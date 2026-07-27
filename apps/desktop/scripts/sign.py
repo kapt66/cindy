@@ -55,8 +55,16 @@ signed_zip_path = os.path.join(tmp_dir, "signed.zip")
 
 try:
     print(f"[sign.py] Zipping {exe_name}...")
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.write(exe_path, exe_name)
+    def write_archive():
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.write(exe_path, exe_name)
+            # NPKG de-duplicates byte-identical uploads. Shared third-party
+            # tools (for example rg.exe) may already have been submitted by
+            # another product/token, whose package this token cannot delete.
+            # Keep the executable unchanged while making this upload unique.
+            archive.comment = f"cindy-meka-sign-{time.time_ns()}-{os.urandom(8).hex()}".encode()
+
+    write_archive()
 
     def upload(memo):
         with open(zip_path, "rb") as source:
@@ -69,17 +77,12 @@ try:
             )
 
     print("[sign.py] Uploading...")
-    response = upload(f"xdt-maker-sign-{int(time.time())}")
+    response = upload(f"cindy-meka-sign-{int(time.time())}")
     data = response.json()
     if response.status_code == 409 and data.get("conflict_id"):
-        conflict_id = data["conflict_id"]
-        print(f"[sign.py] Replacing conflicting package {conflict_id}...")
-        requests.delete(
-            f"{SERVICE_ORIGIN}/api/v1/packages/{conflict_id}/",
-            headers=headers,
-            timeout=REQUEST_TIMEOUT_SECONDS,
-        ).raise_for_status()
-        response = upload(f"xdt-maker-sign-retry-{int(time.time())}")
+        print("[sign.py] Upload conflict; retrying with a unique archive...")
+        write_archive()
+        response = upload(f"cindy-meka-sign-retry-{int(time.time())}")
         data = response.json()
 
     if response.status_code not in (200, 201):

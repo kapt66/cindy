@@ -42,7 +42,7 @@ process.env.VITE_CINDY_AUTH_REGION = CINDY_REGION;
 const CINDY_APP_ID = brandAppId(CINDY_REGION);
 const CINDY_UTI_PREFIX = brandBundleIdPrefix(CINDY_REGION);
 /**
- * 可执行文件基名,按区域派生(cn 'cindy-meka' / global 'cindy-meka-global'):同机双装时
+ * 可执行文件基名,按区域派生(cn 'CindyMeka' / global 'CindyMekaGlobal'):同机双装时
  * exe / mac .app 包名 / NSIS 安装目录与快捷方式若同名,第二个安装会覆盖第一个,
  * 更新器按 exe 名杀进程也会误伤另一区域。运行时 userData 目录由 main 入口按
  * 同一区域切换(src/main/regionUserData.ts),两端从 brand-identity 同源派生。

@@ -8,12 +8,12 @@ import { resolveRegionUserDataDirName } from '../regionUserData';
  * 所以把所有象限全部锁死。
  */
 describe('resolveRegionUserDataDirName', () => {
-  const ARGV = ['cindy-meka.exe'] as const;
+  const ARGV = ['CindyMeka.exe'] as const;
 
-  it('packaged + global → 覆写为 cindy-meka-global(与默认 Meka 分库)', () => {
+  it('packaged + global → 覆写为 CindyMekaGlobal(与默认 Meka 分库)', () => {
     expect(
       resolveRegionUserDataDirName({ isPackaged: true, region: 'global', argv: ARGV }),
-    ).toBe('cindy-meka-global');
+    ).toBe('CindyMekaGlobal');
   });
 
   it('packaged + cn → null(区域目录名 = productName 默认,保持原生行为)', () => {
@@ -36,7 +36,7 @@ describe('resolveRegionUserDataDirName', () => {
       resolveRegionUserDataDirName({
         isPackaged: true,
         region: 'global',
-        argv: ['cindy-meka-global.exe', '--smoke-test', '--user-data-dir=C:\\tmp\\xdt-smoke-x'],
+        argv: ['CindyMekaGlobal.exe', '--smoke-test', '--user-data-dir=C:\\tmp\\xdt-smoke-x'],
       }),
     ).toBeNull();
     // 空格分隔形态同样尊重。
@@ -44,7 +44,7 @@ describe('resolveRegionUserDataDirName', () => {
       resolveRegionUserDataDirName({
         isPackaged: true,
         region: 'global',
-        argv: ['cindy-meka-global.exe', '--user-data-dir', 'C:\\tmp\\xdt-smoke-x'],
+        argv: ['CindyMekaGlobal.exe', '--user-data-dir', 'C:\\tmp\\xdt-smoke-x'],
       }),
     ).toBeNull();
   });

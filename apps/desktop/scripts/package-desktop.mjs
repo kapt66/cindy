@@ -78,7 +78,11 @@ import {
   buildBuildInfo,
   debianArch,
 } from './ci/package-lib.mjs';
-import { applyMacSigningConfigToEnv, applyReleaseCdnBaseUrlToEnv } from './ci/release-regions.mjs';
+import {
+  applyMacSigningConfigToEnv,
+  applyReleaseCdnBaseUrlToEnv,
+  validateMekaReleaseCdnBaseUrl,
+} from './ci/release-regions.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -155,13 +159,10 @@ function runForgeMake({ platform, arch, region, version, versionless, noSign }) 
     );
   }
   if (mekaReleaseCdnBaseUrl) {
-    const parsed = new URL(mekaReleaseCdnBaseUrl);
-    if (parsed.protocol !== 'https:' || parsed.username || parsed.password) {
-      throw new Error('XDT_CDN_BASE_URL must be a credential-free HTTPS URL');
-    }
+    const validatedCdnBaseUrl = validateMekaReleaseCdnBaseUrl(mekaReleaseCdnBaseUrl);
     // 版本化 Meka 包必须能继续从原渠道取 endpoint.json 与后续 manifest。
     // 发布机显式提供旧渠道地址时，它优先于仓内 Cindy 清单基址。
-    clientBuildEnv.VITE_ENDPOINT_MANIFEST_BASE_URL = mekaReleaseCdnBaseUrl;
+    clientBuildEnv.VITE_ENDPOINT_MANIFEST_BASE_URL = validatedCdnBaseUrl;
   }
   const forgeEnv = {
     ...process.env,

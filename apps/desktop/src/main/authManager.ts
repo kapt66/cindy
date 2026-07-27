@@ -39,6 +39,7 @@ import {
 import { closeDb as closeLocalDb } from './localDb';
 import { readReloginFlag, clearReloginFlag } from './updateService';
 import * as canaryFlagStore from './canaryFlagStore';
+import { isCanaryUser } from './localCanaryAllowlist';
 import { decodeAccessTokenOrgSlug } from './authTokenClaims';
 import { getProviderSecretStore } from './secrets/providerSecretStore.js';
 import {
@@ -749,6 +750,15 @@ function scheduleCanaryFlagSync(input: {
   expectedAuthEpoch: number;
   expectedUserId: string;
 }): void {
+  // Meka 开发名单是本地权威来源之一：先同步写入，让冷启动/登录完成后无需等待
+  // feature-flags 网络请求即可读取 canary manifest。后续服务端 false 也必须与
+  // 本地名单做 OR 合并，不能把名单用户降回 stable。
+  if (
+    currentUser?.id === input.expectedUserId &&
+    isCanaryUser(input.expectedUserId, false)
+  ) {
+    canaryFlagStore.sync(true);
+  }
   void syncCanaryFlagAfterAuth(input, {
     fetchFeatureFlags: (token) =>
       apiFetch('/api/user/feature-flags', {
@@ -759,11 +769,17 @@ function scheduleCanaryFlagSync(input: {
       authEpoch: authStateEpoch,
       userId: currentUser?.id ?? null,
     }),
-    persistFlag: canaryFlagStore.sync,
+    persistFlag: (serverIsCanary) =>
+      canaryFlagStore.sync(isCanaryUser(input.expectedUserId, serverIsCanary)),
   })
     .then((outcome) => {
       if (outcome.kind === 'synced') {
-        log.info('canary feature flag synced: isCanary=%s', outcome.isCanary);
+        const effectiveIsCanary = isCanaryUser(input.expectedUserId, outcome.isCanary);
+        log.info(
+          'canary feature flag synced: server=%s effective=%s',
+          outcome.isCanary,
+          effectiveIsCanary,
+        );
         // feature-flags 在登录态落地后异步返回；立即推送新快照，让 renderer
         // 的 Canary 装饰不必等到下一次 refresh / 重启才更新。
         notifyRenderer();

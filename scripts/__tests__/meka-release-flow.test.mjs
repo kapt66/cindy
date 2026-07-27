@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   assertPublishVersionOrder,
   buildCanaryManifest,
+  buildPublishedEndpointManifest,
   compareReleaseVersions,
   putImmutableArtifact,
   sha256File,
@@ -17,7 +18,24 @@ import {
   contentTypeForReleaseFile,
   normalizeReleaseObjectKey,
 } from "../../apps/desktop/scripts/ci/release-storage.mjs";
-import { validateReleaseRegions } from "../../apps/desktop/scripts/ci/release-regions.mjs";
+import {
+  assertMekaReleaseTargetIsolation,
+  validateMekaReleaseCdnBaseUrl,
+  validateReleaseRegions,
+} from "../../apps/desktop/scripts/ci/release-regions.mjs";
+import {
+  packageArgsForShortcut,
+  parsePromoteShortcutArgs,
+  parseReleaseShortcutArgs,
+  promoteArgsForShortcut,
+  publishArgsForShortcut,
+  targetArchs,
+} from "../../apps/desktop/scripts/ci/release-shortcut-lib.mjs";
+import {
+  assertRuntimeManifestAssets,
+  collectLocalRuntimeAssets,
+  publishRuntimeAssets,
+} from "../../apps/desktop/scripts/ci/runtime-release.mjs";
 
 function makeRegions() {
   return Object.fromEntries(
@@ -71,6 +89,182 @@ function makeBuildInfo(root, overrides = {}) {
   return buildInfoPath;
 }
 
+test("fixed CN release shortcuts cover Windows and both macOS architectures", () => {
+  const win = parseReleaseShortcutArgs([
+    "--platform",
+    "win32",
+    "--arch",
+    "x64",
+    "patch",
+  ]);
+  assert.deepEqual(packageArgsForShortcut(win), [
+    "--platform",
+    "win32",
+    "--region",
+    "cn",
+    "--version",
+    "patch",
+    "--arch",
+    "x64",
+  ]);
+  assert.deepEqual(targetArchs("darwin"), ["arm64", "x64"]);
+  assert.deepEqual(targetArchs("darwin", "x64"), ["x64"]);
+
+  const mac = parseReleaseShortcutArgs([
+    "--platform",
+    "darwin",
+    "1.2.3",
+    "--release-notes-file",
+    "notes.txt",
+    "--require-relogin",
+  ]);
+  assert.equal(mac.versionSpec, "1.2.3");
+  assert.equal(mac.requireRelogin, true);
+  assert.deepEqual(
+    publishArgsForShortcut("build-info.json", mac, { execute: true }).slice(-2),
+    ["--require-relogin", "--execute"],
+  );
+  assert.throws(
+    () => parseReleaseShortcutArgs(["--platform", "win32", "--arch", "x64"]),
+    /必须提供版本号/,
+  );
+});
+
+test("fixed promotion shortcuts preview by default and require --yes for writes", () => {
+  const preview = parsePromoteShortcutArgs([
+    "--platform",
+    "darwin",
+    "--arch",
+    "arm64",
+  ]);
+  assert.equal(preview.yes, false);
+  assert.deepEqual(promoteArgsForShortcut("darwin", "arm64"), [
+    "--region",
+    "cn",
+    "--platform",
+    "darwin",
+    "--arch",
+    "arm64",
+  ]);
+
+  const execute = parsePromoteShortcutArgs([
+    "--platform",
+    "win32",
+    "--arch",
+    "x64",
+    "--",
+    "--yes",
+  ]);
+  assert.equal(execute.yes, true);
+  assert.equal(
+    promoteArgsForShortcut("win32", "x64", { yes: true }).at(-1),
+    "--yes",
+  );
+});
+
+test("root and desktop package scripts expose the restored release shortcuts", () => {
+  const rootPackage = JSON.parse(
+    fs.readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
+  );
+  const desktopPackage = JSON.parse(
+    fs.readFileSync(
+      new URL("../../apps/desktop/package.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  for (const name of [
+    "release:win",
+    "release:mac",
+    "release:mac:arm64",
+    "release:mac:x64",
+    "release:promote:win",
+    "release:promote:mac",
+    "release:promote:mac:arm64",
+    "release:promote:mac:x64",
+  ]) {
+    assert.equal(typeof rootPackage.scripts[name], "string", name);
+    assert.equal(typeof desktopPackage.scripts[name], "string", name);
+  }
+});
+
+test("first release publishes Claude and Codex runtime assets into the manifest", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cindy-meka-runtimes-"));
+  try {
+    for (const [dir, binary] of [
+      ["claude-code-bin", "claude.exe"],
+      ["codex-bin", "codex.exe"],
+    ]) {
+      const target = path.join(root, "apps", dir, "win32-x64");
+      fs.mkdirSync(target, { recursive: true });
+      fs.writeFileSync(path.join(target, ".version"), "1.2.3\n");
+      fs.writeFileSync(path.join(target, binary), Buffer.alloc(2048, dir));
+    }
+    const local = collectLocalRuntimeAssets("win32-x64", { projectRoot: root });
+    const objects = new Map();
+    const storage = {
+      async head(key) {
+        return objects.get(key) ?? null;
+      },
+      async putFile(key, filePath, options) {
+        objects.set(key, {
+          size: fs.statSync(filePath).size,
+          metadata: options.metadata,
+        });
+      },
+    };
+    const published = await publishRuntimeAssets(
+      storage,
+      local,
+      null,
+      path.join(root, "out"),
+    );
+    const manifest = {
+      app: {
+        version: "0.0.1",
+        hotfix: {
+          file: "hotfix/win32-x64/cindy-meka-0.0.1.zip",
+          sha256: "a".repeat(64),
+          size: 1,
+        },
+        installer: {
+          file: "app/win32-x64/cindy-meka-0.0.1-Setup.exe",
+          sha256: "b".repeat(64),
+          size: 1,
+        },
+      },
+      ...published.manifestAssets,
+    };
+    assertRuntimeManifestAssets(manifest, "win32-x64");
+    assert.equal(published.results.claudeCode, "uploaded");
+    assert.equal(published.results.codex, "uploaded");
+    assert.match(manifest.claudeCode.file, /claude-code\/1\.2\.3\/win32-x64/);
+    assert.match(manifest.codex.file, /codex\/1\.2\.3\/win32-x64/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("runtime manifest guard rejects a first release without agent assets", () => {
+  assert.throws(
+    () => assertRuntimeManifestAssets({ app: {} }, "win32-x64"),
+    /claudeCode/,
+  );
+});
+
+test("published endpoint manifest keeps CN services but does not inherit Cindy updates", () => {
+  const published = JSON.parse(
+    buildPublishedEndpointManifest(JSON.stringify({
+      schemaVersion: 1,
+      authApiBaseUrl: "https://auth.cindy.com.cn",
+      pluginApiBaseUrl: "https://plugin.cindy.com.cn",
+      cdnBaseUrl: "https://hotfix.cindy.com.cn/cindy",
+    })),
+  );
+  assert.equal(published.authApiBaseUrl, "https://auth.cindy.com.cn");
+  assert.equal(published.pluginApiBaseUrl, "https://plugin.cindy.com.cn");
+  assert.equal(published.cdnBaseUrl, "");
+});
+
 test("RustFS release config keeps non-secret target data separate from credential env names", () => {
   const config = validateReleaseRegions(makeRegions());
   assert.equal(config.cn.oss.bucket, "cindy-meka-cn");
@@ -102,6 +296,36 @@ test("RustFS object keys stay inside the Cindy Meka prefix", () => {
   assert.equal(
     contentTypeForReleaseFile("client.dmg"),
     "application/x-apple-diskimage",
+  );
+});
+
+test("dedicated cindy-meka bucket may publish at bucket root without a duplicate prefix", () => {
+  assert.equal(assertMekaReleaseTargetIsolation("cindy-meka", "/"), "");
+  assert.equal(
+    normalizeReleaseObjectKey(
+      assertMekaReleaseTargetIsolation("cindy-meka", "/"),
+      "manifest-win32-x64-canary.json",
+    ),
+    "manifest-win32-x64-canary.json",
+  );
+  assert.throws(
+    () => assertMekaReleaseTargetIsolation("shared-bucket", "/"),
+    /cindy-meka/,
+  );
+});
+
+test("intranet HTTP release roots require an explicit opt-in", () => {
+  const url = "http://172.25.135.168:1011/cindy-meka";
+  assert.throws(() =>
+    validateMekaReleaseCdnBaseUrl(url, { allowInsecure: false }),
+  );
+  assert.equal(
+    validateMekaReleaseCdnBaseUrl(`${url}/`, { allowInsecure: true }),
+    url,
+  );
+  assert.equal(
+    validateMekaReleaseCdnBaseUrl("https://cdn.example.test/cindy-meka"),
+    "https://cdn.example.test/cindy-meka",
   );
 });
 

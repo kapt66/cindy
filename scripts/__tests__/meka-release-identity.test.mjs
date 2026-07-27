@@ -45,8 +45,8 @@ test('packaging mirrors Cindy Meka executable, updater destination and ZIP names
   const forge = read('apps/desktop/forge.config.ts');
   const packager = read('apps/desktop/scripts/package-desktop.mjs');
 
-  assert.match(ciLib, /export const PACKAGED_APP_NAME = 'cindy-meka';/);
-  assert.match(smoke, /const PACKAGED_APP_NAME = 'cindy-meka';/);
+  assert.match(ciLib, /export const PACKAGED_APP_NAME = 'CindyMeka';/);
+  assert.match(smoke, /const PACKAGED_APP_NAME = 'CindyMeka';/);
   assert.match(
     forge,
     /target', 'release', 'cindy-updater\.exe'\)/,
@@ -79,8 +79,14 @@ test('release packaging can pin the endpoint bootstrap to the Cindy Meka CDN', (
   );
   assert.match(
     packager,
-    /clientBuildEnv\.VITE_ENDPOINT_MANIFEST_BASE_URL = mekaReleaseCdnBaseUrl/,
+    /clientBuildEnv\.VITE_ENDPOINT_MANIFEST_BASE_URL = validatedCdnBaseUrl/,
   );
+});
+
+test('release completion prints installer and hotfix download URLs', () => {
+  const publisher = read('apps/desktop/scripts/publish-desktop.mjs');
+  assert.match(publisher, /storage\.cdnUrl\(installerKey\)/);
+  assert.match(publisher, /storage\.cdnUrl\(hotfixKey\)/);
 });
 
 test('Windows release keeps the old Meka signing service without exposing its token', () => {

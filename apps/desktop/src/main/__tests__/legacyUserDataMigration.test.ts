@@ -19,7 +19,7 @@ import {
 } from '../legacyUserDataMigration';
 
 const BASE = path.join(path.sep, 'base');
-const USER_DATA = path.join(BASE, 'cindy-meka');
+const USER_DATA = path.join(BASE, 'CindyMeka');
 const LEGACY = path.join(BASE, 'xdmaker-meka');
 
 /** 内存 fs 假体:Map 存文件(内容 + mtime),Set 存目录/符号链接;merge 复制不覆盖。 */
@@ -611,7 +611,7 @@ describe('shouldSkipLegacyMigrationForDevSandbox', () => {
     expect(
       shouldSkipLegacyMigrationForDevSandbox({
         isPackaged: false,
-        envUserDataDir: path.join(BASE, 'cindy-meka-dev'),
+        envUserDataDir: path.join(BASE, 'CindyMeka-dev'),
       }),
     ).toBe(true);
   });

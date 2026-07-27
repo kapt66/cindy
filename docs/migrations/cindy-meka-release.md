@@ -26,10 +26,10 @@ Copy-Item apps/desktop/scripts/release-regions.json.example `
 
 `release-regions.json` 已被 Git 忽略。每个 `cn` / `global` / `dev` 块分别配置：
 
-- `oss.cdnBaseUrl`：公开只读 CDN 根地址，必须直接映射到该 bucket 的
-  `cindy-meka/` prefix。
+- `oss.cdnBaseUrl`：公开只读 CDN 根地址，必须直接映射到最终发布根目录。
 - `oss.bucket`：Cindy Meka 独立 RustFS bucket。
-- `oss.prefix`：固定为 `cindy-meka`，避免与 Cindy 渠道混用。
+- `oss.prefix`：共用 bucket 时固定为 `cindy-meka`；独立 bucket 名为
+  `cindy-meka` 且直接使用桶根目录时填写 `/`。
 - `oss.ossRegion`：RustFS S3 region。
 - `s3.endpoint`：RustFS 的 S3 API 地址。
 - `s3.forcePathStyle`：RustFS 通常使用 `true`。
@@ -43,16 +43,85 @@ $env:CINDY_MEKA_RUSTFS_ACCESS_KEY_ID = '<access-key>'
 $env:CINDY_MEKA_RUSTFS_SECRET_ACCESS_KEY = '<secret-key>'
 ```
 
-发版凭证只需限定在对应 bucket 的 `cindy-meka/` prefix，并授予读取/HEAD 与写入对象；
+发版凭证只需限定在对应 bucket 的发布根目录，并授予读取/HEAD 与写入对象；
 脚本不删除远端对象，也不需要删除权限。
 
-也可以用 `CINDY_MEKA_S3_ENDPOINT` 覆盖配置文件中的 endpoint。生产发布要求 HTTPS；
-`CINDY_MEKA_ALLOW_INSECURE_S3=1` 只允许用于隔离的本地 RustFS 测试。
+也可以用 `CINDY_MEKA_S3_ENDPOINT` 覆盖配置文件中的 endpoint。默认要求 HTTPS；
+完全隔离的内网 HTTP 部署必须同时显式设置
+`CINDY_MEKA_ALLOW_INSECURE_S3=1` 和 `CINDY_MEKA_ALLOW_INSECURE_CDN=1`。
+
+独立 `cindy-meka` bucket 的内网示例：
+
+```json
+{
+  "oss": {
+    "cdnBaseUrl": "http://172.25.135.168:1011/cindy-meka",
+    "bucket": "cindy-meka",
+    "prefix": "/",
+    "ossRegion": "us-east-1"
+  }
+}
+```
+
+正式包启动前必须能从 `${cdnBaseUrl}/endpoint.json` 读取 CN 端点清单。
+`release:publish` 会从仓内 `config/endpoint.json` 自动生成并上传公开副本：保留
+CindyAI、登录与插件市场等 HTTPS 业务端点，将其中的 `cdnBaseUrl` 留空，使
+Cindy Meka 回退到构建时显式批准并烘焙的同一发布根地址，不继承上游 Cindy 更新渠道。
 
 CDN 必须允许匿名 `GET` / `HEAD`，RustFS 凭证不能暴露给客户端。manifest 使用
 `no-store`；版本化安装包和 ZIP 使用一年 immutable cache。
 
 ## 3. 构建
+
+### 3.1 固定 CN 渠道快捷发布
+
+发版机已经固定使用 Cindy Meka 的 CN/RustFS 配置时，优先使用与旧 Meka 一致的快捷
+入口。`release:*` 会完成“打包、签名、本地复核、上传版本化产物、写 canary manifest”
+整个流程，并保证 manifest 同时包含首启环境初始化所需的 Claude Code 与 Codex
+运行时资产；它不是仅打包命令。
+
+```powershell
+# Windows x64：明确版本或按远端 canary/stable 基线自动 bump
+pnpm release:win 0.0.12
+pnpm release:win patch
+
+# macOS：缺省连续发布 arm64 + x64，也可只发一个架构
+pnpm release:mac 0.0.12
+pnpm release:mac patch
+pnpm release:mac:arm64 patch
+pnpm release:mac:x64 patch
+```
+
+首次发布没有远端版本基线，不能使用 `patch`，必须传明确版本。需要更新说明或强制重新
+登录时可继续透传参数：
+
+```powershell
+pnpm release:win 0.0.12 -- `
+  --release-notes-file C:\path\release-notes.txt --require-relogin
+```
+
+canary 验收后使用固定平台推进命令；不带 `--yes` 只预览：
+
+```powershell
+pnpm release:promote:win
+pnpm release:promote:win -- --yes
+
+pnpm release:promote:mac
+pnpm release:promote:mac -- --yes
+pnpm release:promote:mac:arm64 -- --yes
+pnpm release:promote:mac:x64 -- --yes
+```
+
+macOS 双架构快捷命令会先让两个架构全部完成本地校验，再开始逐个写 canary；双架构
+推进也会先预览两个目标，再在 `--yes` 模式下逐个推进 stable。
+
+首次安装尚未登录时只能读取 stable manifest，不能识别账号的 canary 标记。因此首包
+即使已经发布到 canary，也必须在验收后执行对应的 `release:promote:* -- --yes`，否则
+新安装客户端会因 stable manifest 404 而无法下载 Agent 运行时、停在环境初始化页。
+登录完成后，客户端把服务端 canary 标记与 Cindy Meka 本地名单合并；任一命中即读取
+canary manifest。
+
+### 3.2 底层分步命令
 
 Windows x64 示例：
 

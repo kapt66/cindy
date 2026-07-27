@@ -14,7 +14,9 @@
  *
  * Lifecycle(2026-07 起):
  *   - 登录 / 冷启动恢复 / 运行时换账号后从 oauth-broker 的
- *     `/api/user/feature-flags` 读取 isCanary 并 sync 到本地;
+ *     `/api/user/feature-flags` 读取 isCanary，与 Cindy Meka 本地名单合并后
+ *     sync 到本地;
+ *   - 本地名单命中时先写入，不等待网络；服务端 false 不会覆盖本地名单;
  *   - 接口失败或响应非法时保留旧值，避免瞬时故障把灰度用户静默降级;
  *   - 登出时 clear，避免未登录或下一账号继承当前账号的发布通道;
  *   - Read by manifestService.fetchManifest() to switch URL between
@@ -71,7 +73,7 @@ export function clear(): void {
 
 /**
  * Convenience: sync local flag to a desired value in one call.
- * authManager 仅在 feature-flags 请求成功且身份仍匹配时调用。
+ * authManager 在本地名单命中时以及 feature-flags 请求成功且身份仍匹配时调用。
  */
 export function sync(isCanary: boolean): void {
   if (isCanary) write();

@@ -35,7 +35,7 @@
 | Orca Worker 微调   | 迁移                     | 仅迁入 Meka 目标选择和远程约束所需改动                             |
 | 打包发布           | 已迁移                   | 打包/发布分层；RustFS 上传、canary、stable promote 与 rollback 已接入 |
 | 项目与角色         | 迁移                     | 项目、角色、元数据、内置 SAGA2 与 6 个角色                         |
-| 原 Meka 用户数据   | 必须兼容                 | 新建 `cindy-meka`，从 `xdmaker-meka` 只读复制并运行 lineage bridge |
+| 原 Meka 用户数据   | 必须兼容                 | 新建 `CindyMeka`，从 `xdmaker-meka` 只读复制并运行 lineage bridge |
 | Windows/macOS 签名 | 沿用原证书/服务          | Windows 原签名服务；macOS 原证书私钥和 self-signed 模式            |
 | 热更新             | 新建 Cindy Meka 渠道     | 不承诺旧 Meka 原地热更新；新应用安装后迁移旧数据                   |
 | device-link        | 继续使用 `cindy://`      | OS 应用身份独立，跨端 wire protocol 不分叉                         |
@@ -70,6 +70,8 @@
   使用命名隔离 sandbox，避免触碰共享数据。
 - Cindy Meka Desktop 发布侧已补齐 RustFS(S3 API)上传、版本化产物 immutable guard、
   canary manifest、stable promote/备份与 rollback；发布配置和凭证与 Cindy 渠道隔离。
+- Meka 本地 canary 名单已迁入 Cindy 当前的异步 feature-flags 同步链：最终通道取
+  “服务端标记或本地名单”的并集，本地名单命中不会被服务端 `false` 降级。
 - 更新链已补严格 SemVer 只升不降、Windows 解压后主程序校验，以及 macOS bundle
   身份/架构/签名校验和启动失败回滚。
 
@@ -92,7 +94,7 @@
 
 ### 3.3 等待手测或发布环境验证
 
-- 真实旧 Meka userData 副本到 `cindy-meka` 的只读迁移。
+- 真实旧 Meka userData 副本到 `CindyMeka` 的只读迁移。
 - 真实 Jira/GitLab 账号和 Issue 创建流程。
 - 真实 MCPRouter 登录、实例创建、绑定和远程会话。
 - Orca Worker 对真实 P4 根目录和远程实例的运行。
@@ -109,9 +111,9 @@
 
 当前身份锚点：
 
-- Windows/macOS 可执行文件名：`cindy-meka`
+- Windows/macOS 可执行文件名：`CindyMeka`
 - CN appId/AUMID/bundle id：`com.xd.cindy.meka`
-- userData：`cindy-meka`
+- userData：`CindyMeka`
 - global/dev 使用各自的 `-global` / `-dev` 派生身份，避免同机覆盖。
 - DB 文件前缀：`cindy-meka`
 - 更新器名：`cindy-meka-updater`
@@ -660,7 +662,7 @@ Shared Cindy userData cannot run migration artifacts that are not canonical on o
 
 处理：
 
-- Cindy Meka 已使用独立的应用身份和 `%APPDATA%\cindy-meka` userData；开发启动与
+- Cindy Meka 已使用独立的应用身份和 `%APPDATA%\CindyMeka` userData；开发启动与
   正式安装默认共享这份产品数据，与上游 Cindy 的开发启动语义一致。
 - 只有在开发未合入 migration 时才显式传入命名 sandbox；启动器保留共享数据库
   migration 安全门禁，但不再自动切换 sandbox。

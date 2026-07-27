@@ -189,7 +189,37 @@ export function buildCanaryManifest(baseManifest, release, options = {}) {
   else delete manifest.app.releaseNotes;
   if (options.requireRelogin === true) manifest.app.requireRelogin = true;
   else delete manifest.app.requireRelogin;
+  if (options.runtimeAssets) {
+    manifest.claudeCode = structuredClone(options.runtimeAssets.claudeCode);
+    manifest.codex = structuredClone(options.runtimeAssets.codex);
+  }
   return manifest;
+}
+
+/**
+ * Build the public endpoint manifest for a Cindy Meka release.
+ *
+ * The packaged app already has the endpoint-manifest root baked in. Keeping
+ * cdnBaseUrl empty makes the update service reuse that same root instead of
+ * inheriting the upstream Cindy update channel from config/endpoint.json.
+ */
+export function buildPublishedEndpointManifest(sourceText) {
+  let source;
+  try {
+    source = JSON.parse(sourceText);
+  } catch {
+    throw new Error('config/endpoint.json 不是合法 JSON');
+  }
+  if (
+    !source ||
+    typeof source !== 'object' ||
+    Array.isArray(source) ||
+    !Number.isInteger(source.schemaVersion) ||
+    source.schemaVersion < 1
+  ) {
+    throw new Error('config/endpoint.json 缺少合法 schemaVersion');
+  }
+  return `${JSON.stringify({ ...source, cdnBaseUrl: '' }, null, 2)}\n`;
 }
 
 export function validateManifestForPlatform(manifest, platformKey) {
@@ -334,11 +364,11 @@ export async function putImmutableText(storage, relativeKey, text) {
   return { uploaded: true, reused: false };
 }
 
-export async function verifyCdnManifest(storage, platformKey, channel, expectedText, options = {}) {
+export async function verifyCdnText(storage, relativeKey, expectedText, options = {}) {
   const attempts = options.attempts ?? 5;
   const retryMs = options.retryMs ?? 1_500;
   const expectedSha = sha256Text(expectedText);
-  const url = storage.cdnUrl(manifestKey(platformKey, channel));
+  const url = storage.cdnUrl(relativeKey);
   let lastError = '';
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
@@ -359,5 +389,9 @@ export async function verifyCdnManifest(storage, platformKey, channel, expectedT
       await new Promise((resolve) => setTimeout(resolve, retryMs));
     }
   }
-  throw new Error(`CDN manifest 校验失败: ${url} (${lastError})`);
+  throw new Error(`CDN 对象校验失败: ${url} (${lastError})`);
+}
+
+export async function verifyCdnManifest(storage, platformKey, channel, expectedText, options = {}) {
+  return verifyCdnText(storage, manifestKey(platformKey, channel), expectedText, options);
 }

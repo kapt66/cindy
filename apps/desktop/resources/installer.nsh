@@ -1,12 +1,9 @@
 ; 区域身份参数化:本文件不再硬编码 Cindy 字面量,
 ; 一律走 electron-builder 在 common.nsh 里注入的宏——
-;   ${APP_EXECUTABLE_FILENAME} = <productName>.exe(cn/global Cindy.exe / dev CindyDev.exe)
-;   ${PRODUCT_FILENAME}        = productName(cn/global Cindy / dev CindyDev)
+;   ${APP_EXECUTABLE_FILENAME} = <productName>.exe(CindyMeka*.exe)
+;   ${PRODUCT_FILENAME}        = productName(CindyMeka*)
 ;   ${SHORTCUT_NAME}           = forge.config nsis.shortcutName(与 exe 基名同源)
-; 2026-07-26 起 cn/global exe 名同值(显示名统一,双装文件层互抢已被 owner
-; 接受);dev 仍独立名,dev 安装器绝不误伤同机并存的正式安装。注册表键名
-; Windows 大小写不敏感,shell 键 "Cindy" 与历史写入的 "cindy" 是同一个键,
-; 行为零变化。
+; Cindy Meka 的 cn/global/dev 文件名按区域派生，安装器只处理本区域身份。
 !macro customInit
   ; Check if the app is already running
   check_running:
@@ -37,7 +34,7 @@
 
   ; Cindy Meka 首装接管旧 XDMaker Meka 快捷方式。仅 cn 身份清理旧名，
   ; 避免 global/dev 跨区域误删。
-  StrCmp "${PRODUCT_FILENAME}" "cindy-meka" 0 meka_legacy_shortcuts_done_init
+  StrCmp "${PRODUCT_FILENAME}" "CindyMeka" 0 meka_legacy_shortcuts_done_init
   Delete "$DESKTOP\xdmaker-meka.lnk"
   Delete "$SMPROGRAMS\xdmaker-meka.lnk"
   Delete "$SMPROGRAMS\xdmaker-meka\xdmaker-meka.lnk"
@@ -57,8 +54,8 @@
   ; 用 HKCU 不用 HKLM:不需要管理员权限, 多用户机器上每个用户启动 app 时自注册。
   ; %V 在 Directory\shell / Directory\Background\shell 两种上下文里都解析为
   ; "用户右键所在的目录" 路径, argv 直传不做 URL 编解码 (deep link 走 cindy-meka:// 另一套)。
-  ; 键名用 ${PRODUCT_FILENAME}(区域身份):cn 'cindy-meka',global
-  ; 'cindy-meka-global',dev 'cindy-meka-dev'——双装时菜单项并存互不覆盖,
+  ; 键名用 ${PRODUCT_FILENAME}(区域身份):cn 'CindyMeka',global
+  ; 'CindyMekaGlobal',dev 'CindyMekaDev'——双装时菜单项并存互不覆盖,
   ; 也与老 XDMaker 安装的 xdt-maker 键并存。
   WriteRegStr HKCU "Software\Classes\Directory\shell\${PRODUCT_FILENAME}" "" "通过 ${PRODUCT_FILENAME} 打开"
   WriteRegStr HKCU "Software\Classes\Directory\shell\${PRODUCT_FILENAME}" "Icon" "$INSTDIR\${APP_EXECUTABLE_FILENAME},0"
@@ -93,7 +90,7 @@
 
   ; 只在卸载 cn/Cindy Meka 身份时清理自己的 ProgID；若旧 XDMaker Meka
   ; 仍安装则恢复其 handler，不把另一个应用留下的可用关联一并删除。
-  StrCmp "${PRODUCT_FILENAME}" "cindy-meka" 0 meka_file_assoc_done
+  StrCmp "${PRODUCT_FILENAME}" "CindyMeka" 0 meka_file_assoc_done
   ReadRegStr $R0 HKCU "Software\Classes\.cindy" ""
   ${If} $R0 == "CindyMeka.CindyGhost"
     ReadRegStr $R1 HKCU "Software\Classes\XDMakerMeka.CindyGhost\shell\open\command" ""

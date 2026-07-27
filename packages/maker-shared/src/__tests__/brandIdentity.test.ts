@@ -95,9 +95,9 @@ describe('BRAND_IDENTITY invariants', () => {
   it('Cindy Meka 新身份与 XDMaker Meka 迁移锚保持分离', () => {
     expect(BRAND_IDENTITY.legacySchemes).toContain('xdt-maker');
     expect(BRAND_IDENTITY.legacyUserDataDirNames).toEqual(['xdmaker-meka', 'xdt-maker']);
-    expect(BRAND_IDENTITY.executableName).toBe('cindy-meka');
+    expect(BRAND_IDENTITY.executableName).toBe('CindyMeka');
     expect(BRAND_IDENTITY.appIdByRegion.cn).toBe('com.xd.cindy.meka');
-    expect(BRAND_IDENTITY.userDataDirName).toBe('cindy-meka');
+    expect(BRAND_IDENTITY.userDataDirName).toBe('CindyMeka');
     expect(BRAND_IDENTITY.dbFilePrefix).toBe('cindy-meka');
     expect(BRAND_IDENTITY.cdnPrefix).toBe('cindy-meka');
     expect(BRAND_IDENTITY.updaterName).toBe('cindy-meka-updater');
@@ -139,11 +139,11 @@ describe('区域解析与派生', () => {
   });
 
   it('brandExecutableName / brandUserDataDirName 按区域取值,默认 global', () => {
-    expect(brandExecutableName()).toBe('cindy-meka-global');
-    expect(brandExecutableName('global')).toBe('cindy-meka-global');
-    expect(brandExecutableName('dev')).toBe('cindy-meka-dev');
-    expect(brandUserDataDirName()).toBe('cindy-meka-global');
-    expect(brandUserDataDirName('global')).toBe('cindy-meka-global');
+    expect(brandExecutableName()).toBe('CindyMekaGlobal');
+    expect(brandExecutableName('global')).toBe('CindyMekaGlobal');
+    expect(brandExecutableName('dev')).toBe('CindyMekaDev');
+    expect(brandUserDataDirName()).toBe('CindyMekaGlobal');
+    expect(brandUserDataDirName('global')).toBe('CindyMekaGlobal');
   });
 });
 
@@ -170,15 +170,15 @@ describe('派生 helper', () => {
 
   it('allUserDataDirNames 本区域目录名恒为首位 + 全部历史值,且不含另一区域', () => {
     expect(allUserDataDirNames()).toEqual([
-      'cindy-meka-global',
+      'CindyMekaGlobal',
       'xdmaker-meka',
       'xdt-maker',
     ]);
-    expect(allUserDataDirNames('cn')).toEqual(['cindy-meka', 'xdmaker-meka', 'xdt-maker']);
+    expect(allUserDataDirNames('cn')).toEqual(['CindyMeka', 'xdmaker-meka', 'xdt-maker']);
     // global 的匹配集不含 cn 的 'Cindy':orphan-reaper 按路径认领进程,
     // 跨区域匹配会误杀另一个安装的进程。
     expect(allUserDataDirNames('global')).toEqual([
-      'cindy-meka-global',
+      'CindyMekaGlobal',
       'xdmaker-meka',
       'xdt-maker',
     ]);

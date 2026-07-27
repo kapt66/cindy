@@ -50,7 +50,9 @@ export class MekaReleaseStorage {
     client = new S3Client({
       endpoint: config.endpoint,
       region: config.region,
-      credentials: config.credentials,
+      // AWS SDK annotates static credentials with internal feature metadata.
+      // Release config is intentionally frozen, so hand the SDK a private copy.
+      credentials: { ...config.credentials },
       forcePathStyle: config.forcePathStyle,
     }),
   ) {

@@ -10,8 +10,8 @@ import { resolveRegionUserDataDirName } from './regionUserData.js';
 import { createLogger, initLogger } from './logger.js';
 import { beginDesktopDevInstance, type DesktopDevMode } from './devStartupStatus.js';
 
-// 同机双装(cn/global):global 构建把 userData 切到区域目录(cindy-meka-global),
-// 与 cn 版(productName 默认 'cindy-meka')彻底分库;数据库 / 登录态 / 单实例锁 /
+// 同机双装(cn/global):global 构建把 userData 切到区域目录(CindyMekaGlobal),
+// 与 cn 版(productName 默认 'CindyMeka')彻底分库;数据库 / 登录态 / 单实例锁 /
 // sessionData 随 userData 目录天然隔离。必须在 initLogger()(packaged 日志
 // 目录)、crashReporter、单实例锁与一切 userData 读取之前执行。cn 构建与
 // dev 返回 null,零行为变化(dev 隔离语义由下方 devCliFlags 的 --isolated 承载)。

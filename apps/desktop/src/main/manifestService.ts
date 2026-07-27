@@ -19,6 +19,8 @@ import * as canaryFlagStore from './canaryFlagStore';
 
 import { createLogger } from './logger';
 import { getClientEndpoint } from './clientEndpointsService';
+import { ENDPOINT_MANIFEST_BASE_URL } from '../shared/endpoints';
+import { resolveUpdateBaseUrl } from '../shared/updateBaseUrl';
 
 const log = createLogger('manifestService');
 
@@ -92,8 +94,11 @@ let cached: Manifest | null = null;
 // 2026-07 退役 cdnInternalBaseUrl:内网加速镜像与 internal_test.txt 探测已下线,
 // 更新/hotfix 链一律直连 cdnBaseUrl。
 export function getBaseUrl(): string {
-  if (process.env.XDT_CDN_BASE_URL) return process.env.XDT_CDN_BASE_URL;
-  return getClientEndpoint('cdnBaseUrl');
+  return resolveUpdateBaseUrl({
+    environmentOverride: process.env.XDT_CDN_BASE_URL,
+    endpointCdnBaseUrl: getClientEndpoint('cdnBaseUrl'),
+    endpointManifestBaseUrl: ENDPOINT_MANIFEST_BASE_URL,
+  });
 }
 
 /**

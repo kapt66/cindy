@@ -1,7 +1,7 @@
 /**
  * legacyUserDataMigration — 首登轻量数据迁移(mToc)。
  *
- * Cindy Meka 身份翻转后 userData 目录从 `xdmaker-meka` 变为 `cindy-meka`,老用户的
+ * Cindy Meka 身份翻转后 userData 目录从 `xdmaker-meka` 变为 `CindyMeka`,老用户的
  * 主库与媒体总仓留在同级的老目录里。本模块在「用户首次登录成功、db 尚未打开」
  * 时(registerLocalDbIpc 的 beforeEnsureReady 钩子)做一次**只读老目录**的简单
  * 迁移:复制主库(+wal/shm 附属文件)、`cindy-media` 目录、`dialogues` 无文件夹

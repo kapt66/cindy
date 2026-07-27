@@ -5,9 +5,10 @@
  * 这边管 OS 注册身份与磁盘/协议标识符——exe 名、AppUserModelId/bundle id、
  * 深链 scheme、userData 目录名、CDN 渠道前缀、更新器产物名等。
  *
- * 2026-07 Cindy Meka 身份迁移：新应用使用独立的 `cindy-meka` OS / 磁盘 /
- * 更新渠道身份，并从 XDMaker Meka 的 `xdmaker-meka` userData 只读导入数据。
- * 旧值只作为兼容输入，不再作为新包的主身份。
+ * 2026-07 Cindy Meka 身份迁移：新应用的程序与 userData 使用 `CindyMeka`
+ * 文件身份；协议、数据库与更新渠道使用机器友好的 `cindy-meka` 身份，并从
+ * XDMaker Meka 的 `xdmaker-meka` userData 只读导入数据。旧值只作为兼容输入，
+ * 不再作为新包的主身份。
  *
  * ⚠️ 语义边界:
  *  - 这是**构建期单点,不是运行时开关**。区域(cn/global)是唯一的构建期维度,
@@ -133,11 +134,11 @@ export interface BrandIdentity {
  */
 export const BRAND_IDENTITY: BrandIdentity = Object.freeze({
   displayName: BRAND_NAME,
-  executableName: 'cindy-meka',
+  executableName: 'CindyMeka',
   executableNameByRegion: Object.freeze({
-    cn: 'cindy-meka',
-    global: 'cindy-meka-global',
-    dev: 'cindy-meka-dev',
+    cn: 'CindyMeka',
+    global: 'CindyMekaGlobal',
+    dev: 'CindyMekaDev',
   }),
   appIdByRegion: Object.freeze({
     cn: 'com.xd.cindy.meka',
@@ -147,11 +148,11 @@ export const BRAND_IDENTITY: BrandIdentity = Object.freeze({
   primaryScheme: 'cindy-meka',
   legacySchemes: Object.freeze(['xdmaker-meka', 'xdt-maker']),
   acceptedUnregisteredSchemes: Object.freeze(['cindy']),
-  userDataDirName: 'cindy-meka',
+  userDataDirName: 'CindyMeka',
   userDataDirNameByRegion: Object.freeze({
-    cn: 'cindy-meka',
-    global: 'cindy-meka-global',
-    dev: 'cindy-meka-dev',
+    cn: 'CindyMeka',
+    global: 'CindyMekaGlobal',
+    dev: 'CindyMekaDev',
   }),
   // `xdmaker-meka` 是直接迁移来源；更早的 `xdt-maker` 仍须保留给
   // orphan reaper、Codex HOME 接管与 owner namespace 兼容逻辑。

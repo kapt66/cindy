@@ -28,6 +28,46 @@ const SCRIPTS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 export const RELEASE_REGIONS_PATH = path.join(SCRIPTS_DIR, 'release-regions.json');
 export const RELEASE_REGIONS_EXAMPLE_PATH = path.join(SCRIPTS_DIR, 'release-regions.json.example');
 
+/**
+ * Validate the public release root. HTTPS remains the default; isolated
+ * intranet RustFS installations may opt into HTTP explicitly.
+ */
+export function validateMekaReleaseCdnBaseUrl(
+  value,
+  { allowInsecure = process.env.CINDY_MEKA_ALLOW_INSECURE_CDN === '1' } = {},
+) {
+  const normalized = String(value ?? '')
+    .trim()
+    .replace(/\/+$/, '');
+  let parsed;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    throw new Error(`CDN base 不是合法 URL: ${value}`);
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error('Cindy Meka 发布 CDN base 不能包含凭证');
+  }
+  if (parsed.protocol === 'https:') return normalized;
+  if (parsed.protocol === 'http:' && allowInsecure) return normalized;
+  throw new Error(
+    'Cindy Meka 发布 CDN base 必须使用 HTTPS；仅隔离内网可显式设置 ' +
+      'CINDY_MEKA_ALLOW_INSECURE_CDN=1',
+  );
+}
+
+/**
+ * Cindy Meka release bytes must be isolated either by the canonical prefix or
+ * by a dedicated bucket whose root is used directly.
+ */
+export function assertMekaReleaseTargetIsolation(bucket, prefix) {
+  const cleanBucket = String(bucket ?? '').trim();
+  const cleanPrefix = String(prefix ?? '').replace(/^\/+|\/+$/g, '');
+  if (cleanPrefix === 'cindy-meka') return cleanPrefix;
+  if (cleanBucket === 'cindy-meka' && cleanPrefix === '') return cleanPrefix;
+  throw new Error('Cindy Meka 只能发布到 cindy-meka prefix，或独立 cindy-meka bucket 的根目录');
+}
+
 /** 每个 region 的 oss 配置块字段 → 对应的既有 env 变量名(refreshOssConfig 的最终读取面)。 */
 export const RELEASE_REGION_ENV_NAMES = Object.freeze({
   cn: Object.freeze({
@@ -274,24 +314,8 @@ export function resolveMekaS3Config(region, options = {}) {
   const normalized = resolveReleaseRegion(region);
   applyReleaseRegionConfigToEnv(normalized, options);
   const objectTarget = resolveOssConfig(normalized);
-  if (objectTarget.prefix !== 'cindy-meka') {
-    throw new Error(
-      `Cindy Meka 只允许发布到 cindy-meka prefix，当前为 ${objectTarget.prefix}`,
-    );
-  }
-  let parsedCdnBase;
-  try {
-    parsedCdnBase = new URL(objectTarget.cdnBase);
-  } catch {
-    throw new Error(`CDN base 不是合法 URL: ${objectTarget.cdnBase}`);
-  }
-  if (
-    parsedCdnBase.protocol !== 'https:'
-    || parsedCdnBase.username
-    || parsedCdnBase.password
-  ) {
-    throw new Error('Cindy Meka 正式发布 CDN base 必须是无凭证的 HTTPS URL');
-  }
+  const releasePrefix = assertMekaReleaseTargetIsolation(objectTarget.bucket, objectTarget.prefix);
+  const releaseCdnBase = validateMekaReleaseCdnBaseUrl(objectTarget.cdnBase);
   const configPath = resolveReleaseRegionsPath(options.filePath);
   const fileS3 = fs.existsSync(configPath)
     ? loadReleaseRegions({ filePath: options.filePath })[normalized].s3
@@ -347,9 +371,9 @@ export function resolveMekaS3Config(region, options = {}) {
   return Object.freeze({
     endpoint: parsedEndpoint.toString().replace(/\/+$/, ''),
     bucket: objectTarget.bucket,
-    prefix: objectTarget.prefix.replace(/^\/+|\/+$/g, ''),
+    prefix: releasePrefix,
     region: objectTarget.region,
-    cdnBase: objectTarget.cdnBase,
+    cdnBase: releaseCdnBase,
     forcePathStyle: fileS3?.forcePathStyle ?? true,
     credentials: Object.freeze({
       accessKeyId,

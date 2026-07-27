@@ -748,11 +748,11 @@ mod tests {
     fn extracted_main_executable_must_exist_and_be_non_empty() {
         let root = temp_test_dir("main-exe");
         let result = (|| {
-            assert!(validate_extracted_main_executable(&root, "cindy-meka.exe").is_err());
-            fs::write(root.join("cindy-meka.exe"), b"").unwrap();
-            assert!(validate_extracted_main_executable(&root, "cindy-meka.exe").is_err());
-            fs::write(root.join("cindy-meka.exe"), b"MZ").unwrap();
-            assert!(validate_extracted_main_executable(&root, "cindy-meka.exe").is_ok());
+            assert!(validate_extracted_main_executable(&root, "CindyMeka.exe").is_err());
+            fs::write(root.join("CindyMeka.exe"), b"").unwrap();
+            assert!(validate_extracted_main_executable(&root, "CindyMeka.exe").is_err());
+            fs::write(root.join("CindyMeka.exe"), b"MZ").unwrap();
+            assert!(validate_extracted_main_executable(&root, "CindyMeka.exe").is_ok());
             assert!(validate_extracted_main_executable(&root, "../other.exe").is_err());
         })();
         let _ = fs::remove_dir_all(&root);

@@ -67,7 +67,7 @@ export const RELEASE_DIR = path.join(DESKTOP_ROOT, 'release');
  * (xdt-maker-<version>-Setup.exe / .dmg / .zip 等)仍留在老值:新渠道 bucket
  * 未就绪,发布目标另议,不随本次翻转。
  */
-export const PACKAGED_APP_NAME = 'cindy-meka';
+export const PACKAGED_APP_NAME = 'CindyMeka';
 
 /**
  * 按区域取打包产物基名(exe / .app / 安装目录 / 快捷方式全部跟随)。
@@ -77,9 +77,9 @@ export const PACKAGED_APP_NAME = 'cindy-meka';
  * PACKAGED_APP_NAME 保留为正式版共同基线值,供未传 region 的 legacy 脚本使用。
  */
 export const PACKAGED_APP_NAME_BY_REGION = Object.freeze({
-  cn: 'cindy-meka',
-  global: 'cindy-meka-global',
-  dev: 'cindy-meka-dev',
+  cn: 'CindyMeka',
+  global: 'CindyMekaGlobal',
+  dev: 'CindyMekaDev',
 });
 
 export function packagedAppName(region = 'global') {
