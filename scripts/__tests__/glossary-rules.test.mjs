@@ -340,7 +340,9 @@ test('glossary.json: locales 与 desktop SUPPORTED_LOCALES 一致', () => {
 // ---------------------------------------------------------------------------
 
 test('GLOSSARY.md 与 glossary.json 同步', () => {
-  const doc = fs.readFileSync(path.join(ROOT, 'i18n', 'GLOSSARY.md'), 'utf8');
+  const doc = fs
+    .readFileSync(path.join(ROOT, 'i18n', 'GLOSSARY.md'), 'utf8')
+    .replace(/\r\n/g, '\n');
   assert.equal(
     doc,
     renderGlossaryDoc(glossary),

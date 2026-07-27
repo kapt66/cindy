@@ -317,6 +317,77 @@ describe('checkForUpdate 版本无关(占位 0.0.0)打包豁免', () => {
   });
 });
 
+describe('update version downgrade protection', () => {
+  it('does not download when the manifest is older than the installed app', async () => {
+    appGetVersion.mockReturnValue('1.2.3');
+    const service = await freshUpdateService('darwin');
+
+    await expect(service.checkForUpdate(updateManifest('1.2.2'))).resolves.toBe('idle');
+    expect(download).not.toHaveBeenCalled();
+    expect(service.getUpdateStatus()).toBe('idle');
+  });
+
+  it('fails closed when the manifest version is not strict SemVer', async () => {
+    const service = await freshUpdateService('darwin');
+
+    await expect(service.checkForUpdate(updateManifest('latest'))).resolves.toBe('manifest_failed');
+    expect(download).not.toHaveBeenCalled();
+  });
+
+  it('offline startup discards an older staged patch instead of relaunching it', async () => {
+    appGetVersion.mockReturnValue('1.2.3');
+    fetchManifest.mockResolvedValue(null);
+    const updatesDir = path.join(TEST_USER_DATA, 'updates');
+    fs.mkdirSync(updatesDir, { recursive: true });
+    fs.writeFileSync(path.join(updatesDir, 'old.zip'), 'zip');
+    fs.writeFileSync(
+      path.join(updatesDir, 'patch-info.json'),
+      JSON.stringify({ version: '1.2.2', fileName: 'old.zip', sha256: 'abc' }),
+    );
+
+    const service = await freshUpdateService('win32');
+    service.initUpdateService();
+    try {
+      const handler = ipcHandlers.get('update-check-startup');
+      await expect(handler?.()).resolves.toMatchObject({
+        hasUpdate: false,
+        action: 'none',
+      });
+      expect(fs.existsSync(path.join(updatesDir, 'old.zip'))).toBe(false);
+      expect(fs.existsSync(path.join(updatesDir, 'patch-info.json'))).toBe(false);
+    } finally {
+      service.stopUpdateService();
+    }
+  });
+
+  it('channel rollback removes a staged newer patch before returning idle', async () => {
+    appGetVersion.mockReturnValue('1.2.3');
+    fetchManifest.mockResolvedValue(updateManifest('1.2.2'));
+    const updatesDir = path.join(TEST_USER_DATA, 'updates');
+    fs.mkdirSync(updatesDir, { recursive: true });
+    fs.writeFileSync(path.join(updatesDir, 'future.zip'), 'zip');
+    fs.writeFileSync(
+      path.join(updatesDir, 'patch-info.json'),
+      JSON.stringify({ version: '1.2.4', fileName: 'future.zip', sha256: 'abc' }),
+    );
+
+    const service = await freshUpdateService('win32');
+    service.initUpdateService();
+    try {
+      const handler = ipcHandlers.get('update-check-startup');
+      await expect(handler?.()).resolves.toMatchObject({
+        hasUpdate: false,
+        action: 'none',
+      });
+      expect(fs.existsSync(path.join(updatesDir, 'future.zip'))).toBe(false);
+      expect(fs.existsSync(path.join(updatesDir, 'patch-info.json'))).toBe(false);
+      expect(download).not.toHaveBeenCalled();
+    } finally {
+      service.stopUpdateService();
+    }
+  });
+});
+
 describe('startup update relaunch safety', () => {
   // Startup/splash auto-applies a staged patch as soon as it is ready — the
   // historic behavior restored deliberately (owner-approved). A fresh launch has

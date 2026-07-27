@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 const source = readFileSync(
   resolve(__dirname, '..', 'features', 'cc-agent', 'NewMakerDraftRoute.tsx'),
   'utf8',
-);
+).replace(/\r\n/g, '\n');
 
 describe('NewMakerDraftRoute Orca worker create order', () => {
   it('delegates worker creation to enableOrca and defers tab reveal until the new route is current', () => {

@@ -172,6 +172,7 @@ fn run_inner<F: FnMut(InstallerEvent)>(
             pct,
         ));
     })?;
+    validate_extracted_main_executable(&extract_dir, &args.exe_name)?;
 
     // 3.5. Selective backup: copy *only* the files in app_dir that the new
     //      release is about to overwrite. Files that exist in the old version
@@ -407,6 +408,37 @@ fn extract_zip<F: FnMut(u64, u64)>(
             io::copy(&mut entry, &mut out)?;
         }
         on_progress((i as u64) + 1, total);
+    }
+    Ok(())
+}
+
+/// A malformed or wrong-product ZIP must fail before backup/replacement. Merely
+/// checking app_dir after copy is insufficient because the old exe may still be
+/// there and would make a ZIP that omitted the new main executable look valid.
+fn validate_extracted_main_executable(
+    extract_dir: &Path,
+    exe_name: &str,
+) -> anyhow::Result<()> {
+    if exe_name.is_empty()
+        || exe_name.contains('/')
+        || exe_name.contains('\\')
+        || exe_name == "."
+        || exe_name == ".."
+    {
+        anyhow::bail!("非法主程序文件名：{}", exe_name);
+    }
+    let extracted_exe = extract_dir.join(exe_name);
+    let metadata = fs::metadata(&extracted_exe).map_err(|_| {
+        anyhow::anyhow!(
+            "热更包缺少主程序：{} 不存在，拒绝替换现有安装",
+            extracted_exe.display()
+        )
+    })?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        anyhow::bail!(
+            "热更包主程序无效：{} 不是非空普通文件",
+            extracted_exe.display()
+        );
     }
     Ok(())
 }
@@ -697,8 +729,35 @@ fn path_is_within(child: &Path, parent: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::path_is_within;
-    use std::path::Path;
+    use super::{path_is_within, validate_extracted_main_executable};
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    fn temp_test_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "cindy-updater-test-{}-{}-{}",
+            name,
+            std::process::id(),
+            chrono::Local::now().timestamp_nanos_opt().unwrap_or_default(),
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn extracted_main_executable_must_exist_and_be_non_empty() {
+        let root = temp_test_dir("main-exe");
+        let result = (|| {
+            assert!(validate_extracted_main_executable(&root, "cindy-meka.exe").is_err());
+            fs::write(root.join("cindy-meka.exe"), b"").unwrap();
+            assert!(validate_extracted_main_executable(&root, "cindy-meka.exe").is_err());
+            fs::write(root.join("cindy-meka.exe"), b"MZ").unwrap();
+            assert!(validate_extracted_main_executable(&root, "cindy-meka.exe").is_ok());
+            assert!(validate_extracted_main_executable(&root, "../other.exe").is_err());
+        })();
+        let _ = fs::remove_dir_all(&root);
+        result
+    }
 
     #[cfg(target_os = "windows")]
     #[test]
