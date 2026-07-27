@@ -69,6 +69,9 @@ importers:
       '@cindy/github-client':
         specifier: workspace:*
         version: link:../../packages/github-client
+      '@cindy/gitlab-client':
+        specifier: workspace:*
+        version: link:../../packages/gitlab-client
       '@cindy/heartbeat-client':
         specifier: workspace:*
         version: link:../../packages/heartbeat-client
@@ -1011,6 +1014,9 @@ importers:
       '@anthropic-ai/claude-agent-sdk':
         specifier: 0.2.112
         version: 0.2.112(zod@4.3.6)
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.29.0
+        version: 1.29.0(zod@4.3.6)
     devDependencies:
       '@types/node':
         specifier: '*'

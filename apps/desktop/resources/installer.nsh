@@ -33,6 +33,19 @@
 
   ; 同步清掉 PinnedTaskbar 里的副本（任务栏固定项也会缓存图标）
   Delete "$APPDATA\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar\${SHORTCUT_NAME}.lnk"
+
+  ; Cindy Meka 首装接管旧 XDMaker Meka 快捷方式。仅 cn 身份清理旧名，
+  ; 避免 global/dev 跨区域误删。
+  StrCmp "${PRODUCT_FILENAME}" "cindy-meka" 0 meka_legacy_shortcuts_done_init
+  Delete "$DESKTOP\xdmaker-meka.lnk"
+  Delete "$SMPROGRAMS\xdmaker-meka.lnk"
+  Delete "$SMPROGRAMS\xdmaker-meka\xdmaker-meka.lnk"
+  Delete "$APPDATA\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar\xdmaker-meka.lnk"
+  Delete "$DESKTOP\XDMaker Meka.lnk"
+  Delete "$SMPROGRAMS\XDMaker Meka.lnk"
+  Delete "$SMPROGRAMS\XDMaker Meka\XDMaker Meka.lnk"
+  Delete "$APPDATA\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar\XDMaker Meka.lnk"
+  meka_legacy_shortcuts_done_init:
 !macroend
 
 !macro customInstall
@@ -42,7 +55,7 @@
   ;
   ; 用 HKCU 不用 HKLM:不需要管理员权限, 多用户机器上每个用户启动 app 时自注册。
   ; %V 在 Directory\shell / Directory\Background\shell 两种上下文里都解析为
-  ; "用户右键所在的目录" 路径, argv 直传不做 URL 编解码 (deep link 走 cindy:// 另一套)。
+  ; "用户右键所在的目录" 路径, argv 直传不做 URL 编解码 (deep link 走 cindy-meka:// 另一套)。
   ; 键名用 ${PRODUCT_FILENAME}(区域身份):cn 'Cindy' 与历史 'cindy' 键大小写
   ; 不敏感同键;global 'CindyGlobal' 独立键——双装时两条菜单项并存互不覆盖,
   ; 也与老 XDMaker 安装的 xdt-maker 键并存。
@@ -76,5 +89,22 @@
   DeleteRegKey HKCU "Software\Classes\Directory\Background\shell\${PRODUCT_FILENAME}"
   DeleteRegKey HKCU "Software\Classes\SystemFileAssociations\.cshare\shell\${PRODUCT_FILENAME}"
   DeleteRegKey HKCU "Software\Classes\SystemFileAssociations\.xdtshare\shell\${PRODUCT_FILENAME}"
+
+  ; 只在卸载 cn/Cindy Meka 身份时清理自己的 ProgID；若旧 XDMaker Meka
+  ; 仍安装则恢复其 handler，不把另一个应用留下的可用关联一并删除。
+  StrCmp "${PRODUCT_FILENAME}" "cindy-meka" 0 meka_file_assoc_done
+  ReadRegStr $R0 HKCU "Software\Classes\.cindy" ""
+  ${If} $R0 == "CindyMeka.CindyGhost"
+    ReadRegStr $R1 HKCU "Software\Classes\XDMakerMeka.CindyGhost\shell\open\command" ""
+    ${If} $R1 != ""
+      WriteRegStr HKCU "Software\Classes\.cindy" "" "XDMakerMeka.CindyGhost"
+    ${Else}
+      DeleteRegValue HKCU "Software\Classes\.cindy" ""
+    ${EndIf}
+  ${EndIf}
+  DeleteRegValue HKCU "Software\Classes\.cindy\OpenWithProgIds" "CindyMeka.CindyGhost"
+  DeleteRegKey /ifempty HKCU "Software\Classes\.cindy\OpenWithProgIds"
+  DeleteRegKey HKCU "Software\Classes\CindyMeka.CindyGhost"
+  meka_file_assoc_done:
   System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, i 0, i 0)'
 !macroend

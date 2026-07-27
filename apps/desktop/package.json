@@ -1,8 +1,8 @@
 {
   "name": "desktop",
-  "productName": "Cindy",
+  "productName": "cindy-meka",
   "version": "1.0.0",
-  "description": "Cindy desktop client (真实版本号在 release 时由脚本通过 APP_VERSION 注入,见 forge.config.ts)",
+  "description": "Cindy Meka desktop client (真实版本号在 release 时由脚本通过 APP_VERSION 注入,见 forge.config.ts)",
   "main": ".vite/build/index.js",
   "private": true,
   "scripts": {
@@ -77,6 +77,7 @@
     "@cindy/embedding-client": "workspace:*",
     "@cindy/file-browser-core": "workspace:*",
     "@cindy/github-client": "workspace:*",
+    "@cindy/gitlab-client": "workspace:*",
     "@cindy/heartbeat-client": "workspace:*",
     "@cindy/maker-cc-manager": "workspace:*",
     "@cindy/maker-core": "workspace:*",

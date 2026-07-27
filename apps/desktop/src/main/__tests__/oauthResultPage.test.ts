@@ -53,7 +53,7 @@ describe('OAuth result page language and copy', () => {
 
   it('builds a localized return-to-Cindy deep link', () => {
     expect(buildOAuthReturnAction('zh', 'xai oauth', 'Cindy')).toEqual({
-      href: 'cindy://focus/xai%20oauth',
+      href: 'cindy-meka://focus/xai%20oauth',
       label: '返回 Cindy',
     });
     expect(buildOAuthReturnAction('en', 'generic-oauth', 'Cindy').label).toBe('Return to Cindy');
@@ -77,7 +77,7 @@ describe('OAuth result page language and copy', () => {
 
   it('localizes the return action for English', () => {
     expect(buildOAuthReturnAction('en', 'ghost-oauth', 'Cindy')).toEqual({
-      href: 'cindy://focus/ghost-oauth',
+      href: 'cindy-meka://focus/ghost-oauth',
       label: 'Return to Cindy',
     });
   });

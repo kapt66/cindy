@@ -19,8 +19,8 @@ import {
 } from '../legacyUserDataMigration';
 
 const BASE = path.join(path.sep, 'base');
-const USER_DATA = path.join(BASE, 'Cindy');
-const LEGACY = path.join(BASE, 'xdt-maker');
+const USER_DATA = path.join(BASE, 'cindy-meka');
+const LEGACY = path.join(BASE, 'xdmaker-meka');
 
 /** 内存 fs 假体:Map 存文件(内容 + mtime),Set 存目录/符号链接;merge 复制不覆盖。 */
 function createMemFs() {
@@ -129,14 +129,14 @@ type MemFs = ReturnType<typeof createMemFs>;
 
 function makeDeps(
   memfs: MemFs,
-  overrides: Partial<Pick<LegacyUserDataMigrationDeps, 'ui'>> = {},
+  overrides: Partial<Pick<LegacyUserDataMigrationDeps, 'legacyDirNames' | 'ui'>> = {},
 ): { deps: LegacyUserDataMigrationDeps; phases: LegacyMigrationPhase[] } {
   const phases: LegacyMigrationPhase[] = [];
   const deps: LegacyUserDataMigrationDeps = {
     userDataDir: USER_DATA,
-    legacyDirNames: ['xdt-maker'],
+    legacyDirNames: overrides.legacyDirNames ?? ['xdmaker-meka'],
     legacyDbPrefixes: ['xdt-maker'],
-    currentDbPrefix: 'cindy',
+    currentDbPrefix: 'cindy-meka',
     fs: memfs.fsDeps,
     now: () => new Date('2026-07-17T08:00:00.000Z'),
     log: { info: vi.fn(), warn: vi.fn() },
@@ -189,6 +189,8 @@ describe('runLegacyUserDataMigration', () => {
       mediaCopied: false,
       dialoguesCopied: false,
       browserProfileCopied: false,
+      mekaSettingsCopied: false,
+      mekaRolesCopied: false,
     });
   });
 
@@ -207,12 +209,30 @@ describe('runLegacyUserDataMigration', () => {
       mediaCopied: false,
       dialoguesCopied: false,
       browserProfileCopied: false,
+      mekaSettingsCopied: false,
+      mekaRolesCopied: false,
     });
-    expect(memfs.read(path.join(USER_DATA, 'cindy-u1.db'))).toBe('db-u1');
+    expect(memfs.read(path.join(USER_DATA, 'cindy-meka-u1.db'))).toBe('db-u1');
     expect(phases).toEqual(['confirm', 'running', 'done']);
     expect(readMarker(memfs)).toMatchObject({ sourceDb: 'xdt-maker-u1.db', mediaCopied: false });
     // 全程只读老目录:源库仍在。
     expect(memfs.read(path.join(LEGACY, 'xdt-maker-u1.db'))).toBe('db-u1');
+  });
+
+  it('直接来源不存在时仍接管更早的 xdt-maker userData', async () => {
+    const memfs = createMemFs();
+    const olderLegacy = path.join(BASE, 'xdt-maker');
+    memfs.addDir(USER_DATA);
+    memfs.addFile(path.join(olderLegacy, 'xdt-maker-u1.db'), 'older-db', 100);
+    const { deps } = makeDeps(memfs, {
+      legacyDirNames: ['xdmaker-meka', 'xdt-maker'],
+    });
+
+    const result = await runLegacyUserDataMigration('u1', deps);
+
+    expect(result).toMatchObject({ status: 'migrated', sourceDb: 'xdt-maker-u1.db' });
+    expect(memfs.read(path.join(USER_DATA, 'cindy-meka-u1.db'))).toBe('older-db');
+    expect(memfs.read(path.join(olderLegacy, 'xdt-maker-u1.db'))).toBe('older-db');
   });
 
   it('无精确命中 → 扫 <prefix>-*.db 取 mtime 最新的一个;无关文件不参与', async () => {
@@ -227,7 +247,7 @@ describe('runLegacyUserDataMigration', () => {
     const result = await runLegacyUserDataMigration('u1', deps);
 
     expect(result).toMatchObject({ status: 'migrated', sourceDb: 'xdt-maker-new.db' });
-    expect(memfs.read(path.join(USER_DATA, 'cindy-u1.db'))).toBe('db-new');
+    expect(memfs.read(path.join(USER_DATA, 'cindy-meka-u1.db'))).toBe('db-new');
   });
 
   it('wal / shm 附属文件跟随复制并按新库名改名', async () => {
@@ -240,14 +260,14 @@ describe('runLegacyUserDataMigration', () => {
 
     await runLegacyUserDataMigration('u1', deps);
 
-    expect(memfs.read(path.join(USER_DATA, 'cindy-u1.db-wal'))).toBe('wal');
-    expect(memfs.read(path.join(USER_DATA, 'cindy-u1.db-shm'))).toBe('shm');
+    expect(memfs.read(path.join(USER_DATA, 'cindy-meka-u1.db-wal'))).toBe('wal');
+    expect(memfs.read(path.join(USER_DATA, 'cindy-meka-u1.db-shm'))).toBe('shm');
   });
 
   it('目标库已存在 → 跳过复制不覆盖,media 与 marker 照常', async () => {
     const memfs = createMemFs();
     memfs.addDir(USER_DATA);
-    memfs.addFile(path.join(USER_DATA, 'cindy-u1.db'), 'existing-new-db');
+    memfs.addFile(path.join(USER_DATA, 'cindy-meka-u1.db'), 'existing-new-db');
     memfs.addFile(path.join(LEGACY, 'xdt-maker-u1.db'), 'legacy-db', 1);
     memfs.addFile(path.join(LEGACY, 'cindy-media', 'a.png'), 'legacy-a');
     const { deps, phases } = makeDeps(memfs);
@@ -260,8 +280,10 @@ describe('runLegacyUserDataMigration', () => {
       mediaCopied: true,
       dialoguesCopied: false,
       browserProfileCopied: false,
+      mekaSettingsCopied: false,
+      mekaRolesCopied: false,
     });
-    expect(memfs.read(path.join(USER_DATA, 'cindy-u1.db'))).toBe('existing-new-db');
+    expect(memfs.read(path.join(USER_DATA, 'cindy-meka-u1.db'))).toBe('existing-new-db');
     expect(memfs.read(path.join(USER_DATA, 'cindy-media', 'a.png'))).toBe('legacy-a');
     expect(phases).toEqual(['confirm', 'running', 'done']);
     expect(readMarker(memfs)).toMatchObject({ sourceDb: null, mediaCopied: true });
@@ -282,8 +304,10 @@ describe('runLegacyUserDataMigration', () => {
       mediaCopied: true,
       dialoguesCopied: false,
       browserProfileCopied: false,
+      mekaSettingsCopied: false,
+      mekaRolesCopied: false,
     });
-    expect(memfs.has(path.join(USER_DATA, 'cindy-u1.db'))).toBe(false);
+    expect(memfs.has(path.join(USER_DATA, 'cindy-meka-u1.db'))).toBe(false);
     expect(memfs.read(path.join(USER_DATA, 'cindy-media', 'b.mp4'))).toBe('video');
   });
 
@@ -322,14 +346,14 @@ describe('runLegacyUserDataMigration', () => {
     memfs.addDir(USER_DATA);
     memfs.addFile(path.join(LEGACY, 'xdt-maker-u1.db'), 'good-db', 1);
     // 模拟上次拷贝中途崩溃:tmp 残留、最终名不存在。
-    memfs.addFile(path.join(USER_DATA, 'cindy-u1.db.mtoc-tmp'), 'trunca');
+    memfs.addFile(path.join(USER_DATA, 'cindy-meka-u1.db.mtoc-tmp'), 'trunca');
     const { deps } = makeDeps(memfs);
 
     const result = await runLegacyUserDataMigration('u1', deps);
 
     expect(result).toMatchObject({ status: 'migrated', sourceDb: 'xdt-maker-u1.db' });
-    expect(memfs.read(path.join(USER_DATA, 'cindy-u1.db'))).toBe('good-db');
-    expect(memfs.has(path.join(USER_DATA, 'cindy-u1.db.mtoc-tmp'))).toBe(false);
+    expect(memfs.read(path.join(USER_DATA, 'cindy-meka-u1.db'))).toBe('good-db');
+    expect(memfs.has(path.join(USER_DATA, 'cindy-meka-u1.db.mtoc-tmp'))).toBe(false);
   });
 
   it('跨 attempt 孤儿 sidecar:源侧无 wal 时,残留在最终名上的旧 wal 被清掉', async () => {
@@ -337,30 +361,30 @@ describe('runLegacyUserDataMigration', () => {
     memfs.addDir(USER_DATA);
     memfs.addFile(path.join(LEGACY, 'xdt-maker-u1.db'), 'db', 1); // 源侧无 wal/shm
     // 上次 attempt 在「wal 已入位、db 未入位」窗口崩溃的残留。
-    memfs.addFile(path.join(USER_DATA, 'cindy-u1.db-wal'), 'stale-wal');
+    memfs.addFile(path.join(USER_DATA, 'cindy-meka-u1.db-wal'), 'stale-wal');
     const { deps } = makeDeps(memfs);
 
     const result = await runLegacyUserDataMigration('u1', deps);
 
     expect(result).toMatchObject({ status: 'migrated', sourceDb: 'xdt-maker-u1.db' });
-    expect(memfs.read(path.join(USER_DATA, 'cindy-u1.db'))).toBe('db');
-    expect(memfs.has(path.join(USER_DATA, 'cindy-u1.db-wal'))).toBe(false);
+    expect(memfs.read(path.join(USER_DATA, 'cindy-meka-u1.db'))).toBe('db');
+    expect(memfs.has(path.join(USER_DATA, 'cindy-meka-u1.db-wal'))).toBe(false);
   });
 
   it('目标库已存在时清理崩溃残留的 tmp 文件', async () => {
     const memfs = createMemFs();
     memfs.addDir(USER_DATA);
-    memfs.addFile(path.join(USER_DATA, 'cindy-u1.db'), 'existing');
-    memfs.addFile(path.join(USER_DATA, 'cindy-u1.db.mtoc-tmp'), 'stale');
-    memfs.addFile(path.join(USER_DATA, 'cindy-u1.db-wal.mtoc-tmp'), 'stale-wal');
+    memfs.addFile(path.join(USER_DATA, 'cindy-meka-u1.db'), 'existing');
+    memfs.addFile(path.join(USER_DATA, 'cindy-meka-u1.db.mtoc-tmp'), 'stale');
+    memfs.addFile(path.join(USER_DATA, 'cindy-meka-u1.db-wal.mtoc-tmp'), 'stale-wal');
     memfs.addFile(path.join(LEGACY, 'xdt-maker-u1.db'), 'legacy', 1);
     const { deps } = makeDeps(memfs);
 
     await runLegacyUserDataMigration('u1', deps);
 
-    expect(memfs.read(path.join(USER_DATA, 'cindy-u1.db'))).toBe('existing');
-    expect(memfs.has(path.join(USER_DATA, 'cindy-u1.db.mtoc-tmp'))).toBe(false);
-    expect(memfs.has(path.join(USER_DATA, 'cindy-u1.db-wal.mtoc-tmp'))).toBe(false);
+    expect(memfs.read(path.join(USER_DATA, 'cindy-meka-u1.db'))).toBe('existing');
+    expect(memfs.has(path.join(USER_DATA, 'cindy-meka-u1.db.mtoc-tmp'))).toBe(false);
+    expect(memfs.has(path.join(USER_DATA, 'cindy-meka-u1.db-wal.mtoc-tmp'))).toBe(false);
   });
 
   it('复制阶段失败 → 不写 marker、推 failed、返回 failed(不 throw)', async () => {
@@ -376,7 +400,7 @@ describe('runLegacyUserDataMigration', () => {
     expect(result).toEqual({ status: 'failed', error: 'disk full' });
     expect(memfs.has(markerPath)).toBe(false);
     // 失败时最终名不存在——半成品只可能以 tmp 名残留,不会被下次"已存在跳过"转正。
-    expect(memfs.has(path.join(USER_DATA, 'cindy-u1.db'))).toBe(false);
+    expect(memfs.has(path.join(USER_DATA, 'cindy-meka-u1.db'))).toBe(false);
     expect(phases).toEqual(['confirm', 'running', 'failed']);
     expect(deps.log.warn).toHaveBeenCalled();
   });
@@ -509,6 +533,44 @@ describe('runLegacyUserDataMigration', () => {
     expect(memfs.has(path.join(USER_DATA, 'browser-runtime'))).toBe(false);
   });
 
+  it('迁移 Meka 非敏感设置与自定义角色，保留目标侧已经存在的新配置', async () => {
+    const memfs = createMemFs();
+    memfs.addDir(USER_DATA);
+    memfs.addDir(LEGACY);
+    memfs.addFile(
+      path.join(LEGACY, 'meka-assistant-settings.json'),
+      '{"p4Root":"C:\\\\P4"}',
+    );
+    memfs.addFile(path.join(LEGACY, 'meka-roles', 'legacy-role.json'), '{"id":"legacy-role"}');
+    memfs.addFile(path.join(LEGACY, 'meka-roles', 'keep-new.json'), '{"source":"legacy"}');
+    memfs.addFile(path.join(USER_DATA, 'meka-roles', 'keep-new.json'), '{"source":"new"}');
+    const { deps } = makeDeps(memfs);
+
+    const result = await runLegacyUserDataMigration('u1', deps);
+
+    expect(result).toMatchObject({
+      status: 'migrated',
+      mekaSettingsCopied: true,
+      mekaRolesCopied: true,
+    });
+    expect(memfs.read(path.join(USER_DATA, 'meka-assistant-settings.json'))).toBe(
+      '{"p4Root":"C:\\\\P4"}',
+    );
+    expect(memfs.read(path.join(USER_DATA, 'meka-roles', 'legacy-role.json'))).toBe(
+      '{"id":"legacy-role"}',
+    );
+    expect(memfs.read(path.join(USER_DATA, 'meka-roles', 'keep-new.json'))).toBe(
+      '{"source":"new"}',
+    );
+    expect(readMarker(memfs)).toMatchObject({
+      mekaSettingsCopied: true,
+      mekaRolesCopied: true,
+    });
+    expect(memfs.read(path.join(LEGACY, 'meka-assistant-settings.json'))).toBe(
+      '{"p4Root":"C:\\\\P4"}',
+    );
+  });
+
   it('确认流程时序:confirm 先推送并阻塞,resolver 放行后才 running', async () => {
     const memfs = createMemFs();
     memfs.addDir(USER_DATA);
@@ -532,7 +594,7 @@ describe('runLegacyUserDataMigration', () => {
       expect(releaseConfirm).not.toBeNull();
     });
     // 确认前:不复制、不写 marker。
-    expect(memfs.has(path.join(USER_DATA, 'cindy-u1.db'))).toBe(false);
+    expect(memfs.has(path.join(USER_DATA, 'cindy-meka-u1.db'))).toBe(false);
     expect(memfs.has(markerPath)).toBe(false);
 
     releaseConfirm!();
@@ -549,7 +611,7 @@ describe('shouldSkipLegacyMigrationForDevSandbox', () => {
     expect(
       shouldSkipLegacyMigrationForDevSandbox({
         isPackaged: false,
-        envUserDataDir: path.join(BASE, 'Cindy-dev'),
+        envUserDataDir: path.join(BASE, 'cindy-meka-dev'),
       }),
     ).toBe(true);
   });

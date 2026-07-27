@@ -21,10 +21,10 @@ export function desktopNoticeNameForPlatform(platform: ForgePlatform): string {
  * 在 macOS 产物目录里定位 .app bundle。
  *
  * Forge 的 postPackage hook 收到的 `opts.outputPaths` 是**平台产物目录**
- * (如 `out/xdt-maker-darwin-arm64`),.app bundle 在其内部;而单测 / 其它调用方
+ * (如 `out/cindy-meka-darwin-arm64`),.app bundle 在其内部;而单测 / 其它调用方
  * 可能直接把 `<App>.app` 当 buildPath 传进来。两种都要兼容:
  *   - buildPath 本身以 `.app` 结尾 → 直接用;
- *   - 否则扫描目录取唯一的 `*.app`;扫不到时按 productName 兜底拼 `xdt-maker.app`
+ *   - 否则扫描目录取唯一的 `*.app`;扫不到时按 productName 兜底拼 `cindy-meka.app`
  *     (交给上层 existsSync 报「packaged resources missing」)。
  */
 function resolveMacAppBundle(buildPath: string): string {
@@ -33,7 +33,7 @@ function resolveMacAppBundle(buildPath: string): string {
     const appDirs = fs.readdirSync(buildPath).filter((entry) => entry.endsWith('.app'));
     if (appDirs.length === 1) return path.join(buildPath, appDirs[0]);
   }
-  return path.join(buildPath, 'xdt-maker.app');
+  return path.join(buildPath, 'cindy-meka.app');
 }
 
 /** 返回 electron-packager 产物内实际的 resources 目录。 */

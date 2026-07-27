@@ -2,7 +2,8 @@
  * deepLinkSchemes — 深链 scheme 的 main / renderer 共用单点。
  *
  * scheme 事实源在 `@cindy/maker-shared/brand-identity`(`BRAND_IDENTITY.primaryScheme`
- * + `legacySchemes`,2026-07 品牌翻转后为 cindy 主 + xdt-maker 历史);本模块把它
+ * + `legacySchemes` + `acceptedUnregisteredSchemes`；当前生成
+ * `cindy-meka://`，注册 Meka 历史 scheme，并额外解析但不注册 `cindy://`)；本模块把它
  * 派生成解析 / 生成两侧需要的形态,双端(src/main、src/renderer)只从这里取值,
  * 不再各自硬编码字面量:
  *  - **生成**:新链接一律用主 scheme(`buildDeepLink` / `DEEP_LINK_URL_PREFIX`);
@@ -14,15 +15,22 @@
  * 无关,不从这里派生。
  */
 
-import { BRAND_IDENTITY, allDeepLinkSchemes } from '@cindy/maker-shared/brand-identity';
+import {
+  BRAND_IDENTITY,
+  allAcceptedDeepLinkSchemes,
+  allDeepLinkSchemes,
+} from '@cindy/maker-shared/brand-identity';
 
 /** 深链主 scheme(生成侧唯一使用的 scheme)。 */
 export const DEEP_LINK_PRIMARY_SCHEME: string = BRAND_IDENTITY.primaryScheme;
 
-/** 解析 / OS 注册需要认的全部 scheme(主 + 历史),主 scheme 恒为首位。 */
-export const DEEP_LINK_SCHEMES: readonly string[] = allDeepLinkSchemes();
+/** 向 OS 注册的 scheme；不包含上游 Cindy 独占的 `cindy://`。 */
+export const DEEP_LINK_REGISTERED_SCHEMES: readonly string[] = allDeepLinkSchemes();
 
-/** 生成侧 URL 前缀:`cindy://`。 */
+/** 解析侧接受的 scheme；额外包含不注册的 `cindy://` 上游互操作输入。 */
+export const DEEP_LINK_SCHEMES: readonly string[] = allAcceptedDeepLinkSchemes();
+
+/** 生成侧 URL 前缀：`cindy-meka://`。 */
 export const DEEP_LINK_URL_PREFIX = `${DEEP_LINK_PRIMARY_SCHEME}://`;
 
 /** 解析侧要认的全部 URL 前缀(与 DEEP_LINK_SCHEMES 同序,主前缀恒为首位)。 */
@@ -31,7 +39,7 @@ export const DEEP_LINK_URL_PREFIXES: readonly string[] = DEEP_LINK_SCHEMES.map(
 );
 
 /**
- * 内嵌进匹配正则的 scheme 备选组源(非捕获):`(?:cindy|xdt-maker)`。
+ * 内嵌进匹配正则的 scheme 备选组源（非捕获），内容由身份档案统一派生。
  * scheme 里的 `-` 在组内是字面量,其余字符按正则元字符防御性转义
  * (scheme 值来自 brand-identity,理论上永远是 [a-z-],转义只是兜底)。
  */
@@ -40,7 +48,7 @@ export const DEEP_LINK_SCHEME_RE_GROUP = `(?:${DEEP_LINK_SCHEMES.map((scheme) =>
 ).join('|')})`;
 
 /**
- * url 若以任一深链前缀(`cindy://` / `xdt-maker://`)开头,返回命中的前缀;
+ * url 若以任一可解析深链前缀（含 `cindy-meka://` 与兼容 scheme）开头，返回命中的前缀；
  * 否则 null。解析端一律用它取前缀长度切片,**禁止**按固定字面量长度切
  * (双 scheme 长度不同,写死长度会切错)。
  */

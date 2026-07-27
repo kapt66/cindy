@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   DEEP_LINK_PRIMARY_SCHEME,
+  DEEP_LINK_REGISTERED_SCHEMES,
   DEEP_LINK_SCHEMES,
   DEEP_LINK_SCHEME_RE_GROUP,
   DEEP_LINK_URL_PREFIX,
@@ -21,15 +22,27 @@ import {
 } from '../deepLinkSchemes';
 
 describe('deepLinkSchemes constants', () => {
-  it('primary scheme is cindy and legacy xdt-maker is still recognized', () => {
-    expect(DEEP_LINK_PRIMARY_SCHEME).toBe('cindy');
-    expect(DEEP_LINK_SCHEMES[0]).toBe('cindy');
+  it('Cindy Meka 生成新 scheme，同时接受历史 Meka 与上游 Cindy 链接', () => {
+    expect(DEEP_LINK_PRIMARY_SCHEME).toBe('cindy-meka');
+    expect(DEEP_LINK_SCHEMES[0]).toBe('cindy-meka');
+    expect(DEEP_LINK_SCHEMES).toContain('xdmaker-meka');
     expect(DEEP_LINK_SCHEMES).toContain('xdt-maker');
-    expect(DEEP_LINK_URL_PREFIX).toBe('cindy://');
+    expect(DEEP_LINK_SCHEMES).toContain('cindy');
+    expect(DEEP_LINK_URL_PREFIX).toBe('cindy-meka://');
+    expect(DEEP_LINK_URL_PREFIXES).toContain('xdmaker-meka://');
     expect(DEEP_LINK_URL_PREFIXES).toContain('xdt-maker://');
   });
 
-  it('regex scheme group matches every registered scheme', () => {
+  it('上游 cindy:// 只解析、不注册，避免抢占同机 Cindy', () => {
+    expect(DEEP_LINK_REGISTERED_SCHEMES).toEqual([
+      'cindy-meka',
+      'xdmaker-meka',
+      'xdt-maker',
+    ]);
+    expect(DEEP_LINK_REGISTERED_SCHEMES).not.toContain('cindy');
+  });
+
+  it('regex scheme group matches every accepted scheme', () => {
     const re = new RegExp(`^${DEEP_LINK_SCHEME_RE_GROUP}$`);
     for (const scheme of DEEP_LINK_SCHEMES) {
       expect(re.test(scheme)).toBe(true);
@@ -90,6 +103,6 @@ describe('stripDeepLinkPathPrefix / hasDeepLinkPathPrefix', () => {
 
 describe('buildDeepLink', () => {
   it('always generates with the primary scheme', () => {
-    expect(buildDeepLink('session/abc')).toBe('cindy://session/abc');
+    expect(buildDeepLink('session/abc')).toBe('cindy-meka://session/abc');
   });
 });

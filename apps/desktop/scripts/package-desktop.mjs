@@ -31,8 +31,8 @@
 //                                   该环境的机器打版本无关包时用它
 //
 // 产物: release/artifacts/<region>/<version|unversioned>/<platform-arch>/
-//   cindy-<version|unversioned>-Setup.exe / -<arch>.dmg / .deb   安装包
-//   cindy-<version>-hotfix.zip                           热更包(仅有版本时)
+//   cindy-meka-<version|unversioned>-Setup.exe / -<arch>.dmg / .deb
+//   cindy-meka-<version>.zip (Windows) / -<arch>.zip (macOS)   热更包
 //   build-info.json                                      发布侧唯一输入
 // =============================================================================
 
@@ -135,16 +135,33 @@ function cleanOutDir() {
   }
 }
 
-function runForgeMake({ platform, arch, region, version, noSign }) {
+function runForgeMake({ platform, arch, region, version, versionless, noSign }) {
   console.log('==> Building remote bundles...');
   execSync('node scripts/build-remote-bundles.mjs', { cwd: DESKTOP_ROOT, stdio: 'inherit' });
 
   console.log(`==> Running electron-forge make (${platform}-${arch}, region=${region})...`);
+  const clientBuildEnv = desktopClientBuildEnv({ allowEnvOverride: false, authRegion: region });
+  const mekaReleaseCdnBaseUrl = process.env.XDT_CDN_BASE_URL?.trim().replace(/\/+$/, '');
+  if (region === 'cn' && !versionless && !mekaReleaseCdnBaseUrl) {
+    throw new Error(
+      'XDT_CDN_BASE_URL is required for a versioned Meka release; '
+      + 'refusing to bake the Cindy endpoint bootstrap into an upgrade',
+    );
+  }
+  if (mekaReleaseCdnBaseUrl) {
+    const parsed = new URL(mekaReleaseCdnBaseUrl);
+    if (parsed.protocol !== 'https:' || parsed.username || parsed.password) {
+      throw new Error('XDT_CDN_BASE_URL must be a credential-free HTTPS URL');
+    }
+    // 版本化 Meka 包必须能继续从原渠道取 endpoint.json 与后续 manifest。
+    // 发布机显式提供旧渠道地址时，它优先于仓内 Cindy 清单基址。
+    clientBuildEnv.VITE_ENDPOINT_MANIFEST_BASE_URL = mekaReleaseCdnBaseUrl;
+  }
   const forgeEnv = {
     ...process.env,
     NODE_ENV: 'production',
     // 烘焙面只含 region + 端点清单自举基址,按 region 二选一。
-    ...desktopClientBuildEnv({ allowEnvOverride: false, authRegion: region }),
+    ...clientBuildEnv,
     // forge.config.ts 的 NSIS appId / AUMID 优先读这个(与 VITE_ 同源,双保险)。
     CINDY_AUTH_REGION: region,
     // forge.config.ts 注入 packagerConfig.appVersion;版本无关时为占位 0.0.0。
@@ -158,9 +175,12 @@ function runForgeMake({ platform, arch, region, version, noSign }) {
   for (const key of Object.keys(forgeEnv)) {
     if (key.toLowerCase() === 'nodefaultcurrentdirectoryinexepath') delete forgeEnv[key];
   }
-  // --no-sign:摘掉 CINDY_WIN_SIGN_CMD,让 forge postPackage 的内部 exe 签名一并
-  // 跳过(forge.config.ts 只认这个 env;不摘的话外部签名命令失败会挂整个 make)。
-  if (noSign) delete forgeEnv.CINDY_WIN_SIGN_CMD;
+  // --no-sign: remove both supported signing entry points so forge skips all
+  // packaged exe, installer and uninstaller signing.
+  if (noSign) {
+    delete forgeEnv.CINDY_WIN_SIGN_CMD;
+    delete forgeEnv.NPKG_TOKEN;
+  }
   execSync(`npx electron-forge make --platform ${platform} --arch ${arch}`, {
     cwd: DESKTOP_ROOT,
     stdio: 'inherit',
@@ -241,11 +261,13 @@ async function finishWindows({ artifactDir, baseName, appName, versionless, allo
   // 在构建环境注入,仓库不绑定任何签名实现)。
   // 门禁在拷贝进 release/artifacts 之前跑:失败时产物目录不留「看起来能用」
   // 的未签名 Setup.exe。校验对象是 make 产出的源文件。
-  const winSignCmd = noSign ? undefined : process.env.CINDY_WIN_SIGN_CMD;
+  const hasWindowsSigning = noSign
+    ? false
+    : Boolean(process.env.CINDY_WIN_SIGN_CMD?.trim() || process.env.NPKG_TOKEN?.trim());
   let installerSigned = false;
   if (noSign) {
     console.log('==> --no-sign: installer / uninstaller / internal exes are UNSIGNED');
-  } else if (winSignCmd) {
+  } else if (hasWindowsSigning) {
     // make 阶段用同一签名命令已签全部 exe + installer + uninstaller;签名命令
     // 失败会让 make 直接挂掉(forge fail closed)。这里再验一道「产物确实带
     // Authenticode 签名块」,防外部命令被误配成 no-op(退出 0 但没签)时
@@ -263,8 +285,8 @@ async function finishWindows({ artifactDir, baseName, appName, versionless, allo
       { encoding: 'utf8' },
     ).trim();
     if (badSigStatuses.includes(sigStatus)) {
-      console.error(`ERROR: CINDY_WIN_SIGN_CMD 已设置且 make 成功,但 Setup.exe 签名状态为 ${sigStatus}。`);
-      console.error('       外部签名命令疑似 no-op 或签名后文件被改动,请检查 CINDY_WIN_SIGN_CMD 配置与构建流程。');
+      console.error(`ERROR: Windows 签名已配置且 make 成功,但 Setup.exe 签名状态为 ${sigStatus}。`);
+      console.error('       签名命令疑似 no-op 或签名后文件被改动,请检查 CINDY_WIN_SIGN_CMD / NPKG_TOKEN 与构建流程。');
       process.exit(1);
     }
     // 再全量扫一遍 packaged 目录:internalExesSigned 不能只凭签名命令在手就记
@@ -286,12 +308,12 @@ async function finishWindows({ artifactDir, baseName, appName, versionless, allo
     }
     installerSigned = true;
   } else if (!versionless && !allowUnsigned) {
-    console.error('ERROR: 有版本的 Windows 打包要求 CINDY_WIN_SIGN_CMD(安装包 / 卸载器 / 内部 exe 均在 forge make 阶段签名)。');
+    console.error('ERROR: 有版本的 Windows 打包要求 CINDY_WIN_SIGN_CMD 或 NPKG_TOKEN(安装包 / 卸载器 / 内部 exe 均在 forge make 阶段签名)。');
     console.error('       缺签名的包在严格策略 Windows 机器上热更/启动/卸载会被拦。');
     console.error('       确要产出未签名包时加 --allow-unsigned。');
     process.exit(1);
   } else {
-    console.log('==> CINDY_WIN_SIGN_CMD not set — installer / uninstaller / internal exes are UNSIGNED');
+    console.log('==> Windows signing not configured — installer / uninstaller / internal exes are UNSIGNED');
   }
 
   const installerPath = path.join(artifactDir, `${baseName}-Setup.exe`);
@@ -301,7 +323,7 @@ async function finishWindows({ artifactDir, baseName, appName, versionless, allo
 
   // 热更 ZIP 只对有版本的包有意义(版本无关包不参与热更新)。
   if (!versionless) {
-    const hotfixZipPath = path.join(artifactDir, `${baseName}-hotfix.zip`);
+    const hotfixZipPath = path.join(artifactDir, `${baseName}.zip`);
     console.log('==> Creating hotfix ZIP from packaged app...');
     if (fs.existsSync(hotfixZipPath)) fs.unlinkSync(hotfixZipPath);
     execFileSync(
@@ -316,7 +338,7 @@ async function finishWindows({ artifactDir, baseName, appName, versionless, allo
     files.push(fileEntry('hotfix', hotfixZipPath));
   }
 
-  return { files, signing: { installerSigned, internalExesSigned: Boolean(winSignCmd) } };
+  return { files, signing: { installerSigned, internalExesSigned: hasWindowsSigning } };
 }
 
 async function finishDarwin({ artifactDir, baseName, appName, arch, versionless, allowUnsigned, noSign }) {
@@ -333,24 +355,58 @@ async function finishDarwin({ artifactDir, baseName, appName, arch, versionless,
   writeMacEntitlements(helperEntitlementsPath);
   writeMacEntitlements(mainEntitlementsPath, { appleEvents: true });
 
-  const applePassword = noSign ? undefined : process.env.APPLE_APP_PASSWORD;
   const wantsRealSigning = !versionless && !noSign;
+  const requestedSigningMode = process.env.MAC_SIGNING_MODE?.trim() || 'developer-id';
+  if (!['developer-id', 'self-signed', 'adhoc'].includes(requestedSigningMode)) {
+    throw new Error('MAC_SIGNING_MODE must be developer-id, self-signed, or adhoc');
+  }
+  const applePassword = noSign ? undefined : process.env.APPLE_APP_PASSWORD;
+  const signIdentity = noSign ? undefined : process.env.APPLE_SIGN_IDENTITY?.trim();
   let signingMode = 'adhoc';
 
-  if (wantsRealSigning && !applePassword && !allowUnsigned) {
-    console.error('ERROR: 有版本的 macOS 打包要求 APPLE_APP_PASSWORD(Developer ID 签名 + 公证)。');
-    console.error('       确要降级 ad-hoc 签名时加 --allow-unsigned(产物无法过 Gatekeeper 分发)。');
-    process.exit(1);
+  if (wantsRealSigning && requestedSigningMode === 'self-signed' && !signIdentity && !allowUnsigned) {
+    throw new Error(
+      'MAC_SIGNING_MODE=self-signed requires APPLE_SIGN_IDENTITY '
+      + '(the existing Meka certificate name in the macOS keychain)',
+    );
+  }
+  if (
+    wantsRealSigning
+    && requestedSigningMode === 'developer-id'
+    && (!applePassword || !signIdentity)
+    && !allowUnsigned
+  ) {
+    throw new Error(
+      'Developer ID macOS packaging requires APPLE_SIGN_IDENTITY and APPLE_APP_PASSWORD',
+    );
+  }
+  if (wantsRealSigning && requestedSigningMode === 'adhoc' && !allowUnsigned) {
+    throw new Error(
+      'Versioned macOS packaging cannot use ad-hoc signing unless --allow-unsigned is explicit',
+    );
   }
 
   const files = [];
-  if (wantsRealSigning && applePassword) {
-    const identity = { ...resolveAppleIdentity(), applePassword };
-    console.log('==> Signing (Developer ID)...');
+  const canSelfSign = wantsRealSigning && requestedSigningMode === 'self-signed' && signIdentity;
+  const canDeveloperSign =
+    wantsRealSigning && requestedSigningMode === 'developer-id' && signIdentity && applePassword;
+  if (canSelfSign || canDeveloperSign) {
+    const identity = canSelfSign
+      ? { signIdentity, timestamp: false }
+      : { ...resolveAppleIdentity(), applePassword, timestamp: true };
+    console.log(
+      canSelfSign
+        ? '==> Signing (existing Meka self-signed identity)...'
+        : '==> Signing (Developer ID)...',
+    );
     signMacAppWithIdentity(appPath, helperEntitlementsPath, mainEntitlementsPath, identity);
-    console.log('==> Notarizing...');
-    notarizeMacApp(appPath, identity);
-    signingMode = 'developer-id+notarized';
+    if (canDeveloperSign) {
+      console.log('==> Notarizing...');
+      notarizeMacApp(appPath, identity);
+      signingMode = 'developer-id+notarized';
+    } else {
+      signingMode = 'self-signed';
+    }
 
     const dmgPath = path.join(artifactDir, `${baseName}-${arch}.dmg`);
     console.log('==> Creating DMG...');
@@ -360,7 +416,7 @@ async function finishDarwin({ artifactDir, baseName, appName, arch, versionless,
     createMacDMG(appPath, dmgPath, `${appName} Installer`, identity);
     files.push(fileEntry('installer', dmgPath));
 
-    const hotfixZipPath = path.join(artifactDir, `${baseName}-${arch}-hotfix.zip`);
+    const hotfixZipPath = path.join(artifactDir, `${baseName}-${arch}.zip`);
     console.log('==> Creating hotfix ZIP...');
     if (fs.existsSync(hotfixZipPath)) fs.unlinkSync(hotfixZipPath);
     exec(`/usr/bin/ditto -c -k "${packagedDir}" "${hotfixZipPath}"`);
@@ -470,7 +526,7 @@ async function main() {
     fs.rmSync(artifactDir, { recursive: true, force: true });
 
     cleanOutDir();
-    runForgeMake({ platform, arch, region, version, noSign });
+    runForgeMake({ platform, arch, region, version, versionless, noSign });
 
     // drizzle 资源校验(平台差异只在 packaged 内路径)。
     const drizzleOut =

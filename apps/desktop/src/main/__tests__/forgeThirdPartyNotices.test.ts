@@ -44,7 +44,7 @@ describe('Forge third-party notice staging', () => {
 
   it.each(['darwin', 'mas'] as const)('stages %s notices under Contents/Resources', (platform) => {
     const fixture = createFixture();
-    const buildPath = path.join(fixture.root, 'xdt-maker.app');
+    const buildPath = path.join(fixture.root, 'cindy-meka.app');
     const resourcesDir = path.join(buildPath, 'Contents', 'Resources');
     fs.mkdirSync(resourcesDir, { recursive: true });
 
@@ -61,8 +61,8 @@ describe('Forge third-party notice staging', () => {
     (platform) => {
       // 复现真实 postPackage:buildPath 是平台产物目录,.app 在其内部。
       const fixture = createFixture();
-      const buildPath = path.join(fixture.root, 'xdt-maker-darwin-arm64');
-      const resourcesDir = path.join(buildPath, 'xdt-maker.app', 'Contents', 'Resources');
+      const buildPath = path.join(fixture.root, 'cindy-meka-darwin-arm64');
+      const resourcesDir = path.join(buildPath, 'cindy-meka.app', 'Contents', 'Resources');
       fs.mkdirSync(resourcesDir, { recursive: true });
 
       stagePackagedThirdPartyNotices(buildPath, platform, fixture.noticesRoot);

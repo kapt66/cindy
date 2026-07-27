@@ -14,8 +14,8 @@ describe('buildProjectDeepLink(严格编码,review P2)', () => {
     const workingDir = "/Users/alice/Projects/my(app)'s dir!*";
     const href = buildProjectDeepLink(workingDir);
     // 生成一律主 scheme;切片按主 scheme 前缀长度(双 scheme 后长度不同)。
-    expect(href.startsWith('cindy://project/')).toBe(true);
-    expect(/[!'()]/.test(href.slice('cindy://project/'.length))).toBe(false);
+    expect(href.startsWith('cindy-meka://project/')).toBe(true);
+    expect(/[!'()]/.test(href.slice('cindy-meka://project/'.length))).toBe(false);
     // 解析端零改动:decodeURIComponent 原生可解严格编码,roundtrip 不变形。
     expect(parseProjectDeepLinkHref(href)).toEqual({ workingDir });
     // 文本匹配白名单能吃下整条生成的链接(不在括号处截断)。
@@ -73,15 +73,14 @@ describe('parseSessionDeepLinkHref', () => {
   });
 });
 
-// 双 scheme 收敛:生成一律 cindy://,解析 cindy + 历史 xdt-maker 都认
-// (上面的 xdt-maker:// 用例即历史 scheme 回归)。
-describe('dual scheme (cindy primary + legacy xdt-maker)', () => {
-  it('builders emit the primary cindy:// scheme', () => {
-    expect(buildSessionDeepLink('abc-123')).toBe('cindy://session/abc-123');
+// Cindy Meka 生成自有 scheme；解析仍兼容上游 cindy:// 与历史 Meka scheme。
+describe('Cindy Meka primary scheme and compatible inputs', () => {
+  it('builders emit the primary cindy-meka:// scheme', () => {
+    expect(buildSessionDeepLink('abc-123')).toBe('cindy-meka://session/abc-123');
     expect(buildSessionMessageDeepLink('abc-123', 'm1')).toBe(
-      'cindy://session/abc-123?message=m1',
+      'cindy-meka://session/abc-123?message=m1',
     );
-    expect(buildProjectDeepLink('/tmp/x')).toBe('cindy://project/%2Ftmp%2Fx');
+    expect(buildProjectDeepLink('/tmp/x')).toBe('cindy-meka://project/%2Ftmp%2Fx');
   });
 
   it('parsers accept primary-scheme cindy:// hrefs', () => {

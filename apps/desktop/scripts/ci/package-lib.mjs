@@ -152,13 +152,10 @@ export function artifactRelDir({ region, version, versionless, platformKey }) {
 }
 
 /**
- * 新渠道产物文件基名(老 release 脚本的 xdt-maker-* 命名不动,新产物统一
- * cindy-*)。两区同名(owner 决策):发布渠道靠不同 OSS bucket 区分,本地
- * 产物已按 artifactRelDir 的 `<region>/` 目录分层,文件名不再
- * 叠区域前缀。
+ * Cindy Meka 发布产物文件基名；区域隔离由 artifactRelDir 与发布目标负责。
  */
 export function artifactBaseName({ version, versionless }) {
-  return `cindy-${versionless ? 'unversioned' : version}`;
+  return `cindy-meka-${versionless ? 'unversioned' : version}`;
 }
 
 /**
@@ -176,7 +173,7 @@ export function buildBuildInfo(ctx) {
   return {
     // v2 移除无运行语义的 package channel；发布通道只属于 publish 阶段。
     schemaVersion: 2,
-    product: 'cindy-desktop',
+    product: 'cindy-meka-desktop',
     // 版本无关包 version 记 null,占位符不冒充真实版本。
     version: ctx.versionless ? null : ctx.version,
     versionless: ctx.versionless,

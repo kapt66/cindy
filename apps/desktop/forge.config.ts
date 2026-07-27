@@ -20,12 +20,16 @@ import {
   resolveCindyRegion,
 } from '@cindy/maker-shared/brand-identity';
 import { stagePackagedThirdPartyNotices } from './forge-third-party-notices';
+import {
+  assertMekaResourceTree,
+  assertPackagedMekaResources,
+} from './forge-meka-resources';
 
 const _require = createRequire(__filename);
 
-// ── 构建期身份(2026-07-17 Cindy 渠道分叉) ─────────────────────────────────────
+// ── 构建期身份(Cindy Meka 独立渠道) ────────────────────────────────────────────
 // 区域默认 cn;打海外包时由发布脚本注入 CINDY_AUTH_REGION=global。appId 随区域
-// 派生(com.xd.cindycn / com.xd.cindy),必须与运行时 shared/brandRegion
+// 派生(com.xd.cindy.meka / com.xd.cindy.meka.global),必须与运行时 shared/brandRegion
 // (经 vite.main.config 的 VITE_CINDY_AUTH_REGION define 烘焙)同源——AUMID
 // 三位一体:NSIS appId = 运行时 setAppUserModelId = 快捷方式 AUMID。
 const CINDY_REGION = resolveCindyRegion(
@@ -38,13 +42,13 @@ process.env.VITE_CINDY_AUTH_REGION = CINDY_REGION;
 const CINDY_APP_ID = brandAppId(CINDY_REGION);
 const CINDY_UTI_PREFIX = brandBundleIdPrefix(CINDY_REGION);
 /**
- * 可执行文件基名,按区域派生(cn 'Cindy' / global 'CindyGlobal'):同机双装时
+ * 可执行文件基名,按区域派生(cn 'cindy-meka' / global 'cindy-meka-global'):同机双装时
  * exe / mac .app 包名 / NSIS 安装目录与快捷方式若同名,第二个安装会覆盖第一个,
  * 更新器按 exe 名杀进程也会误伤另一区域。运行时 userData 目录由 main 入口按
  * 同一区域切换(src/main/regionUserData.ts),两端从 brand-identity 同源派生。
  */
 const CINDY_EXE = brandExecutableName(CINDY_REGION);
-/** 更新器二进制文件名(cindy-updater.exe)。 */
+/** 包内更新器二进制文件名(cindy-meka-updater.exe)。 */
 const UPDATER_EXE = `${BRAND_IDENTITY.updaterName}.exe`;
 
 // discord.js is externalized from the main Vite bundle because its circular
@@ -456,7 +460,10 @@ function buildCindyUpdater(): void {
     throw new Error(`[forge] cargo build --release failed with exit code ${r.status}`);
   }
 
-  const builtExe = path.join(updaterRoot, 'target', 'release', UPDATER_EXE);
+  // Cargo 的 crate/bin 仍保留 Cindy 源码内名；只把随应用分发的目标文件名
+  // Cargo 源二进制仍叫 cindy-updater；复制进新包时按品牌身份改为
+  // cindy-meka-updater.exe。
+  const builtExe = path.join(updaterRoot, 'target', 'release', 'cindy-updater.exe');
   const destExe = path.join(__dirname, 'resources', UPDATER_EXE);
   if (!fs.existsSync(builtExe)) {
     throw new Error(`[forge] cargo build succeeded but ${builtExe} is missing`);
@@ -558,6 +565,23 @@ function signOneExeWithExternalCommand(exePath: string, commandTemplate: string)
 }
 
 /**
+ * Keep Cindy's generic signing override, while allowing existing Meka release
+ * machines to continue using the NPKG_TOKEN-based service. The token stays in
+ * the child environment and never appears in the command line.
+ */
+function resolveWindowsSignCommand(): string | undefined {
+  const explicitCommand = process.env.CINDY_WIN_SIGN_CMD?.trim();
+  if (explicitCommand) return explicitCommand;
+
+  if (!process.env.NPKG_TOKEN?.trim()) return undefined;
+  const signScript = path.join(__dirname, 'scripts', 'sign.py');
+  if (!fs.existsSync(signScript)) {
+    throw new Error(`[forge:sign] Meka signing helper missing at ${signScript}`);
+  }
+  return `python "${signScript}" {file}`;
+}
+
+/**
  * 把 packaged 目录内的所有 .exe 都用外部签名命令签一遍。
  * 触发时机：electron-forge 的 postPackage（package 完、makers 跑前），所以
  * NSIS Setup.exe 拿到的、以及 publish 阶段从 packagedDir 打的热更 ZIP 拿到的，
@@ -572,9 +596,9 @@ function signOneExeWithExternalCommand(exePath: string, commandTemplate: string)
  */
 function signPackagedExes(buildPath: string): void {
   if (process.platform !== 'win32') return;
-  const signCmd = process.env.CINDY_WIN_SIGN_CMD;
+  const signCmd = resolveWindowsSignCommand();
   if (!signCmd) {
-    console.log('[forge:postPackage] CINDY_WIN_SIGN_CMD not set — skipping exe signing');
+    console.log('[forge:postPackage] no Windows signing configuration — skipping exe signing');
     return;
   }
 
@@ -668,14 +692,20 @@ function applyMacPackagedDisplayName(buildPath: string, platform: string): void 
     // 否则 Electron 找不到 Helper app(见函数头 ⚠️)。
     const key = 'CFBundleDisplayName';
     // packager 必写该键,Set 即可;Add 兜底防未来 packager 行为变化。
-    const set = spawnSync('/usr/libexec/PlistBuddy', ['-c', `Set :${key} Cindy`, plistPath]);
+    const displayName = BRAND_IDENTITY.displayName;
+    const set = spawnSync('/usr/libexec/PlistBuddy', ['-c', `Set :${key} ${displayName}`, plistPath]);
     if (set.status !== 0) {
-      const add = spawnSync('/usr/libexec/PlistBuddy', ['-c', `Add :${key} string Cindy`, plistPath]);
+      const add = spawnSync(
+        '/usr/libexec/PlistBuddy',
+        ['-c', `Add :${key} string ${displayName}`, plistPath],
+      );
       if (add.status !== 0) {
         throw new Error(`[forge:postPackage] PlistBuddy failed to set ${key} in ${plistPath}`);
       }
     }
-    console.log(`[forge:postPackage] mac display name → Cindy (${appDir}/Contents/Info.plist)`);
+    console.log(
+      `[forge:postPackage] mac display name → ${displayName} (${appDir}/Contents/Info.plist)`,
+    );
   }
 }
 
@@ -746,6 +776,9 @@ function extraResourcesForTarget(targetPlatform: string): string[] {
     'resources/cc-manager',
     'resources/anthropic-compat-proxy',
     'resources/remote-file-service',
+    // Direct-runtime Meka projects, roles, and Skills share one packaged root.
+    // This is not the deferred S1 capability-pack runtime.
+    'resources/meka',
     // .cindy 发布者/审核 Ed25519 公钥信任表(私钥永不进客户端)。
     'resources/ghost-trust.json',
     // 第三方开源声明,由 scripts/generate-third-party-notices.mjs 生成
@@ -972,7 +1005,7 @@ const makers: ForgeConfig['makers'] = [
     options: {
       categories: ['Development'],
       icon: path.join(__dirname, 'resources', 'icon.png'),
-      // 双 scheme:cindy 主 + xdt-maker 兼容(老分享链接不死)。
+      // 注册 Cindy Meka 主 scheme 与 Meka 历史 scheme；上游 cindy:// 仅解析、不注册。
       mimeType: allDeepLinkSchemes().map((s) => `x-scheme-handler/${s}`),
       maintainer: 'Lizi <feedback@cindy.app>',
       // deb 包名规范要求小写;跟随区域 exe 名(cn cindy / global cindyglobal)。
@@ -1002,9 +1035,9 @@ if (isWin) {
           // 自身证书签,与此列表无关——只影响回调次数。
           signingHashAlgorithms: ['sha256'],
           sign: async (cfg: { path: string }) => {
-            const signCmd = process.env.CINDY_WIN_SIGN_CMD;
+            const signCmd = resolveWindowsSignCommand();
             if (!signCmd) {
-              console.log(`[forge:nsis:sign] CINDY_WIN_SIGN_CMD not set — skipping ${path.basename(cfg.path)}`);
+              console.log(`[forge:nsis:sign] no Windows signing configuration — skipping ${path.basename(cfg.path)}`);
               return;
             }
             signOneExeWithExternalCommand(cfg.path, signCmd);
@@ -1075,18 +1108,18 @@ const config: ForgeConfig = {
     // (与 mac 显示名口径一致)。
     win32metadata: {
       CompanyName: 'XD',
-      ProductName: 'Cindy',
-      FileDescription: 'Cindy',
+      ProductName: BRAND_IDENTITY.displayName,
+      FileDescription: BRAND_IDENTITY.displayName,
     },
     icon: 'resources/icon',
-    // 自定义 URL scheme: xdt-maker://session/<id> | xdt-maker://project/<encoded-workingDir>
+    // 自定义 URL scheme：生成 cindy-meka://；继续注册 Meka 历史 scheme。
     // macOS: electron-packager 把这里的项写进 Info.plist 的 CFBundleURLTypes,
-    //        系统 LaunchServices 据此把 xdt-maker:// 链接路由到本 app。
+    //        系统 LaunchServices 据此把注册集合中的链接路由到本 app。
     // Windows: 不读这个字段(走 app.setAsDefaultProtocolClient 写注册表), 见
     //          main/deepLink.ts registerDeepLinkProtocol()。
     protocols: [
-      // 双 scheme 注册:cindy:// 主 + xdt-maker:// 永久兼容(存量分享链接不死)。
-      { name: 'Cindy Deep Link', schemes: [...allDeepLinkSchemes()] },
+      // 不包含上游 cindy://，避免同机安装 Cindy 时抢占其系统协议。
+      { name: `${BRAND_IDENTITY.displayName} Deep Link`, schemes: [...allDeepLinkSchemes()] },
     ],
     // macOS 文件夹右键 "打开方式 → XDMaker" 入口:
     //   声明 app 能接受 public.folder, Finder 自动把 XDMaker 出现在 "打开方式" 列表。
@@ -1196,6 +1229,7 @@ const config: ForgeConfig = {
     prePackage: async (_forgeConfig, platform, arch) => {
       const targetPlatform = requestedTargetPlatform();
       const targetArch = requestedTargetArch();
+      assertMekaResourceTree(path.join(__dirname, 'resources', 'meka'));
       if (targetPlatform === 'win32') {
         buildCindyUpdater();
       }
@@ -1212,6 +1246,12 @@ const config: ForgeConfig = {
       for (const buildPath of opts.outputPaths) {
         const noticeName = stagePackagedThirdPartyNotices(buildPath, opts.platform);
         console.log(`[forge:postPackage] staged ${noticeName} + restricted component disclosure`);
+        assertPackagedMekaResources(
+          path.join(__dirname, 'resources', 'meka'),
+          buildPath,
+          opts.platform,
+        );
+        console.log('[forge:postPackage] verified bundled Meka resource tree');
         signPackagedExes(buildPath);
         applyMacPackagedDisplayName(buildPath, opts.platform);
       }

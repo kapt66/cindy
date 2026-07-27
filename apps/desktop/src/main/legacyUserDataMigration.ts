@@ -1,13 +1,14 @@
 /**
  * legacyUserDataMigration — 首登轻量数据迁移(mToc)。
  *
- * 身份翻转(2026-07-17)后 userData 目录从 `xdt-maker` 变为 `Cindy`,老用户的
+ * Cindy Meka 身份翻转后 userData 目录从 `xdmaker-meka` 变为 `cindy-meka`,老用户的
  * 主库与媒体总仓留在同级的老目录里。本模块在「用户首次登录成功、db 尚未打开」
  * 时(registerLocalDbIpc 的 beforeEnsureReady 钩子)做一次**只读老目录**的简单
  * 迁移:复制主库(+wal/shm 附属文件)、`cindy-media` 目录、`dialogues` 无文件夹
  * 对话工作目录(agent 可能在里面写过真实文件,必须随迁;DB 里的 working_dir
  * 前缀改写由 db ready 后的 sweepLegacyDialogueWorkingDirs 完成)、agent 浏览器
- * profile(`browser-runtime/browser/XDMaker` → `browser/Cindy`,登录态随迁)到新
+ * profile(`browser-runtime/browser/XDMaker` → `browser/Cindy`,登录态随迁)、
+ * Meka 非敏感设置与自定义角色到新
  * userData,完成后写 marker 文件 `<userData>/mToc` 防重入。
  *
  * 设计要点:
@@ -46,6 +47,10 @@ const CINDY_MEDIA_DIR_NAME = 'cindy-media';
  * 与 localDb/dialogueWorkspace.ts、localDb/dialogueWorkdirSelfHeal.ts 一致)。
  */
 const DIALOGUES_DIR_NAME = 'dialogues';
+
+/** XDMaker Meka 的非敏感产品配置；随数据库一起迁移到 Cindy Meka。 */
+const MEKA_SETTINGS_FILE_NAME = 'meka-assistant-settings.json';
+const MEKA_ROLES_DIR_NAME = 'meka-roles';
 
 /**
  * dialogue 工作目录里的依赖树可由包管理器重建，且 pnpm 会在其中创建大量目录符号链接。
@@ -148,6 +153,8 @@ export type LegacyUserDataMigrationResult =
       mediaCopied: boolean;
       dialoguesCopied: boolean;
       browserProfileCopied: boolean;
+      mekaSettingsCopied: boolean;
+      mekaRolesCopied: boolean;
     }
   | { status: 'failed'; error: string };
 
@@ -204,6 +211,24 @@ async function cleanupDbTmp(fs: LegacyMigrationFsDeps, targetDbPath: string): Pr
 }
 
 /**
+ * 单文件只在目标缺失时复制。配置迁移不能覆盖用户已经在 Cindy Meka 中保存的新值；
+ * tmp + rename 保证崩溃时最终路径不会留下半文件。
+ */
+async function copyFileIfMissing(
+  fs: LegacyMigrationFsDeps,
+  sourcePath: string,
+  targetPath: string,
+): Promise<boolean> {
+  if (!(await fs.pathExists(sourcePath)) || (await fs.pathExists(targetPath))) return false;
+  await fs.mkdirp(path.dirname(targetPath));
+  const tmp = `${targetPath}${COPY_TMP_SUFFIX}`;
+  await fs.removeIfExists(tmp);
+  await fs.copyFile(sourcePath, tmp);
+  await fs.rename(tmp, targetPath);
+  return true;
+}
+
+/**
  * media 目录递归 merge:目标缺失 → tmp+rename 复制;目标存在且字节数一致 →
  * 跳过;字节数不一致(上次截断残留)→ 重拷修复。cindy-media 是内容寻址 blob
  * 仓,"文件名在 = 内容对"必须由字节数兜底,否则截断 blob 永久坏(review P1)。
@@ -217,6 +242,8 @@ async function mergeCopyDir(
     dirNames?: ReadonlySet<string>;
     /** 任意层级命中文件名前缀即跳过(Chrome Singleton 锁)。 */
     filePrefixes?: readonly string[];
+    /** 配置目录迁移时保留目标已有文件；媒体默认修复字节数不一致的截断文件。 */
+    existingFilePolicy?: 'repair-size-mismatch' | 'preserve';
   },
 ): Promise<void> {
   await fs.mkdirp(destDir);
@@ -234,6 +261,7 @@ async function mergeCopyDir(
     if (skip?.filePrefixes?.some((prefix) => entry.name.startsWith(prefix))) continue;
     if (entry.name.endsWith(COPY_TMP_SUFFIX)) continue; // 防御:源侧不应有
     if (await fs.pathExists(dest)) {
+      if (skip?.existingFilePolicy === 'preserve') continue;
       const srcSize = await fs.statSize(src);
       const destSize = await fs.statSize(dest);
       if (srcSize === destSize) continue;
@@ -283,6 +311,8 @@ async function writeMarker(
   mediaCopied: boolean,
   dialoguesCopied: boolean,
   browserProfileCopied: boolean,
+  mekaSettingsCopied: boolean,
+  mekaRolesCopied: boolean,
 ): Promise<void> {
   await deps.fs.writeFile(
     path.join(deps.userDataDir, LEGACY_MIGRATION_MARKER_FILENAME),
@@ -295,6 +325,8 @@ async function writeMarker(
         mediaCopied,
         dialoguesCopied,
         browserProfileCopied,
+        mekaSettingsCopied,
+        mekaRolesCopied,
       },
       null,
       2,
@@ -327,7 +359,7 @@ export async function runLegacyUserDataMigration(
     }
     if (legacyDir == null) {
       // 全新用户:无可迁,静默写 marker,不打扰。
-      await writeMarker(deps, userId, null, false, false, false);
+      await writeMarker(deps, userId, null, false, false, false, false, false);
       deps.log.info('legacy userData migration: no legacy dir, marker written silently');
       return { status: 'no-legacy-dir' };
     }
@@ -425,8 +457,36 @@ export async function runLegacyUserDataMigration(
         deps.log.info('legacy userData migration: browser profile copied (XDMaker -> Cindy)');
       }
 
-      // 3e. 全部成功 → 写 marker → done。
-      await writeMarker(deps, userId, copiedSourceDb, mediaCopied, dialoguesCopied, browserProfileCopied);
+      // 3e. Meka 产品配置：只搬非敏感设置与自定义角色。目标已存在时一律保留
+      // Cindy Meka 新值；safe-storage 不复制，跨应用身份的凭证由用户重新授权。
+      const mekaSettingsCopied = await copyFileIfMissing(
+        deps.fs,
+        path.join(legacyDir, MEKA_SETTINGS_FILE_NAME),
+        path.join(deps.userDataDir, MEKA_SETTINGS_FILE_NAME),
+      );
+      let mekaRolesCopied = false;
+      const legacyMekaRolesDir = path.join(legacyDir, MEKA_ROLES_DIR_NAME);
+      if (await deps.fs.pathExists(legacyMekaRolesDir)) {
+        await mergeCopyDir(
+          deps.fs,
+          legacyMekaRolesDir,
+          path.join(deps.userDataDir, MEKA_ROLES_DIR_NAME),
+          { existingFilePolicy: 'preserve' },
+        );
+        mekaRolesCopied = true;
+      }
+
+      // 3f. 全部成功 → 写 marker → done。
+      await writeMarker(
+        deps,
+        userId,
+        copiedSourceDb,
+        mediaCopied,
+        dialoguesCopied,
+        browserProfileCopied,
+        mekaSettingsCopied,
+        mekaRolesCopied,
+      );
       deps.ui.publish('done');
       return {
         status: 'migrated',
@@ -434,9 +494,11 @@ export async function runLegacyUserDataMigration(
         mediaCopied,
         dialoguesCopied,
         browserProfileCopied,
+        mekaSettingsCopied,
+        mekaRolesCopied,
       };
     } catch (err) {
-      // 3f. 复制阶段失败:不写 marker(下次登录重试),failed 弹窗,不阻塞登录。
+      // 3g. 复制阶段失败:不写 marker(下次登录重试),failed 弹窗,不阻塞登录。
       const message = err instanceof Error ? err.message : String(err);
       deps.log.warn('legacy userData migration failed (will retry next login): %s', message);
       deps.ui.publish('failed');
@@ -574,7 +636,7 @@ export function registerLegacyMigrationIpc(): void {
  * dev userData 覆写(--isolated 沙箱 / 手动 XDT_USER_DATA_DIR)下必须跳过首登迁移。
  *
  * 沙箱目录(如 <userData>-dev)与真实 userData 同级,首次登录时沙箱里没有 mToc
- * marker,探测会命中同级的真实老 xdt-maker 目录 → 弹确认窗并把用户真实主库 /
+ * marker，探测会命中同级的真实旧 Meka 目录 → 弹确认窗并把用户真实主库 /
  * cindy-media / dialogues / 浏览器 profile 整套复制进临时沙箱。这既不是沙箱的
  * 语义(隔离、不动正式数据),也会产生 GB 级无意义复制。isolated 的 argv 与 env
  * 两条声明通道最终都会把生效目录同步进 XDT_USER_DATA_DIR(main/index.ts),
@@ -593,7 +655,7 @@ export function shouldSkipLegacyMigrationForDevSandbox(input: {
  * 幂等 + 防重入;marker 已写时零开销。绝不 throw。
  */
 export async function runLegacyUserDataMigrationForUser(userId: string): Promise<void> {
-  // 仅 cn 构建迁移:老 xdt-maker 数据属于 cn 身份(老渠道只有国内版),
+  // 仅 cn 构建迁移：旧 XDMaker Meka 数据属于 cn 身份（老渠道只有国内版），
   // global 构建(同机双装)是全新身份,把 cn 的历史数据导进 global 库会
   // 跨区域串台(两边 auth 后端不同,会话 / 凭证对不上)。
   if (CURRENT_CINDY_REGION !== 'cn') return;

@@ -67,7 +67,7 @@ export const RELEASE_DIR = path.join(DESKTOP_ROOT, 'release');
  * (xdt-maker-<version>-Setup.exe / .dmg / .zip 等)仍留在老值:新渠道 bucket
  * 未就绪,发布目标另议,不随本次翻转。
  */
-export const PACKAGED_APP_NAME = 'Cindy';
+export const PACKAGED_APP_NAME = 'cindy-meka';
 
 /**
  * 按区域取打包产物基名(2026-07-18 同机双装:cn 'Cindy' / global 'CindyGlobal',
@@ -77,9 +77,9 @@ export const PACKAGED_APP_NAME = 'Cindy';
  * PACKAGED_APP_NAME 保留为 cn 基线值,供未传 region 的 legacy 脚本使用。
  */
 export const PACKAGED_APP_NAME_BY_REGION = Object.freeze({
-  cn: 'Cindy',
-  global: 'CindyGlobal',
-  dev: 'CindyDev',
+  cn: 'cindy-meka',
+  global: 'cindy-meka-global',
+  dev: 'cindy-meka-dev',
 });
 
 export function packagedAppName(region = 'cn') {
@@ -95,9 +95,9 @@ export function packagedAppName(region = 'cn') {
  * 本地产物命名对齐。
  */
 export const RELEASE_ARTIFACT_BASENAME_BY_REGION = Object.freeze({
-  cn: 'cindy',
-  global: 'cindy-global',
-  dev: 'cindy-dev',
+  cn: 'cindy-meka',
+  global: 'cindy-meka-global',
+  dev: 'cindy-meka-dev',
 });
 
 export function releaseArtifactBasename(region = 'cn') {
@@ -109,19 +109,13 @@ export function releaseArtifactBasename(region = 'cn') {
 // CDN_BASE / OSS_BUCKET / OSS_PREFIX / OSS_REGION 由 scripts/shared/oss.mjs 提供并在顶部 re-export。
 
 /**
- * 渠道冻结硬闸(2026-07-17 身份翻转):老 /xdt-maker 渠道已冻结,存量 0.0.x
- * 用户的更新器按 --exe-name xdt-maker.exe 工作——把 Cindy 布局(Cindy.exe)
- * 的产物/manifest 发上老前缀,会让所有存量安装的自动更新当场断裂。
- * 在任何 desktop 发布/上传动作前调用;新渠道 bucket 就绪并把 OSS 前缀切走
- * 之前,发布一律拒绝。确需覆盖(如演练)显式设 XDT_ALLOW_LEGACY_CHANNEL_RELEASE=1。
+ * Cindy Meka 渠道硬闸：新应用不能把产物误发到上游 Cindy 或旧 XDMaker Meka
+ * 前缀。发布/上传入口接线后必须在写远端前调用。
  */
-export function assertNotPublishingCindyToLegacyChannel(ossPrefix) {
-  if (process.env.XDT_ALLOW_LEGACY_CHANNEL_RELEASE === '1') return;
-  if (PACKAGED_APP_NAME === 'Cindy' && ossPrefix === 'xdt-maker') {
+export function assertCindyMekaChannelCompatibility(ossPrefix) {
+  if (ossPrefix !== 'cindy-meka') {
     throw new Error(
-      '[channel-freeze] 拒绝把 Cindy 身份的产物发布到已冻结的 /xdt-maker 渠道:'
-      + '存量用户更新器会因 exe 布局变化(Cindy.exe)当场断裂。'
-      + '等新渠道 OSS 前缀就绪后再发布;演练可设 XDT_ALLOW_LEGACY_CHANNEL_RELEASE=1 覆盖。',
+      `[meka-channel] Cindy Meka 只允许发布到 /cindy-meka，当前 OSS prefix=${ossPrefix}`,
     );
   }
 }
@@ -576,13 +570,14 @@ export function adhocSignMacApp(appPath, helperEntitlementsPath, mainEntitlement
 
 /**
  * Developer ID 由内向外逐层签名(Electron app 不能依赖 --deep)。
- * @param {{ signIdentity: string }} identity
+ * @param {{ signIdentity: string, timestamp?: boolean }} identity
  */
 export function signMacAppWithIdentity(appPath, helperEntitlementsPath, mainEntitlementsPath, identity) {
   console.log('    Removing provenance attributes...');
   exec(`/usr/bin/xattr -dr com.apple.provenance "${appPath}" 2>/dev/null || true`);
 
-  const signBase = `/usr/bin/codesign --force --timestamp --options runtime --sign "${identity.signIdentity}"`;
+  const timestampArg = identity.timestamp === false ? '' : ' --timestamp';
+  const signBase = `/usr/bin/codesign --force${timestampArg} --options runtime --sign "${identity.signIdentity}"`;
   const frameworksDir = path.join(appPath, 'Contents', 'Frameworks');
 
   // 0. app.asar.unpacked/ 里的原生模块(better_sqlite3.node 等)是独立文件,
@@ -708,7 +703,7 @@ function ensureDmgbuild() {
  * 字标 + 手写体 + 拖拽箭头,PDF 矢量高清)、app 居左 / Applications 软链居右、
  * 660×460 固定窗口。
  * 布局坐标与 resources/dmg/render-background.swift 内的品牌块/箭头位置联动,改动需两边同步。
- * @param {{ signIdentity: string }} identity
+ * @param {{ signIdentity: string, timestamp?: boolean }} identity
  */
 export function createMacDMG(appPath, dmgPath, volumeName, identity) {
   const dmgbuildBin = ensureDmgbuild();
@@ -749,7 +744,8 @@ export function createMacDMG(appPath, dmgPath, volumeName, identity) {
   }
 
   console.log('    Signing DMG...');
-  exec(`/usr/bin/codesign --force --timestamp --sign "${identity.signIdentity}" "${dmgPath}"`);
+  const timestampArg = identity.timestamp === false ? '' : ' --timestamp';
+  exec(`/usr/bin/codesign --force${timestampArg} --sign "${identity.signIdentity}" "${dmgPath}"`);
 }
 
 // ── Smoke test (启动 packaged app) ──────────────────────────────────────────

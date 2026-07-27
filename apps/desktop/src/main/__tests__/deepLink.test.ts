@@ -163,8 +163,8 @@ describe('parseDeepLink', () => {
 
 // 双 scheme 收敛(2026-07 品牌翻转):解析 cindy 主 + 历史 xdt-maker 都认,
 // 生成一律主 scheme cindy://。上面的 xdt-maker:// 用例即历史 scheme 回归。
-describe('dual scheme (cindy primary + legacy xdt-maker)', () => {
-  it('parses primary-scheme cindy:// links for every payload type', () => {
+describe('Meka deep-link identity with Cindy interoperability', () => {
+  it('parses Cindy interoperability links for every payload type', () => {
     expect(parseDeepLink('cindy://session/abc-123')).toEqual({
       type: 'session',
       id: 'abc-123',
@@ -183,14 +183,14 @@ describe('dual scheme (cindy primary + legacy xdt-maker)', () => {
     expect(parseDeepLink('cindy://session/')).toBeNull();
   });
 
-  it('generates all builders with the primary cindy:// scheme', () => {
-    expect(DEEP_LINK_PROTOCOL).toBe('cindy');
-    expect(buildSessionDeepLink('abc-123')).toBe('cindy://session/abc-123');
+  it('generates all builders with the Cindy Meka primary scheme', () => {
+    expect(DEEP_LINK_PROTOCOL).toBe('cindy-meka');
+    expect(buildSessionDeepLink('abc-123')).toBe('cindy-meka://session/abc-123');
     expect(buildSessionMessageDeepLink('abc-123', 'm1')).toBe(
-      'cindy://session/abc-123?message=m1',
+      'cindy-meka://session/abc-123?message=m1',
     );
-    expect(buildProjectDeepLink('/tmp/x')).toBe('cindy://project/%2Ftmp%2Fx');
-    expect(buildFocusDeepLink('google-auth')).toBe('cindy://focus/google-auth');
+    expect(buildProjectDeepLink('/tmp/x')).toBe('cindy-meka://project/%2Ftmp%2Fx');
+    expect(buildFocusDeepLink('google-auth')).toBe('cindy-meka://focus/google-auth');
   });
 });
 
@@ -205,7 +205,10 @@ describe('findDeepLinkInArgv', () => {
     expect(findDeepLinkInArgv(['electron.exe', '--flag'])).toBeNull();
   });
 
-  it('accepts both cindy and legacy xdt-maker schemes in argv', () => {
+  it('accepts Meka, Cindy interoperability, and legacy xdt-maker schemes in argv', () => {
+    expect(findDeepLinkInArgv(['electron.exe', 'xdmaker-meka://session/a'])).toBe(
+      'xdmaker-meka://session/a',
+    );
     expect(findDeepLinkInArgv(['electron.exe', 'cindy://session/a'])).toBe('cindy://session/a');
     expect(findDeepLinkInArgv(['electron.exe', 'xdt-maker://session/a'])).toBe(
       'xdt-maker://session/a',

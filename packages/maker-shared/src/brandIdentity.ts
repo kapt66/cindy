@@ -5,10 +5,9 @@
  * 这边管 OS 注册身份与磁盘/协议标识符——exe 名、AppUserModelId/bundle id、
  * 深链 scheme、userData 目录名、CDN 渠道前缀、更新器产物名等。
  *
- * 2026-07-17 身份翻转(Cindy 渠道分叉,老 /xdt-maker 渠道冻结不再发版):
- * 主值全部切换为 Cindy 系,旧值移入 legacy 数组供兼容读取与未来数据迁移方案
- * 使用。本仓构建从此产出 Cindy 身份的包(新装用户直装);存量 xdt-maker 用户
- * 停留在冻结渠道,待后续独立设计的自动迁移方案接走。
+ * 2026-07 Cindy Meka 身份迁移：新应用使用独立的 `cindy-meka` OS / 磁盘 /
+ * 更新渠道身份，并从 XDMaker Meka 的 `xdmaker-meka` userData 只读导入数据。
+ * 旧值只作为兼容输入，不再作为新包的主身份。
  *
  * ⚠️ 语义边界:
  *  - 这是**构建期单点,不是运行时开关**。区域(cn/global)是唯一的构建期维度,
@@ -22,8 +21,8 @@
  *    `xdt-image://` 等进程内 scheme、`.cshare` 扩展名、
  *    localStorage 键等)由各自协议/存储模块维护,
  *    不要试图从这里派生它们。
- *  - `updaterName` = `cindy-updater`(2026-07-17 经 owner 确认随品牌翻转改名,
- *    docs/dev-rules/cindy-updater.md;老渠道已冻结、新应用未发过版,无自更新兼容包袱)。
+ *  - `updaterName` = `cindy-meka-updater`，只属于新 Cindy Meka 渠道；旧
+ *    `xdt-updater` 不作为新包资源名复用。
  *    消费方:updateService(resources 源名 + %TEMP% 运行名)、forge prePackage
  *    构建/签名/extraResource、notices 脚本登记路径。
  *
@@ -89,8 +88,13 @@ export interface BrandIdentity {
   readonly appIdByRegion: Readonly<Record<CindyRegion, string>>;
   /** 深链主 scheme(OS 级注册,`<scheme>://session/...`;cn/global 不区分)。 */
   readonly primaryScheme: string;
-  /** 历史 scheme,永久保持注册 + 解析兼容(存量链接不能死)。只增不减。 */
+  /** 历史 Meka scheme：继续注册并解析，使旧链接可直接唤起新应用。只增不减。 */
   readonly legacySchemes: readonly string[];
+  /**
+   * 只解析、不向 OS 注册的互操作 scheme。`cindy://` 属于上游 Cindy：
+   * Cindy Meka 可复用其链接语义，但不能抢占同机 Cindy 的系统协议所有权。
+   */
+  readonly acceptedUnregisteredSchemes: readonly string[];
   /**
    * Electron userData 目录名(cn / dev 基线值 = package.json productName,
    * Electron 默认派生)。区域值走 `brandUserDataDirName(region)`:global 构建
@@ -115,11 +119,12 @@ export interface BrandIdentity {
   readonly dbFilePrefix: string;
   /** 历史主库文件名前缀；首登本地迁移扫描旧库时只增不减。 */
   readonly legacyDbFilePrefixes: readonly string[];
+  /** Windows `.cindy` 文件关联 ProgID；cn 必须兼容既有 Meka 安装。 */
+  readonly fileAssociationProgIdByRegion: Readonly<Record<CindyRegion, string>>;
 }
 
 /**
- * 当前生效的身份档案(Cindy,2026-07-17 翻转)。
- * 旧 xdt-maker 值全部下沉 legacy 数组。
+ * 当前生效的身份档案：Cindy Meka 是独立新应用；XDMaker Meka 仅作迁移来源。
  *
  * 区域差异字段(2026-07-18 起支持 cn / global 同机双装):appId、
  * executableName、userDataDirName 三组按区域派生;深链 scheme、展示名
@@ -129,31 +134,52 @@ export interface BrandIdentity {
  */
 export const BRAND_IDENTITY: BrandIdentity = Object.freeze({
   displayName: BRAND_NAME,
-  executableName: 'Cindy',
+  executableName: 'cindy-meka',
   executableNameByRegion: Object.freeze({
-    cn: 'Cindy',
-    global: 'CindyGlobal',
-    dev: 'CindyDev',
+    cn: 'cindy-meka',
+    global: 'cindy-meka-global',
+    dev: 'cindy-meka-dev',
   }),
   appIdByRegion: Object.freeze({
-    cn: 'com.xd.cindycn',
-    global: 'com.xd.cindy',
-    dev: 'com.xd.cindydev',
+    cn: 'com.xd.cindy.meka',
+    global: 'com.xd.cindy.meka.global',
+    dev: 'com.xd.cindy.meka.dev',
   }),
-  primaryScheme: 'cindy',
-  legacySchemes: Object.freeze(['xdt-maker']),
-  userDataDirName: 'Cindy',
+  primaryScheme: 'cindy-meka',
+  legacySchemes: Object.freeze(['xdmaker-meka', 'xdt-maker']),
+  acceptedUnregisteredSchemes: Object.freeze(['cindy']),
+  userDataDirName: 'cindy-meka',
   userDataDirNameByRegion: Object.freeze({
-    cn: 'Cindy',
-    global: 'CindyGlobal',
-    dev: 'CindyDev',
+    cn: 'cindy-meka',
+    global: 'cindy-meka-global',
+    dev: 'cindy-meka-dev',
   }),
-  legacyUserDataDirNames: Object.freeze(['xdt-maker']),
-  cdnPrefix: 'cindy',
-  updaterName: 'cindy-updater',
-  dbFilePrefix: 'cindy',
+  // `xdmaker-meka` 是直接迁移来源；更早的 `xdt-maker` 仍须保留给
+  // orphan reaper、Codex HOME 接管与 owner namespace 兼容逻辑。
+  legacyUserDataDirNames: Object.freeze(['xdmaker-meka', 'xdt-maker']),
+  cdnPrefix: 'cindy-meka',
+  updaterName: 'cindy-meka-updater',
+  dbFilePrefix: 'cindy-meka',
   legacyDbFilePrefixes: Object.freeze(['xdt-maker']),
+  fileAssociationProgIdByRegion: Object.freeze({
+    cn: 'CindyMeka.CindyGhost',
+    global: 'CindyMekaGlobal.CindyGhost',
+    dev: 'CindyMekaDev.CindyGhost',
+  }),
 });
+
+/**
+ * Cindy mobile / cross-device wire links remain on the upstream protocol.
+ *
+ * Cindy Meka owns `cindy-meka://`, while S3 mobile/device-link stays on the
+ * upstream Cindy wire format. Keep these constants separate so desktop OS
+ * registration cannot silently rewrite the existing mobile protocol.
+ */
+export const CINDY_INTEROP_PRIMARY_SCHEME = 'cindy';
+export const CINDY_INTEROP_DEEP_LINK_SCHEMES: readonly string[] = Object.freeze([
+  CINDY_INTEROP_PRIMARY_SCHEME,
+  'xdt-maker',
+]);
 
 /** 按区域取 appId(AUMID / bundle id);默认 cn。 */
 export function brandAppId(
@@ -187,9 +213,27 @@ export function brandUserDataDirName(
   return identity.userDataDirNameByRegion[region];
 }
 
+/** 按区域取 Windows `.cindy` 文件关联 ProgID；默认 cn。 */
+export function brandFileAssociationProgId(
+  region: CindyRegion = DEFAULT_CINDY_REGION,
+  identity: BrandIdentity = BRAND_IDENTITY,
+): string {
+  return identity.fileAssociationProgIdByRegion[region];
+}
+
 /** 深链需要注册/解析的全部 scheme(主 + 历史),顺序稳定:主 scheme 恒为首位。 */
 export function allDeepLinkSchemes(identity: BrandIdentity = BRAND_IDENTITY): readonly string[] {
   return [identity.primaryScheme, ...identity.legacySchemes];
+}
+
+/**
+ * 深链解析器接受的全部 scheme：系统注册集合 + 只解析的上游互操作集合。
+ * 顺序稳定且去重，生成侧仍只使用 primaryScheme。
+ */
+export function allAcceptedDeepLinkSchemes(
+  identity: BrandIdentity = BRAND_IDENTITY,
+): readonly string[] {
+  return [...new Set([...allDeepLinkSchemes(identity), ...identity.acceptedUnregisteredSchemes])];
 }
 
 /**

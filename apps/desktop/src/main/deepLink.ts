@@ -1,10 +1,11 @@
 /**
- * deepLink — cindy:// (+ 历史 xdt-maker://) custom URL scheme + folder-context-menu handoff
+ * deepLink — cindy-meka://（兼容 Meka 历史 scheme 与上游 cindy:// 输入）
+ * custom URL scheme + folder-context-menu handoff
  * ---------------------------------------------------------------------------
- * URL 形态(scheme 单点在 shared/deepLinkSchemes.ts:生成一律主 scheme cindy://,
- * 解析主 + 历史 scheme 都认——存量消息里的 xdt-maker:// 老链接不能死):
- *   cindy://session/<sessionId>             —— sessionId 直接是 string id
- *   cindy://project/<urlencoded-workingDir> —— workingDir 全路径 URL-encoded
+ * URL 形态（scheme 单点在 shared/deepLinkSchemes.ts：生成一律使用
+ * cindy-meka://，解析则接受当前、Meka 历史以及不注册的上游 cindy://）：
+ *   cindy-meka://session/<sessionId>             —— sessionId 直接是 string id
+ *   cindy-meka://project/<urlencoded-workingDir> —— workingDir 全路径 URL-encoded
  *
  * 命令行参数形态 (右键菜单 / 命令行):
  *   --open-folder <absolute-path>   或   --open-folder=<absolute-path>
@@ -20,7 +21,7 @@
  * 跨平台行为:
  *   - macOS LaunchServices: 注册靠 Info.plist 的 CFBundleURLTypes (打包时由
  *     electron-packager 写入,见 forge.config.ts packagerConfig.protocols)
- *   - Windows / Linux: 运行时对每个 scheme(cindy / xdt-maker)各调一次
+ *   - Windows / Linux：运行时只为注册集合逐一调用；`cindy://` 不在注册集合
  *     app.setAsDefaultProtocolClient 写注册表 / .desktop entry
  *
  * Pending 缓存 + pull-on-mount:
@@ -42,6 +43,7 @@ import path from 'node:path';
 import { createLogger } from './logger';
 import {
   DEEP_LINK_PRIMARY_SCHEME,
+  DEEP_LINK_REGISTERED_SCHEMES,
   DEEP_LINK_SCHEMES,
   DEEP_LINK_URL_PREFIX,
   matchDeepLinkPrefix,
@@ -51,7 +53,7 @@ const log = createLogger('deepLink');
 
 /** 主 scheme(生成 / OS 注册首选)。历史消费点保留此导出名。 */
 export const DEEP_LINK_PROTOCOL = DEEP_LINK_PRIMARY_SCHEME;
-/** 生成侧前缀(cindy://)。解析侧不要用它做 startsWith——走 matchDeepLinkPrefix。 */
+/** 生成侧前缀（cindy-meka://）。解析侧不要用它做 startsWith——走 matchDeepLinkPrefix。 */
 const URL_PREFIX = DEEP_LINK_URL_PREFIX;
 
 /** Windows 右键菜单 / 命令行入口的 flag。值是绝对路径,argv 透传不编解码。 */
@@ -82,7 +84,7 @@ export type DeepLinkPayload =
   | { type: 'focus' };
 
 /**
- * 解析 cindy:// / xdt-maker:// URL 为 typed payload(两种 scheme 都认,
+ * 解析 Cindy Meka 当前、历史及上游互操作 URL 为 typed payload（按身份档案认领，
  * 按实际命中的前缀长度切片)。
  * 非本协议、格式残缺或 id/workingDir 为空 → null(让调用方静默丢弃)。
  *
@@ -440,7 +442,7 @@ function isWindowsSlashSwitch(value: string): boolean {
  * 必须在 app.whenReady 之前调用一次(Electron 文档要求)。重复调用幂等。
  */
 export function registerDeepLinkProtocol(): void {
-  for (const scheme of DEEP_LINK_SCHEMES) {
+  for (const scheme of DEEP_LINK_REGISTERED_SCHEMES) {
     if (process.defaultApp) {
       // dev:用 Electron 解释器跑 main 入口
       if (process.argv.length >= 2) {

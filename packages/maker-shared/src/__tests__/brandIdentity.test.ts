@@ -2,12 +2,16 @@ import { describe, expect, it } from 'vitest';
 import { BRAND_NAME } from '../branding.js';
 import {
   BRAND_IDENTITY,
+  CINDY_INTEROP_DEEP_LINK_SCHEMES,
+  CINDY_INTEROP_PRIMARY_SCHEME,
   DEFAULT_CINDY_REGION,
+  allAcceptedDeepLinkSchemes,
   allDeepLinkSchemes,
   allUserDataDirNames,
   brandAppId,
   brandBundleIdPrefix,
   brandExecutableName,
+  brandFileAssociationProgId,
   brandUserDataDirName,
   resolveCindyRegion,
 } from '../brandIdentity.js';
@@ -91,10 +95,17 @@ describe('BRAND_IDENTITY invariants', () => {
     );
   });
 
-  it('身份翻转后 legacy 数组必须携带 xdt-maker 旧值(兼容锚,只增不减)', () => {
+  it('Cindy Meka 新身份与 XDMaker Meka 迁移锚保持分离', () => {
     expect(BRAND_IDENTITY.legacySchemes).toContain('xdt-maker');
-    expect(BRAND_IDENTITY.legacyUserDataDirNames).toContain('xdt-maker');
-    expect(BRAND_IDENTITY.legacyDbFilePrefixes).toContain('xdt-maker');
+    expect(BRAND_IDENTITY.legacyUserDataDirNames).toEqual(['xdmaker-meka', 'xdt-maker']);
+    expect(BRAND_IDENTITY.executableName).toBe('cindy-meka');
+    expect(BRAND_IDENTITY.appIdByRegion.cn).toBe('com.xd.cindy.meka');
+    expect(BRAND_IDENTITY.userDataDirName).toBe('cindy-meka');
+    expect(BRAND_IDENTITY.dbFilePrefix).toBe('cindy-meka');
+    expect(BRAND_IDENTITY.cdnPrefix).toBe('cindy-meka');
+    expect(BRAND_IDENTITY.updaterName).toBe('cindy-meka-updater');
+    expect(brandFileAssociationProgId()).toBe('CindyMeka.CindyGhost');
+    expect(BRAND_IDENTITY.legacyDbFilePrefixes).toEqual(['xdt-maker']);
   });
 
   it('档案与内嵌数组已冻结,消费方无法运行时篡改', () => {
@@ -102,7 +113,9 @@ describe('BRAND_IDENTITY invariants', () => {
     expect(Object.isFrozen(BRAND_IDENTITY.appIdByRegion)).toBe(true);
     expect(Object.isFrozen(BRAND_IDENTITY.executableNameByRegion)).toBe(true);
     expect(Object.isFrozen(BRAND_IDENTITY.userDataDirNameByRegion)).toBe(true);
+    expect(Object.isFrozen(BRAND_IDENTITY.fileAssociationProgIdByRegion)).toBe(true);
     expect(Object.isFrozen(BRAND_IDENTITY.legacySchemes)).toBe(true);
+    expect(Object.isFrozen(BRAND_IDENTITY.acceptedUnregisteredSchemes)).toBe(true);
     expect(Object.isFrozen(BRAND_IDENTITY.legacyUserDataDirNames)).toBe(true);
     expect(Object.isFrozen(BRAND_IDENTITY.legacyDbFilePrefixes)).toBe(true);
   });
@@ -122,31 +135,51 @@ describe('区域解析与派生', () => {
 
   it('brandAppId / brandBundleIdPrefix 按区域取值,默认 cn', () => {
     expect(DEFAULT_CINDY_REGION).toBe('cn');
-    expect(brandAppId()).toBe('com.xd.cindycn');
-    expect(brandAppId('global')).toBe('com.xd.cindy');
-    expect(brandBundleIdPrefix('cn')).toBe('com.xd.cindycn');
-    expect(brandBundleIdPrefix('global')).toBe('com.xd.cindy');
+    expect(brandAppId()).toBe('com.xd.cindy.meka');
+    expect(brandAppId('global')).toBe('com.xd.cindy.meka.global');
+    expect(brandBundleIdPrefix('cn')).toBe('com.xd.cindy.meka');
+    expect(brandBundleIdPrefix('global')).toBe('com.xd.cindy.meka.global');
   });
 
   it('brandExecutableName / brandUserDataDirName 按区域取值,默认 cn', () => {
-    expect(brandExecutableName()).toBe('Cindy');
-    expect(brandExecutableName('global')).toBe('CindyGlobal');
-    expect(brandUserDataDirName()).toBe('Cindy');
-    expect(brandUserDataDirName('global')).toBe('CindyGlobal');
+    expect(brandExecutableName()).toBe('cindy-meka');
+    expect(brandExecutableName('global')).toBe('cindy-meka-global');
+    expect(brandUserDataDirName()).toBe('cindy-meka');
+    expect(brandUserDataDirName('global')).toBe('cindy-meka-global');
   });
 });
 
 describe('派生 helper', () => {
   it('allDeepLinkSchemes 主 scheme 恒为首位且包含全部 legacy', () => {
-    expect(allDeepLinkSchemes()).toEqual(['cindy', 'xdt-maker']);
+    expect(allDeepLinkSchemes()).toEqual(['cindy-meka', 'xdmaker-meka', 'xdt-maker']);
+  });
+
+  it('接受上游 cindy:// 但不把它加入 OS 注册集合', () => {
+    expect(allAcceptedDeepLinkSchemes()).toEqual([
+      'cindy-meka',
+      'xdmaker-meka',
+      'xdt-maker',
+      'cindy',
+    ]);
+    expect(allDeepLinkSchemes()).not.toContain('cindy');
+  });
+
+  it('Meka 桌面身份不会改写 Cindy mobile/device-link wire scheme', () => {
+    expect(CINDY_INTEROP_PRIMARY_SCHEME).toBe('cindy');
+    expect(CINDY_INTEROP_DEEP_LINK_SCHEMES).toEqual(['cindy', 'xdt-maker']);
+    expect(Object.isFrozen(CINDY_INTEROP_DEEP_LINK_SCHEMES)).toBe(true);
   });
 
   it('allUserDataDirNames 本区域目录名恒为首位 + 全部历史值,且不含另一区域', () => {
-    expect(allUserDataDirNames()).toEqual(['Cindy', 'xdt-maker']);
-    expect(allUserDataDirNames('cn')).toEqual(['Cindy', 'xdt-maker']);
+    expect(allUserDataDirNames()).toEqual(['cindy-meka', 'xdmaker-meka', 'xdt-maker']);
+    expect(allUserDataDirNames('cn')).toEqual(['cindy-meka', 'xdmaker-meka', 'xdt-maker']);
     // global 的匹配集不含 cn 的 'Cindy':orphan-reaper 按路径认领进程,
     // 跨区域匹配会误杀另一个安装的进程。
-    expect(allUserDataDirNames('global')).toEqual(['CindyGlobal', 'xdt-maker']);
+    expect(allUserDataDirNames('global')).toEqual([
+      'cindy-meka-global',
+      'xdmaker-meka',
+      'xdt-maker',
+    ]);
   });
 
   it('helper 接受显式档案参数(历史身份回放用)', () => {
@@ -154,7 +187,12 @@ describe('派生 helper', () => {
       ...BRAND_IDENTITY,
       primaryScheme: 'xdt-maker',
       legacySchemes: [],
-      userDataDirNameByRegion: { cn: 'xdt-maker', global: 'xdt-maker' },
+      acceptedUnregisteredSchemes: [],
+      userDataDirNameByRegion: {
+        cn: 'xdt-maker',
+        global: 'xdt-maker',
+        dev: 'xdt-maker',
+      },
       legacyUserDataDirNames: [],
       dbFilePrefix: 'xdt-maker',
       legacyDbFilePrefixes: [],

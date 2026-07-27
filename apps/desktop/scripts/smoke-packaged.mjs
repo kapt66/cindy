@@ -42,7 +42,7 @@ const DESKTOP_ROOT = path.resolve(__dirname, '..');
  * 区域化(同机双装):global 产物基名是 CindyGlobal,由调用方
  * (ci/lib.mjs runSmokeTest)经 --app-name= 传入覆盖,本默认值只服务 cn / 手跑。
  */
-const PACKAGED_APP_NAME = 'Cindy';
+const PACKAGED_APP_NAME = 'cindy-meka';
 
 // ── Arg parsing ───────────────────────────────────────────────────────────
 

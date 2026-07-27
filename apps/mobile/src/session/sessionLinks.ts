@@ -1,11 +1,14 @@
-import { BRAND_IDENTITY, allDeepLinkSchemes } from '@cindy/maker-shared/brand-identity';
+import {
+  CINDY_INTEROP_DEEP_LINK_SCHEMES,
+  CINDY_INTEROP_PRIMARY_SCHEME,
+} from '@cindy/maker-shared/brand-identity';
 
 // 深链双 scheme(身份单点派生):cindy 主 + xdt-maker 永久兼容(存量消息里的
 // 老链接不能死);生成一律用主 scheme。与桌面端 shared/deepLinkSchemes 同源镜像。
-const DEEP_LINK_SCHEMES = allDeepLinkSchemes();
+const DEEP_LINK_SCHEMES = CINDY_INTEROP_DEEP_LINK_SCHEMES;
 export const DEEP_LINK_SCHEME_GROUP = DEEP_LINK_SCHEMES.join('|');
 
-const SESSION_LINK_PREFIX = `${BRAND_IDENTITY.primaryScheme}://session/`;
+const SESSION_LINK_PREFIX = `${CINDY_INTEROP_PRIMARY_SCHEME}://session/`;
 const SESSION_LINK_PREFIXES = DEEP_LINK_SCHEMES.map((s) => `${s}://session/`);
 
 /** 返回 url 命中的前缀(任一 scheme),未命中 → null。 */
@@ -99,7 +102,7 @@ export function trimSessionLinkMatch(match: string): string {
   return match.replace(/[.,;:!?]+$/, '');
 }
 
-const PROJECT_LINK_PREFIX = `${BRAND_IDENTITY.primaryScheme}://project/`;
+const PROJECT_LINK_PREFIX = `${CINDY_INTEROP_PRIMARY_SCHEME}://project/`;
 const PROJECT_LINK_PREFIXES = DEEP_LINK_SCHEMES.map((s) => `${s}://project/`);
 
 /**
