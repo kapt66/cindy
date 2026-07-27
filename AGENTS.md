@@ -3,6 +3,26 @@
 > 本文件是 Codex 与 Claude Code 共用的项目指令正本。`CLAUDE.md` 只保留
 > `@AGENTS.md`，不要在两处重复维护规则。
 
+## 首要背景：Meka 私有产品线
+
+- XDMaker 是最初的开源项目；本仓维护者先 fork 了 XDMaker，并在该 fork 的
+  `meka/main` 上独立开发 XDMaker Meka。当前 Git 中保留的对照来源是
+  `xdmaker/meka/main`。
+- 上游后来把 XDMaker 迁移为新仓库 Cindy，并同时完成前后端拆分等仓库重组；因此
+  Cindy 是 XDMaker 的后继代码库，但两者不是可以按普通连续 Git 历史处理的同一仓。
+- 当前仓库是 Cindy 的私有 fork；本仓的 `meka/main` 是 Meka 的主开发分支，与上游
+  Cindy 独立演化。原 XDMaker `meka/main` 的 Meka 产品能力已经按 Cindy 当前架构迁入
+  本仓 `meka/main`，不是通过整分支 merge 得到。
+- 当前产品身份已经确定为 **Cindy Meka**：新包使用 `cindy-meka` 应用/用户数据/
+  更新渠道身份，首次登录从旧 `xdmaker-meka` 目录只读迁移数据；主深链为
+  `cindy-meka://`，内部兼容解析但不向 OS 注册上游 `cindy://`。
+- 处理 Meka 任务时，以 Cindy 当前代码、仓库边界和规则作为实现宿主，以
+  `xdmaker/meka/main` 作为原 Meka 产品意图、历史用户数据、安装身份、签名和更新兼容的
+  对照证据。不得把旧分支整体 merge/cherry-pick 进来，也不得恢复已拆出的服务端代码。
+- 开始任何 Meka 迁移、数据兼容、打包或更新工作前，必须先读
+  `docs/migrations/xdmaker-meka-to-cindy.md`；该文档是迁移范围、决策、状态和风险的事实
+  总账。
+
 ## 仓库边界
 
 - 本仓库只负责 desktop、mobile 及其共享 packages。
