@@ -143,8 +143,45 @@ describe('create_worker tool', () => {
       model: undefined,
       effort: undefined,
       fast: undefined,
+      workingDir: undefined,
+      remoteHostId: undefined,
       initialTask: undefined,
     });
+  });
+
+  it('passes target selection through and reports the authorized execution target', async () => {
+    const createWorker = vi.fn(async () => ({
+      ok: true as const,
+      workerId: 'worker-remote',
+      workerSessionId: 'session-remote',
+      resolved: {
+        workingDir: '/private/remote/workspace',
+        remoteHostId: 'mcpr:saga2-dev',
+      },
+    }));
+    const registry = new XdtHelperToolRegistry();
+    registerCreateWorkerTool(registry, { sessionId: 'lead-1', createWorker });
+
+    const result = await registry.call('create_worker', {
+      role: 'developer',
+      agent: 'claude-code',
+      label: 'remote-dev',
+      working_dir: '/forged',
+      remote_host_id: 'mcpr:saga2-dev',
+    });
+
+    expect(createWorker).toHaveBeenCalledWith(expect.objectContaining({
+      workingDir: '/forged',
+      remoteHostId: 'mcpr:saga2-dev',
+    }));
+    expect(parse(result)).toMatchObject({
+      ok: true,
+      execution_target: {
+        type: 'remote',
+        remote_host_id: 'mcpr:saga2-dev',
+      },
+    });
+    expect(JSON.stringify(parse(result))).not.toContain('/private/remote/workspace');
   });
 
   it('trims valid labels before validating and calling host', async () => {

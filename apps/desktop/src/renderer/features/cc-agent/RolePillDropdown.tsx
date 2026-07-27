@@ -230,11 +230,13 @@ function clearTimerRef(ref: { current: number | null }): void {
 
 function WorkerSummary({
   worker,
+  directoryLabel,
   showAttentionDot,
   selected = false,
   compact = false,
 }: {
   worker: WorkerInfo;
+  directoryLabel?: string;
   showAttentionDot?: boolean;
   selected?: boolean;
   compact?: boolean;
@@ -285,10 +287,17 @@ function WorkerSummary({
         )}
       </div>
       {!compact && (
-        <div className="mt-0.5 ml-[26px] flex items-center gap-1.5 text-[11px] leading-snug text-[var(--text-tertiary)]">
-          <span>{simplifyModelName(worker.model)}</span>
-          <EffortBars effort={worker.effort} />
-        </div>
+        <>
+          <div className="mt-0.5 ml-[26px] flex items-center gap-1.5 text-[11px] leading-snug text-[var(--text-tertiary)]">
+            <span>{simplifyModelName(worker.model)}</span>
+            <EffortBars effort={worker.effort} />
+          </div>
+          {directoryLabel && (
+            <div className="mt-0.5 ml-[26px] min-w-0 truncate text-[11px] leading-snug text-[var(--text-secondary)]">
+              {directoryLabel}
+            </div>
+          )}
+        </>
       )}
     </>
   );
@@ -301,6 +310,7 @@ export interface RolePillDropdownProps {
   activeWorkerCount: number;
   softLimit: number;
   hardLimit: number;
+  directoryLabels?: ReadonlyMap<string, string>;
   onSwitchFocus: (workerId: string) => void;
   onOpenCreate: () => void;
   onOpenSettings: () => void;
@@ -446,12 +456,14 @@ function CreateWorkerTabButton({
 function WorkerTabsList({
   workers,
   selectedWorkerId,
+  directoryLabels,
   onSwitchFocus,
   onArchiveWorker,
   clearAttentionWhenVisible = true,
 }: {
   workers: WorkerInfo[];
   selectedWorkerId: string | null;
+  directoryLabels: ReadonlyMap<string, string>;
   onSwitchFocus: (workerId: string) => void;
   onArchiveWorker: (workerId: string) => void;
   clearAttentionWhenVisible?: boolean;
@@ -533,7 +545,11 @@ function WorkerTabsList({
               contentClassName="min-w-[220px] max-w-[260px] border-[var(--border-default)] bg-[var(--surface-elevated)] text-[var(--text-primary)] shadow-[var(--shadow-menu)]"
               text={
                 <div className="py-0.5">
-                  <WorkerSummary worker={worker} showAttentionDot={showAttentionDot} />
+                  <WorkerSummary
+                    worker={worker}
+                    directoryLabel={directoryLabels.get(worker.workerId)}
+                    showAttentionDot={showAttentionDot}
+                  />
                 </div>
               }
             >
@@ -613,6 +629,7 @@ export function WorkerListToolbar({
   activeWorkerCount,
   softLimit,
   hardLimit,
+  directoryLabels,
   onSwitchFocus,
   onOpenCreate,
   onOpenSettings,
@@ -662,6 +679,7 @@ export function WorkerListToolbar({
           <WorkerTabsList
             workers={workers}
             selectedWorkerId={selectedWorkerId}
+            directoryLabels={directoryLabels ?? new Map()}
             onSwitchFocus={onSwitchFocus}
             onArchiveWorker={onArchiveWorker}
             clearAttentionWhenVisible={clearAttentionWhenVisible}
@@ -676,6 +694,7 @@ export function WorkerListToolbar({
             activeWorkerCount={activeWorkerCount}
             softLimit={softLimit}
             hardLimit={hardLimit}
+            directoryLabels={directoryLabels}
             onSwitchFocus={onSwitchFocus}
             onOpenCreate={onOpenCreate}
             onOpenSettings={onOpenSettings}
@@ -698,6 +717,7 @@ export function RolePillDropdown({
   activeWorkerCount,
   softLimit,
   hardLimit,
+  directoryLabels,
   onSwitchFocus,
   onOpenCreate,
   onOpenSettings,
@@ -717,6 +737,7 @@ export function RolePillDropdown({
   const attention = useWorkerAttentionSnapshot();
   const requestArchiveWorker = useRequestArchiveWorker(onArchiveWorker);
   const open = openMode !== null;
+  const resolvedDirectoryLabels = directoryLabels ?? new Map<string, string>();
 
   useLayoutEffect(() => {
     if (!clearAttentionWhenVisible) return;
@@ -796,6 +817,7 @@ export function RolePillDropdown({
 
   const totalWorkerCount = workers.length;
   const activeCount = activeWorkerCount;
+  const workerDirectoryLabel = resolvedDirectoryLabels.get(worker.workerId);
   // dropdown 折叠态 trigger 只显 focused worker。若其它(折叠后看不见的)worker 处于
   // error, 折叠入口必须也能看出来 —— 否则违反可见性原则(展开才发现问题太迟)。这里
   // 聚合出"存在非当前显示的出错 worker", 在 trigger 右上叠一个 error 角标(static,
@@ -834,7 +856,12 @@ export function RolePillDropdown({
         }}
       >
         <WorkerAvatar agent={worker.agent} status={worker.status} />
-        <span className="font-medium text-[var(--text-primary)]">{worker.role}</span>
+        <span className="shrink-0 font-medium text-[var(--text-primary)]">{worker.role}</span>
+        {workerDirectoryLabel && (
+          <span className="min-w-0 truncate text-[var(--text-tertiary)]">
+            · {workerDirectoryLabel}
+          </span>
+        )}
         {/* 折叠入口错误徽章(内联, 而非溢出角标 —— trigger 处在会裁剪的容器里, 角标会被切)。
             两种情形都显: (1) 当前 focused worker 自己出错; (2) 有"当前没显示出来的"出错
             worker(折叠只显 focused, 描红盖不到隐藏的出错 worker)—— 满足可见性原则。 */}
@@ -915,6 +942,11 @@ export function RolePillDropdown({
                       <span>{simplifyModelName(w.model)}</span>
                       <EffortBars effort={w.effort} />
                     </div>
+                    {resolvedDirectoryLabels.get(w.workerId) && (
+                      <div className="mt-0.5 ml-[26px] min-w-0 truncate text-[11px] leading-snug text-[var(--text-secondary)]">
+                        {resolvedDirectoryLabels.get(w.workerId)}
+                      </div>
+                    )}
                   </button>
                   {/* hover archive ✕ */}
                   <button

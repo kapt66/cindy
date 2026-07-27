@@ -17,6 +17,8 @@ export interface WorkerInfo {
   model: string;
   effort: string | null;
   label: string | null;
+  workingDir?: string | null;
+  remoteHostId?: string | null;
   status: OrcaWorkerStatus;
   focused: boolean;
   idleSince: string | null;
@@ -66,6 +68,14 @@ function mapWorkerRecord(raw: Record<string, unknown>): WorkerInfo {
     model: (session?.model as string) ?? 'claude-sonnet-4-6',
     effort: (session?.effort as string | null) ?? null,
     label: (raw.label as string | null) ?? null,
+    workingDir:
+      typeof session?.workingDir === 'string' && session.workingDir
+        ? session.workingDir
+        : null,
+    remoteHostId:
+      typeof session?.remoteHostId === 'string' && session.remoteHostId
+        ? session.remoteHostId
+        : null,
     status: (raw.status as WorkerInfo['status']) ?? 'idle',
     focused: (raw.focused as boolean) ?? false,
     idleSince: (raw.idleSince as string | null) ?? null,

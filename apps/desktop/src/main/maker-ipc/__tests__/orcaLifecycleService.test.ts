@@ -24,6 +24,7 @@ function createdWorker(overrides: Partial<Extract<OrcaWorkerCreationResult, { ok
       providerId: null,
       role: 'reviewer',
       label: 'reviewer',
+      workingDir: 'C:\\repo',
     },
     ...overrides,
   };
@@ -49,6 +50,8 @@ function createDeps(overrides: Partial<OrcaLifecycleDeps> = {}) {
           providerId: null,
           role: params.role,
           label: params.label,
+          workingDir: params.workingDir ?? 'C:\\repo',
+          ...(params.remoteHostId ? { remoteHostId: params.remoteHostId } : {}),
         },
       });
     }),
@@ -445,6 +448,24 @@ describe('OrcaLifecycleService', () => {
       'broadcastSessionCreated:worker-session-1',
       'broadcastOrcaWorkerChanged:lead-1',
     ]);
+  });
+
+  it('preserves the selected Worker target through enable_collab_mode', async () => {
+    const { deps, service } = createDeps();
+
+    await expect(service.enableTeam({
+      leadSessionId: 'lead-1',
+      workerAgent: 'claude-code',
+      role: 'developer',
+      label: 'developer',
+      workingDir: '/workspace/saga2',
+      remoteHostId: 'mcpr:saga2-dev',
+    })).resolves.toMatchObject({ ok: true });
+
+    expect(deps.createWorkerInTeam).toHaveBeenCalledWith(expect.objectContaining({
+      workingDir: '/workspace/saga2',
+      remoteHostId: 'mcpr:saga2-dev',
+    }));
   });
 
   it('uses the worker role slug as the default label when enabling a team', async () => {

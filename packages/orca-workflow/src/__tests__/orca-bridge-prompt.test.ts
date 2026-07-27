@@ -42,4 +42,14 @@ describe('renderOrcaWorkerSystemPrompt', () => {
     expect(prompt).toContain('worker_id=worker-1');
     expect(prompt).toContain(subagentHint);
   });
+
+  it('adds path-hiding workspace constraints only for remote workers', () => {
+    const remote = renderOrcaWorkerSystemPrompt({ ...workerMeta, remoteExecution: true });
+    const local = renderOrcaWorkerSystemPrompt(workerMeta);
+
+    expect(remote).toContain('you are running on a REMOTE host');
+    expect(remote).toContain('Do not probe it');
+    expect(remote).toContain('refer to files by relative paths');
+    expect(local).not.toContain('you are running on a REMOTE host');
+  });
 });

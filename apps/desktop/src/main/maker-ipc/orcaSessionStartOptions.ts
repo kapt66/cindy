@@ -126,6 +126,7 @@ export function applyOrcaInstructions(o: MakerSessionCreateOpts): boolean {
         sessionId,
         workflowId: teamId,
         leadSessionId,
+        remoteExecution: Boolean(o.remoteHostId),
       });
     }
   }

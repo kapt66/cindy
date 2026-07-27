@@ -6,7 +6,7 @@
  */
 
 export type AgentKind = 'claude-code' | 'codex';
-export type WorkspaceKind = 'project' | 'dialogue';
+export type WorkspaceKind = 'project' | 'dialogue' | 'meka';
 
 /**
  * Effort —— 全集 union，含历史持久化值和当前 runtime 支持值。

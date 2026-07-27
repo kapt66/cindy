@@ -137,6 +137,7 @@ import { createGitSnapshotCoordinator } from '../maker-host/git-snapshot-host.js
 import {
   cancelCodexAuthModeChange,
   finalizeCodexAfterAuthModeChange,
+  getMaker,
   getPluginRegistry,
   prepareCodexForAuthModeChange,
   restartCodexAfterAuthModeChange,
@@ -211,6 +212,15 @@ import {
 } from '../messagePersistBroadcaster.js';
 import { ensureCcManagerInstalledOrInstall } from '../remote-ssh/cc-manager-install.js';
 import { ensureRemoteAgentInstalledOrInstall, ensureRemoteHostReady, getRemoteSshPool, isCcMgrUpgradeInFlight } from '../remote-ssh/index.js';
+import { getMekaP4SettingsService, getMekaRouterService } from '../meka-settings/ipc.js';
+import { parseMcprRemoteHostId } from '../../shared/meka-router.js';
+import { createMekaWorkerTargetResolver } from './mekaWorkerTarget.js';
+import {
+  isMekaManagedWorkspaceDir,
+  materializeMekaRuntimeSkills,
+  resolveMekaRuntimeConfig,
+} from '../meka-projects/runtimeConfig.js';
+import { prepareMekaRuntimeMcp } from '../mcp-integrations/meka-runtime-mcp.js';
 import {
   recordSessionContextSnapshot,
   recordSessionTurnSpend,
@@ -735,6 +745,8 @@ interface OrcaCollabService {
     model?: string;
     effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
     fast?: boolean;
+    workingDir?: string;
+    remoteHostId?: string;
     label: string;
     initialTask?: string;
   }) => Promise<
@@ -745,6 +757,10 @@ interface OrcaCollabService {
       softLimitExceeded?: boolean;
       dispatched?: boolean;
       dispatchOutcome?: CollabDispatchOutcome;
+      resolved?: {
+        workingDir: string;
+        remoteHostId?: string;
+      };
     }
     | { ok: false; errorCode: string; message: string }
   >;
@@ -868,6 +884,8 @@ interface EnableOrcaOptions {
   model?: string;
   effort?: OrcaWorkerEffort;
   fast?: boolean;
+  workingDir?: string;
+  remoteHostId?: string;
 }
 
 let orcaCollabServiceHolder: OrcaCollabService | null = null;
@@ -1059,6 +1077,59 @@ interface PendingInteractionEntry {
 }
 
 const pendingInteractionResolvers = new Map<string, PendingInteractionEntry>();
+
+/**
+ * Reuse Cindy's existing permission interaction for Host-owned Meka operations.
+ * Every unavailable state fails closed; approval is never remembered.
+ */
+export async function authorizeMekaHighRiskCallViaDesktop(input: {
+  sessionId?: string;
+  providerId: string;
+  toolName: string;
+  args: Record<string, unknown>;
+  risk: string;
+}): Promise<boolean> {
+  const sessionId = input.sessionId?.trim();
+  if (
+    !sessionId ||
+    !wiredSessionIds.has(sessionId) ||
+    BrowserWindow.getAllWindows().every((window) => window.isDestroyed()) ||
+    !getMaker().getSession(sessionId)
+  ) {
+    return false;
+  }
+  const request: Extract<InteractionRequest, { kind: 'permission' }> = {
+    kind: 'permission',
+    requestId: `${sessionId}:meka-host-permission:${randomUUID()}`,
+    toolName: `mcp-router:${input.toolName}`,
+    input: input.args,
+    metadata: {
+      providerId: input.providerId,
+      routerToolName: input.toolName,
+      risk: input.risk,
+    },
+  };
+  return new Promise<boolean>((resolve) => {
+    const entry: PendingInteractionEntry = {
+      sessionId,
+      kind: 'permission',
+      request,
+      resolve: (decision) =>
+        resolve(decision.kind === 'permission' && decision.behavior === 'allow'),
+    };
+    entry.timeoutId = setTimeout(() => {
+      const pending = clearPendingInteraction(request.requestId);
+      if (!pending) return;
+      pending.resolve({ kind: 'permission', behavior: 'deny', reason: 'timeout' });
+      dismissRendererInteraction(pending, request.requestId, 'timeout', 'deny');
+    }, PERMISSION_INTERACTION_TIMEOUT_MS);
+    pendingInteractionResolvers.set(request.requestId, entry);
+    broadcastToAllWindows(MAKER_PUSH.INTERACTION_REQUEST, {
+      sessionId,
+      request,
+    });
+  });
+}
 
 /**
  * submit_github_issue 工具的提交前确认桥(kind='issue_confirm')。独立于
@@ -3561,6 +3632,112 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions 
     }
   }
 
+  async function applyMekaProjectRoleConfig(o: CreateOpts): Promise<boolean> {
+    if ((o.vendorOptions as Record<string, unknown> | undefined)?.mekaRuntimeResolved === true) {
+      return true;
+    }
+
+    let workspaceKind = o.workspaceKind;
+    let projectId = o.mekaProjectId ?? null;
+    let roleId = o.mekaRoleId ?? null;
+    let legacyRole = o.mekaRole ?? null;
+    let hydratedPersistedSession = false;
+    if (typeof o.id === 'string' && (!workspaceKind || workspaceKind === 'meka')) {
+      const db = getDbClient().drizzle;
+      const [row] = await db
+        .select({
+          workspaceKind: sessions.workspaceKind,
+          mekaProjectId: sessions.mekaProjectId,
+          mekaRoleId: sessions.mekaRoleId,
+          mekaRole: sessions.mekaRole,
+        })
+        .from(sessions)
+        .where(eq(sessions.id, o.id))
+        .limit(1);
+      if (row) {
+        hydratedPersistedSession = true;
+        workspaceKind = row.workspaceKind;
+        projectId = row.mekaProjectId;
+        roleId = row.mekaRoleId;
+        legacyRole = row.mekaRole;
+        o.workspaceKind = row.workspaceKind;
+        o.mekaProjectId = row.mekaProjectId;
+        o.mekaRoleId = row.mekaRoleId;
+        o.mekaRole = row.mekaRole;
+      }
+    }
+    if (workspaceKind !== 'meka') return false;
+    // Historical Meka rows intentionally retained the old four-role identity and
+    // have no meka_role_id. Resolve them through the current SAGA2 project/role
+    // files at runtime without rewriting user data.
+    if (hydratedPersistedSession && projectId === 'saga2' && !roleId) {
+      roleId =
+        legacyRole === 'planner'
+          ? 'system-overview'
+          : legacyRole === 'tester'
+            ? 'system-debug'
+            : 'general-development';
+      o.mekaRoleId = roleId;
+    }
+    if (!projectId || !roleId) {
+      throwIpcError('INVALID_PARAMS', 'Meka session requires a project and role');
+    }
+
+    let runtime;
+    let skillsMaterialized = false;
+    try {
+      runtime = await resolveMekaRuntimeConfig(projectId, roleId);
+      if (!o.remoteHostId && isMekaManagedWorkspaceDir(o.workingDir)) {
+        await materializeMekaRuntimeSkills(o.workingDir, runtime.skills);
+        skillsMaterialized = true;
+      }
+    } catch (error) {
+      throwIpcError(
+        'INVALID_PARAMS',
+        `Meka project/role configuration failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+
+    let mcp;
+    try {
+      mcp = prepareMekaRuntimeMcp(runtime.mcp);
+    } catch (error) {
+      throwIpcError(
+        'INVALID_PARAMS',
+        `Meka project/role MCP configuration failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    let promptText = runtime.promptText;
+    if (!skillsMaterialized && runtime.skills.length > 0) {
+      promptText = [
+        promptText,
+        '# Configured Meka Agent Skills',
+        ...runtime.skills.map((skill) => [
+          `## ${skill.name} (${skill.id})`,
+          skill.content,
+        ].join('\n\n')),
+      ].filter(Boolean).join('\n\n');
+    }
+    if (promptText) {
+      o.userPrompt = o.userPrompt ? `${o.userPrompt}\n\n${promptText}` : promptText;
+    }
+    o.vendorOptions = {
+      ...(o.vendorOptions as Record<string, unknown> | undefined),
+      source: 'meka',
+      mekaRuntimeResolved: true,
+      mekaProjectId: projectId,
+      mekaRoleId: roleId,
+      mekaMcpProviderIds: mcp.providerIds,
+      mekaMcpInlineConfigs: mcp.inlineConfigs,
+      mekaPolicyProviderRefs: runtime.policyProviderRefs,
+    };
+    return true;
+  }
+
   /**
    * 统一的 session bootstrap 序列（5 步，不含 markOrcaRoleIfNeeded）：
    *   1. applyOrcaInstructions(o)            注入 Orca lead/worker system prompt
@@ -3595,6 +3772,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions 
   }> {
     const didInjectOrcaInstructions = applyOrcaInstructions(o);
     const didInjectProjectContext = await applyProjectContextInjection(o);
+    await applyMekaProjectRoleConfig(o);
 
     if (o.extraDirs && o.extraDirs.length > 0) {
       const validation = await validateExtraDirs(o.extraDirs, o.workingDir);
@@ -3740,7 +3918,6 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions 
       mutableCreateOpts.makerMemoryEnabled = false;
     }
 
-    await ensureRemoteHostReady(remoteHostIdToEnsure);
     const ensureAgentKind: 'claude-code' | 'codex' | null =
       session?.agentKind === 'codex' || session?.agentKind === 'claude-code'
         ? session.agentKind
@@ -3751,6 +3928,38 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions 
             })()
           : null;
     if (!ensureAgentKind) return;
+
+    const mcprInstanceId = parseMcprRemoteHostId(remoteHostIdToEnsure);
+    if (mcprInstanceId) {
+      // Meka MCPRouter worker transport is intentionally Claude-only. The remote
+      // Codex capability-pack path belongs to deferred scope S1.
+      if (ensureAgentKind !== 'claude-code') {
+        throwIpcError(
+          'UNSUPPORTED_CAPABILITY',
+          'MCPRouter workers currently support Claude Code only',
+        );
+      }
+      const instances = await getMekaRouterService().listInstances();
+      const instance = instances.find((candidate) => candidate.id === mcprInstanceId);
+      if (!instance) {
+        throwIpcError('NOT_FOUND', `MCPRouter instance ${mcprInstanceId} was not found`);
+      }
+      if (!instance.supported) {
+        throwIpcError(
+          'UNSUPPORTED_CAPABILITY',
+          `MCPRouter instance ${mcprInstanceId} uses unsupported agent type ${instance.agentType}`,
+        );
+      }
+      if (!instance.available) {
+        throwIpcError(
+          'SSH_NOT_CONNECTED',
+          `MCPRouter instance ${mcprInstanceId} is not available`,
+        );
+      }
+      return;
+    }
+
+    await ensureRemoteHostReady(remoteHostIdToEnsure);
 
     // claude-code 远端走 cc-mgr.mjs daemon。首次 /context 也必须像 send 一样
     // 触发 cc-manager 安装/升级, 否则 query/getContextUsage 可能因旧 bundle 不存在而失败。
@@ -3771,6 +3980,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions 
     makerSessionRegistry,
     {
       bootstrapSession,
+      reconcileCreateOptsWithDb: reconcileCreateOptsAgainstDb,
       markOrcaRoleIfNeeded,
       markKnownNonOrcaIfApplicable,
       allocateDialogueWorkspace: ensureDialogueWorkspaceDir,
@@ -3804,20 +4014,40 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions 
   // 残留在 renderer store / 排队项里的旧 agentKind/resumeSessionId 若原样 spawn,
   // 会把会话劫持回旧引擎且丢交接注入(规则 9:代码兜底)。send 事务与
   // GET_CONTEXT_USAGE 的 lazy 分支共用(后者无校正曾是审计实锤缺口)。
-  async function reconcileCreateOptsAgainstDb(sessionId: string, co: CreateOpts): Promise<void> {
+  async function reconcileCreateOptsAgainstDb(
+    sessionId: string | undefined,
+    co: CreateOpts,
+  ): Promise<void> {
+    if (!sessionId) {
+      if (co.workspaceKind === 'meka') {
+        throwIpcError('INVALID_PARAMS', 'Meka session id required');
+      }
+      return;
+    }
     try {
       const db = getDbClient().drizzle;
       const [row] = await db
         .select({
           agentKind: sessions.agentKind,
+          workingDir: sessions.workingDir,
+          workspaceKind: sessions.workspaceKind,
           model: sessions.model,
           sdkSessionId: sessions.sdkSessionId,
           providerId: sessions.providerId,
+          mekaProjectId: sessions.mekaProjectId,
+          mekaRoleId: sessions.mekaRoleId,
+          mekaRole: sessions.mekaRole,
+          isFormal: sessions.isFormal,
         })
         .from(sessions)
         .where(eq(sessions.id, sessionId))
         .limit(1);
-      if (!row) return;
+      if (!row) {
+        if (co.workspaceKind === 'meka') {
+          throwIpcError('NOT_FOUND', `Meka session ${sessionId} does not exist`);
+        }
+        return;
+      }
       const dbMakerKind = row.agentKind === 'codex' ? 'codex' : 'claude-code';
       if (co.agentKind !== dbMakerKind) {
         log.warn('lazy-create: createOpts agentKind drifted from DB (agent switch); reconciling', {
@@ -3834,7 +4064,37 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions 
       co.model = row.model ?? undefined;
       co.resumeSessionId = row.sdkSessionId ?? undefined;
       co.providerId = row.providerId ?? undefined;
-    } catch {
+      co.workspaceKind = row.workspaceKind;
+      if (typeof row.workingDir === 'string' && row.workingDir.trim() !== '') {
+        co.workingDir = row.workingDir;
+      }
+      if (row.workspaceKind === 'meka') {
+        if (!row.workingDir || row.workingDir.trim() === '') {
+          throwIpcError('NOT_FOUND', `Meka session ${sessionId} has no working directory`);
+        }
+        co.mekaProjectId = row.mekaProjectId;
+        co.mekaRoleId = row.mekaRoleId;
+        co.mekaRole = row.mekaRole;
+        co.isFormal = row.isFormal === 1;
+      } else {
+        co.mekaProjectId = undefined;
+        co.mekaRoleId = undefined;
+        co.mekaRole = undefined;
+        co.isFormal = undefined;
+      }
+    } catch (err) {
+      if (
+        err &&
+        typeof err === 'object' &&
+        'code' in err &&
+        ((err as { code?: unknown }).code === 'INVALID_PARAMS' ||
+          (err as { code?: unknown }).code === 'NOT_FOUND')
+      ) {
+        throw err;
+      }
+      if (co.workspaceKind === 'meka') {
+        throwIpcError('INTERNAL', `Unable to verify Meka session ${sessionId}`);
+      }
       // 校正读库失败按原 opts 继续(与切换功能上线前行为一致)。
     }
   }
@@ -4003,6 +4263,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions 
       model: opts.model,
       effort: opts.effort,
       fast: opts.fast,
+      workingDir: opts.workingDir,
+      remoteHostId: opts.remoteHostId,
       delegateTask: opts.delegateTask,
     });
     if (!result.ok) throwOrcaServiceFailure(result);
@@ -4824,6 +5086,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions 
       model?: unknown;
       effort?: unknown;
       fast?: unknown;
+      workingDir?: unknown;
+      remoteHostId?: unknown;
     };
     const workerAgent: AgentKind = body.workerAgent === 'codex' ? 'codex' : 'claude-code';
     const delegateTask = typeof body.delegateTask === 'string' ? body.delegateTask : undefined;
@@ -4835,6 +5099,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions 
       model: typeof body.model === 'string' ? body.model : undefined,
       effort: typeof body.effort === 'string' ? body.effort as OrcaWorkerEffort : undefined,
       fast: typeof body.fast === 'boolean' ? body.fast : undefined,
+      workingDir: typeof body.workingDir === 'string' ? body.workingDir : undefined,
+      remoteHostId: typeof body.remoteHostId === 'string' ? body.remoteHostId : undefined,
     });
   });
 
@@ -4974,6 +5240,12 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions 
       model,
       effort: typeof b.effort === 'string' ? b.effort as OrcaWorkerEffort : undefined,
       fast: typeof b.fast === 'boolean' ? b.fast : undefined,
+      workingDir: typeof b.workingDir === 'string' && b.workingDir.trim()
+        ? b.workingDir
+        : undefined,
+      remoteHostId: typeof b.remoteHostId === 'string' && b.remoteHostId.trim()
+        ? b.remoteHostId
+        : undefined,
       label: label.value,
       initialTask: typeof b.initialTask === 'string' && b.initialTask.length > 0 ? b.initialTask : undefined,
     });
@@ -5158,6 +5430,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions 
   });
   orcaTeamServiceForEvents = orcaTeamService;
 
+  const resolveMekaWorkerTarget = createMekaWorkerTargetResolver({
+    p4: getMekaP4SettingsService(),
+    router: getMekaRouterService(),
+  });
   const orcaWorkerCreationService = createOrcaWorkerCreationService({
     getActiveTeamByLead,
     listWorkersByLead,
@@ -5171,6 +5447,19 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions 
         id: leadRow.id,
         agentKind: leadRow.agentKind === 'codex' ? 'codex' : 'claude-code',
         workingDir: leadRow.workingDir,
+        workspaceKind: leadRow.workspaceKind,
+        mekaProjectId: leadRow.mekaProjectId ?? null,
+        mekaRoleId:
+          leadRow.mekaRoleId
+          ?? (
+            leadRow.mekaProjectId === 'saga2'
+              ? leadRow.mekaRole === 'planner'
+                ? 'system-overview'
+                : leadRow.mekaRole === 'tester'
+                  ? 'system-debug'
+                  : 'general-development'
+              : null
+          ),
         model: leadRow.model,
         effort: leadRow.effort,
         permissionMode: leadRow.permissionMode,
@@ -5178,6 +5467,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions 
         providerId: leadRow.providerId ?? null,
       };
     },
+    resolveWorkerTarget: resolveMekaWorkerTarget,
     getWorkerDefaults: getWorkerDefaultsFromNewMaker,
     getAvailableModels: (agent) => maker.getCapabilities(agent).availableModels,
     getProviderRoutingContext: async () => {
@@ -5212,6 +5502,36 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions 
     createSessionId: createBusinessSessionId,
     buildCreateOptsWithStderr,
     bootstrapSession,
+    persistMekaWorkerBinding: async ({ sessionId, projectId, roleId }) => {
+      const db = getDbClient().drizzle;
+      const [current] = await db
+        .select({
+          workspaceKind: sessions.workspaceKind,
+          mekaProjectId: sessions.mekaProjectId,
+          mekaRoleId: sessions.mekaRoleId,
+        })
+        .from(sessions)
+        .where(eq(sessions.id, sessionId))
+        .limit(1);
+      if (!current) throw new Error(`Worker session ${sessionId} was not persisted`);
+      if (current.workspaceKind !== 'meka') {
+        throw new Error(`Worker session ${sessionId} did not persist as a Meka workspace`);
+      }
+      if (
+        (current.mekaProjectId && current.mekaProjectId !== projectId)
+        || (current.mekaRoleId && current.mekaRoleId !== roleId)
+      ) {
+        throw new Error(`Worker session ${sessionId} already has a different Meka binding`);
+      }
+      await db
+        .update(sessions)
+        .set({
+          mekaProjectId: projectId,
+          mekaRoleId: roleId,
+          updatedAt: Date.now(),
+        })
+        .where(eq(sessions.id, sessionId));
+    },
     addOrUpdateWorker: async (worker) => {
       await addOrUpdateWorker(worker);
     },

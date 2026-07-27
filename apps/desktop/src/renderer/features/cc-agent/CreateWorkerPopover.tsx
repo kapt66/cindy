@@ -10,6 +10,8 @@ import { useProviders } from '@/hooks/useProviders';
 import { cn } from '@/lib/utils';
 import { isModelEnabled, useModelVisibilityVersion } from '@/state/modelVisibilityPrefs';
 import type { Effort } from '@/lib/userPreferences.types';
+import type { Session } from '@/lib/ccAgent.types';
+import type { MekaRouterInstance } from '../../../shared/meka-router';
 import { selectWorkerModels } from './workerModelAvailability';
 
 const PREDEFINED_ROLES = ['developer', 'designer', 'reviewer', 'tester', 'merger'] as const;
@@ -70,6 +72,8 @@ export interface CreateWorkerForm {
   model: string;
   effort?: Effort;
   fast?: boolean;
+  workingDir?: string;
+  remoteHostId?: string;
   initialTask: string;
 }
 
@@ -82,6 +86,7 @@ export interface CreateWorkerPopoverProps {
   className?: string;
   /** device-link controlled device; omitted for a local Lead session. */
   deviceId?: string;
+  leadSession?: Session | null;
 }
 
 export function CreateWorkerPopover({
@@ -92,6 +97,7 @@ export function CreateWorkerPopover({
   submitLabel,
   className,
   deviceId,
+  leadSession,
 }: CreateWorkerPopoverProps) {
   const { t } = useTranslation();
   const [role, setRole] = useState('developer');
@@ -104,7 +110,13 @@ export function CreateWorkerPopover({
   const [prefs, setPrefs] = useState<WorkerPrefs>(DEFAULT_PREFS);
   const [prefsRestored, setPrefsRestored] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [workerTarget, setWorkerTarget] = useState('');
+  const [mekaP4Root, setMekaP4Root] = useState<string | null>(null);
+  const [mekaLocalDirectories, setMekaLocalDirectories] = useState<string[]>([]);
+  const [mekaRemoteInstances, setMekaRemoteInstances] = useState<MekaRouterInstance[]>([]);
+  const [mekaTargetsLoading, setMekaTargetsLoading] = useState(false);
   const submittingRef = useRef(false);
+  const isMekaLead = !deviceId && leadSession?.workspaceKind === 'meka';
 
   const ccCaps = useAgentCapabilities('claude-code', deviceId);
   const codexCaps = useAgentCapabilities('codex', deviceId);
@@ -128,15 +140,7 @@ export function CreateWorkerPopover({
         ? undefined
         : (providerId, catalogModel) => isModelEnabled(agent, providerId, catalogModel),
     });
-  }, [
-    activeCaps,
-    agent,
-    deviceId,
-    providers,
-    providersError,
-    providersLoading,
-    visibilityVersion,
-  ]);
+  }, [activeCaps, agent, deviceId, providers, providersError, providersLoading, visibilityVersion]);
   const currentModel = activeModels.find((m) => m.id === model);
   const modelCatalogLoading = activeCapabilitiesState.loading || providersLoading;
   const currentModelSupportsFast = Boolean(
@@ -165,6 +169,65 @@ export function CreateWorkerPopover({
     setInitialTask('');
     setPrefsRestored(true);
   }, [open]);
+
+  useEffect(() => {
+    if (!open || !isMekaLead || !leadSession?.mekaProjectId) {
+      setWorkerTarget('');
+      setMekaP4Root(null);
+      setMekaLocalDirectories([]);
+      setMekaRemoteInstances([]);
+      setMekaTargetsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setMekaTargetsLoading(true);
+    void Promise.all([
+      window.electronAPI.mekaSettings.getP4(),
+      window.electronAPI.mekaSettings.router
+        .getProjectBindings(leadSession.mekaProjectId)
+        .then(async (bindings) => {
+          if (bindings.length === 0) return [];
+          const instances = await window.electronAPI.mekaSettings.router.listInstances();
+          const allowed = new Set(bindings);
+          return instances.filter(
+            (instance) => allowed.has(instance.id) && instance.supported && instance.available,
+          );
+        })
+        .catch(() => []),
+    ])
+      .then(([p4, instances]) => {
+        if (cancelled) return;
+        setMekaP4Root(p4.p4RootPath);
+        setMekaLocalDirectories(p4.p4RootPath ? [p4.p4RootPath, ...p4.extraDirs] : []);
+        setMekaRemoteInstances(instances);
+        setWorkerTarget(
+          p4.p4RootPath ? `local:${p4.p4RootPath}` : (instances[0]?.remoteHostId ?? ''),
+        );
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setMekaP4Root(null);
+        setMekaLocalDirectories([]);
+        setMekaRemoteInstances([]);
+        setWorkerTarget('');
+      })
+      .finally(() => {
+        if (!cancelled) setMekaTargetsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isMekaLead, leadSession?.mekaProjectId, open]);
+
+  const selectedRemoteInstance = useMemo(
+    () => mekaRemoteInstances.find((instance) => instance.remoteHostId === workerTarget) ?? null,
+    [mekaRemoteInstances, workerTarget],
+  );
+  const selectedWorkingDir = selectedRemoteInstance
+    ? selectedRemoteInstance.workingDir
+    : workerTarget.startsWith('local:')
+      ? workerTarget.slice('local:'.length)
+      : undefined;
 
   // capabilities 可能尚未加载或模型被移除；加载后把当前选择收敛到可用模型和 effort。
   useEffect(() => {
@@ -201,6 +264,12 @@ export function CreateWorkerPopover({
     [prefs],
   );
 
+  useEffect(() => {
+    if (selectedRemoteInstance && agent !== 'claude-code') {
+      updateAgent('claude-code');
+    }
+  }, [agent, selectedRemoteInstance, updateAgent]);
+
   const updateModel = useCallback(
     (nextModel: string) => {
       setModel(nextModel);
@@ -228,7 +297,8 @@ export function CreateWorkerPopover({
     activeRole.length >= 1 &&
     activeRole.length <= 32 &&
     !customRoleError &&
-    !!currentModel;
+    !!currentModel &&
+    (!isMekaLead || (!!leadSession?.mekaProjectId && !!selectedWorkingDir));
   const resolvedTitle = title ?? t('orca.createWorker.title');
   const resolvedSubmitLabel = submitLabel ?? t('orca.createWorker.submit');
 
@@ -250,6 +320,8 @@ export function CreateWorkerPopover({
         model,
         effort: currentModel && currentModel.efforts.length > 0 ? effort : undefined,
         fast: currentModelSupportsFast ? fast : undefined,
+        workingDir: isMekaLead ? selectedWorkingDir : undefined,
+        remoteHostId: selectedRemoteInstance?.remoteHostId,
         initialTask,
       });
     } finally {
@@ -267,6 +339,9 @@ export function CreateWorkerPopover({
     currentModel,
     currentModelSupportsFast,
     initialTask,
+    isMekaLead,
+    selectedRemoteInstance,
+    selectedWorkingDir,
     onCreate,
   ]);
 
@@ -344,8 +419,9 @@ export function CreateWorkerPopover({
                   'rounded-md px-4 py-1.5 text-13 leading-none border transition-colors',
                   agent === a
                     ? 'bg-[var(--surface-chip)] border-[var(--text-secondary)] text-[var(--text-primary)] font-medium'
-                    : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]',
+                    : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-40',
                 )}
+                disabled={Boolean(selectedRemoteInstance && a === 'codex')}
                 onClick={() => updateAgent(a)}
               >
                 {a === 'codex' ? 'Codex' : 'Claude Code'}
@@ -380,6 +456,46 @@ export function CreateWorkerPopover({
             </p>
           ) : null}
         </div>
+
+        {isMekaLead && (
+          <div className="mb-4">
+            <div className="mb-2 text-12 font-medium uppercase tracking-[0.5px] text-[var(--text-tertiary)]">
+              {t('orca.createWorker.target.label')}
+            </div>
+            <select
+              className="h-9 w-full rounded-lg border border-[var(--border-default)] bg-[var(--surface-elevated)] px-3 text-13 text-[var(--text-primary)] outline-none"
+              value={workerTarget}
+              disabled={mekaTargetsLoading}
+              onChange={(event) => setWorkerTarget(event.target.value)}
+            >
+              {!mekaP4Root && mekaRemoteInstances.length === 0 && (
+                <option value="">{t('orca.createWorker.target.none')}</option>
+              )}
+              {mekaLocalDirectories.map((directory) => (
+                <option key={directory} value={`local:${directory}`}>
+                  {directory === mekaP4Root
+                    ? t('orca.createWorker.target.p4Root')
+                    : t('orca.createWorker.target.localDirectory', {
+                        name: directory.split(/[\\/]/).filter(Boolean).at(-1) ?? directory,
+                      })}
+                </option>
+              ))}
+              {mekaRemoteInstances.map((instance) => (
+                <option key={instance.id} value={instance.remoteHostId}>
+                  {t('orca.createWorker.target.remote', {
+                    project: instance.projectName,
+                    instance: instance.instanceId,
+                  })}
+                </option>
+              ))}
+            </select>
+            {selectedRemoteInstance && (
+              <p className="mt-1.5 text-11 text-[var(--text-tertiary)]">
+                {t('orca.createWorker.target.remoteClaudeOnly')}
+              </p>
+            )}
+          </div>
+        )}
 
         <div className="mb-5">
           <div className="mb-2 text-12 font-medium uppercase tracking-[0.5px] text-[var(--text-tertiary)]">

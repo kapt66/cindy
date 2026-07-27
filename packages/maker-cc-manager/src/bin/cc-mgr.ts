@@ -20,6 +20,7 @@ import path from 'node:path';
 import { ManagerServer } from '../server.js';
 import { SessionRegistry, type SdkQueryFactoryOptions, type SdkQueryLike } from '../session-registry.js';
 import { wireSdkHandlers } from '../sdk-handlers.js';
+import { runMcpShim } from '../mcp-shim.js';
 import { CC_MGR_BUNDLE_VERSION, PROTOCOL_VERSION, SERVER_METHODS, type ApprovalRequestParams, type ApprovalRequestResult } from '../protocol.js';
 
 const MANAGER_VERSION = CC_MGR_BUNDLE_VERSION;
@@ -113,8 +114,10 @@ function ensureBundledNodeOnPath(): void {
 }
 
 interface ParsedArgs {
-  command: 'daemon' | 'version' | 'help' | 'bridge';
+  command: 'daemon' | 'version' | 'help' | 'bridge' | 'mcp-shim';
   socket?: string;
+  session?: string;
+  server?: string;
   /**
    * Self-detach mode: when set, this process re-spawns itself as a detached
    * grandchild and exits immediately. The grandchild becomes a true background
@@ -140,6 +143,28 @@ function parseArgs(argv: string[]): ParsedArgs {
   }
   if (rest[0] === '--version' || rest[0] === '-v') {
     return { command: 'version' };
+  }
+  if (rest[0] === 'mcp-shim') {
+    let socket: string | undefined;
+    let session: string | undefined;
+    let server: string | undefined;
+    for (let i = 1; i < rest.length; i++) {
+      if (rest[i] === '--socket' || rest[i] === '-s') {
+        socket = rest[i + 1];
+        i++;
+      } else if (rest[i] === '--session') {
+        session = rest[i + 1];
+        i++;
+      } else if (rest[i] === '--server') {
+        server = rest[i + 1];
+        i++;
+      }
+    }
+    if (!socket || !session || !server) {
+      console.error('cc-mgr mcp-shim: --socket <path> --session <id> --server <name> are required');
+      process.exit(2);
+    }
+    return { command: 'mcp-shim', socket, session, server };
   }
   if (rest[0] === 'bridge') {
     let socket: string | undefined;
@@ -201,6 +226,8 @@ function printHelp(): void {
       '  cc-mgr bridge --socket <path>             Pipe stdin/stdout to/from the',
       '                                            unix socket (replaces `nc -U`',
       '                                            for hosts without OpenBSD nc).',
+      '  cc-mgr mcp-shim --socket <path> \\         Tunnel a stdio MCP server through',
+      '         --session <id> --server <name>     the attached desktop client.',
       '  cc-mgr --version                          Print version info as JSON',
       '  cc-mgr --help                             Print this message',
       '',
@@ -371,7 +398,7 @@ async function runDaemon(socketPath: string): Promise<void> {
     },
   });
 
-  const handlers = wireSdkHandlers(server, registry);
+  const handlers = wireSdkHandlers(server, registry, { daemonSocketPath: socketPath });
   getAttachedClientCtx = handlers.getAttachedClientCtx;
   server.onClientClose((ctx) => handlers.onClientDisconnected(ctx));
 
@@ -443,6 +470,13 @@ async function main(): Promise<void> {
       return;
     case 'bridge':
       runBridge(args.socket!);
+      return;
+    case 'mcp-shim':
+      await runMcpShim({
+        socket: args.socket!,
+        sessionId: args.session!,
+        serverName: args.server!,
+      });
       return;
     case 'daemon':
       // --detach (no --inner): parent that re-spawns itself as a detached

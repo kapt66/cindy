@@ -359,6 +359,11 @@ export interface AgentDeps {
      */
     startParams: Record<string, unknown>;
     /**
+     * Live sdk MCP configs retained on desktop and projected through cc-mgr.
+     * They are never serialized onto the remote host.
+     */
+    inProcessMcpServers?: Record<string, unknown>;
+    /**
      * Callback for daemon-side approval requests (canUseTool / AskUserQuestion /
      * ExitPlanMode). Host layer registers this on the RPC client; maker-core wires
      * it to the session's interactionResolver.

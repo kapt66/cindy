@@ -42,11 +42,17 @@ function createDeps(overrides: Partial<OrcaWorkerCreationDeps> = {}) {
       id: 'lead-1',
       agentKind: 'codex' as const,
       workingDir: 'C:\\repo',
+      workspaceKind: 'project' as const,
+      mekaProjectId: null,
       model: 'gpt-5.5',
       effort: 'medium',
       permissionMode: 'default',
       fastMode: false,
       providerId: 'xd',
+    })),
+    resolveWorkerTarget: vi.fn(async ({ lead }) => ({
+      ok: true as const,
+      workingDir: lead.workingDir ?? '',
     })),
     getWorkerDefaults: vi.fn(() => ({})),
     getAvailableModels: vi.fn((agent: AgentKind) => (
@@ -92,6 +98,7 @@ function createDeps(overrides: Partial<OrcaWorkerCreationDeps> = {}) {
         didInjectProjectContext: false,
       };
     }),
+    persistMekaWorkerBinding: vi.fn(async () => undefined),
     addOrUpdateWorker: vi.fn(async (worker) => {
       calls.push(`addOrUpdateWorker:${worker.id}`);
     }),
@@ -532,6 +539,8 @@ describe('OrcaWorkerCreationService', () => {
         id: 'lead-1',
         agentKind: 'codex' as const,
         workingDir: 'C:\\repo',
+        workspaceKind: 'project' as const,
+        mekaProjectId: null,
         model: 'gpt-5.4-mini',
         effort: 'minimal',
         permissionMode: 'default',
@@ -1186,6 +1195,141 @@ describe('OrcaWorkerCreationService', () => {
       'removeWorker:worker-1',
     ]);
     expect(deps.dispatchWorkerTask).not.toHaveBeenCalled();
+  });
+
+  it('uses the main-authorized Meka target when bootstrapping a Worker', async () => {
+    const { deps, service } = createDeps({
+      resolveWorkerTarget: vi.fn(async () => ({
+        ok: true as const,
+        workingDir: '/workspace/project',
+        remoteHostId: 'mcpr:instance-1',
+      })),
+    });
+
+    await expect(service.createWorker({
+      leadSessionId: 'lead-1',
+      role: 'developer',
+      agent: 'claude-code',
+      model: 'claude-sonnet-4-6',
+      label: 'developer',
+      workingDir: '/forged',
+      remoteHostId: 'mcpr:instance-1',
+    })).resolves.toMatchObject({ ok: true });
+
+    expect(deps.buildCreateOptsWithStderr).toHaveBeenCalledWith(expect.objectContaining({
+      workingDir: '/workspace/project',
+      remoteHostId: 'mcpr:instance-1',
+    }));
+  });
+
+  it('inherits and persists the Meka project and role binding for a Worker', async () => {
+    const { deps, service } = createDeps({
+      getLeadSessionRow: vi.fn(async () => ({
+        id: 'lead-1',
+        agentKind: 'claude-code' as const,
+        workingDir: 'C:\\p4',
+        workspaceKind: 'meka' as const,
+        mekaProjectId: 'saga2',
+        mekaRoleId: 'system-development',
+        model: 'claude-sonnet-4-6',
+        effort: 'high',
+        permissionMode: 'default',
+        fastMode: false,
+        providerId: 'xd',
+      })),
+      resolveWorkerTarget: vi.fn(async () => ({
+        ok: true as const,
+        workingDir: '/workspace/saga2',
+        remoteHostId: 'mcpr:saga2-dev',
+      })),
+    });
+
+    await expect(service.createWorker({
+      leadSessionId: 'lead-1',
+      role: 'developer',
+      agent: 'claude-code',
+      model: 'claude-sonnet-4-6',
+      label: 'developer',
+      remoteHostId: 'mcpr:saga2-dev',
+    })).resolves.toMatchObject({
+      ok: true,
+      resolved: {
+        workingDir: '/workspace/saga2',
+        remoteHostId: 'mcpr:saga2-dev',
+      },
+    });
+
+    expect(deps.buildCreateOptsWithStderr).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceKind: 'meka',
+      mekaProjectId: 'saga2',
+      mekaRoleId: 'system-development',
+      workingDir: '/workspace/saga2',
+      remoteHostId: 'mcpr:saga2-dev',
+    }));
+    expect(deps.persistMekaWorkerBinding).toHaveBeenCalledWith({
+      sessionId: WORKER_SESSION_ID,
+      projectId: 'saga2',
+      roleId: 'system-development',
+    });
+  });
+
+  it('cleans up a bootstrapped Worker when its Meka binding cannot be persisted', async () => {
+    const { deps, service } = createDeps({
+      getLeadSessionRow: vi.fn(async () => ({
+        id: 'lead-1',
+        agentKind: 'codex' as const,
+        workingDir: 'C:\\p4',
+        workspaceKind: 'meka' as const,
+        mekaProjectId: 'saga2',
+        mekaRoleId: 'system-debug',
+        model: 'gpt-5.5',
+        effort: 'medium',
+        permissionMode: 'default',
+        fastMode: false,
+        providerId: 'xd',
+      })),
+      persistMekaWorkerBinding: vi.fn(async () => {
+        throw new Error('binding write failed');
+      }),
+    });
+
+    await expect(service.createWorker({
+      leadSessionId: 'lead-1',
+      role: 'debugger',
+      agent: 'codex',
+      label: 'debugger',
+    })).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'INTERNAL',
+      message: 'binding write failed',
+    });
+
+    expect(deps.closeWorkerSession).toHaveBeenCalledWith(WORKER_SESSION_ID);
+    expect(deps.archiveWorkerSession).toHaveBeenCalledWith(WORKER_SESSION_ID);
+    expect(deps.addOrUpdateWorker).not.toHaveBeenCalled();
+  });
+
+  it('does not bootstrap a Worker when main rejects its Meka target', async () => {
+    const { deps, service } = createDeps({
+      resolveWorkerTarget: vi.fn(async () => ({
+        ok: false as const,
+        errorCode: 'INVALID_PARAMS' as const,
+        message: 'target rejected',
+      })),
+    });
+
+    await expect(service.createWorker({
+      leadSessionId: 'lead-1',
+      role: 'developer',
+      agent: 'codex',
+      label: 'developer',
+      workingDir: 'C:\\forged',
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'INVALID_PARAMS',
+      message: 'target rejected',
+    });
+    expect(deps.bootstrapSession).not.toHaveBeenCalled();
   });
 });
 

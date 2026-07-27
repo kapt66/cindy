@@ -15,7 +15,9 @@
 import {
   METHODS,
   NOTIFICATIONS,
+  SERVER_METHODS,
   type ClientReplacedNotification,
+  type McpTunnelCallParams,
   type QueryApplyFlagSettingsParams,
   type QueryCloseParams,
   type QueryEventNotification,
@@ -58,7 +60,16 @@ import type { ClientCtx } from './server.js';
  * Install handlers + return utilities for cross-layer wiring.
  * Idempotent within a server instance — calling twice is supported (just overrides handlers).
  */
-export function wireSdkHandlers(server: ManagerServer, registry: SessionRegistry): {
+export interface SdkHandlerOptions {
+  /** Socket used by remote mcp-shim subprocesses to dial back into cc-mgr. */
+  daemonSocketPath?: string;
+}
+
+export function wireSdkHandlers(
+  server: ManagerServer,
+  registry: SessionRegistry,
+  options: SdkHandlerOptions = {},
+): {
   getAttachedClientCtx: (sessionId: string) => ClientCtx | undefined;
   onClientDisconnected: (ctx: ClientCtx) => void;
 } {
@@ -67,6 +78,7 @@ export function wireSdkHandlers(server: ManagerServer, registry: SessionRegistry
   const subscriptionsByCtx = new WeakMap<object, ClientSubscriptions>();
   // Track which ClientCtx is currently attached to each session (for reverse-request routing).
   const attachedCtxBySession = new Map<string, ClientCtx>();
+  const tunneledServersBySession = new Map<string, Set<string>>();
 
   function getSubs(ctx: object): ClientSubscriptions {
     let subs = subscriptionsByCtx.get(ctx);
@@ -125,13 +137,40 @@ export function wireSdkHandlers(server: ManagerServer, registry: SessionRegistry
         }
       }
     }
+    const mcpServers: Record<string, unknown> = { ...(p.mcpServers ?? {}) };
+    const tunneledNames = p.tunneledMcpServers === undefined
+      ? []
+      : parseTunneledMcpServerNames(p.tunneledMcpServers);
+    if (tunneledNames.length > 0) {
+      if (!options.daemonSocketPath) {
+        throwInvalid('tunneledMcpServers requires the daemon socket path');
+      }
+      for (const name of tunneledNames) {
+        if (name in mcpServers) {
+          throwInvalid(`tunneledMcpServers[${name}] conflicts with an mcpServers entry`);
+        }
+        mcpServers[name] = {
+          type: 'stdio',
+          command: process.execPath,
+          args: [
+            process.argv[1],
+            'mcp-shim',
+            '--socket', options.daemonSocketPath,
+            '--session', p.sessionId!,
+            '--server', name,
+          ],
+        };
+      }
+    }
     try {
       const session = registry.create({
         sessionId: p.sessionId!,
         cwd: p.cwd!,
         model: p.model!,
         env: p.env as Record<string, string>,
-        ...(p.mcpServers ? { mcpServers: p.mcpServers } : {}),
+        ...(Object.keys(mcpServers).length > 0
+          ? { mcpServers: mcpServers as QueryStartParams['mcpServers'] }
+          : {}),
         ...(p.permissionMode ? { permissionMode: p.permissionMode } : {}),
         ...(p.systemPrompt !== undefined ? { systemPrompt: p.systemPrompt } : {}),
         ...(p.additionalDirectories ? { additionalDirectories: p.additionalDirectories } : {}),
@@ -151,6 +190,9 @@ export function wireSdkHandlers(server: ManagerServer, registry: SessionRegistry
       registry.attach(session.sessionId, notify, { sinceSeq: 0 });
       getSubs(ctx as never).bySession.set(session.sessionId, notify);
       attachedCtxBySession.set(session.sessionId, ctx as unknown as ClientCtx);
+      if (tunneledNames.length > 0) {
+        tunneledServersBySession.set(session.sessionId, new Set(tunneledNames));
+      }
       const result: QueryStartResult = {
         sessionId: session.sessionId,
         ...(session.sdkSessionId ? { sdkSessionId: session.sdkSessionId } : {}),
@@ -264,6 +306,7 @@ export function wireSdkHandlers(server: ManagerServer, registry: SessionRegistry
       subs.bySession.delete(p.sessionId!);
     }
     attachedCtxBySession.delete(p.sessionId!);
+    tunneledServersBySession.delete(p.sessionId!);
     return { ok: true };
   };
 
@@ -307,9 +350,43 @@ export function wireSdkHandlers(server: ManagerServer, registry: SessionRegistry
     requireString(p.sessionId, 'sessionId');
     await registry.kill(p.sessionId!);
     attachedCtxBySession.delete(p.sessionId!);
+    tunneledServersBySession.delete(p.sessionId!);
     return { ok: true };
   };
 
+  const mcpTunnelCall: MethodHandler = async (params) => {
+    const p = (params ?? {}) as Partial<McpTunnelCallParams>;
+    requireString(p.sessionId, 'sessionId');
+    requireString(p.server, 'server');
+    if (p.operation !== 'listTools' && p.operation !== 'callTool') {
+      throwInvalid('operation must be listTools or callTool');
+    }
+    if (p.operation === 'callTool') requireString(p.name, 'name');
+    if (!tunneledServersBySession.get(p.sessionId!)?.has(p.server!)) {
+      const error = new Error(
+        `session ${p.sessionId} did not declare tunneled MCP server ${p.server}`,
+      ) as Error & { code: 'SESSION_NOT_FOUND' };
+      error.code = 'SESSION_NOT_FOUND';
+      throw error;
+    }
+    const attached = attachedCtxBySession.get(p.sessionId!);
+    if (!attached || attached.socket.destroyed) {
+      const error = new Error(
+        `no attached desktop client for session ${p.sessionId}`,
+      ) as Error & { code: 'SESSION_NOT_FOUND' };
+      error.code = 'SESSION_NOT_FOUND';
+      throw error;
+    }
+    return await server.sendRequest(attached, SERVER_METHODS.MCP_TUNNEL_CALL, {
+      sessionId: p.sessionId!,
+      server: p.server!,
+      operation: p.operation,
+      ...(p.name !== undefined ? { name: p.name } : {}),
+      ...(p.arguments !== undefined ? { arguments: p.arguments } : {}),
+    } satisfies McpTunnelCallParams);
+  };
+
+  server.setHandler(METHODS.MCP_TUNNEL_CALL, mcpTunnelCall);
   server.setHandler(METHODS.QUERY_START, queryStart);
   server.setHandler(METHODS.QUERY_SEND, querySend);
   server.setHandler(METHODS.QUERY_SET_MODEL, querySetModel);
@@ -346,6 +423,22 @@ function requireString(v: unknown, field: string): asserts v is string {
   if (typeof v !== 'string' || v.length === 0) {
     throwInvalid(`${field} must be a non-empty string`);
   }
+}
+
+const SAFE_MCP_SERVER_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+function parseTunneledMcpServerNames(value: unknown): string[] {
+  if (!Array.isArray(value)) throwInvalid('tunneledMcpServers must be an array of strings');
+  const names: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== 'string' || !SAFE_MCP_SERVER_NAME_RE.test(entry)) {
+      throwInvalid(
+        'tunneledMcpServers entries must be 1-64 chars of [A-Za-z0-9._-], not starting with a separator',
+      );
+    }
+    if (!names.includes(entry)) names.push(entry);
+  }
+  return names;
 }
 
 interface ThrowableInvalid extends Error {

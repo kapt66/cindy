@@ -21,6 +21,9 @@ export interface OrcaEnableTeamParams {
   model?: string;
   effort?: OrcaWorkerEffort;
   fast?: boolean;
+  /** Meka-only target hints. The creation service revalidates both in Main. */
+  workingDir?: string;
+  remoteHostId?: string;
   delegateTask?: string;
 }
 
@@ -123,6 +126,8 @@ function normalizeEnableParams(params: OrcaEnableTeamParams): OrcaWorkerCreatePa
     model: params.model?.trim() || undefined,
     effort: params.effort,
     fast: params.fast,
+    workingDir: params.workingDir?.trim() || undefined,
+    remoteHostId: params.remoteHostId?.trim() || undefined,
     initialTask: delegateTask,
   };
 }

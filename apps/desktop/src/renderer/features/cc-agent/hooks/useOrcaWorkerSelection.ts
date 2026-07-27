@@ -309,6 +309,8 @@ export function useOrcaWorkerSelection({
             model: form.model,
             effort: form.effort,
             fast: form.fast,
+            workingDir: form.workingDir,
+            remoteHostId: form.remoteHostId,
             label,
             initialTask: form.initialTask || undefined,
           });

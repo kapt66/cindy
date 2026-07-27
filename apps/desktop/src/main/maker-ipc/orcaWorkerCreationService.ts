@@ -15,6 +15,9 @@ export interface OrcaLeadSessionSnapshot {
   id: string;
   agentKind: AgentKind;
   workingDir: string | null;
+  workspaceKind: 'project' | 'dialogue' | 'meka';
+  mekaProjectId: string | null;
+  mekaRoleId?: string | null;
   model: string;
   effort: string | null;
   permissionMode: string;
@@ -112,6 +115,8 @@ export type OrcaWorkerCreationResult =
         providerId: string | null;
         role: string;
         label: string;
+        workingDir: string;
+        remoteHostId?: string;
       };
     }
   | {
@@ -130,6 +135,9 @@ export interface OrcaWorkerCreateParams {
   model?: string;
   effort?: OrcaWorkerEffort;
   fast?: boolean;
+  /** Meka-only target fields. Main resolves them against P4 settings/project bindings. */
+  workingDir?: string;
+  remoteHostId?: string;
   initialTask?: string;
 }
 
@@ -145,6 +153,15 @@ export interface OrcaWorkerCreationDeps {
   isActiveWorkerStatus(status: OrcaWorkerStatus): boolean;
   readCollaborationSettings(): { workerSoftLimit: number; workerHardLimit: number };
   getLeadSessionRow(leadSessionId: string): Promise<OrcaLeadSessionSnapshot | null>;
+  resolveWorkerTarget(input: {
+    lead: OrcaLeadSessionSnapshot;
+    agent: AgentKind;
+    requestedWorkingDir?: string;
+    requestedRemoteHostId?: string;
+  }): Promise<
+    | { ok: true; workingDir: string; remoteHostId?: string }
+    | { ok: false; errorCode: 'INVALID_PARAMS' | 'NOT_FOUND'; message: string }
+  >;
   getWorkerDefaults(agent: AgentKind): OrcaWorkerDefaultsSnapshot;
   getAvailableModels(agent: AgentKind): OrcaWorkerModelCapabilities[];
   /**
@@ -174,6 +191,11 @@ export interface OrcaWorkerCreationDeps {
     didInjectOrcaInstructions: boolean;
     didInjectProjectContext: boolean;
   }>;
+  persistMekaWorkerBinding(params: {
+    sessionId: string;
+    projectId: string;
+    roleId: string;
+  }): Promise<void>;
   addOrUpdateWorker(worker: OrcaWorkerRecordInput): Promise<void>;
   markOrcaRoleIfNeeded(sessionId: string, role: 'worker'): Promise<void>;
   closeWorkerSession(sessionId: string): Promise<void>;
@@ -457,6 +479,23 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
     if (!lead) {
       return { ok: false, errorCode: 'NOT_FOUND', message: `lead session ${params.leadSessionId} not found` };
     }
+    const target = await deps.resolveWorkerTarget({
+      lead,
+      agent: params.agent,
+      requestedWorkingDir: params.workingDir,
+      requestedRemoteHostId: params.remoteHostId,
+    });
+    if (!target.ok) return target;
+    if (
+      lead.workspaceKind === 'meka'
+      && (!lead.mekaProjectId || !lead.mekaRoleId)
+    ) {
+      return {
+        ok: false,
+        errorCode: 'INVALID_PARAMS',
+        message: 'Meka Lead session has no complete project and role binding',
+      };
+    }
 
     const defaults = deps.getWorkerDefaults(params.agent);
     const resolvedConfig = resolveWorkerConfig({ input: params, lead, defaults, availableModels });
@@ -609,7 +648,15 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
       const workerOpts = deps.buildCreateOptsWithStderr({
         id: workerSessionId,
         agentKind: params.agent,
-        workingDir: lead.workingDir ?? '',
+        workingDir: target.workingDir,
+        workspaceKind: lead.workspaceKind,
+        ...(target.remoteHostId ? { remoteHostId: target.remoteHostId } : {}),
+        ...(lead.workspaceKind === 'meka' && lead.mekaProjectId && lead.mekaRoleId
+          ? {
+              mekaProjectId: lead.mekaProjectId,
+              mekaRoleId: lead.mekaRoleId,
+            }
+          : {}),
         model: resolved.model,
         providerId: resolved.providerId,
         effort: resolved.effort as MakerSessionCreateOpts['effort'],
@@ -626,6 +673,19 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
         workerSession = bootstrapped.session;
       } catch (err) {
         return toInternalFailure(err);
+      }
+
+      if (lead.workspaceKind === 'meka' && lead.mekaProjectId && lead.mekaRoleId) {
+        try {
+          await deps.persistMekaWorkerBinding({
+            sessionId: workerSession.id,
+            projectId: lead.mekaProjectId,
+            roleId: lead.mekaRoleId,
+          });
+        } catch (err) {
+          await cleanupBootstrappedWorkerSession(workerSession.id);
+          return toInternalFailure(err);
+        }
       }
 
       const renewed = reservationValid
@@ -677,6 +737,8 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
           providerId: resolved.providerId,
           role: role.value,
           label: label.value,
+          workingDir: target.workingDir,
+          ...(target.remoteHostId ? { remoteHostId: target.remoteHostId } : {}),
         },
       };
     } finally {

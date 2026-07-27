@@ -24,7 +24,12 @@
  * ring buffer 降级为纯内存 fast-path(同一 daemon 进程生命周期内的 mid-turn 续流)。
  * 断开期间跑完的输出暂不自动补回 chat(follow-up: jsonl recovery 统一 cc + codex)。
  */
-export const PROTOCOL_VERSION = 1 as const;
+/**
+ * v2 adds tunneled in-process MCP projection for desktop-owned tools such as
+ * `orca_worker_bridge`. The remote daemon exposes a stdio shim and routes
+ * tools/list + tools/call back to the attached desktop client.
+ */
+export const PROTOCOL_VERSION = 2 as const;
 
 /**
  * cc-mgr bundle 版本号 — 手动 bump。
@@ -33,7 +38,7 @@ export const PROTOCOL_VERSION = 1 as const;
  * 无关依赖变化而变。desktop 用这个（而非 bundle sha256）判断远端 daemon
  * 是否需要 upgrade,避免无关的 pnpm install 触发全量远端重装。
  */
-export const CC_MGR_BUNDLE_VERSION = '0.0.4' as const;
+export const CC_MGR_BUNDLE_VERSION = '0.0.5' as const;
 
 export type RpcId = number;
 
@@ -86,6 +91,9 @@ export const METHODS = {
   // Lifecycle / handshake
   PROTOCOL_HELLO: 'protocol/hello',
 
+  // In-process MCP tunnel (shim → daemon → attached desktop client)
+  MCP_TUNNEL_CALL: 'mcp/tunnel/call',
+
   // Query (1:1 with SDK Query object lifecycle)
   QUERY_START: 'query/start',
   QUERY_SEND: 'query/send',
@@ -126,6 +134,8 @@ export const NOTIFICATIONS = {
 export const SERVER_METHODS = {
   /** SDK's canUseTool fired — daemon needs desktop to approve/deny a tool use. */
   APPROVAL_REQUEST: 'approval/request',
+  /** Forward a remote mcp-shim request to the attached desktop client. */
+  MCP_TUNNEL_CALL: 'mcp/tunnel/call',
 } as const;
 
 export type ServerMethodName = (typeof SERVER_METHODS)[keyof typeof SERVER_METHODS];
@@ -166,6 +176,11 @@ export interface QueryStartParams {
    * `instance` is a non-serializable McpServer object.
    */
   mcpServers?: Record<string, McpServerStdioConfig | McpServerSseConfig | McpServerHttpConfig>;
+  /**
+   * Desktop in-process MCP server names projected through the daemon. Names
+   * must not collide with serializable `mcpServers` entries.
+   */
+  tunneledMcpServers?: string[];
   /** Permission mode forwarded to SDK. Desktop passes through user's selection. */
   permissionMode?: 'default' | 'acceptEdits' | 'plan' | 'auto' | 'bypassPermissions';
   /** SDK options.systemPrompt — string or { type: 'preset', preset: 'claude_code', append? }. */
@@ -326,6 +341,16 @@ export interface ApprovalRequestResult {
   answers?: Record<string, string>;
   /** For 'plan_review': edited plan text. */
   editedPlan?: string;
+}
+
+/* ============================== MCP tunnel shapes ============================== */
+
+export interface McpTunnelCallParams {
+  sessionId: string;
+  server: string;
+  operation: 'listTools' | 'callTool';
+  name?: string;
+  arguments?: Record<string, unknown>;
 }
 
 /* ============================== Notification shapes ============================== */

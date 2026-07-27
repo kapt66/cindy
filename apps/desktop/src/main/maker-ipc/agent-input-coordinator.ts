@@ -772,7 +772,11 @@ export class AgentInputCoordinator {
         clientId: item.clientId,
       });
     }
-    this.abandonActiveTurnRecoveryForNewInput(state);
+    // Orca traffic is system-to-system coordination, not a user decision to
+    // abandon the failed turn's Retry entry.
+    if (item.origin?.kind !== 'orca') {
+      this.abandonActiveTurnRecoveryForNewInput(state);
+    }
     this.clearErrorUnlessQueueHeadBlocked(state);
     // 用户点「继续任务」表达的是恢复刚才中断/失败的 turn，必须先于此前
     // 已排队的新任务执行；普通 composer / Orca / scheduler 输入仍保持 FIFO。
@@ -1609,6 +1613,9 @@ export class AgentInputCoordinator {
         state.stickyError = null;
         state.recovery = active.item ? { kind: 'active-turn', item: active.item } : null;
         this.emit(sessionId);
+        // Orca reports may cross this recovery gate; ordinary queued input
+        // remains blocked until the user resolves the failed turn.
+        this.scheduleDrain(sessionId, 'terminal-error-active-turn');
         return;
       }
       if (active?.persisting) {
@@ -1702,6 +1709,11 @@ export class AgentInputCoordinator {
       state.recovery = null;
       this.emit(sessionId);
       this.scheduleDrain(sessionId, 'turn-done-after-sticky-error');
+      return;
+    }
+    if (active?.item?.origin?.kind === 'orca' && state.recovery) {
+      this.emit(sessionId);
+      this.scheduleDrain(sessionId, 'turn-done-orca-preserves-recovery');
       return;
     }
     state.error = null;
@@ -1868,11 +1880,11 @@ export class AgentInputCoordinator {
     if (state.queueAbortPending) return null;
     if (state.queueInteractionLocks.length > 0) return null;
     if (state.steeringQueueClientIds.length > 0) return null;
-    if (state.recovery) return null;
-    if (this.deps.hasPendingCredentialSwitch?.(sessionId)) return null;
-    if (this.isDispatchBoundaryBusy(sessionId, state)) return null;
     const head = state.pendingQueue[0];
     if (!head) return null;
+    if (state.recovery && head.origin?.kind !== 'orca') return null;
+    if (this.deps.hasPendingCredentialSwitch?.(sessionId)) return null;
+    if (this.isDispatchBoundaryBusy(sessionId, state)) return null;
     if (this.getDrainableCompact(sessionId, state)) return null;
     if (state.queueEditLocks.includes(head.clientId)) return null;
     return head;
@@ -1929,10 +1941,12 @@ export class AgentInputCoordinator {
     }
     state.pendingQueue = state.pendingQueue.slice(1);
     this.removePendingCompactWaitClientId(state, head.clientId);
-    if (!state.stickyError) {
-      state.error = null;
+    if (head.origin?.kind !== 'orca') {
+      if (!state.stickyError) {
+        state.error = null;
+      }
+      state.recovery = null;
     }
-    state.recovery = null;
     const active: ActiveTurn = {
       item: head,
       delivery: 'turn',

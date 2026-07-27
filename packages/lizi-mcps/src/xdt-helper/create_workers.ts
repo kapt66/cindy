@@ -56,6 +56,9 @@ interface CreatedWorkerResult {
   dispatched?: boolean;
   dispatch_outcome?: unknown;
   queued_message_id?: string;
+  execution_target?:
+    | { type: 'local'; working_dir: string }
+    | { type: 'remote'; remote_host_id: string };
   warning?: 'WORKER_LIMIT_SOFT_EXCEEDED';
 }
 
@@ -150,6 +153,8 @@ export function registerCreateWorkersTool(
           model: worker.model,
           effort: worker.effort,
           fast: worker.fast,
+          workingDir: worker.working_dir,
+          remoteHostId: worker.remote_host_id,
           label: worker.label,
           initialTask: worker.initial_task,
         });
@@ -162,6 +167,19 @@ export function registerCreateWorkersTool(
             status: 'created',
             worker_id: result.workerId,
             worker_session_id: result.workerSessionId,
+            ...(result.resolved
+              ? {
+                  execution_target: result.resolved.remoteHostId
+                    ? {
+                        type: 'remote' as const,
+                        remote_host_id: result.resolved.remoteHostId,
+                      }
+                    : {
+                        type: 'local' as const,
+                        working_dir: result.resolved.workingDir,
+                      },
+                }
+              : {}),
             ...(result.dispatched !== undefined ? { dispatched: result.dispatched } : {}),
             ...(result.dispatchOutcome ? { dispatch_outcome: result.dispatchOutcome } : {}),
             ...(result.queuedMessageId ? { queued_message_id: result.queuedMessageId } : {}),

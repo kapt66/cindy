@@ -29,6 +29,7 @@ export function capAppend(current: string, chunk: string, cap: number): string {
  */
 const WIN32_TASKKILL_MAX_ATTEMPTS = 3;
 const WIN32_TASKKILL_RETRY_DELAY_MS = 150;
+const WIN32_TASKKILL_ATTEMPT_TIMEOUT_MS = 1_000;
 
 /**
  * 最后一层兜底,尽力而为:枚举 pid 的**直接子进程**,对每个单独发
@@ -162,6 +163,8 @@ function killWindowsTree(pid: number, child: ChildProcess, attempt: number, onSe
   };
   try {
     const killer = spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true });
+    let attemptFinished = false;
+    let attemptWatchdog: ReturnType<typeof setTimeout> | undefined;
     const onFailure = (): void => {
       if (childExited()) {
         onSettled?.();
@@ -176,11 +179,28 @@ function killWindowsTree(pid: number, child: ChildProcess, attempt: number, onSe
         fallbackKill();
       }
     };
+    const finishAttempt = (succeeded: boolean): void => {
+      if (attemptFinished) return;
+      attemptFinished = true;
+      if (attemptWatchdog) clearTimeout(attemptWatchdog);
+      if (succeeded) onSettled?.();
+      else onFailure();
+    };
     killer.on('exit', (code) => {
-      if (code !== 0) onFailure();
-      else onSettled?.();
+      finishAttempt(code === 0);
     });
-    killer.on('error', onFailure);
+    killer.on('error', () => finishAttempt(false));
+    // taskkill itself can stall under Windows process-table pressure. Bound each
+    // attempt so retry/fallback and the caller's force-settle path always advance.
+    attemptWatchdog = setTimeout(() => {
+      try {
+        killer.kill();
+      } catch {
+        /* helper already exited */
+      }
+      finishAttempt(false);
+    }, WIN32_TASKKILL_ATTEMPT_TIMEOUT_MS);
+    attemptWatchdog.unref?.();
   } catch {
     fallbackKill();
   }

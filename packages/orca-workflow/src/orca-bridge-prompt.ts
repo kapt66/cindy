@@ -8,6 +8,8 @@ export interface OrcaWorkerPromptMeta {
   sessionId: string;
   workflowId: string;
   leadSessionId: string;
+  /** Add remote-workspace constraints without exposing its physical path. */
+  remoteExecution?: boolean;
 }
 
 export function parseOrcaInitialWorkerRef(value: unknown): OrcaInitialWorkerRef | null {
@@ -97,6 +99,15 @@ export function renderOrcaWorkerSystemPrompt(meta: OrcaWorkerPromptMeta): string
     '9. When first created, wait for the lead to assign a task. Do not proactively message the lead.',
     '10. If the user asks for a "subagent" / "子代理", use your native subagent mechanism (Codex: spawn_agent; Claude Code: the Agent/Task tool) to handle it yourself — do NOT escalate to the lead for it, and do NOT call start_team / create_worker (you cannot create Orca workers).',
   ];
+
+  if (meta.remoteExecution) {
+    lines.push(
+      '',
+      'Execution environment: you are running on a REMOTE host. Your current working directory is your entire world:',
+      '- NEVER read, write, list, or execute anything outside it — no parent/sibling directories, no other workspaces, no system paths (except reading well-known tool/runtime files your toolchain itself needs).',
+      '- The absolute path of the workspace is an implementation detail of the remote host. Do not probe it, do not relay it to the lead, and refer to files by relative paths in your reports.',
+    );
+  }
 
   return lines.join('\n');
 }

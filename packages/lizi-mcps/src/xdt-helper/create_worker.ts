@@ -31,6 +31,10 @@ type CreateWorkerErrorCode =
 interface CreateWorkerSuccessData {
   workerId: string;
   workerSessionId: string;
+  resolved?: {
+    workingDir: string;
+    remoteHostId?: string;
+  };
   softLimitExceeded?: boolean;
   dispatched?: boolean;
   dispatchOutcome?: ControlDispatchOutcome;
@@ -55,6 +59,8 @@ export interface CreateWorkerDeps {
     model?: string;
     effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
     fast?: boolean;
+    workingDir?: string;
+    remoteHostId?: string;
     label: string;
     initialTask?: string;
   }) => Promise<CreateWorkerControlResult>;
@@ -82,6 +88,16 @@ export const createWorkerSpecSchema = z.object({
     .boolean()
     .optional()
     .describe('可选, 是否给 worker 开启 Fast 模式。仅对 codex worker 生效; claude-code 忽略。不传则继承默认。'),
+  working_dir: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('Meka Lead 创建本地 Worker 时可选：P4 根目录或设置中识别出的子目录绝对路径'),
+  remote_host_id: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('Meka Lead 的远程执行目标 mcpr:<instanceId>；实例必须绑定当前项目且 available'),
   label: z
     .string()
     .trim()
@@ -119,6 +135,9 @@ const DESCRIPTION = [
   '- model: 可选, worker 使用的模型 id; 不传走 host 端默认 fallback',
   '- effort: 可选, reasoning/thinking 强度 (low / medium / high / xhigh / max / ultra)。Codex: 映射 OpenAI reasoning effort(max/ultra 仅部分模型如 GPT-5.6 Sol 支持); Claude Code: 映射 extended thinking token 预算(无 ultra,自动降级为 max)。显式传入时必须匹配所选 model 能力；当前 worker 模型都不把 minimal 作为可选思考档。',
   '- fast: 可选 boolean, 是否给 worker 开启 Fast 模式 (更快输出)。用户明确说「fast / 快速 / 开/关 fast」时显式传。仅对 codex worker 生效; claude-code worker 忽略此参数 (其 fast mode 在 agent 层为 no-op)。不传则继承默认 (New Maker 面板默认或 lead session 的 fastMode)。',
+  '- working_dir: Meka Lead 创建本地 Worker 时可选，只能使用设置中允许的 P4 根目录或识别子目录。',
+  '- remote_host_id: Meka Lead 创建远程 Worker 时传 `mcpr:<instanceId>`；传入后 working_dir 被忽略，远端工作区由 Main 按项目绑定解析。',
+  '- execution_target: 返回 Worker 实际执行位置。远程请求必须核对 type=remote，禁止把本地回落误报成远程执行。',
   '- label: worker 短标识, 1-32 chars, 只能含字母、数字、-、_, 同 workflow 内唯一, 用于 switch_focus 定位',
   "- initial_task: 可选, 创建后立即派给 worker 的第一条消息；dispatch_outcome.wakeKind=queued 表示首条任务已成功入队(此时回传 queued_message_id, 被消费前可用 list_worker_queue / update_queued_message / cancel_queued_message 管理)；dispatch_outcome.kind='session-dispatch' 且 dispatched=false，或 kind='host-send' 且 accepted=false，表示 worker 已创建但首条任务未送达 / 派发失败",
   '',
@@ -143,7 +162,17 @@ export function registerCreateWorkerTool(
     category: 'control',
     description: DESCRIPTION,
     inputShape: createWorkerSpecSchema.shape,
-    handler: async ({ role, agent, model, effort, fast, label, initial_task }) => {
+    handler: async ({
+      role,
+      agent,
+      model,
+      effort,
+      fast,
+      working_dir,
+      remote_host_id,
+      label,
+      initial_task,
+    }) => {
       const ctx = deps.getSessionContext?.() ?? deps;
       if (!ctx.sessionId) {
         return errorPayload('LEAD_NOT_SUPPORTED', '当前 session 类型不支持作为 Lead。');
@@ -161,6 +190,8 @@ export function registerCreateWorkerTool(
         model,
         effort,
         fast,
+        workingDir: working_dir,
+        remoteHostId: remote_host_id,
         label,
         initialTask: initial_task,
       });
@@ -178,6 +209,25 @@ export function registerCreateWorkerTool(
         role,
         agent,
         label,
+        ...(result.resolved
+          ? {
+              execution_target: result.resolved.remoteHostId
+                ? {
+                    type: 'remote',
+                    remote_host_id: result.resolved.remoteHostId,
+                  }
+                : {
+                    type: 'local',
+                    working_dir: result.resolved.workingDir,
+                  },
+            }
+          : {}),
+        ...(result.resolved?.remoteHostId
+          ? {}
+          : {
+              hint:
+                'Worker 在本地目录执行。若任务属于绑定的远程实例，请用 remote_host_id="mcpr:<instanceId>" 重建并核对 execution_target。',
+            }),
         ...(result.dispatched !== undefined ? { dispatched: result.dispatched } : {}),
         ...(result.dispatchOutcome ? { dispatch_outcome: result.dispatchOutcome } : {}),
         ...(result.queuedMessageId ? { queued_message_id: result.queuedMessageId } : {}),

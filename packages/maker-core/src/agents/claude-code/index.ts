@@ -187,6 +187,17 @@ const READ_ONLY_CLAUDE_TOOLS: ReadonlySet<string> = new Set([
   'NotebookRead',
 ]);
 
+/**
+ * Desktop-owned in-process MCP servers that are safe to project through a
+ * remote cc-mgr tunnel. Their handlers still execute on desktop.
+ */
+const REMOTE_PROJECTABLE_MCP_SERVERS: ReadonlySet<string> = new Set([
+  // Worker-side reporting/readback tools.
+  'orca_worker_bridge',
+  // Lead-side team/create/dispatch/diagnostic tools.
+  'lizi_orca',
+]);
+
 /** canUseTool fail-closed 分支用: 判断工具是否属于已知只读工具(见上方白名单注释)。 */
 function isReadOnlyClaudeTool(toolName: string): boolean {
   return READ_ONLY_CLAUDE_TOOLS.has(toolName);
@@ -1500,6 +1511,7 @@ export class ClaudeCodeAgent extends BaseAgent {
         // 不可序列化 — instance 里藏 ajv SchemaEnv 循环引用, JSON.stringify 会爆栈。
         // 直接 filter 掉, 让远端 daemon 用 stdio/sse/http MCP 跑; 本地 lizi-* 全套
         // in-process MCP 在远端会话里不可用(远端 cc MVP 的已知限制)。
+        const projectedMcpServers: Record<string, unknown> = {};
         const remoteMcpServers = mcpServers
           ? Object.fromEntries(
               Object.entries(mcpServers).reduce<Array<[string, unknown]>>((acc, [name, cfg]) => {
@@ -1509,14 +1521,29 @@ export class ClaudeCodeAgent extends BaseAgent {
                   acc.push([name, { ...cfg, type: 'stdio' }]);
                 } else if (t === 'stdio' || t === 'sse' || t === 'http') {
                   acc.push([name, cfg]);
+                } else if (t === 'sdk' && REMOTE_PROJECTABLE_MCP_SERVERS.has(name)) {
+                  projectedMcpServers[name] = cfg;
                 }
                 return acc;
               }, []),
             )
           : undefined;
-        if (mcpServers && remoteMcpServers && Object.keys(mcpServers).length !== Object.keys(remoteMcpServers).length) {
-          const dropped = Object.keys(mcpServers).filter((k) => !(k in remoteMcpServers));
-          log.warn('cc remote: dropping in-process MCP servers (MVP not supported)', { dropped });
+        if (mcpServers && remoteMcpServers) {
+          const kept = new Set([
+            ...Object.keys(remoteMcpServers),
+            ...Object.keys(projectedMcpServers),
+          ]);
+          const dropped = Object.keys(mcpServers).filter((name) => !kept.has(name));
+          if (dropped.length > 0) {
+            log.warn('cc remote: dropping in-process MCP servers (not remote-projectable)', {
+              dropped,
+            });
+          }
+          if (Object.keys(projectedMcpServers).length > 0) {
+            log.info('cc remote: projecting in-process MCP servers over cc-mgr tunnel', {
+              projected: Object.keys(projectedMcpServers),
+            });
+          }
         }
         // 计划模式开启时远端 SDK 同样跑 plan; 读 mutable 值让 rewind 重建也拿到当前档。
         const remotePermissionMode = extra?.permissionMode ?? effectiveSdkPermissionMode();
@@ -1560,6 +1587,9 @@ export class ClaudeCodeAgent extends BaseAgent {
           // 误把同名远端路径加进允许范围。远端 cwd 在 startParams.cwd 已传, 别处
           // 想加额外目录要由远端用户在远端机器上配置, 不在本 PR scope。
           ...(remoteMcpServers && Object.keys(remoteMcpServers).length > 0 ? { mcpServers: remoteMcpServers } : {}),
+          ...(Object.keys(projectedMcpServers).length > 0
+            ? { tunneledMcpServers: Object.keys(projectedMcpServers) }
+            : {}),
           ...(resumeSdkSid ? { resumeSdkSessionId: resumeSdkSid } : {}),
           // includePartialMessages 必须跟本地分支保持一致 — 否则 daemon 端 SDK
           // 不发 stream_event / message_delta, UsageTracker 拿不到 per-turn cache
@@ -1588,6 +1618,9 @@ export class ClaudeCodeAgent extends BaseAgent {
           remoteHostId: opts.remoteHostId,
           sessionId: opts.sessionId,
           startParams,
+          ...(Object.keys(projectedMcpServers).length > 0
+            ? { inProcessMcpServers: projectedMcpServers }
+            : {}),
           onApprovalRequest: async (rawParams: unknown) => {
             // 110s timeout — must respond before daemon's 120s server-request timeout.
             // On timeout, dismiss the pending interaction (clears UI) and reject to

@@ -9,6 +9,7 @@ import {
   addRecentFolder,
   FolderPickerPopover,
   type FolderPickerOption,
+  type FolderPickerSelectSource,
 } from '@/components/new-chat/FolderPickerPopover';
 import { useDetectCwd } from '@/hooks/useWorktreeQueries';
 import { useAgentCapabilities, type ModelDescriptor } from '@/hooks/useAgentCapabilities';
@@ -124,7 +125,10 @@ export function ProjectChip({
     return getProjectPickerDisplayName(value, projectOptions) ?? t('newChat.folderPicker.selectProject');
   }, [projectOptions, t, value, workspaceKind]);
 
-  const handleSelect = (path: string, source: 'project' | 'recent' | 'browse' | 'dialogue') => {
+  const handleSelect = (path: string, source: FolderPickerSelectSource) => {
+    // This picker does not receive Meka project options; keep the impossible
+    // callback variant fail-closed if the shared picker grows another source.
+    if (source === 'meka-project') return;
     if (source === 'dialogue') {
       onChangeWorkspaceKind('dialogue');
       onChange('');

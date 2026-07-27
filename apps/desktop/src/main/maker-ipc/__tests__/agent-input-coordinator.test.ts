@@ -1334,6 +1334,45 @@ describe('AgentInputCoordinator send transaction', () => {
     });
   });
 
+  it('drains queued Orca reports past active-turn recovery without consuming Retry', async () => {
+    const h = createHarness();
+    const sessionId = 'orca-report-past-recovery';
+    const userItem = makeItem('q-user', 'do something');
+
+    h.coordinator.enqueue(sessionId, userItem);
+    await flush();
+    expect(h.sendToAgent).toHaveBeenCalledTimes(1);
+
+    h.setRunning(false);
+    h.coordinator.onTurnEvent(sessionId, 'error', 'aborted_streaming');
+    await flush();
+    let projection = latestProjection(h.projections);
+    expect(projection.recovery).toEqual({ kind: 'active-turn', item: userItem });
+    expect(projection.error).toBe('aborted_streaming');
+
+    const report = makeItem('q-orca', '[From Orca Worker]\nreport', {
+      origin: { kind: 'orca', senderLabel: 'worker-1', displayText: 'report' },
+    });
+    h.coordinator.enqueue(sessionId, report);
+    await flush();
+    expect(h.sendToAgent).toHaveBeenCalledTimes(2);
+    projection = latestProjection(h.projections);
+    expect(projection.recovery).toEqual({ kind: 'active-turn', item: userItem });
+    expect(projection.error).toBe('aborted_streaming');
+
+    h.setRunning(false);
+    h.coordinator.onTurnEvent(sessionId, 'done');
+    await flush();
+    projection = latestProjection(h.projections);
+    expect(projection.recovery).toEqual({ kind: 'active-turn', item: userItem });
+    expect(projection.error).toBe('aborted_streaming');
+
+    h.coordinator.enqueue(sessionId, makeItem('q-user-2', 'follow up'));
+    await flush();
+    expect(h.sendToAgent).toHaveBeenCalledTimes(3);
+    expect(latestProjection(h.projections).recovery).toBeNull();
+  });
+
   it('persists queued Orca messages with persistedContent and not agent-facing text', async () => {
     const h = createHarness();
     const sid = 'orca-persisted-content';

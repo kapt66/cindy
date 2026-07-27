@@ -884,6 +884,62 @@ describe('Claude invalid-resume recovery', () => {
     await collected;
   });
 
+  it('projects only the Orca worker bridge into remote Claude sessions', async () => {
+    const workingDir = await makeTempDir();
+    const stream = createControlledStream();
+    const query = {
+      ...createFakeQuery(stream),
+      send: vi.fn(async () => {}),
+    };
+    const remoteCcQueryFactory = vi.fn<NonNullable<AgentDeps['remoteCcQueryFactory']>>(
+      async () => query as never,
+    );
+    const bridgeConfig = { type: 'sdk', instance: { marker: 'orca' } };
+    const leadConfig = { type: 'sdk', instance: { marker: 'lead' } };
+    const otherConfig = { type: 'sdk', instance: { marker: 'other' } };
+    const agent = new ClaudeCodeAgent(
+      createDeps({
+        runtimeConfig: { remoteEndpoint: 'https://gateway.example' },
+        remoteCcQueryFactory,
+        mcpProviders: [
+          {
+            name: 'orca_worker_bridge',
+            toClaudeSdkConfig: () => bridgeConfig,
+          },
+          {
+            name: 'lizi_orca',
+            toClaudeSdkConfig: () => leadConfig,
+          },
+          {
+            name: 'desktop_only_other',
+            toClaudeSdkConfig: () => otherConfig,
+          },
+        ],
+      }),
+    );
+    const handle = await agent.startSession({
+      sessionId: 'remote-orca-bridge',
+      remoteHostId: 'remote-host',
+      model: 'claude-opus-4-6',
+      workingDir,
+      permissionMode: 'acceptEdits',
+    });
+
+    expect(remoteCcQueryFactory).toHaveBeenCalledTimes(1);
+    const call = remoteCcQueryFactory.mock.calls[0]![0];
+    expect(call.startParams).toMatchObject({
+      tunneledMcpServers: ['orca_worker_bridge', 'lizi_orca'],
+    });
+    expect(call.inProcessMcpServers).toEqual({
+      orca_worker_bridge: bridgeConfig,
+      lizi_orca: leadConfig,
+    });
+    expect(call.startParams.mcpServers).toBeUndefined();
+
+    await handle.close();
+    stream.end();
+  });
+
   it('replays runtime drift that arrives during the remote rebuild RPC window', async () => {
     // 远端分支 buildQuery 的 startParams 组装后要 await remoteCcQueryFactory 一次 RPC
     // 往返;窗口内到达的 runtime setter 被 controlRequestsBlocked() 短路成只改闭包。

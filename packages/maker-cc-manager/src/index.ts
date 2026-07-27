@@ -58,6 +58,7 @@ export type {
   SessionKillParams,
   ApprovalRequestParams,
   ApprovalRequestResult,
+  McpTunnelCallParams,
   QueryEventNotification,
   SessionClosedNotification,
   ClientReplacedNotification,

@@ -6,17 +6,20 @@
  * 双栏布局与独立 resize/maximize。
  */
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import { isAgentIslandSupported } from '@/hooks/useAgentIslandSettings';
 import { isSidebarWindow } from '@/lib/sidebarWindow';
 import { toast } from '@/lib/toast';
+import * as sessionService from '@/lib/sessionService';
+import type { Session } from '@/lib/ccAgent.types';
 import { CCAgentSessionView } from './CCAgentSessionView';
 import { CreateWorkerPopover } from './CreateWorkerPopover';
 import { WorkerListToolbar } from './RolePillDropdown';
 import { useOrcaWorkerSelection } from './hooks/useOrcaWorkerSelection';
+import { useWorkerDirectoryLabels } from './hooks/useWorkerDirectoryLabel';
 import { subscribeNewWorkerShortcut } from './lib/newWorkerShortcut';
 import type { ConversationSearchJump } from '../../../shared/conversationSearchJump';
 import { isActiveWorkerStatus } from '../../../shared/orca-worker-status';
@@ -85,7 +88,31 @@ export function OrcaWorkerPanel({
     onFocusWorkerSessionIdConsumed,
     onSelectionIntentCleared,
   });
+  const [leadSession, setLeadSession] = useState<Session | null>(null);
+  const directoryLabels = useWorkerDirectoryLabels(
+    workers,
+    leadSession?.workspaceKind === 'meka',
+  );
   const lastAgentIslandPayloadRef = useRef<string | string[] | null>(null);
+
+  useEffect(() => {
+    if (deviceId) {
+      setLeadSession(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const next = await sessionService.get(leadSessionId);
+        if (!cancelled) setLeadSession(next);
+      } catch {
+        if (!cancelled) setLeadSession(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [deviceId, leadSessionId]);
 
   useEffect(() => {
     if (!viewVisible) return;
@@ -147,6 +174,7 @@ export function OrcaWorkerPanel({
           activeWorkerCount={activeWorkerCount}
           softLimit={softLimit}
           hardLimit={hardLimit}
+          directoryLabels={directoryLabels}
           onSwitchFocus={handleSwitchFocus}
           onOpenCreate={() => setCreateOpen(true)}
           onOpenSettings={() => navigate('/settings?section=collaboration')}
@@ -181,6 +209,7 @@ export function OrcaWorkerPanel({
         onClose={() => setCreateOpen(false)}
         onCreate={handleCreateWorker}
         deviceId={deviceId}
+        leadSession={leadSession}
       />
     </div>
   );

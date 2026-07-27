@@ -5,6 +5,7 @@ import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CreateWorkerPopover } from '../CreateWorkerPopover';
+import type { Session } from '@/lib/ccAgent.types';
 
 const mocks = vi.hoisted(() => ({
   modelsByAgent: {
@@ -83,6 +84,39 @@ describe('CreateWorkerPopover', () => {
     };
     mocks.capabilitiesLoading = false;
     mocks.providersLoading = false;
+    Object.defineProperty(window, 'electronAPI', {
+      configurable: true,
+      value: {
+        mekaSettings: {
+          getP4: vi.fn(async () => ({
+            p4RootPath: 'C:\\P4',
+            subfolders: [{ name: 'saga2_pm' }],
+            extraDirs: ['C:\\P4\\saga2_pm'],
+            readOnlyBecauseFutureSchema: false,
+          })),
+          router: {
+            getProjectBindings: vi.fn(async () => ['instance-1']),
+            listInstances: vi.fn(async () => [
+              {
+                id: 'instance-1',
+                instanceId: 'remote-one',
+                projectId: 'template-1',
+                projectName: 'Remote project',
+                projectDescription: null,
+                agentType: 'claude',
+                agentMode: 'ask',
+                status: 'running',
+                workspaceRef: '/workspace/project',
+                supported: true,
+                available: true,
+                remoteHostId: 'mcpr:instance-1',
+                workingDir: '/workspace/project',
+              },
+            ]),
+          },
+        },
+      },
+    });
   });
 
   afterEach(() => {
@@ -317,5 +351,47 @@ describe('CreateWorkerPopover', () => {
       (screen.getByRole('button', { name: 'orca.createWorker.submit' }) as HTMLButtonElement)
         .disabled,
     ).toBe(true);
+  });
+
+  it('offers the P4 root, recognized saga2_pm directory, and bound MCPRouter instances for a Meka Lead', async () => {
+    const onCreate = vi.fn();
+    const leadSession = {
+      id: 'lead-1',
+      workspaceKind: 'meka',
+      mekaProjectId: 'project-1',
+      mekaRoleId: 'role-1',
+    } as Session;
+    render(
+      <CreateWorkerPopover open leadSession={leadSession} onClose={vi.fn()} onCreate={onCreate} />,
+    );
+
+    const target = await screen.findByRole('combobox');
+    expect(target.textContent).toContain('orca.createWorker.target.p4Root');
+    expect(
+      (
+        screen.getByRole('option', {
+          name: 'orca.createWorker.target.localDirectory',
+        }) as HTMLOptionElement
+      ).value,
+    ).toBe('local:C:\\P4\\saga2_pm');
+    expect(target.textContent).toContain('orca.createWorker.target.remote');
+    fireEvent.change(target, { target: { value: 'mcpr:instance-1' } });
+
+    await waitFor(() =>
+      expect((screen.getByRole('button', { name: 'Codex' }) as HTMLButtonElement).disabled).toBe(
+        true,
+      ),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'orca.createWorker.submit' }));
+
+    await waitFor(() =>
+      expect(onCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agent: 'claude-code',
+          workingDir: '/workspace/project',
+          remoteHostId: 'mcpr:instance-1',
+        }),
+      ),
+    );
   });
 });
