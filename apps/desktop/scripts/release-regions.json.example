@@ -2,9 +2,16 @@
     "cn": {
         "oss": {
             "cdnBaseUrl": "",
-            "bucket": "",
-            "prefix": "",
-            "ossRegion": ""
+            "bucket": "cindy-meka-cn",
+            "prefix": "cindy-meka",
+            "ossRegion": "us-east-1"
+        },
+        "s3": {
+            "endpoint": "https://rustfs.example.com",
+            "forcePathStyle": true,
+            "accessKeyIdEnv": "CINDY_MEKA_RUSTFS_ACCESS_KEY_ID",
+            "secretAccessKeyEnv": "CINDY_MEKA_RUSTFS_SECRET_ACCESS_KEY",
+            "sessionTokenEnv": ""
         },
         "macSigning": {
             "appleId": "",
@@ -16,9 +23,16 @@
     "global": {
         "oss": {
             "cdnBaseUrl": "",
-            "bucket": "",
-            "prefix": "",
-            "ossRegion": ""
+            "bucket": "cindy-meka-global",
+            "prefix": "cindy-meka",
+            "ossRegion": "us-east-1"
+        },
+        "s3": {
+            "endpoint": "https://rustfs.example.com",
+            "forcePathStyle": true,
+            "accessKeyIdEnv": "CINDY_MEKA_RUSTFS_ACCESS_KEY_ID",
+            "secretAccessKeyEnv": "CINDY_MEKA_RUSTFS_SECRET_ACCESS_KEY",
+            "sessionTokenEnv": ""
         },
         "macSigning": {
             "appleId": "",
@@ -30,9 +44,16 @@
     "dev": {
         "oss": {
             "cdnBaseUrl": "",
-            "bucket": "",
-            "prefix": "",
-            "ossRegion": ""
+            "bucket": "cindy-meka-dev",
+            "prefix": "cindy-meka",
+            "ossRegion": "us-east-1"
+        },
+        "s3": {
+            "endpoint": "https://rustfs.example.com",
+            "forcePathStyle": true,
+            "accessKeyIdEnv": "CINDY_MEKA_RUSTFS_ACCESS_KEY_ID",
+            "secretAccessKeyEnv": "CINDY_MEKA_RUSTFS_SECRET_ACCESS_KEY",
+            "sessionTokenEnv": ""
         },
         "macSigning": {
             "appleId": "",

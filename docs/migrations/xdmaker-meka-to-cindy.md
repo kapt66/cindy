@@ -33,7 +33,7 @@
 | 远程 MCPR          | 迁移                     | Router 登录、实例、绑定、隧道和 Worker 目标                        |
 | 远程 Codex Worker  | 已恢复                   | MCPRouter protocol 3 / bundle 0.0.6 控制通道与 app-server 隧道     |
 | Orca Worker 微调   | 迁移                     | 仅迁入 Meka 目标选择和远程约束所需改动                             |
-| 打包发布           | 部分迁移                 | 本地打包、身份和签名入口已迁；上传、manifest 和 promote 尚未迁入   |
+| 打包发布           | 已迁移                   | 打包/发布分层；RustFS 上传、canary、stable promote 与 rollback 已接入 |
 | 项目与角色         | 迁移                     | 项目、角色、元数据、内置 SAGA2 与 6 个角色                         |
 | 原 Meka 用户数据   | 必须兼容                 | 新建 `cindy-meka`，从 `xdmaker-meka` 只读复制并运行 lineage bridge |
 | Windows/macOS 签名 | 沿用原证书/服务          | Windows 原签名服务；macOS 原证书私钥和 self-signed 模式            |
@@ -68,6 +68,10 @@
   结果由 2026-07-27 的本地 merge commit 收口，未推送。
 - Meka 开发启动跟随上游默认使用产品 userData；未 canonical 的 migration 开发才显式
   使用命名隔离 sandbox，避免触碰共享数据。
+- Cindy Meka Desktop 发布侧已补齐 RustFS(S3 API)上传、版本化产物 immutable guard、
+  canary manifest、stable promote/备份与 rollback；发布配置和凭证与 Cindy 渠道隔离。
+- 更新链已补严格 SemVer 只升不降、Windows 解压后主程序校验，以及 macOS bundle
+  身份/架构/签名校验和启动失败回滚。
 
 ### 3.2 明确未迁移
 
@@ -163,9 +167,11 @@ macOS：
 - `self-signed` 模式关闭 timestamp，不要求 notarization 账号。
 - 有版本发布默认不允许无意间产出未签名包；显式放行需使用对应参数。
 
-当前打包入口只产出本地安装包、热更 ZIP 和 `build-info.json`，不会上传 OSS/CDN。
-旧 XDMaker `meka/main` 的 Windows/macOS 发布脚本还负责上传 installer/hotfix、写 canary
-manifest 和推进 stable；这些步骤当前没有等价脚本，仓库 CI 也明确不提供官方发布流程。
+打包入口只产出本地安装包、热更 ZIP 和 `build-info.json`，不会上传 OSS/CDN。发布侧由
+`publish-desktop.mjs` 读取该文件，重新校验签名状态、文件大小与 SHA256 后，把 installer/
+hotfix 上传到 Cindy Meka 独立 RustFS bucket，最后写 canary manifest；经真实验收后由
+`promote-desktop.mjs` 备份并推进 stable，`rollback-desktop.mjs` 可恢复指定 stable 备份。
+详细配置和操作见 `docs/migrations/cindy-meka-release.md`。
 
 关键实现：
 
@@ -176,8 +182,8 @@ manifest 和推进 stable；这些步骤当前没有等价脚本，仓库 CI 也
 - `scripts/__tests__/meka-release-identity.test.mjs`
 
 旧 XDMaker Meka 不直接热更新到 Cindy Meka；用户安装新应用后由首次登录迁移接走数据。
-新渠道首次发布前仍必须补齐上传、canary manifest、stable promote，并修复 Electron
-版本比较、macOS 包身份/架构校验与回滚、Windows 解压后主 exe 校验等既有更新安全缺口。
+新渠道发布代码已补齐，但首次正式发布仍必须在真实 RustFS/CDN、Windows 原签名服务和
+macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能替代真实安装升级验证。
 
 ### 4.3 Meka 设置
 

@@ -22,7 +22,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolveReleaseRegion } from '../../../../scripts/shared/oss.mjs';
+import { resolveOssConfig, resolveReleaseRegion } from '../../../../scripts/shared/oss.mjs';
 
 const SCRIPTS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const RELEASE_REGIONS_PATH = path.join(SCRIPTS_DIR, 'release-regions.json');
@@ -52,6 +52,12 @@ export const RELEASE_REGION_ENV_NAMES = Object.freeze({
 });
 
 const OSS_KEYS = Object.freeze(['cdnBaseUrl', 'bucket', 'prefix', 'ossRegion']);
+const S3_KEYS = Object.freeze([
+  'endpoint',
+  'accessKeyIdEnv',
+  'secretAccessKeyEnv',
+  'sessionTokenEnv',
+]);
 
 /** macSigning 字段 → resolveAppleIdentity 读取的 env 名(两区域同名:一次发布只有一个 region)。 */
 export const MAC_SIGNING_ENV_NAMES = Object.freeze({
@@ -118,11 +124,33 @@ export function validateReleaseRegions(value, options = {}) {
     const normalizedOss = {};
     for (const key of OSS_KEYS) {
       if (typeof oss[key] !== 'string') {
-        throw new Error(`${source} 的 ${region}.oss.${key} 必须是字符串(可留空,发该渠道时才要求非空)`);
+        throw new Error(
+          `${source} 的 ${region}.oss.${key} 必须是字符串(可留空,发该渠道时才要求非空)`,
+        );
       }
       normalizedOss[key] = oss[key].trim();
     }
     const normalized = { oss: Object.freeze(normalizedOss) };
+    if (block.s3 !== undefined) {
+      const s3 = block.s3;
+      if (!s3 || typeof s3 !== 'object' || Array.isArray(s3)) {
+        throw new Error(`${source} 的 ${region}.s3 必须是 object(可整体省略)`);
+      }
+      const normalizedS3 = {};
+      for (const key of S3_KEYS) {
+        const field = s3[key] ?? '';
+        if (typeof field !== 'string') {
+          throw new Error(`${source} 的 ${region}.s3.${key} 必须是字符串`);
+        }
+        normalizedS3[key] = field.trim();
+      }
+      const forcePathStyle = s3.forcePathStyle ?? true;
+      if (typeof forcePathStyle !== 'boolean') {
+        throw new Error(`${source} 的 ${region}.s3.forcePathStyle 必须是 boolean`);
+      }
+      normalizedS3.forcePathStyle = forcePathStyle;
+      normalized.s3 = Object.freeze(normalizedS3);
+    }
     if (block.macSigning !== undefined) {
       const mac = block.macSigning;
       if (!mac || typeof mac !== 'object' || Array.isArray(mac)) {
@@ -132,13 +160,20 @@ export function validateReleaseRegions(value, options = {}) {
       for (const key of MAC_SIGNING_KEYS) {
         const value = mac[key] ?? '';
         if (typeof value !== 'string') {
-          throw new Error(`${source} 的 ${region}.macSigning.${key} 必须是字符串(可留空,回落代码默认身份)`);
+          throw new Error(
+            `${source} 的 ${region}.macSigning.${key} 必须是字符串(可留空,回落代码默认身份)`,
+          );
         }
         normalizedMac[key] = value.trim();
       }
       const passwordEnv = mac.appPasswordEnv ?? '';
-      if (typeof passwordEnv !== 'string' || (passwordEnv.trim() && !/^[A-Z][A-Z0-9_]*$/.test(passwordEnv.trim()))) {
-        throw new Error(`${source} 的 ${region}.macSigning.appPasswordEnv 必须是合法 env 变量名(全大写,可留空 = 读 APPLE_APP_PASSWORD)`);
+      if (
+        typeof passwordEnv !== 'string' ||
+        (passwordEnv.trim() && !/^[A-Z][A-Z0-9_]*$/.test(passwordEnv.trim()))
+      ) {
+        throw new Error(
+          `${source} 的 ${region}.macSigning.appPasswordEnv 必须是合法 env 变量名(全大写,可留空 = 读 APPLE_APP_PASSWORD)`,
+        );
       }
       normalizedMac.appPasswordEnv = passwordEnv.trim();
       normalized.macSigning = Object.freeze(normalizedMac);
@@ -181,7 +216,9 @@ export function applyReleaseCdnBaseUrlToEnv(region, options = {}) {
   }
   const block = loadReleaseRegions({ filePath: options.filePath })[normalized].oss;
   if (!block.cdnBaseUrl) {
-    throw new Error(`${configPath} 的 ${normalized}.oss.cdnBaseUrl 为空(或改设 env ${envName},或显式传 --version x.y.z)`);
+    throw new Error(
+      `${configPath} 的 ${normalized}.oss.cdnBaseUrl 为空(或改设 env ${envName},或显式传 --version x.y.z)`,
+    );
   }
   process.env[envName] = block.cdnBaseUrl;
   return { source: 'file' };
@@ -225,6 +262,101 @@ export function applyReleaseRegionConfigToEnv(region, options = {}) {
   }
   applyMacSigningEnv(regions[normalized].macSigning);
   return { source: 'file' };
+}
+
+/**
+ * 解析 Cindy Meka 的 RustFS(S3 API)发布配置。
+ *
+ * bucket/prefix/CDN/region 继续复用既有地区配置，RustFS endpoint 与凭证
+ * env 名放在同一 region 的 s3 块。真实凭证只从该 env 读取，不进入 JSON。
+ */
+export function resolveMekaS3Config(region, options = {}) {
+  const normalized = resolveReleaseRegion(region);
+  applyReleaseRegionConfigToEnv(normalized, options);
+  const objectTarget = resolveOssConfig(normalized);
+  if (objectTarget.prefix !== 'cindy-meka') {
+    throw new Error(
+      `Cindy Meka 只允许发布到 cindy-meka prefix，当前为 ${objectTarget.prefix}`,
+    );
+  }
+  let parsedCdnBase;
+  try {
+    parsedCdnBase = new URL(objectTarget.cdnBase);
+  } catch {
+    throw new Error(`CDN base 不是合法 URL: ${objectTarget.cdnBase}`);
+  }
+  if (
+    parsedCdnBase.protocol !== 'https:'
+    || parsedCdnBase.username
+    || parsedCdnBase.password
+  ) {
+    throw new Error('Cindy Meka 正式发布 CDN base 必须是无凭证的 HTTPS URL');
+  }
+  const configPath = resolveReleaseRegionsPath(options.filePath);
+  const fileS3 = fs.existsSync(configPath)
+    ? loadReleaseRegions({ filePath: options.filePath })[normalized].s3
+    : undefined;
+
+  const endpoint = process.env.CINDY_MEKA_S3_ENDPOINT?.trim() || fileS3?.endpoint;
+  if (!endpoint) {
+    throw new Error(
+      `缺少 ${normalized} 渠道 RustFS endpoint：请设置 CINDY_MEKA_S3_ENDPOINT，` +
+        `或填写 ${configPath} 的 ${normalized}.s3.endpoint`,
+    );
+  }
+  let parsedEndpoint;
+  try {
+    parsedEndpoint = new URL(endpoint);
+  } catch {
+    throw new Error(`RustFS endpoint 不是合法 URL: ${endpoint}`);
+  }
+  if (
+    !['http:', 'https:'].includes(parsedEndpoint.protocol) ||
+    parsedEndpoint.username ||
+    parsedEndpoint.password
+  ) {
+    throw new Error('RustFS endpoint 必须是无凭证的 http(s) URL');
+  }
+  if (parsedEndpoint.protocol !== 'https:' && process.env.CINDY_MEKA_ALLOW_INSECURE_S3 !== '1') {
+    throw new Error(
+      'RustFS endpoint 必须使用 HTTPS；仅本地隔离测试可显式设置 ' +
+        'CINDY_MEKA_ALLOW_INSECURE_S3=1',
+    );
+  }
+
+  const accessKeyIdEnv = fileS3?.accessKeyIdEnv || 'CINDY_MEKA_RUSTFS_ACCESS_KEY_ID';
+  const secretAccessKeyEnv = fileS3?.secretAccessKeyEnv || 'CINDY_MEKA_RUSTFS_SECRET_ACCESS_KEY';
+  const sessionTokenEnv = fileS3?.sessionTokenEnv || '';
+  for (const [field, envName] of [
+    ['accessKeyIdEnv', accessKeyIdEnv],
+    ['secretAccessKeyEnv', secretAccessKeyEnv],
+    ['sessionTokenEnv', sessionTokenEnv],
+  ]) {
+    if (envName && !/^[A-Z][A-Z0-9_]*$/.test(envName)) {
+      throw new Error(`${normalized}.s3.${field} 不是合法 env 变量名`);
+    }
+  }
+
+  const accessKeyId = process.env[accessKeyIdEnv]?.trim();
+  const secretAccessKey = process.env[secretAccessKeyEnv]?.trim();
+  const sessionToken = sessionTokenEnv ? process.env[sessionTokenEnv]?.trim() : undefined;
+  if (!accessKeyId || !secretAccessKey) {
+    throw new Error(`缺少 RustFS 凭证：请设置 ${accessKeyIdEnv} 与 ${secretAccessKeyEnv}`);
+  }
+
+  return Object.freeze({
+    endpoint: parsedEndpoint.toString().replace(/\/+$/, ''),
+    bucket: objectTarget.bucket,
+    prefix: objectTarget.prefix.replace(/^\/+|\/+$/g, ''),
+    region: objectTarget.region,
+    cdnBase: objectTarget.cdnBase,
+    forcePathStyle: fileS3?.forcePathStyle ?? true,
+    credentials: Object.freeze({
+      accessKeyId,
+      secretAccessKey,
+      ...(sessionToken ? { sessionToken } : {}),
+    }),
+  });
 }
 
 /**

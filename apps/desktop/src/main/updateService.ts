@@ -48,6 +48,7 @@ import {
 import { throwIpcError } from './utils/ipcValidate';
 import { noteExpectedExit } from './startup-diagnostics';
 import { buildMacOSUpdateScript } from './updateScriptMacOS';
+import { compareAppVersions } from './updateVersion';
 import { disposeAndroidAdb } from './mcp-integrations/android';
 import { getGhostNodeRuntimeBroker } from './cindy-brain/index';
 import { cleanOldUpdateFiles } from './updateArtifacts';
@@ -122,7 +123,7 @@ function writeReloginFlag(targetVersion: string): void {
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
-const FIRST_CHECK_DELAY_MS = 10_000;         // first background check delay
+const FIRST_CHECK_DELAY_MS = 10_000; // first background check delay
 const POLL_INTERVAL_MS = 30 * 60 * 1000; // 30min polling
 const AUTO_RELAUNCH_POLL_INTERVAL_MS = 30_000;
 // 启动态 manifest 短超时（#26）：probe 最坏 1.5s + external CDN P99 < 5s，8s 留足余量
@@ -313,7 +314,11 @@ async function requestAutoRelaunch(
 
   lastAutoRelaunchBlockReason = null;
   autoRelaunchInProgress = true;
-  log.info('auto relaunch conditions met (%s), applying update v%s', reason, readyVersion ?? '<unknown>');
+  log.info(
+    'auto relaunch conditions met (%s), applying update v%s',
+    reason,
+    readyVersion ?? '<unknown>',
+  );
   executeRelaunch(theme);
   return { accepted: true };
 }
@@ -388,9 +393,7 @@ export function getUpdateStatus(): UpdateStatus {
   return currentStatus;
 }
 
-export function setUpdateAutoRelaunchBusyProbe(
-  probe: () => boolean | Promise<boolean>,
-): void {
+export function setUpdateAutoRelaunchBusyProbe(probe: () => boolean | Promise<boolean>): void {
   busyProbe = probe;
   void evaluateAutoRelaunch('busy-probe-installed');
 }
@@ -461,7 +464,11 @@ function checkExistingPatch(): { action: 'relaunch' | 'check' | 'none'; version?
   try {
     const raw = fs.readFileSync(infoPath, 'utf-8');
     patchInfo = JSON.parse(raw) as PatchInfo;
-    if (!patchInfo.version || !patchInfo.fileName) {
+    if (
+      !patchInfo.version ||
+      !patchInfo.fileName ||
+      path.basename(patchInfo.fileName) !== patchInfo.fileName
+    ) {
       throw new Error('invalid patch-info');
     }
   } catch {
@@ -475,9 +482,15 @@ function checkExistingPatch(): { action: 'relaunch' | 'check' | 'none'; version?
   }
 
   const currentVersion = app.getVersion();
-  if (patchInfo.version === currentVersion) {
-    // Patch matches current version → already applied; clean up and re-check.
-    try { fs.unlinkSync(patchFilePath); } catch { /* ignore */ }
+  const versionOrder = compareAppVersions(patchInfo.version, currentVersion);
+  if (versionOrder === null || versionOrder <= 0) {
+    // Invalid, already-applied, or older patches must never relaunch the app
+    // into a downgrade when startup is offline.
+    try {
+      fs.unlinkSync(patchFilePath);
+    } catch {
+      /* ignore */
+    }
     removePatchInfo();
     return { action: 'check' };
   }
@@ -486,9 +499,14 @@ function checkExistingPatch(): { action: 'relaunch' | 'check' | 'none'; version?
   if (attempts >= 3) {
     log.error(
       'Patch v%s failed to apply %d times — giving up, clearing patch',
-      patchInfo.version, attempts,
+      patchInfo.version,
+      attempts,
     );
-    try { fs.unlinkSync(patchFilePath); } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(patchFilePath);
+    } catch {
+      /* ignore */
+    }
     removePatchInfo();
     return { action: 'check' };
   }
@@ -501,17 +519,44 @@ function checkExistingPatch(): { action: 'relaunch' | 'check' | 'none'; version?
 
 function writePatchInfo(info: PatchInfo): void {
   try {
-    fs.writeFileSync(
-      path.join(getUpdatesDir(), PATCH_INFO_FILE),
-      JSON.stringify(info),
-    );
+    fs.writeFileSync(path.join(getUpdatesDir(), PATCH_INFO_FILE), JSON.stringify(info));
   } catch (err) {
     log.error('writePatchInfo failed:', err);
   }
 }
 
 function removePatchInfo(): void {
-  try { fs.unlinkSync(path.join(getUpdatesDir(), PATCH_INFO_FILE)); } catch { /* ignore */ }
+  try {
+    fs.unlinkSync(path.join(getUpdatesDir(), PATCH_INFO_FILE));
+  } catch {
+    /* ignore */
+  }
+}
+
+function discardReadyPatch(): void {
+  let patchPath = readyFilePath;
+  if (!patchPath) {
+    try {
+      const parsed = JSON.parse(
+        fs.readFileSync(path.join(getUpdatesDir(), PATCH_INFO_FILE), 'utf8'),
+      ) as Partial<PatchInfo>;
+      if (parsed.fileName && path.basename(parsed.fileName) === parsed.fileName) {
+        patchPath = path.join(getUpdatesDir(), parsed.fileName);
+      }
+    } catch {
+      /* no usable patch metadata */
+    }
+  }
+  if (patchPath) {
+    try {
+      fs.unlinkSync(patchPath);
+    } catch {
+      /* ignore */
+    }
+  }
+  removePatchInfo();
+  readyVersion = undefined;
+  readyFilePath = undefined;
 }
 
 function incrementApplyAttempts(): void {
@@ -592,7 +637,9 @@ function sweepStaleUpdateTempDirs(): void {
 function cleanOldFiles(keepFileName: string): void {
   try {
     cleanOldUpdateFiles(getUpdatesDir(), keepFileName, [PATCH_INFO_FILE, UPDATE_LOCK_FILE]);
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 }
 
 /**
@@ -606,11 +653,7 @@ function isMacAppTranslocated(): boolean {
 // ── Core check logic ───────────────────────────────────────────────────────
 
 export type CheckForUpdateResult =
-  | 'ready'
-  | 'manifest_failed'
-  | 'download_failed'
-  | 'manual_download'
-  | 'idle';
+  'ready' | 'manifest_failed' | 'download_failed' | 'manual_download' | 'idle';
 
 // Module-level in-flight guard so the startup IPC handler and the background
 // poll don't race on the same destPath. ALL access to `inFlightCheck` MUST
@@ -672,7 +715,7 @@ async function doCheckForUpdate(manifestOverride?: Manifest | null): Promise<Che
     setStatus('checking');
   }
 
-  const manifest = manifestOverride ?? await fetchManifest();
+  const manifest = manifestOverride ?? (await fetchManifest());
   if (!manifest) {
     log.info('Manifest fetch failed');
     if (!wasReady) currentStatus = 'idle';
@@ -688,11 +731,31 @@ async function doCheckForUpdate(manifestOverride?: Manifest | null): Promise<Che
 
   const latestVersion = manifest.app.version;
   const currentVersion = app.getVersion();
-  log.info('Version check: current=%s, latest=%s, ready=%s', currentVersion, latestVersion, previousReadyVersion ?? '<none>');
+  log.info(
+    'Version check: current=%s, latest=%s, ready=%s',
+    currentVersion,
+    latestVersion,
+    previousReadyVersion ?? '<none>',
+  );
 
-  if (latestVersion === currentVersion) {
-    log.info('Versions match, no update needed');
+  const versionOrder = compareAppVersions(latestVersion, currentVersion);
+  if (versionOrder === null) {
+    log.error(
+      'Invalid SemVer in update manifest: current=%s latest=%s',
+      currentVersion,
+      latestVersion,
+    );
     if (!wasReady) currentStatus = 'idle';
+    return 'manifest_failed';
+  }
+  if (versionOrder <= 0) {
+    log.info(
+      versionOrder === 0
+        ? 'Versions match, no update needed'
+        : 'Manifest version is older than the installed app; refusing downgrade',
+    );
+    if (wasReady) discardReadyPatch();
+    currentStatus = 'idle';
     return 'idle';
   }
 
@@ -778,19 +841,16 @@ async function doCheckForUpdate(manifestOverride?: Manifest | null): Promise<Che
         normalizer.handle(e);
       },
       onRetry: (e) => {
-        log.warn(
-          'downloader retry attempt %d in %dms (%s)',
-          e.attempt, e.delayMs, e.cause.message,
-        );
+        log.warn('downloader retry attempt %d in %dms (%s)', e.attempt, e.delayMs, e.cause.message);
       },
       onResume: (e) => {
-        log.info(
-          'downloader resume from %d / %s bytes',
-          e.fromBytes, e.totalBytes ?? '?',
-        );
+        log.info('downloader resume from %d / %s bytes', e.fromBytes, e.totalBytes ?? '?');
       },
       logger: {
-        debug: (m, meta) => { /* noisy — silenced in prod */ void meta; void m; },
+        debug: (m, meta) => {
+          /* noisy — silenced in prod */ void meta;
+          void m;
+        },
         info: (m, meta) => log.info(m, meta ?? ''),
         warn: (m, meta) => log.warn(m, meta ?? ''),
         error: (m, meta) => log.error(m, meta ?? ''),
@@ -832,10 +892,7 @@ async function doCheckForUpdate(manifestOverride?: Manifest | null): Promise<Che
     return 'ready';
   } catch (err) {
     if (err instanceof DownloadError) {
-      log.warn(
-        'download failed: code=%s message=%s',
-        err.code, err.message,
-      );
+      log.warn('download failed: code=%s message=%s', err.code, err.message);
     } else {
       log.error('unexpected download error:', err);
     }
@@ -881,7 +938,6 @@ function handleApplyFailure(reason: string): void {
 
 // ── F3: Platform Executors ────────────────────────────────────────────────
 
-
 function executeUpdateWindows(zipPath: string, theme: 'light' | 'dark'): void {
   const appExePath = app.getPath('exe');
   const appDir = path.dirname(appExePath);
@@ -893,13 +949,20 @@ function executeUpdateWindows(zipPath: string, theme: 'light' | 'dark'): void {
   const logPath = path.join(logDir, 'cindy-update.log');
   const pid = process.pid;
 
-  log.info('Windows relaunch: exe=%s, zip=%s, pid=%d', maskPath(appExePath), maskPath(zipPath), pid);
+  log.info(
+    'Windows relaunch: exe=%s, zip=%s, pid=%d',
+    maskPath(appExePath),
+    maskPath(zipPath),
+    pid,
+  );
   try {
     const exeStat = fs.statSync(appExePath);
     const zipStat = fs.statSync(zipPath);
     log.info(
       'pre-update stat: exe size=%d mtime=%s, zip size=%d',
-      exeStat.size, exeStat.mtime.toISOString(), zipStat.size,
+      exeStat.size,
+      exeStat.mtime.toISOString(),
+      zipStat.size,
     );
   } catch (err) {
     log.error('pre-update stat failed:', err);
@@ -936,14 +999,22 @@ function executeUpdateWindows(zipPath: string, theme: 'light' | 'dark'): void {
   // first frame matches the app the user is currently looking at — even when
   // an in-app override disagrees with the OS preference.
   const args = [
-    '--zip', zipPath,
-    '--app-dir', appDir,
-    '--exe-name', exeName,
-    '--pid', String(pid),
-    '--log', logPath,
-    '--lock', lockFilePath,
-    '--theme', theme,
-    '--workdir', workDir,
+    '--zip',
+    zipPath,
+    '--app-dir',
+    appDir,
+    '--exe-name',
+    exeName,
+    '--pid',
+    String(pid),
+    '--log',
+    logPath,
+    '--lock',
+    lockFilePath,
+    '--theme',
+    theme,
+    '--workdir',
+    workDir,
   ];
   log.info('Spawning updater: %s', maskPath(updaterRun));
   log.info('  args: %s', JSON.stringify(args));
@@ -986,9 +1057,17 @@ function forceQuit(): void {
   // 收掉自带 adb server,避免它锁住安装目录阻碍 updater 替换文件。
   disposeAndroidAdb();
   // Node 子进程同理——before-quit 的 destroyAll 不会触发,这里同步 kill。
-  try { getGhostNodeRuntimeBroker().destroyAll(); } catch { /* best-effort */ }
+  try {
+    getGhostNodeRuntimeBroker().destroyAll();
+  } catch {
+    /* best-effort */
+  }
   for (const win of BrowserWindow.getAllWindows()) {
-    try { if (!win.isDestroyed()) win.destroy(); } catch { /* ignore */ }
+    try {
+      if (!win.isDestroyed()) win.destroy();
+    } catch {
+      /* ignore */
+    }
   }
   process.exit(0);
 }
@@ -1014,14 +1093,23 @@ function executeUpdateMacOS(zipPath: string): void {
     const zipStat = fs.statSync(zipPath);
     log.info(
       'pre-update stat: app mtime=%s, zip size=%d',
-      appStat.mtime.toISOString(), zipStat.size,
+      appStat.mtime.toISOString(),
+      zipStat.size,
     );
   } catch (err) {
     log.error('pre-update stat failed:', err);
   }
 
   const script = buildMacOSUpdateScript({
-    pid, appPath, appName, extractDir, zipPath, lockFilePath, scriptPath, logPath,
+    pid,
+    appPath,
+    appName,
+    extractDir,
+    zipPath,
+    lockFilePath,
+    scriptPath,
+    logPath,
+    expectedArch: process.arch === 'arm64' ? 'arm64' : 'x64',
   });
 
   fs.writeFileSync(scriptPath, script, { mode: 0o755 });
@@ -1064,7 +1152,8 @@ function executeRelaunch(theme: 'light' | 'dark'): void {
 
   log.info(
     'Executing relaunch with file: %s (%s bytes)',
-    maskPath(readyFilePath), fs.statSync(readyFilePath).size,
+    maskPath(readyFilePath),
+    fs.statSync(readyFilePath).size,
   );
 
   switch (process.platform) {
@@ -1167,19 +1256,22 @@ export function initUpdateService(): void {
     }
   });
 
-  ipcMain.handle('update-check-now', async (): Promise<{ result: CheckForUpdateResult | 'downloading' }> => {
-    // Short-circuit when a check / download is already in flight or finished:
-    // we don't want the user to wait for an entire download just to see the
-    // toast, and re-entering checkForUpdate() during 'downloading' would
-    // simply re-attach to the same in-flight Promise (still slow to respond).
-    // 'superseding' 等价于"已经在 ready 之上偷偷下新版了",对用户来说也是「正在下载」,
-    // 这里复用 'downloading' 结果让前端 toast 文案保持一致。
-    if (currentStatus === 'downloading') return { result: 'downloading' };
-    if (currentStatus === 'superseding') return { result: 'downloading' };
-    if (currentStatus === 'ready')       return { result: 'ready' };
-    const result = await checkForUpdate();
-    return { result };
-  });
+  ipcMain.handle(
+    'update-check-now',
+    async (): Promise<{ result: CheckForUpdateResult | 'downloading' }> => {
+      // Short-circuit when a check / download is already in flight or finished:
+      // we don't want the user to wait for an entire download just to see the
+      // toast, and re-entering checkForUpdate() during 'downloading' would
+      // simply re-attach to the same in-flight Promise (still slow to respond).
+      // 'superseding' 等价于"已经在 ready 之上偷偷下新版了",对用户来说也是「正在下载」,
+      // 这里复用 'downloading' 结果让前端 toast 文案保持一致。
+      if (currentStatus === 'downloading') return { result: 'downloading' };
+      if (currentStatus === 'superseding') return { result: 'downloading' };
+      if (currentStatus === 'ready') return { result: 'ready' };
+      const result = await checkForUpdate();
+      return { result };
+    },
+  );
 
   ipcMain.handle('update-check-startup', async () => {
     log.info('update-check-startup called');
@@ -1195,7 +1287,10 @@ export function initUpdateService(): void {
       // 的机器 updates/ 里可能残留已下好的 patch,不在这里挡住会把 0.0.0 安装体
       // 启动即替换成线上版本。
       if (isVersionlessAppVersion(app.getVersion())) {
-        log.info('Versionless build (placeholder %s) — skipping startup update flow', app.getVersion());
+        log.info(
+          'Versionless build (placeholder %s) — skipping startup update flow',
+          app.getVersion(),
+        );
         return { hasUpdate: false, action: 'none' as const };
       }
 
@@ -1219,9 +1314,19 @@ export function initUpdateService(): void {
       const currentVersion = app.getVersion();
       log.info('Startup: current=%s, latest=%s', currentVersion, latestVersion);
 
-      if (latestVersion === currentVersion) {
-        // Already up to date — clean up any stale patch directory.
-        checkExistingPatch();
+      const versionOrder = compareAppVersions(latestVersion, currentVersion);
+      if (versionOrder === null) {
+        log.error(
+          'Startup manifest contains invalid SemVer: current=%s latest=%s',
+          currentVersion,
+          latestVersion,
+        );
+        return { hasUpdate: false, action: 'none' as const, error: 'manifest_failed' as const };
+      }
+      if (versionOrder <= 0) {
+        // Equal or rolled-back channels cannot revive a previously downloaded
+        // patch. Remove it even when its version is higher than current.
+        discardReadyPatch();
         return { hasUpdate: false, action: 'none' as const };
       }
 
@@ -1237,7 +1342,8 @@ export function initUpdateService(): void {
       if (patchResult.action === 'relaunch') {
         log.info(
           'Stale patch v%s (latest is v%s), will re-download',
-          patchResult.version, latestVersion,
+          patchResult.version,
+          latestVersion,
         );
         readyVersion = undefined;
         readyFilePath = undefined;

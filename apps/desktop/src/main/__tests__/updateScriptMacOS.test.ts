@@ -45,6 +45,7 @@ function makeParams(overrides: Partial<MacUpdateScriptParams> = {}): MacUpdateSc
     lockFilePath: '/tmp/xdt-update.lock',
     scriptPath: '/tmp/xdt-maker-update-1.sh',
     logPath: '/tmp/cindy-update.log',
+    expectedArch: process.arch === 'arm64' ? 'arm64' : 'x64',
     ...overrides,
   };
 }
@@ -76,7 +77,7 @@ describe('buildMacOSUpdateScript structure', () => {
   });
 
   it('clear-out matches the whole bundle, verification only the main binary', () => {
-    const clearOut = script.slice(0, script.indexOf('Removing old app'));
+    const clearOut = script.slice(0, script.indexOf('Moving old app to rollback slot'));
     const verify = script.slice(script.indexOf('VERIFIED=0'));
     expect(clearOut).toContain('pgrep -f "/Applications/xdt-maker\\.app/"');
     expect(clearOut).not.toContain('pgrep -f "/Applications/xdt-maker\\.app/Contents/MacOS/"');
@@ -94,12 +95,33 @@ describe('buildMacOSUpdateScript structure', () => {
     expect(script.slice(killIdx, abortIdx)).toContain('kill -9 12345');
   });
 
-  it('final SIGKILL sweep sits directly before the swap with no sleep between', () => {
+  it('final SIGKILL sweep sits directly before the rollback-safe swap with no sleep between', () => {
     const sweepIdx = script.indexOf('SIGKILL stragglers just before swap');
-    const rmIdx = script.indexOf('rm -rf "/Applications/xdt-maker.app"');
+    const rollbackIdx = script.indexOf('Moving old app to rollback slot');
     expect(sweepIdx).toBeGreaterThan(-1);
-    expect(rmIdx).toBeGreaterThan(sweepIdx);
-    expect(script.slice(sweepIdx, rmIdx)).not.toContain('sleep');
+    expect(rollbackIdx).toBeGreaterThan(sweepIdx);
+    expect(script.slice(sweepIdx, rollbackIdx)).not.toContain('sleep');
+  });
+
+  it('verifies bundle identity, executable, architecture and signature before moving the old app', () => {
+    const verifyIdx = script.indexOf('incoming identity verified');
+    const swapIdx = script.indexOf('Moving old app to rollback slot');
+    expect(verifyIdx).toBeGreaterThan(-1);
+    expect(swapIdx).toBeGreaterThan(verifyIdx);
+    expect(script).toContain('CFBundleIdentifier');
+    expect(script).toContain('CFBundleExecutable');
+    expect(script).toContain('/usr/bin/lipo -archs');
+    expect(script).toContain('/usr/bin/codesign --verify --deep --strict');
+  });
+
+  it('restores the old bundle when launch verification fails', () => {
+    const failureIdx = script.indexOf('PROCESS START FAILED');
+    const rollbackIdx = script.indexOf('ROLLBACK SUCCEEDED');
+    expect(failureIdx).toBeGreaterThan(-1);
+    expect(rollbackIdx).toBeGreaterThan(failureIdx);
+    expect(script.slice(failureIdx, rollbackIdx)).toContain(
+      'mv "/Applications/xdt-maker.app.cindy-update-rollback-',
+    );
   });
 
   it('gates the open retry on the first open having failed', () => {
@@ -108,7 +130,8 @@ describe('buildMacOSUpdateScript structure', () => {
 
   it('marks update-launched candidates so the app can recover presentation after unlock', () => {
     const openLines = script.split('\n').filter((line) => /^\s*open /.test(line));
-    expect(openLines).toHaveLength(2);
+    // Initial launch, gated retry, and best-effort relaunch after rollback.
+    expect(openLines).toHaveLength(3);
     for (const line of openLines) {
       expect(line).toContain(`--args "${MACOS_UPDATE_RELAUNCH_ARG}"`);
     }
@@ -139,6 +162,21 @@ function shellScript(body: string): string {
   return `#!/bin/bash\n${body}\n`;
 }
 
+function writeTestInfoPlist(appPath: string): void {
+  fs.writeFileSync(
+    path.join(appPath, 'Contents', 'Info.plist'),
+    `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>com.cindy.test.fake</string>
+<key>CFBundleExecutable</key><string>fakemain</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>CFBundleShortVersionString</key><string>1.0.0</string>
+</dict></plist>`,
+  );
+}
+
 /**
  * Builds: an installed fake .app (with Frameworks helper), a zip containing
  * the new fake .app (whose main binary writes a marker + sleeps), and a PATH
@@ -149,33 +187,42 @@ function shellScript(body: string): string {
 function makeSandbox(openBehavior: 'launch' | 'noop'): Sandbox {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xdt-upd-test-'));
   const appPath = path.join(root, 'Installed', 'fake (2).app');
-  const helperDir = path.join(appPath, 'Contents', 'Frameworks', 'fake Helper (Renderer).app', 'Contents', 'MacOS');
+  const helperDir = path.join(
+    appPath,
+    'Contents',
+    'Frameworks',
+    'fake Helper (Renderer).app',
+    'Contents',
+    'MacOS',
+  );
   const mainDir = path.join(appPath, 'Contents', 'MacOS');
   fs.mkdirSync(helperDir, { recursive: true });
   fs.mkdirSync(mainDir, { recursive: true });
-  fs.writeFileSync(path.join(mainDir, 'fakemain'), shellScript('sleep 300'), { mode: 0o755 });
+  fs.copyFileSync('/bin/sleep', path.join(mainDir, 'fakemain'));
+  fs.chmodSync(path.join(mainDir, 'fakemain'), 0o755);
   fs.writeFileSync(path.join(helperDir, 'fakehelper'), shellScript('sleep 300'), { mode: 0o755 });
   fs.writeFileSync(path.join(appPath, 'Contents', 'version.txt'), 'old');
+  writeTestInfoPlist(appPath);
 
   // New bundle → zip (ditto -c -k, same tool the real flow unpacks with).
   const stage = path.join(root, 'stage');
   const newApp = path.join(stage, 'fake (2).app');
   fs.mkdirSync(path.join(newApp, 'Contents', 'MacOS'), { recursive: true });
-  fs.writeFileSync(
-    path.join(newApp, 'Contents', 'MacOS', 'fakemain'),
-    shellScript('sleep 300'),
-    { mode: 0o755 },
-  );
+  fs.copyFileSync('/bin/sleep', path.join(newApp, 'Contents', 'MacOS', 'fakemain'));
+  fs.chmodSync(path.join(newApp, 'Contents', 'MacOS', 'fakemain'), 0o755);
   fs.writeFileSync(path.join(newApp, 'Contents', 'version.txt'), 'new');
+  writeTestInfoPlist(newApp);
+  execFileSync('/usr/bin/codesign', ['--force', '--deep', '--sign', '-', newApp]);
   const zipPath = path.join(root, 'update.zip');
   execFileSync('/usr/bin/ditto', ['-c', '-k', stage, zipPath]);
 
   // PATH stub for `open`.
   const binDir = path.join(root, 'bin');
   fs.mkdirSync(binDir);
-  const openBody = openBehavior === 'launch'
-    ? `nohup "$1/Contents/MacOS/fakemain" >/dev/null 2>&1 &\nexit 0`
-    : 'exit 0';
+  const openBody =
+    openBehavior === 'launch'
+      ? `nohup "$1/Contents/MacOS/fakemain" 300 >/dev/null 2>&1 &\nexit 0`
+      : 'exit 0';
   fs.writeFileSync(path.join(binDir, 'open'), shellScript(openBody), { mode: 0o755 });
 
   const logPath = path.join(root, 'cindy-update.log');
@@ -201,10 +248,15 @@ function runScript(sb: Sandbox): Promise<void> {
   const script = buildMacOSUpdateScript(sb.params);
   fs.writeFileSync(sb.params.scriptPath, script, { mode: 0o755 });
   return new Promise((resolve, reject) => {
-    execFile('/bin/bash', [sb.params.scriptPath], {
-      env: { ...process.env, PATH: `${sb.binDir}:${process.env.PATH}` },
-      timeout: 60_000,
-    }, (err) => (err && err.killed ? reject(err) : resolve()));
+    execFile(
+      '/bin/bash',
+      [sb.params.scriptPath],
+      {
+        env: { ...process.env, PATH: `${sb.binDir}:${process.env.PATH}` },
+        timeout: 60_000,
+      },
+      (err) => (err && err.killed ? reject(err) : resolve()),
+    );
   });
 }
 
@@ -216,7 +268,12 @@ function spawnDetached(cmd: string, args: string[] = []): number {
 }
 
 function pidAlive(pid: number): boolean {
-  try { process.kill(pid, 0); return true; } catch { return false; }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 describe.runIf(isDarwin)('generated script behavior (darwin)', () => {
@@ -228,7 +285,15 @@ describe.runIf(isDarwin)('generated script behavior (darwin)', () => {
       const hungPid = spawnDetached('/bin/sleep', ['300']);
       // Helper still running from the old bundle (outlives the main PID).
       const helperPid = spawnDetached(
-        path.join(sb.appPath, 'Contents', 'Frameworks', 'fake Helper (Renderer).app', 'Contents', 'MacOS', 'fakehelper'),
+        path.join(
+          sb.appPath,
+          'Contents',
+          'Frameworks',
+          'fake Helper (Renderer).app',
+          'Contents',
+          'MacOS',
+          'fakehelper',
+        ),
       );
       sb.params.pid = hungPid;
 
@@ -240,8 +305,10 @@ describe.runIf(isDarwin)('generated script behavior (darwin)', () => {
       // Helper was cleared before the swap...
       expect(log).toMatch(/terminating before swap|SIGKILL stragglers just before swap/);
       expect(pidAlive(helperPid)).toBe(false);
-      // ...and the clear-out happened before "Removing old app" in the log.
-      expect(log.indexOf('terminating before swap')).toBeLessThan(log.indexOf('Removing old app'));
+      // ...and the clear-out happened before the rollback-safe swap.
+      expect(log.indexOf('terminating before swap')).toBeLessThan(
+        log.indexOf('Moving old app to rollback slot'),
+      );
       // Swap really happened: new bundle content in place.
       expect(fs.readFileSync(path.join(sb.appPath, 'Contents', 'version.txt'), 'utf8')).toBe('new');
       // Process verification saw the (stub-launched) new main binary.
@@ -250,12 +317,16 @@ describe.runIf(isDarwin)('generated script behavior (darwin)', () => {
       expect(fs.existsSync(sb.params.lockFilePath)).toBe(false);
       expect(fs.existsSync(sb.params.zipPath)).toBe(false);
     } finally {
-      try { execFileSync('/usr/bin/pkill', ['-9', '-f', sb.root], { stdio: 'ignore' }); } catch { /* no strays left */ }
+      try {
+        execFileSync('/usr/bin/pkill', ['-9', '-f', sb.root], { stdio: 'ignore' });
+      } catch {
+        /* no strays left */
+      }
       fs.rmSync(sb.root, { recursive: true, force: true });
     }
   }, 60_000);
 
-  it('logs PROCESS START FAILED when the relaunched app never comes up', async () => {
+  it('restores the previous bundle when the relaunched app never comes up', async () => {
     const sb = makeSandbox('noop');
     try {
       const oldPid = spawnDetached('/bin/sleep', ['1']); // exits on its own
@@ -264,10 +335,12 @@ describe.runIf(isDarwin)('generated script behavior (darwin)', () => {
       await runScript(sb);
       const log = fs.readFileSync(sb.logPath, 'utf8');
 
-      expect(log).toContain(`PROCESS START FAILED: fake (2) NOT running ${sb.params.timings!.verifyTimeoutSeconds}s after open`);
+      expect(log).toContain(
+        `PROCESS START FAILED: fake (2) NOT running ${sb.params.timings!.verifyTimeoutSeconds}s after open`,
+      );
       expect(log).not.toContain('PROCESS VERIFIED');
-      // Swap itself still succeeded — failure is about launch, not install.
-      expect(fs.readFileSync(path.join(sb.appPath, 'Contents', 'version.txt'), 'utf8')).toBe('new');
+      expect(log).toContain('ROLLBACK SUCCEEDED');
+      expect(fs.readFileSync(path.join(sb.appPath, 'Contents', 'version.txt'), 'utf8')).toBe('old');
     } finally {
       fs.rmSync(sb.root, { recursive: true, force: true });
     }
