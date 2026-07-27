@@ -1,5 +1,18 @@
 import type Database from 'better-sqlite3';
 
+// Migration companion scripts are loaded as CommonJS at runtime. Reuse the
+// frozen upstream 0080/0081 semantics so an XDMaker Meka v0.0.11 database,
+// which arrives at schema version 87, receives the same money migration as a
+// fresh Cindy database before its history is canonicalized.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const regionalMoneyMigration = require('./0080_regional_money.ts') as {
+  run(db: Database.Database): void;
+};
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const preserveGatewayCurrencyMigration = require('./0081_preserve_gateway_currency.ts') as {
+  run(db: Database.Database): void;
+};
+
 interface LineageEntry {
   seq: number;
   legacyFileName: string;
@@ -78,14 +91,14 @@ const MEKA_0_0_11_LINEAGE: readonly LineageEntry[] = [
     seq: 80,
     legacyFileName: '0080_right_snowbird.sql',
     legacyHash: '393852475c44bed128cf83353b18bc9200ab90961ecdc3f624d03ccf4d84eab4',
-    canonicalFileName: '0080_peaceful_baron_strucker.sql',
+    canonicalFileName: '0080_regional_money.sql',
     canonicalHash: 'b4e0497804e46e0a0b0b8c31975b062152d551bac49c3c2e80932567b4085dcd',
   },
   {
     seq: 81,
     legacyFileName: '0081_broken_luckman.sql',
     legacyHash: 'a072deef355eb32feabb0b50375783cc45741ac2a46c937baf71419004f197c0',
-    canonicalFileName: '0081_meka_lineage_slot_81.sql',
+    canonicalFileName: '0081_preserve_gateway_currency.sql',
     canonicalHash: 'b4e0497804e46e0a0b0b8c31975b062152d551bac49c3c2e80932567b4085dcd',
   },
   {
@@ -95,7 +108,7 @@ const MEKA_0_0_11_LINEAGE: readonly LineageEntry[] = [
     legacyAlternateHashes: [
       'a46756c96a24c3414eb3571deb5fe854a4c0e86c9b2a581aae2a813f588ac3ed',
     ],
-    canonicalFileName: '0082_meka_lineage_slot_82.sql',
+    canonicalFileName: '0082_meka_product_schema.sql',
     canonicalHash: 'b4e0497804e46e0a0b0b8c31975b062152d551bac49c3c2e80932567b4085dcd',
   },
   {
@@ -388,6 +401,8 @@ function run(db: Database.Database): void {
   if (!hasExactMekaLineage(db)) return;
 
   db.transaction(() => {
+    regionalMoneyMigration.run(db);
+    preserveGatewayCurrencyMigration.run(db);
     applyCurrentSchemaSemantics(db);
     canonicalizeMigrationHistory(db);
   })();

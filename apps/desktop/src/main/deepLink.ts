@@ -45,6 +45,7 @@ import {
   DEEP_LINK_PRIMARY_SCHEME,
   DEEP_LINK_REGISTERED_SCHEMES,
   DEEP_LINK_SCHEMES,
+  DEEP_LINK_INTEROP_URL_PREFIX,
   DEEP_LINK_URL_PREFIX,
   matchDeepLinkPrefix,
 } from '../shared/deepLinkSchemes';
@@ -161,13 +162,24 @@ function parseSessionMessageParam(rawValue: string): string | null {
  * 注意:'new-session' 不提供 builder——它只由 --open-folder argv 产生,不进入
  * "可复制 / 可粘贴"的 URL 域,避免和现有 project deep link 在 URL 域语义混淆。
  */
-export function buildSessionDeepLink(sessionId: string): string {
-  return `${URL_PREFIX}session/${encodeURIComponent(sessionId)}`;
+export function buildSessionDeepLink(
+  sessionId: string,
+  opts?: { deviceId?: string | null },
+): string {
+  const device = opts?.deviceId ? `?device=${encodeURIComponent(opts.deviceId)}` : '';
+  const prefix = opts?.deviceId ? DEEP_LINK_INTEROP_URL_PREFIX : URL_PREFIX;
+  return `${prefix}session/${encodeURIComponent(sessionId)}${device}`;
 }
 
 /** 带消息锚点(`?message=<clientId>`)的会话深链,与 renderer 侧实现等价镜像。 */
-export function buildSessionMessageDeepLink(sessionId: string, messageClientId: string): string {
-  return `${buildSessionDeepLink(sessionId)}?message=${encodeURIComponent(messageClientId)}`;
+export function buildSessionMessageDeepLink(
+  sessionId: string,
+  messageClientId: string,
+  opts?: { deviceId?: string | null },
+): string {
+  const device = opts?.deviceId ? `&device=${encodeURIComponent(opts.deviceId)}` : '';
+  const prefix = opts?.deviceId ? DEEP_LINK_INTEROP_URL_PREFIX : URL_PREFIX;
+  return `${prefix}session/${encodeURIComponent(sessionId)}?message=${encodeURIComponent(messageClientId)}${device}`;
 }
 
 /**
@@ -301,6 +313,14 @@ export function focusMainWindow(): boolean {
  */
 export function openMainWindowVoiceSettings(tab: 'voice-input' | 'providers'): void {
   dispatchDeepLink({ type: 'settings', tab });
+}
+
+/**
+ * 主进程内部发起的会话聚焦(workspace 槽 focus:true)。复用 deep link 的
+ * 前台 + renderer dispatch 通道,行为与用户点 cindy://session/<id> 一致。
+ */
+export function openMainWindowSession(sessionId: string): void {
+  dispatchDeepLink({ type: 'session', id: sessionId });
 }
 
 function dispatchDeepLink(payload: DeepLinkPayload): void {

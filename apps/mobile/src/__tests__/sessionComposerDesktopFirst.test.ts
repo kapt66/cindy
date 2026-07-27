@@ -29,7 +29,7 @@ describe('mobile session composer desktop-first surface', () => {
     const voiceButtonStart = source.indexOf('const renderComposerVoiceButton = (buttonStyle?: StyleProp<ViewStyle>) => (');
     const voiceButtonEnd = source.indexOf('const removeRemoteFileAttachment = useCallback', voiceButtonStart);
     const voiceButtonSource = source.slice(voiceButtonStart, voiceButtonEnd);
-    const floatingVoiceIndex = composerInputSource.indexOf('floatingVoiceButton={renderComposerVoiceButton}');
+    const floatingVoiceIndex = composerInputSource.indexOf('floatingVoiceButton={voiceUiAvailable ? renderComposerVoiceButton : undefined}');
     const floatingVoiceStyleIndex = composerInputSource.indexOf('floatingVoiceButtonStyle={composerFloatingVoiceButtonStyle}');
     const sendIndex = composerInputSource.indexOf('trailing={composerCardActive ? null : renderComposerTrailingActions()}');
     const composerSurfaceStart = source.indexOf('composerSurface: {');
@@ -120,8 +120,8 @@ describe('mobile session composer desktop-first surface', () => {
     // + 号打开可拖动 Context 面板(附件 / 计划模式 / 目标模式收在面板内)。
     expect(source).toContain('testID="session.contextSheet"');
     expect(attachmentButtonSource).toContain('setContextSheetOpen(true)');
-    expect(source).toContain('<ContextSheetGroup label="模式">');
-    expect(source).toContain('<ContextSheetGroup label="添加">');
+    expect(source).toContain("<ContextSheetGroup label={t('session.common.groupMode')}>");
+    expect(source).toContain("<ContextSheetGroup label={t('session.common.groupAdd')}>");
     expect(source).not.toContain('testID="session.attachmentPathPanel"');
     expect(source).not.toContain('被控电脑上的文件路径');
     expect(source).toContain('testID="session.composerActivityStatus"');
@@ -182,10 +182,12 @@ describe('mobile session composer desktop-first surface', () => {
     expect(inputStyle).toContain('borderWidth: 0');
     expect(inputStyle).not.toContain('borderColor: colors.border');
     expect(inputStyle).not.toContain('borderRadius: radius.pill');
-    expect(inputStyle).toContain('lineHeight: MOBILE_COMPOSER_INPUT_LINE_HEIGHT');
+    // 字号 / 行高 / 水平内边距走 composerTextMetrics:WebView 富文本编辑器与语音听写
+    // 覆盖层共用同一份度量,三边换行位置必须逐字一致(见 composerVoiceDraftMetrics.test.ts)。
+    expect(inputStyle).toContain('...COMPOSER_TEXT_STYLE');
     expect(inputStyle).toContain('maxHeight: MOBILE_COMPOSER_INPUT_MAX_HEIGHT');
     expect(inputStyle).toContain('minHeight: MOBILE_COMPOSER_INPUT_SINGLE_LINE_HEIGHT');
-    expect(inputStyle).toContain('paddingHorizontal: spacing.xs');
+    expect(inputStyle).toContain('paddingHorizontal: COMPOSER_TEXT_HORIZONTAL_PADDING');
     expect(inputStyle).toContain('paddingVertical: MOBILE_COMPOSER_INPUT_VERTICAL_PADDING');
     expect(inputStyle).toContain("textAlignVertical: 'top'");
     // Composer input is a single stable, always-multiline, always-inline instance (no compact↔expanded
@@ -294,11 +296,12 @@ describe('mobile session composer desktop-first surface', () => {
     expect(source).toContain('const canStopComposer = canStopQueue || canStopCurrentRun;');
     expect(source).toContain('canStop: canUseComposer && canStopComposer,');
     expect(source).not.toContain('canStop: canUseComposer && canStopQueue,');
-    expect(source).toContain('const composerVoicePlacement = resolveMobileComposerVoiceButtonPlacement({');
+    expect(source).toContain('const voiceUiAvailable = shouldShowMobileVoiceUi(Platform.OS);');
+    expect(source).toContain('const composerVoicePlacement = voiceUiAvailable');
     expect(source).toContain('hasTrailingAction: composerSendSlotIsStop || composerShowSendButton');
     expect(source).toContain('const renderComposerVoiceButton = (buttonStyle?: StyleProp<ViewStyle>) => (');
     // 录音状态由语音按钮形态表达（Mic / Square / spinner），状态行只承载错误。
-    expect(source).toContain('const voiceStatusVisible = Boolean(voiceError);');
+    expect(source).toContain('const voiceStatusVisible = voiceUiAvailable && Boolean(voiceError);');
     expect(voiceButtonSource).toContain(') : voiceIsListening ? (');
     expect(voiceButtonSource).toContain('<Square');
     expect(voiceStatusIndex).toBeGreaterThan(-1);
@@ -320,13 +323,13 @@ describe('mobile session composer desktop-first surface', () => {
     expect(source).toContain('onPressIn={handleComposerInputPressIn}');
     expect(source).toContain("placeholder={voiceIsListening ? '' : composerLayout.input.placeholder}");
     expect(source).toContain('placeholderTextColor={colors.textTertiary}');
-    expect(source).toContain('voiceIsListening && styles.inputVoiceHidden');
+    expect(source).toContain('inputStyle={voiceIsListening ? styles.inputVoiceHidden : undefined}');
     expect(source).toContain('styles.voiceDraftOverlay');
     expect(voiceDraftOverlayStyle).toContain('...StyleSheet.absoluteFill');
     expect(voiceDraftOverlayStyle).toContain("overflow: 'hidden'");
     expect(voiceDraftOverlayContentStyle).not.toContain('minHeight: COMPOSER_INPUT_SINGLE_LINE_CONTENT_HEIGHT');
     expect(voiceDraftOverlayContentStyle).not.toContain("alignItems: 'flex-start'");
-    expect(voiceDraftOverlayContentStyle).toContain('paddingHorizontal: spacing.xs');
+    expect(voiceDraftOverlayContentStyle).toContain('paddingHorizontal: COMPOSER_TEXT_HORIZONTAL_PADDING');
     expect(voiceDraftOverlayContentStyle).toContain('paddingVertical: COMPOSER_INPUT_VERTICAL_PADDING');
     expect(voiceDraftOverlayContentStyle).not.toContain("width: '100%'");
     expect(voiceDraftMeasuredBlockStyle).not.toContain("alignSelf: 'flex-start'");
@@ -396,7 +399,7 @@ describe('mobile session composer desktop-first surface', () => {
       finishVoiceSource.indexOf('const latestDraft = await controller.stop();'),
     );
     expect(finishVoiceSource).toContain('voiceStopInFlightRef.current = false;');
-    expect(composerInputSource).toContain('floatingVoiceButton={renderComposerVoiceButton}');
+    expect(composerInputSource).toContain('floatingVoiceButton={voiceUiAvailable ? renderComposerVoiceButton : undefined}');
     expect(composerInputSource).toContain('floatingVoiceButtonStyle={composerFloatingVoiceButtonStyle}');
     expect(composerInputSource).toContain('voicePlacement={composerVoicePlacement}');
     expect(sharedSource).toContain('voicePlacement?.inline || voicePlacement?.floating');
@@ -550,18 +553,29 @@ describe('mobile session composer desktop-first surface', () => {
 
     expect(voiceSource).toContain('readCurrentDraft: () => draftRef.current');
     expect(source).toContain('const voiceStartupInFlightRef = useRef(false);');
+    expect(source).toContain('const voicePermissionRequestInFlightRef = useRef(false);');
     expect(source).toContain('const voiceStopInFlightRef = useRef(false);');
     expect(voiceSource).toContain('|| voiceStopInFlightRef.current');
-    expect(voiceSource.indexOf('voiceStartupInFlightRef.current = true;')).toBeLessThan(
-      voiceSource.indexOf('const permission = await requestRecordingPermissionsAsync();'),
+    expect(voiceSource).toContain('resolveMobileVoiceRecordingPermission({');
+    expect(voiceSource).toContain('voiceStartupInFlightRef.current = true;');
+    expect(voiceSource.indexOf('resolveMobileVoiceRecordingPermission({')).toBeLessThan(
+      voiceSource.indexOf('voiceStartupInFlightRef.current = true;'),
+    );
+    expect(voiceSource).toContain('getPermission: getRecordingPermissionsAsync');
+    expect(voiceSource).toContain("isAppActive: () => AppState.currentState === 'active'");
+    expect(voiceSource).toContain(
+      "voicePermissionRequestSeqRef.current !== permissionRequestSeq\n"
+      + "        || AppState.currentState !== 'active'\n"
+      + "      ) return;\n"
+      + "      startupSeq = voiceStartupSeqRef.current + 1;",
     );
     expect(voiceSource).toContain('voiceStartupInFlightRef.current = false;');
     expect(voiceSource).toContain('onDraftChanged: setComposerDraft');
     expect(voiceSource).toContain('isMobileRealtimeAudioAvailable()');
     expect(voiceSource.indexOf('isMobileRealtimeAudioAvailable()')).toBeLessThan(
-      voiceSource.indexOf('requestRecordingPermissionsAsync()'),
+      voiceSource.indexOf('resolveMobileVoiceRecordingPermission({'),
     );
-    expect(voiceSource).toContain('MOBILE_VOICE_REALTIME_AUDIO_UNAVAILABLE_ERROR');
+    expect(voiceSource).toContain('mobileVoiceRealtimeAudioUnavailableError()');
     expect(voiceSource).toContain('const documentBeforeStop = composerDocumentRef.current;');
     expect(voiceSource).toContain('const latestDraft = await controller.stop();');
     expect(voiceSource).toContain('await sendLatest({ documentOverride: latestDocument });');

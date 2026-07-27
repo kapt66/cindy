@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
+import { i18n } from '@/i18n';
 import {
   addSessionExtraDir,
   aiRenameFailureText,
@@ -11,6 +12,11 @@ import {
   settleSessionMenuBack,
 } from '@/session/sessionMenu';
 import type { RemoteSession } from '@/session/types';
+
+// 文案已 i18n 化;固定 zh-CN 让字面量断言与语言环境解耦(全局 mock 默认 en-US)。
+beforeAll(async () => {
+  await i18n.changeLanguage('zh-CN');
+});
 
 function session(patch: Partial<RemoteSession> = {}): RemoteSession {
   return {
@@ -47,7 +53,7 @@ describe('sessionMenu header', () => {
 
   it('falls back to workspace name when the session has no title', () => {
     expect(buildSessionMenuHeader(session({ title: '' }), {}).title).toBe('xdt-maker');
-    expect(buildSessionMenuHeader(session({ title: '', workingDir: null }), {}).title).toBe('远程会话');
+    expect(buildSessionMenuHeader(session({ title: '', workingDir: null }), {}).title).toBe('远程对话');
   });
 
   it('prefers the worktree name in the meta line', () => {

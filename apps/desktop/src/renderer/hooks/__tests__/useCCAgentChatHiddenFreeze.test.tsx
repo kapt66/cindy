@@ -60,6 +60,10 @@ vi.mock('@/lib/makerTransport', () => ({
   aroundMessagesByClientIdFor: vi.fn(async () => []),
   dismissErrorMessageFor: vi.fn(async () => undefined),
   isRemoteSession: vi.fn(() => false),
+  // useSessionEstimatedValue 的历史初值入口:本套测试全部按本机会话走,直接委托给
+  // 下方 messageService mock(既有用例继续用它驱动/断言调用次数)。
+  estimatedSessionValueFor: vi.fn(async (sessionId: string) =>
+    (await import('@/lib/messageService')).estimatedSessionValue(sessionId)),
 }));
 
 vi.mock('@/lib/messageService', () => ({
@@ -112,10 +116,12 @@ import { ChatDisplaySnapshotProvider, type ChatDisplaySnapshot } from '@/compone
 import { makerChatStore, type ChatMessage } from '@/lib/makerChatStore';
 import * as messageService from '@/lib/messageService';
 import { buildTurnUsageDetails } from '../../../shared/turnUsageDetails';
+import type { RegionalMoney } from '../../../shared/regionalMoney';
 
 type TurnCostListener = (payload: {
   sessionId: string;
   clientId: string;
+  turnMoney?: RegionalMoney;
   turnCostUsd: number;
   turnCostIsEstimate: boolean;
   turnUsageDetails?: unknown;
@@ -134,6 +140,16 @@ if (!TURN_USAGE_DETAILS) {
   throw new Error('expected test turn usage details to be buildable');
 }
 
+function usdEstimate(amount: number): RegionalMoney {
+  return {
+    amount,
+    currency: 'USD',
+    approximate: true,
+    kind: 'value-estimate',
+    estimateReasons: ['subscription-value'],
+  };
+}
+
 function sid(label: string): string {
   return `${label}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -148,6 +164,7 @@ function assistantCostMessage(clientId: string, costUsd: number): ChatMessage {
     role: 'assistant',
     content: `cost ${costUsd}`,
     createdAt: new Date(0).toISOString(),
+    turnMoney: usdEstimate(costUsd),
     turnCostUsd: costUsd,
     turnCostIsEstimate: true,
     turnUsageDetails: TURN_USAGE_DETAILS,
@@ -274,7 +291,7 @@ describe('useCCAgentChat hidden chat snapshot freeze', () => {
     function EstimatedValueProbe() {
       renderCounts.estimated += 1;
       const value = useSessionEstimatedValue(sessionId, true);
-      return <div data-testid="estimated-value">{value == null ? '' : value.toFixed(2)}</div>;
+      return <div data-testid="estimated-value">{value == null ? '' : value.amount.toFixed(2)}</div>;
     }
 
     function TestTree({ snapshot }: { snapshot: ChatDisplaySnapshot }) {
@@ -293,6 +310,7 @@ describe('useCCAgentChat hidden chat snapshot freeze', () => {
       turnCostListener?.({
         sessionId,
         clientId: 'hidden-cost',
+        turnMoney: usdEstimate(9.99),
         turnCostUsd: 9.99,
         turnCostIsEstimate: true,
         turnUsageDetails: TURN_USAGE_DETAILS,
@@ -326,7 +344,7 @@ describe('useCCAgentChat hidden chat snapshot freeze', () => {
 
     function EstimatedValueProbe() {
       const value = useSessionEstimatedValue(sessionId, true);
-      return <div data-testid="estimated-value">{value == null ? '' : value.toFixed(2)}</div>;
+      return <div data-testid="estimated-value">{value == null ? '' : value.amount.toFixed(2)}</div>;
     }
 
     render(
@@ -347,6 +365,7 @@ describe('useCCAgentChat hidden chat snapshot freeze', () => {
       turnCostListener?.({
         sessionId,
         clientId: 'unknown-live-client',
+        turnMoney: usdEstimate(2.5),
         turnCostUsd: 2.5,
         turnCostIsEstimate: true,
         turnUsageDetails: TURN_USAGE_DETAILS,
@@ -373,12 +392,20 @@ describe('useCCAgentChat hidden chat snapshot freeze', () => {
     };
     const renderCounts = { estimated: 0 };
     vi.mocked(messageService.estimatedSessionValue)
-      .mockResolvedValueOnce({ totalValueUsd: 4.56, entries: [{ clientId: 'hidden-cost', costUsd: 4.56 }] });
+      .mockResolvedValueOnce({
+        totalValueMoney: usdEstimate(4.56),
+        totalValueUsd: 4.56,
+        entries: [{
+          clientId: 'hidden-cost',
+          money: usdEstimate(4.56),
+          costUsd: 4.56,
+        }],
+      });
 
     function EstimatedValueProbe({ sessionId: currentSessionId }: { sessionId: string }) {
       renderCounts.estimated += 1;
       const value = useSessionEstimatedValue(currentSessionId, true);
-      return <div data-testid="estimated-value">{value == null ? '' : value.toFixed(2)}</div>;
+      return <div data-testid="estimated-value">{value == null ? '' : value.amount.toFixed(2)}</div>;
     }
 
     const { rerender } = render(
@@ -399,6 +426,7 @@ describe('useCCAgentChat hidden chat snapshot freeze', () => {
       turnCostListener?.({
         sessionId,
         clientId: 'hidden-cost',
+        turnMoney: usdEstimate(9.99),
         turnCostUsd: 9.99,
         turnCostIsEstimate: true,
         turnUsageDetails: TURN_USAGE_DETAILS,
@@ -425,6 +453,7 @@ describe('useCCAgentChat hidden chat snapshot freeze', () => {
       turnCostListener?.({
         sessionId,
         clientId: 'hidden-cost',
+        turnMoney: usdEstimate(4.56),
         turnCostUsd: 4.56,
         turnCostIsEstimate: true,
         turnUsageDetails: TURN_USAGE_DETAILS,
@@ -460,7 +489,7 @@ describe('useCCAgentChat hidden chat snapshot freeze', () => {
 
     function EstimatedValueProbe({ sessionId: currentSessionId }: { sessionId: string }) {
       const value = useSessionEstimatedValue(currentSessionId, true);
-      return <div data-testid="estimated-value">{value == null ? '' : value.toFixed(2)}</div>;
+      return <div data-testid="estimated-value">{value == null ? '' : value.amount.toFixed(2)}</div>;
     }
 
     const { rerender } = render(
@@ -476,6 +505,7 @@ describe('useCCAgentChat hidden chat snapshot freeze', () => {
       turnCostListener?.({
         sessionId: clearedSessionId,
         clientId: 'stale-before-clear',
+        turnMoney: usdEstimate(6.66),
         turnCostUsd: 6.66,
         turnCostIsEstimate: true,
         turnUsageDetails: TURN_USAGE_DETAILS,
@@ -511,12 +541,28 @@ describe('useCCAgentChat hidden chat snapshot freeze', () => {
     await waitFor(() => expect(pendingQueries.has(nextSessionId)).toBe(true));
 
     act(() => {
-      pendingQueries.get(staleSessionId)?.({ totalValueUsd: 7.77, entries: [{ clientId: 'stale-entry', costUsd: 7.77 }] });
+      pendingQueries.get(staleSessionId)?.({
+        totalValueMoney: usdEstimate(7.77),
+        totalValueUsd: 7.77,
+        entries: [{
+          clientId: 'stale-entry',
+          money: usdEstimate(7.77),
+          costUsd: 7.77,
+        }],
+      });
     });
     expect(screen.getByTestId('estimated-value').textContent).toBe('');
 
     act(() => {
-      pendingQueries.get(nextSessionId)?.({ totalValueUsd: 3.21, entries: [{ clientId: 'next-entry', costUsd: 3.21 }] });
+      pendingQueries.get(nextSessionId)?.({
+        totalValueMoney: usdEstimate(3.21),
+        totalValueUsd: 3.21,
+        entries: [{
+          clientId: 'next-entry',
+          money: usdEstimate(3.21),
+          costUsd: 3.21,
+        }],
+      });
     });
 
     await waitFor(() => expect(screen.getByTestId('estimated-value').textContent).toBe('3.21'));

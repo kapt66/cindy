@@ -37,9 +37,9 @@ const CANONICAL_FILE_NAMES = [
   '0077_nebulous_veda.sql',
   '0078_same_juggernaut.sql',
   '0079_futuristic_hercules.sql',
-  '0080_peaceful_baron_strucker.sql',
-  '0081_meka_lineage_slot_81.sql',
-  '0082_meka_lineage_slot_82.sql',
+  '0080_regional_money.sql',
+  '0081_preserve_gateway_currency.sql',
+  '0082_meka_product_schema.sql',
   '0083_meka_lineage_slot_83.sql',
   '0084_meka_lineage_slot_84.sql',
   '0085_meka_lineage_slot_85.sql',
@@ -157,6 +157,17 @@ describe('0088 Meka 0.0.11 migration lineage bridge', () => {
           'cost_usd',
           'estimated_value_usd',
           'cost_attribution',
+          'cost_amount',
+          'estimated_value_amount',
+          'cost_currency',
+          'cost_is_approximate',
+        ]),
+      );
+      expect(columnNames(db, 'sessions')).toEqual(
+        expect.arrayContaining([
+          'total_cost_amount',
+          'total_cost_currency',
+          'total_cost_is_approximate',
         ]),
       );
       expect(columnNames(db, 'messages')).toContain('agent_kind');

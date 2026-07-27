@@ -38,6 +38,8 @@ import {
   X,
 } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { useAuth } from '@/auth/AuthContext';
 import { configureCollapseAnimation } from '@/utils/collapseAnimation';
 import { useGuardedPush } from '@/utils/useGuardedPush';
@@ -53,7 +55,6 @@ import { buildMainWindowLayout } from '@/components/mainWindowLayout';
 import { useScreenEdgePadding } from '@/components/screenEdgeInsets';
 import { isAccessRevokedError } from '@/device-link/accessRevoked';
 import { useDeviceLink } from '@/device-link/DeviceLinkContext';
-import { useObserve } from '@/observability/observe';
 import {
   createEmptyDeviceIdentityCache,
   loadDeviceIdentityCache,
@@ -144,6 +145,7 @@ const DEVICE_LIST_TIMEOUT_MS = 12_000;
 // 项目组与自动化组展开后的子列表共用同一个预览限量(设备详情页也 import 复用,避免两处漂移)。
 export const PROJECT_PREVIEW_LIMIT = 5;
 const HOME_SESSION_ROW_HEIGHT = 78;
+const HOME_SESSION_SINGLE_LINE_ROW_HEIGHT = 60;
 const CINDY_LIST_GUTTER = 20;
 const CINDY_LIST_ROW_HEIGHT = 60;
 const CINDY_LIST_ROW_GAP = 10;
@@ -163,6 +165,7 @@ type HydrateDeviceSessionsResult = {
 export default function HomeScreen() {
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
+  const { t } = useTranslation();
   // 所有前进导航(进会话 / 新建 / 设置 / 组页面)统一走守卫 push:列表卡顿时的
   // 连点会各自触发一次裸 push,把同一页压进栈 N 层(返回也要 N 次)。
   const guardedPush = useGuardedPush();
@@ -732,9 +735,9 @@ export default function HomeScreen() {
   })), [deviceRows]);
   const revokedTipDeviceName = useMemo(
     () => revokedTipDeviceId
-      ? deviceModels.find((item) => item.deviceId === revokedTipDeviceId)?.name ?? '这台电脑'
+      ? deviceModels.find((item) => item.deviceId === revokedTipDeviceId)?.name ?? t('devices.list.thisComputer')
       : null,
-    [deviceModels, revokedTipDeviceId],
+    [deviceModels, revokedTipDeviceId, t],
   );
   // 三个派生索引的依赖挂在全局 messageVersion / storeVersion 上,桌面端活跃期逐 emit
   // 重建出内容相同的新 Map——若不做内容稳定化,home → sections → 全列表行整链每次
@@ -793,11 +796,6 @@ export default function HomeScreen() {
   const initialHomeSettled = deviceIdentityCacheReady && lastSyncedAt !== null;
   const initialHomeLoading = !initialHomeSettled && !connectionError;
   const initialHomeError = !initialHomeSettled && !!connectionError;
-  // EAS Observe:首页设备 / 会话首次加载完成即标记可交互(markInteractive 每 route 仅记首次)。
-  const { markInteractive } = useObserve();
-  useEffect(() => {
-    if (initialHomeSettled) markInteractive();
-  }, [initialHomeSettled, markInteractive]);
   // 首次同步完成后校验恢复/当前选中的设备,不成立时回退「所有对话」并同步持久化:
   // - 设备已不存在(解绑):home.selectedDeviceId 是归一化后的口径,查不到会变 null,
   //   若不回退,表头显示旧设备名而列表实际展示全部会话,两者口径不一致。
@@ -827,12 +825,12 @@ export default function HomeScreen() {
     : connectionError ? 'muted' : status === 'online' ? 'ready' : status === 'connecting' ? 'busy' : 'off';
   const connectionTitle = activeConnectionIssue
     ? connectionIssueTitle(activeConnectionIssue.kind)
-    : connectionError ? '同步失败' : homeConnectionTitle(status);
+    : connectionError ? t('devices.list.syncFailed') : homeConnectionTitle(status, t);
   const connectionCopy = activeConnectionIssue
     ? connectionIssueHint(activeConnectionIssue.kind)
     : connectionError;
-  const emptyStateTitle = initialHomeError ? '同步失败' : home.emptyTitle;
-  const emptyStateCopy = initialHomeError ? (connectionError ?? '请求失败') : home.emptyCopy;
+  const emptyStateTitle = initialHomeError ? t('devices.list.syncFailed') : home.emptyTitle;
+  const emptyStateCopy = initialHomeError ? (connectionError ?? t('devices.list.requestFailed')) : home.emptyCopy;
   // 无可控制电脑的引导态(landing)可见性,与 ListEmptyComponent 的分支同口径。
   // 引导态下首页没有可筛选的对话:表头「所有对话 ▾」退化为纯品牌标题、新建 FAB 隐藏,
   // 避免在产品说明页上摆一堆无意义的入口。
@@ -858,12 +856,12 @@ export default function HomeScreen() {
     [deviceModels],
   );
   const selectedDeviceLabel = useMemo(() => {
-    if (!selectedDeviceId) return '所有对话';
+    if (!selectedDeviceId) return t('devices.list.allConversations');
     // 设备列表尚未同步回来时,用偏好里存的设备名兜底,避免冷启动表头闪占位文案。
     return home.deviceFilters.find((item) => item.deviceId === selectedDeviceId)?.label
       ?? restoredDeviceName
-      ?? '这台电脑';
-  }, [home.deviceFilters, restoredDeviceName, selectedDeviceId]);
+      ?? t('devices.list.thisComputer');
+  }, [home.deviceFilters, restoredDeviceName, selectedDeviceId, t]);
   const avatarLabel = useMemo(() => {
     const trimmed = user?.name?.trim() || user?.email?.trim() || 'D';
     return trimmed.slice(0, 1).toUpperCase();
@@ -877,7 +875,7 @@ export default function HomeScreen() {
     // (当前可达设备),否则 re-link 后旧 deviceId 不可达会导致「首页卡片点开打不开」。回退物理 id / store 索引。
     const deviceId = session.canonicalDeviceId ?? session.deviceLinkDeviceId ?? remoteSessionStore.getSessionDeviceId(session.id);
     if (!deviceId) {
-      setError('找不到这个会话所属电脑，请重新同步后再试。');
+      setError(t('devices.list.error.sessionDeviceNotFound'));
       return;
     }
     guardedPush({
@@ -888,7 +886,7 @@ export default function HomeScreen() {
         sessionId: session.id,
       },
     });
-  }, [guardedPush, swipeRegistry]);
+  }, [guardedPush, swipeRegistry, t]);
 
   // ── 会话行滑动操作(置顶 / 归档 / 选项菜单 / 删除 / 重命名)────────────────
   // 首页会话横跨多台设备,不能用页面级单一 transport:RPC 走可达设备(canonicalDeviceId
@@ -913,7 +911,7 @@ export default function HomeScreen() {
   const patchHomeSession = useCallback(async (session: RemoteSession, patch: SessionMetaPatch) => {
     const rpcDeviceId = session.canonicalDeviceId ?? session.deviceLinkDeviceId
       ?? remoteSessionStore.getSessionDeviceId(session.id);
-    if (!rpcDeviceId) throw new Error('找不到这个会话所属电脑，请重新同步后再试。');
+    if (!rpcDeviceId) throw new Error(t('devices.list.error.sessionDeviceNotFound'));
     const shardId = session.deviceLinkDeviceId ?? remoteSessionStore.getSessionDeviceId(session.id) ?? rpcDeviceId;
     const fields = Object.keys(patch);
     // 写序登记:delete 终态取代全字段(pending 重命名/置顶让位);其余按 patch 字段。
@@ -1006,15 +1004,15 @@ export default function HomeScreen() {
     } finally {
       releasePending();
     }
-  }, [invoke]);
+  }, [invoke, t]);
 
   const runSwipeAction = useCallback((session: RemoteSession, action: Exclude<SessionSwipeAction, 'rename'>) => {
     void patchHomeSession(session, swipeActionPatch(action)).catch((err: unknown) => {
       // 归档路径不预先收行(成功时行随数据消失),失败时行可能还停在滑开态:先收行再提示。
       swipeRegistry.closeOpenRow();
-      Alert.alert('操作失败', humanizeRemoteError(err));
+      Alert.alert(t('devices.list.alert.actionFailed'), humanizeRemoteError(err));
     });
-  }, [patchHomeSession, swipeRegistry]);
+  }, [patchHomeSession, swipeRegistry, t]);
 
   // 「选项」菜单动作分发。删除走系统 Alert(系统层弹窗,不受兄弟 Modal 卸载时序影响,
   // 关 sheet 后直接弹);重命名要等 sheet 卸载后再挂弹窗(pendingSheetActionRef,时序
@@ -1025,10 +1023,10 @@ export default function HomeScreen() {
     if (!session) return;
     if (action === 'delete') {
       // 菜单不再展示会话标题(2026-07-07 产品反馈),删除确认在这里带上标题作上下文。
-      const title = session.title?.trim() || '未命名对话';
-      Alert.alert('删除对话？', `将删除「${title}」，删除后不可恢复。`, [
-        { style: 'cancel', text: '取消' },
-        { onPress: () => runSwipeAction(session, 'delete'), style: 'destructive', text: '删除' },
+      const title = session.title?.trim() || t('devices.list.untitled');
+      Alert.alert(t('devices.list.alert.deleteTitle'), t('devices.list.alert.deleteMessage', { title }), [
+        { style: 'cancel', text: t('devices.common.cancel') },
+        { onPress: () => runSwipeAction(session, 'delete'), style: 'destructive', text: t('devices.common.delete') },
       ]);
       return;
     }
@@ -1040,7 +1038,7 @@ export default function HomeScreen() {
       return;
     }
     runSwipeAction(session, action);
-  }, [actionSheetSession, runSwipeAction]);
+  }, [actionSheetSession, runSwipeAction, t]);
 
   const handleSessionSheetClosed = useCallback(() => {
     const pending = pendingSheetActionRef.current;
@@ -1060,9 +1058,9 @@ export default function HomeScreen() {
     setRenameSessionTarget(null);
     if (title === (target.title ?? '')) return;
     void patchHomeSession(target, { title }).catch((err: unknown) => {
-      Alert.alert('重命名失败', humanizeRemoteError(err));
+      Alert.alert(t('devices.list.alert.renameFailed'), humanizeRemoteError(err));
     });
-  }, [patchHomeSession, renameSessionDraft, renameSessionTarget]);
+  }, [patchHomeSession, renameSessionDraft, renameSessionTarget, t]);
 
   // 右滑置顶(收行时序在 SwipeableSessionRow 内:置顶前先收行,避免列表重排后行停在打开态)。
   const toggleSessionPinned = useCallback((session: RemoteSession) => {
@@ -1090,7 +1088,7 @@ export default function HomeScreen() {
     const deviceId = project?.deviceId ?? home.primaryDevice?.deviceId;
     const deviceName = project?.deviceName ?? home.primaryDevice?.label ?? deviceId ?? '';
     if (!deviceId) {
-      setError('没有可用电脑。请先打开桌面端远程控制，然后重新同步。');
+      setError(t('devices.list.error.noDevice'));
       return;
     }
     guardedPush({
@@ -1105,7 +1103,7 @@ export default function HomeScreen() {
         ...(selectedDeviceId ? { deviceExplicit: '1' } : {}),
       },
     });
-  }, [guardedPush, home.primaryDevice, newSessionDeviceOptions, selectedDeviceId]);
+  }, [guardedPush, home.primaryDevice, newSessionDeviceOptions, selectedDeviceId, t]);
 
   const toggleProject = useCallback((key: string) => {
     configureCollapseAnimation();
@@ -1128,7 +1126,7 @@ export default function HomeScreen() {
     // 设备解析与 openSession 同口径:可达优先(canonicalDeviceId),回退物理 id / store 索引。
     const deviceId = session.canonicalDeviceId ?? session.deviceLinkDeviceId ?? remoteSessionStore.getSessionDeviceId(session.id);
     if (!deviceId) {
-      setError('找不到这个任务所属电脑，请重新同步后再试。');
+      setError(t('devices.list.error.taskDeviceNotFound'));
       return;
     }
     // 项目组内的组行(有 workingDir)带上项目维度:baseKey 不含项目 scope,同一任务跨
@@ -1147,7 +1145,7 @@ export default function HomeScreen() {
         automationSessionIds: JSON.stringify(group.sessionIds),
       },
     });
-  }, [guardedPush]);
+  }, [guardedPush, t]);
 
   // 置顶组与项目组一致:点表头收起/展开,共用同一条收起动画。
   const togglePinned = useCallback(() => {
@@ -1240,7 +1238,7 @@ export default function HomeScreen() {
           </View>
         ) : (
           <Pressable
-            accessibilityLabel="选择对话范围"
+            accessibilityLabel={t('devices.list.a11y.selectScope')}
             accessibilityRole="button"
             onPress={openDeviceMenu}
             onPressIn={openDeviceMenu}
@@ -1252,7 +1250,7 @@ export default function HomeScreen() {
           </Pressable>
         )}
         <Pressable
-          accessibilityLabel="打开设置"
+          accessibilityLabel={t('devices.list.a11y.openSettings')}
           accessibilityRole="button"
           onPress={() => guardedPush('/settings')}
           style={({ pressed }) => [styles.avatarButton, pressed && styles.pressed]}
@@ -1276,7 +1274,7 @@ export default function HomeScreen() {
             {connectionCopy ? `${connectionTitle} · ${connectionCopy}` : connectionTitle}
           </Text>
           <Pressable
-            accessibilityLabel={refreshing ? '正在重新同步' : '重新同步'}
+            accessibilityLabel={refreshing ? t('devices.list.a11y.syncing') : t('devices.list.a11y.sync')}
             accessibilityRole="button"
             accessibilityState={{ busy: refreshing || undefined, disabled: refreshing }}
             disabled={refreshing}
@@ -1313,7 +1311,7 @@ export default function HomeScreen() {
           if (section.key !== 'pinned' || !section.title) return null;
           return (
             <Pressable
-              accessibilityLabel={`置顶 ${home.pinned.length} 条对话`}
+              accessibilityLabel={t('devices.list.a11y.pinnedConversations', { count: home.pinned.length })}
               accessibilityRole="button"
               accessibilityState={{ expanded: !pinnedCollapsed }}
               onPress={togglePinned}
@@ -1387,7 +1385,7 @@ export default function HomeScreen() {
       {showRemoteGuide ? null : (
         // 引导态(无可控制电脑)下没有可发起对话的设备,置灰 FAB 也是噪音,直接不渲染。
         <Pressable
-          accessibilityLabel="新建远程对话"
+          accessibilityLabel={t('devices.list.a11y.newRemoteConversation')}
           accessibilityRole="button"
           accessibilityState={{ busy: initialHomeLoading || undefined, disabled: newSessionDisabled }}
           disabled={newSessionDisabled}
@@ -1485,10 +1483,11 @@ export default function HomeScreen() {
 function HomeInitialLoadingState({ style }: { style?: StyleProp<ViewStyle> }) {
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
+  const { t } = useTranslation();
   return (
     <View style={[styles.initialLoadingState, style]} testID="home.loading">
       <ActivityIndicator color={colors.textSecondary} size="small" />
-      <Text style={styles.initialLoadingText}>正在读取可控制电脑</Text>
+      <Text style={styles.initialLoadingText}>{t('devices.list.loading')}</Text>
     </View>
   );
 }
@@ -1520,6 +1519,7 @@ function DeviceMenuModal({
   visible: boolean;
 }) {
   const styles = useThemedStyles(makeStyles);
+  const { t } = useTranslation();
   const { height: screenHeight } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   // 设备多 / 字体放大时,scope 列表(所有对话 + 设备)可能超出屏幕,给它一个可滚动上限,
@@ -1545,7 +1545,7 @@ function DeviceMenuModal({
           >
             {allFilter ? (
               <DeviceMenuItem
-                label="所有对话"
+                label={t('devices.list.allConversations')}
                 onPress={() => onSelect(allFilter)}
                 selected={allFilter.selected}
                 testID="home.deviceChip.all"
@@ -1569,7 +1569,7 @@ function DeviceMenuModal({
           <View style={styles.deviceMenuDivider} />
           <DeviceMenuItem
             checked={groupByProject}
-            label="按项目分组"
+            label={t('devices.list.menu.groupByProject')}
             onPress={onToggleGroupByProject}
             selected={false}
             testID="home.deviceMenu.groupByProject"
@@ -1605,6 +1605,7 @@ function DeviceMenuItem({
 }) {
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
+  const { t } = useTranslation();
   const rowDisabled = dimmed;
   return (
     <Pressable
@@ -1639,7 +1640,7 @@ function DeviceMenuItem({
       ) : null}
       {onRename ? (
         <Pressable
-          accessibilityLabel={`重命名 ${label}`}
+          accessibilityLabel={t('devices.list.a11y.renameDevice', { label })}
           accessibilityRole="button"
           hitSlop={8}
           onPress={(event) => {
@@ -1673,12 +1674,13 @@ function RenameDeviceModal({
 }) {
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
+  const { t } = useTranslation();
   const canSave = draft.trim().length > 0 && !saving;
   return (
     <Modal animationType="fade" transparent visible={visible} onRequestClose={onCancel}>
       <Pressable style={styles.renameDeviceBackdrop} onPress={onCancel} testID="home.renameDevice.backdrop">
         <Pressable style={styles.renameDeviceCard} onPress={() => undefined} testID="home.renameDevice.modal">
-          <Text style={styles.renameDeviceTitle}>重命名设备</Text>
+          <Text style={styles.renameDeviceTitle}>{t('devices.list.renameDevice.title')}</Text>
           <TextInput
             autoFocus
             editable={!saving}
@@ -1687,7 +1689,7 @@ function RenameDeviceModal({
             onSubmitEditing={() => {
               if (canSave) onConfirm();
             }}
-            placeholder="设备名称"
+            placeholder={t('devices.list.renameDevice.placeholder')}
             placeholderTextColor={colors.textTertiary}
             returnKeyType="done"
             selectTextOnFocus
@@ -1698,18 +1700,18 @@ function RenameDeviceModal({
           {/* 确认对统一规则:共享满宽纵排组(保存在上/取消居底),置于卡片底部。 */}
           <MainWindowActionGroup
             primaryActions={[{
-              accessibilityLabel: saving ? '正在保存设备名' : '保存设备名',
+              accessibilityLabel: saving ? t('devices.list.renameDevice.savingA11y') : t('devices.list.renameDevice.saveA11y'),
               busy: saving,
               disabled: !canSave,
-              label: saving ? '保存中' : '保存',
+              label: saving ? t('devices.common.saving') : t('devices.common.save'),
               onPress: onConfirm,
               testID: 'home.renameDevice.save',
               tone: 'primary',
             }]}
             cancelAction={{
-              accessibilityLabel: '取消重命名',
+              accessibilityLabel: t('devices.list.a11y.cancelRename'),
               disabled: saving,
-              label: '取消',
+              label: t('devices.common.cancel'),
               onPress: onCancel,
               testID: 'home.renameDevice.cancel',
             }}
@@ -1742,12 +1744,13 @@ function RenameSessionModal({
 }) {
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
+  const { t } = useTranslation();
   const canSave = draft.trim().length > 0 && !saving;
   return (
     <Modal animationType="fade" transparent visible={visible} onRequestClose={onCancel}>
       <Pressable style={styles.renameDeviceBackdrop} onPress={onCancel} testID="home.renameSession.backdrop">
         <Pressable style={styles.renameDeviceCard} onPress={() => undefined} testID="home.renameSession.modal">
-          <Text style={styles.renameDeviceTitle}>重命名对话</Text>
+          <Text style={styles.renameDeviceTitle}>{t('devices.list.renameSession.title')}</Text>
           <TextInput
             autoFocus
             editable={!saving}
@@ -1756,7 +1759,7 @@ function RenameSessionModal({
             onSubmitEditing={() => {
               if (canSave) onConfirm();
             }}
-            placeholder="对话标题"
+            placeholder={t('devices.list.renameSession.placeholder')}
             placeholderTextColor={colors.textTertiary}
             returnKeyType="done"
             selectTextOnFocus
@@ -1767,17 +1770,17 @@ function RenameSessionModal({
           {/* 确认对统一规则:共享满宽纵排组(保存在上/取消恒居底),与重命名设备卡同款。 */}
           <MainWindowActionGroup
             cancelAction={{
-              accessibilityLabel: '取消重命名',
+              accessibilityLabel: t('devices.list.a11y.cancelRename'),
               disabled: saving,
-              label: '取消',
+              label: t('devices.common.cancel'),
               onPress: onCancel,
               testID: 'home.renameSession.cancel',
             }}
             primaryActions={[{
-              accessibilityLabel: saving ? '正在保存对话标题' : '保存对话标题',
+              accessibilityLabel: saving ? t('devices.list.renameSession.savingA11y') : t('devices.list.renameSession.saveA11y'),
               busy: saving,
               disabled: !canSave,
-              label: saving ? '保存中' : '保存',
+              label: saving ? t('devices.common.saving') : t('devices.common.save'),
               onPress: onConfirm,
               testID: 'home.renameSession.save',
               tone: 'primary',
@@ -1803,6 +1806,7 @@ function RevokedAccessTip({
 }) {
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
+  const { t } = useTranslation();
   return (
     <Modal animationType="fade" transparent visible={deviceName != null} onRequestClose={onClose}>
       <Pressable style={styles.revokedTipBackdrop} onPress={onClose} testID="home.revokedTip.backdrop">
@@ -1813,7 +1817,7 @@ function RevokedAccessTip({
               <Lock color={colors.textPrimary} size={iconSize.lg} strokeWidth={iconStroke.regular} />
             </View>
             <Pressable
-              accessibilityLabel="关闭"
+              accessibilityLabel={t('devices.list.a11y.close')}
               accessibilityRole="button"
               hitSlop={8}
               onPress={onClose}
@@ -1822,12 +1826,12 @@ function RevokedAccessTip({
               <X color={colors.textSecondary} size={iconSize.lg} strokeWidth={iconStroke.regular} />
             </Pressable>
           </View>
-          <Text style={styles.revokedTipTitle}>已撤销访问权限</Text>
+          <Text style={styles.revokedTipTitle}>{t('devices.list.revoked.title')}</Text>
           <Text style={styles.revokedTipBody}>
-            {`「${deviceName ?? '这台电脑'}」撤销了本机的远程访问权限。请在该电脑的 Cindy 设置里重新授权本设备，然后点「重试访问」。`}
+            {t('devices.list.revoked.body', { deviceName: deviceName ?? t('devices.list.thisComputer') })}
           </Text>
           <Pressable
-            accessibilityLabel="重试访问"
+            accessibilityLabel={t('devices.list.revoked.retry')}
             accessibilityRole="button"
             accessibilityState={{ busy: retrying, disabled: retrying }}
             disabled={retrying}
@@ -1838,7 +1842,7 @@ function RevokedAccessTip({
             {retrying ? (
               <ActivityIndicator color={colors.ctaText} size="small" />
             ) : (
-              <Text style={styles.revokedTipRetryText}>重试访问</Text>
+              <Text style={styles.revokedTipRetryText}>{t('devices.list.revoked.retry')}</Text>
             )}
           </Pressable>
         </Pressable>
@@ -1882,6 +1886,7 @@ function ProjectRow({
 }) {
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
+  const { t } = useTranslation();
   // 折叠豁免要命令式读会话运行态,而派生链稳定化后本组件不再逐 emit 重渲染(cell 经
   // PureComponent bail)——以 storeVersion 订阅兜底感知运行态变化,与 AutomationGroup-
   // Children 同款(否则折叠线以下转入 running 的会话不会被豁免展开,review P1)。
@@ -1903,7 +1908,7 @@ function ProjectRow({
       testID="home.projectGroup"
     >
       <Pressable
-        accessibilityLabel={`项目 ${project.title}`}
+        accessibilityLabel={t('devices.list.a11y.project', { title: project.title })}
         accessibilityRole="button"
         accessibilityState={{ expanded: !collapsed }}
         onPress={onToggle}
@@ -1963,7 +1968,7 @@ function ProjectRow({
           })}
           {hiddenRowCount > 0 ? (
             <Pressable
-              accessibilityLabel={`查看全部 ${project.sessionCount} 条对话`}
+              accessibilityLabel={t('devices.list.viewAllConversations', { count: project.sessionCount })}
               accessibilityRole="button"
               disabled={!project.deviceId}
               onPress={onOpenProject}
@@ -1975,7 +1980,7 @@ function ProjectRow({
               testID="home.projectViewAll"
             >
               <Text style={styles.projectViewAllText} numberOfLines={1}>
-                {`查看全部 ${project.sessionCount} 条对话`}
+                {t('devices.list.viewAllConversations', { count: project.sessionCount })}
               </Text>
               <ChevronRight color={colors.textTertiary} size={iconSize.action} strokeWidth={iconStroke.regular} />
             </Pressable>
@@ -2150,6 +2155,7 @@ function HomeSessionRowInner({
 }) {
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
+  const { t } = useTranslation();
   const cindyList = variant === 'cindyList';
   // 运行态走订阅而非命令式读取:行已 memo 化,父层不再逐 emit 重渲染,命令式读取会 stale。
   const sessionIsRunning = useSessionRunning(item.session.id);
@@ -2185,8 +2191,11 @@ function HomeSessionRowInner({
   // 预览走共享 buildRemoteSessionCardPreview(已并入 #368 的 liveActivity),运行中会显示实时活动;
   // 组行的预览位改为任务态摘要(需关注数 / 执行中 / 共 N 次运行),对齐桌面版组头 meta。
   const preview = group
-    ? automationGroupPreview(item, group.sessionCount)
+    ? automationGroupPreview(item, group.sessionCount, t)
     : buildRemoteSessionCardPreview(item, { running });
+  // 零消息会话没有摘要。此时不要保留双行列表的空白第二行；但定时任务与置顶
+  // 标记仍占用右下状态槽，因此继续使用双行布局。
+  const showPreviewLine = !!preview?.trim() || showSchedule || showPinned;
   // 组行点击语义对齐桌面版侧边栏:收起且有需关注内容(未读运行 / 待处理)时,点行直接打开
   // 该看的那条会话(共享层 primary:运行中 > 有未读 > 最新);想展开点行首箭头(独立热区)。
   // 无需关注内容或已展开时,点行仍是展开 / 收起。
@@ -2210,8 +2219,8 @@ function HomeSessionRowInner({
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={group
-          ? groupRowOpensPrimary ? `打开自动化任务 ${item.title} 的最新会话` : `自动化任务 ${item.title}`
-          : `打开会话 ${item.title}`}
+          ? groupRowOpensPrimary ? t('devices.list.a11y.openAutomationLatest', { title: item.title }) : t('devices.list.a11y.automationTask', { title: item.title })
+          : t('devices.list.a11y.openConversation', { title: item.title })}
         accessibilityState={group ? { expanded: groupExpanded } : undefined}
         onPress={group
           ? groupRowOpensPrimary ? openGroupPrimary : () => onToggleAutomationGroup?.(group.key)
@@ -2219,6 +2228,7 @@ function HomeSessionRowInner({
         style={({ pressed }) => [
           styles.sessionListRow,
           cindyList && styles.sessionListRowCindy,
+          !showPreviewLine && styles.sessionListRowSingleLine,
           cindyList && inOutlinedGroup && styles.sessionListRowOutlinedGroup,
           cindyList && inOutlinedGroup && groupEnd && styles.sessionListRowOutlinedGroupEnd,
           standaloneCindyCard && styles.sessionListRowCindyCard,
@@ -2234,7 +2244,7 @@ function HomeSessionRowInner({
           // 展开箭头放行首,与项目组的折叠交互一致(chevron → 图标 → 标题);
           // 独立热区:即使组行点击直开会话(有需关注内容时),点箭头仍然是展开 / 收起。
           <Pressable
-            accessibilityLabel={groupExpanded ? `收起 ${item.title}` : `展开 ${item.title}`}
+            accessibilityLabel={groupExpanded ? t('devices.list.a11y.collapse', { title: item.title }) : t('devices.list.a11y.expand', { title: item.title })}
             accessibilityRole="button"
             hitSlop={{ bottom: 12, left: 12, right: 4, top: 12 }}
             onPress={(event) => {
@@ -2253,7 +2263,11 @@ function HomeSessionRowInner({
             )}
           </Pressable>
         ) : null}
-        <View style={[styles.sessionIconCell, cindyList && styles.sessionIconCellCindy]}>
+        <View style={[
+          styles.sessionIconCell,
+          cindyList && styles.sessionIconCellCindy,
+          !showPreviewLine && styles.sessionIconCellSingleLine,
+        ]}>
           <SessionStatusMark
             active={running || attention}
             item={item}
@@ -2290,7 +2304,7 @@ function HomeSessionRowInner({
                   <SessionRightSpinner testID={`home.sessionRightStatus.running.${item.session.id}`} />
                 ) : (
                   <View
-                    accessibilityLabel={rightStatus === 'error' ? '任务出错' : rightStatus === 'awaiting' ? '等待你处理' : '已完成未读'}
+                    accessibilityLabel={rightStatus === 'error' ? t('devices.list.a11y.taskError') : rightStatus === 'awaiting' ? t('devices.list.a11y.awaitingYou') : t('devices.list.a11y.doneUnread')}
                     accessibilityRole="image"
                     style={[styles.sessionRightDot, {
                       backgroundColor: rightStatus === 'error'
@@ -2305,30 +2319,32 @@ function HomeSessionRowInner({
               </View>
             )}
           </View>
-          <View style={[styles.sessionPreviewRow, cindyList && styles.sessionPreviewRowCindy]}>
-            <Text
-              ellipsizeMode="tail"
-              numberOfLines={1}
-              style={[styles.sessionPreview, cindyList && styles.sessionPreviewCindy]}
-              testID={`home.sessionRowPreview.${item.session.id}`}
-            >
-              {preview}
-            </Text>
-            {showSchedule || showPinned ? (
-              // 组行与单次自动化会话行同款标记:Timer 放右下(时间下方的尾部图标位),
-              // 行首保留正常的会话状态图标(primary 运行的 vendor / 运行态)。
-              <View style={[styles.sessionTrailingIcons, cindyList && styles.sessionTrailingIconsCindy]}>
-                {showSchedule ? (
-                  <AutomationTimerIcon
-                    paused={scheduleStopped}
-                    size={cindyList ? iconSize.xs : iconSize.lg}
-                    testID={`home.sessionAutomationTimer.${item.session.id}`}
-                  />
-                ) : null}
-                {showPinned ? <Pin color={colors.textTertiary} size={cindyList ? iconSize.xs : iconSize.lg} strokeWidth={iconStroke.thin} /> : null}
-              </View>
-            ) : null}
-          </View>
+          {showPreviewLine ? (
+            <View style={[styles.sessionPreviewRow, cindyList && styles.sessionPreviewRowCindy]}>
+              <Text
+                ellipsizeMode="tail"
+                numberOfLines={1}
+                style={[styles.sessionPreview, cindyList && styles.sessionPreviewCindy]}
+                testID={`home.sessionRowPreview.${item.session.id}`}
+              >
+                {preview}
+              </Text>
+              {showSchedule || showPinned ? (
+                // 组行与单次自动化会话行同款标记:Timer 放右下(时间下方的尾部图标位),
+                // 行首保留正常的会话状态图标(primary 运行的 vendor / 运行态)。
+                <View style={[styles.sessionTrailingIcons, cindyList && styles.sessionTrailingIconsCindy]}>
+                  {showSchedule ? (
+                    <AutomationTimerIcon
+                      paused={scheduleStopped}
+                      size={cindyList ? iconSize.xs : iconSize.lg}
+                      testID={`home.sessionAutomationTimer.${item.session.id}`}
+                    />
+                  ) : null}
+                  {showPinned ? <Pin color={colors.textTertiary} size={cindyList ? iconSize.xs : iconSize.lg} strokeWidth={iconStroke.thin} /> : null}
+                </View>
+              ) : null}
+            </View>
+          ) : null}
         </View>
       </Pressable>
       {group && groupExpanded ? (
@@ -2378,6 +2394,7 @@ function AutomationGroupChildren({
 }) {
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
+  const { t } = useTranslation();
   // 折叠豁免要命令式读子会话运行态,而父行(HomeSessionRow)已 memo 化、不再逐 emit
   // 重渲染——这里以 storeVersion 订阅兜底感知运行态变化。仅组展开时挂载,量小成本可忽略。
   useRemoteSessionStoreVersion();
@@ -2417,7 +2434,7 @@ function AutomationGroupChildren({
       })}
       {hasViewAllRow ? (
         <Pressable
-          accessibilityLabel={`查看全部 ${group.sessionCount} 次运行`}
+          accessibilityLabel={t('devices.list.viewAllRuns', { count: group.sessionCount })}
           accessibilityRole="button"
           onPress={() => onOpenGroup?.(group)}
           style={({ pressed }) => [
@@ -2429,7 +2446,7 @@ function AutomationGroupChildren({
           testID={`${testID}.automationViewAll`}
         >
           <Text style={styles.projectViewAllText} numberOfLines={1}>
-            {`查看全部 ${group.sessionCount} 次运行`}
+            {t('devices.list.viewAllRuns', { count: group.sessionCount })}
           </Text>
           <ChevronRight color={colors.textTertiary} size={variant === 'cindyList' ? iconSize.xs : iconSize.action} strokeWidth={iconStroke.regular} />
         </Pressable>
@@ -2439,17 +2456,17 @@ function AutomationGroupChildren({
 }
 
 /** 自动化组行的预览位文案:需关注数 > 执行中 > 共 N 次运行(对齐桌面版组头 meta 的优先级)。 */
-function automationGroupPreview(item: RemoteSessionListItem, sessionCount: number): string {
+function automationGroupPreview(item: RemoteSessionListItem, sessionCount: number, t: TFunction): string {
   const unread = item.scheduleInfo?.unreadCount ?? 0;
   const waiting = item.pendingInteractionCount;
   if (unread > 0 || waiting > 0) {
     return [
-      unread > 0 ? `${unread} 个需关注` : null,
-      waiting > 0 ? `等待处理 ${waiting} 个` : null,
+      unread > 0 ? t('devices.list.preview.needAttention', { count: unread }) : null,
+      waiting > 0 ? t('devices.list.preview.waiting', { count: waiting }) : null,
     ].filter(Boolean).join(' · ');
   }
-  if (item.scheduleInfo?.running) return '自动化执行中';
-  return `共 ${sessionCount} 次运行`;
+  if (item.scheduleInfo?.running) return t('devices.list.preview.automationRunning');
+  return t('devices.list.preview.totalRuns', { count: sessionCount });
 }
 
 // 状态提醒点已移到行右侧(替代时间位,与桌面一致),行首图标只保留 vendor 标识 +
@@ -2530,6 +2547,7 @@ function SessionRelativeTime({ lastActivityAt, style }: { lastActivityAt: string
 
 function SessionRightSpinner({ testID }: { testID?: string }) {
   const { colors } = useTheme();
+  const { t } = useTranslation();
   const spin = useRef(new Animated.Value(0)).current;
   useEffect(() => {
     const loop = Animated.loop(
@@ -2548,7 +2566,7 @@ function SessionRightSpinner({ testID }: { testID?: string }) {
   const rotate = spin.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
   return (
     <Animated.View
-      accessibilityLabel="运行中"
+      accessibilityLabel={t('devices.list.a11y.running')}
       style={{ transform: [{ rotate }] }}
       testID={testID}
     >
@@ -2648,9 +2666,9 @@ function isClaudeCodeAgentKind(agentKind: string): boolean {
   return agentKind !== 'codex';
 }
 
-function homeConnectionTitle(status: 'online' | 'connecting' | 'stopped'): string {
-  if (status === 'connecting') return '连接中';
-  if (status === 'stopped') return '连接断开';
+function homeConnectionTitle(status: 'online' | 'connecting' | 'stopped', t: TFunction): string {
+  if (status === 'connecting') return t('devices.list.connection.connecting');
+  if (status === 'stopped') return t('devices.list.connection.disconnected');
   return '';
 }
 
@@ -3016,6 +3034,9 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     height: CINDY_LIST_ROW_HEIGHT,
     paddingLeft: 18,
   },
+  sessionListRowSingleLine: {
+    height: HOME_SESSION_SINGLE_LINE_ROW_HEIGHT,
+  },
   sessionListRowCindyCard: {
     borderColor: colors.border,
     borderRadius: radius.container,
@@ -3115,6 +3136,10 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   sessionIconCellCindy: {
     paddingTop: 14,
     width: iconSize.md,
+  },
+  sessionIconCellSingleLine: {
+    justifyContent: 'center',
+    paddingTop: 0,
   },
   sessionGroupChevronCell: {
     // 自动化组行行首的展开箭头列:与项目组行首 chevron 对齐(尺寸 22、次级色),

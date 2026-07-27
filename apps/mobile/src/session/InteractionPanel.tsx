@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   Check,
   CornerDownLeft,
@@ -10,6 +11,7 @@ import {
   Square,
 } from 'lucide-react-native';
 import {
+  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -31,7 +33,9 @@ import {
   buildPermissionReviewPresentation,
   buildPlanReviewEvidencePresentation,
   buildInteractionResolveActionPresentation,
+  buildPluginSetupCancelDecision,
   buildPlanReviewDecision,
+  buildRemotePluginSetupPresentation,
   canStartInteractionResolve,
   encodeMultiSelectAnswer,
   resolveInteractionResilient,
@@ -41,12 +45,15 @@ import {
   planReviewFilePath,
   planReviewPlan,
   readRequestId,
+  remoteInteractionHandling,
   selectionFromAnswer,
   sessionScopedPermissionSuggestions,
   sortPendingInteractions,
   type AskQuestion,
   type PermissionReviewPresentation,
   type PlanReviewEvidencePresentation,
+  type RemotePluginSetupPhase,
+  type RemotePluginSetupStep,
 } from '@/session/interactionModel';
 import {
   clearAskUserDraft,
@@ -67,6 +74,25 @@ import { iconSize, radius, spacing, typeScale } from '@/theme/tokens';
 import { contentToPreview } from '@/utils/contentPreview';
 
 const PLAN_PREVIEW_LINE_HEIGHT = 20;
+
+/**
+ * 有本地化文案的 interaction kind 白名单(与 interaction.json 的 `kinds` 键一一对应)。
+ *
+ * kind 来自远端请求、可以是任意字符串,不能直接拼进 i18next 的 key 路径:带 `.` 的值
+ * 会改变路径解析,`__proto__` 这类还会牵扯原型链(#530 review)。白名单外一律归到
+ * `fallback`。
+ */
+const LOCALIZED_INTERACTION_KINDS = new Set([
+  'permission',
+  'ask_user_question',
+  'plan_review',
+  'issue_confirm',
+  'plugin_setup',
+]);
+
+function localizedInteractionKindKey(kind: string): string {
+  return LOCALIZED_INTERACTION_KINDS.has(kind) ? kind : 'fallback';
+}
 
 export type MobilePlanViewerState = 'half' | 'expanded' | 'minimized' | 'edit';
 type RestorablePlanViewerState = Exclude<MobilePlanViewerState, 'minimized'>;
@@ -97,6 +123,7 @@ export function InteractionPanel({
   onError(message: string | null): void;
 }) {
   const styles = useThemedStyles(makeStyles);
+  const { t } = useTranslation();
   const sortedInteractions = useMemo(
     () => sortPendingInteractions(interactions),
     [interactions],
@@ -130,14 +157,37 @@ export function InteractionPanel({
   const activeRequestIdForPresentation = readRequestId(activeInteraction);
   const selectedQueueItem = queuePresentation.items.find((item) => item.requestId === activeRequestIdForPresentation)
     ?? queuePresentation.active;
+  // 共享层的 title / label 是中文直出(desktop 时代留下的),控制端要按当前 locale
+  // 翻译后再渲染,否则这些队列文案在 en / ja / ko 下仍是中文(#530 review)。
+  const localizedKindText = (itemKind: string, field: 'title' | 'label') => t(
+    `interaction.kinds.${localizedInteractionKindKey(itemKind)}.${field}`,
+  );
+  // positionLabel 同样是中文直出,且会被插进队列切换的 accessibility 文案 —— 不翻的话
+  // VoiceOver / TalkBack 在 en / ja / ko 下会念出混语(#530 review)。
+  const localizedPositionLabel = (index: number) => {
+    if (index === 0) return t('interaction.panel.queuePositionCurrent');
+    if (index === 1) return t('interaction.panel.queuePositionNext');
+    return t('interaction.panel.queuePositionNth', { index: index + 1 });
+  };
+  const localizeQueueItem = <T extends { kind: string; positionLabel: string }>(item: T, index: number): T => ({
+    ...item,
+    label: localizedKindText(item.kind, 'label'),
+    positionLabel: localizedPositionLabel(index),
+    title: localizedKindText(item.kind, 'title'),
+  });
+  const selectedQueueIndex = queuePresentation.items.findIndex((item) => item.requestId === activeRequestIdForPresentation);
   const activeQueuePresentation = {
     ...queuePresentation,
-    active: selectedQueueItem,
-    items: queuePresentation.items.map((item) => ({
-      ...item,
+    active: selectedQueueItem
+      ? localizeQueueItem(selectedQueueItem, selectedQueueIndex >= 0 ? selectedQueueIndex : 0)
+      : selectedQueueItem,
+    items: queuePresentation.items.map((item, index) => ({
+      ...localizeQueueItem(item, index),
       active: item.requestId === activeRequestIdForPresentation,
     })),
-    title: selectedQueueItem?.title ?? queuePresentation.title,
+    title: selectedQueueItem
+      ? localizedKindText(selectedQueueItem.kind, 'title')
+      : queuePresentation.title,
   };
   const touchLayout = buildInteractionTouchLayout({
     actionCount: resolveActionCount(kind),
@@ -161,8 +211,8 @@ export function InteractionPanel({
           touchLayout={touchLayout}
         />
         <View style={[styles.card, cardLayoutStyle]} testID="interaction.readOnlyCard">
-          <Text style={styles.kind}>待确认</Text>
-          <Text style={styles.cardTitle}>电脑端正在等待确认</Text>
+          <Text style={styles.kind}>{t('interaction.panel.readOnlyKind')}</Text>
+          <Text style={styles.cardTitle}>{t('interaction.panel.readOnlyTitle')}</Text>
           <Text style={styles.body}>{readOnlyReason}</Text>
         </View>
       </View>
@@ -237,6 +287,7 @@ function PendingTaskHeader({
   touchLayout: InteractionTouchLayout;
 }) {
   const styles = useThemedStyles(makeStyles);
+  const { t } = useTranslation();
   const activeIndex = Math.max(0, presentation.items.findIndex((item) => item.active));
   const nextItem = presentation.items.length > 1
     ? presentation.items[(activeIndex + 1) % presentation.items.length]
@@ -253,12 +304,12 @@ function PendingTaskHeader({
         ]}
       >
         <View style={styles.taskHeaderText}>
-          <Text style={styles.taskEyebrow}>待处理请求</Text>
+          <Text style={styles.taskEyebrow}>{t('interaction.panel.pendingRequests')}</Text>
           <Text numberOfLines={1} style={styles.taskTitle}>{presentation.title}</Text>
         </View>
         {presentation.totalCount > 1 ? (
           <InteractionTouchButton
-            accessibilityLabel={nextItem ? `切换到${nextItem.positionLabel}待处理请求: ${nextItem.label}` : '切换待处理请求'}
+            accessibilityLabel={nextItem ? t('interaction.panel.queueSwitchTo', { position: nextItem.positionLabel, label: nextItem.label }) : t('interaction.panel.queueSwitchGeneric')}
             disabled={!nextItem?.requestId}
             onPress={() => onSelectRequest(nextItem?.requestId ?? null)}
             style={[styles.taskCountPill, { minHeight: touchLayout.taskCountPillMinHeight }]}
@@ -291,16 +342,25 @@ function InteractionItem({
   onError(message: string | null): void;
   touchLayout: InteractionTouchLayout;
 }) {
+  const { t } = useTranslation();
   const maker = useMobileMakerTransport(deviceId);
   const [busy, setBusy] = useState(false);
   const submittingRequestIdRef = useRef<string | null>(null);
   const requestId = readRequestId(item);
   const kind = interactionKind(item);
 
-  const submitDecision = async (decision: Record<string, unknown>) => {
+  const submitDecision = async (
+    decision: Record<string, unknown>,
+    options: { optimisticDismiss?: boolean; resolvedRevision?: number } = {},
+  ) => {
     if (!canStartInteractionResolve({ requestId, submittingRequestId: submittingRequestIdRef.current })) return;
     const currentRequestId = requestId;
     if (!currentRequestId) return;
+    // 乐观 dismiss 只适合「决定即终局」的卡。plugin_setup 的取消由被控端按
+    // expectedRevision 裁决(旧快照会被改判成重新体检而非取消),抢先撤卡会在
+    // 取消其实没生效时留下一张被抑制、再也灌不回来的幽灵卡 —— 那类卡走非乐观
+    // 路径,等被控端 dismiss 推送为准。
+    const optimisticDismiss = options.optimisticDismiss !== false;
     submittingRequestIdRef.current = currentRequestId;
     setBusy(true);
     onError(null);
@@ -309,18 +369,32 @@ function InteractionItem({
     // 登记在途抑制,防权威快照 / push 重放在被控端确认前把同卡灌回闪回;保留
     // item 快照,真失败时原卡复原供重试。
     const itemSnapshot = item;
-    remoteSessionStore.beginOptimisticInteractionDismiss(sessionId, currentRequestId);
+    if (optimisticDismiss) remoteSessionStore.beginOptimisticInteractionDismiss(sessionId, currentRequestId);
     try {
       await resolveInteractionResilient(maker, sessionId, currentRequestId, decision);
       if (kind === 'plan_review') clearPlanReviewDraft(currentRequestId);
-      remoteSessionStore.settleOptimisticInteractionDismiss(sessionId, currentRequestId, { kind: 'confirmed' });
+      if (optimisticDismiss) {
+        remoteSessionStore.settleOptimisticInteractionDismiss(sessionId, currentRequestId, { kind: 'confirmed' });
+      } else if (options.resolvedRevision !== undefined) {
+        // 非乐观路径也必须挡「早发晚到」:提交前发出的慢快照仍带着这张卡,dismiss
+        // push 先到时它会把已取消的卡写回来(#530 review P1)。这里只把 revision
+        // 下限抬过本次决定作用的那份 —— 决定没生效时被控端会推更高 revision,
+        // 卡照样回来。
+        remoteSessionStore.markInteractionRevisionResolved(
+          sessionId,
+          currentRequestId,
+          options.resolvedRevision,
+        );
+      }
     } catch (err) {
       // resolveInteractionResilient 已带弱网重试 + pending 列表权威分辨,走到
       // 这里就是决定确未生效:复原卡片 + 报错。
-      remoteSessionStore.settleOptimisticInteractionDismiss(sessionId, currentRequestId, {
-        kind: 'restore',
-        item: itemSnapshot,
-      });
+      if (optimisticDismiss) {
+        remoteSessionStore.settleOptimisticInteractionDismiss(sessionId, currentRequestId, {
+          kind: 'restore',
+          item: itemSnapshot,
+        });
+      }
       onError(formatRemoteError(err));
     } finally {
       if (submittingRequestIdRef.current === currentRequestId) {
@@ -334,7 +408,7 @@ function InteractionItem({
     return (
       <UnsupportedCard
         kind={kind}
-        message="这个远程交互缺少 requestId，无法回传决定。"
+        message={t('interaction.panel.missingRequestId')}
         request={item.request}
         touchLayout={touchLayout}
       />
@@ -377,8 +451,37 @@ function InteractionItem({
     return (
       <UnsupportedCard
         kind={kind}
-        message="Issue 提交确认只在电脑端处理。请回到桌面端确认或取消提交。"
+        message={t('interaction.panel.issueConfirmUnsupported')}
         request={item.request}
+        touchLayout={touchLayout}
+      />
+    );
+  }
+  // plugin_setup:配置动作(OAuth / 写本地设置)只能在被控端完成,被控端的 IPC
+  // 边界也只放 cancel 过来。手机侧因此给只读摘要 + 取消出口,让用户至少能把
+  // 会话从等待里放出来,而不是对着一张没有任何按钮的卡干等。
+  if (kind === 'plugin_setup') {
+    // 取消入口以共享分类器为准:terminal 快照(被控端 settle 后短暂保留的收尾帧)
+    // 归 desktop-only,此时被控端已 complete、不再受理 resolve,给按钮只会让用户点出
+    // 一个「看起来成功」的 no-op(#530 review)。
+    const cancelDecision = remoteInteractionHandling(item) === 'cancel-only'
+      ? buildPluginSetupCancelDecision(item.request)
+      : null;
+    return (
+      <PluginSetupCard
+        busy={busy}
+        cancel={cancelDecision
+          ? {
+            accessibilityLabel: t('interaction.panel.cancelRequestAccessibility'),
+            label: t('interaction.panel.cancelRequest'),
+            onPress: () => void submitDecision(cancelDecision, {
+              optimisticDismiss: false,
+              resolvedRevision: cancelDecision.expectedRevision,
+            }),
+          }
+          : null}
+        item={item}
+        requestId={requestId}
         touchLayout={touchLayout}
       />
     );
@@ -386,7 +489,7 @@ function InteractionItem({
   return (
     <UnsupportedCard
       kind={kind}
-      message="手机版暂不支持这个远程交互类型。"
+      message={t('interaction.panel.unsupportedType')}
       request={item.request}
       touchLayout={touchLayout}
     />
@@ -405,6 +508,7 @@ function PermissionCard({
   touchLayout: InteractionTouchLayout;
 }) {
   const styles = useThemedStyles(makeStyles);
+  const { t } = useTranslation();
   const presentation = useMemo(() => buildPermissionReviewPresentation(item.request), [item.request]);
   const suggestions = sessionScopedPermissionSuggestions(item.request.suggestions);
   const requestId = readRequestId(item);
@@ -424,7 +528,7 @@ function PermissionCard({
   return (
     <View style={cardStyle(styles, touchLayout)} testID="interaction.permission.card">
       <View style={styles.compactCardHeader}>
-        <Text style={styles.kind}>权限确认</Text>
+        <Text style={styles.kind}>{t('interaction.permission.kind')}</Text>
         <Text numberOfLines={1} style={styles.compactCardTitle}>{permissionState.title}</Text>
       </View>
       <PermissionEvidence
@@ -435,9 +539,9 @@ function PermissionCard({
       />
       <View style={actionsStyle(styles, touchLayout)}>
         <ResolveButton
-          accessibilityLabel="拒绝权限请求"
+          accessibilityLabel={t('interaction.permission.denyAccessibility')}
           busy={busy}
-          label="拒绝"
+          label={t('interaction.permission.deny')}
           onPress={() => onDecision(buildPermissionDecision('deny', { reason: 'User denied' }))}
           requestId={requestId}
           touchStyle={resolveButtonLayoutStyle(touchLayout, 'secondary')}
@@ -446,11 +550,11 @@ function PermissionCard({
         />
         {permissionState.canShowAlwaysAllow ? (
           <ResolveButton
-            accessibilityLabel="本会话总是允许权限请求"
+            accessibilityLabel={t('interaction.permission.alwaysAllowAccessibility')}
             armed={armedDecision === 'always-allow'}
             busy={busy}
-            confirmLabel="确认本会话允许"
-            label="本会话总是允许"
+            confirmLabel={t('interaction.permission.alwaysAllowConfirm')}
+            label={t('interaction.permission.alwaysAllow')}
             onPress={() => requestDecision(
               'always-allow',
               buildPermissionDecision('allow', { permissionUpdates: suggestions }),
@@ -462,11 +566,11 @@ function PermissionCard({
           />
         ) : null}
         <ResolveButton
-          accessibilityLabel="允许一次权限请求"
+          accessibilityLabel={t('interaction.permission.allowOnceAccessibility')}
           armed={armedDecision === 'allow-once'}
           busy={busy}
-          confirmLabel="确认允许一次"
-          label="允许一次"
+          confirmLabel={t('interaction.permission.allowOnceConfirm')}
+          label={t('interaction.permission.allowOnce')}
           onPress={() => requestDecision('allow-once', buildPermissionDecision('allow'))}
           requestId={requestId}
           touchStyle={resolveButtonLayoutStyle(touchLayout, 'primary')}
@@ -490,6 +594,7 @@ function PermissionEvidence({
   touchLayout: InteractionTouchLayout;
 }) {
   const styles = useThemedStyles(makeStyles);
+  const { t } = useTranslation();
   return (
     <View
       style={[
@@ -518,7 +623,7 @@ function PermissionEvidence({
           style={[styles.permissionRiskRow, armed && styles.permissionRiskRowArmed]}
           testID="interaction.permission.riskWarning"
         >
-          <Text style={styles.permissionRiskLabel}>高风险</Text>
+          <Text style={styles.permissionRiskLabel}>{t('interaction.permission.highRisk')}</Text>
           <Text style={styles.permissionRiskText}>{riskWarningText}</Text>
         </View>
       ) : null}
@@ -542,6 +647,7 @@ function AskUserQuestionCard({
 }) {
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
+  const { t } = useTranslation();
   const requestId = readRequestId(item) ?? '';
   const questions = useMemo(() => normalizeAskQuestions(item.request.questions), [item.request.questions]);
   const draftCompletedRef = useRef(false);
@@ -596,14 +702,14 @@ function AskUserQuestionCard({
   if (questions.length === 0) {
     return (
       <View style={cardStyle(styles, touchLayout)} testID="interaction.ask.card">
-        <Text style={styles.kind}>等待回答</Text>
+        <Text style={styles.kind}>{t('interaction.panel.awaitingAnswer')}</Text>
         <Text style={styles.askQuestion} testID="interaction.ask.question">{presentation.title}</Text>
         <Text style={styles.askMetaCaption}>{presentation.summary.detail}</Text>
         <View style={actionsStyle(styles, touchLayout)}>
           <ResolveButton
-            accessibilityLabel="继续远程提问"
+            accessibilityLabel={t('interaction.panel.continueAccessibility')}
             busy={busy}
-            label="继续"
+            label={t('interaction.panel.continue')}
             onPress={() => {
               draftCompletedRef.current = true;
               clearAskUserDraft(requestId);
@@ -630,8 +736,13 @@ function AskUserQuestionCard({
   const canSubmitMulti = selectedLabels.size > 0 || trimmedCustomInput.length > 0;
   const singleAnswer = customModeActive ? trimmedCustomInput : existingAnswer;
   const canSubmitSingle = !isMulti && (singleAnswer ?? '').trim().length > 0;
-  const optionsCaption = options.length > 0 ? `${options.length} 个选项` : '自由输入';
-  const metaCaption = `${optionsCaption} · ${isMulti ? '多选' : '单选'} · 支持其他回答`;
+  const optionsCaption = options.length > 0
+    ? t('interaction.panel.askOptionCount', { count: options.length })
+    : t('interaction.panel.askFreeInput');
+  const metaCaption = t('interaction.panel.askMetaCaption', {
+    options: optionsCaption,
+    mode: isMulti ? t('interaction.panel.askModeMulti') : t('interaction.panel.askModeSingle'),
+  });
 
   const advance = (answer: string) => {
     const nextAnswers = { ...answers, [currentAnswerKey]: answer };
@@ -682,13 +793,13 @@ function AskUserQuestionCard({
   if (collapsed) {
     return (
       <InteractionTouchButton
-        accessibilityLabel="展开问题卡片"
+        accessibilityLabel={t('interaction.panel.expandQuestionCard')}
         onPress={() => setCollapsed(false)}
         style={[cardStyle(styles, touchLayout), styles.collapsedInteractionBar]}
         testID="interaction.ask.collapsedCard"
       >
         <View style={styles.collapsedInteractionText}>
-          <Text style={styles.collapsedInteractionLabel}>等待回答</Text>
+          <Text style={styles.collapsedInteractionLabel}>{t('interaction.panel.awaitingAnswer')}</Text>
           <Text numberOfLines={1} style={styles.collapsedInteractionTitle}>{presentation.title}</Text>
         </View>
         <View style={styles.compactHeaderActions}>
@@ -708,11 +819,11 @@ function AskUserQuestionCard({
   return (
     <View style={cardStyle(styles, touchLayout)} testID="interaction.ask.card">
       <View style={styles.compactCardHeader}>
-        <Text style={styles.askHeaderKind}>等待回答</Text>
+        <Text style={styles.askHeaderKind}>{t('interaction.panel.awaitingAnswer')}</Text>
         <View style={styles.compactHeaderActions}>
           <Text style={styles.pageText}>{presentation.pageLabel}</Text>
           <InteractionTouchButton
-            accessibilityLabel="收起问题卡片"
+            accessibilityLabel={t('interaction.panel.collapseQuestionCard')}
             busy={busy}
             onPress={() => setCollapsed(true)}
             style={styles.iconControl}
@@ -733,8 +844,8 @@ function AskUserQuestionCard({
               : existingAnswer === option.label;
             return (
               <InteractionTouchButton
-                accessibilityLabel={`选择回答 ${option.label}`}
-                accessibilityHint={busy ? '正在把决定回传到电脑端，请不要重复提交。' : undefined}
+                accessibilityLabel={t('interaction.panel.selectAnswer', { label: option.label })}
+                accessibilityHint={busy ? t('interaction.panel.submittingHint') : undefined}
                 disabled={busy}
                 key={option.label}
                 onPress={() => toggleLabel(option.label)}
@@ -781,10 +892,10 @@ function AskUserQuestionCard({
               touchLayout.stackInlineInputRows && styles.customInputRowStacked,
             ]}>
               <TextInput
-                accessibilityLabel="输入自定义回答"
+                accessibilityLabel={t('interaction.panel.customAnswerInputAccessibility')}
                 autoFocus
                 onChangeText={setCustomInput}
-                placeholder="输入其他回答"
+                placeholder={t('interaction.panel.customAnswerPlaceholder')}
                 placeholderTextColor={colors.textTertiary}
                 style={styles.inlineInput}
                 testID="interaction.ask.customInput"
@@ -793,7 +904,7 @@ function AskUserQuestionCard({
             </View>
           ) : (
             <InteractionTouchButton
-              accessibilityLabel="输入其他回答"
+              accessibilityLabel={t('interaction.panel.customAnswerPlaceholder')}
               disabled={busy}
               onPress={() => {
                 if (!isMulti) {
@@ -813,7 +924,7 @@ function AskUserQuestionCard({
               ]}
               testID="interaction.ask.showCustomButton"
             >
-              <Text style={styles.optionCustom}>输入其他回答...</Text>
+              <Text style={styles.optionCustom}>{t('interaction.panel.customAnswerButtonText')}</Text>
             </InteractionTouchButton>
           )}
         </View>
@@ -824,10 +935,10 @@ function AskUserQuestionCard({
           touchLayout.stackInlineInputRows && styles.customInputRowStacked,
         ]}>
           <TextInput
-            accessibilityLabel="输入回答"
+            accessibilityLabel={t('interaction.panel.answerInput')}
             autoFocus
             onChangeText={setCustomInput}
-            placeholder="输入回答"
+            placeholder={t('interaction.panel.answerInput')}
             placeholderTextColor={colors.textTertiary}
             style={styles.inlineInput}
             testID="interaction.ask.textInput"
@@ -839,7 +950,7 @@ function AskUserQuestionCard({
       <View style={actionsStyle(styles, touchLayout)}>
         {currentIndex > 0 ? (
           <InteractionTouchButton
-            accessibilityLabel="上一步"
+            accessibilityLabel={t('interaction.panel.previous')}
             disabled={busy}
             onPress={() => setCurrentIndex((idx) => Math.max(0, idx - 1))}
             style={[
@@ -848,13 +959,13 @@ function AskUserQuestionCard({
             ]}
             testID="interaction.ask.previousButton"
           >
-            <Text style={styles.secondaryText}>上一步</Text>
+            <Text style={styles.secondaryText}>{t('interaction.panel.previous')}</Text>
           </InteractionTouchButton>
         ) : null}
         <ResolveButton
-          accessibilityLabel="跳过问题"
+          accessibilityLabel={t('interaction.panel.skipAccessibility')}
           busy={busy}
-          label="跳过"
+          label={t('interaction.panel.skip')}
           onPress={() => advance('')}
           requestId={requestId}
           touchStyle={resolveButtonLayoutStyle(touchLayout, 'secondary')}
@@ -863,10 +974,10 @@ function AskUserQuestionCard({
         />
         {isMulti ? (
           <ResolveButton
-            accessibilityLabel={isLast ? '提交回答' : '下一步'}
+            accessibilityLabel={isLast ? t('interaction.panel.submitAnswerAccessibility') : t('interaction.panel.next')}
             busy={busy}
-            invalidReason={!canSubmitMulti ? '选择或输入回答后才能继续。' : null}
-            label={isLast ? '提交' : '下一步'}
+            invalidReason={!canSubmitMulti ? t('interaction.panel.answerRequired') : null}
+            label={isLast ? t('interaction.panel.submit') : t('interaction.panel.next')}
             onPress={submitMulti}
             requestId={requestId}
             touchStyle={resolveButtonLayoutStyle(touchLayout, 'primary')}
@@ -875,10 +986,10 @@ function AskUserQuestionCard({
           />
         ) : (
           <ResolveButton
-            accessibilityLabel={isLast ? '提交回答' : '下一步'}
+            accessibilityLabel={isLast ? t('interaction.panel.submitAnswerAccessibility') : t('interaction.panel.next')}
             busy={busy}
-            invalidReason={!canSubmitSingle ? '选择或输入回答后才能继续。' : null}
-            label={isLast ? '提交' : '下一步'}
+            invalidReason={!canSubmitSingle ? t('interaction.panel.answerRequired') : null}
+            label={isLast ? t('interaction.panel.submit') : t('interaction.panel.next')}
             onPress={submitSingle}
             requestId={requestId}
             touchStyle={resolveButtonLayoutStyle(touchLayout, 'primary')}
@@ -908,6 +1019,7 @@ function PlanReviewCard({
 }) {
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
+  const { t } = useTranslation();
   const requestId = readRequestId(item) ?? '';
   const [planText, setPlanText] = useState(() =>
     readPlanReviewDraft(requestId)?.planText ?? planReviewPlan(item.request)
@@ -1003,13 +1115,13 @@ function PlanReviewCard({
       >
         {isMinimized ? (
           <InteractionTouchButton
-            accessibilityLabel="展开计划"
+            accessibilityLabel={t('interaction.panel.planExpand')}
             disabled={resolveBusy}
             onPress={() => updateViewerState(lastExpandedState)}
             style={styles.planMinimizedBar}
             testID="interaction.plan.expandButton"
           >
-            <Text numberOfLines={1} style={styles.planMinimizedTitle}>审阅 Claude 的计划</Text>
+            <Text numberOfLines={1} style={styles.planMinimizedTitle}>{t('interaction.panel.planReviewTitle')}</Text>
             <View style={styles.iconControl}>
               <Plus color={colors.textSecondary} size={iconSize.md} strokeWidth={iconStroke.regular} />
             </View>
@@ -1018,14 +1130,14 @@ function PlanReviewCard({
           <>
             <View style={styles.planViewerHeader}>
               <View style={styles.planViewerTitleWrap}>
-                <Text numberOfLines={1} style={styles.planViewerTitle}>审阅 Claude 的计划</Text>
+                <Text numberOfLines={1} style={styles.planViewerTitle}>{t('interaction.panel.planReviewTitle')}</Text>
                 <Text numberOfLines={1} style={styles.planViewerHint}>
-                  {isEdit ? '使用编辑模式调整计划' : '选中章节即可跳转浏览'}
+                  {isEdit ? t('interaction.panel.planEditHint') : t('interaction.panel.planBrowseHint')}
                 </Text>
               </View>
               <View style={styles.planToolbar}>
                 <InteractionTouchButton
-                  accessibilityLabel={isEdit ? '退出计划编辑' : '编辑计划'}
+                  accessibilityLabel={isEdit ? t('interaction.panel.planEditExit') : t('interaction.panel.planEditToggle')}
                   disabled={resolveBusy}
                   onPress={() => updateViewerState(isEdit ? 'expanded' : 'edit')}
                   selected={isEdit}
@@ -1035,7 +1147,7 @@ function PlanReviewCard({
                   <Pencil color={colors.textSecondary} size={iconSize.sm} strokeWidth={iconStroke.regular} />
                 </InteractionTouchButton>
                 <InteractionTouchButton
-                  accessibilityLabel="收起计划"
+                  accessibilityLabel={t('interaction.panel.planCollapse')}
                   disabled={resolveBusy}
                   onPress={() => updateViewerState('minimized')}
                   style={styles.planToolbarButton}
@@ -1044,7 +1156,7 @@ function PlanReviewCard({
                   <Minus color={colors.textSecondary} size={iconSize.sm} strokeWidth={iconStroke.regular} />
                 </InteractionTouchButton>
                 <InteractionTouchButton
-                  accessibilityLabel={viewerState === 'half' ? '展开计划浏览区' : '切换到半屏计划'}
+                  accessibilityLabel={viewerState === 'half' ? t('interaction.panel.planExpandArea') : t('interaction.panel.planHalf')}
                   disabled={resolveBusy}
                   onPress={() => updateViewerState(viewerState === 'half' ? 'expanded' : 'half')}
                   selected={expandedPlan}
@@ -1072,10 +1184,10 @@ function PlanReviewCard({
             >
               {isEdit ? (
                 <TextInput
-                  accessibilityLabel="计划编辑器"
+                  accessibilityLabel={t('interaction.panel.planEditorAccessibility')}
                   multiline
                   onChangeText={setPlanText}
-                  placeholder="编辑计划"
+                  placeholder={t('interaction.panel.planEditorPlaceholder')}
                   placeholderTextColor={colors.textTertiary}
                   style={[
                     styles.planEditor,
@@ -1097,12 +1209,12 @@ function PlanReviewCard({
                       testID="interaction.plan.outline"
                     >
                       <View style={styles.planOutlineRow}>
-                        <Text style={styles.planOutlineLabel}>目录</Text>
+                        <Text style={styles.planOutlineLabel}>{t('interaction.panel.planOutline')}</Text>
                         {evidence.outlineItems.map((entry) => {
                           const active = entry.id === activeOutlineId;
                           return (
                             <InteractionTouchButton
-                              accessibilityLabel={`跳到计划章节 ${entry.title}`}
+                              accessibilityLabel={t('interaction.panel.planJumpTo', { title: entry.title })}
                               key={entry.id}
                               onPress={() => jumpToOutline(entry)}
                               selected={active}
@@ -1144,7 +1256,7 @@ function PlanReviewCard({
                     nestedScrollEnabled
                     testID="interaction.plan.preview"
                   >
-                    <Text selectable style={styles.planText}>{planText || '计划内容为空。'}</Text>
+                    <Text selectable style={styles.planText}>{planText || t('interaction.panel.planEmpty')}</Text>
                   </ScrollView>
                 </>
               )}
@@ -1163,7 +1275,7 @@ function PlanReviewCard({
         testID="interaction.plan.actionCard"
       >
         <InteractionTouchButton
-          accessibilityLabel="批准执行计划"
+          accessibilityLabel={t('interaction.panel.planApproveAccessibility')}
           busy={resolveBusy}
           disabled={resolveBusy}
           onPress={approvePlan}
@@ -1173,7 +1285,7 @@ function PlanReviewCard({
           <View style={styles.planApproveIcon}>
             <Check color={colors.ctaText} size={iconSize.sm} strokeWidth={iconStroke.bold} />
           </View>
-          <Text numberOfLines={1} style={styles.planApproveText}>批准 Claude 的计划并开始编码</Text>
+          <Text numberOfLines={1} style={styles.planApproveText}>{t('interaction.panel.planApprove')}</Text>
           <CornerDownLeft color={colors.textTertiary} size={iconSize.md} strokeWidth={iconStroke.regular} />
         </InteractionTouchButton>
 
@@ -1181,18 +1293,18 @@ function PlanReviewCard({
           <View style={styles.planFeedbackEditorRow}>
             <Pencil color={colors.textSecondary} size={iconSize.md} strokeWidth={iconStroke.regular} />
             <TextInput
-              accessibilityLabel="计划反馈"
+              accessibilityLabel={t('interaction.panel.planFeedbackLabel')}
               multiline
               onChangeText={setFeedback}
-              placeholder="告诉 Claude 应该怎么做"
+              placeholder={t('interaction.panel.planFeedbackPlaceholder')}
               placeholderTextColor={colors.textTertiary}
               style={styles.planFeedbackInput}
               testID="interaction.plan.feedbackInput"
               value={feedback}
             />
             <InteractionTouchButton
-              accessibilityHint={feedback.trim().length === 0 ? '输入反馈后才能提交。' : undefined}
-              accessibilityLabel="提交计划反馈"
+              accessibilityHint={feedback.trim().length === 0 ? t('interaction.panel.planFeedbackRequired') : undefined}
+              accessibilityLabel={t('interaction.panel.planFeedbackSubmit')}
               busy={resolveBusy}
               disabled={feedback.trim().length === 0 || resolveBusy}
               onPress={denyWithFeedback}
@@ -1208,7 +1320,7 @@ function PlanReviewCard({
           </View>
         ) : (
           <InteractionTouchButton
-            accessibilityLabel="反馈修改计划"
+            accessibilityLabel={t('interaction.panel.planFeedbackAccessibility')}
             busy={resolveBusy}
             disabled={resolveBusy}
             onPress={() => setFeedbackOpen(true)}
@@ -1216,7 +1328,7 @@ function PlanReviewCard({
             testID="interaction.plan.feedbackButton"
           >
             <Pencil color={colors.textSecondary} size={iconSize.md} strokeWidth={iconStroke.regular} />
-            <Text numberOfLines={1} style={styles.planFeedbackPlaceholder}>告诉 Claude 应该怎么做</Text>
+            <Text numberOfLines={1} style={styles.planFeedbackPlaceholder}>{t('interaction.panel.planFeedbackPlaceholder')}</Text>
           </InteractionTouchButton>
         )}
       </View>
@@ -1224,23 +1336,210 @@ function PlanReviewCard({
   );
 }
 
-function UnsupportedCard({
-  kind,
-  message,
-  request,
+/**
+ * plugin_setup 的**只读**状态卡。
+ *
+ * 手机端做不了配置动作(Secret 输入与 OAuth 必须留在被控端,见
+ * docs/dev-rules/plugin-security-and-authoring.md §4 与 desktop 的
+ * interactionResolveOrigin),所以这张卡的价值全在「看懂」:哪个插件、卡在哪一步、
+ * 为什么失败、回电脑端要做什么。动作只有取消。
+ */
+function PluginSetupCard({
+  busy,
+  cancel,
+  item,
+  requestId,
   touchLayout,
 }: {
-  kind: string;
-  message: string;
-  request: PendingInteraction['request'];
+  busy: boolean;
+  cancel: { accessibilityLabel: string; label: string; onPress(): void } | null;
+  item: PendingInteraction;
+  requestId: string | null;
   touchLayout: InteractionTouchLayout;
 }) {
   const styles = useThemedStyles(makeStyles);
+  const { t } = useTranslation();
+  const presentation = useMemo(
+    () => buildRemotePluginSetupPresentation(item.request),
+    [item.request],
+  );
+  const title = presentation.ghostName ?? t('interaction.kinds.plugin_setup.title');
+  return (
+    <View style={cardStyle(styles, touchLayout)} testID="interaction.pluginSetup.card">
+      <View style={styles.compactCardHeader}>
+        {presentation.iconDataUrl ? (
+          <Image
+            accessibilityIgnoresInvertColors
+            // 纯装饰:插件名紧跟其后,读屏再念一次图标只是噪音。
+            accessibilityElementsHidden
+            importantForAccessibility="no"
+            source={{ uri: presentation.iconDataUrl }}
+            style={styles.pluginSetupIcon}
+            testID="interaction.pluginSetup.icon"
+          />
+        ) : null}
+        <View style={styles.compactCardTitleWrap}>
+          <Text style={styles.kind}>{t('interaction.panel.desktopOnlyKind')}</Text>
+          <Text numberOfLines={1} style={styles.compactCardTitle}>{title}</Text>
+        </View>
+        {presentation.stepCount > 0 ? (
+          <Text style={styles.pageText} testID="interaction.pluginSetup.progress">
+            {t('interaction.pluginSetup.progress', {
+              satisfied: presentation.satisfiedCount,
+              total: presentation.stepCount,
+            })}
+          </Text>
+        ) : null}
+      </View>
+      {presentation.intro ? (
+        <Text style={styles.body} numberOfLines={3}>{presentation.intro}</Text>
+      ) : null}
+      {presentation.groups.map((group) => (
+        <View key={group.id} style={styles.pluginSetupGroup}>
+          {group.anyOf ? (
+            <Text style={styles.pluginSetupGroupHint}>{t('interaction.pluginSetup.chooseOne')}</Text>
+          ) : null}
+          {group.steps.map((step) => (
+            <PluginSetupStepRow key={step.id} step={step} />
+          ))}
+        </View>
+      ))}
+      {/* 收尾帧已经 settle,再让用户「去电脑端完成」是错的引导。 */}
+      {presentation.terminal ? null : (
+        <Text style={styles.pluginSetupFootnote}>{t('interaction.pluginSetup.completeOnDesktop')}</Text>
+      )}
+      {cancel ? (
+        <View style={actionsStyle(styles, touchLayout)}>
+          <ResolveButton
+            accessibilityLabel={cancel.accessibilityLabel}
+            busy={busy}
+            label={cancel.label}
+            onPress={cancel.onPress}
+            requestId={requestId}
+            touchStyle={resolveButtonLayoutStyle(touchLayout, 'secondary')}
+            testID="interaction.unsupported.cancelButton"
+            variant="secondary"
+          />
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+/** 运行中的步骤:与桌面同语义,用 Heart Orange 表示「正在进行」。 */
+const PLUGIN_SETUP_RUNNING_PHASES: ReadonlySet<RemotePluginSetupPhase> = new Set([
+  'action_running',
+  'waiting_external',
+  'verifying',
+]);
+
+function PluginSetupStepRow({ step }: { step: RemotePluginSetupStep }) {
+  const styles = useThemedStyles(makeStyles);
+  const { colors } = useTheme();
+  const { t } = useTranslation();
+  const phaseColor = step.phase === 'satisfied'
+    ? colors.statusReady
+    : step.phase && PLUGIN_SETUP_RUNNING_PHASES.has(step.phase)
+      ? colors.statusAccent
+      : colors.textTertiary;
+  const phaseText = step.phase ? t(`interaction.pluginSetup.phase.${step.phase}`) : null;
+  const actionHint = step.actionKind === 'inline_form'
+    ? (step.inlineFieldLabel
+      ? t('interaction.pluginSetup.inlineFormAction', { label: step.inlineFieldLabel })
+      : t('interaction.pluginSetup.inlineFormActionGeneric'))
+    : step.actionKind
+      ? t('interaction.pluginSetup.desktopActionHint', {
+        action: t(`interaction.pluginSetup.action.${step.actionKind}`),
+      })
+      : null;
+  // 已完成的步骤不再提示「回电脑端做什么」——那是下一步该做的事。
+  const visibleActionHint = actionHint && step.phase !== 'satisfied' ? actionHint : null;
+  const errorText = step.errorCode ? t(`interaction.pluginSetup.error.${step.errorCode}`) : null;
+  return (
+    <View
+      // 聚合成一个读屏单元:标题 / 状态 / 待办 / 错误分开念会把一步拆成四条碎片。
+      accessible
+      accessibilityLabel={[step.title, phaseText, step.description, visibleActionHint, errorText]
+        .filter((part): part is string => !!part)
+        .join('，')}
+      style={styles.pluginSetupStep}
+      testID="interaction.pluginSetup.step"
+    >
+      <View style={styles.pluginSetupStepHeader}>
+        <Text numberOfLines={2} style={styles.pluginSetupStepTitle}>{step.title}</Text>
+        {phaseText ? (
+          <Text style={[styles.pluginSetupPhase, { color: phaseColor }]}>{phaseText}</Text>
+        ) : null}
+      </View>
+      {step.description ? (
+        <Text numberOfLines={2} style={styles.pluginSetupStepBody}>{step.description}</Text>
+      ) : null}
+      {visibleActionHint ? (
+        <Text style={styles.pluginSetupStepAction}>{visibleActionHint}</Text>
+      ) : null}
+      {errorText ? (
+        <Text style={styles.pluginSetupStepError} testID="interaction.pluginSetup.stepError">
+          {errorText}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+function UnsupportedCard({
+  busy = false,
+  cancel = null,
+  kind,
+  kindLabel,
+  message,
+  request,
+  requestId = null,
+  summaryLines,
+  touchLayout,
+}: {
+  busy?: boolean;
+  /** 本端唯一能做的动作(目前只有 plugin_setup 的取消);null = 纯展示卡。 */
+  cancel?: { accessibilityLabel: string; label: string; onPress(): void } | null;
+  kind: string;
+  /** eyebrow 覆写;缺省是「暂不支持」。 */
+  kindLabel?: string;
+  message: string;
+  request: PendingInteraction['request'];
+  requestId?: string | null;
+  /**
+   * 可读摘要。**未提供**时才回退成 request 预览(未知类型只能这样交底);提供了
+   * 空数组表示「这类卡本来就该只显示标题」,不能再掉回 raw JSON —— 那正是本次要
+   * 消灭的展示(#530 review)。
+   */
+  summaryLines?: string[];
+  touchLayout: InteractionTouchLayout;
+}) {
+  const styles = useThemedStyles(makeStyles);
+  const { t } = useTranslation();
+  // 合并成一段带换行的文本再限行:每行各自 numberOfLines={6} 会把总可见行数放大成
+  // 6 × 行数,步骤多时把卡撑得很高(#530 review)。
+  const summaryText = (summaryLines ?? [contentToPreview(request)])
+    .filter((line) => line.length > 0)
+    .join('\n');
   return (
     <View style={cardStyle(styles, touchLayout)} testID="interaction.unsupported.card">
-      <Text style={styles.kind}>暂不支持</Text>
+      <Text style={styles.kind}>{kindLabel ?? t('interaction.panel.unsupportedKind')}</Text>
       <Text style={styles.cardTitle}>{message}</Text>
-      <Text style={styles.body} numberOfLines={6}>{contentToPreview(request)}</Text>
+      {summaryText ? <Text style={styles.body} numberOfLines={6}>{summaryText}</Text> : null}
+      {cancel ? (
+        <View style={actionsStyle(styles, touchLayout)}>
+          <ResolveButton
+            accessibilityLabel={cancel.accessibilityLabel}
+            busy={busy}
+            label={cancel.label}
+            onPress={cancel.onPress}
+            requestId={requestId}
+            touchStyle={resolveButtonLayoutStyle(touchLayout, 'secondary')}
+            testID="interaction.unsupported.cancelButton"
+            variant="secondary"
+          />
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -1508,6 +1807,63 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   },
   body: {
     color: colors.textSecondary,
+    fontSize: typeScale.caption,
+    lineHeight: lineHeight.caption,
+  },
+  pluginSetupIcon: {
+    borderRadius: radius.container,
+    flexShrink: 0,
+    height: iconSize.xxl,
+    width: iconSize.xxl,
+  },
+  pluginSetupGroup: {
+    gap: spacing.sm,
+  },
+  pluginSetupGroupHint: {
+    color: colors.textTertiary,
+    fontSize: typeScale.caption,
+    fontWeight: fontWeight.medium,
+    lineHeight: lineHeight.caption,
+  },
+  pluginSetupStep: {
+    gap: spacing.xs,
+  },
+  pluginSetupStepHeader: {
+    alignItems: 'baseline',
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  pluginSetupStepTitle: {
+    color: colors.textPrimary,
+    flex: 1,
+    fontSize: typeScale.footnote,
+    fontWeight: fontWeight.medium,
+    lineHeight: lineHeight.caption,
+    minWidth: 0,
+  },
+  pluginSetupPhase: {
+    // 颜色随 phase 内联(已完成 statusReady / 进行中 statusAccent / 其余 textTertiary)。
+    flexShrink: 0,
+    fontSize: typeScale.caption,
+    fontWeight: fontWeight.medium,
+  },
+  pluginSetupStepBody: {
+    color: colors.textTertiary,
+    fontSize: typeScale.caption,
+    lineHeight: lineHeight.caption,
+  },
+  pluginSetupStepAction: {
+    color: colors.textSecondary,
+    fontSize: typeScale.caption,
+    lineHeight: lineHeight.caption,
+  },
+  pluginSetupStepError: {
+    color: colors.errorText,
+    fontSize: typeScale.caption,
+    lineHeight: lineHeight.caption,
+  },
+  pluginSetupFootnote: {
+    color: colors.textTertiary,
     fontSize: typeScale.caption,
     lineHeight: lineHeight.caption,
   },

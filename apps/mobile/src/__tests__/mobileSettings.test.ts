@@ -1,8 +1,14 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
+import { i18n } from '@/i18n';
 import { buildMobileDeviceName } from '@/device-link/mobileDeviceIdentity';
 import { buildMobileSettingsOverview, relayStatusTone } from '@/settings/mobileSettings';
+
+// 文案已 i18n 化;固定 zh-CN 让字面量断言与语言环境解耦(全局 mock 默认 en-US)。
+beforeAll(async () => {
+  await i18n.changeLanguage('zh-CN');
+});
 
 // Windows checkout(core.autocrlf)下源码是 CRLF;统一归一成 LF,含 \n 的多行片段断言才跨平台成立。
 const readTextLf = (...args: Parameters<typeof readFileSync>): string =>
@@ -138,7 +144,7 @@ describe('mobile settings overview', () => {
     expect(source).toContain('updateSelfDeviceNameDraft(res.name);');
     expect(source).not.toContain('updateSelfDeviceNameDraft(systemDeviceName);');
     expect(source).not.toContain('setSelfDeviceName(systemDeviceName);');
-    expect(source).toContain('title="设备名称"');
+    expect(source).toContain("title={t('settings.deviceNameEditor.screenTitle')}");
     expect(source).toContain('const selfDeviceNameWriteInFlightRef = useRef(false);');
     expect(source).toContain('const selfDeviceNameQueuedWriteRef = useRef<SelfDeviceNameQueuedWrite | null>(null);');
     expect(source).toContain("selfDeviceNameQueuedWriteRef.current = { kind: 'rename', name, options };");
@@ -164,39 +170,56 @@ describe('mobile settings overview', () => {
     expect(source).not.toContain('clearManualName');
   });
 
-  it('always shows the regional privacy policy above the cn-only App filing number', () => {
+  it('always shows privacy policy + user agreement (regional links via legalLinks) above the cn-only App filing number', () => {
     const source = readTextLf(resolve(process.cwd(), 'app/settings.tsx'), 'utf8');
-    const filingCardIndex = source.indexOf('<SettingsGroup title="备案信息">');
+    const filingCardIndex = source.indexOf("<SettingsGroup title={t('settings.legal.sectionTitle')}>");
     const privacyRowIndex = source.indexOf('testID="settings.privacyPolicy"');
-    const regionGuardIndex = source.indexOf("{AUTH_REGION === 'cn' ? (", privacyRowIndex);
+    const userAgreementRowIndex = source.indexOf('testID="settings.userAgreement"');
+    const regionGuardIndex = source.indexOf("{AUTH_REGION === 'cn' ? (", userAgreementRowIndex);
     const filingNumberIndex = source.indexOf('testID="settings.appFilingNumber"');
     const accountActionsIndex = source.indexOf('testID="settings.accountActions"');
 
-    expect(source).toContain("const PRIVACY_POLICY_URL = AUTH_REGION === 'cn'");
-    expect(source).toContain("'https://cindy.cn/privacy/'");
-    expect(source).toContain("'https://cindy.app/privacy/'");
-    expect(source).toContain('Linking.openURL(PRIVACY_POLICY_URL)');
-    expect(source).toContain('accessibilityLabel="打开隐私政策"');
+    // 链接不再本地写死:与登录页共用 legalLinks 区域分流单点(protocol.xd.cn/.com)
+    expect(source).toContain("import { LEGAL_LINKS } from '@/config/legalLinks';");
+    expect(source).toContain('Linking.openURL(LEGAL_LINKS.privacyPolicy)');
+    expect(source).toContain('Linking.openURL(LEGAL_LINKS.termsOfService)');
+    expect(source).not.toContain('PRIVACY_POLICY_URL');
+    expect(source).not.toContain('cindy.cn/privacy');
+    expect(source).not.toContain('cindy.app/privacy');
+    expect(source).toContain("accessibilityLabel={t('settings.legal.openPrivacyPolicy')}");
+    expect(source).toContain("accessibilityLabel={t('settings.legal.openUserAgreement')}");
     expect(source).toContain('accessibilityRole="link"');
-    expect(source).toContain('label="隐私政策"');
-    expect(source).toContain('label="App 备案号"');
+    expect(source).toContain("label={t('settings.legal.privacyPolicy')}");
+    expect(source).toContain("label={t('settings.legal.userAgreement')}");
+    expect(source).toContain("label={t('settings.legal.appFilingNumber')}");
     expect(source).toContain('value="沪ICP备11033765号-89A"');
     expect(filingCardIndex).toBeGreaterThan(-1);
     expect(privacyRowIndex).toBeGreaterThan(filingCardIndex);
-    expect(regionGuardIndex).toBeGreaterThan(privacyRowIndex);
+    expect(userAgreementRowIndex).toBeGreaterThan(privacyRowIndex);
+    expect(regionGuardIndex).toBeGreaterThan(userAgreementRowIndex);
     expect(filingNumberIndex).toBeGreaterThan(regionGuardIndex);
     expect(accountActionsIndex).toBeGreaterThan(filingNumberIndex);
   });
 
-  it('keeps one update action and shows both full-package and OTA versions', () => {
+  it('keeps one update action, scopes TestFlight checks to OTA, and shows both versions', () => {
     const source = readTextLf(resolve(process.cwd(), 'app/settings.tsx'), 'utf8');
 
     expect(source.match(/testID: 'settings\.checkUpdateButton'/g)).toHaveLength(1);
     expect(source).not.toContain('settings.checkBundleUpdateButton');
     expect(source).not.toContain('testID="settings.bundleUpdate"');
     expect(source).toContain('runManualUpdateCheck({');
-    expect(source).toContain('checkBundleUpdate: IS_OTA_SELFHOST ? checkBundleUpdate : undefined');
-    expect(source).toContain('整包版本 {appVersion}');
-    expect(source).toContain('testID="settings.otaVersion">热更版本 {otaVersion}');
+    expect(source).toContain('isTestFlightBuild: IS_TESTFLIGHT_BUILD');
+    expect(source).toContain('const updateCheckEnabled = bundleCheckEnabled || updatesEnabled');
+    expect(source).toContain('checkBundleUpdate: bundleCheckEnabled ? checkBundleUpdate : undefined');
+    expect(source).toContain("'settings.version.testFlightCheckAction'");
+    expect(source).toContain("'settings.version.testFlightCheckingAccessibility'");
+    expect(source).toContain("'settings.version.testFlightNoContentUpdate'");
+    expect(source).toContain("'settings.version.testFlightContentUpdateUnavailable'");
+    expect(source).toContain("testID=\"settings.testFlightUpdateHint\"");
+    expect(source).toContain("{t('settings.version.testFlightUpdateManaged')}");
+    expect(source).toContain("{t('settings.version.bundleVersion', { version: appVersion })}");
+    expect(source).toContain(
+      "testID=\"settings.otaVersion\">{t('settings.version.otaVersion', { version: otaVersion })}",
+    );
   });
 });

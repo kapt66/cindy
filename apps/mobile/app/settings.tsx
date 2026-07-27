@@ -16,10 +16,21 @@ import {
 } from 'react-native';
 import { Text, TextInput } from '@/components/AppText';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { ChevronDown, ChevronRight, X } from 'lucide-react-native';
+import { Check, ChevronDown, ChevronRight, X } from 'lucide-react-native';
+import { useTranslation } from 'react-i18next';
 import type { DeviceView } from '@cindy/device-link';
 import { useAuth } from '@/auth/AuthContext';
 import { loginText } from '@/auth/loginMessages';
+import {
+  clearAnalyticsEnabledOverride,
+  getAnalyticsConsentState,
+  hydrateAnalyticsConsent,
+  setAnalyticsEnabled,
+  subscribeAnalyticsConsent,
+} from '@/analytics/analyticsConsentStore';
+import { initMobileTapdb, setTapdbUser, stopMobileTapdbReporting } from '@/analytics/mobileTapdb';
+import { SUPPORTED_LOCALES, type LocalePreference } from '@/i18n';
+import { useLocale } from '@/i18n/useLocale';
 import { goBackGuarded } from '@/utils/backGuard';
 import { configureCollapseAnimation } from '@/utils/collapseAnimation';
 import {
@@ -28,7 +39,16 @@ import {
   ScreenHeader,
   StatusDot,
 } from '@/components/MobilePrimitives';
-import { AUTH_API_BASE_URL, AUTH_REGION, DESKTOP_PACKAGE_VERSION, DEVICE_LINK_API_BASE_URL, IS_OTA_SELFHOST, REVIEW_MODE } from '@/config/env';
+import {
+  AUTH_API_BASE_URL,
+  AUTH_REGION,
+  DESKTOP_PACKAGE_VERSION,
+  DEVICE_LINK_API_BASE_URL,
+  IS_OTA_SELFHOST,
+  IS_TESTFLIGHT_BUILD,
+  REVIEW_MODE,
+} from '@/config/env';
+import { LEGAL_LINKS } from '@/config/legalLinks';
 import { useDeviceLink } from '@/device-link/DeviceLinkContext';
 import { buildMobileDeviceName } from '@/device-link/mobileDeviceIdentity';
 import { formatRemoteError } from '@/device-link/remoteStatus';
@@ -44,6 +64,7 @@ import {
   writePushEnabled,
 } from '@/notifications/pushNotifications';
 import { buildMobileUpdateInfoRows, currentMobileOtaVersion } from '@/settings/updateInfo';
+import { shouldCheckBundleUpdate } from '@/update/bundleUpdate';
 import { runManualUpdateCheck } from '@/update/manualUpdateCheck';
 import { useBundleUpdatePrompt } from '@/update/useBundleUpdatePrompt';
 import { useCanaryChannelGate } from '@/update/useCanaryChannelGate';
@@ -56,15 +77,16 @@ type SelfDeviceNameQueuedWrite =
   | { kind: 'rename'; name: string; options: SelfDeviceNameSaveOptions }
   | { kind: 'reset' };
 const SETTINGS_DEVICE_TIMEOUT_MS = 12_000;
-const PRIVACY_POLICY_URL = AUTH_REGION === 'cn'
-  ? 'https://cindy.cn/privacy/'
-  : 'https://cindy.app/privacy/';
+// 显示语言选项:「跟随系统」在前,4 种具体语言在后(与 desktop LanguageSection 同序)。
+const LANGUAGE_OPTIONS: readonly LocalePreference[] = ['system', ...SUPPORTED_LOCALES];
 
 export default function SettingsScreen() {
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
   const router = useRouter();
   const auth = useAuth();
+  const { t } = useTranslation();
+  const { locale, setLocale } = useLocale();
   const { status } = useDeviceLink();
   const [copiedRowId, setCopiedRowId] = useState<string | null>(null);
   const [loggingOut, setLoggingOut] = useState(false);
@@ -76,6 +98,14 @@ export default function SettingsScreen() {
   const [pushEnabled, setPushEnabled] = useState(false);
   const [pushBusy, setPushBusy] = useState(false);
   const [pushMessage, setPushMessage] = useState<string | null>(null);
+  // 使用统计(TapDB)开关。真相在 analyticsConsentStore,这里只是视图态。
+  const [analyticsEnabled, setAnalyticsEnabledState] = useState(true);
+  const [analyticsCustomized, setAnalyticsCustomized] = useState(false);
+  const [analyticsBusy, setAnalyticsBusy] = useState(false);
+  // hydration 完成前开关必须禁用:此时显示的是 fail-closed 默认值,可能与盘上
+  // 相反;放行点击会让 toggleAnalytics 对着真值取反,做出与所见相反的动作。
+  const [analyticsReady, setAnalyticsReady] = useState(false);
+  const [analyticsMessage, setAnalyticsMessage] = useState<string | null>(null);
   const updateCheckInFlightRef = useRef(false);
   const [selfDeviceName, setSelfDeviceName] = useState<string | null>(null);
   const [selfDeviceNameDraft, setSelfDeviceNameDraft] = useState('');
@@ -106,22 +136,29 @@ export default function SettingsScreen() {
       userId: auth.user?.id,
       userName: auth.user?.name,
     }),
-    [auth.deviceId, auth.user?.email, auth.user?.id, auth.user?.name, deviceName, status],
+    // t 依赖:buildMobileSettingsOverview 内部走 i18n.t,语言切换时(t 身份变化)重建展示模型。
+    [auth.deviceId, auth.user?.email, auth.user?.id, auth.user?.name, deviceName, status, t],
   );
 
   const appVersion = Constants.expoConfig?.version ?? '0.0.0';
   const updatesEnabled = Updates.isEnabled;
   // 当前运行的 OTA bundle 信息(只读),折进「调试」分组,用于核验热更是否生效。
   const { currentlyRunning } = useUpdates();
-  const updateInfoRows = useMemo(() => buildMobileUpdateInfoRows(currentlyRunning), [currentlyRunning]);
-  const otaVersion = useMemo(() => currentMobileOtaVersion(currentlyRunning), [currentlyRunning]);
+  // t 依赖同 overview:行构造走 i18n.t,语言切换时重算。
+  const updateInfoRows = useMemo(() => buildMobileUpdateInfoRows(currentlyRunning), [currentlyRunning, t]);
+  const otaVersion = useMemo(() => currentMobileOtaVersion(currentlyRunning), [currentlyRunning, t]);
   const canaryChannel = useCanaryChannelGate(IS_OTA_SELFHOST);
-  // 自建变体的统一入口先查整包;无整包时再由 checkForUpdate 继续查 JS OTA。
+  // 允许整包分发时统一入口先查整包;TestFlight 等禁用整包的环境直接进入 JS OTA。
   const { checkNow: checkBundleUpdate } = useBundleUpdatePrompt({
     auto: false,
     isCanary: canaryChannel.isCanary,
   });
-  const updateCheckEnabled = IS_OTA_SELFHOST || updatesEnabled;
+  const bundleCheckEnabled = shouldCheckBundleUpdate({
+    isSelfHosted: IS_OTA_SELFHOST,
+    isReviewMode: REVIEW_MODE,
+    isTestFlightBuild: IS_TESTFLIGHT_BUILD,
+  });
+  const updateCheckEnabled = bundleCheckEnabled || updatesEnabled;
 
   const aboutSection = overview.sections.find((section) => section.id === 'about');
   const debugSection = overview.sections.find((section) => section.id === 'debug');
@@ -180,7 +217,11 @@ export default function SettingsScreen() {
   }, []);
 
   const openPrivacyPolicy = useCallback(() => {
-    void Linking.openURL(PRIVACY_POLICY_URL).catch(() => undefined);
+    void Linking.openURL(LEGAL_LINKS.privacyPolicy).catch(() => undefined);
+  }, []);
+
+  const openUserAgreement = useCallback(() => {
+    void Linking.openURL(LEGAL_LINKS.termsOfService).catch(() => undefined);
   }, []);
 
   const checkForUpdate = useCallback(async () => {
@@ -190,7 +231,7 @@ export default function SettingsScreen() {
     setUpdateMessage(null);
     try {
       const outcome = await runManualUpdateCheck({
-        checkBundleUpdate: IS_OTA_SELFHOST ? checkBundleUpdate : undefined,
+        checkBundleUpdate: bundleCheckEnabled ? checkBundleUpdate : undefined,
         otaEnabled: updatesEnabled,
         checkOtaUpdate: () => Updates.checkForUpdateAsync(),
         fetchOtaUpdate: () => Updates.fetchUpdateAsync(),
@@ -199,16 +240,24 @@ export default function SettingsScreen() {
       });
       if (outcome.kind === 'bundle-update-available') {
         setUpdatePhase('idle');
-        setUpdateMessage('发现整包更新');
+        setUpdateMessage(t('settings.version.bundleUpdateFound'));
       } else if (outcome.kind === 'up-to-date') {
         setUpdatePhase('uptodate');
-        setUpdateMessage('已是最新版本');
+        setUpdateMessage(t(
+          IS_TESTFLIGHT_BUILD
+            ? 'settings.version.testFlightNoContentUpdate'
+            : 'settings.version.upToDate',
+        ));
       } else if (outcome.kind === 'ota-unavailable') {
         setUpdatePhase('uptodate');
-        setUpdateMessage('整包已是最新，当前版本不支持热更新');
+        setUpdateMessage(t(
+          IS_TESTFLIGHT_BUILD
+            ? 'settings.version.testFlightContentUpdateUnavailable'
+            : 'settings.version.bundleUpToDateNoOta',
+        ));
       } else if (outcome.kind === 'reloading') {
         setUpdatePhase('downloading');
-        setUpdateMessage('更新已下载，正在重启');
+        setUpdateMessage(t('settings.version.downloadedRestarting'));
       } else if (outcome.kind === 'busy') {
         setUpdatePhase('idle');
       } else {
@@ -218,7 +267,7 @@ export default function SettingsScreen() {
     } finally {
       updateCheckInFlightRef.current = false;
     }
-  }, [checkBundleUpdate, updateCheckEnabled, updatesEnabled]);
+  }, [bundleCheckEnabled, checkBundleUpdate, t, updateCheckEnabled, updatesEnabled]);
 
   const updateSelfDeviceNameDraft = useCallback((value: string) => {
     selfDeviceNameDraftRef.current = value;
@@ -229,11 +278,11 @@ export default function SettingsScreen() {
   const saveSelfDeviceNameDraft = useCallback(async (rawName: string, options: SelfDeviceNameSaveOptions = {}) => {
     const name = rawName.trim();
     if (name.length === 0) {
-      setSelfDeviceNameMessage('设备名称不能为空。');
+      setSelfDeviceNameMessage(t('settings.deviceNameEditor.emptyError'));
       return;
     }
     if (!auth.deviceId) {
-      setSelfDeviceNameMessage('设备还在初始化，请稍后再试。');
+      setSelfDeviceNameMessage(t('settings.deviceNameEditor.deviceInitializing'));
       return;
     }
     if (selfDeviceNameWriteInFlightRef.current) {
@@ -251,7 +300,7 @@ export default function SettingsScreen() {
         return;
       }
       selfDeviceNameQueuedWriteRef.current = { kind: 'rename', name, options };
-      setSelfDeviceNameMessage('保存中…');
+      setSelfDeviceNameMessage(t('settings.deviceNameEditor.saving'));
       return;
     }
     if (name === deviceName.trim()) {
@@ -264,7 +313,7 @@ export default function SettingsScreen() {
     selfDeviceNameWriteInFlightRef.current = true;
     selfDeviceNameCurrentWriteRef.current = { kind: 'rename', name, options };
     setSelfDeviceNameSaving(true);
-    setSelfDeviceNameMessage('保存中…');
+    setSelfDeviceNameMessage(t('settings.deviceNameEditor.saving'));
     try {
       const res = await auth.apiFetch<{ deviceId: string; name: string }>(
         `/api/device-link/devices/${encodeURIComponent(auth.deviceId)}`,
@@ -278,7 +327,7 @@ export default function SettingsScreen() {
       const draftStillCurrent = options.acceptClosedDraft === true || selfDeviceNameDraftRef.current.trim() === name;
       if (selfDeviceNameSaveSeqRef.current === seq && draftStillCurrent) {
         setSelfDeviceName(res.name);
-        setSelfDeviceNameMessage('已保存。');
+        setSelfDeviceNameMessage(t('settings.deviceNameEditor.saved'));
       }
     } catch (err) {
       if (selfDeviceNameSaveSeqRef.current === seq) setSelfDeviceNameMessage(formatRemoteError(err));
@@ -290,16 +339,16 @@ export default function SettingsScreen() {
         selfDeviceNameRunQueuedWriteRef.current();
       }
     }
-  }, [auth, deviceName, systemDeviceName]);
+  }, [auth, deviceName, systemDeviceName, t]);
 
   const resetSelfDeviceName = useCallback(async () => {
     if (!auth.deviceId) {
-      setSelfDeviceNameMessage('设备还在初始化，请稍后再试。');
+      setSelfDeviceNameMessage(t('settings.deviceNameEditor.deviceInitializing'));
       return;
     }
     if (selfDeviceNameWriteInFlightRef.current) {
       selfDeviceNameQueuedWriteRef.current = { kind: 'reset' };
-      setSelfDeviceNameMessage('正在恢复默认名称…');
+      setSelfDeviceNameMessage(t('settings.deviceNameEditor.restoringDefault'));
       return;
     }
 
@@ -308,7 +357,7 @@ export default function SettingsScreen() {
     selfDeviceNameWriteInFlightRef.current = true;
     selfDeviceNameCurrentWriteRef.current = { kind: 'reset' };
     setSelfDeviceNameSaving(true);
-    setSelfDeviceNameMessage('正在恢复默认名称…');
+    setSelfDeviceNameMessage(t('settings.deviceNameEditor.restoringDefault'));
     try {
       const res = await auth.apiFetch<{ deviceId: string; name: string; manualName?: string | null }>(
         `/api/device-link/devices/${encodeURIComponent(auth.deviceId)}`,
@@ -322,7 +371,7 @@ export default function SettingsScreen() {
       if (selfDeviceNameSaveSeqRef.current === seq) {
         setSelfDeviceName(res.name);
         updateSelfDeviceNameDraft(res.name);
-        setSelfDeviceNameMessage('已恢复默认名称。');
+        setSelfDeviceNameMessage(t('settings.deviceNameEditor.restoredDefault'));
       }
     } catch (err) {
       if (selfDeviceNameSaveSeqRef.current === seq) setSelfDeviceNameMessage(formatRemoteError(err));
@@ -334,7 +383,7 @@ export default function SettingsScreen() {
         selfDeviceNameRunQueuedWriteRef.current();
       }
     }
-  }, [auth, updateSelfDeviceNameDraft]);
+  }, [auth, t, updateSelfDeviceNameDraft]);
 
   selfDeviceNameRunQueuedWriteRef.current = () => {
     const queued = selfDeviceNameQueuedWriteRef.current;
@@ -351,7 +400,7 @@ export default function SettingsScreen() {
     if (!selfDeviceNameEditing) return;
     const name = selfDeviceNameDraft.trim();
     if (name.length === 0) {
-      setSelfDeviceNameMessage('设备名称不能为空。');
+      setSelfDeviceNameMessage(t('settings.deviceNameEditor.emptyError'));
       return;
     }
     if (name === deviceName.trim()) {
@@ -362,7 +411,7 @@ export default function SettingsScreen() {
       void saveSelfDeviceNameDraft(name);
     }, 650);
     return () => clearTimeout(timer);
-  }, [deviceName, saveSelfDeviceNameDraft, selfDeviceNameDraft, selfDeviceNameEditing, selfDeviceNameSaving]);
+  }, [deviceName, saveSelfDeviceNameDraft, selfDeviceNameDraft, selfDeviceNameEditing, selfDeviceNameSaving, t]);
 
   const openSelfDeviceNameEditor = useCallback(() => {
     updateSelfDeviceNameDraft(deviceName);
@@ -411,6 +460,30 @@ export default function SettingsScreen() {
     };
   }, []);
 
+  // 使用统计开关的当前值。store 是本机唯一真相,订阅它以免多个入口写入后本页陈旧。
+  useEffect(() => {
+    let cancelled = false;
+    const sync = () => {
+      if (cancelled) return;
+      const snapshot = getAnalyticsConsentState();
+      setAnalyticsEnabledState(snapshot.enabled);
+      setAnalyticsCustomized(snapshot.enabledCustomized);
+    };
+    void hydrateAnalyticsConsent()
+      .then(sync)
+      .catch(() => undefined)
+      // 读失败也放开:store 已 fail closed 到已 hydrate 的默认态,此后的交互
+      // 操作的是真值,不再有「对陈旧显示取反」的问题。
+      .finally(() => {
+        if (!cancelled) setAnalyticsReady(true);
+      });
+    const unsubscribe = subscribeAnalyticsConsent(sync);
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
+
   const togglePushNotifications = useCallback(async () => {
     if (pushBusy) return;
     setPushBusy(true);
@@ -426,13 +499,13 @@ export default function SettingsScreen() {
           await syncPushRegistration({ enabled: false, apiFetch: auth.apiFetch });
         } catch {
           await markPendingUnregister().catch(() => undefined);
-          setPushMessage('已关闭。当前网络下注销未完成,将在下次联网时自动补上。');
+          setPushMessage(t('settings.notifications.unregisterQueued'));
         }
         return;
       }
       const result = await syncPushRegistration({ enabled: true, apiFetch: auth.apiFetch });
       if (result === 'permission-denied') {
-        setPushMessage('系统通知权限未开启。请到 iOS「设置 → 通知 → Cindy」允许通知后重试。');
+        setPushMessage(t('settings.notifications.permissionDenied'));
         return; // 权限被拒:开关保持关闭,不落盘
       }
       await writePushEnabled(true);
@@ -442,18 +515,78 @@ export default function SettingsScreen() {
     } finally {
       setPushBusy(false);
     }
-  }, [auth.apiFetch, pushBusy, pushEnabled]);
+  }, [auth.apiFetch, pushBusy, pushEnabled, t]);
 
   const toggleDebug = useCallback(() => {
     configureCollapseAnimation();
     setDebugExpanded((value) => !value);
   }, []);
 
+  /* ── 使用统计(TapDB)开关 ──
+     语义是 opt-out:用户在登录页同意《隐私政策》后默认开启,这里随时可关。
+     关闭后立即解绑账号标识、不再主动上报;原生 SDK 不支持反初始化,本次进程内
+     已初始化的实例要到下次冷启动才彻底不再初始化(见 analytics/mobileTapdb)。
+
+     关闭路径**先停上报再落盘**:写盘失败时本次运行已经不再上报(偏安全的一侧),
+     而开关值不变,如实反映「重启后仍是开启」。 */
+  /* 重新开启统计时必须**重新绑定当前账号**。关闭路径已经调过 clearNativeTapdbUser(),
+     而 AuthContext 里负责绑定的 effect 依赖 [initialized, user?.id] —— 拨开关不会
+     让这两个值变化,所以它不会再跑。不补这一下的话,账号维度的用量会一直空到下次
+     重启或下一次登录态变化。 */
+  const resumeAnalyticsReporting = useCallback(async () => {
+    const status = await initMobileTapdb();
+    if (!status.ok) return;
+    const userId = auth.user?.id;
+    if (userId) await setTapdbUser(userId);
+  }, [auth.user?.id]);
+
+  const toggleAnalytics = useCallback(async () => {
+    if (analyticsBusy) return;
+    setAnalyticsBusy(true);
+    setAnalyticsMessage(null);
+    try {
+      // 必须先 hydrate 再取反:AsyncStorage 读慢时 getAnalyticsConsentState() 返回的
+      // 是 fail-closed 默认值,直接取反会算错方向,对着一个陈旧值执行 stop/start。
+      await hydrateAnalyticsConsent();
+      const next = !getAnalyticsConsentState().enabled;
+      if (!next) await stopMobileTapdbReporting();
+      await setAnalyticsEnabled(next);
+      if (next) await resumeAnalyticsReporting();
+    } catch {
+      // 只可能是本机存储异常(无服务端往返)。开关值由 store 回推,保持落盘前的
+      // 真值;这里显式告诉用户没存住,而不是让它看起来「点了没反应」。
+      setAnalyticsMessage(t('settings.legal.analyticsSaveFailed'));
+    } finally {
+      setAnalyticsBusy(false);
+    }
+  }, [analyticsBusy, resumeAnalyticsReporting, t]);
+
+  /* 恢复默认:只删掉开关 override 让它重新跟随版本默认值,同意事实不动
+     (configuration-and-overrides §4)。仅在用户显式拨过开关时出现。 */
+  const resetAnalytics = useCallback(async () => {
+    if (analyticsBusy) return;
+    setAnalyticsBusy(true);
+    setAnalyticsMessage(null);
+    try {
+      await clearAnalyticsEnabledOverride();
+      if (getAnalyticsConsentState().enabled) await resumeAnalyticsReporting();
+      else await stopMobileTapdbReporting();
+    } catch {
+      setAnalyticsMessage(t('settings.legal.analyticsSaveFailed'));
+    } finally {
+      setAnalyticsBusy(false);
+    }
+  }, [analyticsBusy, resumeAnalyticsReporting, t]);
+
   const avatarLabel = (overview.header.name.trim()[0] ?? '?').toUpperCase();
   const updateBusy = updatePhase === 'checking' || updatePhase === 'downloading';
-  const updateButtonLabel = updatePhase === 'checking' ? '检查中'
-    : updatePhase === 'downloading' ? '更新中'
-    : '检查更新';
+  const updateButtonLabel = updatePhase === 'checking' ? t('settings.version.checking')
+    : updatePhase === 'downloading' ? t('settings.version.updating')
+    : t(
+      IS_TESTFLIGHT_BUILD
+        ? 'settings.version.testFlightCheckAction'
+        : 'settings.version.checkAction',
+    );
 
   if (selfDeviceNameEditing) {
     return (
@@ -472,7 +605,7 @@ export default function SettingsScreen() {
       <ScreenHeader
         backTestID="settings.backButton"
         onBack={() => goBackGuarded(router)}
-        title="设置"
+        title={t('settings.title')}
         titleTestID="settings.title"
       />
 
@@ -500,29 +633,50 @@ export default function SettingsScreen() {
           </View>
         </View>
 
-        {/* 版本:只保留统一检查入口,自建线严格先查整包、无整包再查热更。 */}
-        <SettingsGroup title="版本">
+        {/* 版本:只保留统一检查入口;允许整包分发时先查整包,否则直接查热更。 */}
+        <SettingsGroup title={t('settings.version.sectionTitle')}>
           {[
             <View key="version" style={styles.versionRow} testID="settings.version">
               <View style={styles.versionTexts}>
-                <Text style={styles.rowLabel}>当前版本</Text>
-                <Text style={styles.versionValue} numberOfLines={1}>整包版本 {appVersion}</Text>
-                <Text style={styles.rowDetail} numberOfLines={1} testID="settings.otaVersion">热更版本 {otaVersion}</Text>
+                <Text style={styles.rowLabel}>{t('settings.version.currentLabel')}</Text>
+                <Text style={styles.versionValue} numberOfLines={1}>{t('settings.version.bundleVersion', { version: appVersion })}</Text>
+                <Text style={styles.rowDetail} numberOfLines={1} testID="settings.otaVersion">{t('settings.version.otaVersion', { version: otaVersion })}</Text>
                 {/* 二级版本号:自建线打包所配对的桌面产品线版本(0.0.x);仅自建线且已注入时显示 */}
                 {IS_OTA_SELFHOST && DESKTOP_PACKAGE_VERSION ? (
-                  <Text style={styles.rowDetail} numberOfLines={1} testID="settings.desktopVersion">桌面版 {DESKTOP_PACKAGE_VERSION}</Text>
+                  <Text style={styles.rowDetail} numberOfLines={1} testID="settings.desktopVersion">{t('settings.version.desktopVersion', { version: DESKTOP_PACKAGE_VERSION })}</Text>
+                ) : null}
+                {IS_TESTFLIGHT_BUILD ? (
+                  <Text style={styles.rowDetail} numberOfLines={2} testID="settings.testFlightUpdateHint">
+                    {t('settings.version.testFlightUpdateManaged')}
+                  </Text>
                 ) : null}
                 {updateMessage ? (
                   <Text style={styles.rowDetail} numberOfLines={2} testID="settings.updateMessage">{updateMessage}</Text>
                 ) : !REVIEW_MODE && !updatesEnabled ? (
-                  <Text style={styles.rowDetail} numberOfLines={1}>开发版，热更不可用</Text>
+                  <Text style={styles.rowDetail} numberOfLines={2}>
+                    {t(
+                      IS_TESTFLIGHT_BUILD
+                        ? 'settings.version.testFlightContentUpdateUnavailable'
+                        : 'settings.version.devNoOta',
+                    )}
+                  </Text>
                 ) : null}
               </View>
               {/* 审核模式(清单 review 命中当前二进制版本):隐藏检查更新入口,版本号照常展示 */}
               {!REVIEW_MODE ? (
                 <MainWindowActionButton
                   action={{
-                    accessibilityLabel: updateBusy ? '正在检查更新' : '检查更新',
+                    accessibilityLabel: updateBusy
+                      ? t(
+                        IS_TESTFLIGHT_BUILD
+                          ? 'settings.version.testFlightCheckingAccessibility'
+                          : 'settings.version.checkingAccessibility',
+                      )
+                      : t(
+                        IS_TESTFLIGHT_BUILD
+                          ? 'settings.version.testFlightCheckAction'
+                          : 'settings.version.checkAction',
+                      ),
                     busy: updateBusy,
                     disabled: !updateCheckEnabled,
                     label: updateButtonLabel,
@@ -540,20 +694,20 @@ export default function SettingsScreen() {
 
         {/* 通知:任务完成推送(仅 iOS;Android 待 FCM/厂商通道) */}
         {isPushSupported() ? (
-          <SettingsGroup title="通知">
+          <SettingsGroup title={t('settings.notifications.sectionTitle')}>
             {[
               <View key="push-toggle" style={styles.switchRow} testID="settings.pushToggleRow">
                 <View style={styles.switchTexts}>
-                  <Text style={styles.rowLabel}>任务完成通知</Text>
+                  <Text style={styles.rowLabel}>{t('settings.notifications.taskDone')}</Text>
                   <Text style={styles.hint}>
-                    电脑上的任务完成、出错或需要你回复时,推送到这台手机;完成或需要回复时附带最新回复内容。
+                    {t('settings.notifications.taskDoneHint')}
                   </Text>
                   {pushMessage ? (
                     <Text style={styles.hint} testID="settings.pushMessage">{pushMessage}</Text>
                   ) : null}
                 </View>
                 <Switch
-                  accessibilityLabel="任务完成通知"
+                  accessibilityLabel={t('settings.notifications.taskDone')}
                   disabled={pushBusy}
                   onValueChange={() => void togglePushNotifications()}
                   testID="settings.pushToggle"
@@ -565,13 +719,29 @@ export default function SettingsScreen() {
           </SettingsGroup>
         ) : null}
 
+        {/* 显示语言:默认跟随系统,手动选择即持久化 override(恢复跟随系统 = 清除 override) */}
+        <SettingsGroup
+          footer={t('settings.language.hint')}
+          title={t('settings.language.title')}
+        >
+          {LANGUAGE_OPTIONS.map((option) => (
+            <LanguageOptionRow
+              key={option}
+              label={t(`settings.language.options.${option}`)}
+              onPress={() => setLocale(option)}
+              selected={locale === option}
+              testID={`settings.language.${option}`}
+            />
+          ))}
+        </SettingsGroup>
+
         {/* 关于这台手机 */}
         {aboutSection ? (
           <SettingsGroup title={aboutSection.title}>
             {aboutSection.rows.map((row) => (
               row.id === 'about.deviceName' ? (
                 <ActionInfoRow
-                  accessibilityLabel={`修改${row.label}`}
+                  accessibilityLabel={t('settings.about.editAccessibility', { label: row.label })}
                   detail={selfDeviceNameMessage ?? row.detail}
                   key={row.id}
                   label={row.label}
@@ -610,21 +780,59 @@ export default function SettingsScreen() {
           </SettingsGroup>
         ) : null}
 
-        {/* 法律信息:隐私政策始终显示;App 备案号仅国内版显示。 */}
-        <SettingsGroup title="备案信息">
+        {/* 法律信息:隐私政策/用户协议始终显示(链接区域分流走 legalLinks 单点);
+            使用统计开关与它们同组(合规要求关闭途径可被找到);
+            App 备案号仅国内版显示。 */}
+        <SettingsGroup title={t('settings.legal.sectionTitle')}>
+          <View key="analytics-toggle" style={styles.switchRow} testID="settings.analyticsToggleRow">
+            <View style={styles.switchTexts}>
+              <Text style={styles.rowLabel}>{t('settings.legal.analytics')}</Text>
+              <Text style={styles.hint}>{t('settings.legal.analyticsHint')}</Text>
+              {analyticsMessage ? (
+                <Text style={styles.hint} testID="settings.analyticsMessage">{analyticsMessage}</Text>
+              ) : null}
+            </View>
+            <Switch
+              accessibilityLabel={t('settings.legal.analytics')}
+              disabled={analyticsBusy || !analyticsReady}
+              onValueChange={() => void toggleAnalytics()}
+              testID="settings.analyticsToggle"
+              trackColor={{ true: colors.inputCaret }}
+              value={analyticsEnabled}
+            />
+          </View>
+          {analyticsCustomized ? (
+            <ActionInfoRow
+              accessibilityLabel={t('settings.legal.analyticsReset')}
+              key="analytics-reset"
+              label={t('settings.legal.analyticsReset')}
+              onPress={() => void resetAnalytics()}
+              testID="settings.analyticsReset"
+              value={t('settings.legal.analyticsResetAction')}
+            />
+          ) : null}
           <ActionInfoRow
-            accessibilityLabel="打开隐私政策"
+            accessibilityLabel={t('settings.legal.openPrivacyPolicy')}
             accessibilityRole="link"
             key="privacy-policy"
-            label="隐私政策"
+            label={t('settings.legal.privacyPolicy')}
             onPress={openPrivacyPolicy}
             testID="settings.privacyPolicy"
-            value="查看"
+            value={t('settings.legal.view')}
+          />
+          <ActionInfoRow
+            accessibilityLabel={t('settings.legal.openUserAgreement')}
+            accessibilityRole="link"
+            key="user-agreement"
+            label={t('settings.legal.userAgreement')}
+            onPress={openUserAgreement}
+            testID="settings.userAgreement"
+            value={t('settings.legal.view')}
           />
           {AUTH_REGION === 'cn' ? (
             <InfoRow
               key="app-filing-number"
-              label="App 备案号"
+              label={t('settings.legal.appFilingNumber')}
               testID="settings.appFilingNumber"
               value="沪ICP备11033765号-89A"
             />
@@ -634,15 +842,15 @@ export default function SettingsScreen() {
         {/* 账号操作:退出保持明确；注销账号仅保留低调的次要文字入口。 */}
         <View style={styles.dangerArea} testID="settings.accountActions">
           <Text style={styles.dangerHint}>
-            退出只会清除这台手机上的登录态和本地远程镜像，不会影响电脑端会话。
+            {t('settings.account.logoutHint')}
           </Text>
           <MainWindowActionGroup
             dangerActions={[
               {
-                accessibilityLabel: loggingOut ? '正在退出登录' : '退出登录',
+                accessibilityLabel: loggingOut ? t('settings.account.loggingOutAccessibility') : t('settings.account.logout'),
                 busy: loggingOut,
                 disabled: loggingOut,
-                label: loggingOut ? '退出中' : '退出登录',
+                label: loggingOut ? t('settings.account.loggingOut') : t('settings.account.logout'),
                 onPress: () => void logout(),
                 testID: 'settings.logoutButton',
                 tone: 'danger',
@@ -682,14 +890,17 @@ function groupChevron(expanded: boolean, colors: ThemeColors): ReactNode {
 /**
  * iOS 风格分组:组标题在外侧 gutter,组内一块统一卡片,行间用 inset 分隔线。
  * 标题可点(onToggle)时承担折叠开关。rows 为空则不渲染卡片(折叠态)。
+ * footer 为卡片下方 gutter 里的弱说明文字(iOS 分组 footer 惯例)。
  */
 function SettingsGroup({
   children,
+  footer,
   onToggle,
   title,
   titleAccessory,
 }: {
   children: ReactNode;
+  footer?: string;
   onToggle?: () => void;
   title: string;
   titleAccessory?: ReactNode;
@@ -725,7 +936,43 @@ function SettingsGroup({
           ))}
         </View>
       ) : null}
+      {footer && rows.length > 0 ? (
+        <Text style={styles.groupFooter}>{footer}</Text>
+      ) : null}
     </View>
+  );
+}
+
+/** 显示语言单选行:标签左、选中勾右;selected 即当前偏好(含「跟随系统」)。 */
+function LanguageOptionRow({
+  label,
+  onPress,
+  selected,
+  testID,
+}: {
+  label: string;
+  onPress(): void;
+  selected: boolean;
+  testID?: string;
+}) {
+  const styles = useThemedStyles(makeStyles);
+  const { colors } = useTheme();
+  return (
+    <Pressable
+      accessibilityLabel={label}
+      accessibilityRole="radio"
+      accessibilityState={{ checked: selected }}
+      onPress={onPress}
+      style={({ pressed }) => [styles.row, pressed && styles.pressed]}
+      testID={testID}
+    >
+      <View style={styles.rowLine}>
+        <Text style={styles.languageOptionLabel}>{label}</Text>
+        {selected ? (
+          <Check color={colors.textPrimary} size={iconSize.lg} strokeWidth={iconStroke.regular} />
+        ) : null}
+      </View>
+    </Pressable>
   );
 }
 
@@ -806,12 +1053,13 @@ function RenameSelfDeviceScreen({
 }) {
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
+  const { t } = useTranslation();
   return (
     <SafeAreaView style={styles.safeArea} testID="settings.renameSelfDevice.screen">
       <ScreenHeader
         backTestID="settings.renameSelfDevice.backButton"
         onBack={onDone}
-        title="设备名称"
+        title={t('settings.deviceNameEditor.screenTitle')}
       />
       <View style={styles.nameEditorContent}>
         <View style={styles.nameEditorInputRow}>
@@ -820,7 +1068,7 @@ function RenameSelfDeviceScreen({
             maxLength={64}
             onChangeText={onChangeDraft}
             onSubmitEditing={onDone}
-            placeholder="本机名称"
+            placeholder={t('settings.deviceNameEditor.placeholder')}
             placeholderTextColor={colors.textTertiary}
             returnKeyType="done"
             selectTextOnFocus
@@ -830,7 +1078,7 @@ function RenameSelfDeviceScreen({
           />
           {draft.length > 0 ? (
             <Pressable
-              accessibilityLabel="恢复默认本机名称"
+              accessibilityLabel={t('settings.deviceNameEditor.resetAccessibility')}
               accessibilityRole="button"
               hitSlop={8}
               onPress={onResetDefault}
@@ -858,6 +1106,7 @@ function CopyRow({
   row: MobileSettingsRow;
 }) {
   const styles = useThemedStyles(makeStyles);
+  const { t } = useTranslation();
   return (
     <View style={styles.copyRow} testID={`settings.row.${row.id}`}>
       <View style={styles.copyText}>
@@ -869,8 +1118,8 @@ function CopyRow({
         // (调用方虽已先判断,但组件自身也要自洽)。
         <MainWindowActionButton
           action={{
-            accessibilityLabel: `复制${row.label}`,
-            label: copied ? '已复制' : '复制',
+            accessibilityLabel: t('settings.copyRow.accessibility', { label: row.label }),
+            label: copied ? t('settings.copyRow.done') : t('settings.copyRow.action'),
             onPress: () => onCopy(row),
             testID: `settings.copy.${row.id}`,
           }}
@@ -926,6 +1175,12 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     paddingHorizontal: spacing.md,
   },
   groupTitle: { color: colors.textTertiary, flex: 1, fontSize: typeScale.footnote, fontWeight: fontWeight.medium },
+  groupFooter: {
+    color: colors.textTertiary,
+    fontSize: typeScale.caption,
+    lineHeight: lineHeight.caption,
+    paddingHorizontal: spacing.md,
+  },
   card: {
     backgroundColor: colors.surfaceElevated,
     borderColor: colors.border,
@@ -940,6 +1195,7 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   rowLabel: { color: colors.textSecondary, flexShrink: 0, fontSize: typeScale.code },
   rowValue: { color: colors.textPrimary, flex: 1, fontSize: typeScale.code, textAlign: 'right' },
   rowDetail: { color: colors.textTertiary, fontSize: typeScale.caption, lineHeight: lineHeight.caption },
+  languageOptionLabel: { color: colors.textPrimary, flex: 1, fontSize: typeScale.code },
   switchRow: {
     alignItems: 'center',
     flexDirection: 'row',

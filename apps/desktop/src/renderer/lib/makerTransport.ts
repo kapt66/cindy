@@ -192,6 +192,29 @@ export function listMessagesFor(
   return invokeRemote(deviceId, 'local-db:messages:list', [sessionId, opts]) as Promise<Message[]>;
 }
 
+/**
+ * 订阅形态会话「本会话价值」历史汇总:远程走隧道(否则查控制端空库恒为 0,底部 $ chip
+ * 的历史初值永远缺失)。归属用粘滞解析(relay 瞬时重连清空注册表的窗口内不误判为本机,
+ * 与 goal/learn 链路同款);老被控端无此 channel → CHANNEL_NOT_ALLOWED,调用方 catch
+ * 后退化为只显示已加载消息 + 实时推送的部分值。
+ */
+export function estimatedSessionValueFor(sessionId: string): Promise<{
+  totalValueMoney?: import('../../shared/regionalMoney').RegionalMoney | null;
+  totalValueUsd?: number;
+  entries: Array<{
+    clientId: string;
+    money?: import('../../shared/regionalMoney').RegionalMoney;
+    costUsd?: number;
+    turnUsageDetails?: unknown;
+  }>;
+}> {
+  const deviceId = getStickySessionDeviceId(sessionId);
+  if (!deviceId) return messageService.estimatedSessionValue(sessionId);
+  return invokeRemote(deviceId, 'local-db:messages:estimatedSessionValue', [
+    sessionId,
+  ]) as ReturnType<typeof estimatedSessionValueFor>;
+}
+
 /** 会话内搜索跳转定位:远程走隧道 local-db:messages:around(否则查控制端空库,跳转必失败)。 */
 export function aroundMessagesFor(
   sessionId: string,
@@ -371,9 +394,9 @@ type FullOrca = typeof window.electronAPI.localDb.orcaWorkflows;
 /**
  * orca 读/管理的可路由子集(排除 onOrcaWorkerChanged 订阅,见 subscribeOrcaWorkerChanged)。
  * 只列「确有远程调用方 + channel 在 REMOTE_INVOKE_ALLOWLIST 内」的方法。刻意不暴露
- * create / addWorker / updateWorkerStatus / setCollaborationSetting:它们无远程调用方,且
- * 对应 channel 不在 allowlist(远程调会 CHANNEL_NOT_ALLOWED)。本机调用方仍可直接用
- * window.electronAPI.localDb.orcaWorkflows(FullOrca 是超集,本机分支天然带这些)。
+ * updateWorkerStatus / setCollaborationSetting:它们无远程调用方,且对应 channel 不在
+ * allowlist(远程调会 CHANNEL_NOT_ALLOWED)。Team / Worker 创建只能走 maker lifecycle
+ * IPC，以便 Main 在写入前执行实时项目策略授权。
  * makerTransportOrcaRouting.test.ts 有 drift 守卫:适配器里每个 channel 串都必须在 allowlist 内。
  */
 export interface RoutableOrcaWorkflows {

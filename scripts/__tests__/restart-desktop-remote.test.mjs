@@ -7,6 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+	applyDesktopStartupConfigForPhase,
 	devEnvPrefix,
 	isRepositoryDesktopDevProcess,
 	formatDesktopStartupFailure,
@@ -93,6 +94,38 @@ test("desktop restart runner keeps the kill-before-deps order by default", () =>
 		[stepScript(root, "ensure-dev-runtime-assets.mjs")],
 		[stepScript(root, "restart-desktop-remote.mjs"), "--wait-ready"],
 	]);
+});
+
+test("desktop restart process-control phase does not initialize startup configuration", () => {
+	const processControlEnv = {};
+	assert.equal(
+		applyDesktopStartupConfigForPhase({
+			argv: ["--kill-only", "--region=global", "--endpoints-cdn"],
+			env: processControlEnv,
+			mode: "remote",
+		}),
+		null,
+	);
+	assert.deepEqual(processControlEnv, {});
+
+	const startupEnv = {};
+	assert.deepEqual(
+		applyDesktopStartupConfigForPhase({
+			argv: ["--region=global"],
+			env: startupEnv,
+			mode: "remote",
+		}),
+		{
+			region: "global",
+			endpointsCdn: false,
+			endpointManifestFile: "config/endpoint.global.json",
+		},
+	);
+	assert.deepEqual(startupEnv, {
+		CINDY_AUTH_REGION: "global",
+		VITE_CINDY_AUTH_REGION: "global",
+		XDT_ENDPOINT_MANIFEST_FILE: "config/endpoint.global.json",
+	});
 });
 
 test("desktop restart rejects an unmerged migration before the kill step", () => {

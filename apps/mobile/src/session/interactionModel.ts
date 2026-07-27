@@ -4,6 +4,7 @@ import {
   type PendingInteractionLike,
   type PermissionReviewPresentation,
 } from '@cindy/maker-shared/interaction';
+import { i18n } from '@/i18n';
 
 export {
   answerKey,
@@ -18,17 +19,25 @@ export {
   buildPlanReviewDecision,
   buildPlanReviewDecisionSummary,
   buildPlanReviewEvidencePresentation,
+  buildPluginSetupCancelDecision,
+  buildRemotePluginSetupPresentation,
   canStartInteractionResolve,
   encodeMultiSelectAnswer,
   extractPlanOutline,
   formatPermissionInput,
+  interactionBlocksRemoteComposer,
   interactionKind,
   normalizeAskQuestions,
+  pendingInteractionsBlockRemoteComposer,
   permissionRiskSummary,
   permissionTitle,
   planReviewFilePath,
   planReviewPlan,
   readRequestId,
+  remoteInteractionHandling,
+  REMOTE_PLUGIN_SETUP_ACTION_KINDS,
+  REMOTE_PLUGIN_SETUP_ERROR_CODES,
+  REMOTE_PLUGIN_SETUP_PHASES,
   selectActivePendingInteraction,
   selectionFromAnswer,
   sessionScopedPermissionSuggestions,
@@ -37,6 +46,10 @@ export {
   type AskQuestionReviewPresentation,
   type PermissionReviewPresentation,
   type PlanReviewEvidencePresentation,
+  type RemotePluginSetupGroup,
+  type RemotePluginSetupPhase,
+  type RemotePluginSetupPresentation,
+  type RemotePluginSetupStep,
 } from '@cindy/maker-shared/interaction';
 
 export type MobilePermissionDecisionAction = 'allow-once' | 'always-allow';
@@ -56,9 +69,9 @@ export function buildMobilePermissionCardState(input: {
     canShowAlwaysAllow: input.presentation.canAlwaysAllow && !isHighRisk,
     isHighRisk,
     riskWarningText: input.presentation.riskSummary
-      ? (armed ? '确认允许后才会把决定回传到电脑端。' : input.presentation.riskSummary)
+      ? (armed ? i18n.t('interaction.permission.armedRiskWarning') : input.presentation.riskSummary)
       : null,
-    title: isHighRisk && armed ? '确认高风险操作' : input.presentation.title,
+    title: isHighRisk && armed ? i18n.t('interaction.permission.armedHighRiskTitle') : input.presentation.title,
   };
 }
 

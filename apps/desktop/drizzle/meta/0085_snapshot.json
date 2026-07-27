@@ -1,6 +1,6 @@
 {
-  "id": "6aa55831-c31f-4950-932d-85a2a6856ee3",
-  "prevId": "707cea34-fe21-4c42-9a44-23dfa105b18a",
+  "id": "b2d05467-45cb-4833-a2ce-74ba85f97fc5",
+  "prevId": "40a11d9e-541b-4d70-a467-486b387edee0",
   "version": "6",
   "dialect": "sqlite",
   "tables": {
@@ -257,6 +257,29 @@
           "autoincrement": false,
           "default": 0
         },
+        "cost_amount": {
+          "name": "cost_amount",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "cost_currency": {
+          "name": "cost_currency",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "cost_is_approximate": {
+          "name": "cost_is_approximate",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
         "input_tokens": {
           "name": "input_tokens",
           "type": "integer",
@@ -329,6 +352,29 @@
           "notNull": true,
           "autoincrement": false,
           "default": 0
+        },
+        "cost_amount": {
+          "name": "cost_amount",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "cost_currency": {
+          "name": "cost_currency",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "cost_is_approximate": {
+          "name": "cost_is_approximate",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
         },
         "updated_at": {
           "name": "updated_at",
@@ -847,192 +893,6 @@
           ],
           "onUpdate": "no action",
           "onDelete": "cascade"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "meka_projects": {
-      "name": "meka_projects",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "name": {
-          "name": "name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "path": {
-          "name": "path",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "tags": {
-          "name": "tags",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "is_builtin": {
-          "name": "is_builtin",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": false
-        },
-        "sort_order": {
-          "name": "sort_order",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 0
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "meka_roles": {
-      "name": "meka_roles",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "project_id": {
-          "name": "project_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "name": {
-          "name": "name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "display_name": {
-          "name": "display_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "description": {
-          "name": "description",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "tags": {
-          "name": "tags",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "file_path": {
-          "name": "file_path",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "is_builtin": {
-          "name": "is_builtin",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": false
-        },
-        "content_digest": {
-          "name": "content_digest",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "sort_order": {
-          "name": "sort_order",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 0
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "idx_meka_roles_project_id": {
-          "name": "idx_meka_roles_project_id",
-          "columns": [
-            "project_id"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {
-        "meka_roles_project_id_meka_projects_id_fk": {
-          "name": "meka_roles_project_id_meka_projects_id_fk",
-          "tableFrom": "meka_roles",
-          "columnsFrom": [
-            "project_id"
-          ],
-          "tableTo": "meka_projects",
-          "columnsTo": [
-            "id"
-          ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1801,6 +1661,37 @@
           "autoincrement": false,
           "default": 0
         },
+        "cost_amount": {
+          "name": "cost_amount",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "estimated_value_amount": {
+          "name": "estimated_value_amount",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "cost_currency": {
+          "name": "cost_currency",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "cost_is_approximate": {
+          "name": "cost_is_approximate",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
         "cost_attribution": {
           "name": "cost_attribution",
           "type": "text",
@@ -2487,70 +2378,6 @@
           "autoincrement": false,
           "default": "'project'"
         },
-        "meka_role": {
-          "name": "meka_role",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "meka_target_json": {
-          "name": "meka_target_json",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "meka_project_id": {
-          "name": "meka_project_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "meka_role_id": {
-          "name": "meka_role_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "is_formal": {
-          "name": "is_formal",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 0
-        },
-        "formal_type": {
-          "name": "formal_type",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "formal_link": {
-          "name": "formal_link",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "formal_ref": {
-          "name": "formal_ref",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "formal_content_json": {
-          "name": "formal_content_json",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
         "model": {
           "name": "model",
           "type": "text",
@@ -2605,6 +2432,29 @@
           "notNull": true,
           "autoincrement": false,
           "default": 0
+        },
+        "total_cost_amount": {
+          "name": "total_cost_amount",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "total_cost_currency": {
+          "name": "total_cost_currency",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "total_cost_is_approximate": {
+          "name": "total_cost_is_approximate",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
         },
         "context_tokens": {
           "name": "context_tokens",
@@ -2775,13 +2625,6 @@
           "notNull": false,
           "autoincrement": false
         },
-        "capability_snapshot_json": {
-          "name": "capability_snapshot_json",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
         "active_turn_started_at": {
           "name": "active_turn_started_at",
           "type": "integer",
@@ -2864,20 +2707,6 @@
           ],
           "isUnique": false
         },
-        "idx_sessions_meka_project_id": {
-          "name": "idx_sessions_meka_project_id",
-          "columns": [
-            "meka_project_id"
-          ],
-          "isUnique": false
-        },
-        "idx_sessions_meka_role_id": {
-          "name": "idx_sessions_meka_role_id",
-          "columns": [
-            "meka_role_id"
-          ],
-          "isUnique": false
-        },
         "idx_sessions_parent_session_id": {
           "name": "idx_sessions_parent_session_id",
           "columns": [
@@ -2919,32 +2748,6 @@
         }
       },
       "foreignKeys": {
-        "sessions_meka_project_id_meka_projects_id_fk": {
-          "name": "sessions_meka_project_id_meka_projects_id_fk",
-          "tableFrom": "sessions",
-          "columnsFrom": [
-            "meka_project_id"
-          ],
-          "tableTo": "meka_projects",
-          "columnsTo": [
-            "id"
-          ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
-        },
-        "sessions_meka_role_id_meka_roles_id_fk": {
-          "name": "sessions_meka_role_id_meka_roles_id_fk",
-          "tableFrom": "sessions",
-          "columnsFrom": [
-            "meka_role_id"
-          ],
-          "tableTo": "meka_roles",
-          "columnsTo": [
-            "id"
-          ],
-          "onUpdate": "no action",
-          "onDelete": "set null"
-        },
         "sessions_parent_session_id_sessions_id_fk": {
           "name": "sessions_parent_session_id_sessions_id_fk",
           "tableFrom": "sessions",

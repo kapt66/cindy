@@ -40,6 +40,8 @@ import { ComputerUseSection } from './ComputerUseSection';
 import { MekaAssistantSettingsSection } from './MekaAssistantSettingsSection';
 import { useAuth } from '@/contexts/AuthContext';
 import { getLastWorkingDir, subscribeToLastWorkingDir } from '@/state/lastWorkingDir';
+import { BillingSettingsSection } from '@/features/billing/BillingPage';
+import { canAccessBillingSettings } from './billingVisibility';
 
 const DEFAULT_SETTINGS_MENU_WIDTH = 260;
 
@@ -52,7 +54,7 @@ export function SettingsView() {
   const outletContext = useOutletContext<SettingsOutletContext | null>();
   const [searchParams, setSearchParams] = useSearchParams();
   const { t } = useTranslation();
-  const { mode, dataOwnerId } = useAuth();
+  const { mode, dataOwnerId, user } = useAuth();
   const menuWidth = outletContext?.sidebarWidth ?? DEFAULT_SETTINGS_MENU_WIDTH;
   const isMac = window.electronAPI?.platform === 'darwin';
   const [helpAssistantOpen, setHelpAssistantOpen] = useState(false);
@@ -62,6 +64,10 @@ export function SettingsView() {
     getLastWorkingDir,
   );
   const rawTab = searchParams.get('tab');
+  const canAccessBilling = canAccessBillingSettings({
+    mode,
+    membershipKind: user?.membershipKind ?? null,
+  });
   const shouldRedirectToPlugins =
     rawTab === 'ghosts' || rawTab === 'api-keys' || rawTab === 'connections';
 
@@ -73,9 +79,17 @@ export function SettingsView() {
     if (raw === 'feishu-bot' || raw === 'slack-bot') return 'im-bot';
     // legacy 别名:旧独立「Tina」(tina) 已并入「IM 机器人」(im-bot)。
     if (raw === 'tina') return 'im-bot';
+    if (raw === 'billing' && !canAccessBilling) return 'general';
     if (raw === 'agent-island' && !isMac) return 'general';
     return isSettingsTab(raw) ? raw : 'general';
-  }, [isMac, rawTab]);
+  }, [canAccessBilling, isMac, rawTab]);
+
+  useEffect(() => {
+    if (rawTab !== 'billing' || canAccessBilling) return;
+    const next = new URLSearchParams(searchParams);
+    next.delete('tab');
+    setSearchParams(next, { replace: true });
+  }, [canAccessBilling, rawTab, searchParams, setSearchParams]);
 
   // 「IM 机器人」页内分栏:?imGroup=cindy|personal 定位到某个 tab(深链可直达)。
   // 缺省/非法 imGroup 一律落到默认分栏:旧「飞书机器人」深链落「个人」(飞书在
@@ -104,6 +118,10 @@ export function SettingsView() {
       next.delete('openPanel');
       next.delete('ghost');
       next.delete('imGroup');
+      next.delete('section');
+      // providers 页深链参数(connect/wizard):切走 tab 即作废,防再切回来被误消费。
+      next.delete('connect');
+      next.delete('wizard');
       if (tab === 'general') {
         next.delete('tab');
       } else {
@@ -138,8 +156,11 @@ export function SettingsView() {
   }, [activeTab, searchParams, setSearchParams]);
 
   const visibleTabIds = useMemo(
-    () => TAB_IDS.filter((tabId) => isMac || tabId !== 'agent-island'),
-    [isMac],
+    () =>
+      TAB_IDS.filter(
+        (tabId) => (isMac || tabId !== 'agent-island') && (canAccessBilling || tabId !== 'billing'),
+      ),
+    [canAccessBilling, isMac],
   );
 
   // deep-link: ?section=... → scroll to a section inside General settings.
@@ -298,6 +319,21 @@ export function SettingsView() {
                 {/* Section — Logout (pt 18) */}
                 <section className="pt-[18px]" aria-label={t('settings.sections.logout')}>
                   <LogoutSection />
+                </section>
+              </div>
+            )}
+
+            {activeTab === 'billing' && (
+              <div
+                role="tabpanel"
+                id="settings-panel-billing"
+                aria-labelledby="settings-tab-billing"
+              >
+                <section aria-label={t('settings.sections.billing')}>
+                  <BillingSettingsSection
+                    key={`billing:${dataOwnerId ?? 'none'}`}
+                    accountId={dataOwnerId}
+                  />
                 </section>
               </div>
             )}

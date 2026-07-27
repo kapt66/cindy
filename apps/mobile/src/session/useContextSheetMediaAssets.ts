@@ -4,6 +4,7 @@ import { Linking, Platform } from 'react-native';
 // 这里走官方保留的 legacy 入口,批量拿 uri/filename 一次到位。
 import * as MediaLibrary from 'expo-media-library/legacy';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
+import { i18n } from '@/i18n';
 import { MOBILE_IMAGE_UPLOAD_MAX_LONG_EDGE } from '@/session/mobileImagePreprocess';
 
 /** Context 面板媒体列表的单个资产(展示 + 附加所需的最小字段)。 */
@@ -12,6 +13,9 @@ export interface ContextSheetMediaAsset {
   filename: string;
   /** 展示用 URI(iOS ph:// / Android content://);渲染走 expo-image,RN Image 在新架构下不支持 ph://。 */
   uri: string;
+  /** 列表查询已返回的尺寸;Android full info 权限失败时供上传预处理继续使用。 */
+  width?: number;
+  height?: number;
 }
 
 export type ContextSheetMediaKind = 'recent' | 'screenshots';
@@ -58,6 +62,8 @@ async function fetchAssets(kind: ContextSheetMediaKind, first: number): Promise<
     id: asset.id,
     filename: asset.filename,
     uri: asset.uri,
+    width: asset.width,
+    height: asset.height,
   }));
 }
 
@@ -163,9 +169,14 @@ const HEIC_JPEG_COMPRESS = 0.9;
  * race 超时后系统下载仍在后台继续,用户重试时大概率已就位,重试即成功。
  */
 const ASSET_INFO_TIMEOUT_MS = 60_000;
+const ANDROID_ASSET_INFO_FALLBACK_ERROR_CODE = 'ERR_UNABLE_TO_LOAD';
 
-const ICLOUD_DOWNLOAD_TIMEOUT_MESSAGE = '照片还在从 iCloud 下载,等待超时了。请检查网络,稍后重试。';
-const ASSET_NOT_READABLE_MESSAGE = '这张照片暂时无法读取(可能还没从 iCloud 下载完成),请稍后重试。';
+function isAndroidAssetInfoFallbackError(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && error.code === ANDROID_ASSET_INFO_FALLBACK_ERROR_CODE;
+}
 
 async function getAssetInfoWithTimeout(assetId: string): Promise<MediaLibrary.AssetInfo> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -177,7 +188,7 @@ async function getAssetInfoWithTimeout(assetId: string): Promise<MediaLibrary.As
     return await Promise.race([
       info,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(ICLOUD_DOWNLOAD_TIMEOUT_MESSAGE)), ASSET_INFO_TIMEOUT_MS);
+        timer = setTimeout(() => reject(new Error(i18n.t('interaction.contextSheet.icloudTimeout'))), ASSET_INFO_TIMEOUT_MS);
       }),
     ]);
   } finally {
@@ -189,7 +200,9 @@ async function getAssetInfoWithTimeout(assetId: string): Promise<MediaLibrary.As
  * 把相册资产解析成可上传的 file:// 信息。iOS 的 ph:// 不是文件路径,
  * 必须经 getAssetInfoAsync 换 localUri(带 iCloud 下载超时兜底);iOS 拿不到
  * localUri 时直接报错——ph:// 喂给原生上传层只会变成下游玄学失败,就地把
- * 「照片没就位」说清楚;Android 保留 content:// 回退(原生上传可读)。
+ * 「照片没就位」说清楚;Android 的 full info 可能因未授予媒体位置权限返回
+ * ERR_UNABLE_TO_LOAD,此时回退列表查询已返回的 content:// 与尺寸(原生上传可读),
+ * 不为普通附件扩大权限;其它错误继续抛出,避免把真实故障延后到下游。
  * HEIC / HEIF(iOS 相机默认格式)在这里就地转成 JPEG——附件类型白名单与模型图像
  * 接口都只认 jpeg/png/gif/webp,直接放行 HEIC 会在链路下游变成不可用附件。
  * 转 JPEG 的同一次 manipulate 里顺带把长边压到上传上限(见 mobileImagePreprocess),
@@ -198,20 +211,27 @@ async function getAssetInfoWithTimeout(assetId: string): Promise<MediaLibrary.As
 export async function resolveContextSheetMediaAssetForUpload(
   asset: ContextSheetMediaAsset,
 ): Promise<{ uri: string; filename: string; width?: number; height?: number; optimized?: boolean }> {
-  const info = await getAssetInfoWithTimeout(asset.id);
-  const localUri = info.localUri?.trim();
+  let info: MediaLibrary.AssetInfo | undefined;
+  try {
+    info = await getAssetInfoWithTimeout(asset.id);
+  } catch (error) {
+    if (Platform.OS !== 'android' || !isAndroidAssetInfoFallbackError(error)) throw error;
+  }
+  const localUri = info?.localUri?.trim();
   if (!localUri && Platform.OS === 'ios') {
-    throw new Error(ASSET_NOT_READABLE_MESSAGE);
+    throw new Error(i18n.t('interaction.contextSheet.photoNotReadable'));
   }
   const uri = localUri || asset.uri;
+  const width = typeof info?.width === 'number' ? info.width : asset.width;
+  const height = typeof info?.height === 'number' ? info.height : asset.height;
   if (!HEIC_EXT_PATTERN.test(asset.filename) && !HEIC_EXT_PATTERN.test(uri)) {
-    return { filename: asset.filename, uri, width: info.width, height: info.height };
+    return { filename: asset.filename, uri, width, height };
   }
   const context = ImageManipulator.manipulate(uri);
-  const width = typeof info.width === 'number' ? info.width : 0;
-  const height = typeof info.height === 'number' ? info.height : 0;
-  if (Math.max(width, height) > MOBILE_IMAGE_UPLOAD_MAX_LONG_EDGE) {
-    context.resize(width >= height
+  const resolvedWidth = width ?? 0;
+  const resolvedHeight = height ?? 0;
+  if (Math.max(resolvedWidth, resolvedHeight) > MOBILE_IMAGE_UPLOAD_MAX_LONG_EDGE) {
+    context.resize(resolvedWidth >= resolvedHeight
       ? { width: MOBILE_IMAGE_UPLOAD_MAX_LONG_EDGE }
       : { height: MOBILE_IMAGE_UPLOAD_MAX_LONG_EDGE });
   }

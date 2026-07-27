@@ -9,9 +9,18 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Linking, Platform } from 'react-native';
 import Constants from 'expo-constants';
 import * as Updates from 'expo-updates';
-import { IS_OTA_SELFHOST, REVIEW_MODE } from '@/config/env';
+import { i18n } from '@/i18n';
+import {
+  IS_OTA_SELFHOST,
+  IS_TESTFLIGHT_BUILD,
+  REVIEW_MODE,
+} from '@/config/env';
 import { fetchLatestRelease } from './fetchLatestRelease';
-import { evaluateBundleUpdate, preferredInstallUrl } from './bundleUpdate';
+import {
+  evaluateBundleUpdate,
+  preferredInstallUrl,
+  shouldCheckBundleUpdate,
+} from './bundleUpdate';
 import type { BundleUpdateCheckOutcome } from './manualUpdateCheck';
 import { markForcedPrompted } from './resumeUpdateCheck';
 import { isCanaryChannel } from './canaryChannelStore';
@@ -36,10 +45,10 @@ async function openInstall(url: string): Promise<void> {
     // 注意 openURL 在系统接下 URL 时即 resolve,早于用户在系统弹框里点「安装/取消」,
     // 无法得知用户的选择,措辞必须是条件引导式,不能断言"安装已开始"。
     if (url.startsWith('itms-services://')) {
-      Alert.alert('安装提示', '在系统弹框中点击「安装」后,请回到桌面查看安装进度;下载完成后系统会自动替换当前版本。');
+      Alert.alert(i18n.t('update.installHintTitle'), i18n.t('update.installHintBody'));
     }
   } catch {
-    Alert.alert('无法打开安装链接', '请手动复制安装地址在 Safari 中打开。');
+    Alert.alert(i18n.t('update.openInstallFailedTitle'), i18n.t('update.openInstallFailedBody'));
   }
 }
 
@@ -50,8 +59,8 @@ export function promptBundleUpdate(evaluation: ReturnType<typeof evaluateBundleU
   if (!url) return;
   const notes = evaluation.target.releaseNotes?.trim();
   const message = [
-    '发现新版本,需要下载安装整包更新。',
-    notes ? `\n更新内容:\n${notes}` : '',
+    i18n.t('update.bundleAvailableBody'),
+    notes ? i18n.t('update.releaseNotes', { notes }) : '',
   ].join('');
 
   if (evaluation.forced) {
@@ -60,12 +69,12 @@ export function promptBundleUpdate(evaluation: ReturnType<typeof evaluateBundleU
     // 避免"已标记但未展示"导致强更对本进程永久失声。
     markForcedPrompted(evaluation.target.runtimeVersion);
     // 强制更新:不可取消,只留"去更新"。
-    Alert.alert('需要更新', message, [{ text: '去更新', onPress: () => void openInstall(url) }], { cancelable: false });
+    Alert.alert(i18n.t('update.forcedTitle'), message, [{ text: i18n.t('update.goUpdate'), onPress: () => void openInstall(url) }], { cancelable: false });
     return;
   }
-  Alert.alert('发现新版本', message, [
-    { text: '稍后', style: 'cancel' },
-    { text: '去更新', onPress: () => void openInstall(url) },
+  Alert.alert(i18n.t('update.newVersionTitle'), message, [
+    { text: i18n.t('update.later'), style: 'cancel' },
+    { text: i18n.t('update.goUpdate'), onPress: () => void openInstall(url) },
   ]);
 }
 
@@ -75,6 +84,11 @@ export function useBundleUpdatePrompt({
   isCanary = isCanaryChannel(),
 }: Options = {}) {
   const [state, setState] = useState<CheckState>('idle');
+  const bundleCheckEnabled = shouldCheckBundleUpdate({
+    isSelfHosted: IS_OTA_SELFHOST,
+    isReviewMode: REVIEW_MODE,
+    isTestFlightBuild: IS_TESTFLIGHT_BUILD,
+  });
   const inFlightChannels = useRef(new Set<boolean>());
   const channelEpochRef = useRef(0);
   const previousChannelRef = useRef(isCanary);
@@ -86,8 +100,8 @@ export function useBundleUpdatePrompt({
   }
 
   const checkNow = useCallback(async (): Promise<BundleUpdateCheckOutcome> => {
-    // 审核模式:入口按钮已隐藏,这里再挡一层(状态由代码保证,不依赖 UI 层记得隐藏)。
-    if (!IS_OTA_SELFHOST || REVIEW_MODE) return 'skipped';
+    // 审核模式与 TestFlight 都禁止整包外跳；这里再挡一层，不依赖调用方记得隐藏入口。
+    if (!bundleCheckEnabled) return 'skipped';
     if (inFlightChannels.current.has(isCanary)) return 'busy';
     inFlightChannels.current.add(isCanary);
     const requestEpoch = channelEpochRef.current;
@@ -113,7 +127,7 @@ export function useBundleUpdatePrompt({
         return 'update-available';
       } else {
         setState('up-to-date');
-        if (notifyWhenUpToDate) Alert.alert('已是最新版本', '当前已是最新整包版本。');
+        if (notifyWhenUpToDate) Alert.alert(i18n.t('update.upToDateTitle'), i18n.t('update.upToDateBody'));
         return 'up-to-date';
       }
     } catch {
@@ -121,19 +135,19 @@ export function useBundleUpdatePrompt({
       // fetchLatestRelease 连不上(网络/超时/5xx)时抛错:自动检查静默(尽力而为),
       // 手动检查须提示"检查失败",不能沿用旧行为误报"已是最新"。
       setState('error');
-      if (notifyWhenUpToDate) Alert.alert('检查失败', '无法连接更新服务器,请稍后重试。');
+      if (notifyWhenUpToDate) Alert.alert(i18n.t('update.checkFailedTitle'), i18n.t('update.checkFailedBody'));
       return 'error';
     } finally {
       inFlightChannels.current.delete(isCanary);
     }
-  }, [isCanary, notifyWhenUpToDate]);
+  }, [bundleCheckEnabled, isCanary, notifyWhenUpToDate]);
 
   useEffect(() => {
-    if (auto && IS_OTA_SELFHOST) void checkNow();
+    if (auto && bundleCheckEnabled) void checkNow();
     // auto hook 在登录/切账号导致 channel 变化时再检查一次，避免新的账号
     // 继续沿用旧账号的 release 指针；手动检查入口仍由调用方通过 checkNow 触发。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [auto, isCanary]);
+  }, [auto, bundleCheckEnabled, isCanary]);
 
   return { state, checkNow };
 }

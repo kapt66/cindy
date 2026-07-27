@@ -7,6 +7,7 @@ import {
   parseProjectDeepLinkHref,
   parseSessionDeepLinkHref,
   PROJECT_DEEP_LINK_RE_SOURCE,
+  SESSION_DEEP_LINK_RE_SOURCE,
 } from '../lib/deepLink';
 
 describe('buildProjectDeepLink(严格编码,review P2)', () => {
@@ -29,6 +30,7 @@ describe('parseSessionDeepLinkHref', () => {
     expect(parseSessionDeepLinkHref('xdt-maker://session/abc-123')).toEqual({
       sessionId: 'abc-123',
       messageClientId: null,
+      deviceId: null,
     });
   });
 
@@ -36,10 +38,12 @@ describe('parseSessionDeepLinkHref', () => {
     expect(parseSessionDeepLinkHref(buildSessionDeepLink('id with space'))).toEqual({
       sessionId: 'id with space',
       messageClientId: null,
+      deviceId: null,
     });
     expect(parseSessionDeepLinkHref(buildSessionMessageDeepLink('abc', 'client/9'))).toEqual({
       sessionId: 'abc',
       messageClientId: 'client/9',
+      deviceId: null,
     });
   });
 
@@ -47,14 +51,17 @@ describe('parseSessionDeepLinkHref', () => {
     expect(parseSessionDeepLinkHref('xdt-maker://session/abc?message=')).toEqual({
       sessionId: 'abc',
       messageClientId: null,
+      deviceId: null,
     });
     expect(parseSessionDeepLinkHref('xdt-maker://session/abc?message=%ZZ')).toEqual({
       sessionId: 'abc',
       messageClientId: null,
+      deviceId: null,
     });
     expect(parseSessionDeepLinkHref('xdt-maker://session/abc?foo=1&message=m1')).toEqual({
       sessionId: 'abc',
       messageClientId: 'm1',
+      deviceId: null,
     });
   });
 
@@ -62,6 +69,7 @@ describe('parseSessionDeepLinkHref', () => {
     expect(parseSessionDeepLinkHref('xdt-maker://session/abc/#frag')).toEqual({
       sessionId: 'abc',
       messageClientId: null,
+      deviceId: null,
     });
   });
 
@@ -82,11 +90,63 @@ describe('Cindy Meka primary scheme and compatible inputs', () => {
     );
     expect(buildProjectDeepLink('/tmp/x')).toBe('cindy-meka://project/%2Ftmp%2Fx');
   });
+});
 
+// 远程会话深链冻结归属设备(`?device=`):生成/解析对称,旧格式回退 null。
+describe('session deep link device parameter', () => {
+  it('freezes deviceId into the link and roundtrips through the parser', () => {
+    const href = buildSessionDeepLink('abc-123', { deviceId: 'dev-mac~1' });
+    expect(href).toBe('cindy://session/abc-123?device=dev-mac~1');
+    expect(parseSessionDeepLinkHref(href)).toEqual({
+      sessionId: 'abc-123',
+      messageClientId: null,
+      deviceId: 'dev-mac~1',
+    });
+  });
+
+  it('combines message anchor and device parameter', () => {
+    const href = buildSessionMessageDeepLink('abc', 'client/9', { deviceId: 'dev-1' });
+    expect(href).toBe('cindy://session/abc?message=client%2F9&device=dev-1');
+    expect(parseSessionDeepLinkHref(href)).toEqual({
+      sessionId: 'abc',
+      messageClientId: 'client/9',
+      deviceId: 'dev-1',
+    });
+  });
+
+  it('omits the parameter for local sessions (null/undefined deviceId)', () => {
+    expect(buildSessionDeepLink('abc', { deviceId: null })).toBe('cindy-meka://session/abc');
+    expect(buildSessionMessageDeepLink('abc', 'm1', {})).toBe(
+      'cindy-meka://session/abc?message=m1',
+    );
+  });
+
+  it('ignores empty or malformed device values but keeps the rest of the link', () => {
+    expect(parseSessionDeepLinkHref('cindy://session/abc?device=')).toEqual({
+      sessionId: 'abc',
+      messageClientId: null,
+      deviceId: null,
+    });
+    expect(parseSessionDeepLinkHref('cindy://session/abc?device=%ZZ&message=m1')).toEqual({
+      sessionId: 'abc',
+      messageClientId: 'm1',
+      deviceId: null,
+    });
+  });
+
+  it('is fully matched by the free-text session link pattern', () => {
+    const href = buildSessionMessageDeepLink('abc', 'm1', { deviceId: 'dev-1' });
+    const match = `看这条 ${href}。`.match(new RegExp(SESSION_DEEP_LINK_RE_SOURCE));
+    expect(match?.[0].replace(/[.,;:!?]+$/, '')).toBe(href);
+  });
+});
+
+describe('compatible cindy:// inputs', () => {
   it('parsers accept primary-scheme cindy:// hrefs', () => {
     expect(parseSessionDeepLinkHref('cindy://session/abc-123?message=m1')).toEqual({
       sessionId: 'abc-123',
       messageClientId: 'm1',
+      deviceId: null,
     });
     expect(parseProjectDeepLinkHref('cindy://project/%2Ftmp%2Fx')).toEqual({
       workingDir: '/tmp/x',

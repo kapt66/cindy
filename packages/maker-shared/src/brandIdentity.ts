@@ -11,9 +11,9 @@
  *
  * ⚠️ 语义边界:
  *  - 这是**构建期单点,不是运行时开关**。区域(cn/global)是唯一的构建期维度,
- *    经打包命令的 CINDY_AUTH_REGION 选择,默认 cn。appId / exe 名 / userData
- *    目录名按区域派生(cn 与 global 是两个可同机并存的系统身份,appId 与
- *    mobile 的 com.xd.cindycn / com.xd.cindy 同一套)。
+ *    经打包命令的 CINDY_AUTH_REGION 选择,默认 global。appId / userData 目录名
+ *    按区域派生；Cindy Meka 的 cn / global / dev 使用独立 appId、userData
+ *    目录和可执行文件名，避免与普通 Cindy 或彼此覆盖。
  *  - 历史兼容锚点(旧 scheme 解析、旧 userData / DB 文件识别)由
  *    `legacySchemes` / `legacyUserDataDirNames` / `legacyDbFilePrefixes`
  *    承载,只增不减:老用户机器上的存量注册与文件可能永远带着旧值。
@@ -37,19 +37,19 @@ import { BRAND_NAME } from './branding.js';
 
 /**
  * 构建期区域维度(与 mobile 的 EXPO_PUBLIC_CINDY_AUTH_REGION 同语义)。
- * 2026-07-20 新增第三目标 `dev`:独立系统身份(CindyDev,可与 cn/global 同机
+ * 2026-07-20 新增第三目标 `dev`:独立系统身份,可与 cn/global 同机
  * 三装),连接独立的 dev 服务器(config/endpoint.dev.json,服务端就绪前为
  * 约定占位域名)。行为语义上 dev 归 cn 系(登录线/文案等运行时按区域分支处
  * 与 cn 同待遇),差异只在端点与身份。注意与「开发模式(未注入区域的本地
- * dev 构建)」区分:那仍默认 cn 身份。
+ * dev 构建)」区分:那仍默认 global 身份。
  */
 export type CindyRegion = 'cn' | 'global' | 'dev';
 
-/** 默认区域:国内。开发模式 / 未显式注入区域的构建一律落在这里。 */
-export const DEFAULT_CINDY_REGION: CindyRegion = 'cn';
+/** 默认区域:Global。开发模式 / 未显式注入区域的构建一律落在这里。 */
+export const DEFAULT_CINDY_REGION: CindyRegion = 'global';
 
 /**
- * 归一化区域输入(构建脚本 env / 运行时注入值)。空值 → 默认 cn;
+ * 归一化区域输入(构建脚本 env / 运行时注入值)。空值 → 默认 global;
  * 非法值抛错——打包链路宁可失败也不能默默打出身份错误的包。
  */
 export function resolveCindyRegion(raw?: string | null): CindyRegion {
@@ -73,10 +73,9 @@ export interface BrandIdentity {
    */
   readonly executableName: string;
   /**
-   * 按区域派生的可执行文件基名(同机双装:cn 与 global 的安装目录 / exe /
-   * mac .app 包名 / NSIS 快捷方式必须互不相同,否则第二个安装会覆盖第一个,
-   * 更新器按 exe 名杀进程也会误伤另一区域)。区域名不含空格(部分系统对
-   * 带空格路径的兼容性差,owner 决策)。
+   * 按区域派生的可执行文件基名(exe / mac .app 包名 / 安装目录 / NSIS
+   * 快捷方式全部跟随)。Cindy Meka 的 cn / global / dev 名称彼此独立，
+   * 同时与普通 Cindy 隔离；区域名不含空格。
    */
   readonly executableNameByRegion: Readonly<Record<CindyRegion, string>>;
   /**
@@ -126,11 +125,11 @@ export interface BrandIdentity {
 /**
  * 当前生效的身份档案：Cindy Meka 是独立新应用；XDMaker Meka 仅作迁移来源。
  *
- * 区域差异字段(2026-07-18 起支持 cn / global 同机双装):appId、
- * executableName、userDataDirName 三组按区域派生;深链 scheme、展示名
- * BRAND_NAME、cdnPrefix、dbFilePrefix、updaterName 两区共用(scheme 共用是
- * owner 决策:双装时后注册者赢,单装用户无感;cdnPrefix 共用因发布渠道靠
- * 不同 OSS bucket 区分;db 前缀因 userData 已分目录无需再区分)。
+ * 区域差异字段 appId、userDataDirName、executableName 均按区域派生，
+ * cn / global / dev 可并存；深链 scheme、展示名 BRAND_NAME、cdnPrefix、dbFilePrefix、
+ * updaterName 两区共用(scheme 共用是 owner 决策:双装时后注册者赢,单装用户
+ * 无感;cdnPrefix 共用因发布渠道靠不同 OSS bucket 区分;db 前缀因 userData
+ * 已分目录无需再区分)。
  */
 export const BRAND_IDENTITY: BrandIdentity = Object.freeze({
   displayName: BRAND_NAME,
@@ -181,7 +180,7 @@ export const CINDY_INTEROP_DEEP_LINK_SCHEMES: readonly string[] = Object.freeze(
   'xdt-maker',
 ]);
 
-/** 按区域取 appId(AUMID / bundle id);默认 cn。 */
+/** 按区域取 appId(AUMID / bundle id);默认 global。 */
 export function brandAppId(
   region: CindyRegion = DEFAULT_CINDY_REGION,
   identity: BrandIdentity = BRAND_IDENTITY,
@@ -197,7 +196,7 @@ export function brandBundleIdPrefix(
   return identity.appIdByRegion[region];
 }
 
-/** 按区域取可执行文件基名(exe / mac .app / 安装目录 / 快捷方式名);默认 cn。 */
+/** 按区域取可执行文件基名(exe / mac .app / 安装目录 / 快捷方式名);默认 global。 */
 export function brandExecutableName(
   region: CindyRegion = DEFAULT_CINDY_REGION,
   identity: BrandIdentity = BRAND_IDENTITY,
@@ -205,7 +204,7 @@ export function brandExecutableName(
   return identity.executableNameByRegion[region];
 }
 
-/** 按区域取 Electron userData 目录名;默认 cn。 */
+/** 按区域取 Electron userData 目录名;默认 global。 */
 export function brandUserDataDirName(
   region: CindyRegion = DEFAULT_CINDY_REGION,
   identity: BrandIdentity = BRAND_IDENTITY,

@@ -73,6 +73,7 @@ import type { SchedulerDrizzleDb } from './storage';
 import { backfillSessionMeta } from './runners/_shared';
 import { buildSkipResultText, executePreRunHook, formatPreRunHookFailure } from './pre-run-hook';
 import { defaultModelFor } from './model-defaults';
+import { beginHeadlessGhostSetupTurn } from '../mcp-integrations/ghostSetupInteractionSurface.js';
 
 const ALLOWED_EFFORT = new Set<string>([
   'minimal',
@@ -178,6 +179,8 @@ export interface MakerScheduleRunnerDeps {
   onUndispatchedUserTurn?: (sessionId: string) => void;
   /** heartbeat 直发前落实 deferred agent switch,并 bootstrap 新 live session。 */
   applyPendingAgentSwitch?: (sessionId: string, signal?: AbortSignal) => Promise<void>;
+  /** 新建可见会话落库后通知本机窗口与 device-link 列表订阅者。 */
+  onSessionCreated?: (sessionId: string) => void;
   /** 可选:撞忙排队桥。未注入时心跳撞忙回退为顺延(deferFire)旧行为。 */
   schedulerQueue?: SchedulerQueueDeps;
 }
@@ -267,6 +270,7 @@ export class MakerScheduleRunner implements ScheduleRunner {
       throwIfFireAborted(ctx.signal, 'runner entry');
       return await this.fireInner(schedule, ctx, holder);
     } finally {
+      holder.headlessGhostSetupTurn?.close();
       if (
         holder.sessionId &&
         !holder.keepAlive &&
@@ -650,6 +654,7 @@ export class MakerScheduleRunner implements ScheduleRunner {
         title: isHeartbeat ? undefined : `[Schedule] ${schedule.name}`,
         resumeSessionId,
         providerId: createProviderId ?? undefined,
+        vendorOptions: { source: 'scheduler' },
       });
     } catch (err) {
       if (err instanceof CredentialModeSwitchBusyError) {
@@ -663,6 +668,7 @@ export class MakerScheduleRunner implements ScheduleRunner {
     // 登记,后续任何 throw 都能被收尾。
     holder.sessionId = session.id;
     holder.keepAlive = isHeartbeat || !!schedule.persistentSession;
+    holder.headlessGhostSetupTurn = createHeadlessGhostSetupTurnGuard(session.id);
 
     // 4.4.1 heartbeat 模型 / effort 同步：schedule 上的选择与绑定 session 当前值
     // 不一致时，把改动推给 session 运行时。必须显式 setModel / setEffort ——
@@ -885,6 +891,11 @@ export class MakerScheduleRunner implements ScheduleRunner {
         origin,
         planMode: false,
         onAccepted: async () => {
+          // createSession 之后到真正 dispatch 之间仍会 await 模型切换、baseline
+          // 等准备工作。复用 desktop session 时不能在这些准备阶段把用户正在跑的
+          // turn 误标成 headless；只在本轮 send 真正跨过接受边界后 acquire。
+          // fire 已收口后才到达的迟发 callback 由 guard 拒绝，避免重新污染 session。
+          if (!holder.headlessGhostSetupTurn?.markDispatched()) return;
           turnAccepted = true;
           // turn 已被会话接受 → 此刻才落定 sessionId → 本轮 runId 反向映射(供按
           // session 静默解析)。在 send 被接受这一刻写,被 SESSION_RUNNING 拒的并发 run
@@ -900,6 +911,16 @@ export class MakerScheduleRunner implements ScheduleRunner {
             });
           } catch (err) {
             throw new SchedulerOnAcceptedError(err);
+          }
+          // 非 heartbeat 的每次 fire 都创建一条用户可见会话。必须在 source 回填和首条
+          // user message 都 durable 后广播,让本机其它窗口与 device-link 控制端立即重拉；
+          // heartbeat 只是在既有会话上续跑,不重复发 created。
+          if (!isHeartbeat) {
+            try {
+              this.deps.onSessionCreated?.(session.id);
+            } catch (err) {
+              this.deps.logger.warn?.('[runner] session created broadcast failed (non-fatal)', err);
+            }
           }
           if (this.deps.beforeDispatchUserTurn) {
             await this.deps.beforeDispatchUserTurn(session.id);
@@ -1084,6 +1105,38 @@ export class MakerScheduleRunner implements ScheduleRunner {
     /** 绑定会话的当前路由基线(meta.model / meta.effort / sessions.provider_id)。 */
     routingBaseline: { model?: string; effort?: string; providerId: string | null },
   ): Promise<FireResult> {
+    const headlessTurn = {
+      closed: false,
+      release: null as (() => void) | null,
+    };
+    try {
+      return await this.fireTrackedHeartbeatViaQueue(
+        schedule,
+        ctx,
+        sessionId,
+        routingBaseline,
+        () => {
+          // A cancelled queue item may still report a late accept after the
+          // runner has already settled. Do not acquire a marker that no
+          // remaining finally block could release.
+          if (headlessTurn.closed || headlessTurn.release) return;
+          headlessTurn.release = beginHeadlessGhostSetupTurn(sessionId);
+        },
+      );
+    } finally {
+      headlessTurn.closed = true;
+      headlessTurn.release?.();
+      headlessTurn.release = null;
+    }
+  }
+
+  private async fireTrackedHeartbeatViaQueue(
+    schedule: Schedule,
+    ctx: FireContext,
+    sessionId: string,
+    routingBaseline: { model?: string; effort?: string; providerId: string | null },
+    markHeadlessTurnDispatched: () => void,
+  ): Promise<FireResult> {
     const sq = this.deps.schedulerQueue;
     if (!sq) throw new Error('fireHeartbeatViaQueue requires schedulerQueue dep');
     const promptToSend = schedule.silentWhenIdle
@@ -1133,6 +1186,11 @@ export class MakerScheduleRunner implements ScheduleRunner {
       origin,
       onAccepted: async () => {
         dispatched = true;
+        // Queue admission happens while another (possibly user-driven)
+        // Desktop turn still owns the session. Only the accepted scheduler
+        // turn is headless; marking the whole queue wait would suppress setup
+        // cards in that unrelated interactive turn.
+        markHeadlessTurnDispatched();
         const live = this.deps.maker.getSession(sessionId);
         // abort 撞上"项已转 activeTurn、尚未 accept"的派发窗口时,removeQueuedPrompt
         // 是 no-op、coordinator 会继续把 turn 发出去 —— 这里在 accept 时刻补杀:
@@ -1624,11 +1682,39 @@ function throwIfFireAborted(signal: AbortSignal, stage: FireAbortStage): void {
  */
 interface EphemeralSessionHolder {
   sessionId?: string;
+  headlessGhostSetupTurn?: HeadlessGhostSetupTurnGuard;
   /** force cleanup when an accepted ephemeral turn is aborted mid-dispatch */
   closeOnAbort?: boolean;
   worktreeSessionId?: string;
   /** true = heartbeat 复用会话或持续会话,收尾时不关闭。 */
   keepAlive?: boolean;
+}
+
+interface HeadlessGhostSetupTurnGuard {
+  /**
+   * Returns false when this fire already reached a terminal path. That also
+   * lets a late onAccepted callback skip all of its otherwise-stale effects.
+   */
+  markDispatched(): boolean;
+  close(): void;
+}
+
+function createHeadlessGhostSetupTurnGuard(sessionId: string): HeadlessGhostSetupTurnGuard {
+  let closed = false;
+  let release: (() => void) | undefined;
+  return {
+    markDispatched() {
+      if (closed) return false;
+      release ??= beginHeadlessGhostSetupTurn(sessionId);
+      return true;
+    },
+    close() {
+      if (closed) return;
+      closed = true;
+      release?.();
+      release = undefined;
+    },
+  };
 }
 
 class SchedulerOnAcceptedError extends Error {

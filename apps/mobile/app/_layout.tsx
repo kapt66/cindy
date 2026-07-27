@@ -28,6 +28,9 @@ import {
 import { DeviceLinkProvider } from '@/device-link/DeviceLinkContext';
 import { PushNotificationsBridge } from '@/notifications/PushNotificationsBridge';
 import { GestureHandlerRootView } from '@/platform/gestureHandler';
+// import 即同步完成 i18next init;必须先于任何 t() 消费方挂载。
+import '@/i18n';
+import { LocaleProvider } from '@/i18n/useLocale';
 import { ThemeProvider, useTheme } from '@/theme/ThemeProvider';
 import { createNavigationTheme } from '@/theme/navigationTheme';
 import { MobileLoginHandoffStage } from '@/components/MobileLoginHandoffStage';
@@ -44,11 +47,6 @@ import { useStartupOtaGate } from '@/update/useStartupOtaGate';
 import { useCanaryChannelGate } from '@/update/useCanaryChannelGate';
 import { useStartupEndpointGate } from '@/config/useStartupEndpointGate';
 import { IS_OTA_SELFHOST } from '@/config/env';
-import { Observe, ObserveRoot } from '@/observability/observe';
-
-// EAS Observe:启用 expo-router 集成,采集 per-route 导航指标(cold_ttr / warm_ttr / tti)。
-// 必须在挂载前的模块作用域调用;否则 useObserve().markInteractive 会退化为全局兜底、不记 per-route。
-Observe.configure({ integrations: { 'expo-router': true } });
 
 function NavigationGate() {
   const auth = useAuth();
@@ -155,11 +153,11 @@ function RootAfterUpdateChannel({ isCanary }: { isCanary: boolean }) {
   useEffect(() => {
     if (otaReady) dispatchHandoff({ type: 'ota-ready' });
   }, [otaReady, dispatchHandoff]);
-  // 自建变体:启动时检查整包更新(runtimeVersion 变化 → 引导跳 NPKG)。
-  // 内部 IS_OTA_SELFHOST gate,EAS 包为 no-op。JS 热更由上面的门 + expo-updates 处理,与此互补。
+  // 符合整包分发策略的自建变体:启动时检查整包更新(runtimeVersion 变化 → 引导安装)。
+  // TestFlight / 审核 / EAS 包为 no-op。JS 热更由上面的门 + expo-updates 处理,与此互补。
   useBundleUpdatePrompt({ auto: true, isCanary });
   // 自建变体:后台切回前台时静默补一次检查(OTA 静默 fetch 不 reload、整包仅强更提示)。
-  // 内部节流 + IS_OTA_SELFHOST gate,非自建为 no-op。见 useResumeUpdateCheck。
+  // TestFlight 保留 OTA、跳过整包分支；非自建为 no-op。见 useResumeUpdateCheck。
   useResumeUpdateCheck(isCanary);
   // 热更门未就绪(自建变体冷启动正在 check/fetch/reload)时不挂载业务树,避免闪旧 UI;
   // 期间根部常驻 splash 覆盖层在上面顶着,这里返回 null 即可。
@@ -198,6 +196,8 @@ function RootLayout() {
   }, []);
   // Dev-only:JS 停摆探测器,把 JS 线程忙死的时间边界钉进 Metro 日志流(内部 __DEV__ gate)。
   useEffect(() => startJsStallWatchdog(), []);
+  // 使用统计(TapDB):这里只是"尝试"初始化——用户没同意过《隐私政策》时同意闸会
+  // 直接挡回 not_consented,原生 SDK 一个字节都不会读写(见 analytics/mobileTapdb)。
   useEffect(() => {
     void initMobileTapdb();
   }, []);
@@ -235,14 +235,17 @@ function RootLayout() {
     <GestureHandlerRootView style={styles.gestureRoot}>
       <SafeAreaProvider>
         <ThemeProvider>
-          {/* handoff Provider 常驻 root(PR4b):闸门屏切换不重置衔接状态机 */}
-          <MobileLoginHandoffProvider>
-            <EndpointHandoffBridge status={endpointGate.status} />
-            {/* 启动闸门全程共用这一个 splash 实例;端点错误屏需要交互时才隐藏它 */}
-            <StartupSplashOverlay hidden={endpointGate.status === 'error'}>
-              {body}
-            </StartupSplashOverlay>
-          </MobileLoginHandoffProvider>
+          {/* 语言 Provider 常驻 root:恢复持久化 override,覆盖含 (auth) 在内的全部屏幕 */}
+          <LocaleProvider>
+            {/* handoff Provider 常驻 root(PR4b):闸门屏切换不重置衔接状态机 */}
+            <MobileLoginHandoffProvider>
+              <EndpointHandoffBridge status={endpointGate.status} />
+              {/* 启动闸门全程共用这一个 splash 实例;端点错误屏需要交互时才隐藏它 */}
+              <StartupSplashOverlay hidden={endpointGate.status === 'error'}>
+                {body}
+              </StartupSplashOverlay>
+            </MobileLoginHandoffProvider>
+          </LocaleProvider>
         </ThemeProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
@@ -329,6 +332,4 @@ const styles = StyleSheet.create({
   },
 });
 
-// EAS Observe:包裹根布局以采集启动 / 首屏 / OTA 等性能与采用数据。
-// 入口屏(首页 / 会话 / 登录)各自用 useObserve().markInteractive 标记可交互时刻。
-export default ObserveRoot.wrap(RootLayout);
+export default RootLayout;

@@ -3,11 +3,11 @@
  * 由 ModelPickerSheet 装配)。
  *
  * 展现内容对齐桌面 ModelSelector 的 renderModelItem:每行 = 来源官方 mark + 模型名 +
- * `订阅`(订阅制来源)+ `85% off`(骨折版)+ 当前 effort 标签 + Fast 闪电(点亮时)+
+ * `订阅`(订阅制来源)+ `特别折扣`(折扣版)+ 当前 effort 标签 + Fast 闪电(点亮时)+
  * 选中 Check + 行内「配置」入口。
  * 触屏适配:桌面 hover「Edit」→ 每行右侧常驻配置图标,点击经 `onOpenOptions` 通知浮窗
  * 打开二级「模型选项」SheetSurface(元信息 / 快速开关 / 推理强度,见 ModelOptionsSheetView),
- * 本组件不再承载行内展开。骨折版被控端无 gateway key → 整行置灰 + 行内提示。
+ * 本组件不再承载行内展开。折扣版被控端无 gateway key → 整行置灰 + 行内提示。
  *
  * 三态:① 供应商分段(providerRows 非空,选行 = 选「来源 + 模型」);② 扁平回退(flatOptions,
  * 旧被控端,无来源 mark、无记忆,仅选中行可配置);③ 空 → 加载中 / 暂无文案。
@@ -16,6 +16,7 @@
  * (纯逻辑可单测),本组件只做渲染。
  */
 import { Pressable, StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
+import { useTranslation } from 'react-i18next';
 import { Text } from '@/components/AppText';
 import { Check, SlidersHorizontal, Zap } from 'lucide-react-native';
 
@@ -27,7 +28,7 @@ import type { MobileModelMemoryAccessors } from '@/session/draftModelMemory';
 import { useDraftModelMemoryVersion } from '@/session/draftModelMemory';
 import { useSessionModelMirrorVersion } from '@/session/sessionModelMirror';
 import {
-  BUDGET_DISABLED_HINT,
+  budgetDisabledHint,
   budgetRowDisabled,
   effortLabelFor,
   rowEffortOf,
@@ -72,7 +73,7 @@ export interface MobileModelPickerListProps {
   selectedFastMode?: boolean;
   /** 非选中行 effort/fast 记忆读取器(草稿 = draftModelMemory / 会话 = sessionModelMirror)。 */
   modelMemory?: MobileModelMemoryAccessors;
-  /** 被控端网关 key presence('absent' 才置灰骨折版,缺省 'unknown' 不置灰)。 */
+  /** 被控端网关 key presence('absent' 才置灰折扣版,缺省 'unknown' 不置灰)。 */
   apiKeyStatus?: DeviceApiKeyStatus;
   /** 行内配置图标点击(打开二级「模型选项」浮窗);不传则不显示配置入口。 */
   onOpenOptions?(target: ModelOptionsOpenTarget): void;
@@ -159,8 +160,8 @@ export function MobileModelPickerList({
   activeSourceId,
   loading = false,
   disabled = false,
-  emptyHint = '暂无可用模型',
-  loadingHint = '正在加载模型…',
+  emptyHint,
+  loadingHint,
   onSelectProviderRow,
   onSelectFlatModel,
   rowStyle,
@@ -176,6 +177,9 @@ export function MobileModelPickerList({
 }: MobileModelPickerListProps) {
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
+  const { t } = useTranslation();
+  const resolvedEmptyHint = emptyHint ?? t('models.picker.emptyDefault');
+  const resolvedLoadingHint = loadingHint ?? t('models.picker.loadingDefault');
   // 非选中行的记忆写入(二级浮窗里改)不经 props 回流 —— 订阅两个记忆 store 的版本号,
   // 任一变化即重渲染行 effort/Fast 标签(对齐桌面 ModelSelector 的 storeVersion)。
   const storeVersion = useDraftModelMemoryVersion() + useSessionModelMirrorVersion();
@@ -232,7 +236,10 @@ export function MobileModelPickerList({
             (selected || !!modelMemory);
           return (
             <Pressable
-              accessibilityLabel={`选择来源 ${row.provider.name} 的模型 ${row.model.displayName}`}
+              accessibilityLabel={t('models.picker.selectProviderModelAccessibility', {
+                provider: row.provider.name,
+                model: row.model.displayName,
+              })}
               accessibilityRole="button"
               accessibilityState={{ selected, disabled: disabled || rowDisabled }}
               disabled={disabled || rowDisabled}
@@ -264,12 +271,12 @@ export function MobileModelPickerList({
                   <Text numberOfLines={1} style={styles.optionText}>{row.model.displayName}</Text>
                   {isSubscription ? (
                     <View style={styles.budgetBadge}>
-                      <Text style={styles.budgetBadgeText}>订阅</Text>
+                      <Text style={styles.budgetBadgeText}>{t('models.picker.subscriptionBadge')}</Text>
                     </View>
                   ) : null}
                   {isBudget ? (
                     <View style={styles.budgetBadge}>
-                      <Text style={styles.budgetBadgeText}>85% off</Text>
+                      <Text style={styles.budgetBadgeText}>{t('models.picker.discountBadge')}</Text>
                     </View>
                   ) : null}
                   {rowEffort ? (
@@ -282,13 +289,13 @@ export function MobileModelPickerList({
                   ) : null}
                 </View>
                 {rowDisabled ? (
-                  <Text numberOfLines={1} style={styles.disabledHint}>{BUDGET_DISABLED_HINT}</Text>
+                  <Text numberOfLines={1} style={styles.disabledHint}>{budgetDisabledHint()}</Text>
                 ) : null}
               </View>
               {selected ? <Check color={colors.textPrimary} size={iconSize.lg} strokeWidth={iconStroke.medium} /> : null}
               {hasOptions ? (
                 <Pressable
-                  accessibilityLabel={`配置 ${row.model.displayName}`}
+                  accessibilityLabel={t('models.picker.configureAccessibility', { model: row.model.displayName })}
                   accessibilityRole="button"
                   disabled={disabled}
                   hitSlop={6}
@@ -331,7 +338,7 @@ export function MobileModelPickerList({
             : null;
           return (
             <Pressable
-              accessibilityLabel={`选择模型 ${option.label}`}
+              accessibilityLabel={t('models.picker.selectModelAccessibility', { model: option.label })}
               accessibilityRole="button"
               accessibilityState={{ selected, disabled }}
               disabled={disabled}
@@ -366,7 +373,7 @@ export function MobileModelPickerList({
               {selected ? <Check color={colors.textPrimary} size={iconSize.lg} strokeWidth={iconStroke.medium} /> : null}
               {hasOptions ? (
                 <Pressable
-                  accessibilityLabel={`配置 ${option.label}`}
+                  accessibilityLabel={t('models.picker.configureAccessibility', { model: option.label })}
                   accessibilityRole="button"
                   disabled={disabled}
                   hitSlop={6}
@@ -384,5 +391,5 @@ export function MobileModelPickerList({
     );
   }
 
-  return <Text style={styles.empty}>{loading ? loadingHint : emptyHint}</Text>;
+  return <Text style={styles.empty}>{loading ? resolvedLoadingHint : resolvedEmptyHint}</Text>;
 }

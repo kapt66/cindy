@@ -1,6 +1,12 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { apiFetchRaw } from '@/api/client';
 import { DEFAULT_MOBILE_VOICE_LITELLM_BASE_URL, DEVICE_LINK_API_BASE_URL } from '@/config/env';
+import { i18n } from '@/i18n';
+
+// 文案已 i18n 化;固定 zh-CN 让字面量断言与语言环境解耦(全局 mock 默认 en-US)。
+beforeAll(async () => {
+  await i18n.changeLanguage('zh-CN');
+});
 
 const GW_PROXY = `${DEFAULT_MOBILE_VOICE_LITELLM_BASE_URL}/proxy`;
 import {
@@ -9,8 +15,8 @@ import {
   buildMobileVoiceRefinementContext,
   canCancelMobileVoiceRecording,
   makeMobileRefinerPromptCacheKey,
-  MOBILE_VOICE_MIC_PERMISSION_ERROR,
-  MOBILE_VOICE_REALTIME_AUDIO_UNAVAILABLE_ERROR,
+  mobileVoiceMicPermissionError,
+  mobileVoiceRealtimeAudioUnavailableError,
   MOBILE_MAX_VOICE_AUDIO_BYTES,
   isMobileVoiceMicPermissionError,
   mobileVoiceStateLabel,
@@ -92,8 +98,8 @@ describe('mobileVoiceInput', () => {
   });
 
   it('detects microphone permission errors for the settings shortcut', () => {
-    expect(isMobileVoiceMicPermissionError(MOBILE_VOICE_MIC_PERMISSION_ERROR)).toBe(true);
-    expect(MOBILE_VOICE_REALTIME_AUDIO_UNAVAILABLE_ERROR).toContain('原生录音模块');
+    expect(isMobileVoiceMicPermissionError(mobileVoiceMicPermissionError())).toBe(true);
+    expect(mobileVoiceRealtimeAudioUnavailableError()).toContain('原生录音模块');
     expect(isMobileVoiceMicPermissionError('麦克风权限未开启')).toBe(false);
     expect(isMobileVoiceMicPermissionError(null)).toBe(false);
   });
@@ -115,6 +121,7 @@ describe('mobileVoiceInput', () => {
         voiceInputHistory: ['桌面较新的术语', '桌面较早的术语'],
       },
     }), {
+      uiLanguage: 'zh-CN',
       localVoiceInputHistory: ['手机最新术语', '手机较早术语'],
       refinementContext: {
         selectionBefore: '当前输入框前文',
@@ -142,6 +149,23 @@ describe('mobileVoiceInput', () => {
     expect(history.indexOf('- 桌面较早的术语')).toBeLessThan(history.indexOf('- 桌面较新的术语'));
     expect(history.indexOf('- 桌面较新的术语')).toBeLessThan(history.indexOf('- 手机较早术语'));
     expect(history.indexOf('- 手机较早术语')).toBeLessThan(history.indexOf('- 手机最新术语'));
+  });
+
+  it('uses the current UI language for refinement when ASR language is auto', () => {
+    const context = buildMobileVoiceRefinementContext(storedCredential({
+      settings: {
+        language: 'auto',
+        refinementEnabled: true,
+        playInteractionSound: true,
+      },
+    }), {
+      uiLanguage: 'ja',
+    });
+
+    expect(context).toMatchObject({
+      uiLanguage: 'ja',
+      sourceLanguage: 'ja',
+    });
   });
 
   it('normalizes the desktop transcribe result before inserting into the draft', () => {
@@ -283,7 +307,7 @@ describe('mobileVoiceInput', () => {
 
     await expect(putMobileVoiceUpload('https://oss.example/voice-put', new Blob(['x']), 'audio/mp4', {
       fetch: fetchPut,
-    })).rejects.toThrow('语音上传失败: HTTP 403 Forbidden');
+    })).rejects.toThrow('语音上传失败：HTTP 403 Forbidden');
   });
 
   it('streams mobile refinement previews from managed refine SSE chunks', async () => {
@@ -449,6 +473,8 @@ describe('mobileVoiceInput', () => {
       system: 'Return JSON.',
       user: { dictationText: 'raw' },
       schemaName: 'dictation_refinement',
+    // 冒号来自 cloudVoiceHttpErrorMessage() 的代码拼接（半角），不在 locale 里，
+    // 因此不随 zh-CN 全角标点规则变化。
     })).rejects.toThrow('语音润色失败: HTTP 500 Server Error · managed refiner unavailable');
   });
 });

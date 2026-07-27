@@ -24,6 +24,13 @@ import { sql } from 'drizzle-orm';
 import { sessions } from './localDb/schema';
 import { getDbClient } from './localDb/client/current';
 import { createLogger } from './logger';
+import { tapWindowBroadcast } from './device-link/broadcast-tap.js';
+import {
+  addRegionalMoney,
+  legacyUsdMoney,
+  normalizeRegionalMoney,
+  type RegionalMoney,
+} from '../shared/regionalMoney.js';
 
 const log = createLogger('sessionSpendBroadcaster');
 
@@ -43,8 +50,9 @@ export const USAGE_SESSION_CONTEXT_CHANGED = 'usage:session-context-changed';
 
 export interface SessionSpendPayload {
   sessionId: string;
-  /** session 终身累计 USD（已持久化到 sessions.total_cost_usd）。 */
-  totalCostUsd: number;
+  totalMoney: RegionalMoney;
+  /** 仅当累计金额仍是 USD 时给旧 renderer 的兼容投影。 */
+  totalCostUsd?: number;
 }
 
 export interface SessionTokensPayload {
@@ -65,22 +73,63 @@ export interface SessionContextPayload {
  *
  * 极小 / 非法 delta 跳过（与 dailySpend 同阈值）。
  */
-export async function recordSessionTurnSpend(sessionId: string, costUsdDelta: number): Promise<void> {
+export async function recordSessionTurnSpend(
+  sessionId: string,
+  money: RegionalMoney,
+): Promise<void> {
   if (!sessionId) return;
-  if (!Number.isFinite(costUsdDelta) || costUsdDelta < 1e-10) return;
+  const normalized = normalizeRegionalMoney(money);
+  if (!normalized || normalized.amount < 1e-10) return;
   try {
     const db = getDbClient().drizzle;
+    // 单币种累计列:币种守卫必须在同一条 UPDATE 里用 CASE 表达 —— 先查再写
+    // 有 TOCTOU 窗口,并发首写会把不同币种的裸数字加进同一列。冲突段原子地
+    // 弃掉(列保持原币种),下方回读后 warn 留痕。
+    const sameCurrency = sql`(${sessions.totalCostCurrency} IS NULL OR ${sessions.totalCostCurrency} = ${normalized.currency})`;
     await db.update(sessions)
-      .set({ totalCostUsd: sql`${sessions.totalCostUsd} + ${costUsdDelta}` })
+      .set({
+        totalCostAmount: sql`CASE WHEN ${sameCurrency} THEN ${sessions.totalCostAmount} + ${normalized.amount} ELSE ${sessions.totalCostAmount} END`,
+        totalCostCurrency: sql`CASE WHEN ${sameCurrency} THEN ${normalized.currency} ELSE ${sessions.totalCostCurrency} END`,
+        totalCostIsApproximate: sql`CASE WHEN ${sameCurrency} THEN (${sessions.totalCostIsApproximate} OR ${normalized.approximate ? 1 : 0}) ELSE ${sessions.totalCostIsApproximate} END`,
+      })
       .where(sql`${sessions.id} = ${sessionId}`)
       .run();
     const row = await db
-      .select({ totalCostUsd: sessions.totalCostUsd })
+      .select({
+        totalCostUsd: sessions.totalCostUsd,
+        totalCostAmount: sessions.totalCostAmount,
+        totalCostCurrency: sessions.totalCostCurrency,
+        totalCostIsApproximate: sessions.totalCostIsApproximate,
+      })
       .from(sessions)
       .where(sql`${sessions.id} = ${sessionId}`)
       .get();
-    const totalCostUsd = row?.totalCostUsd ?? 0;
-    broadcast({ sessionId, totalCostUsd });
+    if (
+      row?.totalCostCurrency &&
+      row.totalCostCurrency !== normalized.currency
+    ) {
+      log.warn('recordSessionTurnSpend dropped a conflicting-currency segment');
+    }
+    const legacy = legacyUsdMoney(row?.totalCostUsd ?? 0);
+    const current = normalizeRegionalMoney({
+      amount: row?.totalCostAmount ?? 0,
+      currency: row?.totalCostCurrency ?? normalized.currency,
+      approximate: row?.totalCostIsApproximate ?? false,
+      kind: 'actual-cost',
+    });
+    const totalMoney =
+      legacy.amount > 0 && current
+        ? legacy.currency === current.currency
+          ? addRegionalMoney([legacy, current])
+          : current
+        : current ?? legacy;
+    broadcast({
+      sessionId,
+      totalMoney,
+      ...(totalMoney.currency === 'USD'
+        ? { totalCostUsd: totalMoney.amount }
+        : {}),
+    });
   } catch (err) {
     log.warn(
       'recordSessionTurnSpend failed:',
@@ -90,6 +139,10 @@ export async function recordSessionTurnSpend(sessionId: string, costUsdDelta: nu
 }
 
 function broadcast(payload: SessionSpendPayload): void {
+  // device-link 旁路:控制端经 sessions topic(列表订阅常开,会话未打开也不丢)收到
+  // 累计 cost 镜像(本模块走裸 UPDATE、不发 sessions:patched,没有这条 tap 控制端的
+  // $ 永远不更新)。
+  tapWindowBroadcast(USAGE_SESSION_SPEND_CHANGED, payload);
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
       win.webContents.send(USAGE_SESSION_SPEND_CHANGED, payload);
@@ -122,6 +175,7 @@ export async function recordSessionTurnTokens(sessionId: string, tokenDelta: num
 }
 
 function broadcastTokens(payload: SessionTokensPayload): void {
+  tapWindowBroadcast(USAGE_SESSION_TOKENS_CHANGED, payload);
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
       win.webContents.send(USAGE_SESSION_TOKENS_CHANGED, payload);

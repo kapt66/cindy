@@ -1,7 +1,12 @@
 import Constants from 'expo-constants';
 
 import { ApiError, type ApiFetchOptions } from '@/api/client';
-import { VOICE_API_BASE_URL } from '@/config/env';
+import {
+  AUTH_REGION,
+  VOICE_API_BASE_URL,
+  type CindyAuthRegion,
+} from '@/config/env';
+import { i18n } from '@/i18n';
 import type {
   MobileVoiceCredentialSyncAsr,
   MobileVoiceCredentialSyncRefiner,
@@ -10,6 +15,7 @@ import {
   assertMobileVoiceCredentialShape,
   type StoredMobileVoiceCredential,
 } from '@/session/mobileVoiceCredentialStore';
+import { resolveMobileVoiceAsrLanguage } from '@/session/mobileVoiceLanguage';
 
 const VOICE_SESSION_REQUEST_TIMEOUT_MS = 10_000;
 const VOICE_REFINE_WARMUP_TIMEOUT_MS = 10_000;
@@ -42,6 +48,7 @@ type VoiceSessionResponse = {
 /** Per-dictation holder for one-shot ASR tickets and the owning refine session. */
 export class MobileCindyVoiceRunContext {
   private latestSessionId: string | null = null;
+  private readonly sourceLanguage: string | undefined;
   /**
    * 旧 voice-server 不认识 'auto' 标记时置位:会话分配已降级为无润色,后续
    * refine/warmup 直接快速失败(原始 ASR 文本保留),听写本身不受影响。
@@ -52,9 +59,11 @@ export class MobileCindyVoiceRunContext {
     private readonly getAccessToken: AccessTokenProvider,
     private readonly refreshAccessToken: AccessTokenProvider,
     private readonly apiFetch: AuthenticatedApiFetch,
-    private readonly sourceLanguage: string | undefined,
+    sourceLanguage: string | undefined,
     private readonly refinerProvider: string | undefined,
-  ) {}
+  ) {
+    this.sourceLanguage = resolveMobileVoiceAsrLanguage(sourceLanguage);
+  }
 
   async createAsrConnection(asrProvider: string): Promise<{
     websocketUrl: string;
@@ -111,7 +120,7 @@ export class MobileCindyVoiceRunContext {
       || session.asr?.provider !== asrProvider
       || !/^wss?:\/\//.test(session.asr.websocketUrl)
     ) {
-      throw new Error('语音服务返回了无效会话。');
+      throw new Error(i18n.t('composer.voice.invalidSession'));
     }
     return session;
   }
@@ -121,9 +130,9 @@ export class MobileCindyVoiceRunContext {
     authorization: string;
   }> {
     if (this.refinerUnavailableOnServer) {
-      throw new Error('当前 Cindy 语音服务暂不支持托管润色。');
+      throw new Error(i18n.t('composer.voice.managedRefineUnsupported'));
     }
-    if (!this.latestSessionId) throw new Error('语音识别会话尚未连接。');
+    if (!this.latestSessionId) throw new Error(i18n.t('composer.voice.sessionNotConnected'));
     const token = await this.requireAccessToken(options?.refreshAccessToken);
     return {
       url: `${requireVoiceBaseUrl()}/api/voice/sessions/${encodeURIComponent(this.latestSessionId)}/refine?provider=${encodeURIComponent(refinerProvider)}`,
@@ -142,10 +151,10 @@ export class MobileCindyVoiceRunContext {
     promptCacheKey: string;
   }): Promise<void> {
     if (this.refinerUnavailableOnServer) {
-      throw new Error('当前 Cindy 语音服务暂不支持托管润色。');
+      throw new Error(i18n.t('composer.voice.managedRefineUnsupported'));
     }
     const sessionId = this.latestSessionId;
-    if (!sessionId) throw new Error('语音识别会话尚未连接。');
+    if (!sessionId) throw new Error(i18n.t('composer.voice.sessionNotConnected'));
     // 非 2xx 由 apiFetch 抛 ApiError;超时同样抛错,由调用方仅记录。
     await this.apiFetch(
       `/api/voice/sessions/${encodeURIComponent(sessionId)}/refine-warmup`,
@@ -166,7 +175,7 @@ export class MobileCindyVoiceRunContext {
 
   private async requireAccessToken(refreshAccessToken = false): Promise<string> {
     const token = await (refreshAccessToken ? this.refreshAccessToken : this.getAccessToken)();
-    if (!token) throw new Error('请先登录 Cindy 后再使用语音输入。');
+    if (!token) throw new Error(i18n.t('composer.voice.loginRequired'));
     return token;
   }
 }
@@ -226,7 +235,10 @@ const CINDY_MANAGED_REFINER_CHAIN = [
 ] as const satisfies readonly MobileVoiceCredentialSyncRefiner[];
 
 /** Builds the provider-neutral profile graph without persisting any inference key. */
-export function createMobileCindyVoiceCredential(hostDeviceId: string): StoredMobileVoiceCredential {
+export function createMobileCindyVoiceCredential(
+  hostDeviceId: string,
+  region: CindyAuthRegion = AUTH_REGION,
+): StoredMobileVoiceCredential {
   const normalizedHostDeviceId = hostDeviceId.trim();
   if (!normalizedHostDeviceId) throw new Error('host device id is required');
   const baseUrl = requireVoiceBaseUrl();
@@ -242,7 +254,9 @@ export function createMobileCindyVoiceCredential(hostDeviceId: string): StoredMo
     refiner: { ...CINDY_MANAGED_REFINER_CHAIN[0] },
     refinerProviderChain: CINDY_MANAGED_REFINER_CHAIN.map((item) => ({ ...item })),
     settings: {
-      language: 'zh-CN',
+      // Global and dev builds let ASR detect the spoken language. The Mainland
+      // China build keeps Chinese as its product default.
+      language: region === 'cn' ? 'zh-CN' : 'auto',
       refinementEnabled: true,
       playInteractionSound: true,
     },
@@ -255,6 +269,6 @@ export function createMobileCindyVoiceCredential(hostDeviceId: string): StoredMo
 }
 
 function requireVoiceBaseUrl(): string {
-  if (!VOICE_API_BASE_URL) throw new Error('当前区域未配置 Cindy 语音服务。');
+  if (!VOICE_API_BASE_URL) throw new Error(i18n.t('composer.voice.serviceUnavailable'));
   return VOICE_API_BASE_URL.replace(/\/+$/, '');
 }

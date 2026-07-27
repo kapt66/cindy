@@ -1,8 +1,13 @@
 ﻿import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { gzipSync } from 'node:zlib';
-import { afterEach, describe, expect, it } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createAnthropicCompatProxy, isFetchBlockedPort } from './server.js';
+import {
+  createAnthropicCompatProxy,
+  isFetchBlockedPort,
+  listenOnFetchSafeLoopbackPort,
+} from './server.js';
 import {
   createActiveStripTransform,
   createEmptyThinkingRecoveryRule,
@@ -11,6 +16,7 @@ import {
   createToolUseProviderSpecificFieldsRecoveryRule,
   stripEncryptedContentFromBody,
 } from './transform.js';
+import { listenOnAvailableLoopbackPort } from './test-loopback-server.js';
 import { createThreadStripController } from './thread-strip-controller.js';
 import type { ProxyHandle } from './types.js';
 
@@ -34,19 +40,13 @@ function startFakeUpstream(
       handler(idx, body, res);
     });
   });
-  return new Promise((resolve) => {
-    server.listen(0, '127.0.0.1', () => {
-      const addr = server.address();
-      const port = typeof addr === 'object' && addr ? addr.port : 0;
-      resolve({
-        url: `http://127.0.0.1:${port}`,
-        bodies,
-        headers,
-        paths,
-        close: () => new Promise<void>((r) => server.close(() => r())),
-      });
-    });
-  });
+  return listenOnAvailableLoopbackPort(server).then((port) => ({
+    url: `http://127.0.0.1:${port}`,
+    bodies,
+    headers,
+    paths,
+    close: () => new Promise<void>((r) => server.close(() => r())),
+  }));
 }
 
 const ENC_ERROR_BODY = JSON.stringify({
@@ -120,6 +120,117 @@ describe('anthropic-compat-proxy loopback port guard', () => {
 
     const result = await post(proxy.url, { model: 'test-model' });
     expect(result).toEqual({ status: 200, text: JSON.stringify({ ok: true }) });
+  });
+
+  it('jumps out of a Windows excluded-port range after EACCES and cleans listeners', async () => {
+    const attemptedPorts: number[] = [];
+    let boundPort = 0;
+    const fakeServer = new EventEmitter() as EventEmitter & {
+      address: () => { address: string; family: string; port: number } | null;
+      listen: (port: number) => void;
+    };
+    fakeServer.address = () => boundPort === 0
+      ? null
+      : { address: '127.0.0.1', family: 'IPv4', port: boundPort };
+    fakeServer.listen = (port: number) => {
+      attemptedPorts.push(port);
+      queueMicrotask(() => {
+        if (attemptedPorts.length === 1) {
+          fakeServer.emit(
+            'error',
+            Object.assign(new Error('permission denied'), { code: 'EACCES' }),
+          );
+          return;
+        }
+        boundPort = port;
+        fakeServer.emit('listening');
+      });
+    };
+
+    const random = vi.spyOn(Math, 'random')
+      .mockReturnValueOnce(0.05)
+      .mockReturnValueOnce(0.75);
+    try {
+      const port = await listenOnFetchSafeLoopbackPort(
+        fakeServer as unknown as Server,
+        '127.0.0.1',
+        {},
+      );
+      expect(port).toBe(61440);
+      expect(attemptedPorts).toEqual([49971, 61440]);
+      expect(fakeServer.listenerCount('error')).toBe(0);
+      expect(fakeServer.listenerCount('listening')).toBe(0);
+    } finally {
+      random.mockRestore();
+    }
+  });
+
+  it('closes a listening proxy server before rejecting an invalid address', async () => {
+    let closed = false;
+    const fakeServer = new EventEmitter() as EventEmitter & {
+      address: () => null;
+      close: (callback: () => void) => void;
+      listen: () => void;
+    };
+    fakeServer.address = () => null;
+    fakeServer.close = (callback) => {
+      closed = true;
+      queueMicrotask(callback);
+    };
+    fakeServer.listen = () => queueMicrotask(() => fakeServer.emit('listening'));
+
+    await expect(listenOnFetchSafeLoopbackPort(
+      fakeServer as unknown as Server,
+      '127.0.0.1',
+      {},
+    )).rejects.toThrow('anthropic-compat-proxy: failed to bind loopback port');
+    expect(closed).toBe(true);
+    expect(fakeServer.listenerCount('error')).toBe(0);
+    expect(fakeServer.listenerCount('listening')).toBe(0);
+  });
+
+  it('closes a listening test server before rejecting an invalid address', async () => {
+    let closed = false;
+    const fakeServer = new EventEmitter() as EventEmitter & {
+      address: () => null;
+      close: (callback: () => void) => void;
+      listen: () => void;
+    };
+    fakeServer.address = () => null;
+    fakeServer.close = (callback) => {
+      closed = true;
+      queueMicrotask(callback);
+    };
+    fakeServer.listen = () => queueMicrotask(() => fakeServer.emit('listening'));
+
+    await expect(
+      listenOnAvailableLoopbackPort(fakeServer as unknown as Server),
+    ).rejects.toThrow('test loopback server failed to resolve its listening port');
+    expect(closed).toBe(true);
+    expect(fakeServer.listenerCount('error')).toBe(0);
+    expect(fakeServer.listenerCount('listening')).toBe(0);
+  });
+
+  it('reports a stable Error after exhausting test-server bind retries', async () => {
+    const fakeServer = new EventEmitter() as EventEmitter & {
+      address: () => null;
+      listen: () => void;
+    };
+    fakeServer.address = () => null;
+    fakeServer.listen = () => queueMicrotask(() => {
+      fakeServer.emit(
+        'error',
+        Object.assign(new Error('permission denied'), { code: 'EACCES' }),
+      );
+    });
+
+    await expect(
+      listenOnAvailableLoopbackPort(fakeServer as unknown as Server),
+    ).rejects.toThrow(
+      'test loopback server failed to bind after 32 attempts; last error permission denied',
+    );
+    expect(fakeServer.listenerCount('error')).toBe(0);
+    expect(fakeServer.listenerCount('listening')).toBe(0);
   });
 });
 
@@ -496,6 +607,92 @@ describe('anthropic-compat-proxy routingTransform', () => {
     expect(custom.bodies).toHaveLength(1);
   });
 
+  it('forwards to an exact same-origin path override instead of appending the client path', async () => {
+    const custom = await startFakeUpstream((_i, _b, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    });
+    upstreamClose = custom.close;
+
+    proxy = await createAnthropicCompatProxy({
+      upstream: `${custom.url}/base`,
+      transformRequest: [],
+      routingTransform: () => ({ pathOverride: '/tenant/acme/infer?stream=1' }),
+    });
+
+    await post(proxy.url, { model: 'custom-model' });
+    expect(custom.paths).toEqual(['/base/tenant/acme/infer?stream=1']);
+  });
+
+  it('accepts a root override when the upstream base already names the endpoint', async () => {
+    const custom = await startFakeUpstream((_i, _b, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    });
+    upstreamClose = custom.close;
+
+    proxy = await createAnthropicCompatProxy({
+      upstream: `${custom.url}/inference-endpoint`,
+      transformRequest: [],
+      routingTransform: () => ({ pathOverride: '/' }),
+    });
+
+    await post(proxy.url, { model: 'custom-model' });
+    expect(custom.paths).toEqual(['/inference-endpoint/']);
+  });
+
+  it('preserves the upstream base query when applying a path override', async () => {
+    const custom = await startFakeUpstream((_i, _b, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    });
+    upstreamClose = custom.close;
+
+    proxy = await createAnthropicCompatProxy({
+      upstream: `${custom.url}/base?tenant=acme`,
+      transformRequest: [],
+      routingTransform: () => ({ pathOverride: '/infer?stream=1' }),
+    });
+
+    await post(proxy.url, { model: 'custom-model' });
+    expect(custom.paths).toEqual(['/base/infer?tenant=acme&stream=1']);
+  });
+
+  it.each([
+    '//evil.example/infer',
+    '/infer#fragment',
+    '/infer\r\nx-injected: yes',
+    '/my path',
+    '/infer\tmode',
+    '/infer\u0000mode',
+    '/infer\u007fmode',
+    '/infer\u0085mode',
+    '/café',
+    '/infer%2',
+    '/%ZZ',
+    '/模型',
+    '/v1\\messages',
+  ])('rejects an unsafe path override before contacting the upstream: %j', async (pathOverride) => {
+    const custom = await startFakeUpstream((_i, _b, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    });
+    upstreamClose = custom.close;
+
+    proxy = await createAnthropicCompatProxy({
+      upstream: `${custom.url}/base`,
+      transformRequest: [],
+      routingTransform: () => ({ pathOverride }),
+    });
+
+    const result = await post(proxy.url, { model: 'custom-model' });
+    expect(result.status).toBe(502);
+    expect(JSON.parse(result.text)).toEqual({
+      error: { type: 'proxy_error', message: 'selected request path invalid' },
+    });
+    expect(custom.paths).toHaveLength(0);
+  });
+
   it('runs a local handler without resolving an unavailable default upstream', async () => {
     proxy = await createAnthropicCompatProxy({
       upstream: () => '',
@@ -568,7 +765,7 @@ describe('anthropic-compat-proxy routingTransform', () => {
       transformRequest: [],
       routingTransform: (body) => {
         const model = (body as { model?: string }).model ?? '';
-        // 骨折: 默认 upstream(gateway) + 换 gateway key; 普通: override 到 chatgpt + 透传原 auth
+        // 折扣: 默认 upstream(gateway) + 换 gateway key; 普通: override 到 chatgpt + 透传原 auth
         if (model.startsWith('codex/')) return { headerOverride: { authorization: 'Bearer gw-key' } };
         return { upstreamOverride: chatgpt.url };
       },
@@ -821,8 +1018,9 @@ describe('anthropic-compat-proxy routingTransform', () => {
     let observedEnd = false;
     let transformedReqId: number | null = null;
     let observedCtx: { reqId: number; url: string; status: number; upstreamBase: string } | null = null;
+    const upstreamWithQuery = `${upstream.url}/tenant/acme?region=us`;
     proxy = await createAnthropicCompatProxy({
-      upstream: upstream.url,
+      upstream: upstreamWithQuery,
       transformRequest: [(_body, ctx) => {
         transformedReqId = ctx.reqId;
         return null;
@@ -850,7 +1048,7 @@ describe('anthropic-compat-proxy routingTransform', () => {
       reqId: transformedReqId,
       url: '/v1/responses',
       status: 200,
-      upstreamBase: upstream.url,
+      upstreamBase: upstreamWithQuery,
     });
     expect(chunks.join('')).toBe(r.text);
     expect(observedEnd).toBe(true);

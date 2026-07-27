@@ -143,6 +143,39 @@ describe('remoteSessionStore', () => {
     expect(remoteSessionStore.getSessionDeviceId('s1')).toBe('dev-1');
   });
 
+  it('mirrors session-level usage pushes into totalCostUsd / totalTokenUsage', () => {
+    remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1')]);
+
+    // 被控端裸 UPDATE 不发 sessions:patched,这两条(sessions topic)是唯一更新通道。
+    remoteSessionStore.applyRemotePush('dev-1', 'usage:session-spend-changed', {
+      sessionId: 's1',
+      totalCostUsd: 1.23,
+    });
+    remoteSessionStore.applyRemotePush('dev-1', 'usage:session-tokens-changed', {
+      sessionId: 's1',
+      totalTokens: 45_000,
+    });
+    expect(remoteSessionStore.getSessions()[0]).toMatchObject({
+      id: 's1',
+      totalCostUsd: 1.23,
+      totalTokenUsage: 45_000,
+    });
+
+    // 跨设备 payload 防御:NaN / 负数不入镜像。
+    remoteSessionStore.applyRemotePush('dev-1', 'usage:session-spend-changed', {
+      sessionId: 's1',
+      totalCostUsd: Number.NaN,
+    });
+    remoteSessionStore.applyRemotePush('dev-1', 'usage:session-tokens-changed', {
+      sessionId: 's1',
+      totalTokens: -1,
+    });
+    expect(remoteSessionStore.getSessions()[0]).toMatchObject({
+      totalCostUsd: 1.23,
+      totalTokenUsage: 45_000,
+    });
+  });
+
   it('removes archived sessions from the active mirror', () => {
     remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1'), session('s2')]);
     remoteSessionStore.applySessionPatch('dev-1', 's1', { status: 'archived' });
@@ -804,6 +837,111 @@ describe('remoteSessionStore', () => {
         },
       },
     });
+
+    expect(remoteSessionStore.getMessages('s1')[0].content).toMatchObject({
+      input: { plan: [{ step: 'Inspect', status: 'completed' }] },
+    });
+  });
+
+  it('keeps synthetic completion when done precedes the initial plan DB row', () => {
+    remoteSessionStore.applyRemotePush('dev-1', 'maker:event', {
+      sessionId: 's1',
+      persistId: 'plan-row-1',
+      event: {
+        type: 'tool_use',
+        data: {
+          toolUseId: 'plan:turn-1',
+          toolName: 'update_plan',
+          input: {
+            plan: [
+              { step: 'Inspect', status: 'in_progress' },
+              { step: 'Patch', status: 'pending' },
+            ],
+          },
+        },
+      },
+    });
+    remoteSessionStore.applyRemotePush('dev-1', 'maker:event', {
+      sessionId: 's1',
+      event: {
+        type: 'done',
+        source: 'codex',
+        data: {
+          raw: { id: 'turn-1', status: 'completed' },
+          plan: [
+            { step: 'Inspect', status: 'in_progress' },
+            { step: 'Patch', status: 'pending' },
+          ],
+        },
+      },
+    });
+
+    remoteSessionStore.applyRemotePush('dev-1', 'local-db:messages:created', {
+      sessionId: 's1',
+      message: {
+        ...message('plan-row-1', 's1'),
+        role: 'tool_use',
+        toolUseId: 'plan:turn-1',
+        content: {
+          toolUseId: 'plan:turn-1',
+          toolName: 'update_plan',
+          input: {
+            plan: [
+              { step: 'Inspect', status: 'in_progress' },
+              { step: 'Patch', status: 'pending' },
+            ],
+          },
+        },
+      },
+    });
+
+    expect(remoteSessionStore.getMessages('s1')[0].content).toMatchObject({
+      input: {
+        plan: [
+          { step: 'Inspect', status: 'completed' },
+          { step: 'Patch', status: 'completed' },
+        ],
+      },
+    });
+  });
+
+  it('does not let a delayed message window revert synthetic completion', () => {
+    const stalePlanRow = {
+      ...message('plan-row-1', 's1'),
+      role: 'tool_use' as const,
+      toolUseId: 'plan:turn-1',
+      content: {
+        toolUseId: 'plan:turn-1',
+        toolName: 'update_plan',
+        input: { plan: [{ step: 'Inspect', status: 'in_progress' }] },
+      },
+    };
+    remoteSessionStore.setMessages('s1', [stalePlanRow]);
+    remoteSessionStore.applyRemotePush('dev-1', 'maker:event', {
+      sessionId: 's1',
+      persistId: 'plan-row-1',
+      event: {
+        type: 'tool_use',
+        data: {
+          toolUseId: 'plan:turn-1',
+          toolName: 'update_plan',
+          input: { plan: [{ step: 'Inspect', status: 'in_progress' }] },
+        },
+      },
+    });
+    remoteSessionStore.applyRemotePush('dev-1', 'maker:event', {
+      sessionId: 's1',
+      event: {
+        type: 'done',
+        source: 'codex',
+        data: {
+          raw: { id: 'turn-1', status: 'completed' },
+          plan: [{ step: 'Inspect', status: 'in_progress' }],
+        },
+      },
+    });
+
+    remoteSessionStore.setLatestMessageWindow('s1', [stalePlanRow]);
 
     expect(remoteSessionStore.getMessages('s1')[0].content).toMatchObject({
       input: { plan: [{ step: 'Inspect', status: 'completed' }] },

@@ -167,6 +167,11 @@ const CORE_INVOKE_CHANNELS: readonly string[] = [
   'local-db:messages:around',
   // 以 message clientId 定位上下文,供移动端轻量跳转 / fork 来源定位；只读,与 messages:around 同安全级。
   'local-db:messages:around-client-id',
+  // 订阅形态会话「本会话价值」历史汇总(assistant agent_meta 估算值求和):只读聚合,
+  // 无 sender 依赖、无副作用,与 messages:list 同安全级。控制端底部 $ chip 的历史初值
+  // 必须查被控端(查本机是空库恒 0);老被控端无此 channel → CHANNEL_NOT_ALLOWED →
+  // 控制端吞错,仅靠已加载消息 + 实时 turn-cost 推送呈现部分值。
+  'local-db:messages:estimatedSessionValue',
   'local-db:recent-workdirs:list',
   // 窄口径写:从被控端「最近项目」列表移除一条(专用 handler,path 归一后按主键删,
   // 幂等,不动 sessions / 磁盘)。控制端项目选择器的删除入口与本机语义对等;
@@ -288,13 +293,13 @@ const EXTENDED_INVOKE_CHANNELS: readonly string[] = [
   // 人工 reset。mutation 不接收 creditId,不能泛化成任意账号/凭证控制入口。
   'maker:usage:codex-rate-limits',
   'maker:usage:codex-rate-limit-reset',
-  // 模型单价表(只读,main 侧 LiteLLM /model_group/info 缓存):控制端模型选择器展示被控端
-  // 视角的单价(与被控端桌面 tooltip 同源)。无 sender 依赖、无副作用;老被控端无此 channel
+  // 模型单价表(只读,main 侧 Model Access model-groups 投影缓存):控制端模型选择器展示
+  // 被控端视角的单价(与被控端桌面 tooltip 同源)。无 sender 依赖、无副作用;老被控端无此 channel
   // → CHANNEL_NOT_ALLOWED → 控制端隐藏价格(与桌面「无价不显示」口径一致)。
   'maker:usage:model-pricing',
   // 网关 API key **presence-only** 探测:只回 { present: boolean },不回、也永不扩展为读取
   // 密钥材料 —— 这是「账号与密钥永不放行」大类下的窄口径例外(同 DL_VOICE_CREDENTIAL_SYNC
-  // 的例外定位,禁止泛化)。用途:控制端模型选择器判断骨折版(codex/)是否该置灰,判定依据
+  // 的例外定位,禁止泛化)。用途:控制端模型选择器判断折扣版(codex/)是否该置灰,判定依据
   // 在被控端(key 存被控端 safeStorage、请求也从被控端发)。老被控端无此 channel →
   // CHANNEL_NOT_ALLOWED → 控制端按 unknown 处理(不置灰)。
   'maker:api-key:present',
@@ -322,8 +327,9 @@ const EXTENDED_INVOKE_CHANNELS: readonly string[] = [
   // —— 远程文件浏览(右侧栏 / doc 模式,读写增删 + 文件名索引 + 非流式搜索)——
   // 单聚合 channel:被控端专用 handler(见 apps/desktop/src/main/file-browser/device-op.ts),
   // 不复用依赖 event.sender 的既有 file-browser handler。准入:
-  //  - workdir 参数经 remote-workdir-guard 同款收敛(已知会话 workdir / recents /
-  //    真实存在目录),挡伪造路径;路径穿越在 scanner 层拦(assertInsideWorkdir + realpath)。
+  //  - workdir 参数先实时探测被控端本地可访问性,再结合 SSH session 归属解析
+  //    唯一执行端点；本地 / SSH 或多 SSH 歧义时 fail closed。路径穿越在
+  //    scanner 层拦(assertInsideWorkdir + realpath)。
   //  - device-link 已是同账号 + remoteControlEnabled 显式 opt-in,控制端本就能在
   //    workingDir 跑 agent(任意读写/exec),文件浏览不扩大攻击面(fs:list-dir 同款论证)。
   //  - readFile 结果超帧限前被控端预判回结构化 oversize,不裸炸 FRAME_TOO_LARGE。
@@ -346,7 +352,7 @@ const EXTENDED_INVOKE_CHANNELS: readonly string[] = [
   'learn:discard',
   'learn:cancel',
   // —— /cmd 远程(远程会话的 shell 命令在被控端 workingDir 执行才是正确语义)——
-  // handler 对 cwd 走 remote-workdir-guard 收敛(已知目录集合 / 真实存在目录),
+  // handler 对 cwd 走 remote-workdir-guard 实时可访问性探测,
   // 准入论证同 fs:list-dir:同账号 + 显式 opt-in 下控制端本就能驱动 agent 执行任意命令。
   'desktop-cmd:run',
   // —— Worktree(为被控端项目预建独立 git worktree;git/fs 语义在被控端执行才正确——
@@ -398,6 +404,11 @@ export const PUSH_FORWARD_ALLOWLIST: ReadonlySet<string> = new Set([
   // 本轮模型降级标记(payload 顶层 sessionId → 默认路由到 session:<id> topic):
   // 控制端把 agent_meta.modelMismatch 实时 patch 进已打开的远程会话消息流。
   'usage:message-model-mismatch',
+  // session 终身累计 cost / token(topics.ts 归入 sessions topic:列表订阅常开,会话
+  // 未打开也保持镜像新鲜):被控端 sessionSpendBroadcaster 走裸 UPDATE 落库、不发
+  // sessions:patched,控制端远程会话底部 $ chip 依赖这两条把累计值镜像成被控端真相。
+  'usage:session-spend-changed',
+  'usage:session-tokens-changed',
   // local-db 推送(读模型增量)
   'local-db:sessions:created',
   'local-db:sessions:patched',

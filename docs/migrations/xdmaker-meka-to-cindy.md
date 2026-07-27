@@ -31,6 +31,7 @@
 | Meka 设置          | 迁移                     | P4、MCPRouter、MekaDesign 兼容设置                                 |
 | Meka 会话          | 迁移                     | 独立 workspace、项目/角色绑定、正式流程、侧栏分组                  |
 | 远程 MCPR          | 迁移                     | Router 登录、实例、绑定、隧道和 Worker 目标                        |
+| 远程 Codex Worker  | 本轮不迁移               | 标准 Agent 选择器保留，但 MCPRouter 目标上的 Codex 明确禁用        |
 | Orca Worker 微调   | 迁移                     | 仅迁入 Meka 目标选择和远程约束所需改动                             |
 | 打包发布           | 部分迁移                 | 本地打包、身份和签名入口已迁；上传、manifest 和 promote 尚未迁入   |
 | 项目与角色         | 迁移                     | 项目、角色、元数据、内置 SAGA2 与 6 个角色                         |
@@ -38,6 +39,9 @@
 | Windows/macOS 签名 | 沿用原证书/服务          | Windows 原签名服务；macOS 原证书私钥和 self-signed 模式            |
 | 热更新             | 新建 Cindy Meka 渠道     | 不承诺旧 Meka 原地热更新；新应用安装后迁移旧数据                   |
 | device-link        | 继续使用 `cindy://`      | OS 应用身份独立，跨端 wire protocol 不分叉                         |
+| 本地 Desktop 深链  | 使用 `cindy-meka://`     | 只有带 `deviceId` 的跨设备链接切换到 `cindy://`                    |
+| 默认区域/占位版本  | 跟随上游                 | 默认 `global`；`apps/desktop/package.json` 使用 `0.0.0`            |
+| 项目协同策略       | Meka 例外                | 普通 Cindy 项目遵守策略开关；Meka 保持既有协同行为并绕过该开关     |
 | 服务端             | 不在本仓迁移             | 保持 Cindy 已拆分后的仓库边界和协议子仓库                          |
 
 ## 3. 当前总体状态
@@ -60,8 +64,10 @@
 - 远程 MCPRouter 项目实例绑定和会话隧道。
 - Orca Worker 的本地 P4/远程 MCPRouter 目标解析与安全约束。
 - XDMaker Meka 0.0.11 数据库 migration lineage 兼容桥。
-- Meka 开发启动默认使用稳定隔离 sandbox，避免未进入 `origin/main` 的 migration
-  直接触碰共享 userData。
+- 已完成 `origin/main@24604ae4b` 向本地 `meka/main@33348870c` 的同步冲突裁决；
+  结果由 2026-07-27 的本地 merge commit 收口，未推送。
+- Meka 开发启动跟随上游默认使用产品 userData；未 canonical 的 migration 开发才显式
+  使用命名隔离 sandbox，避免触碰共享数据。
 
 ### 3.2 明确未迁移
 
@@ -508,6 +514,8 @@ XDMaker `meka/main` 对应实现为核对正本。
 - 可选择当前项目已绑定、可用且受支持的 MCPRouter 实例作为远程目标。
 - 远程 MCPRouter Claude Worker 必须完整恢复；Codex 只有在 XDMaker Phase 4 transport
   的 cc-manager、bundle/revision 和 thread routing 契约完整落地后才允许解锁。
+- Worker 创建继续复用 Cindy 标准 `VendorSegmentedSwitcher`；选择 MCPRouter 远程目标
+  时仅禁用 Codex 分段并自动收敛到 Claude Code，不恢复旧的手写 Agent 按钮组。
 - 普通 Cindy 会话不能使用 Meka 自定义目标。
 - 不信任 renderer 提供的任意本地目录或远程实例 ID；Main 重新解析并校验。
 - Worker 创建、session request 和 agent input projection 透传 Main 解析后的目标。
@@ -615,15 +623,22 @@ Cindy 和 XDMaker 在共同历史之后分别继续增加 migration。XDMaker Me
 
 ### 5.2 当前方案
 
-- `0080_peaceful_baron_strucker.sql` 是 no-op SQL，实际由 companion script 幂等补齐
-  Meka 表、字段和索引。
-- `0081`–`0087` 是 lineage 保留槽，不重复执行旧 XDMaker migration。
+Cindy Meka 尚未正式发布，因此本次上游同步允许重排本产品线尚未发布的临时编号，以
+`origin/main` 的 canonical migration 为主；本地临时开发数据可以清理，但首发版本仍须
+完整支持从 XDMaker Meka 0.0.11 迁移。
+
+- `0080_regional_money.sql` 和 `0081_preserve_gateway_currency.sql` 完整保留上游编号、
+  snapshot 和 companion script。
+- `0082_meka_product_schema.sql` 是 no-op SQL，由 companion script 幂等补齐 Meka
+  表、字段和索引。
+- `0083`–`0087` 是 Meka lineage 保留槽，不重复执行旧 XDMaker migration。
 - `0088_bridge_meka_0_0_11_lineage` 只在检测到**完全匹配**的 Meka 0.0.11
   migration 历史时运行：
   1. 验证所需表和字段确实存在。
-  2. 补齐 Cindy 当前 schema 语义。
-  3. 规范 Orca Worker label 和必要索引。
-  4. 将 73–87 的 migration history 精确映射到 Cindy canonical 文件/hash。
+  2. 对旧库补跑上游 `0080/0081` 的区域金额字段与币种保留语义。
+  3. 补齐 Cindy 当前 schema 语义。
+  4. 规范 Orca Worker label 和必要索引。
+  5. 将 73–87 的 migration history 精确映射到 Cindy canonical 文件/hash。
 - 未知、部分匹配或被修改过的 lineage 保持原样并拒绝猜测，避免静默损坏数据。
 
 ### 5.3 启动时遇到的问题
@@ -654,9 +669,13 @@ Shared Cindy userData cannot run migration artifacts that are not canonical on o
 
 关键实现：
 
-- `apps/desktop/drizzle/0080_peaceful_baron_strucker.sql`
-- `apps/desktop/drizzle/scripts/0080_peaceful_baron_strucker.ts`
-- `apps/desktop/drizzle/0081_meka_lineage_slot_81.sql` … `0087_*`
+- `apps/desktop/drizzle/0080_regional_money.sql`
+- `apps/desktop/drizzle/scripts/0080_regional_money.ts`
+- `apps/desktop/drizzle/0081_preserve_gateway_currency.sql`
+- `apps/desktop/drizzle/scripts/0081_preserve_gateway_currency.ts`
+- `apps/desktop/drizzle/0082_meka_product_schema.sql`
+- `apps/desktop/drizzle/scripts/0082_meka_product_schema.ts`
+- `apps/desktop/drizzle/0083_meka_lineage_slot_83.sql` … `0087_*`
 - `apps/desktop/drizzle/0088_bridge_meka_0_0_11_lineage.sql`
 - `apps/desktop/drizzle/scripts/0088_bridge_meka_0_0_11_lineage.ts`
 - `scripts/desktop-restart-runner.mjs`
@@ -703,7 +722,8 @@ Shared Cindy userData cannot run migration artifacts that are not canonical on o
 
 问题：旧 Meka lineage、Cindy canonical history 和开发启动保护同时存在。
 
-处理：no-op 槽 + 精确 lineage bridge + 默认隔离开发 sandbox；不放宽共享数据保护。
+处理：上游编号优先 + no-op 槽 + 精确 lineage bridge；未 canonical migration 显式使用
+隔离 sandbox，不放宽共享数据保护。
 
 ### 6.7 初迁 UI 与 Cindy 当前视觉不一致
 
@@ -803,6 +823,46 @@ userData 的 `meka-roles/`，不迁移、不改写。现有热更新 ZIP 包含�
 更新器也会递归覆盖全部新文件，因此
 `resources/meka` 会随热更新落地；旧版三个分散目录可能作为未删除的孤儿保留，但新运行时
 不再读取它们。本轮不修改更新器或更新服务。
+
+### 6.15 2026-07-27 本地同步 `origin/main`
+
+本地从 `meka/main@33348870c` 合并 `origin/main@24604ae4b`。本节记录冲突裁决的事实，
+并随本次本地 merge commit 一并提交；当前结果未推送。
+
+1. **migration 与首发兼容**
+   - Cindy Meka 尚未正式发布，本地临时数据库不作为编号冻结依据；上游
+     `0080_regional_money`、`0081_preserve_gateway_currency` 保持原编号。
+   - Meka schema 顺延到 `0082`，`0083`–`0087` 作为 lineage 槽，
+     `0088_bridge_meka_0_0_11_lineage` 负责 XDMaker Meka 0.0.11 精确桥接。
+   - bridge 会先补齐上游区域金额语义，再补当前 schema 并 canonicalize 历史；未知或
+     部分匹配 lineage 不做猜测。
+2. **上游默认值**
+   - Desktop 默认区域跟随上游为 `global`。
+   - `apps/desktop/package.json` 版本跟随上游占位值 `0.0.0`；Meka 的独立
+     productName、appId、userData、更新渠道和旧数据迁移锚保持不变。
+3. **协同策略**
+   - 普通 Cindy 项目继续受上游“项目协同策略”开关控制。
+   - `workspaceKind=meka` 保持既有协同入口与 Main 侧创建能力，不经过该开关。
+4. **Worker Agent 选择**
+   - UI 同步上游标准 Agent/模型选择组件和 provider/effort/Fast 行为。
+   - 本轮不迁移 XDMaker Phase 4 远程 Codex runtime。选择 MCPRouter 目标时 Codex
+     分段禁用并自动切到 Claude Code；Main 仍 fail closed，避免“可选但不能运行”。
+   - 后续若迁移远程 Codex，必须单独迁入 `codex-bridge`、capability
+     bundle/revision、thread routing 和 MCPRouter app-server transport 全链。
+5. **深链协议**
+   - 本机 Desktop 对话链接使用 `cindy-meka://`。
+   - 带 `deviceId` 的跨设备链接使用 `cindy://`；Meka 只解析该互操作 scheme，不向
+     OS 注册并抢占普通 Cindy 的协议所有权。
+6. **机械合并**
+   - 侧栏保留 Meka 独立分组，同时接入上游项目置顶、加载态和键盘操作。
+   - 数据映射、preload/IPC 类型、Orca 生命周期、移动端引用测试及四语言新增键均取
+     两侧并集；Meka 中文 UI 文案同步上游术语表，将产品 Session 统一为“对话”。
+
+本轮验证结果：migration 结构校验与完整 replay 通过；完整 `pnpm test:unit` 通过；
+受影响且提供 `typecheck` script 的 package（Desktop、Mobile 及三个 bridge package）
+typecheck 通过；旧 Meka lineage、区域身份、深链、协同策略、Orca Worker
+创建/生命周期和 Worker 选择器相关测试通过；术语门禁通过。打包 smoke 与真实环境验收
+尚未执行。
 
 ## 7. 当前未解决问题与风险
 

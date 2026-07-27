@@ -15,13 +15,13 @@
  * Codex 订阅形态主 chip 显示服务端下发的各限额窗口剩余 / 当前会话 USD 折算金额。
  * 窗口构成不做任何假设,完全以上游接口返回为准 —— OpenAI 会调整窗口策略
  * (典型:5h + 周双窗;2026-07 曾一度取消 5h 窗口,且可能随时恢复)。
- * 订阅模式下 USD 是 token 价值,API / codex/ 骨折 GPT 下是 gateway API 单价折算 cost。
+ * 订阅模式下 USD 是 token 价值,API / codex/ 折扣 GPT 下是 gateway API 单价折算 cost。
  * credits / token 明细只放 tooltip,不占主 chip。
  *
  * Codex tooltip 按当前会话实际 runtime route + 当前模型分两种:
  *   - oauth 模式 + 当前 app-server 以 OAuth bearer 启动 + 普通模型: 显示各限额窗口
  *     剩余额度、当前会话 token 累计、credits 明细。订阅没有单一 per-token 余额。
- *   - api 模式、app-server 以 gateway key 启动、或当前模型是 codex/ 骨折 GPT:
+ *   - api 模式、app-server 以 gateway key 启动、或当前模型是 codex/ 折扣 GPT:
  *     与 cc 同一把 XD key、同一套 LiteLLM 计费,直接复用 cc 的 daily/monthly/key
  *     cost 形态 (session 仍显示 USD 折算累计)。
  *
@@ -36,7 +36,13 @@ import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 
 import { cn } from '@/lib/utils';
-import { DAILY_SOFT_LIMIT_FACTOR, formatCompactTokens, formatCompactUsd, formatTurnCostUsd } from '@/lib/usageFormat';
+import {
+  DAILY_SOFT_LIMIT_FACTOR,
+  formatCompactMoney,
+  formatCompactTokens,
+  formatTurnCostMoney,
+  formatTurnCostUsd,
+} from '@/lib/usageFormat';
 import { Tip } from '@/components/ui/tooltip';
 import { useApiKey } from '@/hooks/useApiKey';
 import { useClaudeOAuthConnected } from '@/hooks/useClaudeOAuthConnected';
@@ -60,6 +66,8 @@ import {
   type ClaudeSubscriptionUsageSnapshot,
 } from '@/hooks/useClaudeSubscriptionUsage';
 import {
+  hasAlertingClaudeSessionWindow,
+  isClaudeSubscriptionAlerting,
   matchScopedWindowForModel,
   type ClaudeUsageWindow,
 } from '../../../shared/claudeSubscriptionUsage';
@@ -68,6 +76,7 @@ import { useXaiRateLimit, type XaiRateLimitSnapshot } from '@/hooks/useXaiRateLi
 import { makerChatStore, type ChatMessage } from '@/lib/makerChatStore';
 import { buildTurnUsageTooltipLines } from '@/lib/turnUsageTooltip';
 import type { TurnUsageDetails } from '../../../shared/turnUsageDetails';
+import { gatewayMoney, type RegionalMoney } from '../../../shared/regionalMoney';
 import { CHATGPT_MODEL_PREFIX, XAI_MODEL_PREFIX } from '../../../shared/subscriptionModels';
 import {
   RESET_PENDING_MAX_MS,
@@ -129,7 +138,7 @@ interface MetricSlot {
  */
 function computeMetricSlots(
   claudeQuota: ClaudeAccountUsageSnapshot | null,
-  sessionCostUsd: number | null,
+  sessionMoney: RegionalMoney | null,
   t: TFunction,
 ): Record<MetricKey, MetricSlot> {
   const slots: Record<MetricKey, MetricSlot> = {
@@ -142,8 +151,8 @@ function computeMetricSlots(
     // monthly 永远跟 cycle 一起拿到; daily 走单独 endpoint 可能拉不到 (todaySpend=null) → 隐藏
     slots.monthly = {
       label: t('todaySpend.monthlyLimitLabel', {
-        spend: formatCompactUsd(claudeQuota.spend),
-        limit: formatCompactUsd(claudeQuota.maxBudget),
+        spend: formatCompactMoney(gatewayMoney(claudeQuota.spend)),
+        limit: formatCompactMoney(gatewayMoney(claudeQuota.maxBudget)),
       }),
       available: true,
     };
@@ -151,18 +160,21 @@ function computeMetricSlots(
       const softLimit = (claudeQuota.maxBudget / 30) * DAILY_SOFT_LIMIT_FACTOR;
       slots.daily = {
         label: t('todaySpend.dailyLimitLabel', {
-          spend: formatCompactUsd(claudeQuota.todaySpend),
-          limit: formatCompactUsd(softLimit),
+          spend: formatCompactMoney(
+            gatewayMoney(claudeQuota.todaySpend),
+          ),
+          limit: formatCompactMoney(gatewayMoney(softLimit)),
         }),
         available: true,
       };
     }
   }
 
-  if (typeof sessionCostUsd === 'number' && sessionCostUsd > 0) {
+  if (sessionMoney && sessionMoney.amount > 0) {
+    const cost = formatTurnCostMoney(sessionMoney);
     slots.session = {
-      label: t('todaySpend.sessionCostLabel', { cost: `$${sessionCostUsd.toFixed(2)}` }),
-      tooltipLabel: t('todaySpend.tooltip.sessionUsed', { cost: `$${sessionCostUsd.toFixed(2)}` }),
+      label: t('todaySpend.sessionCostLabel', { cost }),
+      tooltipLabel: t('todaySpend.tooltip.sessionUsed', { cost }),
       available: true,
     };
   }
@@ -439,7 +451,7 @@ function getCodexApiEmptyState(
 function buildCodexTooltipNode(
   snapshot: RateLimitSnapshot | null,
   sessionTokens: number | null,
-  sessionValueUsd: number | null,
+  sessionValueMoney: RegionalMoney | null,
   t: TFunction,
   usageDashboardLabel: string | null,
   nowMs: number,
@@ -477,7 +489,7 @@ function buildCodexTooltipNode(
   } else if (credits?.hasCredits && !parsedCredits) {
     lines.push(t('todaySpend.codex.balanceAvailable'));
   }
-  pushSessionValueLines(lines, sessionValueUsd, sessionTokens, t);
+  pushSessionValueLines(lines, sessionValueMoney, sessionTokens, t);
 
   for (const window of getCodexWindowUsages(snapshot, t, nowMs)) {
     const base = t('todaySpend.codex.windowLine', {
@@ -513,22 +525,17 @@ function buildCodexTooltipNode(
 // 不到回退总周限并标注口径) · 本会话价值 $。tooltip 列全量窗口 (含非当前模型的
 // scoped 条目) + 套餐 + extra usage。utilization 语义 = 已用百分比 (0-100)。
 
-/** Claude 窗口 → 展示行素材;窗口缺失 / 数据不可解析 → null (调用方过滤)。 */
+/**
+ * Claude 窗口 → tooltip 行素材;窗口缺失 / 数据不可解析 → null (调用方过滤)。
+ * tooltip 的窗口行不做逐行高亮 (纯文本 tooltip), 告警只体现在 chip 配色与末尾的
+ * 「接近限额」行 —— 故这里不带 alerting 标记。
+ */
 interface ClaudeWindowUsage {
   label: string;
   used: string;
   remaining: string;
   /** tooltip 用的精确 reset 时间点;无数据 → null。 */
   resetAt: string | null;
-  /** 服务端 severity 非 normal, 或已打满 —— tooltip 高亮 / chip 变警示色的依据。 */
-  alerting: boolean;
-}
-
-function isClaudeWindowAlerting(window: ClaudeUsageWindow | null | undefined): boolean {
-  if (!window) return false;
-  if (clampPercent(window.utilization) >= 99.95) return true;
-  const severity = window.severity?.trim().toLowerCase();
-  return Boolean(severity && severity !== 'normal');
 }
 
 function toClaudeWindowUsage(
@@ -544,7 +551,6 @@ function toClaudeWindowUsage(
     used: formatPercent(usedPercent),
     remaining: formatPercent(100 - usedPercent),
     resetAt: formatResetAt(window.resetsAt),
-    alerting: isClaudeWindowAlerting(window),
   };
 }
 
@@ -621,31 +627,16 @@ function getClaudeChipWindows(
   return windows;
 }
 
-/**
- * chip 警示态: 只看影响当前会话的窗口 (5h / 总周限 / 当前模型 scoped) 与 headers
- * 的整体 status —— 其它模型的窗口打满不限流当前会话, 只在 tooltip 里可见。
- * headers 源的窗口不带 severity, turn 内实时阶段「接近限额」只由整体 status 的
- * allowed_warning 表达, 因此 warning / rejected 都纳入告警 (rejected 在 tooltip
- * 文案分流里优先)。
- */
-function isClaudeSubscriptionAlerting(
-  snapshot: ClaudeSubscriptionUsageSnapshot | null,
-  modelId: string | null | undefined,
-): boolean {
-  if (!snapshot) return false;
-  const status = snapshot.rateLimitStatus?.trim().toLowerCase();
-  if (status === 'rejected' || status === 'allowed_warning') return true;
-  return (
-    isClaudeWindowAlerting(snapshot.fiveHour)
-    || isClaudeWindowAlerting(snapshot.sevenDay)
-    || isClaudeWindowAlerting(matchScopedWindowForModel(snapshot.scoped, modelId))
-  );
-}
+// 告警判定 (chip 变红的口径 + allowed_warning 为何不染红、为何不用 representativeClaim
+// 的取舍) 已收进 shared/claudeSubscriptionUsage.ts: isClaudeUsageWindowAlerting /
+// hasAlertingClaudeSessionWindow / isClaudeSubscriptionAlerting (纯数据判定, 有直接单测)。
+// tooltip 不逐行高亮, 它比 chip 宽一档的那一档在 buildClaudeSubscriptionTooltipNode 里
+// (整体 status 的 allowed_warning 也出「接近限额」行)。
 
 function buildClaudeSubscriptionTooltipNode(
   snapshot: ClaudeSubscriptionUsageSnapshot | null,
   modelId: string | null | undefined,
-  sessionValueUsd: number | null,
+  sessionValueMoney: RegionalMoney | null,
   t: TFunction,
   usageDashboardLabel: string | null,
   latestTurnUsage: LatestTurnUsageSummary | null,
@@ -662,9 +653,9 @@ function buildClaudeSubscriptionTooltipNode(
   if (planLabel) {
     lines.push(t('todaySpend.claude.planLine', { plan: planLabel }));
   }
-  if (typeof sessionValueUsd === 'number' && Number.isFinite(sessionValueUsd) && sessionValueUsd > 0) {
+  if (sessionValueMoney?.amount) {
     lines.push(t('todaySpend.claude.sessionValueLabel', {
-      cost: `$${sessionValueUsd.toFixed(2)}`,
+      cost: formatTurnCostMoney(sessionValueMoney),
     }));
   }
 
@@ -694,10 +685,13 @@ function buildClaudeSubscriptionTooltipNode(
     );
   }
 
+  // tooltip 比 chip 宽一档: allowed_warning (服务端综合全部窗口的模糊信号) 也提示 ——
+  // 上面刚列完全量窗口, 用户能自己看出是哪个窗口吃紧; chip 颜色不吃这个信号 (见
+  // isClaudeSubscriptionAlerting)。
   const status = snapshot.rateLimitStatus?.trim().toLowerCase();
   if (status === 'rejected') {
     lines.push(t('todaySpend.claude.limitRejected'));
-  } else if (isClaudeSubscriptionAlerting(snapshot, modelId)) {
+  } else if (status === 'allowed_warning' || hasAlertingClaudeSessionWindow(snapshot, modelId)) {
     lines.push(t('todaySpend.claude.limitWarning'));
   }
 
@@ -718,8 +712,10 @@ function buildClaudeSubscriptionTooltipNode(
 
 /** 最近一轮 tooltip 使用的 assistant 消息明细。 */
 interface LatestTurnUsageSummary {
+  money?: RegionalMoney;
   costUsd?: number;
   isEstimate?: boolean;
+  segmentMoney?: RegionalMoney;
   segmentCostUsd?: number;
   segmentIsEstimate?: boolean;
   isUserTurnTotal: boolean;
@@ -730,25 +726,38 @@ function findLatestTurnUsageSummary(messages: ChatMessage[]): LatestTurnUsageSum
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];
     if (message.role !== 'assistant' || !message.turnUsageDetails) continue;
+    const userTurnMoney =
+      message.userTurnMoney?.amount
+        ? message.userTurnMoney
+        : undefined;
     const userTurnCostUsd = typeof message.userTurnCostUsd === 'number' && message.userTurnCostUsd > 0
       ? message.userTurnCostUsd
       : undefined;
     return {
-      ...(userTurnCostUsd != null
-        ? { costUsd: userTurnCostUsd }
+      ...(userTurnMoney
+        ? { money: userTurnMoney }
+        : userTurnCostUsd != null
+          ? { costUsd: userTurnCostUsd }
+          : message.turnMoney?.amount
+            ? { money: message.turnMoney }
         : typeof message.turnCostUsd === 'number' && message.turnCostUsd > 0
           ? { costUsd: message.turnCostUsd }
         : {}),
-      ...((userTurnCostUsd != null
+      ...((userTurnMoney || userTurnCostUsd != null
         ? message.userTurnCostIsEstimate
         : message.turnCostIsEstimate) === true ? { isEstimate: true } : {}),
-      ...(userTurnCostUsd != null && typeof message.turnCostUsd === 'number' && message.turnCostUsd > 0
+      ...((userTurnMoney || userTurnCostUsd != null) && message.turnMoney?.amount
+        ? {
+            segmentMoney: message.turnMoney,
+            segmentIsEstimate: message.turnCostIsEstimate === true,
+          }
+        : userTurnCostUsd != null && typeof message.turnCostUsd === 'number' && message.turnCostUsd > 0
         ? {
             segmentCostUsd: message.turnCostUsd,
             segmentIsEstimate: message.turnCostIsEstimate === true,
           }
         : {}),
-      isUserTurnTotal: userTurnCostUsd != null,
+      isUserTurnTotal: Boolean(userTurnMoney || userTurnCostUsd != null),
       details: message.turnUsageDetails,
     };
   }
@@ -789,10 +798,15 @@ function appendLatestTurnUsageLines(
 ): void {
   if (!summary) return;
   if (lines.length > 0) lines.push('');
-  if (summary.isUserTurnTotal && summary.costUsd != null) {
+  if (
+    summary.isUserTurnTotal &&
+    (summary.money?.amount || summary.costUsd != null)
+  ) {
     lines.push(t('todaySpend.tooltip.latestUserTurnTitle'));
     lines.push(t(summary.isEstimate ? 'usageDetails.valueLine' : 'usageDetails.costLine', {
-      cost: formatTurnCostUsd(summary.costUsd),
+      cost: summary.money
+        ? formatTurnCostMoney(summary.money)
+        : formatTurnCostUsd(summary.costUsd ?? 0),
     }));
   }
   lines.push(...buildTurnUsageTooltipLines({
@@ -800,6 +814,7 @@ function appendLatestTurnUsageLines(
     t,
     // Token / model detail remains scoped to the final SDK segment. Keep its
     // cost line separate from the user-turn total shown above.
+    money: summary.isUserTurnTotal ? summary.segmentMoney : summary.money,
     costUsd: summary.isUserTurnTotal ? summary.segmentCostUsd : summary.costUsd,
     isEstimate: summary.isUserTurnTotal ? summary.segmentIsEstimate : summary.isEstimate,
     title: t(summary.isUserTurnTotal
@@ -825,12 +840,14 @@ function pushDashboardLinkLine(lines: string[], label: string | null): void {
 /** 「本会话价值 / token 累计」两行 —— codex 订阅与 xai bridge tooltip 共用(同 i18n key 同格式)。 */
 function pushSessionValueLines(
   lines: string[],
-  sessionValueUsd: number | null,
+  sessionValueMoney: RegionalMoney | null,
   sessionTokens: number | null,
   t: TFunction,
 ): void {
-  if (typeof sessionValueUsd === 'number' && Number.isFinite(sessionValueUsd) && sessionValueUsd > 0) {
-    lines.push(t('todaySpend.codex.sessionValueLabel', { cost: `$${sessionValueUsd.toFixed(2)}` }));
+  if (sessionValueMoney?.amount) {
+    lines.push(t('todaySpend.codex.sessionValueLabel', {
+      cost: formatTurnCostMoney(sessionValueMoney),
+    }));
   }
   if (typeof sessionTokens === 'number' && Number.isFinite(sessionTokens) && sessionTokens > 0) {
     lines.push(t('todaySpend.codex.sessionTokensLine', {
@@ -846,13 +863,13 @@ function pushSessionValueLines(
 function buildXaiTooltipNode(
   rateLimit: XaiRateLimitSnapshot | null,
   sessionTokens: number | null,
-  sessionValueUsd: number | null,
+  sessionValueMoney: RegionalMoney | null,
   t: TFunction,
   usageDashboardLabel: string | null,
   latestTurnUsage: LatestTurnUsageSummary | null,
 ): React.ReactNode {
   const lines: string[] = [];
-  pushSessionValueLines(lines, sessionValueUsd, sessionTokens, t);
+  pushSessionValueLines(lines, sessionValueMoney, sessionTokens, t);
   if (rateLimit && typeof rateLimit.remainingRequests === 'number' && typeof rateLimit.limitRequests === 'number') {
     lines.push(t('todaySpend.xai.requestsLine', {
       remaining: rateLimit.remainingRequests.toLocaleString(),
@@ -889,7 +906,7 @@ function renderSegmentedLabel(segments: React.ReactNode[]): React.ReactNode {
 
 interface TodaySpendChipProps {
   vendorKey?: 'cc' | 'codex';
-  /** 当前会话模型;codex/ 骨折 GPT 恒走 gateway API, 即使 oauth-bearer spawn 也按 API 形态显示。 */
+  /** 当前会话模型;codex/ 折扣 GPT 恒走 gateway API, 即使 oauth-bearer spawn 也按 API 形态显示。 */
   modelId?: string | null;
   /**
    * 本会话显式选定的供应商('anthropic' / 'openai' / 'xd' / null=默认路由)。
@@ -901,6 +918,7 @@ interface TodaySpendChipProps {
   /** session 累计需要 sessionId + 初始值。Claude / Codex API 显示真实 USD cost。 */
   sessionId?: string;
   /** 来自 session.totalCostUsd（sessionService.get 拿到）— mount 后由 IPC push 更新。 */
+  sessionInitialMoney?: RegionalMoney | null;
   sessionInitialCostUsd?: number | null;
   /** 来自 session.totalTokenUsage（sessionService.get 拿到）— mount 后由 IPC push 更新。 */
   sessionInitialTokens?: number | null;
@@ -919,14 +937,18 @@ export function TodaySpendChip({
   modelId,
   providerId,
   sessionId,
+  sessionInitialMoney,
   sessionInitialCostUsd,
   sessionInitialTokens,
   remoteHostId,
   deviceLinkDeviceId,
 }: TodaySpendChipProps) {
   const { t } = useTranslation();
+  // device-link 远程会话:turn 跑在被控端、消耗被控端账号,计费形态(订阅/网关)与账号
+  // 余量的事实都在被控端 —— 本机的 route 观察 / 账号快照与之无关,一律不读、不据此分类。
+  const isDeviceLinkRemote = Boolean(deviceLinkDeviceId);
   const { authInjection: codexAuthInjection } = useCodexRuntimeRoute({
-    enabled: vendorKey === 'codex',
+    enabled: vendorKey === 'codex' && !isDeviceLinkRemote,
     refreshKey: sessionId,
   });
   // cc 订阅判定对齐 main 的 isClaudeSubscriptionSession(register.ts)+ proxy 实际路由:
@@ -946,14 +968,16 @@ export function TodaySpendChip({
   // 远端 Claude 会话恒走网关(runtime-configs 的 remoteEndpoint),本机订阅快照与实际
   // 服务账号无关 —— 排除出订阅形态,回落 gateway quota 展示(与 Codex 远端口径一致)。
   const isRemoteClaudeSession = vendorKey === 'cc' && Boolean(remoteHostId);
+  // device-link 远程会话不参与默认路由观察:本机 proxy 永远看不到被控端会话的请求,
+  // 用本机 OAuth / 网关 key 状态推断只会张冠李戴(形态由下方 device-link 专属分支接管)。
   const isDefaultRouteClaudeSession =
-    vendorKey === 'cc' && !isRemoteClaudeSession && providerId == null;
+    vendorKey === 'cc' && !isRemoteClaudeSession && !isDeviceLinkRemote && providerId == null;
   const { hasSavedKey: hasGatewayKey, isReconciling: gatewayKeyReconciling } = useApiKey();
   const claudeOAuthConnected = useClaudeOAuthConnected(isDefaultRouteClaudeSession);
   const observedClaudeRoute = useClaudeSessionRoute(sessionId, isDefaultRouteClaudeSession);
   const ccBillingFormPending = isDefaultRouteClaudeSession && observedClaudeRoute == null
     && (gatewayKeyReconciling || (!hasGatewayKey && claudeOAuthConnected == null));
-  const isClaudeSubscription = vendorKey === 'cc' && !isRemoteClaudeSession && (
+  const isClaudeSubscription = vendorKey === 'cc' && !isRemoteClaudeSession && !isDeviceLinkRemote && (
     providerId === 'anthropic'
     || (providerId == null && (
       observedClaudeRoute != null
@@ -976,7 +1000,7 @@ export function TodaySpendChip({
   const isCodexXaiProvider =
     vendorKey === 'codex' && typeof modelId === 'string' && modelId.startsWith(XAI_MODEL_PREFIX);
   // codex 走订阅价值估算:ChatGPT 订阅需要 oauth-bearer 且未显式选 XD;xAI 由 proxy 注入
-  // SuperGrok OAuth,不依赖 Codex 子进程凭证。env-key fallback、codex/ 骨折、或显式选 XD
+  // SuperGrok OAuth,不依赖 Codex 子进程凭证。env-key fallback、codex/ 折扣、或显式选 XD
   // → 复用 cc 的 cost tooltip 形态。远端 Codex 的事实在远端 daemon 上,本机只记录 token
   // 价值估算,不写本地 gateway cost。
   const isCodexOauth = vendorKey === 'codex' && !isCodexXaiProvider && (
@@ -991,26 +1015,48 @@ export function TodaySpendChip({
   // 远程会话不读本机账户快照 —— 额度事实在远端:SSH 用 remoteHostId 判,device-link 用
   // deviceLinkDeviceId 判(两者互斥,任一非空即远程,turn 消耗的是远端账号的额度)。
   const isAnyRemoteSession = Boolean(remoteHostId) || Boolean(deviceLinkDeviceId);
-  // Claude 网关/订阅配额的本地读取只对 device-link 加门:SSH 远程 cc 维持既有口径
-  // (isRemoteClaudeSession 已排除订阅形态、回落 gateway quota 展示);device-link 的 turn
-  // 与凭证都在被控端,控制端本机的 LiteLLM / Claude.ai 配额与之无关。
-  const isDeviceLinkRemote = Boolean(deviceLinkDeviceId);
+  // Claude 网关/订阅配额的本地读取只对 device-link 加门(isDeviceLinkRemote,声明在组件
+  // 顶部):SSH 远程 cc 维持既有口径(isRemoteClaudeSession 已排除订阅形态、回落 gateway
+  // quota 展示);device-link 的 turn 与凭证都在被控端,控制端本机的 LiteLLM / Claude.ai
+  // 配额与之无关。
   const shouldReadLocalCodexAccountUsage = usesCodexQuotaForm && !isAnyRemoteSession;
   // 订阅直连 bridge 轮真实计费恒 0(不写 sessions.total_cost_usd),spend hook 无意义 → 关。
-  const sessionCostUsd = useSessionSpend(
-    (vendorKey === 'cc' && !isSubscriptionBridge) || isCodexApi ? sessionId : undefined,
-    (vendorKey === 'cc' && !isSubscriptionBridge) || isCodexApi ? sessionInitialCostUsd : null,
+  // device-link 远程会话形态未知 → 无条件启用(与 tokens / 估算价值同口径),否则被控端
+  // 若是本机判不出的形态(如 codex+xai)累计 cost 镜像永远不展示。
+  const sessionMoney = useSessionSpend(
+    (vendorKey === 'cc' && !isSubscriptionBridge) || isCodexApi || isDeviceLinkRemote
+      ? sessionId
+      : undefined,
+    (vendorKey === 'cc' && !isSubscriptionBridge) || isCodexApi || isDeviceLinkRemote
+      ? sessionInitialMoney
+      : null,
+    (vendorKey === 'cc' && !isSubscriptionBridge) || isCodexApi || isDeviceLinkRemote
+      ? sessionInitialCostUsd
+      : null,
   );
   const sessionTokens = useSessionTokens(
-    isCodexApi || isCodexSubscription || isSubscriptionBridge ? sessionId : undefined,
+    isCodexApi || isCodexSubscription || isSubscriptionBridge || isDeviceLinkRemote
+      ? sessionId
+      : undefined,
     sessionInitialTokens,
   );
   // 订阅会话的"本会话价值"估算 (isEstimate 消息汇总): Codex OAuth / Claude 订阅 / bridge 订阅同管道。
-  const sessionEstimatedValueUsd = useSessionEstimatedValue(
+  // device-link 远程会话形态未知(被控端账号事实拿不到)→ 无条件启用,有估算数据就显示。
+  const sessionEstimatedValueMoney = useSessionEstimatedValue(
     sessionId,
-    isCodexSubscription || isClaudeSubscription || isSubscriptionBridge,
+    isCodexSubscription || isClaudeSubscription || isSubscriptionBridge || isDeviceLinkRemote,
   );
-  const accountUsage = useAccountUsage(sessionId, shouldReadLocalCodexAccountUsage ? 'codex' : undefined);
+  // 按会话形态选配额槽: chatgpt/ bridge 消耗 WHAM(openai-web)报告的配额,
+  // Codex CLI 会话消耗 app-server 报告的配额 —— 不跨槽回退, 绝不显示不是这个
+  // 会话在消耗的配额(账号多限额桶会互相污染, 见 useAccountUsage 头注释)。
+  const accountUsage = useAccountUsage(
+    sessionId,
+    shouldReadLocalCodexAccountUsage ? 'codex' : undefined,
+    isChatgptBridge ? 'openai-web' : 'app-server',
+    // app-server 形态下据当前模型匹配限额桶(账号可能同时有主配额桶与模型专属
+    // 促销桶, 见 useAccountUsage.matchCodexBucketForModel)。
+    modelId,
+  );
   // xAI 限流快照同为本机 main 抓的 —— 远程会话(SSH / device-link)同样抑制,回落价值估算。
   const xaiRateLimit = useXaiRateLimit(usesXaiQuotaForm && !isAnyRemoteSession);
   // cc 与 codex-api 共用同一把 XD gateway key 的 LiteLLM quota; codex-oauth 不订阅。
@@ -1028,22 +1074,27 @@ export function TodaySpendChip({
   const latestTurnUsage = useLatestTurnUsageSummary(sessionId);
   // codex-oauth / cc+chatgpt bridge → ChatGPT 用量看板; cc+xai bridge → xAI 账户页;
   // cc Claude 订阅 → claude.ai 用量页; 其余(cc 网关 / codex-api)→ 暂无看板(null,见文件头 TODO)。
-  const usageDashboardUrl: string | null = usesXaiQuotaForm
-    ? XAI_ACCOUNT_URL
-    : isCodexOauth || isChatgptBridge
-      ? CODEX_USAGE_DASHBOARD_URL
-      : isClaudeSubscription
-        ? CLAUDE_USAGE_DASHBOARD_URL
-        : null;
+  // device-link 远程会话额度属于被控端账号,本机浏览器打开的看板是控制端自己的账号 → 不跳。
+  const usageDashboardUrl: string | null = isDeviceLinkRemote
+    ? null
+    : usesXaiQuotaForm
+      ? XAI_ACCOUNT_URL
+      : isCodexOauth || isChatgptBridge
+        ? CODEX_USAGE_DASHBOARD_URL
+        : isClaudeSubscription
+          ? CLAUDE_USAGE_DASHBOARD_URL
+          : null;
   // 看板链接行文案:与 usageDashboardUrl 一一对应;网关账号无看板 → null
   // (tooltip 不显示"打开看板"行,chip 也不可点)。
-  const usageDashboardLabel: string | null = usesXaiQuotaForm
-    ? t('todaySpend.openXaiUsage')
-    : isCodexOauth || isChatgptBridge
-      ? t('todaySpend.openCodexUsage')
-      : isClaudeSubscription
-        ? t('todaySpend.openClaudeUsage')
-        : null;
+  const usageDashboardLabel: string | null = isDeviceLinkRemote
+    ? null
+    : usesXaiQuotaForm
+      ? t('todaySpend.openXaiUsage')
+      : isCodexOauth || isChatgptBridge
+        ? t('todaySpend.openCodexUsage')
+        : isClaudeSubscription
+          ? t('todaySpend.openClaudeUsage')
+          : null;
   const [windowLabelNowMs, setWindowLabelNowMs] = React.useState(() => Date.now());
 
   // 当前形态下 chip 展示的限额窗口段 (Codex 订阅 / Claude 订阅共用结构);
@@ -1143,21 +1194,23 @@ export function TodaySpendChip({
     return () => window.clearTimeout(timer);
   }, [usesCodexQuotaForm, isClaudeSubscription, windowLabelNowMs, chipResetsAtMsList]);
 
-  // 悬念期主动催一次余量刷新, 让「重置揭晓」尽快到来 —— 两侧的 main read 都是
+  // 悬念期主动催一次余量刷新, 让「重置揭晓」尽快到来 —— main read 都是
   // cached-first + 节流(Claude 订阅端点 180s + 退避; Codex WHAM 10s + in-flight
   // 去重), 每个 tick 重试一次是安全的; 新快照落地即结束悬念期。
-  // 分支优先级必须与上面 chipWindows 的形态选择一致(Codex 形态优先): cc 会话跑
-  // chatgpt/ bridge 模型时 usesCodexQuotaForm 与 isClaudeSubscription 可同时为真,
-  // 此时 chip 显示的是 ChatGPT 窗口, 催刷也必须走 Codex 通道。
+  // 催刷通道必须与 chip 实际显示的配额槽一致:
+  //   - chatgpt/ bridge 形态显示 WHAM(openai-web)槽 → 催 WHAM;
+  //   - Codex CLI 形态显示 app-server 槽 —— WHAM 刷新只落 web 槽、帮不上它,
+  //     且无空闲期 app-server 催刷通道, 靠下一个 turn 事件或悬念超时回落兜底;
+  //   - Claude 订阅形态催订阅端点。
   const hasPendingResetWindow = chipWindows.some((window) => window.resetPending);
   React.useEffect(() => {
     if (!hasPendingResetWindow) return;
-    if (usesCodexQuotaForm) {
+    if (isChatgptBridge) {
       requestCodexAccountRefresh();
-    } else if (isClaudeSubscription) {
+    } else if (isClaudeSubscription && !usesCodexQuotaForm) {
       requestClaudeSubscriptionRefresh();
     }
-  }, [hasPendingResetWindow, isClaudeSubscription, usesCodexQuotaForm, windowLabelNowMs]);
+  }, [hasPendingResetWindow, isChatgptBridge, isClaudeSubscription, usesCodexQuotaForm, windowLabelNowMs]);
 
   const isDashboardClickable = usageDashboardUrl !== null;
   const handleClick = () => {
@@ -1167,12 +1220,40 @@ export function TodaySpendChip({
 
   let labelNode: React.ReactNode;
   let tooltipNode: React.ReactNode = usageDashboardLabel;
-  if (usesCodexQuotaForm) {
+  if (isDeviceLinkRemote) {
+    // device-link 远程会话:不做订阅/网关形态分类(计费事实在被控端,本机账号状态无关),
+    // 数据驱动展示镜像值 —— 订阅估算价值(estimatedSessionValueFor 隧道汇总 + 转发的
+    // turn-cost 推送)与真实累计 cost(usage:session-spend-changed 镜像)有哪个显哪个;
+    // 被控端账号的限额窗口本机拿不到,不显示、不猜。
+    const chipSegments: string[] = [];
+    if (sessionEstimatedValueMoney) {
+      chipSegments.push(t('todaySpend.codex.sessionValueLabel', {
+        cost: formatTurnCostMoney(sessionEstimatedValueMoney),
+      }));
+    }
+    if (sessionMoney?.amount) {
+      chipSegments.push(t('todaySpend.sessionCostLabel', {
+        cost: formatTurnCostMoney(sessionMoney),
+      }));
+    }
+    labelNode = chipSegments.length > 0
+      ? renderSegmentedLabel(chipSegments)
+      : <span className="tabular-nums opacity-60">$</span>;
+    const tooltipLines: string[] = [];
+    pushSessionValueLines(tooltipLines, sessionEstimatedValueMoney, sessionTokens, t);
+    if (sessionMoney?.amount) {
+      tooltipLines.push(t('todaySpend.tooltip.sessionUsed', {
+        cost: formatTurnCostMoney(sessionMoney),
+      }));
+    }
+    appendLatestTurnUsageLines(tooltipLines, latestTurnUsage, t);
+    tooltipNode = tooltipLines.length > 0 ? buildTooltipNode(tooltipLines) : null;
+  } else if (usesCodexQuotaForm) {
     // codex-oauth 与 cc+chatgpt/ bridge 共用同一 ChatGPT 账户,复用同一套限额窗口 + 价值估算渲染。
     const chipSegments = [...windowSegments];
-    if (typeof sessionEstimatedValueUsd === 'number' && sessionEstimatedValueUsd > 0) {
+    if (sessionEstimatedValueMoney) {
       chipSegments.push(t('todaySpend.codex.sessionValueLabel', {
-        cost: `$${sessionEstimatedValueUsd.toFixed(2)}`,
+        cost: formatTurnCostMoney(sessionEstimatedValueMoney),
       }));
     }
     labelNode = chipSegments.length > 0
@@ -1181,7 +1262,7 @@ export function TodaySpendChip({
     tooltipNode = buildCodexTooltipNode(
       accountUsage,
       sessionTokens,
-      sessionEstimatedValueUsd,
+      sessionEstimatedValueMoney,
       t,
       usageDashboardLabel,
       windowLabelNowMs,
@@ -1190,9 +1271,9 @@ export function TodaySpendChip({
   } else if (usesXaiQuotaForm) {
     // xAI 无订阅窗口数据源:主 chip 只显示本会话价值估算,限流细节(若 bridge 抓到)进 tooltip。
     const chipSegments: string[] = [];
-    if (typeof sessionEstimatedValueUsd === 'number' && sessionEstimatedValueUsd > 0) {
+    if (sessionEstimatedValueMoney) {
       chipSegments.push(t('todaySpend.codex.sessionValueLabel', {
-        cost: `$${sessionEstimatedValueUsd.toFixed(2)}`,
+        cost: formatTurnCostMoney(sessionEstimatedValueMoney),
       }));
     }
     labelNode = chipSegments.length > 0
@@ -1201,7 +1282,7 @@ export function TodaySpendChip({
     tooltipNode = buildXaiTooltipNode(
       xaiRateLimit,
       sessionTokens,
-      sessionEstimatedValueUsd,
+      sessionEstimatedValueMoney,
       t,
       usageDashboardLabel,
       latestTurnUsage,
@@ -1210,9 +1291,9 @@ export function TodaySpendChip({
     // Claude 订阅形态 (方案 B): chip 显示「剩余时长 剩余%」倒计时段 + 本会话价值,
     // 倒计时由 windowLabelNowMs 驱动 (常态 60s tick, 最后一分钟逐秒); tooltip 保留精确时间。
     const chipSegments = [...windowSegments];
-    if (typeof sessionEstimatedValueUsd === 'number' && sessionEstimatedValueUsd > 0) {
+    if (sessionEstimatedValueMoney) {
       chipSegments.push(t('todaySpend.claude.sessionValueLabel', {
-        cost: `$${sessionEstimatedValueUsd.toFixed(2)}`,
+        cost: formatTurnCostMoney(sessionEstimatedValueMoney),
       }));
     }
     labelNode = chipSegments.length > 0
@@ -1221,13 +1302,13 @@ export function TodaySpendChip({
     tooltipNode = buildClaudeSubscriptionTooltipNode(
       claudeSubscriptionUsage,
       modelId,
-      sessionEstimatedValueUsd,
+      sessionEstimatedValueMoney,
       t,
       usageDashboardLabel,
       latestTurnUsage,
     );
   } else {
-    const slots = computeMetricSlots(claudeQuota, sessionCostUsd, t);
+    const slots = computeMetricSlots(claudeQuota, sessionMoney, t);
     const chipSegments = getGatewayChipSegments(slots);
     const codexApiHasTokenFallback = isCodexApi
       && !slots.session.available
@@ -1299,6 +1380,8 @@ export function TodaySpendChip({
 
   // Claude 订阅告警态: 影响当前会话的窗口 (5h / 总周限 / 当前模型 scoped) 任一逼近 /
   // 打满, 或 headers 报 rejected → chip 变 error 色 (语义豁免色, 跨主题一致)。
+  // 其它模型的周限吃紧不染红 —— chip 上没有那一段, 红了也无从解释 (见
+  // isClaudeSubscriptionAlerting 对 allowed_warning 的取舍)。
   const claudeSubscriptionAlerting = isClaudeSubscription
     && isClaudeSubscriptionAlerting(claudeSubscriptionUsage, modelId);
 

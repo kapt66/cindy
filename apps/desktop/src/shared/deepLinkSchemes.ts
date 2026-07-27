@@ -17,6 +17,7 @@
 
 import {
   BRAND_IDENTITY,
+  CINDY_INTEROP_PRIMARY_SCHEME,
   allAcceptedDeepLinkSchemes,
   allDeepLinkSchemes,
 } from '@cindy/maker-shared/brand-identity';
@@ -32,6 +33,9 @@ export const DEEP_LINK_SCHEMES: readonly string[] = allAcceptedDeepLinkSchemes()
 
 /** 生成侧 URL 前缀：`cindy-meka://`。 */
 export const DEEP_LINK_URL_PREFIX = `${DEEP_LINK_PRIMARY_SCHEME}://`;
+
+/** 带 deviceId 的跨设备链接使用上游 Cindy wire scheme；不用于 OS 注册。 */
+export const DEEP_LINK_INTEROP_URL_PREFIX = `${CINDY_INTEROP_PRIMARY_SCHEME}://`;
 
 /** 解析侧要认的全部 URL 前缀(与 DEEP_LINK_SCHEMES 同序,主前缀恒为首位)。 */
 export const DEEP_LINK_URL_PREFIXES: readonly string[] = DEEP_LINK_SCHEMES.map(

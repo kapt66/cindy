@@ -500,6 +500,8 @@ export class Scheduler extends EventEmitter {
       scheduleId: schedule.id,
       firedAt,
       status: 'running',
+      // Script 不产生 agent token，零费用是确定值；agent 费用在 turn done 后异步归因。
+      costAttribution: schedule.executionMode === 'script' ? 'zero' : 'unavailable',
       heartbeatAt: firedAt,
     };
     try {
@@ -609,6 +611,7 @@ export class Scheduler extends EventEmitter {
         status: 'skipped',
         sessionId: sessionId || undefined,
         finishedAt,
+        costAttribution: 'zero',
         resultText,
         readAt: finishedAt,
       });
@@ -725,6 +728,7 @@ export class Scheduler extends EventEmitter {
       scheduleId: schedule.id,
       firedAt,
       status: 'running',
+      costAttribution: schedule.executionMode === 'script' ? 'zero' : 'unavailable',
       heartbeatAt: firedAt,
     };
     await this.storage.insertRun(initialRun);
@@ -829,6 +833,7 @@ export class Scheduler extends EventEmitter {
         status: 'skipped',
         sessionId: runSessionId || undefined,
         finishedAt,
+        costAttribution: 'zero',
         resultText: runResultText,
         readAt: finishedAt,
       });
@@ -1106,10 +1111,12 @@ export class Scheduler extends EventEmitter {
     const existing = await this.storage.get(id);
     if (!existing) throw new Error(`Schedule not found: ${id}`);
     const now = this.clock.now();
-    // resume 视作冷启动：interval 模式起新一轮 N 倒计时；cron 模式找下一个壁钟槽位。
+    // resume 视作冷启动：interval 模式起新一轮 N 倒计时（从 now 起算，与 update() 一致）；
+    // cron 模式找下一个壁钟槽位。不要复用 nextIntervalFire —— 它按 lastFinishedAt+N 尊重原
+    // 节奏（restart 语义），会让「上次完成不到一个 N 就 resume」比冷启动更早触发。
     const next =
       existing.intervalMs !== undefined
-        ? nextIntervalFire(existing.lastFinishedAt ?? existing.createdAt, existing.intervalMs, now)
+        ? now + existing.intervalMs
         : nextCronOrMonthlyFire(existing.cronExpr, now, existing.timezone);
     const updated = await this.storage.update(id, {
       status: 'active',
@@ -1617,6 +1624,7 @@ export class Scheduler extends EventEmitter {
         firedAt,
         finishedAt: this.clock.now(),
         status: input.status,
+        costAttribution: input.status === 'skipped' ? 'zero' : 'unavailable',
         resultText: input.resultText,
         errorMsg: input.errorMsg,
       };

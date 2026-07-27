@@ -15,12 +15,14 @@ const source = readFileSync(sourcePath, 'utf8').replace(/\r\n/g, '\n');
 
 describe('TodaySpendChip dashboard routing', () => {
   it('separates the latest user-round total from final-segment token details', () => {
+    expect(source).toContain('message.userTurnMoney?.amount');
     expect(source).toContain('const userTurnCostUsd = typeof message.userTurnCostUsd');
-    expect(source).toContain('? { costUsd: userTurnCostUsd }');
-    expect(source).toContain('isUserTurnTotal: userTurnCostUsd != null');
+    expect(source).toContain('? { money: userTurnMoney }');
+    expect(source).toContain('isUserTurnTotal: Boolean(userTurnMoney || userTurnCostUsd != null)');
     expect(source).toContain("'todaySpend.tooltip.latestUserTurnTitle'");
+    expect(source).toContain('segmentMoney: message.turnMoney');
     expect(source).toContain('segmentCostUsd: message.turnCostUsd');
-    expect(source).toContain('costUsd: summary.isUserTurnTotal ? summary.segmentCostUsd : summary.costUsd');
+    expect(source).toContain('money: summary.isUserTurnTotal ? summary.segmentMoney : summary.money');
     expect(source).toContain("'chat.messageActionBar.userTurnCostDetailsTitle'");
   });
 
@@ -73,6 +75,25 @@ describe('TodaySpendChip dashboard routing', () => {
     expect(source).not.toContain("codexAuthState.authSource === 'oauth'");
   });
 
+  it('renders device-link remote sessions data-driven without local-account classification', () => {
+    // device-link 远程会话:计费形态事实在被控端,本机 route 观察 / 账号状态一律不用。
+    expect(source).toContain('const isDeviceLinkRemote = Boolean(deviceLinkDeviceId);');
+    // 本机 Codex runtime route 观察对 device-link 关闭(否则按控制端账号形态张冠李戴)
+    expect(source).toContain("enabled: vendorKey === 'codex' && !isDeviceLinkRemote,");
+    // Claude 默认路由观察(proxy 观察值 / OAuth / 网关 key 启发式)对 device-link 关闭
+    expect(source).toContain(
+      "vendorKey === 'cc' && !isRemoteClaudeSession && !isDeviceLinkRemote && providerId == null",
+    );
+    // 订阅形态分类整体排除 device-link(专属分支接管渲染)
+    expect(source).toContain(
+      "const isClaudeSubscription = vendorKey === 'cc' && !isRemoteClaudeSession && !isDeviceLinkRemote && (",
+    );
+    // 渲染走专属分支:估算价值 / 累计 cost 有哪个显哪个,不显示本机限额窗口
+    expect(source).toContain('if (isDeviceLinkRemote) {');
+    // 看板链接对 device-link 落 null(额度属于被控端账号,本机浏览器打开的是控制端账号)
+    expect(source).toMatch(/usageDashboardUrl: string \| null = isDeviceLinkRemote\s*\?\s*null/);
+  });
+
   it('does not classify remote Codex sessions from the local runtime route', () => {
     expect(source).toContain('remoteHostId?: string | null');
     expect(source).toContain("const isRemoteCodexSession = vendorKey === 'codex' && Boolean(remoteHostId);");
@@ -82,21 +103,30 @@ describe('TodaySpendChip dashboard routing', () => {
     expect(source).toContain(
       'const shouldReadLocalCodexAccountUsage = usesCodexQuotaForm && !isAnyRemoteSession;',
     );
-    expect(source).toContain("useAccountUsage(sessionId, shouldReadLocalCodexAccountUsage ? 'codex' : undefined)");
+    // 按会话形态选配额槽: bridge → WHAM(openai-web)槽, CLI → app-server 槽,
+    // 不跨槽回退(账号多限额桶互相污染, 2026-07-24 实报 bug)
+    expect(source).toContain("shouldReadLocalCodexAccountUsage ? 'codex' : undefined,");
+    expect(source).toContain("isChatgptBridge ? 'openai-web' : 'app-server',");
   });
 
   it('keeps Codex OAuth subscription details in the chip and tooltip', () => {
     expect(source).not.toContain('CODEX_CREDIT_USD_RATE');
     expect(source).not.toContain('usdFormatted');
     expect(source).not.toContain('function getSessionCostSegment(');
-    expect(source).toContain("t('todaySpend.sessionCostLabel', { cost: `$${sessionCostUsd.toFixed(2)}` })");
+    expect(source).toContain('const cost = formatTurnCostMoney(sessionMoney)');
     expect(source).toContain("tooltipLabel: t('todaySpend.tooltip.sessionUsed'");
     expect(source).toContain("session: { label: t('todaySpend.sessionCostLabel', { cost: '$—' })");
-    expect(source).toContain("(vendorKey === 'cc' && !isSubscriptionBridge) || isCodexApi ? sessionId : undefined");
-    expect(source).toContain("(vendorKey === 'cc' && !isSubscriptionBridge) || isCodexApi ? sessionInitialCostUsd : null");
-    // 订阅"本会话价值"估算: Codex OAuth / Claude 订阅 / bridge 订阅共用同一管道
+    // spend hook 对 device-link 远程会话无条件启用(形态未知,累计 cost 镜像不可丢)
     expect(source).toMatch(
-      /useSessionEstimatedValue\(\s*sessionId,\s*isCodexSubscription \|\| isClaudeSubscription \|\| isSubscriptionBridge,?\s*\)/,
+      /\(vendorKey === 'cc' && !isSubscriptionBridge\) \|\| isCodexApi \|\| isDeviceLinkRemote\s*\?\s*sessionId\s*:\s*undefined/,
+    );
+    expect(source).toMatch(
+      /\(vendorKey === 'cc' && !isSubscriptionBridge\) \|\| isCodexApi \|\| isDeviceLinkRemote\s*\?\s*sessionInitialCostUsd\s*:\s*null/,
+    );
+    // 订阅"本会话价值"估算: Codex OAuth / Claude 订阅 / bridge 订阅共用同一管道;
+    // device-link 远程会话形态未知(被控端账号事实拿不到)→ 无条件启用
+    expect(source).toMatch(
+      /useSessionEstimatedValue\(\s*sessionId,\s*isCodexSubscription \|\| isClaudeSubscription \|\| isSubscriptionBridge \|\| isDeviceLinkRemote,?\s*\)/,
     );
     expect(source).toContain('function getCodexChipWindows(');
     expect(source).toContain("'todaySpend.codex.windowSegment'");
@@ -104,7 +134,7 @@ describe('TodaySpendChip dashboard routing', () => {
       "chipSegments.push(t('todaySpend.codex.sessionValueLabel'",
     );
     expect(source).toContain('tooltipNode = buildCodexTooltipNode(');
-    expect(source).toContain('sessionEstimatedValueUsd,');
+    expect(source).toContain('sessionEstimatedValueMoney,');
     expect(source).toContain("t('todaySpend.codex.sessionValueLabel'");
     expect(source).toContain('getCodexWindowUsages(snapshot, t, nowMs)');
     expect(source).toContain('todaySpend.codex.planCreditsLine');
@@ -120,9 +150,19 @@ describe('TodaySpendChip dashboard routing', () => {
     expect(source).not.toContain('todaySpend.codex.creditsShort');
   });
 
+  it('formats gateway quota amounts with the gateway-native currency', () => {
+    expect(source).toContain(
+      'formatCompactMoney(gatewayMoney(claudeQuota.spend))',
+    );
+    expect(source).toContain(
+      'formatCompactMoney(gatewayMoney(claudeQuota.maxBudget))',
+    );
+    expect(source).not.toContain('formatCompactUsd(claudeQuota.');
+  });
+
   it('uses token and explicit empty-state fallbacks for Codex API sessions', () => {
     expect(source).toContain(
-      'isCodexApi || isCodexSubscription || isSubscriptionBridge ? sessionId : undefined',
+      'isCodexApi || isCodexSubscription || isSubscriptionBridge || isDeviceLinkRemote',
     );
     expect(source).toContain('function hasPositiveSessionTokens(sessionTokens: number | null)');
     expect(source).toContain('const codexApiHasTokenFallback = isCodexApi');
@@ -153,10 +193,20 @@ describe('TodaySpendChip dashboard routing', () => {
     expect(source).toContain('weekly.modelDisplayName ? `${weekly.modelDisplayName} ${countdown}` : countdown');
     expect(source).toContain('todaySpend.claude.sessionValueLabel');
     expect(source).toContain('todaySpend.claude.planLine');
-    // 告警只看影响当前会话的窗口 (5h / 总周限 / 当前模型 scoped);headers 的
-    // allowed_warning 是 turn 内唯一的「接近限额」实时信号, 必须纳入告警态
-    expect(source).toContain('isClaudeSubscriptionAlerting(');
-    expect(source).toContain("status === 'rejected' || status === 'allowed_warning'");
+    // 告警判定是纯数据判定, 统一收在 shared/claudeSubscriptionUsage.ts (有直接单测:
+    // main/usage/__tests__/claudeSubscriptionUsage.test.ts), 组件只消费, 不再本地重写。
+    expect(source).toContain('isClaudeSubscriptionAlerting,');
+    expect(source).toContain('hasAlertingClaudeSessionWindow,');
+    expect(source).not.toContain('function isClaudeSubscriptionAlerting(');
+    expect(source).not.toContain('function hasAlertingClaudeSessionWindow(');
+    // chip 变红只看当前会话真受限 (rejected / 影响本会话的窗口告警); headers 的
+    // allowed_warning 综合了其它模型的分模型周限, 不得单独染红 —— 否则跑 Opus 的
+    // 会话会因 Fable 周限吃紧变红, 而 chip 上根本没有那一段。
+    expect(source).not.toContain("status === 'rejected' || status === 'allowed_warning'");
+    // tooltip 比 chip 宽一档: allowed_warning 仍提示 (紧邻全量窗口列表, 有上下文)
+    expect(source).toContain(
+      "status === 'allowed_warning' || hasAlertingClaudeSessionWindow(snapshot, modelId)",
+    );
     // Claude 订阅 / bridge 订阅不读 gateway quota (不反映订阅花费); 默认路由 key reconcile
     // 完成前形态未定, 同样不放行网关 quota 读 (避免形态闪切)
     expect(source).toContain("vendorKey === 'cc' && !isClaudeSubscription && !isSubscriptionBridge && !ccBillingFormPending");
@@ -248,14 +298,13 @@ describe('TodaySpendChip dashboard routing', () => {
     // motion-safe = 尊重 prefers-reduced-motion (review P1, PR #546)
     expect(source).toContain('<span className="motion-safe:animate-pulse">…</span>');
     expect(source).not.toContain('"animate-pulse"');
-    // 悬念期主动催余量刷新, Claude / Codex 两侧都要 (main 侧 cached-first + 节流,
-    // 重复调用安全; Codex 缺催刷会在空闲期卡悬念态, review P1)。分支优先级必须
-    // 与 chipWindows 形态选择一致 —— Codex 形态优先: cc + chatgpt/ bridge 会话里
-    // usesCodexQuotaForm 与 isClaudeSubscription 可同时为真 (review P1 第二轮)
+    // 悬念期催刷通道必须与 chip 显示的配额槽一致: bridge 形态催 WHAM; Codex CLI
+    // 形态显示 app-server 槽, WHAM 刷新帮不上它(靠 turn 事件 / 悬念超时兜底),
+    // 不得催 —— WHAM 桶与 CLI 配额可能不同(账号多限额桶, 2026-07-24 实报 bug)
     expect(source).toContain(
-      'if (usesCodexQuotaForm) {\n'
+      'if (isChatgptBridge) {\n'
       + '      requestCodexAccountRefresh();\n'
-      + '    } else if (isClaudeSubscription) {\n'
+      + '    } else if (isClaudeSubscription && !usesCodexQuotaForm) {\n'
       + '      requestClaudeSubscriptionRefresh();\n'
       + '    }',
     );

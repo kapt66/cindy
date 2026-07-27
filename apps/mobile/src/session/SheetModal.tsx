@@ -18,10 +18,12 @@ import {
   Animated,
   KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   StyleSheet,
   useWindowDimensions,
 } from 'react-native';
+import { useTranslation } from 'react-i18next';
 import { BlurBackdrop } from '@/session/BlurBackdrop';
 import { useModalFadeLifecycle } from '@/session/useModalFadeLifecycle';
 import { useThemedStyles, type ThemeColors } from '@/theme';
@@ -53,6 +55,7 @@ export function SheetModal({
   children,
 }: SheetModalProps) {
   const styles = useThemedStyles(makeStyles);
+  const { t } = useTranslation();
   const { height: windowHeight } = useWindowDimensions();
   // 背板淡入 + 面板滑入共用一条 progress;关闭淡出/滑出播完后再卸载 Modal。
   const { mounted, progress, onShowStartIn } = useModalFadeLifecycle(visible, {
@@ -118,14 +121,19 @@ export function SheetModal({
       <Animated.View style={backdropStyle}>
         <BlurBackdrop />
         <Pressable
-          accessibilityLabel="关闭面板"
+          accessibilityLabel={t('shared.closePanel')}
           accessibilityRole="button"
           onPress={onBackdropPress}
           style={styles.backdropPressable}
           testID={backdropTestID}
         />
       </Animated.View>
-      {keyboardAvoiding ? (
+      {/* Android:windowSoftInputMode=adjustResize 已在原生层处理键盘避让,若再套
+          KeyboardAvoidingView(behavior='height')会与之对同一键盘反复调整高度,在 Modal 里
+          触发每帧 relayout 的布局回环 → 整窗持续重绘闪烁(用户 2026-07 报「+」/模型选择弹层
+          键盘开着时一直闪;logcat 实测键盘不开合、但 MainActivity 每帧重绘)。故 Android 直接
+          用 content、不套 KAV;iOS(adjustResize 不适用)仍需 KAV 走 padding 避让。 */}
+      {keyboardAvoiding && Platform.OS !== 'android' ? (
         <KeyboardAvoidingView
           behavior={keyboardAvoidingBehavior}
           keyboardVerticalOffset={0}

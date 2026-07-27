@@ -14,7 +14,13 @@
  * handler body 可脱 Electron 用 IpcHarness + 内存 db 直接 invoke 单测（规则 14）。
  */
 
-import type { AgentKind, CustomProviderConfig, ProviderPreset, ProviderView } from '@cindy/model-providers';
+import {
+  isProviderRequestPath,
+  type AgentKind,
+  type CustomProviderConfig,
+  type ProviderPreset,
+  type ProviderView,
+} from '@cindy/model-providers';
 
 import type { LocalCliDetection } from '../../shared/localCliDetect.js';
 
@@ -26,7 +32,7 @@ import {
   updateCustomProvider,
   validateCustomProviderConfig,
 } from '../maker-host/custom-provider-store.js';
-import type { ProviderTestInput, ProviderTestResult } from '../maker-host/provider-diagnostics.js';
+import type { ProviderProbeSpec, ProviderTestInput, ProviderTestResult } from '../maker-host/provider-diagnostics.js';
 import type {
   ProviderModelsFetchResult,
   ProviderModelsFetchSpec,
@@ -98,12 +104,21 @@ function parseTestInput(input: unknown): ProviderTestInput | null {
       if (!spec.headers || typeof spec.headers !== 'object' || Array.isArray(spec.headers)) return null;
       if (Object.values(spec.headers as Record<string, unknown>).some((v) => typeof v !== 'string')) return null;
     }
+    if (spec.wireProtocol !== undefined) {
+      const allowed = spec.agent === 'claude-code'
+        ? ['anthropic-messages']
+        : ['openai-responses', 'openai-chat'];
+      if (typeof spec.wireProtocol !== 'string' || !allowed.includes(spec.wireProtocol)) return null;
+    }
+    if (spec.requestPath !== undefined && !isProviderRequestPath(spec.requestPath)) return null;
     return {
       kind: 'adhoc',
       spec: {
         agent: spec.agent as AgentKind,
         baseUrl: spec.baseUrl,
         modelId: spec.modelId,
+        wireProtocol: spec.wireProtocol as ProviderProbeSpec['wireProtocol'],
+        requestPath: spec.requestPath as string | undefined,
         apiKey: (spec.apiKey as string | null | undefined) ?? null,
         headers: spec.headers as Record<string, string> | undefined,
       },

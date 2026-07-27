@@ -213,6 +213,23 @@ describe('Scheduler', () => {
     expect(list).toHaveLength(1);
   });
 
+  it('marks skipped child runs as zero-cost', async () => {
+    const childHarness = makeHarness({
+      runnerImpl: async (_schedule, ctx) => {
+        await ctx.createChildRun?.({ status: 'skipped' });
+        return { sessionId: '' };
+      },
+    });
+    const sch = await childHarness.scheduler.create({ ...baseInput });
+
+    await childHarness.scheduler.runNow(sch.id);
+
+    const skippedRun = (await childHarness.scheduler.listRuns(sch.id)).find(
+      (run) => run.status === 'skipped',
+    );
+    expect(skippedRun?.costAttribution).toBe('zero');
+  });
+
   it('create() preserves dialogue workspace target', async () => {
     const sch = await h.scheduler.create({ ...baseInput, workspaceKind: 'dialogue' });
     expect(sch.workspaceKind).toBe('dialogue');
@@ -718,6 +735,40 @@ describe('Scheduler', () => {
     const after = await h.storage.get(sch.id);
     // 没跑过，base = createdAt = 00:00:30。max(00:10:30, 05:10:00) = 05:10:00
     expect(after?.nextFireAt).toBe(Date.UTC(2026, 0, 1, 5, 10, 0));
+  });
+
+  it('resume() with intervalMs cold-starts from now even when the last run is recent', async () => {
+    // Regression: resume is documented as a cold start ("起新一轮 N 倒计时"), matching
+    // update()'s `now + intervalMs`. A schedule that finished 17:22:25 with a 1h
+    // interval, resumed at 17:40:00 (well within that hour), must re-arm at
+    // now + 1h = 18:40:00 — NOT lastFinishedAt + 1h = 18:22:25. The latter is
+    // start()/restart's "respect the original cadence" semantics, which must not
+    // leak into a user-initiated resume.
+    h.storage.schedules.set('hourly', {
+      id: 'hourly',
+      name: 'every hour',
+      prompt: 'p',
+      kind: 'cron',
+      cronExpr: '0 * * * *',
+      intervalMs: 60 * 60_000,
+      timezone: 'UTC',
+      recurring: true,
+      manual: false,
+      agentKind: 'claude-code',
+      workspaceKind: 'project',
+      useWorktree: false,
+      notify: { desktop: false, feishu: false },
+      status: 'paused',
+      createdAt: Date.UTC(2026, 0, 1, 16, 0, 0),
+      updatedAt: 0,
+      lastFiredAt: Date.UTC(2026, 0, 1, 17, 22, 18),
+      lastFinishedAt: Date.UTC(2026, 0, 1, 17, 22, 25),
+      nextFireAt: Date.UTC(2026, 0, 1, 18, 22, 25),
+    });
+    h.clock.setTo(Date.UTC(2026, 0, 1, 17, 40, 0));
+    await h.scheduler.resume('hourly');
+    const after = await h.storage.get('hourly');
+    expect(after?.nextFireAt).toBe(Date.UTC(2026, 0, 1, 18, 40, 0));
   });
 
   // ── update() 在用户编辑时是否立刻取消 pending fire ──

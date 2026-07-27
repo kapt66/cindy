@@ -24,6 +24,8 @@ export interface OrcaEnableTeamParams {
   /** Meka-only target hints. The creation service revalidates both in Main. */
   workingDir?: string;
   remoteHostId?: string;
+  /** 显式选定的模型来源;语义见 OrcaWorkerCreateParams.providerId。 */
+  providerId?: string | null;
   delegateTask?: string;
 }
 
@@ -128,6 +130,7 @@ function normalizeEnableParams(params: OrcaEnableTeamParams): OrcaWorkerCreatePa
     fast: params.fast,
     workingDir: params.workingDir?.trim() || undefined,
     remoteHostId: params.remoteHostId?.trim() || undefined,
+    providerId: params.providerId,
     initialTask: delegateTask,
   };
 }

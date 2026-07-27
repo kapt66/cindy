@@ -1,5 +1,6 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_MOBILE_VOICE_LITELLM_BASE_URL } from '@/config/env';
+import { i18n } from '@/i18n';
 
 const GW_PROXY = `${DEFAULT_MOBILE_VOICE_LITELLM_BASE_URL}/proxy`;
 const GW_PROXY_WSS = GW_PROXY.replace(/^https/, 'wss');
@@ -11,6 +12,11 @@ import {
   buildSessionUpdateMessage,
   createMobileAsrProvider,
 } from '@/session/mobileRealtimeAsrProvider';
+
+// 文案已 i18n 化;固定 zh-CN 让字面量断言与语言环境解耦(全局 mock 默认 en-US)。
+beforeAll(async () => {
+  await i18n.changeLanguage('zh-CN');
+});
 
 class FakeSocket {
   static instances: FakeSocket[] = [];
@@ -874,7 +880,7 @@ describe('mobileRealtimeAsrProvider', () => {
       reason: 'Received bad response code from server: 403.',
     });
 
-    await expect(started).rejects.toThrow('Cindy 语音会话已失效或没有权限（WebSocket 403）。请确认登录状态后重试。');
+    await expect(started).rejects.toThrow('Cindy Meka 语音会话已失效或没有权限（WebSocket 403）。请确认登录状态后重试。');
   });
 
   it('redacts the synced voice key from Volcengine websocket errors', async () => {

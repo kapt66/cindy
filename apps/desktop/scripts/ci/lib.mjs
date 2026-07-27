@@ -70,11 +70,11 @@ export const RELEASE_DIR = path.join(DESKTOP_ROOT, 'release');
 export const PACKAGED_APP_NAME = 'cindy-meka';
 
 /**
- * 按区域取打包产物基名(2026-07-18 同机双装:cn 'Cindy' / global 'CindyGlobal',
- * exe / .app / 安装目录 / 快捷方式全部跟随)。镜像
- * brandIdentity.ts 的 executableNameByRegion,一致性同样由
+ * 按区域取打包产物基名(exe / .app / 安装目录 / 快捷方式全部跟随)。
+ * Cindy Meka 的 cn / global / dev 产物名彼此独立。镜像
+ * brandIdentity.ts 的 executableNameByRegion,一致性由
  * scripts/__tests__/brand-identity-sync.test.mjs 断言兜底。
- * PACKAGED_APP_NAME 保留为 cn 基线值,供未传 region 的 legacy 脚本使用。
+ * PACKAGED_APP_NAME 保留为正式版共同基线值,供未传 region 的 legacy 脚本使用。
  */
 export const PACKAGED_APP_NAME_BY_REGION = Object.freeze({
   cn: 'cindy-meka',
@@ -82,7 +82,7 @@ export const PACKAGED_APP_NAME_BY_REGION = Object.freeze({
   dev: 'cindy-meka-dev',
 });
 
-export function packagedAppName(region = 'cn') {
+export function packagedAppName(region = 'global') {
   const name = PACKAGED_APP_NAME_BY_REGION[region];
   if (!name) throw new Error(`unknown region: ${region}`);
   return name;
@@ -100,7 +100,7 @@ export const RELEASE_ARTIFACT_BASENAME_BY_REGION = Object.freeze({
   dev: 'cindy-meka-dev',
 });
 
-export function releaseArtifactBasename(region = 'cn') {
+export function releaseArtifactBasename(region = 'global') {
   const name = RELEASE_ARTIFACT_BASENAME_BY_REGION[region];
   if (!name) throw new Error(`unknown region: ${region}`);
   return name;
@@ -172,7 +172,8 @@ export function exec(cmd, opts = {}) {
 // ── package.json 版本号写入 (退出时自动恢复) ────────────────────────────────
 //
 // electron-packager 会把 package.json 拷到 asar 内部，运行时 app.getVersion()
-// 优先读那里。占位符 0.0.0-dev 不改的话热更新版本比较全部失真。
+// 优先读那里。源码里的 0.0.0 是版本无关构建哨兵；正式打包必须在 forge
+// 运行前临时写入真实版本，否则发布包会被 updateService 当成本地包而跳过更新。
 // 任何 exit / SIGINT / SIGTERM 都恢复，保证 git 工作区干净。
 
 const PACKAGE_JSON_PATH = path.join(DESKTOP_ROOT, 'package.json');
@@ -201,7 +202,7 @@ function restorePackageJson() {
 // no-cache 不一定被 CDN 尊重),客户端 manifestService 与 promote-canary-* 都带了,
 // 唯独发布脚本此前漏了——2026-07-03 事故的直接诱因就是发版时读到陈旧基线,误判
 // "版本变了" 而对已存在的版本化路径做了字节不同的覆盖上传。
-export async function fetchExistingManifestIfAvailable(platformKey, region = 'cn') {
+export async function fetchExistingManifestIfAvailable(platformKey, region = 'global') {
   const cdnBase = resolveReleaseCdnBaseUrl(region);
   const canaryUrl = `${cdnBase}/manifest-${platformKey}-canary.json?t=${Date.now()}`;
   const canaryRes = await fetch(canaryUrl);
@@ -280,7 +281,14 @@ export function createLinuxFirstReleaseManifest(version, baseManifest) {
   return manifest;
 }
 
-export const LINUX_PLATFORM_KEY = 'linux-x64';
+/**
+ * 宿主 Linux 的 platform key。linux 不做交叉打包(原生模块与 vec0.so 都是
+ * per-arch 预编译件),所以缺省校验对象就是宿主自身;写死 linux-x64 会让
+ * aarch64 机器去查一份根本不进包的资产。编排层仍应显式传目标 arch。
+ */
+export function linuxHostPlatformKey() {
+  return `linux-${process.arch}`;
+}
 const LFS_POINTER_PREFIX = 'version https://git-lfs.github.com/spec/v1';
 const MIN_LINUX_RUNTIME_ASSET_SIZE_BYTES = 1024;
 
@@ -295,7 +303,7 @@ function readFilePrefix(filePath, length) {
   }
 }
 
-export function linuxRuntimeAssetPaths(platformKey = LINUX_PLATFORM_KEY) {
+export function linuxRuntimeAssetPaths(platformKey = linuxHostPlatformKey()) {
   return [
     path.join(DESKTOP_ROOT, 'native', 'sqlite-vec', platformKey, 'vec0.so'),
   ];
@@ -320,7 +328,7 @@ export function collectLinuxRuntimeAssetProblems(assetPaths = linuxRuntimeAssetP
 
 export async function ensureLinuxRuntimeAssets({
   label = 'Linux runtime assets',
-  platformKey = LINUX_PLATFORM_KEY,
+  platformKey = linuxHostPlatformKey(),
 } = {}) {
   // Claude/Codex 不打进 Linux 安装包，packaged runtime 会复用系统 CLI、迁移
   // 旧缓存，或从官方上游下载带 SHA-256 校验的 pin 版本。Ripgrep 仍由 forge
@@ -554,11 +562,12 @@ export function adhocSignMacApp(appPath, helperEntitlementsPath, mainEntitlement
   const resourceToolsDir = path.join(appPath, 'Contents', 'Resources', 'tools');
   if (fs.existsSync(resourceToolsDir)) {
     exec(`find "${resourceToolsDir}" -type f | while IFS= read -r f; do if file "$f" | grep -qE "Mach-O"; then ${signBase} "$f"; fi; done`);
+    exec(`find "${resourceToolsDir}" -depth -type d -name "*.app" -exec ${signBase} "{}" \\;`);
   }
 
   exec(`find "${frameworksDir}" -type f | while IFS= read -r f; do if file "$f" | grep -qE "Mach-O"; then ${signBase} "$f"; fi; done`);
-  exec(`find "${frameworksDir}" -name "*.app" -exec ${signBase} --entitlements "${helperEntitlementsPath}" {} \\;`);
-  exec(`find "${frameworksDir}" -maxdepth 1 -name "*.framework" -exec ${signBase} {} \\;`);
+  exec(`find "${frameworksDir}" -name "*.app" -exec ${signBase} --entitlements "${helperEntitlementsPath}" "{}" \\;`);
+  exec(`find "${frameworksDir}" -maxdepth 1 -name "*.framework" -exec ${signBase} "{}" \\;`);
   exec(`${signBase} --entitlements "${mainEntitlementsPath}" "${appPath}"`);
   exec(`/usr/bin/codesign --verify --deep --strict "${appPath}"`);
   verifyMacContactsPermissions(appPath);
@@ -593,6 +602,8 @@ export function signMacAppWithIdentity(appPath, helperEntitlementsPath, mainEnti
   if (fs.existsSync(resourceToolsDir)) {
     console.log('    Signing bundled CLI tools in Contents/Resources/tools/...');
     exec(`find "${resourceToolsDir}" -type f | while IFS= read -r f; do if file "$f" | grep -qE "Mach-O"; then ${signBase} "$f"; fi; done`);
+    console.log('    Signing bundled resource app bundles...');
+    exec(`find "${resourceToolsDir}" -depth -type d -name "*.app" -exec ${signBase} "{}" \\;`);
   }
 
   // 1. 全部 Mach-O(库、chrome_crashpad_handler、ShipIt 等)
@@ -601,11 +612,11 @@ export function signMacAppWithIdentity(appPath, helperEntitlementsPath, mainEnti
 
   // 2. Helper apps(V8 JIT entitlements)
   console.log('    Signing helper apps...');
-  exec(`find "${frameworksDir}" -name "*.app" -exec ${signBase} --entitlements "${helperEntitlementsPath}" {} \\;`);
+  exec(`find "${frameworksDir}" -name "*.app" -exec ${signBase} --entitlements "${helperEntitlementsPath}" "{}" \\;`);
 
   // 3. Framework bundles
   console.log('    Signing frameworks...');
-  exec(`find "${frameworksDir}" -maxdepth 1 -name "*.framework" -exec ${signBase} {} \\;`);
+  exec(`find "${frameworksDir}" -maxdepth 1 -name "*.framework" -exec ${signBase} "{}" \\;`);
 
   // 4. 主 app bundle
   console.log('    Signing main app...');
@@ -627,19 +638,44 @@ export function notarizeMacApp(appPath, identity) {
   exec(`/usr/bin/ditto -c -k --keepParent "${appPath}" "${zipPath}"`);
 
   console.log('    Submitting to Apple notarization service (this may take a few minutes)...');
-  // 密码不进 argv:notarytool 支持 --password @env:VAR,从子进程 env 读取——
-  // 公证等待期间 ps 里只看得到 env 名,不再暴露 app-specific password;
-  // 日志回显的命令也天然无密码,无需打码。
-  const submitCmd =
-    `/usr/bin/xcrun notarytool submit "${zipPath}" ` +
-    `--apple-id "${identity.appleId}" --password "@env:CINDY_NOTARY_PASSWORD" ` +
-    `--team-id "${identity.teamId}" --wait`;
-  console.log(`    $ ${submitCmd}`);
-  execSync(submitCmd, {
+  // 密码作为 --password 值直接传给 notarytool——不再用 --password @env:VAR 间接:
+  // 旧版 notarytool 不认 @env: 前缀,会把字面量 "@env:..." 当密码本身发出去而 401。
+  // 走 spawnSync 参数数组:避免 shell 参与(无插值/无注入面),且日志回显时对密码
+  // 打码(credentials 规则:输出不得含凭证明文)。
+  // 注意暴露面:密码仍作为 xcrun 的明文 argv 传入,--wait 期间(最长 30min)同机同
+  // 用户进程经 ps/proc 仍可读到——构建机为受控单租户环境,取此权衡;若需彻底消除
+  // argv 暴露,后续可改用 notarytool 的 --keychain-profile(@keychain: 凭据)。
+  const submitArgs = [
+    'notarytool',
+    'submit',
+    zipPath,
+    '--apple-id',
+    identity.appleId,
+    '--password',
+    identity.applePassword,
+    '--team-id',
+    identity.teamId,
+    '--wait',
+  ];
+  console.log(
+    `    $ /usr/bin/xcrun notarytool submit "${zipPath}" ` +
+      `--apple-id "${identity.appleId}" --password "****" --team-id "${identity.teamId}" --wait`,
+  );
+  const submitResult = spawnSync('/usr/bin/xcrun', submitArgs, {
     stdio: 'inherit',
     timeout: 1800000, // 30 min
-    env: { ...process.env, CINDY_NOTARY_PASSWORD: identity.applePassword },
   });
+  if (submitResult.error) {
+    throw new Error(`notarytool submit 无法执行:${submitResult.error.message}`);
+  }
+  if (submitResult.signal) {
+    // 被信号终止(如 30min 超时 kill → SIGTERM):status 为 null,单看 exit 会显示
+    // "exit null",这里显式报出 signal 便于定位。
+    throw new Error(`notarytool submit 被信号 ${submitResult.signal} 终止(可能公证超时);公证未通过。`);
+  }
+  if (submitResult.status !== 0) {
+    throw new Error(`notarytool submit 失败(exit ${submitResult.status});公证未通过。`);
+  }
 
   fs.unlinkSync(zipPath);
 
@@ -712,7 +748,7 @@ export function createMacDMG(appPath, dmgPath, volumeName, identity) {
     throw new Error(`DMG background missing: ${backgroundPath}`);
   }
 
-  const appName = path.basename(appPath); // Cindy.app / CindyGlobal.app(global 线)
+  const appName = path.basename(appPath); // Cindy.app(cn/global)/ CindyDev.app(dev 线)
   // JSON.stringify 产出合法 Python 字符串字面量(转义引号/反斜杠语义一致)
   const py = (s) => JSON.stringify(s);
   const settings = [
@@ -750,7 +786,7 @@ export function createMacDMG(appPath, dmgPath, volumeName, identity) {
 
 // ── Smoke test (启动 packaged app) ──────────────────────────────────────────
 
-export function runSmokeTest(platform, arch, region = 'cn') {
+export function runSmokeTest(platform, arch, region = 'global') {
   console.log('==> Running packaged smoke test...');
   const result = spawnSync(
     'node',
@@ -758,7 +794,7 @@ export function runSmokeTest(platform, arch, region = 'cn') {
       'scripts/smoke-packaged.mjs',
       `--platform=${platform}`,
       `--arch=${arch}`,
-      // 产物基名按区域派生(global 的 out 目录 / exe / .app 是 CindyGlobal)。
+      // 产物基名按区域派生(cn/global 'Cindy' / dev 'CindyDev')。
       `--app-name=${packagedAppName(region)}`,
     ],
     { stdio: 'inherit', cwd: DESKTOP_ROOT, shell: false },
