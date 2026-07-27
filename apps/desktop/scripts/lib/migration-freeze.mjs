@@ -215,7 +215,40 @@ export function findFrozenMigrationChanges(repoRoot, ref, authoritativeRuntimePa
         runtimeSourceCommit: currentBaseline.runtimeSourceCommit,
         runtimeScripts: currentBaseline.runtimeScripts,
       };
-      if (JSON.stringify(frozenRuntimeBaseline) !== JSON.stringify(currentRuntimeBaseline)) {
+      const sameVersion =
+        frozenRuntimeBaseline.version === currentRuntimeBaseline.version;
+      const sameRuntimeScripts =
+        JSON.stringify(frozenRuntimeBaseline.runtimeScripts) ===
+        JSON.stringify(currentRuntimeBaseline.runtimeScripts);
+      let frozenAnchorIsReachable = true;
+      try {
+        resolveCommit(repoRoot, frozenRuntimeBaseline.runtimeSourceCommit);
+      } catch {
+        frozenAnchorIsReachable = false;
+      }
+      let replacementAnchorIsVerified = false;
+      if (!frozenAnchorIsReachable) {
+        try {
+          // This validates the replacement anchor's complete runtime script set
+          // and every declared hash. A paired script/hash edit therefore remains
+          // a normal modified-runtime-baseline violation.
+          const verifiedCurrentBaseline = readMigrationBaseline(repoRoot);
+          replacementAnchorIsVerified =
+            verifiedCurrentBaseline.runtimeSourceCommit ===
+            currentRuntimeBaseline.runtimeSourceCommit;
+        } catch {
+          replacementAnchorIsVerified = false;
+        }
+      }
+      const isEquivalentUnreachableAnchorRepair =
+        sameVersion &&
+        sameRuntimeScripts &&
+        !frozenAnchorIsReachable &&
+        replacementAnchorIsVerified;
+      if (
+        JSON.stringify(frozenRuntimeBaseline) !== JSON.stringify(currentRuntimeBaseline) &&
+        !isEquivalentUnreachableAnchorRepair
+      ) {
         violations.push({ path: BASELINE_GIT_PATH, kind: 'modified-runtime-baseline' });
       }
     }

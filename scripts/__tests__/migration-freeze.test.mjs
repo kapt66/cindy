@@ -147,6 +147,37 @@ test('fixed baseline rejects paired runtime script and hash tampering', () => {
   }
 });
 
+test('an unreachable history-rewrite anchor may be repaired to an equivalent verified tree', () => {
+  const fixture = createFixture();
+  const baselinePath = path.join(
+    fixture.repo,
+    'apps',
+    'desktop',
+    'drizzle',
+    'migration-baseline.json',
+  );
+  try {
+    const canonical = JSON.parse(fs.readFileSync(baselinePath, 'utf-8'));
+    const unreachable = { ...canonical, runtimeSourceCommit: 'f'.repeat(40) };
+    fs.writeFileSync(baselinePath, `${JSON.stringify(unreachable, null, 2)}\n`);
+    git(fixture.repo, 'add', baselinePath);
+    git(fixture.repo, 'commit', '-m', 'simulate rewritten historical anchor');
+    const rewrittenMain = git(fixture.repo, 'rev-parse', 'HEAD');
+
+    fs.writeFileSync(baselinePath, `${JSON.stringify(canonical, null, 2)}\n`);
+    assert.deepEqual(
+      findFrozenMigrationChanges(
+        fixture.repo,
+        rewrittenMain,
+        new Set(['apps/desktop/drizzle/scripts/0000_init.ts']),
+      ).violations,
+      [],
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test('new repository main baseline keeps freezing committed migrations', () => {
   const fixture = createFixture();
   try {

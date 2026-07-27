@@ -16,16 +16,21 @@ function git(repoRoot, args, { allowFailure = false } = {}) {
 }
 
 export function resolveMigrationBaseRef(repoRoot) {
-  const baseRef = 'origin/main';
-  if (
-    git(repoRoot, ['rev-parse', '--verify', '--quiet', `${baseRef}^{commit}`], {
-      allowFailure: true,
-    }).status === 0
-  ) {
-    return baseRef;
+  // Private Cindy Meka keeps its canonical release history on meka/main while
+  // origin/main remains the upstream Cindy synchronization branch. Prefer the
+  // product branch when present; upstream checkouts do not have this ref and
+  // retain the original origin/main behavior.
+  for (const baseRef of ['meka/main', 'origin/main']) {
+    if (
+      git(repoRoot, ['rev-parse', '--verify', '--quiet', `${baseRef}^{commit}`], {
+        allowFailure: true,
+      }).status === 0
+    ) {
+      return baseRef;
+    }
   }
   throw new Error(
-    'cannot resolve origin/main; fetch origin before starting shared desktop dev',
+    'cannot resolve meka/main or origin/main; fetch the canonical branch before starting shared desktop dev',
   );
 }
 
@@ -62,7 +67,8 @@ export function usesIsolatedUserData(argv) {
 }
 
 /**
- * Shared userData may only execute migrations that are already canonical on origin/main.
+ * Shared userData may only execute migrations that are already canonical on the
+ * product branch (meka/main in Cindy Meka, origin/main upstream).
  * Run this before the restart pipeline stops any existing Cindy instance.
  */
 export function assertSharedDevMigrationPolicy(repoRoot, argv) {

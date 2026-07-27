@@ -97,6 +97,40 @@ test('migration becomes shared-safe only after it is canonical on origin/main', 
   }
 });
 
+test('meka/main is the canonical migration baseline when the product branch exists', () => {
+  const fixture = createFixture();
+  try {
+    git(fixture.repo, 'switch', '-c', 'meka/main');
+    const migrationPath = path.join(fixture.drizzleDir, '0001_meka.sql');
+    fs.writeFileSync(migrationPath, 'SELECT 1;\n');
+
+    assert.throws(
+      () => assertSharedDevMigrationPolicy(fixture.repo, []),
+      /working tree: \?\? apps\/desktop\/drizzle\/0001_meka\.sql/,
+    );
+
+    git(fixture.repo, 'add', '.');
+    git(fixture.repo, 'commit', '-m', 'canonical meka migration');
+    assert.deepEqual(findUnmergedMigrationArtifacts(fixture.repo), {
+      baseRef: 'meka/main',
+      committed: [],
+      workingTree: [],
+    });
+    assert.doesNotThrow(() => assertSharedDevMigrationPolicy(fixture.repo, []));
+
+    git(fixture.repo, 'switch', '-c', 'feature-after-meka');
+    fs.writeFileSync(path.join(fixture.drizzleDir, '0002_feature.sql'), 'SELECT 2;\n');
+    git(fixture.repo, 'add', '.');
+    git(fixture.repo, 'commit', '-m', 'feature migration');
+    assert.throws(
+      () => assertSharedDevMigrationPolicy(fixture.repo, []),
+      /committed: apps\/desktop\/drizzle\/0002_feature\.sql/,
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test('stale origin/HEAD cannot replace origin/main as the migration baseline', () => {
   const fixture = createFixture();
   try {

@@ -20,6 +20,9 @@ let repoPath: string;
 async function initRepo() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'xdt-codex-rewind-'));
   for (const args of [['init'], ['config', 'user.email', 'test@xdt.local'], ['config', 'user.name', 'XDT Test'], ['config', 'commit.gpgsign', 'false'], ['config', 'core.autocrlf', 'false']]) await gitExec(args, dir);
+  const isolatedExcludesFile = path.join(dir, '.git', 'test-global-excludes');
+  await fs.writeFile(isolatedExcludesFile, '', 'utf8');
+  await gitExec(['config', 'core.excludesFile', isolatedExcludesFile], dir);
   return dir;
 }
 

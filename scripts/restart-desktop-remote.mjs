@@ -22,7 +22,7 @@ const forceKillLabel = process.platform === 'win32' ? 'taskkill /F /T' : 'kill -
  * 主进程侧(devCliFlags.ts)以 app.getPath('userData') 为基座派生同名目录,两边
  * 必须落在同一路径,否则 restart 脚本创建的沙箱目录与实际生效目录分家。
  */
-export const BRAND_USER_DATA_DIR_NAME = 'Cindy';
+export const BRAND_USER_DATA_DIR_NAME = 'cindy-meka';
 
 // 桌面端 .env 默认值。2026-07 端点清单重构后 .env 不再承载任何端点 URL
 // (运行期端点全部来自清单:remote restart 按 region 读 config/endpoint*.json,
