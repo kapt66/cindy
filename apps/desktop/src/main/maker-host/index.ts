@@ -40,7 +40,12 @@ import {
 import { markOrcaMcpHydratedIfNeeded } from '../maker-ipc/orcaMcpHydrationCache.js';
 import { preparePersistedOrcaSessionStart } from '../maker-ipc/orcaSessionStartOptions.js';
 import type { MakerSessionCreateOpts } from '../maker-ipc/sessionRequest.js';
-import { dispatchInterAgentMessage, isSessionInTurn, wireSessionToIpc } from '../maker-ipc/register.js';
+import {
+  authorizeMekaHighRiskCallViaDesktop,
+  dispatchInterAgentMessage,
+  isSessionInTurn,
+  wireSessionToIpc,
+} from '../maker-ipc/register.js';
 import { MAKER_PUSH } from '../maker-ipc/channels.js';
 import { tapWindowBroadcast } from '../device-link/broadcast-tap.js';
 import { remoteInvoke } from '../device-link/index.js';
@@ -61,6 +66,8 @@ import { resolveSessionCcDebugFile } from '../logger.js';
 import { createSshDaemonTransport } from './codex-remote-transport.js';
 import { getRemoteSshPool } from '../remote-ssh/index.js';
 import { openCcManagerSession } from './cc-manager-client.js';
+import { openMcprTunnel } from './mcpr-tunnel.js';
+import { parseMcprRemoteHostId } from '../../shared/meka-router.js';
 import { getRemoteClaudeBinaryPath } from '../remote-ssh/cc-manager-install.js';
 import { createReadImageHook } from './claude-hooks/read-image-hook.js';
 import { deriveAvailableModels, refreshCatalogDerivedModels } from './catalog-to-descriptors.js';
@@ -94,6 +101,11 @@ import {
   refreshCustomMcpProviders,
   resetCustomMcpRegistry,
 } from '../mcp-integrations/custom-mcp-registry.js';
+import {
+  registerMekaRuntimeMcpArrays,
+  resetMekaRuntimeMcpRegistryForTests,
+  setMekaRuntimeHighRiskAuthorizer,
+} from '../mcp-integrations/meka-runtime-mcp.js';
 import { cleanupComputerDriverSession } from '../mcp-integrations/computer.js';
 import { createPluginRegistry, resetPluginRegistry } from './plugins/index.js';
 import {
@@ -374,7 +386,29 @@ export function getMaker(): Maker {
       // RemoteQuery 实现 SDK Query interface 的子集 (ClaudeCodeAgent 实际只调
       // for-await / interrupt / setModel / setPermissionMode / applyFlagSettings),
       // factory 返回时直接 `as unknown as Query` cast 即可。
-      remoteCcQueryFactory: async ({ remoteHostId, sessionId, startParams, onApprovalRequest }) => {
+      remoteCcQueryFactory: async ({
+        remoteHostId,
+        sessionId,
+        startParams,
+        inProcessMcpServers,
+        onApprovalRequest,
+      }) => {
+        const mcprInstanceId = parseMcprRemoteHostId(remoteHostId);
+        if (mcprInstanceId) {
+          const stream = await openMcprTunnel(remoteHostId);
+          const { remoteQuery, dispose, detach } = await openCcManagerSession({
+            stream,
+            transportId: remoteHostId,
+            sessionId,
+            startParams: startParams as unknown as Parameters<typeof openCcManagerSession>[0]['startParams'],
+            onApprovalRequest: onApprovalRequest as Parameters<typeof openCcManagerSession>[0]['onApprovalRequest'],
+            ...(inProcessMcpServers ? { inProcessMcpServers } : {}),
+          });
+          return Object.assign(remoteQuery, {
+            close: dispose,
+            detach,
+          }) as unknown as RemoteCcQuery;
+        }
         const host = getRemoteSshPool().get(remoteHostId);
         if (host?.getStatus() !== 'ready') {
           throw new Error(`remote ssh host not ready: ${remoteHostId}`);
@@ -390,6 +424,7 @@ export function getMaker(): Maker {
           startParams: startParams as unknown as Parameters<typeof openCcManagerSession>[0]['startParams'],
           claudeBinaryPath,
           onApprovalRequest: onApprovalRequest as Parameters<typeof openCcManagerSession>[0]['onApprovalRequest'],
+          ...(inProcessMcpServers ? { inProcessMcpServers } : {}),
         });
 
         // 把 ssh transport disposer 串进 remoteQuery.close — maker-core 不知道
@@ -562,6 +597,8 @@ export function getMaker(): Maker {
     // localDb onReady 可能在 Maker 构造前就已触发（此时 registry 无数组，refresh 空跑）；
     // 在此补一次 refresh，若 DB 尚未就绪则 refreshCustomMcpProviders 内部 catch 后静默跳过。
     // 此后每次 CRUD（mcpHandlers.afterChange）也会 refresh。
+    registerMekaRuntimeMcpArrays(claudeMcpProviders, codexMcpProviders);
+    setMekaRuntimeHighRiskAuthorizer(authorizeMekaHighRiskCallViaDesktop);
     registerCustomMcpArrays(claudeMcpProviders, codexMcpProviders);
     _initialCustomMcpRefresh = refreshCustomMcpProviders();
 
@@ -742,6 +779,7 @@ export function resetMaker(): void {
   _initialCustomMcpRefresh = undefined;
   resetPluginRegistry();
   resetCustomMcpRegistry();
+  resetMekaRuntimeMcpRegistryForTests();
 }
 
 /**

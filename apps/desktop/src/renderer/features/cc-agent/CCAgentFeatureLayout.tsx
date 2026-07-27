@@ -96,7 +96,14 @@ function useTrackLastView(): void {
     // session,落它会污染 lastChatView。
     const sessionMatch = matchPath('/cc-agent/:sessionId', path);
     const sid = sessionMatch?.params.sessionId;
-    if (sid && sid !== 'new' && sid !== 'scheduled' && sid !== 'files' && sid !== 'boot') {
+    if (
+      sid
+      && sid !== 'new'
+      && sid !== 'meka'
+      && sid !== 'scheduled'
+      && sid !== 'files'
+      && sid !== 'boot'
+    ) {
       saveLastChatView({ kind: 'session', sessionId: sid });
     }
   }, [location.pathname]);

@@ -101,6 +101,8 @@ describe('Dialogue sidebar section', () => {
     // workingDir。workingDir 为空时直接创建 dialogue,不再强制弹项目 picker。
     expect(newMakerDraftRouteSource).not.toContain('selectProjectRequired');
     expect(newMakerDraftRouteSource).not.toContain('!selectedWorkingDir');
-    expect(newMakerDraftRouteSource).toContain("workspaceKind: workingDir ? 'project' : 'dialogue'");
+    expect(newMakerDraftRouteSource).toContain(
+      "workspaceKind: isMekaDraft ? 'meka' : workingDir ? 'project' : 'dialogue'",
+    );
   });
 });

@@ -157,7 +157,9 @@ describe('Shared create project picker', () => {
     expect(newMakerDraftRouteSource).toContain(
       'const hasAnyRemoteTarget = useHasAnyRemoteTarget()',
     );
-    expect(newMakerDraftRouteSource).toContain('onAddRemoteProject={hasAnyRemoteTarget ?');
+    expect(newMakerDraftRouteSource).toMatch(
+      /onAddRemoteProject=\{\s*hasAnyRemoteTarget \?/,
+    );
     // 弹窗统一两类来源:SSH ready hosts + device-link 可控设备(optgroup 区分)。
     expect(addRemoteProjectDialogSource).toContain("res.hosts.filter((h) => h.status === 'ready')");
     expect(addRemoteProjectDialogSource).toContain('useControllableDevices()');

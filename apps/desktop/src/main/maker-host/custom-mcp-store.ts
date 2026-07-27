@@ -2,7 +2,7 @@
  * custom-mcp-store —— 用户自定义 MCP 服务器**配置**的 localDb CRUD（不含 token）。
  *
  * 存储：localDb `custom_mcp_servers` 表。DB 文件按 userId 切片
- * （`<userData>/xdt-maker-<userId>.db`，换账号 closeDb 重开），故本表天然账号隔离、无 owner 列
+ * （`<userData>/<dbFilePrefix>-<userId>.db`，换账号 closeDb 重开），故本表天然账号隔离、无 owner 列
  * （与 `custom_providers` / `sessions` 一致）。bearer token 不在此——单独走 safeStorage
  * （`mcp_token_<id>`，见 shared/providerSecrets 的 customMcpSecretStorageKey）。
  *

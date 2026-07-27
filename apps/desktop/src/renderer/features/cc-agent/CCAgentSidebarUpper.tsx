@@ -20,7 +20,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, use
 import type { ReactNode } from 'react';
 import type { SchedulerEvent } from '@cindy/maker-scheduler';
 import { createPortal } from 'react-dom';
-import { Archive, ChevronRight, CirclePlus, Folder, Plug, Timer, Trash2, X } from 'lucide-react';
+import { Archive, BriefcaseBusiness, ChevronRight, CirclePlus, Folder, Plug, Timer, Trash2, X } from 'lucide-react';
 import { useNavigate, useMatch } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
@@ -43,7 +43,11 @@ import {
 import { Tooltip } from '@/components/ui/tooltip';
 import * as sessionService from '@/lib/sessionService';
 import { makerChatStore } from '@/lib/makerChatStore';
-import { clearDraft as clearComposerDraft } from '@/lib/composerDraftStore';
+import {
+  clearDraft as clearComposerDraft,
+  plainTextToTiptapDoc,
+  saveDraft as saveComposerDraft,
+} from '@/lib/composerDraftStore';
 import { cleanupSessionLayoutPrefs } from '@/lib/sessionLayoutPrefs';
 import {
   countDirtyWorktreesForRemoval,
@@ -103,6 +107,10 @@ import {
   compareDialogueSessions,
   type DialogueSortBy,
 } from './sidebar/sections/DialogueSection';
+import { MekaAssistantSection } from './sidebar/sections/MekaAssistantSection';
+import { MekaFormalIssueModal, type PreparedMekaFormalDraft } from './MekaFormalIssueModal';
+import { NEW_MAKER_DRAFT_KEY } from './newMakerDraftKeys';
+import type { MekaProject } from '../../../shared/meka-projects';
 import { ProjectsSection } from './sidebar/sections/ProjectsSection';
 import { DateGroupedSessionsSection } from './sidebar/sections/DateGroupedSessionsSection';
 import { isAutomationGeneratedSession } from './lib/scheduledSessionGrouping';
@@ -143,10 +151,7 @@ import {
 import { getSessionListCollapseView } from './lib/sessionListCollapse';
 import { hasSessionSelectionModifier, type SessionClickModifiers } from './sidebar/SessionItem';
 import type { SessionMoveTarget } from './sidebar/sessionMoveTarget';
-import {
-  normalizeManualPinnedOrder,
-  mergeVisibleReorder,
-} from './hooks/helpers/sidebarFilterCore';
+import { normalizeManualPinnedOrder, mergeVisibleReorder } from './hooks/helpers/sidebarFilterCore';
 import { createLogger } from '@/lib/logger';
 import { useProjectPickerOptions } from '@/hooks/useProjectPickerOptions';
 import { recentWorkdirsStore } from '@/lib/recentWorkdirsStore';
@@ -175,7 +180,7 @@ const log = createLogger('CCAgentSidebarUpper');
 // 三条日志(click / mount / first-paint)按 sid + 时间戳对齐即得端到端耗时。
 const perfLog = createLogger('perf/session-switch');
 
-function makeNewMakerRouteState(workspacePrompt: 'generic' | 'dialogue') {
+function makeNewMakerRouteState(workspacePrompt: 'generic' | 'dialogue' | 'meka') {
   return { workspacePrompt };
 }
 
@@ -553,6 +558,7 @@ function ExpandedView({
   const { sessions, refreshSessions, patchLocal, effectiveIncludeArchived } = sessionsHook;
   const refreshWorktrees = useRefreshWorktrees();
   const projectPickerOptions = useProjectPickerOptions();
+  const [formalMekaProject, setFormalMekaProject] = useState<MekaProject | null>(null);
 
   // 自动化任务本身仍在顶部 Automations 入口管理；自动化任务 fire 后创建出的
   // session 是普通会话,按 project/dialogue 与普通排序/红点逻辑进入 sidebar。
@@ -897,8 +903,16 @@ function ExpandedView({
   }, [sidebarSessions, filter.lastActivity]);
 
   /* ---- Grouping & collapse ---- */
-  const allGroups = useProjectGroups(sidebarSessions, projectAliases.aliases);
-  const groups = useProjectGroups(activityFilteredSessions, projectAliases.aliases);
+  const nonMekaSidebarSessions = useMemo(
+    () => sidebarSessions.filter((session) => session.workspaceKind !== 'meka'),
+    [sidebarSessions],
+  );
+  const nonMekaActivitySessions = useMemo(
+    () => activityFilteredSessions.filter((session) => session.workspaceKind !== 'meka'),
+    [activityFilteredSessions],
+  );
+  const allGroups = useProjectGroups(nonMekaSidebarSessions, projectAliases.aliases);
+  const groups = useProjectGroups(nonMekaActivitySessions, projectAliases.aliases);
   const activeWorkingDirs = useMemo(
     () => allGroups.projects.map((p) => p.projectKey),
     [allGroups.projects],
@@ -910,7 +924,10 @@ function ExpandedView({
   // 并非不存在;codex)。collapse 仍用机器过滤后的 activeWorkingDirs(collapseAll / isAllCollapsed
   // 针对当前可见项目),渲染也仍走机器过滤后的 allGroups / groups。
   const unfilteredProjectSessions = useMemo(
-    () => [...sessions, ...remoteProjectSessions].filter(passesOrcaAndStatus),
+    () =>
+      [...sessions, ...remoteProjectSessions].filter(
+        (session) => session.workspaceKind !== 'meka' && passesOrcaAndStatus(session),
+      ),
     [sessions, remoteProjectSessions, passesOrcaAndStatus],
   );
   const projectUniverse = useProjectGroups(unfilteredProjectSessions, projectAliases.aliases);
@@ -1057,6 +1074,13 @@ function ExpandedView({
     return vendorPredicate ? groups.dialogues.filter(vendorPredicate) : groups.dialogues;
   }, [groups.dialogues, vendorPredicate]);
 
+  const visibleMekaSessions = useMemo(() => {
+    const mekaSessions = activityFilteredSessions.filter(
+      (session) => session.workspaceKind === 'meka',
+    );
+    return vendorPredicate ? mekaSessions.filter(vendorPredicate) : mekaSessions;
+  }, [activityFilteredSessions, vendorPredicate]);
+
   // 对话段排序状态提升到此处:DialogueSection(展开态)受控消费,rail 对话
   // 面板按同一排序渲染——否则折叠后面板的前 N 条/折叠溢出与展开态刚排好的
   // 顺序不一致(codex review)。
@@ -1088,7 +1112,10 @@ function ExpandedView({
     (visibleNewOrder: string[]) => {
       // baseline 与置顶段同序(pinnedSessionIdsInDisplayOrder 内部按 status→pinnedAt desc 排,含归档
       // 置顶),保证首次过滤态拖拽、manualPinnedOrder 还空时,隐藏置顶项不因 baseline 顺序不符而跳位。
-      const fullActivePinnedIds = pinnedSessionIdsInDisplayOrder([...sessions, ...remoteProjectSessions]);
+      const fullActivePinnedIds = pinnedSessionIdsInDisplayOrder([
+        ...sessions,
+        ...remoteProjectSessions,
+      ]);
       const merged = mergeVisibleReorder(
         normalizeManualPinnedOrder(filter.manualPinnedOrder, fullActivePinnedIds),
         visibleNewOrder,
@@ -1102,6 +1129,7 @@ function ExpandedView({
     const allowedProjects = filter.projectsAsSet;
     return activityFilteredSessions.filter((s) => {
       if (s.pinnedAt != null) return false;
+      if (s.workspaceKind === 'meka') return false;
       if (vendorPredicate && !vendorPredicate(s)) return false;
       if (allowedProjects === null) return true;
       if (s.workspaceKind === 'dialogue') return false;
@@ -1224,7 +1252,12 @@ function ExpandedView({
     if (!viewedSessionId) return;
     markAutomationSessionRunsRead(viewedSessionId);
     clearSystemSessionAttention(viewedSessionId);
-  }, [viewedSessionId, activeSessionRemoteReceiptKey, activeRemoteAttentionRev, markAutomationSessionRunsRead]);
+  }, [
+    viewedSessionId,
+    activeSessionRemoteReceiptKey,
+    activeRemoteAttentionRev,
+    markAutomationSessionRunsRead,
+  ]);
 
   // 用户从 Dock badge / taskbar flash 点回 app 时,如果 viewedSessionId 没变,
   // route-driven effect 不会重跑,系统角标会残留。监听 window focus 兜底清当前
@@ -1348,6 +1381,56 @@ function ExpandedView({
     patchNewMakerDraft({ workingDir: null, remoteHostId: null, extraDirs: [] });
     navigate('/cc-agent/new', { state: makeNewMakerRouteState('dialogue') });
   }, [handleClearSelection, navigate]);
+
+  const handleManageMeka = useCallback(() => {
+    handleClearSelection();
+    navigate('/cc-agent/meka');
+  }, [handleClearSelection, navigate]);
+
+  const handleCreateRegularMeka = useCallback(
+    (projectId: string) => {
+      handleClearSelection();
+      patchNewMakerDraft({ workingDir: null, remoteHostId: null, extraDirs: [] });
+      navigate('/cc-agent/new', {
+        state: {
+          ...makeNewMakerRouteState('meka'),
+          mekaProjectId: projectId,
+        },
+      });
+    },
+    [handleClearSelection, navigate],
+  );
+
+  const handleCreateFormalMeka = useCallback((project: MekaProject) => {
+    if (project.workflowType !== 'jira' && project.workflowType !== 'gitlab') return;
+    setFormalMekaProject(project);
+  }, []);
+
+  const handlePreparedFormalMeka = useCallback(
+    (prepared: PreparedMekaFormalDraft) => {
+      const projectId = formalMekaProject?.id;
+      if (!projectId) return;
+      handleClearSelection();
+      patchNewMakerDraft({ workingDir: null, remoteHostId: null, extraDirs: [] });
+      saveComposerDraft(NEW_MAKER_DRAFT_KEY, {
+        text: plainTextToTiptapDoc(prepared.firstMessage),
+        attachments: [],
+        quotes: [],
+        browserComments: [],
+      });
+      setFormalMekaProject(null);
+      navigate('/cc-agent/new', {
+        state: {
+          ...makeNewMakerRouteState('meka'),
+          mekaProjectId: projectId,
+          formal: prepared.formal,
+          formalFirstMessage: prepared.firstMessage,
+          formalTitlePrefix: prepared.titlePrefix,
+        },
+      });
+    },
+    [formalMekaProject, handleClearSelection, navigate],
+  );
 
   const handleLinkCodexProject = useCallback(
     async (project: ProjectNode) => {
@@ -1659,14 +1742,7 @@ function ExpandedView({
       }
       await unarchiveSession(sessionId);
     },
-    [
-      viewedSessionId,
-      runningSessionIds,
-      runSessionAction,
-      sessionsById,
-      unarchiveSession,
-      t,
-    ],
+    [viewedSessionId, runningSessionIds, runSessionAction, sessionsById, unarchiveSession, t],
   );
 
   const handleConfirm = useCallback(async () => {
@@ -1684,16 +1760,12 @@ function ExpandedView({
       action === 'delete' && sessionId === viewedSessionId
         ? await resolveSessionRemovalRedirect(new Set([sessionId]), sessionId)
         : null;
-    await runSessionAction(sessionId, action, { activeSessionId: viewedSessionId, deleteRedirectRoute });
+    await runSessionAction(sessionId, action, {
+      activeSessionId: viewedSessionId,
+      deleteRedirectRoute,
+    });
     setConfirm(CONFIRM_INITIAL);
-  }, [
-    viewedSessionId,
-    confirm,
-    resolveSessionRemovalRedirect,
-    runSessionAction,
-    sessionsById,
-    t,
-  ]);
+  }, [viewedSessionId, confirm, resolveSessionRemovalRedirect, runSessionAction, sessionsById, t]);
 
   const handleCancelConfirm = useCallback(() => {
     setConfirm(CONFIRM_INITIAL);
@@ -2221,81 +2293,98 @@ function ExpandedView({
                 projectOptions={projectPickerOptions}
                 onReorder={handlePinnedReorder}
               />
-        {filter.groupBy === 'date' ? (
-          <DateGroupedSessionsSection
-            sessions={visibleDateSessions}
-            allKnownProjects={projectUniverse.projects}
-            filter={filter}
-            activeSessionId={activeSessionId}
-            runningSessionIds={displayRunningSessionIds}
-            attachedSessionIds={attachedSessionIds}
-            notifications={sidebarNotifications}
-            scheduleSessionIndex={scheduleSessionIndex}
-            selectedSessionIds={selectedSessionIds}
-            onSessionClick={handleSessionClick}
-            onAction={handleActionClick}
-            onRename={handleRename}
-            onTogglePin={handleTogglePin}
-            onMoveSession={handleMoveSession}
-            projectOptions={projectPickerOptions}
-            onScheduleAction={handleScheduleAction}
-          />
-        ) : (
-          <>
-            <ProjectsSection
-              unclassified={visibleUnclassified}
-              projects={visibleProjectsWithVendor}
-              allKnownProjects={projectUniverse.projects}
-              filter={filter}
-              collapsed={collapse.collapsed}
-              isAllCollapsed={collapse.isAllCollapsed}
-              activeSessionId={activeSessionId}
-              runningSessionIds={displayRunningSessionIds}
-              attachedSessionIds={attachedSessionIds}
-              notifications={sidebarNotifications}
-              scheduleSessionIndex={scheduleSessionIndex}
-              selectedSessionIds={selectedSessionIds}
-              onSessionClick={handleSessionClick}
-              onAction={handleActionClick}
-              onRename={handleRename}
-              onTogglePin={handleTogglePin}
-              onMoveSession={handleMoveSession}
-              projectOptions={projectPickerOptions}
-              onScheduleAction={handleScheduleAction}
-              onToggleProject={collapse.toggle}
-              onRenameProject={handleProjectAliasChange}
-              onCollapseAll={collapse.collapseAll}
-              onExpandAll={collapse.expandAll}
-              onCreateProject={handleCreateProject}
-              onCreateInProject={handleCreateInProject}
-              onOpenConversationSearch={handleOpenConversationSearch}
-              onOpenInExplorer={handleOpenInExplorer}
-              onLinkCodexProject={handleLinkCodexProject}
-              linkingCodexProject={linkingCodexProject}
-              onBrowseFiles={handleBrowseFiles}
-              onArchiveAll={handleArchiveAllInProject}
-            />
-            <DialogueSection
-              sessions={visibleDialogues}
-              activeSessionId={activeSessionId}
-              runningSessionIds={displayRunningSessionIds}
-              attachedSessionIds={attachedSessionIds}
-              notifications={sidebarNotifications}
-              scheduleSessionIndex={scheduleSessionIndex}
-              selectedSessionIds={selectedSessionIds}
-              onSessionClick={handleSessionClick}
-              onAction={handleActionClick}
-              onRename={handleRename}
-              onTogglePin={handleTogglePin}
-              onMoveSession={handleMoveSession}
-              projectOptions={projectPickerOptions}
-              onScheduleAction={handleScheduleAction}
-              onCreateDialogue={handleCreateDialogue}
-              sortBy={dialogueSortBy}
-              onSortByChange={setDialogueSortBy}
-            />
-          </>
-        )}
+              {filter.groupBy === 'date' ? (
+                <DateGroupedSessionsSection
+                  sessions={visibleDateSessions}
+                  allKnownProjects={projectUniverse.projects}
+                  filter={filter}
+                  activeSessionId={activeSessionId}
+                  runningSessionIds={displayRunningSessionIds}
+                  attachedSessionIds={attachedSessionIds}
+                  notifications={sidebarNotifications}
+                  scheduleSessionIndex={scheduleSessionIndex}
+                  selectedSessionIds={selectedSessionIds}
+                  onSessionClick={handleSessionClick}
+                  onAction={handleActionClick}
+                  onRename={handleRename}
+                  onTogglePin={handleTogglePin}
+                  onMoveSession={handleMoveSession}
+                  projectOptions={projectPickerOptions}
+                  onScheduleAction={handleScheduleAction}
+                />
+              ) : (
+                <>
+                  <ProjectsSection
+                    unclassified={visibleUnclassified}
+                    projects={visibleProjectsWithVendor}
+                    allKnownProjects={projectUniverse.projects}
+                    filter={filter}
+                    collapsed={collapse.collapsed}
+                    isAllCollapsed={collapse.isAllCollapsed}
+                    activeSessionId={activeSessionId}
+                    runningSessionIds={displayRunningSessionIds}
+                    attachedSessionIds={attachedSessionIds}
+                    notifications={sidebarNotifications}
+                    scheduleSessionIndex={scheduleSessionIndex}
+                    selectedSessionIds={selectedSessionIds}
+                    onSessionClick={handleSessionClick}
+                    onAction={handleActionClick}
+                    onRename={handleRename}
+                    onTogglePin={handleTogglePin}
+                    onMoveSession={handleMoveSession}
+                    projectOptions={projectPickerOptions}
+                    onScheduleAction={handleScheduleAction}
+                    onToggleProject={collapse.toggle}
+                    onRenameProject={handleProjectAliasChange}
+                    onCollapseAll={collapse.collapseAll}
+                    onExpandAll={collapse.expandAll}
+                    onCreateProject={handleCreateProject}
+                    onCreateInProject={handleCreateInProject}
+                    onOpenConversationSearch={handleOpenConversationSearch}
+                    onOpenInExplorer={handleOpenInExplorer}
+                    onLinkCodexProject={handleLinkCodexProject}
+                    linkingCodexProject={linkingCodexProject}
+                    onBrowseFiles={handleBrowseFiles}
+                    onArchiveAll={handleArchiveAllInProject}
+                  />
+                  <DialogueSection
+                    sessions={visibleDialogues}
+                    activeSessionId={activeSessionId}
+                    runningSessionIds={displayRunningSessionIds}
+                    attachedSessionIds={attachedSessionIds}
+                    notifications={sidebarNotifications}
+                    scheduleSessionIndex={scheduleSessionIndex}
+                    selectedSessionIds={selectedSessionIds}
+                    onSessionClick={handleSessionClick}
+                    onAction={handleActionClick}
+                    onRename={handleRename}
+                    onTogglePin={handleTogglePin}
+                    onMoveSession={handleMoveSession}
+                    projectOptions={projectPickerOptions}
+                    onScheduleAction={handleScheduleAction}
+                    onCreateDialogue={handleCreateDialogue}
+                    sortBy={dialogueSortBy}
+                    onSortByChange={setDialogueSortBy}
+                  />
+                </>
+              )}
+              <MekaAssistantSection
+                sessions={visibleMekaSessions}
+                activeSessionId={activeSessionId}
+                runningSessionIds={displayRunningSessionIds}
+                attachedSessionIds={attachedSessionIds}
+                notifications={sidebarNotifications}
+                scheduleSessionIndex={scheduleSessionIndex}
+                selectedSessionIds={selectedSessionIds}
+                onSessionClick={handleSessionClick}
+                onAction={handleActionClick}
+                onRename={handleRename}
+                onTogglePin={handleTogglePin}
+                onScheduleAction={handleScheduleAction}
+                onCreateRegular={handleCreateRegularMeka}
+                onCreateFormal={handleCreateFormalMeka}
+                onManage={handleManageMeka}
+              />
             </>
           )}
         </div>
@@ -2375,6 +2464,13 @@ function ExpandedView({
         projectOptions={projectPickerOptions}
         onScheduleAction={handleScheduleAction}
       />
+      {formalMekaProject ? (
+        <MekaFormalIssueModal
+          project={formalMekaProject}
+          onClose={() => setFormalMekaProject(null)}
+          onPrepared={handlePreparedFormalMeka}
+        />
+      ) : null}
       {deleteScheduleDialog}
     </>
   );
@@ -2438,6 +2534,7 @@ function CollapsedView({
     navigate('/cc-agent/scheduled');
   }, [navigate]);
   const onScheduleMatch = useMatch('/cc-agent/scheduled');
+  const onMekaMatch = useMatch('/cc-agent/meka');
   // 主视图切换(Plugin / Skill 管理)——与展开态 SidebarTopNav 的管理入口同源:
   // 命中 Plugin 或 Skill 视图时高亮。折叠 rail 之前漏了这颗按钮,现保持两态一致。
   const { activeKey, navigateToView } = useActiveMainView();
@@ -2491,6 +2588,15 @@ function CollapsedView({
         active={Boolean(onScheduleMatch)}
         onClick={handleNavScheduled}
         onContextMenu={onAutomationsContextMenu}
+      />
+      <SidebarIconButton
+        icon={BriefcaseBusiness}
+        label={t('meka.manage')}
+        aria-label={t('meka.manage')}
+        aria-current={onMekaMatch ? 'page' : undefined}
+        variant="rail"
+        active={Boolean(onMekaMatch)}
+        onClick={() => navigate('/cc-agent/meka')}
       />
       <SidebarIconButton
         icon={Plug}
@@ -2580,7 +2686,8 @@ function RailPanelShell({
         // 落入自身或菜单/对话框浮层才不算——回到一级面板非项目区必须触发
         // onLeave 收三级,否则旧项目的三级面板悬留(codex review;项目行经
         // mouseenter → openProject 自会接管切换)。
-        const keepalive = level === 1 ? RAIL_PANEL_KEEPALIVE_SELECTOR : RAIL_PROJECT_KEEPALIVE_SELECTOR;
+        const keepalive =
+          level === 1 ? RAIL_PANEL_KEEPALIVE_SELECTOR : RAIL_PROJECT_KEEPALIVE_SELECTOR;
         if (next?.closest(keepalive)) return;
         onLeave();
       }}
@@ -2675,7 +2782,13 @@ function RailPanels({
   useEffect(() => {
     if (!isCollapsed) railPanelStore.closeAll();
   }, [isCollapsed]);
-  useEffect(() => () => { railPanelStore.closeAll(); railPanelStore.setLampScope(null); }, []);
+  useEffect(
+    () => () => {
+      railPanelStore.closeAll();
+      railPanelStore.setLampScope(null);
+    },
+    [],
+  );
 
   // 灯语取样范围发布:与面板实际展示的过滤后集合一致(项目组 + 未分类 + 对话),
   // RailNav 的段灯据此聚合(review P2「灯绕过筛选/截断」两条的根治)。
@@ -2783,7 +2896,13 @@ function RailPanels({
         }
         if (!notifications.has(s.id)) continue;
         const kind = attentionKinds.get(s.id);
-        consider(kind === 'error' || urgentSet.has(s.id) ? 'error' : kind === 'awaiting' ? 'awaiting' : 'done');
+        consider(
+          kind === 'error' || urgentSet.has(s.id)
+            ? 'error'
+            : kind === 'awaiting'
+              ? 'awaiting'
+              : 'done',
+        );
       }
       return { running, dotTone: best };
     },
@@ -2846,7 +2965,9 @@ function RailPanels({
 
   const panelHead = (title: string, count: number) => (
     <div className="flex items-baseline gap-1.5 px-2.5 pb-1 pt-1.5">
-      <span className="min-w-0 flex-1 truncate text-[12.5px] font-extrabold text-foreground">{title}</span>
+      <span className="min-w-0 flex-1 truncate text-[12.5px] font-extrabold text-foreground">
+        {title}
+      </span>
       <span className="shrink-0 text-[10px] text-[var(--text-tertiary)]">
         {t('ccAgent.sidebar.railNavCount', { count })}
       </span>
@@ -2857,7 +2978,7 @@ function RailPanels({
 
   const openProject =
     panelState.openSection === 'projects' && panelState.openProjectKey
-      ? projects.find((p) => p.projectKey === panelState.openProjectKey) ?? null
+      ? (projects.find((p) => p.projectKey === panelState.openProjectKey) ?? null)
       : null;
 
   return (
@@ -2908,13 +3029,19 @@ function RailPanels({
                     aria-expanded={isOpen}
                     onMouseEnter={(e) => {
                       const rect = e.currentTarget.getBoundingClientRect();
-                      railPanelStore.openProject(p.projectKey, { right: rect.right, top: rect.top });
+                      railPanelStore.openProject(p.projectKey, {
+                        right: rect.right,
+                        top: rect.top,
+                      });
                     }}
                     // 键盘可达:Tab 聚焦后 Enter/Space(原生 click)走与 hover
                     // 同一条 openProject 路径,否则三级面板只有鼠标能打开(codex review)。
                     onClick={(e) => {
                       const rect = e.currentTarget.getBoundingClientRect();
-                      railPanelStore.openProject(p.projectKey, { right: rect.right, top: rect.top });
+                      railPanelStore.openProject(p.projectKey, {
+                        right: rect.right,
+                        top: rect.top,
+                      });
                     }}
                     onMouseLeave={() => railPanelStore.scheduleProjectClose()}
                     className={cn(
@@ -2938,7 +3065,9 @@ function RailPanels({
                     >
                       {projectDisplayLabel}
                     </span>
-                    {agg.dotTone && <AttentionDot size={5} tone={agg.dotTone} className="shrink-0" />}
+                    {agg.dotTone && (
+                      <AttentionDot size={5} tone={agg.dotTone} className="shrink-0" />
+                    )}
                     <span className="shrink-0 text-[10px] tabular-nums text-[var(--text-tertiary)]">
                       {p.sessions.length}
                     </span>

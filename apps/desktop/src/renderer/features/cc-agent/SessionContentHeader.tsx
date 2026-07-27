@@ -23,6 +23,7 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { ChevronRight, Ellipsis, Pin } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router-dom';
 
 import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
@@ -74,6 +75,7 @@ import { SessionShareExportDialog } from './sidebar/SessionShareExportDialog';
 import { useRemoteProjectSessions } from '@/features/device-link/remoteProjectsStore';
 import { isRemoteSessionWriteBlocked } from './lib/remoteSessionWriteGuard';
 import { Tip } from '@/components/ui/tooltip';
+import { useMekaSessionScope } from './useMekaSessionScope';
 
 const log = createLogger('SessionContentHeader');
 
@@ -131,6 +133,16 @@ export function SessionContentHeader({
   // 会停留在旧值(Codex review P2)。prop 兜底覆盖 archived 等不在
   // active 桶里的会话。
   const session = routeSessionById.get(sessionProp.id) ?? sessionProp;
+  const navigate = useNavigate();
+  const mekaSessionScope = useMekaSessionScope(
+    session.workspaceKind === 'meka' ? session.mekaProjectId : null,
+    session.workspaceKind === 'meka' ? session.mekaRoleId : null,
+  );
+  const mekaSessionFallback = session.mekaRole
+    ? t('meka.legacySessionScope', { role: t(`meka.legacyRoles.${session.mekaRole}`) })
+    : session.mekaProjectId
+      ? t('meka.unavailableProject')
+      : t('meka.legacySessions');
   const { runningSessionIds } = useSessionRunningStatus(session.id);
   const { confirm: confirmDialog } = useConfirmDialog();
   const { runSessionAction, unarchiveSession } = useSessionLifecycleActions();
@@ -143,7 +155,11 @@ export function SessionContentHeader({
     remoteSessionUnavailable || isRemoteSessionWriteBlocked(session);
   // 「移动到项目」/「导出会话…」可见性与 SessionItem 同条件。
   const canMoveToProject =
-    !isEmpty && !session.remoteHostId && !session.deviceLinkDeviceId && !isArchived;
+    session.workspaceKind !== 'meka'
+    && !isEmpty
+    && !session.remoteHostId
+    && !session.deviceLinkDeviceId
+    && !isArchived;
   const canExportShare =
     !isEmpty && !session.remoteHostId && !session.orcaRole && !session.deviceLinkDeviceId;
   const projectOptions = useProjectPickerOptions();
@@ -523,6 +539,18 @@ export function SessionContentHeader({
         >
           {displayTitle}
         </span>
+      )}
+
+      {!isEditing && session.workspaceKind === 'meka' && (
+        <button
+          type="button"
+          onClick={() => navigate('/cc-agent/meka')}
+          className="ml-1 max-w-56 shrink truncate rounded-full bg-[var(--surface-chip)] px-2 py-0.5 text-11 text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+          style={WINDOW_NO_DRAG_STYLE}
+          title={mekaSessionScope ?? mekaSessionFallback}
+        >
+          {mekaSessionScope ?? mekaSessionFallback}
+        </button>
       )}
 
       {!isEditing && (

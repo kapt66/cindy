@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "projectId": "saga2",
+  "id": "combat-config",
+  "name": "combat-config",
+  "displayName": "战斗配置",
+  "description": "修改战斗配置并在需要时做远端验证",
+  "policyProviderRefs": [
+    "meka-host-risk-policy",
+    "meka-p4-boundary-policy"
+  ],
+  "useProjectDefaults": true,
+  "prompt": "# Combat configuration\n\nRead the governing design and schema before editing. Change the smallest configuration surface, run repository validation, inspect generated or consumed outputs, and use an authorized environment only when local evidence cannot complete verification.",
+  "rules": [],
+  "skills": [],
+  "mcp": [],
+  "projectMetadataSelection": [
+    {
+      "sourcePath": "saga2_design/AGENTS.md",
+      "itemType": "agents-md",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_design/CLAUDE.md",
+      "itemType": "agents-md",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/战斗策划组-combat-planning/skills/saga2-alias-skill/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/战斗策划组-combat-planning/skills/saga2-project-battle-designer/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/战斗策划组-combat-planning/skills/战斗策划组工作流-combat-planning-manager/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/editor-skill-editor-effect/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/editor-skill-editor-module/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/editor-skill-editor-timeline/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/saga2-project-battle-designer/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    }
+  ]
+}

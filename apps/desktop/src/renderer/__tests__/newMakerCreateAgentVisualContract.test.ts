@@ -100,7 +100,7 @@ describe('NewMakerDraftRoute CREATE AGENT visual contract', () => {
       'rememberedEffortByModel={isDeviceLinkDraft ? undefined : draft.effortByModel}',
       'onRememberedEffortChange={',
       'isDeviceLinkDraft ? undefined : handleRememberedEffortChange',
-      'placeholder="Hi Cindy!"',
+      "placeholder={isMekaDraft ? t('meka.draft.placeholder') : 'Hi Cindy!'}",
       'middleToolbarSlot={',
     ]) {
       expect(chatInputBlock).toContain(invariant);

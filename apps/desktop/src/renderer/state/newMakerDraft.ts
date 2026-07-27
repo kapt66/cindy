@@ -71,6 +71,9 @@ export interface CollabWorkerConfig {
   model: string;
   effort?: Effort;
   fast?: boolean;
+  /** Main revalidates these Meka-only target hints when the first Worker is created. */
+  workingDir?: string;
+  remoteHostId?: string;
   /** 首条派工任务。一次性,故意不跨重启持久化(sanitize 加载时丢弃,见下方解析)。 */
   initialTask?: string;
 }
@@ -258,6 +261,14 @@ function sanitize(raw: unknown): NewMakerDraft {
       model,
       effort: typeof wc.effort === 'string' ? (wc.effort as Effort) : undefined,
       fast: typeof wc.fast === 'boolean' ? wc.fast : undefined,
+      workingDir:
+        typeof wc.workingDir === 'string' && wc.workingDir.trim()
+          ? wc.workingDir
+          : undefined,
+      remoteHostId:
+        typeof wc.remoteHostId === 'string' && wc.remoteHostId.trim()
+          ? wc.remoteHostId
+          : undefined,
       // initialTask 是一次性任务,**故意不跨重启持久化**(同 deviceLinkDeviceId 先例):
       // 重启后 Send/New Goal 会静默把过期任务当 delegateTask 发出去,而收起态 pill
       // 无从看见/编辑(codex P2)。耐久保留的只有 role/model/effort/fast。

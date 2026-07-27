@@ -272,6 +272,7 @@ import { registerGitReviewIpc } from './git-review';
 import { registerSidebarSettingsIpc } from './sidebarSettingsStore';
 import { registerTerminalHandlers } from './maker-ipc/terminal-handlers';
 import { registerLocalThemesIpc } from './local-themes/register';
+import { registerMekaSettingsIpc } from './meka-settings/ipc';
 import {
   registerRemoteSshIpc,
   disposeRemoteSshPool,
@@ -5385,6 +5386,7 @@ app.on('ready', async () => {
       mainWindowRef && !mainWindowRef.isDestroyed() ? mainWindowRef.webContents : null,
   });
   registerLocalThemesIpc();
+  registerMekaSettingsIpc();
   registerVoiceInputIpc();
   registerGlobalVoiceInputIpc();
   // 老 'usage:get-today-spend' 已退役 —— renderer 走 maker:usage:today('claude-code') 拉。

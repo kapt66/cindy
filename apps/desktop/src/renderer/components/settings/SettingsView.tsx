@@ -37,6 +37,7 @@ import { CollaborationSection } from './CollaborationSection';
 import { BuiltinToolsSection } from './BuiltinToolsSection';
 import { ContactsSection } from './contacts/ContactsSection';
 import { ComputerUseSection } from './ComputerUseSection';
+import { MekaAssistantSettingsSection } from './MekaAssistantSettingsSection';
 import { useAuth } from '@/contexts/AuthContext';
 import { getLastWorkingDir, subscribeToLastWorkingDir } from '@/state/lastWorkingDir';
 
@@ -374,6 +375,18 @@ export function SettingsView() {
               >
                 <section className="pb-[18px]" aria-label={t('settings.sections.providers')}>
                   <ProvidersSection />
+                </section>
+              </div>
+            )}
+
+            {activeTab === 'meka-assistant' && (
+              <div
+                role="tabpanel"
+                id="settings-panel-meka-assistant"
+                aria-labelledby="settings-tab-meka-assistant"
+              >
+                <section className="pb-[18px]" aria-label={t('settings.tabs.mekaAssistant')}>
+                  <MekaAssistantSettingsSection />
                 </section>
               </div>
             )}

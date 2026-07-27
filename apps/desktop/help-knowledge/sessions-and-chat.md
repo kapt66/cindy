@@ -30,5 +30,5 @@ Each **session** is a persistent chat thread driven by **one agent** (Claude Cod
 
 **Notes:**
 
-- Sessions are **per local user** — they live in the local SQLite DB at `<userData>/cindy-<userId>.db` (installs migrated from the legacy app get their sessions copied from the old `xdt-maker-<userId>.db` on first login). They don't sync to other machines automatically.
+- Sessions are **per local user** — they live in the local SQLite DB at `<userData>/cindy-meka-<userId>.db` (Cindy Meka copies the matching `xdt-maker-<userId>.db` from the legacy `xdmaker-meka` user-data directory on first login). They don't sync to other machines automatically.
 - If you have two desktop instances open (e.g. dev + release) on the same user account, both read/write the same DB and will see each other's sessions.

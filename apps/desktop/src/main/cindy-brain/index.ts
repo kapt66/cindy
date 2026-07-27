@@ -60,7 +60,11 @@ import { handleGhostSetupStatusRequest } from './ghostSetupStatus.js';
 import { handleGhostSecretsRequest } from './runtime/ghostSecretsEndpoint.js';
 import { handleGhostOauthRequest } from './runtime/ghostOauthEndpoint.js';
 import { handleGhostConnectionsRequest } from './runtime/ghostConnectionsEndpoint.js';
-import { GhostOauthAccountManager, type GhostOauthDecl } from './ghostOauthAccounts.js';
+import {
+  GhostOauthAccountManager,
+  type GhostOauthAccessTokenResult,
+  type GhostOauthDecl,
+} from './ghostOauthAccounts.js';
 import { reclaimLoopbackPort } from './portReclaim.js';
 import { GhostConnectionManager } from './ghostConnections.js';
 import { t } from '../i18n.js';
@@ -76,6 +80,7 @@ import {
   LEGACY_JIRA_CONNECTION_FILE,
   LEGACY_JIRA_RT_FILE,
   XD_ATLASSIAN_GHOST_ID,
+  XD_ATLASSIAN_SECRET_KEY,
   migrateAtlassianAccounts,
 } from './atlassianAccountsMigration.js';
 import {
@@ -88,6 +93,7 @@ import {
   LEGACY_GITLAB_CONNECTION_FILE,
   LEGACY_GITLAB_TOKEN_FILE,
   CINDY_GITLAB_GHOST_ID,
+  CINDY_GITLAB_CONNECTION_KEY,
   migrateGitlabAccounts,
 } from './gitlabAccountsMigration.js';
 import { GHOST_SCHEME, ghostExternalLinkUrls, parseGhostPartition } from '../../shared/ghost.js';
@@ -1516,6 +1522,35 @@ function getGhostConnectionManager(): GhostConnectionManager {
     });
   }
   return ghostConnectionManagerSingleton;
+}
+
+/**
+ * Main-only credential adapters for Meka formal workflows. Tokens never cross
+ * IPC and are resolved from the same encrypted vault used by the built-in
+ * Atlassian/GitLab capabilities.
+ */
+export async function getMekaAtlassianAccessToken(
+  accountId?: string,
+): Promise<GhostOauthAccessTokenResult> {
+  const ghost = findAvailableGhost(XD_ATLASSIAN_GHOST_ID);
+  const secret = ghost?.manifest.network?.secrets?.find(
+    (item) => item.key === XD_ATLASSIAN_SECRET_KEY && item.oauth,
+  );
+  if (!secret?.oauth) return { ok: false, error: 'NO_CLIENT_CONFIG' };
+  return getGhostOauthAccountManager().getFreshAccessToken(
+    XD_ATLASSIAN_GHOST_ID,
+    XD_ATLASSIAN_SECRET_KEY,
+    secret.oauth,
+    accountId,
+  );
+}
+
+export function resolveMekaGitlabToken(host: string): string | null {
+  return getGhostConnectionManager().resolveTokenByHost(
+    CINDY_GITLAB_GHOST_ID,
+    CINDY_GITLAB_CONNECTION_KEY,
+    host,
+  );
 }
 
 /**

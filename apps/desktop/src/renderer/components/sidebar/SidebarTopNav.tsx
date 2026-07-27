@@ -19,7 +19,7 @@
  */
 
 import { useCallback } from 'react';
-import { CirclePlus, Plug, Timer } from 'lucide-react';
+import { BriefcaseBusiness, CirclePlus, Plug, Timer } from 'lucide-react';
 import { useNavigate, useMatch } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
@@ -44,6 +44,7 @@ export function SidebarTopNav(): React.ReactElement {
   const navigate = useNavigate();
   const { activeKey, navigateToView } = useActiveMainView();
   const onScheduleMatch = useMatch('/cc-agent/scheduled');
+  const onMekaMatch = useMatch('/cc-agent/meka');
   const { search, allKnownProjects, openSignal } = useConversationSearchContext();
 
   // 通用「新建」入口:只 navigate 到草稿页,不清空 newMakerDraft。
@@ -94,6 +95,25 @@ export function SidebarTopNav(): React.ReactElement {
       </button>
 
       {/* 3. Plugins —— Plugin / Skill 在页面顶部 Tab 内切换 */}
+      <button
+        onClick={() => navigate('/cc-agent/meka')}
+        className={cn(ROW_CLASS, onMekaMatch && ROW_ACTIVE_CLASS)}
+        aria-label={t('meka.manage')}
+        aria-current={onMekaMatch ? 'page' : undefined}
+      >
+        <BriefcaseBusiness
+          size={15}
+          strokeWidth={1.8}
+          className={cn(
+            'shrink-0',
+            onMekaMatch
+              ? 'text-sidebar-item-active-foreground'
+              : 'text-[var(--sidebar-nav-text)]',
+          )}
+        />
+        <span className="leading-none">{t('meka.manage')}</span>
+      </button>
+
       <button
         onClick={() => navigateToView('plugins')}
         className={cn(ROW_CLASS, activeKey === 'plugins' && ROW_ACTIVE_CLASS)}

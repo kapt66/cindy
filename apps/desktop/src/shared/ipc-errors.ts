@@ -19,6 +19,14 @@ export type IpcErrorCode =
   // "会话运行中"文案(实际是别的会话挡住了凭证切换)。
   | 'CREDENTIAL_SWITCH_BUSY'
   | 'NO_LIVE_QUERY'
+  // Meka project / role registry
+  | 'MEKA_PROJECT_NOT_FOUND'
+  | 'MEKA_ROLE_NOT_FOUND'
+  | 'MEKA_PROJECT_IN_USE'
+  | 'MEKA_ROLE_IN_USE'
+  | 'MEKA_ROLE_REQUIRED'
+  | 'MEKA_BUILTIN_READ_ONLY'
+  | 'MEKA_PROJECT_MOVE_UNSUPPORTED'
   // 智能通讯录: (platform, value) 身份已属于另一个联系人 — message 里带占用者 id
   | 'IDENTITY_CONFLICT'
   // domain-specific
@@ -140,6 +148,13 @@ const IPC_ERROR_CODES: ReadonlySet<IpcErrorCode> = new Set<IpcErrorCode>([
   'NO_ACTIVE_TURN',
   'SESSION_RUNNING',
   'NO_LIVE_QUERY',
+  'MEKA_PROJECT_NOT_FOUND',
+  'MEKA_ROLE_NOT_FOUND',
+  'MEKA_PROJECT_IN_USE',
+  'MEKA_ROLE_IN_USE',
+  'MEKA_ROLE_REQUIRED',
+  'MEKA_BUILTIN_READ_ONLY',
+  'MEKA_PROJECT_MOVE_UNSUPPORTED',
   'STALE_DIFF',
   'PUSH_LEASE_EXPIRED',
   'PUSH_NO_REMOTE',

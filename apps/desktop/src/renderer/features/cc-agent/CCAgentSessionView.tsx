@@ -148,6 +148,7 @@ import {
 } from '@/cindy-brain/ghostMediaHandover';
 import { isGlobalDropIntercepted } from '@/lib/globalDropIntercept';
 import { getCollaborationStartErrorMessage } from './collaborationErrors';
+import { canShowCollabToggleForSession } from './lib/collaborationEligibility';
 import { shouldFallbackVendorModel } from './lib/vendorModelFallback';
 import { createSessionRefreshSequence } from './lib/sessionRefreshSequence';
 import { createSessionSnapshotPatchBuffer } from './lib/sessionSnapshotPatchBuffer';
@@ -1668,12 +1669,7 @@ export function CCAgentSessionView({
   // 针对 Lead session 接入了 OrcaSplitView toggle 布局,普通 session 必须能从
   // ChatInput 工具行启用协同变成 Lead,否则 doc 模式下首次开启入口完全没有。
   // 工具行同时传 denseToolbar=true,协同 pill 自动收成 icon-only,窄 rail 视觉 OK。
-  const allowCollabToggle =
-    !orcaMode &&
-    session?.orcaRole !== 'worker' &&
-    session?.remoteHostId == null &&
-    session?.workspaceKind === 'project' &&
-    !!session?.workingDir;
+  const allowCollabToggle = !orcaMode && canShowCollabToggleForSession(session);
   // 把 sessionId 抽出来给 useEffect 用 (linter 偏好稳定的标量依赖)
   const collabSessionId = sessionId;
   useEffect(() => {
@@ -1786,6 +1782,8 @@ export function CCAgentSessionView({
           effort: form.effort as
             'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra' | undefined,
           fast: form.fast,
+          workingDir: form.workingDir,
+          remoteHostId: form.remoteHostId,
           delegateTask: form.initialTask || undefined,
         });
         void sessionsStore.forceRefresh('active');
@@ -3381,6 +3379,7 @@ export function CCAgentSessionView({
         open={createWorkerOpen}
         onClose={() => setCreateWorkerOpen(false)}
         onCreate={requestEnableCollab}
+        leadSession={session}
         title={t('orca.createWorker.enableCollabTitle')}
         submitLabel={t('orca.createWorker.enableCollabSubmit')}
         deviceId={remoteDeviceId}

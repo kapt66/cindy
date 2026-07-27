@@ -21,7 +21,12 @@ export interface FolderPickerOption {
   missing?: boolean;
 }
 
-export type FolderPickerSelectSource = 'project' | 'recent' | 'browse' | 'dialogue';
+export type FolderPickerSelectSource =
+  | 'project'
+  | 'meka-project'
+  | 'recent'
+  | 'browse'
+  | 'dialogue';
 
 const WHEEL_LINE_HEIGHT = 16;
 
@@ -79,6 +84,8 @@ interface FolderPickerPopoverProps {
   onOpenChange: (open: boolean) => void;
   onSelect: (folderPath: string, source: FolderPickerSelectSource) => void;
   projectOptions?: readonly FolderPickerOption[];
+  /** Additional Meka project identities shown in the existing project picker. */
+  mekaProjectOptions?: readonly FolderPickerOption[];
   /**
    * 仅 isProjectPicker 模式下生效, 且只在传入时显示。回调激发 = 用户想从远端
    * 添加一个新的项目目录;调用方应关闭 popover 并打开 AddRemoteProjectDialog。
@@ -98,6 +105,7 @@ export function FolderPickerPopover({
   onOpenChange,
   onSelect,
   projectOptions,
+  mekaProjectOptions,
   onAddRemoteProject,
   side,
   align = 'end',
@@ -106,8 +114,9 @@ export function FolderPickerPopover({
   children,
 }: FolderPickerPopoverProps) {
   const { t } = useTranslation();
-  const isProjectPicker = projectOptions !== undefined;
+  const isProjectPicker = projectOptions !== undefined || mekaProjectOptions !== undefined;
   const effectiveProjectOptions = projectOptions ?? [];
+  const effectiveMekaProjectOptions = mekaProjectOptions ?? [];
   const recentFolders = open && !isProjectPicker ? getRecentFolders() : [];
 
   const handleSelectPath = (folderPath: string, source: FolderPickerSelectSource) => {
@@ -255,6 +264,38 @@ export function FolderPickerPopover({
                 <div className="px-3 py-[10px] text-sm text-[var(--folder-item-path)]">
                   {t('newChat.folderPicker.noProjects')}
                 </div>
+              )}
+              {effectiveMekaProjectOptions.length > 0 && (
+                <>
+                  <div className="px-3 pb-1 pt-3">
+                    <span className="text-xs font-normal text-[var(--folder-label)]">
+                      {t('meka.projectNavigation')} · {t('meka.regularSessions')}
+                    </span>
+                  </div>
+                  {effectiveMekaProjectOptions.map((project) => (
+                    <button
+                      key={project.path}
+                      type="button"
+                      onClick={() => handleSelectPath(project.path, 'meka-project')}
+                      className={cn(
+                        'flex w-full items-center gap-3 rounded-[8px] px-3 py-[10px] text-left',
+                        'outline-none transition-colors hover:bg-[var(--folder-item-hover)]',
+                      )}
+                    >
+                      <Folder size={20} className="shrink-0 text-[var(--folder-item-icon)]" />
+                      <div className="flex min-w-0 flex-1 flex-col items-start">
+                        <span className="w-full truncate text-sm font-medium text-[var(--folder-item-name)]">
+                          {project.name}
+                        </span>
+                        {project.description ? (
+                          <span className="w-full truncate text-xs text-[var(--folder-item-path)]">
+                            {project.description}
+                          </span>
+                        ) : null}
+                      </div>
+                    </button>
+                  ))}
+                </>
               )}
             </div>
             <div className="mx-2 my-1 h-px bg-[var(--folder-picker-border)]" />

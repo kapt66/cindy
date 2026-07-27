@@ -36,13 +36,14 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { NEW_MAKER_DRAFT_KEY } from './newMakerDraftKeys';
 import { CreateWorkerPopover, type CreateWorkerForm } from './CreateWorkerPopover';
 import { createWorkerLabel } from './workerLabel';
-import { useNavigate, useOutletContext } from 'react-router-dom';
+import { useLocation, useNavigate, useOutletContext } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import { themeService } from '@/themes/theme-service';
 import type { Theme as ColorTheme } from '@/themes/types';
 import { ThemeBrandLockup } from '@/components/branding/ThemeBrandLockup';
 import { ChatInput } from '@/components/new-chat/ChatInput';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { WorktreeChipsRow } from '@/components/new-chat/WorktreeChipsRow';
 import {
   FolderPickerPopover,
@@ -60,6 +61,7 @@ import { TopRightChipStack, TopRightChipStackProvider } from '@/components/chat/
 import { useProportionalWidth } from '@/hooks/useProportionalWidth';
 import { useCCSessions } from '@/hooks/useCCSessions';
 import { useVendorAuthGate } from '@/hooks/useVendorAuthGate';
+import { useMekaConfigGate } from '@/hooks/useMekaConfigGate';
 import { useAttachments } from '@/hooks/useAttachments';
 import {
   useNewMakerDraft,
@@ -100,17 +102,30 @@ import { useRefreshWorktrees } from '@/contexts/WorktreeContext';
 import { crossAgentConvertService } from '@/lib/crossAgentConvertService';
 import { useCrossAgentMigrationDialog } from '@/hooks/useCrossAgentConvertPrompt';
 import { getCollaborationStartErrorMessage } from './collaborationErrors';
+import { canShowCollabToggleForDraft } from './lib/collaborationEligibility';
 import { CrossAgentConvertDialog } from '@/components/ui/cross-agent-convert-dialog';
 import type { MakerVendor, Session } from '@/lib/ccAgent.types';
+import {
+  BUILTIN_MEKA_PROJECTS,
+  type MekaProject,
+  type MekaRole,
+} from '../../../shared/meka-projects';
+import type { FormalSessionData } from '../../../shared/meka-formal';
+import { listMekaProjects } from '@/ipc/mekaProjects';
 import { remoteProjectsStore } from '@/features/device-link/remoteProjectsStore';
 import {
   ChevronDown,
+  Check,
   Code2,
   Hammer,
   MessageSquare,
   MessageSquareCode,
   MonitorSmartphone,
+  Search,
   SearchCode,
+  Ticket,
+  UserRound,
+  X,
 } from 'lucide-react';
 import type { Effort, PermissionMode } from '@/lib/userPreferences.types';
 import type { AttachedFile, MentionedResource } from '@/lib/fileTypes';
@@ -212,6 +227,8 @@ function draftEnableOrcaOptions(collab: CollabDraft) {
     model: cfg.model,
     effort: cfg.effort as 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | undefined,
     fast: cfg.fast,
+    workingDir: cfg.workingDir,
+    remoteHostId: cfg.remoteHostId,
     delegateTask: cfg.initialTask || undefined,
   };
 }
@@ -238,6 +255,185 @@ const createAgentQuickStarts = [
     icon: Hammer,
   },
 ] as const;
+
+type WorkspacePrompt = 'generic' | 'dialogue' | 'meka';
+
+interface MekaDraftRouteState {
+  mekaProjectId?: string;
+  mekaRoleId?: string;
+  formal?: FormalSessionData;
+  formalFirstMessage?: string;
+  formalTitlePrefix?: string;
+}
+
+const CREATE_AGENT_CONTEXT_TRIGGER_CLASS =
+  'inline-flex h-[30px] min-w-20 max-w-[220px] items-center justify-center gap-1.5 rounded-full border border-[var(--create-agent-control-border)] bg-[var(--create-agent-control-bg)] px-3 text-[12px] font-medium leading-[14px] text-[var(--create-agent-control-text)] transition-colors hover:bg-[var(--create-agent-control-bg-hover)] active:bg-[var(--create-agent-control-bg-pressed)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--create-agent-focus-ring)] disabled:cursor-not-allowed disabled:opacity-50';
+
+function readWorkspacePrompt(state: unknown): WorkspacePrompt {
+  if (!state || typeof state !== 'object') return 'dialogue';
+  const value = (state as { workspacePrompt?: unknown }).workspacePrompt;
+  return value === 'generic' || value === 'meka' ? value : 'dialogue';
+}
+
+function readMekaDraftRoute(state: unknown): MekaDraftRouteState {
+  if (!state || typeof state !== 'object') return {};
+  const candidate = state as Record<string, unknown>;
+  const formalCandidate = candidate.formal;
+  let formal: FormalSessionData | undefined;
+  if (formalCandidate && typeof formalCandidate === 'object') {
+    const value = formalCandidate as Record<string, unknown>;
+    if (
+      typeof value.type === 'string' &&
+      typeof value.link === 'string' &&
+      typeof value.ref === 'string' &&
+      value.type.trim() &&
+      value.link.trim() &&
+      value.ref.trim()
+    ) {
+      formal = {
+        type: value.type.trim(),
+        link: value.link.trim(),
+        ref: value.ref.trim(),
+        content: value.content ?? null,
+      };
+    }
+  }
+  return {
+    ...(typeof candidate.mekaProjectId === 'string'
+      ? { mekaProjectId: candidate.mekaProjectId }
+      : {}),
+    ...(typeof candidate.mekaRoleId === 'string' ? { mekaRoleId: candidate.mekaRoleId } : {}),
+    ...(formal ? { formal } : {}),
+    ...(typeof candidate.formalFirstMessage === 'string'
+      ? { formalFirstMessage: candidate.formalFirstMessage }
+      : {}),
+    ...(typeof candidate.formalTitlePrefix === 'string'
+      ? { formalTitlePrefix: candidate.formalTitlePrefix }
+      : {}),
+  };
+}
+
+function MekaRolePicker({
+  roles,
+  roleId,
+  disabled,
+  onRoleChange,
+}: {
+  roles: readonly MekaRole[];
+  roleId: string;
+  disabled: boolean;
+  onRoleChange: (roleId: string) => void;
+}) {
+  const { t } = useTranslation();
+  const [roleOpen, setRoleOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const selectedRole = roles.find((role) => role.id === roleId);
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredRoles = normalizedQuery
+    ? roles.filter((role) =>
+        [role.displayName, role.name, role.description ?? '', ...role.tags].some((value) =>
+          value.toLowerCase().includes(normalizedQuery),
+        ),
+      )
+    : roles;
+
+  const itemClass = cn(
+    'flex w-full items-center justify-between gap-3 rounded-[8px] px-3 py-2 text-left',
+    'outline-none transition-colors hover:bg-[var(--model-item-hover)]',
+  );
+
+  return (
+    <Popover
+      open={roleOpen && !disabled}
+      onOpenChange={(open) => {
+        setRoleOpen(disabled ? false : open);
+        if (!open) setQuery('');
+      }}
+    >
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={CREATE_AGENT_CONTEXT_TRIGGER_CLASS}
+          disabled={disabled || roles.length === 0}
+          aria-label={t('meka.projectsRoles.rolePicker')}
+        >
+          <UserRound
+            size={12}
+            strokeWidth={2}
+            className="shrink-0 text-[var(--create-agent-control-icon)]"
+          />
+          <span className="truncate">{selectedRole?.displayName ?? roleId}</span>
+          <ChevronDown
+            size={12}
+            strokeWidth={2}
+            className="shrink-0 text-[var(--create-agent-control-icon)]"
+          />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        side="bottom"
+        align="end"
+        sideOffset={6}
+        className={cn(
+          'z-[10010] w-[320px] rounded-[12px] p-2',
+          'border border-[var(--model-dropdown-border)] bg-[var(--model-dropdown-bg)]',
+        )}
+      >
+        <div className="flex items-center gap-2 rounded-full border border-[var(--model-dropdown-border)] bg-[var(--surface)] px-3 py-[7px]">
+          <Search size={16} className="shrink-0 text-[var(--text-tertiary)]" />
+          <input
+            type="text"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder={t('meka.projectsRoles.searchRole')}
+            aria-label={t('meka.projectsRoles.searchRole')}
+            className="min-w-0 flex-1 bg-transparent text-14 text-[var(--model-item-text)] outline-none placeholder:text-[var(--text-tertiary)]"
+          />
+        </div>
+        <div
+          className="morph-panel-list-scroll -mr-2 mt-2 flex max-h-[300px] flex-col gap-0.5 overflow-y-auto [scrollbar-gutter:stable]"
+          role="listbox"
+          aria-label={t('meka.projectsRoles.rolePicker')}
+        >
+          {filteredRoles.length > 0 ? (
+            filteredRoles.map((role) => (
+              <button
+                key={role.id}
+                type="button"
+                role="option"
+                aria-selected={role.id === roleId}
+                className={itemClass}
+                onClick={() => {
+                  onRoleChange(role.id);
+                  setRoleOpen(false);
+                  setQuery('');
+                }}
+              >
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <span className="truncate text-14 font-medium text-[var(--model-item-text)]">
+                    {role.displayName}
+                  </span>
+                  {role.description ? (
+                    <span className="truncate text-12 text-[var(--text-tertiary)]">
+                      {role.description}
+                    </span>
+                  ) : null}
+                </span>
+                {role.id === roleId ? (
+                  <Check size={15} className="shrink-0 text-[var(--model-item-check)]" />
+                ) : null}
+              </button>
+            ))
+          ) : (
+            <div className="px-3 py-6 text-center text-13 text-[var(--text-tertiary)]">
+              {t('meka.projectsRoles.noResults')}
+            </div>
+          )}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
 
 /**
  * 草稿态没有 sessionId,附件有两种"寄居"形态,lazy-create 出 sessionId 之后
@@ -324,6 +520,69 @@ export function NewMakerDraftRoute() {
   const { t } = useTranslation();
   const draft = useNewMakerDraft();
   const navigate = useNavigate();
+  const location = useLocation();
+  const workspacePrompt = useMemo(() => readWorkspacePrompt(location.state), [location.state]);
+  const routeMekaDraft = useMemo(() => readMekaDraftRoute(location.state), [location.state]);
+  const isMekaDraft = workspacePrompt === 'meka';
+  const [formalDismissed, setFormalDismissed] = useState(false);
+  const formalDraft = isMekaDraft && !formalDismissed ? (routeMekaDraft.formal ?? null) : null;
+  const formalFirstMessage =
+    formalDraft && routeMekaDraft.formalFirstMessage?.trim()
+      ? routeMekaDraft.formalFirstMessage
+      : '';
+  const isFormalDraft = formalDraft !== null && formalFirstMessage.length > 0;
+  const formalTitlePrefix =
+    routeMekaDraft.formalTitlePrefix?.trim() ||
+    (formalDraft?.type === 'gitlab' ? `#${formalDraft.ref}` : formalDraft?.ref) ||
+    '';
+  const [mekaSelection, setMekaSelection] = useState<{
+    projects: readonly MekaProject[];
+    projectId: string;
+    roles: readonly MekaRole[];
+    roleId: string;
+  }>(() => {
+    const project =
+      BUILTIN_MEKA_PROJECTS.find((candidate) => candidate.id === routeMekaDraft.mekaProjectId) ??
+      BUILTIN_MEKA_PROJECTS[0];
+    const roles = project?.roles ?? [];
+    const role = roles.find((candidate) => candidate.id === routeMekaDraft.mekaRoleId) ?? roles[0];
+    return {
+      projects: BUILTIN_MEKA_PROJECTS,
+      projectId: project?.id ?? routeMekaDraft.mekaProjectId ?? '',
+      roles,
+      roleId: role?.id ?? routeMekaDraft.mekaRoleId ?? '',
+    };
+  });
+
+  useEffect(() => {
+    setFormalDismissed(false);
+  }, [routeMekaDraft.formal?.link]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void listMekaProjects()
+      .then((projects) => {
+        if (cancelled || projects.length === 0) return;
+        const project =
+          projects.find((candidate) => candidate.id === routeMekaDraft.mekaProjectId) ??
+          projects[0];
+        const roles = project?.roles ?? [];
+        const role =
+          roles.find((candidate) => candidate.id === routeMekaDraft.mekaRoleId) ?? roles[0];
+        setMekaSelection({
+          projects,
+          projectId: project?.id ?? routeMekaDraft.mekaProjectId ?? '',
+          roles,
+          roleId: role?.id ?? routeMekaDraft.mekaRoleId ?? '',
+        });
+      })
+      .catch(() => {
+        // Keep the builtin snapshot so a transient DB read failure does not blank the draft.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [routeMekaDraft.mekaProjectId, routeMekaDraft.mekaRoleId]);
   // minWidth=640:自适应内容列在大屏封顶 1220(hook 内 MAX),小屏兜一个体面下限
   // (与对话页的 max 对称);窄于下限时 hook 自动回落成"填满容器",不溢出。
   const { containerRef, inputWidth } = useProportionalWidth(914, { minWidth: 640 });
@@ -339,6 +598,7 @@ export function NewMakerDraftRoute() {
   const isDraftToolbarNarrow = draftContentWidth < 600;
   const { createSession } = useCCSessions();
   const vendorAuthGate = useVendorAuthGate();
+  const mekaConfigGate = useMekaConfigGate();
   const refreshWorktrees = useRefreshWorktrees();
 
   // 「添加远程项目」入口:gate = 至少一台 ready SSH 主机 或 一台可控 device-link 设备。
@@ -418,12 +678,23 @@ export function NewMakerDraftRoute() {
   const isDeviceLinkDraft = effectiveWorkingDir != null && effectiveDeviceLinkDeviceId != null;
   const effectiveExtraDirs = draft.extraDirs;
   const effectiveCollab = collab;
-  const effectiveCollabEnabled =
-    effectiveCollab.enabled && effectiveWorkingDir != null && effectiveRemoteHostId == null;
+  const showCollabToggle = canShowCollabToggleForDraft({
+    workingDir: effectiveWorkingDir,
+    remoteHostId: effectiveRemoteHostId,
+    deviceLinkDeviceId: effectiveDeviceLinkDeviceId ?? null,
+    workspaceKind: isMekaDraft
+      ? 'meka'
+      : effectiveWorkingDir != null
+        ? 'project'
+        : 'dialogue',
+  });
+  const effectiveCollabEnabled = effectiveCollab.enabled && showCollabToggle;
   const projectPickerOptions = useProjectPickerOptions();
-  const createAgentModeLabel =
-    getProjectPickerDisplayName(effectiveWorkingDir, projectPickerOptions) ??
-    t('newChat.folderPicker.dialogue');
+  const createAgentModeLabel = isMekaDraft
+    ? mekaSelection.projects.find((project) => project.id === mekaSelection.projectId)
+        ?.displayName ?? t('meka.projectsRoles.projectPicker')
+    : getProjectPickerDisplayName(effectiveWorkingDir, projectPickerOptions) ??
+      t('newChat.folderPicker.dialogue');
   const draftRightSidebar = useMemo(
     () =>
       resolveNewMakerDraftRightSidebar({
@@ -850,6 +1121,10 @@ export function NewMakerDraftRoute() {
           deviceLinkDeviceName: target.deviceName,
           extraDirs: [],
         });
+        navigate('/cc-agent/new', {
+          replace: true,
+          state: { workspacePrompt: 'generic' },
+        });
         return;
       }
 
@@ -1111,9 +1386,39 @@ export function NewMakerDraftRoute() {
   }, []);
   const handleModePickerSelect = useCallback(
     (path: string, source: FolderPickerSelectSource) => {
+      if (source === 'meka-project') {
+        const project = mekaSelection.projects.find((candidate) => candidate.id === path);
+        const roles = project?.roles ?? [];
+        setMekaSelection((current) => ({
+          ...current,
+          projectId: path,
+          roles,
+          roleId: roles[0]?.id ?? '',
+        }));
+        setWtEnabled(false);
+        setWtName('');
+        setWtSourceBranch('');
+        setWtBaseRepo(null);
+        handleWorkingDirChange(null);
+        navigate('/cc-agent/new', {
+          replace: true,
+          state: {
+            workspacePrompt: 'meka',
+            mekaProjectId: path,
+            mekaRoleId: roles[0]?.id,
+          },
+        });
+        return;
+      }
       handleWorkingDirChange(source === 'dialogue' ? null : path);
+      navigate('/cc-agent/new', {
+        replace: true,
+        state: {
+          workspacePrompt: source === 'dialogue' ? 'dialogue' : 'generic',
+        },
+      });
     },
-    [handleWorkingDirChange],
+    [handleWorkingDirChange, mekaSelection.projects, navigate],
   );
 
   const handleWtEnabledChange = useCallback((enabled: boolean) => {
@@ -1171,6 +1476,11 @@ export function NewMakerDraftRoute() {
       // (未选 / 已断开 → null = 跟随默认路由)。透传给 createSession 落盘 sessions.provider_id,
       // 让新会话首个请求就走对来源,与"会话内切来源"行为一致。device-link 远程会话不支持(下方分支跳过)。
       const providerId = opts?.providerId ?? null;
+      const messageToSend = isFormalDraft ? formalFirstMessage : message;
+      if (isMekaDraft && (!mekaSelection.projectId || !mekaSelection.roleId)) {
+        toast.error(t('meka.projectsRoles.selectionRequired'));
+        return false;
+      }
 
       // 本地导航命令(/jump-session)在进入 createSession 前同步短路:命中即直接
       // 跳转,新建界面不会先创建 session。这正是它和 /issue 的关键区别。
@@ -1199,6 +1509,10 @@ export function NewMakerDraftRoute() {
             deviceId: effectiveDeviceLinkDeviceId,
           });
           if (!proceed) return;
+          if (isMekaDraft && mekaSelection.projectId === 'saga2') {
+            const { proceed: mekaProceed } = await mekaConfigGate.checkAndConfirm();
+            if (!mekaProceed) return;
+          }
 
           // device-link 远程项目:在被控端走校验过的 maker:create-session 建会话(写被控 DB,
           // allowlist 内、非裸写),首条消息经 setPending 交给 SessionView 发送(与本地
@@ -1563,11 +1877,22 @@ export function NewMakerDraftRoute() {
             permissionMode,
             fastMode: effectiveFastMode,
             planModeEnabled: effectivePlanMode,
-            workingDir: workingDir ?? undefined,
-            // 没选项目目录 = 创建 standalone dialogue;main 端会按 workspaceKind='dialogue'
-            // 自动分配 <userData>/dialogues/<date>/<sid>/ 作为运行目录,不进入项目段。
-            workspaceKind: workingDir ? 'project' : 'dialogue',
-            remoteHostId: workingDir ? (effectiveRemoteHostId ?? undefined) : undefined,
+            workingDir: isMekaDraft ? undefined : (workingDir ?? undefined),
+            workspaceKind: isMekaDraft ? 'meka' : workingDir ? 'project' : 'dialogue',
+            ...(isMekaDraft
+              ? {
+                  mekaProjectId: mekaSelection.projectId,
+                  mekaRoleId: mekaSelection.roleId,
+                }
+              : {}),
+            ...(isFormalDraft && formalDraft
+              ? {
+                  isFormal: true,
+                  formal: formalDraft,
+                }
+              : {}),
+            remoteHostId:
+              !isMekaDraft && workingDir ? (effectiveRemoteHostId ?? undefined) : undefined,
             // Codex 不支持 extraDirs (capability=false), agent 收到也忽略;
             // 但 draft.extraDirs 是 vendor 无关字段, 这里照传, DB 存了也无害。
             extraDirs: effectiveExtraDirs,
@@ -1623,7 +1948,7 @@ export function NewMakerDraftRoute() {
           // URL。必须在 setPending 之前,否则 SessionView 拿到的还是 base64。
           const rehydratedFiles = await rehomeDraftAttachments(files, newSession.id);
           setPending(newSession.id, {
-            text: message,
+            text: messageToSend,
             files: rehydratedFiles,
             mentions,
             ...(opts?.quotesEncoded ? { quotesEncoded: true } : {}),
@@ -1687,12 +2012,18 @@ export function NewMakerDraftRoute() {
       // 少了它 handleSend 会闭包吃旧的 effectiveCollab,起 Worker 用错配置(codex P2)。
       effectiveCollab.workerConfig,
       vendorAuthGate,
+      mekaConfigGate,
       createSession,
       navigate,
       crossAgentDialog.runMigrationFlow,
       attachmentState,
       refreshWorktrees,
       t,
+      isMekaDraft,
+      isFormalDraft,
+      formalDraft,
+      formalFirstMessage,
+      mekaSelection,
     ],
   );
 
@@ -1710,6 +2041,13 @@ export function NewMakerDraftRoute() {
         deviceId: effectiveDeviceLinkDeviceId,
       });
       if (!proceed) return; // 用户取消授权:弹窗关闭即可,不算错误。
+      if (isMekaDraft && (!mekaSelection.projectId || !mekaSelection.roleId)) {
+        throw new Error(t('meka.projectsRoles.selectionRequired'));
+      }
+      if (isMekaDraft && mekaSelection.projectId === 'saga2') {
+        const { proceed: mekaProceed } = await mekaConfigGate.checkAndConfirm();
+        if (!mekaProceed) return;
+      }
       if (isDeviceLinkDraft) {
         // partial state 防御:device-link 草稿按不变量必带 deviceId+workingDir;
         // 万一缺失,显式报错而不是静默落到「本地建会话 + 本地 setGoal」(目标会建错机器)。
@@ -1789,6 +2127,7 @@ export function NewMakerDraftRoute() {
         return;
       }
       const selectedWorkingDir = effectiveWorkingDir?.trim() || undefined;
+      const goalObjective = isFormalDraft ? formalFirstMessage : objective;
       const newSession = await createSession({
         id: makeDraftSessionId(),
         agentKind: persistedAgentKind,
@@ -1796,9 +2135,22 @@ export function NewMakerDraftRoute() {
         effort: draftInitialEffort,
         permissionMode: chatInitialPermissionMode,
         fastMode: effectiveFastMode,
-        workingDir: selectedWorkingDir,
-        workspaceKind: selectedWorkingDir ? 'project' : 'dialogue',
-        remoteHostId: selectedWorkingDir ? (effectiveRemoteHostId ?? undefined) : undefined,
+        workingDir: isMekaDraft ? undefined : selectedWorkingDir,
+        workspaceKind: isMekaDraft ? 'meka' : selectedWorkingDir ? 'project' : 'dialogue',
+        ...(isMekaDraft
+          ? {
+              mekaProjectId: mekaSelection.projectId,
+              mekaRoleId: mekaSelection.roleId,
+            }
+          : {}),
+        ...(isFormalDraft && formalDraft
+          ? {
+              isFormal: true,
+              formal: formalDraft,
+            }
+          : {}),
+        remoteHostId:
+          !isMekaDraft && selectedWorkingDir ? (effectiveRemoteHostId ?? undefined) : undefined,
         extraDirs: effectiveExtraDirs,
         providerId: chatInitialProviderId ?? null,
       });
@@ -1829,10 +2181,14 @@ export function NewMakerDraftRoute() {
         }
       }
       // setGoal 内部 ensureSession(拉起 agent)+ 发首轮(带目标指令)。
-      await window.electronAPI.maker.setGoal({ sessionId: newSession.id, objective, limits });
+      await window.electronAPI.maker.setGoal({
+        sessionId: newSession.id,
+        objective: goalObjective,
+        limits,
+      });
       // 自动起名:/goal 新建的会话不经普通发送路径,scheduleAutoName 漏触发 → 标题会停在默认。
       // 这里用目标文案补一次,与普通会话同款(宽限期 + 占位 + 不覆盖手动改名)。
-      makerChatStore.autoNameSession(newSession.id, objective, capabilityAgentKind);
+      makerChatStore.autoNameSession(newSession.id, goalObjective, capabilityAgentKind);
       clearComposerDraftAndNotify(NEW_MAKER_DRAFT_KEY);
       resetDraftWorkspaceAfterSend();
       navigate(`/cc-agent/${newSession.id}`, {
@@ -1847,6 +2203,7 @@ export function NewMakerDraftRoute() {
       capabilitiesLoading,
       deviceProvidersLoading,
       vendorAuthGate,
+      mekaConfigGate,
       authVendor,
       effectiveDeviceLinkDeviceId,
       effectiveDeviceLinkDeviceName,
@@ -1864,6 +2221,11 @@ export function NewMakerDraftRoute() {
       effectiveCollab,
       navigate,
       t,
+      isMekaDraft,
+      isFormalDraft,
+      formalDraft,
+      formalFirstMessage,
+      mekaSelection,
     ],
   );
 
@@ -2029,13 +2391,30 @@ export function NewMakerDraftRoute() {
                     : 'absolute right-0 top-[22px] z-10',
                 )}
               >
+                {isMekaDraft ? (
+                  <MekaRolePicker
+                    roles={mekaSelection.roles}
+                    roleId={mekaSelection.roleId}
+                    disabled={wtCreating}
+                    onRoleChange={(roleId) =>
+                      setMekaSelection((current) => ({ ...current, roleId }))
+                    }
+                  />
+                ) : null}
                 <FolderPickerPopover
                   open={folderPickerOpen}
                   onOpenChange={handleFolderPickerOpenChange}
                   onSelect={handleModePickerSelect}
                   projectOptions={projectPickerOptions}
+                  mekaProjectOptions={mekaSelection.projects.map((project) => ({
+                    path: project.id,
+                    name: project.displayName,
+                    description: project.description ?? project.path ?? undefined,
+                  }))}
                   // 仅在有可用远程目标时暴露「添加远程项目」入口(SSH ready 主机 / device-link 可控设备)。
-                  onAddRemoteProject={hasAnyRemoteTarget ? () => setAddRemoteProjectOpen(true) : undefined}
+                  onAddRemoteProject={
+                    hasAnyRemoteTarget ? () => setAddRemoteProjectOpen(true) : undefined
+                  }
                   side="bottom"
                   align="end"
                   sideOffset={6}
@@ -2043,7 +2422,8 @@ export function NewMakerDraftRoute() {
                   <button
                     type="button"
                     data-testid="create-agent-mode-pill"
-                    className="inline-flex h-[30px] min-w-20 max-w-[220px] items-center justify-center gap-1.5 rounded-full border border-[var(--create-agent-control-border)] bg-[var(--create-agent-control-bg)] px-3 text-[12px] font-medium leading-[14px] text-[var(--create-agent-control-text)] transition-colors hover:bg-[var(--create-agent-control-bg-hover)] active:bg-[var(--create-agent-control-bg-pressed)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--create-agent-focus-ring)]"
+                    className={CREATE_AGENT_CONTEXT_TRIGGER_CLASS}
+                    disabled={isFormalDraft}
                     aria-label={t('newChat.collaboration.modeLabel')}
                   >
                     <MessageSquare
@@ -2056,11 +2436,13 @@ export function NewMakerDraftRoute() {
                         ? t('newChat.collaboration.pillLabel')
                         : createAgentModeLabel}
                     </span>
-                    <ChevronDown
-                      size={12}
-                      strokeWidth={2}
-                      className="shrink-0 text-[var(--create-agent-control-icon)]"
-                    />
+                    {!isFormalDraft ? (
+                      <ChevronDown
+                        size={12}
+                        strokeWidth={2}
+                        className="shrink-0 text-[var(--create-agent-control-icon)]"
+                      />
+                    ) : null}
                   </button>
                 </FolderPickerPopover>
                 <WorktreeChipsRow
@@ -2077,7 +2459,7 @@ export function NewMakerDraftRoute() {
                   onSuggestedNameChange={handleWtNameChange}
                   // SSH 远程仍禁用 worktree(远端 git 探测未落地);device-link 远程可用:
                   // 探测/建议名/创建全部经隧道在被控端执行(与 488cb33 前口径一致)。
-                  worktreeDisabled={isRemoteProjectDraft}
+                  worktreeDisabled={isMekaDraft || isRemoteProjectDraft}
                   deviceLinkDeviceId={effectiveDeviceLinkDeviceId ?? null}
                   disabled={wtCreating}
                 />
@@ -2118,7 +2500,7 @@ export function NewMakerDraftRoute() {
                     compactToolbar
                     // denseToolbar 去除(2026-07-22):hero 输入框够宽,协同 toggle 应显示「协同」文字
                     // 与会话内主视图一致;窄窗口仍由 autoDenseToolbar 自动收成 icon-only。
-                    placeholder="Hi Cindy!"
+                    placeholder={isMekaDraft ? t('meka.draft.placeholder') : 'Hi Cindy!'}
                     sessionId={undefined}
                     initialWorkingDir={effectiveWorkingDir}
                     remoteHostId={draft.remoteHostId ?? null}
@@ -2160,9 +2542,7 @@ export function NewMakerDraftRoute() {
                     // 走它而非简单 worker popover。ON 态点击 onChange(enabled:false) 关闭协同。
                     // createSession 已在 effectiveCollabEnabled 时用 workerConfig 拉起 Worker。
                     collaboration={
-                      effectiveWorkingDir != null &&
-                      effectiveRemoteHostId == null &&
-                      effectiveDeviceLinkDeviceId == null
+                      showCollabToggle
                         ? {
                             enabled: effectiveCollab.enabled,
                             worker: effectiveCollab.worker,
@@ -2184,6 +2564,43 @@ export function NewMakerDraftRoute() {
                       />
                     }
                     narrowToolbar={isDraftToolbarNarrow}
+                    rightOfPermissionControl={
+                      isFormalDraft && formalDraft && formalTitlePrefix ? (
+                        <div className="inline-flex h-7 shrink-0 items-stretch overflow-hidden rounded-full border border-[var(--border-default)] text-[var(--text-primary)]">
+                          <Popover>
+                            <PopoverTrigger asChild>
+                              <button
+                                type="button"
+                                className="inline-flex items-center gap-1.5 px-2.5 text-xs font-medium hover:bg-[var(--surface-hover)]"
+                                aria-label={t('meka.formalPicker.formalSession')}
+                              >
+                                <Ticket size={13} strokeWidth={1.8} />
+                                {formalTitlePrefix}
+                              </button>
+                            </PopoverTrigger>
+                            <PopoverContent side="top" align="start" className="w-[300px] p-3">
+                              <p className="text-xs font-medium text-[var(--text-primary)]">
+                                {t('meka.formalPicker.formalSession')}
+                              </p>
+                              <p className="mt-1.5 break-all text-xs text-[var(--text-secondary)]">
+                                {formalDraft.link}
+                              </p>
+                            </PopoverContent>
+                          </Popover>
+                          <button
+                            type="button"
+                            className="inline-flex items-center justify-center px-2 hover:bg-[var(--surface-hover)]"
+                            aria-label={t('meka.formalPicker.exit')}
+                            onClick={() => {
+                              setFormalDismissed(true);
+                              clearComposerDraftAndNotify(NEW_MAKER_DRAFT_KEY);
+                            }}
+                          >
+                            <X size={13} strokeWidth={2} />
+                          </button>
+                        </div>
+                      ) : undefined
+                    }
                     paletteMaxHeight={240}
                     attachmentState={attachmentState}
                     draftKey={NEW_MAKER_DRAFT_KEY}
@@ -2293,6 +2710,8 @@ export function NewMakerDraftRoute() {
                 model: form.model,
                 effort: form.effort,
                 fast: form.fast,
+                workingDir: form.workingDir,
+                remoteHostId: form.remoteHostId,
                 initialTask: form.initialTask || undefined,
               },
             });

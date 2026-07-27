@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 1,
+  "projectId": "saga2",
+  "id": "system-development",
+  "name": "system-development",
+  "displayName": "系统功能开发",
+  "description": "从设计意图到客户端、配置和服务完整落地系统功能",
+  "policyProviderRefs": [
+    "meka-host-risk-policy",
+    "meka-p4-boundary-policy"
+  ],
+  "useProjectDefaults": true,
+  "prompt": "# System development\n\nTurn design intent into an explicit cross-layer contract, assign ownership to configuration, client, service, and documentation surfaces, implement in dependency order, then verify integration and user-visible acceptance criteria.",
+  "rules": [],
+  "skills": [
+    {
+      "skillId": "meka-design-handbook",
+      "enabled": true
+    }
+  ],
+  "mcp": [
+    {
+      "id": "meka-design",
+      "providerId": "meka-design",
+      "enabled": true
+    }
+  ],
+  "projectMetadataSelection": [
+    {
+      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/系统策划组-system-planning/skills/交互原型制作工作流-meka-prototype-manager/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/系统策划组-system-planning/skills/系统功能案生成工作流-system-proposal-manager/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/系统策划组-system-planning/skills/系统策划组工作流-system-planning-manager/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/doc-features-template/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/doc-project/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/doc-proto/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/script-battle/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/script-data/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/script-fun/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/script-game/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/script-home/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/script-test/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/script-ui/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    }
+  ]
+}

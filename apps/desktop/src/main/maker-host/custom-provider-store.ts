@@ -2,7 +2,7 @@
  * custom-provider-store —— 用户自定义供应商**配置**的 localDb CRUD（不含密钥）。
  *
  * 存储：localDb `custom_providers` 表。DB 文件本身按 userId 切片
- * （`<userData>/xdt-maker-<userId>.db`，换账号 closeDb 重开），故本表天然账号隔离、
+ * （`<userData>/<dbFilePrefix>-<userId>.db`，换账号 closeDb 重开），故本表天然账号隔离、
  * 无 owner 列（与 `sessions` 一致）。API key 不在此——按 runtime 单独走 safeStorage（见 routing）。
  *
  * 形状：行 ↔ `@cindy/model-providers` 的 `CustomProviderConfig`（per-runtime）。`runtimes` 列以

@@ -9,6 +9,7 @@ import { ProtectedRoute } from '@/components/auth/ProtectedRoute';
 import { GuestRoute } from '@/components/auth/GuestRoute';
 import { LocalDbGate } from '@/components/auth/LocalDbGate';
 import { CCAgentFeatureLayout } from '@/features/cc-agent/CCAgentFeatureLayout';
+import { MekaProjectRoleEditorRoute } from '@/features/cc-agent/MekaProjectRoleEditorRoute';
 import { CCAgentIndexRedirect } from '@/features/cc-agent/CCAgentIndexRedirect';
 import { SecondaryWindowBootGate } from '@/features/cc-agent/SecondaryWindowBootGate';
 import { CCAgentSessionView } from '@/features/cc-agent/CCAgentSessionView';
@@ -87,6 +88,7 @@ export const router = createHashRouter([
                       // delayed-create: /cc-agent/new 是 transient draft 路由(无后端 session),
                       // 必须在 :sessionId 之前匹配,否则会被当作 sessionId='new' 进入 SessionView。
                       { path: 'new', element: <NewMakerDraftRoute /> },
+                      { path: 'meka', element: <MekaProjectRoleEditorRoute /> },
                       // 兼容旧 deep link:新建入口已收敛到同一个可切换 workspace 的创建页。
                       { path: 'new-dialogue', element: <Navigate to="/cc-agent/new" replace /> },
                       // Scheduled — 调度任务列表（与 new 同一层级，必须在 :sessionId 之前）

@@ -35,7 +35,9 @@ describe('sidebar 顶部 + New 单按钮(delayed-create)', () => {
     const matches = sidebarSource.match(/navigate\(['`]\/cc-agent\/new['`],\s*\{\s*state:\s*makeNewMakerRouteState\('generic'\)\s*\}\)/g);
     expect(matches).not.toBeNull();
     expect(matches!.length).toBeGreaterThanOrEqual(1);
-    expect(sidebarSource).toContain("function makeNewMakerRouteState(workspacePrompt: 'generic' | 'dialogue')");
+    expect(sidebarSource).toContain(
+      "function makeNewMakerRouteState(workspacePrompt: 'generic' | 'dialogue' | 'meka')",
+    );
     expect(sidebarSource).not.toContain('requestId: Date.now()');
   });
 

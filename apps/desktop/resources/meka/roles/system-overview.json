@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "projectId": "saga2",
+  "id": "system-overview",
+  "name": "system-overview",
+  "displayName": "系统说明",
+  "description": "基于文档、配置与代码形成可追溯的系统说明",
+  "policyProviderRefs": [
+    "meka-host-risk-policy",
+    "meka-p4-boundary-policy"
+  ],
+  "useProjectDefaults": true,
+  "excludeDefaults": {
+    "skills": [
+      "remote-operations"
+    ],
+    "mcp": [
+      "mcp-router",
+      "project-agent"
+    ]
+  },
+  "prompt": "# System overview\n\nCollect facts from current documentation, configuration, and code. Cross-check discrepancies, distinguish confirmed behavior from inference, and produce a structured explanation with traceable source locations and known gaps.",
+  "rules": [],
+  "skills": [],
+  "mcp": [],
+  "projectMetadataSelection": [
+    {
+      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/系统策划组-system-planning/skills/交互原型制作工作流-meka-prototype-manager/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/系统策划组-system-planning/skills/系统功能案生成工作流-system-proposal-manager/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/系统策划组-system-planning/skills/系统策划组工作流-system-planning-manager/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/doc-features-template/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/doc-project/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/doc-proto/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/script-battle/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/script-data/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/script-fun/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/script-game/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/script-home/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/script-test/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/script-ui/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    }
+  ]
+}

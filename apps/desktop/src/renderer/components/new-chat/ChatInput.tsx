@@ -380,6 +380,8 @@ interface ChatInputProps {
    * 当前唯一使用方:NewMakerDraftRoute 把 WorktreeChipsRow 注入这里。
    */
   leftOfFolderPicker?: React.ReactNode;
+  /** Additional control rendered immediately after the permission selector. */
+  rightOfPermissionControl?: React.ReactNode;
   /**
    * External attachment management — when provided, ChatInput uses these
    * instead of its own internal useAttachments(). This allows a parent
@@ -1037,6 +1039,7 @@ export function ChatInput({
   onFolderPickerOpenChange,
   showFolderPicker = true,
   leftOfFolderPicker,
+  rightOfPermissionControl,
   onModelDidChange,
   onEffortDidChange,
   onPermissionModeDidChange,
@@ -5278,6 +5281,7 @@ export function ChatInput({
                   iconOnly={useUltraCompactToolbar}
                   visualVariant={isCreateAgentVariant ? 'create-agent' : 'default'}
                 />
+                {rightOfPermissionControl}
                 {useNarrowToolbar && !useCompactMiddleToolbar && <>{middleToolbarSlot}</>}
               </div>
               <div
