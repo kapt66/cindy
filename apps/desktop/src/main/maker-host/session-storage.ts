@@ -36,7 +36,8 @@ function fromDbKind(k: string): AgentKind {
 }
 
 function normalizeWorkspaceKind(value: unknown): WorkspaceKind {
-  return value === 'dialogue' ? 'dialogue' : 'project';
+  if (value === 'dialogue' || value === 'meka') return value;
+  return 'project';
 }
 
 type SessionRow = typeof sessions.$inferSelect;

@@ -1,9 +1,10 @@
 import type { Effort, PermissionMode } from '@/lib/userPreferences.types';
 import type { SessionSource } from '../../shared/sessionSource';
+import type { FormalSessionData } from '../../shared/meka-formal';
 import type { TurnUsageDetails } from '../../shared/turnUsageDetails';
 
 export type SessionStatus = 'active' | 'archived' | 'deleted';
-export type WorkspaceKind = 'project' | 'dialogue';
+export type WorkspaceKind = 'project' | 'dialogue' | 'meka';
 export type DeviceLinkConnectionStatus = 'connected' | 'disconnected';
 
 /**
@@ -183,6 +184,14 @@ export interface Session {
    * - dialogue: workingDir 只是对话运行/文件目录, 不参与 Projects 分组。
    */
   workspaceKind: WorkspaceKind;
+  /** Frozen Meka project/role binding. These fields are creation-only. */
+  mekaProjectId?: string | null;
+  mekaRoleId?: string | null;
+  /** Legacy built-in role marker retained for old Meka sessions. */
+  mekaRole?: 'planner' | 'artist' | 'programmer' | 'tester' | null;
+  isFormal?: boolean;
+  /** Provider-neutral requirement snapshot captured before session creation. */
+  formal?: FormalSessionData | null;
   model: string;
   effort: Effort;
   permissionMode: PermissionMode;

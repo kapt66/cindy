@@ -31,6 +31,40 @@ const SESSION_SOURCES = [
   'shared',
 ] as const satisfies readonly SessionSource[];
 
+export const mekaProjects = sqliteTable('meka_projects', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  path: text('path'),
+  tags: text('tags'),
+  isBuiltin: integer('is_builtin', { mode: 'boolean' }).notNull().default(false),
+  sortOrder: integer('sort_order').notNull().default(0),
+  createdAt: integer('created_at'),
+  updatedAt: integer('updated_at'),
+});
+
+export const mekaRoles = sqliteTable(
+  'meka_roles',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => mekaProjects.id),
+    name: text('name').notNull(),
+    displayName: text('display_name').notNull(),
+    description: text('description'),
+    tags: text('tags'),
+    filePath: text('file_path').notNull(),
+    isBuiltin: integer('is_builtin', { mode: 'boolean' }).notNull().default(false),
+    contentDigest: text('content_digest'),
+    sortOrder: integer('sort_order').notNull().default(0),
+    createdAt: integer('created_at'),
+    updatedAt: integer('updated_at'),
+  },
+  (t) => ({
+    idxProjectId: index('idx_meka_roles_project_id').on(t.projectId),
+  }),
+);
+
 export const sessions = sqliteTable(
   'sessions',
   {
@@ -42,9 +76,20 @@ export const sessions = sqliteTable(
      * - project: working_dir 是项目目录, 参与侧边栏 Projects 分组。
      * - dialogue: working_dir 是对话自己的运行/文件目录, 不作为项目展示。
      */
-    workspaceKind: text('workspace_kind', { enum: ['project', 'dialogue'] })
+    workspaceKind: text('workspace_kind', { enum: ['project', 'dialogue', 'meka'] })
       .notNull()
       .default('project'),
+    mekaRole: text('meka_role', {
+      enum: ['planner', 'artist', 'programmer', 'tester'],
+    }),
+    mekaTargetJson: text('meka_target_json'),
+    mekaProjectId: text('meka_project_id').references(() => mekaProjects.id),
+    mekaRoleId: text('meka_role_id').references(() => mekaRoles.id, { onDelete: 'set null' }),
+    isFormal: integer('is_formal').notNull().default(0),
+    formalType: text('formal_type'),
+    formalLink: text('formal_link'),
+    formalRef: text('formal_ref'),
+    formalContentJson: text('formal_content_json'),
     model: text('model').notNull().default('claude-sonnet-4-6'),
     effort: text('effort', {
       enum: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
@@ -184,6 +229,7 @@ export const sessions = sqliteTable(
      * 仅 Codex 支持; Claude session 此列恒为 null (capability 未接通)。
      */
     remoteHostId: text('remote_host_id'),
+    capabilitySnapshotJson: text('capability_snapshot_json'),
     /**
      * interrupted-turn-resume: 最近一次 turn 的启动时刻(unix ms)。与
      * lastTurnEndedAt 配对做「疑似中断」纯读判定(startedAt > endedAt),两个
@@ -216,6 +262,8 @@ export const sessions = sqliteTable(
     // 服务 listSessions 仅按时间段过滤的路径, 以及游标分页 (createdAt, id) 复合比较。
     idxCreatedAtId: index('idx_sessions_created_at').on(t.createdAt, t.id),
     idxWorkspaceKind: index('idx_sessions_workspace_kind').on(t.workspaceKind),
+    idxMekaProjectId: index('idx_sessions_meka_project_id').on(t.mekaProjectId),
+    idxMekaRoleId: index('idx_sessions_meka_role_id').on(t.mekaRoleId),
     idxParentSessionId: index('idx_sessions_parent_session_id').on(t.parentSessionId),
     idxOrcaRole: index('idx_sessions_orca_role').on(t.orcaRole),
     idxWorktreePath: index('idx_sessions_worktree_path').on(t.worktreePath),
@@ -1022,7 +1070,7 @@ export const skillUsageExposures = sqliteTable(
  * 与 `@cindy/model-providers` 的 `CustomProviderConfig` 一一对应；加载时经 `buildUserProvider`
  * 展开成标准 `Provider`，并进 host 的 active-catalog，供路由 / 选择器 / listProviders 统一消费。
  *
- * 账号隔离：本地 db 文件本身按 userId 切片（`<userData>/xdt-maker-<userId>.db`，换账号 closeDb
+ * 账号隔离：本地 db 文件本身按 userId 切片（`<userData>/<dbFilePrefix>-<userId>.db`，换账号 closeDb
  * 重开），故**不需要 owner 列**——与 `sessions`（同样不存 userId）一致。
  *
  * 密钥**不在本表**：API key 单独存 safeStorage（`provider_key_<id>`，机制同内置 XD 网关 key），

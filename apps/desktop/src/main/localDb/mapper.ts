@@ -32,6 +32,7 @@ import type {
 import { normalizeSessionSource } from '../../shared/sessionSource.js';
 import { normalizeWorkingDirForStorage } from '../../shared/workingDir.js';
 import { isSyntheticTriggerText } from '../../shared/interruptedTurn.js';
+import type { FormalSessionData } from '../../shared/meka-formal.js';
 
 type SessionRow = typeof sessions.$inferSelect;
 type SessionInsert = typeof sessions.$inferInsert;
@@ -116,6 +117,18 @@ export function sessionToCamel(row: SessionRowWithCount): Session {
     title: row.title,
     workingDir: row.workingDir,
     workspaceKind: normalizeWorkspaceKind(row.workspaceKind),
+    mekaProjectId: row.mekaProjectId ?? null,
+    mekaRoleId: row.mekaRoleId ?? null,
+    mekaRole: row.mekaRole ?? null,
+    isFormal: row.isFormal === 1,
+    formal: row.isFormal === 1 && row.formalType && row.formalLink && row.formalRef
+      ? {
+          type: row.formalType,
+          link: row.formalLink,
+          ref: row.formalRef,
+          content: parseFormalContentJson(row.formalContentJson),
+        }
+      : null,
     model: row.model,
     effort: row.effort as Effort,
     permissionMode: row.permissionMode as PermissionMode,
@@ -223,14 +236,38 @@ export function sessionCreateToRow(
      * create 由 renderer 透传用户在草稿里选定的来源,使新会话首个请求就走对供应商。
      */
     providerId?: string | null;
+    /** Creation-only Meka project/role binding. */
+    mekaProjectId?: string | null;
+    mekaRoleId?: string | null;
+    /** Legacy built-in role marker; ignored when a project/role binding exists. */
+    mekaRole?: 'planner' | 'artist' | 'programmer' | 'tester' | null;
+    isFormal?: boolean;
+    formal?: FormalSessionData | null;
   } | undefined,
   now: number,
 ): SessionInsert {
+  const workspaceKind = body?.workspaceKind ?? 'project';
+  const mekaProjectId = workspaceKind === 'meka' ? normalizeOptionalId(body?.mekaProjectId) : null;
+  const mekaRoleId = workspaceKind === 'meka' ? normalizeOptionalId(body?.mekaRoleId) : null;
+  const formal = workspaceKind === 'meka' && body?.isFormal === true
+    ? normalizeFormalSessionData(body.formal)
+    : null;
   return {
     id,
     title: 'New Maker',
     workingDir: normalizeWorkingDirForStorage(body?.workingDir),
-    workspaceKind: body?.workspaceKind ?? 'project',
+    workspaceKind,
+    mekaProjectId,
+    mekaRoleId,
+    mekaRole:
+      workspaceKind === 'meka' && !mekaProjectId && !mekaRoleId
+        ? (body?.mekaRole ?? null)
+        : null,
+    isFormal: formal ? 1 : 0,
+    formalType: formal?.type ?? null,
+    formalLink: formal?.link ?? null,
+    formalRef: formal?.ref ?? null,
+    formalContentJson: formal ? safeStringify(formal.content) : null,
     model: body?.model ?? 'claude-sonnet-4-6',
     effort: (body?.effort as SessionInsert['effort']) ?? 'high',
     permissionMode:
@@ -390,6 +427,39 @@ export function safeParseStringArray(raw: string | null | undefined): string[] {
 }
 
 function normalizeWorkspaceKind(raw: unknown): WorkspaceKind {
+  if (raw === 'dialogue' || raw === 'meka') return raw;
+  return 'project';
+}
+
+function normalizeOptionalId(value: string | null | undefined): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeFormalSessionData(value: FormalSessionData | null | undefined): FormalSessionData | null {
+  if (!value || typeof value !== 'object') return null;
+  const type = normalizeOptionalId(value.type);
+  const link = normalizeOptionalId(value.link);
+  const ref = normalizeOptionalId(value.ref);
+  if (!type || !link || !ref) return null;
+  return { type, link, ref, content: value.content ?? null };
+}
+
+export function parseFormalContentJson(raw: string | null | undefined): unknown | null {
+  return parseJsonOrNull(raw);
+}
+
+function parseJsonOrNull(raw: string | null | undefined): unknown | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeScheduleWorkspaceKind(raw: unknown): 'project' | 'dialogue' {
   return raw === 'dialogue' ? 'dialogue' : 'project';
 }
 
@@ -502,7 +572,7 @@ export function scheduleToCamel(row: ScheduleRow): Schedule {
     providerId: row.providerId ?? undefined,
     effort: row.effort ?? undefined,
     fastMode: !!row.fastMode,
-    workspaceKind: normalizeWorkspaceKind(row.workspaceKind),
+    workspaceKind: normalizeScheduleWorkspaceKind(row.workspaceKind),
     workingDir: row.workingDir ?? undefined,
     useWorktree: !!row.useWorktree,
     targetSessionId: row.targetSessionId ?? undefined,

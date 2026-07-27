@@ -16,6 +16,7 @@ import { extractIpcError } from '@/utils/ipcError';
 import { makerApiFor } from '@/lib/makerTransport';
 import { getSessionDeviceId } from '@/features/device-link/remoteProjectsStore';
 import type { SessionReference } from '../../shared/sessionReference';
+import type { FormalSessionData } from '../../shared/meka-formal';
 
 /**
  * status 过滤器：对应 Sidebar Filter 的 Active/Archived/All 三选。
@@ -69,6 +70,10 @@ export async function create(body?: {
    * 让新会话与「会话内切来源」行为一致(首个请求即走对供应商)。
    */
   providerId?: string | null;
+  mekaProjectId?: string | null;
+  mekaRoleId?: string | null;
+  isFormal?: boolean;
+  formal?: FormalSessionData | null;
 }): Promise<Session> {
   return wrap(window.electronAPI.localDb.sessions.create(body));
 }

@@ -19,6 +19,14 @@ function isSafePathSegment(value: string): boolean {
 export interface MakerSessionCreateOpts extends CreateSessionOptions {
   orcaRole?: 'lead' | 'worker' | null;
   /**
+   * Meka bindings are persisted-session metadata, not caller authority.
+   * Desktop reconciles them from the existing DB row before runtime startup.
+   */
+  mekaProjectId?: string | null;
+  mekaRoleId?: string | null;
+  mekaRole?: 'planner' | 'artist' | 'programmer' | 'tester' | null;
+  isFormal?: boolean;
+  /**
    * Codex-only escape hatch for tests / special callers. Normal desktop paths
    * leave this undefined; Maker lifecycle hooks read the DB bit for every
    * maker.createSession caller (IPC / scheduler / Feishu).
@@ -80,7 +88,7 @@ function readExplicitWorkingDir(value: unknown): string | null {
 
 function readWorkspaceKind(value: unknown): WorkspaceKind | undefined {
   if (value === undefined || value === null) return undefined;
-  if (value === 'project' || value === 'dialogue') return value;
+  if (value === 'project' || value === 'dialogue' || value === 'meka') return value;
   throwIpcError('INVALID_PARAMS', `invalid workspaceKind: ${String(value)}`);
 }
 

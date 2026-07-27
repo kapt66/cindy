@@ -124,6 +124,21 @@ describe('session IPC request parsing', () => {
     ).toThrow('[INVALID_PARAMS]');
   });
 
+  it('parses Meka workspace kind for host-side persisted-row reconciliation', () => {
+    expect(
+      readCreateSessionOpts({
+        id: 'meka-session-1',
+        agentKind: 'codex',
+        workspaceKind: 'meka',
+        workingDir: 'C:\\caller-value',
+        model: 'gpt-5.4',
+      }),
+    ).toMatchObject({
+      id: 'meka-session-1',
+      workspaceKind: 'meka',
+    });
+  });
+
   it('does not allocate a dialogue cwd before base fields are valid', () => {
     const allocateDialogueWorkspace = vi.fn(() => '/dialogue');
 

@@ -30,6 +30,7 @@ import type { AgentKind, Session, WorkspaceKind } from '@/lib/ccAgent.types';
 import * as sessionService from '@/lib/sessionService';
 import type { ListStatusFilter } from '@/lib/sessionService';
 import { sessionsStore } from '@/lib/sessionsStore';
+import type { FormalSessionData } from '../../shared/meka-formal';
 
 interface UseCCSessionsOptions {
   /** Session status filter — F-PJ-10 V0.5.1。默认 'active'。 */
@@ -61,6 +62,10 @@ interface UseCCSessionsReturn {
     remoteHostId?: string;
     /** per-session 来源(供应商)显式选择; null/undefined = 跟随默认路由。透传到 sessionService.create。 */
     providerId?: string | null;
+    mekaProjectId?: string | null;
+    mekaRoleId?: string | null;
+    isFormal?: boolean;
+    formal?: FormalSessionData | null;
   }) => Promise<Session | null>;
   refreshSessions: () => Promise<Session[]>;
   patchLocal: (id: string, patch: Partial<Session>) => void;
@@ -158,6 +163,10 @@ export function useCCSessions(options?: UseCCSessionsOptions): UseCCSessionsRetu
       remoteHostId?: string;
       /** per-session 来源(供应商)显式选择; null/undefined = 跟随默认路由。透传到 sessionService.create → mapper 落盘。 */
       providerId?: string | null;
+      mekaProjectId?: string | null;
+      mekaRoleId?: string | null;
+      isFormal?: boolean;
+      formal?: FormalSessionData | null;
     }): Promise<Session | null> => {
       try {
         const newSession = await sessionService.create({

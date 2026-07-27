@@ -29,6 +29,10 @@ export interface MakerSessionCreateHandlerDeps<
     didInjectOrcaInstructions: boolean;
     didInjectProjectContext: boolean;
   }>;
+  reconcileCreateOptsWithDb(
+    sessionId: string | undefined,
+    opts: MakerSessionCreateOpts,
+  ): Promise<void>;
   markOrcaRoleIfNeeded(
     sessionId: string,
     orcaRole: MakerSessionCreateOpts['orcaRole'],
@@ -48,14 +52,16 @@ export function registerMakerSessionCreateHandler<TSession extends MakerSessionC
   deps: MakerSessionCreateHandlerDeps<TSession>,
 ): void {
   registry.handle(MAKER_INVOKE.CREATE_SESSION, async (_e, opts: unknown) => {
-    const o = withCreateSessionStderr(
-      readCreateSessionOpts(opts, {
-        allocateDialogueWorkspace: deps.allocateDialogueWorkspace,
-        createSessionId: deps.createSessionId,
-        now: deps.now,
-      }),
-      deps.warnStderr,
+    const parsed = readCreateSessionOpts(opts, {
+      allocateDialogueWorkspace: deps.allocateDialogueWorkspace,
+      createSessionId: deps.createSessionId,
+      now: deps.now,
+    });
+    await deps.reconcileCreateOptsWithDb(
+      typeof parsed.id === 'string' ? parsed.id : undefined,
+      parsed,
     );
+    const o = withCreateSessionStderr(parsed, deps.warnStderr);
 
     let bootstrapped: Awaited<ReturnType<typeof deps.bootstrapSession>>;
     try {

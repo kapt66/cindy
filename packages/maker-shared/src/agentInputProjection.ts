@@ -1,5 +1,5 @@
 import { stripChatQuoteMarkerLines } from './chatQuotes.js';
-import { allDeepLinkSchemes } from './brandIdentity.js';
+import { CINDY_INTEROP_DEEP_LINK_SCHEMES } from './brandIdentity.js';
 
 /** Maximum copied target-message text kept in one Composer reference. */
 export const AGENT_MESSAGE_REFERENCE_MAX_CHARS = 12_000;
@@ -71,7 +71,7 @@ function nonEmptyString(value: unknown): value is string {
 }
 
 function stripDeepLinkPrefix(href: string, route: 'session/' | 'project/'): string | null {
-  for (const scheme of allDeepLinkSchemes()) {
+  for (const scheme of CINDY_INTEROP_DEEP_LINK_SCHEMES) {
     const prefix = `${scheme}://${route}`;
     if (href.startsWith(prefix)) return href.slice(prefix.length);
   }

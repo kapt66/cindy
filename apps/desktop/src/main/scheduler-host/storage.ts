@@ -496,6 +496,7 @@ export class DrizzleScheduleStorage implements ScheduleStorage {
 
     for (const session of legacySessions) {
       if (linkedSessionIds.has(session.id)) continue;
+      if (session.workspaceKind === 'meka') continue;
       const name = legacyScheduleNameFromSessionTitle(session.title);
       if (!name) continue;
       const schedule = scheduleByLegacyKey.get(
@@ -567,6 +568,7 @@ export class DrizzleScheduleStorage implements ScheduleStorage {
     const legacySessionScheduleIds = new Map<string, string>();
     const scanSessionIds = new Set(linkedSessionIds);
     for (const session of legacySessions) {
+      if (session.workspaceKind === 'meka') continue;
       const name = legacyScheduleNameFromSessionTitle(session.title);
       if (!name) continue;
       const schedule = scheduleByLegacyKey.get(
@@ -948,6 +950,7 @@ export class DrizzleScheduleStorage implements ScheduleStorage {
     return rows
       .filter((row) => {
         if (linkedSessionIds.has(row.id)) return false;
+        if (row.workspaceKind === 'meka') return false;
         const name = legacyScheduleNameFromSessionTitle(row.title);
         if (!name) return false;
         return legacyAliases.has(
@@ -997,6 +1000,7 @@ export class DrizzleScheduleStorage implements ScheduleStorage {
       .where(and(eq(scheduleRuns.scheduleId, schedule.id), legacyTitleWhere()));
 
     for (const row of linkedRows) {
+      if (row.workspaceKind === 'meka') continue;
       const name = legacyScheduleNameFromSessionTitle(row.title);
       if (!name) continue;
       addAlias({
@@ -1078,6 +1082,7 @@ export class DrizzleScheduleStorage implements ScheduleStorage {
     const linkedKeys = new Set<string>();
     for (const row of linkedLegacyRows) {
       if (!row.legacySessionFallback) continue;
+      if (row.sessionWorkspaceKind === 'meka') continue;
       const legacyName = legacyScheduleNameFromSessionTitle(row.sessionTitle);
       if (!legacyName) continue;
       const key = legacyScheduleKey({

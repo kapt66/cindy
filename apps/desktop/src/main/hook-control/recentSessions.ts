@@ -18,7 +18,7 @@ interface RecentSessionRow {
   id: string;
   title: string;
   workingDir: string | null;
-  workspaceKind: 'project' | 'dialogue';
+  workspaceKind: 'project' | 'dialogue' | 'meka';
   /** Kept as string so legacy/internal database values fail the allowlist closed. */
   source: string;
   userSendAt: number | null;
@@ -34,6 +34,7 @@ export function minimiseRecentSessions(
   const result: QuerySessionEntry[] = [];
   for (const row of rows) {
     if (!VISIBLE_SESSION_SOURCES.has(row.source)) continue;
+    if (row.workspaceKind === 'meka') continue;
     let workspace: string | null = null;
     if (row.workspaceKind === 'dialogue') {
       workspace = HOOK_CHAT_WORKSPACE_ALIAS;

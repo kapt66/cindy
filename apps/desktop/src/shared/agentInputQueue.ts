@@ -13,6 +13,7 @@ import {
   projectAgentFacingText,
   type AgentInputReference,
 } from '@cindy/maker-shared/agent-input-projection';
+import { DEEP_LINK_SCHEME_RE_GROUP } from './deepLinkSchemes';
 
 export type { AgentInputReference } from '@cindy/maker-shared/agent-input-projection';
 
@@ -428,7 +429,10 @@ export function updateQueuedMessageContent(
   return merged;
 }
 
-const SESSION_REF_LINK_RE = /(?:cindy|xdt-maker):\/\/session\/([A-Za-z0-9%~_-]+)(?:\?([A-Za-z0-9%&=~._-]*))?/g;
+const SESSION_REF_LINK_RE = new RegExp(
+  `${DEEP_LINK_SCHEME_RE_GROUP}:\\/\\/session\\/([A-Za-z0-9%~_-]+)(?:\\?([A-Za-z0-9%&=~._-]*))?`,
+  'g',
+);
 
 /** Rebuild structured references from visible text while retaining device hints. */
 export function reconcileSessionRefsForText(

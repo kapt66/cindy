@@ -23,6 +23,10 @@ import {
   type SessionRowWithCount,
 } from '../mapper';
 import { ensureDialogueWorkspaceDir } from '../dialogueWorkspace';
+import {
+  ensureMekaWorkspaceDir,
+  resolveMekaProjectWorkspacePath,
+} from '../mekaWorkspace';
 import { recomputePrRefsForSession } from '../../git-context/prRefsStore';
 import { ensureProjectGitInitialized } from '../../git-snapshot/projectGitBootstrap';
 import { readGitSafetySettings } from '../../maker-host/git-safety-settings-store';
@@ -42,6 +46,10 @@ import {
   setOnSessionTurnEndedPersisted,
 } from '../sessionActiveTurn';
 import { rebroadcastAgentSwitchBoundary } from './messages';
+import { getMekaProjectById } from './mekaProjects';
+import { getFormalProvider } from '../../meka-formal/registry';
+import { registerBuiltInFormalProviders } from '../../meka-formal/providers';
+import { getMekaP4SettingsService } from '../../meka-settings/ipc';
 
 const log = createLogger('sessions');
 const DEFAULT_DRAFT_SESSION_TITLE = 'New Maker';
@@ -577,7 +585,7 @@ export function registerSessionIpc(): void {
     if (bodyObj.agentKind !== undefined && !ALLOWED_AGENT_KINDS.has(bodyObj.agentKind as string)) {
       throwIpcError('INVALID_PARAMS', `invalid agentKind: ${String(bodyObj.agentKind)}`);
     }
-    const ALLOWED_WORKSPACE_KINDS = new Set<string>(['project', 'dialogue']);
+    const ALLOWED_WORKSPACE_KINDS = new Set<string>(['project', 'dialogue', 'meka']);
     if (
       bodyObj.workspaceKind !== undefined &&
       !ALLOWED_WORKSPACE_KINDS.has(bodyObj.workspaceKind as string)
@@ -593,20 +601,92 @@ export function registerSessionIpc(): void {
       throwIpcError('INVALID_PARAMS', `invalid orcaRole: ${String(bodyObj.orcaRole)}`);
     }
     const workspaceKind =
-      (createBody?.workspaceKind as 'project' | 'dialogue' | undefined) ?? 'project';
+      (createBody?.workspaceKind as 'project' | 'dialogue' | 'meka' | undefined) ?? 'project';
+    let validatedCreateBody = createBody;
+    const mekaProjectId =
+      typeof createBody?.mekaProjectId === 'string' ? createBody.mekaProjectId.trim() : '';
+    const mekaRoleId =
+      typeof createBody?.mekaRoleId === 'string' ? createBody.mekaRoleId.trim() : '';
+    const hasMekaProjectRole = mekaProjectId.length > 0 && mekaRoleId.length > 0;
+    let mekaProjectWorkingDir: string | null = null;
+    if (workspaceKind === 'meka' && !hasMekaProjectRole) {
+      throwIpcError('INVALID_PARAMS', 'Meka session requires a project and role');
+    }
+    if (workspaceKind === 'meka' && hasMekaProjectRole) {
+      const project = await getMekaProjectById(mekaProjectId);
+      if (!project) {
+        throwIpcError('MEKA_PROJECT_NOT_FOUND', `Meka project ${mekaProjectId} not found`);
+      }
+      const role = await getDbClient().queryOne<{ project_id: string }>(
+        'SELECT project_id FROM meka_roles WHERE id = ?',
+        [mekaRoleId],
+      );
+      if (!role || role.project_id !== project.id) {
+        throwIpcError('INVALID_PARAMS', 'Meka role does not belong to the selected project');
+      }
+      try {
+        mekaProjectWorkingDir = await resolveMekaProjectWorkspacePath(project.path, {
+          readP4RootPath: async () => (await getMekaP4SettingsService().get()).p4RootPath,
+        });
+      } catch (error) {
+        throwIpcError(
+          'PRECONDITION_FAILED',
+          error instanceof Error ? error.message : 'Meka project path cannot be resolved',
+        );
+      }
+      if (createBody?.isFormal === true) {
+        registerBuiltInFormalProviders();
+        const formal = createBody?.formal;
+        const provider = getFormalProvider(formal?.type);
+        if (
+          !provider
+          || project.formalWorkflowEnabled !== true
+          || project.workflowType !== provider.type
+        ) {
+          throwIpcError('INVALID_PARAMS', 'formal workflow does not match the selected project');
+        }
+        const normalizedContent = provider.validateContent(formal?.content);
+        const parsedLink = formal ? provider.parseLink(formal.link, project) : null;
+        if (
+          !formal
+          || !normalizedContent
+          || !parsedLink
+          || parsedLink.ref !== formal.ref
+        ) {
+          throwIpcError('INVALID_PARAMS', 'formal workflow snapshot is invalid');
+        }
+        validatedCreateBody = {
+          ...createBody,
+          formal: {
+            type: provider.type,
+            link: parsedLink.webUrl,
+            ref: parsedLink.ref,
+            content: normalizedContent,
+          },
+        };
+      }
+    } else if (createBody?.isFormal === true) {
+      throwIpcError('INVALID_PARAMS', 'formal workflow requires a registered Meka project');
+    }
     const explicitWorkingDir =
       normalizeWorkingDirForStorage(
-        typeof createBody?.workingDir === 'string' ? createBody.workingDir : null,
+        typeof validatedCreateBody?.workingDir === 'string' ? validatedCreateBody.workingDir : null,
       ) ?? undefined;
     const workingDir =
       workspaceKind === 'dialogue' && !explicitWorkingDir
         ? ensureDialogueWorkspaceDir(id, now)
-        : explicitWorkingDir;
+        : workspaceKind === 'meka'
+          ? mekaProjectWorkingDir ?? ensureMekaWorkspaceDir(id, now)
+          : explicitWorkingDir;
     if (workspaceKind === 'dialogue' && !explicitWorkingDir) {
       log.info('[localDb] allocated dialogue workspace', { sessionId: id, workingDir });
     }
     // body 透传 agentKind / orcaRole 给 mapper；非法值已由上方校验拦截，默认值由 mapper 兜底。
-    const insertRow = sessionCreateToRow(id, { ...createBody, workspaceKind, workingDir }, now);
+    const insertRow = sessionCreateToRow(
+      id,
+      { ...validatedCreateBody, workspaceKind, workingDir },
+      now,
+    );
     await ensureProjectGitInitialized({
       workingDir: insertRow.workingDir,
       workspaceKind: insertRow.workspaceKind,
@@ -626,7 +706,11 @@ export function registerSessionIpc(): void {
     // 路径写进去,后续 New Maker 项目下拉选中它时会丢失 host、按本机路径创建出一个
     // 错误的本地会话(指向本机不存在的同名目录)。在 host-aware 最近项目(给该表加
     // remote_host_id 列 + picker 区分 local/remote)落地前,remote 项目一律不进最近列表。
-    if (insertRow.workspaceKind === 'project' && insertRow.workingDir && !insertRow.remoteHostId) {
+    if (
+      (insertRow.workspaceKind === 'project' || insertRow.workspaceKind === 'meka')
+      && insertRow.workingDir
+      && !insertRow.remoteHostId
+    ) {
       void upsertRecentWorkdir(insertRow.workingDir, now);
     }
     // 订阅槽①旁路通知(fire-and-forget,动态 import 防环):意识旁听会话创建。
@@ -729,8 +813,12 @@ export function registerSessionIpc(): void {
       if (expectedWorkingDir !== null && typeof expectedWorkingDir !== 'string') {
         throwIpcError('INVALID_PARAMS', 'expected.workingDir must be a string or null');
       }
-      if (expectedWorkspaceKind !== 'project' && expectedWorkspaceKind !== 'dialogue') {
-        throwIpcError('INVALID_PARAMS', 'expected.workspaceKind must be project or dialogue');
+      if (
+        expectedWorkspaceKind !== 'project'
+        && expectedWorkspaceKind !== 'dialogue'
+        && expectedWorkspaceKind !== 'meka'
+      ) {
+        throwIpcError('INVALID_PARAMS', 'expected.workspaceKind must be project, dialogue or meka');
       }
       if (expectedRemoteHostId !== null && typeof expectedRemoteHostId !== 'string') {
         throwIpcError('INVALID_PARAMS', 'expected.remoteHostId must be a string or null');
@@ -790,6 +878,16 @@ export function registerSessionIpc(): void {
       const value = p.workspaceKind;
       if (value !== 'project' && value !== 'dialogue') {
         throwIpcError('INVALID_PARAMS', `invalid workspaceKind: ${String(value)}`);
+      }
+    }
+    if (p.workspaceKind !== undefined || p.workingDir !== undefined) {
+      const [identity] = await db
+        .select({ workspaceKind: sessions.workspaceKind })
+        .from(sessions)
+        .where(eq(sessions.id, sid));
+      if (!identity) throwIpcError('NOT_FOUND', 'Session does not exist');
+      if (identity.workspaceKind === 'meka') {
+        throwIpcError('INVALID_PARAMS', 'Meka project and workspace bindings are immutable');
       }
     }
     const ALLOWED_UPDATE_ORCA_ROLES = new Set<string>(['lead', 'worker']);

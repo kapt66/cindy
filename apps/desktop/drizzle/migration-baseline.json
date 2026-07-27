@@ -2,8 +2,8 @@
     "version":  2,
     "algorithm":  "sha256",
     "lineEndings":  "lf",
-    "sourceCommit":  "1af796595a4f394e57eff95e225810c7540fba1f",
-    "runtimeSourceCommit":  "8a3f43f9e10a14c1bc95b97c5e6413788f0058fe",
+    "sourceCommit":  "51440f675cbc8a42c582614dda6b3c34e65c298d",
+    "runtimeSourceCommit":  "51440f675cbc8a42c582614dda6b3c34e65c298d",
     "runtimeScripts":  {
                            "0024_ensure_session_workspace_kind.ts":  "613c57cc71c694fc2ee44949715c1ca347c3269416c730d051642ed6bc216992",
                            "0025_reclassify_codex_projectless_dialogues.ts":  "8a23fe1dbf174dfbbf3440679735bdcc6a02019efd26e8d2a71c5998ee319620",
@@ -21,7 +21,13 @@
                            "0066_slim_messages_fts.ts":  "42f638fc5a119d80fd068b36232b5b3b47782658da23e5e725a1b569fae0477c",
                            "0069_unusual_loki.ts":  "e7e807430b4e7e401fba1192b9c2ea7589bc9841c4398496d3bf48f9f31e1ade",
                            "0071_bright_ultron.ts":  "79e8fa4c645a6760c66bab32e0847b85ec4a4018a00754a40339096d278ce73f",
-                           "0073_thankful_hex.ts":  "2e16a36256e00ad4be883438d11ecdd12306607e9ccf8f137c2887eb1452047e"
+                           "0073_thankful_hex.ts":  "2e16a36256e00ad4be883438d11ecdd12306607e9ccf8f137c2887eb1452047e",
+                           "0074_bridge_legacy_migration_lineage.ts":  "947866cc745680b19b19fe277952473b850da1e1dc684c5a90246b15e80ac00b",
+                           "0075_complex_strong_guy.ts":  "7a093a684b90a54088beeafae666cbd115371efa98afdc788e7b9391443e2eaf",
+                           "0076_melted_post.ts":  "bf6aca5b143f9f7902146ee3032ff366a73887d54679ca7736b74395102dc4cc",
+                           "0077_nebulous_veda.ts":  "e60548298f1a1448c398bc5e2dd669acf3fb5e5675f08f908a196d72e44403d9",
+                           "0078_same_juggernaut.ts":  "fbb6171d45755277e2c242afd0da3b7ed96cca002fadc68043cb06f8bc95b8e2",
+                           "0079_futuristic_hercules.ts":  "e22a98267ba885e1d772e0f584f0f9a837709eb9d6bdf3d4c4d8e50c4cf51b8a"
                        },
     "migrations":  {
                        "0000_init.sql":  "1e9cde03038e90171698488b57b25ef3097964c595e8889f7316f0363482584b",
@@ -97,6 +103,12 @@
                        "0070_woozy_harpoon.sql":  "6ca932b0c31ecc10e242cb5d6310886f736d2c61ad16a8778dbc328fa98a820f",
                        "0071_bright_ultron.sql":  "80d87a1da8a6626eb66371a1580fd3ec72a8e28274a2713a7c070cf34bb7e057",
                        "0072_first_lightspeed.sql":  "9f44429d7e8f49f2c114a1a103469e427be03e7fa2e6c7801472700fec6a5f9a",
-                       "0073_thankful_hex.sql":  "45204245bf226cd740b99b013f73df0ca52e9254764f86dde5f182cc4151ad8a"
+                       "0073_thankful_hex.sql":  "45204245bf226cd740b99b013f73df0ca52e9254764f86dde5f182cc4151ad8a",
+                       "0074_bridge_legacy_migration_lineage.sql":  "51742f4eb58ad542be550d2a698a0e61cfca1a9fbb0074be98e7f31a6749c75e",
+                       "0075_complex_strong_guy.sql":  "1880cc34e5af4a684828a9eeb95737f03bd3f3f4c98265af8be0b694d8dd204d",
+                       "0076_melted_post.sql":  "912e6d75166ee0bfaf51942d34ab527042d1803971db7929cf90429a8c2cebe8",
+                       "0077_nebulous_veda.sql":  "6d54ca60ebe0a0d2d23a88cc266b726bddf10f3a9b80dce07a3fa71d13418804",
+                       "0078_same_juggernaut.sql":  "ac078c551e24c0f422898f14e12ecc4ea29d09ab43f43e8b1272c79eee65f24b",
+                       "0079_futuristic_hercules.sql":  "9a631fc8e6985c750971777332fdccfcfd7f47fa2e88dc9746d1bc64415db97f"
                    }
 }

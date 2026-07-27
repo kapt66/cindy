@@ -21,6 +21,11 @@ import { registerRightSidebarTabsIpc } from './rightSidebarTabs';
 import { registerDevSqliteVecIpc } from './dev/sqliteVec';
 import { registerSearchIpc } from './search';
 import { registerRemoteHistoryIpc } from './history';
+import { registerMekaProjectsIpc } from './mekaProjects';
+import { registerMekaRolesIpc } from './mekaRoles';
+import { registerMekaProjectMetadataIpc } from './mekaProjectMetadata';
+import { registerMekaFormalIpc } from './mekaFormal';
+import { registerMekaSkillCatalogIpc } from './mekaSkillCatalog';
 
 import { createLogger } from '../../logger';
 import { recordDesktopDevLocalDbStartupResult } from '../../devStartupStatus';
@@ -96,11 +101,13 @@ export function registerLocalDbIpc(opts: RegisterLocalDbIpcOpts = {}): void {
       result = await runEnsureReady(userId);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      log.error(JSON.stringify({
-        event: 'localDb.ipc.ensure-ready.failed',
-        userId,
-        error: message,
-      }));
+      log.error(
+        JSON.stringify({
+          event: 'localDb.ipc.ensure-ready.failed',
+          userId,
+          error: message,
+        }),
+      );
       result = {
         ready: false,
         error: { code: 'DB_INIT_FAILED', message },
@@ -126,6 +133,11 @@ export function registerLocalDbIpc(opts: RegisterLocalDbIpcOpts = {}): void {
   registerOrcaWorkflowIpc();
   registerRecentWorkdirsIpc();
   registerProjectAliasesIpc();
+  registerMekaRolesIpc();
+  registerMekaProjectsIpc();
+  registerMekaProjectMetadataIpc();
+  registerMekaSkillCatalogIpc();
+  registerMekaFormalIpc();
   registerRightSidebarTabsIpc();
   registerSearchIpc();
   registerDevSqliteVecIpc();

@@ -29,6 +29,7 @@ import { app, dialog, BrowserWindow } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import { BRAND_IDENTITY } from '@cindy/maker-shared/brand-identity';
+import { seedBuiltinMekaProjects } from '../../shared/meka-projects';
 
 import { createBetterSqliteDatabase } from './betterSqliteFactory';
 import {
@@ -327,6 +328,9 @@ export async function ensureReady(userId: string): Promise<EnsureReadyResult> {
           schemaVersion: schemaStartup.compatibility.databaseVersion,
         }),
       );
+    }
+    if (!passiveSharedUserData) {
+      seedBuiltinMekaProjects(db);
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

@@ -22,6 +22,7 @@ function createDeps(overrides: Record<string, unknown> = {}) {
       didInjectOrcaInstructions: false,
       didInjectProjectContext: true,
     }),
+    reconcileCreateOptsWithDb: vi.fn().mockResolvedValue(undefined),
     markOrcaRoleIfNeeded: vi.fn(),
     markKnownNonOrcaIfApplicable: vi.fn(),
     sendWorkerReadyMessage: vi.fn(),
@@ -131,6 +132,43 @@ describe('maker session CREATE_SESSION IPC handler', () => {
       }),
     ).rejects.toMatchObject({ code: 'INVALID_PARAMS' });
     expect(deps.bootstrapSession).not.toHaveBeenCalled();
+  });
+
+  it('reconciles persisted Meka authority before bootstrapping', async () => {
+    const harness = new IpcHarness();
+    const reconcileCreateOptsWithDb = vi.fn(
+      async (_sessionId: string | undefined, opts: Record<string, unknown>) => {
+        opts.workingDir = 'C:\\trusted-meka-project';
+        opts.workspaceKind = 'meka';
+        opts.mekaProjectId = 'project-1';
+        opts.mekaRoleId = 'role-1';
+      },
+    );
+    const deps = createDeps({ reconcileCreateOptsWithDb });
+    registerMakerSessionCreateHandler(harness, deps);
+
+    await harness.invoke(MAKER_INVOKE.CREATE_SESSION, {
+      id: 'meka-session-1',
+      agentKind: 'codex',
+      workingDir: 'C:\\untrusted-caller-path',
+      model: 'gpt-5.4',
+      workspaceKind: 'meka',
+      mekaProjectId: 'forged-project',
+      mekaRoleId: 'forged-role',
+    });
+
+    expect(reconcileCreateOptsWithDb).toHaveBeenCalledWith(
+      'meka-session-1',
+      expect.objectContaining({ workspaceKind: 'meka' }),
+    );
+    expect(deps.bootstrapSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workingDir: 'C:\\trusted-meka-project',
+        workspaceKind: 'meka',
+        mekaProjectId: 'project-1',
+        mekaRoleId: 'role-1',
+      }),
+    );
   });
 
   it('maps credential mode busy from bootstrap to CREDENTIAL_SWITCH_BUSY', async () => {
