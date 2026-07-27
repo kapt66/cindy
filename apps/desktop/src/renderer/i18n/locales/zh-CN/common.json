@@ -7073,8 +7073,7 @@
         "none": "请配置 P4 根目录或绑定一个可用的 MCPRouter 实例",
         "p4Root": "本地 · 已配置的 P4 根目录",
         "localDirectory": "本地 · {{name}}",
-        "remote": "远程 · {{project}} · {{instance}}",
-        "remoteClaudeOnly": "远程 MCPRouter Worker 当前仅支持 Claude Code。"
+        "remote": "远程 · {{project}} · {{instance}}"
       },
       "enableCollabTitle": "开启协同",
       "enableCollabSubmit": "开启协同"

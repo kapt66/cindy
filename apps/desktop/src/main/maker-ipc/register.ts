@@ -222,6 +222,16 @@ import {
   readSessionWorkingDirFromDb,
 } from '../maker-host/session-storage.js';
 import {
+  bindSessionRemoteCodex,
+  ensureRemoteCodexCapability,
+  releaseRemoteCodexCapability,
+  unbindSessionRemoteCodex,
+} from '../maker-host/mcpr-codex-capability.js';
+import {
+  buildMekaRemoteCodexBundle,
+  type MekaRemoteCodexBundle,
+} from '../maker-host/meka-remote-codex-bundle.js';
+import {
   clearSessionPersistState,
   consumeLastAssistantPersistId,
   drainPersistQueue,
@@ -3170,6 +3180,13 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
       agentInputCoordinatorHolder?.onExternalTurnSettled(session.id);
       gitSnapshotCoordinator?.onSessionClosed(session.id);
       wiredSessionIds.delete(session.id);
+      const remoteCodexHandle = unbindSessionRemoteCodex(session.id);
+      if (remoteCodexHandle) {
+        void releaseRemoteCodexCapability(
+          remoteCodexHandle.instanceId,
+          remoteCodexHandle.revisionHash,
+        );
+      }
       clearOrcaMcpHydrated(session.id);
       knownNonOrcaSessionIds.delete(session.id);
       lastReportedCostUsdBySession.delete(session.id);
@@ -3904,8 +3921,20 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions 
     }
   }
 
+  const pendingMekaRemoteCodexBundles = new WeakMap<object, MekaRemoteCodexBundle>();
+
   async function applyMekaProjectRoleConfig(o: CreateOpts): Promise<boolean> {
     if ((o.vendorOptions as Record<string, unknown> | undefined)?.mekaRuntimeResolved === true) {
+      const instanceId = parseMcprRemoteHostId(o.remoteHostId);
+      if (
+        o.agentKind === 'codex'
+        && instanceId
+        && o.mekaProjectId
+        && o.mekaRoleId
+      ) {
+        const runtime = await resolveMekaRuntimeConfig(o.mekaProjectId, o.mekaRoleId);
+        pendingMekaRemoteCodexBundles.set(o, buildMekaRemoteCodexBundle(runtime.skills));
+      }
       return true;
     }
 
@@ -4007,6 +4036,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions 
       mekaMcpInlineConfigs: mcp.inlineConfigs,
       mekaPolicyProviderRefs: runtime.policyProviderRefs,
     };
+    if (o.agentKind === 'codex' && parseMcprRemoteHostId(o.remoteHostId)) {
+      pendingMekaRemoteCodexBundles.set(o, buildMekaRemoteCodexBundle(runtime.skills));
+    }
     return true;
   }
 
@@ -4052,7 +4084,55 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions 
     }
 
     await hydrateProviderIdBeforeSessionStart(o);
-    const session = await maker.createSession(o);
+
+    const mcprInstanceId = parseMcprRemoteHostId(o.remoteHostId);
+    const remoteCodexBundle = pendingMekaRemoteCodexBundles.get(o);
+    let remoteCapabilityRetained = false;
+    if (
+      typeof o.id === 'string'
+      && o.agentKind === 'codex'
+      && mcprInstanceId
+      && remoteCodexBundle
+    ) {
+      try {
+        const previousHandle = unbindSessionRemoteCodex(o.id);
+        if (previousHandle) {
+          await releaseRemoteCodexCapability(
+            previousHandle.instanceId,
+            previousHandle.revisionHash,
+          );
+        }
+        await ensureRemoteCodexCapability(mcprInstanceId, remoteCodexBundle);
+        bindSessionRemoteCodex(o.id, {
+          instanceId: mcprInstanceId,
+          revisionHash: remoteCodexBundle.revisionHash,
+        });
+        remoteCapabilityRetained = true;
+      } catch (error) {
+        throwIpcError(
+          'INVALID_PARAMS',
+          `Remote Codex capability delivery failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+
+    let session: Awaited<ReturnType<typeof maker.createSession>>;
+    try {
+      session = await maker.createSession(o);
+    } catch (error) {
+      if (remoteCapabilityRetained && typeof o.id === 'string') {
+        unbindSessionRemoteCodex(o.id);
+        await releaseRemoteCodexCapability(
+          mcprInstanceId!,
+          remoteCodexBundle!.revisionHash,
+        );
+      }
+      throw error;
+    } finally {
+      pendingMekaRemoteCodexBundles.delete(o);
+    }
     await markProjectContextIfNeeded(session.id, didInjectProjectContext);
     wireSessionToIpc(session);
     markOrcaMcpHydratedIfNeeded(session.id, o);

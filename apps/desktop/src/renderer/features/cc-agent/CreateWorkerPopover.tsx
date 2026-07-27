@@ -323,7 +323,6 @@ export function CreateWorkerPopover({
     : workerTarget.startsWith('local:')
       ? workerTarget.slice('local:'.length)
       : undefined;
-  const remoteCodexUnavailable = Boolean(isMekaLead && selectedRemoteInstance);
 
   // capabilities 可能尚未加载或模型被移除；加载后把当前选择收敛到可用模型和 effort。
   useEffect(() => {
@@ -398,12 +397,6 @@ export function CreateWorkerPopover({
     },
     [agent, deviceId, effort, fast, model, prefs, providerSource],
   );
-
-  useEffect(() => {
-    if (remoteCodexUnavailable && agent !== 'claude-code') {
-      updateAgent('claude-code');
-    }
-  }, [agent, remoteCodexUnavailable, updateAgent]);
 
   const updateModel = useCallback(
     (nextModel: string) => {
@@ -579,7 +572,6 @@ export function CreateWorkerPopover({
     activeRole.length <= 32 &&
     !customRoleError &&
     !!currentModel &&
-    (!remoteCodexUnavailable || agent === 'claude-code') &&
     (!isMekaLead || (!!leadSession?.mekaProjectId && !!selectedWorkingDir));
   const resolvedTitle = title ?? t('orca.createWorker.title');
   const resolvedSubmitLabel = submitLabel ?? t('orca.createWorker.submit');
@@ -724,7 +716,6 @@ export function CreateWorkerPopover({
             value={vendorKey}
             width={220}
             ariaLabel={t('orca.createWorker.agentLabel')}
-            disabledVendors={remoteCodexUnavailable ? ['codex'] : undefined}
             onChange={(next) => updateAgent(next === 'codex' ? 'codex' : 'claude-code')}
           />
         </div>
@@ -817,11 +808,6 @@ export function CreateWorkerPopover({
                 </option>
               ))}
             </select>
-            {selectedRemoteInstance && (
-              <p className="mt-1.5 text-11 text-[var(--text-tertiary)]">
-                {t('orca.createWorker.target.remoteClaudeOnly')}
-              </p>
-            )}
           </div>
         )}
 

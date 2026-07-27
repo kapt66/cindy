@@ -26,6 +26,12 @@ import {
   isRpcResponse,
   type HelloParams,
   type HelloResult,
+  type BundleEnsureResult,
+  type BundleFile,
+  type BundleReleaseResult,
+  type CapabilityRevisionRegisterResult,
+  type CapabilityThreadRegisterResult,
+  type CapabilityThreadUnregisterResult,
   type NotificationName,
   type RpcError,
   type RpcId,
@@ -46,6 +52,12 @@ export interface RpcClientOptions {
   clientId?: string;
   /** Called when a corrupt NDJSON line is encountered (for diagnostics). */
   onCorruptLine?: (line: string, err: Error) => void;
+  /** Override the protocol negotiated by this client (MCPRouter Codex uses v3). */
+  protocolVersion?: number;
+  /** Optional exact daemon feature bundle pin. */
+  bundleVersion?: string;
+  /** Reject hello when the server does not echo the configured bundle pin. */
+  enforceBundleVersion?: boolean;
 }
 
 export interface RpcRequestOptions {
@@ -82,6 +94,9 @@ export class RpcClient {
   private readonly onClose?: () => void;
   private readonly onError?: (err: Error) => void;
   private readonly clientId?: string;
+  private readonly protocolVersion: number;
+  private readonly bundleVersion?: string;
+  private readonly enforceBundleVersion: boolean;
   private readonly listeners: Array<{ event: string; fn: (...args: unknown[]) => void }> = [];
   /** Additional subscribers added after construction via subscribe(). */
   private readonly subscribers = new Set<NotificationSubscriber>();
@@ -101,6 +116,9 @@ export class RpcClient {
     this.onClose = opts.onClose;
     this.onError = opts.onError;
     this.clientId = opts.clientId;
+    this.protocolVersion = opts.protocolVersion ?? PROTOCOL_VERSION;
+    this.bundleVersion = opts.bundleVersion;
+    this.enforceBundleVersion = opts.enforceBundleVersion === true;
     this.decoder = new NDJSONDecoder({ onCorruptLine: opts.onCorruptLine });
     this.attach();
   }
@@ -114,10 +132,63 @@ export class RpcClient {
    */
   async hello(opts: RpcRequestOptions = {}): Promise<HelloResult> {
     const params: HelloParams = {
-      protocolVersion: PROTOCOL_VERSION,
+      protocolVersion: this.protocolVersion,
+      ...(this.bundleVersion ? { bundleVersion: this.bundleVersion } : {}),
       ...(this.clientId ? { clientId: this.clientId } : {}),
     };
-    return await this.request<HelloResult>(METHODS.PROTOCOL_HELLO, params, opts);
+    const result = await this.request<HelloResult>(METHODS.PROTOCOL_HELLO, params, opts);
+    if (this.enforceBundleVersion && result.bundleVersion !== this.bundleVersion) {
+      throw new RpcClientError({
+        code: 'INVALID_BUNDLE_VERSION',
+        message: `server bundle ${String(result.bundleVersion)} does not match client bundle ${String(this.bundleVersion)}`,
+      });
+    }
+    return result;
+  }
+
+  async bundleEnsure(
+    revisionHash: string,
+    files: readonly BundleFile[],
+    opts: RpcRequestOptions = {},
+  ): Promise<BundleEnsureResult> {
+    return await this.request<BundleEnsureResult>(
+      METHODS.BUNDLE_ENSURE,
+      { revisionHash, files: [...files] },
+      opts,
+    );
+  }
+
+  async bundleRelease(
+    revisionHash: string,
+    opts: RpcRequestOptions = {},
+  ): Promise<BundleReleaseResult> {
+    return await this.request<BundleReleaseResult>(METHODS.BUNDLE_RELEASE, { revisionHash }, opts);
+  }
+
+  async capabilityRevisionRegister(
+    revisionHash: string,
+    opts: RpcRequestOptions = {},
+  ): Promise<CapabilityRevisionRegisterResult> {
+    return await this.request(METHODS.CAPABILITY_REVISION_REGISTER, { revisionHash }, opts);
+  }
+
+  async capabilityThreadRegister(
+    threadId: string,
+    revisionHash: string,
+    opts: RpcRequestOptions = {},
+  ): Promise<CapabilityThreadRegisterResult> {
+    return await this.request(
+      METHODS.CAPABILITY_THREAD_REGISTER,
+      { threadId, revisionHash },
+      opts,
+    );
+  }
+
+  async capabilityThreadUnregister(
+    threadId: string,
+    opts: RpcRequestOptions = {},
+  ): Promise<CapabilityThreadUnregisterResult> {
+    return await this.request(METHODS.CAPABILITY_THREAD_UNREGISTER, { threadId }, opts);
   }
 
   /**

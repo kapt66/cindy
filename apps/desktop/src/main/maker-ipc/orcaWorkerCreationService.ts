@@ -528,14 +528,6 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
       requestedRemoteHostId: params.remoteHostId,
     });
     if (!target.ok) return target;
-    if (params.agent === 'codex' && target.remoteHostId?.startsWith('mcpr:')) {
-      return {
-        ok: false,
-        errorCode: 'INVALID_PARAMS',
-        message:
-          'Remote MCPRouter Codex Workers are unavailable until the complete Codex transport is migrated',
-      };
-    }
     if (
       lead.workspaceKind === 'meka'
       && (!lead.mekaProjectId || !lead.mekaRoleId)
@@ -597,13 +589,45 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
               ? (cachedProviderFallback?.requiresExplicitRoute ? cachedProviderFallback.id : null)
               : resolvedConfig.providerId,
     };
+    const isRemoteMcprCodex =
+      params.agent === 'codex' && target.remoteHostId?.startsWith('mcpr:') === true;
+    if (isRemoteMcprCodex) {
+      if (!deps.readClaudeApiKey()) {
+        return {
+          ok: false,
+          errorCode: 'INVALID_PARAMS',
+          message: 'Remote MCPRouter Codex Workers require an AI Gateway API key',
+        };
+      }
+      const gatewayProvider = agentProviders.find((provider) => provider.id === 'xd');
+      if (
+        (explicitSourceId !== null && explicitSourceId !== 'xd')
+        || !gatewayProvider?.models.includes(resolved.model)
+      ) {
+        return {
+          ok: false,
+          errorCode: 'PROVIDER_ROUTE_UNAVAILABLE',
+          message: buildProviderRouteUnavailableMessage(
+            params.agent,
+            'xd',
+            resolved.model,
+            gatewayProvider,
+          ),
+        };
+      }
+      // The remote spawn header is gateway-key only. Persist the same route in
+      // session state so the UI/provider metadata cannot claim OAuth routing.
+      resolved.providerId = 'xd';
+    }
     // Fast 与 effort 都按**实际路由来源**自己的模型条目判定(显式来源、defaults 缓存
     // 来源、spawn 默认来源统一)—— getAvailableModels 是跨来源拍平清单(首来源 wins,
     // 且不含连接态),同 id 模型的 supportsFastMode / efforts 在不同来源可分叉:首来源
     // 的元数据会误杀或误放行真实路由来源的能力(codex review 三轮)。
-    const routeProviderId = explicitSourceId
-      ?? resolved.providerId
-      ?? providerRouting.resolveDefaultProviderIdForModel(params.agent, resolved.model);
+    const routeProviderId = isRemoteMcprCodex
+      ? 'xd'
+      : explicitSourceId
+        ?? resolved.providerId
+        ?? providerRouting.resolveDefaultProviderIdForModel(params.agent, resolved.model);
     const routeProvider = routeProviderId === null
       ? undefined
       : agentProviders.find((provider) => provider.id === routeProviderId);

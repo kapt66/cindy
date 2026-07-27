@@ -7073,8 +7073,7 @@
         "none": "P4 루트를 설정하거나 사용 가능한 MCPRouter 인스턴스를 연결하세요",
         "p4Root": "로컬 · 설정된 P4 루트",
         "localDirectory": "로컬 · {{name}}",
-        "remote": "원격 · {{project}} · {{instance}}",
-        "remoteClaudeOnly": "원격 MCPRouter Worker는 현재 Claude Code만 지원합니다."
+        "remote": "원격 · {{project}} · {{instance}}"
       },
       "enableCollabTitle": "협업 시작",
       "enableCollabSubmit": "협업 시작"

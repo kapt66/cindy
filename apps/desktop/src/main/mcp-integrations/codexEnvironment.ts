@@ -20,6 +20,13 @@ import {
 const TOKEN_ENV = 'LIZI_MCP_TOKEN';
 const MCP_TIMEOUT_SEC = 10 * 60;
 
+export { TOKEN_ENV as CODEX_MCP_TOKEN_ENV, MCP_TIMEOUT_SEC as CODEX_MCP_TIMEOUT_SEC };
+
+/** Render one string value for a Codex `-c` TOML override. */
+export function codexTomlString(value: string): string {
+  return JSON.stringify(value);
+}
+
 /**
  * 把一个 header 名渲染成 codex `-c` override 里合法的 TOML dotted-key 段。
  *

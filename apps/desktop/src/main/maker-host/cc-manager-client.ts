@@ -86,7 +86,7 @@ const DAEMON_READY_TIMEOUT_MS = 10_000;
  * crash guard 救活但 hang 在 handler) 时, request 永远等不到 response, client
  * 卡死 UI 显示 "connecting" 不可恢复。15s 兜底让 user-visible error 快速冒出来。
  */
-const RPC_REQUEST_TIMEOUT_MS = 15_000;
+export const RPC_REQUEST_TIMEOUT_MS = 15_000;
 /** ssh 启 daemon 命令的最长等待 — 超时 ssh channel 被强关, daemon 已 setsid 独立。 */
 const DAEMON_SPAWN_SSH_TIMEOUT_MS = 5_000;
 /** sock 探活 / 等待循环的轮询间隔。 */
@@ -218,7 +218,7 @@ echo "$DAEMON_PID" > "${REMOTE_PID}"
  * SSH 自身的 channel window flow control (ssh2 库内部处理)。实测 NDJSON RPC
  * 流量小, 不会触发反压, best-effort 即可。
  */
-function bridgeStreamToDuplex(handle: CcManagerByteStream): Duplex {
+export function bridgeStreamToDuplex(handle: CcManagerByteStream): Duplex {
   const duplex = new Duplex({
     read(): void {
       /* push-driven, 无主动 pull 逻辑 */

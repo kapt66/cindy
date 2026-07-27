@@ -7083,8 +7083,7 @@
         "none": "Configure a P4 root or bind an available MCPRouter instance",
         "p4Root": "Local · configured P4 root",
         "localDirectory": "Local · {{name}}",
-        "remote": "Remote · {{project}} · {{instance}}",
-        "remoteClaudeOnly": "Remote MCPRouter Workers currently support Claude Code only."
+        "remote": "Remote · {{project}} · {{instance}}"
       },
       "enableCollabTitle": "Start Collaboration",
       "enableCollabSubmit": "Start Collaboration"

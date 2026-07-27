@@ -341,11 +341,13 @@ function makeServerError(code: RpcErrorCode, message: string, data?: unknown): S
 
 const ERROR_CODES = new Set<RpcErrorCode>([
   'INVALID_PROTOCOL_VERSION',
+  'INVALID_BUNDLE_VERSION',
   'UNKNOWN_METHOD',
   'INVALID_PARAMS',
   'NOT_INITIALIZED',
   'SESSION_NOT_FOUND',
   'SESSION_ALREADY_EXISTS',
+  'BUNDLE_MATERIALIZE_FAILED',
   'SDK_ERROR',
   'INTERNAL',
 ]);

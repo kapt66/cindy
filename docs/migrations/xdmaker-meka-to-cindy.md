@@ -31,7 +31,7 @@
 | Meka 设置          | 迁移                     | P4、MCPRouter、MekaDesign 兼容设置                                 |
 | Meka 会话          | 迁移                     | 独立 workspace、项目/角色绑定、正式流程、侧栏分组                  |
 | 远程 MCPR          | 迁移                     | Router 登录、实例、绑定、隧道和 Worker 目标                        |
-| 远程 Codex Worker  | 本轮不迁移               | 标准 Agent 选择器保留，但 MCPRouter 目标上的 Codex 明确禁用        |
+| 远程 Codex Worker  | 已恢复                   | MCPRouter protocol 3 / bundle 0.0.6 控制通道与 app-server 隧道     |
 | Orca Worker 微调   | 迁移                     | 仅迁入 Meka 目标选择和远程约束所需改动                             |
 | 打包发布           | 部分迁移                 | 本地打包、身份和签名入口已迁；上传、manifest 和 promote 尚未迁入   |
 | 项目与角色         | 迁移                     | 项目、角色、元数据、内置 SAGA2 与 6 个角色                         |
@@ -502,7 +502,7 @@ XDMaker `meka/main` 对应实现为核对正本。
 | Worker→Lead 桥接       | 远程 Claude Worker 注入 `orca_worker_bridge`，结果可回传 Lead                    | 需复核：本地 bridge 已有，MCPRouter transport 投影需核对        | 以 XDMaker `8d2354939` 和 Cindy 当前 transport 对照                            |
 | Lead→Worker 调度与队列 | `send_to_worker`、busy queue、恢复、状态广播、错误可见                           | Cindy 上游实现已存在                                            | 不覆盖 Cindy 新实现，只做 Meka 回归                                            |
 | 远程 Claude Worker     | 经 MCPRouter tunnel + cc-manager 运行                                            | 已有 tunnel 基础，需端到端复核 bridge/runtime config            | 补定向测试，保留 Main fail-closed                                              |
-| 远程 Codex Worker      | Phase 4 经 cc-manager `codex-bridge`、bundle revision、thread routing 运行       | 未迁移；当前 Main 明确拒绝 MCPRouter Codex                      | 独立核对 transport 与 S1 依赖；未具备完整 transport 前不得只解锁 UI            |
+| 远程 Codex Worker      | Phase 4 经 cc-manager `codex-bridge`、bundle revision、thread routing 运行       | 已恢复；使用直接运行时 Skill 构造最小冻结 bundle                | 保留 gateway-key fail-closed；不为此恢复整套 S1 snapshot                       |
 | 远程操作 Skill         | 先发现项目绑定实例，直接 `start_team`，再以 `remote_host_id` 建 Worker并核对回执 | 文案已在，但底层目标参数/回执缺失                               | 底层修复后同步文案和测试                                                       |
 | 重启与 idle resume     | 重建 Lead/Worker 关系；Worker resume 保留目标目录和远程宿主                      | Cindy 通用 Orca 已有，Meka 身份继承需补                         | 增加 Meka Worker 持久化/恢复定向测试                                           |
 
@@ -512,10 +512,10 @@ XDMaker `meka/main` 对应实现为核对正本。
   `saga2_design` / `saga2_json` / `saga2_unity` / `saga2_pm` 子目录作为本地
   Worker 目标。
 - 可选择当前项目已绑定、可用且受支持的 MCPRouter 实例作为远程目标。
-- 远程 MCPRouter Claude Worker 必须完整恢复；Codex 只有在 XDMaker Phase 4 transport
-  的 cc-manager、bundle/revision 和 thread routing 契约完整落地后才允许解锁。
+- 远程 MCPRouter Claude Worker 与 Codex Worker 都必须保持完整 transport 契约；
+  Codex 使用独立 `codex-appserver` 隧道和 cc-manager 控制通道。
 - Worker 创建继续复用 Cindy 标准 `VendorSegmentedSwitcher`；选择 MCPRouter 远程目标
-  时仅禁用 Codex 分段并自动收敛到 Claude Code，不恢复旧的手写 Agent 按钮组。
+  时 Claude Code 与 Codex 均可选择，不恢复旧的手写 Agent 按钮组。
 - 普通 Cindy 会话不能使用 Meka 自定义目标。
 - 不信任 renderer 提供的任意本地目录或远程实例 ID；Main 重新解析并校验。
 - Worker 创建、session request 和 agent input projection 透传 Main 解析后的目标。
@@ -589,16 +589,16 @@ XDMaker `meka/main` 对应实现为核对正本。
      直接 `start_team`，再以精确 `remote_host_id` 创建 Worker，并核对
      `execution_target`；禁止把 MCPRouter 实例误当 SSH 主机。
 
-本轮没有解锁远程 Codex Worker。XDMaker 的 Codex Phase 4 依赖 cc-manager
-`codex-bridge`、capability bundle/revision 和 thread routing，属于此前明确暂缓的
-S1 交付链。只放开 UI 会制造“可选但不能运行”的假能力，因此保持 fail closed。若后续
-批准这一子项，必须把上述 transport 契约作为一个完整模块迁移，不能只复制 agent
-选择条件。
+远程 Codex Worker 已按完整 transport 契约恢复，而不是单独放开 UI：Desktop 使用
+`mode=codex-appserver` 隧道发送 spawn header，并通过独立 cc-manager 控制通道执行
+`bundle/ensure`、revision register 和 thread register/unregister。远程侧只允许
+gateway-key；本地 OAuth、`auth.json` 与 loopback proxy 不跨机器分发。
 
-远程 MCPRouter 的托管 cc-manager bundle 位于服务端部署物中。本仓已完成协议和 bundle
-源码；真实 MCPRouter 环境要使用该隧道，服务端需用本版本重新构建/部署 bundle。按仓库
-边界本轮没有修改或发布服务端仓库，因此该项属于部署前置条件，而不是在客户端静默兼容
-旧 daemon。
+本次没有因此恢复 S1 snapshot 系统。Cindy 直接运行时已经解析出的项目/角色 Skill 会
+被稳定排序并冻结为 `catalog.json + SKILL.md` 最小 bundle；revision 对完整文件集做
+内容寻址。MCPRouter 服务端仓的 protocol 3 / bundle 0.0.6、capability MCP 与
+`codex-bridge` 已独立验证，客户端仓只携带显式协商参数和 RPC 类型，不把本仓 SSH
+Claude daemon 冒充成完整 MCPRouter 服务端。
 
 ### 4.9 Mobile 与 device-link
 
@@ -845,10 +845,10 @@ userData 的 `meka-roles/`，不迁移、不改写。现有热更新 ZIP 包含�
    - `workspaceKind=meka` 保持既有协同入口与 Main 侧创建能力，不经过该开关。
 4. **Worker Agent 选择**
    - UI 同步上游标准 Agent/模型选择组件和 provider/effort/Fast 行为。
-   - 本轮不迁移 XDMaker Phase 4 远程 Codex runtime。选择 MCPRouter 目标时 Codex
-     分段禁用并自动切到 Claude Code；Main 仍 fail closed，避免“可选但不能运行”。
-   - 后续若迁移远程 Codex，必须单独迁入 `codex-bridge`、capability
-     bundle/revision、thread routing 和 MCPRouter app-server transport 全链。
+   - MCPRouter 目标允许选择 Codex；Main 强制 AI Gateway key 与 `xd` gateway
+     provider 路由，其他 provider/OAuth 路由 fail closed。
+   - transport 包含 `codex-bridge` spawn header、capability bundle/revision、
+     thread routing 和 MCPRouter app-server 字节隧道全链。
 5. **深链协议**
    - 本机 Desktop 对话链接使用 `cindy-meka://`。
    - 带 `deviceId` 的跨设备链接使用 `cindy://`；Meka 只解析该互操作 scheme，不向
@@ -873,9 +873,9 @@ typecheck 通过；旧 Meka lineage、区域身份、深链、协同策略、Orc
   插件化 UI。
 - 如果未来某个 Meka 角色依赖项目/角色配置之外的 capability pack hook/tool，必须按
   具体需求逐个迁移，不能把整个 S1 目录无审查复制进来。
-- 远程 Codex Worker 仍保持禁用；其 cc-manager `codex-bridge`、capability
-  bundle/revision、thread routing 与 MCPRouter Codex app-server transport 尚未迁移。
-  这是 S1 暂缓决定的直接结果，不能只解除 Main/UI guard。
+- 远程 Codex Worker 已恢复，但当前只支持 MCPRouter + AI Gateway key；OAuth、
+  provider OAuth、自定义 provider 与 SSH Codex 不在本次扩展范围。能力交付只冻结
+  Cindy 直接项目/角色运行时的 Skill，不等同于恢复 S1 通用 capability snapshot。
 - 内联 MCP 中带 `{{secret:name}}` 的环境变量目前会因没有对应的 Meka secret 解析器而
   阻断会话启动，避免把占位符或明文当凭证下发。当前 6 个内置角色只使用 MCPRouter
   provider 引用，不受此限制；自定义内联 MCP 的凭证配置仍需后续补齐正式密钥入口。

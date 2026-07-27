@@ -12,8 +12,8 @@
  * are passed through verbatim (SDK already gives us typed JSON-safe shapes).
  *
  * Versioning: every connection must start with a protocol/hello handshake.
- * If client.protocolVersion !== server.protocolVersion the server replies with
- * INVALID_PROTOCOL_VERSION and the client should toast "upgrade required".
+ * Callers may also pin an exact bundle version so a desktop cannot silently
+ * use a daemon that lacks its required RPC surface.
  */
 
 /**
@@ -28,6 +28,10 @@
  * v2 adds tunneled in-process MCP projection for desktop-owned tools such as
  * `orca_worker_bridge`. The remote daemon exposes a stdio shim and routes
  * tools/list + tools/call back to the attached desktop client.
+ *
+ * MCPRouter's separately deployed daemon negotiates protocol v3 for immutable
+ * capability bundles and Codex revision/thread routing. The desktop RPC client
+ * can opt into that version without changing this SSH daemon's own version.
  */
 export const PROTOCOL_VERSION = 2 as const;
 
@@ -51,11 +55,13 @@ export interface RpcError {
 
 export type RpcErrorCode =
   | 'INVALID_PROTOCOL_VERSION'
+  | 'INVALID_BUNDLE_VERSION'
   | 'UNKNOWN_METHOD'
   | 'INVALID_PARAMS'
   | 'NOT_INITIALIZED'
   | 'SESSION_NOT_FOUND'
   | 'SESSION_ALREADY_EXISTS'
+  | 'BUNDLE_MATERIALIZE_FAILED'
   | 'SDK_ERROR'
   | 'INTERNAL';
 
@@ -88,6 +94,15 @@ export type RpcMessage = RpcRequest | RpcResponse | RpcNotification;
  * Keep alphabetical inside each namespace.
  */
 export const METHODS = {
+  // Remote Codex capability routing
+  CAPABILITY_REVISION_REGISTER: 'capability/revision/register',
+  CAPABILITY_THREAD_REGISTER: 'capability/thread/register',
+  CAPABILITY_THREAD_UNREGISTER: 'capability/thread/unregister',
+
+  // Immutable capability bundle delivery
+  BUNDLE_ENSURE: 'bundle/ensure',
+  BUNDLE_RELEASE: 'bundle/release',
+
   // Lifecycle / handshake
   PROTOCOL_HELLO: 'protocol/hello',
 
@@ -146,14 +161,57 @@ export type NotificationName = (typeof NOTIFICATIONS)[keyof typeof NOTIFICATIONS
 
 export interface HelloParams {
   protocolVersion: number;
+  /** Exact daemon feature bundle expected by the client. */
+  bundleVersion?: string;
   /** Optional client identifier (logs / debugging). */
   clientId?: string;
 }
 
 export interface HelloResult {
   protocolVersion: number;
+  /** Exact daemon feature bundle serving this connection. */
+  bundleVersion?: string;
   /** Manager build / git SHA, surfaced for diagnostics. */
   managerVersion?: string;
+  /** Daemon-loopback MCP endpoint for remote Codex, when enabled. */
+  capabilityMcpUrl?: string;
+  /** Bearer token required by capabilityMcpUrl. */
+  capabilityMcpToken?: string;
+}
+
+export interface CapabilityRevisionRegisterResult {
+  registered: true;
+}
+
+export interface CapabilityThreadRegisterResult {
+  registered: true;
+}
+
+export interface CapabilityThreadUnregisterResult {
+  unregistered: boolean;
+}
+
+/** A UTF-8 text file projected beneath the daemon capability cache. */
+export interface BundleFile {
+  relPath: string;
+  content: string;
+  /** SHA-256 hex digest of the UTF-8 content bytes. */
+  digest: string;
+}
+
+export interface BundleEnsureParams {
+  revisionHash: string;
+  catalogDigest?: string;
+  files: BundleFile[];
+}
+
+export interface BundleEnsureResult {
+  pluginPath: string;
+}
+
+export interface BundleReleaseResult {
+  released: boolean;
+  removed: boolean;
 }
 
 /**

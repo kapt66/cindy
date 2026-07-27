@@ -31,6 +31,7 @@
 import { randomBytes, createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import path from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 
 import type { RemoteHost, ExecStreamHandle } from '@cindy/maker-remote-ssh';
 
@@ -93,6 +94,9 @@ import type {
   CodexAppServerTransport as Transport,
   CodexAppServerCloseInfo as TransportCloseInfo,
 } from '@cindy/maker-core';
+import type { CcManagerByteStream } from './cc-manager-client.js';
+import type { CodexBridgeSpawnHeader } from './mcpr-codex-capability.js';
+import { openMcprTunnel } from './mcpr-tunnel.js';
 
 /** Minimal Logger surface we need (matches maker-core's interface shape). */
 interface Logger {
@@ -582,4 +586,197 @@ exec "$CODEX" "$@"
  */
 export function shellQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+/* ============================== MCPRouter Codex transport ============================== */
+
+const CODEX_BRIDGE_HEADER_KEY = '$codexBridge';
+
+export interface McprCodexTransportOptions {
+  instanceId: string;
+  buildHeader: () => Promise<CodexBridgeSpawnHeader>;
+  logger: Logger;
+  openStream?: (instanceId: string) => Promise<CcManagerByteStream>;
+  handshakeTimeoutMs?: number;
+}
+
+/**
+ * Run Codex app-server behind MCPRouter's `codex-appserver` byte tunnel.
+ * The first line is a spawn header consumed by the remote cc-mgr bridge; all
+ * following bytes are the ordinary Codex app-server NDJSON protocol.
+ */
+export function createMcprCodexTransport(opts: McprCodexTransportOptions): Transport {
+  const logger = opts.logger.child('codex-mcpr-transport');
+  const handshakeTimeoutMs = opts.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
+  const openStream = opts.openStream
+    ?? ((instanceId: string) => openMcprTunnel(
+      `mcpr:${instanceId}`,
+      { mode: 'codex-appserver' },
+    ));
+
+  const lineHandlers = new Set<LineHandler>();
+  const closeHandlers = new Set<CloseHandler>();
+  const lineBuffer: string[] = [];
+  let lineHandlerArmed = false;
+  const pendingWrites: Array<{
+    line: string;
+    resolve: () => void;
+    reject: (error: Error) => void;
+  }> = [];
+
+  let state: State = 'connecting';
+  let stream: CcManagerByteStream | null = null;
+  const decoder = new StringDecoder('utf8');
+  let incomingRemainder = '';
+  let handshakeTimer: NodeJS.Timeout | null = null;
+
+  const fireClose = (reason: string): void => {
+    if (state === 'closed') return;
+    state = 'closed';
+    if (handshakeTimer) {
+      clearTimeout(handshakeTimer);
+      handshakeTimer = null;
+    }
+    const error = new Error(`McprCodexTransport closed: ${reason}`);
+    for (const pending of pendingWrites.splice(0)) pending.reject(error);
+    try {
+      stream?.kill();
+    } catch {
+      // Best-effort transport teardown.
+    }
+    stream = null;
+    const info: TransportCloseInfo = { reason };
+    for (const handler of closeHandlers) {
+      try {
+        handler(info);
+      } catch {
+        // A close subscriber must not prevent the remaining subscribers.
+      }
+    }
+  };
+
+  const fireLine = (line: string): void => {
+    if (!lineHandlerArmed) {
+      lineBuffer.push(line);
+      return;
+    }
+    for (const handler of lineHandlers) handler(line);
+  };
+
+  const writeRaw = (data: string): Promise<void> => {
+    if (!stream || state !== 'open') {
+      return Promise.reject(new Error(`McprCodexTransport.writeLine: state=${state}`));
+    }
+    try {
+      stream.write(data);
+      return Promise.resolve();
+    } catch (error) {
+      return Promise.reject(error as Error);
+    }
+  };
+
+  const bootstrap = async (): Promise<void> => {
+    const header = await opts.buildHeader();
+    const handle = await openStream(opts.instanceId);
+    if (state === 'closed') {
+      try {
+        handle.kill();
+      } catch {
+        // The timeout path already owns the terminal state.
+      }
+      return;
+    }
+    stream = handle;
+
+    handle.onStdoutBytes((chunk) => {
+      if (state !== 'open') return;
+      incomingRemainder += decoder.write(chunk);
+      const lastNewline = incomingRemainder.lastIndexOf('\n');
+      if (lastNewline === -1) return;
+      const lines = incomingRemainder.slice(0, lastNewline).split('\n');
+      incomingRemainder = incomingRemainder.slice(lastNewline + 1);
+      for (const line of lines) {
+        const trimmed = line.replace(/\r$/, '');
+        if (trimmed) fireLine(trimmed);
+      }
+    });
+    handle.onClose((info) => {
+      const detail = info.signal ?? (info.code !== null ? `code=${info.code}` : 'unknown');
+      fireClose(`MCPRouter tunnel closed (${detail})`);
+    });
+    handle.onError((error) => {
+      fireClose(`MCPRouter tunnel error: ${error.message}`);
+    });
+
+    handle.write(`${JSON.stringify({ [CODEX_BRIDGE_HEADER_KEY]: header })}\n`);
+    state = 'open';
+    if (handshakeTimer) {
+      clearTimeout(handshakeTimer);
+      handshakeTimer = null;
+    }
+    for (const pending of pendingWrites.splice(0)) {
+      writeRaw(`${pending.line}\n`).then(pending.resolve, pending.reject);
+    }
+    logger.info('MCPRouter Codex transport open', { instanceId: opts.instanceId });
+  };
+
+  handshakeTimer = setTimeout(() => {
+    if (state === 'connecting') {
+      fireClose(`handshake timeout after ${handshakeTimeoutMs}ms`);
+    }
+  }, handshakeTimeoutMs);
+  handshakeTimer.unref?.();
+
+  void bootstrap().catch((error) => {
+    logger.error('bootstrap failed', { message: (error as Error).message });
+    fireClose(`bootstrap failed: ${(error as Error).message}`);
+  });
+
+  return {
+    writeLine(line: string): Promise<void> {
+      if (state === 'closed') {
+        return Promise.reject(new Error('McprCodexTransport.writeLine after close'));
+      }
+      if (state === 'connecting') {
+        return new Promise<void>((resolve, reject) => {
+          pendingWrites.push({ line, resolve, reject });
+        });
+      }
+      return writeRaw(`${line}\n`);
+    },
+
+    onLine(handler: LineHandler): () => void {
+      lineHandlers.add(handler);
+      if (!lineHandlerArmed) {
+        lineHandlerArmed = true;
+        for (const line of lineBuffer.splice(0)) {
+          for (const subscriber of lineHandlers) subscriber(line);
+        }
+      }
+      return () => {
+        lineHandlers.delete(handler);
+      };
+    },
+
+    onStderr(_handler: StderrHandler): () => void {
+      return () => undefined;
+    },
+
+    onClose(handler: CloseHandler): () => void {
+      closeHandlers.add(handler);
+      return () => {
+        closeHandlers.delete(handler);
+      };
+    },
+
+    async close(reason = 'McprCodexTransport.close()'): Promise<void> {
+      if (state === 'closed') return;
+      try {
+        stream?.end();
+      } catch {
+        // fireClose below remains authoritative.
+      }
+      fireClose(reason);
+    },
+  };
 }

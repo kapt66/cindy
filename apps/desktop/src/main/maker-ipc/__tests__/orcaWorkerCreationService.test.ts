@@ -1239,8 +1239,41 @@ describe('OrcaWorkerCreationService', () => {
     }));
   });
 
-  it('rejects remote MCPRouter Codex before bootstrapping a Worker', async () => {
+  it('creates a remote MCPRouter Codex Worker on the gateway route', async () => {
     const { deps, service } = createDeps({
+      resolveWorkerTarget: vi.fn(async () => ({
+        ok: true as const,
+        workingDir: '/workspace/project',
+        remoteHostId: 'mcpr:instance-1',
+      })),
+    });
+
+    await expect(service.createWorker({
+      leadSessionId: 'lead-1',
+      role: 'developer',
+      agent: 'codex',
+      model: 'gpt-5.5',
+      label: 'developer',
+      remoteHostId: 'mcpr:instance-1',
+    })).resolves.toMatchObject({
+      ok: true,
+      resolved: {
+        providerId: 'xd',
+        remoteHostId: 'mcpr:instance-1',
+      },
+    });
+
+    expect(deps.bootstrapSession).toHaveBeenCalledWith(expect.objectContaining({
+      agentKind: 'codex',
+      providerId: 'xd',
+      remoteHostId: 'mcpr:instance-1',
+      workingDir: '/workspace/project',
+    }));
+  });
+
+  it('rejects a remote MCPRouter Codex Worker without a gateway key', async () => {
+    const { deps, service } = createDeps({
+      readClaudeApiKey: vi.fn((): string | null => null),
       resolveWorkerTarget: vi.fn(async () => ({
         ok: true as const,
         workingDir: '/workspace/project',
@@ -1258,7 +1291,7 @@ describe('OrcaWorkerCreationService', () => {
     })).resolves.toMatchObject({
       ok: false,
       errorCode: 'INVALID_PARAMS',
-      message: expect.stringContaining('Codex transport'),
+      message: expect.stringContaining('AI Gateway API key'),
     });
 
     expect(deps.bootstrapSession).not.toHaveBeenCalled();

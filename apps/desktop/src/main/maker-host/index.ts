@@ -63,7 +63,15 @@ import {
 } from './session-storage.js';
 import { desktopMakerLogger } from './logger-adapter.js';
 import { resolveSessionCcDebugFile } from '../logger.js';
-import { createSshDaemonTransport } from './codex-remote-transport.js';
+import {
+  createMcprCodexTransport,
+  createSshDaemonTransport,
+} from './codex-remote-transport.js';
+import {
+  buildRemoteCodexBridgeHeader,
+  routeCodexThreadRegister,
+  routeCodexThreadUnregister,
+} from './mcpr-codex-capability.js';
 import { getRemoteSshPool } from '../remote-ssh/index.js';
 import { openCcManagerSession } from './cc-manager-client.js';
 import { openMcprTunnel } from './mcpr-tunnel.js';
@@ -555,17 +563,27 @@ export function getMaker(): Maker {
         // ordinary-tool policy at thread creation so later Settings changes do
         // not mutate a runtime that is already running.
         const disabledPluginIds = getPluginRegistry().getDisabledRuntimePluginIds(workingDir);
-        registerCodexMcpThreadContext(threadId, {
-          agentKind: 'codex',
-          sessionId,
-          workingDir,
-          vendorOptions: {
-            ...vendorOptions,
-            [CODEX_DISABLED_BUILTIN_PLUGIN_IDS_KEY]: disabledPluginIds,
+        routeCodexThreadRegister(
+          { threadId, sessionId },
+          () => {
+            registerCodexMcpThreadContext(threadId, {
+              agentKind: 'codex',
+              sessionId,
+              workingDir,
+              vendorOptions: {
+                ...vendorOptions,
+                [CODEX_DISABLED_BUILTIN_PLUGIN_IDS_KEY]: disabledPluginIds,
+              },
+            });
           },
-        });
+        );
       },
-      unregisterCodexMcpThreadContext,
+      unregisterCodexMcpThreadContext: (threadId) => {
+        routeCodexThreadUnregister(
+          threadId,
+          () => unregisterCodexMcpThreadContext(threadId),
+        );
+      },
       prepareCodexResumeSession: prepareExternalCodexSessionForResume,
       registerCodexSystemPromptForThread: ({ sessionId, threadId, text }) =>
         registerCodexProxyComposed(sessionId, threadId, text),
@@ -587,6 +605,14 @@ export function getMaker(): Maker {
       // 这里包一层把 RemoteHost + SshDaemonTransport 装起来。
       // 远端机器没在 pool / 未连接 → 抛错, CodexAgent 把它当 startSession 失败传上去。
       getRemoteCodexTransport: (remoteHostId) => {
+        const mcprInstanceId = parseMcprRemoteHostId(remoteHostId);
+        if (mcprInstanceId) {
+          return createMcprCodexTransport({
+            instanceId: mcprInstanceId,
+            buildHeader: () => buildRemoteCodexBridgeHeader(mcprInstanceId),
+            logger: desktopMakerLogger,
+          });
+        }
         const remoteHost = getRemoteSshPool().get(remoteHostId);
         if (!remoteHost) {
           throw new Error(`remote SSH host "${remoteHostId}" not found in pool — connect it first under Settings → Remote`);

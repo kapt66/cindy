@@ -24,13 +24,17 @@ type WebSocketConstructor = new (
   options: { headers: Record<string, string> },
 ) => WebSocketLike;
 
-export function buildMcprTunnelUrl(baseUrl: string, instanceId: string): string {
+export function buildMcprTunnelUrl(
+  baseUrl: string,
+  instanceId: string,
+  mode: 'cc-mgr' | 'codex-appserver' = 'cc-mgr',
+): string {
   const url = new URL(baseUrl);
   if (url.protocol === 'http:') url.protocol = 'ws:';
   else if (url.protocol === 'https:') url.protocol = 'wss:';
   else throw new Error('MCPRouter tunnel requires HTTP or HTTPS');
   url.pathname = `/api/project-agent-instances/${encodeURIComponent(instanceId)}/agent-tunnel`;
-  url.search = '';
+  url.search = mode === 'cc-mgr' ? '' : `?mode=${encodeURIComponent(mode)}`;
   url.hash = '';
   return url.toString();
 }
@@ -40,13 +44,14 @@ export async function openMcprTunnel(
   deps: {
     getAuth?: () => Promise<{ baseUrl: string; sessionToken: string }>;
     WebSocketCtor?: WebSocketConstructor;
+    mode?: 'cc-mgr' | 'codex-appserver';
   } = {},
 ): Promise<CcManagerByteStream> {
   const instanceId = parseMcprRemoteHostId(remoteHostId);
   if (!instanceId) throw new Error('[MCPR_INSTANCE_INVALID] invalid MCPRouter host id');
   const auth = await (deps.getAuth ?? (() => getMekaRouterService().getTunnelAuth()))();
   const Ctor = deps.WebSocketCtor ?? (WebSocket as unknown as WebSocketConstructor);
-  const socket = new Ctor(buildMcprTunnelUrl(auth.baseUrl, instanceId), {
+  const socket = new Ctor(buildMcprTunnelUrl(auth.baseUrl, instanceId, deps.mode), {
     headers: { cookie: `session=${auth.sessionToken}` },
   });
   socket.binaryType = 'nodebuffer';

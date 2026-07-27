@@ -7073,8 +7073,7 @@
         "none": "P4 ルートを設定するか、利用可能な MCPRouter インスタンスをバインドしてください",
         "p4Root": "ローカル · 設定済み P4 ルート",
         "localDirectory": "ローカル · {{name}}",
-        "remote": "リモート · {{project}} · {{instance}}",
-        "remoteClaudeOnly": "リモート MCPRouter Worker は現在 Claude Code のみ対応しています。"
+        "remote": "リモート · {{project}} · {{instance}}"
       },
       "enableCollabTitle": "コラボレーションを開始",
       "enableCollabSubmit": "コラボレーションを開始"

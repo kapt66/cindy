@@ -458,7 +458,7 @@ describe('CreateWorkerPopover', () => {
     ).toBe(true);
   });
 
-  it('keeps the standard Agent switcher but disables Codex for a bound MCPRouter target', async () => {
+  it('keeps Codex selectable for a bound MCPRouter target', async () => {
     const onCreate = vi.fn();
     const leadSession = {
       id: 'lead-1',
@@ -483,15 +483,16 @@ describe('CreateWorkerPopover', () => {
     fireEvent.change(target, { target: { value: 'mcpr:instance-1' } });
 
     const codexTab = screen.getByRole('tab', { name: 'Codex' }) as HTMLButtonElement;
-    await waitFor(() => expect(codexTab.disabled).toBe(true));
-    expect(screen.getByRole('tab', { name: 'Claude' }).getAttribute('aria-selected')).toBe('true');
-    expect(screen.getByText('orca.createWorker.target.remoteClaudeOnly')).toBeTruthy();
+    expect(codexTab.disabled).toBe(false);
+    fireEvent.click(codexTab);
+    expect(codexTab.getAttribute('aria-selected')).toBe('true');
+    expect(screen.queryByText('orca.createWorker.target.remoteClaudeOnly')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'orca.createWorker.submit' }));
 
     await waitFor(() =>
       expect(onCreate).toHaveBeenCalledWith(
         expect.objectContaining({
-          agent: 'claude-code',
+          agent: 'codex',
           workingDir: '/workspace/project',
           remoteHostId: 'mcpr:instance-1',
           providerId: null,

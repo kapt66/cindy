@@ -9,6 +9,15 @@ describe('Meka MCPRouter tunnel', () => {
     expect(buildMcprTunnelUrl('https://router.example/base?old=1', 'instance / one')).toBe(
       'wss://router.example/api/project-agent-instances/instance%20%2F%20one/agent-tunnel',
     );
+    expect(
+      buildMcprTunnelUrl(
+        'https://router.example/base?old=1',
+        'instance / one',
+        'codex-appserver',
+      ),
+    ).toBe(
+      'wss://router.example/api/project-agent-instances/instance%20%2F%20one/agent-tunnel?mode=codex-appserver',
+    );
   });
 
   it('uses the stored Router session cookie when opening a project instance tunnel', async () => {
