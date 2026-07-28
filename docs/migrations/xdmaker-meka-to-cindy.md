@@ -125,6 +125,14 @@
 - 来源目录：`xdmaker-meka`，全程只读、不删除。
 - 来源数据库：`xdt-maker-<userId>.db`（包含 `-wal` / `-shm`）。
 - 目标数据库：`cindy-meka-<userId>.db`。
+- 新旧账号系统 UID 不同时，优先复用 `xdmaker/meka/main` 已落盘的
+  `migration/identity-anchor.json`，按当前 email 唯一匹配旧 UID；没有身份锚时只接受
+  唯一一个非 smoke 主库。多账号、损坏锚或多候选均失败并保留重试，不按 mtime 猜测。
+- `xdt-maker-__smoke_test__.db` 永不参与真实用户迁移；早期测试包若已误迁该库，会在
+  目标库、sidecar 与 migration runtime identity 文件留下
+  `*.before-smoke-repair.bak` 后重新认领真实旧库。
+- 主库使用 SQLite online backup 复制，把 WAL 中已提交事务合入完整目标库，并在落位前
+  通过 `quick_check` 和核心表检查；不把旧 WAL/SHM 与新主库直接拼接。
 - 同步迁移媒体、dialogues、受管浏览器 profile、`meka-assistant-settings.json` 与
   `meka-roles/`；目标已有配置不覆盖。
 - `safe-storage` 不跨应用身份复制；用户在 Cindy Meka 中重新登录/授权。

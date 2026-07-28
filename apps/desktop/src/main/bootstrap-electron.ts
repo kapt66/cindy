@@ -5306,9 +5306,9 @@ app.on('ready', async () => {
     beforeEnsureReady: async (userId) => {
       const user = authManager.getAuthState().user;
       if (user == null || user.id !== userId) return;
-      // 首登轻量迁移(老 xdt-maker userData → Cindy):内部自带 marker 防重入与
+      // 首登轻量迁移（旧 XDMaker Meka userData → Cindy Meka）：内部自带 marker 防重入与
       // 全量兜底,绝不 throw,失败不阻塞登录(ensureReady 照常建新库)。
-      await runLegacyUserDataMigrationForUser(user.id);
+      await runLegacyUserDataMigrationForUser(user);
     },
     onReady: async (userId) => {
       // 必须先 await ensureLifecycleDbClient(内部 await createDbClient → worker

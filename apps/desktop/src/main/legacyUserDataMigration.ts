@@ -4,7 +4,8 @@
  * Cindy Meka 身份翻转后 userData 目录从 `xdmaker-meka` 变为 `CindyMeka`,老用户的
  * 主库与媒体总仓留在同级的老目录里。本模块在「用户首次登录成功、db 尚未打开」
  * 时(registerLocalDbIpc 的 beforeEnsureReady 钩子)做一次**只读老目录**的简单
- * 迁移:复制主库(+wal/shm 附属文件)、`cindy-media` 目录、`dialogues` 无文件夹
+ * 迁移:通过 SQLite online backup 复制主库并合入 WAL、迁移 `cindy-media` 目录、
+ * `dialogues` 无文件夹
  * 对话工作目录(agent 可能在里面写过真实文件,必须随迁;DB 里的 working_dir
  * 前缀改写由 db ready 后的 sweepLegacyDialogueWorkingDirs 完成)、agent 浏览器
  * profile(`browser-runtime/browser/XDMaker` → `browser/Cindy`,登录态随迁)、
@@ -32,8 +33,14 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { app, BrowserWindow, ipcMain } from 'electron';
 import { BRAND_IDENTITY } from '@cindy/maker-shared/brand-identity';
+import Database from 'better-sqlite3';
 import { CURRENT_CINDY_REGION } from '../shared/brandRegion.js';
 
+import {
+  createBetterSqliteDatabase,
+  restrictDbFilePermissions,
+  resolveBetterSqliteNativeBinding,
+} from './localDb/betterSqliteFactory';
 import { createLogger } from './logger';
 
 /** marker 文件名(userData 根下)。存在 = 本 profile 已做过首登轻量迁移。 */
@@ -51,6 +58,8 @@ const DIALOGUES_DIR_NAME = 'dialogues';
 /** XDMaker Meka 的非敏感产品配置；随数据库一起迁移到 Cindy Meka。 */
 const MEKA_SETTINGS_FILE_NAME = 'meka-assistant-settings.json';
 const MEKA_ROLES_DIR_NAME = 'meka-roles';
+/** XDMaker Meka 收尾版写入的跨账号系统身份锚；结构以 xdmaker/meka/main 为准。 */
+const IDENTITY_ANCHOR_REL_PATH = path.join('migration', 'identity-anchor.json');
 
 /**
  * dialogue 工作目录里的依赖树可由包管理器重建，且 pnpm 会在其中创建大量目录符号链接。
@@ -96,6 +105,8 @@ export type LegacyMigrationPhase = 'confirm' | 'running' | 'done' | 'failed';
 export interface LegacyMigrationFsDeps {
   /** 路径存在(文件或目录)。 */
   pathExists(p: string): Promise<boolean>;
+  /** 读取 UTF-8 文本(marker 校验用)。 */
+  readFile(p: string): Promise<string>;
   /** 列目录文件名;目录不存在返回 []。 */
   listDir(dir: string): Promise<string[]>;
   /**
@@ -105,8 +116,6 @@ export interface LegacyMigrationFsDeps {
   listDirEntries(
     dir: string,
   ): Promise<Array<{ name: string; isDirectory: boolean; isSymbolicLink: boolean }>>;
-  /** 文件 mtime(ms);用于「扫最新源库」。 */
-  statMtimeMs(p: string): Promise<number>;
   /** 文件字节数;media merge 的"已存在但截断"检测用。 */
   statSize(p: string): Promise<number>;
   /** 复制单文件(允许覆盖——只用于 .mtoc-tmp 临时名,最终名一律经 rename 入位)。 */
@@ -137,7 +146,14 @@ export interface LegacyUserDataMigrationDeps {
   legacyDbPrefixes: readonly string[];
   /** 新主库文件名前缀(目标 `<prefix>-<userId>.db`)。 */
   currentDbPrefix: string;
+  /** 当前 Cindy 账号 email；用于匹配旧 Meka identity anchor。 */
+  currentUserEmail?: string | null;
   fs: LegacyMigrationFsDeps;
+  /**
+   * 生产环境使用 SQLite online backup 把 WAL 合入完整主库并 quick_check；
+   * 单测未注入时保留文件级复制假体，以覆盖原子落位与 sidecar 清理。
+   */
+  copyDatabase?(sourcePath: string, temporaryTargetPath: string): Promise<void>;
   /** 注入时钟(marker 的 migratedAt)。 */
   now(): Date;
   log: { info(msg: string, ...args: unknown[]): void; warn(msg: string, ...args: unknown[]): void };
@@ -160,6 +176,12 @@ export type LegacyUserDataMigrationResult =
 
 /** wal / shm 附属文件后缀(SQLite sidecar 命名:`<db 文件全名><后缀>`)。 */
 const DB_SIDECAR_SUFFIXES = ['-wal', '-shm'] as const;
+/** 与某一 DB migration history 绑定的旁路身份文件；换主库时不可沿用。 */
+const DB_RUNTIME_METADATA_SUFFIXES = ['.migration-runtime.json'] as const;
+/** packaged smoke 会创建该后缀的临时 DB；它永远不能成为真实用户的迁移源。 */
+const SMOKE_TEST_DB_SUFFIX = '-__smoke_test__.db';
+/** 已误迁 smoke DB 时，替换前保留当前目标库及 sidecar 的一次性备份。 */
+export const SMOKE_MIGRATION_BACKUP_SUFFIX = '.before-smoke-repair.bak';
 
 /**
  * 复制暂存临时名后缀。所有复制先落 tmp、就绪后 rename 入位——中途崩溃只会
@@ -176,24 +198,40 @@ async function copyDbAtomic(
   fs: LegacyMigrationFsDeps,
   sourceDbPath: string,
   targetDbPath: string,
+  options: {
+    replaceExisting?: boolean;
+    copyDatabase?: (sourcePath: string, temporaryTargetPath: string) => Promise<void>;
+  } = {},
 ): Promise<void> {
   const dbTmp = `${targetDbPath}${COPY_TMP_SUFFIX}`;
   await fs.removeIfExists(dbTmp);
-  await fs.copyFile(sourceDbPath, dbTmp);
-  const sidecarRenames: Array<{ tmp: string; final: string }> = [];
-  for (const suffix of DB_SIDECAR_SUFFIXES) {
-    const sidecarSrc = `${sourceDbPath}${suffix}`;
-    if (!(await fs.pathExists(sidecarSrc))) continue;
-    const final = `${targetDbPath}${suffix}`;
-    const tmp = `${final}${COPY_TMP_SUFFIX}`;
-    await fs.removeIfExists(tmp);
-    await fs.copyFile(sidecarSrc, tmp);
-    sidecarRenames.push({ tmp, final });
+  if (options.copyDatabase) {
+    await options.copyDatabase(sourceDbPath, dbTmp);
+  } else {
+    await fs.copyFile(sourceDbPath, dbTmp);
   }
-  // 目标 db 不存在(调用前提),最终名上的任何 sidecar 都是上次 attempt 的孤儿
-  // ——无条件清掉,防止「本次源侧无 wal」时旧 attempt 的 stale wal 与新 db 错配
-  // (SQLite 打开时按 wal 自身校验链回放,不与 db 交叉校验,错配可致损坏)。
+  const sidecarRenames: Array<{ tmp: string; final: string }> = [];
+  // online backup 已把 WAL 中已提交数据合并进 dbTmp，不得再混入源 sidecar。
+  // 文件级复制只服务 DI 单测与兼容假体，仍需带上 wal/shm。
+  if (!options.copyDatabase) {
+    for (const suffix of DB_SIDECAR_SUFFIXES) {
+      const sidecarSrc = `${sourceDbPath}${suffix}`;
+      if (!(await fs.pathExists(sidecarSrc))) continue;
+      const final = `${targetDbPath}${suffix}`;
+      const tmp = `${final}${COPY_TMP_SUFFIX}`;
+      await fs.removeIfExists(tmp);
+      await fs.copyFile(sidecarSrc, tmp);
+      sidecarRenames.push({ tmp, final });
+    }
+  }
+  // 普通迁移要求目标 db 不存在；唯一替换路径是 marker 已证明目标来自 smoke DB，
+  // 且调用方已经完成不覆盖的备份。先移走旧 db，再统一清掉旧 sidecar，防止
+  // 「本次源侧无 wal」时 stale wal 与新 db 错配。
+  if (options.replaceExisting) await fs.removeIfExists(targetDbPath);
   for (const suffix of DB_SIDECAR_SUFFIXES) {
+    await fs.removeIfExists(`${targetDbPath}${suffix}`);
+  }
+  for (const suffix of DB_RUNTIME_METADATA_SUFFIXES) {
     await fs.removeIfExists(`${targetDbPath}${suffix}`);
   }
   for (const { tmp, final } of sidecarRenames) {
@@ -226,6 +264,18 @@ async function copyFileIfMissing(
   await fs.copyFile(sourcePath, tmp);
   await fs.rename(tmp, targetPath);
   return true;
+}
+
+/** 已知 smoke 误迁修复前备份目标 DB 与 sidecar；既有备份永不覆盖。 */
+async function backupTargetDbBeforeSmokeRepair(
+  fs: LegacyMigrationFsDeps,
+  targetDbPath: string,
+): Promise<void> {
+  for (const suffix of ['', ...DB_SIDECAR_SUFFIXES, ...DB_RUNTIME_METADATA_SUFFIXES]) {
+    const source = `${targetDbPath}${suffix}`;
+    const backup = `${source}${SMOKE_MIGRATION_BACKUP_SUFFIX}`;
+    await copyFileIfMissing(fs, source, backup);
+  }
 }
 
 /**
@@ -274,33 +324,193 @@ async function mergeCopyDir(
   }
 }
 
-/**
- * 选源库:优先精确命中 `<prefix>-<userId>.db`;否则扫 `<prefix>-*.db` 里 mtime
- * 最新的一个;一个都没有返回 null(跳过 db 步骤)。
- */
-async function pickSourceDb(
+type SourceDbSelection =
+  | {
+      status: 'selected';
+      path: string;
+      strategy: 'current-user-id' | 'identity-anchor' | 'only-candidate';
+    }
+  | { status: 'none' }
+  | { status: 'blocked'; error: string };
+
+interface IdentityAnchorAccount {
+  userId: string;
+  email: string | null;
+}
+
+function normalizeEmail(raw: string | null | undefined): string | null {
+  if (typeof raw !== 'string') return null;
+  const normalized = raw.trim().toLowerCase();
+  return normalized || null;
+}
+
+async function readIdentityAnchor(
   legacyDir: string,
-  userId: string,
+  fs: LegacyMigrationFsDeps,
+): Promise<
+  | { status: 'absent' }
+  | { status: 'valid'; accounts: IdentityAnchorAccount[] }
+  | { status: 'invalid'; error: string }
+> {
+  const anchorPath = path.join(legacyDir, IDENTITY_ANCHOR_REL_PATH);
+  if (!(await fs.pathExists(anchorPath))) return { status: 'absent' };
+  try {
+    const parsed = JSON.parse(await fs.readFile(anchorPath)) as {
+      schemaVersion?: unknown;
+      accounts?: unknown;
+    };
+    if (parsed?.schemaVersion !== 1 || !Array.isArray(parsed.accounts)) {
+      return { status: 'invalid', error: 'identity anchor has an unsupported shape' };
+    }
+    const accounts = parsed.accounts.filter(
+      (account): account is IdentityAnchorAccount =>
+        account != null &&
+        typeof account === 'object' &&
+        typeof (account as IdentityAnchorAccount).userId === 'string' &&
+        (account as IdentityAnchorAccount).userId.length > 0 &&
+        ((account as IdentityAnchorAccount).email == null ||
+          typeof (account as IdentityAnchorAccount).email === 'string'),
+    );
+    if (accounts.length !== parsed.accounts.length) {
+      return { status: 'invalid', error: 'identity anchor contains an invalid account' };
+    }
+    return { status: 'valid', accounts };
+  } catch (err) {
+    return {
+      status: 'invalid',
+      error: `identity anchor is unreadable: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+}
+
+function dbPathForIdentity(legacyDir: string, prefix: string, userId: string): string | null {
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(prefix)) return null;
+  const fileName = `${prefix}-${userId}.db`;
+  // userId 来自远端身份，不假设其字符集；只要求拼出的值仍是单一文件名段，
+  // 拒绝 `/`、`\`、`.` / `..` 等路径逃逸。避免 path.resolve 改写 Windows
+  // 根相对路径或 UNC 语义。
+  if (path.basename(fileName) !== fileName || fileName === '.' || fileName === '..') return null;
+  const root = path.normalize(legacyDir);
+  const candidate = path.join(root, fileName);
+  return path.dirname(candidate) === root ? candidate : null;
+}
+
+async function eligibleDbCandidates(
+  legacyDir: string,
   legacyDbPrefixes: readonly string[],
   fs: LegacyMigrationFsDeps,
-): Promise<string | null> {
-  for (const prefix of legacyDbPrefixes) {
-    const exact = path.join(legacyDir, `${prefix}-${userId}.db`);
-    if (await fs.pathExists(exact)) return exact;
+): Promise<string[]> {
+  return (await fs.listDir(legacyDir))
+    .filter(
+      (name) =>
+        name.endsWith('.db') &&
+        !name.endsWith(SMOKE_TEST_DB_SUFFIX) &&
+        legacyDbPrefixes.some((prefix) => name.startsWith(`${prefix}-`)),
+    )
+    .map((name) => path.join(legacyDir, name));
+}
+
+/**
+ * 选源库严格复用 xdmaker/meka/main 的身份锚语义：
+ *  1) 同 UID 精确命中；
+ *  2) identity anchor 按 email 唯一映射旧 UID；
+ *  3) 无 anchor 时仅接受单一非 smoke 候选。
+ * 多账号、损坏 anchor、anchor 与 DB 不一致均 fail closed，绝不按 mtime 猜测。
+ */
+async function pickSourceDb(
+  legacyDirs: readonly string[],
+  userId: string,
+  currentUserEmail: string | null | undefined,
+  legacyDbPrefixes: readonly string[],
+  fs: LegacyMigrationFsDeps,
+): Promise<SourceDbSelection> {
+  // 同一账号系统或 UID 恰好保持一致时，不需要身份锚。
+  for (const legacyDir of legacyDirs) {
+    for (const prefix of legacyDbPrefixes) {
+      const exact = dbPathForIdentity(legacyDir, prefix, userId);
+      if (exact == null || exact.endsWith(SMOKE_TEST_DB_SUFFIX)) continue;
+      if (await fs.pathExists(exact)) {
+        return { status: 'selected', path: exact, strategy: 'current-user-id' };
+      }
+    }
   }
-  const entries = await fs.listDir(legacyDir);
-  const candidates = entries.filter(
-    (name) =>
-      name.endsWith('.db') &&
-      legacyDbPrefixes.some((prefix) => name.startsWith(`${prefix}-`)),
-  );
-  if (candidates.length === 0) return null;
-  let newest: { name: string; mtimeMs: number } | null = null;
-  for (const name of candidates) {
-    const mtimeMs = await fs.statMtimeMs(path.join(legacyDir, name));
-    if (newest == null || mtimeMs > newest.mtimeMs) newest = { name, mtimeMs };
+
+  // 直接来源目录里的 anchor 是账号系统切换的权威映射。只要存在，就不允许
+  // 降级到“猜一个 DB”；损坏或不匹配必须保留重试并给出诊断。
+  for (const legacyDir of legacyDirs) {
+    const anchor = await readIdentityAnchor(legacyDir, fs);
+    if (anchor.status === 'absent') continue;
+    if (anchor.status === 'invalid') {
+      return { status: 'blocked', error: anchor.error };
+    }
+    const email = normalizeEmail(currentUserEmail);
+    if (email == null) {
+      return {
+        status: 'blocked',
+        error: 'identity anchor exists, but current user email is missing',
+      };
+    }
+    const hits = anchor.accounts.filter(
+      (account) => account.userId !== userId && normalizeEmail(account.email) === email,
+    );
+    if (hits.length !== 1) {
+      return {
+        status: 'blocked',
+        error:
+          hits.length === 0
+            ? 'identity anchor does not match the current user'
+            : 'identity anchor matches multiple legacy users',
+      };
+    }
+    const candidates = (
+      await Promise.all(
+        legacyDbPrefixes.map(async (prefix) => {
+          const candidate = dbPathForIdentity(legacyDir, prefix, hits[0].userId);
+          return candidate != null && (await fs.pathExists(candidate)) ? candidate : null;
+        }),
+      )
+    ).filter((candidate): candidate is string => candidate != null);
+    if (candidates.length !== 1) {
+      return {
+        status: 'blocked',
+        error:
+          candidates.length === 0
+            ? 'identity anchor matched, but its legacy database is missing'
+            : 'identity anchor matched multiple legacy database prefixes',
+      };
+    }
+    return { status: 'selected', path: candidates[0], strategy: 'identity-anchor' };
   }
-  return newest == null ? null : path.join(legacyDir, newest.name);
+
+  // 更早、没有身份锚的版本只在候选唯一时兼容；目录优先级仍由 legacyDirNames 决定。
+  for (const legacyDir of legacyDirs) {
+    const candidates = await eligibleDbCandidates(legacyDir, legacyDbPrefixes, fs);
+    if (candidates.length === 1) {
+      return { status: 'selected', path: candidates[0], strategy: 'only-candidate' };
+    }
+    if (candidates.length > 1) {
+      return {
+        status: 'blocked',
+        error: `multiple legacy databases found under ${path.basename(legacyDir)}`,
+      };
+    }
+  }
+  return { status: 'none' };
+}
+
+/** 仅识别本次已知的 smoke 误迁 marker；未知/损坏 marker 保持既有 fail-closed 跳过语义。 */
+async function markerReferencesSmokeTestDb(
+  fs: LegacyMigrationFsDeps,
+  markerPath: string,
+): Promise<boolean> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(markerPath)) as unknown;
+    if (parsed == null || typeof parsed !== 'object') return false;
+    const sourceDb = (parsed as { sourceDb?: unknown }).sourceDb;
+    return typeof sourceDb === 'string' && sourceDb.endsWith(SMOKE_TEST_DB_SUFFIX);
+  } catch {
+    return false;
+  }
 }
 
 /** 写 mToc marker(JSON;schemaVersion 固定 1)。 */
@@ -343,26 +553,32 @@ export async function runLegacyUserDataMigration(
   deps: LegacyUserDataMigrationDeps,
 ): Promise<LegacyUserDataMigrationResult> {
   try {
-    // 1. marker 已存在 → 零开销返回,绝不弹窗。
+    // 1. marker 已存在通常零开销返回。早期 Cindy Meka 版本可能把 packaged smoke
+    // DB 误选为真实源库；仅该 marker 允许进入一次可备份、可重试的修复路径。
     const markerPath = path.join(deps.userDataDir, LEGACY_MIGRATION_MARKER_FILENAME);
-    if (await deps.fs.pathExists(markerPath)) return { status: 'marker-exists' };
+    const markerExists = await deps.fs.pathExists(markerPath);
+    const repairingSmokeMigration =
+      markerExists && (await markerReferencesSmokeTestDb(deps.fs, markerPath));
+    if (markerExists && !repairingSmokeMigration) return { status: 'marker-exists' };
+    if (repairingSmokeMigration) {
+      deps.log.warn('legacy userData migration: repairing prior smoke DB migration');
+    }
 
-    // 2. 探测同级老目录(取候选名里第一个存在的)。
+    // 2. 探测同级老目录。文件/目录资产仍以最直接的旧 Meka 目录为准；DB 选择
+    // 会跨候选目录做严格身份匹配，直接来源没有库时才能接管更早的 xdt-maker。
     const parentDir = path.dirname(deps.userDataDir);
-    let legacyDir: string | null = null;
+    const legacyDirs: string[] = [];
     for (const name of deps.legacyDirNames) {
       const candidate = path.join(parentDir, name);
-      if (await deps.fs.pathExists(candidate)) {
-        legacyDir = candidate;
-        break;
-      }
+      if (await deps.fs.pathExists(candidate)) legacyDirs.push(candidate);
     }
-    if (legacyDir == null) {
+    if (legacyDirs.length === 0) {
       // 全新用户:无可迁,静默写 marker,不打扰。
       await writeMarker(deps, userId, null, false, false, false, false, false);
       deps.log.info('legacy userData migration: no legacy dir, marker written silently');
       return { status: 'no-legacy-dir' };
     }
+    const legacyDir = legacyDirs[0];
 
     // 3. 有老数据 → 弹确认窗并等待用户点「确定」(唯一按钮,不可取消)。
     deps.ui.publish('confirm');
@@ -372,29 +588,56 @@ export async function runLegacyUserDataMigration(
     try {
       // 3a/3b. 主库 + wal/shm 附属文件。
       let copiedSourceDb: string | null = null;
-      const sourceDbPath = await pickSourceDb(legacyDir, userId, deps.legacyDbPrefixes, deps.fs);
-      if (sourceDbPath == null) {
+      const sourceDb = await pickSourceDb(
+        legacyDirs,
+        userId,
+        deps.currentUserEmail,
+        deps.legacyDbPrefixes,
+        deps.fs,
+      );
+      if (sourceDb.status === 'blocked') {
+        throw new Error(sourceDb.error);
+      }
+      if (sourceDb.status === 'none') {
+        if (repairingSmokeMigration) {
+          throw new Error('prior smoke DB migration detected, but no eligible legacy DB was found');
+        }
         deps.log.info('legacy userData migration: no legacy db found, skipping db step');
       } else {
-        const targetDbPath = path.join(
-          deps.userDataDir,
-          `${deps.currentDbPrefix}-${userId}.db`,
-        );
+        const sourceDbPath = sourceDb.path;
+        const targetDbPath = path.join(deps.userDataDir, `${deps.currentDbPrefix}-${userId}.db`);
         if (await deps.fs.pathExists(targetDbPath)) {
-          // 最终名只经 rename 产生,存在即完整成品(半成品只会以 .mtoc-tmp 残留),
-          // 跳过是安全的;顺手清理上次崩溃可能留下的 tmp。
-          await cleanupDbTmp(deps.fs, targetDbPath);
-          deps.log.info(
-            'legacy userData migration: target db already exists, skipping db copy (%s)',
-            path.basename(targetDbPath),
-          );
+          if (repairingSmokeMigration) {
+            await backupTargetDbBeforeSmokeRepair(deps.fs, targetDbPath);
+            await copyDbAtomic(deps.fs, sourceDbPath, targetDbPath, {
+              replaceExisting: true,
+              copyDatabase: deps.copyDatabase,
+            });
+            copiedSourceDb = path.basename(sourceDbPath);
+            deps.log.info(
+              'legacy userData migration: replaced smoke DB from %s via %s (previous target backed up)',
+              copiedSourceDb,
+              sourceDb.strategy,
+            );
+          } else {
+            // 最终名只经 rename 产生,存在即完整成品(半成品只会以 .mtoc-tmp 残留),
+            // 跳过是安全的;顺手清理上次崩溃可能留下的 tmp。
+            await cleanupDbTmp(deps.fs, targetDbPath);
+            deps.log.info(
+              'legacy userData migration: target db already exists, skipping db copy (%s)',
+              path.basename(targetDbPath),
+            );
+          }
         } else {
-          await copyDbAtomic(deps.fs, sourceDbPath, targetDbPath);
+          await copyDbAtomic(deps.fs, sourceDbPath, targetDbPath, {
+            copyDatabase: deps.copyDatabase,
+          });
           copiedSourceDb = path.basename(sourceDbPath);
           deps.log.info(
-            'legacy userData migration: db copied %s -> %s',
+            'legacy userData migration: db copied %s -> %s via %s',
             copiedSourceDb,
             path.basename(targetDbPath),
+            sourceDb.strategy,
           );
         }
       }
@@ -544,6 +787,7 @@ const realFsDeps: LegacyMigrationFsDeps = {
       return false;
     }
   },
+  readFile: (p) => fsp.readFile(p, 'utf8'),
   listDir: async (dir) => {
     try {
       return await fsp.readdir(dir);
@@ -590,7 +834,6 @@ const realFsDeps: LegacyMigrationFsDeps = {
       return [];
     }
   },
-  statMtimeMs: async (p) => (await fsp.stat(p)).mtimeMs,
   statSize: async (p) => (await fsp.stat(p)).size,
   copyFile: (src, dest) => fsp.copyFile(src, dest),
   rename: (src, dest) => fsp.rename(src, dest),
@@ -600,6 +843,50 @@ const realFsDeps: LegacyMigrationFsDeps = {
   },
   writeFile: (p, content) => fsp.writeFile(p, content, 'utf8'),
 };
+
+/**
+ * 从只读旧库生成完整 SQLite 副本：online backup 会把 WAL 中已提交事务合入目标，
+ * 随后 quick_check + 核心表检查阻止损坏或非 Cindy/XDMaker 主库落位。
+ */
+export async function copyDatabaseVerified(sourcePath: string, targetPath: string): Promise<void> {
+  // 旧目录契约是内容与元数据都只读。createBetterSqliteDatabase 会在非 Windows
+  // 平台 chmod 0600，因此源库必须直接用同一 native binding 打开；目标副本仍走
+  // factory，继续获得权限收紧。
+  const nativeBinding = resolveBetterSqliteNativeBinding();
+  const source = new Database(sourcePath, {
+    readonly: true,
+    fileMustExist: true,
+    ...(nativeBinding ? { nativeBinding } : {}),
+  });
+  try {
+    await source.backup(targetPath);
+  } finally {
+    source.close();
+  }
+
+  const probe = createBetterSqliteDatabase(targetPath, { readonly: true, fileMustExist: true });
+  try {
+    const verdict = (probe.pragma('quick_check') as Array<{ quick_check?: string }>)[0]
+      ?.quick_check;
+    if (verdict !== 'ok') {
+      throw new Error(`migrated database quick_check = ${verdict ?? 'unknown'}`);
+    }
+    const coreTables = probe
+      .prepare(
+        `SELECT name
+           FROM sqlite_master
+          WHERE type = 'table'
+            AND name IN ('sessions', 'messages', 'migration_meta')`,
+      )
+      .all() as Array<{ name: string }>;
+    if (new Set(coreTables.map((row) => row.name)).size !== 3) {
+      throw new Error('migrated database is missing required application tables');
+    }
+  } finally {
+    probe.close();
+  }
+  restrictDbFilePermissions(targetPath);
+}
 
 const electronUiDeps: LegacyMigrationUiDeps = {
   publish: broadcastPhase,
@@ -654,7 +941,10 @@ export function shouldSkipLegacyMigrationForDevSandbox(input: {
  * bootstrap 挂载点:首次登录成功后、ensureReady 打开 db 前调用。
  * 幂等 + 防重入;marker 已写时零开销。绝不 throw。
  */
-export async function runLegacyUserDataMigrationForUser(userId: string): Promise<void> {
+export async function runLegacyUserDataMigrationForUser(user: {
+  id: string;
+  email: string | null;
+}): Promise<void> {
   // 仅 cn 构建迁移：旧 XDMaker Meka 数据属于 cn 身份（老渠道只有国内版），
   // global 构建(同机双装)是全新身份,把 cn 的历史数据导进 global 库会
   // 跨区域串台(两边 auth 后端不同,会话 / 凭证对不上)。
@@ -673,12 +963,14 @@ export async function runLegacyUserDataMigrationForUser(userId: string): Promise
     await inFlight;
     return;
   }
-  inFlight = runLegacyUserDataMigration(userId, {
+  inFlight = runLegacyUserDataMigration(user.id, {
     userDataDir: app.getPath('userData'),
     legacyDirNames: BRAND_IDENTITY.legacyUserDataDirNames,
     legacyDbPrefixes: BRAND_IDENTITY.legacyDbFilePrefixes,
     currentDbPrefix: BRAND_IDENTITY.dbFilePrefix,
+    currentUserEmail: user.email,
     fs: realFsDeps,
+    copyDatabase: copyDatabaseVerified,
     now: () => new Date(),
     log,
     ui: electronUiDeps,

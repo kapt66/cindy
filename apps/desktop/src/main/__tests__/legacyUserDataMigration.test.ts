@@ -6,17 +6,22 @@
  * runLegacyUserDataMigration,不触发默认 electron 实现)。
  */
 
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  copyDatabaseVerified,
   LEGACY_MIGRATION_MARKER_FILENAME,
   runLegacyUserDataMigration,
+  SMOKE_MIGRATION_BACKUP_SUFFIX,
   shouldSkipLegacyMigrationForDevSandbox,
   type LegacyMigrationFsDeps,
   type LegacyMigrationPhase,
   type LegacyUserDataMigrationDeps,
 } from '../legacyUserDataMigration';
+import { createBetterSqliteDatabase } from '../localDb/betterSqliteFactory';
 
 const BASE = path.join(path.sep, 'base');
 const USER_DATA = path.join(BASE, 'CindyMeka');
@@ -50,6 +55,11 @@ function createMemFs() {
 
   const fsDeps: LegacyMigrationFsDeps = {
     pathExists: async (p) => files.has(norm(p)) || dirs.has(norm(p)) || symbolicLinks.has(norm(p)),
+    readFile: async (p) => {
+      const file = files.get(norm(p));
+      if (!file) throw new Error(`ENOENT: ${p}`);
+      return file.content;
+    },
     listDir: async (dir) => {
       const nd = norm(dir);
       const out: string[] = [];
@@ -59,11 +69,6 @@ function createMemFs() {
         if (path.dirname(link) === nd) out.push(path.basename(link));
       }
       return out;
-    },
-    statMtimeMs: async (p) => {
-      const f = files.get(norm(p));
-      if (!f) throw new Error(`ENOENT: ${p}`);
-      return f.mtimeMs;
     },
     listDirEntries: async (dir) => {
       const nd = norm(dir);
@@ -129,7 +134,9 @@ type MemFs = ReturnType<typeof createMemFs>;
 
 function makeDeps(
   memfs: MemFs,
-  overrides: Partial<Pick<LegacyUserDataMigrationDeps, 'legacyDirNames' | 'ui'>> = {},
+  overrides: Partial<
+    Pick<LegacyUserDataMigrationDeps, 'legacyDirNames' | 'ui' | 'currentUserEmail' | 'copyDatabase'>
+  > = {},
 ): { deps: LegacyUserDataMigrationDeps; phases: LegacyMigrationPhase[] } {
   const phases: LegacyMigrationPhase[] = [];
   const deps: LegacyUserDataMigrationDeps = {
@@ -137,7 +144,9 @@ function makeDeps(
     legacyDirNames: overrides.legacyDirNames ?? ['xdmaker-meka'],
     legacyDbPrefixes: ['xdt-maker'],
     currentDbPrefix: 'cindy-meka',
+    currentUserEmail: overrides.currentUserEmail,
     fs: memfs.fsDeps,
+    copyDatabase: overrides.copyDatabase,
     now: () => new Date('2026-07-17T08:00:00.000Z'),
     log: { info: vi.fn(), warn: vi.fn() },
     ui: overrides.ui ?? {
@@ -235,7 +244,7 @@ describe('runLegacyUserDataMigration', () => {
     expect(memfs.read(path.join(olderLegacy, 'xdt-maker-u1.db'))).toBe('older-db');
   });
 
-  it('无精确命中 → 扫 <prefix>-*.db 取 mtime 最新的一个;无关文件不参与', async () => {
+  it('无身份锚且存在多个真实库 → fail closed，不按 mtime 猜测', async () => {
     const memfs = createMemFs();
     memfs.addDir(USER_DATA);
     memfs.addFile(path.join(LEGACY, 'xdt-maker-old.db'), 'db-old', 100);
@@ -246,8 +255,125 @@ describe('runLegacyUserDataMigration', () => {
 
     const result = await runLegacyUserDataMigration('u1', deps);
 
-    expect(result).toMatchObject({ status: 'migrated', sourceDb: 'xdt-maker-new.db' });
-    expect(memfs.read(path.join(USER_DATA, 'cindy-meka-u1.db'))).toBe('db-new');
+    expect(result).toMatchObject({ status: 'failed' });
+    expect(memfs.has(path.join(USER_DATA, 'cindy-meka-u1.db'))).toBe(false);
+    expect(memfs.has(markerPath)).toBe(false);
+  });
+
+  it('新旧 UID 不同 → 按旧 Meka identity anchor 的 email 精确认领主库', async () => {
+    const memfs = createMemFs();
+    memfs.addDir(USER_DATA);
+    memfs.addFile(
+      path.join(LEGACY, 'migration', 'identity-anchor.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        accounts: [
+          {
+            userId: 'old-auth-user',
+            email: ' User@Example.com ',
+            feishuOpenId: 'ou_old',
+            lastSeenAt: '2026-07-17T00:00:00.000Z',
+          },
+        ],
+      }),
+    );
+    memfs.addFile(path.join(LEGACY, 'xdt-maker-old-auth-user.db'), 'anchored-db', 100);
+    memfs.addFile(path.join(LEGACY, 'xdt-maker-other-user.db'), 'other-db', 9999);
+    memfs.addFile(path.join(LEGACY, 'xdt-maker-__smoke_test__.db'), 'smoke-db', 10000);
+    const { deps } = makeDeps(memfs, { currentUserEmail: 'user@example.com' });
+
+    const result = await runLegacyUserDataMigration('new-auth-user', deps);
+
+    expect(result).toMatchObject({
+      status: 'migrated',
+      sourceDb: 'xdt-maker-old-auth-user.db',
+    });
+    expect(memfs.read(path.join(USER_DATA, 'cindy-meka-new-auth-user.db'))).toBe('anchored-db');
+  });
+
+  it('identity anchor 存在但不匹配当前 email → 不降级猜单库', async () => {
+    const memfs = createMemFs();
+    memfs.addDir(USER_DATA);
+    memfs.addFile(
+      path.join(LEGACY, 'migration', 'identity-anchor.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        accounts: [{ userId: 'old-auth-user', email: 'other@example.com' }],
+      }),
+    );
+    memfs.addFile(path.join(LEGACY, 'xdt-maker-old-auth-user.db'), 'only-db', 100);
+    const { deps } = makeDeps(memfs, { currentUserEmail: 'user@example.com' });
+
+    const result = await runLegacyUserDataMigration('new-auth-user', deps);
+
+    expect(result).toMatchObject({ status: 'failed' });
+    expect(memfs.has(path.join(USER_DATA, 'cindy-meka-new-auth-user.db'))).toBe(false);
+    expect(memfs.has(markerPath)).toBe(false);
+  });
+
+  it('无精确命中时永久排除 packaged smoke DB，即使它的 mtime 更新', async () => {
+    const memfs = createMemFs();
+    memfs.addDir(USER_DATA);
+    memfs.addFile(path.join(LEGACY, 'xdt-maker-real-user.db'), 'real-db', 100);
+    memfs.addFile(path.join(LEGACY, 'xdt-maker-__smoke_test__.db'), 'empty-smoke-db', 9999);
+    const { deps } = makeDeps(memfs);
+
+    const result = await runLegacyUserDataMigration('new-auth-user', deps);
+
+    expect(result).toMatchObject({ status: 'migrated', sourceDb: 'xdt-maker-real-user.db' });
+    expect(memfs.read(path.join(USER_DATA, 'cindy-meka-new-auth-user.db'))).toBe('real-db');
+  });
+
+  it('已误迁 smoke DB 的 marker 会备份错误目标并从真实旧库修复', async () => {
+    const memfs = createMemFs();
+    const targetDb = path.join(USER_DATA, 'cindy-meka-new-auth-user.db');
+    memfs.addDir(USER_DATA);
+    memfs.addFile(
+      markerPath,
+      JSON.stringify({ schemaVersion: 1, sourceDb: 'xdt-maker-__smoke_test__.db' }),
+    );
+    memfs.addFile(targetDb, 'copied-smoke-db');
+    memfs.addFile(`${targetDb}-wal`, 'copied-smoke-wal');
+    memfs.addFile(`${targetDb}.migration-runtime.json`, 'smoke-runtime-identity');
+    memfs.addFile(path.join(LEGACY, 'xdt-maker-real-user.db'), 'real-db', 100);
+    memfs.addFile(path.join(LEGACY, 'xdt-maker-real-user.db-wal'), 'real-wal', 100);
+    memfs.addFile(path.join(LEGACY, 'xdt-maker-__smoke_test__.db'), 'empty-smoke-db', 9999);
+    const { deps, phases } = makeDeps(memfs);
+
+    const result = await runLegacyUserDataMigration('new-auth-user', deps);
+
+    expect(result).toMatchObject({ status: 'migrated', sourceDb: 'xdt-maker-real-user.db' });
+    expect(memfs.read(targetDb)).toBe('real-db');
+    expect(memfs.read(`${targetDb}-wal`)).toBe('real-wal');
+    expect(memfs.read(`${targetDb}${SMOKE_MIGRATION_BACKUP_SUFFIX}`)).toBe('copied-smoke-db');
+    expect(memfs.read(`${targetDb}-wal${SMOKE_MIGRATION_BACKUP_SUFFIX}`)).toBe('copied-smoke-wal');
+    expect(memfs.read(`${targetDb}.migration-runtime.json${SMOKE_MIGRATION_BACKUP_SUFFIX}`)).toBe(
+      'smoke-runtime-identity',
+    );
+    expect(memfs.has(`${targetDb}.migration-runtime.json`)).toBe(false);
+    expect(readMarker(memfs)).toMatchObject({ sourceDb: 'xdt-maker-real-user.db' });
+    expect(phases).toEqual(['confirm', 'running', 'done']);
+  });
+
+  it('smoke 误迁修复找不到真实旧库时保持原 marker 和目标库，留待下次重试', async () => {
+    const memfs = createMemFs();
+    const targetDb = path.join(USER_DATA, 'cindy-meka-new-auth-user.db');
+    const poisonedMarker = JSON.stringify({
+      schemaVersion: 1,
+      sourceDb: 'xdt-maker-__smoke_test__.db',
+    });
+    memfs.addDir(USER_DATA);
+    memfs.addFile(markerPath, poisonedMarker);
+    memfs.addFile(targetDb, 'copied-smoke-db');
+    memfs.addFile(path.join(LEGACY, 'xdt-maker-__smoke_test__.db'), 'empty-smoke-db', 9999);
+    const { deps, phases } = makeDeps(memfs);
+
+    const result = await runLegacyUserDataMigration('new-auth-user', deps);
+
+    expect(result).toMatchObject({ status: 'failed' });
+    expect(memfs.read(targetDb)).toBe('copied-smoke-db');
+    expect(memfs.read(markerPath)).toBe(poisonedMarker);
+    expect(phases).toEqual(['confirm', 'running', 'failed']);
   });
 
   it('wal / shm 附属文件跟随复制并按新库名改名', async () => {
@@ -262,6 +388,26 @@ describe('runLegacyUserDataMigration', () => {
 
     expect(memfs.read(path.join(USER_DATA, 'cindy-meka-u1.db-wal'))).toBe('wal');
     expect(memfs.read(path.join(USER_DATA, 'cindy-meka-u1.db-shm'))).toBe('shm');
+  });
+
+  it('生产 copyDatabase 注入口生成完整主库时不混入源 wal/shm', async () => {
+    const memfs = createMemFs();
+    memfs.addDir(USER_DATA);
+    const sourceDb = path.join(LEGACY, 'xdt-maker-u1.db');
+    const targetDb = path.join(USER_DATA, 'cindy-meka-u1.db');
+    memfs.addFile(sourceDb, 'raw-db', 1);
+    memfs.addFile(`${sourceDb}-wal`, 'committed-in-wal', 1);
+    const copyDatabase = vi.fn(async (_sourcePath: string, temporaryTargetPath: string) => {
+      memfs.addFile(temporaryTargetPath, 'online-backup-db');
+    });
+    const { deps } = makeDeps(memfs, { copyDatabase });
+
+    const result = await runLegacyUserDataMigration('u1', deps);
+
+    expect(result).toMatchObject({ status: 'migrated', sourceDb: 'xdt-maker-u1.db' });
+    expect(copyDatabase).toHaveBeenCalledWith(sourceDb, `${targetDb}.mtoc-tmp`);
+    expect(memfs.read(targetDb)).toBe('online-backup-db');
+    expect(memfs.has(`${targetDb}-wal`)).toBe(false);
   });
 
   it('目标库已存在 → 跳过复制不覆盖,media 与 marker 照常', async () => {
@@ -409,7 +555,10 @@ describe('runLegacyUserDataMigration', () => {
     const memfs = createMemFs();
     memfs.addDir(USER_DATA);
     memfs.addDir(LEGACY);
-    memfs.addFile(path.join(LEGACY, 'dialogues', '2026-06-22', 'sess-1', 'note.md'), 'agent-output');
+    memfs.addFile(
+      path.join(LEGACY, 'dialogues', '2026-06-22', 'sess-1', 'note.md'),
+      'agent-output',
+    );
     memfs.addFile(path.join(LEGACY, 'dialogues', '2026-05-20', 'sess-2', 'data.json'), '{}');
     // 空的 dialogue 工作目录(最常见形态)也要随迁成目录。
     memfs.addDir(path.join(LEGACY, 'dialogues', '2026-07-01', 'sess-3'));
@@ -421,7 +570,9 @@ describe('runLegacyUserDataMigration', () => {
     expect(memfs.read(path.join(USER_DATA, 'dialogues', '2026-06-22', 'sess-1', 'note.md'))).toBe(
       'agent-output',
     );
-    expect(memfs.read(path.join(USER_DATA, 'dialogues', '2026-05-20', 'sess-2', 'data.json'))).toBe('{}');
+    expect(memfs.read(path.join(USER_DATA, 'dialogues', '2026-05-20', 'sess-2', 'data.json'))).toBe(
+      '{}',
+    );
     // 老目录只读:源文件原样保留。
     expect(memfs.read(path.join(LEGACY, 'dialogues', '2026-06-22', 'sess-1', 'note.md'))).toBe(
       'agent-output',
@@ -500,8 +651,14 @@ describe('runLegacyUserDataMigration', () => {
     const legacyProfile = path.join(LEGACY, 'browser-runtime', 'browser', 'XDMaker');
     memfs.addFile(path.join(legacyProfile, 'user-data', 'Local State'), 'local-state');
     memfs.addFile(path.join(legacyProfile, 'user-data', 'Default', 'Cookies'), 'cookies');
-    memfs.addFile(path.join(legacyProfile, 'user-data', 'Default', 'Cache', 'blob0'), 'cache-bytes');
-    memfs.addFile(path.join(legacyProfile, 'user-data', 'Default', 'Code Cache', 'js0'), 'code-cache');
+    memfs.addFile(
+      path.join(legacyProfile, 'user-data', 'Default', 'Cache', 'blob0'),
+      'cache-bytes',
+    );
+    memfs.addFile(
+      path.join(legacyProfile, 'user-data', 'Default', 'Code Cache', 'js0'),
+      'code-cache',
+    );
     memfs.addFile(path.join(legacyProfile, 'user-data', 'SingletonLock'), 'lock');
     const { deps } = makeDeps(memfs);
 
@@ -514,7 +671,9 @@ describe('runLegacyUserDataMigration', () => {
     expect(memfs.read(path.join(newProfile, 'user-data', 'Default', 'Cookies'))).toBe('cookies');
     // Chrome 重建型缓存与单实例锁不搬。
     expect(memfs.has(path.join(newProfile, 'user-data', 'Default', 'Cache', 'blob0'))).toBe(false);
-    expect(memfs.has(path.join(newProfile, 'user-data', 'Default', 'Code Cache', 'js0'))).toBe(false);
+    expect(memfs.has(path.join(newProfile, 'user-data', 'Default', 'Code Cache', 'js0'))).toBe(
+      false,
+    );
     expect(memfs.has(path.join(newProfile, 'user-data', 'SingletonLock'))).toBe(false);
     // 老目录只读:源 profile 原样保留。
     expect(memfs.read(path.join(legacyProfile, 'user-data', 'Default', 'Cookies'))).toBe('cookies');
@@ -537,10 +696,7 @@ describe('runLegacyUserDataMigration', () => {
     const memfs = createMemFs();
     memfs.addDir(USER_DATA);
     memfs.addDir(LEGACY);
-    memfs.addFile(
-      path.join(LEGACY, 'meka-assistant-settings.json'),
-      '{"p4Root":"C:\\\\P4"}',
-    );
+    memfs.addFile(path.join(LEGACY, 'meka-assistant-settings.json'), '{"p4Root":"C:\\\\P4"}');
     memfs.addFile(path.join(LEGACY, 'meka-roles', 'legacy-role.json'), '{"id":"legacy-role"}');
     memfs.addFile(path.join(LEGACY, 'meka-roles', 'keep-new.json'), '{"source":"legacy"}');
     memfs.addFile(path.join(USER_DATA, 'meka-roles', 'keep-new.json'), '{"source":"new"}');
@@ -620,9 +776,9 @@ describe('shouldSkipLegacyMigrationForDevSandbox', () => {
     expect(
       shouldSkipLegacyMigrationForDevSandbox({ isPackaged: false, envUserDataDir: undefined }),
     ).toBe(false);
-    expect(
-      shouldSkipLegacyMigrationForDevSandbox({ isPackaged: false, envUserDataDir: '' }),
-    ).toBe(false);
+    expect(shouldSkipLegacyMigrationForDevSandbox({ isPackaged: false, envUserDataDir: '' })).toBe(
+      false,
+    );
     expect(
       shouldSkipLegacyMigrationForDevSandbox({ isPackaged: false, envUserDataDir: '   ' }),
     ).toBe(false);
@@ -635,5 +791,48 @@ describe('shouldSkipLegacyMigrationForDevSandbox', () => {
         envUserDataDir: path.join(BASE, 'anything'),
       }),
     ).toBe(false);
+  });
+});
+
+describe('copyDatabaseVerified', () => {
+  it('SQLite online backup 会合入活跃 WAL 中的已提交会话并产出完整主库', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-meka-legacy-db-copy-'));
+    const sourcePath = path.join(tempDir, 'xdt-maker-old-user.db');
+    const targetPath = path.join(tempDir, 'cindy-meka-new-user.db');
+    const source = createBetterSqliteDatabase(sourcePath);
+    try {
+      source.pragma('journal_mode = WAL');
+      source.exec(`
+        CREATE TABLE migration_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT);
+        CREATE TABLE messages (id TEXT PRIMARY KEY, session_id TEXT, content TEXT);
+        INSERT INTO migration_meta (key, value) VALUES ('schema_version', '1');
+        INSERT INTO sessions (id, title) VALUES ('legacy-session', 'Legacy session');
+        INSERT INTO messages (id, session_id, content)
+        VALUES ('legacy-message', 'legacy-session', 'from WAL');
+      `);
+      expect(fs.existsSync(`${sourcePath}-wal`)).toBe(true);
+
+      await copyDatabaseVerified(sourcePath, targetPath);
+
+      const target = createBetterSqliteDatabase(targetPath, {
+        readonly: true,
+        fileMustExist: true,
+      });
+      try {
+        expect(
+          target.prepare(`SELECT title FROM sessions WHERE id = 'legacy-session'`).get(),
+        ).toEqual({ title: 'Legacy session' });
+        expect(
+          target.prepare(`SELECT content FROM messages WHERE id = 'legacy-message'`).get(),
+        ).toEqual({ content: 'from WAL' });
+        expect(target.pragma('quick_check')).toEqual([{ quick_check: 'ok' }]);
+      } finally {
+        target.close();
+      }
+    } finally {
+      source.close();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });
