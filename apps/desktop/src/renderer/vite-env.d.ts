@@ -3765,6 +3765,7 @@ interface ElectronAPI {
       }>;
       setRoute: (routeId: string, enabled: boolean) => Promise<void>;
       connectDesign: (endpoint: string) => Promise<void>;
+      useRouterDesign: (conflictId: string) => Promise<void>;
       disconnectDesign: () => Promise<void>;
       listInstances: () => Promise<import('../shared/meka-router').MekaRouterInstance[]>;
       listTemplates: () => Promise<import('../shared/meka-router').MekaRouterTemplate[]>;

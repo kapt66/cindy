@@ -1,7 +1,8 @@
 # XDMaker Meka → Cindy Meka 严格迁移总账
 
-> 状态：功能迁移与调整中，等待开发者手测；尚未进入最终提交门禁阶段
-> 最后更新：2026-07-27
+> 状态：本轮代码门禁及当前提交 DCO 签署已通过；远端历史 6 个 commit 的存量 DCO
+> 缺签未在本次改写；仍等待开发者手测
+> 最后更新：2026-07-28
 > 目标仓库：`C:\Workspace\cindy`，分支 `meka/main`
 > 来源仓库：远端 `xdmaker`（`git@github.com:kapt66/XDMaker.git`），分支
 > `xdmaker/meka/main`
@@ -59,6 +60,8 @@
   `process.resourcesPath/meka`，并在 Forge 打包后校验源码树与包内树的文件和内容一致。
 - Meka 普通会话与 Jira/GitLab 正式流程会话。
 - Meka 会话侧栏、项目层级、正式流程/普通会话二级分组。
+- 侧栏“Meka 助理”区固定在滚动列表首位；会话顶部的项目/角色绑定胶囊只显示角色名，
+  点击后携带冻结的项目与角色 ID 直达角色配置。
 - 侧栏新建 Meka 会话入口和按项目新建入口。
 - 项目/角色管理详情页按 Cindy 插件详情页的页面层级和视觉语言重构。
 - 远程 MCPRouter 项目实例绑定和会话隧道。
@@ -207,7 +210,15 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
 - MCPRouter 登录、断开、工具路由、项目实例和项目绑定。
 - MCPRouter 地址默认预填 XDMaker 既有地址
   `http://172.25.135.168:1020/`，并允许通过 `VITE_MEKA_MCPROUTER_URL` 覆盖。
-- MekaDesign 连接状态。
+- MekaDesign 支持不依赖 MCPRouter 的独立 HTTP(S) endpoint 配置；完整 endpoint
+  （包括 query 中的授权参数）只持久化在 OS 加密存储。
+- 登录或刷新已认证的 MCPRouter 时读取 Router 中已有的 MekaDesign 路由作为地址候选：
+  本地未配置时自动采用；与本地地址不一致时由设置页询问“替换地址/保留当前地址”，
+  未确认前不覆盖本地配置。路由读取失败不影响 Router 登录，保留本地状态并在后续刷新
+  重试。
+- MekaDesign 和 MCPRouter 的连接生命周期相互独立：断开 Router 保留 MekaDesign；
+  主动断开 MekaDesign 后记录本地 override，不会在下一次刷新时被同一 Router 路由
+  自动恢复。
 - OS 加密存储中的 Router 凭证。
 - 旧 Meka 设置文件形状兼容。
 - 新版本配置文件的只读保护，避免旧客户端降级覆盖未来 schema。
@@ -216,6 +227,14 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
 
 - 保存 P4 字段时不覆盖 Router/Design 或未知字段。
 - Router 写入不覆盖 P4 和未知字段。
+- 非敏感配置文件中的 `mekadesignConfigured` 只表示 endpoint 是否已配置；
+  `mekaDesignRouterSyncSuppressed=true` 表示用户曾主动断开并覆盖 Router 自动同步。
+  该字段缺失/`false` 时允许自动采用候选，重新手工配置或确认替换后恢复为 `false`；
+  两个字段都不保存 endpoint 或凭证。
+- MekaDesign 的本地 endpoint 是代理会话唯一使用的设计工具入口。MCPRouter 只提供
+  地址发现候选和其他 Router 工具，不能作为第二条 MekaDesign 调用通道。
+- 地址冲突状态只向 Renderer 返回不可逆 conflict ID；确认替换时由 Main 重新读取
+  Router 候选，不为本功能新增将候选完整 endpoint 下放 Renderer 的路径。
 - 原始凭证不进入 renderer、项目文件或 Git。
 
 关键实现：
@@ -282,6 +301,15 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
   使用与原版一致的确定性规范化和冲突后缀规则，中文目录名不会导致会话启动失败。
 - 角色与项目默认 MCP provider 引用直接决定本会话是否挂载 MCPRouter；
   项目绑定继续限制实例类 Router 工具。项目元数据中的 MCP 配置也参与解析。
+- 角色选择 `meka-design` 时挂载独立的 `meka_design` provider，并从 OS 加密存储读取
+  当前唯一 endpoint。即使同一角色也启用了 `mcp-router`，Router 的项目级工具发现会
+  过滤其 MekaDesign 静态路由，直接调用同类 Router 工具也会拒绝，避免同一会话同时
+  访问两个设计地址。
+- Claude 会话直接使用 HTTP provider；Codex 的进程级 MCP 集合在首个 thread 前冻结，
+  因此无论启动时是否已配置 endpoint 都预注册本地 `meka_design` 动态代理，并在每次
+  `tools/list` / `tools/call` 时读取最新加密配置和可信 thread context；运行中新增或替换
+  endpoint 不需要重启 Codex host。非 Meka 会话或未选择 `meka-design` 的角色只得到空
+  工具列表，不能借进程级 bridge 越权访问 endpoint。
 - `meka-host-risk-policy` 与 `meka-p4-boundary-policy` 是当前内置角色允许的 Host
   policy 引用；未知 policy 引用会阻断启动，避免配置被静默忽略。MCPRouter 每次调用
   都重新核对工具、项目实例绑定和风险元数据，高风险调用复用 Cindy permission
@@ -461,9 +489,11 @@ Meka 会话侧栏不建立独立视觉规范，项目行、会话行、二级分
 - 静态工具/路由读取。
 - 设置页按 MCP endpoint 聚合并展示“客户端”，不暴露具体工具名称；同一客户端下的
   静态路由按组启停，内置/Worker 工具只读。
-- 配置 MekaDesign 时向 Router discover 请求明确发送客户端名称和描述；配套 MCPRouter
-  服务端将其持久化到 endpoint 下的静态路由，并在重复 discover、工具全部 skipped 时
-  幂等回填已有记录。
+- Router 返回的 `clientName=MekaDesign` 元数据用于识别候选 endpoint；兼容旧版没有
+  clientName、但保留了唯一 `?key=mcp_...` endpoint 的历史路由。
+- Cindy 配置 MekaDesign 时只保存独立 endpoint，不再向 Router discover 或删除
+  Router 路由。代理会话通过独立 `meka_design` provider 使用该 endpoint；Router
+  provider 会过滤已识别的 MekaDesign 工具名称并拒绝旁路调用。
 - 项目实例和模板读取。
 - 设置页只读展示“远程模板 → 实例 → 可用状态”概览；创建实例和项目绑定仍归项目详情，
   不在全局设置中修改项目归属。
@@ -805,10 +835,11 @@ MekaDesign 断开确认、连接状态、账号和刷新交互。实例创建、
 正确聚合，也只能本地猜测显示名，Router 管理端看到的元数据仍为空。现已同步修改外部
 MCPRouter：新增向后兼容的 `client_name/client_description` 可空列，discover 和普通
 route API 支持 `clientName/clientDescription`，已有 endpoint 重复 discover 时也更新
-旧路由。Cindy 配置 MekaDesign 固定注册名称 `MekaDesign` 和描述
+旧路由。旧版 Cindy 配置 MekaDesign 时曾固定注册名称 `MekaDesign` 和描述
 `MekaDesign 设计平台 MCP 工具`。元数据同时贯穿静态路由启动加载、运行时 RoutingTable、
 `/api/workers` 客户端列表和 Router Web 管理页；名称只用于展示，不替换 endpoint 分组键，
-避免改变批量暂停、重试和删除语义。Cindy 设置页优先显示 Router 返回的真实元数据。
+避免改变批量暂停、重试和删除语义。当前 Cindy 不再主动 discover MekaDesign，但设置页
+仍优先使用 Router 返回的真实元数据识别历史路由并提供地址同步候选。
 
 ### 6.13 MekaDesign discover 曾误删 endpoint 授权参数
 
@@ -819,7 +850,8 @@ HTTP 401，并由 discover 包装为 502。
 
 处理：拆分两套 URL 规则。MCPRouter 基地址继续移除 query/hash；MCP endpoint 只允许
 无 URL 用户名/密码的 HTTP(S)，保留完整 pathname 和 query，仅删除不会发送到服务端的
-fragment。保存、discover 和断开删除均使用同一个保留 query 的规范化 endpoint。
+fragment。当前 MekaDesign endpoint 用于独立保存和直接运行时连接；Router 历史路由同步
+也按完整 endpoint 比较，不能因丢失 query 而误判成另一地址。
 
 ### 6.14 内置 Meka 资源分散导致安装包漏带 Skill
 
@@ -880,6 +912,20 @@ typecheck 通过；旧 Meka lineage、区域身份、深链、协同策略、Orc
 创建/生命周期和 Worker 选择器相关测试通过；术语门禁通过。打包 smoke 与真实环境验收
 尚未执行。
 
+### 6.16 MekaDesign 与 MCPRouter 曾形成两个运行时入口
+
+问题：MekaDesign 独立配置后，启用了项目默认 `mcp-router` 的角色会同时得到
+`meka_design` 直连工具和 Router 中聚合的 MekaDesign 工具。地址不一致时，即使设置页
+选择“保留当前地址”，模型仍可能经 Router 调用另一个地址，实际入口不确定。
+
+处理：把 OS 加密存储中的 MekaDesign endpoint 定义为代理会话唯一入口。设置页的冲突
+确认只决定是否用 Router 候选替换该 endpoint；`mcp_router` 的项目工具列表过滤所有已识别
+MekaDesign 路由，`call_tool` 也在 Main 边界拒绝同名旁路调用。内置
+`meka-design-handbook` 同步要求只使用 Host 提供的 `meka_design` 工具。Codex 通过
+thread-context gated 的本地动态代理投影这条唯一入口，Claude 继续直连 HTTP endpoint。
+冲突确认只携带不可逆 ID，确认替换由 Main 重新读取候选，避免为本功能新增 Router
+候选 endpoint 下放。
+
 ## 7. 当前未解决问题与风险
 
 ### 7.1 功能未迁移
@@ -893,8 +939,9 @@ typecheck 通过；旧 Meka lineage、区域身份、深链、协同策略、Orc
   provider OAuth、自定义 provider 与 SSH Codex 不在本次扩展范围。能力交付只冻结
   Cindy 直接项目/角色运行时的 Skill，不等同于恢复 S1 通用 capability snapshot。
 - 内联 MCP 中带 `{{secret:name}}` 的环境变量目前会因没有对应的 Meka secret 解析器而
-  阻断会话启动，避免把占位符或明文当凭证下发。当前 6 个内置角色只使用 MCPRouter
-  provider 引用，不受此限制；自定义内联 MCP 的凭证配置仍需后续补齐正式密钥入口。
+  阻断会话启动，避免把占位符或明文当凭证下发。内置角色使用 Host provider 引用；
+  `mcp-router` 读取 Router 加密凭证，`meka-design` 读取独立加密 endpoint，均不经过
+  内联环境变量。自定义内联 MCP 的凭证配置仍需后续补齐正式密钥入口。
 
 ### 7.2 尚未真实环境验收
 
@@ -909,8 +956,9 @@ typecheck 通过；旧 Meka lineage、区域身份、深链、协同策略、Orc
   发布服务端。
 - MCPRouter 客户端名称/描述需要部署
   `C:\Workspace\ttdbl3\agentic-os\mcp-router` 本轮 schema/API/Web 变更后才会持久化；
-  服务启动时会给旧数据库自动增加两个可空列。已有 MekaDesign 路由在新服务部署后
-  重新执行 discover 即可幂等回填；当前 Cindy UI 可通过断开后重新配置触发。
+  服务启动时会给旧数据库自动增加两个可空列。当前 Cindy 不再向 Router discover
+  MekaDesign；已有命名路由可直接作为地址候选，旧版无名称路由只在唯一 endpoint
+  符合历史 `?key=mcp_...` 形状时兼容识别。
 - 正式流程选择器当前复用 Cindy Main 侧内置 Ghost 的 Jira/GitLab 授权；未连接时会提示
   先完成对应 Ghost 配置再重试。XDMaker 原选择器内嵌连接入口没有迁入，是否需要补回
   应由真实账号手测后决定。
@@ -924,6 +972,7 @@ typecheck 通过；旧 Meka lineage、区域身份、深链、协同策略、Orc
 - Cindy 原有顶部模式/分支/worktree、快速开始、底部工具栏是否保持原布局和行为。
 - 正式流程事项选择、首条消息预填、项目锁定、角色切换和退出正式流程是否正确。
 - 正式流程/普通会话分组是否覆盖用户现有会话。
+- 会话顶部角色名是否正确，点击后是否直接打开该项目下的对应角色配置。
 - 空项目、删除项目、旧版无绑定会话的侧栏表现。
 - 项目/角色详情页的 Light/Dark、窄窗口和大量项目/角色场景。
 - Meka 页签首次进入是否只显示项目卡片；进入项目、返回项目库以及项目信息/角色切换时，
@@ -941,7 +990,7 @@ typecheck 通过；旧 Meka lineage、区域身份、深链、协同策略、Orc
 
 ## 8. 手测建议
 
-现阶段优先功能手测，不跑完整仓库门禁。
+本轮完整代码门禁已经执行；以下真实环境与 UI 手测仍待开发者完成。
 
 ### 8.1 启动和数据
 
@@ -957,15 +1006,24 @@ typecheck 通过；旧 Meka lineage、区域身份、深链、协同策略、Orc
 2. 重启后确认配置保留。
 3. 打开 MCPRouter 登录窗口，确认默认地址已预填；登录/断开后确认凭证不显示在
    renderer 日志。
-4. 用包含 `?key=...` 的 MekaDesign 链接配置，确认 Router discover 的 MCP initialize
-   不再报 401，且断开时能按同一完整 endpoint 删除路由。
-5. 连接后确认“客户端”列表按 endpoint 每个客户端只显示一行，不出现具体工具名称；
+4. 未连接 MCPRouter 时，用包含 `?key=...` 的 MekaDesign 链接独立配置；确认完整 query
+   被保留，新建启用 `meka-design` 的代理会话后只出现 `meka_design` 设计工具。
+5. 登录包含 MekaDesign 历史路由的 MCPRouter：本地未配置时确认自动同步 endpoint；
+   本地地址不同时确认弹出“替换/保留”，选择保留不改本地地址，选择替换后唯一入口改为
+   Router 候选地址。
+6. 连接后确认“客户端”列表按 endpoint 每个客户端只显示一行，不出现具体工具名称；
    MekaDesign 显示真实名称和描述；切换一个客户端时，其下全部静态路由同步启停，
    系统内置/Worker 客户端不可切换。
-6. 确认远程模板按模板分组显示实例数量、实例 ID 和可用状态；未关联模板的实例进入
+7. 确认远程模板按模板分组显示实例数量、实例 ID 和可用状态；未关联模板的实例进入
    独立分组，设置页不提供创建或绑定操作。
-7. 检查 MekaDesign 状态；断开 MekaDesign 或 MCPRouter 前应显示影响确认，断开
-   MCPRouter 后 MekaDesign 状态和客户端/模板/实例列表一并清空。
+8. 同时配置 MekaDesign 和 MCPRouter 后，在启用两者的 Meka 角色会话中确认 Router
+   `list_tools` 不返回 MekaDesign 工具，直接要求 Router 调用同类工具也会被拒绝。
+9. 断开 MCPRouter 后确认 MekaDesign 仍保持连接；主动断开 MekaDesign 后刷新设置，
+   确认不会被 Router 中仍存在的历史路由立即恢复。
+10. 分别创建 Claude 与 Codex Meka 会话，确认两者都能通过唯一 `meka_design` 入口列出
+    工具；普通 Codex 会话以及未选择 `meka-design` 的 Meka 角色不能列出或调用这些工具。
+11. 检查冲突确认 IPC 回执：不应包含 Router 候选的完整 URL 或 `?key=`；确认替换后由
+    Main 重新读取候选并更新唯一入口。
 
 ### 8.3 项目、角色和会话
 
@@ -1035,9 +1093,9 @@ typecheck 通过；旧 Meka lineage、区域身份、深链、协同策略、Orc
 5. 检查窗口较窄时卡片网格、详情分栏、顶栏操作和正式流程输入。
 6. 检查项目/角色保存、删除、新建、加载、错误提示和空状态。
 
-## 9. 最终提交前门禁（当前暂缓）
+## 9. 最终提交前门禁
 
-根据当前开发者决定，完整门禁和代码质量审查留到功能手测稳定、准备提交时执行。
+本轮已进入最终提交审查；代码与本地自动化门禁已执行，真实安装、升级和 UI 验收仍待完成。
 
 最终至少需要：
 
@@ -1052,8 +1110,18 @@ typecheck 通过；旧 Meka lineage、区域身份、深链、协同策略、Orc
 9. 真实旧 Meka 数据副本升级测试。
 10. 旧签名版本 → 新版本热更新测试。
 
-当前已做过的定向验证只用于实现阶段反馈，不代表最终门禁已完成。后续 UI/功能继续调整后
-应重新执行最终门禁。
+本轮最终代码门禁结果：
+
+- `pnpm test:unit` 通过：根级 314 项（307 通过、7 跳过）无失败，Desktop、Mobile 与
+  所有 unit workspace 通过。
+- `pnpm --filter desktop run --if-present typecheck`、`pnpm check:i18n`、
+  `pnpm check:i18n-glossary` 和 `git diff --check` 通过。
+- 当前功能提交使用 `git commit -s`，author、committer 与 `Signed-off-by` 一致。
+  `pnpm check:dco` 的完整 `origin/main..meka/main` 范围仍会报告本次修改之前、已经存在于
+  `origin/meka/main` 的 6 个 commit 缺签。曾按用户确认在本地仅重写这些提交的消息，
+  并验证旧、新 HEAD 文件树零差异；后续 `git pull --rebase` 为避免 force-push 已发布
+  分支，恢复远端原历史并只重放本次功能提交。因此本次交付不包含历史改写，存量缺签需
+  由维护者另行决定治理方式。
 
 本轮项目/角色直接运行时接线后的定向结果：
 

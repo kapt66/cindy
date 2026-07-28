@@ -13,6 +13,7 @@ import {
   Users,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { useSearchParams } from 'react-router-dom';
 
 import {
   PLUGIN_MANAGEMENT_FRAME_CLASS,
@@ -621,6 +622,9 @@ function RoleMcpEditor({
 
 export function MekaProjectRoleEditorRoute() {
   const { t } = useTranslation();
+  const [searchParams] = useSearchParams();
+  const requestedProjectId = searchParams.get('projectId');
+  const requestedRoleId = searchParams.get('roleId');
   const [projects, setProjects] = useState<MekaProject[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [selectedRoleId, setSelectedRoleId] = useState<string | null>(null);
@@ -650,13 +654,21 @@ export function MekaProjectRoleEditorRoute() {
       return current && next.some((item) => item.id === current) ? current : null;
     });
     emitMekaProjectsRolesChanged();
+    return next;
   }, []);
 
   useEffect(() => {
-    void reload()
+    void reload(requestedProjectId)
+      .then((nextProjects) => {
+        if (!requestedProjectId || !requestedRoleId) return;
+        const requestedProject = nextProjects.find((item) => item.id === requestedProjectId);
+        if (requestedProject?.roles.some((item) => item.id === requestedRoleId)) {
+          setSelectedRoleId(requestedRoleId);
+        }
+      })
       .catch(() => toast.error(t('meka.failed')))
       .finally(() => setProjectsLoaded(true));
-  }, [reload, t]);
+  }, [reload, requestedProjectId, requestedRoleId, t]);
 
   useEffect(() => {
     void window.electronAPI.localDb.mekaSkillCatalog

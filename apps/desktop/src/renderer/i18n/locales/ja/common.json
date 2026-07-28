@@ -141,8 +141,7 @@
         }
       },
       "design": {
-        "description": "MCPRouter 経由で MekaDesign ツールを登録します。",
-        "requiresRouter": "先に MCPRouter に接続してください。",
+        "description": "MekaDesign に直接接続するか、MCPRouter の既存アドレスを再利用します。",
         "connect": "設定",
         "disconnect": "切断",
         "connected": "接続済み",
@@ -150,7 +149,13 @@
         "url": "MekaDesign URL",
         "disconnectConfirm": {
           "title": "MekaDesign を切断",
-          "description": "MCPRouter からすべての MekaDesign ツールを登録解除します。続行しますか？"
+          "description": "保存済みの MekaDesign アドレスを削除します。続行しますか？"
+        },
+        "conflict": {
+          "title": "MekaDesign アドレスを置き換えますか？",
+          "description": "MCPRouter の MekaDesign アドレスが現在の設定と異なります。MCPRouter のアドレスに置き換えますか？",
+          "replace": "アドレスを置き換える",
+          "keep": "現在のアドレスを保持"
         }
       },
       "p4": {
@@ -7423,7 +7428,7 @@
     "confirmDeleteProject": "Meka からこのプロジェクトを削除しますか？ソースは保持されます。",
     "confirmDeleteRole": "このロールを削除しますか？",
     "atLeastOneRole": "プロジェクトには最低1つのロールが必要です。",
-    "sessionListTitle": "Meka セッション",
+    "sessionListTitle": "Meka アシスタント",
     "formalSessions": "正式フロー",
     "regularSessions": "通常セッション",
     "noSessions": "Meka セッションはまだありません。",

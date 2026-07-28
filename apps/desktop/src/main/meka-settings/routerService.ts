@@ -1,5 +1,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 
 import {
   buildMcprRemoteHostId,
@@ -54,6 +55,68 @@ function isRecord(value: unknown): value is JsonRecord {
 
 function text(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function opaqueEndpointId(endpoint: string): string {
+  return createHash('sha256').update(endpoint).digest('hex');
+}
+
+function hasLegacyMekaDesignKey(endpoint: string): boolean {
+  try {
+    return new URL(endpoint).searchParams.get('key')?.startsWith('mcp_') === true;
+  } catch {
+    return false;
+  }
+}
+
+function findMekaDesignEndpoint(
+  routes: unknown[],
+  preferredEndpoint: string | null,
+  legacyConfigured: boolean,
+): string | null {
+  const records = routes.filter(isRecord);
+  const allEndpoints = [
+    ...new Set(
+      records
+        .map((route) => text(route.endpoint))
+        .filter((endpoint): endpoint is string => endpoint !== null),
+    ),
+  ];
+  const namedEndpoints = [
+    ...new Set(
+      records
+        .filter((route) => text(route.clientName)?.toLowerCase() === 'mekadesign')
+        .map((route) => text(route.endpoint))
+        .filter((endpoint): endpoint is string => endpoint !== null),
+    ),
+  ];
+  if (preferredEndpoint && namedEndpoints.includes(preferredEndpoint)) return preferredEndpoint;
+  if (namedEndpoints.length > 0) return namedEndpoints[0];
+  if (!legacyConfigured) return null;
+  if (preferredEndpoint && allEndpoints.includes(preferredEndpoint)) return preferredEndpoint;
+  // XDMaker registered routes before MCPRouter accepted clientName metadata, while its encrypted
+  // endpoint cannot migrate into Cindy Meka. Only recover the unique legacy MekaDesign key shape.
+  const legacyEndpoints = allEndpoints.filter(hasLegacyMekaDesignKey);
+  return legacyEndpoints.length === 1 ? legacyEndpoints[0] : null;
+}
+
+function findMekaDesignToolNames(
+  routes: unknown[],
+  preferredEndpoint: string | null,
+  legacyConfigured: boolean,
+): Set<string> {
+  const designEndpoint = findMekaDesignEndpoint(routes, preferredEndpoint, legacyConfigured);
+  return new Set(
+    routes
+      .filter(isRecord)
+      .filter(
+        (route) =>
+          text(route.clientName)?.toLowerCase() === 'mekadesign' ||
+          (!!designEndpoint && text(route.endpoint) === designEndpoint),
+      )
+      .map((route) => text(route.toolName))
+      .filter((toolName): toolName is string => toolName !== null),
+  );
 }
 
 function normalizeInstance(raw: JsonRecord): MekaRouterInstance {
@@ -144,20 +207,94 @@ export function createMekaRouterService(deps: MekaRouterServiceDeps) {
     return { baseUrl, token, clientKey };
   }
 
+  async function syncMekaDesignFromRouter(
+    raw: JsonRecord,
+    baseUrl: string,
+    token: string,
+  ): Promise<{ designUrl: string | null; routerUrl: string | null; conflict: boolean }> {
+    const previousUrl = deps.vault.read(SECRET_KEYS.mekaDesignUrl);
+    const routes = await client.listRoutes(baseUrl, token);
+    const routerUrl = findMekaDesignEndpoint(
+      routes,
+      previousUrl,
+      raw.mekadesignConfigured === true,
+    );
+    if (raw.mekaDesignRouterSyncSuppressed === true && !previousUrl) {
+      return { designUrl: null, routerUrl, conflict: false };
+    }
+    if (previousUrl && routerUrl && previousUrl !== routerUrl) {
+      return { designUrl: previousUrl, routerUrl, conflict: true };
+    }
+    const syncedUrl = previousUrl ?? routerUrl;
+    const syncedConfigured = syncedUrl !== null;
+    if (previousUrl === syncedUrl && (raw.mekadesignConfigured === true) === syncedConfigured) {
+      return { designUrl: syncedUrl, routerUrl, conflict: false };
+    }
+    try {
+      if (syncedUrl) deps.vault.store(SECRET_KEYS.mekaDesignUrl, syncedUrl);
+      await save({ ...raw, mekadesignConfigured: syncedConfigured });
+      return { designUrl: syncedUrl, routerUrl, conflict: false };
+    } catch (error) {
+      if (previousUrl) deps.vault.store(SECRET_KEYS.mekaDesignUrl, previousUrl);
+      else deps.vault.remove(SECRET_KEYS.mekaDesignUrl);
+      throw error;
+    }
+  }
+
+  async function saveMekaDesignEndpoint(raw: JsonRecord, url: string): Promise<void> {
+    const previousUrl = deps.vault.read(SECRET_KEYS.mekaDesignUrl);
+    deps.vault.store(SECRET_KEYS.mekaDesignUrl, url);
+    try {
+      await save({
+        ...raw,
+        mekadesignConfigured: true,
+        mekaDesignRouterSyncSuppressed: false,
+      });
+    } catch (error) {
+      if (previousUrl) deps.vault.store(SECRET_KEYS.mekaDesignUrl, previousUrl);
+      else deps.vault.remove(SECRET_KEYS.mekaDesignUrl);
+      throw error;
+    }
+  }
+
   return {
     async getSettings(): Promise<MekaRouterSettingsView> {
       const raw = await load();
       const routerUrl = text(raw.routerUrl);
       const token = deps.vault.read(SECRET_KEYS.sessionToken);
       const clientKey = deps.vault.read(SECRET_KEYS.clientKey);
-      const designUrl = deps.vault.read(SECRET_KEYS.mekaDesignUrl);
+      let designUrl = deps.vault.read(SECRET_KEYS.mekaDesignUrl);
+      let mekaDesignConfigured = raw.mekadesignConfigured === true && !!designUrl;
+      let mekaDesignConflict = false;
+      let mekaDesignConflictId: string | null = null;
+      if (
+        routerUrl &&
+        token &&
+        clientKey &&
+        !(typeof raw.schemaVersion === 'number' && raw.schemaVersion > 1)
+      ) {
+        try {
+          const synced = await syncMekaDesignFromRouter(raw, routerUrl, token);
+          designUrl = synced.designUrl;
+          mekaDesignConflict = synced.conflict;
+          mekaDesignConflictId =
+            synced.conflict && synced.designUrl && synced.routerUrl
+              ? opaqueEndpointId(`${synced.designUrl}\0${synced.routerUrl}`)
+              : null;
+          mekaDesignConfigured = designUrl !== null;
+        } catch {
+          // Settings remain usable with the last local state while MCPRouter is unavailable.
+        }
+      }
       return {
         configured: !!routerUrl && !!token && !!clientKey,
         routerUrl,
         defaultRouterUrl: DEFAULT_MEKA_MCPROUTER_URL,
         routerUsername: text(raw.routerUsername),
-        mekaDesignConfigured: raw.mekadesignConfigured === true && !!designUrl,
+        mekaDesignConfigured,
         mekaDesignUrl: designUrl,
+        mekaDesignConflict,
+        mekaDesignConflictId,
       };
     },
 
@@ -167,16 +304,48 @@ export function createMekaRouterService(deps: MekaRouterServiceDeps) {
       if (!normalizedUsername || !password) throw new Error('MCPRouter credentials are required');
       const token = await client.login(baseUrl, normalizedUsername, password);
       const clientKey = await client.ensureClientKey(baseUrl, token);
+      const raw = await load();
+      const existingMekaDesignUrl = deps.vault.read(SECRET_KEYS.mekaDesignUrl);
+      let mekaDesignUrl: string | null = null;
+      let routeDiscoverySucceeded = false;
+      try {
+        const routes = await client.listRoutes(baseUrl, token);
+        routeDiscoverySucceeded = true;
+        mekaDesignUrl = findMekaDesignEndpoint(
+          routes,
+          existingMekaDesignUrl,
+          raw.mekadesignConfigured === true,
+        );
+      } catch {
+        // Router login remains valid when optional MekaDesign route discovery is unavailable.
+      }
+      const effectiveMekaDesignUrl =
+        existingMekaDesignUrl ??
+        (raw.mekaDesignRouterSyncSuppressed === true ? null : mekaDesignUrl);
       try {
         deps.vault.store(SECRET_KEYS.password, password);
         deps.vault.store(SECRET_KEYS.sessionToken, token);
         deps.vault.store(SECRET_KEYS.clientKey, clientKey);
-        const raw = await load();
-        await save({ ...raw, routerUrl: baseUrl, routerUsername: normalizedUsername });
+        if (effectiveMekaDesignUrl) {
+          deps.vault.store(SECRET_KEYS.mekaDesignUrl, effectiveMekaDesignUrl);
+        }
+        await save({
+          ...raw,
+          routerUrl: baseUrl,
+          routerUsername: normalizedUsername,
+          mekadesignConfigured:
+            effectiveMekaDesignUrl !== null ||
+            (!routeDiscoverySucceeded && raw.mekadesignConfigured === true),
+        });
       } catch (error) {
-        deps.vault.remove(SECRET_KEYS.password);
-        deps.vault.remove(SECRET_KEYS.sessionToken);
-        deps.vault.remove(SECRET_KEYS.clientKey);
+        for (const key of [SECRET_KEYS.password, SECRET_KEYS.sessionToken, SECRET_KEYS.clientKey]) {
+          deps.vault.remove(key);
+        }
+        if (existingMekaDesignUrl) {
+          deps.vault.store(SECRET_KEYS.mekaDesignUrl, existingMekaDesignUrl);
+        } else {
+          deps.vault.remove(SECRET_KEYS.mekaDesignUrl);
+        }
         throw error;
       }
     },
@@ -186,12 +355,13 @@ export function createMekaRouterService(deps: MekaRouterServiceDeps) {
       const baseUrl = text(raw.routerUrl);
       const token = deps.vault.read(SECRET_KEYS.sessionToken);
       if (baseUrl && token) await client.logout(baseUrl, token);
-      for (const key of Object.values(SECRET_KEYS)) deps.vault.remove(key);
+      for (const key of [SECRET_KEYS.password, SECRET_KEYS.sessionToken, SECRET_KEYS.clientKey]) {
+        deps.vault.remove(key);
+      }
       await save({
         ...raw,
         routerUrl: null,
         routerUsername: null,
-        mekadesignConfigured: false,
         routeEnabledCache: {},
       });
     },
@@ -225,7 +395,7 @@ export function createMekaRouterService(deps: MekaRouterServiceDeps) {
     },
 
     async listProjectTools(projectId: string): Promise<Array<Record<string, unknown>>> {
-      const { baseUrl, clientKey } = await auth();
+      const { baseUrl, token, clientKey } = await auth();
       const raw = await load();
       const bindings = isRecord(raw.projectRemoteInstanceIds) ? raw.projectRemoteInstanceIds : {};
       const selected = bindings[projectId];
@@ -234,8 +404,17 @@ export function createMekaRouterService(deps: MekaRouterServiceDeps) {
           ? selected.filter((item): item is string => typeof item === 'string')
           : [],
       );
-      const tools = await client.listTools(baseUrl, clientKey);
+      const [tools, routes] = await Promise.all([
+        client.listTools(baseUrl, clientKey),
+        client.listRoutes(baseUrl, token),
+      ]);
+      const mekaDesignTools = findMekaDesignToolNames(
+        routes,
+        deps.vault.read(SECRET_KEYS.mekaDesignUrl),
+        raw.mekadesignConfigured === true,
+      );
       return tools.filter(isRecord).filter((tool) => {
+        if (mekaDesignTools.has(text(tool.name) ?? '')) return false;
         const annotations = isRecord(tool.annotations) ? tool.annotations : {};
         const instanceId = text(annotations.instanceId);
         return instanceId === null || allowed.has(instanceId);
@@ -248,7 +427,7 @@ export function createMekaRouterService(deps: MekaRouterServiceDeps) {
       args: Record<string, unknown>,
       authorizeHighRisk?: MekaRouterHighRiskAuthorization,
     ): Promise<{ content: unknown[]; isError?: boolean }> {
-      const { baseUrl, clientKey } = await auth();
+      const { baseUrl, token, clientKey } = await auth();
       const raw = await load();
       const bindings = isRecord(raw.projectRemoteInstanceIds) ? raw.projectRemoteInstanceIds : {};
       const selected = bindings[projectId];
@@ -257,7 +436,19 @@ export function createMekaRouterService(deps: MekaRouterServiceDeps) {
           ? selected.filter((item): item is string => typeof item === 'string')
           : [],
       );
-      const tools = (await client.listTools(baseUrl, clientKey)).filter(isRecord);
+      const [toolRows, routes] = await Promise.all([
+        client.listTools(baseUrl, clientKey),
+        client.listRoutes(baseUrl, token),
+      ]);
+      const mekaDesignTools = findMekaDesignToolNames(
+        routes,
+        deps.vault.read(SECRET_KEYS.mekaDesignUrl),
+        raw.mekadesignConfigured === true,
+      );
+      if (mekaDesignTools.has(name)) {
+        throw new Error('MekaDesign tools are available only through the direct MekaDesign MCP');
+      }
+      const tools = toolRows.filter(isRecord);
       const tool = tools.find((entry) => text(entry.name) === name);
       if (!tool) throw new Error(`MCPRouter tool is not available: ${name}`);
       const annotations = isRecord(tool.annotations) ? tool.annotations : {};
@@ -288,23 +479,41 @@ export function createMekaRouterService(deps: MekaRouterServiceDeps) {
 
     async connectMekaDesign(endpoint: string): Promise<void> {
       const url = client.normalizeMcpEndpointUrl(endpoint);
-      const { baseUrl, token } = await auth();
-      await client.discover(baseUrl, token, url, {
-        clientName: 'MekaDesign',
-        clientDescription: 'MekaDesign 设计平台 MCP 工具',
-      });
-      deps.vault.store(SECRET_KEYS.mekaDesignUrl, url);
       const raw = await load();
-      await save({ ...raw, mekadesignConfigured: true });
+      await saveMekaDesignEndpoint(raw, url);
+    },
+
+    async useMekaDesignFromRouter(conflictId: string): Promise<void> {
+      const { baseUrl, token } = await auth();
+      const raw = await load();
+      const routes = await client.listRoutes(baseUrl, token);
+      const url = findMekaDesignEndpoint(routes, null, raw.mekadesignConfigured === true);
+      if (!url) throw new Error('MCPRouter does not have a MekaDesign address');
+      const currentUrl = deps.vault.read(SECRET_KEYS.mekaDesignUrl);
+      if (!currentUrl || opaqueEndpointId(`${currentUrl}\0${url}`) !== conflictId) {
+        throw new Error('MekaDesign address conflict changed; refresh settings and confirm again');
+      }
+      await saveMekaDesignEndpoint(raw, url);
     },
 
     async disconnectMekaDesign(): Promise<void> {
-      const endpoint = deps.vault.read(SECRET_KEYS.mekaDesignUrl);
-      const { baseUrl, token } = await auth();
-      if (endpoint) await client.deleteEndpointRoutes(baseUrl, token, endpoint);
-      deps.vault.remove(SECRET_KEYS.mekaDesignUrl);
       const raw = await load();
-      await save({ ...raw, mekadesignConfigured: false });
+      const previousUrl = deps.vault.read(SECRET_KEYS.mekaDesignUrl);
+      deps.vault.remove(SECRET_KEYS.mekaDesignUrl);
+      try {
+        await save({
+          ...raw,
+          mekadesignConfigured: false,
+          mekaDesignRouterSyncSuppressed: true,
+        });
+      } catch (error) {
+        if (previousUrl) deps.vault.store(SECRET_KEYS.mekaDesignUrl, previousUrl);
+        throw error;
+      }
+    },
+
+    getMekaDesignEndpoint(): string | null {
+      return deps.vault.read(SECRET_KEYS.mekaDesignUrl);
     },
 
     async listInstances(): Promise<MekaRouterInstance[]> {

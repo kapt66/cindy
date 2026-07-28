@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { Eye, EyeOff, FolderOpen, Plug, RefreshCw, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -103,6 +103,7 @@ export function MekaAssistantSettingsSection() {
   const [designUrl, setDesignUrl] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const promptedDesignConflict = useRef<string | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -156,12 +157,30 @@ export function MekaAssistantSettingsSection() {
         setTemplates([]);
         setInstances([]);
       }
+      if (!next.mekaDesignConflictId) promptedDesignConflict.current = null;
+      if (next.mekaDesignConflict && next.mekaDesignConflictId) {
+        if (promptedDesignConflict.current !== next.mekaDesignConflictId) {
+          promptedDesignConflict.current = next.mekaDesignConflictId;
+          const replace = await confirm({
+            title: t('settings.meka.design.conflict.title'),
+            description: t('settings.meka.design.conflict.description'),
+            confirmText: t('settings.meka.design.conflict.replace'),
+            cancelText: t('settings.meka.design.conflict.keep'),
+          });
+          if (replace) {
+            await window.electronAPI.mekaSettings.router.useRouterDesign(
+              next.mekaDesignConflictId,
+            );
+            setRouter(await window.electronAPI.mekaSettings.router.get());
+          }
+        }
+      }
     } catch (error) {
       toast.error(extractIpcError(error)?.message ?? t('settings.meka.router.loadFailed'));
     } finally {
       setRouterRefreshing(false);
     }
-  }, [t]);
+  }, [confirm, t]);
 
   useEffect(() => {
     void refreshRouter();
@@ -539,9 +558,7 @@ export function MekaAssistantSettingsSection() {
           <div>
             <h3 className="text-16 font-medium text-[var(--settings-section-title)]">MekaDesign</h3>
             <p className="mt-1 text-13 leading-relaxed text-[var(--settings-section-desc)]">
-              {router?.configured
-                ? t('settings.meka.design.description')
-                : t('settings.meka.design.requiresRouter')}
+              {t('settings.meka.design.description')}
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -553,24 +570,21 @@ export function MekaAssistantSettingsSection() {
                 type="button"
                 className={BUTTON_CLASS}
                 onClick={() => void disconnectDesign()}
-                disabled={submitting || !router.configured}
+                disabled={submitting}
               >
                 {t('settings.meka.design.disconnect')}
               </button>
             ) : (
-              <button
-                type="button"
-                className={BUTTON_CLASS}
-                disabled={!router?.configured}
-                onClick={() => setDesignModal(true)}
-              >
+              <button type="button" className={BUTTON_CLASS} onClick={() => setDesignModal(true)}>
                 {t('settings.meka.design.connect')}
               </button>
             )}
           </div>
         </div>
         {router?.mekaDesignUrl && (
-          <div className="truncate text-12 text-[var(--text-tertiary)]">{router.mekaDesignUrl}</div>
+          <div className="truncate text-12 text-[var(--text-tertiary)]">
+            {router.mekaDesignUrl}
+          </div>
         )}
       </div>
 

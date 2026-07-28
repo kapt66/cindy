@@ -2465,6 +2465,23 @@ function ExpandedView({
             </div>
           ) : (
             <>
+              <MekaAssistantSection
+                sessions={visibleMekaSessions}
+                activeSessionId={activeSessionId}
+                runningSessionIds={displayRunningSessionIds}
+                attachedSessionIds={attachedSessionIds}
+                notifications={sidebarNotifications}
+                scheduleSessionIndex={scheduleSessionIndex}
+                selectedSessionIds={selectedSessionIds}
+                onSessionClick={handleSessionClick}
+                onAction={handleActionClick}
+                onRename={handleRename}
+                onTogglePin={handleTogglePin}
+                onScheduleAction={handleScheduleAction}
+                onCreateRegular={handleCreateRegularMeka}
+                onCreateFormal={handleCreateFormalMeka}
+                onManage={handleManageMeka}
+              />
               <PinnedSection
                 entries={visiblePinnedEntries}
                 allKnownProjects={projectUniverse.projects}
@@ -2599,23 +2616,6 @@ function ExpandedView({
                   />
                 </>
               )}
-              <MekaAssistantSection
-                sessions={visibleMekaSessions}
-                activeSessionId={activeSessionId}
-                runningSessionIds={displayRunningSessionIds}
-                attachedSessionIds={attachedSessionIds}
-                notifications={sidebarNotifications}
-                scheduleSessionIndex={scheduleSessionIndex}
-                selectedSessionIds={selectedSessionIds}
-                onSessionClick={handleSessionClick}
-                onAction={handleActionClick}
-                onRename={handleRename}
-                onTogglePin={handleTogglePin}
-                onScheduleAction={handleScheduleAction}
-                onCreateRegular={handleCreateRegularMeka}
-                onCreateFormal={handleCreateFormalMeka}
-                onManage={handleManageMeka}
-              />
             </>
           )}
         </div>

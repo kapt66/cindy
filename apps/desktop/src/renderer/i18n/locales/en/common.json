@@ -141,8 +141,7 @@
         }
       },
       "design": {
-        "description": "Register MekaDesign tools through MCPRouter.",
-        "requiresRouter": "Connect MCPRouter first.",
+        "description": "Connect directly to MekaDesign or reuse its address from MCPRouter.",
         "connect": "Configure",
         "disconnect": "Disconnect",
         "connected": "Connected",
@@ -150,7 +149,13 @@
         "url": "MekaDesign URL",
         "disconnectConfirm": {
           "title": "Disconnect MekaDesign",
-          "description": "This unregisters all MekaDesign tools from MCPRouter. Continue?"
+          "description": "This removes the saved MekaDesign address. Continue?"
+        },
+        "conflict": {
+          "title": "Replace MekaDesign Address?",
+          "description": "The MekaDesign address in MCPRouter differs from the current configuration. Replace the current address with the MCPRouter address?",
+          "replace": "Replace Address",
+          "keep": "Keep Current Address"
         }
       },
       "p4": {
@@ -7434,7 +7439,7 @@
     "confirmDeleteProject": "Remove this project from Meka? Project source files are kept.",
     "confirmDeleteRole": "Delete this role?",
     "atLeastOneRole": "A project must keep at least one role.",
-    "sessionListTitle": "Meka sessions",
+    "sessionListTitle": "Meka Assistant",
     "formalSessions": "Formal",
     "regularSessions": "Regular",
     "noSessions": "No Meka sessions yet.",

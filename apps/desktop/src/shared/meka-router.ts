@@ -5,6 +5,8 @@ export interface MekaRouterSettingsView {
   routerUsername: string | null;
   mekaDesignConfigured: boolean;
   mekaDesignUrl: string | null;
+  mekaDesignConflict: boolean;
+  mekaDesignConflictId: string | null;
 }
 
 export interface MekaRouterTool {

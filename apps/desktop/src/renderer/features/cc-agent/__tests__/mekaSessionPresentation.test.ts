@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { Session } from '@/lib/ccAgent.types';
 import type { MekaProject } from '../../../../shared/meka-projects';
 import { buildMekaProjectSessionGroups } from '../sidebar/sections/MekaAssistantSection';
-import { resolveMekaSessionScope } from '../useMekaSessionScope';
+import { buildMekaRoleEditorRoute, resolveMekaSessionScope } from '../useMekaSessionScope';
 
 const project: MekaProject = {
   id: 'project-a',
@@ -119,9 +119,15 @@ describe('Meka session presentation', () => {
     expect(groups[1]?.regularSessions[0]?.id).toBe('legacy');
   });
 
-  it('resolves the session header label from project and role identity', () => {
-    expect(resolveMekaSessionScope(project, 'role-a')).toBe('Project A · Planner');
-    expect(resolveMekaSessionScope(project, 'removed-role')).toBe('Project A');
+  it('shows only the role name in the session header', () => {
+    expect(resolveMekaSessionScope(project, 'role-a')).toBe('Planner');
+    expect(resolveMekaSessionScope(project, 'removed-role')).toBeNull();
     expect(resolveMekaSessionScope(null, 'role-a')).toBeNull();
+  });
+
+  it('builds a direct role-editor route with encoded frozen identities', () => {
+    expect(buildMekaRoleEditorRoute('project/a', 'role & planner')).toBe(
+      '/cc-agent/meka?projectId=project%2Fa&roleId=role%20%26%20planner',
+    );
   });
 });

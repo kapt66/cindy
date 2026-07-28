@@ -2488,6 +2488,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.invoke('meka-settings:router:set-route', { routeId, enabled }),
       connectDesign: (endpoint: string): Promise<void> =>
         ipcRenderer.invoke('meka-settings:design:connect', endpoint),
+      useRouterDesign: (conflictId: string): Promise<void> =>
+        ipcRenderer.invoke('meka-settings:design:use-router', conflictId),
       disconnectDesign: (): Promise<void> => ipcRenderer.invoke('meka-settings:design:disconnect'),
       listInstances: (): Promise<import('../shared/meka-router').MekaRouterInstance[]> =>
         ipcRenderer.invoke('meka-settings:router:list-instances'),

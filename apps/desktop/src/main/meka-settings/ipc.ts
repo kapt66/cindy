@@ -16,6 +16,7 @@ export const MEKA_SETTINGS_CHANNELS = {
   ROUTER_LIST_TOOLS: 'meka-settings:router:list-tools',
   ROUTER_SET_ROUTE: 'meka-settings:router:set-route',
   DESIGN_CONNECT: 'meka-settings:design:connect',
+  DESIGN_USE_ROUTER: 'meka-settings:design:use-router',
   DESIGN_DISCONNECT: 'meka-settings:design:disconnect',
   ROUTER_LIST_INSTANCES: 'meka-settings:router:list-instances',
   ROUTER_LIST_TEMPLATES: 'meka-settings:router:list-templates',
@@ -115,6 +116,9 @@ export function registerMekaSettingsIpc(
   });
   ipcMain.handle(MEKA_SETTINGS_CHANNELS.DESIGN_CONNECT, (_event, endpoint: unknown) =>
     router.connectMekaDesign(requireString(endpoint, 'endpoint')),
+  );
+  ipcMain.handle(MEKA_SETTINGS_CHANNELS.DESIGN_USE_ROUTER, (_event, conflictId: unknown) =>
+    router.useMekaDesignFromRouter(requireString(conflictId, 'conflictId')),
   );
   ipcMain.handle(MEKA_SETTINGS_CHANNELS.DESIGN_DISCONNECT, () => router.disconnectMekaDesign());
   ipcMain.handle(MEKA_SETTINGS_CHANNELS.ROUTER_LIST_INSTANCES, () => router.listInstances());

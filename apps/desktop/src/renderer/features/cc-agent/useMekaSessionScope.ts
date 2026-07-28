@@ -10,7 +10,11 @@ export function resolveMekaSessionScope(
 ): string | null {
   if (!project) return null;
   const role = project.roles.find((candidate) => candidate.id === roleId);
-  return role ? `${project.displayName} · ${role.displayName}` : project.displayName;
+  return role?.displayName ?? null;
+}
+
+export function buildMekaRoleEditorRoute(projectId: string, roleId: string): string {
+  return `/cc-agent/meka?projectId=${encodeURIComponent(projectId)}&roleId=${encodeURIComponent(roleId)}`;
 }
 
 export function useMekaSessionScope(
@@ -26,6 +30,7 @@ export function useMekaSessionScope(
         setScope(null);
         return;
       }
+      setScope(null);
       void getMekaProject(projectId)
         .then((project) => {
           if (!cancelled) setScope(resolveMekaSessionScope(project, roleId));

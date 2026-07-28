@@ -75,7 +75,7 @@ import { SessionShareExportDialog } from './sidebar/SessionShareExportDialog';
 import { useRemoteProjectSessions } from '@/features/device-link/remoteProjectsStore';
 import { isRemoteSessionWriteBlocked } from './lib/remoteSessionWriteGuard';
 import { Tip } from '@/components/ui/tooltip';
-import { useMekaSessionScope } from './useMekaSessionScope';
+import { buildMekaRoleEditorRoute, useMekaSessionScope } from './useMekaSessionScope';
 
 const log = createLogger('SessionContentHeader');
 
@@ -138,11 +138,13 @@ export function SessionContentHeader({
     session.workspaceKind === 'meka' ? session.mekaProjectId : null,
     session.workspaceKind === 'meka' ? session.mekaRoleId : null,
   );
-  const mekaSessionFallback = session.mekaRole
+  const legacyMekaRoleLabel = session.mekaRole
     ? t('meka.legacySessionScope', { role: t(`meka.legacyRoles.${session.mekaRole}`) })
-    : session.mekaProjectId
-      ? t('meka.unavailableProject')
-      : t('meka.legacySessions');
+    : null;
+  const mekaRoleEditorRoute =
+    session.mekaProjectId && session.mekaRoleId
+      ? buildMekaRoleEditorRoute(session.mekaProjectId, session.mekaRoleId)
+      : null;
   const { runningSessionIds } = useSessionRunningStatus(session.id);
   const { confirm: confirmDialog } = useConfirmDialog();
   const { runSessionAction, unarchiveSession } = useSessionLifecycleActions();
@@ -544,17 +546,33 @@ export function SessionContentHeader({
         </span>
       )}
 
-      {!isEditing && session.workspaceKind === 'meka' && (
-        <button
-          type="button"
-          onClick={() => navigate('/cc-agent/meka')}
-          className="ml-1 max-w-56 shrink truncate rounded-full bg-[var(--surface-chip)] px-2 py-0.5 text-11 text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
-          style={WINDOW_NO_DRAG_STYLE}
-          title={mekaSessionScope ?? mekaSessionFallback}
-        >
-          {mekaSessionScope ?? mekaSessionFallback}
-        </button>
-      )}
+      {!isEditing &&
+        session.workspaceKind === 'meka' &&
+        mekaSessionScope &&
+        mekaRoleEditorRoute && (
+          <button
+            type="button"
+            onClick={() => navigate(mekaRoleEditorRoute)}
+            className="ml-1 max-w-56 shrink truncate rounded-full bg-[var(--surface-chip)] px-2 py-0.5 text-11 text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+            style={WINDOW_NO_DRAG_STYLE}
+            title={mekaSessionScope}
+          >
+            {mekaSessionScope}
+          </button>
+        )}
+
+      {!isEditing &&
+        session.workspaceKind === 'meka' &&
+        !mekaRoleEditorRoute &&
+        legacyMekaRoleLabel && (
+          <span
+            className="ml-1 max-w-56 shrink truncate rounded-full bg-[var(--surface-chip)] px-2 py-0.5 text-11 text-[var(--text-secondary)]"
+            style={WINDOW_NO_DRAG_STYLE}
+            title={legacyMekaRoleLabel}
+          >
+            {legacyMekaRoleLabel}
+          </span>
+        )}
 
       {!isEditing && (
         <DropdownMenu>

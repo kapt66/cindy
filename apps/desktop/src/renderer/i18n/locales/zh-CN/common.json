@@ -141,8 +141,7 @@
         }
       },
       "design": {
-        "description": "通过 MCPRouter 注册 MekaDesign 工具。",
-        "requiresRouter": "请先连接 MCPRouter。",
+        "description": "直接连接 MekaDesign，也可复用 MCPRouter 中已有的地址。",
         "connect": "配置",
         "disconnect": "断开",
         "connected": "已连接",
@@ -150,7 +149,13 @@
         "url": "MekaDesign 链接",
         "disconnectConfirm": {
           "title": "断开 MekaDesign",
-          "description": "将从 MCPRouter 注销 MekaDesign 的全部工具。确认继续？"
+          "description": "将移除当前保存的 MekaDesign 地址。确认继续？"
+        },
+        "conflict": {
+          "title": "替换 MekaDesign 地址？",
+          "description": "MCPRouter 中的 MekaDesign 地址与当前配置不同。是否使用 MCPRouter 地址替换当前地址？",
+          "replace": "替换地址",
+          "keep": "保留当前地址"
         }
       },
       "p4": {
@@ -7641,7 +7646,7 @@
     "confirmDeleteProject": "从 Meka 中移除此项目？项目源码文件会保留。",
     "confirmDeleteRole": "删除此角色？",
     "atLeastOneRole": "项目至少需要保留一个角色。",
-    "sessionListTitle": "Meka 对话",
+    "sessionListTitle": "Meka 助理",
     "formalSessions": "正式流程",
     "regularSessions": "普通对话",
     "noSessions": "还没有 Meka 对话。",
