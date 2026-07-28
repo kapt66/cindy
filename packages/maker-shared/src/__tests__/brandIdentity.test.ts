@@ -10,6 +10,8 @@ import {
   allUserDataDirNames,
   brandAppId,
   brandBundleIdPrefix,
+  brandDesktopDeviceId,
+  brandDesktopIsolatedDeviceId,
   brandExecutableName,
   brandFileAssociationProgId,
   brandUserDataDirName,
@@ -36,6 +38,7 @@ describe('BRAND_IDENTITY invariants', () => {
       expect(prefix).toMatch(fileSafe);
     }
     expect(BRAND_IDENTITY.updaterName).toMatch(fileSafe);
+    expect(BRAND_IDENTITY.desktopDeviceIdPrefix).toMatch(/^[a-z0-9][a-z0-9-]*-$/);
   });
 
   it('executableName / userDataDirName 是安全的文件名段(允许首字母大写)', () => {
@@ -100,6 +103,7 @@ describe('BRAND_IDENTITY invariants', () => {
     expect(BRAND_IDENTITY.userDataDirName).toBe('CindyMeka');
     expect(BRAND_IDENTITY.dbFilePrefix).toBe('cindy-meka');
     expect(BRAND_IDENTITY.cdnPrefix).toBe('cindy-meka');
+    expect(BRAND_IDENTITY.desktopDeviceIdPrefix).toBe('cindy-meka-');
     expect(BRAND_IDENTITY.updaterName).toBe('cindy-meka-updater');
     expect(brandFileAssociationProgId()).toBe('CindyMekaGlobal.CindyGhost');
     expect(BRAND_IDENTITY.legacyDbFilePrefixes).toEqual(['xdt-maker']);
@@ -148,6 +152,26 @@ describe('区域解析与派生', () => {
 });
 
 describe('派生 helper', () => {
+  it('Desktop deviceId 保留 Cindy Meka 前缀、与裸 Cindy 指纹隔离且不超过 64 字符', () => {
+    const machineId = 'a'.repeat(100);
+    expect(brandDesktopDeviceId(' machine-id ')).toBe('cindy-meka-machine-id');
+    expect(brandDesktopDeviceId(machineId)).toHaveLength(64);
+    expect(brandDesktopDeviceId(machineId)).toMatch(/^cindy-meka-/);
+    expect(brandDesktopDeviceId(machineId)).not.toBe(machineId.slice(0, 64));
+    expect(() => brandDesktopDeviceId('   ')).toThrow('machine id is required');
+  });
+
+  it('isolated Desktop deviceId 在产品前缀下继续按沙箱分家', () => {
+    expect(brandDesktopIsolatedDeviceId('machine-id')).toBe('cindy-meka-dev-machine-id');
+    expect(brandDesktopIsolatedDeviceId('machine-id', 'feature-a')).toBe(
+      'cindy-meka-dev-feature-a-machine-id',
+    );
+    expect(brandDesktopIsolatedDeviceId('a'.repeat(100), 'n'.repeat(32))).toHaveLength(64);
+    expect(() => brandDesktopIsolatedDeviceId('machine-id', '非法')).toThrow(
+      'invalid isolation name',
+    );
+  });
+
   it('allDeepLinkSchemes 主 scheme 恒为首位且包含全部 legacy', () => {
     expect(allDeepLinkSchemes()).toEqual(['cindy-meka', 'xdmaker-meka', 'xdt-maker']);
   });

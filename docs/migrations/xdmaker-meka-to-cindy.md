@@ -50,6 +50,9 @@
 ### 3.1 已实现
 
 - Meka 应用安装身份、userData、DB lineage，以及本地打包身份和 Windows 产物命名。
+- Cindy Meka Desktop 的服务端 deviceId 使用 `cindy-meka-` 产品前缀；普通 Cindy、
+  旧 XDMaker Meka 与显式隔离 sandbox 各占独立设备槽，登录/续期不会互相轮换
+  refresh token。
 - Meka 设置：P4、MCPRouter、MekaDesign。
 - Meka 项目、角色、项目元数据和内置 SAGA2 数据。
 - SAGA2 内置项目采用“包内基线 + 已配置 P4 根目录下 `.meka/project.json` 覆盖层”；
@@ -104,6 +107,8 @@
 - Windows 原签名服务产出的安装包升级。
 - macOS 原证书私钥签名后的升级与钥匙串体验。
 - Cindy Meka 新安装包与独立更新渠道的完整升级。
+- 同机同时运行普通 Cindy 与 Cindy Meka，分别登录同一账号并跨越至少一个 token
+  刷新周期，确认两边登录态都保持有效。
 - 本轮新会话入口、二级分组和项目/角色详情页的视觉、交互手测。
 
 ## 4. 各模块迁移明细
@@ -118,6 +123,13 @@
 - CN appId/AUMID/bundle id：`com.xd.cindy.meka`
 - userData：`CindyMeka`
 - global/dev 使用各自的 `-global` / `-dev` 派生身份，避免同机覆盖。
+- Desktop deviceId：正式包与普通 dev 为 `cindy-meka-<machineId>`；显式隔离 sandbox
+  为 `cindy-meka-dev-[<sandbox>-]<machineId>`，统一限制在 64 字符内。普通 Cindy
+  继续使用裸机器指纹，旧 XDMaker Meka 使用 `meka-`，三者互不覆盖服务端
+  `(userId, deviceId)` 设备槽。
+- 自动验证：身份派生与启动顺序回归、Desktop typecheck、变更文件 ESLint 及根目录
+  `pnpm test:unit` 已通过；仍需用正式 Cindy 与 Cindy Meka 同账号跨 token 刷新周期
+  完成一次双开实机验证。
 - DB 文件前缀：`cindy-meka`
 - 更新器名：`cindy-meka-updater`
 - 更新/CDN 前缀：`cindy-meka`
@@ -139,6 +151,9 @@
 - 同步迁移媒体、dialogues、受管浏览器 profile、`meka-assistant-settings.json` 与
   `meka-roles/`；目标已有配置不覆盖。
 - `safe-storage` 不跨应用身份复制；用户在 Cindy Meka 中重新登录/授权。
+- 早期 Cindy Meka 测试包曾使用裸机器指纹；升级到产品前缀后，旧 refresh token
+  不能跨 deviceId 续期，测试用户可能需要一次重新登录。Cindy Meka 尚未正式发布，
+  首发必须直接携带新 deviceId 身份，不能继续发行裸指纹版本。
 
 深链边界：
 
@@ -154,6 +169,7 @@
 - `packages/maker-shared/src/branding.ts`
 - `apps/desktop/forge.config.ts`
 - `apps/desktop/src/main/bootstrap-electron.ts`
+- `apps/desktop/src/main/index.ts`
 - `apps/desktop/src/shared/deepLinkSchemes.ts`
 
 ### 4.2 发布、签名与热更新

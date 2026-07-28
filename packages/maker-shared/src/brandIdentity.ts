@@ -3,7 +3,8 @@
  *
  * 与 `branding.ts`(展示名层,`BRAND_NAME`)互补:那边管用户/LLM 看到的名字,
  * 这边管 OS 注册身份与磁盘/协议标识符——exe 名、AppUserModelId/bundle id、
- * 深链 scheme、userData 目录名、CDN 渠道前缀、更新器产物名等。
+ * 深链 scheme、userData 目录名、Desktop deviceId 前缀、CDN 渠道前缀、
+ * 更新器产物名等。
  *
  * 2026-07 Cindy Meka 身份迁移：新应用的程序与 userData 使用 `CindyMeka`
  * 文件身份；协议、数据库与更新渠道使用机器友好的 `cindy-meka` 身份，并从
@@ -30,7 +31,7 @@
  * 消费方:
  *  - apps/desktop forge.config.ts(executableName / appId / protocols / UTI)
  *  - apps/desktop main 常量(AUMID、深链、orphan-reaper 路径标记、skillhub
- *    usageIndexer 的 userData 兜底路径、localDb 文件名前缀)
+ *    usageIndexer 的 userData 兜底路径、localDb 文件名前缀、认证 deviceId)
  *  - release / publish / smoke 脚本(产物名、OSS 前缀)
  */
 
@@ -48,6 +49,9 @@ export type CindyRegion = 'cn' | 'global' | 'dev';
 
 /** 默认区域:Global。开发模式 / 未显式注入区域的构建一律落在这里。 */
 export const DEFAULT_CINDY_REGION: CindyRegion = 'global';
+
+/** 服务端设备标识的既有长度上限。 */
+export const MAX_DESKTOP_DEVICE_ID_LENGTH = 64;
 
 /**
  * 归一化区域输入(构建脚本 env / 运行时注入值)。空值 → 默认 global;
@@ -107,6 +111,15 @@ export interface BrandIdentity {
   /** 历史 userData 目录名(orphan-reaper 等按路径识别的消费点需匹配全量)。只增不减。 */
   readonly legacyUserDataDirNames: readonly string[];
   /**
+   * Desktop 服务端设备标识前缀。
+   *
+   * auth-server 的 refresh token 按 `(userId, deviceId)` 一对一保存；同机安装的
+   * 普通 Cindy 使用裸机器指纹，因此 Cindy Meka 必须加产品前缀，否则两边登录/
+   * 续期会轮换同一设备槽的 token 并互相登出。该前缀同时让 device-link、SkillHub
+   * 等复用认证 deviceId 的服务端能力保持产品身份一致。
+   */
+  readonly desktopDeviceIdPrefix: string;
+  /**
    * 更新分发 CDN / OSS 的一级路径前缀(渠道身份,老客户端永远只看自己的前缀)。
    * ⚠️ 两区共用(owner 决策 2026-07-18):cn / global 的发布渠道靠**不同
    * OSS bucket** 区分,不靠路径前缀——本字段不做区域派生,发布侧矩阵按
@@ -157,6 +170,7 @@ export const BRAND_IDENTITY: BrandIdentity = Object.freeze({
   // `xdmaker-meka` 是直接迁移来源；更早的 `xdt-maker` 仍须保留给
   // orphan reaper、Codex HOME 接管与 owner namespace 兼容逻辑。
   legacyUserDataDirNames: Object.freeze(['xdmaker-meka', 'xdt-maker']),
+  desktopDeviceIdPrefix: 'cindy-meka-',
   cdnPrefix: 'cindy-meka',
   updaterName: 'cindy-meka-updater',
   dbFilePrefix: 'cindy-meka',
@@ -211,6 +225,46 @@ export function brandUserDataDirName(
   identity: BrandIdentity = BRAND_IDENTITY,
 ): string {
   return identity.userDataDirNameByRegion[region];
+}
+
+function requireMachineId(machineId: string): string {
+  const normalized = machineId.trim();
+  if (!normalized) throw new Error('machine id is required');
+  return normalized;
+}
+
+/**
+ * 为正式包与共享产品 userData 的普通 dev 派生稳定、产品隔离的 Desktop deviceId。
+ * 截断只发生在机器指纹尾部，产品前缀永远完整保留。
+ */
+export function brandDesktopDeviceId(
+  machineId: string,
+  identity: BrandIdentity = BRAND_IDENTITY,
+): string {
+  return `${identity.desktopDeviceIdPrefix}${requireMachineId(machineId)}`.slice(
+    0,
+    MAX_DESKTOP_DEVICE_ID_LENGTH,
+  );
+}
+
+/**
+ * 为显式 `--isolated[=<name>]` 沙箱派生独立 deviceId。
+ * isolationName 已由 Desktop CLI 限制为安全的 ≤32 字符段；这里再次校验，
+ * 避免未来新增调用方绕过入口约束并挤掉全部机器指纹预算。
+ */
+export function brandDesktopIsolatedDeviceId(
+  machineId: string,
+  isolationName?: string | null,
+  identity: BrandIdentity = BRAND_IDENTITY,
+): string {
+  if (isolationName && !/^[A-Za-z0-9_-]{1,32}$/.test(isolationName)) {
+    throw new Error('invalid isolation name');
+  }
+  const prefix = `${identity.desktopDeviceIdPrefix}dev-`;
+  const nameSegment = isolationName ? `${isolationName}-` : '';
+  const machineIdBudget = MAX_DESKTOP_DEVICE_ID_LENGTH - prefix.length - nameSegment.length;
+  if (machineIdBudget < 1) throw new Error('desktop device id prefix is too long');
+  return `${prefix}${nameSegment}${requireMachineId(machineId).slice(0, machineIdBudget)}`;
 }
 
 /** 按区域取 Windows `.cindy` 文件关联 ProgID；默认 cn。 */

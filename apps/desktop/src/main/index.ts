@@ -5,6 +5,12 @@ import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { setDefaultAutoSelectFamilyAttemptTimeout } from 'node:net';
 import { exit, stderr } from 'node:process';
+import {
+  BRAND_IDENTITY,
+  MAX_DESKTOP_DEVICE_ID_LENGTH,
+  brandDesktopDeviceId,
+  brandDesktopIsolatedDeviceId,
+} from '@cindy/maker-shared/brand-identity';
 import { CURRENT_CINDY_REGION } from '../shared/brandRegion.js';
 import { resolveRegionUserDataDirName } from './regionUserData.js';
 import { createLogger, initLogger } from './logger.js';
@@ -60,16 +66,19 @@ if (stripped.length > 0) {
 
 installInvokeCapture();
 
-// dev-only 启动覆写(与 scripts/restart-desktop-remote.mjs 的 --passive/--isolated
-// 同义,人类直跑 pnpm dev:desktop* 时参数经 electron-forge 的 `--` 透传到这里,
-// restart 脚本路径经 XDT_ISOLATED=1 环境变量声明隔离意图):
+// 启动期身份与 dev-only 覆写。dev 参数与 scripts/restart-desktop-remote.mjs 的
+// --passive/--isolated 同义；人类直跑 pnpm dev:desktop* 时参数经 electron-forge
+// 的 `--` 透传到这里，restart 脚本路径经 XDT_ISOLATED=1 声明隔离意图：
 //   - XDT_USER_DATA_DIR / --isolated:userData 切独立目录 —— 多实例不抢 SQLite 锁
 //     (device-link 联调)、或与正式版彻底分家(--isolated 默认 <userData>-dev)。
-//   - 隔离模式同时派生独立 deviceId(dev-<机器指纹>):服务端 refresh token 按
-//     (user, device) 一对一存,沙箱沿用物理机指纹登录会覆盖正式版的续期凭证,
-//     导致正式版下次续期被登出(同机互踢);显式设 XDT_DEVICE_ID_OVERRIDE 时尊重用户值。
+//   - 所有 Cindy Meka 实例都使用产品前缀 deviceId(cindy-meka-<机器指纹>),
+//     与同机普通 Cindy 的裸指纹分家。服务端 refresh token 按 (user, device)
+//     一对一存,若共用裸指纹,任一产品登录/续期都会覆盖另一边并造成同机互踢。
+//   - 隔离模式在产品前缀下继续派生 cindy-meka-dev-<沙箱>-<机器指纹>；
+//     显式设 XDT_DEVICE_ID_OVERRIDE 时尊重用户值。
 //   - --passive / XDT_SCHEDULER_PASSIVE:定时任务自动触发让位给同机另一实例。
-// 必须在 app 'ready' 前调用。仅 dev(非 packaged)生效,生产忽略,零线上影响。
+// 必须在 app 'ready' 和 authManager 动态加载前完成。CLI/目录覆写仅 dev 生效；
+// 产品 deviceId 命名空间对 dev 与 packaged 一律生效。
 import { machineIdSync } from 'node-machine-id';
 import {
   resolveDevCliFlags,
@@ -128,20 +137,21 @@ if (devFlags.needsIsolatedDeviceId) {
   // 顶层读一次 XDT_DEVICE_ID_OVERRIDE ?? machineIdSync()。机器指纹极小概率取不到
   // (machineIdSync 抛),兜底用固定串:跨机器同账号双沙箱会撞,但比静默回落物理机
   // 指纹(必踢正式版)安全方向正确。
-  // 长度硬预算 64:server 端 Slack 设备注册的 deviceId 白名单上限 64 字符
-  // (apps/server/src/routes/slack.ts),超长会被静默降级成 legacy 伪设备。
-  // 默认沙箱 'dev-' + 60 位指纹 = 64;命名沙箱 'dev-<名字>-' + 剩余预算的指纹
-  // (名字 ≤32 → 指纹 ≥27 位 = 108 bit 熵,唯一性依然充裕)。
-  const nameSegment = devFlags.isolationName ? `${devFlags.isolationName}-` : '';
+  // 长度硬预算 64；helper 保留完整产品/沙箱前缀，只截断机器指纹尾部。
   let isolatedDeviceId: string;
   try {
-    const hashBudget = 60 - nameSegment.length; // 'dev-'(4) + nameSegment + hash = 64
-    isolatedDeviceId = `dev-${nameSegment}${machineIdSync().slice(0, hashBudget)}`;
+    isolatedDeviceId = brandDesktopIsolatedDeviceId(machineIdSync(), devFlags.isolationName);
   } catch {
-    isolatedDeviceId = `isolated-dev${devFlags.isolationName ? `-${devFlags.isolationName}` : ''}`;
+    isolatedDeviceId = (
+      `${BRAND_IDENTITY.desktopDeviceIdPrefix}isolated-dev` +
+      `${devFlags.isolationName ? `-${devFlags.isolationName}` : ''}`
+    ).slice(0, MAX_DESKTOP_DEVICE_ID_LENGTH);
   }
   process.env.XDT_DEVICE_ID_OVERRIDE = isolatedDeviceId;
   stderr.write(`[cindy] dev isolated deviceId → ${isolatedDeviceId}\n`);
+} else if (!process.env.XDT_DEVICE_ID_OVERRIDE?.trim()) {
+  // 普通 dev 与 packaged 都必须在 authManager 动态 import 前固定产品设备身份。
+  process.env.XDT_DEVICE_ID_OVERRIDE = brandDesktopDeviceId(machineIdSync());
 }
 
 // 实例注册表对 dev 与 packaged 一律登记:dev/release 按 flavor 分锁域、共享同一

@@ -223,11 +223,13 @@ let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let refreshPromise: Promise<boolean> | null = null;
 let sessionInvalidationPromise: Promise<void> | null = null;
 /**
- * 设备标识。默认绑定物理机(machineIdSync)。
+ * 设备标识。Desktop 正常入口会在模块加载前注入带 Cindy Meka 产品前缀的稳定值，
+ * 避免与同机普通 Cindy 共用 auth-server 的 `(userId, deviceId)` refresh-token 槽；
+ * 仅直接加载本模块的非常规入口才回落到物理机指纹(machineIdSync)。
  *
- * dev-only 覆盖:设了 `XDT_DEVICE_ID_OVERRIDE` 则用它——用于在同一台机器上跑多个
- * desktop 实例模拟「多设备」(device-link 跨设备远程控制本地联调)。deviceId 只是
- * 同账号下区分设备的标识、非鉴权凭证(鉴权走 auth-server 签发的 JWT),覆盖无安全风险。
+ * `XDT_DEVICE_ID_OVERRIDE` 也用于在同一台机器上跑多个 desktop 实例模拟「多设备」
+ * (device-link 跨设备远程控制本地联调)。deviceId 只是同账号下区分设备的标识、
+ * 非鉴权凭证(鉴权走 auth-server 签发的 JWT),覆盖无安全风险。
  */
 const deviceId = process.env.XDT_DEVICE_ID_OVERRIDE?.trim() || machineIdSync();
 
