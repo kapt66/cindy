@@ -648,6 +648,20 @@ The brand block reads only `brand.icon/logo` — no compatibility with the legac
 
 The splash wordmark is a separate asset pair (`assets/splash/wordmark.png`, white text, for DARK / `wordmark-light.png`, dark text, for LIGHT): both 459×156 (@2x) with a 229.5×78 render frame (its exact 2x full frame), and **neither carries a drop shadow** — `SplashScreen.test.tsx` asserts the absence. (Asset-size and shadow history: decision log.)
 
+**Cindy Meka Desktop application icon (approved 2026-07-29).** The installed-app,
+taskbar, tray, installer/updater, Finder, and Dock identity uses the Cindy illustration
+with one upper-left diagonal `MEKA` edition label. The label uses intrinsic asset colors
+acid lime `#C7FF00` and deep navy `#10182F`; these are app-icon artwork colors outside
+the theme token system and do not change between Light and Dark modes. Its geometry is
+fixed across every raster size: the top edge is 50% of the square canvas, the left edge
+is 44%, and the triangular area is approximately 11%. Small raster entries may differ
+only through pixel rounding and antialiasing; do not optically grow or shrink the label.
+`apps/desktop/resources/icon-master-1024.png` is the authoritative full-square master.
+`scripts/generate-win-ico.mjs` derives the seven-entry Windows ICO plus the synchronized
+main-app/updater PNG and ICO assets; `scripts/generate-mac-icns.mjs` applies the Apple
+safe-area grid and derives the ten-entry ICNS plus Dock PNG. Never hand-edit a derived
+asset independently.
+
 **Sanctioned brand surface — mobile download dialog (approved 2026-07-25).** The fourth surface allowed to carry brand artwork, alongside login / splash / new-session:
 
 - **Where**: `components/sidebar/MobileDownloadDialog.tsx` only, and only the dialog header icon (64px `resources/icon.png`). This is a promotion surface for the mobile app, so showing the app's own icon is identification, not decoration.
