@@ -504,7 +504,7 @@ if (stale.length > 0) {
 // GLOSSARY.md 是给人和 AI 查阅的入口,过期比不存在更糟——大家会照着过期的表写文案。
 // 用与生成器完全相同的渲染函数比对,不做「差不多就行」的模糊校验。
 const docStale = fs.existsSync(DOC_PATH)
-  ? fs.readFileSync(DOC_PATH, 'utf8') !== renderGlossaryDoc(glossary)
+  ? fs.readFileSync(DOC_PATH, 'utf8').replace(/\r\n?/g, '\n') !== renderGlossaryDoc(glossary)
   : true;
 if (docStale) {
   console.error(

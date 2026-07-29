@@ -103,7 +103,8 @@ UI 文案的语气与措辞另见 [`DESIGN.md`](../design-rules/DESIGN.md) 的 V
 ### 5.1 术语表与门禁
 
 - **数据正本**：`i18n/glossary.json`；人读版 `i18n/GLOSSARY.md` 由
-  `pnpm i18n:glossary-doc` 生成，**不要手改**。
+  `pnpm i18n:glossary-doc` 生成，**不要手改**。同步门禁比较前会统一 CRLF／LF，避免
+  Windows checkout 把内容相同的生成文档误判为过期。
 - **两级状态**：`decided` 违反即阻断 CI；`proposed` 只告警，用于承载「已知不一致但
   尚未拍板」的术语——让清单可见可讨论，而不是靠脚本替产品做裁决。
 - **三类规则**：禁用译法、保留英文术语的大小写形态、zh-CN 半角标点与三语省略号。

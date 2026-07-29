@@ -350,6 +350,17 @@ test('GLOSSARY.md 与 glossary.json 同步', () => {
   );
 });
 
+test('术语表门禁跨平台忽略 checkout 的 CRLF/LF 差异', () => {
+  const source = fs.readFileSync(
+    path.join(ROOT, 'scripts', 'check-i18n-glossary.mjs'),
+    'utf8',
+  );
+  assert.match(
+    source,
+    /readFileSync\(DOC_PATH, 'utf8'\)\.replace\(\/\\r\\n\?\/g, '\\n'\)/,
+  );
+});
+
 // ---------------------------------------------------------------------------
 // baseline 完整性
 // ---------------------------------------------------------------------------
