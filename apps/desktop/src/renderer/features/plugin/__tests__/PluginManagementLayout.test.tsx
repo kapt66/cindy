@@ -1,5 +1,6 @@
 /**
- * Regression coverage for the shared Plugin and Skill shell, search accessibility, and focus order.
+ * Regression coverage for the shared Meka Plugin, Plugin, and Skill shell,
+ * search accessibility, and focus order.
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  * @vitest-environment jsdom
  */
@@ -12,6 +13,7 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string) =>
       ({
+        'settings.ghosts.meka.title': 'Meka Plugins',
         'settings.ghosts.title': 'Plugins',
         'settings.ghosts.page.search': 'Search plugins',
         'settings.ghosts.page.clearSearch': 'Clear Plugin Search',
@@ -42,19 +44,46 @@ function ActiveMainView() {
   return <output data-testid="active-main-view">{useActiveMainView().activeKey}</output>;
 }
 
+function MainViewNavigation() {
+  const { navigateToView } = useActiveMainView();
+  return (
+    <>
+      <button type="button" onClick={() => navigateToView('plugins')}>
+        Open plugin management
+      </button>
+      <CurrentPath />
+    </>
+  );
+}
+
 describe('PluginManagementLayout', () => {
-  it('presents Plugins and Skills as peer tabs and navigates to the skill home', async () => {
+  it('puts Meka Plugins before the local Plugin and Skill peer tabs', async () => {
     render(
-      <MemoryRouter initialEntries={['/plugins']}>
-        <PluginManagementLayout activeTab="plugins">
+      <MemoryRouter initialEntries={['/meka-plugins']}>
+        <PluginManagementLayout activeTab="meka-plugins">
           <CurrentPath />
         </PluginManagementLayout>
       </MemoryRouter>,
     );
 
-    expect(screen.getByRole('tab', { name: 'Plugins' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
+      'Meka Plugins',
+      'Plugins',
+      'Skills',
+    ]);
+    expect(screen.getByRole('tab', { name: 'Meka Plugins' }).getAttribute('aria-selected')).toBe(
+      'true',
+    );
+    expect(screen.getByRole('tab', { name: 'Plugins' }).getAttribute('aria-selected')).toBe(
+      'false',
+    );
     expect(screen.getByRole('tab', { name: 'Skills' }).getAttribute('aria-selected')).toBe('false');
     expect(screen.queryByRole('tab', { name: 'SkillHub' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Plugins' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('current-path').textContent).toBe('/plugins');
+    });
 
     fireEvent.click(screen.getByRole('tab', { name: 'Skills' }));
     await waitFor(() => {
@@ -70,6 +99,19 @@ describe('PluginManagementLayout', () => {
     );
 
     expect(screen.getByTestId('active-main-view').textContent).toBe('plugins');
+  });
+
+  it('opens the first Meka Plugin category from the main Plugin navigation', async () => {
+    render(
+      <MemoryRouter initialEntries={['/issues']}>
+        <MainViewNavigation />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open plugin management' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('current-path').textContent).toBe('/meka-plugins');
+    });
   });
 
   it('uses the same constrained frame for the tab row and page content', () => {
@@ -139,6 +181,7 @@ describe('PluginManagementLayout', () => {
   });
 
   it.each([
+    ['meka-plugins', 'Search plugins', 'Clear Plugin Search'],
     ['plugins', 'Search plugins', 'Clear Plugin Search'],
     ['skills', 'Search skills', 'Clear skill search'],
   ] as const)(

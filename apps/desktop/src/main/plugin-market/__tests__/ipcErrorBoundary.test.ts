@@ -25,7 +25,18 @@ describe('Plugin Market IPC error boundary', () => {
 
     expect(body).toContain('if (isIpcError(error)) throw error;');
     expect(body).toContain("throwIpcError('INTERNAL', 'Plugin market operation failed');");
-    expect(registerSource.match(/return invokePluginMarket\(/g)?.length).toBe(4);
+    expect(registerSource.match(/return invokePluginMarket\(/g)?.length).toBe(10);
+    expect(registerSource).toContain("'plugin-market:snapshot'");
+    expect(registerSource).toContain("'plugin-market:set-local-channel'");
+    expect(registerSource).toContain('isValidGhostId(normalizedGhostId)');
+    expect(registerSource).toContain(
+      'getGhostManager().list().some((ghost) => ghost.manifest.id === normalizedGhostId)',
+    );
+    expect(registerSource).toContain("'meka-plugin-market:snapshot'");
+    expect(registerSource).toContain("'meka-plugin-market:installed-ghost-ids'");
+    expect(registerSource).toContain("'meka-ledger.v1.json'");
+    expect(registerSource).toContain('adoptLegacyInstallations: false');
+    expect(registerSource).toContain('applyDefaultInstalls: false');
   });
 
   it('does not throw user-visible plain errors from the market service', () => {

@@ -405,6 +405,8 @@ const fanOutLayoutChanged = createIpcFanOut('layout:changed');
 // 意识仓库变化广播 (install/uninstall 后 main 推全量已装清单,多窗口热更新;
 // 见 main/cindy-brain/index.ts)。
 const fanOutGhostsChanged = createIpcFanOut('ghosts:changed');
+const fanOutGhostContentReloaded = createIpcFanOut('ghosts:content-reloaded');
+const fanOutMekaDevPluginsChanged = createIpcFanOut('meka-dev-plugins:changed');
 const fanOutGhostSetupNavigate = createIpcFanOut('maker:plugin-setup:navigate');
 // Plugin 顶部已安装快捷行的最近使用顺序，多窗口同步。
 const fanOutGhostRecentUsageChanged = createIpcFanOut('ghosts:recent-usage-changed');
@@ -881,9 +883,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
       disabled: boolean,
     ): Promise<{ disabled: string[] }> =>
       ipcRenderer.invoke('ghosts:workdir-prefs:set', workdir, id, disabled),
-    takePendingInstall: (): Promise<{ filePath: string | null }> =>
-      ipcRenderer.invoke('ghosts:take-pending-install'),
+    takePendingInstall: (): Promise<{
+      filePath: string | null;
+      channel: 'meka' | null;
+    }> => ipcRenderer.invoke('ghosts:take-pending-install'),
     onChanged: fanOutGhostsChanged,
+    onContentReloaded: fanOutGhostContentReloaded,
     onSetupNavigate: (
       callback: (
         payload:
@@ -976,6 +981,26 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('ghosts:dev-runtime', action, id),
   },
 
+  mekaDevPlugins: {
+    list: (): Promise<{ items: unknown[] }> => ipcRenderer.invoke('meka-dev-plugins:list'),
+    pick: (): Promise<unknown> => ipcRenderer.invoke('meka-dev-plugins:pick'),
+    install: (request: unknown): Promise<unknown> =>
+      ipcRenderer.invoke('meka-dev-plugins:install', request),
+    package: (id: string): Promise<unknown> =>
+      ipcRenderer.invoke('meka-dev-plugins:package', id),
+    uploadInfo: (
+      id: string,
+    ): Promise<import('../shared/mekaDevPlugin').MekaDevPluginUploadInfo> =>
+      ipcRenderer.invoke('meka-dev-plugins:upload-info', id),
+    upload: (
+      request: import('../shared/mekaDevPlugin').MekaDevPluginUploadRequest,
+    ): Promise<import('../shared/mekaDevPlugin').MekaDevPluginUploadResult> =>
+      ipcRenderer.invoke('meka-dev-plugins:upload', request),
+    remove: (id: string): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('meka-dev-plugins:remove', id),
+    onChanged: fanOutMekaDevPluginsChanged,
+  },
+
   pluginMarket: {
     snapshot: (): Promise<import('../shared/pluginMarket').PluginMarketSnapshot> =>
       ipcRenderer.invoke('plugin-market:snapshot'),
@@ -990,6 +1015,25 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('plugin-market:install', pluginId, options),
     uninstall: (pluginId: string): Promise<{ ok: true }> =>
       ipcRenderer.invoke('plugin-market:uninstall', pluginId),
+    markLocalInstall: (ghostId: string, expectedOwnerId: string): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('plugin-market:set-local-channel', ghostId, 'cindy', expectedOwnerId),
+  },
+  mekaPluginMarket: {
+    snapshot: (): Promise<import('../shared/pluginMarket').PluginMarketSnapshot> =>
+      ipcRenderer.invoke('meka-plugin-market:snapshot'),
+    installedGhostIds: (): Promise<string[]> =>
+      ipcRenderer.invoke('meka-plugin-market:installed-ghost-ids'),
+    detail: (pluginId: string): Promise<import('../shared/pluginMarket').PluginMarketDetail> =>
+      ipcRenderer.invoke('meka-plugin-market:detail', pluginId),
+    install: (
+      pluginId: string,
+      options: { expectedReleaseId: string; allowPermissionExpansion?: boolean },
+    ): Promise<{ ghost: import('../shared/ghost').InstalledGhost }> =>
+      ipcRenderer.invoke('meka-plugin-market:install', pluginId, options),
+    uninstall: (pluginId: string): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('meka-plugin-market:uninstall', pluginId),
+    markLocalInstall: (ghostId: string, expectedOwnerId: string): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('plugin-market:set-local-channel', ghostId, 'meka', expectedOwnerId),
   },
   voiceInput: {
     prewarm: (payload?: {

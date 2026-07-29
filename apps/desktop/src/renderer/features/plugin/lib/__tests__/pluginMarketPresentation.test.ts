@@ -74,6 +74,34 @@ describe('orderPluginCatalogItems', () => {
     ).toEqual(['market:market', 'installed:local-z', 'installed:local-a']);
   });
 
+  it('keeps an uninstalled remote release and its independent development copy visible together', () => {
+    const remote = marketItem('plugin-demo', 'demo-plugin', 'not-installed');
+
+    const ordered = orderPluginCatalogItems(
+      [remote],
+      [{ id: 'meka-dev-demo-plugin-12345678' }],
+      [remote],
+    );
+
+    expect(
+      ordered.map(({ kind, item }) => `${kind}:${kind === 'installed' ? item.id : item.ghostId}`),
+    ).toEqual(['market:demo-plugin', 'installed:meka-dev-demo-plugin-12345678']);
+  });
+
+  it('keeps the original installed-card replacement rule while appending the development copy', () => {
+    const remote = marketItem('plugin-demo', 'demo-plugin', 'installed');
+
+    const ordered = orderPluginCatalogItems(
+      [remote],
+      [{ id: 'demo-plugin' }, { id: 'meka-dev-demo-plugin-12345678' }],
+      [],
+    );
+
+    expect(
+      ordered.map(({ kind, item }) => `${kind}:${kind === 'installed' ? item.id : item.ghostId}`),
+    ).toEqual(['installed:demo-plugin', 'installed:meka-dev-demo-plugin-12345678']);
+  });
+
   it('keeps a conflicting market card and its local install at the server position', () => {
     const first = marketItem('plugin-first', 'first', 'not-installed');
     const conflict = marketItem('plugin-conflict', 'collision', 'conflict');

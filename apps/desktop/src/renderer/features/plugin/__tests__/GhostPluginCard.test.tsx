@@ -37,6 +37,7 @@ const installedPlugin: GhostPluginListItem = {
   version: '1.0.0',
   enabled: true,
   canUse: true,
+  hasPanel: true,
 };
 
 const marketPlugin: PluginMarketItem = {
@@ -127,6 +128,28 @@ describe('GhostPluginCard', () => {
     expect(onAction).not.toHaveBeenCalled();
   });
 
+  it('shows a direct Open Interface action for a panel-bearing Plugin', () => {
+    const onOpenPanel = vi.fn();
+    const onSelect = vi.fn();
+    render(
+      <GhostPluginCard
+        item={installedPlugin}
+        onSelect={onSelect}
+        onAction={vi.fn()}
+        onOpenPanel={onOpenPanel}
+      />,
+    );
+
+    const openPanelButton = screen.getByRole('button', {
+      name: 'settings.ghosts.detail.openPanelAction',
+    });
+    expect(openPanelButton.parentElement?.className).toContain('flex-col');
+
+    fireEvent.click(openPanelButton);
+    expect(onOpenPanel).toHaveBeenCalledTimes(1);
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
   it('surfaces the market update state with a badge and a direct update action', () => {
     const onAction = vi.fn();
     const onUpdate = vi.fn();
@@ -177,19 +200,48 @@ describe('GhostPluginCard', () => {
     expect(onUpdate).not.toHaveBeenCalled();
   });
 
-  it('disables Use when an installed plugin has no command', () => {
+  it('hides Use and falls back to Details when an installed plugin has no command', () => {
+    const onSelect = vi.fn();
     render(
       <GhostPluginCard
         item={{ ...installedPlugin, canUse: false }}
-        onSelect={vi.fn()}
+        onSelect={onSelect}
         onAction={vi.fn()}
       />,
     );
 
+    expect(screen.queryByRole('button', { name: 'settings.ghosts.page.useAria' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'settings.ghosts.market.details' }));
+    expect(onSelect).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows Package only when the development action is provided', () => {
+    const onDevelopmentPackage = vi.fn();
+    const { rerender } = render(
+      <GhostPluginCard
+        item={{ ...installedPlugin, canUse: false, hasPanel: false }}
+        development
+        onSelect={vi.fn()}
+        onAction={vi.fn()}
+        onDevelopmentPackage={onDevelopmentPackage}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'settings.ghosts.meka.dev.packageAction' }),
+    );
+    expect(onDevelopmentPackage).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <GhostPluginCard
+        item={{ ...installedPlugin, canUse: false, hasPanel: false }}
+        onSelect={vi.fn()}
+        onAction={vi.fn()}
+      />,
+    );
     expect(
-      (screen.getByRole('button', { name: 'settings.ghosts.page.useAria' }) as HTMLButtonElement)
-        .disabled,
-    ).toBe(true);
+      screen.queryByRole('button', { name: 'settings.ghosts.meka.dev.packageAction' }),
+    ).toBeNull();
   });
 
   it('renders project-scope enabled state and respects the global-disabled lock', () => {
@@ -308,9 +360,7 @@ describe('LegacyGhostRecoveryNotice', () => {
       />,
     );
 
-    expect(
-      screen.getByText('settings.ghosts.legacyRecovery.partialBlocked'),
-    ).toBeTruthy();
+    expect(screen.getByText('settings.ghosts.legacyRecovery.partialBlocked')).toBeTruthy();
     expect(screen.queryByRole('button')).toBeNull();
   });
 });

@@ -113,6 +113,7 @@ describe('ghostPluginViewModel', () => {
       name: 'XD Mivo',
       enabled: true,
       canUse: true,
+      hasPanel: false,
       version: '1.5.10',
     });
   });
@@ -180,6 +181,7 @@ describe('ghostPluginViewModel', () => {
     );
 
     expect(detail.panelMinWidth).toBe(360);
+    expect(detail.hasPanel).toBe(true);
     expect(detail).not.toHaveProperty('manifest');
   });
 });

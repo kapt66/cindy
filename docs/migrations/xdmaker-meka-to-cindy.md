@@ -1,8 +1,8 @@
 # XDMaker Meka → Cindy Meka 严格迁移总账
 
-> 状态：本轮代码门禁及当前提交 DCO 签署已通过；远端历史 6 个 commit 的存量 DCO
-> 缺签未在本次改写；仍等待开发者手测
-> 最后更新：2026-07-28
+> 状态：本轮未提交改动的代码门禁已通过；更新器图标资源已由 owner 确认并独立提交，
+> `cindy-protocol` 保持父仓记录的干净版本，仍等待开发者手测
+> 最后更新：2026-07-29
 > 目标仓库：`C:\Workspace\cindy`，分支 `meka/main`
 > 来源仓库：远端 `xdmaker`（`git@github.com:kapt66/XDMaker.git`），分支
 > `xdmaker/meka/main`
@@ -25,25 +25,25 @@
 
 ## 2. 已确认的顶层决策
 
-| 决策项             | 结论                     | 当前实现                                                           |
-| ------------------ | ------------------------ | ------------------------------------------------------------------ |
-| S1 通用能力包      | 暂不迁移，后续按需迁移   | 不引入 Meka 内置插件/能力包运行时和整套 capability snapshot 系统   |
-| S3 主观改动        | 没有 Meka 主观修改，丢弃 | 不迁移 XDMaker 的移动端/device-link 主观改造                       |
-| Meka 设置          | 迁移                     | P4、MCPRouter、MekaDesign 兼容设置                                 |
-| Meka 会话          | 迁移                     | 独立 workspace、项目/角色绑定、正式流程、侧栏分组                  |
-| 远程 MCPR          | 迁移                     | Router 登录、实例、绑定、隧道和 Worker 目标                        |
-| 远程 Codex Worker  | 已恢复                   | MCPRouter protocol 3 / bundle 0.0.6 控制通道与 app-server 隧道     |
-| Orca Worker 微调   | 迁移                     | 仅迁入 Meka 目标选择和远程约束所需改动                             |
+| 决策项             | 结论                     | 当前实现                                                              |
+| ------------------ | ------------------------ | --------------------------------------------------------------------- |
+| S1 通用能力包      | 暂不迁移，后续按需迁移   | 不引入 Meka 内置插件/能力包运行时和整套 capability snapshot 系统      |
+| S3 主观改动        | 没有 Meka 主观修改，丢弃 | 不迁移 XDMaker 的移动端/device-link 主观改造                          |
+| Meka 设置          | 迁移                     | P4、MCPRouter、MekaDesign 兼容设置                                    |
+| Meka 会话          | 迁移                     | 独立 workspace、项目/角色绑定、正式流程、侧栏分组                     |
+| 远程 MCPR          | 迁移                     | Router 登录、实例、绑定、隧道和 Worker 目标                           |
+| 远程 Codex Worker  | 已恢复                   | MCPRouter protocol 3 / bundle 0.0.6 控制通道与 app-server 隧道        |
+| Orca Worker 微调   | 迁移                     | 仅迁入 Meka 目标选择和远程约束所需改动                                |
 | 打包发布           | 已迁移                   | 打包/发布分层；RustFS 上传、canary、stable promote 与 rollback 已接入 |
-| 项目与角色         | 迁移                     | 项目、角色、元数据、内置 SAGA2 与 6 个角色                         |
-| 原 Meka 用户数据   | 必须兼容                 | 新建 `CindyMeka`，从 `xdmaker-meka` 只读复制并运行 lineage bridge |
-| Windows/macOS 签名 | 沿用原证书/服务          | Windows 原签名服务；macOS 原证书私钥和 self-signed 模式            |
-| 热更新             | 新建 Cindy Meka 渠道     | 不承诺旧 Meka 原地热更新；新应用安装后迁移旧数据                   |
-| device-link        | 继续使用 `cindy://`      | OS 应用身份独立，跨端 wire protocol 不分叉                         |
-| 本地 Desktop 深链  | 使用 `cindy-meka://`     | 只有带 `deviceId` 的跨设备链接切换到 `cindy://`                    |
-| 默认区域/占位版本  | 跟随上游                 | 默认 `global`；`apps/desktop/package.json` 使用 `0.0.0`            |
-| 项目协同策略       | Meka 例外                | 普通 Cindy 项目遵守策略开关；Meka 保持既有协同行为并绕过该开关     |
-| 服务端             | 不在本仓迁移             | 保持 Cindy 已拆分后的仓库边界和协议子仓库                          |
+| 项目与角色         | 迁移                     | 项目、角色、元数据、内置 SAGA2 与 6 个角色                            |
+| 原 Meka 用户数据   | 必须兼容                 | 新建 `CindyMeka`，从 `xdmaker-meka` 只读复制并运行 lineage bridge     |
+| Windows/macOS 签名 | 沿用原证书/服务          | Windows 原签名服务；macOS 原证书私钥和 self-signed 模式               |
+| 热更新             | 新建 Cindy Meka 渠道     | 不承诺旧 Meka 原地热更新；新应用安装后迁移旧数据                      |
+| device-link        | 继续使用 `cindy://`      | OS 应用身份独立，跨端 wire protocol 不分叉                            |
+| 本地 Desktop 深链  | 使用 `cindy-meka://`     | 只有带 `deviceId` 的跨设备链接切换到 `cindy://`                       |
+| 默认区域/占位版本  | 跟随上游                 | 默认 `global`；`apps/desktop/package.json` 使用 `0.0.0`               |
+| 项目协同策略       | Meka 例外                | 普通 Cindy 项目遵守策略开关；Meka 保持既有协同行为并绕过该开关        |
+| 服务端             | 不在本仓迁移             | 保持 Cindy 已拆分后的仓库边界和协议子仓库                             |
 
 ## 3. 当前总体状态
 
@@ -134,6 +134,13 @@
 - 更新器名：`cindy-meka-updater`
 - 更新/CDN 前缀：`cindy-meka`
 - `.cindy` 文件关联在 CN 区使用 `CindyMeka.CindyGhost`。
+- Desktop 正式应用图标使用 Cindy 原画叠加左上 `MEKA` 斜角标签：荧光黄绿
+  `#C7FF00`、深海军蓝 `#10182F`，标签顶边固定为画布宽度 50%、左边固定为画布高度
+  44%（三角区域约 11%），所有尺寸共享同一几何比例。权威母版为
+  `apps/desktop/resources/icon-master-1024.png`；Windows 由
+  `scripts/generate-win-ico.mjs` 派生 16/24/32/48/64/128/256 七档 ICO 和 512 PNG，
+  并同步 updater 的 PNG/ICO；macOS 由 `scripts/generate-mac-icns.mjs` 生成十档 ICNS
+  与 Dock PNG。小尺寸仅允许像素取整和抗锯齿差异，不另设角标占比。
 
 旧数据迁移锚点：
 
@@ -200,6 +207,9 @@ macOS：
 `publish-desktop.mjs` 读取该文件，重新校验签名状态、文件大小与 SHA256 后，把 installer/
 hotfix 上传到 Cindy Meka 独立 RustFS bucket，最后写 canary manifest；经真实验收后由
 `promote-desktop.mjs` 备份并推进 stable，`rollback-desktop.mjs` 可恢复指定 stable 备份。
+正式 S3 API 与公开对象入口为 `https://s3.meka.pawdy.fun/`，管理控制台为
+`https://s3-admin.meka.pawdy.fun/`；控制台地址不进入客户端或发布脚本配置。发布 S3 与
+客户端下载均强制 HTTPS，不再保留内网 HTTP 放行开关。
 详细配置和操作见 `docs/migrations/cindy-meka-release.md`。
 
 关键实现：
@@ -218,14 +228,38 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
 
 已迁移：
 
+- 插件界面显示方式：默认沿用现有停靠面板；「设置 → Meka 助理 → 插件界面」可切换为
+  Modal。该布尔偏好属于本机 Renderer 界面 override，默认 `false` 不落盘，用户开启时仅
+  在 localStorage 的 `xdt:ghostPanelPresentation:v1` 记录 `true`，关闭即删除 override、
+  重新跟随停靠默认。Modal 覆盖主页面 90% 宽高，并直接复用原沙箱面板内核；开启后停靠
+  面板和最小化气泡只在视图层隐藏，布局树、气泡位置和重装位置记忆不改写。插件列表卡片
+  与详情页对所有声明 `panel` 且已启用的插件提供「打开界面」；停靠型插件在关闭 Modal
+  override 时返回工作区并恢复原面板，插件目录没有具体会话宿主时，`position: "tab"` 的显式打开
+  使用同一 Modal 兜底。列表卡片沿用原插件卡片布局；存在「打开界面」时，按钮操作区改为
+  纵向排列以避免挤压来源、版本和插件 ID，元信息保持单行并只截断 ID。打开按钮是独立操作，
+  不改变当前详情选择状态。Modal 面板的 WebView 在 `dom-ready` 后接管键盘焦点，以避免
+  Radix 对话框初始焦点停留在关闭按钮、导致插件内部树／列表收不到真实方向键；停靠与页签
+  面板仍保持被动焦点策略，不在重载或热更新时抢走宿主输入。Modal 首次打开后，关闭只把
+  宿主内容与遮罩切为不可见、不可交互，不卸载沙箱 WebView；再次打开同一插件会恢复原有
+  选择、滚动、输入和在途命令界面。插件逻辑页与 Node worker 继续沿用独立后台生命周期，
+  不因 Modal 显隐启动或终止；停用、卸载、内容 revision 更新或插件页真正卸载仍会按原规则
+  清理／重建对应面板实例。隐藏态 WebView 不抢宿主焦点，重新打开时复用实例并重新接管
+  键盘焦点。实机用 Meka P4 在扫描进行中关闭 Modal，关闭态 WebView target
+  保持存活并在后台完成扫描；重新打开后 target 身份与关闭前内存标记均保持不变。
 - P4 根目录读取、保存和 `saga2_design` / `saga2_json` / `saga2_unity` /
   `saga2_pm` 目录发现。`saga2_pm` 是项目管理工作区，包含长期 PM 治理规范、
   AI 开发流程看板、用于交付评估的可复用 Agent Skill，以及版本交付和收尾记录。
   已经保存过 P4 根目录的用户无需重新选择路径，读取设置时会补充识别
   `saga2_pm`，且不会因此改写配置文件。
 - MCPRouter 登录、断开、工具路由、项目实例和项目绑定。
-- MCPRouter 地址默认预填 XDMaker 既有地址
-  `http://172.25.135.168:1020/`，并允许通过 `VITE_MEKA_MCPROUTER_URL` 覆盖。
+- MCPRouter 地址默认预填经 Caddy 终止 TLS 的正式域名
+  `https://mcpr.meka.pawdy.fun/`，并允许通过 `VITE_MEKA_MCPROUTER_URL` 覆盖为另一个
+  无凭据 HTTPS 地址；HTTP 或非法 override 会回落正式域名。Caddy
+  使用 DNS-01 为该仅解析到内网地址的域名申请公开信任证书，Cindy 与浏览器无需安装私有
+  根 CA。MCPRouter 已全面停用 HTTP 与裸 IP 入口；任何历史 HTTP 或裸 IP base 都在
+  运行期统一迁移到该生产 HTTPS 地址，其他 HTTPS 域名 endpoint 仍保持原值。登录继续
+  使用 Electron Chromium 网络栈，使系统代理、公开证书校验与插件 API 保持一致，不关闭
+  或绕过全局证书验证。
 - MekaDesign 支持不依赖 MCPRouter 的独立 HTTP(S) endpoint 配置；完整 endpoint
   （包括 query 中的授权参数）只持久化在 OS 加密存储。
 - 登录或刷新已认证的 MCPRouter 时读取 Router 中已有的 MekaDesign 路由作为地址候选：
@@ -537,6 +571,112 @@ Cindy 现有权限确认；无窗口、无会话监听或未明确允许时一�
   `packages/server/src/db/repos/static-routes.ts`、`packages/server/src/db/schema.ts`、
   `packages/server/src/routing/loader.ts`、`packages/server/src/management/worker-routes.ts`
   和 `packages/web/src/api/workers.ts`
+
+#### 4.7.1 MCPRouter Meka 插件仓库
+
+本轮新增的 Meka 插件分发不依赖上游 Cindy 服务端。公开目录只依赖 MCPRouter 部署地址，
+个人与指定用户分享目录复用已绑定 MCPRouter 的身份：
+
+- MCPRouter 同进程加载独立 `@mcp-router/meka-plugin-registry` package；后台新增
+  “Meka 插件”页签，普通用户可上传自己的 `.cindy` Release、切换仅自己／公开／指定用户
+  分享，并软删除自己的插件。
+- 后台管理继续使用 MCPRouter Session Cookie。未绑定客户端使用独立的
+  `/api/public/plugins*` 列表、详情和下载授权接口，不发送任何凭证且只能观察
+  `visibility=public`；已绑定客户端使用 `/api/plugins*`，携带 Meka 绑定时自动创建并保存到
+  OS 加密存储的 client key，可观察公开、自己拥有及明确分享给当前 Router 用户的插件。
+  Cindy 登录 access token、Router Session Token 和密码均不进入插件交付请求。
+- MCPRouter 内部 `private / shared / public` 对 Cindy plugin delivery v2 分别投影为
+  `personal / personal / public`；分享 ACL 不进入 wire protocol。
+- `.cindy` 原始字节按 SHA-256 内容寻址写入 MCPRouter 的持久化数据目录；Release
+  不可覆盖，修改包内容必须上传新版本。下载继续遵守客户端既有 HTTPS、短期过期、
+  8 MiB、Content-Length 和 SHA-256 校验。内网部署由 Caddy 在标准 443 端口为
+  `https://mcpr.meka.pawdy.fun` 终止 TLS，MCPRouter 容器内的 HTTP 只用于反向代理和部署机
+  本地诊断；证书通过 DNS-01 签发且公开受信。客户端继续直接复用
+  `@cindy/plugin-protocol` 的单参数、HTTPS-only parser，不修改协议 submodule，也不为
+  Meka 渠道增加明文 HTTP 例外。
+- Cindy 原插件市场继续使用 `pluginApiBaseUrl`；Meka 插件市场始终使用 MCPRouter 地址。
+  客户端每次请求都重新读取当前绑定状态：完整绑定存在时走鉴权接口，未绑定或断开后走
+  匿名公开接口，不以 401 自动回退，也不复用过期的个人目录结果。未保存 Router 地址时使用
+  当前版本的 `DEFAULT_MEKA_MCPROUTER_URL`（支持既有构建期 override）；自定义地址在登录
+  配置存在期间继续作为 registry origin。两条市场渠道共用 v2 parser、完整
+  manifest/runtime 校验、权限扩张确认和原子替换，但使用相互独立的 owner-scoped ledger；
+  从页签顶部导入的本地包另由 host 侧渠道账本记录用户选择，
+  避免本机插件或 Cindy 市场插件被误归为 Meka，且不信任 `ghost.json` 自报来源。
+- 插件管理页把该远端目录独立为最前面的“Meka 插件”一级分类；“Meka 插件”和“插件”
+  都保留本机插件的导入、创建、启停与配置，差异只在分发渠道：普通“插件”显示手动安装
+  与 Cindy 市场归属项，“Meka 插件”只显示 MCPRouter 目录和由其独立账本确认安装的项；
+  从该分类“创建 Meka 插件”时，创作任务明确标记为 Meka 渠道并提示打包后到 MCPRouter
+  上传。创建提示要求 `ghost_forge_pack` 显式传 `channel: "meka"`；该一次性渠道上下文
+  随待安装事件进入标准确认／安装流程，只有安装或更新成功后才写入 Meka 的
+  owner-scoped ledger。它不进入 `ghost.json`，普通 Forge、拖入和双击安装也不会推断为
+  Meka。“技能”保持原 SkillHub 页面。
+- Meka 分类的“添加插件”菜单另提供“从目录加载（开发模式）”。该入口独立于 Cindy 与
+  MCPRouter 两套市场：用户选择源码目录并确认 manifest、信任和权限后，客户端将目录登记
+  到当前 data owner 的本地开发注册表，并由隔离 watcher 持续监听。首次确认同时绑定排序
+  后的包内路径／逐文件内容指纹、data owner 和 session generation；确认后目录内容变化或
+  换号／重新登录均拒绝安装并要求重新选择。每次变更先在 OS 临时目录生成 `.cindy`，再
+  复用现有包校验与原子 install/update；运行时仍只执行安装快照，不直接执行源码目录。
+  原始源码包先完成签名／信任检查；Host 派生身份后移除已失效的源码签名，再把派生包按
+  未签名开发快照重新完整校验。开发包使用由原始 plugin ID 派生的独立
+  `meka-dev-*` runtime ID；
+  slash command 同样派生 DEV 别名，展示仍保留原始 ID，并在卡片、快捷入口和详情图标上
+  覆盖斜向 `DEV` 角标。失败保留最后可用快照，源码改 ID 则拒绝自动迁移。
+  远端未安装版本、原始 ID 的正式安装版本和开发 runtime 可以同时存在：原市场仍只按原始
+  ID 执行“未安装显示远端卡、安装后以安装卡替换远端卡”的规则，开发卡始终作为额外条目，
+  不改变远端／正式版本状态。成功同步会重启对应开发运行时并刷新已打开的
+  panel/settings WebView。
+  移除开发条目会停止监听并走标准卸载；data owner 边界 teardown 会等待开发安装／同步
+  mutation，并在切换前停止旧 owner watcher。普通“插件”分类、两套远端 API 和渠道
+  ledger 均不感知此注册表，减少后续合并上游时的交叉修改。
+- 开发卡右侧动作按能力声明收敛：`panel`、`command` 分别控制“打开界面”和“使用”，
+  无直接能力时回落“详情”；开发卡额外提供“打包”。打包弹窗生成保留源码原始
+  plugin ID／command 的正式 `.cindy`，可保存到本地；完整 MCPRouter 绑定存在时还可直接
+  用 Main 持有的 session cookie 上传不可变 Release。弹窗在登录前后保持同一组动作；
+  未配置 MCPRouter 时上传置灰，并原位复用“设置 → Meka 助理”的既有 MCPRouter 配置
+  弹窗。登录完成后保留打包流程并立即启用上传，不跳转设置页。Renderer 不接触包字节、
+  Router cookie 或密码。弹窗展示源码 manifest 版本，并通过 owner management API 回填、
+  编辑和同步 `private / shared / public` 权限及 shared 用户名。远端存在旧版本时显示当前
+  与目标版本并在发布前二次确认；相同版本遵守 Release 不可变约束，不覆盖包内容，只同步
+  权限并提示先提升版本号再发布新内容。owner API 空列表按首次发布处理；已保存 session
+  返回 401 时按登录失效处理，保留当前弹窗和本地打包，并原位提供重新登录入口。
+- 未发布的 v1 开发注册表若已在手测环境产生，会在首次加载时迁移为同时记录
+  `pluginId/runtimeId` 的 v2：先装入独立开发 runtime，再清理曾占用原始 ID 的旧开发快照。
+- Cindy 与 MCPRouter 市场并存时，详情、安装、更新和卸载请求始终绑定当前页签对应的
+  API 与 ledger；跨源 `ghostId` 冲突继续由既有本机安装冲突检查 fail closed。
+
+服务端落地契约见 MCPRouter 仓 `docs/meka-plugin-registry.md`；客户端关键实现：
+
+- `apps/desktop/src/main/meka-settings/routerService.ts`
+- `apps/desktop/src/main/plugin-market/api.ts`
+- `apps/desktop/src/main/plugin-market/service.ts`
+- `apps/desktop/src/main/cindy-brain/mekaDevPlugins.ts`
+- `apps/desktop/src/renderer/features/plugin/GhostPluginPage.tsx`
+
+验证覆盖 `ghost_forge_pack` 渠道参数透传、pending 安装请求原子消费、普通安装不推断
+Meka、安装与更新成功后写入独立账本、Meka 创建提示的渠道约束，以及开发目录登记、
+owner 级持久化、自动同步、失败保留、双 ID 派生、v1 注册表迁移，以及远端／正式／开发
+版本共存；Desktop 与 `cindy-tools` 均有对应定向单测和类型检查。
+
+2026-07-29 开发目录模式定向验证：Desktop typecheck 通过；Forge、开发注册表双 ID
+迁移、远程／正式／开发版本共存、移除与同步串行、DEV 角标、内容刷新、插件卡片／详情
+与 Modal 的定向测试通过；变更文件 ESLint、`pnpm check:i18n` 与
+`pnpm check:i18n-glossary` 通过，无新增术语违规。Light／Dark 实机与真实目录热更新仍待
+开发者手测。
+
+2026-07-29 未提交交付审查补充：开发目录首次确认已绑定稳定内容指纹与 app session，
+data owner teardown 会等待安装／同步并停止旧 watcher；派生 runtime 包移除已失效的源码
+签名后按未签名开发快照重新校验。Watcher client singleton 改为无副作用静态模块，由
+Desktop bootstrap 在 `before-quit` 释放。渠道归属 IPC 仅接受已安装且合法的插件 ID；
+MCPRouter 默认地址和 Meka 插件下载均保持 HTTPS-only。相关定向测试、Desktop typecheck
+与 `cindy-tools` build 通过；协议 submodule 无修改。
+
+2026-07-29 MCPRouter 公开目录补充：服务端把匿名 public 与 client-key 用户目录拆为独立
+API；Desktop 每次列表、详情和下载授权请求前重新读取绑定状态，已绑定走用户目录，未绑定
+或断开后走匿名公开目录且不发送凭证。client key 只有在对应 Router origin 已原子持久化后
+才允许使用，避免连接自定义 Router 的保存窗口把 key 误发到默认 origin。Desktop
+plugin-market／Router service 共 7 个测试文件、70 个测试及 Desktop typecheck 通过；
+MCPRouter registry 24 个测试、Server 72 个测试及两个 package typecheck 通过。两种状态下
+真实 Router 的列表切换与安装仍待开发者手测。
 
 ### 4.8 Orca Worker 微调
 
@@ -1111,7 +1251,7 @@ thread-context gated 的本地动态代理投影这条唯一入口，Claude 继�
 
 ## 9. 最终提交前门禁
 
-本轮已进入最终提交审查；代码与本地自动化门禁已执行，真实安装、升级和 UI 验收仍待完成。
+本轮未提交改动已完成代码审查与本地自动化门禁；真实安装、升级和 UI 验收仍待完成。
 
 最终至少需要：
 
@@ -1128,16 +1268,17 @@ thread-context gated 的本地动态代理投影这条唯一入口，Claude 继�
 
 本轮最终代码门禁结果：
 
-- `pnpm test:unit` 通过：根级 314 项（307 通过、7 跳过）无失败，Desktop、Mobile 与
+- `pnpm test:unit` 通过：根级 315 项（308 通过、7 跳过）无失败，Desktop、Mobile 与
   所有 unit workspace 通过。
-- `pnpm --filter desktop run --if-present typecheck`、`pnpm check:i18n`、
-  `pnpm check:i18n-glossary` 和 `git diff --check` 通过。
-- 当前功能提交使用 `git commit -s`，author、committer 与 `Signed-off-by` 一致。
-  `pnpm check:dco` 的完整 `origin/main..meka/main` 范围仍会报告本次修改之前、已经存在于
-  `origin/meka/main` 的 6 个 commit 缺签。曾按用户确认在本地仅重写这些提交的消息，
-  并验证旧、新 HEAD 文件树零差异；后续 `git pull --rebase` 为避免 force-push 已发布
-  分支，恢复远端原历史并只重放本次功能提交。因此本次交付不包含历史改写，存量缺签需
-  由维护者另行决定治理方式。
+- `pnpm --filter desktop run --if-present typecheck`、`cindy-tools` build、
+  `pnpm check:i18n` 和父仓 `git diff --check` 通过；协议 submodule 无修改。
+- `pnpm check:i18n-glossary` 通过，术语表生成物与四语言文案无新增违规。
+- 变更文件 ESLint 在排除 HEAD 已存在的 `SupportedLocale` 未使用与
+  `throwInstallError`／`throwUninstallError` fallthrough 告警后通过；这些存量问题不是
+  本次未提交 diff 引入，未擅自纳入。
+- 当前功能尚未 commit，因此不能声称已有 DCO trailer。后续提交必须使用 `git commit -s`；
+  当前 `pnpm check:dco` 仍报告本次未提交 diff 之前已有的 6 个 Meka 历史 commit 缺签，
+  本轮未重写已发布历史；最终仍以真实提交范围与 PR 上 DCO App 为准。
 
 本轮项目/角色直接运行时接线后的定向结果：
 
@@ -1149,8 +1290,8 @@ thread-context gated 的本地动态代理投影这条唯一入口，Claude 继�
   共 8 个测试文件、32 个测试通过。
 - 内置资源统一到 `resources/meka` 后，Desktop typecheck 与定向 lint 通过；开发态/
   安装态根路径、Forge 清单、源码与包内资源树一致性、项目/角色解析和内置播种均有定向
-  测试覆盖。仓库根 `pnpm test:unit` 仍被当前工作树中既有的侧栏源码契约
-  断言阻断（例如旧断言未包含 `workspacePrompt='meka'`），本轮未越界修改该侧栏模块。
+  测试覆盖；侧栏 `workspacePrompt='meka'` 源码契约断言已经同步，当前根级
+  `pnpm test:unit` 不再被该项阻断。
 - Orca 补漏后 Desktop typecheck、`@cindy/maker-core` build、
   `@cindy/maker-cc-manager` build 通过。
 - 协同资格、首个/后续 Worker 目标、Main 校验、项目/角色继承、MCP

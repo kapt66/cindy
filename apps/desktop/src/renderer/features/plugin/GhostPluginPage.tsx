@@ -1,5 +1,5 @@
 /**
- * Plugin catalog and detail coordinator backed by the latest Ghost host APIs.
+ * Local Plugin management and Meka catalog coordinator backed by the latest Ghost host APIs.
  *
  * Inputs: installed Ghost snapshots and user actions.
  * Outputs: the Plugin list/detail UI, focus-stable installed queue, and Plugin action flows.
@@ -8,7 +8,15 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ChevronDown, ChevronRight, ChevronUp, Plus, Sparkles, Upload } from 'lucide-react';
+import {
+  ChevronDown,
+  ChevronRight,
+  ChevronUp,
+  FolderCode,
+  Plus,
+  Sparkles,
+  Upload,
+} from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { WINDOW_NO_DRAG_STYLE } from '@/components/layout/windowDrag';
@@ -34,7 +42,11 @@ import {
 import { patchDraft } from '@/state/newMakerDraft';
 import { ghostInstallErrorKey } from '@/cindy-brain/installErrorKey';
 import { confirmAndInstallGhost, pickAndUpdateGhost } from '@/cindy-brain/installFlow';
-import { GhostPermissionList, GhostUpdateReview } from '@/cindy-brain/GhostPermissionList';
+import {
+  GhostInstallReview,
+  GhostPermissionList,
+  GhostUpdateReview,
+} from '@/cindy-brain/GhostPermissionList';
 import { cn } from '@/lib/utils';
 import { Switch } from '@/components/ui/switch';
 import { getLastWorkingDir, subscribeToLastWorkingDir } from '@/state/lastWorkingDir';
@@ -43,6 +55,7 @@ import {
   diffGhostPermissionItems,
   ghostPanelKind,
   ghostPermissionItems,
+  layoutWithGhostPanel,
   type GhostSetupStatus,
 } from '../../../shared/ghost';
 import type {
@@ -51,6 +64,7 @@ import type {
   PluginMarketSnapshot,
 } from '../../../shared/pluginMarket';
 import type { LegacyGhostRecoveryStatus } from '../../../shared/legacyGhostRecovery';
+import type { MekaDevPluginItem } from '../../../shared/mekaDevPlugin';
 import {
   toGhostPluginDetail,
   toGhostPluginListItem,
@@ -66,6 +80,7 @@ import {
 } from './PluginManagementLayout';
 import { GhostPluginDetailView } from './GhostPluginDetailView';
 import { GhostPluginIcon } from './GhostPluginIcon';
+import { MekaDevPluginPackageDialog } from './MekaDevPluginPackageDialog';
 import { MarketPluginDetailView } from './MarketPluginDetailView';
 import { PluginScopePicker, usePluginRecentWorkdirs } from './PluginScopePicker';
 import {
@@ -75,6 +90,9 @@ import {
 } from './lib/pluginMarketPresentation';
 import { pluginMarketErrorKey } from './lib/pluginMarketErrorKey';
 import { usePluginIconRefresh } from './lib/usePluginIconRefresh';
+import { GhostPanelModal } from '@/cindy-brain/GhostPanelModal';
+import { restoreGhostPanel } from '@/lib/ghostPanelBubbleState';
+import { useGhostPanelModalPresentation } from '@/lib/ghostPanelPresentationPreference';
 import './plugin-motion.css';
 
 const MAX_VISIBLE_INSTALLED_GHOSTS = 5;
@@ -83,6 +101,8 @@ const PLUGIN_CATALOG_TOOLBAR_CLASS =
 type PluginPresentationFilter = 'all' | PluginPresentationOrigin;
 type PresentedGhostPluginItem = GhostPluginListItem & {
   origin: PluginPresentationOrigin;
+  development: boolean;
+  sourcePluginId: string;
   /** 市场存在更新时的市场记录;列表卡片据此显示更新徽标与直达入口。 */
   marketUpdate: PluginMarketItem | null;
 };
@@ -101,14 +121,20 @@ const PRESENTATION_FILTERS: readonly PluginPresentationFilter[] = [
  * real Ghost runtime. The page deliberately keeps the previous list/detail
  * interaction shape, while every displayed field comes from InstalledGhost.
  */
-export function GhostPluginPage() {
+export function GhostPluginPage({ surface = 'plugins' }: { surface?: 'plugins' | 'meka' }) {
   const { t } = useTranslation();
+  const isMekaSurface = surface === 'meka';
+  const marketApi = useMemo(
+    () => (isMekaSurface ? window.electronAPI.mekaPluginMarket : window.electronAPI.pluginMarket),
+    [isMekaSurface],
+  );
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { confirm, confirmWithCheckbox } = useConfirmDialog();
   const { user, mode, dataOwnerId } = useAuth();
   const showEnterprise = user?.membershipKind === 'org';
   const ghosts = useInstalledGhosts();
+  const pluginPanelModalPresentation = useGhostPanelModalPresentation();
   const installedGhostIdsKey = ghosts
     .map((ghost) => ghost.manifest.id)
     .sort()
@@ -118,9 +144,16 @@ export function GhostPluginPage() {
     .sort()
     .join('\0');
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [panelModalGhostId, setPanelModalGhostId] = useState<string | null>(null);
+  const [panelModalOpen, setPanelModalOpen] = useState(false);
+  const panelModalTriggerRef = useRef<HTMLElement | null>(null);
+  const [devPackageDialogGhostId, setDevPackageDialogGhostId] = useState<string | null>(null);
+  const [devPackageDialogOpen, setDevPackageDialogOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [installedExpanded, setInstalledExpanded] = useState(false);
   const [marketSnapshot, setMarketSnapshot] = useState<PluginMarketSnapshot | null>(null);
+  const [mekaInstalledGhostIds, setMekaInstalledGhostIds] = useState<string[]>([]);
+  const [mekaDevPluginItems, setMekaDevPluginItems] = useState<MekaDevPluginItem[]>([]);
   const [originFilter, setOriginFilter] = useState<PluginPresentationFilter>('all');
   const [marketDetail, setMarketDetail] = useState<PluginMarketDetail | null>(null);
   const [marketBusyId, setMarketBusyId] = useState<string | null>(null);
@@ -152,33 +185,51 @@ export function GhostPluginPage() {
   const [legacyRecoveryStatus, setLegacyRecoveryStatus] =
     useState<LegacyGhostRecoveryStatus | null>(null);
   const [legacyRecoveryRetrying, setLegacyRecoveryRetrying] = useState(false);
-  const refreshMarket = useCallback(async (preserveOnError = false) => {
-    const requestId = ++marketRefreshRequestRef.current;
-    try {
-      const snapshot = await window.electronAPI.pluginMarket.snapshot();
-      if (requestId !== marketRefreshRequestRef.current) return;
-      // Main intentionally represents market outages as data so the initial page can render a
-      // non-blocking empty state. During icon renewal, convert that fulfilled unavailable result
-      // back into a failure: the catch path preserves the visible snapshot and the hook retries.
-      if (preserveOnError && snapshot.unavailableReason !== null) {
-        throw new Error(snapshot.unavailableReason);
+  const refreshMarket = useCallback(
+    async (preserveOnError = false) => {
+      const requestId = ++marketRefreshRequestRef.current;
+      const mekaInstalledGhostIdsPromise = window.electronAPI.mekaPluginMarket
+        .installedGhostIds()
+        .catch(() => []);
+      const mekaDevPluginsPromise = window.electronAPI.mekaDevPlugins
+        .list()
+        .then(({ items }) => items)
+        .catch(() => []);
+      try {
+        const [snapshot, nextMekaInstalledGhostIds, nextMekaDevPluginItems] = await Promise.all([
+          marketApi.snapshot(),
+          mekaInstalledGhostIdsPromise,
+          mekaDevPluginsPromise,
+        ]);
+        if (requestId !== marketRefreshRequestRef.current) return;
+        setMekaInstalledGhostIds(nextMekaInstalledGhostIds);
+        setMekaDevPluginItems(nextMekaDevPluginItems);
+        // Main intentionally represents market outages as data so the initial page can render a
+        // non-blocking empty state. During icon renewal, convert that fulfilled unavailable result
+        // back into a failure: the catch path preserves the visible snapshot and the hook retries.
+        if (preserveOnError && snapshot.unavailableReason !== null) {
+          throw new Error(snapshot.unavailableReason);
+        }
+        setMarketSnapshot(snapshot);
+      } catch (error) {
+        if (requestId !== marketRefreshRequestRef.current) return;
+        setMekaInstalledGhostIds(await mekaInstalledGhostIdsPromise);
+        setMekaDevPluginItems(await mekaDevPluginsPromise);
+        setMarketSnapshot((current) =>
+          preserveOnError && current
+            ? current
+            : {
+                items: [],
+                unavailableReason: error instanceof Error ? error.message : String(error),
+              },
+        );
+        // Background icon renewal keeps the current snapshot visible, but must still report
+        // failure to the renewal hook so it can schedule a bounded retry.
+        if (preserveOnError) throw error;
       }
-      setMarketSnapshot(snapshot);
-    } catch (error) {
-      if (requestId !== marketRefreshRequestRef.current) return;
-      setMarketSnapshot((current) =>
-        preserveOnError && current
-          ? current
-          : {
-              items: [],
-              unavailableReason: error instanceof Error ? error.message : String(error),
-            },
-      );
-      // Background icon renewal keeps the current snapshot visible, but must still report
-      // failure to the renewal hook so it can schedule a bounded retry.
-      if (preserveOnError) throw error;
-    }
-  }, []);
+    },
+    [marketApi],
+  );
   useEffect(() => {
     setMarketSnapshot(null);
     setMarketDetail(null);
@@ -187,6 +238,13 @@ export function GhostPluginPage() {
     marketDetailRequestRef.current += 1;
     void refreshMarket();
   }, [refreshMarket, mode, dataOwnerId]);
+  useEffect(
+    () =>
+      window.electronAPI.mekaDevPlugins.onChanged(({ items }) => {
+        setMekaDevPluginItems(items);
+      }),
+    [],
+  );
   useEffect(() => {
     if (installedGhostIdsKeyRef.current === installedGhostIdsKey) return;
     installedGhostIdsKeyRef.current = installedGhostIdsKey;
@@ -286,6 +344,16 @@ export function GhostPluginPage() {
     }
     return map;
   }, [marketItems]);
+  const mekaDevPluginById = useMemo(
+    () => new Map(mekaDevPluginItems.map((item) => [item.runtimeId, item])),
+    [mekaDevPluginItems],
+  );
+  const devPackageDialogItem = devPackageDialogGhostId
+    ? (mekaDevPluginById.get(devPackageDialogGhostId) ?? null)
+    : null;
+  const devPackageDialogGhost = devPackageDialogGhostId
+    ? (ghosts.find((ghost) => ghost.manifest.id === devPackageDialogGhostId) ?? null)
+    : null;
   const allInstalledItems = useMemo<PresentedGhostPluginItem[]>(
     () =>
       ghosts
@@ -298,19 +366,24 @@ export function GhostPluginPage() {
         )
         .map((ghost) => {
           const marketItem = marketByGhostId.get(ghost.manifest.id) ?? null;
+          const developmentItem = mekaDevPluginById.get(ghost.manifest.id);
+          const development = developmentItem !== undefined;
           return {
             ...toGhostPluginListItem(ghost),
             origin: pluginPresentationOrigin(marketItem),
+            development,
+            sourcePluginId: developmentItem?.pluginId ?? ghost.manifest.id,
             // 迁移账本(legacy-unresolved)会让 main 把同版本 release 也判成
             // update-available;列表入口只对版本号确实变化的更新亮牌。
             marketUpdate:
+              !development &&
               marketItem?.installState === 'update-available' &&
               marketItem.version !== ghost.manifest.version
                 ? marketItem
                 : null,
           };
         }),
-    [ghosts, marketByGhostId],
+    [ghosts, marketByGhostId, mekaDevPluginById],
   );
   const installedItems = useMemo(
     () =>
@@ -319,13 +392,28 @@ export function GhostPluginPage() {
         : allInstalledItems.filter((item) => item.origin !== 'organization'),
     [allInstalledItems, showEnterprise],
   );
+  const mekaInstalledGhostIdSet = useMemo(
+    () => new Set([...mekaInstalledGhostIds, ...mekaDevPluginItems.map((item) => item.runtimeId)]),
+    [mekaDevPluginItems, mekaInstalledGhostIds],
+  );
+  // 两个渠道复用同一套管理能力，但条目归属由 host 侧独立账本裁决：
+  // 手动安装和 Cindy 市场插件留在“插件”，MCPRouter 安装项只进 Meka。
+  const surfaceInstalledItems = useMemo(
+    () =>
+      installedItems.filter((item) =>
+        isMekaSurface
+          ? mekaInstalledGhostIdSet.has(item.id)
+          : !mekaInstalledGhostIdSet.has(item.id),
+      ),
+    [installedItems, isMekaSurface, mekaInstalledGhostIdSet],
+  );
   const installedShortcutItems = useMemo(
-    () => sortGhostPluginItemsByRecentUse(installedItems, recentGhostIds),
-    [installedItems, recentGhostIds],
+    () => sortGhostPluginItemsByRecentUse(surfaceInstalledItems, recentGhostIds),
+    [recentGhostIds, surfaceInstalledItems],
   );
   const searchedInstalledItems = useMemo(
-    () => filterGhostPluginItems(installedItems, query),
-    [installedItems, query],
+    () => filterGhostPluginItems(surfaceInstalledItems, query),
+    [query, surfaceInstalledItems],
   );
   const searchedAvailableMarketItems = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase();
@@ -341,13 +429,13 @@ export function GhostPluginPage() {
   }, [marketItems, query, showEnterprise]);
   const originFilters = useMemo(
     () =>
-      showEnterprise
+      showEnterprise && !isMekaSurface
         ? PRESENTATION_FILTERS
         : PRESENTATION_FILTERS.filter((filter) => filter !== 'organization'),
-    [showEnterprise],
+    [isMekaSurface, showEnterprise],
   );
   const effectiveOriginFilter =
-    !showEnterprise && originFilter === 'organization' ? 'all' : originFilter;
+    (isMekaSurface || !showEnterprise) && originFilter === 'organization' ? 'all' : originFilter;
   const items = useMemo(
     () =>
       effectiveOriginFilter === 'all'
@@ -381,6 +469,7 @@ export function GhostPluginPage() {
     return counts;
   }, [searchedAvailableMarketItems, searchedInstalledItems]);
   const searchedItemCount = searchedInstalledItems.length + searchedAvailableMarketItems.length;
+  const surfaceIsEmpty = surfaceInstalledItems.length === 0 && marketItems.length === 0;
   const selectedGhost = selectedId
     ? (ghosts.find((ghost) => ghost.manifest.id === selectedId) ?? null)
     : null;
@@ -388,8 +477,13 @@ export function GhostPluginPage() {
   const selectedMarketInstall = selectedDetail
     ? (marketByGhostId.get(selectedDetail.id) ?? null)
     : null;
+  const selectedDevPlugin = selectedDetail
+    ? (mekaDevPluginById.get(selectedDetail.id) ?? null)
+    : null;
   const selectedMarketUpdate =
-    selectedMarketInstall?.installState === 'update-available' ? selectedMarketInstall : null;
+    !selectedDevPlugin && selectedMarketInstall?.installState === 'update-available'
+      ? selectedMarketInstall
+      : null;
 
   const panelStatus = useMemo(() => {
     if (!selectedDetail || selectedDetail.panelMinWidth === null) return null;
@@ -445,7 +539,7 @@ export function GhostPluginPage() {
       const marketBusyLease = acquireMarketBusy(marketItem.pluginId);
       if (!marketBusyLease) return;
       try {
-        const next = await window.electronAPI.pluginMarket.detail(marketItem.pluginId);
+        const next = await marketApi.detail(marketItem.pluginId);
         if (!isMarketBusyLeaseActive(marketBusyLease)) return;
         const diff = diffGhostPermissionItems(
           installedGhost?.manifest ?? next.manifest,
@@ -463,7 +557,7 @@ export function GhostPluginPage() {
           cancelText: t('settings.ghosts.updateConfirm.cancel'),
         });
         if (!approved || !isMarketBusyLeaseActive(marketBusyLease)) return;
-        const result = await window.electronAPI.pluginMarket.install(marketItem.pluginId, {
+        const result = await marketApi.install(marketItem.pluginId, {
           expectedReleaseId: next.releaseId,
           allowPermissionExpansion: diff.added.length > 0,
         });
@@ -488,6 +582,7 @@ export function GhostPluginPage() {
       confirm,
       ghosts,
       isMarketBusyLeaseActive,
+      marketApi,
       marketByGhostId,
       refreshMarket,
       releaseMarketBusy,
@@ -507,8 +602,59 @@ export function GhostPluginPage() {
   const handleInstall = useCallback(async () => {
     const picked = await window.electronAPI.ghosts.pickFile().catch(() => null);
     if (!picked || 'canceled' in picked) return;
-    await confirmAndInstallGhost(picked.filePath, { t, confirm, confirmWithCheckbox });
-  }, [confirm, confirmWithCheckbox, t]);
+    await confirmAndInstallGhost(picked.filePath, {
+      t,
+      confirm,
+      confirmWithCheckbox,
+      onInstalled: async (ghost) => {
+        if (dataOwnerId) {
+          await marketApi.markLocalInstall(ghost.manifest.id, dataOwnerId);
+        }
+      },
+    });
+    await refreshMarket();
+  }, [confirm, confirmWithCheckbox, dataOwnerId, marketApi, refreshMarket, t]);
+
+  const handleInstallDevelopment = useCallback(async () => {
+    let picked: Awaited<ReturnType<typeof window.electronAPI.mekaDevPlugins.pick>>;
+    try {
+      picked = await window.electronAPI.mekaDevPlugins.pick();
+    } catch (error) {
+      toast.error(extractIpcError(error)?.message ?? t('settings.ghosts.meka.dev.installFailed'));
+      return;
+    }
+    if (picked.canceled) return;
+    const approved = await confirm({
+      title: t('settings.ghosts.meka.dev.confirmTitle', {
+        name: picked.manifest.name,
+      }),
+      description: t('settings.ghosts.meka.dev.confirmDescription'),
+      content: (
+        <GhostInstallReview
+          description={picked.manifest.description}
+          meta={picked.sourceDir}
+          trust={picked.trust}
+          items={ghostPermissionItems(picked.manifest)}
+        />
+      ),
+      maxWidth: 520,
+      confirmText: t('settings.ghosts.meka.dev.confirm'),
+      cancelText: t('settings.ghosts.installConfirm.cancel'),
+    });
+    if (!approved) return;
+    try {
+      const { ghost } = await window.electronAPI.mekaDevPlugins.install({
+        sourceDir: picked.sourceDir,
+        expectedPackageSha256: picked.packageSha256,
+        expectedDataOwnerId: picked.dataOwnerId,
+        expectedSessionGeneration: picked.sessionGeneration,
+      });
+      toast.success(t('settings.ghosts.meka.dev.installed', { name: ghost.manifest.name }));
+      await refreshMarket();
+    } catch (error) {
+      toast.error(extractIpcError(error)?.message ?? t('settings.ghosts.meka.dev.installFailed'));
+    }
+  }, [confirm, refreshMarket, t]);
 
   const handleRetryLegacyRecovery = useCallback(async () => {
     legacyRecoveryStatusRequestRef.current += 1;
@@ -535,8 +681,11 @@ export function GhostPluginPage() {
   }, [refreshMarket]);
 
   const handleCreateWithCindy = useCallback(() => {
+    const prompt = isMekaSurface
+      ? `${t('settings.ghosts.meka.createPromptLead')}\n\n${t('settings.ghosts.page.createPrompt')}`
+      : t('settings.ghosts.page.createPrompt');
     saveComposerDraft(NEW_MAKER_DRAFT_KEY, {
-      text: plainTextToTiptapDoc(t('settings.ghosts.page.createPrompt')),
+      text: plainTextToTiptapDoc(prompt),
       attachments: [],
       focusAtEnd: true,
     });
@@ -547,7 +696,7 @@ export function GhostPluginPage() {
       deviceLinkDeviceName: null,
     });
     navigate('/cc-agent/new');
-  }, [navigate, t]);
+  }, [isMekaSurface, navigate, t]);
 
   // 打开插件详情并滚到「配置」区(就绪弹窗的「去配置」动作)。详情视图
   // 可能尚未挂载,滚动排到渲染之后的下一帧;减弱动效时改即时定位。
@@ -611,6 +760,31 @@ export function GhostPluginPage() {
     if (selectedGhost) void handleUseGhost(selectedGhost.manifest.id);
   }, [handleUseGhost, selectedGhost]);
 
+  const handleOpenPanel = useCallback(
+    async (id: string, trigger: HTMLButtonElement) => {
+      const ghost = ghosts.find((candidate) => candidate.manifest.id === id);
+      if (!ghost?.manifest.panel || ghost.enabled === false) return;
+      panelModalTriggerRef.current = trigger;
+      // A tab panel needs a concrete session host. The Plugin catalog has no
+      // active session, so its explicit Open action uses the same modal host;
+      // docked panels otherwise preserve the existing navigation behavior.
+      if (pluginPanelModalPresentation || ghost.manifest.panel.position === 'tab') {
+        setPanelModalGhostId(id);
+        setPanelModalOpen(true);
+        return;
+      }
+      const currentLayout = window.electronAPI.layout.getStateSync().layout;
+      const withPanel = layoutWithGhostPanel(currentLayout, ghost.manifest);
+      if (withPanel) {
+        await window.electronAPI.layout.set(withPanel).catch(() => undefined);
+      }
+      restoreGhostPanel(id);
+      await window.electronAPI.ghostPanelWindow.setDetached(id, false).catch(() => undefined);
+      navigate('/cc-agent/new');
+    },
+    [ghosts, navigate, pluginPanelModalPresentation],
+  );
+
   const handleUninstall = useCallback(async () => {
     if (!selectedDetail) return;
     const ok = await confirm({
@@ -621,8 +795,11 @@ export function GhostPluginPage() {
     });
     if (!ok) return;
     try {
-      if (selectedMarketInstall) {
-        await window.electronAPI.pluginMarket.uninstall(selectedMarketInstall.pluginId);
+      if (selectedDevPlugin) {
+        await window.electronAPI.mekaDevPlugins.remove(selectedDetail.id);
+        await refreshMarket();
+      } else if (selectedMarketInstall) {
+        await marketApi.uninstall(selectedMarketInstall.pluginId);
         await refreshMarket();
       } else {
         await window.electronAPI.ghosts.uninstall(selectedDetail.id);
@@ -630,12 +807,22 @@ export function GhostPluginPage() {
       toast.success(t('settings.ghosts.toast.uninstalled', { name: selectedDetail.name }));
     } catch (error) {
       toast.error(
-        selectedMarketInstall
-          ? t(pluginMarketErrorKey(error))
-          : t(ghostInstallErrorKey(extractIpcError(error)?.code)),
+        selectedDevPlugin
+          ? (extractIpcError(error)?.message ?? t('settings.ghosts.meka.dev.removeFailed'))
+          : selectedMarketInstall
+            ? t(pluginMarketErrorKey(error))
+            : t(ghostInstallErrorKey(extractIpcError(error)?.code)),
       );
     }
-  }, [confirm, refreshMarket, selectedDetail, selectedMarketInstall, t]);
+  }, [
+    confirm,
+    marketApi,
+    refreshMarket,
+    selectedDetail,
+    selectedDevPlugin,
+    selectedMarketInstall,
+    t,
+  ]);
 
   const handleSelectMarket = useCallback(
     async (pluginId: string) => {
@@ -644,7 +831,7 @@ export function GhostPluginPage() {
       if (!marketBusyLease) return;
       const requestId = ++marketDetailRequestRef.current;
       try {
-        const detail = await window.electronAPI.pluginMarket.detail(pluginId);
+        const detail = await marketApi.detail(pluginId);
         if (
           requestId === marketDetailRequestRef.current &&
           isMarketBusyLeaseActive(marketBusyLease)
@@ -662,22 +849,25 @@ export function GhostPluginPage() {
         releaseMarketBusy(marketBusyLease);
       }
     },
-    [acquireMarketBusy, isMarketBusyLeaseActive, releaseMarketBusy, t],
+    [acquireMarketBusy, isMarketBusyLeaseActive, marketApi, releaseMarketBusy, t],
   );
 
-  const refreshVisibleMarketDetail = useCallback(async (pluginId: string) => {
-    // A background icon renewal may observe navigation, but must never invalidate a
-    // user-initiated detail request by advancing its request generation.
-    const requestId = marketDetailRequestRef.current;
-    try {
-      const detail = await window.electronAPI.pluginMarket.detail(pluginId);
-      if (requestId !== marketDetailRequestRef.current) return;
-      setMarketDetail((current) => (current?.pluginId === pluginId ? detail : current));
-    } catch (error) {
-      // A background URL renewal must not close an otherwise usable detail page.
-      if (requestId === marketDetailRequestRef.current) throw error;
-    }
-  }, []);
+  const refreshVisibleMarketDetail = useCallback(
+    async (pluginId: string) => {
+      // A background icon renewal may observe navigation, but must never invalidate a
+      // user-initiated detail request by advancing its request generation.
+      const requestId = marketDetailRequestRef.current;
+      try {
+        const detail = await marketApi.detail(pluginId);
+        if (requestId !== marketDetailRequestRef.current) return;
+        setMarketDetail((current) => (current?.pluginId === pluginId ? detail : current));
+      } catch (error) {
+        // A background URL renewal must not close an otherwise usable detail page.
+        if (requestId === marketDetailRequestRef.current) throw error;
+      }
+    },
+    [marketApi],
+  );
   const visibleMarketIcons = useMemo(
     () => [...marketItems.map((item) => item.icon), marketDetail?.icon],
     [marketDetail?.icon, marketItems],
@@ -710,8 +900,7 @@ export function GhostPluginPage() {
     // 的现查事实,renderer 的 ghosts 推送缓存可能短暂滞后;仅在 update 态且缓存
     // 缺目标时,用既有 listSync 向 Main 现查一次。仍缺失说明状态已经变化,
     // 让后端按原有校验拒绝,绝不能拿新清单和自己做 diff 吞掉新增权限。
-    let installedGhost =
-      ghosts.find((ghost) => ghost.manifest.id === marketDetail.ghostId) ?? null;
+    let installedGhost = ghosts.find((ghost) => ghost.manifest.id === marketDetail.ghostId) ?? null;
     if (isUpdate && !installedGhost) {
       try {
         installedGhost =
@@ -764,11 +953,9 @@ export function GhostPluginPage() {
         autoFocusConfirm: true,
       });
       if (!confirmed || !isMarketBusyLeaseActive(marketBusyLease)) return;
-      const result = await window.electronAPI.pluginMarket.install(marketDetail.pluginId, {
+      const result = await marketApi.install(marketDetail.pluginId, {
         expectedReleaseId: marketDetail.releaseId,
-        ...(isUpdate && diff!.added.length > 0
-          ? { allowPermissionExpansion: true }
-          : {}),
+        ...(isUpdate && diff!.added.length > 0 ? { allowPermissionExpansion: true } : {}),
       });
       if (!isMarketBusyLeaseActive(marketBusyLease)) return;
       // 市场首装装完即开(2026-07-26 定案),toast 用"已安装";更新路径如实
@@ -798,11 +985,16 @@ export function GhostPluginPage() {
     confirm,
     ghosts,
     isMarketBusyLeaseActive,
+    marketApi,
     marketDetail,
     refreshMarket,
     releaseMarketBusy,
     t,
   ]);
+
+  const panelModalGhost = panelModalGhostId
+    ? (ghosts.find((ghost) => ghost.manifest.id === panelModalGhostId) ?? null)
+    : null;
 
   if (marketDetail) {
     return (
@@ -821,228 +1013,314 @@ export function GhostPluginPage() {
 
   if (selectedDetail) {
     return (
-      <GhostPluginDetailView
-        ghost={selectedGhost}
-        detail={selectedDetail}
-        panelStatus={panelStatus}
-        enabledOverride={
-          selectedGhost
-            ? effectiveEnabled(selectedGhost.manifest.id, selectedGhost.enabled)
-            : undefined
-        }
-        onBack={() => setSelectedId(null)}
-        onToggle={(enabled) => void handleToggle(selectedDetail.id, enabled)}
-        onUse={handleUse}
-        onUpdate={() => void handleUpdate()}
-        updateLabel={
-          selectedMarketUpdate
-            ? t('settings.ghosts.market.update')
-            : undefined
-        }
-        updateVersion={
-          selectedMarketUpdate && selectedMarketUpdate.version !== selectedDetail.version
-            ? selectedMarketUpdate.version
-            : undefined
-        }
-        updateBusy={selectedMarketUpdate !== null && marketBusyId !== null}
-        onUninstall={() => void handleUninstall()}
-        toggleDisabled={scopeDir !== null && selectedGhost !== null && !selectedGhost.enabled}
-      />
+      <>
+        <GhostPluginDetailView
+          ghost={selectedGhost}
+          detail={selectedDetail}
+          development={selectedDevPlugin !== null}
+          displayId={selectedDevPlugin?.pluginId}
+          panelStatus={panelStatus}
+          enabledOverride={
+            selectedGhost
+              ? effectiveEnabled(selectedGhost.manifest.id, selectedGhost.enabled)
+              : undefined
+          }
+          onBack={() => {
+            setPanelModalOpen(false);
+            setPanelModalGhostId(null);
+            setSelectedId(null);
+          }}
+          onToggle={(enabled) => {
+            if (!enabled) {
+              setPanelModalOpen(false);
+              setPanelModalGhostId(null);
+            }
+            void handleToggle(selectedDetail.id, enabled);
+          }}
+          onUse={handleUse}
+          onOpenPanel={
+            selectedGhost?.manifest.panel
+              ? (trigger) => void handleOpenPanel(selectedDetail.id, trigger)
+              : undefined
+          }
+          onUpdate={selectedDevPlugin ? undefined : () => void handleUpdate()}
+          updateLabel={selectedMarketUpdate ? t('settings.ghosts.market.update') : undefined}
+          updateVersion={
+            selectedMarketUpdate && selectedMarketUpdate.version !== selectedDetail.version
+              ? selectedMarketUpdate.version
+              : undefined
+          }
+          updateBusy={selectedMarketUpdate !== null && marketBusyId !== null}
+          onUninstall={() => void handleUninstall()}
+          toggleDisabled={scopeDir !== null && selectedGhost !== null && !selectedGhost.enabled}
+        />
+        {panelModalGhost ? (
+          <GhostPanelModal
+            ghost={panelModalGhost}
+            open={panelModalOpen}
+            onOpenChange={setPanelModalOpen}
+            returnFocusRef={panelModalTriggerRef}
+          />
+        ) : null}
+      </>
     );
   }
 
   return (
-    <PluginManagementLayout
-      activeTab="plugins"
-      query={query}
-      onQueryChange={setQuery}
-      searchPlaceholder={t('settings.ghosts.page.search')}
-      clearSearchLabel={t('settings.ghosts.page.clearSearch')}
-      headerActions={
-        <GhostPluginActions
-          onInstall={() => void handleInstall()}
-          onCreateWithCindy={handleCreateWithCindy}
-        />
-      }
-    >
-      <main className="min-h-0 w-full flex-1 overflow-y-auto bg-[var(--surface)] [scrollbar-gutter:stable_both-edges]">
-        <PluginManagementPage>
-          <header className="plugin-motion-page-header pb-2">
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <h1 className="text-28 font-medium leading-tight text-[var(--text-primary)]">
-                  {t('settings.ghosts.title')}
-                </h1>
-                <PluginScopePicker
-                  scopeDir={scopeDir}
-                  activeSessionWorkingDir={activeSessionWorkingDir ?? undefined}
-                  recentWorkdirs={recentWorkdirs}
-                  onPick={handlePickScope}
-                />
-              </div>
-              <p className="mt-2 max-w-2xl text-14 leading-6 text-[var(--text-secondary)]">
-                {t('settings.ghosts.description')}
-              </p>
-            </div>
-          </header>
-
-          {scopeDir ? (
-            <div className="mt-5 flex items-center justify-between gap-3 rounded-xl border border-[var(--border-default)] bg-[var(--surface-chip)] px-4 py-3">
-              <div className="flex min-w-0 items-center gap-2.5">
-                <span className="truncate text-13 font-medium text-[var(--text-primary)]">
-                  {scopeDir}
-                </span>
-                <span className="truncate text-12 text-[var(--text-tertiary)]">
-                  {t('settings.ghosts.projectBanner.desc')}
-                </span>
-              </div>
-              <button
-                type="button"
-                onClick={() => handlePickScope(null)}
-                className="shrink-0 rounded-full border border-[var(--border-default)] px-3 py-1 text-12 text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-hover-soft)]"
-              >
-                {t('settings.ghosts.projectBanner.backToGlobal')}
-              </button>
-            </div>
-          ) : null}
-
-          {installedShortcutItems.length > 0 ? (
-            <section className="plugin-motion-page-section mt-5 border-b-[0.5px] border-[var(--border-default)] pb-5">
-              <div className="mb-1 flex items-baseline gap-2">
-                <h2 className="text-13 font-medium text-[var(--text-secondary)]">
-                  {t('settings.ghosts.page.installedTitle')}
-                </h2>
-                <span className="text-12 tabular-nums text-[var(--text-tertiary)]">
-                  {installedShortcutItems.length}
-                </span>
-              </div>
-              <InstalledGhostQueue
-                items={installedShortcutItems}
-                expanded={installedExpanded}
-                onExpandedChange={setInstalledExpanded}
-                onSelect={setSelectedId}
-              />
-            </section>
-          ) : null}
-
-          <section className="plugin-motion-page-section mt-6 min-w-0">
-            <div className={PLUGIN_CATALOG_TOOLBAR_CLASS}>
-              <div className="flex shrink-0 items-baseline gap-2 whitespace-nowrap">
-                <h2 className="text-20 font-medium text-[var(--text-primary)]">
-                  {t('settings.ghosts.page.allTitle')}
-                </h2>
-                <span className="text-13 tabular-nums text-[var(--text-tertiary)]">
-                  {items.length + availableMarketItems.length}
-                </span>
-              </div>
-              <div
-                className="plugin-catalog-filters flex min-w-0 max-w-full items-center gap-1 overflow-x-auto"
-                role="group"
-                aria-label={t('settings.ghosts.page.filtersAria')}
-                style={WINDOW_NO_DRAG_STYLE}
-              >
-                {originFilters.map((filter) => {
-                  const selected = effectiveOriginFilter === filter;
-                  const count = filter === 'all' ? searchedItemCount : originCounts[filter];
-                  return (
-                    <button
-                      key={filter}
-                      type="button"
-                      aria-pressed={selected}
-                      onClick={() => setOriginFilter(filter)}
-                      className={cn(
-                        'shrink-0 select-none rounded-full px-3.5 py-2 text-12 transition-colors duration-150',
-                        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
-                        selected
-                          ? 'bg-[var(--surface-chip)] text-[var(--text-primary)]'
-                          : 'text-[var(--text-secondary)] hover:bg-[var(--surface-hover-soft)] hover:text-[var(--text-primary)]',
-                      )}
-                    >
-                      {filter === 'all'
-                        ? t('settings.ghosts.page.filterAll')
-                        : t(`settings.ghosts.page.origin.${filter}`)}
-                      <span className="ml-1.5 tabular-nums text-[var(--text-tertiary)]">
-                        {count}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {marketSnapshot?.unavailableReason ? (
-              <p className="mb-4 rounded-xl border border-[var(--border-default)] bg-[var(--surface-chip)] px-4 py-3 text-12 text-[var(--text-secondary)]">
-                {t(
-                  marketSnapshot.unavailableReason === 'authentication-required'
-                    ? 'settings.ghosts.market.authenticationRequired'
-                    : marketSnapshot.unavailableReason === 'not-configured'
-                      ? 'settings.ghosts.market.notConfigured'
-                      : 'settings.ghosts.market.unavailable',
-                )}
-              </p>
-            ) : null}
-
-            {legacyRecoveryStatus ? (
-              <LegacyGhostRecoveryNotice
-                status={legacyRecoveryStatus}
-                retrying={legacyRecoveryRetrying}
-                onRetry={() => void handleRetryLegacyRecovery()}
-              />
-            ) : null}
-
-            {catalogItems.length > 0 ? (
-              <div className={cn('plugin-motion-stagger', PLUGIN_MANAGEMENT_CARD_GRID_CLASS)}>
-                {catalogItems.map((catalogItem) =>
-                  catalogItem.kind === 'installed' ? (
-                    <GhostPluginCard
-                      key={`installed:${catalogItem.item.id}`}
-                      item={catalogItem.item}
-                      sourceLabel={t(`settings.ghosts.page.origin.${catalogItem.item.origin}`)}
-                      onSelect={() => setSelectedId(catalogItem.item.id)}
-                      onAction={() => void handleUseGhost(catalogItem.item.id)}
-                      updateVersion={catalogItem.item.marketUpdate?.version}
-                      updateBusy={catalogItem.item.marketUpdate !== null && marketBusyId !== null}
-                      onUpdate={
-                        catalogItem.item.marketUpdate
-                          ? () => void handleMarketUpdate(catalogItem.item.id)
-                          : undefined
-                      }
-                      effectiveEnabled={effectiveEnabled(
-                        catalogItem.item.id,
-                        catalogItem.item.enabled,
-                      )}
-                      toggleDisabled={scopeDir !== null && !catalogItem.item.enabled}
-                      onToggle={(enabled) => void handleToggle(catalogItem.item.id, enabled)}
-                    />
-                  ) : (
-                    <MarketPluginCard
-                      key={`market:${catalogItem.item.pluginId}`}
-                      item={catalogItem.item}
-                      busy={marketBusyId !== null}
-                      onSelect={() => void handleSelectMarket(catalogItem.item.pluginId)}
-                      onIconLoadError={handleMarketIconLoadError}
-                    />
-                  ),
-                )}
-              </div>
-            ) : !legacyRecoveryStatus ? (
-              <div className="rounded-xl border-[0.5px] border-[var(--border-default)] px-5 py-10 text-center">
-                <p className="text-13 text-[var(--text-secondary)]">
-                  {installedItems.length === 0 && marketItems.length === 0
-                    ? t('settings.ghosts.empty')
-                    : t('settings.ghosts.page.emptyFiltered')}
+    <>
+      <PluginManagementLayout
+        activeTab={isMekaSurface ? 'meka-plugins' : 'plugins'}
+        query={query}
+        onQueryChange={setQuery}
+        searchPlaceholder={t('settings.ghosts.page.search')}
+        clearSearchLabel={t('settings.ghosts.page.clearSearch')}
+        headerActions={
+          <GhostPluginActions
+            meka={isMekaSurface}
+            onInstall={() => void handleInstall()}
+            onInstallDevelopment={isMekaSurface ? () => void handleInstallDevelopment() : undefined}
+            onCreateWithCindy={handleCreateWithCindy}
+          />
+        }
+      >
+        <main className="min-h-0 w-full flex-1 overflow-y-auto bg-[var(--surface)] [scrollbar-gutter:stable_both-edges]">
+          <PluginManagementPage>
+            <header className="plugin-motion-page-header pb-2">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <h1 className="text-28 font-medium leading-tight text-[var(--text-primary)]">
+                    {t(isMekaSurface ? 'settings.ghosts.meka.title' : 'settings.ghosts.title')}
+                  </h1>
+                  <PluginScopePicker
+                    scopeDir={scopeDir}
+                    activeSessionWorkingDir={activeSessionWorkingDir ?? undefined}
+                    recentWorkdirs={recentWorkdirs}
+                    onPick={handlePickScope}
+                  />
+                </div>
+                <p className="mt-2 max-w-2xl text-14 leading-6 text-[var(--text-secondary)]">
+                  {t(
+                    isMekaSurface
+                      ? 'settings.ghosts.meka.description'
+                      : 'settings.ghosts.description',
+                  )}
                 </p>
-                {installedItems.length === 0 && marketItems.length === 0 ? (
-                  <p className="mt-1.5 text-12 text-[var(--text-tertiary)]">
-                    {t('settings.ghosts.emptyHint')}
-                  </p>
-                ) : null}
+              </div>
+            </header>
+
+            {scopeDir ? (
+              <div className="mt-5 flex items-center justify-between gap-3 rounded-xl border border-[var(--border-default)] bg-[var(--surface-chip)] px-4 py-3">
+                <div className="flex min-w-0 items-center gap-2.5">
+                  <span className="truncate text-13 font-medium text-[var(--text-primary)]">
+                    {scopeDir}
+                  </span>
+                  <span className="truncate text-12 text-[var(--text-tertiary)]">
+                    {t('settings.ghosts.projectBanner.desc')}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handlePickScope(null)}
+                  className="shrink-0 rounded-full border border-[var(--border-default)] px-3 py-1 text-12 text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-hover-soft)]"
+                >
+                  {t('settings.ghosts.projectBanner.backToGlobal')}
+                </button>
               </div>
             ) : null}
-          </section>
-        </PluginManagementPage>
-      </main>
-    </PluginManagementLayout>
+
+            {installedShortcutItems.length > 0 ? (
+              <section className="plugin-motion-page-section mt-5 border-b-[0.5px] border-[var(--border-default)] pb-5">
+                <div className="mb-1 flex items-baseline gap-2">
+                  <h2 className="text-13 font-medium text-[var(--text-secondary)]">
+                    {t('settings.ghosts.page.installedTitle')}
+                  </h2>
+                  <span className="text-12 tabular-nums text-[var(--text-tertiary)]">
+                    {installedShortcutItems.length}
+                  </span>
+                </div>
+                <InstalledGhostQueue
+                  items={installedShortcutItems}
+                  expanded={installedExpanded}
+                  onExpandedChange={setInstalledExpanded}
+                  onSelect={setSelectedId}
+                />
+              </section>
+            ) : null}
+
+            <section className="plugin-motion-page-section mt-6 min-w-0">
+              <div className={PLUGIN_CATALOG_TOOLBAR_CLASS}>
+                <div className="flex shrink-0 items-baseline gap-2 whitespace-nowrap">
+                  <h2 className="text-20 font-medium text-[var(--text-primary)]">
+                    {t('settings.ghosts.page.allTitle')}
+                  </h2>
+                  <span className="text-13 tabular-nums text-[var(--text-tertiary)]">
+                    {items.length + availableMarketItems.length}
+                  </span>
+                </div>
+                <div
+                  className="plugin-catalog-filters flex min-w-0 max-w-full items-center gap-1 overflow-x-auto"
+                  role="group"
+                  aria-label={t('settings.ghosts.page.filtersAria')}
+                  style={WINDOW_NO_DRAG_STYLE}
+                >
+                  {originFilters.map((filter) => {
+                    const selected = effectiveOriginFilter === filter;
+                    const count = filter === 'all' ? searchedItemCount : originCounts[filter];
+                    return (
+                      <button
+                        key={filter}
+                        type="button"
+                        aria-pressed={selected}
+                        onClick={() => setOriginFilter(filter)}
+                        className={cn(
+                          'shrink-0 select-none rounded-full px-3.5 py-2 text-12 transition-colors duration-[var(--motion-fast)]',
+                          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
+                          selected
+                            ? 'bg-[var(--surface-chip)] text-[var(--text-primary)]'
+                            : 'text-[var(--text-secondary)] hover:bg-[var(--surface-hover-soft)] hover:text-[var(--text-primary)]',
+                        )}
+                      >
+                        {filter === 'all'
+                          ? t('settings.ghosts.page.filterAll')
+                          : t(
+                              isMekaSurface
+                                ? `settings.ghosts.meka.origin.${filter}`
+                                : `settings.ghosts.page.origin.${filter}`,
+                            )}
+                        <span className="ml-1.5 tabular-nums text-[var(--text-tertiary)]">
+                          {count}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {marketSnapshot?.unavailableReason ? (
+                <p className="mb-4 rounded-xl border border-[var(--border-default)] bg-[var(--surface-chip)] px-4 py-3 text-12 text-[var(--text-secondary)]">
+                  {t(
+                    marketSnapshot.unavailableReason === 'authentication-required'
+                      ? 'settings.ghosts.market.authenticationRequired'
+                      : marketSnapshot.unavailableReason === 'not-configured'
+                        ? 'settings.ghosts.market.notConfigured'
+                        : 'settings.ghosts.market.unavailable',
+                  )}
+                </p>
+              ) : null}
+
+              {!isMekaSurface && legacyRecoveryStatus ? (
+                <LegacyGhostRecoveryNotice
+                  status={legacyRecoveryStatus}
+                  retrying={legacyRecoveryRetrying}
+                  onRetry={() => void handleRetryLegacyRecovery()}
+                />
+              ) : null}
+
+              {catalogItems.length > 0 ? (
+                <div className={cn('plugin-motion-stagger', PLUGIN_MANAGEMENT_CARD_GRID_CLASS)}>
+                  {catalogItems.map((catalogItem) =>
+                    catalogItem.kind === 'installed' ? (
+                      <GhostPluginCard
+                        key={`installed:${catalogItem.item.id}`}
+                        item={catalogItem.item}
+                        development={catalogItem.item.development}
+                        displayId={catalogItem.item.sourcePluginId}
+                        sourceLabel={t(
+                          catalogItem.item.development
+                            ? mekaDevPluginById.get(catalogItem.item.id)?.status === 'error'
+                              ? 'settings.ghosts.meka.dev.syncError'
+                              : 'settings.ghosts.meka.dev.badge'
+                            : isMekaSurface
+                              ? `settings.ghosts.meka.origin.${catalogItem.item.origin}`
+                              : `settings.ghosts.page.origin.${catalogItem.item.origin}`,
+                        )}
+                        onSelect={() => setSelectedId(catalogItem.item.id)}
+                        onAction={() => void handleUseGhost(catalogItem.item.id)}
+                        onOpenPanel={
+                          catalogItem.item.hasPanel
+                            ? (trigger) => void handleOpenPanel(catalogItem.item.id, trigger)
+                            : undefined
+                        }
+                        onDevelopmentPackage={
+                          catalogItem.item.development
+                            ? () => {
+                                setDevPackageDialogGhostId(catalogItem.item.id);
+                                setDevPackageDialogOpen(true);
+                              }
+                            : undefined
+                        }
+                        updateVersion={catalogItem.item.marketUpdate?.version}
+                        updateBusy={catalogItem.item.marketUpdate !== null && marketBusyId !== null}
+                        onUpdate={
+                          catalogItem.item.marketUpdate
+                            ? () => void handleMarketUpdate(catalogItem.item.id)
+                            : undefined
+                        }
+                        effectiveEnabled={effectiveEnabled(
+                          catalogItem.item.id,
+                          catalogItem.item.enabled,
+                        )}
+                        toggleDisabled={scopeDir !== null && !catalogItem.item.enabled}
+                        onToggle={(enabled) => void handleToggle(catalogItem.item.id, enabled)}
+                      />
+                    ) : (
+                      <MarketPluginCard
+                        key={`market:${catalogItem.item.pluginId}`}
+                        item={catalogItem.item}
+                        busy={marketBusyId !== null}
+                        onSelect={() => void handleSelectMarket(catalogItem.item.pluginId)}
+                        onIconLoadError={handleMarketIconLoadError}
+                        sourceLabel={t(
+                          isMekaSurface
+                            ? `settings.ghosts.meka.origin.${pluginPresentationOrigin(catalogItem.item)}`
+                            : `settings.ghosts.page.origin.${pluginPresentationOrigin(catalogItem.item)}`,
+                        )}
+                      />
+                    ),
+                  )}
+                </div>
+              ) : isMekaSurface || !legacyRecoveryStatus ? (
+                <div className="rounded-xl border-[0.5px] border-[var(--border-default)] px-5 py-10 text-center">
+                  <p className="text-13 text-[var(--text-secondary)]">
+                    {surfaceIsEmpty
+                      ? t(isMekaSurface ? 'settings.ghosts.meka.empty' : 'settings.ghosts.empty')
+                      : t('settings.ghosts.page.emptyFiltered')}
+                  </p>
+                  {surfaceIsEmpty ? (
+                    <p className="mt-1.5 text-12 text-[var(--text-tertiary)]">
+                      {t(
+                        isMekaSurface
+                          ? 'settings.ghosts.meka.emptyHint'
+                          : 'settings.ghosts.emptyHint',
+                      )}
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+            </section>
+          </PluginManagementPage>
+        </main>
+      </PluginManagementLayout>
+      {panelModalGhost ? (
+        <GhostPanelModal
+          ghost={panelModalGhost}
+          open={panelModalOpen}
+          onOpenChange={setPanelModalOpen}
+          returnFocusRef={panelModalTriggerRef}
+        />
+      ) : null}
+      <MekaDevPluginPackageDialog
+        item={devPackageDialogItem}
+        pluginName={devPackageDialogGhost?.manifest.name ?? ''}
+        pluginVersion={devPackageDialogGhost?.manifest.version ?? ''}
+        open={devPackageDialogOpen && devPackageDialogItem !== null}
+        onOpenChange={(open) => {
+          setDevPackageDialogOpen(open);
+          if (!open) setDevPackageDialogGhostId(null);
+        }}
+        onUploaded={() => refreshMarket(true).catch(() => undefined)}
+      />
+    </>
   );
 }
 
@@ -1098,11 +1376,13 @@ export function MarketPluginCard({
   busy,
   onSelect,
   onIconLoadError,
+  sourceLabel,
 }: {
   item: PluginMarketItem;
   busy: boolean;
   onSelect: () => void;
   onIconLoadError: () => void;
+  sourceLabel?: string;
 }) {
   const { t } = useTranslation();
   return (
@@ -1135,7 +1415,7 @@ export function MarketPluginCard({
           </span>
           <span className="mt-1 flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap text-11 text-[var(--text-tertiary)]">
             <span className="shrink-0">
-              {t(`settings.ghosts.page.origin.${pluginPresentationOrigin(item)}`)}
+              {sourceLabel ?? t(`settings.ghosts.page.origin.${pluginPresentationOrigin(item)}`)}
             </span>
             <span className="shrink-0" aria-hidden="true">
               ·
@@ -1182,10 +1462,14 @@ export function MarketPluginCard({
 
 /** Plugin-specific creation and import actions rendered after the shared search. */
 function GhostPluginActions({
+  meka,
   onInstall,
+  onInstallDevelopment,
   onCreateWithCindy,
 }: {
+  meka: boolean;
   onInstall: () => void;
+  onInstallDevelopment?: () => void;
   onCreateWithCindy: () => void;
 }) {
   const { t } = useTranslation();
@@ -1220,7 +1504,7 @@ function GhostPluginActions({
       <DropdownMenuContent
         align="end"
         sideOffset={8}
-        className="w-52 rounded-[12px] border-[0.5px] border-[var(--border-default)] bg-[var(--surface-elevated)] p-1.5 text-[var(--text-primary)] shadow-[var(--shadow-menu)]"
+        className="w-56 rounded-[12px] border-[0.5px] border-[var(--border-default)] bg-[var(--surface-elevated)] p-1.5 text-[var(--text-primary)] shadow-[var(--shadow-menu)]"
       >
         <DropdownMenuItem
           onSelect={onCreateWithCindy}
@@ -1232,7 +1516,9 @@ function GhostPluginActions({
             className="text-[var(--text-secondary)]"
             aria-hidden="true"
           />
-          {t('settings.ghosts.page.createWithCindy')}
+          {t(
+            meka ? 'settings.ghosts.meka.createWithCindy' : 'settings.ghosts.page.createWithCindy',
+          )}
         </DropdownMenuItem>
         <DropdownMenuSeparator className="mx-2 my-1 h-px bg-[var(--border-default)]" />
         <DropdownMenuItem
@@ -1247,6 +1533,20 @@ function GhostPluginActions({
           />
           {t('settings.ghosts.install')}
         </DropdownMenuItem>
+        {onInstallDevelopment ? (
+          <DropdownMenuItem
+            onSelect={onInstallDevelopment}
+            className="h-10 gap-3 rounded-lg px-3 text-13 focus:bg-[var(--surface-hover-soft)] focus:text-[var(--text-primary)]"
+          >
+            <FolderCode
+              size={16}
+              strokeWidth={1.7}
+              className="text-[var(--text-secondary)]"
+              aria-hidden="true"
+            />
+            {t('settings.ghosts.meka.dev.loadDirectory')}
+          </DropdownMenuItem>
+        ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -1255,9 +1555,13 @@ function GhostPluginActions({
 /** Compact installed Plugin card. */
 export function GhostPluginCard({
   item,
+  development = false,
+  displayId = item.id,
   sourceLabel,
   onSelect,
   onAction,
+  onOpenPanel,
+  onDevelopmentPackage,
   onUpdate,
   updateVersion,
   updateBusy = false,
@@ -1265,10 +1569,14 @@ export function GhostPluginCard({
   effectiveEnabled,
   toggleDisabled = false,
 }: {
-  item: GhostPluginListItem;
+  item: GhostPluginListItem & { development?: boolean };
+  development?: boolean;
+  displayId?: string;
   sourceLabel?: string;
   onSelect: () => void;
   onAction: () => void;
+  onOpenPanel?: (trigger: HTMLButtonElement) => void;
+  onDevelopmentPackage?: () => void;
   /** 市场存在新版本时的直达更新入口;与 updateVersion 同时提供。 */
   onUpdate?: () => void;
   updateVersion?: string;
@@ -1278,6 +1586,14 @@ export function GhostPluginCard({
   toggleDisabled?: boolean;
 }) {
   const { t } = useTranslation();
+  const hasUpdateAction = Boolean(updateVersion && onUpdate);
+  const hasUseAction = item.canUse && !hasUpdateAction;
+  const showDetailFallback =
+    !onOpenPanel && !onDevelopmentPackage && !hasUpdateAction && !hasUseAction;
+  const actionCount =
+    Number(Boolean(onOpenPanel)) +
+    Number(Boolean(onDevelopmentPackage)) +
+    Number(hasUpdateAction || hasUseAction || showDetailFallback);
   return (
     <article
       className={cn(
@@ -1295,7 +1611,12 @@ export function GhostPluginCard({
         className="flex min-w-0 flex-1 items-start gap-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
         aria-label={item.name}
       >
-        <GhostPluginIcon iconDataUrl={item.iconDataUrl} iconId={item.id} iconName={item.name} />
+        <GhostPluginIcon
+          iconDataUrl={item.iconDataUrl}
+          iconId={item.id}
+          iconName={item.name}
+          development={development}
+        />
         <span className="flex min-w-0 flex-1 flex-col self-stretch pt-0.5">
           <span className="flex min-w-0 items-center gap-2">
             <span className="truncate text-15 font-medium text-[var(--text-primary)]">
@@ -1310,16 +1631,16 @@ export function GhostPluginCard({
           <span className="mt-1 flex min-w-0 items-center gap-1.5 text-11 text-[var(--text-tertiary)]">
             {sourceLabel ? (
               <>
-                <span>{sourceLabel}</span>
+                <span className="shrink-0 whitespace-nowrap">{sourceLabel}</span>
                 <span aria-hidden="true">·</span>
               </>
             ) : null}
-            <span>v{item.version}</span>
+            <span className="shrink-0 whitespace-nowrap">v{item.version}</span>
             <span aria-hidden="true">·</span>
-            <span className="truncate font-mono">{item.id}</span>
+            <span className="truncate font-mono">{displayId}</span>
           </span>
           <span className="mt-1.5 line-clamp-2 text-13 leading-5 text-[var(--text-secondary)]">
-            {item.description || item.id}
+            {item.description || displayId}
           </span>
         </span>
       </button>
@@ -1332,39 +1653,88 @@ export function GhostPluginCard({
             aria-label={t('settings.ghosts.enableAria', { name: item.name })}
           />
         ) : null}
-        {updateVersion && onUpdate ? (
-          <button
-            type="button"
-            onClick={onUpdate}
-            disabled={updateBusy}
-            className={cn(
-              'inline-flex h-8 shrink-0 items-center justify-center self-center rounded-lg border border-[var(--border-default)] bg-transparent px-3 text-12 font-medium text-[var(--text-primary)]',
-              'transition-[background-color,border-color,transform,opacity] duration-150',
-              'hover:border-[var(--text-tertiary)] hover:bg-[var(--surface-hover-soft)] active:scale-[0.98]',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
-              'disabled:cursor-wait disabled:opacity-40 disabled:active:scale-100',
-            )}
-            aria-label={t('settings.ghosts.market.updateAria', { name: item.name })}
-          >
-            {t('settings.ghosts.market.updateAction')}
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={onAction}
-            disabled={!(effectiveEnabled ?? item.enabled) || !item.canUse}
-            className={cn(
-              'inline-flex h-8 shrink-0 items-center justify-center self-center rounded-lg border border-[var(--border-default)] bg-transparent px-3 text-12 font-medium text-[var(--text-primary)]',
-              'transition-[background-color,border-color,transform,opacity] duration-150',
-              'hover:border-[var(--text-tertiary)] hover:bg-[var(--surface-hover-soft)] active:scale-[0.98]',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
-              'disabled:cursor-not-allowed disabled:opacity-40 disabled:active:scale-100',
-            )}
-            aria-label={t('settings.ghosts.page.useAria', { name: item.name })}
-          >
-            {t('settings.ghosts.page.useAction')}
-          </button>
-        )}
+        <div className={cn('flex items-center gap-2', actionCount > 1 && 'flex-col items-stretch')}>
+          {onOpenPanel ? (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onOpenPanel(event.currentTarget);
+              }}
+              disabled={!(effectiveEnabled ?? item.enabled)}
+              className={cn(
+                'inline-flex h-8 shrink-0 items-center justify-center self-center rounded-lg border border-[var(--border-default)] bg-transparent px-3 text-12 font-medium text-[var(--text-primary)]',
+                'transition-[background-color,border-color,transform,opacity] duration-[var(--motion-fast)]',
+                'hover:border-[var(--text-tertiary)] hover:bg-[var(--surface-hover-soft)] active:scale-[0.98]',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
+                'disabled:cursor-not-allowed disabled:opacity-40 disabled:active:scale-100',
+              )}
+            >
+              {t('settings.ghosts.detail.openPanelAction')}
+            </button>
+          ) : null}
+          {onDevelopmentPackage ? (
+            <button
+              type="button"
+              onClick={onDevelopmentPackage}
+              className={cn(
+                'inline-flex h-8 shrink-0 items-center justify-center self-center rounded-lg border border-[var(--border-default)] bg-transparent px-3 text-12 font-medium text-[var(--text-primary)]',
+                'transition-[background-color,border-color,transform,opacity] duration-[var(--motion-fast)]',
+                'hover:border-[var(--text-tertiary)] hover:bg-[var(--surface-hover-soft)] active:scale-[0.98]',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
+              )}
+            >
+              {t('settings.ghosts.meka.dev.packageAction')}
+            </button>
+          ) : null}
+          {updateVersion && onUpdate ? (
+            <button
+              type="button"
+              onClick={onUpdate}
+              disabled={updateBusy}
+              className={cn(
+                'inline-flex h-8 shrink-0 items-center justify-center self-center rounded-lg border border-[var(--border-default)] bg-transparent px-3 text-12 font-medium text-[var(--text-primary)]',
+                'transition-[background-color,border-color,transform,opacity] duration-[var(--motion-fast)]',
+                'hover:border-[var(--text-tertiary)] hover:bg-[var(--surface-hover-soft)] active:scale-[0.98]',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
+                'disabled:cursor-wait disabled:opacity-40 disabled:active:scale-100',
+              )}
+              aria-label={t('settings.ghosts.market.updateAria', { name: item.name })}
+            >
+              {t('settings.ghosts.market.updateAction')}
+            </button>
+          ) : hasUseAction ? (
+            <button
+              type="button"
+              onClick={onAction}
+              disabled={!(effectiveEnabled ?? item.enabled)}
+              className={cn(
+                'inline-flex h-8 shrink-0 items-center justify-center self-center rounded-lg border border-[var(--border-default)] bg-transparent px-3 text-12 font-medium text-[var(--text-primary)]',
+                'transition-[background-color,border-color,transform,opacity] duration-[var(--motion-fast)]',
+                'hover:border-[var(--text-tertiary)] hover:bg-[var(--surface-hover-soft)] active:scale-[0.98]',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
+                'disabled:cursor-not-allowed disabled:opacity-40 disabled:active:scale-100',
+              )}
+              aria-label={t('settings.ghosts.page.useAria', { name: item.name })}
+            >
+              {t('settings.ghosts.page.useAction')}
+            </button>
+          ) : showDetailFallback ? (
+            <button
+              type="button"
+              onClick={onSelect}
+              className={cn(
+                'inline-flex h-8 shrink-0 items-center justify-center self-center rounded-lg border border-[var(--border-default)] bg-transparent px-3 text-12 font-medium text-[var(--text-primary)]',
+                'transition-[background-color,border-color,transform,opacity] duration-[var(--motion-fast)]',
+                'hover:border-[var(--text-tertiary)] hover:bg-[var(--surface-hover-soft)] active:scale-[0.98]',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
+              )}
+            >
+              {t('settings.ghosts.market.details')}
+            </button>
+          ) : null}
+        </div>
       </div>
     </article>
   );
@@ -1374,7 +1744,7 @@ export function InstalledGhostShortcut({
   item,
   onSelect,
 }: {
-  item: GhostPluginListItem;
+  item: GhostPluginListItem & { development?: boolean };
   onSelect: (id: string) => void;
 }) {
   return (
@@ -1390,7 +1760,12 @@ export function InstalledGhostShortcut({
         )}
         aria-label={item.name}
       >
-        <GhostPluginIcon iconDataUrl={item.iconDataUrl} iconId={item.id} iconName={item.name} />
+        <GhostPluginIcon
+          iconDataUrl={item.iconDataUrl}
+          iconId={item.id}
+          iconName={item.name}
+          development={item.development}
+        />
       </button>
     </Tip>
   );
@@ -1403,7 +1778,7 @@ export function InstalledGhostQueue({
   onExpandedChange,
   onSelect,
 }: {
-  items: readonly GhostPluginListItem[];
+  items: readonly (GhostPluginListItem & { development?: boolean })[];
   expanded: boolean;
   onExpandedChange: (expanded: boolean) => void;
   onSelect: (id: string) => void;

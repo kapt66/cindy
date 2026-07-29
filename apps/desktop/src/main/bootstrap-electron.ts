@@ -37,6 +37,7 @@ import {
   markDesktopDevWindowReady,
 } from './devStartupStatus';
 import { prewarmMacComputerPermissionGuideHelper } from './computer-permission-guide/MacComputerPermissionGuideNativeHost.js';
+import { watcherHostClient } from './watcher-host/index.js';
 
 const PROCESS_STARTED_AT_MS = Date.now();
 // Official Linux binaries total hundreds of MB. Keep one shared deadline for
@@ -842,7 +843,7 @@ async function teardownAuthAccountBoundary(reason: string): Promise<void> {
   // state. Stop them before changing owners; resident Ghosts are recreated by
   // the auth-change activation pass after the new boundary is committed.
   await waitForGhostMutations();
-  suspendAllGhosts();
+  await suspendAllGhosts();
   // Personal IM channels have the same DB boundary. Relogin restarts them from
   // the next owner DB-ready callback; app:ready-for-bot remains a compatibility
   // retry after the new DbClient is ready.
@@ -1689,6 +1690,7 @@ const windowsClosePromptFallback = createWindowsClosePromptFallbackController(
 
 app.on('before-quit', () => {
   isQuitting = true;
+  watcherHostClient.dispose();
   windowsClosePromptFallback.dispose();
   destroyWindowsTray();
   disposeUpdatePresentationRecovery();

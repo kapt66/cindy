@@ -18,7 +18,11 @@ function setup(initial: Record<string, unknown> = {}) {
     },
   };
   const client = {
-    normalizeBaseUrl: vi.fn((url: string) => url.replace(/\/+$/, '')),
+    normalizeBaseUrl: vi.fn((url: string) =>
+      url.startsWith('http:')
+        ? DEFAULT_MEKA_MCPROUTER_URL.replace(/\/+$/, '')
+        : url.replace(/\/+$/, ''),
+    ),
     normalizeMcpEndpointUrl: vi.fn((url: string) => url.trim().replace(/#.*$/, '')),
     login: vi.fn(async () => 'session-token'),
     ensureClientKey: vi.fn(async () => 'client-key'),
@@ -32,6 +36,9 @@ function setup(initial: Record<string, unknown> = {}) {
     listInstances: vi.fn(async () => []),
     listTemplates: vi.fn(async () => []),
     findOrCreateInstance: vi.fn(async () => ({})),
+    listOwnedMekaPlugins: vi.fn(async () => []),
+    uploadMekaPlugin: vi.fn(async () => ({})),
+    setMekaPluginAccess: vi.fn(async () => ({})),
   } as unknown as MekaRouterClient;
   const service = createMekaRouterService({
     configPath: 'C:\\userData\\meka-assistant-settings.json',
@@ -59,8 +66,9 @@ function setup(initial: Record<string, unknown> = {}) {
 }
 
 describe('MekaRouterService', () => {
-  it('exposes and accepts the original Meka MCPRouter default address', async () => {
+  it('exposes and accepts the HTTPS Meka MCPRouter default address', async () => {
     const fixture = setup();
+    expect(DEFAULT_MEKA_MCPROUTER_URL).toBe('https://mcpr.meka.pawdy.fun/');
 
     await expect(fixture.service.getSettings()).resolves.toMatchObject({
       configured: false,
@@ -75,6 +83,21 @@ describe('MekaRouterService', () => {
       'meka-user',
       'secret',
     );
+  });
+
+  it('routes a previously saved HTTP origin through the production HTTPS Router', async () => {
+    const fixture = setup({ routerUrl: 'http://retired-router.example/' });
+    fixture.secrets.set('meka.router.sessionToken', 'existing-session');
+    fixture.secrets.set('meka.router.clientKey', 'existing-client-key');
+
+    await expect(fixture.service.getSettings()).resolves.toMatchObject({
+      configured: true,
+      routerUrl: DEFAULT_MEKA_MCPROUTER_URL.replace(/\/+$/, ''),
+    });
+    await expect(fixture.service.getPluginRegistryAccess()).resolves.toEqual({
+      baseUrl: DEFAULT_MEKA_MCPROUTER_URL.replace(/\/+$/, ''),
+      clientKey: 'existing-client-key',
+    });
   });
 
   it('connects with the original client-key identity and preserves P4/unknown settings', async () => {
@@ -101,6 +124,39 @@ describe('MekaRouterService', () => {
     });
     expect(fixture.secrets.get('meka.router.sessionToken')).toBe('session-token');
     expect(fixture.secrets.get('meka.router.clientKey')).toBe('client-key');
+  });
+
+  it('resolves anonymous default and bound registry access without session credentials', async () => {
+    const fixture = setup();
+    fixture.secrets.set('meka.router.sessionToken', 'not-yet-persisted-session');
+    fixture.secrets.set('meka.router.clientKey', 'not-yet-persisted-key');
+
+    await expect(fixture.service.getPluginRegistryAccess()).resolves.toEqual({
+      baseUrl: DEFAULT_MEKA_MCPROUTER_URL.replace(/\/+$/, ''),
+      clientKey: null,
+    });
+
+    await fixture.service.connect('https://router.example/', 'meka-user', 'secret');
+
+    await expect(fixture.service.getPluginRegistryAccess()).resolves.toEqual({
+      baseUrl: 'https://router.example',
+      clientKey: 'client-key',
+    });
+
+    await fixture.service.disconnect();
+    await expect(fixture.service.getPluginRegistryAccess()).resolves.toEqual({
+      baseUrl: DEFAULT_MEKA_MCPROUTER_URL.replace(/\/+$/, ''),
+      clientKey: null,
+    });
+  });
+
+  it('uses a saved custom Router origin anonymously when no binding exists', async () => {
+    const fixture = setup({ routerUrl: 'https://public-router.example/' });
+
+    await expect(fixture.service.getPluginRegistryAccess()).resolves.toEqual({
+      baseUrl: 'https://public-router.example',
+      clientKey: null,
+    });
   });
 
   it('keeps MCPRouter login successful when optional MekaDesign route discovery fails', async () => {
@@ -375,6 +431,120 @@ describe('MekaRouterService', () => {
       custom: 'keep',
       projectRemoteInstanceIds: { 'project-1': ['instance-1'] },
     });
+  });
+
+  it('previews an owned Plugin and publishes a confirmed immutable update with synchronized access', async () => {
+    const fixture = setup({ routerUrl: 'https://router.example' });
+    fixture.secrets.set('meka.router.sessionToken', 'session-token');
+    fixture.secrets.set('meka.router.clientKey', 'client-key');
+    const existing = {
+      id: 'plugin-resource',
+      ghostId: 'demo-plugin',
+      visibility: 'private' as const,
+      sharedUsernames: [],
+      currentRelease: {
+        id: 'release-1',
+        version: '1.0.0',
+        sha256: 'a'.repeat(64),
+        sizeBytes: 4,
+        publishedAt: '2026-07-29T00:00:00.000Z',
+      },
+    };
+    const updated = {
+      ...existing,
+      visibility: 'shared' as const,
+      sharedUsernames: ['alice'],
+      currentRelease: { ...existing.currentRelease, id: 'release-2', version: '2.0.0' },
+    };
+    vi.mocked(fixture.client.listOwnedMekaPlugins).mockResolvedValue([existing]);
+    vi.mocked(fixture.client.uploadMekaPlugin).mockResolvedValue(updated);
+    vi.mocked(fixture.client.setMekaPluginAccess).mockResolvedValue(updated);
+
+    await expect(fixture.service.getMekaPluginUploadInfo('demo-plugin', '2.0.0')).resolves.toEqual({
+      pluginId: 'demo-plugin',
+      version: '2.0.0',
+      existing: {
+        pluginResourceId: 'plugin-resource',
+        currentReleaseId: 'release-1',
+        currentVersion: '1.0.0',
+        visibility: 'private',
+        sharedUsernames: [],
+      },
+    });
+    await expect(
+      fixture.service.uploadMekaPlugin(
+        new Uint8Array([1, 2, 3, 4]),
+        'demo-plugin',
+        '2.0.0',
+        'shared',
+        ['alice', 'alice'],
+        'release-1',
+      ),
+    ).resolves.toEqual({
+      pluginId: 'demo-plugin',
+      version: '2.0.0',
+      visibility: 'shared',
+      releasePublished: true,
+    });
+    expect(fixture.client.uploadMekaPlugin).toHaveBeenCalledWith(
+      'https://router.example',
+      'session-token',
+      expect.any(Uint8Array),
+      'plugin-resource',
+    );
+    expect(fixture.client.setMekaPluginAccess).toHaveBeenCalledWith(
+      'https://router.example',
+      'session-token',
+      'plugin-resource',
+      'shared',
+      ['alice'],
+    );
+  });
+
+  it('synchronizes access without overwriting an existing immutable version', async () => {
+    const fixture = setup({ routerUrl: 'https://router.example' });
+    fixture.secrets.set('meka.router.sessionToken', 'session-token');
+    fixture.secrets.set('meka.router.clientKey', 'client-key');
+    const existing = {
+      id: 'plugin-resource',
+      ghostId: 'demo-plugin',
+      visibility: 'private' as const,
+      sharedUsernames: [],
+      currentRelease: {
+        id: 'release-1',
+        version: '1.0.0',
+        sha256: 'a'.repeat(64),
+        sizeBytes: 4,
+        publishedAt: '2026-07-29T00:00:00.000Z',
+      },
+    };
+    vi.mocked(fixture.client.listOwnedMekaPlugins).mockResolvedValue([existing]);
+    vi.mocked(fixture.client.setMekaPluginAccess).mockResolvedValue({
+      ...existing,
+      visibility: 'public',
+    });
+
+    await expect(
+      fixture.service.uploadMekaPlugin(
+        new Uint8Array([1]),
+        'demo-plugin',
+        '1.0.0',
+        'public',
+        [],
+        'release-1',
+      ),
+    ).resolves.toMatchObject({
+      visibility: 'public',
+      releasePublished: false,
+    });
+    expect(fixture.client.uploadMekaPlugin).not.toHaveBeenCalled();
+    expect(fixture.client.setMekaPluginAccess).toHaveBeenCalledWith(
+      'https://router.example',
+      'session-token',
+      'plugin-resource',
+      'public',
+      [],
+    );
   });
 
   it('exposes only project-bound tools and authorizes every high-risk call', async () => {

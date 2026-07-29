@@ -2,7 +2,7 @@
 // GhostPanelBubbleLayer:最小化气泡的渲染 / 点击恢复(先缩没后还原) /
 // 拖后吞点击 / detach 隐藏。
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 import type { GhostManifest, InstalledGhost } from '../../../shared/ghost';
 import {
@@ -14,6 +14,10 @@ import {
   __resetGhostPanelWindowsStateForTest,
   __setGhostPanelWindowsStateForTest,
 } from '../../lib/ghostPanelWindowState';
+import {
+  __resetGhostPanelPresentationPreferenceForTest,
+  setGhostPanelModalPresentationEnabled,
+} from '../../lib/ghostPanelPresentationPreference';
 import { __resetInstalledGhostsStoreForTest } from '../useInstalledGhosts';
 import { GhostPanelBubbleLayer } from '../GhostPanelBubbleLayer';
 
@@ -52,6 +56,7 @@ afterEach(() => {
   cleanup();
   __resetGhostPanelBubbleStateForTest();
   __resetGhostPanelWindowsStateForTest();
+  __resetGhostPanelPresentationPreferenceForTest();
   __resetInstalledGhostsStoreForTest();
   delete (window as unknown as { electronAPI?: unknown }).electronAPI;
 });
@@ -114,5 +119,16 @@ describe('GhostPanelBubbleLayer', () => {
     minimizeGhostPanel('a');
     render(<GhostPanelBubbleLayer />);
     expect(screen.queryByTestId('ghost-panel-bubble-a')).toBeNull();
+  });
+
+  it('Modal 展示模式隐藏停靠面板气泡，关闭后恢复原最小化记忆', () => {
+    stubGhostsBridge([ghost('a')]);
+    minimizeGhostPanel('a');
+    setGhostPanelModalPresentationEnabled(true);
+    render(<GhostPanelBubbleLayer />);
+    expect(screen.queryByTestId('ghost-panel-bubble-a')).toBeNull();
+
+    act(() => setGhostPanelModalPresentationEnabled(false));
+    expect(screen.getByTestId('ghost-panel-bubble-a')).toBeTruthy();
   });
 });

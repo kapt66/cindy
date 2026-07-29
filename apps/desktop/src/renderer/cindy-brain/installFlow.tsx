@@ -63,6 +63,8 @@ interface InstallFlowDeps {
   getSidebarSessionId?: () => string | null;
   /** 打开/聚焦插件页签;缺省 openGhostTabInSidebar,测试注入用。 */
   openGhostTab?: (sessionId: string, ghostId: string) => Promise<void>;
+  /** Host-side channel attribution after a successful install or update. */
+  onInstalled?: (ghost: InstalledGhost) => Promise<void>;
 }
 
 /** 意识装入/更新确认框统一宽度:权限清单是富内容,默认 400px 折行到累。 */
@@ -107,6 +109,12 @@ async function confirmAndRunUpdate(
   try {
     const { ghost } = await window.electronAPI.ghosts.update(lizFilePath, {
       expectedPackageSha256: packageSha256,
+    });
+    await deps.onInstalled?.(ghost).catch((err) => {
+      installFlowLog.warn('record plugin channel after update failed', {
+        ghostId: ghost.manifest.id,
+        err,
+      });
     });
     toast.success(
       t('settings.ghosts.toast.updated', {
@@ -192,6 +200,12 @@ export async function confirmAndInstallGhost(
     const { ghost } = await window.electronAPI.ghosts.install(lizFilePath, {
       enable,
       expectedPackageSha256: packageSha256,
+    });
+    await deps.onInstalled?.(ghost).catch((err) => {
+      installFlowLog.warn('record plugin channel after install failed', {
+        ghostId: ghost.manifest.id,
+        err,
+      });
     });
     toast.success(
       enable

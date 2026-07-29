@@ -58,7 +58,10 @@ vi.mock('../download.js', () => ({
 import type { VisiblePluginDetail, VisiblePluginSummary } from '@cindy/plugin-protocol';
 
 import { PluginMarketLedger } from '../ledger';
-import { PluginMarketService } from '../service';
+import {
+  PluginMarketService,
+  type PluginMarketServiceOptions,
+} from '../service';
 import type { PluginMarketApi } from '../api';
 
 const roots: string[] = [];
@@ -132,11 +135,15 @@ function detail(item = summary(), slots: ['notify'] | ['notify', 'fs'] = ['notif
   };
 }
 
-function harness(items: VisiblePluginSummary[]) {
+function harness(
+  items: VisiblePluginSummary[],
+  options: PluginMarketServiceOptions = {},
+) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-plugin-service-'));
   roots.push(root);
   const ledger = new PluginMarketLedger(path.join(root, 'ledger.json'));
   const api = {
+    isConfigured: vi.fn(async () => runtime.pluginApiBaseUrl !== null),
     listAll: vi.fn(async () => items),
     detail: vi.fn(async (pluginId: string) => {
       const item = items.find((candidate) => candidate.id === pluginId);
@@ -153,11 +160,44 @@ function harness(items: VisiblePluginSummary[]) {
   return {
     api,
     ledger,
-    service: new PluginMarketService(api as unknown as PluginMarketApi, ledger),
+    service: new PluginMarketService(
+      api as unknown as PluginMarketApi,
+      ledger,
+      options,
+    ),
   };
 }
 
 describe('PluginMarketService migration and defaultInstall', () => {
+  it('can disable Cindy legacy adoption and default installs for an independent channel', async () => {
+    const legacy = summary({
+      id: `c${'b'.repeat(24)}`,
+      ghostId: 'cindy-legacy',
+    });
+    const defaultPlugin = summary({
+      id: `c${'c'.repeat(24)}`,
+      ghostId: 'cindy-default',
+      defaultInstall: true,
+    });
+    runtime.ghosts = [{
+      manifest: manifest(legacy.ghostId),
+      dir: 'C:\\plugins\\cindy-legacy',
+      enabled: true,
+    }];
+    const h = harness([legacy, defaultPlugin], {
+      adoptLegacyInstallations: false,
+      applyDefaultInstalls: false,
+    });
+
+    await expect(h.service.snapshot()).resolves.toMatchObject({
+      unavailableReason: null,
+    });
+
+    expect(h.ledger.installationForGhost(legacy.ghostId)).toBeNull();
+    expect(h.ledger.installationForGhost(defaultPlugin.ghostId)).toBeNull();
+    expect(runtime.install).not.toHaveBeenCalled();
+  });
+
   it('passes the optional release icon metadata to renderer-safe market items', async () => {
     const icon = {
       mimeType: 'image/png',
@@ -230,13 +270,13 @@ describe('PluginMarketService migration and defaultInstall', () => {
   });
 
   it('reports missing market configuration before requiring authentication', async () => {
-    runtime.pluginApiBaseUrl = null;
     runtime.session = {
       mode: 'signed-out',
       dataOwnerId: null,
       generation: 2,
     };
     const h = harness([summary()]);
+    h.api.isConfigured.mockResolvedValue(false);
 
     await expect(h.service.snapshot()).resolves.toEqual({
       items: [],
@@ -512,6 +552,30 @@ describe('PluginMarketService migration and defaultInstall', () => {
     await complete?.();
     expect(h.ledger.installationForGhost(item.ghostId)?.installed).toBe(false);
     expect(h.ledger.isDefaultInstallSuppressed('user-1', item.id)).toBe(true);
+  });
+
+  it('reports only locally present installs owned by this channel ledger', async () => {
+    const item = summary();
+    runtime.ghosts = [
+      {
+        manifest: manifest(item.ghostId),
+        dir: `/userData/cindy-brain/${item.ghostId}`,
+        enabled: true,
+      },
+    ];
+    const h = harness([item]);
+    h.ledger.upsertInstallation(recordForTest(item));
+    h.ledger.upsertInstallation({
+      ...recordForTest(
+        summary({
+          id: `c${'b'.repeat(24)}`,
+          ghostId: 'missing-runtime-plugin',
+        }),
+      ),
+      ghostId: 'missing-runtime-plugin',
+    });
+
+    await expect(h.service.installedGhostIds()).resolves.toEqual([item.ghostId]);
   });
 
   it('records local-mode defaultInstall opt-out under the local owner', async () => {

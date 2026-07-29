@@ -21,6 +21,7 @@ import {
 import {
   assertMekaReleaseTargetIsolation,
   validateMekaReleaseCdnBaseUrl,
+  validateMekaS3Endpoint,
   validateReleaseRegions,
 } from "../../apps/desktop/scripts/ci/release-regions.mjs";
 import {
@@ -314,18 +315,22 @@ test("dedicated cindy-meka bucket may publish at bucket root without a duplicate
   );
 });
 
-test("intranet HTTP release roots require an explicit opt-in", () => {
-  const url = "http://172.25.135.168:1011/cindy-meka";
-  assert.throws(() =>
-    validateMekaReleaseCdnBaseUrl(url, { allowInsecure: false }),
+test("Cindy Meka release roots are HTTPS-only", () => {
+  assert.throws(
+    () => validateMekaReleaseCdnBaseUrl("http://insecure.example.test/cindy-meka"),
+    /必须使用 HTTPS/,
   );
   assert.equal(
-    validateMekaReleaseCdnBaseUrl(`${url}/`, { allowInsecure: true }),
-    url,
+    validateMekaReleaseCdnBaseUrl("https://s3.meka.pawdy.fun/cindy-meka/"),
+    "https://s3.meka.pawdy.fun/cindy-meka",
+  );
+  assert.throws(
+    () => validateMekaS3Endpoint("http://insecure.example.test"),
+    /无凭证的 HTTPS URL/,
   );
   assert.equal(
-    validateMekaReleaseCdnBaseUrl("https://cdn.example.test/cindy-meka"),
-    "https://cdn.example.test/cindy-meka",
+    validateMekaS3Endpoint("https://s3.meka.pawdy.fun/"),
+    "https://s3.meka.pawdy.fun",
   );
 });
 

@@ -22,17 +22,17 @@
 
 ## 事实来源
 
-| 内容 | 权威来源 |
-|---|---|
-| 编写手册（作者唯一教材，现拿现读） | `apps/desktop/src/main/cindy-brain/forge.ts` 的 `FORGE_GUIDE`，经 `ghost_forge_guide` 工具下发 |
-| 身份卡字段与校验、管子协议类型 | `apps/desktop/src/shared/ghost.ts`（`validateGhostManifest`、`cindy.send` / `cindy.onHostMessage` 类型） |
-| 打包限制 | `apps/desktop/src/main/cindy-brain/forge.ts` 的 `packGhostDir` |
-| 运行时、沙箱进程与生命周期 | `apps/desktop/src/main/cindy-brain/runtime/GhostRuntime.ts`、`GhostManager.ts` |
+| 内容                                            | 权威来源                                                                                                         |
+| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| 编写手册（作者唯一教材，现拿现读）              | `apps/desktop/src/main/cindy-brain/forge.ts` 的 `FORGE_GUIDE`，经 `ghost_forge_guide` 工具下发                   |
+| 身份卡字段与校验、管子协议类型                  | `apps/desktop/src/shared/ghost.ts`（`validateGhostManifest`、`cindy.send` / `cindy.onHostMessage` 类型）         |
+| 打包限制                                        | `apps/desktop/src/main/cindy-brain/forge.ts` 的 `packGhostDir`                                                   |
+| 运行时、沙箱进程与生命周期                      | `apps/desktop/src/main/cindy-brain/runtime/GhostRuntime.ts`、`GhostManager.ts`                                   |
 | 能力 slot（网络／通知／文件系统／技能／宿主等） | `apps/desktop/src/main/cindy-brain/networkSlot.ts`、`notifySlot.ts`、`fsSlot.ts`、`cindySlot.ts`、`skillSlot.ts` |
-| 面板供片、注入主题 token 与协议 | `apps/desktop/src/renderer/cindy-brain/ghostPanelTheme.ts`、`cindy-ghost://` 分支 |
-| 权限注入／更新确认 UI | `apps/desktop/src/renderer/cindy-brain/GhostPermissionList.tsx` |
-| 远程／手机版能力准入白名单 | `packages/device-link/src/allowlist.ts` |
-| 行为与安全不变量 | `apps/desktop/src/main/cindy-brain/__tests__/`、`forge.test.ts` |
+| 面板供片、注入主题 token 与协议                 | `apps/desktop/src/renderer/cindy-brain/ghostPanelTheme.ts`、`cindy-ghost://` 分支                                |
+| 权限注入／更新确认 UI                           | `apps/desktop/src/renderer/cindy-brain/GhostPermissionList.tsx`                                                  |
+| 远程／手机版能力准入白名单                      | `packages/device-link/src/allowlist.ts`                                                                          |
+| 行为与安全不变量                                | `apps/desktop/src/main/cindy-brain/__tests__/`、`forge.test.ts`                                                  |
 
 文档与实现冲突时以代码为准，但必须在同一改动内同步修正本文与手册。
 
@@ -95,6 +95,72 @@
   宿主绝对路径或不必要的字节暴露给沙箱**。媒体字节须走
   [`media-storage-and-protocols.md`](media-storage-and-protocols.md) 的统一入库。
 - 面板供片与注入的主题 token 只用 `ghostPanelTheme.ts` 白名单内的值，不扩大暴露面。
+- 已安装且声明 `panel` 的插件在列表卡片与详情页统一显示「打开界面」。默认仍按 manifest 的
+  `panel.position` 使用既有停靠／页签宿主；Meka 助理设置可写入本机界面 override，把停靠
+  面板改为覆盖主页面 90% 宽高的 Modal。Modal 必须复用 `GhostChipPanelBody`、原插件专属
+  partition、`cindy-ghost://` 供片、主题注入、崩溃接管和媒体右键链路，不得另建放宽权限的
+  WebView。Modal 模式只隐藏停靠面板与气泡，布局树、最小化位置和重装复活记忆保持不变；
+  关闭 override 后原位恢复。Modal 内的面板 WebView 必须在 `dom-ready` 后接管键盘焦点，
+  确保插件内的树、列表及快捷键能收到真实键盘输入；停靠与页签宿主不得在重载时主动抢焦点。
+  用户关闭一个已经打开的 Modal 时，宿主只把 Modal 与遮罩切为不可见、不可交互，必须保留
+  原沙箱 WebView 的挂载，使插件内选择、滚动、输入和在途请求继续存在；再次打开同一插件
+  复用该实例。插件被停用／卸载、内容 revision 更新或所属页面真正卸载时仍按原生命周期
+  销毁并重建。逻辑沙箱与 Node worker 本来独立于面板 WebView，Modal 显隐不得改变其后台
+  生命周期。隐藏态内容更新不得抢走宿主焦点；重新显示时应把焦点交回已保活的 WebView，
+  不要求用户先点击面板才能继续键盘操作。该设置不改变 `ghost.json` 作者契约。
+
+### 4.1 Meka 开发目录模式
+
+- “Meka 插件”页可由用户显式选择一个本地源码目录并登记为开发插件。目录绝对路径只写入
+  当前 data owner 的 `cindy-brain/.meka-dev-plugins.json`，不写市场来源账本、不上传
+  MCPRouter，也不进入插件 manifest；普通 Cindy“插件”页不提供该入口。
+- 开发副本不得占用源码 manifest 的原始插件 ID。Host 为其派生不超过 32 字符的稳定
+  `meka-dev-*` runtime ID，并在临时包内只改写 `id`；若源码声明 slash command，则同步
+  派生带摘要的独立 DEV command。注册表同时保存 `pluginId` 与 `runtimeId`，Renderer 只用
+  runtime ID 做运行时操作，展示仍使用原始 plugin ID。由此远端未安装卡、正式安装卡和
+  开发卡可按原市场规则共存：开发副本既不把远端版本判成“已安装”，也不覆盖或隐藏正式版。
+  开发卡片、快捷入口和详情图标必须显示使用语义颜色 token 的斜向 `DEV` 角标。
+- 目录首次登记必须展示与正式安装相同的 manifest、信任等级和权限清单，并取得一次明确
+  确认。确认必须绑定到已检查快照的稳定内容指纹（排序后的包内路径与逐文件内容），安装
+  前重新打包不一致时以 `PRECONDITION_FAILED` 拒绝并要求用户重新选择；不得仅凭目录路径
+  接受确认后的替换。确认还须绑定 data owner 与 session generation，换号或重新登录后不得
+  复用旧确认。登记后即表示用户持续信任该目录的后续内容变更；不得把任意外部路径、磁盘
+  根目录或同 ID 的正式安装静默转为开发来源。
+- watcher 必须运行在既有隔离的 watcher utility process。源码变更经 debounce 后打包到
+  OS 临时目录，再交给 `GhostManager.inspect` 与原子 install/update 链路；不得让沙箱直接
+  从源码目录执行，也不得为开发模式绕过包大小、manifest、保留 ID、token broker 或权限
+  校验。原始源码包须先完成签名／信任检查；Host 改写 runtime ID 与 command 后，原签名已
+  不再对应派生包字节，必须移除该失效签名并把派生包按未签名开发快照再次完整检查，不得
+  携带虚假的签名信任声明。Main 须静态引用无副作用的 watcher client singleton，真实
+  Electron `before-quit` 释放由 Desktop bootstrap 统一接线；不得在 Ghost IPC 注册路径恢复
+  运行时动态 import。临时 `.cindy` 必须在每次尝试后清理。
+- 开发目录绑定期间插件 ID 固定；若 manifest 改 ID，自动更新 fail closed，用户须移除后
+  重新登记。打包或更新失败只把开发条目标为错误，继续保留最后一次成功安装的快照。
+- v1 开发注册表曾直接用原始插件 ID 安装快照；读取时须迁移到 v2 双 ID 记录。先成功安装
+  独立 runtime 副本，再清理旧 ID 快照，避免迁移失败时先删除最后可用版本。
+- 同版本内容更新成功后，逻辑沙箱／Node／Agent slot 按正常更新生命周期重启；已经可见的
+  panel/settings WebView 通过专用 content revision 事件重建，确保 HTML/CSS/JS 变化即时
+  生效。该事件只负责本机可见界面刷新，不进入 device-link 协议。
+- 移除开发插件先停止监听和 debounce，排空该 runtime 已进入队列或正在执行的同步链，再
+  走标准卸载与清理，确保卸载是最后一次安装态 mutation；若卸载失败，恢复监听并保留
+  注册记录。切换 data owner 时同样必须排空旧 owner 同步并停止 watcher，再加载新 owner
+  注册表。
+- 开发插件卡片按 manifest 能力显示直接动作：只有声明 `panel` 才显示“打开界面”，只有
+  声明 `command` 才显示“使用”；没有直接能力时回落到“详情”。开发卡另显示“打包”，
+  打开 Host 托管的打包弹窗。弹窗始终允许把**原始源码身份**（不是 `meka-dev-*` 派生
+  身份）打成 `.cindy` 保存到用户选择的位置；上传动作在所有状态下保持同一位置，只有完整
+  MCPRouter 绑定存在时才启用。未绑定时弹窗提供“配置登录”，原位复用“设置 → Meka 助理”
+  的既有 MCPRouter 配置弹窗；登录完成后不得关闭或跳离打包流程，而应立即启用上传供用户
+  继续操作。弹窗展示源码 manifest 版本，并从 MCPRouter owner API 回填“仅自己／部分
+  可见／公开”权限及部分可见用户名；发布或单独保存权限后通过 `/access` 将完整权限设置
+  同步回后台。远端已存在该插件且源码版本不同时，发布前必须显示当前／目标版本并二次
+  确认；版本相同时不得覆盖不可变 Release，只允许同步权限，并提示提升版本后再发布内容。
+  owner API 返回空列表表示尚未发布，必须进入首次上传，不得显示读取失败；保存的 Router
+  session 返回 401 时表示登录已失效，弹窗应保留本地打包并原位提供“配置登录”。
+  上传使用 Main 内的 Router session cookie 经 HTTPS 调管理 API，包字节与凭证均不得进入
+  Renderer。MCPRouter 已停用 HTTP 与裸 IP 入口，任何历史 HTTP 或裸 IP base 在运行期统一
+  迁移到 `https://mcpr.meka.pawdy.fun/`，不得保留明文认证或证书主机名不匹配的例外。
+  每次上传产生不可覆盖的 Release；未配置 Router 时不得尝试远端写操作。
 
 ## 5. 作者契约与编写手册同步
 
@@ -109,6 +175,11 @@
 - (c) 模型能力 slot 的 kind／参数／模型白名单；
 - (d) 面板供片协议与注入的主题 token（`cindy-ghost://` 分支、`ghostPanelTheme.ts` 白名单）；
 - (e) 打包限制（`forge.ts` 的 `packGhostDir`）。
+
+`ghost_forge_pack` 的可选 `channel: 'meka'` 是 Host 创建入口下发的一次性安装归属，
+不是插件能力、权限或身份卡字段。只有明确来自 Meka 创建任务的调用可携带它，且只在
+用户确认安装或更新成功后写入 Meka 独立账本；不得写入 `ghost.json`，普通 Forge、
+拖入和双击安装也不得自行推断 Meka 归属。
 
 反向同样成立：改校验必须同步手册；改手册宣称的新能力必须真有实现。`forge.test.ts` 的
 关键章节存在性测试只是最低闸，不替代逐条人工核对。

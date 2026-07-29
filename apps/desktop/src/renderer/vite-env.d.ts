@@ -221,7 +221,8 @@ type VoiceInputModelSelectionResultData = {
     auth: 'api-key' | 'codex';
     settingsTab: 'api-keys' | 'connections' | 'providers';
     error?: string;
-    failureReason?: 'custom-asr-config-missing' | 'custom-asr-key-missing' | 'codex-realtime-unsupported';
+    failureReason?:
+      'custom-asr-config-missing' | 'custom-asr-key-missing' | 'codex-realtime-unsupported';
   };
   customAsrApiKeyConfigured: boolean;
 };
@@ -232,8 +233,10 @@ type LocalThemeWriteResult = import('../shared/local-themes').LocalThemeWriteRes
 type ImDefaultSettingsPatch = import('../shared/imDefaultSettings').ImDefaultSettingsPatch;
 type ImDefaultSettingsState = import('../shared/imDefaultSettings').ImDefaultSettingsState;
 type ImDefaultSettingsChannel = import('../shared/imDefaultSettings').ImDefaultSettingsChannel;
-type SubagentModelSettingsPatch = import('../shared/subagentModelSettings').SubagentModelSettingsPatch;
-type SubagentModelSettingsState = import('../shared/subagentModelSettings').SubagentModelSettingsState;
+type SubagentModelSettingsPatch =
+  import('../shared/subagentModelSettings').SubagentModelSettingsPatch;
+type SubagentModelSettingsState =
+  import('../shared/subagentModelSettings').SubagentModelSettingsState;
 
 interface VoiceInputShortcut {
   trigger?: 'keyboard' | 'modifier';
@@ -1059,8 +1062,14 @@ interface ElectronAPI {
      */
     cindyPrefsSync: (id: string) => {
       overrides: Record<string, string>;
-      image: { options: Array<{ id: string; label: string }>; defaultModel: { id: string; label: string } | null };
-      video: { options: Array<{ id: string; label: string }>; defaultModel: { id: string; label: string } | null };
+      image: {
+        options: Array<{ id: string; label: string }>;
+        defaultModel: { id: string; label: string } | null;
+      };
+      video: {
+        options: Array<{ id: string; label: string }>;
+        defaultModel: { id: string; label: string } | null;
+      };
     };
     /** 写/清一项覆盖(model=null 即恢复跟随默认);返回该意识最新覆盖表。 */
     setCindyPref: (
@@ -1089,11 +1098,16 @@ interface ElectronAPI {
       id: string,
       disabled: boolean,
     ) => Promise<{ disabled: string[] }>;
-    /** 双击 .cindy 的待装路径,原子取走(取即清空;无则 null)。 */
-    takePendingInstall: () => Promise<{ filePath: string | null }>;
+    /** .cindy 待装请求,原子取走；channel 是宿主一次性归属，不来自插件清单。 */
+    takePendingInstall: () => Promise<{
+      filePath: string | null;
+      channel: 'meka' | null;
+    }>;
     onChanged: (
       callback: (payload: { ghosts: import('../shared/ghost').InstalledGhost[] }) => void,
     ) => () => void;
+    /** 开发目录完成原子同步后，要求同 ID 的可见界面重新装载内容。 */
+    onContentReloaded: (callback: (payload: { id: string }) => void) => () => void;
     /** Host 校验 setup action 后请求打开固定的本地配置入口。 */
     onSetupNavigate: (
       callback: (
@@ -1247,8 +1261,12 @@ interface ElectronAPI {
     runtimeStates: () => Promise<{ states: Record<string, string> }>;
     /** 面板错误态「重载意识」:清熔断记账 + 重新拉起沙箱。 */
     reload: (id: string) => Promise<{ state: string }>;
-    legacyRecoveryStatus: () => Promise<import('../shared/legacyGhostRecovery').LegacyGhostRecoveryStatus>;
-    retryLegacyRecovery: () => Promise<import('../shared/legacyGhostRecovery').LegacyGhostRecoveryStatus>;
+    legacyRecoveryStatus: () => Promise<
+      import('../shared/legacyGhostRecovery').LegacyGhostRecoveryStatus
+    >;
+    retryLegacyRecovery: () => Promise<
+      import('../shared/legacyGhostRecovery').LegacyGhostRecoveryStatus
+    >;
     /** dev-only 运行时控制(packaged 版 main 侧不注册,调用会 reject)。 */
     devRuntime: (
       action: 'status' | 'spawn' | 'stop' | 'crash',
@@ -1256,17 +1274,46 @@ interface ElectronAPI {
     ) => Promise<{ states?: Record<string, string>; state?: string }>;
   };
 
+  /** Meka 专属开发目录登记簿；不写 Cindy / Meka 市场来源账本。 */
+  mekaDevPlugins: {
+    list: () => Promise<{ items: import('../shared/mekaDevPlugin').MekaDevPluginItem[] }>;
+    pick: () => Promise<import('../shared/mekaDevPlugin').MekaDevPluginPickResult>;
+    install: (
+      request: import('../shared/mekaDevPlugin').MekaDevPluginInstallRequest,
+    ) => Promise<import('../shared/mekaDevPlugin').MekaDevPluginInstallResult>;
+    package: (id: string) => Promise<import('../shared/mekaDevPlugin').MekaDevPluginPackageResult>;
+    uploadInfo: (id: string) => Promise<import('../shared/mekaDevPlugin').MekaDevPluginUploadInfo>;
+    upload: (
+      request: import('../shared/mekaDevPlugin').MekaDevPluginUploadRequest,
+    ) => Promise<import('../shared/mekaDevPlugin').MekaDevPluginUploadResult>;
+    remove: (id: string) => Promise<{ ok: true }>;
+    onChanged: (
+      callback: (payload: { items: import('../shared/mekaDevPlugin').MekaDevPluginItem[] }) => void,
+    ) => () => void;
+  };
+
   /** Plugin Protocol v2 市场；网络、下载与安装全部在 main 进程完成。 */
   pluginMarket: {
     snapshot: () => Promise<import('../shared/pluginMarket').PluginMarketSnapshot>;
-    detail: (
-      pluginId: string,
-    ) => Promise<import('../shared/pluginMarket').PluginMarketDetail>;
+    detail: (pluginId: string) => Promise<import('../shared/pluginMarket').PluginMarketDetail>;
     install: (
       pluginId: string,
       options: { expectedReleaseId: string; allowPermissionExpansion?: boolean },
     ) => Promise<{ ghost: import('../shared/ghost').InstalledGhost }>;
     uninstall: (pluginId: string) => Promise<{ ok: true }>;
+    markLocalInstall: (ghostId: string, expectedOwnerId: string) => Promise<{ ok: true }>;
+  };
+  /** MCPRouter-backed Meka Plugin channel with an independent provenance ledger. */
+  mekaPluginMarket: {
+    snapshot: () => Promise<import('../shared/pluginMarket').PluginMarketSnapshot>;
+    installedGhostIds: () => Promise<string[]>;
+    detail: (pluginId: string) => Promise<import('../shared/pluginMarket').PluginMarketDetail>;
+    install: (
+      pluginId: string,
+      options: { expectedReleaseId: string; allowPermissionExpansion?: boolean },
+    ) => Promise<{ ghost: import('../shared/ghost').InstalledGhost }>;
+    uninstall: (pluginId: string) => Promise<{ ok: true }>;
+    markLocalInstall: (ghostId: string, expectedOwnerId: string) => Promise<{ ok: true }>;
   };
   voiceInput: {
     prewarm: (payload?: {
@@ -1311,28 +1358,28 @@ interface ElectronAPI {
       settingsTab: 'api-keys' | 'connections' | 'providers';
       error?: string;
       authErrorReason?: string;
-      failureReason?: 'custom-asr-config-missing' | 'custom-asr-key-missing' | 'codex-realtime-unsupported';
+      failureReason?:
+        'custom-asr-config-missing' | 'custom-asr-key-missing' | 'codex-realtime-unsupported';
     }>;
-    getReadinessCached: () =>
-      | {
-          ok: boolean;
-          serviceMode: VoiceInputServiceModeData;
-          provider:
-            | 'custom-realtime-asr'
-            | 'elevenlabs-scribe-realtime'
-            | 'openai-realtime-whisper'
-            | 'litellm-gpt-realtime-whisper'
-            | 'litellm-qwen3-asr-flash-realtime'
-            | 'litellm-volcengine-sauc-asr'
-            | 'litellm-batch';
-          providerModel: string;
-          auth: 'api-key' | 'codex';
-          settingsTab: 'api-keys' | 'connections' | 'providers';
-          error?: string;
-          authErrorReason?: string;
-          failureReason?: 'custom-asr-config-missing' | 'custom-asr-key-missing' | 'codex-realtime-unsupported';
-        }
-      | null;
+    getReadinessCached: () => {
+      ok: boolean;
+      serviceMode: VoiceInputServiceModeData;
+      provider:
+        | 'custom-realtime-asr'
+        | 'elevenlabs-scribe-realtime'
+        | 'openai-realtime-whisper'
+        | 'litellm-gpt-realtime-whisper'
+        | 'litellm-qwen3-asr-flash-realtime'
+        | 'litellm-volcengine-sauc-asr'
+        | 'litellm-batch';
+      providerModel: string;
+      auth: 'api-key' | 'codex';
+      settingsTab: 'api-keys' | 'connections' | 'providers';
+      error?: string;
+      authErrorReason?: string;
+      failureReason?:
+        'custom-asr-config-missing' | 'custom-asr-key-missing' | 'codex-realtime-unsupported';
+    } | null;
     getModelSelection: () => Promise<VoiceInputModelSelectionResultData>;
     setModelSelection: (patch: {
       serviceMode?: VoiceInputServiceModeData | null;
@@ -1395,9 +1442,7 @@ interface ElectronAPI {
     onGlobalOverlayCommand: (
       callback: (command: { type: 'start' | 'submit' | 'cancel' }) => void,
     ) => () => void;
-    adviseDictionaryLearning: (
-      payload: VoiceInputDictionaryAdviceInput,
-    ) => Promise<
+    adviseDictionaryLearning: (payload: VoiceInputDictionaryAdviceInput) => Promise<
       | {
           ok: true;
           actions: VoiceInputDictionaryLearningAction[];
@@ -1590,9 +1635,7 @@ interface ElectronAPI {
   setAnalyticsEnabled: (enabled: boolean) => Promise<AnalyticsSettingsPayload>;
   resetAnalyticsEnabled: () => Promise<AnalyticsSettingsPayload>;
   acceptPrivacyConsent: () => Promise<AnalyticsSettingsPayload>;
-  onAnalyticsSettingsChange: (
-    callback: (payload: AnalyticsSettingsPayload) => void,
-  ) => () => void;
+  onAnalyticsSettingsChange: (callback: (payload: AnalyticsSettingsPayload) => void) => () => void;
 
   // ── Profile 编辑(设置 → 用户卡片编辑名字 / 头像;直写服务端,跨设备生效) ──
   profileGetState: () => Promise<{
@@ -3580,9 +3623,7 @@ interface ElectronAPI {
         sessionId: string,
         opts?: { limit?: number; before?: string; beforeTs?: number },
       ) => Promise<import('@/lib/ccAgent.types').Message[]>;
-      estimatedSessionValue: (
-        sessionId: string,
-      ) => Promise<{
+      estimatedSessionValue: (sessionId: string) => Promise<{
         totalValueMoney?: import('../shared/regionalMoney').RegionalMoney | null;
         totalValueUsd?: number;
         entries: Array<{
@@ -3704,9 +3745,7 @@ interface ElectronAPI {
     forceKill: (input: { tabId: string; webContentsId?: number }) => Promise<{ ok: true }>;
     /** main → renderer:资源看门狗事件(evict-request / kill-notice / cpu-alert)。 */
     onResourceEvent: (
-      cb: (
-        event: import('../shared/rsbBrowserBridge').RsbBrowserBridgeResourceEvent,
-      ) => void,
+      cb: (event: import('../shared/rsbBrowserBridge').RsbBrowserBridgeResourceEvent) => void,
     ) => () => void;
   };
 
@@ -4272,9 +4311,7 @@ interface ElectronAPI {
     }) => Promise<void>;
 
     /** 快照:某会话当前挂起交互(permission/ask/plan),打开/重连/刷新会话时拉一次重建面板。 */
-    getPendingInteractions: (
-      sessionId: string,
-    ) => Promise<
+    getPendingInteractions: (sessionId: string) => Promise<
       Array<{
         request: { kind: string; requestId: string; [k: string]: unknown };
         persistId?: string;
@@ -4408,9 +4445,7 @@ interface ElectronAPI {
       defaultEnabled?: boolean;
     }>;
     /** Takes effect immediately for proxy recovery. */
-    silentEncryptedRetrySet: (
-      enabled: boolean,
-    ) => Promise<{
+    silentEncryptedRetrySet: (enabled: boolean) => Promise<{
       enabled: boolean;
       isCustomized: boolean;
       defaultEnabled: boolean;
@@ -4460,9 +4495,7 @@ interface ElectronAPI {
       defaultAutoSnapshotEnabled: boolean;
     }>;
     /** 立即生效; Codex rewind 入口跟随此开关显示 */
-    gitSafetySet: (
-      enabled: boolean,
-    ) => Promise<{
+    gitSafetySet: (enabled: boolean) => Promise<{
       autoSnapshotEnabled: boolean;
       isCustomized: boolean;
       defaultAutoSnapshotEnabled: boolean;
@@ -4661,23 +4694,22 @@ interface ElectronAPI {
       }>;
       getAccount: (agentKind: 'claude-code' | 'codex') => Promise<unknown | null>;
       /** provider-scoped 模型单价表；XD 价格与 model-access /models 同快照更新。 */
-      getModelPricing: () => Promise<
-        import('../shared/regionalMoney').ModelPricingCatalog | null
-      >;
+      getModelPricing: () => Promise<import('../shared/regionalMoney').ModelPricingCatalog | null>;
       onModelPricingChanged: (
-        cb: (
-          pricing: import('../shared/regionalMoney').ModelPricingCatalog | null,
-        ) => void,
+        cb: (pricing: import('../shared/regionalMoney').ModelPricingCatalog | null) => void,
       ) => () => void;
       /** 用量历史聚合 (首页仪表盘)。wire 形态与 main/usage/usageHistory.ts 的 UsageHistoryPayload 同形。 */
-      getHistory: (
-        opts?: { days?: number; forceRefresh?: boolean },
-      ) => Promise<import('../main/usage/usageHistory').UsageHistoryPayload>;
-      onTodaySpendChanged: (cb: (p: {
-        day: string;
-        money: import('../shared/regionalMoney').RegionalMoney;
-        costUsd?: number;
-      }) => void) => () => void;
+      getHistory: (opts?: {
+        days?: number;
+        forceRefresh?: boolean;
+      }) => Promise<import('../main/usage/usageHistory').UsageHistoryPayload>;
+      onTodaySpendChanged: (
+        cb: (p: {
+          day: string;
+          money: import('../shared/regionalMoney').RegionalMoney;
+          costUsd?: number;
+        }) => void,
+      ) => () => void;
       onTodayTokensChanged: (cb: (p: CodexUsageSnapshot) => void) => () => void;
       onClaudeAccountChanged: (
         cb: (p: {
@@ -4735,9 +4767,7 @@ interface ElectronAPI {
         workingDir: string,
         agentKind: 'claude-code' | 'codex',
       ) => Promise<{ items: CrossAgentMigrationItem[] }>;
-      convert: (
-        items: CrossAgentMigrationItem[],
-      ) => Promise<{
+      convert: (items: CrossAgentMigrationItem[]) => Promise<{
         total: number;
         successCount: number;
         skippedCount: number;

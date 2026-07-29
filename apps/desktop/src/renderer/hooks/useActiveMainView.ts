@@ -28,7 +28,11 @@ interface ViewDef {
 const VIEWS: ViewDef[] = [
   { key: 'cc-agent', to: '/cc-agent', prefixes: ['/cc-agent'] },
   { key: 'issues', to: '/issues', prefixes: ['/issues'] },
-  { key: 'plugins', to: '/plugins', prefixes: ['/plugins', '/skillhub'] },
+  {
+    key: 'plugins',
+    to: '/meka-plugins',
+    prefixes: ['/meka-plugins', '/plugins', '/skillhub'],
+  },
 ];
 
 const DEFAULT_KEY: MainViewKey = 'cc-agent';

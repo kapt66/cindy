@@ -67,6 +67,19 @@ describe('packGhostDir', () => {
     await fs.promises.rm(r.cindyPath, { force: true });
   });
 
+  it('可将产物写入独立输出目录，不污染开发源码目录', async () => {
+    const dir = await makeSrcDir({
+      'ghost.json': JSON.stringify(GOOD_MANIFEST),
+      'main.js': '// brain',
+    });
+    const outputDir = path.join(workDir, 'packed');
+    const r = await packGhostDir(dir, { outputDir });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    if (!r.ok) return;
+    expect(r.cindyPath).toBe(path.join(outputDir, 'demo-1.0.0.cindy'));
+    expect(await fs.promises.readdir(dir)).toEqual(['ghost.json', 'main.js']);
+  });
+
   it('打包跳过开发残留:.git / node_modules / 隐藏文件 / 旧 .cindy 不进包', async () => {
     const dir = await makeSrcDir({
       'ghost.json': JSON.stringify(GOOD_MANIFEST),
@@ -430,6 +443,8 @@ describe('FORGE_GUIDE', () => {
       '沙箱红线',
       'ghost_forge_scaffold',
       'ghost_forge_pack',
+      "channel: 'meka'",
+      'channel 只供 Host',
       'cindy-signatures.json',
       '发布者签名',
       'Cindy 审核签名',

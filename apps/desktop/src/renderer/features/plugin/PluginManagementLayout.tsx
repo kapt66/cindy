@@ -1,5 +1,5 @@
 /**
- * Shared list-page shell for the Plugin and Skill product surfaces.
+ * Shared list-page shell for the Meka Plugin, local Plugin, and Skill product surfaces.
  *
  * Inputs: active tab, shared search state, optional labels with tab-derived defaults, and actions.
  * Outputs: one width, focus-order-aligned adaptive toolbar, scrolling frame, and transitions.
@@ -15,8 +15,10 @@ import { WINDOW_DRAG_STYLE, WINDOW_NO_DRAG_STYLE } from '@/components/layout/win
 import { cn } from '@/lib/utils';
 import './plugin-motion.css';
 
+export type PluginManagementTab = 'meka-plugins' | 'plugins' | 'skills';
+
 interface PluginManagementLayoutProps {
-  activeTab: 'plugins' | 'skills';
+  activeTab: PluginManagementTab;
   children: ReactNode;
   query?: string;
   onQueryChange?: (query: string) => void;
@@ -26,7 +28,7 @@ interface PluginManagementLayoutProps {
 }
 
 interface PluginManagementHeaderProps {
-  activeTab: 'plugins' | 'skills';
+  activeTab: PluginManagementTab;
   children?: ReactNode;
   query?: string;
   onQueryChange?: (query: string) => void;
@@ -40,8 +42,8 @@ interface PluginManagementPageProps {
 }
 
 /**
- * Plugin / Skill 是同一个管理页面的两个一级 Tab。宽度和水平留白只能在
- * 这个 Frame 中定义,避免两个页面各自调整后再次漂移。
+ * Meka Plugin / Plugin / Skill 是同一个管理页面的三个一级 Tab。宽度和
+ * 水平留白只能在这个 Frame 中定义,避免三个页面各自调整后再次漂移。
  */
 export const PLUGIN_MANAGEMENT_FRAME_CLASS = 'mx-auto w-full max-w-[920px] px-8 lg:px-12';
 
@@ -97,10 +99,10 @@ export function PluginManagementHeader({
   const searchInputId = `plugin-management-${activeTab}-search`;
   const resolvedSearchPlaceholder =
     searchPlaceholder ??
-    t(activeTab === 'plugins' ? 'settings.ghosts.page.search' : 'skillhub.home.search');
+    t(activeTab === 'skills' ? 'skillhub.home.search' : 'settings.ghosts.page.search');
   const resolvedClearSearchLabel =
     clearSearchLabel ??
-    t(activeTab === 'plugins' ? 'settings.ghosts.page.clearSearch' : 'skillhub.home.clearSearch');
+    t(activeTab === 'skills' ? 'skillhub.home.clearSearch' : 'settings.ghosts.page.clearSearch');
 
   useLayoutEffect(() => {
     const frame = frameRef.current;
@@ -129,6 +131,11 @@ export function PluginManagementHeader({
         boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--surface-elevated) 24%, transparent)',
       }}
     >
+      <TabButton
+        active={activeTab === 'meka-plugins'}
+        label={t('settings.ghosts.meka.title')}
+        onClick={() => navigate('/meka-plugins')}
+      />
       <TabButton
         active={activeTab === 'plugins'}
         label={t('settings.ghosts.title')}
@@ -224,7 +231,7 @@ export function PluginManagementHeader({
   );
 }
 
-/** Shared breathing room and page-enter hook for both top-level catalogs. */
+/** Shared breathing room and page-enter hook for the three top-level catalogs. */
 export function PluginManagementPage({ children, className }: PluginManagementPageProps) {
   return (
     <div className={cn(PLUGIN_MANAGEMENT_FRAME_CLASS, 'flex flex-col pb-16 pt-8', className)}>

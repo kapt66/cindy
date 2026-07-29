@@ -58,4 +58,23 @@ describe('market Ghost session boundary', () => {
     expect(leaseIndex).toBeGreaterThan(inspectIndex);
     expect(body).toContain('releaseMutation?.();');
   });
+
+  it('keeps Meka development reads and approved installs inside one app session', () => {
+    const start = source.indexOf("ipcMain.handle('meka-dev-plugins:list'");
+    const end = source.indexOf(
+      '\n  // 启动即对账一次 skill 槽链接',
+      start,
+    );
+    const body = source.slice(start, end);
+
+    expect(body).toContain('const expectedOwner = captureGhostMutationOwner();');
+    expect(body).toContain('!isSameAppSession(expectedOwner, getActiveAppSession())');
+    expect(body).toContain('expectedPackageSha256');
+    expect(body).toContain('expectedSessionGeneration');
+    expect(body).toContain('const releaseMutation = beginGhostMutation(expectedOwner);');
+    expect(source).toContain(
+      "import { watcherHostClient } from '../watcher-host/index.js';",
+    );
+    expect(body).not.toContain("await import('../watcher-host/index.js')");
+  });
 });

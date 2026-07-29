@@ -105,7 +105,12 @@
     },
     "meka": {
       "title": "Meka 助理",
-      "description": "管理 Meka 助理的 P4 路径、MCPRouter 与 MekaDesign 连接。",
+      "description": "管理插件界面、P4 路径、MCPRouter 与 MekaDesign 连接。",
+      "pluginPanel": {
+        "title": "插件界面",
+        "description": "开启后，插件界面通过覆盖主页面 90% 宽高的弹窗打开；关闭时继续使用原有停靠面板。",
+        "toggleAria": "使用弹窗打开插件界面"
+      },
       "router": {
         "title": "MCPRouter 连接",
         "description": "连接 MCPRouter 后，Meka 助理对话可使用经路由聚合的全部 MCP 工具。凭证仅保存到操作系统加密存储。",
@@ -2381,6 +2386,69 @@
     "ghosts": {
       "title": "插件",
       "description": "扩展 Cindy 能力的工具与集成。",
+      "meka": {
+        "title": "Meka 插件",
+        "description": "浏览和安装当前 MCPRouter 账号有权访问的插件。",
+        "createWithCindy": "创建 Meka 插件",
+        "createPromptLead": "这是一个 Meka 插件创作任务。Meka 表示插件完成后要通过 MCPRouter 的 Meka 插件渠道发布；调用 ghost_forge_pack 时必须传入 channel: \"meka\"，让客户端记录本次安装的渠道归属。不要在 ghost.json 中自造 Meka 来源字段，来源身份由发布与安装渠道记录。打包完成后，请明确告诉我生成的 .cindy 文件位置，并提示我到 MCPRouter 后台上传。",
+        "dev": {
+          "pickTitle": "选择 Meka 插件开发目录",
+          "loadDirectory": "从目录加载（开发模式）",
+          "badge": "开发模式",
+          "ribbon": "DEV",
+          "syncError": "开发模式 · 同步失败",
+          "confirmTitle": "加载开发插件“{{name}}”？",
+          "confirmDescription": "Cindy Meka 会持续监听并信任此目录。目录内容变更后会自动校验并更新已安装副本；更新失败时继续使用上一个可用版本。",
+          "confirm": "加载并监听",
+          "installed": "已加载开发插件“{{name}}”",
+          "installFailed": "加载开发插件失败",
+          "removeFailed": "移除开发插件失败",
+          "packageAction": "打包",
+          "packageTitle": "打包开发插件“{{name}}”",
+          "packageChecking": "正在检查 MCPRouter 连接状态。你始终可以把当前源码快照打包到本地。",
+          "packageConfigured": "将当前源码快照打包到本地，或作为不可变 Release 上传到已配置的 MCPRouter。",
+          "packageLocalOnly": "尚未配置 MCPRouter。当前仅可将源码快照打包到本地。",
+          "packageLoginRequired": "MCPRouter 登录已失效，请重新配置登录。当前仍可打包到本地。",
+          "packageLocal": "打包到本地",
+          "packaging": "正在打包",
+          "upload": "上传到 MCPRouter",
+          "uploading": "正在上传",
+          "cancel": "取消",
+          "packageDialogTitle": "保存 Meka 插件包",
+          "packageFileType": "Cindy 插件包",
+          "packageSaved": "已将插件“{{name}}”保存到 {{path}}",
+          "packageFailed": "打包插件失败",
+          "uploaded": "已上传插件“{{name}}” v{{version}}",
+          "uploadFailed": "上传插件失败",
+          "configureRouter": "配置登录",
+          "versionLabel": "版本",
+          "permissionLabel": "插件权限",
+          "permissions": {
+            "private": "仅自己",
+            "shared": "部分可见",
+            "public": "公开"
+          },
+          "sharedUsersLabel": "可见用户",
+          "sharedUsersPlaceholder": "输入准确用户名，多个用户名用逗号或换行分隔",
+          "sharedUsersRequired": "部分可见至少需要一个用户名",
+          "checkingPublishInfo": "正在同步 MCPRouter 中的版本和权限…",
+          "publishInfoFailed": "无法读取 MCPRouter 中的版本和权限，请稍后重试",
+          "versionAlreadyExists": "MCPRouter 已存在 v{{currentVersion}}。当前操作只会同步权限；如需发布新内容，请先提升版本号。",
+          "versionUpdate": "MCPRouter 当前为 v{{currentVersion}}，将发布 v{{nextVersion}}。",
+          "syncAccess": "同步权限",
+          "syncingAccess": "正在同步权限",
+          "accessSynced": "插件权限已同步",
+          "updateConfirmTitle": "确认更新插件？",
+          "updateConfirmDescription": "MCPRouter 当前版本为 v{{currentVersion}}，将发布不可覆盖的新版本 v{{nextVersion}}，并同步所选权限。",
+          "updateConfirmAction": "确认更新"
+        },
+        "origin": {
+          "public": "公开",
+          "local": "个人与共享"
+        },
+        "empty": "没有可用的 Meka 插件",
+        "emptyHint": "请先绑定 MCPRouter，或在 MCPRouter 后台上传、公开或分享插件。"
+      },
       "page": {
         "search": "搜索插件",
         "clearSearch": "清除插件搜索",
@@ -2443,7 +2511,7 @@
       },
       "install": "安装插件…",
       "empty": "还没有安装任何插件",
-      "emptyHint": "可从插件市场安装，或点击右上角导入 .cindy 文件",
+      "emptyHint": "可切换到「Meka 插件」安装，或点击右上角导入 .cindy 文件",
       "legacyRecovery": {
         "title": "旧版本插件正在等待恢复",
         "deferred": "检测到 {{count}} 个旧插件目录。为避免其它实例仍在使用这些数据，Cindy 暂缓了自动恢复。",
@@ -2657,6 +2725,9 @@
         "descriptionExpand": "展开",
         "descriptionCollapse": "收起",
         "useAction": "使用",
+        "openPanelAction": "打开界面",
+        "openPanelDisabled": "请先开启插件",
+        "closePanel": "关闭插件界面",
         "useDisabled": "请先开启插件",
         "moreActions": "更多插件操作",
         "updateFromFile": "从 .cindy 文件更新…",
@@ -7356,7 +7427,6 @@
         "cancelFailed": "取消订阅失败，请稍后重试。"
       },
       "topupCard": {
-
         "action": "购买点数"
       }
     },

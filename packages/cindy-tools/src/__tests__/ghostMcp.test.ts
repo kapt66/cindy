@@ -941,13 +941,19 @@ describe("cindy_ghosts · ghost_forge(锻造)", () => {
   });
 
   it("forge_pack 成功透传产物信息;失败标 isError 并带结构化错误", async () => {
-    const okResult = await handleForgePack(fakeDeps(), {
+    const forgePack = vi.fn(fakeDeps().forgePack);
+    const okResult = await handleForgePack(fakeDeps({ forgePack }), {
       dir: "/src/my-ghost",
+      channel: "meka",
     });
     expect(parsePayload(okResult)).toMatchObject({
       ok: true,
       id: "x",
       version: "1.0.0",
+    });
+    expect(forgePack).toHaveBeenCalledWith({
+      dir: "/src/my-ghost",
+      channel: "meka",
     });
 
     const failed = await handleForgePack(

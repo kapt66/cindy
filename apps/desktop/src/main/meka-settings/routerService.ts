@@ -11,11 +11,22 @@ import {
   type MekaRouterTemplate,
   type MekaRouterTool,
 } from '../../shared/meka-router.js';
+import type {
+  MekaDevPluginUploadInfo,
+  MekaDevPluginUploadResult,
+  MekaPluginVisibility,
+} from '../../shared/mekaDevPlugin.js';
 import { createMekaRouterClient, type MekaRouterClient } from './routerClient.js';
 import { classifyMekaRouterToolRisk, type MekaToolRisk } from './mekaRiskPolicy.js';
 import { DEFAULT_MEKA_MCPROUTER_URL } from './config.js';
 
 type JsonRecord = Record<string, unknown>;
+
+function publishError(code: string, message: string): Error {
+  const error = new Error(message);
+  (error as Error & { code: string }).code = code;
+  return error;
+}
 
 export interface MekaRouterHighRiskAuthorization {
   (input: {
@@ -200,7 +211,8 @@ export function createMekaRouterService(deps: MekaRouterServiceDeps) {
 
   async function auth(): Promise<{ baseUrl: string; token: string; clientKey: string }> {
     const raw = await load();
-    const baseUrl = text(raw.routerUrl);
+    const configuredBaseUrl = text(raw.routerUrl);
+    const baseUrl = configuredBaseUrl ? client.normalizeBaseUrl(configuredBaseUrl) : null;
     const token = deps.vault.read(SECRET_KEYS.sessionToken);
     const clientKey = deps.vault.read(SECRET_KEYS.clientKey);
     if (!baseUrl || !token || !clientKey) throw new Error('MCPRouter is not configured');
@@ -260,7 +272,8 @@ export function createMekaRouterService(deps: MekaRouterServiceDeps) {
   return {
     async getSettings(): Promise<MekaRouterSettingsView> {
       const raw = await load();
-      const routerUrl = text(raw.routerUrl);
+      const configuredBaseUrl = text(raw.routerUrl);
+      const routerUrl = configuredBaseUrl ? client.normalizeBaseUrl(configuredBaseUrl) : null;
       const token = deps.vault.read(SECRET_KEYS.sessionToken);
       const clientKey = deps.vault.read(SECRET_KEYS.clientKey);
       let designUrl = deps.vault.read(SECRET_KEYS.mekaDesignUrl);
@@ -352,7 +365,8 @@ export function createMekaRouterService(deps: MekaRouterServiceDeps) {
 
     async disconnect(): Promise<void> {
       const raw = await load();
-      const baseUrl = text(raw.routerUrl);
+      const configuredBaseUrl = text(raw.routerUrl);
+      const baseUrl = configuredBaseUrl ? client.normalizeBaseUrl(configuredBaseUrl) : null;
       const token = deps.vault.read(SECRET_KEYS.sessionToken);
       if (baseUrl && token) await client.logout(baseUrl, token);
       for (const key of [SECRET_KEYS.password, SECRET_KEYS.sessionToken, SECRET_KEYS.clientKey]) {
@@ -583,6 +597,104 @@ export function createMekaRouterService(deps: MekaRouterServiceDeps) {
     async getTunnelAuth(): Promise<{ baseUrl: string; sessionToken: string }> {
       const { baseUrl, token } = await auth();
       return { baseUrl, sessionToken: token };
+    },
+
+    async getMekaPluginUploadInfo(
+      pluginId: string,
+      version: string,
+    ): Promise<MekaDevPluginUploadInfo> {
+      const { baseUrl, token } = await auth();
+      const existing = (await client.listOwnedMekaPlugins(baseUrl, token)).find(
+        (plugin) => plugin.ghostId === pluginId,
+      );
+      return {
+        pluginId,
+        version,
+        existing: existing
+          ? {
+              pluginResourceId: existing.id,
+              currentReleaseId: existing.currentRelease.id,
+              currentVersion: existing.currentRelease.version,
+              visibility: existing.visibility,
+              sharedUsernames: existing.sharedUsernames,
+            }
+          : null,
+      };
+    },
+
+    /**
+     * Publish one immutable .cindy Release and then synchronize its access
+     * settings through MCPRouter's owner-management API. Retrying a release
+     * whose version is already current only retries access synchronization.
+     */
+    async uploadMekaPlugin(
+      bytes: Uint8Array,
+      pluginId: string,
+      version: string,
+      visibility: MekaPluginVisibility,
+      sharedUsernames: string[],
+      expectedCurrentReleaseId: string | null,
+    ): Promise<MekaDevPluginUploadResult> {
+      const { baseUrl, token } = await auth();
+      const normalizedSharedUsernames = [
+        ...new Set(sharedUsernames.map((username) => username.trim()).filter(Boolean)),
+      ];
+      if (visibility === 'shared' && normalizedSharedUsernames.length === 0) {
+        throw publishError('INVALID_PARAMS', 'Shared visibility requires at least one username.');
+      }
+      const existing = (await client.listOwnedMekaPlugins(baseUrl, token)).find(
+        (plugin) => plugin.ghostId === pluginId,
+      );
+      if ((existing?.currentRelease.id ?? null) !== expectedCurrentReleaseId) {
+        throw publishError(
+          'PRECONDITION_FAILED',
+          'The MCPRouter Plugin changed after the upload preview was loaded.',
+        );
+      }
+
+      const releasePublished = existing?.currentRelease.version !== version;
+      const published = releasePublished
+        ? await client.uploadMekaPlugin(baseUrl, token, bytes, existing?.id ?? null)
+        : existing;
+      if (!published) {
+        throw publishError('INTERNAL', 'MCPRouter did not return the published Plugin.');
+      }
+      await client.setMekaPluginAccess(
+        baseUrl,
+        token,
+        published.id,
+        visibility,
+        visibility === 'shared' ? normalizedSharedUsernames : [],
+      );
+      return {
+        pluginId,
+        version,
+        visibility,
+        releasePublished,
+      };
+    },
+
+    /**
+     * Resolve the registry origin independently from Router authentication.
+     * A complete binding adds its persistent client key; session tokens and
+     * saved passwords never enter plugin delivery.
+     */
+    async getPluginRegistryAccess(): Promise<{
+      baseUrl: string;
+      clientKey: string | null;
+    }> {
+      const raw = await load();
+      const configuredBaseUrl = text(raw.routerUrl);
+      const baseUrl = client.normalizeBaseUrl(configuredBaseUrl ?? DEFAULT_MEKA_MCPROUTER_URL);
+      const token = deps.vault.read(SECRET_KEYS.sessionToken);
+      const clientKey = deps.vault.read(SECRET_KEYS.clientKey);
+      return {
+        baseUrl,
+        // connect() stores secrets before atomically saving their matching
+        // origin. Never send a newly provisioned key to the default origin
+        // during that short persistence window.
+        clientKey: configuredBaseUrl && token && clientKey ? clientKey : null,
+      };
     },
   };
 }

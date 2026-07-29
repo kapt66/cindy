@@ -4,6 +4,7 @@ import { CircleAlert, LayoutGrid, MoonStar } from 'lucide-react';
 import type { WebviewTag } from 'electron';
 
 import { cn } from '@/lib/utils';
+import { useGhostContentRevision } from '@/lib/ghostContentRevision';
 import { GHOST_SCHEME, ghostPartition, type InstalledGhost } from '../../shared/ghost';
 import {
   buildGhostPluginSettingsThemeCss,
@@ -167,6 +168,7 @@ function SettingsWebviewBody({
   const [generation, setGeneration] = useState(0);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const { manifest } = ghost;
+  const contentRevision = useGhostContentRevision(manifest.id);
   const settingsHtml = manifest.settingsHtml;
   const fixedHeight = manifest.settingsHeight;
   const buildSettingsThemeCss =
@@ -399,6 +401,7 @@ function SettingsWebviewBody({
   }, [
     crashed,
     generation,
+    contentRevision,
     manifest.id,
     manifest.version,
     manifest.resolvedLocale,

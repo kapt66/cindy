@@ -34,7 +34,9 @@ import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import { confirmAndInstallGhost } from '@/cindy-brain/installFlow';
+import { createPendingInstallAttribution } from '@/cindy-brain/pendingInstallAttribution';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
+import { useAuth } from '@/contexts/AuthContext';
 import {
   classifyGlobalDropPath,
   markGlobalDropIntercepted,
@@ -69,18 +71,25 @@ export function GlobalDropImportListener({
   const navigate = useNavigate();
   const { t } = useTranslation();
   const { confirm, confirmWithCheckbox } = useConfirmDialog();
+  const { dataOwnerId } = useAuth();
 
   // 双击 .cindy 的转交消费:挂载时取一次(冷启动双击,main 已缓存)+ 订阅
   // 信号(已运行时双击)。取到路径即走与按钮/拖入完全相同的确认装入编排。
   useEffect(() => {
     const consumePending = async () => {
-      const { filePath } = await window.electronAPI.ghosts.takePendingInstall();
+      const { filePath, channel } = await window.electronAPI.ghosts.takePendingInstall();
       if (filePath) {
+        const onInstalled = createPendingInstallAttribution(
+          channel,
+          dataOwnerId,
+          window.electronAPI.mekaPluginMarket.markLocalInstall,
+        );
         await confirmAndInstallGhost(filePath, {
           t,
           confirm,
           confirmWithCheckbox,
           getSidebarSessionId: getRightSidebarSessionId,
+          ...(onInstalled ? { onInstalled } : {}),
         });
       }
     };
@@ -88,7 +97,7 @@ export function GlobalDropImportListener({
     return window.electronAPI.ghosts.onInstallRequested(() => {
       void consumePending().catch((err) => log.warn('consume pending cindy install failed', err));
     });
-  }, [confirm, confirmWithCheckbox, getRightSidebarSessionId, t]);
+  }, [confirm, confirmWithCheckbox, dataOwnerId, getRightSidebarSessionId, t]);
 
   useEffect(() => {
     // 悬停识别:单文件且 MIME 命中才给遮罩。

@@ -8,7 +8,7 @@ describe('resolveUpdateBaseUrl', () => {
       resolveUpdateBaseUrl({
         environmentOverride: 'https://override.example.test/root/',
         endpointCdnBaseUrl: 'https://manifest.example.test/root',
-        endpointManifestBaseUrl: 'http://intranet.test/cindy-meka',
+        endpointManifestBaseUrl: 'https://baked.example.test/cindy-meka',
       }),
     ).toBe('https://override.example.test/root');
   });
@@ -17,7 +17,7 @@ describe('resolveUpdateBaseUrl', () => {
     expect(
       resolveUpdateBaseUrl({
         endpointCdnBaseUrl: 'https://manifest.example.test/root/',
-        endpointManifestBaseUrl: 'http://intranet.test/cindy-meka',
+        endpointManifestBaseUrl: 'https://baked.example.test/cindy-meka',
       }),
     ).toBe('https://manifest.example.test/root');
   });
@@ -26,8 +26,8 @@ describe('resolveUpdateBaseUrl', () => {
     expect(
       resolveUpdateBaseUrl({
         endpointCdnBaseUrl: '',
-        endpointManifestBaseUrl: 'http://172.25.135.168:1011/cindy-meka/',
+        endpointManifestBaseUrl: 'https://s3.meka.pawdy.fun/cindy-meka/',
       }),
-    ).toBe('http://172.25.135.168:1011/cindy-meka');
+    ).toBe('https://s3.meka.pawdy.fun/cindy-meka');
   });
 });

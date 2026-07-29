@@ -9,6 +9,8 @@ export {
 } from './ghost/mcpServer.js';
 export type {
   CindyForgePackErrorCode,
+  CindyForgeInstallChannel,
+  CindyForgePackRequest,
   CindyForgePackResult,
   CindyForgeScaffoldResult,
   CindyForgeScaffoldTemplate,

@@ -1,9 +1,10 @@
 import path from 'node:path';
 import fs from 'node:fs';
 
-import { app, ipcMain, safeStorage } from 'electron';
+import { app, ipcMain, net, safeStorage } from 'electron';
 
 import { createMekaP4SettingsService, type MekaP4SettingsService } from './service.js';
+import { createMekaRouterClient } from './routerClient.js';
 import { createMekaRouterService, type MekaRouterService } from './routerService.js';
 import { requireObject, requireString, throwIpcError } from '../utils/ipcValidate.js';
 
@@ -76,6 +77,9 @@ export function getMekaRouterService(): MekaRouterService {
   routerSingleton = createMekaRouterService({
     configPath: path.join(userDataPath, 'meka-assistant-settings.json'),
     vault: createEncryptedVault(userDataPath),
+    // Use Chromium's network stack so MCPRouter login follows the same system
+    // proxy and public certificate trust as the rest of Desktop.
+    client: createMekaRouterClient({ fetchImpl: net.fetch }),
   });
   return routerSingleton;
 }

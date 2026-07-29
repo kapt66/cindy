@@ -63,10 +63,9 @@ export class PluginMarketLedger {
    * Binds a dynamic owner-scoped ledger to the path captured at operation start.
    * Static test/isolated ledgers keep their instance so callers can inspect them.
    */
-  bind(filePath: string): PluginMarketLedger {
-    return typeof this.filePathSource === 'function'
-      ? new PluginMarketLedger(filePath)
-      : this;
+  bind(filePath?: string): PluginMarketLedger {
+    if (typeof this.filePathSource !== 'function') return this;
+    return new PluginMarketLedger(filePath ?? this.filePathSource());
   }
 
   private filePath(): string {

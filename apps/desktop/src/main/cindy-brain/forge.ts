@@ -5,9 +5,9 @@
  * - FORGE_GUIDE:随主机版本走的《意识编写手册》,经总机 ghost_forge_guide
  *   喂给 agent——替代"人读的作者文档",同事对 AI 说"帮我做个 XX 意识"即可;
  * - packGhostDir:源码目录 → 校验(与装入同一套 validateGhostManifest)→
- *   打包 .cindy 到源码目录自身(id-version.cindy,同名覆盖;shouldSkip 跳过
- *   *.cindy 防套娃)。装入确认弹窗由调用方(mcp-integrations 接线)经双击
- *   转交通道触发,本文件不碰 UI。
+ *   打包 .cindy（默认落源码目录自身；开发目录监听可指定临时输出目录，
+ *   避免产物反向触发 watcher；shouldSkip 跳过 *.cindy 防套娃）。装入确认
+ *   弹窗由调用方(mcp-integrations 接线)经双击转交通道触发,本文件不碰 UI。
  *
  * 安全边界:agent 能写意识源码(它本来就有文件工具),但打包必须过校验、
  * 装入必须过用户确认框(默认沉睡)——与手动拖 .cindy 完全同一条门。
@@ -525,7 +525,10 @@ export async function scaffoldGhostDir(
  * 同名覆盖——同 id 同版本重打包语义上就是同一个包),用户在自己的意识目录里
  * 就能拿到成品;出错返回结构化分类,agent 按 message 修源码即可,不抛异常。
  */
-export async function packGhostDir(dir: string): Promise<ForgePackResult> {
+export async function packGhostDir(
+  dir: string,
+  options: { outputDir?: string } = {},
+): Promise<ForgePackResult> {
   try {
     let stat: fs.Stats;
     try {
@@ -674,7 +677,9 @@ export async function packGhostDir(dir: string): Promise<ForgePackResult> {
         message: `压缩包体积超上限(${maxCindyBytes} 字节)`,
       };
     }
-    const cindyPath = path.join(dir, `${manifest.id}-${manifest.version}.cindy`);
+    const outputDir = options.outputDir ? path.resolve(options.outputDir) : dir;
+    await fs.promises.mkdir(outputDir, { recursive: true });
+    const cindyPath = path.join(outputDir, `${manifest.id}-${manifest.version}.cindy`);
     await fs.promises.writeFile(cindyPath, buf);
     return { ok: true, cindyPath, manifest };
   } catch (err) {
@@ -2454,7 +2459,10 @@ const ensured = await cindy.workspace({
 
 1. 新插件先调 \`ghost_forge_scaffold\` 生成骨架，或把已有源码放在用户工作目录下的
    一个文件夹里(如 \`my-ghost/\`)；脚手架目标必须是新目录，绝不覆盖已有文件；
-2. 调 \`ghost_forge_pack({ dir: '<绝对路径>' })\`——校验 + 打包 + 弹装入确认框;
+2. 普通创建任务调 \`ghost_forge_pack({ dir: '<绝对路径>' })\`——校验 + 打包 + 弹装入确认框。
+   仅当当前任务明确来自 Meka 创建入口时，调
+   \`ghost_forge_pack({ dir: '<绝对路径>', channel: 'meka' })\`。channel 只供 Host
+   记录本次安装归属，绝不写入 \`ghost.json\`，普通拖入或双击安装也不会推断该归属。
    产物落在源码目录里(\`<id>-<version>.cindy\`,同版本覆盖,下次打包自动跳过);
 3. **告知用户去点弹窗**(装入默认沉睡,提醒用户勾"立即开启"或到主界面侧边栏「插件」中唤醒);
 4. 改代码后重新 pack:同 id 会弹"更新 vX → vY",唤醒状态与面板位置自动保留

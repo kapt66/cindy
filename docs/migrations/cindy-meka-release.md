@@ -46,19 +46,28 @@ $env:CINDY_MEKA_RUSTFS_SECRET_ACCESS_KEY = '<secret-key>'
 发版凭证只需限定在对应 bucket 的发布根目录，并授予读取/HEAD 与写入对象；
 脚本不删除远端对象，也不需要删除权限。
 
-也可以用 `CINDY_MEKA_S3_ENDPOINT` 覆盖配置文件中的 endpoint。默认要求 HTTPS；
-完全隔离的内网 HTTP 部署必须同时显式设置
-`CINDY_MEKA_ALLOW_INSECURE_S3=1` 和 `CINDY_MEKA_ALLOW_INSECURE_CDN=1`。
+也可以用 `CINDY_MEKA_S3_ENDPOINT` 覆盖配置文件中的 endpoint。S3 API 与客户端下载根
+地址都强制 HTTPS，不提供 HTTP 放行开关。
 
-独立 `cindy-meka` bucket 的内网示例：
+当前正式 RustFS 地址：
+
+- S3 API 与公开对象入口：`https://s3.meka.pawdy.fun/`
+- 管理控制台：`https://s3-admin.meka.pawdy.fun/`；仅供管理员操作，不得配置为
+  `cdnBaseUrl` 或 `s3.endpoint`。
+
+独立 `cindy-meka` bucket 的正式示例：
 
 ```json
 {
   "oss": {
-    "cdnBaseUrl": "http://172.25.135.168:1011/cindy-meka",
+    "cdnBaseUrl": "https://s3.meka.pawdy.fun/cindy-meka",
     "bucket": "cindy-meka",
     "prefix": "/",
     "ossRegion": "us-east-1"
+  },
+  "s3": {
+    "endpoint": "https://s3.meka.pawdy.fun",
+    "forcePathStyle": true
   }
 }
 ```

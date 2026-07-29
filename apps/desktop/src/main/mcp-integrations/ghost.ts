@@ -973,13 +973,18 @@ export function getCindyGhostsMcpDeps(sessionCtx?: LiziMcpSessionContext): Cindy
       }
       return result;
     },
-    async forgePack({ dir }): Promise<CindyForgePackResult> {
+    async forgePack({ dir, channel }): Promise<CindyForgePackResult> {
       const packed = await packGhostDir(dir);
       if (!packed.ok) return packed;
       // 与双击 .cindy 同一条转交通道:renderer 弹标准确认框(同 id 已装则
       // 自动转"更新 vX → vY"),用户点头才真装。
-      await handleIncomingCindyFile(packed.cindyPath, 'ghost-forge');
-      log.info('ghost forge packed', { dir, cindyPath: packed.cindyPath, id: packed.manifest.id });
+      await handleIncomingCindyFile(packed.cindyPath, 'ghost-forge', { channel });
+      log.info('ghost forge packed', {
+        dir,
+        cindyPath: packed.cindyPath,
+        id: packed.manifest.id,
+        channel,
+      });
       return {
         ok: true,
         cindyPath: packed.cindyPath,

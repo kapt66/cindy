@@ -22,6 +22,7 @@ export interface GhostPluginListItem {
   version: string;
   enabled: boolean;
   canUse: boolean;
+  hasPanel?: boolean;
   trust?: GhostTrustInfo;
   iconDataUrl?: string;
 }
@@ -110,6 +111,7 @@ export function toGhostPluginListItem(ghost: InstalledGhost): GhostPluginListIte
     version: manifest.version,
     enabled: ghost.enabled,
     canUse: Boolean(manifest.command),
+    hasPanel: Boolean(manifest.panel),
     trust: ghost.trust ?? {
       level: 'unverified',
       publisherSigned: false,

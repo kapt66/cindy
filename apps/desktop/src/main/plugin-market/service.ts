@@ -7,7 +7,7 @@ import {
   type VisiblePluginDetail,
   type VisiblePluginSummary,
 } from '@cindy/plugin-protocol';
-import { app, type WebContents } from 'electron';
+import { app } from 'electron';
 
 import {
   diffGhostPermissionItems,
@@ -34,7 +34,6 @@ import {
   ownerScopedUserDataPath,
   type ActiveAppSession,
 } from '../appSessionState.js';
-import { getClientEndpoint } from '../clientEndpointsService.js';
 import { createLogger } from '../logger.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
 import { PluginMarketApi } from './api.js';
@@ -151,6 +150,16 @@ interface LocalInstallSnapshot {
   installations: Readonly<Record<string, PluginMarketInstallationRecord>>;
 }
 
+export interface PluginMarketServiceOptions {
+  /**
+   * Only the original Cindy market may claim pre-ledger official installs.
+   * Independent channels must require explicit installation/provenance.
+   */
+  adoptLegacyInstallations?: boolean;
+  /** Independent channels never inherit Cindy's default-install policy. */
+  applyDefaultInstalls?: boolean;
+}
+
 /**
  * Plugin 市场的 main 端协调器。远程不可用时不碰本地目录；安装写路径必须依次
  * 通过 protocol parser、下载大小/SHA 校验、Ghost runtime validator 和原子换目录。
@@ -164,10 +173,11 @@ export class PluginMarketService {
     private readonly ledger = new PluginMarketLedger(() =>
       ownerScopedUserDataPath('plugin-market', 'ledger.v1.json'),
     ),
+    private readonly options: PluginMarketServiceOptions = {},
   ) {}
 
   async snapshot(): Promise<PluginMarketSnapshot> {
-    if (!getClientEndpoint('pluginApiBaseUrl')) {
+    if (!(await this.api.isConfigured())) {
       return { items: [], unavailableReason: 'not-configured' };
     }
     let owner: ActiveAppSession;
@@ -196,9 +206,13 @@ export class PluginMarketService {
 
     requireSameMarketOwner(owner);
     const ledger = this.ledgerForOwner(owner);
-    await this.adoptLegacyInstallations(plugins, ledger, owner);
+    if (this.options.adoptLegacyInstallations !== false) {
+      await this.adoptLegacyInstallations(plugins, ledger, owner);
+    }
     await this.reconcileRemovedInstallations(ledger, owner);
-    await this.applyDefaultInstalls(plugins, owner, ledger);
+    if (this.options.applyDefaultInstalls !== false) {
+      await this.applyDefaultInstalls(plugins, owner, ledger);
+    }
     requireSameMarketOwner(owner);
     return { items: this.toItems(plugins, ledger), unavailableReason: null };
   }
@@ -207,7 +221,7 @@ export class PluginMarketService {
     if (!isValidPluginResourceId(pluginId)) {
       throwIpcError('INVALID_PARAMS', 'Invalid Plugin ID');
     }
-    this.requireConfigured();
+    await this.requireConfigured();
     const owner = captureMarketOwner();
     const plugin = await this.api.detail(pluginId);
     requireSameMarketOwner(owner);
@@ -240,7 +254,7 @@ export class PluginMarketService {
     if (!isValidPluginResourceId(pluginId)) {
       throwIpcError('INVALID_PARAMS', 'Invalid Plugin ID');
     }
-    this.requireConfigured();
+    await this.requireConfigured();
     const owner = captureMarketOwner();
     const ledger = this.ledgerForOwner(owner);
     return this.withMutation(pluginId, async () => {
@@ -316,6 +330,28 @@ export class PluginMarketService {
       }
       return { ok: true };
     });
+  }
+
+  /**
+   * Returns locally present packages whose provenance belongs to this service's
+   * ledger. The renderer uses this local-only fact to keep Cindy and Meka
+   * channels disjoint even when either remote catalog is unavailable.
+   */
+  async installedGhostIds(): Promise<string[]> {
+    let owner: ActiveAppSession;
+    try {
+      owner = captureMarketOwner();
+    } catch {
+      return [];
+    }
+    const installedRuntimeIds = new Set(
+      getGhostManager()
+        .list()
+        .map((ghost) => ghost.manifest.id),
+    );
+    return Object.values(this.ledgerForOwner(owner).read().installations)
+      .filter((record) => record.installed && installedRuntimeIds.has(record.ghostId))
+      .map((record) => record.ghostId);
   }
 
   /**
@@ -424,8 +460,8 @@ export class PluginMarketService {
     }
   }
 
-  private requireConfigured(): void {
-    if (!getClientEndpoint('pluginApiBaseUrl')) {
+  private async requireConfigured(): Promise<void> {
+    if (!(await this.api.isConfigured())) {
       throwIpcError('UNSUPPORTED_CAPABILITY', 'Plugin market is not configured');
     }
   }
@@ -586,9 +622,7 @@ export class PluginMarketService {
 
   private ledgerForOwner(owner: ActiveAppSession): PluginMarketLedger {
     requireSameMarketOwner(owner);
-    return this.ledger.bind(
-      ownerScopedUserDataPath('plugin-market', 'ledger.v1.json'),
-    );
+    return this.ledger.bind();
   }
 
   private withLedgerMutation<T>(

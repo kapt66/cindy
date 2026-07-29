@@ -28,14 +28,8 @@ const SCRIPTS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 export const RELEASE_REGIONS_PATH = path.join(SCRIPTS_DIR, 'release-regions.json');
 export const RELEASE_REGIONS_EXAMPLE_PATH = path.join(SCRIPTS_DIR, 'release-regions.json.example');
 
-/**
- * Validate the public release root. HTTPS remains the default; isolated
- * intranet RustFS installations may opt into HTTP explicitly.
- */
-export function validateMekaReleaseCdnBaseUrl(
-  value,
-  { allowInsecure = process.env.CINDY_MEKA_ALLOW_INSECURE_CDN === '1' } = {},
-) {
+/** Validate the public release root. Cindy Meka release delivery is HTTPS-only. */
+export function validateMekaReleaseCdnBaseUrl(value) {
   const normalized = String(value ?? '')
     .trim()
     .replace(/\/+$/, '');
@@ -49,11 +43,21 @@ export function validateMekaReleaseCdnBaseUrl(
     throw new Error('Cindy Meka 发布 CDN base 不能包含凭证');
   }
   if (parsed.protocol === 'https:') return normalized;
-  if (parsed.protocol === 'http:' && allowInsecure) return normalized;
-  throw new Error(
-    'Cindy Meka 发布 CDN base 必须使用 HTTPS；仅隔离内网可显式设置 ' +
-      'CINDY_MEKA_ALLOW_INSECURE_CDN=1',
-  );
+  throw new Error('Cindy Meka 发布 CDN base 必须使用 HTTPS');
+}
+
+/** Validate the credential-bearing RustFS API endpoint. */
+export function validateMekaS3Endpoint(value) {
+  let parsed;
+  try {
+    parsed = new URL(String(value ?? '').trim());
+  } catch {
+    throw new Error(`RustFS endpoint 不是合法 URL: ${value}`);
+  }
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password) {
+    throw new Error('RustFS endpoint 必须是无凭证的 HTTPS URL');
+  }
+  return parsed.toString().replace(/\/+$/, '');
 }
 
 /**
@@ -328,25 +332,7 @@ export function resolveMekaS3Config(region, options = {}) {
         `或填写 ${configPath} 的 ${normalized}.s3.endpoint`,
     );
   }
-  let parsedEndpoint;
-  try {
-    parsedEndpoint = new URL(endpoint);
-  } catch {
-    throw new Error(`RustFS endpoint 不是合法 URL: ${endpoint}`);
-  }
-  if (
-    !['http:', 'https:'].includes(parsedEndpoint.protocol) ||
-    parsedEndpoint.username ||
-    parsedEndpoint.password
-  ) {
-    throw new Error('RustFS endpoint 必须是无凭证的 http(s) URL');
-  }
-  if (parsedEndpoint.protocol !== 'https:' && process.env.CINDY_MEKA_ALLOW_INSECURE_S3 !== '1') {
-    throw new Error(
-      'RustFS endpoint 必须使用 HTTPS；仅本地隔离测试可显式设置 ' +
-        'CINDY_MEKA_ALLOW_INSECURE_S3=1',
-    );
-  }
+  const validatedEndpoint = validateMekaS3Endpoint(endpoint);
 
   const accessKeyIdEnv = fileS3?.accessKeyIdEnv || 'CINDY_MEKA_RUSTFS_ACCESS_KEY_ID';
   const secretAccessKeyEnv = fileS3?.secretAccessKeyEnv || 'CINDY_MEKA_RUSTFS_SECRET_ACCESS_KEY';
@@ -369,7 +355,7 @@ export function resolveMekaS3Config(region, options = {}) {
   }
 
   return Object.freeze({
-    endpoint: parsedEndpoint.toString().replace(/\/+$/, ''),
+    endpoint: validatedEndpoint,
     bucket: objectTarget.bucket,
     prefix: releasePrefix,
     region: objectTarget.region,

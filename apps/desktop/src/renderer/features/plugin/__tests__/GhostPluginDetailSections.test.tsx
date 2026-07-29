@@ -20,6 +20,8 @@ vi.mock('react-i18next', () => ({
         'settings.ghosts.detail.viewAllTools': 'See All',
         'settings.ghosts.detail.collapseTools': 'Show Less',
         'settings.ghosts.detail.noToolDescription': 'No description',
+        'settings.ghosts.detail.openPanelAction': 'Open Interface',
+        'settings.ghosts.detail.openPanelDisabled': 'Enable this Plugin first',
         'settings.ghosts.detail.permissionsTitle': 'Permissions',
         'settings.ghosts.detail.viewAllPermissions': 'See All',
         'settings.ghosts.detail.permissionsDialogDescription': `${String(options?.count ?? '')} permissions`,
@@ -161,6 +163,51 @@ describe('Ghost plugin detail sections', () => {
     expect(backButton?.className).toContain('-ml-3');
     expect(detailHero?.className).toContain('grid-cols-[64px_minmax(0,1fr)_auto]');
     expect(detailActions?.className).toContain('flex-nowrap');
+  });
+
+  it('shows an Open Interface action only for panel-bearing Plugins', () => {
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    const onOpenPanel = vi.fn();
+
+    const { rerender } = render(
+      <GhostPluginDetailView
+        ghost={null}
+        detail={detail}
+        panelStatus="Docked"
+        onBack={vi.fn()}
+        onToggle={vi.fn()}
+        onUse={vi.fn()}
+        onOpenPanel={onOpenPanel}
+        onUpdate={vi.fn()}
+        onUninstall={vi.fn()}
+        toggleDisabled={false}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Interface' }));
+    expect(onOpenPanel).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <GhostPluginDetailView
+        ghost={null}
+        detail={{ ...detail, panelMinWidth: null }}
+        panelStatus={null}
+        onBack={vi.fn()}
+        onToggle={vi.fn()}
+        onUse={vi.fn()}
+        onUpdate={vi.fn()}
+        onUninstall={vi.fn()}
+        toggleDisabled={false}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: 'Open Interface' })).toBeNull();
   });
 
   it('disables every market update entry while an update is busy', async () => {

@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import type {
+  CindyForgeInstallChannel,
   CindyForgeScaffoldTemplate,
   CindyGhostInfo,
   CindyGhostSetupAllowedAction,
@@ -75,6 +76,7 @@ const D_GHOST_FORGE_PACK = [
   "dir 传源码目录的绝对路径(目录里须有 ghost.json;打包自动跳过 .git / node_modules /",
   "隐藏文件 / *.cindy)。失败返回结构化错误(MANIFEST_INVALID 等,message 带具体原因),",
   "按 message 修正源码后重新打包即可。打包成功 ≠ 已装入:告知用户去点确认框。",
+  '仅当创建任务明确来自 Meka 渠道时传 channel:"meka";它只记录宿主侧安装归属,不得写进 ghost.json。',
 ].join("\n");
 
 /** 花名册单条自述的长度上限(工具描述是缓存前缀,不许被超长自述撑爆)。 */
@@ -664,10 +666,13 @@ export async function handleForgeScaffold(
 /** ghost_forge_pack 的 handler 主体(导出供单测)。 */
 export async function handleForgePack(
   deps: CindyGhostsMcpDeps,
-  input: { dir: string },
+  input: { dir: string; channel?: CindyForgeInstallChannel },
 ): Promise<McpTextResult> {
   try {
-    const result = await deps.forgePack({ dir: input.dir });
+    const result = await deps.forgePack({
+      dir: input.dir,
+      ...(input.channel ? { channel: input.channel } : {}),
+    });
     if (!result.ok) {
       deps.logger?.warn("ghost_forge_pack rejected", {
         dir: input.dir,
@@ -783,6 +788,12 @@ export function createCindyGhostsMcpServer(
     D_GHOST_FORGE_PACK,
     {
       dir: z.string().describe("插件源码目录的绝对路径(目录里须有 ghost.json)"),
+      channel: z
+        .enum(["meka"])
+        .optional()
+        .describe(
+          '仅当当前创建任务明确来自 Meka 渠道时传 "meka";只影响宿主侧安装归属,不写入 ghost.json',
+        ),
     },
     async (input) => handleForgePack(deps, input),
   );

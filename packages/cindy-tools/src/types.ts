@@ -159,6 +159,15 @@ export type CindyForgePackErrorCode =
   | 'TOO_LARGE' // 文件数或总体积超上限
   | 'INTERNAL';
 
+/** Host 认可的本地安装渠道；只影响宿主侧归属，不进入 ghost.json。 */
+export type CindyForgeInstallChannel = 'meka';
+
+export interface CindyForgePackRequest {
+  dir: string;
+  /** 仅当创建入口明确指定渠道时传入；普通 Forge 试装保持为空。 */
+  channel?: CindyForgeInstallChannel;
+}
+
 export type CindyForgePackResult =
   | {
       ok: true;
@@ -283,7 +292,7 @@ export interface CindyGhostsMcpDeps {
    * 装入(同 id 已装则更新)确认框——装不装永远由用户决定,agent 只能
    * 递到用户面前。
    */
-  forgePack(request: { dir: string }): Promise<CindyForgePackResult>;
+  forgePack(request: CindyForgePackRequest): Promise<CindyForgePackResult>;
   logger?: {
     info: (msg: string, meta?: Record<string, unknown>) => void;
     warn: (msg: string, meta?: Record<string, unknown>) => void;

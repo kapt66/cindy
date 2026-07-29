@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { Eye, EyeOff, FolderOpen, Plug, RefreshCw, X } from 'lucide-react';
+import { FolderOpen, Plug, RefreshCw, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import type { MekaP4Settings } from '../../../shared/meka-settings';
@@ -18,10 +18,15 @@ import { Switch } from '@/components/ui/switch';
 import { Tip } from '@/components/ui/tooltip';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
 import {
+  setGhostPanelModalPresentationEnabled,
+  useGhostPanelModalPresentation,
+} from '@/lib/ghostPanelPresentationPreference';
+import {
   buildMekaRouterClientGroups,
   getMekaRouterClientLabel,
   groupMekaRouterTemplates,
 } from './mekaRouterSettingsModel';
+import { MekaRouterConnectDialog } from './MekaRouterConnectDialog';
 
 const CARD_CLASS = cn(
   'flex flex-col gap-4 rounded-[12px] border p-4',
@@ -87,6 +92,7 @@ function SettingsModal(props: { title: string; onClose: () => void; children: Re
 export function MekaAssistantSettingsSection() {
   const { t } = useTranslation();
   const { confirm } = useConfirmDialog();
+  const pluginPanelModalPresentation = useGhostPanelModalPresentation();
   const [settings, setSettings] = useState<MekaP4Settings | null>(null);
   const [loading, setLoading] = useState(true);
   const [routerRefreshing, setRouterRefreshing] = useState(false);
@@ -97,11 +103,7 @@ export function MekaAssistantSettingsSection() {
   const [instances, setInstances] = useState<MekaRouterInstance[]>([]);
   const [routerModal, setRouterModal] = useState(false);
   const [designModal, setDesignModal] = useState(false);
-  const [routerUrl, setRouterUrl] = useState('');
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
   const [designUrl, setDesignUrl] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const promptedDesignConflict = useRef<string | null>(null);
 
@@ -168,9 +170,7 @@ export function MekaAssistantSettingsSection() {
             cancelText: t('settings.meka.design.conflict.keep'),
           });
           if (replace) {
-            await window.electronAPI.mekaSettings.router.useRouterDesign(
-              next.mekaDesignConflictId,
-            );
+            await window.electronAPI.mekaSettings.router.useRouterDesign(next.mekaDesignConflictId);
             setRouter(await window.electronAPI.mekaSettings.router.get());
           }
         }
@@ -185,21 +185,6 @@ export function MekaAssistantSettingsSection() {
   useEffect(() => {
     void refreshRouter();
   }, [refreshRouter]);
-
-  const connectRouter = useCallback(async () => {
-    setSubmitting(true);
-    try {
-      await window.electronAPI.mekaSettings.router.connect({ routerUrl, username, password });
-      setPassword('');
-      setRouterModal(false);
-      await refreshRouter();
-      toast.success(t('settings.meka.router.connected'));
-    } catch (error) {
-      toast.error(extractIpcError(error)?.message ?? String(error));
-    } finally {
-      setSubmitting(false);
-    }
-  }, [password, refreshRouter, routerUrl, t, username]);
 
   const disconnectRouter = useCallback(async () => {
     const confirmed = await confirm({
@@ -303,6 +288,37 @@ export function MekaAssistantSettingsSection() {
   return (
     <div className="flex flex-col gap-5">
       <div className={CARD_CLASS}>
+        <div className="flex items-center justify-between gap-4">
+          <div className="min-w-0">
+            <h3 className="text-16 font-medium text-[var(--settings-section-title)]">
+              {t('settings.meka.pluginPanel.title')}
+            </h3>
+            <p className="mt-1 text-13 leading-relaxed text-[var(--settings-section-desc)]">
+              {t('settings.meka.pluginPanel.description')}
+            </p>
+          </div>
+          <Switch
+            checked={pluginPanelModalPresentation}
+            onCheckedChange={(enabled) => {
+              setGhostPanelModalPresentationEnabled(enabled);
+              if (!enabled) return;
+              // Modal mode has one visible host. Merge any detached Plugin
+              // windows back first; the layout preference then keeps their
+              // docked panes hidden until modal mode is disabled.
+              const ghosts = window.electronAPI.ghosts.listSync().ghosts;
+              for (const ghost of ghosts) {
+                if (!ghost.manifest.panel || ghost.manifest.panel.position === 'tab') continue;
+                void window.electronAPI.ghostPanelWindow
+                  .setDetached(ghost.manifest.id, false)
+                  .catch(() => undefined);
+              }
+            }}
+            aria-label={t('settings.meka.pluginPanel.toggleAria')}
+          />
+        </div>
+      </div>
+
+      <div className={CARD_CLASS}>
         <div>
           <h3 className="text-16 font-medium text-[var(--settings-section-title)]">
             {t('settings.meka.p4.title')}
@@ -402,15 +418,7 @@ export function MekaAssistantSettingsSection() {
                 {t('settings.meka.router.disconnect')}
               </button>
             ) : (
-              <button
-                type="button"
-                className={BUTTON_CLASS}
-                onClick={() => {
-                  setRouterUrl(router?.routerUrl ?? router?.defaultRouterUrl ?? '');
-                  setUsername(router?.routerUsername ?? '');
-                  setRouterModal(true);
-                }}
-              >
+              <button type="button" className={BUTTON_CLASS} onClick={() => setRouterModal(true)}>
                 <Plug size={16} />
                 {t('settings.meka.router.connect')}
               </button>
@@ -582,82 +590,16 @@ export function MekaAssistantSettingsSection() {
           </div>
         </div>
         {router?.mekaDesignUrl && (
-          <div className="truncate text-12 text-[var(--text-tertiary)]">
-            {router.mekaDesignUrl}
-          </div>
+          <div className="truncate text-12 text-[var(--text-tertiary)]">{router.mekaDesignUrl}</div>
         )}
       </div>
 
-      {routerModal && (
-        <SettingsModal
-          title={t('settings.meka.router.dialogTitle')}
-          onClose={() => setRouterModal(false)}
-        >
-          <label className="flex flex-col gap-1">
-            <span className="text-13 text-[var(--text-secondary)]">
-              {t('settings.meka.router.url')}
-            </span>
-            <input
-              className={INPUT_CLASS}
-              value={routerUrl}
-              onChange={(event) => setRouterUrl(event.target.value)}
-              placeholder={router?.defaultRouterUrl ?? 'https://router.example'}
-              autoFocus
-            />
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-13 text-[var(--text-secondary)]">
-              {t('settings.meka.router.username')}
-            </span>
-            <input
-              className={INPUT_CLASS}
-              value={username}
-              onChange={(event) => setUsername(event.target.value)}
-            />
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-13 text-[var(--text-secondary)]">
-              {t('settings.meka.router.password')}
-            </span>
-            <div className="relative">
-              <input
-                className={cn(INPUT_CLASS, 'pr-10')}
-                type={showPassword ? 'text' : 'password'}
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') void connectRouter();
-                }}
-              />
-              <button
-                type="button"
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--text-tertiary)]"
-                onClick={() => setShowPassword((value) => !value)}
-                aria-label={
-                  showPassword
-                    ? t('settings.meka.router.hidePassword')
-                    : t('settings.meka.router.showPassword')
-                }
-              >
-                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-              </button>
-            </div>
-          </label>
-          <div className="flex justify-end gap-2">
-            <button type="button" className={BUTTON_CLASS} onClick={() => setRouterModal(false)}>
-              {t('logic.confirm.cancel')}
-            </button>
-            <button
-              type="button"
-              className={BUTTON_CLASS}
-              disabled={submitting || !routerUrl.trim() || !username.trim() || !password}
-              onClick={() => void connectRouter()}
-            >
-              {t('settings.meka.router.connect')}
-            </button>
-          </div>
-        </SettingsModal>
-      )}
+      <MekaRouterConnectDialog
+        open={routerModal}
+        settings={router}
+        onOpenChange={setRouterModal}
+        onConnected={refreshRouter}
+      />
 
       {designModal && (
         <SettingsModal

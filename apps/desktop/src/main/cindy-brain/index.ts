@@ -4,7 +4,13 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 
 import { createLogger } from '../logger.js';
-import { throwIpcError } from '../utils/ipcValidate.js';
+import {
+  requireEnum,
+  requireNonNegativeInt,
+  requireObject,
+  requireString,
+  throwIpcError,
+} from '../utils/ipcValidate.js';
 import {
   type GhostAppRegion,
   CINDY_ACCOUNT_GHOST_IDS,
@@ -215,6 +221,17 @@ import {
   createLegacyGhostRecoveryIpcHandlers,
 } from './legacyGhostRecoveryIpc.js';
 import type { LegacyGhostRecoveryStatus } from '../../shared/legacyGhostRecovery.js';
+import type {
+  MekaDevPluginInstallRequest,
+  MekaDevPluginItem,
+  MekaDevPluginUploadRequest,
+} from '../../shared/mekaDevPlugin.js';
+import { MEKA_PLUGIN_VISIBILITIES } from '../../shared/mekaDevPlugin.js';
+import { packGhostDir } from './forge.js';
+import { MekaDevPluginError, MekaDevPluginManager } from './mekaDevPlugins.js';
+import { getMekaRouterService } from '../meka-settings/ipc.js';
+import { watcherHostClient } from '../watcher-host/index.js';
+import { isIpcErrorCode, type IpcErrorCode } from '../../shared/ipc-errors.js';
 
 /**
  * 意识仓库的进程级单例 + IPC 注册。
@@ -248,6 +265,7 @@ function currentGhostAppContext() {
 
 let managerSingleton: GhostManager | null = null;
 let ghostSetupManifestTrackerSingleton: GhostSetupManifestTracker | null = null;
+let mekaDevPluginsSingleton: MekaDevPluginManager | null = null;
 
 function getGhostSetupManifestTracker(): GhostSetupManifestTracker {
   if (!ghostSetupManifestTrackerSingleton) {
@@ -542,7 +560,8 @@ export function suspendCindyAccountGhosts(): void {
 }
 
 /** Stop every sandbox before changing the active data owner. */
-export function suspendAllGhosts(): void {
+export async function suspendAllGhosts(): Promise<void> {
+  await mekaDevPluginsSingleton?.suspend();
   runtimeSingleton?.destroyAll();
   brainRootCache = null;
 }
@@ -2603,11 +2622,391 @@ function spawnIfResident(ghost: InstalledGhost): void {
     });
 }
 
+function broadcastMekaDevPluginsChanged(items: MekaDevPluginItem[]): void {
+  BrowserWindow.getAllWindows().forEach((window) => {
+    if (window.isDestroyed()) return;
+    window.webContents.send('meka-dev-plugins:changed', { items });
+  });
+}
+
+function broadcastGhostContentReloaded(id: string): void {
+  BrowserWindow.getAllWindows().forEach((window) => {
+    if (window.isDestroyed()) return;
+    window.webContents.send('ghosts:content-reloaded', { id });
+  });
+}
+
 export function registerGhostIpc(): void {
   if (ipcRegistered) return;
   ipcRegistered = true;
   const manager = getGhostManager();
   const runtime = getGhostRuntime();
+  const inspectDevelopmentPackage = async (cindyPath: string) => {
+    const inspected = await manager.inspect(cindyPath);
+    if ('rejection' in inspected) throwInstallError(inspected.rejection);
+    rejectReservedGhostId(inspected.manifest.id);
+    rejectUnauthorizedTokenBroker(inspected.manifest);
+    return inspected;
+  };
+  const installDevelopmentPackage = async (cindyPath: string): Promise<InstalledGhost> => {
+    const mutationOwner = captureGhostMutationOwner();
+    const releaseMutation = beginGhostMutation(mutationOwner);
+    try {
+      const inspected = await inspectDevelopmentPackage(cindyPath);
+      return installAndDock(manager, cindyPath, {
+        enable: true,
+        expectedPackageSha256: inspected.packageSha256,
+      });
+    } finally {
+      releaseMutation();
+    }
+  };
+  const updateDevelopmentPackage = async (
+    cindyPath: string,
+    expectedId: string,
+  ): Promise<InstalledGhost> => {
+    const mutationOwner = captureGhostMutationOwner();
+    const releaseMutation = beginGhostMutation(mutationOwner);
+    try {
+      const inspected = await inspectDevelopmentPackage(cindyPath);
+      if (inspected.manifest.id !== expectedId) {
+        throwIpcError(
+          'GHOST_FILE_INVALID',
+          `开发目录的插件 ID 已从 ${expectedId} 改为 ${inspected.manifest.id}`,
+        );
+      }
+      const previousGhost = manager.list().find((ghost) => ghost.manifest.id === expectedId);
+      if (!previousGhost) {
+        return installAndDock(manager, cindyPath, {
+          enable: true,
+          expectedPackageSha256: inspected.packageSha256,
+        });
+      }
+      runtime.stop(expectedId);
+      getGhostNodeRuntimeBroker().stop(expectedId);
+      getGhostAgentSlot().clearGhost(expectedId);
+      let result: Awaited<ReturnType<typeof manager.update>>;
+      try {
+        result = await manager.update(cindyPath, {
+          expectedPackageSha256: inspected.packageSha256,
+        });
+      } catch (error) {
+        spawnIfResident(previousGhost);
+        throw error;
+      }
+      if ('rejection' in result) {
+        spawnIfResident(previousGhost);
+        throwInstallError(result.rejection);
+      }
+      runtime.resetFuse(expectedId);
+      const docked = layoutWithGhostPanel(getLayoutStore().getLayout(), result.ghost.manifest);
+      if (docked) {
+        const applied = getLayoutStore().setLayout(docked);
+        if ('rejection' in applied) {
+          log.warn('development Plugin panel dock rejected', {
+            id: expectedId,
+            reason: applied.rejection,
+          });
+        }
+      }
+      spawnIfResident(result.ghost);
+      return result.ghost;
+    } finally {
+      releaseMutation();
+    }
+  };
+  const mekaDevPlugins = new MekaDevPluginManager({
+    getRegistryPath: () => path.join(brainRootDir(), '.meka-dev-plugins.json'),
+    getTempRoot: () => path.join(app.getPath('temp'), 'cindy-meka-dev-plugins'),
+    packDirectory: packGhostDir,
+    inspectPackage: async (cindyPath) => {
+      const inspected = await inspectDevelopmentPackage(cindyPath);
+      return { manifest: inspected.manifest, trust: inspected.trust };
+    },
+    installPackage: installDevelopmentPackage,
+    updatePackage: updateDevelopmentPackage,
+    uninstallPackage: uninstallGhostAndCleanup,
+    isInstalled: (id) => manager.list().some((ghost) => ghost.manifest.id === id),
+    subscribe: (dir, ignore, onEvents, onError) =>
+      watcherHostClient.subscribe(dir, ignore, onEvents, onError),
+    onContentReloaded: broadcastGhostContentReloaded,
+    onChanged: broadcastMekaDevPluginsChanged,
+    log,
+  });
+  mekaDevPluginsSingleton = mekaDevPlugins;
+  const throwMekaDevPluginError = (error: unknown): never => {
+    if (!(error instanceof MekaDevPluginError)) {
+      if (
+        error &&
+        typeof error === 'object' &&
+        isIpcErrorCode((error as { code?: unknown }).code)
+      ) {
+        throwIpcError(
+          (error as { code: IpcErrorCode }).code,
+          error instanceof Error ? error.message : 'Meka development Plugin operation failed.',
+        );
+      }
+      log.error('Meka development Plugin IPC failed', error);
+      throwIpcError('INTERNAL', 'Meka development Plugin operation failed.');
+    }
+    switch (error.code) {
+      case 'already-installed':
+      case 'source-conflict':
+        return throwIpcError('ALREADY_EXISTS', error.message);
+      case 'not-found':
+        return throwIpcError('NOT_FOUND', error.message);
+      case 'invalid-plugin':
+        return throwIpcError('GHOST_FILE_INVALID', error.message);
+      case 'source-changed':
+        return throwIpcError('PRECONDITION_FAILED', error.message);
+      case 'invalid-directory':
+        return throwIpcError('INVALID_PARAMS', error.message);
+      default:
+        log.error('Meka development Plugin operation failed', error);
+        return throwIpcError('INTERNAL', 'Meka development Plugin operation failed.');
+    }
+  };
+  ipcMain.handle('meka-dev-plugins:list', async (event) => {
+    assertTrustedAppRendererEvent(event);
+    const expectedOwner = captureGhostMutationOwner();
+    if (!expectedOwner.dataOwnerId) {
+      throwIpcError('PRECONDITION_FAILED', 'A stable data owner is required.');
+    }
+    try {
+      const items = await mekaDevPlugins.list();
+      if (
+        isAppSessionBoundaryPending() ||
+        !isSameAppSession(expectedOwner, getActiveAppSession())
+      ) {
+        throwIpcError(
+          'PRECONDITION_FAILED',
+          'The active account changed while loading development Plugins.',
+        );
+      }
+      return { items };
+    } catch (error) {
+      throwMekaDevPluginError(error);
+    }
+  });
+  ipcMain.handle('meka-dev-plugins:pick', async (event) => {
+    assertTrustedAppRendererEvent(event);
+    const expectedOwner = captureGhostMutationOwner();
+    if (!expectedOwner.dataOwnerId) {
+      throwIpcError('PRECONDITION_FAILED', 'A stable data owner is required.');
+    }
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const options = {
+      title: t('settings.ghosts.meka.dev.pickTitle'),
+      properties: ['openDirectory' as const],
+    };
+    const picked = win
+      ? await dialog.showOpenDialog(win, options)
+      : await dialog.showOpenDialog(options);
+    if (picked.canceled || picked.filePaths.length === 0) return { canceled: true };
+    try {
+      const inspection = await mekaDevPlugins.inspect(picked.filePaths[0]);
+      if (
+        isAppSessionBoundaryPending() ||
+        !isSameAppSession(expectedOwner, getActiveAppSession())
+      ) {
+        throwIpcError(
+          'PRECONDITION_FAILED',
+          'The active account changed while inspecting the Plugin.',
+        );
+      }
+      return {
+        canceled: false,
+        dataOwnerId: expectedOwner.dataOwnerId,
+        sessionGeneration: expectedOwner.generation,
+        ...inspection,
+      };
+    } catch (error) {
+      throwMekaDevPluginError(error);
+    }
+  });
+  ipcMain.handle('meka-dev-plugins:install', async (event, rawRequest: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    const payload = requireObject(rawRequest);
+    const request: MekaDevPluginInstallRequest = {
+      sourceDir: requireString(payload.sourceDir, 'sourceDir'),
+      expectedPackageSha256: requireString(
+        payload.expectedPackageSha256,
+        'expectedPackageSha256',
+      ),
+      expectedDataOwnerId: requireString(payload.expectedDataOwnerId, 'expectedDataOwnerId'),
+      expectedSessionGeneration: requireNonNegativeInt(
+        payload.expectedSessionGeneration,
+        'expectedSessionGeneration',
+      ),
+    };
+    if (!/^[a-f0-9]{64}$/i.test(request.expectedPackageSha256)) {
+      throwIpcError('INVALID_PARAMS', 'expectedPackageSha256 must be a SHA-256 digest');
+    }
+    const expectedOwner = captureGhostMutationOwner();
+    if (
+      expectedOwner.dataOwnerId !== request.expectedDataOwnerId ||
+      expectedOwner.generation !== request.expectedSessionGeneration
+    ) {
+      throwIpcError('PRECONDITION_FAILED', 'The active account changed before installation.');
+    }
+    const releaseMutation = beginGhostMutation(expectedOwner);
+    try {
+      return await mekaDevPlugins.install(
+        request.sourceDir,
+        request.expectedPackageSha256.toLowerCase(),
+      );
+    } catch (error) {
+      throwMekaDevPluginError(error);
+    } finally {
+      releaseMutation();
+    }
+  });
+  ipcMain.handle('meka-dev-plugins:package', async (event, id: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    const runtimeId = requireString(id, 'id');
+    const expectedOwner = captureGhostMutationOwner();
+    const releaseMutation = beginGhostMutation(expectedOwner);
+    try {
+      const packaged = await mekaDevPlugins.package(runtimeId);
+      const defaultPath = `${packaged.manifest.id}-${packaged.manifest.version}.cindy`;
+      const win = BrowserWindow.fromWebContents(event.sender);
+      const options = {
+        title: t('settings.ghosts.meka.dev.packageDialogTitle'),
+        defaultPath,
+        filters: [{ name: t('settings.ghosts.meka.dev.packageFileType'), extensions: ['cindy'] }],
+      };
+      const selected = win
+        ? await dialog.showSaveDialog(win, options)
+        : await dialog.showSaveDialog(options);
+      if (selected.canceled || !selected.filePath) return { canceled: true };
+      if (
+        isAppSessionBoundaryPending() ||
+        !isSameAppSession(expectedOwner, getActiveAppSession())
+      ) {
+        throwIpcError(
+          'PRECONDITION_FAILED',
+          'The active account changed before saving the development Plugin package.',
+        );
+      }
+      const filePath = selected.filePath.toLowerCase().endsWith('.cindy')
+        ? selected.filePath
+        : `${selected.filePath}.cindy`;
+      await fs.promises.writeFile(filePath, packaged.bytes);
+      return {
+        canceled: false,
+        filePath,
+        pluginId: packaged.manifest.id,
+        version: packaged.manifest.version,
+      };
+    } catch (error) {
+      throwMekaDevPluginError(error);
+    } finally {
+      releaseMutation();
+    }
+  });
+  ipcMain.handle('meka-dev-plugins:upload-info', async (event, id: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    const runtimeId = requireString(id, 'id');
+    const expectedOwner = captureGhostMutationOwner();
+    try {
+      const packaged = await mekaDevPlugins.package(runtimeId);
+      if (
+        isAppSessionBoundaryPending() ||
+        !isSameAppSession(expectedOwner, getActiveAppSession())
+      ) {
+        throwIpcError(
+          'PRECONDITION_FAILED',
+          'The active account changed before loading the development Plugin upload preview.',
+        );
+      }
+      const uploadInfo = await getMekaRouterService().getMekaPluginUploadInfo(
+        packaged.manifest.id,
+        packaged.manifest.version,
+      );
+      if (
+        isAppSessionBoundaryPending() ||
+        !isSameAppSession(expectedOwner, getActiveAppSession())
+      ) {
+        throwIpcError(
+          'PRECONDITION_FAILED',
+          'The active account changed while loading the development Plugin upload preview.',
+        );
+      }
+      return uploadInfo;
+    } catch (error) {
+      throwMekaDevPluginError(error);
+    }
+  });
+  ipcMain.handle('meka-dev-plugins:upload', async (event, rawRequest: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    const payload = requireObject(rawRequest);
+    const sharedUsernames = payload.sharedUsernames;
+    if (
+      !Array.isArray(sharedUsernames) ||
+      sharedUsernames.some((username) => typeof username !== 'string')
+    ) {
+      throwIpcError('INVALID_PARAMS', 'sharedUsernames must be a string array');
+    }
+    const expectedCurrentReleaseId = payload.expectedCurrentReleaseId;
+    if (
+      expectedCurrentReleaseId !== null &&
+      (typeof expectedCurrentReleaseId !== 'string' || !expectedCurrentReleaseId.trim())
+    ) {
+      throwIpcError('INVALID_PARAMS', 'expectedCurrentReleaseId must be a string or null');
+    }
+    const request: MekaDevPluginUploadRequest = {
+      id: requireString(payload.id, 'id'),
+      visibility: requireEnum(
+        payload.visibility,
+        MEKA_PLUGIN_VISIBILITIES,
+        'visibility',
+      ),
+      sharedUsernames,
+      expectedCurrentReleaseId,
+    };
+    const expectedOwner = captureGhostMutationOwner();
+    const releaseMutation = beginGhostMutation(expectedOwner);
+    try {
+      const packaged = await mekaDevPlugins.package(request.id);
+      if (
+        isAppSessionBoundaryPending() ||
+        !isSameAppSession(expectedOwner, getActiveAppSession())
+      ) {
+        throwIpcError(
+          'PRECONDITION_FAILED',
+          'The active account changed before uploading the development Plugin package.',
+        );
+      }
+      return await getMekaRouterService().uploadMekaPlugin(
+        packaged.bytes,
+        packaged.manifest.id,
+        packaged.manifest.version,
+        request.visibility,
+        request.sharedUsernames,
+        request.expectedCurrentReleaseId,
+      );
+    } catch (error) {
+      throwMekaDevPluginError(error);
+    } finally {
+      releaseMutation();
+    }
+  });
+  ipcMain.handle('meka-dev-plugins:remove', async (event, id: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    if (typeof id !== 'string' || id.trim().length === 0) {
+      throwIpcError('INVALID_PARAMS', 'id must be a non-empty string');
+    }
+    const expectedOwner = captureGhostMutationOwner();
+    const releaseMutation = beginGhostMutation(expectedOwner);
+    try {
+      await mekaDevPlugins.remove(id);
+      return { ok: true };
+    } catch (error) {
+      throwMekaDevPluginError(error);
+    } finally {
+      releaseMutation();
+    }
+  });
   // 启动即对账一次 skill 槽链接:上次会话崩溃/异常退出留下的悬空链接、
   // 换账号后的期望态变化,都在这里自愈(后续变更由 ghosts:changed 广播驱动)。
   scheduleGhostSkillReconcile();
@@ -3491,7 +3890,10 @@ export function registerGhostIpc(): void {
   // 取走(取即清空),随后走与按钮/拖入完全相同的确认装入编排。
   ipcMain.handle('ghosts:take-pending-install', (event) => {
     assertTrustedAppRendererEvent(event);
-    return { filePath: takePendingCindyInstall() };
+    const pending = takePendingCindyInstall();
+    return pending
+      ? { ...pending, channel: pending.channel ?? null }
+      : { filePath: null, channel: null };
   });
 
   // 只验不装:读出 .cindy 的清单给确认弹窗展示,零副作用。

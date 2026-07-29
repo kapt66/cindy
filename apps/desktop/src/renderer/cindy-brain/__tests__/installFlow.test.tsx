@@ -96,6 +96,63 @@ describe('installFlow · 装入确认', () => {
     expect(confirm).not.toHaveBeenCalled();
     expect(install).toHaveBeenCalledTimes(1);
   });
+
+  it('records host channel attribution only after installation succeeds', async () => {
+    setupWindow(baseManifest);
+    const onInstalled = vi.fn(async () => undefined);
+
+    await confirmAndInstallGhost('/tmp/node.cindy', {
+      ...deps(vi.fn(async () => true)),
+      onInstalled,
+    });
+
+    expect(onInstalled).toHaveBeenCalledWith(
+      expect.objectContaining({
+        manifest: expect.objectContaining({ id: baseManifest.id }),
+      }),
+    );
+  });
+
+  it('records host channel attribution after an existing plugin is updated', async () => {
+    const updatedGhost = {
+      manifest: { ...baseManifest, version: '1.1.0' },
+    };
+    const update = vi.fn(async () => ({ ghost: updatedGhost }));
+    Object.defineProperty(globalThis, 'window', {
+      value: {
+        electronAPI: {
+          ghosts: {
+            inspect: vi.fn(async () => ({
+              manifest: updatedGhost.manifest,
+              packageSha256: 'b'.repeat(64),
+              trust: {
+                level: 'unverified',
+                publisherSigned: false,
+                publisherVerified: false,
+                reviewed: false,
+              },
+            })),
+            listSync: vi.fn(() => ({
+              ghosts: [{ manifest: baseManifest }],
+            })),
+            update,
+          },
+        },
+      },
+      configurable: true,
+    });
+    const onInstalled = vi.fn(async () => undefined);
+
+    await confirmAndInstallGhost('/tmp/node-update.cindy', {
+      ...deps(vi.fn(async () => true)),
+      onInstalled,
+    });
+
+    expect(update).toHaveBeenCalledWith('/tmp/node-update.cindy', {
+      expectedPackageSha256: 'b'.repeat(64),
+    });
+    expect(onInstalled).toHaveBeenCalledWith(updatedGhost);
+  });
 });
 
 describe('installFlow · tab 型插件「立即开启并打开页签」', () => {

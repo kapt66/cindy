@@ -10,6 +10,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { toast } from '@/lib/toast';
+import { useGhostContentRevision } from '@/lib/ghostContentRevision';
 
 import { GHOST_SCHEME, ghostPartition, type GhostManifest } from '../../shared/ghost';
 import { createGhostThemeInjector, observeHostTheme } from './ghostPanelTheme';
@@ -38,12 +39,17 @@ export function GhostPanelError({
   onReload?: () => void;
 }): ReactNode {
   const { t } = useTranslation();
-  const reload = onReload ?? (() => void window.electronAPI.ghosts.reload(manifest.id).catch(() => {}));
+  const reload =
+    onReload ?? (() => void window.electronAPI.ghosts.reload(manifest.id).catch(() => {}));
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-4">
       <CircleAlert size={22} className="text-[var(--error-fg)]" />
       <p className="text-center text-[12px] leading-relaxed text-[var(--text-secondary)]">
-        {t(state === 'fused' ? 'settings.ghosts.panelError.fused' : 'settings.ghosts.panelError.crashed')}
+        {t(
+          state === 'fused'
+            ? 'settings.ghosts.panelError.fused'
+            : 'settings.ghosts.panelError.crashed',
+        )}
       </p>
       <div className="flex items-center gap-2">
         <button
@@ -56,7 +62,9 @@ export function GhostPanelError({
         {/* 关闭 = 转沉睡,可逆动作,按 docs/design-rules/cindy-design-system.md 红色纪律走灰度次按钮(红只留错误图标)。 */}
         <button
           type="button"
-          onClick={() => void window.electronAPI.ghosts.setEnabled(manifest.id, false).catch(() => {})}
+          onClick={() =>
+            void window.electronAPI.ghosts.setEnabled(manifest.id, false).catch(() => {})
+          }
           className="rounded-full border border-[var(--border-default)] px-3.5 py-1.5 text-[12px] font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--surface-chip)]"
         >
           {t('settings.ghosts.panelError.close')}
@@ -170,11 +178,24 @@ export function pickGhostPanelMediaUri(
  * 主题 token 在 dom-ready 注入、主机换肤时重灌(ghostPanelTheme)。
  * webview 崩溃 = 本地错误接管态(重载 = 原地重挂载,不经主机)。
  */
-export function GhostChipPanelBody({ manifest }: { manifest: GhostManifest }): ReactNode {
+export function GhostChipPanelBody({
+  manifest,
+  autoFocusWebview = false,
+}: {
+  manifest: GhostManifest;
+  /**
+   * Modal 打开时由面板 WebView 接管键盘焦点。停靠/页签宿主保持 false，
+   * 避免后台面板在重载或热更新时抢走主界面输入焦点。
+   */
+  autoFocusWebview?: boolean;
+}): ReactNode {
+  const contentRevision = useGhostContentRevision(manifest.id);
   const [crashed, setCrashed] = useState(false);
   const [generation, setGeneration] = useState(0);
   const [mediaMenu, setMediaMenu] = useState<GhostPanelMediaMenuState | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const autoFocusWebviewRef = useRef(autoFocusWebview);
+  autoFocusWebviewRef.current = autoFocusWebview;
 
   const panelHtml = manifest.panel?.html;
   useEffect(() => {
@@ -198,7 +219,10 @@ export function GhostChipPanelBody({ manifest }: { manifest: GhostManifest }): R
         if (!disposed) injector.inject();
       }, 50);
     };
-    const onDomReady = () => injector.onDomReady();
+    const onDomReady = () => {
+      injector.onDomReady();
+      if (autoFocusWebviewRef.current) webview.focus();
+    };
     const onGone = () => {
       if (!disposed) setCrashed(true);
     };
@@ -250,6 +274,7 @@ export function GhostChipPanelBody({ manifest }: { manifest: GhostManifest }): R
   }, [
     crashed,
     generation,
+    contentRevision,
     manifest.id,
     manifest.version,
     manifest.resolvedLocale,

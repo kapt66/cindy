@@ -15,6 +15,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 import { cn } from '@/lib/utils';
 import { ghostFallbackIconKind, type GhostFallbackIconKind } from './lib/ghostPluginViewModel';
@@ -62,14 +63,17 @@ export function GhostPluginIcon({
   iconId,
   iconName,
   onIconLoadError,
+  development = false,
   size = 'md',
 }: {
   iconDataUrl?: string;
   iconId: string;
   iconName: string;
   onIconLoadError?: () => void;
+  development?: boolean;
   size?: GhostPluginIconSize;
 }) {
+  const { t } = useTranslation();
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
   useEffect(() => {
     setFailedSrc(null);
@@ -82,7 +86,7 @@ export function GhostPluginIcon({
   return (
     <span
       className={cn(
-        'inline-flex shrink-0 items-center justify-center overflow-hidden border-[0.5px] border-[var(--border-default)]',
+        'relative inline-flex shrink-0 items-center justify-center overflow-hidden border-[0.5px] border-[var(--border-default)]',
         resolvedIconDataUrl
           ? 'bg-[var(--plugin-icon-surface)] shadow-[var(--plugin-icon-shadow)]'
           : 'bg-[var(--surface-elevated)] text-[var(--text-secondary)] shadow-none',
@@ -111,6 +115,20 @@ export function GhostPluginIcon({
           className={FALLBACK_ICON_CLASSES[size]}
         />
       )}
+      {development && (size === 'md' || size === 'detail') ? (
+        <span
+          data-testid="plugin-dev-ribbon"
+          className={cn(
+            'pointer-events-none absolute z-[1] flex -rotate-45 items-center justify-center bg-[var(--accent-emphasis)] font-medium tracking-[0.08em] text-[var(--accent-pure-cta-fg)]',
+            size === 'detail'
+              ? '-left-[18px] top-[8px] h-[14px] w-[72px] text-[8px]'
+              : '-left-[15px] top-[6px] h-[12px] w-[60px] text-[7px]',
+          )}
+          aria-label={t('settings.ghosts.meka.dev.ribbon')}
+        >
+          {t('settings.ghosts.meka.dev.ribbon')}
+        </span>
+      ) : null}
     </span>
   );
 }

@@ -1,18 +1,59 @@
+import { isIP } from 'node:net';
+
+import type { MekaPluginVisibility } from '../../shared/mekaDevPlugin.js';
+import { PRODUCTION_MEKA_MCPROUTER_URL } from './config.js';
+
 const REQUEST_TIMEOUT_MS = 15_000;
+const UPLOAD_REQUEST_TIMEOUT_MS = 60_000;
 const CLIENT_KEY_NAME = 'xdt-maker-meka';
 
-type FetchLike = typeof fetch;
+type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 export interface RouterClientDeps {
   fetchImpl?: FetchLike;
 }
 
+export class MekaRouterRequestError extends Error {
+  readonly code: 'PERMISSION_DENIED' | undefined;
+
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = 'MekaRouterRequestError';
+    this.code = status === 401 ? 'PERMISSION_DENIED' : undefined;
+  }
+}
+
+export interface ManagedMekaPlugin {
+  id: string;
+  ghostId: string;
+  visibility: MekaPluginVisibility;
+  sharedUsernames: string[];
+  currentRelease: {
+    id: string;
+    version: string;
+    sha256: string;
+    sizeBytes: number;
+    publishedAt: string;
+  };
+}
+
 function normalizeBaseUrl(input: string): string {
   const url = new URL(input.trim());
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new Error('MCPRouter URL must use HTTP or HTTPS');
+    throw new Error('MCPRouter URL must use HTTPS');
   }
   if (url.username || url.password) throw new Error('MCPRouter URL must not contain credentials');
+  // MCPRouter has completed its domain + HTTPS migration. Any previously saved
+  // HTTP or raw-IP origin now resolves to the single production Router so
+  // credentials are never sent over plaintext transport or to a certificate
+  // hostname mismatch.
+  const hostname = url.hostname.replace(/^\[|\]$/g, '');
+  if (url.protocol === 'http:' || isIP(hostname) !== 0) {
+    return new URL(PRODUCTION_MEKA_MCPROUTER_URL).toString().replace(/\/$/, '');
+  }
   url.pathname = url.pathname.replace(/\/+$/, '');
   url.search = '';
   url.hash = '';
@@ -38,9 +79,10 @@ async function request(
   baseUrl: string,
   pathname: string,
   init: RequestInit = {},
+  timeoutMs = REQUEST_TIMEOUT_MS,
 ): Promise<Response> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await (deps.fetchImpl ?? fetch)(`${normalizeBaseUrl(baseUrl)}${pathname}`, {
       ...init,
@@ -51,10 +93,11 @@ async function request(
   }
 }
 
-async function readError(response: Response, operation: string): Promise<Error> {
+async function readError(response: Response, operation: string): Promise<MekaRouterRequestError> {
   const text = await response.text().catch(() => '');
-  return new Error(
+  return new MekaRouterRequestError(
     `MCPRouter ${operation} failed (${response.status})${text ? `: ${text.slice(0, 200)}` : ''}`,
+    response.status,
   );
 }
 
@@ -103,6 +146,69 @@ export function createMekaRouterClient(deps: RouterClientDeps = {}) {
       const body = (await created.json()) as { key?: string };
       if (!body.key) throw new Error('MCPRouter client-key response is invalid');
       return body.key;
+    },
+
+    async listOwnedMekaPlugins(
+      baseUrl: string,
+      sessionToken: string,
+    ): Promise<ManagedMekaPlugin[]> {
+      const response = await request(deps, baseUrl, '/api/meka-plugins', {
+        headers: sessionHeaders(sessionToken),
+      });
+      if (!response.ok) throw await readError(response, 'list owned Meka Plugins');
+      const body = (await response.json()) as unknown;
+      if (!Array.isArray(body)) throw new Error('MCPRouter owned Plugin response is invalid');
+      return body as ManagedMekaPlugin[];
+    },
+
+    async uploadMekaPlugin(
+      baseUrl: string,
+      sessionToken: string,
+      bytes: Uint8Array,
+      pluginResourceId: string | null,
+    ): Promise<ManagedMekaPlugin> {
+      const body = new ArrayBuffer(bytes.byteLength);
+      new Uint8Array(body).set(bytes);
+      const response = await request(
+        deps,
+        baseUrl,
+        pluginResourceId
+          ? `/api/meka-plugins/${encodeURIComponent(pluginResourceId)}/releases`
+          : '/api/meka-plugins/upload',
+        {
+          method: 'POST',
+          headers: {
+            cookie: `session=${sessionToken}`,
+            accept: 'application/json',
+            'content-type': 'application/vnd.cindy.plugin',
+          },
+          body,
+        },
+        UPLOAD_REQUEST_TIMEOUT_MS,
+      );
+      if (!response.ok) throw await readError(response, 'upload Meka Plugin');
+      return (await response.json()) as ManagedMekaPlugin;
+    },
+
+    async setMekaPluginAccess(
+      baseUrl: string,
+      sessionToken: string,
+      pluginResourceId: string,
+      visibility: MekaPluginVisibility,
+      sharedUsernames: string[],
+    ): Promise<ManagedMekaPlugin> {
+      const response = await request(
+        deps,
+        baseUrl,
+        `/api/meka-plugins/${encodeURIComponent(pluginResourceId)}/access`,
+        {
+          method: 'PATCH',
+          headers: sessionHeaders(sessionToken),
+          body: JSON.stringify({ visibility, sharedUsernames }),
+        },
+      );
+      if (!response.ok) throw await readError(response, 'update Meka Plugin access');
+      return (await response.json()) as ManagedMekaPlugin;
     },
 
     async listTools(baseUrl: string, clientKey: string) {

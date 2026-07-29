@@ -27,23 +27,38 @@ import { createLogger } from '../logger.js';
 
 const log = createLogger('ghosts:open-file');
 
-let pendingCindyInstall: string | null = null;
+export type CindyInstallChannel = 'meka';
 
-/** renderer 原子取走待装路径(取即清空;无则 null)。IPC handler 消费。 */
-export function takePendingCindyInstall(): string | null {
-  const path = pendingCindyInstall;
-  pendingCindyInstall = null;
-  return path;
+export interface PendingCindyInstall {
+  filePath: string;
+  /** 一次性宿主安装归属；不来自插件清单。 */
+  channel?: CindyInstallChannel;
 }
 
-export async function handleIncomingCindyFile(filePath: string, source: string): Promise<void> {
-  log.info('incoming .cindy file', { filePath, source });
+let pendingCindyInstall: PendingCindyInstall | null = null;
+
+/** renderer 原子取走待装请求(取即清空;无则 null)。IPC handler 消费。 */
+export function takePendingCindyInstall(): PendingCindyInstall | null {
+  const pending = pendingCindyInstall;
+  pendingCindyInstall = null;
+  return pending;
+}
+
+export async function handleIncomingCindyFile(
+  filePath: string,
+  source: string,
+  options: { channel?: CindyInstallChannel } = {},
+): Promise<void> {
+  log.info('incoming .cindy file', { filePath, source, channel: options.channel });
   try {
     if (!(await fs.promises.stat(filePath)).isFile()) return;
   } catch {
     return; // 路径不存在 / 不可读 → 静默忽略(与 open-folder 的容错口径一致)
   }
-  pendingCindyInstall = filePath;
+  pendingCindyInstall = {
+    filePath,
+    ...(options.channel ? { channel: options.channel } : {}),
+  };
   // 已运行的窗口立即收到信号;冷启动时没有窗口,renderer 挂载后主动来取。
   BrowserWindow.getAllWindows().forEach((window) => {
     if (window.isDestroyed()) return;

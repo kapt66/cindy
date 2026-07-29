@@ -6,12 +6,17 @@ import {
   type LayoutNode,
   type PaneNode,
 } from '../../shared/layoutTree';
+import { GHOST_PANEL_KIND_PREFIX } from '../../shared/ghost';
 import { installGhostDevTools } from '../cindy-brain/ghostDevTools';
 import {
   ensureGhostPanelsRegistered,
   useGhostPanelsSync,
 } from '../cindy-brain/ghostPanels';
 import { isGhostPanelKindMinimized, useGhostPanelBubbleState } from '../lib/ghostPanelBubbleState';
+import {
+  isGhostPanelModalPresentationEnabled,
+  useGhostPanelModalPresentation,
+} from '../lib/ghostPanelPresentationPreference';
 import { isGhostPanelKindDetached, useGhostPanelWindowsState } from '../lib/ghostPanelWindowState';
 import { registerBuiltinPanels } from '../panels/builtinPanels';
 import { getPanelKind } from '../panels/registry';
@@ -61,6 +66,7 @@ const NON_CHAT_FLOOR_PX = 120;
 function isPanelKindVisible(kind: string): boolean {
   return (
     getPanelKind(kind) !== null &&
+    !(kind.startsWith(GHOST_PANEL_KIND_PREFIX) && isGhostPanelModalPresentationEnabled()) &&
     !isGhostPanelKindDetached(kind) &&
     !isGhostPanelKindMinimized(kind)
   );
@@ -353,6 +359,7 @@ export function LayoutRoot({ suppressNonChatPanels = false }: LayoutRootProps = 
   // hook 感知变化)。
   const ghostWindowsState = useGhostPanelWindowsState();
   const ghostBubbleState = useGhostPanelBubbleState();
+  const ghostPanelModalPresentation = useGhostPanelModalPresentation();
 
   // 首帧同步读取(sendSync):布局在第一帧就位,不出现默认布局闪现。
   const [layout, setLayout] = useState<Layout>(() => window.electronAPI.layout.getStateSync().layout);
@@ -380,7 +387,14 @@ export function LayoutRoot({ suppressNonChatPanels = false }: LayoutRootProps = 
   // isPanelKindVisible 的隐式数据源(模块级镜像),必须进 deps 才能感知抽离变化。
   const widths = useMemo(
     () => computePanelWidths(layout, liveFractions, avail),
-    [layout, liveFractions, avail, ghostWindowsState, ghostBubbleState],
+    [
+      layout,
+      liveFractions,
+      avail,
+      ghostWindowsState,
+      ghostBubbleState,
+      ghostPanelModalPresentation,
+    ],
   );
   // chat 实际渲染宽 ≈ 可用宽 − 可见非 chat 面板宽度之和(拖缝余量用,见
   // RootDividerPropsExtra;折叠面板的误差偏保守)。
@@ -402,7 +416,16 @@ export function LayoutRoot({ suppressNonChatPanels = false }: LayoutRootProps = 
       void window.electronAPI.layout.set(fixed).catch(() => undefined);
     }, 250);
     return () => clearTimeout(timer);
-  }, [availCtx, ghostBubbleState, ghostSyncVersion, ghostWindowsState, layout, liveFractions, suppressNonChatPanels]);
+  }, [
+    availCtx,
+    ghostBubbleState,
+    ghostPanelModalPresentation,
+    ghostSyncVersion,
+    ghostWindowsState,
+    layout,
+    liveFractions,
+    suppressNonChatPanels,
+  ]);
 
   // 撑满目标失效自动还原:面板被卸下/停用(kind 注销)、抽离进独立窗口或
   // pane 离开树时清态,免得下次回来以陈年撑满态惊回。接管态(设置页)只是
@@ -415,7 +438,15 @@ export function LayoutRoot({ suppressNonChatPanels = false }: LayoutRootProps = 
       c.children.some((ch) => ch.node.type === 'pane' && ch.node.panelKind === maximizedKind) &&
       isPanelKindVisible(maximizedKind);
     if (!present) setMaximizedKind(null);
-  }, [layout, ghostBubbleState, ghostSyncVersion, ghostWindowsState, maximizedKind, suppressNonChatPanels]);
+  }, [
+    layout,
+    ghostBubbleState,
+    ghostPanelModalPresentation,
+    ghostSyncVersion,
+    ghostWindowsState,
+    maximizedKind,
+    suppressNonChatPanels,
+  ]);
 
   const content = layout.content;
   let body: ReactNode;

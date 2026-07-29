@@ -61,12 +61,15 @@ import './plugin-motion.css';
 interface GhostPluginDetailViewProps {
   ghost: InstalledGhost | null;
   detail: GhostPluginDetail;
+  development?: boolean;
+  displayId?: string;
   panelStatus: string | null;
   enabledOverride?: boolean;
   onBack: () => void;
   onToggle: (enabled: boolean) => void;
   onUse: () => void;
-  onUpdate: () => void;
+  onOpenPanel?: (trigger: HTMLButtonElement) => void;
+  onUpdate?: () => void;
   updateLabel?: string;
   /** 市场存在新版本时的目标版本号;设置后头部展示显著的更新按钮。 */
   updateVersion?: string;
@@ -121,11 +124,14 @@ const DETAIL_SURFACE_INTERACTIVE_CLASS =
 export function GhostPluginDetailView({
   ghost,
   detail,
+  development = false,
+  displayId = detail.id,
   panelStatus,
   enabledOverride,
   onBack,
   onToggle,
   onUse,
+  onOpenPanel,
   onUpdate,
   updateLabel,
   updateVersion,
@@ -204,6 +210,7 @@ export function GhostPluginDetailView({
               iconDataUrl={detail.iconDataUrl}
               iconId={detail.id}
               iconName={detail.name}
+              development={development}
               size="detail"
             />
             <div className="min-w-0">
@@ -217,7 +224,7 @@ export function GhostPluginDetailView({
               className="plugin-detail-actions flex shrink-0 flex-nowrap items-center gap-1.5"
               style={WINDOW_NO_DRAG_STYLE}
             >
-              {updateVersion ? (
+              {updateVersion && onUpdate ? (
                 <button
                   type="button"
                   onClick={onUpdate}
@@ -230,6 +237,22 @@ export function GhostPluginDetailView({
                   )}
                 >
                   {t('settings.ghosts.market.updateTo', { version: updateVersion })}
+                </button>
+              ) : null}
+              {onOpenPanel ? (
+                <button
+                  type="button"
+                  onClick={(event) => onOpenPanel(event.currentTarget)}
+                  disabled={!enabled}
+                  title={!enabled ? t('settings.ghosts.detail.openPanelDisabled') : undefined}
+                  className={cn(
+                    'inline-flex h-10 items-center justify-center whitespace-nowrap rounded-full border border-[var(--border-default)] bg-[var(--surface-elevated)] px-5 text-13 font-medium text-[var(--text-primary)]',
+                    'transition-[background-color,border-color,transform,opacity] duration-[var(--motion-fast)] hover:border-[var(--text-tertiary)] hover:bg-[var(--surface-hover-soft)] active:scale-[0.98]',
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
+                    'disabled:cursor-not-allowed disabled:opacity-40 disabled:active:scale-100',
+                  )}
+                >
+                  {t('settings.ghosts.detail.openPanelAction')}
                 </button>
               ) : null}
               <button
@@ -268,14 +291,18 @@ export function GhostPluginDetailView({
                   sideOffset={8}
                   className="w-56 rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] p-1.5 text-[var(--text-primary)] shadow-[var(--shadow-menu)]"
                 >
-                  <DropdownMenuItem
-                    onSelect={onUpdate}
-                    disabled={updateBusy}
-                    className="h-10 rounded-lg px-3 text-13 focus:bg-[var(--surface-hover-soft)]"
-                  >
-                    {updateLabel ?? t('settings.ghosts.detail.updateFromFile')}
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator className="mx-2 my-1 h-px bg-[var(--border-default)]" />
+                  {onUpdate ? (
+                    <>
+                      <DropdownMenuItem
+                        onSelect={onUpdate}
+                        disabled={updateBusy}
+                        className="h-10 rounded-lg px-3 text-13 focus:bg-[var(--surface-hover-soft)]"
+                      >
+                        {updateLabel ?? t('settings.ghosts.detail.updateFromFile')}
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator className="mx-2 my-1 h-px bg-[var(--border-default)]" />
+                    </>
+                  ) : null}
                   <DropdownMenuItem
                     onSelect={onUninstall}
                     className="h-10 gap-2.5 rounded-lg px-3 text-13 text-[var(--error-fg)] focus:bg-[var(--error-bg)] focus:text-[var(--error-fg-strong)]"
@@ -367,7 +394,7 @@ export function GhostPluginDetailView({
 
         {detail.permissions.length > 0 ? <PermissionSummary items={detail.permissions} /> : null}
 
-        <DetailsSection detail={detail} panelStatus={panelStatus} />
+        <DetailsSection detail={detail} displayId={displayId} panelStatus={panelStatus} />
       </article>
     </main>
   );
@@ -607,9 +634,11 @@ function PermissionDetailRow({ item }: { item: GhostPermissionItem }) {
 
 export function DetailsSection({
   detail,
+  displayId = detail.id,
   panelStatus,
 }: {
   detail: GhostPluginDetail;
+  displayId?: string;
   panelStatus: string | null;
 }) {
   const { t } = useTranslation();
@@ -655,7 +684,7 @@ export function DetailsSection({
     {
       key: 'identifier',
       label: t('settings.ghosts.detail.infoId'),
-      value: detail.id,
+      value: displayId,
       monospace: true,
     },
     ...(detail.contents.length > 0

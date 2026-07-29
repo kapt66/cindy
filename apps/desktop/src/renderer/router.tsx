@@ -154,6 +154,7 @@ export const router = createHashRouter([
                     ],
                   },
                   { path: 'settings', element: <SettingsView /> },
+                  { path: 'meka-plugins', element: <GhostPluginPage surface="meka" /> },
                   { path: 'plugins', element: <GhostPluginPage /> },
                   {
                     path: 'billing',

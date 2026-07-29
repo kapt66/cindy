@@ -130,7 +130,7 @@ describe('ChatInput session switch focus contract', () => {
       'window.electronAPI.ghosts.onRecentUsageChanged(({ ids }) => {',
     );
     expect(pluginPageSource).toMatch(
-      /sortGhostPluginItemsByRecentUse\(installedItems, recentGhostIds\)/,
+      /sortGhostPluginItemsByRecentUse\(surfaceInstalledItems, recentGhostIds\)/,
     );
     expect(pluginPageSource).not.toContain(
       'sortGhostPluginItemsByRecentUse(\n        ghosts',

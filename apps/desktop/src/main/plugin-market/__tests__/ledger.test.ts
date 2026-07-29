@@ -105,7 +105,7 @@ describe('PluginMarketLedger', () => {
     const ledger = new PluginMarketLedger(() =>
       path.join(root, owner, 'ledger.v1.json'),
     );
-    const bound = ledger.bind(path.join(root, owner, 'ledger.v1.json'));
+    const bound = ledger.bind();
 
     owner = 'owner-b';
     bound.upsertInstallation(record());
