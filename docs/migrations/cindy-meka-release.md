@@ -214,7 +214,32 @@ back-up/<stable-version>/manifest-<platformKey>.json
 
 随后写 stable manifest，并从 CDN 反向校验。macOS arm64/x64 必须分别推进。
 
-## 6. 回滚
+## 6. Canary 撤回与 stable 回滚
+
+### 6.1 将 canary 对齐回 stable
+
+不要手动删除版本化 installer、hotfix 或运行时资产。需要撤回未推进的 canary，或已经
+手动删除 canary manifest 后希望恢复可读指针时，使用：
+
+```powershell
+# Windows：默认只预览
+pnpm release:reset-canary:win
+pnpm release:reset-canary:win -- --yes
+
+# macOS：缺省先预览 arm64 + x64，再逐架构执行
+pnpm release:reset-canary:mac
+pnpm release:reset-canary:mac -- --yes
+```
+
+脚本先校验 stable manifest 引用的 installer、hotfix、Claude 与 Codex 资产仍存在；
+当前 canary 存在时按“版本 + manifest 全文 SHA256”写入
+`back-up/canary/<version>/<sha256>/manifest-<platformKey>.json`，随后把 stable manifest
+全文写到 canary 指针并从 CDN 反向校验。版本化产物不会删除。
+
+该操作不是客户端降级：已经安装更高 canary 的客户端仍会因严格 SemVer 保持当前版本，
+需要重新安装 stable，或等待一个更高版本发布。
+
+### 6.2 回滚 stable
 
 先预览：
 
@@ -232,6 +257,11 @@ pnpm --filter desktop release:rollback -- `
 ## 7. 发布前验收
 
 - Windows：安装包签名、包内 exe 签名、旧版 → canary 热更、启动与卸载。
+- Windows 图标变更：热更替换并验证新进程启动后，确认开始菜单、运行中任务栏按钮与
+  悬浮缩略图均显示新图标；更新器会发送 `SHCNE_ASSOCCHANGED` 使 Shell 图标／关联缓存
+  失效，但该 best-effort 通知不参与更新成功判定。注意热更由更新前版本的 updater
+  执行：首次发布含该能力的 canary 后，还要再发布一个更高版本，由前一版执行第二次
+  热更，才能覆盖这条通知路径。
 - macOS：两个架构分别核对 bundle id、`CFBundleExecutable`、Mach-O 架构、签名；
   模拟新包启动失败时确认旧 `.app` 被恢复。
 - RustFS：bucket/prefix 与 Cindy 隔离，凭证仅发版机可见。

@@ -8,6 +8,7 @@ import {
   assertPublishVersionOrder,
   buildCanaryManifest,
   buildPublishedEndpointManifest,
+  canaryBackupKey,
   compareReleaseVersions,
   putImmutableArtifact,
   sha256File,
@@ -182,10 +183,33 @@ test("root and desktop package scripts expose the restored release shortcuts", (
     "release:promote:mac",
     "release:promote:mac:arm64",
     "release:promote:mac:x64",
+    "release:reset-canary:win",
+    "release:reset-canary:mac",
+    "release:reset-canary:mac:arm64",
+    "release:reset-canary:mac:x64",
   ]) {
     assert.equal(typeof rootPackage.scripts[name], "string", name);
     assert.equal(typeof desktopPackage.scripts[name], "string", name);
   }
+});
+
+test("canary reset backups are immutable and content-addressed", () => {
+  const first = canaryBackupKey(
+    "win32-x64",
+    "1.2.3",
+    '{"app":{"version":"1.2.3"}}\n',
+  );
+  const second = canaryBackupKey(
+    "win32-x64",
+    "1.2.3",
+    '{"app":{"version":"1.2.3","releaseNotes":"changed"}}\n',
+  );
+  assert.match(
+    first,
+    /^back-up\/canary\/1\.2\.3\/[a-f0-9]{64}\/manifest-win32-x64\.json$/,
+  );
+  assert.notEqual(first, second);
+  assert.throws(() => canaryBackupKey("linux-x64", "1.2.3", "{}"), /非法 platformKey/);
 });
 
 test("first release publishes Claude and Codex runtime assets into the manifest", async () => {

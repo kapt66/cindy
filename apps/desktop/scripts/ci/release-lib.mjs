@@ -349,6 +349,12 @@ export function stableBackupKey(platformKey, version) {
   return `back-up/${version}/manifest-${platformKey}.json`;
 }
 
+export function canaryBackupKey(platformKey, version, manifestText) {
+  parseVersion(version);
+  if (!SUPPORTED_PLATFORM_KEYS.has(platformKey)) throw new Error(`非法 platformKey=${platformKey}`);
+  return `back-up/canary/${version}/${sha256Text(manifestText)}/manifest-${platformKey}.json`;
+}
+
 export async function putImmutableText(storage, relativeKey, text) {
   const localSha = sha256Text(text);
   const head = await storage.head(relativeKey);
