@@ -17,11 +17,11 @@
  * QUERY_START / QUERY_SEND / etc.
  */
 
-import * as net from 'node:net';
-import * as fs from 'node:fs/promises';
-import * as path from 'node:path';
+import * as net from "node:net";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
 
-import { NDJSONDecoder, encodeMessage } from './codec.js';
+import { NDJSONDecoder, encodeMessage } from "./codec.js";
 import {
   METHODS,
   PROTOCOL_VERSION,
@@ -35,7 +35,7 @@ import {
   type RpcMessage,
   type RpcRequest,
   type RpcResponse,
-} from './protocol.js';
+} from "./protocol.js";
 
 export interface ManagerServerOptions {
   /** Absolute path to the unix socket. Parent dir is created if missing. */
@@ -55,9 +55,9 @@ export interface ManagerLogger {
 
 const defaultLogger: ManagerLogger = {
   debug: () => undefined,
-  info: (msg, ctx) => console.error('[cc-mgr][info]', msg, ctx ?? ''),
-  warn: (msg, ctx) => console.error('[cc-mgr][warn]', msg, ctx ?? ''),
-  error: (msg, ctx) => console.error('[cc-mgr][error]', msg, ctx ?? ''),
+  info: (msg, ctx) => console.error("[cc-mgr][info]", msg, ctx ?? ""),
+  warn: (msg, ctx) => console.error("[cc-mgr][warn]", msg, ctx ?? ""),
+  error: (msg, ctx) => console.error("[cc-mgr][error]", msg, ctx ?? ""),
 };
 
 export interface ClientCtx {
@@ -73,7 +73,10 @@ export interface ClientCtx {
  * Handler signature. Must return either a result payload (any JSON-serializable
  * value) or throw with .code matching RpcErrorCode for typed error responses.
  */
-export type MethodHandler = (params: unknown, ctx: ClientCtx) => Promise<unknown> | unknown;
+export type MethodHandler = (
+  params: unknown,
+  ctx: ClientCtx,
+) => Promise<unknown> | unknown;
 
 interface PendingServerRequest {
   resolve: (result: unknown) => void;
@@ -89,7 +92,10 @@ export class ManagerServer {
   private readonly managerVersion?: string;
   private readonly handlers = new Map<string, MethodHandler>();
   private readonly clients = new Set<ClientCtx>();
-  private readonly pendingServerRequests = new Map<RpcId, PendingServerRequest>();
+  private readonly pendingServerRequests = new Map<
+    RpcId,
+    PendingServerRequest
+  >();
   private readonly clientCloseListeners: Array<(ctx: ClientCtx) => void> = [];
   private nextServerRequestId: RpcId = -1;
   private started = false;
@@ -129,18 +135,22 @@ export class ManagerServer {
       if (timeoutMs > 0) {
         entry.timer = setTimeout(() => {
           if (this.pendingServerRequests.delete(id)) {
-            reject(new Error(`server request ${method} timed out after ${timeoutMs}ms`));
+            reject(
+              new Error(
+                `server request ${method} timed out after ${timeoutMs}ms`,
+              ),
+            );
           }
         }, timeoutMs);
       }
       this.pendingServerRequests.set(id, entry);
-      const request: RpcRequest = { type: 'request', id, method, params };
+      const request: RpcRequest = { type: "request", id, method, params };
       if (!ctx.socket.destroyed) {
         ctx.socket.write(encodeMessage(request));
       } else {
         this.pendingServerRequests.delete(id);
         if (entry.timer) clearTimeout(entry.timer);
-        reject(new Error('client socket already destroyed'));
+        reject(new Error("client socket already destroyed"));
       }
     });
   }
@@ -156,19 +166,19 @@ export class ManagerServer {
     }
     await new Promise<void>((resolve, reject) => {
       const onError = (err: Error): void => {
-        this.server.off('listening', onListening);
+        this.server.off("listening", onListening);
         reject(err);
       };
       const onListening = (): void => {
-        this.server.off('error', onError);
+        this.server.off("error", onError);
         resolve();
       };
-      this.server.once('error', onError);
-      this.server.once('listening', onListening);
+      this.server.once("error", onError);
+      this.server.once("listening", onListening);
       this.server.listen(this.socketPath);
     });
     this.started = true;
-    this.logger.info('manager started', { socketPath: this.socketPath });
+    this.logger.info("manager started", { socketPath: this.socketPath });
   }
 
   /** Register a listener called when a client socket closes. */
@@ -191,18 +201,21 @@ export class ManagerServer {
       await fs.rm(this.socketPath, { force: true });
     }
     this.started = false;
-    this.logger.info('manager stopped');
+    this.logger.info("manager stopped");
   }
 
   private registerBuiltinHandlers(): void {
     this.handlers.set(METHODS.PROTOCOL_HELLO, async (params, ctx) => {
       const p = (params ?? {}) as Partial<HelloParams>;
-      if (typeof p.protocolVersion !== 'number') {
-        throw makeServerError('INVALID_PARAMS', 'protocolVersion is required (number)');
+      if (typeof p.protocolVersion !== "number") {
+        throw makeServerError(
+          "INVALID_PARAMS",
+          "protocolVersion is required (number)",
+        );
       }
       if (p.protocolVersion !== PROTOCOL_VERSION) {
         throw makeServerError(
-          'INVALID_PROTOCOL_VERSION',
+          "INVALID_PROTOCOL_VERSION",
           `client version ${p.protocolVersion} != server version ${PROTOCOL_VERSION}`,
         );
       }
@@ -221,28 +234,37 @@ export class ManagerServer {
       socket,
       decoder: new NDJSONDecoder({
         onCorruptLine: (line, err) =>
-          this.logger.warn('corrupt ndjson line', { error: err.message, line: line.slice(0, 200) }),
+          this.logger.warn("corrupt ndjson line", {
+            error: err.message,
+            line: line.slice(0, 200),
+          }),
       }),
       initialized: false,
     };
     this.clients.add(ctx);
-    this.logger.debug('client connected', { totalClients: this.clients.size });
+    this.logger.debug("client connected", { totalClients: this.clients.size });
 
-    socket.on('data', (chunk: Buffer) => {
+    socket.on("data", (chunk: Buffer) => {
       for (const msg of ctx.decoder.push(chunk)) {
         void this.dispatch(ctx, msg);
       }
     });
-    socket.on('close', () => {
+    socket.on("close", () => {
       this.clients.delete(ctx);
       this.rejectPendingForCtx(ctx);
       for (const listener of this.clientCloseListeners) {
-        try { listener(ctx); } catch { /* */ }
+        try {
+          listener(ctx);
+        } catch {
+          /* */
+        }
       }
-      this.logger.debug('client disconnected', { totalClients: this.clients.size });
+      this.logger.debug("client disconnected", {
+        totalClients: this.clients.size,
+      });
     });
-    socket.on('error', (err) => {
-      this.logger.warn('client socket error', { error: err.message });
+    socket.on("error", (err) => {
+      this.logger.warn("client socket error", { error: err.message });
     });
   }
 
@@ -258,15 +280,15 @@ export class ManagerServer {
     const request = msg as RpcRequest;
     if (!ctx.initialized && request.method !== METHODS.PROTOCOL_HELLO) {
       this.sendResponse(ctx, request.id, undefined, {
-        code: 'NOT_INITIALIZED',
-        message: 'send protocol/hello first',
+        code: "NOT_INITIALIZED",
+        message: "send protocol/hello first",
       });
       return;
     }
     const handler = this.handlers.get(request.method);
     if (!handler) {
       this.sendResponse(ctx, request.id, undefined, {
-        code: 'UNKNOWN_METHOD',
+        code: "UNKNOWN_METHOD",
         message: `no handler for method ${request.method}`,
       });
       return;
@@ -275,12 +297,16 @@ export class ManagerServer {
       const result = await handler(request.params, ctx);
       this.sendResponse(ctx, request.id, result, undefined);
     } catch (err) {
-      const e = err as { code?: RpcErrorCode; message?: string; data?: unknown };
+      const e = err as {
+        code?: RpcErrorCode;
+        message?: string;
+        data?: unknown;
+      };
       const code: RpcErrorCode =
-        e.code && isValidErrorCode(e.code) ? e.code : 'INTERNAL';
+        e.code && isValidErrorCode(e.code) ? e.code : "INTERNAL";
       this.sendResponse(ctx, request.id, undefined, {
         code,
-        message: e.message ?? 'internal error',
+        message: e.message ?? "internal error",
         ...(e.data !== undefined ? { data: e.data } : {}),
       });
     }
@@ -291,7 +317,7 @@ export class ManagerServer {
       if (entry.ctx === ctx) {
         this.pendingServerRequests.delete(id);
         if (entry.timer) clearTimeout(entry.timer);
-        entry.reject(new Error('client disconnected before responding'));
+        entry.reject(new Error("client disconnected before responding"));
       }
     }
   }
@@ -315,10 +341,12 @@ export class ManagerServer {
     error: { code: RpcErrorCode; message: string; data?: unknown } | undefined,
   ): void {
     const response: RpcResponse = {
-      type: 'response',
+      type: "response",
       id,
       ...(result !== undefined ? { result } : {}),
-      ...(error ? { error: makeRpcError(error.code, error.message, error.data) } : {}),
+      ...(error
+        ? { error: makeRpcError(error.code, error.message, error.data) }
+        : {}),
     };
     if (!ctx.socket.destroyed) {
       ctx.socket.write(encodeMessage(response));
@@ -332,7 +360,11 @@ interface ServerError {
   data?: unknown;
 }
 
-function makeServerError(code: RpcErrorCode, message: string, data?: unknown): ServerError {
+function makeServerError(
+  code: RpcErrorCode,
+  message: string,
+  data?: unknown,
+): ServerError {
   const err = new Error(message) as Error & ServerError;
   err.code = code;
   if (data !== undefined) err.data = data;
@@ -340,16 +372,18 @@ function makeServerError(code: RpcErrorCode, message: string, data?: unknown): S
 }
 
 const ERROR_CODES = new Set<RpcErrorCode>([
-  'INVALID_PROTOCOL_VERSION',
-  'INVALID_BUNDLE_VERSION',
-  'UNKNOWN_METHOD',
-  'INVALID_PARAMS',
-  'NOT_INITIALIZED',
-  'SESSION_NOT_FOUND',
-  'SESSION_ALREADY_EXISTS',
-  'BUNDLE_MATERIALIZE_FAILED',
-  'SDK_ERROR',
-  'INTERNAL',
+  "INVALID_PROTOCOL_VERSION",
+  "INVALID_BUNDLE_VERSION",
+  "UNKNOWN_METHOD",
+  "INVALID_PARAMS",
+  "NOT_INITIALIZED",
+  "SESSION_NOT_FOUND",
+  "SESSION_ALREADY_EXISTS",
+  "BUNDLE_MATERIALIZE_FAILED",
+  "SESSION_KILL_PENDING",
+  "SESSION_KILL_TIMEOUT",
+  "SDK_ERROR",
+  "INTERNAL",
 ]);
 
 function isValidErrorCode(code: string): code is RpcErrorCode {

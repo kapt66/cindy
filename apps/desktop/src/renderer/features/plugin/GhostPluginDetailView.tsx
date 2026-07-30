@@ -80,6 +80,7 @@ interface GhostPluginDetailViewProps {
   updateProgress?: PluginMarketInstallProgress | null;
   onUninstall: () => void;
   toggleDisabled: boolean;
+  onIconLoadError?: () => void;
 }
 
 const PERMISSION_ICON: Record<GhostPermissionItem['kind'], LucideIcon> = {
@@ -143,6 +144,7 @@ export function GhostPluginDetailView({
   updateProgress,
   onUninstall,
   toggleDisabled,
+  onIconLoadError,
 }: GhostPluginDetailViewProps) {
   const { t } = useTranslation();
   const [descriptionExpanded, setDescriptionExpanded] = useState(false);
@@ -154,9 +156,7 @@ export function GhostPluginDetailView({
   const hasPanelPresentationPreference =
     ghost?.manifest.panel?.allowUserPresentationOverride === true;
   const hasConfiguration =
-    detail.hasSettingsUi ||
-    cindyCapabilities.length > 0 ||
-    hasPanelPresentationPreference;
+    detail.hasSettingsUi || cindyCapabilities.length > 0 || hasPanelPresentationPreference;
   const summary = ghostPluginSummary(detail.description, detail.id);
 
   useLayoutEffect(() => {
@@ -222,6 +222,7 @@ export function GhostPluginDetailView({
               iconName={detail.name}
               development={development}
               size="detail"
+              onIconLoadError={onIconLoadError}
             />
             <div className="min-w-0">
               <h1 className="truncate text-28 font-medium leading-[34px] text-[var(--text-primary)]">
@@ -251,9 +252,11 @@ export function GhostPluginDetailView({
                   <PluginMarketProgressContent
                     progress={updateProgress}
                     update
-                    fallback={t('settings.ghosts.market.updateTo', {
-                      version: updateVersion,
-                    })}
+                    fallback={
+                      updateVersion === detail.version
+                        ? t('settings.ghosts.market.update')
+                        : t('settings.ghosts.market.updateTo', { version: updateVersion })
+                    }
                   />
                 </button>
               ) : null}
@@ -320,9 +323,7 @@ export function GhostPluginDetailView({
                           progress={updateProgress}
                           update
                           showBar={false}
-                          fallback={
-                            updateLabel ?? t('settings.ghosts.detail.updateFromFile')
-                          }
+                          fallback={updateLabel ?? t('settings.ghosts.detail.updateFromFile')}
                         />
                       </DropdownMenuItem>
                       <DropdownMenuSeparator className="mx-2 my-1 h-px bg-[var(--border-default)]" />

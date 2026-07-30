@@ -30,12 +30,7 @@ import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
-import {
-  RpcClient,
-  createRemoteQuery,
-  METHODS,
-  SERVER_METHODS,
-} from '@cindy/maker-cc-manager';
+import { RpcClient, createRemoteQuery, METHODS, SERVER_METHODS } from '@cindy/maker-cc-manager';
 import type {
   RemoteQuery,
   QueryStartParams,
@@ -87,6 +82,12 @@ const DAEMON_READY_TIMEOUT_MS = 10_000;
  * 卡死 UI 显示 "connecting" 不可恢复。15s 兜底让 user-visible error 快速冒出来。
  */
 export const RPC_REQUEST_TIMEOUT_MS = 15_000;
+/**
+ * SESSION_KILL 专用 timeout — daemon 侧 kill 会同步等 consume loop 退出
+ * (10s 看门狗 + close() 升级后再等 5s grace, 见 maker-cc-manager
+ * session-registry.ts), 正常路径最坏 ~15s, 必须显著宽于通用 RPC 超时。
+ */
+const KILL_RPC_TIMEOUT_MS = 30_000;
 /** ssh 启 daemon 命令的最长等待 — 超时 ssh channel 被强关, daemon 已 setsid 独立。 */
 const DAEMON_SPAWN_SSH_TIMEOUT_MS = 5_000;
 /** sock 探活 / 等待循环的轮询间隔。 */
@@ -300,6 +301,16 @@ export async function openCcManagerSession(opts: {
   onApprovalRequest?: (params: ApprovalRequestParams) => Promise<ApprovalRequestResult>;
   /** Desktop-owned sdk MCP instances projected into a remote Claude session. */
   inProcessMcpServers?: Record<string, unknown>;
+  /**
+   * 强制 fresh start:daemon 侧 session alive 时也先 kill 再走 start 路径
+   * (而非 attach)。用于本机 HTTP MCP bridge 重启 (app 重启) 后首轮注入:
+   * 旧 SDK 持有的 mcp-session-id 在新 bridge 已不存在, attach 会让协同
+   * MCP 的每次调用 404 且 SDK 不会自动重新 initialize。fresh start 经
+   * startParams.resumeSdkSessionId 恢复上下文 (远端 cc CLI session 文件
+   * 持久化在远端机器上)。SSH 断线重连 (app 未重启) 不要传:bridge 内存
+   * 表还在, attach 是对的。
+   */
+  forceFreshQuery?: boolean;
 }): Promise<{
   remoteQuery: RemoteQuery;
   dispose: () => Promise<void>;
@@ -328,9 +339,11 @@ export async function openCcManagerSession(opts: {
   // 下来的同款), 已经在 REMOTE_XDT_NODE_PATH; cc-mgr.mjs 也已经在 REMOTE_BUNDLE,
   // 两个都不依赖远端系统额外软件。比 `nc -U` 多 1 个 node 启动开销 (~30ms),
   // 换"任意 Linux 镜像都能跑"的稳定性。
-  const handle: CcManagerByteStream = opts.stream ?? await opts.host!.execStream(
-    `"${REMOTE_NODE}" "${REMOTE_BUNDLE}" bridge --socket "${REMOTE_SOCK}"`,
-  );
+  const handle: CcManagerByteStream =
+    opts.stream ??
+    (await opts.host!.execStream(
+      `"${REMOTE_NODE}" "${REMOTE_BUNDLE}" bridge --socket "${REMOTE_SOCK}"`,
+    ));
   const duplex = bridgeStreamToDuplex(handle);
   const client = new RpcClient(duplex);
   const tunnelProxies = new Map<string, { proxy: McpClient; instance: McpServer }>();
@@ -358,11 +371,22 @@ export async function openCcManagerSession(opts: {
         try {
           return await opts.onApprovalRequest(p);
         } catch (err) {
-          log.warn('approval request handler rejected', { kind: p.kind, error: (err as Error)?.message });
-          return { kind: p.kind, behavior: 'deny', reason: (err as Error)?.message ?? 'handler error' } satisfies ApprovalRequestResult;
+          log.warn('approval request handler rejected', {
+            kind: p.kind,
+            error: (err as Error)?.message,
+          });
+          return {
+            kind: p.kind,
+            behavior: 'deny',
+            reason: (err as Error)?.message ?? 'handler error',
+          } satisfies ApprovalRequestResult;
         }
       }
-      return { kind: p.kind, behavior: 'deny', reason: 'no approval handler registered' } satisfies ApprovalRequestResult;
+      return {
+        kind: p.kind,
+        behavior: 'deny',
+        reason: 'no approval handler registered',
+      } satisfies ApprovalRequestResult;
     });
 
     for (const [name, cfg] of Object.entries(opts.inProcessMcpServers ?? {})) {
@@ -403,9 +427,13 @@ export async function openCcManagerSession(opts: {
     //
     // 一次 SESSION_LIST RPC ≈ daemon 内 in-memory Map 遍历, 本地 desktop 看是
     // 1 个额外 RTT (~10ms over ssh), 远比 race 后 fallback 干净。
-    const list = await client.request<SessionListResult>(METHODS.SESSION_LIST, {}, {
-      timeoutMs: RPC_REQUEST_TIMEOUT_MS,
-    });
+    const list = await client.request<SessionListResult>(
+      METHODS.SESSION_LIST,
+      {},
+      {
+        timeoutMs: RPC_REQUEST_TIMEOUT_MS,
+      },
+    );
 
     const listedSession = list.sessions.find((s) => s.sessionId === opts.sessionId);
     // dead session 处理(对齐 codex 模式):alive → attach live-only,
@@ -413,26 +441,84 @@ export async function openCcManagerSession(opts: {
     // chat(跟 codex remote 行为一致);基于 SDK jsonl 的 read-since-lineNo
     // recovery 是 follow-up,**尚未实现**。
     if (listedSession && !listedSession.alive) {
-      await client.request(
-        METHODS.SESSION_KILL,
-        { sessionId: opts.sessionId },
-        { timeoutMs: RPC_REQUEST_TIMEOUT_MS },
-      ).catch(() => undefined);
+      // dead 条目的 kill 只是注册表清理, 失败可吞:start 路径对 dead 条目
+      // 不撞 SESSION_ALREADY_EXISTS (该错误只对 alive 条目)。
+      await client
+        .request(
+          METHODS.SESSION_KILL,
+          { sessionId: opts.sessionId },
+          { timeoutMs: RPC_REQUEST_TIMEOUT_MS },
+        )
+        .catch(() => undefined);
       log.info('cc-mgr: dead session killed (fresh start, 对齐 codex 模式)', {
         hostId: transportId,
         sessionId: opts.sessionId,
         daemonLastSeq: listedSession.lastSeq,
       });
     }
-    const existing = listedSession?.alive ? listedSession : undefined;
+    // forceFreshQuery:alive 也 kill + fresh (bridge MCP 重启后首轮注入,
+    // 见 opts.forceFreshQuery 注释)。
+    const killAliveForFresh = listedSession?.alive === true && opts.forceFreshQuery === true;
+    if (killAliveForFresh) {
+      // kill 失败不得吞错继续 (greptile P1):旧 session 仍 alive 时 fresh
+      // start 必撞 SESSION_ALREADY_EXISTS, 且后续重试沿同一路径永久卡死。
+      // 让错误上抛 → open 失败 → forcedFresh 状态不提交 (maker-host 只在
+      // open 成功后 add), 下次重试仍带 forceFreshQuery 重试 kill, 瞬时
+      // 故障可恢复。
+      await client.request(
+        METHODS.SESSION_KILL,
+        { sessionId: opts.sessionId },
+        { timeoutMs: KILL_RPC_TIMEOUT_MS },
+      );
+      // registry.kill 同步等 consume loop 退出才返回 (interrupt 无效时
+      // 升级 query.close() 终止子进程; 仍不退出抛 SESSION_KILL_TIMEOUT
+      // 上抛, 绝不谎报已退出 — greptile confidence 3/5)。此处轮询只是
+      // belt-and-braces (loop 退出到 list 反映之间无间隙, 通常首轮即
+      // break), 保留以兜住 daemon 老版本 (无同步 kill) 的慢退出:
+      // 退避 (150ms→1s), 总预算 30s。
+      // 超时只能上抛, 不得降级 attach (greptile R22/R23 P1):kill 已 end
+      // 输入队列, AsyncQueue.push 在 end 后静默丢弃 (cc-mgr registry 注释
+      // 实锤) — attach 仍在退出中的 query 会吞掉用户消息。慢退出场景由
+      // 调用方重试自然覆盖 (重试时 query 多已退出);consume loop 永不退出
+      // 是 daemon 病态, 任何客户端策略都无法恢复, 错误信息给出可操作
+      // 指引 (重启远端 cc-mgr)。fresh 状态不提交, 下次重试仍带
+      // forceFreshQuery。
+      const killWaitDeadline = Date.now() + 30_000;
+      let pollDelayMs = 150;
+      for (;;) {
+        const after = await client.request<SessionListResult>(
+          METHODS.SESSION_LIST,
+          {},
+          {
+            timeoutMs: RPC_REQUEST_TIMEOUT_MS,
+          },
+        );
+        const stillAlive =
+          after.sessions.find((s) => s.sessionId === opts.sessionId)?.alive === true;
+        if (!stillAlive) break;
+        if (Date.now() > killWaitDeadline) {
+          throw new Error(
+            `cc-mgr: session ${opts.sessionId} still alive 30s after kill (forced fresh) — ` +
+              `the daemon's consume loop did not exit; retry shortly, or restart the remote ` +
+              `cc-mgr daemon if it persists (a wedged consume loop cannot be recovered from the client side)`,
+          );
+        }
+        await new Promise((r) => setTimeout(r, pollDelayMs));
+        pollDelayMs = Math.min(pollDelayMs * 2, 1_000);
+      }
+      log.info('cc-mgr: alive session killed for forced fresh start (bridge MCP re-inject)', {
+        hostId: transportId,
+        sessionId: opts.sessionId,
+        daemonLastSeq: listedSession.lastSeq,
+      });
+    }
+    const existing = listedSession?.alive && !killAliveForFresh ? listedSession : undefined;
 
     // 对齐 codex 模式: alive → attach live-only, dead/absent → fresh start。
     // 不 replay 旧 events,不追踪 cursor。
     const remoteStartParams: QueryStartParams = {
       ...startParamsWithBinary,
-      ...(tunnelProxies.size > 0
-        ? { tunneledMcpServers: [...tunnelProxies.keys()] }
-        : {}),
+      ...(tunnelProxies.size > 0 ? { tunneledMcpServers: [...tunnelProxies.keys()] } : {}),
     };
     const remoteQuery = existing
       ? await createRemoteQuery({

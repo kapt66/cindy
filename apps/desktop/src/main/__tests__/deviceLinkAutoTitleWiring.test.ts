@@ -24,8 +24,14 @@ const sessionsSource = readFileSync(
 ).replace(/\r\n?/g, '\n');
 
 function handlerBody(channel: string, nextChannel: string): string {
-  const start = registerSource.indexOf(`ipcMain.handle(MAKER_INVOKE.${channel}`);
-  const end = registerSource.indexOf(`ipcMain.handle(MAKER_INVOKE.${nextChannel}`, start);
+  const handlerStart = (target: string, from = 0) => {
+    const match = new RegExp(`ipcMain\\.handle\\(\\s*MAKER_INVOKE\\.${target}`).exec(
+      registerSource.slice(from),
+    );
+    return match?.index === undefined ? -1 : from + match.index;
+  };
+  const start = handlerStart(channel);
+  const end = handlerStart(nextChannel, start);
   expect(start).toBeGreaterThan(-1);
   expect(end).toBeGreaterThan(start);
   return registerSource.slice(start, end);
@@ -76,14 +82,20 @@ describe('user rename notification ordering', () => {
     // 智能标题仍能满足 `WHERE title = 期望值` 把用户刚保存的名字盖掉(review P1)。
     for (const [note, write] of [
       // local-db:sessions:update(本机重命名框)
-      ["if (typeof p.title === 'string') noteUserTitleWritten(sid);",
-       'await db.update(sessions).set(setObj).where(eq(sessions.id, sid));'],
+      [
+        "if (typeof p.title === 'string') noteUserTitleWritten(sid);",
+        'await db.update(sessions).set(setObj).where(eq(sessions.id, sid));',
+      ],
       // patchSessionMetaInDb(device-link 远程改名)
-      ['if (patch.title !== undefined) noteUserTitleWritten(sessionId);',
-       'await db.update(sessions).set(setObj).where(eq(sessions.id, sessionId));'],
+      [
+        'if (patch.title !== undefined) noteUserTitleWritten(sessionId);',
+        'await db.update(sessions).set(setObj).where(eq(sessions.id, sessionId));',
+      ],
       // renameSessionTitlesInDb(MCP 批量改名)
-      ['for (const change of changes) noteUserTitleWritten(change.sessionId);',
-       "getDbClient()\n    .tx('sessions.renameTitles'"],
+      [
+        'for (const change of changes) noteUserTitleWritten(change.sessionId);',
+        "getDbClient()\n    .tx('sessions.renameTitles'",
+      ],
     ] as const) {
       const noteAt = sessionsSource.indexOf(note);
       expect(noteAt).toBeGreaterThan(-1);

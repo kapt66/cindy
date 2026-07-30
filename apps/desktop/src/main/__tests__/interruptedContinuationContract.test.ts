@@ -18,7 +18,10 @@ const sessionViewSource = readFileSync(
 
 function matchIndexes(haystack: string, pattern: RegExp): number[] {
   const indexes: number[] = [];
-  const re = new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`);
+  const re = new RegExp(
+    pattern.source,
+    pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`,
+  );
   for (const match of haystack.matchAll(re)) {
     if (typeof match.index === 'number') indexes.push(match.index);
   }
@@ -27,8 +30,12 @@ function matchIndexes(haystack: string, pattern: RegExp): number[] {
 
 describe('interrupted continuation enqueue contract', () => {
   it('does not durable-ack continue prompts at INPUT_ENQUEUE or onAccepted time', () => {
-    const enqueueStart = registerSource.indexOf('ipcMain.handle(MAKER_INVOKE.INPUT_ENQUEUE');
-    const enqueueEnd = registerSource.indexOf('ipcMain.handle(MAKER_INVOKE.INPUT_COMPACT', enqueueStart);
+    const enqueueStart =
+      /ipcMain\.handle\(\s*MAKER_INVOKE\.INPUT_ENQUEUE/.exec(registerSource)?.index ?? -1;
+    const compactMatch = /ipcMain\.handle\(\s*MAKER_INVOKE\.INPUT_COMPACT/.exec(
+      registerSource.slice(enqueueStart),
+    );
+    const enqueueEnd = compactMatch?.index === undefined ? -1 : enqueueStart + compactMatch.index;
     expect(enqueueStart).toBeGreaterThan(-1);
     expect(enqueueEnd).toBeGreaterThan(enqueueStart);
     const enqueueHandler = registerSource.slice(enqueueStart, enqueueEnd);
@@ -81,6 +88,11 @@ describe('interrupted continuation enqueue contract', () => {
     expect(sessionViewSource).toMatch(
       /if \(syntheticContinuationPending && sessionInterruptAcked\) \{\s*setSessionInterruptAcked\(false\);\s*\}/,
     );
+    // 恰好两处消费点(error-tail banner 与 interrupted banner 的互斥渲染条件),
+    // 多一处就要回来审视是否绕过了「抑制交给排队/在飞状态」这条契约。
+    // 注:PR #879 加的「挂起状态落回 false 的边沿 → 重算告警红点」effect 走的是
+    // 早退写法(`if (!was || syntheticContinuationPending) return;`),不消费这个
+    // 否定形式,故计数不变。
     expect(matchIndexes(sessionViewSource, /!syntheticContinuationPending/)).toHaveLength(2);
   });
 });

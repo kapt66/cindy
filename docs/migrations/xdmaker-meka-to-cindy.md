@@ -1,8 +1,8 @@
 # XDMaker Meka → Cindy Meka 严格迁移总账
 
-> 状态：本轮未提交改动的代码门禁已通过；更新器图标资源已由 owner 确认并独立提交，
-> `cindy-protocol` 保持父仓记录的干净版本，仍等待开发者手测
-> 最后更新：2026-07-29
+> 状态：正在把 `origin/main@e4b464a2e` 合入 `meka/main@9ddf4d662`；冲突已完成
+> 语义收敛，等待本轮迁移、类型与单测门禁
+> 最后更新：2026-07-30
 > 目标仓库：`C:\Workspace\cindy`，分支 `meka/main`
 > 来源仓库：远端 `xdmaker`（`git@github.com:kapt66/XDMaker.git`），分支
 > `xdmaker/meka/main`
@@ -1132,6 +1132,52 @@ MekaDesign 路由，`call_tool` 也在 Main 边界拒绝同名旁路调用。内
 thread-context gated 的本地动态代理投影这条唯一入口，Claude 继续直连 HTTP endpoint。
 冲突确认只携带不可逆 ID，确认替换由 Main 重新读取候选，避免为本功能新增 Router
 候选 endpoint 下放。
+
+### 6.17 2026-07-30 本地同步 `origin/main`
+
+本地从 `meka/main@9ddf4d662` 合并 `origin/main@e4b464a2e`。本节记录本轮冲突处理后的
+有效行为；冲突解析与提交前门禁已经完成，本轮只创建本地 merge commit，不推送。
+
+1. **产品身份与能力边界**
+   - Desktop 继续从 `BRAND_IDENTITY` 读取 Cindy Meka 的 productName、描述与安装身份，
+     不接受上游普通 Cindy 的字面量覆盖。
+   - 上游新增的微信 IM、provider 刷新、设备项目选择和插件市场恢复能力按当前架构合入；
+     Meka 市场 surface、开发插件面板、项目/角色绑定和正式流程保持独立语义。
+2. **migration 编号碰撞**
+   - `meka/main` 已发布并冻结的 `0082`–`0088` 历史不改写；上游同号的微信与群消息表
+     migration 不直接进入 Meka lineage。
+   - 使用 Drizzle custom migration 从最新 Meka snapshot 生成
+     `0089_upstream_wechat_and_group_messages`；生成器负责 snapshot 与 journal，SQL 只承载
+     上游两条 migration 的等价 DDL，避免重复执行既有 Meka schema。
+3. **新建草稿与协同**
+   - 普通 Cindy 草稿接入上游 device scope、远程项目浏览、发送中互斥和协同策略刷新；
+     `workspaceKind=meka` 继续要求项目与角色，保留正式目标创建，不展示普通 Cindy 的
+     DeviceSwitcher。
+   - 上游统一的目标解析器成为工作目录与 `remoteHostId` 的事实来源；普通远程 Lead 的
+     Worker 继承 SSH host，Meka Worker 继续使用显式 P4/MCPRouter 目标。
+4. **插件与远程运行时**
+   - 插件页保留 Meka surface、开发态安装和打开面板动作，同时接入上游 locale、
+     foreground refresh、同版本更新识别与图标失效恢复。
+   - Claude/Codex 远程查询同时保留 Meka 的进程内 MCP/MCPRouter 投影，并接入上游
+     provider options、Maker Memory、fresh query 与远程 host 生命周期。
+5. **协议子模块**
+   - 父仓指针前进到 `cindy-protocol@2520a40`；该提交是 `8303c39` 的后代。
+   - 上游父仓提交 `c098d544f` 已记录配套 server 同步到同一指针；最新一步只补
+     `turn.reopen` 契约文档，不改变 wire shape 或导出 API，因此不存在单端协议漂移。
+
+本轮自动化验证结果：
+
+- `pnpm test:unit` 通过，包括根级 runner、Desktop、Mobile、maker-core 及其余 unit
+  workspace；Windows `%TEMP%` 位于用户目录所导致的 subagent fixture 污染，以及超大
+  64-bit inode 使测试中的 `ino + 1` 失去差异，均仅在测试隔离/断言层修正，未改变生产
+  扫描和 netlog 校验语义。
+- `pnpm -r --if-present run typecheck` 通过。
+- `pnpm --filter desktop db:validate` 与
+  `pnpm --filter desktop test:migration-replay` 通过，确认冻结的 `0082`–`0088` 未被
+  改写，`0089` 可从当前 Meka lineage 顺序回放。
+- `pnpm test:runner` 通过；协议子模块指针祖先关系与最终无 wire/API 漂移已人工核对。
+
+真实账号、MCPRouter、远程设备和双主题 UI 仍需后续手测。
 
 ## 7. 当前未解决问题与风险
 

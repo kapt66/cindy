@@ -43,7 +43,7 @@ function findWorkerSession(params: {
   }
   const firstWorkerRecord = workerRecords[0];
   return firstWorkerRecord
-    ? sessions.find((s) => s.id === firstWorkerRecord.sessionId) ?? null
+    ? (sessions.find((s) => s.id === firstWorkerRecord.sessionId) ?? null)
     : null;
 }
 
@@ -111,46 +111,54 @@ describe('OrcaWorkflowRoute worker session lookup contract', () => {
   const workerB: TestSession = { id: 'worker-b', agentKind: 'cc' };
 
   it('returns explicit worker only when workflow records link it to the lead', () => {
-    expect(findWorkerSession({
-      leadSession: lead,
-      sessions: [lead, workerA, workerB],
-      workerRecords: [{ id: 'worker-record-a', sessionId: workerA.id }],
-      workerSessionId: workerA.id,
-    })).toBe(workerA);
+    expect(
+      findWorkerSession({
+        leadSession: lead,
+        sessions: [lead, workerA, workerB],
+        workerRecords: [{ id: 'worker-record-a', sessionId: workerA.id }],
+        workerSessionId: workerA.id,
+      }),
+    ).toBe(workerA);
   });
 
   it('falls back to the first workflow worker record', () => {
-    expect(findWorkerSession({
-      leadSession: lead,
-      sessions: [lead, workerA, workerB],
-      workerRecords: [
-        { id: 'worker-record-b', sessionId: workerB.id },
-        { id: 'worker-record-a', sessionId: workerA.id },
-      ],
-      workerSessionId: 'unlinked-worker',
-    })).toBe(workerB);
+    expect(
+      findWorkerSession({
+        leadSession: lead,
+        sessions: [lead, workerA, workerB],
+        workerRecords: [
+          { id: 'worker-record-b', sessionId: workerB.id },
+          { id: 'worker-record-a', sessionId: workerA.id },
+        ],
+        workerSessionId: 'unlinked-worker',
+      }),
+    ).toBe(workerB);
   });
 
   it('returns the focused worker before the URL hint', () => {
-    expect(findWorkerSession({
-      leadSession: lead,
-      sessions: [lead, workerA, workerB],
-      workerRecords: [
-        { id: 'worker-record-a', sessionId: workerA.id },
-        { id: 'worker-record-b', sessionId: workerB.id },
-      ],
-      focusedWorkerSessionId: workerB.id,
-      workerSessionId: workerA.id,
-    })).toBe(workerB);
+    expect(
+      findWorkerSession({
+        leadSession: lead,
+        sessions: [lead, workerA, workerB],
+        workerRecords: [
+          { id: 'worker-record-a', sessionId: workerA.id },
+          { id: 'worker-record-b', sessionId: workerB.id },
+        ],
+        focusedWorkerSessionId: workerB.id,
+        workerSessionId: workerA.id,
+      }),
+    ).toBe(workerB);
   });
 
   it('returns null without workflow records', () => {
-    expect(findWorkerSession({
-      leadSession: lead,
-      sessions: [lead, workerA],
-      workerRecords: [],
-      workerSessionId: null,
-    })).toBe(null);
+    expect(
+      findWorkerSession({
+        leadSession: lead,
+        sessions: [lead, workerA],
+        workerRecords: [],
+        workerSessionId: null,
+      }),
+    ).toBe(null);
   });
 });
 
@@ -173,13 +181,13 @@ describe('OrcaWorkflowRoute source invariants', () => {
       "text={effectiveDisabledReason ?? t('newChat.collaboration.stopHint')}",
     );
     expect(collaborationModeToggleSource.match(/disabledWrapperProps\(/g)).toHaveLength(3);
-    expect(collaborationModeToggleSource.match(/aria-hidden=\{disabled \|\| undefined\}/g)).toHaveLength(3);
+    expect(
+      collaborationModeToggleSource.match(/aria-hidden=\{disabled \|\| undefined\}/g),
+    ).toHaveLength(3);
     expect(collaborationModeToggleSource).toContain(
       "'aria-disabled': onDisabledActivate ? undefined : true",
     );
-    expect(collaborationModeToggleSource).toContain(
-      'onKeyDown: blockDisabledKeyboardActivation',
-    );
+    expect(collaborationModeToggleSource).toContain('onKeyDown: blockDisabledKeyboardActivation');
     expect(collaborationModeToggleSource).toContain(
       "if (event.key !== 'Enter' && event.key !== ' ') return;",
     );
@@ -188,20 +196,17 @@ describe('OrcaWorkflowRoute source invariants', () => {
   });
 
   it('keeps the active collaboration tooltip free of policy-disabled reasons', () => {
-    expect(sessionViewSource).toContain(
-      "disabledReason:\n" +
-        "                            !collabEnabled\n" +
-        "                              ? collabPolicyEligible && collabPolicy.loading",
+    expect(sessionViewSource).toMatch(
+      /disabledReason:\s*!collabEnabled\s*\?\s*collabPolicyEligible && collabPolicy\.loading/,
     );
-    expect(sessionViewSource).toContain(
-      "                                  : undefined\n" +
-        "                              : undefined,",
+    expect(sessionViewSource).toMatch(
+      /collabPolicy\.unavailable[\s\S]*?'newChat\.collaboration\.disabledHint',[\s\S]*?\)\s*:\s*undefined\s*:\s*undefined,/,
     );
   });
 
   it('retries an unavailable policy from the disabled collaboration control', () => {
-    expect(sessionViewSource).toContain(
-      'onDisabledActivate: collabPolicyEligible && collabPolicy.unavailable',
+    expect(sessionViewSource).toMatch(
+      /onDisabledActivate:\s*collabPolicyEligible && collabPolicy\.unavailable/,
     );
     expect(sessionViewSource).toContain('void collabPolicy.refresh().then((policy) => {');
     expect(sessionViewSource).toContain('if (policy.enabled && !policy.unavailable) {');
@@ -212,9 +217,8 @@ describe('OrcaWorkflowRoute source invariants', () => {
   });
 
   it('does not subscribe to project policy updates from the legacy Orca route or Meka', () => {
-    expect(sessionViewSource).toContain(
-      'const collabPolicyEligible =\n' +
-        '    allowCollabToggle && !isMekaCollabSession;',
+    expect(sessionViewSource).toMatch(
+      /const collabPolicyEligible =\s*allowCollabToggle && !isMekaCollabSession;/,
     );
     expect(sessionViewSource).toContain(
       "const isMekaCollabSession = session?.workspaceKind === 'meka';",
@@ -230,7 +234,9 @@ describe('OrcaWorkflowRoute source invariants', () => {
     expect(routeSource).toContain("params.delete('workerAgent')");
     expect(routeSource).toContain('leadSessionId: sessionId');
     expect(routeSource).toContain('focusWorkerSessionId: workerSessionId');
-    expect(routeSource).toContain('navigate(`/cc-agent/${sessionId}${nextSearch ? `?${nextSearch}` : \'\'}`, {');
+    expect(routeSource).toContain(
+      "navigate(`/cc-agent/${sessionId}${nextSearch ? `?${nextSearch}` : ''}`, {",
+    );
     expect(routeSource).toContain('const orcaWorkersReveal = isOrcaLeadSession(leadSession)');
     expect(routeSource).toContain('orcaWorkersReveal,');
     expect(routeSource).not.toContain('<CCAgentSessionView');
@@ -262,9 +268,7 @@ describe('OrcaWorkflowRoute source invariants', () => {
 
   it('keeps missing worker panes as placeholders instead of editable inputs', () => {
     expect(splitViewSource).toContain("workerEmptyLabel ?? t('orca.split.waitingForWorker')");
-    expect(chatInputSource).toContain(
-      "autofocus: !disableAutofocus && !disabled ? 'end' : false",
-    );
+    expect(chatInputSource).toContain("autofocus: !disableAutofocus && !disabled ? 'end' : false");
     expect(chatInputSource).toContain('editor?.setEditable(!disabled)');
   });
 
@@ -302,7 +306,9 @@ describe('OrcaWorkflowRoute source invariants', () => {
   it('maps manual collaboration start failures through i18n instead of raw IPC messages', () => {
     expect(sessionViewSource).toContain('getCollaborationStartErrorMessage(err, t, {');
     expect(sessionViewSource).toContain('remoteDevice: Boolean(remoteDeviceId)');
-    expect(sessionViewSource).not.toContain("ipcError?.message ?? t('newChat.collaboration.startFailed'");
+    expect(sessionViewSource).not.toContain(
+      "ipcError?.message ?? t('newChat.collaboration.startFailed'",
+    );
   });
 
   it('keeps Orca search jump state available for the target pane', () => {
@@ -314,7 +320,9 @@ describe('OrcaWorkflowRoute source invariants', () => {
       }
       return;
     }`);
-    expect(sessionViewSource).toContain('...(workerSearchJump ? { searchJump: workerSearchJump } : {})');
+    expect(sessionViewSource).toContain(
+      '...(workerSearchJump ? { searchJump: workerSearchJump } : {})',
+    );
     expect(sessionViewSource).toContain('...(workerSearchJump ? { searchJump: undefined } : {})');
     expect(workerPanelSource).toContain('searchJumpProp={searchJump}');
     expect(workerPanelSource).toContain('onSearchJumpConsumed={onSearchJumpConsumed}');
@@ -322,34 +330,60 @@ describe('OrcaWorkflowRoute source invariants', () => {
 
   it('reveals draft-created Orca worker tabs from route state after the lead route owns the session', () => {
     expect(sessionViewSource).toContain('function parseOrcaWorkersRevealState(state: unknown)');
-    expect(sessionViewSource).toContain('reveal?.leadSessionId && reveal.leadSessionId !== sessionId');
+    expect(sessionViewSource).toContain(
+      'reveal?.leadSessionId && reveal.leadSessionId !== sessionId',
+    );
     expect(sessionViewSource).toContain('const hasWorkerSearchJump = Boolean(');
-    expect(sessionViewSource).toContain('routeWorkerHint.hasWorkerParam || !!orcaWorkersReveal || hasWorkerSearchJump');
-    expect(sessionViewSource).toContain('const shouldRevealWorkersTab = hasExplicitOrcaWorkersReveal || shouldPassiveRevealWorkersTab;');
+    expect(sessionViewSource).toContain(
+      'routeWorkerHint.hasWorkerParam || !!orcaWorkersReveal || hasWorkerSearchJump',
+    );
+    expect(sessionViewSource).toContain(
+      'const shouldRevealWorkersTab = hasExplicitOrcaWorkersReveal || shouldPassiveRevealWorkersTab;',
+    );
     expect(sessionViewSource).toContain('orcaWorkersReveal?.focusWorkerSessionId ??');
-    expect(sessionViewSource).toContain('hasWorkerSearchJump ? searchJump?.sessionId ?? null : null');
+    expect(sessionViewSource).toMatch(
+      /hasWorkerSearchJump \? \(?searchJump\?\.sessionId \?\? null\)? : null/,
+    );
     expect(sessionViewSource).toContain('orcaWorkersReveal: undefined');
-    expect(sessionViewSource).toContain("routeResult === 'stale-context' && shouldRevealWorkersTab");
+    expect(sessionViewSource).toContain(
+      "routeResult === 'stale-context' && shouldRevealWorkersTab",
+    );
     expect(sessionViewSource).toContain("routeResult !== 'attached' && routeResult !== 'routed'");
   });
 
   it('passively reveals the collaboration tab only for plain Orca Lead routes with no collapsed record', () => {
-    expect(sessionViewSource).toContain("import { readPanelCollapsedRecord } from '@/layout/collapsePrefs';");
-    expect(sessionViewSource).toContain("import {");
+    expect(sessionViewSource).toContain(
+      "import { readPanelCollapsedRecord } from '@/layout/collapsePrefs';",
+    );
+    expect(sessionViewSource).toContain('import {');
     expect(sessionViewSource).toContain('shouldRevealOrcaWorkersAfterPaint');
     expect(sessionViewSource).toContain('shouldRevealOrcaWorkersBeforeFirstPaint');
-    expect(sessionViewSource).toContain('const passiveOrcaWorkersRevealSessionRef = useRef<string | null>(null);');
+    expect(sessionViewSource).toContain(
+      'const passiveOrcaWorkersRevealSessionRef = useRef<string | null>(null);',
+    );
     expect(sessionViewSource).toContain('const rightSidebarCollapsedRecord = sessionId');
-    expect(sessionViewSource).toContain('const shouldFirstFrameRevealOrcaWorkers = shouldRevealOrcaWorkersBeforeFirstPaint({');
+    expect(sessionViewSource).toContain(
+      'const shouldFirstFrameRevealOrcaWorkers = shouldRevealOrcaWorkersBeforeFirstPaint({',
+    );
     expect(sessionViewSource).toContain('hasExplicitReveal: hasExplicitOrcaWorkersReveal');
-    expect(sessionViewSource).toContain("hasSynchronousSessionIdentity: sessionFromList?.orcaRole === 'lead'");
-    expect(sessionViewSource).toContain('initialCollapsed={shouldFirstFrameRevealOrcaWorkers ? false : undefined}');
-    expect(sessionViewSource).toContain('writeInitialCollapsedRecord={shouldFirstFrameRevealOrcaWorkers}');
-    expect(sessionViewSource).toContain('passiveOrcaWorkersRevealSessionRef.current !== sessionId &&');
+    expect(sessionViewSource).toContain(
+      "hasSynchronousSessionIdentity: sessionFromList?.orcaRole === 'lead'",
+    );
+    expect(sessionViewSource).toContain(
+      'initialCollapsed={shouldFirstFrameRevealOrcaWorkers ? false : undefined}',
+    );
+    expect(sessionViewSource).toContain(
+      'writeInitialCollapsedRecord={shouldFirstFrameRevealOrcaWorkers}',
+    );
+    expect(sessionViewSource).toContain(
+      'passiveOrcaWorkersRevealSessionRef.current !== sessionId &&',
+    );
     expect(sessionViewSource).toContain('shouldRevealOrcaWorkersAfterPaint({');
     expect(sessionViewSource).toContain('const shouldPassiveRevealWorkersTab =');
     expect(sessionViewSource).toContain('passiveOrcaWorkersRevealSessionRef.current = sessionId;');
-    expect(sessionViewSource).toContain('const focusWorkerSessionId = hasExplicitOrcaWorkersReveal');
+    expect(sessionViewSource).toContain(
+      'const focusWorkerSessionId = hasExplicitOrcaWorkersReveal',
+    );
     expect(sessionViewSource).toContain(': null;');
     expect(sessionViewSource).toContain(
       '...(shouldFirstFrameRevealOrcaWorkers ? { animate: false } : {}),',
@@ -361,7 +395,9 @@ describe('OrcaWorkflowRoute source invariants', () => {
 
   it('sets passive collaboration sidebar collapsed state during the route layout declaration', () => {
     expect(sessionViewSource).toContain('useLayoutEffect(() => {');
-    expect(sessionViewSource).toContain('declare(sessionId, { initialCollapsed, writeInitialCollapsedRecord });');
+    expect(sessionViewSource).toContain(
+      'declare(sessionId, { initialCollapsed, writeInitialCollapsedRecord });',
+    );
     expect(mainLayoutSource).toContain('const declareRightSidebarSessionId = useCallback');
     expect(mainLayoutSource).toContain('const nextCollapsed = hasInitialCollapsed');
     expect(mainLayoutSource).toContain('setIsRightSidebarCollapsed(nextCollapsed);');
@@ -370,13 +406,25 @@ describe('OrcaWorkflowRoute source invariants', () => {
   });
 
   it('lets search jumps and explicit tab hints mount the targeted worker before focused-worker fallback', () => {
-    const searchJumpPriority = workerSelectionHookSource.indexOf('if (effectiveSearchJumpWorkerSessionId)');
-    const hintPriority = workerSelectionHookSource.indexOf('if (focusWorkerHintSessionId)', searchJumpPriority);
-    const focusedWorkerFallback = workerSelectionHookSource.indexOf('if (focusedWorker)', hintPriority);
+    const searchJumpPriority = workerSelectionHookSource.indexOf(
+      'if (effectiveSearchJumpWorkerSessionId)',
+    );
+    const hintPriority = workerSelectionHookSource.indexOf(
+      'if (focusWorkerHintSessionId)',
+      searchJumpPriority,
+    );
+    const focusedWorkerFallback = workerSelectionHookSource.indexOf(
+      'if (focusedWorker)',
+      hintPriority,
+    );
 
     expect(workerSelectionHookSource).toContain('const searchJumpWorkerSessionId =');
-    expect(workerSelectionHookSource).toContain('const [searchJumpPinnedWorkerSessionId, setSearchJumpPinnedWorkerSessionId]');
-    expect(workerSelectionHookSource).toContain('const [focusWorkerPinnedSessionId, setFocusWorkerPinnedSessionId]');
+    expect(workerSelectionHookSource).toContain(
+      'const [searchJumpPinnedWorkerSessionId, setSearchJumpPinnedWorkerSessionId]',
+    );
+    expect(workerSelectionHookSource).toContain(
+      'const [focusWorkerPinnedSessionId, setFocusWorkerPinnedSessionId]',
+    );
     expect(workerSelectionHookSource).toContain('setSearchJumpPinnedWorkerSessionId(null);');
     expect(workerSelectionHookSource).toContain('setFocusWorkerPinnedSessionId(null);');
     expect(searchJumpPriority).toBeGreaterThan(-1);
@@ -392,18 +440,30 @@ describe('OrcaWorkflowRoute source invariants', () => {
     expect(splitViewSource).toContain('if (!reportAgentIslandVisibility) return null;');
     expect(splitViewSource).not.toContain('if (!navigateOnStop) return null;');
     expect(splitViewSource).not.toContain('if (!navigateOnStop) return;');
-    expect(splitViewSource).toContain("togglePane === 'worker' ? (workerSession?.id ?? null) : leadSessionId");
+    expect(splitViewSource).toContain(
+      "togglePane === 'worker' ? (workerSession?.id ?? null) : leadSessionId",
+    );
     expect(splitViewSource).toContain('const syncAgentIslandVisibleSession = useCallback');
-    expect(splitViewSource).toContain('window.electronAPI.agentIsland?.setVisibleSession?.(agentIslandVisibleSessionIds)');
-    expect(splitViewSource).toContain("window.addEventListener('focus', syncAgentIslandVisibleSession)");
+    expect(splitViewSource).toContain(
+      'window.electronAPI.agentIsland?.setVisibleSession?.(agentIslandVisibleSessionIds)',
+    );
+    expect(splitViewSource).toContain(
+      "window.addEventListener('focus', syncAgentIslandVisibleSession)",
+    );
   });
 
   it('reports the visible right-sidebar collaboration worker sessions to Agent Island', () => {
-    expect(workerPanelSource).toContain("import { isAgentIslandSupported } from '@/hooks/useAgentIslandSettings';");
+    expect(workerPanelSource).toContain(
+      "import { isAgentIslandSupported } from '@/hooks/useAgentIslandSettings';",
+    );
     expect(workerPanelSource).toContain('if (!isAgentIslandSupported()) return;');
-    expect(workerPanelSource).toContain('viewVisible && workerSessionId && workerSessionId !== leadSessionId');
+    expect(workerPanelSource).toContain(
+      'viewVisible && workerSessionId && workerSessionId !== leadSessionId',
+    );
     expect(workerPanelSource).toContain('[leadSessionId, workerSessionId]');
-    expect(workerPanelSource).toContain('window.electronAPI.agentIsland?.setVisibleSession?.(visibleSessionIds)');
+    expect(workerPanelSource).toContain(
+      'window.electronAPI.agentIsland?.setVisibleSession?.(visibleSessionIds)',
+    );
   });
 
   it('does not navigate the detached sidebar window to settings from the worker toolbar', () => {
@@ -415,31 +475,47 @@ describe('OrcaWorkflowRoute source invariants', () => {
     expect(workerPanelSource).toContain('navigationMode="sidebar-embedded"');
     expect(workerPanelSource).toContain('sidebarTargetSessionId={leadSessionId}');
     expect(sessionViewSource).toContain('sidebarTargetSessionId={sidebarTargetSessionId}');
-    expect(sessionViewSource).toContain("const ownsWindowRoute = navigationMode === 'route-owner';");
+    expect(sessionViewSource).toContain(
+      "const ownsWindowRoute = navigationMode === 'route-owner';",
+    );
     expect(sessionViewSource).toContain('ownsWindowRoute && handoffFrom');
     expect(sessionViewSource).toContain('ownsWindowRoute && session?.parentSessionId');
-    expect(sessionViewSource).toContain('onForkStripEncrypted={ownsWindowRoute ? handleForkStripEncrypted : undefined}');
+    expect(sessionViewSource).toContain(
+      'onForkStripEncrypted={ownsWindowRoute ? handleForkStripEncrypted : undefined}',
+    );
   });
 
   it('waits for detached bootstrap before mounting or writing the embedded right sidebar', () => {
     expect(mainLayoutSource).toContain('rsbWindow.loaded && !rsbDetached ? (');
-    expect(mainLayoutSource).toContain('if (!sessionId || !rsbWindow.loaded || rsbDetached) return;');
+    expect(mainLayoutSource).toContain(
+      'if (!sessionId || !rsbWindow.loaded || rsbDetached) return;',
+    );
     expect(mainLayoutSource).toContain("routeSidebarCommand({ type: 'open-terminal', sessionId })");
     expect(mainLayoutSource).toContain('const windowState = getRsbWindowUiState();');
-    expect(mainLayoutSource).toContain('const currentSessionId = rightSidebarSessionIdRef.current;');
+    expect(mainLayoutSource).toContain(
+      'const currentSessionId = rightSidebarSessionIdRef.current;',
+    );
   });
 
   it('passes Orca lead vendor options when sending from the plain lead route', () => {
     expect(sessionViewSource).toContain('const orcaLeadVendorOptions =');
     expect(sessionViewSource).toContain('sessionId && isOrcaLeadSession(session)');
-    expect(sessionViewSource).not.toContain('isOrcaMode && sessionId && isOrcaLeadSession(session)');
-    expect(sessionViewSource).toContain("vendorOptions: { orcaRole: 'lead', orcaLeadSessionId: sessionId }");
+    expect(sessionViewSource).not.toContain(
+      'isOrcaMode && sessionId && isOrcaLeadSession(session)',
+    );
+    expect(sessionViewSource).toContain(
+      "vendorOptions: { orcaRole: 'lead', orcaLeadSessionId: sessionId }",
+    );
   });
 
   it('shows the Lead identity bar only in the plain Orca Lead route', () => {
-    expect(sessionViewSource).toContain('const ownsRoute = !sessionIdProp && !isCompactRail && !isOrcaMode;');
+    expect(sessionViewSource).toContain(
+      'const ownsRoute = !sessionIdProp && !isCompactRail && !isOrcaMode;',
+    );
     expect(sessionViewSource).toContain('const collabEnabled = isOrcaLeadSessionView;');
-    expect(sessionViewSource).toContain('const showOrcaLeadIdentityBar = ownsRoute && collabEnabled;');
+    expect(sessionViewSource).toContain(
+      'const showOrcaLeadIdentityBar = ownsRoute && collabEnabled;',
+    );
     expect(sessionViewSource).toContain("t('orca.split.leadLabel', {");
     expect(sessionViewSource).toContain('orcaAgentLabel(leadAgentKind)');
     expect(sessionViewSource).toContain('<VendorIcon');
@@ -475,12 +551,16 @@ describe('OrcaWorkflowRoute source invariants', () => {
   it('reports embedded doc-mode Orca rail visibility only while the rail is open', () => {
     expect(workdirBrowseRouteSource).not.toContain('navigateOnStop={false}');
     expect(workdirBrowseRouteSource).not.toContain('layout="toggle"');
-    expect(workdirBrowseRouteSource).toContain('reportAgentIslandVisibility={!railCollapse.collapsed}');
+    expect(workdirBrowseRouteSource).toContain(
+      'reportAgentIslandVisibility={!railCollapse.collapsed}',
+    );
   });
 
   it('uses a request id so repeated jumps to the same message re-run focus', () => {
     expect(sessionViewSource).toContain('requestFocusMessage(searchJump.messageClientId)');
-    expect(sessionViewSource).toContain('focusMessageRequestId={focusedMessageTarget?.requestId ?? 0}');
+    expect(sessionViewSource).toContain(
+      'focusMessageRequestId={focusedMessageTarget?.requestId ?? 0}',
+    );
     expect(messageStreamSource).toContain('focusMessageRequestId?: number;');
     expect(messageStreamSource).toContain('lastAppliedFocusRef.current === focusRequestKey');
     expect(messageStreamSource).toContain('missingFocus.requestKey === focusRequestKey');

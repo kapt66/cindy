@@ -13,6 +13,7 @@ const mekaLead = {
   permissionMode: 'default',
   fastMode: false,
   providerId: null,
+  remoteHostId: null,
 };
 
 function createResolver(

@@ -2,7 +2,7 @@
 
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { BillingPaymentOrder, BillingSubscription } from '../../../../shared/billing';
+import type { BillingSubscription } from '../../../../shared/billing';
 
 const i18n = {
   language: 'en',
@@ -343,6 +343,7 @@ describe('BillingPage remote catalog rendering', () => {
             ],
           })),
           getCurrentSubscription: vi.fn(async () => ({ subscription: null })),
+          openPaymentRedirect: vi.fn(async () => ({ success: true })),
         },
         openExternal: vi.fn(),
       },
@@ -361,6 +362,46 @@ describe('BillingPage remote catalog rendering', () => {
       ),
     ).toBeTruthy();
     expect(screen.getByText('billing.usage.detailsUnavailable')).toBeTruthy();
+  });
+
+  it('does not describe missing plan credits as incomplete history when there is no subscription', async () => {
+    window.electronAPI.billing.getCreditUsage = vi.fn(async () => ({
+      available: '3',
+      plan: { remaining: '0', used: null, total: null },
+      purchased: { remaining: '0', used: '0', total: '0' },
+      promotional: { remaining: '3', used: '0', total: '3' },
+      promotionalGrants: [],
+      promotionalGrantsComplete: true,
+      promotionalGrantConsistency: 'OBSERVED' as const,
+      ledgerUpdatedAt: null,
+      scale: 9 as const,
+      observedAt: '2026-07-23T12:00:00Z',
+    }));
+
+    render(<BillingPage />);
+
+    expect(await screen.findByText('billing.usage.noPlanCredits')).toBeTruthy();
+    expect(screen.queryByText('billing.usage.historyUnavailable')).toBeNull();
+  });
+
+  it('keeps nonzero plan balances truthful when there is no subscription', async () => {
+    window.electronAPI.billing.getCreditUsage = vi.fn(async () => ({
+      available: '3',
+      plan: { remaining: '3', used: null, total: null },
+      purchased: { remaining: '0', used: '0', total: '0' },
+      promotional: { remaining: '0', used: '0', total: '0' },
+      promotionalGrants: [],
+      promotionalGrantsComplete: true,
+      promotionalGrantConsistency: 'OBSERVED' as const,
+      ledgerUpdatedAt: null,
+      scale: 9 as const,
+      observedAt: '2026-07-23T12:00:00Z',
+    }));
+
+    render(<BillingPage />);
+
+    expect(await screen.findByText('billing.usage.historyUnavailable')).toBeTruthy();
+    expect(screen.queryByText('billing.usage.noPlanCredits')).toBeNull();
   });
 
   it('shows current plan price, included credits, status, and renewal date', async () => {
@@ -673,6 +714,42 @@ describe('BillingPage remote catalog rendering', () => {
     view.rerender(<BillingPage />);
     expect(await screen.findByText('billing.checkout.actionExpiredBody')).toBeTruthy();
     expect(screen.queryByAltText('billing.checkout.qrAlt')).toBeNull();
+  });
+
+  it('opens a Stripe Checkout redirect automatically once and keeps the manual fallback', async () => {
+    const url = 'https://checkout.stripe.com/c/pay/session_fixture';
+    const subscription = {
+      subscriptionId: 'subscription_incomplete',
+      status: 'INCOMPLETE' as const,
+      currentPeriodStartAt: null,
+      currentPeriodEndAt: null,
+      entitlementValidUntil: null,
+      cancelAtPeriodEnd: false,
+      effectivePlan: null,
+      purchaseAttemptId: 'attempt_redirect',
+      paymentAction: {
+        type: 'REDIRECT' as const,
+        url,
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      },
+    };
+    Object.assign(checkout.state, {
+      open: true,
+      kind: 'SUBSCRIPTION',
+      phase: 'AWAITING_PAYMENT',
+      subscription,
+    });
+    const openPaymentRedirect = vi.mocked(window.electronAPI.billing.openPaymentRedirect);
+
+    const view = render(<BillingPage />);
+    await waitFor(() => expect(openPaymentRedirect).toHaveBeenCalledWith({ url }));
+
+    Object.assign(checkout.state, { subscription: { ...subscription } });
+    view.rerender(<BillingPage />);
+    expect(openPaymentRedirect).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByText('billing.checkout.openPayment'));
+    expect(openPaymentRedirect).toHaveBeenCalledTimes(2);
   });
 
   it('does not show zero or block purchases when balance is not provisioned', async () => {
@@ -1270,6 +1347,7 @@ describe('BillingPage plan change', () => {
     confirmPlanChange: vi.fn(),
     refreshPlanChange: vi.fn(),
     cancelPlanChange: vi.fn(),
+    openPaymentRedirect: vi.fn(async () => ({ success: true })),
   });
 
   const install = (billing: ReturnType<typeof billingMocks>) => {
@@ -1574,6 +1652,46 @@ describe('BillingPage plan change', () => {
     // APPLIED refreshes subscription, catalog, and balance exactly once more.
     await waitFor(() => expect(billing.getBalance).toHaveBeenCalledTimes(2));
     expect(billing.getCurrentSubscription).toHaveBeenCalledTimes(2);
+  });
+
+  it('opens a Stripe plan-change redirect automatically once and keeps the manual fallback', async () => {
+    const billing = install(billingMocks());
+    const url = 'https://checkout.stripe.com/c/pay/plan_change_fixture';
+    billing.quotePlanChange.mockResolvedValue({
+      planChangeId: 'plan_change_redirect',
+      changeType: 'UPGRADE',
+      status: 'QUOTED',
+      quotedAmountMinor: 1100,
+      quotedCurrency: 'usd',
+      quoteExpiresAt: '2099-01-01T00:00:00.000Z',
+      effectiveAt: '2026-07-24T00:00:00.000Z',
+      paymentAction: null,
+    });
+    billing.confirmPlanChange.mockResolvedValue({
+      planChangeId: 'plan_change_redirect',
+      changeType: 'UPGRADE',
+      status: 'AWAITING_PAYMENT',
+      quotedAmountMinor: 1100,
+      quotedCurrency: 'usd',
+      quoteExpiresAt: null,
+      effectiveAt: '2026-07-24T00:00:00.000Z',
+      paymentAction: {
+        type: 'REDIRECT',
+        url,
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      },
+    });
+
+    render(<BillingPage />);
+    fireEvent.click(await screen.findByText('billing.settings.subscriptionCard.changeAction'));
+    fireEvent.click((await screen.findByText('Max plan')).closest('button')!);
+    fireEvent.click(await screen.findByText('billing.planChange.confirm'));
+
+    await waitFor(() => expect(billing.openPaymentRedirect).toHaveBeenCalledWith({ url }));
+    expect(billing.openPaymentRedirect).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByText('billing.checkout.openPayment'));
+    expect(billing.openPaymentRedirect).toHaveBeenCalledTimes(2);
   });
 
   it('renders a grandfathered current plan from the captured subscription terms', async () => {

@@ -19,7 +19,7 @@ type Fetcher = <T>(
 const defaultFetcher: Fetcher = (apiPath, options) =>
   serverApiFetch(apiPath, {
     ...options,
-    baseUrl: getClientEndpoint('pluginApiBaseUrl'),
+    baseUrl: () => getClientEndpoint('pluginApiBaseUrl'),
   });
 
 async function defaultConfigured(): Promise<boolean> {

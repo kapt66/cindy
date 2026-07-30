@@ -35,13 +35,13 @@
  * (src/auth/loginMessages.ts 等 .ts 文件),本脚本只扫 locale JSON,不解析这些 TS。
  * 它们由各自的编译期 Record 类型 + parity 单测保证结构,但术语一致性目前是盲区。
  */
-import crypto from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-import { renderGlossaryDoc } from './shared/glossary-doc.mjs';
-import { validateAgainstSchema } from './shared/json-schema-lite.mjs';
+import { normalizeDocEol, renderGlossaryDoc } from "./shared/glossary-doc.mjs";
+import { validateAgainstSchema } from "./shared/json-schema-lite.mjs";
 import {
   ELLIPSIS_LOCALES,
   FULL_WIDTH_PUNCT,
@@ -58,21 +58,39 @@ import {
   makeSourceTermMatcher,
   occursIn,
   stripNonProse,
-} from './shared/glossary-rules.mjs';
+} from "./shared/glossary-rules.mjs";
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const GLOSSARY_PATH = path.join(repoRoot, 'i18n', 'glossary.json');
-const SCHEMA_PATH = path.join(repoRoot, 'i18n', 'glossary.schema.json');
-const BASELINE_PATH = path.join(repoRoot, 'i18n', 'glossary-baseline.json');
-const DOC_PATH = path.join(repoRoot, 'i18n', 'GLOSSARY.md');
-const DESKTOP_LOCALES = path.join(repoRoot, 'apps', 'desktop', 'src', 'renderer', 'i18n', 'locales');
-const MOBILE_LOCALES = path.join(repoRoot, 'apps', 'mobile', 'src', 'i18n', 'locales');
+const repoRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+);
+const GLOSSARY_PATH = path.join(repoRoot, "i18n", "glossary.json");
+const SCHEMA_PATH = path.join(repoRoot, "i18n", "glossary.schema.json");
+const BASELINE_PATH = path.join(repoRoot, "i18n", "glossary-baseline.json");
+const DOC_PATH = path.join(repoRoot, "i18n", "GLOSSARY.md");
+const DESKTOP_LOCALES = path.join(
+  repoRoot,
+  "apps",
+  "desktop",
+  "src",
+  "renderer",
+  "i18n",
+  "locales",
+);
+const MOBILE_LOCALES = path.join(
+  repoRoot,
+  "apps",
+  "mobile",
+  "src",
+  "i18n",
+  "locales",
+);
 
 const SUPPORTED_SCHEMA_VERSION = 1;
 
 const args = new Set(process.argv.slice(2));
-const UPDATE_BASELINE = args.has('--update-baseline');
-const REPORT_ONLY = args.has('--report');
+const UPDATE_BASELINE = args.has("--update-baseline");
+const REPORT_ONLY = args.has("--report");
 
 function fail(message) {
   console.error(`[check-i18n-glossary] ${message}`);
@@ -85,7 +103,7 @@ function fail(message) {
 
 function readJson(file) {
   try {
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
+    return JSON.parse(fs.readFileSync(file, "utf8"));
   } catch (err) {
     fail(`读取 / 解析失败: ${path.relative(repoRoot, file)}\n  ${err.message}`);
   }
@@ -106,7 +124,7 @@ const schemaErrors = validateAgainstSchema(glossary, readJson(SCHEMA_PATH));
 if (schemaErrors.length > 0) {
   fail(
     `i18n/glossary.json 不符合 i18n/glossary.schema.json:\n` +
-      schemaErrors.map((e) => `  - ${e}`).join('\n'),
+      schemaErrors.map((e) => `  - ${e}`).join("\n"),
   );
 }
 
@@ -116,7 +134,12 @@ if (schemaErrors.length > 0) {
 // additionalProperties 只能约束「值」的形状,不能拿另一个字段的内容去约束键名。
 // 于是 forbidden.zh_CN(下划线,正确写法是 zh-CN)这类拼写照样通过校验,而扫描时只按
 // glossary.locales 迭代,那条规则就被静默忽略了——写了规则、看着有校验、实际没生效。
-const LOCALE_KEYED_FIELDS = ['translations', 'forbidden', 'alsoAllowed', 'minorityByDesign'];
+const LOCALE_KEYED_FIELDS = [
+  "translations",
+  "forbidden",
+  "alsoAllowed",
+  "minorityByDesign",
+];
 const declaredLocales = new Set(glossary.locales);
 const localeKeyErrors = [];
 for (const term of glossary.terms) {
@@ -124,23 +147,25 @@ for (const term of glossary.terms) {
     for (const locale of Object.keys(term[field] ?? {})) {
       if (!declaredLocales.has(locale)) {
         localeKeyErrors.push(
-          `术语 ${term.id} 的 ${field}.${locale}:"${locale}" 不在 locales [${glossary.locales.join(', ')}] 里`,
+          `术语 ${term.id} 的 ${field}.${locale}:"${locale}" 不在 locales [${glossary.locales.join(", ")}] 里`,
         );
       }
     }
   }
 }
 if (localeKeyErrors.length > 0) {
-  fail(`术语表里有无法生效的语言键(拼错的语言键会让整条规则静默失效):\n${localeKeyErrors.map((e) => `  - ${e}`).join('\n')}`);
+  fail(
+    `术语表里有无法生效的语言键(拼错的语言键会让整条规则静默失效):\n${localeKeyErrors.map((e) => `  - ${e}`).join("\n")}`,
+  );
 }
 
 /** 递归展平嵌套 JSON 为 Map<'a.b.c', string>。 */
 function flatten(obj, prefix, out) {
   for (const [key, value] of Object.entries(obj)) {
     const keyPath = prefix ? `${prefix}.${key}` : key;
-    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+    if (value !== null && typeof value === "object" && !Array.isArray(value)) {
       flatten(value, keyPath, out);
-    } else if (typeof value === 'string') {
+    } else if (typeof value === "string") {
       out.set(keyPath, value);
     }
   }
@@ -154,9 +179,9 @@ function flatten(obj, prefix, out) {
 function loadLocale(locale) {
   const out = new Map();
 
-  const desktopFile = path.join(DESKTOP_LOCALES, locale, 'common.json');
+  const desktopFile = path.join(DESKTOP_LOCALES, locale, "common.json");
   if (fs.existsSync(desktopFile)) {
-    for (const [k, v] of flatten(readJson(desktopFile), '', new Map())) {
+    for (const [k, v] of flatten(readJson(desktopFile), "", new Map())) {
       out.set(`desktop:${k}`, v);
     }
   }
@@ -164,9 +189,13 @@ function loadLocale(locale) {
   const mobileDir = path.join(MOBILE_LOCALES, locale);
   if (fs.existsSync(mobileDir)) {
     for (const file of fs.readdirSync(mobileDir).sort()) {
-      if (!file.endsWith('.json')) continue;
-      const ns = file.slice(0, -'.json'.length);
-      for (const [k, v] of flatten(readJson(path.join(mobileDir, file)), '', new Map())) {
+      if (!file.endsWith(".json")) continue;
+      const ns = file.slice(0, -".json".length);
+      for (const [k, v] of flatten(
+        readJson(path.join(mobileDir, file)),
+        "",
+        new Map(),
+      )) {
         out.set(`mobile/${ns}:${k}`, v);
       }
     }
@@ -178,7 +207,8 @@ function loadLocale(locale) {
 const locales = glossary.locales;
 const corpus = new Map(locales.map((l) => [l, loadLocale(l)]));
 for (const [locale, entries] of corpus) {
-  if (entries.size === 0) fail(`locale "${locale}" 未加载到任何文案,请检查 locales 目录布局`);
+  if (entries.size === 0)
+    fail(`locale "${locale}" 未加载到任何文案,请检查 locales 目录布局`);
 }
 
 // ---------------------------------------------------------------------------
@@ -187,7 +217,7 @@ for (const [locale, entries] of corpus) {
 
 /** 截断长文案,提示里只需要够判断语境的片段。 */
 function truncate(text, max) {
-  const flat = text.replace(/\s+/g, ' ').trim();
+  const flat = text.replace(/\s+/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max)}…` : flat;
 }
 
@@ -204,7 +234,11 @@ function truncate(text, max) {
  * 安全得多——baseline 的全部意义就是「已知且冻结」,文案变了就不再是同一件事。
  */
 function makeViolation({ locale, key, rule, detail, severity, hint, text }) {
-  const digest = crypto.createHash('sha256').update(text ?? '').digest('hex').slice(0, 12);
+  const digest = crypto
+    .createHash("sha256")
+    .update(text ?? "")
+    .digest("hex")
+    .slice(0, 12);
   return {
     locale,
     key,
@@ -223,10 +257,12 @@ for (const term of glossary.terms) {
   const isExempt = makeExemptChecker(term.exempt);
   // 严格校验 status:拼错(如 "decied")时若静默按 proposed 处理,该术语的全部违规会
   // 降级成告警、CI 照常通过——门禁被无声关掉比报错危险得多。
-  if (term.status !== 'decided' && term.status !== 'proposed') {
-    fail(`术语 ${term.id} 的 status "${term.status}" 非法,只能是 decided 或 proposed`);
+  if (term.status !== "decided" && term.status !== "proposed") {
+    fail(
+      `术语 ${term.id} 的 status "${term.status}" 非法,只能是 decided 或 proposed`,
+    );
   }
-  const severity = term.status === 'decided' ? 'error' : 'warn';
+  const severity = term.status === "decided" ? "error" : "warn";
 
   for (const locale of locales) {
     const entries = corpus.get(locale);
@@ -237,8 +273,8 @@ for (const term of glossary.terms) {
     // 「目录」,但无条件禁「文件夹」会误伤 Folder;Running 禁「进行中」会误伤
     // In Progress)。没有这个条件,这类术语根本没法进表。
     for (const entry of term.forbidden?.[locale] ?? []) {
-      const bad = typeof entry === 'string' ? entry : entry.text;
-      const whenEn = typeof entry === 'string' ? null : entry.whenEn;
+      const bad = typeof entry === "string" ? entry : entry.text;
+      const whenEn = typeof entry === "string" ? null : entry.whenEn;
       // 匹配口径统一由 makeSourceTermMatcher 提供(词边界复用 WORD_BOUNDARY、复数按英语
       // 真实形态展开)。影子 catalog 的三份单测原先各抄了一份同样的正则,抄本之间早晚
       // 失配,现已一并改用这个函数。
@@ -270,14 +306,14 @@ for (const term of glossary.terms) {
           makeViolation({
             locale,
             key,
-            rule: 'forbidden-term',
+            rule: "forbidden-term",
             detail: `${term.id}:${bad}\u00d7${badCount}`,
             severity,
             text: value,
             hint:
               `「${bad}」是 ${term.en} 条目下的禁用译法` +
-              (whenEn ? `(该 key 的英文源含 ${whenEn})` : '') +
-              (source ? `\n      英文源: ${truncate(source, 100)}` : '') +
+              (whenEn ? `(该 key 的英文源含 ${whenEn})` : "") +
+              (source ? `\n      英文源: ${truncate(source, 100)}` : "") +
               `\n      读英文源与该 key 的用途后再定译法;首选译法见 i18n/GLOSSARY.md 的 ${term.en} 条目`,
           }),
         );
@@ -303,7 +339,7 @@ for (const term of glossary.terms) {
         makeViolation({
           locale,
           key,
-          rule: 'term-case',
+          rule: "term-case",
           detail: `${term.id}:${hit}\u00d7${hitCount}`,
           severity,
           text: value,
@@ -342,18 +378,21 @@ for (const locale of locales) {
     // 「{{total}},上限」剥离后逗号前是空格,违规会被静默放过。
     const prose = normalizeForPunctuation(value);
 
-    const mark = checkHalfWidth && !isHalfWidthExempt(key) ? findHalfWidthPunct(prose) : null;
+    const mark =
+      checkHalfWidth && !isHalfWidthExempt(key)
+        ? findHalfWidthPunct(prose)
+        : null;
     if (mark) {
       violations.push(
         makeViolation({
           locale,
           key,
-          rule: 'punct-halfwidth',
+          rule: "punct-halfwidth",
           // detail 只表达「半角标点命中总次数」,不与 mark(第一个命中的标点)绑定:
           // 一条文案里同时有 `,` 和 `:` 时,`,×2` 会读成「两个逗号」,而且指纹会随
           // 「哪个标点先出现」变化——同样的两处违规换个顺序就成了另一条指纹。
           detail: `halfwidth\u00d7${countHalfWidthPunct(prose)}`,
-          severity: 'error',
+          severity: "error",
           text: value,
           hint: `中文字符后应使用全角「${FULL_WIDTH_PUNCT[mark] ?? mark}」,当前是半角「${mark}」`,
         }),
@@ -365,11 +404,11 @@ for (const locale of locales) {
         makeViolation({
           locale,
           key,
-          rule: 'punct-ellipsis',
+          rule: "punct-ellipsis",
           detail: `...×${(prose.match(/\.\.\./g) ?? []).length}`,
-          severity: 'error',
+          severity: "error",
           text: value,
-          hint: '省略号应使用「…」而非三个半角点',
+          hint: "省略号应使用「…」而非三个半角点",
         }),
       );
     }
@@ -384,7 +423,7 @@ violations.sort((a, b) => a.fingerprint.localeCompare(b.fingerprint));
 
 // baseline **只收 error 级**。proposed 术语的告警刻意不冻结:它们本来就不阻断,
 // 冻进 baseline 只会让「还有多少术语没裁决」这个数字消失,失去提醒作用。
-const blockingAll = violations.filter((v) => v.severity === 'error');
+const blockingAll = violations.filter((v) => v.severity === "error");
 
 if (UPDATE_BASELINE) {
   // --update-baseline **只能删,不能加**。
@@ -395,36 +434,48 @@ if (UPDATE_BASELINE) {
   //
   // 真要新冻结一批存量(例如新增一条规则),得手动编辑 JSON——那样新增条目会明明白白
   // 出现在 diff 里被 review 看到。
-  const existing = fs.existsSync(BASELINE_PATH) ? new Set(readJson(BASELINE_PATH).entries ?? []) : new Set();
+  const existing = fs.existsSync(BASELINE_PATH)
+    ? new Set(readJson(BASELINE_PATH).entries ?? [])
+    : new Set();
   const additions = blockingAll.filter((v) => !existing.has(v.fingerprint));
   if (additions.length > 0) {
     fail(
       `--update-baseline 只能删除已修好的条目,不能登记新违规(当前有 ${additions.length} 条不在 baseline 里):\n` +
         additions
           .slice(0, 10)
-          .map((v) => `  - ${v.fingerprint.split('\t').slice(0, 3).join(' / ')}`)
-          .join('\n') +
-        (additions.length > 10 ? `\n  ...另有 ${additions.length - 10} 条` : '') +
-        '\n请修掉这些违规;确需冻结时手动编辑 i18n/glossary-baseline.json,让新增条目出现在 diff 里。',
+          .map(
+            (v) => `  - ${v.fingerprint.split("\t").slice(0, 3).join(" / ")}`,
+          )
+          .join("\n") +
+        (additions.length > 10
+          ? `\n  ...另有 ${additions.length - 10} 条`
+          : "") +
+        "\n请修掉这些违规;确需冻结时手动编辑 i18n/glossary-baseline.json,让新增条目出现在 diff 里。",
     );
   }
   const kept = blockingAll.map((v) => v.fingerprint).sort();
   const payload = {
     _comment:
-      '存量违规冻结清单(仅 status=decided 的术语与标点规则)。只减不增:修好一条就从这里' +
-      '删一条,新增违规一律阻断 CI。剪枝: node scripts/check-i18n-glossary.mjs --update-baseline' +
-      '(该命令拒绝登记新违规,新增条目必须手动编辑本文件)',
+      "存量违规冻结清单(仅 status=decided 的术语与标点规则)。只减不增:修好一条就从这里" +
+      "删一条,新增违规一律阻断 CI。剪枝: node scripts/check-i18n-glossary.mjs --update-baseline" +
+      "(该命令拒绝登记新违规,新增条目必须手动编辑本文件)",
     _generatedFrom: `glossary.json version ${glossary.version}`,
     entries: kept,
   };
-  fs.writeFileSync(BASELINE_PATH, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  fs.writeFileSync(
+    BASELINE_PATH,
+    `${JSON.stringify(payload, null, 2)}\n`,
+    "utf8",
+  );
   console.log(
     `[check-i18n-glossary] baseline 已剪枝: ${existing.size} → ${kept.length} 条 → ${path.relative(repoRoot, BASELINE_PATH)}`,
   );
   process.exit(0);
 }
 
-const baseline = fs.existsSync(BASELINE_PATH) ? readJson(BASELINE_PATH) : { entries: [] };
+const baseline = fs.existsSync(BASELINE_PATH)
+  ? readJson(BASELINE_PATH)
+  : { entries: [] };
 const baselineSet = new Set(baseline.entries ?? []);
 
 // baseline **只屏蔽 error 级违规**,不看 fingerprint 就一律放过。
@@ -439,11 +490,12 @@ const baselineSet = new Set(baseline.entries ?? []);
 // baseline 的语义就是「已冻结的阻断项」。
 const currentBlocking = new Set(blockingAll.map((v) => v.fingerprint));
 const stale = [...baselineSet].filter((fp) => !currentBlocking.has(fp)).sort();
-const isMasked = (v) => v.severity === 'error' && baselineSet.has(v.fingerprint);
+const isMasked = (v) =>
+  v.severity === "error" && baselineSet.has(v.fingerprint);
 const fresh = violations.filter((v) => !isMasked(v));
 
-const blocking = fresh.filter((v) => v.severity === 'error');
-const warnings = fresh.filter((v) => v.severity === 'warn');
+const blocking = fresh.filter((v) => v.severity === "error");
+const warnings = fresh.filter((v) => v.severity === "warn");
 const known = violations.filter(isMasked);
 
 // ---------------------------------------------------------------------------
@@ -458,65 +510,75 @@ function print(list, label, log) {
     log(`      ${v.hint}`);
   }
   if (!REPORT_ONLY && list.length > 40) {
-    log(`  ...(其余 ${list.length - 40} 处省略,完整明细: node scripts/check-i18n-glossary.mjs --report)`);
+    log(
+      `  ...(其余 ${list.length - 40} 处省略,完整明细: node scripts/check-i18n-glossary.mjs --report)`,
+    );
   }
 }
 
-print(blocking, '❌ 新增术语/标点违规', console.error);
+print(blocking, "❌ 新增术语/标点违规", console.error);
 
 // 待裁决术语按术语折叠:逐条列出会淹没真正需要处理的新增违规,而这里的重点是
 // 「还有哪些术语没拍板、各自波及多大」,不是每一条的位置。
 if (warnings.length > 0) {
   const byTerm = new Map();
   for (const v of warnings) {
-    const termId = v.detail.split(':')[0];
+    const termId = v.detail.split(":")[0];
     byTerm.set(termId, (byTerm.get(termId) ?? 0) + 1);
   }
-  console.warn(`\n[check-i18n-glossary] ⚠️ 待裁决术语命中 ${warnings.length} 处(status=proposed,不阻断):`);
+  console.warn(
+    `\n[check-i18n-glossary] ⚠️ 待裁决术语命中 ${warnings.length} 处(status=proposed,不阻断):`,
+  );
   for (const [termId, count] of [...byTerm].sort((a, b) => b[1] - a[1])) {
     const term = glossary.terms.find((t) => t.id === termId);
-    console.warn(`  ${String(count).padStart(4)} 处  ${termId}（${term?.en ?? '?'}）`);
+    console.warn(
+      `  ${String(count).padStart(4)} 处  ${termId}（${term?.en ?? "?"}）`,
+    );
   }
   console.warn(
-    '  裁决后把 i18n/glossary.json 里对应条目的 status 改为 decided,' +
-      '并重新生成 baseline 冻结存量。明细: node scripts/check-i18n-glossary.mjs --report',
+    "  裁决后把 i18n/glossary.json 里对应条目的 status 改为 decided," +
+      "并重新生成 baseline 冻结存量。明细: node scripts/check-i18n-glossary.mjs --report",
   );
 }
 
 if (REPORT_ONLY) {
-  print(warnings, 'ℹ️ 待裁决术语明细', console.log);
-  print(known, 'ℹ️ baseline 内已知存量', console.log);
+  print(warnings, "ℹ️ 待裁决术语明细", console.log);
+  print(known, "ℹ️ baseline 内已知存量", console.log);
 }
 
 if (stale.length > 0) {
-  console.error(`\n[check-i18n-glossary] ❌ baseline 有 ${stale.length} 条已失效条目(问题已修复,但仍挂在账上):`);
+  console.error(
+    `\n[check-i18n-glossary] ❌ baseline 有 ${stale.length} 条已失效条目(问题已修复,但仍挂在账上):`,
+  );
   for (const fp of stale.slice(0, 40)) {
-    const [locale, key, rule, detail] = fp.split('\t');
+    const [locale, key, rule, detail] = fp.split("\t");
     console.error(`  ${locale}  ${key}  (${rule}: ${detail})`);
   }
-  if (stale.length > 40) console.error(`  ...(其余 ${stale.length - 40} 条省略)`);
+  if (stale.length > 40)
+    console.error(`  ...(其余 ${stale.length - 40} 条省略)`);
   console.error(
-    '\nbaseline 只减不增。请删除上述条目,或跑剪枝命令自动摘掉已修好的:\n' +
-      '  node scripts/check-i18n-glossary.mjs --update-baseline',
+    "\nbaseline 只减不增。请删除上述条目,或跑剪枝命令自动摘掉已修好的:\n" +
+      "  node scripts/check-i18n-glossary.mjs --update-baseline",
   );
 }
 
 // GLOSSARY.md 是给人和 AI 查阅的入口,过期比不存在更糟——大家会照着过期的表写文案。
 // 用与生成器完全相同的渲染函数比对,不做「差不多就行」的模糊校验。
 const docStale = fs.existsSync(DOC_PATH)
-  ? fs.readFileSync(DOC_PATH, 'utf8').replace(/\r\n?/g, '\n') !== renderGlossaryDoc(glossary)
+  ? normalizeDocEol(fs.readFileSync(DOC_PATH, "utf8")) !==
+    normalizeDocEol(renderGlossaryDoc(glossary))
   : true;
 if (docStale) {
   console.error(
-    '\n[check-i18n-glossary] ❌ i18n/GLOSSARY.md 与 i18n/glossary.json 不同步(或缺失)。\n' +
-      '  运行 pnpm i18n:glossary-doc 重新生成。',
+    "\n[check-i18n-glossary] ❌ i18n/GLOSSARY.md 与 i18n/glossary.json 不同步(或缺失)。\n" +
+      "  运行 pnpm i18n:glossary-doc 重新生成。",
   );
 }
 
 if (REPORT_ONLY) {
   console.log(
     `\n[check-i18n-glossary] 报告模式:新增 ${blocking.length} / 待裁决 ${warnings.length} / ` +
-      `baseline 存量 ${known.length} / baseline 失效 ${stale.length} / 文档${docStale ? '过期' : '同步'}`,
+      `baseline 存量 ${known.length} / baseline 失效 ${stale.length} / 文档${docStale ? "过期" : "同步"}`,
   );
   process.exit(0);
 }
@@ -524,16 +586,16 @@ if (REPORT_ONLY) {
 if (blocking.length > 0 || stale.length > 0 || docStale) {
   console.error(
     `\n[check-i18n-glossary] 失败:新增违规 ${blocking.length} / baseline 失效 ${stale.length}` +
-      `${docStale ? ' / 文档过期' : ''}。术语裁决见 i18n/glossary.json,人读版 i18n/GLOSSARY.md。`,
+      `${docStale ? " / 文档过期" : ""}。术语裁决见 i18n/glossary.json,人读版 i18n/GLOSSARY.md。`,
   );
   process.exit(1);
 }
 
-const decided = glossary.terms.filter((t) => t.status === 'decided').length;
+const decided = glossary.terms.filter((t) => t.status === "decided").length;
 const proposed = glossary.terms.length - decided;
 console.log(
   `[check-i18n-glossary] ✅ 术语表 ${decided} 条已裁决 / ${proposed} 条待讨论,` +
-    `${locales.join(' / ')} 无新增违规` +
-    (known.length > 0 ? `(baseline 存量 ${known.length} 处待清理)` : '') +
-    (warnings.length > 0 ? `(待裁决术语告警 ${warnings.length} 处)` : ''),
+    `${locales.join(" / ")} 无新增违规` +
+    (known.length > 0 ? `(baseline 存量 ${known.length} 处待清理)` : "") +
+    (warnings.length > 0 ? `(待裁决术语告警 ${warnings.length} 处)` : ""),
 );

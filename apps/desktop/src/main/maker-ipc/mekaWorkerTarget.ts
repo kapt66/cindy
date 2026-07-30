@@ -38,7 +38,11 @@ export function createMekaWorkerTargetResolver(deps: {
           message: 'custom Worker targets are only supported for Meka sessions',
         };
       }
-      return { ok: true, workingDir: lead.workingDir ?? '' };
+      return {
+        ok: true,
+        workingDir: lead.workingDir ?? '',
+        ...(lead.remoteHostId ? { remoteHostId: lead.remoteHostId } : {}),
+      };
     }
     if (!lead.mekaProjectId) {
       return {

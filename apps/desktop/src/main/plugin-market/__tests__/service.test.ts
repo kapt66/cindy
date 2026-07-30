@@ -59,10 +59,7 @@ import type { VisiblePluginDetail, VisiblePluginSummary } from '@cindy/plugin-pr
 
 import { downloadVerifiedPlugin } from '../download';
 import { PluginMarketLedger } from '../ledger';
-import {
-  PluginMarketService,
-  type PluginMarketServiceOptions,
-} from '../service';
+import { PluginMarketService, type PluginMarketServiceOptions } from '../service';
 import type { PluginMarketApi } from '../api';
 
 const roots: string[] = [];
@@ -103,9 +100,7 @@ function manifest(
   };
 }
 
-function summary(
-  overrides: Partial<VisiblePluginSummary> = {},
-): VisiblePluginSummary {
+function summary(overrides: Partial<VisiblePluginSummary> = {}): VisiblePluginSummary {
   return {
     id: PLUGIN_ID,
     ghostId: 'cindy-test',
@@ -127,7 +122,10 @@ function summary(
   };
 }
 
-function detail(item = summary(), slots: ['notify'] | ['notify', 'fs'] = ['notify']): VisiblePluginDetail {
+function detail(
+  item = summary(),
+  slots: ['notify'] | ['notify', 'fs'] = ['notify'],
+): VisiblePluginDetail {
   return {
     ...item,
     currentRelease: {
@@ -137,10 +135,7 @@ function detail(item = summary(), slots: ['notify'] | ['notify', 'fs'] = ['notif
   };
 }
 
-function harness(
-  items: VisiblePluginSummary[],
-  options: PluginMarketServiceOptions = {},
-) {
+function harness(items: VisiblePluginSummary[], options: PluginMarketServiceOptions = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-plugin-service-'));
   roots.push(root);
   const ledger = new PluginMarketLedger(path.join(root, 'ledger.json'));
@@ -162,11 +157,7 @@ function harness(
   return {
     api,
     ledger,
-    service: new PluginMarketService(
-      api as unknown as PluginMarketApi,
-      ledger,
-      options,
-    ),
+    service: new PluginMarketService(api as unknown as PluginMarketApi, ledger, options),
   };
 }
 
@@ -181,11 +172,13 @@ describe('PluginMarketService migration and defaultInstall', () => {
       ghostId: 'cindy-default',
       defaultInstall: true,
     });
-    runtime.ghosts = [{
-      manifest: manifest(legacy.ghostId),
-      dir: 'C:\\plugins\\cindy-legacy',
-      enabled: true,
-    }];
+    runtime.ghosts = [
+      {
+        manifest: manifest(legacy.ghostId),
+        dir: 'C:\\plugins\\cindy-legacy',
+        enabled: true,
+      },
+    ];
     const h = harness([legacy, defaultPlugin], {
       adoptLegacyInstallations: false,
       applyDefaultInstalls: false,
@@ -200,6 +193,50 @@ describe('PluginMarketService migration and defaultInstall', () => {
     expect(runtime.install).not.toHaveBeenCalled();
   });
 
+  it('projects same-release display metadata without reinstalling the package', async () => {
+    runtime.ghosts = [
+      {
+        manifest: manifest(),
+        dir: '/userData/cindy-brain/cindy-test',
+        enabled: false,
+      },
+    ];
+    const item = summary({
+      name: 'Renamed Plugin',
+      description: 'Updated market description',
+      author: 'Updated Publisher',
+    });
+    const h = harness([item]);
+    h.ledger.upsertInstallation({
+      pluginId: item.id,
+      ghostId: item.ghostId,
+      releaseId: item.currentRelease.id,
+      version: item.currentRelease.version,
+      sha256: item.currentRelease.sha256,
+      scope: item.scope,
+      organizationId: item.organizationId,
+      source: 'market',
+      installed: true,
+      updatedAt: '2026-07-27T00:00:00.000Z',
+    });
+
+    await expect(h.service.snapshot()).resolves.toMatchObject({
+      items: [
+        {
+          name: 'Renamed Plugin',
+          description: 'Updated market description',
+          author: 'Updated Publisher',
+          releaseId: 'release-1',
+          version: '1.0.0',
+          installState: 'installed',
+          enabled: false,
+        },
+      ],
+      unavailableReason: null,
+    });
+    expect(runtime.install).not.toHaveBeenCalled();
+  });
+
   it('passes the optional release icon metadata to renderer-safe market items', async () => {
     const icon = {
       mimeType: 'image/png',
@@ -208,12 +245,14 @@ describe('PluginMarketService migration and defaultInstall', () => {
       url: 'https://oss.example.invalid/icons/test.png',
       expiresAt: '2026-07-23T00:05:00.000Z',
     };
-    const h = harness([summary({
-      currentRelease: {
-        ...summary().currentRelease,
-        icon,
-      },
-    })]);
+    const h = harness([
+      summary({
+        currentRelease: {
+          ...summary().currentRelease,
+          icon,
+        },
+      }),
+    ]);
 
     await expect(h.service.snapshot()).resolves.toMatchObject({
       items: [{ icon }],
@@ -222,10 +261,12 @@ describe('PluginMarketService migration and defaultInstall', () => {
   });
 
   it('takes bounded local snapshots instead of reading the ledger per market item', async () => {
-    const items = Array.from({ length: 50 }, (_, index) => summary({
-      id: `c${index.toString(36).padStart(24, '0')}`,
-      ghostId: `cindy-test-${index}`,
-    }));
+    const items = Array.from({ length: 50 }, (_, index) =>
+      summary({
+        id: `c${index.toString(36).padStart(24, '0')}`,
+        ghostId: `cindy-test-${index}`,
+      }),
+    );
     const h = harness(items);
     const read = vi.spyOn(h.ledger, 'read');
 
@@ -366,13 +407,10 @@ describe('PluginMarketService migration and defaultInstall', () => {
 
     const snapshot = await h.service.snapshot();
 
-    expect(runtime.install).toHaveBeenCalledWith(
-      expect.stringMatching(/\.cindy$/),
-      {
-        ghostId: 'cindy-test',
-        version: '1.0.0',
-      },
-    );
+    expect(runtime.install).toHaveBeenCalledWith(expect.stringMatching(/\.cindy$/), {
+      ghostId: 'cindy-test',
+      version: '1.0.0',
+    });
     expect(snapshot.items[0]).toMatchObject({
       installState: 'installed',
       enabled: true,
@@ -394,15 +432,14 @@ describe('PluginMarketService migration and defaultInstall', () => {
     });
     const h = harness([item]);
 
-    const { ghost } = await h.service.install(item.id, { expectedReleaseId: item.currentRelease.id });
+    const { ghost } = await h.service.install(item.id, {
+      expectedReleaseId: item.currentRelease.id,
+    });
 
-    expect(runtime.install).toHaveBeenCalledWith(
-      expect.stringMatching(/\.cindy$/),
-      {
-        ghostId: 'cindy-test',
-        version: '1.0.0',
-      },
-    );
+    expect(runtime.install).toHaveBeenCalledWith(expect.stringMatching(/\.cindy$/), {
+      ghostId: 'cindy-test',
+      version: '1.0.0',
+    });
     // 锁定装完即开的最终结果:装入入口返回的 ghost 必须是启用态。
     expect(ghost.enabled).toBe(true);
     expect(vi.mocked(downloadVerifiedPlugin).mock.lastCall?.[3]).toBeUndefined();
@@ -523,13 +560,10 @@ describe('PluginMarketService migration and defaultInstall', () => {
 
     const snapshot = await h.service.snapshot();
 
-    expect(runtime.install).toHaveBeenCalledWith(
-      expect.stringMatching(/\.cindy$/),
-      {
-        ghostId: item.ghostId,
-        version: item.currentRelease.version,
-      },
-    );
+    expect(runtime.install).toHaveBeenCalledWith(expect.stringMatching(/\.cindy$/), {
+      ghostId: item.ghostId,
+      version: item.currentRelease.version,
+    });
     expect(snapshot.items[0]).toMatchObject({
       installState: 'installed',
       enabled: true,
@@ -550,7 +584,9 @@ describe('PluginMarketService migration and defaultInstall', () => {
     });
     const h = harness([item]);
 
-    await expect(h.service.install(item.id, { expectedReleaseId: item.currentRelease.id })).resolves.toMatchObject({
+    await expect(
+      h.service.install(item.id, { expectedReleaseId: item.currentRelease.id }),
+    ).resolves.toMatchObject({
       ghost: { manifest: { id: 'cindy-test' }, enabled: false },
     });
     expect(h.api.download).toHaveBeenCalledWith(item.id, item.currentRelease.id);
@@ -572,7 +608,9 @@ describe('PluginMarketService migration and defaultInstall', () => {
     });
     const h = harness([item]);
 
-    await expect(h.service.install(item.id, { expectedReleaseId: item.currentRelease.id })).rejects.toThrow('[NOT_FOUND]');
+    await expect(
+      h.service.install(item.id, { expectedReleaseId: item.currentRelease.id }),
+    ).rejects.toThrow('[NOT_FOUND]');
     expect(h.api.detail).not.toHaveBeenCalled();
     expect(runtime.install).not.toHaveBeenCalled();
   });
@@ -770,7 +808,9 @@ describe('PluginMarketService migration and defaultInstall', () => {
       installed: false,
     });
 
-    await expect(h.service.install(item.id, { expectedReleaseId: item.currentRelease.id })).rejects.toThrow('[ALREADY_EXISTS]');
+    await expect(
+      h.service.install(item.id, { expectedReleaseId: item.currentRelease.id }),
+    ).rejects.toThrow('[ALREADY_EXISTS]');
     expect(runtime.install).not.toHaveBeenCalled();
   });
 
@@ -802,7 +842,9 @@ describe('PluginMarketService migration and defaultInstall', () => {
     });
     h.api.detail.mockResolvedValue(detail(item, ['notify', 'fs']));
 
-    await expect(h.service.install(item.id, { expectedReleaseId: item.currentRelease.id })).rejects.toThrow('[PRECONDITION_FAILED]');
+    await expect(
+      h.service.install(item.id, { expectedReleaseId: item.currentRelease.id }),
+    ).rejects.toThrow('[PRECONDITION_FAILED]');
     expect(runtime.install).not.toHaveBeenCalled();
 
     await expect(
@@ -882,7 +924,9 @@ describe('PluginMarketService migration and defaultInstall', () => {
       sizeBytes: item.currentRelease.sizeBytes,
     });
 
-    await expect(h.service.install(item.id, { expectedReleaseId: item.currentRelease.id })).rejects.toThrow('[PRECONDITION_FAILED]');
+    await expect(
+      h.service.install(item.id, { expectedReleaseId: item.currentRelease.id }),
+    ).rejects.toThrow('[PRECONDITION_FAILED]');
     expect(runtime.install).not.toHaveBeenCalled();
   });
 
@@ -898,7 +942,9 @@ describe('PluginMarketService migration and defaultInstall', () => {
       return [item];
     });
 
-    await expect(h.service.install(item.id, { expectedReleaseId: item.currentRelease.id })).rejects.toThrow('[PRECONDITION_FAILED]');
+    await expect(
+      h.service.install(item.id, { expectedReleaseId: item.currentRelease.id }),
+    ).rejects.toThrow('[PRECONDITION_FAILED]');
     expect(runtime.install).not.toHaveBeenCalled();
     expect(h.ledger.installationForGhost(item.ghostId)).toBeNull();
   });
@@ -921,7 +967,9 @@ describe('PluginMarketService migration and defaultInstall', () => {
       return installedGhost;
     });
 
-    await expect(h.service.install(item.id, { expectedReleaseId: item.currentRelease.id })).resolves.toEqual({
+    await expect(
+      h.service.install(item.id, { expectedReleaseId: item.currentRelease.id }),
+    ).resolves.toEqual({
       ghost: installedGhost,
     });
     expect(h.ledger.installationForGhost(item.ghostId)).toMatchObject({

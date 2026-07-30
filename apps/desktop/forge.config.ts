@@ -20,10 +20,7 @@ import {
   resolveCindyRegion,
 } from '@cindy/maker-shared/brand-identity';
 import { stagePackagedThirdPartyNotices } from './forge-third-party-notices';
-import {
-  assertMekaResourceTree,
-  assertPackagedMekaResources,
-} from './forge-meka-resources';
+import { assertMekaResourceTree, assertPackagedMekaResources } from './forge-meka-resources';
 
 const _require = createRequire(__filename);
 
@@ -55,9 +52,7 @@ const UPDATER_EXE = `${BRAND_IDENTITY.updaterName}.exe`;
 // CommonJS graph crashes when Rollup reorders it. Its dependency tree contains
 // version conflicts, so it is copied with parent-relative node_modules layout
 // instead of being flattened into the generic runtime dep list below.
-const DISCORD_RUNTIME_DEPS = [
-  'discord.js',
-];
+const DISCORD_RUNTIME_DEPS = ['discord.js'];
 
 // Workspace 用 pnpm `node-linker=hoisted`，所有依赖都只在根 node_modules/ 下，
 // apps/desktop/node_modules/ 里连 symlink 都没建。electron-packager 只扫
@@ -298,11 +293,7 @@ function copyDependencyTree(
  */
 function copySqliteVecBinary(buildPath: string, targetPlatform: string, targetArch: string): void {
   const ext =
-    targetPlatform === 'win32'
-      ? 'vec0.dll'
-      : targetPlatform === 'linux'
-        ? 'vec0.so'
-        : 'vec0.dylib';
+    targetPlatform === 'win32' ? 'vec0.dll' : targetPlatform === 'linux' ? 'vec0.so' : 'vec0.dylib';
   const platformDir = `${targetPlatform}-${targetArch}`;
   const src = path.join(__dirname, 'native', 'sqlite-vec', platformDir, ext);
   if (!fs.existsSync(src)) {
@@ -334,9 +325,8 @@ function bundleNativeDeps(buildPath: string, targetPlatform: string, targetArch:
   // 不能让它退化到 root 可能 hoist 的 1.7.2。以 node-pty 目录为解析起点。
   const nodePtyDir = resolvePackageDir('node-pty');
   for (const dep of deps) {
-    const src = dep === 'node-addon-api'
-      ? resolvePackageDir(dep, [nodePtyDir])
-      : resolvePackageDir(dep);
+    const src =
+      dep === 'node-addon-api' ? resolvePackageDir(dep, [nodePtyDir]) : resolvePackageDir(dep);
     const dst = path.join(destModules, dep);
     // Scoped packages (`@protobufjs/aspromise`) need their `@scope` parent
     // dir created before cpSync — cpSync only mkdir's the leaf.
@@ -376,9 +366,7 @@ async function rebuildNativeDepsInPackage(
     'better_sqlite3.node',
   );
   if (!fs.existsSync(sqliteNative)) {
-    throw new Error(
-      `[forge:afterCopy] rebuild reported success but ${sqliteNative} is missing`,
-    );
+    throw new Error(`[forge:afterCopy] rebuild reported success but ${sqliteNative} is missing`);
   }
   // node-pty 的 .node 在 build/Release/pty.node;Windows 上同名,Linux/macOS 同名。
   // 跟 better-sqlite3 一样,缺了直接抛出,避免发出无法启动 PTY 的包。
@@ -391,9 +379,7 @@ async function rebuildNativeDepsInPackage(
     'pty.node',
   );
   if (!fs.existsSync(ptyNative)) {
-    throw new Error(
-      `[forge:afterCopy] rebuild reported success but ${ptyNative} is missing`,
-    );
+    throw new Error(`[forge:afterCopy] rebuild reported success but ${ptyNative} is missing`);
   }
 
   // node-pty 被整目录纳入 asar.unpack（为放出 spawn-helper / winpty 等运行时二进制），
@@ -419,7 +405,10 @@ async function rebuildNativeDepsInPackage(
   console.log(`[forge:afterCopy] rebuild ok: ${sqliteNative}, ${ptyNative}`);
 }
 
-const isDev = process.env.NODE_ENV !== 'production' && !process.argv.includes('make') && !process.argv.includes('package');
+const isDev =
+  process.env.NODE_ENV !== 'production' &&
+  !process.argv.includes('make') &&
+  !process.argv.includes('package');
 const isWin = process.platform === 'win32';
 
 /**
@@ -479,7 +468,9 @@ function buildCindyUpdater(): void {
 
   fs.copyFileSync(builtExe, destExe);
   const sizeMb = (fs.statSync(destExe).size / (1024 * 1024)).toFixed(2);
-  console.log(`[forge:prePackage] ${UPDATER_EXE} → ${destExe} (${sizeMb} MB, ${Date.now() - t0}ms)`);
+  console.log(
+    `[forge:prePackage] ${UPDATER_EXE} → ${destExe} (${sizeMb} MB, ${Date.now() - t0}ms)`,
+  );
 }
 
 /**
@@ -494,7 +485,8 @@ function findMtExe(): string {
   for (const base of candidates) {
     if (!fs.existsSync(base)) continue;
     // 子目录形如 10.0.22621.0, 取版本号最大的
-    const versions = fs.readdirSync(base)
+    const versions = fs
+      .readdirSync(base)
       .filter((d) => /^10\.\d+\.\d+\.\d+$/.test(d))
       .sort()
       .reverse();
@@ -508,7 +500,7 @@ function findMtExe(): string {
   }
   throw new Error(
     '[forge] mt.exe not found. Install Windows 10/11 SDK and ensure ' +
-    '"C:\\Program Files (x86)\\Windows Kits\\10\\bin\\<ver>\\x64\\mt.exe" exists.',
+      '"C:\\Program Files (x86)\\Windows Kits\\10\\bin\\<ver>\\x64\\mt.exe" exists.',
   );
 }
 
@@ -520,11 +512,9 @@ function patchUpdaterManifest(exePath: string): void {
   const mt = findMtExe();
   // -outputresource:<exe>;#1 — 替换 exe 里资源 ID 1 (RT_MANIFEST), 不新增。
   // tauri-build 已经塞过一个默认 manifest 在 ID 1, 这步把它换成我们的版本。
-  const r = spawnSync(mt, [
-    '-nologo',
-    '-manifest', manifestPath,
-    `-outputresource:${exePath};#1`,
-  ], { stdio: 'inherit' });
+  const r = spawnSync(mt, ['-nologo', '-manifest', manifestPath, `-outputresource:${exePath};#1`], {
+    stdio: 'inherit',
+  });
   if (r.error) throw new Error(`[forge] mt.exe spawn failed: ${r.error.message}`);
   if (r.status !== 0) throw new Error(`[forge] mt.exe exited ${r.status} when patching manifest`);
   console.log(`[forge:prePackage] manifest patched into ${UPDATER_EXE} (PCA bypass)`);
@@ -561,7 +551,8 @@ function signOneExeWithExternalCommand(exePath: string, commandTemplate: string)
   console.log(`[forge:sign] signing ${path.basename(exePath)}...`);
   const r = spawnSync(command, { stdio: 'inherit', shell: true });
   if (r.error) throw new Error(`[forge:sign] sign command spawn failed: ${r.error.message}`);
-  if (r.status !== 0) throw new Error(`[forge:sign] sign command exited ${r.status} for ${exePath}`);
+  if (r.status !== 0)
+    throw new Error(`[forge:sign] sign command exited ${r.status} for ${exePath}`);
 }
 
 /**
@@ -693,12 +684,17 @@ function applyMacPackagedDisplayName(buildPath: string, platform: string): void 
     const key = 'CFBundleDisplayName';
     // packager 必写该键,Set 即可;Add 兜底防未来 packager 行为变化。
     const displayName = BRAND_IDENTITY.displayName;
-    const set = spawnSync('/usr/libexec/PlistBuddy', ['-c', `Set :${key} ${displayName}`, plistPath]);
+    const set = spawnSync('/usr/libexec/PlistBuddy', [
+      '-c',
+      `Set :${key} ${displayName}`,
+      plistPath,
+    ]);
     if (set.status !== 0) {
-      const add = spawnSync(
-        '/usr/libexec/PlistBuddy',
-        ['-c', `Add :${key} string ${displayName}`, plistPath],
-      );
+      const add = spawnSync('/usr/libexec/PlistBuddy', [
+        '-c',
+        `Add :${key} string ${displayName}`,
+        plistPath,
+      ]);
       if (add.status !== 0) {
         throw new Error(`[forge:postPackage] PlistBuddy failed to set ${key} in ${plistPath}`);
       }
@@ -751,7 +747,9 @@ function stageRipgrep(targetPlatform: string, targetArch: string): void {
     stdio: 'inherit',
   });
   if (r.status !== 0) {
-    throw new Error(`[forge] failed to ensure pinned ripgrep ${key}; run "pnpm update:ripgrep" before packaging`);
+    throw new Error(
+      `[forge] failed to ensure pinned ripgrep ${key}; run "pnpm update:ripgrep" before packaging`,
+    );
   }
   if (!fs.existsSync(src)) {
     throw new Error(`[forge] ripgrep still missing at ${src} after ensure`);
@@ -803,9 +801,13 @@ function assertRealAndroidPlatformTool(filePath: string): void {
   if (stat.size < 4096) {
     const prefix = fs.readFileSync(filePath, 'utf8').slice(0, 128);
     if (prefix.includes('git-lfs.github.com/spec/v1')) {
-      throw new Error(`[forge] bundled Android platform-tools file is a Git LFS pointer; run "git lfs pull": ${filePath}`);
+      throw new Error(
+        `[forge] bundled Android platform-tools file is a Git LFS pointer; run "git lfs pull": ${filePath}`,
+      );
     }
-    throw new Error(`[forge] bundled Android platform-tools file is unexpectedly small (${stat.size} bytes): ${filePath}`);
+    throw new Error(
+      `[forge] bundled Android platform-tools file is unexpectedly small (${stat.size} bytes): ${filePath}`,
+    );
   }
 }
 
@@ -855,7 +857,9 @@ function stageAndroidPlatformTools(targetPlatform: string, targetArch: string): 
   if (!fs.existsSync(srcDir)) {
     fs.rmSync(destDir, { recursive: true, force: true });
     if (targetPlatform !== 'win32') {
-      console.log(`[forge:prePackage] Android platform-tools ${key} missing; runtime preparation will download it when needed`);
+      console.log(
+        `[forge:prePackage] Android platform-tools ${key} missing; runtime preparation will download it when needed`,
+      );
       return;
     }
     throw new Error(`[forge] bundled Android platform-tools missing at ${srcDir}`);
@@ -907,10 +911,19 @@ function swiftArchLabel(arch: ForgeArch, deploymentTarget: string): string {
     .join('+');
 }
 
-function runSwiftcForTarget(src: string, dest: string, target: string, extraArgs: string[], label: string): void {
-  const r = spawnSync('swiftc', ['-target', target, src, ...extraArgs, '-o', dest], { stdio: 'inherit' });
+function runSwiftcForTarget(
+  src: string,
+  dest: string,
+  target: string,
+  extraArgs: string[],
+  label: string,
+): void {
+  const r = spawnSync('swiftc', ['-target', target, src, ...extraArgs, '-o', dest], {
+    stdio: 'inherit',
+  });
   if (r.error) throw new Error(`[forge] swiftc spawn failed for ${label}: ${r.error.message}`);
-  if (r.status !== 0) throw new Error(`[forge] swiftc failed for ${label} (${target}) with exit code ${r.status}`);
+  if (r.status !== 0)
+    throw new Error(`[forge] swiftc failed for ${label} (${target}) with exit code ${r.status}`);
 }
 
 function buildSwiftHelperForForgeArch(
@@ -928,12 +941,17 @@ function buildSwiftHelperForForgeArch(
   }
 
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xdt-swift-helper-'));
-  const outputs = targets.map((target) => path.join(tempDir, `${path.basename(dest)}-${target.split('-')[0]}`));
+  const outputs = targets.map((target) =>
+    path.join(tempDir, `${path.basename(dest)}-${target.split('-')[0]}`),
+  );
   try {
-    targets.forEach((target, index) => runSwiftcForTarget(src, outputs[index], target, extraArgs, label));
+    targets.forEach((target, index) =>
+      runSwiftcForTarget(src, outputs[index], target, extraArgs, label),
+    );
     const r = spawnSync('lipo', ['-create', ...outputs, '-output', dest], { stdio: 'inherit' });
     if (r.error) throw new Error(`[forge] lipo spawn failed for ${label}: ${r.error.message}`);
-    if (r.status !== 0) throw new Error(`[forge] lipo failed for ${label} with exit code ${r.status}`);
+    if (r.status !== 0)
+      throw new Error(`[forge] lipo failed for ${label} with exit code ${r.status}`);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
@@ -958,16 +976,28 @@ function buildMacVoiceInputTextInsertionHelper(platform: ForgePlatform, arch: Fo
   );
   fs.chmodSync(dest, 0o755);
   const sizeMb = (fs.statSync(dest).size / (1024 * 1024)).toFixed(2);
-  console.log(`[forge:prePackage] macOS voice input text insertion helper (${swiftArchLabel(arch, MACOS_VOICE_HELPER_DEPLOYMENT_TARGET)}) -> ${dest} (${sizeMb} MB)`);
+  console.log(
+    `[forge:prePackage] macOS voice input text insertion helper (${swiftArchLabel(arch, MACOS_VOICE_HELPER_DEPLOYMENT_TARGET)}) -> ${dest} (${sizeMb} MB)`,
+  );
 }
 
-function buildMacVoiceInputModifierShortcutListener(platform: ForgePlatform, arch: ForgeArch): void {
+function buildMacVoiceInputModifierShortcutListener(
+  platform: ForgePlatform,
+  arch: ForgeArch,
+): void {
   if (process.platform !== 'darwin' || !isMacForgePlatform(platform)) return;
-  const src = path.join(__dirname, 'native', 'voice-input', 'macos-modifier-shortcut-listener.swift');
+  const src = path.join(
+    __dirname,
+    'native',
+    'voice-input',
+    'macos-modifier-shortcut-listener.swift',
+  );
   const destDir = path.join(__dirname, 'resources', 'tools', 'voice-input');
   const dest = path.join(destDir, 'xdt-macos-modifier-shortcut-listener');
   if (!fs.existsSync(src)) {
-    throw new Error(`[forge] macOS voice input modifier shortcut listener source missing at ${src}`);
+    throw new Error(
+      `[forge] macOS voice input modifier shortcut listener source missing at ${src}`,
+    );
   }
   fs.mkdirSync(destDir, { recursive: true });
   buildSwiftHelperForForgeArch(
@@ -980,7 +1010,9 @@ function buildMacVoiceInputModifierShortcutListener(platform: ForgePlatform, arc
   );
   fs.chmodSync(dest, 0o755);
   const sizeMb = (fs.statSync(dest).size / (1024 * 1024)).toFixed(2);
-  console.log(`[forge:prePackage] macOS voice input modifier shortcut listener (${swiftArchLabel(arch, MACOS_VOICE_HELPER_DEPLOYMENT_TARGET)}) -> ${dest} (${sizeMb} MB)`);
+  console.log(
+    `[forge:prePackage] macOS voice input modifier shortcut listener (${swiftArchLabel(arch, MACOS_VOICE_HELPER_DEPLOYMENT_TARGET)}) -> ${dest} (${sizeMb} MB)`,
+  );
 }
 
 function buildMacAgentIslandHelper(platform: ForgePlatform, arch: ForgeArch): void {
@@ -1022,7 +1054,9 @@ function buildMacAgentIslandHelper(platform: ForgePlatform, arch: ForgeArch): vo
   fs.cpSync(mascotsSrc, mascotsDest, { recursive: true });
   fs.chmodSync(dest, 0o755);
   const sizeMb = (fs.statSync(dest).size / (1024 * 1024)).toFixed(2);
-  console.log(`[forge:prePackage] macOS agent island helper (${swiftArchLabel(arch, MACOS_AGENT_ISLAND_HELPER_DEPLOYMENT_TARGET)}) -> ${dest} (${sizeMb} MB)`);
+  console.log(
+    `[forge:prePackage] macOS agent island helper (${swiftArchLabel(arch, MACOS_AGENT_ISLAND_HELPER_DEPLOYMENT_TARGET)}) -> ${dest} (${sizeMb} MB)`,
+  );
 }
 
 function buildMacComputerPermissionGuideHelper(platform: ForgePlatform, arch: ForgeArch): void {
@@ -1049,26 +1083,31 @@ function buildMacComputerPermissionGuideHelper(platform: ForgePlatform, arch: Fo
   );
   fs.chmodSync(dest, 0o755);
   const sizeMb = (fs.statSync(dest).size / (1024 * 1024)).toFixed(2);
-  console.log(`[forge:prePackage] macOS computer permission guide helper (${swiftArchLabel(arch, MACOS_COMPUTER_PERMISSION_GUIDE_HELPER_DEPLOYMENT_TARGET)}) -> ${dest} (${sizeMb} MB)`);
+  console.log(
+    `[forge:prePackage] macOS computer permission guide helper (${swiftArchLabel(arch, MACOS_COMPUTER_PERMISSION_GUIDE_HELPER_DEPLOYMENT_TARGET)}) -> ${dest} (${sizeMb} MB)`,
+  );
 }
 
 // MakerNSIS is Windows-only (native dependency), conditionally require to
 // avoid import errors on macOS / Linux.
 const makers: ForgeConfig['makers'] = [
   new MakerZIP({}, ['darwin']),
-  new MakerDeb({
-    options: {
-      categories: ['Development'],
-      icon: path.join(__dirname, 'resources', 'icon.png'),
-      // 注册 Cindy Meka 主 scheme 与 Meka 历史 scheme；上游 cindy:// 仅解析、不注册。
-      mimeType: allDeepLinkSchemes().map((s) => `x-scheme-handler/${s}`),
-      maintainer: 'Lizi <feedback@cindy.app>',
-      // deb 包名规范要求小写;跟随区域 exe 名(cn/global cindy / dev cindydev)。
-      name: CINDY_EXE.toLowerCase(),
-      bin: CINDY_EXE,
-      productName: CINDY_EXE,
+  new MakerDeb(
+    {
+      options: {
+        categories: ['Development'],
+        icon: path.join(__dirname, 'resources', 'icon.png'),
+        // 注册 Cindy Meka 主 scheme 与 Meka 历史 scheme；上游 cindy:// 仅解析、不注册。
+        mimeType: allDeepLinkSchemes().map((s) => `x-scheme-handler/${s}`),
+        maintainer: 'Lizi <feedback@cindy.app>',
+        // deb 包名规范要求小写;跟随区域 exe 名(cn/global cindy / dev cindydev)。
+        name: CINDY_EXE.toLowerCase(),
+        bin: CINDY_EXE,
+        productName: CINDY_EXE,
+      },
     },
-  }, ['linux']),
+    ['linux'],
+  ),
 ];
 if (isWin) {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -1092,7 +1131,9 @@ if (isWin) {
           sign: async (cfg: { path: string }) => {
             const signCmd = resolveWindowsSignCommand();
             if (!signCmd) {
-              console.log(`[forge:nsis:sign] no Windows signing configuration — skipping ${path.basename(cfg.path)}`);
+              console.log(
+                `[forge:nsis:sign] no Windows signing configuration — skipping ${path.basename(cfg.path)}`,
+              );
               return;
             }
             signOneExeWithExternalCommand(cfg.path, signCmd);
@@ -1108,6 +1149,22 @@ if (isWin) {
         // 接受)/ dev 'CindyDev'(仍与正式包隔离)。显式设值防 app-builder
         // 回落 package.json productName 造成 dev 与正式包同目录。
         productName: CINDY_EXE,
+        // Setup.exe 与 Uninstall <App>.exe 的 FileDescription 版本资源。
+        // app-builder-lib 只从 metadata(= apps/desktop/package.json)取
+        // description,没有顶层 config 字段;extraMetadata 是唯一的覆盖通道
+        // (packager.ts 在读完 package.json 后 deepAssign 进 metadata)。
+        // 不设时回落 package.json 的 npm 包描述,UAC 提权弹窗、文件属性、
+        // 快捷方式悬停提示上就会显示那段面向开发者的文本。
+        //
+        // ⚠️ 取 displayName 而非 CINDY_EXE:展示名两区(含 dev)共用 'Cindy',
+        // 而 exe 名 dev 派生为 'CindyDev'。用后者会让 dev 包的安装器显示
+        // CindyDev、装完的主 exe 却显示 Cindy(win32metadata 同样取
+        // displayName)——安装前后自相矛盾,正是本次要消除的那类不一致。
+        // 文件名层的区分由 productName / shortcutName 承担,与展示层解耦。
+        //
+        // prepackaged 模式下 doPack 直接 return,extraMetadata 不会重写
+        // 已由 electron-forge 打好的 app.asar 内 package.json。
+        extraMetadata: { description: BRAND_IDENTITY.displayName },
         nsis: {
           oneClick: false,
           allowToChangeInstallationDirectory: true,
@@ -1148,7 +1205,9 @@ const config: ForgeConfig = {
     // Windows 上也带 winpty-agent.exe / DLL 等非 .node 二进制；这些都必须 unpack
     // 到 asar 外才能被 spawn / 动态加载。AutoUnpackNativesPlugin 只 unpack .node,
     // 所以这里显式覆盖 loudness / node-pty 整个目录。
-    asar: { unpack: '**/{@img/{sharp-libvips-*,sharp-win32-*},loudness,native/sqlite-vec,node-pty}/**' },
+    asar: {
+      unpack: '**/{@img/{sharp-libvips-*,sharp-win32-*},loudness,native/sqlite-vec,node-pty}/**',
+    },
     // 打包名(out 目录 / mac .app 包名 / Helper 目录名 / 主 plist CFBundleName)
     // 按区域派生:cn/global 'Cindy'(2026-07-26 显示名统一,.app 撞名双装
     // 互覆已被 owner 接受)/ dev 'CindyDev'(显式设值防 packager 回落
@@ -1163,7 +1222,9 @@ const config: ForgeConfig = {
     appBundleId: CINDY_APP_ID,
     // exe 资源元数据(任务管理器进程名、文件右键属性的显示层)。只影响展示,
     // 与 exe 文件名 / AUMID / userData 等标识符解耦;显示层两区共用 Cindy
-    // (与 mac 显示名口径一致)。
+    // (与 mac 显示名口径一致)。FileDescription 走 BRAND_IDENTITY.displayName,
+    // 与 NSIS maker 的 extraMetadata.description 同一表达式——安装器/卸载器
+    // 与主 exe 的「说明」字段必须同值,否则 dev 包会安装前后显示两个名字。
     win32metadata: {
       CompanyName: 'XD',
       ProductName: BRAND_IDENTITY.displayName,
@@ -1179,8 +1240,8 @@ const config: ForgeConfig = {
       // 不包含上游 cindy://，避免同机安装 Cindy 时抢占其系统协议。
       { name: `${BRAND_IDENTITY.displayName} Deep Link`, schemes: [...allDeepLinkSchemes()] },
     ],
-    // macOS 文件夹右键 "打开方式 → XDMaker" 入口:
-    //   声明 app 能接受 public.folder, Finder 自动把 XDMaker 出现在 "打开方式" 列表。
+    // macOS 文件夹右键 "打开方式 → Cindy" 入口:
+    //   声明 app 能接受 public.folder, Finder 自动把 Cindy 出现在 "打开方式" 列表。
     //   LSHandlerRank=Alternate: 不抢 Finder 默认 handler, 仅作为可选项之一。
     //   CFBundleTypeRole=Editor: 用户对该类型有 "打开+操作" 能力 (而非 Viewer 只看)。
     //   触发后 macOS 通过 app.on('open-file') 事件把目录路径推给 main 进程,
@@ -1350,6 +1411,12 @@ const config: ForgeConfig = {
           target: 'preload',
         },
         {
+          entry: 'src/main/im/wechat/silkWorker.ts',
+          config: 'vite.silk-worker.config.ts',
+          // SILK/WASM 解码隔离在线程中，避免阻塞 Electron main。
+          target: 'preload',
+        },
+        {
           entry: 'src/main/watcher-host/watcherHostProcess.ts',
           config: 'vite.watcher-host.config.ts',
           // 同 dbWorker:借 preload target 出 CJS 单文件；运行时是 Electron
@@ -1400,17 +1467,19 @@ const config: ForgeConfig = {
       ],
     }),
     // FusesPlugin conflicts with VitePlugin on `start` command — only load for package/make
-    ...(isDev ? [] : [
-      new FusesPlugin({
-        version: FuseVersion.V1,
-        [FuseV1Options.RunAsNode]: false,
-        [FuseV1Options.EnableCookieEncryption]: true,
-        [FuseV1Options.EnableNodeOptionsEnvironmentVariable]: false,
-        [FuseV1Options.EnableNodeCliInspectArguments]: false,
-        [FuseV1Options.EnableEmbeddedAsarIntegrityValidation]: true,
-        [FuseV1Options.OnlyLoadAppFromAsar]: true,
-      }),
-    ]),
+    ...(isDev
+      ? []
+      : [
+          new FusesPlugin({
+            version: FuseVersion.V1,
+            [FuseV1Options.RunAsNode]: false,
+            [FuseV1Options.EnableCookieEncryption]: true,
+            [FuseV1Options.EnableNodeOptionsEnvironmentVariable]: false,
+            [FuseV1Options.EnableNodeCliInspectArguments]: false,
+            [FuseV1Options.EnableEmbeddedAsarIntegrityValidation]: true,
+            [FuseV1Options.OnlyLoadAppFromAsar]: true,
+          }),
+        ]),
   ],
 };
 

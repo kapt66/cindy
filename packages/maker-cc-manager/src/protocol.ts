@@ -42,7 +42,7 @@ export const PROTOCOL_VERSION = 2 as const;
  * 无关依赖变化而变。desktop 用这个（而非 bundle sha256）判断远端 daemon
  * 是否需要 upgrade,避免无关的 pnpm install 触发全量远端重装。
  */
-export const CC_MGR_BUNDLE_VERSION = '0.0.5' as const;
+export const CC_MGR_BUNDLE_VERSION = "0.0.5" as const;
 
 export type RpcId = number;
 
@@ -54,33 +54,37 @@ export interface RpcError {
 }
 
 export type RpcErrorCode =
-  | 'INVALID_PROTOCOL_VERSION'
-  | 'INVALID_BUNDLE_VERSION'
-  | 'UNKNOWN_METHOD'
-  | 'INVALID_PARAMS'
-  | 'NOT_INITIALIZED'
-  | 'SESSION_NOT_FOUND'
-  | 'SESSION_ALREADY_EXISTS'
-  | 'BUNDLE_MATERIALIZE_FAILED'
-  | 'SDK_ERROR'
-  | 'INTERNAL';
+  | "INVALID_PROTOCOL_VERSION"
+  | "INVALID_BUNDLE_VERSION"
+  | "UNKNOWN_METHOD"
+  | "INVALID_PARAMS"
+  | "NOT_INITIALIZED"
+  | "SESSION_NOT_FOUND"
+  | "SESSION_ALREADY_EXISTS"
+  | "BUNDLE_MATERIALIZE_FAILED"
+  /** forceful kill 终止窗口 (inputQueue 已 end, consume loop 未退出) — 可重试。 */
+  | "SESSION_KILL_PENDING"
+  /** kill + close 升级后 consume loop 仍未退出 (daemon 病态) — 需重启 daemon。 */
+  | "SESSION_KILL_TIMEOUT"
+  | "SDK_ERROR"
+  | "INTERNAL";
 
 export interface RpcRequest<P = unknown> {
-  type: 'request';
+  type: "request";
   id: RpcId;
   method: string;
   params: P;
 }
 
 export interface RpcResponse<R = unknown> {
-  type: 'response';
+  type: "response";
   id: RpcId;
   result?: R;
   error?: RpcError;
 }
 
 export interface RpcNotification<P = unknown> {
-  type: 'notification';
+  type: "notification";
   method: string;
   params: P;
 }
@@ -95,35 +99,35 @@ export type RpcMessage = RpcRequest | RpcResponse | RpcNotification;
  */
 export const METHODS = {
   // Remote Codex capability routing
-  CAPABILITY_REVISION_REGISTER: 'capability/revision/register',
-  CAPABILITY_THREAD_REGISTER: 'capability/thread/register',
-  CAPABILITY_THREAD_UNREGISTER: 'capability/thread/unregister',
+  CAPABILITY_REVISION_REGISTER: "capability/revision/register",
+  CAPABILITY_THREAD_REGISTER: "capability/thread/register",
+  CAPABILITY_THREAD_UNREGISTER: "capability/thread/unregister",
 
   // Immutable capability bundle delivery
-  BUNDLE_ENSURE: 'bundle/ensure',
-  BUNDLE_RELEASE: 'bundle/release',
+  BUNDLE_ENSURE: "bundle/ensure",
+  BUNDLE_RELEASE: "bundle/release",
 
   // Lifecycle / handshake
-  PROTOCOL_HELLO: 'protocol/hello',
+  PROTOCOL_HELLO: "protocol/hello",
 
   // In-process MCP tunnel (shim → daemon → attached desktop client)
-  MCP_TUNNEL_CALL: 'mcp/tunnel/call',
+  MCP_TUNNEL_CALL: "mcp/tunnel/call",
 
   // Query (1:1 with SDK Query object lifecycle)
-  QUERY_START: 'query/start',
-  QUERY_SEND: 'query/send',
-  QUERY_SET_MODEL: 'query/setModel',
-  QUERY_SET_PERMISSION_MODE: 'query/setPermissionMode',
-  QUERY_APPLY_FLAG_SETTINGS: 'query/applyFlagSettings',
-  QUERY_GET_CONTEXT_USAGE: 'query/getContextUsage',
-  QUERY_INTERRUPT: 'query/interrupt',
-  QUERY_STOP_TASK: 'query/stopTask',
-  QUERY_CLOSE: 'query/close',
+  QUERY_START: "query/start",
+  QUERY_SEND: "query/send",
+  QUERY_SET_MODEL: "query/setModel",
+  QUERY_SET_PERMISSION_MODE: "query/setPermissionMode",
+  QUERY_APPLY_FLAG_SETTINGS: "query/applyFlagSettings",
+  QUERY_GET_CONTEXT_USAGE: "query/getContextUsage",
+  QUERY_INTERRUPT: "query/interrupt",
+  QUERY_STOP_TASK: "query/stopTask",
+  QUERY_CLOSE: "query/close",
 
   // Session (manager-level — list / attach / kill independent of Query lifecycle)
-  SESSION_ATTACH: 'session/attach',
-  SESSION_LIST: 'session/list',
-  SESSION_KILL: 'session/kill',
+  SESSION_ATTACH: "session/attach",
+  SESSION_LIST: "session/list",
+  SESSION_KILL: "session/kill",
 } as const;
 
 export type MethodName = (typeof METHODS)[keyof typeof METHODS];
@@ -133,11 +137,11 @@ export type MethodName = (typeof METHODS)[keyof typeof METHODS];
  */
 export const NOTIFICATIONS = {
   /** SDK message event for a session. Carries seq for replay ordering. */
-  QUERY_EVENT: 'query/event',
+  QUERY_EVENT: "query/event",
   /** A session has been closed (terminal). */
-  SESSION_CLOSED: 'session/closed',
+  SESSION_CLOSED: "session/closed",
   /** Current attach has been replaced by another client (single-attach policy). */
-  CLIENT_REPLACED: 'client/replaced',
+  CLIENT_REPLACED: "client/replaced",
 } as const;
 
 /**
@@ -148,14 +152,16 @@ export const NOTIFICATIONS = {
  */
 export const SERVER_METHODS = {
   /** SDK's canUseTool fired — daemon needs desktop to approve/deny a tool use. */
-  APPROVAL_REQUEST: 'approval/request',
+  APPROVAL_REQUEST: "approval/request",
   /** Forward a remote mcp-shim request to the attached desktop client. */
-  MCP_TUNNEL_CALL: 'mcp/tunnel/call',
+  MCP_TUNNEL_CALL: "mcp/tunnel/call",
 } as const;
 
-export type ServerMethodName = (typeof SERVER_METHODS)[keyof typeof SERVER_METHODS];
+export type ServerMethodName =
+  (typeof SERVER_METHODS)[keyof typeof SERVER_METHODS];
 
-export type NotificationName = (typeof NOTIFICATIONS)[keyof typeof NOTIFICATIONS];
+export type NotificationName =
+  (typeof NOTIFICATIONS)[keyof typeof NOTIFICATIONS];
 
 /* ============================== Param shapes ============================== */
 
@@ -233,14 +239,18 @@ export interface QueryStartParams {
    * In-process MCP (`McpSdkServerConfigWithInstance`) is rejected because
    * `instance` is a non-serializable McpServer object.
    */
-  mcpServers?: Record<string, McpServerStdioConfig | McpServerSseConfig | McpServerHttpConfig>;
+  mcpServers?: Record<
+    string,
+    McpServerStdioConfig | McpServerSseConfig | McpServerHttpConfig
+  >;
   /**
    * Desktop in-process MCP server names projected through the daemon. Names
    * must not collide with serializable `mcpServers` entries.
    */
   tunneledMcpServers?: string[];
   /** Permission mode forwarded to SDK. Desktop passes through user's selection. */
-  permissionMode?: 'default' | 'acceptEdits' | 'plan' | 'auto' | 'bypassPermissions';
+  permissionMode?:
+    "default" | "acceptEdits" | "plan" | "auto" | "bypassPermissions";
   /** SDK options.systemPrompt — string or { type: 'preset', preset: 'claude_code', append? }. */
   systemPrompt?: unknown;
   /** SDK options.additionalDirectories. */
@@ -276,7 +286,7 @@ export interface QuerySetModelParams {
 
 export interface QuerySetPermissionModeParams {
   sessionId: string;
-  mode: 'default' | 'acceptEdits' | 'plan' | 'auto' | 'bypassPermissions';
+  mode: "default" | "acceptEdits" | "plan" | "auto" | "bypassPermissions";
 }
 
 export interface QueryApplyFlagSettingsParams {
@@ -358,7 +368,7 @@ export interface ApprovalRequestParams {
   /** Unique request ID (SDK's toolUseID). Used to correlate response. */
   requestId: string;
   /** Interaction kind — matches maker-core InteractionRequest.kind. */
-  kind: 'permission' | 'ask_user_question' | 'plan_review';
+  kind: "permission" | "ask_user_question" | "plan_review";
   /** Tool name (for 'permission' kind). */
   toolName?: string;
   /** Tool input (for 'permission' kind). */
@@ -386,9 +396,9 @@ export interface ApprovalRequestParams {
  */
 export interface ApprovalRequestResult {
   /** Decision kind — must match the request's kind. */
-  kind: 'permission' | 'ask_user_question' | 'plan_review';
+  kind: "permission" | "ask_user_question" | "plan_review";
   /** For 'permission': 'allow' | 'deny'. */
-  behavior?: 'allow' | 'deny';
+  behavior?: "allow" | "deny";
   /** For 'permission': updated input if user modified. */
   updatedInput?: Record<string, unknown>;
   /** For 'permission': permission rule updates. */
@@ -406,7 +416,7 @@ export interface ApprovalRequestResult {
 export interface McpTunnelCallParams {
   sessionId: string;
   server: string;
-  operation: 'listTools' | 'callTool';
+  operation: "listTools" | "callTool";
   name?: string;
   arguments?: Record<string, unknown>;
 }
@@ -426,7 +436,7 @@ export interface QueryEventNotification {
 export interface SessionClosedNotification {
   sessionId: string;
   /** Why the session ended — exit normally, killed, crashed, etc. */
-  reason: 'completed' | 'closed' | 'killed' | 'error';
+  reason: "completed" | "closed" | "killed" | "error";
   /** Optional human-readable detail. */
   detail?: string;
 }
@@ -434,26 +444,26 @@ export interface SessionClosedNotification {
 export interface ClientReplacedNotification {
   sessionId: string;
   /** Always 'another-client-attached' for now — kept open for future reasons. */
-  reason: 'another-client-attached';
+  reason: "another-client-attached";
 }
 
 /* ============================== MCP server config (cross-process safe) ============================== */
 
 export interface McpServerStdioConfig {
-  type?: 'stdio';
+  type?: "stdio";
   command: string;
   args?: string[];
   env?: Record<string, string>;
 }
 
 export interface McpServerSseConfig {
-  type: 'sse';
+  type: "sse";
   url: string;
   headers?: Record<string, string>;
 }
 
 export interface McpServerHttpConfig {
-  type: 'http';
+  type: "http";
   url: string;
   headers?: Record<string, string>;
 }
@@ -461,35 +471,39 @@ export interface McpServerHttpConfig {
 /* ============================== Type guards ============================== */
 
 export function isRpcMessage(value: unknown): value is RpcMessage {
-  if (typeof value !== 'object' || value === null) return false;
+  if (typeof value !== "object" || value === null) return false;
   const v = value as Record<string, unknown>;
-  if (v.type === 'request') {
-    return typeof v.id === 'number' && typeof v.method === 'string';
+  if (v.type === "request") {
+    return typeof v.id === "number" && typeof v.method === "string";
   }
-  if (v.type === 'response') {
-    return typeof v.id === 'number';
+  if (v.type === "response") {
+    return typeof v.id === "number";
   }
-  if (v.type === 'notification') {
-    return typeof v.method === 'string';
+  if (v.type === "notification") {
+    return typeof v.method === "string";
   }
   return false;
 }
 
 export function isRpcRequest(value: RpcMessage): value is RpcRequest {
-  return value.type === 'request';
+  return value.type === "request";
 }
 
 export function isRpcResponse(value: RpcMessage): value is RpcResponse {
-  return value.type === 'response';
+  return value.type === "response";
 }
 
 export function isRpcNotification(value: RpcMessage): value is RpcNotification {
-  return value.type === 'notification';
+  return value.type === "notification";
 }
 
 /* ============================== Helpers ============================== */
 
 /** Construct a typed error result. Caller passes this as RpcResponse.error. */
-export function makeRpcError(code: RpcErrorCode, message: string, data?: unknown): RpcError {
+export function makeRpcError(
+  code: RpcErrorCode,
+  message: string,
+  data?: unknown,
+): RpcError {
   return { code, message, ...(data !== undefined ? { data } : {}) };
 }

@@ -88,9 +88,9 @@ describe('PluginMarketApi', () => {
   it('treats injected sources as configured unless a checker says otherwise', async () => {
     const fetcher = vi.fn();
     await expect(new PluginMarketApi(fetcher).isConfigured()).resolves.toBe(true);
-    await expect(
-      new PluginMarketApi(fetcher, async () => false).isConfigured(),
-    ).resolves.toBe(false);
+    await expect(new PluginMarketApi(fetcher, async () => false).isConfigured()).resolves.toBe(
+      false,
+    );
   });
 
   it('keeps Cindy and MCPRouter requests on independent endpoints and credentials', async () => {
@@ -103,10 +103,12 @@ describe('PluginMarketApi', () => {
     await new PluginMarketApi().listAll();
     await new MekaPluginMarketApi().listAll();
 
-    expect(sources.serverApiFetch.mock.calls[0]?.[1]).toMatchObject({
-      baseUrl: sources.cindyBaseUrl,
+    const cindyOptions = sources.serverApiFetch.mock.calls[0]?.[1];
+    expect(cindyOptions).toMatchObject({
+      baseUrl: expect.any(Function),
     });
-    expect(sources.serverApiFetch.mock.calls[0]?.[1]).not.toHaveProperty('token');
+    expect(cindyOptions?.baseUrl()).toBe(sources.cindyBaseUrl);
+    expect(cindyOptions).not.toHaveProperty('token');
     expect(sources.serverApiFetch.mock.calls[1]?.[1]).toMatchObject({
       baseUrl: sources.mekaAccess.baseUrl,
       token: sources.mekaAccess.clientKey,
@@ -166,10 +168,7 @@ describe('PluginMarketApi', () => {
       expect.stringContaining('/api/plugins?'),
       expect.stringContaining('/api/public/plugins?'),
     ]);
-    expect(sources.serverApiFetch.mock.calls[0]?.[1]).toHaveProperty(
-      'token',
-      'meka-client-key',
-    );
+    expect(sources.serverApiFetch.mock.calls[0]?.[1]).toHaveProperty('token', 'meka-client-key');
     expect(sources.serverApiFetch.mock.calls[1]?.[1]).not.toHaveProperty('token');
   });
 

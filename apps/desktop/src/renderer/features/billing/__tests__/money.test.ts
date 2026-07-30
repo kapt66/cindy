@@ -5,13 +5,18 @@ import { describe, expect, it } from 'vitest';
 import { formatBillingAmount, formatBillingMinorAmount } from '../money';
 
 const usd = (value: number) =>
-  new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD' }).format(value);
+  new Intl.NumberFormat(undefined, {
+    style: 'currency',
+    currency: 'USD',
+    currencyDisplay: 'narrowSymbol',
+  }).format(value);
 const jpy = (value: number) =>
   new Intl.NumberFormat(undefined, { style: 'currency', currency: 'JPY' }).format(value);
 const exactUsd = (whole: bigint, fraction: bigint) => {
   const formatter = new Intl.NumberFormat(undefined, {
     style: 'currency',
     currency: 'USD',
+    currencyDisplay: 'narrowSymbol',
   });
   const resolved = formatter.resolvedOptions();
   const localizedFraction = new Intl.NumberFormat(resolved.locale, {
@@ -49,6 +54,10 @@ describe('formatBillingAmount', () => {
 
   it('falls back to the raw amount when the value is not numeric', () => {
     expect(formatBillingAmount('not-a-number', 'usd')).toBe('not-a-number USD');
+  });
+
+  it('uses the dollar symbol for USD in Chinese', () => {
+    expect(formatBillingAmount('3', 'usd', 'zh-CN')).toBe('$3.00');
   });
 });
 

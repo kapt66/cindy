@@ -24,7 +24,6 @@ import { createLogger } from '../logger.js';
 import { getClientEndpoint } from '../clientEndpointsService.js';
 import { resolveOwnerScopedSecretStorageKey } from '../secrets/providerSecretStore.js';
 
-export { getCodexBudgetEffectiveCostMultiplier } from './turnCostCalculator.js';
 export { getModelPriceQuote } from '../../shared/modelPriceQuote.js';
 export type {
   ModelPriceQuote as ModelPrice,
@@ -32,10 +31,9 @@ export type {
 } from '../../shared/regionalMoney.js';
 
 const log = createLogger('modelPricing');
-// v4: 币种语义从「按构建区域标注」改为「跟随来源(默认 USD)」——旧缓存里
-// CN 构建的 quote 带错标 CNY,必须整体作废,否则升级后到下一次 /models 同步
-// 前仍会用旧币种折算单轮费用。
-const DISK_CACHE_VERSION = 4;
+// v6:所有 Gateway 模型统一按服务端 costDiscount 计费。v5 的 codex/ quote 已
+// 硬编码乘过 0.15 且丢弃 costDiscount，不能继续复用。
+const DISK_CACHE_VERSION = 6;
 const DISK_CACHE_FILE = 'model-pricing.json';
 
 export const MODEL_PRICING_CHANGED_CHANNEL = 'usage:model-pricing-changed';
@@ -66,12 +64,12 @@ function currentKeyCacheIdentity(): string {
   }
 }
 
-function currentScope(): string {
+function currentScope(userId?: string): string {
   return [
     'v1',
     `region=${CURRENT_CINDY_REGION}`,
     `base=${getClientEndpoint('modelAccessApiBaseUrl').trim()}`,
-    `user=${getCurrentDbClientUserId() ?? 'anonymous'}`,
+    `user=${userId ?? getCurrentDbClientUserId() ?? 'anonymous'}`,
     currentKeyCacheIdentity(),
   ].join('|');
 }
@@ -116,6 +114,14 @@ function validateQuote(
   }
   if (isNonNegativeFinite(quote.cacheCreatePerMtok)) {
     next.cacheCreatePerMtok = quote.cacheCreatePerMtok;
+  }
+  if (
+    typeof quote.costDiscount === 'number' &&
+    Number.isFinite(quote.costDiscount) &&
+    quote.costDiscount > 0 &&
+    quote.costDiscount <= 1
+  ) {
+    next.costDiscount = quote.costDiscount;
   }
   return next;
 }
@@ -222,9 +228,14 @@ function broadcastPricing(pricing: ModelPricingCatalog | null): void {
  */
 export function replaceGatewayModelPricing(
   models: readonly ModelAccessGatewayModel[],
+  authenticatedUserId?: string,
 ): ModelPricingCatalog {
-  const scope = currentScope();
-  const pricing = gatewayPricingCatalog(models);
+  // /models can finish a few milliseconds before localDb takeover has exposed
+  // its user through getCurrentDbClientUserId(). The model-access caller
+  // therefore passes the authenticated user captured when the request starts,
+  // so a valid startup snapshot is never persisted under `anonymous`.
+  const scope = currentScope(authenticatedUserId);
+  const pricing = gatewayPricingCatalog(models, CURRENT_CINDY_REGION);
   cache = pricing;
   cacheScope = scope;
   cacheAt = Date.now();
@@ -263,7 +274,8 @@ export async function getModelPricing(): Promise<ModelPricingCatalog | null> {
 /**
  * 记账热路径等待 inflight 同步的上限:/models 请求本身不设超时,黑洞网络下
  * 不能让记账写入无限期挂起(app 等待期间退出会丢整轮账)。超时后直接用当前
- * 已落地的投影计价,quote 缺失时调用方走 SDK 兜底,不丢账。
+ * 已落地的投影计价；Gateway quote 缺失时不记录金额，避免把 SDK 的 USD 字段
+ * 当成当前区域的 Gateway 价格。
  */
 const PRICING_SYNC_WAIT_MS = 3_000;
 
