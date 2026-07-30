@@ -1164,6 +1164,16 @@ thread-context gated 的本地动态代理投影这条唯一入口，Claude 继�
    - 父仓指针前进到 `cindy-protocol@2520a40`；该提交是 `8303c39` 的后代。
    - 上游父仓提交 `c098d544f` 已记录配套 server 同步到同一指针；最新一步只补
      `turn.reopen` 契约文档，不改变 wire shape 或导出 API，因此不存在单端协议漂移。
+6. **冷启动 owner boundary**
+   - 合并后的首次 CN remote 启动暴露出 device-link busy timer 仍直接读取动态 Maker
+     facade；冷启动 refresh 更换 data owner 时，facade 按新隔离契约抛出的
+     `PRECONDITION_FAILED` 逃逸为 `uncaughtException`，导致主进程在窗口 ready 前退出。
+   - 对照 merge 两边父提交确认：上述 busy probe 与动态 facade 的组合在合并前的 Meka
+     与上游父提交都已存在，owner-boundary fail-closed facade 也已同时存在；因此这是
+     原有竞态在合并后首次冷启动时被时序触发，不是冲突解析时误选一侧。
+   - busy probe 现以 `null` 表达 owner boundary 期间暂不可读：轮询跳过本拍且不改
+     dedupe 基线，握手沿用最后稳定值；Renderer IPC 仍继续收到可重试的
+     `PRECONDITION_FAILED`，没有放宽 owner 隔离。
 
 本轮自动化验证结果：
 
@@ -1176,6 +1186,12 @@ thread-context gated 的本地动态代理投影这条唯一入口，Claude 继�
   `pnpm --filter desktop test:migration-replay` 通过，确认冻结的 `0082`–`0088` 未被
   改写，`0089` 可从当前 Meka lineage 顺序回放。
 - `pnpm test:runner` 通过；协议子模块指针祖先关系与最终无 wire/API 漂移已人工核对。
+- owner-boundary 回归修复补跑
+  `pnpm --filter desktop exec vitest run src/main/__tests__/busyReporter.test.ts --pool=threads --maxWorkers=1`
+  （7/7）与 Desktop typecheck；随后以
+  `pnpm restart:desktop:remote --region=cn` 重现相同 CN remote 冷启动路径，主进程完成
+  owner 切换、`0089` migration、主窗口 ready 与 device-link 上线，未再出现
+  `uncaughtException` / `DEV_PROCESS_EXITED`。
 
 真实账号、MCPRouter、远程设备和双主题 UI 仍需后续手测。
 

@@ -33,7 +33,7 @@ import { permissionModeOrAsk } from '@cindy/maker-shared/permission-mode';
 import { DL_SESSION_REFERENCE_CAPABILITY_CHANNEL } from '@cindy/device-link';
 import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { BrowserWindow, ipcMain, type IpcMainInvokeEvent } from 'electron';
-import { getActiveAppSession } from '../appSessionState.js';
+import { getActiveAppSession, isAppSessionBoundaryPending } from '../appSessionState.js';
 import type { AgentMeta } from '../../renderer/lib/ccAgent.types';
 import {
   deriveAutoTitleSeed,
@@ -3632,7 +3632,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
 
   // device-link busy presence:把「本机是否有 turn 在跑」探针注入 device-link host,
   // 它每 5s 取一次、翻转才上报,让控制端设备列表显示 busy 三态(规则 2:回调注入解耦)。
-  setDeviceLinkBusyProbe(() => anySessionInTurn(maker));
+  // IPC 用的动态 Maker facade 在 owner boundary 必须抛 PRECONDITION_FAILED；后台 presence
+  // 轮询则应跳过这一拍，不能让同一个暂态异常逃逸成 uncaughtException 并终止主进程。
+  setDeviceLinkBusyProbe(() =>
+    isAppSessionBoundaryPending() ? null : anySessionInTurn(maker),
+  );
 
   // device-link 参数级收敛:远程 create-session 的 workingDir / worktree:create 的 baseRepo
   // 必须是本机当前可访问的目录,挡掉控制端用任意路径越权起进程或执行 git。

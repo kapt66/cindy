@@ -65,6 +65,12 @@ session 被拒绝时，Desktop 仍把轮换后的 refresh token 写回原 realm�
 删除记录，避免破坏共享 userData 中另一实例仍在使用的会话。登出会清除记录和
 `sessionRealm`，业务端点恢复安装包区域。
 
+Desktop 更换 data owner 时，动态 Maker facade 对 IPC 继续 fail closed，统一返回可重试的
+`PRECONDITION_FAILED`。进程内周期任务不能把这一预期暂态当成致命异常：device-link 的
+busy presence probe 在 owner boundary 期间返回“暂不可读”，轮询跳过本次上报，握手沿用
+最后一次稳定值；boundary 提交后下一次轮询自然补报真实状态。该处理不放宽账号隔离，也
+不把暂态误报成空闲。
+
 Mobile 的 Pending OAuth 同时保存 `realm`，但 redirect scheme 始终使用当前安装包的
 scheme。个人验证码和社交登录不做跨区域发现，也不合并两区 passport。
 

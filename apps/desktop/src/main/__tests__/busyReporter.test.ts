@@ -36,6 +36,21 @@ describe('busyReporter', () => {
     expect(__testing.getLastReported()).toBe(true);
   });
 
+  it('owner boundary 暂不可读时保留稳定值并跳过轮询上报', () => {
+    let busy: boolean | null = true;
+    setBusyProbe(() => busy);
+    expect(pollBusyChange()).toBe(true);
+
+    busy = null;
+    expect(currentBusy()).toBe(true);
+    expect(helloBusy()).toBe(true);
+    expect(pollBusyChange()).toBeNull();
+    expect(__testing.getLastReported()).toBe(true);
+
+    busy = false;
+    expect(pollBusyChange()).toBe(false);
+  });
+
   it('[New-F] turn 进行中重连:hello 报 busy=true,轮询不会误判「未变化」', () => {
     // 模拟:turn 已在跑(busy=true),先经轮询上报过一次 → 基线 true。
     let busy = true;

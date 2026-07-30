@@ -13,17 +13,26 @@
  * probe 由 register.ts 在 maker 就绪后注入(返回本机当前是否有任意 session 在 turn 中)。
  */
 
-let busyProbe: (() => boolean) | null = null;
+type BusyProbe = () => boolean | null;
+
+let busyProbe: BusyProbe | null = null;
 let lastReportedBusy = false;
 
-/** register.ts 注入:返回本机当前是否有任意 session 在 turn 中。传 null 解绑。 */
-export function setBusyProbe(probe: (() => boolean) | null): void {
+/**
+ * register.ts 注入：返回本机当前是否有任意 session 在 turn 中。
+ * 返回 null 表示 owner boundary 期间暂不可读；传 null 则解绑 probe。
+ */
+export function setBusyProbe(probe: BusyProbe | null): void {
   busyProbe = probe;
 }
 
-/** 当前真实 busy(无 probe 时按 false)。 */
+function readBusy(): boolean | null {
+  return busyProbe ? busyProbe() : false;
+}
+
+/** 当前可用的 busy；owner boundary 暂不可读时保留最后一次稳定值。 */
 export function currentBusy(): boolean {
-  return busyProbe?.() ?? false;
+  return readBusy() ?? lastReportedBusy;
 }
 
 /**
@@ -40,7 +49,10 @@ export function helloBusy(): boolean {
  * 轮询用:当前 busy 与基线不同 → 更新基线并返回新值(需上报);相同 → 返回 null(无需上报)。
  */
 export function pollBusyChange(): boolean | null {
-  const busy = currentBusy();
+  const busy = readBusy();
+  // owner-bound Maker 正在替换时没有可归属的真实快照。跳过这一拍，不把暂态误报为空闲，
+  // 也不改 dedupe 基线；稳定后下一拍会自然补报真实翻转。
+  if (busy === null) return null;
   if (busy === lastReportedBusy) return null;
   lastReportedBusy = busy;
   return busy;
