@@ -248,6 +248,13 @@ fn run_inner<F: FnMut(InstallerEvent)>(
                 "[installer] LAUNCH VERIFIED: {} is running",
                 args.exe_name
             ));
+            // The hot-update path replaces the packaged executable and icon
+            // resources without re-running NSIS. Windows may otherwise keep
+            // the taskbar/AUMID icon group and file-association icons cached
+            // even after Explorer restarts. Notify only after the replacement
+            // has launched successfully: failed installs and rollback paths
+            // must not advertise the transient replacement to the Shell.
+            notify_shell_associations_changed();
             let _ = fs::remove_dir_all(&backup_dir);
             cleanup_staging();
             Ok(())
@@ -309,6 +316,41 @@ fn run_inner<F: FnMut(InstallerEvent)>(
             }
         }
     }
+}
+
+/// Invalidate Windows Shell association/icon caches after a verified update.
+///
+/// SHChangeNotify returns no status, so this is intentionally best-effort and
+/// cannot turn an otherwise successful update into a failure. The non-Windows
+/// updater build keeps the same call site as a no-op.
+#[cfg(target_os = "windows")]
+fn notify_shell_associations_changed() {
+    use windows_sys::Win32::UI::Shell::SHChangeNotify;
+
+    dispatch_shell_association_change(|event_id, flags, item1, item2| unsafe {
+        SHChangeNotify(event_id, flags, item1, item2);
+    });
+    logger::info("[shell] notified SHCNE_ASSOCCHANGED after verified update");
+}
+
+#[cfg(not(target_os = "windows"))]
+fn notify_shell_associations_changed() {}
+
+/// Small injectable boundary so tests can assert the exact Shell event and
+/// null-payload contract without invalidating the developer machine's cache.
+#[cfg(target_os = "windows")]
+fn dispatch_shell_association_change<F>(notify: F)
+where
+    F: FnOnce(i32, u32, *const std::ffi::c_void, *const std::ffi::c_void),
+{
+    use windows_sys::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST};
+
+    notify(
+        SHCNE_ASSOCCHANGED as i32,
+        SHCNF_IDLIST,
+        std::ptr::null(),
+        std::ptr::null(),
+    );
 }
 
 /// Sweep stale `xdt-update-*` dirs/files from %TEMP% that are older than
@@ -729,6 +771,8 @@ fn path_is_within(child: &Path, parent: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "windows")]
+    use super::dispatch_shell_association_change;
     use super::{path_is_within, validate_extracted_main_executable};
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -784,6 +828,23 @@ mod tests {
             Path::new(r"C:\Windows\System32\svchost.exe"),
             Path::new(r"C:\Users\u\AppData\Local\xdt-maker"),
         ));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn shell_refresh_uses_assoc_changed_idlist_with_null_payloads() {
+        use std::cell::Cell;
+        use windows_sys::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST};
+
+        let calls = Cell::new(0);
+        dispatch_shell_association_change(|event_id, flags, item1, item2| {
+            calls.set(calls.get() + 1);
+            assert_eq!(event_id, SHCNE_ASSOCCHANGED as i32);
+            assert_eq!(flags, SHCNF_IDLIST);
+            assert!(item1.is_null());
+            assert!(item2.is_null());
+        });
+        assert_eq!(calls.get(), 1);
     }
 
     #[test]
