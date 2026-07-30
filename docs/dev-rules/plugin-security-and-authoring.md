@@ -162,6 +162,49 @@
   迁移到 `https://mcpr.meka.pawdy.fun/`，不得保留明文认证或证书主机名不匹配的例外。
   每次上传产生不可覆盖的 Release；未配置 Router 时不得尝试远端写操作。
 
+### 4.2 Meka 独立市场的大包下载边界
+
+- 上游 Cindy 插件市场继续使用 8 MiB 压缩包上限。Meka 的 MCPRouter 市场只在 Release
+  manifest 已通过共享 `validateGhostManifest` 且声明 `node` 时，把压缩包下载上限提升到
+  128 MiB；普通 Meka 插件仍为 8 MiB。该例外由 Meka 市场实例显式注入，不得改变共享服务
+  的默认值，也不得依据插件 ID、名称或服务端自报渠道推断。
+- 大包必须流式写入 `app.getPath('temp')` 下调用方生成的唯一临时路径，并在写入过程中同时
+  执行 Release 声明大小、渠道上限与增量 SHA-256 校验；禁止为放宽上限而把完整包聚合到
+  Main 进程内存。目标使用排他创建，Content-Length 不一致、流超限、字节数／摘要不一致、
+  写盘或关闭失败都必须删除本次创建的未验证文件，且不得覆盖调用方路径上已有文件。
+- Meka 大包策略只改变客户端接收合法包的上限，不改变 HTTPS-only、短期下载授权、Release
+  不可变、manifest／签名／权限确认、原子安装和运行时沙箱边界，也不修改
+  `@cindy/plugin-protocol` wire contract 或上游 Cindy 服务端。
+- Meka Desktop 的显式安装／更新可通过独立的
+  `meka-plugin-market:install-progress` push channel 展示阶段与字节进度。Renderer 为每次
+  用户操作生成 UUID，Main 校验后只向发起该 IPC 的可信 WebContents 回传
+  `operationId`、`pluginId`、`phase`、`downloadedBytes` 与 `totalBytes`；preload 必须剥离
+  Electron event 并运行期校验 payload，Renderer 只接收当前 operation。不得回传签名 URL、
+  临时路径、凭证或包内容，进度观察器失败也不得改变安装结果。该入口仅服务 Desktop 本地
+  Meka 管理页；市场详情的安装／更新按钮、已安装插件详情与列表更新按钮必须复用同一
+  operation 状态，不得为更新另开无隔离的旁路。该事件不加入 device-link invoke／push
+  allowlist；Mobile 不提供插件市场安装管理。
+
+### 4.3 插件级界面打开方式
+
+- 停靠面板可在 `panel` 声明 `allowUserPresentationOverride: true`，由 Cindy 在插件详情
+  「配置」区自动绘制“跟随默认／停靠在对话窗口／弹窗打开”三态设置。该字段只适用于
+  `position: "left"`（或缺省 position）；`position: "tab"` 的页签语义由 manifest 固定，
+  声明本字段必须拒装。
+- 这是宿主托管的用户界面偏好，不是插件能力、权限或业务参数。插件脚本没有写接口，不得
+  在 `settingsHtml` 里另画同名设置，也不得用 `/kv` 特殊键模拟。作者只负责声明是否展示；
+  选择、持久化、恢复默认以及 detached／minimized 状态收敛均由宿主负责。
+- 有效值优先级固定为“插件级用户 override → Meka 助理的插件默认打开方式 → 停靠产品
+  默认”。插件级 `inherit` 通过删除 override 实现；只持久化显式 `docked`／`modal`，
+  不能把默认值快照复制到每个插件。插件更新按 runtime plugin ID 保留选择。
+- 全局默认和插件级 override 都是本机 Renderer 视图偏好，不改变布局树账本。布局可见性、
+  最小化气泡和插件页“打开界面”必须调用同一个 effective resolver，避免同一插件在不同
+  入口得到不同形态。插件目录的列表卡片、详情页及后续新增入口还必须复用同一个 launcher，
+  不得各自维护 Modal／停靠分支。Modal 首次打开时先以关闭态稳定挂载目标宿主，再于下一
+  animation frame 切换为打开，避免创建 Dialog 的同一次可信点击被当作 outside interaction
+  立即关闭；切换目标或离开详情时必须取消尚未执行的打开请求。该偏好不进入插件沙箱、
+  Main IPC 或 device-link 协议。
+
 ## 5. 作者契约与编写手册同步
 
 `FORGE_GUIDE` 是 agent 替用户编写插件的**唯一教材**，由 `ghost_forge_guide` 现拿现读。

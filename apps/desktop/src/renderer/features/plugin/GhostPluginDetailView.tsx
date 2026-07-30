@@ -53,8 +53,11 @@ import { Switch } from '@/components/ui/switch';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import type { GhostPermissionItem, GhostToolDecl, InstalledGhost } from '../../../shared/ghost';
+import type { PluginMarketInstallProgress } from '../../../shared/pluginMarket';
 import { type GhostPluginDetail } from './lib/ghostPluginViewModel';
 import { GhostPluginIcon } from './GhostPluginIcon';
+import { PluginMarketProgressContent } from './PluginMarketProgressContent';
+import { PluginPanelPresentationPreference } from './PluginPanelPresentationPreference';
 import { ghostPluginSummary } from './lib/ghostPluginDetailModel';
 import './plugin-motion.css';
 
@@ -74,6 +77,7 @@ interface GhostPluginDetailViewProps {
   /** 市场存在新版本时的目标版本号;设置后头部展示显著的更新按钮。 */
   updateVersion?: string;
   updateBusy?: boolean;
+  updateProgress?: PluginMarketInstallProgress | null;
   onUninstall: () => void;
   toggleDisabled: boolean;
 }
@@ -136,6 +140,7 @@ export function GhostPluginDetailView({
   updateLabel,
   updateVersion,
   updateBusy = false,
+  updateProgress,
   onUninstall,
   toggleDisabled,
 }: GhostPluginDetailViewProps) {
@@ -146,7 +151,12 @@ export function GhostPluginDetailView({
   const enabled = enabledOverride ?? detail.enabled;
   const canUse = enabled && detail.canUse;
   const cindyCapabilities = detail.cindyCapabilities;
-  const hasConfiguration = detail.hasSettingsUi || cindyCapabilities.length > 0;
+  const hasPanelPresentationPreference =
+    ghost?.manifest.panel?.allowUserPresentationOverride === true;
+  const hasConfiguration =
+    detail.hasSettingsUi ||
+    cindyCapabilities.length > 0 ||
+    hasPanelPresentationPreference;
   const summary = ghostPluginSummary(detail.description, detail.id);
 
   useLayoutEffect(() => {
@@ -229,14 +239,22 @@ export function GhostPluginDetailView({
                   type="button"
                   onClick={onUpdate}
                   disabled={updateBusy}
+                  aria-busy={updateBusy}
                   className={cn(
-                    'inline-flex h-10 items-center justify-center rounded-full border border-[var(--border-default)] bg-[var(--surface-elevated)] px-5 text-13 font-medium text-[var(--text-primary)]',
+                    'relative inline-flex h-10 items-center justify-center overflow-hidden rounded-full border border-[var(--border-default)] bg-[var(--surface-elevated)] px-5 text-13 font-medium text-[var(--text-primary)]',
                     'transition-[background-color,border-color,transform,opacity] duration-150 hover:border-[var(--text-tertiary)] hover:bg-[var(--surface-hover-soft)] active:scale-[0.98]',
                     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
-                    'disabled:cursor-wait disabled:opacity-40 disabled:active:scale-100',
+                    'disabled:cursor-wait disabled:active:scale-100',
+                    updateBusy && !updateProgress && 'opacity-40',
                   )}
                 >
-                  {t('settings.ghosts.market.updateTo', { version: updateVersion })}
+                  <PluginMarketProgressContent
+                    progress={updateProgress}
+                    update
+                    fallback={t('settings.ghosts.market.updateTo', {
+                      version: updateVersion,
+                    })}
+                  />
                 </button>
               ) : null}
               {onOpenPanel ? (
@@ -298,7 +316,14 @@ export function GhostPluginDetailView({
                         disabled={updateBusy}
                         className="h-10 rounded-lg px-3 text-13 focus:bg-[var(--surface-hover-soft)]"
                       >
-                        {updateLabel ?? t('settings.ghosts.detail.updateFromFile')}
+                        <PluginMarketProgressContent
+                          progress={updateProgress}
+                          update
+                          showBar={false}
+                          fallback={
+                            updateLabel ?? t('settings.ghosts.detail.updateFromFile')
+                          }
+                        />
                       </DropdownMenuItem>
                       <DropdownMenuSeparator className="mx-2 my-1 h-px bg-[var(--border-default)]" />
                     </>
@@ -349,6 +374,9 @@ export function GhostPluginDetailView({
               title={t('settings.ghosts.detail.configurationTitle')}
             />
             <div className={cn(DETAIL_SECTION_CONTENT_CLASS, 'space-y-3')}>
+              {hasPanelPresentationPreference ? (
+                <PluginPanelPresentationPreference ghostId={detail.id} />
+              ) : null}
               {detail.hasSettingsUi ? (
                 ghost ? (
                   <GhostSettingsWebview

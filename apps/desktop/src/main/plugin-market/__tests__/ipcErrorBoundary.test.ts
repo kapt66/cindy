@@ -17,6 +17,10 @@ describe('Plugin Market IPC error boundary', () => {
     resolve(process.cwd(), 'src/main/plugin-market/service.ts'),
     'utf8',
   ).replace(/\r\n/g, '\n');
+  const preloadSource = readFileSync(
+    resolve(process.cwd(), 'src/preload/preload.ts'),
+    'utf8',
+  ).replace(/\r\n/g, '\n');
 
   it('preserves structured errors and normalizes unexpected failures', () => {
     const start = registerSource.indexOf('async function invokePluginMarket');
@@ -37,11 +41,28 @@ describe('Plugin Market IPC error boundary', () => {
     expect(registerSource).toContain("'meka-ledger.v1.json'");
     expect(registerSource).toContain('adoptLegacyInstallations: false');
     expect(registerSource).toContain('applyDefaultInstalls: false');
+    expect(registerSource).toContain(
+      'resolveMaxDownloadBytes: resolveMekaPluginMaxDownloadBytes',
+    );
+    expect(registerSource).toContain('requireInstallOperationId(obj?.operationId)');
+    expect(registerSource).toContain('if (sender.isDestroyed()) return;');
+    expect(registerSource).toContain(
+      'sender.send(MEKA_PLUGIN_MARKET_INSTALL_PROGRESS_CHANNEL, payload)',
+    );
   });
 
   it('does not throw user-visible plain errors from the market service', () => {
     expect(serviceSource).not.toContain('throw new Error(');
     expect(serviceSource).toContain("throwIpcError('PRECONDITION_FAILED'");
     expect(serviceSource).toContain("throwIpcError('PERMISSION_DENIED'");
+  });
+
+  it('filters Meka progress payloads before exposing them to the renderer', () => {
+    expect(preloadSource).toContain(
+      'fanOutMekaPluginMarketInstallProgress((payload) => {',
+    );
+    expect(preloadSource).toContain(
+      'if (isPluginMarketInstallProgress(payload)) callback(payload);',
+    );
   });
 });

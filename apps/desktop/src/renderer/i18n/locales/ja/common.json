@@ -107,9 +107,9 @@
       "title": "Meka アシスタント",
       "description": "プラグイン画面、P4 パス、MCPRouter、MekaDesign 接続を管理します。",
       "pluginPanel": {
-        "title": "プラグイン画面",
-        "description": "有効にすると、プラグイン画面はメインページの幅と高さの 90% を占めるモーダルで開きます。無効にすると、従来のドッキングパネルを使用します。",
-        "toggleAria": "プラグイン画面をモーダルで開く"
+        "title": "プラグインのデフォルトの開き方",
+        "description": "個別設定のないプラグインに適用するデフォルトです。有効にするとメインページの 90% を占めるモーダル、無効にすると会話の横にドッキングして開きます。各プラグインの設定で上書きできます。",
+        "toggleAria": "プラグイン画面をデフォルトでモーダル表示する"
       },
       "router": {
         "title": "MCPRouter 接続",
@@ -2481,6 +2481,10 @@
           "local": "ローカル"
         },
         "install": "インストール",
+        "preparing": "準備中…",
+        "downloading": "ダウンロード中 {{percent}}%…",
+        "installing": "インストール中…",
+        "updating": "更新中…",
         "details": "詳細",
         "update": "マーケットから更新",
         "updateAvailable": "更新あり",
@@ -2734,6 +2738,16 @@
         "settingsTitle": "{{name}} の設定",
         "settingsUnavailableUntilRestore": "この設定を再び使用するには、プラグインを復元してください。",
         "configurationTitle": "設定",
+        "panelPresentation": {
+          "title": "開き方",
+          "description": "このプラグインだけに適用されます。「デフォルトに従う」では「設定 → Meka アシスタント → プラグインのデフォルトの開き方」を使用します。",
+          "aria": "このプラグインの開き方を選択",
+          "options": {
+            "inherit": "デフォルトに従う",
+            "docked": "会話の横にドッキング",
+            "modal": "モーダルで開く"
+          }
+        },
         "openTool": "Tool {{name}} の詳細を表示",
         "noToolDescription": "この Tool には説明がありません。",
         "viewAllTools": "さらに表示",

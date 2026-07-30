@@ -30,7 +30,10 @@ import {
   useGhostPanelBubbleState,
 } from '../lib/ghostPanelBubbleState';
 import { isGhostPanelKindDetached, useGhostPanelWindowsState } from '../lib/ghostPanelWindowState';
-import { useGhostPanelModalPresentation } from '../lib/ghostPanelPresentationPreference';
+import {
+  isGhostPanelModalPresentationEnabled,
+  useGhostPanelPresentationRevision,
+} from '../lib/ghostPanelPresentationPreference';
 import { useInstalledGhosts } from './useInstalledGhosts';
 
 const BUBBLE_SIZE = 48;
@@ -226,7 +229,7 @@ function Bubble({ manifest, iconDataUrl, pos }: BubbleProps): ReactNode {
 export function GhostPanelBubbleLayer(): ReactNode {
   const ghosts = useInstalledGhosts();
   const bubbles = useGhostPanelBubbleState();
-  const modalPresentation = useGhostPanelModalPresentation();
+  useGhostPanelPresentationRevision();
   // 订阅抽离状态:detach 期间气泡隐藏,合并回来自动复现。
   useGhostPanelWindowsState();
 
@@ -249,10 +252,11 @@ export function GhostPanelBubbleLayer(): ReactNode {
       g.enabled !== false &&
       g.manifest.panel !== undefined &&
       g.manifest.panel.position !== 'tab' &&
+      !isGhostPanelModalPresentationEnabled(g.manifest.id) &&
       bubbles[g.manifest.id]?.minimized === true &&
       !isGhostPanelKindDetached(ghostPanelKind(g.manifest.id)),
   );
-  if (modalPresentation || minimized.length === 0) return null;
+  if (minimized.length === 0) return null;
 
   let defaultIndex = 0;
   const items = minimized.map((g) => {

@@ -749,7 +749,8 @@ my-ghost/
   "cindy": { "image": ["generate", "edit"] },   // 声明了 cindy 槽时必写:能力详单,见下
   "panel": { "title": "面板标题", "html": "panel.html", "position": "left",
              "minWidth": 240, "defaultFraction": 0.24,
-             "systemButtons": { "maximize": false } },
+             "systemButtons": { "maximize": false },
+             "allowUserPresentationOverride": true },
   // panel.position:面板显示形态。left(缺省)= 停靠主聊天窗左侧;
   // "tab" = 右侧栏页签(与文件/审查/终端同一容器,每会话至多一个,用户从
   // 空态列表或「+」菜单打开;此形态没有拖缝宽度,声明 minWidth /
@@ -760,6 +761,11 @@ my-ghost/
   // 声明 false 逐个关闭。当前一批:maximize(撑满内容区)、detach(在独立
   // 窗口中打开)、minimize(最小化为浮动气泡)。标题条本体恒由主机绘制、
   // 关不掉;未知键拒装;position:"tab" 时声明本字段拒装
+  // panel.allowUserPresentationOverride(可选,仅停靠形态):声明 true 后,
+  // Cindy 会在该插件的「配置」区自动绘制“跟随默认 / 停靠在对话窗口 /
+  // 弹窗打开”三态设置。值由宿主托管,优先于「设置 → Meka 助理 →
+  // 插件默认打开方式」;插件脚本不应把它复制进 /kv,也不能静默修改。
+  // position:"tab" 有固定页签语义,声明本字段会被拒装
   "settingsHtml": "settings.html",  // 可选:设置页「自定义设置区」自绘界面(见 §4.8;声明了用户填的凭证时仍必填,用于长期管理/替换/清除;调用前缺失时主机也会在统一 Setup 卡内联收单,见 §4.7)
   "settingsHeight": 360             // 可选:固定高度 px(160–800);缺省 = 随内容自适应(矮内容真收矮,高至 800);内容会动态增减时才声明,避免抖动
 }
@@ -2398,6 +2404,13 @@ const ensured = await cindy.workspace({
   打开。页签形态没有拖缝宽度语义,声明 \`minWidth\` / \`defaultFraction\` 会被
   拒装。两种形态的面板代码完全一样(同一 panel.html,供片/主题/媒体规则不变),
   只是宿主容器不同;页签形态请把界面做成自适应宽度;
+- 停靠面板若希望用户可为当前插件单独选择打开方式，可声明
+  \`"allowUserPresentationOverride": true\`。宿主会在插件详情的「配置」区绘制三态
+  选择器：跟随默认、停靠在对话窗口、弹窗打开；插件级用户选择优先于
+  「设置 → Meka 助理 → 插件默认打开方式」，选择“跟随默认”会删除插件级 override。
+  这是宿主界面偏好，不是插件业务参数：不要在 settingsHtml 里另画一份，不要写入
+  \`/kv\`，插件代码也没有写接口。该字段只允许 \`position:"left"\`（或省略 position）
+  的停靠面板；\`position:"tab"\` 声明会拒装。
 - 停靠形态的**标题条(标准头)由主机绘制**:标题(\`panel.title\`)+ 一批系统
   按钮(当前:「撑满内容区」、「在独立窗口中打开」——用户可把你的面板抽进
   自己的 OS 窗口,关窗/合并即回停靠原位——以及「最小化为浮动气泡」——用户
@@ -2503,6 +2516,7 @@ const ensured = await cindy.workspace({
 - 声明了 tool 槽但缺 tools(或反之)· panel.html 声明了但 slots 没有 "panel"
 - settingsHtml 路径不合法/文件不在包里 · settingsHeight 越界(160–800)或没配 settingsHtml 单独声明
 - panel.systemButtons 格式错(不是对象、未知键、值非布尔,或 position:"tab" 时声明——页签形态没有标准头)
+- panel.allowUserPresentationOverride 不是布尔值,或在 position:"tab" 上声明
 - keywords(已废弃字段,旧包兼容保留,新意识别写)有单字词 · kind 写了但不是 "chip"(可省略) · schemaVersion 不是 2
 - cindy 详单格式错(未知类目/动作、空数组、有详单但 slots 没有 "cindy")
 - agent 详单格式错(有详单但 slots 没有 "agent"，或 background 不是 true；只需点击触发时应省略 agent 字段)

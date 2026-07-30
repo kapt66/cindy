@@ -55,11 +55,11 @@ import {
   diffGhostPermissionItems,
   ghostPanelKind,
   ghostPermissionItems,
-  layoutWithGhostPanel,
   type GhostSetupStatus,
 } from '../../../shared/ghost';
 import type {
   PluginMarketDetail,
+  PluginMarketInstallProgress,
   PluginMarketItem,
   PluginMarketSnapshot,
 } from '../../../shared/pluginMarket';
@@ -82,6 +82,7 @@ import { GhostPluginDetailView } from './GhostPluginDetailView';
 import { GhostPluginIcon } from './GhostPluginIcon';
 import { MekaDevPluginPackageDialog } from './MekaDevPluginPackageDialog';
 import { MarketPluginDetailView } from './MarketPluginDetailView';
+import { PluginMarketProgressContent } from './PluginMarketProgressContent';
 import { PluginScopePicker, usePluginRecentWorkdirs } from './PluginScopePicker';
 import {
   orderPluginCatalogItems,
@@ -90,9 +91,7 @@ import {
 } from './lib/pluginMarketPresentation';
 import { pluginMarketErrorKey } from './lib/pluginMarketErrorKey';
 import { usePluginIconRefresh } from './lib/usePluginIconRefresh';
-import { GhostPanelModal } from '@/cindy-brain/GhostPanelModal';
-import { restoreGhostPanel } from '@/lib/ghostPanelBubbleState';
-import { useGhostPanelModalPresentation } from '@/lib/ghostPanelPresentationPreference';
+import { useGhostPanelLauncher } from './useGhostPanelLauncher';
 import './plugin-motion.css';
 
 const MAX_VISIBLE_INSTALLED_GHOSTS = 5;
@@ -134,7 +133,10 @@ export function GhostPluginPage({ surface = 'plugins' }: { surface?: 'plugins' |
   const { user, mode, dataOwnerId } = useAuth();
   const showEnterprise = user?.membershipKind === 'org';
   const ghosts = useInstalledGhosts();
-  const pluginPanelModalPresentation = useGhostPanelModalPresentation();
+  const { openPanel, resetPanelModal, modalHost } = useGhostPanelLauncher({
+    ghosts,
+    navigate,
+  });
   const installedGhostIdsKey = ghosts
     .map((ghost) => ghost.manifest.id)
     .sort()
@@ -144,9 +146,6 @@ export function GhostPluginPage({ surface = 'plugins' }: { surface?: 'plugins' |
     .sort()
     .join('\0');
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [panelModalGhostId, setPanelModalGhostId] = useState<string | null>(null);
-  const [panelModalOpen, setPanelModalOpen] = useState(false);
-  const panelModalTriggerRef = useRef<HTMLElement | null>(null);
   const [devPackageDialogGhostId, setDevPackageDialogGhostId] = useState<string | null>(null);
   const [devPackageDialogOpen, setDevPackageDialogOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -157,6 +156,9 @@ export function GhostPluginPage({ surface = 'plugins' }: { surface?: 'plugins' |
   const [originFilter, setOriginFilter] = useState<PluginPresentationFilter>('all');
   const [marketDetail, setMarketDetail] = useState<PluginMarketDetail | null>(null);
   const [marketBusyId, setMarketBusyId] = useState<string | null>(null);
+  const [mekaInstallProgress, setMekaInstallProgress] =
+    useState<PluginMarketInstallProgress | null>(null);
+  const activeMekaInstallRef = useRef<{ operationId: string; pluginId: string } | null>(null);
   // 市场操作的同步互斥锁。React state 在提交前有窗口期,快速连点会让多个回调
   // 都读到 null;ref 先到先得,state 只驱动按钮禁用等 UI 展示。每次占锁都返回
   // 唯一 lease,避免账号/模式切换后的旧异步流程误释放新流程持有的同 pluginId 锁。
@@ -177,6 +179,54 @@ export function GhostPluginPage({ surface = 'plugins' }: { surface?: 'plugins' |
     (lease: { pluginId: string }) => marketBusyLockRef.current === lease,
     [],
   );
+  const installFromActiveMarket = useCallback(
+    async (
+      pluginId: string,
+      options: { expectedReleaseId: string; allowPermissionExpansion?: boolean },
+    ) => {
+      if (!isMekaSurface) {
+        return window.electronAPI.pluginMarket.install(pluginId, options);
+      }
+      const operationId = crypto.randomUUID();
+      activeMekaInstallRef.current = { operationId, pluginId };
+      setMekaInstallProgress({
+        operationId,
+        pluginId,
+        phase: 'preparing',
+        downloadedBytes: 0,
+        totalBytes: 1,
+      });
+      try {
+        return await window.electronAPI.mekaPluginMarket.install(pluginId, {
+          ...options,
+          operationId,
+        });
+      } finally {
+        if (activeMekaInstallRef.current?.operationId === operationId) {
+          activeMekaInstallRef.current = null;
+          setMekaInstallProgress(null);
+        }
+      }
+    },
+    [isMekaSurface],
+  );
+  useEffect(() => {
+    if (!isMekaSurface) {
+      activeMekaInstallRef.current = null;
+      setMekaInstallProgress(null);
+      return;
+    }
+    return window.electronAPI.mekaPluginMarket.onInstallProgress((progress) => {
+      const active = activeMekaInstallRef.current;
+      if (
+        active?.operationId !== progress.operationId ||
+        active.pluginId !== progress.pluginId
+      ) {
+        return;
+      }
+      setMekaInstallProgress(progress);
+    });
+  }, [isMekaSurface]);
   const marketRefreshRequestRef = useRef(0);
   const marketDetailRequestRef = useRef(0);
   const installedGhostIdsKeyRef = useRef(installedGhostIdsKey);
@@ -557,7 +607,7 @@ export function GhostPluginPage({ surface = 'plugins' }: { surface?: 'plugins' |
           cancelText: t('settings.ghosts.updateConfirm.cancel'),
         });
         if (!approved || !isMarketBusyLeaseActive(marketBusyLease)) return;
-        const result = await marketApi.install(marketItem.pluginId, {
+        const result = await installFromActiveMarket(marketItem.pluginId, {
           expectedReleaseId: next.releaseId,
           allowPermissionExpansion: diff.added.length > 0,
         });
@@ -581,8 +631,8 @@ export function GhostPluginPage({ surface = 'plugins' }: { surface?: 'plugins' |
       acquireMarketBusy,
       confirm,
       ghosts,
+      installFromActiveMarket,
       isMarketBusyLeaseActive,
-      marketApi,
       marketByGhostId,
       refreshMarket,
       releaseMarketBusy,
@@ -760,31 +810,6 @@ export function GhostPluginPage({ surface = 'plugins' }: { surface?: 'plugins' |
     if (selectedGhost) void handleUseGhost(selectedGhost.manifest.id);
   }, [handleUseGhost, selectedGhost]);
 
-  const handleOpenPanel = useCallback(
-    async (id: string, trigger: HTMLButtonElement) => {
-      const ghost = ghosts.find((candidate) => candidate.manifest.id === id);
-      if (!ghost?.manifest.panel || ghost.enabled === false) return;
-      panelModalTriggerRef.current = trigger;
-      // A tab panel needs a concrete session host. The Plugin catalog has no
-      // active session, so its explicit Open action uses the same modal host;
-      // docked panels otherwise preserve the existing navigation behavior.
-      if (pluginPanelModalPresentation || ghost.manifest.panel.position === 'tab') {
-        setPanelModalGhostId(id);
-        setPanelModalOpen(true);
-        return;
-      }
-      const currentLayout = window.electronAPI.layout.getStateSync().layout;
-      const withPanel = layoutWithGhostPanel(currentLayout, ghost.manifest);
-      if (withPanel) {
-        await window.electronAPI.layout.set(withPanel).catch(() => undefined);
-      }
-      restoreGhostPanel(id);
-      await window.electronAPI.ghostPanelWindow.setDetached(id, false).catch(() => undefined);
-      navigate('/cc-agent/new');
-    },
-    [ghosts, navigate, pluginPanelModalPresentation],
-  );
-
   const handleUninstall = useCallback(async () => {
     if (!selectedDetail) return;
     const ok = await confirm({
@@ -953,7 +978,7 @@ export function GhostPluginPage({ surface = 'plugins' }: { surface?: 'plugins' |
         autoFocusConfirm: true,
       });
       if (!confirmed || !isMarketBusyLeaseActive(marketBusyLease)) return;
-      const result = await marketApi.install(marketDetail.pluginId, {
+      const result = await installFromActiveMarket(marketDetail.pluginId, {
         expectedReleaseId: marketDetail.releaseId,
         ...(isUpdate && diff!.added.length > 0 ? { allowPermissionExpansion: true } : {}),
       });
@@ -984,30 +1009,34 @@ export function GhostPluginPage({ surface = 'plugins' }: { surface?: 'plugins' |
     acquireMarketBusy,
     confirm,
     ghosts,
+    installFromActiveMarket,
     isMarketBusyLeaseActive,
-    marketApi,
     marketDetail,
     refreshMarket,
     releaseMarketBusy,
     t,
   ]);
 
-  const panelModalGhost = panelModalGhostId
-    ? (ghosts.find((ghost) => ghost.manifest.id === panelModalGhostId) ?? null)
-    : null;
-
   if (marketDetail) {
     return (
-      <MarketPluginDetailView
-        detail={marketDetail}
-        busy={marketBusyId === marketDetail.pluginId}
-        onBack={() => {
-          marketDetailRequestRef.current += 1;
-          setMarketDetail(null);
-        }}
-        onInstall={() => void handleInstallFromMarket()}
-        onIconLoadError={handleMarketIconLoadError}
-      />
+      <>
+        <MarketPluginDetailView
+          detail={marketDetail}
+          busy={marketBusyId === marketDetail.pluginId}
+          progress={
+            mekaInstallProgress?.pluginId === marketDetail.pluginId
+              ? mekaInstallProgress
+              : null
+          }
+          onBack={() => {
+            marketDetailRequestRef.current += 1;
+            setMarketDetail(null);
+          }}
+          onInstall={() => void handleInstallFromMarket()}
+          onIconLoadError={handleMarketIconLoadError}
+        />
+        {modalHost}
+      </>
     );
   }
 
@@ -1026,21 +1055,19 @@ export function GhostPluginPage({ surface = 'plugins' }: { surface?: 'plugins' |
               : undefined
           }
           onBack={() => {
-            setPanelModalOpen(false);
-            setPanelModalGhostId(null);
+            resetPanelModal();
             setSelectedId(null);
           }}
           onToggle={(enabled) => {
             if (!enabled) {
-              setPanelModalOpen(false);
-              setPanelModalGhostId(null);
+              resetPanelModal();
             }
             void handleToggle(selectedDetail.id, enabled);
           }}
           onUse={handleUse}
           onOpenPanel={
             selectedGhost?.manifest.panel
-              ? (trigger) => void handleOpenPanel(selectedDetail.id, trigger)
+              ? (trigger) => void openPanel(selectedDetail.id, trigger)
               : undefined
           }
           onUpdate={selectedDevPlugin ? undefined : () => void handleUpdate()}
@@ -1051,17 +1078,16 @@ export function GhostPluginPage({ surface = 'plugins' }: { surface?: 'plugins' |
               : undefined
           }
           updateBusy={selectedMarketUpdate !== null && marketBusyId !== null}
+          updateProgress={
+            selectedMarketUpdate &&
+            mekaInstallProgress?.pluginId === selectedMarketUpdate.pluginId
+              ? mekaInstallProgress
+              : null
+          }
           onUninstall={() => void handleUninstall()}
           toggleDisabled={scopeDir !== null && selectedGhost !== null && !selectedGhost.enabled}
         />
-        {panelModalGhost ? (
-          <GhostPanelModal
-            ghost={panelModalGhost}
-            open={panelModalOpen}
-            onOpenChange={setPanelModalOpen}
-            returnFocusRef={panelModalTriggerRef}
-          />
-        ) : null}
+        {modalHost}
       </>
     );
   }
@@ -1238,7 +1264,7 @@ export function GhostPluginPage({ surface = 'plugins' }: { surface?: 'plugins' |
                         onAction={() => void handleUseGhost(catalogItem.item.id)}
                         onOpenPanel={
                           catalogItem.item.hasPanel
-                            ? (trigger) => void handleOpenPanel(catalogItem.item.id, trigger)
+                            ? (trigger) => void openPanel(catalogItem.item.id, trigger)
                             : undefined
                         }
                         onDevelopmentPackage={
@@ -1251,6 +1277,13 @@ export function GhostPluginPage({ surface = 'plugins' }: { surface?: 'plugins' |
                         }
                         updateVersion={catalogItem.item.marketUpdate?.version}
                         updateBusy={catalogItem.item.marketUpdate !== null && marketBusyId !== null}
+                        updateProgress={
+                          catalogItem.item.marketUpdate &&
+                          mekaInstallProgress?.pluginId ===
+                            catalogItem.item.marketUpdate.pluginId
+                            ? mekaInstallProgress
+                            : null
+                        }
                         onUpdate={
                           catalogItem.item.marketUpdate
                             ? () => void handleMarketUpdate(catalogItem.item.id)
@@ -1301,14 +1334,7 @@ export function GhostPluginPage({ surface = 'plugins' }: { surface?: 'plugins' |
           </PluginManagementPage>
         </main>
       </PluginManagementLayout>
-      {panelModalGhost ? (
-        <GhostPanelModal
-          ghost={panelModalGhost}
-          open={panelModalOpen}
-          onOpenChange={setPanelModalOpen}
-          returnFocusRef={panelModalTriggerRef}
-        />
-      ) : null}
+      {modalHost}
       <MekaDevPluginPackageDialog
         item={devPackageDialogItem}
         pluginName={devPackageDialogGhost?.manifest.name ?? ''}
@@ -1565,6 +1591,7 @@ export function GhostPluginCard({
   onUpdate,
   updateVersion,
   updateBusy = false,
+  updateProgress,
   onToggle,
   effectiveEnabled,
   toggleDisabled = false,
@@ -1581,6 +1608,7 @@ export function GhostPluginCard({
   onUpdate?: () => void;
   updateVersion?: string;
   updateBusy?: boolean;
+  updateProgress?: PluginMarketInstallProgress | null;
   onToggle?: (enabled: boolean) => void;
   effectiveEnabled?: boolean;
   toggleDisabled?: boolean;
@@ -1693,16 +1721,26 @@ export function GhostPluginCard({
               type="button"
               onClick={onUpdate}
               disabled={updateBusy}
+              aria-busy={updateBusy}
               className={cn(
-                'inline-flex h-8 shrink-0 items-center justify-center self-center rounded-lg border border-[var(--border-default)] bg-transparent px-3 text-12 font-medium text-[var(--text-primary)]',
+                'relative inline-flex h-8 shrink-0 items-center justify-center self-center overflow-hidden rounded-lg border border-[var(--border-default)] bg-transparent px-3 text-12 font-medium text-[var(--text-primary)]',
                 'transition-[background-color,border-color,transform,opacity] duration-[var(--motion-fast)]',
                 'hover:border-[var(--text-tertiary)] hover:bg-[var(--surface-hover-soft)] active:scale-[0.98]',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
-                'disabled:cursor-wait disabled:opacity-40 disabled:active:scale-100',
+                'disabled:cursor-wait disabled:active:scale-100',
+                updateBusy && !updateProgress && 'opacity-40',
               )}
-              aria-label={t('settings.ghosts.market.updateAria', { name: item.name })}
+              aria-label={
+                updateProgress
+                  ? undefined
+                  : t('settings.ghosts.market.updateAria', { name: item.name })
+              }
             >
-              {t('settings.ghosts.market.updateAction')}
+              <PluginMarketProgressContent
+                progress={updateProgress}
+                update
+                fallback={t('settings.ghosts.market.updateAction')}
+              />
             </button>
           ) : hasUseAction ? (
             <button

@@ -207,9 +207,18 @@ macOS：
 `publish-desktop.mjs` 读取该文件，重新校验签名状态、文件大小与 SHA256 后，把 installer/
 hotfix 上传到 Cindy Meka 独立 RustFS bucket，最后写 canary manifest；经真实验收后由
 `promote-desktop.mjs` 备份并推进 stable，`rollback-desktop.mjs` 可恢复指定 stable 备份。
+版本化产物保持不可变；同路径内容不同的同版本重发会被拒绝。
+撤回 canary 时不删除版本化对象；`reset-canary-desktop.mjs` 会先校验 stable 引用资产，
+按版本与内容哈希备份当前 canary manifest，再将 canary 指针对齐到 stable。该操作只
+改变后续检查结果，不会让已安装更高 canary 的客户端降级。
 正式 S3 API 与公开对象入口为 `https://s3.meka.pawdy.fun/`，管理控制台为
 `https://s3-admin.meka.pawdy.fun/`；控制台地址不进入客户端或发布脚本配置。发布 S3 与
 客户端下载均强制 HTTPS，不再保留内网 HTTP 放行开关。
+Windows 热更不会重新执行 NSIS；为使图标资源替换后任务栏 AppUserModelID 分组与文件
+关联不继续显示旧缓存，更新器只在新进程启动验证成功后 best-effort 发送
+`SHChangeNotify(SHCNE_ASSOCCHANGED)`。通知不改变更新成功判定，失败／回滚路径不发送。
+热更由更新前版本的 updater 执行，首次引入该通知的版本被旧 updater 安装时不会触发；
+验证和发布评估必须覆盖“已带新 updater 的版本再更新到更高版本”的第二跳。
 详细配置和操作见 `docs/migrations/cindy-meka-release.md`。
 
 关键实现：
@@ -228,10 +237,23 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
 
 已迁移：
 
-- 插件界面显示方式：默认沿用现有停靠面板；「设置 → Meka 助理 → 插件界面」可切换为
-  Modal。该布尔偏好属于本机 Renderer 界面 override，默认 `false` 不落盘，用户开启时仅
-  在 localStorage 的 `xdt:ghostPanelPresentation:v1` 记录 `true`，关闭即删除 override、
-  重新跟随停靠默认。Modal 覆盖主页面 90% 宽高，并直接复用原沙箱面板内核；开启后停靠
+- 插件界面显示方式：默认沿用现有停靠面板；「设置 → Meka 助理 → 插件默认打开方式」
+  可切换全局默认。该布尔偏好属于本机 Renderer 界面 override，默认 `false` 不落盘，用户
+  开启时仅在 localStorage 的 `xdt:ghostPanelPresentation:v1` 记录 `true`，关闭即删除
+  override、重新跟随停靠产品默认。声明 `panel.allowUserPresentationOverride: true` 的
+  停靠插件还会在自身详情「配置」区获得“跟随默认／停靠在对话窗口／弹窗打开”三态设置；
+  显式值按 runtime plugin ID 写入 `xdt:ghostPanelPresentationOverrides:v1`，选择跟随默认
+  即删除该项。有效优先级为插件级用户 override → 全局默认 → 停靠产品默认；`tab` 插件
+  保持 manifest 页签语义，不开放覆盖。Meka P4 是首个示例声明。
+  2026-07-30 定向验证覆盖 manifest 收词与拒装、全局/插件级优先级和继承恢复、气泡过滤、
+  宿主设置组件及 Forge 作者手册，共 172 项测试通过；Desktop typecheck、变更文件 ESLint、
+  i18n key 一致性及术语门禁通过。
+  插件目录的列表与详情“打开界面”统一改由同一个 launcher 解析上述优先级和承载形态；
+  Modal 目标先以关闭态挂载，下一 animation frame 再打开，修复详情页首次可信点击同时
+  创建 Dialog 时被 outside interaction 立即关闭、而列表再次点击才生效的不一致。切换
+  目标、离开详情或停用插件会取消待执行的打开请求；4 项 launcher 回归测试及原有 Modal
+  测试通过。
+  Modal 覆盖主页面 90% 宽高，并直接复用原沙箱面板内核；开启后相应插件的停靠
   面板和最小化气泡只在视图层隐藏，布局树、气泡位置和重装位置记忆不改写。插件列表卡片
   与详情页对所有声明 `panel` 且已启用的插件提供「打开界面」；停靠型插件在关闭 Modal
   override 时返回工作区并恢复原面板，插件目录没有具体会话宿主时，`position: "tab"` 的显式打开
@@ -589,11 +611,21 @@ Cindy 现有权限确认；无窗口、无会话监听或未明确允许时一�
   `personal / personal / public`；分享 ACL 不进入 wire protocol。
 - `.cindy` 原始字节按 SHA-256 内容寻址写入 MCPRouter 的持久化数据目录；Release
   不可覆盖，修改包内容必须上传新版本。下载继续遵守客户端既有 HTTPS、短期过期、
-  8 MiB、Content-Length 和 SHA-256 校验。内网部署由 Caddy 在标准 443 端口为
+  Content-Length 和 SHA-256 校验。上游 Cindy 市场继续保持 8 MiB 上限；Meka 市场仅在
+  Release manifest 已通过共享校验且声明 `node` 时允许最多 128 MiB，普通 Meka 插件仍为
+  8 MiB。该渠道策略只注入 Meka 的独立 service 实例；下载按流写入排他创建的临时文件并
+  增量计算 SHA-256，失败清理未验证文件，不在 Main 内存聚合完整大包。内网部署由 Caddy
+  在标准 443 端口为
   `https://mcpr.meka.pawdy.fun` 终止 TLS，MCPRouter 容器内的 HTTP 只用于反向代理和部署机
   本地诊断；证书通过 DNS-01 签发且公开受信。客户端继续直接复用
   `@cindy/plugin-protocol` 的单参数、HTTPS-only parser，不修改协议 submodule，也不为
   Meka 渠道增加明文 HTTP 例外。
+- Meka 市场显式安装／更新使用 Desktop-local 的 operation-scoped 进度事件：Renderer
+  生成 UUID，Main 只向发起安装的可信 WebContents 回传准备完成后的下载字节与安装阶段，
+  preload 校验 payload；市场详情安装／更新按钮以及已安装插件详情、列表更新按钮都展示
+  准备、下载百分比和安装／更新状态。事件不携带签名 URL、临时路径、凭证或包内容，页面
+  关闭不会取消已经开始的安装。Mobile／device-link 不提供插件市场管理入口，因此该事件
+  不加入远程 invoke／push allowlist。
 - Cindy 原插件市场继续使用 `pluginApiBaseUrl`；Meka 插件市场始终使用 MCPRouter 地址。
   客户端每次请求都重新读取当前绑定状态：完整绑定存在时走鉴权接口，未绑定或断开后走
   匿名公开接口，不以 401 自动回退，也不复用过期的个人目录结果。未保存 Router 地址时使用
@@ -677,6 +709,15 @@ API；Desktop 每次列表、详情和下载授权请求前重新读取绑定状
 plugin-market／Router service 共 7 个测试文件、70 个测试及 Desktop typecheck 通过；
 MCPRouter registry 24 个测试、Server 72 个测试及两个 package typecheck 通过。两种状态下
 真实 Router 的列表切换与安装仍待开发者手测。
+
+2026-07-30 Meka Node 插件大包补充：Meka 独立市场在共享 manifest 校验通过后允许
+`node` 插件下载最多 128 MiB，普通 Meka 插件与上游 Cindy 市场继续保持 8 MiB。下载器改为
+排他创建临时文件、流式写盘并增量校验大小与 SHA-256，任何未验证结果都在失败路径清理；
+不修改协议或服务端。Meka 安装与更新按钮进一步按单次 UUID 隔离展示准备、下载百分比和
+安装／更新阶段，覆盖市场详情、已安装插件详情及列表更新入口；Main push 仅返回非敏感字节
+状态且不进入 device-link。定向测试、i18n／glossary、变更文件 ESLint 与 Desktop typecheck
+均通过；完整 plugin-market 加 shared payload validator、renderer 进度按钮共 9 个测试文件、
+67 个测试通过。真实 MCPRouter 下载 Meka Docs 并完成安装仍待开发者手测。
 
 ### 4.8 Orca Worker 微调
 

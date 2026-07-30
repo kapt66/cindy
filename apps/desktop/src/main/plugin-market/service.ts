@@ -13,10 +13,12 @@ import {
   diffGhostPermissionItems,
   isOfficialGhostId,
   validateGhostManifest,
+  type GhostManifest,
   type InstalledGhost,
 } from '../../shared/ghost.js';
 import type {
   PluginMarketDetail,
+  PluginMarketInstallPhase,
   PluginMarketItem,
   PluginMarketSnapshot,
 } from '../../shared/pluginMarket.js';
@@ -150,6 +152,23 @@ interface LocalInstallSnapshot {
   installations: Readonly<Record<string, PluginMarketInstallationRecord>>;
 }
 
+export interface PluginMarketInstallProgressUpdate {
+  phase: PluginMarketInstallPhase;
+  downloadedBytes: number;
+  totalBytes: number;
+}
+
+function reportInstallProgress(
+  observer: ((progress: PluginMarketInstallProgressUpdate) => void) | undefined,
+  progress: PluginMarketInstallProgressUpdate,
+): void {
+  try {
+    observer?.(progress);
+  } catch {
+    // Progress is best-effort UI telemetry and must not affect installation.
+  }
+}
+
 export interface PluginMarketServiceOptions {
   /**
    * Only the original Cindy market may claim pre-ledger official installs.
@@ -158,6 +177,12 @@ export interface PluginMarketServiceOptions {
   adoptLegacyInstallations?: boolean;
   /** Independent channels never inherit Cindy's default-install policy. */
   applyDefaultInstalls?: boolean;
+  /**
+   * Optional independent-channel policy for compressed package downloads.
+   * The default Cindy market leaves this unset and retains the downloader's
+   * 8 MiB ceiling.
+   */
+  resolveMaxDownloadBytes?: (manifest: GhostManifest) => number | undefined;
 }
 
 /**
@@ -249,6 +274,7 @@ export class PluginMarketService {
        *  否则用户审阅 A、实际安装/启用 B(review P1)。 */
       expectedReleaseId: string;
       allowPermissionExpansion?: boolean;
+      onProgress?: (progress: PluginMarketInstallProgressUpdate) => void;
     },
   ): Promise<{ ghost: InstalledGhost }> {
     if (!isValidPluginResourceId(pluginId)) {
@@ -287,6 +313,7 @@ export class PluginMarketService {
           {
             expectedInstalled: existing,
             allowPermissionExpansion: options.allowPermissionExpansion === true,
+            ...(options.onProgress ? { onProgress: options.onProgress } : {}),
           },
           owner,
           ledger,
@@ -382,6 +409,7 @@ export class PluginMarketService {
       allowPermissionExpansion?: boolean;
       /** 确认操作时的安装意图;下载窗口期目标被另一窗口卸载时拒绝滑入首装。 */
       expectedInstalled: boolean;
+      onProgress?: (progress: PluginMarketInstallProgressUpdate) => void;
     } = { expectedInstalled: false },
     owner = captureMarketOwner(),
     ledger = this.ledgerForOwner(owner),
@@ -427,7 +455,33 @@ export class PluginMarketService {
       `cindy-plugin-${plugin.id}-${crypto.randomUUID()}.cindy`,
     );
     try {
-      await downloadVerifiedPlugin(download.url, download, tempPath);
+      const maxDownloadBytes =
+        this.options.resolveMaxDownloadBytes?.(compatible.manifest);
+      const downloadOptions =
+        maxDownloadBytes === undefined && options.onProgress === undefined
+          ? undefined
+          : {
+              ...(maxDownloadBytes === undefined ? {} : { maxBytes: maxDownloadBytes }),
+              ...(options.onProgress
+                ? {
+                    onProgress: (progress: {
+                      downloadedBytes: number;
+                      totalBytes: number;
+                    }) => {
+                      reportInstallProgress(options.onProgress, {
+                        phase: 'downloading',
+                        ...progress,
+                      });
+                    },
+                  }
+                : {}),
+            };
+      await downloadVerifiedPlugin(
+        download.url,
+        download,
+        tempPath,
+        downloadOptions,
+      );
       requireSameMarketOwner(owner);
       if (options.expectedInstalled) {
         const stillInstalled = getGhostManager()
@@ -442,6 +496,11 @@ export class PluginMarketService {
           );
         }
       }
+      reportInstallProgress(options.onProgress, {
+        phase: 'installing',
+        downloadedBytes: download.sizeBytes,
+        totalBytes: download.sizeBytes,
+      });
       // 市场首装一律装完即开(2026-07-26 定案,见 installOrUpdateMarketGhostPackage);
       // 已装过则走原位更新,唤醒/沉睡状态延续当前值。
       const ghost = await installOrUpdateMarketGhostPackage(tempPath, {

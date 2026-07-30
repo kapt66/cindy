@@ -107,9 +107,9 @@
       "title": "Meka Assistant",
       "description": "Manage Plugin interfaces, P4 paths, MCPRouter, and MekaDesign connections.",
       "pluginPanel": {
-        "title": "Plugin Interface",
-        "description": "When enabled, Plugin interfaces open in a modal covering 90% of the main page. Turn it off to keep using docked panels.",
-        "toggleAria": "Open Plugin Interfaces in a Modal"
+        "title": "Default Plugin Opening",
+        "description": "Sets the default for Plugins without their own override. Turn it on to use a modal covering 90% of the main page, or off to dock interfaces beside the conversation. Individual Plugins can override it in their configuration.",
+        "toggleAria": "Open Plugin Interfaces in a Modal by Default"
       },
       "router": {
         "title": "MCPRouter connection",
@@ -2482,6 +2482,10 @@
           "local": "Local"
         },
         "install": "Install",
+        "preparing": "Preparing…",
+        "downloading": "Downloading {{percent}}%…",
+        "installing": "Installing…",
+        "updating": "Updating…",
         "details": "Details",
         "update": "Update from market",
         "updateAvailable": "Update available",
@@ -2735,6 +2739,16 @@
         "settingsTitle": "{{name}} Settings",
         "settingsUnavailableUntilRestore": "Restore the plugin to use this configuration again.",
         "configurationTitle": "Configuration",
+        "panelPresentation": {
+          "title": "Opening Method",
+          "description": "Only affects this Plugin. “Follow Default” uses Settings → Meka Assistant → Default Plugin Opening.",
+          "aria": "Choose how this Plugin opens",
+          "options": {
+            "inherit": "Follow Default",
+            "docked": "Dock Beside Conversation",
+            "modal": "Open in Modal"
+          }
+        },
         "openTool": "View details for Tool {{name}}",
         "noToolDescription": "No description is available for this Tool.",
         "viewAllTools": "See All",

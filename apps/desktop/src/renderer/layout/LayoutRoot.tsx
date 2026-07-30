@@ -15,7 +15,7 @@ import {
 import { isGhostPanelKindMinimized, useGhostPanelBubbleState } from '../lib/ghostPanelBubbleState';
 import {
   isGhostPanelModalPresentationEnabled,
-  useGhostPanelModalPresentation,
+  useGhostPanelPresentationRevision,
 } from '../lib/ghostPanelPresentationPreference';
 import { isGhostPanelKindDetached, useGhostPanelWindowsState } from '../lib/ghostPanelWindowState';
 import { registerBuiltinPanels } from '../panels/builtinPanels';
@@ -64,9 +64,12 @@ const NON_CHAT_FLOOR_PX = 120;
  * 在存档中但不渲染」)。
  */
 function isPanelKindVisible(kind: string): boolean {
+  const ghostId = kind.startsWith(GHOST_PANEL_KIND_PREFIX)
+    ? kind.slice(GHOST_PANEL_KIND_PREFIX.length)
+    : null;
   return (
     getPanelKind(kind) !== null &&
-    !(kind.startsWith(GHOST_PANEL_KIND_PREFIX) && isGhostPanelModalPresentationEnabled()) &&
+    !(ghostId !== null && isGhostPanelModalPresentationEnabled(ghostId)) &&
     !isGhostPanelKindDetached(kind) &&
     !isGhostPanelKindMinimized(kind)
   );
@@ -359,7 +362,7 @@ export function LayoutRoot({ suppressNonChatPanels = false }: LayoutRootProps = 
   // hook 感知变化)。
   const ghostWindowsState = useGhostPanelWindowsState();
   const ghostBubbleState = useGhostPanelBubbleState();
-  const ghostPanelModalPresentation = useGhostPanelModalPresentation();
+  const ghostPanelPresentationRevision = useGhostPanelPresentationRevision();
 
   // 首帧同步读取(sendSync):布局在第一帧就位,不出现默认布局闪现。
   const [layout, setLayout] = useState<Layout>(() => window.electronAPI.layout.getStateSync().layout);
@@ -393,7 +396,7 @@ export function LayoutRoot({ suppressNonChatPanels = false }: LayoutRootProps = 
       avail,
       ghostWindowsState,
       ghostBubbleState,
-      ghostPanelModalPresentation,
+      ghostPanelPresentationRevision,
     ],
   );
   // chat 实际渲染宽 ≈ 可用宽 − 可见非 chat 面板宽度之和(拖缝余量用,见
@@ -419,7 +422,7 @@ export function LayoutRoot({ suppressNonChatPanels = false }: LayoutRootProps = 
   }, [
     availCtx,
     ghostBubbleState,
-    ghostPanelModalPresentation,
+    ghostPanelPresentationRevision,
     ghostSyncVersion,
     ghostWindowsState,
     layout,
@@ -441,7 +444,7 @@ export function LayoutRoot({ suppressNonChatPanels = false }: LayoutRootProps = 
   }, [
     layout,
     ghostBubbleState,
-    ghostPanelModalPresentation,
+    ghostPanelPresentationRevision,
     ghostSyncVersion,
     ghostWindowsState,
     maximizedKind,

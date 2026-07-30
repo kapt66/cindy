@@ -243,6 +243,41 @@ describe('ghost · 清单校验', () => {
     ).toBeUndefined();
   });
 
+  it('panel.allowUserPresentationOverride:仅允许停靠面板声明布尔值', () => {
+    const enabled = validateGhostManifest({
+      ...goodManifest(),
+      panel: {
+        html: 'panel.html',
+        position: 'left',
+        allowUserPresentationOverride: true,
+      },
+    });
+    expect(enabled.ok).toBe(true);
+    if (enabled.ok) {
+      expect(enabled.manifest.panel?.allowUserPresentationOverride).toBe(true);
+    }
+
+    expect(
+      validateGhostManifest({
+        ...goodManifest(),
+        panel: {
+          html: 'panel.html',
+          allowUserPresentationOverride: 'yes',
+        },
+      }).ok,
+    ).toBe(false);
+    expect(
+      validateGhostManifest({
+        ...goodManifest(),
+        panel: {
+          html: 'panel.html',
+          position: 'tab',
+          allowUserPresentationOverride: true,
+        },
+      }).ok,
+    ).toBe(false);
+  });
+
   it('author:可选展示名,1–64 字符,原样输出', () => {
     const base = validateGhostManifest({ ...goodManifest(), author: 'Lizi' });
     expect(base.ok && (base as { ok: true; manifest: GhostManifest }).manifest.author).toBe('Lizi');

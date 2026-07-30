@@ -65,6 +65,10 @@ import type {
   VoiceInputRefinerTransport,
 } from '../shared/voiceInputRefinerProfiles';
 import { isIpcErrorCode, type IpcErrorCode } from '../shared/ipc-errors';
+import {
+  isPluginMarketInstallProgress,
+  MEKA_PLUGIN_MARKET_INSTALL_PROGRESS_CHANNEL,
+} from '../shared/pluginMarket';
 import type { VoiceInputSyncErrorResult } from '../shared/voiceInputData';
 import type { UtilityTextFailure } from '../shared/utilityTextResult';
 import type {
@@ -407,6 +411,9 @@ const fanOutLayoutChanged = createIpcFanOut('layout:changed');
 const fanOutGhostsChanged = createIpcFanOut('ghosts:changed');
 const fanOutGhostContentReloaded = createIpcFanOut('ghosts:content-reloaded');
 const fanOutMekaDevPluginsChanged = createIpcFanOut('meka-dev-plugins:changed');
+const fanOutMekaPluginMarketInstallProgress = createIpcFanOut(
+  MEKA_PLUGIN_MARKET_INSTALL_PROGRESS_CHANNEL,
+);
 const fanOutGhostSetupNavigate = createIpcFanOut('maker:plugin-setup:navigate');
 // Plugin 顶部已安装快捷行的最近使用顺序，多窗口同步。
 const fanOutGhostRecentUsageChanged = createIpcFanOut('ghosts:recent-usage-changed');
@@ -1027,9 +1034,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('meka-plugin-market:detail', pluginId),
     install: (
       pluginId: string,
-      options: { expectedReleaseId: string; allowPermissionExpansion?: boolean },
+      options: {
+        expectedReleaseId: string;
+        allowPermissionExpansion?: boolean;
+        operationId: string;
+      },
     ): Promise<{ ghost: import('../shared/ghost').InstalledGhost }> =>
       ipcRenderer.invoke('meka-plugin-market:install', pluginId, options),
+    onInstallProgress: (
+      callback: (
+        payload: import('../shared/pluginMarket').PluginMarketInstallProgress,
+      ) => void,
+    ): (() => void) =>
+      fanOutMekaPluginMarketInstallProgress((payload) => {
+        if (isPluginMarketInstallProgress(payload)) callback(payload);
+      }),
     uninstall: (pluginId: string): Promise<{ ok: true }> =>
       ipcRenderer.invoke('meka-plugin-market:uninstall', pluginId),
     markLocalInstall: (ghostId: string, expectedOwnerId: string): Promise<{ ok: true }> =>

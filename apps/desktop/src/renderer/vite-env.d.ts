@@ -1310,8 +1310,15 @@ interface ElectronAPI {
     detail: (pluginId: string) => Promise<import('../shared/pluginMarket').PluginMarketDetail>;
     install: (
       pluginId: string,
-      options: { expectedReleaseId: string; allowPermissionExpansion?: boolean },
+      options: {
+        expectedReleaseId: string;
+        allowPermissionExpansion?: boolean;
+        operationId: string;
+      },
     ) => Promise<{ ghost: import('../shared/ghost').InstalledGhost }>;
+    onInstallProgress: (
+      callback: (payload: import('../shared/pluginMarket').PluginMarketInstallProgress) => void,
+    ) => () => void;
     uninstall: (pluginId: string) => Promise<{ ok: true }>;
     markLocalInstall: (ghostId: string, expectedOwnerId: string) => Promise<{ ok: true }>;
   };

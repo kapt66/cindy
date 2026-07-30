@@ -107,9 +107,9 @@
       "title": "Meka 助理",
       "description": "管理插件界面、P4 路径、MCPRouter 与 MekaDesign 连接。",
       "pluginPanel": {
-        "title": "插件界面",
-        "description": "开启后，插件界面通过覆盖主页面 90% 宽高的弹窗打开；关闭时继续使用原有停靠面板。",
-        "toggleAria": "使用弹窗打开插件界面"
+        "title": "插件默认打开方式",
+        "description": "作为未单独设置插件的默认值。开启后默认使用覆盖主页面 90% 宽高的弹窗；关闭时默认停靠在对话窗口。插件可在自己的配置中单独覆盖。",
+        "toggleAria": "默认使用弹窗打开插件界面"
       },
       "router": {
         "title": "MCPRouter 连接",
@@ -2481,6 +2481,10 @@
           "local": "本地"
         },
         "install": "安装",
+        "preparing": "正在准备…",
+        "downloading": "正在下载 {{percent}}%…",
+        "installing": "正在安装…",
+        "updating": "正在更新…",
         "details": "详情",
         "update": "从市场更新",
         "updateAvailable": "可更新",
@@ -2734,6 +2738,16 @@
         "settingsTitle": "{{name}} 设置",
         "settingsUnavailableUntilRestore": "恢复插件后可继续使用这项配置。",
         "configurationTitle": "配置",
+        "panelPresentation": {
+          "title": "打开方式",
+          "description": "仅影响此插件。选择“跟随默认”时，使用“设置 → Meka 助理 → 插件默认打开方式”。",
+          "aria": "选择此插件的打开方式",
+          "options": {
+            "inherit": "跟随默认",
+            "docked": "停靠在对话窗口",
+            "modal": "弹窗打开"
+          }
+        },
         "openTool": "查看 Tool {{name}} 的详情",
         "noToolDescription": "该 Tool 暂无描述。",
         "viewAllTools": "查看更多",

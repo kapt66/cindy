@@ -493,6 +493,10 @@ describe('FORGE_GUIDE', () => {
       '在独立窗口中打开',
       'minimize',
       '最小化为浮动气泡',
+      // 2026-07-30 停靠面板可声明宿主托管的每插件打开方式覆盖。
+      'allowUserPresentationOverride',
+      '插件默认打开方式',
+      '不要在 settingsHtml 里另画一份',
       // 2026-07-25 skill 槽:随包捆绑 Agent Skills,声明一致性 + 全局作用域披露。
       // 卡槽总数标记随 workspace 槽合入更新为十五个。
       '十五个卡槽',

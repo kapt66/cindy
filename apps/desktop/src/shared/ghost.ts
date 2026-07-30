@@ -342,6 +342,12 @@ export interface GhostPanelDecl {
    * 未知键按规则 9 收词明确拒绝,新按钮上线时在这里扩键。
    */
   systemButtons?: { maximize?: boolean; detach?: boolean; minimize?: boolean };
+  /**
+   * Ask the host to render a per-Plugin presentation preference. The setting
+   * is user-owned and may override the Meka Assistant global default.
+   * Only docked (`left`) panels support this; tab panels keep tab semantics.
+   */
+  allowUserPresentationOverride?: boolean;
 }
 
 /**
@@ -2472,6 +2478,15 @@ export function validateGhostManifest(raw: unknown): ManifestValidation {
       };
     }
     let position: GhostPanelPosition | undefined;
+    if (
+      p.allowUserPresentationOverride !== undefined &&
+      typeof p.allowUserPresentationOverride !== 'boolean'
+    ) {
+      return {
+        ok: false,
+        reason: 'panel.allowUserPresentationOverride 必须是布尔值',
+      };
+    }
     if (p.position !== undefined) {
       if (p.position === 'top' || p.position === 'bottom') {
         // 收词但明确拒绝(规则 9 不静默降级):上下停靠等布局引擎嵌套分割就绪后开放。
@@ -2492,12 +2507,15 @@ export function validateGhostManifest(raw: unknown): ManifestValidation {
       // 页签形态没有拖缝宽度/标准头语义:收词明确拒绝而非静默忽略(规则 9)。
       if (
         position === 'tab' &&
-        (p.minWidth !== undefined || p.defaultFraction !== undefined || p.systemButtons !== undefined)
+        (p.minWidth !== undefined ||
+          p.defaultFraction !== undefined ||
+          p.systemButtons !== undefined ||
+          p.allowUserPresentationOverride !== undefined)
       ) {
         return {
           ok: false,
           reason:
-            "panel.minWidth / panel.defaultFraction / panel.systemButtons 仅停靠形态(left)有效,position:'tab' 时请移除",
+            "panel.minWidth / panel.defaultFraction / panel.systemButtons / panel.allowUserPresentationOverride 仅停靠形态(left)有效,position:'tab' 时请移除",
         };
       }
     }
@@ -2508,6 +2526,9 @@ export function validateGhostManifest(raw: unknown): ManifestValidation {
       ...(p.minWidth !== undefined ? { minWidth: p.minWidth as number } : {}),
       ...(p.defaultFraction !== undefined ? { defaultFraction: p.defaultFraction as number } : {}),
       ...(systemButtons !== undefined ? { systemButtons } : {}),
+      ...(p.allowUserPresentationOverride !== undefined
+        ? { allowUserPresentationOverride: p.allowUserPresentationOverride as boolean }
+        : {}),
     };
   }
 

@@ -18,6 +18,7 @@ import { Switch } from '@/components/ui/switch';
 import { Tip } from '@/components/ui/tooltip';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
 import {
+  isGhostPanelModalPresentationEnabled,
   setGhostPanelModalPresentationEnabled,
   useGhostPanelModalPresentation,
 } from '@/lib/ghostPanelPresentationPreference';
@@ -307,7 +308,13 @@ export function MekaAssistantSettingsSection() {
               // docked panes hidden until modal mode is disabled.
               const ghosts = window.electronAPI.ghosts.listSync().ghosts;
               for (const ghost of ghosts) {
-                if (!ghost.manifest.panel || ghost.manifest.panel.position === 'tab') continue;
+                if (
+                  !ghost.manifest.panel ||
+                  ghost.manifest.panel.position === 'tab' ||
+                  !isGhostPanelModalPresentationEnabled(ghost.manifest.id)
+                ) {
+                  continue;
+                }
                 void window.electronAPI.ghostPanelWindow
                   .setDetached(ghost.manifest.id, false)
                   .catch(() => undefined);

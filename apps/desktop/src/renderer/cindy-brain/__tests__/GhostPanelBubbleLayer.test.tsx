@@ -17,6 +17,7 @@ import {
 import {
   __resetGhostPanelPresentationPreferenceForTest,
   setGhostPanelModalPresentationEnabled,
+  setGhostPanelPresentationOverride,
 } from '../../lib/ghostPanelPresentationPreference';
 import { __resetInstalledGhostsStoreForTest } from '../useInstalledGhosts';
 import { GhostPanelBubbleLayer } from '../GhostPanelBubbleLayer';
@@ -109,7 +110,7 @@ describe('GhostPanelBubbleLayer', () => {
     __setGhostPanelWindowsStateForTest({ a: { detached: true, lastOpen: true, open: true } });
     const { rerender } = render(<GhostPanelBubbleLayer />);
     expect(screen.queryByTestId('ghost-panel-bubble-a')).toBeNull();
-    __setGhostPanelWindowsStateForTest({});
+    act(() => __setGhostPanelWindowsStateForTest({}));
     rerender(<GhostPanelBubbleLayer />);
     expect(screen.getByTestId('ghost-panel-bubble-a')).toBeTruthy();
   });
@@ -130,5 +131,23 @@ describe('GhostPanelBubbleLayer', () => {
 
     act(() => setGhostPanelModalPresentationEnabled(false));
     expect(screen.getByTestId('ghost-panel-bubble-a')).toBeTruthy();
+  });
+
+  it('插件级覆盖只隐藏目标插件，并优先于全局默认', () => {
+    stubGhostsBridge([ghost('a'), ghost('b')]);
+    minimizeGhostPanel('a');
+    minimizeGhostPanel('b');
+    setGhostPanelPresentationOverride('a', 'modal');
+    render(<GhostPanelBubbleLayer />);
+
+    expect(screen.queryByTestId('ghost-panel-bubble-a')).toBeNull();
+    expect(screen.getByTestId('ghost-panel-bubble-b')).toBeTruthy();
+
+    act(() => {
+      setGhostPanelModalPresentationEnabled(true);
+      setGhostPanelPresentationOverride('a', 'docked');
+    });
+    expect(screen.getByTestId('ghost-panel-bubble-a')).toBeTruthy();
+    expect(screen.queryByTestId('ghost-panel-bubble-b')).toBeNull();
   });
 });

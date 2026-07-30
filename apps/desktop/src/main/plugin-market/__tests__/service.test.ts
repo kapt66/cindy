@@ -57,6 +57,7 @@ vi.mock('../download.js', () => ({
 
 import type { VisiblePluginDetail, VisiblePluginSummary } from '@cindy/plugin-protocol';
 
+import { downloadVerifiedPlugin } from '../download';
 import { PluginMarketLedger } from '../ledger';
 import {
   PluginMarketService,
@@ -71,6 +72,7 @@ afterEach(() => {
   runtime.ghosts = [];
   runtime.install.mockReset();
   runtime.uninstall.mockReset();
+  vi.mocked(downloadVerifiedPlugin).mockClear();
   runtime.builtinRemoved.clear();
   runtime.accountGhostAvailable = true;
   runtime.boundaryPending = false;
@@ -403,6 +405,102 @@ describe('PluginMarketService migration and defaultInstall', () => {
     );
     // 锁定装完即开的最终结果:装入入口返回的 ghost 必须是启用态。
     expect(ghost.enabled).toBe(true);
+    expect(vi.mocked(downloadVerifiedPlugin).mock.lastCall?.[3]).toBeUndefined();
+  });
+
+  it('forwards verified download bytes and switches to installing after verification', async () => {
+    const item = summary();
+    const onProgress = vi.fn();
+    vi.mocked(downloadVerifiedPlugin).mockImplementationOnce(
+      async (_url, expected, _target, options) => {
+        options?.onProgress?.({
+          downloadedBytes: expected.sizeBytes,
+          totalBytes: expected.sizeBytes,
+        });
+      },
+    );
+    runtime.install.mockResolvedValue({
+      manifest: manifest(),
+      dir: '/userData/cindy-brain/cindy-test',
+      enabled: true,
+    });
+    const h = harness([item]);
+
+    await h.service.install(item.id, {
+      expectedReleaseId: item.currentRelease.id,
+      onProgress,
+    });
+
+    expect(onProgress.mock.calls).toEqual([
+      [
+        {
+          phase: 'downloading',
+          downloadedBytes: item.currentRelease.sizeBytes,
+          totalBytes: item.currentRelease.sizeBytes,
+        },
+      ],
+      [
+        {
+          phase: 'installing',
+          downloadedBytes: item.currentRelease.sizeBytes,
+          totalBytes: item.currentRelease.sizeBytes,
+        },
+      ],
+    ]);
+  });
+
+  it('applies an independent channel download ceiling only after manifest validation', async () => {
+    const item = summary();
+    const resolveMaxDownloadBytes = vi.fn(() => 128 * 1024 * 1024);
+    runtime.install.mockResolvedValue({
+      manifest: manifest(),
+      dir: '/userData/cindy-brain/cindy-test',
+      enabled: true,
+    });
+    const h = harness([item], { resolveMaxDownloadBytes });
+
+    await h.service.install(item.id, {
+      expectedReleaseId: item.currentRelease.id,
+    });
+
+    expect(resolveMaxDownloadBytes).toHaveBeenCalledWith(
+      expect.objectContaining({ id: item.ghostId }),
+    );
+    expect(downloadVerifiedPlugin).toHaveBeenLastCalledWith(
+      'https://downloads.test.invalid/plugin.cindy',
+      expect.objectContaining({
+        sizeBytes: item.currentRelease.sizeBytes,
+        sha256: item.currentRelease.sha256,
+      }),
+      expect.stringMatching(/\.cindy$/),
+      { maxBytes: 128 * 1024 * 1024 },
+    );
+  });
+
+  it('does not consult an independent channel policy for an invalid manifest', async () => {
+    const item = summary();
+    const resolveMaxDownloadBytes = vi.fn(() => 128 * 1024 * 1024);
+    const h = harness([item], { resolveMaxDownloadBytes });
+    h.api.detail.mockResolvedValue({
+      ...detail(item),
+      currentRelease: {
+        ...detail(item).currentRelease,
+        manifest: {
+          ...manifest(),
+          schemaVersion: 999,
+        },
+      },
+    } as unknown as VisiblePluginDetail);
+
+    await expect(
+      h.service.install(item.id, {
+        expectedReleaseId: item.currentRelease.id,
+      }),
+    ).rejects.toThrow('[GHOST_FILE_INVALID]');
+
+    expect(resolveMaxDownloadBytes).not.toHaveBeenCalled();
+    expect(h.api.download).not.toHaveBeenCalled();
+    expect(downloadVerifiedPlugin).not.toHaveBeenCalled();
   });
 
   it('installs and enables a public defaultInstall package in local mode', async () => {

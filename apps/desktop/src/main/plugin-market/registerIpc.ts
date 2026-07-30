@@ -3,6 +3,11 @@ import { ipcMain } from 'electron';
 import { isIpcError } from '../../shared/ipc-errors.js';
 import { isValidGhostId } from '../../shared/ghost.js';
 import {
+  isPluginMarketInstallOperationId,
+  MEKA_PLUGIN_MARKET_INSTALL_PROGRESS_CHANNEL,
+  type PluginMarketInstallProgress,
+} from '../../shared/pluginMarket.js';
+import {
   getActiveAppSession,
   isAppSessionBoundaryPending,
   ownerScopedUserDataPath,
@@ -14,12 +19,20 @@ import { requireString, throwIpcError } from '../utils/ipcValidate.js';
 import { MekaPluginMarketApi } from './api.js';
 import { PluginChannelLedger } from './channelLedger.js';
 import { PluginMarketLedger } from './ledger.js';
+import { resolveMekaPluginMaxDownloadBytes } from './mekaDownloadPolicy.js';
 import { PluginMarketService } from './service.js';
 
 const log = createLogger('plugin-market-ipc');
 let registered = false;
 let serviceSingleton: PluginMarketService | null = null;
 let mekaServiceSingleton: PluginMarketService | null = null;
+
+function requireInstallOperationId(value: unknown): string {
+  if (!isPluginMarketInstallOperationId(value)) {
+    throwIpcError('INVALID_PARAMS', 'Invalid Plugin install operation ID');
+  }
+  return value;
+}
 
 function service(): PluginMarketService {
   serviceSingleton ??= new PluginMarketService();
@@ -35,6 +48,7 @@ function mekaService(): PluginMarketService {
     {
       adoptLegacyInstallations: false,
       applyDefaultInstalls: false,
+      resolveMaxDownloadBytes: resolveMekaPluginMaxDownloadBytes,
     },
   );
   return mekaServiceSingleton;
@@ -190,14 +204,27 @@ export function registerPluginMarketIpc(): void {
           ? (options as {
               expectedReleaseId?: unknown;
               allowPermissionExpansion?: unknown;
+              operationId?: unknown;
             })
           : null;
+      const normalizedPluginId = requireString(pluginId, 'pluginId');
       const expectedReleaseId = requireString(obj?.expectedReleaseId, 'expectedReleaseId');
       const allowPermissionExpansion = obj?.allowPermissionExpansion === true;
+      const operationId = requireInstallOperationId(obj?.operationId);
+      const sender = event.sender;
       return invokePluginMarket(() =>
-        mekaService().install(requireString(pluginId, 'pluginId'), {
+        mekaService().install(normalizedPluginId, {
           expectedReleaseId,
           allowPermissionExpansion,
+          onProgress: (progress) => {
+            if (sender.isDestroyed()) return;
+            const payload: PluginMarketInstallProgress = {
+              operationId,
+              pluginId: normalizedPluginId,
+              ...progress,
+            };
+            sender.send(MEKA_PLUGIN_MARKET_INSTALL_PROGRESS_CHANNEL, payload);
+          },
         }),
       );
     },

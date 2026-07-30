@@ -4,13 +4,18 @@ import { useTranslation } from 'react-i18next';
 import { WINDOW_NO_DRAG_STYLE } from '@/components/layout/windowDrag';
 import { cn } from '@/lib/utils';
 import { ghostPermissionItems } from '../../../shared/ghost';
-import type { PluginMarketDetail } from '../../../shared/pluginMarket';
+import type {
+  PluginMarketDetail,
+  PluginMarketInstallProgress,
+} from '../../../shared/pluginMarket';
 import { GhostPluginIcon } from './GhostPluginIcon';
+import { PluginMarketProgressContent } from './PluginMarketProgressContent';
 import { pluginPresentationOrigin } from './lib/pluginMarketPresentation';
 
 interface MarketPluginDetailViewProps {
   detail: PluginMarketDetail;
   busy: boolean;
+  progress: PluginMarketInstallProgress | null;
   onBack: () => void;
   onInstall: () => void;
   onIconLoadError: () => void;
@@ -19,6 +24,7 @@ interface MarketPluginDetailViewProps {
 export function MarketPluginDetailView({
   detail,
   busy,
+  progress,
   onBack,
   onInstall,
   onIconLoadError,
@@ -36,6 +42,8 @@ export function MarketPluginDetailView({
           : 'settings.ghosts.market.install';
   const actionDisabled =
     busy || detail.installState === 'installed' || detail.installState === 'conflict';
+  const unavailableAction =
+    detail.installState === 'installed' || detail.installState === 'conflict';
 
   return (
     <main className="plugin-motion-root h-full min-h-0 w-full overflow-y-auto bg-[var(--surface)] [scrollbar-gutter:stable_both-edges]">
@@ -79,16 +87,23 @@ export function MarketPluginDetailView({
               type="button"
               onClick={onInstall}
               disabled={actionDisabled}
+              aria-busy={busy}
               className={cn(
-                'plugin-detail-primary-action inline-flex h-10 min-w-[104px] items-center justify-center gap-2 whitespace-nowrap rounded-full px-4 text-13 font-medium',
+                'plugin-detail-primary-action relative inline-flex h-10 min-w-[104px] select-none items-center justify-center gap-2 overflow-hidden whitespace-nowrap rounded-full px-4 text-13 font-medium',
                 'bg-[var(--accent-cta-bg)] text-[var(--accent-pure-cta-fg)]',
                 'transition-[background-color,transform,opacity] duration-150 hover:bg-[var(--accent-hover)] active:scale-[0.98]',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
-                'disabled:cursor-not-allowed disabled:opacity-40 disabled:active:scale-100',
+                'disabled:active:scale-100',
+                busy ? 'cursor-wait' : 'disabled:cursor-not-allowed',
+                unavailableAction && 'opacity-40',
               )}
             >
               <Download size={15} aria-hidden="true" />
-              {t(actionKey)}
+              <PluginMarketProgressContent
+                progress={busy ? progress : null}
+                update={detail.installState === 'update-available'}
+                fallback={t(actionKey)}
+              />
             </button>
           </div>
           <p className="mt-5 text-14 leading-[22px] text-[var(--text-secondary)]">
