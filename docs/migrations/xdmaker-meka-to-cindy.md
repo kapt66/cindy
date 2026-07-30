@@ -905,7 +905,14 @@ Shared Cindy userData cannot run migration artifacts that are not canonical on o
 - 只有在开发未合入 migration 时才显式传入命名 sandbox；启动器保留共享数据库
   migration 安全门禁，但不再自动切换 sandbox。
 - 本私有产品线以 `meka/main` 作为 migration canonical 基线；`origin/main` 继续作为
-  上游 Cindy 同步分支。没有 `meka/main` 的上游 checkout 仍使用 `origin/main`。
+  上游 Cindy 同步分支。`db:validate` 与共享开发启动保护均优先解析该产品分支；tag 等
+  detached checkout 可回退到 `origin/meka/main`。没有 Meka 产品分支的上游 checkout
+  仍使用 `origin/main`，单纯 fetch 上游不会改变 Meka 的冻结基线。
+- 2026-07-30 复盘：migration freeze 自 Cindy 初始开源提交起只解析 `origin/main`；
+  Meka 开发启动保护在 2026-07-27 已切到 `meka/main`，release 校验器当时漏同步。此前
+  本地 `origin/main` 尚未包含上游 0082/0083，问题未显现；一次不含 merge 的
+  `fetch --prune` 推进远端跟踪引用后才触发误报。修复仅统一 canonical baseline 解析，
+  没有恢复、删除、重编号或改写任何 migration runtime identity。
 
 注意：
 

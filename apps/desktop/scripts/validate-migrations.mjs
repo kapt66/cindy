@@ -15,7 +15,7 @@
  *      + 依赖只用 `import type`），禁止顶层 ESM `export` / value `import`——这些脚本以 raw
  *      形式随包发出（forge extraResource），生产 Electron 用 `require()` 当 CJS 加载，ESM
  *      语法会在用户端炸 `Unexpected token 'export'`（dev/vitest 走 import 不复现，静默生产坑）
- *   6. 从旧仓迁入的固定 SHA256 基线，以及已进入新仓 main/PR base 的 migration SQL +
+ *   6. 从旧仓迁入的固定 SHA256 基线，以及已进入 canonical 产品分支/PR base 的 migration SQL +
  *      companion TS runtime identity 不可增删或修改，只允许追加新 migration
  *
  * 通过 → stdout 输出 `✅ migration validation passed: 0000..<max> ... + historical runtime identities frozen`
@@ -263,7 +263,7 @@ if (fs.existsSync(SCRIPTS_DIR)) {
   info(`step 5/6 ok — 无 drizzle/scripts/ 目录，跳过`);
 }
 
-// ── 6. 旧仓固定基线 / 新仓 main 的 migration runtime identity 冻结 ────────
+// ── 6. 旧仓固定基线 / canonical 产品分支的 migration runtime identity 冻结 ──
 
 let freezeResult;
 try {
@@ -280,7 +280,7 @@ const freezeChecks = [
 ];
 if (freezeResult.baseline && freezeResult.mainCheck) {
   freezeChecks.push({
-    label: `main baseline ${freezeResult.baseline.ref} (${freezeResult.baseline.commit.slice(0, 10)})`,
+    label: `canonical baseline ${freezeResult.baseline.ref} (${freezeResult.baseline.commit.slice(0, 10)})`,
     result: freezeResult.mainCheck,
   });
 }
@@ -291,16 +291,16 @@ for (const check of freezeChecks) {
     .join(', ');
   fail(
     `${check.label} 中已有的 migration SQL / companion TS identity 被改写：${detail}。` +
-      `已进入 main/发版的 migration runtime 不可增删或修改，请新增 migration 修正。`,
+      `已进入 canonical 产品分支/发版的 migration runtime 不可增删或修改，请新增 migration 修正。`,
   );
 }
-const mainSummary = freezeResult.mainCheck
-  ? `，main 基线冻结 ${freezeResult.mainCheck.migrationCount} 条 SQL + ` +
+const canonicalSummary = freezeResult.mainCheck
+  ? `，canonical 基线冻结 ${freezeResult.mainCheck.migrationCount} 条 SQL + ` +
     `${freezeResult.mainCheck.runtimeScriptCount} 条 runtime script`
-  : '；新仓尚无 main commit，跳过增量 Git 基线';
+  : '；新仓尚无 canonical commit，跳过增量 Git 基线';
 info(
   `step 6/6 ok — 固定 SHA256 基线冻结 ${freezeResult.fixedCheck.migrationCount} 条 migration SQL + ` +
-    `${freezeResult.fixedCheck.runtimeScriptCount} 条 runtime script${mainSummary}`,
+    `${freezeResult.fixedCheck.runtimeScriptCount} 条 runtime script${canonicalSummary}`,
 );
 
 // ── Done ───────────────────────────────────────────────────────────────────

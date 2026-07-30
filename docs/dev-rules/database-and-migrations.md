@@ -25,23 +25,32 @@
 
 ## Append-only 不变量
 
-- 已进入 `main` 的 `NNNN_*.sql` 及其同名 `drizzle/scripts/NNNN_*.ts` 永久冻结：不得修改、
-  删除、改名、换序号或事后补 companion。修复只能追加新 migration。
+- 已进入 canonical 产品分支的 `NNNN_*.sql` 及其同名
+  `drizzle/scripts/NNNN_*.ts` 永久冻结：不得修改、删除、改名、换序号或事后补
+  companion。Cindy Meka 使用 `meka/main`，上游 checkout 使用 `origin/main`；修复只能
+  追加新 migration。
 - 旧仓迁入的 SQL、迁仓首个 commit 已存在的 companion script 由
-  `drizzle/migration-baseline.json` 固定 SHA256；新仓已进入 `main` 的 migration
-  继续由 Git 基线冻结。两部分都由 `db:validate` 检查。
+  `drizzle/migration-baseline.json` 固定 SHA256；新仓已进入 canonical 产品分支的
+  migration 继续由 Git 基线冻结。两部分都由 `db:validate` 检查。
 - `drizzle/meta/_journal.json` 与 `*_snapshot.json` 只能由 Drizzle 生成，不得手工修改。
 - migration 序号必须从 `0000` 连续递增，不得重复或跳号。
-- 生成 migration 前先基于最新 `origin/main`。多人分支撞号时，保留自己的 schema 意图，
-  以最新主干 migration 链重新生成；不得手改文件名、journal 或 snapshot 强行换号。
-- **migration 文件本体（`NNNN_*.sql` 与同名 companion）不写注释**。这些文件入 `main`
-  即永久冻结，事后连注释都无法修改或删除——写进去的任何内部系统名、内部链接、
-  评审编号、人名都会永远留在公开仓里。背景与动机写在 PR 描述或 `docs/`；存量
+- 生成 migration 前先基于最新 canonical 产品分支：Cindy Meka 使用 `meka/main`，上游
+  checkout 使用 `origin/main`。同步上游时还要显式检查 `origin/main` 的新编号是否与
+  Meka 已发布 lineage 冲突。多人分支撞号时，保留自己的 schema 意图，以最新产品分支
+  migration 链重新生成；不得手改文件名、journal 或 snapshot 强行换号。
+- `db:validate` 的 Git 冻结基线与产品发布分支一致：显式
+  `XDT_MIGRATION_BASE_REF`／PR base 优先，其后依次尝试 `meka/main`、
+  `origin/meka/main`、`origin/main`、`main`。仅 fetch 上游不得让 Meka 已发布 lineage
+  被误判为改写。
+- **migration 文件本体（`NNNN_*.sql` 与同名 companion）不写注释**。这些文件进入
+  canonical 产品分支即永久冻结，事后连注释都无法修改或删除——写进去的任何内部系统名、
+  内部链接、评审编号、人名都会永远留在公开仓里。背景与动机写在 PR 描述或 `docs/`；存量
   migration 里已有的注释按冻结不变量原样保留，不得回头清理。
 
 ## 标准变更流程
 
-1. 核对工作区与最新 `origin/main`，确认没有把任务混入他人的 schema／migration 改动。
+1. 核对工作区与最新 canonical 产品分支，确认没有把任务混入他人的 schema／migration
+   改动；同步上游时额外核对最新 `origin/main`。
 2. 修改 `apps/desktop/src/main/localDb/schema.ts`。
 3. 通过 Drizzle 生成 SQL、snapshot 与 journal 条目：
 

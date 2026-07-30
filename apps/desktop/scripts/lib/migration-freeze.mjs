@@ -3,7 +3,7 @@
  *
  * 从旧仓迁入的 migration SQL，以及迁仓首个 commit 已存在的 companion TS，
  * 由 drizzle/migration-baseline.json 固定内容 hash，不再依赖 notice 或旧仓
- * Git 历史。之后进入新仓 main 的 migration 继续用 Git tree 做增量冻结，
+ * Git 历史。之后进入 canonical 产品分支的 migration 继续用 Git tree 做增量冻结，
  * 因此只允许追加新 migration，不允许改写或删除历史 SQL，也不允许增删或
  * 改写已经发布的 companion TS runtime script。
  */
@@ -312,11 +312,19 @@ function githubPullRequestBase(env) {
   }
 }
 
-/** 新仓尚无首个 commit 时允许无 main 基线；固定 manifest 仍会保护迁入历史。 */
+/**
+ * 新仓尚无首个 commit 时允许无 canonical 基线；固定 manifest 仍会保护迁入历史。
+ *
+ * Cindy Meka 的发布 migration 历史固定在 meka/main，origin/main 只是上游同步分支。
+ * 显式 override 与 PR base 仍优先；没有 Meka 产品分支的上游 checkout 继续回退到
+ * origin/main / main。
+ */
 export function resolveMainBaseline(repoRoot, env = process.env) {
   const candidates = [
     env.XDT_MIGRATION_BASE_REF,
     githubPullRequestBase(env),
+    'meka/main',
+    'origin/meka/main',
     'origin/main',
     'main',
   ].filter(Boolean);

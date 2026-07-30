@@ -191,6 +191,48 @@ test('new repository main baseline keeps freezing committed migrations', () => {
   }
 });
 
+test('Cindy Meka canonical baseline takes precedence over upstream origin/main', () => {
+  const fixture = createFixture();
+  try {
+    git(fixture.repo, 'branch', 'meka/main', fixture.anchor);
+    fs.writeFileSync(
+      path.join(fixture.repo, 'apps', 'desktop', 'drizzle', '0001_upstream.sql'),
+      'SELECT 1;\n',
+    );
+    git(fixture.repo, 'add', '.');
+    git(fixture.repo, 'commit', '-m', 'upstream migration');
+    git(fixture.repo, 'update-ref', 'refs/remotes/origin/main', 'HEAD');
+
+    assert.deepEqual(resolveMainBaseline(fixture.repo, {}), {
+      ref: 'meka/main',
+      commit: fixture.anchor,
+    });
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('detached Meka checkout can use origin/meka/main as its canonical baseline', () => {
+  const fixture = createFixture();
+  try {
+    git(fixture.repo, 'update-ref', 'refs/remotes/origin/meka/main', fixture.anchor);
+    fs.writeFileSync(
+      path.join(fixture.repo, 'apps', 'desktop', 'drizzle', '0001_upstream.sql'),
+      'SELECT 1;\n',
+    );
+    git(fixture.repo, 'add', '.');
+    git(fixture.repo, 'commit', '-m', 'upstream migration');
+    git(fixture.repo, 'update-ref', 'refs/remotes/origin/main', 'HEAD');
+
+    assert.deepEqual(resolveMainBaseline(fixture.repo, {}), {
+      ref: 'origin/meka/main',
+      commit: fixture.anchor,
+    });
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test('new repository main baseline freezes companion runtime scripts', () => {
   const fixture = createFixture();
   const scriptPath = path.join(
