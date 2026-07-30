@@ -207,10 +207,13 @@ macOS：
 `publish-desktop.mjs` 读取该文件，重新校验签名状态、文件大小与 SHA256 后，把 installer/
 hotfix 上传到 Cindy Meka 独立 RustFS bucket，最后写 canary manifest；经真实验收后由
 `promote-desktop.mjs` 备份并推进 stable，`rollback-desktop.mjs` 可恢复指定 stable 备份。
-版本化产物保持不可变；同路径内容不同的同版本重发会被拒绝。
-撤回 canary 时不删除版本化对象；`reset-canary-desktop.mjs` 会先校验 stable 引用资产，
-按版本与内容哈希备份当前 canary manifest，再将 canary 指针对齐到 stable。该操作只
-改变后续检查结果，不会让已安装更高 canary 的客户端降级。
+版本化产物在正常发布链路中保持不可变；同路径内容不同的同版本重发会被拒绝。
+内网 RustFS 撤回 canary 时，`reset-canary-desktop.mjs` 会先校验 stable 引用资产，按
+版本与内容哈希备份当前 canary manifest，将 canary 指针对齐到 stable 并完成反向校验，
+再删除被撤回版本的 installer/hotfix；删除前确认最终 stable/canary 均不引用目标，且
+Claude/Codex runtime 不参与清理。脚本自动扫描并清理当前架构中版本高于 stable 的标准
+installer/hotfix，因此指针已提前对齐时仍可直接重复运行同一 reset 命令处理遗留对象。
+该操作不会让已安装更高 canary 的客户端降级。
 正式 S3 API 与公开对象入口为 `https://s3.meka.pawdy.fun/`，管理控制台为
 `https://s3-admin.meka.pawdy.fun/`；控制台地址不进入客户端或发布脚本配置。发布 S3 与
 客户端下载均强制 HTTPS，不再保留内网 HTTP 放行开关。

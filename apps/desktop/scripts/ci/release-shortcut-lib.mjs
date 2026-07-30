@@ -144,3 +144,43 @@ export function promoteArgsForShortcut(platform, arch, { yes = false } = {}) {
   if (yes) args.push('--yes');
   return args;
 }
+
+export function parseResetCanaryShortcutArgs(argv) {
+  const result = {
+    platform: '',
+    arch: null,
+    yes: false,
+  };
+  let platformSeen = false;
+  let archSeen = false;
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === '--') continue;
+    if (arg === '--platform') {
+      if (platformSeen) throw new Error('--platform 只能传一次');
+      platformSeen = true;
+      result.platform = takeValue(argv, arg, index);
+      index += 1;
+    } else if (arg === '--arch') {
+      if (archSeen) throw new Error('--arch 只能传一次');
+      archSeen = true;
+      result.arch = takeValue(argv, arg, index);
+      index += 1;
+    } else if (arg === '--yes') {
+      result.yes = true;
+    } else {
+      throw new Error(`未知参数: ${arg}`);
+    }
+  }
+
+  if (!result.platform) throw new Error('缺少固定重置平台');
+  validateTarget(result.platform, result.arch);
+  return Object.freeze(result);
+}
+
+export function resetCanaryArgsForShortcut(platform, arch, { yes = false } = {}) {
+  const args = ['--region', 'cn', '--platform', platform, '--arch', arch];
+  if (yes) args.push('--yes');
+  return args;
+}

@@ -3,8 +3,10 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
 import {
+  DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
@@ -101,6 +103,46 @@ export class MekaReleaseStorage {
     );
     if (!result.Body) throw new Error(`RustFS 返回空对象体: ${relativeKey}`);
     return Buffer.from(await result.Body.transformToByteArray());
+  }
+
+  async deleteObject(relativeKey) {
+    await this.client.send(
+      new DeleteObjectCommand({
+        Bucket: this.config.bucket,
+        Key: this.objectKey(relativeKey),
+      }),
+    );
+  }
+
+  async listKeys(relativePrefix) {
+    const keys = [];
+    let continuationToken;
+    do {
+      const result = await this.client.send(
+        new ListObjectsV2Command({
+          Bucket: this.config.bucket,
+          Prefix: this.objectKey(relativePrefix),
+          ContinuationToken: continuationToken,
+        }),
+      );
+      for (const object of result.Contents ?? []) {
+        if (object.Key) keys.push(object.Key);
+      }
+      if (result.IsTruncated && !result.NextContinuationToken) {
+        throw new Error(`RustFS 分页响应缺少 continuation token: ${relativePrefix}`);
+      }
+      continuationToken = result.IsTruncated ? result.NextContinuationToken : undefined;
+    } while (continuationToken);
+
+    const configuredPrefix = String(this.config.prefix ?? '').replace(/^\/+|\/+$/g, '');
+    if (!configuredPrefix) return keys;
+    const prefixWithSlash = `${configuredPrefix}/`;
+    return keys.map((key) => {
+      if (!key.startsWith(prefixWithSlash)) {
+        throw new Error(`RustFS 返回了发布前缀外的对象: ${key}`);
+      }
+      return key.slice(prefixWithSlash.length);
+    });
   }
 
   async getText(relativeKey) {

@@ -43,8 +43,10 @@ $env:CINDY_MEKA_RUSTFS_ACCESS_KEY_ID = '<access-key>'
 $env:CINDY_MEKA_RUSTFS_SECRET_ACCESS_KEY = '<secret-key>'
 ```
 
-发版凭证只需限定在对应 bucket 的发布根目录，并授予读取/HEAD 与写入对象；
-脚本不删除远端对象，也不需要删除权限。
+发版凭证限定在对应 bucket 的发布根目录，并授予读取/HEAD 与写入对象。常规发布、推进与
+stable 回滚不删除对象；内网 RustFS 的 canary 撤回清理还需要对
+`app/<platformKey>/`、`hotfix/<platformKey>/` 授予按 prefix 限制的 `ListBucket` 与
+`DeleteObject`，不向 runtime 目录开放脚本删除能力。
 
 也可以用 `CINDY_MEKA_S3_ENDPOINT` 覆盖配置文件中的 endpoint。S3 API 与客户端下载根
 地址都强制 HTTPS，不提供 HTTP 放行开关。
@@ -218,8 +220,8 @@ back-up/<stable-version>/manifest-<platformKey>.json
 
 ### 6.1 将 canary 对齐回 stable
 
-不要手动删除版本化 installer、hotfix 或运行时资产。需要撤回未推进的 canary，或已经
-手动删除 canary manifest 后希望恢复可读指针时，使用：
+不要在 RustFS 管理界面中手工拆分操作。需要撤回未推进的 canary，或已经手动删除 canary
+manifest 后希望恢复可读指针时，使用：
 
 ```powershell
 # Windows：默认只预览
@@ -234,7 +236,14 @@ pnpm release:reset-canary:mac -- --yes
 脚本先校验 stable manifest 引用的 installer、hotfix、Claude 与 Codex 资产仍存在；
 当前 canary 存在时按“版本 + manifest 全文 SHA256”写入
 `back-up/canary/<version>/<sha256>/manifest-<platformKey>.json`，随后把 stable manifest
-全文写到 canary 指针并从 CDN 反向校验。版本化产物不会删除。
+全文写到 canary 指针并反向校验，最后删除被撤回 canary 版本的 installer 与 hotfix，
+并逐项 HEAD 确认已不存在。删除前会确认目标路径不再被 stable 或 reset 后的 canary
+引用；同版本仍被引用时拒绝删除。Claude/Codex runtime 始终不参与清理。
+
+脚本会扫描当前架构的 app/hotfix 目录，并把版本号高于 stable 的标准 Cindy Meka
+installer/hotfix 视为待撤回 canary 产物。因此即使 canary 指针已经先行对齐 stable，
+再次运行同一个 reset 命令也会在预览中列出残留对象，追加 `--yes` 即可清理；不需要指定
+版本号。历史 stable 版本、非标准文件名及 runtime 目录不在扫描或删除范围内。
 
 该操作不是客户端降级：已经安装更高 canary 的客户端仍会因严格 SemVer 保持当前版本，
 需要重新安装 stable，或等待一个更高版本发布。

@@ -17,6 +17,7 @@ import {
 } from "../../apps/desktop/scripts/ci/release-lib.mjs";
 import {
   contentTypeForReleaseFile,
+  MekaReleaseStorage,
   normalizeReleaseObjectKey,
 } from "../../apps/desktop/scripts/ci/release-storage.mjs";
 import {
@@ -29,10 +30,17 @@ import {
   packageArgsForShortcut,
   parsePromoteShortcutArgs,
   parseReleaseShortcutArgs,
+  parseResetCanaryShortcutArgs,
   promoteArgsForShortcut,
   publishArgsForShortcut,
+  resetCanaryArgsForShortcut,
   targetArchs,
 } from "../../apps/desktop/scripts/ci/release-shortcut-lib.mjs";
+import {
+  assertArtifactsUnreferenced,
+  resetCanaryArtifactCandidates,
+  resetCanaryArtifactKeys,
+} from "../../apps/desktop/scripts/ci/reset-canary-lib.mjs";
 import {
   assertRuntimeManifestAssets,
   collectLocalRuntimeAssets,
@@ -161,6 +169,142 @@ test("fixed promotion shortcuts preview by default and require --yes for writes"
   assert.equal(
     promoteArgsForShortcut("win32", "x64", { yes: true }).at(-1),
     "--yes",
+  );
+});
+
+test("canary reset shortcuts preview by default and require only --yes for writes", () => {
+  const preview = parseResetCanaryShortcutArgs([
+    "--platform",
+    "win32",
+    "--arch",
+    "x64",
+  ]);
+  assert.equal(preview.yes, false);
+  assert.deepEqual(
+    resetCanaryArgsForShortcut("win32", "x64", {
+      yes: true,
+    }),
+    ["--region", "cn", "--platform", "win32", "--arch", "x64", "--yes"],
+  );
+  assert.throws(
+    () =>
+      parseResetCanaryShortcutArgs([
+        "--platform",
+        "win32",
+        "--arch",
+        "x64",
+        "--unknown",
+      ]),
+    /未知参数/,
+  );
+});
+
+test("canary reset discovers only standard app and hotfix objects newer than stable", () => {
+  const windows = resetCanaryArtifactKeys("win32", "x64", "0.0.4");
+  assert.deepEqual(windows, [
+    "app/win32-x64/cindy-meka-0.0.4-Setup.exe",
+    "hotfix/win32-x64/cindy-meka-0.0.4.zip",
+  ]);
+  assert.deepEqual(resetCanaryArtifactKeys("darwin", "arm64", "1.2.3"), [
+    "app/darwin-arm64/cindy-meka-1.2.3-arm64.dmg",
+    "hotfix/darwin-arm64/cindy-meka-1.2.3-arm64.zip",
+  ]);
+
+  assert.deepEqual(
+    resetCanaryArtifactCandidates("win32", "x64", "0.0.3", [
+      "app/win32-x64/cindy-meka-0.0.3-Setup.exe",
+      ...windows,
+      "app/win32-x64/cindy-meka-0.0.5-Setup.exe.bak",
+      "claude-code/2.1.219/win32-x64/claude.exe",
+      "hotfix/darwin-arm64/cindy-meka-0.0.5-arm64.zip",
+    ]),
+    windows,
+  );
+  assert.throws(
+    () =>
+      assertArtifactsUnreferenced(windows, [
+        {
+          app: {
+            installer: { file: windows[0] },
+            hotfix: { file: windows[1] },
+          },
+        },
+      ]),
+    /仍被 reset 后的 manifest 引用/,
+  );
+  assert.doesNotThrow(() =>
+    assertArtifactsUnreferenced(windows, [
+      {
+        app: {
+          installer: {
+            file: "app/win32-x64/cindy-meka-0.0.3-Setup.exe",
+          },
+          hotfix: { file: "hotfix/win32-x64/cindy-meka-0.0.3.zip" },
+        },
+      },
+    ]),
+  );
+});
+
+test("release storage deletes within its configured prefix", async () => {
+  const commands = [];
+  const storage = new MekaReleaseStorage(
+    { bucket: "releases", prefix: "cindy-meka" },
+    {
+      async send(command) {
+        commands.push(command);
+      },
+    },
+  );
+
+  await storage.deleteObject("app/win32-x64/cindy-meka-0.0.4-Setup.exe");
+  assert.deepEqual(commands[0].input, {
+    Bucket: "releases",
+    Key: "cindy-meka/app/win32-x64/cindy-meka-0.0.4-Setup.exe",
+  });
+});
+
+test("release storage lists paginated keys within its configured prefix", async () => {
+  const commands = [];
+  const responses = [
+    {
+      Contents: [{ Key: "cindy-meka/app/win32-x64/first.exe" }],
+      IsTruncated: true,
+      NextContinuationToken: "next-page",
+    },
+    {
+      Contents: [{ Key: "cindy-meka/app/win32-x64/second.exe" }],
+      IsTruncated: false,
+    },
+  ];
+  const storage = new MekaReleaseStorage(
+    { bucket: "releases", prefix: "cindy-meka" },
+    {
+      async send(command) {
+        commands.push(command);
+        return responses.shift();
+      },
+    },
+  );
+
+  assert.deepEqual(await storage.listKeys("app/win32-x64"), [
+    "app/win32-x64/first.exe",
+    "app/win32-x64/second.exe",
+  ]);
+  assert.equal(commands[0].input.Prefix, "cindy-meka/app/win32-x64");
+  assert.equal(commands[1].input.ContinuationToken, "next-page");
+
+  const malformedStorage = new MekaReleaseStorage(
+    { bucket: "releases", prefix: "cindy-meka" },
+    {
+      async send() {
+        return { IsTruncated: true };
+      },
+    },
+  );
+  await assert.rejects(
+    () => malformedStorage.listKeys("app/win32-x64"),
+    /缺少 continuation token/,
   );
 });
 
