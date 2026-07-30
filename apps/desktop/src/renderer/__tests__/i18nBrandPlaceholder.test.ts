@@ -20,4 +20,18 @@ describe('locale 品牌名插值', () => {
     expect(rendered).toContain(BRAND_NAME);
     expect(rendered).not.toContain('{{appName}}');
   });
+
+  it('数据库版本恢复页在四种语言中使用当前产品展示名', () => {
+    for (const locale of ['en', 'zh-CN', 'ja', 'ko']) {
+      const t = i18n.getFixedT(locale);
+      for (const key of [
+        'localDbFatal.updateReady.description',
+        'localDbFatal.preparing.description',
+      ]) {
+        const rendered = t(key);
+        expect(rendered).toContain(BRAND_NAME);
+        expect(rendered).not.toContain('{{appName}}');
+      }
+    }
+  });
 });

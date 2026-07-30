@@ -1174,6 +1174,16 @@ thread-context gated 的本地动态代理投影这条唯一入口，Claude 继�
    - busy probe 现以 `null` 表达 owner boundary 期间暂不可读：轮询跳过本拍且不改
      dedupe 基线，握手沿用最后稳定值；Renderer IPC 仍继续收到可重试的
      `PRECONDITION_FAILED`，没有放宽 owner 隔离。
+7. **0089 与已发布 0.0.4 的共享数据库边界**
+   - 合并后开发版在共享 Cindy Meka userData 执行新增
+     `0089_upstream_wechat_and_group_messages` 后，0.0.4 内置 runtime 只到 0088；
+     旧版再次启动会因 sidecar 已冻结的 seq 89 在自身 runtime 中不存在而报
+     `MIGRATE_FAILED`。这是防止旧二进制读取新 schema 的预期 fail-closed 行为，不是
+     0089 执行失败，也不能通过改写、删除或降级数据库规避。
+   - 在包含未发布 migration 的开发版与旧发布版之间切换时，开发启动使用
+     `--isolated[=<名字>]`；已经升级的共享库只能由包含相同 migration runtime identity
+     的后续版本继续使用。恢复页四语品牌文案改用 `{{appName}}`，由
+     `BRAND_NAME` 注入为 `Cindy Meka`，不再显示上游硬编码 `Cindy`。
 
 本轮自动化验证结果：
 

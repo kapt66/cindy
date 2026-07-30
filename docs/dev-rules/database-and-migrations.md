@@ -95,6 +95,10 @@ companion CommonJS 格式和历史 runtime identity 冻结；不能用单独 typ
 
 - 未进入 `main` 的 migration 禁止连接共享 Cindy userData 运行；否则分支换号或回退后会让
   本地 `schema_version` 与真实结构永久分叉。
+- 即使 migration 已进入当前产品主分支，只要它尚未包含在本机已安装的发布版中，开发版
+  在共享 userData 执行该 migration 后，旧发布版也会按设计拒绝打开这份更新后的数据库；
+  append-only 只保证向前升级，不保证旧二进制向前兼容。仍需继续使用旧发布版时，开发
+  启动必须使用显式 `--isolated[=<名字>]`。
 - 需要启动验证时，按照 `desktop-development.md` 的参数说明使用显式
   `--isolated[=<名字>]` 沙箱。migration replay 自身使用临时数据库，不污染用户数据。
 - 不得为了测试 migration 临时改写、降级或删除用户数据库；需要历史状态时新增最小 fixture。
