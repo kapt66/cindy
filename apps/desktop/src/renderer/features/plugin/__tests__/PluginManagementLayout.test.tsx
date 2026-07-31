@@ -1,5 +1,5 @@
 /**
- * Regression coverage for the shared Meka Plugin, Plugin, and Skill shell,
+ * Regression coverage for the shared Meka and upstream Plugin management shell,
  * search accessibility, and focus order.
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  * @vitest-environment jsdom
@@ -15,6 +15,7 @@ vi.mock('react-i18next', () => ({
       ({
         'settings.ghosts.meka.title': 'Meka Plugins',
         'settings.ghosts.title': 'Plugins',
+        'sidebar.tabs.projects': 'Projects',
         'settings.ghosts.page.search': 'Search plugins',
         'settings.ghosts.page.clearSearch': 'Clear Plugin Search',
         'skillhub.home.title': 'Skills',
@@ -57,9 +58,9 @@ function MainViewNavigation() {
 }
 
 describe('PluginManagementLayout', () => {
-  it('puts Meka Plugins before the local Plugin and Skill peer tabs', async () => {
+  it('keeps Meka Plugin and Project as peer tabs under the Meka navigation', async () => {
     render(
-      <MemoryRouter initialEntries={['/meka-plugins']}>
+      <MemoryRouter initialEntries={['/cc-agent/meka/plugins']}>
         <PluginManagementLayout activeTab="meka-plugins">
           <CurrentPath />
         </PluginManagementLayout>
@@ -67,24 +68,33 @@ describe('PluginManagementLayout', () => {
     );
 
     expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
-      'Meka Plugins',
+      'Plugins',
+      'Projects',
+    ]);
+    expect(screen.getByRole('tab', { name: 'Plugins' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('tab', { name: 'Projects' }).getAttribute('aria-selected')).toBe(
+      'false',
+    );
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Projects' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('current-path').textContent).toBe('/cc-agent/meka');
+    });
+  });
+
+  it('keeps upstream Plugin and Skill as peer tabs under the Plugin navigation', async () => {
+    render(
+      <MemoryRouter initialEntries={['/plugins']}>
+        <PluginManagementLayout activeTab="plugins">
+          <CurrentPath />
+        </PluginManagementLayout>
+      </MemoryRouter>,
+    );
+
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
       'Plugins',
       'Skills',
     ]);
-    expect(screen.getByRole('tab', { name: 'Meka Plugins' }).getAttribute('aria-selected')).toBe(
-      'true',
-    );
-    expect(screen.getByRole('tab', { name: 'Plugins' }).getAttribute('aria-selected')).toBe(
-      'false',
-    );
-    expect(screen.getByRole('tab', { name: 'Skills' }).getAttribute('aria-selected')).toBe('false');
-    expect(screen.queryByRole('tab', { name: 'SkillHub' })).toBeNull();
-
-    fireEvent.click(screen.getByRole('tab', { name: 'Plugins' }));
-    await waitFor(() => {
-      expect(screen.getByTestId('current-path').textContent).toBe('/plugins');
-    });
-
     fireEvent.click(screen.getByRole('tab', { name: 'Skills' }));
     await waitFor(() => {
       expect(screen.getByTestId('current-path').textContent).toBe('/skillhub/local');
@@ -101,7 +111,17 @@ describe('PluginManagementLayout', () => {
     expect(screen.getByTestId('active-main-view').textContent).toBe('plugins');
   });
 
-  it('opens the first Meka Plugin category from the main Plugin navigation', async () => {
+  it('keeps the conversation sidebar view active for the Meka Plugin page', () => {
+    render(
+      <MemoryRouter initialEntries={['/cc-agent/meka/plugins']}>
+        <ActiveMainView />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId('active-main-view').textContent).toBe('cc-agent');
+  });
+
+  it('opens the upstream Plugin category from the main Plugin navigation', async () => {
     render(
       <MemoryRouter initialEntries={['/issues']}>
         <MainViewNavigation />
@@ -110,7 +130,7 @@ describe('PluginManagementLayout', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Open plugin management' }));
     await waitFor(() => {
-      expect(screen.getByTestId('current-path').textContent).toBe('/meka-plugins');
+      expect(screen.getByTestId('current-path').textContent).toBe('/plugins');
     });
   });
 

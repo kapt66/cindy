@@ -16,7 +16,7 @@ import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router-dom';
 
 import {
-  PLUGIN_MANAGEMENT_FRAME_CLASS,
+  PluginManagementLayout,
   PluginManagementPage,
 } from '@/features/plugin/PluginManagementLayout';
 import { WINDOW_DRAG_STYLE, WINDOW_NO_DRAG_STYLE } from '@/components/layout/windowDrag';
@@ -956,38 +956,42 @@ export function MekaProjectRoleEditorRoute() {
 
   if (!selectedProject) {
     return (
-      <main className="flex h-full min-h-0 w-full flex-col bg-[var(--surface)] text-[var(--text-primary)]">
-        <header className="h-16 shrink-0 px-3" style={WINDOW_DRAG_STYLE}>
-          <div
-            className={cn(
-              PLUGIN_MANAGEMENT_FRAME_CLASS,
-              'flex h-full items-center justify-end gap-4',
-            )}
+      <PluginManagementLayout
+        activeTab="meka-projects"
+        headerActions={
+          <button
+            type="button"
+            className={buttonClass}
+            onClick={createProject}
+            disabled={busy}
           >
-            <button
-              type="button"
-              className={buttonClass}
-              style={WINDOW_NO_DRAG_STYLE}
-              onClick={createProject}
-              disabled={busy}
-            >
-              <Plus size={15} aria-hidden="true" />
-              {t('meka.newProject')}
-            </button>
-          </div>
-        </header>
-
-        <div className="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable_both-edges]">
+            <Plus size={15} aria-hidden="true" />
+            {t('meka.newProject')}
+          </button>
+        }
+      >
+        <main className="min-h-0 flex-1 overflow-y-auto bg-[var(--surface)] text-[var(--text-primary)] [scrollbar-gutter:stable_both-edges]">
           <PluginManagementPage>
+            <header className="plugin-motion-page-header pb-2">
+              <div className="min-w-0">
+                <h1 className="text-28 font-medium leading-tight text-[var(--text-primary)]">
+                  {t('meka.title')}
+                </h1>
+                <p className="mt-2 max-w-2xl text-14 leading-6 text-[var(--text-secondary)]">
+                  {t('meka.subtitle')}
+                </p>
+              </div>
+            </header>
+
             {!projectsLoaded ? (
-              <div className="flex min-h-72 items-center justify-center text-13 text-[var(--text-secondary)]">
+              <div className="plugin-motion-page-section mt-6 flex min-h-72 items-center justify-center text-13 text-[var(--text-secondary)]">
                 {t('meka.loading')}
               </div>
             ) : projects.length > 0 ? (
-              <section className="min-w-0">
+              <section className="plugin-motion-page-section mt-6 min-w-0">
                 <div className="mb-5 flex items-baseline gap-2">
                   <h2 className="text-20 font-medium text-[var(--text-primary)]">
-                    {t('meka.projectNavigation')}
+                    {t('sidebar.tabs.projects')}
                   </h2>
                   <span className="text-13 tabular-nums text-[var(--text-tertiary)]">
                     {projects.length}
@@ -1040,7 +1044,7 @@ export function MekaProjectRoleEditorRoute() {
                 </div>
               </section>
             ) : (
-              <div className="mt-7 flex min-h-72 flex-col items-center justify-center rounded-xl border-[0.5px] border-[var(--border-default)] p-8 text-center">
+              <div className="plugin-motion-page-section mt-7 flex min-h-72 flex-col items-center justify-center rounded-xl border-[0.5px] border-[var(--border-default)] p-8 text-center">
                 <BriefcaseBusiness
                   size={30}
                   className="text-[var(--text-tertiary)]"
@@ -1056,8 +1060,8 @@ export function MekaProjectRoleEditorRoute() {
               </div>
             )}
           </PluginManagementPage>
-        </div>
-      </main>
+        </main>
+      </PluginManagementLayout>
     );
   }
 

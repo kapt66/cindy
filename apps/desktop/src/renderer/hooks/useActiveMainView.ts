@@ -30,8 +30,8 @@ const VIEWS: ViewDef[] = [
   { key: 'issues', to: '/issues', prefixes: ['/issues'] },
   {
     key: 'plugins',
-    to: '/meka-plugins',
-    prefixes: ['/meka-plugins', '/plugins', '/skillhub'],
+    to: '/plugins',
+    prefixes: ['/plugins', '/skillhub'],
   },
 ];
 

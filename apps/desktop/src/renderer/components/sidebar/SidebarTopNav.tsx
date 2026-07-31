@@ -1,7 +1,7 @@
 /**
  * SidebarTopNav —— 侧栏顶部常驻动作/导航列表(取代原 HorizontalTabbar)。
  * ---------------------------------------------------------------------------
- * 一条同级、等权的列表行,按顺序:新建 / 自动任务 / Plugins / 搜索 / 远程机器。
+ * 一条同级、等权的列表行,按顺序:新建 / 自动任务 / Meka / Plugins / 搜索 / 远程机器。
  *   - 新建 / 自动任务:项目(cc-agent)视图的动作 —— 在任意视图点击都跳回项目视图并执行。
  *   - Plugins:主视图切换(navigateToView),命中当前视图时高亮。
  *   - 搜索(SidebarInlineSearch):静息态与其余行同款「🔍 搜索」;hover / 聚焦
@@ -44,7 +44,7 @@ export function SidebarTopNav(): React.ReactElement {
   const navigate = useNavigate();
   const { activeKey, navigateToView } = useActiveMainView();
   const onScheduleMatch = useMatch('/cc-agent/scheduled');
-  const onMekaMatch = useMatch('/cc-agent/meka');
+  const onMekaMatch = useMatch('/cc-agent/meka/*');
   const { search, allKnownProjects, openSignal } = useConversationSearchContext();
 
   // 通用「新建」入口:只 navigate 到草稿页,不清空 newMakerDraft。
@@ -94,9 +94,9 @@ export function SidebarTopNav(): React.ReactElement {
         <span className="leading-none">{t('ccAgent.layout.automations')}</span>
       </button>
 
-      {/* 3. Plugins —— Plugin / Skill 在页面顶部 Tab 内切换 */}
+      {/* 3. Meka —— Meka Plugin / Project 在页面顶部 Tab 内切换 */}
       <button
-        onClick={() => navigate('/cc-agent/meka')}
+        onClick={() => navigate('/cc-agent/meka/plugins')}
         className={cn(ROW_CLASS, onMekaMatch && ROW_ACTIVE_CLASS)}
         aria-label={t('meka.manage')}
         aria-current={onMekaMatch ? 'page' : undefined}
@@ -114,6 +114,7 @@ export function SidebarTopNav(): React.ReactElement {
         <span className="leading-none">{t('meka.manage')}</span>
       </button>
 
+      {/* 4. Plugins —— 上游 Plugin / Skill 在页面顶部 Tab 内切换 */}
       <button
         onClick={() => navigateToView('plugins')}
         className={cn(ROW_CLASS, activeKey === 'plugins' && ROW_ACTIVE_CLASS)}
@@ -132,7 +133,7 @@ export function SidebarTopNav(): React.ReactElement {
         <span className="leading-none">{t('sidebar.tabs.plugins')}</span>
       </button>
 
-      {/* 4. 搜索 —— 静息态与上面三行同款;hover / 聚焦就地展开成搜索框 */}
+      {/* 5. 搜索 —— 静息态与上面导航行同款;hover / 聚焦就地展开成搜索框 */}
       <SidebarInlineSearch
         search={search}
         allKnownProjects={allKnownProjects}
@@ -140,7 +141,7 @@ export function SidebarTopNav(): React.ReactElement {
         onSearchActive={ensureConversationView}
       />
 
-      {/* 5. 远程机器 —— 同款行样式的文字下拉(过滤下方会话列表的机器范围);
+      {/* 6. 远程机器 —— 同款行样式的文字下拉(过滤下方会话列表的机器范围);
           无相关远程机器时组件自身 return null,不占行。 */}
       <MachineSwitcherMenu />
     </div>

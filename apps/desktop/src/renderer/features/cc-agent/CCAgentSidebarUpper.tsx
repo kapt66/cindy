@@ -1604,7 +1604,7 @@ function ExpandedView({
 
   const handleManageMeka = useCallback(() => {
     handleClearSelection();
-    navigate('/cc-agent/meka');
+    navigate('/cc-agent/meka/plugins');
   }, [handleClearSelection, navigate]);
 
   const handleCreateRegularMeka = useCallback(
@@ -2869,7 +2869,7 @@ function CollapsedView({
     navigate('/cc-agent/scheduled');
   }, [navigate]);
   const onScheduleMatch = useMatch('/cc-agent/scheduled');
-  const onMekaMatch = useMatch('/cc-agent/meka');
+  const onMekaMatch = useMatch('/cc-agent/meka/*');
   // 主视图切换(Plugin / Skill 管理)——与展开态 SidebarTopNav 的管理入口同源:
   // 命中 Plugin 或 Skill 视图时高亮。折叠 rail 之前漏了这颗按钮,现保持两态一致。
   const { activeKey, navigateToView } = useActiveMainView();
@@ -2931,7 +2931,7 @@ function CollapsedView({
         aria-current={onMekaMatch ? 'page' : undefined}
         variant="rail"
         active={Boolean(onMekaMatch)}
-        onClick={() => navigate('/cc-agent/meka')}
+        onClick={() => navigate('/cc-agent/meka/plugins')}
       />
       <SidebarIconButton
         icon={Plug}

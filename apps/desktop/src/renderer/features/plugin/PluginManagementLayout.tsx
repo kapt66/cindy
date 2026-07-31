@@ -1,5 +1,5 @@
 /**
- * Shared list-page shell for the Meka Plugin, local Plugin, and Skill product surfaces.
+ * Shared list-page shell for the Meka and upstream Plugin management surfaces.
  *
  * Inputs: active tab, shared search state, optional labels with tab-derived defaults, and actions.
  * Outputs: one width, focus-order-aligned adaptive toolbar, scrolling frame, and transitions.
@@ -15,7 +15,7 @@ import { WINDOW_DRAG_STYLE, WINDOW_NO_DRAG_STYLE } from '@/components/layout/win
 import { cn } from '@/lib/utils';
 import './plugin-motion.css';
 
-export type PluginManagementTab = 'meka-plugins' | 'plugins' | 'skills';
+export type PluginManagementTab = 'meka-plugins' | 'meka-projects' | 'plugins' | 'skills';
 
 interface PluginManagementLayoutProps {
   activeTab: PluginManagementTab;
@@ -42,8 +42,8 @@ interface PluginManagementPageProps {
 }
 
 /**
- * Meka Plugin / Plugin / Skill 是同一个管理页面的三个一级 Tab。宽度和
- * 水平留白只能在这个 Frame 中定义,避免三个页面各自调整后再次漂移。
+ * Meka 的 Plugin / Project 与上游的 Plugin / Skill 共用同一个管理页骨架。
+ * 宽度和水平留白只能在这个 Frame 中定义,避免各页面自行调整后再次漂移。
  */
 export const PLUGIN_MANAGEMENT_FRAME_CLASS = 'mx-auto w-full max-w-[920px] px-8 lg:px-12';
 
@@ -96,6 +96,7 @@ export function PluginManagementHeader({
   const frameRef = useRef<HTMLDivElement | null>(null);
   const [stacked, setStacked] = useState(false);
   const searchable = query !== undefined && onQueryChange !== undefined;
+  const isMekaTab = activeTab === 'meka-plugins' || activeTab === 'meka-projects';
   const searchInputId = `plugin-management-${activeTab}-search`;
   const resolvedSearchPlaceholder =
     searchPlaceholder ??
@@ -118,6 +119,28 @@ export function PluginManagementHeader({
     return () => observer.disconnect();
   }, []);
 
+  const tabItems: ReadonlyArray<{
+    id: PluginManagementTab;
+    label: string;
+    to: string;
+  }> = isMekaTab
+    ? [
+        {
+          id: 'meka-plugins',
+          label: t('settings.ghosts.title'),
+          to: '/cc-agent/meka/plugins',
+        },
+        {
+          id: 'meka-projects',
+          label: t('sidebar.tabs.projects'),
+          to: '/cc-agent/meka',
+        },
+      ]
+    : [
+        { id: 'plugins', label: t('settings.ghosts.title'), to: '/plugins' },
+        { id: 'skills', label: t('skillhub.home.title'), to: '/skillhub/local' },
+      ];
+
   const tabs = (
     <div
       key="plugin-management-tabs"
@@ -131,21 +154,14 @@ export function PluginManagementHeader({
         boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--surface-elevated) 24%, transparent)',
       }}
     >
-      <TabButton
-        active={activeTab === 'meka-plugins'}
-        label={t('settings.ghosts.meka.title')}
-        onClick={() => navigate('/meka-plugins')}
-      />
-      <TabButton
-        active={activeTab === 'plugins'}
-        label={t('settings.ghosts.title')}
-        onClick={() => navigate('/plugins')}
-      />
-      <TabButton
-        active={activeTab === 'skills'}
-        label={t('skillhub.home.title')}
-        onClick={() => navigate('/skillhub/local')}
-      />
+      {tabItems.map((tab) => (
+        <TabButton
+          key={tab.id}
+          active={activeTab === tab.id}
+          label={tab.label}
+          onClick={() => navigate(tab.to)}
+        />
+      ))}
     </div>
   );
 
@@ -231,7 +247,7 @@ export function PluginManagementHeader({
   );
 }
 
-/** Shared breathing room and page-enter hook for the three top-level catalogs. */
+/** Shared breathing room and page-enter hook for the top-level catalogs. */
 export function PluginManagementPage({ children, className }: PluginManagementPageProps) {
   return (
     <div className={cn(PLUGIN_MANAGEMENT_FRAME_CLASS, 'flex flex-col pb-16 pt-8', className)}>
