@@ -5,8 +5,8 @@
 > 之前
 
 本文细化根 [`../../AGENTS.md`](../../AGENTS.md) 的「通用工作流程」「Git 与交付」两节，补上
-worktree 会话契约、直推 `main` 的额外门禁与 review 严重度口径，不重复根文件已有的通用
-流程。
+worktree 会话契约、提交组织、直推 `main` 的额外门禁与 review 严重度口径，不重复根文件
+已有的通用流程。
 
 ## 1. Dogfooding：在本仓 worktree 会话里工作
 
@@ -36,6 +36,14 @@ worktree 会话契约、直推 `main` 的额外门禁与 review 严重度口径�
 
 - 本仓默认 **PR-first**：代码和文档通常从非默认分支通过 PR 进入 `main`；直推 `main` 只由
   具备 bypass 权限的维护者明确选择，并执行本节的额外门禁。
+- **提交必须按功能组织**：在首次 `git add` 或创建 commit 前，先盘点工作区并写出 commit
+  plan；按用户可感知能力、独立行为或明确契约边界拆成可单独 review 的提交，不得仅按文件
+  类型机械拆成“代码／测试／文档”，也不得因为改动来自同一工作树或准备一次性交付，就把
+  多个功能压进一个提交。一个功能对应的实现、测试和事实文档应进入同一个提交；确有共享
+  基础设施时，可先形成不夹带上层产品行为的独立基础提交。每个提交都应保持可构建、可验证，
+  提交说明准确描述该提交本身。开始暂存后若发现新的功能边界，必须重新调整 staged 内容，
+  不能用一个笼统 commit 收尾。用户明确要求 squash、fixup 或单提交交付时才可例外，并在
+  交付说明中写明。
 - PR 的 Title／Description 以 [`../../.github/PULL_REQUEST_TEMPLATE.md`](../../.github/PULL_REQUEST_TEMPLATE.md)
   为准（这次改了什么／怎么验证的／风险）；涉及 SQLite migration、system prompt、协议、
   原生层或跨平台差异时必须在「风险」里说明；涉及 UI 时必须在「UI 变化」注明引用的
