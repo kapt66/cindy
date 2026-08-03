@@ -65,6 +65,9 @@
   提的，提交者身份不构成例外。
 - 新增或调整产品功能、判断能力应进入 Core / Skill / 插件、设计人机交互或多端体验
   前，必须先读 `docs/product-rules/core-product-principles.md`。
+- 新增或修改 Meka 技能入口、标准技能包兼容、MCPRouter 技能分发、安装来源记录或
+  Meka 项目角色与市场技能的关系前，必须先读
+  `docs/product-rules/meka-skills.md`。
 - 新增或修改按区域（`cn` / `global`）分支的逻辑、构建身份与命名、端点选择、区域相关
   UI 标注，或涉及两个版本关系的对外文案前，必须先读
   `docs/product-rules/region-and-editions.md`：**无限定词身份归 Global，未显式指定

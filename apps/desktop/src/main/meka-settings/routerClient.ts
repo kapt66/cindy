@@ -1,6 +1,7 @@
 import { isIP } from 'node:net';
 
 import type { MekaPluginVisibility } from '../../shared/mekaDevPlugin.js';
+import type { MekaSkillVisibility } from '../../shared/mekaSkillMarket.js';
 import { PRODUCTION_MEKA_MCPROUTER_URL } from './config.js';
 
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -40,6 +41,38 @@ export interface ManagedMekaPlugin {
   };
 }
 
+export interface ManagedMekaSkill {
+  id: string;
+  slug: string;
+  name: string;
+  description: string;
+  visibility: MekaSkillVisibility;
+  sharedUsernames: string[];
+  currentRelease: {
+    id: string;
+    version: string;
+    sha256: string;
+    sizeBytes: number;
+    uncompressedSizeBytes: number;
+    publishDescription?: string;
+    publishedAt: string;
+  };
+}
+
+interface ProxyMekaSkillUpload {
+  mode: 'proxy';
+  maxBytes: number;
+}
+
+interface DirectMekaSkillUpload {
+  mode: 'direct';
+  maxBytes: number;
+  uploadId: string;
+  url: string;
+  expiresAt: string;
+  headers: Record<string, string>;
+}
+
 function normalizeBaseUrl(input: string): string {
   const url = new URL(input.trim());
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
@@ -74,6 +107,24 @@ function normalizeMcpEndpointUrl(input: string): string {
   return url.toString();
 }
 
+async function fetchWithTimeout(
+  deps: RouterClientDeps,
+  input: string,
+  init: RequestInit = {},
+  timeoutMs = REQUEST_TIMEOUT_MS,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await (deps.fetchImpl ?? fetch)(input, {
+      ...init,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function request(
   deps: RouterClientDeps,
   baseUrl: string,
@@ -81,16 +132,7 @@ async function request(
   init: RequestInit = {},
   timeoutMs = REQUEST_TIMEOUT_MS,
 ): Promise<Response> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await (deps.fetchImpl ?? fetch)(`${normalizeBaseUrl(baseUrl)}${pathname}`, {
-      ...init,
-      signal: controller.signal,
-    });
-  } finally {
-    clearTimeout(timeout);
-  }
+  return fetchWithTimeout(deps, `${normalizeBaseUrl(baseUrl)}${pathname}`, init, timeoutMs);
 }
 
 async function readError(response: Response, operation: string): Promise<MekaRouterRequestError> {
@@ -209,6 +251,133 @@ export function createMekaRouterClient(deps: RouterClientDeps = {}) {
       );
       if (!response.ok) throw await readError(response, 'update Meka Plugin access');
       return (await response.json()) as ManagedMekaPlugin;
+    },
+
+    async listOwnedMekaSkills(baseUrl: string, sessionToken: string): Promise<ManagedMekaSkill[]> {
+      const response = await request(deps, baseUrl, '/api/meka-skills', {
+        headers: sessionHeaders(sessionToken),
+      });
+      if (!response.ok) throw await readError(response, 'list owned Meka Skills');
+      const body = (await response.json()) as unknown;
+      if (!Array.isArray(body)) throw new Error('MCPRouter owned Skill response is invalid');
+      return body as ManagedMekaSkill[];
+    },
+
+    async uploadMekaSkill(
+      baseUrl: string,
+      sessionToken: string,
+      bytes: Uint8Array,
+      skillResourceId: string | null,
+      publishDescription: string,
+    ): Promise<ManagedMekaSkill> {
+      const preparationResponse = await request(deps, baseUrl, '/api/meka-skills/uploads', {
+        method: 'POST',
+        headers: sessionHeaders(sessionToken),
+        body: JSON.stringify({
+          sizeBytes: bytes.byteLength,
+          ...(skillResourceId ? { skillId: skillResourceId } : {}),
+        }),
+      });
+      if (!preparationResponse.ok) {
+        throw await readError(preparationResponse, 'prepare Meka Skill upload');
+      }
+      const preparation = (await preparationResponse.json()) as
+        ProxyMekaSkillUpload | DirectMekaSkillUpload;
+      if (bytes.byteLength > preparation.maxBytes) {
+        throw new Error(`Meka Skill package exceeds ${preparation.maxBytes} bytes`);
+      }
+      const body = new ArrayBuffer(bytes.byteLength);
+      new Uint8Array(body).set(bytes);
+      if (preparation.mode === 'proxy') {
+        const publishQuery = publishDescription
+          ? `?publishDescription=${encodeURIComponent(publishDescription)}`
+          : '';
+        const response = await request(
+          deps,
+          baseUrl,
+          skillResourceId
+            ? `/api/meka-skills/${encodeURIComponent(skillResourceId)}/releases${publishQuery}`
+            : `/api/meka-skills/upload${publishQuery}`,
+          {
+            method: 'POST',
+            headers: {
+              cookie: `session=${sessionToken}`,
+              accept: 'application/json',
+              'content-type': 'application/vnd.cindy.skill+zip',
+            },
+            body,
+          },
+          UPLOAD_REQUEST_TIMEOUT_MS,
+        );
+        if (!response.ok) throw await readError(response, 'upload Meka Skill');
+        return (await response.json()) as ManagedMekaSkill;
+      }
+      const uploaded = await fetchWithTimeout(
+        deps,
+        preparation.url,
+        {
+          method: 'PUT',
+          headers: preparation.headers,
+          body,
+          credentials: 'omit',
+        },
+        UPLOAD_REQUEST_TIMEOUT_MS,
+      );
+      if (!uploaded.ok) throw await readError(uploaded, 'upload Meka Skill to RustFS');
+      const finalized = await request(
+        deps,
+        baseUrl,
+        `/api/meka-skills/uploads/${encodeURIComponent(preparation.uploadId)}/finalize`,
+        {
+          method: 'POST',
+          headers: sessionHeaders(sessionToken),
+          body: JSON.stringify({
+            ...(skillResourceId ? { skillId: skillResourceId } : {}),
+            ...(publishDescription ? { publishDescription } : {}),
+          }),
+        },
+        UPLOAD_REQUEST_TIMEOUT_MS,
+      );
+      if (!finalized.ok) throw await readError(finalized, 'finalize Meka Skill upload');
+      return (await finalized.json()) as ManagedMekaSkill;
+    },
+
+    async setMekaSkillAccess(
+      baseUrl: string,
+      sessionToken: string,
+      skillResourceId: string,
+      visibility: MekaSkillVisibility,
+      sharedUsernames: string[],
+    ): Promise<ManagedMekaSkill> {
+      const response = await request(
+        deps,
+        baseUrl,
+        `/api/meka-skills/${encodeURIComponent(skillResourceId)}/access`,
+        {
+          method: 'PATCH',
+          headers: sessionHeaders(sessionToken),
+          body: JSON.stringify({ visibility, sharedUsernames }),
+        },
+      );
+      if (!response.ok) throw await readError(response, 'update Meka Skill access');
+      return (await response.json()) as ManagedMekaSkill;
+    },
+
+    async deleteMekaSkill(
+      baseUrl: string,
+      sessionToken: string,
+      skillResourceId: string,
+    ): Promise<void> {
+      const response = await request(
+        deps,
+        baseUrl,
+        `/api/meka-skills/${encodeURIComponent(skillResourceId)}`,
+        {
+          method: 'DELETE',
+          headers: sessionHeaders(sessionToken),
+        },
+      );
+      if (!response.ok) throw await readError(response, 'delete Meka Skill');
     },
 
     async listTools(baseUrl: string, clientKey: string) {

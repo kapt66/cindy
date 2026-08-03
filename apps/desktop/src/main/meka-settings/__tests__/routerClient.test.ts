@@ -212,6 +212,204 @@ describe('MekaRouterClient', () => {
     );
   });
 
+  it('keeps Meka Skill owner management on its independent routes and media type', async () => {
+    const managed = {
+      id: 'skill-1',
+      slug: 'release-notes',
+      name: 'release-notes',
+      description: 'Prepare release notes',
+      visibility: 'shared' as const,
+      sharedUsernames: ['alice'],
+      currentRelease: {
+        id: 'release-2',
+        version: '2.0.0',
+        sha256: 'b'.repeat(64),
+        sizeBytes: 4,
+        uncompressedSizeBytes: 8,
+        publishedAt: '2026-07-29T00:00:00.000Z',
+      },
+    };
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json([managed]))
+      .mockResolvedValueOnce(Response.json({ mode: 'proxy', maxBytes: 10 * 1024 * 1024 }))
+      .mockResolvedValueOnce(Response.json(managed))
+      .mockResolvedValueOnce(Response.json(managed)) as typeof fetch;
+    const client = createMekaRouterClient({ fetchImpl });
+
+    await expect(
+      client.listOwnedMekaSkills('https://router.example', 'session-token'),
+    ).resolves.toEqual([managed]);
+    await client.uploadMekaSkill(
+      'https://router.example',
+      'session-token',
+      new Uint8Array([1]),
+      'skill-1',
+      'Adds Jira formatting',
+    );
+    await client.setMekaSkillAccess(
+      'https://router.example',
+      'session-token',
+      'skill-1',
+      'shared',
+      ['alice'],
+    );
+
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      2,
+      'https://router.example/api/meka-skills/uploads',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ sizeBytes: 1, skillId: 'skill-1' }),
+      }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      3,
+      'https://router.example/api/meka-skills/skill-1/releases?publishDescription=Adds%20Jira%20formatting',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          'content-type': 'application/vnd.cindy.skill+zip',
+        }),
+      }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      4,
+      'https://router.example/api/meka-skills/skill-1/access',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ visibility: 'shared', sharedUsernames: ['alice'] }),
+      }),
+    );
+  });
+
+  it('uploads Meka Skill bytes directly to a RustFS grant before finalizing', async () => {
+    const managed = {
+      id: 'skill-1',
+      slug: 'release-notes',
+      name: 'release-notes',
+      description: 'Prepare release notes',
+      visibility: 'private' as const,
+      sharedUsernames: [],
+      currentRelease: {
+        id: 'release-1',
+        version: '1.0.0',
+        sha256: 'b'.repeat(64),
+        sizeBytes: 4,
+        uncompressedSizeBytes: 8,
+        publishedAt: '2026-07-29T00:00:00.000Z',
+      },
+    };
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        Response.json({
+          mode: 'direct',
+          maxBytes: 10 * 1024 * 1024,
+          uploadId: 'upload-1',
+          url: 'https://s3.example/mcp-router-skills/staging/upload.zip?signed=1',
+          expiresAt: '2030-01-01T00:00:00.000Z',
+          headers: {
+            'Content-Type': 'application/vnd.cindy.skill+zip',
+            'x-amz-meta-expected-size': '4',
+          },
+        }),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 200 }))
+      .mockResolvedValueOnce(Response.json(managed)) as typeof fetch;
+    const client = createMekaRouterClient({ fetchImpl });
+
+    await expect(
+      client.uploadMekaSkill(
+        'https://router.example',
+        'session-token',
+        new Uint8Array([1, 2, 3, 4]),
+        null,
+        'First release',
+      ),
+    ).resolves.toEqual(managed);
+
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      2,
+      'https://s3.example/mcp-router-skills/staging/upload.zip?signed=1',
+      expect.objectContaining({
+        method: 'PUT',
+        credentials: 'omit',
+        headers: expect.objectContaining({
+          'Content-Type': 'application/vnd.cindy.skill+zip',
+        }),
+        body: expect.any(ArrayBuffer),
+      }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      3,
+      'https://router.example/api/meka-skills/uploads/upload-1/finalize',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ publishDescription: 'First release' }),
+      }),
+    );
+  });
+
+  it('aborts a stalled direct Meka Skill upload at the upload timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(
+          Response.json({
+            mode: 'direct',
+            maxBytes: 10 * 1024 * 1024,
+            uploadId: 'upload-1',
+            url: 'https://s3.example/upload.zip?signed=1',
+            expiresAt: '2030-01-01T00:00:00.000Z',
+            headers: { 'Content-Type': 'application/vnd.cindy.skill+zip' },
+          }),
+        )
+        .mockImplementationOnce(
+          (_input: string, init: RequestInit) =>
+            new Promise<Response>((_resolve, reject) => {
+              init.signal?.addEventListener('abort', () => {
+                reject(new DOMException('The operation was aborted', 'AbortError'));
+              });
+            }),
+        ) as typeof fetch;
+      const client = createMekaRouterClient({ fetchImpl });
+
+      const upload = client.uploadMekaSkill(
+        'https://router.example',
+        'session-token',
+        new Uint8Array([1]),
+        null,
+        '',
+      );
+      const rejection = expect(upload).rejects.toMatchObject({ name: 'AbortError' });
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      await rejection;
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('deletes an owned Meka Skill through the session-authenticated management route', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 204 })) as typeof fetch;
+    const client = createMekaRouterClient({ fetchImpl });
+
+    await expect(
+      client.deleteMekaSkill('https://router.example', 'session-token', 'skill/resource'),
+    ).resolves.toBeUndefined();
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://router.example/api/meka-skills/skill%2Fresource',
+      expect.objectContaining({
+        method: 'DELETE',
+        headers: expect.objectContaining({ cookie: 'session=session-token' }),
+      }),
+    );
+  });
+
   it('classifies an expired owner-management session as permission denied', async () => {
     const fetchImpl = vi.fn(async () =>
       Response.json({ error: 'Unauthorized' }, { status: 401 }),

@@ -1854,6 +1854,55 @@ describe('skillhub/installService', () => {
     expect(vi.mocked(registryService.addInstall)).not.toHaveBeenCalled();
   });
 
+  it('records Meka distribution provenance without requiring Cindy SkillHub auth', async () => {
+    const zipBuf = await makeZip({
+      'SKILL.md': '---\nname: meka-skill\ndescription: Test\nversion: 1.0.0\n---\n',
+    });
+    const { net } = await import('electron');
+    const { getCurrentUserId } = await import('../../authManager');
+    const { registryService } = await import('../registry');
+    const { install } = await import('../installService');
+    const finalDir = path.join(TEST_ROOT, 'skills', 'meka-skill');
+
+    vi.mocked(getCurrentUserId).mockReturnValue(null);
+    vi.mocked(net.fetch).mockResolvedValue(mockDownload(zipBuf));
+    vi.mocked(registryService.addInstall).mockResolvedValue(undefined);
+
+    const result = await install(
+      { name: 'meka-skill', installPath: finalDir, version: '1.0.0' },
+      () => undefined,
+      {
+        channel: 'meka',
+        authorId: 'meka:skill-resource',
+        isAvailable: async () => true,
+        getDownloadInfo: async () => ({
+          url: 'https://router.example/meka-skill.zip',
+          expiresAt: '2030-01-01T00:00:00.000Z',
+          fileHash: sha256(zipBuf),
+          fileSize: zipBuf.byteLength,
+          zipSha256: sha256(zipBuf),
+          version: '1.0.0',
+          resourceId: 'skill-resource',
+          releaseId: 'release-1',
+        }),
+      },
+    );
+
+    expect(result.success).toBe(true);
+    expect(registryService.addInstall).toHaveBeenCalledWith(
+      'meka-skill',
+      finalDir,
+      expect.objectContaining({
+        authorId: 'meka:skill-resource',
+        distribution: {
+          channel: 'meka',
+          resourceId: 'skill-resource',
+          releaseId: 'release-1',
+        },
+      }),
+    );
+  });
+
   it('rejects uninstall while a learn apply holds the shared lock', async () => {
     const dir = path.join(TEST_ROOT, '.agents', 'skills', 'locked-skill');
     fs.mkdirSync(dir, { recursive: true });

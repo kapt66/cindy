@@ -96,12 +96,23 @@ export type InstallProgressEvent =
 
 type ProgressCb = (e: InstallProgressEvent) => void;
 
-interface DownloadInfoResponse {
+export interface DownloadInfoResponse {
   url: string;
   expiresAt: string;
   fileHash: string;
   fileSize: number;
   zipSha256: string;
+}
+
+export interface SkillInstallSource {
+  /** Remote channel that owns the resulting local provenance. */
+  channel: 'meka';
+  /** Re-evaluated during the operation so account/router changes cancel safely. */
+  isAvailable: () => boolean | Promise<boolean>;
+  getDownloadInfo: (
+    params: Pick<InstallParams, 'name' | 'version'>,
+  ) => Promise<DownloadInfoResponse & { version: string; resourceId: string; releaseId: string }>;
+  authorId?: string;
 }
 
 interface FinalSwitchRollbackState {
@@ -462,9 +473,10 @@ function safeJoin(dest: string, relPath: string): string | null {
 export async function install(
   p: InstallParams,
   onProgress: ProgressCb,
+  source?: SkillInstallSource,
 ): Promise<InstallResult> {
   const userId = getCurrentUserId();
-  if (!userId) {
+  if (!source && !userId) {
     onProgress({ phase: 'failed', name: p.name, errorCode: 'AUTH_REQUIRED', message: '未登录' });
     return { success: false, errorCode: 'AUTH_REQUIRED', message: '未登录' };
   }
@@ -494,10 +506,18 @@ export async function install(
   const signal = ac.signal;
   inflight.set(p.name, ac);
 
+  let sourceAvailable = true;
+  const refreshSourceAvailability = async (): Promise<void> => {
+    try {
+      sourceAvailable = source ? await source.isAvailable() : true;
+    } catch {
+      sourceAvailable = false;
+    }
+  };
   const checkAbort = (): boolean => {
     if (
       signal.aborted ||
-      !getAppCapabilities().canUseSkillHubCloud ||
+      (source ? !sourceAvailable : !getAppCapabilities().canUseSkillHubCloud) ||
       getCurrentDataOwnerId() !== installOwnerId
     ) {
       ac.abort();
@@ -508,6 +528,7 @@ export async function install(
   };
 
   try {
+    await refreshSourceAvailability();
     // 链接拓扑必须在持锁后读取，避免 install / learn final-switch 之间的 TOCTOU。
     const finalDir = await resolvePhysicalInstallDir(logicalFinalDir, p.name);
     const stagingDir = path.join(path.dirname(finalDir), `.xdt-installing-${p.name}-${rand()}`);
@@ -518,18 +539,33 @@ export async function install(
 
     let info: DownloadInfoResponse;
     let downloadVersion: string = p.version ?? '';
+    let distribution: StoredInstall['distribution'];
     try {
-      // 如果没传版本号，先查 hub 拿最新版本
-      if (!downloadVersion) {
-        const detail = await skillhubApiFetch<{ version: string }>(
-          `/api/skills-hub/skills/${encodeURIComponent(p.name)}`,
+      if (source) {
+        const resolved = await source.getDownloadInfo({
+          name: p.name,
+          ...(downloadVersion ? { version: downloadVersion } : {}),
+        });
+        info = resolved;
+        downloadVersion = resolved.version;
+        distribution = {
+          channel: source.channel,
+          resourceId: resolved.resourceId,
+          releaseId: resolved.releaseId,
+        };
+      } else {
+        // 如果没传版本号，先查 hub 拿最新版本
+        if (!downloadVersion) {
+          const detail = await skillhubApiFetch<{ version: string }>(
+            `/api/skills-hub/skills/${encodeURIComponent(p.name)}`,
+          );
+          downloadVersion = detail.version;
+        }
+        const versionQs = downloadVersion ? `?version=${encodeURIComponent(downloadVersion)}` : '';
+        info = await skillhubApiFetch<DownloadInfoResponse>(
+          `/api/skills-hub/skills/${encodeURIComponent(p.name)}/download${versionQs}`,
         );
-        downloadVersion = detail.version;
       }
-      const versionQs = downloadVersion ? `?version=${encodeURIComponent(downloadVersion)}` : '';
-      info = await skillhubApiFetch<DownloadInfoResponse>(
-        `/api/skills-hub/skills/${encodeURIComponent(p.name)}/download${versionQs}`,
-      );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const code: InstallErrorCode = (err as { statusCode?: number }).statusCode === 404 ? 'NOT_FOUND' : 'DOWNLOAD_FAILED';
@@ -537,6 +573,7 @@ export async function install(
       return { success: false, errorCode: code, message };
     }
 
+    await refreshSourceAvailability();
     if (checkAbort()) return { success: false, errorCode: 'CANCELLED', message: '已取消' };
 
     // 2) 下载 zip（流式 + 字节上限，防 OOM）
@@ -589,6 +626,7 @@ export async function install(
       return { success: false, errorCode: 'DOWNLOAD_FAILED', message };
     }
 
+    await refreshSourceAvailability();
     if (checkAbort()) return { success: false, errorCode: 'CANCELLED', message: '已取消' };
 
     // 3) 校验阶段保留给 UI 进度；下载后在本函数内校验 size/sha。
@@ -656,6 +694,7 @@ export async function install(
       return { success: false, errorCode: code, message };
     }
 
+    await refreshSourceAvailability();
     if (checkAbort()) {
       await fs.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
       return { success: false, errorCode: 'CANCELLED', message: '已取消' };
@@ -701,6 +740,7 @@ export async function install(
 
     // Owner boundaries can happen while the final switch is in progress. Do
     // not allow the old owner's files to become visible to the new owner.
+    await refreshSourceAvailability();
     if (checkAbort()) {
       await rollbackFinalSwitch(finalDir, rollbackState).catch((rollbackErr) => {
         log.error('[skillInstall] rollback after owner change failed:', rollbackErr);
@@ -711,6 +751,7 @@ export async function install(
 
     // 7) 同步 registry
     onProgress({ phase: 'registering', name: p.name });
+    await refreshSourceAvailability();
     if (checkAbort()) {
       await rollbackFinalSwitch(finalDir, rollbackState).catch((rollbackErr) => {
         log.error('[skillInstall] rollback before registry commit failed:', rollbackErr);
@@ -721,19 +762,21 @@ export async function install(
     // 拉 hub 元数据 — 落盘 authorId 给渲染层兜底用（离线 fallback）。
     // isMine=true 时存当前 userId（与 renderer 的 currentUserId 同命名空间），
     // 否则存 slug（不会与 currentUserId 匹配 → 正确识别为 foreign）。
-    let authorId = '';
-    try {
-      const resp = await skillhubApiFetch<{
-        items: Array<{ slug: string; owner: { slug: string }; isMine: boolean }>;
-        availableCount?: number;
-      }>('/api/skills-hub/skills/batch-detail', {
-        method: 'POST',
-        body: { slugs: [p.name] },
-      });
-      const matched = resp.items?.find((i) => i.slug === p.name);
-      authorId = matched?.isMine ? userId : (matched?.owner.slug ?? '');
-    } catch (err) {
-      log.warn('[skillInstall] batch-detail after install warn:', err);
+    let authorId = source?.authorId ?? '';
+    if (!source) {
+      try {
+        const resp = await skillhubApiFetch<{
+          items: Array<{ slug: string; owner: { slug: string }; isMine: boolean }>;
+          availableCount?: number;
+        }>('/api/skills-hub/skills/batch-detail', {
+          method: 'POST',
+          body: { slugs: [p.name] },
+        });
+        const matched = resp.items?.find((i) => i.slug === p.name);
+        authorId = matched?.isMine ? (userId ?? '') : (matched?.owner.slug ?? '');
+      } catch (err) {
+        log.warn('[skillInstall] batch-detail after install warn:', err);
+      }
     }
 
     const folderHash = (await computeFolderHash(finalDir).catch(() => null)) ?? '';
@@ -780,6 +823,7 @@ export async function install(
         updatedAt: nowSec,
         origin: 'installed',
         autoSynced: nextAutoSynced,
+        ...(distribution ? { distribution } : {}),
       });
       logicalRegistryWritten = true;
       for (const { installPath } of physicalRegistrySnapshots) {
@@ -857,7 +901,7 @@ export async function install(
       rollbackState.backupDir = null;
     }
 
-    if (p.autoSync !== true) {
+    if (!source && p.autoSync !== true && userId) {
       await clearIgnoredAutoSyncSkill(p.name, userId).catch((err) => {
         log.warn('[skillInstall] clear auto-sync ignore failed:', err);
       });

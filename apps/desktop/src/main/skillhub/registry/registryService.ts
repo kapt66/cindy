@@ -156,7 +156,12 @@ export async function addInstall(
 export async function updateInstall(
   skillName: string,
   installPath: string,
-  partial: Partial<Pick<StoredInstall, 'version' | 'folderHash' | 'updatedAt' | 'authorId' | 'origin' | 'autoSynced'>>,
+  partial: Partial<
+    Pick<
+      StoredInstall,
+      'version' | 'folderHash' | 'updatedAt' | 'authorId' | 'origin' | 'autoSynced' | 'distribution'
+    >
+  >,
 ): Promise<void> {
   const normalizedPath = path.normalize(installPath);
 

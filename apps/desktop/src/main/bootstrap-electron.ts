@@ -597,6 +597,7 @@ import {
 import { getGhostSetupChangeBus } from './cindy-brain/ghostSetupChangeBus.js';
 import { getGhostSetupInteractionBridge } from './cindy-brain/ghostSetupInteractionBridge.js';
 import { registerPluginMarketIpc } from './plugin-market/registerIpc.js';
+import { registerMekaSkillIpc } from './meka-skills/registerIpc.js';
 import { findCindyFileInArgv } from './cindy-brain/argv.js';
 import { handleIncomingCindyFile } from './cindy-brain/openFileInstall.js';
 import { registerCindyFileAssociation } from './cindy-brain/fileAssociation.js';
@@ -1140,6 +1141,7 @@ registerLayoutIpc();
 // 无跳变)、install/uninstall 写路径、changed 广播。见 main/cindy-brain/。
 registerGhostIpc();
 registerPluginMarketIpc();
+registerMekaSkillIpc();
 
 // ── Custom protocol registration (image-local-cache M2) ──────────────────
 // MUST run before app.whenReady(), and MUST be a SINGLE call:

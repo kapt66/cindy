@@ -30,6 +30,16 @@ export interface StoredInstall {
    *  provenance.personal=true ⇒ 含本地会话衍生内容。当前不拦截发布 ——
    *  作为将来「发布前泛化」流程(另行独立 PR)的判定依据保留。 */
   provenance?: LearnProvenance;
+  /**
+   * Optional remote distribution provenance. Legacy records omit this field.
+   * Channel ownership never enters SKILL.md; it only prevents one market from
+   * treating another market's same-name install as its own update target.
+   */
+  distribution?: {
+    channel: 'cindy' | 'meka';
+    resourceId: string;
+    releaseId: string;
+  };
 }
 
 export interface StoredManifest {

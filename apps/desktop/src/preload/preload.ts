@@ -1065,6 +1065,42 @@ contextBridge.exposeInMainWorld('electronAPI', {
     markLocalInstall: (ghostId: string, expectedOwnerId: string): Promise<{ ok: true }> =>
       ipcRenderer.invoke('plugin-market:set-local-channel', ghostId, 'meka', expectedOwnerId),
   },
+  mekaSkills: {
+    snapshot: (
+      query?: string,
+    ): Promise<import('../shared/mekaSkillMarket').MekaSkillMarketSnapshot> =>
+      ipcRenderer.invoke('meka-skills:snapshot', query),
+    detail: (skillId: string): Promise<import('../shared/mekaSkillMarket').MekaSkillMarketDetail> =>
+      ipcRenderer.invoke('meka-skills:detail', skillId),
+    files: (skillId: string): Promise<import('../shared/mekaSkillMarket').MekaSkillPreviewFile[]> =>
+      ipcRenderer.invoke('meka-skills:files', skillId),
+    file: (
+      skillId: string,
+      filePath: string,
+    ): Promise<import('../shared/mekaSkillMarket').MekaSkillPreviewFile> =>
+      ipcRenderer.invoke('meka-skills:file', skillId, filePath),
+    install: (
+      request: import('../shared/mekaSkillMarket').MekaSkillInstallRequest,
+    ): Promise<import('../main/skillhub/installService').InstallResult> =>
+      ipcRenderer.invoke('meka-skills:install', request),
+    managementInfo: (
+      skillId: string,
+    ): Promise<import('../shared/mekaSkillMarket').MekaSkillManagementInfo> =>
+      ipcRenderer.invoke('meka-skills:management-info', skillId),
+    updateAccess: (
+      request: import('../shared/mekaSkillMarket').MekaSkillAccessUpdateRequest,
+    ): Promise<import('../shared/mekaSkillMarket').MekaSkillManagementInfo> =>
+      ipcRenderer.invoke('meka-skills:update-access', request),
+    deletePublished: (
+      request: import('../shared/mekaSkillMarket').MekaSkillDeleteRequest,
+    ): Promise<{ ok: true }> => ipcRenderer.invoke('meka-skills:delete-published', request),
+    pickSource: (): Promise<import('../shared/mekaSkillMarket').MekaSkillPublishInfo | null> =>
+      ipcRenderer.invoke('meka-skills:pick-source'),
+    publishSource: (
+      request: import('../shared/mekaSkillMarket').MekaSkillPublishRequest,
+    ): Promise<import('../shared/mekaSkillMarket').MekaSkillPublishResult> =>
+      ipcRenderer.invoke('meka-skills:publish-source', request),
+  },
   voiceInput: {
     prewarm: (payload?: {
       sourceLanguage?: string;

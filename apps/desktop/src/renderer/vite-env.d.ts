@@ -1019,9 +1019,7 @@ interface ElectronAPI {
     write: (req: LocalThemeWriteRequest) => Promise<LocalThemeWriteResult>;
     openDir: () => Promise<LocalThemeOpenDirResult>;
     /** 导入 VSCode / Obsidian 主题文件；对话框与读文件都在 main 侧。 */
-    importExternal: () => Promise<
-      import('../shared/theme-import/types').LocalThemeImportResult
-    >;
+    importExternal: () => Promise<import('../shared/theme-import/types').LocalThemeImportResult>;
   };
 
   /** RSB terminal tab —— PTY 后端 + xterm.js,详见 shared/terminal-bridge.ts 注释。 */
@@ -1356,6 +1354,34 @@ interface ElectronAPI {
     ) => () => void;
     uninstall: (pluginId: string) => Promise<{ ok: true }>;
     markLocalInstall: (ghostId: string, expectedOwnerId: string) => Promise<{ ok: true }>;
+  };
+  /** MCPRouter-owned Skill distribution using the standard Agent Skill package format. */
+  mekaSkills: {
+    snapshot: (
+      query?: string,
+    ) => Promise<import('../shared/mekaSkillMarket').MekaSkillMarketSnapshot>;
+    detail: (skillId: string) => Promise<import('../shared/mekaSkillMarket').MekaSkillMarketDetail>;
+    files: (skillId: string) => Promise<import('../shared/mekaSkillMarket').MekaSkillPreviewFile[]>;
+    file: (
+      skillId: string,
+      filePath: string,
+    ) => Promise<import('../shared/mekaSkillMarket').MekaSkillPreviewFile>;
+    install: (
+      request: import('../shared/mekaSkillMarket').MekaSkillInstallRequest,
+    ) => Promise<import('../main/skillhub/installService').InstallResult>;
+    managementInfo: (
+      skillId: string,
+    ) => Promise<import('../shared/mekaSkillMarket').MekaSkillManagementInfo>;
+    updateAccess: (
+      request: import('../shared/mekaSkillMarket').MekaSkillAccessUpdateRequest,
+    ) => Promise<import('../shared/mekaSkillMarket').MekaSkillManagementInfo>;
+    deletePublished: (
+      request: import('../shared/mekaSkillMarket').MekaSkillDeleteRequest,
+    ) => Promise<{ ok: true }>;
+    pickSource: () => Promise<import('../shared/mekaSkillMarket').MekaSkillPublishInfo | null>;
+    publishSource: (
+      request: import('../shared/mekaSkillMarket').MekaSkillPublishRequest,
+    ) => Promise<import('../shared/mekaSkillMarket').MekaSkillPublishResult>;
   };
   voiceInput: {
     prewarm: (payload?: {
@@ -3161,9 +3187,7 @@ interface ElectronAPI {
    * 「worktree 回收链已跑完」推送。归档/删除后 main 侧的回收是 fire-and-forget 的
    * 异步链，store 条目移除远晚于状态 IPC 返回，renderer 必须等这条才能拿到真实快照。
    */
-  onWorktreeChanged: (
-    callback: (payload: { sessionId: string }) => void,
-  ) => () => void;
+  onWorktreeChanged: (callback: (payload: { sessionId: string }) => void) => () => void;
 
   // ── Slack Hook(中心 slack-hook-server 接入) ── 类型正本在 shared/hookControlIpc.ts
   hookControl: {
@@ -5149,6 +5173,11 @@ interface StoredInstall {
   autoSynced?: boolean;
   /** /learn 蒸馏产物的溯源(仅 origin='learned')。personal=true ⇒ publish 拦截。 */
   provenance?: import('../shared/learnTypes').LearnProvenance;
+  distribution?: {
+    channel: 'cindy' | 'meka';
+    resourceId: string;
+    releaseId: string;
+  };
 }
 
 interface StoredManifest {

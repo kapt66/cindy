@@ -16,6 +16,14 @@ import type {
   MekaDevPluginUploadResult,
   MekaPluginVisibility,
 } from '../../shared/mekaDevPlugin.js';
+import {
+  nextMekaSkillVersion,
+  type MekaSkillManagementInfo,
+  type MekaSkillPublishInfo,
+  type MekaSkillPublishResult,
+  type MekaSkillSourcePreview,
+  type MekaSkillVisibility,
+} from '../../shared/mekaSkillMarket.js';
 import { createMekaRouterClient, type MekaRouterClient } from './routerClient.js';
 import { classifyMekaRouterToolRisk, type MekaToolRisk } from './mekaRiskPolicy.js';
 import { DEFAULT_MEKA_MCPROUTER_URL } from './config.js';
@@ -668,6 +676,161 @@ export function createMekaRouterService(deps: MekaRouterServiceDeps) {
       );
       return {
         pluginId,
+        version,
+        visibility,
+        releasePublished,
+      };
+    },
+
+    async getMekaSkillPublishInfo(source: MekaSkillSourcePreview): Promise<MekaSkillPublishInfo> {
+      const { baseUrl, token } = await auth();
+      const existing = (await client.listOwnedMekaSkills(baseUrl, token)).find(
+        (skill) => skill.slug === source.name,
+      );
+      return {
+        source,
+        suggestedVersion: nextMekaSkillVersion(existing?.currentRelease.version ?? null),
+        existing: existing
+          ? {
+              skillResourceId: existing.id,
+              currentReleaseId: existing.currentRelease.id,
+              currentVersion: existing.currentRelease.version,
+              visibility: existing.visibility,
+              sharedUsernames: existing.sharedUsernames,
+            }
+          : null,
+      };
+    },
+
+    async getMekaSkillManagementInfo(skillResourceId: string): Promise<MekaSkillManagementInfo> {
+      const { baseUrl, token } = await auth();
+      const owned = (await client.listOwnedMekaSkills(baseUrl, token)).find(
+        (skill) => skill.id === skillResourceId,
+      );
+      if (!owned) {
+        throw publishError('NOT_FOUND', 'The MCPRouter Skill is not owned by this account.');
+      }
+      return {
+        skillResourceId: owned.id,
+        slug: owned.slug,
+        name: owned.name,
+        currentReleaseId: owned.currentRelease.id,
+        currentVersion: owned.currentRelease.version,
+        visibility: owned.visibility,
+        sharedUsernames: owned.sharedUsernames,
+      };
+    },
+
+    async updateMekaSkillAccess(
+      skillResourceId: string,
+      expectedCurrentReleaseId: string,
+      visibility: MekaSkillVisibility,
+      sharedUsernames: string[],
+    ): Promise<MekaSkillManagementInfo> {
+      const { baseUrl, token } = await auth();
+      const normalizedSharedUsernames = [
+        ...new Set(sharedUsernames.map((username) => username.trim()).filter(Boolean)),
+      ];
+      if (visibility === 'shared' && normalizedSharedUsernames.length === 0) {
+        throw publishError('INVALID_PARAMS', 'Shared visibility requires at least one username.');
+      }
+      const owned = (await client.listOwnedMekaSkills(baseUrl, token)).find(
+        (skill) => skill.id === skillResourceId,
+      );
+      if (!owned) {
+        throw publishError('NOT_FOUND', 'The MCPRouter Skill is not owned by this account.');
+      }
+      if (owned.currentRelease.id !== expectedCurrentReleaseId) {
+        throw publishError(
+          'PRECONDITION_FAILED',
+          'The MCPRouter Skill changed after management details were loaded.',
+        );
+      }
+      const updated = await client.setMekaSkillAccess(
+        baseUrl,
+        token,
+        owned.id,
+        visibility,
+        visibility === 'shared' ? normalizedSharedUsernames : [],
+      );
+      return {
+        skillResourceId: updated.id,
+        slug: updated.slug,
+        name: updated.name,
+        currentReleaseId: updated.currentRelease.id,
+        currentVersion: updated.currentRelease.version,
+        visibility: updated.visibility,
+        sharedUsernames: updated.sharedUsernames,
+      };
+    },
+
+    async deleteMekaSkill(
+      skillResourceId: string,
+      expectedCurrentReleaseId: string,
+    ): Promise<void> {
+      const { baseUrl, token } = await auth();
+      const owned = (await client.listOwnedMekaSkills(baseUrl, token)).find(
+        (skill) => skill.id === skillResourceId,
+      );
+      if (!owned) {
+        throw publishError('NOT_FOUND', 'The MCPRouter Skill is not owned by this account.');
+      }
+      if (owned.currentRelease.id !== expectedCurrentReleaseId) {
+        throw publishError(
+          'PRECONDITION_FAILED',
+          'The MCPRouter Skill changed after management details were loaded.',
+        );
+      }
+      await client.deleteMekaSkill(baseUrl, token, owned.id);
+    },
+
+    async uploadMekaSkill(
+      bytes: Uint8Array,
+      source: MekaSkillSourcePreview,
+      version: string,
+      extraDescription: string,
+      visibility: MekaSkillVisibility,
+      sharedUsernames: string[],
+      expectedCurrentReleaseId: string | null,
+    ): Promise<MekaSkillPublishResult> {
+      const { baseUrl, token } = await auth();
+      const normalizedSharedUsernames = [
+        ...new Set(sharedUsernames.map((username) => username.trim()).filter(Boolean)),
+      ];
+      if (visibility === 'shared' && normalizedSharedUsernames.length === 0) {
+        throw publishError('INVALID_PARAMS', 'Shared visibility requires at least one username.');
+      }
+      const existing = (await client.listOwnedMekaSkills(baseUrl, token)).find(
+        (skill) => skill.slug === source.name,
+      );
+      if ((existing?.currentRelease.id ?? null) !== expectedCurrentReleaseId) {
+        throw publishError(
+          'PRECONDITION_FAILED',
+          'The MCPRouter Skill changed after the upload preview was loaded.',
+        );
+      }
+      const releasePublished = existing?.currentRelease.version !== version;
+      const published = releasePublished
+        ? await client.uploadMekaSkill(
+            baseUrl,
+            token,
+            bytes,
+            existing?.id ?? null,
+            extraDescription,
+          )
+        : existing;
+      if (!published) {
+        throw publishError('INTERNAL', 'MCPRouter did not return the published Skill.');
+      }
+      await client.setMekaSkillAccess(
+        baseUrl,
+        token,
+        published.id,
+        visibility,
+        visibility === 'shared' ? normalizedSharedUsernames : [],
+      );
+      return {
+        skillId: source.name,
         version,
         visibility,
         releasePublished,

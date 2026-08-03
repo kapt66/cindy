@@ -39,6 +39,10 @@ function setup(initial: Record<string, unknown> = {}) {
     listOwnedMekaPlugins: vi.fn(async () => []),
     uploadMekaPlugin: vi.fn(async () => ({})),
     setMekaPluginAccess: vi.fn(async () => ({})),
+    listOwnedMekaSkills: vi.fn(async () => []),
+    uploadMekaSkill: vi.fn(async () => ({})),
+    setMekaSkillAccess: vi.fn(async () => ({})),
+    deleteMekaSkill: vi.fn(async () => undefined),
   } as unknown as MekaRouterClient;
   const service = createMekaRouterService({
     configPath: 'C:\\userData\\meka-assistant-settings.json',
@@ -544,6 +548,237 @@ describe('MekaRouterService', () => {
       'plugin-resource',
       'public',
       [],
+    );
+  });
+
+  it('publishes an immutable Meka Skill release and synchronizes exact-user access', async () => {
+    const fixture = setup({ routerUrl: 'https://router.example' });
+    fixture.secrets.set('meka.router.sessionToken', 'session-token');
+    fixture.secrets.set('meka.router.clientKey', 'client-key');
+    const existing = {
+      id: 'skill-resource',
+      slug: 'release-notes',
+      name: 'release-notes',
+      description: 'Prepare release notes',
+      visibility: 'private' as const,
+      sharedUsernames: [],
+      currentRelease: {
+        id: 'release-1',
+        version: '1.0.0',
+        sha256: 'a'.repeat(64),
+        sizeBytes: 4,
+        uncompressedSizeBytes: 8,
+        publishedAt: '2026-07-29T00:00:00.000Z',
+      },
+    };
+    const updated = {
+      ...existing,
+      currentRelease: { ...existing.currentRelease, id: 'release-2', version: '2.0.0' },
+    };
+    vi.mocked(fixture.client.listOwnedMekaSkills).mockResolvedValue([existing]);
+    vi.mocked(fixture.client.uploadMekaSkill).mockResolvedValue(updated);
+    vi.mocked(fixture.client.setMekaSkillAccess).mockResolvedValue({
+      ...updated,
+      visibility: 'shared',
+      sharedUsernames: ['alice'],
+    });
+
+    const source = {
+      sourceId: 'source-1',
+      directoryPath: 'C:\\skills\\release-notes',
+      name: 'release-notes',
+      description: 'Prepare release notes',
+      fileCount: 2,
+      packageSizeBytes: 4,
+    };
+    await expect(fixture.service.getMekaSkillPublishInfo(source)).resolves.toMatchObject({
+      source,
+      suggestedVersion: '1.0.1',
+      existing: {
+        skillResourceId: 'skill-resource',
+        currentReleaseId: 'release-1',
+        currentVersion: '1.0.0',
+      },
+    });
+    await expect(
+      fixture.service.uploadMekaSkill(
+        new Uint8Array([1, 2, 3, 4]),
+        source,
+        '2.0.0',
+        'Adds Jira formatting',
+        'shared',
+        ['alice', 'alice'],
+        'release-1',
+      ),
+    ).resolves.toEqual({
+      skillId: 'release-notes',
+      version: '2.0.0',
+      visibility: 'shared',
+      releasePublished: true,
+    });
+    expect(fixture.client.uploadMekaSkill).toHaveBeenCalledWith(
+      'https://router.example',
+      'session-token',
+      expect.any(Uint8Array),
+      'skill-resource',
+      'Adds Jira formatting',
+    );
+    expect(fixture.client.setMekaSkillAccess).toHaveBeenCalledWith(
+      'https://router.example',
+      'session-token',
+      'skill-resource',
+      'shared',
+      ['alice'],
+    );
+  });
+
+  it('synchronizes Meka Skill access without uploading an existing immutable version', async () => {
+    const fixture = setup({ routerUrl: 'https://router.example' });
+    fixture.secrets.set('meka.router.sessionToken', 'session-token');
+    fixture.secrets.set('meka.router.clientKey', 'client-key');
+    const existing = {
+      id: 'skill-resource',
+      slug: 'release-notes',
+      name: 'release-notes',
+      description: 'Prepare release notes',
+      visibility: 'private' as const,
+      sharedUsernames: [],
+      currentRelease: {
+        id: 'release-1',
+        version: '1.0.0',
+        sha256: 'a'.repeat(64),
+        sizeBytes: 4,
+        uncompressedSizeBytes: 8,
+        publishedAt: '2026-07-29T00:00:00.000Z',
+      },
+    };
+    vi.mocked(fixture.client.listOwnedMekaSkills).mockResolvedValue([existing]);
+    vi.mocked(fixture.client.setMekaSkillAccess).mockResolvedValue({
+      ...existing,
+      visibility: 'public',
+    });
+    const source = {
+      sourceId: 'source-1',
+      directoryPath: 'C:\\skills\\release-notes',
+      name: 'release-notes',
+      description: 'Prepare release notes',
+      fileCount: 1,
+      packageSizeBytes: 4,
+    };
+
+    await expect(
+      fixture.service.uploadMekaSkill(
+        new Uint8Array([1, 2, 3, 4]),
+        source,
+        '1.0.0',
+        '',
+        'public',
+        [],
+        'release-1',
+      ),
+    ).resolves.toEqual({
+      skillId: 'release-notes',
+      version: '1.0.0',
+      visibility: 'public',
+      releasePublished: false,
+    });
+    expect(fixture.client.uploadMekaSkill).not.toHaveBeenCalled();
+    expect(fixture.client.setMekaSkillAccess).toHaveBeenCalledWith(
+      'https://router.example',
+      'session-token',
+      'skill-resource',
+      'public',
+      [],
+    );
+  });
+
+  it('suggests 1.0.0 when the Meka Skill does not exist remotely', async () => {
+    const fixture = setup({ routerUrl: 'https://router.example' });
+    fixture.secrets.set('meka.router.sessionToken', 'session-token');
+    fixture.secrets.set('meka.router.clientKey', 'client-key');
+    vi.mocked(fixture.client.listOwnedMekaSkills).mockResolvedValue([]);
+    const source = {
+      sourceId: 'source-1',
+      directoryPath: 'C:\\skills\\release-notes',
+      name: 'release-notes',
+      description: 'Prepare release notes',
+      fileCount: 1,
+      packageSizeBytes: 100,
+    };
+
+    await expect(fixture.service.getMekaSkillPublishInfo(source)).resolves.toEqual({
+      source,
+      suggestedVersion: '1.0.0',
+      existing: null,
+    });
+  });
+
+  it('loads, updates, and deletes only the expected owned Meka Skill release', async () => {
+    const fixture = setup({ routerUrl: 'https://router.example' });
+    fixture.secrets.set('meka.router.sessionToken', 'session-token');
+    fixture.secrets.set('meka.router.clientKey', 'client-key');
+    const existing = {
+      id: 'skill-resource',
+      slug: 'release-notes',
+      name: 'Release notes',
+      description: 'Prepare release notes',
+      visibility: 'private' as const,
+      sharedUsernames: [],
+      currentRelease: {
+        id: 'release-1',
+        version: '1.0.0',
+        sha256: 'a'.repeat(64),
+        sizeBytes: 4,
+        uncompressedSizeBytes: 8,
+        publishedAt: '2026-07-29T00:00:00.000Z',
+      },
+    };
+    const updated = {
+      ...existing,
+      visibility: 'shared' as const,
+      sharedUsernames: ['alice'],
+    };
+    vi.mocked(fixture.client.listOwnedMekaSkills).mockResolvedValue([existing]);
+    vi.mocked(fixture.client.setMekaSkillAccess).mockResolvedValue(updated);
+
+    await expect(fixture.service.getMekaSkillManagementInfo('skill-resource')).resolves.toEqual({
+      skillResourceId: 'skill-resource',
+      slug: 'release-notes',
+      name: 'Release notes',
+      currentReleaseId: 'release-1',
+      currentVersion: '1.0.0',
+      visibility: 'private',
+      sharedUsernames: [],
+    });
+    await expect(
+      fixture.service.updateMekaSkillAccess('skill-resource', 'release-1', 'shared', [
+        'alice',
+        'alice',
+      ]),
+    ).resolves.toMatchObject({
+      visibility: 'shared',
+      sharedUsernames: ['alice'],
+    });
+    expect(fixture.client.setMekaSkillAccess).toHaveBeenCalledWith(
+      'https://router.example',
+      'session-token',
+      'skill-resource',
+      'shared',
+      ['alice'],
+    );
+
+    await expect(
+      fixture.service.deleteMekaSkill('skill-resource', 'stale-release'),
+    ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    expect(fixture.client.deleteMekaSkill).not.toHaveBeenCalled();
+
+    await expect(
+      fixture.service.deleteMekaSkill('skill-resource', 'release-1'),
+    ).resolves.toBeUndefined();
+    expect(fixture.client.deleteMekaSkill).toHaveBeenCalledWith(
+      'https://router.example',
+      'session-token',
+      'skill-resource',
     );
   });
 
