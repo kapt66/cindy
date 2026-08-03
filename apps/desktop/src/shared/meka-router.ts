@@ -45,6 +45,8 @@ export interface MekaRouterInstance {
   workingDir: string;
 }
 
+export const ROUTER_INSTANCE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/;
+
 export const MCPR_REMOTE_HOST_PREFIX = 'mcpr:';
 
 export function buildMcprRemoteHostId(instanceId: string): string {

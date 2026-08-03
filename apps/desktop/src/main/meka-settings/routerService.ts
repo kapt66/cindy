@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import {
   buildMcprRemoteHostId,
   isMekaRouterInstanceAvailable,
+  ROUTER_INSTANCE_NAME_PATTERN,
   type MekaRouterInstance,
   type MekaRouterRoute,
   type MekaRouterSettingsView,
@@ -562,7 +563,7 @@ export function createMekaRouterService(deps: MekaRouterServiceDeps) {
 
     async createInstance(templateId: string, name: string): Promise<MekaRouterInstance> {
       const normalizedName = name.trim();
-      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/.test(normalizedName)) {
+      if (!ROUTER_INSTANCE_NAME_PATTERN.test(normalizedName)) {
         throw new Error(
           'Instance name must be 2–64 letters, numbers, dots, dashes, or underscores',
         );

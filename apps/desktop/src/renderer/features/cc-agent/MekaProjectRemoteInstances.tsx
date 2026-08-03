@@ -1,14 +1,21 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import * as Dialog from '@radix-ui/react-dialog';
 import { Plus, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-import type { MekaRouterInstance, MekaRouterTemplate } from '../../../shared/meka-router';
+import {
+  ROUTER_INSTANCE_NAME_PATTERN,
+  type MekaRouterInstance,
+  type MekaRouterTemplate,
+} from '../../../shared/meka-router';
 import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
 import { extractIpcError } from '@/utils/ipcError';
 
 const buttonClass =
   'inline-flex h-9 select-none items-center justify-center gap-1.5 rounded-full border border-[var(--button-secondary-border)] bg-[var(--button-secondary-bg)] px-4 text-13 font-medium text-[var(--button-secondary-fg)] transition-colors hover:bg-[var(--button-secondary-hover-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:opacity-40';
+const inputClass =
+  'h-10 w-full rounded-lg border border-[var(--settings-input-border)] bg-[var(--settings-input-bg)] px-3 text-13 text-[var(--settings-input-text)] outline-none transition-colors focus:border-[var(--settings-input-border-focus)]';
 
 export function MekaProjectRemoteInstances({ projectId }: { projectId: string }) {
   const { t } = useTranslation();
@@ -17,6 +24,9 @@ export function MekaProjectRemoteInstances({ projectId }: { projectId: string })
   const [bindings, setBindings] = useState<string[]>([]);
   const [configured, setConfigured] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [templateId, setTemplateId] = useState('');
+  const [instanceName, setInstanceName] = useState('');
 
   const refresh = useCallback(async () => {
     setBusy(true);
@@ -66,28 +76,32 @@ export function MekaProjectRemoteInstances({ projectId }: { projectId: string })
     [bindings, projectId],
   );
 
+  const openCreate = useCallback(() => {
+    setTemplateId(templates[0]?.id ?? '');
+    setInstanceName('');
+    setCreateOpen(true);
+  }, [templates]);
+
+  const nameValid = ROUTER_INSTANCE_NAME_PATTERN.test(instanceName.trim());
+
   const createFromTemplate = useCallback(async () => {
-    const templateId = window
-      .prompt(
-        `${t('meka.remote.templatePrompt')}\n${templates.map((item) => `${item.id}: ${item.name}`).join('\n')}`,
-        templates[0]?.id,
-      )
-      ?.trim();
-    if (!templateId) return;
-    const name = window.prompt(t('meka.remote.instanceNamePrompt'))?.trim();
-    if (!name) return;
+    if (!templateId || !nameValid) return;
     setBusy(true);
     try {
-      const created = await window.electronAPI.mekaSettings.router.createInstance(templateId, name);
+      const created = await window.electronAPI.mekaSettings.router.createInstance(
+        templateId,
+        instanceName.trim(),
+      );
       const next = [...new Set([...bindings, created.id])];
       await window.electronAPI.mekaSettings.router.setProjectBindings(projectId, next);
+      setCreateOpen(false);
       await refresh();
     } catch (error) {
       toast.error(extractIpcError(error)?.message ?? String(error));
     } finally {
       setBusy(false);
     }
-  }, [bindings, projectId, refresh, t, templates]);
+  }, [bindings, instanceName, nameValid, projectId, refresh, templateId]);
 
   return (
     <section className="mt-10">
@@ -107,7 +121,7 @@ export function MekaProjectRemoteInstances({ projectId }: { projectId: string })
           </button>
           <button
             className={buttonClass}
-            onClick={() => void createFromTemplate()}
+            onClick={openCreate}
             disabled={busy || !configured || templates.length === 0}
           >
             <Plus size={13} />
@@ -150,6 +164,62 @@ export function MekaProjectRemoteInstances({ projectId }: { projectId: string })
           </div>
         )}
       </div>
+      <Dialog.Root open={createOpen} onOpenChange={(open) => !open && setCreateOpen(false)}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-[10000] bg-[var(--overlay-modal)]" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-[10001] w-[calc(100vw-32px)] max-w-[440px] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] p-5 text-[var(--text-primary)] shadow-[var(--shadow-menu)] focus:outline-none">
+            <Dialog.Title className="text-16 font-medium">{t('meka.remote.create')}</Dialog.Title>
+            <div className="mt-4 flex flex-col gap-4">
+              <label className="flex flex-col gap-2 text-13 text-[var(--text-secondary)]">
+                <span>{t('meka.remote.template')}</span>
+                <select
+                  className={inputClass}
+                  value={templateId}
+                  onChange={(event) => setTemplateId(event.target.value)}
+                >
+                  {templates.map((template) => (
+                    <option key={template.id} value={template.id}>
+                      {template.description
+                        ? `${template.name} - ${template.description}`
+                        : template.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex flex-col gap-2 text-13 text-[var(--text-secondary)]">
+                <span>{t('meka.remote.instanceName')}</span>
+                <input
+                  autoFocus
+                  className={inputClass}
+                  value={instanceName}
+                  onChange={(event) => setInstanceName(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' && nameValid) void createFromTemplate();
+                  }}
+                />
+                {instanceName.trim() && !nameValid ? (
+                  <span className="text-12 text-[var(--error-fg)]">
+                    {t('meka.remote.instanceNameInvalid')}
+                  </span>
+                ) : null}
+              </label>
+              <div className="flex justify-end gap-2">
+                <button className={buttonClass} type="button" onClick={() => setCreateOpen(false)}>
+                  {t('logic.confirm.cancel')}
+                </button>
+                <button
+                  className={buttonClass}
+                  type="button"
+                  disabled={busy || !templateId || !nameValid}
+                  onClick={() => void createFromTemplate()}
+                >
+                  {t('meka.remote.create')}
+                </button>
+              </div>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
     </section>
   );
 }

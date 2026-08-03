@@ -7956,8 +7956,9 @@
       "empty": "利用可能なリモートプロジェクトインスタンスはありません。",
       "available": "利用可能",
       "unavailable": "利用不可",
-      "templatePrompt": "テンプレート ID を入力：",
-      "instanceNamePrompt": "インスタンス名を入力："
+      "template": "プロジェクトテンプレート",
+      "instanceName": "インスタンス名",
+      "instanceNameInvalid": "英数字で始まる 2～64 文字の英数字、ピリオド、ハイフン、またはアンダースコアを入力してください。"
     }
   },
   "billing": {

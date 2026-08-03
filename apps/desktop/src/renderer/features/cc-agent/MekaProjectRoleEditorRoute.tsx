@@ -116,6 +116,62 @@ function projectDraft(project: MekaProject, file?: MekaProjectFile | null): Draf
   };
 }
 
+function emptyProjectDraft(): DraftProject {
+  return {
+    displayName: '',
+    description: '',
+    path: '',
+    formalWorkflowEnabled: false,
+    workflowType: 'none',
+    jiraProjectKey: '',
+    gitlabProjectUrl: '',
+    disciplines: [MEKA_GENERAL_DISCIPLINE],
+    domains: [],
+  };
+}
+
+function emptyProjectFile(): MekaProjectFile {
+  return {
+    schemaVersion: 1,
+    projectId: 'new',
+    basic: {
+      displayName: '',
+      path: '',
+      disciplines: [MEKA_GENERAL_DISCIPLINE],
+      domains: [],
+    },
+    metadata: [],
+  };
+}
+
+function emptyRoleDraft(projectId: string): MekaRoleManifestFile {
+  return {
+    schemaVersion: 1,
+    projectId,
+    id: '',
+    name: '',
+    displayName: '',
+    description: '',
+    prompt: '',
+    policyProviderRefs: [],
+    rules: [],
+    skills: [],
+    promptFragments: [],
+    mcp: [],
+    projectMetadataSelection: [],
+  };
+}
+
+function roleFileForCreate(
+  role: MekaRoleManifestFile,
+): Omit<MekaRoleManifestFile, 'id' | 'name' | 'projectId'> {
+  const roleFile: Partial<MekaRoleManifestFile> = { ...role };
+  delete roleFile.id;
+  delete roleFile.name;
+  delete roleFile.projectId;
+  return roleFile as Omit<MekaRoleManifestFile, 'id' | 'name' | 'projectId'>;
+}
+
 function cloneValue<T>(value: T): T {
   return structuredClone(value);
 }
@@ -638,6 +694,8 @@ export function MekaProjectRoleEditorRoute() {
   const [busy, setBusy] = useState(false);
   const [gitRemoteFetching, setGitRemoteFetching] = useState(false);
   const [projectsLoaded, setProjectsLoaded] = useState(false);
+  const [creatingProject, setCreatingProject] = useState(false);
+  const [creatingRole, setCreatingRole] = useState(false);
 
   const selectedProject = useMemo(
     () => projects.find((item) => item.id === selectedProjectId) ?? null,
@@ -678,6 +736,7 @@ export function MekaProjectRoleEditorRoute() {
   }, []);
 
   useEffect(() => {
+    if (creatingProject) return;
     if (!selectedProject) {
       setProject(null);
       setProjectFile(null);
@@ -718,9 +777,10 @@ export function MekaProjectRoleEditorRoute() {
     return () => {
       cancelled = true;
     };
-  }, [selectedProject]);
+  }, [creatingProject, selectedProject]);
 
   useEffect(() => {
+    if (creatingRole) return;
     if (!selectedRoleId) {
       setRole(null);
       setRoleEffective(null);
@@ -746,7 +806,7 @@ export function MekaProjectRoleEditorRoute() {
     return () => {
       cancelled = true;
     };
-  }, [selectedRoleId]);
+  }, [creatingRole, selectedRoleId]);
 
   const run = useCallback(
     async (action: () => Promise<void>) => {
@@ -762,16 +822,18 @@ export function MekaProjectRoleEditorRoute() {
     [t],
   );
 
-  const createProject = () =>
-    void run(async () => {
-      const displayName = window.prompt(t('meka.projectName'))?.trim();
-      if (!displayName) return;
-      const path = window.prompt(t('meka.projectPath'))?.trim();
-      if (!path) return;
-      const created = await window.electronAPI.localDb.mekaProjects.create({ displayName, path });
-      setSelectedRoleId(null);
-      await reload(created.id);
-    });
+  const createProject = () => {
+    setCreatingProject(true);
+    setCreatingRole(false);
+    setSelectedProjectId(null);
+    setSelectedRoleId(null);
+    setProject(emptyProjectDraft());
+    setProjectFile(emptyProjectFile());
+    setRole(null);
+    setRoleEffective(null);
+    setMetadata([]);
+    setMetadataEffective([]);
+  };
 
   const projectDirty = useMemo(() => {
     if (!project || !projectFile) return false;
@@ -787,12 +849,27 @@ export function MekaProjectRoleEditorRoute() {
   );
 
   const cancelProjectDraft = () => {
+    if (creatingProject) {
+      setCreatingProject(false);
+      setProject(null);
+      setProjectFile(null);
+      setMetadata([]);
+      setMetadataEffective([]);
+      return;
+    }
     if (!selectedProject || !projectFile) return;
     setProject(projectDraft(selectedProject, projectFile));
     setMetadata(cloneValue(metadataEffective));
   };
 
   const cancelRoleDraft = () => {
+    if (creatingRole) {
+      setCreatingRole(false);
+      setSelectedRoleId(null);
+      setRole(null);
+      setRoleEffective(null);
+      return;
+    }
     setRole(roleEffective ? cloneValue(roleEffective) : null);
   };
 
@@ -832,8 +909,27 @@ export function MekaProjectRoleEditorRoute() {
   };
 
   const saveProject = () => {
-    if (!selectedProject || !project || !projectFile) return;
+    if (!project || !projectFile) return;
     void run(async () => {
+      if (creatingProject) {
+        const created = await window.electronAPI.localDb.mekaProjects.create({
+          displayName: project.displayName.trim(),
+          description: project.description.trim() || null,
+          path: project.path.trim(),
+        });
+        await window.electronAPI.localDb.mekaProjectMetadata.saveProject({
+          projectId: created.id,
+          project: {
+            ...projectFileFromDraft(projectFile, project, metadata),
+            projectId: created.id,
+          },
+        });
+        await reload(created.id);
+        setCreatingProject(false);
+        toast.success(t('meka.saved'));
+        return;
+      }
+      if (!selectedProject) return;
       const savedFile = await window.electronAPI.localDb.mekaProjectMetadata.saveProject({
         projectId: selectedProject.id,
         project: projectFileFromDraft(projectFile, project, metadata),
@@ -865,34 +961,28 @@ export function MekaProjectRoleEditorRoute() {
   };
 
   const createRole = () => {
-    if (!selectedProject) return;
-    void run(async () => {
-      const displayName = window.prompt(t('meka.roleName'))?.trim();
-      if (!displayName) return;
-      const created = await window.electronAPI.localDb.mekaRoles.create({
-        projectId: selectedProject.id,
-        roleFile: {
-          schemaVersion: 1,
-          displayName,
-          description: '',
-          prompt: '',
-          policyProviderRefs: [],
-          rules: [],
-          skills: [],
-          promptFragments: [],
-          mcp: [],
-          projectMetadataSelection: [],
-        },
-      });
-      await reload(selectedProject.id);
-      setSelectedRoleId(created.id);
-    });
+    if (!selectedProject || creatingProject) return;
+    setCreatingRole(true);
+    setSelectedRoleId(null);
+    setRole(emptyRoleDraft(selectedProject.id));
+    setRoleEffective(null);
   };
 
   const saveRole = () => {
     const selectedRole = selectedProject?.roles.find((item) => item.id === selectedRoleId);
-    if (!selectedProject || !role || selectedRole?.isBuiltin) return;
+    if (!selectedProject || !role || (!creatingRole && selectedRole?.isBuiltin)) return;
     void run(async () => {
+      if (creatingRole) {
+        const created = await window.electronAPI.localDb.mekaRoles.create({
+          projectId: selectedProject.id,
+          roleFile: roleFileForCreate(role),
+        });
+        await reload(selectedProject.id);
+        setCreatingRole(false);
+        setSelectedRoleId(created.id);
+        toast.success(t('meka.saved'));
+        return;
+      }
       await window.electronAPI.localDb.mekaRoles.update({
         projectId: selectedProject.id,
         roleFile: role,
@@ -909,11 +999,10 @@ export function MekaProjectRoleEditorRoute() {
   const copyRole = () => {
     if (!selectedProject || !role) return;
     void run(async () => {
-      const { id: _id, name: _name, projectId: _projectId, ...roleFile } = role;
       const created = await window.electronAPI.localDb.mekaRoles.create({
         projectId: selectedProject.id,
         roleFile: {
-          ...roleFile,
+          ...roleFileForCreate(role),
           displayName: t('meka.roleCopyName', { name: role.displayName }),
         },
       });
@@ -954,17 +1043,12 @@ export function MekaProjectRoleEditorRoute() {
     });
   };
 
-  if (!selectedProject) {
+  if (!selectedProject && !creatingProject) {
     return (
       <PluginManagementLayout
         activeTab="meka-projects"
         headerActions={
-          <button
-            type="button"
-            className={buttonClass}
-            onClick={createProject}
-            disabled={busy}
-          >
+          <button type="button" className={buttonClass} onClick={createProject} disabled={busy}>
             <Plus size={15} aria-hidden="true" />
             {t('meka.newProject')}
           </button>
@@ -1065,10 +1149,17 @@ export function MekaProjectRoleEditorRoute() {
     );
   }
 
-  const showingRole = selectedRoleId !== null;
+  const showingRole = creatingRole || selectedRoleId !== null;
   const selectedRoleSummary =
-    selectedProject.roles.find((item) => item.id === selectedRoleId) ?? null;
+    selectedProject?.roles.find((item) => item.id === selectedRoleId) ?? null;
   const selectionReadOnly = showingRole ? selectedRoleSummary?.isBuiltin === true : false;
+  const projectCreateValid =
+    creatingProject && !!project?.displayName.trim() && !!project.path.trim();
+  const roleCreateValid = creatingRole && !!role?.displayName.trim();
+  const canCancel = showingRole ? creatingRole || roleDirty : creatingProject || projectDirty;
+  const canSave = showingRole
+    ? roleCreateValid || (roleDirty && !!role)
+    : projectCreateValid || (projectDirty && !!project && !!projectFile);
 
   return (
     <main className="flex h-full min-h-0 w-full flex-col bg-[var(--surface)] text-[var(--text-primary)]">
@@ -1079,6 +1170,8 @@ export function MekaProjectRoleEditorRoute() {
         <button
           type="button"
           onClick={() => {
+            setCreatingProject(false);
+            setCreatingRole(false);
             setSelectedRoleId(null);
             setSelectedProjectId(null);
           }}
@@ -1090,14 +1183,14 @@ export function MekaProjectRoleEditorRoute() {
         </button>
         <div className="flex min-w-0 flex-1 flex-col gap-1 overflow-hidden">
           <h1 className="truncate text-lg font-medium leading-none text-[var(--text-primary)]">
-            {selectedProject.displayName}
+            {creatingProject ? t('meka.newProject') : selectedProject?.displayName}
           </h1>
           <p className="truncate text-12 text-[var(--text-tertiary)]">
-            {selectedProject.path ?? selectedProject.id}
+            {creatingProject ? project?.path : (selectedProject?.path ?? selectedProject?.id)}
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2" style={WINDOW_NO_DRAG_STYLE}>
-          {showingRole && selectedRoleSummary?.isBuiltin ? (
+          {showingRole && !creatingRole && selectedRoleSummary?.isBuiltin ? (
             <button className={buttonClass} onClick={copyRole} disabled={busy || !role}>
               <Copy size={14} aria-hidden="true" />
               {t('meka.copyRole')}
@@ -1108,22 +1201,19 @@ export function MekaProjectRoleEditorRoute() {
               <button
                 className={buttonClass}
                 onClick={showingRole ? cancelRoleDraft : cancelProjectDraft}
-                disabled={busy || !(showingRole ? roleDirty : projectDirty)}
+                disabled={busy || !canCancel}
               >
                 {t('logic.confirm.cancel')}
               </button>
               <button
                 className={buttonClass}
                 onClick={showingRole ? saveRole : saveProject}
-                disabled={
-                  busy ||
-                  !(showingRole ? roleDirty && !!role : projectDirty && !!project && !!projectFile)
-                }
+                disabled={busy || !canSave}
               >
                 <Save size={14} aria-hidden="true" />
                 {showingRole ? t('meka.saveRole') : t('meka.save')}
               </button>
-              {showingRole || !selectedProject.isBuiltin ? (
+              {!creatingProject && !creatingRole && (showingRole || !selectedProject?.isBuiltin) ? (
                 <button
                   type="button"
                   onClick={showingRole ? deleteRole : deleteProject}
@@ -1144,7 +1234,10 @@ export function MekaProjectRoleEditorRoute() {
           <nav className="flex flex-col gap-1" aria-label={t('meka.projectNavigation')}>
             <button
               type="button"
-              onClick={() => setSelectedRoleId(null)}
+              onClick={() => {
+                setCreatingRole(false);
+                setSelectedRoleId(null);
+              }}
               aria-current={!showingRole ? 'page' : undefined}
               className={cn(
                 'flex min-h-10 w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-13 transition-colors',
@@ -1159,42 +1252,49 @@ export function MekaProjectRoleEditorRoute() {
             </button>
           </nav>
 
-          <div className="mt-6 flex items-center justify-between gap-2 px-3">
-            <h2 className="text-xs font-medium uppercase tracking-wider text-[var(--text-tertiary)]">
-              {t('meka.roles')}
-            </h2>
-            <button
-              type="button"
-              onClick={createRole}
-              disabled={busy}
-              aria-label={t('meka.newRole')}
-              className="grid size-7 shrink-0 place-items-center rounded-full text-[var(--text-tertiary)] transition-colors hover:bg-[var(--surface-hover-soft)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:opacity-40"
-            >
-              <Plus size={14} aria-hidden="true" />
-            </button>
-          </div>
-          <nav className="mt-2 flex flex-col gap-1" aria-label={t('meka.roles')}>
-            {selectedProject.roles.map((item) => (
+          {!creatingProject ? (
+            <div className="mt-6 flex items-center justify-between gap-2 px-3">
+              <h2 className="text-xs font-medium uppercase tracking-wider text-[var(--text-tertiary)]">
+                {t('meka.roles')}
+              </h2>
               <button
-                key={item.id}
                 type="button"
-                onClick={() => setSelectedRoleId(item.id)}
-                aria-current={item.id === selectedRoleId ? 'page' : undefined}
-                className={cn(
-                  'flex min-h-10 w-full items-center gap-3 rounded-lg px-3 py-2 text-left transition-colors',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
-                  item.id === selectedRoleId
-                    ? 'bg-[var(--surface-chip)] text-[var(--text-primary)]'
-                    : 'text-[var(--text-secondary)] hover:bg-[var(--surface-hover-soft)] hover:text-[var(--text-primary)]',
-                )}
+                onClick={createRole}
+                disabled={busy}
+                aria-label={t('meka.newRole')}
+                className="grid size-7 shrink-0 place-items-center rounded-full text-[var(--text-tertiary)] transition-colors hover:bg-[var(--surface-hover-soft)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:opacity-40"
               >
-                <Users size={15} className="shrink-0" aria-hidden="true" />
-                <span className="min-w-0 flex-1 truncate text-13 font-medium">
-                  {item.displayName}
-                </span>
+                <Plus size={14} aria-hidden="true" />
               </button>
-            ))}
-          </nav>
+            </div>
+          ) : null}
+          {!creatingProject ? (
+            <nav className="mt-2 flex flex-col gap-1" aria-label={t('meka.roles')}>
+              {selectedProject?.roles.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => {
+                    setCreatingRole(false);
+                    setSelectedRoleId(item.id);
+                  }}
+                  aria-current={item.id === selectedRoleId ? 'page' : undefined}
+                  className={cn(
+                    'flex min-h-10 w-full items-center gap-3 rounded-lg px-3 py-2 text-left transition-colors',
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
+                    item.id === selectedRoleId
+                      ? 'bg-[var(--surface-chip)] text-[var(--text-primary)]'
+                      : 'text-[var(--text-secondary)] hover:bg-[var(--surface-hover-soft)] hover:text-[var(--text-primary)]',
+                  )}
+                >
+                  <Users size={15} className="shrink-0" aria-hidden="true" />
+                  <span className="min-w-0 flex-1 truncate text-13 font-medium">
+                    {item.displayName}
+                  </span>
+                </button>
+              ))}
+            </nav>
+          ) : null}
         </aside>
 
         <section className="min-w-0 flex-1 overflow-y-auto px-8 pb-16 pt-8 [scrollbar-gutter:stable]">
@@ -1449,7 +1549,12 @@ export function MekaProjectRoleEditorRoute() {
                 <div className={cn(detailSurfaceClass, 'mt-5')}>
                   <label className={fieldLabelClass}>
                     <span>{t('meka.projectPath')}</span>
-                    <input className={inputClass} value={project.path} disabled />
+                    <input
+                      className={inputClass}
+                      value={project.path}
+                      disabled={selectionReadOnly || !creatingProject}
+                      onChange={(event) => setProject({ ...project, path: event.target.value })}
+                    />
                   </label>
                   <div className="mt-5 border-t border-[var(--border-default)] pt-5">
                     <div className="grid gap-4 md:grid-cols-2">
@@ -1532,7 +1637,9 @@ export function MekaProjectRoleEditorRoute() {
                 </div>
               </section>
 
-              <MekaProjectRemoteInstances projectId={selectedProject.id} />
+              {!creatingProject && selectedProject ? (
+                <MekaProjectRemoteInstances projectId={selectedProject.id} />
+              ) : null}
 
               <section className={detailSectionClass}>
                 <DetailSectionHeader
@@ -1572,189 +1679,197 @@ export function MekaProjectRoleEditorRoute() {
                 </div>
               </section>
 
-              <section className={detailSectionClass}>
-                <DetailSectionHeader
-                  icon={<BookOpen size={18} aria-hidden="true" />}
-                  title={t('meka.metadata')}
-                  action={
-                    !selectionReadOnly ? (
-                      <button className={buttonClass} onClick={discoverMetadata} disabled={busy}>
-                        <RefreshCw
-                          size={14}
-                          className={cn(busy && 'animate-spin')}
-                          aria-hidden="true"
-                        />
-                        {t('meka.discover')}
-                      </button>
-                    ) : undefined
-                  }
-                />
-                <div className="mt-5 flex flex-col gap-4">
-                  {METADATA_TYPE_ORDER.map((itemType) => {
-                    const groupItems = metadata.filter((item) => item.itemType === itemType);
-                    return (
-                      <section
-                        key={itemType}
-                        className="rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated-soft)] p-4"
-                      >
-                        <div className="mb-3 flex items-baseline gap-2">
-                          <h3 className="text-14 font-medium text-[var(--text-primary)]">
-                            {t(`meka.metadataTypes.${itemType}`)}
-                          </h3>
-                          <span className="text-12 tabular-nums text-[var(--text-tertiary)]">
-                            {groupItems.length}
-                          </span>
-                        </div>
-                        {groupItems.length > 0 ? (
-                          <div className="flex flex-col gap-2">
-                            {groupItems.map((item) => {
-                              const itemIndex = metadata.indexOf(item);
-                              return (
-                                <details
-                                  key={`${item.itemType}:${item.sourcePath}`}
-                                  className="group rounded-lg border border-[var(--border-default)] bg-[var(--surface-elevated)]"
-                                >
-                                  <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3">
-                                    <ChevronRight
-                                      size={14}
-                                      className="shrink-0 text-[var(--text-tertiary)] transition-transform group-open:rotate-90"
-                                      aria-hidden="true"
-                                    />
-                                    <span className="min-w-0 flex-1">
-                                      <span className="block truncate text-13 font-medium text-[var(--text-primary)]">
-                                        {item.displayName ?? item.name}
+              {!creatingProject ? (
+                <section className={detailSectionClass}>
+                  <DetailSectionHeader
+                    icon={<BookOpen size={18} aria-hidden="true" />}
+                    title={t('meka.metadata')}
+                    action={
+                      !selectionReadOnly ? (
+                        <button className={buttonClass} onClick={discoverMetadata} disabled={busy}>
+                          <RefreshCw
+                            size={14}
+                            className={cn(busy && 'animate-spin')}
+                            aria-hidden="true"
+                          />
+                          {t('meka.discover')}
+                        </button>
+                      ) : undefined
+                    }
+                  />
+                  <div className="mt-5 flex flex-col gap-4">
+                    {METADATA_TYPE_ORDER.map((itemType) => {
+                      const groupItems = metadata.filter((item) => item.itemType === itemType);
+                      return (
+                        <section
+                          key={itemType}
+                          className="rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated-soft)] p-4"
+                        >
+                          <div className="mb-3 flex items-baseline gap-2">
+                            <h3 className="text-14 font-medium text-[var(--text-primary)]">
+                              {t(`meka.metadataTypes.${itemType}`)}
+                            </h3>
+                            <span className="text-12 tabular-nums text-[var(--text-tertiary)]">
+                              {groupItems.length}
+                            </span>
+                          </div>
+                          {groupItems.length > 0 ? (
+                            <div className="flex flex-col gap-2">
+                              {groupItems.map((item) => {
+                                const itemIndex = metadata.indexOf(item);
+                                return (
+                                  <details
+                                    key={`${item.itemType}:${item.sourcePath}`}
+                                    className="group rounded-lg border border-[var(--border-default)] bg-[var(--surface-elevated)]"
+                                  >
+                                    <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3">
+                                      <ChevronRight
+                                        size={14}
+                                        className="shrink-0 text-[var(--text-tertiary)] transition-transform group-open:rotate-90"
+                                        aria-hidden="true"
+                                      />
+                                      <span className="min-w-0 flex-1">
+                                        <span className="block truncate text-13 font-medium text-[var(--text-primary)]">
+                                          {item.displayName ?? item.name}
+                                        </span>
+                                        <span className="mt-0.5 block truncate text-11 text-[var(--text-tertiary)]">
+                                          {t(`meka.metadataTypes.${item.itemType}`)} ·{' '}
+                                          {item.sourcePath}
+                                        </span>
                                       </span>
-                                      <span className="mt-0.5 block truncate text-11 text-[var(--text-tertiary)]">
-                                        {t(`meka.metadataTypes.${item.itemType}`)} ·{' '}
-                                        {item.sourcePath}
-                                      </span>
-                                    </span>
-                                    <input
-                                      type="checkbox"
-                                      checked={item.enabled}
-                                      disabled={selectionReadOnly}
-                                      onClick={(event) => event.stopPropagation()}
-                                      onChange={(event) =>
-                                        setMetadata(
-                                          metadata.map((current, currentIndex) =>
-                                            currentIndex === itemIndex
-                                              ? { ...current, enabled: event.target.checked }
-                                              : current,
-                                          ),
-                                        )
-                                      }
-                                      aria-label={t('meka.enabled')}
-                                    />
-                                  </summary>
-                                  <div className="border-t border-[var(--border-default)] px-4 py-4">
-                                    <div className="grid gap-4 md:grid-cols-2">
-                                      <label className={fieldLabelClass}>
-                                        <span>{t('meka.metadataDisplayName')}</span>
-                                        <input
-                                          className={inputClass}
-                                          value={item.displayName ?? ''}
-                                          disabled={selectionReadOnly}
-                                          onChange={(event) =>
-                                            setMetadata(
-                                              metadata.map((current, currentIndex) =>
-                                                currentIndex === itemIndex
-                                                  ? { ...current, displayName: event.target.value }
-                                                  : current,
-                                              ),
-                                            )
-                                          }
-                                        />
-                                      </label>
-                                      <label className={fieldLabelClass}>
-                                        <span>{t('meka.description')}</span>
-                                        <input
-                                          className={inputClass}
-                                          value={item.description ?? ''}
-                                          disabled={selectionReadOnly}
-                                          onChange={(event) =>
-                                            setMetadata(
-                                              metadata.map((current, currentIndex) =>
-                                                currentIndex === itemIndex
-                                                  ? { ...current, description: event.target.value }
-                                                  : current,
-                                              ),
-                                            )
-                                          }
-                                        />
-                                      </label>
-                                    </div>
-                                    <div className="mt-4 grid gap-4 md:grid-cols-2">
-                                      <div>
-                                        <div className="mb-2 text-12 text-[var(--text-secondary)]">
-                                          {t('meka.disciplines')}
-                                        </div>
-                                        <VocabEditor
-                                          values={item.disciplines}
-                                          disabled={selectionReadOnly}
-                                          placeholder={t('meka.vocabAddPlaceholder')}
-                                          onChange={(disciplines) =>
-                                            setMetadata(
-                                              metadata.map((current, currentIndex) =>
-                                                currentIndex === itemIndex
-                                                  ? { ...current, disciplines }
-                                                  : current,
-                                              ),
-                                            )
-                                          }
-                                        />
-                                      </div>
-                                      <div>
-                                        <div className="mb-2 text-12 text-[var(--text-secondary)]">
-                                          {t('meka.domains')}
-                                        </div>
-                                        <VocabEditor
-                                          values={item.domains}
-                                          disabled={selectionReadOnly}
-                                          placeholder={t('meka.vocabAddPlaceholder')}
-                                          onChange={(domains) =>
-                                            setMetadata(
-                                              metadata.map((current, currentIndex) =>
-                                                currentIndex === itemIndex
-                                                  ? { ...current, domains }
-                                                  : current,
-                                              ),
-                                            )
-                                          }
-                                        />
-                                      </div>
-                                    </div>
-                                    <label className={cn(fieldLabelClass, 'mt-4')}>
-                                      <span>{t('meka.notes')}</span>
-                                      <textarea
-                                        className={textAreaClass}
-                                        value={item.notes ?? ''}
+                                      <input
+                                        type="checkbox"
+                                        checked={item.enabled}
                                         disabled={selectionReadOnly}
+                                        onClick={(event) => event.stopPropagation()}
                                         onChange={(event) =>
                                           setMetadata(
                                             metadata.map((current, currentIndex) =>
                                               currentIndex === itemIndex
-                                                ? { ...current, notes: event.target.value }
+                                                ? { ...current, enabled: event.target.checked }
                                                 : current,
                                             ),
                                           )
                                         }
+                                        aria-label={t('meka.enabled')}
                                       />
-                                    </label>
-                                  </div>
-                                </details>
-                              );
-                            })}
-                          </div>
-                        ) : (
-                          <p className="text-12 text-[var(--text-tertiary)]">
-                            {t('meka.metadataTypeEmpty')}
-                          </p>
-                        )}
-                      </section>
-                    );
-                  })}
-                </div>
-              </section>
+                                    </summary>
+                                    <div className="border-t border-[var(--border-default)] px-4 py-4">
+                                      <div className="grid gap-4 md:grid-cols-2">
+                                        <label className={fieldLabelClass}>
+                                          <span>{t('meka.metadataDisplayName')}</span>
+                                          <input
+                                            className={inputClass}
+                                            value={item.displayName ?? ''}
+                                            disabled={selectionReadOnly}
+                                            onChange={(event) =>
+                                              setMetadata(
+                                                metadata.map((current, currentIndex) =>
+                                                  currentIndex === itemIndex
+                                                    ? {
+                                                        ...current,
+                                                        displayName: event.target.value,
+                                                      }
+                                                    : current,
+                                                ),
+                                              )
+                                            }
+                                          />
+                                        </label>
+                                        <label className={fieldLabelClass}>
+                                          <span>{t('meka.description')}</span>
+                                          <input
+                                            className={inputClass}
+                                            value={item.description ?? ''}
+                                            disabled={selectionReadOnly}
+                                            onChange={(event) =>
+                                              setMetadata(
+                                                metadata.map((current, currentIndex) =>
+                                                  currentIndex === itemIndex
+                                                    ? {
+                                                        ...current,
+                                                        description: event.target.value,
+                                                      }
+                                                    : current,
+                                                ),
+                                              )
+                                            }
+                                          />
+                                        </label>
+                                      </div>
+                                      <div className="mt-4 grid gap-4 md:grid-cols-2">
+                                        <div>
+                                          <div className="mb-2 text-12 text-[var(--text-secondary)]">
+                                            {t('meka.disciplines')}
+                                          </div>
+                                          <VocabEditor
+                                            values={item.disciplines}
+                                            disabled={selectionReadOnly}
+                                            placeholder={t('meka.vocabAddPlaceholder')}
+                                            onChange={(disciplines) =>
+                                              setMetadata(
+                                                metadata.map((current, currentIndex) =>
+                                                  currentIndex === itemIndex
+                                                    ? { ...current, disciplines }
+                                                    : current,
+                                                ),
+                                              )
+                                            }
+                                          />
+                                        </div>
+                                        <div>
+                                          <div className="mb-2 text-12 text-[var(--text-secondary)]">
+                                            {t('meka.domains')}
+                                          </div>
+                                          <VocabEditor
+                                            values={item.domains}
+                                            disabled={selectionReadOnly}
+                                            placeholder={t('meka.vocabAddPlaceholder')}
+                                            onChange={(domains) =>
+                                              setMetadata(
+                                                metadata.map((current, currentIndex) =>
+                                                  currentIndex === itemIndex
+                                                    ? { ...current, domains }
+                                                    : current,
+                                                ),
+                                              )
+                                            }
+                                          />
+                                        </div>
+                                      </div>
+                                      <label className={cn(fieldLabelClass, 'mt-4')}>
+                                        <span>{t('meka.notes')}</span>
+                                        <textarea
+                                          className={textAreaClass}
+                                          value={item.notes ?? ''}
+                                          disabled={selectionReadOnly}
+                                          onChange={(event) =>
+                                            setMetadata(
+                                              metadata.map((current, currentIndex) =>
+                                                currentIndex === itemIndex
+                                                  ? { ...current, notes: event.target.value }
+                                                  : current,
+                                              ),
+                                            )
+                                          }
+                                        />
+                                      </label>
+                                    </div>
+                                  </details>
+                                );
+                              })}
+                            </div>
+                          ) : (
+                            <p className="text-12 text-[var(--text-tertiary)]">
+                              {t('meka.metadataTypeEmpty')}
+                            </p>
+                          )}
+                        </section>
+                      );
+                    })}
+                  </div>
+                </section>
+              ) : null}
             </div>
           ) : (
             <div className="flex h-full items-center justify-center text-13 text-[var(--text-tertiary)]">

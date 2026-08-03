@@ -8173,8 +8173,9 @@
       "empty": "暂无可用的远程项目实例。",
       "available": "可用",
       "unavailable": "不可用",
-      "templatePrompt": "请输入模板 ID：",
-      "instanceNamePrompt": "请输入实例名称："
+      "template": "项目模板",
+      "instanceName": "实例名称",
+      "instanceNameInvalid": "请输入 2–64 位字母、数字、点、短横线或下划线，且首位必须是字母或数字。"
     }
   }
 }

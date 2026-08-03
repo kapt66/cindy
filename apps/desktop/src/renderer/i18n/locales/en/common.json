@@ -7967,8 +7967,9 @@
       "empty": "No remote project instances are available.",
       "available": "Available",
       "unavailable": "Unavailable",
-      "templatePrompt": "Enter a template ID:",
-      "instanceNamePrompt": "Enter an instance name:"
+      "template": "Project template",
+      "instanceName": "Instance name",
+      "instanceNameInvalid": "Use 2–64 letters, numbers, dots, dashes, or underscores, starting with a letter or number."
     }
   },
   "billing": {
