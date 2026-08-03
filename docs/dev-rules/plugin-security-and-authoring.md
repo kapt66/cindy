@@ -28,7 +28,7 @@
 | 身份卡字段与校验、管子协议类型                  | `apps/desktop/src/shared/ghost.ts`（`validateGhostManifest`、`cindy.send` / `cindy.onHostMessage` 类型）         |
 | 打包限制                                        | `apps/desktop/src/main/cindy-brain/forge.ts` 的 `packGhostDir`                                                   |
 | 运行时、沙箱进程与生命周期                      | `apps/desktop/src/main/cindy-brain/runtime/GhostRuntime.ts`、`GhostManager.ts`                                   |
-| 能力 slot（网络／通知／文件系统／技能／宿主等） | `apps/desktop/src/main/cindy-brain/networkSlot.ts`、`notifySlot.ts`、`fsSlot.ts`、`cindySlot.ts`、`skillSlot.ts` |
+| 能力 slot（网络／通知／文件系统／文件定位／技能／宿主等） | `apps/desktop/src/main/cindy-brain/networkSlot.ts`、`notifySlot.ts`、`fsSlot.ts`、`revealSlot.ts`、`cindySlot.ts`、`skillSlot.ts` |
 | 面板供片、注入主题 token 与协议                 | `apps/desktop/src/renderer/cindy-brain/ghostPanelTheme.ts`、`cindy-ghost://` 分支                                |
 | 权限注入／更新确认 UI                           | `apps/desktop/src/renderer/cindy-brain/GhostPermissionList.tsx`                                                  |
 | 远程／手机版能力准入白名单                      | `packages/device-link/src/allowlist.ts`                                                                          |
@@ -60,6 +60,14 @@
   也不构成授权。
 - 新增或修改 slot 时，除同步编写手册与校验（下节 5）外，还必须同步 shared 类型、
   preload／host handler、权限 UI（`GhostPermissionList.tsx`）、错误边界和测试。
+- `reveal` 槽只允许插件请求 Host 在系统文件管理器中定位一个已存在的本机普通文件或目录。
+  请求中的绝对路径由 Host 重新 `realpath` / `stat` 校验；文件夹通过系统文件管理器打开其
+  父目录并选中该文件夹。路径不存在、来自远程工作区或无法交给 OS 时 fail closed；结果不
+  回传规范化路径，也不授予读写权限。
+  这是独立的安装权限，不能通过 `fs` 槽或面板 Renderer 的 `window.electronAPI` 绕过。
+- `pick` 槽支持 `mode: "file"` 与 `mode: "directory"`。两者都必须由用户在系统选择框
+  中亲选后才返回；`file` 模式不支持 `deposit`，目录票据仍只适用于 `directory` 模式。
+  绝对路径仅提供给声明 `node` 或 `reveal` 的插件，未声明两者的插件必须使用目录票据。
 - `skill` 槽是唯一**越出沙箱**的能力：技能指令由主 Agent 以用户全部权限执行、全局
   生效、不随 workdir 级停用隐藏。其安全边界是**声明一致性**（manifest 里的
   name／description 必须与 SKILL.md frontmatter 逐字一致，`skillSlot.ts` 的

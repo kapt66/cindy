@@ -2501,10 +2501,10 @@ describe('ghost · 2026-07-23 通用能力四件套(session-context / pick / pre
     expect(withPreview({ hosts: ['a.example.com'], extra: 1 }).ok).toBe(false);
   });
 
-  it('session-context / pick / workspace 槽:纯槽声明即可装入,并生成对应权限项', () => {
+  it('session-context / pick / preview / reveal / workspace 槽:纯槽声明即可装入,并生成对应权限项', () => {
     const r = validateGhostManifest({
       ...goodChipManifest(),
-      slots: ['panel', 'session-context', 'pick', 'preview', 'workspace'],
+      slots: ['panel', 'session-context', 'pick', 'preview', 'reveal', 'workspace'],
       preview: { hosts: ['example.com'] },
     });
     expect(r.ok).toBe(true);
@@ -2531,8 +2531,15 @@ describe('ghost · 2026-07-23 通用能力四件套(session-context / pick / pre
           labelKey: 'workspace',
           detailKey: 'workspaceDetail',
         }),
+        expect.objectContaining({
+          key: 'reveal',
+          kind: 'reveal',
+          labelKey: 'reveal',
+          detailKey: 'revealDetail',
+        }),
       ]),
     );
+    expect(ghostContentKeys(r.manifest)).toContain('slotReveal');
   });
 
   it('ghostPreviewUrlAllowed:https + 白名单命中放行;http 仅 loopback;凭证/越界/畸形拒', () => {

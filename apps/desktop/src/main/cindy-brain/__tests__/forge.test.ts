@@ -495,18 +495,21 @@ describe('FORGE_GUIDE', () => {
       'anyOf',
       'secret:brave_api_key',
       'Node 凭证同样可参与 setup.requires',
-      // 2026-07-23 通用能力四件套:会话上下文 / node 多入口 / 目录选择 / 面板预览。
+      // 2026-07-23 通用能力四件套:会话上下文 / node 多入口 / 文件/文件夹选择 / 面板预览。
       '会话上下文(session-context 槽)',
       'workdir_is_local',
       'workdir_is_read_only',
       'node.entries',
       'node.secretBindings',
       'request.cindy.secrets',
-      '目录选择(pick 槽)',
+      '文件/文件夹选择(pick 槽)',
       'cindy.pick',
       '面板预览(preview 槽)',
       'cindy.preview',
       'preview.hosts',
+      '文件定位(reveal 槽)',
+      'cindy.reveal',
+      'reveal-request',
       // 2026-07-23 长任务续命:maxTotalMs 沉默窗口语义。
       'maxTotalMs',
       '有动静就续期',
@@ -532,8 +535,8 @@ describe('FORGE_GUIDE', () => {
       '插件默认打开方式',
       '不要在 settingsHtml 里另画一份',
       // 2026-07-25 skill 槽:随包捆绑 Agent Skills,声明一致性 + 全局作用域披露。
-      // 卡槽总数标记随 workspace 槽合入更新为十五个。
-      '十五个卡槽',
+      // 卡槽总数标记随 reveal 槽合入更新为十六个。
+      '十六个卡槽',
       '捆绑 Agent Skills(skill 槽)',
       'skill.items',
       'SKILL.md',
@@ -541,7 +544,7 @@ describe('FORGE_GUIDE', () => {
       '逐字一致',
       '不受插件沙箱约束',
       // 2026-07-25 工作区会话(workspace 槽):目录亲选/确认卡授权,判重复用,
-      // 空会话入口落侧边栏;§2 卡槽清单与 §4.17 章节同步。
+      // 空会话入口落侧边栏;§2 卡槽清单与 §4.18 章节同步。
       '创建工作区会话(workspace 槽)',
       'cindy.workspace',
       "kind: 'ensure-session'",

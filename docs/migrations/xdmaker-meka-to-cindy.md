@@ -613,6 +613,15 @@ Cindy 现有权限确认；无窗口、无会话监听或未明确允许时一�
 
 #### 4.7.1 MCPRouter Meka 插件仓库
 
+2026-08-03 Desktop 与 Meka 插件作者契约新增 `reveal` 能力槽：插件可通过
+`cindy.reveal({ path })` 请求宿主在 Explorer/Finder 中选中一个已存在的本机文件或文件夹。
+文件夹由系统文件管理器打开父目录并选中。该能力独立于 `fs`，由 Main 重新执行 realpath/stat 校验并限速，结果不回传路径，也不支持
+SSH 远程工作区路径；Meka 插件仓同步 `ghost.json` slot、Forge 手册快照和示例用法。
+
+2026-08-03 `pick` 槽扩展为 `file` / `directory` 两种系统选择模式。用户亲选文件或文件夹后，
+仅声明 `node` 或 `reveal` 的插件获得绝对路径；`file` 模式不支持目录过户票据，目录票据仍只
+适用于 `directory` 模式。该能力不进入远程/移动端，Host 继续负责窗口挂靠、取消、限速和权限校验。
+
 本轮新增的 Meka 插件分发不依赖上游 Cindy 服务端。公开目录只依赖 MCPRouter 部署地址，
 个人与指定用户分享目录复用已绑定 MCPRouter 的身份：
 

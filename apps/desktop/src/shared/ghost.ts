@@ -76,10 +76,10 @@ const GHOST_ID_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
  * 注入 args.session_context。
  * 只注入宿主认证过的事实,插件与 agent 自报的同名字段一律被剥除;远程工作区
  * (workdir 不在本机)时 workdir_is_local=false,插件不得把它当本机路径用。
- * 'pick' = 目录选择(2026-07-23):插件经管子申请主机弹**系统级**选文件夹窗口,
+ * 'pick' = 文件/文件夹选择(2026-07-23):插件经管子申请主机弹**系统级**选择窗口,
  * 用户亲手选中即授权(与浏览器文件选择同一哲学:决定权在用户的点击上)。
- * 返回票据(dir_deposit,同 ghost_call dir 通道);声明了 node 槽的插件额外
- * 拿到绝对路径(Node 侧本就有用户级本机权限,路径保密无意义,可信才是重点)。
+ * 返回票据(dir_deposit,同 ghost_call dir 通道);声明了 node 或 reveal 槽的插件额外
+ * 拿到绝对路径(Node 侧本就有用户级本机权限,reveal 只消费用户亲选事实)。
  * 'preview' = 面板预览(2026-07-23):插件经管子申请在右侧栏内置浏览器里打开
  * 一个网址标签页。网址范围装入时在 preview.hosts 白名单里定死(同 network
  * 域名白名单语法),运行期主机逐次校验,范围外一律拒——防钓鱼是结构性的。
@@ -90,6 +90,9 @@ const GHOST_ID_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
  * 约束,也不随"某工作目录停用本插件"而隐藏——仅全局停用/卸载才撤链。因此
  * manifest 全声明式(items 的 name/description 必须与 SKILL.md frontmatter 逐字
  * 一致,打包与装入双侧强制),装入确认框逐条列出并置于清单最上部。
+ * 'reveal' = 文件定位(2026-08-03):插件请主机在系统文件管理器中选中一个
+ * 已知的本机文件或文件夹。路径由插件自己提供,主机重新 realpath/检查存在性;
+ * 该槽不授予读写权限,也不把路径回传给插件。
  * 'workspace' = 工作区会话(2026-07-25):插件请主机在指定本机项目目录下确保
  * 存在一个会话入口并显示在侧边栏——目录下已有 active 会话即复用,没有才创建
  * 空 draft 会话(不拉起 agent 进程)。目录授权两条路:系统选文件夹窗口亲选
@@ -112,6 +115,7 @@ export const GHOST_SLOTS = [
   'pick',
   'preview',
   'skill',
+  'reveal',
   'workspace',
 ] as const;
 export type GhostSlot = (typeof GHOST_SLOTS)[number];
@@ -1321,6 +1325,7 @@ export function ghostContentKeys(manifest: GhostManifest): string[] {
     else if (slot === 'fs') keys.push('slotFs');
     // skill 是信任面最高的内容(给主 Agent 灌指令),详情页必须如实露出。
     else if (slot === 'skill') keys.push('slotSkill');
+    else if (slot === 'reveal') keys.push('slotReveal');
     else if (slot === 'workspace') keys.push('slotWorkspace');
     // 'panel' 槽已由 manifest.panel 覆盖,不重复
   }
@@ -1383,7 +1388,7 @@ export interface GhostPermissionItem {
   /** 稳定键:更新 diff 按它对齐(内容变化视为移除+新增,如面板换边)。 */
   key: string;
   /** 图标分组(renderer 按 kind 选图标)。 */
-  kind: 'cindy' | 'agent' | 'node' | 'tool' | 'command' | 'panel' | 'code' | 'subscribe' | 'card' | 'network' | 'notify' | 'fs' | 'session-context' | 'pick' | 'preview' | 'skill' | 'workspace';
+  kind: 'cindy' | 'agent' | 'node' | 'tool' | 'command' | 'panel' | 'code' | 'subscribe' | 'card' | 'network' | 'notify' | 'fs' | 'session-context' | 'pick' | 'preview' | 'skill' | 'reveal' | 'workspace';
   /** i18n key 后缀,消费方拼 `settings.ghosts.perm.<labelKey>`。 */
   labelKey: string;
   /** i18n 插值参数(工具名、指令名、面板标题等)。 */
@@ -1595,6 +1600,9 @@ export function ghostPermissionItems(manifest: GhostManifest): GhostPermissionIt
   // 会话权限/其它目录逐次确认),让用户装入前就知道边界在哪。
   if (manifest.slots.includes('fs')) {
     items.push({ key: 'fs', kind: 'fs', labelKey: 'fsWrite', detailKey: 'fsWriteDetail' });
+  }
+  if (manifest.slots.includes('reveal')) {
+    items.push({ key: 'reveal', kind: 'reveal', labelKey: 'reveal', detailKey: 'revealDetail' });
   }
   // pick 槽:能弹系统选文件夹窗口。授权动作是用户亲手选中,装入时只告知
   // "它会来要"。
@@ -4090,9 +4098,11 @@ export function validateGhostManifest(raw: unknown): ManifestValidation {
  *     无需另配对)。gen_image / edit_image;须声明 'cindy' 卡槽与能力详单。
  *   - fetch-request:network 槽代理 HTTP(invoke 返回值即响应,无需另配对)。
  *     须声明 'network' 卡槽与域名详单;凭证由主机注入,意识永不经手。
- *   - pick-request:pick 槽——请主机弹系统级选文件夹窗口(用户亲选即授权)。
+ *   - pick-request:pick 槽——请主机弹系统级选文件/文件夹窗口(用户亲选即授权)。
  *   - preview-request:preview 槽——请主机在右侧栏内置浏览器开预览标签页
  *     (URL 必须命中身份卡 preview.hosts 白名单)。
+ *   - reveal-request:reveal 槽——请主机在系统文件管理器中选中一个本机文件或文件夹;
+ *     路径由主机重新校验且不回传。
  *
  * 身份永远由主机按 webContents 反查(不信自报),这里的类型只描述载荷形状。
  */
@@ -4308,33 +4318,38 @@ export const GHOST_PICK_TITLE_MAX_CHARS = 80;
 /** pick 槽:同一插件两次弹选择框的最小间隔 ms(防对话框骚扰)。 */
 export const GHOST_PICK_MIN_INTERVAL_MS = 3000;
 
+/** reveal 槽:路径字符串长度上限。 */
+export const GHOST_REVEAL_PATH_MAX_CHARS = 4096;
+/** reveal 槽:同一插件两次定位的最小间隔 ms(防系统文件管理器刷屏)。 */
+export const GHOST_REVEAL_MIN_INTERVAL_MS = 1000;
+
 /**
- * 上行:pick 槽——请主机弹系统级选文件夹窗口。用户亲手选中即授权;
+ * 上行:pick 槽——请主机弹系统级选文件/文件夹窗口。用户亲手选中即授权;
  * 取消即拒,插件拿不到任何路径信息。
  */
 export interface GhostPipePickRequest {
   type: 'pick-request';
-  /** v1 只支持选目录;将来扩文件类型时在此收窄枚举。 */
-  mode: 'directory';
+  /** 选择文件或文件夹。 */
+  mode: 'file' | 'directory';
   /** 选择框内的用途说明(净化后随插件名一起展示,让用户知道谁在要、要来干嘛)。 */
   title?: string;
   /**
    * 是否同时签发目录过户票据(dir_deposit,上传等主机代办用;收集有
-   * 文件数/体积上限,大目录会失败)。未声明 node 槽的插件必须请求票据——
+   * 文件数/体积上限,大目录会失败)。未声明 node/reveal 槽的插件必须请求票据——
    * 否则选完什么都拿不到,请求本身就是无意义的。
    */
   deposit?: boolean;
 }
 
-/** pick 槽结构化返回。path 仅在插件声明了 node 槽时提供(见 GHOST_SLOTS 注释)。 */
+/** pick 槽结构化返回。path 仅在插件声明了 node 或 reveal 槽时提供。 */
 export type GhostPipePickResult =
   | {
       ok: true;
-      /** 所选目录名(展示用,不含上级路径)。 */
+      /** 所选文件或目录名(展示用,不含上级路径)。 */
       name: string;
-      /** 绝对路径:仅 node 槽插件可见(Node 侧本就有用户级本机权限)。 */
+      /** 绝对路径:仅 node/reveal 槽插件可见。 */
       path?: string;
-      /** 目录过户票据(同 ghost_call dir 通道;上传等主机代办凭票取件)。 */
+      /** 目录过户票据(仅 directory 模式;同 ghost_call dir 通道)。 */
       dir_deposit?: DirDepositReceiptShape;
     }
   | {
@@ -4447,6 +4462,28 @@ export type GhostPipePreviewResult =
         | 'URL_NOT_ALLOWED'
         | 'RATE_LIMITED'
         | 'HOST_NOT_READY'
+        | 'INTERNAL';
+      message: string;
+    };
+
+/** 上行:reveal 槽——请主机在系统文件管理器中选中一个本机文件或文件夹。 */
+export interface GhostPipeRevealRequest {
+  type: 'reveal-request';
+  /** 本机绝对路径;主机只接受现存普通文件或文件夹。 */
+  path: string;
+}
+
+/** reveal 槽结构化返回;不回传路径。 */
+export type GhostPipeRevealResult =
+  | { ok: true }
+  | {
+      ok: false;
+      errorCode:
+        | 'PERMISSION_DENIED'
+        | 'INVALID_REQUEST'
+        | 'NOT_FOUND'
+        | 'NOT_FILE'
+        | 'RATE_LIMITED'
         | 'INTERNAL';
       message: string;
     };

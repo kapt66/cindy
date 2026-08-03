@@ -154,6 +154,7 @@ import { GhostAgentSlot, type GhostAgentTurnRunner } from './agentSlot.js';
 import { GhostNodeRuntimeBroker } from './nodeRuntimeBroker.js';
 import { GhostPickSlot } from './pickSlot.js';
 import { GhostPreviewSlot } from './previewSlot.js';
+import { GhostRevealSlot } from './revealSlot.js';
 import { GhostWorkspaceSlot, type WorkspaceSessionService } from './workspaceSlot.js';
 import type { GhostTrustRegistry } from './ghostSignature.js';
 import { GhostNotifySlot, sanitizeGhostNoticeText } from './notifySlot.js';
@@ -1600,6 +1601,18 @@ export function getGhostPickSlot(): GhostPickSlot {
         if (result.canceled || result.filePaths.length === 0) return null;
         return result.filePaths[0];
       },
+      showFileDialog: async ({ ghostName, purpose }) => {
+        const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+        if (!win || win.isDestroyed()) throw new Error('没有可挂靠的宿主窗口');
+        const message = t('settings.ghosts.pick.fileDialogMessage').replaceAll('{{name}}', ghostName);
+        const result = await dialog.showOpenDialog(win, {
+          title: t('settings.ghosts.pick.fileDialogTitle'),
+          message: purpose ? `${message}\n${purpose}` : message,
+          properties: ['openFile'],
+        });
+        if (result.canceled || result.filePaths.length === 0) return null;
+        return result.filePaths[0];
+      },
       // userGranted=true 的授权事实 = 用户刚在系统对话框里亲手选中了这个目录
       // (与确认卡点允许同强度;dirDeposit 注释的授权语义包含本通道)。
       depositDir: (ghostId, dirAbs) =>
@@ -2453,6 +2466,19 @@ export function getGhostNetworkSlot(): GhostNetworkSlot {
 }
 
 let fsSlotSingleton: GhostFsSlot | null = null;
+let revealSlotSingleton: GhostRevealSlot | null = null;
+
+/** 文件定位槽单例(reveal):只把已存在普通文件或文件夹交给 OS 文件管理器选中。 */
+export function getGhostRevealSlot(): GhostRevealSlot {
+  if (!revealSlotSingleton) {
+    revealSlotSingleton = new GhostRevealSlot({
+      getGhost: findAvailableGhost,
+      showItemInFolder: (filePath) => shell.showItemInFolder(filePath),
+      log,
+    });
+  }
+  return revealSlotSingleton;
+}
 
 /**
  * fs 槽单例(写文件,2026-07-14):deps 全部懒取现查——意识清单实扫、
@@ -3624,8 +3650,8 @@ export function registerGhostIpc(): void {
   // 代办,返回值即结果)/ card-update(卡槽③供片,cardService 校验链)/
   // notify(系统提示,notifySlot 资格审+限速)/ fs-request(fs 槽代写文件,
   // fsSlot 三档守门)/ agent-request(Agent 新回合,一次性用户票或后台权限
-  // 守门)/ node-request(随包 Node JSON-RPC/MCP stdio 中继)/ pick-request
-  // (系统级选文件夹,用户亲选即授权)/ preview-request(右侧栏开预览标签,
+  // 守门)/ reveal-request(reveal 槽定位本机文件)/ node-request(随包 Node JSON-RPC/MCP stdio 中继)/ pick-request
+  // (系统级选文件/文件夹,用户亲选即授权)/ preview-request(右侧栏开预览标签,
   // preview.hosts 白名单守门)/ workspace-request(工作区会话入口,亲选或
   // 确认卡授权,判重/创建在 workspaceSlot)。其它类型一律拒。
   ipcMain.handle('ghost-pipe:ping', (event) => {
@@ -3673,6 +3699,11 @@ export function registerGhostIpc(): void {
     if (type === 'fs-request') {
       return getGhostFsSlot().handleFsRequest(id, payload);
     }
+    // reveal-request = reveal 槽定位本机文件或文件夹;路径由插件提供但由主机
+    // realpath/stat 重新校验,执行副作用只在 Electron Main。
+    if (type === 'reveal-request') {
+      return getGhostRevealSlot().handleRequest(id, payload);
+    }
     // agent-request = 让 Cindy Agent 开始一个普通 user 回合；插件文本绝不
     // 进入 system prompt。票据、会话归属、模板和后台权限都在 agentSlot。
     if (type === 'agent-request') {
@@ -3683,7 +3714,7 @@ export function registerGhostIpc(): void {
     if (type === 'node-request') {
       return getGhostNodeRuntimeBroker().handleRequest(id, payload);
     }
-    // pick-request = 系统级选文件夹(pick 槽):用户亲手选中即授权,取消即拒;
+    // pick-request = 系统级选文件/文件夹(pick 槽):用户亲手选中即授权,取消即拒;
     // 限速/单发/结果分档在 pickSlot。
     if (type === 'pick-request') {
       return getGhostPickSlot().handleRequest(id, payload);

@@ -858,7 +858,7 @@ key、未知字段、原清单没有的条目、类型或长度不合格、文�
 node secretBindings key、setup kv key——都不能使用 \`__proto__\`、\`constructor\` 或
 \`prototype\`；这些名称是宿主保留键，打包时会直接拒绝。
 
-十五个卡槽:\`tool\`(注册工具给 AI)、\`cindy\`(请 Cindy 本体代办:出图/改图)、\`agent\`(让
+十六个卡槽:\`tool\`(注册工具给 AI)、\`cindy\`(请 Cindy 本体代办:出图/改图)、\`agent\`(让
 当前 Agent 开始一个普通用户回合,见 §4.11)、\`panel\`(常驻
 面板)、\`card\`(聊天卡片:自绘工具调用的过程与结果,见 §4.5)、\`subscribe\`(旁听会话
 事件 + 拦截用户消息,见 §4.6)、\`network\`(访问自带服务的域名白名单 HTTP,主机代发,
@@ -867,9 +867,9 @@ node secretBindings key、setup kv key——都不能使用 \`__proto__\`、\`co
 Node 工作进程或 stdio MCP,见 §4.12)、\`session-context\`(派活时主机把当前会话的
 可信 session_id / workdir / 只读状态注入 args,见 §4.13)、\`pick\`(请主机弹系统选文件夹窗口,
 用户亲选即授权,见 §4.14)、\`preview\`(请主机在右侧栏内置浏览器打开白名单网站的
-预览标签,见 §4.15)、\`skill\`(捆绑 Agent Skills:随包 SKILL.md 技能,启用后
-Claude Code 与 Codex 都能发现,见 §4.16)、\`workspace\`(请主机为项目目录在
-侧边栏创建/复用会话入口,见 §4.17)。
+预览标签,见 §4.15)、\`reveal\`(请主机在系统文件管理器中选中本机文件,见 §4.16)、\`skill\`(捆绑 Agent Skills:随包 SKILL.md 技能,启用后
+Claude Code 与 Codex 都能发现,见 §4.17)、\`workspace\`(请主机为项目目录在
+侧边栏创建/复用会话入口,见 §4.18)。
 
 **agent 能力详单**:在 \`slots\` 加 \`"agent"\`，默认只允许在用户真实点击你的
 聊天卡片后发起一次 Agent 回合；这一档不写配套字段。若确实需要没有当次点击也能
@@ -911,7 +911,7 @@ node 详单**不接受** \`command\` / \`args\` / \`shell\` / \`env\` 或其它�
 }
 \`\`\`
 
-**skill 详单**(声明 skill 槽时必写,详见 §4.16):
+**skill 详单**(声明 skill 槽时必写,详见 §4.17):
 
 \`\`\`json
 "skill": {
@@ -2349,10 +2349,23 @@ cindy.onHostMessage(async (msg) => {
 - 这只是"位置信息",不是文件访问权:读写仍走 fs 槽 / node 槽各自的守门;
 - 未声明本槽的插件,args 里永远没有 \`session_context\` 字段。
 
-## 4.14 目录选择(pick 槽)
+## 4.14 文件/文件夹选择(pick 槽)
 
-需要用户交一个文件夹进来(导入/同步/部署源)时,声明 \`pick\` 槽,经管子请主机
-弹**系统级**选文件夹窗口——用户亲手选中即授权,取消则你什么都拿不到:
+需要用户交一个文件或文件夹进来时,声明 \`pick\` 槽,经管子请主机弹**系统级**选择窗口——
+用户亲手选中即授权,取消则你什么都拿不到:
+
+\`\`\`js
+const pickedFile = await cindy.pick({
+  mode: 'file',
+  title: '选择要验收的文件'
+});
+const pickedDirectory = await cindy.pick({
+  mode: 'directory',
+  title: '选择项目文件夹'
+});
+\`\`\`
+
+两种模式共用同一限速和取消语义:
 
 \`\`\`js
 const picked = await cindy.pick({
@@ -2361,8 +2374,8 @@ const picked = await cindy.pick({
   deposit: true                       // 需要过户票据(上传用)时带;声明了 node 槽可省
 });
 if (picked.ok) {
-  // picked.name        —— 所选目录名(展示用)
-  // picked.path        —— 绝对路径,仅声明了 node 槽的插件有(交给 Node 侧干活)
+  // picked.name        —— 所选文件或目录名(展示用)
+  // picked.path        —— 绝对路径,仅声明了 node/reveal 槽的插件有
   // picked.dir_deposit —— 过户票据(同 ghost_call dir 通道;deposit:true 才有)
 }
 \`\`\`
@@ -2372,10 +2385,10 @@ if (picked.ok) {
 - 对话框由主机拼装并带你的插件名,\`title\` 只是用途说明片段,伪装不了主机文案;
 - 同一插件两次请求最小间隔 3 秒、全局同时只有一个选择框(超了回 RATE_LIMITED /
   BUSY);用户取消回 CANCELLED——**尊重取消,不要循环重弹**,那是骚扰;
-- 未声明 node 槽的插件必须 \`deposit: true\`(没有票据你什么都拿不到,请求会被拒);
+- \`file\` 模式不支持 \`deposit\`; \`directory\` 模式未声明 node/reveal 槽的插件必须 \`deposit: true\`(没有票据你什么都拿不到,请求会被拒);
   票据收集有上限(500 文件/单文件 50MB/总 256MB),超限会签发失败;
-- \`path\` 只发给声明了 node 槽的插件:Node 侧本就有用户级本机权限,给路径不扩权,
-  价值是把"用户选了哪个目录"这一事实可信地交过去。
+- \`path\` 只发给声明了 node 或 reveal 槽的插件;Node 侧本就有用户级本机权限,reveal
+  只用于把用户亲选结果交给 Host 定位,给路径不扩展文件读写权限。
 
 ## 4.15 面板预览(preview 槽)
 
@@ -2401,7 +2414,25 @@ if (!opened.ok) console.warn(opened.errorCode, opened.message);
   知道页面是谁开的;
 - 标签开在用户自己的右侧栏浏览器里,关不关、看不看由用户决定。
 
-## 4.16 捆绑 Agent Skills(skill 槽)
+## 4.16 文件定位(reveal 槽)
+
+需要把插件已知的本机文件或文件夹交给用户在 Explorer / Finder 中定位时,声明 \`reveal\` 槽并调用:
+
+\`\`\`js
+const result = await cindy.reveal({ path: '/Users/me/project/report.json' });
+if (!result.ok) console.warn(result.errorCode, result.message);
+\`\`\`
+
+规则与红线:
+
+- \`cindy.reveal\` 底层消息类型是 \`reveal-request\`;优先使用上面的便捷 API;
+- \`path\` 必须是本机绝对路径;主机会重新 realpath、确认目标存在且是普通文件或目录,然后调用系统文件管理器选中它;文件夹会定位到其父目录并选中该文件夹;
+- 该槽只触发系统 UI,不授予插件读写权限,也不会把规范化后的路径回传给插件;
+- 只应传插件已经通过 Node 工作进程、工具参数或其它明确交接获得的路径;不要猜测或遍历敏感路径;
+- 同一插件两次请求最小间隔 1 秒;不存在、远程主机路径或系统无法打开时会返回结构化错误;
+- \`reveal\` 是独立安装权限,不能通过 \`fs\` 槽或面板 \`window.electronAPI\` 绕过声明。
+
+## 4.17 捆绑 Agent Skills(skill 槽)
 
 想让插件"自带一份教 Agent 怎么用好自己的说明书"(或任何领域技能),把技能目录
 随包携带并声明 \`skill\` 槽 + \`skill.items\` 详单(见 §2)。装入且启用后,主机把
@@ -2431,13 +2462,13 @@ SKILL.md 硬规则(打包与装入双侧强制,任一不满足直接拒):
 信任与作用域(如实告知用户,也请作者自重):
 
 - 技能指令由**主 Agent 以用户全部权限执行**,对所有项目、所有会话生效,
-  **不受插件沙箱约束**——这是十五个卡槽里信任面最高的能力,装入确认框会把
+  **不受插件沙箱约束**——这是十六个卡槽里信任面最高的能力,装入确认框会把
   每个技能置顶逐条列出;
 - 技能跟随插件的**全局**启用状态:仅在某个工作目录停用插件**不会**隐藏技能,
   只有全局停用或卸载才撤链(本期只有全局作用域);
 - \`skill.items\` 的字段不参与 locales 本地化(必须与 SKILL.md 逐字一致,而
   SKILL.md 只有一份)。
-## 4.17 创建工作区会话(workspace 槽)
+## 4.18 创建工作区会话(workspace 槽)
 
 需要把某个项目目录变成侧边栏里的会话入口("打开项目"/仓库列表这类场景)时,
 声明 \`workspace\` 槽,经管子请主机**确保**该目录下存在一个会话:目录下已有

@@ -58,6 +58,7 @@ const KIND_ICON: Record<GhostPermissionItem['kind'], LucideIcon> = {
   pick: FolderOpen,
   preview: AppWindow,
   skill: GraduationCap,
+  reveal: FolderOpen,
   workspace: FolderPlus,
 };
 

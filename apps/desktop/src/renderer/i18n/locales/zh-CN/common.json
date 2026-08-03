@@ -2831,6 +2831,8 @@
         "notifyDetail": "提示内容由这个插件提供，提示上会标注它的名字；自动消失，不会打断你的操作。",
         "fsWrite": "可写入文件(创建/修改)",
         "fsWriteDetail": "它自己的专属数据目录随时可写；当前对话的工作目录跟随对话的权限模式(免批模式直接写，逐条确认模式先征求你同意)；其它目录每次都需要你确认。文件始终由主机代写，插件本身无法直接访问你的文件系统。",
+        "reveal": "可在系统文件管理器中显示本机文件",
+        "revealDetail": "插件可以请 Cindy 在资源管理器或访达中选中一个已经存在的本机文件。这不会授予文件读写权限；主机会重新检查每个路径，也不会把路径回传给插件。",
         "networkHost": "访问网络域名 {{host}}",
         "networkSecret": "需要你提供凭证「{{name}}」",
         "networkSecretGhostInputDetail": "凭证由这个插件自己的设置界面收集，录入时会经过插件页面；随后一次性交给主机加密保管，存入后插件无法读回，主机只在请求它声明的域名时注入。",
@@ -2960,6 +2962,7 @@
         "slotNotify": "系统提示",
         "slotFs": "写文件",
         "slotSkill": "Agent 技能",
+        "slotReveal": "文件管理器定位",
         "slotWorkspace": "工作区对话"
       },
       "commandPaletteTag": "插件指令",
@@ -2971,7 +2974,9 @@
       },
       "pick": {
         "dialogTitle": "选择文件夹",
-        "dialogMessage": "插件「{{name}}」请求你选择一个文件夹"
+        "dialogMessage": "插件「{{name}}」请求你选择一个文件夹",
+        "fileDialogTitle": "选择文件",
+        "fileDialogMessage": "插件「{{name}}」请求你选择一个文件"
       },
       "workspace": {
         "dialogTitle": "选择项目文件夹",

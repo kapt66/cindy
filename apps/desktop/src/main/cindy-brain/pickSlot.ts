@@ -1,8 +1,8 @@
 /**
- * pickSlot.ts — 目录选择槽(pick,2026-07-23)。
+ * pickSlot.ts — 系统文件/文件夹选择槽(pick,2026-07-23)。
  * ---------------------------------------------------------------------------
- * 插件经管子上行 `{type:'pick-request', mode:'directory', title?, deposit?}`,
- * 请主机弹**系统级**选文件夹窗口。安全模型(与浏览器文件选择同一哲学):
+ * 插件经管子上行 `{type:'pick-request', mode:'file'|'directory', title?, deposit?}`,
+ * 请主机弹**系统级**选择窗口。安全模型(与浏览器文件选择同一哲学):
  *
  * - 资格审:已装、启用、声明 pick 槽;
  * - 授权动作 = 用户在系统对话框里**亲手选中**。取消即拒,插件拿不到任何
@@ -14,9 +14,9 @@
  * - 结果分档:
  *   · dir_deposit 票据(deposit:true;同 ghost_call dir 通道,主机代办上传
  *     凭票取件,绝对路径与字节不进沙箱);
- *   · 绝对路径只给声明了 node 槽的插件——Node 侧本就有当前系统用户级本机
- *     权限,给路径不构成扩权,价值在于把"用户选了哪个目录"这一事实**可信**
- *     地交过去;未声明 node 槽的插件必须请求票据,否则拒单。
+ *   · 绝对路径给声明了 node 或 reveal 槽的插件——node 侧本就有当前系统用户级
+ *     本机权限,reveal 侧只拿用户亲选的路径交给 Host 定位;无这两类槽的插件必须
+ *     请求目录票据,否则拒单。
  *
  * 纯逻辑 + 依赖注入(规则 14):Electron dialog / 票据库在 cindy-brain/index.ts
  * 组装时注入,单测喂假 deps 直测。
@@ -40,6 +40,7 @@ export interface PickSlotDeps {
    * 找不到可挂靠的 Cindy 窗口时应 reject(失败关闭,不弹无主对话框)。
    */
   showDirectoryDialog(params: { ghostName: string; purpose: string | null }): Promise<string | null>;
+  showFileDialog(params: { ghostName: string; purpose: string | null }): Promise<string | null>;
   /** 签发目录过户票据(dirDeposit.deposit,userGranted 语义 = 用户已亲手选中)。 */
   depositDir(
     ghostId: string,
@@ -77,8 +78,8 @@ export class GhostPickSlot {
       return fail('INVALID_REQUEST', 'pick-request 载荷必须是对象');
     }
     const request = payload as Record<string, unknown>;
-    if (request.mode !== 'directory') {
-      return fail('INVALID_REQUEST', 'mode 目前只支持 "directory"');
+    if (request.mode !== 'directory' && request.mode !== 'file') {
+      return fail('INVALID_REQUEST', 'mode 必须是 "file" 或 "directory"');
     }
     if (request.title !== undefined && typeof request.title !== 'string') {
       return fail('INVALID_REQUEST', 'title 必须是字符串');
@@ -88,10 +89,14 @@ export class GhostPickSlot {
     }
     const wantDeposit = request.deposit === true;
     const hasNode = ghost.manifest.slots.includes('node');
-    if (!hasNode && !wantDeposit) {
+    const hasReveal = ghost.manifest.slots.includes('reveal');
+    if (request.mode === 'file' && wantDeposit) {
+      return fail('INVALID_REQUEST', 'file 模式不支持目录过户票据');
+    }
+    if (!hasNode && !hasReveal && !wantDeposit) {
       return fail(
         'INVALID_REQUEST',
-        '未声明 node 槽的插件必须带 deposit:true(选完只有过户票据可发,不给绝对路径)',
+        '未声明 node/reveal 槽的插件必须带 deposit:true(选完只有过户票据可发,不给绝对路径)',
       );
     }
 
@@ -113,7 +118,10 @@ export class GhostPickSlot {
     this.dialogInFlight = true;
     let picked: string | null;
     try {
-      picked = await this.deps.showDirectoryDialog({
+      const showDialog = request.mode === 'file'
+        ? this.deps.showFileDialog
+        : this.deps.showDirectoryDialog;
+      picked = await showDialog({
         ghostName: ghost.manifest.name,
         purpose,
       });
@@ -142,7 +150,7 @@ export class GhostPickSlot {
       }
       result.dir_deposit = deposited.receipt;
     }
-    if (hasNode) {
+    if (hasNode || hasReveal) {
       result.path = picked;
     }
     this.deps.log?.info('ghost pick granted', {

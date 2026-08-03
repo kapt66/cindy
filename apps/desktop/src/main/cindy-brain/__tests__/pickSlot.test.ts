@@ -29,6 +29,7 @@ function makeSlot(overrides: Partial<PickSlotDeps> = {}) {
   const deps: PickSlotDeps = {
     getGhost: () => pickGhost(),
     showDirectoryDialog: vi.fn(async () => '/Users/me/projects'),
+    showFileDialog: vi.fn(async () => '/Users/me/report.json'),
     depositDir: vi.fn(() => ({
       ok: true as const,
       receipt: { token: 't', file_count: 1, total_bytes: 10, rel_paths: ['a.txt'] },
@@ -53,9 +54,13 @@ describe('pickSlot · 资格审与载荷校验', () => {
     });
   });
 
-  it('mode 只认 directory;title/deposit 类型不对整单拒', async () => {
+  it('mode 支持 file/directory;title/deposit 类型不对整单拒', async () => {
     const { slot } = makeSlot();
-    expect(await slot.handleRequest('pick-ghost', { mode: 'file' })).toMatchObject({
+    expect(await slot.handleRequest('pick-ghost', { mode: 'file', deposit: true })).toMatchObject({
+      ok: false,
+      errorCode: 'INVALID_REQUEST',
+    });
+    expect(await slot.handleRequest('pick-ghost', { mode: 'other' })).toMatchObject({
       ok: false,
       errorCode: 'INVALID_REQUEST',
     });
@@ -110,6 +115,15 @@ describe('pickSlot · 授权 = 用户亲选', () => {
     });
     expect(r).toMatchObject({ ok: true, dir_deposit: { token: 't' } });
     expect((r as { path?: unknown }).path).toBeUndefined();
+  });
+
+  it('file 模式让声明 reveal 槽的插件拿到用户亲选文件路径', async () => {
+    const { slot, deps } = makeSlot({
+      getGhost: () => pickGhost({ slots: ['pick', 'reveal'] }),
+    });
+    const result = await slot.handleRequest('pick-ghost', { mode: 'file' });
+    expect(result).toMatchObject({ ok: true, name: 'report.json', path: '/Users/me/report.json' });
+    expect(deps.showFileDialog).toHaveBeenCalledWith({ ghostName: 'Pick Ghost', purpose: null });
   });
 
   it('用户取消 = CANCELLED,插件拿不到任何路径信息', async () => {
