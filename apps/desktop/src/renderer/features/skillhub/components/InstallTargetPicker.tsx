@@ -29,11 +29,25 @@ import {
 } from '../lib/installTargetPaths';
 import type { MarketSkill } from '../hooks/useMarketList';
 
+export interface SkillInstallRequest {
+  name: string;
+  installPath?: string;
+  force?: boolean;
+}
+
+export interface SkillInstallResult {
+  success: boolean;
+  errorCode?: string;
+  message?: string;
+  absolutePath?: string;
+}
+
 interface InstallTargetPickerProps {
   open: boolean;
   skill: MarketSkill | null;
   onClose: () => void;
   onInstallComplete: () => void;
+  installSkill?: (params: SkillInstallRequest) => Promise<SkillInstallResult>;
 }
 
 // 最多可见的项目行数（超出滚动）
@@ -41,11 +55,7 @@ const MAX_VISIBLE_PROJECTS = 4;
 const PROJECT_ROW_H = 48;
 const INSTALL_PICKER_TITLE_ID = 'skillhub-install-picker-title';
 
-async function runInstall(params: {
-  name: string;
-  installPath?: string;
-  force?: boolean;
-}): Promise<{ success: boolean; errorCode?: string; message?: string; absolutePath?: string }> {
+async function runInstall(params: SkillInstallRequest): Promise<SkillInstallResult> {
   return window.electronAPI.skillhub.install({
     name: params.name,
     installPath: params.installPath,
@@ -53,7 +63,13 @@ async function runInstall(params: {
   });
 }
 
-export function InstallTargetPicker({ open, skill, onClose, onInstallComplete }: InstallTargetPickerProps) {
+export function InstallTargetPicker({
+  open,
+  skill,
+  onClose,
+  onInstallComplete,
+  installSkill = runInstall,
+}: InstallTargetPickerProps) {
   const { t } = useTranslation();
   const { projects, loading: projectsLoading } = useProjectsForPicker();
   const { confirm } = useConfirmDialog();
@@ -98,7 +114,7 @@ export function InstallTargetPicker({ open, skill, onClose, onInstallComplete }:
     setBannerError(null);
     setInstalling(true);
     try {
-      const res = await runInstall({ name: skill.name, installPath });
+      const res = await installSkill({ name: skill.name, installPath });
       if (res.success) {
         toast.success(t('skillhub.installPicker.installSuccess', {
           name: skill.name,
@@ -119,7 +135,7 @@ export function InstallTargetPicker({ open, skill, onClose, onInstallComplete }:
           cancelText: t('skillhub.installPicker.conflictDialog.cancel'),
         });
         if (!ok) return;
-        const forced = await runInstall({ name: skill.name, installPath, force: true });
+        const forced = await installSkill({ name: skill.name, installPath, force: true });
         if (forced.success) {
           toast.success(t('skillhub.installPicker.installSuccess', {
             name: skill.name,

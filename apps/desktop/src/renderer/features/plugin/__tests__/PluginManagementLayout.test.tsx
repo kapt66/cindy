@@ -58,7 +58,7 @@ function MainViewNavigation() {
 }
 
 describe('PluginManagementLayout', () => {
-  it('keeps Meka Plugin and Project as peer tabs under the Meka navigation', async () => {
+  it('keeps Meka Plugin, Skill, and Project as peer tabs under the Meka navigation', async () => {
     render(
       <MemoryRouter initialEntries={['/cc-agent/meka/plugins']}>
         <PluginManagementLayout activeTab="meka-plugins">
@@ -69,9 +69,13 @@ describe('PluginManagementLayout', () => {
 
     expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
       'Plugins',
+      'Skills',
       'Projects',
     ]);
     expect(screen.getByRole('tab', { name: 'Plugins' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('tab', { name: 'Skills' }).getAttribute('aria-selected')).toBe(
+      'false',
+    );
     expect(screen.getByRole('tab', { name: 'Projects' }).getAttribute('aria-selected')).toBe(
       'false',
     );
@@ -79,6 +83,21 @@ describe('PluginManagementLayout', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Projects' }));
     await waitFor(() => {
       expect(screen.getByTestId('current-path').textContent).toBe('/cc-agent/meka');
+    });
+  });
+
+  it('opens the independent Meka Skill page from the Meka tab row', async () => {
+    render(
+      <MemoryRouter initialEntries={['/cc-agent/meka/plugins']}>
+        <PluginManagementLayout activeTab="meka-plugins">
+          <CurrentPath />
+        </PluginManagementLayout>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Skills' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('current-path').textContent).toBe('/cc-agent/meka/skills');
     });
   });
 
@@ -202,6 +221,7 @@ describe('PluginManagementLayout', () => {
 
   it.each([
     ['meka-plugins', 'Search plugins', 'Clear Plugin Search'],
+    ['meka-skills', 'Search skills', 'Clear skill search'],
     ['plugins', 'Search plugins', 'Clear Plugin Search'],
     ['skills', 'Search skills', 'Clear skill search'],
   ] as const)(

@@ -17,30 +17,22 @@
  * for the rationale.
  */
 
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { Outlet } from 'react-router-dom';
 
-import { useCCSessions } from '@/hooks/useCCSessions';
-import { groupSessions } from '@/features/cc-agent/lib/projectGrouping';
 import { useRegisterCCAgentSidebar } from '@/features/cc-agent/useRegisterCCAgentSidebar';
 import { createLogger } from '@/lib/logger';
 
 const log = createLogger('SkillhubFeatureLayout');
-import {
-  bootstrapSkillhub,
-  refresh as refreshSkillhub,
-  setSkillhubDataOwner,
-  syncProjects,
-  useSkillhub,
-  type SkillhubProject,
-} from './hooks/useSkillhub';
+import { refresh as refreshSkillhub, useSkillhub } from './hooks/useSkillhub';
+import { useSkillhubProjectBootstrap } from './hooks/useSkillhubProjectBootstrap';
 import { useSkillSync } from './hooks/useSkillSync';
-import { projectHash } from './lib/projectHash';
 import { useAuth } from '@/contexts/AuthContext';
 
 export function SkillhubFeatureLayout() {
-  const { dataOwnerId, mode } = useAuth();
+  const { mode } = useAuth();
   const cloudSyncEnabled = mode === 'cloud';
+  useSkillhubProjectBootstrap();
   // 技能改为右侧整页(无左树导航),左侧 app 侧栏沿用 cc-agent 项目/对话列表。
   // 显式注册同一个 CCAgentSidebarUpper:warm 导航时与 cc-agent 注册的是同一组件
   // 类型,只 reconcile、不 remount(实例状态保留);冷启动直接进 /skillhub 时则首次
@@ -106,41 +98,6 @@ export function SkillhubFeatureLayout() {
         log.warn('reconcileMineRegistry failed:', err);
       });
   }, [bootstrapped, cloudSyncEnabled, skills, syncResults]);
-
-  // sessions[] 来自 useCCSessions；groupSessions 会按归一化 workingDir 聚合成
-  // 项目节点（含消歧后的 displayName，并按 latestActivityAt 排序）。SkillHub 只需要
-  // 项目轴，pinned / unclassified 是 CC Agent 侧概念。
-  //
-  // 关键点：useCCSessions 每次 mount 会先以 isLoading=true、sessions=[] 起步再重新拉取。
-  // MainLayout 的 FadeSwitcher 又用 `key={location.pathname}` 驱动页面淡入淡出，
-  // 所以每次点击 skill 都会 remount 本 Layout。如果此时把临时空列表同步进 store，会触发：
-  //   1. Layout remount
-  //   2. store 收到空项目列表
-  //   3. 重新扫描且没有项目 → 项目技能瞬间消失
-  //   4. CC Agent 拉取完成后再同步真实项目 → 再扫一次
-  // 这就是点击闪烁和 DetailView 短暂 "skill not found" 的来源；因此必须等
-  // isLoading=false 后再同步项目列表。
-  const { sessions, isLoading: sessionsLoading } = useCCSessions();
-
-  const skillhubProjects = useMemo<SkillhubProject[] | null>(() => {
-    if (sessionsLoading) return null;
-    const { projects } = groupSessions(sessions);
-    return projects.map((p) => ({
-      projectRoot: p.workingDir,
-      hash: projectHash(p.workingDir),
-      displayName: p.displayName,
-    }));
-  }, [sessions, sessionsLoading]);
-
-  useEffect(() => {
-    setSkillhubDataOwner(dataOwnerId);
-    if (dataOwnerId === null || skillhubProjects === null) return;
-    syncProjects(skillhubProjects);
-    // reset() clears the module bootstrap guard on owner changes. Calling this
-    // after project sync keeps local-mode scans alive even when the project
-    // list is unchanged or empty.
-    bootstrapSkillhub();
-  }, [dataOwnerId, skillhubProjects]);
 
   return (
     <div className="flex h-full w-full flex-col">

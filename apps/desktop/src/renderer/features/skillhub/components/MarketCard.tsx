@@ -1,6 +1,15 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, Clock3, Download, Eye, Pencil, Trash2, type LucideIcon } from 'lucide-react';
+import {
+  ChevronDown,
+  Clock3,
+  Download,
+  Eye,
+  Pencil,
+  Settings2,
+  Trash2,
+  type LucideIcon,
+} from 'lucide-react';
 
 import {
   DropdownMenu,
@@ -52,11 +61,13 @@ function AuthorAvatar({ url, initial }: AuthorAvatarProps) {
 }
 
 function visibilityLabel(skill: MarketSkill, allowPrivateLabel: boolean): string {
-  return i18n.t(marketVisibilityLabelKey({
-    visibility: skill.visibility,
-    publishedVisibility: skill.publishedVisibility,
-    allowPrivateLabel,
-  }));
+  return i18n.t(
+    marketVisibilityLabelKey({
+      visibility: skill.visibility,
+      publishedVisibility: skill.publishedVisibility,
+      allowPrivateLabel,
+    }),
+  );
 }
 
 /** 卡片「管理」菜单里的动作(详情统一走浮窗,菜单只收管理类操作) */
@@ -70,10 +81,30 @@ interface MarketCardProps {
   onClone: (skill: MarketSkill) => void;
   /** 管理菜单动作。仅 My Published 传入。 */
   onManageAction?: (skill: MarketSkill, action: MarketCardManageAction) => void;
+  /** 渠道自有的单一管理弹窗入口；存在时替代上游多动作菜单。 */
+  onManage?: (skill: MarketSkill) => void;
   /** 整卡点击 → 更新 useMarketSelection（不打开 Picker）*/
   onClick?: (skill: MarketSkill) => void;
   /** 卡片是否处于"选中"态 — sidebar 联动时加深边框 */
   selected?: boolean;
+}
+
+export function ManageButton({ onClick }: { onClick: (event: React.MouseEvent) => void }) {
+  const { t } = useTranslation();
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'flex h-9 shrink-0 items-center gap-2 rounded-full px-[18px]',
+        'bg-[var(--chat-input-chip-bg)] text-sm font-medium text-[var(--msg-assistant-text)]',
+        'transition-colors hover:bg-[var(--cmd-palette-item-hover)]',
+      )}
+    >
+      <Settings2 size={14} className="shrink-0" />
+      <span className="leading-none">{t('skillhub.marketCard.manage')}</span>
+    </button>
+  );
 }
 
 function CloneButton({ onClick }: { onClick: (e: React.MouseEvent) => void }) {
@@ -113,7 +144,12 @@ export function ManageMenu({
     disabled?: boolean;
   }> = [
     { action: 'edit', labelKey: 'skillhub.marketActions.edit', icon: Pencil },
-    { action: 'manageVisibility', labelKey: 'skillhub.marketActions.manageVisibility', icon: Eye, disabled: inReview },
+    {
+      action: 'manageVisibility',
+      labelKey: 'skillhub.marketActions.manageVisibility',
+      icon: Eye,
+      disabled: inReview,
+    },
     { action: 'clone', labelKey: 'skillhub.marketActions.clone', icon: Download },
     { action: 'delete', labelKey: 'skillhub.marketActions.delete', icon: Trash2, danger: true },
   ];
@@ -160,9 +196,14 @@ export function ManageMenu({
               {t(labelKey)}
             </DropdownMenuItem>
           );
-          return action === 'delete'
-            ? <div key={action}><DropdownMenuSeparator />{item}</div>
-            : item;
+          return action === 'delete' ? (
+            <div key={action}>
+              <DropdownMenuSeparator />
+              {item}
+            </div>
+          ) : (
+            item
+          );
         })}
       </DropdownMenuContent>
     </DropdownMenu>
@@ -175,6 +216,7 @@ export function MarketCard({
   allowPrivateVisibilityLabel = false,
   onClone,
   onManageAction,
+  onManage,
   onClick,
   selected,
 }: MarketCardProps) {
@@ -218,7 +260,10 @@ export function MarketCard({
         </span>
         {status ? (
           <span
-            className={cn('inline-flex shrink-0 items-center justify-center rounded-full border font-medium', publishedStatusClass(status))}
+            className={cn(
+              'inline-flex shrink-0 items-center justify-center rounded-full border font-medium',
+              publishedStatusClass(status),
+            )}
             style={{ height: '20px', padding: '0 8px', fontSize: '11px' }}
           >
             {t(publishedStatusLabelKey(status))}
@@ -271,7 +316,14 @@ export function MarketCard({
             <span>{downloads}</span>
           </span>
         </div>
-        {primaryAction === 'manage' && onManageAction ? (
+        {primaryAction === 'manage' && onManage ? (
+          <ManageButton
+            onClick={(event) => {
+              event.stopPropagation();
+              onManage(skill);
+            }}
+          />
+        ) : primaryAction === 'manage' && onManageAction ? (
           <ManageMenu skill={skill} onAction={onManageAction} />
         ) : primaryAction === 'clone' ? (
           <CloneButton

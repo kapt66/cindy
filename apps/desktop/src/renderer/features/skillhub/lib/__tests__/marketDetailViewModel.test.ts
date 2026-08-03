@@ -6,6 +6,7 @@ import {
   filterAvailableMarketItems,
   initialPreviewPath,
   marketCardPrimaryAction,
+  marketDetailActions,
   previewBodyForFile,
 } from '../marketDetailViewModel';
 
@@ -67,57 +68,90 @@ describe('market cloud detail view model', () => {
   });
 
   it('strips markdown frontmatter and wraps non-markdown files for preview', () => {
-    expect(previewBodyForFile({
-      path: 'SKILL.md',
-      language: 'markdown',
-      content: '---\nname: helper\nversion: 1.0.0\n---\n# Helper\n\nBody',
-      truncated: false,
-    })).toBe('# Helper\n\nBody');
+    expect(
+      previewBodyForFile({
+        path: 'SKILL.md',
+        language: 'markdown',
+        content: '---\nname: helper\nversion: 1.0.0\n---\n# Helper\n\nBody',
+        truncated: false,
+      }),
+    ).toBe('# Helper\n\nBody');
 
-    expect(previewBodyForFile({
-      path: 'scripts/run.py',
-      language: 'python',
-      content: 'print("hi")',
-      truncated: false,
-    })).toBe('```python\nprint("hi")\n```');
+    expect(
+      previewBodyForFile({
+        path: 'scripts/run.py',
+        language: 'python',
+        content: 'print("hi")',
+        truncated: false,
+      }),
+    ).toBe('```python\nprint("hi")\n```');
   });
 
   it('shows Manage only for owned cards inside My Published', () => {
-    expect(marketCardPrimaryAction({
-      isMine: true,
-      listVisibility: 'mine',
-      cardState: 'not-installed',
-    })).toBe('manage');
+    expect(
+      marketCardPrimaryAction({
+        isMine: true,
+        listVisibility: 'mine',
+        cardState: 'not-installed',
+      }),
+    ).toBe('manage');
 
-    expect(marketCardPrimaryAction({
-      isMine: true,
-      listVisibility: 'all',
-      cardState: 'not-installed',
-    })).toBe('clone');
+    expect(
+      marketCardPrimaryAction({
+        isMine: true,
+        listVisibility: 'all',
+        cardState: 'not-installed',
+      }),
+    ).toBe('clone');
 
-    expect(marketCardPrimaryAction({
-      isMine: false,
-      listVisibility: 'all',
-      cardState: 'installed-latest',
-    })).toBe('clone');
+    expect(
+      marketCardPrimaryAction({
+        isMine: false,
+        listVisibility: 'all',
+        cardState: 'installed-latest',
+      }),
+    ).toBe('clone');
 
-    expect(marketCardPrimaryAction({
-      isMine: false,
-      listVisibility: 'all',
-      cardState: 'installing',
-    })).toBe('clone');
+    expect(
+      marketCardPrimaryAction({
+        isMine: false,
+        listVisibility: 'all',
+        cardState: 'installing',
+      }),
+    ).toBe('clone');
 
-    expect(marketCardPrimaryAction({
-      isMine: false,
-      listVisibility: 'available',
-      cardState: 'not-installed',
-    })).toBe('clone');
+    expect(
+      marketCardPrimaryAction({
+        isMine: false,
+        listVisibility: 'available',
+        cardState: 'not-installed',
+      }),
+    ).toBe('clone');
 
-    expect(marketCardPrimaryAction({
-      isMine: false,
-      listVisibility: 'available',
-      cardState: 'installed-outdated',
-    })).toBe('none');
+    expect(
+      marketCardPrimaryAction({
+        isMine: false,
+        listVisibility: 'available',
+        cardState: 'installed-outdated',
+      }),
+    ).toBe('none');
+  });
+
+  it('derives detail actions from skill ownership instead of the entry surface', () => {
+    expect(
+      marketDetailActions({
+        isMine: true,
+        canClone: true,
+        canManage: true,
+      }),
+    ).toEqual({ clone: true, manage: true });
+    expect(
+      marketDetailActions({
+        isMine: false,
+        canClone: true,
+        canManage: true,
+      }),
+    ).toEqual({ clone: true, manage: false });
   });
 
   it('keeps Available on any not-installed skill regardless of author (mine included)', () => {
@@ -149,15 +183,17 @@ describe('market cloud detail view model', () => {
       absolutePath: '/repo/app/.claude/skills/demo-skill',
     });
 
-    expect(buildMarketSelectionRows({
-      selectedSkill: { name: 'demo-skill', isMine: false, latestVersion: '2.0.0' },
-      installs: [
-        { skill: globalSkill, entry: makeRegistryEntry({ version: '1.0.0' }) },
-        { skill: projectSkill, entry: makeRegistryEntry({ version: '2.0.0' }) },
-      ],
-      skills: [globalSkill, projectSkill],
-      localCopyLabel: 'Local copy',
-    })).toEqual([
+    expect(
+      buildMarketSelectionRows({
+        selectedSkill: { name: 'demo-skill', isMine: false, latestVersion: '2.0.0' },
+        installs: [
+          { skill: globalSkill, entry: makeRegistryEntry({ version: '1.0.0' }) },
+          { skill: projectSkill, entry: makeRegistryEntry({ version: '2.0.0' }) },
+        ],
+        skills: [globalSkill, projectSkill],
+        localCopyLabel: 'Local copy',
+      }),
+    ).toEqual([
       { skill: globalSkill, versionLabel: 'v1.0.0', isOutdated: true },
       { skill: projectSkill, versionLabel: 'v2.0.0', isOutdated: false },
     ]);
@@ -169,12 +205,14 @@ describe('market cloud detail view model', () => {
       registryEntry: null,
     });
 
-    expect(buildMarketSelectionRows({
-      selectedSkill: { name: 'demo-skill', isMine: false, latestVersion: '1.0.0' },
-      installs: [],
-      skills: [localOnlySkill],
-      localCopyLabel: 'Local copy',
-    })).toEqual([]);
+    expect(
+      buildMarketSelectionRows({
+        selectedSkill: { name: 'demo-skill', isMine: false, latestVersion: '1.0.0' },
+        installs: [],
+        skills: [localOnlySkill],
+        localCopyLabel: 'Local copy',
+      }),
+    ).toEqual([]);
   });
 
   it('shows unregistered local copies only for owned market skills and avoids duplicating registered paths', () => {
@@ -190,23 +228,27 @@ describe('market cloud detail view model', () => {
       registryEntry: null,
     });
 
-    expect(buildMarketSelectionRows({
-      selectedSkill: { name: 'demo-skill', isMine: true, latestVersion: '1.0.0' },
-      installs: [{ skill: registeredSkill, entry: makeRegistryEntry({ version: '1.0.0' }) }],
-      skills: [registeredSkill, localCopy],
-      localCopyLabel: 'Local copy',
-    })).toEqual([
+    expect(
+      buildMarketSelectionRows({
+        selectedSkill: { name: 'demo-skill', isMine: true, latestVersion: '1.0.0' },
+        installs: [{ skill: registeredSkill, entry: makeRegistryEntry({ version: '1.0.0' }) }],
+        skills: [registeredSkill, localCopy],
+        localCopyLabel: 'Local copy',
+      }),
+    ).toEqual([
       { skill: registeredSkill, versionLabel: 'v1.0.0', isOutdated: false },
       { skill: localCopy, versionLabel: 'Local copy', isOutdated: false },
     ]);
   });
 
   it('ignores stale registry records once their folders disappear from the scan result', () => {
-    expect(buildMarketSelectionRows({
-      selectedSkill: { name: 'demo-skill', isMine: false, latestVersion: '1.0.0' },
-      installs: [],
-      skills: [],
-      localCopyLabel: 'Local copy',
-    })).toEqual([]);
+    expect(
+      buildMarketSelectionRows({
+        selectedSkill: { name: 'demo-skill', isMine: false, latestVersion: '1.0.0' },
+        installs: [],
+        skills: [],
+        localCopyLabel: 'Local copy',
+      }),
+    ).toEqual([]);
   });
 });

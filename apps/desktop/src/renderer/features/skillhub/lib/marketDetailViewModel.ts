@@ -15,7 +15,8 @@ export type PreviewTreeNode =
 
 export type MarketListVisibility = 'all' | 'mine' | 'available';
 export type MarketCardPrimaryAction = 'manage' | 'clone' | 'none';
-export type MarketCardState = 'not-installed' | 'installed-latest' | 'installed-outdated' | 'installing';
+export type MarketCardState =
+  'not-installed' | 'installed-latest' | 'installed-outdated' | 'installing';
 
 export type TeamOption = { slug: string; name: string; source?: string | null };
 export type TeamScopeValue = {
@@ -55,7 +56,10 @@ function insertPath(nodes: PreviewTreeNode[], parts: string[], fullPath: string)
       node.type === 'folder' && node.name === head,
   );
   if (!folder) {
-    const folderPath = fullPath.split('/').slice(0, parts.length - rest.length).join('/');
+    const folderPath = fullPath
+      .split('/')
+      .slice(0, parts.length - rest.length)
+      .join('/');
     folder = { type: 'folder', name: head, path: folderPath, children: [] };
     nodes.push(folder);
   }
@@ -64,9 +68,7 @@ function insertPath(nodes: PreviewTreeNode[], parts: string[], fullPath: string)
 
 function sortTree(nodes: PreviewTreeNode[]): PreviewTreeNode[] {
   return [...nodes]
-    .map((node) => node.type === 'folder'
-      ? { ...node, children: sortTree(node.children) }
-      : node)
+    .map((node) => (node.type === 'folder' ? { ...node, children: sortTree(node.children) } : node))
     .sort(sortNodes);
 }
 
@@ -97,7 +99,9 @@ function stripYamlFrontmatter(content: string): string {
   return content.slice(match[0].length);
 }
 
-export function previewBodyForFile(file: Pick<HubPreviewFile, 'path' | 'language' | 'content' | 'truncated'>): string {
+export function previewBodyForFile(
+  file: Pick<HubPreviewFile, 'path' | 'language' | 'content' | 'truncated'>,
+): string {
   const suffix = file.truncated ? '\n\n<!-- 文件内容已截断 -->' : '';
   if (isMarkdown(file.path, file.language)) return `${stripYamlFrontmatter(file.content)}${suffix}`;
   const lang = file.language && file.language !== 'text' ? file.language : '';
@@ -115,35 +119,50 @@ export function marketCardPrimaryAction(input: {
   return 'none';
 }
 
-export function filterAvailableMarketItems<T extends {
-  cardState: MarketCardState;
-}>(items: T[]): T[] {
+export function marketDetailActions(input: {
+  isMine: boolean;
+  canClone: boolean;
+  canManage: boolean;
+}): { clone: boolean; manage: boolean } {
+  return {
+    clone: input.canClone,
+    manage: input.isMine && input.canManage,
+  };
+}
+
+export function filterAvailableMarketItems<
+  T extends {
+    cardState: MarketCardState;
+  },
+>(items: T[]): T[] {
   // 「可获取」= 本地未装,不分作者。
   // 我发的但本地没有(换机器 / 卸载后)也应入选,能重新下载。
   return items.filter((item) => item.cardState === 'not-installed');
 }
 
-export function buildMarketSelectionRows<TSkill extends {
-  kind: string;
-  name: string;
-  absolutePath: string;
-}>(
-  input: {
-    selectedSkill: { name: string; isMine: boolean; latestVersion?: string | null } | null;
-    installs: Array<{ skill: TSkill; entry: StoredInstall }>;
-    skills: TSkill[];
-    localCopyLabel: string;
+export function buildMarketSelectionRows<
+  TSkill extends {
+    kind: string;
+    name: string;
+    absolutePath: string;
   },
-): MarketSelectionRow<TSkill>[] {
+>(input: {
+  selectedSkill: { name: string; isMine: boolean; latestVersion?: string | null } | null;
+  installs: Array<{ skill: TSkill; entry: StoredInstall }>;
+  skills: TSkill[];
+  localCopyLabel: string;
+}): MarketSelectionRow<TSkill>[] {
   const { selectedSkill, installs, skills, localCopyLabel } = input;
   if (!selectedSkill) return [];
 
   const registeredPaths = new Set(installs.map(({ skill }) => skill.absolutePath));
   const localCopies = selectedSkill.isMine
-    ? skills.filter((skill) =>
-      skill.kind === 'skill' &&
-      skill.name === selectedSkill.name &&
-      !registeredPaths.has(skill.absolutePath))
+    ? skills.filter(
+        (skill) =>
+          skill.kind === 'skill' &&
+          skill.name === selectedSkill.name &&
+          !registeredPaths.has(skill.absolutePath),
+      )
     : [];
 
   return [

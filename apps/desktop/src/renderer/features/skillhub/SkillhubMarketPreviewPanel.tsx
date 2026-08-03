@@ -14,10 +14,10 @@ import type { MarketSkill } from './hooks/useMarketList';
 import {
   buildPreviewTree,
   initialPreviewPath,
+  marketDetailActions,
   previewBodyForFile,
   type HubPreviewFile,
   type HubPreviewFileMeta,
-  type MarketCardPrimaryAction,
 } from './lib/marketDetailViewModel';
 import { marketActionErrorMessage } from './lib/marketErrors';
 import { marketVisibilityLabelKey } from './lib/marketVisibility';
@@ -28,7 +28,7 @@ import {
   publishedStatusLabelKey,
 } from './lib/publishedStatus';
 import { MarketPreviewTree } from './components/MarketPreviewTree';
-import { ManageMenu, type MarketCardManageAction } from './components/MarketCard';
+import { ManageButton, ManageMenu, type MarketCardManageAction } from './components/MarketCard';
 import { ScanResultDialog } from './ScanResultDialog';
 import type { ScanResultPayload } from './PublishDialog';
 
@@ -36,10 +36,45 @@ interface SkillhubMarketPreviewPanelProps {
   skill: MarketSkill | null;
   open: boolean;
   onClose: () => void;
-  /** 与卡片同口径的主操作:clone / manage / none。头部据此渲染操作按钮 */
-  primaryAction?: MarketCardPrimaryAction;
   onClone?: (skill: MarketSkill) => void;
   onManageAction?: (skill: MarketSkill, action: MarketCardManageAction) => void;
+  onManage?: (skill: MarketSkill) => void;
+  loadFiles?: (skill: MarketSkill) => Promise<{
+    success: boolean;
+    files?: HubPreviewFileMeta[];
+    error?: string;
+    errorCode?: string;
+  }>;
+  readFile?: (
+    skill: MarketSkill,
+    path: string,
+  ) => Promise<{
+    success: boolean;
+    file?: HubPreviewFile;
+    error?: string;
+    errorCode?: string;
+  }>;
+  allowLearn?: boolean;
+}
+
+async function loadSkillhubFiles(
+  skill: MarketSkill,
+): Promise<{ success: boolean; files?: HubPreviewFileMeta[]; error?: string }> {
+  return window.electronAPI.skillhub.getPublishedFiles({
+    name: skill.name,
+    version: skill.latestVersion,
+  });
+}
+
+async function readSkillhubFile(
+  skill: MarketSkill,
+  path: string,
+): Promise<{ success: boolean; file?: HubPreviewFile; error?: string }> {
+  return window.electronAPI.skillhub.readPublishedFile({
+    name: skill.name,
+    path,
+    version: skill.latestVersion,
+  });
 }
 
 /**
@@ -54,15 +89,23 @@ export function SkillhubMarketPreviewPanel({
   skill,
   open,
   onClose,
-  primaryAction = 'none',
   onClone,
   onManageAction,
+  onManage,
+  loadFiles = loadSkillhubFiles,
+  readFile = readSkillhubFile,
+  allowLearn = true,
 }: SkillhubMarketPreviewPanelProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const skillName = skill?.name ?? null;
   const skillVersion = skill?.latestVersion;
   const panelOpen = open && skillName !== null;
+  const detailActions = marketDetailActions({
+    isMine: skill?.isMine === true,
+    canClone: onClone !== undefined,
+    canManage: onManage !== undefined || onManageAction !== undefined,
+  });
   const [files, setFiles] = useState<HubPreviewFileMeta[]>([]);
   const [filesLoading, setFilesLoading] = useState(false);
   const [filesError, setFilesError] = useState<string | null>(null);
@@ -85,7 +128,7 @@ export function SkillhubMarketPreviewPanel({
   }, [panelOpen, onClose]);
 
   useEffect(() => {
-    if (!panelOpen || !skillName) {
+    if (!panelOpen || !skill) {
       setFiles([]);
       setFilesLoading(false);
       setFilesError(null);
@@ -98,8 +141,7 @@ export function SkillhubMarketPreviewPanel({
     setFile(null);
     setFilesError(null);
     setSelectedPath(null);
-    void window.electronAPI.skillhub
-      .getPublishedFiles({ name: skillName, version: skillVersion })
+    void loadFiles(skill)
       .then((res) => {
         if (cancelled) return;
         setFilesLoading(false);
@@ -119,10 +161,10 @@ export function SkillhubMarketPreviewPanel({
     return () => {
       cancelled = true;
     };
-  }, [panelOpen, skillName, skillVersion, t]);
+  }, [loadFiles, panelOpen, skill, skillName, skillVersion, t]);
 
   useEffect(() => {
-    if (!panelOpen || !skillName || !selectedPath) {
+    if (!panelOpen || !skill || !selectedPath) {
       setFile(null);
       setFileLoading(false);
       return undefined;
@@ -130,8 +172,7 @@ export function SkillhubMarketPreviewPanel({
     let cancelled = false;
     // 不预清空 file:切换文件时保留旧内容直到新内容到达,避免空白帧
     setFileLoading(true);
-    void window.electronAPI.skillhub
-      .readPublishedFile({ name: skillName, path: selectedPath, version: skillVersion })
+    void readFile(skill, selectedPath)
       .then((res) => {
         if (cancelled) return;
         setFileLoading(false);
@@ -150,7 +191,7 @@ export function SkillhubMarketPreviewPanel({
     return () => {
       cancelled = true;
     };
-  }, [panelOpen, selectedPath, skillName, skillVersion, t]);
+  }, [panelOpen, readFile, selectedPath, skill, skillName, skillVersion, t]);
 
   const tree = useMemo(() => buildPreviewTree(files), [files]);
 
@@ -192,11 +233,13 @@ export function SkillhubMarketPreviewPanel({
                     className="inline-flex shrink-0 items-center justify-center rounded-full bg-[var(--chat-input-chip-bg)] text-[var(--settings-section-desc)]"
                     style={{ height: '20px', padding: '0 8px', fontSize: '11px' }}
                   >
-                    {t(marketVisibilityLabelKey({
-                      visibility: skill.visibility,
-                      publishedVisibility: skill.publishedVisibility,
-                      allowPrivateLabel: true,
-                    }))}
+                    {t(
+                      marketVisibilityLabelKey({
+                        visibility: skill.visibility,
+                        publishedVisibility: skill.publishedVisibility,
+                        allowPrivateLabel: true,
+                      }),
+                    )}
                   </span>
                   {status ? (
                     <button
@@ -209,9 +252,17 @@ export function SkillhubMarketPreviewPanel({
                             version: effectivePublishedStatusVersion(skill) ?? skill.latestVersion,
                           })
                           .then((res) => {
-                            setScanResult(res.success
-                              ? { status: res.status, gates: res.gates as ScanResultPayload['gates'] }
-                              : { status: 'scan_status_unavailable', gates: [{ name: 'scan-status', status: 'unavailable' }] });
+                            setScanResult(
+                              res.success
+                                ? {
+                                    status: res.status,
+                                    gates: res.gates as ScanResultPayload['gates'],
+                                  }
+                                : {
+                                    status: 'scan_status_unavailable',
+                                    gates: [{ name: 'scan-status', status: 'unavailable' }],
+                                  },
+                            );
                             setScanDialogOpen(true);
                           });
                       }}
@@ -227,7 +278,7 @@ export function SkillhubMarketPreviewPanel({
                 </div>
 
                 <div className="flex shrink-0 items-center gap-2">
-                  {primaryAction === 'clone' ? (
+                  {detailActions.clone && allowLearn ? (
                     <button
                       type="button"
                       onClick={() => {
@@ -256,13 +307,18 @@ export function SkillhubMarketPreviewPanel({
                         'flex shrink-0 items-center gap-1.5 rounded-full border border-[var(--border-default)] transition-colors',
                         'text-[var(--text-secondary)] hover:bg-[var(--surface-chip)]',
                       )}
-                      style={{ height: '32px', padding: '0 14px', fontSize: '13px', fontWeight: 500 }}
+                      style={{
+                        height: '32px',
+                        padding: '0 14px',
+                        fontSize: '13px',
+                        fontWeight: 500,
+                      }}
                     >
                       <GraduationCap size={14} className="shrink-0" />
                       <span className="leading-none">{t('learn.hub.learnButton')}</span>
                     </button>
                   ) : null}
-                  {primaryAction === 'clone' && onClone ? (
+                  {detailActions.clone && onClone ? (
                     <button
                       type="button"
                       onClick={() => onClone(skill)}
@@ -270,13 +326,20 @@ export function SkillhubMarketPreviewPanel({
                         'flex shrink-0 items-center gap-1.5 rounded-full transition-colors',
                         'bg-[var(--lightbox-cta-bg)] text-[var(--lightbox-cta-fg)] hover:bg-[var(--lightbox-cta-hover)]',
                       )}
-                      style={{ height: '32px', padding: '0 14px', fontSize: '13px', fontWeight: 500 }}
+                      style={{
+                        height: '32px',
+                        padding: '0 14px',
+                        fontSize: '13px',
+                        fontWeight: 500,
+                      }}
                     >
                       <Download size={14} className="shrink-0" />
                       <span className="leading-none">{t('skillhub.marketCard.clone')}</span>
                     </button>
                   ) : null}
-                  {primaryAction === 'manage' && onManageAction ? (
+                  {detailActions.manage && onManage ? (
+                    <ManageButton onClick={() => onManage(skill)} />
+                  ) : detailActions.manage && onManageAction ? (
                     <ManageMenu skill={skill} onAction={onManageAction} />
                   ) : null}
                   <button
@@ -342,7 +405,9 @@ export function SkillhubMarketPreviewPanel({
                     body={t('skillhub.marketPreview.emptyHint')}
                   />
                 ) : filesError && selectedPath ? (
-                  <p className="px-10 py-8 text-sm text-[var(--cmd-palette-item-meta)]">{filesError}</p>
+                  <p className="px-10 py-8 text-sm text-[var(--cmd-palette-item-meta)]">
+                    {filesError}
+                  </p>
                 ) : file ? (
                   <div key={file.path} className="w-full animate-fade-in px-10 py-8">
                     <div className="mx-auto w-full min-w-0 max-w-[860px]">
@@ -373,15 +438,7 @@ export function SkillhubMarketPreviewPanel({
   );
 }
 
-function PanelState({
-  icon,
-  title,
-  body,
-}: {
-  icon: ReactNode;
-  title: string;
-  body?: string;
-}) {
+function PanelState({ icon, title, body }: { icon: ReactNode; title: string; body?: string }) {
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-3 px-8 text-center text-muted-foreground">
       <div>{icon}</div>

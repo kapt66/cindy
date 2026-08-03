@@ -502,16 +502,21 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
 初次迁移把项目切换、项目表单、全部角色、远程 MCPR、项目知识和正式流程一次性铺在
 同一长页面中，不符合 Cindy 已有管理页面的渐进式层级。本轮改为：
 
-- 左侧 Meka 入口默认进入 Meka 插件目录；Meka 列表页顶部固定为“插件 / 项目”两个
+- 左侧 Meka 入口默认进入 Meka 插件目录；Meka 列表页顶部固定为“插件 / 技能 / 项目”三个
   同级页签，复用上游插件管理页的宽度、胶囊 Tab、搜索／动作区与窄宽堆叠布局。
-- “插件”只展示现有 MCPRouter Meka 插件目录及其本机归属项；“项目”进入原项目库，
+- “插件”只展示现有 MCPRouter Meka 插件目录及其本机归属项；“技能”使用 Cindy 上游
+  技能首页、推荐卡、本地分组、预览侧板和安装目标选择器，只把远端目录／预览／安装适配到
+  MCPRouter；首页保留 Skill Hub 下钻入口并进入 MCPRouter 驱动的 Meka Skill Hub，本地
+  分组只显示 registry `origin = installed` 且 provenance 为 `meka` 的下载技能；“项目”进入原项目库，
   不默认选中第一个项目、不展示任何配置表单。带 `projectId` / `roleId` 的角色配置直达
   URL 继续落在项目页，不因默认入口改为插件而改变。
 - Meka 插件与项目列表页使用同一内容层级：28px 大标题、14px 副标题、下方 20px
   内容分区标题及一致的垂直留白；项目页复用现有“Meka 项目 / 管理项目角色与正式流程”
   四语言文案，不再以较小的项目列表标题直接开场。
-- 点击具体插件或项目后继续使用各自原有详情布局；Meka 顶部页签只属于两个列表入口，
-  不侵入详情页。
+- Meka 技能不得保留自定义卡片、详情 Dialog 或另一套安装交互；共享组件的变化必须同步
+  生效，渠道差异只能进入数据适配器和必要的 MCPRouter 来源文案。
+- 点击具体插件或项目后继续使用各自原有详情布局；Meka 顶部页签只属于三个列表入口，
+  不侵入详情页。Meka 本地技能进入 Cindy 现有技能详情链路。
 - 项目库复用插件页的居中宽度和标题层级；项目卡片直接同步本地 Skill 卡片的网格、
   尺寸、图标容器、阴影、hover、标题行、描述行与右侧进入箭头，不单独设计 Meka 卡片变体。
 - 项目卡片展示项目名称与描述/路径；内置项目在 Skill 卡片“本地”来源标识的同一位置
@@ -647,7 +652,7 @@ Cindy 现有权限确认；无窗口、无会话监听或未明确允许时一�
   从页签顶部导入的本地包另由 host 侧渠道账本记录用户选择，
   避免本机插件或 Cindy 市场插件被误归为 Meka，且不信任 `ghost.json` 自报来源。
 - Meka 插件目录从上游“插件 / 技能”管理入口移回左侧 Meka 产品入口，作为 Meka
-  “插件 / 项目”中的“插件”页；上游插件入口只保留“插件 / 技能”。两个入口继续复用
+  “插件 / 技能 / 项目”中的“插件”页；上游插件入口只保留“插件 / 技能”。两个入口继续复用
   同一管理页骨架，但不把 Meka 市场混入上游插件分类。
 - 普通“插件”显示手动安装与 Cindy 市场归属项；Meka“插件”只显示 MCPRouter 目录和
   由其独立账本确认安装的项。两者都保留本机插件的导入、创建、启停与配置，差异只在
@@ -733,6 +738,87 @@ MCPRouter registry 24 个测试、Server 72 个测试及两个 package typecheck
 状态且不进入 device-link。定向测试、i18n／glossary、变更文件 ESLint 与 Desktop typecheck
 均通过；完整 plugin-market 加 shared payload validator、renderer 进度按钮共 9 个测试文件、
 67 个测试通过。真实 MCPRouter 下载 Meka Docs 并完成安装仍待开发者手测。
+
+#### 4.7.2 MCPRouter Meka 技能仓库
+
+2026-07-31 起新增 Meka 技能独立分发链。Meka 技能复用 Cindy 上游 Agent Skill 的
+`SKILL.md` 文件夹格式、`.agents/skills` 安装目标和 Claude Code／Codex 发现机制，但不
+复用上游 SkillHub 的账号、团队、部门、资源 ID、市场 API 或发布记录。
+
+- Meka 顶部导航目标顺序为“插件 / 技能 / 项目”；技能页直接复用 Cindy 上游技能首页的
+  推荐卡、本地全局／项目分组、右侧预览侧板和全局／项目／其他目录安装选择器，禁止维护
+  Meka Renderer 变体；Meka Skill Hub 复用上游市场工具栏、筛选、市场卡、预览与安装交互，
+  目录、文件预览和安装调用绑定 MCPRouter 渠道。本地分组只认 Meka 安装 provenance，
+  不混入 Cindy SkillHub 或用户手写技能。
+- ZIP 根目录直接包含 `SKILL.md`；Meka 渠道、远端资源和 release provenance 只进入
+  MCPRouter 数据库及客户端 owner-scoped registry，不写进技能内容。
+- 创建、目录来源、打包、上传、私有／指定用户／公开权限、不可变 release 和下载授权
+  参照 Meka 插件实现，但技能拥有独立表、API 和对象空间。
+- 第一阶段不把市场技能混入 Meka 项目角色的内置技能目录。安装后的技能由 Agent 原生
+  发现；将来如增加角色绑定，必须保存渠道、资源 ID 和 release／版本约束。
+- 本轮不修改 maker-core system prompt，不修改 `cindy-protocol`，不增加自动安装、
+  自动更新或权限撤销后的本地自动删除。
+
+目标架构、包限制、安全要求与分阶段验收见
+[`../product-rules/meka-skills.md`](../product-rules/meka-skills.md)。实现状态以该文档和
+本节后续验证记录为准。
+
+当前浏览安装切片已接通 Meka 三页签、Meka Skill Hub、MCPRouter 独立目录、Meka 渠道
+本地技能、共享详情预览、全局／项目／其他目录安装和渠道 provenance。一次性目录授权、
+打包以及版本／访问范围发布已通过首页“添加技能”按钮暴露；该按钮复用 Meka 插件的动作
+按钮与菜单布局，提供 Cindy 创建任务和“发布”。“发布”先打开窗口，再在窗口内选择目录、
+私有／指定用户／公开权限、版本与可选额外描述；首次发布建议 `1.0.0`，远端已存在时自动
+建议下一 patch。标准 Cindy Skill 的源 `SKILL.md` 不要求 `version`，Main 只向上传 ZIP
+注入所选版本且不改写源文件；额外描述作为 MCPRouter 版本级元数据保存。访问范围改用与
+Meka 插件相同的下拉控件及指定用户输入样式，目录审查成功后可选仅自己、指定用户或公开。
+自己发布的技能现已在“可获取／全部／我的发布”卡片和预览侧板提供直接“管理”动作，
+本地管理弹窗可发布新版本、修改访问范围或停止远端分发。新版本继续复用既有发布窗口与
+一次性目录授权，并要求所选目录解析到同一远端技能资源；同版本重试只同步权限，不覆盖
+不可变 release。目录授权在打包前后校验目录哈希并持有该次 ZIP，实际上传只使用这份已
+审查字节，不会重新打包已变化的目录；权限修改和停止分发在 Main 侧
+重新校验 Router owner 身份及弹窗加载时的 current release ID，避免越权或覆盖并发发布。
+RustFS 签名 URL 的直接 PUT 与 finalize 统一受上传超时约束，网络停滞会中止本次发布。
+Meka 的目录授权、安装和预览统一执行 10 MiB 压缩、50 MiB 解压及 1000 文件上限；安装
+下载授权的大小和 SHA-256 还必须与用户确认的 current release 完全一致。
+停止分发只移除远端发布，不卸载或自动删除任何已安装本地副本。独立 ZIP 安装、本地卸载和
+持久开发来源管理仍待后续增量。管理弹窗各操作区按钮统一右对齐；停止分发入口不额外显示
+按钮上方说明，点击后才显示不可撤销确认。
+首页推荐与 Skill Hub 现在共用详情侧板内的同一动作推导，不再由页面按入口或筛选传入
+互斥主操作：本人发布的技能详情同时显示 Clone 与管理，其他技能只显示 Clone。新版本目录
+选择、同资源校验和发布弹窗也收回同一个 Meka 管理组件，两个页面只负责打开该共享流程。
+Desktop 定向
+覆盖页签与搜索、目录校验、无版本标准 Skill、发布包版本注入、公开／登录目录分流、Router
+管理 API、发布并发前提和安全安装回滚；
+MCPRouter 定向覆盖标准包、不可变 release、共享可见性、会话／client-key／匿名边界与
+下载授权，并为 `meka_skill_releases` 增加可空 `publish_description` 兼容列。2026-07-31
+本轮 Desktop 4 个定向文件 40 项、MCPRouter registry 9 项与 server route 3 项测试通过，
+两仓 typecheck、Desktop 变更文件 ESLint、i18n／glossary 均通过。2026-08-03 提交前第二次
+根级 `pnpm test:unit` 完整通过，所有可运行 workspace 成功；其中 Desktop 1386 个测试文件
+共 15903 项通过、16 项跳过。第一次全量运行仅有未改动的 `codexHttpBridge.test.ts` 因
+随机分配到 Fetch 禁止端口产生 2 项 `bad port`，该文件单独复跑 17 项通过，随后第二次全量
+通过。本轮最终 Desktop typecheck、变更文件 ESLint、i18n、glossary 与 `git diff --check`
+均通过；仍未完成真实 Router、Light／Dark 和 Windows／macOS 双平台手测。
+
+2026-08-03 owner 管理增量的 Desktop 定向覆盖管理信息、权限更新、owner／release 并发
+防护、删除路由、管理按钮与弹窗交互；删除客户端当前按 MCPRouter
+`DELETE /api/meka-skills/:id` 契约实现。本仓未修改或检查独立服务端仓，真实 Router 是否
+部署该路由，以及管理弹窗的 Light／Dark、Windows／macOS 双平台实机表现仍待联调手测。
+
+2026-07-31 修复首个真实发布包的预览回归：早期 Meka 适配只把 detail manifest 重建为
+`SKILL.md` frontmatter，随后上游共享预览按设计隐藏 frontmatter，导致正文看似为空，其他
+文件则始终返回空字符串。当前 Main 改为下载并校验当前不可变 release ZIP，读取真实文件，
+按访问身份缓存单个 release，并对包与文件分别校验大小／SHA-256；Renderer 仍只接收最多
+1 MiB 的单文件文本。Desktop typecheck、变更文件 ESLint，以及预览 adapter／共享正文处理／
+Meka 首页与市场共 4 个文件 19 项定向测试通过。
+
+客户端与服务端允许错峰上线：旧 MCPRouter 缺少 `/api/skills` 并返回 404 时，Meka 技能页
+显示“服务端需要升级”，不再把该兼容状态包装成通用 IPC 加载错误；该分支不得回退或混入
+上游 SkillHub。网络失败、5xx 与响应结构异常继续作为真实错误上报。
+
+生产技能包与 Meka 插件一样使用 RustFS 预签名直传，但落在独立的
+`mcp-router-skills` bucket：`staging/<owner-sha256>/<upload-id>.zip` 仅用于短期上传，
+finalize 校验后提升为 `<package-sha256>.zip` 并删除 staging。Desktop 不持有 RustFS
+凭证；MCPRouter session 只用于申请 grant 与 finalize，安装下载使用短期预签名 GET。
 
 ### 4.8 Orca Worker 微调
 
@@ -1266,7 +1352,10 @@ thread-context gated 的本地动态代理投影这条唯一入口，Claude 继�
 - 会话顶部角色名是否正确，点击后是否直接打开该项目下的对应角色配置。
 - 空项目、删除项目、旧版无绑定会话的侧栏表现。
 - 项目/角色详情页的 Light/Dark、窄窗口和大量项目/角色场景。
-- 左侧 Meka 入口是否默认打开“插件”，顶部是否只显示“插件 / 项目”；切到“项目”后
+- 左侧 Meka 入口是否默认打开“插件”，顶部是否只显示“插件 / 技能 / 项目”；切到“技能”
+  后是否使用与 Cindy 上游技能一致的推荐卡、本地分组、右侧预览和安装目标选择，仅目录、
+  预览和安装数据来自 MCPRouter；Skill Hub 入口是否进入 Meka 自有市场，本地分组是否只
+  显示 Meka Skill Hub 安装项；切到“项目”后
   是否只显示项目卡片。进入项目、返回项目库以及项目信息/角色切换时，是否没有旧表单
   闪现或状态串位。
 - 左侧上游“插件”入口顶部是否只保留“插件 / 技能”，不再混入 Meka 插件目录。
@@ -1380,10 +1469,12 @@ thread-context gated 的本地动态代理投影这条唯一入口，Claude 继�
 ### 8.6 UI
 
 1. Light/Dark 各检查一次。
-2. 首次打开左侧 Meka，确认默认进入“插件”；顶部只显示“插件 / 项目”，并与上游插件页
+2. 首次打开左侧 Meka，确认默认进入“插件”；顶部只显示“插件 / 技能 / 项目”，并与上游插件页
    的宽度、Tab、搜索和动作区布局一致。
-3. 切到“项目”后只显示项目卡片，不自动打开首个项目；切回“插件”仍显示原 Meka
-   插件目录和原有操作。
+3. 切到“技能”后确认布局、推荐卡、本地分组、右侧预览和安装目标选择与 Cindy 上游技能
+   一致，且远端数据和安装均走 MCPRouter；点击 Skill Hub 后确认市场工具栏、筛选、卡片、
+   预览和安装交互与上游一致，“本地技能”不出现 Cindy SkillHub 或手写技能；切到“项目”
+   后只显示项目卡片，不自动打开首个项目；切回“插件”仍显示原 Meka 插件目录和原有操作。
 4. 打开左侧上游“插件”，确认顶部只显示“插件 / 技能”，且两个入口的选中态不会串位。
 5. 点击项目后，顶栏展示项目名称；左栏为项目信息和角色列表；右栏只显示当前选择内容。
 6. 检查返回项目库、切换项目信息/角色、长项目名、长路径和长角色名。

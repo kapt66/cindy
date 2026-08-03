@@ -22,6 +22,8 @@ import { SkillhubFeatureLayout } from '@/features/skillhub/SkillhubFeatureLayout
 import { SkillhubHomeView } from '@/features/skillhub/SkillhubHomeView';
 import { SkillhubDetailView } from '@/features/skillhub/SkillhubDetailView';
 import { SkillhubMarketListView } from '@/features/skillhub/SkillhubMarketListView';
+import { MekaSkillHomeView } from '@/features/skillhub/MekaSkillHomeView';
+import { MekaSkillMarketListView } from '@/features/skillhub/MekaSkillMarketListView';
 import { MakerExperimentalView } from '@/features/maker-experimental/MakerExperimentalView';
 import { SchedulerPage } from '@/features/scheduler';
 import { GhostPluginPage } from '@/features/plugin/GhostPluginPage';
@@ -97,6 +99,8 @@ export const router = createHashRouter([
                       // 必须在 :sessionId 之前匹配,否则会被当作 sessionId='new' 进入 SessionView。
                       { path: 'new', element: <NewMakerDraftRoute /> },
                       { path: 'meka/plugins', element: <GhostPluginPage surface="meka" /> },
+                      { path: 'meka/skills', element: <MekaSkillHomeView /> },
+                      { path: 'meka/skills/market', element: <MekaSkillMarketListView /> },
                       { path: 'meka', element: <MekaProjectRoleEditorRoute /> },
                       // 兼容旧 deep link:新建入口已收敛到同一个可切换 workspace 的创建页。
                       { path: 'new-dialogue', element: <Navigate to="/cc-agent/new" replace /> },

@@ -33,7 +33,6 @@ import { canAccessSkillhubMarket } from './lib/marketAccess';
 import { refresh as refreshSkillhub, useSkillhub } from './hooks/useSkillhub';
 import { useMarketList, type MarketSkill } from './hooks/useMarketList';
 import { basename } from './lib/pathDerivations';
-import { marketCardPrimaryAction } from './lib/marketDetailViewModel';
 import { deriveSkillSource } from './lib/skillSource';
 import { InstallTargetPicker } from './components/InstallTargetPicker';
 import { SkillhubMarketPreviewPanel } from './SkillhubMarketPreviewPanel';
@@ -242,43 +241,8 @@ export function SkillhubHomeView() {
                 </div>
               ) : (
                 <div className={cn('plugin-motion-stagger', PLUGIN_MANAGEMENT_CARD_GRID_CLASS)}>
-                  {recommended.map((s) => (
-                    <button
-                      key={s.name}
-                      type="button"
-                      onClick={() => openRecommended(s)}
-                      className={cn(
-                        'group flex min-h-[100px] flex-col gap-1.5 rounded-[12px] border-[0.5px] border-[var(--border-default)]',
-                        'bg-[var(--surface-elevated)] p-3 text-left shadow-[var(--plugin-card-shadow)]',
-                        'transition-[background-color,border-color,transform] duration-150 ease-out',
-                        'hover:-translate-y-0.5 hover:border-[var(--text-tertiary)]',
-                        'active:translate-y-0 active:scale-[0.992]',
-                        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
-                      )}
-                    >
-                      <div className="flex items-center gap-2">
-                        <span className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--msg-assistant-text)]">
-                          {s.displayName || s.name}
-                        </span>
-                        {s.installedLocally && (
-                          <span className="shrink-0 rounded-full bg-[var(--chat-input-chip-bg)] px-1.5 py-0.5 text-10 text-[var(--cmd-palette-item-meta)]">
-                            {t('skillhub.home.installed')}
-                          </span>
-                        )}
-                      </div>
-                      {s.description && (
-                        <p className="line-clamp-2 text-xs text-[var(--cmd-palette-item-meta)]">
-                          {s.description}
-                        </p>
-                      )}
-                      <div className="flex items-center gap-2 text-11 text-[var(--cmd-palette-item-meta)]">
-                        <span className="min-w-0 truncate">{s.authorName}</span>
-                        <span className="inline-flex shrink-0 items-center gap-0.5">
-                          <Download size={11} />
-                          {s.downloads}
-                        </span>
-                      </div>
-                    </button>
+                  {recommended.map((skill) => (
+                    <RecommendedSkillCard key={skill.name} skill={skill} onOpen={openRecommended} />
                   ))}
                 </div>
               )}
@@ -330,15 +294,6 @@ export function SkillhubHomeView() {
           open={previewSkill !== null}
           skill={previewSkill}
           onClose={() => setPreviewSkill(null)}
-          primaryAction={
-            previewSkill
-              ? marketCardPrimaryAction({
-                  isMine: previewSkill.isMine,
-                  listVisibility: 'available',
-                  cardState: previewSkill.cardState,
-                })
-              : 'none'
-          }
           onClone={handleClone}
         />
         <InstallTargetPicker
@@ -358,7 +313,7 @@ export function SkillhubHomeView() {
   );
 }
 
-function SkillSectionHeading({ title, count }: { title: string; count: number }) {
+export function SkillSectionHeading({ title, count }: { title: string; count: number }) {
   return (
     <div className="mb-5 flex items-end justify-between gap-4">
       <div className="flex min-w-0 items-baseline gap-2">
@@ -369,17 +324,66 @@ function SkillSectionHeading({ title, count }: { title: string; count: number })
   );
 }
 
-function LocalGroup({
+export function RecommendedSkillCard({
+  skill,
+  onOpen,
+}: {
+  skill: MarketSkill;
+  onOpen: (skill: MarketSkill) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(skill)}
+      className={cn(
+        'group flex min-h-[100px] flex-col gap-1.5 rounded-[12px] border-[0.5px] border-[var(--border-default)]',
+        'bg-[var(--surface-elevated)] p-3 text-left shadow-[var(--plugin-card-shadow)]',
+        'transition-[background-color,border-color,transform] duration-150 ease-out',
+        'hover:-translate-y-0.5 hover:border-[var(--text-tertiary)]',
+        'active:translate-y-0 active:scale-[0.992]',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
+      )}
+    >
+      <div className="flex items-center gap-2">
+        <span className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--msg-assistant-text)]">
+          {skill.displayName || skill.name}
+        </span>
+        {skill.installedLocally && (
+          <span className="shrink-0 rounded-full bg-[var(--chat-input-chip-bg)] px-1.5 py-0.5 text-10 text-[var(--cmd-palette-item-meta)]">
+            {t('skillhub.home.installed')}
+          </span>
+        )}
+      </div>
+      {skill.description && (
+        <p className="line-clamp-2 text-xs text-[var(--cmd-palette-item-meta)]">
+          {skill.description}
+        </p>
+      )}
+      <div className="flex items-center gap-2 text-11 text-[var(--cmd-palette-item-meta)]">
+        <span className="min-w-0 truncate">{skill.authorName}</span>
+        <span className="inline-flex shrink-0 items-center gap-0.5">
+          <Download size={11} />
+          {skill.downloads}
+        </span>
+      </div>
+    </button>
+  );
+}
+
+export function LocalGroup({
   label,
   skills,
   syncResults,
   onOpen,
+  sourceLabel,
 }: {
   label: string;
   skills: SkillhubSkill[];
   /** server 归属结果(含 isMine),用于历史遗留 registry(origin 缺失)的来源推断 */
   syncResults: Map<string, SkillhubSyncResult>;
   onOpen: (s: SkillhubSkill) => void;
+  sourceLabel?: (skill: SkillhubSkill, defaultSource: 'skillhub' | 'local') => string;
 }) {
   const { t } = useTranslation();
   return (
@@ -421,9 +425,11 @@ function LocalGroup({
                     {s.name}
                   </span>
                   <span className="shrink-0 text-10 text-[var(--text-tertiary)]">
-                    {source === 'skillhub'
-                      ? t('skillhub.home.sourceSkillhub')
-                      : t('skillhub.home.sourceLocal')}
+                    {sourceLabel
+                      ? sourceLabel(s, source)
+                      : source === 'skillhub'
+                        ? t('skillhub.home.sourceSkillhub')
+                        : t('skillhub.home.sourceLocal')}
                   </span>
                 </span>
                 {s.description && (

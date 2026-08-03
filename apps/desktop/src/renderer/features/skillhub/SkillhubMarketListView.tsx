@@ -40,7 +40,7 @@ const FILTER_CHIP_STYLE = { height: '32px', padding: '0 12px', fontSize: '12px' 
 // Must match the global native scrollbar width in styles/globals.css.
 const MARKET_SCROLLBAR_GUTTER_PX = 12;
 
-const SORT_OPTIONS: Array<{ value: SortBy; labelKey: string }> = [
+export const SKILLHUB_MARKET_SORT_OPTIONS: Array<{ value: SortBy; labelKey: string }> = [
   { value: 'trending', labelKey: 'skillhub.market.sortTrending' },
   { value: 'downloads', labelKey: 'skillhub.market.sortDownloads' },
   { value: 'updated_at', labelKey: 'skillhub.market.sortLatest' },
@@ -48,7 +48,7 @@ const SORT_OPTIONS: Array<{ value: SortBy; labelKey: string }> = [
 ];
 
 /** 圆角 pill 过滤 chip；样式跟 toolbar 上的 visibility chip 完全一致。 */
-function FilterChip({
+export function SkillhubMarketFilterChip({
   active,
   label,
   onClick,
@@ -91,12 +91,16 @@ function SkillhubMarketListViewInner() {
   const { t } = useTranslation();
   const location = useLocation();
   const navigate = useNavigate();
-  const marketState = location.state as { freshEntry?: boolean; initialVisibility?: Visibility } | null;
-  const initialVisibility = marketState?.initialVisibility === 'all' ||
+  const marketState = location.state as {
+    freshEntry?: boolean;
+    initialVisibility?: Visibility;
+  } | null;
+  const initialVisibility =
+    marketState?.initialVisibility === 'all' ||
     marketState?.initialVisibility === 'mine' ||
     marketState?.initialVisibility === 'available'
-    ? marketState.initialVisibility
-    : undefined;
+      ? marketState.initialVisibility
+      : undefined;
   const {
     items,
     loading,
@@ -120,9 +124,11 @@ function SkillhubMarketListViewInner() {
   const isMineView = visibility === 'mine';
   const mineGroups = isMineView ? groupMineByOwner(items) : [];
 
-  const selectedCategoryName = categoryFilter === CATEGORY_ALL
-    ? t('skillhub.market.categoryAll')
-    : categories.find((c) => c.slug === categoryFilter)?.name ?? t('skillhub.market.categoryAll');
+  const selectedCategoryName =
+    categoryFilter === CATEGORY_ALL
+      ? t('skillhub.market.categoryAll')
+      : (categories.find((c) => c.slug === categoryFilter)?.name ??
+        t('skillhub.market.categoryAll'));
   const marketScrollRef = useRef<HTMLDivElement | null>(null);
   const [marketHasVerticalOverflow, setMarketHasVerticalOverflow] = useState(false);
 
@@ -134,7 +140,7 @@ function SkillhubMarketListViewInner() {
   // 当前选中的 Market skill —— 初始值取自模块级 store(detail goBack 回来的场景),
   // freshEntry 时强制 null。
   const [selectedName, setSelectedName] = useState<string | null>(() =>
-    isFreshEntry ? null : getMarketSelected()?.name ?? null,
+    isFreshEntry ? null : (getMarketSelected()?.name ?? null),
   );
   const [previewSkill, setPreviewSkill] = useState<MarketSkill | null>(null);
 
@@ -152,7 +158,9 @@ function SkillhubMarketListViewInner() {
     const el = sentinelRef.current;
     if (!el) return;
     const observer = new IntersectionObserver(
-      ([entry]) => { if (entry.isIntersecting) void loadMore(); },
+      ([entry]) => {
+        if (entry.isIntersecting) void loadMore();
+      },
       { rootMargin: '200px' },
     );
     observer.observe(el);
@@ -175,9 +183,8 @@ function SkillhubMarketListViewInner() {
     };
 
     measure();
-    const resizeObserver = typeof ResizeObserver === 'undefined'
-      ? null
-      : new ResizeObserver(scheduleMeasure);
+    const resizeObserver =
+      typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(scheduleMeasure);
     resizeObserver?.observe(el);
     if (el.firstElementChild) resizeObserver?.observe(el.firstElementChild);
     window.addEventListener('resize', scheduleMeasure);
@@ -207,8 +214,9 @@ function SkillhubMarketListViewInner() {
   // 「我的管理」按团队角色拦截写操作:viewer 团队的 skill 照常显示,但点
   // 编辑/可见性/删除时提示「权限不足」。角色取自 Hub /users/teams 的 myRole
   // (一次性拉取);拿不到时不主动拦,留给保存时 Hub 的 403 兜底。
-  const [myRoleByTeamSlug, setMyRoleByTeamSlug] =
-    useState<Map<string, 'admin' | 'publisher' | 'viewer' | undefined>>(() => new Map());
+  const [myRoleByTeamSlug, setMyRoleByTeamSlug] = useState<
+    Map<string, 'admin' | 'publisher' | 'viewer' | undefined>
+  >(() => new Map());
   useEffect(() => {
     // myRoleByTeamSlug 只在「我的管理」tab 用,非该 tab 不发请求,省一次无意义的网络往返
     if (!isMineView) return;
@@ -217,7 +225,9 @@ function SkillhubMarketListViewInner() {
       if (cancelled || !res.success) return;
       setMyRoleByTeamSlug(new Map(res.teams.map((team) => [team.slug, team.myRole])));
     });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [isMineView]);
 
   // 订阅 install progress 事件：done 时 refresh 本地 scan + toast
@@ -227,10 +237,12 @@ function SkillhubMarketListViewInner() {
         void refreshSkillhub();
       } else if (event.phase === 'failed') {
         if (event.errorCode !== 'CANCELLED') {
-          toast.error(t('skillhub.market.installFailedToast', {
-            name: event.name,
-            message: event.message ?? event.errorCode ?? t('skillhub.market.installError'),
-          }));
+          toast.error(
+            t('skillhub.market.installFailedToast', {
+              name: event.name,
+              message: event.message ?? event.errorCode ?? t('skillhub.market.installError'),
+            }),
+          );
         }
       }
     });
@@ -238,7 +250,10 @@ function SkillhubMarketListViewInner() {
   }, [t]);
 
   const sortLabel = useMemo(() => {
-    return t(SORT_OPTIONS.find((option) => option.value === sortBy)?.labelKey ?? 'skillhub.market.sortLatest');
+    return t(
+      SKILLHUB_MARKET_SORT_OPTIONS.find((option) => option.value === sortBy)?.labelKey ??
+        'skillhub.market.sortLatest',
+    );
   }, [sortBy, t]);
 
   const handleCardClick = (skill: MarketSkill) => {
@@ -360,7 +375,13 @@ function SkillhubMarketListViewInner() {
         {/* search-input — 200x36 */}
         <div
           className="flex shrink-0 items-center rounded-full border border-[var(--chat-input-border)] bg-[var(--chat-input-bg)]"
-          style={{ width: '200px', height: '36px', padding: '0 12px', gap: '8px', ...WINDOW_NO_DRAG_STYLE }}
+          style={{
+            width: '200px',
+            height: '36px',
+            padding: '0 12px',
+            gap: '8px',
+            ...WINDOW_NO_DRAG_STYLE,
+          }}
         >
           <Search size={14} className="shrink-0 text-[var(--chat-input-placeholder)]" />
           <input
@@ -394,7 +415,7 @@ function SkillhubMarketListViewInner() {
               sideOffset={4}
               className="w-32 overflow-hidden rounded-xl border border-[var(--cmd-palette-border)] bg-[var(--cmd-palette-bg)] p-1 shadow-[var(--shadow-menu)]"
             >
-              {SORT_OPTIONS.map((option) => (
+              {SKILLHUB_MARKET_SORT_OPTIONS.map((option) => (
                 <DropdownMenuItem
                   key={option.value}
                   onSelect={() => setSortBy(option.value)}
@@ -446,17 +467,17 @@ function SkillhubMarketListViewInner() {
           ) : null}
 
           {/* 可获取默认选中,语义对齐 SkillHub 徽标 */}
-          <FilterChip
+          <SkillhubMarketFilterChip
             active={visibility === 'available'}
             label={t('skillhub.market.chipAvailable')}
             onClick={() => setVisibility('available')}
           />
-          <FilterChip
+          <SkillhubMarketFilterChip
             active={visibility === 'all'}
             label={t('skillhub.market.chipAll')}
             onClick={() => setVisibility('all')}
           />
-          <FilterChip
+          <SkillhubMarketFilterChip
             active={visibility === 'mine'}
             label={t('skillhub.market.chipMine')}
             onClick={() => setVisibility('mine')}
@@ -469,37 +490,53 @@ function SkillhubMarketListViewInner() {
         <div
           ref={marketScrollRef}
           className="h-full overflow-y-auto overflow-x-hidden"
-          style={marketHasVerticalOverflow
-            ? {
-              width: `calc(100% + ${MARKET_SCROLLBAR_GUTTER_PX}px)`,
-              marginLeft: `-${MARKET_SCROLLBAR_GUTTER_PX}px`,
-            }
-            : { width: '100%' }}
+          style={
+            marketHasVerticalOverflow
+              ? {
+                  width: `calc(100% + ${MARKET_SCROLLBAR_GUTTER_PX}px)`,
+                  marginLeft: `-${MARKET_SCROLLBAR_GUTTER_PX}px`,
+                }
+              : { width: '100%' }
+          }
         >
           {error ? (
             <div className="flex h-full items-center justify-center">
-              <p className="text-sm text-[var(--error-fg)]">{t('skillhub.market.loadFailed', { error })}</p>
+              <p className="text-sm text-[var(--error-fg)]">
+                {t('skillhub.market.loadFailed', { error })}
+              </p>
             </div>
           ) : loading && items.length === 0 ? (
             <div className="flex h-full items-center justify-center">
-              <p className="text-sm text-[var(--cmd-palette-item-meta)]">{t('skillhub.market.loading')}</p>
+              <p className="text-sm text-[var(--cmd-palette-item-meta)]">
+                {t('skillhub.market.loading')}
+              </p>
             </div>
           ) : items.length === 0 ? (
             <div className="flex h-full items-center justify-center">
-              <p className="text-sm text-[var(--cmd-palette-item-meta)]">{t('skillhub.market.noResults')}</p>
+              <p className="text-sm text-[var(--cmd-palette-item-meta)]">
+                {t('skillhub.market.noResults')}
+              </p>
             </div>
           ) : (
             <div
-              style={marketHasVerticalOverflow
-                ? { padding: '16px 12px 24px 36px' }
-                : { padding: '16px 24px 24px 24px' }}
+              style={
+                marketHasVerticalOverflow
+                  ? { padding: '16px 12px 24px 36px' }
+                  : { padding: '16px 24px 24px 24px' }
+              }
             >
               {isMineView ? (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
                   {mineGroups.map((group) => (
-                    <div key={group.key} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    <div
+                      key={group.key}
+                      style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}
+                    >
                       <div className="flex items-center gap-2" style={{ padding: '2px 2px 0' }}>
-                        <span className="font-medium text-[var(--msg-assistant-text)]" style={{ fontSize: '13px' }}>
+                        <span
+                          className="font-medium text-[var(--msg-assistant-text)]"
+                          style={{ fontSize: '13px' }}
+                        >
                           {group.isPersonal ? t('skillhub.market.ownerGroupPersonal') : group.label}
                         </span>
                         <span
@@ -562,20 +599,15 @@ function SkillhubMarketListViewInner() {
         open={previewSkill !== null}
         skill={previewSkill}
         onClose={handlePreviewClose}
-        primaryAction={previewSkill
-          ? marketCardPrimaryAction({
-            isMine: previewSkill.isMine,
-            listVisibility: visibility,
-            cardState: previewSkill.cardState,
-          })
-          : 'none'}
         onClone={handleClone}
         onManageAction={handleManageAction}
       />
       {editTarget ? (
         <MarketInfoEditDialog
           open
-          onOpenChange={(v) => { if (!v) setEditTarget(null); }}
+          onOpenChange={(v) => {
+            if (!v) setEditTarget(null);
+          }}
           skillName={editTarget.name}
           currentCategories={editTarget.categories}
           readOnly={lacksTeamManagePermission(editTarget, myRoleByTeamSlug)}
@@ -588,7 +620,9 @@ function SkillhubMarketListViewInner() {
       {visibilityTarget ? (
         <VisibilityEditorDialog
           open
-          onOpenChange={(v) => { if (!v) setVisibilityTarget(null); }}
+          onOpenChange={(v) => {
+            if (!v) setVisibilityTarget(null);
+          }}
           skillName={visibilityTarget.name}
           currentTier={tierForSkill(visibilityTarget)}
           currentOwnerType={visibilityTarget.ownerType}

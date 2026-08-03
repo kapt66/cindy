@@ -15,7 +15,12 @@ import { WINDOW_DRAG_STYLE, WINDOW_NO_DRAG_STYLE } from '@/components/layout/win
 import { cn } from '@/lib/utils';
 import './plugin-motion.css';
 
-export type PluginManagementTab = 'meka-plugins' | 'meka-projects' | 'plugins' | 'skills';
+export type PluginManagementTab =
+  | 'meka-plugins'
+  | 'meka-skills'
+  | 'meka-projects'
+  | 'plugins'
+  | 'skills';
 
 interface PluginManagementLayoutProps {
   activeTab: PluginManagementTab;
@@ -96,14 +101,25 @@ export function PluginManagementHeader({
   const frameRef = useRef<HTMLDivElement | null>(null);
   const [stacked, setStacked] = useState(false);
   const searchable = query !== undefined && onQueryChange !== undefined;
-  const isMekaTab = activeTab === 'meka-plugins' || activeTab === 'meka-projects';
+  const isMekaTab =
+    activeTab === 'meka-plugins' ||
+    activeTab === 'meka-skills' ||
+    activeTab === 'meka-projects';
   const searchInputId = `plugin-management-${activeTab}-search`;
   const resolvedSearchPlaceholder =
     searchPlaceholder ??
-    t(activeTab === 'skills' ? 'skillhub.home.search' : 'settings.ghosts.page.search');
+    t(
+      activeTab === 'skills' || activeTab === 'meka-skills'
+        ? 'skillhub.home.search'
+        : 'settings.ghosts.page.search',
+    );
   const resolvedClearSearchLabel =
     clearSearchLabel ??
-    t(activeTab === 'skills' ? 'skillhub.home.clearSearch' : 'settings.ghosts.page.clearSearch');
+    t(
+      activeTab === 'skills' || activeTab === 'meka-skills'
+        ? 'skillhub.home.clearSearch'
+        : 'settings.ghosts.page.clearSearch',
+    );
 
   useLayoutEffect(() => {
     const frame = frameRef.current;
@@ -129,6 +145,11 @@ export function PluginManagementHeader({
           id: 'meka-plugins',
           label: t('settings.ghosts.title'),
           to: '/cc-agent/meka/plugins',
+        },
+        {
+          id: 'meka-skills',
+          label: t('skillhub.home.title'),
+          to: '/cc-agent/meka/skills',
         },
         {
           id: 'meka-projects',
