@@ -121,3 +121,6 @@ pnpm test:unit
 - 数据库 migration、协议、更新器、权限与用户数据另有高风险专项规则；命中时先读取
   对应规则，不以本页命令替代专项验证。
 - 记录实际执行和结果；未执行的高相关检查必须说明原因。
+
+OAuth loopback 单测的浏览器回调夹具在监听器建立后立即发起 loopback 请求，不额外排队
+`setImmediate`；这样在 Windows CI 的并发 Vitest worker 负载下不会把合法回调延迟到测试超时。

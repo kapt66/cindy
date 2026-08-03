@@ -39,10 +39,9 @@ function browserRedirect(authorizeUrl: string, params: (u: URL) => Record<string
   if (!redirectUri) throw new Error('authorize URL 缺 redirect_uri');
   const cb = new URL(redirectUri);
   for (const [k, v] of Object.entries(params(url))) cb.searchParams.set(k, v);
-  // 不 await:引擎在 race 回调,fire-and-forget 即可;失败让测试超时暴露。
-  setImmediate(() => {
-    void fetch(cb.toString()).catch(() => undefined);
-  });
+  // 监听器已在 openExternal 前建立;立即发请求,避免重负载 runner 上的
+  // setImmediate 延迟把回调推过引擎的超时窗口。仍不 await,失败让测试超时暴露。
+  void fetch(cb.toString()).catch(() => undefined);
 }
 
 /** 探一个当前空闲的 loopback 端口。它只保证"探测那一刻"空闲,见 pinnedPortCase。 */
