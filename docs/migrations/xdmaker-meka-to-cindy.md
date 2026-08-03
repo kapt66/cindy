@@ -120,9 +120,9 @@
 当前身份锚点：
 
 - Windows/macOS 可执行文件名：`CindyMeka`
-- CN appId/AUMID/bundle id：`com.xd.cindy.meka`
+- 固定 appId/AUMID/bundle id：`com.xd.cindy.meka`
 - userData：`CindyMeka`
-- global/dev 使用各自的 `-global` / `-dev` 派生身份，避免同机覆盖。
+- CN / Global 构建复用同一正式安装身份；dev 保持独立开发身份。
 - Desktop deviceId：正式包与普通 dev 为 `cindy-meka-<machineId>`；显式隔离 sandbox
   为 `cindy-meka-dev-[<sandbox>-]<machineId>`，统一限制在 64 字符内。普通 Cindy
   继续使用裸机器指纹，旧 XDMaker Meka 使用 `meka-`，三者互不覆盖服务端
@@ -133,7 +133,7 @@
 - DB 文件前缀：`cindy-meka`
 - 更新器名：`cindy-meka-updater`
 - 更新/CDN 前缀：`cindy-meka`
-- `.cindy` 文件关联在 CN 区使用 `CindyMeka.CindyGhost`。
+- `.cindy` 文件关联固定使用 `CindyMeka.CindyGhost`。
 - Desktop 正式应用图标使用 Cindy 原画叠加左上 `MEKA` 斜角标签：荧光黄绿
   `#C7FF00`、深海军蓝 `#10182F`，标签顶边固定为画布宽度 50%、左边固定为画布高度
   44%（三角区域约 11%），所有尺寸共享同一几何比例。权威母版为
@@ -145,6 +145,16 @@
 旧数据迁移锚点：
 
 - 来源目录：`xdmaker-meka`，全程只读、不删除。
+- 已登录用户可从「设置 → 通用」个人信息卡退出当前账号，再在登录页选择 CN / Global；
+  该入口复用统一登出流程，不改动固定安装身份。
+- 企业 SSO 沿用双区 home-realm 发现：Global edition 输入 CN 企业时显示跨区确认，确认后
+  认证与账号业务端点使用 CN，但产品版别不变。登录页显式选择 CN / Global 则是更高优先级
+  的 edition override，不等同于企业自动发现。
+- 认证快照向 Renderer 暴露有效 `edition`；Cindy AI 模型/媒体能力和 dev 侧栏标识跟随该值。
+  默认 Global 启动后在登录页显式选择 CN 会得到 CN 模型目录；Global 选择后因企业 SSO
+  登录 CN 仍保留 Global 模型目录。edition 随认证会话单独保存，登出时与会话一并清除。
+- 本次不增加跨区 UID 映射、凭证分槽或数据库迁移。两区账号仍按服务端 UID 使用既有本地
+  owner 机制；需要合并两区历史数据时必须另做显式迁移，不得按邮箱自动合并。
 - 来源数据库：`xdt-maker-<userId>.db`（包含 `-wal` / `-shm`）。
 - 目标数据库：`cindy-meka-<userId>.db`。
 - 新旧账号系统 UID 不同时，优先复用 `xdmaker/meka/main` 已落盘的

@@ -33,6 +33,7 @@ describe('auth login-flow reset', () => {
     const clearEnd = source.indexOf('\n}\n\n// ── Public API', clearStart);
     const clearBody = source.slice(clearStart, clearEnd);
     expect(clearBody).toContain('resetLoginFlowState();');
+    expect(clearBody).toContain('removeSafe(PRODUCT_EDITION_KEY);');
     expect(clearBody).toContain('canaryFlagStore.clear();');
   });
 
@@ -41,6 +42,7 @@ describe('auth login-flow reset', () => {
     const completeEnd = source.indexOf('\n}\n\nasync function acceptLoginOutcome', completeStart);
     const completeBody = source.slice(completeStart, completeEnd);
     expect(completeBody).toContain('if (authStateEpoch !== loginEpoch)');
+    expect(completeBody).toContain('writeSafe(PRODUCT_EDITION_KEY, activeProductEdition);');
     expect(completeBody).toContain('notifyRenderer();');
     // 防复活:主机飞书 token 链已随 refresh-feishu 退役(2026-07-17),
     // authManager 不得再接 FeishuTokenManager(飞书授权归 xd-feishu 意识
@@ -49,7 +51,7 @@ describe('auth login-flow reset', () => {
     expect(source).not.toContain('setJwt(');
   });
 
-  it('requires confirmation only when enterprise discovery crosses the build region', () => {
+  it('requires confirmation only when enterprise discovery crosses the selected realm', () => {
     const start = source.indexOf("if (action.type === 'discover-sso-org') {");
     expect(start).toBeGreaterThan(-1);
     const body = source.slice(
@@ -57,7 +59,7 @@ describe('auth login-flow reset', () => {
       source.indexOf("\n    if (action.type === 'request-code')", start),
     );
     expect(body).toContain('const methods = ssoOrgDiscoveryToMethods(discovery)');
-    expect(body).toContain('if (discovery.region !== AUTH_REGION)');
+    expect(body).toContain('if (discovery.region !== selectedRealm)');
     expect(body).toContain("type: 'realm-switch-required'");
     expect(body).toContain("type: 'discovery-loaded'");
     expect(body).toContain("email: ''");
@@ -73,9 +75,9 @@ describe('auth login-flow reset', () => {
     expect(confirmBody).toContain("type: 'discovery-loaded'");
   });
 
-  it('clears stale organization realm state before personal login and a new discovery', () => {
+  it('uses the explicit login-page realm for personal login without changing it after SSO discovery', () => {
     const discoveryStart = source.indexOf(
-      'async function discoverOrganizationRealm(org: string)',
+      'async function discoverOrganizationRealm(org: string, selectedRealm: AuthRegion)',
     );
     const discoveryBody = source.slice(
       discoveryStart,
@@ -83,22 +85,13 @@ describe('auth login-flow reset', () => {
     );
     expect(discoveryBody).toContain('pendingAuthRealm = null;');
 
-    const actionStart = source.indexOf(
-      'async function runLoginAction(action: DesktopLoginAction)',
+    expect(source).toContain("if (action.type === 'select-realm') {");
+    expect(source).toContain('state: await selectLoginRealm(action.realm)');
+    expect(source).toContain(
+      'const client = createAuthClient(pendingAuthRealm ?? selectedRealm);',
     );
-    const actionPreamble = source.slice(
-      actionStart,
-      source.indexOf('const stateBeforeAction', actionStart),
-    );
-    expect(actionPreamble).toContain("action.type === 'discover'");
-    expect(actionPreamble).toContain("action.type === 'request-code'");
-    expect(actionPreamble).toContain("action.type === 'verify-code'");
-    expect(actionPreamble).toContain(
-      "action.type === 'start-browser' && action.kind === 'social'",
-    );
-    expect(actionPreamble).toContain(
-      'if (startsBuildRealmFlow) pendingAuthRealm = null;',
-    );
+    expect(source).toContain('activeProductEdition = realm;');
+    expect(source).toContain('if (discovery.region !== selectedRealm)');
   });
 
   it('does not leave expired private tickets on a screen that can only reuse them', () => {
@@ -144,6 +137,9 @@ describe('auth login-flow reset', () => {
 
     expect(authenticatedFastPath).toBeGreaterThan(-1);
     expect(initializeBody).toContain('removeSafe(LEGACY_ACCOUNT_REFRESH_TOKEN_KEY);');
+    expect(initializeBody).toContain(
+      'activeProductEdition = readPersistedProductEdition() ?? CURRENT_CINDY_REGION;',
+    );
     expect(initializeBody).not.toContain('refreshAccount');
     expect(initializeBody).not.toContain('restoreAccountSelection');
   });
@@ -168,7 +164,7 @@ describe('auth login-flow reset', () => {
     expect(initializeBody).not.toContain('activateClientEndpointRealm(persistedSession.realm);');
 
     const coldStart = source.indexOf('async function runColdStartRefreshFlow(');
-    const coldEnd = source.indexOf('\n}\n\nasync function loadLoginProviders()', coldStart);
+    const coldEnd = source.indexOf('\n}\n\nfunction authRealmForEdition(', coldStart);
     const coldBody = source.slice(coldStart, coldEnd);
     const coldPolicyGuard = coldBody.indexOf('!canRestoreAuthSessionForMembership(');
     const coldRealmActivation = coldBody.indexOf('activateClientEndpointRealm(storedRealm);');

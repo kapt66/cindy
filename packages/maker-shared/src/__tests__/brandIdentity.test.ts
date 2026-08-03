@@ -58,14 +58,16 @@ describe('BRAND_IDENTITY invariants', () => {
     }
   });
 
-  it('系统身份、数据目录和可执行文件名在各区域互不相同', () => {
+  it('正式服务区共享安装身份，dev 保持独立', () => {
     expect(BRAND_IDENTITY.executableNameByRegion.cn)
-      .not.toBe(BRAND_IDENTITY.executableNameByRegion.global);
+      .toBe(BRAND_IDENTITY.executableNameByRegion.global);
     expect(BRAND_IDENTITY.userDataDirNameByRegion.cn)
-      .not.toBe(BRAND_IDENTITY.userDataDirNameByRegion.global);
+      .toBe(BRAND_IDENTITY.userDataDirNameByRegion.global);
+    expect(BRAND_IDENTITY.executableNameByRegion.dev)
+      .not.toBe(BRAND_IDENTITY.executableNameByRegion.global);
   });
 
-  it('cn 区域值 = 基线标量字段(dev / legacy 消费点与 cn 构建同一身份)', () => {
+  it('cn 区域值 = 基线标量字段', () => {
     expect(BRAND_IDENTITY.executableNameByRegion.cn).toBe(BRAND_IDENTITY.executableName);
     expect(BRAND_IDENTITY.userDataDirNameByRegion.cn).toBe(BRAND_IDENTITY.userDataDirName);
   });
@@ -79,11 +81,11 @@ describe('BRAND_IDENTITY invariants', () => {
     expect(BRAND_IDENTITY.legacySchemes).not.toContain(BRAND_IDENTITY.primaryScheme);
   });
 
-  it('appId 两区都是反向域名格式且互不相同(cn/global 可并存的系统身份)', () => {
+  it('appId 两区都是同一个反向域名格式的正式身份', () => {
     const rdnRe = /^[a-z][a-z0-9]*(\.[a-z][a-z0-9-]*)+$/;
     expect(BRAND_IDENTITY.appIdByRegion.cn).toMatch(rdnRe);
     expect(BRAND_IDENTITY.appIdByRegion.global).toMatch(rdnRe);
-    expect(BRAND_IDENTITY.appIdByRegion.cn).not.toBe(BRAND_IDENTITY.appIdByRegion.global);
+    expect(BRAND_IDENTITY.appIdByRegion.cn).toBe(BRAND_IDENTITY.appIdByRegion.global);
   });
 
   it('legacy userData / DB 前缀不含当前值(历史表只放旧值)', () => {
@@ -105,7 +107,7 @@ describe('BRAND_IDENTITY invariants', () => {
     expect(BRAND_IDENTITY.cdnPrefix).toBe('cindy-meka');
     expect(BRAND_IDENTITY.desktopDeviceIdPrefix).toBe('cindy-meka-');
     expect(BRAND_IDENTITY.updaterName).toBe('cindy-meka-updater');
-    expect(brandFileAssociationProgId()).toBe('CindyMekaGlobal.CindyGhost');
+    expect(brandFileAssociationProgId()).toBe('CindyMeka.CindyGhost');
     expect(BRAND_IDENTITY.legacyDbFilePrefixes).toEqual(['xdt-maker']);
   });
 
@@ -134,20 +136,20 @@ describe('区域解析与派生', () => {
     expect(() => resolveCindyRegion('us')).toThrow(/Invalid Cindy region/);
   });
 
-  it('brandAppId / brandBundleIdPrefix 按区域取值,默认 global', () => {
+  it('brandAppId / brandBundleIdPrefix 正式服务区固定,默认 global', () => {
     expect(DEFAULT_CINDY_REGION).toBe('global');
-    expect(brandAppId()).toBe('com.xd.cindy.meka.global');
-    expect(brandAppId('global')).toBe('com.xd.cindy.meka.global');
+    expect(brandAppId()).toBe('com.xd.cindy.meka');
+    expect(brandAppId('global')).toBe('com.xd.cindy.meka');
     expect(brandBundleIdPrefix('cn')).toBe('com.xd.cindy.meka');
-    expect(brandBundleIdPrefix('global')).toBe('com.xd.cindy.meka.global');
+    expect(brandBundleIdPrefix('global')).toBe('com.xd.cindy.meka');
   });
 
   it('brandExecutableName / brandUserDataDirName 按区域取值,默认 global', () => {
-    expect(brandExecutableName()).toBe('CindyMekaGlobal');
-    expect(brandExecutableName('global')).toBe('CindyMekaGlobal');
+    expect(brandExecutableName()).toBe('CindyMeka');
+    expect(brandExecutableName('global')).toBe('CindyMeka');
     expect(brandExecutableName('dev')).toBe('CindyMekaDev');
-    expect(brandUserDataDirName()).toBe('CindyMekaGlobal');
-    expect(brandUserDataDirName('global')).toBe('CindyMekaGlobal');
+    expect(brandUserDataDirName()).toBe('CindyMeka');
+    expect(brandUserDataDirName('global')).toBe('CindyMeka');
   });
 });
 
@@ -192,20 +194,10 @@ describe('派生 helper', () => {
     expect(Object.isFrozen(CINDY_INTEROP_DEEP_LINK_SCHEMES)).toBe(true);
   });
 
-  it('allUserDataDirNames 本区域目录名恒为首位 + 全部历史值,且不含另一区域', () => {
-    expect(allUserDataDirNames()).toEqual([
-      'CindyMekaGlobal',
-      'xdmaker-meka',
-      'xdt-maker',
-    ]);
+  it('allUserDataDirNames 正式目录名恒为首位 + 全部历史值', () => {
+    expect(allUserDataDirNames()).toEqual(['CindyMeka', 'xdmaker-meka', 'xdt-maker']);
     expect(allUserDataDirNames('cn')).toEqual(['CindyMeka', 'xdmaker-meka', 'xdt-maker']);
-    // global 的匹配集不含 cn 的 'Cindy':orphan-reaper 按路径认领进程,
-    // 跨区域匹配会误杀另一个安装的进程。
-    expect(allUserDataDirNames('global')).toEqual([
-      'CindyMekaGlobal',
-      'xdmaker-meka',
-      'xdt-maker',
-    ]);
+    expect(allUserDataDirNames('global')).toEqual(['CindyMeka', 'xdmaker-meka', 'xdt-maker']);
   });
 
   it('helper 接受显式档案参数(历史身份回放用)', () => {

@@ -13,9 +13,9 @@ describe('canRestoreAuthSessionForMembership', () => {
     ['cn', 'global'],
     ['global', 'cn'],
   ] as const)(
-    'rejects a personal session outside its build realm (%s build, %s session)',
+    'allows a personal session from the other service realm (%s startup, %s session)',
     (buildRegion, sessionRealm) => {
-      expect(canRestoreAuthSessionForMembership(buildRegion, sessionRealm, 'personal')).toBe(false);
+      expect(canRestoreAuthSessionForMembership(buildRegion, sessionRealm, 'personal')).toBe(true);
     },
   );
 

@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from 'react';
 import { useTranslation } from 'react-i18next';
+import type { CindyRegion } from '@cindy/maker-shared/brand-identity';
 
 import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
 import { clearWorkersCache } from '@/features/cc-agent/hooks/useWorkers';
@@ -32,6 +33,7 @@ import { isSidebarWindow } from '@/lib/sidebarWindow';
 import { isGhostPanelWindow } from '@/lib/ghostPanelWindow';
 import { setNewMakerDraftOwner } from '@/state/newMakerDraft';
 import { setComposerDraftOwner } from '@/lib/composerDraftStore';
+import { CURRENT_CINDY_REGION } from '../../shared/brandRegion';
 
 /**
  * 登录态上下文：user / isAuthenticated / isCanary / deviceId 全部来自 main 的
@@ -44,6 +46,7 @@ import { setComposerDraftOwner } from '@/lib/composerDraftStore';
 export interface AuthContextValue {
   user: User | null;
   mode: 'signed-out' | 'local' | 'cloud';
+  edition: CindyRegion;
   dataOwnerId: string | null;
   canEnterApp: boolean;
   isAuthenticated: boolean;
@@ -76,6 +79,7 @@ const log = createLogger('AuthContext');
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [mode, setMode] = useState<'signed-out' | 'local' | 'cloud'>('signed-out');
+  const [edition, setEdition] = useState<CindyRegion>(CURRENT_CINDY_REGION);
   const [dataOwnerId, setDataOwnerId] = useState<string | null>(null);
   const [canEnterApp, setCanEnterApp] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -125,6 +129,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         void bootstrapMemorySettingsFromMain();
       }
       setMode(state.mode);
+      setEdition(state.edition);
       setDataOwnerId(state.dataOwnerId);
       setCanEnterApp(state.canEnterApp);
       setIsAuthenticated(state.isAuthenticated);
@@ -278,6 +283,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const state = await authServiceRef.current!.enterLocalMode();
     setComposerDraftOwner(state.dataOwnerId);
     setMode(state.mode);
+    setEdition(state.edition);
     setDataOwnerId(state.dataOwnerId);
     setCanEnterApp(state.canEnterApp);
     setIsAuthenticated(state.isAuthenticated);
@@ -288,6 +294,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const state = await authServiceRef.current!.exitLocalMode();
     setComposerDraftOwner(state.dataOwnerId);
     setMode(state.mode);
+    setEdition(state.edition);
     setDataOwnerId(state.dataOwnerId);
     setCanEnterApp(state.canEnterApp);
     setIsAuthenticated(state.isAuthenticated);
@@ -336,6 +343,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     () => ({
       user,
       mode,
+      edition,
       dataOwnerId,
       canEnterApp,
       isAuthenticated,
@@ -360,6 +368,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [
       user,
       mode,
+      edition,
       dataOwnerId,
       canEnterApp,
       isAuthenticated,

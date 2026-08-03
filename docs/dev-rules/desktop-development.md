@@ -7,12 +7,17 @@
 
 ## Agent 启动入口
 
-Agent 启动 Desktop 只使用仓库根的安全包装命令，并显式选择目标区域：
+Agent 启动 Desktop 只使用仓库根的安全包装命令。Cindy Meka 常规开发不需要指定
+`--region`：
 
 ```bash
-pnpm restart:desktop:remote --region=global
-pnpm restart:desktop:remote --region=cn
+pnpm restart:desktop:remote
 ```
+
+该命令以 Global endpoint manifest 自举，并把 Global 作为未登录时的产品 edition 默认值；
+登录页显式选择 CN / Global 后，该选择随认证会话保存并优先于启动默认，登出后清除。只有
+验证特定 endpoint manifest 或 edition 默认值时才显式传 `--region=cn|global|dev`。该参数
+不改变 Cindy Meka 的安装身份、userData 或更新渠道。
 
 Desktop 连接的是你自己的 Cindy 云端账号（remote）。这与登录页中免 Cindy 账号的
 「跳过登录」（应用内显示为「未登录」，无需账号即可使用本机 agent；代码内部标识仍为
@@ -27,8 +32,10 @@ Desktop 连接的是你自己的 Cindy 云端账号（remote）。这与登录�
 两个 restart 命令都支持下列参数；**用户没提就不要主动加**（不带 = 共库 + 正常调度）。
 这些参数只对 dev 生效，不影响用户机器上的正式版。
 
-- `--region=cn|global`（默认 `global`）：切换构建身份与仓内端点清单；中国大陆版
-  必须显式传 `--region=cn`，读取 `config/endpoint.json`。
+- `--region=cn|global|dev`（默认 `global`）：切换 endpoint bootstrap 与仓内端点清单；
+  验证中国大陆清单时显式传 `--region=cn`，读取 `config/endpoint.json`。它也是没有登录页
+  override 时的 edition 默认值。登录页显式选择优先于该默认值；企业 SSO 自动发现只改变
+  实际认证服务区，不改变有效 edition。
 - `--isolated` / `--isolated=<名字>`：使用独立 userData 沙箱，数据库、登录态、会话、定时
   任务与设备身份都与正式版彻底隔离（首次需重新登录）；命名沙箱每个名字一条独立沙箱，
   名字限 `A-Za-z0-9_-`、≤32 字符。用户说「独立数据库／隔离数据／沙箱启动／不要动正式版

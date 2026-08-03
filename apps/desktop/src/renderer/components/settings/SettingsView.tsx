@@ -19,7 +19,7 @@ import { WindowBehaviorSection } from './WindowBehaviorSection';
 import { KeyboardShortcutsSection } from './KeyboardShortcutsSection';
 import { AgentIslandSection } from './AgentIslandSection';
 import { LanguageSection } from './LanguageSection';
-import { LogoutSection } from './LogoutSection';
+import { AccountDeletionSection } from './AccountDeletionSection';
 import { ImBotSection, isImBotSettingsGroup, type ImBotSettingsGroup } from './ImBotSection';
 import { AboutSection } from './AboutSection';
 import { UserPromptSection } from './UserPromptSection';
@@ -327,9 +327,9 @@ export function SettingsView() {
                   <ExperimentalSection />
                 </section>
 
-                {/* Section — Logout (pt 18) */}
+                {/* Section — Account deletion (pt 18) */}
                 <section className="pt-[18px]" aria-label={t('settings.sections.logout')}>
-                  <LogoutSection />
+                  <AccountDeletionSection />
                 </section>
               </div>
             )}

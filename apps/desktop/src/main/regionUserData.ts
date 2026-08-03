@@ -1,21 +1,15 @@
 /**
- * regionUserData — packaged 构建按区域切换 Electron userData 目录(同机双装)。
+ * regionUserData — packaged userData 覆写兼容入口。
  *
- * 背景:cn / global 是两个可同机并存的系统身份(appId / exe / 安装目录已按
- * 区域派生),但 Electron 默认 userData 目录由 package.json productName('CindyMeka')
- * 派生,两个区域的包会共用同一目录——数据库 / 登录态 / 单实例锁全部串台。
- * 因此 global 构建在 main 入口最早期(initLogger、crashReporter、单实例锁、
- * 一切 userData 读取之前)把 userData 切到区域目录(%APPDATA%\CindyMekaGlobal /
- * ~/Library/Application Support/CindyMekaGlobal),与 cn 版彻底分库。
+ * Cindy Meka 正式版已收敛为固定安装身份，cn / global 都使用 Electron 默认的
+ * `CindyMeka` 目录；dev 保持独立。本模块保留纯函数和早期调用位，兼容上游结构。
  *
  * 语义边界:
- *  - cn 构建的区域目录名 = productName 默认派生目录 → 返回 null,零改动,
- *    保持 Electron 原生行为(线上 cn 包与历史行为完全一致)。
+ *  - cn / global 目录名 = productName 默认派生目录 → 返回 null。
  *  - dev(非 packaged)永远返回 null:dev 的隔离语义由 --isolated /
  *    XDT_USER_DATA_DIR(devCliFlags)承载,不与区域身份耦合。
  *  - 命令行显式传了 Chromium 原生 `--user-data-dir` 时返回 null,尊重调用方
- *    (smoke-packaged.mjs 用它把假库指到 os.tmpdir 临时目录;覆写会让 global
- *    包的 smoke 数据写进真实 CindyMekaGlobal 目录、临时目录清了个空)。
+ *    (smoke-packaged.mjs 用它把假库指到 os.tmpdir 临时目录)。
  *  - 只决定**目录名**,拼绝对路径(appData 基址)留给调用方——本模块保持
  *    零 Electron 依赖,可直接单测。
  */
@@ -43,7 +37,7 @@ export function resolveRegionUserDataDirName(input: {
   if (!input.isPackaged) return null;
   if (hasExplicitUserDataDir(input.argv)) return null;
   const dirName = brandUserDataDirName(input.region);
-  // 与 productName 默认派生目录同名(cn)→ 不覆写,走 Electron 原生路径。
+  // 与 productName 默认派生目录同名 → 不覆写,走 Electron 原生路径。
   if (dirName === BRAND_IDENTITY.userDataDirName) return null;
   return dirName;
 }

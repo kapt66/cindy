@@ -3360,6 +3360,10 @@
       "cn": "CN",
       "dev": "Dev"
     },
+    "realmSelector": {
+      "cn": "Mainland China",
+      "global": "Global"
+    },
     "errors": {
       "fallback": "Sign-in failed. Please try again.",
       "AUTH_SERVICE_UNAVAILABLE": "The sign-in service is temporarily unavailable.",

@@ -58,20 +58,18 @@ describe('UserInfoSection — outer wrapper takes over full-row hover', () => {
 });
 
 describe('UserInfoSection — version label', () => {
-  it('labels only the non-global builds alongside the app version', () => {
+  it('labels the effective edition alongside the app version in dev', () => {
     expect(source).toContain("import { CURRENT_CINDY_REGION } from '../../../shared/brandRegion';");
     // 「哪些区域要标」必须来自 shared 单点,不得在组件里再写一份映射
     // (issue 反馈链路同源;口径见 DESIGN.md §16.3 / region-and-editions §2.3)。
     expect(source).toContain("import { shouldLabelRegion } from '../../../shared/regionCode';");
     expect(source).not.toMatch(/const REGION_LABEL/);
-    // global 故意不贴标签,落到 null 分支只显示版本号。
-    expect(source).toMatch(
-      /const appRegionLabel = !shouldLabelRegion\(CURRENT_CINDY_REGION\)\s*\n\s*\? null\s*\n\s*: CURRENT_CINDY_REGION === 'cn'/,
-    );
+    expect(source).toContain("edition === 'global'");
+    expect(source).toContain('import.meta.env.DEV');
     // 展示文案走 i18n,且 key 为字面量分支(check:i18n 静态提取要看得到)。
     expect(source).toContain("t('sidebar.user.regionCodeCn')");
     expect(source).toContain("t('sidebar.user.regionCodeDev')");
-    expect(source).not.toContain("'Global'");
+    expect(source).toContain("t('login.realmSelector.global')");
     expect(source).not.toMatch(/'CN'|'Dev'/);
     expect(source).toMatch(
       /const appVersionLabel = appRegionLabel\s*\n\s*\? `\$\{appRegionLabel\} · \$\{appDisplayVersion\}`\s*\n\s*: appDisplayVersion;/,
@@ -87,7 +85,9 @@ describe('UserInfoSection — Canary avatar badge', () => {
     expect(source).toContain(
       "import { Flame, Shield, Smartphone, UserRound } from 'lucide-react';",
     );
-    expect(source).toContain('const { user, mode, isCanary } = useAuth();');
+    expect(source).toContain(
+      'const { user, mode, isCanary, edition = CURRENT_CINDY_REGION } = useAuth();',
+    );
     expect(source).toContain('{isCanary && (');
     expect(source).toContain("aria-label={t('sidebar.user.canaryBadge')}");
     expect(source).not.toContain("isCanary && 'ring-[1.5px] ring-foreground'");

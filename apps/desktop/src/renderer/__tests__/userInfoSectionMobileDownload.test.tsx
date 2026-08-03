@@ -18,6 +18,10 @@ vi.mock('react-router-dom', () => ({
   useNavigate: () => navigate,
 }));
 
+vi.mock('../../shared/brandRegion', () => ({
+  CURRENT_CINDY_REGION: 'global',
+}));
+
 vi.mock('@/contexts/AuthContext', () => ({
   useAuth: () => ({
     user: { name: 'Cindy user', avatar: null },
@@ -75,6 +79,11 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('UserInfoSection mobile download entry', () => {
+  it('shows the Global startup edition in the default dev build', () => {
+    render(<UserInfoSection isCollapsed={false} />);
+    expect(screen.getByText('login.realmSelector.global · 1.0.0')).toBeTruthy();
+  });
+
   it.each([
     ['expanded', false],
     ['collapsed', true],

@@ -3359,6 +3359,10 @@
       "cn": "CN",
       "dev": "Dev"
     },
+    "realmSelector": {
+      "cn": "中国大陆",
+      "global": "Global"
+    },
     "errors": {
       "fallback": "登录失败，请稍后重试",
       "AUTH_SERVICE_UNAVAILABLE": "登录服务暂不可用",

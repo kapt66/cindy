@@ -1,11 +1,12 @@
 import { useEffect, useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Building2, Copy, Pencil, UserRound } from 'lucide-react';
+import { Building2, Copy, LogOut, Pencil, UserRound } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
 import { useAuth } from '@/contexts/AuthContext';
+import { useLogout } from '@/hooks/useLogout';
 import { ProfileEditDialog } from './ProfileEditDialog';
 
 const ORGANIZATION_ROLE_I18N_KEYS = {
@@ -31,6 +32,7 @@ function abbreviateUserId(id: string): string {
 
 export function UserProfileCard() {
   const { user, mode, exitLocalMode } = useAuth();
+  const { handleLogout } = useLogout();
   const navigate = useNavigate();
   const [avatarError, setAvatarError] = useState(false);
   const [orgLogoError, setOrgLogoError] = useState(false);
@@ -211,21 +213,39 @@ export function UserProfileCard() {
         )}
       </div>
 
-      {/* 编辑名字 / 头像(直写服务端,弹窗见 ProfileEditDialog) */}
-      <button
-        type="button"
-        onClick={() => setEditOpen(true)}
-        aria-label={t('settings.userProfile.edit.open')}
-        title={t('settings.userProfile.edit.open')}
-        className={cn(
-          'flex h-8 w-8 shrink-0 items-center justify-center rounded-full',
-          'text-[var(--text-tertiary)] transition-colors',
-          'hover:bg-[var(--settings-profile-avatar-bg)] hover:text-[var(--text-primary)]',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring-soft)]',
-        )}
-      >
-        <Pencil size={15} />
-      </button>
+      <div className="flex shrink-0 items-center gap-1.5">
+        {/* 编辑名字 / 头像(直写服务端,弹窗见 ProfileEditDialog) */}
+        <button
+          type="button"
+          onClick={() => setEditOpen(true)}
+          aria-label={t('settings.userProfile.edit.open')}
+          title={t('settings.userProfile.edit.open')}
+          className={cn(
+            'flex h-8 w-8 shrink-0 items-center justify-center rounded-full',
+            'text-[var(--text-tertiary)] transition-colors',
+            'hover:bg-[var(--settings-profile-avatar-bg)] hover:text-[var(--text-primary)]',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring-soft)]',
+          )}
+        >
+          <Pencil aria-hidden="true" size={15} />
+        </button>
+
+        <button
+          type="button"
+          onClick={() => void handleLogout()}
+          aria-label={t('settings.logout.aria')}
+          className={cn(
+            'flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-full px-3',
+            'border border-[var(--settings-logout-border)] bg-[var(--settings-logout-bg)]',
+            'text-12 font-medium text-[var(--settings-logout-text)]',
+            'transition-colors hover:bg-[var(--settings-logout-hover-bg)] active:scale-[0.98]',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring-soft)]',
+          )}
+        >
+          <LogOut aria-hidden="true" size={14} />
+          <span className="whitespace-nowrap">{t('settings.logout.button')}</span>
+        </button>
+      </div>
 
       <ProfileEditDialog open={editOpen} onOpenChange={setEditOpen} />
     </div>

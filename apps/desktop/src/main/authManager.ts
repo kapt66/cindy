@@ -41,6 +41,7 @@ import {
   type ProviderConfig,
   type SocialProvider,
 } from '@cindy/auth-client';
+import type { CindyRegion } from '@cindy/maker-shared/brand-identity';
 import { closeDb as closeLocalDb } from './localDb';
 import { readReloginFlag, clearReloginFlag } from './updateService';
 import * as canaryFlagStore from './canaryFlagStore';
@@ -99,6 +100,7 @@ import {
   claimLegacyOwnerNamespace,
   recordLegacyGhostMigrationResult,
 } from './ownerNamespaceMigration.js';
+import { CURRENT_CINDY_REGION } from '../shared/brandRegion.js';
 
 const log = createLogger('authManager');
 
@@ -130,6 +132,7 @@ function authServerUrl(realm: AuthRegion = activeAuthRealm): string {
   return getClientEndpointForRealm(realm, 'authApiBaseUrl');
 }
 const AUTH_SESSION_KEY = 'cindy_auth_session_v1';
+const PRODUCT_EDITION_KEY = 'cindy_product_edition_v1';
 const LEGACY_RESOURCE_REFRESH_TOKEN_KEY = 'cindy_auth_refresh_token';
 const ACCOUNT_DELETION_RECEIPT_KEY = 'cindy_auth_account_deletion_receipt';
 const LEGACY_ACCOUNT_REFRESH_TOKEN_KEY = 'cindy_auth_account_refresh_token';
@@ -181,6 +184,8 @@ export interface AuthState {
   user: User | null;
   /** Stable application session. Local is an app session, not cloud authentication. */
   mode: AppSessionMode;
+  /** Effective product edition; enterprise SSO discovery does not change it. */
+  edition: CindyRegion;
   /** Owner for local databases and owner-scoped private state. */
   dataOwnerId: string | null;
   /** Local and cloud sessions may enter the main application. */
@@ -230,6 +235,8 @@ let authSessionTeardown: AuthSessionTeardown | null = null;
 
 let accessToken: string | null = null;
 let currentUser: CurrentUser | null = null;
+/** Product capability edition selected by startup region or the login-page override. */
+let activeProductEdition: CindyRegion = CURRENT_CINDY_REGION;
 /** 已登录会话区域；安装包区域 AUTH_REGION 始终不变。 */
 let activeAuthRealm: AuthRegion = AUTH_REGION;
 /** 企业发现成功后冻结到整次 SSO 流程，reset/cancel/失败回收时清除。 */
@@ -398,6 +405,11 @@ function removeSafe(key: string): void {
 
 function readPersistedAuthSession() {
   return parseAuthSessionRecord(readSafe(AUTH_SESSION_KEY));
+}
+
+function readPersistedProductEdition(): CindyRegion | null {
+  const edition = readSafe(PRODUCT_EDITION_KEY);
+  return edition === 'cn' || edition === 'global' || edition === 'dev' ? edition : null;
 }
 
 function readPersistedRefreshToken(realm = activeAuthRealm): string | null {
@@ -1261,6 +1273,7 @@ function snapshotAuthState(): AuthState {
         }
       : null,
     mode: appSession.mode,
+    edition: activeProductEdition,
     dataOwnerId: appSession.dataOwnerId,
     canEnterApp: appSession.mode !== 'signed-out',
     isAuthenticated: isCloudAuthenticated,
@@ -1276,6 +1289,7 @@ function snapshotLoggedOutAuthState(): AuthState {
   return {
     user: null,
     mode: 'signed-out',
+    edition: activeProductEdition,
     dataOwnerId: null,
     canEnterApp: false,
     isAuthenticated: false,
@@ -1444,6 +1458,7 @@ function clearAuth(
       );
     } else {
       removeSafe(AUTH_SESSION_KEY);
+      removeSafe(PRODUCT_EDITION_KEY);
       removeSafe(LEGACY_RESOURCE_REFRESH_TOKEN_KEY);
       removeSafe(LEGACY_ACCOUNT_REFRESH_TOKEN_KEY);
       removeSafe(LEGACY_REFRESH_TOKEN_KEY);
@@ -2005,6 +2020,7 @@ export async function initialize(options: AuthInitializeOptions = {}): Promise<A
     );
     lastAcceptedRefreshToken = null;
     removeSafe(AUTH_SESSION_KEY);
+    removeSafe(PRODUCT_EDITION_KEY);
     removeSafe(LEGACY_RESOURCE_REFRESH_TOKEN_KEY);
     pendingAccountToken = null;
     removeSafe(LEGACY_ACCOUNT_REFRESH_TOKEN_KEY);
@@ -2042,6 +2058,7 @@ export async function initialize(options: AuthInitializeOptions = {}): Promise<A
     commitActiveAppSession('signed-out');
     return snapshotLoggedOutAuthState();
   }
+  activeProductEdition = readPersistedProductEdition() ?? CURRENT_CINDY_REGION;
   try {
     await loadClientEndpointsForRealm(persistedSession.realm);
   } catch (error) {
@@ -2268,15 +2285,21 @@ async function runColdStartRefreshFlow(
   }
 }
 
-async function loadLoginProviders(): Promise<AuthFlowState> {
+function authRealmForEdition(edition: CindyRegion): AuthRegion {
+  return edition === 'global' ? 'global' : 'cn';
+}
+
+async function loadLoginProviders(
+  realm: AuthRegion = authRealmForEdition(activeProductEdition),
+): Promise<AuthFlowState> {
   discoveredMethods = [];
   pendingAccountToken = null;
   pendingLoginTicket = null;
   pendingBindTicket = null;
   pendingSsoVerificationTicket = null;
   pendingAccountDeletionRestored = false;
-  pendingAuthRealm = null;
-  providerConfig = await createAuthClient(AUTH_REGION).getProviders();
+  pendingAuthRealm = realm;
+  providerConfig = await createAuthClient(realm).getProviders();
   loginFlowState = reduceAuthFlow(loginFlowState, {
     type: 'providers-loaded',
     providers: providerConfig,
@@ -2284,13 +2307,20 @@ async function loadLoginProviders(): Promise<AuthFlowState> {
   return loginFlowState;
 }
 
-async function discoverOrganizationRealm(org: string) {
+async function selectLoginRealm(realm: AuthRegion): Promise<AuthFlowState> {
+  await loadClientEndpointsForRealm(realm);
+  const state = await loadLoginProviders(realm);
+  activeProductEdition = realm;
+  return state;
+}
+
+async function discoverOrganizationRealm(org: string, selectedRealm: AuthRegion) {
   // 新的一次组织发现不得复用上一轮成功结果；只有本轮双区判定成功后才重新冻结。
   pendingAuthRealm = null;
   const realmConfig = getClientEndpointRealmConfig();
   if (!realmConfig.crossRealmOrgLoginEnabled || !realmConfig.realmManifestBaseUrls) {
-    pendingAuthRealm = AUTH_REGION;
-    return createAuthClient(AUTH_REGION).discoverSsoOrg(org);
+    pendingAuthRealm = selectedRealm;
+    return createAuthClient(selectedRealm).discoverSsoOrg(org);
   }
 
   // 先并行加载/校验两区清单，再并行做 home-realm discovery。任一清单或请求
@@ -2385,10 +2415,12 @@ async function completeLogin(
     accessToken = outcome.accessToken;
     persistedRefreshTokenNeedsIdentityCheck = false;
     clearReplacementIntegrationReloadTimers();
-    const committedRealm = pendingAuthRealm ?? AUTH_REGION;
+    const committedRealm = pendingAuthRealm ?? authRealmForEdition(activeProductEdition);
     activateClientEndpointRealm(committedRealm);
     activeAuthRealm = committedRealm;
-    writePersistedAuthSession(outcome.refreshToken, committedRealm);
+    if (writePersistedAuthSession(outcome.refreshToken, committedRealm)) {
+      writeSafe(PRODUCT_EDITION_KEY, activeProductEdition);
+    }
     removeSafe(LEGACY_REFRESH_TOKEN_KEY);
     lastAcceptedRefreshToken = outcome.refreshToken;
     removeSafe(ACCOUNT_DELETION_RECEIPT_KEY);
@@ -2451,15 +2483,6 @@ async function acceptLoginOutcome(outcome: LoginOutcome): Promise<AuthFlowState>
 }
 
 async function runLoginAction(action: DesktopLoginAction): Promise<DesktopLoginActionResult> {
-  const startsBuildRealmFlow =
-    action.type === 'discover' ||
-    action.type === 'request-code' ||
-    action.type === 'verify-code' ||
-    (action.type === 'start-browser' && action.kind === 'social');
-  if (startsBuildRealmFlow) pendingAuthRealm = null;
-  const client = createAuthClient(
-    startsBuildRealmFlow ? AUTH_REGION : pendingAuthRealm ?? activeAuthRealm,
-  );
   const stateBeforeAction = loginFlowState?.step === 'error' ? null : loginFlowState;
   try {
     // Cancellation is intercepted by dispatchLoginAction so it can settle the
@@ -2470,6 +2493,11 @@ async function runLoginAction(action: DesktopLoginAction): Promise<DesktopLoginA
     if (action.type === 'reset') {
       return { success: true, state: await loadLoginProviders() };
     }
+    if (action.type === 'select-realm') {
+      return { success: true, state: await selectLoginRealm(action.realm) };
+    }
+    const selectedRealm = providerConfig?.region ?? authRealmForEdition(activeProductEdition);
+    const client = createAuthClient(pendingAuthRealm ?? selectedRealm);
     if (action.type === 'confirm-sso-realm') {
       const confirmation = loginFlowState;
       if (
@@ -2499,7 +2527,7 @@ async function runLoginAction(action: DesktopLoginAction): Promise<DesktopLoginA
           'No enterprise region switch is waiting for cancellation',
         );
       }
-      pendingAuthRealm = null;
+      pendingAuthRealm = confirmation.providers.region;
       discoveredMethods = [];
       loginFlowState = reduceAuthFlow(loginFlowState, {
         type: 'providers-loaded',
@@ -2524,9 +2552,12 @@ async function runLoginAction(action: DesktopLoginAction): Promise<DesktopLoginA
     // 同区域直接进入连接选择；跨区域先进入确认状态，确认后才把连接写入
     // start-browser 白名单并允许继续 SSO。
     if (action.type === 'discover-sso-org') {
-      const discovery = await discoverOrganizationRealm(action.org.trim().toLowerCase());
+      const discovery = await discoverOrganizationRealm(
+        action.org.trim().toLowerCase(),
+        selectedRealm,
+      );
       const methods = ssoOrgDiscoveryToMethods(discovery);
-      if (discovery.region !== AUTH_REGION) {
+      if (discovery.region !== selectedRealm) {
         if (!providerConfig) {
           throw new AuthApiError(
             'AUTH_SERVICE_UNAVAILABLE',

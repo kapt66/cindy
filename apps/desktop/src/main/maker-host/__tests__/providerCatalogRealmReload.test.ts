@@ -9,6 +9,12 @@ const h = vi.hoisted(() => ({
     source: Record<string, unknown>;
     resolve: (catalog: unknown) => void;
   }>,
+  authState: {
+    mode: 'signed-out' as 'signed-out' | 'cloud',
+    edition: 'global' as 'cn' | 'global',
+    user: null as { id: string } | null,
+  },
+  canUseCindyGateway: false,
 }));
 
 vi.mock('electron', () => ({
@@ -38,13 +44,13 @@ vi.mock('../../clientEndpointsService.js', () => ({
   getClientEndpoint: () => h.endpoint,
 }));
 vi.mock('../../authManager.js', () => ({
-  getAuthState: () => ({ mode: 'signed-out', user: null }),
+  getAuthState: () => h.authState,
 }));
 vi.mock('../../appSessionState.js', () => ({
   getActiveAppSession: () => ({ mode: 'signed-out', dataOwnerId: null }),
 }));
 vi.mock('../../appCapabilities.js', () => ({
-  getAppCapabilities: () => ({ canUseCindyGateway: false }),
+  getAppCapabilities: () => ({ canUseCindyGateway: h.canUseCindyGateway }),
 }));
 vi.mock('../../ownerNamespaceMigration.js', () => ({
   hasLegacyOwnerNamespaceClaim: () => false,
@@ -102,6 +108,7 @@ import { BUNDLED_CATALOG, type Catalog } from '@cindy/model-providers';
 import { getActiveCatalog } from '../active-catalog.js';
 import {
   ensureActiveCatalogLoaded,
+  getDesktopSelectableCatalog,
   reloadActiveCatalogForEndpointChange,
 } from '../createDesktopProviderService.js';
 
@@ -148,5 +155,29 @@ describe('provider catalog realm reload', () => {
     h.loads[2]!.resolve(catalogNamed('catalog-cn-latest'));
     await cnReload;
     expect(activeMarker()).toBe('catalog-cn-latest');
+
+    // A Global edition keeps Global product capabilities after enterprise SSO
+    // authenticates against CN. sessionRealm selects endpoints, not edition.
+    h.authState = {
+      mode: 'cloud',
+      edition: 'global',
+      user: { id: 'cn-user' },
+    };
+    h.canUseCindyGateway = true;
+    const selectable = getDesktopSelectableCatalog();
+    const cindyAi = selectable.providers.find((provider) => provider.id === 'xd');
+    expect(cindyAi?.imageModels?.length).toBeGreaterThan(0);
+    expect(cindyAi?.videoModels?.some((model) => model.id === 'happyhorse')).toBe(true);
+
+    // An explicit login-page CN selection overrides the startup Global edition.
+    // The same CN auth realm must now expose Mainland product capabilities.
+    h.authState.edition = 'cn';
+    const cnSelectable = getDesktopSelectableCatalog();
+    const cnCindyAi = cnSelectable.providers.find((provider) => provider.id === 'xd');
+    expect(cnCindyAi?.imageModels).toEqual([]);
+    expect(cnCindyAi?.videoModels?.map((model) => model.id)).toEqual([
+      'seedance-fast',
+      'seedance-pro',
+    ]);
   });
 });

@@ -45,9 +45,8 @@ import {
   LoginTextLink,
   LoginTitleBlock,
 } from './LoginControls';
+import { LoginRealmSelector } from './LoginRealmSelector';
 import { useResendCountdown } from './useResendCountdown';
-import { CURRENT_CINDY_REGION } from '../../../shared/brandRegion';
-import { shouldLabelRegion } from '../../../shared/regionCode';
 import { LEGAL_LINKS } from '../../../shared/legalLinks';
 import { resolveIdentifierMethod } from '../../../shared/loginIdentifierMethod';
 import {
@@ -60,34 +59,6 @@ import {
 } from './loginDesignTokens';
 import { PANEL_FIXED_SCALE } from './loginScale';
 import { canResumePendingConsent, makeConsentStamp, type ConsentStamp } from './consentGate';
-
-/**
- * 标题旁区域徽标的 i18n key(2026-07-27 拍板)。
- *
- * **global 故意缺席**:Cindy 是「天生全球」的产品,默认版本不需要给自己贴标签
- * 证明是全球版——只有为特定法规单独构建的版本才被标注(不对称命名)。旧实现给
- * global 挂 "Global" 徽标,读出来反而是「存在一个本土主场版、这是它的出口型号」,
- * 与叙事相反。cn / dev 仍标注:两者连的都不是 global 端点(cn 走国内端点、dev
- * 走独立 dev 端点),登录页是用户确认自己连向哪个后端的位置;dev 另有并存场景
- * ——CindyDev 保持独立可执行名,可与正式包同机共存。⚠️ 别把 cn 的理由写成
- * 「区分同机双装的 cn / global」:2026-07-26 起两者可执行名同为 Cindy、安装
- * 目录与快捷方式同名互抢,该双装场景已明确放弃支持(见 brandIdentity.ts 的
- * executableNameByRegion doc)。
- *
- * 值为四语同文的区域代号(与旧 login.globalRegion 一致:区域标识不翻译),仍走
- * i18n 以便日后改判为「中国大陆版」这类可译文案时不必回改组件。
- *
- * ⚠️ 本表只负责「哪个区域用哪个 i18n key」。**「标不标」不由本表决定**——那是
- * `shared/regionCode.ts` 的 `CINDY_REGION_CODE` 一处说了算(issue 反馈链路、侧栏
- * 版本行同源),消费处统一过 `shouldLabelRegion()`。否则改了 shared 映射、登录页
- * 这张表没跟上,徽标就会与其它界面报出不同的区域身份而没有任何信号。两者的对齐
- * (有代号的区域必须有 key、不标的区域不得有 key)由
- * `renderer/__tests__/regionCode.consistency.test.ts` 断言。
- */
-const REGION_PILL_KEY: Partial<Record<typeof CURRENT_CINDY_REGION, string>> = {
-  cn: 'login.regionPill.cn',
-  dev: 'login.regionPill.dev',
-};
 
 const log = createLogger('LoginPage');
 
@@ -172,6 +143,7 @@ export function LoginPage() {
   // 需先于 bottomReserve 计算声明——协议行只在 identifier 主视图渲染,sso-org 子视图隐藏。
   const [ssoOrgMode, setSsoOrgMode] = useState(false);
   const realmConfirmation = loginState?.step === 'realm-confirmation' ? loginState : null;
+  const selectedRealm = loginState?.step === 'identifier' ? loginState.providers.region : 'global';
 
   /* ── 协议同意链路(consent PR):radio 状态 + 未勾选拦截弹窗 + 同意后续接。
      过门点(产品拍板 2026-07-24 二次):手机号提交、邮箱提交(discover 前)、
@@ -306,24 +278,15 @@ export function LoginPage() {
   useLayoutEffect(() => {
     return () => reportPanelBottomReserve(null);
   }, [reportPanelBottomReserve]);
-  const isGlobalBuild = import.meta.env.VITE_CINDY_AUTH_REGION === 'global';
-  // 徽标读 CURRENT_CINDY_REGION 而非上面的 env 字面比较:未注入区域的本地 dev
-  // 构建经 resolveCindyRegion 落到默认 global,正确地不挂徽标(而非误挂 Dev)。
-  // 「标不标」过 shouldLabelRegion(shared 单点,与侧栏 / issue 链路同源),本组件的
-  // REGION_PILL_KEY 只回答「用哪个 key」——两层分开,shared 映射改了这里不会静默漂移。
-  const regionPillKey = shouldLabelRegion(CURRENT_CINDY_REGION)
-    ? REGION_PILL_KEY[CURRENT_CINDY_REGION]
-    : undefined;
-  // identifier 形态 = 构建区域确定性推导(用户拍板 2026-07-21:手机/邮箱分区互斥,
-  // 双 tab 切换移除);providers 仅兜底区域首选方式未下发的场景。
+  // identifier 形态由用户选择的 service realm 推导；providers 兜底服务端能力。
   const identifierKind: VerificationKind = useMemo(
     () =>
       loginState?.step === 'identifier'
-        ? resolveIdentifierMethod(CURRENT_CINDY_REGION, loginState.providers)
-        : isGlobalBuild
+        ? resolveIdentifierMethod(selectedRealm, loginState.providers)
+        : selectedRealm === 'global'
           ? 'email'
           : 'phone',
-    [loginState, isGlobalBuild],
+    [loginState, selectedRealm],
   );
   const [identifier, setIdentifier] = useState('');
   // identifier 本地格式校验错误(设计稿 347:1727:非法邮箱/手机号 → 输入框红边 +
@@ -407,7 +370,7 @@ export function LoginPage() {
     setBindingContact('');
     setBindingCode('');
     setIdentifierFormatError(null);
-  }, [loginState?.step]);
+  }, [loginState?.step, selectedRealm]);
 
   const errorMessage = useMemo(() => {
     if (!errorCode) return null;
@@ -463,7 +426,7 @@ export function LoginPage() {
     if (localModePendingRef.current) return;
     const value = ssoOrg.trim();
     if (!value) return;
-    // 组织区域先静默发现；仅当结果与安装包区域不一致时，main 状态机进入
+    // 组织区域先静默发现；仅当结果与当前选择的服务区不一致时，main 状态机进入
     // realm-confirmation，由下方弹窗在继续 SSO 前向用户确认。
     void dispatch({ type: 'discover-sso-org', org: value });
   };
@@ -482,8 +445,18 @@ export function LoginPage() {
             <LoginTitleBlock
               title={t('login.title')}
               subtitle={t('login.subtitle')}
-              regionPill={regionPillKey ? t(regionPillKey) : undefined}
             />
+            <div className="mt-3 flex justify-center">
+              <LoginRealmSelector
+                value={selectedRealm}
+                cnLabel={t('login.realmSelector.cn')}
+                globalLabel={t('login.realmSelector.global')}
+                disabled={isLoading}
+                onChange={(realm) => {
+                  if (realm !== selectedRealm) void dispatch({ type: 'select-realm', realm });
+                }}
+              />
+            </div>
             <LoginInput
               autoFocus
               disabled={isLoading}

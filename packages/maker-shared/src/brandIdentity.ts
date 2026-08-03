@@ -12,10 +12,9 @@
  * 不再作为新包的主身份。
  *
  * ⚠️ 语义边界:
- *  - 这是**构建期单点,不是运行时开关**。区域(cn/global)是唯一的构建期维度,
- *    经打包命令的 CINDY_AUTH_REGION 选择,默认 global。appId / userData 目录名
- *    按区域派生；Cindy Meka 的 cn / global / dev 使用独立 appId、userData
- *    目录和可执行文件名，避免与普通 Cindy 或彼此覆盖。
+ *  - Cindy Meka 的安装身份固定。构建 region 只选择端点自举与发布配置；
+ *    cn / global 返回同一 appId、userData 目录和可执行文件名。dev 继续使用
+ *    独立身份；正式服务区可在登录页运行时切换。
  *  - 历史兼容锚点(旧 scheme 解析、旧 userData / DB 文件识别)由
  *    `legacySchemes` / `legacyUserDataDirNames` / `legacyDbFilePrefixes`
  *    承载,只增不减:老用户机器上的存量注册与文件可能永远带着旧值。
@@ -38,12 +37,9 @@
 import { BRAND_NAME } from './branding.js';
 
 /**
- * 构建期区域维度(与 mobile 的 EXPO_PUBLIC_CINDY_AUTH_REGION 同语义)。
- * 2026-07-20 新增第三目标 `dev`:独立系统身份,可与 cn/global 同机
- * 三装),连接独立的 dev 服务器(config/endpoint.dev.json,服务端就绪前为
- * 约定占位域名)。行为语义上 dev 归 cn 系(登录线/文案等运行时按区域分支处
- * 与 cn 同待遇),差异只在端点与身份。注意与「开发模式(未注入区域的本地
- * dev 构建)」区分:那仍默认 global 身份。
+ * 构建期区域配置(与 mobile 的 EXPO_PUBLIC_CINDY_AUTH_REGION 取值兼容)。
+ * Meka 中 `dev` 保留独立开发端点和安装身份，不是可持久化的正式服务区。
+ * 未注入区域的本地 dev 仍默认 global。
  */
 export type CindyRegion = 'cn' | 'global' | 'dev';
 
@@ -72,20 +68,17 @@ export interface BrandIdentity {
    * 可执行文件基名(Windows 加 .exe;mac Mach-O 名同源派生)。
    * 首字母大写是产品决策(Cindy.exe,同 Discord/Slack 惯例);Windows 进程
    * 匹配大小写不敏感,产物 / OSS key 命名走小写的 `cdnPrefix`,互不影响。
-   * ⚠️ 这是 **cn / dev 基线值**;2026-07-18 支持同机双装后,打包与运行时
-   * 一律走 `brandExecutableName(region)` 取区域值,本字段仅供 dev 链路
-   * (restart 脚本镜像)与 legacy 消费点使用。
+   * Meka 正式 region 都返回该固定值；调用方仍统一走
+   * `brandExecutableName(region)`，dev 则保留独立名称。
    */
   readonly executableName: string;
   /**
-   * 按区域派生的可执行文件基名(exe / mac .app 包名 / 安装目录 / NSIS
-   * 快捷方式全部跟随)。Cindy Meka 的 cn / global / dev 名称彼此独立，
-   * 同时与普通 Cindy 隔离；区域名不含空格。
+   * 为兼容构建 API 保留的 region 索引。cn / global 必须相同；dev 独立。
    */
   readonly executableNameByRegion: Readonly<Record<CindyRegion, string>>;
   /**
-   * Windows AppUserModelId = NSIS appId = macOS bundle id,按区域派生
-   * (cn/global 是两个可并存的系统身份,与 mobile 同一套命名)。
+   * Windows AppUserModelId = NSIS appId = macOS bundle id。Meka 不按
+   * service realm 派生该值。
    * ⚠️ AUMID 三位一体:NSIS appId、运行时 setAppUserModelId、快捷方式 AUMID
    * 必须逐字符一致,否则 Windows toast 通知被静默丢弃。取值经 `brandAppId()`。
    */
@@ -100,13 +93,11 @@ export interface BrandIdentity {
    */
   readonly acceptedUnregisteredSchemes: readonly string[];
   /**
-   * Electron userData 目录名(cn / dev 基线值 = package.json productName,
-   * Electron 默认派生)。区域值走 `brandUserDataDirName(region)`:global 构建
-   * 在 main 入口早期 setPath 切到区域目录,与 cn 彻底分库(数据库 / 登录态 /
-   * 单实例锁随 userData 目录天然隔离)。
+   * Electron 正式版 userData 固定目录名(package.json productName 默认派生)。
+   * cn / global 共享该目录，账号数据继续按现有 data owner 隔离；dev 独立。
    */
   readonly userDataDirName: string;
-  /** 按区域派生的 userData 目录名(cn 保持 productName 默认,global 独立目录)。 */
+  /** 为兼容构建 API 保留的 region 索引；cn / global 相同，dev 独立。 */
   readonly userDataDirNameByRegion: Readonly<Record<CindyRegion, string>>;
   /** 历史 userData 目录名(orphan-reaper 等按路径识别的消费点需匹配全量)。只增不减。 */
   readonly legacyUserDataDirNames: readonly string[];
@@ -139,23 +130,21 @@ export interface BrandIdentity {
 /**
  * 当前生效的身份档案：Cindy Meka 是独立新应用；XDMaker Meka 仅作迁移来源。
  *
- * 区域差异字段 appId、userDataDirName、executableName 均按区域派生，
- * cn / global / dev 可并存；深链 scheme、展示名 BRAND_NAME、cdnPrefix、dbFilePrefix、
- * updaterName 两区共用(scheme 共用是 owner 决策:双装时后注册者赢,单装用户
- * 无感;cdnPrefix 共用因发布渠道靠不同 OSS bucket 区分;db 前缀因 userData
- * 已分目录无需再区分)。
+ * cn / global 的 appId、userDataDirName、executableName 与文件关联固定；dev
+ * 保留独立安装身份。深链 scheme、展示名、cdnPrefix、dbFilePrefix 与 updaterName
+ * 继续共用。
  */
 export const BRAND_IDENTITY: BrandIdentity = Object.freeze({
   displayName: BRAND_NAME,
   executableName: 'CindyMeka',
   executableNameByRegion: Object.freeze({
     cn: 'CindyMeka',
-    global: 'CindyMekaGlobal',
+    global: 'CindyMeka',
     dev: 'CindyMekaDev',
   }),
   appIdByRegion: Object.freeze({
     cn: 'com.xd.cindy.meka',
-    global: 'com.xd.cindy.meka.global',
+    global: 'com.xd.cindy.meka',
     dev: 'com.xd.cindy.meka.dev',
   }),
   primaryScheme: 'cindy-meka',
@@ -164,7 +153,7 @@ export const BRAND_IDENTITY: BrandIdentity = Object.freeze({
   userDataDirName: 'CindyMeka',
   userDataDirNameByRegion: Object.freeze({
     cn: 'CindyMeka',
-    global: 'CindyMekaGlobal',
+    global: 'CindyMeka',
     dev: 'CindyMekaDev',
   }),
   // `xdmaker-meka` 是直接迁移来源；更早的 `xdt-maker` 仍须保留给
@@ -177,7 +166,7 @@ export const BRAND_IDENTITY: BrandIdentity = Object.freeze({
   legacyDbFilePrefixes: Object.freeze(['xdt-maker']),
   fileAssociationProgIdByRegion: Object.freeze({
     cn: 'CindyMeka.CindyGhost',
-    global: 'CindyMekaGlobal.CindyGhost',
+    global: 'CindyMeka.CindyGhost',
     dev: 'CindyMekaDev.CindyGhost',
   }),
 });
@@ -291,9 +280,8 @@ export function allAcceptedDeepLinkSchemes(
 }
 
 /**
- * 按路径识别本产品 userData 的全部目录名(本区域当前 + 历史),本区域目录名
- * 恒为首位。⚠️ 故意**不包含另一区域**的目录:同机双装时 orphan-reaper 等
- * 按路径匹配的消费点只应认领自己区域的进程 / 文件,跨区域匹配会误杀。
+ * 按路径识别本产品 userData 的全部目录名(固定当前身份 + 历史迁移来源)，
+ * 当前目录名恒为首位。
  */
 export function allUserDataDirNames(
   region: CindyRegion = DEFAULT_CINDY_REGION,

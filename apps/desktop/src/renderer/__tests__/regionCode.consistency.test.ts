@@ -6,12 +6,10 @@
  * i18n,便于日后改判为可译文案;issue 正文直接落常量,因为读者是维护者、不跟随界面
  * 语言)。机制不同就没有编译期约束——改了一边的取值、或新增区域 / 新增消费链路只补了
  * 一边,typecheck 与各自的单测都不会响。issue 链路还额外有「卡片展示的就是最终写进
- * issue 正文的内容」这条契约,漂移会直接骗到用户;侧栏版本行与登录页徽标则会让同一个
- * 构建在不同界面报出不同的区域身份。这一测就是补上那道缺失的信号。
+ * issue 正文的内容」这条契约,漂移会直接骗到用户;侧栏版本行也必须与 issue 口径一致。
  *
- * 当前覆盖三条消费链路:issue 提交确认卡片、侧栏用户卡片版本行、登录页标题旁区域
- * 徽标。**新增消费链路时把它的 i18n 命名空间加进 CONSUMERS 即可**,不要另写一份平行
- * 断言——漏进表就等于那条链路不受约束(2026-07-29 review 即因此漏掉登录页徽标)。
+ * 当前覆盖 issue 提交确认卡片和侧栏用户卡片版本行。登录页现在是可交互的服务区选择器，
+ * 不再属于构建区域代号消费链路。
  */
 
 import { describe, expect, it } from 'vitest';
@@ -44,9 +42,6 @@ function regionCodeKeyFor(region: string): string {
 /**
  * 消费区域代号的各条链路:i18n key 所在对象 + 该链路的 key 命名。
  *
- * 登录页徽标的 key 命名与另两条不同(`login.regionPill.cn` 而非 `regionCodeCn`),
- * 所以 keyFor 可按链路覆盖。
- *
  * ⚠️ 本表只覆盖 **i18n bundle 侧**:某个区域在四语包里有没有 key、取值对不对。
  * 「组件里有没有真的引用到那个 key」是另一回事,由下面的 SOURCE_CONSUMERS 用源码
  * 字面量扫描覆盖(各组件都把 key 写成字面量分支而非动态拼接,为的是 `pnpm check:i18n`
@@ -69,12 +64,6 @@ const CONSUMERS: ReadonlyArray<{
     prefix: 'sidebar.user',
     pick: (b) => (b.sidebar as { user: Bundle }).user,
   },
-  {
-    label: '登录页标题旁区域徽标',
-    prefix: 'login.regionPill',
-    pick: (b) => (b.login as { regionPill: Bundle }).regionPill,
-    keyFor: (region) => region,
-  },
 ];
 
 /** 取某条链路上该区域的 i18n key 名。 */
@@ -85,8 +74,7 @@ function keyOf(consumer: (typeof CONSUMERS)[number], region: string): string {
 /**
  * 各消费点组件源码 + 它引用 i18n key 的完整路径写法。
  *
- * 为什么要扫源码:三条链路的「哪个区域用哪个 key」都由组件自己维护(LoginPage 的
- * REGION_PILL_KEY 映射表、侧栏与 issue 卡片的三元字面量分支)。新增区域时只补了
+ * 为什么要扫源码:两条链路的「哪个区域用哪个 key」都由组件自己维护。新增区域时只补了
  * CINDY_REGION_CODE 与四语 bundle、忘了补组件分支,上面的 bundle 断言照样全绿,而
  * 该区域在界面上拿不到文案 —— 这一组断言补的就是那道信号。
  */
@@ -95,11 +83,6 @@ const SOURCE_CONSUMERS: ReadonlyArray<{
   file: string;
   keyPathFor: (region: string) => string;
 }> = [
-  {
-    label: '登录页标题旁区域徽标',
-    file: 'components/login/LoginPage.tsx',
-    keyPathFor: (region) => `login.regionPill.${region}`,
-  },
   {
     label: '侧栏用户卡片版本行',
     file: 'components/sidebar/UserInfoSection.tsx',

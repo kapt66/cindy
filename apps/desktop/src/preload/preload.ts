@@ -1439,6 +1439,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   authInitialize: (): Promise<{
     user: unknown;
     mode: 'signed-out' | 'local' | 'cloud';
+    edition: 'cn' | 'global' | 'dev';
     dataOwnerId: string | null;
     canEnterApp: boolean;
     isAuthenticated: boolean;

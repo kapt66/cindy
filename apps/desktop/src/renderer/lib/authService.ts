@@ -1,4 +1,5 @@
 import type { AuthFlowState } from '@cindy/auth-client';
+import type { CindyRegion } from '@cindy/maker-shared/brand-identity';
 import type {
   DesktopAccountDeletionAvailabilityResult,
   DesktopAccountDeletionChallenge,
@@ -10,6 +11,7 @@ import type {
   DesktopLoginActionResult,
 } from '../../shared/authIpc';
 import type { Effort } from '@/lib/userPreferences.types';
+import { CURRENT_CINDY_REGION } from '../../shared/brandRegion';
 
 /** Renderer-safe projection of the authenticated auth-server membership. */
 // role 已随 /api/user/me、/api/me 退役；isCanary 改由 main 进程从专用
@@ -35,6 +37,7 @@ export interface User {
 export interface AuthState {
   user: User | null;
   mode: 'signed-out' | 'local' | 'cloud';
+  edition: CindyRegion;
   dataOwnerId: string | null;
   canEnterApp: boolean;
   isAuthenticated: boolean;
@@ -68,6 +71,7 @@ export function createAuthService(): AuthService {
     const normalized: AuthState = {
       user: rawState.user as User | null,
       mode: rawState.mode,
+      edition: rawState.edition ?? CURRENT_CINDY_REGION,
       dataOwnerId: rawState.dataOwnerId,
       canEnterApp: rawState.canEnterApp,
       isAuthenticated: rawState.isAuthenticated,
@@ -85,6 +89,7 @@ export function createAuthService(): AuthService {
       return {
         user: raw.user as User | null,
         mode: raw.mode,
+        edition: raw.edition ?? CURRENT_CINDY_REGION,
         dataOwnerId: raw.dataOwnerId,
         canEnterApp: raw.canEnterApp,
         isAuthenticated: raw.isAuthenticated,

@@ -25,8 +25,8 @@ import { assertMekaResourceTree, assertPackagedMekaResources } from './forge-mek
 const _require = createRequire(__filename);
 
 // ── 构建期身份(Cindy Meka 独立渠道) ────────────────────────────────────────────
-// 区域默认 global;中国大陆包由发布脚本显式注入 CINDY_AUTH_REGION=cn。appId 随区域
-// 派生(com.xd.cindy.meka / com.xd.cindy.meka.global),必须与运行时 shared/brandRegion
+// 区域默认 global;现有 Meka 发布快捷链显式注入 CINDY_AUTH_REGION=cn。正式版 appId
+// 固定为 com.xd.cindy.meka,必须与运行时 shared/brandRegion
 // (经 vite.main.config 的 VITE_CINDY_AUTH_REGION define 烘焙)同源——AUMID
 // 三位一体:NSIS appId = 运行时 setAppUserModelId = 快捷方式 AUMID。
 const CINDY_REGION = resolveCindyRegion(
@@ -39,10 +39,8 @@ process.env.VITE_CINDY_AUTH_REGION = CINDY_REGION;
 const CINDY_APP_ID = brandAppId(CINDY_REGION);
 const CINDY_UTI_PREFIX = brandBundleIdPrefix(CINDY_REGION);
 /**
- * 可执行文件基名,按区域派生(cn 'CindyMeka' / global 'CindyMekaGlobal'):同机双装时
- * exe / mac .app 包名 / NSIS 安装目录与快捷方式若同名,第二个安装会覆盖第一个,
- * 更新器按 exe 名杀进程也会误伤另一区域。运行时 userData 目录由 main 入口按
- * 同一区域切换(src/main/regionUserData.ts),两端从 brand-identity 同源派生。
+ * 正式版可执行文件基名固定为 CindyMeka；dev 保持独立身份。cn / global
+ * 只选择端点/发布配置，不改变安装目录、快捷方式或进程名。
  */
 const CINDY_EXE = brandExecutableName(CINDY_REGION);
 /** 包内更新器二进制文件名(cindy-meka-updater.exe)。 */
@@ -1142,12 +1140,10 @@ if (isWin) {
         // appId 决定 NSIS 写到 Start Menu 快捷方式上的 System.AppUserModel.ID 属性。
         // Electron 主进程必须用 app.setAppUserModelId() 设同一个值，Windows 通知中枢
         // 才会接收 toast；否则原生 Notification 被静默丢弃。
-        // 值按构建区域派生(shared/brandRegion 运行时同源),见文件头身份块。
+        // 值从固定 Meka 身份表读取(shared/brandRegion 运行时同源),见文件头身份块。
         appId: CINDY_APP_ID,
-        // 安装目录名跟随区域 exe 名(默认装到 …\Programs\<productName>):
-        // cn/global 'Cindy'(2026-07-26 显示名统一,双装同目录互抢已被 owner
-        // 接受)/ dev 'CindyDev'(仍与正式包隔离)。显式设值防 app-builder
-        // 回落 package.json productName 造成 dev 与正式包同目录。
+        // 正式版固定安装目录名(默认装到 …\Programs\CindyMeka)，dev 独立。
+        // 显式设值防 app-builder 与 Forge 对 productName 的回落规则漂移。
         productName: CINDY_EXE,
         // Setup.exe 与 Uninstall <App>.exe 的 FileDescription 版本资源。
         // app-builder-lib 只从 metadata(= apps/desktop/package.json)取
@@ -1208,17 +1204,14 @@ const config: ForgeConfig = {
     asar: {
       unpack: '**/{@img/{sharp-libvips-*,sharp-win32-*},loudness,native/sqlite-vec,node-pty}/**',
     },
-    // 打包名(out 目录 / mac .app 包名 / Helper 目录名 / 主 plist CFBundleName)
-    // 按区域派生:cn/global 'Cindy'(2026-07-26 显示名统一,.app 撞名双装
-    // 互覆已被 owner 接受)/ dev 'CindyDev'(显式设值防 packager 回落
-    // package.json productName 让 dev 与正式包撞名)。mac 的 Dock/Cmd+Tab/
+    // 正式版固定打包名(out 目录 / mac .app 包名 / Helper 目录名 / 主 plist
+    // CFBundleName)，dev 独立。显式设值防 packager 回落规则漂移。mac 的 Dock/Cmd+Tab/
     // 通知**显示名**由 postPackage 的 applyMacPackagedDisplayName 经
     // CFBundleDisplayName 统一拉回 Cindy(对 dev 是唯一显示名来源;
     // CFBundleName 不可动,Electron 靠它找 Helper,见该函数注释)。
     name: CINDY_EXE,
     executableName: CINDY_EXE,
-    // mac bundle id(与 Windows AUMID 同值,按区域派生;cn/global 是两个可并存
-    // 的系统身份,与 mobile 的 com.xd.cindycn / com.xd.cindy 同一套)。
+    // mac bundle id 与 Windows AUMID 同值；cn / global 固定，dev 独立。
     appBundleId: CINDY_APP_ID,
     // exe 资源元数据(任务管理器进程名、文件右键属性的显示层)。只影响展示,
     // 与 exe 文件名 / AUMID / userData 等标识符解耦;显示层两区共用 Cindy

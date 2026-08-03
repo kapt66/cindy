@@ -3359,6 +3359,10 @@
       "cn": "CN",
       "dev": "Dev"
     },
+    "realmSelector": {
+      "cn": "中国本土",
+      "global": "Global"
+    },
     "errors": {
       "fallback": "ログインに失敗しました。再試行してください。",
       "AUTH_SERVICE_UNAVAILABLE": "ログインサービスは一時的に利用できません。",

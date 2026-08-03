@@ -442,6 +442,7 @@ interface FeishuBotRegistrationStatusPayload {
 interface AuthStateChangePayload {
   user: AuthUser | null;
   mode: 'signed-out' | 'local' | 'cloud';
+  edition: 'cn' | 'global' | 'dev';
   dataOwnerId: string | null;
   canEnterApp: boolean;
   isAuthenticated: boolean;
@@ -1677,6 +1678,7 @@ interface ElectronAPI {
   authInitialize: () => Promise<{
     user: AuthUser | null;
     mode: 'signed-out' | 'local' | 'cloud';
+    edition: 'cn' | 'global' | 'dev';
     dataOwnerId: string | null;
     canEnterApp: boolean;
     isAuthenticated: boolean;

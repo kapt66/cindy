@@ -4,10 +4,12 @@ import type {
   AccountDeletionStatus,
   AuthFlowState,
   VerificationKind,
+  AuthRegion,
 } from '@cindy/auth-client';
 
 export type DesktopLoginAction =
   | { type: 'reset' }
+  | { type: 'select-realm'; realm: AuthRegion }
   | { type: 'cancel-browser' }
   | { type: 'discover'; email: string }
   | { type: 'discover-sso-org'; org: string }
@@ -85,6 +87,10 @@ export function parseDesktopLoginAction(value: unknown): DesktopLoginAction | nu
   switch (value.type) {
     case 'reset':
       return { type: 'reset' };
+    case 'select-realm':
+      return value.realm === 'cn' || value.realm === 'global'
+        ? { type: 'select-realm', realm: value.realm }
+        : null;
     case 'cancel-browser':
       return { type: 'cancel-browser' };
     case 'discover':

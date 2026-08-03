@@ -77,7 +77,6 @@ import {
   projectProviderCatalogForBuildRegion,
 } from './provider-access-policy.js';
 import { getAppCapabilities } from '../appCapabilities.js';
-import { CURRENT_CINDY_REGION } from '../../shared/brandRegion.js';
 import {
   claimDetectedNativeProviderAuth,
   migrateLegacyNativeProviderAuthBindings,
@@ -438,7 +437,7 @@ let singleton: ProviderService | null = null;
 export function getDesktopSelectableCatalog(): Catalog {
   const regionCatalog = projectProviderCatalogForBuildRegion(
     getActiveCatalog(),
-    CURRENT_CINDY_REGION,
+    getAuthState().edition,
   );
   return filterProviderCatalogForAccount(regionCatalog, {
     canUseCindyGateway: getAppCapabilities().canUseCindyGateway,

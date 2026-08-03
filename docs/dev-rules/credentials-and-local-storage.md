@@ -22,6 +22,8 @@
   或不受信任页面。
 - access token 等只需短期使用的秘密优先保留在内存中。日志、错误、遥测和调试输出不得
   包含凭证明文、完整鉴权头或可直接复用的授权材料。
+- Desktop 的 `cindy_product_edition_v1` 是随认证会话写入 `safeStorage` 的非秘密元数据，
+  只用于恢复 CN / Global 产品能力选择；登出或强制重登清除认证会话时必须同步清除。
 - 测试只使用明显无效的假凭证，不读取或复制开发者真实的 `HOME`、Agent home、
   Electron userData 或系统凭证目录。
 

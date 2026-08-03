@@ -17,7 +17,7 @@ interface UserInfoSectionProps {
 }
 
 export function UserInfoSection({ isCollapsed, onOpenUpdateNotice }: UserInfoSectionProps) {
-  const { user, mode, isCanary } = useAuth();
+  const { user, mode, isCanary, edition = CURRENT_CINDY_REGION } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [avatarError, setAvatarError] = useState(false);
@@ -51,18 +51,16 @@ export function UserInfoSection({ isCollapsed, onOpenUpdateNotice }: UserInfoSec
   const showNotSignedInGlyph = !user && isLocal;
   const appDisplayVersion = window.electronAPI.appDisplayVersion;
   const appDisplayVersionDetail = window.electronAPI.appDisplayVersionDetail;
-  // 版本行的区域前缀。「哪些区域要标」只有 CINDY_REGION_CODE 一个事实源(issue
-  // 反馈链路同源),口径见 DESIGN.md §16.3 与 region-and-editions.md §2.3:
-  // cn → CN、dev → Dev、**global 不标**——Cindy 默认版本不给自己贴标签自证是全球版,
-  // global 构建这一行只剩版本号。展示文案走 i18n(同 login.regionPill.* 的做法),
-  // 便于日后改判为「中国大陆版」这类可译文案时不必回改组件;key 写成字面量分支而非
-  // 动态拼接,保证 pnpm check:i18n 的静态提取能看到全部 key。一致性由
-  // __tests__/regionCode.consistency.test.ts 逐区域逐语言断言。
-  const appRegionLabel = !shouldLabelRegion(CURRENT_CINDY_REGION)
-    ? null
-    : CURRENT_CINDY_REGION === 'cn'
-      ? t('sidebar.user.regionCodeCn')
-      : t('sidebar.user.regionCodeDev');
+  // 版本行展示有效产品 edition，而不是企业 SSO 最终落到的 auth realm。
+  // 正式 Global 仍按产品规则省略标签；dev 显式显示 Global，方便核对 --region。
+  const appRegionLabel =
+    edition === 'global'
+      ? import.meta.env.DEV
+        ? t('login.realmSelector.global')
+        : null
+      : shouldLabelRegion(edition) && edition === 'cn'
+        ? t('sidebar.user.regionCodeCn')
+        : t('sidebar.user.regionCodeDev');
   const appVersionLabel = appRegionLabel
     ? `${appRegionLabel} · ${appDisplayVersion}`
     : appDisplayVersion;

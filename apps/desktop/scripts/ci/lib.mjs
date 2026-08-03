@@ -71,14 +71,14 @@ export const PACKAGED_APP_NAME = 'CindyMeka';
 
 /**
  * 按区域取打包产物基名(exe / .app / 安装目录 / 快捷方式全部跟随)。
- * Cindy Meka 的 cn / global / dev 产物名彼此独立。镜像
- * brandIdentity.ts 的 executableNameByRegion,一致性由
+ * Cindy Meka 的 cn / global 复用正式产物名，dev 保持独立。镜像
+ * brandIdentity.ts 的 executableNameByRegion，一致性由
  * scripts/__tests__/brand-identity-sync.test.mjs 断言兜底。
  * PACKAGED_APP_NAME 保留为正式版共同基线值,供未传 region 的 legacy 脚本使用。
  */
 export const PACKAGED_APP_NAME_BY_REGION = Object.freeze({
   cn: 'CindyMeka',
-  global: 'CindyMekaGlobal',
+  global: 'CindyMeka',
   dev: 'CindyMekaDev',
 });
 
@@ -96,7 +96,7 @@ export function packagedAppName(region = 'global') {
  */
 export const RELEASE_ARTIFACT_BASENAME_BY_REGION = Object.freeze({
   cn: 'cindy-meka',
-  global: 'cindy-meka-global',
+  global: 'cindy-meka',
   dev: 'cindy-meka-dev',
 });
 

@@ -2,24 +2,19 @@ import { describe, expect, it } from 'vitest';
 import { resolveRegionUserDataDirName } from '../regionUserData';
 
 /**
- * 同机双装的核心不变量:cn 构建 / dev 完全不动 Electron 默认 userData
- * (线上 cn 包行为零变化),global packaged 构建切到独立目录。
- * 这个函数跑在 main 入口最早期,回归 = 两个区域的包共库串台(P0),
- * 所以把所有象限全部锁死。
+ * 单安装 Meka 的核心不变量：service realm 不得改写 Electron userData。
  */
 describe('resolveRegionUserDataDirName', () => {
   const ARGV = ['CindyMeka.exe'] as const;
 
-  it('packaged + global → 覆写为 CindyMekaGlobal(与默认 Meka 分库)', () => {
+  it('packaged + global → null(与 CN 共享固定 Meka userData)', () => {
     expect(
       resolveRegionUserDataDirName({ isPackaged: true, region: 'global', argv: ARGV }),
-    ).toBe('CindyMekaGlobal');
+    ).toBeNull();
   });
 
   it('packaged + cn → null(区域目录名 = productName 默认,保持原生行为)', () => {
-    expect(
-      resolveRegionUserDataDirName({ isPackaged: true, region: 'cn', argv: ARGV }),
-    ).toBeNull();
+    expect(resolveRegionUserDataDirName({ isPackaged: true, region: 'cn', argv: ARGV })).toBeNull();
   });
 
   it('dev(非 packaged)任何区域都不覆写(隔离语义归 --isolated)', () => {
@@ -36,7 +31,7 @@ describe('resolveRegionUserDataDirName', () => {
       resolveRegionUserDataDirName({
         isPackaged: true,
         region: 'global',
-        argv: ['CindyMekaGlobal.exe', '--smoke-test', '--user-data-dir=C:\\tmp\\xdt-smoke-x'],
+        argv: ['CindyMeka.exe', '--smoke-test', '--user-data-dir=C:\\tmp\\xdt-smoke-x'],
       }),
     ).toBeNull();
     // 空格分隔形态同样尊重。
@@ -44,7 +39,7 @@ describe('resolveRegionUserDataDirName', () => {
       resolveRegionUserDataDirName({
         isPackaged: true,
         region: 'global',
-        argv: ['CindyMekaGlobal.exe', '--user-data-dir', 'C:\\tmp\\xdt-smoke-x'],
+        argv: ['CindyMeka.exe', '--user-data-dir', 'C:\\tmp\\xdt-smoke-x'],
       }),
     ).toBeNull();
   });

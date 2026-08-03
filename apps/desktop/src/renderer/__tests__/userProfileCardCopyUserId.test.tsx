@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   writeText: vi.fn(),
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
+  handleLogout: vi.fn(),
   exitLocalMode: vi.fn(),
   authState: {
     user: {
@@ -49,6 +50,10 @@ vi.mock('@/lib/toast', () => ({
   toast: { success: mocks.toastSuccess, error: mocks.toastError },
 }));
 
+vi.mock('@/hooks/useLogout', () => ({
+  useLogout: () => ({ handleLogout: mocks.handleLogout }),
+}));
+
 vi.mock('@/components/settings/ProfileEditDialog', () => ({
   ProfileEditDialog: ({ open }: { open: boolean }) =>
     open ? <div data-testid="profile-edit-dialog" /> : null,
@@ -82,6 +87,7 @@ describe('UserProfileCard copy user ID', () => {
     };
     mocks.authState.mode = 'cloud';
     mocks.authState.exitLocalMode.mockReset();
+    mocks.handleLogout.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -152,6 +158,18 @@ describe('UserProfileCard copy user ID', () => {
     expect(mocks.writeText).not.toHaveBeenCalled();
   });
 
+  it('offers logout from the cloud profile card', async () => {
+    renderCard();
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'settings.logout.aria',
+      }),
+    );
+
+    await waitFor(() => expect(mocks.handleLogout).toHaveBeenCalledOnce());
+  });
+
   it('shows an error toast when clipboard access fails', async () => {
     mocks.writeText.mockRejectedValueOnce(new Error('clipboard denied'));
     renderCard();
@@ -173,6 +191,7 @@ describe('UserProfileCard copy user ID', () => {
     });
     expect(signInButton).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'settings.userProfile.local.exit' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'settings.logout.aria' })).toBeNull();
     expect(mocks.authState.exitLocalMode).not.toHaveBeenCalled();
 
     fireEvent.click(signInButton);
