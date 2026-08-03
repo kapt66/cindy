@@ -1377,6 +1377,8 @@ thread-context gated 的本地动态代理投影这条唯一入口，Claude 继�
 - Router 实例创建恢复为应用内模板选择、实例名称输入和 2–64 位格式校验；Renderer 与 Main
   共用 shared 名称规则，创建成功后自动绑定当前项目。该 Dialog 只用于 Router 实例的局部
   操作，不替代项目/角色的完整配置页创建流程。
+- Renderer 同步禁止浏览器 `prompt()` 的直接、对象属性与计算属性调用；ESLint 在开发期
+  报错，TypeScript AST 单测扫描产品 Renderer 源码，第三方 `vendor/` 明确排除。
 - SAGA2 项目覆盖层写在已配置 P4 根目录的 `.meka/project.json`；首次保存和元数据重新
   发现会改动该项目文件。手测前应确认 P4 根目录正确，必要时先备份已有覆盖文件。
 
@@ -1548,6 +1550,7 @@ thread-context gated 的本地动态代理投影这条唯一入口，Claude 继�
   MCPRouter、重启恢复、Light/Dark 和最终全量门禁。
 - 项目/角色完整创建草稿、取消不落库、保存后创建，以及 Router 模板创建与绑定的 2 个
   定向测试文件、5 个测试通过；变更文件 ESLint 通过。
+- Renderer 禁用浏览器 `prompt()` 的 AST 检测与产品源码扫描共 1 个测试文件、2 个测试通过。
 
 ## 10. 后续继续迁移时的硬性注意事项
 

@@ -38,6 +38,11 @@ Renderer 可以负责组件渲染、交互状态、表单状态、展示数据�
 - 不保存长期业务真相；持久状态由 Main 或领域 package 管理，Renderer 只持有视图状态和
   可重建缓存。
 - 不把前端隐藏、按钮禁用或 prompt 当成权限边界。
+- Cindy Renderer 禁止调用浏览器同步 `prompt()`：Electron 不实现该 API，调用会直接失败。
+  用户输入按工作流放在应用自有的完整表单或 Dialog 中，并由 Renderer 管理草稿、校验、
+  取消和异步错误。`apps/desktop/eslint.config.mjs` 与
+  `src/renderer/__tests__/unsupportedBrowserPrompt.test.ts` 同时门禁直接、对象属性和计算属性
+  调用；第三方 `src/renderer/vendor/` 不纳入产品源码扫描。
 - 不为了绕过 IPC 在 Renderer 中新增带凭证的网络请求。无凭证的公开资源请求必须受 CSP
   约束，并确认不会泄露本地数据。
 
@@ -147,5 +152,6 @@ webview）——所有例外都必须继续由 `webview-security.ts` 在 `will-a
 
 ```bash
 pnpm --filter desktop exec vitest run src/main/__tests__/webview-security.test.ts src/main/security/__tests__/csp.test.ts
+pnpm --filter desktop exec vitest run src/renderer/__tests__/unsupportedBrowserPrompt.test.ts
 pnpm --filter desktop typecheck
 ```

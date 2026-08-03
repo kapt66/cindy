@@ -22,23 +22,49 @@ export default tseslint.config(
       'src/main/__spike__/**/*.{ts,tsx}',
     ],
     rules: {
-      'no-restricted-imports': ['error', {
-        paths: [
-          {
-            name: 'node:worker_threads',
-            message: 'Use DbClient instead. Direct worker_threads breaks escape hatch.',
-          },
-          {
-            name: 'worker_threads',
-            message: 'Use DbClient instead. Direct worker_threads breaks escape hatch.',
-          },
-          {
-            name: 'electron',
-            importNames: ['utilityProcess'],
-            message: 'Use DbClient instead. Direct utilityProcess breaks escape hatch.',
-          },
-        ],
-      }],
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: 'node:worker_threads',
+              message: 'Use DbClient instead. Direct worker_threads breaks escape hatch.',
+            },
+            {
+              name: 'worker_threads',
+              message: 'Use DbClient instead. Direct worker_threads breaks escape hatch.',
+            },
+            {
+              name: 'electron',
+              importNames: ['utilityProcess'],
+              message: 'Use DbClient instead. Direct utilityProcess breaks escape hatch.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    files: ['src/renderer/**/*.{ts,tsx,js,jsx}'],
+    rules: {
+      // Electron does not implement the synchronous browser prompt API. Product
+      // input must use an application-owned form or Dialog so focus, themes,
+      // validation and async errors remain under renderer control.
+      'no-restricted-globals': [
+        'error',
+        {
+          name: 'prompt',
+          message: 'Electron does not support prompt(). Use an application-owned form or Dialog.',
+        },
+      ],
+      'no-restricted-properties': [
+        'error',
+        ...['window', 'globalThis', 'self'].map((object) => ({
+          object,
+          property: 'prompt',
+          message: 'Electron does not support prompt(). Use an application-owned form or Dialog.',
+        })),
+      ],
     },
   },
 );
