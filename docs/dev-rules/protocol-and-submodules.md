@@ -5,7 +5,10 @@
 > 协议／relay／隧道 payload／IPC allowlist，或任何改动客户端与服务端之间 wire protocol
 > 的地方之前
 
-`cindy-protocol` 是客户端与服务端共享的 wire protocol 权威来源。submodule 指针漂移或
+`cindy-protocol` 是客户端与服务端共享的 wire protocol 权威来源。Cindy 上游使用
+`makecindy/cindy-protocol`；本仓 Meka 产品线使用
+`git@github.com:kapt66/cindy-protocol.git`，其 `main` 必须持续包含所依赖的 Meka 协议扩展。
+submodule 指针漂移或
 单端改协议会让两端不一致，且这类不一致在本仓的 typecheck／单测里发现不了，只有真实
 连接时才暴露。device-link 的运行时约束另见
 [`remote-and-mobile-adaptation.md`](remote-and-mobile-adaptation.md)，submodule 初始化命令见
@@ -24,18 +27,18 @@
   协议子仓。
 - 获得确认后、对子仓产生任何写入前，必须执行
   `git -C cindy-protocol remote get-url origin` 核对来源。`origin` 必须是官方上游
-  `https://github.com/makecindy/cindy-protocol.git`；若不是，先执行
-  `git -C cindy-protocol remote set-url origin https://github.com/makecindy/cindy-protocol.git`
-  纠正，再从上游拉取并核对目标能力与基线。不得基于私有 fork、临时 remote 或仅本地
-  commit 修改并推进父仓 gitlink。
-- 协议修改必须在协议上游形成可审查、可拉取的提交，再按本页的兼容和发布顺序更新消费方
+  `https://github.com/makecindy/cindy-protocol.git`；本仓 Meka 产品线例外使用
+  `git@github.com:kapt66/cindy-protocol.git`。若不是当前产品线对应的固定来源，先纠正，
+  再从来源仓拉取并核对目标能力与基线。不得基于临时 remote 或仅本地 commit 修改并推进
+  父仓 gitlink。
+- 协议修改必须在当前产品线的协议来源仓形成可审查、可拉取的提交，再按本页的兼容和发布顺序更新消费方
   与父仓 submodule 指针；不得把未上游化的脏子仓状态当作 Cindy 功能实现的一部分交付。
 
 ## 事实来源
 
 | 内容 | 权威来源 |
 |---|---|
-| 协议权威源 | 根 submodule `cindy-protocol`（`github.com/makecindy/cindy-protocol`） |
+| 协议权威源 | 根 submodule `cindy-protocol`（Cindy 上游：`makecindy/cindy-protocol`；本仓 Meka：`kapt66/cindy-protocol`） |
 | desktop 消费的协议包 | `@cindy/slack-hook-protocol` |
 | device-link relay 层定义 | `@cindy/device-link-protocol`；客户端重连、IPC allowlist、隧道 payload 在 `packages/device-link` |
 | 插件来源 | 客户端不预装插件；一律通过 SkillHub 或用户手动安装 `.cindy` 包 |
@@ -66,7 +69,8 @@
 
 1. 是否真的必须修改共享协议，且已核对上游能力并排除不改协议的实现？
 2. 是否已向用户说明必要性、替代方案与跨仓影响，并取得修改协议子仓的明确确认？
-3. 子仓 `origin` 是否已核对或纠正为 `https://github.com/makecindy/cindy-protocol.git`？
+3. 子仓 `origin` 是否已核对或纠正为当前产品线的固定来源（本仓 Meka 为
+   `git@github.com:kapt66/cindy-protocol.git`）？
 4. 改动是否触及跨端 wire protocol？是否要同步 `cindy-protocol` 与服务端？
 5. 升级 submodule 指针时，是否确认了服务端同步、不会造成协议漂移？
 6. 客户端是否在 `packages/device-link` 之外另造了协议或绕过 relay 层定义？

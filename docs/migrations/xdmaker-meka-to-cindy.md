@@ -740,6 +740,12 @@ SSH 远程工作区路径；Meka 插件仓同步 `ghost.json` slot、Forge 手�
 
 服务端落地契约见 MCPRouter 仓 `docs/meka-plugin-registry.md`；客户端关键实现：
 
+2026-08-04 起，本仓 `cindy-protocol` submodule 固定使用
+`git@github.com:kapt66/cindy-protocol.git`。Meka 插件的共享 manifest slot 白名单同步加入
+`reveal` 与 `cindy.media: ["deposit"]`，使 MCPRouter 市场详情响应与 Desktop 已落地的
+文件定位、媒体寄存运行时契约一致；父仓只能
+锁定已经提交并可从该 fork 拉取的协议提交，客户端与 MCPRouter 服务端需同步升级 parser。
+
 - `apps/desktop/src/main/meka-settings/routerService.ts`
 - `apps/desktop/src/main/plugin-market/api.ts`
 - `apps/desktop/src/main/plugin-market/service.ts`
