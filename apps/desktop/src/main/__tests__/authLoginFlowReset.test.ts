@@ -41,6 +41,14 @@ describe('auth login-flow reset', () => {
     expect(clearBody).toContain('canaryFlagStore.clear();');
   });
 
+  it('restores the packaged product edition after logout so the next login uses the build realm', () => {
+    const resetStart = source.indexOf('function resetActiveAuthRealmToBuild(): void {');
+    const resetEnd = source.indexOf('\n}', resetStart);
+    const resetBody = source.slice(resetStart, resetEnd);
+    expect(resetBody).toContain('activeProductEdition = CURRENT_CINDY_REGION;');
+    expect(resetBody).toContain('activeAuthRealm = AUTH_REGION;');
+  });
+
   it('keeps the login-epoch guard and does not resurrect the legacy feishu token chain', () => {
     const completeStart = source.indexOf('async function completeLogin(');
     const completeEnd = source.indexOf('\n}\n\nasync function acceptLoginOutcome', completeStart);

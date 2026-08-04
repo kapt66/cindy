@@ -1383,6 +1383,11 @@ function resetLoginFlowState(): void {
 }
 
 function resetActiveAuthRealmToBuild(): void {
+  // Product edition is an in-memory login-session override. Once the cloud
+  // session is cleared, it must return to the packaged build default too;
+  // otherwise the next login attempt can query the previously selected
+  // region until the app is restarted.
+  activeProductEdition = CURRENT_CINDY_REGION;
   activeAuthRealm = AUTH_REGION;
   resetClientEndpointRealm();
 }
