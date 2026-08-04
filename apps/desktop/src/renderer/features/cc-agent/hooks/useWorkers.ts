@@ -1,11 +1,20 @@
 /**
- * useWorkers — 封装 listWorkersByLead + ORCA_WORKER_CHANGED 实时刷新。
+ * useWorkers — 读取 renderer 进程内唯一的 Orca worker 投影。
  */
 
-import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
+import { useCallback } from 'react';
 import { createLogger } from '@/lib/logger';
-import { orcaWorkflowsFor, subscribeOrcaWorkerChanged } from '@/lib/makerTransport';
-import { isActiveWorkerStatus, type OrcaWorkerStatus } from '../../../../shared/orca-worker-status';
+import { orcaWorkflowsFor } from '@/lib/makerTransport';
+import { type OrcaWorkerStatus } from '../../../../shared/orca-worker-status';
+
+import {
+  clearWorkerProjectionStore,
+  getActiveWorkerCount,
+  refreshWorkerCreationState,
+  revalidateWorkersProjection,
+  useWorkerProjection,
+  useWorkerProjectionOwner,
+} from './workerProjectionStore';
 
 const log = createLogger('useWorkers');
 
@@ -13,7 +22,7 @@ export interface WorkerInfo {
   workerId: string;
   sessionId: string;
   role: string;
-  agent: 'claude-code' | 'codex';
+  agent: 'claude-code' | 'codex' | 'pi';
   model: string;
   effort: string | null;
   label: string | null;
@@ -183,109 +192,26 @@ async function refreshSettingsSnapshot(leadSessionId: string): Promise<void> {
 }
 
 export function clearWorkersCache(leadSessionId?: string): void {
-  if (leadSessionId) {
-    workersCache.delete(leadSessionId);
-    workersRequestSeq.delete(leadSessionId);
-    settingsRequestSeq.delete(leadSessionId);
-    latestWorkersRequest.delete(leadSessionId);
-    latestWorkersResult.delete(leadSessionId);
-    cacheSubscribers.get(leadSessionId)?.forEach((listener) => listener());
-  } else {
-    workersCache.clear();
-    workersRequestSeq.clear();
-    settingsRequestSeq.clear();
-    latestWorkersRequest.clear();
-    latestWorkersResult.clear();
-    cacheSubscribers.forEach((listeners) => listeners.forEach((listener) => listener()));
-  }
-}
-
-function updateHookSnapshot(
-  setHookSnapshot: Dispatch<SetStateAction<{
-    leadSessionId: string | undefined;
-    snapshot: WorkersSnapshot;
-  }>>,
-  leadSessionId: string | undefined,
-): void {
-  setHookSnapshot((previous) => {
-    const snapshot = readCachedSnapshot(leadSessionId);
-    return previous.leadSessionId === leadSessionId && previous.snapshot === snapshot
-      ? previous
-      : { leadSessionId, snapshot };
-  });
+  clearWorkerProjectionStore(leadSessionId);
 }
 
 export function useWorkers(leadSessionId: string | undefined) {
-  const [hookSnapshot, setHookSnapshot] = useState<{
-    leadSessionId: string | undefined;
-    snapshot: WorkersSnapshot;
-  }>(() => ({ leadSessionId, snapshot: readCachedSnapshot(leadSessionId) }));
-  const currentLeadSessionIdRef = useRef(leadSessionId);
-  currentLeadSessionIdRef.current = leadSessionId;
+  useWorkerProjectionOwner(leadSessionId);
+  const snapshot = useWorkerProjection(leadSessionId);
 
   const refresh = useCallback(async (): Promise<WorkersRefreshResult | null> => {
-    if (!leadSessionId) {
-      updateHookSnapshot(setHookSnapshot, undefined);
-      return null;
-    }
-    // device-link:远程 lead 走隧道读被控端团队;本机 lead 原样走本机 DB(orcaWorkflowsFor 分流)。
-    return refreshWorkersSnapshot(leadSessionId);
+    if (!leadSessionId) return null;
+    return revalidateWorkersProjection(leadSessionId);
   }, [leadSessionId]);
 
   const refreshCreationState = useCallback(async (): Promise<WorkerCreationRefreshResult> => {
     if (!leadSessionId) return { status: 'failed', workers: [], hardLimit: null };
-    const [workersResult, settings] = await Promise.all([
-      refreshWorkersSnapshot(leadSessionId),
-      orcaWorkflowsFor(leadSessionId)
-        .getCollaborationSettings()
-        .catch(() => null),
-    ]);
-    const rawHardLimit = (settings as Record<string, unknown> | null)?.workerHardLimit;
-    const hardLimit =
-      typeof rawHardLimit === 'number' && Number.isFinite(rawHardLimit) && rawHardLimit >= 0
-        ? rawHardLimit
-        : null;
-    if (workersResult.status !== 'applied' || hardLimit === null) {
-      return { status: 'failed', workers: workersResult.workers, hardLimit };
-    }
-    return { status: 'applied', workers: workersResult.workers, hardLimit };
+    return refreshWorkerCreationState(leadSessionId);
   }, [leadSessionId]);
 
-  useEffect(() => {
-    updateHookSnapshot(setHookSnapshot, leadSessionId);
-    if (!leadSessionId) return;
-    return subscribeCachedSnapshot(leadSessionId, () => {
-      // lead 切换 render 与旧 effect cleanup 之间仍可能收到旧 Lead 通知；同步 ref
-      // 守住最后一道边界，旧 Lead 永远不能 set 当前 hook snapshot。
-      if (currentLeadSessionIdRef.current !== leadSessionId) return;
-      updateHookSnapshot(setHookSnapshot, leadSessionId);
-    });
-  }, [leadSessionId]);
-
-  useEffect(() => {
-    if (!leadSessionId) return;
-    void refresh();
-    void refreshSettingsSnapshot(leadSessionId);
-  }, [leadSessionId, refresh]);
-
-  // worker 变更实时刷新:按 lead 来源分流(本机 IPC 推送 / device-link 远程推送),
-  // 被控端 worker-changed 经隧道转发并按 leadSessionId 过滤。见 subscribeOrcaWorkerChanged。
-  useEffect(() => {
-    if (!leadSessionId) return;
-    return subscribeOrcaWorkerChanged(leadSessionId, refresh);
-  }, [refresh, leadSessionId]);
-
-  // lead prop 切换发生在 effect cleanup 之前；render 阶段若 state 仍属于旧 Lead，
-  // 同步改读新 Lead cache，绝不把旧 worker 列表闪到新会话首帧。
-  const currentSnapshot =
-    hookSnapshot.leadSessionId === leadSessionId
-      ? hookSnapshot.snapshot
-      : readCachedSnapshot(leadSessionId);
-  const { workers, softLimit, hardLimit } = currentSnapshot;
+  const { workers, softLimit, hardLimit } = snapshot;
   const focusedWorker = workers.find((w) => w.focused) ?? workers[0] ?? null;
-  // 与后端 activeCount 共用 shared/orca-worker-status 的判定, 避免漂移 (F6)。
-  // primitive 返回值不需要 useMemo 稳定身份。
-  const activeWorkerCount = workers.filter((w) => isActiveWorkerStatus(w.status)).length;
+  const activeWorkerCount = getActiveWorkerCount(workers);
 
   return {
     workers,

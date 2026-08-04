@@ -5,6 +5,8 @@
  * 置顶 / 归档 / 删除)+「会话信息」二级入口;二级 = 用量 / 工作目录 / 附加引用目录 / 标识。
  * 全部为纯函数,不碰 IO;交互副作用(clipboard / Alert / 远端写)由组件层承担。
  */
+import { isDefaultDraftSessionTitle } from '@cindy/maker-shared/session-title';
+
 import { i18n } from '@/i18n';
 import { sessionCollaborationLabel } from '@/session/collaboration';
 import { normalizeExtraDirs } from '@/session/newSession';
@@ -56,7 +58,12 @@ export function buildSessionMenuHeader(
   if (collabLabel) chips.push({ id: 'collab', label: collabLabel });
 
   return {
-    title: session.title || workspaceName(session) || i18n.t('session.menu.titleFallback'),
+    // 哨兵(尚未起名)直接给本地化兜底,**不回落 workspaceName** —— 回落会把目录名当标题,
+    // 与 desktop 的「未命名任务」不一致(PR #1031 review P1)。文案走 i18n:本模块四语言
+    // 都在用 i18n.t,不能塞硬编码中文(mobile 支持 en / ja / ko)。
+    title: isDefaultDraftSessionTitle(session.title)
+      ? i18n.t('session.menu.unnamedTitle')
+      : session.title || workspaceName(session) || i18n.t('session.menu.titleFallback'),
     chips,
     metaLine: buildSessionMenuMetaLine(session),
     usageSummary: buildSessionMenuUsageSummary(session),
@@ -171,6 +178,7 @@ const AI_RENAME_OFFLINE_ERROR_CODES = [
   'DEVICE_OFFLINE',
   'LINK_NOT_OPEN',
   'NOT_CONNECTED',
+  'BACKPRESSURE',
   'INVOKE_TIMEOUT',
 ] as const;
 
@@ -195,7 +203,7 @@ function readErrorCode(error: Error): string {
 }
 
 function buildSessionMenuMetaLine(session: RemoteSession): string {
-  const agentLabel = session.agentKind === 'codex' ? 'Codex' : 'Claude';
+  const agentLabel = session.agentKind === 'codex' ? 'Codex' : session.agentKind === 'pi' ? 'Pi' : 'Claude';
   const parts = [agentLabel];
   const worktree = sessionWorktreeInfo(session);
   const workspace = workspaceName(session);

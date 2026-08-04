@@ -17,8 +17,8 @@ describe('Plugin Market IPC error boundary', () => {
     resolve(process.cwd(), 'src/main/plugin-market/service.ts'),
     'utf8',
   ).replace(/\r\n/g, '\n');
-  const preloadSource = readFileSync(
-    resolve(process.cwd(), 'src/preload/preload.ts'),
+  const bootstrapSource = readFileSync(
+    resolve(process.cwd(), 'src/main/bootstrap-electron.ts'),
     'utf8',
   ).replace(/\r\n/g, '\n');
 
@@ -29,26 +29,20 @@ describe('Plugin Market IPC error boundary', () => {
 
     expect(body).toContain('if (isIpcError(error)) throw error;');
     expect(body).toContain("throwIpcError('INTERNAL', 'Plugin market operation failed');");
-    expect(registerSource.match(/return invokePluginMarket\(/g)?.length).toBe(10);
-    expect(registerSource).toContain("'plugin-market:snapshot'");
-    expect(registerSource).toContain("'plugin-market:set-local-channel'");
-    expect(registerSource).toContain('isValidGhostId(normalizedGhostId)');
-    expect(registerSource).toContain(
-      'getGhostManager().list().some((ghost) => ghost.manifest.id === normalizedGhostId)',
-    );
-    expect(registerSource).toContain("'meka-plugin-market:snapshot'");
-    expect(registerSource).toContain("'meka-plugin-market:installed-ghost-ids'");
-    expect(registerSource).toContain("'meka-ledger.v1.json'");
-    expect(registerSource).toContain('adoptLegacyInstallations: false');
-    expect(registerSource).toContain('applyDefaultInstalls: false');
-    expect(registerSource).toContain(
-      'resolveMaxDownloadBytes: resolveMekaPluginMaxDownloadBytes',
-    );
-    expect(registerSource).toContain('requireInstallOperationId(obj?.operationId)');
-    expect(registerSource).toContain('if (sender.isDestroyed()) return;');
-    expect(registerSource).toContain(
-      'sender.send(MEKA_PLUGIN_MARKET_INSTALL_PROGRESS_CHANNEL, payload)',
-    );
+    // The merged client intentionally keeps ordinary-market, Meka-market, and
+    // custom-source handlers. Each registration must stay behind the same
+    // structured error boundary; the union currently has sixteen call sites.
+    expect(registerSource.match(/return invokePluginMarket\(/g)?.length).toBe(16);
+  });
+
+  it('refuses renderer-supplied local paths and only grants them via the picker', () => {
+    // 本地目录授权边界:Renderer 直传绝对路径不构成授权,必须由 Main 原生
+    // 目录选择器签发(用户的选择即授权)。此断言防止有人退回"直传即添加"。
+    expect(registerSource).toContain("parsed.source.type === 'local'");
+    expect(registerSource).toContain('Local folders must be added via the directory picker');
+    expect(registerSource).toContain("ipcMain.handle('plugin-market:pick-local-source'");
+    expect(serviceSource).toContain('addLocalSourceFromPicker');
+    expect(serviceSource).toContain("properties: ['openDirectory']");
   });
 
   it('does not throw user-visible plain errors from the market service', () => {
@@ -57,12 +51,37 @@ describe('Plugin Market IPC error boundary', () => {
     expect(serviceSource).toContain("throwIpcError('PERMISSION_DENIED'");
   });
 
-  it('filters Meka progress payloads before exposing them to the renderer', () => {
-    expect(preloadSource).toContain(
-      'fanOutMekaPluginMarketInstallProgress((payload) => {',
+  it('runs default plugin reconciliation on cold start and stable owner changes', () => {
+    const syncStart = registerSource.indexOf(
+      'export async function syncDefaultMarketPlugins(): Promise<void>',
     );
-    expect(preloadSource).toContain(
-      'if (isPluginMarketInstallProgress(payload)) callback(payload);',
+    const syncEnd = registerSource.indexOf('\n}\n\n/**\n * Preserve stable IPC errors', syncStart);
+    const syncBody = registerSource.slice(syncStart, syncEnd);
+    expect(syncBody).toContain('await service().snapshot();');
+    expect(syncBody).toContain("log.warn('default plugin startup sync failed'");
+
+    const ownerSyncStart = bootstrapSource.indexOf(
+      'function syncDefaultPluginsForActiveOwner(): void',
     );
+    const ownerSyncEnd = bootstrapSource.indexOf('\n}\n\nconst registerIpcHandlers', ownerSyncStart);
+    const ownerSyncBody = bootstrapSource.slice(ownerSyncStart, ownerSyncEnd);
+    expect(ownerSyncBody).toContain(
+      'if (!session.dataOwnerId || isAppSessionBoundaryPending()) return;',
+    );
+    expect(ownerSyncBody).toContain('if (scope === defaultPluginSyncInFlightScope) return;');
+    expect(ownerSyncBody).toContain('void syncDefaultMarketPlugins().finally(() => {');
+    expect(ownerSyncBody).toContain('defaultPluginSyncInFlightScope = null;');
+
+    const listenerStart = bootstrapSource.indexOf(
+      'disposePluginMarketAuthListener = authManager.onAuthStateChange',
+    );
+    expect(listenerStart).toBeGreaterThan(-1);
+    expect(
+      bootstrapSource.indexOf(
+        'queueMicrotask(syncDefaultPluginsForActiveOwner);',
+        listenerStart,
+      ),
+    ).toBeGreaterThan(listenerStart);
+    expect(bootstrapSource).toContain("'plugin-market-auth-listener'");
   });
 });

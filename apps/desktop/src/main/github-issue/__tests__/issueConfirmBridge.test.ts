@@ -51,6 +51,10 @@ describe('IssueConfirmBridge', () => {
       },
     });
     expect((payload as { request: { requestId: string } }).request.requestId).toBeTruthy();
+    expect(bridge.pendingSnapshots('other-session')).toEqual([]);
+    expect(bridge.pendingSnapshots('sess-1')).toEqual([
+      { sessionId: 'sess-1', request: (payload as { request: unknown }).request },
+    ]);
   });
 
   it('resolve 确认 decision → promise settle 为 confirmed,值取卡片当前版', async () => {
@@ -184,12 +188,25 @@ describe('IssueConfirmBridge', () => {
     const requestId = lastRequestId(broadcast);
     vi.advanceTimersByTime(1001);
     await expect(promise).resolves.toEqual({ confirmed: false, reason: 'timeout' });
+    expect(bridge.pendingSnapshots()).toEqual([]);
     expect(broadcast).toHaveBeenCalledWith(MAKER_PUSH.INTERACTION_DISMISSED, {
       sessionId: 'sess-1',
       requestId,
       reason: 'timeout',
       resolvedAs: 'deny',
     });
+  });
+
+  it('默认确认超时早于 600 秒 MCP deadline', async () => {
+    const bridge = new IssueConfirmBridge({ broadcast: vi.fn() });
+    const promise = bridge.request('sess-1', DRAFT, ENV, IDENTITY);
+
+    vi.advanceTimersByTime(9 * 60 * 1000 - 1);
+    expect(bridge.pendingSnapshots('sess-1')).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+
+    await expect(promise).resolves.toEqual({ confirmed: false, reason: 'timeout' });
+    expect(bridge.pendingSnapshots()).toEqual([]);
   });
 
   it('cleanupForSession 只清目标会话的 pending,并广播收卡', async () => {
@@ -199,6 +216,8 @@ describe('IssueConfirmBridge', () => {
     const p2 = bridge.request('sess-2', DRAFT, ENV, IDENTITY);
     bridge.cleanupForSession('sess-1', 'session_aborted');
     await expect(p1).resolves.toEqual({ confirmed: false, reason: 'session_aborted' });
+    expect(bridge.pendingSnapshots('sess-1')).toEqual([]);
+    expect(bridge.pendingSnapshots('sess-2')).toHaveLength(1);
     const dismissed = broadcast.mock.calls.filter(
       ([channel]) => channel === MAKER_PUSH.INTERACTION_DISMISSED,
     );
@@ -209,5 +228,60 @@ describe('IssueConfirmBridge', () => {
       .requestId;
     expect(bridge.resolve(req2, { confirmed: false })).toBe(true);
     await expect(p2).resolves.toEqual({ confirmed: false, reason: 'cancelled' });
+  });
+});
+
+describe('onDesktopOnlyConfirmPending(#926)', () => {
+  it('request 派发确认卡后同步触发回调,带 sessionId', async () => {
+    const onPending = vi.fn();
+    const bridge = new IssueConfirmBridge({
+      broadcast: () => {},
+      timeoutMs: 50,
+      onDesktopOnlyConfirmPending: onPending,
+    });
+    const p = bridge.request(
+      'feishu_bot_ou_1',
+      { title: 't', body: 'b', type: 'bug' },
+      { appVersion: '0.0.0', platform: 'darwin', arch: 'arm64', osVersion: '1', region: 'cn' },
+      { kind: 'platform', login: 'cindy' },
+    );
+    expect(onPending).toHaveBeenCalledWith('feishu_bot_ou_1');
+    await p; // 超时收口,不留挂起 promise
+  });
+
+  it('未注入回调时行为不变(可选依赖)', async () => {
+    const bridge = new IssueConfirmBridge({ broadcast: () => {}, timeoutMs: 50 });
+    const decision = await bridge.request(
+      's1',
+      { title: 't', body: 'b', type: 'bug' },
+      { appVersion: '0.0.0', platform: 'darwin', arch: 'arm64', osVersion: '1', region: 'cn' },
+      { kind: 'github-user', login: 'u' },
+    );
+    expect(decision.confirmed).toBe(false);
+  });
+});
+
+describe('onDesktopOnlyConfirmPending 抛错防护(#1059 review)', () => {
+  it('回调同步抛错被吞掉只 warn,确认流程照常走到超时收口', async () => {
+    const warn = vi.fn();
+    const bridge = new IssueConfirmBridge({
+      broadcast: () => {},
+      timeoutMs: 50,
+      logger: { warn },
+      onDesktopOnlyConfirmPending: () => {
+        throw new Error('notifier exploded');
+      },
+    });
+    const decision = await bridge.request(
+      's-throw',
+      { title: 't', body: 'b', type: 'bug' },
+      { appVersion: '0.0.0', platform: 'darwin', arch: 'arm64', osVersion: '1', region: 'cn' },
+      { kind: 'github-user', login: 'u' },
+    );
+    expect(decision.confirmed).toBe(false);
+    expect(warn).toHaveBeenCalledWith(
+      'onDesktopOnlyConfirmPending threw (ignored)',
+      expect.objectContaining({ sessionId: 's-throw' }),
+    );
   });
 });

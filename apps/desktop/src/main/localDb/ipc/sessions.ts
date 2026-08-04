@@ -9,13 +9,19 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 import { ipcMain, app, BrowserWindow } from 'electron';
-import { eq, ne, and, desc, count, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
+import { eq, ne, and, desc, count, inArray, isNotNull, isNull, sql, type SQL } from 'drizzle-orm';
+
+import {
+  DEFAULT_DRAFT_SESSION_TITLE,
+  normalizeAutoTitle,
+} from '@cindy/maker-shared/session-title';
 
 import { getDbClient } from '../client/current';
 import type { DbClient } from '../client/DbClient';
 import { sessions, messages } from '../schema';
 import { throwIpcError, requireString, requireObject } from '../../utils/ipcValidate';
 import { resolveBusinessSessionId } from '../../sessionIds';
+import { normalizeDbAgentKind } from '../../../shared/agentKindConversion';
 import {
   sessionToCamel,
   sessionCreateToRow,
@@ -48,7 +54,12 @@ import {
   listInterruptedPendingSessionIds,
   setOnSessionTurnEndedPersisted,
 } from '../sessionActiveTurn';
-import { dismissErrorMessage, rebroadcastAgentSwitchBoundary } from './messages';
+import {
+  dismissErrorMessage,
+  listDeletableSessionPersistedChatAttachmentPaths,
+  rebroadcastAgentSwitchBoundary,
+} from './messages';
+import { cleanupStagedChatAttachments } from '../../file-browser/remote-file-cache';
 import { getMekaProjectById } from './mekaProjects';
 import { getFormalProvider } from '../../meka-formal/registry';
 import { registerBuiltInFormalProviders } from '../../meka-formal/providers';
@@ -56,8 +67,9 @@ import { getMekaP4SettingsService } from '../../meka-settings/ipc';
 import { assertTrustedAppRendererEvent } from '../../security/trustedAppRenderer.js';
 
 const log = createLogger('sessions');
-const DEFAULT_DRAFT_SESSION_TITLE = 'New Maker';
 const REMOTE_EDITABLE_META = new Set(['status', 'title', 'pinnedAt']);
+const initialSessionListLogged = new Set<string>();
+const SLOW_SESSION_LIST_MS = 250;
 
 /**
  * 广播 sessions:patched 到本机所有窗口 + device-link tap。tap 让该 patch 经 topic 路由
@@ -130,6 +142,12 @@ function scheduleWorktreeRecycleForStatusChange(sessionId: string, status: unkno
     });
 }
 
+// shadow savepoint 链(refs/cindy/savepoints/<sid>)刻意**不**挂 status 变化
+// 即时清理:覆盖导入等流程会把旧会话瞬态置为 deleted、失败后经 journal 恢复,
+// status 触发的 ref 删除与这类回滚天然竞态(删了就不可逆)。孤儿 ref 隐藏且
+// 极小,统一由启动期 reconcileSavepointRefsForDeletedSessions() 清理——启动期
+// 不存在进行中的瞬态软删流程。
+
 /**
  * 会话 status 变化的订阅槽①旁路通知(archived → did-session-archived)。
  * 与 worktree 回收共用同三个调用点(update / patch-meta / 批量 setStatus),
@@ -193,7 +211,7 @@ const REMOTE_PERSIST_FIELDS = new Set([
 export async function applyAgentSwitchToSessionRow(
   sessionId: string,
   patch: {
-    agentKind: 'cc' | 'codex';
+    agentKind: 'cc' | 'codex' | 'pi';
     model: string;
     providerId: string | null | undefined;
     sdkSessionId?: string | null;
@@ -297,6 +315,40 @@ export async function persistSessionFields(
 }
 
 const MAX_LIMIT = 1000;
+
+/**
+ * LEFT JOIN 形状下 `count()` 的目标列——必须是 `messages.session_id`，不能是 `messages.id`。
+ * 当前只有单行 get/update 路径（{@link selectSessionWithCount}）用这个形状。
+ *
+ * 三种写法只有一种可用：
+ *   - `count(messages.id)`         语义对但**回表**：id 不在任何覆盖索引里，SQLite 为取它
+ *                                  必须逐行读 messages 主表。消息多的会话就是读几万行。
+ *   - `count(*)`                   **语义错**：LEFT JOIN 对零消息会话也补一行，数出 1 而非 0，
+ *                                  会打歪 sidebar 的「单空 New Maker 草稿」判定。
+ *   - `count(messages.session_id)` 语义对且免回表：session_id 是
+ *                                  idx_messages_session_created 的首列。
+ *
+ * 代价差一个数量级。这个形状原先也用在 list 路径上（`LIMIT` 在 GROUP BY 之后才生效、削不掉
+ * 扫描量，于是成本正比于 messages 表**总体积**）：4.7GB / 111 万条消息的真实库上同库同数据
+ * 实测冷缓存 10.2s → 1.25s、热缓存 920ms → 73ms。list 现已另走两段式（见
+ * {@link selectSessionListRows}），但 get/update 每次改标题、切模型都会跑这一条。
+ *
+ * 由 sessionListMessageCount 回归测试守护：它在真库上对照两种写法的 query plan（覆盖索引
+ * vs 回表）与空会话语义，并静态断言生产源码用的就是这一列。
+ */
+const MESSAGE_COUNT_COL = messages.sessionId;
+
+/**
+ * 两段式 list 里的 messageCount：标量子查询版。口径与 `count(MESSAGE_COUNT_COL)` 完全
+ * 一致——该会话的全部 messages 行数，不过滤 role / rewind_at / cleared_at（口径要动就得
+ * 连手机端卡片上的「N 条消息」一起想，见 maker-shared/sessionList 的 messageCountLabel）。
+ *
+ * 这里用 `count(*)` 反而是安全的：标量子查询没有 LEFT JOIN 补的那一行空行，无匹配时聚合
+ * 返回 0。仍然只扫 idx_messages_session_created（session_id 是首列），不回表。
+ */
+const SESSION_MESSAGE_COUNT_SQL = sql<number>`(
+  SELECT count(*) FROM messages m WHERE m.session_id = ${sessions.id}
+)`.as('message_count');
 
 /**
  * sidebar-card-mode：最近一条 user/assistant 消息的 content / role correlated 子查询。
@@ -413,8 +465,8 @@ export async function getSessionRowSnapshot(id: string): Promise<{
 
 /**
  * 按 session id 查 fs 槽(意识写文件)守门要看的会话快照:workdir 位置、
- * permission 模式(claude / codex 共用这一列,codex 的 approval/sandbox 由
- * 它映射派生)、plan 开关、远程工作区标记。失败 swallow 返 null(调用方按
+ * permission 模式(claude / codex / pi 共用这一列,codex 的 approval/sandbox
+ * 由它映射派生)、plan 开关、远程工作区标记。失败 swallow 返 null(调用方按
  * 「会话不存在」拒绝写入,不抛)。
  */
 export async function getSessionFsSnapshot(id: string): Promise<{
@@ -497,14 +549,6 @@ export async function touchUserSendInDb(id: string, atMs?: number): Promise<void
   });
 }
 
-/**
- * 自动标题的统一归一化:折叠空白 → trim → 截断 40 字。先 trim 再截断,避免前导
- * 大量空白吃满长度得到空标题。落库出口与占位覆写方都用它算出同一个串。
- */
-export function normalizeAutoTitle(text: string): string {
-  return text.replace(/\s+/g, ' ').trim().slice(0, 40).trimEnd();
-}
-
 /** fork 出来的会话的占位标题前缀("[Fork] …" / "[Fork·已剥离] …")。 */
 const FORK_PLACEHOLDER_TITLE_PREFIX = '[Fork';
 
@@ -554,7 +598,7 @@ export interface OverwritableAutoTitleTarget {
    * `reconcileCreateOptsAgainstDb` 处理的正是同一类漂移),用错 agent 会让标题
    * 走错供应商 —— 纯 Codex / 纯 Claude 用户会因此只拿到 fallback 标题。
    */
-  agentKind: 'claude-code' | 'codex';
+  agentKind: 'claude-code' | 'codex' | 'pi';
   /**
    * 是否仍停在建会话时的裸默认标题。合成占位(纯附件消息)只允许覆写这一种 ——
    * fork 占位与上一条附件写下的合成占位都要保留到用户真正打字为止。
@@ -569,7 +613,7 @@ export async function getOverwritableAutoTitle(
   const db = getDbClient().drizzle;
   const row = await selectSessionWithCount(db, id);
   if (!row) return null;
-  const agentKind = row.agentKind === 'codex' ? 'codex' : 'claude-code';
+  const agentKind = row.agentKind === 'codex' || row.agentKind === 'pi' ? row.agentKind : 'claude-code';
   const overwritable =
     row.title === DEFAULT_DRAFT_SESSION_TITLE ||
     (!!row.parentSessionId && row.title.startsWith(FORK_PLACEHOLDER_TITLE_PREFIX)) ||
@@ -661,7 +705,9 @@ export async function clearSessionContextInDb(sessionId: string, atMs?: number):
   });
 }
 
-export function registerSessionIpc(): void {
+export function registerSessionIpc(
+  readSessionListLogScope: () => string | null = () => null,
+): void {
   // interrupted-turn-resume 假阳性修复:每次 last_turn_ended_at 真正落库(正常收尾 /
   // barrier 版收尾 / ack)都广播 lastTurnEndedAt patch —— renderer 的 session 快照可能
   // 是在 turn 飞行中或「done → ended 落库」空窗里取的(startedAt > endedAt),此前
@@ -674,6 +720,7 @@ export function registerSessionIpc(): void {
   ipcMain.handle(
     'local-db:sessions:list',
     async (_e, limit: unknown, status: unknown, options: unknown) => {
+      const startedAt = performance.now();
       const db = getDbClient().drizzle;
       // sidebar-card-mode: 首次 list(db 必然 ready)触发一次置顶摘要回填——
       // 老置顶会话没有 turn-done 触发点。模块内部 once 守卫 + 串行 + swallow。
@@ -687,42 +734,26 @@ export function registerSessionIpc(): void {
       //      listSessions 行为一致：'all' 白名单 ['active','archived']）
       const statusFilter: 'active' | 'archived' | null =
         status === 'active' || status === 'archived' ? status : null;
-      // round-3 修复：一次性 LEFT JOIN + GROUP BY 带出 messageCount，
-      // 避免 N+1 子查询。messageCount 现在主要用于"单空 New Maker 草稿"判定
-      // （sidebar 入口防止重复创建），sidebar 排序/分组已切到 userSendAt。
-      // WHERE 加在 join 前，保证 messageCount 聚合结果正确。
-      const selectSessionListRows = () =>
-        db
-          .select({
-            session: sessions,
-            messageCount: count(messages.id),
-            latestMessageContent: LATEST_MSG_CONTENT_SQL,
-            latestMessageRole: LATEST_MSG_ROLE_SQL,
-          })
-          .from(sessions)
-          .leftJoin(messages, eq(messages.sessionId, sessions.id));
       // 按 DESKTOP_VISIBLE_SESSION_SOURCES 白名单过滤 — 包含 IM 渠道
       // (feishu/slack/discord)与本机自动化(scheduler/learn/shared);
       // feishu 会话以「对话」分组展示(workspaceKind='dialogue')。
       const sourceFilter = inArray(sessions.source, DESKTOP_VISIBLE_SESSION_SOURCES);
       const statusWhere = () =>
         statusFilter ? eq(sessions.status, statusFilter) : ne(sessions.status, 'deleted');
-      const filteredQuery = selectSessionListRows().where(and(sourceFilter, statusWhere()));
-      const rows = await filteredQuery
-        .groupBy(sessions.id)
-        .orderBy(desc(sessions.updatedAt))
-        .limit(cap);
+      const rows = await selectSessionListRows(db, and(sourceFilter, statusWhere()), cap);
 
       let mergedRows = rows;
       if (includePinned) {
-        const pinnedRows = await selectSessionListRows()
-          .where(and(sourceFilter, statusWhere(), isNotNull(sessions.pinnedAt)))
-          .groupBy(sessions.id)
-          .orderBy(desc(sessions.updatedAt));
+        const pinnedRows = await selectSessionListRows(
+          db,
+          and(sourceFilter, statusWhere(), isNotNull(sessions.pinnedAt)),
+          null,
+        );
         mergedRows = mergeSessionListRows(rows, pinnedRows);
       }
 
-      return mergedRows.map((r) =>
+      const queryFinishedAt = performance.now();
+      const result = mergedRows.map((r) =>
         sessionToCamel({
           ...r.session,
           messageCount: r.messageCount,
@@ -730,6 +761,28 @@ export function registerSessionIpc(): void {
           latestMessageRole: r.latestMessageRole,
         }),
       );
+      const finishedAt = performance.now();
+      const filter = statusFilter ?? 'all';
+      const elapsedMs = Math.round(finishedAt - startedAt);
+      const fields = JSON.stringify({
+        event: 'localDb.sessions.list.done',
+        filter,
+        cap,
+        includePinned,
+        rows: result.length,
+        queryElapsedMs: Math.round(queryFinishedAt - startedAt),
+        mapElapsedMs: Math.round(finishedAt - queryFinishedAt),
+        elapsedMs,
+      });
+      const logScope = readSessionListLogScope() ?? 'unscoped';
+      const logKey = `${logScope}:${filter}:${includePinned ? 'pinned' : 'plain'}`;
+      if (!initialSessionListLogged.has(logKey) || elapsedMs >= SLOW_SESSION_LIST_MS) {
+        initialSessionListLogged.add(logKey);
+        log.info(fields);
+      } else {
+        log.debug(fields);
+      }
+      return result;
     },
   );
 
@@ -740,7 +793,7 @@ export function registerSessionIpc(): void {
     const id = resolveBusinessSessionId(bodyObj.id);
     const createBody = bodyObj as Parameters<typeof sessionCreateToRow>[1];
     // M16: agentKind 白名单校验（防止 renderer 传非法值）
-    const ALLOWED_AGENT_KINDS = new Set<string>(['cc', 'codex']);
+    const ALLOWED_AGENT_KINDS = new Set<string>(['cc', 'codex', 'pi']);
     if (bodyObj.agentKind !== undefined && !ALLOWED_AGENT_KINDS.has(bodyObj.agentKind as string)) {
       throwIpcError('INVALID_PARAMS', `invalid agentKind: ${String(bodyObj.agentKind)}`);
     }
@@ -1024,7 +1077,7 @@ export function registerSessionIpc(): void {
         state: row.status === 'deleted' ? 'deleted' : 'available',
         status: row.status,
         title: row.title,
-        agentKind: row.agentKind === 'codex' ? 'codex' : 'cc',
+        agentKind: normalizeDbAgentKind(row.agentKind),
       };
     });
   });
@@ -1219,6 +1272,15 @@ export function registerSessionIpc(): void {
     }
     const row = await selectSessionWithCount(db, sid);
     if (!row) throwIpcError('NOT_FOUND', 'Session 不存在');
+    const updated = sessionToCamel(row);
+    const broadcastPatch =
+      p.pinnedAt === undefined
+        ? p
+        : {
+            ...p,
+            pinnedAt: updated.pinnedAt,
+            ...(updated.pinnedAt === null ? {} : { status: updated.status }),
+          };
     const projectTargetChanged = p.workspaceKind !== undefined || p.workingDir !== undefined;
     const settingsChanged = Object.keys(p).some((key) => REMOTE_PERSIST_FIELDS.has(key));
     const titleChanged = p.title !== undefined;
@@ -1230,18 +1292,17 @@ export function registerSessionIpc(): void {
     ) {
       await upsertRecentWorkdir(row.workingDir, Date.now());
     }
-    if (projectTargetChanged || settingsChanged || titleChanged) {
-      broadcastSessionPatched(sid, p);
+    if (projectTargetChanged || settingsChanged || titleChanged || p.pinnedAt !== undefined) {
+      broadcastSessionPatched(sid, broadcastPatch);
     }
     // sidebar-card-mode: 会话被置顶那一刻补生成任务摘要(turn-done 路径只覆盖
     // "置顶后又跑过 turn"的会话)。动态 import 避免 localDb → maker-host 的静态
     // 模块环;fire-and-forget,模块内部自带置顶/节流守卫。
-    if (p.pinnedAt != null) {
+    if (p.pinnedAt !== undefined && updated.pinnedAt !== null) {
       void import('../../sessionTaskSummary.js').then((m) =>
         m.maybeGenerateSessionTaskSummary(sid),
       );
     }
-    const updated = sessionToCamel(row);
     notifyAgentIslandSessionPatch(updated.id, {
       status: updated.status,
       title: updated.title,
@@ -1350,6 +1411,14 @@ export async function patchSessionMetaInDb(
         err: err instanceof Error ? err.message : String(err),
       });
     });
+    void listDeletableSessionPersistedChatAttachmentPaths(sessionId)
+      .then((filePaths) => cleanupStagedChatAttachments(filePaths))
+      .catch((err) => {
+        log.warn('staged chat attachment cleanup failed', {
+          sessionId,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      });
   }
   removeHookAttachmentDir(sessionId, patch.status);
   scheduleWorktreeRecycleForStatusChange(sessionId, patch.status);
@@ -1515,9 +1584,67 @@ function removeHookAttachmentDir(sessionId: string, status: unknown): void {
   });
 }
 
+/** {@link selectSessionListRows} 的行形状——与 sessionToCamel 的入参对齐。 */
+interface SessionListRow {
+  session: typeof sessions.$inferSelect;
+  messageCount: number;
+  latestMessageContent: string | null;
+  latestMessageRole: string | null;
+}
+
+/**
+ * sessions:list 的行查询——**两段式**：CTE 先按排序取够 `cap` 个 id，主查询只对这批行算
+ * messageCount 与 preview。
+ *
+ * 为什么不能沿用一段式的 `LEFT JOIN messages + GROUP BY`：那个形状下 `LIMIT` 在 GROUP BY
+ * **之后**才生效，于是每个候选会话的全部消息都要参与聚合，成本与"最终只要 1000 行"无关。
+ * 4.7GB / 111 万条消息的真实库上，把聚合面从 1743 个会话收窄到 1000 个，热缓存 104ms →
+ * 54ms。会话越多、limit 占比越小，收益越大。
+ *
+ * 用单条 CTE 而不是"先查 id 再 IN (...)"两次往返，有两个理由：
+ *   1. 一致性——两次查询之间会话可能被删/改状态，第二段就会比第一段少行，列表凭空少一条。
+ *      CTE 是单条语句、单一致性快照。
+ *   2. 参数——`IN (...)` 要绑 cap 个参数（当前 MAX_LIMIT=1000），CTE 只绑一个 limit。
+ *
+ * messageCount 在这里是**标量子查询**里的 `count(*)`，与一段式的 `count(MESSAGE_COUNT_COL)`
+ * 语义一致：无匹配行时聚合返回 0，不存在 LEFT JOIN 那个"空会话数出 1"的坑（那也是为什么
+ * 一段式不能图快改用 `count(*)`）。它同样只扫 idx_messages_session_created，不回表。
+ *
+ * @param where 行过滤条件，同时作用于 CTE 与主查询（CTE 决定取哪些、主查询决定算哪些）。
+ * @param cap   取前 N 行；`null` = 不限（置顶补齐分支用，pinned 行数天然很少）。
+ */
+function selectSessionListRows(
+  db: DbClient['drizzle'],
+  where: SQL | undefined,
+  cap: number | null,
+): Promise<SessionListRow[]> {
+  const pickedBase = db.select({ id: sessions.id }).from(sessions).where(where);
+  const picked = db
+    .$with('picked')
+    .as(
+      cap === null
+        ? pickedBase.orderBy(desc(sessions.updatedAt))
+        : pickedBase.orderBy(desc(sessions.updatedAt)).limit(cap),
+    );
+  return db
+    .with(picked)
+    .select({
+      session: sessions,
+      messageCount: SESSION_MESSAGE_COUNT_SQL,
+      latestMessageContent: LATEST_MSG_CONTENT_SQL,
+      latestMessageRole: LATEST_MSG_ROLE_SQL,
+    })
+    .from(sessions)
+    .innerJoin(picked, eq(picked.id, sessions.id))
+    .where(where)
+    .orderBy(desc(sessions.updatedAt));
+}
+
 /** 单行 SELECT + messages count：LEFT JOIN + GROUP BY 保证 0 条消息时 count 为 0。
  *  preview 子查询同步带出——get/update 路径返回的 Session 会整体替换 store 里的行，
- *  缺字段会把列表查询带回的 preview 冲掉。 */
+ *  缺字段会把列表查询带回的 preview 冲掉。
+ *  count 目标列同 list 路径走 {@link MESSAGE_COUNT_COL}：这里虽只数一个会话，但消息多的
+ *  会话回表一样要读几万行主表，而 get/update 在每次改标题、切模型后都会跑。 */
 async function selectSessionWithCount(
   db: DbClient['drizzle'],
   id: string,
@@ -1525,7 +1652,7 @@ async function selectSessionWithCount(
   const [r] = await db
     .select({
       session: sessions,
-      messageCount: count(messages.id),
+      messageCount: count(MESSAGE_COUNT_COL),
       latestMessageContent: LATEST_MSG_CONTENT_SQL,
       latestMessageRole: LATEST_MSG_ROLE_SQL,
     })
@@ -1630,7 +1757,7 @@ export async function setSessionProviderIdInDb(
 }
 
 /** Persist the provider-facing source for a newly-created shared IM session. */
-export async function setSessionSourceInDb(sessionId: string, source: 'telegram'): Promise<void> {
+export async function setSessionSourceInDb(sessionId: string, source: 'telegram' | 'x'): Promise<void> {
   try {
     const db = getDbClient().drizzle;
     await db.update(sessions).set({ source }).where(eq(sessions.id, sessionId));

@@ -43,8 +43,9 @@
  *   but the first user reply hits "localDb not ready: call ensureReady(userId)
  *   first" — see chat with 王韬 (group 混(派科夫)) on 2026-05-07.
  *   `startImConnection()` is the explicit gate; it's idempotent and a no-op
- *   when the auto-update service is staging a relaunch (skip + retry on the
- *   next cold boot).
+ *   when the auto-update service is about to relaunch this process (skip +
+ *   retry on the next cold boot). "About to relaunch" is NOT the same as "a
+ *   patch is staged" — see `isUpdateRelaunchImminent()`.
  *
  * Credentials are independent from Cindy auth: the bot uses the user's own
  * channel credentials and keeps them across logout. Runtime connectivity is
@@ -52,15 +53,30 @@
  * the logged-in user's DbClient; a later login reconnects saved credentials.
  */
 
+import path from 'node:path';
+
 import { ipcMain, BrowserWindow, dialog, type IpcMainEvent } from 'electron';
 import { and, eq, like, ne, sql } from 'drizzle-orm';
 
 import { getDbClient } from '../localDb/client/current';
 import { sessions } from '../localDb/schema';
-import { im, feishuIm, discordIm, wechatCompatibilityPolicy, wechatIm } from './host';
+import {
+  im,
+  feishuIm,
+  discordIm,
+  telegramIm,
+  dingtalkIm,
+  wechatCompatibilityPolicy,
+  wechatIm,
+  wecomIm,
+} from './host';
 import { wireFeishuOrchestrator, type FeishuOrchestratorConfig } from './feishu';
 import { wireDiscordOrchestrator } from './discord';
+import { wireTelegramOrchestrator } from './telegram';
+import { wireDingTalkOrchestrator } from './dingtalk';
 import { wireWechatOrchestrator } from './wechat';
+import { wireWecomOrchestrator } from './wecom';
+import { resetTelegramGroupContextCursors } from './telegram/groupWindow';
 import { getImOrchestrator, listImOrchestrators } from './shared/orchestrator';
 import { createSerializedConnectionLifecycle } from './connectionLifecycle';
 import {
@@ -75,7 +91,7 @@ import type { ImOrchestratorConfig } from './shared/types';
 import { bindingStore, executeDetach } from './binding';
 import { IM_DEFAULT_EFFORT_OVERRIDES, IM_DEFAULT_SETTINGS } from '../../shared/imDefaultSettings';
 import { getAuthState } from '../authManager';
-import { getUpdateStatus } from '../updateService';
+import { getUpdateStatus, isUpdateRelaunchImminent } from '../updateService';
 
 import { createLogger } from '../logger';
 import { assertTrustedAppRendererEvent } from '../security/trustedAppRenderer';
@@ -85,7 +101,16 @@ import {
   writeWechatWorkingDir,
 } from './wechat/channelSettings';
 
-export { im, feishuIm, discordIm, wechatIm } from './host';
+export {
+  registerTelegramBotConfigIpc,
+  im,
+  feishuIm,
+  discordIm,
+  telegramIm,
+  dingtalkIm,
+  wechatIm,
+  wecomIm,
+} from './host';
 
 const log = createLogger('main:im');
 
@@ -146,7 +171,29 @@ const DISCORD_CONFIG: ImOrchestratorConfig = {
   effortOverrides: IM_DEFAULT_EFFORT_OVERRIDES,
 };
 
+// 个人 Telegram bot 渠道与 Feishu/Discord 共享同一套产品默认值。
+const TELEGRAM_CONFIG: ImOrchestratorConfig = {
+  agentKind: IM_DEFAULT_SETTINGS.agentKind,
+  defaultModel: IM_DEFAULT_SETTINGS.agents[IM_DEFAULT_SETTINGS.agentKind].model,
+  defaultPermissionMode: 'auto',
+  effortOverrides: IM_DEFAULT_EFFORT_OVERRIDES,
+};
+
+const DINGTALK_CONFIG: ImOrchestratorConfig = {
+  agentKind: IM_DEFAULT_SETTINGS.agentKind,
+  defaultModel: IM_DEFAULT_SETTINGS.agents[IM_DEFAULT_SETTINGS.agentKind].model,
+  defaultPermissionMode: 'auto',
+  effortOverrides: IM_DEFAULT_EFFORT_OVERRIDES,
+};
+
 const WECHAT_CONFIG: ImOrchestratorConfig = {
+  agentKind: IM_DEFAULT_SETTINGS.agentKind,
+  defaultModel: IM_DEFAULT_SETTINGS.agents[IM_DEFAULT_SETTINGS.agentKind].model,
+  defaultPermissionMode: IM_DEFAULT_SETTINGS.permissionMode,
+  effortOverrides: IM_DEFAULT_EFFORT_OVERRIDES,
+};
+
+const WECOM_CONFIG: ImOrchestratorConfig = {
   agentKind: IM_DEFAULT_SETTINGS.agentKind,
   defaultModel: IM_DEFAULT_SETTINGS.agents[IM_DEFAULT_SETTINGS.agentKind].model,
   defaultPermissionMode: IM_DEFAULT_SETTINGS.permissionMode,
@@ -170,7 +217,10 @@ export function startImOrchestrators(): void {
 
   wireFeishuOrchestrator(feishuIm, FEISHU_CONFIG);
   wireDiscordOrchestrator(discordIm, DISCORD_CONFIG);
+  wireTelegramOrchestrator(telegramIm, TELEGRAM_CONFIG);
+  wireDingTalkOrchestrator(dingtalkIm, DINGTALK_CONFIG);
   wireWechatOrchestrator(wechatIm, WECHAT_CONFIG);
+  wireWecomOrchestrator(wecomIm, WECOM_CONFIG);
 
   ipcMain.handle('wechatBot:get-state', (event) => {
     assertTrustedAppRendererEvent(event);
@@ -348,6 +398,8 @@ export function startImOrchestrators(): void {
 
 async function initializeImConnection(): Promise<void> {
   await reconcileOwnerScopedImWorkingDirs();
+  // 个人 Telegram 群窗口不做自动清理(Chris 2026-07-30: 本地群消息库即 bot
+  // 的长期记忆, 永久保留, 清理只按用户明确指令执行)。
   try {
     await bindingStore.preload();
   } catch (err) {
@@ -390,6 +442,7 @@ async function reconcileOwnerScopedImWorkingDirs(): Promise<void> {
   const db = getDbClient().drizzle;
   const feishuAdapter = getImOrchestrator('feishu')?.adapter;
   const discordAdapter = getImOrchestrator('discord')?.adapter;
+  const telegramAdapter = getImOrchestrator('telegram')?.adapter;
   const wechatAdapter = getImOrchestrator('wechat')?.adapter;
 
   try {
@@ -422,6 +475,37 @@ async function reconcileOwnerScopedImWorkingDirs(): Promise<void> {
       for (const row of rows) {
         if (!row.botContextId) continue;
         const scoped = discordAdapter.sessions.ensureWorkingDir(row.botContextId);
+        if (row.workingDir === scoped) continue;
+        await db.update(sessions).set({ workingDir: scoped }).where(eq(sessions.id, row.id));
+      }
+    }
+
+    if (telegramAdapter) {
+      // source='telegram' 同时覆盖官方 hook 会话(imBotContextId 为 null)与
+      // 个人 bot 会话 — botContextId 空值守卫天然把官方行排除在外。
+      const rows = await db
+        .select({
+          id: sessions.id,
+          workingDir: sessions.workingDir,
+          botContextId: sessions.imBotContextId,
+        })
+        .from(sessions)
+        .where(eq(sessions.source, 'telegram'));
+      for (const row of rows) {
+        if (!row.botContextId) continue;
+        // /project 切到项目目录是用户显式选择, 重连不得覆盖回托管目录 —
+        // 本归一只服务"跨 owner 命名空间迁移的旧托管路径"。判定用完整尾段
+        // `…/im-working-dir/telegram-<botId>`(而非子串), 用户项目路径碰巧
+        // 含 'im-working-dir' 字样不会被误判(review P1)。
+        const managedTail = path.join('im-working-dir', `telegram-${row.botContextId}`);
+        if (
+          row.workingDir &&
+          !row.workingDir.endsWith(`${path.sep}${managedTail}`) &&
+          !row.workingDir.endsWith(`/${managedTail}`)
+        ) {
+          continue;
+        }
+        const scoped = telegramAdapter.sessions.ensureWorkingDir(row.botContextId);
         if (row.workingDir === scoped) continue;
         await db.update(sessions).set({ workingDir: scoped }).where(eq(sessions.id, row.id));
       }
@@ -467,6 +551,9 @@ const connectionLifecycle = createSerializedConnectionLifecycle({
         }
       }
       bindingStore.resetRuntime();
+      // 群上下文游标是账号内存态 — 登出/换号必须清零, 防止新账号复用旧游标
+      // 造成上下文窗口被静默跳过。
+      resetTelegramGroupContextCursors();
     }
   },
   onStartError: (err) => {
@@ -497,10 +584,17 @@ configureImAccountScope({
  * effect. FeishuIM.init() is a no-op when no credentials are saved, so the bot
  * stays idle until the user pastes appId / appSecret in Settings.
  *
- * Skips when an update is downloading or staged for relaunch — bringing the
- * bot up just to tear it down within seconds would spam the owner with
- * online/offline notifications. The next cold boot (after the update) will
+ * Skips only when the updater is actually about to replace this process —
+ * bringing the bot up just to tear it down within seconds would spam the owner
+ * with online/offline notifications. The next cold boot (after the update) will
  * connect normally.
+ *
+ * The gate MUST be `isUpdateRelaunchImminent()`, not the raw update status: a
+ * `ready` (staged) patch never relaunches on its own when the user turned
+ * auto-relaunch off, so gating on the status left this permanently skipped on
+ * every cold boot of an out-of-date install — the bot never came online and
+ * `feishuBot:save` kept failing with `[IM_NOT_READY]` (the account boundary is
+ * activated inside `im.init()`), with no way out but manually updating.
  */
 export function startImConnection(): void {
   if (connectionLifecycle.isStarted()) {
@@ -508,10 +602,9 @@ export function startImConnection(): void {
     return;
   }
 
-  const updateStatus = getUpdateStatus();
-  if (updateStatus === 'downloading' || updateStatus === 'ready') {
+  if (isUpdateRelaunchImminent()) {
     log.info(
-      `startImConnection: skip (updateService status=${updateStatus}); will connect on next cold boot`,
+      `startImConnection: skip (update relaunch imminent, updateService status=${getUpdateStatus()}); will connect on next cold boot`,
     );
     return;
   }

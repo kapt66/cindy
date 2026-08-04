@@ -38,6 +38,8 @@ import type {
   ApprovalRequestParams,
   ApprovalRequestResult,
   McpTunnelCallParams,
+  OAuthRefreshParams,
+  OAuthRefreshResult,
 } from '@cindy/maker-cc-manager';
 import {
   REMOTE_CC_MGR_BUNDLE_PATH,
@@ -311,6 +313,13 @@ export async function openCcManagerSession(opts: {
    * 表还在, attach 是对的。
    */
   forceFreshQuery?: boolean;
+  /**
+   * Callback invoked when the remote daemon needs a fresh subscription OAuth
+   * token (remote cc hit 401 mid-turn). Maps to maker-core's
+   * auth.getFreshSubscriptionToken. If not provided, refresh requests answer
+   * token=null (SDK surfaces the auth error — pre-refresh behavior).
+   */
+  onOAuthRefresh?: (params: OAuthRefreshParams) => Promise<OAuthRefreshResult>;
 }): Promise<{
   remoteQuery: RemoteQuery;
   dispose: () => Promise<void>;
@@ -418,6 +427,22 @@ export async function openCcManagerSession(opts: {
         });
       });
     }
+    // OAuth refresh handler — daemon sends these when the remote cc SDK's
+    // getOAuthToken fires (subscription token expired mid-turn). token=null
+    // on any failure: the daemon passes it to the SDK, which surfaces the
+    // auth error (same as the pre-refresh behavior).
+    client.setRequestHandler(SERVER_METHODS.OAUTH_REFRESH, async (params) => {
+      const p = params as OAuthRefreshParams;
+      if (opts.onOAuthRefresh) {
+        try {
+          return await opts.onOAuthRefresh(p);
+        } catch (err) {
+          log.warn('oauth refresh handler rejected', { sessionId: p.sessionId, error: (err as Error)?.message });
+          return { token: null } satisfies OAuthRefreshResult;
+        }
+      }
+      return { token: null } satisfies OAuthRefreshResult;
+    });
 
     // start-vs-attach 路由:cc-mgr daemon 是 setsid 持久化的, desktop 关掉 daemon
     // 不死, SessionRegistry 里旧 sessionId 仍活着。重启后用同 sessionId 调

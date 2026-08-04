@@ -9,7 +9,11 @@ import { describe, expect, it } from 'vitest';
 
 import { buildRegistry, type Catalog, type CatalogModel, type Provider } from '@cindy/model-providers';
 
-import { checkModelRoute, resolveLenientRoute } from '../model-route-guard.js';
+import {
+  checkModelRoute,
+  pickEnabledFallbackModel,
+  resolveLenientRoute,
+} from '../model-route-guard.js';
 
 function model(id: string, extra: Partial<CatalogModel> = {}): CatalogModel {
   return { id, name: id, contextWindow: 200_000, efforts: [], defaultEffort: null, ...extra };
@@ -122,6 +126,106 @@ describe('checkModelRoute', () => {
     });
   });
 
+  it('retired tombstone 拒绝新路由、跳过 fallback；同 id 有有效他源时仅隐式改道', () => {
+    const catalog = {
+      providers: [
+        provider('xd', [
+          model('claude-opus-5', { status: 'retired' }),
+          model('claude-sonnet-4-6'),
+        ]),
+        provider('anthropic', [model('claude-opus-5')]),
+      ],
+    } as Catalog;
+    const v = buildRegistry(catalog, { xd: true, anthropic: true }, {});
+    expect(checkModelRoute(v, 'claude-code', 'claude-opus-5', 'xd')).toEqual({
+      kind: 'reject',
+      reason: 'model-retired',
+    });
+    expect(checkModelRoute(v, 'claude-code', 'claude-opus-5', null)).toEqual({
+      kind: 'reroute',
+      providerId: 'anthropic',
+    });
+    expect(pickEnabledFallbackModel(v, 'claude-code')).toEqual({
+      model: 'claude-sonnet-4-6',
+      providerId: 'xd',
+    });
+
+    const allRetired = buildRegistry(
+      { providers: [provider('xd', [model('claude-opus-5', { status: 'retired' })])] } as Catalog,
+      { xd: true },
+      {},
+    );
+    expect(checkModelRoute(allRetired, 'claude-code', 'claude-opus-5', null)).toEqual({
+      kind: 'reject',
+      reason: 'model-retired',
+    });
+    expect(pickEnabledFallbackModel(allRetired, 'claude-code')).toBeNull();
+  });
+
+  it('显式来源只有 Registry tombstone、目录无实体时仍拒绝；完整本地实体可复活', () => {
+    const isRetiredTombstone = (providerId: string | null, modelId: string) =>
+      (providerId === null || providerId === 'anthropic') && modelId === 'claude-gone';
+    const otherSourceOnly = buildRegistry(
+      { providers: [provider('xd', [model('claude-gone')])] } as Catalog,
+      { xd: true },
+      {},
+    );
+    expect(
+      checkModelRoute(otherSourceOnly, 'claude-code', 'claude-gone', 'anthropic', {
+        isRetiredTombstone,
+      }),
+    ).toEqual({ kind: 'reject', reason: 'model-retired' });
+    expect(
+      checkModelRoute([], 'claude-code', 'claude-gone', null, { isRetiredTombstone }),
+    ).toEqual({ kind: 'reject', reason: 'model-retired' });
+    expect(
+      resolveLenientRoute([], 'claude-code', 'claude-gone', 'anthropic', {
+        isRetiredTombstone,
+      }),
+    ).toEqual({ model: undefined, providerId: null, degraded: true });
+
+    const withLocalRevival = buildRegistry(
+      {
+        providers: [
+          provider('xd', [model('claude-gone')]),
+          provider('anthropic', [model('claude-gone', { status: 'active' })]),
+        ],
+      } as Catalog,
+      { xd: true, anthropic: true },
+      {},
+    );
+    expect(
+      checkModelRoute(withLocalRevival, 'claude-code', 'claude-gone', 'anthropic', {
+        isRetiredTombstone,
+      }),
+    ).toEqual({ kind: 'pass' });
+  });
+
+  it('隐式来源:原生默认拷贝是能力模型而他源有聊天拷贝 ⇒ reroute;显式点名非聊天拷贝仍 reject(2026-07 review 第 26 轮)', () => {
+    // xd(原生默认)把 shared-id 标为图像生成,openai 的拷贝是 chat。UI 的发送检查
+    // (chatEligibleSourcesForModel)因 openai 判定"能发",守卫若 reject 会与 UI 口径
+    // 打架;若 pass 实际路由层又会把请求发进 xd 的图像端点 —— 必须与停用轴同构,
+    // 显式改道到聊天拷贝。
+    const catalog = {
+      providers: [
+        provider('xd', [model('shared-id', { mode: 'image_generation' })]),
+        provider('openai', [model('shared-id', { mode: 'chat' })]),
+      ],
+    } as Catalog;
+    const v = buildRegistry(catalog, { xd: true, openai: true }, {});
+    expect(checkModelRoute(v, 'claude-code', 'shared-id', null)).toEqual({
+      kind: 'reroute',
+      providerId: 'openai',
+    });
+    // 显式点名非聊天拷贝:点名是"花谁的钱"的明确表达,不静默换源,照旧 reject。
+    expect(checkModelRoute(v, 'claude-code', 'shared-id', 'xd')).toEqual({
+      kind: 'reject',
+      reason: 'capability-model',
+    });
+    // 显式选聊天拷贝所在来源:放行。
+    expect(checkModelRoute(v, 'claude-code', 'shared-id', 'openai')).toEqual({ kind: 'pass' });
+  });
+
   it('能力模型分类按将要路由的拷贝判:未连接来源的对话拷贝不构成豁免', () => {
     // 同 id 在 xd 是图像模型、在用户自定义 mycorp 是对话模型,但 mycorp 未连接:
     // 实际路由永远不会落到未连接拷贝,隐式与点名 xd 都必须拒(PR #744 review 第六轮)。
@@ -142,7 +246,7 @@ describe('checkModelRoute', () => {
     });
   });
 
-  it('混源同 id 双连接:分类按选中来源 —— 显式选用户家对话拷贝放行,XD 家能力拷贝与隐式默认都拒', () => {
+  it('混源同 id 双连接:分类按选中来源 —— 显式选用户家对话拷贝放行,点名 XD 家能力拷贝拒,隐式默认改道到对话拷贝', () => {
     const catalog = {
       providers: [
         provider('xd', [model('gpt-image-2', { group: 'image' })]),
@@ -155,10 +259,12 @@ describe('checkModelRoute', () => {
       kind: 'reject',
       reason: 'capability-model',
     });
-    // 隐式:原生默认落点是 xd(能力拷贝)—— provider-route 不看分类,必须在边界拒。
+    // 隐式:原生默认落点是 xd(能力拷贝),但用户家有已连接的对话拷贝 —— 与停用轴
+    // 同构显式改道,不 reject(UI 的发送检查因 mycorp 判"能发",拒会口径打架;
+    // 2026-07 review 第 26 轮)。
     expect(checkModelRoute(v, 'claude-code', 'gpt-image-2', null)).toEqual({
-      kind: 'reject',
-      reason: 'capability-model',
+      kind: 'reroute',
+      providerId: 'mycorp',
     });
   });
 

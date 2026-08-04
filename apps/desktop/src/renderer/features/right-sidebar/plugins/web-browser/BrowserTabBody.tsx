@@ -36,12 +36,14 @@ import { createLogger } from '@/lib/logger';
 import { isSidebarWindow } from '@/lib/sidebarWindow';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
+import { mapIpcErrorToI18nKey } from '@/utils/ipcError';
 
 import { browserWebviewPool } from '../../lib/browserWebviewPool';
 import {
   forceKillBrowserTab,
   setForegroundBrowserTab,
 } from '../../lib/rsbBrowserBridge';
+import { isLocalHtmlFileUrl } from '../../lib/openInSidebarBrowser';
 import { closeTab } from '../../store';
 import { useBrowserWebview } from '../../hooks/useBrowserWebview';
 import type { TabKindHostContext } from '../../types';
@@ -49,6 +51,7 @@ import type { TabKindHostContext } from '../../types';
 import { BrowserChrome, type BrowserChromeHandle } from './BrowserChrome';
 import { BrowserCommentPopover } from './BrowserCommentPopover';
 import { useBrowserComment } from './useBrowserComment';
+import { useLocalHtmlAutoReload } from './useLocalHtmlAutoReload';
 import type { WebBrowserState } from './index';
 
 const log = createLogger('rightSidebar.browserTabBody');
@@ -84,6 +87,9 @@ export function BrowserTabBody({ state, ctx, active, shellVisible }: BrowserTabB
   // sessionId 跟 tabId 一起喂给 hook,用于 dom-ready 后给 main 端 TabRegistry
   // 上报 (sessionId, tabId, webContentsId) 三元组(Phase 2 browser bridge)。
   const { tabId, sessionId } = ctx;
+  // device-link 归属由 host context 携带三态事实：字符串=远端、null=已确认本机、
+  // undefined=冷启动/bootstrap 尚未解析。系统文件打开对后两者只放行已确认本机。
+  const deviceLinkDeviceId = ctx.deviceLinkDeviceId;
   // 真实可见性:顶层 active tab 且整个侧栏展开。shellVisible 缺省(旧宿主 /
   // 测试)按可见处理,与 active 的既有缺省语义一致。
   const tabVisible = active === true && shellVisible !== false;
@@ -100,6 +106,20 @@ export function BrowserTabBody({ state, ctx, active, shellVisible }: BrowserTabB
   stateUrlRef.current = state.url;
   browserUrlRef.current = browser.url;
   navigateRef.current = browser.navigate;
+
+  // 当前会话一轮结束后，如果该轮产物修改了正在预览的本地 HTML，则刷新一次。
+  // 不监听磁盘；非激活 tab 与 SSH 远程会话不参与。
+  useLocalHtmlAutoReload({
+    sessionId,
+    workdir: ctx.workdir,
+    url: browser.url || state.url,
+    reload: browser.reload,
+    enabled:
+      active === true &&
+      ctx.remoteHostId === null &&
+      deviceLinkDeviceId === null &&
+      !browser.crash,
+  });
 
   // 把 pool 的 wrapper 挂进 slot —— useLayoutEffect(在 paint 前移 DOM,避免闪)。
   // 卸载时把 wrapper 挪回 pool 的 off-screen container 保活 webContents。
@@ -356,12 +376,12 @@ export function BrowserTabBody({ state, ctx, active, shellVisible }: BrowserTabB
   const pageUrlRef = useRef(browser.url || state.url || 'about:blank');
   pageUrlRef.current = browser.url || state.url || 'about:blank';
   const getPageUrl = useCallback(() => pageUrlRef.current, []);
-  const comment = useBrowserComment(tabId, sessionId, getPageUrl);
+  const comment = useBrowserComment(tabId, sessionId, browser.webview, getPageUrl);
   // 页面评论的落点是主窗 composer 的「N 条注释」胶囊。detached 独立子窗口
   // (SidebarWindowLayout)只挂 RightSidebarShell、不挂 ChatInput,评论写进
   // 子窗口自己的 composerDraftStore 无处可发(还会误报成功 toast),故子窗口里
   // 不提供评论入口。内嵌侧栏(主窗)与副窗口(MainLayout,自带 composer)不受影响。
-  const commentSupported = !isSidebarWindow();
+  const commentSupported = !isSidebarWindow() && Boolean(sessionId) && Boolean(browser.webview);
 
   // 崩溃恢复 —— banner 上的 "重新加载" 按钮:对 unresponsive 走 reload(让 guest
   // 主线程被打断重启),对 crashed/killed/oom 走 navigate(等价于 reload,但能
@@ -385,23 +405,42 @@ export function BrowserTabBody({ state, ctx, active, shellVisible }: BrowserTabB
   const menuUrlRef = useRef(state.url || 'about:blank');
   menuUrlRef.current = state.url || 'about:blank';
 
+  const menuUrl = menuUrlRef.current;
+  const isWebUrl = /^https?:\/\//i.test(menuUrl);
+  const isLocalHtmlUrl =
+    ctx.remoteHostId === null && deviceLinkDeviceId === null && isLocalHtmlFileUrl(menuUrl);
+  const canOpenInSystemBrowser = isWebUrl || isLocalHtmlUrl;
+
   // 「更多」菜单 —— 用系统默认浏览器打开当前页。
-  // 菜单项在无有效链接时已 disabled,这里再兜一层空 / about:blank 保护。
-  // openExternal 在被控端(远程控制场景)本机打开,语义正确(见规则 26)。
+  // HTTP(S) 走 openExternal;本地 HTML 走专用文件 IPC。远程 SSH 会话的 file://
+  // URL 指向远端 workdir,不能误交给控制端本机的文件打开器,因此由菜单禁用。
   const handleOpenInSystemBrowser = useCallback(() => {
     const url = menuUrlRef.current;
     if (!url || url === 'about:blank') return;
-    void window.electronAPI
-      .openExternal(url)
+    const localFileUrl =
+      ctx.remoteHostId === null && deviceLinkDeviceId === null && isLocalHtmlFileUrl(url);
+    const openPromise: Promise<{ success: boolean; error?: string }> | null = localFileUrl
+      ? window.electronAPI.openFileInBrowser(url)
+      : /^https?:\/\//i.test(url)
+        ? window.electronAPI.openExternal(url)
+        : null;
+    if (!openPromise) return;
+    void openPromise
       .then((res) => {
         if (!res?.success) {
-          toast.error(t('chat.markdownRenderer.openInBrowserFailed'));
+          toast.error(res?.error || t('chat.markdownRenderer.openInBrowserFailed'));
         }
       })
-      .catch(() => {
-        toast.error(t('chat.markdownRenderer.openInBrowserFailed'));
+      .catch((error) => {
+        const errorKey = localFileUrl
+          ? mapIpcErrorToI18nKey(error, {
+              namespace: 'chat.markdownRenderer',
+              fallback: 'chat.markdownRenderer.openInBrowserFailed',
+            })
+          : 'chat.markdownRenderer.openInBrowserFailed';
+        toast.error(t(errorKey));
       });
-  }, [t]);
+  }, [ctx.remoteHostId, deviceLinkDeviceId, t]);
 
   // 「更多」菜单 —— 复制当前页链接到剪贴板(renderer clipboard,项目惯例)。
   const handleCopyLink = useCallback(async () => {
@@ -432,6 +471,7 @@ export function BrowserTabBody({ state, ctx, active, shellVisible }: BrowserTabB
         commentActive={comment.mode !== 'off'}
         onToggleComment={comment.toggle}
         commentSupported={commentSupported}
+        canOpenInSystemBrowser={canOpenInSystemBrowser}
         onOpenInSystemBrowser={handleOpenInSystemBrowser}
         onCopyLink={handleCopyLink}
       />
@@ -502,12 +542,16 @@ export function BrowserTabBody({ state, ctx, active, shellVisible }: BrowserTabB
           </div>
         )}
         {/* 评论输入气泡:锚在 guest 上报的点选坐标。 */}
-        {(comment.mode === 'pending' || comment.mode === 'submitting') &&
+        {(comment.mode === 'pending' ||
+          comment.mode === 'cancelling' ||
+          comment.mode === 'submitting') &&
           comment.pendingTarget && (
             <BrowserCommentPopover
               anchor={comment.pendingTarget.point}
-              submitting={comment.mode === 'submitting'}
+              submitting={comment.mode !== 'pending'}
               designBaseline={comment.pendingTarget.designBaseline}
+              editorDraft={comment.editorDraft}
+              onEditorDraftChange={comment.updateEditorDraft}
               onSubmit={comment.submit}
               onCancel={comment.cancelPending}
               onPreviewDesign={comment.previewDesign}

@@ -21,6 +21,8 @@ import { TEST_CLIENT_ENDPOINTS } from '../../test/vitest/clientEndpointsFixture'
 
 const ipcOn = vi.hoisted(() => vi.fn());
 const netRequest = vi.hoisted(() => vi.fn());
+const showMessageBoxSync = vi.hoisted(() => vi.fn());
+const clipboardWriteText = vi.hoisted(() => vi.fn());
 vi.mock('electron', () => ({
   app: {
     getPath: vi.fn(),
@@ -28,7 +30,8 @@ vi.mock('electron', () => ({
     isPackaged: false,
     exit: vi.fn(),
   },
-  dialog: { showMessageBoxSync: vi.fn() },
+  dialog: { showMessageBoxSync },
+  clipboard: { writeText: clipboardWriteText },
   ipcMain: { on: ipcOn },
   net: { request: netRequest },
   // netLog 是静态 import(architecture-invariants.md §2);captureEndpointNetLog 这条
@@ -46,6 +49,7 @@ import {
   activateClientEndpointRealm,
   captureNetLogAround,
   prepareEndpointNetLogFile,
+  promptRetryDialog,
   verifyEndpointNetLogCapture,
   classifyManifestFailure,
   getClientEndpoint,
@@ -67,6 +71,8 @@ afterEach(() => {
   resetClientEndpointsForTest();
   ipcOn.mockClear();
   netRequest.mockReset();
+  showMessageBoxSync.mockReset();
+  clipboardWriteText.mockReset();
 });
 
 const FULL_MANIFEST = JSON.stringify({
@@ -95,6 +101,93 @@ const LOCAL_MANIFEST = JSON.stringify({
   apiBaseUrl: 'http://localhost:3333',
   authApiBaseUrl: 'http://localhost:3344',
   deviceLinkApiBaseUrl: 'http://localhost:3335',
+});
+
+describe('启动失败系统提示框', () => {
+  it('使用友好警告文案并展示简短错误信息,但不展示地址、网络诊断或本机路径', () => {
+    showMessageBoxSync.mockReturnValueOnce(0);
+
+    const choice = promptRetryDialog(
+      {
+        reason: 'fetch-failed:ERR_CONNECTION_RESET',
+        kind: 'network',
+        diagnosis: 'proxy=DIRECT dns=ok(43.146.61.38) tcp=ok(12ms)',
+        logPath: '/Users/example/Library/Logs/Cindy/endpoint-netlog/capture.json',
+        offlineSavedAt: null,
+      },
+      'https://hotfix.cindy.app/cindy/endpoint.json',
+      'zh-CN',
+    );
+
+    expect(choice).toBe('retry');
+    expect(showMessageBoxSync).toHaveBeenCalledTimes(1);
+    const options = showMessageBoxSync.mock.calls[0]?.[0] as {
+      type: string;
+      message: string;
+      detail: string;
+      buttons: string[];
+    };
+    const visibleText = `${options.message}\n${options.detail}\n${options.buttons.join('\n')}`;
+    expect(options.type).toBe('warning');
+    expect(options.message).toBe('Cindy 暂时无法连接');
+    expect(visibleText).toContain('请确认设备已联网');
+    expect(visibleText).toContain('错误信息：ERR_CONNECTION_RESET');
+    expect(visibleText).toContain('复制诊断信息');
+    expect(visibleText).not.toContain('截图');
+    expect(visibleText).not.toContain('CINDY-NET-');
+    expect(visibleText).not.toContain('43.146.61.38');
+    expect(visibleText).not.toContain('proxy=DIRECT');
+    expect(visibleText).not.toContain('/Users/example');
+  });
+
+  it('复制诊断后保留弹框,不触发重试或退出,并显示已复制反馈', () => {
+    showMessageBoxSync.mockReturnValueOnce(1).mockReturnValueOnce(0);
+
+    const choice = promptRetryDialog(
+      {
+        reason: 'fetch-failed:ERR_CONNECTION_RESET',
+        kind: 'network',
+        diagnosis: 'proxy=DIRECT dns=ok(43.146.61.38) tcp=ok(12ms)',
+        logPath: '/Users/example/Library/Logs/Cindy/endpoint-netlog/capture.json',
+        offlineSavedAt: null,
+      },
+      'https://hotfix.cindy.app/cindy/endpoint.json',
+      'zh-CN',
+    );
+
+    expect(choice).toBe('retry');
+    expect(showMessageBoxSync).toHaveBeenCalledTimes(2);
+    expect(clipboardWriteText).toHaveBeenCalledTimes(1);
+    expect(clipboardWriteText.mock.calls[0]?.[0]).toContain('ERR_CONNECTION_RESET');
+    expect(clipboardWriteText.mock.calls[0]?.[0]).toContain('hotfix.cindy.app');
+    expect(clipboardWriteText.mock.calls[0]?.[0]).toContain('proxy=DIRECT');
+    expect(clipboardWriteText.mock.calls[0]?.[0]).toContain('/Users/example');
+    expect(showMessageBoxSync.mock.calls[1]?.[0].detail).toContain('诊断信息已复制');
+  });
+
+  it('复制诊断失败时在弹框内明确提示,不误报为已复制', () => {
+    showMessageBoxSync.mockReturnValueOnce(1).mockReturnValueOnce(0);
+    clipboardWriteText.mockImplementationOnce(() => {
+      throw new Error('clipboard unavailable');
+    });
+
+    const choice = promptRetryDialog(
+      {
+        reason: 'fetch-failed:ERR_CONNECTION_RESET',
+        kind: 'network',
+        diagnosis: 'proxy=DIRECT dns=ok(43.146.61.38) tcp=ok(12ms)',
+        logPath: '/Users/example/Library/Logs/Cindy/endpoint-netlog/capture.json',
+        offlineSavedAt: null,
+      },
+      'https://hotfix.cindy.app/cindy/endpoint.json',
+      'zh-CN',
+    );
+
+    expect(choice).toBe('retry');
+    expect(showMessageBoxSync).toHaveBeenCalledTimes(2);
+    expect(showMessageBoxSync.mock.calls[1]?.[0].detail).toContain('诊断信息未能复制');
+    expect(showMessageBoxSync.mock.calls[1]?.[0].detail).not.toContain('诊断信息已复制');
+  });
 });
 
 describe('resolveEndpointSource(清单来源三选一)', () => {
@@ -1222,6 +1315,14 @@ describe('netlog 产物事后核对(verifyEndpointNetLogCapture)', () => {
     const differentDirDev = capture.dirDev === 1 ? 2 : 1;
     expect(verifyEndpointNetLogCapture({ ...capture, dirIno: differentDirIno })).toBe(false);
     expect(verifyEndpointNetLogCapture({ ...capture, dirDev: differentDirDev })).toBe(false);
+
+// Windows 可能把 ino 暴露为 0；生产逻辑会有意跳过无法执行的 inode 身份核对。
+    if (!capture.dirIno) return;
+    // 不用 +1：Windows 的 inode 可能超过 Number.MAX_SAFE_INTEGER，+1 后数值仍相等。
+    const otherIno = capture.dirIno === 1 ? 2 : 1;
+    const otherDev = capture.dirDev === 1 ? 2 : 1;
+    expect(verifyEndpointNetLogCapture({ ...capture, dirIno: otherIno })).toBe(false);
+    expect(verifyEndpointNetLogCapture({ ...capture, dirDev: otherDev })).toBe(false);
   });
 
   it('目标被换成 symlink → 不通过', () => {

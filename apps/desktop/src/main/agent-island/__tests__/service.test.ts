@@ -129,8 +129,10 @@ vi.mock('../../device-link/broadcast-tap.js', () => ({
 }));
 
 import { resetEpermGuidanceForTest } from '../../file-access/permissions.js';
+import { setMainLocale } from '../../i18n.js';
 
 beforeEach(() => {
+  setMainLocale('en');
   mocks.getSessionRowSnapshot.mockReset();
   mocks.getSessionRowSnapshot.mockResolvedValue(null);
   mocks.displays.splice(0, mocks.displays.length, mocks.primaryDisplay);
@@ -1257,10 +1259,38 @@ describe('AgentIslandService native publishing', () => {
       '/goal 测试一下是不是支持目标模式',
     );
     await vi.waitFor(() => expect(mocks.getSessionRowSnapshot).toHaveBeenCalledTimes(1));
+    // cache-miss 加载路径同样要过显示投影:发给 native 的是本地化兜底文案,而不是
+    // DB 里那个 locale-independent 的英文哨兵(PR #1031 review P1)。此前只有读路径
+    // hydrateMeta 做了投影,这条断言正好固化了漏掉的那一半。
     await vi.waitFor(() => expect(publish.mock.calls.at(-1)?.[0].sessions[0]).toMatchObject({
-      title: 'New Maker',
+      title: 'Untitled session',
       projectName: null,
     }));
+    // 另一条写路径(metadata patch)同样过投影;权威标题到达后照常原样发布 ——
+    // 投影只作用于哨兵,不会把真实标题也顶掉。
+    service.handleSessionMetadataPatch('s1', { title: '登录失败排查' });
+    await vi.waitFor(() => expect(publish.mock.calls.at(-1)?.[0].sessions[0]).toMatchObject({
+      title: '登录失败排查',
+    }));
+    service.handleSessionMetadataPatch('s1', { title: 'New Maker' });
+    await vi.waitFor(() => expect(publish.mock.calls.at(-1)?.[0].sessions[0]).toMatchObject({
+      title: 'Untitled session',
+    }));
+    // 切换应用语言后必须**立刻**换语言:投影发生在构建 payload 那一刻,而 state / cache
+    // 存的是原始哨兵,所以 refreshLocalization() 的这次 republish 自然带新语言。若把投影
+    // 固化进 state,这里会一直停在上一语言,直到下一次 metadata 事件(PR #1031 review P1)。
+    {
+      setMainLocale('zh-CN');
+      service.refreshLocalization();
+      await vi.waitFor(() => expect(publish.mock.calls.at(-1)?.[0].sessions[0]).toMatchObject({
+        title: '未命名任务',
+      }));
+      setMainLocale('en');
+      service.refreshLocalization();
+      await vi.waitFor(() => expect(publish.mock.calls.at(-1)?.[0].sessions[0]).toMatchObject({
+        title: 'Untitled session',
+      }));
+    }
     expect(publish.mock.calls.at(-1)?.[0].strings).toMatchObject({
       appName: BRAND_NAME,
       newMessage: 'New message',
@@ -2183,6 +2213,63 @@ describe('AgentIslandService native publishing', () => {
       sessionId: meta.sessionId,
       phase: 'completed',
     });
+  });
+
+  it('uses the same replacement boundary when auto-resume withheld the old error', async () => {
+    const { AgentIslandService } = await import('../service.js');
+    const publish = vi.fn((state: AgentIslandDisplayState, frameOrFrames: AgentIslandNativeFrame | AgentIslandNativeFrame[]) => {
+      void state;
+      void frameOrFrames;
+      return true;
+    });
+    const playSound = vi.fn<(sound: AgentIslandSoundChoice) => boolean>(() => true);
+    const service = new AgentIslandService({
+      getMainWindow: () => null,
+      nativeHost: { failed: false, publish, playSound },
+    });
+    syncEnabledForTest(service, publish);
+    service.setSoundSettings({
+      enabled: true,
+      sounds: {
+        ...DEFAULT_AGENT_ISLAND_SOUND_SETTINGS.sounds,
+        complete: customSound('complete.wav'),
+      },
+    });
+    const meta = { sessionId: 'auto-resume-replacement', agentKind: 'claude-code' as const };
+    service.handleUserPrompt(meta, 'first turn');
+    service.handleUserPrompt(meta, 'continue automatically', {
+      clientId: 'auto-retry-1',
+      replacesCurrentTurn: true,
+    });
+    service.handleUserPromptDispatching(meta.sessionId);
+    playSound.mockClear();
+
+    service.handleAgentEvent(
+      meta,
+      { type: 'status', source: 'claude-code', data: { isRunning: false, status: 'Done' } },
+    );
+    service.handleAgentEvent(
+      meta,
+      { type: 'done', source: 'claude-code', data: { reason: 'turn_interrupted' } },
+    );
+
+    expect(playSound).not.toHaveBeenCalled();
+    expect(publish.mock.calls.at(-1)?.[0].sessions[0]).toMatchObject({
+      sessionId: meta.sessionId,
+      phase: 'running',
+    });
+
+    service.handleAgentEvent(
+      meta,
+      { type: 'status', source: 'claude-code', data: { isRunning: true, status: 'Thinking...' } },
+    );
+    service.handleAgentEvent(
+      meta,
+      { type: 'status', source: 'claude-code', data: { isRunning: false, status: 'Done' } },
+    );
+
+    expect(playSound).toHaveBeenCalledTimes(1);
+    expect(playSound).toHaveBeenCalledWith(customSound('complete.wav'));
   });
 
   it('accepts replacement-turn interaction requests before its running status arrives', async () => {
@@ -3927,6 +4014,63 @@ describe('AgentIslandService native publishing', () => {
     expect(framesById.get(2)).toMatchObject({ width: 360, contentWidth: 320 });
   });
 
+  it('re-publishes native frames when a wake refresh keeps the same screen signature', async () => {
+    const { AgentIslandService } = await import('../service.js');
+    const publish = vi.fn((state: AgentIslandDisplayState, frameOrFrames: AgentIslandNativeFrame | AgentIslandNativeFrame[]) => {
+      void state;
+      void frameOrFrames;
+      return true;
+    });
+    const service = new AgentIslandService({
+      getMainWindow: () => null,
+      nativeHost: { failed: false, publish },
+    });
+    syncEnabledForTest(service, publish);
+    const setNativeScreenMetrics = (
+      service as unknown as {
+        handleNativeScreenMetrics(metrics: {
+          screens: Array<{
+            displayId: number;
+            frame: { x: number; y: number; width: number; height: number };
+            hasNotch: boolean;
+            notchWidth: number;
+            topBarHeight: number;
+            menuBarHeight: number;
+            safeAreaTop: number;
+            isMain: boolean;
+            signature: string;
+          }>;
+          preferredDisplayId: number | null;
+          forceRefresh?: boolean;
+        }): void;
+      }
+    ).handleNativeScreenMetrics.bind(service);
+    const metrics = {
+      preferredDisplayId: mocks.primaryDisplay.id,
+      screens: [{
+        displayId: mocks.primaryDisplay.id,
+        frame: mocks.primaryDisplay.bounds,
+        hasNotch: false,
+        notchWidth: 0,
+        topBarHeight: 24,
+        menuBarHeight: 24,
+        safeAreaTop: 0,
+        isMain: true,
+        signature: 'primary',
+      }],
+    };
+
+    publish.mockClear();
+    setNativeScreenMetrics(metrics);
+    expect(publish).toHaveBeenCalledTimes(1);
+
+    setNativeScreenMetrics(metrics);
+    expect(publish).toHaveBeenCalledTimes(1);
+
+    setNativeScreenMetrics({ ...metrics, forceRefresh: true });
+    expect(publish).toHaveBeenCalledTimes(2);
+  });
+
   it('uses native notched-display metrics when computing display frames', async () => {
     const { AgentIslandService } = await import('../service.js');
     const publish = vi.fn((state: AgentIslandDisplayState, frameOrFrames: AgentIslandNativeFrame | AgentIslandNativeFrame[]) => {
@@ -4233,5 +4377,51 @@ describe('AgentIslandService session attention cleared bridge (error read semant
     // 显式清除(renderer 确认报错 UI 真实展示):生效并重新 publish。
     service.handleSessionAttentionCleared('s-err', 'explicit');
     expect(publishSpy.mock.calls.length).toBeGreaterThan(publishCountAfterError);
+  });
+});
+
+describe('会话关闭原因决定条目去留', () => {
+  it('进程关闭保留仍在展示的完成卡片,归档/删除照常硬删', async () => {
+    const { AgentIslandService } = await import('../service.js');
+    const publish = vi.fn(() => true);
+    const service = new AgentIslandService({
+      getMainWindow: () => null,
+      nativeHost: { failed: false, publish },
+    });
+    syncEnabledForTest(service, publish);
+    const sessions = (
+      service as unknown as { state: { sessions: Map<string, unknown> } }
+    ).state.sessions;
+
+    // 临时会话调度的真实时序:done 之后 runner 的 fire finally 立刻 closeSession。
+    // 此刻完成卡片刚弹出来,硬删条目会让它当场消失(用户看到「弹一下就收起」)。
+    service.handleAgentEvent({ sessionId: 'ephemeral' }, doneEvent());
+    expect(sessions.has('ephemeral')).toBe(true);
+    service.handleSessionClosed('ephemeral', { reason: 'process-closed' });
+    expect(sessions.has('ephemeral')).toBe(true);
+
+    // 会话被归档 / 删除(默认 reason)语义是「这条记录不该再存在」→ 照常硬删。
+    service.handleSessionClosed('ephemeral');
+    expect(sessions.has('ephemeral')).toBe(false);
+  });
+
+  it('进程关闭时若已无展示需求,条目照常删除', async () => {
+    const { AgentIslandService } = await import('../service.js');
+    const publish = vi.fn(() => true);
+    const service = new AgentIslandService({
+      getMainWindow: () => null,
+      nativeHost: { failed: false, publish },
+    });
+    syncEnabledForTest(service, publish);
+    const sessions = (
+      service as unknown as { state: { sessions: Map<string, unknown> } }
+    ).state.sessions;
+
+    // 只是跑起来、没有任何终态未读 → 进程一关就没有保留价值。
+    service.handleUserPrompt({ sessionId: 'plain', agentKind: 'codex' }, 'hi');
+    expect(sessions.has('plain')).toBe(true);
+
+    service.handleSessionClosed('plain', { reason: 'process-closed' });
+    expect(sessions.has('plain')).toBe(false);
   });
 });

@@ -16,6 +16,7 @@ import { McpServersSection } from './McpServersSection';
 import { RemoteControlSection } from './RemoteControlSection';
 import { NotificationSection } from './NotificationSection';
 import { WindowBehaviorSection } from './WindowBehaviorSection';
+import { ComposerSendShortcutSection } from './ComposerSendShortcutSection';
 import { KeyboardShortcutsSection } from './KeyboardShortcutsSection';
 import { AgentIslandSection } from './AgentIslandSection';
 import { LanguageSection } from './LanguageSection';
@@ -33,6 +34,7 @@ import { GitSafetySection } from './GitSafetySection';
 import { SessionImportSection } from './SessionImportSection';
 import { HelpSection } from './HelpSection';
 import { HelpAssistantPanel } from './HelpAssistantPanel';
+import { AgentResourceSection } from './AgentResourceSection';
 import { CollaborationSection } from './CollaborationSection';
 import { BuiltinToolsSection } from './BuiltinToolsSection';
 import { ContactsSection } from './contacts/ContactsSection';
@@ -88,21 +90,22 @@ export function SettingsView() {
     if (rawTab !== 'billing' || canAccessBilling) return;
     const next = new URLSearchParams(searchParams);
     next.delete('tab');
+    // 计费页不可见时它的深链意图(intent=topup)也一并作废,不留在 URL 上等着
+    // 用户切到别的 tab 再被误消费。
+    next.delete('intent');
     setSearchParams(next, { replace: true });
   }, [canAccessBilling, rawTab, searchParams, setSearchParams]);
 
-  // 「IM 机器人」页内分栏:?imGroup=cindy|personal 定位到某个 tab(深链可直达)。
-  // 缺省/非法 imGroup 一律落到默认分栏:旧「飞书机器人」深链落「个人」(飞书在
-  // 个人栏),其余(im-bot / slack-bot / tina)落「Cindy」。
+  // 「IM 机器人」官方/个人已纵向同页展示；?imGroup=cindy|personal 只负责把
+  // 深链滚动到对应分区。旧「飞书机器人」深链继续定位到「个人」。
   const activeImGroupRaw = activeTab === 'im-bot' ? searchParams.get('imGroup') : null;
   const activeImBotGroup: ImBotSettingsGroup | null = isImBotSettingsGroup(activeImGroupRaw)
     ? activeImGroupRaw
     : null;
-  const imBotFallbackGroup: ImBotSettingsGroup =
-    searchParams.get('tab') === 'feishu-bot' ? 'personal' : 'cindy';
-  // 渲染层直接用兜底值,imGroup 缺省时不回写 URL(少一次 replace,深链语义不变)。
-  const resolvedImBotGroup: ImBotSettingsGroup | null =
-    activeTab === 'im-bot' ? (activeImBotGroup ?? imBotFallbackGroup) : null;
+  const imBotTargetGroup: ImBotSettingsGroup | null =
+    activeTab === 'im-bot'
+      ? (activeImBotGroup ?? (searchParams.get('tab') === 'feishu-bot' ? 'personal' : null))
+      : null;
 
   // 切分区后外层滚动容器回顶:滚动偏移是容器的、不随内层 key 重挂归零,
   // 长页滚到底再切短页会停在中段(review 反馈)。瞬时回顶,不做平滑。
@@ -119,9 +122,11 @@ export function SettingsView() {
       next.delete('ghost');
       next.delete('imGroup');
       next.delete('section');
-      // providers 页深链参数(connect/wizard):切走 tab 即作废,防再切回来被误消费。
+      // providers 页深链参数(connect/wizard)与计费页深链参数(intent):切走 tab 即
+      // 作废,防再切回来被误消费。
       next.delete('connect');
       next.delete('wizard');
+      next.delete('intent');
       if (tab === 'general') {
         next.delete('tab');
       } else {
@@ -130,17 +135,6 @@ export function SettingsView() {
       setSearchParams(next, { replace: true });
     },
     [activeTab, searchParams, setSearchParams],
-  );
-
-  const handleSelectImBotGroup = useCallback(
-    (group: ImBotSettingsGroup) => {
-      const next = new URLSearchParams(searchParams);
-      next.delete('openPanel');
-      next.set('tab', 'im-bot');
-      next.set('imGroup', group);
-      setSearchParams(next, { replace: true });
-    },
-    [searchParams, setSearchParams],
   );
 
   useEffect(() => {
@@ -163,7 +157,7 @@ export function SettingsView() {
     [canAccessBilling, isMac],
   );
 
-  // deep-link: ?section=... → scroll to a section inside General settings.
+  // deep-link: ?section=... → scroll to a section inside the active tab.
   useEffect(() => {
     const section = searchParams.get('section');
     const sectionId =
@@ -171,7 +165,9 @@ export function SettingsView() {
         ? 'settings-collaboration'
         : section === 'notifications'
           ? 'settings-notifications'
-          : null;
+          : section === 'contacts'
+            ? 'settings-contacts'
+            : null;
     if (!sectionId) return;
     const el = document.getElementById(sectionId);
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -303,6 +299,15 @@ export function SettingsView() {
                   <WindowBehaviorSection />
                 </section>
 
+                {/* Section — Composer send shortcut (应用级、本地输入偏好)。 */}
+                <section
+                  id="settings-composer"
+                  className="py-[18px]"
+                  aria-label={t('settings.sections.composer')}
+                >
+                  <ComposerSendShortcutSection />
+                </section>
+
                 {/* Section — Experimental (py 18)
                     内部按 EXPERIMENTAL_FEATURES 注册表渲染; admin-only 项对非 admin 用户
                     自动跳过。如果当前没有任何可见 feature, ExperimentalSection 自身返回 null,
@@ -313,6 +318,16 @@ export function SettingsView() {
                   aria-label={t('settings.sections.collaboration')}
                 >
                   <CollaborationSection />
+                </section>
+
+                {/* Section — Agent resource usage (命令并发/进程优先级/工具链限核)。
+                    与 Collaboration(worker 上限)相邻:同属"agent 吃多少机器资源"的治理面。 */}
+                <section
+                  id="settings-agent-resource"
+                  className="py-[18px]"
+                  aria-label={t('settings.sections.agentResource')}
+                >
+                  <AgentResourceSection />
                 </section>
 
                 {/* Section — Git safety savepoints (formal setting, not experimental). */}
@@ -364,11 +379,14 @@ export function SettingsView() {
                 <section className="pb-[18px]" aria-label={t('settings.sections.subagentModels')}>
                   <SubagentModelSection key={`subagent-models:${mode}:${dataOwnerId ?? 'none'}`} />
                 </section>
-                {mode !== 'local' && (
-                  <section className="pb-[18px]" aria-label={t('settings.contacts.title')}>
-                    <ContactsSection key={`contacts:${dataOwnerId ?? 'none'}`} />
-                  </section>
-                )}
+                {/* 通讯录是本机全局库(数据与开关都不依赖云端账号),local 模式同样可用 */}
+                <section
+                  id="settings-contacts"
+                  className="pb-[18px]"
+                  aria-label={t('settings.contacts.title')}
+                >
+                  <ContactsSection key={`contacts:${dataOwnerId ?? 'none'}`} />
+                </section>
                 <section className="pb-[18px]" aria-label={t('settings.sections.compaction')}>
                   <CompactionSection key={`compaction:${mode}:${dataOwnerId ?? 'none'}`} />
                 </section>
@@ -505,14 +523,9 @@ export function SettingsView() {
 
             {activeTab === 'im-bot' && (
               <div role="tabpanel" id="settings-panel-im-bot" aria-labelledby="settings-tab-im-bot">
-                {/* 单页 + 页内分栏 tab:imGroup 缺省时渲染默认分栏 */}
+                {/* 官方/个人纵向同页展示；imGroup 只保留深链定位语义。 */}
                 <section aria-label={t('settings.sections.imBot')}>
-                  {resolvedImBotGroup && (
-                    <ImBotSection
-                      group={resolvedImBotGroup}
-                      onGroupChange={handleSelectImBotGroup}
-                    />
-                  )}
+                  <ImBotSection targetGroup={imBotTargetGroup} />
                 </section>
               </div>
             )}

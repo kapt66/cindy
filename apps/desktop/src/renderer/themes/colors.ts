@@ -254,6 +254,14 @@ registerColor('input', {
   light: 'var(--border-shadcn-hsl)',
   dark: 'var(--border-shadcn-hsl)',
 }, 'input');
+registerColor('switch-track-off', {
+  light: 'var(--text-secondary)',
+  dark: 'var(--text-secondary)',
+}, '共享 Switch 未选中轨道；跟随主题次要前景，与默认/悬停表面及滑块保持至少 3:1 非文字组件对比度，同时弱于开启态');
+registerColor('switch-thumb-off', {
+  light: 'var(--surface-on-card)',
+  dark: 'var(--surface-on-card)',
+}, '共享 Switch 未选中滑块；跟随主题反相前景，与未选中轨道保持至少 3:1 非文字组件对比度');
 registerColor('ring', {
   light: 'var(--text-primary-hsl)',
   dark: 'var(--text-primary-hsl)',
@@ -1017,15 +1025,6 @@ registerColor('model-section-label', {
   light: 'var(--text-secondary)',
   dark: 'var(--text-secondary)',
 }, 'Stone — "Effort" header');
-registerColor('model-budget-badge-bg', {
-  light: '#dcfce7',
-  dark: '#14532d',
-}, 'Budget model badge background');
-registerColor('model-budget-badge-text', {
-  light: '#16a34a',
-  dark: '#86efac',
-}, 'Budget model badge text');
-
 // Permission selector
 registerColor('perm-item-selected-bg', {
   light: '#f8f8f6',
@@ -1664,6 +1663,10 @@ registerColor('card-status-done', {
   light: '#2AAE5B',
   dark: '#2AAE5B',
 }, '状态点 — 完成未读 (设计定稿 2026-07-17 #2AAE5B,取代 #22c55e;普通/定时任务完成统一,橙专职 running)');
+registerColor('completion-badge-fg', {
+  light: '#1f1f1e',
+  dark: '#1f1f1e',
+}, '完成徽标(✓)前景 — 深墨前景压在 card-status-done 绿上,对比 5.29:1(白前景只有 2.88:1,不达 WCAG 1.4.11 非文字 3:1 门槛);light/dark 同值,与 surface-on-card 暗态的 checked icon 深前景惯例一致');
 registerColor('remote-status-disconnected', {
   light: 'var(--text-tertiary)',
   dark: 'var(--text-tertiary)',
@@ -1950,6 +1953,10 @@ registerColor('focus-ring-soft', {
   light: 'rgba(65, 124, 221, 0.5)',
   dark: 'rgba(65, 124, 221, 0.5)',
 }, '50% alpha focus ring(随 focus-ring #417CDD,定稿 2026-07-17)— 替代 ring-[#xxx]/50 写法');
+registerColor('text-selection-bg', {
+  light: 'var(--focus-ring-soft)',
+  dark: 'var(--focus-ring-soft)',
+}, '文字选中背景(焦点离开宿主窗口时仍保持清晰可见)');
 registerColor('shadow-menu', {
   light: '0 4px 16px rgba(0, 0, 0, 0.15)',
   dark: '0 4px 16px rgba(0, 0, 0, 0.5)',

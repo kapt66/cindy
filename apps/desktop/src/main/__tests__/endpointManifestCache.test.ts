@@ -60,6 +60,20 @@ function createSymlinkIfSupported(target: string, linkPath: string): boolean {
   }
 }
 
+// Windows 上创建 symlink 需要管理员或开发者模式;拿不到权限时(EPERM)跳过相关
+// 用例,与下面 mkfifo 不可用时的处理一致。探测一次,别让每个用例各炸一遍。
+const canSymlink = (() => {
+  const probeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-symlink-probe-'));
+  try {
+    fs.symlinkSync(path.join(probeDir, 'target'), path.join(probeDir, 'link'));
+    return true;
+  } catch {
+    return false;
+  } finally {
+    fs.rmSync(probeDir, { recursive: true, force: true });
+  }
+})();
+
 describe('endpointManifestCache', () => {
   it('写入后可原样读回', () => {
     expect(writeEndpointManifestCache(dir, ENTRY)).toBe(true);
@@ -151,6 +165,8 @@ describe('缓存端点的受信任域约束(安全边界)', () => {
   const CN_BASE = 'https://hotfix.cindy.com.cn/cindy';
   const TRUSTED = Object.values(REGION_ENDPOINT_DOMAIN);
   /** CN 构建的策略:非跨区端点锁 cindy.com.cn,slack/telegram hook 才允许 cindy.app。 */
+
+/** CN 构建的策略:非跨区端点锁 cindy.com.cn,slack/telegram/x hook 才允许 cindy.app。 */
   const CN_POLICY = {
     regionDomain: REGION_ENDPOINT_DOMAIN.cn,
     crossRegionDomain: REGION_ENDPOINT_DOMAIN.global,
@@ -168,9 +184,13 @@ describe('缓存端点的受信任域约束(安全边界)', () => {
     expect(REGION_ENDPOINT_DOMAIN.global).toBe('cindy.app');
   });
 
-  it('跨区例外只有 slack / telegram hook 两个 key', () => {
+  it('跨区例外只有 slack / telegram / x hook 三个 key', () => {
     // 每加一个 key 就等于允许该端点跨区,而跨区 token 误发正是要防的事。
-    expect([...CROSS_REGION_ENDPOINT_KEYS].sort()).toEqual(['slackHookWsUrl', 'telegramHookWsUrl']);
+    expect([...CROSS_REGION_ENDPOINT_KEYS].sort()).toEqual([
+      'slackHookWsUrl',
+      'telegramHookWsUrl',
+      'xHookWsUrl',
+    ]);
   });
 
   it('CN 构建拒绝换成 Global 真实服务的伪造缓存(跨区 token 误发)', () => {
@@ -226,6 +246,9 @@ describe('缓存端点的受信任域约束(安全边界)', () => {
           authApiBaseUrl: 'https://auth.cindy.com.cn',
           slackHookWsUrl: 'wss://slack-hook.cindy.app',
           telegramHookWsUrl: 'wss://telegram-hook.cindy.app',
+          // CN 清单按 Telegram 同款单部署模式放量 X 时,离线缓存回退必须仍受信
+          // (PR #1230 review:漏登记会让 CN 用户断网时失去缓存启动出口)。
+          xHookWsUrl: 'wss://x-hook.cindy.app',
           websiteUrl: 'https://cindy.com.cn',
           cdnBaseUrl: 'https://hotfix.cindy.com.cn/cindy',
           authDesktopCallbackUrl: 'https://auth.cindy.com.cn/api/auth/desktop/callback',
@@ -280,7 +303,8 @@ describe('缓存端点的受信任域约束(安全边界)', () => {
 });
 
 describe('缓存读取只接受常规文件(阻断路径不能被挂住)', () => {
-  it('symlink 指向合法缓存也拒绝(statSync 会跟随,lstatSync 不会)', () => {
+  // skipIf: 无 symlink 权限时报告为 skipped 而不是假 passed
+  it.skipIf(!canSymlink)('symlink 指向合法缓存也拒绝(statSync 会跟随,lstatSync 不会)', () => {
     const real = path.join(dir, 'real-cache.json');
     fs.writeFileSync(real, JSON.stringify(ENTRY), 'utf8');
     if (!createSymlinkIfSupported(real, cacheFile())) return;
@@ -340,7 +364,8 @@ describe('缓存写入的临时文件必须唯一且独占创建', () => {
     expect(readEndpointManifestCache(dir)).toEqual(ENTRY);
   });
 
-  it('target 被换成 symlink 时 rename 替换掉它本身,不写穿到链接目标', () => {
+  // skipIf: 无 symlink 权限时报告为 skipped 而不是假 passed
+  it.skipIf(!canSymlink)('target 被换成 symlink 时 rename 替换掉它本身,不写穿到链接目标', () => {
     const outside = path.join(dir, 'outside.txt');
     fs.writeFileSync(outside, 'untouched', 'utf8');
     if (!createSymlinkIfSupported(outside, cacheFile())) return;

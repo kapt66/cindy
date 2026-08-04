@@ -30,12 +30,7 @@ import { RightSidebarMaximize } from '@/components/layout/RightSidebarMaximize';
 import { CHROME_ACTIONS_GEOMETRY } from '@/components/layout/chromeActionsGeometry';
 import { TabBar, TabStrip } from './TabBar';
 import { EmptyState } from './EmptyState';
-import {
-  getTabKind,
-  hydrateTabState,
-  listGhostTabMenuMetas,
-  useTabKindRegistryVersion,
-} from './registry';
+import { getTabKind, hydrateTabState } from './registry';
 import {
   addOrFocusSingletonTab,
   addTab,
@@ -54,6 +49,7 @@ import type { TabKindHostContext, TabKindId, TabState } from './types';
 // getTabKind 查 registry。
 import './plugins';
 import { initRsbBrowserBridge } from './lib/rsbBrowserBridge';
+import { initPopupRouter, setPopupFallbackSession } from './lib/popupRouter';
 
 const log = createLogger('rightSidebar.shell');
 /**
@@ -80,6 +76,8 @@ interface RightSidebarShellProps {
   workdir: string;
   /** 非空 = SSH remote 会话(workdir 为远端路径);见 TabKindHostContext.remoteHostId。 */
   remoteHostId: string | null;
+  /** device-link 会话归属：null = 已确认本机，undefined = 尚未解析。 */
+  deviceLinkDeviceId?: string | null;
   /** RightSidebar aside 当前是否真实展开。折叠时 keep-alive body 仍挂载但不可见。 */
   shellVisible?: boolean;
   isMac: boolean;
@@ -124,6 +122,7 @@ export function RightSidebarShell({
   sessionId,
   workdir,
   remoteHostId,
+  deviceLinkDeviceId,
   shellVisible = true,
   isMac,
   unifiedTopbar = false,
@@ -201,11 +200,23 @@ export function RightSidebarShell({
   const tabs = bucket.tabs;
   const activeTabId = bucket.activeTabId;
 
-  // 插件页签(panel.position:'tab')随装/卸/停用动态注册,版本号驱动重渲——
-  // EmptyState 的插件行与「+」菜单动态分组都吃这份数据。
-  const tabRegistryVersion = useTabKindRegistryVersion();
-  // 注册表是模块级 Map,不在 React 数据流里 —— 版本号是唯一变化信号,拿它当 dep。
-  const ghostTabMetas = useMemo(() => listGhostTabMenuMetas(), [tabRegistryVersion]);
+  // 面板收束(2026-08):插件页签不再注册进右侧栏。历史会话里持久化的
+  // `ghost:*` tab 是旧形态残留,发现即静默关闭 —— 这些 kind 已无渲染方,
+  // 留着只会落到 PlaceholderBody 变成"敬请期待"的死页签。
+  useEffect(() => {
+    if (!bucket.hydrated || !sessionId) return;
+    const legacyGhostTabs = bucket.tabs.filter((tab) => tab.kind.startsWith('ghost:'));
+    if (legacyGhostTabs.length === 0) return;
+    void (async () => {
+      for (const tab of legacyGhostTabs) {
+        try {
+          await closeTab(sessionId, tab.id);
+        } catch (err) {
+          log.error('legacy ghost tab prune failed', { sessionId, tabId: tab.id, err });
+        }
+      }
+    })();
+  }, [bucket.hydrated, bucket.tabs, sessionId]);
 
   // 关掉最后一个 tab → 通知 host 自动收起侧栏。只在 tab 数「从 >0 变 0」的转变时
   // 触发,不是"等于 0"就触发:
@@ -344,29 +355,16 @@ export function RightSidebarShell({
     }
   }, [sessionId, bucket.tabs]);
 
-  // 订阅 main 端的 webview popup 推送 —— guest webview 内 window.open /
-  // target=_blank / window.location 跨 host 时,把 popup URL 路由到一个新的
-  // web-browser RSB tab(对齐 Codex `main-cC-d0ezP.js:48849` 的 foreground/
-  // background-tab 智能路由,简化版:都开前台 tab)。
-  // 注:sessionId 为 null 时(刚 mount 还没拿到 session)推上来的 popup 暂时丢弃 ——
-  // RSB 自身在没 sessionId 时也不显示,用户也看不到 webview,实际不会触发 popup。
+  // popup 路由已挪到窗口级常驻模块(lib/popupRouter.ts):订阅不随 Shell 生命
+  // 周期,用户离开聊天视图 / main 端归属等待期间 route 切换都不再丢 popup。
+  // Shell 只负责两件事:确保 router 已 init(幂等,与 bridge 同款),以及把
+  // "用户正在看的 session"喂给 router 作无归属 popup 的回落目标(保留最后
+  // 已知值,Shell 卸载期间到达的 popup 仍有处可去)。
   useEffect(() => {
-    if (!sessionId) return;
-    const off = window.electronAPI.onRsbBrowserPopup(({ url }) => {
-      // 给新 tab 一份完整 default state,只把 url 替换成 popup URL;hydrateState
-      // 会把缺字段补回默认。background-tab disposition 暂不区分,统一前台打开;
-      // 日后要支持后台 tab 时再按 disposition 分支选 setActive。
-      const initialState = {
-        url,
-        title: '',
-        favicon: null,
-        isAudible: false,
-      };
-      void addTab(sessionId, 'web-browser', initialState).catch((err) => {
-        log.error('rsb popup → addTab failed', { sessionId, url, err });
-      });
-    });
-    return off;
+    initPopupRouter();
+  }, []);
+  useEffect(() => {
+    setPopupFallbackSession(sessionId);
   }, [sessionId]);
 
   useEffect(() => {
@@ -511,8 +509,6 @@ export function RightSidebarShell({
             onAddBackgroundTasksTab={() => handleAdd('background-tasks')}
             onAddBrowserTab={() => handleAdd('web-browser')}
             onAddTerminalTab={() => handleAdd('terminal')}
-            ghostTabMetas={ghostTabMetas}
-            onAddGhostTab={handleAdd}
           />
         ) : (
           // 所有 tab 都挂载,只切换可见性(规则 7:杜绝切顶层 tab 时 plugin 内部 state /
@@ -526,6 +522,7 @@ export function RightSidebarShell({
               sessionId={sessionId}
               workdir={workdir}
               remoteHostId={remoteHostId}
+              deviceLinkDeviceId={deviceLinkDeviceId}
               shellVisible={shellVisible}
               t={t}
             />
@@ -542,6 +539,7 @@ interface PluginBodyHostProps {
   sessionId: string | null;
   workdir: string;
   remoteHostId: string | null;
+  deviceLinkDeviceId?: string | null;
   shellVisible: boolean;
   t: ReturnType<typeof useTranslation>['t'];
 }
@@ -561,6 +559,7 @@ function PluginBodyHost({
   sessionId,
   workdir,
   remoteHostId,
+  deviceLinkDeviceId,
   shellVisible,
   t,
 }: PluginBodyHostProps) {
@@ -578,6 +577,7 @@ function PluginBodyHost({
       sessionId: sessionId ?? '',
       workdir,
       remoteHostId,
+      deviceLinkDeviceId,
       patchState: (patch: unknown) => {
         if (!sessionId) return;
         void patchTabState(sessionId, tab.id, (current) => {
@@ -604,7 +604,7 @@ function PluginBodyHost({
       setCloseInterceptor: (interceptor) =>
         setTabCloseInterceptor(tab.id, interceptor),
     }),
-    [sessionId, workdir, remoteHostId, tab.id],
+    [sessionId, workdir, remoteHostId, deviceLinkDeviceId, tab.id],
   );
 
   // active 切换:走 effect 通知 plugin(plugin 自己内部用 ctx.onVisibilityChange

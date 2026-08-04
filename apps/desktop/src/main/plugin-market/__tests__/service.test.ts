@@ -4,6 +4,8 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { ghostPermissionBaselineKey } from '../../../shared/ghost.js';
+
 const runtime = vi.hoisted(() => ({
   ghosts: [] as Array<{
     manifest: Record<string, unknown>;
@@ -57,13 +59,24 @@ vi.mock('../download.js', () => ({
 
 import type { VisiblePluginDetail, VisiblePluginSummary } from '@cindy/plugin-protocol';
 
-import { downloadVerifiedPlugin } from '../download';
+import { withGhostInstallLock } from '../../cindy-brain/ghostInstallLock';
+import { GhostPackagePermissionReviewRequiredError } from '../../cindy-brain/packagePermissionReview';
 import { PluginMarketLedger } from '../ledger';
 import { PluginMarketService, type PluginMarketServiceOptions } from '../service';
 import type { PluginMarketApi } from '../api';
+import { downloadVerifiedPlugin } from '../download';
 
 const roots: string[] = [];
 const PLUGIN_ID = `c${'a'.repeat(24)}`;
+
+/** 手动可控 deferred,用于精确编排"安装在飞行中"的交错。 */
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
 
 afterEach(() => {
   runtime.ghosts = [];
@@ -308,6 +321,7 @@ describe('PluginMarketService migration and defaultInstall', () => {
     await expect(h.service.snapshot()).resolves.toEqual({
       items: [],
       unavailableReason: 'authentication-required',
+      customSourceNames: [],
     });
     expect(h.api.listAll).not.toHaveBeenCalled();
   });
@@ -324,6 +338,7 @@ describe('PluginMarketService migration and defaultInstall', () => {
     await expect(h.service.snapshot()).resolves.toEqual({
       items: [],
       unavailableReason: 'not-configured',
+      customSourceNames: [],
     });
     expect(h.api.listAll).not.toHaveBeenCalled();
   });
@@ -335,6 +350,7 @@ describe('PluginMarketService migration and defaultInstall', () => {
     await expect(h.service.snapshot()).resolves.toEqual({
       items: [],
       unavailableReason: 'session-switching',
+      customSourceNames: [],
     });
     expect(h.api.listAll).not.toHaveBeenCalled();
   });
@@ -407,10 +423,14 @@ describe('PluginMarketService migration and defaultInstall', () => {
 
     const snapshot = await h.service.snapshot();
 
-    expect(runtime.install).toHaveBeenCalledWith(expect.stringMatching(/\.cindy$/), {
-      ghostId: 'cindy-test',
-      version: '1.0.0',
-    });
+    expect(runtime.install).toHaveBeenCalledWith(
+      expect.stringMatching(/\.cindy$/),
+      {
+        ghostId: 'cindy-test',
+        version: '1.0.0',
+        reviewedManifest: expect.objectContaining({ id: 'cindy-test' }),
+      },
+    );
     expect(snapshot.items[0]).toMatchObject({
       installState: 'installed',
       enabled: true,
@@ -436,26 +456,24 @@ describe('PluginMarketService migration and defaultInstall', () => {
       expectedReleaseId: item.currentRelease.id,
     });
 
-    expect(runtime.install).toHaveBeenCalledWith(expect.stringMatching(/\.cindy$/), {
-      ghostId: 'cindy-test',
-      version: '1.0.0',
-    });
-    // 锁定装完即开的最终结果:装入入口返回的 ghost 必须是启用态。
-    expect(ghost.enabled).toBe(true);
-    expect(vi.mocked(downloadVerifiedPlugin).mock.lastCall?.[3]).toBeUndefined();
-  });
-
-  it('forwards verified download bytes and switches to installing after verification', async () => {
-    const item = summary();
-    const onProgress = vi.fn();
-    vi.mocked(downloadVerifiedPlugin).mockImplementationOnce(
-      async (_url, expected, _target, options) => {
-        options?.onProgress?.({
-          downloadedBytes: expected.sizeBytes,
-          totalBytes: expected.sizeBytes,
-        });
+    expect(runtime.install).toHaveBeenCalledWith(
+      expect.stringMatching(/\.cindy$/),
+      {
+        ghostId: 'cindy-test',
+        version: '1.0.0',
+        reviewedManifest: expect.objectContaining({ id: 'cindy-test' }),
       },
     );
+    // 锁定装完即开的最终结果:装入入口返回的 ghost 必须是启用态。
+    expect(ghost?.enabled).toBe(true);
+  });
+
+  // 装入确认框渲染的是**服务端给的** manifest,真正落地的是 .cindy 包里的
+  // ghost.json。服务端投影层与客户端清单契约漂移时(cindy-protocol 那份平行
+  // 校验器已经缺了 confirm 槽,新字段按「忽略未知字段」被静默丢掉),包会带着
+  // 用户没审过的权限装进来。出口处需要这份 reviewedManifest 才能逐项比对拦下。
+  it('passes the reviewed server manifest to the install entry so package permissions can be re-reviewed', async () => {
+    const item = summary();
     runtime.install.mockResolvedValue({
       manifest: manifest(),
       dir: '/userData/cindy-brain/cindy-test',
@@ -463,81 +481,72 @@ describe('PluginMarketService migration and defaultInstall', () => {
     });
     const h = harness([item]);
 
-    await h.service.install(item.id, {
-      expectedReleaseId: item.currentRelease.id,
-      onProgress,
-    });
+    await h.service.install(item.id, { expectedReleaseId: item.currentRelease.id });
 
-    expect(onProgress.mock.calls).toEqual([
-      [
-        {
-          phase: 'downloading',
-          downloadedBytes: item.currentRelease.sizeBytes,
-          totalBytes: item.currentRelease.sizeBytes,
-        },
-      ],
-      [
-        {
-          phase: 'installing',
-          downloadedBytes: item.currentRelease.sizeBytes,
-          totalBytes: item.currentRelease.sizeBytes,
-        },
-      ],
-    ]);
+    const passed = runtime.install.mock.calls[0]?.[1] as { reviewedManifest?: unknown };
+    expect(passed.reviewedManifest).toBeDefined();
+    // 必须是服务端那一份原文(确认框渲染的就是它),不是包里的或已装的。
+    expect(passed.reviewedManifest).toMatchObject({
+      id: item.ghostId,
+      version: item.currentRelease.version,
+    });
   });
 
-  it('applies an independent channel download ceiling only after manifest validation', async () => {
+  it('returns a recoverable package review result and forwards the bound approval on retry', async () => {
     const item = summary();
-    const resolveMaxDownloadBytes = vi.fn(() => 128 * 1024 * 1024);
-    runtime.install.mockResolvedValue({
+    const review = {
+      manifest: manifest('cindy-test', '1.0.0', ['notify', 'fs']),
+      packageSha256: 'a'.repeat(64),
+      installedBaseline: null,
+    };
+    runtime.install.mockRejectedValueOnce(
+      new GhostPackagePermissionReviewRequiredError(review),
+    );
+    const h = harness([item]);
+
+    await expect(
+      h.service.install(item.id, { expectedReleaseId: item.currentRelease.id }),
+    ).resolves.toEqual({ reviewRequired: review });
+    expect(h.ledger.installationForGhost(item.ghostId)).toBeNull();
+
+    runtime.install.mockResolvedValueOnce({
       manifest: manifest(),
       dir: '/userData/cindy-brain/cindy-test',
       enabled: true,
     });
-    const h = harness([item], { resolveMaxDownloadBytes });
-
-    await h.service.install(item.id, {
-      expectedReleaseId: item.currentRelease.id,
-    });
-
-    expect(resolveMaxDownloadBytes).toHaveBeenCalledWith(
-      expect.objectContaining({ id: item.ghostId }),
-    );
-    expect(downloadVerifiedPlugin).toHaveBeenLastCalledWith(
-      'https://downloads.test.invalid/plugin.cindy',
-      expect.objectContaining({
-        sizeBytes: item.currentRelease.sizeBytes,
-        sha256: item.currentRelease.sha256,
-      }),
-      expect.stringMatching(/\.cindy$/),
-      { maxBytes: 128 * 1024 * 1024 },
-    );
-  });
-
-  it('does not consult an independent channel policy for an invalid manifest', async () => {
-    const item = summary();
-    const resolveMaxDownloadBytes = vi.fn(() => 128 * 1024 * 1024);
-    const h = harness([item], { resolveMaxDownloadBytes });
-    h.api.detail.mockResolvedValue({
-      ...detail(item),
-      currentRelease: {
-        ...detail(item).currentRelease,
-        manifest: {
-          ...manifest(),
-          schemaVersion: 999,
-        },
-      },
-    } as unknown as VisiblePluginDetail);
-
     await expect(
       h.service.install(item.id, {
         expectedReleaseId: item.currentRelease.id,
+        approvedPackageSha256: review.packageSha256,
       }),
-    ).rejects.toThrow('[GHOST_FILE_INVALID]');
+    ).resolves.toMatchObject({ ghost: { manifest: { id: item.ghostId } } });
+    expect(runtime.install).toHaveBeenLastCalledWith(
+      expect.stringMatching(/\.cindy$/),
+      expect.objectContaining({ approvedPackageSha256: review.packageSha256 }),
+    );
+  });
 
-    expect(resolveMaxDownloadBytes).not.toHaveBeenCalled();
-    expect(h.api.download).not.toHaveBeenCalled();
-    expect(downloadVerifiedPlugin).not.toHaveBeenCalled();
+  it('does not return package review details after the active owner changes', async () => {
+    const item = summary();
+    const review = {
+      manifest: manifest('cindy-test', '1.0.0', ['notify', 'fs']),
+      packageSha256: 'a'.repeat(64),
+      installedBaseline: null,
+    };
+    runtime.install.mockImplementationOnce(async () => {
+      runtime.session = {
+        mode: 'cloud',
+        dataOwnerId: 'user-2',
+        generation: 2,
+      };
+      throw new GhostPackagePermissionReviewRequiredError(review);
+    });
+    const h = harness([item]);
+
+    await expect(
+      h.service.install(item.id, { expectedReleaseId: item.currentRelease.id }),
+    ).rejects.toThrow('[PRECONDITION_FAILED]');
+    expect(h.ledger.installationForGhost(item.ghostId)).toBeNull();
   });
 
   it('installs and enables a public defaultInstall package in local mode', async () => {
@@ -560,10 +569,14 @@ describe('PluginMarketService migration and defaultInstall', () => {
 
     const snapshot = await h.service.snapshot();
 
-    expect(runtime.install).toHaveBeenCalledWith(expect.stringMatching(/\.cindy$/), {
-      ghostId: item.ghostId,
-      version: item.currentRelease.version,
-    });
+    expect(runtime.install).toHaveBeenCalledWith(
+      expect.stringMatching(/\.cindy$/),
+      {
+        ghostId: item.ghostId,
+        version: item.currentRelease.version,
+        reviewedManifest: expect.objectContaining({ id: item.ghostId }),
+      },
+    );
     expect(snapshot.items[0]).toMatchObject({
       installState: 'installed',
       enabled: true,
@@ -594,6 +607,43 @@ describe('PluginMarketService migration and defaultInstall', () => {
       pluginId: item.id,
       installed: true,
     });
+  });
+
+  it('服务端安装持 ghostId 锁,覆盖落位到溯源写入整段', async () => {
+    // 少了这把锁,本地 .cindy 装入能在包检查窗口里落入同 id 的包,随后被本次安装
+    // 当作更新目标覆盖;账本写入若在锁外,本地装入还能插在"落位"与"写溯源"之间,
+    // 让账本认领一个已被替换的包(服务端记录不带 manifestDigest,投影判不出来)。
+    // 这里用真实的 withGhostInstallLock(service 直接 import,未被 mock)观察:
+    // 安装在飞行中时,外部同 id 请求必须进不来;账本已写入后才放行。
+    const item = summary();
+    const h = harness([item]);
+    const installGate = deferred();
+    runtime.install.mockImplementation(async () => {
+      await installGate.promise;
+      return { manifest: manifest(), dir: '/userData/cindy-brain/cindy-test', enabled: true };
+    });
+
+    const order: string[] = [];
+    const installing = h.service.install(item.id, {
+      expectedReleaseId: item.currentRelease.id,
+    });
+    // 等安装推进到持锁并阻塞在 runtime.install 上。
+    await vi.waitFor(() => expect(runtime.install).toHaveBeenCalled());
+    const outsider = withGhostInstallLock(item.ghostId, async () => {
+      // 进入临界区的那一刻,账本必须已经写完(写入在锁内)。
+      order.push(
+        h.ledger.installationForGhost(item.ghostId)?.installed === true
+          ? 'outsider:ledger-written'
+          : 'outsider:ledger-missing',
+      );
+    });
+    await Promise.resolve();
+    // 安装仍持锁(阻塞在落位上):外部同 id 请求不得进入。
+    expect(order).toEqual([]);
+    installGate.resolve();
+    await Promise.all([installing, outsider]);
+    // 进入时看到的是"账本已写",而不是"包已落位但溯源还没写"的中间态。
+    expect(order).toEqual(['outsider:ledger-written']);
   });
 
   it('rejects a non-public plugin returned to account-free local mode', async () => {
@@ -628,6 +678,7 @@ describe('PluginMarketService migration and defaultInstall', () => {
     await expect(h.service.snapshot()).resolves.toEqual({
       items: [],
       unavailableReason: null,
+      customSourceNames: [],
     });
     expect(h.api.listAll).toHaveBeenCalledOnce();
   });
@@ -856,6 +907,89 @@ describe('PluginMarketService migration and defaultInstall', () => {
       ghost: { manifest: { version: '2.0.0' } },
     });
     expect(runtime.install).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-checks the reviewed baseline inside the install lock before honouring an expansion', async () => {
+    const item = summary({
+      currentRelease: { ...summary().currentRelease, id: 'release-2', version: '2.0.0' },
+    });
+    // 用户审阅时的已装 manifest 是 notify+fs(相对目标包没有新增权限);
+    // IPC 往返期间「从文件更新」把它换成了只有 notify 的包——此刻目标包相对
+    // **当前**已装多出 fs,而这条权限用户从没审过。旧批准不得放行它。
+    const reviewedInstalled = manifest('cindy-test', '1.0.0', ['notify', 'fs']);
+    runtime.ghosts = [
+      {
+        manifest: manifest(),
+        dir: '/userData/cindy-brain/cindy-test',
+        enabled: true,
+      },
+    ];
+    runtime.install.mockResolvedValue({
+      manifest: manifest('cindy-test', '2.0.0', ['notify', 'fs']),
+      dir: '/userData/cindy-brain/cindy-test',
+      enabled: true,
+    });
+    const h = harness([item]);
+    h.ledger.upsertInstallation({ ...recordForTest(item), releaseId: 'release-1', version: '1.0.0' });
+    h.api.detail.mockResolvedValue(detail(item, ['notify', 'fs']));
+
+    await expect(
+      h.service.install(item.id, {
+        expectedReleaseId: item.currentRelease.id,
+        allowPermissionExpansion: true,
+        reviewedBaseline: ghostPermissionBaselineKey(reviewedInstalled),
+      }),
+    ).rejects.toThrow('[PRECONDITION_FAILED]');
+    expect(runtime.install).not.toHaveBeenCalled();
+
+    // 基线与当前已装一致时照常放行(正常批准路径不被这道复核破坏)。
+    await expect(
+      h.service.install(item.id, {
+        expectedReleaseId: item.currentRelease.id,
+        allowPermissionExpansion: true,
+        reviewedBaseline: ghostPermissionBaselineKey(manifest()),
+      }),
+    ).resolves.toMatchObject({ ghost: { manifest: { version: '2.0.0' } } });
+    expect(runtime.install).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-checks the baseline inside the install lock when the download window is raced', async () => {
+    const item = summary({
+      currentRelease: { ...summary().currentRelease, id: 'release-2', version: '2.0.0' },
+    });
+    // 审阅时已装 notify+fs:相对目标包没有新增权限,批准是"空头"批准。
+    const reviewedInstalled = manifest('cindy-test', '1.0.0', ['notify', 'fs']);
+    runtime.ghosts = [
+      { manifest: reviewedInstalled, dir: '/userData/cindy-brain/cindy-test', enabled: true },
+    ];
+    runtime.install.mockResolvedValue({
+      manifest: manifest('cindy-test', '2.0.0', ['notify', 'fs']),
+      dir: '/userData/cindy-brain/cindy-test',
+      enabled: true,
+    });
+    // 下载窗口期(锁外复核已通过之后)本地 ghosts:update 把已装换成只有 notify
+    // 的包——此刻目标包相对当前已装多出 fs,而这条从没被审阅过。
+    const downloadMock = vi.mocked(
+      (await import('../download.js')).downloadVerifiedPlugin,
+    );
+    downloadMock.mockImplementationOnce(async () => {
+      runtime.ghosts = [
+        { manifest: manifest(), dir: '/userData/cindy-brain/cindy-test', enabled: true },
+      ];
+    });
+    const h = harness([item]);
+    h.ledger.upsertInstallation({ ...recordForTest(item), releaseId: 'release-1', version: '1.0.0' });
+    h.api.detail.mockResolvedValue(detail(item, ['notify', 'fs']));
+
+    await expect(
+      h.service.install(item.id, {
+        expectedReleaseId: item.currentRelease.id,
+        allowPermissionExpansion: true,
+        reviewedBaseline: ghostPermissionBaselineKey(reviewedInstalled),
+      }),
+    ).rejects.toThrow('[PRECONDITION_FAILED]');
+    // 锁内复核发生在落位之前:并发替换绕不过旧批准。
+    expect(runtime.install).not.toHaveBeenCalled();
   });
 
   it('rejects an update when the installed target disappears during download', async () => {

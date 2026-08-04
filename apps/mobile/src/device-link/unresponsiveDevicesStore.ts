@@ -3,8 +3,9 @@
  * ---------------------------------------------------------------------------
  * 结构照 revokedDevicesStore 模板:module 级 Set + subscribe/getSnapshot +
  * useSyncExternalStore hook,供 UI(首页设备行 failed 态、ConnectionBanner)订阅。
- * 状态机本体在 deviceResponsivenessBreaker.ts(纯逻辑,可单测);本文件持有
- * module 级单例并暴露 DeviceLinkContext 发送路径用的门禁 / 收尾 helper。
+ * 状态机本体在 @cindy/maker-shared/device-responsiveness(纯逻辑,可单测,
+ * desktop / mobile 控制端共享);本文件持有 module 级单例并暴露 DeviceLinkContext
+ * 发送路径用的门禁 / 收尾 helper。
  */
 import { useSyncExternalStore } from 'react';
 import { DeviceLinkError, type DeviceLinkErrorCode } from '@cindy/device-link';
@@ -13,7 +14,7 @@ import {
   createDeviceResponsivenessBreaker,
   type BreakerSendSlot,
   type BreakerSettleOutcome,
-} from '@/device-link/deviceResponsivenessBreaker';
+} from '@cindy/maker-shared/device-responsiveness';
 
 const unresponsive = new Set<string>();
 let snapshot: ReadonlySet<string> = new Set();
@@ -114,8 +115,16 @@ export function buildDeviceResponsivenessProbeArgs(): unknown[] {
  * (含探测标记与设备代数)必须原样回传给 settleDeviceSend——代数不匹配的
  * 旧请求结果会被忽略(review P1:恢复前派出的长超时请求不再污染新一代计数)。
  */
-export function acquireDeviceSendSlot(deviceId: string): BreakerSendSlot {
-  const slot = breaker.acquire(deviceId);
+export function createDeviceSendCohort(deviceId: string): number {
+  return breaker.createCohort(deviceId);
+}
+
+export function acquireDeviceSendSlot(
+  deviceId: string,
+  cohort?: number,
+  options?: { allowProbe?: boolean },
+): BreakerSendSlot {
+  const slot = breaker.acquire(deviceId, cohort, options);
   if (slot.decision === 'reject') throw createDeviceUnresponsiveError(deviceId);
   return slot;
 }
@@ -135,8 +144,9 @@ export function settleDeviceSend(
 }
 
 /**
- * 清除单个设备的熔断状态与 UI 镜像。撤权时调用:设备的「响应性」已无意义,
- * 且撤权有自己的专属 UI,不应再叠加「电脑端未响应」降级态。
+ * 清除单个设备的熔断状态与 UI 镜像。撤权或权威 presence 不可用时调用:
+ * 设备的「响应性」已无意义,且对应状态有自己的专属 UI,不应再叠加
+ * 「电脑端未响应」降级态。clear 会翻代,此前在途请求的晚到超时不再重建计数。
  */
 export function clearDeviceResponsivenessTrackingFor(deviceId: string): void {
   breaker.clear(deviceId);

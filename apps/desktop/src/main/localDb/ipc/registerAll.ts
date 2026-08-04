@@ -10,6 +10,7 @@
 import { ipcMain } from 'electron';
 
 import { closeDb, ensureReady, getCurrentUserId } from '../index';
+import { getCurrentDbClientUserId } from '../client/current';
 import { registerSessionIpc } from './sessions';
 import { registerMessageIpc } from './messages';
 import { registerOrcaWorkflowIpc } from './orcaTeams';
@@ -76,6 +77,7 @@ export function registerLocalDbIpc(opts: RegisterLocalDbIpcOpts = {}): void {
     },
   });
   ipcMain.handle('local-db:ensure-ready', async (_e, userId: unknown) => {
+    const startedAt = performance.now();
     log.info(
       JSON.stringify({
         event: 'localDb.ipc.ensure-ready.recv',
@@ -119,13 +121,14 @@ export function registerLocalDbIpc(opts: RegisterLocalDbIpcOpts = {}): void {
         event: 'localDb.ipc.ensure-ready.done',
         userId,
         ready: result.ready,
+        elapsedMs: Math.round(performance.now() - startedAt),
         ...(result.ready ? {} : { error: result.error }),
       }),
     );
     return result;
   });
 
-  registerSessionIpc();
+  registerSessionIpc(getCurrentDbClientUserId);
   registerMessageIpc();
   registerRemoteHistoryIpc();
   registerSessionImportIpc();

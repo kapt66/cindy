@@ -33,25 +33,17 @@ describe('Ghost Plugin creation prompt', () => {
     expect(prompt).toContain('打包并安装插件');
   });
 
-  it('marks Cindy-assisted creation as Meka without adding manifest provenance', () => {
-    const { createPromptLead, createWithCindy } = zhCommon.settings.ghosts.meka;
+  it('asks with option cards and surfaces hidden design choices (guide §0)', () => {
+    const prompt = zhCommon.settings.ghosts.page.createPrompt;
 
-    expect(createWithCindy).toBe('创建 Meka 插件');
-    expect(createPromptLead).toContain('MCPRouter');
-    expect(createPromptLead).toContain('channel: "meka"');
-    expect(createPromptLead).toContain('ghost_forge_pack');
-    expect(createPromptLead).toContain('ghost.json');
-    expect(createPromptLead).toContain('不要');
-    expect(createPromptLead).toContain('.cindy');
-    expect(pageSource).toContain("t('settings.ghosts.meka.createPromptLead')");
-    expect(pageSource).toContain("t('settings.ghosts.page.createPrompt')");
-  });
-
-  it('keeps Cindy and MCPRouter catalogs separate by channel provenance', () => {
-    expect(pageSource).toContain('window.electronAPI.mekaPluginMarket');
-    expect(pageSource).toContain('window.electronAPI.pluginMarket');
-    expect(pageSource).toContain('mekaInstalledGhostIdSet.has(item.id)');
-    expect(pageSource).toContain('!mekaInstalledGhostIdSet.has(item.id)');
-    expect(pageSource).not.toContain('if (!isMekaSurface) return [];');
+    // 与 FORGE_GUIDE §0「设计对齐」呼应:先读该章,再用带选项的提问卡片把
+    // 用户想不到的设计选项(面板形态等)摆出来选,而不是开放式追问。
+    expect(prompt).toContain('设计对齐');
+    expect(prompt).toContain('提问卡片');
+    expect(prompt).toContain('推荐项');
+    expect(prompt).toContain('停靠面板');
+    // 面板收束(2026-08-02):tab 形态住在插件页内,不再是右侧栏页签。
+    expect(prompt).toContain('插件页内面板');
+    expect(prompt).not.toContain('右侧栏页签');
   });
 });

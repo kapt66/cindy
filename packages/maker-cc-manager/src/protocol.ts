@@ -19,6 +19,10 @@
 /**
  * Bump on any breaking change. Minor additive changes don't bump.
  *
+ * v2: query/start 增加 host toolGuards，并要求 daemon 在权限规则之前重建
+ * PreToolUse 闸门。旧 daemon 会无声忽略未知字段，导致 capability routing
+ * fail-open，因此这项表面上的字段新增必须按不兼容协议升级处理。
+ *
  * v1 (redesign): 删除 dead-session drain/archive 握手,对齐 codex 模式。
  * reattach 只接新 events (live-only subscription),不 replay 旧 ring buffer。
  * ring buffer 降级为纯内存 fast-path(同一 daemon 进程生命周期内的 mid-turn 续流)。
@@ -42,7 +46,7 @@ export const PROTOCOL_VERSION = 2 as const;
  * 无关依赖变化而变。desktop 用这个（而非 bundle sha256）判断远端 daemon
  * 是否需要 upgrade,避免无关的 pnpm install 触发全量远端重装。
  */
-export const CC_MGR_BUNDLE_VERSION = "0.0.5" as const;
+export const CC_MGR_BUNDLE_VERSION = '0.0.6' as const;
 
 export type RpcId = number;
 
@@ -155,6 +159,14 @@ export const SERVER_METHODS = {
   APPROVAL_REQUEST: "approval/request",
   /** Forward a remote mcp-shim request to the attached desktop client. */
   MCP_TUNNEL_CALL: "mcp/tunnel/call",
+  /**
+   * SDK's getOAuthToken fired — remote cc hit a 401 on its subscription OAuth
+   * token and the daemon needs desktop to mint a fresh one
+   * (auth.getFreshSubscriptionToken). Additive (protocol version unchanged):
+   * old desktops answer UNKNOWN_METHOD → daemon returns null to the SDK,
+   * degrading to the pre-refresh behavior (session surfaces the auth error).
+   */
+  OAUTH_REFRESH: 'oauth/refresh',
 } as const;
 
 export type ServerMethodName =
@@ -260,8 +272,29 @@ export interface QueryStartParams {
   disallowedTools?: string[];
   /** SDK options.tools (preset). */
   tools?: unknown;
+  /**
+   * Host-owned, daemon-enforced tool routing guards.
+   *
+   * These are materialized as in-process PreToolUse hooks on the remote
+   * machine. Keeping them outside `extraOptions` prevents remote user/project
+   * permission allow rules (or bypassPermissions) from silently skipping the
+   * host's capability-source choice.
+   */
+  toolGuards?: QueryToolGuard[];
   /** Any extra SDK options we want to pass through verbatim. */
   extraOptions?: Record<string, unknown>;
+}
+
+export interface QueryToolGuard {
+  /** Exact SDK tool-name prefix, for example `mcp__plugin_x_server__`. */
+  toolNamePrefix: string;
+  /** Exact harness-owned MCP server id before Claude normalizes punctuation. */
+  sourceServerId?: string;
+  invocation: 'auto' | 'explicit-only' | 'disabled';
+  /** Explicit command tokens that select this source for the active turn. */
+  explicitSelectors?: string[];
+  /** Optional user-facing denial reason returned by the PreToolUse hook. */
+  denialMessage?: string;
 }
 
 export interface QueryStartResult {
@@ -392,6 +425,27 @@ export interface ApprovalRequestParams {
 }
 
 /**
+ * OAuth refresh request — daemon's SDK getOAuthToken callback fired (remote cc
+ * got a 401 on the spawn-time subscription token). Desktop should return a
+ * fresh access token, or null when refresh is impossible (logged out, refresh
+ * token revoked) — the SDK then surfaces the auth error to the session.
+ */
+export interface OAuthRefreshParams {
+  /**
+   * Session asking for the refresh. Deliberately the only field: desktop's own
+   * env/credential store is the source of truth for the stale-token baseline,
+   * and echoing the daemon-side token back over the wire would widen the
+   * token's exposure surface for no consumer.
+   */
+  sessionId: string;
+}
+
+export interface OAuthRefreshResult {
+  /** Fresh subscription access token, or null when refresh failed. */
+  token: string | null;
+}
+
+/**
  * Response from desktop for an approval request.
  */
 export interface ApprovalRequestResult {
@@ -409,6 +463,8 @@ export interface ApprovalRequestResult {
   answers?: Record<string, string>;
   /** For 'plan_review': edited plan text. */
   editedPlan?: string;
+  /** System dismissal rather than user-authored plan feedback. */
+  dismissed?: boolean;
 }
 
 /* ============================== MCP tunnel shapes ============================== */

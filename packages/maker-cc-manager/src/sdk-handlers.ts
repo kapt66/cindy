@@ -11,7 +11,6 @@
  * (socket close) we detach the callback from any session it had attached to.
  */
 
-
 import {
   METHODS,
   NOTIFICATIONS,
@@ -29,19 +28,16 @@ import {
   type QuerySetPermissionModeParams,
   type QueryStartParams,
   type QueryStartResult,
+  type QueryToolGuard,
   type SessionAttachParams,
   type SessionAttachResult,
   type SessionClosedNotification,
   type SessionKillParams,
   type SessionListResult,
-} from './protocol.js';
-import { ManagerServer, type MethodHandler } from './server.js';
-import {
-  SessionRegistry,
-  type AttachedNotify,
-} from './session-registry.js';
-import { encodeMessage } from './codec.js';
-
+} from "./protocol.js";
+import { ManagerServer, type MethodHandler } from "./server.js";
+import { SessionRegistry, type AttachedNotify } from "./session-registry.js";
+import { encodeMessage } from "./codec.js";
 
 /**
  * Per-connection client context — tracks which sessions a given socket has
@@ -54,7 +50,7 @@ interface ClientSubscriptions {
   bySession: Map<string, AttachedNotify>;
 }
 
-import type { ClientCtx } from './server.js';
+import type { ClientCtx } from "./server.js";
 
 /**
  * Install handlers + return utilities for cross-layer wiring.
@@ -94,19 +90,21 @@ export function wireSdkHandlers(
    * notifications back to the right socket). Stored on the session via
    * registry.attach so the consume loop can call it on each SDK event.
    */
-  function makeNotify(ctx: { socket: { write(s: string): boolean; destroyed: boolean } }): AttachedNotify {
-    return (kind: 'event' | 'closed' | 'replaced', payload: unknown): void => {
+  function makeNotify(ctx: {
+    socket: { write(s: string): boolean; destroyed: boolean };
+  }): AttachedNotify {
+    return (kind: "event" | "closed" | "replaced", payload: unknown): void => {
       if (ctx.socket.destroyed) return;
       const method =
-        kind === 'event'
+        kind === "event"
           ? NOTIFICATIONS.QUERY_EVENT
-          : kind === 'closed'
+          : kind === "closed"
             ? NOTIFICATIONS.SESSION_CLOSED
             : NOTIFICATIONS.CLIENT_REPLACED;
       try {
         ctx.socket.write(
           encodeMessage({
-            type: 'notification',
+            type: "notification",
             method,
             params: payload as
               | QueryEventNotification
@@ -123,45 +121,58 @@ export function wireSdkHandlers(
   /* ----------------------------- query/start ----------------------------- */
   const queryStart: MethodHandler = async (params, ctx) => {
     const p = (params ?? {}) as Partial<QueryStartParams>;
-    requireString(p.sessionId, 'sessionId');
-    requireString(p.cwd, 'cwd');
-    requireString(p.model, 'model');
-    if (typeof p.env !== 'object' || p.env === null) {
-      throwInvalid('env must be an object');
+    requireString(p.sessionId, "sessionId");
+    requireString(p.cwd, "cwd");
+    requireString(p.model, "model");
+    if (typeof p.env !== "object" || p.env === null) {
+      throwInvalid("env must be an object");
     }
     // Reject in-process MCP configs at the protocol boundary (instance != serializable)
     if (p.mcpServers) {
       for (const [name, cfg] of Object.entries(p.mcpServers)) {
-        if (typeof cfg === 'object' && cfg !== null && 'instance' in (cfg as object)) {
-          throwInvalid(`mcpServers[${name}]: in-process 'instance' transport not supported in remote mode`);
+        if (
+          typeof cfg === "object" &&
+          cfg !== null &&
+          "instance" in (cfg as object)
+        ) {
+          throwInvalid(
+            `mcpServers[${name}]: in-process 'instance' transport not supported in remote mode`,
+          );
         }
       }
     }
     const mcpServers: Record<string, unknown> = { ...(p.mcpServers ?? {}) };
-    const tunneledNames = p.tunneledMcpServers === undefined
-      ? []
-      : parseTunneledMcpServerNames(p.tunneledMcpServers);
+    const tunneledNames =
+      p.tunneledMcpServers === undefined
+        ? []
+        : parseTunneledMcpServerNames(p.tunneledMcpServers);
     if (tunneledNames.length > 0) {
       if (!options.daemonSocketPath) {
-        throwInvalid('tunneledMcpServers requires the daemon socket path');
+        throwInvalid("tunneledMcpServers requires the daemon socket path");
       }
       for (const name of tunneledNames) {
         if (name in mcpServers) {
-          throwInvalid(`tunneledMcpServers[${name}] conflicts with an mcpServers entry`);
+          throwInvalid(
+            `tunneledMcpServers[${name}] conflicts with an mcpServers entry`,
+          );
         }
         mcpServers[name] = {
-          type: 'stdio',
+          type: "stdio",
           command: process.execPath,
           args: [
             process.argv[1],
-            'mcp-shim',
-            '--socket', options.daemonSocketPath,
-            '--session', p.sessionId!,
-            '--server', name,
+            "mcp-shim",
+            "--socket",
+            options.daemonSocketPath,
+            "--session",
+            p.sessionId!,
+            "--server",
+            name,
           ],
         };
       }
     }
+    const toolGuards = validateToolGuards(p.toolGuards);
     try {
       const session = registry.create({
         sessionId: p.sessionId!,
@@ -169,15 +180,22 @@ export function wireSdkHandlers(
         model: p.model!,
         env: p.env as Record<string, string>,
         ...(Object.keys(mcpServers).length > 0
-          ? { mcpServers: mcpServers as QueryStartParams['mcpServers'] }
+          ? { mcpServers: mcpServers as QueryStartParams["mcpServers"] }
           : {}),
         ...(p.permissionMode ? { permissionMode: p.permissionMode } : {}),
-        ...(p.systemPrompt !== undefined ? { systemPrompt: p.systemPrompt } : {}),
-        ...(p.additionalDirectories ? { additionalDirectories: p.additionalDirectories } : {}),
+        ...(p.systemPrompt !== undefined
+          ? { systemPrompt: p.systemPrompt }
+          : {}),
+        ...(p.additionalDirectories
+          ? { additionalDirectories: p.additionalDirectories }
+          : {}),
         ...(p.allowedTools ? { allowedTools: p.allowedTools } : {}),
         ...(p.disallowedTools ? { disallowedTools: p.disallowedTools } : {}),
         ...(p.tools !== undefined ? { tools: p.tools } : {}),
-        ...(p.resumeSdkSessionId ? { resumeSdkSessionId: p.resumeSdkSessionId } : {}),
+        ...(toolGuards ? { toolGuards } : {}),
+        ...(p.resumeSdkSessionId
+          ? { resumeSdkSessionId: p.resumeSdkSessionId }
+          : {}),
         ...(p.extraOptions ? { extraOptions: p.extraOptions } : {}),
       });
       // Auto-attach this client on start (typical flow — caller is the same
@@ -206,8 +224,8 @@ export function wireSdkHandlers(
   /* ----------------------------- query/send ----------------------------- */
   const querySend: MethodHandler = async (params) => {
     const p = (params ?? {}) as Partial<QuerySendParams>;
-    requireString(p.sessionId, 'sessionId');
-    if (p.message === undefined) throwInvalid('message is required');
+    requireString(p.sessionId, "sessionId");
+    if (p.message === undefined) throwInvalid("message is required");
     try {
       registry.sendMessage(p.sessionId!, p.message);
       return { ok: true };
@@ -219,8 +237,8 @@ export function wireSdkHandlers(
   /* ----------------------------- query/setModel ----------------------------- */
   const querySetModel: MethodHandler = async (params) => {
     const p = (params ?? {}) as Partial<QuerySetModelParams>;
-    requireString(p.sessionId, 'sessionId');
-    requireString(p.model, 'model');
+    requireString(p.sessionId, "sessionId");
+    requireString(p.model, "model");
     try {
       await registry.setModel(p.sessionId!, p.model!);
       return { ok: true };
@@ -232,8 +250,8 @@ export function wireSdkHandlers(
   /* ----------------------------- query/setPermissionMode ----------------------------- */
   const querySetPermissionMode: MethodHandler = async (params) => {
     const p = (params ?? {}) as Partial<QuerySetPermissionModeParams>;
-    requireString(p.sessionId, 'sessionId');
-    requireString(p.mode, 'mode');
+    requireString(p.sessionId, "sessionId");
+    requireString(p.mode, "mode");
     try {
       await registry.setPermissionMode(p.sessionId!, p.mode!);
       return { ok: true };
@@ -245,12 +263,15 @@ export function wireSdkHandlers(
   /* ----------------------------- query/applyFlagSettings ----------------------------- */
   const queryApplyFlagSettings: MethodHandler = async (params) => {
     const p = (params ?? {}) as Partial<QueryApplyFlagSettingsParams>;
-    requireString(p.sessionId, 'sessionId');
-    if (typeof p.settings !== 'object' || p.settings === null) {
-      throwInvalid('settings must be an object');
+    requireString(p.sessionId, "sessionId");
+    if (typeof p.settings !== "object" || p.settings === null) {
+      throwInvalid("settings must be an object");
     }
     try {
-      await registry.applyFlagSettings(p.sessionId!, p.settings as Record<string, unknown>);
+      await registry.applyFlagSettings(
+        p.sessionId!,
+        p.settings as Record<string, unknown>,
+      );
       return { ok: true };
     } catch (err) {
       throw mapRegistryError(err);
@@ -260,7 +281,7 @@ export function wireSdkHandlers(
   /* ----------------------------- query/getContextUsage ----------------------------- */
   const queryGetContextUsage: MethodHandler = async (params) => {
     const p = (params ?? {}) as Partial<QueryGetContextUsageParams>;
-    requireString(p.sessionId, 'sessionId');
+    requireString(p.sessionId, "sessionId");
     try {
       return await registry.getContextUsage(p.sessionId!);
     } catch (err) {
@@ -271,7 +292,7 @@ export function wireSdkHandlers(
   /* ----------------------------- query/interrupt ----------------------------- */
   const queryInterrupt: MethodHandler = async (params) => {
     const p = (params ?? {}) as Partial<QueryInterruptParams>;
-    requireString(p.sessionId, 'sessionId');
+    requireString(p.sessionId, "sessionId");
     try {
       await registry.interrupt(p.sessionId!);
       return { ok: true };
@@ -283,8 +304,8 @@ export function wireSdkHandlers(
   /* ----------------------------- query/stopTask ----------------------------- */
   const queryStopTask: MethodHandler = async (params) => {
     const p = (params ?? {}) as Partial<QueryStopTaskParams>;
-    requireString(p.sessionId, 'sessionId');
-    requireString(p.taskId, 'taskId');
+    requireString(p.sessionId, "sessionId");
+    requireString(p.taskId, "taskId");
     try {
       await registry.stopTask(p.sessionId!, p.taskId!);
       return { ok: true };
@@ -296,7 +317,7 @@ export function wireSdkHandlers(
   /* ----------------------------- query/close ----------------------------- */
   const queryClose: MethodHandler = async (params, ctx) => {
     const p = (params ?? {}) as Partial<QueryCloseParams>;
-    requireString(p.sessionId, 'sessionId');
+    requireString(p.sessionId, "sessionId");
     await registry.close(p.sessionId!);
     // Detach any subscription this client had on this session.
     const subs = getSubs(ctx as never);
@@ -313,7 +334,7 @@ export function wireSdkHandlers(
   /* ----------------------------- session/attach ----------------------------- */
   const sessionAttach: MethodHandler = async (params, ctx) => {
     const p = (params ?? {}) as Partial<SessionAttachParams>;
-    requireString(p.sessionId, 'sessionId');
+    requireString(p.sessionId, "sessionId");
     try {
       // Reject any in-flight approval requests bound to the old ctx before replacing.
       const oldCtx = attachedCtxBySession.get(p.sessionId!);
@@ -347,7 +368,7 @@ export function wireSdkHandlers(
   /* ----------------------------- session/kill ----------------------------- */
   const sessionKill: MethodHandler = async (params) => {
     const p = (params ?? {}) as Partial<SessionKillParams>;
-    requireString(p.sessionId, 'sessionId');
+    requireString(p.sessionId, "sessionId");
     await registry.kill(p.sessionId!);
     attachedCtxBySession.delete(p.sessionId!);
     tunneledServersBySession.delete(p.sessionId!);
@@ -356,25 +377,25 @@ export function wireSdkHandlers(
 
   const mcpTunnelCall: MethodHandler = async (params) => {
     const p = (params ?? {}) as Partial<McpTunnelCallParams>;
-    requireString(p.sessionId, 'sessionId');
-    requireString(p.server, 'server');
-    if (p.operation !== 'listTools' && p.operation !== 'callTool') {
-      throwInvalid('operation must be listTools or callTool');
+    requireString(p.sessionId, "sessionId");
+    requireString(p.server, "server");
+    if (p.operation !== "listTools" && p.operation !== "callTool") {
+      throwInvalid("operation must be listTools or callTool");
     }
-    if (p.operation === 'callTool') requireString(p.name, 'name');
+    if (p.operation === "callTool") requireString(p.name, "name");
     if (!tunneledServersBySession.get(p.sessionId!)?.has(p.server!)) {
       const error = new Error(
         `session ${p.sessionId} did not declare tunneled MCP server ${p.server}`,
-      ) as Error & { code: 'SESSION_NOT_FOUND' };
-      error.code = 'SESSION_NOT_FOUND';
+      ) as Error & { code: "SESSION_NOT_FOUND" };
+      error.code = "SESSION_NOT_FOUND";
       throw error;
     }
     const attached = attachedCtxBySession.get(p.sessionId!);
     if (!attached || attached.socket.destroyed) {
       const error = new Error(
         `no attached desktop client for session ${p.sessionId}`,
-      ) as Error & { code: 'SESSION_NOT_FOUND' };
-      error.code = 'SESSION_NOT_FOUND';
+      ) as Error & { code: "SESSION_NOT_FOUND" };
+      error.code = "SESSION_NOT_FOUND";
       throw error;
     }
     return await server.sendRequest(attached, SERVER_METHODS.MCP_TUNNEL_CALL, {
@@ -420,7 +441,7 @@ export function wireSdkHandlers(
 /* ============================== helpers ============================== */
 
 function requireString(v: unknown, field: string): asserts v is string {
-  if (typeof v !== 'string' || v.length === 0) {
+  if (typeof v !== "string" || v.length === 0) {
     throwInvalid(`${field} must be a non-empty string`);
   }
 }
@@ -428,12 +449,13 @@ function requireString(v: unknown, field: string): asserts v is string {
 const SAFE_MCP_SERVER_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 function parseTunneledMcpServerNames(value: unknown): string[] {
-  if (!Array.isArray(value)) throwInvalid('tunneledMcpServers must be an array of strings');
+  if (!Array.isArray(value))
+    throwInvalid("tunneledMcpServers must be an array of strings");
   const names: string[] = [];
   for (const entry of value) {
-    if (typeof entry !== 'string' || !SAFE_MCP_SERVER_NAME_RE.test(entry)) {
+    if (typeof entry !== "string" || !SAFE_MCP_SERVER_NAME_RE.test(entry)) {
       throwInvalid(
-        'tunneledMcpServers entries must be 1-64 chars of [A-Za-z0-9._-], not starting with a separator',
+        "tunneledMcpServers entries must be 1-64 chars of [A-Za-z0-9._-], not starting with a separator",
       );
     }
     if (!names.includes(entry)) names.push(entry);
@@ -441,13 +463,86 @@ function parseTunneledMcpServerNames(value: unknown): string[] {
   return names;
 }
 
+function validateToolGuards(value: unknown): QueryToolGuard[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) throwInvalid("toolGuards must be an array");
+  return value.map((raw, index) => {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      throwInvalid(`toolGuards[${index}] must be an object`);
+    }
+    const guard = raw as Record<string, unknown>;
+    requireString(guard.toolNamePrefix, `toolGuards[${index}].toolNamePrefix`);
+    if (guard.toolNamePrefix.trim().length === 0) {
+      throwInvalid(
+        `toolGuards[${index}].toolNamePrefix must not be whitespace-only`,
+      );
+    }
+    if (guard.sourceServerId !== undefined) {
+      requireString(
+        guard.sourceServerId,
+        `toolGuards[${index}].sourceServerId`,
+      );
+      if (guard.sourceServerId.trim().length === 0) {
+        throwInvalid(
+          `toolGuards[${index}].sourceServerId must not be whitespace-only`,
+        );
+      }
+    }
+    if (
+      guard.invocation !== "auto" &&
+      guard.invocation !== "explicit-only" &&
+      guard.invocation !== "disabled"
+    ) {
+      throwInvalid(
+        `toolGuards[${index}].invocation must be auto, explicit-only, or disabled`,
+      );
+    }
+    if (
+      guard.explicitSelectors !== undefined &&
+      (!Array.isArray(guard.explicitSelectors) ||
+        guard.explicitSelectors.some(
+          (selector) =>
+            typeof selector !== "string" ||
+            (!selector.trim().startsWith("$") &&
+              !selector.trim().startsWith("/")),
+        ))
+    ) {
+      throwInvalid(
+        `toolGuards[${index}].explicitSelectors must contain only $ or / command tokens`,
+      );
+    }
+    if (
+      guard.denialMessage !== undefined &&
+      typeof guard.denialMessage !== "string"
+    ) {
+      throwInvalid(`toolGuards[${index}].denialMessage must be a string`);
+    }
+    const toolNamePrefix = guard.toolNamePrefix.trim();
+    const sourceServerId = guard.sourceServerId?.trim();
+    if (!/^mcp__[A-Za-z0-9_-]+__$/.test(toolNamePrefix)) {
+      throwInvalid(
+        `toolGuards[${index}].toolNamePrefix must be a normalized Claude MCP tool prefix`,
+      );
+    }
+    return {
+      toolNamePrefix,
+      ...(sourceServerId ? { sourceServerId } : {}),
+      invocation: guard.invocation,
+      ...(guard.explicitSelectors
+        ? { explicitSelectors: [...guard.explicitSelectors] as string[] }
+        : {}),
+      ...(guard.denialMessage ? { denialMessage: guard.denialMessage } : {}),
+    };
+  });
+}
+
 interface ThrowableInvalid extends Error {
-  code: 'INVALID_PARAMS';
+  code: "INVALID_PARAMS";
 }
 
 function throwInvalid(message: string): never {
   const err = new Error(message) as ThrowableInvalid;
-  err.code = 'INVALID_PARAMS';
+  err.code = "INVALID_PARAMS";
   throw err;
 }
 
@@ -458,15 +553,17 @@ function throwInvalid(message: string): never {
 function mapRegistryError(err: unknown): Error {
   const e = err as { code?: string; message?: string };
   const code =
-    e.code === 'SESSION_NOT_FOUND' ||
-    e.code === 'SESSION_ALREADY_EXISTS' ||
-    e.code === 'SESSION_KILL_PENDING' ||
-    e.code === 'SESSION_KILL_TIMEOUT' ||
-    e.code === 'SDK_ERROR' ||
-    e.code === 'INVALID_PARAMS'
+    e.code === "SESSION_NOT_FOUND" ||
+    e.code === "SESSION_ALREADY_EXISTS" ||
+    e.code === "SESSION_KILL_PENDING" ||
+    e.code === "SESSION_KILL_TIMEOUT" ||
+    e.code === "SDK_ERROR" ||
+    e.code === "INVALID_PARAMS"
       ? e.code
-      : 'SDK_ERROR';
-  const out = new Error(e.message ?? 'unknown error') as Error & { code: string };
+      : "SDK_ERROR";
+  const out = new Error(e.message ?? "unknown error") as Error & {
+    code: string;
+  };
   out.code = code;
   return out;
 }

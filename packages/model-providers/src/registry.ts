@@ -13,6 +13,10 @@
  */
 
 import type { Catalog, Provider, CatalogModel, AgentKind, RoutingDescriptor } from './types.js';
+import {
+  isAgentSelectableModel,
+  isModelSelectableForNewRoute,
+} from './classification.js';
 import type { ProviderLogoKind } from './providerBranding.js';
 import {
   isModelDisabled,
@@ -26,10 +30,10 @@ export type ConnectionState = Record<string, boolean>;
 /**
  * 动态清单发现的失败归因。
  *
- * 只有「清单唯一来源是动态发现」的供应商才会有（如 Anthropic 订阅：静态目录段已退役，
- * 拉不到 `/v1/models` 就是零模型）。这类供应商一旦发现失败，UI 若继续说「已连接，正在
- * 发现模型」就是在骗用户——直连不通的网络环境下它永远不会自己好转。`kind` 决定 UI 说
- * 什么，`detail` 只进日志与诊断，不直接展示（可能含上游原始错误文本）。
+ * 只有 live entitlement 证据依赖动态发现的供应商才会有（如 Anthropic 订阅）。
+ * Registry presence 可能仍让目录展示模型，但发现失败意味着当前账号尚未得到可用性
+ * 证明；UI 若继续说「已连接，正在发现模型」就是在骗用户。`kind` 决定 UI 说什么，
+ * `detail` 只进日志与诊断，不直接展示（可能含上游原始错误文本）。
  */
 export interface ProviderModelDiscoveryFailure {
   /**
@@ -79,7 +83,8 @@ export type ProviderModelDiscoveryFailureView = Omit<ProviderModelDiscoveryFailu
 /**
  * 各供应商最近一次的清单发现失败，由 host 注入；成功即清除。
  *
- * 稀疏 map：只有「清单唯一来源是动态发现」且当前确实失败了的供应商才有键，缺省是 `{}`。
+ * 稀疏 map：只有 live entitlement 证据依赖动态发现且当前确实失败的供应商才有键，
+ * 缺省是 `{}`。
  * 因此必须是 `Partial` —— 写成全量 `Record` 会让 `state[id]` 的类型谎称不可能是
  * `undefined`，读 `.kind` 的调用方迟早在运行时炸。
  */
@@ -255,6 +260,31 @@ export function sourcesForModel(
 }
 
 /**
+ * 同 sourcesForModel,但只保留该来源上**这个模型条目本身确实是聊天模型**的来源
+ * (issue #882 第 3 点,2026-07 review)。所有"这个来源能不能真的把这个模型发出去"
+ * 的判断——路由解析、发送前置校验(空来源拦截)、"选中来源已断连"提示——必须走
+ * 同一份口径,否则会出现 UI 说"能发"、resolveRoute 却解析不出可用来源的分裂状态。
+ * 只在裸 `sourcesForModel`(仅看 id 是否存在,不看 mode)不够用的场景才需要这个;
+ * 纯展示/设置页场景仍应直接用 sourcesForModel,不要在那里过度收紧。
+ */
+export function chatEligibleSourcesForModel(
+  views: ProviderView[],
+  modelId: string,
+  agent: AgentKind,
+  opts: { onlyConnected?: boolean; includeDisabled?: boolean } = {},
+): ProviderView[] {
+  return sourcesForModel(views, modelId, agent, opts).filter((provider) => {
+    const model = getModel(provider, modelId, agent);
+    // provider-aware 谓词而非裸 isChatEligible:用户自定义供应商显式配置的模型带未知
+    // group,id 撞上能力启发式(如 flux-image-x)时不能被误杀(2026-07 review 第 25 轮)。
+    return (
+      model !== undefined &&
+      isAgentSelectableModel(model, { userProvider: provider.source === 'user' })
+    );
+  });
+}
+
+/**
  * 某 agent 在已连接来源列表(rail)里的「原生默认来源 id」。
  * 与模型选择器 activeSourceId 的 nativeDefault 口径一致:
  *   codex  → 优先 openai,其次 xd,再兜底 rail 首项。
@@ -274,7 +304,8 @@ export function nativeDefaultSourceId(rail: ProviderView[], agent: AgentKind | n
  * 来源选择必须先收窄到「已连接且确实提供当前模型」的集合，再应用显式选择 / 原生默认：
  * 否则当 XD key 被清除、但 OpenAI 仍连接时，Claude 会话会把 OpenAI 当成 agent 级兜底，
  * 拼出「OpenAI 图标 + Opus」这种不可能路由。显式来源失效时返回同模型的默认可用来源；
- * 当前模型没有任何已连接来源时返回 null。
+ * 当前模型没有任何已连接且可用于新路由的来源时返回 null。retired tombstone 与本地
+ * disabled 都不参与本函数；运行中会话的真实来源展示必须改用 actualSourceIdForModel。
  */
 export function effectiveSourceIdForModel(
   views: ProviderView[],
@@ -282,7 +313,13 @@ export function effectiveSourceIdForModel(
   modelId: string,
   agent: AgentKind,
 ): string | null {
-  const sources = sourcesForModel(views, modelId, agent);
+  const sources = chatEligibleSourcesForModel(views, modelId, agent).filter((provider) => {
+    const model = getModel(provider, modelId, agent);
+    return (
+      model !== undefined &&
+      isModelSelectableForNewRoute(model, { userProvider: provider.source === 'user' })
+    );
+  });
   if (providerId && sources.some((provider) => provider.id === providerId)) return providerId;
   return nativeDefaultSourceId(sources, agent);
 }
@@ -301,7 +338,10 @@ export function actualSourceIdForModel(
   modelId: string,
   agent: AgentKind,
 ): string | null {
-  const sources = sourcesForModel(views, modelId, agent, { includeDisabled: true });
+  // Resume keeps disabled/retired copies, but never relaxes the agent/chat capability boundary:
+  // a catalog correction that reclassifies an id as image/audio must not make a running agent
+  // session dispatch into a non-chat endpoint.
+  const sources = chatEligibleSourcesForModel(views, modelId, agent, { includeDisabled: true });
   if (providerId && sources.some((provider) => provider.id === providerId)) return providerId;
   return nativeDefaultSourceId(sources, agent);
 }

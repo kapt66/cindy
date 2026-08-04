@@ -53,13 +53,17 @@ import { WINDOW_NO_DRAG_STYLE, useManualWindowDrag } from '@/components/layout/w
 import { recentWorkdirsStore } from '@/lib/recentWorkdirsStore';
 import { useRegisterContentHeader } from '../feature-context';
 import { useSessionLifecycleActions } from './hooks/useSessionLifecycleActions';
-import { getAutomationSessionDisplayTitle } from './lib/scheduledSessionGrouping';
+import {
+  getSessionDisplayTitle,
+  isEmptyDraftSession,
+  toStoredSessionTitle,
+} from './lib/sessionDisplayTitle';
 import {
   getVisibleSidebarSessionIds,
   pickSessionIdAfterRemoval,
 } from './lib/sessionRemovalNavigation';
 import { isOrcaLeadSession, resolveSessionRoute } from '@/lib/orcaSessionIdentity';
-import { orcaWorkflowsFor } from '@/lib/makerTransport';
+import { revalidateWorkersProjection } from './hooks/workerProjectionStore';
 import { GitContextBadge } from './GitContextBadge';
 import { SessionRenameInput } from './SessionRenameInput';
 import { useSessionBoundSchedules } from '@/features/scheduler/lib/scheduleSessionBinding';
@@ -75,6 +79,7 @@ import {
 import { SessionProjectMoveSubmenu } from './sidebar/SessionProjectMoveSubmenu';
 import type { SessionMoveTarget } from './sidebar/sessionMoveTarget';
 import { SessionShareExportDialog } from './sidebar/SessionShareExportDialog';
+import { SessionBranchTreeDialog } from './SessionBranchTreeDialog';
 import { useRemoteProjectSessions } from '@/features/device-link/remoteProjectsStore';
 import { isRemoteSessionWriteBlocked } from './lib/remoteSessionWriteGuard';
 import { Tip } from '@/components/ui/tooltip';
@@ -154,8 +159,8 @@ export function SessionContentHeader({
 
   const isPinned = session.pinnedAt != null;
   const isArchived = session.status === 'archived';
-  // Draft 判定与 SessionItem 同口径:未改名的 New Maker 且无消息。
-  const isEmpty = session.title === 'New Maker' && (session._count?.messages ?? 0) === 0;
+  // Draft 判定与 SessionItem 同口径:标题仍是默认哨兵且无消息。
+  const isEmpty = isEmptyDraftSession(session);
   const remoteWritesBlocked =
     remoteSessionUnavailable || isRemoteSessionWriteBlocked(session);
   // 「移动到项目」/「导出会话…」可见性与 SessionItem 同条件。
@@ -167,11 +172,25 @@ export function SessionContentHeader({
     && !isArchived;
   const canExportShare =
     !isEmpty && !session.remoteHostId && !session.orcaRole && !session.deviceLinkDeviceId;
+  // 导出 HTML:pi 原生 export_html。仅当前打开的本地 pi 会话(需 live 进程应答 RPC),
+  // 排除空会话 / 远程 / device-link / archived(archived 无 live 进程)。
+  const canExportHtml =
+    session.agentKind === 'pi' &&
+    !isEmpty &&
+    !session.remoteHostId &&
+    !session.deviceLinkDeviceId &&
+    !isArchived;
+  // 手动压缩:pi 原生 compact,同一 live 本地 pi 会话前提(斜杠转义后用户无法手输
+  // /compact,这是 pi 会话手动压缩的唯一入口)。回合运行中 pi 拒绝压缩 → 禁用而非隐藏。
+  const canCompact = canExportHtml;
+  const [compacting, setCompacting] = useState(false);
+  const compactDisabled = compacting || runningSessionIds.has(session.id);
   const projectOptions = useProjectPickerOptions();
   // heartbeat schedule 绑定标识,与 SessionItem 同源数据;删除/过期后自动消失。
   const boundSchedules = useSessionBoundSchedules(session.id);
   const displayTitle =
-    getAutomationSessionDisplayTitle(session)?.trim() || t('ccAgent.sessionHeader.untitled');
+    getSessionDisplayTitle(session, t('ccAgent.common.unnamedSession'))?.trim() ||
+    t('ccAgent.sessionHeader.untitled');
   const remoteIconKind = session.deviceLinkDeviceId ? 'device-link' : session.remoteHostId ? 'ssh' : null;
   const remoteIconConnectionStatus = session.deviceLinkDeviceId
     ? session.deviceLinkConnectionStatus ?? 'connected'
@@ -193,15 +212,13 @@ export function SessionContentHeader({
       showRemoteWriteBlockedToast();
       return;
     }
-    setEditValue(session.title?.trim() || displayTitle);
+    // 预填用 displayTitle,不是原始 session.title —— 后者在未起名的会话上是英文
+    // 哨兵,会把 "New Maker" 填进重命名输入框。commitTitle 的 `unchanged` 判据同步
+    // 把 displayTitle 也算作「没改」,否则原样回车会把兜底文案写进库冲掉哨兵。
+    setEditValue(displayTitle);
     committedRef.current = false;
     setIsEditing(true);
-  }, [
-    displayTitle,
-    remoteWritesBlocked,
-    session.title,
-    showRemoteWriteBlockedToast,
-  ]);
+  }, [displayTitle, remoteWritesBlocked, showRemoteWriteBlockedToast]);
 
   // 标题文字是 no-drag(否则 onDoubleClick 收不到,见 span 处注释),
   // 拖窗习惯由手动拖拽补回:按住标题移动超过死区即拖动窗口。
@@ -214,17 +231,26 @@ export function SessionContentHeader({
       committedRef.current = true;
       const trimmed = raw.trim();
       setIsEditing(false);
+      // 「没改」= 与原始标题相同,**或**与预填的显示标题相同。后者不可省:未起名的
+      // 会话预填的是本地化兜底文案(「未命名任务」),它不等于库里的英文哨兵 —— 只比
+      // session.title 的话,用户双击后原样回车就会把兜底文案写进库、把哨兵冲掉,
+      // 自动起名从此永久跳过这个会话(标题永远停在「未命名任务」)。
+      const unchanged = !trimmed || trimmed === session.title || trimmed === displayTitle;
       if (remoteWritesBlocked) {
-        if (trimmed && trimmed !== session.title) showRemoteWriteBlockedToast();
+        if (!unchanged) showRemoteWriteBlockedToast();
         return;
       }
-      if (!trimmed || trimmed === session.title) return;
+      if (unchanged) return;
+      // 预填是**显示标题**(legacy automation 会话已剥掉 `[Schedule] ` 前缀),落库前还原,
+      // 否则 isAutomationGeneratedSession 认不出它、会话从 automation 分组消失
+      // (PR #1031 review P1)。
+      const stored = toStoredSessionTitle(session, trimmed);
       const oldTitle = session.title;
-      patchLocal(session.id, { title: trimmed });
+      patchLocal(session.id, { title: stored });
       try {
         // 远程会话:patch-meta 经隧道写被控端 → 广播 sessions:patched → applyPatch 更新远程分片
         // (纯镜像,无需重拉);本机会话 patchLocal 已乐观反映。
-        await sessionService.patchMeta(session.id, { title: trimmed });
+        await sessionService.patchMeta(session.id, { title: stored });
       } catch (err) {
         log.error('[session rename]', err);
         toast.error(t('ccAgent.sidebar.renameFailed'));
@@ -232,6 +258,7 @@ export function SessionContentHeader({
       }
     },
     [
+      displayTitle,
       remoteWritesBlocked,
       session.id,
       session.title,
@@ -268,7 +295,7 @@ export function SessionContentHeader({
     t,
   ]);
 
-  /* ---- 复制对话链接(cindy://session/<id> 深链,与 SessionItem 同语义;
+  /* ---- 复制任务链接(cindy://session/<id> 深链,与 SessionItem 同语义;
           远程会话把归属设备冻进 ?device=) ---- */
   const handleCopyDeepLink = useCallback(async () => {
     try {
@@ -310,8 +337,8 @@ export function SessionContentHeader({
       // worker 列表,避免依赖挂载初期尚未加载完成的订阅态(Codex review P2)。
       // 查询失败时不阻断,与 sidebar map 拉取失败(空集合)的行为一致。
       if (isOrcaLeadSession(session)) {
-        const workers = await orcaWorkflowsFor(session.id)
-          .listWorkersByLead(session.id)
+        const workers = await revalidateWorkersProjection(session.id)
+          .then((result) => (result.status === 'applied' ? result.workers : []))
           .catch(() => []);
         if (workers.some((worker) => runningSessionIds.has(worker.sessionId))) {
           toast.warning(t('ccAgent.sidebar.sessionMenu.moveToProjectRunningBlocked'));
@@ -385,6 +412,68 @@ export function SessionContentHeader({
 
   /* ---- 导出会话(.cshare)---- 弹窗仅打开时挂载,与 SessionItem 同款。 */
   const [shareExportOpen, setShareExportOpen] = useState(false);
+  const [branchTreeOpen, setBranchTreeOpen] = useState(false);
+  const allKnownSessions = useMemo(
+    () => [...sessions, ...remoteProjectSessions],
+    [remoteProjectSessions, sessions],
+  );
+  const hasSessionFamily = useMemo(
+    () => allKnownSessions.some((item) =>
+      item.parentSessionId === session.id || item.id === session.parentSessionId),
+    [allKnownSessions, session.id, session.parentSessionId],
+  );
+  const canShowBranchTree = !isEmpty && (session.agentKind === 'pi' || hasSessionFamily);
+
+  /* ---- 手动压缩(pi 原生 compact)---- 长操作(LLM 摘要),压缩边界经事件流自动进聊天;
+   * 回合运行中 pi 会拒绝,菜单项据 running 态禁用。compacting 状态在上方派生区声明。 */
+  const handleCompactSession = useCallback(async () => {
+    if (compacting) return;
+    setCompacting(true);
+    try {
+      const result = await window.electronAPI.maker.compactSession(session.id);
+      if (result?.noop) {
+        // 良性:上下文太小,无可压缩内容。信息性提示,不是失败。
+        toast.info(t('ccAgent.sidebar.sessionMenu.compactNothing'));
+      } else if (result) {
+        const hasNumbers =
+          typeof result.tokensBefore === 'number' && typeof result.estimatedTokensAfter === 'number';
+        toast.success(
+          hasNumbers
+            ? t('ccAgent.sidebar.sessionMenu.compactSuccessWithTokens', {
+                before: Math.round((result.tokensBefore ?? 0) / 1000),
+                after: Math.round((result.estimatedTokensAfter ?? 0) / 1000),
+              })
+            : t('ccAgent.sidebar.sessionMenu.compactSuccess'),
+        );
+      }
+      // null:会话无 live 进程 / 不支持(入口已按 gate 隐藏,极少走到)。静默即可。
+    } catch (err) {
+      log.warn('manual compact failed', err);
+      toast.warning(t('ccAgent.sidebar.sessionMenu.compactFailed'));
+    } finally {
+      setCompacting(false);
+    }
+  }, [compacting, session.id, t]);
+
+  /* ---- 导出 HTML(pi 原生 export_html)---- 主进程弹保存对话框 + 导出 + 在文件管理器显示。 */
+  const [exportingHtml, setExportingHtml] = useState(false);
+  const handleExportHtml = useCallback(async () => {
+    if (exportingHtml) return;
+    setExportingHtml(true);
+    try {
+      const written = await window.electronAPI.maker.exportSessionHtml(session.id);
+      if (written) {
+        toast.success(t('ccAgent.sidebar.sessionMenu.exportHtmlSuccess'));
+      }
+      // written == null:用户取消保存对话框,或会话无 live 进程(未打开)。取消是正常路径,
+      // 不打扰;后者极少(本入口只对当前打开会话可见),静默即可。
+    } catch (err) {
+      log.warn('export session html failed', err);
+      toast.warning(t('ccAgent.sidebar.sessionMenu.exportHtmlFailed'));
+    } finally {
+      setExportingHtml(false);
+    }
+  }, [exportingHtml, session.id, t]);
 
   /* ---- Archive / Delete / Unarchive ----
    * 执行序列共用 useSessionLifecycleActions（与 CCAgentSidebarUpper 同一实现）；
@@ -651,6 +740,14 @@ export function SessionContentHeader({
                 >
                   {t('ccAgent.sidebar.sessionMenu.copySessionLink')}
                 </DropdownMenuItem>
+                {canShowBranchTree && (
+                  <DropdownMenuItem
+                    onSelect={() => setBranchTreeOpen(true)}
+                    className={MENU_ITEM_CLASS}
+                  >
+                    {t('ccAgent.sidebar.sessionMenu.sessionBranches')}
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuSeparator className={MENU_SEPARATOR_CLASS} />
                 <DropdownMenuItem
                   disabled={remoteWritesBlocked}
@@ -750,12 +847,40 @@ export function SessionContentHeader({
                 >
                   {t('ccAgent.sidebar.sessionMenu.openInNewWindow')}
                 </DropdownMenuItem>
+                {canShowBranchTree && (
+                  <DropdownMenuItem
+                    onSelect={() => setBranchTreeOpen(true)}
+                    className={MENU_ITEM_CLASS}
+                  >
+                    {t('ccAgent.sidebar.sessionMenu.sessionBranches')}
+                  </DropdownMenuItem>
+                )}
                 {canExportShare && (
                   <DropdownMenuItem
                     onSelect={() => setShareExportOpen(true)}
                     className={MENU_ITEM_CLASS}
                   >
                     {t('ccAgent.sidebar.sessionMenu.exportShare')}
+                  </DropdownMenuItem>
+                )}
+                {canExportHtml && (
+                  <DropdownMenuItem
+                    disabled={exportingHtml}
+                    onSelect={() => void handleExportHtml()}
+                    className={MENU_ITEM_CLASS}
+                  >
+                    {t('ccAgent.sidebar.sessionMenu.exportHtml')}
+                  </DropdownMenuItem>
+                )}
+                {canCompact && (
+                  <DropdownMenuItem
+                    disabled={compactDisabled}
+                    onSelect={() => void handleCompactSession()}
+                    className={MENU_ITEM_CLASS}
+                  >
+                    {compacting
+                      ? t('ccAgent.sidebar.sessionMenu.compacting')
+                      : t('ccAgent.sidebar.sessionMenu.compact')}
                   </DropdownMenuItem>
                 )}
                 <DropdownMenuSeparator className={MENU_SEPARATOR_CLASS} />
@@ -788,6 +913,16 @@ export function SessionContentHeader({
           open={shareExportOpen}
           sessionId={session.id}
           onOpenChange={setShareExportOpen}
+        />
+      )}
+      {branchTreeOpen && (
+        <SessionBranchTreeDialog
+          open={branchTreeOpen}
+          onOpenChange={setBranchTreeOpen}
+          session={session}
+          sessions={allKnownSessions}
+          running={runningSessionIds.has(session.id)}
+          writeBlocked={remoteWritesBlocked}
         />
       )}
     </div>

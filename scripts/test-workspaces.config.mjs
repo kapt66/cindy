@@ -17,22 +17,50 @@ const vitestBin = (...args) => ({ type: 'packageBin', bin: 'vitest', args });
 // Not everything moves. The heavy manual tiers (db, migration, git-integration)
 // stay on the default pool: they bootstrap runtime assets and drive real
 // Git/SQLite subprocesses, and none sits on the PR gate path. A workspace also
-// opts out when its tests cannot survive a worker thread; both known blockers
+// opts out when its tests cannot survive a worker thread; the known blockers
 // are recorded at their call site below — desktop needs the webstorage flag on a
 // Node that installs those globals, and the flag cannot coexist with worker
 // threads (scripts/shared/node-webstorage.mjs), while maker-core fakes HOME,
 // which a worker cannot see because `process.env` there is a thread-local copy
 // while `os.homedir()` reads the real environment through libuv.
 //
+// win32 opts desktop out wholesale: on Windows (Node 24.14.1, 2026-07-30) the
+// desktop suite under threads segfaulted the whole vitest process (exit 139)
+// on 2 of 2 runs — same native-addon-finalizer-in-isolate-teardown crash
+// class node-webstorage.mjs documents, only without execArgv in play — while
+// forks passed 15651 tests twice in a row. The churn this pool exists to
+// avoid is a LaunchServices problem; Windows has no launchservicesd, so forks
+// costs it nothing.
+//
 // Keep every opt-out listed in the pool regression test, and keep the list
 // short: at 1330 of this tier's 1845 files, desktop alone decides whether the
 // churn is a trickle or back to where it started.
 const UNIT_POOL_DEFAULT = 'threads';
+const UNIT_TEST_SHARD_ENV = 'XDT_UNIT_TEST_SHARD';
+
+/**
+ * Split every Vitest workspace by the same CI shard so the two Windows jobs
+ * still form one complete unit gate. The runner adds `passWithNoTests` only
+ * when a workspace has fewer selected files than the configured shard count.
+ */
+export function unitTestShardArgs(value = process.env[UNIT_TEST_SHARD_ENV]) {
+  if (value == null || String(value).trim() === '') return [];
+  const normalized = String(value).trim();
+  const match = /^(\d+)\/(\d+)$/.exec(normalized);
+  if (!match) throw new Error(`${UNIT_TEST_SHARD_ENV} must use <index>/<count>`);
+  const index = Number(match[1]);
+  const count = Number(match[2]);
+  if (!Number.isSafeInteger(index) || !Number.isSafeInteger(count) || index < 1 || count < 1 || index > count) {
+    throw new Error(`${UNIT_TEST_SHARD_ENV} must satisfy 1 <= index <= count`);
+  }
+  return [`--shard=${index}/${count}`];
+}
+
 // Workspace-level parallelism owns the global process budget. Keep ordinary
 // Vitest workspaces at one worker each so outer concurrency cannot multiply
 // every child process's default CPU-sized pool.
 const unitVitestCommand = (workers = 1, pool = UNIT_POOL_DEFAULT) =>
-  vitestBin('run', `--pool=${pool}`, `--maxWorkers=${workers}`);
+  vitestBin('run', `--pool=${pool}`, `--maxWorkers=${workers}`, ...unitTestShardArgs());
 const noCollectableTestsReason = 'No collectable tests yet. Add tests and mark a tier required when this workspace gains testable logic.';
 const desktopDbInclude = [
   'src/main/localDb/**/__tests__/*.test.ts',
@@ -101,9 +129,14 @@ export default {
           // what local dev and CI run, the flag is a no-op, so this suite's 1330
           // files take threads and stop spawning a process each. On a
           // webstorage-enabled Node the flag wins and the suite stays on forks.
+          // win32 stays on forks unconditionally — threads segfaults there and
+          // the churn threads exists to avoid is macOS-only (see the pool note
+          // at the top of this file).
           command: unitVitestCommand(
             desktopUnitWorkerCount(),
-            nodeWebstorageEnabled() ? 'forks' : 'threads',
+            nodeWebstorageEnabled() || process.platform === 'win32'
+              ? 'forks'
+              : 'threads',
           ),
           exclude: [
             '**/*.git-integration.test.ts',
@@ -177,6 +210,7 @@ export default {
     requiredUnitWorkspace('mobile', 'apps/mobile', { workers: 4, execution: 'exclusive' }),
     requiredUnitWorkspace('@cindy/anthropic-compat-proxy', 'packages/anthropic-compat-proxy'),
     requiredUnitWorkspace('@cindy/anthropic-responses-bridge', 'packages/anthropic-responses-bridge'),
+    requiredUnitWorkspace('@cindy/responses-anthropic-bridge', 'packages/responses-anthropic-bridge'),
     requiredUnitWorkspace('@cindy/responses-chat-bridge', 'packages/responses-chat-bridge'),
     requiredUnitWorkspace('@cindy/auth-client', 'packages/auth-client'),
     requiredUnitWorkspace('@cindy/browser-control-runtime', 'packages/browser-control-runtime'),

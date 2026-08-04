@@ -6,7 +6,7 @@
  * 双栏布局与独立 resize/maximize。
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
@@ -95,6 +95,19 @@ export function OrcaWorkerPanel({
   const directoryLabels = useWorkerDirectoryLabels(workers, leadSession?.workspaceKind === 'meka');
   const lastAgentIslandPayloadRef = useRef<string | string[] | null>(null);
 
+  const handleOpenCreate = useCallback(async () => {
+    const result = await refreshCreationState();
+    if (result.status !== 'applied') {
+      toast.error(t('newChat.collaboration.createWorkerRefreshFailed'));
+      return;
+    }
+    const activeCount = result.workers.filter((worker) =>
+      isActiveWorkerStatus(worker.status),
+    ).length;
+    if (result.hardLimit !== null && activeCount >= result.hardLimit) return;
+    setCreateOpen(true);
+  }, [refreshCreationState, setCreateOpen, t]);
+
   useEffect(() => {
     if (deviceId) {
       setLeadSession(null);
@@ -176,7 +189,7 @@ export function OrcaWorkerPanel({
           hardLimit={hardLimit}
           directoryLabels={directoryLabels}
           onSwitchFocus={handleSwitchFocus}
-          onOpenCreate={() => setCreateOpen(true)}
+          onOpenCreate={() => void handleOpenCreate()}
           onOpenSettings={() => navigate('/settings?section=collaboration')}
           settingsEnabled={!isSidebarWindow()}
           onArchiveWorker={handleArchiveWorker}

@@ -21,6 +21,18 @@ type BindingFile = Partial<Record<NativeProviderId, string>> & {
    * （`bindNativeProviderAuth` 清除），那时凭证已由本人重新写入。
    */
   revoked?: Partial<Record<NativeProviderId, string>>;
+  /**
+   * 由**用户在 Cindy 里亲自完成授权**而绑定的 provider（值 = 执行授权的 owner）。
+   *
+   * 与自动认领（`claimDetectedNativeProviderAuth`，继承本机 CLI 已有凭证）区分开来。两者
+   * 结果相同（provider 绑到当前 owner、凭证可用），但**来路**不同，而来路是用户可见文案的
+   * 依据：「已沿用这台电脑上登录的账号」只对继承成立；对刚在 Cindy 里点过授权的用户说这句话
+   * 是错的（PR #1076 review 第三轮）。
+   *
+   * 判定不比对 owner —— 有值即说明这份凭证是经 Cindy 的登录流程写入的，不是「先于 Cindy
+   * 就存在」。登出时清除（那之后的凭证若还在，就回到「可被继承」的语义）。
+   */
+  selfAuthorized?: Partial<Record<NativeProviderId, string>>;
 };
 
 function bindingPath(): string {
@@ -76,11 +88,6 @@ function readBindingsOrFail(): BindingRead {
   }
 }
 
-function readBindings(): BindingFile {
-  const read = readBindingsOrFail();
-  return read.ok ? read.bindings : {};
-}
-
 function writeBindings(value: BindingFile): void {
   const file = bindingPath();
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -91,12 +98,25 @@ function writeBindings(value: BindingFile): void {
 
 /** Return true only when the native OAuth credential is explicitly bound to this owner. */
 export function isNativeProviderAuthBound(provider: NativeProviderId): boolean {
+  const read = readBindingsOrFail();
+  if (!read.ok) return false;
+  const bindings = read.bindings;
+  // Revocation describes the credential itself, not the current app owner. It must therefore
+  // remain authoritative during signed-out/bootstrap reads too; otherwise a residual local token
+  // can be treated as bound before an owner session has committed.
+  if (bindings.revoked && provider in bindings.revoked) return false;
   const owner = getActiveAppSession().dataOwnerId;
   // During unit/bootstrap code paths there may be no committed owner yet.
   // Owner-bound sessions are fail-closed; pre-session callers retain legacy
   // behavior until authentication commits an owner boundary.
   if (!owner) return true;
-  return readBindings()[provider] === owner;
+  return bindings[provider] === owner;
+}
+
+/** Whether an explicit durable revocation currently suppresses this provider credential. */
+export function isNativeProviderAuthRevoked(provider: NativeProviderId): boolean {
+  const read = readBindingsOrFail();
+  return Boolean(read.ok && read.bindings.revoked && provider in read.bindings.revoked);
 }
 
 /** Bind newly completed native OAuth to the current data owner. */
@@ -112,7 +132,12 @@ export function bindNativeProviderAuth(provider: NativeProviderId): void {
       delete revoked[provider];
       bindings.revoked = revoked;
     }
-    writeBindings({ ...bindings, [provider]: owner });
+    // 记下「这是用户自己在 Cindy 里授权的」——继承类文案据此不再对它成立。
+    writeBindings({
+      ...bindings,
+      selfAuthorized: { ...bindings.selfAuthorized, [provider]: owner },
+      [provider]: owner,
+    });
     return;
   }
   // 归属信息有损:用户正在显式授权,不写等于让他连不上,所以必须写;但写法要保守。
@@ -132,7 +157,23 @@ export function bindNativeProviderAuth(provider: NativeProviderId): void {
   for (const other of NATIVE_PROVIDER_IDS) {
     if (other !== provider) suppressed[other] = owner;
   }
-  writeBindings({ ...salvaged, revoked: suppressed, [provider]: owner });
+  writeBindings({
+    ...salvaged,
+    revoked: suppressed,
+    selfAuthorized: { ...salvaged.selfAuthorized, [provider]: owner },
+    [provider]: owner,
+  });
+}
+
+/**
+ * 这份 provider 凭证是不是**用户在 Cindy 里亲自授权**得来的(而非继承本机 CLI 已有凭证)。
+ * 只回 boolean,供用户可见文案取舍(见 `selfAuthorized` 字段注释)。读不出绑定文件时按
+ * `true` 保守处理 —— 「说不清来路」时不要声称「已沿用你本机的登录」。
+ */
+export function isNativeProviderAuthSelfAuthorized(provider: NativeProviderId): boolean {
+  const read = readBindingsOrFail();
+  if (!read.ok && read.reason === 'unreadable') return true;
+  return read.bindings.selfAuthorized?.[provider] !== undefined;
 }
 
 /**
@@ -158,8 +199,16 @@ export function unbindNativeProviderAuth(
   const bindings = read.bindings;
   const owner = getActiveAppSession().dataOwnerId;
   const marking = opts?.revoked === true && !!owner;
-  if (!(provider in bindings) && !marking) return;
+  const hadSelfAuthorized = bindings.selfAuthorized?.[provider] !== undefined;
+  if (!(provider in bindings) && !marking && !hadSelfAuthorized) return;
   delete bindings[provider];
+  // 授权来路随绑定一起作废:登出之后这份凭证若还在本机,它对 Cindy 就重新是「外部已有的
+  // 凭证」，继承语义（及其文案）重新成立。
+  if (hadSelfAuthorized) {
+    const selfAuthorized = { ...bindings.selfAuthorized };
+    delete selfAuthorized[provider];
+    bindings.selfAuthorized = selfAuthorized;
+  }
   if (marking) bindings.revoked = { ...(bindings.revoked ?? {}), [provider]: owner as string };
   writeBindings(bindings);
 }
@@ -236,5 +285,28 @@ export function claimDetectedNativeProviderAuth(
   if (bindings.revoked && provider in bindings.revoked) return false;
   if (!hasCredential()) return false;
   writeBindings({ ...bindings, [provider]: owner });
+  return true;
+}
+
+/**
+ * Restore a provider binding only for the owner that was using the credential when it was
+ * invalidated. This is intentionally narrower than generic auto-claim: a renewed shared system
+ * credential is recovery of an existing owner relationship, so `legacyClaimOwner` must not strand
+ * that owner, while account switches and explicit revocation still fail closed.
+ */
+export function restoreNativeProviderAuthForRecovery(
+  provider: NativeProviderId,
+  expectedOwner: string,
+  hasCredential: () => boolean,
+): boolean {
+  const owner = getActiveAppSession().dataOwnerId;
+  if (!owner || owner !== expectedOwner || isAppSessionBoundaryPending()) return false;
+  const read = readBindingsOrFail();
+  if (!read.ok) return false;
+  const bindings = read.bindings;
+  if (bindings.revoked && provider in bindings.revoked) return false;
+  if (!hasCredential()) return false;
+  if (provider in bindings) return bindings[provider] === expectedOwner;
+  writeBindings({ ...bindings, [provider]: expectedOwner });
   return true;
 }

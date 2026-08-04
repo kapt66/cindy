@@ -74,7 +74,7 @@ export const createWorkerSpecSchema = z.object({
     .max(32)
     .describe('worker 角色: developer / reviewer / tester / merger 或自定义 string'),
   agent: z
-    .enum(['claude-code', 'codex'])
+    .enum(['claude-code', 'codex', 'pi'])
     .describe('worker agent 类型'),
   model: z
     .string()
@@ -87,7 +87,7 @@ export const createWorkerSpecSchema = z.object({
   fast: z
     .boolean()
     .optional()
-    .describe('可选, 是否给 worker 开启 Fast 模式。仅对 codex worker 生效; claude-code 忽略。不传则继承默认。'),
+    .describe('可选, 是否给 worker 开启 Fast 模式。对 codex 与 pi worker 生效(且需所选模型支持 Fast); claude-code 忽略。不传则继承默认。'),
   working_dir: z
     .string()
     .min(1)
@@ -126,15 +126,16 @@ export function toWorkerLimitPayload(limit: WorkerLimitSnapshot | undefined): Re
 
 const DESCRIPTION = [
   '在当前 workflow 内创建新 worker session。',
-  '注:create_worker 建的是 Orca worker(session 级、持久、UI 可见),不是 subagent。若用户要的是 subagent(一次性、用完即弃),请用原生 subagent 机制(Codex:spawn_agent;Claude Code:Task 工具),不要用 create_worker。',
+  '注:create_worker 建的是 Orca worker(session 级、持久、UI 可见),不是 subagent。若用户要的是 subagent(一次性、用完即弃),请用你自己的原生 subagent 机制(如 Codex 的 spawn_agent、Claude Code 的 Task 工具),不要用 create_worker。' +
+  'Orca worker 永远不是 subagent 的替代品;你没有原生 subagent 机制时,如实告知用户并请他决定,不要拿 worker 顶替。',
   '用户一次要求创建 2 个及以上 Worker 时必须改用 create_workers；不要并行或连续多次调用 create_worker。',
   '',
   '参数:',
   '- role: worker 角色 (developer / reviewer / tester / merger 或自定义 string)',
-  '- agent: worker agent 类型 (codex / claude-code)',
+  '- agent: worker agent 类型 (codex / claude-code / pi)',
   '- model: 可选, worker 使用的模型 id; 不传走 host 端默认 fallback',
   '- effort: 可选, reasoning/thinking 强度 (low / medium / high / xhigh / max / ultra)。Codex: 映射 OpenAI reasoning effort(max/ultra 仅部分模型如 GPT-5.6 Sol 支持); Claude Code: 映射 extended thinking token 预算(无 ultra,自动降级为 max)。显式传入时必须匹配所选 model 能力；当前 worker 模型都不把 minimal 作为可选思考档。',
-  '- fast: 可选 boolean, 是否给 worker 开启 Fast 模式 (更快输出)。用户明确说「fast / 快速 / 开/关 fast」时显式传。仅对 codex worker 生效; claude-code worker 忽略此参数 (其 fast mode 在 agent 层为 no-op)。不传则继承默认 (New Maker 面板默认或 lead session 的 fastMode)。',
+  '- fast: 可选 boolean, 是否给 worker 开启 Fast 模式 (更快输出)。用户明确说「fast / 快速 / 开/关 fast」时显式传。对 codex 与 pi worker 生效 (且需所选模型声明 supportsFastMode; 否则自动降级为关); claude-code worker 忽略此参数 (其 fast mode 在 agent 层为 no-op)。不传则继承默认 (New Maker 面板默认或 lead session 的 fastMode)。',
   '- working_dir: Meka Lead 创建本地 Worker 时可选，只能使用设置中允许的 P4 根目录或识别子目录。',
   '- remote_host_id: Meka Lead 创建远程 Worker 时传 `mcpr:<instanceId>`；传入后 working_dir 被忽略，远端工作区由 Main 按项目绑定解析。',
   '- execution_target: 返回 Worker 实际执行位置。远程请求必须核对 type=remote，禁止把本地回落误报成远程执行。',
@@ -180,7 +181,7 @@ export function registerCreateWorkerTool(
       if (ctx.vendorOptions?.orcaRole === 'worker') {
         return errorPayload(
           'WORKER_CANNOT_NEST',
-          'create_worker 是 Orca Lead 创建 worker session 的入口,不是 subagent 入口。若用户明确要求 subagent / 子代理,请使用你自己的原生 subagent 机制(Codex:spawn_agent;Claude Code:Task/Agent 工具),不要使用 Orca create_worker / start_team。',
+          'create_worker 是 Orca Lead 创建 worker session 的入口,不是 subagent 入口。若用户明确要求 subagent / 子代理,请使用你自己的原生 subagent 机制(如 Codex 的 spawn_agent、Claude Code 的 Task/Agent 工具),不要使用 Orca create_worker / start_team。没有原生 subagent 机制时如实告知用户,Orca worker 不是它的替代品。',
         );
       }
       const result = await deps.createWorker({

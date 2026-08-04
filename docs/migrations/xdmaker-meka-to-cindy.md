@@ -1,8 +1,8 @@
 # XDMaker Meka → Cindy Meka 严格迁移总账
 
-> 状态：正在把 `origin/main@e4b464a2e` 合入 `meka/main@9ddf4d662`；冲突已完成
-> 语义收敛，等待本轮迁移、类型与单测门禁
-> 最后更新：2026-07-30
+> 状态：`origin/main@2db5c6280641` 正在同步到 `meka/main@58edde41c7c`；当前工作树已完成
+> 冲突语义收敛，尚未创建 merge commit，等待本轮迁移、类型与单测门禁
+> 最后更新：2026-08-04
 > 目标仓库：`C:\Workspace\cindy`，分支 `meka/main`
 > 来源仓库：远端 `xdmaker`（`git@github.com:kapt66/XDMaker.git`），分支
 > `xdmaker/meka/main`
@@ -46,6 +46,18 @@
 | 服务端             | 不在本仓迁移             | 保持 Cindy 已拆分后的仓库边界和协议子仓库                             |
 
 ## 3. 当前总体状态
+
+### 3.0 本轮同步状态
+
+- merge-base：`e4b464a2efcc56110dd71251c654eab72e9b70b0`。
+- 本轮采用语义双向合并：上游 Cindy 的通用能力、协议安全和 UI/市场改动保留；Meka
+  的项目/角色、MCPRouter、Meka 市场、Meka 会话与身份兼容保留；不存在未解决的 Git
+  冲突标记。
+- 数据库采用追加 lineage：保留 Meka `0082` 至 `0089`，上游 `0082`/`0083` 的同义
+  变更由 Meka `0089` 覆盖，不重复应用；新增 `0090_rich_phalanx` 只承接两边均需要
+  的新字段，nullable `cost_currency` 用 `COALESCE(..., 'USD')` 回填后再设约束。
+- 冲突逐项记录、处理方式、决策人与验证现状见
+  `docs/migrations/2026-08-origin-main-to-meka-main.md`。
 
 ### 3.1 已实现
 
@@ -1592,6 +1604,14 @@ thread-context gated 的本地动态代理投影这条唯一入口，Claude 继�
 - Renderer 禁用浏览器 `prompt()` 的 AST 检测与产品源码扫描共 1 个测试文件、2 个测试通过。
 
 ## 10. 后续继续迁移时的硬性注意事项
+
+### 9.1 `origin/main` → `meka/main` 同步报告
+
+2026-08-04 的上游同步、冲突逐项说明、用户决策归属和本次验证状态见
+[`docs/migrations/2026-08-origin-main-to-meka-main.md`](./2026-08-origin-main-to-meka-main.md)。
+该报告的当前结论优先于本文较早阶段记录的“全量门禁通过”描述：本次同步已完成文件级
+冲突收敛并修复 3 处合并结构断裂，但根 `pnpm test:unit` 仍有未分类失败，因此尚未达到
+可提交状态；不得将历史阶段的通过结果复用于本次 merge。
 
 1. 不直接 merge `xdmaker/meka/main`。
 2. 不以“文件有差异”为迁移理由，必须说明 Meka 产品意图。

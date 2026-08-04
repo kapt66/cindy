@@ -7,8 +7,9 @@
  *
  *   createSession(复用按 meta 取 resumeSessionId/workDir/model) ->
  *   wireSessionToIpc(renderer 可见, 消息落库链路不缺) ->
- *   turnFinished 监听(text 累积 + done 收口, 含后台 subagent 在途时的
- *   延迟定格与静默兜底) -> session.send(onAccepted 落 user 消息)。
+ *   observeHookTurn 监听(text 累积 + done 收口, 含后台 subagent 在途时的
+ *   延迟定格与静默兜底; 实现抽在 turnObserver.ts, 与 watchContinuation 共用)
+ *   -> session.send(onAccepted 落 user 消息)。
  *
  * 进度快照(turn.progress): text/tool_use 事件驱动 turnActivity(与 IM 流式卡
  * 同一套过程区纯逻辑), 节流合成 markdown 快照经 req.onProgress 回调发射;
@@ -31,10 +32,9 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 import { app, BrowserWindow } from 'electron';
+import { stripInternalWebCitations } from '@cindy/maker-shared/internal-citation';
 
-import { isTerminalAgentErrorEvent } from '@cindy/maker-core';
 import type {
-  AgentEvent,
   AgentKind,
   PermissionMode,
   UserContentBlock,
@@ -85,18 +85,14 @@ import { worktreeStore, WorktreeManager } from '../worktree/index.js';
 import { readImDefaultSettings } from '../im/defaultSettingsStore.js';
 import { getWorkspaceProviderSource } from './workspaceProviderSourceStore.js';
 import { getDesktopProviderService } from '../maker-host/createDesktopProviderService.js';
-import {
-  createTurnActivity,
-  markActivityWriting,
-  pushThinkingStep,
-  pushToolStep,
-  renderActivity,
-  setActivityNotice,
-} from '../im/shared/turnActivity.js';
-import { overloadFailureNotice, overloadRetryNotice } from '../im/shared/turnRetryNotice.js';
 import { beginHeadlessGhostSetupTurn } from '../mcp-integrations/ghostSetupInteractionSurface.js';
+import { observeHookTurn, type HookTurnObserver } from './turnObserver.js';
 
-import type { HookRunOutcome, HookSessionRunner } from './dispatcher.js';
+import type {
+  HookContinuationWatchRequest,
+  HookRunOutcome,
+  HookSessionRunner,
+} from './dispatcher.js';
 import { resolveHookSessionConfig, type ResolvedHookSessionConfig } from './defaults.js';
 import { decodeAttachments, sanitizeAttachmentName } from './attachments.js';
 import {
@@ -135,7 +131,11 @@ async function resolveNewSessionConfig(
 
   const resolved = resolveHookSessionConfig(
     {
-      readDefaults: () => readImDefaultSettings(sourceIm === 'slack' ? 'slack' : undefined),
+      readDefaults: () =>
+        // 官方 Telegram hook 与个人 Bot 是两个独立入口。个人 Bot 使用
+        // channel='telegram'；官方群继续读取 global，避免任一设置卡静默
+        // 改写另一入口的新会话路由。
+        readImDefaultSettings(sourceIm === 'slack' ? 'slack' : undefined),
       // 可执行清单按**启用**口径,不叠加「显示 / 隐藏」偏好:隐藏只是陈列过滤
       // (选择器不列),被 IM 显式点名或兜底选中仍然合法;停用的模型与供应商已由
       // visibleModelUnion 内建的准入过滤(model.disabled / suspended)剔除,点名
@@ -157,9 +157,11 @@ async function resolveNewSessionConfig(
   const channel =
     sourceIm === 'telegram'
       ? ('telegram' as const)
-      : sourceIm === 'slack'
-        ? ('slack' as const)
-        : null;
+      : sourceIm === 'x'
+        ? ('x' as const)
+        : sourceIm === 'slack'
+          ? ('slack' as const)
+          : null;
   const workdirProviderId =
     channel !== null && workspaceCtx?.alias
       ? getWorkspaceProviderSource(channel, workspaceCtx.teamId, workspaceCtx.alias)
@@ -195,9 +197,6 @@ async function resolveNewSessionConfig(
   return { ...resolved, model: lenient.model, providerId: lenient.providerId };
 }
 
-/** 后台 subagent 事件静默兜底(同 scheduler BG_TASK_IDLE_FALLBACK_MS 语义)。 */
-const BG_TASK_IDLE_FALLBACK_MS = 10 * 60_000;
-
 /**
  * 广播「新会话已建」给所有窗口 + device-link tap —— renderer sessionsStore
  * 收到即重拉列表, 新 hook 会话实时出现在侧边栏(不广播的话要等手动刷新)。
@@ -215,12 +214,26 @@ function broadcastSessionCreated(sessionId: string): void {
   }
 }
 
-/**
- * 整 turn 硬超时。scheduler 有 ctx.signal 可 abort, hook v1 无 task.cancel ——
- * SDK 卡死一个事件都不发时, 没有这条兜底该 session 的 hook 队列会永久饿死。
- * 上限取宽(正常长任务 10-30min 量级), 触发即按 error 收口。
- */
-const TURN_HARD_TIMEOUT_MS = 60 * 60_000;
+// ── turn 时长策略: hook 侧**不设任何**上限(2026-08-01 定) ────────────────────
+//
+// 与桌面端自己跑 turn 的规则一致: 普通会话没有任何"一轮跑太久就砍"的机制 ——
+// turn 跑到 done 为止, 卡住了由用户自己停。hook 没有理由比它更严: 同一个 agent、
+// 同一套 SDK, 换个入口就被砍掉正在出的结果, 才是需要解释的那一侧。所以整轮硬
+// 超时(TURN_HARD_TIMEOUT_MS = 60min)撤了 —— 一个跑了一小时且仍在出结果的任务
+// 被拦腰截断, 恰恰截的是最值得等的那类。
+//
+// 「observer 永不 settle → dispatcher 的 running 槽位永不释放 → 该 session 的后续
+// 渠道消息永久排队」这条路, 由 **maker-core Session 自己的 turn stall 看门狗**
+// 堵上(armTurnStallWatchdog, 默认 45min 零事件), 不需要 hook 侧另起一道:
+//   - 它排除掉等用户回应交互、以及后台任务在跑这两种合法静默;
+//   - 它按分片计时并核对真实经过时间, 把合盖睡眠那段排除掉;
+//   - 它触发时**真的 abort 这一轮**, 还复核 abort 是否生效, 没生效就关会话;
+//   - 它 fan out 的是终态 error 事件, observer 对终态 error 本来就收口。
+// 而且它与控制连接无关 —— server 的 task.cancel 送不到时它照样管用。
+//
+// 本 PR 一度在 turnObserver 里另起了一个裸 setTimeout 做同样的事, 上面四条一条
+// 都没有(PR #1272 review 指出), 已删除。同一条不变量两处判定, 弱的那处只会先
+// 开火。见 turnObserver.ts 顶部的说明。
 
 /**
  * 从 tool_result 全文抽出可外发的 xdt-image URL —— 与 IM turnRunner 的
@@ -233,6 +246,25 @@ const TURN_HARD_TIMEOUT_MS = 60 * 60_000;
  *  hook Slack 拿不到任何生成图(2026-07-16 实踩)。 */
 function isRenderableImageUrl(u: string): boolean {
   return u.startsWith('xdt-image://') || u.startsWith('cindy-media://');
+}
+
+/**
+ * agent 挂起等用户时挂在过程区的状态行, **按交互类型分** —— 都写"等待授权"会把
+ * 问答与计划审阅说成权限请求(review 指出)。
+ *
+ * **刻意不说卡片去了哪**: 投递位置由 hook server 决定(Telegram 群里的授权卡自
+ * 2026-08 起改投宿主私聊), 客户端不知道对端版本, 写"已发到私聊"可能是假的。
+ */
+const AWAITING_INTERACTION_NOTICE: Record<string, string> = {
+  permission: '等待授权 · 需要你确认',
+  ask_user_question: '等待回答 · 需要你选择',
+  plan_review: '等待审阅 · 需要你确认计划',
+};
+/** 未知 kind(将来新增类型)不编造语义, 只说在等你。 */
+const AWAITING_INTERACTION_FALLBACK = '等待你的确认';
+
+function awaitingInteractionNotice(kind: string): string {
+  return AWAITING_INTERACTION_NOTICE[kind] ?? AWAITING_INTERACTION_FALLBACK;
 }
 
 /** 兜底账本条目是否图片(hook 本期只外发图片):cindy-media 地址按扩展名判。 */
@@ -282,72 +314,105 @@ function resolveRenderableImageUrl(url: string): { absPath: string } {
 }
 
 /**
- * 进度快照节流(trailing-edge): 事件密集时最多每 1.5s 发一帧, 与 IM 流式卡的
- * chat.update 节流(1300ms)同量级 —— server 侧每帧一次 chat.update(Tier 3
- * ~50/min/频道), 这个间隔留有安全余量。
+ * tool_result 全文里的出站图片旁路(run() 与 watchContinuation 共用)。
+ *
+ * art image_generate 等工具按设计不在文本里嵌 xdt-image markdown, 渠道侧能拿到
+ * 图的唯一通路是从 tool_result JSON 里接走 URL。解析失败只 warn, 不拖垮 turn。
  */
-const PROGRESS_THROTTLE_MS = 1500;
-/** 无新事件时的低频刷新(过程区耗时行"第 N 步 · 42s"不冻结)。 */
-const PROGRESS_TICK_MS = 5000;
-/** 单帧快照长度上限: 头部截断 —— server 侧占位消息本就 3900 上限, 中间帧
- *  开头(过程区 + 正文起始)信息量最大, 收口后 turn.end 会带完整文本。 */
-const PROGRESS_SNAPSHOT_MAX_CHARS = 3800;
+function collectOutboundImages(
+  fullText: string,
+  sink: string[],
+  log: { warn(msg: string): void },
+): void {
+  for (const url of extractToolResultImageUrls(fullText)) {
+    try {
+      const { absPath } = resolveRenderableImageUrl(url);
+      sink.push(absPath);
+    } catch (err) {
+      log.warn(
+        `hook resolve tool_result image failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+}
 
 /**
- * 进度快照发射器: 合成「过程区时间线 + 部分正文」并按 trailing-edge 节流回调。
- * 纯定时器逻辑, 不做 IO —— 真正的发送(turn.progress 帧)由 dispatcher 注入的
- * onProgress 承担。stop() 后不再发射(收口后的迟到事件被丢弃)。
+ * 一轮 turn 的两份正文。**必须成对传递**, 所以做成一个值而不是两个参数。
+ *
+ * 两者在 X 上不相等, 而它们的用途完全不同 —— 混用过一次就是本 PR 的缺陷:
+ * 把公开正文缩到末段时, 附件的引用扫描跟着缩了, agent 贴在中间那条消息里的
+ * 图和文件被静默丢掉。两个相邻的 string 参数编译器管不了传反, 收成命名字段
+ * 之后传错就写不出来。
  */
-function createProgressEmitter(
-  emit: (text: string) => void,
-  compose: () => string,
-): { schedule: () => void; ensureTicker: () => void; stop: () => void } {
-  let lastEmitAt = 0;
-  let lastEmittedText = '';
-  let pending: NodeJS.Timeout | null = null;
-  let ticker: NodeJS.Timeout | null = null;
-  let stopped = false;
+interface HookTurnTexts {
+  /** 发出去的正文。 */
+  readonly publicText: string;
+  /** 整轮正文 —— 出站引用的扫描范围, 与公开正文无关。 */
+  readonly wholeTurn: string;
+}
 
-  const fire = (): void => {
-    if (stopped) return;
-    const text = compose();
-    if (text.length === 0) return;
-    const snapshot =
-      text.length > PROGRESS_SNAPSHOT_MAX_CHARS
-        ? `${text.slice(0, PROGRESS_SNAPSHOT_MAX_CHARS - 1)}…`
-        : text;
-    // The low-frequency activity ticker can fire while the user-visible
-    // answer is unchanged. Do not spend provider API calls on identical
-    // full snapshots (and, for Telegram, do not re-animate the same draft).
-    if (snapshot === lastEmittedText) return;
-    lastEmitAt = Date.now();
-    lastEmittedText = snapshot;
-    emit(snapshot);
-  };
-  const schedule = (): void => {
-    if (stopped || pending !== null) return;
-    const wait = Math.max(0, lastEmitAt + PROGRESS_THROTTLE_MS - Date.now());
-    pending = setTimeout(() => {
-      pending = null;
-      fire();
-    }, wait);
-    pending.unref?.();
-  };
-  return {
-    schedule,
-    ensureTicker(): void {
-      if (stopped || ticker !== null) return;
-      ticker = setInterval(schedule, PROGRESS_TICK_MS);
-      ticker.unref?.();
-    },
-    stop(): void {
-      stopped = true;
-      if (pending !== null) clearTimeout(pending);
-      if (ticker !== null) clearInterval(ticker);
-      pending = null;
-      ticker = null;
-    },
-  };
+/**
+ * 收口取文(run() 与 watchContinuation 共用 —— 两处必须同判据, 所以两份正文
+ * 的关系只在这里定义一次, 调用方不自己拼)。
+ *
+ * X 的**公开正文**只取最后一条助手消息: 一次 mention 只有一条公开回帖的名额,
+ * 而 agent 的常态是"先说一句要去看看 → 干活 → 给结论", 整轮拼接会把过程叙述
+ * 原样发到公开时间线, 稀释真正要公开的最终结论(见 turnObserver.finalSegment)。
+ *
+ * 其余渠道公开正文就是整轮, 不能跟着改: IM 里过程叙述有用, 且只取最后一条会
+ * 丢掉"先答后补"型 turn 的正文(实踩: Telegram 群里最终答案丢失 —— 见
+ * turnObserver 的文本累积语义注释)。
+ *
+ * wholeTurn 则**任何渠道都是整轮**: 它只用于扫描出站引用, 与"发什么"无关。
+ */
+function turnTextsFor(observer: HookTurnObserver, im: string | undefined): HookTurnTexts {
+  const wholeTurn = observer.text();
+  return { publicText: im === 'x' ? observer.finalSegment() : wholeTurn, wholeTurn };
+}
+
+/**
+ * 收口时的出站附件收集(run() 与 watchContinuation 共用)。
+ *
+ * 文本引用 / 旁路图都不存在时不读盘 —— base64 编码只在真需要时发生; 收集失败不
+ * 拖垮收口, 附件是回帖增强, 文本永远要发出去。
+ *
+ * 引用扫描按**整轮**来, 而不是按要发出去的那段(见 HookTurnTexts): 否则 agent
+ * 贴在中间那条消息里的图和文件会随着"只取末段"一起被丢掉(PR #1272 review)。
+ */
+async function collectOutboundForFinalText(
+  texts: HookTurnTexts,
+  extraImageAbsPaths: string[],
+  allowedFileRoots: string[],
+  log: { warn(msg: string): void },
+): Promise<{ finalText: string; attachments?: HookRunOutcome['attachments'] }> {
+  // Defense in depth for X/Slack/Telegram: live Codex traffic is normalized in
+  // maker-core, but older persisted/continuation text and future adapters must
+  // never forward private Web citation delimiters to an external channel.
+  const publicText = stripInternalWebCitations(texts.publicText);
+  const wholeTurn = stripInternalWebCitations(texts.wholeTurn);
+  if (!hasOutboundRefs(wholeTurn) && extraImageAbsPaths.length === 0) {
+    return { finalText: publicText };
+  }
+  try {
+    const collected = await collectOutboundAttachments(publicText, extraImageAbsPaths, {
+      resolveImageUrl: resolveRenderableImageUrl,
+      allowedFileRoots,
+      ...(wholeTurn !== publicText ? { refScanText: wholeTurn } : {}),
+      log,
+    });
+    if (collected.skipped > 0) {
+      log.warn(`hook outbound attachments: ${collected.skipped} skipped (size/read limits)`);
+    }
+    return {
+      finalText: collected.text,
+      ...(collected.attachments.length > 0 ? { attachments: collected.attachments } : {}),
+    };
+  } catch (err) {
+    log.warn(
+      `hook outbound attachment collection failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return { finalText: publicText };
+  }
 }
 
 export function createMakerHookSessionRunner(deps: {
@@ -433,6 +498,33 @@ export function createMakerHookSessionRunner(deps: {
         durationMs: Date.now() - startedAt,
       });
 
+      // 权限档完全按用户配的走 —— 此处曾给 Telegram 群轮次做过隐式降档
+      // (新会话强制建成 'ask'、复用会话每轮临时切 'ask' 再恢复, 并挂
+      // 破坏性操作强确认策略): 用户在设置里选了「完全访问」, 官方 bot 却在
+      // 群里静默跑 'ask' 并弹确认卡, 于是设置与实际对不上(Chris 2026-08-03
+      // 实踩)。完全访问就是完全访问: 不得在运行期另起一套隐式权限配置;
+      // 真要给新话题另一档, 也得是新话题配置里显式的权限项。
+      //
+      // 官方 bot 的群聊定位是引导用户装自己的个人 bot, 不承担「群里多人
+      // 共用一个 bot」的权限模型 —— 那套已在个人 bot 里设计过(guest 轮次
+      // 强确认), 不在这里重做。
+      /**
+       * 群/topic 轮次在 send 预约后取 session turn lease —— **与权限档无关**。
+       *
+       * 供应商可能在前台 done 与后台任务续跑之间瞬时报 idle, observeHookTurn 刻意
+       * 在那段窗口里保持 pending。不持有 lease 时 Session.send 会在那个空窗里放
+       * Desktop 轮次进来, 两个逻辑轮次共享 session 事件流 / origin / 交互路由 ——
+       * Desktop 的输出会混进 Telegram 结果, 或续跑被路由错(codex review #1490:
+       * 上一版把它跟临时降档一起删了, 而两者本来无关 —— 原注释就写着“即使复用
+       * 会话已是安全档、不需要切档, 也要持住这段独占”)。
+       */
+      const isTelegramGroupTurn = req.source?.im === 'telegram' && req.laneKind === 'group';
+      let releaseTelegramGroupTurnLease: (() => void) | null = null;
+      const releaseTelegramGroupTurn = (): void => {
+        releaseTelegramGroupTurnLease?.();
+        releaseTelegramGroupTurnLease = null;
+      };
+
       /**
        * 授权判定刻意**只在 dispatcher 侧**做(定位时 + 执行前按当前映射重查),
        * runner 不再参与。曾经尝试过把判定贯穿到这里 —— 比对 meta.workDir、比对
@@ -488,7 +580,12 @@ export function createMakerHookSessionRunner(deps: {
         ...(req.isNew
           ? {
               vendorOptions: {
-                source: req.source?.im === 'telegram' ? 'telegram' : 'slack-hook',
+                source:
+                  req.source?.im === 'telegram'
+                    ? 'telegram'
+                    : req.source?.im === 'x'
+                      ? 'x'
+                      : 'slack-hook',
               },
             }
           : {}),
@@ -534,7 +631,7 @@ export function createMakerHookSessionRunner(deps: {
           `hook run aborted: live session ${req.sessionId} runs in a directory that is no longer in the workspace map`,
         );
         return fail(
-          '这个对话正在一个已不在工作目录映射里的目录中运行，本条消息没有执行。把该目录加进 设置 → 远程连接 → 工作目录映射，或在桌面端关掉这个对话后重发。',
+          '这个任务正在一个已不在工作目录映射里的目录中运行，本条消息没有执行。把该目录加进 设置 → 远程连接 → 工作目录映射，或在桌面端关掉这个任务后重发。',
         );
       }
 
@@ -554,6 +651,12 @@ export function createMakerHookSessionRunner(deps: {
       // listener 由中央 InteractionRouter 持有;这里只准备本 turn 的 handler,
       // 真正的 route 在 beforeProviderStart 屏障内登记。
       const ownInteractionIds = new Set<string>();
+      /**
+       * 待决交互各自的过程区状态行(requestId → notice, 插入序)。agent 可以并行发起
+       * 多个权限请求, 任一个先收口都不能把共享的那一行清掉 —— 否则群里的进度消息又
+       * 变回静止, 而其余交互还要等最长 30 分钟。收口后回落到剩余里最新那条。
+       */
+      const pendingInteractionNotices = new Map<string, string>();
       let interactionRouteLease: InteractionRouteLease | null = null;
       const headlessTurn = {
         closed: false,
@@ -565,6 +668,9 @@ export function createMakerHookSessionRunner(deps: {
         if (headlessTurn.closed || headlessTurn.release) return;
         headlessTurn.release = beginHeadlessGhostSetupTurn(session.id);
       };
+      // 前向引用: 交互回调只在 turn 跑起来之后才可能被调用, 那时 observer 已就位。
+      // 用它给过程区挂「等待授权」, 不新增任何渠道消息。
+      let activeObserver: HookTurnObserver | null = null;
       const handleHookInteraction: InteractionHandler = async (ireq) => {
         if (req.onInteraction) {
           const sendCard = req.onInteraction;
@@ -592,13 +698,25 @@ export function createMakerHookSessionRunner(deps: {
           }
           ownInteractionIds.add(ireq.requestId);
           sendCard({ interactionId: ireq.requestId, ...composed.card });
-          const decision = await registerHookInteraction({
-            interactionId: ireq.requestId,
-            composed,
-            onFallback: (reason) => sendCancel?.(ireq.requestId, reason),
-          });
-          ownInteractionIds.delete(ireq.requestId);
-          return decision;
+          // 等授权期间没有任何 agent 事件 —— 渠道那条进度消息会彻底静止, 而卡片
+          // 可能根本不在这个会话里(Telegram 群里的授权卡改投宿主私聊)。挂一行状态,
+          // 收口后摘掉; 全程只改已经在发的那条快照, 不新增群消息。
+          pendingInteractionNotices.set(ireq.requestId, awaitingInteractionNotice(ireq.kind));
+          activeObserver?.setNotice(awaitingInteractionNotice(ireq.kind));
+          try {
+            const decision = await registerHookInteraction({
+              interactionId: ireq.requestId,
+              composed,
+              onFallback: (reason) => sendCancel?.(ireq.requestId, reason),
+            });
+            ownInteractionIds.delete(ireq.requestId);
+            return decision;
+          } finally {
+            pendingInteractionNotices.delete(ireq.requestId);
+            // 仍有交互待决时保留状态行, 只有最后一个收口才摘掉。回落到**剩余里最新**
+            // 那条 —— 与挂起时"新卡片覆盖状态行"同序(Map 保持插入序)。
+            activeObserver?.setNotice([...pendingInteractionNotices.values()].at(-1) ?? null);
+          }
         }
         if (ireq.kind === 'ask_user_question') {
           return { kind: 'ask_user_question', answers: {} };
@@ -628,6 +746,8 @@ export function createMakerHookSessionRunner(deps: {
           cancelHookInteraction(iid, '任务已结束, 此交互已失效');
         }
         ownInteractionIds.clear();
+        // 收口后不再有待决交互: 先清空, 各 handler 的 finally 随后只会摘掉状态行。
+        pendingInteractionNotices.clear();
       };
       // 新建会话广播 -> 侧边栏实时出现(复用/接管的会话本来就在列表里, 不用发)
       if (req.isNew) {
@@ -647,8 +767,8 @@ export function createMakerHookSessionRunner(deps: {
         if (providerId) {
           await setSessionProviderIdInDb(session.id, providerId);
         }
-        if (req.source?.im === 'telegram') {
-          await setSessionSourceInDb(session.id, 'telegram');
+        if (req.source?.im === 'telegram' || req.source?.im === 'x') {
+          await setSessionSourceInDb(session.id, req.source.im);
         }
         broadcastSessionCreated(session.id);
       }
@@ -662,243 +782,21 @@ export function createMakerHookSessionRunner(deps: {
         }
       }
 
-      // turn 收口监听 —— done 时若有在途后台任务则延迟定格, 事件静默超时
-      // 兜底; terminal error 即失败。
-      //
-      // 文本累积语义(2026-07-28 修订): translator 的 isFinal 是**逐条**
-      // agent_message 的完成信号(每条完成都携带该条全文), 不是整个 turn 的
-      // 终稿 —— 用它整体替换累积文本, 会让"先回一句 → 思考 → 终答"的多消息
-      // turn 只剩最后被替换的那条(实踩: Telegram 群里最终答案丢失)。
-      // 正确姿势: isFinal 把该条追加进已定稿段, 流式增量走尾部缓冲。
-      let finalizedText = '';
-      let streamTail = '';
-      let assistantText = '';
-      /** 最近一次定稿段所属的 claude 消息 uuid(同消息相邻块连拼用)。 */
-      let lastFinalUuid: string | undefined;
-      const recomputeAssistantText = (): void => {
-        // trim 只用于判空(纯空白尾巴不该拼出悬空分隔), 拼接用原文 ——
-        // 首行缩进/换行是内容(markdown 代码块等), 不得被裁掉。
-        const hasTail = streamTail.trim().length > 0;
-        assistantText = hasTail
-          ? finalizedText
-            ? `${finalizedText}\n\n${streamTail}`
-            : streamTail
-          : finalizedText;
-      };
+      // turn 收口监听 —— 语义抽在 turnObserver.ts, 与 watchContinuation 共用
+      // 同一份实现(后台任务延迟定格、silent-stop 守卫、非终态 error 的重试
+      // 提示、isFinal 的文本累积形态), 刻意不复制第二份: 这些细节改一处漏一处
+      // 就会让"续跑接回渠道"那条路径静默落后于本路径。
       // tool_result 旁路收集的出站图片 absPath(收口时随 turn.end 附件外发)
       const extraImageAbsPaths: string[] = [];
-      // 进度快照(turn.progress 链路): 过程区时间线与 IM 流式卡同一套纯逻辑
-      // (turnActivity), 合成规则同 composeStreamingView —— 有正文时过程区在
-      // 上正文在下, done/error 后 stop, 不再发射。
-      const activity = createTurnActivity(Date.now());
-      const isTelegram = req.source?.im === 'telegram';
-      // Telegram DM 的 Rich draft 是"部分终稿"动画, 过程时间线反复重排会导致
-      // 整段清空重播 —— DM 保持只流正文。群/topic 的进度载体是可编辑消息
-      // (无 draft 动画), 与 Slack 过程卡同款: 时间线在上正文在下, 让群成员
-      // 看到"正在干什么"而不是盯着一句旧话干等(2026-07-28 实踩)。
-      const answerOnlyProgress = isTelegram && req.laneKind !== 'group';
-      const progress = req.onProgress
-        ? createProgressEmitter(req.onProgress, () => {
-            // 只流正文的唯一例外: 还没有任何正文、而 agent 正在自动重试(上游过载)
-            // 时, 草稿本来就是空的 —— 此时给出那一行状态说明, 否则用户在整个退避
-            // 窗口里完全看不到任何反馈。有正文后仍只发正文, 不掺过程区。
-            // (群/topic 走上面的完整过程卡, notice 已在那条路径里渲染。)
-            if (answerOnlyProgress) return assistantText || (activity.notice ?? '');
-            const act = renderActivity(activity, Date.now());
-            if (!act) return assistantText;
-            return assistantText ? `${act}\n\n${assistantText}` : act;
-          })
-        : null;
-      let stopListening: (() => void) | undefined;
-      const turnFinished = new Promise<void>((resolve, reject) => {
-        const runningBgTasks = new Set<string>();
-        let waitingForBgTasks = false;
-        let bgFallbackTimer: NodeJS.Timeout | undefined;
-        let pendingSettleUnsub: (() => void) | undefined;
-        const clearBgTimer = (): void => {
-          if (bgFallbackTimer) {
-            clearTimeout(bgFallbackTimer);
-            bgFallbackTimer = undefined;
-          }
-        };
-        const finish = (): void => {
-          clearBgTimer();
-          pendingSettleUnsub?.();
-          pendingSettleUnsub = undefined;
-          progress?.stop();
-          off();
-          stopListening = undefined;
-          resolve();
-        };
-        const armBgTimer = (): void => {
-          clearBgTimer();
-          bgFallbackTimer = setTimeout(() => {
-            log.warn(`[hook-runner] bg task events silent, finalizing: ${session.id}`);
-            finish();
-          }, BG_TASK_IDLE_FALLBACK_MS);
-          bgFallbackTimer.unref?.();
-        };
-        const off = session.onEvent((ev: AgentEvent) => {
-          if (waitingForBgTasks) armBgTimer();
-          if (ev.type === 'agent_task_update') {
-            const data = ev.data as { taskId?: string; status?: string } | null;
-            if (data && typeof data.taskId === 'string') {
-              if (data.status === 'running') runningBgTasks.add(data.taskId);
-              else runningBgTasks.delete(data.taskId);
-            }
-            return;
-          }
-          if (ev.type === 'text') {
-            const data = ev.data as { text?: string; isFinal?: boolean } | null;
-            if (data && typeof data.text === 'string') {
-              if (data.isFinal) {
-                // isFinal 形态按 translator 契约区分, 不做内容猜测(前缀
-                // 启发式在"尾段恰好以已流增量开头"时会误判丢正文):
-                // ① claude 块终稿(带 agentMeta): data.text 是该块全文, 覆盖
-                //   已流增量; 同一条消息(同 uuid)的相邻文本块按原文连拼
-                //   (renderer 同款 raw concat), 不同消息之间空行分隔。
-                // ② claude result 兜底 fallbackTail(刻意不带 agentMeta):
-                //   只含 UI 缺的尾段, 与已流增量原样接上。
-                // ③ codex item.completed: 该条全文, 覆盖已流增量。
-                // ④ 未知 source: 保守用前缀启发式。
-                const src = (ev as { source?: string }).source;
-                const meta = (ev as { agentMeta?: { uuid?: unknown } }).agentMeta;
-                const claudeTail = src === 'claude-code' && meta === undefined;
-                const segment = claudeTail
-                  ? streamTail + data.text
-                  : src === 'claude-code' || src === 'codex'
-                    ? data.text
-                    : data.text.startsWith(streamTail)
-                      ? data.text
-                      : streamTail + data.text;
-                const uuid =
-                  src === 'claude-code' && typeof meta?.uuid === 'string'
-                    ? meta.uuid
-                    : undefined;
-                const sameMessage = uuid !== undefined && uuid === lastFinalUuid;
-                finalizedText = finalizedText
-                  ? `${finalizedText}${sameMessage ? '' : '\n\n'}${segment}`
-                  : segment;
-                lastFinalUuid = uuid;
-                streamTail = '';
-              } else {
-                streamTail += data.text;
-              }
-              recomputeAssistantText();
-              markActivityWriting(activity);
-              progress?.schedule();
-            }
-            return;
-          }
-          if (ev.type === 'thinking') {
-            if (pushThinkingStep(activity, ev.data)) {
-              progress?.ensureTicker();
-              progress?.schedule();
-            }
-            return;
-          }
-          if (ev.type === 'tool_use') {
-            // 过程展示: 与 IM 流式卡同款滚动时间线(turnActivity), 让 Slack 侧
-            // 在长 agentic turn 里看到"正在干什么", 而不是盯着 👀 表情干等
-            const data = ev.data as {
-              toolName?: unknown;
-              toolUseId?: unknown;
-              input?: unknown;
-            } | null;
-            if (data && typeof data.toolName === 'string') {
-              pushToolStep(
-                activity,
-                data.toolName,
-                data.input,
-                typeof data.toolUseId === 'string' ? data.toolUseId : undefined,
-              );
-              progress?.ensureTicker();
-              progress?.schedule();
-            }
-            return;
-          }
-          if (ev.type === 'error' && !isTerminalAgentErrorEvent(ev)) {
-            // 非终止 error = agent 正在自愈(当前只透过载类的自动重试)。turn 没
-            // 结束, 不收口; 但必须在过程区留一行, 否则零产出的退避窗口里渠道那
-            // 条消息整段静止(见 turnRetryNotice.ts 的模块注释)。
-            const notice = overloadRetryNotice(ev.data);
-            if (notice !== null && setActivityNotice(activity, notice)) {
-              // ticker 让"第 N 步 · 42s"与这行状态一起走时间, 重试期间没有任何
-              // 新事件也能看出还在动。
-              progress?.ensureTicker();
-              progress?.schedule();
-            }
-            return;
-          }
-          if (ev.type === 'tool_result_full') {
-            // 出站图片旁路(与 IM handleToolResultFullEvent 同语义): art
-            // image_generate 等工具按设计不在文本里嵌 xdt-image markdown,
-            // Slack 侧能拿到图的唯一通路是从 tool_result JSON 里接走 URL
-            const data = ev.data as { fullText?: unknown } | null;
-            if (data && typeof data.fullText === 'string') {
-              for (const url of extractToolResultImageUrls(data.fullText)) {
-                try {
-                  const { absPath } = resolveRenderableImageUrl(url);
-                  extraImageAbsPaths.push(absPath);
-                } catch (err) {
-                  log.warn(
-                    `hook resolve tool_result image failed: ${err instanceof Error ? err.message : String(err)}`,
-                  );
-                }
-              }
-            }
-            return;
-          }
-          if (ev.type === 'done') {
-            if ((ev.data as { silentStop?: boolean } | null | undefined)?.silentStop === true) {
-              pendingSettleUnsub?.();
-              pendingSettleUnsub = onSilentStopSettled(session.id, (_sid, reason) => {
-                pendingSettleUnsub?.();
-                pendingSettleUnsub = undefined;
-                if (reason === 'exhausted') {
-                  clearBgTimer();
-                  progress?.stop();
-                  off();
-                  stopListening = undefined;
-                  reject(new Error('silent-stop auto-resume exhausted'));
-                } else {
-                  finish();
-                }
-              });
-              return;
-            }
-            if (runningBgTasks.size > 0) {
-              waitingForBgTasks = true;
-              armBgTimer();
-              return;
-            }
-            finish();
-          } else if (isTerminalAgentErrorEvent(ev)) {
-            clearBgTimer();
-            progress?.stop();
-            off();
-            stopListening = undefined;
-            const data = ev.data as { message?: string; errorStatus?: number } | null;
-            const raw = data?.message ?? 'agent terminal error';
-            // 过载重试耗尽: 渠道里发裸英文原文(server 侧再前缀成 "Task failed:")
-            // 等于把内部串丢给用户, 且没说清"怎么才能真的重试"。换成可读说明,
-            // 原文留在本地日志里供排查。
-            const friendly = overloadFailureNotice(raw, data?.errorStatus);
-            if (friendly !== null) {
-              log.warn(`hook turn failed (upstream overload): ${raw}`);
-            }
-            reject(new Error(friendly ?? raw));
-          }
-        });
-        stopListening = (): void => {
-          clearBgTimer();
-          pendingSettleUnsub?.();
-          pendingSettleUnsub = undefined;
-          progress?.stop();
-          off();
-        };
+      const observer = observeHookTurn(session, {
+        // 进度快照不按渠道/聊天类型分叉: 过程区时间线在上正文在下,
+        // Telegram DM / 群 / topic 与 Slack 一致。
+        ...(req.onProgress ? { onProgress: req.onProgress } : {}),
+        onToolResult: (fullText) => collectOutboundImages(fullText, extraImageAbsPaths, log),
+        onSilentStopSettled,
+        log,
       });
-      void turnFinished.catch(() => undefined);
+      activeObserver = observer;
 
       // origin 标注见文件头注释(闭合联合下的 v1 取舍)。scheduleId 用稳定的
       // hook 连接标识 —— renderer/IM 只拿它做展示与分组, 不回查 schedule 表。
@@ -952,7 +850,9 @@ export function createMakerHookSessionRunner(deps: {
           });
         } catch (err) {
           inboundAttachmentFailures += 1;
-          log.warn(`hook image ingest failed: ${err instanceof Error ? err.message : String(err)}`);
+          log.warn(
+            `hook image ingest failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
       }
       const fileBlocks: UserContentBlock[] = [];
@@ -992,7 +892,9 @@ export function createMakerHookSessionRunner(deps: {
         } catch (err) {
           inboundAttachmentFailures += 1;
           // Media must never fall back to a feature-specific cache (rule 25).
-          log.warn(`hook media ingest failed: ${err instanceof Error ? err.message : String(err)}`);
+          log.warn(
+            `hook media ingest failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
       }
       if (plainFiles.length > 0) {
@@ -1054,6 +956,13 @@ export function createMakerHookSessionRunner(deps: {
         const sendResult = await session.send(outgoingMessage, {
           origin,
           planMode: false,
+          afterTurnReserved: () => {
+            // 只取 lease, 不动权限档(用户配的就是最终档)。取在预约之后:
+            // 忙的 Desktop 轮次已在 send 预约阶段被拒, 轮到这里就是本轮的世界。
+            if (isTelegramGroupTurn) {
+              releaseTelegramGroupTurnLease ??= session.acquireTurnLease();
+            }
+          },
           beforeProviderStart: () => {
             const routeOrigin: RoutedTurnOrigin =
               req.source?.im === 'slack'
@@ -1107,34 +1016,31 @@ export function createMakerHookSessionRunner(deps: {
           context: `hook:${req.origin.connectionId}`,
         });
         if (!outcome.dispatched) {
-          stopListening?.();
+          observer.stop();
           finalizeInteractions();
+          releaseTelegramGroupTurn();
           return fail(`send not dispatched: ${outcome.reason}`);
         }
       } catch (err) {
-        stopListening?.();
+        observer.stop();
         finalizeInteractions();
+        releaseTelegramGroupTurn();
         return fail(err instanceof Error ? err.message : String(err));
       }
 
-      // 硬超时兜底(见常量注释); 超时后摘监听, 迟到的 done 不再有消费方
-      let hardTimer: NodeJS.Timeout | undefined;
-      const hardTimeout = new Promise<never>((_, rejectTimeout) => {
-        hardTimer = setTimeout(
-          () => rejectTimeout(new Error(`hook turn hard timeout (${TURN_HARD_TIMEOUT_MS}ms)`)),
-          TURN_HARD_TIMEOUT_MS,
-        );
-        hardTimer.unref?.();
-      });
+      // turn 不设时长上限(见常量注释): 收口全靠 observer, 兜底在 maker-core
+      // 的 turn stall 看门狗。
       try {
-        await Promise.race([turnFinished, hardTimeout]);
+        await observer.finished;
       } catch (err) {
-        stopListening?.();
+        observer.stop();
         return fail(err instanceof Error ? err.message : String(err));
       } finally {
-        if (hardTimer) clearTimeout(hardTimer);
         // 无论正常收口还是超时/错误,未决交互都按默认收口并释放中央 route
         finalizeInteractions();
+        // lease 在这里才能放: observer.finished 已把后台任务一并定格
+        // (早放 = 后台续跑期间又回到共享 session 的旧行为)。幂等。
+        releaseTelegramGroupTurn();
       }
 
       // 已知 v1 取舍: 不做 scheduler 4.5.1 的完整 backfillSessionMeta。
@@ -1142,26 +1048,14 @@ export function createMakerHookSessionRunner(deps: {
       // 能稳定展示渠道来源，既有 Slack source 兼容行为保持不变。
       // 出站附件: 文本引用 / 旁路图存在时才收集(读盘 + base64 只在需要时
       // 发生); 收集失败不拖垮收口 —— 附件是回帖增强, 文本永远要发出去
-      let finalText = assistantText;
-      let outAttachments: HookRunOutcome['attachments'];
-      if (hasOutboundRefs(assistantText) || extraImageAbsPaths.length > 0) {
-        try {
-          const collected = await collectOutboundAttachments(assistantText, extraImageAbsPaths, {
-            resolveImageUrl: resolveRenderableImageUrl,
-            allowedFileRoots: [workingDir],
-            log,
-          });
-          finalText = collected.text;
-          if (collected.attachments.length > 0) outAttachments = collected.attachments;
-          if (collected.skipped > 0) {
-            log.warn(`hook outbound attachments: ${collected.skipped} skipped (size/read limits)`);
-          }
-        } catch (err) {
-          log.warn(
-            `hook outbound attachment collection failed: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
-      }
+      const collected = await collectOutboundForFinalText(
+        turnTextsFor(observer, req.source?.im),
+        extraImageAbsPaths,
+        [workingDir],
+        log,
+      );
+      let finalText = collected.finalText;
+      const outAttachments = collected.attachments;
       if (inboundAttachmentFailures > 0) {
         const warning =
           `⚠️ Incoming attachment processing incomplete: ${inboundAttachmentFailures} ` +
@@ -1176,5 +1070,120 @@ export function createMakerHookSessionRunner(deps: {
         ...(outAttachments !== undefined ? { attachments: outAttachments } : {}),
       };
     },
+
+    watchContinuation(req) {
+      // 归属已由 dispatcher 用 clientId 确认(见 uiContinuationSignal), 且本调用发生在
+      // vendor dispatch **之前** —— live session 必然已就绪, 不需要等它出现, 也不需要
+      // 靠"首个事件"猜这一轮是不是目标轮。
+      const session = getMaker().getSession(req.sessionId);
+      if (!session) {
+        // 理论上不该发生(马上就要 dispatch)。保守放弃, 让 dispatcher 把记账还回去。
+        log.warn(
+          `hook continuation: live session vanished right before dispatch (${req.sessionId})`,
+        );
+        req.onAbandon();
+        return () => undefined;
+      }
+      return beginContinuationWatch(session, req, log);
+    },
+  };
+}
+
+/**
+ * 挂上一次续跑观察(live session 已确定存在)。
+ *
+ * 与 run() 共用 observeHookTurn, 所以收口语义、文本累积形态、过程区渲染判据都只有
+ * 一份实现(见 turnObserver.ts)。
+ */
+function beginContinuationWatch(
+  session: NonNullable<ReturnType<ReturnType<typeof getMaker>['getSession']>>,
+  req: HookContinuationWatchRequest,
+  log: { info(msg: string): void; warn(msg: string): void },
+): () => void {
+  // live 实例可能仍跑在搬迁前的旧目录里(与 run() 的同名校验同理, 见 PR #733)。
+  // 记账里存的是失败那一轮的持久化目录, 只查它会让"旧目录已被移出映射、新目录仍在"
+  // 的会话放行 —— 那样续跑的输出与文件会从一个已撤销的目录回流到渠道。
+  if (req.isDirAuthorized && !req.isDirAuthorized(session.workDir)) {
+    log.info(
+      `hook continuation skipped: the live session runs in a directory that is no longer in the workspace map (${session.id})`,
+    );
+    req.onAbandon();
+    return () => undefined;
+  }
+  const startedAt = Date.now();
+  const extraImageAbsPaths: string[] = [];
+  let claimed = false;
+  let settled = false;
+  const observer = observeHookTurn(session, {
+    // 与 run() 同一呈现: 过程区时间线在上正文在下, 不按聊天类型分叉。
+    onProgress: (text) => {
+      // 认领之前不发进度: 那时 server 还没把这条消息挂到新 requestId 上。
+      if (claimed) req.onProgress(text);
+    },
+    onToolResult: (fullText) => collectOutboundImages(fullText, extraImageAbsPaths, log),
+    onSilentStopSettled,
+    log,
+  });
+
+  // **立刻认领**: 归属已由 clientId 确认, 且 dispatch 即将不可逆 —— 不需要再等首个
+  // 事件来判断"这一轮到底是不是目标轮"。早先那套(等首个事件)恰恰是误认的来源:
+  // 会话级观察器分不清事件属于哪条用户消息, 绕过 coordinator 的 turn 会顶替进来。
+  claimed = true;
+  req.onClaim();
+
+  /** 收口一次(幂等)。errorMessage 非空 = 这一轮失败。 */
+  const settle = (errorMessage: string | null): void => {
+    if (settled) return;
+    settled = true;
+    observer.stop();
+    // 已停止观察 —— 成功那一路还要 await 收集出站附件, 所以先同步告知一声, 让
+    // dispatcher 把这一轮从"在观察"的账上摘掉(见 onSettling 的说明)。
+    req.onSettling?.();
+    if (!claimed) {
+      // 从没认领过 -> server 侧对这条消息一无所知, 静默退场。
+      req.onAbandon();
+      return;
+    }
+    if (errorMessage !== null) {
+      // 与 run() 的失败收口同形(finalText 空, 错误交给渠道渲染)。
+      req.onEnd({
+        status: 'error',
+        finalText: '',
+        errorMessage,
+        durationMs: Date.now() - startedAt,
+      });
+      return;
+    }
+    void (async () => {
+      // workDir 以 live session 为权威(会话可能被移动过), 与 run() 里
+      // isDirAuthorized 用 session.workDir 复核同理。
+      const collected = await collectOutboundForFinalText(
+        turnTextsFor(observer, req.source?.im),
+        extraImageAbsPaths,
+        [session.workDir],
+        log,
+      );
+      req.onEnd({
+        status: 'ok',
+        finalText: collected.finalText,
+        errorMessage: null,
+        durationMs: Date.now() - startedAt,
+        ...(collected.attachments !== undefined ? { attachments: collected.attachments } : {}),
+      });
+    })();
+  };
+
+  // 不设任何时长上限, 与 run() 及桌面端普通会话一致(见本文件「turn 时长策略」)。
+  // 这条路径此前与 run() 一样有整轮硬超时, 也刻意没有叠加更短的"空转"超时 ——
+  // 理由是「长 turn 完全可能几分钟不出事件, 或只出被本观察器忽略的账号级事件」。
+  // 兜底统一交给 maker-core 的 turn stall 看门狗(它的终态 error 会让 observer 收口)。
+  observer.finished.then(
+    () => settle(null),
+    (err: unknown) => settle(err instanceof Error ? err.message : String(err)),
+  );
+
+  return () => {
+    // 撤销: 已认领的必须收口(否则渠道消息停在假的"进行中"), 未认领的静默退场。
+    settle(claimed ? 'hook continuation cancelled' : null);
   };
 }

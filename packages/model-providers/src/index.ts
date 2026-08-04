@@ -10,6 +10,7 @@
 export type {
   AgentKind,
   ProviderWireProtocol,
+  CodexCompatibilityWireProtocol,
   Effort,
   ProviderSource,
   AuthMethod,
@@ -23,12 +24,17 @@ export type {
   CustomProviderConfig,
   CustomProviderRuntimeConfig,
   ProviderRuntimeModelConfig,
+  PiReasoningEffort,
   ProviderPreset,
   ProviderPresetRuntime,
   OAuthAuthorizationCodeDescriptor,
   OAuthDeviceCodeDescriptor,
   OAuthProviderDescriptor,
 } from './types.js';
+
+export { PI_REASONING_EFFORTS } from './types.js';
+
+export { resolveCodexCompatibilityWireProtocol } from './codexCompatibility.js';
 
 export { BUNDLED_CATALOG, BUILTIN_PROVIDERS, parseCatalog, presetDisplayName, sanitizePresets, sortPresetsForLocale } from './catalog.js';
 
@@ -50,6 +56,27 @@ export {
   loadCatalog,
   loadCatalogWithSource,
 } from './source.js';
+
+export {
+  compareModelRegistryRevisions,
+  decideModelRegistrySnapshot,
+  findModelRegistryRoute,
+  resolveModelReferencePrice,
+} from './modelRegistry.js';
+export { modelRegistryCanonicalJson } from '@cindy/model-access-protocol';
+export type {
+  ResolvedModelReferencePrice,
+  ResolveModelReferencePriceOptions,
+  ModelRegistryRevisionRelation,
+  ModelRegistrySnapshotDecision,
+} from './modelRegistry.js';
+export type {
+  ModelReferencePrice,
+  ModelReferencePriceSource,
+  ModelRegistry,
+  ModelRegistryEntry,
+  ModelRegistryRoute,
+} from '@cindy/model-access-protocol';
 export type {
   CatalogSourceConfig,
   CatalogIO,
@@ -67,6 +94,7 @@ export {
   providerOffersModel,
   getModel,
   sourcesForModel,
+  chatEligibleSourcesForModel,
   resolveRoute,
   modelSupportsFastMode,
   sessionModelSupportsFastMode,
@@ -119,9 +147,13 @@ export {
   SUBSCRIPTION_DIRECT_MODEL_PREFIXES,
   isSubscriptionDirectModel,
   CATEGORY_ORDER,
+  CHAT_VENDOR_CATEGORY_ORDER,
   categorize,
+  classifyModel,
+  isChatEligible,
   groupOf,
   isAgentSelectableModel,
+  isModelSelectableForNewRoute,
   groupModelsForDisplay,
   isBudgetModel,
   modelBadges,

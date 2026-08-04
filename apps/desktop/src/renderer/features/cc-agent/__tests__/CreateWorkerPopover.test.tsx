@@ -51,6 +51,7 @@ const mocks = vi.hoisted(() => ({
         supportsFastMode?: boolean;
         efforts?: string[];
         defaultEffort?: string | null;
+        mode?: string;
         /** 停用轴(buildRegistry 烘焙的视图层标志;narrowProviderSource 消费)。 */
         disabled?: boolean;
       }>
@@ -239,6 +240,28 @@ describe('CreateWorkerPopover', () => {
     cleanup();
     window.localStorage.clear();
     resetProviderModelMemoryForTest();
+  });
+
+  it('centers the setup and keeps agent and model on one row without changing its size', () => {
+    render(<CreateWorkerPopover open onClose={vi.fn()} onCreate={vi.fn()} />);
+
+    const panel = screen.getByText('orca.createWorker.title').closest('.relative.z-10');
+    const overlay = panel?.parentElement;
+    expect(overlay?.className).toContain('items-center');
+    expect(overlay?.className).not.toContain('items-start');
+    expect(overlay?.className).not.toContain('pt-[10vh]');
+    expect(panel?.className).toContain('w-[500px]');
+    expect(panel?.className).toContain('p-6');
+
+    const agentSwitcher = screen.getByRole('tablist', {
+      name: 'orca.createWorker.agentLabel',
+    });
+    const pairedFields = agentSwitcher.closest('.grid');
+    expect(pairedFields?.className).toContain('grid-cols-[220px_minmax(0,1fr)]');
+    expect(pairedFields?.contains(screen.getByTestId('model-selector'))).toBe(true);
+
+    const initialTask = screen.getByPlaceholderText('orca.createWorker.initialTaskPlaceholder');
+    expect(initialTask.className).toContain('h-[96px]');
   });
 
   it('disables immediately and collapses repeated click events into one request', async () => {
@@ -752,6 +775,40 @@ describe('CreateWorkerPopover', () => {
     fireEvent.click(screen.getByRole('button', { name: 'orca.createWorker.submit' }));
     await waitFor(() =>
       expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ providerId: 'openai' })),
+    );
+  });
+
+  it('narrows a remembered provider whose model entry is non-chat (issue #882 第 3 点, 2026-07 review)', async () => {
+    // 记忆来源上这个 model id 的具体条目是非聊天(mode='image_generation')——
+    // providerOffersModel 只看 id 是否存在,不会挡住它;narrowProviderSource 必须
+    // 自己叠加 isChatEligible,否则会把这个来源提交给 main,请求发到 image 端点。
+    window.localStorage.setItem(
+      'workerCreationPrefs',
+      JSON.stringify({
+        lastAgent: 'codex',
+        codex: { model: 'gpt-5.5', effort: 'high', fast: false, providerId: 'openai' },
+      }),
+    );
+    mocks.localProviders = [
+      {
+        id: 'openai',
+        name: 'OpenAI',
+        connected: true,
+        agents: ['codex'],
+        models: { codex: [{ id: 'gpt-5.5', mode: 'image_generation' }], 'claude-code': [] },
+      },
+    ];
+    mocks.modelsByAgent.codex = [model('gpt-5.5')];
+    mocks.capabilitiesByAgent.codex = { availableModels: [{ id: 'gpt-5.5' }] };
+    const onCreate = vi.fn();
+
+    render(<CreateWorkerPopover open onClose={vi.fn()} onCreate={onCreate} />);
+    await waitFor(() =>
+      expect(screen.getByTestId('model-selector').dataset.currentProvider).toBe(''),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'orca.createWorker.submit' }));
+    await waitFor(() =>
+      expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ providerId: null })),
     );
   });
 

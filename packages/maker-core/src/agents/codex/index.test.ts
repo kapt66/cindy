@@ -319,6 +319,7 @@ function installFakeHost(
     remoteCompactionProviderId?: string;
     userAgent?: string;
     codexHome?: string;
+    buildSessionMcpConfig?: (sessionInstanceId?: string) => Record<string, unknown>;
   } = {},
 ) {
   const ensureStarted = vi.fn(async () => ({
@@ -366,6 +367,9 @@ function installFakeHost(
   const unsubscribeThread = vi.fn(async () => {});
   const isCodexProxyActive = vi.fn(() => opts.codexProxyActive === true);
   const getRemoteCompactionProviderId = vi.fn(() => opts.remoteCompactionProviderId ?? null);
+  const getSessionMcpConfig = vi.fn((sessionInstanceId?: string) =>
+    opts.buildSessionMcpConfig?.(sessionInstanceId) ?? {},
+  );
   const host = {
     ensureStarted,
     // startSession 的 initialize 直调走限时变体 (codex R13 P1): fake 里
@@ -376,6 +380,7 @@ function installFakeHost(
     unsubscribeThread,
     isCodexProxyActive,
     getRemoteCompactionProviderId,
+    getSessionMcpConfig,
     getConnectionId: () => 'test-connection',
     getThreadHandlers: () => threadHandlers,
   };
@@ -517,6 +522,740 @@ describe('CodexAgent permissions', () => {
       code: 'TURN_PERMISSION_POLICY_UNSUPPORTED',
       permissionMode: 'bypassPermissions',
     });
+    await handle.close();
+  });
+});
+
+describe('CodexAgent capability routing', () => {
+  const capabilityRouting = {
+    overrides: [
+      {
+        capabilityId: 'feishu',
+        source: {
+          kind: 'harness-plugin',
+          harness: 'codex',
+          surface: 'mcp',
+          id: 'cindy-routed-feishu-delegate',
+          artifactId: 'feishu-delegate',
+          containerId: 'feishu-delegate@personal',
+        },
+        invocation: 'explicit-only',
+        explicitSelectors: [
+          '$feishu-delegate:message-feishu-coworkers',
+          '/feishu-delegate:message-feishu-coworkers',
+        ],
+        replacement: {
+          kind: 'cindy-plugin',
+          id: 'xd-feishu',
+        },
+      },
+      {
+        capabilityId: 'computer-use',
+        source: {
+          kind: 'harness-plugin',
+          harness: 'codex',
+          surface: 'plugin',
+          id: 'computer-use@openai-bundled',
+        },
+        invocation: 'disabled',
+        replacement: {
+          kind: 'cindy-host',
+          id: 'cindy_computer',
+        },
+      },
+    ],
+  } as const;
+
+  it('applies host-owned plugin policy to new and resumed Codex 0.145 threads', async () => {
+    const startAgent = new CodexAgent(createDeps({}, { capabilityRouting }));
+    const startHost = installFakeHost(startAgent, undefined, {
+      userAgent: 'mock-codex/0.145.0',
+    });
+    const startHandle = await startAgent.startSession({
+      sessionId: 'session-capability-routing-start',
+      model: 'gpt-5.4',
+      workingDir: '/repo',
+    });
+    const startParams = startHost.request.mock.calls.find(
+      ([method]) => method === Method.ThreadStart,
+    )?.[1] as { config?: Record<string, unknown> };
+    expect(startParams.config).toMatchObject({
+      'plugins."computer-use@openai-bundled".enabled': false,
+      'plugins."feishu-delegate@personal".mcp_servers."feishu-delegate".enabled': false,
+      'plugins."feishu-delegate@personal".mcp_servers."cindy-routed-feishu-delegate".default_tools_approval_mode':
+        'prompt',
+    });
+
+    const resumeAgent = new CodexAgent(createDeps({}, { capabilityRouting }));
+    const resumeHost = installFakeHost(resumeAgent, undefined, {
+      userAgent: 'mock-codex/0.145.0',
+    });
+    const resumeHandle = await resumeAgent.startSession({
+      sessionId: 'session-capability-routing-resume',
+      model: 'gpt-5.4',
+      workingDir: '/repo',
+      resumeSessionId: '123e4567-e89b-12d3-a456-426614174000',
+    });
+    const resumeParams = resumeHost.request.mock.calls.find(
+      ([method]) => method === Method.ThreadResume,
+    )?.[1] as { config?: Record<string, unknown> };
+    expect(resumeParams.config).toMatchObject({
+      'plugins."computer-use@openai-bundled".enabled': false,
+      'plugins."feishu-delegate@personal".mcp_servers."feishu-delegate".enabled': false,
+      'plugins."feishu-delegate@personal".mcp_servers."cindy-routed-feishu-delegate".default_tools_approval_mode':
+        'prompt',
+    });
+
+    await startHandle.close();
+    await resumeHandle.close();
+  });
+
+  it('fails closed for older Codex daemons that cannot apply plugin overrides', async () => {
+    const agent = new CodexAgent(createDeps({}, { capabilityRouting }));
+    installFakeHost(agent, undefined, {
+      userAgent: 'mock-codex/0.144.6',
+    });
+    await expect(
+      agent.startSession({
+        sessionId: 'session-capability-routing-legacy',
+        model: 'gpt-5.4',
+        workingDir: '/repo',
+        remoteHostId: 'legacy-remote',
+      }),
+    ).rejects.toThrow('requires Codex app-server 0.145.0 or newer');
+  });
+
+  it('disables an explicit-only plugin on remote Codex where the local overlay is unavailable', async () => {
+    const agent = new CodexAgent(createDeps({}, { capabilityRouting }));
+    const host = installFakeHost(agent, undefined, {
+      userAgent: 'mock-codex/0.145.0',
+    });
+    const handle = await agent.startSession({
+      sessionId: 'session-capability-routing-remote',
+      model: 'gpt-5.4',
+      workingDir: '/repo',
+      remoteHostId: 'remote-host',
+    });
+    const params = host.request.mock.calls.find(
+      ([method]) => method === Method.ThreadStart,
+    )?.[1] as { config?: Record<string, unknown> };
+
+    expect(params.config).toMatchObject({
+      'plugins."feishu-delegate@personal".enabled': false,
+      'plugins."computer-use@openai-bundled".enabled': false,
+    });
+    expect(params.config).not.toHaveProperty(
+      'plugins."feishu-delegate@personal".mcp_servers."cindy-routed-feishu-delegate".default_tools_approval_mode',
+    );
+
+    await handle.close();
+  });
+
+  it('declines an explicit-only downstream MCP unless the user chose that source', async () => {
+    const makeAgent = () =>
+      new CodexAgent(
+        createDeps(
+          {},
+          {
+            capabilityRouting,
+            getMcpToolApprovalPolicy: () => 'auto-approve',
+          },
+        ),
+      );
+    const install = (agent: CodexAgent, turnId: string) =>
+      installFakeHost(
+        agent,
+        (method) => {
+          if (method === Method.TurnStart) return { turn: { id: turnId } };
+          return undefined;
+        },
+        { userAgent: 'mock-codex/0.145.0' },
+      );
+    const request = (turnId: string) => ({
+      threadId: 'start-thread-id',
+      turnId,
+      serverName: 'cindy-routed-feishu-delegate',
+      mode: 'form' as const,
+      _meta: {
+        codex_approval_kind: 'mcp_tool_call',
+        tool_name: 'feishu_read_messages',
+      },
+      message: 'Allow tool call',
+      requestedSchema: {},
+    });
+
+    const implicitAgent = makeAgent();
+    const implicitHost = install(implicitAgent, 'turn-implicit-feishu');
+    const implicitHandle = await implicitAgent.startSession({
+      sessionId: 'session-implicit-feishu',
+      model: 'gpt-5.4',
+      workingDir: '/repo',
+    });
+    await implicitHandle.send({
+      type: 'user',
+      content: '查一下我和康康的飞书消息',
+    });
+    const implicitHandlers = implicitHost.getThreadHandlers();
+    if (!implicitHandlers?.mcpServerElicitation) {
+      throw new Error('expected mcpServerElicitation handler');
+    }
+    await expect(
+      implicitHandlers.mcpServerElicitation(request('turn-implicit-feishu')),
+    ).resolves.toEqual({ action: 'decline', content: null, _meta: null });
+    implicitHandlers.itemStarted?.({
+      threadId: 'start-thread-id',
+      turnId: 'turn-implicit-feishu',
+      item: {
+        id: 'user-owned-colliding-mcp',
+        type: 'mcpToolCall',
+        server: 'cindy-routed-feishu-delegate',
+        tool: 'feishu_read_messages',
+        pluginId: null,
+      },
+    });
+    await expect(
+      implicitHandlers.mcpServerElicitation(request('turn-implicit-feishu')),
+    ).resolves.toEqual({ action: 'accept', content: null, _meta: null });
+    await expect(
+      implicitHandlers.mcpServerElicitation({
+        ...request('turn-implicit-feishu'),
+        serverName: 'feishu-delegate',
+      }),
+    ).resolves.toEqual({ action: 'accept', content: null, _meta: null });
+
+    const explicitAgent = makeAgent();
+    const explicitHost = install(explicitAgent, 'turn-explicit-feishu');
+    const explicitHandle = await explicitAgent.startSession({
+      sessionId: 'session-explicit-feishu',
+      model: 'gpt-5.4',
+      workingDir: '/repo',
+    });
+    await explicitHandle.send({
+      type: 'user',
+      content: '请用 $feishu-delegate:message-feishu-coworkers 查一下康康',
+    });
+    const explicitHandlers = explicitHost.getThreadHandlers();
+    if (!explicitHandlers?.mcpServerElicitation) {
+      throw new Error('expected mcpServerElicitation handler');
+    }
+    // The routed runtime name alone is not enough: without app-server
+    // provenance we cannot distinguish the plugin overlay from another source.
+    await expect(
+      explicitHandlers.mcpServerElicitation(request('turn-explicit-feishu')),
+    ).resolves.toEqual({ action: 'decline', content: null, _meta: null });
+    explicitHandlers.itemStarted?.({
+      threadId: 'start-thread-id',
+      turnId: 'turn-explicit-feishu',
+      item: {
+        id: 'routed-feishu-call',
+        type: 'mcpToolCall',
+        server: 'cindy-routed-feishu-delegate',
+        tool: 'feishu_read_messages',
+        pluginId: 'feishu-delegate@personal',
+      },
+    });
+    await expect(
+      explicitHandlers.mcpServerElicitation(request('turn-explicit-feishu')),
+    ).resolves.toEqual({ action: 'accept', content: null, _meta: null });
+    explicitHandlers.itemStarted?.({
+      threadId: 'start-thread-id',
+      turnId: 'turn-explicit-feishu',
+      item: {
+        id: 'colliding-user-feishu-call',
+        type: 'mcpToolCall',
+        server: 'cindy-routed-feishu-delegate',
+        tool: 'other_tool',
+        pluginId: null,
+      },
+    });
+    await expect(
+      explicitHandlers.mcpServerElicitation({
+        ...request('turn-explicit-feishu'),
+        _meta: {
+          codex_approval_kind: 'mcp_tool_call',
+        },
+      }),
+    ).resolves.toEqual({ action: 'decline', content: null, _meta: null });
+
+    await implicitHandle.close();
+    await explicitHandle.close();
+  });
+
+  it('merges inherited and newly added capability selectors into plan follow-up turns', async () => {
+    const cases = [
+      {
+        label: 'inherited-implementation',
+        initialPrompt: '用 $feishu-delegate:message-feishu-coworkers 制定查询计划',
+        plan: '1. 查询消息',
+        decision: { kind: 'plan_review', behavior: 'allow' } as const,
+      },
+      {
+        label: 'inherited-revision',
+        initialPrompt: '用 $feishu-delegate:message-feishu-coworkers 制定查询计划',
+        plan: '1. 查询消息',
+        decision: {
+          kind: 'plan_review',
+          behavior: 'deny',
+          reason: '再补充消息范围',
+        } as const,
+      },
+      {
+        label: 'edited-implementation',
+        initialPrompt: '制定一个查询消息的计划',
+        plan: '1. 查询消息',
+        decision: {
+          kind: 'plan_review',
+          behavior: 'allow',
+          editedPlan:
+            '1. 用 $feishu-delegate:message-feishu-coworkers 查询消息',
+        } as const,
+      },
+      {
+        label: 'feedback-revision',
+        initialPrompt: '制定一个查询消息的计划',
+        plan: '1. 查询消息',
+        decision: {
+          kind: 'plan_review',
+          behavior: 'deny',
+          reason:
+            '请改用 $feishu-delegate:message-feishu-coworkers 并补充消息范围',
+        } as const,
+      },
+    ];
+
+    for (const testCase of cases) {
+      let turnSeq = 0;
+      const agent = new CodexAgent(
+        createDeps(
+          {},
+          {
+            capabilityRouting,
+            getMcpToolApprovalPolicy: () => 'auto-approve',
+          },
+        ),
+      );
+      const host = installFakeHost(
+        agent,
+        (method) => {
+          if (method === Method.TurnStart) {
+            turnSeq += 1;
+            return { turn: { id: `${testCase.label}-turn-${turnSeq}` } };
+          }
+          return undefined;
+        },
+        { userAgent: 'mock-codex/0.145.0' },
+      );
+      const handle = await agent.startSession({
+        sessionId: `session-plan-${testCase.label}-capability-routing`,
+        model: 'gpt-5.4',
+        workingDir: '/repo',
+        planMode: true,
+      });
+      handle.setInteractionResolver(async () => testCase.decision);
+      await handle.send({
+        type: 'user',
+        content: testCase.initialPrompt,
+      });
+
+      const handlers = host.getThreadHandlers();
+      if (!handlers?.mcpServerElicitation) {
+        throw new Error('expected mcpServerElicitation handler');
+      }
+      const planTurnId = `${testCase.label}-turn-1`;
+      handlers.turnStarted?.({ threadId: 'start-thread-id', turn: { id: planTurnId } });
+      handlers.itemCompleted?.({
+        threadId: 'start-thread-id',
+        turnId: planTurnId,
+        item: { type: 'plan', id: `${planTurnId}-plan`, text: testCase.plan },
+      } as never);
+      handlers.turnCompleted?.({
+        threadId: 'start-thread-id',
+        turn: { id: planTurnId, status: 'completed' },
+      });
+
+      await vi.waitFor(() => {
+        expect(
+          host.request.mock.calls.filter(([method]) => method === Method.TurnStart),
+        ).toHaveLength(2);
+      });
+      const followUpTurnId = `${testCase.label}-turn-2`;
+      handlers.itemStarted?.({
+        threadId: 'start-thread-id',
+        turnId: followUpTurnId,
+        item: {
+          id: `${testCase.label}-routed-feishu-call`,
+          type: 'mcpToolCall',
+          server: 'cindy-routed-feishu-delegate',
+          tool: 'feishu_read_messages',
+          pluginId: 'feishu-delegate@personal',
+        },
+      });
+      await expect(
+        handlers.mcpServerElicitation({
+          threadId: 'start-thread-id',
+          turnId: followUpTurnId,
+          serverName: 'cindy-routed-feishu-delegate',
+          mode: 'form',
+          _meta: {
+            codex_approval_kind: 'mcp_tool_call',
+            tool_name: 'feishu_read_messages',
+          },
+          message: 'Allow tool call',
+          requestedSchema: {},
+        }),
+      ).resolves.toEqual({ action: 'accept', content: null, _meta: null });
+
+      await handle.close();
+    }
+  });
+
+  it('binds explicit capability selection before a pending turn/start response', async () => {
+    const pendingTurnStart = deferred<{ turn: { id: string } }>();
+    const agent = new CodexAgent(
+      createDeps(
+        {},
+        {
+          capabilityRouting,
+          getMcpToolApprovalPolicy: () => 'auto-approve',
+        },
+      ),
+    );
+    const host = installFakeHost(
+      agent,
+      (method) => {
+        if (method === Method.TurnStart) return pendingTurnStart.promise;
+        return undefined;
+      },
+      { userAgent: 'mock-codex/0.145.0' },
+    );
+    const handle = await agent.startSession({
+      sessionId: 'session-started-before-response-capability-routing',
+      model: 'gpt-5.4',
+      workingDir: '/repo',
+    });
+    const sendPromise = handle.send({
+      type: 'user',
+      content: '请用 $feishu-delegate:message-feishu-coworkers 查消息',
+    });
+    await vi.waitFor(() => {
+      expect(
+        host.request.mock.calls.filter(([method]) => method === Method.TurnStart),
+      ).toHaveLength(1);
+    });
+
+    const handlers = host.getThreadHandlers();
+    if (!handlers?.mcpServerElicitation) {
+      throw new Error('expected mcpServerElicitation handler');
+    }
+    handlers.turnStarted?.({
+      threadId: 'start-thread-id',
+      turn: { id: 'early-capability-turn' },
+    });
+    handlers.itemStarted?.({
+      threadId: 'start-thread-id',
+      turnId: 'early-capability-turn',
+      item: {
+        id: 'early-routed-feishu-call',
+        type: 'mcpToolCall',
+        server: 'cindy-routed-feishu-delegate',
+        tool: 'feishu_read_messages',
+        pluginId: 'feishu-delegate@personal',
+      },
+    });
+    await expect(
+      handlers.mcpServerElicitation({
+        threadId: 'start-thread-id',
+        turnId: 'early-capability-turn',
+        serverName: 'cindy-routed-feishu-delegate',
+        mode: 'form',
+        _meta: {
+          codex_approval_kind: 'mcp_tool_call',
+          tool_name: 'feishu_read_messages',
+        },
+        message: 'Allow tool call',
+        requestedSchema: {},
+      }),
+    ).resolves.toEqual({ action: 'accept', content: null, _meta: null });
+
+    pendingTurnStart.resolve({ turn: { id: 'early-capability-turn' } });
+    await sendPromise;
+    await handle.close();
+  });
+
+  it('does not unlock a downstream MCP when an explicit steering message is rejected', async () => {
+    const steerAck = deferred<{ turnId: string }>();
+    const agent = new CodexAgent(
+      createDeps(
+        {},
+        {
+          capabilityRouting,
+          getMcpToolApprovalPolicy: () => 'auto-approve',
+        },
+      ),
+    );
+    const host = installFakeHost(
+      agent,
+      (method) => {
+        if (method === Method.TurnStart) {
+          return { turn: { id: 'turn-rejected-capability-steer' } };
+        }
+        if (method === Method.TurnSteer) {
+          return steerAck.promise;
+        }
+        return undefined;
+      },
+      { userAgent: 'mock-codex/0.145.0' },
+    );
+    const handle = await agent.startSession({
+      sessionId: 'session-rejected-capability-steer',
+      model: 'gpt-5.4',
+      workingDir: '/repo',
+    });
+    await handle.send({
+      type: 'user',
+      content: '查一下我和康康的飞书消息',
+    });
+    const handlers = host.getThreadHandlers();
+    if (!handlers?.mcpServerElicitation) {
+      throw new Error('expected mcpServerElicitation handler');
+    }
+    handlers.itemStarted?.({
+      threadId: 'start-thread-id',
+      turnId: 'turn-rejected-capability-steer',
+      item: {
+        id: 'rejected-steer-routed-feishu-call',
+        type: 'mcpToolCall',
+        server: 'cindy-routed-feishu-delegate',
+        tool: 'feishu_read_messages',
+        pluginId: 'feishu-delegate@personal',
+      },
+    });
+    const steerPromise = handle.steer({
+      type: 'user',
+      content: '/feishu-delegate:message-feishu-coworkers 查一下康康',
+    });
+    await vi.waitFor(() => {
+      expect(
+        host.request.mock.calls.filter(([method]) => method === Method.TurnSteer),
+      ).toHaveLength(1);
+    });
+    let elicitationSettled = false;
+    const elicitationPromise = handlers.mcpServerElicitation({
+        threadId: 'start-thread-id',
+        turnId: 'turn-rejected-capability-steer',
+        serverName: 'cindy-routed-feishu-delegate',
+        mode: 'form',
+        _meta: {
+          codex_approval_kind: 'mcp_tool_call',
+          tool_name: 'feishu_read_messages',
+        },
+        message: 'Allow tool call',
+        requestedSchema: {},
+      }).then((result) => {
+        elicitationSettled = true;
+        return result;
+      });
+    await Promise.resolve();
+    expect(elicitationSettled).toBe(false);
+
+    const serverError = Object.assign(
+      new Error(
+        'expected active turn id turn-rejected-capability-steer but found another-turn',
+      ),
+      { code: -32600 },
+    );
+    const steerAssertion = expect(steerPromise).rejects.toThrow(
+      'No active Codex turn to steer',
+    );
+    steerAck.reject(serverError);
+    await steerAssertion;
+    await expect(elicitationPromise).resolves.toEqual({
+      action: 'decline',
+      content: null,
+      _meta: null,
+    });
+
+    await handle.close();
+  });
+
+  it('waits for a steer acknowledgement before applying its explicit capability selection', async () => {
+    const steerAck = deferred<{ turnId: string }>();
+    const agent = new CodexAgent(
+      createDeps(
+        {},
+        {
+          capabilityRouting,
+          getMcpToolApprovalPolicy: () => 'auto-approve',
+        },
+      ),
+    );
+    const host = installFakeHost(
+      agent,
+      (method) => {
+        if (method === Method.TurnStart) {
+          return { turn: { id: 'turn-pending-capability-steer' } };
+        }
+        if (method === Method.TurnSteer) return steerAck.promise;
+        return undefined;
+      },
+      { userAgent: 'mock-codex/0.145.0' },
+    );
+    const handle = await agent.startSession({
+      sessionId: 'session-pending-capability-steer',
+      model: 'gpt-5.4',
+      workingDir: '/repo',
+    });
+    await handle.send({
+      type: 'user',
+      content: '查一下我和康康的飞书消息',
+    });
+    const handlers = host.getThreadHandlers();
+    if (!handlers?.mcpServerElicitation) {
+      throw new Error('expected mcpServerElicitation handler');
+    }
+    handlers.itemStarted?.({
+      threadId: 'start-thread-id',
+      turnId: 'turn-pending-capability-steer',
+      item: {
+        id: 'pending-steer-routed-feishu-call',
+        type: 'mcpToolCall',
+        server: 'cindy-routed-feishu-delegate',
+        tool: 'feishu_read_messages',
+        pluginId: 'feishu-delegate@personal',
+      },
+    });
+    const steerPromise = handle.steer({
+      type: 'user',
+      content: '/feishu-delegate:message-feishu-coworkers 查一下康康',
+    });
+    await vi.waitFor(() => {
+      expect(
+        host.request.mock.calls.filter(([method]) => method === Method.TurnSteer),
+      ).toHaveLength(1);
+    });
+    let elicitationSettled = false;
+    const elicitationPromise = handlers.mcpServerElicitation({
+      threadId: 'start-thread-id',
+      turnId: 'turn-pending-capability-steer',
+      serverName: 'cindy-routed-feishu-delegate',
+      mode: 'form',
+      _meta: {
+        codex_approval_kind: 'mcp_tool_call',
+        tool_name: 'feishu_read_messages',
+      },
+      message: 'Allow tool call',
+      requestedSchema: {},
+    }).then((result) => {
+      elicitationSettled = true;
+      return result;
+    });
+    await Promise.resolve();
+    expect(elicitationSettled).toBe(false);
+
+    steerAck.resolve({ turnId: 'turn-pending-capability-steer' });
+    await steerPromise;
+    await expect(elicitationPromise).resolves.toEqual({
+      action: 'accept',
+      content: null,
+      _meta: null,
+    });
+
+    await handle.close();
+  });
+
+  it('records explicit capability selection after a late steer acknowledgement', async () => {
+    const steerAck = deferred<{ turnId: string }>();
+    const agent = new CodexAgent(
+      createDeps(
+        {},
+        {
+          capabilityRouting,
+          getMcpToolApprovalPolicy: () => 'auto-approve',
+        },
+      ),
+    );
+    const host = installFakeHost(
+      agent,
+      (method) => {
+        if (method === Method.TurnStart) {
+          return { turn: { id: 'turn-late-capability-steer' } };
+        }
+        if (method === Method.TurnSteer) return steerAck.promise;
+        return undefined;
+      },
+      { userAgent: 'mock-codex/0.145.0' },
+    );
+    const handle = await agent.startSession({
+      sessionId: 'session-late-capability-steer',
+      model: 'gpt-5.4',
+      workingDir: '/repo',
+    });
+    await handle.send({
+      type: 'user',
+      content: '查一下飞书消息',
+    });
+    const handlers = host.getThreadHandlers();
+    if (!handlers?.mcpServerElicitation) {
+      throw new Error('expected mcpServerElicitation handler');
+    }
+    const invokeRoutedTool = async (itemId: string) => {
+      handlers.itemStarted?.({
+        threadId: 'start-thread-id',
+        turnId: 'turn-late-capability-steer',
+        item: {
+          id: itemId,
+          type: 'mcpToolCall',
+          server: 'cindy-routed-feishu-delegate',
+          tool: 'feishu_read_messages',
+          pluginId: 'feishu-delegate@personal',
+        },
+      });
+      return handlers.mcpServerElicitation!({
+        threadId: 'start-thread-id',
+        turnId: 'turn-late-capability-steer',
+        serverName: 'cindy-routed-feishu-delegate',
+        mode: 'form',
+        _meta: {
+          codex_approval_kind: 'mcp_tool_call',
+          tool_name: 'feishu_read_messages',
+        },
+        message: 'Allow tool call',
+        requestedSchema: {},
+      });
+    };
+
+    vi.useFakeTimers();
+    try {
+      const steerPromise = handle.steer({
+        type: 'user',
+        content: '/feishu-delegate:message-feishu-coworkers 查一下康康',
+      });
+      for (let i = 0; i < 5; i += 1) {
+        if (host.request.mock.calls.some(([method]) => method === Method.TurnSteer)) break;
+        await Promise.resolve();
+      }
+      const timeoutAssertion = expect(steerPromise).rejects.toThrow(
+        /did not acknowledge/i,
+      );
+      await vi.advanceTimersByTimeAsync(10_000);
+      await timeoutAssertion;
+
+      await expect(invokeRoutedTool('before-late-ack')).resolves.toEqual({
+        action: 'decline',
+        content: null,
+        _meta: null,
+      });
+      steerAck.resolve({ turnId: 'turn-late-capability-steer' });
+      await Promise.resolve();
+      await Promise.resolve();
+      await expect(invokeRoutedTool('after-late-ack')).resolves.toEqual({
+        action: 'accept',
+        content: null,
+        _meta: null,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
     await handle.close();
   });
 });
@@ -1879,6 +2618,154 @@ describe('CodexAgent.startSession developerInstructions', () => {
     await proxyHandle.close();
   });
 
+  it('reports Codex child and descendant threads to the host-owned proxy route registry', async () => {
+    const registerCodexChildThreadForParent = vi.fn();
+    const registerCodexMcpThreadContext = vi.fn();
+    const unregisterCodexMcpThreadContext = vi.fn();
+    const agent = new CodexAgent(createDeps(
+      { systemPrompt: 'HOST PRODUCT PROMPT' },
+      {
+        registerCodexSystemPromptForThread: vi.fn(),
+        registerCodexChildThreadForParent,
+        registerCodexMcpThreadContext,
+        unregisterCodexMcpThreadContext,
+      },
+    ));
+    const host = installFakeHost(agent, undefined, { codexProxyActive: true });
+    const handle = await agent.startSession({
+      sessionId: 'session-child-route',
+      model: 'gpt-5.4',
+      workingDir: '/repo',
+    });
+
+    const handlers = host.getThreadHandlers();
+    if (!handlers?.descendantThreadStarted) {
+      throw new Error('expected descendantThreadStarted handler');
+    }
+    handlers.descendantThreadStarted({
+      thread: {
+        id: 'child-thread-id',
+        parentThreadId: 'start-thread-id',
+      },
+    });
+    handlers.descendantThreadStarted({
+      thread: {
+        id: 'grandchild-thread-id',
+        parentThreadId: 'child-thread-id',
+      },
+    });
+
+    expect(registerCodexChildThreadForParent).toHaveBeenNthCalledWith(1, {
+      parentThreadId: 'start-thread-id',
+      childThreadId: 'child-thread-id',
+    });
+    expect(registerCodexChildThreadForParent).toHaveBeenNthCalledWith(2, {
+      parentThreadId: 'child-thread-id',
+      childThreadId: 'grandchild-thread-id',
+    });
+    expect(registerCodexMcpThreadContext).toHaveBeenNthCalledWith(2, {
+      threadId: 'child-thread-id',
+      sessionId: 'session-child-route',
+      workingDir: '/repo',
+      vendorOptions: {},
+    });
+    expect(registerCodexMcpThreadContext).toHaveBeenNthCalledWith(3, {
+      threadId: 'grandchild-thread-id',
+      sessionId: 'session-child-route',
+      workingDir: '/repo',
+      vendorOptions: {},
+    });
+
+    await handle.close();
+    expect(unregisterCodexMcpThreadContext).toHaveBeenCalledWith('start-thread-id');
+    expect(unregisterCodexMcpThreadContext).toHaveBeenCalledWith('child-thread-id');
+    expect(unregisterCodexMcpThreadContext).toHaveBeenCalledWith('grandchild-thread-id');
+  });
+
+  it('keeps thread/start developerInstructions on the websocket provider and skips proxy registration', async () => {
+    const registerCodexSystemPromptForThread = vi.fn();
+    const agent = new CodexAgent(createDeps(
+      { systemPrompt: 'HOST PRODUCT PROMPT' },
+      { registerCodexSystemPromptForThread },
+    ));
+    const host = installFakeHost(agent, undefined, {
+      codexProxyActive: true,
+      remoteCompactionProviderId: 'cindy_openai',
+    });
+
+    const handle = await agent.startSession({
+      sessionId: 'session-websocket-start',
+      model: 'gpt-5.4',
+      providerId: 'openai',
+      workingDir: '/repo',
+      userPrompt: 'USER PROMPT',
+    });
+    const params = host.request.mock.calls.find(([method]) => method === Method.ThreadStart)?.[1] as {
+      developerInstructions?: string;
+      modelProvider?: string;
+    };
+
+    expect(params.modelProvider).toBe('cindy_openai');
+    expect(params.developerInstructions).toContain('HOST PRODUCT PROMPT');
+    expect(params.developerInstructions).toContain('USER PROMPT');
+    expect(registerCodexSystemPromptForThread).not.toHaveBeenCalled();
+    expect(handle.codexProductPromptDelivery).toEqual({
+      threadId: 'start-thread-id',
+      historyHasProductPrompt: true,
+    });
+    await handle.close();
+  });
+
+  it('reinjects websocket developerInstructions when daemon recovery resumes the thread', async () => {
+    const registerCodexSystemPromptForThread = vi.fn();
+    const agent = new CodexAgent(createDeps(
+      { systemPrompt: 'HOST PRODUCT PROMPT' },
+      { registerCodexSystemPromptForThread },
+    ));
+    let turnStarts = 0;
+    const host = installFakeHost(agent, (method) => {
+      if (method === Method.TurnStart) {
+        turnStarts += 1;
+        if (turnStarts === 1) throw new Error('thread not found');
+        return { turn: { id: `turn-${turnStarts}` } };
+      }
+      if (method === Method.ThreadResume) {
+        return {
+          thread: { id: 'start-thread-id' },
+          model: 'gpt-5.4',
+          modelProvider: 'cindy_openai',
+          cwd: '/repo',
+        };
+      }
+      return undefined;
+    }, {
+      codexProxyActive: true,
+      remoteCompactionProviderId: 'cindy_openai',
+    });
+
+    const handle = await agent.startSession({
+      sessionId: 'session-websocket-daemon-recovery',
+      model: 'gpt-5.4',
+      providerId: 'openai',
+      workingDir: '/repo',
+      userPrompt: 'USER PROMPT',
+    });
+    await handle.send({ type: 'user', content: 'hello' });
+
+    const startParams = host.request.mock.calls.find(
+      ([method]) => method === Method.ThreadStart,
+    )?.[1] as { developerInstructions?: string };
+    const resumeParams = host.request.mock.calls.find(
+      ([method]) => method === Method.ThreadResume,
+    )?.[1] as { developerInstructions?: string; modelProvider?: string };
+    expect(resumeParams.modelProvider).toBe('cindy_openai');
+    expect(resumeParams.developerInstructions).toBe(startParams.developerInstructions);
+    expect(resumeParams.developerInstructions).toContain('HOST PRODUCT PROMPT');
+    expect(resumeParams.developerInstructions).toContain('USER PROMPT');
+    expect(registerCodexSystemPromptForThread).not.toHaveBeenCalled();
+    await handle.close();
+  });
+
   it('omits thread/resume developerInstructions and registers prompt when codex proxy is active', async () => {
     const runtimeConfig = { systemPrompt: 'HOST PRODUCT PROMPT' };
     const userPrompt = [
@@ -1933,6 +2820,78 @@ describe('CodexAgent.startSession developerInstructions', () => {
 
     await startBaselineHandle.close();
     await proxyHandle.close();
+  });
+
+  it('keeps thread/resume developerInstructions on the websocket provider when history lacks them', async () => {
+    const registerCodexSystemPromptForThread = vi.fn();
+    const agent = new CodexAgent(createDeps(
+      { systemPrompt: 'HOST PRODUCT PROMPT' },
+      { registerCodexSystemPromptForThread },
+    ));
+    const host = installFakeHost(agent, undefined, {
+      codexProxyActive: true,
+      remoteCompactionProviderId: 'cindy_openai',
+    });
+
+    const handle = await agent.startSession({
+      sessionId: 'session-websocket-resume',
+      model: 'gpt-5.4',
+      providerId: 'openai',
+      workingDir: '/repo',
+      resumeSessionId: '123e4567-e89b-12d3-a456-426614174000',
+      codexHistoryHasProductPrompt: false,
+      userPrompt: 'USER PROMPT',
+    });
+    const params = host.request.mock.calls.find(([method]) => method === Method.ThreadResume)?.[1] as {
+      developerInstructions?: string;
+      modelProvider?: string;
+    };
+
+    expect(params.modelProvider).toBe('cindy_openai');
+    expect(params.developerInstructions).toContain('HOST PRODUCT PROMPT');
+    expect(params.developerInstructions).toContain('USER PROMPT');
+    expect(registerCodexSystemPromptForThread).not.toHaveBeenCalled();
+    expect(handle.codexProductPromptDelivery).toEqual({
+      threadId: 'resume-thread-id',
+      historyHasProductPrompt: true,
+    });
+    await handle.close();
+  });
+
+  it('keeps thread/resume developerInstructions on the websocket provider when history already contains them', async () => {
+    const registerCodexSystemPromptForThread = vi.fn();
+    const agent = new CodexAgent(createDeps(
+      { systemPrompt: 'HOST PRODUCT PROMPT' },
+      { registerCodexSystemPromptForThread },
+    ));
+    const host = installFakeHost(agent, undefined, {
+      codexProxyActive: true,
+      remoteCompactionProviderId: 'cindy_openai',
+    });
+
+    const handle = await agent.startSession({
+      sessionId: 'session-websocket-resume-existing-prompt',
+      model: 'gpt-5.4',
+      providerId: 'openai',
+      workingDir: '/repo',
+      resumeSessionId: '123e4567-e89b-12d3-a456-426614174000',
+      codexHistoryHasProductPrompt: true,
+      userPrompt: 'USER PROMPT',
+    });
+    const params = host.request.mock.calls.find(([method]) => method === Method.ThreadResume)?.[1] as {
+      developerInstructions?: string;
+      modelProvider?: string;
+    };
+
+    expect(params.modelProvider).toBe('cindy_openai');
+    expect(params.developerInstructions).toContain('HOST PRODUCT PROMPT');
+    expect(params.developerInstructions).toContain('USER PROMPT');
+    expect(registerCodexSystemPromptForThread).not.toHaveBeenCalled();
+    expect(handle.codexProductPromptDelivery).toEqual({
+      threadId: 'resume-thread-id',
+      historyHasProductPrompt: true,
+    });
+    await handle.close();
   });
 
   it('omits developerInstructions from thread/resume params when codex proxy is inactive and history already has product prompt', async () => {
@@ -2705,6 +3664,66 @@ describe('CodexAgent MCP thread context hooks', () => {
     ).toBe(pushCountAfterSet);
 
     await handle.close();
+    await agent.dispose();
+  });
+
+  it('uses the home directory to list global skills for a new conversation without a cwd', async () => {
+    const home = os.homedir();
+    MockCodexTransport.onCreate = (transport) => {
+      transport.setMockResponse(Method.SkillsList, {
+        result: {
+          data: [{
+            cwd: home,
+            skills: [
+              {
+                name: 'pr-watch',
+                description: 'Watch PR feedback',
+                path: path.join(home, '.agents', 'skills', 'pr-watch', 'SKILL.md'),
+                scope: 'user',
+                enabled: true,
+              },
+              {
+                name: 'openai-templates:artifact-template-report',
+                description: 'Plugin-internal template',
+                path: path.join(
+                  home,
+                  '.codex',
+                  'plugins',
+                  'cache',
+                  'openai-curated-remote',
+                  'openai-templates',
+                  '0.1.0',
+                  'skills',
+                  'artifact-template-report',
+                  'SKILL.md',
+                ),
+                scope: 'user',
+                enabled: true,
+              },
+              {
+                name: 'skill-creator',
+                description: 'System skill',
+                path: path.join(home, '.codex', 'skills', '.system', 'skill-creator', 'SKILL.md'),
+                scope: 'system',
+                enabled: true,
+              },
+            ],
+            errors: [],
+          }],
+        },
+      });
+    };
+    const agent = new CodexAgent(createDeps());
+
+    await expect(agent.listAgentSkills({})).resolves.toMatchObject({
+      skills: [expect.objectContaining({ name: 'pr-watch', scope: 'user' })],
+    });
+
+    const request = createdTransports[0].lines
+      .map((line) => JSON.parse(line) as { method?: string; params?: unknown })
+      .find((line) => line.method === Method.SkillsList);
+    expect(request?.params).toMatchObject({ cwds: [home] });
+
     await agent.dispose();
   });
 
@@ -4153,6 +5172,7 @@ describe('CodexAgent MCP thread context hooks', () => {
 
     const handle = await agent.startSession({
       sessionId: 'session-codex-mcp-context',
+      sessionInstanceId: 'instance-codex-mcp-context',
       model: 'gpt-5.4',
       workingDir: '/repo',
       vendorOptions: { orcaRole: 'lead' },
@@ -4162,13 +5182,60 @@ describe('CodexAgent MCP thread context hooks', () => {
     expect(registerCodexMcpThreadContext).toHaveBeenCalledWith({
       threadId: 'start-thread-id',
       sessionId: 'session-codex-mcp-context',
+      sessionInstanceId: 'instance-codex-mcp-context',
       workingDir: '/repo',
       vendorOptions: { orcaRole: 'lead' },
     });
 
     await handle.close();
     expect(unregisterCodexMcpThreadContext).toHaveBeenCalledTimes(1);
-    expect(unregisterCodexMcpThreadContext).toHaveBeenCalledWith('start-thread-id');
+    expect(unregisterCodexMcpThreadContext).toHaveBeenCalledWith(
+      'start-thread-id',
+      'instance-codex-mcp-context',
+    );
+  });
+
+  it('applies instance-bound MCP URLs to both thread/start and thread/resume', async () => {
+    const buildConfig = (sessionInstanceId?: string) => ({
+      'mcp_servers.cindy_ghosts.url': `http://127.0.0.1:47100/mcp/cindy_ghosts?instance=${sessionInstanceId}`,
+    });
+
+    const startAgent = new CodexAgent(createDeps());
+    const startHost = installFakeHost(startAgent, undefined, {
+      buildSessionMcpConfig: buildConfig,
+    });
+    const startHandle = await startAgent.startSession({
+      sessionId: 'session-instance-start',
+      sessionInstanceId: 'instance-start',
+      model: 'gpt-5.4',
+      workingDir: '/repo',
+    });
+    const startParams = startHost.request.mock.calls.find(
+      ([method]) => method === Method.ThreadStart,
+    )?.[1] as { config?: Record<string, unknown> };
+    expect(startHost.getSessionMcpConfig).toHaveBeenCalledWith('instance-start');
+    expect(startParams.config).toMatchObject(buildConfig('instance-start'));
+
+    const resumeAgent = new CodexAgent(createDeps());
+    const resumeHost = installFakeHost(resumeAgent, undefined, {
+      buildSessionMcpConfig: buildConfig,
+    });
+    const resumeHandle = await resumeAgent.startSession({
+      sessionId: 'session-instance-resume',
+      sessionInstanceId: 'instance-resume',
+      resumeSessionId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      model: 'gpt-5.4',
+      workingDir: '/repo',
+    });
+    const resumeParams = resumeHost.request.mock.calls.find(
+      ([method]) => method === Method.ThreadResume,
+    )?.[1] as { config?: Record<string, unknown> };
+    expect(resumeHost.getSessionMcpConfig).toHaveBeenCalledWith('instance-resume');
+    expect(resumeParams.config).toMatchObject(buildConfig('instance-resume'));
+    expect(resumeParams.config).not.toEqual(startParams.config);
+
+    await startHandle.close();
+    await resumeHandle.close();
   });
 
   it('unsubscribes the app-server thread when closing a local session without stopping the shared host', async () => {
@@ -4195,7 +5262,7 @@ describe('CodexAgent MCP thread context hooks', () => {
     expect(transport!.closed).toBe(false);
   });
 
-  it('finishes closing when the app-server stays connected without answering thread/unsubscribe', async () => {
+  it('retires the shared app-server when thread/unsubscribe stays unanswered', async () => {
     vi.useFakeTimers();
     try {
       MockCodexTransport.dropThreadUnsubscribe = true;
@@ -4211,10 +5278,535 @@ describe('CodexAgent MCP thread context hooks', () => {
       await vi.advanceTimersByTimeAsync(5_000);
 
       await expect(closePromise).resolves.toBeUndefined();
-      expect(createdTransports[0]?.closed).toBe(false);
+      // A timed-out thread/unsubscribe means the daemon may still keep the
+      // thread loaded. Retiring the shared host prevents a later Cindy task
+      // from resuming that loaded thread with a stale MCP identity/config.
+      expect(createdTransports[0]?.closed).toBe(true);
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('retires the captured host and rejects an unused-thread replacement when release fails', async () => {
+    const agent = new CodexAgent(createDeps());
+    let threadStartSeq = 0;
+    const host = installFakeHost(agent, (method) => {
+      if (method === Method.ThreadStart) {
+        return {
+          thread: { id: `replacement-thread-${++threadStartSeq}` },
+          model: 'gpt-5.4',
+          modelProvider: 'openai',
+          cwd: '/repo',
+        };
+      }
+      return undefined;
+    });
+    const retireHostKey = vi
+      .spyOn(
+        agent as unknown as { retireHostKey: (...args: unknown[]) => Promise<void> },
+        'retireHostKey',
+      )
+      .mockResolvedValue(undefined);
+    const handle = await agent.startSession({
+      sessionId: 'session-unused-replacement-release-failure',
+      model: 'gpt-5.4',
+      workingDir: '/repo',
+    });
+    const initialSubscription = host.subscribeThread.mock.results[0]?.value;
+    const release = initialSubscription?.release;
+    if (!release) throw new Error('expected initial subscription');
+    release.mockRejectedValueOnce(new Error('thread/unsubscribe failed'));
+
+    await handle.setExtraDirs?.(['/shared-before-first-turn']);
+    await expect(
+      handle.send(
+        { type: 'user', content: 'use the reference on the first turn' },
+        { throwOnStartFailure: true },
+      ),
+    ).rejects.toThrow(/session expired|reference profile replacement cleanup/i);
+
+    expect(retireHostKey).toHaveBeenCalledWith(
+      'local',
+      'unused profile replacement release',
+      expect.objectContaining({ failIfActive: false }),
+    );
+    expect(host.subscribeThread).toHaveBeenCalledTimes(1);
+  });
+
+  describe('websocket body recovery auto-retry', () => {
+    const ENCRYPTED_ERROR =
+      'Encrypted content could not be decrypted or parsed. code=invalid_encrypted_content';
+
+    function installRecoveryHost(agent: CodexAgent): ReturnType<typeof installFakeHost> {
+      let turnSeq = 0;
+      return installFakeHost(agent, (method) => {
+        if (method === Method.TurnStart) {
+          turnSeq += 1;
+          return { turn: { id: `turn-${turnSeq}` } };
+        }
+        return undefined;
+      });
+    }
+
+    it('arms HTTP fallback and retries the same zero-output turn once', async () => {
+      const armCodexHttpRecovery = vi.fn(() => 'encrypted_content');
+      const agent = new CodexAgent(createDeps({}, { armCodexHttpRecovery }));
+      const host = installRecoveryHost(agent);
+      const handle = await agent.startSession({
+        sessionId: 'session-ws-body-recovery',
+        model: 'gpt-5.4',
+        workingDir: '/repo',
+      });
+      const events: AgentEvent[] = [];
+      void (async () => {
+        for await (const event of handle.events()) events.push(event);
+      })();
+
+      await handle.send({ type: 'user', content: 'hello' });
+      const handlers = host.getThreadHandlers();
+      if (!handlers?.error || !handlers.turnCompleted) throw new Error('expected handlers');
+
+      handlers.error({
+        threadId: 'start-thread-id',
+        turnId: 'turn-1',
+        willRetry: false,
+        error: {
+          message: 'Bad request',
+          additionalDetails: ENCRYPTED_ERROR,
+          codexErrorInfo: 'badRequest',
+        },
+      });
+      expect(
+        host.request.mock.calls.filter(([method]) => method === Method.TurnStart),
+      ).toHaveLength(1);
+      handlers.turnCompleted({
+        threadId: 'start-thread-id',
+        turn: {
+          id: 'turn-1',
+          status: 'failed',
+          error: { message: ENCRYPTED_ERROR },
+        },
+      });
+
+      await waitForExpectation(() => {
+        expect(
+          host.request.mock.calls.filter(([method]) => method === Method.TurnStart),
+        ).toHaveLength(2);
+        expect(handle.getCurrentTurnId?.()).toBe('turn-2');
+      });
+      expect(armCodexHttpRecovery).toHaveBeenCalledWith({
+        sessionId: 'session-ws-body-recovery',
+        threadId: 'start-thread-id',
+        message: 'Bad request',
+        additionalDetails: ENCRYPTED_ERROR,
+      });
+      expect(
+        events.some(
+          (event) =>
+            event.type === 'error' &&
+            (event.data as { isTerminal?: boolean }).isTerminal === true,
+        ),
+      ).toBe(false);
+
+      // 原 WS turn 的迟到终态已落墓碑，不得把 HTTP 重投收口掉。
+      handlers.turnCompleted({
+        threadId: 'start-thread-id',
+        turn: {
+          id: 'turn-1',
+          status: 'failed',
+          error: { message: ENCRYPTED_ERROR },
+        },
+      });
+      expect(handle.getCurrentTurnId?.()).toBe('turn-2');
+
+      handlers.turnCompleted({
+        threadId: 'start-thread-id',
+        turn: { id: 'turn-2', status: 'completed' },
+      });
+      await waitForExpectation(() => {
+        expect(events.some((event) => event.type === 'done')).toBe(true);
+      });
+      await handle.close();
+    });
+
+    it.each([false, true])(
+      'defers HTTP fallback until an early recovery error gets turn/start ownership (started=%s)',
+      async (startedBeforeError) => {
+        const firstStart = deferred<{ turn: { id: string } }>();
+        let turnStarts = 0;
+        const armCodexHttpRecovery = vi.fn(() => 'encrypted_content');
+        const agent = new CodexAgent(createDeps({}, { armCodexHttpRecovery }));
+        const host = installFakeHost(agent, (method) => {
+          if (method !== Method.TurnStart) return undefined;
+          turnStarts += 1;
+          if (turnStarts === 1) return firstStart.promise;
+          return { turn: { id: `turn-${turnStarts}` } };
+        });
+        const handle = await agent.startSession({
+          sessionId: 'session-ws-body-recovery-before-start-response',
+          model: 'gpt-5.4',
+          workingDir: '/repo',
+        });
+        const events: AgentEvent[] = [];
+        void (async () => {
+          for await (const event of handle.events()) events.push(event);
+        })();
+
+        const sendPromise = handle.send({ type: 'user', content: 'hello' });
+        await waitForExpectation(() => expect(turnStarts).toBe(1));
+        const handlers = host.getThreadHandlers();
+        if (!handlers?.error || !handlers.turnStarted || !handlers.turnCompleted) {
+          throw new Error('expected handlers');
+        }
+        if (startedBeforeError) {
+          handlers.turnStarted({
+            threadId: 'start-thread-id',
+            turn: { id: 'turn-1' },
+          });
+        }
+        handlers.error({
+          threadId: 'start-thread-id',
+          turnId: 'turn-1',
+          willRetry: false,
+          error: {
+            message: 'Bad request',
+            additionalDetails: ENCRYPTED_ERROR,
+            codexErrorInfo: 'badRequest',
+          },
+        });
+
+        await Promise.resolve();
+        expect(turnStarts).toBe(1);
+        expect(events.some(
+          (event) =>
+            event.type === 'error'
+            && (event.data as { isTerminal?: boolean }).isTerminal === true,
+        )).toBe(false);
+        handlers.turnCompleted({
+          threadId: 'start-thread-id',
+          turn: {
+            id: 'turn-1',
+            status: 'failed',
+            error: { message: ENCRYPTED_ERROR },
+          },
+        });
+        expect(turnStarts).toBe(1);
+
+        firstStart.resolve({ turn: { id: 'turn-1' } });
+        await sendPromise;
+        await waitForExpectation(() => {
+          expect(turnStarts).toBe(2);
+          expect(handle.getCurrentTurnId?.()).toBe('turn-2');
+        });
+        expect(armCodexHttpRecovery).toHaveBeenCalledTimes(1);
+        expect(events.some(
+          (event) =>
+            event.type === 'error'
+            && (event.data as { isTerminal?: boolean }).isTerminal === true,
+        )).toBe(false);
+        await handle.close();
+      },
+    );
+
+    it.each([false, true])(
+      'defers HTTP fallback until an early failed turn/completed gets turn/start ownership (started=%s)',
+      async (startedBeforeCompletion) => {
+        const firstStart = deferred<{ turn: { id: string } }>();
+        let turnStarts = 0;
+        const armCodexHttpRecovery = vi.fn(() => 'encrypted_content');
+        const agent = new CodexAgent(createDeps({}, { armCodexHttpRecovery }));
+        const host = installFakeHost(agent, (method) => {
+          if (method !== Method.TurnStart) return undefined;
+          turnStarts += 1;
+          if (turnStarts === 1) return firstStart.promise;
+          return { turn: { id: `turn-${turnStarts}` } };
+        });
+        const handle = await agent.startSession({
+          sessionId: 'session-ws-body-recovery-completed-before-start-response',
+          model: 'gpt-5.4',
+          workingDir: '/repo',
+        });
+        const events: AgentEvent[] = [];
+        void (async () => {
+          for await (const event of handle.events()) events.push(event);
+        })();
+
+        const sendPromise = handle.send({ type: 'user', content: 'hello' });
+        await waitForExpectation(() => expect(turnStarts).toBe(1));
+        const handlers = host.getThreadHandlers();
+        if (!handlers?.turnCompleted || !handlers.turnStarted) throw new Error('expected handlers');
+        if (startedBeforeCompletion) {
+          handlers.turnStarted({
+            threadId: 'start-thread-id',
+            turn: { id: 'turn-1' },
+          });
+        }
+        handlers.turnCompleted({
+          threadId: 'start-thread-id',
+          turn: {
+            id: 'turn-1',
+            status: 'failed',
+            error: { message: ENCRYPTED_ERROR },
+          },
+        });
+
+        await Promise.resolve();
+        expect(turnStarts).toBe(1);
+        expect(events.some(
+          (event) =>
+            event.type === 'error'
+            && (event.data as { isTerminal?: boolean }).isTerminal === true,
+        )).toBe(false);
+
+        firstStart.resolve({ turn: { id: 'turn-1' } });
+        await sendPromise;
+        await waitForExpectation(() => {
+          expect(turnStarts).toBe(2);
+          expect(handle.getCurrentTurnId?.()).toBe('turn-2');
+        });
+        expect(armCodexHttpRecovery).toHaveBeenCalledTimes(1);
+        expect(events.some(
+          (event) =>
+            event.type === 'error'
+            && (event.data as { isTerminal?: boolean }).isTerminal === true,
+        )).toBe(false);
+        await handle.close();
+      },
+    );
+
+    it('surfaces one terminal failure when recovery completes before turn/start rejects', async () => {
+      const firstStart = deferred<{ turn: { id: string } }>();
+      const armCodexHttpRecovery = vi.fn(() => 'encrypted_content');
+      const agent = new CodexAgent(createDeps({}, { armCodexHttpRecovery }));
+      const host = installFakeHost(agent, (method) => {
+        if (method === Method.TurnStart) return firstStart.promise;
+        return undefined;
+      });
+      const handle = await agent.startSession({
+        sessionId: 'session-ws-body-recovery-start-rejects',
+        model: 'gpt-5.4',
+        workingDir: '/repo',
+      });
+      const events: AgentEvent[] = [];
+      void (async () => {
+        for await (const event of handle.events()) events.push(event);
+      })();
+
+      const sendPromise = handle.send({ type: 'user', content: 'hello' });
+      await waitForExpectation(() => {
+        expect(
+          host.request.mock.calls.filter(([method]) => method === Method.TurnStart),
+        ).toHaveLength(1);
+      });
+      const handlers = host.getThreadHandlers();
+      if (!handlers?.error || !handlers.turnCompleted) throw new Error('expected handlers');
+      handlers.error({
+        threadId: 'start-thread-id',
+        turnId: 'turn-1',
+        willRetry: false,
+        error: {
+          message: 'Bad request',
+          additionalDetails: ENCRYPTED_ERROR,
+          codexErrorInfo: 'badRequest',
+        },
+      });
+      handlers.turnCompleted({
+        threadId: 'start-thread-id',
+        turn: {
+          id: 'turn-1',
+          status: 'failed',
+          error: { message: ENCRYPTED_ERROR },
+        },
+      });
+      firstStart.reject(new Error('turn/start transport failed'));
+      await sendPromise;
+
+      await waitForExpectation(() => {
+        expect(events.filter(
+          (event) =>
+            event.type === 'error'
+            && (event.data as { isTerminal?: boolean }).isTerminal === true,
+        )).toHaveLength(1);
+      });
+      expect(
+        host.request.mock.calls.filter(([method]) => method === Method.TurnStart),
+      ).toHaveLength(1);
+      await handle.close();
+    });
+
+    it('cancels a recorded recovery intent without replaying the turn', async () => {
+      const armCodexHttpRecovery = vi.fn(() => 'encrypted_content');
+      const agent = new CodexAgent(createDeps({}, { armCodexHttpRecovery }));
+      const host = installRecoveryHost(agent);
+      const handle = await agent.startSession({
+        sessionId: 'session-ws-body-recovery-cancelled',
+        model: 'gpt-5.4',
+        workingDir: '/repo',
+      });
+
+      await handle.send({ type: 'user', content: 'hello' });
+      const handlers = host.getThreadHandlers();
+      if (!handlers?.error || !handlers.turnCompleted) throw new Error('expected handlers');
+      handlers.error({
+        threadId: 'start-thread-id',
+        turnId: 'turn-1',
+        willRetry: false,
+        error: {
+          message: 'Bad request',
+          additionalDetails: ENCRYPTED_ERROR,
+          codexErrorInfo: 'badRequest',
+        },
+      });
+
+      await handle.abort();
+      handlers.turnCompleted({
+        threadId: 'start-thread-id',
+        turn: {
+          id: 'turn-1',
+          status: 'failed',
+          error: { message: ENCRYPTED_ERROR },
+        },
+      });
+      await Promise.resolve();
+
+      expect(
+        host.request.mock.calls.filter(([method]) => method === Method.TurnStart),
+      ).toHaveLength(1);
+      expect(armCodexHttpRecovery).toHaveBeenCalledTimes(1);
+      expect(handle.isTurnRunning?.()).toBe(false);
+      await handle.close();
+    });
+
+    it('does not replay a recovery error after the turn has produced output', async () => {
+      const armCodexHttpRecovery = vi.fn(() => 'image_generation_id');
+      const agent = new CodexAgent(createDeps({}, { armCodexHttpRecovery }));
+      const host = installRecoveryHost(agent);
+      const handle = await agent.startSession({
+        sessionId: 'session-ws-body-recovery-output',
+        model: 'gpt-5.4',
+        workingDir: '/repo',
+      });
+      await handle.send({ type: 'user', content: 'hello' });
+      const handlers = host.getThreadHandlers();
+      if (!handlers?.error || !handlers.reasoningTextDelta) throw new Error('expected handlers');
+
+      handlers.reasoningTextDelta({
+        threadId: 'start-thread-id',
+        turnId: 'turn-1',
+        itemId: 'reasoning-1',
+        contentIndex: 0,
+        delta: 'already produced output',
+      });
+      handlers.error({
+        threadId: 'start-thread-id',
+        turnId: 'turn-1',
+        willRetry: false,
+        error: {
+          message: 'Image generation items without `id` are not supported for this request.',
+          codexErrorInfo: 'badRequest',
+        },
+      });
+      await Promise.resolve();
+
+      expect(armCodexHttpRecovery).not.toHaveBeenCalled();
+      expect(
+        host.request.mock.calls.filter(([method]) => method === Method.TurnStart),
+      ).toHaveLength(1);
+      expect(handle.isTurnRunning?.()).toBe(false);
+      await handle.close();
+    });
+
+    it('does not retry the same logical send again when the HTTP retry also fails', async () => {
+      const armCodexHttpRecovery = vi.fn(() => 'encrypted_content');
+      const agent = new CodexAgent(createDeps({}, { armCodexHttpRecovery }));
+      const host = installRecoveryHost(agent);
+      const handle = await agent.startSession({
+        sessionId: 'session-ws-body-recovery-once',
+        model: 'gpt-5.4',
+        workingDir: '/repo',
+      });
+      const events: AgentEvent[] = [];
+      void (async () => {
+        for await (const event of handle.events()) events.push(event);
+      })();
+
+      await handle.send({ type: 'user', content: 'hello' });
+      const handlers = host.getThreadHandlers();
+      if (!handlers?.error || !handlers.turnCompleted) throw new Error('expected handlers');
+
+      const failTurn = (turnId: string) => {
+        handlers.error?.({
+          threadId: 'start-thread-id',
+          turnId,
+          willRetry: false,
+          error: {
+            message: 'Bad request',
+            additionalDetails: ENCRYPTED_ERROR,
+            codexErrorInfo: 'badRequest',
+          },
+        });
+        handlers.turnCompleted?.({
+          threadId: 'start-thread-id',
+          turn: {
+            id: turnId,
+            status: 'failed',
+            error: { message: ENCRYPTED_ERROR },
+          },
+        });
+      };
+      failTurn('turn-1');
+      await waitForExpectation(() => {
+        expect(
+          host.request.mock.calls.filter(([method]) => method === Method.TurnStart),
+        ).toHaveLength(2);
+      });
+
+      failTurn('turn-2');
+      await waitForExpectation(() => {
+        expect(events.some(
+          (event) =>
+            event.type === 'error'
+            && (event.data as { isTerminal?: boolean }).isTerminal === true,
+        )).toBe(true);
+      });
+      expect(
+        host.request.mock.calls.filter(([method]) => method === Method.TurnStart),
+      ).toHaveLength(2);
+      expect(handle.isTurnRunning?.()).toBe(false);
+      await handle.close();
+    });
+
+    it('recovers from a failed turn/completed when no error notification was delivered', async () => {
+      const armCodexHttpRecovery = vi.fn(() => 'encrypted_content');
+      const agent = new CodexAgent(createDeps({}, { armCodexHttpRecovery }));
+      const host = installRecoveryHost(agent);
+      const handle = await agent.startSession({
+        sessionId: 'session-ws-body-recovery-completed-only',
+        model: 'gpt-5.4',
+        workingDir: '/repo',
+      });
+
+      await handle.send({ type: 'user', content: 'hello' });
+      const handlers = host.getThreadHandlers();
+      if (!handlers?.turnCompleted) throw new Error('expected turnCompleted handler');
+      handlers.turnCompleted({
+        threadId: 'start-thread-id',
+        turn: {
+          id: 'turn-1',
+          status: 'failed',
+          error: { message: ENCRYPTED_ERROR },
+        },
+      });
+
+      await waitForExpectation(() => {
+        expect(
+          host.request.mock.calls.filter(([method]) => method === Method.TurnStart),
+        ).toHaveLength(2);
+        expect(handle.getCurrentTurnId?.()).toBe('turn-2');
+      });
+      expect(armCodexHttpRecovery).toHaveBeenCalledTimes(1);
+      await handle.close();
+    });
   });
 
   // ── 服务过载（模型容量不足）退避重投 ──────────────────────────────────────
@@ -4238,6 +5830,27 @@ describe('CodexAgent MCP thread context hooks', () => {
     }
 
     const CAPACITY_MESSAGE = 'Selected model is at capacity. Please try a different model.';
+    const TERMINAL_RATE_LIMIT_MESSAGE =
+      'exceeded retry limit, last status: 429 Too Many Requests';
+
+    async function rejectCurrentTurnForTerminalRateLimit(
+      handle: AgentSessionHandle,
+      handlers: ThreadEventHandlers,
+    ): Promise<void> {
+      const turnId = handle.getCurrentTurnId?.() ?? '';
+      handlers.error?.({
+        threadId: 'start-thread-id',
+        turnId,
+        willRetry: false,
+        error: {
+          message: TERMINAL_RATE_LIMIT_MESSAGE,
+          codexErrorInfo: {
+            responseTooManyFailedAttempts: { httpStatusCode: 429 },
+          },
+        },
+      });
+      await vi.advanceTimersByTimeAsync(40_000);
+    }
 
     function turnStartCount(host: ReturnType<typeof installFakeHost>): number {
       return host.request.mock.calls.filter(([method]) => method === Method.TurnStart).length;
@@ -4311,6 +5924,254 @@ describe('CodexAgent MCP thread context hooks', () => {
         // 退避（首档 2s ±25%）后重投同一份 turnParams。
         await vi.advanceTimersByTimeAsync(3_000);
         expect(turnStartCount(host)).toBe(2);
+
+        await handle.close();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('retries a zero-output terminal 429 after the daemon exhausts its own retry budget', async () => {
+      vi.useFakeTimers();
+      try {
+        const agent = new CodexAgent(createDeps());
+        const host = installCapacityHost(agent);
+        const handle = await agent.startSession({
+          sessionId: 'session-terminal-rate-limit-retry',
+          model: 'gpt-5.4',
+          workingDir: '/repo',
+        });
+        await handle.send({ type: 'user', content: 'hello' });
+
+        const handlers = host.getThreadHandlers();
+        if (!handlers?.error) throw new Error('expected error handler');
+        const events: AgentEvent[] = [];
+        void (async () => {
+          for await (const event of handle.events()) events.push(event);
+        })();
+
+        handlers.error({
+          threadId: 'start-thread-id',
+          turnId: 'turn-1',
+          willRetry: false,
+          error: {
+            message: TERMINAL_RATE_LIMIT_MESSAGE,
+            codexErrorInfo: {
+              responseTooManyFailedAttempts: { httpStatusCode: 429 },
+            },
+          },
+        });
+        await vi.advanceTimersByTimeAsync(0);
+
+        const errorEvents = events.filter((event) => event.type === 'error');
+        expect(errorEvents).toHaveLength(1);
+        expect(errorEvents[0].data).toMatchObject({
+          errorStatus: 429,
+          isTerminal: false,
+          willRetry: true,
+        });
+        expect((errorEvents[0].data as { message: string }).message).toContain(
+          'rate-limit-retry 1/2',
+        );
+        expect(errorEvents[0].data).toMatchObject({
+          reason: 'terminal-rate-limit-retry',
+        });
+        expect(
+          events.some(
+            (event) =>
+              event.type === 'status' &&
+              (event.data as { isRunning?: boolean }).isRunning === false,
+          ),
+        ).toBe(false);
+
+        await vi.advanceTimersByTimeAsync(20_000);
+        expect(turnStartCount(host)).toBe(2);
+
+        await handle.close();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('stops terminal 429 outer retries after two attempts', async () => {
+      vi.useFakeTimers();
+      try {
+        const agent = new CodexAgent(createDeps());
+        const host = installCapacityHost(agent);
+        const handle = await agent.startSession({
+          sessionId: 'session-terminal-rate-limit-budget',
+          model: 'gpt-5.4',
+          workingDir: '/repo',
+        });
+        await handle.send({ type: 'user', content: 'hello' });
+
+        const handlers = host.getThreadHandlers();
+        if (!handlers?.error) throw new Error('expected error handler');
+        const events: AgentEvent[] = [];
+        void (async () => {
+          for await (const event of handle.events()) events.push(event);
+        })();
+
+        for (let i = 0; i < 3; i += 1) {
+          await rejectCurrentTurnForTerminalRateLimit(handle, handlers);
+        }
+
+        expect(turnStartCount(host)).toBe(1 + 2);
+        expect(
+          events.filter(
+            (event) =>
+              event.type === 'error' &&
+              (event.data as { isTerminal?: boolean }).isTerminal === true,
+          ),
+        ).toHaveLength(1);
+        expect(
+          events.some(
+            (event) =>
+              event.type === 'status' &&
+              (event.data as { isRunning?: boolean }).isRunning === false,
+          ),
+        ).toBe(true);
+
+        await handle.close();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it.each([
+      {
+        name: 'capacity then terminal rate limit',
+        failures: ['capacity', 'terminal-rate-limit', 'terminal-rate-limit'] as const,
+        expectedTurnStarts: 3,
+      },
+      {
+        name: 'terminal rate limit then capacity',
+        failures: [
+          'terminal-rate-limit',
+          'terminal-rate-limit',
+          'capacity',
+          'capacity',
+          'capacity',
+        ] as const,
+        expectedTurnStarts: 5,
+      },
+    ])(
+      'shares one replay budget across policies: $name',
+      async ({ failures, expectedTurnStarts }) => {
+        vi.useFakeTimers();
+        try {
+          const agent = new CodexAgent(createDeps());
+          const host = installCapacityHost(agent);
+          const handle = await agent.startSession({
+            sessionId: `session-shared-replay-budget-${failures[0]}`,
+            model: 'gpt-5.4',
+            workingDir: '/repo',
+          });
+          await handle.send({ type: 'user', content: 'hello' });
+
+          const handlers = host.getThreadHandlers();
+          if (!handlers?.error) throw new Error('expected error handler');
+          const events: AgentEvent[] = [];
+          void (async () => {
+            for await (const event of handle.events()) events.push(event);
+          })();
+
+          for (const failure of failures) {
+            if (failure === 'capacity') {
+              await rejectCurrentTurnForCapacity(handle, handlers);
+            } else {
+              await rejectCurrentTurnForTerminalRateLimit(handle, handlers);
+            }
+          }
+
+          // 两类错误共享同一 logical send 的 attempt：策略切换不能各自续满预算。
+          // 顺序不同只会选择当前 policy 的上限，绝不会叠成 4 + 2 次外层重投。
+          expect(turnStartCount(host)).toBe(expectedTurnStarts);
+          expect(
+            events.filter(
+              (event) =>
+                event.type === 'error' &&
+                (event.data as { isTerminal?: boolean }).isTerminal === true,
+            ),
+          ).toHaveLength(1);
+
+          await handle.close();
+        } finally {
+          vi.useRealTimers();
+        }
+      },
+    );
+
+    it('does not outer-retry a terminal 429 after the turn produced output', async () => {
+      vi.useFakeTimers();
+      try {
+        const agent = new CodexAgent(createDeps());
+        const host = installCapacityHost(agent);
+        const handle = await agent.startSession({
+          sessionId: 'session-terminal-rate-limit-output',
+          model: 'gpt-5.4',
+          workingDir: '/repo',
+        });
+        await handle.send({ type: 'user', content: 'hello' });
+
+        const handlers = host.getThreadHandlers();
+        if (!handlers?.error || !handlers.reasoningTextDelta) {
+          throw new Error('expected handlers');
+        }
+        handlers.reasoningTextDelta({
+          threadId: 'start-thread-id',
+          turnId: 'turn-1',
+          delta: 'already working',
+        } as never);
+        handlers.error({
+          threadId: 'start-thread-id',
+          turnId: 'turn-1',
+          willRetry: false,
+          error: {
+            message: TERMINAL_RATE_LIMIT_MESSAGE,
+            codexErrorInfo: {
+              responseTooManyFailedAttempts: { httpStatusCode: 429 },
+            },
+          },
+        });
+        await vi.advanceTimersByTimeAsync(40_000);
+
+        expect(turnStartCount(host)).toBe(1);
+        expect(handle.isTurnRunning?.()).toBe(false);
+
+        await handle.close();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not outer-retry terminal account usage limits even when the text contains 429', async () => {
+      vi.useFakeTimers();
+      try {
+        const agent = new CodexAgent(createDeps());
+        const host = installCapacityHost(agent);
+        const handle = await agent.startSession({
+          sessionId: 'session-terminal-usage-limit',
+          model: 'gpt-5.4',
+          workingDir: '/repo',
+        });
+        await handle.send({ type: 'user', content: 'hello' });
+
+        const handlers = host.getThreadHandlers();
+        if (!handlers?.error) throw new Error('expected error handler');
+        handlers.error({
+          threadId: 'start-thread-id',
+          turnId: 'turn-1',
+          willRetry: false,
+          error: {
+            message: TERMINAL_RATE_LIMIT_MESSAGE,
+            codexErrorInfo: 'usageLimitExceeded',
+          },
+        });
+        await vi.advanceTimersByTimeAsync(40_000);
+
+        expect(turnStartCount(host)).toBe(1);
+        expect(handle.isTurnRunning?.()).toBe(false);
 
         await handle.close();
       } finally {
@@ -4604,7 +6465,7 @@ describe('CodexAgent MCP thread context hooks', () => {
             (e) =>
               e.type === 'error' &&
               (e.data as { isTerminal?: boolean; reason?: string }).isTerminal === true &&
-              (e.data as { reason?: string }).reason === 'codex-overload-retry-aborted',
+              (e.data as { reason?: string }).reason === 'codex-turn-replay-retry-aborted',
           ),
         ).toBe(true);
         expect(
@@ -6444,7 +8305,13 @@ describe('CodexAgent MCP thread context hooks', () => {
         controller.abort();
         await vi.advanceTimersByTimeAsync(0);
         const after = events.slice(before);
-        expect(after.filter((e) => e.type === 'error' && e.data?.isTerminal === true)).toHaveLength(1);
+        const terminalAfterSignal = after.filter(
+          (e) => e.type === 'error' && e.data?.isTerminal === true,
+        );
+        expect(terminalAfterSignal).toHaveLength(1);
+        expect(terminalAfterSignal[0].data).toMatchObject({
+          reason: 'codex-turn-replay-retry-cancelled',
+        });
         expect(after.some((e) => e.type === 'status' && e.data?.isRunning === false)).toBe(true);
         expect(handle.isTurnRunning?.()).toBe(false);
 
@@ -7395,11 +9262,9 @@ describe('CodexAgent MCP thread context hooks', () => {
       }
     });
 
-    it('interrupts the retry when a Guardian failure downgrades Auto to Ask mid-backoff', async () => {
-      // Guardian 不可用时的内部降级(switchAutoRuntimeToAskImmediately)绕开了公开的
-      // setPermissionMode, 原本只判 currentTurnId / isTurnStartPending —— 退避计时器
-      // 正在等的窗口两者都不成立, 重投一到点就会以已被撤销的 Auto 档执行工具
-      // (review #844 codex P1)。
+    it('keeps an Auto retry alive when Guardian failure switches only the reviewer route', async () => {
+      // Guardian 不可用不再把用户选择改成 Ask，只把后续审批切到 Cindy fallback。
+      // 因为权限档没有收紧，退避中的同一 Auto turn 不应被额外 interrupt。
       vi.useFakeTimers();
       try {
         const agent = new CodexAgent(createDeps());
@@ -7429,7 +9294,7 @@ describe('CodexAgent MCP thread context hooks', () => {
         expect(handle.getCurrentTurnId?.()).toBeNull();
         expect(turnStartCount(host)).toBe(1);
 
-        // Guardian 超时 → 运行期降到 Ask（不经过 setPermissionMode）。
+        // Guardian 超时 → 保持 Auto，只标记原生 reviewer 不可用。
         handlers.autoApprovalReviewCompleted({
           threadId: 'start-thread-id',
           turnId: 'turn-guardian',
@@ -7449,8 +9314,7 @@ describe('CodexAgent MCP thread context hooks', () => {
         } as never);
         await vi.advanceTimersByTimeAsync(3_000);
 
-        // 重投照常发出（它带的是冻结的 Auto 策略），但必须紧跟一个 interrupt——
-        // 冻结档比当前的 Ask 宽，不能让它以被撤销的权限继续跑工具。
+        // 重投照常发出，权限仍是 Auto，不应被误当成收紧而中断。
         expect(turnStartCount(host)).toBe(2);
         expect(
           host.request.mock.calls.some(
@@ -7458,7 +9322,7 @@ describe('CodexAgent MCP thread context hooks', () => {
               method === Method.TurnInterrupt &&
               (params as { turnId?: string }).turnId === 'turn-2',
           ),
-        ).toBe(true);
+        ).toBe(false);
 
         await handle.close();
       } finally {
@@ -7765,7 +9629,7 @@ describe('CodexAgent MCP thread context hooks', () => {
         );
         expect(terminalAfterAbort).toHaveLength(1);
         expect(terminalAfterAbort[0].data).toMatchObject({
-          reason: 'codex-overload-retry-aborted',
+          reason: 'codex-turn-replay-retry-aborted',
         });
 
         // 随后在途的重投 RPC 失败：**不得**再补第二条 terminal error / Done。
@@ -8391,11 +10255,9 @@ describe('CodexAgent MCP thread context hooks', () => {
     await handle.close();
   });
 
-  it('enables Guardian after a local provider reviewer route is registered and keeps its model current', async () => {
-    const registerCodexReviewerRouteContext = vi.fn(() => true);
-    const agent = new CodexAgent(createDeps({}, {
-      registerCodexReviewerRouteContext,
-    }));
+  it('keeps third-party routes on the user protocol and reviews with the current session model', async () => {
+    const reviewAutoPermissionAction = vi.fn(async () => ({ verdict: 'allow' as const }));
+    const agent = new CodexAgent(createDeps({}, { reviewAutoPermissionAction }));
     const host = installFakeHost(agent, (method) => {
       if (method === Method.TurnStart) {
         return { turn: { id: 'turn-provider-aware-reviewer' } };
@@ -8414,189 +10276,38 @@ describe('CodexAgent MCP thread context hooks', () => {
     const startParams = host.request.mock.calls.find(([method]) => method === Method.ThreadStart)?.[1] as {
       approvalsReviewer?: string;
     };
-    // The thread is created before its id can be registered with the proxy.
     expect(startParams.approvalsReviewer).toBe('user');
-    expect(registerCodexReviewerRouteContext).toHaveBeenCalledWith({
-      sessionId: 'session-provider-aware-reviewer',
-      threadId: 'start-thread-id',
-      model: 'deepseek/deepseek-v4',
-    });
-
-    await handle.send({ type: 'user', content: 'hello' });
-    const firstTurnParams = host.request.mock.calls.find(([method]) => method === Method.TurnStart)?.[1] as {
-      approvalsReviewer?: string;
-    };
-    expect(firstTurnParams.approvalsReviewer).toBe('auto_review');
 
     if (!handle.setModel) throw new Error('expected setModel');
     await handle.setModel('qwen/qwen3-coder');
-    expect(registerCodexReviewerRouteContext).toHaveBeenLastCalledWith({
-      sessionId: 'session-provider-aware-reviewer',
-      threadId: 'start-thread-id',
-      model: 'qwen/qwen3-coder',
-    });
-    host.getThreadHandlers()?.threadSettingsUpdated?.({
-      threadId: 'start-thread-id',
-      threadSettings: {
-        serviceTier: null,
-        model: 'qwen/qwen3-coder-202607',
-        effort: 'high',
-      },
-    });
-    expect(registerCodexReviewerRouteContext).toHaveBeenLastCalledWith({
-      sessionId: 'session-provider-aware-reviewer',
-      threadId: 'start-thread-id',
-      model: 'qwen/qwen3-coder-202607',
-    });
-    await handle.close();
-  });
-
-  it('keeps user approvals while a runtime default-model sentinel is unresolved', async () => {
-    const registerCodexReviewerRouteContext = vi.fn(() => true);
-    const agent = new CodexAgent(createDeps({}, {
-      registerCodexReviewerRouteContext,
-    }));
-    const host = installFakeHost(agent, (method) => {
-      if (method === Method.TurnStart) {
-        return { turn: { id: `turn-default-sentinel-${host.request.mock.calls.length}` } };
-      }
-      if (method === Method.ThreadSettingsUpdate) return {};
-      return undefined;
-    }, { codexProxyActive: true });
-    const handle = await agent.startSession({
-      sessionId: 'session-provider-reviewer-default-sentinel',
-      model: 'deepseek/deepseek-v4',
-      providerId: 'xd',
-      workingDir: '/repo',
-      permissionMode: 'auto',
-    });
-
-    expect(registerCodexReviewerRouteContext).toHaveBeenLastCalledWith({
-      sessionId: 'session-provider-reviewer-default-sentinel',
-      threadId: 'start-thread-id',
-      model: 'deepseek/deepseek-v4',
-    });
-
-    if (!handle.setModel) throw new Error('expected setModel');
-    await handle.setModel('gpt-5');
-    expect(registerCodexReviewerRouteContext).toHaveBeenCalledTimes(1);
-    expect(host.request.mock.calls.some(
-      ([method, params]) =>
-        method === Method.ThreadSettingsUpdate &&
-        (params as { model?: string }).model === 'gpt-5',
-    )).toBe(false);
-
-    await handle.send({ type: 'user', content: 'use the provider default' });
-    const firstTurnParams = host.request.mock.calls.find(([method]) => method === Method.TurnStart)?.[1] as {
-      approvalsReviewer?: string;
-    };
-    expect(firstTurnParams.approvalsReviewer).toBe('user');
-
-    await handle.setModel('qwen/qwen3-coder');
-    expect(registerCodexReviewerRouteContext).toHaveBeenLastCalledWith({
-      sessionId: 'session-provider-reviewer-default-sentinel',
-      threadId: 'start-thread-id',
-      model: 'qwen/qwen3-coder',
-    });
-    await handle.send({ type: 'user', content: 'use the concrete model' });
-    const turnCalls = host.request.mock.calls.filter(([method]) => method === Method.TurnStart);
-    const secondTurnParams = turnCalls[1]?.[1] as { approvalsReviewer?: string };
-    expect(secondTurnParams.approvalsReviewer).toBe('auto_review');
-    await handle.close();
-  });
-
-  it('registers the model resolved by thread/start when the request uses the default sentinel', async () => {
-    const registerCodexReviewerRouteContext = vi.fn(() => true);
-    const agent = new CodexAgent(createDeps({}, {
-      registerCodexReviewerRouteContext,
-    }));
-    installFakeHost(agent, (method) => {
-      if (method === Method.ThreadStart) {
-        return {
-          thread: { id: 'start-thread-id' },
-          model: 'deepseek/deepseek-v4',
-          modelProvider: 'xd',
-          cwd: '/repo',
-        };
-      }
-      return undefined;
-    }, { codexProxyActive: true });
-
-    const handle = await agent.startSession({
-      sessionId: 'session-provider-reviewer-default-model',
-      model: 'gpt-5',
-      providerId: 'xd',
-      workingDir: '/repo',
-      permissionMode: 'auto',
-    });
-
-    expect(registerCodexReviewerRouteContext).toHaveBeenCalledWith({
-      sessionId: 'session-provider-reviewer-default-model',
-      threadId: 'start-thread-id',
-      model: 'deepseek/deepseek-v4',
-    });
-    await handle.close();
-  });
-
-  it('keeps user approvals when provider reviewer route registration fails', async () => {
-    const registerCodexReviewerRouteContext = vi.fn(() => {
-      throw new Error('proxy registry unavailable');
-    });
-    const agent = new CodexAgent(createDeps({}, {
-      registerCodexReviewerRouteContext,
-    }));
-    const host = installFakeHost(agent, (method) => {
-      if (method === Method.TurnStart) {
-        return { turn: { id: 'turn-provider-reviewer-register-failed' } };
-      }
-      return undefined;
-    }, { codexProxyActive: true });
-    const handle = await agent.startSession({
-      sessionId: 'session-provider-reviewer-register-failed',
-      model: 'deepseek/deepseek-v4',
-      providerId: 'xd',
-      workingDir: '/repo',
-      permissionMode: 'auto',
-    });
-
-    await handle.send({ type: 'user', content: 'hello' });
+    await handle.send({ type: 'user', content: 'Check this project for type errors' });
     const turnParams = host.request.mock.calls.find(([method]) => method === Method.TurnStart)?.[1] as {
       approvalsReviewer?: string;
     };
     expect(turnParams.approvalsReviewer).toBe('user');
-    await handle.close();
-  });
 
-  it('registers the resumed parent thread before enabling a provider-aware reviewer', async () => {
-    const registerCodexReviewerRouteContext = vi.fn(() => true);
-    const agent = new CodexAgent(createDeps({}, {
-      registerCodexReviewerRouteContext,
+    const handlers = host.getThreadHandlers();
+    if (!handlers?.commandExecutionApproval) throw new Error('expected commandExecutionApproval');
+    await expect(handlers.commandExecutionApproval({
+      threadId: 'start-thread-id',
+      turnId: 'turn-provider-aware-reviewer',
+      itemId: 'typecheck',
+      command: 'npx tsc --noEmit',
+      cwd: '/repo',
+    })).resolves.toEqual({ decision: 'accept' });
+    expect(reviewAutoPermissionAction).toHaveBeenCalledWith(expect.objectContaining({
+      agentKind: 'codex',
+      providerId: 'xd',
+      model: 'qwen/qwen3-coder',
+      userIntent: 'Check this project for type errors',
+      action: { kind: 'exec', command: 'npx tsc --noEmit', cwd: '/repo' },
+      workspaceRoots: ['/repo'],
+      platform: process.platform,
     }));
-    const host = installFakeHost(agent, (method) => {
-      if (method === Method.TurnStart) {
-        return { turn: { id: 'turn-resumed-provider-reviewer' } };
-      }
-      return undefined;
-    }, { codexProxyActive: true });
-    const handle = await agent.startSession({
-      sessionId: 'session-resumed-provider-reviewer',
-      resumeSessionId: '12345678-1234-1234-1234-123456789abc',
-      model: 'xai/grok-4.5',
-      providerId: 'xai',
-      workingDir: '/repo',
-      permissionMode: 'auto',
-    });
-
-    expect(registerCodexReviewerRouteContext).toHaveBeenCalledWith({
-      sessionId: 'session-resumed-provider-reviewer',
-      threadId: 'resume-thread-id',
-      model: 'xai/grok-4.5',
-    });
-    await handle.send({ type: 'user', content: 'hello' });
-    const turnParams = host.request.mock.calls.find(([method]) => method === Method.TurnStart)?.[1] as {
-      approvalsReviewer?: string;
-    };
-    expect(turnParams.approvalsReviewer).toBe('auto_review');
+    expect(reviewAutoPermissionAction.mock.calls[0]?.[0]).not.toHaveProperty('transcript');
+    expect(reviewAutoPermissionAction.mock.calls[0]?.[0]).not.toHaveProperty('tools');
+    expect(reviewAutoPermissionAction.mock.calls[0]?.[0]).not.toHaveProperty('memory');
+    expect(reviewAutoPermissionAction.mock.calls[0]?.[0]).not.toHaveProperty('skills');
     await handle.close();
   });
 
@@ -8646,7 +10357,7 @@ describe('CodexAgent MCP thread context hooks', () => {
       itemId: 'cmd-no-resolver',
       command: 'curl https://example.com',
       cwd: '/repo',
-    })).resolves.toEqual({ decision: 'decline' });
+    })).resolves.toEqual({ decision: 'accept' });
     if (!handle.setPermissionMode) throw new Error('expected setPermissionMode');
     await handle.setPermissionMode('ask');
     expect(host.request.mock.calls.filter(([method]) => method === Method.TurnInterrupt)).toHaveLength(0);
@@ -8711,8 +10422,12 @@ describe('CodexAgent MCP thread context hooks', () => {
     await handle.close();
   });
 
-  it('falls back to the approval UI if Auto-review still forwards a command request', async () => {
-    const agent = new CodexAgent(createDeps());
+  it('opens the approval UI only when the lightweight reviewer explicitly returns ask', async () => {
+    const reviewAutoPermissionAction = vi.fn(async () => ({
+      verdict: 'ask' as const,
+      reason: 'This action crosses a high-impact boundary.',
+    }));
+    const agent = new CodexAgent(createDeps({}, { reviewAutoPermissionAction }));
     const host = installFakeHost(agent);
     const handle = await agent.startSession({
       sessionId: 'session-auto-command-fallback',
@@ -8723,20 +10438,230 @@ describe('CodexAgent MCP thread context hooks', () => {
     });
     const handlers = host.getThreadHandlers();
     if (!handlers?.commandExecutionApproval) throw new Error('expected commandExecutionApproval handler');
-    const resolver = vi.fn(async () => ({ kind: 'permission' as const, behavior: 'allow' as const }));
+    const resolver = vi.fn(async (): Promise<InteractionDecision> => (
+      { kind: 'permission', behavior: 'allow' }
+    ));
     handle.setInteractionResolver(resolver);
 
+    // 灰区不会自动弹窗；只有 lightweight reviewer 明确返回 ask 才转发用户。
     const result = await handlers.commandExecutionApproval({
       threadId: 'start-thread-id',
       turnId: 'turn-1',
       itemId: 'cmd-1',
       approvalId: 'approval-1',
-      command: 'pwd',
+      command: 'npm install express',
       cwd: '/repo',
     });
 
     expect(result).toEqual({ decision: 'accept' });
+    expect(reviewAutoPermissionAction).toHaveBeenCalledOnce();
     expect(resolver).toHaveBeenCalledOnce();
+    const request = resolver.mock.calls[0]?.[0];
+    expect(request?.kind).toBe('permission');
+    if (request?.kind !== 'permission') throw new Error('expected permission request');
+    expect(request.suggestions).toBeUndefined();
+    await handle.close();
+  });
+
+  it('re-checks Ask and Full access after an in-flight Cindy auto-review', async () => {
+    const askReview = deferred<{ verdict: 'allow' }>();
+    const askReviewer = vi.fn(() => askReview.promise);
+    const askAgent = new CodexAgent(createDeps({}, { reviewAutoPermissionAction: askReviewer }));
+    const askHost = installFakeHost(askAgent);
+    const askHandle = await askAgent.startSession({
+      sessionId: 'session-auto-review-late-ask', model: 'gpt-5.5', providerId: 'openai',
+      workingDir: '/repo', permissionMode: 'auto',
+    });
+    const askHandlers = askHost.getThreadHandlers();
+    if (!askHandlers?.commandExecutionApproval) throw new Error('expected commandExecutionApproval handler');
+    const askResolver = vi.fn(async (_request: InteractionRequest): Promise<InteractionDecision> => (
+      { kind: 'permission', behavior: 'allow' }
+    ));
+    askHandle.setInteractionResolver(askResolver);
+    const pendingAsk = askHandlers.commandExecutionApproval({
+      threadId: 'start-thread-id', turnId: 'turn-late-ask', itemId: 'cmd-late-ask', approvalId: 'a-late-ask',
+      command: 'rm -rf build', cwd: '/repo',
+    });
+    await waitForExpectation(() => expect(askReviewer).toHaveBeenCalledOnce());
+    await askHandle.setPermissionMode!('ask');
+    askReview.resolve({ verdict: 'allow' });
+    await expect(pendingAsk).resolves.toEqual({ decision: 'accept' });
+    expect(askResolver).toHaveBeenCalledOnce();
+    expect(askResolver.mock.calls[0]?.[0]).toMatchObject({ kind: 'permission', suggestions: undefined });
+    await askHandle.close();
+
+    const fullReview = deferred<{ verdict: 'allow' }>();
+    const fullReviewer = vi.fn(() => fullReview.promise);
+    const fullAgent = new CodexAgent(createDeps({}, { reviewAutoPermissionAction: fullReviewer }));
+    const fullHost = installFakeHost(fullAgent);
+    const fullHandle = await fullAgent.startSession({
+      sessionId: 'session-auto-review-late-full', model: 'gpt-5.5', providerId: 'openai',
+      workingDir: '/repo', permissionMode: 'auto',
+    });
+    const fullHandlers = fullHost.getThreadHandlers();
+    if (!fullHandlers?.commandExecutionApproval) throw new Error('expected commandExecutionApproval handler');
+    const fullResolver = vi.fn(async (_request: InteractionRequest): Promise<InteractionDecision> => (
+      { kind: 'permission', behavior: 'allow' }
+    ));
+    fullHandle.setInteractionResolver(fullResolver);
+    const pendingFull = fullHandlers.commandExecutionApproval({
+      threadId: 'start-thread-id', turnId: 'turn-late-full', itemId: 'cmd-late-full', approvalId: 'a-late-full',
+      command: 'rm -rf build', cwd: '/repo',
+    });
+    await waitForExpectation(() => expect(fullReviewer).toHaveBeenCalledOnce());
+    await fullHandle.setPermissionMode!('bypassPermissions');
+    fullReview.resolve({ verdict: 'allow' });
+    await expect(pendingFull).resolves.toEqual({ decision: 'accept' });
+    expect(fullResolver).not.toHaveBeenCalled();
+    await fullHandle.close();
+  });
+
+  it('auto-approves safe fallback commands via the Cindy auto-review core without prompting', async () => {
+    const reviewAutoPermissionAction = vi.fn(async () => ({ verdict: 'allow' as const }));
+    const agent = new CodexAgent(createDeps({}, { reviewAutoPermissionAction }));
+    const host = installFakeHost(agent);
+    const handle = await agent.startSession({
+      sessionId: 'session-auto-core-safe',
+      model: 'gpt-5.5',
+      providerId: 'openai',
+      workingDir: '/repo',
+      permissionMode: 'auto',
+    });
+    const handlers = host.getThreadHandlers();
+    if (!handlers?.commandExecutionApproval) throw new Error('expected commandExecutionApproval handler');
+    const resolver = vi.fn(async (): Promise<InteractionDecision> => (
+      { kind: 'permission', behavior: 'allow' }
+    ));
+    handle.setInteractionResolver(resolver);
+
+    // 只读 shell(命令行浏览器抓取)→ Cindy core 静默放行,不惊动 resolver(少打扰,模型无关)。
+    const safe = await handlers.commandExecutionApproval({
+      threadId: 'start-thread-id', turnId: 'turn-1', itemId: 'cmd-safe', approvalId: 'a-safe',
+      command: 'curl -sS https://example.com', cwd: '/repo',
+    });
+    expect(safe).toEqual({ decision: 'accept' });
+    expect(resolver).not.toHaveBeenCalled();
+
+    // 常规工作区清理交轻量 reviewer；明确 allow 后也不弹窗。
+    const cleanup = await handlers.commandExecutionApproval({
+      threadId: 'start-thread-id', turnId: 'turn-1', itemId: 'cmd-cleanup', approvalId: 'a-cleanup',
+      command: 'rm -rf build', cwd: '/repo',
+    });
+    expect(cleanup).toEqual({ decision: 'accept' });
+    expect(reviewAutoPermissionAction).toHaveBeenCalledOnce();
+    expect(resolver).not.toHaveBeenCalled();
+
+    // 提权边界才直接转发 UI。
+    const danger = await handlers.commandExecutionApproval({
+      threadId: 'start-thread-id', turnId: 'turn-1', itemId: 'cmd-danger', approvalId: 'a-danger',
+      command: 'sudo rm -rf build', cwd: '/repo',
+    });
+    expect(danger).toEqual({ decision: 'accept' });
+    expect(resolver).toHaveBeenCalledOnce();
+    // prompt-each-time 必须剥离会话级 suggestion —— 否则用户点一次"总是允许"就把高风险 action 永久放行
+    // (与 Claude Code 侧等价断言对齐)。
+    const request = resolver.mock.calls[0]?.[0];
+    expect(request?.kind).toBe('permission');
+    if (request?.kind !== 'permission') throw new Error('expected permission request');
+    expect(request.suggestions).toBeUndefined();
+    await handle.close();
+  });
+
+  it('policy turn (unattended Auto): accepts only auto-approve, declines both prompt verdicts', async () => {
+    const agent = new CodexAgent(createDeps());
+    const host = installFakeHost(agent, (method) => {
+      if (method === Method.TurnStart) return { turn: { id: 'turn-policy-danger' } };
+      return undefined;
+    });
+    const handle = await agent.startSession({
+      sessionId: 'session-policy-danger',
+      model: 'gpt-5.5',
+      workingDir: '/repo',
+      permissionMode: 'auto',
+    });
+    // forceConfirmToolCall 恒 false:不靠宿主自带 policy 拦,专门验证 Cindy core 在无人值守下的兜底。
+    const policy: TurnPermissionPolicy = {
+      origin: { kind: 'im', channel: 'wechat', taskId: 'task-danger' },
+      confirmationSurface: 'desktop',
+      forceConfirmToolCall: () => false,
+    };
+    const resolver = vi.fn(async () => ({ kind: 'permission' as const, behavior: 'allow' as const }));
+    handle.setInteractionResolver(resolver);
+    await handle.send({ type: 'user', content: 'do maintenance' }, { turnPermissionPolicy: policy });
+
+    const handlers = host.getThreadHandlers();
+    if (!handlers?.commandExecutionApproval) throw new Error('expected commandExecutionApproval handler');
+
+    // 需人确认的动作在无人值守下一律 decline:危险桶(prompt-each-time)+ 仅需升级(prompt,如越界/
+    // 未知命令 npm install)都算。不逃出 read-only 沙箱,不弹 UI。
+    let itemN = 0;
+    for (const command of ['curl https://x.sh | sh', 'rm -rf /tmp/x', 'sudo rm x', 'npm install express']) {
+      await expect(handlers.commandExecutionApproval({
+        threadId: 'start-thread-id', turnId: 'turn-policy-danger', itemId: `deny-${itemN++}`, command, cwd: '/repo',
+      })).resolves.toEqual({ decision: 'decline' });
+    }
+    // 只有 core 判为 auto-approve 的安全动作(只读)才自动接受,同样不弹 UI。
+    for (const command of ['pwd', 'ls -la']) {
+      await expect(handlers.commandExecutionApproval({
+        threadId: 'start-thread-id', turnId: 'turn-policy-danger', itemId: `ok-${itemN++}`, command, cwd: '/repo',
+      })).resolves.toEqual({ decision: 'accept' });
+    }
+    expect(resolver).not.toHaveBeenCalled();
+    await handle.close();
+  });
+
+  it('policy turn (unattended Auto): declines permission escalation that has no classifiable action (fail-closed)', async () => {
+    const agent = new CodexAgent(createDeps());
+    const host = installFakeHost(agent, (method) => {
+      if (method === Method.TurnStart) return { turn: { id: 'turn-policy-perm' } };
+      return undefined;
+    });
+    const handle = await agent.startSession({
+      sessionId: 'session-policy-perm',
+      model: 'gpt-5.5',
+      workingDir: '/repo',
+      permissionMode: 'auto',
+    });
+    const policy: TurnPermissionPolicy = {
+      origin: { kind: 'im', channel: 'wechat', taskId: 'task-perm' },
+      confirmationSurface: 'desktop',
+      forceConfirmToolCall: () => false,
+    };
+    const resolver = vi.fn(async () => ({ kind: 'permission' as const, behavior: 'allow' as const }));
+    handle.setInteractionResolver(resolver);
+    await handle.send({ type: 'user', content: 'do maintenance' }, { turnPermissionPolicy: policy });
+
+    const handlers = host.getThreadHandlers();
+    if (!handlers?.permissionsApproval) throw new Error('expected permissionsApproval handler');
+    // 能力升级(permissions)在无人值守下没有 autoReviewAction 可审查 → fail-closed:授权为空(拒绝),不弹 UI。
+    const res = await handlers.permissionsApproval({
+      threadId: 'start-thread-id',
+      turnId: 'turn-policy-perm',
+      itemId: 'perm-1',
+      permissions: { network: true },
+    });
+    expect(res).toEqual({ permissions: {}, scope: 'turn' });
+    expect(resolver).not.toHaveBeenCalled();
+    await handle.close();
+  });
+
+  it('auto-approves deterministic safe actions even without an interaction resolver', async () => {
+    const agent = new CodexAgent(createDeps());
+    const host = installFakeHost(agent);
+    const handle = await agent.startSession({
+      sessionId: 'session-auto-core-noresolver',
+      model: 'gpt-5.5',
+      providerId: 'openai',
+      workingDir: '/repo',
+      permissionMode: 'auto',
+    });
+    const handlers = host.getThreadHandlers();
+    if (!handlers?.commandExecutionApproval) throw new Error('expected commandExecutionApproval handler');
+    // allow/block 不依赖 UI。只有 ask 在没有 resolver 时才 fail-closed decline。
+    await expect(handlers.commandExecutionApproval({
+      threadId: 'start-thread-id', turnId: 'turn-1', itemId: 'cmd-noresolver', approvalId: 'a-nr',
+      command: 'curl -sS https://example.com', cwd: '/repo',
+    })).resolves.toEqual({ decision: 'accept' });
     await handle.close();
   });
 
@@ -8783,12 +10708,13 @@ describe('CodexAgent MCP thread context hooks', () => {
     await handle.close();
   });
 
-  it('surfaces Guardian auto-review timeouts as visible non-terminal errors', async () => {
-    const classifierUnavailable = vi.fn();
-    const agent = new CodexAgent(createDeps({}, {
-      onAutoPermissionClassifierUnavailable: classifierUnavailable,
-    }));
-    const host = installFakeHost(agent);
+  it('keeps Auto and switches to the current-model fallback when Guardian times out', async () => {
+    const reviewAutoPermissionAction = vi.fn(async () => ({ verdict: 'allow' as const }));
+    const agent = new CodexAgent(createDeps({}, { reviewAutoPermissionAction }));
+    const host = installFakeHost(agent, (method) => {
+      if (method === Method.TurnStart) return { turn: { id: 'turn-after-guardian-timeout' } };
+      return undefined;
+    });
     const handle = await agent.startSession({
       sessionId: 'session-guardian-timeout',
       model: 'gpt-5.5',
@@ -8796,7 +10722,6 @@ describe('CodexAgent MCP thread context hooks', () => {
       workingDir: '/repo',
       permissionMode: 'auto',
     });
-    const iterator = handle.events()[Symbol.asyncIterator]();
     const handlers = host.getThreadHandlers();
     if (!handlers?.autoApprovalReviewCompleted) throw new Error('expected autoApprovalReviewCompleted');
     handlers.autoApprovalReviewCompleted({
@@ -8810,78 +10735,33 @@ describe('CodexAgent MCP thread context hooks', () => {
       review: { status: 'timedOut', riskLevel: null, userAuthorization: null, rationale: 'review timed out' },
       action: { type: 'networkAccess', target: 'https://example.com', host: 'example.com', protocol: 'https', port: 443 },
     });
-    expect(classifierUnavailable).not.toHaveBeenCalled();
-    await expect(nextEvent(iterator)).resolves.toMatchObject({
-      type: 'error',
-      data: {
-        reason: 'codex-auto-review-unavailable',
-        isTerminal: false,
-        reviewRationale: 'review timed out',
-      },
-    });
-    await Promise.resolve();
-    expect(classifierUnavailable).toHaveBeenCalledWith({
-      sessionId: 'session-guardian-timeout',
-      agentKind: 'codex',
-      status: 408,
-    });
-    await handle.close();
-  });
-
-  it('switches the local runtime to Ask before notifying the host about a Guardian timeout', async () => {
-    const classifierUnavailable = vi.fn();
-    const agent = new CodexAgent(createDeps({}, {
-      onAutoPermissionClassifierUnavailable: classifierUnavailable,
-    }));
-    const host = installFakeHost(agent, (method) => {
-      if (method === Method.TurnStart) return { turn: { id: 'turn-after-guardian-timeout' } };
-      return undefined;
-    });
-    const handle = await agent.startSession({
-      sessionId: 'session-guardian-timeout-runtime',
-      model: 'gpt-5.5',
-      providerId: 'openai',
-      workingDir: '/repo',
-      permissionMode: 'auto',
-    });
-    const handlers = host.getThreadHandlers();
-    if (!handlers?.autoApprovalReviewCompleted) throw new Error('expected autoApprovalReviewCompleted');
-
-    handlers.autoApprovalReviewCompleted({
-      threadId: 'start-thread-id',
-      turnId: 'turn-guardian',
-      startedAtMs: 1,
-      completedAtMs: 2,
-      reviewId: 'review-timeout-runtime',
-      targetItemId: 'item-network-runtime',
-      decisionSource: 'agent',
-      review: { status: 'timedOut', riskLevel: null, userAuthorization: null, rationale: null },
-      action: { type: 'networkAccess', target: 'https://example.com', host: 'example.com', protocol: 'https', port: 443 },
-    });
-
-    expect(classifierUnavailable).not.toHaveBeenCalled();
-    await handle.send({ type: 'user', content: 'retry after fallback' });
+    await handle.send({ type: 'user', content: 'Run the type checker' });
     const turnParams = host.request.mock.calls.find(([method]) => method === Method.TurnStart)?.[1] as {
       approvalPolicy?: string;
       approvalsReviewer?: string;
     };
-    expect(turnParams.approvalPolicy).toBe('on-request');
-    expect(turnParams.approvalsReviewer).toBe('user');
-    expect(classifierUnavailable).toHaveBeenCalledWith({
-      sessionId: 'session-guardian-timeout-runtime',
-      agentKind: 'codex',
-      status: 408,
+    expect(turnParams).toMatchObject({
+      approvalPolicy: 'on-request',
+      approvalsReviewer: 'user',
     });
+    if (!handlers.commandExecutionApproval) throw new Error('expected commandExecutionApproval');
+    await expect(handlers.commandExecutionApproval({
+      threadId: 'start-thread-id',
+      turnId: 'turn-after-guardian-timeout',
+      itemId: 'typecheck-after-timeout',
+      command: 'npx tsc --noEmit',
+      cwd: '/repo',
+    })).resolves.toEqual({ decision: 'accept' });
+    expect(reviewAutoPermissionAction).toHaveBeenCalledWith(expect.objectContaining({
+      providerId: 'openai',
+      model: 'gpt-5.5',
+      userIntent: 'Run the type checker',
+    }));
     await handle.close();
   });
 
-  it('treats Guardian reviewer failures as unavailable and contains host callback errors', async () => {
-    const classifierUnavailable = vi.fn(() => {
-      throw new Error('host callback failed');
-    });
-    const agent = new CodexAgent(createDeps({}, {
-      onAutoPermissionClassifierUnavailable: classifierUnavailable,
-    }));
+  it('treats Guardian reviewer failures as unavailable without emitting a user-facing error', async () => {
+    const agent = new CodexAgent(createDeps());
     const host = installFakeHost(agent);
     const handle = await agent.startSession({
       sessionId: 'session-guardian-reviewer-failure',
@@ -8890,7 +10770,6 @@ describe('CodexAgent MCP thread context hooks', () => {
       workingDir: '/repo',
       permissionMode: 'auto',
     });
-    const iterator = handle.events()[Symbol.asyncIterator]();
     const handlers = host.getThreadHandlers();
     if (!handlers?.autoApprovalReviewCompleted) throw new Error('expected autoApprovalReviewCompleted');
 
@@ -8910,26 +10789,16 @@ describe('CodexAgent MCP thread context hooks', () => {
       },
       action: { type: 'command', source: 'shell', command: 'pwd', cwd: '/repo' },
     });
-    expect(classifierUnavailable).not.toHaveBeenCalled();
-
-    await expect(nextEvent(iterator)).resolves.toMatchObject({
-      type: 'error',
-      data: { reason: 'codex-auto-review-unavailable', isTerminal: false },
-    });
-    await Promise.resolve();
-    expect(classifierUnavailable).toHaveBeenCalledWith({
-      sessionId: 'session-guardian-reviewer-failure',
-      agentKind: 'codex',
-      status: 500,
-    });
+    await handle.send({ type: 'user', content: 'continue after reviewer failure' });
+    const turnParams = host.request.mock.calls.find(([method]) => method === Method.TurnStart)?.[1] as {
+      approvalsReviewer?: string;
+    };
+    expect(turnParams.approvalsReviewer).toBe('user');
     await handle.close();
   });
 
   it('ignores a stale Guardian timeout from a previous turn', async () => {
-    const classifierUnavailable = vi.fn();
-    const agent = new CodexAgent(createDeps({}, {
-      onAutoPermissionClassifierUnavailable: classifierUnavailable,
-    }));
+    const agent = new CodexAgent(createDeps());
     const host = installFakeHost(agent, (method) => {
       if (method === Method.TurnStart) return { turn: { id: 'turn-current' } };
       return undefined;
@@ -8958,7 +10827,6 @@ describe('CodexAgent MCP thread context hooks', () => {
     });
 
     await Promise.resolve();
-    expect(classifierUnavailable).not.toHaveBeenCalled();
     const turnParams = host.request.mock.calls.find(([method]) => method === Method.TurnStart)?.[1] as {
       approvalsReviewer?: string;
     };
@@ -9699,18 +11567,21 @@ describe('CodexAgent MCP thread context hooks', () => {
       workingDir: '/repo',
     });
     const handlers = host.getThreadHandlers();
-    if (!handlers?.dynamicToolCall) throw new Error('expected dynamicToolCall handler');
+    if (!handlers?.dynamicToolCall || !handlers.requestUserInput) {
+      throw new Error('expected user input handlers');
+    }
     let requestCount = 0;
+    const pendingDecision = deferred<InteractionDecision>();
     handle.setInteractionResolver(async (req) => {
       requestCount += 1;
       expect(req).toMatchObject({
         kind: 'ask_user_question',
-        requestId: requestCount === 1 ? 'req-dynamic' : 'req-dynamic-legacy',
+        requestId: 'req-dynamic',
       });
-      return { kind: 'ask_user_question', answers: { 'What next?': 'Keep going' } };
+      return pendingDecision.promise;
     });
 
-    const result = await handlers.dynamicToolCall({
+    const resultPromise = handlers.dynamicToolCall({
       threadId: 'start-thread-id',
       turnId: 'turn-1',
       callId: 'dynamic-call-1',
@@ -9718,18 +11589,46 @@ describe('CodexAgent MCP thread context hooks', () => {
       tool: 'ask_user_question',
       arguments: {
         questions: [{
-          id: 'q1',
           header: 'Direction',
           question: 'What next?',
-          options: [{ label: 'Keep going', description: 'Continue current work' }],
         }],
       },
     }, { requestId: 'req-dynamic' });
 
+    const nativeDuplicateResultPromise = handlers.requestUserInput({
+      threadId: 'start-thread-id',
+      turnId: 'turn-1',
+      itemId: 'native-call-duplicate',
+      questions: [{
+        id: 'native-q1',
+        header: 'Direction',
+        question: 'What next?',
+        isOther: false,
+        isSecret: false,
+        options: [],
+      }],
+    }, { requestId: 'req-native-duplicate' });
+
+    expect(requestCount).toBe(1);
+    pendingDecision.resolve({
+      kind: 'ask_user_question',
+      answers: { 'What next?': 'Keep going' },
+    });
+
+    const [result, nativeDuplicateResult] = await Promise.all([
+      resultPromise,
+      nativeDuplicateResultPromise,
+    ]);
     expect(result.success).toBe(true);
     expect(result.contentItems).toEqual([
-      { type: 'inputText', text: JSON.stringify({ q1: { answers: ['Keep going'] } }) },
+      {
+        type: 'inputText',
+        text: JSON.stringify({ 'question-1': { answers: ['Keep going'] } }),
+      },
     ]);
+    expect(nativeDuplicateResult).toEqual({
+      answers: { 'native-q1': { answers: ['Keep going'] } },
+    });
 
     const legacyResult = await handlers.dynamicToolCall({
       threadId: 'start-thread-id',
@@ -9739,14 +11638,88 @@ describe('CodexAgent MCP thread context hooks', () => {
       tool: 'ask_user_question',
       arguments: {
         questions: [{
-          id: 'q1',
+          id: 'legacy-q1',
           header: 'Direction',
           question: 'What next?',
-          options: [{ label: 'Keep going', description: 'Continue current work' }],
+          options: null,
         }],
       },
     }, { requestId: 'req-dynamic-legacy' });
-    expect(legacyResult).toEqual(result);
+    expect(legacyResult.contentItems).toEqual([
+      {
+        type: 'inputText',
+        text: JSON.stringify({ 'legacy-q1': { answers: ['Keep going'] } }),
+      },
+    ]);
+    expect(requestCount).toBe(1);
+    await handle.close();
+  });
+
+  it('preserves submitted answers from different concurrent user input prompts', async () => {
+    const agent = new CodexAgent(createDeps());
+    const host = installFakeHost(agent);
+    const handle = await agent.startSession({
+      sessionId: 'session-concurrent-user-input',
+      model: 'gpt-5.4',
+      workingDir: '/repo',
+    });
+    const handlers = host.getThreadHandlers();
+    if (!handlers?.dynamicToolCall) throw new Error('expected dynamicToolCall handler');
+
+    const firstDecision = deferred<InteractionDecision>();
+    const secondDecision = deferred<InteractionDecision>();
+    let requestCount = 0;
+    handle.setInteractionResolver(async (req) => {
+      if (req.kind !== 'ask_user_question') throw new Error('expected ask_user_question');
+      requestCount += 1;
+      if (req.requestId === 'req-first') return firstDecision.promise;
+      if (req.requestId === 'req-second') return secondDecision.promise;
+      return {
+        kind: 'ask_user_question',
+        answers: { [req.questions[0]?.question ?? '']: 'Unexpected repeat' },
+      };
+    });
+
+    const callQuestion = (
+      requestId: string,
+      callId: string,
+      questionId: string,
+      question: string,
+    ) => handlers.dynamicToolCall?.({
+      threadId: 'start-thread-id',
+      turnId: 'turn-1',
+      callId,
+      namespace: 'cindy',
+      tool: 'ask_user_question',
+      arguments: {
+        questions: [{ id: questionId, header: 'Direction', question }],
+      },
+    }, { requestId });
+
+    const firstResultPromise = callQuestion('req-first', 'call-first', 'first', 'First question?');
+    const secondResultPromise = callQuestion('req-second', 'call-second', 'second', 'Second question?');
+    if (!firstResultPromise || !secondResultPromise) throw new Error('expected dynamic tool results');
+    expect(requestCount).toBe(2);
+
+    secondDecision.resolve({
+      kind: 'ask_user_question',
+      answers: { 'Second question?': 'Second answer' },
+    });
+    await secondResultPromise;
+    firstDecision.resolve({
+      kind: 'ask_user_question',
+      answers: { 'First question?': 'First answer' },
+    });
+    await firstResultPromise;
+
+    const firstReplay = await callQuestion('req-first-replay', 'call-first-replay', 'first', 'First question?');
+    const secondReplay = await callQuestion('req-second-replay', 'call-second-replay', 'second', 'Second question?');
+    expect(firstReplay?.contentItems).toEqual([
+      { type: 'inputText', text: JSON.stringify({ first: { answers: ['First answer'] } }) },
+    ]);
+    expect(secondReplay?.contentItems).toEqual([
+      { type: 'inputText', text: JSON.stringify({ second: { answers: ['Second answer'] } }) },
+    ]);
     expect(requestCount).toBe(2);
     await handle.close();
   });
@@ -9762,21 +11735,29 @@ describe('CodexAgent MCP thread context hooks', () => {
     const iterator = handle.events()[Symbol.asyncIterator]();
     const handlers = host.getThreadHandlers();
     if (!handlers?.requestUserInput || !handlers.serverRequestResolved) throw new Error('expected handlers');
-    const pendingDecision = deferred<InteractionDecision>();
-    handle.setInteractionResolver(async () => pendingDecision.promise);
+    const cancelledDecision = deferred<InteractionDecision>();
+    const retryDecision = deferred<InteractionDecision>();
+    let requestCount = 0;
+    handle.setInteractionResolver(async (req) => {
+      requestCount += 1;
+      return req.requestId === 'req-resolved'
+        ? cancelledDecision.promise
+        : retryDecision.promise;
+    });
 
+    const question = {
+      id: 'q1',
+      header: 'Question',
+      question: 'Pick one',
+      isOther: false,
+      isSecret: false,
+      options: null,
+    };
     const responsePromise = handlers.requestUserInput({
       threadId: 'start-thread-id',
       turnId: 'turn-1',
       itemId: 'item-1',
-      questions: [{
-        id: 'q1',
-        header: 'Question',
-        question: 'Pick one',
-        isOther: false,
-        isSecret: false,
-        options: null,
-      }],
+      questions: [question],
     }, { requestId: 'req-resolved' });
 
     handlers.serverRequestResolved({ threadId: 'start-thread-id', requestId: 'req-resolved' });
@@ -9790,8 +11771,315 @@ describe('CodexAgent MCP thread context hooks', () => {
         resolvedAs: 'deny',
       },
     });
-    pendingDecision.resolve({ kind: 'ask_user_question', answers: { q1: 'late' } });
+
+    const retryResponsePromise = handlers.requestUserInput({
+      threadId: 'start-thread-id',
+      turnId: 'turn-1',
+      itemId: 'item-2',
+      questions: [question],
+    }, { requestId: 'req-retry' });
+    expect(requestCount).toBe(2);
+    retryDecision.resolve({
+      kind: 'ask_user_question',
+      answers: { 'Pick one': 'fresh' },
+    });
+    await expect(retryResponsePromise).resolves.toEqual({
+      answers: { q1: { answers: ['fresh'] } },
+    });
+
+    cancelledDecision.resolve({
+      kind: 'ask_user_question',
+      answers: { 'Pick one': 'late' },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await expect(handlers.requestUserInput({
+      threadId: 'start-thread-id',
+      turnId: 'turn-1',
+      itemId: 'item-3',
+      questions: [question],
+    }, { requestId: 'req-replay' })).resolves.toEqual({
+      answers: { q1: { answers: ['fresh'] } },
+    });
+    expect(requestCount).toBe(2);
     await handle.close();
+  });
+
+  it('does not cache a late user-input answer after local turn interruption', async () => {
+    const agent = new CodexAgent(createDeps());
+    const host = installFakeHost(agent, (method) => {
+      if (method === Method.TurnStart) return { turn: { id: 'turn-1' } };
+      if (method === Method.TurnInterrupt) return {};
+      return undefined;
+    });
+    const handle = await agent.startSession({
+      sessionId: 'session-user-input-local-interrupt',
+      model: 'gpt-5.4',
+      workingDir: '/repo',
+    });
+    await handle.send({ type: 'user', content: 'ask me a question' });
+    const handlers = host.getThreadHandlers();
+    if (!handlers?.requestUserInput) throw new Error('expected requestUserInput handler');
+    const interruptedDecision = deferred<InteractionDecision>();
+    const replacementDecision = deferred<InteractionDecision>();
+    let requestCount = 0;
+    handle.setInteractionResolver(async () => {
+      requestCount += 1;
+      return requestCount === 1
+        ? interruptedDecision.promise
+        : replacementDecision.promise;
+    });
+
+    const question = {
+      id: 'q1',
+      header: 'Question',
+      question: 'Pick one',
+      isOther: false,
+      isSecret: false,
+      options: null,
+    };
+    const interruptedResponsePromise = handlers.requestUserInput({
+      threadId: 'start-thread-id',
+      turnId: 'turn-1',
+      itemId: 'item-interrupted',
+      questions: [question],
+    }, { requestId: 'req-interrupted' });
+
+    await handle.abort();
+    await expect(interruptedResponsePromise).resolves.toEqual({ answers: {} });
+
+    interruptedDecision.resolve({
+      kind: 'ask_user_question',
+      answers: { 'Pick one': 'late' },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const replacementResponsePromise = handlers.requestUserInput({
+      threadId: 'start-thread-id',
+      turnId: 'turn-1',
+      itemId: 'item-replacement',
+      questions: [question],
+    }, { requestId: 'req-replacement' });
+    expect(requestCount).toBe(2);
+    replacementDecision.resolve({
+      kind: 'ask_user_question',
+      answers: { 'Pick one': 'fresh' },
+    });
+    await expect(replacementResponsePromise).resolves.toEqual({
+      answers: { q1: { answers: ['fresh'] } },
+    });
+
+    handlers.turnCompleted?.({
+      threadId: 'start-thread-id',
+      turn: { id: 'turn-1', status: 'interrupted' },
+    });
+    await handle.close();
+  });
+
+  it('reassigns a joined duplicate when the interaction owner is cancelled', async () => {
+    const agent = new CodexAgent(createDeps());
+    const host = installFakeHost(agent);
+    const handle = await agent.startSession({
+      sessionId: 'session-user-input-owner-cancelled',
+      model: 'gpt-5.4',
+      workingDir: '/repo',
+    });
+    const iterator = handle.events()[Symbol.asyncIterator]();
+    const handlers = host.getThreadHandlers();
+    if (!handlers?.requestUserInput || !handlers.dynamicToolCall || !handlers.serverRequestResolved) {
+      throw new Error('expected handlers');
+    }
+    const ownerDecision = deferred<InteractionDecision>();
+    const joinedDecision = deferred<InteractionDecision>();
+    let requestCount = 0;
+    handle.setInteractionResolver(async (req) => {
+      requestCount += 1;
+      return req.requestId === 'req-owner'
+        ? ownerDecision.promise
+        : joinedDecision.promise;
+    });
+
+    const ownerResponsePromise = handlers.requestUserInput({
+      threadId: 'start-thread-id',
+      turnId: 'turn-1',
+      itemId: 'item-owner',
+      questions: [{
+        id: 'native-q1',
+        header: 'Question',
+        question: 'Pick one',
+        isOther: false,
+        isSecret: false,
+        options: null,
+      }],
+    }, { requestId: 'req-owner' });
+    const joinedResponsePromise = handlers.dynamicToolCall({
+      threadId: 'start-thread-id',
+      turnId: 'turn-1',
+      callId: 'item-joined',
+      namespace: 'cindy',
+      tool: 'ask_user_question',
+      arguments: {
+        questions: [{
+          id: 'dynamic-q1',
+          header: 'Question',
+          question: 'Pick one',
+          isOther: false,
+          options: null,
+        }],
+      },
+    }, { requestId: 'req-joined' });
+    expect(requestCount).toBe(1);
+
+    handlers.serverRequestResolved({ threadId: 'start-thread-id', requestId: 'req-owner' });
+
+    await expect(ownerResponsePromise).resolves.toEqual({ answers: {} });
+    await expect(nextEvent(iterator)).resolves.toMatchObject({
+      type: 'interaction_dismissed',
+      data: {
+        requestId: 'req-owner',
+        reason: 'server_request_resolved',
+        resolvedAs: 'deny',
+      },
+    });
+    await waitForExpectation(() => {
+      expect(requestCount).toBe(2);
+    });
+
+    joinedDecision.resolve({
+      kind: 'ask_user_question',
+      answers: { 'Pick one': 'fresh' },
+    });
+    await expect(joinedResponsePromise).resolves.toEqual({
+      success: true,
+      contentItems: [{
+        type: 'inputText',
+        text: JSON.stringify({ 'dynamic-q1': { answers: ['fresh'] } }),
+      }],
+    });
+
+    ownerDecision.resolve({
+      kind: 'ask_user_question',
+      answers: { 'Pick one': 'late' },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await expect(handlers.requestUserInput({
+      threadId: 'start-thread-id',
+      turnId: 'turn-1',
+      itemId: 'item-replay',
+      questions: [{
+        id: 'replay-q1',
+        header: 'Question',
+        question: 'Pick one',
+        isOther: false,
+        isSecret: false,
+        options: null,
+      }],
+    }, { requestId: 'req-replay' })).resolves.toEqual({
+      answers: { 'replay-q1': { answers: ['fresh'] } },
+    });
+    expect(requestCount).toBe(2);
+    await handle.close();
+  });
+
+  it.each([
+    {
+      lifecycle: 'turn completion',
+      reason: 'turn_completed',
+      trigger: (_handle: AgentSessionHandle, handlers: ThreadEventHandlers) => {
+        handlers.turnCompleted?.({
+          threadId: 'start-thread-id',
+          turn: { id: 'turn-1', status: 'completed' },
+        });
+      },
+    },
+    {
+      lifecycle: 'transport failure',
+      reason: 'transport_error',
+      trigger: (_handle: AgentSessionHandle, handlers: ThreadEventHandlers) => {
+        handlers.error?.({
+          threadId: 'start-thread-id',
+          turnId: '',
+          willRetry: false,
+          scope: 'transport',
+          error: { message: 'transport closed' },
+        });
+      },
+    },
+    {
+      lifecycle: 'session close',
+      reason: 'session_closed',
+      trigger: async (handle: AgentSessionHandle) => {
+        await handle.close();
+      },
+    },
+  ])('wakes joined user-input requests during $lifecycle cleanup', async ({ lifecycle, reason, trigger }) => {
+    const logger = createNoopLogger();
+    const debug = vi.spyOn(logger, 'debug');
+    const agent = new CodexAgent(createDeps({}, { logger }));
+    const host = installFakeHost(agent);
+    const handle = await agent.startSession({
+      sessionId: `session-user-input-cleanup-${lifecycle.replaceAll(' ', '-')}`,
+      model: 'gpt-5.4',
+      workingDir: '/repo',
+    });
+    const handlers = host.getThreadHandlers();
+    if (!handlers?.requestUserInput || !handlers.dynamicToolCall) {
+      throw new Error('expected user input handlers');
+    }
+    const ownerDecision = deferred<InteractionDecision>();
+    let requestCount = 0;
+    handle.setInteractionResolver(async () => {
+      requestCount += 1;
+      return ownerDecision.promise;
+    });
+
+    const ownerResponsePromise = handlers.requestUserInput({
+      threadId: 'start-thread-id',
+      turnId: 'turn-1',
+      itemId: 'item-owner',
+      questions: [{
+        id: 'native-q1',
+        header: 'Question',
+        question: 'Pick one',
+        isOther: false,
+        isSecret: false,
+        options: null,
+      }],
+    }, { requestId: 'req-owner' });
+    const joinedResponsePromise = handlers.dynamicToolCall({
+      threadId: 'start-thread-id',
+      turnId: 'turn-1',
+      callId: 'item-joined',
+      namespace: 'cindy',
+      tool: 'ask_user_question',
+      arguments: {
+        questions: [{
+          id: 'dynamic-q1',
+          header: 'Question',
+          question: 'Pick one',
+          isOther: false,
+          options: null,
+        }],
+      },
+    }, { requestId: 'req-joined' });
+    expect(requestCount).toBe(1);
+
+    await trigger(handle, handlers);
+
+    await expect(ownerResponsePromise).resolves.toEqual({ answers: {} });
+    await expect(joinedResponsePromise).resolves.toEqual({
+      success: false,
+      contentItems: [{ type: 'inputText', text: `Request cancelled: ${reason}` }],
+    });
+    await waitForExpectation(() => {
+      expect(debug).toHaveBeenCalledWith(
+        'joined duplicate same-turn user input request cancelled',
+        { requestId: 'req-joined', turnId: 'turn-1' },
+      );
+    });
+    if (lifecycle !== 'session close') await handle.close();
   });
 
   it('updates the registered vendorOptions object by reference on setVendorOptions', async () => {
@@ -10169,6 +12457,9 @@ describe('CodexAgent.forkSdkSession', () => {
       threadId: 'fork-thread-id',
       numTurns: 2,
     });
+    expect(host.unsubscribeThread).toHaveBeenNthCalledWith(1, 'fork-thread-id');
+    expect(host.unsubscribeThread).toHaveBeenNthCalledWith(2, 'rollback-thread-id');
+    expect(host.unsubscribeThread).not.toHaveBeenCalledWith('source-thread-id');
     expect(result.newSdkSessionId).toBe('rollback-thread-id');
     expect(result.uuidMap.size).toBe(0);
   });
@@ -10189,8 +12480,58 @@ describe('CodexAgent.forkSdkSession', () => {
       threadId: 'source-thread-id',
       persistExtendedHistory: true,
     });
+    expect(host.unsubscribeThread).toHaveBeenCalledTimes(1);
+    expect(host.unsubscribeThread).toHaveBeenCalledWith('fork-thread-id');
+    expect(host.unsubscribeThread).not.toHaveBeenCalledWith('source-thread-id');
     expect(result.newSdkSessionId).toBe('fork-thread-id');
     expect(result.uuidMap.size).toBe(0);
+  });
+
+  it('unloads the forked child when rollback fails', async () => {
+    const agent = new CodexAgent(createDeps());
+    const host = installFakeHost(agent, (method) => {
+      if (method === Method.ThreadRollback) throw new Error('rollback failed');
+      return undefined;
+    });
+
+    await expect(agent.forkSdkSession({
+      sourceSdkSessionId: 'source-thread-id',
+      upToMessageId: undefined,
+      tailTurnsToDrop: 1,
+    })).rejects.toThrow('rollback failed');
+
+    expect(host.unsubscribeThread).toHaveBeenCalledTimes(1);
+    expect(host.unsubscribeThread).toHaveBeenCalledWith('fork-thread-id');
+    expect(host.unsubscribeThread).not.toHaveBeenCalledWith('source-thread-id');
+  });
+
+  it('retires the captured host and rejects when a forked child cannot be unloaded', async () => {
+    const agent = new CodexAgent(createDeps());
+    const host = installFakeHost(agent);
+    host.unsubscribeThread.mockRejectedValueOnce(new Error('unsubscribe failed'));
+    const retireHostKey = vi
+      .spyOn(
+        agent as unknown as { retireHostKey: (...args: unknown[]) => Promise<void> },
+        'retireHostKey',
+      )
+      .mockResolvedValue(undefined);
+
+    await expect(agent.forkSdkSession({
+      sourceSdkSessionId: 'source-thread-id',
+      upToMessageId: undefined,
+      tailTurnsToDrop: 0,
+    })).rejects.toThrow('unsubscribe failed');
+
+    expect(retireHostKey).toHaveBeenCalledWith(
+      'local',
+      'Codex fork child fork-thread-id could not be unloaded safely',
+      expect.objectContaining({
+        failIfActive: false,
+        logPrefix: 'codex fork child cleanup',
+        expectedGeneration: 0,
+      }),
+    );
+    expect(host.unsubscribeThread).not.toHaveBeenCalledWith('source-thread-id');
   });
 
   it('forks from a temporary rollout copy without unsafe payload lines', async () => {
@@ -10346,6 +12687,45 @@ describe('CodexAgent rewind', () => {
       text: registeredText,
     });
     await handle.close();
+  });
+
+  it('retires the captured host and terminates the handle when rollback subscription release fails', async () => {
+    const agent = new CodexAgent(createDeps());
+    const host = installFakeHost(agent);
+    const retireHostKey = vi
+      .spyOn(
+        agent as unknown as { retireHostKey: (...args: unknown[]) => Promise<void> },
+        'retireHostKey',
+      )
+      .mockResolvedValue(undefined);
+    const handle = await agent.startSession({
+      sessionId: 'session-rewind-release-failure',
+      model: 'gpt-5.4',
+      workingDir: '/repo',
+    });
+    const commitRewindFiles = handle.commitRewindFiles;
+    if (!commitRewindFiles) throw new Error('expected commitRewindFiles');
+    const initialSubscription = host.subscribeThread.mock.results[0]?.value;
+    const release = initialSubscription?.release;
+    if (!release) throw new Error('expected initial subscription');
+    release.mockRejectedValueOnce(new Error('thread/unsubscribe failed'));
+
+    await expect(
+      commitRewindFiles('', '', { tailTurnsToDrop: 1 }),
+    ).rejects.toThrow(/session expired|thread\/rollback subscription cleanup/i);
+
+    expect(retireHostKey).toHaveBeenCalledWith(
+      'local',
+      'thread/rollback subscription release',
+      expect.objectContaining({ failIfActive: false }),
+    );
+    expect(host.subscribeThread).toHaveBeenCalledTimes(1);
+    await expect(
+      handle.send(
+        { type: 'user', content: 'must stay closed after cleanup failure' },
+        { throwOnStartFailure: true },
+      ),
+    ).rejects.toThrow(/closed/i);
   });
 
   it('discards the replacement thread when close races with rollback cleanup', async () => {
@@ -14589,5 +16969,1087 @@ describe('CodexAgent upstream-response-idle watchdog', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('CodexAgent reconnect-stall watchdog', () => {
+  const RECONNECT_STALL_MS = 120_000;
+
+  beforeEach(() => {
+    // 本组只验证显式 `Reconnecting... N/M` deadline，不让 30min upstream-idle
+    // 看门狗参与计时与收口。
+    vi.stubEnv('XDT_CODEX_IDLE_TIMEOUT_MS', '0');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  function installReconnectHost(
+    agent: CodexAgent,
+    interruptHangs = false,
+    interruptAck?: Promise<unknown>,
+  ) {
+    let turnSeq = 0;
+    return installFakeHost(agent, (method) => {
+      if (method === Method.TurnStart) return { turn: { id: `turn-${++turnSeq}` } };
+      if (method === Method.TurnInterrupt) {
+        if (interruptAck) return interruptAck;
+        return interruptHangs ? new Promise<never>(() => {}) : {};
+      }
+      return undefined;
+    });
+  }
+
+  async function startReconnectTurn(
+    agent: CodexAgent,
+    sessionId: string,
+    interruptAck?: Promise<unknown>,
+  ) {
+    const host = installReconnectHost(agent, false, interruptAck);
+    const handle = await agent.startSession({ sessionId, model: 'gpt-5.4', workingDir: '/repo' });
+    const seen: AgentEvent[] = [];
+    void (async () => {
+      for await (const event of handle.events()) seen.push(event);
+    })();
+    await handle.send({ type: 'user', content: 'go' });
+    const handlers = host.getThreadHandlers();
+    if (!handlers) throw new Error('expected thread handlers');
+    handlers.turnStarted?.({ threadId: 'start-thread-id', turn: { id: 'turn-1' } } as never);
+    return { host, handle, handlers, seen };
+  }
+
+  function emitReconnect(
+    handlers: ThreadEventHandlers,
+    attempt: number,
+    maxAttempts = 5,
+  ): void {
+    handlers.error?.({
+      threadId: 'start-thread-id',
+      turnId: 'turn-1',
+      error: { message: `Reconnecting... ${attempt}/${maxAttempts}` },
+      willRetry: true,
+    } as never);
+  }
+
+  it('首次重连提示后 120s 无进展 → 收口为 codex_reconnect_stalled', async () => {
+    vi.useFakeTimers();
+    try {
+      const agent = new CodexAgent(createDeps());
+      const { host, handle, handlers, seen } = await startReconnectTurn(
+        agent,
+        'session-reconnect-stalled',
+      );
+      emitReconnect(handlers, 1);
+
+      await vi.advanceTimersByTimeAsync(RECONNECT_STALL_MS + 1);
+
+      expect(seen).toContainEqual(expect.objectContaining({
+        type: 'error',
+        data: expect.objectContaining({
+          reason: 'codex_reconnect_stalled',
+          isTerminal: true,
+        }),
+      }));
+      expect(handle.isTurnRunning?.()).toBe(false);
+      expect(host.request.mock.calls).toContainEqual([
+        Method.TurnInterrupt,
+        expect.objectContaining({ turnId: 'turn-1' }),
+      ]);
+      await handle.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+
+  it('子代理进展不算主 turn 恢复:reconnect deadline 照旧到点收口', async () => {
+    // eventQueue.push 的探针会刷新 upstreamIdleLastEventAt + armUpstreamIdle(),并把事件喂给
+    // observeReconnectStallEvent —— 而 `agent_task_update` 就在 isReconnectRecoveryEvent 的
+    // 白名单里(那对 Claude 主线程的 Task 更新是对的)。于是子线程一有进展就清掉 reconnect
+    // deadline:主 turn 其实已经哑火,却因为子代理还在跑而永远检测不出来(review)。
+    vi.useFakeTimers();
+    try {
+      const agent = new CodexAgent(createDeps());
+      const { handle, handlers, seen } = await startReconnectTurn(
+        agent,
+        'session-reconnect-descendant',
+      );
+      // spawn 登记必须发生在 reconnect 提示**之前**:itemStarted 是主线程事件,它本身就是
+      // 合法的主 turn 进展、会清掉 deadline(第一版测试把它放在后面,于是测的是"主线程事件
+      // 清了 deadline",而不是"子代理帧不该清")。
+      handlers.descendantThreadStarted?.({
+        thread: { id: 'child-1', parentThreadId: 'start-thread-id' },
+      } as never);
+      handlers.itemStarted?.({
+        threadId: 'start-thread-id',
+        turnId: 'turn-1',
+        item: { id: 'spawn-1', type: 'subAgentActivity', kind: 'started', agentThreadId: 'child-1', agentPath: '/scout' },
+      } as never);
+
+      emitReconnect(handlers, 1);
+
+      // 此后主线程一条事件都不发,只有子代理持续产出进展(每 30s 一次工具调用)。
+      for (let i = 0; i < 4; i += 1) {
+        await vi.advanceTimersByTimeAsync(30_000);
+        handlers.descendantNotification?.('child-1', 'item/started', {
+          threadId: 'child-1',
+          turnId: 'child-turn',
+          item: { id: `child-tool-${i}`, type: 'commandExecution' },
+        });
+      }
+
+      // 卡片确实在更新(证明子代理帧真的流过来了,不是测试没生效)。
+      expect(seen.filter((e) => e.type === 'agent_task_update').length).toBeGreaterThan(0);
+      // 关键:deadline 不被子代理帧续命,照旧到点收口。
+      await vi.advanceTimersByTimeAsync(RECONNECT_STALL_MS + 1);
+      expect(seen).toContainEqual(expect.objectContaining({
+        type: 'error',
+        data: expect.objectContaining({
+          reason: 'codex_reconnect_stalled',
+          isTerminal: true,
+        }),
+      }));
+      await handle.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('后续 2/5、3/5 只更新进度，不延长首次提示建立的总 deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      const agent = new CodexAgent(createDeps());
+      const { handle, handlers, seen } = await startReconnectTurn(
+        agent,
+        'session-reconnect-deadline',
+      );
+      emitReconnect(handlers, 1);
+      await vi.advanceTimersByTimeAsync(60_000);
+      emitReconnect(handlers, 2);
+      await vi.advanceTimersByTimeAsync(30_000);
+      emitReconnect(handlers, 3);
+      await vi.advanceTimersByTimeAsync(30_001);
+
+      expect(seen.some(
+        (event) =>
+          event.type === 'error' &&
+          (event.data as { reason?: unknown }).reason === 'codex_reconnect_stalled',
+      )).toBe(true);
+      await handle.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('系统休眠期间不消耗重连额度，醒来后只等待剩余清醒时间', async () => {
+    vi.useFakeTimers();
+    try {
+      const startAt = Date.now();
+      vi.setSystemTime(startAt);
+      const agent = new CodexAgent(createDeps());
+      const { handle, handlers, seen } = await startReconnectTurn(
+        agent,
+        'session-reconnect-suspend',
+      );
+      emitReconnect(handlers, 1);
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      vi.setSystemTime(startAt + 8 * 60 * 60_000);
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(seen.some(
+        (event) =>
+          event.type === 'error' &&
+          (event.data as { reason?: unknown }).reason === 'codex_reconnect_stalled',
+      )).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(60_001);
+      expect(seen.some(
+        (event) =>
+          event.type === 'error' &&
+          (event.data as { reason?: unknown }).reason === 'codex_reconnect_stalled',
+      )).toBe(true);
+      await handle.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('deadline 内重新收到 thinking 或工具产出后不再触发', async () => {
+    vi.useFakeTimers();
+    try {
+      const agent = new CodexAgent(createDeps());
+      const { handle, handlers, seen } = await startReconnectTurn(
+        agent,
+        'session-reconnect-recovered',
+      );
+      emitReconnect(handlers, 1);
+      await vi.advanceTimersByTimeAsync(60_000);
+      handlers.reasoningTextDelta?.({
+        threadId: 'start-thread-id',
+        turnId: 'turn-1',
+        itemId: 'reasoning-1',
+        delta: 'recovered',
+      } as never);
+      await vi.advanceTimersByTimeAsync(RECONNECT_STALL_MS * 2);
+
+      expect(seen.some(
+        (event) =>
+          event.type === 'error' &&
+          (event.data as { reason?: unknown }).reason === 'codex_reconnect_stalled',
+      )).toBe(false);
+      expect(handle.isTurnRunning?.()).toBe(true);
+      await handle.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('重连停滞的 interrupt ACK 未到前保持 busy，迟到 completed 不得提前放行续跑', async () => {
+    vi.useFakeTimers();
+    try {
+      const interruptAck = deferred<Record<string, never>>();
+      const agent = new CodexAgent(createDeps());
+      const { handle, handlers, seen } = await startReconnectTurn(
+        agent,
+        'session-reconnect-deferred-ack',
+        interruptAck.promise,
+      );
+      emitReconnect(handlers, 1);
+
+      await vi.advanceTimersByTimeAsync(RECONNECT_STALL_MS + 1);
+
+      expect(seen).toContainEqual(expect.objectContaining({
+        type: 'error',
+        data: expect.objectContaining({
+          reason: 'codex_reconnect_stalled',
+          isTerminal: true,
+        }),
+      }));
+      expect(handle.isTurnRunning?.()).toBe(true);
+
+      // Codex may report the old turn's terminal notification before the
+      // interrupt RPC response. It must not release the admission guard.
+      handlers.turnCompleted?.({
+        threadId: 'start-thread-id',
+        turn: { id: 'turn-1', status: 'failed' },
+      } as never);
+      expect(handle.isTurnRunning?.()).toBe(true);
+
+      interruptAck.resolve({});
+      await vi.advanceTimersByTimeAsync(0);
+      expect(handle.isTurnRunning?.()).toBe(false);
+      await handle.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('迟到 completed 证明旧 turn 已结束时，即使两次 interrupt 都 reject 也不退役共享 host', async () => {
+    vi.useFakeTimers();
+    try {
+      const firstInterrupt = deferred<never>();
+      const secondInterrupt = deferred<never>();
+      const agent = new CodexAgent(createDeps());
+      const retireHostKey = vi
+        .spyOn(
+          agent as unknown as { retireHostKey: (...args: unknown[]) => Promise<void> },
+          'retireHostKey',
+        )
+        .mockResolvedValue(undefined);
+      let interruptCall = 0;
+      const host = installFakeHost(agent, (method) => {
+        if (method === Method.TurnStart) return { turn: { id: 'turn-1' } };
+        if (method === Method.TurnInterrupt) {
+          interruptCall += 1;
+          return interruptCall === 1 ? firstInterrupt.promise : secondInterrupt.promise;
+        }
+        return undefined;
+      });
+      const handle = await agent.startSession({
+        sessionId: 'session-reconnect-completed-before-interrupt-rejects',
+        model: 'gpt-5.4',
+        workingDir: '/repo',
+      });
+      let eventsEnded = false;
+      void (async () => {
+        for await (const event of handle.events()) void event;
+        eventsEnded = true;
+      })();
+      await handle.send({ type: 'user', content: 'go' });
+      const handlers = host.getThreadHandlers();
+      if (!handlers) throw new Error('expected thread handlers');
+      handlers.turnStarted?.({ threadId: 'start-thread-id', turn: { id: 'turn-1' } } as never);
+      emitReconnect(handlers, 1);
+
+      await vi.advanceTimersByTimeAsync(RECONNECT_STALL_MS + 1);
+      expect(handle.isTurnRunning?.()).toBe(true);
+
+      handlers.turnCompleted?.({
+        threadId: 'start-thread-id',
+        turn: { id: 'turn-1', status: 'failed' },
+      } as never);
+      firstInterrupt.reject(new Error('turn already completed'));
+      await vi.advanceTimersByTimeAsync(0);
+      secondInterrupt.reject(new Error('turn already completed'));
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(handle.isTurnRunning?.()).toBe(false);
+      expect(eventsEnded).toBe(false);
+      expect(retireHostKey).not.toHaveBeenCalled();
+      await handle.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('handle close 的 subscription release 失败时，等待期间到达的 completed 仍会阻止退役共享 host', async () => {
+    vi.useFakeTimers();
+    try {
+      const firstInterrupt = deferred<never>();
+      const secondInterrupt = deferred<never>();
+      const closeRelease = deferred<void>();
+      const agent = new CodexAgent(createDeps());
+      const retireHostKey = vi
+        .spyOn(
+          agent as unknown as { retireHostKey: (...args: unknown[]) => Promise<void> },
+          'retireHostKey',
+        )
+        .mockResolvedValue(undefined);
+      let interruptCall = 0;
+      const host = installFakeHost(agent, (method) => {
+        if (method === Method.TurnStart) return { turn: { id: 'turn-1' } };
+        if (method === Method.TurnInterrupt) {
+          interruptCall += 1;
+          return interruptCall === 1 ? firstInterrupt.promise : secondInterrupt.promise;
+        }
+        return undefined;
+      });
+      const handle = await agent.startSession({
+        sessionId: 'session-reconnect-completed-during-close',
+        model: 'gpt-5.4',
+        workingDir: '/repo',
+      });
+      const subscription = host.subscribeThread.mock.results[0]?.value;
+      const release = subscription?.release;
+      if (!release) throw new Error('expected reconnect-stall subscription');
+      const closeReleasePromise = closeRelease.promise;
+      release.mockImplementationOnce(() => closeReleasePromise);
+      let eventsEnded = false;
+      void (async () => {
+        for await (const event of handle.events()) void event;
+        eventsEnded = true;
+      })();
+      await handle.send({ type: 'user', content: 'go' });
+      const handlers = host.getThreadHandlers();
+      if (!handlers) throw new Error('expected thread handlers');
+      handlers.turnStarted?.({ threadId: 'start-thread-id', turn: { id: 'turn-1' } } as never);
+      emitReconnect(handlers, 1);
+
+      await vi.advanceTimersByTimeAsync(RECONNECT_STALL_MS + 1);
+      firstInterrupt.reject(new Error('turn already completed'));
+      await vi.advanceTimersByTimeAsync(0);
+      secondInterrupt.reject(new Error('turn already completed'));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(release).toHaveBeenCalledOnce();
+
+      handlers.turnCompleted?.({
+        threadId: 'start-thread-id',
+        turn: { id: 'turn-1', status: 'failed' },
+      } as never);
+      closeRelease.reject(new Error('thread/unsubscribe failed'));
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(eventsEnded).toBe(true);
+      expect(retireHostKey).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('interrupt 不响应时关闭 handle 并退役坏 host，下一次发送可重建', async () => {
+    vi.useFakeTimers();
+    try {
+      const agent = new CodexAgent(createDeps());
+      const host = installReconnectHost(agent, true);
+      const retireHostKey = vi
+        .spyOn(
+          agent as unknown as { retireHostKey: (...args: unknown[]) => Promise<void> },
+          'retireHostKey',
+        )
+        .mockResolvedValue(undefined);
+      const handle = await agent.startSession({
+        sessionId: 'session-reconnect-retire',
+        model: 'gpt-5.4',
+        workingDir: '/repo',
+      });
+      const subscription = host.subscribeThread.mock.results[0]?.value;
+      const release = subscription?.release;
+      if (!release) throw new Error('expected reconnect-stall subscription');
+      release.mockRejectedValueOnce(new Error('thread/unsubscribe failed'));
+      let eventsEnded = false;
+      void (async () => {
+        for await (const event of handle.events()) void event;
+        eventsEnded = true;
+      })();
+      await handle.send({ type: 'user', content: 'go' });
+      const handlers = host.getThreadHandlers();
+      if (!handlers) throw new Error('expected thread handlers');
+      handlers.turnStarted?.({ threadId: 'start-thread-id', turn: { id: 'turn-1' } } as never);
+      emitReconnect(handlers, 1);
+
+      await vi.advanceTimersByTimeAsync(RECONNECT_STALL_MS + 20_010);
+
+      expect(eventsEnded).toBe(true);
+      expect(retireHostKey).toHaveBeenCalledTimes(1);
+      expect(retireHostKey.mock.calls[0]?.[2]).toMatchObject({
+        failIfActive: false,
+        logPrefix: 'codex upstream-idle watchdog',
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('重连提示早于 turnStarted 且 turn/start 仍 pending 时也会收口并隔离迟到 turn', async () => {
+    vi.useFakeTimers();
+    try {
+      const pendingStart = deferred<{ turn: { id: string } }>();
+      const startEntered = deferred<void>();
+      const interruptEntered = deferred<void>();
+      const agent = new CodexAgent(createDeps());
+      const retireHostKey = vi
+        .spyOn(
+          agent as unknown as { retireHostKey: (...args: unknown[]) => Promise<void> },
+          'retireHostKey',
+        )
+        .mockResolvedValue(undefined);
+      const host = installFakeHost(agent, (method) => {
+        if (method === Method.TurnStart) {
+          startEntered.resolve();
+          return pendingStart.promise;
+        }
+        if (method === Method.TurnInterrupt) {
+          interruptEntered.resolve();
+          return {};
+        }
+        return undefined;
+      });
+      const handle = await agent.startSession({
+        sessionId: 'session-reconnect-before-started',
+        model: 'gpt-5.4',
+        workingDir: '/repo',
+      });
+      const subscription = host.subscribeThread.mock.results[0]?.value;
+      const release = subscription?.release;
+      if (!release) throw new Error('expected pending-turn subscription');
+      release.mockRejectedValueOnce(new Error('thread/unsubscribe failed'));
+      const seen: AgentEvent[] = [];
+      void (async () => {
+        for await (const event of handle.events()) seen.push(event);
+      })();
+      const sendPromise = handle.send({ type: 'user', content: 'go' });
+      await startEntered.promise;
+      expect(host.request.mock.calls.filter(([method]) => method === Method.TurnStart)).toHaveLength(1);
+      const handlers = host.getThreadHandlers();
+      if (!handlers?.error) throw new Error('expected thread handlers');
+      handlers.error({
+        threadId: 'start-thread-id',
+        turnId: 'turn-1',
+        error: { message: 'Reconnecting... 1/5' },
+        willRetry: true,
+      } as never);
+
+      await vi.advanceTimersByTimeAsync(RECONNECT_STALL_MS + 1);
+      await interruptEntered.promise;
+
+      expect(seen).toContainEqual(expect.objectContaining({
+        type: 'error',
+        data: expect.objectContaining({
+          reason: 'codex_reconnect_stalled',
+          isTerminal: true,
+        }),
+      }));
+      expect(host.request.mock.calls).toContainEqual([
+        Method.TurnInterrupt,
+        expect.objectContaining({ turnId: 'turn-1' }),
+      ]);
+
+      pendingStart.resolve({ turn: { id: 'turn-1' } });
+      await sendPromise;
+      expect(handle.isTurnRunning?.()).toBe(false);
+      expect(retireHostKey).not.toHaveBeenCalled();
+      await handle.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('pending turn/start 的中断两次都不响应时才退役共享 host', async () => {
+    vi.useFakeTimers();
+    try {
+      const pendingStart = deferred<{ turn: { id: string } }>();
+      const startEntered = deferred<void>();
+      const agent = new CodexAgent(createDeps());
+      const retireHostKey = vi
+        .spyOn(
+          agent as unknown as { retireHostKey: (...args: unknown[]) => Promise<void> },
+          'retireHostKey',
+        )
+        .mockResolvedValue(undefined);
+      const host = installFakeHost(agent, (method) => {
+        if (method === Method.TurnStart) {
+          startEntered.resolve();
+          return pendingStart.promise;
+        }
+        if (method === Method.TurnInterrupt) return new Promise<never>(() => {});
+        return undefined;
+      });
+      const handle = await agent.startSession({
+        sessionId: 'session-reconnect-before-started-retire',
+        model: 'gpt-5.4',
+        workingDir: '/repo',
+      });
+      const subscription = host.subscribeThread.mock.results[0]?.value;
+      const release = subscription?.release;
+      if (!release) throw new Error('expected pending-turn subscription');
+      release.mockRejectedValueOnce(new Error('thread/unsubscribe failed'));
+      void (async () => {
+        for await (const event of handle.events()) void event;
+      })();
+      const sendPromise = handle.send({ type: 'user', content: 'go' });
+      await startEntered.promise;
+      const handlers = host.getThreadHandlers();
+      if (!handlers?.error) throw new Error('expected thread handlers');
+      handlers.error({
+        threadId: 'start-thread-id',
+        turnId: 'turn-1',
+        error: { message: 'Reconnecting... 1/5' },
+        willRetry: true,
+      } as never);
+
+      await vi.advanceTimersByTimeAsync(RECONNECT_STALL_MS + 1);
+      // handle.close() 立即释放本 thread；共享 host 只有在两次 interrupt ack 都超时后
+      // 才允许退役。
+      expect(handle.isTurnRunning?.()).toBe(false);
+      expect(retireHostKey).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(10_000 * 2 + 10);
+
+      expect(host.request.mock.calls.filter(([method]) => method === Method.TurnInterrupt)).toHaveLength(2);
+      expect(retireHostKey).toHaveBeenCalledTimes(1);
+      expect(retireHostKey.mock.calls[0]?.[2]).toMatchObject({ failIfActive: true });
+
+      pendingStart.resolve({ turn: { id: 'turn-1' } });
+      await sendPromise;
+      await handle.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('CodexAgent context window reporting', () => {
+  // agent 侧只负责两件事:按 turn 归属模型、把 host 给的已核实上限与上报值取小。
+  // 「目录里这个窗口算不算已核实、该用哪条路由的」判定在 host
+  // (apps/desktop/.../catalog-to-descriptors.ts 的 resolveVerifiedContextWindow,有独立用例)。
+  const GATEWAY_MODEL = 'codex/gpt-5.6-sol';
+  const WIDE_MODEL = 'codex/gpt-wide';
+
+  /** 注入 host 侧解析器;返回 null = 该路由没有已核实上限(不收敛)。 */
+  function agentWithVerified(resolve: (providerId: string | null | undefined, modelId: string) => number | null) {
+    return new CodexAgent(
+      createDeps({}, { resolveVerifiedContextWindow: resolve } as never),
+    );
+  }
+
+  /** 最常见形态:按 model id 给固定的已核实上限。 */
+  function agentWithWindows(windows: Record<string, number>) {
+    return agentWithVerified((_providerId, modelId) => windows[modelId] ?? null);
+  }
+
+  /** turn/start 与 settings/update 都要能应答: setModel 会推 thread/settings/update。 */
+  function installTurnCapableHost(agent: CodexAgent) {
+    let turnSeq = 0;
+    return installFakeHost(agent, (method) => {
+      if (method === Method.TurnStart) return { turn: { id: `turn-${++turnSeq}` } };
+      if (method === Method.ThreadSettingsUpdate) return {};
+      if (method === Method.TurnInterrupt) return {};
+      return undefined;
+    });
+  }
+
+  const usageBreakdown = {
+    totalTokens: 108,
+    inputTokens: 100,
+    cachedInputTokens: 40,
+    outputTokens: 5,
+    reasoningOutputTokens: 3,
+  };
+
+  function pushUsage(handlers: ThreadEventHandlers, turnId: string, appServerWindow: number): void {
+    handlers.tokenUsageUpdated?.({
+      threadId: 'start-thread-id',
+      turnId,
+      tokenUsage: {
+        total: usageBreakdown,
+        last: usageBreakdown,
+        modelContextWindow: appServerWindow,
+      },
+    } as never);
+  }
+
+  async function reportedContextWindow(
+    agent: CodexAgent,
+    sessionId: string,
+    model: string,
+    appServerWindow: number,
+  ): Promise<number> {
+    const host = installFakeHost(agent);
+    const handle = await agent.startSession({ sessionId, model, workingDir: '/repo' });
+    const subscribeCalls = host.subscribeThread.mock.calls as unknown as Array<
+      [string, ThreadEventHandlers]
+    >;
+    const handlers = subscribeCalls[0]?.[1];
+    if (!handlers) throw new Error('expected thread handlers');
+
+    handlers.turnStarted?.({ threadId: 'start-thread-id', turn: { id: 'turn-1' } } as never);
+    pushUsage(handlers, 'turn-1', appServerWindow);
+
+    const { contextWindow } = handle.getUsageSnapshot();
+    await handle.close();
+    return contextWindow;
+  }
+
+  it('把 app-server 上报的基础模型窗口收敛到该路由已核实的上限', async () => {
+    expect(
+      await reportedContextWindow(
+        agentWithWindows({ [GATEWAY_MODEL]: 372_000 }),
+        'session-ctxwin-cap',
+        GATEWAY_MODEL,
+        1_000_000,
+      ),
+    ).toBe(372_000);
+  });
+
+  it('上报值本来就更小时取上报值(路由真被降窗)', async () => {
+    expect(
+      await reportedContextWindow(
+        agentWithWindows({ [GATEWAY_MODEL]: 372_000 }),
+        'session-ctxwin-downsized',
+        GATEWAY_MODEL,
+        128_000,
+      ),
+    ).toBe(128_000);
+  });
+
+  // host 返回 null 覆盖了所有「不该收敛」的情形:目录未覆盖、只有派生兜底值(自定义 provider
+  // 的 200K 占位 / codex model/list 的 272K)、provider 归属有歧义、host 未注入解析器。
+  it('host 没有给出已核实上限时不收敛,直接采信上报值', async () => {
+    expect(
+      await reportedContextWindow(
+        agentWithVerified(() => null),
+        'session-ctxwin-unverified',
+        'gpt-5.4',
+        1_000_000,
+      ),
+    ).toBe(1_000_000);
+  });
+
+  it('host 完全没注入解析器时同样不收敛(老 host / 远程会话)', async () => {
+    expect(
+      await reportedContextWindow(
+        new CodexAgent(createDeps()),
+        'session-ctxwin-no-resolver',
+        GATEWAY_MODEL,
+        1_000_000,
+      ),
+    ).toBe(1_000_000);
+  });
+
+  // 解析器每次调用都读 live 目录(host 侧实现如此),所以会话中途的目录刷新即时生效 ——
+  // 不能在会话启动时把结果缓存住。
+  it('解析结果随目录刷新即时生效,不被会话启动时缓存住', async () => {
+    let live = 200_000;
+    const agent = agentWithVerified((_p, modelId) => (modelId === GATEWAY_MODEL ? live : null));
+    const host = installFakeHost(agent);
+    const handle = await agent.startSession({
+      sessionId: 'session-ctxwin-live-catalog',
+      model: GATEWAY_MODEL,
+      workingDir: '/repo',
+    });
+    const subscribeCalls = host.subscribeThread.mock.calls as unknown as Array<
+      [string, ThreadEventHandlers]
+    >;
+    const handlers = subscribeCalls[0]?.[1];
+    if (!handlers) throw new Error('expected thread handlers');
+
+    live = 372_000; // 模拟 refreshCatalogDerivedModels 之后的目录
+
+    handlers.turnStarted?.({ threadId: 'start-thread-id', turn: { id: 'turn-1' } } as never);
+    pushUsage(handlers, 'turn-1', 1_000_000);
+
+    expect(handle.getUsageSnapshot().contextWindow).toBe(372_000);
+    await handle.close();
+  });
+
+  // 会话实际路由的 provider 必须传给 host —— 同一个无前缀 id 可能同时来自订阅直连与网关,
+  // 只有按 providerId 才能取到该路由声明的上限(否则这个常见配置下收敛会整个失效)。
+  it('把会话的 providerId 传给解析器', async () => {
+    const seen: Array<string | null | undefined> = [];
+    const agent = agentWithVerified((providerId, modelId) => {
+      seen.push(providerId);
+      return providerId === 'xd' && modelId === 'gpt-5.6-sol' ? 372_000 : null;
+    });
+    const host = installFakeHost(agent);
+    const handle = await agent.startSession({
+      sessionId: 'session-ctxwin-provider',
+      model: 'gpt-5.6-sol',
+      providerId: 'xd',
+      workingDir: '/repo',
+    } as never);
+    const subscribeCalls = host.subscribeThread.mock.calls as unknown as Array<
+      [string, ThreadEventHandlers]
+    >;
+    const handlers = subscribeCalls[0]?.[1];
+    if (!handlers) throw new Error('expected thread handlers');
+
+    handlers.turnStarted?.({ threadId: 'start-thread-id', turn: { id: 'turn-1' } } as never);
+    pushUsage(handlers, 'turn-1', 1_000_000);
+
+    expect(handle.getUsageSnapshot().contextWindow).toBe(372_000);
+    expect(seen).toContain('xd');
+    await handle.close();
+  });
+
+  // daemon 重启后 turn/start 报 "thread not found" 会走 thread/resume + 重投; 若会话是用
+  // 'gpt-5' 哨兵启动的, resume 会把它解析成具体路由模型并重写 turnParams.model。快照必须
+  // 跟着改写走 —— 否则重投 turn 的用量按 'gpt-5' 去问 host(拿不到上限), 保留 1M。
+  it('daemon 恢复重写模型后刷新 turn 模型快照', async () => {
+    const agent = agentWithWindows({ [GATEWAY_MODEL]: 372_000 });
+    let turnStartCount = 0;
+    const host = installFakeHost(agent, (method) => {
+      if (method === Method.ThreadStart) {
+        // 保留哨兵: 让 mutableModel 停在 'gpt-5', 复现 resume 解析具体模型的前提。
+        return { thread: { id: 'start-thread-id' }, model: 'gpt-5', modelProvider: 'openai', cwd: '/repo' };
+      }
+      if (method === Method.TurnStart) {
+        turnStartCount += 1;
+        if (turnStartCount === 1) throw new Error('thread not found');
+        return { turn: { id: `turn-${turnStartCount}` } };
+      }
+      if (method === Method.ThreadResume) {
+        return { thread: { id: 'start-thread-id' }, model: GATEWAY_MODEL, modelProvider: 'openai', cwd: '/repo' };
+      }
+      if (method === Method.ThreadSettingsUpdate) return {};
+      return undefined;
+    });
+    const handle = await agent.startSession({
+      sessionId: 'session-ctxwin-recovery',
+      model: 'gpt-5',
+      workingDir: '/repo',
+    });
+
+    await handle.send({ type: 'user', content: 'go' });
+    await vi.waitFor(() => {
+      expect(turnStartCount).toBeGreaterThanOrEqual(2);
+    });
+
+    const handlers = host.getThreadHandlers();
+    if (!handlers) throw new Error('expected thread handlers');
+    handlers.turnStarted?.({ threadId: 'start-thread-id', turn: { id: 'turn-2' } } as never);
+    pushUsage(handlers, 'turn-2', 1_000_000);
+
+    expect(handle.getUsageSnapshot().contextWindow).toBe(372_000);
+    await handle.close();
+  });
+
+  // server 会把请求的 model id 规范化后经 thread/settings/updated 回带(实测 `gpt-5.4` →
+  // `gpt-5.4-codex`),那个 wire 变体在产品目录里不存在。窗口上限按目录条目精确查,所以
+  // 快照必须用**目录 id**而不是 wire 值 —— 否则规范化之后就再也查不到、停止收敛。
+  it('server 规范化 model id 后仍按目录 id 解析上限', async () => {
+    const asked: string[] = [];
+    const agent = agentWithVerified((_providerId, modelId) => {
+      asked.push(modelId);
+      return modelId === 'gpt-5.4' ? 272_000 : null;
+    });
+    const host = installTurnCapableHost(agent);
+    const handle = await agent.startSession({
+      sessionId: 'session-ctxwin-canonicalized',
+      model: 'gpt-5.4',
+      workingDir: '/repo',
+    });
+    const handlers = host.getThreadHandlers();
+    if (!handlers) throw new Error('expected thread handlers');
+
+    // server 回带权威快照,把 id 规范成 wire 变体(目录里没有这个 id)。
+    handlers.threadSettingsUpdated?.({
+      threadId: 'start-thread-id',
+      threadSettings: { serviceTier: null, model: 'gpt-5.4-codex', effort: 'high' },
+    } as never);
+    expect(handle.model).toBe('gpt-5.4-codex'); // wire 值确实被对齐了
+
+    await handle.send({ type: 'user', content: 'go' });
+    handlers.turnStarted?.({ threadId: 'start-thread-id', turn: { id: 'turn-1' } } as never);
+    pushUsage(handlers, 'turn-1', 1_000_000);
+
+    // 收敛仍按目录 id 生效,而不是拿 wire 变体去查(那会查不到 → 保留 1M)。
+    expect(handle.getUsageSnapshot().contextWindow).toBe(272_000);
+    expect(asked).toContain('gpt-5.4');
+    expect(asked).not.toContain('gpt-5.4-codex');
+
+    await handle.close();
+  });
+
+  // idle 会话可以热切 provider:host 的 applyRuntimeSetModelChange 带着 { providerId } 调
+  // setModel。窗口上限按 (provider, model) 解析,只更新 model 会让下一 turn 拿新模型去问
+  // **旧路由** —— 那既可能取到错误上限,也可能整个取不到。
+  it('setModel 带来的 provider 切换要跟着进下一 turn 的归属', async () => {
+    const seen: Array<[string | null | undefined, string]> = [];
+    const agent = agentWithVerified((providerId, modelId) => {
+      seen.push([providerId, modelId]);
+      if (providerId === 'xd' && modelId === 'gpt-5.6-sol') return 372_000;
+      if (providerId === 'other' && modelId === 'gpt-5.6-sol') return 900_000;
+      return null;
+    });
+    const host = installTurnCapableHost(agent);
+    const handle = await agent.startSession({
+      sessionId: 'session-ctxwin-provider-switch',
+      model: 'gpt-5.6-sol',
+      providerId: 'xd',
+      workingDir: '/repo',
+    } as never);
+    const handlers = host.getThreadHandlers();
+    if (!handlers) throw new Error('expected thread handlers');
+
+    await handle.send({ type: 'user', content: 'go' });
+    handlers.turnStarted?.({ threadId: 'start-thread-id', turn: { id: 'turn-1' } } as never);
+    pushUsage(handlers, 'turn-1', 1_000_000);
+    expect(handle.getUsageSnapshot().contextWindow).toBe(372_000);
+
+    // 同一个 model id 换到另一条路由(真实上限不同)。
+    if (!handle.setModel) throw new Error('expected setModel support');
+    await handle.setModel('gpt-5.6-sol', { providerId: 'other' } as never);
+
+    await handle.send({ type: 'user', content: 'again' });
+    handlers.turnStarted?.({ threadId: 'start-thread-id', turn: { id: 'turn-2' } } as never);
+    pushUsage(handlers, 'turn-2', 1_000_000);
+    expect(handle.getUsageSnapshot().contextWindow).toBe(900_000);
+    expect(seen).toContainEqual(['other', 'gpt-5.6-sol']);
+
+    await handle.close();
+  });
+
+  // setModel 文档写「下一 turn 才生效」,但 mutableModel 是**即时**改的。活跃 turn 仍在
+  // 产出 usage 时切模型,不能拿下一个模型的上限去收敛这一 turn。
+  it('活跃 turn 的用量按该 turn 的模型归属,不受中途 setModel 影响', async () => {
+    const agent = agentWithWindows({ [GATEWAY_MODEL]: 372_000, [WIDE_MODEL]: 1_000_000 });
+    const host = installTurnCapableHost(agent);
+    const handle = await agent.startSession({
+      sessionId: 'session-ctxwin-turn-model',
+      model: GATEWAY_MODEL,
+      workingDir: '/repo',
+    });
+    const handlers = host.getThreadHandlers();
+    if (!handlers) throw new Error('expected thread handlers');
+
+    // 真实走一次 send,让 turnParams 带着 372K 的模型发出去
+    await handle.send({ type: 'user', content: 'go' });
+    handlers.turnStarted?.({ threadId: 'start-thread-id', turn: { id: 'turn-1' } } as never);
+
+    // turn 还在飞时切到 1M 的模型。显式断言能力存在 —— 用 `?.()` 静默跳过会让这条
+    // 用例在 setModel 消失后依然"通过",反而掩盖回归。
+    if (!handle.setModel) throw new Error('expected setModel support');
+    await handle.setModel(WIDE_MODEL);
+
+    // 这条 usage 属于仍在产出的 372K turn,必须按 372K 收敛
+    pushUsage(handlers, 'turn-1', 1_000_000);
+    expect(handle.getUsageSnapshot().contextWindow).toBe(372_000);
+
+    // 下一 turn 才轮到新模型:它的 1M 上限不再被旧模型压住
+    await handle.send({ type: 'user', content: 'again' });
+    handlers.turnStarted?.({ threadId: 'start-thread-id', turn: { id: 'turn-2' } } as never);
+    pushUsage(handlers, 'turn-2', 1_000_000);
+    expect(handle.getUsageSnapshot().contextWindow).toBe(1_000_000);
+
+    await handle.close();
+  });
+
+  it('registers the subagent spawn mapping on item/updated, not just started/completed', async () => {
+    // V1 的 spawn 是长跑 item(started → updated* → completed)。started 那帧若没到我们手里
+    // (turn 缓冲、stale turn 丢弃、上游省略),原实现要等到 completed 才建立映射 —— 期间子线程
+    // 的 item / token / 终态全被缓冲,卡片在整个运行期没有实时数据,最后才一次性补上。那正是本
+    // PR 要解决的问题本身(review)。这里**只发 updated**,不发 started。
+    const agent = new CodexAgent(createDeps());
+    const host = installFakeHost(agent);
+    const handle = await agent.startSession({
+      sessionId: 'session-subagent-updated',
+      model: 'gpt-5.4',
+      workingDir: '/repo',
+    });
+    const events: AgentEvent[] = [];
+    void (async () => {
+      for await (const event of handle.events()) events.push(event);
+    })();
+
+    const handlers = host.getThreadHandlers();
+    if (!handlers?.itemUpdated || !handlers.descendantThreadStarted || !handlers.descendantNotification) {
+      throw new Error('expected item/descendant handlers');
+    }
+    handlers.turnStarted?.({ threadId: 'start-thread-id', turn: { id: 'turn-sa' } });
+
+    // 跳过 started,直接发 updated —— 映射必须在这一帧就建立。
+    handlers.itemUpdated({
+      threadId: 'start-thread-id',
+      turnId: 'turn-sa',
+      item: {
+        id: 'spawn-item-1',
+        type: 'collabAgentToolCall',
+        tool: 'spawnAgent',
+        senderThreadId: 'start-thread-id',
+        receiverThreadIds: ['child-thread-1'],
+        status: 'inProgress',
+        agentsStates: [],
+      },
+    });
+
+    // 映射已就位 → 子线程的实时事件应当当场路由成卡片更新,而不是被缓冲到 completed。
+    handlers.descendantThreadStarted({
+      thread: { id: 'child-thread-1', parentThreadId: 'start-thread-id' },
+    });
+    handlers.descendantNotification('child-thread-1', 'item/started', {
+      threadId: 'child-thread-1',
+      turnId: 'child-turn-1',
+      item: { id: 'child-tool-1', type: 'commandExecution' },
+    });
+    handlers.descendantNotification('child-thread-1', 'thread/tokenUsage/updated', {
+      threadId: 'child-thread-1',
+      turnId: 'child-turn-1',
+      tokenUsage: { total: { totalTokens: 4_242 } },
+    });
+
+    await vi.waitFor(() => {
+      const updates = events.filter((e) => e.type === 'agent_task_update');
+      expect(updates.length).toBeGreaterThan(0);
+    });
+    const updates = events
+      .filter((e) => e.type === 'agent_task_update')
+      .map((e) => e.data as { taskId?: string; status?: string; usage?: { totalTokens?: number; toolUses?: number } });
+    // 运行期就能看到真实聚合(工具数与 token),不是等 completed 才补。
+    expect(updates.some((u) => u.taskId === 'spawn-item-1')).toBe(true);
+    const last = updates.filter((u) => u.taskId === 'spawn-item-1').at(-1);
+    expect(last?.usage?.toolUses).toBe(1);
+    expect(last?.usage?.totalTokens).toBe(4_242);
+    expect(last?.status).toBe('running');
+
+    await handle.close();
+  });
+
+  it('closes out running subagent cards when the transport dies (app-server crash / IO disconnect)', async () => {
+    // 普通 transport 断连(app-server 崩溃 / stdio 断开)会作废订阅:后代通知**永远不会再到**,
+    // 而 tracker 的终态只由后代 turn/completed 写入。原来这条路径只广播 error 并清主线程缓存,
+    // 子代理卡就停在最后一帧 running —— 进程早死了,界面还在原地转圈(review)。close() 与
+    // cleanup-failure 已复用同一套终态快照 + 清 tracker,这里补的是断连入口。
+    const agent = new CodexAgent(createDeps());
+    const host = installFakeHost(agent);
+    const handle = await agent.startSession({
+      sessionId: 'session-subagent-transport-drop',
+      model: 'gpt-5.4',
+      workingDir: '/repo',
+    });
+    const events: AgentEvent[] = [];
+    void (async () => {
+      for await (const event of handle.events()) events.push(event);
+    })();
+
+    const handlers = host.getThreadHandlers();
+    if (!handlers?.itemStarted || !handlers.descendantThreadStarted || !handlers.descendantNotification) {
+      throw new Error('expected item/descendant handlers');
+    }
+    handlers.turnStarted?.({ threadId: 'start-thread-id', turn: { id: 'turn-sa' } });
+    handlers.itemStarted({
+      threadId: 'start-thread-id',
+      turnId: 'turn-sa',
+      item: {
+        id: 'spawn-item-1',
+        type: 'collabAgentToolCall',
+        tool: 'spawnAgent',
+        senderThreadId: 'start-thread-id',
+        receiverThreadIds: ['child-thread-1'],
+        status: 'inProgress',
+        agentsStates: [],
+      },
+    });
+    handlers.descendantThreadStarted({ thread: { id: 'child-thread-1', parentThreadId: 'start-thread-id' } });
+    handlers.descendantNotification('child-thread-1', 'item/started', {
+      threadId: 'child-thread-1',
+      turnId: 'child-turn-1',
+      item: { id: 'child-tool-1', type: 'commandExecution' },
+    });
+    handlers.descendantNotification('child-thread-1', 'thread/tokenUsage/updated', {
+      threadId: 'child-thread-1',
+      turnId: 'child-turn-1',
+      tokenUsage: { total: { totalTokens: 1_234 } },
+    });
+
+    const cardFrames = () =>
+      events
+        .filter((e) => e.type === 'agent_task_update')
+        .map(
+          (e) => e.data as { taskId?: string; status?: string; usage?: { totalTokens?: number; toolUses?: number } },
+        )
+        .filter((u) => u.taskId === 'spawn-item-1');
+    const flush = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    };
+
+    await vi.waitFor(() => {
+      expect(cardFrames().at(-1)?.status).toBe('running');
+    });
+
+    // app-server 崩了:willRetry=false + scope=transport,turnId 为空(server 已经说不出是哪个 turn)。
+    handlers.error?.({
+      threadId: 'start-thread-id',
+      turnId: '',
+      willRetry: false,
+      scope: 'transport',
+      error: { message: 'app-server transport closed unexpectedly' },
+    });
+
+    await vi.waitFor(() => {
+      expect(cardFrames().at(-1)?.status).toBe('stopped');
+    });
+    // 收口帧必须带上已聚合的真实用量,不能退化成空快照(否则用户看到「已停止 + 0 token」)。
+    const terminal = cardFrames().at(-1);
+    expect(terminal?.usage?.toolUses).toBe(1);
+    expect(terminal?.usage?.totalTokens).toBe(1_234);
+
+    const afterTerminal = cardFrames().length;
+    // tracker 与 lineage 都已清:再来一次断连不重复投递终态;迟到的后代通知也不能让这张卡
+    // 复活回 running 继续转圈(断连后子线程 id 已无归属,通知只会落进缓冲区自然淘汰)。
+    handlers.error?.({
+      threadId: 'start-thread-id',
+      turnId: '',
+      willRetry: false,
+      scope: 'transport',
+      error: { message: 'app-server transport closed unexpectedly' },
+    });
+    handlers.descendantNotification('child-thread-1', 'turn/started', {
+      threadId: 'child-thread-1',
+      turnId: 'child-turn-2',
+    });
+    handlers.descendantNotification('child-thread-1', 'thread/tokenUsage/updated', {
+      threadId: 'child-thread-1',
+      turnId: 'child-turn-2',
+      tokenUsage: { total: { totalTokens: 9_999 } },
+    });
+    await flush();
+    expect(cardFrames()).toHaveLength(afterTerminal);
+
+    // close() 走的是同一套 drain,清过之后必须幂等,不补第二帧终态。
+    await handle.close();
+    await flush();
+    expect(cardFrames()).toHaveLength(afterTerminal);
   });
 });

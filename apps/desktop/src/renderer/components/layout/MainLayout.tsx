@@ -68,6 +68,7 @@ import { requestNewWorkerFromShortcut } from '@/features/cc-agent/lib/newWorkerS
 import { useCorruptionRestoredToast } from '@/hooks/useCorruptionRestoredToast';
 // #37 schema-drift release-side toast
 import { useSchemaDriftWarningToast } from '@/hooks/useSchemaDriftWarningToast';
+import { useVoiceInputShortcutRecoveryToast } from '@/hooks/useVoiceInputShortcutRecoveryToast';
 import { requestProjectFocus } from '@/state/pendingProjectFocus';
 import { patchDraft } from '@/state/newMakerDraft';
 import { cn } from '@/lib/utils';
@@ -261,9 +262,6 @@ export function MainLayout() {
   const [rightSidebarSessionId, setRightSidebarSessionId] = useState<string | null>(null);
   const rightSidebarSessionIdRef = useRef(rightSidebarSessionId);
   rightSidebarSessionIdRef.current = rightSidebarSessionId;
-  // 给树内远端消费方(如 GlobalDropImportListener 的装入编排)的稳定 getter:
-  // 读 ref 拿最新值,prop 身份不随会话切换变化,不触发下游 effect 重挂。
-  const getRightSidebarSessionId = useCallback(() => rightSidebarSessionIdRef.current, []);
   const declareRightSidebarSessionId = useCallback(
     (sessionId: string | null, opts: RightSidebarSessionDeclarationOptions = {}) => {
       rightSidebarSessionIdRef.current = sessionId;
@@ -288,18 +286,21 @@ export function MainLayout() {
   const [rightSidebarWorkdirInfo, setRightSidebarWorkdirInfo] = useState<{
     workdir: string;
     remoteHostId: string | null;
-  }>({ workdir: '', remoteHostId: null });
+    deviceLinkDeviceId?: string | null;
+  }>({ workdir: '', remoteHostId: null, deviceLinkDeviceId: undefined });
   const setRightSidebarWorkdir = useCallback(
-    (workdir: string, remoteHostId: string | null = null) =>
+    (workdir: string, remoteHostId: string | null = null, deviceLinkDeviceId?: string | null) =>
       // 同值 bailout(返回 prev 引用):恢复"字符串 state 同值不重渲染"的旧语义。
       // Outlet context 对象每次渲染都是新身份,OrcaWorkflowRoute 等消费方的
       // effect 以 outletContext 为 dep——如果同值 declare 也换新对象,会形成
       // declare → 重渲染 → 新 context → effect 重跑 → declare 的死循环
       // (真机实测 Maximum update depth exceeded)。
       setRightSidebarWorkdirInfo((prev) =>
-        prev.workdir === workdir && prev.remoteHostId === remoteHostId
+        prev.workdir === workdir &&
+        prev.remoteHostId === remoteHostId &&
+        prev.deviceLinkDeviceId === deviceLinkDeviceId
           ? prev
-          : { workdir, remoteHostId },
+          : { workdir, remoteHostId, deviceLinkDeviceId },
       ),
     [],
   );
@@ -464,6 +465,8 @@ export function MainLayout() {
   useCorruptionRestoredToast();
   // #37：release 端未知 schema drift 一次性 toast(提示用户升级或联系支持)
   useSchemaDriftWarningToast();
+  // 语音快捷键在设置页之外自动恢复失败 —— 那时设置页的 toast 不在,只能由常挂载的这里提示。
+  useVoiceInputShortcutRecoveryToast();
   // device-link 跨设备远程控制:同账号在线 + 开了被控的设备,其项目自动并入侧边栏
   useDeviceLinkRemoteProjects();
 
@@ -802,6 +805,7 @@ export function MainLayout() {
       sessionId: rightSidebarSessionId,
       workdir: rightSidebarWorkdirInfo.workdir || null,
       remoteHostId: rightSidebarWorkdirInfo.remoteHostId,
+      deviceLinkDeviceId: rightSidebarWorkdirInfo.deviceLinkDeviceId,
       available: rightSidebarAvailable,
     });
   }, [rightSidebarSessionId, rightSidebarWorkdirInfo, rightSidebarAvailable]);
@@ -1277,6 +1281,7 @@ export function MainLayout() {
                   sessionId={rightSidebarSessionId}
                   workdir={rightSidebarWorkdirInfo.workdir}
                   remoteHostId={rightSidebarWorkdirInfo.remoteHostId}
+                  deviceLinkDeviceId={rightSidebarWorkdirInfo.deviceLinkDeviceId}
                   onDetach={isSecondaryWindow() ? undefined : handleDetachRightSidebar}
                   // M2:面板贴左时 detach / maximize 由 Shell 顶栏右端自渲染
                   // (面板自属控件跟面板走);折叠 toggle 恒在窗口右上浮层,不下沉。
@@ -1390,10 +1395,7 @@ export function MainLayout() {
       {/* FeiShu Bot conflict dialog -- subscribes to main process push and surfaces a global modal */}
       <FeishuConflictDialogHost />
       {/* 窗口级拖拽兜底:拖 .cshare 进窗口空白处 → 会话导入向导 */}
-      <GlobalDropImportListener
-        onOpenShareImport={openShareImport}
-        getRightSidebarSessionId={getRightSidebarSessionId}
-      />
+      <GlobalDropImportListener onOpenShareImport={openShareImport} />
       {shareImportRequest && (
         <SessionShareImportWizard
           key={shareImportRequest.id}

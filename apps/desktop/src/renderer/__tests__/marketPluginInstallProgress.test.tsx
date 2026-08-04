@@ -34,6 +34,8 @@ const detail: PluginMarketDetail = {
   icon: null,
   installState: 'not-installed',
   enabled: null,
+  sourceType: 'server',
+  sourceMarketName: null,
   manifest: {
     schemaVersion: 2,
     id: 'meka-docs',
