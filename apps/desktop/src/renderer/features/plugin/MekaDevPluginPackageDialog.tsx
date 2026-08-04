@@ -193,8 +193,10 @@ export function MekaDevPluginPackageDialog({
       );
       await onUploaded();
       onOpenChange(false);
-    } catch {
-      toast.error(t('settings.ghosts.meka.dev.uploadFailed'));
+    } catch (error) {
+      toast.error(
+        extractIpcError(error)?.message ?? t('settings.ghosts.meka.dev.uploadFailed'),
+      );
     } finally {
       setActiveAction(null);
     }

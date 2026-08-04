@@ -159,6 +159,21 @@ describe('MekaRouterClient', () => {
     expect([...new Uint8Array(uploadedBody as ArrayBuffer)]).toEqual([...bytes]);
   });
 
+  it('classifies an ownership conflict so IPC can preserve the Router reason', async () => {
+    const fetchImpl = vi.fn(async () =>
+      Response.json({ error: 'Another user already owns this plugin id' }, { status: 409 }),
+    ) as typeof fetch;
+    const client = createMekaRouterClient({ fetchImpl });
+
+    await expect(
+      client.uploadMekaPlugin('https://router.example', 'session-token', new Uint8Array([1]), null),
+    ).rejects.toMatchObject({
+      code: 'ALREADY_EXISTS',
+      status: 409,
+      message: expect.stringContaining('Another user already owns this plugin id'),
+    });
+  });
+
   it('loads owned Plugin access and publishes updates through the bound release endpoint', async () => {
     const managed = {
       id: 'plugin-1',

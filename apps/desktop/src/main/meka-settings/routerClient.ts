@@ -15,7 +15,8 @@ export interface RouterClientDeps {
 }
 
 export class MekaRouterRequestError extends Error {
-  readonly code: 'PERMISSION_DENIED' | undefined;
+  /** Maps HTTP statuses that the IPC layer can explain without losing detail. */
+  readonly code: 'PERMISSION_DENIED' | 'ALREADY_EXISTS' | undefined;
 
   constructor(
     message: string,
@@ -23,7 +24,8 @@ export class MekaRouterRequestError extends Error {
   ) {
     super(message);
     this.name = 'MekaRouterRequestError';
-    this.code = status === 401 ? 'PERMISSION_DENIED' : undefined;
+    this.code =
+      status === 401 ? 'PERMISSION_DENIED' : status === 409 ? 'ALREADY_EXISTS' : undefined;
   }
 }
 

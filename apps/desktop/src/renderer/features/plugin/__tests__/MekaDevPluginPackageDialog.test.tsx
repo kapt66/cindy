@@ -21,6 +21,7 @@ vi.mock('@/lib/toast', () => ({
 }));
 
 import { MekaDevPluginPackageDialog } from '../MekaDevPluginPackageDialog';
+import { toast } from '@/lib/toast';
 
 const item = {
   runtimeId: 'meka-dev-demo-12345678',
@@ -307,5 +308,73 @@ describe('MekaDevPluginPackageDialog', () => {
       }),
     );
     expect(confirmMock).not.toHaveBeenCalled();
+  });
+
+  it('shows the Router reason when publishing is rejected', async () => {
+    getRouter.mockResolvedValue({ configured: true });
+    getUploadInfo.mockResolvedValue({
+      pluginId: 'demo-plugin',
+      version: '1.0.0',
+      existing: null,
+    });
+    uploadPlugin.mockRejectedValue(
+      new Error(
+        "Error invoking remote method 'meka-dev-plugins:upload': Error: [ALREADY_EXISTS] MCPRouter upload Meka Plugin failed (409): {\"error\":\"Another user already owns this plugin id\"}",
+      ),
+    );
+    render(
+      <MekaDevPluginPackageDialog
+        item={item}
+        pluginName="Demo"
+        pluginVersion="1.0.0"
+        open
+        onOpenChange={vi.fn()}
+        onUploaded={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'settings.ghosts.meka.dev.upload' }),
+    );
+
+    await waitFor(() =>
+      expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+        expect.stringContaining('Another user already owns this plugin id'),
+      ),
+    );
+  });
+
+  it('shows the detailed IPC reason for an otherwise internal upload failure', async () => {
+    getRouter.mockResolvedValue({ configured: true });
+    getUploadInfo.mockResolvedValue({
+      pluginId: 'demo-plugin',
+      version: '1.0.0',
+      existing: null,
+    });
+    uploadPlugin.mockRejectedValue(
+      new Error(
+        "Error invoking remote method 'meka-dev-plugins:upload': Error: [INTERNAL] Meka development Plugin operation failed: request timed out",
+      ),
+    );
+    render(
+      <MekaDevPluginPackageDialog
+        item={item}
+        pluginName="Demo"
+        pluginVersion="1.0.0"
+        open
+        onOpenChange={vi.fn()}
+        onUploaded={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'settings.ghosts.meka.dev.upload' }),
+    );
+
+    await waitFor(() =>
+      expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+        expect.stringContaining('request timed out'),
+      ),
+    );
   });
 });

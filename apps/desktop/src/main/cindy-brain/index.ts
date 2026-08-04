@@ -2944,6 +2944,11 @@ export function registerGhostIpc(): void {
     log,
   });
   mekaDevPluginsSingleton = mekaDevPlugins;
+  const describeMekaDevPluginError = (error: unknown): string => {
+    if (error instanceof Error && error.message.trim()) return error.message.trim();
+    if (typeof error === 'string' && error.trim()) return error.trim();
+    return 'Meka development Plugin operation failed.';
+  };
   const throwMekaDevPluginError = (error: unknown): never => {
     if (!(error instanceof MekaDevPluginError)) {
       if (
@@ -2953,11 +2958,11 @@ export function registerGhostIpc(): void {
       ) {
         throwIpcError(
           (error as { code: IpcErrorCode }).code,
-          error instanceof Error ? error.message : 'Meka development Plugin operation failed.',
+          describeMekaDevPluginError(error),
         );
       }
       log.error('Meka development Plugin IPC failed', error);
-      throwIpcError('INTERNAL', 'Meka development Plugin operation failed.');
+      throwIpcError('INTERNAL', describeMekaDevPluginError(error));
     }
     switch (error.code) {
       case 'already-installed':
@@ -2973,7 +2978,7 @@ export function registerGhostIpc(): void {
         return throwIpcError('INVALID_PARAMS', error.message);
       default:
         log.error('Meka development Plugin operation failed', error);
-        return throwIpcError('INTERNAL', 'Meka development Plugin operation failed.');
+        return throwIpcError('INTERNAL', describeMekaDevPluginError(error));
     }
   };
   ipcMain.handle('meka-dev-plugins:list', async (event) => {
