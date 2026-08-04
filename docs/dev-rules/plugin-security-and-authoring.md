@@ -99,6 +99,11 @@
   继续满足 manifest 安装期的 `https`、无内嵌凭证校验；它不是 Agent 文案或 plan
   的一部分，插件也不能通过 `settings.js` 动态替换 Setup 卡地址。
 - 模型调用一律走 Cindy 统一通道，不允许插件自建绕过通道的推理请求。
+- 插件声明 `cindy.image` / `cindy.video` 后，详情配置、override 校验、实际代办和付费
+  派发前复查必须共用同一份运行时媒体目录。Cindy Meka 的目录按认证快照中的有效
+  `edition` 投影 CN / Global 能力，不能按安装包构建区域投影；因此登录页切换服务区后，
+  插件图像与视频能力须和普通供应商目录同步变化。用户停用供应商或媒体模型后，所有上述
+  入口也必须同时失效，不能只隐藏详情页选项。
 - 附件、媒体、目录和保存路径通过归属校验后的 grant／deposit／ledger 交接，**禁止把
   宿主绝对路径或不必要的字节暴露给沙箱**。媒体字节须走
   [`media-storage-and-protocols.md`](media-storage-and-protocols.md) 的统一入库。

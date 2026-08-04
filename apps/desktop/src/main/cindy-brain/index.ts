@@ -1746,6 +1746,8 @@ export function getGhostPreviewSlot(): GhostPreviewSlot {
 /**
  * 当前媒体能力配置(图像/视频同一套推导)——与会话模型列表**同一获取
  * 来源**:providers.json 运行时目录(getActiveCatalog,OSS 热更 + 内置兜底),
+ * 并按当前认证快照的 edition 投影 CN / Global 产品能力；不能使用安装包的
+ * 构建区域，否则 Cindy Meka 在登录页切换服务区后插件仍会看到旧区域清单。
  * 汇总各供应商的 imageModels/imageDefaults 或 videoModels/videoDefaults
  * (今天只有 xd 网关一家有)。清单与默认/档位选型全部来自目录,主机代码零
  * 模型字面量;派生规则见 cindyMediaCatalog.ts。
@@ -1760,7 +1762,10 @@ function getCatalogMediaConfig(kind: 'image' | 'video'): CindyMediaCatalogConfig
     // 停用过滤:用户在 设置 → 模型供应商 停用的媒体模型 / 供应商不进候选清单
     // (与对话模型的准入口径同源,见 model-disable-store)。
     const access = readModelDisableOverrides();
-    const catalog = projectProviderCatalogForBuildRegion(getActiveCatalog(), CURRENT_CINDY_REGION);
+    const catalog = projectProviderCatalogForBuildRegion(
+      getActiveCatalog(),
+      getAuthState().edition,
+    );
     return deriveCindyMediaConfig(
       catalog.providers,
       kind,

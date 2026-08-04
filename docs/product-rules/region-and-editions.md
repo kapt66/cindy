@@ -38,6 +38,18 @@ Cindy 是一个面向全球的产品。中国大陆版是它为当地法规、�
 
 新增区域相关判断时，不要把三个值当作并列的三个版本处理。
 
+### 1.2 Cindy Meka 的运行期 edition 例外
+
+Cindy Meka 使用单一安装身份，并允许用户在登录页选择 CN / Global 服务区。对该产品线，
+`CURRENT_CINDY_REGION` 只表示安装包构建区域以及未登录时的启动默认值；登录后有效产品能力
+必须读取认证快照的 `edition`。企业 SSO home-realm 发现只改变认证与账号业务端点，不改变
+用户显式选择的 edition。
+
+以下能力必须跟随运行期 edition：普通供应商可选目录、插件 `cindy.image` / `cindy.video`
+媒体目录，以及后续明确归类为“产品能力”的区域分支。安装身份、appId、userData、更新渠道、
+文件关联和插件 app-context 中作者契约定义的“宿主构建身份”仍保持构建期静态，不得因服务区
+切换而重派生。
+
 ## 2. 产品不变量
 
 ### 2.1 无限定词身份归 Global
@@ -135,6 +147,20 @@ Cindy 是一个面向全球的产品。中国大陆版是它为当地法规、�
 | 端点清单文件名 | `config/endpoint.json` 是中国大陆版，`config/endpoint.global.json` 才是 Global | §2.1 | 改名牵动构建脚本与发布链路 |
 | Electron userData 目录名 | `cn` 为 `Cindy`、`global` 为 `CindyGlobal` | §2.1 | 已发布客户端的数据目录不能直接改名，需要迁移方案 |
 | Mobile 构建的 region 缺省 | `apps/mobile/app.config.js` 的 `resolveRegion()` 与 `scripts/shared/client-endpoint-build-env.cjs` 的 `resolveRegion()` 在未注入 `EXPO_PUBLIC_CINDY_AUTH_REGION` 时缺省为 `cn` | §2.2 | **有意保留的兼容基线**：这是 mobile 原生指纹基线，翻转默认值即触发一次全量冷更（`app.config.js` 顶部注释已写明）。日常开发脚本都显式注入 `global`，该缺省只在无 env 时兜底。收敛必须并入一次计划内冷更，并按 `docs/dev-rules/mobile-development.md` 的「冷更边界」取得把关人确认 |
+
+### 4.1 Cindy Meka 运行期 edition 审计待办
+
+2026-08-04 对 Desktop 的构建期区域引用完成一轮只读审计。插件媒体目录已按 §1.2 收敛；
+下列候选不在该修复中顺手替换，后续须按各自产品语义单独处理：
+
+| 候选 | 当前风险 | 后续处理边界 |
+| --- | --- | --- |
+| 供应商空态引导（`renderer/hooks/useProviderOnboarding.ts`） | CN 构建切到 Global 后仍可能优先展示 CN preset，而不是 Global OAuth 渠道 | 改为运行期 edition，并补 CN ↔ Global 双向空态测试 |
+| IM 机器人可见性（`renderer/components/settings/ImBotSection.tsx`） | CN 构建切到 Global 后仍可能隐藏 Cindy 分栏与 Discord | 改为运行期 edition，并复用 `imBotVisibility` 的区域矩阵测试 |
+| 计费、模型报价与用量账本币种（`BillingPage.tsx`、`main/usage/`、`shared/regionalMoney.ts`、`maker-ipc/register.ts`） | 界面、报价缓存与写入币种仍可能跟随构建区域；直接动态切换会让同一数据库出现混合币种 | 先裁决账本是安装级固定币种还是 edition/session 级币种，再设计缓存 scope、历史行读取和切区迁移；裁决前禁止机械替换 |
+
+已核对为构建身份、无需纳入上述待办的引用包括 appId／AUMID／exe、userData 与旧数据迁移、
+更新器、文件关联、快捷方式、About 安装包标识，以及插件 app-context 的宿主构建区域。
 
 新增或收敛任一项时同步更新本表；涉及设计规范的项，必须与 `docs/design-rules/`
 对应条款同时修订，不允许两处并存互相矛盾的规定。当同一项的规范散落在多份设计文档
