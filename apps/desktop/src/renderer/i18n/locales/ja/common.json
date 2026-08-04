@@ -2924,555 +2924,6 @@
       "deleteAria": "{{name}} のショートカットを削除",
       "cancel": "キャンセル"
     },
-    "ghosts": {
-      "title": "プラグイン",
-      "description": "Cindy の機能を広げるツールと連携。",
-      "meka": {
-        "title": "Meka プラグイン",
-        "description": "現在の MCPRouter アカウントで利用できるプラグインを閲覧・インストールします。",
-        "createWithCindy": "Meka プラグインを作成",
-        "createPromptLead": "これは Meka プラグインの作成タスクです。Meka は、完成したプラグインを MCPRouter の Meka プラグインチャネルから公開することを意味します。ghost_forge_pack を呼び出すときは channel: \"meka\" を必ず渡し、クライアントに今回のインストールチャネルを記録させてください。ghost.json に Meka の配布元フィールドを独自追加しないでください。配布元は公開・インストールチャネルによって記録されます。パッケージ化が完了したら、生成された .cindy ファイルの場所を明示し、MCPRouter 管理画面へのアップロードを案内してください。",
-        "dev": {
-          "pickTitle": "Meka プラグインの開発ディレクトリを選択",
-          "loadDirectory": "ディレクトリから読み込む（開発）",
-          "badge": "開発モード",
-          "ribbon": "DEV",
-          "syncError": "開発モード · 同期失敗",
-          "confirmTitle": "開発プラグイン「{{name}}」を読み込みますか？",
-          "confirmDescription": "Cindy Meka はこのディレクトリを継続的に監視して信頼します。変更は検証後にインストール済みコピーへ自動反映され、更新に失敗した場合は直前の正常なバージョンを使い続けます。",
-          "confirm": "読み込んで監視",
-          "installed": "開発プラグイン「{{name}}」を読み込みました",
-          "installFailed": "開発プラグインを読み込めません",
-          "removeFailed": "開発プラグインを削除できません",
-          "packageAction": "パッケージ化",
-          "packageTitle": "開発プラグイン「{{name}}」をパッケージ化",
-          "packageChecking": "MCPRouter の接続状態を確認しています。現在のソーススナップショットはいつでもローカルにパッケージ化できます。",
-          "packageConfigured": "現在のソーススナップショットをローカルにパッケージ化するか、変更不可の Release として設定済みの MCPRouter にアップロードします。",
-          "packageLocalOnly": "MCPRouter が設定されていません。現在はソーススナップショットのローカルパッケージ化のみ可能です。",
-          "packageLoginRequired": "MCPRouter のログインが期限切れです。再ログインするとアップロードできます。ローカルパッケージ化は引き続き利用できます。",
-          "packageLocal": "ローカルに保存",
-          "packaging": "パッケージ化中",
-          "upload": "MCPRouter にアップロード",
-          "uploading": "アップロード中",
-          "cancel": "キャンセル",
-          "packageDialogTitle": "Meka プラグインパッケージを保存",
-          "packageFileType": "Cindy プラグインパッケージ",
-          "packageSaved": "プラグイン「{{name}}」を {{path}} に保存しました",
-          "packageFailed": "プラグインをパッケージ化できませんでした",
-          "uploaded": "プラグイン「{{name}}」v{{version}} をアップロードしました",
-          "uploadFailed": "プラグインをアップロードできませんでした",
-          "configureRouter": "ログインを設定",
-          "versionLabel": "バージョン",
-          "permissionLabel": "プラグインの公開範囲",
-          "permissions": {
-            "private": "自分のみ",
-            "shared": "指定したユーザー",
-            "public": "公開"
-          },
-          "sharedUsersLabel": "閲覧可能なユーザー",
-          "sharedUsersPlaceholder": "正確なユーザー名をカンマまたは改行で区切って入力",
-          "sharedUsersRequired": "少なくとも 1 つのユーザー名が必要です",
-          "checkingPublishInfo": "MCPRouter のバージョンと公開範囲を同期しています…",
-          "publishInfoFailed": "MCPRouter のバージョンと公開範囲を読み込めませんでした",
-          "versionAlreadyExists": "MCPRouter には v{{currentVersion}} が既に存在します。この操作では公開範囲のみ同期します。新しい内容を公開するにはバージョンを上げてください。",
-          "versionUpdate": "MCPRouter の現在のバージョンは v{{currentVersion}} です。v{{nextVersion}} を公開します。",
-          "syncAccess": "公開範囲を同期",
-          "syncingAccess": "公開範囲を同期中",
-          "accessSynced": "プラグインの公開範囲を同期しました",
-          "updateConfirmTitle": "プラグインを更新しますか？",
-          "updateConfirmDescription": "MCPRouter の現在のバージョンは v{{currentVersion}} です。上書き不可の v{{nextVersion}} を公開し、選択した公開範囲を同期します。",
-          "updateConfirmAction": "更新を確認"
-        },
-        "origin": {
-          "public": "公開",
-          "local": "個人・共有"
-        },
-        "empty": "利用できる Meka プラグインはありません",
-        "emptyHint": "MCPRouter を接続するか、管理画面からプラグインをアップロード、公開、共有してください。"
-      },
-      "page": {
-        "search": "プラグインを検索",
-        "clearSearch": "プラグイン検索をクリア",
-        "addPlugin": "プラグインを追加",
-        "addPluginAria": "プラグイン追加オプション",
-        "createWithCindy": "Cindy で作成",
-        "createPrompt": "Cindy プラグインを作成したいです。まず ghost_forge_guide を呼び出してハンドブックの目次を取得し、最初に第 0 章「設計のすり合わせ」を読み、その後 section パラメータで関連する章（少なくともサンドボックスの禁止事項とパッケージ化の章）を読み込んでから着手してください。すぐに実装を始めないでください。質問から始めてください：選択肢付きの質問カードを優先し、1 枚のカードでは 1 つの重要な判断に絞り、あなたのおすすめを明示した上で、私が気づきにくい設計オプション（UI 形態：ドッキングパネル / プラグインページ内のパネル / チャットカード / UI なし、$ 呼び出しコマンド、起動モード、ネットワーク接続の要否、設定ページの要否など）を積極的に提示して選ばせてください。解決する課題、対象ユーザー、操作フロー、必要なツールと接続、権限の境界、受け入れ条件を段階的に確認してください。設計を確認した後、仕様に沿って実装と検証を行い、最後に ghost_forge_pack を呼び出してプラグインをパッケージ化し、インストールしてください。",
-        "installedTitle": "インストール済みプラグイン",
-        "installedExpand": "インストール済みプラグインをさらに {{count}} 件表示",
-        "installedCollapse": "追加のインストール済みプラグインを隠す",
-        "allTitle": "すべてのプラグイン",
-        "filterAll": "すべて",
-        "filtersAria": "提供元でプラグインを絞り込む",
-        "origin": {
-          "public": "公開",
-          "organization": "チーム共有",
-          "local": "ローカル",
-          "custom": "カスタム"
-        },
-        "emptyFiltered": "一致するプラグインがありません",
-        "useAction": "使用",
-        "useAria": "{{name}} を使用",
-        "installedSection": "インストール済み",
-        "recommendedSection": "おすすめ",
-        "updatesAvailable": "{{count}} 件のプラグイン更新があります",
-        "updateAll": "すべて更新",
-        "ignoreRound": "今回は無視",
-        "updateTo": "v{{version}} に更新",
-        "updateAria": "{{name}} を v{{version}} に更新",
-        "usePanelAction": "使う",
-        "chatAction": "会話",
-        "chatAria": "{{name}} と会話",
-        "manageAction": "管理",
-        "manageAria": "{{name}} を管理",
-        "agentInvoked": "Agent が自動で呼び出し",
-        "upToDate": "最新です",
-        "installAria": "{{name}} をインストール"
-      },
-      "market": {
-        "scopeAria": "プラグインの提供元を絞り込む",
-        "scope": {
-          "all": "すべて",
-          "public": "公開",
-          "organization": "組織",
-          "personal": "個人",
-          "local": "ローカル",
-          "custom": "カスタム"
-        },
-        "install": "インストール",
-        "preparing": "準備中…",
-        "downloading": "ダウンロード中 {{percent}}%…",
-        "installing": "インストール中…",
-        "updating": "更新中…",
-        "details": "詳細",
-        "update": "マーケットから更新",
-        "updateAvailable": "更新あり",
-        "updateAction": "更新",
-        "updateAria": "{{name}}を更新",
-        "updateTo": "v{{version}} に更新",
-        "installed": "インストール済み",
-        "conflict": "プラグイン ID の競合",
-        "unavailable": "プラグインマーケットを一時的に利用できません。インストール済みプラグインは引き続き利用できます。",
-        "authenticationRequired": "プラグインマーケットを表示するには Cindy にログインしてください。",
-        "notConfigured": "この環境ではプラグインマーケットが設定されていません。インストール済みプラグインは引き続き利用できます。",
-        "errors": {
-          "generic": "プラグインマーケットの操作に失敗しました。もう一度お試しください。",
-          "invalidRequest": "プラグインのリクエストが無効です。",
-          "notFound": "このプラグインは利用できなくなりました。マーケットを更新して、もう一度お試しください。",
-          "conflict": "インストール済みまたはマーケットの別のプラグインが同じプラグイン ID を使用しています。",
-          "stateChanged": "操作中にアカウント、プラグイン、またはリリースが変更されました。最新の状態を確認して、もう一度お試しください。",
-          "accessDenied": "このプラグイン操作は許可されていないか、キャンセルされました。",
-          "notConfigured": "この環境ではプラグインマーケットを利用できません。",
-          "invalidPackage": "このプラグインパッケージは無効か、現在の Cindy バージョンではサポートされていません。"
-        },
-        "securityTitle": "インストールと権限",
-        "securityDescription": "メインプロセスでサイズと SHA-256、プラグインマニフェストを検証してからアトミックにインストールします。初回インストール後は自動的に有効になり、プラグインページからいつでも無効化できます。更新では現在の有効/無効の状態が維持されます。",
-        "noPermissions": "このプラグインは追加機能を宣言していません。",
-        "installConfirmTitle": "「{{name}}」をインストールしますか？",
-        "installConfirmDescription": "パッケージの整合性とマニフェスト互換性を確認してからインストールします。インストール完了後は自動的に有効になり、いつでも無効化や設定の変更ができます。",
-        "updateConfirmDescription": "パッケージの整合性とマニフェスト互換性を確認してから、既存のバージョンを置き換えます。現在の有効/無効の状態は変わりません。",
-        "customSecurityDescription": "このプラグインは追加したカスタムマーケット由来で、Cindy サーバーによる整合性検証は行われていません。インストール前にメインプロセスでマニフェストを検証します。初回インストール後は自動で有効になり、プラグインページでいつでも無効化できます。",
-        "customInstallConfirmDescription": "カスタムマーケット由来のプラグインのため、サーバーによる整合性検証は行われません。インストール前にマニフェストを検証します。インストール後は自動で有効になり、プラグインページでいつでも無効化・設定変更ができます。",
-        "sources": {
-          "addMarketplace": "プラグインマーケットを追加…",
-          "dialogTitle": "プラグインマーケットを追加",
-          "dialogDescription": "GitHub リポジトリ、Git URL、またはローカルフォルダーからプラグインマーケットを追加します。",
-          "learnMore": "詳しく見る",
-          "sourceLabel": "ソース",
-          "sourcePlaceholder": "openai/plugins または git@github.com:org/repo.git",
-          "refLabel": "Git 参照",
-          "refPlaceholder": "メインブランチ",
-          "sparseLabel": "スパースパス",
-          "sparsePlaceholder": "1 行に 1 パス（例: plugins/codex）",
-          "gitUnavailable": "Git がインストールされていないか、バージョンが 2.25 未満です。Git ソースは利用できません。ローカルフォルダーのソースは引き続き利用できます。",
-          "listTitle": "追加済みのマーケット",
-          "pluginCount": "{{count}} 個のプラグイン",
-          "sourceError": "読み込み失敗",
-          "localBadge": "ローカル",
-          "defaultRef": "デフォルトブランチ",
-          "neverSynced": "未同期",
-          "refresh": "更新",
-          "remove": "削除",
-          "removeConfirmTitle": "マーケット「{{name}}」を削除しますか？",
-          "removeConfirmDescription": "削除すると、このマーケットのプラグインは表示されなくなります。インストール済みのプラグインは保持されます。",
-          "close": "閉じる",
-          "add": "マーケットを追加",
-          "errors": {
-            "invalidSource": "ソースの形式が無効です。GitHub の owner/repo、Git URL、またはローカルフォルダーのパスを指定してください。",
-            "gitUnavailable": "Git がインストールされていないか、バージョンが 2.25 未満のため、Git ソースを追加できません。",
-            "cloneAuthFailed": "このリポジトリにアクセスできません。プライベートリポジトリの場合は、先にシステムで Git 認証（credential helper または SSH key）を設定してください。",
-            "credentialsNotAllowed": "ソースの URL にユーザー名やパスワードを含めることはできません。システムの Git 認証（credential helper または SSH key）を使用してください。",
-            "cloneFailed": "リポジトリのクローンに失敗しました。ネットワークまたはプロキシ設定を確認してから再試行してください。",
-            "refNotFound": "指定された Git 参照が見つかりません。ブランチ名またはタグ名を確認してください。",
-            "manifestMissing": "このソースに対応する marketplace.json マニフェストが見つかりません。",
-            "duplicate": "このマーケットはすでに追加されています。",
-            "notFound": "このマーケットは存在しないか、すでに削除されています。"
-          },
-          "guide": {
-            "title": "カスタムプラグインマーケットガイド",
-            "intro": "プラグインマーケットとは、マニフェストファイルを持つ Git リポジトリまたはローカルフォルダーで、Cindy プラグインのセットを配布するためのものです。",
-            "structureTitle": "ディレクトリ構造",
-            "structureBody": "マーケットには 1 つのマニフェストファイルと、プラグインごとのディレクトリが必要です。各プラグインディレクトリには有効な ghost.json（プラグインの身分証）が必要です。",
-            "structureLabelManifest": "マニフェスト",
-            "structureLabelGhostCard": "プラグインカード",
-            "structureLabelEntry": "プラグインのエントリー",
-            "structureNote": "マニフェストは次のいずれかに配置できます:",
-            "manifestTitle": "マニフェスト形式",
-            "manifestBody": "name はマーケットの一意の識別子です（追加後はこの名前で管理します）。plugins 配列の source はリポジトリ内のプラグインディレクトリを相対パスで指します。{\"source\": \"local\", \"path\": \"…\"} のオブジェクト形式も利用できます。",
-            "sourceTitle": "ソース形式",
-            "sourceBody": "GitHub 省略形 owner/repo、完全な Git URL（https / ssh / git@）、ローカルフォルダーパス（~ 可）を指定できます。Git 参照にはブランチ、タグ、commit を指定でき、空ならデフォルトブランチです。スパースパスは 1 行に 1 つ指定し、リポジトリの一部のサブディレクトリだけをチェックアウトします（大きなリポジトリ向け）。",
-            "authTitle": "プライベートリポジトリ",
-            "authBody": "認証はすべてシステムの Git 設定に依存し、Cindy は Git の認証情報を一切保存しません。SSH の場合: 利用可能な key がマシンに設定されている必要があります。組織が SAML SSO を強制している場合は、GitHub の SSH key 設定で Configure SSO からその組織に key を承認してください。HTTPS の場合: Personal Access Token を使用し、システムの credential helper に保存します。",
-            "rulesTitle": "インストールルール",
-            "rulesBody": "プラグイン id はグローバルに一意で先着順です。インストール済みプラグインとの競合は明示されます。cindy- などの公式予約プレフィックスを使うプラグインはカスタムマーケットからインストールできません。インストール前にプラグインが宣言する権限をすべて表示し、確認するとインストールが完了して自動的に有効になります。",
-            "copy": "ガイドをコピー",
-            "copied": "ガイドをクリップボードにコピーしました。",
-            "copyFailed": "コピーに失敗しました。もう一度お試しください。"
-          }
-        }
-      },
-      "install": "プラグインをインストール…",
-      "empty": "まだプラグインがインストールされていません",
-      "emptyHint": "「Meka プラグイン」からインストールするか、上のメニューから .cindy ファイルを読み込めます",
-      "legacyRecovery": {
-        "title": "旧バージョンのプラグインを復元できます",
-        "deferred": "{{count}} 個の旧プラグインディレクトリを検出しました。他のインスタンスが使用中の可能性があるため、復元を保留しました。",
-        "deferred_one": "{{count}} 個の旧プラグインディレクトリを検出しました。他のインスタンスが使用中の可能性があるため、復元を保留しました。",
-        "deferred_other": "{{count}} 個の旧プラグインディレクトリを検出しました。他のインスタンスが使用中の可能性があるため、復元を保留しました。",
-        "partial": "{{count}} 個の旧プラグインディレクトリを検出しました。一部を自動復元できなかったため、再試行できます。",
-        "partial_one": "{{count}} 個の旧プラグインディレクトリを検出しました。一部を自動復元できなかったため、再試行できます。",
-        "partial_other": "{{count}} 個の旧プラグインディレクトリを検出しました。一部を自動復元できなかったため、再試行できます。",
-        "partialBlocked": "{{count}} 個の旧プラグインディレクトリを検出しましたが、Cindy は安全に自動復元できませんでした。データは変更せず保持されています。",
-        "partialBlocked_one": "{{count}} 個の旧プラグインディレクトリを検出しましたが、Cindy は安全に自動復元できませんでした。データは変更せず保持されています。",
-        "partialBlocked_other": "{{count}} 個の旧プラグインディレクトリを検出しましたが、Cindy は安全に自動復元できませんでした。データは変更せず保持されています。",
-        "claimedByOtherOwner": "{{count}} 個の旧プラグインディレクトリを検出しましたが、このデータは最初に取得したアカウントに属します。元のアカウントに戻って復元してください。",
-        "claimedByOtherOwner_one": "{{count}} 個の旧プラグインディレクトリを検出しましたが、このデータは最初に取得したアカウントに属します。元のアカウントに戻って復元してください。",
-        "claimedByOtherOwner_other": "{{count}} 個の旧プラグインディレクトリを検出しましたが、このデータは最初に取得したアカウントに属します。元のアカウントに戻って復元してください。",
-        "retry": "復元を再試行",
-        "retrying": "復元中…"
-      },
-      "disabledTag": "無効",
-      "projectDisabledTag": "このプロジェクトでは無効",
-      "projectSwitchLockedTip": "このプラグインはグローバルで無効です。先に「グローバル」ビューで有効にしてください",
-      "projectBanner": {
-        "title": "プロジェクト「{{name}}」を設定中",
-        "desc": "ここのスイッチはこのプロジェクトのみに適用されます。オフにしたプラグインは新しいセッションに現れません",
-        "backToGlobal": "グローバルに戻る"
-      },
-      "scopePicker": {
-        "global": "グローバル(デフォルト)",
-        "ariaLabel": "プラグインの適用範囲を選択",
-        "browse": "別のフォルダを選択…"
-      },
-      "enableAria": "{{name}} を有効化",
-      "uninstall": "アンインストール",
-      "uninstallConfirm": {
-        "title": "「{{name}}」をアンインストールしますか?",
-        "description": "パネルと機能が削除されます。レイアウト位置は保持され、再インストール時に元の位置へ復元されます。",
-        "cancel": "キャンセル"
-      },
-      "setupGate": {
-        "title": "「{{name}}」は設定が必要です",
-        "descriptionMissing": "使用する前に次の設定が必要です：{{items}}。今すぐプラグイン設定を開きますか？",
-        "descriptionReauth": "アカウントの認証が期限切れです：{{items}}。再接続すると使用できます。今すぐ設定を開きますか？",
-        "configure": "設定を開く",
-        "cancel": "キャンセル",
-        "anySeparator": " または ",
-        "groupSeparator": "、"
-      },
-      "toast": {
-        "installed": "「{{name}}」をインストールしました",
-        "uninstalled": "「{{name}}」をアンインストールしました",
-        "installedAsleep": "「{{name}}」をインストールしました(無効状態。ここでいつでも有効化できます)",
-        "updated": "「{{name}}」を v{{version}} に更新しました",
-        "projectDisabled": "「{{name}}」をこのプロジェクトで無効にしました(新しいセッションから適用)",
-        "projectEnabled": "「{{name}}」はこのプロジェクトでグローバル設定に従います",
-        "exported": "「{{name}}」の .cindy ファイルを書き出しました",
-        "exportFailed": "「{{name}}」を書き出せませんでした。もう一度お試しください"
-      },
-      "panelError": {
-        "crashed": "このプラグインはクラッシュしました",
-        "fused": "このプラグインは繰り返しクラッシュしたため停止しました",
-        "reload": "プラグインを再読み込み",
-        "close": "プラグインを閉じる"
-      },
-      "installConfirm": {
-        "title": "プラグイン「{{name}}」をインストールしますか？",
-        "confirm": "プラグインをインストール",
-        "cancel": "キャンセル",
-        "meta": "バージョン {{version}}。ローカルにインストールされ、いつでもアンインストールできます。",
-        "metaWithAuthor": "作者 {{author}} · バージョン {{version}}。ローカルにインストールされ、いつでもアンインストールできます。",
-        "enableNow": "インストール後すぐに有効化",
-        "enableNowOpenTab": "インストール後すぐに有効化してタブを開く",
-        "expandDescription": "紹介全文を表示",
-        "collapseDescription": "紹介を折りたたむ",
-        "enableNowOpenPanel": "インストール後すぐに有効化してパネルを開く"
-      },
-      "trust": {
-        "official": "Cindy 公式プラグイン",
-        "officialDetail": "Cindy に同梱されています。",
-        "reviewed": "発行元を確認済み · このバージョンは審査済み",
-        "reviewedDetail": "署名は有効で、Cindy の審査署名がこの正確なバージョンの全ファイルに対応しています。",
-        "verifiedPublisher": "確認済みの発行元:{{publisher}}",
-        "verifiedPublisherDetail": "署名は有効でファイルは変更されていませんが、この正確なバージョンには Cindy の審査署名がありません。",
-        "signedUnverified": "署名あり・発行元の身元は未確認:{{publisher}}",
-        "signedUnverifiedDetail": "ファイルが変更されていないことは確認できますが、現在の Cindy はこの発行元キーを認識していません。",
-        "unsigned": "未確認 / 署名なし",
-        "unsignedDetail": "配布元と、配布後に変更されたかどうかを確認できません。",
-        "unknownPublisher": "不明な発行元",
-        "unknownReviewerDetail": "審査情報はありますが、現在の Cindy は審査キーを認識していないため、審査済みとは表示しません。"
-      },
-      "perm": {
-        "grantsTitle": "インストール後に持つ権限:",
-        "toolsGroup": "登録ツール",
-        "toolsDiffGroup": "登録ツールの変更",
-        "itemCount": "{{count}} 件",
-        "cindyImageGenerate": "画像生成(Cindy に代行依頼)",
-        "cindyImageEdit": "画像編集(Cindy に代行依頼、自身が生成した画像のみ)",
-        "cindyVideoGenerate": "動画生成(Cindy に代行依頼)",
-        "cindyVideoEdit": "画像から動画(Cindy に代行依頼、参照画像は自身名義のもののみ)",
-        "cindyMediaDeposit": "保有している画像・動画・音声をあなたのメディアライブラリに保存できます",
-        "cindyMediaDepositDetail": "プラグイン内で貼り付け・ドロップした素材も AI で加工できるようにするための権限です。保存内容はこのプラグイン名義で記録され、最大 {{quota}} まで使用し、アンインストール時に併せて削除されます。",
-        "agentUserAction": "プラグインカードをクリックした後、Agent の新しいターンを開始できます",
-        "agentUserActionDetail": "1 回のクリックにつき 1 回だけ開始でき、そのカードが属するセッションでのみ使用できます。",
-        "agentBackground": "バックグラウンドで Agent の新しいターンを自動的に開始できます",
-        "agentBackgroundDetail": "毎回のクリックは不要ですが、以前このプラグインに関連付けたセッションでのみ使用できます。モデル料金が発生する場合があります。",
-        "nodeRuntime": "同梱された Node プログラムをこのコンピューターで実行できます",
-        "nodeMcp": "同梱された stdio MCP をこのコンピューターで実行できます",
-        "nodeRuntimeDetail": "高リスク:あなたのユーザーアカウントと同じ権限で、ローカルファイルの読み書き、ネットワークアクセス、他のプログラムの起動ができます。Cindy のブラウザーサンドボックスでは隔離できません。",
-        "nodeSecret": "保存済みの認証情報「{{name}}」をローカル Node プログラムに渡せます",
-        "nodeSecretDetail": "Cindy は暗号化して保管し、以下で宣言された Worker メソッドの実行時だけ一時的に注入します。Node プログラムは平文を受け取り、ブラウザー側のプラグインコードや Agent パラメーターへ返したり、ログやファイルに保存したりできるため、信頼できるプラグインだけをインストールしてください。",
-        "nodeResident": "Node プログラムをバックグラウンドで常駐実行できます",
-        "nodeResidentDetail": "プラグインが有効な間は実行を続け、無効化、更新、アンインストール、または Cindy 終了時に停止します。",
-        "tool": "ツール「{{name}}」",
-        "command": "チャット指令 ${{command}}",
-        "panelLeft": "パネル「{{title}}」· チャットの左側にドッキング",
-        "panelTab": "パネル「{{title}}」· 右サイドバーのタブ",
-        "code": "実行コード",
-        "codeDetail": "独立したサンドボックスで実行され、ファイルやネットワークにはアクセスできません。",
-        "resident": "常駐実行(有効化すると起動し、呼び出されなくてもバックグラウンドプロセスを維持)",
-        "residentDetail": "待機中も少量のメモリを使用します。無効化またはアンインストールすると、プロセスは直ちに終了します。",
-        "subscribeTopics": "セッションの動きを傍受(ターン・セッションイベント、メッセージ内容は含まない)",
-        "subscribeHooks": "送信するメッセージの読み取り・ブロック・書き換えが可能",
-        "subscribeHooksDetail": "送信前に各メッセージを審査します。ブロックしたり、本文を書き換えてから送信することがあります。ブロックされたメッセージは編集して再送信できます。",
-        "subscribeAssistantReply": "AI の返信を読み取り・書き換え可能",
-        "subscribeAssistantReplyDetail": "AI の返信が完了するたびに処理します。本文を推敲・書き換えたり(直接置き換えられ、原文は残りません)、返信の吹き出しを独自に描画したカードに差し替えることがあります(カード差し替えの場合は原文が保持され、ワンタップで確認できます)。",
-        "card": "メッセージカードを描画",
-        "cardExternalLink": "カード内で外部リンクを宣言でき、確認後にブラウザで開きます",
-        "cardExternalLinkDetail": "カード内のリンクをクリックすると確認ダイアログが表示され、承認後にシステムブラウザで開きます。http/https アドレスのみ許可されます。",
-        "notify": "システム通知を表示可能(画面上部のライトな通知)",
-        "notifyDetail": "通知の内容はこのプラグインが提供し、通知にはその名前が表示されます。自動的に消え、操作を妨げることはありません。",
-        "fsWrite": "ファイルを書き込めます(作成/変更)",
-        "fsWriteDetail": "専用データフォルダにはいつでも書き込めます。現在のセッションの作業ディレクトリへの書き込みはセッションの権限モードに従います(自動承認モードでは直接書き込み、逐次確認モードでは事前に承認を求めます)。それ以外のフォルダへの書き込みは毎回確認が必要です。ファイルは常にホストが代理で書き込み、プラグイン自体があなたのファイルシステムに直接アクセスすることはありません。",
-        "reveal": "システムのファイルマネージャーでローカルファイルを表示できます",
-        "revealDetail": "プラグインは Cindy に既存のローカルファイルを Explorer または Finder で選択表示するよう依頼できます。ファイルの読み書き権限は付与されず、各パスはホストが再確認し、パスはプラグインに返されません。",
-        "networkHost": "ネットワークドメイン {{host}} にアクセス",
-        "networkSecret": "認証情報「{{name}}」の入力が必要",
-        "networkSecretGhostInputDetail": "この資格情報はプラグイン自身の設定画面で入力を受け付けるため、入力時にはプラグインのページを経由します。その後ホストへ一度だけ渡されて暗号化保存され、保存後はプラグインから読み出せません。注入は宣言されたドメインへのリクエスト時のみホストが行います。",
-        "networkSecretIdentity": "ログインメールアドレスを認証情報「{{name}}」として使用します",
-        "networkSecretIdentityDetail": "値はログイン中のアカウントのメールアドレスから取得され、リクエスト時にホストが自動的に導出・注入します。入力は不要です。プラグインは設定画面に現在の身元を表示する目的で、このメールアドレスを読み取れます。",
-        "networkSecretOauth": "{{host}} で OAuth 認可を行うよう案内します({{name}})",
-        "networkSecretOauthDetail": "認可フローとすべてのトークンはホストが管理し、プラグインのコードからは読み取れません。クライアント資格情報はこのプラグインの詳細ページで入力します。以下は要求される権限スコープの原文です。確認のうえ許可してください。",
-        "networkConnections": "あなたが追加した{{label}}に接続可能",
-        "networkConnectionsDetail": "アドレスはこのプラグインの設定画面で追加します。新しいアドレスの追加には毎回あなたの確認が必要で、入力した資格情報は対応するアドレスにのみ注入されます。",
-        "codeDetailNetwork": "独立したサンドボックスで実行され、ファイルにはアクセスできません。ネットワークは上記のドメインに限られ、ホストが代理送信します。",
-        "codeDetailWithNode": "パネル UI は独立したサンドボックスで実行されます。ローカル処理は上記で宣言された Node ランタイムが提供します。",
-        "added": "追加",
-        "removed": "削除",
-        "unchanged": "他 {{count}} 件の権限は変更なし",
-        "noChange": "権限に変更はありません。",
-        "pick": "フォルダの選択をあなたに依頼できます",
-        "pickDetail": "依頼があると、Cindy がシステムのフォルダ選択ウィンドウを表示します。どのフォルダを渡すかはあなたが直接決め、キャンセルすれば何も渡りません。",
-        "workspace": "プロジェクトフォルダのセッション入口をサイドバーに作成するよう依頼できます",
-        "workspaceDetail": "依頼があると、あなたが直接フォルダを選ぶか、確認カードでフルパスを見てから許可を決めます。あなたが開始した呼び出しの処理中は、現在のセッションの作業ディレクトリ内のサブフォルダは追加確認なしで使用されます。既にセッションがあるフォルダは再利用され、重複作成はされません。作成されるのは空のセッションだけで、勝手にタスクが始まることはありません。",
-        "sessionContext": "現在のセッションが使用中のプロジェクトフォルダの場所を知ることができます",
-        "sessionContextDetail": "現在のセッションのために動作するときだけ、場所の情報(セッション ID とプロジェクトフォルダのパス)を伝えます。ファイルの内容は含まれず、ファイルへのアクセス権も与えられません。",
-        "preview": "以下のサイトのプレビューページをサイドバーのブラウザで開けます",
-        "previewDetail": "開けるのは下に列挙されたサイトだけです。ページを開くたびに、どのプラグインが開いたかが表示されます。",
-        "nodeChildSpawn": "Node プログラムは、パッケージ内で申告済みのサブプロセスの起動をホストに依頼できます",
-        "nodeChildSpawnDetail": "起動できるのは自身のパッケージ内で申告済みの JS ファイルだけです(メインプログラムと同じローカル権限)。任意のコマンドは実行できません。プラグインの無効化や終了時にはサブプロセスも一緒に閉じられます。",
-        "skill": "AI アシスタントにスキル「{{name}}」を追加します",
-        "skillDetail": "スキルは AI が自分の指示として読み込んで実行する指示ファイルです。あなたの全権限で、Claude Code と Codex のすべてのプロジェクトに適用され、このプラグインのサンドボックスには制限されません。プラグインが有効な間は利用可能で、無効化またはアンインストールすると削除されます。特定のフォルダーだけでプラグインをオフにしても非表示にはなりません。ここではスキルの全文をプレビューできません——信頼できるプラグインのみをインストールしてください。",
-        "cindyTextOneshot": "Cindy のクイックチャンネルに質問してテキスト回答を受け取れます",
-        "cindyTextOneshotDetail": "システムの軽量タスクモデルチェーン(自動タイトルと同じ経路)を使用します。Agent は使わず、ファイルにもアクセスしません。モデル料金が発生する場合があります。",
-        "agentErrand": "Cindy Agent にタスクを任せて結果を受け取れます",
-        "agentErrandDetail": "タスクはこのプラグイン専用のセッションで実行され、サイドバーから常に確認・停止できます。既定では読み取り専用で、権限の引き上げはプラグイン設定であなた自身が行う必要があります。モデル料金が発生する場合があります。",
-        "atResourceProvider": "@ で「{{name}}」を使ってプラグインリソースを検索できます",
-        "atResourceProviderDetail": "@ でこのプラグインを明示的に選択した後にのみツールが実行されます。プラグイン作者は検索に副作用がないことを保証する必要があります。",
-        "subscribeActivity": "AI が思考中のタイミングと、あなたの操作を待っているタイミングを傍受",
-        "subscribeActivityDetail": "分かるのはタイミングのみです。思考の開始と終了、そして AI があなたの承認や回答を待っている時点だけを把握します。思考の内容、承認待ちの操作、関係するコマンドやファイル、計画の本文、質問、あなたの回答は一切見えず、あなたの代わりに承認することもできません。",
-        "badge": "プラグイン入口に未読マークを点灯できます",
-        "badgeDetail": "新しい内容があるとき、サイドバーのプラグイン入口と自身のカードに緑の点を点灯し、一行の要約を添えられます。パネルを開くと消えます。音は鳴らず、振動もせず、システムの通知センターにも入らず、システム通知とは別個の権限です。",
-        "confirm": "確認ダイアログで同意を求められます",
-        "confirmDetail": "実行前に Cindy 自身と同じ確認ダイアログを開いて尋ねることができます。文面はプラグインが提供し、ダイアログにはその名前が表示されます。確認するかキャンセルするかはあなたがクリックして決め、プラグイン自身はクリックできません。同時に開けるのは 1 つまでで、頻繁な要求はブロックされます。"
-      },
-      "connections": {
-        "confirmTitle": "接続先の追加",
-        "confirmMessage": "プラグイン「{{name}}」が接続先 {{host}} の追加を求めています",
-        "confirmDetail": "許可すると、このプラグインはホスト経由でこのアドレスにアクセスできます({{label}})。入力した資格情報はこのアドレスへのリクエストにのみ注入されます。",
-        "confirmAllow": "許可",
-        "confirmCancel": "キャンセル"
-      },
-      "errors": {
-        "fileInvalid": "有効な .cindy プラグインファイルではありません",
-        "alreadyInstalled": "このプラグインは既にインストールされています",
-        "commandConflict": "コマンドがインストール済みのプラグインと重複しています。先に相手をアンインストールするか、コマンド名を変更してください。",
-        "idReserved": "この id は公式予約プレフィックス cindy- を使用しています。アプリに同梱されたプラグインのみ使用できます",
-        "sourceMissing": "選択したファイルが見つかりません",
-        "generic": "操作に失敗しました。もう一度お試しください",
-        "updateIdMismatch": "選択したファイルはプラグイン「{{id}}」で、このプラグイン「{{expected}}」と一致しません"
-      },
-      "detail": {
-        "enable": "有効化",
-        "backToList": "プラグイン一覧に戻る",
-        "infoTitle": "詳細情報",
-        "infoId": "識別子",
-        "infoAuthor": "作者",
-        "infoTrust": "配布元と署名",
-        "byAuthor": "作者 {{author}}",
-        "infoPanel": "パネル",
-        "infoLocation": "インストール場所",
-        "expandInfoValue": "{{label}}をすべて表示",
-        "collapseInfoValue": "{{label}}を折りたたむ",
-        "copyLocation": "インストール場所をコピー",
-        "locationCopied": "インストール場所をコピーしました",
-        "locationCopyFailed": "インストール場所をコピーできませんでした。手動でコピーしてください",
-        "openLocation": "インストール場所を開く",
-        "panelDocked": "ドッキング済み · 最小幅 {{min}}px",
-        "panelNotDocked": "未ドッキング(レイアウトに位置記録なし)",
-        "panelNone": "このプラグインにパネルはありません",
-        "customSlotTitle": "プラグインのカスタム設定エリア",
-        "dangerTitle": "プラグインをアンインストール",
-        "infoContents": "内容",
-        "infoVersion": "バージョン",
-        "updateTitle": "バージョン更新",
-        "updateDesc": "新しい .cindy ファイルを選んでその場で置き換えます。有効状態とパネル位置は保持されます。",
-        "cindyPrefs": {
-          "title": "Cindy 能力",
-          "desc": "このプラグインが申請した Cindy 代行能力ごとに使用モデルを指定できます。既定ではシステム(内蔵プロキシ)に従います。",
-          "cap": {
-            "image.generate": "画像生成",
-            "image.edit": "画像編集",
-            "video.generate": "動画生成",
-            "video.edit": "画像から動画",
-            "text.oneshot": "クイック回答(テキスト)"
-          },
-          "defaultOption": "{{model}}(既定)",
-          "noModels": "利用可能なモデルなし"
-        },
-        "toolsTitle": "Tools",
-        "permissionsTitle": "権限",
-        "infoDescription": "説明",
-        "customSlotAsleep": "このプラグインは無効です。有効化すると、ここに設定画面が表示されます。",
-        "descriptionExpand": "もっと見る",
-        "descriptionCollapse": "折りたたむ",
-        "useAction": "Plugin を使用",
-        "openPanelAction": "画面を開く",
-        "openPanelDisabled": "先にプラグインを有効にしてください",
-        "closePanel": "プラグイン画面を閉じる",
-        "useDisabled": "使用する前に Plugin を有効にしてください",
-        "moreActions": "その他の Plugin 操作",
-        "updateFromFile": ".cindy ファイルから更新…",
-        "settingsTitle": "{{name}} の設定",
-        "settingsUnavailableUntilRestore": "この設定を再び使用するには、プラグインを復元してください。",
-        "configurationTitle": "設定",
-        "panelPresentation": {
-          "title": "開き方",
-          "description": "このプラグインだけに適用されます。「デフォルトに従う」では「設定 → Meka アシスタント → プラグインのデフォルトの開き方」を使用します。",
-          "aria": "このプラグインの開き方を選択",
-          "options": {
-            "inherit": "デフォルトに従う",
-            "docked": "会話の横にドッキング",
-            "modal": "モーダルで開く"
-          }
-        },
-        "openTool": "Tool {{name}} の詳細を表示",
-        "noToolDescription": "この Tool には説明がありません。",
-        "viewAllTools": "さらに表示",
-        "collapseTools": "Tool を折りたたむ",
-        "viewAllPermissions": "さらに表示",
-        "permissionsDialogDescription": "この Plugin が要求する全 {{count}} 項目の権限",
-        "closeDialog": "ダイアログを閉じる",
-        "panelPageHosted": "プラグインページから開く · 離れると自動的に閉じます",
-        "errandPrefs": {
-          "title": "AI 代行",
-          "desc": "このプラグインが Cindy Agent にタスクを任せるときの実行設定です。未設定の項目は新規ドラフトの選択に従います。既定では読み取り専用で、専用フォルダー内で作業します。",
-          "agent": "Agent",
-          "model": "モデル",
-          "permission": "書き込み権限",
-          "permissionDisabled": "代行セッションでは選べません",
-          "workdir": "作業フォルダー",
-          "workdirDefault": "プラグイン専用フォルダー(既定)",
-          "workdirPick": "選択…",
-          "workdirClear": "既定のフォルダーに戻す"
-        },
-        "chatAction": "会話",
-        "enabledLabel": "有効",
-        "disabledLabel": "無効",
-        "exportPackage": ".cindy ファイルを書き出す…",
-        "exportFileType": "Cindy プラグイン"
-      },
-      "contents": {
-        "panel": "パネル",
-        "settingsUi": "カスタム設定画面",
-        "code": "実行コード",
-        "slotCindy": "Cindy 代行",
-        "slotAgent": "Agent の新しいターンを開始",
-        "slotNode": "ローカル Node プログラム",
-        "slotTool": "ツール登録",
-        "slotSubscribe": "メッセージ購読",
-        "slotCard": "メッセージカード",
-        "slotNetwork": "ネットワークアクセス",
-        "slotNotify": "システム通知",
-        "slotFs": "ファイル書き込み",
-        "slotSkill": "エージェントスキル",
-        "slotReveal": "ファイルマネージャーで表示",
-        "slotWorkspace": "ワークスペースセッション",
-        "slotBadge": "未読バッジ"
-      },
-      "commandPaletteTag": "プラグインコマンド",
-      "updateConfirm": {
-        "title": "プラグイン「{{name}}」を更新しますか?",
-        "body": "バージョン {{from}} → {{to}}。既存バージョンを置き換えます。有効状態とパネル位置は保持されます。",
-        "confirm": "更新",
-        "cancel": "キャンセル"
-      },
-      "pick": {
-        "dialogTitle": "フォルダを選択",
-        "dialogMessage": "プラグイン「{{name}}」がフォルダの選択を求めています",
-        "fileDialogTitle": "ファイルを選択",
-        "fileDialogMessage": "プラグイン「{{name}}」がファイルの選択を求めています"
-      },
-      "workspace": {
-        "dialogTitle": "プロジェクトフォルダを選択",
-        "dialogMessage": "プラグイン「{{name}}」がサイドバーにセッションを作成するため、プロジェクトフォルダの選択を求めています"
-      },
-      "confirm": {
-        "dialogTitle": "プラグイン「{{name}}」が確認を求めています"
-      },
-      "panelHost": {
-        "close": "パネルを閉じる"
-      },
-      "updateAll": {
-        "title": "すべて更新 · {{count}} 件",
-        "description": "権限に変更がない更新は自動で完了します。権限が拡張される更新は項目ごとに確認が必要です。",
-        "versionRange": "v{{from}} → v{{to}}",
-        "permissionChanged": "権限に変更あり",
-        "reviewOutdated": "権限の差分が古くなりました",
-        "rereview": "再確認",
-        "reviewDiff": "確認する",
-        "collapseDiff": "閉じる",
-        "approve": "同意して更新",
-        "skip": "スキップ",
-        "statusPending": "待機中",
-        "statusInstalling": "更新中…",
-        "statusDone": "更新済み",
-        "statusSkipped": "スキップ済み",
-        "statusFailed": "更新に失敗",
-        "background": "バックグラウンドで続行",
-        "doneAction": "完了",
-        "doneToast": "一括更新が完了:{{done}} 件更新、{{rest}} 件未完了"
-      }
-    },
     "mcp": {
       "title": "外部ツール",
       "subtitle": "独自のリモート MCP サーバーを接続します。HTTP / Streamable HTTP サーバーは Claude と Codex の両方で利用可能；SSE は Claude 専用です。",
@@ -4011,6 +3462,1585 @@
       },
       "capThreads": "ツールチェーンの並列度を制限",
       "capThreadsHint": "VITEST_MAX_FORKS や MAKEFLAGS などの環境変数を注入し、1 つのテストやビルドが全 CPU コアを占有しないようにします。自分で設定した同名の変数は上書きされません。"
+    },
+    "computerUse": {
+      "title": "自動操作",
+      "description": "エージェントがコンピュータと接続済みデバイスを使ってあなたの代わりに作業します。ブラウザ自動操作は独立したブラウザを使い、Android 自動操作は ADB を使い、コンピュータ自動操作はローカルドライバーに依存します。",
+      "codexRefreshDeferred": "設定は保存されましたが、Codex が使用中です。アプリを再起動すると、新しい Codex セッションに反映されます。",
+      "browser": {
+        "title": "自動操作ブラウザ",
+        "description": "エージェント専用の独立したブラウザ。普段の Chrome とは分離されています",
+        "toggleAria": "ブラウザ自動操作を切り替える",
+        "toggleHint": "この切り替えは、以降に開始した Agent セッションにのみ反映されます。実行中のセッションには影響しません。",
+        "noProjectHint": "プロジェクトのセッションから「設定」を開くと、そのプロジェクトのブラウザ自動操作を切り替えられます。",
+        "detected": "{{browser}} を検出しました",
+        "notDetected": "ローカルブラウザが見つかりません。Chrome をインストールするとブラウザ自動操作を利用できます。",
+        "download": "Chrome をダウンロード",
+        "toast": {
+          "enabled": "ブラウザ自動操作を有効にしました",
+          "disabled": "ブラウザ自動操作を無効にしました",
+          "toggleFailed": "ブラウザ自動操作の切り替えに失敗しました",
+          "openedForLogin": "自動操作ブラウザを開きました。必要なサイトにログインしてください",
+          "openForLoginFailed": "ブラウザを開けませんでした"
+        },
+        "openForLogin": "Agent 専用ブラウザを開く",
+        "openForLoginHint": "これはエージェント専用の独立したブラウザです。お使いの Chrome を利用しますが、プロファイルは完全に独立しており（右上に「Cindy」と表示）、普段の Chrome のタブ・ブックマーク・ログイン状態には一切影響しません。エージェントはこのブラウザであなたの代わりにページを開き、読み、クリックし、スクリーンショットを撮ります。ログインが必要なサイトは、上の「Agent 専用ブラウザを開く」から一度ログインすれば、ログイン状態が保持され、以降はエージェントがあなたとして操作を続けられます。"
+      },
+      "browserBackend": {
+        "title": "自動操作のブラウザ対象",
+        "description": "エージェントが実際に操作するブラウザを選択します。ログイン状態は 2 つのモード間で独立しています。",
+        "defaultTag": "デフォルト",
+        "resetToDefault": "デフォルトに戻す",
+        "toggleFailed": "ブラウザ対象の切り替えに失敗しました",
+        "health": {
+          "ready": "内蔵ブラウザの制御接続は正常です。",
+          "error": "内蔵ブラウザの接続に失敗しました：{{reason}}。「内蔵ブラウザを復旧」で制御接続を再構築してください。",
+          "reasons": {
+            "disposing": "前回の終了処理が完了していません",
+            "hostUnavailable": "内蔵ブラウザー画面の準備ができていないか、接続が切れています",
+            "startFailed": "新しい制御プロセスを起動できませんでした",
+            "statusFailed": "制御プロセスの状態確認に失敗しました",
+            "recoveryFailed": "制御接続を再構築できませんでした"
+          },
+          "reconnect": "内蔵ブラウザを再接続",
+          "recover": "内蔵ブラウザを復旧",
+          "recovering": "内蔵ブラウザを復旧中…",
+          "recovered": "内蔵ブラウザを再接続しました",
+          "recoverFailed": "内蔵ブラウザの復旧に失敗しました。理由を確認して再試行してください。"
+        },
+        "rsbWebview": {
+          "title": "サイドバー内蔵ブラウザ",
+          "description": "エージェントは右サイドバーの webview タブ内で操作します。ポップアップなし、ログイン状態は独立保持。"
+        },
+        "external": {
+          "title": "独立した外部ブラウザ",
+          "description": "エージェントは専用の Chrome ウィンドウを操作します（vendored Playwright）。"
+        }
+      },
+      "android": {
+        "title": "Android 自動操作",
+        "description": "エージェントが ADB 経由で接続済み Android デバイスを確認し、操作できます",
+        "toggleAria": "Android 自動操作を切り替える",
+        "refresh": "再確認",
+        "toggleHint": "このマシン全体の切り替えは、以降に開始した Agent セッションにのみ反映されます。実行中のセッションには影響しません。",
+        "status": {
+          "checking": "ADB の状態を確認しています…",
+          "preparing": "ADB を準備しています…",
+          "ready": "ADB は準備できています。利用可能なデバイス: {{count}}。デフォルト: {{device}}",
+          "adbDetail": "{{version}}（{{path}}）",
+          "noDevice": "ADB は準備できていますが、許可済みの Android デバイスが接続されていません。",
+          "defaultUnavailable": "デフォルトの Android デバイスを利用できません: {{device}}",
+          "multipleDevices": "ADB は準備できています。利用可能なデバイス: {{count}}。Agent に device serial を指定してください。",
+          "unauthorized": "ADB はデバイスを検出しましたが、USB debugging が許可されていません。",
+          "offline": "ADB はデバイスを検出しましたが、デバイスは offline 状態です。",
+          "adbNotFound": "ADB が見つかりません。Android 自動操作を有効にすると platform-tools を準備します。必要に応じてカスタム adb パスも設定できます。",
+          "failed": "ADB 状態確認に失敗しました: {{message}}",
+          "unknownIssue": "ADB の問題: {{issue}}"
+        },
+        "connectionGuide": {
+          "connect": {
+            "title": "Android スマートフォンを接続する方法",
+            "adbNote": "Cindy が ADB を自動で準備するため、Android SDK のインストールは不要です。「カスタム ADB パス」は上級者向けです。",
+            "step1": "データ転送に対応した USB ケーブルでスマートフォンとパソコンを接続します。",
+            "step2": "スマートフォンの「設定 → デバイス情報」でビルド番号を連続してタップし、開発者向けオプションを有効にします。",
+            "step3": "「開発者向けオプション」で「USB デバッグ」をオンにします。",
+            "step4": "スマートフォンのロックを解除したまま Cindy に戻り、「再確認」をクリックします。"
+          },
+          "unauthorized": {
+            "title": "USB デバッグを許可してください",
+            "body": "スマートフォンに表示された USB デバッグの許可ダイアログで「許可」を選び、可能なら「このパソコンを常に許可」にチェックを入れてから、Cindy で「再確認」をクリックします。"
+          },
+          "offline": {
+            "title": "デバイスが offline です",
+            "body": "USB ケーブルをいったん抜き差しし、スマートフォンのロックを解除したまま、Cindy に戻って「再確認」をクリックします。"
+          }
+        },
+        "device": {
+          "title": "デバイス",
+          "ariaLabel": "デフォルトの Android デバイスを選択",
+          "auto": "自動",
+          "autoHint": "唯一の利用可能デバイスを使用",
+          "connected": "利用可能なデバイス {{count}} 台が接続されています",
+          "none": "ADB デバイスなし",
+          "ready": "利用可能",
+          "state": "状態: {{state}}",
+          "unavailable": "利用不可"
+        },
+        "adb": {
+          "title": "ADB",
+          "auto": "ADB の自動解決を使用しています",
+          "preparing": "ADB を準備しています…",
+          "ready": "現在の使用元: {{source}}",
+          "prepareFailed": "ADB の準備に失敗しました: {{message}}",
+          "placeholder": "カスタム adb パス",
+          "pathAria": "カスタム ADB パス",
+          "save": "パスを保存",
+          "useDefault": "デフォルトを使用",
+          "source": {
+            "auto": "自動",
+            "custom": "カスタム",
+            "env": "環境変数",
+            "prepared": "準備済み",
+            "bundled": "同梱",
+            "sdk": "Android SDK",
+            "path": "PATH"
+          }
+        },
+        "toast": {
+          "enabled": "Android 自動操作を有効にしました",
+          "disabled": "Android 自動操作を無効にしました",
+          "toggleFailed": "Android 自動操作の切り替えに失敗しました",
+          "statusFailed": "Android 自動操作の状態確認に失敗しました",
+          "deviceFailed": "デフォルトの Android デバイスを保存できませんでした",
+          "adbPathFailed": "ADB パスを保存できませんでした"
+        }
+      },
+      "directControl": {
+        "title": "自動操作コンピュータ",
+        "description": "エージェントがウィンドウを調べ、UI を読み取り、クリックや入力を実行できます",
+        "status": {
+          "ready": "使用できます",
+          "needsPermission": "システム権限が必要です",
+          "notInstalled": "ドライバー未インストール",
+          "disabled": "オフ",
+          "checking": "権限を確認中…",
+          "setup": "権限を設定",
+          "version": "CUA Driver {{version}}"
+        },
+        "toggleAria": "コンピュータの直接操作を切り替える",
+        "driverInfo": "コンピュータ自動操作はオープンソースの CUA Driver で提供されます。ローカルで動作し、画面の読み取りやクリック、入力などを行います。",
+        "openSourceProject": "オープンソースプロジェクトを見る",
+        "detected": "{{version}} を検出しました（{{path}}、{{daemon}}）",
+        "daemonRunning": "バックグラウンドサービスは実行中です",
+        "daemonStopped": "バックグラウンドサービスは停止中です。使用時に自動起動します",
+        "notDetected": "cua-driver が検出されません。初回有効化時に自動でインストールされます。権限を付与すると、コンピュータの直接操作を利用できます。",
+        "installing": "cua-driver をインストール中…",
+        "authorizing": "システム権限を待っています。Cua Driver の権限ウィンドウで「アクセシビリティ」と「画面収録」を許可してください。",
+        "permissionIntro": {
+          "title": "コンピュータ自動操作を有効化",
+          "description": "{{appName}} は Cua Driver をローカルにインストールまたは起動し、画面の読み取りやクリック、入力などを行います。自分でコンピュータ自動操作タスクを開始した場合にのみ有効にしてください。",
+          "macosDescription": "次に {{appName}} は Cua Driver のインストールまたは権限付与フローを開き、必要に応じて macOS のシステム設定へ移動します。まず CuaDriver に「アクセシビリティ」と「画面収録」の基本権限を許可してください。その後の使用中に、macOS が対象アプリや具体的な操作ごとに追加の確認を表示することがあります。自分で Computer Use タスクを開始した場合にのみ承認してください。完了後 {{appName}} に戻ると、自動で確認して有効化します。",
+          "confirm": "続行",
+          "cancel": "後で"
+        },
+        "permissionGuide": {
+          "waiting": "操作待ち",
+          "step": "コンピュータ操作を有効にする",
+          "completeEyebrow": "権限の設定完了",
+          "dragTitle": "CuaDriver を「{{permission}}」にドラッグ",
+          "turnOnAppTitle": "「{{permission}}」で CuaDriver をオンにする",
+          "dragHint": "ドラッグ",
+          "draggingTitle": "CuaDriver をドラッグ中",
+          "draggingHint": "「{{permission}}」の一覧にドロップ",
+          "appName": "CuaDriver",
+          "turnOnTitle": "「{{permission}}」をオンにする",
+          "turnOnDescription": "システム設定でこの権限をオンにしてください。Cindy が自動的に続行します。",
+          "readyTitle": "Computer Use の準備ができました",
+          "readyDescription": "必要なときに Cindy がこのコンピュータを操作できます。"
+        },
+        "permissions": {
+          "title": "システム権限",
+          "macosHint": "コンピュータ操作には「アクセシビリティ」と「画面収録」が必要です。実際の使用中には、対象アプリや操作ごとに追加確認が表示されることがあります。",
+          "accessibilityLabel": "アクセシビリティ",
+          "screenRecordingLabel": "画面収録",
+          "grant": "許可する",
+          "accessibility": "アクセシビリティ：{{status}}",
+          "screenRecording": "画面収録：{{status}}",
+          "runtimeConfirmations": "基本権限は準備できています。実際の使用中には、macOS が対象アプリや具体的な操作ごとに追加の確認を表示することがあります。自分で Computer Use タスクを開始した直後の場合にのみ承認してください。",
+          "granted": "許可済み",
+          "missing": "未許可",
+          "unknown": "不明",
+          "notRequired": "不要",
+          "openAccessibility": "アクセシビリティ設定を開く",
+          "openScreenRecording": "画面収録設定を開く",
+          "recheck": "再確認",
+          "moreDetails": "詳細情報",
+          "hideDetails": "詳細を閉じる",
+          "windowsHint": "Windows では追加のシステム権限は不要です。Agent が作業している間は、対象アプリを現在のアクティブなデスクトップ上で表示したままにしてください。",
+          "linuxHint": "Linux では macOS の TCC 権限は使いません。現在のデスクトップセッションでウィンドウ取得と入力自動化が許可されていることを確認してください。"
+        },
+        "toggleHint": "この切り替えは、以降に開始した Agent セッションにのみ反映されます。実行中のセッションには影響しません。",
+        "noProjectHint": "プロジェクトのセッションから「設定」を開くと、そのプロジェクトのコンピュータ直接操作を切り替えられます。",
+        "update": {
+          "available": "新しいバージョン v{{version}} が利用可能です。更新後、システム権限の再許可が必要になる場合があります。",
+          "action": "更新",
+          "updating": "更新中…",
+          "downloadingPercent": "ダウンロード中 {{percent}}%（{{downloaded}}/{{total}} MB）…",
+          "downloadingBytes": "ダウンロード中、{{downloaded}} MB 完了…",
+          "installing": "ダウンロード完了、インストール中…",
+          "toast": {
+            "success": "cua-driver を最新バージョンに更新しました",
+            "failed": "cua-driver の更新に失敗しました。しばらくしてからもう一度お試しください。"
+          }
+        },
+        "toast": {
+          "enabled": "コンピュータの直接操作を有効にしました",
+          "disabled": "コンピュータの直接操作を無効にしました",
+          "toggleFailed": "コンピュータの直接操作の切り替えに失敗しました",
+          "installFailed": "cua-driver のインストールに失敗しました",
+          "permissionFailed": "コンピュータ操作の権限が完了していません",
+          "permissionPending": "2つのシステム権限を許可したら、ここに戻って「再確認」を押してください",
+          "permissionSettingsOpened": "システム権限設定を開きました。許可が完了したら、ここに戻って「再チェック」を押してください。",
+          "permissionSettingsMonitoring": "システムの権限設定を開きました。権限を付与すると、状態は自動的に更新されます。",
+          "openPermissionSettingsFailed": "システム権限設定を開けませんでした"
+        }
+      }
+    },
+    "builtinTools": {
+      "title": "組み込みツール",
+      "description": "新しいセッションのデフォルトを設定するか、プロジェクトごとに上書きします。プロジェクト設定が優先されます。",
+      "empty": "利用可能なツールはありません。",
+      "toggleAria": "{{name}} ツールを切り替え",
+      "toggleHint": "変更は新規または再起動した Agent セッションにのみ反映され、実行中のセッションには影響しません。",
+      "loadFailed": "ツール一覧の読み込みに失敗しました",
+      "scopePicker": {
+        "ariaLabel": "組み込みツール設定の適用範囲を切り替え",
+        "userDefault": "新しいセッションのデフォルト",
+        "userDefaultDescription": "プロジェクト上書きのない新規セッションに適用"
+      },
+      "source": {
+        "project": "プロジェクト",
+        "projectTooltip": "プロジェクト設定で上書きされています ({{dir}})",
+        "user": "ユーザーデフォルト",
+        "userTooltip": "新しいセッションのデフォルトを継承",
+        "product": "製品デフォルト",
+        "productTooltip": "Cindy の製品デフォルトを継承"
+      },
+      "toast": {
+        "enabled": "{{name}} を有効化しました — 次回セッションから反映",
+        "disabled": "{{name}} を無効化しました — 次回セッションから反映",
+        "toggleFailed": "ツールの切り替えに失敗しました",
+        "cannotModifyEssential": "{{name}} は基盤ツールのため無効化できません。"
+      },
+      "plugins": {
+        "feishu": {
+          "name": "Feishu",
+          "description": "Feishu IM 連携 — メッセージ、ドキュメント、Wiki、カレンダー"
+        },
+        "google": {
+          "name": "Google",
+          "description": "Google 連携 — Sheets(読み取り)と Gmail(検索 / 閲覧 / 送信 / 下書き / ラベル)"
+        },
+        "feishu_bot": {
+          "name": "Feishu Bot",
+          "description": "ボット経由で Feishu ユーザーにファイルや通知を送信"
+        },
+        "scheduler": {
+          "name": "スケジューラー",
+          "description": "タスクスケジューリング — cron 定期ジョブとワンショットリマインダー"
+        },
+        "memory": {
+          "name": "Cindy メモリ",
+          "description": "セッションをまたいでコンテキストを保持する Agent 横断の長期メモリ"
+        },
+        "xdt_helper": {
+          "name": "Cindy Helper",
+          "description": "ホスト機能の開示 — 利用可能なツールとモデルを Agent に伝える"
+        },
+        "collab": {
+          "name": "コラボモード",
+          "description": "オフにしても今後作成するセッションにのみ反映され、現在の Worker は停止しません。マルチ Worker のチーム編成に使用します"
+        },
+        "lsp": {
+          "name": "LSP",
+          "description": "TypeScript LSP クエリ(Beta — 「設定 → 実験的機能 → LSP モード」で制御)"
+        }
+      }
+    },
+    "silentEncryptedRetry": {
+      "cell": {
+        "label": "プロトコル暗号化コンテンツを破棄して再試行",
+        "description": "プロバイダー切り替え時(例: 格安 GPT → 公式 GPT)、履歴内の前プロバイダーの暗号化推論を自動的に破棄して静かに再送し、セッションの停止を防ぎます。初回トリガー後は次のモデル切り替えまで有効です。代償として破棄されたターンはモデルが再推論し、トークンをやや多く消費します。デフォルトはオン。"
+      },
+      "toggleAria": "「プロトコル暗号化コンテンツを破棄して再試行」を切り替え",
+      "toast": {
+        "enabled": "暗号化コンテンツの静かな再試行をオンにしました。",
+        "disabled": "暗号化コンテンツの静かな再試行をオフにしました。",
+        "toggleFailed": "暗号化コンテンツの静かな再試行の切り替えに失敗しました"
+      }
+    },
+    "remoteControl": {
+      "title": "リモート接続",
+      "description": "同じアカウントのデバイスを相互に遠隔操作したり、SSH でリモートホストに接続したりできます。",
+      "accessRevokedByPeer": "アクセス権が撤回されました。相手側の設定で復元する必要があります",
+      "deviceControlToggleAria": "{{name}} の操作を切り替え",
+      "myDevices": {
+        "controlIt": "このデバイスを操作する",
+        "allowInbound": "このデバイスに本機の操作を許可",
+        "allowInboundAria": "{{name}} に本機の操作を許可するか切り替え",
+        "peerControlOff": "相手側が操作を許可していません",
+        "masterOffHint": "先に上のメインスイッチをオンにしてください",
+        "controllingThisMac": "本機を操作中"
+      },
+      "toast": {
+        "revoked": "このデバイスのアクセス権を撤回しました",
+        "revokeFailed": "撤回に失敗しました",
+        "restored": "このデバイスのアクセス権を復元しました",
+        "restoreFailed": "復元に失敗しました"
+      },
+      "sections": {
+        "myDevices": "マイデバイス",
+        "ssh": "SSH リモートホスト",
+        "hook": "Cindy IM ボット"
+      },
+      "hook": {
+        "description": "Slack と Telegram を同じ Cindy に接続します。メッセージはこのデバイスに送られ、プロジェクト一覧とセッション実行基盤を共有します。アカウント連携と設定はプロバイダーごとに分離されます。",
+        "slackDescription": "Slack ワークスペースを連携し、Slack から Cindy にタスクを依頼できます。",
+        "slackDisabledHint": "スイッチをオンにすると Slack 認証が始まります。連携が完了すると Slack からタスクを依頼できます。",
+        "slackBoundHint": "連携が完了しました。スイッチをオフにすると連携が解除され、再びオンにするには再認証が必要です。",
+        "lifecycleAnnouncement": {
+          "label": "オンライン・オフライン通知",
+          "cellLabel": "メッセージ通知",
+          "hint": "このデバイスのオンライン・オフライン時に Slack Bot から通知メッセージを送信します"
+        },
+        "toggleAria": "Slack 接続の有効状態を切り替え",
+        "installApp": "Slack アプリをインストール",
+        "status": {
+          "disabled": "無効",
+          "connecting": "接続中…",
+          "connected": "接続済み",
+          "standby": "別のインスタンスが接続中",
+          "error": "接続失敗"
+        },
+        "form": {
+          "workspacesCardTitle": "作業ディレクトリのマッピング",
+          "workspacesCardDescription": "エイリアス → ローカル絶対パス。ディレクトリ一覧は全チャンネル共通で、実行設定はチャンネルごとに独立します。",
+          "workspacesBoundCount_one": "ローカル作業ディレクトリを {{count}} 個バインド済み",
+          "workspacesBoundCount_other": "ローカル作業ディレクトリを {{count}} 個バインド済み",
+          "aliasPlaceholder": "エイリアス(例: my-server)",
+          "addWorkspace": "作業ディレクトリを追加",
+          "removeWorkspace": "この作業ディレクトリを削除",
+          "changeDir": "クリックしてディレクトリを変更(別名と設定は保持)",
+          "defaultWorkspaceChip": "デフォルト: {{name}}",
+          "defaultWorkspaceAria": "タスク発行時に使う既定の作業ディレクトリを選択",
+          "defaultWorkspaceRadioAria": "「{{name}}」を既定の作業ディレクトリに設定",
+          "defaultWorkspaceRowHint": "選択したディレクトリが既定の作業ディレクトリです。Telegram の個別チャット・グループ・トピックのうち、プロジェクトを個別に選んでいない会話のタスクはすべてここで実行されます（/workspace で個別に選んだ会話はそのまま）。選択したディレクトリの行の権限モードにご注意ください。「フルアクセス」にすると、どのグループから @ で呼ばれてもそのリポジトリ内でフルアクセスで実行されます。",
+          "legacyDefaultsTitle": "旧「新規会話の設定」がまだ有効です",
+          "legacyDefaultsDescription": "この端末には以前の公式 bot 既定値が保存されており、個別に設定していないディレクトリのフォールバックとして今も使われます（公式 Telegram と X で共通の 1 件）。これらの値は各ディレクトリごとに設定する方式になりました。既定値に戻すと、次のすべてが削除されます:",
+          "legacyDefaultsRow": {
+            "agentKind": "既定 Agent: {{current}} → {{fallback}}",
+            "permissionMode": "権限モード: {{current}} → {{fallback}}"
+          },
+          "legacyDefaultsRowAgent": "{{agent}}: {{fields}}",
+          "legacyDefaultsField": {
+            "model": "モデル {{current}} → {{fallback}}",
+            "effort": "思考の強度 {{current}} → {{fallback}}",
+            "source": "モデルの提供元 {{current}} → {{fallback}}"
+          },
+          "legacyDefaultsFieldSeparator": "、",
+          "legacyDefaultsSourceFollowsGlobal": "グローバル設定に従う"
+        },
+        "binding": {
+          "copyLink": "リンクをコピー",
+          "copied": "リンクをコピーしました",
+          "state": {
+            "denied": "Slack の認可ページで認可がキャンセルされました",
+            "expired": "認可がタイムアウトしました。再接続してください",
+            "failed": "連携に失敗しました",
+            "revoked": "連携が解除されました"
+          },
+          "retryHint": "スイッチをもう一度オンにすると再接続して連携し直せます。"
+        },
+        "toast": {
+          "saveFailed": "保存に失敗しました",
+          "toggleFailed": "切り替えに失敗しました",
+          "actionFailed": "操作に失敗しました"
+        },
+        "loginRequired": "先に {{appName}} アカウントにログインしてください。ログイン後、接続は自動的に復旧します。",
+        "standbyHint": "このコンピューター上の別の Cindy インスタンスが Slack 接続を使用しています。それを閉じてから、このスイッチをもう一度オンにすると引き継げます。",
+        "authorizing": "認可中…",
+        "statusBound": "連携済み @{{name}}",
+        "statusBoundTeam": "{{team}} に連携済み @{{name}}",
+        "statusUnbound": "未連携",
+        "notInstalled": {
+          "title": "認証した Slack ワークスペースに Cindy アプリがインストールされていません",
+          "hint": "bot がメッセージの送受信やタスク配信を行うには、まず Cindy アプリをワークスペースにインストールしてください。インストール後、スイッチをもう一度オンにするとバインドが完了します。",
+          "status": "アプリのインストール待ち",
+          "confirmTitle": "Slack ワークスペースに Cindy アプリをインストール",
+          "confirmDescription": "認証した Slack ワークスペースには Cindy アプリがインストールされていません。bot がメッセージの送受信やタスク配信を行うにはインストールが必要です。今すぐインストールしますか?インストール完了後、バインドは自動的に完了します。",
+          "confirmInstall": "インストール",
+          "confirmCancel": "キャンセル",
+          "waitingHint": "インストールの完了を待っています…完了するとバインドは自動的に行われ、再認証は不要です。"
+        },
+        "multi": {
+          "statusWorkspaces_one": "{{count}} 個のワークスペース",
+          "statusWorkspaces_other": "{{count}} 個のワークスペース",
+          "statusPendingSuffix_one": "({{count}} 件対応待ち)",
+          "statusPendingSuffix_other": "({{count}} 件対応待ち)",
+          "statusOffKept_one": "オフ · {{count}} 個のワークスペース連携を保持中",
+          "statusOffKept_other": "オフ · {{count}} 個のワークスペース連携を保持中",
+          "displaced": "別のデバイスで連携済み",
+          "rebind": "再連携",
+          "removeAria": "このワークスペースの連携を解除",
+          "removeConfirmTitle": "{{team}} の連携を解除",
+          "removeConfirmDescription": "解除すると、Slack ワークスペース「{{team}}」からこのデバイスへタスクを送れなくなります。必要になったら、いつでも再認証して連携し直せます。",
+          "removeDisplacedConfirmDescription": "この連携は別のデバイスに引き継がれています。削除しても、ローカルの一覧からこの行が消えるだけです。",
+          "removeConfirm": "解除",
+          "cancelPending": "キャンセル",
+          "dismiss": "閉じる",
+          "addWorkspace": "Slack ワークスペースを追加",
+          "alreadyBound": "認可されたのはすでに連携済みの {{team}} です。別のワークスペースを追加するには、Slack の認可ページ右上でワークスペースを切り替えてから許可してください。"
+        },
+        "telegram": {
+          "description": "Telegram アカウントを連携し、公式 bot 経由で Cindy にタスクを依頼できます。",
+          "disabledHint": "スイッチをオンにして、Telegram 内の案内に従ってアカウント連携を完了してください。",
+          "toggleAria": "Telegram 接続を切り替える",
+          "connect": "Telegram と連携",
+          "openApp": "Telegram を開く",
+          "cancel": "連携をキャンセル",
+          "retry": "連携を再試行",
+          "openBot": "Bot を開く",
+          "addToGroup": "グループに追加",
+          "unlink": "Telegram の連携を解除",
+          "unlinkConfirmTitle": "Telegram の連携を解除しますか？",
+          "unlinkConfirmDescription": "Telegram からこのデバイスへメッセージを送れなくなります。ローカルプロジェクトと Slack 接続には影響しません。",
+          "status": {
+            "checking": "サーバー対応を確認中…",
+            "unavailable": "このサーバーでは利用できません",
+            "disabled": "無効",
+            "none": "未連携",
+            "pending": "Telegram を開き、Start をタップして連携",
+            "awaiting_confirmation": "Telegram でデバイス切り替えを確認してください",
+            "confirmed": "{{user}} を @{{bot}} に連携済み",
+            "denied": "連携が拒否されました",
+            "expired": "連携リンクの期限が切れました",
+            "failed": "連携に失敗しました",
+            "revoked": "連携を解除しました",
+            "superseded": "別のデバイスに連携されています"
+          },
+          "behavior": {
+            "title": "リアクションと引用",
+            "emojiLabel": "絵文字リアクション",
+            "emojiOption": {
+              "off": "オフ",
+              "minimal": "ベーシック",
+              "expressive": "生き生き"
+            },
+            "emojiHint": {
+              "off": "絵文字リアクションを付けません。",
+              "minimal": "受信時 👀、成功 👍、失敗 👎。",
+              "expressive": "成功と失敗で分けたリアクションプールからランダムに選びます。"
+            },
+            "groupQuoteLabel": "グループで質問を引用して返信",
+            "quoteOption": {
+              "off": "しない",
+              "first": "最初のみ",
+              "all": "毎回"
+            },
+            "groupQuoteHint": {
+              "off": "グループの回答を質問に紐付けません。",
+              "first": "回答の最初のメッセージが質問を引用します（推奨）。",
+              "all": "回答のすべてのメッセージが質問を引用します。"
+            },
+            "dmQuoteLabel": "DM でメッセージを引用して返信",
+            "dmQuoteHint": {
+              "off": "DM の回答は引用なしで送ります（デフォルト）。",
+              "first": "最初の返信があなたのメッセージを引用します。"
+            },
+            "error": {
+              "load": "Telegram の動作設定を読み込めませんでした。接続を確認して再試行してください。",
+              "save": "Telegram の動作設定を保存できませんでした。最後に確認された設定へ戻しました。",
+              "retry": "再読み込み"
+            }
+          },
+          "groups": {
+            "title": "グループ参加モード",
+            "hint": "公式 bot が確認したグループが表示されます。アクティブは連携済みアカウントの全発言だけに適用され、他のメンバーはローカル文脈に入りますがタスクを開始できません。",
+            "empty": "まだグループがありません。bot を追加し、連携済みアカウントからメッセージを送ってください。",
+            "contactsOn": "グループの他の発言者はスマート連絡先に自動登録されます。",
+            "contactsOff": "スマート連絡先がオフのため、他のメンバーは自動登録されません。",
+            "contactsEnable": "オンにする",
+            "error": {
+              "load": "Telegram のグループを読み込めませんでした。接続を確認して再試行してください。",
+              "save": "グループ参加モードを保存できませんでした。最後に確認されたモードへ戻しました。",
+              "retry": "再読み込み"
+            },
+            "mode": {
+              "mention": "@ のみ",
+              "always": "アクティブ"
+            }
+          }
+        },
+        "x": {
+          "description": "X (Twitter) アカウントを連携し、X で Cindy bot にメンションしてタスクを依頼できます。",
+          "disabledHint": "スイッチをオンにして、案内に従って X アカウントを認証してください。",
+          "toggleAria": "X 接続を切り替え",
+          "guide": {
+            "usageLabel": "使い方",
+            "usageBody": "X で @askmycindy をメンションしてポストすると、タスクがこの端末に届いてここで実行され、結果が返信として戻ります。",
+            "riskLabel": "返信は公開されます",
+            "riskPublicBody": "Cindy の返信は公開ポストで、誰でも閲覧できます。公開の場で答えを探したり問題を解決するのに向いていますが、プライベートな用件には向きません —— プライバシーが露出するおそれがあります。",
+            "riskWorkdirBody": "X のタスクはすべて X 連携設定で指定した既定の作業ディレクトリで実行されます。Agent はその中のファイルを読み書きでき、結論は公開で返信されます —— 非公開リポジトリを指している場合、ファイルの内容も公開される可能性があります。",
+            "withdrawLabel": "返信を取り消す",
+            "withdrawBody": "質問した本人がその返信に「/delete」と返信すると削除できます。公開された返信だけが削除され、ローカルのタスク記録は残ります。",
+            "ackTitle": "X を連携しました —— 使い方と注意点",
+            "ackConfirm": "リスクを理解しました"
+          },
+          "connect": "X を連携",
+          "openApp": "X を開いて認証",
+          "cancel": "連携をキャンセル",
+          "retry": "再連携",
+          "openBot": "X で bot を表示",
+          "unlink": "X の連携を解除",
+          "unlinkConfirmTitle": "X の連携を解除しますか?",
+          "unlinkConfirmDescription": "解除すると X からこのデバイスへタスクを送れなくなります。ローカルプロジェクトと他のチャンネルには影響しません。",
+          "status": {
+            "checking": "サーバーの対応状況を確認中…",
+            "unavailable": "このサーバーではまだ利用できません",
+            "disabled": "無効",
+            "none": "未連携",
+            "pending": "X を開いてアカウントを認証してください",
+            "awaiting_confirmation": "X で認証を確認してください",
+            "confirmed": "{{user}} が {{bot}} と連携済み",
+            "denied": "認証が拒否されました",
+            "expired": "認証リンクの有効期限切れ",
+            "failed": "連携に失敗しました",
+            "revoked": "連携が解除されました",
+            "superseded": "別のデバイスで連携済み"
+          }
+        }
+      },
+      "summary": {
+        "otherDevices": "他のデバイス {{count}} 台",
+        "noOtherDevices": "他のデバイスなし",
+        "hostCount": "ホスト {{count}} 台",
+        "hostsConnected": "{{count}} 台接続中",
+        "noHosts": "ホスト未追加"
+      },
+      "revokeConfirm": {
+        "title": "アクセス権を撤回しますか?",
+        "description": "撤回すると、このデバイスはただちに切断され、本機をリモート操作できなくなります。再接続するには「設定 → リモート接続」でアクセス権を復元する必要があります。",
+        "confirm": "アクセス権を撤回"
+      }
+    },
+    "tina": {
+      "chat": {
+        "title": "会話",
+        "description": "リポジトリに紐づかない会話です。Slack・Telegram・X で「chat」を選ぶと、会話 lane ごとにセッションを利用できます。"
+      },
+      "prefs": {
+        "agentLabel": "Agent",
+        "modelLabel": "モデル",
+        "effortLabel": "推論強度",
+        "permissionLabel": "権限モード",
+        "providerSlack": "Slack",
+        "providerTelegram": "Telegram",
+        "providerX": "X",
+        "requireConnected": "{{provider}} 接続後に編集できます（上のスイッチをオンにして接続をお待ちください）。",
+        "requireBinding": "先に {{provider}} アカウントの連携を完了してください。",
+        "serverUnsupported": "サーバーのバージョンが古いか応答がないため、設定を読み込めません。",
+        "retry": "再試行",
+        "toast": {
+          "saveFailed": "ディレクトリ設定の保存に失敗しました"
+        },
+        "teamChipAria": "設定の対象となる Slack ワークスペースを選択"
+      }
+    },
+    "devices": {
+      "title": "デバイス連携",
+      "description": "同じ飛書(Feishu)アカウントでログインしたデバイス同士が相互に検出できます。「操作を許可」をオンにすると、他のデバイスからこのマシンの {{appName}} をリモート操作できます。",
+      "allowControl": "同一アカウントのデバイスによる操作を許可",
+      "allowControlHint": "オンにすると、同じアカウントでログインした他のデバイスは毎回の承認なしでこのマシンを操作できます。被操作中はインジケーターが表示され、いつでも切断できます。",
+      "keepAwake": "パソコンをスリープさせない",
+      "keepAwakeHint": "オンにするとこのマシンはスリープせず、バックグラウンドのエージェントやスケジュールタスクが動作し続けます（ディスプレイのオフや画面ロックは可能です）。",
+      "linkStatus": {
+        "stopped": "未接続",
+        "connecting": "接続中…",
+        "online": "接続済み"
+      },
+      "connectionIssue": {
+        "auth-failed": "ログインが無効になりました。再ログインしてください",
+        "replaced": "同じデバイスの別の接続に置き換えられました",
+        "too-many-connections": "このアカウントの同時接続数が上限に達しました",
+        "version-mismatch": "プロトコルバージョンが一致しません。アプリを更新してください",
+        "unstable": "接続が切断と再接続を繰り返しています。ネットワークを確認し、続く場合は Cindy を再起動してください"
+      },
+      "refresh": "更新",
+      "empty": "他のデバイスはまだありません。別のパソコンで同じアカウントで {{appName}} にログインすると、ここに表示されます。",
+      "thisDevice": "このデバイス",
+      "status": {
+        "online": "オンライン",
+        "busy": "作業中"
+      },
+      "lastSeen": "最終オンライン {{time}}",
+      "justNow": "たった今",
+      "minutesAgo": "{{count}} 分前",
+      "hoursAgo": "{{count}} 時間前",
+      "daysAgo": "{{count}} 日前",
+      "rename": "名前を変更",
+      "renameConfirm": "確定",
+      "renameCancel": "キャンセル",
+      "delete": "削除",
+      "deleteOnlineHint": "オンラインのデバイスは削除できません",
+      "error": {
+        "unavailable": "デバイス連携サービスは現在利用できません(サーバー未対応またはネットワークエラー)",
+        "listFailed": "デバイス一覧の取得に失敗しました"
+      },
+      "toast": {
+        "enabled": "同一アカウントのデバイスによる操作を許可しました",
+        "disabled": "被操作を無効にしました",
+        "toggleFailed": "切り替えに失敗しました",
+        "controlEnabled": "このデバイスの操作をオンにしました",
+        "controlDisabled": "このデバイスの操作をオフにしました",
+        "controlToggleFailed": "デバイス操作の切り替えに失敗しました",
+        "keepAwakeOn": "スリープ防止をオンにしました。このパソコンはスリープしません",
+        "keepAwakeOff": "スリープ防止をオフにしました",
+        "keepAwakeToggleFailed": "スリープ防止の切り替えに失敗しました",
+        "renameFailed": "名前の変更に失敗しました",
+        "deleted": "デバイスを削除しました",
+        "deleteOnline": "デバイスがオンラインのため削除できません",
+        "deleteFailed": "削除に失敗しました",
+        "disconnected": "すべてのリモート接続を切断しました",
+        "disconnectFailed": "リモート接続の切断に失敗しました",
+        "remoteSessionEnded": "リモートデバイスがこのセッションを終了しました"
+      },
+      "control": "操作",
+      "standbyHint": "このパソコンの別の Cindy インスタンスがリモート接続を使用しています。それを閉じると、このインスタンスが自動的に引き継ぎます。"
+    },
+    "imBot": {
+      "beta": "Beta",
+      "groups": {
+        "cindy": "公式",
+        "personal": "個人"
+      },
+      "tips": {
+        "cindy": "Cindy が提供・管理します。自分でボットを作成したり認証情報を用意したりする必要はなく、案内に沿って接続するだけで利用できます。",
+        "personal": "自分のアカウントまたはボットを接続し、必要な認証情報を自分で管理します。アカウント、権限、設定はチャネルごとに保存されます。"
+      },
+      "defaults": {
+        "title": "新規会話設定",
+        "channelDescriptions": {
+          "feishu": "Feishu の新規会話では、この Agent とモデルを使用します。既存の DM には /new で適用します。",
+          "slack": "Slack の新しいスレッドでは、この Agent とモデルを使用します。",
+          "discord": "Discord の新規会話では、この Agent とモデルを使用します。既存の DM には /new で適用します。",
+          "wechat": "WeChat の新規会話では、この Agent・モデル・権限モードを使用します。既存のチャットには /new で適用します。",
+          "telegram": "Telegram の新規会話では、この Agent とモデルを使用します。既存の会話には /new で適用します。",
+          "dingtalk": "DingTalk の新規会話では、この Agent とモデルを使用します。既存の会話には /new で適用します。",
+          "wecom": "WeCom の新規会話では、この Agent・モデル・権限モードを使用します。既存のチャットには /new で適用します。"
+        },
+        "agentLabel": "Agent",
+        "modelLabel": "モデル設定",
+        "loading": "新規会話設定を読み込み中…",
+        "loadFailed": "新規会話設定を読み込めませんでした",
+        "saveFailed": "新規会話設定を保存できませんでした",
+        "agents": {
+          "claude-code": "Claude Code",
+          "codex": "Codex",
+          "pi": "Pi"
+        }
+      }
+    },
+    "shortcuts": {
+      "title": "キーボードショートカット",
+      "resetAll": "すべてデフォルトに戻す",
+      "reset": "デフォルトに戻す",
+      "recording": "新しいショートカットを入力…",
+      "editAria": "{{name}} のショートカットを変更",
+      "errors": {
+        "saveFailed": "ショートカット設定の保存に失敗しました",
+        "notBindable": "このキーの組み合わせは使用できません",
+        "systemReserved": "OS によって予約されています",
+        "conflict": "「{{name}}」と競合しています",
+        "voiceConflict": "音声入力のショートカットと競合しています",
+        "composerVoiceConflict": "音声入力のショートカットと競合しています。メッセージ入力の送信ショートカットまたは音声入力のショートカットを変更してください。",
+        "menuAccelerator": "この組み合わせはメニューショートカットとして登録できません"
+      },
+      "items": {
+        "toggle-sidebar": {
+          "label": "サイドバーを切り替え",
+          "description": "左側のセッションリストを折りたたみ・展開します"
+        },
+        "open-settings": {
+          "label": "設定を開く",
+          "description": "設定ページを開きます"
+        },
+        "new-maker": {
+          "label": "新しいセッション",
+          "description": "新しいセッションを開始します"
+        },
+        "close-tab-or-window": {
+          "label": "タブまたはウィンドウを閉じる",
+          "description": "フォーカスが右パネル内にある場合は現在のタブを閉じ、それ以外はウィンドウを閉じます"
+        },
+        "right-tab-prev": {
+          "label": "右サイドバーの前のタブ",
+          "description": "右サイドバーの前のタブに切り替えます"
+        },
+        "right-tab-next": {
+          "label": "右サイドバーの次のタブ",
+          "description": "右サイドバーの次のタブに切り替えます"
+        },
+        "find-in-page": {
+          "label": "ページ内検索",
+          "description": "現在のページや開いているドキュメント内のテキストを検索します"
+        },
+        "search-in-project": {
+          "label": "プロジェクト全体を検索",
+          "description": "ドキュメント閲覧中に作業ディレクトリ全体を検索します"
+        },
+        "save-file": {
+          "label": "ファイルを保存",
+          "description": "編集中のドキュメントをディスクに保存します"
+        },
+        "zoom-in": {
+          "label": "拡大",
+          "description": "アプリの表示を拡大します"
+        },
+        "zoom-out": {
+          "label": "縮小",
+          "description": "アプリの表示を縮小します"
+        },
+        "zoom-reset": {
+          "label": "ズームをリセット",
+          "description": "表示倍率をデフォルトに戻します"
+        },
+        "browser-focus-url": {
+          "label": "アドレスバーにフォーカス",
+          "description": "内蔵ブラウザのアドレスバーにフォーカスします"
+        },
+        "browser-back": {
+          "label": "ブラウザで戻る",
+          "description": "内蔵ブラウザで前のページに戻ります"
+        },
+        "browser-forward": {
+          "label": "ブラウザで進む",
+          "description": "内蔵ブラウザで次のページに進みます"
+        },
+        "browser-reload": {
+          "label": "ページを再読み込み",
+          "description": "内蔵ブラウザの現在のページを再読み込みします"
+        },
+        "cycle-permission-mode": {
+          "label": "権限モードを切り替え",
+          "description": "入力欄にフォーカスがあるときにセッションの権限モードを順に切り替えます"
+        },
+        "open-terminal": {
+          "label": "ターミナルを開く",
+          "description": "右サイドバーでターミナルを開きます（既に開いている場合はフォーカス）"
+        },
+        "switch-session-1": {
+          "label": "1番目のセッションに移動",
+          "description": "サイドバーに表示されている1番目のセッションに移動します"
+        },
+        "switch-session-2": {
+          "label": "2番目のセッションに移動",
+          "description": "サイドバーに表示されている2番目のセッションに移動します"
+        },
+        "switch-session-3": {
+          "label": "3番目のセッションに移動",
+          "description": "サイドバーに表示されている3番目のセッションに移動します"
+        },
+        "switch-session-4": {
+          "label": "4番目のセッションに移動",
+          "description": "サイドバーに表示されている4番目のセッションに移動します"
+        },
+        "switch-session-5": {
+          "label": "5番目のセッションに移動",
+          "description": "サイドバーに表示されている5番目のセッションに移動します"
+        },
+        "switch-session-6": {
+          "label": "6番目のセッションに移動",
+          "description": "サイドバーに表示されている6番目のセッションに移動します"
+        },
+        "switch-session-7": {
+          "label": "7番目のセッションに移動",
+          "description": "サイドバーに表示されている7番目のセッションに移動します"
+        },
+        "switch-session-8": {
+          "label": "8番目のセッションに移動",
+          "description": "サイドバーに表示されている8番目のセッションに移動します"
+        },
+        "switch-session-9": {
+          "label": "9番目のセッションに移動",
+          "description": "サイドバーに表示されている9番目のセッションに移動します"
+        }
+      },
+      "none": "未設定",
+      "edit": "編集",
+      "delete": "削除",
+      "deleteAria": "{{name}} のショートカットを削除",
+      "cancel": "キャンセル"
+    },
+    "ghosts": {
+      "title": "プラグイン",
+      "description": "Cindy の機能を広げるツールと連携。",
+      "meka": {
+        "title": "Meka プラグイン",
+        "description": "現在の MCPRouter アカウントで利用できるプラグインを閲覧・インストールします。",
+        "createWithCindy": "Meka プラグインを作成",
+        "createPromptLead": "これは Meka プラグインの作成タスクです。Meka は、完成したプラグインを MCPRouter の Meka プラグインチャネルから公開することを意味します。ghost_forge_pack を呼び出すときは channel: \"meka\" を必ず渡し、クライアントに今回のインストールチャネルを記録させてください。ghost.json に Meka の配布元フィールドを独自追加しないでください。配布元は公開・インストールチャネルによって記録されます。パッケージ化が完了したら、生成された .cindy ファイルの場所を明示し、MCPRouter 管理画面へのアップロードを案内してください。",
+        "dev": {
+          "pickTitle": "Meka プラグインの開発ディレクトリを選択",
+          "loadDirectory": "ディレクトリから読み込む（開発）",
+          "badge": "開発モード",
+          "ribbon": "DEV",
+          "syncError": "開発モード · 同期失敗",
+          "confirmTitle": "開発プラグイン「{{name}}」を読み込みますか？",
+          "confirmDescription": "Cindy Meka はこのディレクトリを継続的に監視して信頼します。変更は検証後にインストール済みコピーへ自動反映され、更新に失敗した場合は直前の正常なバージョンを使い続けます。",
+          "confirm": "読み込んで監視",
+          "installed": "開発プラグイン「{{name}}」を読み込みました",
+          "installFailed": "開発プラグインを読み込めません",
+          "removeFailed": "開発プラグインを削除できません",
+          "packageAction": "パッケージ化",
+          "packageTitle": "開発プラグイン「{{name}}」をパッケージ化",
+          "packageChecking": "MCPRouter の接続状態を確認しています。現在のソーススナップショットはいつでもローカルにパッケージ化できます。",
+          "packageConfigured": "現在のソーススナップショットをローカルにパッケージ化するか、変更不可の Release として設定済みの MCPRouter にアップロードします。",
+          "packageLocalOnly": "MCPRouter が設定されていません。現在はソーススナップショットのローカルパッケージ化のみ可能です。",
+          "packageLoginRequired": "MCPRouter のログインが期限切れです。再ログインするとアップロードできます。ローカルパッケージ化は引き続き利用できます。",
+          "packageLocal": "ローカルに保存",
+          "packaging": "パッケージ化中",
+          "upload": "MCPRouter にアップロード",
+          "uploading": "アップロード中",
+          "cancel": "キャンセル",
+          "packageDialogTitle": "Meka プラグインパッケージを保存",
+          "packageFileType": "Cindy プラグインパッケージ",
+          "packageSaved": "プラグイン「{{name}}」を {{path}} に保存しました",
+          "packageFailed": "プラグインをパッケージ化できませんでした",
+          "uploaded": "プラグイン「{{name}}」v{{version}} をアップロードしました",
+          "uploadFailed": "プラグインをアップロードできませんでした",
+          "configureRouter": "ログインを設定",
+          "versionLabel": "バージョン",
+          "permissionLabel": "プラグインの公開範囲",
+          "permissions": {
+            "private": "自分のみ",
+            "shared": "指定したユーザー",
+            "public": "公開"
+          },
+          "sharedUsersLabel": "閲覧可能なユーザー",
+          "sharedUsersPlaceholder": "正確なユーザー名をカンマまたは改行で区切って入力",
+          "sharedUsersRequired": "少なくとも 1 つのユーザー名が必要です",
+          "checkingPublishInfo": "MCPRouter のバージョンと公開範囲を同期しています…",
+          "publishInfoFailed": "MCPRouter のバージョンと公開範囲を読み込めませんでした",
+          "versionAlreadyExists": "MCPRouter には v{{currentVersion}} が既に存在します。この操作では公開範囲のみ同期します。新しい内容を公開するにはバージョンを上げてください。",
+          "versionUpdate": "MCPRouter の現在のバージョンは v{{currentVersion}} です。v{{nextVersion}} を公開します。",
+          "syncAccess": "公開範囲を同期",
+          "syncingAccess": "公開範囲を同期中",
+          "accessSynced": "プラグインの公開範囲を同期しました",
+          "updateConfirmTitle": "プラグインを更新しますか？",
+          "updateConfirmDescription": "MCPRouter の現在のバージョンは v{{currentVersion}} です。上書き不可の v{{nextVersion}} を公開し、選択した公開範囲を同期します。",
+          "updateConfirmAction": "更新を確認"
+        },
+        "origin": {
+          "public": "公開",
+          "local": "個人・共有"
+        },
+        "empty": "利用できる Meka プラグインはありません",
+        "emptyHint": "MCPRouter を接続するか、管理画面からプラグインをアップロード、公開、共有してください。"
+      },
+      "page": {
+        "search": "プラグインを検索",
+        "clearSearch": "プラグイン検索をクリア",
+        "addPlugin": "プラグインを追加",
+        "addPluginAria": "プラグイン追加オプション",
+        "createWithCindy": "Cindy で作成",
+        "createPrompt": "Cindy プラグインを作成したいです。まず ghost_forge_guide を呼び出してハンドブックの目次を取得し、最初に第 0 章「設計のすり合わせ」を読み、その後 section パラメータで関連する章（少なくともサンドボックスの禁止事項とパッケージ化の章）を読み込んでから着手してください。すぐに実装を始めないでください。質問から始めてください：選択肢付きの質問カードを優先し、1 枚のカードでは 1 つの重要な判断に絞り、あなたのおすすめを明示した上で、私が気づきにくい設計オプション（UI 形態：ドッキングパネル / プラグインページ内のパネル / チャットカード / UI なし、$ 呼び出しコマンド、起動モード、ネットワーク接続の要否、設定ページの要否など）を積極的に提示して選ばせてください。解決する課題、対象ユーザー、操作フロー、必要なツールと接続、権限の境界、受け入れ条件を段階的に確認してください。設計を確認した後、仕様に沿って実装と検証を行い、最後に ghost_forge_pack を呼び出してプラグインをパッケージ化し、インストールしてください。",
+        "installedTitle": "インストール済みプラグイン",
+        "installedExpand": "インストール済みプラグインをさらに {{count}} 件表示",
+        "installedCollapse": "追加のインストール済みプラグインを隠す",
+        "allTitle": "すべてのプラグイン",
+        "filterAll": "すべて",
+        "filtersAria": "提供元でプラグインを絞り込む",
+        "origin": {
+          "public": "公開",
+          "organization": "チーム共有",
+          "local": "ローカル",
+          "custom": "カスタム"
+        },
+        "emptyFiltered": "一致するプラグインがありません",
+        "useAction": "使用",
+        "useAria": "{{name}} を使用",
+        "installedSection": "インストール済み",
+        "recommendedSection": "おすすめ",
+        "updatesAvailable": "{{count}} 件のプラグイン更新があります",
+        "updateAll": "すべて更新",
+        "ignoreRound": "今回は無視",
+        "updateTo": "v{{version}} に更新",
+        "updateAria": "{{name}} を v{{version}} に更新",
+        "usePanelAction": "使う",
+        "chatAction": "会話",
+        "chatAria": "{{name}} と会話",
+        "manageAction": "管理",
+        "manageAria": "{{name}} を管理",
+        "agentInvoked": "Agent が自動で呼び出し",
+        "upToDate": "最新です",
+        "installAria": "{{name}} をインストール"
+      },
+      "market": {
+        "scopeAria": "プラグインの提供元を絞り込む",
+        "scope": {
+          "all": "すべて",
+          "public": "公開",
+          "organization": "組織",
+          "personal": "個人",
+          "local": "ローカル",
+          "custom": "カスタム"
+        },
+        "install": "インストール",
+        "preparing": "準備中…",
+        "downloading": "ダウンロード中 {{percent}}%…",
+        "installing": "インストール中…",
+        "updating": "更新中…",
+        "details": "詳細",
+        "update": "マーケットから更新",
+        "updateAvailable": "更新あり",
+        "updateAction": "更新",
+        "updateAria": "{{name}}を更新",
+        "updateTo": "v{{version}} に更新",
+        "installed": "インストール済み",
+        "conflict": "プラグイン ID の競合",
+        "unavailable": "プラグインマーケットを一時的に利用できません。インストール済みプラグインは引き続き利用できます。",
+        "authenticationRequired": "プラグインマーケットを表示するには Cindy にログインしてください。",
+        "notConfigured": "この環境ではプラグインマーケットが設定されていません。インストール済みプラグインは引き続き利用できます。",
+        "errors": {
+          "generic": "プラグインマーケットの操作に失敗しました。もう一度お試しください。",
+          "invalidRequest": "プラグインのリクエストが無効です。",
+          "notFound": "このプラグインは利用できなくなりました。マーケットを更新して、もう一度お試しください。",
+          "conflict": "インストール済みまたはマーケットの別のプラグインが同じプラグイン ID を使用しています。",
+          "stateChanged": "操作中にアカウント、プラグイン、またはリリースが変更されました。最新の状態を確認して、もう一度お試しください。",
+          "accessDenied": "このプラグイン操作は許可されていないか、キャンセルされました。",
+          "notConfigured": "この環境ではプラグインマーケットを利用できません。",
+          "invalidPackage": "このプラグインパッケージは無効か、現在の Cindy バージョンではサポートされていません。"
+        },
+        "securityTitle": "インストールと権限",
+        "securityDescription": "メインプロセスでサイズと SHA-256、プラグインマニフェストを検証してからアトミックにインストールします。初回インストール後は自動的に有効になり、プラグインページからいつでも無効化できます。更新では現在の有効/無効の状態が維持されます。",
+        "noPermissions": "このプラグインは追加機能を宣言していません。",
+        "installConfirmTitle": "「{{name}}」をインストールしますか？",
+        "installConfirmDescription": "パッケージの整合性とマニフェスト互換性を確認してからインストールします。インストール完了後は自動的に有効になり、いつでも無効化や設定の変更ができます。",
+        "updateConfirmDescription": "パッケージの整合性とマニフェスト互換性を確認してから、既存のバージョンを置き換えます。現在の有効/無効の状態は変わりません。",
+        "customSecurityDescription": "このプラグインは追加したカスタムマーケット由来で、Cindy サーバーによる整合性検証は行われていません。インストール前にメインプロセスでマニフェストを検証します。初回インストール後は自動で有効になり、プラグインページでいつでも無効化できます。",
+        "customInstallConfirmDescription": "カスタムマーケット由来のプラグインのため、サーバーによる整合性検証は行われません。インストール前にマニフェストを検証します。インストール後は自動で有効になり、プラグインページでいつでも無効化・設定変更ができます。",
+        "sources": {
+          "addMarketplace": "プラグインマーケットを追加…",
+          "dialogTitle": "プラグインマーケットを追加",
+          "dialogDescription": "GitHub リポジトリ、Git URL、またはローカルフォルダーからプラグインマーケットを追加します。",
+          "learnMore": "詳しく見る",
+          "sourceLabel": "ソース",
+          "sourcePlaceholder": "openai/plugins または git@github.com:org/repo.git",
+          "refLabel": "Git 参照",
+          "refPlaceholder": "メインブランチ",
+          "sparseLabel": "スパースパス",
+          "sparsePlaceholder": "1 行に 1 パス（例: plugins/codex）",
+          "gitUnavailable": "Git がインストールされていないか、バージョンが 2.25 未満です。Git ソースは利用できません。ローカルフォルダーのソースは引き続き利用できます。",
+          "listTitle": "追加済みのマーケット",
+          "pluginCount": "{{count}} 個のプラグイン",
+          "sourceError": "読み込み失敗",
+          "localBadge": "ローカル",
+          "defaultRef": "デフォルトブランチ",
+          "neverSynced": "未同期",
+          "refresh": "更新",
+          "remove": "削除",
+          "removeConfirmTitle": "マーケット「{{name}}」を削除しますか？",
+          "removeConfirmDescription": "削除すると、このマーケットのプラグインは表示されなくなります。インストール済みのプラグインは保持されます。",
+          "close": "閉じる",
+          "add": "マーケットを追加",
+          "errors": {
+            "invalidSource": "ソースの形式が無効です。GitHub の owner/repo、Git URL、またはローカルフォルダーのパスを指定してください。",
+            "gitUnavailable": "Git がインストールされていないか、バージョンが 2.25 未満のため、Git ソースを追加できません。",
+            "cloneAuthFailed": "このリポジトリにアクセスできません。プライベートリポジトリの場合は、先にシステムで Git 認証（credential helper または SSH key）を設定してください。",
+            "credentialsNotAllowed": "ソースの URL にユーザー名やパスワードを含めることはできません。システムの Git 認証（credential helper または SSH key）を使用してください。",
+            "cloneFailed": "リポジトリのクローンに失敗しました。ネットワークまたはプロキシ設定を確認してから再試行してください。",
+            "refNotFound": "指定された Git 参照が見つかりません。ブランチ名またはタグ名を確認してください。",
+            "manifestMissing": "このソースに対応する marketplace.json マニフェストが見つかりません。",
+            "duplicate": "このマーケットはすでに追加されています。",
+            "notFound": "このマーケットは存在しないか、すでに削除されています。"
+          },
+          "guide": {
+            "title": "カスタムプラグインマーケットガイド",
+            "intro": "プラグインマーケットとは、マニフェストファイルを持つ Git リポジトリまたはローカルフォルダーで、Cindy プラグインのセットを配布するためのものです。",
+            "structureTitle": "ディレクトリ構造",
+            "structureBody": "マーケットには 1 つのマニフェストファイルと、プラグインごとのディレクトリが必要です。各プラグインディレクトリには有効な ghost.json（プラグインの身分証）が必要です。",
+            "structureLabelManifest": "マニフェスト",
+            "structureLabelGhostCard": "プラグインカード",
+            "structureLabelEntry": "プラグインのエントリー",
+            "structureNote": "マニフェストは次のいずれかに配置できます:",
+            "manifestTitle": "マニフェスト形式",
+            "manifestBody": "name はマーケットの一意の識別子です（追加後はこの名前で管理します）。plugins 配列の source はリポジトリ内のプラグインディレクトリを相対パスで指します。{\"source\": \"local\", \"path\": \"…\"} のオブジェクト形式も利用できます。",
+            "sourceTitle": "ソース形式",
+            "sourceBody": "GitHub 省略形 owner/repo、完全な Git URL（https / ssh / git@）、ローカルフォルダーパス（~ 可）を指定できます。Git 参照にはブランチ、タグ、commit を指定でき、空ならデフォルトブランチです。スパースパスは 1 行に 1 つ指定し、リポジトリの一部のサブディレクトリだけをチェックアウトします（大きなリポジトリ向け）。",
+            "authTitle": "プライベートリポジトリ",
+            "authBody": "認証はすべてシステムの Git 設定に依存し、Cindy は Git の認証情報を一切保存しません。SSH の場合: 利用可能な key がマシンに設定されている必要があります。組織が SAML SSO を強制している場合は、GitHub の SSH key 設定で Configure SSO からその組織に key を承認してください。HTTPS の場合: Personal Access Token を使用し、システムの credential helper に保存します。",
+            "rulesTitle": "インストールルール",
+            "rulesBody": "プラグイン id はグローバルに一意で先着順です。インストール済みプラグインとの競合は明示されます。cindy- などの公式予約プレフィックスを使うプラグインはカスタムマーケットからインストールできません。インストール前にプラグインが宣言する権限をすべて表示し、確認するとインストールが完了して自動的に有効になります。",
+            "copy": "ガイドをコピー",
+            "copied": "ガイドをクリップボードにコピーしました。",
+            "copyFailed": "コピーに失敗しました。もう一度お試しください。"
+          }
+        }
+      },
+      "install": "プラグインをインストール…",
+      "empty": "まだプラグインがインストールされていません",
+      "emptyHint": "マーケットからインストールするか、上のメニューから .cindy ファイルを読み込めます",
+      "legacyRecovery": {
+        "title": "旧バージョンのプラグインを復元できます",
+        "deferred": "{{count}} 個の旧プラグインディレクトリを検出しました。他のインスタンスが使用中の可能性があるため、復元を保留しました。",
+        "deferred_one": "{{count}} 個の旧プラグインディレクトリを検出しました。他のインスタンスが使用中の可能性があるため、復元を保留しました。",
+        "deferred_other": "{{count}} 個の旧プラグインディレクトリを検出しました。他のインスタンスが使用中の可能性があるため、復元を保留しました。",
+        "partial": "{{count}} 個の旧プラグインディレクトリを検出しました。一部を自動復元できなかったため、再試行できます。",
+        "partial_one": "{{count}} 個の旧プラグインディレクトリを検出しました。一部を自動復元できなかったため、再試行できます。",
+        "partial_other": "{{count}} 個の旧プラグインディレクトリを検出しました。一部を自動復元できなかったため、再試行できます。",
+        "partialBlocked": "{{count}} 個の旧プラグインディレクトリを検出しましたが、Cindy は安全に自動復元できませんでした。データは変更せず保持されています。",
+        "partialBlocked_one": "{{count}} 個の旧プラグインディレクトリを検出しましたが、Cindy は安全に自動復元できませんでした。データは変更せず保持されています。",
+        "partialBlocked_other": "{{count}} 個の旧プラグインディレクトリを検出しましたが、Cindy は安全に自動復元できませんでした。データは変更せず保持されています。",
+        "claimedByOtherOwner": "{{count}} 個の旧プラグインディレクトリを検出しましたが、このデータは最初に取得したアカウントに属します。元のアカウントに戻って復元してください。",
+        "claimedByOtherOwner_one": "{{count}} 個の旧プラグインディレクトリを検出しましたが、このデータは最初に取得したアカウントに属します。元のアカウントに戻って復元してください。",
+        "claimedByOtherOwner_other": "{{count}} 個の旧プラグインディレクトリを検出しましたが、このデータは最初に取得したアカウントに属します。元のアカウントに戻って復元してください。",
+        "retry": "復元を再試行",
+        "retrying": "復元中…"
+      },
+      "disabledTag": "無効",
+      "projectDisabledTag": "このプロジェクトでは無効",
+      "projectSwitchLockedTip": "このプラグインはグローバルで無効です。先に「グローバル」ビューで有効にしてください",
+      "projectBanner": {
+        "title": "プロジェクト「{{name}}」を設定中",
+        "desc": "ここのスイッチはこのプロジェクトのみに適用されます。オフにしたプラグインはこのプロジェクトでは使用できません",
+        "backToGlobal": "グローバルに戻る"
+      },
+      "scopePicker": {
+        "global": "グローバル(デフォルト)",
+        "ariaLabel": "プラグインの適用範囲を選択",
+        "browse": "別のフォルダを選択…"
+      },
+      "enableAria": "{{name}} を有効化",
+      "uninstall": "アンインストール",
+      "uninstallConfirm": {
+        "title": "「{{name}}」をアンインストールしますか?",
+        "description": "パネルと機能が削除されます。レイアウト位置は保持され、再インストール時に元の位置へ復元されます。",
+        "cancel": "キャンセル"
+      },
+      "setupGate": {
+        "title": "「{{name}}」は設定が必要です",
+        "descriptionMissing": "使用する前に次の設定が必要です：{{items}}。今すぐプラグイン設定を開きますか？",
+        "descriptionReauth": "アカウントの認証が期限切れです：{{items}}。再接続すると使用できます。今すぐ設定を開きますか？",
+        "configure": "設定を開く",
+        "cancel": "キャンセル",
+        "anySeparator": " または ",
+        "groupSeparator": "、"
+      },
+      "toast": {
+        "installed": "「{{name}}」をインストールしました",
+        "uninstalled": "「{{name}}」をアンインストールしました",
+        "installedAsleep": "「{{name}}」をインストールしました(無効状態。ここでいつでも有効化できます)",
+        "updated": "「{{name}}」を v{{version}} に更新しました",
+        "projectDisabled": "「{{name}}」をこのプロジェクトで無効にしました",
+        "projectEnabled": "「{{name}}」はこのプロジェクトでグローバル設定に従います",
+        "exported": "「{{name}}」の .cindy ファイルを書き出しました",
+        "exportFailed": "「{{name}}」を書き出せませんでした。もう一度お試しください"
+      },
+      "panelError": {
+        "crashed": "このプラグインはクラッシュしました",
+        "fused": "このプラグインは繰り返しクラッシュしたため停止しました",
+        "reload": "プラグインを再読み込み",
+        "close": "プラグインを閉じる"
+      },
+      "installConfirm": {
+        "title": "プラグイン「{{name}}」をインストールしますか？",
+        "confirm": "プラグインをインストール",
+        "cancel": "キャンセル",
+        "meta": "バージョン {{version}}。ローカルにインストールされ、いつでもアンインストールできます。",
+        "metaWithAuthor": "作者 {{author}} · バージョン {{version}}。ローカルにインストールされ、いつでもアンインストールできます。",
+        "enableNow": "インストール後すぐに有効化",
+        "enableNowOpenTab": "インストール後すぐに有効化してタブを開く",
+        "expandDescription": "紹介全文を表示",
+        "collapseDescription": "紹介を折りたたむ",
+        "enableNowOpenPanel": "インストール後すぐに有効化してパネルを開く"
+      },
+      "trust": {
+        "official": "Cindy 公式プラグイン",
+        "officialDetail": "Cindy に同梱されています。",
+        "reviewed": "発行元を確認済み · このバージョンは審査済み",
+        "reviewedDetail": "署名は有効で、Cindy の審査署名がこの正確なバージョンの全ファイルに対応しています。",
+        "verifiedPublisher": "確認済みの発行元:{{publisher}}",
+        "verifiedPublisherDetail": "署名は有効でファイルは変更されていませんが、この正確なバージョンには Cindy の審査署名がありません。",
+        "signedUnverified": "署名あり・発行元の身元は未確認:{{publisher}}",
+        "signedUnverifiedDetail": "ファイルが変更されていないことは確認できますが、現在の Cindy はこの発行元キーを認識していません。",
+        "unsigned": "未確認 / 署名なし",
+        "unsignedDetail": "配布元と、配布後に変更されたかどうかを確認できません。",
+        "unknownPublisher": "不明な発行元",
+        "unknownReviewerDetail": "審査情報はありますが、現在の Cindy は審査キーを認識していないため、審査済みとは表示しません。"
+      },
+      "perm": {
+        "grantsTitle": "インストール後に持つ権限:",
+        "toolsGroup": "登録ツール",
+        "toolsDiffGroup": "登録ツールの変更",
+        "itemCount": "{{count}} 件",
+        "cindyImageGenerate": "画像生成(Cindy に代行依頼)",
+        "cindyImageEdit": "画像編集(Cindy に代行依頼、自身が生成した画像のみ)",
+        "cindyVideoGenerate": "動画生成(Cindy に代行依頼)",
+        "cindyVideoEdit": "画像から動画(Cindy に代行依頼、参照画像は自身名義のもののみ)",
+        "cindyMediaDeposit": "保有している画像・動画・音声をあなたのメディアライブラリに保存できます",
+        "cindyMediaDepositDetail": "プラグイン内で貼り付け・ドロップした素材も AI で加工できるようにするための権限です。保存内容はこのプラグイン名義で記録され、最大 {{quota}} まで使用し、アンインストール時に併せて削除されます。",
+        "agentUserAction": "プラグインカードをクリックした後、Agent の新しいターンを開始できます",
+        "agentUserActionDetail": "1 回のクリックにつき 1 回だけ開始でき、そのカードが属するセッションでのみ使用できます。",
+        "agentBackground": "バックグラウンドで Agent の新しいターンを自動的に開始できます",
+        "agentBackgroundDetail": "毎回のクリックは不要ですが、以前このプラグインに関連付けたセッションでのみ使用できます。モデル料金が発生する場合があります。",
+        "nodeRuntime": "同梱された Node プログラムをこのコンピューターで実行できます",
+        "nodeMcp": "同梱された stdio MCP をこのコンピューターで実行できます",
+        "nodeRuntimeDetail": "高リスク:あなたのユーザーアカウントと同じ権限で、ローカルファイルの読み書き、ネットワークアクセス、他のプログラムの起動ができます。Cindy のブラウザーサンドボックスでは隔離できません。",
+        "nodeSecret": "保存済みの認証情報「{{name}}」をローカル Node プログラムに渡せます",
+        "nodeSecretDetail": "Cindy は暗号化して保管し、以下で宣言された Worker メソッドの実行時だけ一時的に注入します。Node プログラムは平文を受け取り、ブラウザー側のプラグインコードや Agent パラメーターへ返したり、ログやファイルに保存したりできるため、信頼できるプラグインだけをインストールしてください。",
+        "nodeResident": "Node プログラムをバックグラウンドで常駐実行できます",
+        "nodeResidentDetail": "プラグインが有効な間は実行を続け、無効化、更新、アンインストール、または Cindy 終了時に停止します。",
+        "tool": "ツール「{{name}}」",
+        "command": "チャット指令 ${{command}}",
+        "panelLeft": "パネル「{{title}}」· チャットの左側にドッキング",
+        "panelTab": "パネル「{{title}}」· プラグインページ内で開く",
+        "code": "実行コード",
+        "codeDetail": "独立したサンドボックスで実行され、ファイルやネットワークにはアクセスできません。",
+        "resident": "常駐実行(有効化すると起動し、呼び出されなくてもバックグラウンドプロセスを維持)",
+        "residentDetail": "待機中も少量のメモリを使用します。無効化またはアンインストールすると、プロセスは直ちに終了します。",
+        "subscribeTopics": "セッションの動きを傍受(ターン・セッションイベント、メッセージ内容は含まない)",
+        "subscribeHooks": "送信するメッセージの読み取り・ブロック・書き換えが可能",
+        "subscribeHooksDetail": "送信前に各メッセージを審査します。ブロックしたり、本文を書き換えてから送信することがあります。ブロックされたメッセージは編集して再送信できます。",
+        "subscribeAssistantReply": "AI の返信を読み取り・書き換え可能",
+        "subscribeAssistantReplyDetail": "AI の返信が完了するたびに処理します。本文を推敲・書き換えたり(直接置き換えられ、原文は残りません)、返信の吹き出しを独自に描画したカードに差し替えることがあります(カード差し替えの場合は原文が保持され、ワンタップで確認できます)。",
+        "card": "メッセージカードを描画",
+        "cardExternalLink": "カード内で外部リンクを宣言でき、確認後にブラウザで開きます",
+        "cardExternalLinkDetail": "カード内のリンクをクリックすると確認ダイアログが表示され、承認後にシステムブラウザで開きます。http/https アドレスのみ許可されます。",
+        "notify": "システム通知を表示可能(画面上部のライトな通知)",
+        "notifyDetail": "通知の内容はこのプラグインが提供し、通知にはその名前が表示されます。自動的に消え、操作を妨げることはありません。",
+        "fsWrite": "ファイルを書き込めます(作成/変更)",
+        "fsWriteDetail": "専用データフォルダにはいつでも書き込めます。現在のセッションの作業ディレクトリへの書き込みはセッションの権限モードに従います(自動承認モードでは直接書き込み、逐次確認モードでは事前に承認を求めます)。それ以外のフォルダへの書き込みは毎回確認が必要です。ファイルは常にホストが代理で書き込み、プラグイン自体があなたのファイルシステムに直接アクセスすることはありません。",
+        "reveal": "システムのファイルマネージャーでローカルファイルを表示できます",
+        "revealDetail": "プラグインは Cindy に既存のローカルファイルを Explorer または Finder で選択表示するよう依頼できます。ファイルの読み書き権限は付与されず、各パスはホストが再確認し、パスはプラグインに返されません。",
+        "networkHost": "ネットワークドメイン {{host}} にアクセス",
+        "networkSecret": "認証情報「{{name}}」の入力が必要",
+        "networkSecretGhostInputDetail": "この資格情報はプラグイン自身の設定画面で入力を受け付けるため、入力時にはプラグインのページを経由します。その後ホストへ一度だけ渡されて暗号化保存され、保存後はプラグインから読み出せません。注入は宣言されたドメインへのリクエスト時のみホストが行います。",
+        "networkSecretIdentity": "ログインメールアドレスを認証情報「{{name}}」として使用します",
+        "networkSecretIdentityDetail": "値はログイン中のアカウントのメールアドレスから取得され、リクエスト時にホストが自動的に導出・注入します。入力は不要です。プラグインは設定画面に現在の身元を表示する目的で、このメールアドレスを読み取れます。",
+        "networkSecretOauth": "{{host}} で OAuth 認可を行うよう案内します({{name}})",
+        "networkSecretOauthDetail": "認可フローとすべてのトークンはホストが管理し、プラグインのコードからは読み取れません。クライアント資格情報はこのプラグインの詳細ページで入力します。以下は要求される権限スコープの原文です。確認のうえ許可してください。",
+        "networkConnections": "あなたが追加した{{label}}に接続可能",
+        "networkConnectionsDetail": "アドレスはこのプラグインの設定画面で追加します。新しいアドレスの追加には毎回あなたの確認が必要で、入力した資格情報は対応するアドレスにのみ注入されます。",
+        "codeDetailNetwork": "独立したサンドボックスで実行され、ファイルにはアクセスできません。ネットワークは上記のドメインに限られ、ホストが代理送信します。",
+        "codeDetailWithNode": "パネル UI は独立したサンドボックスで実行されます。ローカル処理は上記で宣言された Node ランタイムが提供します。",
+        "added": "追加",
+        "removed": "削除",
+        "unchanged": "他 {{count}} 件の権限は変更なし",
+        "noChange": "権限に変更はありません。",
+        "pick": "フォルダの選択をあなたに依頼できます",
+        "pickDetail": "依頼があると、Cindy がシステムのフォルダ選択ウィンドウを表示します。どのフォルダを渡すかはあなたが直接決め、キャンセルすれば何も渡りません。",
+        "workspace": "プロジェクトフォルダのセッション入口をサイドバーに作成するよう依頼できます",
+        "workspaceDetail": "依頼があると、あなたが直接フォルダを選ぶか、確認カードでフルパスを見てから許可を決めます。あなたが開始した呼び出しの処理中は、現在のセッションの作業ディレクトリ内のサブフォルダは追加確認なしで使用されます。既にセッションがあるフォルダは再利用され、重複作成はされません。作成されるのは空のセッションだけで、勝手にタスクが始まることはありません。",
+        "sessionContext": "現在のセッションが使用中のプロジェクトフォルダの場所を知ることができます",
+        "sessionContextDetail": "現在のセッションのために動作するときだけ、場所の情報(セッション ID とプロジェクトフォルダのパス)を伝えます。ファイルの内容は含まれず、ファイルへのアクセス権も与えられません。",
+        "preview": "以下のサイトのプレビューページをサイドバーのブラウザで開けます",
+        "previewDetail": "開けるのは下に列挙されたサイトだけです。ページを開くたびに、どのプラグインが開いたかが表示されます。",
+        "nodeChildSpawn": "Node プログラムは、パッケージ内で申告済みのサブプロセスの起動をホストに依頼できます",
+        "nodeChildSpawnDetail": "起動できるのは自身のパッケージ内で申告済みの JS ファイルだけです(メインプログラムと同じローカル権限)。任意のコマンドは実行できません。プラグインの無効化や終了時にはサブプロセスも一緒に閉じられます。",
+        "skill": "AI アシスタントにスキル「{{name}}」を追加します",
+        "skillDetail": "スキルは AI が自分の指示として読み込んで実行する指示ファイルです。あなたの全権限で、Claude Code と Codex のすべてのプロジェクトに適用され、このプラグインのサンドボックスには制限されません。プラグインが有効な間は利用可能で、無効化またはアンインストールすると削除されます。特定のフォルダーだけでプラグインをオフにしても非表示にはなりません。ここではスキルの全文をプレビューできません——信頼できるプラグインのみをインストールしてください。",
+        "cindyTextOneshot": "Cindy のクイックチャンネルに質問してテキスト回答を受け取れます",
+        "cindyTextOneshotDetail": "システムの軽量タスクモデルチェーン(自動タイトルと同じ経路)を使用します。Agent は使わず、ファイルにもアクセスしません。モデル料金が発生する場合があります。",
+        "agentErrand": "Cindy Agent にタスクを任せて結果を受け取れます",
+        "agentErrandDetail": "タスクはこのプラグイン専用のセッションで実行され、サイドバーから常に確認・停止できます。既定では読み取り専用で、権限の引き上げはプラグイン設定であなた自身が行う必要があります。モデル料金が発生する場合があります。",
+        "atResourceProvider": "@ で「{{name}}」を使ってプラグインリソースを検索できます",
+        "atResourceProviderDetail": "@ でこのプラグインを明示的に選択した後にのみツールが実行されます。プラグイン作者は検索に副作用がないことを保証する必要があります。",
+        "subscribeActivity": "AI が思考中のタイミングと、あなたの操作を待っているタイミングを傍受",
+        "subscribeActivityDetail": "分かるのはタイミングのみです。思考の開始と終了、そして AI があなたの承認や回答を待っている時点だけを把握します。思考の内容、承認待ちの操作、関係するコマンドやファイル、計画の本文、質問、あなたの回答は一切見えず、あなたの代わりに承認することもできません。",
+        "badge": "プラグイン入口に未読マークを点灯できます",
+        "badgeDetail": "新しい内容があるとき、サイドバーのプラグイン入口と自身のカードに緑の点を点灯し、一行の要約を添えられます。パネルを開くと消えます。音は鳴らず、振動もせず、システムの通知センターにも入らず、システム通知とは別個の権限です。",
+        "confirm": "確認ダイアログで同意を求められます",
+        "confirmDetail": "実行前に Cindy 自身と同じ確認ダイアログを開いて尋ねることができます。文面はプラグインが提供し、ダイアログにはその名前が表示されます。確認するかキャンセルするかはあなたがクリックして決め、プラグイン自身はクリックできません。同時に開けるのは 1 つまでで、頻繁な要求はブロックされます。",
+        "networkSecretOrganizationIdentity": "Cindy の組織ユーザー ID を認証情報「{{name}}」として使用します",
+        "networkSecretOrganizationIdentityDetail": "Cindy は必要なときに短時間有効な ID アサーションを発行し、ホストだけが明示されたサービスホストへ送信します。プラグインのコードはトークンを読み取ったり保存したりできません。"
+      },
+      "connections": {
+        "confirmTitle": "接続先の追加",
+        "confirmMessage": "プラグイン「{{name}}」が接続先 {{host}} の追加を求めています",
+        "confirmDetail": "許可すると、このプラグインはホスト経由でこのアドレスにアクセスできます({{label}})。入力した資格情報はこのアドレスへのリクエストにのみ注入されます。",
+        "confirmAllow": "許可",
+        "confirmCancel": "キャンセル"
+      },
+      "errors": {
+        "fileInvalid": "有効な .cindy プラグインファイルではありません",
+        "alreadyInstalled": "このプラグインは既にインストールされています",
+        "commandConflict": "コマンドがインストール済みのプラグインと重複しています。先に相手をアンインストールするか、コマンド名を変更してください。",
+        "idReserved": "この id は公式予約プレフィックス cindy- を使用しています。アプリに同梱されたプラグインのみ使用できます",
+        "sourceMissing": "選択したファイルが見つかりません",
+        "generic": "操作に失敗しました。もう一度お試しください",
+        "updateIdMismatch": "選択したファイルはプラグイン「{{id}}」で、このプラグイン「{{expected}}」と一致しません"
+      },
+      "detail": {
+        "enable": "有効化",
+        "backToList": "プラグイン一覧に戻る",
+        "infoTitle": "詳細情報",
+        "infoId": "識別子",
+        "infoAuthor": "作者",
+        "infoTrust": "配布元と署名",
+        "byAuthor": "作者 {{author}}",
+        "infoPanel": "パネル",
+        "infoLocation": "インストール場所",
+        "expandInfoValue": "{{label}}をすべて表示",
+        "collapseInfoValue": "{{label}}を折りたたむ",
+        "copyLocation": "インストール場所をコピー",
+        "locationCopied": "インストール場所をコピーしました",
+        "locationCopyFailed": "インストール場所をコピーできませんでした。手動でコピーしてください",
+        "openLocation": "インストール場所を開く",
+        "panelDocked": "ドッキング済み · 最小幅 {{min}}px",
+        "panelNotDocked": "未ドッキング(レイアウトに位置記録なし)",
+        "panelNone": "このプラグインにパネルはありません",
+        "customSlotTitle": "プラグインのカスタム設定エリア",
+        "dangerTitle": "プラグインをアンインストール",
+        "infoContents": "内容",
+        "infoVersion": "バージョン",
+        "updateTitle": "バージョン更新",
+        "updateDesc": "新しい .cindy ファイルを選んでその場で置き換えます。有効状態とパネル位置は保持されます。",
+        "cindyPrefs": {
+          "title": "Cindy 能力",
+          "desc": "このプラグインが申請した Cindy 代行能力ごとに使用モデルを指定できます。既定ではシステム(内蔵プロキシ)に従います。",
+          "cap": {
+            "image.generate": "画像生成",
+            "image.edit": "画像編集",
+            "video.generate": "動画生成",
+            "video.edit": "画像から動画",
+            "text.oneshot": "クイック回答(テキスト)"
+          },
+          "defaultOption": "{{model}}(既定)",
+          "noModels": "利用可能なモデルなし"
+        },
+        "toolsTitle": "Tools",
+        "permissionsTitle": "権限",
+        "infoDescription": "説明",
+        "customSlotAsleep": "このプラグインは無効です。有効化すると、ここに設定画面が表示されます。",
+        "descriptionExpand": "もっと見る",
+        "descriptionCollapse": "折りたたむ",
+        "useAction": "Plugin を使用",
+        "openPanelAction": "画面を開く",
+        "openPanelDisabled": "先にプラグインを有効にしてください",
+        "closePanel": "プラグイン画面を閉じる",
+        "useDisabled": "使用する前に Plugin を有効にしてください",
+        "moreActions": "その他の Plugin 操作",
+        "updateFromFile": ".cindy ファイルから更新…",
+        "settingsTitle": "{{name}} の設定",
+        "settingsUnavailableUntilRestore": "この設定を再び使用するには、プラグインを復元してください。",
+        "configurationTitle": "設定",
+        "panelPresentation": {
+          "title": "開き方",
+          "description": "このプラグインだけに適用されます。「デフォルトに従う」では「設定 → Meka アシスタント → プラグインのデフォルトの開き方」を使用します。",
+          "aria": "このプラグインの開き方を選択",
+          "options": {
+            "inherit": "デフォルトに従う",
+            "docked": "会話の横にドッキング",
+            "modal": "モーダルで開く"
+          }
+        },
+        "openTool": "Tool {{name}} の詳細を表示",
+        "noToolDescription": "この Tool には説明がありません。",
+        "viewAllTools": "さらに表示",
+        "collapseTools": "Tool を折りたたむ",
+        "viewAllPermissions": "さらに表示",
+        "permissionsDialogDescription": "この Plugin が要求する全 {{count}} 項目の権限",
+        "closeDialog": "ダイアログを閉じる",
+        "panelPageHosted": "プラグインページから開く · 離れると自動的に閉じます",
+        "errandPrefs": {
+          "title": "AI 代行",
+          "desc": "このプラグインが Cindy Agent にタスクを任せるときの実行設定です。未設定の項目は新規ドラフトの選択に従います。既定では読み取り専用で、専用フォルダー内で作業します。",
+          "agent": "Agent",
+          "model": "モデル",
+          "permission": "書き込み権限",
+          "permissionDisabled": "代行セッションでは選べません",
+          "workdir": "作業フォルダー",
+          "workdirDefault": "プラグイン専用フォルダー(既定)",
+          "workdirPick": "選択…",
+          "workdirClear": "既定のフォルダーに戻す"
+        },
+        "chatAction": "会話",
+        "enabledLabel": "有効",
+        "disabledLabel": "無効",
+        "exportPackage": ".cindy ファイルを書き出す…",
+        "exportFileType": "Cindy プラグイン"
+      },
+      "contents": {
+        "panel": "パネル",
+        "settingsUi": "カスタム設定画面",
+        "code": "実行コード",
+        "slotCindy": "Cindy 代行",
+        "slotAgent": "Agent の新しいターンを開始",
+        "slotNode": "ローカル Node プログラム",
+        "slotTool": "ツール登録",
+        "slotSubscribe": "メッセージ購読",
+        "slotCard": "メッセージカード",
+        "slotNetwork": "ネットワークアクセス",
+        "slotNotify": "システム通知",
+        "slotFs": "ファイル書き込み",
+        "slotSkill": "エージェントスキル",
+        "slotReveal": "ファイルマネージャーで表示",
+        "slotWorkspace": "ワークスペースセッション",
+        "slotBadge": "未読バッジ"
+      },
+      "commandPaletteTag": "プラグインコマンド",
+      "updateConfirm": {
+        "title": "プラグイン「{{name}}」を更新しますか?",
+        "body": "バージョン {{from}} → {{to}}。既存バージョンを置き換えます。有効状態とパネル位置は保持されます。",
+        "confirm": "更新",
+        "cancel": "キャンセル"
+      },
+      "pick": {
+        "dialogTitle": "フォルダを選択",
+        "dialogMessage": "プラグイン「{{name}}」がフォルダの選択を求めています",
+        "fileDialogTitle": "ファイルを選択",
+        "fileDialogMessage": "プラグイン「{{name}}」がファイルの選択を求めています"
+      },
+      "workspace": {
+        "dialogTitle": "プロジェクトフォルダを選択",
+        "dialogMessage": "プラグイン「{{name}}」がサイドバーにセッションを作成するため、プロジェクトフォルダの選択を求めています"
+      },
+      "confirm": {
+        "dialogTitle": "プラグイン「{{name}}」が確認を求めています"
+      },
+      "panelHost": {
+        "close": "パネルを閉じる"
+      },
+      "updateAll": {
+        "title": "すべて更新 · {{count}} 件",
+        "description": "権限に変更がない更新は自動で完了します。権限が拡張される更新は項目ごとに確認が必要です。",
+        "versionRange": "v{{from}} → v{{to}}",
+        "permissionChanged": "権限に変更あり",
+        "reviewOutdated": "権限の差分が古くなりました",
+        "rereview": "再確認",
+        "reviewDiff": "確認する",
+        "collapseDiff": "閉じる",
+        "approve": "同意して更新",
+        "skip": "スキップ",
+        "statusPending": "待機中",
+        "statusInstalling": "更新中…",
+        "statusDone": "更新済み",
+        "statusSkipped": "スキップ済み",
+        "statusFailed": "更新に失敗",
+        "background": "バックグラウンドで続行",
+        "doneAction": "完了",
+        "doneToast": "一括更新が完了:{{done}} 件更新、{{rest}} 件未完了"
+      }
+    },
+    "mcp": {
+      "title": "外部ツール",
+      "subtitle": "独自のリモート MCP サーバーを接続します。HTTP / Streamable HTTP サーバーは Claude と Codex の両方で利用可能；SSE は Claude 専用です。",
+      "cancel": "キャンセル",
+      "save": "保存",
+      "editAria": "編集",
+      "deleteAria": "削除",
+      "addCustom": {
+        "title": "MCP サーバーを追加",
+        "subtitle": "リモート MCP エンドポイント(http/sse)を入力"
+      },
+      "dialog": {
+        "createTitle": "MCP サーバーを追加",
+        "editTitle": "MCP サーバーを編集",
+        "desc": "リモート http / sse 型の MCP のみ対応。保存後、新しいセッションから呼び出せます。実行中のセッションには影響しません。"
+      },
+      "fields": {
+        "name": "表示名",
+        "namePlaceholder": "例: マイツールボックス",
+        "transport": "トランスポート",
+        "url": "エンドポイント URL",
+        "urlPlaceholder": "https://example.com/mcp",
+        "token": "Bearer トークン(任意)",
+        "tokenPlaceholder": "認証トークンを入力",
+        "tokenEditPlaceholder": "空欄で保存済みトークンを削除",
+        "tokenSaved": "保存済み",
+        "tokenHelp": "認証に使用:Claude は Authorization: Bearer ヘッダーとして送信します。Codex は Bearer 認証のみ対応します。",
+        "headers": "ヘッダー(任意)",
+        "headerNamePlaceholder": "ヘッダー名",
+        "headerValuePlaceholder": "値",
+        "addHeader": "ヘッダーを追加",
+        "removeRow": "この行を削除"
+      },
+      "errors": {
+        "nameRequired": "表示名を入力してください",
+        "urlInvalid": "有効な http(s) URL を入力してください"
+      },
+      "toast": {
+        "created": "MCP サーバーを追加しました",
+        "updated": "MCP サーバーを更新しました",
+        "deleted": "MCP サーバーを削除しました",
+        "saveFailed": "保存に失敗しました",
+        "deleteFailed": "削除に失敗しました"
+      },
+      "deleteConfirm": {
+        "title": "「{{name}}」を削除しますか?",
+        "message": "削除すると、新しいセッションではこの MCP が読み込まれなくなります。",
+        "confirm": "削除"
+      }
+    },
+    "contacts": {
+      "title": "スマート連絡先",
+      "description": "エージェントのための人物・組織データベース。プラットフォーム横断の身元照合(メール / Feishu / Slack / GitHub id → この人は誰か)、関係性の背景、日付付きイベント記録を備えています。エージェントが作業中に自動で収集し、確度の低い項目は確認待ちキューに入ります。データは既定ではこの端末だけに保存され、必要に応じてデバイス間同期を有効にできます。検索や整理はお使いのモデルを通じて処理されます。",
+      "enable": {
+        "label": "スマート連絡先を有効にする",
+        "description": "オンにすると、エージェントが連絡先情報を検索・自動収集できます(不確かな項目は確認待ちへ)。オフにしても、ここでの閲覧や管理には影響しません。",
+        "toggleAria": "スマート連絡先を切り替え"
+      },
+      "sync": {
+        "label": "自分のデバイス間で同期",
+        "description": "参加させる各デスクトップで一度有効にします。オンラインのデバイスは自動同期し、同じローカルネットワークでは直接接続を優先します。それ以外はエンドツーエンド暗号化された中継データを使用します。比較はプログラム処理のみで、モデルや token は消費しません。",
+        "toggleAria": "連絡先のデバイス同期を切り替え",
+        "syncNow": "今すぐ同期",
+        "onlineDevices_other": "ほかのデバイス {{count}} 台がオンライン",
+        "route": {
+          "lan": "ローカルネットワーク",
+          "relay": "暗号化中継"
+        },
+        "status": {
+          "loading": "同期状態を確認中…",
+          "signInRequired": "デバイス間で同期するには Cindy アカウントにログインしてください",
+          "off": "同期はオフです",
+          "waiting": "同期を有効にしたほかのデスクトップがオンラインになるのを待っています",
+          "syncing": "安全に同期中…",
+          "ready": "準備完了。デバイスがオンラインになると自動同期します",
+          "lastSuccess": "{{device}} · {{time}} · {{route}}"
+        },
+        "error": {
+          "secure-storage-unavailable": "システムの安全なストレージを利用できないため、デバイス秘密鍵を保護できません",
+          "peer-identity-changed": "デバイスの識別情報が変わったため、データ保護のため同期を停止しました",
+          "sync-failed": "同期に失敗しました。次にデバイスがオンラインになったとき再試行します"
+        },
+        "toast": {
+          "enabled": "デバイス同期を有効にしました",
+          "disabled": "デバイス同期を無効にしました"
+        }
+      },
+      "stats": "{{people}} 人 / {{orgs}} 組織 / {{groups}} グループ",
+      "kind": {
+        "person": "人物",
+        "org": "組織"
+      },
+      "filters": {
+        "all": "すべて",
+        "person": "人物",
+        "org": "組織",
+        "pending": "確認待ち"
+      },
+      "list": {
+        "searchPlaceholder": "名前 / メール / キーワードで検索",
+        "newAria": "連絡先を新規作成",
+        "newNamePlaceholder": "名前または組織名",
+        "newKindAria": "種別を切り替え(人物 / 組織)",
+        "newConfirm": "作成",
+        "groupFilterAria": "グループで絞り込み",
+        "groupFilterAll": "すべてのグループ",
+        "loadMore": "さらに読み込む",
+        "noResults": "一致する連絡先がありません",
+        "empty": "連絡先はまだ空です。有効にするとエージェントが作業中に自動で収集します。右上の + から手動追加もできます。"
+      },
+      "detail": {
+        "empty": "左側で連絡先を選択するとプロフィールが表示されます",
+        "pendingBanner": "エージェントが低い確度で収集した項目です。登録するか確認してください。",
+        "pendingConfirm": "登録する",
+        "pendingDiscard": "破棄",
+        "nameAria": "表示名",
+        "deleteAria": "連絡先を削除",
+        "summaryPlaceholder": "一行の説明",
+        "identities": "アカウント",
+        "identityRemoveAria": "アカウント {{value}} を削除",
+        "identityPlatformAria": "プラットフォーム",
+        "identityValuePlaceholder": "メール / プラットフォーム id / ハンドル",
+        "identityAddAria": "アカウントを追加",
+        "narrative": "関係と背景",
+        "narrativePlaceholder": "あなたとの関係、協働の履歴、背景情報(Markdown)",
+        "agentNotes": "エージェントへの指示",
+        "agentNotesPlaceholder": "例:これは上司の個人メールアドレス。一斉送信しないこと",
+        "events": "イベント記録",
+        "eventsEmpty": "イベントはまだありません",
+        "eventDeleteAria": "イベントを削除",
+        "eventDatePlaceholder": "2026-07-07",
+        "eventTextPlaceholder": "何があったか",
+        "eventAddAria": "イベントを追加",
+        "groups": "グループ",
+        "groupRemoveAria": "グループ {{name}} から削除",
+        "groupAddAria": "グループに追加",
+        "groupAddPlaceholder": "グループに追加…",
+        "discardChanges": "変更を破棄",
+        "save": "保存",
+        "identitiesEmpty": "アカウントはまだありません",
+        "relations": "つながり",
+        "relationsEmpty": "つながりはまだありません(所属組織 / 関係者)",
+        "relationAddAria": "つながりを追加",
+        "relationRemoveAria": "{{name}} とのつながりを削除",
+        "relationVerbPlaceholder": "在籍 / 家族…",
+        "relationTargetAria": "関連する連絡先を選択",
+        "relationTargetPlaceholder": "人物または組織を選択…",
+        "relationNotePlaceholder": "メモ(役職…)"
+      },
+      "deleteConfirm": {
+        "title": "「{{name}}」を削除しますか?",
+        "description": "すべてのアカウント、イベント記録、グループ所属も削除されます。元に戻せません。",
+        "confirm": "削除",
+        "cancel": "キャンセル"
+      },
+      "toast": {
+        "enabled": "スマート連絡先を有効にしました",
+        "disabled": "スマート連絡先を無効にしました",
+        "codexRefreshDeferred": "設定は保存されましたが、Codex が使用中のため、Codex セッションへの反映はアプリ再起動後になります",
+        "toggleFailed": "スマート連絡先の切り替えに失敗しました",
+        "created": "「{{name}}」を作成しました",
+        "createFailed": "作成に失敗しました",
+        "deleted": "「{{name}}」を削除しました",
+        "deleteFailed": "削除に失敗しました",
+        "saved": "保存しました",
+        "saveFailed": "保存に失敗しました",
+        "confirmFailed": "登録の確認に失敗しました",
+        "identityAddFailed": "アカウントの追加に失敗しました",
+        "identityRemoveFailed": "アカウントの削除に失敗しました",
+        "eventAddFailed": "イベントの追加に失敗しました",
+        "eventDeleteFailed": "イベントの削除に失敗しました",
+        "groupAddFailed": "グループへの追加に失敗しました",
+        "groupRemoveFailed": "グループからの削除に失敗しました",
+        "relationAddFailed": "つながりの追加に失敗しました",
+        "relationRemoveFailed": "つながりの削除に失敗しました"
+      },
+      "manage": "管理",
+      "manager": {
+        "title": "スマート連絡先",
+        "closeAria": "閉じる"
+      },
+      "merge": {
+        "button": "重複を統合",
+        "buttonAria": "重複した連絡先を統合",
+        "hint": "重複した連絡先を選ぶと、そのアカウント・イベント・つながりを「{{target}}」に統合し、元の連絡先を削除します。",
+        "searchPlaceholder": "重複を検索…",
+        "confirmTitle": "「{{source}}」を「{{target}}」に統合しますか?",
+        "confirmDescription": "「{{source}}」のアカウント、イベント、つながり、グループはすべて移行され、元のプロフィールは削除されます。元に戻せません。",
+        "confirm": "統合",
+        "success": "「{{source}}」を「{{target}}」に統合しました",
+        "failed": "統合に失敗しました"
+      },
+      "import": {
+        "title": "連絡先をインポート",
+        "button": "インポート",
+        "pickHint": "外部ソースから一括インポートします。メール/電話が既存プロフィールと一致する項目は自動的に統合され(重複なし)、名前が似ている項目は手動確認リストに入ります。",
+        "sourceSystem": "システム連絡先",
+        "sourceSystemDesc": "読み取り専用。初回はシステム許可が必要",
+        "sourceVcf": "vCard ファイル",
+        "sourceVcfDesc": ".vcf(連絡先エクスポートの標準形式)",
+        "emptySource": "このソースにインポート可能な連絡先がありません",
+        "permissionDenied": "連絡先へのアクセスが拒否されました — システム設定 → プライバシーとセキュリティ → オートメーション で許可してください",
+        "systemReadFailed": "システム連絡先の読み取りに失敗しました",
+        "vcfParseFailed": "vCard ファイルの解析に失敗しました",
+        "selectedCount": "{{checked}} / {{total}} 件選択中",
+        "groupPlaceholder": "インポート後にグループへ追加(任意。存在しなければ作成)",
+        "run": "{{count}} 件をインポート",
+        "running": "インポート中…",
+        "failed": "インポートに失敗しました",
+        "doneSummary": "インポート完了: 新規 {{created}} 件、既存プロフィールへ統合 {{enriched}} 件、組織を {{orgs}} 件作成。",
+        "needsReview": "{{count}} 件は既存プロフィールと名前が似ているためインポートされませんでした。確認してください: {{names}}",
+        "identityConflicts": "{{count}} 件のレコードに他の連絡先が所有する ID が含まれていたため統合されませんでした（{{names}}）。同一人物か管理画面で確認して統合してください",
+        "relationErrors": "{{count}} 件の在職関係を作成できませんでした（{{names}}）",
+        "skipped": "{{count}} 件をスキップしました(無効またはエラー)。"
+      },
+      "ipcError": {
+        "IDENTITY_CONFLICT": "このIDは既に別の連絡先に登録されています。既存のプロフィールを更新するか、先に統合してください。",
+        "PERMISSION_DENIED": "連絡先へのアクセスが許可されていません。システム設定 > プライバシーとセキュリティ > オートメーション で許可してください。",
+        "UNSUPPORTED_CAPABILITY": "この操作は現在のプラットフォームではサポートされていません。",
+        "NOT_FOUND": "対象が存在しないか、既に削除されています。",
+        "ALREADY_EXISTS": "同名または同内容の項目が既に存在します。",
+        "INVALID_PARAMS": "入力が無効です。確認して再試行してください。",
+        "INTERNAL": "操作に失敗しました。しばらくしてから再試行してください。"
+      },
+      "guide": {
+        "hint": "AI の案内で連絡先プロフィールの追加、保留項目の確認、重複整理を進めます。",
+        "cta": "AI で連絡先を管理",
+        "managementPrompt": "スマート連絡先を管理してください。まず現在の状態と利用可能なツールを確認し、必要な連絡先の追加、重複項目の整理、保留項目の確認を順に案内してください。書き込み、統合、削除を行う前には必ず私に確認してください。"
+      }
     },
     "remotePermission": {
       "label": "権限モード",
@@ -5478,6 +6508,8 @@
       "searching": "検索中…",
       "noMatch": "一致するファイルがありません",
       "keepTyping": "入力を続けて絞り込み…",
+      "add": "追加",
+      "plugins": "プラグイン",
       "filesAndFolders": "ファイルとフォルダ",
       "browserTab": "ブラウザタブ",
       "desktopWindow": "アプリウィンドウ",
@@ -5723,8 +6755,20 @@
       "retryTitle": "最後のメッセージを再送信",
       "cancelTitle": "エラーを閉じる",
       "retry": "再試行",
-      "credentialSwitchBusy": "他の Codex タスクが実行中のため、この会話で選択したプロバイダーへまだ切り替えられません（共有 Codex プロセスの再起動が必要です）。他のタスクの終了後に「再試行」を押してください。",
-      "codexThreadStale": "Codex の認証モードが切り替わりました。この会話は続行できません。新しい会話を開始してください。",
+      "continueAfterReset": "リセット後に続行",
+      "continueAfterResetTitle": "利用上限のリセット後にこのタスクを続行する一回限りの自動化を作成",
+      "gatewayQuotaExhausted": "Cindy AI の残高が不足しています。チャージすると続行できます。",
+      "viewBalance": "残高を見る",
+      "viewBalanceTitle": "「使用量と請求」を開いて残高を確認・チャージ",
+      "credentialSwitchBusy": "他の Codex タスクが実行中のため、このセッションで選択したプロバイダーへまだ切り替えられません（共有 Codex プロセスの再起動が必要です）。他のタスクの終了後に「再試行」を押してください。",
+      "codexThreadStale": "Codex の認証モードが切り替わりました。このセッションは続行できません。新しいセッションを開始してください。",
+      "codexResumeNotReady": "Codex は現在このタスクを再開できません。しばらくしてからもう一度お試しください。",
+      "claudeGatewayOpusPlanMismatch": "この Opus リクエストは Claude.ai サブスクリプションではなく、XD Gateway 経由で送信され、このモデルが拒否されました。Claude.ai サブスクリプションに切り替えて再試行するか、別のモデルを選択してください。",
+      "claudeSubscriptionOpusPlanMismatch": "接続中の Claude Pro プランでは Opus を利用できません。プランに含まれるモデルに切り替えてください。最近プランを変更した場合は、設定で Anthropic を再接続してから再試行してください。",
+      "switchClaudeSubscription": "Claude.ai に切り替えて再試行",
+      "switchClaudeSubscriptionTitle": "このセッションを Claude.ai サブスクリプションに切り替えて再試行",
+      "switchingClaudeSubscription": "Claude.ai に切り替え中…",
+      "claudeSubscriptionSwitchFailed": "Claude.ai への切り替えまたはこのセッションの再試行に失敗しました：{{msg}}",
       "budgetModelHint": "繰り返し失敗する場合は、通常版 GPT モデルに切り替えてお試しください。",
       "codexAuthMissing": "リモートの Codex がまだサインインしていません（401 Unauthorized）。「認証情報を同期」をクリックしてローカルの Codex 認証情報をリモートの Cindy Codex home にプッシュし、再試行してください。",
       "codexAuthMissingLocal": "Codex 認証情報がないか期限切れです（401 Unauthorized）。{{appName}} Settings → Codex から再ログインする（ログイン時に app-server が自動再起動）か、ターミナルで `codex login` 実行後 Settings で認証モードを一度切り替えて app-server を再起動してから、新しい会話を開始してください。",
@@ -9092,8 +10136,8 @@
       "poolDetail": "使用済み {{used}} · 合計 {{total}}",
       "remaining": "残り",
       "progressLabel": "{{label}}の使用量",
-      "noPlanCredits": "有効なサブスクリプションがないため、サブスクリプションクレジットはありません。",
-      "historyUnavailable": "使用履歴が完全ではないため、残りのクレジットのみ表示しています。",
+      "noPlanCredits": "有効なサブスクリプションがないため、プラン残高はありません。",
+      "historyUnavailable": "使用履歴が完全ではないため、残りの残高のみ表示しています。",
       "detailsUnavailable": "使用量の詳細を取得できないため、現在の残高のみ表示しています。",
       "promotionalDetails": {
         "title": "特典クレジット明細",
@@ -9135,7 +10179,7 @@
     },
     "catalog": {
       "errorTitle": "プランを取得できません",
-      "errorDescription": "接続を確認して再試行してください。ローカルの代替プランは表示しません。",
+      "errorDescription": "接続を確認して、もう一度お試しください。",
       "emptyTitle": "近日公開予定です。お楽しみに。",
       "currentPlan": "現在のプラン",
       "unavailableReasons": {
@@ -9199,7 +10243,7 @@
       "openPayment": "支払いページを開く",
       "refreshingAction": "支払い情報を取得中…",
       "paymentCompleted": "支払いが完了しました。",
-      "requestFailed": "リクエストに失敗しました。不明な作成結果では同じ冪等キーで安全に再試行します。",
+      "requestFailed": "リクエストに失敗しました。しばらくしてからもう一度お試しください。",
       "expiredBody": "支払いリンクの期限が切れました。新しい支払いを作成してください。",
       "actionExpiredBody": "コードの有効期限が切れました。閉じてから再度選択し、新しい支払いを作成してください。",
       "canceledBody": "この支払いはキャンセルされました。",
@@ -9207,16 +10251,17 @@
     },
     "planChange": {
       "targetTitle": "サブスクリプションプランの変更",
+      "back": "戻る",
       "upgradeBadge": "アップグレード",
       "sameLevelBadge": "同じレベル",
       "downgradeBadge": "ダウングレード",
       "emptyTitle": "切り替え可能なプランがありません",
-      "emptyDescription": "現在の支払い方法で切り替え可能なプランがまだ設定されていません。",
+      "emptyDescription": "現在、切り替え可能な他のプランはありません。",
       "quotingTitle": "プラン変更を準備中",
-      "quotingBody": "サーバーから金額と適用時期を取得しています…",
+      "quotingBody": "金額と適用時期を確認しています…",
       "quoteTitle": "プラン変更の確認",
       "confirmingTitle": "変更を送信中",
-      "confirmingBody": "プラン変更をサーバーに送信しています…",
+      "confirmingBody": "プラン変更を送信しています…",
       "pendingProviderTitle": "プラン変更を処理中",
       "pendingProviderBody": "決済プロバイダーが変更を処理しています。Cindy が結果を確認し続けます…",
       "awaitingTitle": "差額のお支払い",
@@ -9233,7 +10278,7 @@
       "requestFailed": "プラン変更リクエストを完了できませんでした。サブスクリプションの状態を更新して、もう一度お試しください。",
       "quoteRejected": "現在のサブスクリプションではこのプランに変更できません。別のプランを選択してください。",
       "chooseAnotherPlan": "別のプランを選択",
-      "resyncHint": "確認結果を検証できませんでした。サーバーから最新の状態を同期しています…",
+      "resyncHint": "結果をまだ確認できません。最新の状態をもう一度確認しています…",
       "upgradeDueNow": "今期の差額 {{amount}} をお支払いください",
       "upgradeNoAmount": "確認後、アップグレードは即時適用されます。",
       "upgradeHint": "お支払い完了後にアップグレードが即時適用され、以降は新プランの価格で更新されます。",

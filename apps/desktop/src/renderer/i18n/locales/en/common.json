@@ -2925,555 +2925,6 @@
       "deleteAria": "Delete shortcut for {{name}}",
       "cancel": "Cancel"
     },
-    "ghosts": {
-      "title": "Plugins",
-      "description": "Tools and integrations that extend Cindy.",
-      "meka": {
-        "title": "Meka Plugins",
-        "description": "Browse and install plugins available to your current MCPRouter account.",
-        "createWithCindy": "Create Meka Plugin",
-        "createPromptLead": "This is a Meka Plugin creation task. Meka means the finished plugin will be published through the MCPRouter Meka Plugin channel. When calling ghost_forge_pack, you must pass channel: \"meka\" so the client records this installation's channel attribution. Do not invent a Meka source field in ghost.json; source identity comes from the publishing and installation channel. After packaging, clearly tell me where the generated .cindy file is and remind me to upload it in the MCPRouter admin console.",
-        "dev": {
-          "pickTitle": "Select a Meka Plugin Development Directory",
-          "loadDirectory": "Load from Directory (Development)",
-          "badge": "Development",
-          "ribbon": "DEV",
-          "syncError": "Development · Sync failed",
-          "confirmTitle": "Load development Plugin “{{name}}”?",
-          "confirmDescription": "Cindy Meka will continuously watch and trust this directory. Changes are validated and copied into the installed snapshot automatically; the last working version stays active if an update fails.",
-          "confirm": "Load and Watch",
-          "installed": "Loaded development Plugin “{{name}}”",
-          "installFailed": "Could not load the development Plugin",
-          "removeFailed": "Could not remove the development Plugin",
-          "packageAction": "Package",
-          "packageTitle": "Package development Plugin “{{name}}”",
-          "packageChecking": "Checking the MCPRouter connection. You can always package the current source snapshot locally.",
-          "packageConfigured": "Package the current source snapshot locally, or upload it to the configured MCPRouter as an immutable Release.",
-          "packageLocalOnly": "MCPRouter is not configured. You can only package the source snapshot locally.",
-          "packageLoginRequired": "Your MCPRouter login has expired. Sign in again to upload; local packaging remains available.",
-          "packageLocal": "Package Locally",
-          "packaging": "Packaging",
-          "upload": "Upload to MCPRouter",
-          "uploading": "Uploading",
-          "cancel": "Cancel",
-          "packageDialogTitle": "Save Meka Plugin Package",
-          "packageFileType": "Cindy Plugin Package",
-          "packageSaved": "Saved Plugin “{{name}}” to {{path}}",
-          "packageFailed": "Could not package Plugin",
-          "uploaded": "Uploaded Plugin “{{name}}” v{{version}}",
-          "uploadFailed": "Could not upload Plugin",
-          "configureRouter": "Configure Login",
-          "versionLabel": "Version",
-          "permissionLabel": "Plugin access",
-          "permissions": {
-            "private": "Only me",
-            "shared": "Specific people",
-            "public": "Public"
-          },
-          "sharedUsersLabel": "People with access",
-          "sharedUsersPlaceholder": "Enter exact usernames, separated by commas or new lines",
-          "sharedUsersRequired": "Specific people requires at least one username",
-          "checkingPublishInfo": "Syncing the version and access settings from MCPRouter…",
-          "publishInfoFailed": "Could not load the version and access settings from MCPRouter",
-          "versionAlreadyExists": "MCPRouter already has v{{currentVersion}}. This action only synchronizes access; bump the version before publishing new content.",
-          "versionUpdate": "MCPRouter currently has v{{currentVersion}}. This will publish v{{nextVersion}}.",
-          "syncAccess": "Sync Access",
-          "syncingAccess": "Syncing Access",
-          "accessSynced": "Plugin access synchronized",
-          "updateConfirmTitle": "Update this Plugin?",
-          "updateConfirmDescription": "MCPRouter currently has v{{currentVersion}}. This publishes immutable v{{nextVersion}} and synchronizes the selected access.",
-          "updateConfirmAction": "Confirm Update"
-        },
-        "origin": {
-          "public": "Public",
-          "local": "Personal & shared"
-        },
-        "empty": "No Meka plugins available",
-        "emptyHint": "Connect MCPRouter, or upload, publish, or share a plugin from its admin console."
-      },
-      "page": {
-        "search": "Search plugins",
-        "clearSearch": "Clear Plugin Search",
-        "addPlugin": "Add plugin",
-        "addPluginAria": "Plugin add options",
-        "createWithCindy": "Create with Cindy",
-        "createPrompt": "I want to create a Cindy plugin. First call ghost_forge_guide to get the handbook's table of contents, read chapter 0 (design alignment) first, then read the relevant chapters via the section parameter (at minimum the sandbox red-lines and packaging chapters) before writing any code; do not start implementing yet. Begin by asking questions: prefer option-based question cards, one key decision per card with your recommended choice marked, and proactively surface design options I may not know about — such as the UI form (docked panel, panel inside the Plugins page, chat card, or no UI), a $ command word, launch mode, network access, and whether a settings page is needed. Step by step, confirm the problem to solve, target users, interaction flow, required tools and connections, permission boundaries, and acceptance criteria. After I confirm the design, implement and validate it according to the specification, then call ghost_forge_pack to package and install the plugin.",
-        "installedTitle": "Installed Plugins",
-        "installedExpand": "Show {{count}} more installed plugins",
-        "installedCollapse": "Hide additional installed plugins",
-        "allTitle": "All plugins",
-        "filterAll": "All",
-        "filtersAria": "Filter plugins by source",
-        "origin": {
-          "public": "Public",
-          "organization": "Team shared",
-          "local": "Local",
-          "custom": "Custom"
-        },
-        "emptyFiltered": "No matching plugins",
-        "useAction": "Use",
-        "useAria": "Use {{name}}",
-        "installedSection": "Installed",
-        "recommendedSection": "Recommended",
-        "updatesAvailable": "{{count}} plugin updates available",
-        "updateAll": "Update all",
-        "ignoreRound": "Ignore this round",
-        "updateTo": "Update to v{{version}}",
-        "updateAria": "Update {{name}} to v{{version}}",
-        "usePanelAction": "Use",
-        "chatAction": "Chat",
-        "chatAria": "Chat with {{name}}",
-        "manageAction": "Manage",
-        "manageAria": "Manage {{name}}",
-        "agentInvoked": "Invoked by Agent",
-        "upToDate": "Up to date",
-        "installAria": "Install {{name}}"
-      },
-      "market": {
-        "scopeAria": "Filter plugin sources",
-        "scope": {
-          "all": "All",
-          "public": "Public",
-          "organization": "Organization",
-          "personal": "Personal",
-          "local": "Local",
-          "custom": "Custom"
-        },
-        "install": "Install",
-        "preparing": "Preparing…",
-        "downloading": "Downloading {{percent}}%…",
-        "installing": "Installing…",
-        "updating": "Updating…",
-        "details": "Details",
-        "update": "Update from market",
-        "updateAvailable": "Update available",
-        "updateAction": "Update",
-        "updateAria": "Update {{name}}",
-        "updateTo": "Update to v{{version}}",
-        "installed": "Installed",
-        "conflict": "Plugin ID conflict",
-        "unavailable": "The plugin market is temporarily unavailable. Installed plugins remain available.",
-        "authenticationRequired": "Sign in to Cindy to view the plugin market.",
-        "notConfigured": "The plugin market is not configured for this environment. Installed plugins remain available.",
-        "errors": {
-          "generic": "The plugin market operation failed. Please try again.",
-          "invalidRequest": "The plugin request is invalid.",
-          "notFound": "This plugin is no longer available. Refresh the market and try again.",
-          "conflict": "Another installed or market plugin uses the same plugin ID.",
-          "stateChanged": "The account, plugin, or release changed during this operation. Review the latest state and try again.",
-          "accessDenied": "This plugin operation is not permitted or was cancelled.",
-          "notConfigured": "The plugin market is not available in this environment.",
-          "invalidPackage": "This plugin package is invalid or is not supported by this version of Cindy."
-        },
-        "securityTitle": "Install and permissions",
-        "securityDescription": "Cindy verifies package size and SHA-256 in the main process, validates the plugin manifest, then installs atomically. First-time installs are enabled automatically and can be disabled anytime on the Plugins page; updates keep the current enabled state.",
-        "noPermissions": "This plugin declares no additional capabilities.",
-        "installConfirmTitle": "Install “{{name}}”?",
-        "installConfirmDescription": "The package will be verified for integrity and manifest compatibility. The plugin is enabled automatically after install; you can disable it or adjust its setup anytime.",
-        "updateConfirmDescription": "The package will be verified for integrity and manifest compatibility, then replace the installed version. Its current enabled state stays unchanged.",
-        "customSecurityDescription": "This plugin comes from a custom marketplace you added and has not been verified by the Cindy server. Its manifest is validated in the main process before install. First-time installs are enabled automatically and can be disabled anytime on the Plugins page.",
-        "customInstallConfirmDescription": "This plugin comes from a custom marketplace and has not been verified for integrity by the server; its manifest will be validated before install. The plugin is enabled automatically after install; you can disable it or adjust its setup anytime.",
-        "sources": {
-          "addMarketplace": "Add Plugin Marketplace…",
-          "dialogTitle": "Add Plugin Marketplace",
-          "dialogDescription": "Add a plugin marketplace from a GitHub repository, Git URL, or local folder.",
-          "learnMore": "Learn more",
-          "sourceLabel": "Source",
-          "sourcePlaceholder": "openai/plugins or git@github.com:org/repo.git",
-          "refLabel": "Git Ref",
-          "refPlaceholder": "Main branch",
-          "sparseLabel": "Sparse Paths",
-          "sparsePlaceholder": "One path per line, e.g. plugins/codex",
-          "gitUnavailable": "Git is not installed or is older than 2.25. Git sources are unavailable; local folder sources still work.",
-          "listTitle": "Added Marketplaces",
-          "pluginCount": "{{count}} plugins",
-          "sourceError": "Unavailable",
-          "localBadge": "Local",
-          "defaultRef": "Default branch",
-          "neverSynced": "Never synced",
-          "refresh": "Refresh",
-          "remove": "Remove",
-          "removeConfirmTitle": "Remove marketplace \"{{name}}\"?",
-          "removeConfirmDescription": "Plugins from this marketplace will no longer be listed. Installed plugins are kept.",
-          "close": "Close",
-          "add": "Add Marketplace",
-          "errors": {
-            "invalidSource": "Invalid source. Use a GitHub owner/repo, a Git URL, or a local folder path.",
-            "gitUnavailable": "Git is not installed or is older than 2.25, so Git sources cannot be added.",
-            "cloneAuthFailed": "Cannot access this repository. For private repositories, configure Git authentication on this machine first (credential helper or SSH key).",
-            "credentialsNotAllowed": "The source URL cannot contain a username or password. Use system Git authentication instead (credential helper or SSH key).",
-            "cloneFailed": "Failed to clone the repository. Check your network or proxy settings and try again.",
-            "refNotFound": "The specified Git ref was not found. Check the branch or tag name.",
-            "manifestMissing": "No supported marketplace.json manifest was found in this source.",
-            "duplicate": "This marketplace has already been added.",
-            "notFound": "This marketplace does not exist or has been removed."
-          },
-          "guide": {
-            "title": "Custom Plugin Marketplace Guide",
-            "intro": "A plugin marketplace is a Git repository or local folder with a manifest file, used to distribute a set of Cindy plugins.",
-            "structureTitle": "Directory Structure",
-            "structureBody": "A marketplace needs one manifest file plus one directory per plugin. Every plugin directory must contain a valid ghost.json (the plugin identity card).",
-            "structureLabelManifest": "manifest",
-            "structureLabelGhostCard": "Plugin card",
-            "structureLabelEntry": "Plugin entry",
-            "structureNote": "The manifest can live in one of these locations:",
-            "manifestTitle": "Manifest Format",
-            "manifestBody": "name is the unique identity of the marketplace (you manage it by this name after adding). Each source in the plugins array points to a plugin directory inside the repository as a relative path; the object form {\"source\": \"local\", \"path\": \"…\"} is also supported.",
-            "sourceTitle": "Source Formats",
-            "sourceBody": "Accepted sources: GitHub shorthand owner/repo, full Git URLs (https / ssh / git@), and local folder paths (~ supported). Git ref accepts a branch, tag, or commit; leave empty for the default branch. Sparse paths (one per line) check out only the listed subdirectories — useful for large repositories.",
-            "authTitle": "Private Repositories",
-            "authBody": "Authentication relies entirely on your system Git configuration — Cindy never stores Git credentials. SSH: a working key must be configured on this machine; if the organization enforces SAML SSO, authorize the key for that organization via Configure SSO in your GitHub SSH key settings. HTTPS: use a Personal Access Token stored by the system credential helper.",
-            "rulesTitle": "Install Rules",
-            "rulesBody": "Plugin ids are globally unique, first come first served — conflicts with installed plugins are called out explicitly. Plugins using officially reserved prefixes like cindy- cannot be installed from custom marketplaces. Before install, every permission the plugin declares is shown for review; confirming completes the install and enables the plugin.",
-            "copy": "Copy guide",
-            "copied": "Guide copied to clipboard.",
-            "copyFailed": "Copy failed. Please try again."
-          }
-        }
-      },
-      "install": "Install Plugin…",
-      "empty": "No plugins installed yet",
-      "emptyHint": "Switch to Meka Plugins to install one, or import a .cindy file from the menu above",
-      "legacyRecovery": {
-        "title": "Plugins from an older version are waiting to be restored",
-        "deferred": "Found {{count}} older plugin directory. Cindy deferred restoration to avoid moving data while another instance may still be using it.",
-        "deferred_one": "Found {{count}} older plugin directory. Cindy deferred restoration to avoid moving data while another instance may still be using it.",
-        "deferred_other": "Found {{count}} older plugin directories. Cindy deferred restoration to avoid moving data while another instance may still be using it.",
-        "partial": "Found {{count}} older plugin directory. Some data was not restored automatically, so you can retry now.",
-        "partial_one": "Found {{count}} older plugin directory. Some data was not restored automatically, so you can retry now.",
-        "partial_other": "Found {{count}} older plugin directories. Some data was not restored automatically, so you can retry now.",
-        "partialBlocked": "Found {{count}} older plugin directory, but Cindy could not safely restore it automatically. The data was kept unchanged.",
-        "partialBlocked_one": "Found {{count}} older plugin directory, but Cindy could not safely restore it automatically. The data was kept unchanged.",
-        "partialBlocked_other": "Found {{count}} older plugin directories, but Cindy could not safely restore them automatically. The data was kept unchanged.",
-        "claimedByOtherOwner": "Found {{count}} older plugin directory, but it belongs to the first account that claimed this device data. Switch back to that account to restore it.",
-        "claimedByOtherOwner_one": "Found {{count}} older plugin directory, but it belongs to the first account that claimed this device data. Switch back to that account to restore it.",
-        "claimedByOtherOwner_other": "Found {{count}} older plugin directories, but it belongs to the first account that claimed this device data. Switch back to that account to restore it.",
-        "retry": "Retry restoring",
-        "retrying": "Restoring…"
-      },
-      "disabledTag": "Disabled",
-      "projectDisabledTag": "Off in this project",
-      "projectSwitchLockedTip": "This plugin is disabled globally; enable it in the Global view first",
-      "projectBanner": {
-        "title": "Configuring project \"{{name}}\"",
-        "desc": "Switches here only affect this project — turned-off plugins won't appear in its new sessions",
-        "backToGlobal": "Back to global"
-      },
-      "scopePicker": {
-        "global": "Global (default)",
-        "ariaLabel": "Choose where plugins take effect",
-        "browse": "Choose another folder…"
-      },
-      "enableAria": "Enable {{name}}",
-      "uninstall": "Uninstall",
-      "uninstallConfirm": {
-        "title": "Uninstall \"{{name}}\"?",
-        "description": "Its panel and capabilities will be removed. Its layout spot is kept and restored if you install it again.",
-        "cancel": "Cancel"
-      },
-      "setupGate": {
-        "title": "“{{name}}” Needs Setup",
-        "descriptionMissing": "Before using it, set up: {{items}}. Open the plugin settings now?",
-        "descriptionReauth": "Account authorization has expired: {{items}}. Reconnect to keep using it. Open the plugin settings now?",
-        "configure": "Open Settings",
-        "cancel": "Cancel",
-        "anySeparator": " or ",
-        "groupSeparator": ", "
-      },
-      "toast": {
-        "installed": "Installed \"{{name}}\"",
-        "uninstalled": "Uninstalled \"{{name}}\"",
-        "installedAsleep": "Installed \"{{name}}\" (disabled — enable it here anytime)",
-        "updated": "\"{{name}}\" updated to v{{version}}",
-        "projectDisabled": "Turned off \"{{name}}\" for this project (applies to new sessions)",
-        "projectEnabled": "\"{{name}}\" now follows the global setting in this project",
-        "exported": "Exported the .cindy file for \"{{name}}\"",
-        "exportFailed": "Couldn't export \"{{name}}\" — try again"
-      },
-      "panelError": {
-        "crashed": "This plugin crashed",
-        "fused": "This plugin crashed repeatedly and was paused",
-        "reload": "Reload plugin",
-        "close": "Close plugin"
-      },
-      "installConfirm": {
-        "title": "Install plugin “{{name}}”?",
-        "confirm": "Install plugin",
-        "cancel": "Cancel",
-        "meta": "Version {{version}}. Installs locally and can be uninstalled anytime.",
-        "metaWithAuthor": "By {{author}} · Version {{version}}. Installs locally and can be uninstalled anytime.",
-        "enableNow": "Enable right after install",
-        "enableNowOpenTab": "Enable and open its tab right after install",
-        "expandDescription": "Show Full Description",
-        "collapseDescription": "Hide Full Description",
-        "enableNowOpenPanel": "Enable and open its panel right after install"
-      },
-      "trust": {
-        "official": "Official Cindy plugin",
-        "officialDetail": "Bundled with Cindy.",
-        "reviewed": "Verified publisher · This version was reviewed",
-        "reviewedDetail": "The signatures are valid and the Cindy review signature matches every file in this exact version.",
-        "verifiedPublisher": "Verified publisher: {{publisher}}",
-        "verifiedPublisherDetail": "The signature is valid and the files are unchanged, but this exact version has no Cindy review signature.",
-        "signedUnverified": "Signed, but publisher identity is unverified: {{publisher}}",
-        "signedUnverifiedDetail": "The signature proves the files are unchanged, but this Cindy version does not recognize the publisher key.",
-        "unsigned": "Unverified / unsigned",
-        "unsignedDetail": "The source and whether the package changed after distribution cannot be verified.",
-        "unknownPublisher": "Unknown publisher",
-        "unknownReviewerDetail": "The package claims a review, but this Cindy version does not recognize the reviewer key, so it is not shown as reviewed."
-      },
-      "perm": {
-        "grantsTitle": "After installing it will have:",
-        "toolsGroup": "Registered Tools",
-        "toolsDiffGroup": "Registered Tool Changes",
-        "itemCount": "{{count}} total",
-        "cindyImageGenerate": "Image generation (delegated to Cindy)",
-        "cindyImageEdit": "Image editing (delegated to Cindy, its own images only)",
-        "cindyVideoGenerate": "Video generation (delegated to Cindy)",
-        "cindyVideoEdit": "Image-to-video (delegated to Cindy, reference images from its own media only)",
-        "cindyMediaDeposit": "Can save images, video or audio it holds into your media library",
-        "cindyMediaDepositDetail": "This lets AI work on material you paste or drop into the plugin. Saved items are recorded under this plugin, use at most {{quota}}, and are cleaned up when you uninstall it.",
-        "agentUserAction": "Can start a new Agent turn after you click a plugin card",
-        "agentUserActionDetail": "Each click permits one turn only, and only in the session that owns the card.",
-        "agentBackground": "Can automatically start new Agent turns in the background",
-        "agentBackgroundDetail": "Does not require a click each time, but can only use sessions you previously connected to this plugin. Model charges may apply.",
-        "nodeRuntime": "Can run a bundled Node program on this computer",
-        "nodeMcp": "Can run a bundled stdio MCP on this computer",
-        "nodeRuntimeDetail": "High risk: it has the same local access as your user account, including files, network, and starting other programs. Cindy cannot contain it in the browser sandbox.",
-        "nodeSecret": "Can provide the stored credential “{{name}}” to the local Node program",
-        "nodeSecretDetail": "Cindy stores it encrypted and injects it only while the declared Worker methods below run. The Node program receives the plaintext and can return, log, save, or otherwise expose it to browser-side plugin code or Agent parameters. Only install plugins you trust.",
-        "nodeResident": "The Node program can stay running in the background",
-        "nodeResidentDetail": "Runs while the plugin is enabled and stops when disabled, updated, uninstalled, or when Cindy exits.",
-        "tool": "Tool \"{{name}}\"",
-        "command": "Chat command ${{command}}",
-        "panelLeft": "Panel \"{{title}}\" · docked left of the chat",
-        "panelTab": "Panel \"{{title}}\" · tab in the right sidebar",
-        "code": "Executable code",
-        "codeDetail": "Runs in an isolated sandbox with no access to your files or network.",
-        "resident": "Always-on (starts when enabled, keeps a background process even when idle)",
-        "residentDetail": "Uses a small amount of memory while idle; the process stops immediately when it is disabled or uninstalled.",
-        "subscribeTopics": "Observes your session activity (turn and session events, no message content)",
-        "subscribeHooks": "Can read, block, or rewrite the messages you send",
-        "subscribeHooksDetail": "Reviews each message before sending: it may block it or rewrite the text before it goes out; blocked messages can be edited and resent.",
-        "subscribeAssistantReply": "Can read and rewrite the AI's replies",
-        "subscribeAssistantReplyDetail": "Processes each AI reply after it completes: it may polish or rewrite the text (replacing it directly, without keeping the original), or replace the reply bubble with its own rendered card (in that case the original text is kept and can be viewed with one tap).",
-        "card": "Renders message cards",
-        "cardExternalLink": "Cards may declare external links that open your browser after confirmation",
-        "cardExternalLinkDetail": "Clicking a card link shows a confirmation dialog; the URL opens in your system browser only after you approve. Only http/https addresses are allowed.",
-        "notify": "Can show system tips (light banner at the top of the screen)",
-        "notifyDetail": "Tip text is provided by this plugin and labeled with its name; tips fade automatically and never block your work.",
-        "fsWrite": "Can write files (create / modify)",
-        "fsWriteDetail": "Its own private data folder is always writable. Writes into the current session's working directory follow the session's permission mode (auto-approve modes write directly; per-action modes ask you first). Any other folder always requires your confirmation. Files are always written by the host — the plugin itself never touches your file system.",
-        "reveal": "Can show a local file in your system file manager",
-        "revealDetail": "The plugin can ask Cindy to select an existing local file in Explorer or Finder. This does not grant file read or write access; each path is rechecked by the host and the path is not returned to the plugin.",
-        "networkHost": "Accesses the network domain {{host}}",
-        "networkSecret": "Needs a credential from you: \"{{name}}\"",
-        "networkSecretGhostInputDetail": "Collected by this plugin's own settings UI — the plugin page sees the value at entry time. It is then handed to the host in one step for encrypted storage; once stored, the plugin can never read it back, and the host injects it only for the domains it declares.",
-        "networkSecretIdentity": "Will use your login email as the credential \"{{name}}\"",
-        "networkSecretIdentityDetail": "The value comes from your signed-in account's email, derived and injected by the host at request time; nothing to fill in. The plugin can read this email to show the current identity in its settings UI.",
-        "networkSecretOauth": "Will guide you through OAuth authorization at {{host}} ({{name}})",
-        "networkSecretOauthDetail": "The authorization flow and all tokens are managed by the host and can never be read by the plugin code; you provide the client credentials on the plugin detail page. The requested permission scopes are listed verbatim below — review them before approving.",
-        "networkConnections": "Can connect to {{label}} addresses you add",
-        "networkConnectionsDetail": "Addresses are added in this plugin's settings UI; every new address requires your confirmation, and the credential you provide is injected only for its own address.",
-        "codeDetailNetwork": "Runs in an isolated sandbox with no access to your files; network access is limited to the domains listed above, relayed by the host.",
-        "codeDetailWithNode": "The panel UI runs in an isolated sandbox; local processing is provided by the Node runtime declared above.",
-        "added": "New",
-        "removed": "Removed",
-        "unchanged": "{{count}} other permissions unchanged",
-        "noChange": "No permission changes.",
-        "pick": "Can ask you to pick a folder for it",
-        "pickDetail": "When it asks, Cindy shows the system folder picker; you decide what to share, and cancelling gives it nothing.",
-        "workspace": "Can ask to create a session entry for a project folder in the sidebar",
-        "workspaceDetail": "When it asks, you either pick the folder yourself or see the full path on a confirmation card before deciding; while it is handling a call you started, subfolders inside the current session's working directory are used directly without an extra prompt. Folders that already have a session are reused, and what gets created is an empty session — nothing starts running on its own.",
-        "sessionContext": "Can learn which project folder the current session is working in",
-        "sessionContextDetail": "Shares only location facts (session ID and project folder path) while it works for the current session — no file contents, and no file access is granted.",
-        "preview": "Can open preview pages from the sites below in the sidebar browser",
-        "previewDetail": "Only the sites listed below can be opened; every page it opens is attributed to this plugin.",
-        "nodeChildSpawn": "Its Node program can ask the host to start declared sub-processes from its package",
-        "nodeChildSpawnDetail": "Only JS files declared inside its own package can be started (same local permissions as the main program); arbitrary commands cannot be executed. Sub-processes are closed together when the plugin is disabled or exits.",
-        "skill": "Adds the skill \"{{name}}\" to your AI assistants",
-        "skillDetail": "A skill is an instruction file the AI loads and follows as its own, with your full permissions, in Claude Code and Codex, across every project — it is not confined to this plugin's sandbox. It stays available while the plugin is enabled and is removed when the plugin is disabled or uninstalled; turning the plugin off for a single folder does not hide it. The full skill text cannot be previewed here — only install plugins you trust.",
-        "cindyTextOneshot": "Can ask Cindy's fast lane a question and receive a text answer",
-        "cindyTextOneshotDetail": "Uses the system's lightweight utility model chain (the same lane as auto titles). No Agent involved and no file access. Model charges may apply.",
-        "agentErrand": "Can hand tasks to the Cindy Agent and collect the result",
-        "agentErrandDetail": "Tasks run in this plugin's dedicated session, always visible in the sidebar and stoppable at any time. Read-only by default; raising the level requires your change in the plugin settings. Model charges may apply.",
-        "atResourceProvider": "Can search Plugin resources in @ using \"{{name}}\"",
-        "atResourceProviderDetail": "The tool runs only after you explicitly select this Plugin in @. Plugin authors must keep this search free of side effects.",
-        "subscribeActivity": "Observes when the AI is thinking and when it is waiting on you",
-        "subscribeActivityDetail": "Sees only the timing: when thinking starts and ends, and when the AI is waiting for your approval or your answer. It never sees the reasoning text, the action awaiting approval, the command or file involved, the plan, the question, or your answer — and it cannot approve anything on your behalf.",
-        "badge": "Can light an unread mark on the Plugins entry",
-        "badgeDetail": "When it has something new, it can show a green dot on the sidebar Plugins entry and on its own card, with a one-line summary. Opening its panel clears the dot. The dot makes no sound, does not vibrate, never reaches your system notification center, and is a permission separate from system tips.",
-        "confirm": "Can ask for your confirmation in a dialog",
-        "confirmDetail": "Before acting it can open a dialog that looks like Cindy's own to ask you. The question comes from the plugin and the dialog is labeled with its name; only you can click confirm or cancel — the plugin cannot. At most one dialog at a time, and asking too often is blocked."
-      },
-      "connections": {
-        "confirmTitle": "Add connection address",
-        "confirmMessage": "Plugin \"{{name}}\" requests to add the connection address {{host}}",
-        "confirmDetail": "If allowed, this plugin can reach this address via the host ({{label}}); the credential you provide is injected only into requests to this address.",
-        "confirmAllow": "Allow",
-        "confirmCancel": "Cancel"
-      },
-      "errors": {
-        "fileInvalid": "Not a valid .cindy plugin file",
-        "alreadyInstalled": "This plugin is already installed",
-        "commandConflict": "Its command conflicts with an installed plugin. Uninstall the other one or rename the command.",
-        "idReserved": "This id uses the reserved official prefix cindy-; it is only available to plugins bundled with the app",
-        "sourceMissing": "The selected file could not be found",
-        "generic": "Operation failed. Please try again.",
-        "updateIdMismatch": "The selected file is plugin \"{{id}}\", which does not match this plugin \"{{expected}}\""
-      },
-      "detail": {
-        "enable": "Enable",
-        "backToList": "Back to plugins",
-        "infoTitle": "Details",
-        "infoId": "Identifier",
-        "infoAuthor": "Author",
-        "infoTrust": "Source & signature",
-        "byAuthor": "By {{author}}",
-        "infoPanel": "Panel",
-        "infoLocation": "Install location",
-        "expandInfoValue": "Show full {{label}}",
-        "collapseInfoValue": "Collapse {{label}}",
-        "copyLocation": "Copy install location",
-        "locationCopied": "Install location copied",
-        "locationCopyFailed": "Could not copy the install location. Copy it manually.",
-        "openLocation": "Open install location",
-        "panelDocked": "Docked · min width {{min}}px",
-        "panelNotDocked": "Not docked (no layout record yet)",
-        "panelNone": "This plugin has no panel",
-        "customSlotTitle": "Plugin custom settings area",
-        "dangerTitle": "Uninstall plugin",
-        "infoContents": "Contains",
-        "infoVersion": "Version",
-        "updateTitle": "Update version",
-        "updateDesc": "Pick a new .cindy file to replace the installed version in place; enabled state and panel position are preserved.",
-        "cindyPrefs": {
-          "title": "Cindy abilities",
-          "desc": "Each Cindy delegation ability this plugin requested can be pinned to a specific model; defaults follow the system (built-in proxy).",
-          "cap": {
-            "image.generate": "Image generation",
-            "image.edit": "Image editing",
-            "video.generate": "Video generation",
-            "video.edit": "Image-to-video",
-            "text.oneshot": "Quick answer (text)"
-          },
-          "defaultOption": "{{model}} (default)",
-          "noModels": "No models available"
-        },
-        "toolsTitle": "Tools",
-        "permissionsTitle": "Permissions",
-        "infoDescription": "Description",
-        "customSlotAsleep": "This plugin is disabled. Enable it to see its settings UI here.",
-        "descriptionExpand": "Show more",
-        "descriptionCollapse": "Show less",
-        "useAction": "Use Plugin",
-        "openPanelAction": "Open Interface",
-        "openPanelDisabled": "Enable this Plugin before opening its interface",
-        "closePanel": "Close Plugin Interface",
-        "useDisabled": "Enable this Plugin before using it",
-        "moreActions": "More Plugin Actions",
-        "updateFromFile": "Update from .cindy File…",
-        "settingsTitle": "{{name}} Settings",
-        "settingsUnavailableUntilRestore": "Restore the plugin to use this configuration again.",
-        "configurationTitle": "Configuration",
-        "panelPresentation": {
-          "title": "Opening Method",
-          "description": "Only affects this Plugin. “Follow Default” uses Settings → Meka Assistant → Default Plugin Opening.",
-          "aria": "Choose how this Plugin opens",
-          "options": {
-            "inherit": "Follow Default",
-            "docked": "Dock Beside Conversation",
-            "modal": "Open in Modal"
-          }
-        },
-        "openTool": "View details for Tool {{name}}",
-        "noToolDescription": "No description is available for this Tool.",
-        "viewAllTools": "See All",
-        "collapseTools": "Collapse Tools",
-        "viewAllPermissions": "See All",
-        "permissionsDialogDescription": "All {{count}} permissions requested by this Plugin",
-        "closeDialog": "Close Dialog",
-        "panelPageHosted": "Opens from the Plugin page · closes when you leave",
-        "errandPrefs": {
-          "title": "AI errands",
-          "desc": "How this plugin's tasks run when it hands work to the Cindy Agent. Unset fields follow your new-draft preferences; the helper is read-only by default and works in a dedicated folder.",
-          "agent": "Agent",
-          "model": "Model",
-          "permission": "Write access",
-          "permissionDisabled": "Not available for errand sessions",
-          "workdir": "Working folder",
-          "workdirDefault": "Plugin's dedicated folder (default)",
-          "workdirPick": "Choose…",
-          "workdirClear": "Reset to default folder"
-        },
-        "chatAction": "Chat",
-        "enabledLabel": "Enabled",
-        "disabledLabel": "Disabled",
-        "exportPackage": "Export .cindy File…",
-        "exportFileType": "Cindy Plugin"
-      },
-      "contents": {
-        "panel": "Panel",
-        "settingsUi": "Custom settings UI",
-        "code": "Executable code",
-        "slotCindy": "Cindy delegation",
-        "slotAgent": "Starts Agent turns",
-        "slotNode": "Local Node program",
-        "slotTool": "Tools",
-        "slotSubscribe": "Message subscription",
-        "slotCard": "Message cards",
-        "slotNetwork": "Network access",
-        "slotNotify": "System tips",
-        "slotFs": "File writing",
-        "slotSkill": "Agent skills",
-        "slotReveal": "File manager reveal",
-        "slotWorkspace": "Workspace sessions",
-        "slotBadge": "Unread badge"
-      },
-      "commandPaletteTag": "Plugin command",
-      "updateConfirm": {
-        "title": "Update plugin \"{{name}}\"?",
-        "body": "Version {{from}} → {{to}}. This replaces the installed version; enabled state and panel position are preserved.",
-        "confirm": "Update",
-        "cancel": "Cancel"
-      },
-      "pick": {
-        "dialogTitle": "Choose a folder",
-        "dialogMessage": "Plugin “{{name}}” is asking you to choose a folder",
-        "fileDialogTitle": "Choose a file",
-        "fileDialogMessage": "Plugin “{{name}}” is asking you to choose a file"
-      },
-      "workspace": {
-        "dialogTitle": "Choose a project folder",
-        "dialogMessage": "Plugin “{{name}}” is asking you to choose a project folder to create a session in the sidebar"
-      },
-      "confirm": {
-        "dialogTitle": "Plugin “{{name}}” needs your confirmation"
-      },
-      "panelHost": {
-        "close": "Close panel"
-      },
-      "updateAll": {
-        "title": "Update all · {{count}} plugins",
-        "description": "Updates without permission changes finish automatically; permission expansions need your per-item approval.",
-        "versionRange": "v{{from}} → v{{to}}",
-        "permissionChanged": "Permissions changed",
-        "reviewOutdated": "Permission diff outdated",
-        "rereview": "Review again",
-        "reviewDiff": "Review & confirm",
-        "collapseDiff": "Collapse",
-        "approve": "Approve & update",
-        "skip": "Skip",
-        "statusPending": "Queued",
-        "statusInstalling": "Updating…",
-        "statusDone": "Updated",
-        "statusSkipped": "Skipped",
-        "statusFailed": "Update failed",
-        "background": "Continue in background",
-        "doneAction": "Done",
-        "doneToast": "Batch update finished: {{done}} updated, {{rest}} not completed"
-      }
-    },
     "mcp": {
       "title": "External tools",
       "subtitle": "Connect your own remote MCP servers. HTTP/Streamable HTTP servers work with both Claude and Codex; SSE is Claude-only.",
@@ -4013,6 +3464,1586 @@
       },
       "capThreads": "Cap Toolchain Parallelism",
       "capThreadsHint": "Injects environment variables such as VITEST_MAX_FORKS and MAKEFLAGS so a single test or build command can't take every CPU core. Variables you set yourself are never overridden."
+    },
+    "computerUse": {
+      "title": "Automation",
+      "description": "Let agents use your computer and connected devices to get things done for you. Browser automation uses an isolated browser; Android automation uses ADB; computer automation relies on a local driver.",
+      "codexRefreshDeferred": "Setting saved, but Codex is busy. Restart the app to apply it to new Codex sessions.",
+      "browser": {
+        "title": "Browser automation",
+        "description": "A dedicated browser for agents — separate from your everyday Chrome",
+        "toggleAria": "Toggle browser automation",
+        "toggleHint": "This toggle only applies to agent sessions started afterward; it does not affect a session that is already running.",
+        "noProjectHint": "Open Settings from a project session to toggle browser automation for that project.",
+        "detected": "Detected {{browser}}",
+        "notDetected": "No local browser detected. Install Chrome to use browser automation.",
+        "download": "Download Chrome",
+        "toast": {
+          "enabled": "Browser automation enabled",
+          "disabled": "Browser automation disabled",
+          "toggleFailed": "Failed to toggle browser automation",
+          "openedForLogin": "Automation browser opened — sign into the sites you need",
+          "openForLoginFailed": "Failed to open the browser"
+        },
+        "openForLogin": "Open agent browser",
+        "openForLoginHint": "This is a dedicated browser for agents: it runs on your installed Chrome but with a separate profile (shown as “Cindy”), so it never touches your everyday Chrome's tabs, bookmarks, or logins. Agents open pages, read, click, and take screenshots here on your behalf. For sites that need a login, click “Open agent browser” above and sign in once — your session is kept, so the agent can keep acting as you afterward."
+      },
+      "browserBackend": {
+        "title": "Automation browser target",
+        "description": "Pick which browser the agent actually drives during automation. Login state is independent between the two modes.",
+        "defaultTag": "Default",
+        "resetToDefault": "Reset to default",
+        "toggleFailed": "Failed to switch browser target",
+        "health": {
+          "ready": "Embedded browser control is connected.",
+          "error": "Embedded browser connection failed: {{reason}}. Choose “Recover Browser” to rebuild the control connection.",
+          "reasons": {
+            "disposing": "the previous shutdown has not completed",
+            "hostUnavailable": "the embedded browser interface is not ready or its connection was lost",
+            "startFailed": "the replacement controller could not start",
+            "statusFailed": "the controller status check failed",
+            "recoveryFailed": "the control connection could not be rebuilt"
+          },
+          "reconnect": "Reconnect Browser",
+          "recover": "Recover Browser",
+          "recovering": "Recovering Browser…",
+          "recovered": "Embedded browser reconnected",
+          "recoverFailed": "Failed to recover the embedded browser. Review the reason and try again."
+        },
+        "rsbWebview": {
+          "title": "Sidebar embedded browser",
+          "description": "Agent operates inside the right-sidebar webview tabs. No popup window; sign-ins are kept separately."
+        },
+        "external": {
+          "title": "Standalone external browser",
+          "description": "Agent drives a dedicated Chrome window (vendored Playwright)."
+        }
+      },
+      "android": {
+        "title": "Android automation",
+        "description": "Let agents inspect and operate a connected Android device over ADB",
+        "toggleAria": "Toggle Android automation",
+        "refresh": "Recheck",
+        "toggleHint": "This machine-wide toggle only applies to agent sessions started afterward; it does not affect a session that is already running.",
+        "status": {
+          "checking": "Checking ADB status…",
+          "preparing": "Preparing ADB…",
+          "ready": "ADB ready. Ready devices: {{count}}. Default: {{device}}",
+          "adbDetail": "{{version}} at {{path}}",
+          "noDevice": "ADB ready. No authorized Android device is connected.",
+          "defaultUnavailable": "Default Android device is unavailable: {{device}}",
+          "multipleDevices": "ADB ready. Ready devices: {{count}}. Ask the agent to use a device serial.",
+          "unauthorized": "ADB sees a device, but USB debugging is not authorized.",
+          "offline": "ADB sees a device, but it is offline.",
+          "adbNotFound": "ADB not detected. Enable Android automation to prepare platform-tools, or set a custom adb path.",
+          "failed": "ADB status check failed: {{message}}",
+          "unknownIssue": "ADB issue: {{issue}}"
+        },
+        "connectionGuide": {
+          "connect": {
+            "title": "How to connect an Android phone",
+            "adbNote": "Cindy prepares ADB automatically; you do not need to install the Android SDK. Custom ADB path is for advanced users.",
+            "step1": "Connect the phone to the computer with a USB cable that supports data transfer.",
+            "step2": "On the phone, open Settings → About phone and tap the build number repeatedly to enable Developer options.",
+            "step3": "Open Developer options and turn on USB debugging.",
+            "step4": "Keep the phone unlocked, return to Cindy, and click Recheck."
+          },
+          "unauthorized": {
+            "title": "Allow USB debugging",
+            "body": "On the phone, choose Allow in the USB debugging permission dialog. We recommend checking Always allow from this computer, then return to Cindy and click Recheck."
+          },
+          "offline": {
+            "title": "The device is offline",
+            "body": "Reconnect the USB cable, keep the phone unlocked, then return to Cindy and click Recheck."
+          }
+        },
+        "device": {
+          "title": "Device",
+          "ariaLabel": "Select default Android device",
+          "auto": "Auto",
+          "autoHint": "Use the only ready device",
+          "connected": "{{count}} ready device connected",
+          "none": "No ADB devices",
+          "ready": "Ready",
+          "state": "State: {{state}}",
+          "unavailable": "Unavailable"
+        },
+        "adb": {
+          "title": "ADB",
+          "auto": "Automatic ADB resolution is active",
+          "preparing": "Preparing ADB…",
+          "ready": "Current source: {{source}}",
+          "prepareFailed": "ADB preparation failed: {{message}}",
+          "placeholder": "Custom adb path",
+          "pathAria": "Custom ADB path",
+          "save": "Save Path",
+          "useDefault": "Use Default",
+          "source": {
+            "auto": "Automatic",
+            "custom": "Custom",
+            "env": "Environment",
+            "prepared": "Prepared",
+            "bundled": "Bundled",
+            "sdk": "Android SDK",
+            "path": "PATH"
+          }
+        },
+        "toast": {
+          "enabled": "Android automation enabled",
+          "disabled": "Android automation disabled",
+          "toggleFailed": "Failed to toggle Android automation",
+          "statusFailed": "Failed to check Android automation status",
+          "deviceFailed": "Failed to save default Android device",
+          "adbPathFailed": "Failed to save ADB path"
+        }
+      },
+      "directControl": {
+        "title": "Computer automation",
+        "description": "Let agents inspect windows, read UI, click, and type",
+        "status": {
+          "ready": "Ready to use",
+          "needsPermission": "Needs system access",
+          "notInstalled": "Driver not installed",
+          "disabled": "Turned off",
+          "checking": "Checking access…",
+          "setup": "Set up access",
+          "version": "CUA Driver {{version}}"
+        },
+        "toggleAria": "Toggle direct computer control",
+        "driverInfo": "Computer automation is powered by the open-source CUA Driver. It runs locally to read the screen and perform actions such as clicking and typing.",
+        "openSourceProject": "View open-source project",
+        "detected": "Detected {{version}} ({{path}}, {{daemon}})",
+        "daemonRunning": "daemon running",
+        "daemonStopped": "daemon stopped; it will start automatically on use",
+        "notDetected": "cua-driver was not detected. It will be installed automatically the first time you enable this; grant permissions afterward to use direct computer control.",
+        "installing": "Installing cua-driver…",
+        "authorizing": "Waiting for system permissions. Complete Accessibility and Screen Recording in the Cua Driver permission window.",
+        "permissionIntro": {
+          "title": "Enable computer automation",
+          "description": "{{appName}} will install or start Cua Driver locally to read the screen and perform actions such as clicking and typing. Enable it only when you intentionally started a computer automation task.",
+          "macosDescription": "{{appName}} will install or open Cua Driver's permission flow next, and may jump to macOS System Settings. First grant the core Accessibility and Screen Recording permissions to CuaDriver. During later use, macOS may still show additional confirmations for a target app or a specific action. Only approve those prompts when you intentionally started a Computer Use task. Then return to {{appName}} and it will check automatically.",
+          "confirm": "Continue",
+          "cancel": "Not now"
+        },
+        "permissionGuide": {
+          "waiting": "Waiting for you",
+          "step": "Open computer automation",
+          "completeEyebrow": "Permissions complete",
+          "dragTitle": "Drag CuaDriver into {{permission}}",
+          "turnOnAppTitle": "Turn on CuaDriver in {{permission}}",
+          "dragHint": "Drag",
+          "draggingTitle": "Dragging CuaDriver",
+          "draggingHint": "Drop into {{permission}}",
+          "appName": "CuaDriver",
+          "turnOnTitle": "Turn on {{permission}}",
+          "turnOnDescription": "Turn on this permission in System Settings. Cindy will continue automatically.",
+          "readyTitle": "Computer Use is ready",
+          "readyDescription": "Cindy can now operate this computer when you ask."
+        },
+        "permissions": {
+          "title": "System access",
+          "macosHint": "Computer Use needs Accessibility and Screen Recording. During actual use, macOS may still show additional confirmations for a target app or action.",
+          "accessibilityLabel": "Accessibility",
+          "screenRecordingLabel": "Screen Recording",
+          "grant": "Grant",
+          "accessibility": "Accessibility: {{status}}",
+          "screenRecording": "Screen Recording: {{status}}",
+          "runtimeConfirmations": "Core permissions are ready. During actual use, macOS may still show additional confirmations for a target app or a specific action; only approve them when you just started a Computer Use task.",
+          "granted": "granted",
+          "missing": "not granted",
+          "unknown": "unknown",
+          "notRequired": "not required",
+          "openAccessibility": "Open Accessibility settings",
+          "openScreenRecording": "Open Screen Recording settings",
+          "recheck": "Recheck",
+          "moreDetails": "More details",
+          "hideDetails": "Hide details",
+          "windowsHint": "Windows does not require extra system permissions. Keep the target app visible on the active desktop while the agent works.",
+          "linuxHint": "Linux does not use macOS TCC permissions; make sure the current desktop session allows window inspection and input automation."
+        },
+        "toggleHint": "This toggle only applies to agent sessions started afterward; it does not affect a session that is already running.",
+        "noProjectHint": "Open Settings from a project session to toggle direct computer control for that project.",
+        "update": {
+          "available": "New version v{{version}} available. You may need to re-grant system permissions after updating.",
+          "action": "Update",
+          "updating": "Updating…",
+          "downloadingPercent": "Downloading {{percent}}% ({{downloaded}}/{{total}} MB)…",
+          "downloadingBytes": "Downloading, {{downloaded}} MB so far…",
+          "installing": "Download complete, installing…",
+          "toast": {
+            "success": "cua-driver updated to the latest version",
+            "failed": "Failed to update cua-driver. Please try again later."
+          }
+        },
+        "toast": {
+          "enabled": "Direct computer control enabled",
+          "disabled": "Direct computer control disabled",
+          "toggleFailed": "Failed to toggle direct computer control",
+          "installFailed": "Failed to install cua-driver",
+          "permissionFailed": "Computer Use permissions are not complete",
+          "permissionPending": "Finish the two system permissions, then return here and click Recheck",
+          "permissionSettingsOpened": "System permission settings opened. After granting, come back and click \"Recheck\".",
+          "permissionSettingsMonitoring": "System permission settings opened. Finish the permissions and the status will update automatically.",
+          "openPermissionSettingsFailed": "Failed to open system permission settings"
+        }
+      }
+    },
+    "builtinTools": {
+      "title": "Built-in Tools",
+      "description": "Set defaults for new sessions or override them for a project. Project settings take priority.",
+      "empty": "No tools available.",
+      "toggleAria": "Toggle {{name}} tool",
+      "toggleHint": "Changes apply only to new or restarted agent sessions. Running sessions are not affected.",
+      "loadFailed": "Failed to load tool list",
+      "scopePicker": {
+        "ariaLabel": "Switch the scope of built-in tool settings",
+        "userDefault": "New session defaults",
+        "userDefaultDescription": "Used by new sessions without a project override"
+      },
+      "source": {
+        "project": "project",
+        "projectTooltip": "Overridden by project settings ({{dir}})",
+        "user": "user default",
+        "userTooltip": "Inherited from new session defaults",
+        "product": "product default",
+        "productTooltip": "Inherited from Cindy product defaults"
+      },
+      "toast": {
+        "enabled": "{{name}} enabled — takes effect on next session",
+        "disabled": "{{name}} disabled — takes effect on next session",
+        "toggleFailed": "Failed to toggle tool",
+        "cannotModifyEssential": "{{name}} is an essential tool and cannot be disabled."
+      },
+      "plugins": {
+        "feishu": {
+          "name": "Feishu",
+          "description": "Feishu IM integration — messaging, docs, wikis, and calendar access"
+        },
+        "google": {
+          "name": "Google",
+          "description": "Google integration — Sheets (read-only) and Gmail (search / read / send / draft / labels)"
+        },
+        "feishu_bot": {
+          "name": "Feishu Bot",
+          "description": "Send files and notifications to Feishu users via bot messages"
+        },
+        "scheduler": {
+          "name": "Scheduler",
+          "description": "Task scheduling — cron-based recurring jobs and one-shot reminders"
+        },
+        "memory": {
+          "name": "Cindy Memory",
+          "description": "Cross-agent long-term memory for persistent context across sessions"
+        },
+        "xdt_helper": {
+          "name": "Cindy Helper",
+          "description": "Host capability disclosure — tells agents what tools and models are available"
+        },
+        "collab": {
+          "name": "Collab Mode",
+          "description": "Turning it off only affects newly created sessions and does not stop active workers; supports multi-worker team orchestration"
+        },
+        "lsp": {
+          "name": "LSP",
+          "description": "TypeScript LSP queries (Beta — gated by Settings → Experimental → LSP Mode)"
+        }
+      }
+    },
+    "silentEncryptedRetry": {
+      "cell": {
+        "label": "Silently drop protocol-encrypted content and retry",
+        "description": "When switching providers, automatically drop encrypted reasoning from history and resend silently. After the first trigger, it stays active until the next model switch. On by default."
+      },
+      "toggleAria": "Toggle silently dropping protocol-encrypted content and retrying",
+      "toast": {
+        "enabled": "Silent encrypted-content retry is on.",
+        "disabled": "Silent encrypted-content retry is off.",
+        "toggleFailed": "Failed to switch silent encrypted-content retry"
+      }
+    },
+    "remoteControl": {
+      "title": "Remote Connection",
+      "description": "Control your other signed-in devices remotely, or connect to a remote host over SSH.",
+      "accessRevokedByPeer": "Access revoked — the other device must restore it in its settings",
+      "deviceControlToggleAria": "Toggle control for {{name}}",
+      "myDevices": {
+        "controlIt": "I control it",
+        "allowInbound": "Let it control this device",
+        "allowInboundAria": "Toggle whether {{name}} can control this device",
+        "peerControlOff": "Remote control not enabled on that device",
+        "masterOffHint": "Turn on the master switch above first",
+        "controllingThisMac": "Controlling this device"
+      },
+      "toast": {
+        "revoked": "Access revoked for this device",
+        "revokeFailed": "Failed to revoke access",
+        "restored": "Access restored for this device",
+        "restoreFailed": "Failed to restore access"
+      },
+      "sections": {
+        "myDevices": "My devices",
+        "ssh": "SSH remote hosts",
+        "hook": "Cindy IM bots"
+      },
+      "hook": {
+        "description": "Connect Slack and Telegram to the same Cindy. Messages are dispatched to this device and share its project list and session runner; each provider keeps its own account and preferences.",
+        "slackDescription": "Bind Slack workspaces and hand tasks to Cindy from Slack.",
+        "slackDisabledHint": "Turn on the switch to start Slack authorization; once bound you can dispatch tasks from Slack.",
+        "slackBoundHint": "Binding complete. Turning the switch off unbinds this device; turning it back on requires authorizing again.",
+        "lifecycleAnnouncement": {
+          "label": "Online/Offline Notifications",
+          "cellLabel": "Message Notifications",
+          "hint": "Have the Slack Bot send a message when this device goes online or offline"
+        },
+        "toggleAria": "Toggle the Slack connection",
+        "installApp": "Install Slack App",
+        "status": {
+          "disabled": "Disabled",
+          "connecting": "Connecting…",
+          "connected": "Connected",
+          "standby": "Connected by another instance",
+          "error": "Connection failed"
+        },
+        "form": {
+          "workspacesCardTitle": "Working directory mappings",
+          "workspacesCardDescription": "Alias → local absolute path; the directory list is shared across channels while run preferences stay per channel.",
+          "workspacesBoundCount_one": "{{count}} local working directory bound",
+          "workspacesBoundCount_other": "{{count}} local working directories bound",
+          "aliasPlaceholder": "Alias, e.g. my-server",
+          "addWorkspace": "Add working directory",
+          "removeWorkspace": "Remove this working directory",
+          "changeDir": "Click to change directory (alias and preferences kept)",
+          "defaultWorkspaceChip": "Default: {{name}}",
+          "defaultWorkspaceAria": "Choose the default working directory for dispatched tasks",
+          "defaultWorkspaceRadioAria": "Set \"{{name}}\" as the default working directory",
+          "defaultWorkspaceRowHint": "The selected directory is the default working directory: any Telegram DM, group or topic conversation that has not picked a project of its own runs its tasks there (conversations that chose one with /workspace keep theirs). Mind the permission mode on the selected directory’s row — set to Full access, an @mention from any group runs with full access inside that repository.",
+          "legacyDefaultsTitle": "Legacy “new conversation” defaults are still in effect",
+          "legacyDefaultsDescription": "This device saved older official-bot defaults that still act as the fallback for directories without their own settings (official Telegram and X share one copy). These values are now set per directory. Restoring defaults clears all of the following:",
+          "legacyDefaultsRow": {
+            "agentKind": "Default agent: {{current}} → {{fallback}}",
+            "permissionMode": "Permission mode: {{current}} → {{fallback}}"
+          },
+          "legacyDefaultsRowAgent": "{{agent}}: {{fields}}",
+          "legacyDefaultsField": {
+            "model": "model {{current}} → {{fallback}}",
+            "effort": "reasoning effort {{current}} → {{fallback}}",
+            "source": "model source {{current}} → {{fallback}}"
+          },
+          "legacyDefaultsFieldSeparator": ", ",
+          "legacyDefaultsSourceFollowsGlobal": "follows global settings"
+        },
+        "binding": {
+          "copyLink": "Copy link",
+          "copied": "Link copied",
+          "state": {
+            "denied": "Authorization was cancelled on the Slack page",
+            "expired": "Authorization timed out, please reconnect",
+            "failed": "Binding failed",
+            "revoked": "Binding revoked"
+          },
+          "retryHint": "Turn the switch back on to reconnect and link again."
+        },
+        "toast": {
+          "saveFailed": "Failed to save",
+          "toggleFailed": "Failed to toggle",
+          "actionFailed": "Operation failed"
+        },
+        "loginRequired": "Sign in to your {{appName}} account first; the connection resumes automatically after login.",
+        "standbyHint": "Another Cindy instance on this computer is using the Slack connection. Close it, then turn this switch back on to take over.",
+        "authorizing": "Authorizing…",
+        "statusBound": "Linked as @{{name}}",
+        "statusBoundTeam": "Linked to {{team}} as @{{name}}",
+        "statusUnbound": "Not linked",
+        "notInstalled": {
+          "title": "The Cindy app isn't installed in the Slack workspace you authorized",
+          "hint": "Install the Cindy app to the workspace so the bot can send and receive messages and dispatch tasks. After installing, turn the switch on again to finish binding.",
+          "status": "App install required",
+          "confirmTitle": "Install the Cindy app to your Slack workspace",
+          "confirmDescription": "The Slack workspace you authorized doesn't have the Cindy app installed. The bot needs it to send and receive messages and dispatch tasks. Install now? Binding completes automatically once installed.",
+          "confirmInstall": "Install",
+          "confirmCancel": "Cancel",
+          "waitingHint": "Waiting for the installation to finish… Binding completes automatically once installed, no re-authorization needed."
+        },
+        "multi": {
+          "statusWorkspaces_one": "{{count}} workspace",
+          "statusWorkspaces_other": "{{count}} workspaces",
+          "statusPendingSuffix_one": " ({{count}} pending)",
+          "statusPendingSuffix_other": " ({{count}} pending)",
+          "statusOffKept_one": "Off · {{count}} workspace binding kept",
+          "statusOffKept_other": "Off · {{count}} workspace bindings kept",
+          "displaced": "Bound on another device",
+          "rebind": "Rebind",
+          "removeAria": "Unlink this workspace",
+          "removeConfirmTitle": "Unlink {{team}}",
+          "removeConfirmDescription": "After unlinking, the Slack workspace \"{{team}}\" can no longer dispatch tasks to this device. You can authorize and bind it again anytime.",
+          "removeDisplacedConfirmDescription": "This binding has been taken over by another device. Removing it only deletes this row from the local list.",
+          "removeConfirm": "Unlink",
+          "cancelPending": "Cancel",
+          "dismiss": "Dismiss",
+          "addWorkspace": "Add Slack workspace",
+          "alreadyBound": "You authorized {{team}}, which is already linked. To add another workspace, switch workspaces in the top-right corner of the Slack authorization page before allowing."
+        },
+        "telegram": {
+          "description": "Link your Telegram account and dispatch tasks to Cindy via the official bot.",
+          "disabledHint": "Turn on the switch, then follow the prompts in Telegram to link your account.",
+          "toggleAria": "Toggle the Telegram connection",
+          "connect": "Link Telegram",
+          "openApp": "Open Telegram",
+          "cancel": "Cancel Linking",
+          "retry": "Retry Linking",
+          "openBot": "Open Bot",
+          "addToGroup": "Add to Group",
+          "unlink": "Unlink Telegram",
+          "unlinkConfirmTitle": "Unlink Telegram?",
+          "unlinkConfirmDescription": "Telegram will no longer dispatch messages to this device. Your local projects and Slack connection are not affected.",
+          "status": {
+            "checking": "Checking server support…",
+            "unavailable": "Not available on this server",
+            "disabled": "Disabled",
+            "none": "Not linked",
+            "pending": "Open Telegram and tap Start to link",
+            "awaiting_confirmation": "Confirm the device switch in Telegram",
+            "confirmed": "Linked {{user}} with @{{bot}}",
+            "denied": "Linking was denied",
+            "expired": "Link expired",
+            "failed": "Linking failed",
+            "revoked": "Link removed",
+            "superseded": "Linked to another device"
+          },
+          "behavior": {
+            "title": "Reactions & quoting",
+            "emojiLabel": "Emoji reactions",
+            "emojiOption": {
+              "off": "Off",
+              "minimal": "Basic",
+              "expressive": "Lively"
+            },
+            "emojiHint": {
+              "off": "No emoji reactions at all.",
+              "minimal": "👀 on receipt, 👍 on success, 👎 on failure.",
+              "expressive": "Completed tasks pick randomly from separate positive and negative reaction pools."
+            },
+            "groupQuoteLabel": "Quote the question in groups",
+            "quoteOption": {
+              "off": "Never",
+              "first": "First reply",
+              "all": "Every reply"
+            },
+            "groupQuoteHint": {
+              "off": "Group answers are not attached to the question.",
+              "first": "The first reply quotes the question (recommended).",
+              "all": "Every message in the answer quotes the question."
+            },
+            "dmQuoteLabel": "Quote your message in DM",
+            "dmQuoteHint": {
+              "off": "DM answers are sent without quoting (default).",
+              "first": "The first reply quotes your message."
+            },
+            "error": {
+              "load": "Telegram behavior could not be loaded. Check the connection and retry.",
+              "save": "Telegram behavior was not saved. The last confirmed settings were restored.",
+              "retry": "Retry loading"
+            }
+          },
+          "groups": {
+            "title": "Group participation",
+            "hint": "Groups seen by the official bot appear here. Active mode applies to every message from your linked account only; other members add local context but cannot trigger tasks.",
+            "empty": "No groups yet. Add the bot to a group and send a message from your linked account.",
+            "contactsOn": "Other people who speak in groups are auto-added to Smart Contacts.",
+            "contactsOff": "Smart Contacts is off, so other group members will not be remembered automatically.",
+            "contactsEnable": "Turn on",
+            "error": {
+              "load": "Telegram groups could not be loaded. Check the connection and retry.",
+              "save": "The group mode was not saved. The last confirmed mode was restored.",
+              "retry": "Retry loading"
+            },
+            "mode": {
+              "mention": "@ only",
+              "always": "Active"
+            }
+          }
+        },
+        "x": {
+          "description": "Link your X (Twitter) account and dispatch tasks by mentioning the Cindy bot on X.",
+          "disabledHint": "Turn on the switch, then follow the prompts to authorize your X account.",
+          "toggleAria": "Toggle X connection",
+          "guide": {
+            "usageLabel": "How to Use It",
+            "usageBody": "Post on X mentioning @askmycindy and the task is dispatched to this device to run here; the result comes back as a reply.",
+            "riskLabel": "Replies Are Public",
+            "riskPublicBody": "Our reply is a public post that anyone can read. This suits questions and problems you are happy to work through in the open — not private matters, where it risks exposing them.",
+            "riskWorkdirBody": "Every X task runs in the default working directory set in X connection settings. The Agent can read and write files there, and its conclusion is posted publicly — if that directory points at a private repository, file contents may become public with it.",
+            "withdrawLabel": "To Withdraw a Reply",
+            "withdrawBody": "Whoever asked can delete a reply by replying \"/delete\" to it. Only the public reply is deleted — the local task record is kept.",
+            "ackTitle": "X Is Linked — How It Works and What to Watch For",
+            "ackConfirm": "I Understand the Risks"
+          },
+          "connect": "Link X",
+          "openApp": "Open X to authorize",
+          "cancel": "Cancel linking",
+          "retry": "Retry linking",
+          "openBot": "View bot on X",
+          "unlink": "Unlink X",
+          "unlinkConfirmTitle": "Unlink X?",
+          "unlinkConfirmDescription": "After unlinking, X can no longer dispatch tasks to this device; local projects and other channels are unaffected.",
+          "status": {
+            "checking": "Checking server support…",
+            "unavailable": "Not yet available on this server",
+            "disabled": "Disabled",
+            "none": "Not linked",
+            "pending": "Open X to authorize your account",
+            "awaiting_confirmation": "Confirm the authorization on X",
+            "confirmed": "{{user}} linked to {{bot}}",
+            "denied": "Authorization denied",
+            "expired": "Authorization link expired",
+            "failed": "Linking failed",
+            "revoked": "Unlinked",
+            "superseded": "Linked on another device"
+          }
+        }
+      },
+      "summary": {
+        "otherDevices": "{{count}} other device(s)",
+        "noOtherDevices": "No other devices",
+        "hostCount": "{{count}} host(s)",
+        "hostsConnected": "{{count}} connected",
+        "noHosts": "No hosts yet"
+      },
+      "revokeConfirm": {
+        "title": "Revoke access?",
+        "description": "Once revoked, this device is disconnected immediately and can no longer control this machine remotely. You will need to restore its access under Settings → Remote Connection before it can reconnect.",
+        "confirm": "Revoke access"
+      }
+    },
+    "tina": {
+      "chat": {
+        "title": "Chat",
+        "description": "Plain conversations without any repository; select \"chat\" from Slack, Telegram, or X, one session per conversation lane."
+      },
+      "prefs": {
+        "agentLabel": "Agent",
+        "modelLabel": "Model",
+        "effortLabel": "Reasoning effort",
+        "permissionLabel": "Permission mode",
+        "providerSlack": "Slack",
+        "providerTelegram": "Telegram",
+        "providerX": "X",
+        "requireConnected": "Editable once {{provider}} is connected (enable its switch above and wait for the connection).",
+        "requireBinding": "Complete {{provider}} account linking first.",
+        "serverUnsupported": "Server is too old or not responding; preferences cannot be loaded.",
+        "retry": "Retry",
+        "toast": {
+          "saveFailed": "Failed to save directory preferences"
+        },
+        "teamChipAria": "Choose which Slack workspace these preferences belong to"
+      }
+    },
+    "devices": {
+      "title": "Device Link",
+      "description": "Devices signed in with the same Feishu account can discover each other. Once \"Allow control\" is on, your other devices can remotely control {{appName}} on this machine.",
+      "allowControl": "Allow same-account devices to control this machine",
+      "allowControlHint": "When enabled, other devices signed in with the same account can control this machine without per-connection approval. A visible indicator is shown while being controlled, and you can disconnect at any time.",
+      "keepAwake": "Keep computer awake",
+      "keepAwakeHint": "When enabled, this machine won't go to sleep, so background agents and scheduled tasks keep running (you can still turn off the display or lock the screen).",
+      "linkStatus": {
+        "stopped": "Not connected",
+        "connecting": "Connecting…",
+        "online": "Connected"
+      },
+      "connectionIssue": {
+        "auth-failed": "Sign-in expired — please sign in again",
+        "replaced": "Connection replaced by another instance of this device",
+        "too-many-connections": "Connection limit reached for this account",
+        "version-mismatch": "Protocol version mismatch — please update the app",
+        "unstable": "Connection keeps dropping and reconnecting — check the network, or restart Cindy if it persists"
+      },
+      "refresh": "Refresh",
+      "empty": "No other devices yet. Sign in to {{appName}} with the same account on another computer and it will show up here.",
+      "thisDevice": "This device",
+      "status": {
+        "online": "Online",
+        "busy": "Busy"
+      },
+      "lastSeen": "Last seen {{time}}",
+      "justNow": "just now",
+      "minutesAgo": "{{count}} min ago",
+      "hoursAgo": "{{count}} h ago",
+      "daysAgo": "{{count}} d ago",
+      "rename": "Rename",
+      "renameConfirm": "Confirm",
+      "renameCancel": "Cancel",
+      "delete": "Delete",
+      "deleteOnlineHint": "Online devices cannot be deleted",
+      "error": {
+        "unavailable": "Device Link service is unavailable (not enabled on server or network error)",
+        "listFailed": "Failed to load device list"
+      },
+      "toast": {
+        "enabled": "Same-account devices can now control this machine",
+        "disabled": "Remote control disabled",
+        "toggleFailed": "Failed to toggle",
+        "controlEnabled": "Control for this device is on",
+        "controlDisabled": "Control for this device is off",
+        "controlToggleFailed": "Failed to toggle device control",
+        "keepAwakeOn": "Keep awake on — this computer won't sleep",
+        "keepAwakeOff": "Keep awake off",
+        "keepAwakeToggleFailed": "Failed to toggle keep awake",
+        "renameFailed": "Rename failed",
+        "deleted": "Device deleted",
+        "deleteOnline": "Device is online and cannot be deleted",
+        "deleteFailed": "Delete failed",
+        "disconnected": "Disconnected all remote connections",
+        "disconnectFailed": "Failed to disconnect remote connection",
+        "remoteSessionEnded": "The remote device ended this session"
+      },
+      "control": "Control",
+      "standbyHint": "Another Cindy instance on this computer is using the remote connection. Close it and this instance takes over automatically."
+    },
+    "imBot": {
+      "beta": "Beta",
+      "groups": {
+        "cindy": "Official",
+        "personal": "Personal"
+      },
+      "tips": {
+        "cindy": "Provided and maintained by Cindy. No need to create a bot or supply credentials—follow the connection steps to get started.",
+        "personal": "Use your own account or bot and manage the required credentials yourself. Each channel keeps its own account, permissions, and settings."
+      },
+      "defaults": {
+        "title": "New Conversation Configuration",
+        "channelDescriptions": {
+          "feishu": "New Feishu conversations use this Agent and model. Send /new in an existing DM to apply it.",
+          "slack": "New Slack threads use this Agent and model.",
+          "discord": "New Discord conversations use this Agent and model. Send /new in an existing DM to apply it.",
+          "wechat": "New WeChat conversations use this Agent, model, and permission mode. Send /new in an existing chat to apply them.",
+          "telegram": "New Telegram conversations use this Agent and model. Send /new in an existing conversation to apply it.",
+          "dingtalk": "New DingTalk conversations use this Agent and model. Send /new in an existing conversation to apply it.",
+          "wecom": "New WeCom conversations use this Agent, model, and permission mode. Send /new in an existing chat to apply them."
+        },
+        "agentLabel": "Agent",
+        "modelLabel": "Model Configuration",
+        "loading": "Loading new conversation configuration…",
+        "loadFailed": "Failed to load new conversation configuration",
+        "saveFailed": "Failed to save new conversation configuration",
+        "agents": {
+          "claude-code": "Claude Code",
+          "codex": "Codex",
+          "pi": "Pi"
+        }
+      }
+    },
+    "shortcuts": {
+      "title": "Keyboard Shortcuts",
+      "resetAll": "Reset all to defaults",
+      "reset": "Reset to default",
+      "recording": "Press new shortcut…",
+      "editAria": "Change shortcut for {{name}}",
+      "errors": {
+        "saveFailed": "Failed to save shortcut settings",
+        "notBindable": "This key combination cannot be used",
+        "systemReserved": "Reserved by the operating system",
+        "conflict": "Conflicts with \"{{name}}\"",
+        "voiceConflict": "Conflicts with the voice input shortcut",
+        "composerVoiceConflict": "Conflicts with the voice input shortcut. Change either the composer send shortcut or the voice input shortcut.",
+        "menuAccelerator": "This combination cannot be registered as a menu shortcut"
+      },
+      "items": {
+        "toggle-sidebar": {
+          "label": "Toggle sidebar",
+          "description": "Collapse or expand the session list sidebar"
+        },
+        "open-settings": {
+          "label": "Open settings",
+          "description": "Open the settings page"
+        },
+        "new-maker": {
+          "label": "New session",
+          "description": "Start a new session"
+        },
+        "close-tab-or-window": {
+          "label": "Close tab or window",
+          "description": "Close the active right panel tab when focused there, otherwise close the window"
+        },
+        "right-tab-prev": {
+          "label": "Previous right sidebar tab",
+          "description": "Switch to the previous tab in the right sidebar"
+        },
+        "right-tab-next": {
+          "label": "Next right sidebar tab",
+          "description": "Switch to the next tab in the right sidebar"
+        },
+        "find-in-page": {
+          "label": "Find in page",
+          "description": "Search text on the current page or in the open document"
+        },
+        "search-in-project": {
+          "label": "Search in project",
+          "description": "Search across the working directory while browsing documents"
+        },
+        "save-file": {
+          "label": "Save file",
+          "description": "Write the document being edited to disk"
+        },
+        "zoom-in": {
+          "label": "Zoom in",
+          "description": "Zoom in the app interface"
+        },
+        "zoom-out": {
+          "label": "Zoom out",
+          "description": "Zoom out the app interface"
+        },
+        "zoom-reset": {
+          "label": "Reset zoom",
+          "description": "Restore the default zoom level"
+        },
+        "browser-focus-url": {
+          "label": "Focus address bar",
+          "description": "Focus the address bar in the built-in browser"
+        },
+        "browser-back": {
+          "label": "Browser back",
+          "description": "Go back to the previous page in the built-in browser"
+        },
+        "browser-forward": {
+          "label": "Browser forward",
+          "description": "Go forward to the next page in the built-in browser"
+        },
+        "browser-reload": {
+          "label": "Reload page",
+          "description": "Reload the current page in the built-in browser"
+        },
+        "cycle-permission-mode": {
+          "label": "Cycle permission mode",
+          "description": "Cycle the session permission mode while the composer is focused"
+        },
+        "open-terminal": {
+          "label": "Open terminal",
+          "description": "Open a terminal in the right sidebar (focuses the existing one)"
+        },
+        "switch-session-1": {
+          "label": "Go to session 1",
+          "description": "Jump to the 1st visible session in the sidebar"
+        },
+        "switch-session-2": {
+          "label": "Go to session 2",
+          "description": "Jump to the 2nd visible session in the sidebar"
+        },
+        "switch-session-3": {
+          "label": "Go to session 3",
+          "description": "Jump to the 3rd visible session in the sidebar"
+        },
+        "switch-session-4": {
+          "label": "Go to session 4",
+          "description": "Jump to the 4th visible session in the sidebar"
+        },
+        "switch-session-5": {
+          "label": "Go to session 5",
+          "description": "Jump to the 5th visible session in the sidebar"
+        },
+        "switch-session-6": {
+          "label": "Go to session 6",
+          "description": "Jump to the 6th visible session in the sidebar"
+        },
+        "switch-session-7": {
+          "label": "Go to session 7",
+          "description": "Jump to the 7th visible session in the sidebar"
+        },
+        "switch-session-8": {
+          "label": "Go to session 8",
+          "description": "Jump to the 8th visible session in the sidebar"
+        },
+        "switch-session-9": {
+          "label": "Go to session 9",
+          "description": "Jump to the 9th visible session in the sidebar"
+        }
+      },
+      "none": "Not set",
+      "edit": "Edit",
+      "delete": "Delete",
+      "deleteAria": "Delete shortcut for {{name}}",
+      "cancel": "Cancel"
+    },
+    "ghosts": {
+      "title": "Plugins",
+      "description": "Tools and integrations that extend Cindy.",
+      "meka": {
+        "title": "Meka Plugins",
+        "description": "Browse and install plugins available to your current MCPRouter account.",
+        "createWithCindy": "Create Meka Plugin",
+        "createPromptLead": "This is a Meka Plugin creation task. Meka means the finished plugin will be published through the MCPRouter Meka Plugin channel. When calling ghost_forge_pack, you must pass channel: \"meka\" so the client records this installation's channel attribution. Do not invent a Meka source field in ghost.json; source identity comes from the publishing and installation channel. After packaging, clearly tell me where the generated .cindy file is and remind me to upload it in the MCPRouter admin console.",
+        "dev": {
+          "pickTitle": "Select a Meka Plugin Development Directory",
+          "loadDirectory": "Load from Directory (Development)",
+          "badge": "Development",
+          "ribbon": "DEV",
+          "syncError": "Development · Sync failed",
+          "confirmTitle": "Load development Plugin “{{name}}”?",
+          "confirmDescription": "Cindy Meka will continuously watch and trust this directory. Changes are validated and copied into the installed snapshot automatically; the last working version stays active if an update fails.",
+          "confirm": "Load and Watch",
+          "installed": "Loaded development Plugin “{{name}}”",
+          "installFailed": "Could not load the development Plugin",
+          "removeFailed": "Could not remove the development Plugin",
+          "packageAction": "Package",
+          "packageTitle": "Package development Plugin “{{name}}”",
+          "packageChecking": "Checking the MCPRouter connection. You can always package the current source snapshot locally.",
+          "packageConfigured": "Package the current source snapshot locally, or upload it to the configured MCPRouter as an immutable Release.",
+          "packageLocalOnly": "MCPRouter is not configured. You can only package the source snapshot locally.",
+          "packageLoginRequired": "Your MCPRouter login has expired. Sign in again to upload; local packaging remains available.",
+          "packageLocal": "Package Locally",
+          "packaging": "Packaging",
+          "upload": "Upload to MCPRouter",
+          "uploading": "Uploading",
+          "cancel": "Cancel",
+          "packageDialogTitle": "Save Meka Plugin Package",
+          "packageFileType": "Cindy Plugin Package",
+          "packageSaved": "Saved Plugin “{{name}}” to {{path}}",
+          "packageFailed": "Could not package Plugin",
+          "uploaded": "Uploaded Plugin “{{name}}” v{{version}}",
+          "uploadFailed": "Could not upload Plugin",
+          "configureRouter": "Configure Login",
+          "versionLabel": "Version",
+          "permissionLabel": "Plugin access",
+          "permissions": {
+            "private": "Only me",
+            "shared": "Specific people",
+            "public": "Public"
+          },
+          "sharedUsersLabel": "People with access",
+          "sharedUsersPlaceholder": "Enter exact usernames, separated by commas or new lines",
+          "sharedUsersRequired": "Specific people requires at least one username",
+          "checkingPublishInfo": "Syncing the version and access settings from MCPRouter…",
+          "publishInfoFailed": "Could not load the version and access settings from MCPRouter",
+          "versionAlreadyExists": "MCPRouter already has v{{currentVersion}}. This action only synchronizes access; bump the version before publishing new content.",
+          "versionUpdate": "MCPRouter currently has v{{currentVersion}}. This will publish v{{nextVersion}}.",
+          "syncAccess": "Sync Access",
+          "syncingAccess": "Syncing Access",
+          "accessSynced": "Plugin access synchronized",
+          "updateConfirmTitle": "Update this Plugin?",
+          "updateConfirmDescription": "MCPRouter currently has v{{currentVersion}}. This publishes immutable v{{nextVersion}} and synchronizes the selected access.",
+          "updateConfirmAction": "Confirm Update"
+        },
+        "origin": {
+          "public": "Public",
+          "local": "Personal & shared"
+        },
+        "empty": "No Meka plugins available",
+        "emptyHint": "Connect MCPRouter, or upload, publish, or share a plugin from its admin console."
+      },
+      "page": {
+        "search": "Search plugins",
+        "clearSearch": "Clear Plugin Search",
+        "addPlugin": "Add plugin",
+        "addPluginAria": "Plugin add options",
+        "createWithCindy": "Create with Cindy",
+        "createPrompt": "I want to create a Cindy plugin. First call ghost_forge_guide to get the handbook's table of contents, read chapter 0 (design alignment) first, then read the relevant chapters via the section parameter (at minimum the sandbox red-lines and packaging chapters) before writing any code; do not start implementing yet. Begin by asking questions: prefer option-based question cards, one key decision per card with your recommended choice marked, and proactively surface design options I may not know about — such as the UI form (docked panel, panel inside the Plugins page, chat card, or no UI), a $ command word, launch mode, network access, and whether a settings page is needed. Step by step, confirm the problem to solve, target users, interaction flow, required tools and connections, permission boundaries, and acceptance criteria. After I confirm the design, implement and validate it according to the specification, then call ghost_forge_pack to package and install the plugin.",
+        "installedTitle": "Installed Plugins",
+        "installedExpand": "Show {{count}} more installed plugins",
+        "installedCollapse": "Hide additional installed plugins",
+        "allTitle": "All plugins",
+        "filterAll": "All",
+        "filtersAria": "Filter plugins by source",
+        "origin": {
+          "public": "Public",
+          "organization": "Team shared",
+          "local": "Local",
+          "custom": "Custom"
+        },
+        "emptyFiltered": "No matching plugins",
+        "useAction": "Use",
+        "useAria": "Use {{name}}",
+        "installedSection": "Installed",
+        "recommendedSection": "Recommended",
+        "updatesAvailable": "{{count}} plugin updates available",
+        "updateAll": "Update all",
+        "ignoreRound": "Ignore this round",
+        "updateTo": "Update to v{{version}}",
+        "updateAria": "Update {{name}} to v{{version}}",
+        "usePanelAction": "Use",
+        "chatAction": "Chat",
+        "chatAria": "Chat with {{name}}",
+        "manageAction": "Manage",
+        "manageAria": "Manage {{name}}",
+        "agentInvoked": "Invoked by Agent",
+        "upToDate": "Up to date",
+        "installAria": "Install {{name}}"
+      },
+      "market": {
+        "scopeAria": "Filter plugin sources",
+        "scope": {
+          "all": "All",
+          "public": "Public",
+          "organization": "Organization",
+          "personal": "Personal",
+          "local": "Local",
+          "custom": "Custom"
+        },
+        "install": "Install",
+        "preparing": "Preparing…",
+        "downloading": "Downloading {{percent}}%…",
+        "installing": "Installing…",
+        "updating": "Updating…",
+        "details": "Details",
+        "update": "Update from market",
+        "updateAvailable": "Update available",
+        "updateAction": "Update",
+        "updateAria": "Update {{name}}",
+        "updateTo": "Update to v{{version}}",
+        "installed": "Installed",
+        "conflict": "Plugin ID conflict",
+        "unavailable": "The plugin market is temporarily unavailable. Installed plugins remain available.",
+        "authenticationRequired": "Sign in to Cindy to view the plugin market.",
+        "notConfigured": "The plugin market is not configured for this environment. Installed plugins remain available.",
+        "errors": {
+          "generic": "The plugin market operation failed. Please try again.",
+          "invalidRequest": "The plugin request is invalid.",
+          "notFound": "This plugin is no longer available. Refresh the market and try again.",
+          "conflict": "Another installed or market plugin uses the same plugin ID.",
+          "stateChanged": "The account, plugin, or release changed during this operation. Review the latest state and try again.",
+          "accessDenied": "This plugin operation is not permitted or was cancelled.",
+          "notConfigured": "The plugin market is not available in this environment.",
+          "invalidPackage": "This plugin package is invalid or is not supported by this version of Cindy."
+        },
+        "securityTitle": "Install and permissions",
+        "securityDescription": "Cindy verifies package size and SHA-256 in the main process, validates the plugin manifest, then installs atomically. First-time installs are enabled automatically and can be disabled anytime on the Plugins page; updates keep the current enabled state.",
+        "noPermissions": "This plugin declares no additional capabilities.",
+        "installConfirmTitle": "Install “{{name}}”?",
+        "installConfirmDescription": "The package will be verified for integrity and manifest compatibility. The plugin is enabled automatically after install; you can disable it or adjust its setup anytime.",
+        "updateConfirmDescription": "The package will be verified for integrity and manifest compatibility, then replace the installed version. Its current enabled state stays unchanged.",
+        "customSecurityDescription": "This plugin comes from a custom marketplace you added and has not been verified by the Cindy server. Its manifest is validated in the main process before install. First-time installs are enabled automatically and can be disabled anytime on the Plugins page.",
+        "customInstallConfirmDescription": "This plugin comes from a custom marketplace and has not been verified for integrity by the server; its manifest will be validated before install. The plugin is enabled automatically after install; you can disable it or adjust its setup anytime.",
+        "sources": {
+          "addMarketplace": "Add Plugin Marketplace…",
+          "dialogTitle": "Add Plugin Marketplace",
+          "dialogDescription": "Add a plugin marketplace from a GitHub repository, Git URL, or local folder.",
+          "learnMore": "Learn more",
+          "sourceLabel": "Source",
+          "sourcePlaceholder": "openai/plugins or git@github.com:org/repo.git",
+          "refLabel": "Git Ref",
+          "refPlaceholder": "Main branch",
+          "sparseLabel": "Sparse Paths",
+          "sparsePlaceholder": "One path per line, e.g. plugins/codex",
+          "gitUnavailable": "Git is not installed or is older than 2.25. Git sources are unavailable; local folder sources still work.",
+          "listTitle": "Added Marketplaces",
+          "pluginCount": "{{count}} plugins",
+          "sourceError": "Unavailable",
+          "localBadge": "Local",
+          "defaultRef": "Default branch",
+          "neverSynced": "Never synced",
+          "refresh": "Refresh",
+          "remove": "Remove",
+          "removeConfirmTitle": "Remove marketplace \"{{name}}\"?",
+          "removeConfirmDescription": "Plugins from this marketplace will no longer be listed. Installed plugins are kept.",
+          "close": "Close",
+          "add": "Add Marketplace",
+          "errors": {
+            "invalidSource": "Invalid source. Use a GitHub owner/repo, a Git URL, or a local folder path.",
+            "gitUnavailable": "Git is not installed or is older than 2.25, so Git sources cannot be added.",
+            "cloneAuthFailed": "Cannot access this repository. For private repositories, configure Git authentication on this machine first (credential helper or SSH key).",
+            "credentialsNotAllowed": "The source URL cannot contain a username or password. Use system Git authentication instead (credential helper or SSH key).",
+            "cloneFailed": "Failed to clone the repository. Check your network or proxy settings and try again.",
+            "refNotFound": "The specified Git ref was not found. Check the branch or tag name.",
+            "manifestMissing": "No supported marketplace.json manifest was found in this source.",
+            "duplicate": "This marketplace has already been added.",
+            "notFound": "This marketplace does not exist or has been removed."
+          },
+          "guide": {
+            "title": "Custom Plugin Marketplace Guide",
+            "intro": "A plugin marketplace is a Git repository or local folder with a manifest file, used to distribute a set of Cindy plugins.",
+            "structureTitle": "Directory Structure",
+            "structureBody": "A marketplace needs one manifest file plus one directory per plugin. Every plugin directory must contain a valid ghost.json (the plugin identity card).",
+            "structureLabelManifest": "manifest",
+            "structureLabelGhostCard": "Plugin card",
+            "structureLabelEntry": "Plugin entry",
+            "structureNote": "The manifest can live in one of these locations:",
+            "manifestTitle": "Manifest Format",
+            "manifestBody": "name is the unique identity of the marketplace (you manage it by this name after adding). Each source in the plugins array points to a plugin directory inside the repository as a relative path; the object form {\"source\": \"local\", \"path\": \"…\"} is also supported.",
+            "sourceTitle": "Source Formats",
+            "sourceBody": "Accepted sources: GitHub shorthand owner/repo, full Git URLs (https / ssh / git@), and local folder paths (~ supported). Git ref accepts a branch, tag, or commit; leave empty for the default branch. Sparse paths (one per line) check out only the listed subdirectories — useful for large repositories.",
+            "authTitle": "Private Repositories",
+            "authBody": "Authentication relies entirely on your system Git configuration — Cindy never stores Git credentials. SSH: a working key must be configured on this machine; if the organization enforces SAML SSO, authorize the key for that organization via Configure SSO in your GitHub SSH key settings. HTTPS: use a Personal Access Token stored by the system credential helper.",
+            "rulesTitle": "Install Rules",
+            "rulesBody": "Plugin ids are globally unique, first come first served — conflicts with installed plugins are called out explicitly. Plugins using officially reserved prefixes like cindy- cannot be installed from custom marketplaces. Before install, every permission the plugin declares is shown for review; confirming completes the install and enables the plugin.",
+            "copy": "Copy guide",
+            "copied": "Guide copied to clipboard.",
+            "copyFailed": "Copy failed. Please try again."
+          }
+        }
+      },
+      "install": "Install Plugin…",
+      "empty": "No plugins installed yet",
+      "emptyHint": "Install from the market, or import a .cindy file from the menu above",
+      "legacyRecovery": {
+        "title": "Plugins from an older version are waiting to be restored",
+        "deferred": "Found {{count}} older plugin directory. Cindy deferred restoration to avoid moving data while another instance may still be using it.",
+        "deferred_one": "Found {{count}} older plugin directory. Cindy deferred restoration to avoid moving data while another instance may still be using it.",
+        "deferred_other": "Found {{count}} older plugin directories. Cindy deferred restoration to avoid moving data while another instance may still be using it.",
+        "partial": "Found {{count}} older plugin directory. Some data was not restored automatically, so you can retry now.",
+        "partial_one": "Found {{count}} older plugin directory. Some data was not restored automatically, so you can retry now.",
+        "partial_other": "Found {{count}} older plugin directories. Some data was not restored automatically, so you can retry now.",
+        "partialBlocked": "Found {{count}} older plugin directory, but Cindy could not safely restore it automatically. The data was kept unchanged.",
+        "partialBlocked_one": "Found {{count}} older plugin directory, but Cindy could not safely restore it automatically. The data was kept unchanged.",
+        "partialBlocked_other": "Found {{count}} older plugin directories, but Cindy could not safely restore them automatically. The data was kept unchanged.",
+        "claimedByOtherOwner": "Found {{count}} older plugin directory, but it belongs to the first account that claimed this device data. Switch back to that account to restore it.",
+        "claimedByOtherOwner_one": "Found {{count}} older plugin directory, but it belongs to the first account that claimed this device data. Switch back to that account to restore it.",
+        "claimedByOtherOwner_other": "Found {{count}} older plugin directories, but it belongs to the first account that claimed this device data. Switch back to that account to restore it.",
+        "retry": "Retry restoring",
+        "retrying": "Restoring…"
+      },
+      "disabledTag": "Disabled",
+      "projectDisabledTag": "Off in this project",
+      "projectSwitchLockedTip": "This plugin is disabled globally; enable it in the Global view first",
+      "projectBanner": {
+        "title": "Configuring project \"{{name}}\"",
+        "desc": "Switches here only affect this project — turned-off plugins are unavailable in it",
+        "backToGlobal": "Back to global"
+      },
+      "scopePicker": {
+        "global": "Global (default)",
+        "ariaLabel": "Choose where plugins take effect",
+        "browse": "Choose another folder…"
+      },
+      "enableAria": "Enable {{name}}",
+      "uninstall": "Uninstall",
+      "uninstallConfirm": {
+        "title": "Uninstall \"{{name}}\"?",
+        "description": "Its panel and capabilities will be removed. Its layout spot is kept and restored if you install it again.",
+        "cancel": "Cancel"
+      },
+      "setupGate": {
+        "title": "“{{name}}” Needs Setup",
+        "descriptionMissing": "Before using it, set up: {{items}}. Open the plugin settings now?",
+        "descriptionReauth": "Account authorization has expired: {{items}}. Reconnect to keep using it. Open the plugin settings now?",
+        "configure": "Open Settings",
+        "cancel": "Cancel",
+        "anySeparator": " or ",
+        "groupSeparator": ", "
+      },
+      "toast": {
+        "installed": "Installed \"{{name}}\"",
+        "uninstalled": "Uninstalled \"{{name}}\"",
+        "installedAsleep": "Installed \"{{name}}\" (disabled — enable it here anytime)",
+        "updated": "\"{{name}}\" updated to v{{version}}",
+        "projectDisabled": "Turned off \"{{name}}\" for this project",
+        "projectEnabled": "\"{{name}}\" now follows the global setting in this project",
+        "exported": "Exported the .cindy file for \"{{name}}\"",
+        "exportFailed": "Couldn't export \"{{name}}\" — try again"
+      },
+      "panelError": {
+        "crashed": "This plugin crashed",
+        "fused": "This plugin crashed repeatedly and was paused",
+        "reload": "Reload plugin",
+        "close": "Close plugin"
+      },
+      "installConfirm": {
+        "title": "Install plugin “{{name}}”?",
+        "confirm": "Install plugin",
+        "cancel": "Cancel",
+        "meta": "Version {{version}}. Installs locally and can be uninstalled anytime.",
+        "metaWithAuthor": "By {{author}} · Version {{version}}. Installs locally and can be uninstalled anytime.",
+        "enableNow": "Enable right after install",
+        "enableNowOpenTab": "Enable and open its tab right after install",
+        "expandDescription": "Show Full Description",
+        "collapseDescription": "Hide Full Description",
+        "enableNowOpenPanel": "Enable and open its panel right after install"
+      },
+      "trust": {
+        "official": "Official Cindy plugin",
+        "officialDetail": "Bundled with Cindy.",
+        "reviewed": "Verified publisher · This version was reviewed",
+        "reviewedDetail": "The signatures are valid and the Cindy review signature matches every file in this exact version.",
+        "verifiedPublisher": "Verified publisher: {{publisher}}",
+        "verifiedPublisherDetail": "The signature is valid and the files are unchanged, but this exact version has no Cindy review signature.",
+        "signedUnverified": "Signed, but publisher identity is unverified: {{publisher}}",
+        "signedUnverifiedDetail": "The signature proves the files are unchanged, but this Cindy version does not recognize the publisher key.",
+        "unsigned": "Unverified / unsigned",
+        "unsignedDetail": "The source and whether the package changed after distribution cannot be verified.",
+        "unknownPublisher": "Unknown publisher",
+        "unknownReviewerDetail": "The package claims a review, but this Cindy version does not recognize the reviewer key, so it is not shown as reviewed."
+      },
+      "perm": {
+        "grantsTitle": "After installing it will have:",
+        "toolsGroup": "Registered Tools",
+        "toolsDiffGroup": "Registered Tool Changes",
+        "itemCount": "{{count}} total",
+        "cindyImageGenerate": "Image generation (delegated to Cindy)",
+        "cindyImageEdit": "Image editing (delegated to Cindy, its own images only)",
+        "cindyVideoGenerate": "Video generation (delegated to Cindy)",
+        "cindyVideoEdit": "Image-to-video (delegated to Cindy, reference images from its own media only)",
+        "cindyMediaDeposit": "Can save images, video or audio it holds into your media library",
+        "cindyMediaDepositDetail": "This lets AI work on material you paste or drop into the plugin. Saved items are recorded under this plugin, use at most {{quota}}, and are cleaned up when you uninstall it.",
+        "agentUserAction": "Can start a new Agent turn after you click a plugin card",
+        "agentUserActionDetail": "Each click permits one turn only, and only in the session that owns the card.",
+        "agentBackground": "Can automatically start new Agent turns in the background",
+        "agentBackgroundDetail": "Does not require a click each time, but can only use sessions you previously connected to this plugin. Model charges may apply.",
+        "nodeRuntime": "Can run a bundled Node program on this computer",
+        "nodeMcp": "Can run a bundled stdio MCP on this computer",
+        "nodeRuntimeDetail": "High risk: it has the same local access as your user account, including files, network, and starting other programs. Cindy cannot contain it in the browser sandbox.",
+        "nodeSecret": "Can provide the stored credential “{{name}}” to the local Node program",
+        "nodeSecretDetail": "Cindy stores it encrypted and injects it only while the declared Worker methods below run. The Node program receives the plaintext and can return, log, save, or otherwise expose it to browser-side plugin code or Agent parameters. Only install plugins you trust.",
+        "nodeResident": "The Node program can stay running in the background",
+        "nodeResidentDetail": "Runs while the plugin is enabled and stops when disabled, updated, uninstalled, or when Cindy exits.",
+        "tool": "Tool \"{{name}}\"",
+        "command": "Chat command ${{command}}",
+        "panelLeft": "Panel \"{{title}}\" · docked left of the chat",
+        "panelTab": "Panel \"{{title}}\" · opens inside the Plugins page",
+        "code": "Executable code",
+        "codeDetail": "Runs in an isolated sandbox with no access to your files or network.",
+        "resident": "Always-on (starts when enabled, keeps a background process even when idle)",
+        "residentDetail": "Uses a small amount of memory while idle; the process stops immediately when it is disabled or uninstalled.",
+        "subscribeTopics": "Observes your session activity (turn and session events, no message content)",
+        "subscribeHooks": "Can read, block, or rewrite the messages you send",
+        "subscribeHooksDetail": "Reviews each message before sending: it may block it or rewrite the text before it goes out; blocked messages can be edited and resent.",
+        "subscribeAssistantReply": "Can read and rewrite the AI's replies",
+        "subscribeAssistantReplyDetail": "Processes each AI reply after it completes: it may polish or rewrite the text (replacing it directly, without keeping the original), or replace the reply bubble with its own rendered card (in that case the original text is kept and can be viewed with one tap).",
+        "card": "Renders message cards",
+        "cardExternalLink": "Cards may declare external links that open your browser after confirmation",
+        "cardExternalLinkDetail": "Clicking a card link shows a confirmation dialog; the URL opens in your system browser only after you approve. Only http/https addresses are allowed.",
+        "notify": "Can show system tips (light banner at the top of the screen)",
+        "notifyDetail": "Tip text is provided by this plugin and labeled with its name; tips fade automatically and never block your work.",
+        "fsWrite": "Can write files (create / modify)",
+        "fsWriteDetail": "Its own private data folder is always writable. Writes into the current session's working directory follow the session's permission mode (auto-approve modes write directly; per-action modes ask you first). Any other folder always requires your confirmation. Files are always written by the host — the plugin itself never touches your file system.",
+        "reveal": "Can show a local file in your system file manager",
+        "revealDetail": "The plugin can ask Cindy to select an existing local file in Explorer or Finder. This does not grant file read or write access; each path is rechecked by the host and the path is not returned to the plugin.",
+        "networkHost": "Accesses the network domain {{host}}",
+        "networkSecret": "Needs a credential from you: \"{{name}}\"",
+        "networkSecretGhostInputDetail": "Collected by this plugin's own settings UI — the plugin page sees the value at entry time. It is then handed to the host in one step for encrypted storage; once stored, the plugin can never read it back, and the host injects it only for the domains it declares.",
+        "networkSecretIdentity": "Will use your login email as the credential \"{{name}}\"",
+        "networkSecretIdentityDetail": "The value comes from your signed-in account's email, derived and injected by the host at request time; nothing to fill in. The plugin can read this email to show the current identity in its settings UI.",
+        "networkSecretOauth": "Will guide you through OAuth authorization at {{host}} ({{name}})",
+        "networkSecretOauthDetail": "The authorization flow and all tokens are managed by the host and can never be read by the plugin code; you provide the client credentials on the plugin detail page. The requested permission scopes are listed verbatim below — review them before approving.",
+        "networkConnections": "Can connect to {{label}} addresses you add",
+        "networkConnectionsDetail": "Addresses are added in this plugin's settings UI; every new address requires your confirmation, and the credential you provide is injected only for its own address.",
+        "codeDetailNetwork": "Runs in an isolated sandbox with no access to your files; network access is limited to the domains listed above, relayed by the host.",
+        "codeDetailWithNode": "The panel UI runs in an isolated sandbox; local processing is provided by the Node runtime declared above.",
+        "added": "New",
+        "removed": "Removed",
+        "unchanged": "{{count}} other permissions unchanged",
+        "noChange": "No permission changes.",
+        "pick": "Can ask you to pick a folder for it",
+        "pickDetail": "When it asks, Cindy shows the system folder picker; you decide what to share, and cancelling gives it nothing.",
+        "workspace": "Can ask to create a session entry for a project folder in the sidebar",
+        "workspaceDetail": "When it asks, you either pick the folder yourself or see the full path on a confirmation card before deciding; while it is handling a call you started, subfolders inside the current session's working directory are used directly without an extra prompt. Folders that already have a session are reused, and what gets created is an empty session — nothing starts running on its own.",
+        "sessionContext": "Can learn which project folder the current session is working in",
+        "sessionContextDetail": "Shares only location facts (session ID and project folder path) while it works for the current session — no file contents, and no file access is granted.",
+        "preview": "Can open preview pages from the sites below in the sidebar browser",
+        "previewDetail": "Only the sites listed below can be opened; every page it opens is attributed to this plugin.",
+        "nodeChildSpawn": "Its Node program can ask the host to start declared sub-processes from its package",
+        "nodeChildSpawnDetail": "Only JS files declared inside its own package can be started (same local permissions as the main program); arbitrary commands cannot be executed. Sub-processes are closed together when the plugin is disabled or exits.",
+        "skill": "Adds the skill \"{{name}}\" to your AI assistants",
+        "skillDetail": "A skill is an instruction file the AI loads and follows as its own, with your full permissions, in Claude Code and Codex, across every project — it is not confined to this plugin's sandbox. It stays available while the plugin is enabled and is removed when the plugin is disabled or uninstalled; turning the plugin off for a single folder does not hide it. The full skill text cannot be previewed here — only install plugins you trust.",
+        "cindyTextOneshot": "Can ask Cindy's fast lane a question and receive a text answer",
+        "cindyTextOneshotDetail": "Uses the system's lightweight utility model chain (the same lane as auto titles). No Agent involved and no file access. Model charges may apply.",
+        "agentErrand": "Can hand tasks to the Cindy Agent and collect the result",
+        "agentErrandDetail": "Tasks run in this plugin's dedicated session, always visible in the sidebar and stoppable at any time. Read-only by default; raising the level requires your change in the plugin settings. Model charges may apply.",
+        "atResourceProvider": "Can search Plugin resources in @ using \"{{name}}\"",
+        "atResourceProviderDetail": "The tool runs only after you explicitly select this Plugin in @. Plugin authors must keep this search free of side effects.",
+        "subscribeActivity": "Observes when the AI is thinking and when it is waiting on you",
+        "subscribeActivityDetail": "Sees only the timing: when thinking starts and ends, and when the AI is waiting for your approval or your answer. It never sees the reasoning text, the action awaiting approval, the command or file involved, the plan, the question, or your answer — and it cannot approve anything on your behalf.",
+        "badge": "Can light an unread mark on the Plugins entry",
+        "badgeDetail": "When it has something new, it can show a green dot on the sidebar Plugins entry and on its own card, with a one-line summary. Opening its panel clears the dot. The dot makes no sound, does not vibrate, never reaches your system notification center, and is a permission separate from system tips.",
+        "confirm": "Can ask for your confirmation in a dialog",
+        "confirmDetail": "Before acting it can open a dialog that looks like Cindy's own to ask you. The question comes from the plugin and the dialog is labeled with its name; only you can click confirm or cancel — the plugin cannot. At most one dialog at a time, and asking too often is blocked.",
+        "networkSecretOrganizationIdentity": "Will use your Cindy organization identity as the credential \"{{name}}\"",
+        "networkSecretOrganizationIdentityDetail": "Cindy issues a short-lived identity assertion when needed, and the host sends it only to the explicitly listed service hosts. The plugin code cannot read or store the token."
+      },
+      "connections": {
+        "confirmTitle": "Add connection address",
+        "confirmMessage": "Plugin \"{{name}}\" requests to add the connection address {{host}}",
+        "confirmDetail": "If allowed, this plugin can reach this address via the host ({{label}}); the credential you provide is injected only into requests to this address.",
+        "confirmAllow": "Allow",
+        "confirmCancel": "Cancel"
+      },
+      "errors": {
+        "fileInvalid": "Not a valid .cindy plugin file",
+        "alreadyInstalled": "This plugin is already installed",
+        "commandConflict": "Its command conflicts with an installed plugin. Uninstall the other one or rename the command.",
+        "idReserved": "This id uses the reserved official prefix cindy-; it is only available to plugins bundled with the app",
+        "sourceMissing": "The selected file could not be found",
+        "generic": "Operation failed. Please try again.",
+        "updateIdMismatch": "The selected file is plugin \"{{id}}\", which does not match this plugin \"{{expected}}\""
+      },
+      "detail": {
+        "enable": "Enable",
+        "backToList": "Back to plugins",
+        "infoTitle": "Details",
+        "infoId": "Identifier",
+        "infoAuthor": "Author",
+        "infoTrust": "Source & signature",
+        "byAuthor": "By {{author}}",
+        "infoPanel": "Panel",
+        "infoLocation": "Install location",
+        "expandInfoValue": "Show full {{label}}",
+        "collapseInfoValue": "Collapse {{label}}",
+        "copyLocation": "Copy install location",
+        "locationCopied": "Install location copied",
+        "locationCopyFailed": "Could not copy the install location. Copy it manually.",
+        "openLocation": "Open install location",
+        "panelDocked": "Docked · min width {{min}}px",
+        "panelNotDocked": "Not docked (no layout record yet)",
+        "panelNone": "This plugin has no panel",
+        "customSlotTitle": "Plugin custom settings area",
+        "dangerTitle": "Uninstall plugin",
+        "infoContents": "Contains",
+        "infoVersion": "Version",
+        "updateTitle": "Update version",
+        "updateDesc": "Pick a new .cindy file to replace the installed version in place; enabled state and panel position are preserved.",
+        "cindyPrefs": {
+          "title": "Cindy abilities",
+          "desc": "Each Cindy delegation ability this plugin requested can be pinned to a specific model; defaults follow the system (built-in proxy).",
+          "cap": {
+            "image.generate": "Image generation",
+            "image.edit": "Image editing",
+            "video.generate": "Video generation",
+            "video.edit": "Image-to-video",
+            "text.oneshot": "Quick answer (text)"
+          },
+          "defaultOption": "{{model}} (default)",
+          "noModels": "No models available"
+        },
+        "toolsTitle": "Tools",
+        "permissionsTitle": "Permissions",
+        "infoDescription": "Description",
+        "customSlotAsleep": "This plugin is disabled. Enable it to see its settings UI here.",
+        "descriptionExpand": "Show more",
+        "descriptionCollapse": "Show less",
+        "useAction": "Use Plugin",
+        "openPanelAction": "Open Interface",
+        "openPanelDisabled": "Enable this Plugin before opening its interface",
+        "closePanel": "Close Plugin Interface",
+        "useDisabled": "Enable this Plugin before using it",
+        "moreActions": "More Plugin Actions",
+        "updateFromFile": "Update from .cindy File…",
+        "settingsTitle": "{{name}} Settings",
+        "settingsUnavailableUntilRestore": "Restore the plugin to use this configuration again.",
+        "configurationTitle": "Configuration",
+        "panelPresentation": {
+          "title": "Opening Method",
+          "description": "Only affects this Plugin. “Follow Default” uses Settings → Meka Assistant → Default Plugin Opening.",
+          "aria": "Choose how this Plugin opens",
+          "options": {
+            "inherit": "Follow Default",
+            "docked": "Dock Beside Conversation",
+            "modal": "Open in Modal"
+          }
+        },
+        "openTool": "View details for Tool {{name}}",
+        "noToolDescription": "No description is available for this Tool.",
+        "viewAllTools": "See All",
+        "collapseTools": "Collapse Tools",
+        "viewAllPermissions": "See All",
+        "permissionsDialogDescription": "All {{count}} permissions requested by this Plugin",
+        "closeDialog": "Close Dialog",
+        "panelPageHosted": "Opens from the Plugin page · closes when you leave",
+        "errandPrefs": {
+          "title": "AI errands",
+          "desc": "How this plugin's tasks run when it hands work to the Cindy Agent. Unset fields follow your new-draft preferences; the helper is read-only by default and works in a dedicated folder.",
+          "agent": "Agent",
+          "model": "Model",
+          "permission": "Write access",
+          "permissionDisabled": "Not available for errand sessions",
+          "workdir": "Working folder",
+          "workdirDefault": "Plugin's dedicated folder (default)",
+          "workdirPick": "Choose…",
+          "workdirClear": "Reset to default folder"
+        },
+        "chatAction": "Chat",
+        "enabledLabel": "Enabled",
+        "disabledLabel": "Disabled",
+        "exportPackage": "Export .cindy File…",
+        "exportFileType": "Cindy Plugin"
+      },
+      "contents": {
+        "panel": "Panel",
+        "settingsUi": "Custom settings UI",
+        "code": "Executable code",
+        "slotCindy": "Cindy delegation",
+        "slotAgent": "Starts Agent turns",
+        "slotNode": "Local Node program",
+        "slotTool": "Tools",
+        "slotSubscribe": "Message subscription",
+        "slotCard": "Message cards",
+        "slotNetwork": "Network access",
+        "slotNotify": "System tips",
+        "slotFs": "File writing",
+        "slotSkill": "Agent skills",
+        "slotReveal": "File manager reveal",
+        "slotWorkspace": "Workspace sessions",
+        "slotBadge": "Unread badge"
+      },
+      "commandPaletteTag": "Plugin command",
+      "updateConfirm": {
+        "title": "Update plugin \"{{name}}\"?",
+        "body": "Version {{from}} → {{to}}. This replaces the installed version; enabled state and panel position are preserved.",
+        "confirm": "Update",
+        "cancel": "Cancel"
+      },
+      "pick": {
+        "dialogTitle": "Choose a folder",
+        "dialogMessage": "Plugin “{{name}}” is asking you to choose a folder",
+        "fileDialogTitle": "Choose a file",
+        "fileDialogMessage": "Plugin “{{name}}” is asking you to choose a file"
+      },
+      "workspace": {
+        "dialogTitle": "Choose a project folder",
+        "dialogMessage": "Plugin “{{name}}” is asking you to choose a project folder to create a session in the sidebar"
+      },
+      "confirm": {
+        "dialogTitle": "Plugin “{{name}}” needs your confirmation"
+      },
+      "panelHost": {
+        "close": "Close panel"
+      },
+      "updateAll": {
+        "title": "Update all · {{count}} plugins",
+        "description": "Updates without permission changes finish automatically; permission expansions need your per-item approval.",
+        "versionRange": "v{{from}} → v{{to}}",
+        "permissionChanged": "Permissions changed",
+        "reviewOutdated": "Permission diff outdated",
+        "rereview": "Review again",
+        "reviewDiff": "Review & confirm",
+        "collapseDiff": "Collapse",
+        "approve": "Approve & update",
+        "skip": "Skip",
+        "statusPending": "Queued",
+        "statusInstalling": "Updating…",
+        "statusDone": "Updated",
+        "statusSkipped": "Skipped",
+        "statusFailed": "Update failed",
+        "background": "Continue in background",
+        "doneAction": "Done",
+        "doneToast": "Batch update finished: {{done}} updated, {{rest}} not completed"
+      }
+    },
+    "mcp": {
+      "title": "External tools",
+      "subtitle": "Connect your own remote MCP servers. HTTP/Streamable HTTP servers work with both Claude and Codex; SSE is Claude-only.",
+      "cancel": "Cancel",
+      "save": "Save",
+      "editAria": "Edit",
+      "deleteAria": "Delete",
+      "addCustom": {
+        "title": "Add MCP server",
+        "subtitle": "Enter a remote MCP endpoint (http/sse)"
+      },
+      "dialog": {
+        "createTitle": "Add MCP server",
+        "editTitle": "Edit MCP server",
+        "desc": "Remote http / sse MCP only. New sessions can call it after saving; in-flight sessions are unaffected."
+      },
+      "fields": {
+        "name": "Display name",
+        "namePlaceholder": "e.g. My toolbox",
+        "transport": "Transport",
+        "url": "Endpoint URL",
+        "urlPlaceholder": "https://example.com/mcp",
+        "token": "Bearer token (optional)",
+        "tokenPlaceholder": "Enter auth token",
+        "tokenEditPlaceholder": "Leave blank to remove the saved token",
+        "tokenSaved": "Saved",
+        "tokenHelp": "Used for auth: Claude sends it as an Authorization: Bearer header; Codex only supports Bearer auth.",
+        "headers": "Headers (optional)",
+        "headerNamePlaceholder": "Header name",
+        "headerValuePlaceholder": "Value",
+        "addHeader": "Add header",
+        "removeRow": "Remove row"
+      },
+      "errors": {
+        "nameRequired": "Display name is required",
+        "urlInvalid": "Enter a valid http(s) URL"
+      },
+      "toast": {
+        "created": "MCP server added",
+        "updated": "MCP server updated",
+        "deleted": "MCP server deleted",
+        "saveFailed": "Failed to save",
+        "deleteFailed": "Failed to delete"
+      },
+      "deleteConfirm": {
+        "title": "Delete \"{{name}}\"?",
+        "message": "New sessions will no longer load this MCP.",
+        "confirm": "Delete"
+      }
+    },
+    "contacts": {
+      "title": "Smart Contacts",
+      "description": "A people and organization directory built for agents: cross-platform identity resolution (email / Feishu / Slack / GitHub id → who is this), relationship context, and dated event records. Agents collect entries as they work; low-confidence ones land in a pending queue for your review. Data stays on this device by default, with optional device sync; lookups and organizing are processed through your own model.",
+      "enable": {
+        "label": "Enable Smart Contacts",
+        "description": "When on, agents can look up and automatically collect contact information (uncertain entries go to pending review). Turning it off does not affect browsing or managing existing data here.",
+        "toggleAria": "Toggle Smart Contacts"
+      },
+      "sync": {
+        "label": "Sync across my devices",
+        "description": "Enable once on each desktop you want to include. Online devices sync automatically, connecting directly on the same local network when possible or using end-to-end encrypted relay data. Comparison is programmatic, with no model or token usage.",
+        "toggleAria": "Toggle contact device sync",
+        "syncNow": "Sync now",
+        "onlineDevices_one": "{{count}} other device online",
+        "onlineDevices_other": "{{count}} other devices online",
+        "route": {
+          "lan": "Local network",
+          "relay": "Encrypted relay"
+        },
+        "status": {
+          "loading": "Reading sync status…",
+          "signInRequired": "Sign in to your Cindy account to sync between devices",
+          "off": "Sync is off",
+          "waiting": "Waiting for another sync-enabled desktop to come online",
+          "syncing": "Syncing securely…",
+          "ready": "Ready — devices will sync when they come online",
+          "lastSuccess": "{{device}} · {{time}} · {{route}}"
+        },
+        "error": {
+          "secure-storage-unavailable": "System secure storage is unavailable, so the device key cannot be protected",
+          "peer-identity-changed": "A device identity changed; sync is paused to protect your data",
+          "sync-failed": "Sync failed and will retry when a device is next online"
+        },
+        "toast": {
+          "enabled": "Device sync enabled",
+          "disabled": "Device sync disabled"
+        }
+      },
+      "stats": "{{people}} people / {{orgs}} orgs / {{groups}} groups",
+      "kind": {
+        "person": "Person",
+        "org": "Organization"
+      },
+      "filters": {
+        "all": "All",
+        "person": "People",
+        "org": "Orgs",
+        "pending": "Pending"
+      },
+      "list": {
+        "searchPlaceholder": "Search name / email / keyword",
+        "newAria": "New contact",
+        "newNamePlaceholder": "Name or organization",
+        "newKindAria": "Toggle type (person / organization)",
+        "newConfirm": "Create",
+        "groupFilterAria": "Filter by group",
+        "groupFilterAll": "All groups",
+        "loadMore": "Load more",
+        "noResults": "No matching contacts",
+        "empty": "Your contacts are empty. Once enabled, agents will collect entries as they work — or click + to add one manually."
+      },
+      "detail": {
+        "empty": "Select a contact on the left to view its profile",
+        "pendingBanner": "This entry was collected by an agent with low confidence. Please review it.",
+        "pendingConfirm": "Confirm",
+        "pendingDiscard": "Discard",
+        "nameAria": "Display name",
+        "deleteAria": "Delete contact",
+        "summaryPlaceholder": "One-line summary",
+        "identities": "Identities",
+        "identityRemoveAria": "Remove identity {{value}}",
+        "identityPlatformAria": "Platform",
+        "identityValuePlaceholder": "Email / platform id / handle",
+        "identityAddAria": "Add identity",
+        "narrative": "Relationship & background",
+        "narrativePlaceholder": "Your relationship, collaboration history, and background (Markdown)",
+        "agentNotes": "Instructions for agents",
+        "agentNotesPlaceholder": "e.g. This is the boss’s personal email — never mass-mail it",
+        "events": "Timeline",
+        "eventsEmpty": "No events yet",
+        "eventDeleteAria": "Delete event",
+        "eventDatePlaceholder": "2026-07-07",
+        "eventTextPlaceholder": "What happened",
+        "eventAddAria": "Add event",
+        "groups": "Groups",
+        "groupRemoveAria": "Remove from group {{name}}",
+        "groupAddAria": "Add to group",
+        "groupAddPlaceholder": "Add to group…",
+        "discardChanges": "Discard changes",
+        "save": "Save",
+        "identitiesEmpty": "No identities yet",
+        "relations": "Connections",
+        "relationsEmpty": "No connections yet (organizations / related people)",
+        "relationAddAria": "Add connection",
+        "relationRemoveAria": "Remove connection with {{name}}",
+        "relationVerbPlaceholder": "works at / family…",
+        "relationTargetAria": "Choose related contact",
+        "relationTargetPlaceholder": "Choose a person or org…",
+        "relationNotePlaceholder": "Note (title…)"
+      },
+      "deleteConfirm": {
+        "title": "Delete \"{{name}}\"?",
+        "description": "All identities, timeline events, and group memberships will be deleted. This cannot be undone.",
+        "confirm": "Delete",
+        "cancel": "Cancel"
+      },
+      "toast": {
+        "enabled": "Smart Contacts enabled",
+        "disabled": "Smart Contacts disabled",
+        "codexRefreshDeferred": "Setting saved, but Codex is busy — it will apply to Codex sessions after the app restarts",
+        "toggleFailed": "Failed to toggle Smart Contacts",
+        "created": "Created \"{{name}}\"",
+        "createFailed": "Failed to create contact",
+        "deleted": "Deleted \"{{name}}\"",
+        "deleteFailed": "Failed to delete contact",
+        "saved": "Saved",
+        "saveFailed": "Failed to save",
+        "confirmFailed": "Failed to confirm entry",
+        "identityAddFailed": "Failed to add identity",
+        "identityRemoveFailed": "Failed to remove identity",
+        "eventAddFailed": "Failed to add event",
+        "eventDeleteFailed": "Failed to delete event",
+        "groupAddFailed": "Failed to add to group",
+        "groupRemoveFailed": "Failed to remove from group",
+        "relationAddFailed": "Failed to add connection",
+        "relationRemoveFailed": "Failed to remove connection"
+      },
+      "manage": "Manage",
+      "manager": {
+        "title": "Smart Contacts",
+        "closeAria": "Close"
+      },
+      "merge": {
+        "button": "Merge duplicate",
+        "buttonAria": "Merge duplicate contact",
+        "hint": "Pick a duplicate to merge its identities, events, and connections into \"{{target}}\", then delete it.",
+        "searchPlaceholder": "Search duplicates…",
+        "confirmTitle": "Merge \"{{source}}\" into \"{{target}}\"?",
+        "confirmDescription": "All identities, events, connections, and groups of \"{{source}}\" will be moved over, and its profile deleted. This cannot be undone.",
+        "confirm": "Merge",
+        "success": "Merged \"{{source}}\" into \"{{target}}\"",
+        "failed": "Merge failed"
+      },
+      "import": {
+        "title": "Import contacts",
+        "button": "Import",
+        "pickHint": "Bulk import from an external source. Entries whose email/phone matches an existing profile are merged automatically (no duplicates); similar names go to a manual review list.",
+        "sourceSystem": "System Contacts",
+        "sourceSystemDesc": "Read-only; requires system permission on first use",
+        "sourceVcf": "vCard file",
+        "sourceVcfDesc": ".vcf (standard contacts export format)",
+        "emptySource": "No importable contacts in this source",
+        "permissionDenied": "Contacts access denied — allow it in System Settings → Privacy & Security → Automation",
+        "systemReadFailed": "Failed to read system contacts",
+        "vcfParseFailed": "Failed to parse the vCard file",
+        "selectedCount": "{{checked}} / {{total}} selected",
+        "groupPlaceholder": "Add to group after import (optional; created if missing)",
+        "run": "Import {{count}}",
+        "running": "Importing…",
+        "failed": "Import failed",
+        "doneSummary": "Import finished: {{created}} created, {{enriched}} merged into existing profiles, {{orgs}} organizations created.",
+        "needsReview": "{{count}} entries have names similar to existing profiles and were not imported — please review: {{names}}",
+        "identityConflicts": "{{count}} record(s) had identities already owned by other contacts ({{names}}) and were not merged — review them in the manager to decide whether to merge",
+        "relationErrors": "{{count}} employment relation(s) could not be created ({{names}})",
+        "skipped": "{{count}} entries skipped (invalid or failed)."
+      },
+      "ipcError": {
+        "IDENTITY_CONFLICT": "This identity already belongs to another contact. Update that profile or merge first.",
+        "PERMISSION_DENIED": "Contacts access not authorized. Allow it in System Settings > Privacy & Security > Automation.",
+        "UNSUPPORTED_CAPABILITY": "This action is not supported on this platform.",
+        "NOT_FOUND": "The target no longer exists.",
+        "ALREADY_EXISTS": "An item with the same name or content already exists.",
+        "INVALID_PARAMS": "Invalid input. Please check and try again.",
+        "INTERNAL": "Operation failed. Please try again later."
+      },
+      "guide": {
+        "hint": "Let AI help add contact profiles, review pending entries, and clean up duplicates.",
+        "cta": "Manage Contacts with AI",
+        "managementPrompt": "Help me manage my Smart Contacts. First check the current state and the tools already available, then guide me through adding useful contacts, reviewing duplicates, and handling pending entries. Ask me before any write, merge, or deletion."
+      }
     },
     "remotePermission": {
       "label": "Permission mode",
@@ -5480,6 +6511,8 @@
       "searching": "Searching…",
       "noMatch": "No matching files",
       "keepTyping": "Keep typing to narrow down…",
+      "add": "Add",
+      "plugins": "Plugins",
       "filesAndFolders": "Files and folders",
       "browserTab": "Browser tab",
       "desktopWindow": "App window",
@@ -5727,6 +6760,13 @@
       "retry": "Retry",
       "credentialSwitchBusy": "Another Codex task is still running, so the provider for this session can't be applied yet (the shared Codex process needs a restart). Retry after those tasks finish.",
       "codexThreadStale": "Codex auth mode changed — this session can't continue. Start a new session to apply it.",
+      "codexResumeNotReady": "Codex can't resume this task right now. Try again in a little while.",
+      "claudeGatewayOpusPlanMismatch": "This Opus request went through XD Gateway, not your Claude.ai subscription. That gateway route rejected the model. Switch to your Claude.ai subscription and retry, or choose another model.",
+      "claudeSubscriptionOpusPlanMismatch": "Opus isn't available on the connected Claude Pro plan. Switch to a model included in your plan. If you recently upgraded, reconnect Anthropic in Settings, then retry.",
+      "switchClaudeSubscription": "Switch to Claude.ai & Retry",
+      "switchClaudeSubscriptionTitle": "Switch this session to the Claude.ai subscription and retry",
+      "switchingClaudeSubscription": "Switching to Claude.ai…",
+      "claudeSubscriptionSwitchFailed": "Couldn’t switch to Claude.ai or retry this session: {{msg}}",
       "budgetModelHint": "If this keeps failing, try switching to the standard GPT model.",
       "codexAuthMissing": "Remote Codex hasn't been signed in yet (401 Unauthorized). Click \"Sync auth\" to push your local Codex credentials to the remote Cindy Codex home, then retry.",
       "codexAuthMissingLocal": "Codex credentials missing or expired (401 Unauthorized). Re-login in {{appName}} Settings → Codex (the app-server will auto-restart on login), or run `codex login` in your terminal and toggle the auth mode in Settings once to restart the app-server. Then start a new session.",
@@ -9148,7 +10188,7 @@
     },
     "catalog": {
       "errorTitle": "Plans are temporarily unavailable",
-      "errorDescription": "Check your connection and retry. Local fallback plans will not be used.",
+      "errorDescription": "Check your connection and try again.",
       "emptyTitle": "Coming soon. Stay tuned.",
       "currentPlan": "Current Plan",
       "unavailableReasons": {
@@ -9212,7 +10252,7 @@
       "openPayment": "Open payment page",
       "refreshingAction": "Loading payment instructions…",
       "paymentCompleted": "Your payment was completed.",
-      "requestFailed": "The request failed. Retry safely; an uncertain create result keeps the original idempotency key.",
+      "requestFailed": "The request failed. Try again later.",
       "expiredBody": "This payment link expired. Create a new payment to continue.",
       "actionExpiredBody": "This code expired. Close this window and choose again to generate a new one.",
       "canceledBody": "This payment was canceled.",
@@ -9220,16 +10260,17 @@
     },
     "planChange": {
       "targetTitle": "Change subscription plan",
+      "back": "Back",
       "upgradeBadge": "Upgrade",
       "sameLevelBadge": "Same tier",
       "downgradeBadge": "Downgrade",
       "emptyTitle": "No plans available to switch to",
-      "emptyDescription": "The server has not configured another plan for your current payment method.",
+      "emptyDescription": "There are no other plans available to switch to.",
       "quotingTitle": "Preparing plan change",
-      "quotingBody": "Fetching the price and effective time from the server…",
+      "quotingBody": "Confirming the price and effective time…",
       "quoteTitle": "Confirm plan change",
       "confirmingTitle": "Submitting plan change",
-      "confirmingBody": "Submitting your plan change to the server…",
+      "confirmingBody": "Submitting your plan change…",
       "pendingProviderTitle": "Processing plan change",
       "pendingProviderBody": "The payment provider is processing this change. Cindy will keep checking the result…",
       "awaitingTitle": "Pay the difference",
@@ -9246,7 +10287,7 @@
       "requestFailed": "The plan change request couldn’t be completed. Refresh your subscription status and try again.",
       "quoteRejected": "This plan isn’t available for your current subscription. Choose another plan.",
       "chooseAnotherPlan": "Choose Another Plan",
-      "resyncHint": "The confirmation result could not be verified. Syncing the latest status from the server…",
+      "resyncHint": "The result could not be confirmed yet. Checking the latest status again…",
       "upgradeDueNow": "Pay {{amount}} now for the remainder of this period",
       "upgradeNoAmount": "The upgrade takes effect immediately after confirmation.",
       "upgradeHint": "The upgrade takes effect immediately after payment. The renewal price becomes the new plan price.",

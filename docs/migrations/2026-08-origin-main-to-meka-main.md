@@ -5,14 +5,15 @@
 - 工作区：`C:\Workspace\cindy`
 - 目标分支：`meka/main`
 - 来源：`origin/main`
-- 来源 SHA：`2db5c62806413845685d2d9cfb252a79a531315c`
+- 来源 SHA：`58060cd4c`（本轮最新 `origin/main`；前一阶段基线为 `2db5c6280641`）
 - 目标合并前 SHA：`58edde41c7c8f2b712a9e2899742e519d37f0ca4`
 - merge-base：`e4b464a2efcc56110dd71251c654eab72e9b70b0`
 - 执行时间：2026-08-04（Asia/Shanghai）
-- 交付状态：工作树中的 merge 已完成文件级收敛，尚未 commit、push 或创建 PR。
+- 交付状态：本轮 merge 正在收敛冲突，尚未 commit、push 或创建 PR。
 
-本次只处理客户端仓库已有范围。未修改协议子仓、服务端仓库或无关存量问题；没有执行
-`git merge --abort`、破坏性回退或覆盖用户已有改动。
+本次只处理客户端仓库已有范围，并按用户确认纳入 Meka fork 的 `cindy-protocol` gitlink
+同步；未修改协议子仓源码、服务端仓库或无关存量问题；没有执行 `git merge --abort`、
+破坏性回退或覆盖用户已有改动。
 
 ## 2. 决策记录
 
@@ -25,6 +26,8 @@
 | 格式、重复 import、类型接口并集 | Agent | 仅处理可证明不改变功能的结构冲突 |
 | Agent/IPC、插件权限、身份、远程路由冲突 | 用户定下“双向保留”原则；Agent 按现有产品边界落地 | 保留双方语义并恢复完整边界；没有用类型强转或删除路径掩盖不确定性。若后续行为测试显示真实产品取舍，暂停并回请用户决策 |
 | 合并后新增代码造成的括号/函数闭合断裂 | Agent | 仅补齐结构闭合并保留双方新增内容；未改变运行时语义 |
+| `@` 资源 Provider 运行入口 | 用户 | 接受上游移除两阶段 Provider 搜索、IPC、preload 和权限展示；保留历史 `plugin-resource` 解析、序列化、正文投影与旧 manifest 宽容读取 |
+| `cindy-protocol` gitlink | 用户 | 协议仓也是 Meka fork，接收上游 `ff055be58` 协议包回到源码直发的指针；不在本次修改子仓源码 |
 
 ## 3. 冲突内容与最终处理
 
@@ -84,6 +87,36 @@ script 和 journal。
 - renderer 测试 fixture 补齐 `sourceType/sourceMarketName`；普通插件 action 显式传入
   `meka={false}`；可选的文件更新回调不再要求测试构造无意义的 handler。
 
+### 3.6 `@` 资源 Provider 移除（本轮新增冲突）
+
+涉及 `atResourceProvider.ts`、对应 Main/Preload IPC、`atResourceService.ts`、
+`AtMentionPanel`、`ChatInput`、`GhostManifest` 权限类型及旧 Provider 测试。
+
+- Meka 旧实现解决的是“在 `@` 面板中先选择插件，再调用一个只读搜索工具定位外部
+  资源”的问题，并提供本地 session 工作目录校验、插件启用/Setup 门禁、固定
+  `{ query, limit }` 参数、结果清洗、超时与 `plugin-resource` 深链，避免草稿路径
+  伪造和副作用工具被隐式调用。
+- 上游提交 `694ae8607` 重构 `@` 入口，改为直接列出已安装插件的 `plugin-command`；
+  远程会话也不再暴露控制端本地插件入口，因此删除 Provider 搜索调度、IPC、preload
+  API、权限 receipt 和两阶段输入状态。普通插件 tool/command 仍保留。
+- 最终处理：接受上游删除运行入口及 `atResourceProvider.ts`/旧 Provider 测试；不恢复
+  已废弃的两阶段搜索。保留共享层对历史 `plugin-resource` 的 parse/project、正文
+  展开、消息展示和 composer 序列化兼容，并让旧 manifest 中同名字段被宽容忽略，避免
+  历史插件/消息因升级而消失。`plugin-resource` 只作为历史引用类型，不再由新入口生成。
+  `reveal` 权限类型与该功能无关，继续保留 Meka 的独立 Reveal 能力。
+- 影响：新安装或更新的插件不能再通过 `manifest.atResourceProvider` 接入 `@` 搜索；
+  需要搜索资源的能力应迁移到普通插件 command/tool。已有消息中的资源正文和 session/
+  message 元数据仍可展示与投影。决策人：用户；实施人：Codex。
+
+### 3.7 `cindy-protocol` 指针同步（本轮新增冲突）
+
+- 上游将协议包从预构建产物切回源码直发，目标 commit 为 `ff055be58e05a082bb5eb6327de115ad8bf127b9`；
+  Desktop dev/typecheck/bundle 不再依赖撤销的预构建 `@cindy/model-access-protocol`，
+  Mobile 增加 `.js` → `.ts` fallback。
+- 子仓 `origin` 已核对为 Meka 官方 fork `https://github.com/kapt66/cindy-protocol.git`。
+  本次只在已有 fork 提交之间合并并更新父仓 gitlink，不修改协议源码；跨仓发布前服务端需
+  同步使用同一协议 commit，避免 wire protocol 漂移。用户确认将该 fork 纳入本轮同步。
+
 ## 4. 验证与剩余风险
 
 已执行：
@@ -124,7 +157,7 @@ NODE_OPTIONS=--max-old-space-size=8192 pnpm --filter desktop exec tsc --noEmit -
 
 ### 5.1 失败复测与归属判断（2026-08-04）
 
-以下保留上次失败集合的归因快照，作为处理证据；后续修复结果见 5.2-5.4。归属依据是当前
+以下保留上次失败集合的归因快照，作为处理证据；后续修复结果见 5.2-5.5。归属依据是当前
 合并结果相对两条父线的对象：
 
 | 归属 | 证据与代表性失败 | 当前处理 |
@@ -192,7 +225,23 @@ NODE_OPTIONS=--max-old-space-size=8192 pnpm --filter desktop exec tsc --noEmit -
   精确豁免，不把它改成模型“プロバイダー”。决策依据：用户选择 A、术语表既有语义说明；
   实施人：Codex。
 
-最新验证（2026-08-04）：`pnpm test:unit` 全部通过；Desktop、Mobile、maker-core、
-maker-shared、协议包均 PASS。受影响包 `desktop`、`mobile`、`@cindy/maker-shared` 的
-typecheck 全部通过；`pnpm check:i18n` 与 `pnpm check:i18n-glossary` 通过（仅保留仓库既有
-warning）。工作区无未解决冲突标记；尚未 commit、push。
+### 5.5 第二轮全量门禁失败归因（2026-08-04）
+
+- 四语 locale 的 44 个缺 key 不是 Meka 调用路径错误。两条父线都只有一个
+  `settings.ghosts` 对象：Meka 父线包含 Meka 市场、开发插件和面板文案，上游父线包含新版
+  普通插件市场文案；本次文本合并把两块对象同时放进同一个 `settings`，形成重复 JSON key。
+  运行时 JSON 解析采用后一个对象，前一块 Meka 文案因此被整体遮蔽。最终以结构化对象并集
+  合成唯一 `settings.ghosts`，重叠 key 采用上游当前值，Meka 独有 key 全部保留；组件调用和
+  用户可见行为不改。该问题由本地双父线合并引入，实施人：Codex。
+- `sentPastedTextPreview` 的失败来自上游提交 `789f417c7` 新增的源码结构断言把换行写死为
+  LF；Windows checkout 读取到 CRLF 后匹配失败，被测 Renderer 行为与上游一致。测试改为
+  同时接受 LF/CRLF，不改粘贴正文投影或收起逻辑。该问题属于上游测试的 Windows 兼容缺口，
+  实施人：Codex。
+- 两项修复后的定向复测为 13/13 通过；locale 结构恢复为四语各一个
+  `settings.ghosts`，Meka 与上游关键子树均可由运行时 JSON 对象读取。
+
+最新验证（2026-08-04）：第二轮 `pnpm test:unit` 全部通过；Desktop、Mobile、maker-core、
+maker-shared、lizi-im 及全部可运行协议包均 PASS。受影响包按仓库门禁执行
+`run --if-present typecheck`，Desktop、Mobile 通过，其余包无该脚本并按规则跳过；
+`pnpm check:i18n` 与 `pnpm check:i18n-glossary` 通过（仅保留仓库既有 warning）。工作区无
+未解决冲突标记；本报告随 DCO 签名 merge commit 落地，未 push。
