@@ -192,6 +192,7 @@ export function buildCanaryManifest(baseManifest, release, options = {}) {
   if (options.runtimeAssets) {
     manifest.claudeCode = structuredClone(options.runtimeAssets.claudeCode);
     manifest.codex = structuredClone(options.runtimeAssets.codex);
+    manifest.ripgrep = structuredClone(options.runtimeAssets.ripgrep);
   }
   return manifest;
 }

@@ -353,15 +353,19 @@ test("canary reset backups are immutable and content-addressed", () => {
     /^back-up\/canary\/1\.2\.3\/[a-f0-9]{64}\/manifest-win32-x64\.json$/,
   );
   assert.notEqual(first, second);
-  assert.throws(() => canaryBackupKey("linux-x64", "1.2.3", "{}"), /非法 platformKey/);
+  assert.throws(
+    () => canaryBackupKey("linux-x64", "1.2.3", "{}"),
+    /非法 platformKey/,
+  );
 });
 
-test("first release publishes Claude and Codex runtime assets into the manifest", async () => {
+test("first release publishes every runtime asset into the manifest", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "cindy-meka-runtimes-"));
   try {
     for (const [dir, binary] of [
       ["claude-code-bin", "claude.exe"],
       ["codex-bin", "codex.exe"],
+      ["ripgrep-bin", "rg.exe"],
     ]) {
       const target = path.join(root, "apps", dir, "win32-x64");
       fs.mkdirSync(target, { recursive: true });
@@ -406,8 +410,10 @@ test("first release publishes Claude and Codex runtime assets into the manifest"
     assertRuntimeManifestAssets(manifest, "win32-x64");
     assert.equal(published.results.claudeCode, "uploaded");
     assert.equal(published.results.codex, "uploaded");
+    assert.equal(published.results.ripgrep, "uploaded");
     assert.match(manifest.claudeCode.file, /claude-code\/1\.2\.3\/win32-x64/);
     assert.match(manifest.codex.file, /codex\/1\.2\.3\/win32-x64/);
+    assert.match(manifest.ripgrep.file, /ripgrep\/1\.2\.3\/win32-x64/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -420,14 +426,75 @@ test("runtime manifest guard rejects a first release without agent assets", () =
   );
 });
 
+test("runtime manifest guard can read legacy manifests without ripgrep", () => {
+  assert.doesNotThrow(() =>
+    assertRuntimeManifestAssets(
+      {
+        app: {},
+        claudeCode: {
+          version: "1.2.3",
+          file: "claude-code/1.2.3/win32-x64/claude.exe.gz",
+          sha256: "a".repeat(64),
+          size: 1,
+        },
+        codex: {
+          version: "1.2.3",
+          file: "codex/1.2.3/win32-x64/codex.exe.gz",
+          sha256: "b".repeat(64),
+          size: 1,
+        },
+      },
+      "win32-x64",
+      { allowMissing: ["ripgrep"] },
+    ),
+  );
+});
+
+test("canary manifest records every published runtime asset", () => {
+  const runtimeAsset = (root, binary) => ({
+    version: "1.2.3",
+    file: `${root}/1.2.3/win32-x64/${binary}.gz`,
+    sha256: "a".repeat(64),
+    size: 123,
+    binarySha256: "b".repeat(64),
+  });
+  const runtimeAssets = {
+    claudeCode: runtimeAsset("claude-code", "claude.exe"),
+    codex: runtimeAsset("codex", "codex.exe"),
+    ripgrep: runtimeAsset("ripgrep", "rg.exe"),
+  };
+  const manifest = buildCanaryManifest(
+    {
+      app: { version: "1.2.2" },
+    },
+    {
+      version: "1.2.3",
+      platformKey: "win32-x64",
+      installer: {
+        name: "cindy-meka-1.2.3-Setup.exe",
+        sha256: "c".repeat(64),
+        size: 1,
+      },
+      hotfix: { name: "cindy-meka-1.2.3.zip", sha256: "d".repeat(64), size: 1 },
+    },
+    { runtimeAssets },
+  );
+
+  assert.deepEqual(manifest.claudeCode, runtimeAssets.claudeCode);
+  assert.deepEqual(manifest.codex, runtimeAssets.codex);
+  assert.deepEqual(manifest.ripgrep, runtimeAssets.ripgrep);
+});
+
 test("published endpoint manifest keeps CN services but does not inherit Cindy updates", () => {
   const published = JSON.parse(
-    buildPublishedEndpointManifest(JSON.stringify({
-      schemaVersion: 1,
-      authApiBaseUrl: "https://auth.cindy.com.cn",
-      pluginApiBaseUrl: "https://plugin.cindy.com.cn",
-      cdnBaseUrl: "https://hotfix.cindy.com.cn/cindy",
-    })),
+    buildPublishedEndpointManifest(
+      JSON.stringify({
+        schemaVersion: 1,
+        authApiBaseUrl: "https://auth.cindy.com.cn",
+        pluginApiBaseUrl: "https://plugin.cindy.com.cn",
+        cdnBaseUrl: "https://hotfix.cindy.com.cn/cindy",
+      }),
+    ),
   );
   assert.equal(published.authApiBaseUrl, "https://auth.cindy.com.cn");
   assert.equal(published.pluginApiBaseUrl, "https://plugin.cindy.com.cn");
@@ -485,7 +552,8 @@ test("dedicated cindy-meka bucket may publish at bucket root without a duplicate
 
 test("Cindy Meka release roots are HTTPS-only", () => {
   assert.throws(
-    () => validateMekaReleaseCdnBaseUrl("http://insecure.example.test/cindy-meka"),
+    () =>
+      validateMekaReleaseCdnBaseUrl("http://insecure.example.test/cindy-meka"),
     /必须使用 HTTPS/,
   );
   assert.equal(

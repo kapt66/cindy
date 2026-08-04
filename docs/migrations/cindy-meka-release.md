@@ -88,8 +88,8 @@ CDN 必须允许匿名 `GET` / `HEAD`，RustFS 凭证不能暴露给客户端。
 
 发版机已经固定使用 Cindy Meka 的 CN/RustFS 配置时，优先使用与旧 Meka 一致的快捷
 入口。`release:*` 会完成“打包、签名、本地复核、上传版本化产物、写 canary manifest”
-整个流程，并保证 manifest 同时包含首启环境初始化所需的 Claude Code 与 Codex
-运行时资产；它不是仅打包命令。
+整个流程，并保证 manifest 同时包含首启环境初始化所需的 Claude Code、Codex 与
+ripgrep 运行时资产；它不是仅打包命令。
 
 ```powershell
 # Windows x64：明确版本或按远端 canary/stable 基线自动 bump
@@ -185,11 +185,19 @@ pnpm --filter desktop release:publish -- `
 
 写入顺序固定为：
 
-1. `app/<platformKey>/<installer>`
-2. `hotfix/<platformKey>/<zip>`
-3. `manifest-<platformKey>-canary.json`
+1. `claude-code/<version>/<platformKey>/claude[.exe].gz`
+2. `codex/<version>/<platformKey>/codex[.exe].gz`
+3. `ripgrep/<version>/<platformKey>/rg[.exe].gz`
+4. `app/<platformKey>/<installer>`
+5. `hotfix/<platformKey>/<zip>`
+6. `manifest-<platformKey>-canary.json`
 
-版本化对象不可覆盖。同一路径存在相同 SHA256/size 时幂等复用；内容不同则中止。
+版本化对象不可覆盖。runtime manifest 同时记录 gzip 与裸二进制 SHA-256；同一路径存在
+相同内容时幂等复用，内容不同则中止。macOS 受控 CI 会在依赖安装前直接下载 ripgrep
+官方静态归档并校验官方 `.sha256`，避开 GitHub Releases API 限流；发布完成后，客户端
+仍可从上述 RustFS 路径 fallback。官方静态资产网络不可用时，macOS CI 也会尝试同一
+fallback，但仅接受 manifest 中 pin、规范路径、gzip SHA-256 与裸二进制 SHA-256 都完整
+匹配的对象。不得在管理界面手工覆盖同版本 runtime 对象。
 manifest 写入后脚本会从 CDN 带 cache-bust 重新读取并核对全文哈希。
 
 ## 5. 推进 stable
@@ -233,12 +241,14 @@ pnpm release:reset-canary:mac
 pnpm release:reset-canary:mac -- --yes
 ```
 
-脚本先校验 stable manifest 引用的 installer、hotfix、Claude 与 Codex 资产仍存在；
+脚本先校验 stable manifest 引用的 installer、hotfix、Claude、Codex，以及新 manifest
+中的 ripgrep 资产仍存在；历史 stable 没有 ripgrep 字段时仍允许 reset，以便兼容该字段
+引入前的发布。
 当前 canary 存在时按“版本 + manifest 全文 SHA256”写入
 `back-up/canary/<version>/<sha256>/manifest-<platformKey>.json`，随后把 stable manifest
 全文写到 canary 指针并反向校验，最后删除被撤回 canary 版本的 installer 与 hotfix，
 并逐项 HEAD 确认已不存在。删除前会确认目标路径不再被 stable 或 reset 后的 canary
-引用；同版本仍被引用时拒绝删除。Claude/Codex runtime 始终不参与清理。
+引用；同版本仍被引用时拒绝删除。Claude/Codex/ripgrep runtime 始终不参与清理。
 
 脚本会扫描当前架构的 app/hotfix 目录，并把版本号高于 stable 的标准 Cindy Meka
 installer/hotfix 视为待撤回 canary 产物。因此即使 canary 指针已经先行对齐 stable，

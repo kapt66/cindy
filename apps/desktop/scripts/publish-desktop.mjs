@@ -24,12 +24,7 @@ import {
   publishRuntimeAssets,
 } from './ci/runtime-release.mjs';
 
-const PROJECT_ROOT = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  '..',
-  '..',
-  '..',
-);
+const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const ENDPOINT_MANIFEST_FILE_BY_REGION = Object.freeze({
   cn: 'endpoint.json',
   global: 'endpoint.global.json',
@@ -83,7 +78,8 @@ async function main() {
   console.log(`  manifest  -> ${canaryKey}`);
   console.log(
     `  runtimes  -> Claude ${localRuntimeAssets.claudeCode.version}, ` +
-      `Codex ${localRuntimeAssets.codex.version}`,
+      `Codex ${localRuntimeAssets.codex.version}, ` +
+      `ripgrep ${localRuntimeAssets.ripgrep.version}`,
   );
 
   if (!args.execute) {
@@ -130,6 +126,7 @@ async function main() {
   console.log(`  hotfix:    ${hotfixResult.reused ? 'reused' : 'uploaded'}`);
   console.log(`  claude:    ${runtime.results.claudeCode}`);
   console.log(`  codex:     ${runtime.results.codex}`);
+  console.log(`  ripgrep:   ${runtime.results.ripgrep}`);
   console.log(`  installer: ${storage.cdnUrl(installerKey)}`);
   console.log(`  hotfix:    ${storage.cdnUrl(hotfixKey)}`);
   console.log(`  endpoints: ${storage.cdnUrl('endpoint.json')}`);

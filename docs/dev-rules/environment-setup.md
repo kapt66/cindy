@@ -31,6 +31,13 @@ pnpm install
 （claude／codex／ripgrep，不入 git；失败只告警不阻断），dev 启动前的 guard 会再确认。
 正常情况下无需手动安装二进制。
 
+受控 macOS 发布流水线会在安装依赖前从 ripgrep 官方静态 Release 资产下载当前 pin，
+并校验官方 `.sha256` 后写入 `apps/ripgrep-bin/<platform>/`；该 job 会设置
+`XDT_SKIP_AGENT_BIN_INSTALL=1`，因此发布不依赖 Releases API 的限流配额。正式发布脚本
+同时将 ripgrep 压缩资产登记到 RustFS 的版本化 immutable 路径，并在 manifest 中记录
+gzip 与裸二进制 SHA-256，供客户端 CDN fallback 完整校验。官方静态资产网络不可用时，
+macOS CI 也只接受 manifest 中 pin、路径及双 SHA-256 全部匹配的 RustFS 资产。
+
 新 worktree 不共享 `node_modules`。确认 checkout 已完成且根 `package.json` 存在后，
 在该 worktree 内重新运行 `pnpm install`。
 

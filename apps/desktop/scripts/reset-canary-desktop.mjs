@@ -41,12 +41,13 @@ function parseArgs(argv) {
 }
 
 function referencedAssetKeys(manifest, platformKey) {
-  assertRuntimeManifestAssets(manifest, platformKey);
+  assertRuntimeManifestAssets(manifest, platformKey, { allowMissing: ['ripgrep'] });
   return [
     manifest.app.installer.file,
     manifest.app.hotfix.file,
     manifest.claudeCode.file,
     manifest.codex.file,
+    ...(manifest.ripgrep?.file ? [manifest.ripgrep.file] : []),
   ];
 }
 
@@ -127,7 +128,7 @@ async function main() {
     }
     console.log(`已删除: ${key}`);
   }
-  console.log('仅清理被撤回版本的 installer/hotfix；Claude/Codex runtime 不参与删除。');
+  console.log('仅清理被撤回版本的 installer/hotfix；Claude/Codex/ripgrep runtime 不参与删除。');
   console.log('已安装更高 canary 的客户端不会自动降级。');
 }
 

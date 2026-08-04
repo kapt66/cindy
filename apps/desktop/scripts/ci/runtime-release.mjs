@@ -28,24 +28,22 @@ const RUNTIME_DEFINITIONS = Object.freeze([
     sourceDir: 'codex-bin',
     binaryBaseName: 'codex',
   }),
+  Object.freeze({
+    field: 'ripgrep',
+    objectRoot: 'ripgrep',
+    sourceDir: 'ripgrep-bin',
+    binaryBaseName: 'rg',
+  }),
 ]);
 
 function runtimeBinaryName(platformKey, baseName) {
   return platformKey.startsWith('win32-') ? `${baseName}.exe` : baseName;
 }
 
-export function collectLocalRuntimeAssets(
-  platformKey,
-  { projectRoot = PROJECT_ROOT } = {},
-) {
+export function collectLocalRuntimeAssets(platformKey, { projectRoot = PROJECT_ROOT } = {}) {
   return Object.fromEntries(
     RUNTIME_DEFINITIONS.map((definition) => {
-      const sourceRoot = path.join(
-        projectRoot,
-        'apps',
-        definition.sourceDir,
-        platformKey,
-      );
+      const sourceRoot = path.join(projectRoot, 'apps', definition.sourceDir, platformKey);
       const version = fs.readFileSync(path.join(sourceRoot, '.version'), 'utf8').trim();
       if (!VERSION_RE.test(version)) {
         throw new Error(`${definition.field} 本地版本非法: ${version || '<empty>'}`);
@@ -89,14 +87,16 @@ function validRuntimeManifestAsset(asset, platformKey) {
   );
 }
 
-export function assertRuntimeManifestAssets(manifest, platformKey, { required = true } = {}) {
+export function assertRuntimeManifestAssets(
+  manifest,
+  platformKey,
+  { required = true, allowMissing = [] } = {},
+) {
   for (const definition of RUNTIME_DEFINITIONS) {
     const asset = manifest?.[definition.field];
-    if (!asset && !required) continue;
+    if (!asset && (!required || allowMissing.includes(definition.field))) continue;
     if (!validRuntimeManifestAsset(asset, platformKey)) {
-      throw new Error(
-        `manifest 缺少或包含非法的 ${definition.field} ${platformKey} 运行时资产`,
-      );
+      throw new Error(`manifest 缺少或包含非法的 ${definition.field} ${platformKey} 运行时资产`);
     }
   }
   return manifest;
@@ -167,10 +167,7 @@ async function putImmutableRuntimeAsset(storage, local, compressed) {
         },
       };
     }
-    if (
-      remoteGzipSha256 === compressed.sha256 &&
-      remote.size === compressed.size
-    ) {
+    if (remoteGzipSha256 === compressed.sha256 && remote.size === compressed.size) {
       return {
         uploaded: false,
         manifestAsset: {
@@ -212,12 +209,7 @@ async function putImmutableRuntimeAsset(storage, local, compressed) {
   };
 }
 
-export async function publishRuntimeAssets(
-  storage,
-  localAssets,
-  baseManifest,
-  outputDir,
-) {
+export async function publishRuntimeAssets(storage, localAssets, baseManifest, outputDir) {
   const manifestAssets = {};
   const results = {};
 
