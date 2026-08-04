@@ -177,7 +177,7 @@ describe('wave4 stage 视觉', () => {
 
 /* ── identifier 态系(附录 A providers 行) ── */
 describe('identifier 态(附录 A providers 场景)', () => {
-  it('providers:both → 无 tabs,区域定形态(测试构建=cn 默认→手机;2026-07-21 分区互斥拍板)', async () => {
+  it('providers:both → 无 tabs,区域定形态(harness 显式 cn→手机;2026-07-21 分区互斥拍板)', async () => {
     mount(await identifierState('providers:both'));
     expect(screen.queryByTestId('login-id-tabs')).toBeNull();
     expect((screen.getByTestId('login-input') as HTMLInputElement).placeholder).toBe(

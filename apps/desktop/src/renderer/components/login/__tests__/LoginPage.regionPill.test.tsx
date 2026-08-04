@@ -29,7 +29,7 @@ vi.mock('@/components/title-bar/WindowControls', () => ({ WindowControls: () => 
 import { LoginPage } from '../LoginPage';
 
 /** 构造指定服务区的 identifier 屏状态。 */
-async function identifierState(realm: 'cn' | 'global' = 'cn'): Promise<AuthFlowState> {
+async function identifierState(realm: 'cn' | 'global' = 'global'): Promise<AuthFlowState> {
   const client = new CindyAuthClient({
     baseUrl: 'https://auth.scenario.invalid',
     region: realm,
@@ -66,7 +66,7 @@ afterEach(() => {
 
 describe('登录页服务区选择器', () => {
   it('按 provider realm 选中 CN', async () => {
-    mount(await identifierState());
+    mount(await identifierState('cn'));
     expect(screen.getByTestId('login-realm-cn').getAttribute('aria-checked')).toBe('true');
     expect(screen.getByTestId('login-realm-global').getAttribute('aria-checked')).toBe('false');
   });
@@ -81,8 +81,32 @@ describe('登录页服务区选择器', () => {
     expect(screen.queryByTestId('login-region-pill')).toBeNull();
   });
 
-  it('点击另一区派发显式 select-realm 动作', async () => {
+  it('选择器使用会话草稿同款胶囊分段，并与输入框保持独立槽位', async () => {
     mount(await identifierState());
+    const selector = screen.getByTestId('login-realm-selector');
+    const cnButton = screen.getByTestId('login-realm-cn');
+    const globalButton = screen.getByTestId('login-realm-global');
+    const input = screen.getByTestId('login-input');
+
+    expect(selector.parentElement?.className).toContain('absolute');
+    expect(selector.parentElement?.getAttribute('style')).toContain('top: 106px');
+    expect(selector.style.height).toBe('60px');
+    expect(selector.style.borderRadius).toBe('9999px');
+    expect(selector.style.padding).toBe('6px');
+    expect(selector.style.gap).toBe('4px');
+    expect(selector.className).toContain('rounded-full');
+    expect(globalButton.className).toContain('rounded-full');
+    expect(globalButton.className).toContain('items-center');
+    expect(globalButton.className).toContain('bg-[var(--surface-elevated)]');
+    expect(cnButton.className).toContain('border-transparent');
+    expect(cnButton.style.fontSize).toBe('28px');
+    expect(cnButton.style.paddingLeft).toBe('28px');
+    expect(cnButton.style.paddingRight).toBe('28px');
+    expect(input.style.top).toBe('180px');
+  });
+
+  it('点击另一区派发显式 select-realm 动作', async () => {
+    mount(await identifierState('cn'));
     fireEvent.click(screen.getByTestId('login-realm-global'));
     expect(loginHook.value.dispatch).toHaveBeenCalledWith({
       type: 'select-realm',

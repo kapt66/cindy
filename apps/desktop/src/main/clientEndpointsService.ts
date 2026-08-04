@@ -90,9 +90,9 @@ const log = createLogger('clientEndpoints');
 
 const MANIFEST_FILE_NAME = 'endpoint.json';
 const BUILD_VARIANT = import.meta.env.VITE_CINDY_AUTH_REGION;
-/** 与 authManager 的构建区域判定保持一致；dev 使用 CN auth 身份。 */
+/** 与 authManager 的构建区域判定保持一致；缺省 Global，dev 使用 CN auth 身份。 */
 const BUILD_AUTH_REGION: ClientEndpointRegion =
-  BUILD_VARIANT === 'global' ? 'global' : 'cn';
+  BUILD_VARIANT === 'cn' || BUILD_VARIANT === 'dev' ? 'cn' : 'global';
 const DEFAULT_REALM_MANIFEST_BASE_URLS: RealmManifestBaseUrls =
   BUILD_AUTH_REGION === 'global'
     ? {

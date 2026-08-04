@@ -150,6 +150,9 @@
 - 企业 SSO 沿用双区 home-realm 发现：Global edition 输入 CN 企业时显示跨区确认，确认后
   认证与账号业务端点使用 CN，但产品版别不变。登录页显式选择 CN / Global 则是更高优先级
   的 edition override，不等同于企业自动发现。
+- 未显式注入 `VITE_CINDY_AUTH_REGION` 或未传 `--region` 时，Desktop 登录页与 Main
+  认证端点均默认 Global；只有显式 CN 构建（内部 `dev` 构建沿用 CN auth 语义）才以
+  CN 作为启动认证服务区。登录页的 CN / Global 选择仍可在运行期覆盖当前服务区。
 - 认证快照向 Renderer 暴露有效 `edition`；Cindy AI 模型/媒体能力和 dev 侧栏标识跟随该值。
   默认 Global 启动后在登录页显式选择 CN 会得到 CN 模型目录；Global 选择后因企业 SSO
   登录 CN 仍保留 Global 模型目录。edition 随认证会话单独保存，登出时与会话一并清除。

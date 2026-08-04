@@ -1,6 +1,6 @@
 import { cn } from '@/lib/utils';
 
-import { REGION_PILL } from './loginDesignTokens';
+import { REGION_SELECTOR } from './loginDesignTokens';
 
 export type LoginRealm = 'cn' | 'global';
 
@@ -22,8 +22,13 @@ export function LoginRealmSelector({
     <span
       role="radiogroup"
       data-testid="login-realm-selector"
-      className="inline-flex shrink-0 overflow-hidden border border-[var(--border-default)] bg-[var(--surface-secondary)]"
-      style={{ height: REGION_PILL.height, borderRadius: 8 }}
+      className="inline-flex shrink-0 items-center rounded-full border border-[var(--border-default)] bg-[var(--surface-chip)]"
+      style={{
+        height: REGION_SELECTOR.height,
+        borderRadius: REGION_SELECTOR.radius,
+        padding: REGION_SELECTOR.trackPadding,
+        gap: REGION_SELECTOR.gap,
+      }}
     >
       {(['cn', 'global'] as const).map((realm) => {
         const selected = value === realm;
@@ -37,13 +42,18 @@ export function LoginRealmSelector({
             disabled={disabled}
             onClick={() => onChange(realm)}
             className={cn(
-              'h-full whitespace-nowrap px-3 font-medium transition-colors',
+              'flex h-full items-center justify-center whitespace-nowrap rounded-full leading-none transition-colors',
               selected
-                ? 'bg-[var(--surface-elevated)] text-[var(--text-primary)]'
-                : 'text-[var(--text-secondary)] hover:bg-[var(--surface-hover)]',
+                ? 'border border-[var(--border-default)] bg-[var(--surface-elevated)] font-medium text-[var(--text-primary)]'
+                : 'border border-transparent font-normal text-[var(--text-secondary)] hover:text-[var(--text-primary)]',
+              'focus-visible:z-[1] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring-soft)]',
               'disabled:cursor-not-allowed disabled:opacity-60',
             )}
-            style={{ fontSize: REGION_PILL.fontSize, lineHeight: `${REGION_PILL.height}px` }}
+            style={{
+              paddingLeft: REGION_SELECTOR.paddingX,
+              paddingRight: REGION_SELECTOR.paddingX,
+              fontSize: REGION_SELECTOR.fontSize,
+            }}
           >
             {realm === 'cn' ? cnLabel : globalLabel}
           </button>

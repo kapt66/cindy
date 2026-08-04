@@ -109,6 +109,22 @@ export const SUBTITLE = { x: 70, y: 75, width: 540, fontSize: 20, lineHeight: 23
  * token(几何值单点,呼应 DESIGN.md §16.2「几何常量固化在常量文件」)。
  */
 export const REGION_PILL = { height: 30, radius: 40, gap: 2, paddingX: 11, fontSize: 16 } as const;
+/**
+ * 登录服务区选择器(位于副标题与输入框之间)。几何对齐会话草稿的
+ * VendorSegmentedSwitcher：外层与选中段均为全圆角胶囊。登录组按 0.5 缩放，
+ * 60px 高 / 28px 字号 / 6px 内边距 / 4px 间距在屏幕上得到 30px 控件高 /
+ * 14px 文字 / 3px 内边距 / 2px 间距。
+ */
+export const REGION_SELECTOR = {
+  top: 106,
+  height: 60,
+  radius: 9999,
+  trackPadding: 6,
+  gap: 4,
+  paddingX: 28,
+  fontSize: 28,
+  inputY: 180,
+} as const;
 export const CONTROL = {
   x: 70,
   inputY: 158,

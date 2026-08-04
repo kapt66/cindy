@@ -172,7 +172,7 @@ describe('协议同意行', () => {
     // 链接点击不影响勾选态、不弹同意弹窗
     expect(screen.getByTestId('login-consent-radio').getAttribute('aria-checked')).toBe('false');
     expect(screen.queryByTestId('login-consent-dialog')).toBeNull();
-    // 区域分流单点:测试构建 = cn(未注入 VITE_CINDY_AUTH_REGION)
+    // 区域分流单点:brandRegion harness 显式固定为 cn。
     expect(LEGAL_LINKS.termsOfService).toBe(CN_TERMS_URL);
     expect(LEGAL_LINKS.privacyPolicy).toBe(CN_PRIVACY_URL);
   });

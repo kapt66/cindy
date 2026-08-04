@@ -55,6 +55,7 @@ import {
   LOGIN_COLORS,
   LOGIN_DELETION_BUBBLE,
   LOGIN_LOCAL_MODE,
+  REGION_SELECTOR,
   SSO_ORG_HINT,
 } from './loginDesignTokens';
 import { PANEL_FIXED_SCALE } from './loginScale';
@@ -446,7 +447,10 @@ export function LoginPage() {
               title={t('login.title')}
               subtitle={t('login.subtitle')}
             />
-            <div className="mt-3 flex justify-center">
+            <div
+              className="absolute left-0 flex w-full justify-center"
+              style={{ top: REGION_SELECTOR.top, height: REGION_SELECTOR.height }}
+            >
               <LoginRealmSelector
                 value={selectedRealm}
                 cnLabel={t('login.realmSelector.cn')}
@@ -460,6 +464,7 @@ export function LoginPage() {
             <LoginInput
               autoFocus
               disabled={isLoading}
+              top={REGION_SELECTOR.inputY}
               type={identifierKind === 'email' ? 'email' : 'tel'}
               autoComplete={identifierKind === 'email' ? 'email' : 'tel'}
               value={identifier}

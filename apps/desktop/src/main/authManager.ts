@@ -123,8 +123,13 @@ async function claimLegacyNamespaceForVerifiedUser(userId: string): Promise<void
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
+// Global is the product default; the internal dev build intentionally keeps CN
+// auth semantics, while an explicit cn build remains CN.
 const AUTH_REGION: AuthRegion =
-  import.meta.env.VITE_CINDY_AUTH_REGION === 'global' ? 'global' : 'cn';
+  import.meta.env.VITE_CINDY_AUTH_REGION === 'cn' ||
+  import.meta.env.VITE_CINDY_AUTH_REGION === 'dev'
+    ? 'cn'
+    : 'global';
 // 端点惰性读取(勿固化成模块级常量):远程清单在 app.ready 内解析,
 // 顶层求值会把值钉死在烘焙值上。clientEndpointsService 的烘焙值已含 dev fallback。
 // 默认读取构建区域；组织 SSO 发现后按冻结的 session realm 读取对应清单。

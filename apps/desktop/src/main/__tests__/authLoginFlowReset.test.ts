@@ -16,6 +16,10 @@ describe('auth login-flow reset', () => {
     resolve(process.cwd(), 'src/main/hook-control/ipc.ts'),
     'utf8',
   ).replace(/\r\n/g, '\n');
+  const clientEndpointsSource = readFileSync(
+    resolve(process.cwd(), 'src/main/clientEndpointsService.ts'),
+    'utf8',
+  ).replace(/\r\n/g, '\n');
 
   it('clears renderer state, provider cache, and private tickets whenever auth is cleared', () => {
     const resetStart = source.indexOf('function resetLoginFlowState(): void {');
@@ -92,6 +96,15 @@ describe('auth login-flow reset', () => {
     );
     expect(source).toContain('activeProductEdition = realm;');
     expect(source).toContain('if (discovery.region !== selectedRealm)');
+  });
+
+  it('defaults the auth realm to Global and keeps dev/CN auth semantics explicit', () => {
+    expect(source).toContain("import.meta.env.VITE_CINDY_AUTH_REGION === 'cn'");
+    expect(source).toContain("import.meta.env.VITE_CINDY_AUTH_REGION === 'dev'");
+    expect(source).toContain("? 'cn'\n    : 'global'");
+    expect(clientEndpointsSource).toContain(
+      "BUILD_VARIANT === 'cn' || BUILD_VARIANT === 'dev' ? 'cn' : 'global'",
+    );
   });
 
   it('does not leave expired private tickets on a screen that can only reuse them', () => {
