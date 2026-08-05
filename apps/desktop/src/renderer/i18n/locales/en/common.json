@@ -9997,6 +9997,8 @@
     "projectDetailsDescription": "Set the project name, working directory, and team-facing description.",
     "projectName": "Project name",
     "projectPath": "Local project path",
+    "chooseDirectory": "Choose directory",
+    "projectPathPickFailed": "Could not open the directory picker.",
     "description": "Description",
     "save": "Save",
     "delete": "Remove",

@@ -88,7 +88,11 @@ export const sessions = sqliteTable(
       enum: ['planner', 'artist', 'programmer', 'tester'],
     }),
     mekaTargetJson: text('meka_target_json'),
-    mekaProjectId: text('meka_project_id').references(() => mekaProjects.id),
+    /**
+     * Historical project identity, intentionally not a foreign key: removing a
+     * project must preserve old sessions in the unavailable-project group.
+     */
+    mekaProjectId: text('meka_project_id'),
     mekaRoleId: text('meka_role_id').references(() => mekaRoles.id, { onDelete: 'set null' }),
     isFormal: integer('is_formal').notNull().default(0),
     formalType: text('formal_type'),

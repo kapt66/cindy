@@ -9988,6 +9988,8 @@
     "projectDetailsDescription": "プロジェクト名、作業ディレクトリ、チーム向けの説明を設定します。",
     "projectName": "プロジェクト名",
     "projectPath": "ローカルパス",
+    "chooseDirectory": "ディレクトリを選択",
+    "projectPathPickFailed": "ディレクトリ選択を開けませんでした。",
     "description": "説明",
     "save": "保存",
     "delete": "削除",
