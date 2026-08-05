@@ -158,7 +158,7 @@ export interface MekaProjectFile {
   };
   metadata: MekaProjectMetadataConfigItem[];
   roleDefaults?: MekaProjectRoleDefaults;
-  /** Full editable snapshots of bundled roles when a builtin project uses its project file. */
+  /** Full portable role snapshots materialized when importing a project-owned configuration. */
   builtinRoles?: MekaRoleManifestFile[];
 }
 

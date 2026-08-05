@@ -5,12 +5,14 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import type { MekaProjectFile, MekaRoleManifestFile } from '../../../shared/meka-projects.js';
 import {
+  cloneMekaRoleManifestForProject,
   createProjectConfigExclusive,
   normalizeMekaProjectFile,
   normalizeMekaRoleManifest,
   readBuiltinRoleManifest,
   readEffectiveProjectConfig,
   readProjectConfigAtRoot,
+  renameImportedProjectOnConflict,
   saveProjectConfig,
 } from '../projectConfig.js';
 
@@ -209,6 +211,44 @@ describe('Meka project.json boundary', () => {
       projectId: 'source-project',
       basic: { path: path.resolve(path.sep, 'source-checkout') },
     });
+  });
+
+  it('clones imported role content under fresh project and role identities', () => {
+    const source = {
+      ...roleManifest('saga2-role', 'saga2'),
+      displayName: '战斗配置',
+      tags: [],
+      prompt: 'Keep the imported role content.',
+      skills: [{ id: 'combat-skill', path: 'skills/combat-skill' }],
+    } satisfies MekaRoleManifestFile;
+
+    expect(cloneMekaRoleManifestForProject(source, 'copied-project', 'copied-role')).toEqual({
+      ...source,
+      id: 'copied-role',
+      projectId: 'copied-project',
+      name: 'copied-role',
+    });
+  });
+
+  it('uses the directory name when an imported display name is already registered', () => {
+    const root = path.join(path.parse(process.cwd()).root, 'Workspace', 'saga2_project_git');
+    const source = {
+      ...projectFile('copied-project', root),
+      basic: { displayName: 'SAGA2', path: root },
+    };
+
+    const renamed = renameImportedProjectOnConflict(source, root, ['saga2']);
+    expect(renamed.basic).toMatchObject({
+      name: 'saga2_project_git',
+      displayName: 'saga2_project_git',
+    });
+
+    const suffixed = renameImportedProjectOnConflict(source, root, [
+      'SAGA2',
+      'saga2_project_git',
+    ]);
+    expect(suffixed.basic.displayName).toBe('saga2_project_git (2)');
+    expect(renameImportedProjectOnConflict(source, root, ['Another project'])).toBe(source);
   });
 
   it('creates exclusively, normalizes vocabularies, and round-trips atomically', async () => {

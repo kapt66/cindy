@@ -353,6 +353,41 @@ export function normalizeMekaRoleManifest(
   };
 }
 
+export function cloneMekaRoleManifestForProject(
+  role: MekaRoleManifestFile,
+  projectId: string,
+  roleId: string,
+): MekaRoleManifestFile {
+  return normalizeMekaRoleManifest(
+    { ...role, id: roleId, projectId, name: roleId },
+    roleId,
+    projectId,
+  );
+}
+
+export function renameImportedProjectOnConflict(
+  file: MekaProjectFile,
+  projectRoot: string,
+  registeredDisplayNames: readonly string[],
+): MekaProjectFile {
+  const keys = new Set(registeredDisplayNames.map((name) => name.trim().toLocaleLowerCase()));
+  if (!keys.has(file.basic.displayName.trim().toLocaleLowerCase())) return file;
+
+  const directoryName = path.basename(path.resolve(projectRoot)).trim() || file.basic.displayName;
+  let suffix = '';
+  let index = 1;
+  let candidate = directoryName.slice(0, 120);
+  while (keys.has(candidate.toLocaleLowerCase())) {
+    index += 1;
+    suffix = ` (${index})`;
+    candidate = `${directoryName.slice(0, 120 - suffix.length)}${suffix}`;
+  }
+  return {
+    ...file,
+    basic: { ...file.basic, name: candidate, displayName: candidate },
+  };
+}
+
 function bundledProjectFilePath(locator: ProjectConfigLocator): string {
   return path.join(
     bundledMekaProjectsRoot(),

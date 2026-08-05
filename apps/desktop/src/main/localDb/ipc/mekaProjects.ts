@@ -12,19 +12,21 @@ import type {
 } from '../../../shared/meka-projects.js';
 import { isIpcError } from '../../../shared/ipc-errors.js';
 import {
+  cloneMekaRoleManifestForProject,
   createProjectConfigExclusive,
   readEffectiveProjectConfig,
   readProjectConfigAtRoot,
   readProjectConfigState,
   resolveCustomRoleManifestPath,
   resolveProjectConfigPath,
+  renameImportedProjectOnConflict,
   saveProjectConfig,
 } from '../../meka-projects/projectConfig.js';
 import { getMekaP4SettingsService } from '../../meka-settings/ipc.js';
 import { assertTrustedAppRendererEvent } from '../../security/trustedAppRenderer.js';
 import { requireObject, requireString, throwIpcError } from '../../utils/ipcValidate.js';
 import { getDbClient } from '../client/current.js';
-import { ensureDefaultMekaRole } from './mekaRoles.js';
+import { createMekaRole, ensureDefaultMekaRole } from './mekaRoles.js';
 
 export const MEKA_PROJECT_LIST = 'meka-project:list';
 export const MEKA_PROJECT_GET = 'meka-project:get';
@@ -275,9 +277,10 @@ async function createProject(input: unknown): Promise<MekaProject> {
     const body = requireObject(input);
     const root = absoluteProjectPath(body.path);
     const configuredBuiltinRoot = (await getMekaP4SettingsService().get()).p4RootPath;
-    const duplicate = (
-      await getDbClient().query<ProjectRow>('SELECT * FROM meka_projects WHERE path IS NOT NULL')
-    ).find((candidate) => {
+    const registeredRows = await getDbClient().query<ProjectRow>(
+      'SELECT * FROM meka_projects WHERE path IS NOT NULL',
+    );
+    const duplicate = registeredRows.find((candidate) => {
       const candidateRoot = candidate.is_builtin === 1 ? configuredBuiltinRoot : candidate.path;
       if (!candidateRoot || !path.isAbsolute(candidateRoot)) return false;
       const left = path.resolve(candidateRoot);
@@ -302,8 +305,14 @@ async function createProject(input: unknown): Promise<MekaProject> {
         : undefined;
     const projectTags = tags(body.tags);
     const now = Date.now();
-    const file: MekaProjectFile =
-      existingFile ??
+    let file: MekaProjectFile =
+      (existingFile
+        ? renameImportedProjectOnConflict(
+            existingFile,
+            root,
+            (await Promise.all(registeredRows.map(toProject))).map((project) => project.displayName),
+          )
+        : null) ??
       ({
         schemaVersion: 1,
         projectId: id,
@@ -328,7 +337,7 @@ async function createProject(input: unknown): Promise<MekaProject> {
     };
     const target = locator(row, root);
     let createdProjectFile = false;
-    let createdRoleId: string | null = null;
+    const createdRoleIds: string[] = [];
     if (!existingFile) {
       await createProjectConfigExclusive(target, file);
       createdProjectFile = true;
@@ -340,7 +349,22 @@ async function createProject(input: unknown): Promise<MekaProject> {
          VALUES (?, ?, ?, ?, 0, 0, ?, ?)`,
         [id, row.name, root, JSON.stringify(projectTags), now, now],
       );
-      createdRoleId = (await ensureDefaultMekaRole(id)).id;
+      if (file.builtinRoles && file.builtinRoles.length > 0) {
+        const clonedRoles: NonNullable<MekaProjectFile['builtinRoles']> = [];
+        for (const [sortOrder, sourceRole] of file.builtinRoles.entries()) {
+          const createdRole = await createMekaRole({
+            projectId: id,
+            roleFile: sourceRole,
+            sortOrder,
+          });
+          createdRoleIds.push(createdRole.id);
+          clonedRoles.push(cloneMekaRoleManifestForProject(sourceRole, id, createdRole.id));
+        }
+        file = { ...file, builtinRoles: clonedRoles };
+      } else {
+        const createdRole = await ensureDefaultMekaRole(id);
+        createdRoleIds.push(createdRole.id);
+      }
       if (existingFile) {
         // Persist the current checkout location so the shared file is portable
         // for the next machine or checkout that imports it.
@@ -353,11 +377,13 @@ async function createProject(input: unknown): Promise<MekaProject> {
       await getDbClient()
         .exec('DELETE FROM meka_projects WHERE id = ?', [id])
         .catch(() => undefined);
-      if (createdRoleId) {
-        await unlink(resolveCustomRoleManifestPath(createdRoleId, app.getPath('userData'))).catch(
-          () => undefined,
-        );
-      }
+      await Promise.all(
+        createdRoleIds.map((roleId) =>
+          unlink(resolveCustomRoleManifestPath(roleId, app.getPath('userData'))).catch(
+            () => undefined,
+          ),
+        ),
+      );
       if (createdProjectFile) {
         await unlink(resolveProjectConfigPath(target)).catch(() => undefined);
       }
