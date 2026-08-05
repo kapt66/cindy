@@ -5927,6 +5927,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           providerId: sessions.providerId,
           effort: sessions.effort,
           fastMode: sessions.fastMode,
+          workingDir: sessions.workingDir,
+          workspaceKind: sessions.workspaceKind,
+          mekaProjectId: sessions.mekaProjectId,
+          mekaRoleId: sessions.mekaRoleId,
         })
         .from(sessions)
         .where(eq(sessions.id, sessionId))
@@ -5951,6 +5955,16 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       co.providerId = row.providerId;
       co.effort = (row.effort ?? undefined) as CreateOpts['effort'];
       co.fastMode = !!row.fastMode;
+      if (row.workspaceKind === 'meka') {
+        if (!row.workingDir || !row.mekaProjectId || !row.mekaRoleId) {
+          throw new Error(`Meka session ${sessionId} is missing its persisted project binding`);
+        }
+        co.workingDir = row.workingDir;
+        co.workspaceKind = 'meka';
+        co.mekaProjectId = row.mekaProjectId;
+        co.mekaRoleId = row.mekaRoleId;
+        co.extraDirs = await readSessionExtraDirsFromDb(sessionId);
+      }
     } catch {
       // 校正读库失败按原 opts 继续(与切换功能上线前行为一致)。
     }

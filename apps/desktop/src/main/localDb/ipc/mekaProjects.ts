@@ -212,6 +212,7 @@ async function toProject(row: ProjectRow): Promise<MekaProject> {
     displayName: basic?.displayName ?? row.name,
     description: basic?.description ?? null,
     path: basic?.path ?? row.path,
+    additionalPaths: basic?.additionalPaths ?? [],
     formalWorkflowEnabled: basic?.formalWorkflowEnabled,
     jiraProjectKey: basic?.jiraProjectKey,
     workflowType: basic?.workflowType,

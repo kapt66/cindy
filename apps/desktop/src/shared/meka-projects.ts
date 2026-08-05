@@ -45,6 +45,8 @@ export interface MekaRolePromptFragment {
 }
 
 export interface MekaProjectMetadataSelection {
+  /** Absolute metadata root; omitted for the primary project path. */
+  rootPath?: string;
   sourcePath: string;
   itemType: MekaProjectMetadataItemType;
   enabled: boolean;
@@ -70,6 +72,8 @@ export interface MekaRoleMcpInlineConfig {
 export type MekaRoleMcpEntry = MekaRoleMcpProviderRef | MekaRoleMcpInlineConfig;
 
 export interface MekaProjectDefaultMetadataSelection {
+  /** Absolute metadata root; omitted for the primary project path. */
+  rootPath?: string;
   sourcePath: string;
   itemType: MekaProjectMetadataItemType;
 }
@@ -114,6 +118,8 @@ export interface MekaProjectMetadataEditable {
 }
 
 export interface MekaProjectMetadataConfigItem extends MekaProjectMetadataEditable {
+  /** Absolute metadata root; omitted for the primary project path. */
+  rootPath?: string;
   sourcePath: string;
   itemType: MekaProjectMetadataItemType;
   disciplines?: string[];
@@ -141,6 +147,8 @@ export interface MekaProjectFile {
     displayName: string;
     description?: string;
     path: string;
+    /** Additional read-only roots searched for metadata and attached to Meka sessions. */
+    additionalPaths?: string[];
     formalWorkflowEnabled?: boolean;
     jiraProjectKey?: string;
     workflowType?: MekaWorkflowType;
@@ -169,6 +177,7 @@ export interface MekaProjectMetadata extends MekaProjectMetadataOverride {
   projectId: string;
   itemType: MekaProjectMetadataItemType;
   sourcePath: string;
+  rootPath?: string;
   subProjectPath: string | null;
   name: string;
   contentFingerprint: string;
@@ -196,6 +205,7 @@ export interface MekaProject {
   displayName: string;
   description: string | null;
   path?: string | null;
+  additionalPaths?: string[];
   formalWorkflowEnabled?: boolean;
   jiraProjectKey?: string;
   workflowType?: MekaWorkflowType;

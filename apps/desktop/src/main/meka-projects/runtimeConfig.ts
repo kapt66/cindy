@@ -62,9 +62,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function metadataKey(
-  selection: Pick<MekaProjectDefaultMetadataSelection, 'sourcePath' | 'itemType'>,
+  selection: Pick<MekaProjectDefaultMetadataSelection, 'rootPath' | 'sourcePath' | 'itemType'>,
 ): string {
-  return `${selection.sourcePath}\0${selection.itemType}`;
+  return `${selection.rootPath ?? ''}\0${selection.sourcePath}\0${selection.itemType}`;
 }
 
 function isLegacySkill(
@@ -209,10 +209,19 @@ async function resolveProjectWorkspace(project: ProjectRow): Promise<string | nu
 
 async function readProjectMetadataContent(
   projectRoot: string | null,
+  additionalRoots: readonly string[],
   selection: MekaProjectMetadataSelection,
 ): Promise<string | null> {
   if (!projectRoot) return null;
-  const root = path.resolve(projectRoot);
+  const roots = [path.resolve(projectRoot), ...additionalRoots.map((root) => path.resolve(root))];
+  const root = path.resolve(selection.rootPath ?? projectRoot);
+  const rootKey = (candidate: string) =>
+    process.platform === 'win32'
+      ? path.normalize(candidate).toLowerCase()
+      : path.normalize(candidate);
+  if (!roots.some((candidate) => rootKey(candidate) === rootKey(root))) {
+    throw new Error(`Meka project metadata root is not configured: ${root}`);
+  }
   const candidate = path.resolve(root, ...selection.sourcePath.split('/'));
   const relative = path.relative(root, candidate);
   if (path.isAbsolute(relative) || relative === '..' || relative.startsWith(`..${path.sep}`)) {
@@ -362,6 +371,7 @@ export async function resolveMekaRuntimeConfig(
   const skills = new Map<string, MekaRuntimeSkill>();
   const prompts: string[] = [];
   const mcp = new Map<string, MekaRoleMcpEntry>();
+  const additionalRoots = projectFile.basic.additionalPaths ?? [];
   const projectMetadata = new Map(projectFile.metadata.map((item) => [metadataKey(item), item]));
 
   if (roleFile.prompt?.trim()) prompts.push(roleFile.prompt.trim());
@@ -411,7 +421,7 @@ export async function resolveMekaRuntimeConfig(
     if (!selection.enabled) continue;
     const configuredMetadata = projectMetadata.get(metadataKey(selection));
     if (configuredMetadata?.enabled === false) continue;
-    const content = await readProjectMetadataContent(projectRoot, selection);
+    const content = await readProjectMetadataContent(projectRoot, additionalRoots, selection);
     if (content === null) continue;
     switch (selection.itemType) {
       case 'agents-md':
