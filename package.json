@@ -115,6 +115,7 @@
     "release:reset-canary:mac": "node scripts/ensure-deps.mjs && pnpm --filter desktop release:reset-canary:mac",
     "release:reset-canary:mac:arm64": "node scripts/ensure-deps.mjs && pnpm --filter desktop release:reset-canary:mac:arm64",
     "release:reset-canary:mac:x64": "node scripts/ensure-deps.mjs && pnpm --filter desktop release:reset-canary:mac:x64",
+    "release:runtime:linux-x64": "node apps/desktop/scripts/publish-agent-runtimes.mjs --platform linux-x64 --region cn --execute",
     "check:i18n": "node scripts/check-i18n.mjs",
     "check:i18n-glossary": "node scripts/check-i18n-glossary.mjs",
     "check:i18n-glossary:report": "node scripts/check-i18n-glossary.mjs --report",

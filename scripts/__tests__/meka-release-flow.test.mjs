@@ -42,10 +42,17 @@ import {
   resetCanaryArtifactKeys,
 } from "../../apps/desktop/scripts/ci/reset-canary-lib.mjs";
 import {
+  AGENT_RUNTIME_DEFINITIONS,
   assertRuntimeManifestAssets,
+  buildAgentRuntimeManifest,
   collectLocalRuntimeAssets,
   publishRuntimeAssets,
+  runtimeManifestKey,
 } from "../../apps/desktop/scripts/ci/runtime-release.mjs";
+import {
+  parseAgentRuntimePublishArgs,
+  putAgentRuntimeManifestIfChanged,
+} from "../../apps/desktop/scripts/publish-agent-runtimes.mjs";
 
 function makeRegions() {
   return Object.fromEntries(
@@ -417,6 +424,95 @@ test("first release publishes every runtime asset into the manifest", async () =
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("linux runtime workflow publishes only Claude and Codex with a dedicated manifest", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cindy-meka-linux-runtimes-"));
+  try {
+    for (const [dir, binary, version] of [
+      ["claude-code-bin", "claude", "2.1.219"],
+      ["codex-bin", "codex", "0.145.0"],
+    ]) {
+      const target = path.join(root, "apps", dir, "linux-x64");
+      fs.mkdirSync(target, { recursive: true });
+      fs.writeFileSync(path.join(target, ".version"), `${version}\n`);
+      fs.writeFileSync(path.join(target, binary), Buffer.alloc(2048, dir));
+    }
+    const local = collectLocalRuntimeAssets("linux-x64", {
+      projectRoot: root,
+      definitions: AGENT_RUNTIME_DEFINITIONS,
+    });
+    const objects = new Map();
+    const storage = {
+      async head(key) {
+        return objects.get(key) ?? null;
+      },
+      async putFile(key, filePath, options) {
+        objects.set(key, {
+          size: fs.statSync(filePath).size,
+          metadata: options.metadata,
+        });
+      },
+    };
+    const published = await publishRuntimeAssets(
+      storage,
+      local,
+      null,
+      path.join(root, "out"),
+      { definitions: AGENT_RUNTIME_DEFINITIONS },
+    );
+    const manifest = buildAgentRuntimeManifest("linux-x64", published.manifestAssets);
+
+    assert.equal(runtimeManifestKey("linux-x64"), "runtime-manifest-linux-x64.json");
+    assert.equal(manifest.schemaVersion, 1);
+    assert.equal(manifest.platformKey, "linux-x64");
+    assert.equal(manifest.claudeCode.version, "2.1.219");
+    assert.equal(manifest.codex.version, "0.145.0");
+    assert.equal("ripgrep" in manifest, false);
+    assert.match(manifest.claudeCode.file, /^claude-code\/2\.1\.219\/linux-x64\/claude\.gz$/);
+    assert.match(manifest.codex.file, /^codex\/0\.145\.0\/linux-x64\/codex\.gz$/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("linux runtime publish CLI is explicit and validates its target", () => {
+  assert.deepEqual(
+    parseAgentRuntimePublishArgs(["--platform", "linux-x64", "--region=cn", "--execute"]),
+    { execute: true, platform: "linux-x64", region: "cn" },
+  );
+  assert.throws(() => parseAgentRuntimePublishArgs([]), /--platform/);
+  assert.throws(
+    () => parseAgentRuntimePublishArgs(["--platform", "freebsd-x64"]),
+    /platformKey/,
+  );
+});
+
+test("linux runtime manifest publication is idempotent for identical content", async () => {
+  const manifestKey = "runtime-manifest-linux-x64.json";
+  const manifestText = '{"schemaVersion":1,"platformKey":"linux-x64"}\n';
+  let remoteText;
+  let putCount = 0;
+  const storage = {
+    async head() {
+      return remoteText === undefined ? null : { size: Buffer.byteLength(remoteText) };
+    },
+    async getText() {
+      return remoteText;
+    },
+    async putText(_key, text) {
+      putCount += 1;
+      remoteText = text;
+    },
+  };
+
+  assert.equal(await putAgentRuntimeManifestIfChanged(storage, manifestKey, manifestText), "created");
+  assert.equal(await putAgentRuntimeManifestIfChanged(storage, manifestKey, manifestText), "reused");
+  assert.equal(putCount, 1);
+
+  const changed = manifestText.replace("linux-x64", "linux-arm64");
+  assert.equal(await putAgentRuntimeManifestIfChanged(storage, manifestKey, changed), "updated");
+  assert.equal(putCount, 2);
 });
 
 test("runtime manifest guard rejects a first release without agent assets", () => {

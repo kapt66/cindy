@@ -15,7 +15,7 @@ const PROJECT_ROOT = path.resolve(
 const SHA256_RE = /^[a-f0-9]{64}$/;
 const VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 
-const RUNTIME_DEFINITIONS = Object.freeze([
+export const RUNTIME_DEFINITIONS = Object.freeze([
   Object.freeze({
     field: 'claudeCode',
     objectRoot: 'claude-code',
@@ -36,13 +36,22 @@ const RUNTIME_DEFINITIONS = Object.freeze([
   }),
 ]);
 
+export const AGENT_RUNTIME_DEFINITIONS = Object.freeze(
+  RUNTIME_DEFINITIONS.filter(({ field }) => field === 'claudeCode' || field === 'codex'),
+);
+
+const PLATFORM_KEY_RE = /^(?:win32|darwin|linux)-(?:x64|arm64)$/;
+
 function runtimeBinaryName(platformKey, baseName) {
   return platformKey.startsWith('win32-') ? `${baseName}.exe` : baseName;
 }
 
-export function collectLocalRuntimeAssets(platformKey, { projectRoot = PROJECT_ROOT } = {}) {
+export function collectLocalRuntimeAssets(
+  platformKey,
+  { projectRoot = PROJECT_ROOT, definitions = RUNTIME_DEFINITIONS } = {},
+) {
   return Object.fromEntries(
-    RUNTIME_DEFINITIONS.map((definition) => {
+    definitions.map((definition) => {
       const sourceRoot = path.join(projectRoot, 'apps', definition.sourceDir, platformKey);
       const version = fs.readFileSync(path.join(sourceRoot, '.version'), 'utf8').trim();
       if (!VERSION_RE.test(version)) {
@@ -90,15 +99,35 @@ function validRuntimeManifestAsset(asset, platformKey) {
 export function assertRuntimeManifestAssets(
   manifest,
   platformKey,
-  { required = true, allowMissing = [] } = {},
+  { required = true, allowMissing = [], definitions = RUNTIME_DEFINITIONS } = {},
 ) {
-  for (const definition of RUNTIME_DEFINITIONS) {
+  for (const definition of definitions) {
     const asset = manifest?.[definition.field];
     if (!asset && (!required || allowMissing.includes(definition.field))) continue;
     if (!validRuntimeManifestAsset(asset, platformKey)) {
       throw new Error(`manifest 缺少或包含非法的 ${definition.field} ${platformKey} 运行时资产`);
     }
   }
+  return manifest;
+}
+
+export function runtimeManifestKey(platformKey) {
+  if (!PLATFORM_KEY_RE.test(platformKey)) {
+    throw new Error(`非法 runtime platformKey=${platformKey}`);
+  }
+  return `runtime-manifest-${platformKey}.json`;
+}
+
+export function buildAgentRuntimeManifest(platformKey, assets) {
+  const manifest = {
+    schemaVersion: 1,
+    platformKey,
+    claudeCode: structuredClone(assets.claudeCode),
+    codex: structuredClone(assets.codex),
+  };
+  assertRuntimeManifestAssets(manifest, platformKey, {
+    definitions: AGENT_RUNTIME_DEFINITIONS,
+  });
   return manifest;
 }
 
@@ -209,11 +238,17 @@ async function putImmutableRuntimeAsset(storage, local, compressed) {
   };
 }
 
-export async function publishRuntimeAssets(storage, localAssets, baseManifest, outputDir) {
+export async function publishRuntimeAssets(
+  storage,
+  localAssets,
+  baseManifest,
+  outputDir,
+  { definitions = RUNTIME_DEFINITIONS } = {},
+) {
   const manifestAssets = {};
   const results = {};
 
-  for (const definition of RUNTIME_DEFINITIONS) {
+  for (const definition of definitions) {
     const local = localAssets[definition.field];
     const existing = baseManifest?.[definition.field];
     if (
@@ -236,6 +271,7 @@ export async function publishRuntimeAssets(storage, localAssets, baseManifest, o
   assertRuntimeManifestAssets(
     { ...baseManifest, ...manifestAssets },
     Object.values(localAssets)[0].platformKey,
+    { definitions },
   );
   return { manifestAssets: Object.freeze(manifestAssets), results: Object.freeze(results) };
 }
