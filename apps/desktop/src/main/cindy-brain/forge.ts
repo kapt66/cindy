@@ -885,24 +885,32 @@ async function buildGhostPackage(
 }
 
 /**
- * 校验 + 打包一个意识源码目录。产物写到源码目录自身(<id>-<version>.cindy,
- * 同名覆盖——同 id 同版本重打包语义上就是同一个包),用户在自己的意识目录里
- * 就能拿到成品;出错返回结构化分类,agent 按 message 修源码即可,不抛异常。
+ * 校验 + 打包一个意识源码目录。默认产物写到源码目录自身
+ * (<id>-<version>.cindy,同名覆盖);Meka 开发目录监听传 outputDir,
+ * 让临时包直接落到 OS 临时目录,不改写源码目录也不需要跨卷搬运。
+ * 出错返回结构化分类,agent 按 message 修源码即可,不抛异常。
  */
 export async function packGhostDir(
   dir: string,
-  options?: { iconPng?: Buffer },
+  options: { iconPng?: Buffer; outputDir?: string } = {},
 ): Promise<ForgePackResult> {
-  const built = await buildGhostPackage(dir, undefined, options);
+  const built = await buildGhostPackage(
+    dir,
+    undefined,
+    options.iconPng === undefined ? undefined : { iconPng: options.iconPng },
+  );
   if (!built.ok) return built;
   const authoringIssue = firstGhostAuthoringIssue(built.manifestRaw);
   if (authoringIssue) {
     return { ok: false, errorCode: 'MANIFEST_INVALID', message: authoringIssue };
   }
-  // 产物跟源码住一起(2026-07 Lizi 定案:拿取直观);文件收集在写盘之前完成
-  // + shouldSkip 跳过 *.cindy,自身产物不会进包;同名覆盖。
-  const cindyPath = path.join(dir, `${built.manifest.id}-${built.manifest.version}.cindy`);
+  // 默认产物跟源码住一起(2026-07 Lizi 定案:拿取直观);
+  // 开发目录模式显式指定每次唯一的临时根,不能先写源码目录再 rename,
+  // 否则 Windows 源码盘与系统临时盘不同时会稳定报 EXDEV。
+  const outputDir = options.outputDir ? path.resolve(options.outputDir) : dir;
+  const cindyPath = path.join(outputDir, `${built.manifest.id}-${built.manifest.version}.cindy`);
   try {
+    await fs.promises.mkdir(outputDir, { recursive: true });
     await fs.promises.writeFile(cindyPath, built.buf);
   } catch (err) {
     return {

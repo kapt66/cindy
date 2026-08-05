@@ -3830,13 +3830,7 @@ export function registerGhostIpc(): void {
   const mekaDevPlugins = new MekaDevPluginManager({
     getRegistryPath: () => path.join(brainRootDir(), '.meka-dev-plugins.json'),
     getTempRoot: () => path.join(app.getPath('temp'), 'cindy-meka-dev-plugins'),
-    packDirectory: async (sourceDir, { outputDir }) => {
-      const packed = await packGhostDir(sourceDir);
-      if (!packed.ok) return packed;
-      const destination = path.join(outputDir, path.basename(packed.cindyPath));
-      await fs.promises.rename(packed.cindyPath, destination);
-      return { ...packed, cindyPath: destination };
-    },
+    packDirectory: (sourceDir, { outputDir }) => packGhostDir(sourceDir, { outputDir }),
     inspectPackage: async (cindyPath) => {
       const inspected = await inspectDevelopmentPackage(cindyPath);
       return { manifest: inspected.manifest, trust: inspected.trust };

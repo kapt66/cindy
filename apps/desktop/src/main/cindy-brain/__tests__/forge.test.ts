@@ -94,6 +94,27 @@ describe('packGhostDir', () => {
     await fs.promises.rm(r.cindyPath, { force: true });
   });
 
+  it('可将产物直接写入独立输出目录，不依赖跨卷 rename 也不污染开发源码', async () => {
+    const dir = await makeSrcDir({
+      'ghost.json': JSON.stringify(GOOD_MANIFEST),
+      'main.js': '// brain',
+    });
+    const outputDir = path.join(workDir, 'packed');
+    const renameSpy = vi.spyOn(fs.promises, 'rename');
+
+    try {
+      const r = await packGhostDir(dir, { outputDir });
+
+      expect(r.ok, JSON.stringify(r)).toBe(true);
+      if (!r.ok) return;
+      expect(r.cindyPath).toBe(path.join(outputDir, 'demo-1.0.0.cindy'));
+      expect(await fs.promises.readdir(dir)).toEqual(['ghost.json', 'main.js']);
+      expect(renameSpy).not.toHaveBeenCalled();
+    } finally {
+      renameSpy.mockRestore();
+    }
+  });
+
   it('iconPng 仅覆盖包内图标与清单快照，不改写插件源码', async () => {
     const dir = await makeSrcDir({
       'ghost.json': JSON.stringify(GOOD_MANIFEST),
