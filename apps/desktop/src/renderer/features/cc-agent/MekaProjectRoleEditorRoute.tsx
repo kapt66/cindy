@@ -6,6 +6,7 @@ import {
   ChevronRight,
   Copy,
   FolderOpen,
+  Info,
   MessageSquarePlus,
   Plus,
   RefreshCw,
@@ -24,6 +25,7 @@ import {
 import { WINDOW_DRAG_STYLE, WINDOW_NO_DRAG_STYLE } from '@/components/layout/windowDrag';
 import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
+import { Tip } from '@/components/ui/tooltip';
 import { emitMekaProjectsRolesChanged } from '@/lib/mekaProjectsRolesBus';
 import type {
   MekaProject,
@@ -316,6 +318,196 @@ function VocabEditor({
   );
 }
 
+interface SelectableItem {
+  key: string;
+  label: string;
+  description?: string;
+  disciplines: string[];
+  domains: string[];
+  selected: boolean;
+  disabled?: boolean;
+  metadataSelection?: MekaProjectMetadataSelection;
+  onToggle: (enabled: boolean) => void;
+}
+
+/** Group resource chips by discipline and expose discipline/domain bulk toggles. */
+function SelectableChipList({
+  items,
+  disabled,
+  emptyLabel,
+  onBulkToggle,
+}: {
+  items: SelectableItem[];
+  disabled?: boolean;
+  emptyLabel?: string;
+  onBulkToggle?: (items: SelectableItem[], enabled: boolean) => void;
+}): ReactNode {
+  const { t } = useTranslation();
+  if (items.length === 0)
+    return emptyLabel ? <p className="text-13 text-[var(--text-tertiary)]">{emptyLabel}</p> : null;
+
+  const disciplineSet = new Set<string>();
+  const domainSet = new Set<string>();
+  for (const item of items) {
+    for (const discipline of item.disciplines.length > 0
+      ? item.disciplines
+      : [MEKA_GENERAL_DISCIPLINE])
+      disciplineSet.add(discipline);
+    for (const domain of item.domains) domainSet.add(domain);
+  }
+  const groupForDiscipline = (value: string) =>
+    items.filter((item) =>
+      (item.disciplines.length > 0 ? item.disciplines : [MEKA_GENERAL_DISCIPLINE]).includes(value),
+    );
+  const groupForDomain = (value: string) => items.filter((item) => item.domains.includes(value));
+  const toggleGroup = (group: SelectableItem[]) => {
+    const active = group.filter((item) => !item.disabled);
+    const turnOn = !active.length || !active.every((item) => item.selected);
+    if (onBulkToggle) {
+      onBulkToggle(active, turnOn);
+      return;
+    }
+    for (const item of active) if (item.selected !== turnOn) item.onToggle(turnOn);
+  };
+  const bulkChip = (value: string, group: SelectableItem[], kind: 'discipline' | 'domain') => {
+    const active = group.filter((item) => !item.disabled);
+    const on = active.length > 0 && active.every((item) => item.selected);
+    const mixed = !on && active.some((item) => item.selected);
+    return (
+      <button
+        key={`${kind}:${value}`}
+        type="button"
+        disabled={disabled}
+        aria-pressed={on}
+        onClick={() => toggleGroup(group)}
+        className={cn(
+          'inline-flex items-center gap-1 rounded-full px-2 py-1 text-12 transition-colors disabled:opacity-50',
+          on
+            ? 'bg-[var(--accent-cta-bg)] text-[var(--accent-pure-cta-fg)]'
+            : mixed
+              ? 'bg-[var(--surface-chip)] text-[var(--text-primary)] ring-1 ring-[var(--accent-cta-bg)]'
+              : 'bg-[var(--surface-chip)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]',
+        )}
+      >
+        {value}
+        {mixed ? (
+          <span className="text-10" aria-hidden="true">
+            ●
+          </span>
+        ) : null}
+      </button>
+    );
+  };
+  const groups = new Map<string, SelectableItem[]>();
+  for (const item of items) {
+    const key = item.disciplines[0] ?? MEKA_GENERAL_DISCIPLINE;
+    groups.set(key, [...(groups.get(key) ?? []), item]);
+  }
+  const groupOrder = [MEKA_GENERAL_DISCIPLINE, '策划', '程序', '美术', 'QA'];
+  const groupKeys = [...groups.keys()].sort((a, b) => {
+    const ai = groupOrder.indexOf(a);
+    const bi = groupOrder.indexOf(b);
+    if (ai < 0 && bi < 0) return a.localeCompare(b);
+    if (ai < 0) return 1;
+    if (bi < 0) return -1;
+    return ai - bi;
+  });
+  return (
+    <div className="mt-4 flex flex-col gap-3 border-t border-[var(--border-default)] pt-4">
+      {disciplineSet.size > 1 ? (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-11 text-[var(--text-secondary)]">{t('meka.disciplines')}</span>
+          {[...disciplineSet].map((value) =>
+            bulkChip(value, groupForDiscipline(value), 'discipline'),
+          )}
+        </div>
+      ) : null}
+      {domainSet.size > 0 ? (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-11 text-[var(--text-secondary)]">{t('meka.domains')}</span>
+          {[...domainSet].map((value) => bulkChip(value, groupForDomain(value), 'domain'))}
+        </div>
+      ) : null}
+      {groupKeys.map((key) => (
+        <div key={key} className="flex flex-col gap-1.5">
+          <span className="text-12 font-medium text-[var(--text-primary)]">{key}</span>
+          <div className="flex flex-wrap gap-1.5">
+            {(groups.get(key) ?? []).map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                disabled={disabled || item.disabled}
+                aria-pressed={item.selected}
+                onClick={() => item.onToggle(!item.selected)}
+                className={cn(
+                  'inline-flex items-center gap-1 rounded-full px-2 py-1 text-12 transition-colors disabled:opacity-40',
+                  item.selected
+                    ? 'bg-[var(--accent-cta-bg)] text-[var(--accent-pure-cta-fg)]'
+                    : 'bg-[var(--surface-chip)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]',
+                )}
+              >
+                <span>{item.label}</span>
+                {item.description ? (
+                  <Tip text={item.description} side="top">
+                    <Info size={11} className="text-[var(--text-tertiary)]" aria-hidden="true" />
+                  </Tip>
+                ) : null}
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function metadataToSelectable(
+  items: readonly MekaProjectMetadata[],
+  itemTypes: readonly MekaProjectMetadataItemType[],
+  selections: readonly MekaProjectMetadataSelection[],
+  onChange: (next: MekaProjectMetadataSelection[]) => void,
+): SelectableItem[] {
+  const selected = new Map(
+    selections.map((item) => [metadataKey(item.rootPath, item.sourcePath, item.itemType), item.enabled]),
+  );
+  return items
+    .filter((item) => itemTypes.includes(item.itemType))
+    .map((item) => {
+      const key = metadataKey(item.rootPath, item.sourcePath, item.itemType);
+      const metadataSelection: MekaProjectMetadataSelection = {
+        ...(item.rootPath ? { rootPath: item.rootPath } : {}),
+        sourcePath: item.sourcePath,
+        itemType: item.itemType,
+        enabled: true,
+      };
+      return {
+        key,
+        label: item.displayName ?? item.name,
+        description: item.description,
+        disciplines: item.disciplines ?? [],
+        domains: item.domains ?? [],
+        selected: selected.get(key) === true,
+        disabled: !item.enabled,
+        metadataSelection,
+        onToggle: (enabled) =>
+          onChange([
+            ...selections.filter(
+              (entry) => metadataKey(entry.rootPath, entry.sourcePath, entry.itemType) !== key,
+            ),
+            { ...metadataSelection, enabled },
+          ]),
+      };
+    });
+}
+
+function metadataKey(
+  rootPath: string | undefined,
+  sourcePath: string,
+  itemType: MekaProjectMetadataItemType,
+): string {
+  return `${rootPath ?? ''}\0${itemType}\0${sourcePath}`;
+}
+
 function MetadataSelectionList({
   metadata,
   itemTypes,
@@ -329,66 +521,44 @@ function MetadataSelectionList({
   disabled?: boolean;
   onChange: (selections: MekaProjectMetadataSelection[]) => void;
 }) {
-  const { t } = useTranslation();
-  const items = metadata.filter((item) => item.enabled && itemTypes.includes(item.itemType));
-  if (items.length === 0) return null;
-  const selectionMap = new Map(
-    selections.map((item) => [`${item.rootPath ?? ''}:${item.itemType}:${item.sourcePath}`, item]),
-  );
-
+  const items = metadataToSelectable(metadata, itemTypes, selections, onChange);
   return (
-    <div className="mt-4 border-t border-[var(--border-default)] pt-4">
-      <div className="mb-2 text-12 font-medium text-[var(--text-secondary)]">
-        {t('meka.projectKnowledge')}
-      </div>
-      <div className="grid gap-2 md:grid-cols-2">
-        {items.map((item) => {
-          const key = `${item.rootPath ?? ''}:${item.itemType}:${item.sourcePath}`;
-          const checked = selectionMap.get(key)?.enabled === true;
-          return (
-            <label
-              key={key}
-              className="flex min-w-0 items-center gap-2 rounded-lg border border-[var(--border-default)] bg-[var(--surface-elevated)] px-3 py-2 text-12"
-            >
-              <input
-                type="checkbox"
-                checked={checked}
-                disabled={disabled}
-                onChange={(event) => {
-                  const next = selections.filter(
-                    (selection) =>
-                      (selection.rootPath ?? '') !== (item.rootPath ?? '') ||
-                      selection.sourcePath !== item.sourcePath ||
-                      selection.itemType !== item.itemType,
-                  );
-                  if (event.target.checked) {
-                    next.push({
-                      ...(item.rootPath ? { rootPath: item.rootPath } : {}),
-                      sourcePath: item.sourcePath,
-                      itemType: item.itemType,
-                      enabled: true,
-                    });
-                  }
-                  onChange(next);
-                }}
-              />
-              <span className="min-w-0 flex-1 truncate">{item.displayName ?? item.name}</span>
-            </label>
+    <SelectableChipList
+      items={items}
+      disabled={disabled}
+      emptyLabel={undefined}
+      onBulkToggle={(group, enabled) => {
+        const keys = new Set(group.map((item) => item.key));
+        const next = selections.filter(
+          (entry) => !keys.has(metadataKey(entry.rootPath, entry.sourcePath, entry.itemType)),
+        );
+        if (enabled) {
+          next.push(
+            ...group.flatMap((item) =>
+              item.metadataSelection ? [{ ...item.metadataSelection, enabled: true }] : [],
+            ),
           );
-        })}
-      </div>
-    </div>
+        }
+        onChange(next);
+      }}
+    />
   );
 }
 
 function RoleSkillsEditor({
   skills,
   catalog,
+  projectItems,
+  projectSelections,
+  onProjectMetadataChange,
   disabled,
   onChange,
 }: {
   skills: Array<MekaRoleSkillSelection | MekaRoleSkillEntry>;
   catalog: readonly MekaSkillCatalogEntry[];
+  projectItems: readonly MekaProjectMetadata[];
+  projectSelections: readonly MekaProjectMetadataSelection[];
+  onProjectMetadataChange: (next: MekaProjectMetadataSelection[]) => void;
   disabled?: boolean;
   onChange: (skills: Array<MekaRoleSkillSelection | MekaRoleSkillEntry>) => void;
 }) {
@@ -400,59 +570,74 @@ function RoleSkillsEditor({
   const knownIds = new Set(catalog.map((item) => item.skillId));
   const unknownSelections = selections.filter((item) => !knownIds.has(item.skillId));
   const selectedById = new Map(selections.map((item) => [item.skillId, item]));
-  const grouped = new Map<string, MekaSkillCatalogEntry[]>();
-  for (const item of catalog) {
-    const key = `${item.category} / ${item.subCategory}`;
-    grouped.set(key, [...(grouped.get(key) ?? []), item]);
-  }
-
-  const setSelected = (skillId: string, enabled: boolean) => {
-    const existing = selectedById.get(skillId);
-    if (existing) {
-      onChange(
-        skills.map((item) =>
-          isRoleSkillSelection(item) && item.skillId === skillId ? { ...item, enabled } : item,
-        ),
+  const setSelected = (skillId: string, enabled: boolean) =>
+    onChange(
+      skills.some((entry) => isRoleSkillSelection(entry) && entry.skillId === skillId)
+        ? skills.map((entry) =>
+            isRoleSkillSelection(entry) && entry.skillId === skillId
+              ? { ...entry, enabled }
+              : entry,
+          )
+        : [...skills, { skillId, enabled }],
+    );
+  const items: SelectableItem[] = [
+    ...catalog.map((item) => ({
+      key: `catalog:${item.skillId}`,
+      label: item.skillId,
+      description: item.description || item.purpose,
+      disciplines: [item.category],
+      domains: item.subCategory ? [item.subCategory] : [],
+      selected: selectedById.get(item.skillId)?.enabled === true,
+      onToggle: (enabled: boolean) => setSelected(item.skillId, enabled),
+    })),
+    ...metadataToSelectable(projectItems, ['skill'], projectSelections, onProjectMetadataChange),
+  ];
+  const bulkToggle = (group: SelectableItem[], enabled: boolean) => {
+    const catalogItems = group.filter((item) => item.key.startsWith('catalog:'));
+    const metadataItems = group.filter((item) => !item.key.startsWith('catalog:'));
+    const ids = new Set(catalogItems.map((item) => item.key.slice('catalog:'.length)));
+    const known = new Set(skills.filter(isRoleSkillSelection).map((entry) => entry.skillId));
+    const missing = catalogItems.filter((item) => !known.has(item.key.slice('catalog:'.length)));
+    if (catalogItems.length > 0) {
+      const next = skills.map((entry) =>
+        isRoleSkillSelection(entry) && ids.has(entry.skillId) ? { ...entry, enabled } : entry,
       );
-      return;
+      onChange(
+        enabled
+          ? [
+              ...next,
+              ...missing.map((item) => ({
+                skillId: item.key.slice('catalog:'.length),
+                enabled: true,
+              })),
+            ]
+          : next,
+      );
     }
-    onChange([...skills, { skillId, enabled }]);
+    if (metadataItems.length > 0) {
+      const keys = new Set(metadataItems.map((item) => item.key));
+      const next = projectSelections.filter(
+        (entry) => !keys.has(metadataKey(entry.rootPath, entry.sourcePath, entry.itemType)),
+      );
+      if (enabled) {
+        next.push(
+          ...metadataItems.flatMap((item) =>
+            item.metadataSelection ? [{ ...item.metadataSelection, enabled: true }] : [],
+          ),
+        );
+      }
+      onProjectMetadataChange(next);
+    }
   };
 
   return (
     <div className="flex flex-col gap-5">
-      {[...grouped.entries()].map(([group, entries]) => (
-        <div key={group}>
-          <div className="mb-2 text-12 font-medium text-[var(--text-secondary)]">{group}</div>
-          <div className="grid gap-2 md:grid-cols-2">
-            {entries.map((item) => {
-              const selected = selectedById.get(item.skillId);
-              return (
-                <label
-                  key={item.filePath}
-                  className="flex min-w-0 items-start gap-3 rounded-lg border border-[var(--border-default)] bg-[var(--surface-elevated)] px-3 py-2.5"
-                >
-                  <input
-                    className="mt-0.5"
-                    type="checkbox"
-                    checked={selected?.enabled === true}
-                    disabled={disabled}
-                    onChange={(event) => setSelected(item.skillId, event.target.checked)}
-                  />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-12 font-medium text-[var(--text-primary)]">
-                      {item.skillId}
-                    </span>
-                    <span className="mt-0.5 block text-11 leading-4 text-[var(--text-secondary)]">
-                      {item.description}
-                    </span>
-                  </span>
-                </label>
-              );
-            })}
-          </div>
-        </div>
-      ))}
+      <SelectableChipList
+        items={items}
+        disabled={disabled}
+        emptyLabel={t('meka.skillsEmpty')}
+        onBulkToggle={bulkToggle}
+      />
       {unknownSelections.length > 0 || legacyEntries.length > 0 ? (
         <div>
           <div className="mb-2 text-12 font-medium text-[var(--text-secondary)]">
@@ -1505,16 +1690,16 @@ export function MekaProjectRoleEditorRoute() {
                     <RoleSkillsEditor
                       skills={role.skills}
                       catalog={skillCatalog}
+                      projectItems={metadata}
+                      projectSelections={role.projectMetadataSelection ?? []}
+                      onProjectMetadataChange={(projectMetadataSelection) =>
+                        setRole((current) =>
+                          current ? { ...current, projectMetadataSelection } : current,
+                        )
+                      }
                       disabled={selectionReadOnly}
-                      onChange={(skills) => setRole({ ...role, skills })}
-                    />
-                    <MetadataSelectionList
-                      metadata={metadata}
-                      itemTypes={['skill']}
-                      selections={role.projectMetadataSelection ?? []}
-                      disabled={selectionReadOnly}
-                      onChange={(projectMetadataSelection) =>
-                        setRole({ ...role, projectMetadataSelection })
+                      onChange={(skills) =>
+                        setRole((current) => (current ? { ...current, skills } : current))
                       }
                     />
                   </div>

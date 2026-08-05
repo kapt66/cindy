@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
   MekaProject,
   MekaProjectFile,
+  MekaProjectMetadata,
+  MekaSkillCatalogEntry,
   MekaRoleManifestFile,
 } from '../../../../shared/meka-projects';
 import { MekaProjectRoleEditorRoute } from '../MekaProjectRoleEditorRoute';
@@ -85,7 +87,10 @@ function roleManifest(): MekaRoleManifestFile {
   };
 }
 
-function installApi(initialProjects: MekaProject[]) {
+function installApi(
+  initialProjects: MekaProject[],
+  options: { metadata?: MekaProjectMetadata[]; catalog?: MekaSkillCatalogEntry[] } = {},
+) {
   let projects = initialProjects;
   const showOpenDirectoryDialog = vi.fn(
     async (): Promise<{ canceled: boolean; path?: string }> => ({
@@ -142,16 +147,18 @@ function installApi(initialProjects: MekaProject[]) {
         create: createRole,
         update: vi.fn(),
         delete: vi.fn(),
-        readManifest: vi.fn(async (id: string) => (id === 'role-new' ? roleManifest() : null)),
+        readManifest: vi.fn(async (id: string) =>
+          id ? { ...roleManifest(), id, name: id } : null,
+        ),
       },
       mekaProjectMetadata: {
         loadProject: vi.fn(async (id: string) => projectFile(id)),
-        list: vi.fn(async () => []),
+        list: vi.fn(async () => options.metadata ?? []),
         saveProject,
         discover: vi.fn(async () => []),
         gitRemote: vi.fn(async () => null),
       },
-      mekaSkillCatalog: { list: vi.fn(async () => []) },
+      mekaSkillCatalog: { list: vi.fn(async () => options.catalog ?? []) },
     },
   };
   const electronApi = {
@@ -159,7 +166,14 @@ function installApi(initialProjects: MekaProject[]) {
     showOpenDirectoryDialog,
   };
   (window as unknown as { electronAPI: typeof electronApi }).electronAPI = electronApi;
-  return { createProject, createRole, saveProject, showOpenDirectoryDialog, showOpenDirectory };
+  return {
+    createProject,
+    createRole,
+    saveProject,
+    updateRole: api.localDb.mekaRoles.update,
+    showOpenDirectoryDialog,
+    showOpenDirectory,
+  };
 }
 
 function renderRoute(initialEntry = '/') {
@@ -297,5 +311,83 @@ describe('Meka project and role create states', () => {
 
     expect(await screen.findByRole('heading', { name: 'meka.projectBasicInfo' })).toBeTruthy();
     expect(api.createRole).not.toHaveBeenCalled();
+  });
+
+  it('restores discipline and domain bulk selection for role resources', async () => {
+    const role = {
+      id: 'role-existing',
+      projectId: 'project-a',
+      name: 'role-existing',
+      displayName: 'Existing role',
+      description: null,
+      tags: [],
+      filePath: 'role-existing.json',
+      isBuiltin: false,
+      contentDigest: null,
+      sortOrder: 0,
+      createdAt: null,
+      updatedAt: null,
+    };
+    const metadata: MekaProjectMetadata[] = [
+      {
+        projectId: 'project-a',
+        itemType: 'skill',
+        sourcePath: 'skills/program.md',
+        rootPath: 'C:/projects/shared',
+        subProjectPath: null,
+        name: 'program.md',
+        contentFingerprint: 'program',
+        disciplines: ['程序'],
+        domains: ['战斗'],
+        enabled: true,
+      },
+    ];
+    const catalog: MekaSkillCatalogEntry[] = [
+      {
+        skillId: 'skill-program',
+        category: '程序',
+        subCategory: '战斗',
+        description: 'program skill',
+        filePath: 'program/SKILL.md',
+      },
+      {
+        skillId: 'skill-design',
+        category: '策划',
+        subCategory: '系统',
+        description: 'design skill',
+        filePath: 'design/SKILL.md',
+      },
+    ];
+    const api = installApi([projectSummary([role])], { metadata, catalog });
+    renderRoute('/?projectId=project-a&roleId=role-existing');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Existing role' }));
+    await screen.findByDisplayValue('New role');
+    fireEvent.click(screen.getByRole('button', { name: '程序' }));
+    fireEvent.click(screen.getByRole('button', { name: 'meka.saveRole' }));
+
+    await waitFor(() => expect(api.createRole).not.toHaveBeenCalled());
+    expect(api.updateRole).toHaveBeenCalledWith(
+      expect.objectContaining({
+        roleFile: expect.objectContaining({
+          skills: expect.arrayContaining([{ skillId: 'skill-program', enabled: true }]),
+          projectMetadataSelection: expect.arrayContaining([
+            {
+              rootPath: 'C:/projects/shared',
+              sourcePath: 'skills/program.md',
+              itemType: 'skill',
+              enabled: true,
+            },
+          ]),
+        }),
+      }),
+    );
+    expect(api.updateRole).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        roleFile: expect.objectContaining({
+          skills: expect.arrayContaining([{ skillId: 'skill-design', enabled: true }]),
+        }),
+      }),
+    );
   });
 });
