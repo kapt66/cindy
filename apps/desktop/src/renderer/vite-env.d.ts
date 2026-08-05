@@ -26,8 +26,7 @@ type DesktopLoginActionResult = import('../shared/authIpc').DesktopLoginActionRe
 type UtilityTextFailure = import('../shared/utilityTextResult').UtilityTextFailure;
 type MakerSessionTreeSnapshot = import('@cindy/maker-core').SessionTreeSnapshot;
 type BrowserBackendHealth = import('../shared/browserBackend').BrowserBackendHealth;
-type BrowserBackendRecoveryResult =
-  import('../shared/browserBackend').BrowserBackendRecoveryResult;
+type BrowserBackendRecoveryResult = import('../shared/browserBackend').BrowserBackendRecoveryResult;
 type DesktopAccountDeletionConfirmInput =
   import('../shared/authIpc').DesktopAccountDeletionConfirmInput;
 type DesktopAccountDeletionAvailabilityResult =
@@ -182,7 +181,8 @@ interface RemoteAgentOneShotResult extends RemoteAgentExecResult {
 type VoiceInputState = import('@cindy/voice-input-core').VoiceInputState;
 type VoiceAudioTrace = import('@cindy/voice-input-core').AudioTrace;
 type VoiceSpeechSegment = import('@cindy/voice-input-core').SpeechSegment;
-type VoiceInputGlobalErrorCode = 'empty' | 'unavailable' | 'unconfirmed' | 'permission' | 'failed' | 'superseded';
+type VoiceInputGlobalErrorCode =
+  'empty' | 'unavailable' | 'unconfirmed' | 'permission' | 'failed' | 'superseded';
 type VoiceInputGlobalResult =
   { ok: true } | { ok: false; error: string; errorCode?: VoiceInputGlobalErrorCode };
 type VoiceEditableRange = import('@cindy/voice-input-core').EditableRange;
@@ -253,9 +253,12 @@ type LocalThemeWriteResult = import('../shared/local-themes').LocalThemeWriteRes
 type ImDefaultSettingsPatch = import('../shared/imDefaultSettings').ImDefaultSettingsPatch;
 type ImDefaultSettingsState = import('../shared/imDefaultSettings').ImDefaultSettingsState;
 type ImDefaultSettingsChannel = import('../shared/imDefaultSettings').ImDefaultSettingsChannel;
-type SubagentModelSettingsPatch = import('../shared/subagentModelSettings').SubagentModelSettingsPatch;
-type SubagentModelSettingsState = import('../shared/subagentModelSettings').SubagentModelSettingsState;
-type SubagentModelSettingsWriteResult = import('../shared/subagentModelSettings').SubagentModelSettingsWriteResult;
+type SubagentModelSettingsPatch =
+  import('../shared/subagentModelSettings').SubagentModelSettingsPatch;
+type SubagentModelSettingsState =
+  import('../shared/subagentModelSettings').SubagentModelSettingsState;
+type SubagentModelSettingsWriteResult =
+  import('../shared/subagentModelSettings').SubagentModelSettingsWriteResult;
 
 /** Agent 资源占用设置的 IPC wire 形状(main 侧 agentResourceSettingsWire)。 */
 type AgentResourceProcessPriority = 'normal' | 'low' | 'lowest';
@@ -1156,10 +1159,19 @@ interface ElectronAPI {
      */
     cindyPrefsSync: (id: string) => {
       overrides: Record<string, string>;
-      image: { options: Array<{ id: string; label: string }>; defaultModel: { id: string; label: string } | null };
-      video: { options: Array<{ id: string; label: string }>; defaultModel: { id: string; label: string } | null };
+      image: {
+        options: Array<{ id: string; label: string }>;
+        defaultModel: { id: string; label: string } | null;
+      };
+      video: {
+        options: Array<{ id: string; label: string }>;
+        defaultModel: { id: string; label: string } | null;
+      };
       /** 文本类(快问快答):选项是轻量任务模型链的档位(供应商×模型),不是媒体目录模型。 */
-      text: { options: Array<{ id: string; label: string }>; defaultModel: { id: string; label: string } | null };
+      text: {
+        options: Array<{ id: string; label: string }>;
+        defaultModel: { id: string; label: string } | null;
+      };
     };
     /** 写/清一项覆盖(model=null 即恢复跟随默认);返回该意识最新覆盖表。 */
     setCindyPref: (
@@ -1413,11 +1425,7 @@ interface ElectronAPI {
       id?: string,
     ) => Promise<{ states?: Record<string, string>; state?: string }>;
     /** dev-only：经正式插件派发/权限链调用一个已声明工具。 */
-    devCall: (
-      id: string,
-      tool: string,
-      args: Record<string, unknown>,
-    ) => Promise<unknown>;
+    devCall: (id: string, tool: string, args: Record<string, unknown>) => Promise<unknown>;
   };
 
   /** Meka 专属开发目录登记簿；不写 Cindy / Meka 市场来源账本。 */
@@ -1460,9 +1468,7 @@ interface ElectronAPI {
       sparsePaths?: string[];
     }) => Promise<import('../shared/pluginMarket').MarketSourceSummary>;
     removeSource: (name: string) => Promise<{ ok: true }>;
-    refreshSource: (
-      name: string,
-    ) => Promise<import('../shared/pluginMarket').MarketSourceSummary>;
+    refreshSource: (name: string) => Promise<import('../shared/pluginMarket').MarketSourceSummary>;
     gitPreflight: () => Promise<{ ok: boolean; version: string | null }>;
     markLocalInstall: (ghostId: string, expectedOwnerId: string) => Promise<{ ok: true }>;
   };
@@ -1487,16 +1493,31 @@ interface ElectronAPI {
     markLocalInstall: (ghostId: string, expectedOwnerId: string) => Promise<{ ok: true }>;
   };
   mekaSkills: {
-    snapshot: (query?: string) => Promise<import('../shared/mekaSkillMarket').MekaSkillMarketSnapshot>;
+    snapshot: (
+      query?: string,
+    ) => Promise<import('../shared/mekaSkillMarket').MekaSkillMarketSnapshot>;
     detail: (skillId: string) => Promise<import('../shared/mekaSkillMarket').MekaSkillMarketDetail>;
     files: (skillId: string) => Promise<import('../shared/mekaSkillMarket').MekaSkillPreviewFile[]>;
-    file: (skillId: string, filePath: string) => Promise<import('../shared/mekaSkillMarket').MekaSkillPreviewFile>;
-    install: (request: import('../shared/mekaSkillMarket').MekaSkillInstallRequest) => Promise<import('../main/skillhub/installService').InstallResult>;
-    managementInfo: (skillId: string) => Promise<import('../shared/mekaSkillMarket').MekaSkillManagementInfo>;
-    updateAccess: (request: import('../shared/mekaSkillMarket').MekaSkillAccessUpdateRequest) => Promise<import('../shared/mekaSkillMarket').MekaSkillManagementInfo>;
-    deletePublished: (request: import('../shared/mekaSkillMarket').MekaSkillDeleteRequest) => Promise<{ ok: true }>;
+    file: (
+      skillId: string,
+      filePath: string,
+    ) => Promise<import('../shared/mekaSkillMarket').MekaSkillPreviewFile>;
+    install: (
+      request: import('../shared/mekaSkillMarket').MekaSkillInstallRequest,
+    ) => Promise<import('../main/skillhub/installService').InstallResult>;
+    managementInfo: (
+      skillId: string,
+    ) => Promise<import('../shared/mekaSkillMarket').MekaSkillManagementInfo>;
+    updateAccess: (
+      request: import('../shared/mekaSkillMarket').MekaSkillAccessUpdateRequest,
+    ) => Promise<import('../shared/mekaSkillMarket').MekaSkillManagementInfo>;
+    deletePublished: (
+      request: import('../shared/mekaSkillMarket').MekaSkillDeleteRequest,
+    ) => Promise<{ ok: true }>;
     pickSource: () => Promise<import('../shared/mekaSkillMarket').MekaSkillPublishInfo | null>;
-    publishSource: (request: import('../shared/mekaSkillMarket').MekaSkillPublishRequest) => Promise<import('../shared/mekaSkillMarket').MekaSkillPublishResult>;
+    publishSource: (
+      request: import('../shared/mekaSkillMarket').MekaSkillPublishRequest,
+    ) => Promise<import('../shared/mekaSkillMarket').MekaSkillPublishResult>;
   };
   voiceInput: {
     prewarm: (payload?: {
@@ -1604,11 +1625,11 @@ interface ElectronAPI {
     updateSettings: (patch: Partial<VoiceInputSettingsData>) => Promise<VoiceInputSettingsData>;
     updateShortcutSetting: (shortcut: VoiceInputShortcut | null) => Promise<
       | {
-        ok: true;
-        settings: VoiceInputSettingsData;
-        /** 已存盘但 macOS 监听权限未授权，快捷键要等授权后才生效。 */
-        pendingInputMonitoring?: boolean;
-      }
+          ok: true;
+          settings: VoiceInputSettingsData;
+          /** 已存盘但 macOS 监听权限未授权，快捷键要等授权后才生效。 */
+          pendingInputMonitoring?: boolean;
+        }
       | { ok: false; error: string; errorCode?: VoiceInputGlobalErrorCode }
     >;
     deleteDictionaryEntries: (entryIds: string[]) => Promise<VoiceInputSettingsData>;
@@ -1640,7 +1661,9 @@ interface ElectronAPI {
      * 挂载时也要主动取一次：失败可能发生在常挂载 UI 之前，那时推送没有订阅者。
      */
     consumeShortcutRecoveryFailure: () => Promise<{ failed: boolean }>;
-    onGlobalShortcutTrigger: (callback: (payload?: { id?: string; phase?: 'start' | 'tap' | 'end' }) => void) => () => void;
+    onGlobalShortcutTrigger: (
+      callback: (payload?: { id?: string; phase?: 'start' | 'tap' | 'end' }) => void,
+    ) => () => void;
     claimGlobalShortcutTrigger: (id: string) => void;
     onGlobalOverlayCommand: (
       callback: (command: { type: 'start' | 'submit' | 'cancel' }) => void,
@@ -1951,7 +1974,10 @@ interface ElectronAPI {
     listGroups: () => Promise<{
       groups: Array<{ chatId: string; chatName: string | null; activation: 'mention' | 'always' }>;
     }>;
-    setGroupActivation: (payload: { chatId: string; mode: 'mention' | 'always' }) => Promise<unknown>;
+    setGroupActivation: (payload: {
+      chatId: string;
+      mode: 'mention' | 'always';
+    }) => Promise<unknown>;
     getPersona: () => Promise<{ botName: string; soul: string }>;
     setPersona: (payload: {
       botName?: string;
@@ -2098,9 +2124,7 @@ interface ElectronAPI {
   ) => () => void;
 
   /** 被控端本地 main → 自身 renderer:控制端写穿的「新建会话默认启用 worktree」(patchDraft 写真实草稿)。 */
-  onMakerWorktreePrefApply: (
-    cb: (payload: { worktreeEnabled: boolean }) => void,
-  ) => () => void;
+  onMakerWorktreePrefApply: (cb: (payload: { worktreeEnabled: boolean }) => void) => () => void;
 
   /** 被控端本地 main → 自身 renderer:控制端写穿的会话「模型 effort/fast」pref(调本地 setter)。 */
   onMakerSessionPrefApply: (
@@ -2551,10 +2575,7 @@ interface ElectronAPI {
   openPath: (filePath: string) => Promise<{ success: boolean; error?: string }>;
 
   /** Copy a dangerous local attachment into the controlled inert cache. */
-  stageChatAttachment: (params: {
-    sourcePath: string;
-    suggestedName: string;
-  }) => Promise<
+  stageChatAttachment: (params: { sourcePath: string; suggestedName: string }) => Promise<
     | { success: true; path: string }
     | {
         success: false;
@@ -3060,10 +3081,9 @@ interface ElectronAPI {
       failures: Array<{ name: string; error: string }>;
     }>;
     cancelInstall: (name: string) => Promise<{ success: boolean }>;
-    uninstall: (absolutePath: string) => Promise<
-      | { success: true }
-      | { success: false; errorCode: string; message: string }
-    >;
+    uninstall: (
+      absolutePath: string,
+    ) => Promise<{ success: true } | { success: false; errorCode: string; message: string }>;
     /** 在 main 内选择并检查本地包，成功时签发绑定当前 renderer 的短期导入授权。 */
     pickLocal: () => Promise<
       | { success: true; canceled: true }
@@ -3078,11 +3098,7 @@ interface ElectronAPI {
       | { success: false; errorCode: string; message: string }
     >;
     /** 使用 main 签发的文件授权导入；registry origin=imported。 */
-    importLocal: (params: {
-      grantToken: string;
-      installPath?: string;
-      force?: boolean;
-    }) => Promise<
+    importLocal: (params: { grantToken: string; installPath?: string; force?: boolean }) => Promise<
       | {
           success: true;
           name: string;
@@ -3795,12 +3811,8 @@ interface ElectronAPI {
 
   remotePrecreatedWorktreeLedger: {
     list: () => Promise<RemotePrecreatedWorktreeLedgerSnapshot>;
-    register: (
-      record: PendingRemotePrecreatedWorktree,
-    ) => Promise<{ persisted: boolean }>;
-    forget: (
-      target: PendingRemotePrecreatedWorktreeTarget,
-    ) => Promise<{ persisted: boolean }>;
+    register: (record: PendingRemotePrecreatedWorktree) => Promise<{ persisted: boolean }>;
+    forget: (target: PendingRemotePrecreatedWorktreeTarget) => Promise<{ persisted: boolean }>;
   };
 
   // ── session 级"终身累计 cost"变化 (per-session, 不是 today-aggregate) ──
@@ -3821,9 +3833,7 @@ interface ElectronAPI {
   // turnUsageDetails),两侧各写一份必然漂移:曾出现 main 已放宽为可选、这里仍声明
   // 必填,消费方在 typecheck 通过的情况下解引用 undefined。
   onUsageMessageTurnCost: (
-    cb: (
-      data: import('../shared/turnCostPayload').MessageTurnCostPayload,
-    ) => void,
+    cb: (data: import('../shared/turnCostPayload').MessageTurnCostPayload) => void,
   ) => () => void;
 
   // per-message 维度: turn 结束检测到模型被上游降级 / 替换时 main 推标记
@@ -3935,12 +3945,17 @@ interface ElectronAPI {
     mekaProjects: {
       list: () => Promise<import('../shared/meka-projects').MekaProject[]>;
       get: (id: string) => Promise<import('../shared/meka-projects').MekaProject | null>;
+      inspectPath: (
+        path: string,
+      ) => Promise<import('../shared/meka-projects').MekaProjectFile | null>;
       create: (input: {
         displayName: string;
         description?: string | null;
         path: string;
+        additionalPaths?: readonly string[];
         tags?: readonly string[];
       }) => Promise<import('../shared/meka-projects').MekaProject>;
+      resetBuiltin: (id: string) => Promise<import('../shared/meka-projects').MekaProject>;
       update: (input: {
         id: string;
         patch: {
@@ -4156,7 +4171,9 @@ interface ElectronAPI {
       getByLeadSession: (leadSessionId: string) => Promise<OrcaTeamRecord | null>;
       getByWorkerSession: (workerSessionId: string) => Promise<OrcaTeamRecord | null>;
       listWorkersByLead: (leadSessionId: string) => Promise<OrcaWorkerRecord[]>;
-      listWorkersByLeads?: (leadSessionIds: string[]) => Promise<Record<string, OrcaWorkerRecord[]>>;
+      listWorkersByLeads?: (
+        leadSessionIds: string[],
+      ) => Promise<Record<string, OrcaWorkerRecord[]>>;
       updateWorkerStatus: (
         workerId: string,
         status: 'idle' | 'running' | 'done' | 'error',
@@ -4603,9 +4620,7 @@ interface ElectronAPI {
       ctx: { sessionId?: string; workingDir?: string; args?: string; deviceId?: string },
     ) => Promise<{ success: boolean; error?: string }>;
 
-    listAgentCommands: (
-      agentKind: 'claude-code' | 'codex' | 'pi',
-    ) => Promise<{
+    listAgentCommands: (agentKind: 'claude-code' | 'codex' | 'pi') => Promise<{
       success: boolean;
       error?: string;
       commands?: Array<{ kind: 'agent-builtin'; name: string; description: string }>;
@@ -4861,13 +4876,15 @@ interface ElectronAPI {
       sessionId: string,
       clientId: string,
     ) => Promise<{ sessionId: string; clientId: string; clientIds: string[] }>;
-    listActive: () => Promise<Array<{
-      sessionId: string;
-      agentKind: 'claude-code' | 'codex' | 'pi';
-      workDir: string;
-      capabilities: unknown;
-      isTurnRunning: boolean;
-    }>>;
+    listActive: () => Promise<
+      Array<{
+        sessionId: string;
+        agentKind: 'claude-code' | 'codex' | 'pi';
+        workDir: string;
+        capabilities: unknown;
+        isTurnRunning: boolean;
+      }>
+    >;
     onInputProjection: (
       cb: (payload: import('../shared/agentInputQueue').AgentInputProjection) => void,
     ) => () => void;
@@ -4986,14 +5003,20 @@ interface ElectronAPI {
       providerId?: string | null,
       effort?: string,
       fastMode?: boolean,
-    ) => Promise<{ switched: boolean; agentKind: 'claude-code' | 'codex' | 'pi'; model: string; engineReady: boolean; deferred?: boolean; sameEngineRevision?: number; sameEngineSuperseded?: boolean }>;
+    ) => Promise<{
+      switched: boolean;
+      agentKind: 'claude-code' | 'codex' | 'pi';
+      model: string;
+      engineReady: boolean;
+      deferred?: boolean;
+      sameEngineRevision?: number;
+      sameEngineSuperseded?: boolean;
+    }>;
     /**
      * 读 main 权威的 pending 切换意图(内存态,不落库;无意图 → null)。
      * 重开视图 / device-link 远程会话重连后恢复乐观显示用。
      */
-    getSessionAgentSwitchIntent: (
-      sessionId: string,
-    ) => Promise<{
+    getSessionAgentSwitchIntent: (sessionId: string) => Promise<{
       targetAgentKind: 'claude-code' | 'codex' | 'pi';
       model: string;
       providerId: string | null;
@@ -5069,7 +5092,12 @@ interface ElectronAPI {
     makerMemoryReset: () => Promise<{ removedCount: number }>;
 
     /** 启动期拉 main 持久化的三个 memory 开关 — 见 preload memoryGetSettings 注释 */
-    memoryGetSettings: () => Promise<{ maker: boolean; claudeCode: boolean; codex: boolean; pi: boolean }>;
+    memoryGetSettings: () => Promise<{
+      maker: boolean;
+      claudeCode: boolean;
+      codex: boolean;
+      pi: boolean;
+    }>;
     memoryGetSettingsState: () => Promise<{
       maker: boolean;
       claudeCode: boolean;
@@ -5108,7 +5136,9 @@ interface ElectronAPI {
 
     /** 子代理模型覆盖。null 表示不注入覆盖，仅对新建 agent 会话生效。 */
     subagentModelSettingsGet: () => Promise<SubagentModelSettingsState>;
-    subagentModelSettingsSet: (patch: SubagentModelSettingsPatch) => Promise<SubagentModelSettingsWriteResult>;
+    subagentModelSettingsSet: (
+      patch: SubagentModelSettingsPatch,
+    ) => Promise<SubagentModelSettingsWriteResult>;
     subagentModelSettingsReset: () => Promise<SubagentModelSettingsWriteResult>;
 
     /** Agent 资源占用治理(命令并发上限/进程优先级/工具链限核)。 */
@@ -5303,9 +5333,7 @@ interface ElectronAPI {
      * fresh 一到即整体接管。**非权威**:里面没有本次查询的健康状况,它的空列表也不构成
      * 「查证过的空」(详见 main/github-issue/myIssuesSnapshotStore.ts)。
      */
-    getMyIssuesSnapshot: () => Promise<
-      import('../shared/myIssues').MyIssuesSnapshot | null
-    >;
+    getMyIssuesSnapshot: () => Promise<import('../shared/myIssues').MyIssuesSnapshot | null>;
     listMyIssues: (options?: { force?: boolean }) => Promise<
       | ({ success: true } & import('../shared/myIssues').MyIssuesResult)
       | {
@@ -5418,9 +5446,7 @@ interface ElectronAPI {
         import('@cindy/maker-shared/device-link-contract').MobileCodexRateLimitsResult
       >;
       /** Cindy AI /models 下发的 XD 原生报价。 */
-      getModelPricing: () => Promise<
-        import('../shared/regionalMoney').ModelPricingCatalog | null
-      >;
+      getModelPricing: () => Promise<import('../shared/regionalMoney').ModelPricingCatalog | null>;
       onModelPricingChanged: (
         cb: (pricing: import('../shared/regionalMoney').ModelPricingCatalog | null) => void,
       ) => () => void;

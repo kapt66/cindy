@@ -44,6 +44,10 @@ vi.mock('@/lib/mekaProjectsRolesBus', () => ({
   emitMekaProjectsRolesChanged: vi.fn(),
 }));
 
+vi.mock('@/components/ui/confirm-dialog-provider', () => ({
+  useConfirmDialog: () => ({ confirm: vi.fn(async () => true) }),
+}));
+
 function projectFile(projectId: string, displayName = 'Project A'): MekaProjectFile {
   return {
     schemaVersion: 1,
@@ -62,6 +66,7 @@ function projectSummary(roles: MekaProject['roles'] = []): MekaProject {
     path: 'C:/projects/a',
     tags: [],
     isBuiltin: false,
+    configSource: 'project',
     sortOrder: 0,
     createdAt: null,
     updatedAt: null,
@@ -89,7 +94,11 @@ function roleManifest(): MekaRoleManifestFile {
 
 function installApi(
   initialProjects: MekaProject[],
-  options: { metadata?: MekaProjectMetadata[]; catalog?: MekaSkillCatalogEntry[] } = {},
+  options: {
+    metadata?: MekaProjectMetadata[];
+    catalog?: MekaSkillCatalogEntry[];
+    inspectFile?: MekaProjectFile | null;
+  } = {},
 ) {
   let projects = initialProjects;
   const showOpenDirectoryDialog = vi.fn(
@@ -98,11 +107,13 @@ function installApi(
       path: 'C:/projects/selected',
     }),
   );
-  const createProject = vi.fn(async (input: { displayName: string; path: string }) => {
-    const created = { ...projectSummary(), displayName: input.displayName, path: input.path };
-    projects = [created];
-    return created;
-  });
+  const createProject = vi.fn(
+    async (input: { displayName: string; path: string; additionalPaths?: readonly string[] }) => {
+      const created = { ...projectSummary(), displayName: input.displayName, path: input.path };
+      projects = [created];
+      return created;
+    },
+  );
   const createRole = vi.fn(
     async (_input: {
       projectId: string;
@@ -131,6 +142,7 @@ function installApi(
     },
   );
   const saveProject = vi.fn(async ({ project }: { project: MekaProjectFile }) => project);
+  const resetBuiltin = vi.fn(async () => projects[0]);
   const showOpenDirectory = vi.fn(async () => ({
     success: true,
     path: 'C:/projects/shared',
@@ -140,7 +152,9 @@ function installApi(
     localDb: {
       mekaProjects: {
         list: vi.fn(async () => projects),
+        inspectPath: vi.fn(async () => options.inspectFile ?? null),
         create: createProject,
+        resetBuiltin,
         delete: vi.fn(),
       },
       mekaRoles: {
@@ -171,6 +185,7 @@ function installApi(
     createRole,
     saveProject,
     updateRole: api.localDb.mekaRoles.update,
+    resetBuiltin,
     showOpenDirectoryDialog,
     showOpenDirectory,
   };
@@ -190,7 +205,7 @@ describe('Meka project and role create states', () => {
     vi.clearAllMocks();
   });
 
-  it('opens a full project draft and only persists it on Save', async () => {
+  it('creates a project from its name and ordered directory list', async () => {
     const api = installApi([]);
     renderRoute();
 
@@ -202,22 +217,17 @@ describe('Meka project and role create states', () => {
     fireEvent.change(screen.getByLabelText('meka.projectName'), {
       target: { value: 'Configured project' },
     });
-    fireEvent.change(screen.getByLabelText('meka.projectPath'), {
-      target: { value: 'C:/projects/configured' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'meka.save' }));
+    fireEvent.click(screen.getByRole('button', { name: 'meka.choosePrimaryDirectory' }));
+    await screen.findByText('C:/projects/selected');
+    fireEvent.click(screen.getByRole('button', { name: 'meka.createProjectAction' }));
 
     await waitFor(() => expect(api.createProject).toHaveBeenCalledTimes(1));
-    expect(api.saveProject).toHaveBeenCalledWith({
-      projectId: 'project-a',
-      project: expect.objectContaining({
-        projectId: 'project-a',
-        basic: expect.objectContaining({
-          displayName: 'Configured project',
-          path: 'C:/projects/configured',
-        }),
-      }),
+    expect(api.createProject).toHaveBeenCalledWith({
+      displayName: 'Configured project',
+      path: 'C:/projects/selected',
+      additionalPaths: [],
     });
+    expect(api.saveProject).not.toHaveBeenCalled();
   });
 
   it('selects a directory for a new project and keeps saved project paths immutable', async () => {
@@ -226,18 +236,15 @@ describe('Meka project and role create states', () => {
 
     await screen.findByText('meka.empty');
     fireEvent.click(screen.getAllByRole('button', { name: 'meka.newProject' })[0]);
-    fireEvent.click(screen.getByRole('button', { name: 'meka.chooseDirectory' }));
+    fireEvent.change(screen.getByLabelText('meka.projectName'), {
+      target: { value: 'Selected project' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'meka.choosePrimaryDirectory' }));
 
     await waitFor(() => expect(newProjectApi.showOpenDirectoryDialog).toHaveBeenCalledTimes(1));
-    expect((screen.getByLabelText('meka.projectPath') as HTMLInputElement).value).toBe(
-      'C:/projects/selected',
-    );
-    newProjectApi.showOpenDirectoryDialog.mockResolvedValueOnce({ canceled: true });
-    fireEvent.click(screen.getByRole('button', { name: 'meka.chooseDirectory' }));
-    await waitFor(() => expect(newProjectApi.showOpenDirectoryDialog).toHaveBeenCalledTimes(2));
-    expect((screen.getByLabelText('meka.projectPath') as HTMLInputElement).value).toBe(
-      'C:/projects/selected',
-    );
+    expect(screen.getByText('C:/projects/selected')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'meka.createProjectAction' }));
+    await waitFor(() => expect(newProjectApi.createProject).toHaveBeenCalledTimes(1));
 
     cleanup();
     const savedProjectApi = installApi([projectSummary()]);
@@ -249,13 +256,44 @@ describe('Meka project and role create states', () => {
     expect(savedProjectApi.showOpenDirectoryDialog).not.toHaveBeenCalled();
   });
 
+  it('uses an existing project file instead of overwriting dialog values', async () => {
+    const existing = {
+      ...projectFile('portable-project', 'Portable project'),
+      basic: {
+        ...projectFile('portable-project', 'Portable project').basic,
+        additionalPaths: ['C:/projects/reference'],
+      },
+    };
+    const api = installApi([], { inspectFile: existing });
+    renderRoute();
+
+    await screen.findByText('meka.empty');
+    fireEvent.click(screen.getAllByRole('button', { name: 'meka.newProject' })[0]);
+    fireEvent.change(screen.getByLabelText('meka.projectName'), {
+      target: { value: 'Ignored name' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'meka.choosePrimaryDirectory' }));
+
+    expect(await screen.findByDisplayValue('Portable project')).toBeTruthy();
+    expect(screen.getByText('C:/projects/reference')).toBeTruthy();
+    expect(screen.getByText('meka.existingProjectConfigDetected')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'meka.createProjectAction' }));
+
+    await waitFor(() => expect(api.createProject).toHaveBeenCalledTimes(1));
+    expect(api.createProject).toHaveBeenCalledWith({
+      displayName: 'Portable project',
+      path: 'C:/projects/selected',
+      additionalPaths: ['C:/projects/reference'],
+    });
+  });
+
   it('leaves a new project draft without persisting when cancelled', async () => {
     const api = installApi([]);
     renderRoute();
 
     await screen.findByText('meka.empty');
     fireEvent.click(screen.getAllByRole('button', { name: 'meka.newProject' })[0]);
-    fireEvent.click(screen.getByRole('button', { name: 'logic.confirm.cancel' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'logic.confirm.cancel' })[0]);
 
     expect(await screen.findByText('meka.empty')).toBeTruthy();
     expect(api.createProject).not.toHaveBeenCalled();
@@ -277,6 +315,78 @@ describe('Meka project and role create states', () => {
         basic: expect.objectContaining({ additionalPaths: ['C:/projects/shared'] }),
       }),
     });
+  });
+
+  it('edits bundled roles from a project file and can reset the builtin project', async () => {
+    const builtinRole = {
+      id: 'general-development',
+      projectId: 'saga2',
+      name: 'general-development',
+      displayName: 'General development',
+      description: null,
+      tags: [],
+      filePath: 'meka/roles/general-development.json',
+      isBuiltin: true,
+      contentDigest: null,
+      sortOrder: 0,
+      createdAt: null,
+      updatedAt: null,
+    };
+    const sagaProject: MekaProject = {
+      ...projectSummary([builtinRole]),
+      id: 'saga2',
+      name: 'saga2',
+      displayName: 'SAGA2',
+      isBuiltin: true,
+      configSource: 'project',
+    };
+    const api = installApi([sagaProject]);
+    renderRoute('/?projectId=saga2');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'General development' }));
+    expect(((await screen.findByLabelText('meka.roleName')) as HTMLInputElement).disabled).toBe(
+      false,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'meka.projectDetails' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'meka.resetBuiltinProjectAction' }));
+
+    await waitFor(() => expect(api.resetBuiltin).toHaveBeenCalledWith('saga2'));
+  });
+
+  it('allows editing bundled roles before a project file exists', async () => {
+    const builtinRole = {
+      id: 'general-development',
+      projectId: 'saga2',
+      name: 'general-development',
+      displayName: 'General development',
+      description: null,
+      tags: [],
+      filePath: 'meka/roles/general-development.json',
+      isBuiltin: true,
+      contentDigest: null,
+      sortOrder: 0,
+      createdAt: null,
+      updatedAt: null,
+    };
+    const api = installApi([
+      {
+        ...projectSummary([builtinRole]),
+        id: 'saga2',
+        name: 'saga2',
+        displayName: 'SAGA2',
+        isBuiltin: true,
+        configSource: 'builtin',
+      },
+    ]);
+    renderRoute('/?projectId=saga2');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'General development' }));
+    const roleName = (await screen.findByLabelText('meka.roleName')) as HTMLInputElement;
+    expect(roleName.disabled).toBe(false);
+    fireEvent.change(roleName, { target: { value: 'Edited development' } });
+    fireEvent.click(screen.getByRole('button', { name: 'meka.saveRole' }));
+
+    await waitFor(() => expect(api.updateRole).toHaveBeenCalledTimes(1));
   });
 
   it('opens the full role editor and only creates the role on Save', async () => {

@@ -21,6 +21,7 @@ import {
   saveProjectConfig,
 } from '../../meka-projects/projectConfig.js';
 import { getMekaP4SettingsService } from '../../meka-settings/ipc.js';
+import { assertTrustedAppRendererEvent } from '../../security/trustedAppRenderer.js';
 import { requireObject, requireString, throwIpcError } from '../../utils/ipcValidate.js';
 import { getDbClient } from '../client/current.js';
 
@@ -150,10 +151,11 @@ async function saveProject(input: unknown): Promise<MekaProjectFile> {
       );
     }
     const saved = await saveProjectConfig(locator, body.project as MekaProjectFile);
-    await getDbClient().exec(
-      'UPDATE meka_projects SET name = ?, path = ?, updated_at = ? WHERE id = ?',
-      [saved.basic.name ?? row.name, saved.basic.path, Date.now(), saved.projectId],
-    );
+    await getDbClient().exec('UPDATE meka_projects SET name = ?, updated_at = ? WHERE id = ?', [
+      saved.basic.name ?? row.name,
+      Date.now(),
+      saved.projectId,
+    ]);
     return saved;
   } catch (error) {
     rethrow(error, 'save');
@@ -210,9 +212,15 @@ async function gitRemote(projectIdInput: unknown): Promise<string | null> {
 }
 
 export function registerMekaProjectMetadataIpc(): void {
-  ipcMain.handle(MEKA_PROJECT_METADATA_DISCOVER, (_event, id: unknown) => discover(id));
+  ipcMain.handle(MEKA_PROJECT_METADATA_DISCOVER, (event, id: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    return discover(id);
+  });
   ipcMain.handle(MEKA_PROJECT_METADATA_LIST, (_event, id: unknown) => list(id));
   ipcMain.handle(MEKA_PROJECT_LOAD, (_event, id: unknown) => loadProject(id));
-  ipcMain.handle(MEKA_PROJECT_SAVE, (_event, input: unknown) => saveProject(input));
+  ipcMain.handle(MEKA_PROJECT_SAVE, (event, input: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    return saveProject(input);
+  });
   ipcMain.handle(MEKA_PROJECT_GIT_REMOTE, (_event, id: unknown) => gitRemote(id));
 }

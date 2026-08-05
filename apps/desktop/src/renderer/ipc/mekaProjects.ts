@@ -4,6 +4,7 @@ export interface CreateMekaProjectInput {
   displayName: string;
   description?: string | null;
   path: string;
+  additionalPaths?: readonly string[];
   tags?: readonly string[];
 }
 
@@ -20,6 +21,11 @@ export const listMekaProjects = (): Promise<MekaProject[]> =>
 export const getMekaProject = (id: string): Promise<MekaProject | null> =>
   window.electronAPI.localDb.mekaProjects.get(id);
 
+export const inspectMekaProjectPath = (
+  path: string,
+): Promise<import('../../shared/meka-projects').MekaProjectFile | null> =>
+  window.electronAPI.localDb.mekaProjects.inspectPath(path);
+
 export const createMekaProject = (input: CreateMekaProjectInput): Promise<MekaProject> =>
   window.electronAPI.localDb.mekaProjects.create(input);
 
@@ -31,7 +37,8 @@ export const updateMekaProject = (
 export const deleteMekaProject = (id: string): Promise<void> =>
   window.electronAPI.localDb.mekaProjects.delete(id);
 
-export const resolveMekaProjectPath = (
-  id: string,
-): Promise<{ resolvedPath: string | null }> =>
+export const resetBuiltinMekaProject = (id: string): Promise<MekaProject> =>
+  window.electronAPI.localDb.mekaProjects.resetBuiltin(id);
+
+export const resolveMekaProjectPath = (id: string): Promise<{ resolvedPath: string | null }> =>
   window.electronAPI.localDb.mekaProjects.resolvePath(id);

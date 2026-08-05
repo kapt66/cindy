@@ -12,6 +12,7 @@ const project: MekaProject = {
   description: null,
   tags: [],
   isBuiltin: false,
+  configSource: 'project',
   sortOrder: 0,
   createdAt: 1,
   updatedAt: 1,

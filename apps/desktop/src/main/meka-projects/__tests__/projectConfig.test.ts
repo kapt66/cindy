@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -60,6 +60,45 @@ describe('Meka project.json boundary', () => {
     expect(
       JSON.parse(await readFile(path.join(root, '.meka', 'project.json'), 'utf8')),
     ).toMatchObject({ projectId: 'saga2', basic: { displayName: 'SAGA2 Local' } });
+  });
+
+  it('uses a SAGA2 project file as the only project source and materializes builtin roles', async () => {
+    const root = await tempRoot();
+    const configDirectory = path.join(root, '.meka');
+    await mkdir(configDirectory, { recursive: true });
+    await writeFile(
+      path.join(configDirectory, 'project.json'),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        projectId: 'saga2',
+        basic: {
+          displayName: 'Project-owned SAGA2',
+          path: 'stale-path',
+          disciplines: ['通用'],
+          domains: [],
+        },
+        metadata: [],
+        roleDefaults: { skills: [] },
+      })}\n`,
+      'utf8',
+    );
+
+    const loaded = await readEffectiveProjectConfig({
+      projectId: 'saga2',
+      isBuiltin: true,
+      projectRoot: root,
+      appIsPackaged: false,
+    });
+
+    expect(loaded?.basic.displayName).toBe('Project-owned SAGA2');
+    expect(loaded?.basic.path).toBe(path.resolve(root));
+    expect(loaded?.metadata).toEqual([]);
+    expect(loaded?.builtinRoles).toHaveLength(6);
+    const persisted = JSON.parse(
+      await readFile(path.join(configDirectory, 'project.json'), 'utf8'),
+    ) as MekaProjectFile;
+    expect(persisted.metadata).toEqual([]);
+    expect(persisted.builtinRoles).toHaveLength(6);
   });
 
   it('creates exclusively, normalizes vocabularies, and round-trips atomically', async () => {

@@ -5,6 +5,7 @@ import { app } from 'electron';
 
 import type {
   MekaProjectDefaultMetadataSelection,
+  MekaProjectFile,
   MekaProjectMetadataSelection,
   MekaProjectRoleDefaults,
   MekaRoleFile,
@@ -321,10 +322,11 @@ async function readRoleRelativeFile(row: RoleRow, relativePath: string): Promise
   return fs.readFile(candidate, 'utf8');
 }
 
-async function resolveRoleFile(row: RoleRow): Promise<MekaRoleFile> {
+async function resolveRoleFile(row: RoleRow, projectFile: MekaProjectFile): Promise<MekaRoleFile> {
   const manifest =
     row.is_builtin === 1
-      ? await readBuiltinRoleManifest(row.id, row.project_id)
+      ? (projectFile.builtinRoles?.find((role) => role.id === row.id) ??
+        (await readBuiltinRoleManifest(row.id, row.project_id)))
       : await readCustomRoleManifest(row.id, app.getPath('userData'), row.project_id);
   if (!manifest) throw new Error(`Meka role manifest is missing: ${row.id}`);
   return manifest;
@@ -364,7 +366,7 @@ export async function resolveMekaRuntimeConfig(
   if (!projectFile) throw new Error(`Meka project config is missing: ${projectId}`);
 
   const roleFile = mergeMekaProjectRoleDefaults(
-    await resolveRoleFile(role),
+    await resolveRoleFile(role, projectFile),
     projectFile.roleDefaults ?? {},
   );
   const catalog = await listBundledSkills();

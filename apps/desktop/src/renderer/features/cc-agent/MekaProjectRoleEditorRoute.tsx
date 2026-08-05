@@ -5,11 +5,11 @@ import {
   BriefcaseBusiness,
   ChevronRight,
   Copy,
-  FolderOpen,
   Info,
   MessageSquarePlus,
   Plus,
   RefreshCw,
+  RotateCcw,
   Save,
   Trash2,
   X,
@@ -26,6 +26,7 @@ import { WINDOW_DRAG_STYLE, WINDOW_NO_DRAG_STYLE } from '@/components/layout/win
 import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
 import { Tip } from '@/components/ui/tooltip';
+import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
 import { emitMekaProjectsRolesChanged } from '@/lib/mekaProjectsRolesBus';
 import type {
   MekaProject,
@@ -45,6 +46,7 @@ import type {
 import { MEKA_GENERAL_DISCIPLINE } from '../../../shared/meka-projects';
 import { parseJiraIssueFromLink } from '../../../shared/jira';
 import { MekaProjectRemoteInstances } from './MekaProjectRemoteInstances';
+import { MekaProjectCreateDialog, type MekaProjectCreateInput } from './MekaProjectCreateDialog';
 
 type DraftProject = {
   displayName: string;
@@ -119,36 +121,6 @@ function projectDraft(project: MekaProject, file?: MekaProjectFile | null): Draf
     gitlabProjectUrl: basic?.gitlabProjectUrl ?? project.gitlabProjectUrl ?? '',
     disciplines: basic?.disciplines ?? [MEKA_GENERAL_DISCIPLINE],
     domains: basic?.domains ?? [],
-  };
-}
-
-function emptyProjectDraft(): DraftProject {
-  return {
-    displayName: '',
-    description: '',
-    path: '',
-    additionalPaths: [],
-    formalWorkflowEnabled: false,
-    workflowType: 'none',
-    jiraProjectKey: '',
-    gitlabProjectUrl: '',
-    disciplines: [MEKA_GENERAL_DISCIPLINE],
-    domains: [],
-  };
-}
-
-function emptyProjectFile(): MekaProjectFile {
-  return {
-    schemaVersion: 1,
-    projectId: 'new',
-    basic: {
-      displayName: '',
-      path: '',
-      additionalPaths: [],
-      disciplines: [MEKA_GENERAL_DISCIPLINE],
-      domains: [],
-    },
-    metadata: [],
   };
 }
 
@@ -468,7 +440,10 @@ function metadataToSelectable(
   onChange: (next: MekaProjectMetadataSelection[]) => void,
 ): SelectableItem[] {
   const selected = new Map(
-    selections.map((item) => [metadataKey(item.rootPath, item.sourcePath, item.itemType), item.enabled]),
+    selections.map((item) => [
+      metadataKey(item.rootPath, item.sourcePath, item.itemType),
+      item.enabled,
+    ]),
   );
   return items
     .filter((item) => itemTypes.includes(item.itemType))
@@ -875,6 +850,7 @@ function RoleMcpEditor({
 
 export function MekaProjectRoleEditorRoute() {
   const { t } = useTranslation();
+  const { confirm } = useConfirmDialog();
   const [searchParams] = useSearchParams();
   const requestedProjectId = searchParams.get('projectId');
   const requestedRoleId = searchParams.get('roleId');
@@ -890,9 +866,8 @@ export function MekaProjectRoleEditorRoute() {
   const [skillCatalog, setSkillCatalog] = useState<MekaSkillCatalogEntry[]>([]);
   const [busy, setBusy] = useState(false);
   const [gitRemoteFetching, setGitRemoteFetching] = useState(false);
-  const [pathPicking, setPathPicking] = useState(false);
   const [projectsLoaded, setProjectsLoaded] = useState(false);
-  const [creatingProject, setCreatingProject] = useState(false);
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [creatingRole, setCreatingRole] = useState(false);
 
   const selectedProject = useMemo(
@@ -934,7 +909,6 @@ export function MekaProjectRoleEditorRoute() {
   }, []);
 
   useEffect(() => {
-    if (creatingProject) return;
     if (!selectedProject) {
       setProject(null);
       setProjectFile(null);
@@ -975,7 +949,7 @@ export function MekaProjectRoleEditorRoute() {
     return () => {
       cancelled = true;
     };
-  }, [creatingProject, selectedProject]);
+  }, [selectedProject]);
 
   useEffect(() => {
     if (creatingRole) return;
@@ -1021,16 +995,16 @@ export function MekaProjectRoleEditorRoute() {
   );
 
   const createProject = () => {
-    setCreatingProject(true);
-    setCreatingRole(false);
-    setSelectedProjectId(null);
-    setSelectedRoleId(null);
-    setProject(emptyProjectDraft());
-    setProjectFile(emptyProjectFile());
-    setRole(null);
-    setRoleEffective(null);
-    setMetadata([]);
-    setMetadataEffective([]);
+    setCreateDialogOpen(true);
+  };
+
+  const confirmCreateProject = async (input: MekaProjectCreateInput) => {
+    await run(async () => {
+      const created = await window.electronAPI.localDb.mekaProjects.create(input);
+      await reload(created.id);
+      setCreateDialogOpen(false);
+      toast.success(t('meka.saved'));
+    });
   };
 
   const projectDirty = useMemo(() => {
@@ -1047,14 +1021,6 @@ export function MekaProjectRoleEditorRoute() {
   );
 
   const cancelProjectDraft = () => {
-    if (creatingProject) {
-      setCreatingProject(false);
-      setProject(null);
-      setProjectFile(null);
-      setMetadata([]);
-      setMetadataEffective([]);
-      return;
-    }
     if (!selectedProject || !projectFile) return;
     setProject(projectDraft(selectedProject, projectFile));
     setMetadata(cloneValue(metadataEffective));
@@ -1084,21 +1050,6 @@ export function MekaProjectRoleEditorRoute() {
       );
     } catch {
       toast.error(t('meka.jiraKeyParseFailed'));
-    }
-  };
-
-  const chooseProjectDirectory = async () => {
-    if (!project || !creatingProject) return;
-    setPathPicking(true);
-    try {
-      const result = await window.electronAPI.showOpenDirectoryDialog();
-      if (!result.canceled && result.path) {
-        setProject((current) => (current ? { ...current, path: result.path ?? '' } : current));
-      }
-    } catch {
-      toast.error(t('meka.projectPathPickFailed'));
-    } finally {
-      setPathPicking(false);
     }
   };
 
@@ -1142,24 +1093,6 @@ export function MekaProjectRoleEditorRoute() {
   const saveProject = () => {
     if (!project || !projectFile) return;
     void run(async () => {
-      if (creatingProject) {
-        const created = await window.electronAPI.localDb.mekaProjects.create({
-          displayName: project.displayName.trim(),
-          description: project.description.trim() || null,
-          path: project.path.trim(),
-        });
-        await window.electronAPI.localDb.mekaProjectMetadata.saveProject({
-          projectId: created.id,
-          project: {
-            ...projectFileFromDraft(projectFile, project, metadata),
-            projectId: created.id,
-          },
-        });
-        await reload(created.id);
-        setCreatingProject(false);
-        toast.success(t('meka.saved'));
-        return;
-      }
       if (!selectedProject) return;
       const savedFile = await window.electronAPI.localDb.mekaProjectMetadata.saveProject({
         projectId: selectedProject.id,
@@ -1191,8 +1124,24 @@ export function MekaProjectRoleEditorRoute() {
     });
   };
 
+  const resetBuiltinProject = async () => {
+    if (!selectedProject?.isBuiltin || selectedProject.configSource !== 'project') return;
+    const confirmed = await confirm({
+      title: t('meka.resetBuiltinProjectTitle'),
+      description: t('meka.resetBuiltinProjectDescription'),
+      confirmText: t('meka.resetBuiltinProjectAction'),
+      cancelText: t('logic.confirm.cancel'),
+    });
+    if (!confirmed) return;
+    await run(async () => {
+      await window.electronAPI.localDb.mekaProjects.resetBuiltin(selectedProject.id);
+      await reload(selectedProject.id);
+      toast.success(t('meka.resetBuiltinProjectDone'));
+    });
+  };
+
   const createRole = () => {
-    if (!selectedProject || creatingProject) return;
+    if (!selectedProject) return;
     setCreatingRole(true);
     setSelectedRoleId(null);
     setRole(emptyRoleDraft(selectedProject.id));
@@ -1200,8 +1149,7 @@ export function MekaProjectRoleEditorRoute() {
   };
 
   const saveRole = () => {
-    const selectedRole = selectedProject?.roles.find((item) => item.id === selectedRoleId);
-    if (!selectedProject || !role || (!creatingRole && selectedRole?.isBuiltin)) return;
+    if (!selectedProject || !role) return;
     void run(async () => {
       if (creatingRole) {
         const created = await window.electronAPI.localDb.mekaRoles.create({
@@ -1274,216 +1222,243 @@ export function MekaProjectRoleEditorRoute() {
     });
   };
 
-  if (!selectedProject && !creatingProject) {
+  if (!selectedProject) {
     return (
-      <PluginManagementLayout
-        activeTab="meka-projects"
-        headerActions={
-          <button type="button" className={buttonClass} onClick={createProject} disabled={busy}>
-            <Plus size={15} aria-hidden="true" />
-            {t('meka.newProject')}
-          </button>
-        }
-      >
-        <main className="min-h-0 flex-1 overflow-y-auto bg-[var(--surface)] text-[var(--text-primary)] [scrollbar-gutter:stable_both-edges]">
-          <PluginManagementPage>
-            <header className="plugin-motion-page-header pb-2">
-              <div className="min-w-0">
-                <h1 className="text-28 font-medium leading-tight text-[var(--text-primary)]">
-                  {t('meka.title')}
-                </h1>
-                <p className="mt-2 max-w-2xl text-14 leading-6 text-[var(--text-secondary)]">
-                  {t('meka.subtitle')}
-                </p>
-              </div>
-            </header>
-
-            {!projectsLoaded ? (
-              <div className="plugin-motion-page-section mt-6 flex min-h-72 items-center justify-center text-13 text-[var(--text-secondary)]">
-                {t('meka.loading')}
-              </div>
-            ) : projects.length > 0 ? (
-              <section className="plugin-motion-page-section mt-6 min-w-0">
-                <div className="mb-5 flex items-baseline gap-2">
-                  <h2 className="text-20 font-medium text-[var(--text-primary)]">
-                    {t('sidebar.tabs.projects')}
-                  </h2>
-                  <span className="text-13 tabular-nums text-[var(--text-tertiary)]">
-                    {projects.length}
-                  </span>
+      <>
+        <PluginManagementLayout
+          activeTab="meka-projects"
+          headerActions={
+            <button type="button" className={buttonClass} onClick={createProject} disabled={busy}>
+              <Plus size={15} aria-hidden="true" />
+              {t('meka.newProject')}
+            </button>
+          }
+        >
+          <main className="min-h-0 flex-1 overflow-y-auto bg-[var(--surface)] text-[var(--text-primary)] [scrollbar-gutter:stable_both-edges]">
+            <PluginManagementPage>
+              <header className="plugin-motion-page-header pb-2">
+                <div className="min-w-0">
+                  <h1 className="text-28 font-medium leading-tight text-[var(--text-primary)]">
+                    {t('meka.title')}
+                  </h1>
+                  <p className="mt-2 max-w-2xl text-14 leading-6 text-[var(--text-secondary)]">
+                    {t('meka.subtitle')}
+                  </p>
                 </div>
-                <div className="plugin-motion-stagger grid grid-cols-1 gap-3 md:grid-cols-2">
-                  {projects.map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => {
-                        setSelectedRoleId(null);
-                        setSelectedProjectId(item.id);
-                      }}
-                      className={cn(
-                        'group flex w-full items-start gap-3 rounded-[12px] border-[0.5px] border-[var(--border-default)] px-3 py-2.5 text-left',
-                        'bg-[var(--surface-elevated)] shadow-[var(--plugin-card-shadow)]',
-                        'transition-[background-color,border-color,transform] duration-150 ease-out',
-                        'hover:-translate-y-0.5 hover:border-[var(--text-tertiary)]',
-                        'active:translate-y-0 active:scale-[0.992]',
-                        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
-                      )}
-                      aria-label={item.displayName}
-                    >
-                      <span className="flex size-9 shrink-0 items-center justify-center rounded-[22%] border-[0.5px] border-[var(--border-default)] bg-[var(--surface-elevated)] text-[var(--text-primary)] shadow-[var(--plugin-card-shadow)]">
-                        <BriefcaseBusiness size={17} strokeWidth={1.75} aria-hidden="true" />
-                      </span>
-                      <span className="flex min-w-0 flex-1 flex-col gap-1 pt-0.5">
-                        <span className="flex min-w-0 items-center gap-2">
-                          <span className="min-w-0 flex-1 truncate text-13 font-medium text-[var(--text-primary)]">
-                            {item.displayName}
+              </header>
+
+              {!projectsLoaded ? (
+                <div className="plugin-motion-page-section mt-6 flex min-h-72 items-center justify-center text-13 text-[var(--text-secondary)]">
+                  {t('meka.loading')}
+                </div>
+              ) : projects.length > 0 ? (
+                <section className="plugin-motion-page-section mt-6 min-w-0">
+                  <div className="mb-5 flex items-baseline gap-2">
+                    <h2 className="text-20 font-medium text-[var(--text-primary)]">
+                      {t('sidebar.tabs.projects')}
+                    </h2>
+                    <span className="text-13 tabular-nums text-[var(--text-tertiary)]">
+                      {projects.length}
+                    </span>
+                  </div>
+                  <div className="plugin-motion-stagger grid grid-cols-1 gap-3 md:grid-cols-2">
+                    {projects.map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedRoleId(null);
+                          setSelectedProjectId(item.id);
+                        }}
+                        className={cn(
+                          'group flex w-full items-start gap-3 rounded-[12px] border-[0.5px] border-[var(--border-default)] px-3 py-2.5 text-left',
+                          'bg-[var(--surface-elevated)] shadow-[var(--plugin-card-shadow)]',
+                          'transition-[background-color,border-color,transform] duration-150 ease-out',
+                          'hover:-translate-y-0.5 hover:border-[var(--text-tertiary)]',
+                          'active:translate-y-0 active:scale-[0.992]',
+                          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
+                        )}
+                        aria-label={item.displayName}
+                      >
+                        <span className="flex size-9 shrink-0 items-center justify-center rounded-[22%] border-[0.5px] border-[var(--border-default)] bg-[var(--surface-elevated)] text-[var(--text-primary)] shadow-[var(--plugin-card-shadow)]">
+                          <BriefcaseBusiness size={17} strokeWidth={1.75} aria-hidden="true" />
+                        </span>
+                        <span className="flex min-w-0 flex-1 flex-col gap-1 pt-0.5">
+                          <span className="flex min-w-0 items-center gap-2">
+                            <span className="min-w-0 flex-1 truncate text-13 font-medium text-[var(--text-primary)]">
+                              {item.displayName}
+                            </span>
+                            {item.isBuiltin ? (
+                              <span className="shrink-0 text-10 text-[var(--text-tertiary)]">
+                                {t('meka.builtin')}
+                              </span>
+                            ) : null}
                           </span>
-                          {item.isBuiltin ? (
-                            <span className="shrink-0 text-10 text-[var(--text-tertiary)]">
-                              {t('meka.builtin')}
+                          {item.description || item.path ? (
+                            <span className="line-clamp-1 text-12 leading-4 text-[var(--text-secondary)]">
+                              {item.description || item.path}
                             </span>
                           ) : null}
                         </span>
-                        {item.description || item.path ? (
-                          <span className="line-clamp-1 text-12 leading-4 text-[var(--text-secondary)]">
-                            {item.description || item.path}
-                          </span>
-                        ) : null}
-                      </span>
-                      <span className="mt-1 flex size-7 shrink-0 items-center justify-center rounded-lg border border-transparent text-[var(--text-secondary)] transition-[background-color,color,transform] group-hover:translate-x-0.5 group-hover:bg-[var(--surface-chip)] group-hover:text-[var(--text-primary)] group-active:translate-x-0 group-active:scale-95">
-                        <ChevronRight size={15} strokeWidth={1.8} aria-hidden="true" />
-                      </span>
-                    </button>
-                  ))}
+                        <span className="mt-1 flex size-7 shrink-0 items-center justify-center rounded-lg border border-transparent text-[var(--text-secondary)] transition-[background-color,color,transform] group-hover:translate-x-0.5 group-hover:bg-[var(--surface-chip)] group-hover:text-[var(--text-primary)] group-active:translate-x-0 group-active:scale-95">
+                          <ChevronRight size={15} strokeWidth={1.8} aria-hidden="true" />
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              ) : (
+                <div className="plugin-motion-page-section mt-7 flex min-h-72 flex-col items-center justify-center rounded-xl border-[0.5px] border-[var(--border-default)] p-8 text-center">
+                  <BriefcaseBusiness
+                    size={30}
+                    className="text-[var(--text-tertiary)]"
+                    aria-hidden="true"
+                  />
+                  <p className="mt-4 max-w-sm text-14 leading-6 text-[var(--text-secondary)]">
+                    {t('meka.empty')}
+                  </p>
+                  <button
+                    className={cn(buttonClass, 'mt-5')}
+                    onClick={createProject}
+                    disabled={busy}
+                  >
+                    <Plus size={15} aria-hidden="true" />
+                    {t('meka.newProject')}
+                  </button>
                 </div>
-              </section>
-            ) : (
-              <div className="plugin-motion-page-section mt-7 flex min-h-72 flex-col items-center justify-center rounded-xl border-[0.5px] border-[var(--border-default)] p-8 text-center">
-                <BriefcaseBusiness
-                  size={30}
-                  className="text-[var(--text-tertiary)]"
-                  aria-hidden="true"
-                />
-                <p className="mt-4 max-w-sm text-14 leading-6 text-[var(--text-secondary)]">
-                  {t('meka.empty')}
-                </p>
-                <button className={cn(buttonClass, 'mt-5')} onClick={createProject} disabled={busy}>
-                  <Plus size={15} aria-hidden="true" />
-                  {t('meka.newProject')}
-                </button>
-              </div>
-            )}
-          </PluginManagementPage>
-        </main>
-      </PluginManagementLayout>
+              )}
+            </PluginManagementPage>
+          </main>
+        </PluginManagementLayout>
+        <MekaProjectCreateDialog
+          open={createDialogOpen}
+          busy={busy}
+          onOpenChange={setCreateDialogOpen}
+          onCreate={confirmCreateProject}
+        />
+      </>
     );
   }
 
   const showingRole = creatingRole || selectedRoleId !== null;
   const selectedRoleSummary =
     selectedProject?.roles.find((item) => item.id === selectedRoleId) ?? null;
-  const selectionReadOnly = showingRole ? selectedRoleSummary?.isBuiltin === true : false;
-  const projectCreateValid =
-    creatingProject && !!project?.displayName.trim() && !!project.path.trim();
+  // Bundled SAGA2 roles are editable in place; the first save materializes
+  // their snapshot in the project-root .meka/project.json.
+  const selectionReadOnly = false;
   const roleCreateValid = creatingRole && !!role?.displayName.trim();
-  const canCancel = showingRole ? creatingRole || roleDirty : creatingProject || projectDirty;
+  const canCancel = showingRole ? creatingRole || roleDirty : projectDirty;
   const canSave = showingRole
     ? roleCreateValid || (roleDirty && !!role)
-    : projectCreateValid || (projectDirty && !!project && !!projectFile);
+    : projectDirty && !!project && !!projectFile;
 
   return (
-    <main className="flex h-full min-h-0 w-full flex-col bg-[var(--surface)] text-[var(--text-primary)]">
-      <header
-        className="flex h-[72px] w-full shrink-0 items-center gap-4 border-b border-[var(--cmd-palette-border)] pl-4 pr-6"
-        style={WINDOW_DRAG_STYLE}
-      >
-        <button
-          type="button"
-          onClick={() => {
-            setCreatingProject(false);
-            setCreatingRole(false);
-            setSelectedRoleId(null);
-            setSelectedProjectId(null);
-          }}
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[var(--settings-section-desc)] transition-colors hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
-          style={WINDOW_NO_DRAG_STYLE}
-          aria-label={t('meka.backToProjects')}
+    <>
+      <main className="flex h-full min-h-0 w-full flex-col bg-[var(--surface)] text-[var(--text-primary)]">
+        <header
+          className="flex h-[72px] w-full shrink-0 items-center gap-4 border-b border-[var(--cmd-palette-border)] pl-4 pr-6"
+          style={WINDOW_DRAG_STYLE}
         >
-          <ArrowLeft size={18} aria-hidden="true" />
-        </button>
-        <div className="flex min-w-0 flex-1 flex-col gap-1 overflow-hidden">
-          <h1 className="truncate text-lg font-medium leading-none text-[var(--text-primary)]">
-            {creatingProject ? t('meka.newProject') : selectedProject?.displayName}
-          </h1>
-          <p className="truncate text-12 text-[var(--text-tertiary)]">
-            {creatingProject ? project?.path : (selectedProject?.path ?? selectedProject?.id)}
-          </p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2" style={WINDOW_NO_DRAG_STYLE}>
-          {showingRole && !creatingRole && selectedRoleSummary?.isBuiltin ? (
-            <button className={buttonClass} onClick={copyRole} disabled={busy || !role}>
-              <Copy size={14} aria-hidden="true" />
-              {t('meka.copyRole')}
-            </button>
-          ) : null}
-          {!selectionReadOnly ? (
-            <>
-              <button
-                className={buttonClass}
-                onClick={showingRole ? cancelRoleDraft : cancelProjectDraft}
-                disabled={busy || !canCancel}
-              >
-                {t('logic.confirm.cancel')}
+          <button
+            type="button"
+            onClick={() => {
+              setCreatingRole(false);
+              setSelectedRoleId(null);
+              setSelectedProjectId(null);
+            }}
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[var(--settings-section-desc)] transition-colors hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+            style={WINDOW_NO_DRAG_STYLE}
+            aria-label={t('meka.backToProjects')}
+          >
+            <ArrowLeft size={18} aria-hidden="true" />
+          </button>
+          <div className="flex min-w-0 flex-1 flex-col gap-1 overflow-hidden">
+            <h1 className="truncate text-lg font-medium leading-none text-[var(--text-primary)]">
+              {selectedProject.displayName}
+            </h1>
+            <p className="truncate text-12 text-[var(--text-tertiary)]">
+              {selectedProject.path ?? selectedProject.id}
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-2" style={WINDOW_NO_DRAG_STYLE}>
+            {showingRole && !creatingRole && selectedRoleSummary?.isBuiltin ? (
+              <button className={buttonClass} onClick={copyRole} disabled={busy || !role}>
+                <Copy size={14} aria-hidden="true" />
+                {t('meka.copyRole')}
               </button>
-              <button
-                className={buttonClass}
-                onClick={showingRole ? saveRole : saveProject}
-                disabled={busy || !canSave}
-              >
-                <Save size={14} aria-hidden="true" />
-                {showingRole ? t('meka.saveRole') : t('meka.save')}
-              </button>
-              {!creatingProject && !creatingRole && (showingRole || !selectedProject?.isBuiltin) ? (
+            ) : null}
+            {!selectionReadOnly ? (
+              <>
                 <button
-                  type="button"
-                  onClick={showingRole ? deleteRole : deleteProject}
-                  disabled={busy || (showingRole ? !role : !project)}
-                  aria-label={showingRole ? t('meka.deleteRole') : t('meka.delete')}
-                  className="grid size-9 shrink-0 place-items-center rounded-full text-[var(--text-secondary)] transition-colors hover:bg-[var(--error-bg)] hover:text-[var(--error-fg-strong)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:opacity-40"
+                  className={buttonClass}
+                  onClick={showingRole ? cancelRoleDraft : cancelProjectDraft}
+                  disabled={busy || !canCancel}
                 >
-                  <Trash2 size={16} aria-hidden="true" />
+                  {t('logic.confirm.cancel')}
                 </button>
-              ) : null}
-            </>
-          ) : null}
-        </div>
-      </header>
+                <button
+                  className={buttonClass}
+                  onClick={showingRole ? saveRole : saveProject}
+                  disabled={busy || !canSave}
+                >
+                  <Save size={14} aria-hidden="true" />
+                  {showingRole ? t('meka.saveRole') : t('meka.save')}
+                </button>
+                {!creatingRole &&
+                (showingRole
+                  ? selectedRoleSummary?.isBuiltin === false
+                  : !selectedProject.isBuiltin) ? (
+                  <button
+                    type="button"
+                    onClick={showingRole ? deleteRole : deleteProject}
+                    disabled={busy || (showingRole ? !role : !project)}
+                    aria-label={showingRole ? t('meka.deleteRole') : t('meka.delete')}
+                    className="grid size-9 shrink-0 place-items-center rounded-full text-[var(--text-secondary)] transition-colors hover:bg-[var(--error-bg)] hover:text-[var(--error-fg-strong)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:opacity-40"
+                  >
+                    <Trash2 size={16} aria-hidden="true" />
+                  </button>
+                ) : null}
+                {!showingRole &&
+                selectedProject.isBuiltin &&
+                selectedProject.configSource === 'project' ? (
+                  <button
+                    type="button"
+                    className={buttonClass}
+                    disabled={busy}
+                    onClick={() => void resetBuiltinProject()}
+                  >
+                    <RotateCcw size={14} aria-hidden="true" />
+                    {t('meka.resetBuiltinProjectAction')}
+                  </button>
+                ) : null}
+              </>
+            ) : null}
+          </div>
+        </header>
 
-      <div className="flex min-h-0 flex-1">
-        <aside className="flex w-[260px] shrink-0 flex-col overflow-y-auto border-r border-[var(--cmd-palette-border)] px-3 py-4">
-          <nav className="flex flex-col gap-1" aria-label={t('meka.projectNavigation')}>
-            <button
-              type="button"
-              onClick={() => {
-                setCreatingRole(false);
-                setSelectedRoleId(null);
-              }}
-              aria-current={!showingRole ? 'page' : undefined}
-              className={cn(
-                'flex min-h-10 w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-13 transition-colors',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
-                !showingRole
-                  ? 'bg-[var(--surface-chip)] font-medium text-[var(--text-primary)]'
-                  : 'text-[var(--text-secondary)] hover:bg-[var(--surface-hover-soft)] hover:text-[var(--text-primary)]',
-              )}
-            >
-              <BriefcaseBusiness size={16} className="shrink-0" aria-hidden="true" />
-              <span className="truncate">{t('meka.projectDetails')}</span>
-            </button>
-          </nav>
+        <div className="flex min-h-0 flex-1">
+          <aside className="flex w-[260px] shrink-0 flex-col overflow-y-auto border-r border-[var(--cmd-palette-border)] px-3 py-4">
+            <nav className="flex flex-col gap-1" aria-label={t('meka.projectNavigation')}>
+              <button
+                type="button"
+                onClick={() => {
+                  setCreatingRole(false);
+                  setSelectedRoleId(null);
+                }}
+                aria-current={!showingRole ? 'page' : undefined}
+                className={cn(
+                  'flex min-h-10 w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-13 transition-colors',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
+                  !showingRole
+                    ? 'bg-[var(--surface-chip)] font-medium text-[var(--text-primary)]'
+                    : 'text-[var(--text-secondary)] hover:bg-[var(--surface-hover-soft)] hover:text-[var(--text-primary)]',
+                )}
+              >
+                <BriefcaseBusiness size={16} className="shrink-0" aria-hidden="true" />
+                <span className="truncate">{t('meka.projectDetails')}</span>
+              </button>
+            </nav>
 
-          {!creatingProject ? (
             <div className="mt-6 flex items-center justify-between gap-2 px-3">
               <h2 className="text-xs font-medium uppercase tracking-wider text-[var(--text-tertiary)]">
                 {t('meka.roles')}
@@ -1498,8 +1473,6 @@ export function MekaProjectRoleEditorRoute() {
                 <Plus size={14} aria-hidden="true" />
               </button>
             </div>
-          ) : null}
-          {!creatingProject ? (
             <nav className="mt-2 flex flex-col gap-1" aria-label={t('meka.roles')}>
               {selectedProject?.roles.map((item) => (
                 <button
@@ -1525,38 +1498,253 @@ export function MekaProjectRoleEditorRoute() {
                 </button>
               ))}
             </nav>
-          ) : null}
-        </aside>
+          </aside>
 
-        <section className="min-w-0 flex-1 overflow-y-auto px-8 pb-16 pt-8 [scrollbar-gutter:stable]">
-          {showingRole ? (
-            role ? (
+          <section className="min-w-0 flex-1 overflow-y-auto px-8 pb-16 pt-8 [scrollbar-gutter:stable]">
+            {showingRole ? (
+              role ? (
+                <div className="mx-auto w-full max-w-[760px]">
+                  <section className={detailSectionClass}>
+                    <DetailSectionHeader
+                      icon={<Users size={18} aria-hidden="true" />}
+                      title={t('meka.roleBasicInfo')}
+                      description={
+                        selectionReadOnly
+                          ? t('meka.builtinRoleReadOnly')
+                          : t('meka.rolesDescription')
+                      }
+                    />
+                    <div className={cn(detailSurfaceClass, 'mt-5')}>
+                      <label className={fieldLabelClass}>
+                        <span>{t('meka.roleName')}</span>
+                        <input
+                          className={inputClass}
+                          value={role.displayName}
+                          disabled={selectionReadOnly}
+                          onChange={(event) =>
+                            setRole({ ...role, displayName: event.target.value })
+                          }
+                        />
+                      </label>
+                      <label className={cn(fieldLabelClass, 'mt-4')}>
+                        <span>{t('meka.description')}</span>
+                        <textarea
+                          className={textAreaClass}
+                          value={role.description ?? ''}
+                          disabled={selectionReadOnly}
+                          onChange={(event) =>
+                            setRole({ ...role, description: event.target.value })
+                          }
+                        />
+                      </label>
+                    </div>
+                  </section>
+
+                  <section className={detailSectionClass}>
+                    <DetailSectionHeader
+                      icon={<MessageSquarePlus size={18} aria-hidden="true" />}
+                      title={t('meka.prompt')}
+                      description={t('meka.promptDescription')}
+                    />
+                    <div className={cn(detailSurfaceClass, 'mt-5')}>
+                      <textarea
+                        className={cn(textAreaClass, 'min-h-72 font-mono text-12')}
+                        value={role.prompt ?? ''}
+                        disabled={selectionReadOnly}
+                        onChange={(event) => setRole({ ...role, prompt: event.target.value })}
+                      />
+                    </div>
+                  </section>
+
+                  <section className={detailSectionClass}>
+                    <DetailSectionHeader
+                      icon={<BookOpen size={18} aria-hidden="true" />}
+                      title={t('meka.rules')}
+                      description={t('meka.rulesDescription')}
+                      action={
+                        !selectionReadOnly ? (
+                          <button
+                            type="button"
+                            className={compactButtonClass}
+                            onClick={() =>
+                              setRole({
+                                ...role,
+                                rules: [
+                                  ...(role.rules ?? []),
+                                  {
+                                    id: `rule-${Date.now().toString(36)}`,
+                                    text: t('meka.newRuleText'),
+                                    enabled: true,
+                                  },
+                                ],
+                              })
+                            }
+                          >
+                            <Plus size={13} aria-hidden="true" />
+                            {t('meka.addRule')}
+                          </button>
+                        ) : undefined
+                      }
+                    />
+                    <div className={cn(detailSurfaceClass, 'mt-5')}>
+                      <div className="flex flex-col gap-3">
+                        {(role.rules ?? []).map((ruleItem, index) => (
+                          <div key={ruleItem.id} className="flex items-start gap-3">
+                            <input
+                              className="mt-3"
+                              type="checkbox"
+                              checked={ruleItem.enabled}
+                              disabled={selectionReadOnly}
+                              onChange={(event) =>
+                                setRole({
+                                  ...role,
+                                  rules: (role.rules ?? []).map((item, itemIndex) =>
+                                    itemIndex === index
+                                      ? { ...item, enabled: event.target.checked }
+                                      : item,
+                                  ),
+                                })
+                              }
+                            />
+                            <textarea
+                              className={cn(textAreaClass, 'min-h-16 flex-1')}
+                              value={ruleItem.text}
+                              disabled={selectionReadOnly}
+                              onChange={(event) =>
+                                setRole({
+                                  ...role,
+                                  rules: (role.rules ?? []).map((item, itemIndex) =>
+                                    itemIndex === index
+                                      ? { ...item, text: event.target.value }
+                                      : item,
+                                  ),
+                                })
+                              }
+                            />
+                            {!selectionReadOnly ? (
+                              <button
+                                type="button"
+                                className="mt-3 text-[var(--text-tertiary)] hover:text-[var(--error-fg-strong)]"
+                                onClick={() =>
+                                  setRole({
+                                    ...role,
+                                    rules: (role.rules ?? []).filter(
+                                      (_, itemIndex) => itemIndex !== index,
+                                    ),
+                                  })
+                                }
+                                aria-label={t('meka.remove')}
+                              >
+                                <Trash2 size={14} aria-hidden="true" />
+                              </button>
+                            ) : null}
+                          </div>
+                        ))}
+                        {(role.rules ?? []).length === 0 ? (
+                          <p className="text-13 text-[var(--text-tertiary)]">
+                            {t('meka.rulesEmpty')}
+                          </p>
+                        ) : null}
+                      </div>
+                      <MetadataSelectionList
+                        metadata={metadata}
+                        itemTypes={['rule', 'agents-md']}
+                        selections={role.projectMetadataSelection ?? []}
+                        disabled={selectionReadOnly}
+                        onChange={(projectMetadataSelection) =>
+                          setRole({ ...role, projectMetadataSelection })
+                        }
+                      />
+                    </div>
+                  </section>
+
+                  <section className={detailSectionClass}>
+                    <DetailSectionHeader
+                      icon={<BookOpen size={18} aria-hidden="true" />}
+                      title={t('meka.skills')}
+                      description={t('meka.skillsDescription')}
+                    />
+                    <div className={cn(detailSurfaceClass, 'mt-5')}>
+                      <RoleSkillsEditor
+                        skills={role.skills}
+                        catalog={skillCatalog}
+                        projectItems={metadata}
+                        projectSelections={role.projectMetadataSelection ?? []}
+                        onProjectMetadataChange={(projectMetadataSelection) =>
+                          setRole((current) =>
+                            current ? { ...current, projectMetadataSelection } : current,
+                          )
+                        }
+                        disabled={selectionReadOnly}
+                        onChange={(skills) =>
+                          setRole((current) => (current ? { ...current, skills } : current))
+                        }
+                      />
+                    </div>
+                  </section>
+
+                  <section className={detailSectionClass}>
+                    <DetailSectionHeader
+                      icon={<RefreshCw size={18} aria-hidden="true" />}
+                      title={t('meka.roleMcp')}
+                      description={t('meka.roleMcpDescription')}
+                    />
+                    <div className={cn(detailSurfaceClass, 'mt-5')}>
+                      <RoleMcpEditor
+                        entries={role.mcp}
+                        disabled={selectionReadOnly}
+                        onChange={(mcp) => setRole({ ...role, mcp })}
+                      />
+                      <MetadataSelectionList
+                        metadata={metadata}
+                        itemTypes={['mcp']}
+                        selections={role.projectMetadataSelection ?? []}
+                        disabled={selectionReadOnly}
+                        onChange={(projectMetadataSelection) =>
+                          setRole({ ...role, projectMetadataSelection })
+                        }
+                      />
+                    </div>
+                  </section>
+                </div>
+              ) : (
+                <div className="flex h-full items-center justify-center text-13 text-[var(--text-tertiary)]">
+                  {t('meka.loading')}
+                </div>
+              )
+            ) : project ? (
               <div className="mx-auto w-full max-w-[760px]">
                 <section className={detailSectionClass}>
                   <DetailSectionHeader
-                    icon={<Users size={18} aria-hidden="true" />}
-                    title={t('meka.roleBasicInfo')}
+                    icon={<BriefcaseBusiness size={18} aria-hidden="true" />}
+                    title={t('meka.projectBasicInfo')}
                     description={
-                      selectionReadOnly ? t('meka.builtinRoleReadOnly') : t('meka.rolesDescription')
+                      selectionReadOnly
+                        ? t('meka.builtinProjectReadOnly')
+                        : t('meka.projectDetailsDescription')
                     }
                   />
-                  <div className={cn(detailSurfaceClass, 'mt-5')}>
+                  <div className={cn(detailSurfaceClass, 'mt-5 space-y-4')}>
                     <label className={fieldLabelClass}>
-                      <span>{t('meka.roleName')}</span>
+                      <span>{t('meka.projectName')}</span>
                       <input
                         className={inputClass}
-                        value={role.displayName}
+                        value={project.displayName}
                         disabled={selectionReadOnly}
-                        onChange={(event) => setRole({ ...role, displayName: event.target.value })}
+                        onChange={(event) =>
+                          setProject({ ...project, displayName: event.target.value })
+                        }
                       />
                     </label>
-                    <label className={cn(fieldLabelClass, 'mt-4')}>
+                    <label className={fieldLabelClass}>
                       <span>{t('meka.description')}</span>
                       <textarea
                         className={textAreaClass}
-                        value={role.description ?? ''}
+                        value={project.description}
                         disabled={selectionReadOnly}
-                        onChange={(event) => setRole({ ...role, description: event.target.value })}
+                        onChange={(event) =>
+                          setProject({ ...project, description: event.target.value })
+                        }
                       />
                     </label>
                   </div>
@@ -1565,425 +1753,196 @@ export function MekaProjectRoleEditorRoute() {
                 <section className={detailSectionClass}>
                   <DetailSectionHeader
                     icon={<MessageSquarePlus size={18} aria-hidden="true" />}
-                    title={t('meka.prompt')}
-                    description={t('meka.promptDescription')}
+                    title={t('meka.projectConfiguration')}
                   />
                   <div className={cn(detailSurfaceClass, 'mt-5')}>
-                    <textarea
-                      className={cn(textAreaClass, 'min-h-72 font-mono text-12')}
-                      value={role.prompt ?? ''}
-                      disabled={selectionReadOnly}
-                      onChange={(event) => setRole({ ...role, prompt: event.target.value })}
-                    />
-                  </div>
-                </section>
-
-                <section className={detailSectionClass}>
-                  <DetailSectionHeader
-                    icon={<BookOpen size={18} aria-hidden="true" />}
-                    title={t('meka.rules')}
-                    description={t('meka.rulesDescription')}
-                    action={
-                      !selectionReadOnly ? (
-                        <button
-                          type="button"
-                          className={compactButtonClass}
-                          onClick={() =>
-                            setRole({
-                              ...role,
-                              rules: [
-                                ...(role.rules ?? []),
-                                {
-                                  id: `rule-${Date.now().toString(36)}`,
-                                  text: t('meka.newRuleText'),
-                                  enabled: true,
-                                },
-                              ],
-                            })
-                          }
-                        >
-                          <Plus size={13} aria-hidden="true" />
-                          {t('meka.addRule')}
-                        </button>
-                      ) : undefined
-                    }
-                  />
-                  <div className={cn(detailSurfaceClass, 'mt-5')}>
-                    <div className="flex flex-col gap-3">
-                      {(role.rules ?? []).map((ruleItem, index) => (
-                        <div key={ruleItem.id} className="flex items-start gap-3">
-                          <input
-                            className="mt-3"
-                            type="checkbox"
-                            checked={ruleItem.enabled}
-                            disabled={selectionReadOnly}
-                            onChange={(event) =>
-                              setRole({
-                                ...role,
-                                rules: (role.rules ?? []).map((item, itemIndex) =>
-                                  itemIndex === index
-                                    ? { ...item, enabled: event.target.checked }
-                                    : item,
-                                ),
-                              })
-                            }
-                          />
-                          <textarea
-                            className={cn(textAreaClass, 'min-h-16 flex-1')}
-                            value={ruleItem.text}
-                            disabled={selectionReadOnly}
-                            onChange={(event) =>
-                              setRole({
-                                ...role,
-                                rules: (role.rules ?? []).map((item, itemIndex) =>
-                                  itemIndex === index
-                                    ? { ...item, text: event.target.value }
-                                    : item,
-                                ),
-                              })
-                            }
-                          />
-                          {!selectionReadOnly ? (
-                            <button
-                              type="button"
-                              className="mt-3 text-[var(--text-tertiary)] hover:text-[var(--error-fg-strong)]"
-                              onClick={() =>
-                                setRole({
-                                  ...role,
-                                  rules: (role.rules ?? []).filter(
-                                    (_, itemIndex) => itemIndex !== index,
-                                  ),
-                                })
-                              }
-                              aria-label={t('meka.remove')}
-                            >
-                              <Trash2 size={14} aria-hidden="true" />
-                            </button>
-                          ) : null}
-                        </div>
-                      ))}
-                      {(role.rules ?? []).length === 0 ? (
-                        <p className="text-13 text-[var(--text-tertiary)]">
-                          {t('meka.rulesEmpty')}
-                        </p>
-                      ) : null}
-                    </div>
-                    <MetadataSelectionList
-                      metadata={metadata}
-                      itemTypes={['rule', 'agents-md']}
-                      selections={role.projectMetadataSelection ?? []}
-                      disabled={selectionReadOnly}
-                      onChange={(projectMetadataSelection) =>
-                        setRole({ ...role, projectMetadataSelection })
-                      }
-                    />
-                  </div>
-                </section>
-
-                <section className={detailSectionClass}>
-                  <DetailSectionHeader
-                    icon={<BookOpen size={18} aria-hidden="true" />}
-                    title={t('meka.skills')}
-                    description={t('meka.skillsDescription')}
-                  />
-                  <div className={cn(detailSurfaceClass, 'mt-5')}>
-                    <RoleSkillsEditor
-                      skills={role.skills}
-                      catalog={skillCatalog}
-                      projectItems={metadata}
-                      projectSelections={role.projectMetadataSelection ?? []}
-                      onProjectMetadataChange={(projectMetadataSelection) =>
-                        setRole((current) =>
-                          current ? { ...current, projectMetadataSelection } : current,
-                        )
-                      }
-                      disabled={selectionReadOnly}
-                      onChange={(skills) =>
-                        setRole((current) => (current ? { ...current, skills } : current))
-                      }
-                    />
-                  </div>
-                </section>
-
-                <section className={detailSectionClass}>
-                  <DetailSectionHeader
-                    icon={<RefreshCw size={18} aria-hidden="true" />}
-                    title={t('meka.roleMcp')}
-                    description={t('meka.roleMcpDescription')}
-                  />
-                  <div className={cn(detailSurfaceClass, 'mt-5')}>
-                    <RoleMcpEditor
-                      entries={role.mcp}
-                      disabled={selectionReadOnly}
-                      onChange={(mcp) => setRole({ ...role, mcp })}
-                    />
-                    <MetadataSelectionList
-                      metadata={metadata}
-                      itemTypes={['mcp']}
-                      selections={role.projectMetadataSelection ?? []}
-                      disabled={selectionReadOnly}
-                      onChange={(projectMetadataSelection) =>
-                        setRole({ ...role, projectMetadataSelection })
-                      }
-                    />
-                  </div>
-                </section>
-              </div>
-            ) : (
-              <div className="flex h-full items-center justify-center text-13 text-[var(--text-tertiary)]">
-                {t('meka.loading')}
-              </div>
-            )
-          ) : project ? (
-            <div className="mx-auto w-full max-w-[760px]">
-              <section className={detailSectionClass}>
-                <DetailSectionHeader
-                  icon={<BriefcaseBusiness size={18} aria-hidden="true" />}
-                  title={t('meka.projectBasicInfo')}
-                  description={
-                    selectionReadOnly
-                      ? t('meka.builtinProjectReadOnly')
-                      : t('meka.projectDetailsDescription')
-                  }
-                />
-                <div className={cn(detailSurfaceClass, 'mt-5 space-y-4')}>
-                  <label className={fieldLabelClass}>
-                    <span>{t('meka.projectName')}</span>
-                    <input
-                      className={inputClass}
-                      value={project.displayName}
-                      disabled={selectionReadOnly}
-                      onChange={(event) =>
-                        setProject({ ...project, displayName: event.target.value })
-                      }
-                    />
-                  </label>
-                  <label className={fieldLabelClass}>
-                    <span>{t('meka.description')}</span>
-                    <textarea
-                      className={textAreaClass}
-                      value={project.description}
-                      disabled={selectionReadOnly}
-                      onChange={(event) =>
-                        setProject({ ...project, description: event.target.value })
-                      }
-                    />
-                  </label>
-                </div>
-              </section>
-
-              <section className={detailSectionClass}>
-                <DetailSectionHeader
-                  icon={<MessageSquarePlus size={18} aria-hidden="true" />}
-                  title={t('meka.projectConfiguration')}
-                />
-                <div className={cn(detailSurfaceClass, 'mt-5')}>
-                  <div className="flex items-end gap-2">
-                    <label className={cn(fieldLabelClass, 'min-w-0 flex-1')}>
-                      <span>{t('meka.projectPath')}</span>
-                      <input
-                        className={inputClass}
-                        value={project.path}
-                        disabled={selectionReadOnly || !creatingProject || pathPicking}
-                        onChange={(event) => setProject({ ...project, path: event.target.value })}
-                      />
-                    </label>
-                    {creatingProject && !selectionReadOnly ? (
-                      <button
-                        type="button"
-                        className={cn(compactButtonClass, 'mb-1 shrink-0')}
-                        disabled={busy || pathPicking}
-                        onClick={() => void chooseProjectDirectory()}
-                      >
-                        <FolderOpen size={14} aria-hidden="true" />
-                        {t('meka.chooseDirectory')}
-                      </button>
-                    ) : null}
-                  </div>
-                  <div className="mt-5 border-t border-[var(--border-default)] pt-5">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="text-13 text-[var(--text-secondary)]">
-                          {t('meka.additionalPaths')}
-                        </div>
-                        <p className="mt-1 text-12 leading-5 text-[var(--text-tertiary)]">
-                          {t('meka.additionalPathsDescription')}
-                        </p>
-                      </div>
-                      {!selectionReadOnly ? (
-                        <button
-                          type="button"
-                          className={cn(compactButtonClass, 'shrink-0')}
-                          onClick={() => void addAdditionalPath()}
-                        >
-                          <Plus size={13} aria-hidden="true" />
-                          {t('meka.addAdditionalPath')}
-                        </button>
-                      ) : null}
-                    </div>
-                    <div className="mt-3 flex flex-col gap-2">
-                      {project.additionalPaths.map((additionalPath) => (
-                        <div
-                          key={additionalPath}
-                          className="flex min-w-0 items-center gap-2 rounded-lg border border-[var(--border-default)] bg-[var(--surface-elevated)] px-3 py-2"
-                        >
-                          <span className="min-w-0 flex-1 truncate text-12 text-[var(--text-secondary)]">
-                            {additionalPath}
-                          </span>
-                          {!selectionReadOnly ? (
-                            <button
-                              type="button"
-                              className="grid size-6 shrink-0 place-items-center rounded-full text-[var(--text-tertiary)] hover:bg-[var(--surface-hover-soft)] hover:text-[var(--text-primary)]"
-                              aria-label={t('meka.removeAdditionalPath')}
-                              onClick={() =>
-                                setProject((current) =>
-                                  current
-                                    ? {
-                                        ...current,
-                                        additionalPaths: current.additionalPaths.filter(
-                                          (item) => item !== additionalPath,
-                                        ),
-                                      }
-                                    : current,
-                                )
-                              }
-                            >
-                              <X size={13} aria-hidden="true" />
-                            </button>
-                          ) : null}
-                        </div>
-                      ))}
-                      {project.additionalPaths.length === 0 ? (
-                        <p className="text-12 text-[var(--text-tertiary)]">
-                          {t('meka.additionalPathsEmpty')}
-                        </p>
-                      ) : null}
-                    </div>
-                  </div>
-                  <div className="mt-5 border-t border-[var(--border-default)] pt-5">
-                    <div className="grid gap-4 md:grid-cols-2">
-                      <label className={fieldLabelClass}>
-                        <span>{t('meka.formalProvider')}</span>
-                        <select
-                          className={inputClass}
-                          value={project.formalWorkflowEnabled ? project.workflowType : 'none'}
-                          disabled={selectionReadOnly}
-                          onChange={(event) => {
-                            const workflowType = event.target.value as MekaWorkflowType;
-                            setProject({
-                              ...project,
-                              formalWorkflowEnabled: workflowType !== 'none',
-                              workflowType,
-                            });
-                            if (workflowType === 'gitlab' && !project.gitlabProjectUrl) {
-                              void fetchGitRemoteUrl();
-                            }
-                          }}
-                        >
-                          <option value="none">{t('meka.formalDisabled')}</option>
-                          <option value="jira">Jira</option>
-                          <option value="gitlab">GitLab</option>
-                        </select>
+                    <div className="flex items-end gap-2">
+                      <label className={cn(fieldLabelClass, 'min-w-0 flex-1')}>
+                        <span>{t('meka.projectPath')}</span>
+                        <input className={inputClass} value={project.path} disabled />
                       </label>
-                      {project.workflowType === 'jira' && project.formalWorkflowEnabled ? (
-                        <div className="flex items-end gap-2">
-                          <label className={cn(fieldLabelClass, 'min-w-0 flex-1')}>
-                            <span>{t('meka.jiraKey')}</span>
-                            <input
-                              className={inputClass}
-                              value={project.jiraProjectKey}
-                              disabled={selectionReadOnly}
-                              onChange={(event) =>
-                                setProject({ ...project, jiraProjectKey: event.target.value })
-                              }
-                            />
-                          </label>
-                          {!selectionReadOnly ? (
-                            <button
-                              type="button"
-                              className={cn(compactButtonClass, 'mb-1 shrink-0')}
-                              onClick={() => void parseJiraProjectKeyFromClipboard()}
-                            >
-                              {t('meka.jiraLinkParse')}
-                            </button>
-                          ) : null}
+                    </div>
+                    <div className="mt-5 border-t border-[var(--border-default)] pt-5">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-13 text-[var(--text-secondary)]">
+                            {t('meka.additionalPaths')}
+                          </div>
+                          <p className="mt-1 text-12 leading-5 text-[var(--text-tertiary)]">
+                            {t('meka.additionalPathsDescription')}
+                          </p>
                         </div>
-                      ) : null}
-                      {project.workflowType === 'gitlab' && project.formalWorkflowEnabled ? (
-                        <div className="flex items-end gap-2">
-                          <label className={cn(fieldLabelClass, 'min-w-0 flex-1')}>
-                            <span>{t('meka.gitlabUrl')}</span>
-                            <input
-                              className={inputClass}
-                              value={project.gitlabProjectUrl}
-                              disabled={selectionReadOnly}
-                              onChange={(event) =>
-                                setProject({ ...project, gitlabProjectUrl: event.target.value })
+                        {!selectionReadOnly ? (
+                          <button
+                            type="button"
+                            className={cn(compactButtonClass, 'shrink-0')}
+                            onClick={() => void addAdditionalPath()}
+                          >
+                            <Plus size={13} aria-hidden="true" />
+                            {t('meka.addAdditionalPath')}
+                          </button>
+                        ) : null}
+                      </div>
+                      <div className="mt-3 flex flex-col gap-2">
+                        {project.additionalPaths.map((additionalPath) => (
+                          <div
+                            key={additionalPath}
+                            className="flex min-w-0 items-center gap-2 rounded-lg border border-[var(--border-default)] bg-[var(--surface-elevated)] px-3 py-2"
+                          >
+                            <span className="min-w-0 flex-1 truncate text-12 text-[var(--text-secondary)]">
+                              {additionalPath}
+                            </span>
+                            {!selectionReadOnly ? (
+                              <button
+                                type="button"
+                                className="grid size-6 shrink-0 place-items-center rounded-full text-[var(--text-tertiary)] hover:bg-[var(--surface-hover-soft)] hover:text-[var(--text-primary)]"
+                                aria-label={t('meka.removeAdditionalPath')}
+                                onClick={() =>
+                                  setProject((current) =>
+                                    current
+                                      ? {
+                                          ...current,
+                                          additionalPaths: current.additionalPaths.filter(
+                                            (item) => item !== additionalPath,
+                                          ),
+                                        }
+                                      : current,
+                                  )
+                                }
+                              >
+                                <X size={13} aria-hidden="true" />
+                              </button>
+                            ) : null}
+                          </div>
+                        ))}
+                        {project.additionalPaths.length === 0 ? (
+                          <p className="text-12 text-[var(--text-tertiary)]">
+                            {t('meka.additionalPathsEmpty')}
+                          </p>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div className="mt-5 border-t border-[var(--border-default)] pt-5">
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <label className={fieldLabelClass}>
+                          <span>{t('meka.formalProvider')}</span>
+                          <select
+                            className={inputClass}
+                            value={project.formalWorkflowEnabled ? project.workflowType : 'none'}
+                            disabled={selectionReadOnly}
+                            onChange={(event) => {
+                              const workflowType = event.target.value as MekaWorkflowType;
+                              setProject({
+                                ...project,
+                                formalWorkflowEnabled: workflowType !== 'none',
+                                workflowType,
+                              });
+                              if (workflowType === 'gitlab' && !project.gitlabProjectUrl) {
+                                void fetchGitRemoteUrl();
                               }
-                            />
-                          </label>
-                          {!selectionReadOnly ? (
-                            <button
-                              type="button"
-                              className={cn(compactButtonClass, 'mb-1 shrink-0')}
-                              disabled={gitRemoteFetching}
-                              onClick={() => void fetchGitRemoteUrl()}
-                            >
-                              {gitRemoteFetching
-                                ? t('meka.gitRemoteFetching')
-                                : t('meka.gitRemoteFetch')}
-                            </button>
-                          ) : null}
-                        </div>
-                      ) : null}
+                            }}
+                          >
+                            <option value="none">{t('meka.formalDisabled')}</option>
+                            <option value="jira">Jira</option>
+                            <option value="gitlab">GitLab</option>
+                          </select>
+                        </label>
+                        {project.workflowType === 'jira' && project.formalWorkflowEnabled ? (
+                          <div className="flex items-end gap-2">
+                            <label className={cn(fieldLabelClass, 'min-w-0 flex-1')}>
+                              <span>{t('meka.jiraKey')}</span>
+                              <input
+                                className={inputClass}
+                                value={project.jiraProjectKey}
+                                disabled={selectionReadOnly}
+                                onChange={(event) =>
+                                  setProject({ ...project, jiraProjectKey: event.target.value })
+                                }
+                              />
+                            </label>
+                            {!selectionReadOnly ? (
+                              <button
+                                type="button"
+                                className={cn(compactButtonClass, 'mb-1 shrink-0')}
+                                onClick={() => void parseJiraProjectKeyFromClipboard()}
+                              >
+                                {t('meka.jiraLinkParse')}
+                              </button>
+                            ) : null}
+                          </div>
+                        ) : null}
+                        {project.workflowType === 'gitlab' && project.formalWorkflowEnabled ? (
+                          <div className="flex items-end gap-2">
+                            <label className={cn(fieldLabelClass, 'min-w-0 flex-1')}>
+                              <span>{t('meka.gitlabUrl')}</span>
+                              <input
+                                className={inputClass}
+                                value={project.gitlabProjectUrl}
+                                disabled={selectionReadOnly}
+                                onChange={(event) =>
+                                  setProject({ ...project, gitlabProjectUrl: event.target.value })
+                                }
+                              />
+                            </label>
+                            {!selectionReadOnly ? (
+                              <button
+                                type="button"
+                                className={cn(compactButtonClass, 'mb-1 shrink-0')}
+                                disabled={gitRemoteFetching}
+                                onClick={() => void fetchGitRemoteUrl()}
+                              >
+                                {gitRemoteFetching
+                                  ? t('meka.gitRemoteFetching')
+                                  : t('meka.gitRemoteFetch')}
+                              </button>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
                     </div>
                   </div>
-                </div>
-              </section>
+                </section>
 
-              {!creatingProject && selectedProject ? (
                 <MekaProjectRemoteInstances projectId={selectedProject.id} />
-              ) : null}
 
-              <section className={detailSectionClass}>
-                <DetailSectionHeader
-                  icon={<BookOpen size={18} aria-hidden="true" />}
-                  title={t('meka.disciplinesAndDomains')}
-                />
-                <div className={cn(detailSurfaceClass, 'mt-5 space-y-5')}>
-                  <div>
-                    <div className="mb-2 text-13 font-medium text-[var(--text-secondary)]">
-                      {t('meka.disciplines')}
+                <section className={detailSectionClass}>
+                  <DetailSectionHeader
+                    icon={<BookOpen size={18} aria-hidden="true" />}
+                    title={t('meka.disciplinesAndDomains')}
+                  />
+                  <div className={cn(detailSurfaceClass, 'mt-5 space-y-5')}>
+                    <div>
+                      <div className="mb-2 text-13 font-medium text-[var(--text-secondary)]">
+                        {t('meka.disciplines')}
+                      </div>
+                      <p className="mb-3 text-12 leading-5 text-[var(--text-secondary)]">
+                        {t('meka.disciplinesDescription')}
+                      </p>
+                      <VocabEditor
+                        values={project.disciplines}
+                        locked={[MEKA_GENERAL_DISCIPLINE]}
+                        disabled={selectionReadOnly}
+                        placeholder={t('meka.vocabAddPlaceholder')}
+                        onChange={(disciplines) => setProject({ ...project, disciplines })}
+                      />
                     </div>
-                    <p className="mb-3 text-12 leading-5 text-[var(--text-secondary)]">
-                      {t('meka.disciplinesDescription')}
-                    </p>
-                    <VocabEditor
-                      values={project.disciplines}
-                      locked={[MEKA_GENERAL_DISCIPLINE]}
-                      disabled={selectionReadOnly}
-                      placeholder={t('meka.vocabAddPlaceholder')}
-                      onChange={(disciplines) => setProject({ ...project, disciplines })}
-                    />
-                  </div>
-                  <div className="border-t border-[var(--border-default)] pt-5">
-                    <div className="mb-2 text-13 font-medium text-[var(--text-secondary)]">
-                      {t('meka.domains')}
+                    <div className="border-t border-[var(--border-default)] pt-5">
+                      <div className="mb-2 text-13 font-medium text-[var(--text-secondary)]">
+                        {t('meka.domains')}
+                      </div>
+                      <p className="mb-3 text-12 leading-5 text-[var(--text-secondary)]">
+                        {t('meka.domainsDescription')}
+                      </p>
+                      <VocabEditor
+                        values={project.domains}
+                        disabled={selectionReadOnly}
+                        placeholder={t('meka.vocabAddPlaceholder')}
+                        onChange={(domains) => setProject({ ...project, domains })}
+                      />
                     </div>
-                    <p className="mb-3 text-12 leading-5 text-[var(--text-secondary)]">
-                      {t('meka.domainsDescription')}
-                    </p>
-                    <VocabEditor
-                      values={project.domains}
-                      disabled={selectionReadOnly}
-                      placeholder={t('meka.vocabAddPlaceholder')}
-                      onChange={(domains) => setProject({ ...project, domains })}
-                    />
                   </div>
-                </div>
-              </section>
+                </section>
 
-              {!creatingProject ? (
                 <section className={detailSectionClass}>
                   <DetailSectionHeader
                     icon={<BookOpen size={18} aria-hidden="true" />}
@@ -2175,15 +2134,21 @@ export function MekaProjectRoleEditorRoute() {
                     })}
                   </div>
                 </section>
-              ) : null}
-            </div>
-          ) : (
-            <div className="flex h-full items-center justify-center text-13 text-[var(--text-tertiary)]">
-              {t('meka.loading')}
-            </div>
-          )}
-        </section>
-      </div>
-    </main>
+              </div>
+            ) : (
+              <div className="flex h-full items-center justify-center text-13 text-[var(--text-tertiary)]">
+                {t('meka.loading')}
+              </div>
+            )}
+          </section>
+        </div>
+      </main>
+      <MekaProjectCreateDialog
+        open={createDialogOpen}
+        busy={busy}
+        onOpenChange={setCreateDialogOpen}
+        onCreate={confirmCreateProject}
+      />
+    </>
   );
 }

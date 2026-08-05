@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { unlink, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 
 import { createId } from '@paralleldrive/cuid2';
 import { app, ipcMain } from 'electron';
@@ -11,9 +12,13 @@ import {
   normalizeMekaRoleManifest,
   readBuiltinRoleManifest,
   readCustomRoleManifest,
+  readProjectConfigState,
   resolveCustomRoleManifestPath,
+  saveProjectConfig,
   writeCustomRoleManifest,
 } from '../../meka-projects/projectConfig.js';
+import { getMekaP4SettingsService } from '../../meka-settings/ipc.js';
+import { assertTrustedAppRendererEvent } from '../../security/trustedAppRenderer.js';
 import { requireObject, requireString, throwIpcError } from '../../utils/ipcValidate.js';
 import { getDbClient } from '../client/current.js';
 
@@ -41,6 +46,12 @@ interface RoleRow {
   updated_at: number | null;
 }
 
+interface ProjectRow {
+  id: string;
+  path: string | null;
+  is_builtin: number;
+}
+
 export interface CreateMekaRoleInput {
   projectId: string;
   roleFile: Omit<MekaRoleManifestFile, 'id' | 'name' | 'projectId'>;
@@ -55,7 +66,8 @@ export interface UpdateMekaRoleInput {
 
 function safeId(value: unknown, name: string): string {
   const id = requireString(value, name).trim();
-  if (!SAFE_ID_RE.test(id)) throwIpcError('INVALID_PARAMS', `${name} contains unsupported characters`);
+  if (!SAFE_ID_RE.test(id))
+    throwIpcError('INVALID_PARAMS', `${name} contains unsupported characters`);
   return id;
 }
 
@@ -85,6 +97,17 @@ function toRole(row: RoleRow): MekaRole {
   };
 }
 
+function roleFromManifest(row: RoleRow, manifest: MekaRoleManifestFile): MekaRole {
+  return {
+    ...toRole(row),
+    name: manifest.name,
+    displayName: manifest.displayName,
+    description: manifest.description ?? null,
+    tags: manifest.tags ?? [],
+    contentDigest: digest(manifest),
+  };
+}
+
 function digest(manifest: MekaRoleManifestFile): string {
   return createHash('sha256').update(JSON.stringify(manifest), 'utf8').digest('hex');
 }
@@ -98,11 +121,32 @@ function sortOrder(value: unknown): number {
 }
 
 async function projectExists(projectId: string): Promise<boolean> {
-  return Boolean(await getDbClient().queryOne('SELECT id FROM meka_projects WHERE id = ?', [projectId]));
+  return Boolean(
+    await getDbClient().queryOne('SELECT id FROM meka_projects WHERE id = ?', [projectId]),
+  );
 }
 
 async function roleRow(roleId: string): Promise<RoleRow | undefined> {
   return getDbClient().queryOne<RoleRow>('SELECT * FROM meka_roles WHERE id = ?', [roleId]);
+}
+
+async function projectRow(projectId: string): Promise<ProjectRow | undefined> {
+  return getDbClient().queryOne<ProjectRow>(
+    'SELECT id, path, is_builtin FROM meka_projects WHERE id = ?',
+    [projectId],
+  );
+}
+
+async function builtinProjectState(projectId: string) {
+  const project = await projectRow(projectId);
+  if (!project || project.is_builtin !== 1) return null;
+  const projectRoot = (await getMekaP4SettingsService().get()).p4RootPath ?? '';
+  return readProjectConfigState({
+    projectId,
+    isBuiltin: true,
+    projectRoot: path.isAbsolute(projectRoot) ? path.resolve(projectRoot) : '',
+    appIsPackaged: app.isPackaged,
+  });
 }
 
 async function upsertRole(
@@ -151,7 +195,10 @@ function rethrow(error: unknown, action: string): never {
   throwIpcError('INTERNAL', `failed to ${action} Meka role: ${String(error)}`);
 }
 
-export function createDefaultMekaRoleManifest(projectId: string, roleId: string): MekaRoleManifestFile {
+export function createDefaultMekaRoleManifest(
+  projectId: string,
+  roleId: string,
+): MekaRoleManifestFile {
   return {
     schemaVersion: 1,
     id: roleId,
@@ -176,13 +223,17 @@ export async function createMekaRole(input: unknown): Promise<MekaRole> {
     }
     const id = safeId(createId(), 'generated role id');
     const roleFile = requireObject(body.roleFile, 'roleFile');
-    const manifest = normalizeMekaRoleManifest({
-      ...roleFile,
-      schemaVersion: 1,
+    const manifest = normalizeMekaRoleManifest(
+      {
+        ...roleFile,
+        schemaVersion: 1,
+        id,
+        projectId,
+        name: id,
+      },
       id,
       projectId,
-      name: id,
-    }, id, projectId);
+    );
     const userData = app.getPath('userData');
     await createCustomRoleManifestExclusive(id, manifest, userData);
     try {
@@ -223,14 +274,40 @@ async function updateMekaRole(input: unknown): Promise<MekaRole> {
     const id = safeId(roleFile.id, 'role id');
     const current = await roleRow(id);
     if (!current) throwIpcError('MEKA_ROLE_NOT_FOUND', `Meka role ${id} not found`);
-    if (current.is_builtin === 1) throwIpcError('MEKA_BUILTIN_READ_ONLY', 'builtin role is read-only');
-    if (current.project_id !== projectId) throwIpcError('INVALID_PARAMS', 'role projectId mismatch');
+    if (current.project_id !== projectId)
+      throwIpcError('INVALID_PARAMS', 'role projectId mismatch');
     const manifest = normalizeMekaRoleManifest(roleFile, id, projectId);
+    if (current.is_builtin === 1) {
+      const state = await builtinProjectState(projectId);
+      if (!state?.file)
+        throwIpcError('MEKA_PROJECT_NOT_FOUND', 'builtin project configuration unavailable');
+      const roleIndex = state.file.builtinRoles?.findIndex((role) => role.id === id) ?? -1;
+      if (roleIndex < 0) throwIpcError('MEKA_ROLE_NOT_FOUND', `Meka role ${id} not found`);
+      const builtinRoles = [...state.file.builtinRoles!];
+      builtinRoles[roleIndex] = manifest;
+      if (!path.isAbsolute(state.file.basic.path)) {
+        throwIpcError('INVALID_PARAMS', 'configure the Meka P4 root before saving builtin roles');
+      }
+      await saveProjectConfig(
+        {
+          projectId,
+          isBuiltin: true,
+          projectRoot: state.file.basic.path,
+          appIsPackaged: app.isPackaged,
+        },
+        { ...state.file, builtinRoles },
+      );
+      return roleFromManifest(current, manifest);
+    }
     const userData = app.getPath('userData');
     const previous = await readCustomRoleManifest(id, userData, projectId);
     await writeCustomRoleManifest(id, manifest, userData);
     try {
-      return await upsertRole(manifest, sortOrder(body.sortOrder ?? current.sort_order), current.created_at ?? Date.now());
+      return await upsertRole(
+        manifest,
+        sortOrder(body.sortOrder ?? current.sort_order),
+        current.created_at ?? Date.now(),
+      );
     } catch (error) {
       if (previous) await writeCustomRoleManifest(id, previous, userData);
       throw error;
@@ -245,7 +322,8 @@ async function deleteMekaRole(idInput: unknown): Promise<void> {
     const id = safeId(idInput, 'role id');
     const current = await roleRow(id);
     if (!current) throwIpcError('MEKA_ROLE_NOT_FOUND', `Meka role ${id} not found`);
-    if (current.is_builtin === 1) throwIpcError('MEKA_BUILTIN_READ_ONLY', 'builtin role is read-only');
+    if (current.is_builtin === 1)
+      throwIpcError('MEKA_BUILTIN_READ_ONLY', 'builtin role is read-only');
     const count = await getDbClient().queryOne<{ count: number }>(
       'SELECT COUNT(*) AS count FROM meka_roles WHERE project_id = ?',
       [current.project_id],
@@ -262,7 +340,8 @@ async function deleteMekaRole(idInput: unknown): Promise<void> {
     try {
       await getDbClient().exec('DELETE FROM meka_roles WHERE id = ?', [id]);
     } catch (error) {
-      if (previous) await writeFile(filePath, `${JSON.stringify(previous, null, 2)}\n`, { mode: 0o600 });
+      if (previous)
+        await writeFile(filePath, `${JSON.stringify(previous, null, 2)}\n`, { mode: 0o600 });
       throw error;
     }
   } catch (error) {
@@ -272,24 +351,48 @@ async function deleteMekaRole(idInput: unknown): Promise<void> {
 
 async function listMekaRoles(projectIdInput: unknown): Promise<MekaRole[]> {
   const projectId = safeId(projectIdInput, 'projectId');
-  return (await getDbClient().query<RoleRow>(
+  const rows = await getDbClient().query<RoleRow>(
     'SELECT * FROM meka_roles WHERE project_id = ? ORDER BY sort_order, display_name',
     [projectId],
-  )).map(toRole);
+  );
+  const state = rows.some((row) => row.is_builtin === 1)
+    ? await builtinProjectState(projectId)
+    : null;
+  const builtinRoles = new Map((state?.file?.builtinRoles ?? []).map((role) => [role.id, role]));
+  return rows.map((row) =>
+    row.is_builtin === 1 && builtinRoles.has(row.id)
+      ? roleFromManifest(row, builtinRoles.get(row.id)!)
+      : toRole(row),
+  );
 }
 
 async function readRoleManifest(roleIdInput: unknown): Promise<MekaRoleManifestFile | null> {
   const roleId = safeId(roleIdInput, 'role id');
   const row = await roleRow(roleId);
   if (!row) return null;
-  if (row.is_builtin === 1) return readBuiltinRoleManifest(roleId, row.project_id);
+  if (row.is_builtin === 1) {
+    const state = await builtinProjectState(row.project_id);
+    return (
+      state?.file?.builtinRoles?.find((role) => role.id === roleId) ??
+      readBuiltinRoleManifest(roleId, row.project_id)
+    );
+  }
   return readCustomRoleManifest(roleId, app.getPath('userData'), row.project_id);
 }
 
 export function registerMekaRolesIpc(): void {
   ipcMain.handle(MEKA_ROLE_LIST, (_event, projectId: unknown) => listMekaRoles(projectId));
-  ipcMain.handle(MEKA_ROLE_CREATE, (_event, input: unknown) => createMekaRole(input));
-  ipcMain.handle(MEKA_ROLE_UPDATE, (_event, input: unknown) => updateMekaRole(input));
-  ipcMain.handle(MEKA_ROLE_DELETE, (_event, id: unknown) => deleteMekaRole(id));
+  ipcMain.handle(MEKA_ROLE_CREATE, (event, input: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    return createMekaRole(input);
+  });
+  ipcMain.handle(MEKA_ROLE_UPDATE, (event, input: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    return updateMekaRole(input);
+  });
+  ipcMain.handle(MEKA_ROLE_DELETE, (event, id: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    return deleteMekaRole(id);
+  });
   ipcMain.handle(MEKA_ROLE_READ_MANIFEST, (_event, id: unknown) => readRoleManifest(id));
 }

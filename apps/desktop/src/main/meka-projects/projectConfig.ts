@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import {
@@ -10,6 +10,7 @@ import {
   type MekaProjectMetadataItemType,
   type MekaRoleMcpEntry,
   type MekaRoleManifestFile,
+  type MekaProjectConfigSource,
   type ProjectConfigLocator,
 } from '../../shared/meka-projects.js';
 import { bundledMekaProjectsRoot, bundledMekaRolesRoot } from './resourcePaths.js';
@@ -247,6 +248,17 @@ export function normalizeMekaProjectFile(
   const disciplines = cleanStrings(input.basic.disciplines).filter(
     (item) => item !== MEKA_GENERAL_DISCIPLINE,
   );
+  const builtinRoles = Array.isArray(input.builtinRoles)
+    ? [
+        ...new Map(
+          input.builtinRoles.map((role) => {
+            if (!isRecord(role)) throw new Error('builtin project role must be an object');
+            const roleId = safeId(role.id, 'builtin role id');
+            return [roleId, normalizeMekaRoleManifest(role, roleId, projectId)] as const;
+          }),
+        ).values(),
+      ]
+    : undefined;
   return {
     schemaVersion: 1,
     projectId,
@@ -275,6 +287,7 @@ export function normalizeMekaProjectFile(
     ...(normalizeRoleDefaults(input.roleDefaults)
       ? { roleDefaults: normalizeRoleDefaults(input.roleDefaults) }
       : {}),
+    ...(builtinRoles ? { builtinRoles } : {}),
   };
 }
 
@@ -359,29 +372,6 @@ function writableProjectFilePath(locator: ProjectConfigLocator): string {
   return path.join(locator.projectRoot, '.meka', 'project.json');
 }
 
-function mergeProjectFiles(
-  base: MekaProjectFile | null,
-  override: MekaProjectFile | null,
-): MekaProjectFile | null {
-  if (!base) return override;
-  if (!override) return base;
-  const metadata = new Map<string, MekaProjectMetadataConfigItem>();
-  for (const item of [...base.metadata, ...override.metadata]) {
-    metadata.set(`${item.rootPath ?? ''}:${item.itemType}:${item.sourcePath}`, item);
-  }
-  return {
-    schemaVersion: 1,
-    projectId: base.projectId,
-    basic: { ...override.basic },
-    metadata: [...metadata.values()],
-    ...(override.roleDefaults !== undefined
-      ? { roleDefaults: override.roleDefaults }
-      : base.roleDefaults !== undefined
-        ? { roleDefaults: base.roleDefaults }
-        : {}),
-  };
-}
-
 function customRolePath(roleId: string, userData: string): string {
   return path.join(path.resolve(userData), 'meka-roles', `${safeId(roleId, 'role id')}.json`);
 }
@@ -417,27 +407,139 @@ async function atomicWriteJson(filePath: string, value: unknown): Promise<void> 
   }
 }
 
+function anchoredProjectFile(file: MekaProjectFile, projectRoot: string): MekaProjectFile {
+  if (!path.isAbsolute(projectRoot)) return file;
+  const resolvedRoot = path.resolve(projectRoot);
+  const rootKey = absolutePathKey(resolvedRoot);
+  const additionalPaths = file.basic.additionalPaths?.filter(
+    (candidate) => absolutePathKey(candidate) !== rootKey,
+  );
+  return {
+    ...file,
+    basic: {
+      ...file.basic,
+      path: resolvedRoot,
+      ...(additionalPaths && additionalPaths.length > 0
+        ? { additionalPaths }
+        : { additionalPaths: undefined }),
+    },
+  };
+}
+
+async function readBundledRoleManifests(projectId: string): Promise<MekaRoleManifestFile[]> {
+  const root = bundledMekaRolesRoot();
+  const entries = await readdir(root, { withFileTypes: true });
+  const manifests: MekaRoleManifestFile[] = [];
+  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    if (!entry.isFile() || path.extname(entry.name).toLowerCase() !== '.json') continue;
+    const input = await readJson(path.join(root, entry.name));
+    if (!isRecord(input) || input.projectId !== projectId) continue;
+    const roleId = path.basename(entry.name, '.json');
+    manifests.push(normalizeMekaRoleManifest(input, roleId, projectId));
+  }
+  return manifests;
+}
+
+function assertCompleteBuiltinRoles(
+  actual: readonly MekaRoleManifestFile[],
+  expected: readonly MekaRoleManifestFile[],
+): void {
+  const actualIds = new Set(actual.map((role) => role.id));
+  const expectedIds = new Set(expected.map((role) => role.id));
+  if (
+    actualIds.size !== expectedIds.size ||
+    [...expectedIds].some((roleId) => !actualIds.has(roleId))
+  ) {
+    throw new Error('builtin project file must contain every bundled role exactly once');
+  }
+}
+
+export interface EffectiveProjectConfigState {
+  file: MekaProjectFile | null;
+  source: MekaProjectConfigSource;
+}
+
+export async function readProjectConfigAtRoot(
+  projectRoot: string,
+): Promise<MekaProjectFile | null> {
+  if (!path.isAbsolute(projectRoot)) throw new Error('project root must be absolute');
+  const input = await readJson(path.join(path.resolve(projectRoot), '.meka', 'project.json'));
+  if (input === null) return null;
+  if (!isRecord(input)) throw new Error('invalid project file header');
+  const projectId = safeId(input.projectId, 'projectId');
+  return anchoredProjectFile(normalizeMekaProjectFile(input, projectId), projectRoot);
+}
+
+export async function readProjectConfigState(
+  locator: ProjectConfigLocator,
+): Promise<EffectiveProjectConfigState> {
+  if (!locator.isBuiltin) {
+    const input = await readJson(writableProjectFilePath(locator));
+    return {
+      file:
+        input === null
+          ? null
+          : anchoredProjectFile(
+              normalizeMekaProjectFile(input, locator.projectId),
+              locator.projectRoot,
+            ),
+      source: 'project',
+    };
+  }
+
+  const baseInput = await readJson(bundledProjectFilePath(locator));
+  const bundledRoles = await readBundledRoleManifests(locator.projectId);
+  const base =
+    baseInput === null
+      ? null
+      : anchoredProjectFile(
+          {
+            ...normalizeMekaProjectFile(baseInput, locator.projectId),
+            builtinRoles: bundledRoles,
+          },
+          locator.projectRoot,
+        );
+  if (!path.isAbsolute(locator.projectRoot)) return { file: base, source: 'builtin' };
+
+  const projectPath = writableProjectFilePath(locator);
+  const projectInput = await readJson(projectPath);
+  if (projectInput === null) return { file: base, source: 'builtin' };
+
+  let projectFile = anchoredProjectFile(
+    normalizeMekaProjectFile(projectInput, locator.projectId),
+    locator.projectRoot,
+  );
+  if (projectFile.builtinRoles === undefined) {
+    projectFile = { ...projectFile, builtinRoles: bundledRoles };
+    await atomicWriteJson(projectPath, projectFile);
+  } else {
+    assertCompleteBuiltinRoles(projectFile.builtinRoles, bundledRoles);
+  }
+  return { file: projectFile, source: 'project' };
+}
+
 export async function readEffectiveProjectConfig(
   locator: ProjectConfigLocator,
 ): Promise<MekaProjectFile | null> {
-  if (!locator.isBuiltin) {
-    const input = await readJson(writableProjectFilePath(locator));
-    return input === null ? null : normalizeMekaProjectFile(input, locator.projectId);
-  }
-  const baseInput = await readJson(bundledProjectFilePath(locator));
-  const base = baseInput === null ? null : normalizeMekaProjectFile(baseInput, locator.projectId);
-  if (!path.isAbsolute(locator.projectRoot)) return base;
-  const overrideInput = await readJson(writableProjectFilePath(locator));
-  const override =
-    overrideInput === null ? null : normalizeMekaProjectFile(overrideInput, locator.projectId);
-  return mergeProjectFiles(base, override);
+  return (await readProjectConfigState(locator)).file;
 }
 
 export async function saveProjectConfig(
   locator: ProjectConfigLocator,
   draft: MekaProjectFile,
 ): Promise<MekaProjectFile> {
-  const normalized = normalizeMekaProjectFile(draft, locator.projectId);
+  let normalized = normalizeMekaProjectFile(
+    anchoredProjectFile(draft, locator.projectRoot),
+    locator.projectId,
+  );
+  if (locator.isBuiltin) {
+    const bundledRoles = await readBundledRoleManifests(locator.projectId);
+    if (normalized.builtinRoles === undefined) {
+      normalized = { ...normalized, builtinRoles: bundledRoles };
+    } else {
+      assertCompleteBuiltinRoles(normalized.builtinRoles, bundledRoles);
+    }
+  }
   await atomicWriteJson(writableProjectFilePath(locator), normalized);
   return normalized;
 }
@@ -447,7 +549,10 @@ export async function createProjectConfigExclusive(
   draft: MekaProjectFile,
 ): Promise<MekaProjectFile> {
   if (locator.isBuiltin) throw new Error('builtin Meka project is read-only');
-  const normalized = normalizeMekaProjectFile(draft, locator.projectId);
+  const normalized = normalizeMekaProjectFile(
+    anchoredProjectFile(draft, locator.projectRoot),
+    locator.projectId,
+  );
   const filePath = writableProjectFilePath(locator);
   await mkdir(path.dirname(filePath), { recursive: true });
   const handle = await open(filePath, 'wx', 0o600);

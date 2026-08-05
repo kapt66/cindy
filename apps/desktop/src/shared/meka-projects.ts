@@ -158,7 +158,11 @@ export interface MekaProjectFile {
   };
   metadata: MekaProjectMetadataConfigItem[];
   roleDefaults?: MekaProjectRoleDefaults;
+  /** Full editable snapshots of bundled roles when a builtin project uses its project file. */
+  builtinRoles?: MekaRoleManifestFile[];
 }
+
+export type MekaProjectConfigSource = 'builtin' | 'project';
 
 export interface ProjectConfigLocator {
   projectId: string;
@@ -212,6 +216,7 @@ export interface MekaProject {
   gitlabProjectUrl?: string;
   tags: string[];
   isBuiltin: boolean;
+  configSource: MekaProjectConfigSource;
   sortOrder: number;
   createdAt: number | null;
   updatedAt: number | null;
@@ -273,6 +278,7 @@ export const BUILTIN_MEKA_PROJECTS: readonly MekaProject[] = [
     path: 'saga2',
     tags: ['builtin', 'saga2'],
     isBuiltin: true,
+    configSource: 'builtin',
     sortOrder: 0,
     createdAt: null,
     updatedAt: null,
