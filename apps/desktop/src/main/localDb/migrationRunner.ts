@@ -467,6 +467,13 @@ const FROZEN_REPLAY_DEFECT_GUARDS: Record<string, (db: Database.Database) => boo
   },
 };
 
+// SQLite ignores PRAGMA foreign_keys changes made inside an active transaction. 0091 rebuilds
+// sessions while preserving rows in tables that reference it, so its transaction must start with
+// foreign-key enforcement disabled and restore it only after the DDL commits or rolls back.
+const MIGRATIONS_REQUIRING_FOREIGN_KEYS_OFF = new Set([
+  '0091_meka_project_history_reference.sql',
+]);
+
 export function runMigrationReplay(
   db: Database.Database,
   options: RunMigrationReplayOptions,
@@ -480,7 +487,18 @@ export function runMigrationReplay(
     const startedAt = Date.now();
     const sql = fs.readFileSync(migration.sqlPath, 'utf-8');
     const contentHash = hashMigrationFile(migration.sqlPath);
+    const requiresForeignKeysOff = MIGRATIONS_REQUIRING_FOREIGN_KEYS_OFF.has(migration.fileName);
+    const foreignKeysWereEnabled = requiresForeignKeysOff && Boolean(db.pragma('foreign_keys', { simple: true }));
+    if (requiresForeignKeysOff && foreignKeysWereEnabled) db.pragma('foreign_keys = OFF');
+    let legacyRoleDeleteTriggerSql: string | null = null;
+    if (migration.fileName === '0091_meka_project_history_reference.sql') {
+      const trigger = db
+        .prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?")
+        .get('meka_roles_delete_null_session_role') as { sql?: string } | undefined;
+      legacyRoleDeleteTriggerSql = trigger?.sql ?? null;
+    }
     const tx = db.transaction(() => {
+      if (legacyRoleDeleteTriggerSql) db.exec('DROP TRIGGER `meka_roles_delete_null_session_role`');
       if (!FROZEN_REPLAY_DEFECT_GUARDS[migration.fileName]?.(db)) {
         db.exec(sql);
       }
@@ -493,6 +511,7 @@ export function runMigrationReplay(
         }
         script.run(db);
       }
+      if (legacyRoleDeleteTriggerSql) db.exec(legacyRoleDeleteTriggerSql);
       writeSchemaVersion(db, migration.seq);
       writeMigrationHistory(
         db,
@@ -502,7 +521,17 @@ export function runMigrationReplay(
         options.onMigrationHistoryWriteFailed,
       );
     });
-    tx();
+    try {
+      tx();
+    } finally {
+      if (requiresForeignKeysOff && foreignKeysWereEnabled) db.pragma('foreign_keys = ON');
+    }
+    if (requiresForeignKeysOff && foreignKeysWereEnabled) {
+      const violations = db.pragma('foreign_key_check') as unknown[];
+      if (violations.length > 0) {
+        throw new Error(`foreign key check failed after ${migration.fileName}`);
+      }
+    }
     options.onMigrationApplied?.(migration, Date.now() - startedAt);
   }
 

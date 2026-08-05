@@ -203,6 +203,45 @@ describeMigrationReplay('migration replay', () => {
     }
   });
 
+  it('rebuilds sessions without losing dependent rows or legacy role-delete triggers', () => {
+    const { db, cleanup } = createTempDb();
+    try {
+      db.pragma('foreign_keys = ON');
+      const sql = readFileSync(path.join(drizzleDir(), '0091_meka_project_history_reference.sql'), 'utf-8');
+      const createSessions = sql.split(/--> statement-breakpoint\s*/)[1]?.replace('__new_sessions', 'sessions');
+      if (!createSessions) throw new Error('0091 sessions definition missing');
+      db.exec(`${createSessions}
+        CREATE TABLE migration_meta (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);
+        CREATE TABLE migration_history (seq INTEGER PRIMARY KEY NOT NULL, file_name TEXT NOT NULL, content_hash TEXT NOT NULL, applied_at INTEGER NOT NULL);
+        CREATE TABLE meka_roles (id TEXT PRIMARY KEY NOT NULL);
+        CREATE TABLE messages (id TEXT PRIMARY KEY NOT NULL, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE);
+        INSERT INTO migration_meta VALUES ('schema_version', '90');
+        INSERT INTO meka_roles VALUES ('role-1');
+        INSERT INTO sessions (id, title, created_at, updated_at, meka_role_id) VALUES ('session-1', 'History', 1, 1, 'role-1');
+        INSERT INTO messages VALUES ('message-1', 'session-1');
+        CREATE TRIGGER meka_roles_delete_null_session_role
+        BEFORE DELETE ON meka_roles BEGIN
+          UPDATE sessions SET meka_role_id = NULL WHERE meka_role_id = OLD.id;
+        END;`);
+
+      const result = runMigrationReplay(db, { drizzleDir: drizzleDir(), currentVersion: 90 });
+      expect(result.applied.map((migration) => migration.seq)).toEqual([91]);
+      expect(db.prepare('SELECT count(*) AS count FROM messages').get()).toEqual({ count: 1 });
+      expect(db.prepare('SELECT meka_role_id FROM sessions WHERE id = ?').get('session-1')).toEqual({
+        meka_role_id: 'role-1',
+      });
+      expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?").get('meka_roles_delete_null_session_role')).toEqual({ 1: 1 });
+      expect((db.prepare("PRAGMA foreign_key_list('sessions')").all() as Array<{ from: string }>).some((fk) => fk.from === 'meka_project_id')).toBe(false);
+      expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
+      db.prepare('DELETE FROM meka_roles WHERE id = ?').run('role-1');
+      expect(db.prepare('SELECT meka_role_id FROM sessions WHERE id = ?').get('session-1')).toEqual({
+        meka_role_id: null,
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
   it('upgrades a schema v39 Orca workflow database through the 0040 script', () => {
     const { db, cleanup } = createTempDb();
     try {
