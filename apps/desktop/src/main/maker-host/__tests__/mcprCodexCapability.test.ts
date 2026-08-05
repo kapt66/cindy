@@ -28,7 +28,9 @@ vi.mock('@cindy/maker-cc-manager', () => ({
 }));
 
 const listInstances = vi.fn(async () => [{
+  id: 'instance-1',
   instanceId: 'instance-1',
+  agentType: 'codex',
   workingDir: '/workspace/project',
   supported: true,
   available: true,
@@ -96,6 +98,25 @@ describe('MCPRouter Codex capability control', () => {
       'mcp_servers.lizi_capabilities.bearer_token_env_var="LIZI_MCP_TOKEN"',
     );
     expect(header.extraArgs?.join(' ')).not.toContain('daemon-token');
+  });
+
+  it('matches the stable API id when it differs from the display instance id', async () => {
+    const target = {
+      id: 'stable-instance-id',
+      instanceId: 'display-name',
+      agentType: 'codex',
+      workingDir: '/workspace/project',
+      supported: true,
+      available: true,
+    };
+    listInstances.mockResolvedValueOnce([target]).mockResolvedValueOnce([target]);
+
+    await expect(buildRemoteCodexBridgeHeader('stable-instance-id')).resolves.toMatchObject({
+      cwd: '/workspace/project',
+    });
+    await expect(buildRemoteCodexBridgeHeader('display-name')).rejects.toThrow(
+      'MCPR_INSTANCE_NOT_READY',
+    );
   });
 
   it('ensures the bundle before registering the revision', async () => {

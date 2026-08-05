@@ -122,6 +122,9 @@ beforeEach(async () => {
   });
   const notifications: Array<{ method: string; params: unknown }> = [];
   const client = new RpcClient(socket, {
+    // The core Claude query/session surface remains negotiable on v2. Codex
+    // capability and tunneled MCP behavior is covered by the v3 suites.
+    protocolVersion: 2,
     onNotification: (n) => notifications.push({ method: n.method, params: n.params }),
   });
   await client.hello();

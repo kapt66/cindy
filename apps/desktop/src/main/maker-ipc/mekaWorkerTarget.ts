@@ -53,11 +53,11 @@ export function createMekaWorkerTargetResolver(deps: {
     }
 
     if (requestedRemoteHostId) {
-      if (agent !== 'claude-code') {
+      if (agent !== 'claude-code' && agent !== 'codex') {
         return {
           ok: false,
           errorCode: 'INVALID_PARAMS',
-          message: 'MCPRouter Workers currently support Claude Code only',
+          message: 'MCPRouter Workers support Claude Code and Codex only',
         };
       }
       const instanceId = parseMcprRemoteHostId(requestedRemoteHostId);

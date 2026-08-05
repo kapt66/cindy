@@ -19,6 +19,7 @@ import type { Duplex } from 'node:stream';
 
 import { NDJSONDecoder, encodeMessage } from './codec.js';
 import {
+  CC_MGR_BUNDLE_VERSION,
   METHODS,
   PROTOCOL_VERSION,
   isRpcNotification,
@@ -54,7 +55,7 @@ export interface RpcClientOptions {
   onCorruptLine?: (line: string, err: Error) => void;
   /** Override the protocol negotiated by this client (MCPRouter Codex uses v3). */
   protocolVersion?: number;
-  /** Optional exact daemon feature bundle pin. */
+  /** Exact daemon feature bundle pin override; defaults to this package's pin. */
   bundleVersion?: string;
   /** Reject hello when the server does not echo the configured bundle pin. */
   enforceBundleVersion?: boolean;
@@ -95,7 +96,7 @@ export class RpcClient {
   private readonly onError?: (err: Error) => void;
   private readonly clientId?: string;
   private readonly protocolVersion: number;
-  private readonly bundleVersion?: string;
+  private readonly bundleVersion: string;
   private readonly enforceBundleVersion: boolean;
   private readonly listeners: Array<{ event: string; fn: (...args: unknown[]) => void }> = [];
   /** Additional subscribers added after construction via subscribe(). */
@@ -117,7 +118,7 @@ export class RpcClient {
     this.onError = opts.onError;
     this.clientId = opts.clientId;
     this.protocolVersion = opts.protocolVersion ?? PROTOCOL_VERSION;
-    this.bundleVersion = opts.bundleVersion;
+    this.bundleVersion = opts.bundleVersion ?? CC_MGR_BUNDLE_VERSION;
     this.enforceBundleVersion = opts.enforceBundleVersion === true;
     this.decoder = new NDJSONDecoder({ onCorruptLine: opts.onCorruptLine });
     this.attach();
@@ -133,7 +134,7 @@ export class RpcClient {
   async hello(opts: RpcRequestOptions = {}): Promise<HelloResult> {
     const params: HelloParams = {
       protocolVersion: this.protocolVersion,
-      ...(this.bundleVersion ? { bundleVersion: this.bundleVersion } : {}),
+      bundleVersion: this.bundleVersion,
       ...(this.clientId ? { clientId: this.clientId } : {}),
     };
     const result = await this.request<HelloResult>(METHODS.PROTOCOL_HELLO, params, opts);

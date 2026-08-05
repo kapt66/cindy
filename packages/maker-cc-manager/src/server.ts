@@ -23,6 +23,7 @@ import * as path from "node:path";
 
 import { NDJSONDecoder, encodeMessage } from "./codec.js";
 import {
+  CC_MGR_BUNDLE_VERSION,
   METHODS,
   PROTOCOL_VERSION,
   isRpcRequest,
@@ -42,6 +43,8 @@ export interface ManagerServerOptions {
   socketPath: string;
   /** Manager build / git SHA, returned in hello result. */
   managerVersion?: string;
+  /** Remote Codex loopback capability bridge advertised during v3 hello. */
+  capabilityMcp?: { url: string; token: string };
   /** Optional logger. Defaults to console. */
   logger?: ManagerLogger;
 }
@@ -65,6 +68,8 @@ export interface ClientCtx {
   decoder: NDJSONDecoder;
   /** Set true after a successful PROTOCOL_HELLO. */
   initialized: boolean;
+  /** Protocol version negotiated by protocol/hello. */
+  protocolVersion?: number;
   /** Optional client identifier from hello — for log correlation. */
   clientId?: string;
 }
@@ -90,6 +95,7 @@ export class ManagerServer {
   private readonly logger: ManagerLogger;
   private readonly socketPath: string;
   private readonly managerVersion?: string;
+  private readonly capabilityMcp?: { url: string; token: string };
   private readonly handlers = new Map<string, MethodHandler>();
   private readonly clients = new Set<ClientCtx>();
   private readonly pendingServerRequests = new Map<
@@ -103,6 +109,7 @@ export class ManagerServer {
   constructor(opts: ManagerServerOptions) {
     this.socketPath = opts.socketPath;
     this.managerVersion = opts.managerVersion;
+    this.capabilityMcp = opts.capabilityMcp;
     this.logger = opts.logger ?? defaultLogger;
     this.server = net.createServer((socket) => this.onConnection(socket));
     this.registerBuiltinHandlers();
@@ -213,17 +220,37 @@ export class ManagerServer {
           "protocolVersion is required (number)",
         );
       }
-      if (p.protocolVersion !== PROTOCOL_VERSION) {
+      if (typeof p.bundleVersion !== "string" || p.bundleVersion.length === 0) {
+        throw makeServerError(
+          "INVALID_PARAMS",
+          "bundleVersion is required (string)",
+        );
+      }
+      if (p.bundleVersion !== CC_MGR_BUNDLE_VERSION) {
+        throw makeServerError(
+          "INVALID_BUNDLE_VERSION",
+          `client bundle ${p.bundleVersion} does not match server bundle ${CC_MGR_BUNDLE_VERSION}`,
+        );
+      }
+      if (p.protocolVersion < 2 || p.protocolVersion > PROTOCOL_VERSION) {
         throw makeServerError(
           "INVALID_PROTOCOL_VERSION",
-          `client version ${p.protocolVersion} != server version ${PROTOCOL_VERSION}`,
+          `client version ${p.protocolVersion} is not supported by server version ${PROTOCOL_VERSION}`,
         );
       }
       ctx.initialized = true;
+      ctx.protocolVersion = p.protocolVersion;
       ctx.clientId = p.clientId;
       const result: HelloResult = {
-        protocolVersion: PROTOCOL_VERSION,
+        protocolVersion: p.protocolVersion,
+        bundleVersion: CC_MGR_BUNDLE_VERSION,
         ...(this.managerVersion ? { managerVersion: this.managerVersion } : {}),
+        ...(p.protocolVersion >= 3 && this.capabilityMcp
+          ? {
+              capabilityMcpUrl: this.capabilityMcp.url,
+              capabilityMcpToken: this.capabilityMcp.token,
+            }
+          : {}),
       };
       return result;
     });

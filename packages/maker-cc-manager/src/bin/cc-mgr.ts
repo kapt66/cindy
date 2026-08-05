@@ -21,6 +21,8 @@ import { ManagerServer } from '../server.js';
 import { SessionRegistry, type SdkQueryFactoryOptions, type SdkQueryLike } from '../session-registry.js';
 import { wireSdkHandlers } from '../sdk-handlers.js';
 import { runMcpShim } from '../mcp-shim.js';
+import { runCodexBridge } from '../codex-bridge.js';
+import { CapabilityMcpRouter } from '../capability-mcp-router.js';
 import { CC_MGR_BUNDLE_VERSION, PROTOCOL_VERSION, SERVER_METHODS, type ApprovalRequestParams, type ApprovalRequestResult, type OAuthRefreshParams, type OAuthRefreshResult } from '../protocol.js';
 
 const MANAGER_VERSION = CC_MGR_BUNDLE_VERSION;
@@ -114,7 +116,7 @@ function ensureBundledNodeOnPath(): void {
 }
 
 interface ParsedArgs {
-  command: 'daemon' | 'version' | 'help' | 'bridge' | 'mcp-shim';
+  command: 'daemon' | 'version' | 'help' | 'bridge' | 'codex-bridge' | 'mcp-shim';
   socket?: string;
   session?: string;
   server?: string;
@@ -143,6 +145,9 @@ function parseArgs(argv: string[]): ParsedArgs {
   }
   if (rest[0] === '--version' || rest[0] === '-v') {
     return { command: 'version' };
+  }
+  if (rest[0] === 'codex-bridge') {
+    return { command: 'codex-bridge' };
   }
   if (rest[0] === 'mcp-shim') {
     let socket: string | undefined;
@@ -226,6 +231,9 @@ function printHelp(): void {
       '  cc-mgr bridge --socket <path>             Pipe stdin/stdout to/from the',
       '                                            unix socket (replaces `nc -U`',
       '                                            for hosts without OpenBSD nc).',
+      '  cc-mgr codex-bridge                       Spawn $CC_MGR_CODEX_BIN app-server',
+      '                                            and relay its NDJSON stdio after a',
+      '                                            required spawn-header first line.',
       '  cc-mgr mcp-shim --socket <path> \\         Tunnel a stdio MCP server through',
       '         --session <id> --server <name>     the attached desktop client.',
       '  cc-mgr --version                          Print version info as JSON',
@@ -365,15 +373,38 @@ async function runDaemon(socketPath: string): Promise<void> {
     return q as unknown as SdkQueryLike;
   };
 
+  const logger = {
+    debug: (msg: string, ctx?: Record<string, unknown>) => console.error('[cc-mgr][debug]', msg, ctx ?? ''),
+    info: (msg: string, ctx?: Record<string, unknown>) => console.error('[cc-mgr][info]', msg, ctx ?? ''),
+    warn: (msg: string, ctx?: Record<string, unknown>) => console.error('[cc-mgr][warn]', msg, ctx ?? ''),
+    error: (msg: string, ctx?: Record<string, unknown>) => console.error('[cc-mgr][error]', msg, ctx ?? ''),
+  };
+
+  const configuredCapabilityPort = Number(process.env.CC_MGR_CAPABILITY_PORT ?? '0');
+  if (
+    !Number.isInteger(configuredCapabilityPort)
+    || configuredCapabilityPort < 0
+    || configuredCapabilityPort > 65_535
+  ) {
+    throw new Error('CC_MGR_CAPABILITY_PORT must be an integer between 0 and 65535');
+  }
+  const capabilityRouter = new CapabilityMcpRouter({
+    logger,
+    port: configuredCapabilityPort,
+    ...(process.env.CC_MGR_CAPABILITY_TOKEN
+      ? { token: process.env.CC_MGR_CAPABILITY_TOKEN }
+      : {}),
+  });
+  await capabilityRouter.start();
+
   const server = new ManagerServer({
     socketPath,
     managerVersion: MANAGER_VERSION,
-    logger: {
-      debug: (msg, ctx) => console.error('[cc-mgr][debug]', msg, ctx ?? ''),
-      info: (msg, ctx) => console.error('[cc-mgr][info]', msg, ctx ?? ''),
-      warn: (msg, ctx) => console.error('[cc-mgr][warn]', msg, ctx ?? ''),
-      error: (msg, ctx) => console.error('[cc-mgr][error]', msg, ctx ?? ''),
+    capabilityMcp: {
+      url: capabilityRouter.url,
+      token: capabilityRouter.token,
     },
+    logger,
   });
 
   // Registry needs server + handlers wired to forward approval requests via reverse-RPC.
@@ -410,15 +441,14 @@ async function runDaemon(socketPath: string): Promise<void> {
         { timeoutMs: 30_000 },
       );
     },
-    logger: {
-      debug: (msg, ctx) => console.error('[cc-mgr][debug]', msg, ctx ?? ''),
-      info: (msg, ctx) => console.error('[cc-mgr][info]', msg, ctx ?? ''),
-      warn: (msg, ctx) => console.error('[cc-mgr][warn]', msg, ctx ?? ''),
-      error: (msg, ctx) => console.error('[cc-mgr][error]', msg, ctx ?? ''),
-    },
+    logger,
   });
 
-  const handlers = wireSdkHandlers(server, registry, { daemonSocketPath: socketPath });
+  const handlers = wireSdkHandlers(server, registry, {
+    daemonSocketPath: socketPath,
+    capabilityRouter,
+    logger,
+  });
   getAttachedClientCtx = handlers.getAttachedClientCtx;
   server.onClientClose((ctx) => handlers.onClientDisconnected(ctx));
 
@@ -444,6 +474,9 @@ async function runDaemon(socketPath: string): Promise<void> {
     try {
       await server.stop();
     } finally {
+      await capabilityRouter.stop().catch((error) => {
+        console.error('[cc-mgr] capability router stop failed', (error as Error)?.message);
+      });
       process.exit(0);
     }
   };
@@ -491,6 +524,16 @@ async function main(): Promise<void> {
     case 'bridge':
       runBridge(args.socket!);
       return;
+    case 'codex-bridge': {
+      const code = await runCodexBridge({
+        stdin: process.stdin,
+        stdout: process.stdout,
+        stderr: process.stderr,
+        env: process.env,
+      });
+      process.exit(code);
+      return;
+    }
     case 'mcp-shim':
       await runMcpShim({
         socket: args.socket!,

@@ -13,6 +13,8 @@ import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { recentWorkdirsStore } from '@/lib/recentWorkdirsStore';
+import type { MekaRouterInstance } from '../../../shared/meka-router';
+import { MekaRemoteSessionPicker } from './MekaRemoteSessionPicker';
 
 const RECENT_FOLDERS_KEY = 'cc-agent-recent-folders';
 const MAX_RECENT = 5;
@@ -129,6 +131,8 @@ interface FolderPickerPopoverProps {
    * 上层按当前可用的 SSH / device-link 目标决定是否传入,这里不做判断。
    */
   onAddRemoteProject?: (deviceId?: string) => void;
+  /** MCPRouter instances/templates are loaded lazily while the picker is open. */
+  onSelectRemoteSession?: (instance: MekaRouterInstance) => void;
   side?: 'top' | 'right' | 'bottom' | 'left';
   align?: 'start' | 'center' | 'end';
   sideOffset?: number;
@@ -145,6 +149,7 @@ export function FolderPickerPopover({
   deviceScope,
   onRemoveRemoteProject,
   onAddRemoteProject,
+  onSelectRemoteSession,
   side,
   align = 'end',
   sideOffset = 4,
@@ -419,6 +424,10 @@ export function FolderPickerPopover({
             <div className="mx-2 my-1 h-px bg-[var(--folder-picker-border)]" />
           </>
         )}
+
+        {isProjectPicker && onSelectRemoteSession ? (
+          <MekaRemoteSessionPicker open={open} onSelect={onSelectRemoteSession} />
+        ) : null}
 
         {/* Recent folders — list scrolls when more than 4 items, label and
             "Choose a different folder" button stay outside the scroll area. */}

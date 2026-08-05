@@ -30,7 +30,13 @@ import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
-import { RpcClient, createRemoteQuery, METHODS, SERVER_METHODS } from '@cindy/maker-cc-manager';
+import {
+  CC_MGR_BUNDLE_VERSION,
+  RpcClient,
+  createRemoteQuery,
+  METHODS,
+  SERVER_METHODS,
+} from '@cindy/maker-cc-manager';
 import type {
   RemoteQuery,
   QueryStartParams,
@@ -354,7 +360,13 @@ export async function openCcManagerSession(opts: {
       `"${REMOTE_NODE}" "${REMOTE_BUNDLE}" bridge --socket "${REMOTE_SOCK}"`,
     ));
   const duplex = bridgeStreamToDuplex(handle);
-  const client = new RpcClient(duplex);
+  // New MCPRouter/cc-mgr builds require the exact bundle identity in hello.
+  // Do not enable enforceBundleVersion here: older SSH daemons may accept the
+  // field but omit it from their response, and the installer already owns the
+  // upgrade decision for ordinary SSH remotes.
+  const client = new RpcClient(duplex, {
+    bundleVersion: CC_MGR_BUNDLE_VERSION,
+  });
   const tunnelProxies = new Map<string, { proxy: McpClient; instance: McpServer }>();
   const closeTunnelProxies = async (): Promise<void> => {
     for (const [name, entry] of tunnelProxies) {

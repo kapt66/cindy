@@ -96,7 +96,7 @@ describe('Meka Worker target resolver', () => {
     ).resolves.toMatchObject({ ok: false, errorCode: 'INVALID_PARAMS' });
   });
 
-  it('resolves only a bound, available Claude MCPRouter instance', async () => {
+  it('resolves a bound, available Claude or Codex MCPRouter instance', async () => {
     const resolve = createResolver();
 
     await expect(
@@ -118,7 +118,11 @@ describe('Meka Worker target resolver', () => {
         agent: 'codex',
         requestedRemoteHostId: 'mcpr:instance-1',
       }),
-    ).resolves.toMatchObject({ ok: false, errorCode: 'INVALID_PARAMS' });
+    ).resolves.toEqual({
+      ok: true,
+      workingDir: '/workspace/project',
+      remoteHostId: 'mcpr:instance-1',
+    });
   });
 
   it('rejects unbound and unavailable remote instances', async () => {

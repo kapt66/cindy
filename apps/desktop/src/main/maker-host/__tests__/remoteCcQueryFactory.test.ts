@@ -95,6 +95,13 @@ describe('remoteCcQueryFactory cleanup wiring', () => {
     expect(killForFreshBlock).toContain('stillAlive');
   });
 
+  it('pins the cc-mgr bundle identity in protocol/hello for MCPRouter and SSH daemons', () => {
+    expect(ccManagerClientSource).toContain('CC_MGR_BUNDLE_VERSION');
+    expect(ccManagerClientSource).toMatch(
+      /new RpcClient\(duplex,\s*\{[\s\S]*bundleVersion:\s*CC_MGR_BUNDLE_VERSION,/,
+    );
+  });
+
   it('clears forced-fresh tracking when the bridge instance is rebuilt', () => {
     // review P2 回归:custom MCP CRUD / 全局插件开关触发
     // shutdownCodexEnvironment 后 bridge lazy 重建, 旧 bridge 的

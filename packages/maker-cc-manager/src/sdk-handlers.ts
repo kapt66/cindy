@@ -11,10 +11,19 @@
  * (socket close) we detach the callback from any session it had attached to.
  */
 
+import * as os from "node:os";
+import * as path from "node:path";
+
 import {
   METHODS,
   NOTIFICATIONS,
+  PROTOCOL_VERSION,
   SERVER_METHODS,
+  type BundleEnsureParams,
+  type BundleReleaseParams,
+  type CapabilityRevisionRegisterParams,
+  type CapabilityThreadRegisterParams,
+  type CapabilityThreadUnregisterParams,
   type ClientReplacedNotification,
   type McpTunnelCallParams,
   type QueryApplyFlagSettingsParams,
@@ -35,9 +44,11 @@ import {
   type SessionKillParams,
   type SessionListResult,
 } from "./protocol.js";
-import { ManagerServer, type MethodHandler } from "./server.js";
+import { ManagerServer, type ManagerLogger, type MethodHandler } from "./server.js";
 import { SessionRegistry, type AttachedNotify } from "./session-registry.js";
 import { encodeMessage } from "./codec.js";
+import { CapabilityBundleStore } from "./capability-bundle-store.js";
+import type { CapabilityMcpRouter } from "./capability-mcp-router.js";
 
 /**
  * Per-connection client context — tracks which sessions a given socket has
@@ -57,6 +68,10 @@ import type { ClientCtx } from "./server.js";
  * Idempotent within a server instance — calling twice is supported (just overrides handlers).
  */
 export interface SdkHandlerOptions {
+  bundleStore?: CapabilityBundleStore;
+  capabilityCacheRoot?: string;
+  logger?: ManagerLogger;
+  capabilityRouter?: CapabilityMcpRouter;
   /** Socket used by remote mcp-shim subprocesses to dial back into cc-mgr. */
   daemonSocketPath?: string;
 }
@@ -69,6 +84,17 @@ export function wireSdkHandlers(
   getAttachedClientCtx: (sessionId: string) => ClientCtx | undefined;
   onClientDisconnected: (ctx: ClientCtx) => void;
 } {
+  const bundleStore = options.bundleStore ?? new CapabilityBundleStore(
+    options.capabilityCacheRoot
+      ?? process.env.CC_MGR_CAPABILITY_CACHE_ROOT
+      ?? path.join(os.tmpdir(), "cc-mgr-capability-cache"),
+    options.logger,
+  );
+  void bundleStore.sweepExpired().catch((error) => {
+    options.logger?.warn("capability bundle startup sweep failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
   // Track per-socket subscriptions. We use the server context's `socket` as the
   // map key (referenced via the ctx the handler receives).
   const subscriptionsByCtx = new WeakMap<object, ClientSubscriptions>();
@@ -118,6 +144,55 @@ export function wireSdkHandlers(
     };
   }
 
+  /* ----------------------------- capability bundle ----------------------------- */
+  const bundleEnsure: MethodHandler = async (params, ctx) => {
+    requireProtocolV3(ctx);
+    const p = (params ?? {}) as Partial<BundleEnsureParams>;
+    requireString(p.revisionHash, "revisionHash");
+    if (p.catalogDigest !== undefined) requireString(p.catalogDigest, "catalogDigest");
+    if (!Array.isArray(p.files)) throwInvalid("files must be an array");
+    return await bundleStore.ensure({
+      revisionHash: p.revisionHash,
+      ...(p.catalogDigest !== undefined ? { catalogDigest: p.catalogDigest } : {}),
+      files: p.files,
+    });
+  };
+
+  const bundleRelease: MethodHandler = async (params, ctx) => {
+    requireProtocolV3(ctx);
+    const p = (params ?? {}) as Partial<BundleReleaseParams>;
+    requireString(p.revisionHash, "revisionHash");
+    return await bundleStore.release(p.revisionHash);
+  };
+
+  const capabilityRevisionRegister: MethodHandler = async (params, ctx) => {
+    requireProtocolV3(ctx);
+    if (!options.capabilityRouter) throwInvalid("capability MCP router is unavailable");
+    const p = (params ?? {}) as Partial<CapabilityRevisionRegisterParams>;
+    requireString(p.revisionHash, "revisionHash");
+    const bundleRoot = await bundleStore.resolveExistingBundleRoot(p.revisionHash);
+    await options.capabilityRouter.registerRevisionFromBundle(p.revisionHash, bundleRoot);
+    return { registered: true };
+  };
+
+  const capabilityThreadRegister: MethodHandler = async (params, ctx) => {
+    requireProtocolV3(ctx);
+    if (!options.capabilityRouter) throwInvalid("capability MCP router is unavailable");
+    const p = (params ?? {}) as Partial<CapabilityThreadRegisterParams>;
+    requireString(p.threadId, "threadId");
+    requireString(p.revisionHash, "revisionHash");
+    options.capabilityRouter.registerThread(p.threadId, p.revisionHash);
+    return { registered: true };
+  };
+
+  const capabilityThreadUnregister: MethodHandler = async (params, ctx) => {
+    requireProtocolV3(ctx);
+    if (!options.capabilityRouter) throwInvalid("capability MCP router is unavailable");
+    const p = (params ?? {}) as Partial<CapabilityThreadUnregisterParams>;
+    requireString(p.threadId, "threadId");
+    return { unregistered: options.capabilityRouter.unregisterThread(p.threadId) };
+  };
+
   /* ----------------------------- query/start ----------------------------- */
   const queryStart: MethodHandler = async (params, ctx) => {
     const p = (params ?? {}) as Partial<QueryStartParams>;
@@ -147,6 +222,7 @@ export function wireSdkHandlers(
         ? []
         : parseTunneledMcpServerNames(p.tunneledMcpServers);
     if (tunneledNames.length > 0) {
+      requireProtocolV3(ctx);
       if (!options.daemonSocketPath) {
         throwInvalid("tunneledMcpServers requires the daemon socket path");
       }
@@ -407,6 +483,11 @@ export function wireSdkHandlers(
     } satisfies McpTunnelCallParams);
   };
 
+  server.setHandler(METHODS.BUNDLE_ENSURE, bundleEnsure);
+  server.setHandler(METHODS.BUNDLE_RELEASE, bundleRelease);
+  server.setHandler(METHODS.CAPABILITY_REVISION_REGISTER, capabilityRevisionRegister);
+  server.setHandler(METHODS.CAPABILITY_THREAD_REGISTER, capabilityThreadRegister);
+  server.setHandler(METHODS.CAPABILITY_THREAD_UNREGISTER, capabilityThreadUnregister);
   server.setHandler(METHODS.MCP_TUNNEL_CALL, mcpTunnelCall);
   server.setHandler(METHODS.QUERY_START, queryStart);
   server.setHandler(METHODS.QUERY_SEND, querySend);
@@ -443,6 +524,16 @@ export function wireSdkHandlers(
 function requireString(v: unknown, field: string): asserts v is string {
   if (typeof v !== "string" || v.length === 0) {
     throwInvalid(`${field} must be a non-empty string`);
+  }
+}
+
+function requireProtocolV3(ctx: ClientCtx): void {
+  if (ctx.protocolVersion !== PROTOCOL_VERSION || PROTOCOL_VERSION < 3) {
+    const error = new Error(
+      "capability routing and tunneled MCP require protocol version 3",
+    ) as Error & { code: "INVALID_PROTOCOL_VERSION" };
+    error.code = "INVALID_PROTOCOL_VERSION";
+    throw error;
   }
 }
 

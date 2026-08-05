@@ -383,7 +383,8 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
   文件含空路径、旧签出路径或不一致的角色归属也不会提前改盘；只有项目及默认角色注册成功后
   才原子回写归一化文件。导入的完整角色快照会逐个克隆为新项目的可编辑自定义角色并生成新
   角色 ID；只有文件不含角色快照时才创建“通用”默认角色。导入显示名与已登记项目冲突时改用
-  主目录名称（仍冲突则追加序号），便于同一份项目配置复制到不同目录使用且保持列表可辨识。
+  主目录名称（仍冲突则追加序号）。角色克隆顺序以已登记来源项目为准，优先按原角色 ID、再按
+  显示名匹配，避免项目文件的快照排列改变默认角色；同一配置复制到不同目录后仍保持列表可辨识。
 - 编辑采用“有效值 + 草稿”双状态：无变更时保存/取消不可用，取消恢复有效值，保存完整
   `project.json` 或角色 manifest 后重新读取并刷新有效值，避免 Renderer 分两步写出
   项目表和配置文件的不一致中间态。
@@ -660,6 +661,17 @@ Meka 会话侧栏不建立独立视觉规范，项目行、会话行、二级分
 - 经授权 cookie 建立 agent tunnel WebSocket。
 - 远程实例的可用性、支持状态和绑定校验。
 - 不接受 renderer 伪造的远程目标。
+
+远程任务路由的维护不变量：`mcpr:<instanceId>` 是 MCPRouter 账号隧道身份，不是 SSH
+host。会话创建、lazy resume、send 前置和恢复路径必须先分类 `remoteHostId`，只有 SSH
+身份才能调用 `ensureRemoteHostReady` 或查询 SSH pool；MCPRouter 身份必须交给
+`openMcprTunnel` / `createMcprCodexTransport`。分类实现与合并防回归清单见
+`docs/dev-rules/mcpr-remote-session-routing.md`。
+
+2026-08-05 回归修复：`4d1e01b7f`（`origin/main -> meka/main`）曾覆盖掉已有的
+MCPRouter session-start preflight 分支，导致 `mcpr:<instanceId>` 抛出
+`SSH_HOST_NOT_FOUND`。当前已恢复启动分流，并让 SSH-only recovery 路径过滤 MCPRouter
+身份；`remote-session-routing` 与 `remoteSessionMakerMemory` 测试锁住该契约。
 
 未迁移 S1 的通用 capability bundle。MCPRouter provider 由项目/角色配置直接选择，
 并按当前项目的实例绑定过滤工具；这条链路不依赖通用能力包状态或快照。Router
@@ -987,7 +999,10 @@ XDMaker `meka/main` 对应实现为核对正本。
   Codex 使用独立 `codex-appserver` 隧道和 cc-manager 控制通道。
 - Worker 创建继续复用 Cindy 标准 `VendorSegmentedSwitcher`；选择 MCPRouter 远程目标
   时 Claude Code 与 Codex 均可选择，不恢复旧的手写 Agent 按钮组。
-- 普通 Cindy 会话不能使用 Meka 自定义目标。
+- 普通 Cindy 会话默认仍不显示 Meka 自定义目录；已登录 MCPRouter 时，新建任务项目选择器
+  可选择账号可访问且可用的远程项目实例，或从可访问模板创建实例后立即使用。该入口只传
+  Host 投影的远程实例身份，Main 继续做归属、状态和隧道校验；device-link 与 MCPRouter
+  目标互斥，手机版不新增独立入口。详见 `docs/product-rules/mcpr-remote-project-sessions.md`。
 - 不信任 renderer 提供的任意本地目录或远程实例 ID；Main 重新解析并校验。
 - Worker 创建、session request 和 agent input projection 透传 Main 解析后的目标。
 - Cindy 已移除 capability snapshot，因此不能照搬旧快照字段；Worker 必须继承 Lead 的
@@ -1035,8 +1050,9 @@ XDMaker `meka/main` 对应实现为核对正本。
    - Meka Worker 的列表、tab 与提示显示 P4 根/子目录名或
      “远程：实例名”；普通 Cindy Worker 不新增目录标签。
 6. **远程 Claude 协同工具隧道**
-   - Cindy 的 cc-manager 协议增加最小 MCP tunnel 版本（protocol v2，
-     bundle `0.0.5`），没有带入 S1 的 bundle/revision/capability router。
+   - Cindy 的 cc-manager bundle `0.0.6` 自报最高 protocol v3：v2 保留 Claude
+     query/session 与 host `toolGuards`，v3 才开放 tunneled MCP、immutable bundle 和
+     Codex revision/thread routing。
    - 远端 daemon 为白名单服务建立 stdio `mcp-shim`，经 reverse request 回到
      desktop 的同一个 in-process MCP 实例。
    - 白名单与 XDMaker 最终状态一致：Worker 侧 `orca_worker_bridge`
@@ -1076,9 +1092,11 @@ gateway-key；本地 OAuth、`auth.json` 与 loopback proxy 不跨机器分发�
 
 本次没有因此恢复 S1 snapshot 系统。Cindy 直接运行时已经解析出的项目/角色 Skill 会
 被稳定排序并冻结为 `catalog.json + SKILL.md` 最小 bundle；revision 对完整文件集做
-内容寻址。MCPRouter 服务端仓的 protocol 3 / bundle 0.0.6、capability MCP 与
-`codex-bridge` 已独立验证，客户端仓只携带显式协商参数和 RPC 类型，不把本仓 SSH
-Claude daemon 冒充成完整 MCPRouter 服务端。
+内容寻址。`maker-cc-manager` 现在是 MCPRouter 完整版 bundle 的源码真源，并同时携带
+`codex-bridge`、daemon loopback capability MCP 与最小 immutable Skill bundle 缓存；这些
+能力只投递 Cindy 已解析的项目/角色 Skill，不恢复 S1 capability snapshot/activation
+体系。MCPRouter 构建从 `CINDY_SRC` 重建并探测 `0.0.6/protocol 3`；按需下载的 runtime
+manifest/cache 链路另行拒绝低于 `0.145.0` 的 Codex，并校验压缩包与裸二进制哈希。
 
 ### 4.9 Mobile 与 device-link
 
@@ -1704,6 +1722,60 @@ thread-context gated 的本地动态代理投影这条唯一入口，Claude 继�
 - 项目/角色完整创建草稿、取消不落库、保存后创建，以及 Router 模板创建与绑定的 2 个
   定向测试文件、5 个测试通过；变更文件 ESLint 通过。
 - Renderer 禁用浏览器 `prompt()` 的 AST 检测与产品源码扫描共 1 个测试文件、2 个测试通过。
+
+### 6.18 2026-08-05 MCPRouter Codex bootstrap 身份回归
+
+用户反馈 `MCPR_INSTANCE_NOT_READY`，错误实例值形如 `mcpr:<uuid>`。排查确认这不是
+SSH 路由回归：请求已经进入 MCPRouter Codex capability，但 bridge 用 `instanceId`
+查实例，而 Desktop 的 `remoteHostId` 是用 API 返回的 `id` 构造的；当两字段不同时，
+真实实例会被误判不存在。同期发现 `routerService.normalizeInstance()` 只支持
+`agentType=claude`，也会把服务端合法的 Codex 实例标记为 unsupported。
+
+修复内容：统一 `instance.id` 为 MCPRouter transport 身份；`claude` 与 `codex` 都可用；
+新建任务按实例类型选择 `cc` 或 `codex`；Codex Worker 目标不再被错误拒绝。回归测试覆盖
+`id` 与 `instanceId` 分离时的 bridge 查找，以及 Codex 远程目标解析。相关工程契约见
+[`docs/dev-rules/mcpr-remote-session-routing.md`](../dev-rules/mcpr-remote-session-routing.md)。
+
+### 6.19 2026-08-05 远程 cc-mgr/Codex 版本契约
+
+后续现场反馈暴露两条版本问题：Claude 远程 cc-mgr 新版要求
+`protocol/hello.params.bundleVersion`，而 Desktop 的 SSH/MCPRouter Claude factory 曾省略
+该参数；Codex MCPRouter Worker 当前仍可能打包 `cindy/0.144.1`，低于 Cindy capability
+routing 的 `0.145.0` 最低版本。
+
+处理：Desktop Claude/SSH/MCPRouter 共用的 `openCcManagerSession` 固定发送
+`CC_MGR_BUNDLE_VERSION`，但不要求旧 daemon 回显，以保持旧 SSH 主机可升级；Codex 继续
+fail closed，要求 MCPRouter 发布包含 `0.145.0+` 的 remote runtime。不得在客户端静默关闭
+capability routing，也不得把 MCPRouter 服务端版本问题伪装成普通 GPT 切换建议。
+
+### 6.20 2026-08-05 MCPRouter Linux runtime 按需交付
+
+为避免 MCPRouter 镜像继续内置数百 MB Claude/Codex 裸二进制，Cindy Meka 发布层增加
+独立的 Linux runtime 入口。它按 Cindy 当前 pin 准备 `linux-x64` Claude/Codex，将 gzip
+以版本化 immutable 路径上传到公开 `cindy-meka` bucket，最后更新并公开回读校验
+`runtime-manifest-linux-x64.json`。该入口既可由 `runtime-assets` 单独执行，也作为完整
+`release` 的阻断前置；相同对象复用、相同 manifest 不重写。桌面 Windows/macOS 发布契约
+不变。
+
+MCPRouter 不持有 RustFS 凭证；它从公开 CDN 读取 manifest 和资产，完成 gzip 与裸二进制
+双 SHA-256 校验后缓存在持久数据卷。远程实例启动时预热当前 agent，tunnel 打开前再次
+ensure，避免构建机缓存或旧镜像决定线上 CLI 版本。完整发布契约见
+[`docs/dev-rules/agent-runtime-release.md`](../dev-rules/agent-runtime-release.md)。
+
+### 6.21 2026-08-05 cc-manager bundle protocol pin 回归
+
+现场 runtime 报错 `expected 0.0.6/protocol 3, got 0.0.6/protocol 2`。根因是 Cindy 迁移时
+只带入了 protocol 3 的部分客户端类型和调用点，`maker-cc-manager` 实际 daemon 仍自报
+protocol 2；manager version 没有同步表达这一能力差异，因此旧 bundle 直到真实 tunnel
+启动才被识别。
+
+修复把 XDMaker 的 protocol 3 服务端能力迁入 Cindy 当前 cc-manager 基线，并保留 Cindy
+后续新增的 `toolGuards`、`query/stopTask`、OAuth refresh 与 kill pending/timeout。daemon
+严格校验 bundle pin，按 v2/v3 协商隔离 Claude 与 Codex 能力；回归覆盖 v2 Claude 主链、
+v3 MCP tunnel、bundle 缓存、Codex bridge 和按 thread 路由的远程 Skill 读取。MCPRouter
+构建新增同一 bundle pin 探测，运行时 manifest/cache 链路锁定 Codex `0.145.0+`，并在
+daemon spawn 前再次复核 bundle；部署新 bundle 后必须重启 runtime，避免旧镜像/旧进程
+继续服务。
 
 ## 10. 后续继续迁移时的硬性注意事项
 

@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { RpcClient, RpcClientError } from '../src/client.js';
 import { ManagerServer } from '../src/server.js';
-import { PROTOCOL_VERSION } from '../src/protocol.js';
+import { CC_MGR_BUNDLE_VERSION, PROTOCOL_VERSION } from '../src/protocol.js';
 
 interface Ctx {
   server: ManagerServer;
@@ -44,6 +44,10 @@ beforeEach(async () => {
   const server = new ManagerServer({
     socketPath,
     managerVersion: 'test-0.0.0',
+    capabilityMcp: {
+      url: 'http://127.0.0.1:43210/mcp/lizi_capabilities',
+      token: 'test-token',
+    },
     logger: {
       debug: () => undefined,
       info: () => undefined,
@@ -73,18 +77,53 @@ describe('ManagerServer Phase 1 skeleton', () => {
   it('returns hello response with server version', async () => {
     const res = await ctx!.client.hello();
     expect(res.protocolVersion).toBe(PROTOCOL_VERSION);
+    expect(res.bundleVersion).toBe(CC_MGR_BUNDLE_VERSION);
     expect(res.managerVersion).toBe('test-0.0.0');
+    expect(res.capabilityMcpUrl).toBe('http://127.0.0.1:43210/mcp/lizi_capabilities');
+    expect(res.capabilityMcpToken).toBe('test-token');
+  });
+
+  it('keeps protocol v2 available for Claude without advertising Codex capability routing', async () => {
+    const res = await ctx!.client.request<Record<string, unknown>>('protocol/hello', {
+      protocolVersion: 2,
+      bundleVersion: CC_MGR_BUNDLE_VERSION,
+    });
+    expect(res).toMatchObject({
+      protocolVersion: 2,
+      bundleVersion: CC_MGR_BUNDLE_VERSION,
+      managerVersion: 'test-0.0.0',
+    });
+    expect(res).not.toHaveProperty('capabilityMcpUrl');
+    expect(res).not.toHaveProperty('capabilityMcpToken');
   });
 
   it('rejects mismatched protocol version', async () => {
     await expect(
-      ctx!.client.request('protocol/hello', { protocolVersion: 999 }),
+      ctx!.client.request('protocol/hello', {
+        protocolVersion: 999,
+        bundleVersion: CC_MGR_BUNDLE_VERSION,
+      }),
     ).rejects.toBeInstanceOf(RpcClientError);
     try {
-      await ctx!.client.request('protocol/hello', { protocolVersion: 999 });
+      await ctx!.client.request('protocol/hello', {
+        protocolVersion: 999,
+        bundleVersion: CC_MGR_BUNDLE_VERSION,
+      });
     } catch (err) {
       expect((err as RpcClientError).rpcError.code).toBe('INVALID_PROTOCOL_VERSION');
     }
+  });
+
+  it('requires and validates the exact bundle pin', async () => {
+    await expect(
+      ctx!.client.request('protocol/hello', { protocolVersion: PROTOCOL_VERSION }),
+    ).rejects.toMatchObject({ rpcError: { code: 'INVALID_PARAMS' } });
+    await expect(
+      ctx!.client.request('protocol/hello', {
+        protocolVersion: PROTOCOL_VERSION,
+        bundleVersion: '0.0.5',
+      }),
+    ).rejects.toMatchObject({ rpcError: { code: 'INVALID_BUNDLE_VERSION' } });
   });
 
   it('returns NOT_INITIALIZED for any method before hello', async () => {

@@ -112,6 +112,8 @@
   `docs/mcpr-plugin-capability-gateway.md` 与 `packages/server/src/capabilities/` 契约。
 - 修改客户端自动更新链路（`cindy-updater` 或 Electron 侧更新服务）前，必须先读
   `docs/dev-rules/cindy-updater.md`。
+- 修改 Claude/Codex runtime 版本 pin、RustFS 运行时资产发布或 MCPRouter Linux runtime
+  交付前，必须先读 `docs/dev-rules/agent-runtime-release.md`。
 - 新增或修改 Desktop 日志、IPC 错误处理、main 侧业务逻辑与测试、跨平台（macOS／
   Windows）行为，或任何 UI 文案的 i18n 落地前，必须先读
   `docs/dev-rules/engineering-conventions.md`。
@@ -128,6 +130,9 @@
   或修改 device-link 的重试／超时／断链恢复逻辑前，必须先读
   `docs/dev-rules/remote-and-mobile-adaptation.md`；其中恢复路径改动必须回答该文件的
   「故障半径三问」。
+- 新增或修改 MCPRouter 远程任务启动、恢复、SSH preflight 或 `remoteHostId` 路由前，
+  必须先读 `docs/dev-rules/mcpr-remote-session-routing.md`；`mcpr:<instanceId>` 与 SSH
+  host 是不同 transport，不能共享 SSH pool 前置。
 - 在 Cindy 内嵌 worktree 会话里工作、准备提交或直推、或做 code review 前，必须先读
   `docs/dev-rules/development-workflow.md`。
 

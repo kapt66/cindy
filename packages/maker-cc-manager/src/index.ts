@@ -43,9 +43,13 @@ export type {
   BundleFile,
   BundleEnsureParams,
   BundleEnsureResult,
+  BundleReleaseParams,
   BundleReleaseResult,
+  CapabilityRevisionRegisterParams,
   CapabilityRevisionRegisterResult,
+  CapabilityThreadRegisterParams,
   CapabilityThreadRegisterResult,
+  CapabilityThreadUnregisterParams,
   CapabilityThreadUnregisterResult,
   QueryStartParams,
   QueryToolGuard,
@@ -92,3 +96,6 @@ export type {
 
 export { ManagerServer } from './server.js';
 export type { ManagerServerOptions, ManagerLogger, MethodHandler, ClientCtx } from './server.js';
+
+export { CapabilityMcpRouter } from './capability-mcp-router.js';
+export type { CapabilityMcpRouterOptions } from './capability-mcp-router.js';

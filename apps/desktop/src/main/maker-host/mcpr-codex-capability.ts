@@ -255,7 +255,9 @@ export async function buildRemoteCodexBridgeHeader(
   instanceId: string,
 ): Promise<CodexBridgeSpawnHeader> {
   const target = (await getMekaRouterService().listInstances()).find(
-    (instance) => instance.instanceId === instanceId
+    // `instanceId` here is parsed from `mcpr:<remoteHostId>`. The host ID is
+    // built from the API record's stable `id`, not its display/name field.
+    (instance) => instance.id === instanceId
       && instance.supported
       && instance.available,
   );

@@ -6373,7 +6373,12 @@
       "removeFromList": "Remove from list",
       "missingDir": "Folder not found",
       "remoteProjectsLoadFailed": "Couldn't load projects from {{device}}. Check the connection and try again.",
-      "retryRemoteProjects": "Reload projects"
+      "retryRemoteProjects": "Reload projects",
+      "remoteInstances": "Remote MCPRouter instances",
+      "remoteLoading": "Loading remote instances…",
+      "remoteEmpty": "No available remote instances.",
+      "remoteCreate": "Create a remote instance from a template",
+      "remoteSelected": "{{project}} · {{instance}}"
     },
     "pendingQueue": {
       "regionAria": "Pending message queue",
@@ -10119,7 +10124,8 @@
       "unavailable": "Unavailable",
       "template": "Project template",
       "instanceName": "Instance name",
-      "instanceNameInvalid": "Use 2–64 letters, numbers, dots, dashes, or underscores, starting with a letter or number."
+      "instanceNameInvalid": "Use 2–64 letters, numbers, dots, dashes, or underscores, starting with a letter or number.",
+      "creating": "Creating…"
     }
   },
   "billing": {

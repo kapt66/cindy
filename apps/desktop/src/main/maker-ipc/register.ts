@@ -320,7 +320,7 @@ import {
 } from '../remote-ssh/agent-proxy.js';
 import { ensureRemoteAgentInstalledOrInstall, ensureRemoteHostReady, getRemoteSshPool, isCcMgrUpgradeInFlight } from '../remote-ssh/index.js';
 import { getMekaP4SettingsService, getMekaRouterService } from '../meka-settings/ipc.js';
-import { parseMcprRemoteHostId } from '../../shared/meka-router.js';
+import { classifyRemoteSessionTransport } from '../maker-host/remote-session-routing.js';
 import { createMekaWorkerTargetResolver } from './mekaWorkerTarget.js';
 import {
   isMekaManagedWorkspaceDir,
@@ -5663,7 +5663,6 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       }
     }
 
-    await ensureRemoteHostReady(remoteHostIdToEnsure);
     const ensureAgentKind: 'claude-code' | 'codex' | 'pi' | null =
       session?.agentKind === 'codex' || session?.agentKind === 'claude-code' || session?.agentKind === 'pi'
         ? session.agentKind
@@ -5674,6 +5673,12 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             })()
           : null;
     if (!ensureAgentKind) return;
+
+    // MCPRouter sessions use the account tunnel factories in maker-host. Their
+    // logical `mcpr:<instanceId>` id is never an SSH pool key.
+    if (classifyRemoteSessionTransport(remoteHostIdToEnsure) === 'mcpr') return;
+
+    await ensureRemoteHostReady(remoteHostIdToEnsure);
 
     // claude-code 远端走 cc-mgr.mjs daemon。首次 /context 也必须像 send 一样
     // 触发 cc-manager 安装/升级, 否则 query/getContextUsage 可能因旧 bundle 不存在而失败。
@@ -5788,6 +5793,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     const session = maker.getSession(sessionId);
     const remoteHostId = session?.remoteHostId;
     if (!remoteHostId) return;
+    if (classifyRemoteSessionTransport(remoteHostId) === 'mcpr') return;
     const host = getRemoteSshPool().get(remoteHostId);
     const hostReady = host?.getStatus() === 'ready';
     // agent-proxy 的 live-turn defer 在这里补刀 — codex 与 CC 的 turn 收口

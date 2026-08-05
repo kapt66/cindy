@@ -6370,7 +6370,12 @@
       "removeFromList": "从列表中移除",
       "missingDir": "目录不存在",
       "remoteProjectsLoadFailed": "无法读取 {{device}} 上的项目。请检查连接后重试。",
-      "retryRemoteProjects": "重新读取项目"
+      "retryRemoteProjects": "重新读取项目",
+      "remoteInstances": "远程 MCPRouter 实例",
+      "remoteLoading": "正在读取远程实例…",
+      "remoteEmpty": "暂无可用远程实例。",
+      "remoteCreate": "基于模板创建远程实例",
+      "remoteSelected": "{{project}} · {{instance}}"
     },
     "pendingQueue": {
       "regionAria": "待发送消息队列",
@@ -10345,7 +10350,8 @@
       "unavailable": "不可用",
       "template": "项目模板",
       "instanceName": "实例名称",
-      "instanceNameInvalid": "请输入 2–64 位字母、数字、点、短横线或下划线，且首位必须是字母或数字。"
+      "instanceNameInvalid": "请输入 2–64 位字母、数字、点、短横线或下划线，且首位必须是字母或数字。",
+      "creating": "正在创建…"
     }
   },
   "ghostPanel": {

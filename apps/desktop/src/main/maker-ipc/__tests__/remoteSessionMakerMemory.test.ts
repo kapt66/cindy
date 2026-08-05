@@ -25,6 +25,24 @@ const source = readFileSync(resolve(__dirname, '..', 'register.ts'), 'utf8').rep
 );
 
 describe('ensureRemoteReadyForSessionStart Maker Memory flag (R1 P1)', () => {
+  it('keeps MCPRouter sessions out of the SSH readiness preflight', () => {
+    const fnStart = source.indexOf('async function ensureRemoteReadyForSessionStart');
+    const functionEnd = source.indexOf('\n  // 暴露给 maker-host 的 orca bridge deps', fnStart);
+    const mcprGuard = source.indexOf(
+      "classifyRemoteSessionTransport(remoteHostIdToEnsure) === 'mcpr'",
+      fnStart,
+    );
+    const sshPreflight = source.indexOf(
+      'await ensureRemoteHostReady(remoteHostIdToEnsure);',
+      fnStart,
+    );
+
+    expect(mcprGuard).toBeGreaterThan(-1);
+    expect(functionEnd).toBeGreaterThan(mcprGuard);
+    expect(functionEnd).toBeGreaterThan(sshPreflight);
+    expect(sshPreflight).toBeGreaterThan(mcprGuard);
+  });
+
   it('no longer hard-forces makerMemoryEnabled=false on remote createOpts', () => {
     // 旧回归形态:remoteHostId 赋值后紧跟无条件覆盖 false。R2 的 stale-bridge
     // 钳制分支里也有受守卫的 `= false` 赋值, 所以只锁「无条件」形态。

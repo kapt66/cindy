@@ -30,7 +30,9 @@ export interface MekaRouterTemplate {
 }
 
 export interface MekaRouterInstance {
+  /** Stable API record id; the only value allowed inside `mcpr:<id>`. */
   id: string;
+  /** MCPRouter agent instance/display name; never use as transport identity. */
   instanceId: string;
   projectId: string | null;
   projectName: string;

@@ -151,7 +151,10 @@ function normalizeInstance(raw: JsonRecord): MekaRouterInstance {
   const workspaceRef = text(raw.workspaceRef);
   const agentType = text(raw.agentType) ?? '';
   const status = text(raw.status);
-  const supported = agentType === 'claude' && !!id;
+  // MCPRouter project-agent-instances supports both agent backends. `id` is
+  // the stable instance identity used by bindings and `remoteHostId`; the
+  // human-facing `instanceId` may be a different name.
+  const supported = (agentType === 'claude' || agentType === 'codex') && !!id;
   return {
     id,
     instanceId,

@@ -132,6 +132,7 @@ import { resolveCollabEntryPolicy } from './collabEntryPolicy';
 import { useCollabProjectPolicy } from './hooks/useCollabProjectPolicy';
 import { CrossAgentConvertDialog } from '@/components/ui/cross-agent-convert-dialog';
 import type { MakerVendor, Session } from '@/lib/ccAgent.types';
+import { parseMcprRemoteHostId, type MekaRouterInstance } from '../../../shared/meka-router';
 import {
   BUILTIN_MEKA_PROJECTS,
   type MekaProject,
@@ -428,7 +429,7 @@ interface MekaDraftRouteState {
 }
 
 const CREATE_AGENT_CONTEXT_TRIGGER_CLASS =
-  'inline-flex h-[30px] min-w-20 max-w-[220px] items-center justify-center gap-1.5 rounded-full border border-[var(--create-agent-control-border)] bg-[var(--create-agent-control-bg)] px-3 text-[12px] font-medium leading-[14px] text-[var(--create-agent-control-text)] transition-colors hover:bg-[var(--create-agent-control-bg-hover)] active:bg-[var(--create-agent-control-bg-pressed)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--create-agent-focus-ring)] disabled:cursor-not-allowed disabled:opacity-50';
+  'inline-flex h-[30px] min-w-20 max-w-[320px] items-center justify-center gap-1.5 rounded-full border border-[var(--create-agent-control-border)] bg-[var(--create-agent-control-bg)] px-3 text-[12px] font-medium leading-[14px] text-[var(--create-agent-control-text)] transition-colors hover:bg-[var(--create-agent-control-bg-hover)] active:bg-[var(--create-agent-control-bg-pressed)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--create-agent-focus-ring)] disabled:cursor-not-allowed disabled:opacity-50';
 
 function readWorkspacePrompt(state: unknown): WorkspacePrompt {
   if (!state || typeof state !== 'object') return 'dialogue';
@@ -690,6 +691,10 @@ interface DraftTargetRequest {
   deviceName: string | null;
   /** 目标工作区;null = 该设备上的「对话」(不绑项目)。 */
   workingDir: string | null;
+  /** MCPRouter target; mutually exclusive with device-link. */
+  remoteHostId?: string | null;
+  /** Remote MCPRouter workspaces have a different filesystem from the controller. */
+  remoteTarget?: boolean;
   /**
    * 已经 inline 拉到的被控端快照。只有「添加远程项目」那条路径有 —— 它为了验证设备可达,本来就
    * 直接 invoke 过 capabilities / defaults,于是能立刻 seed,不必等 effect 再跑一轮隧道往返。
@@ -851,6 +856,7 @@ export function NewMakerDraftRoute() {
     });
   }, []);
   const [folderPickerOpen, setFolderPickerOpen] = useState(false);
+  const [remoteSessionDisplayLabel, setRemoteSessionDisplayLabel] = useState<string | null>(null);
   // 设备切换器(#807)。与项目 picker 互斥打开 —— 两个 popover 同时浮着会互相遮挡。
   const [devicePickerOpen, setDevicePickerOpen] = useState(false);
   // 整页拖入的视觉反馈(与 CCAgentSessionView 聊天区同款):enter/leave 计数
@@ -1120,7 +1126,15 @@ export function NewMakerDraftRoute() {
       retryDeviceLinkProjects,
     ],
   );
-  const createAgentModeLabel = isMekaDraft
+  const mcprInstanceId = parseMcprRemoteHostId(effectiveRemoteHostId);
+  const remoteSessionLabel = mcprInstanceId
+    ? remoteSessionDisplayLabel ?? mcprInstanceId
+    : effectiveRemoteHostId
+      ? effectiveWorkingDir?.split(/[\\/]/).filter(Boolean).pop() ?? effectiveRemoteHostId
+      : null;
+  const createAgentModeLabel = remoteSessionLabel
+    ? remoteSessionLabel
+    : isMekaDraft
     ? (mekaSelection.projects.find((project) => project.id === mekaSelection.projectId)
         ?.displayName ?? t('meka.projectsRoles.projectPicker'))
     : (getProjectPickerDisplayName(
@@ -1796,6 +1810,7 @@ export function NewMakerDraftRoute() {
       // chip 绑 workingDir;附件绑设备。两者条件不同,见各自函数的注释。
       if (deviceChanged || workingDirChanged) stripProjectRelativeMentions();
       if (deviceChanged) dropPathBackedAttachments();
+      if (req.remoteTarget) dropPathBackedAttachments();
 
       // 作废那三个无 TTL 快照 —— 但**不是**「指向设备就做」(Codex review 第 30 轮 P1,我上一轮
       // 收敛时写错的条件)。evict 不是幂等清理,而是一次**有副作用的状态转移**:它 notify
@@ -1885,7 +1900,7 @@ export function NewMakerDraftRoute() {
         deviceLinkDeviceName: req.deviceName,
         workingDir: req.workingDir,
         // device-link 与 SSH 互斥。
-        remoteHostId: null,
+         remoteHostId: req.remoteHostId ?? null,
         // 换设备 → 上一台的路径全失效;进「对话」→ 单次授权不该跨上下文延续。
         // 同机换项目时不传(store 保持原值):那些目录在这台机器上仍然有效。
         ...(deviceChanged || req.workingDir == null ? { extraDirs: [] } : {}),
@@ -2399,6 +2414,7 @@ export function NewMakerDraftRoute() {
     (path: string, source: FolderPickerSelectSource) => {
       // 发送已在途时闭包持有旧工作区，禁止切换后让已在途创建落到旧目标。
       if (sendInFlightRef.current) return;
+      setRemoteSessionDisplayLabel(null);
       if (source === 'meka-project') {
         const project = mekaSelection.projects.find((candidate) => candidate.id === path);
         const roles = project?.roles ?? [];
@@ -2428,6 +2444,35 @@ export function NewMakerDraftRoute() {
       });
     },
     [handleWorkingDirChange, mekaSelection.projects, navigate],
+  );
+
+  const handleSelectRemoteSession = useCallback(
+    (instance: MekaRouterInstance) => {
+      if (sendInFlightRef.current || !instance.supported || !instance.available) return;
+      setFolderPickerOpen(false);
+      setRemoteSessionDisplayLabel(
+        t('newChat.folderPicker.remoteSelected', {
+          project: instance.projectName || instance.instanceId,
+          instance: instance.instanceId,
+        }),
+      );
+      // Keep the visible engine aligned with the worker backend advertised by
+      // MCPRouter. `instanceId` is display data; `agentType` is the contract.
+      const nextVendor = instance.agentType === 'codex' ? 'codex' : 'cc';
+      if (draft.vendor !== nextVendor) switchVendor(nextVendor, chatPrefs);
+      applyDraftTarget({
+        deviceId: null,
+        deviceName: null,
+        workingDir: instance.workingDir,
+        remoteHostId: instance.remoteHostId,
+        remoteTarget: true,
+      });
+      navigate('/cc-agent/new', {
+        replace: true,
+        state: { workspacePrompt: 'generic' },
+      });
+    },
+    [applyDraftTarget, chatPrefs, draft.vendor, navigate, t],
   );
 
   // 用户切换 worktree(2026-07-29 实测后第二版):
@@ -3919,6 +3964,7 @@ export function NewMakerDraftRoute() {
                   }))}
                   deviceScope={folderPickerDeviceScope}
                   onRemoveRemoteProject={removeRemoteProject}
+                  onSelectRemoteSession={!isMekaDraft ? handleSelectRemoteSession : undefined}
                   // 仅在有可用远程目标时暴露「添加远程项目」入口(SSH ready 主机 / device-link 可控设备)。
                   // 已经选定对端设备时无条件下发:此时浏览目标是明确的那台机器,不该再受
                   // hasAnyRemoteTarget 影响 —— 它会在该设备离线时变 false,把「浏览文件夹」推回
@@ -3938,6 +3984,7 @@ export function NewMakerDraftRoute() {
                     className={CREATE_AGENT_CONTEXT_TRIGGER_CLASS}
                     disabled={isFormalDraft || wtCreating || sendInFlight}
                     aria-label={t('newChat.collaboration.modeLabel')}
+                    title={createAgentModeLabel}
                   >
                     <MessageSquare
                       size={12}

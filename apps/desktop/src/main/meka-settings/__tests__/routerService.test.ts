@@ -77,6 +77,45 @@ function setup(initial: Record<string, unknown> = {}) {
 }
 
 describe('MekaRouterService', () => {
+  it('normalizes Claude and Codex instances with the stable API id as remote identity', async () => {
+    const fixture = setup({ routerUrl: 'https://router.example/' });
+    fixture.secrets.set('meka.router.sessionToken', 'existing-session');
+    fixture.secrets.set('meka.router.clientKey', 'existing-client-key');
+    vi.mocked(fixture.client.listInstances).mockResolvedValue([
+      {
+        id: 'stable-codex-id',
+        instanceId: 'codex-display-name',
+        agentType: 'codex',
+        status: 'ready',
+        workspaceRef: '/workspace/codex',
+      },
+      {
+        id: 'stable-claude-id',
+        instanceId: 'claude-display-name',
+        agentType: 'claude',
+        status: 'running',
+        workspaceRef: '/workspace/claude',
+      },
+    ]);
+
+    await expect(fixture.service.listInstances()).resolves.toEqual([
+      expect.objectContaining({
+        id: 'stable-codex-id',
+        instanceId: 'codex-display-name',
+        supported: true,
+        available: true,
+        remoteHostId: 'mcpr:stable-codex-id',
+      }),
+      expect.objectContaining({
+        id: 'stable-claude-id',
+        instanceId: 'claude-display-name',
+        supported: true,
+        available: true,
+        remoteHostId: 'mcpr:stable-claude-id',
+      }),
+    ]);
+  });
+
   it('probes and calls Plugin capabilities with the stored Host session', async () => {
     const fixture = setup({ routerUrl: 'https://router.example/' });
     fixture.secrets.set('meka.router.sessionToken', 'existing-session');

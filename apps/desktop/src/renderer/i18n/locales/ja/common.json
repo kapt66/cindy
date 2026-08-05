@@ -6370,7 +6370,12 @@
       "removeFromList": "リストから削除",
       "missingDir": "フォルダが見つかりません",
       "remoteProjectsLoadFailed": "{{device}} のプロジェクトを読み込めませんでした。接続を確認して再試行してください。",
-      "retryRemoteProjects": "プロジェクトを再読み込み"
+      "retryRemoteProjects": "プロジェクトを再読み込み",
+      "remoteInstances": "リモート MCPRouter インスタンス",
+      "remoteLoading": "リモートインスタンスを読み込み中…",
+      "remoteEmpty": "利用可能なリモートインスタンスはありません。",
+      "remoteCreate": "テンプレートからリモートインスタンスを作成",
+      "remoteSelected": "{{project}} · {{instance}}"
     },
     "pendingQueue": {
       "regionAria": "送信待ちメッセージのキュー",
@@ -10110,7 +10115,8 @@
       "unavailable": "利用不可",
       "template": "プロジェクトテンプレート",
       "instanceName": "インスタンス名",
-      "instanceNameInvalid": "英数字で始まる 2～64 文字の英数字、ピリオド、ハイフン、またはアンダースコアを入力してください。"
+      "instanceNameInvalid": "英数字で始まる 2～64 文字の英数字、ピリオド、ハイフン、またはアンダースコアを入力してください。",
+      "creating": "作成中…"
     }
   },
   "billing": {

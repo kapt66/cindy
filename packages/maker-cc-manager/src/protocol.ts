@@ -12,12 +12,13 @@
  * are passed through verbatim (SDK already gives us typed JSON-safe shapes).
  *
  * Versioning: every connection must start with a protocol/hello handshake.
- * Callers may also pin an exact bundle version so a desktop cannot silently
- * use a daemon that lacks its required RPC surface.
+ * Protocol v2 remains available for the Claude query/session surface, while
+ * protocol v3 adds the remote Codex capability and tunneled MCP surfaces.
+ * Every supported client must pin the exact bundle version.
  */
 
 /**
- * Bump on any breaking change. Minor additive changes don't bump.
+ * Bump when the deployed daemon gains a new negotiated protocol surface.
  *
  * v2: query/start 增加 host toolGuards，并要求 daemon 在权限规则之前重建
  * PreToolUse 闸门。旧 daemon 会无声忽略未知字段，导致 capability routing
@@ -27,17 +28,12 @@
  * reattach 只接新 events (live-only subscription),不 replay 旧 ring buffer。
  * ring buffer 降级为纯内存 fast-path(同一 daemon 进程生命周期内的 mid-turn 续流)。
  * 断开期间跑完的输出暂不自动补回 chat(follow-up: jsonl recovery 统一 cc + codex)。
- */
-/**
- * v2 adds tunneled in-process MCP projection for desktop-owned tools such as
- * `orca_worker_bridge`. The remote daemon exposes a stdio shim and routes
- * tools/list + tools/call back to the attached desktop client.
  *
- * MCPRouter's separately deployed daemon negotiates protocol v3 for immutable
- * capability bundles and Codex revision/thread routing. The desktop RPC client
- * can opt into that version without changing this SSH daemon's own version.
+ * v3: adds immutable capability bundles, Codex revision/thread routing and
+ * tunneled in-process MCP projection. The daemon still negotiates v2 for
+ * clients that only need the Claude query/session surface.
  */
-export const PROTOCOL_VERSION = 2 as const;
+export const PROTOCOL_VERSION = 3 as const;
 
 /**
  * cc-mgr bundle 版本号 — 手动 bump。
@@ -180,14 +176,14 @@ export type NotificationName =
 export interface HelloParams {
   protocolVersion: number;
   /** Exact daemon feature bundle expected by the client. */
-  bundleVersion?: string;
+  bundleVersion: string;
   /** Optional client identifier (logs / debugging). */
   clientId?: string;
 }
 
 export interface HelloResult {
   protocolVersion: number;
-  /** Exact daemon feature bundle serving this connection. */
+  /** Exact daemon feature bundle serving this connection; absent on legacy daemons. */
   bundleVersion?: string;
   /** Manager build / git SHA, surfaced for diagnostics. */
   managerVersion?: string;
@@ -201,12 +197,25 @@ export interface CapabilityRevisionRegisterResult {
   registered: true;
 }
 
+export interface CapabilityRevisionRegisterParams {
+  revisionHash: string;
+}
+
 export interface CapabilityThreadRegisterResult {
   registered: true;
 }
 
+export interface CapabilityThreadRegisterParams {
+  threadId: string;
+  revisionHash: string;
+}
+
 export interface CapabilityThreadUnregisterResult {
   unregistered: boolean;
+}
+
+export interface CapabilityThreadUnregisterParams {
+  threadId: string;
 }
 
 /** A UTF-8 text file projected beneath the daemon capability cache. */
@@ -230,6 +239,10 @@ export interface BundleEnsureResult {
 export interface BundleReleaseResult {
   released: boolean;
   removed: boolean;
+}
+
+export interface BundleReleaseParams {
+  revisionHash: string;
 }
 
 /**

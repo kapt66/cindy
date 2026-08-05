@@ -75,6 +75,7 @@ import { getRemoteAgentProxyEnv, reconcileCodexAgentProxyEnv } from '../remote-s
 import { openCcManagerSession } from './cc-manager-client.js';
 import { openMcprTunnel } from './mcpr-tunnel.js';
 import { parseMcprRemoteHostId } from '../../shared/meka-router.js';
+import { classifyRemoteSessionTransport } from './remote-session-routing.js';
 import { getRemoteClaudeBinaryPath } from '../remote-ssh/cc-manager-install.js';
 import {
   createBashConcurrencyHooks,
@@ -439,6 +440,7 @@ export function handleCodexEnvironmentShutdownForRemote(): void {
   }
   const liveTurnChecker = getRemoteCodexLiveTurnChecker();
   for (const hostId of hostIds) {
+    if (classifyRemoteSessionTransport(hostId) === 'mcpr') continue;
     const host = getRemoteSshPool().get(hostId);
     if (host?.getStatus() !== 'ready') continue;
     void stripRemoteCodexMcpConfig(host, {
@@ -499,11 +501,18 @@ export async function ensureCodexMcpBridgeStartedForRemote(): Promise<{
           listRemoteCodexHostIds: () => {
             const ids = new Set<string>();
             for (const s of _maker?.listActiveSessions() ?? []) {
-              if (s.remoteHostId && s.agentKind === 'codex') ids.add(s.remoteHostId);
+              if (
+                s.remoteHostId
+                && s.agentKind === 'codex'
+                && classifyRemoteSessionTransport(s.remoteHostId) === 'ssh'
+              ) {
+                ids.add(s.remoteHostId);
+              }
             }
             return [...ids];
           },
           getReadyHost: (hostId) => {
+            if (classifyRemoteSessionTransport(hostId) === 'mcpr') return null;
             const host = getRemoteSshPool().get(hostId);
             return host?.getStatus() === 'ready' ? host : null;
           },
