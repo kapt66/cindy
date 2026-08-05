@@ -10221,6 +10221,8 @@
     "projectDetailsDescription": "设置项目名称、工作目录和给团队成员看的说明。",
     "projectName": "项目名称",
     "projectPath": "本地项目路径",
+    "chooseDirectory": "选择目录",
+    "projectPathPickFailed": "无法打开目录选择器。",
     "description": "描述",
     "save": "保存",
     "delete": "移除",

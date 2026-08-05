@@ -5,6 +5,7 @@ import {
   BriefcaseBusiness,
   ChevronRight,
   Copy,
+  FolderOpen,
   MessageSquarePlus,
   Plus,
   RefreshCw,
@@ -693,6 +694,7 @@ export function MekaProjectRoleEditorRoute() {
   const [skillCatalog, setSkillCatalog] = useState<MekaSkillCatalogEntry[]>([]);
   const [busy, setBusy] = useState(false);
   const [gitRemoteFetching, setGitRemoteFetching] = useState(false);
+  const [pathPicking, setPathPicking] = useState(false);
   const [projectsLoaded, setProjectsLoaded] = useState(false);
   const [creatingProject, setCreatingProject] = useState(false);
   const [creatingRole, setCreatingRole] = useState(false);
@@ -886,6 +888,21 @@ export function MekaProjectRoleEditorRoute() {
       );
     } catch {
       toast.error(t('meka.jiraKeyParseFailed'));
+    }
+  };
+
+  const chooseProjectDirectory = async () => {
+    if (!project || !creatingProject) return;
+    setPathPicking(true);
+    try {
+      const result = await window.electronAPI.showOpenDirectoryDialog();
+      if (!result.canceled && result.path) {
+        setProject((current) => (current ? { ...current, path: result.path ?? '' } : current));
+      }
+    } catch {
+      toast.error(t('meka.projectPathPickFailed'));
+    } finally {
+      setPathPicking(false);
     }
   };
 
@@ -1547,15 +1564,28 @@ export function MekaProjectRoleEditorRoute() {
                   title={t('meka.projectConfiguration')}
                 />
                 <div className={cn(detailSurfaceClass, 'mt-5')}>
-                  <label className={fieldLabelClass}>
-                    <span>{t('meka.projectPath')}</span>
-                    <input
-                      className={inputClass}
-                      value={project.path}
-                      disabled={selectionReadOnly || !creatingProject}
-                      onChange={(event) => setProject({ ...project, path: event.target.value })}
-                    />
-                  </label>
+                  <div className="flex items-end gap-2">
+                    <label className={cn(fieldLabelClass, 'min-w-0 flex-1')}>
+                      <span>{t('meka.projectPath')}</span>
+                      <input
+                        className={inputClass}
+                        value={project.path}
+                        disabled={selectionReadOnly || !creatingProject || pathPicking}
+                        onChange={(event) => setProject({ ...project, path: event.target.value })}
+                      />
+                    </label>
+                    {creatingProject && !selectionReadOnly ? (
+                      <button
+                        type="button"
+                        className={cn(compactButtonClass, 'mb-1 shrink-0')}
+                        disabled={busy || pathPicking}
+                        onClick={() => void chooseProjectDirectory()}
+                      >
+                        <FolderOpen size={14} aria-hidden="true" />
+                        {t('meka.chooseDirectory')}
+                      </button>
+                    ) : null}
+                  </div>
                   <div className="mt-5 border-t border-[var(--border-default)] pt-5">
                     <div className="grid gap-4 md:grid-cols-2">
                       <label className={fieldLabelClass}>

@@ -139,6 +139,70 @@ describeMigrationReplay('migration replay', () => {
     }
   });
 
+  it('keeps Meka session history while allowing its project registry row to be removed', () => {
+    const { db, cleanup } = createTempDb();
+    try {
+      runMigrationReplay(db, { drizzleDir: drizzleDir() });
+
+      const projectForeignKeys = db
+        .prepare("PRAGMA foreign_key_list('sessions')")
+        .all() as Array<{ from: string }>;
+      expect(projectForeignKeys.some((foreignKey) => foreignKey.from === 'meka_project_id')).toBe(
+        false,
+      );
+
+      db.prepare(
+        `INSERT INTO meka_projects (id, name, path, tags, is_builtin, sort_order)
+         VALUES (?, ?, ?, ?, 0, 0)`,
+      ).run('history-project', 'history-project', 'C:/history-project', '[]');
+      db.prepare(
+        `INSERT INTO meka_roles
+          (id, project_id, name, display_name, file_path, is_builtin, sort_order)
+         VALUES (?, ?, ?, ?, ?, 0, 0)`,
+      ).run(
+        'history-role',
+        'history-project',
+        'history-role',
+        'History role',
+        'roles/history-role.json',
+      );
+      db.prepare(
+        `INSERT INTO sessions
+          (id, title, meka_project_id, meka_role_id, model, effort, permission_mode,
+           agent_kind, source, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        'history-session',
+        'History session',
+        'history-project',
+        'history-role',
+        'claude-sonnet-4-6',
+        'high',
+        'ask',
+        'cc',
+        'desktop',
+        1,
+        1,
+      );
+
+      db.exec('BEGIN');
+      db.prepare('DELETE FROM meka_roles WHERE project_id = ?').run('history-project');
+      db.prepare('DELETE FROM meka_projects WHERE id = ?').run('history-project');
+      db.exec('COMMIT');
+
+      expect(db.prepare('SELECT id FROM meka_projects WHERE id = ?').get('history-project')).toBe(
+        undefined,
+      );
+      expect(
+        db.prepare('SELECT meka_project_id, meka_role_id FROM sessions WHERE id = ?').get(
+          'history-session',
+        ),
+      ).toEqual({ meka_project_id: 'history-project', meka_role_id: null });
+    } finally {
+      cleanup();
+    }
+  });
+
   it('upgrades a schema v39 Orca workflow database through the 0040 script', () => {
     const { db, cleanup } = createTempDb();
     try {

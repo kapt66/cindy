@@ -87,6 +87,12 @@ function roleManifest(): MekaRoleManifestFile {
 
 function installApi(initialProjects: MekaProject[]) {
   let projects = initialProjects;
+  const showOpenDirectoryDialog = vi.fn(
+    async (): Promise<{ canceled: boolean; path?: string }> => ({
+      canceled: false,
+      path: 'C:/projects/selected',
+    }),
+  );
   const createProject = vi.fn(async (input: { displayName: string; path: string }) => {
     const created = { ...projectSummary(), displayName: input.displayName, path: input.path };
     projects = [created];
@@ -143,8 +149,12 @@ function installApi(initialProjects: MekaProject[]) {
       mekaSkillCatalog: { list: vi.fn(async () => []) },
     },
   };
-  (window as unknown as { electronAPI: typeof api }).electronAPI = api;
-  return { createProject, createRole, saveProject };
+  const electronApi = {
+    ...api,
+    showOpenDirectoryDialog,
+  };
+  (window as unknown as { electronAPI: typeof electronApi }).electronAPI = electronApi;
+  return { createProject, createRole, saveProject, showOpenDirectoryDialog };
 }
 
 function renderRoute(initialEntry = '/') {
@@ -189,6 +199,35 @@ describe('Meka project and role create states', () => {
         }),
       }),
     });
+  });
+
+  it('selects a directory for a new project and keeps saved project paths immutable', async () => {
+    const newProjectApi = installApi([]);
+    renderRoute();
+
+    await screen.findByText('meka.empty');
+    fireEvent.click(screen.getAllByRole('button', { name: 'meka.newProject' })[0]);
+    fireEvent.click(screen.getByRole('button', { name: 'meka.chooseDirectory' }));
+
+    await waitFor(() => expect(newProjectApi.showOpenDirectoryDialog).toHaveBeenCalledTimes(1));
+    expect((screen.getByLabelText('meka.projectPath') as HTMLInputElement).value).toBe(
+      'C:/projects/selected',
+    );
+    newProjectApi.showOpenDirectoryDialog.mockResolvedValueOnce({ canceled: true });
+    fireEvent.click(screen.getByRole('button', { name: 'meka.chooseDirectory' }));
+    await waitFor(() => expect(newProjectApi.showOpenDirectoryDialog).toHaveBeenCalledTimes(2));
+    expect((screen.getByLabelText('meka.projectPath') as HTMLInputElement).value).toBe(
+      'C:/projects/selected',
+    );
+
+    cleanup();
+    const savedProjectApi = installApi([projectSummary()]);
+    renderRoute('/?projectId=project-a');
+    expect((await screen.findByLabelText('meka.projectPath') as HTMLInputElement).disabled).toBe(
+      true,
+    );
+    expect(screen.queryByRole('button', { name: 'meka.chooseDirectory' })).toBeNull();
+    expect(savedProjectApi.showOpenDirectoryDialog).not.toHaveBeenCalled();
   });
 
   it('leaves a new project draft without persisting when cancelled', async () => {
