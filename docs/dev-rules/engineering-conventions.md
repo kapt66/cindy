@@ -116,6 +116,9 @@ PR 门禁必须在 Windows 上用两个并行分片完整覆盖 `pnpm test:unit`
 该 CI 契约。不能用静态扫描“测试字符串是否含斜杠”代替 Windows 实跑，因为它无法可靠区分宿主
 路径与逻辑路径。
 
+测试验证 pnpm 子进程参数时，必须覆盖 Windows `.cmd`／`.bat` 包装路径：此路径通过 `cmd.exe`
+和 `CINDY_PNPM_CMD_ARG_*` 环境变量逐项转发参数，不能把 `/c` 命令串误当成直接的 pnpm 参数数组。
+
 ## 4. 跨平台双端兼容（macOS / Windows）
 
 任何功能都必须同时考虑 macOS / Windows，并在两端做到最优性能。

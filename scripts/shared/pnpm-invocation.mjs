@@ -31,16 +31,44 @@ export function resolvePnpmInvocation(args, options = {}) {
   const execPath = options.execPath ?? process.execPath;
   const platform = options.platform ?? process.platform;
   const isWindows = platform === "win32";
-  if (npmExecPath) {
-    const extension = path.extname(npmExecPath).toLowerCase();
+  const resolvedNpmExecPath = isWindows
+    ? resolveWindowsNpmExecPath(npmExecPath, execPath)
+    : npmExecPath;
+  if (resolvedNpmExecPath) {
+    const extension = path.extname(resolvedNpmExecPath).toLowerCase();
     if (JS_ENTRY_EXTENSIONS.has(extension))
-      return { command: execPath, args: [npmExecPath, ...args], shell: false };
+      return {
+        command: execPath,
+        args: [resolvedNpmExecPath, ...args],
+        shell: false,
+      };
     if (!isWindows || WINDOWS_DIRECT_EXEC_EXTENSIONS.has(extension))
-      return { command: npmExecPath, args, shell: false };
-    return resolveWindowsPnpmThroughCmd(npmExecPath, args, options.comSpec);
+      return { command: resolvedNpmExecPath, args, shell: false };
+    return resolveWindowsPnpmThroughCmd(
+      resolvedNpmExecPath,
+      args,
+      options.comSpec,
+    );
   }
-  if (isWindows) return resolveWindowsPnpmThroughCmd("pnpm", args, options.comSpec);
+  if (isWindows)
+    return resolveWindowsPnpmThroughCmd(
+      path.win32.join(path.win32.dirname(execPath), "pnpm.cmd"),
+      args,
+      options.comSpec,
+    );
   return { command: "pnpm", args, shell: isWindows };
+}
+
+function resolveWindowsNpmExecPath(npmExecPath, execPath) {
+  const windowsPath = path.win32;
+  if (!npmExecPath || windowsPath.isAbsolute(npmExecPath)) return npmExecPath;
+  // Corepack exposes lifecycle npm_execpath as a path relative to its Node
+  // installation. Resolve it before a workspace cwd turns it into a dead path.
+  return windowsPath.join(
+    windowsPath.dirname(execPath),
+    "node_modules",
+    ...npmExecPath.replace(/\\/g, "/").split("/"),
+  );
 }
 
 function resolveWindowsPnpmThroughCmd(pnpmCommand, args, comSpec = process.env.ComSpec) {

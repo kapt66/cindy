@@ -1232,6 +1232,29 @@ test("resolvePnpmInvocation invokes Windows command wrappers through cmd.exe", (
 	}
 });
 
+test("resolvePnpmInvocation resolves Corepack relative JS entries from Node install", () => {
+	const execPath = path.win32.normalize("C:/node/node.exe");
+	assert.deepEqual(
+		resolvePnpmInvocation(["--version"], {
+			execPath,
+			npmExecPath: "corepack/dist/pnpm.js",
+			platform: "win32",
+		}),
+		{
+			command: execPath,
+			args: [
+				path.win32.join(
+					path.win32.dirname(execPath),
+					"node_modules",
+					"corepack/dist/pnpm.js",
+				),
+				"--version",
+			],
+			shell: false,
+		},
+	);
+});
+
 test("resolvePnpmInvocation quotes Windows command wrapper arguments", () => {
 	assert.deepEqual(
 		resolvePnpmInvocation(
@@ -1286,7 +1309,7 @@ test("usablePnpmExecPath rejects paths that are not a present pnpm entry", () =>
 test("resolvePnpmInvocation fallback shell behavior is explicit per platform", () => {
 	assert.deepEqual(
 		resolvePnpmInvocation(["--version"], {
-			execPath: "node",
+			execPath: "C:/node/node.exe",
 			npmExecPath: undefined,
 			platform: "win32",
 			comSpec: "C:/Windows/System32/cmd.exe",
@@ -1301,7 +1324,7 @@ test("resolvePnpmInvocation fallback shell behavior is explicit per platform", (
 				'""%CINDY_PNPM_CMD_ARG_0%" "%CINDY_PNPM_CMD_ARG_1%""',
 			],
 			env: {
-				CINDY_PNPM_CMD_ARG_0: "pnpm",
+				CINDY_PNPM_CMD_ARG_0: path.win32.join("C:/node", "pnpm.cmd"),
 				CINDY_PNPM_CMD_ARG_1: "--version",
 			},
 			shell: false,
@@ -1796,15 +1819,37 @@ test("runPlannedTests passes selected include files to packageBin commands", asy
 		allFiles: ["packages/orca-workflow/src/__tests__/orca-bridge-mcp.test.ts"],
 		manifest,
 		tier: "unit",
-		runCommandImpl: async (command, args) => {
-			calls.push({ command, args });
+		runCommandImpl: async (command, args, options) => {
+			calls.push({ command, args, options });
 			return { exitCode: 0, output: "PASS" };
 		},
 	});
-	assert.deepEqual(calls[0].args.slice(-1), [
-		"src/__tests__/orca-bridge-mcp.test.ts",
-	]);
-	assert.equal(calls[0].args.includes("src/__tests__/**/*.test.ts"), false);
+	const invocation = calls[0];
+	const forwardedEntries = Object.entries(invocation.options?.env ?? {})
+		.filter(([name]) => /^CINDY_PNPM_CMD_ARG_\d+$/.test(name))
+		.sort(
+			([left], [right]) =>
+				Number(left.slice("CINDY_PNPM_CMD_ARG_".length)) -
+				Number(right.slice("CINDY_PNPM_CMD_ARG_".length)),
+		);
+	if (forwardedEntries.length > 0) {
+		// Windows .cmd/.bat pnpm entries are invoked through cmd.exe. The
+		// resolver passes each argument through a dedicated environment variable
+		// so paths and shell metacharacters remain intact.
+		const forwardedArgs = forwardedEntries.map(([, value]) => value);
+		assert.deepEqual(forwardedArgs.slice(-1), [
+			"src/__tests__/orca-bridge-mcp.test.ts",
+		]);
+		assert.equal(
+			forwardedArgs.includes("src/__tests__/**/*.test.ts"),
+			false,
+		);
+	} else {
+		assert.deepEqual(invocation.args.slice(-1), [
+			"src/__tests__/orca-bridge-mcp.test.ts",
+		]);
+		assert.equal(invocation.args.includes("src/__tests__/**/*.test.ts"), false);
+	}
 });
 
 test("buildPnpmArgs rejects selected files outside the workspace", () => {

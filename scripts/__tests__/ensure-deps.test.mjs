@@ -68,7 +68,11 @@ test('falls back to PATH when npm_execpath is missing or stale', () => {
       ['install'],
       { npm_execpath: 'C:/stale/pnpm.cmd' },
       () => false,
-      { platform: 'win32', comSpec: 'C:/Windows/System32/cmd.exe' },
+      {
+        execPath: 'C:/node/node.exe',
+        platform: 'win32',
+        comSpec: 'C:/Windows/System32/cmd.exe',
+      },
     ),
     {
       command: 'C:/Windows/System32/cmd.exe',
@@ -80,7 +84,7 @@ test('falls back to PATH when npm_execpath is missing or stale', () => {
         '""%CINDY_PNPM_CMD_ARG_0%" "%CINDY_PNPM_CMD_ARG_1%""',
       ],
       env: {
-        CINDY_PNPM_CMD_ARG_0: 'pnpm',
+        CINDY_PNPM_CMD_ARG_0: path.win32.join('C:/node', 'pnpm.cmd'),
         CINDY_PNPM_CMD_ARG_1: 'install',
       },
       shell: false,
