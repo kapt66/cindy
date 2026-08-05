@@ -2,7 +2,7 @@
 
 > 状态：`origin/main@2db5c6280641` 正在同步到 `meka/main@58edde41c7c`；当前工作树已完成
 > 冲突语义收敛，尚未创建 merge commit，等待本轮迁移、类型与单测门禁
-> 最后更新：2026-08-04
+> 最后更新：2026-08-05
 > 目标仓库：`C:\Workspace\cindy`，分支 `meka/main`
 > 来源仓库：远端 `xdmaker`（`git@github.com:kapt66/XDMaker.git`），分支
 > `xdmaker/meka/main`
@@ -1582,6 +1582,10 @@ thread-context gated 的本地动态代理投影这条唯一入口，Claude 继�
     横幅和 Retry 入口不能被清除。
 12. 远程 Worker 尝试要求 cwd 外路径时应被 prompt 约束拒绝；这项只验证 Agent 行为，
     不把它误记为 OS 沙箱验收。
+
+本轮额外路径交付后，根级 `pnpm test:unit` 的源码契约测试已同步到当前实现：Worker ready
+使用运行期 `liveSession`，preload Worker adapter 的多行函数签名使用结构化匹配，避免仅因
+格式化或变量重命名误报。
 
 ### 8.6 UI
 

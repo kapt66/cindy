@@ -164,14 +164,16 @@ describe('sendToSession ordering', () => {
     );
 
     expect(createWorkerReadyBlock).toContain(
-      "session.send({ type: 'user', content: ORCA_WORKER_READY_MESSAGE }, { planMode: false })",
+      "liveSession.send({ type: 'user', content: ORCA_WORKER_READY_MESSAGE }, { planMode: false })",
     );
     expect(workerReadyPlaceholderBlock).toContain('{ planMode: false, throwOnStartFailure: true },');
     expect(sendToSessionBlock).toContain('planMode: false,');
     expect(queuedCreateOptsBlock).toContain('planMode: false,');
     expect(orcaInterAgentDispatcherSource).toContain('planMode: false,');
     expect(schedulerRunnerSource).toContain('planMode: false,');
-    expect(goalControllerSource).toContain("{ origin: { kind: 'goal', goalSessionId: sessionId }, planMode: false },");
+    expect(goalControllerSource).toMatch(
+      /origin:\s*\{\s*kind:\s*'goal',\s*goalSessionId:\s*sessionId\s*\},[\s\S]*?planMode:\s*false,/,
+    );
     expect(imTurnRunnerSource).toContain('planMode: false,');
     expect(orcaWorkflowSource).toContain('planMode: false,');
   });
@@ -742,10 +744,14 @@ describe('sendToSession ordering', () => {
   });
 
   it('keeps worker idle/archive adapters passing the caller lead session id', () => {
-    expect(preloadSource).toContain("idleWorker: (leadSessionId: string, workerId: string, expectedStatus?: 'done'): Promise<unknown> =>");
+    expect(preloadSource).toMatch(
+      /idleWorker:\s*\(\s*leadSessionId:\s*string,\s*workerId:\s*string,\s*expectedStatus\?:\s*'done',\s*\)?:\s*Promise<unknown>\s*=>/s,
+    );
     expect(preloadSource).toContain("ipcRenderer.invoke('maker:worker:idle', {");
     expect(preloadSource).toContain("ipcRenderer.invoke('maker:worker:acknowledge-done', {");
-    expect(preloadSource).toContain("archiveWorker: (leadSessionId: string, workerId: string): Promise<unknown> =>");
+    expect(preloadSource).toMatch(
+      /archiveWorker:\s*\(\s*leadSessionId:\s*string,\s*workerId:\s*string\s*\):\s*Promise<unknown>\s*=>/s,
+    );
     expect(preloadSource).toContain("ipcRenderer.invoke('maker:worker:archive', { leadSessionId, workerId })");
     // device-link:归档入口(现居 useOrcaWorkerSelection)经 orcaWorkflowsFor 按 lead 来源路由
     // (本机直连 / 远程隧道),但仍把 (leadSessionId, workerId) 传给 archiveWorker ——
