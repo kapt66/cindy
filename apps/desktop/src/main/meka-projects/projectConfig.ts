@@ -16,6 +16,7 @@ import { bundledMekaProjectsRoot, bundledMekaRolesRoot } from './resourcePaths.j
 
 const SAFE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const ITEM_TYPES = new Set<MekaProjectMetadataItemType>(['agents-md', 'skill', 'rule', 'mcp']);
+const MAX_ADDITIONAL_PATHS = 10;
 export const SECRET_REFERENCE_RE = /^\{\{secret:([A-Za-z0-9][A-Za-z0-9._-]*)\}\}$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -64,6 +65,38 @@ function canonicalRelativePath(value: unknown, label: string): string {
   return sourcePath;
 }
 
+function canonicalAbsolutePath(value: unknown, label: string): string {
+  const raw = nonEmptyString(value, label);
+  if (!path.isAbsolute(raw) || raw.includes('\0')) {
+    throw new Error(`${label} must be an absolute path`);
+  }
+  return path.normalize(raw);
+}
+
+function absolutePathKey(value: string): string {
+  const normalized = path.normalize(value);
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+function cleanAbsolutePaths(value: unknown, label: string): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error(`${label} must be an array of absolute paths`);
+  const paths: string[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    const normalized = canonicalAbsolutePath(item, label);
+    const key = absolutePathKey(normalized);
+    if (!seen.has(key)) {
+      seen.add(key);
+      paths.push(normalized);
+    }
+  }
+  if (paths.length > MAX_ADDITIONAL_PATHS) {
+    throw new Error(`${label} cannot contain more than ${MAX_ADDITIONAL_PATHS} paths`);
+  }
+  return paths;
+}
+
 function normalizeMetadata(input: unknown): MekaProjectMetadataConfigItem {
   if (!isRecord(input)) throw new Error('project metadata item must be an object');
   const itemType = input.itemType;
@@ -71,6 +104,10 @@ function normalizeMetadata(input: unknown): MekaProjectMetadataConfigItem {
     throw new Error(`unsupported project metadata item type: ${String(itemType)}`);
   }
   const editable = parseMekaEditableMetadata(input);
+  const rootPath =
+    input.rootPath === undefined || input.rootPath === null || input.rootPath === ''
+      ? undefined
+      : canonicalAbsolutePath(input.rootPath, 'metadata rootPath');
   const subProjectPath =
     input.subProjectPath === null
       ? null
@@ -78,6 +115,7 @@ function normalizeMetadata(input: unknown): MekaProjectMetadataConfigItem {
         ? canonicalRelativePath(input.subProjectPath, 'metadata subProjectPath')
         : undefined;
   return {
+    ...(rootPath ? { rootPath } : {}),
     sourcePath: canonicalRelativePath(input.sourcePath, 'metadata sourcePath'),
     itemType: itemType as MekaProjectMetadataItemType,
     disciplines: cleanStrings(input.disciplines),
@@ -153,6 +191,9 @@ function normalizeDefaultMetadataSelections(
       throw new Error(`unsupported project metadata item type: ${String(item.itemType)}`);
     }
     return {
+      ...(item.rootPath === undefined || item.rootPath === null || item.rootPath === ''
+        ? {}
+        : { rootPath: canonicalAbsolutePath(item.rootPath, 'role metadata rootPath') }),
       sourcePath: canonicalRelativePath(item.sourcePath, 'role metadata sourcePath'),
       itemType: item.itemType as MekaProjectMetadataItemType,
     };
@@ -191,8 +232,18 @@ export function normalizeMekaProjectFile(
   const metadata = new Map<string, MekaProjectMetadataConfigItem>();
   for (const raw of input.metadata) {
     const item = normalizeMetadata(raw);
-    metadata.set(`${item.sourcePath}|${item.itemType}`, item);
+    metadata.set(`${item.rootPath ?? ''}|${item.sourcePath}|${item.itemType}`, item);
   }
+  const projectPath = nonEmptyString(input.basic.path, 'project path');
+  const normalizedProjectPath = path.isAbsolute(projectPath) ? path.normalize(projectPath) : null;
+  const additionalPaths = cleanAbsolutePaths(
+    input.basic.additionalPaths,
+    'project additionalPaths',
+  ).filter(
+    (candidate) =>
+      normalizedProjectPath === null ||
+      absolutePathKey(candidate) !== absolutePathKey(normalizedProjectPath),
+  );
   const disciplines = cleanStrings(input.basic.disciplines).filter(
     (item) => item !== MEKA_GENERAL_DISCIPLINE,
   );
@@ -207,7 +258,8 @@ export function normalizeMekaProjectFile(
       ...(typeof input.basic.description === 'string' && input.basic.description.trim()
         ? { description: input.basic.description.trim() }
         : {}),
-      path: nonEmptyString(input.basic.path, 'project path'),
+      path: projectPath,
+      ...(additionalPaths.length > 0 ? { additionalPaths } : {}),
       ...(workflowType ? { workflowType } : {}),
       formalWorkflowEnabled: workflowType !== undefined && workflowType !== 'none',
       ...(typeof input.basic.jiraProjectKey === 'string' && input.basic.jiraProjectKey.trim()
@@ -273,6 +325,9 @@ export function normalizeMekaRoleManifest(
     mcp: input.mcp.map(validateMcpEntry),
     projectMetadataSelection: Array.isArray(input.projectMetadataSelection)
       ? input.projectMetadataSelection.filter(isRecord).map((item) => ({
+          ...(item.rootPath === undefined || item.rootPath === null || item.rootPath === ''
+            ? {}
+            : { rootPath: canonicalAbsolutePath(item.rootPath, 'role metadata rootPath') }),
           sourcePath: canonicalRelativePath(item.sourcePath, 'role metadata sourcePath'),
           itemType: item.itemType as MekaProjectMetadataItemType,
           enabled: item.enabled !== false,
@@ -312,7 +367,7 @@ function mergeProjectFiles(
   if (!override) return base;
   const metadata = new Map<string, MekaProjectMetadataConfigItem>();
   for (const item of [...base.metadata, ...override.metadata]) {
-    metadata.set(`${item.itemType}:${item.sourcePath}`, item);
+    metadata.set(`${item.rootPath ?? ''}:${item.itemType}:${item.sourcePath}`, item);
   }
   return {
     schemaVersion: 1,

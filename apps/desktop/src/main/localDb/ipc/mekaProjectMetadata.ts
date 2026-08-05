@@ -87,6 +87,7 @@ function effectiveItem(
 ): MekaProjectMetadata {
   return {
     projectId,
+    ...(item.rootPath ? { rootPath: item.rootPath } : {}),
     sourcePath: item.sourcePath,
     itemType: item.itemType,
     subProjectPath: item.subProjectPath ?? null,
@@ -106,12 +107,15 @@ function mergeDiscovered(
   discovered: readonly DiscoveredMekaProjectMetadata[],
 ): MekaProjectFile {
   const previous = new Map(
-    current.metadata.map((item) => [`${item.sourcePath}|${item.itemType}`, item]),
+    current.metadata.map((item) => [
+      `${item.rootPath ?? ''}|${item.sourcePath}|${item.itemType}`,
+      item,
+    ]),
   );
   return {
     ...current,
     metadata: discovered.map((item) => {
-      const old = previous.get(`${item.sourcePath}|${item.itemType}`);
+      const old = previous.get(`${item.rootPath ?? ''}|${item.sourcePath}|${item.itemType}`);
       return {
         ...old,
         ...item,
@@ -170,6 +174,7 @@ async function discover(projectIdInput: unknown): Promise<MekaProjectMetadata[]>
     const found = await discoverLocalMekaProjectMetadata(
       locator.projectRoot,
       getRipgrepBinaryPath(),
+      current.basic.additionalPaths ?? [],
     );
     const next = mergeDiscovered(current, found);
     await saveProjectConfig(locator, next);

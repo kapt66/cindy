@@ -1032,7 +1032,13 @@ export function NewMakerDraftRoute() {
   // 零可用模型引导卡:device-link 草稿不出(连接态在被控端,本机替它连不上)。
   const providerOnboarding = useProviderOnboarding();
   const showProviderOnboardingCard = providerOnboarding.visible && !isDeviceLinkDraft;
-  const effectiveExtraDirs = draft.extraDirs;
+  const effectiveExtraDirs = useMemo(() => {
+    if (!isMekaDraft) return draft.extraDirs;
+    const projectPaths = mekaSelection.projects.find(
+      (project) => project.id === mekaSelection.projectId,
+    )?.additionalPaths ?? [];
+    return [...new Set([...projectPaths, ...draft.extraDirs])];
+  }, [draft.extraDirs, isMekaDraft, mekaSelection.projectId, mekaSelection.projects]);
   const effectiveCollab = collab;
   const showCollabToggle = canShowCollabToggleForDraft({
     workingDir: effectiveWorkingDir,

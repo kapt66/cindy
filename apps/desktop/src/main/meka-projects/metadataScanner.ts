@@ -8,6 +8,8 @@ import type { MekaProjectMetadataItemType } from '../../shared/meka-projects.js'
 export interface DiscoveredMekaProjectMetadata {
   itemType: MekaProjectMetadataItemType;
   sourcePath: string;
+  /** Absolute root for extra paths; omitted when the primary project root is used. */
+  rootPath?: string;
   subProjectPath: string | null;
   name: string;
   description?: string;
@@ -27,12 +29,13 @@ function canonicalPath(candidate: string): string | null {
   const slashed = candidate.replaceAll('\\', '/').replace(/^\.\/+/, '');
   const normalized = path.posix.normalize(slashed);
   if (
-    !slashed
-    || normalized !== slashed
-    || path.posix.isAbsolute(slashed)
-    || normalized === '..'
-    || normalized.startsWith('../')
-  ) return null;
+    !slashed ||
+    normalized !== slashed ||
+    path.posix.isAbsolute(slashed) ||
+    normalized === '..' ||
+    normalized.startsWith('../')
+  )
+    return null;
   return normalized;
 }
 
@@ -66,17 +69,22 @@ function describe(
     const parsed = parseFrontmatter(content);
     const rawName = parsed.frontmatter?.name;
     return {
-      name: typeof rawName === 'string' && rawName.trim()
-        ? rawName.trim()
-        : fallbackName(sourcePath, type),
+      name:
+        typeof rawName === 'string' && rawName.trim()
+          ? rawName.trim()
+          : fallbackName(sourcePath, type),
       ...(parsed.description ? { description: parsed.description } : {}),
     };
   }
   if (type === 'mcp') {
     try {
-      const parsed = JSON.parse(content) as { mcpServers?: Record<string, unknown>; servers?: Record<string, unknown> };
+      const parsed = JSON.parse(content) as {
+        mcpServers?: Record<string, unknown>;
+        servers?: Record<string, unknown>;
+      };
       const ids = Object.keys(parsed.mcpServers ?? parsed.servers ?? {}).sort();
-      if (ids.length > 0) return { name: ids.length === 1 ? ids[0]! : `${ids[0]} +${ids.length - 1}` };
+      if (ids.length > 0)
+        return { name: ids.length === 1 ? ids[0]! : `${ids[0]} +${ids.length - 1}` };
     } catch {
       // Invalid JSON is still surfaced as discovered metadata for the editor.
     }
@@ -87,24 +95,55 @@ function describe(
 export async function discoverLocalMekaProjectMetadata(
   projectRoot: string,
   rgPath: string,
+  additionalRoots: readonly string[] = [],
 ): Promise<DiscoveredMekaProjectMetadata[]> {
   if (!path.isAbsolute(projectRoot)) throw new Error('project root must be absolute');
-  const listed = await listAllFiles({ workdir: projectRoot, rgPath });
-  const files = [...new Set(listed.files.map(canonicalPath).filter((item): item is string => Boolean(item)))]
-    .sort((a, b) => a.localeCompare(b));
-  const candidates = files
-    .map((sourcePath) => ({ sourcePath, itemType: metadataType(sourcePath) }))
-    .filter((item): item is { sourcePath: string; itemType: MekaProjectMetadataItemType } =>
-      item.itemType !== null);
-  const discovered = await Promise.all(candidates.map(async ({ sourcePath, itemType }) => {
-    const content = (await readFile(projectRoot, sourcePath)).content;
-    return {
-      itemType,
-      sourcePath,
-      subProjectPath: inferMekaSubProjectPath(sourcePath, files),
-      ...describe(sourcePath, itemType, content),
-      contentFingerprint: createHash('sha256').update(content, 'utf8').digest('hex'),
-    };
-  }));
-  return discovered;
+  if (additionalRoots.some((root) => !path.isAbsolute(root))) {
+    throw new Error('additional project roots must be absolute');
+  }
+  const primaryRoot = path.resolve(projectRoot);
+  const rootKey = (root: string) =>
+    process.platform === 'win32' ? path.normalize(root).toLowerCase() : path.normalize(root);
+  const uniqueAdditionalRoots: string[] = [];
+  const seenRoots = new Set([rootKey(primaryRoot)]);
+  for (const additionalRoot of additionalRoots) {
+    const root = path.resolve(additionalRoot);
+    const key = rootKey(root);
+    if (!seenRoots.has(key)) {
+      seenRoots.add(key);
+      uniqueAdditionalRoots.push(root);
+    }
+  }
+  const roots = [
+    { root: primaryRoot, rootPath: undefined as string | undefined },
+    ...uniqueAdditionalRoots.map((root) => ({ root, rootPath: root })),
+  ];
+  const discovered = await Promise.all(
+    roots.map(async ({ root, rootPath }) => {
+      const listed = await listAllFiles({ workdir: root, rgPath });
+      const files = [
+        ...new Set(listed.files.map(canonicalPath).filter((item): item is string => Boolean(item))),
+      ].sort((a, b) => a.localeCompare(b));
+      const candidates = files
+        .map((sourcePath) => ({ sourcePath, itemType: metadataType(sourcePath) }))
+        .filter(
+          (item): item is { sourcePath: string; itemType: MekaProjectMetadataItemType } =>
+            item.itemType !== null,
+        );
+      return Promise.all(
+        candidates.map(async ({ sourcePath, itemType }) => {
+          const content = (await readFile(root, sourcePath)).content;
+          return {
+            itemType,
+            sourcePath,
+            ...(rootPath ? { rootPath } : {}),
+            subProjectPath: inferMekaSubProjectPath(sourcePath, files),
+            ...describe(sourcePath, itemType, content),
+            contentFingerprint: createHash('sha256').update(content, 'utf8').digest('hex'),
+          };
+        }),
+      );
+    }),
+  );
+  return discovered.flat();
 }

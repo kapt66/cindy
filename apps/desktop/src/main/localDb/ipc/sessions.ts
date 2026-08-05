@@ -846,6 +846,13 @@ export function registerSessionIpc(
           error instanceof Error ? error.message : 'Meka project path cannot be resolved',
         );
       }
+      const requestedExtraDirs = Array.isArray(createBody?.extraDirs)
+        ? createBody.extraDirs.filter((item): item is string => typeof item === 'string')
+        : [];
+      validatedCreateBody = {
+        ...createBody,
+        extraDirs: [...new Set([...(project.additionalPaths ?? []), ...requestedExtraDirs])],
+      };
       if (createBody?.isFormal === true) {
         registerBuiltInFormalProviders();
         const formal = createBody?.formal;
@@ -863,7 +870,7 @@ export function registerSessionIpc(
           throwIpcError('INVALID_PARAMS', 'formal workflow snapshot is invalid');
         }
         validatedCreateBody = {
-          ...createBody,
+          ...validatedCreateBody,
           formal: {
             type: provider.type,
             link: parsedLink.webUrl,

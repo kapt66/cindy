@@ -64,10 +64,16 @@ describe('Meka project.json boundary', () => {
 
   it('creates exclusively, normalizes vocabularies, and round-trips atomically', async () => {
     const root = await tempRoot();
+    const additionalRoot = await tempRoot();
     const locator = { projectId: 'demo', isBuiltin: false, projectRoot: root, appIsPackaged: true };
     await createProjectConfigExclusive(locator, {
       ...projectFile('demo', root),
-      basic: { ...projectFile('demo', root).basic, disciplines: ['程序', '通用', '程序'] },
+      basic: {
+        ...projectFile('demo', root).basic,
+        additionalPaths: [additionalRoot, additionalRoot],
+        disciplines: ['程序', '通用', '程序'],
+      },
+      metadata: [{ rootPath: additionalRoot, sourcePath: 'AGENTS.md', itemType: 'agents-md' }],
     });
     await expect(
       createProjectConfigExclusive(locator, projectFile('demo', root)),
@@ -75,6 +81,14 @@ describe('Meka project.json boundary', () => {
 
     const loaded = await readEffectiveProjectConfig(locator);
     expect(loaded?.basic.disciplines).toEqual(['通用', '程序']);
+    expect(loaded?.basic.additionalPaths).toEqual([path.normalize(additionalRoot)]);
+    expect(loaded?.metadata).toEqual([
+      expect.objectContaining({
+        rootPath: path.normalize(additionalRoot),
+        sourcePath: 'AGENTS.md',
+        itemType: 'agents-md',
+      }),
+    ]);
 
     await saveProjectConfig(locator, {
       ...loaded!,

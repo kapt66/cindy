@@ -2,7 +2,7 @@
 
 > 状态：`origin/main@2db5c6280641` 正在同步到 `meka/main@58edde41c7c`；当前工作树已完成
 > 冲突语义收敛，尚未创建 merge commit，等待本轮迁移、类型与单测门禁
-> 最后更新：2026-08-04
+> 最后更新：2026-08-05
 > 目标仓库：`C:\Workspace\cindy`，分支 `meka/main`
 > 来源仓库：远端 `xdmaker`（`git@github.com:kapt66/XDMaker.git`），分支
 > `xdmaker/meka/main`
@@ -71,6 +71,13 @@
   项目字段与元数据可编辑，包内资源和内置角色 manifest 保持只读。
 - 项目/角色配置直达 Agent 运行时：项目默认项、角色提示词/规则、Skill、项目元数据和
   MCP 均从当前项目与角色配置解析，不经过 capability snapshot。
+- Meka 项目配置支持 `basic.additionalPaths` 作为额外的只读绝对路径（最多 10 个，规范化
+  后去重并排除主项目路径）。项目元数据重新扫描时会遍历主路径和全部额外路径；额外根下
+  的条目持久化 `rootPath`，因此不同根目录中的同名相对路径不会互相覆盖。旧项目缺少该
+  可选字段时按空列表兼容。
+- 新建或恢复 Meka 任务时，项目的 `additionalPaths` 会与任务请求的 `extraDirs` 合并并
+  作为只读引用目录传给 Agent；formal 任务、lazy-create 和 idle worker 恢复均保留这组
+  目录。运行期读取元数据会校验 `rootPath` 属于当前项目配置的根集合，并拒绝路径逃逸。
 - 内置项目、角色与 Skill 统一从 `resources/meka/` 分发；正式包使用
   `process.resourcesPath/meka`，并在 Forge 打包后校验源码树与包内树的文件和内容一致。
 - Meka 普通会话与 Jira/GitLab 正式流程会话。
@@ -1528,11 +1535,15 @@ thread-context gated 的本地动态代理投影这条唯一入口，Claude 继�
    工具结果及模型消息中都不出现远端物理绝对路径。
 9. Meka Worker 重启/idle 后继续保留项目、角色、目标和 Lead 关系；项目/角色 prompt、
    Skill、MCP 与元数据仍按同一 manifest 生效。
-10. 远程 Claude Worker 可调用 `send_to_lead`，远程 Claude Lead 可调用
+10. 在项目详情中添加两个额外绝对路径，重新扫描后确认两处根目录的元数据都能选择；
+    新建、formal、idle 恢复和 lazy-create 的 Meka 任务均包含这些目录作为只读 `extraDirs`。
+    旧项目配置没有 `additionalPaths` 时仍可正常打开和创建任务；Windows 路径大小写变体
+    不会造成重复扫描或误拒绝。
+11. 远程 Claude Worker 可调用 `send_to_lead`，远程 Claude Lead 可调用
     `start_team/create_worker/send_to_worker`；未在白名单的 desktop MCP 不应出现在远端。
-11. 让 Lead turn 进入失败 Retry 状态后送达 Worker 报告；报告必须及时派发，同时原错误
+12. 让 Lead turn 进入失败 Retry 状态后送达 Worker 报告；报告必须及时派发，同时原错误
     横幅和 Retry 入口不能被清除。
-12. 远程 Worker 尝试要求 cwd 外路径时应被 prompt 约束拒绝；这项只验证 Agent 行为，
+13. 远程 Worker 尝试要求 cwd 外路径时应被 prompt 约束拒绝；这项只验证 Agent 行为，
     不把它误记为 OS 沙箱验收。
 
 ### 8.6 UI

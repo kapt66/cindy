@@ -120,7 +120,12 @@ function installApi(initialProjects: MekaProject[]) {
     },
   );
   const saveProject = vi.fn(async ({ project }: { project: MekaProjectFile }) => project);
+  const showOpenDirectory = vi.fn(async () => ({
+    success: true,
+    path: 'C:/projects/shared',
+  }));
   const api = {
+    dialog: { showOpenDirectory },
     localDb: {
       mekaProjects: {
         list: vi.fn(async () => projects),
@@ -144,7 +149,7 @@ function installApi(initialProjects: MekaProject[]) {
     },
   };
   (window as unknown as { electronAPI: typeof api }).electronAPI = api;
-  return { createProject, createRole, saveProject };
+  return { createProject, createRole, saveProject, showOpenDirectory };
 }
 
 function renderRoute(initialEntry = '/') {
@@ -201,6 +206,24 @@ describe('Meka project and role create states', () => {
 
     expect(await screen.findByText('meka.empty')).toBeTruthy();
     expect(api.createProject).not.toHaveBeenCalled();
+  });
+
+  it('persists additional project paths selected from the project information editor', async () => {
+    const api = installApi([projectSummary()]);
+    renderRoute('/?projectId=project-a');
+
+    await screen.findByRole('heading', { name: 'meka.projectBasicInfo' });
+    fireEvent.click(screen.getByRole('button', { name: 'meka.addAdditionalPath' }));
+    await screen.findByText('C:/projects/shared');
+    fireEvent.click(screen.getByRole('button', { name: 'meka.save' }));
+
+    await waitFor(() => expect(api.saveProject).toHaveBeenCalledTimes(1));
+    expect(api.saveProject).toHaveBeenCalledWith({
+      projectId: 'project-a',
+      project: expect.objectContaining({
+        basic: expect.objectContaining({ additionalPaths: ['C:/projects/shared'] }),
+      }),
+    });
   });
 
   it('opens the full role editor and only creates the role on Save', async () => {

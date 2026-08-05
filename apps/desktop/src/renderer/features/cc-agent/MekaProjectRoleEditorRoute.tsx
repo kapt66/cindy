@@ -10,6 +10,7 @@ import {
   RefreshCw,
   Save,
   Trash2,
+  X,
   Users,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -46,6 +47,7 @@ type DraftProject = {
   displayName: string;
   description: string;
   path: string;
+  additionalPaths: string[];
   formalWorkflowEnabled: boolean;
   workflowType: MekaWorkflowType;
   jiraProjectKey: string;
@@ -106,6 +108,7 @@ function projectDraft(project: MekaProject, file?: MekaProjectFile | null): Draf
     displayName: basic?.displayName ?? project.displayName,
     description: basic?.description ?? project.description ?? '',
     path: basic?.path ?? project.path ?? '',
+    additionalPaths: basic?.additionalPaths ?? project.additionalPaths ?? [],
     formalWorkflowEnabled:
       basic?.formalWorkflowEnabled === true || project.formalWorkflowEnabled === true,
     workflowType: basic?.workflowType ?? project.workflowType ?? 'none',
@@ -121,6 +124,7 @@ function emptyProjectDraft(): DraftProject {
     displayName: '',
     description: '',
     path: '',
+    additionalPaths: [],
     formalWorkflowEnabled: false,
     workflowType: 'none',
     jiraProjectKey: '',
@@ -137,6 +141,7 @@ function emptyProjectFile(): MekaProjectFile {
     basic: {
       displayName: '',
       path: '',
+      additionalPaths: [],
       disciplines: [MEKA_GENERAL_DISCIPLINE],
       domains: [],
     },
@@ -178,6 +183,7 @@ function cloneValue<T>(value: T): T {
 
 function metadataConfig(item: MekaProjectMetadata): MekaProjectMetadataConfigItem {
   return {
+    ...(item.rootPath ? { rootPath: item.rootPath } : {}),
     sourcePath: item.sourcePath,
     itemType: item.itemType,
     subProjectPath: item.subProjectPath,
@@ -204,6 +210,9 @@ function projectFileFromDraft(
       displayName: project.displayName.trim(),
       description: project.description.trim() || undefined,
       path: project.path.trim(),
+      additionalPaths: [
+        ...new Set(project.additionalPaths.map((item) => item.trim()).filter(Boolean)),
+      ],
       formalWorkflowEnabled: project.formalWorkflowEnabled,
       workflowType: project.formalWorkflowEnabled ? project.workflowType : 'none',
       jiraProjectKey: project.jiraProjectKey.trim() || undefined,
@@ -323,7 +332,7 @@ function MetadataSelectionList({
   const items = metadata.filter((item) => item.enabled && itemTypes.includes(item.itemType));
   if (items.length === 0) return null;
   const selectionMap = new Map(
-    selections.map((item) => [`${item.itemType}:${item.sourcePath}`, item]),
+    selections.map((item) => [`${item.rootPath ?? ''}:${item.itemType}:${item.sourcePath}`, item]),
   );
 
   return (
@@ -333,7 +342,7 @@ function MetadataSelectionList({
       </div>
       <div className="grid gap-2 md:grid-cols-2">
         {items.map((item) => {
-          const key = `${item.itemType}:${item.sourcePath}`;
+          const key = `${item.rootPath ?? ''}:${item.itemType}:${item.sourcePath}`;
           const checked = selectionMap.get(key)?.enabled === true;
           return (
             <label
@@ -347,11 +356,13 @@ function MetadataSelectionList({
                 onChange={(event) => {
                   const next = selections.filter(
                     (selection) =>
+                      (selection.rootPath ?? '') !== (item.rootPath ?? '') ||
                       selection.sourcePath !== item.sourcePath ||
                       selection.itemType !== item.itemType,
                   );
                   if (event.target.checked) {
                     next.push({
+                      ...(item.rootPath ? { rootPath: item.rootPath } : {}),
                       sourcePath: item.sourcePath,
                       itemType: item.itemType,
                       enabled: true,
@@ -906,6 +917,24 @@ export function MekaProjectRoleEditorRoute() {
     } finally {
       setGitRemoteFetching(false);
     }
+  };
+
+  const addAdditionalPath = async () => {
+    if (!project || selectionReadOnly) return;
+    const result = await window.electronAPI.dialog.showOpenDirectory(
+      project.path.trim() ? { defaultPath: project.path.trim() } : undefined,
+    );
+    const selected = result.success ? result.path?.trim() : null;
+    if (
+      !selected ||
+      project.additionalPaths.includes(selected) ||
+      selected === project.path.trim()
+    ) {
+      return;
+    }
+    setProject((current) =>
+      current ? { ...current, additionalPaths: [...current.additionalPaths, selected] } : current,
+    );
   };
 
   const saveProject = () => {
@@ -1556,6 +1585,66 @@ export function MekaProjectRoleEditorRoute() {
                       onChange={(event) => setProject({ ...project, path: event.target.value })}
                     />
                   </label>
+                  <div className="border-t border-[var(--border-default)] pt-5">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-13 text-[var(--text-secondary)]">
+                          {t('meka.additionalPaths')}
+                        </div>
+                        <p className="mt-1 text-12 leading-5 text-[var(--text-tertiary)]">
+                          {t('meka.additionalPathsDescription')}
+                        </p>
+                      </div>
+                      {!selectionReadOnly ? (
+                        <button
+                          type="button"
+                          className={cn(compactButtonClass, 'shrink-0')}
+                          onClick={() => void addAdditionalPath()}
+                        >
+                          <Plus size={13} aria-hidden="true" />
+                          {t('meka.addAdditionalPath')}
+                        </button>
+                      ) : null}
+                    </div>
+                    <div className="mt-3 flex flex-col gap-2">
+                      {project.additionalPaths.map((additionalPath) => (
+                        <div
+                          key={additionalPath}
+                          className="flex min-w-0 items-center gap-2 rounded-lg border border-[var(--border-default)] bg-[var(--surface-elevated)] px-3 py-2"
+                        >
+                          <span className="min-w-0 flex-1 truncate text-12 text-[var(--text-secondary)]">
+                            {additionalPath}
+                          </span>
+                          {!selectionReadOnly ? (
+                            <button
+                              type="button"
+                              className="grid size-6 shrink-0 place-items-center rounded-full text-[var(--text-tertiary)] hover:bg-[var(--surface-hover-soft)] hover:text-[var(--text-primary)]"
+                              aria-label={t('meka.removeAdditionalPath')}
+                              onClick={() =>
+                                setProject((current) =>
+                                  current
+                                    ? {
+                                        ...current,
+                                        additionalPaths: current.additionalPaths.filter(
+                                          (item) => item !== additionalPath,
+                                        ),
+                                      }
+                                    : current,
+                                )
+                              }
+                            >
+                              <X size={13} aria-hidden="true" />
+                            </button>
+                          ) : null}
+                        </div>
+                      ))}
+                      {project.additionalPaths.length === 0 ? (
+                        <p className="text-12 text-[var(--text-tertiary)]">
+                          {t('meka.additionalPathsEmpty')}
+                        </p>
+                      ) : null}
+                    </div>
+                  </div>
                   <div className="mt-5 border-t border-[var(--border-default)] pt-5">
                     <div className="grid gap-4 md:grid-cols-2">
                       <label className={fieldLabelClass}>
@@ -1719,7 +1808,7 @@ export function MekaProjectRoleEditorRoute() {
                                 const itemIndex = metadata.indexOf(item);
                                 return (
                                   <details
-                                    key={`${item.itemType}:${item.sourcePath}`}
+                                    key={`${item.rootPath ?? ''}:${item.itemType}:${item.sourcePath}`}
                                     className="group rounded-lg border border-[var(--border-default)] bg-[var(--surface-elevated)]"
                                   >
                                     <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3">
@@ -1734,7 +1823,9 @@ export function MekaProjectRoleEditorRoute() {
                                         </span>
                                         <span className="mt-0.5 block truncate text-11 text-[var(--text-tertiary)]">
                                           {t(`meka.metadataTypes.${item.itemType}`)} ·{' '}
-                                          {item.sourcePath}
+                                          {item.rootPath
+                                            ? `${item.rootPath}/${item.sourcePath}`
+                                            : item.sourcePath}
                                         </span>
                                       </span>
                                       <input
