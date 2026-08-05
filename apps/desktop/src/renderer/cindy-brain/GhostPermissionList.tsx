@@ -23,6 +23,7 @@ import {
   KeyRound,
   LayoutTemplate,
   MapPin,
+  Network,
   Megaphone,
   MessageCircleQuestion,
   PanelLeft,
@@ -63,6 +64,7 @@ const KIND_ICON: Record<GhostPermissionItem['kind'], LucideIcon> = {
   skill: GraduationCap,
   reveal: FolderOpen,
   workspace: FolderPlus,
+  mcpr: Network,
 };
 
 function itemIcon(item: GhostPermissionItem): LucideIcon {

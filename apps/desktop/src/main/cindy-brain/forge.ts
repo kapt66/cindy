@@ -1290,6 +1290,26 @@ node 详单**不接受** \`command\` / \`args\` / \`shell\` / \`env\` 或其它�
 复杂配置再进入插件详情页。配齐后继续原调用。检查、字段绑定、保存状态和恢复都在主机
 代码里执行,你只声明需求,不用写卡片回调或检查逻辑,也不要在电子脑里自己重复检查。
 
+**MCPRouter 能力(\`mcpr\` 槽,受控路由)**：如果插件需要访问 MCPRouter，先在 \`slots\` 中声明
+\`"mcpr"\`，并提供精确的 route 白名单；Host 的 \`status\` 与 \`configure-login\` 两个固定操作
+无需写入白名单。例如：
+
+\`\`\`json
+{
+  "slots": ["tool", "mcpr"],
+  "mcpr": {
+    "routes": ["other-configs.get"]
+  }
+}
+\`\`\`
+
+业务 route 由 MCPRouter 服务端 registry 注册，只有已注册 route 才可调用。当前首个业务
+route 为 \`other-configs.get\`（\`account\` scope），输入只含 \`ownerUsername\` 与 \`name\`。
+插件请求不能携带 URL、HTTP method、headers、Cookie、Authorization 或 client key。
+运行期可调用 \`cindy.mcpr.status()\` 与 \`cindy.mcpr.call({ contractVersion:1, route, input,
+scope })\`。\`configureLogin()\` 目前只返回现有状态，不主动打开窗口；未登录时引导用户到
+Cindy Meka 设置配置 MCPRouter，不要在插件面板收集账号或密码。
+
 \`\`\`json
 "setup": {
   "requires": [                                     // 0–8 组;组间全部满足(allOf),组内任一满足(anyOf);空数组 = 显式声明"无使用前置需求"(恒就绪,见下)

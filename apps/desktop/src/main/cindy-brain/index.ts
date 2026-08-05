@@ -179,6 +179,7 @@ import { GhostPickSlot } from './pickSlot.js';
 import { recordGhostPickedDir } from './pickGrantsStore.js';
 import { GhostPreviewSlot } from './previewSlot.js';
 import { GhostRevealSlot } from './revealSlot.js';
+import { GhostMcprSlot } from './mcprSlot.js';
 import { GhostWorkspaceSlot, type WorkspaceSessionService } from './workspaceSlot.js';
 import type { GhostTrustRegistry } from './ghostSignature.js';
 import { GhostNotifySlot, sanitizeGhostNoticeText } from './notifySlot.js';
@@ -3211,6 +3212,18 @@ export function getGhostNetworkSlot(): GhostNetworkSlot {
 
 let fsSlotSingleton: GhostFsSlot | null = null;
 let revealSlotSingleton: GhostRevealSlot | null = null;
+let mcprSlotSingleton: GhostMcprSlot | null = null;
+
+/** MCPRouter 受控路由槽；身份、地址与 session 均由 Host 持有。 */
+export function getGhostMcprSlot(): GhostMcprSlot {
+  if (!mcprSlotSingleton) {
+    mcprSlotSingleton = new GhostMcprSlot({
+      getGhost: findAvailableGhost,
+      getService: getMekaRouterService,
+    });
+  }
+  return mcprSlotSingleton;
+}
 
 /** 文件定位槽单例(reveal):只把已存在普通文件或文件夹交给 OS 文件管理器选中。 */
 export function getGhostRevealSlot(): GhostRevealSlot {
@@ -4581,6 +4594,7 @@ export function registerGhostIpc(): void {
   // notify(系统提示,notifySlot 资格审+限速)/ fs-request(fs 槽代写文件,
   // fsSlot 三档守门)/ agent-request(Agent 新回合,一次性用户票或后台权限
   // 守门)/ agent-errand-request(派活取件,agent.errand 加档 + 频控守门)/ reveal-request(定位本机文件)/
+  // mcpr-request(MCPRouter 受控逻辑 route,Host 持有认证)/
   // node-request(随包 Node JSON-RPC/MCP stdio 中继)/ pick-request
   // (系统级选文件夹,用户亲选即授权)/ preview-request(右侧栏开预览标签,
   // preview.hosts 白名单守门)/ workspace-request(工作区会话入口,亲选或
@@ -4634,6 +4648,11 @@ export function registerGhostIpc(): void {
     // realpath/stat 重新校验,执行副作用只在 Electron Main。
     if (type === 'reveal-request') {
       return getGhostRevealSlot().handleRequest(id, payload);
+    }
+    // mcpr-request = MCPRouter 受控能力；manifest route、输入大小与 scope
+    // 先由 Host 校验，再交 Router registry 和当前登录用户权限复核。
+    if (type === 'mcpr-request') {
+      return getGhostMcprSlot().handleRequest(id, payload);
     }
     // agent-request = 让 Cindy Agent 开始一个普通 user 回合；插件文本绝不
     // 进入 system prompt。票据、会话归属、模板和后台权限都在 agentSlot。

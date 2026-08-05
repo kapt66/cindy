@@ -36,6 +36,8 @@ import { contextBridge, ipcRenderer } from 'electron';
  * - confirm(req):confirm 槽的便捷口——send({type:'confirm-request', …req}) 的
  *   语法糖;主机弹自己那套确认框并把用户的真实点击回给沙箱,资格审/净化/限速/
  *   单飞/超时兜底全在主机侧 confirmSlot 与 ghostConfirmDialogBridge。
+ * - mcpr.status()/configureLogin()/call(req):mcpr 槽便捷口。插件只提交 manifest
+ *   已声明的逻辑 route 与 JSON 输入；Router 地址和 session 始终留在 Host。
  */
 
 type HostMessageListener = (payload: unknown) => void;
@@ -82,4 +84,19 @@ contextBridge.exposeInMainWorld('cindy', {
     ipcRenderer.invoke('ghost-pipe:send', { ...req, type: 'workspace-request' }),
   confirm: (req: Record<string, unknown>): Promise<unknown> =>
     ipcRenderer.invoke('ghost-pipe:send', { ...req, type: 'confirm-request' }),
+  mcpr: {
+    status: (): Promise<unknown> =>
+      ipcRenderer.invoke('ghost-pipe:send', { type: 'mcpr-request', operation: 'status' }),
+    configureLogin: (): Promise<unknown> =>
+      ipcRenderer.invoke('ghost-pipe:send', {
+        type: 'mcpr-request',
+        operation: 'configure-login',
+      }),
+    call: (request: Record<string, unknown>): Promise<unknown> =>
+      ipcRenderer.invoke('ghost-pipe:send', {
+        type: 'mcpr-request',
+        operation: 'call',
+        request,
+      }),
+  },
 });

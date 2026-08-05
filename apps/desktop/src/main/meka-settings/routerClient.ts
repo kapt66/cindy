@@ -2,6 +2,7 @@ import { isIP } from 'node:net';
 
 import type { MekaPluginVisibility } from '../../shared/mekaDevPlugin.js';
 import type { MekaSkillVisibility } from '../../shared/mekaSkillMarket.js';
+import type { McprCallRequest, McprCallResponse } from '../../shared/mcpr-plugin-capability.js';
 import { PRODUCTION_MEKA_MCPROUTER_URL } from './config.js';
 
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -190,6 +191,31 @@ export function createMekaRouterClient(deps: RouterClientDeps = {}) {
       const body = (await created.json()) as { key?: string };
       if (!body.key) throw new Error('MCPRouter client-key response is invalid');
       return body.key;
+    },
+
+    async getPluginCapabilityStatus(baseUrl: string, sessionToken: string): Promise<void> {
+      const response = await request(deps, baseUrl, '/api/plugin-capabilities/status', {
+        headers: sessionHeaders(sessionToken),
+      });
+      if (!response.ok) throw await readError(response, 'check Plugin capability session');
+    },
+
+    async callPluginCapability(
+      baseUrl: string,
+      sessionToken: string,
+      capabilityRequest: McprCallRequest,
+    ): Promise<McprCallResponse> {
+      const { callId, ...routeRequest } = capabilityRequest;
+      const response = await request(deps, baseUrl, '/api/plugin-capabilities/call', {
+        method: 'POST',
+        headers: sessionHeaders(sessionToken),
+        body: JSON.stringify({
+          ...routeRequest,
+          ...(callId ? { requestId: callId } : {}),
+        }),
+      });
+      if (!response.ok) throw await readError(response, 'call Plugin capability');
+      return (await response.json()) as McprCallResponse;
     },
 
     async listOwnedMekaPlugins(

@@ -668,6 +668,20 @@ Cindy 现有权限确认；无窗口、无会话监听或未明确允许时一�
   `packages/server/src/routing/loader.ts`、`packages/server/src/management/worker-routes.ts`
   和 `packages/web/src/api/workers.ts`
 
+2026-08-05 新增跨仓 `mcpr` 插件能力契约：所有显式声明该 slot 的插件可申请 Host 固定的
+`status` / `configure-login`，以及 manifest 白名单内的逻辑 route。Cindy 不维护业务 URL；
+MCPRouter 通过 server-owned capability registry 持续扩展 route。manifest 校验、权限投影、
+作者手册、Host IPC 和 Router HTTP gateway 均按该 contract 接线；不允许插件把 `mcpr`
+当作任意网络代理。事实契约见 Cindy
+`docs/dev-rules/mcpr-plugin-capability.md` 与 MCPRouter `docs/mcpr-plugin-capability-gateway.md`。
+
+2026-08-05 同步完成首条运行时链路：Desktop preload/Main `GhostMcprSlot` 使用 Host
+保存的 MCPRouter session 调用 Router session-only capability gateway，首个业务 route
+为 `other-configs.get`。插件只提交 owner username、配置名与 `account` scope；Router
+沿用 existing other-config private/shared/public 权限，并把无权与不存在统一映射为
+`ROUTE_NOT_FOUND`。`meka-capability-check` `0.4.0` 提供登录状态与读取真人验收入口。
+宿主通用登录窗口仍只能从 Cindy 设置打开，插件 `configureLogin()` 暂不主动拉起窗口。
+
 #### 4.7.1 MCPRouter Meka 插件仓库
 
 2026-08-03 Desktop 与 Meka 插件作者契约新增 `reveal` 能力槽：插件可通过
@@ -1077,8 +1091,11 @@ Cindy 和 XDMaker 在共同历史之后分别继续增加 migration。XDMaker Me
 
 2026-08-05 追加 migration `0091_meka_project_history_reference`，通过 SQLite 表重建
 移除历史外键，保留全部会话数据；删除项目时仍在同一事务中先删角色、再删项目注册行，
-项目目录、`.meka/project.json`、源码和历史会话均不删除。验证覆盖 migration replay 以及
-历史引用保留语义。
+项目目录、`.meka/project.json`、源码和历史会话均不删除。表重建会暂时停用外键约束，
+如果存量库存在旧版 `meka_roles_delete_null_session_role` trigger，则保存并恢复其原始定义；提交后执行
+`foreign_key_check`，避免级联删除消息、Orca 或侧栏子表。验证覆盖带旧 trigger 和
+依赖 `sessions` 的子表的 migration replay，以及历史引用保留语义。该 migration 尚未进入
+canonical 发布基线，可在本分支修正；已失败的运行会由 migration 备份自动回滚后重试。
 
 ### 5.3 当前方案
 

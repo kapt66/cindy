@@ -31,6 +31,49 @@ describe('MekaRouterClient', () => {
     ).toThrow('must not contain URL credentials');
   });
 
+  it('calls the Plugin capability gateway with only the Host session cookie', async () => {
+    const fetchImpl = vi.fn(async () =>
+      Response.json({
+        ok: true,
+        contractVersion: 1,
+        route: 'other-configs.get',
+        output: { ownerUsername: 'alice', name: 'demo', content: 'value', key: 'value' },
+        requestId: 'router-request',
+      }),
+    ) as typeof fetch;
+    const client = createMekaRouterClient({ fetchImpl });
+    const request = {
+      contractVersion: 1 as const,
+      route: 'other-configs.get',
+      scope: 'account' as const,
+      input: { ownerUsername: 'alice', name: 'demo' },
+      callId: 'host-request',
+    };
+
+    await expect(
+      client.callPluginCapability('https://router.example', 'session-token', request),
+    ).resolves.toMatchObject({ ok: true, route: 'other-configs.get' });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://router.example/api/plugin-capabilities/call',
+      expect.objectContaining({
+        method: 'POST',
+        headers: {
+          cookie: 'session=session-token',
+          accept: 'application/json',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          contractVersion: 1,
+          route: 'other-configs.get',
+          scope: 'account',
+          input: { ownerUsername: 'alice', name: 'demo' },
+          requestId: 'host-request',
+        }),
+      }),
+    );
+  });
+
   it('keeps paging tools/list until the Router cursor is exhausted', async () => {
     const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
     const responses = [

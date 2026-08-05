@@ -1,5 +1,10 @@
 import { findSplitChildByPanelKind, insertRootSplitPane, type Layout } from './layoutTree';
 import { DEFAULT_LOCALE, SUPPORTED_LOCALES, type SupportedLocale } from './locale';
+import {
+  MCPR_MAX_ROUTE_PATTERNS,
+  isMcprRoutePattern,
+  type McprRoutePattern,
+} from './mcpr-plugin-capability';
 
 /**
  * 意识(Ghost,.cindy 文件)的清单数据模型与校验 —— main / renderer 共用。
@@ -107,6 +112,8 @@ const GHOST_ID_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
  * 'reveal' = 文件定位(2026-08-03):插件请主机在系统文件管理器中选中一个
  * 已知的本机文件或文件夹。路径由插件自己提供,主机重新 realpath/检查存在性;
  * 该槽不授予读写权限,也不把路径回传给插件。
+ * 'mcpr' = MCPRouter 受控能力(2026-08-05):插件只能请求 manifest.mcpr.routes
+ * 声明的逻辑 route；Host 持有地址与认证，Router registry 按当前用户再鉴权。
  * 'workspace' = 工作区会话(2026-07-25):插件请主机在指定本机项目目录下确保
  * 存在一个会话入口并显示在侧边栏——目录下已有 active 会话即复用,没有才创建
  * 空 draft 会话(不拉起 agent 进程)。目录授权两条路:系统选文件夹窗口亲选
@@ -133,6 +140,7 @@ export const GHOST_SLOTS = [
   'skill',
   'reveal',
   'workspace',
+  'mcpr',
 ] as const;
 export type GhostSlot = (typeof GHOST_SLOTS)[number];
 
@@ -143,6 +151,11 @@ export type GhostSlot = (typeof GHOST_SLOTS)[number];
  */
 export interface GhostCardNeeds {
   externalLinks?: boolean;
+}
+
+/** MCPRouter 逻辑 route 白名单；不允许声明 URL 或 transport 字段。 */
+export interface GhostMcprNeeds {
+  routes: McprRoutePattern[];
 }
 
 /**
@@ -1203,6 +1216,8 @@ export interface GhostManifest {
   agent?: GhostAgentNeeds;
   /** 随包本地 Node 工作进程详单；须与 slots 中的 `node` 成对。 */
   node?: GhostNodeNeeds;
+  /** mcpr 槽详单；须与 slots 中的 `mcpr` 成对。 */
+  mcpr?: GhostMcprNeeds;
   /**
    * 设置页「自定义设置区」界面入口(可选;安装目录内相对路径,意识自绘)。
    * 与面板同款沙箱 webview 渲染(零桥、分区断网、CSP 'self'),主题 token
@@ -1378,6 +1393,7 @@ export function ghostContentKeys(manifest: GhostManifest): string[] {
     else if (slot === 'skill') keys.push('slotSkill');
     else if (slot === 'reveal') keys.push('slotReveal');
     else if (slot === 'workspace') keys.push('slotWorkspace');
+    else if (slot === 'mcpr') keys.push('slotMcpr');
     // 'panel' 槽已由 manifest.panel 覆盖,不重复
   }
   return keys;
@@ -1439,7 +1455,7 @@ export interface GhostPermissionItem {
   /** 稳定键:更新 diff 按它对齐(内容变化视为移除+新增,如面板换边)。 */
   key: string;
   /** 图标分组(renderer 按 kind 选图标)。 */
-  kind: 'cindy' | 'agent' | 'node' | 'tool' | 'command' | 'panel' | 'code' | 'subscribe' | 'card' | 'network' | 'notify' | 'confirm' | 'fs' | 'session-context' | 'pick' | 'preview' | 'skill' | 'reveal' | 'workspace';
+  kind: 'cindy' | 'agent' | 'node' | 'tool' | 'command' | 'panel' | 'code' | 'subscribe' | 'card' | 'network' | 'notify' | 'confirm' | 'fs' | 'session-context' | 'pick' | 'preview' | 'skill' | 'reveal' | 'workspace' | 'mcpr';
   /** i18n key 后缀,消费方拼 `settings.ghosts.perm.<labelKey>`。 */
   labelKey: string;
   /** i18n 插值参数(工具名、指令名、面板标题等)。 */
@@ -1528,6 +1544,23 @@ export function ghostPermissionItems(manifest: GhostManifest): GhostPermissionIt
       labelKey: 'networkHost',
       labelArgs: { host },
     });
+  }
+  if (manifest.slots.includes('mcpr') && manifest.mcpr) {
+    items.unshift({
+      key: 'mcpr',
+      kind: 'mcpr',
+      labelKey: 'mcpr',
+      detailKey: 'mcprDetail',
+    });
+    for (const route of [...manifest.mcpr.routes].reverse()) {
+      items.unshift({
+        key: `mcpr:route:${route}`,
+        kind: 'mcpr',
+        labelKey: 'mcprRoute',
+        labelArgs: { route },
+        detailKey: 'mcprRouteDetail',
+      });
+    }
   }
   // agent 槽:真人点击触发是基础档；后台自动触发另列一项高风险权限。
   if (manifest.slots.includes('agent')) {
@@ -2809,6 +2842,41 @@ export function validateGhostManifest(raw: unknown): ManifestValidation {
   }
   if (slots.includes('panel') && panel === undefined) {
     return { ok: false, reason: 'slots 声明了 "panel" 但缺少 panel(面板由意识自绘,html 必填)' };
+  }
+
+  let mcpr: GhostMcprNeeds | undefined;
+  if (raw.mcpr !== undefined) {
+    if (!isPlainObject(raw.mcpr)) {
+      return { ok: false, reason: 'mcpr 详单必须是对象(如 { "routes": ["other-configs.get"] })' };
+    }
+    if (!slots.includes('mcpr')) {
+      return { ok: false, reason: '声明了 mcpr 详单但 slots 未包含 "mcpr"' };
+    }
+    const mcprRaw = raw.mcpr as Record<string, unknown>;
+    const unknownMcprField = Object.keys(mcprRaw).find((key) => key !== 'routes');
+    if (unknownMcprField) {
+      return { ok: false, reason: `mcpr 含不允许的字段 ${JSON.stringify(unknownMcprField)}` };
+    }
+    if (!Array.isArray(mcprRaw.routes) || mcprRaw.routes.length === 0) {
+      return { ok: false, reason: 'mcpr.routes 必须是非空 route 白名单' };
+    }
+    if (mcprRaw.routes.length > MCPR_MAX_ROUTE_PATTERNS) {
+      return { ok: false, reason: `mcpr.routes 最多 ${MCPR_MAX_ROUTE_PATTERNS} 条` };
+    }
+    const routes: McprRoutePattern[] = [];
+    for (const route of mcprRaw.routes) {
+      if (!isMcprRoutePattern(route)) {
+        return { ok: false, reason: `mcpr.routes 含非法 route ${JSON.stringify(route)}` };
+      }
+      if (routes.includes(route)) {
+        return { ok: false, reason: `mcpr.routes 含重复 route ${JSON.stringify(route)}` };
+      }
+      routes.push(route);
+    }
+    mcpr = { routes };
+  }
+  if (slots.includes('mcpr') && mcpr === undefined) {
+    return { ok: false, reason: 'slots 声明了 "mcpr" 但缺少 mcpr 详单(route 白名单必填)' };
   }
 
   // card 槽详单:有详单必有槽;有槽无详单 = 纯渲染卡片(默认行为,向后兼容)。
@@ -4295,6 +4363,7 @@ export function validateGhostManifest(raw: unknown): ManifestValidation {
       ...(subscribe !== undefined ? { subscribe } : {}),
       ...(network !== undefined ? { network } : {}),
       ...(preview !== undefined ? { preview } : {}),
+      ...(mcpr !== undefined ? { mcpr } : {}),
       ...(skill !== undefined ? { skill } : {}),
       ...(setup !== undefined ? { setup } : {}),
       ...(raw.command !== undefined ? { command: raw.command as string } : {}),

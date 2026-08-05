@@ -107,6 +107,9 @@
   能力 slot、打包与内容判据、manifest 契约、装入与权限确认 UI、已装列表投影）的 PR 一律
   走白名单确认门，需放行人明确 Approve 才能合并，不看 diff 大小、不因「是 bugfix／纯技术
   改动」豁免。
+- 新增或修改插件的 `mcpr` 卡槽、MCPRouter route 白名单、Host 鉴权注入或跨仓能力调用时，
+  还必须先读 `docs/dev-rules/mcpr-plugin-capability.md`，并同步核对 MCPRouter 仓库的
+  `docs/mcpr-plugin-capability-gateway.md` 与 `packages/server/src/capabilities/` 契约。
 - 修改客户端自动更新链路（`cindy-updater` 或 Electron 侧更新服务）前，必须先读
   `docs/dev-rules/cindy-updater.md`。
 - 新增或修改 Desktop 日志、IPC 错误处理、main 侧业务逻辑与测试、跨平台（macOS／

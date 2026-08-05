@@ -28,6 +28,12 @@ import {
 import { createMekaRouterClient, type MekaRouterClient } from './routerClient.js';
 import { classifyMekaRouterToolRisk, type MekaToolRisk } from './mekaRiskPolicy.js';
 import { DEFAULT_MEKA_MCPROUTER_URL } from './config.js';
+import {
+  MCPR_CAPABILITY_CONTRACT_VERSION,
+  type McprCallRequest,
+  type McprCallResponse,
+  type McprStatus,
+} from '../../shared/mcpr-plugin-capability.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -228,6 +234,15 @@ export function createMekaRouterService(deps: MekaRouterServiceDeps) {
     return { baseUrl, token, clientKey };
   }
 
+  async function sessionAuth(): Promise<{ baseUrl: string; token: string }> {
+    const raw = await load();
+    const configuredBaseUrl = text(raw.routerUrl);
+    const baseUrl = configuredBaseUrl ? client.normalizeBaseUrl(configuredBaseUrl) : null;
+    const token = deps.vault.read(SECRET_KEYS.sessionToken);
+    if (!baseUrl || !token) throw new Error('MCPRouter is not configured');
+    return { baseUrl, token };
+  }
+
   async function syncMekaDesignFromRouter(
     raw: JsonRecord,
     baseUrl: string,
@@ -279,6 +294,43 @@ export function createMekaRouterService(deps: MekaRouterServiceDeps) {
   }
 
   return {
+    async getPluginCapabilityStatus(): Promise<McprStatus> {
+      const checkedAt = new Date().toISOString();
+      let session: { baseUrl: string; token: string };
+      try {
+        session = await sessionAuth();
+      } catch {
+        return {
+          contractVersion: MCPR_CAPABILITY_CONTRACT_VERSION,
+          configured: false,
+          remote: 'unauthenticated',
+          checkedAt,
+        };
+      }
+      try {
+        await client.getPluginCapabilityStatus(session.baseUrl, session.token);
+        return {
+          contractVersion: MCPR_CAPABILITY_CONTRACT_VERSION,
+          configured: true,
+          remote: 'authenticated',
+          checkedAt,
+        };
+      } catch (error) {
+        const status = isRecord(error) && typeof error.status === 'number' ? error.status : 0;
+        return {
+          contractVersion: MCPR_CAPABILITY_CONTRACT_VERSION,
+          configured: true,
+          remote: status === 401 ? 'expired' : 'unavailable',
+          checkedAt,
+        };
+      }
+    },
+
+    async callPluginCapability(request: McprCallRequest): Promise<McprCallResponse> {
+      const { baseUrl, token } = await sessionAuth();
+      return client.callPluginCapability(baseUrl, token, request);
+    },
+
     async getSettings(): Promise<MekaRouterSettingsView> {
       const raw = await load();
       const configuredBaseUrl = text(raw.routerUrl);

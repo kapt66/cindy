@@ -1,0 +1,95 @@
+# MCPRouter 插件能力契约
+
+> **状态**：跨仓事实契约，版本 `1`（2026-08-05）
+> **适用范围**：所有显式声明 `mcpr` 卡槽的 `.cindy` 插件；不按插件来源区分。
+
+本文是 Cindy Desktop 与 `mcp-router` 仓库之间的共同约束。它只定义能力边界和 wire
+形状，不把 MCPRouter 的业务 route 清单复制进 Cindy。Host 代码、插件作者手册和
+MCPRouter 服务端实现发生冲突时，必须先修正契约和两边实现，再交付。
+
+## 1. 能力声明
+
+`mcpr` 是独立的能力 slot。存量插件未声明该 slot，升级后保持原行为；声明了 slot 的
+插件必须同时声明精确的 `mcpr.routes` 白名单：
+
+```json
+{
+  "slots": ["tool", "mcpr"],
+  "mcpr": {
+    "routes": ["mcp.tools.list", "mcp.tools.call", "meka.design.*"]
+  }
+}
+```
+
+校验规则由 `apps/desktop/src/shared/ghost.ts` 强制：route 只允许小写点分标识，最多
+32 条、每条最多 128 个字符；末尾 `.*` 才是通配符，且只匹配同一 namespace 下的 route。
+不能声明 URL、HTTP method、headers、Cookie、Authorization、client key 或任意
+其它 transport 字段。
+
+`status` 与 `configure-login` 是 Host 固定操作，不写入 route 白名单。v1 契约为
+`mcp.tools.list` 和 `mcp.tools.call` 预留 MCP 基础 route；实际可调用性仍以 Router registry
+是否注册为准。其它业务 route 由 MCPRouter registry 注册，Cindy 不需要随业务扩展更新。
+
+## 2. 调用模型
+
+插件请求只允许携带以下字段：
+
+| 字段 | 要求 |
+| --- | --- |
+| `route` | 必须命中当前插件 manifest 的 route pattern，并由 Router registry 注册 |
+| `input` | JSON 值；Host 按 256 KiB 请求预算限制大小 |
+| `scope` | `account`、`current-project` 或 `selected-instance`；route 要求时必填 |
+| `callId` | 可选插件侧关联值，不是权限凭证；Host 会另铸 Router `requestId` |
+
+Host 通过真实 `webContents` 反查 `ghostId`，不信任插件自报身份。Host 负责：
+
+- 固定 MCPRouter origin、session cookie 注入和远端认证状态探测；
+- manifest route 匹配、请求大小、超时、并发和速率限制；
+- account / project / instance scope 绑定与高风险操作确认；
+- 错误规范化、响应脱敏、审计关联和取消传播。
+
+MCPRouter 负责 route 是否存在、输入 schema、用户/项目/实例权限、风险分类和业务
+dispatch。插件永远不能取得密码、session token、client key 或原始 HTTP 响应头。
+
+## 3. 登录与状态
+
+`status` 返回本地 `configured` 与远端 `remote` 两个维度。`configured` 只表示本地有
+配置，不能替代远端 session 有效性；`remote` 为 `authenticated`、`unauthenticated`、
+`expired` 或 `unavailable`。
+
+`configure-login` 的目标行为是由 Host 打开宿主通用的 MCPRouter 鉴权窗口。插件只接收
+成功、取消或失败，以及最新 `status`；不得自行打开登录 URL、读取 Cookie 或实现第二套
+登录页。当前窗口桥尚未接线，调用只返回现有状态，未登录时由插件引导用户进入 Cindy
+Meka 设置。
+
+## 4. 错误、兼容与审计
+
+两仓共享 `contractVersion: 1`。错误使用稳定 code：`ROUTE_NOT_DECLARED`、
+`ROUTE_NOT_FOUND`、`INVALID_REQUEST`、`INVALID_INPUT`、`SCOPE_REQUIRED`、`FORBIDDEN`、
+`AUTH_REQUIRED`、`AUTH_EXPIRED`、`AUTH_UNAVAILABLE`、`RISK_CONFIRMATION_REQUIRED`、
+`RATE_LIMITED`、`TIMEOUT`、`INTERNAL`。面向插件的 message 不得包含 token、Cookie、URL
+中的敏感查询参数或后端堆栈。
+
+新增 route 只需在 MCPRouter registry 注册并在插件 manifest 中声明；不得修改 Cindy
+代码来增加业务 URL。变更字段、错误语义或认证边界时必须提升契约版本，并在两仓同时
+记录迁移/兼容策略。`cindy-protocol` 不承载本地 Desktop→MCPRouter HTTP 契约，本能力
+当前不修改该子仓，也不接入 Mobile/device-link。
+
+## 5. 实现状态
+
+Desktop 电子脑 preload 已暴露 `cindy.mcpr.status()`、`configureLogin()` 与 `call()`；
+Main 按真实 `webContents` 反查插件身份，并在 `GhostMcprSlot` 中检查启用状态、manifest
+route、scope、callId 和 256 KiB JSON 预算，再使用 Host 保存的 Router session 调用
+`GET /api/plugin-capabilities/status` 或 `POST /api/plugin-capabilities/call`。插件不接触
+Router origin 或任何认证材料。
+
+首个已接线业务 route 为 `other-configs.get`（`account` scope / `read` risk），输入只含
+`ownerUsername` 与 `name`。Router 复用 `/api/configs/:ownerUsername/:name` 的
+private/shared/public 权限查询；无权访问与不存在统一为 `ROUTE_NOT_FOUND`。
+
+`configureLogin()` 当前只返回现有远端状态：已登录为 `connected`，其余为 `failed` 并
+引导用户在 Cindy Meka 设置中配置。宿主通用登录窗口的 Main→Renderer 交互桥尚未落地，
+因此插件不能通过该方法主动打开登录框；此限制不能通过开放 URL 或让插件收集密码绕过。
+
+测试覆盖 manifest 校验、route 匹配、Host 拒绝未声明 route、session-only HTTP 调用、
+远端状态映射，以及 Router 对 other-config 可见性和额外 transport 字段的拒绝。

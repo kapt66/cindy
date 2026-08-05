@@ -30,7 +30,7 @@
 | 身份卡字段与校验、管子协议类型                  | `apps/desktop/src/shared/ghost.ts`（`validateGhostManifest`、`cindy.send` / `cindy.onHostMessage` 类型）         |
 | 打包限制                                        | `apps/desktop/src/main/cindy-brain/forge.ts` 的 `packGhostDir`                                                   |
 | 运行时、沙箱进程与生命周期                      | `apps/desktop/src/main/cindy-brain/runtime/GhostRuntime.ts`、`GhostManager.ts`                                   |
-| 能力 slot（网络／通知／文件系统／文件定位／技能／宿主等） | `apps/desktop/src/main/cindy-brain/networkSlot.ts`、`notifySlot.ts`、`fsSlot.ts`、`revealSlot.ts`、`cindySlot.ts`、`skillSlot.ts` |
+| 能力 slot（网络／通知／文件系统／文件定位／技能／宿主／MCPRouter 等） | `apps/desktop/src/main/cindy-brain/networkSlot.ts`、`notifySlot.ts`、`fsSlot.ts`、`revealSlot.ts`、`cindySlot.ts`、`skillSlot.ts`；`mcpr` 的跨仓契约见 [`mcpr-plugin-capability.md`](mcpr-plugin-capability.md) |
 | 面板供片、注入主题 token 与协议                 | `apps/desktop/src/renderer/cindy-brain/ghostPanelTheme.ts`、`cindy-ghost://` 分支                                |
 | 权限注入／更新确认 UI                           | `apps/desktop/src/renderer/cindy-brain/GhostPermissionList.tsx`                                                  |
 | 远程／手机版能力准入白名单                      | `packages/device-link/src/allowlist.ts`                                                                          |
@@ -42,7 +42,7 @@
 | 身份卡字段与校验、管子协议类型 | `apps/desktop/src/shared/ghost.ts`（`validateGhostManifest`、`cindy.send` / `cindy.onHostMessage` 类型） |
 | 打包限制 | `apps/desktop/src/main/cindy-brain/forge.ts` 的 `packGhostDir` |
 | 运行时、沙箱进程与生命周期 | `apps/desktop/src/main/cindy-brain/runtime/GhostRuntime.ts`、`GhostManager.ts` |
-| 能力 slot（网络／通知／确认／文件系统／技能／宿主等） | `apps/desktop/src/main/cindy-brain/networkSlot.ts`、`notifySlot.ts`、`badgeSlot.ts`（未读角标，落盘账本 `ghostUnreadStore.ts`）、`confirmSlot.ts`（往返桥 `ghostConfirmDialogBridge.ts`，renderer 落地 `cindy-brain/GhostConfirmDialogHost.tsx`）、`fsSlot.ts`、`cindySlot.ts`、`skillSlot.ts`、`agentSlot.ts`、`errandSlot.ts`（派活执行链在 `maker-ipc/ghostErrandRunner.ts`，每插件配置在 `errandPrefsStore.ts`） |
+| 能力 slot（网络／通知／确认／文件系统／技能／宿主／MCPRouter 等） | `apps/desktop/src/main/cindy-brain/networkSlot.ts`、`notifySlot.ts`、`badgeSlot.ts`（未读角标，落盘账本 `ghostUnreadStore.ts`）、`confirmSlot.ts`（往返桥 `ghostConfirmDialogBridge.ts`，renderer 落地 `cindy-brain/GhostConfirmDialogHost.tsx`）、`fsSlot.ts`、`cindySlot.ts`、`skillSlot.ts`、`agentSlot.ts`、`errandSlot.ts`（派活执行链在 `maker-ipc/ghostErrandRunner.ts`，每插件配置在 `errandPrefsStore.ts`）；`mcpr` 的跨仓契约见 [`mcpr-plugin-capability.md`](mcpr-plugin-capability.md) |
 | 面板供片、注入主题 token 与协议 | `apps/desktop/src/renderer/cindy-brain/ghostPanelTheme.ts`、`cindy-ghost://` 分支 |
 | 权限注入／更新确认 UI | `apps/desktop/src/renderer/cindy-brain/GhostPermissionList.tsx` |
 | 远程／手机版能力准入白名单 | `packages/device-link/src/allowlist.ts` |
@@ -121,6 +121,10 @@
   继续满足 manifest 安装期的 `https`、无内嵌凭证校验；它不是 Agent 文案或 plan
   的一部分，插件也不能通过 `settings.js` 动态替换 Setup 卡地址。
 - 模型调用一律走 Cindy 统一通道，不允许插件自建绕过通道的推理请求。
+- `mcpr` 是所有插件均可显式申请的独立 slot，不按安装来源授予。插件只能发送
+  `manifest.mcpr.routes` 白名单内的逻辑 route，不能发送 URL、HTTP method、headers 或
+  MCPRouter 凭证；Host 托管登录、鉴权、来源绑定与通用安全策略，业务 route 与 schema
+  由 MCPRouter registry 扩展。完整契约见 [`mcpr-plugin-capability.md`](mcpr-plugin-capability.md)。
 - 插件声明 `cindy.image` / `cindy.video` 后，详情配置、override 校验、实际代办和付费
   派发前复查必须共用同一份运行时媒体目录。Cindy Meka 的目录按认证快照中的有效
   `edition` 投影 CN / Global 能力，不能按安装包构建区域投影；因此登录页切换服务区后，

@@ -27,6 +27,7 @@ import {
   KeyRound,
   LayoutTemplate,
   MapPin,
+  Network,
   Megaphone,
   MessageCircleQuestion,
   MoreVertical,
@@ -119,6 +120,7 @@ const PERMISSION_ICON: Record<GhostPermissionItem['kind'], LucideIcon> = {
   skill: GraduationCap,
   reveal: FolderOpen,
   workspace: FolderPlus,
+  mcpr: Network,
 };
 
 /** Chooses a visual affordance without changing the host-owned permission title or meaning. */

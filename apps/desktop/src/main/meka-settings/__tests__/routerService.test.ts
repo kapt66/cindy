@@ -26,6 +26,13 @@ function setup(initial: Record<string, unknown> = {}) {
     normalizeMcpEndpointUrl: vi.fn((url: string) => url.trim().replace(/#.*$/, '')),
     login: vi.fn(async () => 'session-token'),
     ensureClientKey: vi.fn(async () => 'client-key'),
+    getPluginCapabilityStatus: vi.fn(async () => undefined),
+    callPluginCapability: vi.fn(async () => ({
+      ok: true as const,
+      contractVersion: 1 as const,
+      route: 'other-configs.get',
+      output: {},
+    })),
     logout: vi.fn(async () => undefined),
     listTools: vi.fn(async () => []),
     callTool: vi.fn(async () => ({ content: [] })),
@@ -70,6 +77,32 @@ function setup(initial: Record<string, unknown> = {}) {
 }
 
 describe('MekaRouterService', () => {
+  it('probes and calls Plugin capabilities with the stored Host session', async () => {
+    const fixture = setup({ routerUrl: 'https://router.example/' });
+    fixture.secrets.set('meka.router.sessionToken', 'existing-session');
+
+    await expect(fixture.service.getPluginCapabilityStatus()).resolves.toMatchObject({
+      configured: true,
+      remote: 'authenticated',
+    });
+    await fixture.service.callPluginCapability({
+      contractVersion: 1,
+      route: 'other-configs.get',
+      scope: 'account',
+      input: { ownerUsername: 'alice', name: 'demo' },
+    });
+
+    expect(fixture.client.getPluginCapabilityStatus).toHaveBeenCalledWith(
+      'https://router.example',
+      'existing-session',
+    );
+    expect(fixture.client.callPluginCapability).toHaveBeenCalledWith(
+      'https://router.example',
+      'existing-session',
+      expect.objectContaining({ route: 'other-configs.get' }),
+    );
+  });
+
   it('exposes and accepts the HTTPS Meka MCPRouter default address', async () => {
     const fixture = setup();
     expect(DEFAULT_MEKA_MCPROUTER_URL).toBe('https://mcpr.meka.pawdy.fun/');
