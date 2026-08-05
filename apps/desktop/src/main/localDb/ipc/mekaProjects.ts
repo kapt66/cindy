@@ -16,6 +16,7 @@ import {
   readEffectiveProjectConfig,
   readProjectConfigAtRoot,
   readProjectConfigState,
+  resolveCustomRoleManifestPath,
   resolveProjectConfigPath,
   saveProjectConfig,
 } from '../../meka-projects/projectConfig.js';
@@ -289,8 +290,8 @@ async function createProject(input: unknown): Promise<MekaProject> {
       throwIpcError('ALREADY_EXISTS', 'the selected directory is already registered');
     }
 
-    const existingFile = await readProjectConfigAtRoot(root);
-    const id = existingFile?.projectId ?? safeId(createId(), 'generated project id');
+    const id = safeId(createId(), 'generated project id');
+    const existingFile = await readProjectConfigAtRoot(root, id);
     if (await projectRow(id)) {
       throwIpcError('ALREADY_EXISTS', `Meka project ${id} is already registered`);
     }
@@ -327,6 +328,7 @@ async function createProject(input: unknown): Promise<MekaProject> {
     };
     const target = locator(row, root);
     let createdProjectFile = false;
+    let createdRoleId: string | null = null;
     if (!existingFile) {
       await createProjectConfigExclusive(target, file);
       createdProjectFile = true;
@@ -338,7 +340,12 @@ async function createProject(input: unknown): Promise<MekaProject> {
          VALUES (?, ?, ?, ?, 0, 0, ?, ?)`,
         [id, row.name, root, JSON.stringify(projectTags), now, now],
       );
-      await ensureDefaultMekaRole(id);
+      createdRoleId = (await ensureDefaultMekaRole(id)).id;
+      if (existingFile) {
+        // Persist the current checkout location so the shared file is portable
+        // for the next machine or checkout that imports it.
+        await saveProjectConfig(target, file);
+      }
     } catch (error) {
       await getDbClient()
         .exec('DELETE FROM meka_roles WHERE project_id = ?', [id])
@@ -346,6 +353,11 @@ async function createProject(input: unknown): Promise<MekaProject> {
       await getDbClient()
         .exec('DELETE FROM meka_projects WHERE id = ?', [id])
         .catch(() => undefined);
+      if (createdRoleId) {
+        await unlink(resolveCustomRoleManifestPath(createdRoleId, app.getPath('userData'))).catch(
+          () => undefined,
+        );
+      }
       if (createdProjectFile) {
         await unlink(resolveProjectConfigPath(target)).catch(() => undefined);
       }

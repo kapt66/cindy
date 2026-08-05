@@ -10,6 +10,7 @@ import {
   normalizeMekaRoleManifest,
   readBuiltinRoleManifest,
   readEffectiveProjectConfig,
+  readProjectConfigAtRoot,
   saveProjectConfig,
 } from '../projectConfig.js';
 
@@ -31,6 +32,22 @@ function projectFile(projectId: string, root: string): MekaProjectFile {
     projectId,
     basic: { displayName: 'Demo', path: root },
     metadata: [],
+  };
+}
+
+function roleManifest(id: string, projectId: string): MekaRoleManifestFile {
+  return {
+    schemaVersion: 1,
+    id,
+    projectId,
+    name: id,
+    displayName: id,
+    policyProviderRefs: [],
+    rules: [],
+    skills: [],
+    promptFragments: [],
+    mcp: [],
+    projectMetadataSelection: [],
   };
 }
 
@@ -99,6 +116,99 @@ describe('Meka project.json boundary', () => {
     ) as MekaProjectFile;
     expect(persisted.metadata).toEqual([]);
     expect(persisted.builtinRoles).toHaveLength(6);
+  });
+
+  it.each(['', path.resolve(path.sep, 'previous-checkout')])(
+    'anchors portable project files to the selected directory when path is %j',
+    async (storedPath) => {
+      const root = await tempRoot();
+      const configDirectory = path.join(root, '.meka');
+      await mkdir(configDirectory, { recursive: true });
+      const configPath = path.join(configDirectory, 'project.json');
+      await writeFile(
+        configPath,
+        `${JSON.stringify({
+          schemaVersion: 1,
+          projectId: 'portable-project',
+          basic: {
+            displayName: 'Portable project',
+            path: storedPath,
+            additionalPaths: [root],
+          },
+          metadata: [],
+        })}\n`,
+        'utf8',
+      );
+
+      const loaded = await readProjectConfigAtRoot(root);
+
+      expect(loaded?.basic.path).toBe(path.resolve(root));
+      expect(loaded?.basic.additionalPaths).toBeUndefined();
+      expect(JSON.parse(await readFile(configPath, 'utf8'))).toMatchObject({
+        basic: { path: storedPath },
+      });
+
+      await saveProjectConfig(
+        {
+          projectId: 'portable-project',
+          isBuiltin: false,
+          projectRoot: root,
+          appIsPackaged: true,
+        },
+        loaded!,
+      );
+      expect(JSON.parse(await readFile(configPath, 'utf8'))).toMatchObject({
+        basic: { path: path.resolve(root) },
+      });
+    },
+  );
+
+  it('reidentifies a copied project file and every embedded role for a new registration', async () => {
+    const root = await tempRoot();
+    const configDirectory = path.join(root, '.meka');
+    await mkdir(configDirectory, { recursive: true });
+    const configPath = path.join(configDirectory, 'project.json');
+    await writeFile(
+      configPath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        projectId: 'source-project',
+        basic: {
+          displayName: 'Copied project',
+          path: path.resolve(path.sep, 'source-checkout'),
+        },
+        metadata: [],
+        builtinRoles: [
+          roleManifest('copied-role', 'source-project'),
+          roleManifest('previously-mismatched-role', 'other-project'),
+        ],
+      })}\n`,
+      'utf8',
+    );
+
+    const inspected = await readProjectConfigAtRoot(root);
+    expect(inspected).toMatchObject({
+      projectId: 'source-project',
+      basic: { path: path.resolve(root) },
+    });
+    expect(inspected?.builtinRoles?.map((role) => role.projectId)).toEqual([
+      'source-project',
+      'source-project',
+    ]);
+
+    const imported = await readProjectConfigAtRoot(root, 'target-project');
+    expect(imported).toMatchObject({
+      projectId: 'target-project',
+      basic: { path: path.resolve(root) },
+    });
+    expect(imported?.builtinRoles?.map((role) => role.projectId)).toEqual([
+      'target-project',
+      'target-project',
+    ]);
+    expect(JSON.parse(await readFile(configPath, 'utf8'))).toMatchObject({
+      projectId: 'source-project',
+      basic: { path: path.resolve(path.sep, 'source-checkout') },
+    });
   });
 
   it('creates exclusively, normalizes vocabularies, and round-trips atomically', async () => {

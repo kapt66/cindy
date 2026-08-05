@@ -454,6 +454,33 @@ function assertCompleteBuiltinRoles(
   }
 }
 
+function normalizeProjectFileAtRoot(
+  input: unknown,
+  expectedProjectId: string,
+  projectRoot: string,
+  rewriteIdentity = false,
+): MekaProjectFile {
+  if (!isRecord(input)) throw new Error('invalid project file header');
+  const builtinRoles = Array.isArray(input.builtinRoles)
+    ? input.builtinRoles.map((role) =>
+        rewriteIdentity && isRecord(role) ? { ...role, projectId: expectedProjectId } : role,
+      )
+    : input.builtinRoles;
+  const anchoredInput = {
+    ...input,
+    ...(rewriteIdentity ? { projectId: expectedProjectId } : {}),
+    basic: {
+      ...(isRecord(input.basic) ? input.basic : {}),
+      path: path.resolve(projectRoot),
+    },
+    ...(builtinRoles === undefined ? {} : { builtinRoles }),
+  };
+  return anchoredProjectFile(
+    normalizeMekaProjectFile(anchoredInput, expectedProjectId),
+    projectRoot,
+  );
+}
+
 export interface EffectiveProjectConfigState {
   file: MekaProjectFile | null;
   source: MekaProjectConfigSource;
@@ -461,13 +488,14 @@ export interface EffectiveProjectConfigState {
 
 export async function readProjectConfigAtRoot(
   projectRoot: string,
+  targetProjectId?: string,
 ): Promise<MekaProjectFile | null> {
   if (!path.isAbsolute(projectRoot)) throw new Error('project root must be absolute');
   const input = await readJson(path.join(path.resolve(projectRoot), '.meka', 'project.json'));
   if (input === null) return null;
   if (!isRecord(input)) throw new Error('invalid project file header');
-  const projectId = safeId(input.projectId, 'projectId');
-  return anchoredProjectFile(normalizeMekaProjectFile(input, projectId), projectRoot);
+  const projectId = safeId(targetProjectId ?? input.projectId, 'projectId');
+  return normalizeProjectFileAtRoot(input, projectId, projectRoot, true);
 }
 
 export async function readProjectConfigState(
@@ -479,10 +507,7 @@ export async function readProjectConfigState(
       file:
         input === null
           ? null
-          : anchoredProjectFile(
-              normalizeMekaProjectFile(input, locator.projectId),
-              locator.projectRoot,
-            ),
+          : normalizeProjectFileAtRoot(input, locator.projectId, locator.projectRoot),
       source: 'project',
     };
   }
@@ -505,8 +530,9 @@ export async function readProjectConfigState(
   const projectInput = await readJson(projectPath);
   if (projectInput === null) return { file: base, source: 'builtin' };
 
-  let projectFile = anchoredProjectFile(
-    normalizeMekaProjectFile(projectInput, locator.projectId),
+  let projectFile = normalizeProjectFileAtRoot(
+    projectInput,
+    locator.projectId,
     locator.projectRoot,
   );
   if (projectFile.builtinRoles === undefined) {
