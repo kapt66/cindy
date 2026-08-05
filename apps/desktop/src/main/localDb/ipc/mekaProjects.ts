@@ -21,6 +21,7 @@ import {
   resolveProjectConfigPath,
   renameImportedProjectOnConflict,
   saveProjectConfig,
+  sortImportedRoleManifests,
 } from '../../meka-projects/projectConfig.js';
 import { getMekaP4SettingsService } from '../../meka-settings/ipc.js';
 import { assertTrustedAppRendererEvent } from '../../security/trustedAppRenderer.js';
@@ -305,12 +306,15 @@ async function createProject(input: unknown): Promise<MekaProject> {
         : undefined;
     const projectTags = tags(body.tags);
     const now = Date.now();
+    const registeredProjects = existingFile
+      ? await Promise.all(registeredRows.map(toProject))
+      : [];
     let file: MekaProjectFile =
       (existingFile
         ? renameImportedProjectOnConflict(
             existingFile,
             root,
-            (await Promise.all(registeredRows.map(toProject))).map((project) => project.displayName),
+            registeredProjects.map((project) => project.displayName),
           )
         : null) ??
       ({
@@ -325,6 +329,15 @@ async function createProject(input: unknown): Promise<MekaProject> {
         },
         metadata: [],
       } as MekaProjectFile);
+    if (file.builtinRoles && file.builtinRoles.length > 0) {
+      file = {
+        ...file,
+        builtinRoles: sortImportedRoleManifests(
+          file.builtinRoles,
+          registeredProjects.flatMap((project) => project.roles),
+        ),
+      };
+    }
     const row: ProjectRow = {
       id,
       name: file.basic.name ?? id,

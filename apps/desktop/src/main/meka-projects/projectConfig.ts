@@ -9,6 +9,7 @@ import {
   type MekaProjectMetadataConfigItem,
   type MekaProjectMetadataItemType,
   type MekaRoleMcpEntry,
+  type MekaRole,
   type MekaRoleManifestFile,
   type MekaProjectConfigSource,
   type ProjectConfigLocator,
@@ -386,6 +387,30 @@ export function renameImportedProjectOnConflict(
     ...file,
     basic: { ...file.basic, name: candidate, displayName: candidate },
   };
+}
+
+export function sortImportedRoleManifests(
+  roles: readonly MekaRoleManifestFile[],
+  referenceRoles: readonly MekaRole[],
+): MekaRoleManifestFile[] {
+  const byId = new Map<string, number>();
+  const byDisplayName = new Map<string, number>();
+  for (const role of [...referenceRoles].sort((left, right) => left.sortOrder - right.sortOrder)) {
+    if (!byId.has(role.id)) byId.set(role.id, role.sortOrder);
+    const displayNameKey = role.displayName.trim().toLocaleLowerCase();
+    if (!byDisplayName.has(displayNameKey)) byDisplayName.set(displayNameKey, role.sortOrder);
+  }
+  return roles
+    .map((role, index) => ({
+      role,
+      index,
+      order:
+        byId.get(role.id) ??
+        byDisplayName.get(role.displayName.trim().toLocaleLowerCase()) ??
+        Number.MAX_SAFE_INTEGER,
+    }))
+    .sort((left, right) => left.order - right.order || left.index - right.index)
+    .map(({ role }) => role);
 }
 
 function bundledProjectFilePath(locator: ProjectConfigLocator): string {

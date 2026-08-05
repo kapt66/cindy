@@ -92,6 +92,38 @@ vi.mock('../../localDb/client/current.js', () => ({
         ];
       }
       if (sql.includes('FROM meka_roles')) {
+        if (params[0] === 'saga2') {
+          return [
+            {
+              id: 'general-development',
+              project_id: 'saga2',
+              name: 'general-development',
+              display_name: '通用开发',
+              description: null,
+              tags: '[]',
+              file_path: 'meka/roles/general-development.json',
+              is_builtin: 1,
+              content_digest: null,
+              sort_order: 0,
+              created_at: null,
+              updated_at: null,
+            },
+            {
+              id: 'combat-config',
+              project_id: 'saga2',
+              name: 'combat-config',
+              display_name: '战斗配置',
+              description: null,
+              tags: '[]',
+              file_path: 'meka/roles/combat-config.json',
+              is_builtin: 1,
+              content_digest: null,
+              sort_order: 2,
+              created_at: null,
+              updated_at: null,
+            },
+          ];
+        }
         return h.roleRows.filter((row) => row.project_id === params[0]);
       }
       throw new Error(`unexpected query: ${sql}`);
@@ -189,7 +221,7 @@ describe('Meka copied project import', () => {
       projectId: 'target-project',
       basic: { name: 'saga2', displayName: 'SAGA2', path: root },
       metadata: [],
-      builtinRoles: [role('general-development', '通用开发'), role('combat-config', '战斗配置')],
+      builtinRoles: [role('combat-config', '战斗配置'), role('general-development', '通用开发')],
     };
     const handler = h.handlers.get(MEKA_PROJECT_CREATE)!;
 

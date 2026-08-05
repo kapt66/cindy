@@ -3,7 +3,11 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { MekaProjectFile, MekaRoleManifestFile } from '../../../shared/meka-projects.js';
+import type {
+  MekaProjectFile,
+  MekaRole,
+  MekaRoleManifestFile,
+} from '../../../shared/meka-projects.js';
 import {
   cloneMekaRoleManifestForProject,
   createProjectConfigExclusive,
@@ -14,6 +18,7 @@ import {
   readProjectConfigAtRoot,
   renameImportedProjectOnConflict,
   saveProjectConfig,
+  sortImportedRoleManifests,
 } from '../projectConfig.js';
 
 const roots: string[] = [];
@@ -50,6 +55,23 @@ function roleManifest(id: string, projectId: string): MekaRoleManifestFile {
     promptFragments: [],
     mcp: [],
     projectMetadataSelection: [],
+  };
+}
+
+function roleSummary(id: string, displayName: string, sortOrder: number): MekaRole {
+  return {
+    id,
+    projectId: 'saga2',
+    name: id,
+    displayName,
+    description: null,
+    tags: [],
+    filePath: `meka/roles/${id}.json`,
+    isBuiltin: true,
+    contentDigest: null,
+    sortOrder,
+    createdAt: null,
+    updatedAt: null,
   };
 }
 
@@ -249,6 +271,29 @@ describe('Meka project.json boundary', () => {
     ]);
     expect(suffixed.basic.displayName).toBe('saga2_project_git (2)');
     expect(renameImportedProjectOnConflict(source, root, ['Another project'])).toBe(source);
+  });
+
+  it('restores source role order by id and then display name for copied role ids', () => {
+    const references = [
+      roleSummary('general-development', '通用开发', 0),
+      roleSummary('combat-config', '战斗配置', 2),
+    ];
+    const copiedRoles = [
+      roleManifest('copied-combat', 'copied-project'),
+      roleManifest('copied-general', 'copied-project'),
+    ];
+    copiedRoles[0].displayName = '战斗配置';
+    copiedRoles[1].displayName = '通用开发';
+
+    expect(
+      sortImportedRoleManifests(copiedRoles, references).map((role) => role.displayName),
+    ).toEqual(['通用开发', '战斗配置']);
+    expect(
+      sortImportedRoleManifests(
+        [roleManifest('combat-config', 'saga2'), roleManifest('general-development', 'saga2')],
+        references,
+      ).map((role) => role.id),
+    ).toEqual(['general-development', 'combat-config']);
   });
 
   it('creates exclusively, normalizes vocabularies, and round-trips atomically', async () => {
