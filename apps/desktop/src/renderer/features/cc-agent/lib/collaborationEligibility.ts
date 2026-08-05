@@ -36,7 +36,7 @@ export function canShowCollabToggleForSession(
  * Meka drafts receive their app-managed working directory from Main while the
  * session is created, so they are eligible before a local cwd exists.
  */
-export function canShowCollabToggleForDraft(draft: CollabEligibleDraftLike): boolean {
+export function canShowMekaCollabToggleForDraft(draft: CollabEligibleDraftLike): boolean {
   if (draft.remoteHostId != null || draft.deviceLinkDeviceId != null) return false;
   if (draft.workspaceKind === 'meka') return true;
   return draft.workspaceKind === 'project' && draft.workingDir != null;

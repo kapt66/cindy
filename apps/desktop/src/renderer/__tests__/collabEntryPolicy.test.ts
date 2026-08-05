@@ -143,6 +143,12 @@ describe('resolveCollabEntryPolicy 五类场景', () => {
 });
 
 describe('drift 守卫:两个入口共用同一份判定', () => {
+  it('Meka 专用资格函数不得覆盖 Cindy 普通对话草稿的通用 policy', () => {
+    const src = read('features/cc-agent/NewMakerDraftRoute.tsx');
+    expect(src).toContain("const showCollabToggle = isMekaDraft");
+    expect(src).toContain(': collabEntry.eligible;');
+  });
+
   it('草稿路由与会话视图都调 resolveCollabEntryPolicy,不再各自内联判据', () => {
     for (const f of [
       'features/cc-agent/NewMakerDraftRoute.tsx',

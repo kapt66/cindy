@@ -90,6 +90,47 @@ describe('GhostPluginCard', () => {
     expect(screen.getByRole('button', { name: 'settings.ghosts.page.chatAria' })).toBeTruthy();
   });
 
+  it('keeps the development identity and package action on the installed card', () => {
+    const onPackage = vi.fn();
+    const { container } = render(
+      <GhostPluginCard
+        item={{ ...commandPlugin, id: 'meka-dev-demo-plugin' }}
+        development
+        onPrimary={vi.fn()}
+        onManage={vi.fn()}
+        onDevelopmentPackage={onPackage}
+      />,
+    );
+
+    expect(container.querySelector('[data-testid="plugin-dev-ribbon"]')).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole('button', { name: 'settings.ghosts.meka.dev.packageAction' }),
+    );
+    expect(onPackage).toHaveBeenCalledTimes(1);
+  });
+
+  it('projects Meka update progress into the card action', () => {
+    render(
+      <GhostPluginCard
+        item={commandPlugin}
+        updateVersion="1.1.0"
+        updateBusy
+        updateProgress={{
+          operationId: '00000000-0000-4000-8000-000000000001',
+          pluginId: commandPlugin.id,
+          phase: 'installing',
+          downloadedBytes: 10,
+          totalBytes: 10,
+        }}
+        onPrimary={vi.fn()}
+        onManage={vi.fn()}
+        onUpdate={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('settings.ghosts.market.updating')).toBeTruthy();
+  });
+
   it('labels the primary button 使用 for a tab-panel plugin', () => {
     const onPrimary = vi.fn();
     render(<GhostPluginCard item={panelPlugin} onPrimary={onPrimary} onManage={vi.fn()} />);

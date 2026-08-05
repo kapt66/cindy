@@ -245,18 +245,28 @@ export function registerPluginMarketIpc(): void {
           ? (options as {
               expectedReleaseId?: unknown;
               allowPermissionExpansion?: unknown;
+              reviewedBaseline?: unknown;
+              approvedPackageSha256?: unknown;
               operationId?: unknown;
             })
           : null;
       const normalizedPluginId = requireString(pluginId, 'pluginId');
       const expectedReleaseId = requireString(obj?.expectedReleaseId, 'expectedReleaseId');
       const allowPermissionExpansion = obj?.allowPermissionExpansion === true;
+      const reviewedBaseline =
+        typeof obj?.reviewedBaseline === 'string' ? obj.reviewedBaseline : undefined;
+      const approvedPackageSha256 =
+        typeof obj?.approvedPackageSha256 === 'string'
+          ? obj.approvedPackageSha256
+          : undefined;
       const operationId = requireInstallOperationId(obj?.operationId);
       const sender = event.sender;
       return invokePluginMarket(() =>
         mekaService().install(normalizedPluginId, {
           expectedReleaseId,
           allowPermissionExpansion,
+          ...(reviewedBaseline !== undefined ? { reviewedBaseline } : {}),
+          ...(approvedPackageSha256 !== undefined ? { approvedPackageSha256 } : {}),
           onProgress: (progress) => {
             if (sender.isDestroyed()) return;
             const payload: PluginMarketInstallProgress = {

@@ -4323,6 +4323,7 @@
           "updateConfirmAction": "Confirm Update"
         },
         "origin": {
+          "all": "All",
           "public": "Public",
           "local": "Personal & shared"
         },
@@ -9846,6 +9847,7 @@
     }
   },
   "mekaSkills": {
+    "back": "Back to Meka Skills",
     "title": "Meka Skills",
     "description": "Browse and install standard Agent Skills distributed independently through MCPRouter.",
     "browseDescription": "Discover and install MCPRouter skills from Meka Skill Hub",

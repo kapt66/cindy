@@ -127,7 +127,7 @@ import { useRefreshWorktrees } from '@/contexts/WorktreeContext';
 import { crossAgentConvertService } from '@/lib/crossAgentConvertService';
 import { useCrossAgentMigrationDialog } from '@/hooks/useCrossAgentConvertPrompt';
 import { getCollaborationStartErrorMessage } from './collaborationErrors';
-import { canShowCollabToggleForDraft } from './lib/collaborationEligibility';
+import { canShowMekaCollabToggleForDraft } from './lib/collaborationEligibility';
 import { resolveCollabEntryPolicy } from './collabEntryPolicy';
 import { useCollabProjectPolicy } from './hooks/useCollabProjectPolicy';
 import { CrossAgentConvertDialog } from '@/components/ui/cross-agent-convert-dialog';
@@ -1034,27 +1034,34 @@ export function NewMakerDraftRoute() {
   const showProviderOnboardingCard = providerOnboarding.visible && !isDeviceLinkDraft;
   const effectiveExtraDirs = draft.extraDirs;
   const effectiveCollab = collab;
-  const showCollabToggle = canShowCollabToggleForDraft({
-    workingDir: effectiveWorkingDir,
-    remoteHostId: effectiveRemoteHostId,
-    deviceLinkDeviceId: effectiveDeviceLinkDeviceId ?? null,
-    workspaceKind: isMekaDraft ? 'meka' : effectiveWorkingDir != null ? 'project' : 'dialogue',
-  });
-  const effectiveCollabEnabled = effectiveCollab.enabled && showCollabToggle;
   // 协同入口判定与会话视图共用同一个 helper(issue #1170:两处各写一份判据,于是同一个
   // device-link 项目在草稿里没入口、进会话页又有)。草稿的 workspaceKind 显式按
   // "有没有选项目目录" 给出 —— 与它提交给 createSession 的值同源,不让 helper 反推。
-  const collabWorkspaceKind = effectiveWorkingDir ? 'project' : 'dialogue';
+  const collabWorkspaceKind = isMekaDraft
+    ? 'meka'
+    : effectiveWorkingDir
+      ? 'project'
+      : 'dialogue';
   const collabEntry = resolveCollabEntryPolicy({
     workspaceKind: collabWorkspaceKind,
     workingDir: effectiveWorkingDir,
     remoteHostId: effectiveRemoteHostId,
     deviceLinkDeviceId: effectiveDeviceLinkDeviceId,
   });
+  // Cindy 的通用 policy 已明确支持普通对话草稿(无 workingDir 时只查用户/全局开关)。
+  // Meka 的项目/角色草稿仍使用专用资格函数，并保留其不依赖本地 cwd 的行为；不要让
+  // Meka helper 覆盖 Cindy dialogue 的入口，否则「+」菜单会在合并后静默消失。
+  const showCollabToggle = isMekaDraft
+    ? canShowMekaCollabToggleForDraft({
+        workingDir: effectiveWorkingDir,
+        remoteHostId: effectiveRemoteHostId,
+        deviceLinkDeviceId: effectiveDeviceLinkDeviceId ?? null,
+        workspaceKind: 'meka',
+      })
+    : collabEntry.eligible;
+  const effectiveCollabEnabled = effectiveCollab.enabled && showCollabToggle;
   const collabPolicyEligible =
-    showCollabToggle &&
-    !isMekaDraft &&
-    collabEntry.eligible;
+    !isMekaDraft && collabEntry.eligible;
   const collabPolicy = useCollabProjectPolicy(effectiveWorkingDir, collabPolicyEligible, {
     workspaceKind: collabWorkspaceKind,
     // dialogue 没有用户项目,SSH 远端 draft 的 workingDir 又是远端主机路径;两者都跳过

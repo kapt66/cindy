@@ -105,6 +105,7 @@ import {
   skipUpdateExpansion,
   startUpdateAllBatch,
   subscribeUpdateAllBatch,
+  type UpdateAllMarketApi,
 } from './lib/updateAllController';
 import { formatSetupGateDescription } from './lib/ghostSetupGateModel';
 import {
@@ -206,7 +207,11 @@ export function GhostPluginPage({ surface = 'plugins' }: { surface?: 'plugins' |
   const [openPanelId, setOpenPanelId] = useState<string | null>(null);
   // 数据归属键:面板宿主与排序快照都按它失效(定义要早于两处消费点)。
   const panelOwnerKey = ghostPanelOwnerKey(mode, dataOwnerId);
-  const ignoredRoundKey = ignoredRoundStorageKey(mode, dataOwnerId);
+  const ignoredRoundKey = ignoredRoundStorageKey(
+    mode,
+    dataOwnerId,
+    isMekaSurface ? 'meka' : 'cindy',
+  );
   const [ignoredRound, setIgnoredRound] = useState(() => readIgnoredRound(ignoredRoundKey));
   // 账号 / 本地云模式切换:换桶重读,不把上一个身份的「忽略本轮」带进来。
   useEffect(() => {
@@ -241,7 +246,7 @@ export function GhostPluginPage({ surface = 'plugins' }: { surface?: 'plugins' |
   const installFromActiveMarket = useCallback(
     async (
       pluginId: string,
-      options: { expectedReleaseId: string; allowPermissionExpansion?: boolean },
+      options: Omit<PluginMarketInstallOptions, 'onProgress'>,
     ) => {
       if (!isMekaSurface) {
         return window.electronAPI.pluginMarket.install(pluginId, options);
@@ -269,6 +274,26 @@ export function GhostPluginPage({ surface = 'plugins' }: { surface?: 'plugins' |
     },
     [isMekaSurface],
   );
+  const updateAllMarketApi = useMemo<UpdateAllMarketApi | undefined>(() => {
+    if (!isMekaSurface) return undefined;
+    return {
+      channel: 'meka',
+      detail: (pluginId) => window.electronAPI.mekaPluginMarket.detail(pluginId),
+      install: (pluginId, options) =>
+        installFromActiveMarket(pluginId, {
+          expectedReleaseId: options.expectedReleaseId,
+          ...(options.allowPermissionExpansion
+            ? { allowPermissionExpansion: true }
+            : {}),
+          ...(options.reviewedBaseline
+            ? { reviewedBaseline: options.reviewedBaseline }
+            : {}),
+          ...(options.approvedPackageSha256
+            ? { approvedPackageSha256: options.approvedPackageSha256 }
+            : {}),
+        }),
+    };
+  }, [installFromActiveMarket, isMekaSurface]);
   useEffect(() => {
     if (!isMekaSurface) {
       activeMekaInstallRef.current = null;
@@ -677,15 +702,16 @@ export function GhostPluginPage({ surface = 'plugins' }: { surface?: 'plugins' |
   // 批次状态住在模块级控制器里(生命周期长于本页:关弹窗离开 /plugins
   // 后批次继续跑,回来仍保留待确认项的批准/跳过入口),页面只订阅快照。
   const updateBatch = useSyncExternalStore(subscribeUpdateAllBatch, getUpdateAllBatchState);
-  const updateRows = updateBatch.rows;
-  const batchRunning = updateBatch.running;
+  const updateChannel = isMekaSurface ? 'meka' : 'cindy';
+  const updateRows = updateBatch.channel === updateChannel ? updateBatch.rows : null;
+  const batchRunning = updateBatch.channel === updateChannel && updateBatch.running;
   const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
   // 与外部事实对账:已装清单或市场快照变化(单项更新/文件更新/卸载)收束
   // 对应批量行——完成判据取市场快照的 installState(目标 release 是否落账),
   // 不用版本号;账号或模式切换作废整批,旧账号的批次绝不落到新账号数据上。
   useEffect(() => {
-    reconcileUpdateAllBatch(marketItems);
-  }, [ghosts, marketItems, mode, dataOwnerId]);
+    reconcileUpdateAllBatch(marketItems, updateChannel);
+  }, [ghosts, marketItems, mode, dataOwnerId, updateChannel]);
   // 有未完结批次(含待确认项)时横幅必须在场:它是重开批量弹窗的唯一入口,
   // 「忽略本轮」不得顺带藏掉待确认项的批准/跳过路径。
   const hasUnfinishedBatch = updateRows !== null && !isBatchFinished(updateRows);
@@ -802,10 +828,9 @@ export function GhostPluginPage({ surface = 'plugins' }: { surface?: 'plugins' |
       lease: { pluginId: string };
       options: PluginMarketInstallOptions;
     }): Promise<InstalledGhost | null> => {
-      const initial = await window.electronAPI.pluginMarket.install(
-        input.detail.pluginId,
-        input.options,
-      );
+      const initial = isMekaSurface
+        ? await installFromActiveMarket(input.detail.pluginId, input.options)
+        : await window.electronAPI.pluginMarket.install(input.detail.pluginId, input.options);
       if (initial.ghost !== undefined) return initial.ghost;
       if (!isMarketBusyLeaseActive(input.lease)) return null;
 
@@ -824,15 +849,19 @@ export function GhostPluginPage({ surface = 'plugins' }: { surface?: 'plugins' |
       });
       if (!approved || !isMarketBusyLeaseActive(input.lease)) return null;
 
-      const retried = await window.electronAPI.pluginMarket.install(
-        input.detail.pluginId,
-        {
-          ...input.options,
-          allowPermissionExpansion: review.installedBaseline !== null,
-          reviewedBaseline: review.installedBaseline ?? undefined,
-          approvedPackageSha256: review.packageSha256,
-        },
-      );
+      const retried = isMekaSurface
+        ? await installFromActiveMarket(input.detail.pluginId, {
+            expectedReleaseId: input.options.expectedReleaseId,
+            allowPermissionExpansion: review.installedBaseline !== null,
+            reviewedBaseline: review.installedBaseline ?? undefined,
+            approvedPackageSha256: review.packageSha256,
+          })
+        : await window.electronAPI.pluginMarket.install(input.detail.pluginId, {
+            ...input.options,
+            allowPermissionExpansion: review.installedBaseline !== null,
+            reviewedBaseline: review.installedBaseline ?? undefined,
+            approvedPackageSha256: review.packageSha256,
+          });
       if (retried.ghost !== undefined) return retried.ghost;
 
       // 同一 release 的真实包不应漂移；再次要求复核说明已装基线在往返窗口内变化。
@@ -840,7 +869,7 @@ export function GhostPluginPage({ surface = 'plugins' }: { surface?: 'plugins' |
       await refreshMarket();
       return null;
     },
-    [confirm, isMarketBusyLeaseActive, refreshMarket, t],
+    [confirm, installFromActiveMarket, isMekaSurface, isMarketBusyLeaseActive, refreshMarket, t],
   );
 
   // 市场更新流程由列表卡片和详情页共用:先取目标 release 的完整 manifest 做
@@ -872,27 +901,20 @@ export function GhostPluginPage({ surface = 'plugins' }: { surface?: 'plugins' |
           cancelText: t('settings.ghosts.updateConfirm.cancel'),
         });
         if (!approved || !isMarketBusyLeaseActive(marketBusyLease)) return;
-        const ghost = isMekaSurface
-          ? (
-              await installFromActiveMarket(marketItem.pluginId, {
-                expectedReleaseId: next.releaseId,
-                allowPermissionExpansion: diff.added.length > 0,
-              })
-            ).ghost
-          : await installReviewedMarketPackage({
-              detail: next,
-              lease: marketBusyLease,
-              options: {
-                expectedReleaseId: next.releaseId,
-                ...(next.sourceType !== 'server' ? { expectedManifest: next.manifest } : {}),
-                allowPermissionExpansion: diff.added.length > 0,
-                // 用户看确认框这段时间里已装 manifest 可能被换掉(如从文件更新);
-                // 把审阅基线交给 Main,在安装锁内复核后才放行扩权。
-                ...(installedGhost
-                  ? { reviewedBaseline: ghostPermissionBaselineKey(installedGhost.manifest) }
-                  : {}),
-              },
-            });
+        const ghost = await installReviewedMarketPackage({
+          detail: next,
+          lease: marketBusyLease,
+          options: {
+            expectedReleaseId: next.releaseId,
+            ...(next.sourceType !== 'server' ? { expectedManifest: next.manifest } : {}),
+            allowPermissionExpansion: diff.added.length > 0,
+            // 用户看确认框这段时间里已装 manifest 可能被换掉(如从文件更新);
+            // 把审阅基线交给 Main,在安装锁内复核后才放行扩权。
+            ...(installedGhost
+              ? { reviewedBaseline: ghostPermissionBaselineKey(installedGhost.manifest) }
+              : {}),
+          },
+        });
         if (!ghost) return;
         if (!isMarketBusyLeaseActive(marketBusyLease)) return;
         toast.success(
@@ -941,13 +963,20 @@ export function GhostPluginPage({ surface = 'plugins' }: { surface?: 'plugins' |
 
   // 控制器在挂载期借用本页的市场刷新;卸载后批次继续跑,重新进页全量刷新。
   useEffect(
-    () => setUpdateAllBatchHooks({ refreshMarket: () => refreshMarket() }),
-    [refreshMarket],
+    () =>
+      setUpdateAllBatchHooks({
+        refreshMarket: () => refreshMarket(),
+        marketApi: updateAllMarketApi,
+      }),
+    [refreshMarket, updateAllMarketApi],
   );
   const handleUpdateAll = useCallback(() => {
     const current = getUpdateAllBatchState();
     // 运行中或还有待确认项的批次:重开弹窗接着处理,不重建批次。
-    if (current.running || (current.rows !== null && !isBatchFinished(current.rows))) {
+    if (
+      current.channel === updateChannel &&
+      (current.running || (current.rows !== null && !isBatchFinished(current.rows)))
+    ) {
       setUpdateDialogOpen(true);
       return;
     }
@@ -958,7 +987,7 @@ export function GhostPluginPage({ surface = 'plugins' }: { surface?: 'plugins' |
       updatableInstalledItems.flatMap((item) => (item.marketUpdate ? [item.marketUpdate] : [])),
     );
     setUpdateDialogOpen(true);
-  }, [updatableInstalledItems]);
+  }, [updatableInstalledItems, updateChannel]);
 
   const handleInstall = useCallback(async () => {
     const picked = await window.electronAPI.ghosts.pickFile().catch(() => null);
@@ -1327,35 +1356,26 @@ export function GhostPluginPage({ surface = 'plugins' }: { surface?: 'plugins' |
         autoFocusConfirm: true,
       });
       if (!confirmed || !isMarketBusyLeaseActive(marketBusyLease)) return;
-      const ghost = isMekaSurface
-        ? (
-            await installFromActiveMarket(marketDetail.pluginId, {
-              expectedReleaseId: marketDetail.releaseId,
-              ...(isUpdate && diff!.added.length > 0
-                ? { allowPermissionExpansion: true }
-                : {}),
-            })
-          ).ghost
-        : await installReviewedMarketPackage({
-            detail: marketDetail,
-            lease: marketBusyLease,
-            options: {
-              expectedReleaseId: marketDetail.releaseId,
-              ...(marketDetail.sourceType !== 'server'
-                ? { expectedManifest: marketDetail.manifest }
-                : {}),
-              ...(isUpdate && diff!.added.length > 0
-                ? {
-                    allowPermissionExpansion: true,
-                    // 确认框展示期间已装 manifest 可能被换掉;基线交由 Main 在
-                    // 安装锁内复核,不一致就拒绝这次批准而不是沿用旧同意。
-                    ...(installedGhost
-                      ? { reviewedBaseline: ghostPermissionBaselineKey(installedGhost.manifest) }
-                      : {}),
-                  }
-                : {}),
-            },
-          });
+      const ghost = await installReviewedMarketPackage({
+        detail: marketDetail,
+        lease: marketBusyLease,
+        options: {
+          expectedReleaseId: marketDetail.releaseId,
+          ...(marketDetail.sourceType !== 'server'
+            ? { expectedManifest: marketDetail.manifest }
+            : {}),
+          ...(isUpdate && diff!.added.length > 0
+            ? {
+                allowPermissionExpansion: true,
+                // 确认框展示期间已装 manifest 可能被换掉;基线交由 Main 在
+                // 安装锁内复核,不一致就拒绝这次批准而不是沿用旧同意。
+                ...(installedGhost
+                  ? { reviewedBaseline: ghostPermissionBaselineKey(installedGhost.manifest) }
+                  : {}),
+              }
+            : {}),
+        },
+      });
       if (!ghost) return;
       if (!isMarketBusyLeaseActive(marketBusyLease)) return;
       // 市场首装装完即开(2026-07-26 定案),toast 用"已安装";更新路径如实
@@ -1581,6 +1601,40 @@ export function GhostPluginPage({ surface = 'plugins' }: { surface?: 'plugins' |
                 />
               </section>
             ) : null}
+            {bannerVisible ? (
+              <div className="mb-4 mt-5 flex items-center gap-4 rounded-xl border-[0.5px] border-[var(--border-default)] bg-[var(--surface-elevated)] px-4 py-3.5">
+                <span className="grid size-9 shrink-0 place-items-center rounded-full bg-[var(--surface-chip)] text-[var(--text-primary)]">
+                  <ArrowUp size={16} aria-hidden="true" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-13 font-medium text-[var(--text-primary)]">
+                    {t('settings.ghosts.page.updatesAvailable', {
+                      count: updatableInstalledItems.length,
+                    })}
+                  </p>
+                  <p className="truncate text-12 text-[var(--text-secondary)]">
+                    {updatableInstalledItems
+                      .map((item) => `${item.name} v${item.marketUpdate?.version ?? ''}`)
+                      .join(' · ')}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleIgnoreRound}
+                  className="shrink-0 rounded-full px-3 py-1.5 text-12 text-[var(--text-secondary)] transition-colors duration-150 hover:bg-[var(--surface-hover-soft)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+                >
+                  {t('settings.ghosts.page.ignoreRound')}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleUpdateAll}
+                  disabled={marketBusyId !== null}
+                  className="inline-flex h-9 shrink-0 items-center rounded-full bg-[var(--accent-cta-bg)] px-4 text-12 font-medium text-[var(--accent-pure-cta-fg)] transition-transform duration-150 hover:bg-[var(--accent-hover)] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+                >
+                  {t('settings.ghosts.page.updateAll')}
+                </button>
+              </div>
+            ) : null}
             <section className="plugin-motion-page-section mt-6 min-w-0">
               <div className={PLUGIN_CATALOG_TOOLBAR_CLASS}>
                 <div className="flex items-baseline gap-2">
@@ -1621,14 +1675,30 @@ export function GhostPluginPage({ surface = 'plugins' }: { surface?: 'plugins' |
                         displayId={catalogItem.item.sourcePluginId}
                         sourceLabel={
                           catalogItem.item.development
-                            ? t('settings.ghosts.meka.dev.badge')
+                            ? mekaDevPluginById.get(catalogItem.item.id)?.status === 'error'
+                              ? t('settings.ghosts.meka.dev.syncError')
+                              : t('settings.ghosts.meka.dev.badge')
                             : t(`settings.ghosts.meka.origin.${catalogItem.item.origin}`)
                         }
                         updateVersion={catalogItem.item.marketUpdate?.version}
                         updateBusy={marketBusyId !== null}
+                        updateProgress={
+                          catalogItem.item.marketUpdate &&
+                          mekaInstallProgress?.pluginId === catalogItem.item.marketUpdate.pluginId
+                            ? mekaInstallProgress
+                            : null
+                        }
                         onUpdate={
                           catalogItem.item.marketUpdate
                             ? () => void handleMarketUpdate(catalogItem.item.id)
+                            : undefined
+                        }
+                        onDevelopmentPackage={
+                          catalogItem.item.development
+                            ? () => {
+                                setDevPackageDialogGhostId(catalogItem.item.id);
+                                setDevPackageDialogOpen(true);
+                              }
                             : undefined
                         }
                         effectiveEnabled={effectiveEnabled(
@@ -1667,6 +1737,16 @@ export function GhostPluginPage({ surface = 'plugins' }: { surface?: 'plugins' |
           </PluginManagementPage>
         </main>
         {modalHost}
+        {updateRows ? (
+          <UpdateAllDialog
+            open={updateDialogOpen}
+            rows={updateRows}
+            iconByGhostId={new Map(ghosts.map((ghost) => [ghost.manifest.id, ghost.iconDataUrl]))}
+            onApprove={(pluginId) => void approveUpdateExpansion(pluginId)}
+            onSkip={skipUpdateExpansion}
+            onClose={() => setUpdateDialogOpen(false)}
+          />
+        ) : null}
         <MekaDevPluginPackageDialog
           item={devPackageDialogItem}
           pluginName={devPackageDialogGhost?.manifest.name ?? ''}
@@ -2243,6 +2323,8 @@ export function GhostPluginCard({
   updateVersion,
   updateBusy = false,
   onUpdate,
+  onDevelopmentPackage,
+  updateProgress,
   effectiveEnabled,
   onPrimary,
   onManage,
@@ -2256,6 +2338,8 @@ export function GhostPluginCard({
   updateVersion?: string;
   updateBusy?: boolean;
   onUpdate?: () => void;
+  onDevelopmentPackage?: () => void;
+  updateProgress?: PluginMarketInstallProgress | null;
   effectiveEnabled?: boolean;
   onPrimary: () => void;
   onManage: () => void;
@@ -2326,6 +2410,7 @@ export function GhostPluginCard({
         iconDataUrl={item.iconDataUrl}
         iconId={item.id}
         iconName={item.name}
+        development={development}
         onIconLoadError={onIconLoadError}
       />
       <span className="flex min-w-0 flex-1 flex-col self-stretch pt-0.5">
@@ -2372,19 +2457,35 @@ export function GhostPluginCard({
               type="button"
               onClick={onUpdate}
               disabled={updateBusy}
-              aria-label={t('settings.ghosts.page.updateAria', {
-                name: item.name,
-                version: updateVersion,
-              })}
+              aria-label={
+                updateProgress
+                  ? undefined
+                  : t('settings.ghosts.page.updateAria', {
+                      name: item.name,
+                      version: updateVersion,
+                    })
+              }
               className={cn(
                 'inline-flex h-7 items-center gap-1 rounded-full border border-[var(--border-default)] bg-[var(--surface-elevated)] px-2.5 text-11 font-medium text-[var(--text-primary)]',
                 'transition-colors duration-150 hover:bg-[var(--surface-hover-soft)]',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
-                'disabled:cursor-wait disabled:opacity-40',
+                'disabled:cursor-wait disabled:active:scale-100',
+                updateBusy && !updateProgress && 'opacity-40',
               )}
             >
-              <ArrowUp size={11} className="text-[var(--text-secondary)]" aria-hidden="true" />
-              {t('settings.ghosts.page.updateTo', { version: updateVersion })}
+              {updateProgress ? (
+                <PluginMarketProgressContent
+                  progress={updateProgress}
+                  update
+                  fallback={t('settings.ghosts.page.updateTo', { version: updateVersion })}
+                  showBar={false}
+                />
+              ) : (
+                <>
+                  <ArrowUp size={11} className="text-[var(--text-secondary)]" aria-hidden="true" />
+                  {t('settings.ghosts.page.updateTo', { version: updateVersion })}
+                </>
+              )}
             </button>
           ) : null}
           <button
@@ -2397,6 +2498,16 @@ export function GhostPluginCard({
             <SlidersHorizontal size={14} aria-hidden="true" />
           </button>
         </span>
+        {onDevelopmentPackage ? (
+          <button
+            type="button"
+            onClick={onDevelopmentPackage}
+            aria-label={t('settings.ghosts.meka.dev.packageAction')}
+            className="inline-flex h-7 shrink-0 items-center justify-center rounded-full border border-[var(--border-default)] bg-transparent px-2.5 text-11 font-medium text-[var(--text-secondary)] transition-colors duration-150 hover:border-[var(--text-tertiary)] hover:bg-[var(--surface-hover-soft)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+          >
+            {t('settings.ghosts.meka.dev.packageAction')}
+          </button>
+        ) : null}
         {primaryControl}
       </span>
     </article>

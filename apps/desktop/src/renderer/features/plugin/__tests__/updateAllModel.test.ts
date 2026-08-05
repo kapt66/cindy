@@ -119,6 +119,7 @@ describe('ignoredRoundStorageKey', () => {
     // 账号 A 忽略本轮,不得静默压掉账号 B 或本地模式的更新横幅。
     expect(new Set([cloudA, cloudB, local]).size).toBe(3);
     expect(ignoredRoundStorageKey('cloud', 'owner-a')).toBe(cloudA);
+    expect(ignoredRoundStorageKey('cloud', 'owner-a', 'meka')).not.toBe(cloudA);
     // 未登录/本地无 owner 时也有稳定桶,不回落到共享键。
     expect(local).toContain('anonymous');
   });

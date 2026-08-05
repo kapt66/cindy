@@ -66,6 +66,8 @@ function marketItem(overrides: Partial<PluginMarketItem>): PluginMarketItem {
 
 const detailMock = vi.fn<(pluginId: string) => Promise<PluginMarketDetail>>();
 const installMock = vi.fn(async () => ({ ghost: { manifest: manifest({}) } }) as never);
+const mekaDetailMock = vi.fn<(pluginId: string) => Promise<PluginMarketDetail>>();
+const mekaInstallMock = vi.fn(async () => ({ ghost: { manifest: manifest({}) } }) as never);
 
 function stubDetail(overrides: {
   manifest: GhostManifest;
@@ -91,10 +93,13 @@ beforeEach(() => {
   dataOwnerTesting.reset();
   setDataOwnerGeneration('owner-a');
   detailMock.mockReset();
+  mekaDetailMock.mockReset();
   // mockReset 而非 mockClear:用例可能装过"卡住不 resolve"的实现(并发编排),
   // 只清调用记录会让它泄漏到后面的用例里把 waitFor 全部拖超时。
   installMock.mockReset();
   installMock.mockResolvedValue({ ghost: { manifest: manifest({}) } } as never);
+  mekaInstallMock.mockReset();
+  mekaInstallMock.mockResolvedValue({ ghost: { manifest: manifest({}) } } as never);
   vi.mocked(toast.success).mockClear();
   installedGhosts = [{ manifest: manifest({ version: '1.0.0' }) }];
   (window as unknown as { electronAPI: unknown }).electronAPI = {
@@ -112,6 +117,27 @@ describe('updateAllController', () => {
 
     expect(getUpdateAllBatchState().rows?.[0]?.status).toBe('skipped');
     expect(installMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps Meka batch updates on the Meka market adapter', async () => {
+    stubDetail({ manifest: manifest({}), sourceType: 'server' });
+    mekaDetailMock.mockResolvedValue({
+      ...marketItem({ pluginId: 'meka-plugin-a' }),
+      manifest: manifest({}),
+    } as unknown as PluginMarketDetail);
+    setUpdateAllBatchHooks({
+      marketApi: { detail: mekaDetailMock, install: mekaInstallMock },
+    });
+
+    startUpdateAllBatch([marketItem({ pluginId: 'meka-plugin-a' })]);
+    await waitForSettledBatch();
+
+    expect(mekaDetailMock).toHaveBeenCalledWith('meka-plugin-a');
+    expect(mekaInstallMock).toHaveBeenCalledWith('meka-plugin-a', {
+      expectedReleaseId: 'release-2',
+    });
+    expect(detailMock).not.toHaveBeenCalled();
+    expect(getUpdateAllBatchState().rows?.[0]?.status).toBe('done');
   });
 
   it('holds actual package permissions for approval', async () => {

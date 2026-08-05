@@ -775,6 +775,26 @@ owner 级持久化、自动同步、失败保留、双 ID 派生、v1 注册表�
 `pnpm check:i18n-glossary` 通过，无新增术语违规。Light／Dark 实机与真实目录热更新仍待
 开发者手测。
 
+2026-08-05 合并后 UI 回审补齐一处功能断链：插件卡片重构曾漏传开发身份到图标，且漏掉
+开发卡“打包”入口、同步失败状态文案和 Meka 列表更新进度展示。现已恢复；开发插件仍在
+卡片、快捷入口和详情图标上显示 `DEV`，同步失败仍保留最后可用快照并显示失败状态，列表
+更新按钮继续显示准备／下载／安装阶段。新增卡片回归测试；Desktop typecheck 与真实目录
+热更新仍待开发者手测。
+
+2026-08-05 第二轮插件/技能映射回审：Meka 插件列表补回与 Cindy 一致的更新横幅和“全部更新”
+入口，并复用批量权限复核弹窗；批次启动时绑定 Meka 独立 market adapter，不混用 Cindy API 或
+ledger。Meka IPC 同步透传共享安装服务已有的 `reviewedBaseline` 与
+`approvedPackageSha256`，因此扩权和实际包权限复核仍由用户明确确认。Meka 技能首页与市场页
+已覆盖 Cindy 基础推荐、本地分组、预览、安装目标、工具栏和筛选，Meka 独立目录、发布、访问
+范围、删除等管理能力继续保留。Cindy 首页“导入本地技能”仍未接入 Meka；因 Meka 独立目录
+授权/安装 IPC 尚不存在，且本节已将独立 ZIP 安装、本地卸载和持久开发来源列为后续增量，
+本轮不把 Cindy import IPC 误用于 Meka，待产品决定是否扩大范围。插件批量/市场定向测试与
+Desktop typecheck 通过；共享详情返回 Meka 首页且不再显示 Cindy 市场动作，真实 Router 数据
+和 Light/Dark 实机检查仍待开发者手测。
+
+2026-08-05 Meka 插件来源筛选回审补齐动态 `all` 选项的四语文案；页面使用上游来源筛选并集，
+Meka locale 需同步提供 `settings.ghosts.meka.origin.all`，避免把 i18n key 直接显示给用户。
+
 2026-07-29 未提交交付审查补充：开发目录首次确认已绑定稳定内容指纹与 app session，
 data owner teardown 会等待安装／同步并停止旧 watcher；派生 runtime 包移除已失效的源码
 签名后按未签名开发快照重新校验。Watcher client singleton 改为无副作用静态模块，由
@@ -992,6 +1012,15 @@ XDMaker `meka/main` 对应实现为核对正本。
    - 与 XDMaker 最终文档一致：先发现项目绑定实例，必要时完成实例/模板/绑定链，
      直接 `start_team`，再以精确 `remote_host_id` 创建 Worker，并核对
      `execution_target`；禁止把 MCPRouter 实例误当 SSH 主机。
+
+#### 4.8.4 普通 Cindy 对话入口边界回审（2026-08-05）
+
+Meka 专用的 `canShowMekaCollabToggleForDraft` 只负责 `workspaceKind=meka` 草稿在 Main 分配
+工作目录前的资格。普通 Cindy 的项目/对话草稿与会话继续由共享
+`resolveCollabEntryPolicy` 判定；其中无项目目录的 `dialogue` 草稿也必须在 ChatInput 的
+`+` 菜单显示协同入口，并按 `skipProjectQuery` 只读取用户/全局策略。合并时若把 Meka
+helper 套到普通草稿，会造成入口消失；该断链已修复并由策略测试锁定。Worker 子会话、
+不满足远程边界的目标和 Main 最终授权规则不变。
 
 远程 Codex Worker 已按完整 transport 契约恢复，而不是单独放开 UI：Desktop 使用
 `mode=codex-appserver` 隧道发送 spawn header，并通过独立 cc-manager 控制通道执行
@@ -1610,8 +1639,11 @@ thread-context gated 的本地动态代理投影这条唯一入口，Claude 继�
 2026-08-04 的上游同步、冲突逐项说明、用户决策归属和本次验证状态见
 [`docs/migrations/2026-08-origin-main-to-meka-main.md`](./2026-08-origin-main-to-meka-main.md)。
 该报告的当前结论优先于本文较早阶段记录的“全量门禁通过”描述：本次同步已完成文件级
-冲突收敛并修复 3 处合并结构断裂，但根 `pnpm test:unit` 仍有未分类失败，因此尚未达到
-可提交状态；不得将历史阶段的通过结果复用于本次 merge。
+冲突收敛并修复合并结构断裂；首次并发门禁中的浏览器 prompt 扫描测试出现资源时延超时，
+单测单跑、官方串行复跑及随后默认并发门禁复跑均已通过，因此代码测试门禁已达到通过状态。
+仍有两项交付前置条件：
+命中插件基座路径的改动必须取得指定放行人的明确 `Approve`，以及真实 Electron、Light/Dark
+和旧版 Meka 数据升级验证尚未完成；在这些条件满足前不得声称已达到可合并状态。
 
 1. 不直接 merge `xdmaker/meka/main`。
 2. 不以“文件有差异”为迁移理由，必须说明 Meka 产品意图。

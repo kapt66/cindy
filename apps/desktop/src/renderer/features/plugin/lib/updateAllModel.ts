@@ -121,8 +121,14 @@ export function batchSummary(rows: readonly UpdateAllRow[]): {
 export function ignoredRoundStorageKey(
   mode: 'signed-out' | 'local' | 'cloud',
   dataOwnerId: string | null,
+  channel: 'cindy' | 'meka' = 'cindy',
 ): string {
-  return `cindy.pluginUpdates.ignoredRound.${mode}.${dataOwnerId ?? 'anonymous'}`;
+  const ownerKey = `${mode}.${dataOwnerId ?? 'anonymous'}`;
+  // Keep the pre-Meka Cindy key stable; Meka has an independent ledger and
+  // therefore must not inherit a Cindy user's ignored update round.
+  return channel === 'meka'
+    ? `cindy.pluginUpdates.ignoredRound.meka.${ownerKey}`
+    : `cindy.pluginUpdates.ignoredRound.${ownerKey}`;
 }
 
 /**

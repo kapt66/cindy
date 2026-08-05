@@ -970,7 +970,12 @@ export function SkillhubDetailView() {
   // 而是退出到 SkillHub 一级页：market 来源回 market，其它入口回 local 欢迎页。
   const navState = location.state as { from?: string; resetHistory?: boolean } | null;
   const fromRoute = navState?.from ?? '/skillhub';
-  const backTargetRoute = fromRoute === '/skillhub/market' ? '/skillhub/market' : '/skillhub/local';
+  const backTargetRoute =
+    fromRoute === '/skillhub/market'
+      ? '/skillhub/market'
+      : fromRoute === '/cc-agent/meka/skills'
+        ? '/cc-agent/meka/skills'
+        : '/skillhub/local';
   // 兼容旧 sessionStorage 栈：从外部入口进入时先清掉，避免老版本留下的
   // detail 链影响后续返回语义。
   const shouldResetHistory = navState?.resetHistory === true;
@@ -1002,6 +1007,10 @@ export function SkillhubDetailView() {
       ) ?? null
     );
   }, [params, searchParams, skills]);
+  // Meka installs use the independent MCPRouter registry. The shared detail
+  // viewer still renders files and editing, but Cindy SkillHub market actions
+  // (publish/update/uninstall) must not be sent for a Meka provenance entry.
+  const isMekaEntry = entry?.registryEntry?.distribution?.channel === 'meka';
 
   // 记录最近访问项供下次打开 SkillHub 时恢复；返回按钮会清掉它，避免用户
   // 主动退出详情页后又被 welcome 自动带回同一条记录。
@@ -1114,7 +1123,7 @@ export function SkillhubDetailView() {
     return { info, liveScanStatus: null };
   }, []);
 
-  const remoteInfoName = isSkill ? (entry?.name ?? null) : null;
+  const remoteInfoName = isSkill && !isMekaEntry ? (entry?.name ?? null) : null;
   const remoteInfoRequest = useMemo(() => {
     if (!remoteInfoName) return null;
     return { name: remoteInfoName, refreshKey: infoFetchTrigger };
@@ -1276,7 +1285,7 @@ export function SkillhubDetailView() {
   const detailAction = detailActionState?.status ?? null;
   const isOutdated = detailActionState?.isOutdated ?? false;
   const isMineDirty = detailActionState?.isMineDirty ?? false;
-  const showUninstall = detailActionState?.showUninstall ?? false;
+  const showUninstall = !isMekaEntry && (detailActionState?.showUninstall ?? false);
   const showForeignDirtyBanner = detailActionState?.showForeignDirtyBanner ?? false;
 
   const [scanResult, setScanResult] = useState<ScanResultPayload | null>(null);
@@ -1301,6 +1310,8 @@ export function SkillhubDetailView() {
     ? t('skillhub.detail.back.exitEdit')
     : fromRoute === '/skillhub/market'
       ? t('skillhub.detail.back.market')
+      : fromRoute === '/cc-agent/meka/skills'
+        ? t('mekaSkills.back')
       : t('skillhub.detail.back.skillhub');
   const plaintextEditorRef = useRef<PlaintextEditorHandle>(null);
   // Raw initial content the editor was mounted with — used to compare on
@@ -1883,7 +1894,7 @@ export function SkillhubDetailView() {
                 </span>
               </span>
             ))}
-            {detailState?.isMine && publishedStatus === 'rejected' && (
+            {!isMekaEntry && detailState?.isMine && publishedStatus === 'rejected' && (
               <Tip text={t('skillhub.detail.rejectedTooltip')}>
                 <button
                   type="button"
@@ -2049,7 +2060,7 @@ export function SkillhubDetailView() {
               </Tip>
             )}
             {/* My published skill, local is clean. */}
-            {detailAction?.kind === 'published-tag' && (
+            {!isMekaEntry && detailAction?.kind === 'published-tag' && (
               isPublishedReviewing ? (
                 <button
                   type="button"
@@ -2077,7 +2088,7 @@ export function SkillhubDetailView() {
               )
             )}
             {/* Local registry fallback / foreign installed skill. */}
-            {detailAction?.kind === 'installed-tag' && (
+            {!isMekaEntry && detailAction?.kind === 'installed-tag' && (
               <span className={cn(
                 'inline-flex h-9 items-center gap-1.5 rounded-full border px-[14px]',
                 'text-[13px] text-[var(--cmd-palette-item-meta)]',
@@ -2089,7 +2100,7 @@ export function SkillhubDetailView() {
             )}
 
             {/* My published skill has local changes. */}
-            {detailAction?.kind === 'publish-new-version' && (
+            {!isMekaEntry && detailAction?.kind === 'publish-new-version' && (
               <>
                 {isPublishedReviewing ? (
                   <button
@@ -2150,7 +2161,7 @@ export function SkillhubDetailView() {
             )}
 
             {/* Server explicitly has no market record; first-publish flow. */}
-            {detailAction?.kind === 'publish-to-market' && (
+            {!isMekaEntry && detailAction?.kind === 'publish-to-market' && (
               <button
                 type="button"
                 onClick={openPublish}
@@ -2167,7 +2178,7 @@ export function SkillhubDetailView() {
             )}
 
             {/* Server confirms a newer version exists. */}
-            {detailAction?.kind === 'update' && (
+            {!isMekaEntry && detailAction?.kind === 'update' && (
               <button
                 type="button"
                 onClick={() => { void handleUpdateInstalled(detailAction.latestVersion); }}
@@ -2216,7 +2227,7 @@ export function SkillhubDetailView() {
       {!editMode && isSkill && detailReady && detailState && (
         <>
           {/* mine + dirty: local changes not yet published */}
-          {isMineDirty && (
+          {!isMekaEntry && isMineDirty && (
             <div className="shrink-0 pl-3 pr-3 pt-4">
               <button
                 type="button"
@@ -2237,7 +2248,7 @@ export function SkillhubDetailView() {
             </div>
           )}
           {/* outdated: 另一台设备发布了新版,本地版本号已落后 */}
-          {isOutdated && detailState.isMine && entry.registryEntry && (
+          {!isMekaEntry && isOutdated && detailState.isMine && entry.registryEntry && (
             <div className="shrink-0 pl-3 pr-3 pt-4">
               <button
                 type="button"
@@ -2261,7 +2272,7 @@ export function SkillhubDetailView() {
             </div>
           )}
           {/* foreign + dirty: installed skill modified locally */}
-          {showForeignDirtyBanner && (
+          {!isMekaEntry && showForeignDirtyBanner && (
             <div className="shrink-0 pl-3 pr-3 pt-4">
               <button
                 type="button"
@@ -2282,7 +2293,7 @@ export function SkillhubDetailView() {
             </div>
           )}
           {/* unregistered: name may be taken by someone else */}
-          {detailState.origin === null && infoResult && !infoResult.isMine && (
+          {!isMekaEntry && detailState.origin === null && infoResult && !infoResult.isMine && (
             <div className="shrink-0 pl-3 pr-3 pt-4">
               <div className={cn(
                 'flex items-center gap-2.5 rounded-xl px-4 py-3',

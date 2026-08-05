@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  canShowCollabToggleForDraft,
+  canShowMekaCollabToggleForDraft,
   canShowCollabToggleForSession,
   isLocalCollabWorkspaceKind,
 } from '../lib/collaborationEligibility';
@@ -45,7 +45,7 @@ describe('collaboration eligibility', () => {
     ['local project', { workspaceKind: 'project', workingDir: 'C:\\repo', remoteHostId: null, deviceLinkDeviceId: null }],
     ['Meka before cwd allocation', { workspaceKind: 'meka', workingDir: null, remoteHostId: null, deviceLinkDeviceId: null }],
   ] as const)('shows a %s draft', (_label, draft) => {
-    expect(canShowCollabToggleForDraft(draft)).toBe(true);
+    expect(canShowMekaCollabToggleForDraft(draft)).toBe(true);
   });
 
   it.each([
@@ -54,6 +54,6 @@ describe('collaboration eligibility', () => {
     ['remote project', { workspaceKind: 'project', workingDir: 'C:\\repo', remoteHostId: 'ssh-1', deviceLinkDeviceId: null }],
     ['device-link Meka', { workspaceKind: 'meka', workingDir: null, remoteHostId: null, deviceLinkDeviceId: 'device-1' }],
   ] as const)('hides a %s draft', (_label, draft) => {
-    expect(canShowCollabToggleForDraft(draft)).toBe(false);
+    expect(canShowMekaCollabToggleForDraft(draft)).toBe(false);
   });
 });

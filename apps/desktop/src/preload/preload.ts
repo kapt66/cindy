@@ -1186,9 +1186,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
       options: {
         expectedReleaseId: string;
         allowPermissionExpansion?: boolean;
+        reviewedBaseline?: string;
+        approvedPackageSha256?: string;
         operationId: string;
       },
-    ): Promise<{ ghost: import('../shared/ghost').InstalledGhost }> =>
+    ): Promise<import('../shared/pluginMarket').PluginMarketInstallResult> =>
       ipcRenderer.invoke('meka-plugin-market:install', pluginId, options),
     onInstallProgress: (
       callback: (payload: import('../shared/pluginMarket').PluginMarketInstallProgress) => void,

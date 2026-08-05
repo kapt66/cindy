@@ -2,8 +2,8 @@
  * Window-level controller for the "update all plugins" batch flow.
  *
  * Inputs: the market update snapshot plus user approve/skip actions.
- * Outputs: a subscribable batch snapshot for the Plugin page and the
- * serial install IPC calls.
+ * Outputs: a subscribable batch snapshot for the Plugin page and serial install
+ * IPC calls through the market adapter captured for the active channel.
  *
  * 为什么在组件外:批次可以在用户关掉弹窗、离开 /plugins 后继续跑
  * (「后台继续」语义),待确认的扩权项也必须在回到插件页后仍然保留
@@ -30,6 +30,9 @@ import {
 import type {
   PluginMarketItem,
   PluginMarketPackageReview,
+  PluginMarketDetail,
+  PluginMarketInstallOptions,
+  PluginMarketInstallResult,
 } from '../../../../shared/pluginMarket';
 import { pluginMarketErrorKey } from './pluginMarketErrorKey';
 import {
@@ -44,16 +47,37 @@ export interface UpdateAllBatchState {
   /** null = 从未启动过批次;数组引用随每次行迁移变化(快照语义)。 */
   rows: UpdateAllRow[] | null;
   running: boolean;
+  channel: 'cindy' | 'meka' | null;
 }
 
 interface UpdateAllBatchHooks {
   /** 批次推进后的市场快照刷新;页面卸载期间缺席,重新进页会全量刷新。 */
   refreshMarket?: () => Promise<void>;
+  /** 当前页面对应的市场适配器；批次启动时捕获，避免离开页面后串到 Cindy 渠道。 */
+  marketApi?: UpdateAllMarketApi;
 }
 
-let state: UpdateAllBatchState = { rows: null, running: false };
+export interface UpdateAllMarketApi {
+  channel?: 'cindy' | 'meka';
+  detail: (pluginId: string) => Promise<PluginMarketDetail>;
+  install: (
+    pluginId: string,
+    options: PluginMarketInstallOptions,
+  ) => Promise<PluginMarketInstallResult>;
+}
+
+let state: UpdateAllBatchState = { rows: null, running: false, channel: null };
 let finishToastShown = false;
 let hooks: UpdateAllBatchHooks = {};
+let batchMarketApi: UpdateAllMarketApi | null = null;
+
+function defaultMarketApi(): UpdateAllMarketApi {
+  return {
+    channel: 'cindy',
+    detail: (pluginId) => window.electronAPI.pluginMarket.detail(pluginId),
+    install: (pluginId, options) => window.electronAPI.pluginMarket.install(pluginId, options),
+  };
+}
 /** 批次启动时的账号世代:身份切换后旧批次整体作废,绝不跨账号安装。 */
 let batchOwner: DataOwnerGeneration | null = null;
 /**
@@ -167,7 +191,7 @@ function voidStaleBatch(): void {
   batchOwner = null;
   beginGeneration(); // 让在飞的 runner / approve 立即失效。
   finishToastShown = true; // 作废批次不再补发完成 toast。
-  emit({ rows: null, running: false });
+  emit({ rows: null, running: false, channel: null });
 }
 
 export function subscribeUpdateAllBatch(listener: () => void): () => void {
@@ -264,8 +288,14 @@ export function startUpdateAllBatch(marketUpdates: readonly PluginMarketItem[]):
   );
   finishToastShown = false;
   batchOwner = getDataOwnerGeneration();
+  batchMarketApi = hooks.marketApi ?? defaultMarketApi();
+  const channel = batchMarketApi.channel ?? 'cindy';
   const generation = beginGeneration();
-  emit({ rows: buildUpdateAllRows(marketUpdates, installedVersionById), running: false });
+  emit({
+    rows: buildUpdateAllRows(marketUpdates, installedVersionById),
+    running: false,
+    channel,
+  });
   void runQueue(generation);
 }
 
@@ -290,9 +320,9 @@ async function runQueue(generation: number): Promise<void> {
       // detail 提到 try 外:install 抛前置条件失败时,catch 要靠它把目标 release
       // 写回待重审行——runApprovalBody 的入口守卫要求 row.releaseId 存在,
       // 缺了它用户点「重新审阅」会直接 return,该项在本批次里静默卡死。
-      let detail: Awaited<ReturnType<typeof window.electronAPI.pluginMarket.detail>> | null = null;
+      let detail: PluginMarketDetail | null = null;
       try {
-        detail = await window.electronAPI.pluginMarket.detail(next.pluginId);
+        detail = await batchMarketApi!.detail(next.pluginId);
         // detail 往返期间可能切换账号或换批次:install 会以当前账号执行,
         // 旧批次绝不能把上一轮的更新落到新账号/新批次上。
         if (batchGeneration !== generation) return;
@@ -327,7 +357,7 @@ async function runQueue(generation: number): Promise<void> {
           });
           continue;
         }
-        const result = await window.electronAPI.pluginMarket.install(next.pluginId, {
+        const result = await batchMarketApi!.install(next.pluginId, {
           expectedReleaseId: detail.releaseId,
           ...(detail.sourceType !== 'server' ? { expectedManifest: detail.manifest } : {}),
         });
@@ -463,7 +493,7 @@ async function runApprovalBody(pluginId: string, generation: number): Promise<vo
     //     但不同 release」不会被误判成完成;版本号比对做不到这点。
     //  2. 最新 releaseId / manifest —— 并发防护与非 server 源的 reviewed manifest。
     //  3. 当前 manifest —— 与已装 manifest 重算权限差异。
-    const detail = await window.electronAPI.pluginMarket.detail(pluginId);
+    const detail = await batchMarketApi!.detail(pluginId);
     // detail 往返期间批次可能已被作废/接管:此后一律不再写状态、不再安装。
     // 与 runQueue 同一套**双重**校验:代际管「同账号内换批次」,owner 管
     // 「账号刚切走但页面的作废 effect 还没跑」那个窗口——只看代际的话,
@@ -532,10 +562,10 @@ async function runApprovalBody(pluginId: string, generation: number): Promise<vo
      * 返回 true = 真的装上了;false = 已按重审/让位处理完,调用方直接收手。
      */
     const installOrHoldForReReview = async (
-      options: Parameters<typeof window.electronAPI.pluginMarket.install>[1],
+      options: PluginMarketInstallOptions,
     ): Promise<boolean> => {
       try {
-        const result = await window.electronAPI.pluginMarket.install(pluginId, options);
+        const result = await batchMarketApi!.install(pluginId, options);
         if (result.reviewRequired) {
           holdPackageReview(
             generation,
@@ -633,8 +663,12 @@ export function skipUpdateExpansion(pluginId: string): void {
  * (从文件装入)在版本比对下无法区分,会把没装上目标 release 的行误收成完成。
  * 页面在已装清单、市场快照或身份变化时调用,并把当前市场快照传进来。
  */
-export function reconcileUpdateAllBatch(marketItems: readonly PluginMarketItem[] = []): void {
+export function reconcileUpdateAllBatch(
+  marketItems: readonly PluginMarketItem[] = [],
+  channel: 'cindy' | 'meka' = 'cindy',
+): void {
   if (state.rows === null) return;
+  if (state.channel !== channel) return;
   if (!batchOwnerCurrent()) {
     voidStaleBatch();
     return;
@@ -677,9 +711,10 @@ export function reconcileUpdateAllBatch(marketItems: readonly PluginMarketItem[]
 
 /** 仅测试用:清空模块级批次状态与回调注册。 */
 export function __resetUpdateAllBatchForTest(): void {
-  state = { rows: null, running: false };
+  state = { rows: null, running: false, channel: null };
   finishToastShown = false;
   hooks = {};
+  batchMarketApi = null;
   batchOwner = null;
   // 递增而非归零:上个用例遗留的在飞 runner 认的是旧代际,归零会让它复活。
   beginGeneration();

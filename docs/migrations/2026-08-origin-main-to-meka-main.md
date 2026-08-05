@@ -245,3 +245,90 @@ maker-shared、lizi-im 及全部可运行协议包均 PASS。受影响包按仓�
 `run --if-present typecheck`，Desktop、Mobile 通过，其余包无该脚本并按规则跳过；
 `pnpm check:i18n` 与 `pnpm check:i18n-glossary` 通过（仅保留仓库既有 warning）。工作区无
 未解决冲突标记；本报告随 DCO 签名 merge commit 落地，未 push。
+
+### 5.6 合并后插件开发态 UI 回审（2026-08-05）
+
+- 用户反馈插件开发模式角标消失。回溯确认 `GhostPluginIcon`、开发注册表、
+  `development` 计算和 Meka 快捷入口均仍在；问题来自 `4d1e01b7f` 对上游插件卡片重构的
+  冲突落地：`GhostPluginCard` 仍接收 `development`，但调用图标时漏传该属性。开发卡的
+  `onDevelopmentPackage` 入口和 `syncError` 来源文案也在同一重构中被遗漏；Meka 列表更新
+  按钮的 `updateProgress` 参数/渲染同时被删除，导致准备、下载、安装阶段不再可见。
+- 处理：恢复卡片到图标的 `development` 投影；恢复开发卡“打包”动作和同步失败来源文案；
+  恢复 Meka 列表更新按钮的进度投影，并补充卡片回归测试。未改变普通 Cindy 插件市场、
+  Meka/普通市场账本或开发注册表运行时行为。
+- 归因：本地双向合并后的 UI 语义断链；不是上游删除 Meka 功能。决策人：用户要求修复；
+  实施人：Codex。验证：插件卡片、图标、详情和开发包弹窗定向测试 50/50 通过；Desktop
+  typecheck、`git diff --check` 和 `pnpm check:i18n-glossary` 通过。真实目录热更新、Light/Dark
+  实机目检仍未执行。
+
+### 5.7 Meka 插件/技能基础能力映射回审（2026-08-05）
+
+- 对照 `origin/main` 的插件页更新链路与迁移账 4.7.1，确认 Meka 已复用同一批量更新模型、
+  权限差异复核和安装进度展示；但 Meka surface 的列表渲染曾漏掉更新横幅、“全部更新”入口及
+  批量弹窗，只保留了卡片单项更新。该遗漏属于本地 Meka Renderer 映射断链，不是上游有意移除
+  Meka 功能。
+- 处理：Meka 插件页补回 Cindy 同款“`x` 个插件有可用更新”横幅、忽略本轮和“全部更新”按钮，
+  复用 `UpdateAllDialog`；批量控制器在启动时捕获当前 market adapter，普通页绑定 Cindy
+  `pluginMarket`，Meka 页绑定 `mekaPluginMarket`，并按渠道隔离窗口级批次投影，批次离开页面后仍不跨渠道。Meka 的独立
+  MCPRouter ledger、安装进度事件和开发插件管理入口均保留。
+- “忽略本轮”状态同时按渠道分桶：保留旧 Cindy key 的兼容读取，新增 Meka 独立 key，避免用户
+  在普通插件页忽略更新后误把 Meka 更新横幅一并隐藏。
+- 回审还发现 Meka 安装 IPC 未透传 `reviewedBaseline` / `approvedPackageSha256`，导致扩权或
+  实际包权限复核批准无法达到 Main 的既有安全前置条件。只补齐这两个已存在于共享
+  `PluginMarketService` 的参数，不改变权限策略或放宽审查；单项和批量 Meka 更新都继续要求
+  用户确认扩权。
+- 技能页逐项核对：Meka 首页已复用 Cindy 的推荐卡、本地全局/项目分组、预览面板和安装目标；
+  市场页已复用工具栏、筛选、卡片、预览和安装交互，并保留 Meka 独立 MCPRouter 目录、文件
+  预览、发布、访问范围管理和删除能力。发现 Cindy 首页的“导入本地技能”暂未映射：Meka
+  当前没有独立的本地目录授权/安装 IPC，且迁移账 4.7.2 明确把独立 ZIP 安装、本地卸载和持久
+  开发来源列为后续增量；没有把 Cindy `skillhub.importLocal` 误接到 Meka，以免写入错误
+  provenance。Meka 市场技能仍未混入 Cindy SkillHub 或 Meka 项目角色内置目录；该导入能力若要
+  纳入本轮，需要新增 Meka 渠道设计与 Main IPC，留待用户决策。
+- 共享技能详情页对 Meka provenance 仅保留文件预览/编辑，隐藏 Cindy SkillHub 的发布、更新、
+  卸载和审核状态动作，避免 Meka 本地技能误调用 Cindy IPC；这是对“本地卸载尚待后续增量”的
+  明确保护，不改变 Meka 安装或管理弹窗。
+- 修正 Meka 技能首页进入共享详情后的返回落点：沿用入口 state 回到 `/cc-agent/meka/skills`，
+  不再误跳上游 `/skillhub/local`；四语补齐对应返回文案。
+- 决策人：用户要求“基础功能同步、Meka 管理能力保留”；实施人：Codex。验证：插件批量控制器
+  新增 Meka adapter 回归测试，插件批量/模型/卡片 62 项与 plugin-market Main/API 52 项通过；
+  Desktop typecheck 与 `git diff --check` 通过。技能页面真实 MCPRouter 数据、Light/Dark 实机
+  目检和全量 `pnpm test:unit` 本轮未重复执行。
+
+### 5.8 普通对话草稿的协同入口回归（2026-08-05）
+
+- 用户反馈普通对话的 composer `+` 菜单看不到“协同模式”。回溯 `origin/main` 的
+  `resolveCollabEntryPolicy` 及其测试确认：普通 Cindy 对话草稿（尚未分配
+  `workingDir`）和已创建对话都属于可显示入口，草稿只查询用户/全局协同策略。
+- 本地 Meka 迁移提交 `fc7a77b6c` 新增 `canShowMekaCollabToggleForDraft`，其职责是覆盖
+  `workspaceKind=meka` 在 Main 分配 cwd 前的资格；合并落地时却把它用于所有草稿，
+  把 Cindy 的 `dialogue` 误判为不 eligible，导致 `ChatInput` 没收到
+  `collaboration` 配置。该问题是本地合并后的入口断链，不是上游有意删除协同功能。
+- 处理：普通 Cindy 草稿继续使用 `collabEntry.eligible`；只有 Meka 草稿使用 Meka 专用
+  eligibility。保留 Worker、远程和策略查询边界，不改变协同开启/关闭流程。决策人：用户
+  要求检查合并遗漏并修复；实施人：Codex。
+- 验证：`collabEntryPolicy` 定向测试、Desktop typecheck、`git diff --check`；未做真实
+  Electron UI 点击和 Light/Dark 实机目检。
+
+### 5.9 Meka 插件来源筛选文案缺失（2026-08-05）
+
+- 用户反馈 Meka 插件页来源筛选显示裸 key `settings.ghosts.meka.origin.all`。
+- 原因：合并后的 Meka `origin` locale 对象只保留 `public` / `local`，但页面复用了上游
+  `RECOMMENDED_FILTERS` 的动态 `all` 来源；四语同时缺字段，所以 fallback 无法提供文案。
+- 处理：四语补齐 `settings.ghosts.meka.origin.all`（All / すべて / 전체 / 全部），并增加
+  locale 回归测试。未改变筛选逻辑或市场来源边界。决策人：用户报告问题；实施人：Codex。
+- 验证：Meka 来源文案回归、`pnpm check:i18n`、`pnpm check:i18n-glossary`、
+  `git diff --check`。
+
+### 5.10 最终全量单测复核（2026-08-05）
+
+- 首次并发运行 `pnpm test:unit` 仅有
+  `src/renderer/__tests__/unsupportedBrowserPrompt.test.ts` 的 20 秒单测超时；该测试
+  单独重跑为 2/2 通过（约 1.95 秒），没有发现 `prompt()` 违规或断言失败。
+- 按仓库提供的排查参数重新运行
+  `pnpm test:unit -- --workspace-concurrency=1`，全量通过：Desktop 1676 个文件、
+  20453 项测试通过（46 skipped），其它 unit workspace 也全部通过。归因是全量 workspace
+  并发下的资源/扫描时延波动，不是本次代码或测试行为回归；未修改测试超时或降低覆盖率。
+- 随后按提交门禁原始命令再次运行 `pnpm test:unit`，默认并发配置全量通过，确认首次超时
+  不可复现，最终提交以这次默认门禁结果为准。
+- 决策人：无需产品取舍；实施人：Codex。该结果覆盖此前 5.7 中“全量未重复执行”的旧记录，
+  以本节为最终验证事实。

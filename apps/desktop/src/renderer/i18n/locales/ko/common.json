@@ -4321,6 +4321,7 @@
           "updateConfirmAction": "업데이트 확인"
         },
         "origin": {
+          "all": "전체",
           "public": "공개",
           "local": "개인 및 공유"
         },
@@ -9837,6 +9838,7 @@
     }
   },
   "mekaSkills": {
+    "back": "Meka 스킬로 돌아가기",
     "title": "Meka 스킬",
     "description": "MCPRouter를 통해 독립적으로 배포되는 표준 Agent 스킬을 탐색하고 설치합니다.",
     "browseDescription": "Meka Skill Hub에서 MCPRouter 스킬을 찾아 설치",
