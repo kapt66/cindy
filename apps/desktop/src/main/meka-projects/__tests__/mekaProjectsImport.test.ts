@@ -9,13 +9,15 @@ const h = vi.hoisted(() => ({
   importedFile: null as MekaProjectFile | null,
   savedFile: null as MekaProjectFile | null,
   createdProject: null as Record<string, unknown> | null,
+  projectRows: [] as Array<Record<string, unknown>>,
+  failProjectId: null as string | null,
   roleRows: [] as Array<Record<string, unknown>>,
   createRole: vi.fn(),
   ensureDefaultRole: vi.fn(),
 }));
 
 vi.mock('electron', () => ({
-  app: { isPackaged: true, getPath: () => 'C:\\CindyMekaTest' },
+  app: { isPackaged: false, getAppPath: () => process.cwd(), getPath: () => 'C:\\CindyMekaTest' },
   ipcMain: {
     handle: vi.fn((channel: string, handler: (...args: unknown[]) => unknown) => {
       h.handlers.set(channel, handler);
@@ -48,18 +50,21 @@ vi.mock('../projectConfig.js', async (importOriginal) => {
           }
         : h.importedFile,
     ),
-    readProjectConfigState: vi.fn(async (locator: { projectId: string }) => ({
-      file:
-        locator.projectId === 'saga2'
-          ? {
-              schemaVersion: 1,
-              projectId: 'saga2',
-              basic: { name: 'saga2', displayName: 'SAGA2', path: 'C:\\Workspace\\saga2' },
-              metadata: [],
-            }
-          : h.savedFile,
-      source: locator.projectId === 'saga2' ? 'builtin' : 'project',
-    })),
+    readProjectConfigState: vi.fn(async (locator: { projectId: string }) => {
+      if (locator.projectId === h.failProjectId) throw new Error('projectId mismatch');
+      return {
+        file:
+          locator.projectId === 'saga2'
+            ? {
+                schemaVersion: 1,
+                projectId: 'saga2',
+                basic: { name: 'saga2', displayName: 'SAGA2', path: 'C:\\Workspace\\saga2' },
+                metadata: [],
+              }
+            : h.savedFile,
+        source: locator.projectId === 'saga2' ? 'builtin' : 'project',
+      };
+    }),
     resolveCustomRoleManifestPath: (roleId: string) => `C:\\roles\\${roleId}.json`,
     resolveProjectConfigPath: () => 'C:\\project.json',
     saveProjectConfig: vi.fn(async (_locator: unknown, file: MekaProjectFile) => {
@@ -78,18 +83,20 @@ vi.mock('../../localDb/client/current.js', () => ({
   getDbClient: () => ({
     query: async (sql: string, params: unknown[] = []) => {
       if (sql.includes('FROM meka_projects')) {
-        return [
-          {
-            id: 'saga2',
-            name: 'saga2',
-            path: 'saga2',
-            tags: '[]',
-            is_builtin: 1,
-            sort_order: 0,
-            created_at: null,
-            updated_at: null,
-          },
-        ];
+        return h.projectRows.length > 0
+          ? h.projectRows
+          : [
+              {
+                id: 'saga2',
+                name: 'saga2',
+                path: 'saga2',
+                tags: '[]',
+                is_builtin: 1,
+                sort_order: 0,
+                created_at: null,
+                updated_at: null,
+              },
+            ];
       }
       if (sql.includes('FROM meka_roles')) {
         if (params[0] === 'saga2') {
@@ -149,6 +156,7 @@ vi.mock('../../localDb/client/current.js', () => ({
 
 import {
   MEKA_PROJECT_CREATE,
+  MEKA_PROJECT_LIST,
   registerMekaProjectsIpc,
 } from '../../localDb/ipc/mekaProjects.js';
 
@@ -174,6 +182,8 @@ describe('Meka copied project import', () => {
     h.handlers.clear();
     h.savedFile = null;
     h.createdProject = null;
+    h.projectRows = [];
+    h.failProjectId = null;
     h.roleRows = [];
     h.importedFile = null;
     h.createRole.mockReset();
@@ -245,5 +255,117 @@ describe('Meka copied project import', () => {
       'cloned-role-2',
     ]);
     expect(h.savedFile?.builtinRoles?.every((item) => item.projectId === created.id)).toBe(true);
+  });
+
+  it('keeps SAGA2 visible when another registered project has an unreadable config', async () => {
+    h.projectRows = [
+      {
+        id: 'saga2',
+        name: 'saga2',
+        path: 'saga2',
+        tags: '[]',
+        is_builtin: 1,
+        sort_order: 0,
+        created_at: null,
+        updated_at: null,
+      },
+      {
+        id: 'broken-project',
+        name: 'Broken project',
+        path: 'C:\\Workspace\\broken-project',
+        tags: '[]',
+        is_builtin: 0,
+        sort_order: 1,
+        created_at: null,
+        updated_at: null,
+      },
+    ];
+    h.failProjectId = 'broken-project';
+    h.roleRows = [
+      {
+        id: 'broken-role',
+        project_id: 'broken-project',
+        name: 'broken-role',
+        display_name: '保留角色',
+        description: null,
+        tags: '[]',
+        file_path: 'meka-roles/broken-role.json',
+        is_builtin: 0,
+        content_digest: null,
+        sort_order: 0,
+        created_at: null,
+        updated_at: null,
+      },
+    ];
+
+    const projects = (await h.handlers.get(MEKA_PROJECT_LIST)!({})) as Array<{
+      id: string;
+      roles: Array<{ id: string }>;
+    }>;
+
+    expect(projects.map((project) => project.id)).toEqual(['saga2', 'broken-project']);
+    expect(projects[1].roles.map((role) => role.id)).toEqual(['broken-role']);
+  });
+
+  it('hydrates bundled roles when a copied SAGA2 project file has no role snapshots', async () => {
+    const root = path.join(path.parse(process.cwd()).root, 'Workspace', 'saga2_project_git');
+    h.importedFile = {
+      schemaVersion: 1,
+      projectId: 'saga2',
+      basic: { name: 'saga2', displayName: 'SAGA2', path: root },
+      metadata: [],
+    };
+
+    const created = (await h.handlers.get(MEKA_PROJECT_CREATE)!({}, {
+      path: root,
+      displayName: 'SAGA2',
+    })) as { id: string };
+
+    expect(h.ensureDefaultRole).not.toHaveBeenCalled();
+    expect(h.createRole).toHaveBeenCalledTimes(6);
+    expect(h.savedFile?.builtinRoles).toHaveLength(6);
+    expect(h.savedFile?.builtinRoles?.every((item) => item.projectId === created.id)).toBe(true);
+  });
+
+  it('imports a copied config even when an older registered project cannot be inspected', async () => {
+    const root = path.join(path.parse(process.cwd()).root, 'Workspace', 'copied-project');
+    h.projectRows = [
+      {
+        id: 'saga2',
+        name: 'saga2',
+        path: 'saga2',
+        tags: '[]',
+        is_builtin: 1,
+        sort_order: 0,
+        created_at: null,
+        updated_at: null,
+      },
+      {
+        id: 'broken-project',
+        name: 'Broken project',
+        path: 'C:\\Workspace\\broken-project',
+        tags: '[]',
+        is_builtin: 0,
+        sort_order: 1,
+        created_at: null,
+        updated_at: null,
+      },
+    ];
+    h.failProjectId = 'broken-project';
+    h.importedFile = {
+      schemaVersion: 1,
+      projectId: 'source-project',
+      basic: { name: 'source-project', displayName: 'Copied project', path: root },
+      metadata: [],
+    };
+    h.ensureDefaultRole.mockResolvedValue({ id: 'default-role' });
+
+    const created = (await h.handlers.get(MEKA_PROJECT_CREATE)!({}, {
+      path: root,
+      displayName: 'Copied project',
+    })) as { id: string };
+
+    expect(created.id).not.toBe('source-project');
+    expect(h.savedFile?.projectId).toBe(created.id);
   });
 });

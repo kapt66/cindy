@@ -15,6 +15,7 @@ import {
   cloneMekaRoleManifestForProject,
   createProjectConfigExclusive,
   readEffectiveProjectConfig,
+  readBundledRoleManifests,
   readProjectConfigAtRoot,
   readProjectConfigState,
   resolveCustomRoleManifestPath,
@@ -24,6 +25,7 @@ import {
   sortImportedRoleManifests,
 } from '../../meka-projects/projectConfig.js';
 import { getMekaP4SettingsService } from '../../meka-settings/ipc.js';
+import { createLogger } from '../../logger.js';
 import { assertTrustedAppRendererEvent } from '../../security/trustedAppRenderer.js';
 import { requireObject, requireString, throwIpcError } from '../../utils/ipcValidate.js';
 import { getDbClient } from '../client/current.js';
@@ -39,6 +41,7 @@ export const MEKA_PROJECT_INSPECT_PATH = 'meka-project:inspect-path';
 export const MEKA_PROJECT_RESET_BUILTIN = 'meka-project:reset-builtin';
 
 const SAFE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+const log = createLogger('meka-projects');
 
 interface ProjectRow {
   id: string;
@@ -244,6 +247,47 @@ async function toProject(row: ProjectRow): Promise<MekaProject> {
   };
 }
 
+function fallbackProject(
+  row: ProjectRow,
+  builtinRoot: string | null | undefined,
+  roles: readonly MekaRole[],
+): MekaProject {
+  const fallbackPath =
+    row.is_builtin === 1 && builtinRoot && path.isAbsolute(builtinRoot)
+      ? path.resolve(builtinRoot)
+      : row.path;
+  return {
+    id: row.id,
+    name: row.name,
+    displayName: row.name,
+    description: null,
+    path: fallbackPath,
+    additionalPaths: [],
+    tags: parseTags(row.tags),
+    isBuiltin: row.is_builtin === 1,
+    configSource: row.is_builtin === 1 ? 'builtin' : 'project',
+    sortOrder: row.sort_order,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    roles,
+  };
+}
+
+async function fallbackForRow(row: ProjectRow): Promise<MekaProject> {
+  let builtinRoot: string | null = null;
+  if (row.is_builtin === 1) {
+    try {
+      builtinRoot = (await getMekaP4SettingsService().get()).p4RootPath;
+    } catch {
+      // The registered row is still useful when settings are temporarily unavailable.
+    }
+  }
+  // The project file may be unreadable, but database-owned role rows are still
+  // valid and are needed to keep existing sessions addressable.
+  const roles = await rolesFor(row.id);
+  return fallbackProject(row, builtinRoot, roles);
+}
+
 function rethrow(error: unknown, action: string): never {
   if (isIpcError(error)) throw error;
   if (/FOREIGN KEY constraint failed/i.test(String(error))) {
@@ -259,13 +303,36 @@ async function listProjects(): Promise<MekaProject[]> {
   const rows = await getDbClient().query<ProjectRow>(
     'SELECT * FROM meka_projects ORDER BY sort_order, name',
   );
-  return Promise.all(rows.map(toProject));
+  return Promise.all(
+    rows.map(async (row) => {
+      try {
+        return await toProject(row);
+      } catch (error) {
+        // One malformed project must not hide the builtin catalog or history
+        // belonging to other projects.
+        log.warn('failed to load Meka project; using registered row fallback', {
+          projectId: row.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return fallbackForRow(row);
+      }
+    }),
+  );
 }
 
 async function getProject(idInput: unknown): Promise<MekaProject | null> {
   const id = safeId(idInput, 'project id');
   const row = await projectRow(id);
-  return row ? toProject(row) : null;
+  if (!row) return null;
+  try {
+    return await toProject(row);
+  } catch (error) {
+    log.warn('failed to load Meka project by id; using registered row fallback', {
+      projectId: row.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return fallbackForRow(row);
+  }
 }
 
 /** Trusted Main-side lookup used by formal workflow providers. */
@@ -295,7 +362,10 @@ async function createProject(input: unknown): Promise<MekaProject> {
     }
 
     const id = safeId(createId(), 'generated project id');
-    const existingFile = await readProjectConfigAtRoot(root, id);
+    // Read once with the source identity so a bundled SAGA2 project file can
+    // recover its role catalog before the imported copy is reidentified.
+    const sourceFile = await readProjectConfigAtRoot(root);
+    const existingFile = sourceFile ? await readProjectConfigAtRoot(root, id) : null;
     if (await projectRow(id)) {
       throwIpcError('ALREADY_EXISTS', `Meka project ${id} is already registered`);
     }
@@ -307,7 +377,21 @@ async function createProject(input: unknown): Promise<MekaProject> {
     const projectTags = tags(body.tags);
     const now = Date.now();
     const registeredProjects = existingFile
-      ? await Promise.all(registeredRows.map(toProject))
+      ? await Promise.all(
+          registeredRows.map(async (registeredRow) => {
+            try {
+              return await toProject(registeredRow);
+            } catch (error) {
+              // Import naming must remain available even when an older
+              // registration has a malformed project-owned configuration.
+              log.warn('failed to inspect registered project during import', {
+                projectId: registeredRow.id,
+                error: error instanceof Error ? error.message : String(error),
+              });
+              return fallbackForRow(registeredRow);
+            }
+          }),
+        )
       : [];
     let file: MekaProjectFile =
       (existingFile
@@ -329,6 +413,12 @@ async function createProject(input: unknown): Promise<MekaProject> {
         },
         metadata: [],
       } as MekaProjectFile);
+    if (existingFile && file.builtinRoles === undefined && sourceFile) {
+      const bundledRoles = await readBundledRoleManifests(sourceFile.projectId);
+      if (bundledRoles.length > 0) {
+        file = { ...file, builtinRoles: bundledRoles };
+      }
+    }
     if (file.builtinRoles && file.builtinRoles.length > 0) {
       file = {
         ...file,

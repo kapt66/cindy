@@ -16,6 +16,7 @@ import {
   readBuiltinRoleManifest,
   readEffectiveProjectConfig,
   readProjectConfigAtRoot,
+  readProjectConfigState,
   renameImportedProjectOnConflict,
   saveProjectConfig,
   sortImportedRoleManifests,
@@ -103,7 +104,7 @@ describe('Meka project.json boundary', () => {
     ).toMatchObject({ projectId: 'saga2', basic: { displayName: 'SAGA2 Local' } });
   });
 
-  it('uses a SAGA2 project file as the only project source and materializes builtin roles', async () => {
+  it('uses a SAGA2 project file as the authoritative project source with bundled role fallback', async () => {
     const root = await tempRoot();
     const configDirectory = path.join(root, '.meka');
     await mkdir(configDirectory, { recursive: true });
@@ -139,7 +140,41 @@ describe('Meka project.json boundary', () => {
       await readFile(path.join(configDirectory, 'project.json'), 'utf8'),
     ) as MekaProjectFile;
     expect(persisted.metadata).toEqual([]);
-    expect(persisted.builtinRoles).toHaveLength(6);
+    expect(persisted.builtinRoles).toBeUndefined();
+  });
+
+  it('prefers project-owned role snapshots and falls back per missing bundled role', async () => {
+    const root = await tempRoot();
+    const locator = {
+      projectId: 'saga2',
+      isBuiltin: true,
+      projectRoot: root,
+      appIsPackaged: false,
+    };
+    const bundled = await readEffectiveProjectConfig(locator);
+    const overriddenRole = {
+      ...bundled!.builtinRoles!.find((role) => role.id === 'general-development')!,
+      displayName: 'Project-owned development',
+    };
+    const configPath = path.join(root, '.meka', 'project.json');
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(
+      configPath,
+      `${JSON.stringify({
+        ...bundled,
+        builtinRoles: [overriddenRole],
+      })}\n`,
+      'utf8',
+    );
+
+    const loaded = await readEffectiveProjectConfig(locator);
+
+    expect(loaded?.builtinRoles).toHaveLength(6);
+    expect(
+      loaded?.builtinRoles?.find((role) => role.id === 'general-development')?.displayName,
+    ).toBe('Project-owned development');
+    const persisted = JSON.parse(await readFile(configPath, 'utf8')) as MekaProjectFile;
+    expect(persisted.builtinRoles).toHaveLength(1);
   });
 
   it.each(['', path.resolve(path.sep, 'previous-checkout')])(
@@ -347,6 +382,121 @@ describe('Meka project.json boundary', () => {
     expect(() => normalizeMekaProjectFile(projectFile('other', root), 'demo')).toThrow(
       /projectId mismatch/,
     );
+  });
+
+  it('repairs a copied project identity when reading an existing registration', async () => {
+    const root = await tempRoot();
+    const configPath = path.join(root, '.meka', 'project.json');
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(
+      configPath,
+      `${JSON.stringify({
+        ...projectFile('saga2', root),
+        basic: { displayName: 'Copied SAGA2', path: 'saga2' },
+        builtinRoles: [roleManifest('copied-role', 'saga2')],
+      })}\n`,
+      'utf8',
+    );
+
+    const locator = {
+      projectId: 'copied-project',
+      isBuiltin: false,
+      projectRoot: root,
+      appIsPackaged: false,
+    };
+    const state = await readProjectConfigState(locator);
+
+    expect(state.file).toMatchObject({
+      projectId: 'copied-project',
+      basic: { path: path.resolve(root) },
+    });
+    expect(state.file?.builtinRoles?.[0]?.projectId).toBe('copied-project');
+    expect(JSON.parse(await readFile(configPath, 'utf8'))).toMatchObject({
+      projectId: 'copied-project',
+      basic: { path: path.resolve(root) },
+      builtinRoles: [{ projectId: 'copied-project' }],
+    });
+  });
+
+  it('repairs stale embedded role identities even when the project id already matches', async () => {
+    const root = await tempRoot();
+    const configPath = path.join(root, '.meka', 'project.json');
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(
+      configPath,
+      `${JSON.stringify({
+        ...projectFile('copied-project', root),
+        builtinRoles: [roleManifest('copied-role', 'source-project')],
+      })}\n`,
+      'utf8',
+    );
+
+    const state = await readProjectConfigState({
+      projectId: 'copied-project',
+      isBuiltin: false,
+      projectRoot: root,
+      appIsPackaged: false,
+    });
+
+    expect(state.file?.builtinRoles?.[0]?.projectId).toBe('copied-project');
+    expect(JSON.parse(await readFile(configPath, 'utf8'))).toMatchObject({
+      projectId: 'copied-project',
+      builtinRoles: [{ projectId: 'copied-project' }],
+    });
+  });
+
+  it('reidentifies a copied builtin override while retaining all bundled roles', async () => {
+    const root = await tempRoot();
+    const locator = {
+      projectId: 'saga2',
+      isBuiltin: true,
+      projectRoot: root,
+      appIsPackaged: false,
+    };
+    const base = await readEffectiveProjectConfig(locator);
+    expect(base?.builtinRoles).toHaveLength(6);
+    const configPath = path.join(root, '.meka', 'project.json');
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(
+      configPath,
+      `${JSON.stringify({
+        ...base,
+        projectId: 'source-project',
+        builtinRoles: base!.builtinRoles!.map((role) => ({ ...role, projectId: 'source-project' })),
+      })}\n`,
+      'utf8',
+    );
+
+    const state = await readProjectConfigState(locator);
+
+    expect(state.source).toBe('project');
+    expect(state.file?.projectId).toBe('saga2');
+    expect(state.file?.builtinRoles).toHaveLength(6);
+    expect(state.file?.builtinRoles?.every((role) => role.projectId === 'saga2')).toBe(true);
+    const persisted = JSON.parse(await readFile(configPath, 'utf8')) as MekaProjectFile;
+    expect(persisted.projectId).toBe('saga2');
+    expect(persisted.builtinRoles?.every((role) => role.projectId === 'saga2')).toBe(true);
+  });
+
+  it('falls back to bundled SAGA2 data when its project override is malformed', async () => {
+    const root = await tempRoot();
+    const configPath = path.join(root, '.meka', 'project.json');
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(configPath, '{"schemaVersion":1,"projectId":"saga2"}\n', 'utf8');
+
+    const state = await readProjectConfigState({
+      projectId: 'saga2',
+      isBuiltin: true,
+      projectRoot: root,
+      appIsPackaged: false,
+    });
+
+    expect(state.source).toBe('project');
+    expect(state.file).toMatchObject({
+      projectId: 'saga2',
+      basic: { displayName: 'SAGA2' },
+      builtinRoles: expect.any(Array),
+    });
   });
 });
 

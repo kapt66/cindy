@@ -287,9 +287,9 @@ export const BUILTIN_MEKA_PROJECTS: readonly MekaProject[] = [
 ];
 
 /**
- * Converge the read-only builtin registry without overwriting user-owned rows.
+ * Converge the bundled project registry without overwriting user-owned rows.
  * This runs after migrations on writable startup so clean Cindy databases and
- * databases upgraded from an older Meka build see the same builtin catalog.
+ * databases upgraded from an older Meka build see the same bundled catalog.
  */
 export function seedBuiltinMekaProjects(db: Database.Database, now = Date.now()): void {
   const upsertProject = db.prepare(`
