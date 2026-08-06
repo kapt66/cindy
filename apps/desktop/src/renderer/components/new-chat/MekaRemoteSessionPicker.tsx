@@ -91,11 +91,6 @@ export function MekaRemoteSessionPicker({ open, onSelect }: Props) {
 
   return (
     <>
-      <div className="px-3 pb-1 pt-2">
-        <span className="text-xs font-normal text-[var(--folder-label)]">
-          {t('newChat.folderPicker.remoteInstances')}
-        </span>
-      </div>
       <div data-folder-picker-scroll="true" className="pending-queue-scroll max-h-[180px] overflow-y-auto">
         {loading && availableInstances.length === 0 ? (
           <div className="flex items-center gap-2 px-3 py-[10px] text-sm text-[var(--folder-item-path)]">

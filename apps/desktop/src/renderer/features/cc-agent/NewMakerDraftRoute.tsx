@@ -52,6 +52,7 @@ import {
   type FolderPickerSelectSource,
 } from '@/components/new-chat/FolderPickerPopover';
 import { DeviceSwitcherPill } from '@/components/new-chat/DeviceSwitcherPill';
+import { MekaRouterConnectDialog } from '@/components/settings/MekaRouterConnectDialog';
 import { RightSidebarToggle } from '@/components/layout/RightSidebarToggle';
 import {
   AddRemoteProjectDialog,
@@ -132,7 +133,11 @@ import { resolveCollabEntryPolicy } from './collabEntryPolicy';
 import { useCollabProjectPolicy } from './hooks/useCollabProjectPolicy';
 import { CrossAgentConvertDialog } from '@/components/ui/cross-agent-convert-dialog';
 import type { MakerVendor, Session } from '@/lib/ccAgent.types';
-import { parseMcprRemoteHostId, type MekaRouterInstance } from '../../../shared/meka-router';
+import {
+  parseMcprRemoteHostId,
+  type MekaRouterInstance,
+  type MekaRouterSettingsView,
+} from '../../../shared/meka-router';
 import {
   BUILTIN_MEKA_PROJECTS,
   type MekaProject,
@@ -857,6 +862,32 @@ export function NewMakerDraftRoute() {
   }, []);
   const [folderPickerOpen, setFolderPickerOpen] = useState(false);
   const [remoteSessionDisplayLabel, setRemoteSessionDisplayLabel] = useState<string | null>(null);
+  const [mcprChannelSelected, setMcprChannelSelected] = useState(() =>
+    parseMcprRemoteHostId(draft.remoteHostId) !== null,
+  );
+  const [mcprSettings, setMcprSettings] = useState<MekaRouterSettingsView | null>(null);
+  const [mcprConnectOpen, setMcprConnectOpen] = useState(false);
+  const mcprConfigured = mcprSettings?.configured ?? false;
+  const refreshMcprSettings = useCallback(async () => {
+    if (isMekaDraft) {
+      setMcprSettings(null);
+      setMcprChannelSelected(false);
+      return;
+    }
+    const router = window.electronAPI?.mekaSettings?.router;
+    if (!router) {
+      setMcprSettings(null);
+      return;
+    }
+    try {
+      setMcprSettings(await router.get());
+    } catch {
+      setMcprSettings(null);
+    }
+  }, [isMekaDraft]);
+  useEffect(() => {
+    void refreshMcprSettings();
+  }, [refreshMcprSettings]);
   // 设备切换器(#807)。与项目 picker 互斥打开 —— 两个 popover 同时浮着会互相遮挡。
   const [devicePickerOpen, setDevicePickerOpen] = useState(false);
   // 整页拖入的视觉反馈(与 CCAgentSessionView 聊天区同款):enter/leave 计数
@@ -1135,13 +1166,16 @@ export function NewMakerDraftRoute() {
   const createAgentModeLabel = remoteSessionLabel
     ? remoteSessionLabel
     : isMekaDraft
-    ? (mekaSelection.projects.find((project) => project.id === mekaSelection.projectId)
-        ?.displayName ?? t('meka.projectsRoles.projectPicker'))
-    : (getProjectPickerDisplayName(
-        effectiveWorkingDir,
-        activeProjectOptions,
-        effectiveDeviceLinkDeviceId,
-      ) ?? t('newChat.folderPicker.dialogue'));
+      ? (mekaSelection.projects.find((project) => project.id === mekaSelection.projectId)
+          ?.displayName ?? t('meka.projectsRoles.projectPicker'))
+      : (getProjectPickerDisplayName(
+          effectiveWorkingDir,
+          activeProjectOptions,
+          effectiveDeviceLinkDeviceId,
+        ) ??
+        (mcprChannelSelected
+          ? t('newChat.folderPicker.selectProject')
+          : t('newChat.folderPicker.dialogue')));
   const draftRightSidebar = useMemo(
     () =>
       resolveNewMakerDraftRightSidebar({
@@ -2387,7 +2421,8 @@ export function NewMakerDraftRoute() {
       // 点已选中的那一行(包括本机时点「本机」)只是确认当前选择,不该有任何副作用。
       // 下面会剥 mention chip、丢路径型附件并清 workingDir / extraDirs —— 重选同一设备时执行这些,
       // 等于用户点一下就静默丢掉已选的项目、附件和部分已写好的消息。必须先早返回。
-      if (deviceId === (effectiveDeviceLinkDeviceId ?? null)) return;
+      if (!mcprChannelSelected && deviceId === (effectiveDeviceLinkDeviceId ?? null)) return;
+      setMcprChannelSelected(false);
       // 换完停在这台设备的「对话」(workingDir=null):上一台的项目路径在新机器上基本不存在,
       // 留着会让用户以为项目跟过来了、发送时才在被控端 path guard 上失败。与 mobile 切设备后
       // 工作区回落的行为一致。其余连带清理全部由 applyDraftTarget 按「设备变了」推导。
@@ -2399,8 +2434,18 @@ export function NewMakerDraftRoute() {
       // 早返回掉,deviceId 必然变化 → hook effect 必然重跑 → evict 后必然 cache miss 并自行 fetch。
       applyDraftTarget({ deviceId, deviceName, workingDir: null });
     },
-    [effectiveDeviceLinkDeviceId, applyDraftTarget],
+    [effectiveDeviceLinkDeviceId, mcprChannelSelected, applyDraftTarget],
   );
+  const handleMcpRemoteSelect = useCallback(() => {
+    if (sendInFlightRef.current || isMekaDraft) return;
+    if (mcprChannelSelected) return;
+    setMcprChannelSelected(true);
+    setRemoteSessionDisplayLabel(null);
+    applyDraftTarget({ deviceId: null, deviceName: null, workingDir: null });
+  }, [applyDraftTarget, isMekaDraft, mcprChannelSelected]);
+  const handleConnectMcpr = useCallback(() => {
+    setMcprConnectOpen(true);
+  }, []);
   const handleOpenRemoteProject = useCallback((deviceId?: string) => {
     setAddRemoteProjectDeviceId(deviceId ?? null);
     setAddRemoteProjectOpen(true);
@@ -2415,6 +2460,7 @@ export function NewMakerDraftRoute() {
       // 发送已在途时闭包持有旧工作区，禁止切换后让已在途创建落到旧目标。
       if (sendInFlightRef.current) return;
       setRemoteSessionDisplayLabel(null);
+      setMcprChannelSelected(false);
       if (source === 'meka-project') {
         const project = mekaSelection.projects.find((candidate) => candidate.id === path);
         const roles = project?.roles ?? [];
@@ -2450,6 +2496,7 @@ export function NewMakerDraftRoute() {
     (instance: MekaRouterInstance) => {
       if (sendInFlightRef.current || !instance.supported || !instance.available) return;
       setFolderPickerOpen(false);
+      setMcprChannelSelected(true);
       setRemoteSessionDisplayLabel(
         t('newChat.folderPicker.remoteSelected', {
           project: instance.projectName || instance.instanceId,
@@ -3945,6 +3992,9 @@ export function NewMakerDraftRoute() {
                     devices={selectableDevices}
                     value={effectiveDeviceLinkDeviceId ?? null}
                     onChange={handleDeviceChange}
+                    mcprConfigured={mcprConfigured}
+                    mcprSelected={mcprChannelSelected}
+                    onMcpRemoteSelect={handleMcpRemoteSelect}
                     open={devicePickerOpen}
                     onOpenChange={handleDevicePickerOpenChange}
                     // 窄屏 pill 排会进正常流并 flex-wrap;多台时收成图标 + 状态点少占一行。
@@ -3963,8 +4013,13 @@ export function NewMakerDraftRoute() {
                     description: project.description ?? project.path ?? undefined,
                   }))}
                   deviceScope={folderPickerDeviceScope}
+                  mcprRemoteOnly={mcprChannelSelected}
+                  mcprConfigured={mcprConfigured}
+                  onConnectMcpr={handleConnectMcpr}
                   onRemoveRemoteProject={removeRemoteProject}
-                  onSelectRemoteSession={!isMekaDraft ? handleSelectRemoteSession : undefined}
+                  onSelectRemoteSession={
+                    mcprChannelSelected && !isMekaDraft ? handleSelectRemoteSession : undefined
+                  }
                   // 仅在有可用远程目标时暴露「添加远程项目」入口(SSH ready 主机 / device-link 可控设备)。
                   // 已经选定对端设备时无条件下发:此时浏览目标是明确的那台机器,不该再受
                   // hasAnyRemoteTarget 影响 —— 它会在该设备离线时变 false,把「浏览文件夹」推回
@@ -4365,6 +4420,12 @@ export function NewMakerDraftRoute() {
           // 里还有一道 fail-closed 兜底,防非 UI 路径漏进 Pi+SSH。
           agentVendor={draft.vendor}
           onProjectAdded={handleRemoteProjectAdded}
+        />
+        <MekaRouterConnectDialog
+          open={mcprConnectOpen}
+          settings={mcprSettings}
+          onOpenChange={setMcprConnectOpen}
+          onConnected={refreshMcprSettings}
         />
       </div>
     </TopRightChipStackProvider>

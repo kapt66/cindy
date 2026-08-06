@@ -13,6 +13,7 @@ export const MEKA_SETTINGS_CHANNELS = {
   SET_P4_ROOT: 'meka-settings:set-p4-root',
   ROUTER_GET: 'meka-settings:router:get',
   ROUTER_CONNECT: 'meka-settings:router:connect',
+  ROUTER_REGISTER: 'meka-settings:router:register',
   ROUTER_DISCONNECT: 'meka-settings:router:disconnect',
   ROUTER_LIST_TOOLS: 'meka-settings:router:list-tools',
   ROUTER_SET_ROUTE: 'meka-settings:router:set-route',
@@ -106,6 +107,14 @@ export function registerMekaSettingsIpc(
   ipcMain.handle(MEKA_SETTINGS_CHANNELS.ROUTER_CONNECT, (_event, input: unknown) => {
     const body = requireObject(input);
     return router.connect(
+      requireString(body.routerUrl, 'routerUrl'),
+      requireString(body.username, 'username'),
+      requireString(body.password, 'password'),
+    );
+  });
+  ipcMain.handle(MEKA_SETTINGS_CHANNELS.ROUTER_REGISTER, (_event, input: unknown) => {
+    const body = requireObject(input);
+    return router.register(
       requireString(body.routerUrl, 'routerUrl'),
       requireString(body.username, 'username'),
       requireString(body.password, 'password'),

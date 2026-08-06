@@ -133,6 +133,10 @@ interface FolderPickerPopoverProps {
   onAddRemoteProject?: (deviceId?: string) => void;
   /** MCPRouter instances/templates are loaded lazily while the picker is open. */
   onSelectRemoteSession?: (instance: MekaRouterInstance) => void;
+  /** When true, this second-level picker is scoped to the MCPR remote channel. */
+  mcprRemoteOnly?: boolean;
+  mcprConfigured?: boolean;
+  onConnectMcpr?: () => void;
   side?: 'top' | 'right' | 'bottom' | 'left';
   align?: 'start' | 'center' | 'end';
   sideOffset?: number;
@@ -150,6 +154,9 @@ export function FolderPickerPopover({
   onRemoveRemoteProject,
   onAddRemoteProject,
   onSelectRemoteSession,
+  mcprRemoteOnly = false,
+  mcprConfigured = false,
+  onConnectMcpr,
   side,
   align = 'end',
   sideOffset = 4,
@@ -299,7 +306,7 @@ export function FolderPickerPopover({
         )}
         onWheel={handleFolderPickerWheel}
       >
-        {isProjectPicker && (
+        {isProjectPicker && !mcprRemoteOnly && (
           <>
             <div className="px-3 py-2">
               <span className="text-xs font-normal text-[var(--folder-label)]">
@@ -425,7 +432,34 @@ export function FolderPickerPopover({
           </>
         )}
 
-        {isProjectPicker && onSelectRemoteSession ? (
+        {isProjectPicker && mcprRemoteOnly ? (
+          <div className="px-3 pb-1 pt-2">
+            <span className="text-xs font-normal text-[var(--folder-label)]">
+              {t('newChat.folderPicker.mcprRemoteProjects')}
+            </span>
+          </div>
+        ) : null}
+
+        {isProjectPicker && mcprRemoteOnly && !mcprConfigured ? (
+          <button
+            type="button"
+            onClick={() => {
+              onConnectMcpr?.();
+              onOpenChange(false);
+            }}
+            className={cn(
+              'flex w-full items-center gap-3 rounded-[8px] px-3 py-[10px] text-left',
+              'transition-colors outline-none hover:bg-[var(--folder-item-hover)]',
+            )}
+          >
+            <Globe size={20} className="shrink-0 text-[var(--folder-item-icon)]" />
+            <span className="relative top-px text-sm font-medium text-[var(--folder-item-name)]">
+              {t('newChat.folderPicker.connectMcpr')}
+            </span>
+          </button>
+        ) : null}
+
+        {isProjectPicker && mcprRemoteOnly && mcprConfigured && onSelectRemoteSession ? (
           <MekaRemoteSessionPicker open={open} onSelect={onSelectRemoteSession} />
         ) : null}
 
@@ -470,7 +504,7 @@ export function FolderPickerPopover({
         )}
 
         {/* Choose a different folder */}
-        <button
+        {!mcprRemoteOnly ? <button
           type="button"
           onClick={handleChooseDifferent}
           className={cn(
@@ -486,7 +520,7 @@ export function FolderPickerPopover({
               ? t('newChat.folderPicker.browseProjectFolder')
               : t('newChat.folderPicker.browseFolder')}
           </span>
-        </button>
+        </button> : null}
 
         {/* Phase D: 添加远程项目入口。仅 isProjectPicker 且上层传了
             onAddRemoteProject (即至少一台 host 勾了 autoConnect) 时显示,
@@ -502,7 +536,7 @@ export function FolderPickerPopover({
                 所以「在对端设备的语境里添加 SSH 项目」本身是语境错位;要用 SSH 先把设备切回本机,
                 与设备 pill 的语义一致。
             对端一个项目都没有时的空态入口不受影响 —— 那条走 tabBrowse 且**带**设备身份。 */}
-        {isProjectPicker && onAddRemoteProject && !deviceScope && (
+        {isProjectPicker && !mcprRemoteOnly && onAddRemoteProject && !deviceScope && (
           <button
             type="button"
             onClick={() => {

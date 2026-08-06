@@ -140,6 +140,29 @@ describe('Shared create project picker', () => {
     expect(folderPickerPopoverSource).toContain("t('newChat.folderPicker.browseProjectFolder')");
   });
 
+  it('keeps the MCPR-only project picker scoped to remote projects', () => {
+    const mcprOnlyIndex = folderPickerPopoverSource.indexOf(
+      '{isProjectPicker && mcprRemoteOnly ? (',
+    );
+    const mcprProjectsHeadingIndex = folderPickerPopoverSource.indexOf(
+      "t('newChat.folderPicker.mcprRemoteProjects')",
+      mcprOnlyIndex,
+    );
+    const mcprConfiguredBranchIndex = folderPickerPopoverSource.indexOf(
+      'mcprRemoteOnly && !mcprConfigured',
+      mcprOnlyIndex,
+    );
+    const mcprOnlyMenu = folderPickerPopoverSource.slice(mcprOnlyIndex, mcprConfiguredBranchIndex);
+
+    expect(mcprOnlyIndex).toBeGreaterThanOrEqual(0);
+    expect(mcprProjectsHeadingIndex).toBeGreaterThan(mcprOnlyIndex);
+    expect(mcprOnlyMenu).not.toContain("handleSelectPath('', 'dialogue')");
+    expect(mcprOnlyMenu).not.toContain("t('newChat.folderPicker.dialogue')");
+    expect(folderPickerPopoverSource).toContain("!mcprRemoteOnly ? <button");
+    expect(newMakerDraftRouteSource).not.toContain('mcprChannelSelected ?');
+    expect(newMakerDraftRouteSource).toContain("t('newChat.folderPicker.selectProject')");
+  });
+
   it('keeps route-local placeholder state out of CREATE AGENT after sidebar ownership moved to the app shell', () => {
     expect(newMakerDraftRouteSource).not.toContain(
       'getWorkspacePromptFromRouteState(location.state)',
@@ -309,8 +332,14 @@ describe('Shared create project picker', () => {
       'const { devices: selectableDevices, loaded: selectableDevicesLoaded } = useSelectableDevices();',
     );
     expect(newMakerDraftRouteSource).toContain('<DeviceSwitcherPill');
-    // 没有对端设备 → 组件自己返回 null,只有本机的用户看不到任何新增控件。
-    expect(deviceSwitcherPillSource).toContain('if (devices.length === 0) return null');
+    // MCPRouter 是始终可见的独立位置渠道；未连接时在二级项目菜单提供连接入口。
+    expect(deviceSwitcherPillSource).toContain('mcprRemoteLabel');
+    expect(folderPickerPopoverSource).toContain("t('newChat.folderPicker.connectMcpr')");
+    expect(folderPickerPopoverSource).toContain('mcprRemoteOnly && !mcprConfigured');
+    expect(deviceSwitcherPillSource).toContain("mcprRemoteLabel");
+    expect(newMakerDraftRouteSource).toContain('<MekaRouterConnectDialog');
+    expect(newMakerDraftRouteSource).toContain('setMcprConnectOpen(true)');
+    expect(newMakerDraftRouteSource).not.toContain("navigate('/settings?tab=meka-assistant')");
     // 离线设备列出但禁用 —— 掉线时从列表消失会让用户以为配对丢了。
     expect(deviceSwitcherPillSource).toContain('disabled={!device.online}');
     // 换设备后停在这台设备的「对话」:上一台的项目路径在新机器上基本不存在,
@@ -400,7 +429,7 @@ describe('Shared create project picker', () => {
   it('hides the add-remote-project entry once a device is selected', () => {
     // 条件里必须有 !deviceScope —— 这是这条行为的全部实现。
     expect(folderPickerPopoverSource).toContain(
-      '{isProjectPicker && onAddRemoteProject && !deviceScope && (',
+      '{isProjectPicker && !mcprRemoteOnly && onAddRemoteProject && !deviceScope && (',
     );
     // 那一项就是不带设备身份的那次调用;它只应出现在本机语境。
     expect(folderPickerPopoverSource).toContain('onAddRemoteProject();');
@@ -442,7 +471,7 @@ describe('Shared create project picker', () => {
   // 就静默丢掉已选项目和部分已写好的消息(mention chip 被剥、workingDir/extraDirs 被清)。
   it('ignores reselecting the current device before touching either draft store', () => {
     expect(newMakerDraftRouteSource).toContain(
-      'if (deviceId === (effectiveDeviceLinkDeviceId ?? null)) return;',
+      'if (!mcprChannelSelected && deviceId === (effectiveDeviceLinkDeviceId ?? null)) return;',
     );
   });
 
@@ -971,7 +1000,7 @@ describe('Shared create project picker', () => {
     // 声明本身是 `= useCallback(` 不匹配这个模式,所以数出来的就是调用点。
     const calls = newMakerDraftRouteSource.match(/applyDraftTarget\(\{/g) ?? [];
     // 远程 MCPRouter 实例也是同一个目标收敛动作的一条调用路径。
-    expect(calls.length).toBe(5);
+    expect(calls.length).toBe(6);
     // 组件里不得再有任何一处手写这些副作用 —— 手写一处就等于又开了一条绕过推导的路。
     // patchDraft 仍可出现(入场清 extraDirs、发送后复位),但不得再带设备字段。
     expect(newMakerDraftRouteSource).not.toContain('deviceLinkDeviceId: deviceId,');

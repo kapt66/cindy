@@ -144,11 +144,20 @@
         "instanceAvailable": "利用可能",
         "instanceUnavailable": "利用不可",
         "dialogTitle": "MCPRouter に接続",
+        "loginDescription": "MCPRouter のアドレスとアカウント情報を入力して、リモートプロジェクトに接続します。",
+        "registerDialogTitle": "MCPRouter アカウントを登録",
+        "registerDescription": "MCPRouter アカウントを作成し、登録後に自動で接続します。",
         "url": "Router URL",
         "username": "ユーザー名",
         "password": "パスワード",
+        "confirmPassword": "パスワードの確認",
         "showPassword": "パスワードを表示",
         "hidePassword": "パスワードを非表示",
+        "register": "登録",
+        "backToLogin": "ログインに戻る",
+        "registerSubmit": "登録して接続",
+        "registered": "登録して接続しました",
+        "passwordMismatch": "パスワードが一致しません",
         "disconnectConfirm": {
           "title": "MCPRouter を切断",
           "description": "この端末に保存された MCPRouter の認証情報を削除し、MekaDesign も切断します。続行しますか？"
@@ -6372,9 +6381,11 @@
       "remoteProjectsLoadFailed": "{{device}} のプロジェクトを読み込めませんでした。接続を確認して再試行してください。",
       "retryRemoteProjects": "プロジェクトを再読み込み",
       "remoteInstances": "リモート MCPRouter インスタンス",
+      "mcprRemoteProjects": "MCPR リモートプロジェクト",
       "remoteLoading": "リモートインスタンスを読み込み中…",
       "remoteEmpty": "利用可能なリモートインスタンスはありません。",
       "remoteCreate": "テンプレートからリモートインスタンスを作成",
+      "connectMcpr": "MCPRouter に接続",
       "remoteSelected": "{{project}} · {{instance}}"
     },
     "pendingQueue": {
@@ -6564,12 +6575,15 @@
       "ruleSeparator": "、"
     },
     "deviceSwitcher": {
-      "label": "デバイス",
+      "label": "場所",
       "localHint": "このパソコンで実行",
       "onlineHint": "接続済み — 作成できます",
       "offlineHint": "オフライン — 接続後に利用可能",
       "attachmentsDropped": "添付ファイル {{count}} 件を削除しました（前のデバイス上のファイルです）",
-      "attachmentsRemoteUnsupported": "リモートデバイスではファイル添付に未対応のため {{count}} 件をスキップしました（画像は可）"
+      "attachmentsRemoteUnsupported": "リモートデバイスではファイル添付に未対応のため {{count}} 件をスキップしました（画像は可）",
+      "mcprRemoteLabel": "MCPR リモート",
+      "mcprRemoteHint": "MCPRouter のリモートプロジェクトで実行",
+      "mcprRemoteDisconnectedHint": "MCPRouter 未接続"
     },
     "agentSelect": {
       "label": "エンジン",

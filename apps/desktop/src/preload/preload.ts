@@ -3022,6 +3022,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.invoke('meka-settings:router:get'),
       connect: (input: { routerUrl: string; username: string; password: string }): Promise<void> =>
         ipcRenderer.invoke('meka-settings:router:connect', input),
+      register: (input: { routerUrl: string; username: string; password: string }): Promise<void> =>
+        ipcRenderer.invoke('meka-settings:router:register', input),
       disconnect: (): Promise<void> => ipcRenderer.invoke('meka-settings:router:disconnect'),
       listTools: (): Promise<{
         tools: import('../shared/meka-router').MekaRouterTool[];

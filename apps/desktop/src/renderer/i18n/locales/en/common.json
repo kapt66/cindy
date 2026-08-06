@@ -144,11 +144,20 @@
         "instanceAvailable": "Available",
         "instanceUnavailable": "Unavailable",
         "dialogTitle": "Connect MCPRouter",
+        "loginDescription": "Enter the MCPRouter address and your account details to connect to remote projects.",
+        "registerDialogTitle": "Create an MCPRouter Account",
+        "registerDescription": "Create an MCPRouter account and connect automatically after registration.",
         "url": "Router URL",
         "username": "Username",
         "password": "Password",
+        "confirmPassword": "Confirm password",
         "showPassword": "Show password",
         "hidePassword": "Hide password",
+        "register": "Register",
+        "backToLogin": "Back to sign in",
+        "registerSubmit": "Register and connect",
+        "registered": "Account created and connected",
+        "passwordMismatch": "The passwords do not match",
         "disconnectConfirm": {
           "title": "Disconnect MCPRouter",
           "description": "This clears the saved MCPRouter credentials on this device and also disconnects MekaDesign. Continue?"
@@ -6375,9 +6384,11 @@
       "remoteProjectsLoadFailed": "Couldn't load projects from {{device}}. Check the connection and try again.",
       "retryRemoteProjects": "Reload projects",
       "remoteInstances": "Remote MCPRouter instances",
+      "mcprRemoteProjects": "MCPR remote projects",
       "remoteLoading": "Loading remote instances…",
       "remoteEmpty": "No available remote instances.",
       "remoteCreate": "Create a remote instance from a template",
+      "connectMcpr": "Connect MCPRouter",
       "remoteSelected": "{{project}} · {{instance}}"
     },
     "pendingQueue": {
@@ -6567,12 +6578,15 @@
       "ruleSeparator": ", "
     },
     "deviceSwitcher": {
-      "label": "Device",
+      "label": "Location",
       "localHint": "Runs on this computer",
       "onlineHint": "Connected — available",
       "offlineHint": "Offline — available once connected",
       "attachmentsDropped": "Removed {{count}} attachment(s) — they live on the previous device",
-      "attachmentsRemoteUnsupported": "File attachments aren't supported on a remote device — skipped {{count}} (images are fine)"
+      "attachmentsRemoteUnsupported": "File attachments aren't supported on a remote device — skipped {{count}} (images are fine)",
+      "mcprRemoteLabel": "MCPR Remote",
+      "mcprRemoteHint": "Run in an MCPRouter remote project",
+      "mcprRemoteDisconnectedHint": "MCPRouter is not connected"
     },
     "agentSelect": {
       "label": "Engine",

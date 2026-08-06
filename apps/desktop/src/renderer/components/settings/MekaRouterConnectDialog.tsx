@@ -9,6 +9,8 @@ import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import { extractIpcError } from '@/utils/ipcError';
 
+type AuthMode = 'login' | 'register';
+
 const BUTTON_CLASS = cn(
   'inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-md px-3 text-14 font-medium',
   'border border-[var(--settings-btn-secondary-border)] bg-[var(--settings-btn-secondary-bg)]',
@@ -37,7 +39,9 @@ export function MekaRouterConnectDialog({
   const [routerUrl, setRouterUrl] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [mode, setMode] = useState<AuthMode>('login');
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
@@ -45,28 +49,62 @@ export function MekaRouterConnectDialog({
     setRouterUrl(settings?.routerUrl ?? settings?.defaultRouterUrl ?? '');
     setUsername(settings?.routerUsername ?? '');
     setPassword('');
+    setConfirmPassword('');
     setShowPassword(false);
+    setMode('login');
   }, [open, settings]);
 
-  const connect = async () => {
-    if (submitting || !routerUrl.trim() || !username.trim() || !password) return;
+  const submit = async () => {
+    if (
+      submitting ||
+      !routerUrl.trim() ||
+      !username.trim() ||
+      !password ||
+      (mode === 'register' && (!confirmPassword || password !== confirmPassword))
+    ) {
+      if (mode === 'register' && confirmPassword && password !== confirmPassword) {
+        toast.error(t('settings.meka.router.passwordMismatch'));
+      }
+      return;
+    }
     setSubmitting(true);
     try {
-      await window.electronAPI.mekaSettings.router.connect({
+      await window.electronAPI.mekaSettings.router[mode === 'register' ? 'register' : 'connect']({
         routerUrl,
         username,
         password,
       });
       await onConnected();
       setPassword('');
+      setConfirmPassword('');
       onOpenChange(false);
-      toast.success(t('settings.meka.router.connected'));
+      toast.success(
+        t(
+          mode === 'register'
+            ? 'settings.meka.router.registered'
+            : 'settings.meka.router.connected',
+        ),
+      );
     } catch (error) {
       toast.error(extractIpcError(error)?.message ?? String(error));
     } finally {
       setSubmitting(false);
     }
   };
+
+  const switchMode = () => {
+    setMode((current) => (current === 'login' ? 'register' : 'login'));
+    setPassword('');
+    setConfirmPassword('');
+    setShowPassword(false);
+  };
+
+  const canSubmit =
+    !submitting &&
+    !!routerUrl.trim() &&
+    !!username.trim() &&
+    !!password &&
+    (mode === 'login' || (!!confirmPassword && password === confirmPassword));
 
   return (
     <Dialog.Root
@@ -87,10 +125,18 @@ export function MekaRouterConnectDialog({
             'border-[var(--settings-theme-card-border)] bg-[var(--settings-theme-card-bg)]',
           )}
           style={WINDOW_NO_DRAG_STYLE}
+          onKeyDown={(event) => {
+            // App.tsx disables Tab globally; keep native/Radix focus traversal inside this form.
+            if (event.key === 'Tab') event.stopPropagation();
+          }}
         >
           <div className="flex items-center justify-between gap-3">
             <Dialog.Title className="text-16 font-medium text-[var(--settings-section-title)]">
-              {t('settings.meka.router.dialogTitle')}
+              {t(
+                mode === 'register'
+                  ? 'settings.meka.router.registerDialogTitle'
+                  : 'settings.meka.router.dialogTitle',
+              )}
             </Dialog.Title>
             <Dialog.Close asChild>
               <button
@@ -103,74 +149,117 @@ export function MekaRouterConnectDialog({
               </button>
             </Dialog.Close>
           </div>
-          <label className="flex flex-col gap-1">
-            <span className="text-13 text-[var(--text-secondary)]">
-              {t('settings.meka.router.url')}
-            </span>
-            <input
-              className={INPUT_CLASS}
-              value={routerUrl}
-              onChange={(event) => setRouterUrl(event.target.value)}
-              placeholder={settings?.defaultRouterUrl ?? 'https://router.example'}
-              autoFocus
-            />
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-13 text-[var(--text-secondary)]">
-              {t('settings.meka.router.username')}
-            </span>
-            <input
-              className={INPUT_CLASS}
-              value={username}
-              onChange={(event) => setUsername(event.target.value)}
-            />
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-13 text-[var(--text-secondary)]">
-              {t('settings.meka.router.password')}
-            </span>
-            <div className="relative">
+          <Dialog.Description className="text-13 leading-5 text-[var(--text-secondary)]">
+            {t(
+              mode === 'register'
+                ? 'settings.meka.router.registerDescription'
+                : 'settings.meka.router.loginDescription',
+            )}
+          </Dialog.Description>
+          <form
+            className="flex flex-col gap-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void submit();
+            }}
+          >
+            <label className="flex flex-col gap-1">
+              <span className="text-13 text-[var(--text-secondary)]">
+                {t('settings.meka.router.url')}
+              </span>
               <input
-                className={cn(INPUT_CLASS, 'pr-10')}
-                type={showPassword ? 'text' : 'password'}
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') void connect();
-                }}
+                className={INPUT_CLASS}
+                type="url"
+                value={routerUrl}
+                onChange={(event) => setRouterUrl(event.target.value)}
+                placeholder={settings?.defaultRouterUrl ?? 'https://router.example'}
+                autoComplete="url"
+                autoFocus
               />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-13 text-[var(--text-secondary)]">
+                {t('settings.meka.router.username')}
+              </span>
+              <input
+                className={INPUT_CLASS}
+                value={username}
+                onChange={(event) => setUsername(event.target.value)}
+                autoComplete="username"
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-13 text-[var(--text-secondary)]">
+                {t('settings.meka.router.password')}
+              </span>
+              <div className="relative">
+                <input
+                  className={cn(INPUT_CLASS, 'pr-10')}
+                  type={showPassword ? 'text' : 'password'}
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
+                />
+                <button
+                  type="button"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--text-tertiary)]"
+                  onClick={() => setShowPassword((value) => !value)}
+                  aria-label={
+                    showPassword
+                      ? t('settings.meka.router.hidePassword')
+                      : t('settings.meka.router.showPassword')
+                  }
+                >
+                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
+            </label>
+            {mode === 'register' && (
+              <label className="flex flex-col gap-1">
+                <span className="text-13 text-[var(--text-secondary)]">
+                  {t('settings.meka.router.confirmPassword')}
+                </span>
+                <input
+                  className={INPUT_CLASS}
+                  type={showPassword ? 'text' : 'password'}
+                  value={confirmPassword}
+                  onChange={(event) => setConfirmPassword(event.target.value)}
+                  autoComplete="new-password"
+                />
+              </label>
+            )}
+            <div className="flex items-center justify-between gap-3">
               <button
                 type="button"
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--text-tertiary)]"
-                onClick={() => setShowPassword((value) => !value)}
-                aria-label={
-                  showPassword
-                    ? t('settings.meka.router.hidePassword')
-                    : t('settings.meka.router.showPassword')
-                }
+                className="h-9 px-1 text-14 text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={submitting}
+                onClick={switchMode}
               >
-                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                {t(
+                  mode === 'login'
+                    ? 'settings.meka.router.register'
+                    : 'settings.meka.router.backToLogin',
+                )}
               </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className={BUTTON_CLASS}
+                  disabled={submitting}
+                  onClick={() => onOpenChange(false)}
+                >
+                  {t('logic.confirm.cancel')}
+                </button>
+                <button type="submit" className={BUTTON_CLASS} disabled={!canSubmit}>
+                  {t(
+                    mode === 'register'
+                      ? 'settings.meka.router.registerSubmit'
+                      : 'settings.meka.router.connect',
+                  )}
+                </button>
+              </div>
             </div>
-          </label>
-          <div className="flex justify-end gap-2">
-            <button
-              type="button"
-              className={BUTTON_CLASS}
-              disabled={submitting}
-              onClick={() => onOpenChange(false)}
-            >
-              {t('logic.confirm.cancel')}
-            </button>
-            <button
-              type="button"
-              className={BUTTON_CLASS}
-              disabled={submitting || !routerUrl.trim() || !username.trim() || !password}
-              onClick={() => void connect()}
-            >
-              {t('settings.meka.router.connect')}
-            </button>
-          </div>
+          </form>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>

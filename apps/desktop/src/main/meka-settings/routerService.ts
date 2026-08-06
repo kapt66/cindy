@@ -280,6 +280,58 @@ export function createMekaRouterService(deps: MekaRouterServiceDeps) {
     }
   }
 
+  async function completeConnection(
+    baseUrl: string,
+    normalizedUsername: string,
+    password: string,
+    token: string,
+  ): Promise<void> {
+    const clientKey = await client.ensureClientKey(baseUrl, token);
+    const raw = await load();
+    const existingMekaDesignUrl = deps.vault.read(SECRET_KEYS.mekaDesignUrl);
+    let mekaDesignUrl: string | null = null;
+    let routeDiscoverySucceeded = false;
+    try {
+      const routes = await client.listRoutes(baseUrl, token);
+      routeDiscoverySucceeded = true;
+      mekaDesignUrl = findMekaDesignEndpoint(
+        routes,
+        existingMekaDesignUrl,
+        raw.mekadesignConfigured === true,
+      );
+    } catch {
+      // Authentication remains valid when optional MekaDesign route discovery is unavailable.
+    }
+    const effectiveMekaDesignUrl =
+      existingMekaDesignUrl ?? (raw.mekaDesignRouterSyncSuppressed === true ? null : mekaDesignUrl);
+    try {
+      deps.vault.store(SECRET_KEYS.password, password);
+      deps.vault.store(SECRET_KEYS.sessionToken, token);
+      deps.vault.store(SECRET_KEYS.clientKey, clientKey);
+      if (effectiveMekaDesignUrl) {
+        deps.vault.store(SECRET_KEYS.mekaDesignUrl, effectiveMekaDesignUrl);
+      }
+      await save({
+        ...raw,
+        routerUrl: baseUrl,
+        routerUsername: normalizedUsername,
+        mekadesignConfigured:
+          effectiveMekaDesignUrl !== null ||
+          (!routeDiscoverySucceeded && raw.mekadesignConfigured === true),
+      });
+    } catch (error) {
+      for (const key of [SECRET_KEYS.password, SECRET_KEYS.sessionToken, SECRET_KEYS.clientKey]) {
+        deps.vault.remove(key);
+      }
+      if (existingMekaDesignUrl) {
+        deps.vault.store(SECRET_KEYS.mekaDesignUrl, existingMekaDesignUrl);
+      } else {
+        deps.vault.remove(SECRET_KEYS.mekaDesignUrl);
+      }
+      throw error;
+    }
+  }
+
   async function saveMekaDesignEndpoint(raw: JsonRecord, url: string): Promise<void> {
     const previousUrl = deps.vault.read(SECRET_KEYS.mekaDesignUrl);
     deps.vault.store(SECRET_KEYS.mekaDesignUrl, url);
@@ -380,51 +432,15 @@ export function createMekaRouterService(deps: MekaRouterServiceDeps) {
       const normalizedUsername = username.trim();
       if (!normalizedUsername || !password) throw new Error('MCPRouter credentials are required');
       const token = await client.login(baseUrl, normalizedUsername, password);
-      const clientKey = await client.ensureClientKey(baseUrl, token);
-      const raw = await load();
-      const existingMekaDesignUrl = deps.vault.read(SECRET_KEYS.mekaDesignUrl);
-      let mekaDesignUrl: string | null = null;
-      let routeDiscoverySucceeded = false;
-      try {
-        const routes = await client.listRoutes(baseUrl, token);
-        routeDiscoverySucceeded = true;
-        mekaDesignUrl = findMekaDesignEndpoint(
-          routes,
-          existingMekaDesignUrl,
-          raw.mekadesignConfigured === true,
-        );
-      } catch {
-        // Router login remains valid when optional MekaDesign route discovery is unavailable.
-      }
-      const effectiveMekaDesignUrl =
-        existingMekaDesignUrl ??
-        (raw.mekaDesignRouterSyncSuppressed === true ? null : mekaDesignUrl);
-      try {
-        deps.vault.store(SECRET_KEYS.password, password);
-        deps.vault.store(SECRET_KEYS.sessionToken, token);
-        deps.vault.store(SECRET_KEYS.clientKey, clientKey);
-        if (effectiveMekaDesignUrl) {
-          deps.vault.store(SECRET_KEYS.mekaDesignUrl, effectiveMekaDesignUrl);
-        }
-        await save({
-          ...raw,
-          routerUrl: baseUrl,
-          routerUsername: normalizedUsername,
-          mekadesignConfigured:
-            effectiveMekaDesignUrl !== null ||
-            (!routeDiscoverySucceeded && raw.mekadesignConfigured === true),
-        });
-      } catch (error) {
-        for (const key of [SECRET_KEYS.password, SECRET_KEYS.sessionToken, SECRET_KEYS.clientKey]) {
-          deps.vault.remove(key);
-        }
-        if (existingMekaDesignUrl) {
-          deps.vault.store(SECRET_KEYS.mekaDesignUrl, existingMekaDesignUrl);
-        } else {
-          deps.vault.remove(SECRET_KEYS.mekaDesignUrl);
-        }
-        throw error;
-      }
+      await completeConnection(baseUrl, normalizedUsername, password, token);
+    },
+
+    async register(routerUrl: string, username: string, password: string): Promise<void> {
+      const baseUrl = client.normalizeBaseUrl(routerUrl.trim() || DEFAULT_MEKA_MCPROUTER_URL);
+      const normalizedUsername = username.trim();
+      if (!normalizedUsername || !password) throw new Error('MCPRouter credentials are required');
+      const token = await client.register(baseUrl, normalizedUsername, password);
+      await completeConnection(baseUrl, normalizedUsername, password, token);
     },
 
     async disconnect(): Promise<void> {

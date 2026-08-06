@@ -154,6 +154,13 @@ function sessionHeaders(sessionToken: string): Record<string, string> {
   };
 }
 
+function readSessionToken(response: Response, operation: 'login' | 'register'): string {
+  const cookie = response.headers.get('set-cookie') ?? '';
+  const token = cookie.match(/(?:^|;\s*)session=([^;]+)/)?.[1];
+  if (!token) throw new Error(`MCPRouter ${operation} did not return a session cookie`);
+  return token;
+}
+
 export function createMekaRouterClient(deps: RouterClientDeps = {}) {
   return {
     normalizeBaseUrl,
@@ -166,10 +173,17 @@ export function createMekaRouterClient(deps: RouterClientDeps = {}) {
         body: JSON.stringify({ username, password }),
       });
       if (!response.ok) throw await readError(response, 'login');
-      const cookie = response.headers.get('set-cookie') ?? '';
-      const token = cookie.match(/(?:^|;\s*)session=([^;]+)/)?.[1];
-      if (!token) throw new Error('MCPRouter login did not return a session cookie');
-      return token;
+      return readSessionToken(response, 'login');
+    },
+
+    async register(baseUrl: string, username: string, password: string): Promise<string> {
+      const response = await request(deps, baseUrl, '/api/auth/register', {
+        method: 'POST',
+        headers: { accept: 'application/json', 'content-type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      if (!response.ok) throw await readError(response, 'register');
+      return readSessionToken(response, 'register');
     },
 
     async ensureClientKey(baseUrl: string, token: string): Promise<string> {

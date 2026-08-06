@@ -144,11 +144,20 @@
         "instanceAvailable": "可用",
         "instanceUnavailable": "不可用",
         "dialogTitle": "连接 MCPRouter",
+        "loginDescription": "输入 MCPRouter 地址和账号信息以连接远程项目。",
+        "registerDialogTitle": "注册 MCPRouter 账号",
+        "registerDescription": "创建 MCPRouter 账号，注册成功后将自动连接。",
         "url": "Router URL",
         "username": "账号",
         "password": "密码",
+        "confirmPassword": "确认密码",
         "showPassword": "显示密码",
         "hidePassword": "隐藏密码",
+        "register": "注册",
+        "backToLogin": "返回登录",
+        "registerSubmit": "注册并连接",
+        "registered": "注册成功，已连接",
+        "passwordMismatch": "两次输入的密码不一致",
         "disconnectConfirm": {
           "title": "断开 MCPRouter",
           "description": "将清除本机保存的 MCPRouter 凭证，并同时断开 MekaDesign 连接。确认继续？"
@@ -6372,9 +6381,11 @@
       "remoteProjectsLoadFailed": "无法读取 {{device}} 上的项目。请检查连接后重试。",
       "retryRemoteProjects": "重新读取项目",
       "remoteInstances": "远程 MCPRouter 实例",
+      "mcprRemoteProjects": "MCPR远程项目",
       "remoteLoading": "正在读取远程实例…",
       "remoteEmpty": "暂无可用远程实例。",
       "remoteCreate": "基于模板创建远程实例",
+      "connectMcpr": "连接 MCPRouter",
       "remoteSelected": "{{project}} · {{instance}}"
     },
     "pendingQueue": {
@@ -6564,12 +6575,15 @@
       "ruleSeparator": "、"
     },
     "deviceSwitcher": {
-      "label": "设备",
+      "label": "位置",
       "localHint": "在这台电脑上运行",
       "onlineHint": "已连接，可在其上创建",
       "offlineHint": "离线 · 连上后可用",
       "attachmentsDropped": "已移除 {{count}} 个附件：它们是上一台设备上的文件",
-      "attachmentsRemoteUnsupported": "远程设备暂不支持文件附件，已跳过 {{count}} 个（图片可以）"
+      "attachmentsRemoteUnsupported": "远程设备暂不支持文件附件，已跳过 {{count}} 个（图片可以）",
+      "mcprRemoteLabel": "MCPR远程",
+      "mcprRemoteHint": "在 MCPRouter 远程项目上运行",
+      "mcprRemoteDisconnectedHint": "未连接 MCPRouter"
     },
     "agentSelect": {
       "label": "引擎",

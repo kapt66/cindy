@@ -1787,6 +1787,30 @@ v3 MCP tunnel、bundle 缓存、Codex bridge 和按 thread 路由的远程 Skill
 daemon spawn 前再次复核 bundle；部署新 bundle 后必须重启 runtime，避免旧镜像/旧进程
 继续服务。
 
+### 6.22 2026-08-06 新建任务 MCPR 位置渠道
+
+用户反馈 MCPRouter 实例混入普通项目列表，且创建页在未连接 Router 时没有明确恢复入口。
+处理为一级位置菜单的独立“MCPR远程”渠道，位置固定在本机下方；进入该渠道后，二级项目菜单
+只投影 MCPR 实例/模板，标题只出现一次，并隐藏本地文件夹浏览和其它远程项目入口；未选实例
+时右侧项目胶囊显示统一的“选择项目”占位，不显示“MCPR远程”或“对话”。MCPR 项目菜单不
+提供“对话”，位置渠道由左侧菜单独立切换，切回本机后按本机项目菜单的统一逻辑选择对话。未连接时
+二级菜单提供“连接 MCPRouter”，直接打开与设置页共用的 MCPRouter 连接窗口并保留当前草稿，
+不在创建页新增凭证落盘或连接协议。普通本地/设备项目列表不再包含 MCPR 实例。验证：MCPR/项目 picker 定向
+单测、Desktop typecheck、i18n key 与术语表检查通过；真实 Electron 双主题与连接后端仍待手测。
+
+### 6.23 2026-08-06 MCPRouter 通用连接窗口注册与键盘流程
+
+新建任务入口复用通用连接窗口后，现场发现应用级 Tab 拦截导致窗口内输入框无法键盘切换，
+且窗口缺少用途说明和账号注册入口。处理为仅在该 Dialog 边界内阻止 Tab 继续冒泡到全局拦截，
+保留 Radix 焦点圈和原生表单顺序；登录与注册模式均显示完整标题和说明，底部左侧用文本按钮
+切换模式，注册模式增加确认密码并以“注册并连接”提交。
+
+客户端 Main 新增 `/api/auth/register` 调用和 `meka-settings:router:register` IPC。注册成功返回的
+session 直接复用登录后的 client key 初始化、MekaDesign 路由发现与 OS 加密存储收尾逻辑，
+不会重复登录，也不会把 session 或持久凭证暴露给 Renderer。HTTP client、Main service 和
+Dialog 定向测试覆盖注册请求、直接连接、共享持久化与 Tab 事件边界；真实 MCPRouter 注册、
+Electron 焦点顺序及 Light/Dark 仍待手测。
+
 ## 10. 后续继续迁移时的硬性注意事项
 
 ### 9.1 `origin/main` → `meka/main` 同步报告

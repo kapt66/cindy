@@ -5,9 +5,8 @@
  * (与 mobile 的「设备 → Agent → 工作区」同构)。
  *
  * 几条刻意的取舍:
- *   - **没有对端设备就整个不渲染**。绝大多数用户只有本机,给他们凭空多一个只能选「本机」的
- *     控件是纯负担。mobile 的做法是禁用并隐藏 ⇕,desktop 这排寸土寸金(mode pill + worktree
- *     齿轮已经占着,窄屏还会换行),直接不渲染更干净。
+ *   - **没有对端设备时仍保留 MCPR 渠道**。MCPRouter 是独立位置来源,即使尚未连接也要让用户
+ *     进入二级菜单完成连接;没有对端设备且 MCPR 未接入时,位置菜单仍只增加这一条明确渠道。
  *   - **离线设备照样列出、置灰禁用**。掉线时若直接从列表消失,用户会以为配对丢了;列出来并
  *     写明「离线」才能让人知道那台机器还在,只是没连上。
  *   - **不记忆上次选的设备**,每次进创建页默认本机。draft store 的 deviceLinkDeviceId 本来就
@@ -17,7 +16,7 @@
  *     少一次换行。只有一台对端时不收(名字短,信息更重要)。
  */
 
-import { Check, ChevronDown, Laptop } from 'lucide-react';
+import { Check, ChevronDown, Cloud, Laptop } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { cn } from '@/lib/utils';
@@ -33,6 +32,11 @@ interface Props {
   /** 当前选中的设备;null = 本机。 */
   value: DeviceSwitcherValue;
   onChange: (deviceId: DeviceSwitcherValue, deviceName: string | null) => void;
+  /** Whether MCPRouter is currently connected (the channel remains visible when false). */
+  mcprConfigured?: boolean;
+  /** Selected when the draft is waiting for an MCPRouter project choice. */
+  mcprSelected?: boolean;
+  onMcpRemoteSelect?: () => void;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** 窄屏(pill 排进正常流)时收成图标 + 状态点。 */
@@ -61,6 +65,9 @@ export function DeviceSwitcherPill({
   devices,
   value,
   onChange,
+  mcprConfigured = false,
+  mcprSelected = false,
+  onMcpRemoteSelect,
   open,
   onOpenChange,
   compact = false,
@@ -68,12 +75,11 @@ export function DeviceSwitcherPill({
 }: Props) {
   const { t } = useTranslation();
 
-  // 没有任何对端设备 → 这个维度不存在,不占位、不渲染。
-  if (devices.length === 0) return null;
-
   const localLabel = t('ccAgent.sidebar.machineSwitcher.localMachine');
-  const label = resolveDeviceLabel(devices, value, localLabel);
-  const current = value == null ? null : devices.find((d) => d.deviceId === value);
+  const label = mcprSelected
+    ? t('newChat.deviceSwitcher.mcprRemoteLabel')
+    : resolveDeviceLabel(devices, value, localLabel);
+  const current = mcprSelected ? null : value == null ? null : devices.find((d) => d.deviceId === value);
   // 本机不画状态点(它永远在线,画了只是噪音)。
   const showDot = current != null;
   // 当前值必须进 aria-label:compact 模式下按钮只剩图标 + 状态点、不渲染设备名文本,只报
@@ -106,11 +112,15 @@ export function DeviceSwitcherPill({
             compact ? 'px-2.5' : 'min-w-20 max-w-[200px] px-3',
           )}
         >
-          <Laptop
-            size={12}
-            strokeWidth={2}
-            className="shrink-0 text-[var(--create-agent-control-icon)]"
-          />
+          {mcprSelected ? (
+            <Cloud size={12} strokeWidth={2} className="shrink-0 text-[var(--create-agent-control-icon)]" />
+          ) : (
+            <Laptop
+              size={12}
+              strokeWidth={2}
+              className="shrink-0 text-[var(--create-agent-control-icon)]"
+            />
+          )}
           {showDot && (
             <span
               aria-hidden
@@ -155,11 +165,28 @@ export function DeviceSwitcherPill({
           icon={<Laptop size={20} strokeWidth={2} className="shrink-0 text-[var(--folder-item-icon)]" />}
           name={localLabel}
           hint={t('newChat.deviceSwitcher.localHint')}
-          selected={value == null}
+          selected={!mcprSelected && value == null}
           onSelect={() => select(null, null)}
         />
 
         <div className="mx-2 my-1 h-px bg-[var(--folder-picker-border)]" />
+
+        <DeviceRow
+          icon={<Cloud size={20} strokeWidth={2} className="shrink-0 text-[var(--folder-item-icon)]" />}
+          name={t('newChat.deviceSwitcher.mcprRemoteLabel')}
+          hint={
+            mcprConfigured
+              ? t('newChat.deviceSwitcher.mcprRemoteHint')
+              : t('newChat.deviceSwitcher.mcprRemoteDisconnectedHint')
+          }
+          selected={mcprSelected}
+          onSelect={() => {
+            onMcpRemoteSelect?.();
+            onOpenChange(false);
+          }}
+        />
+
+        {devices.length > 0 ? <div className="mx-2 my-1 h-px bg-[var(--folder-picker-border)]" /> : null}
 
         <div className="pending-queue-scroll -mr-2 max-h-[216px] overflow-x-hidden overflow-y-auto overscroll-contain pr-2">
           {devices.map((device) => (
@@ -177,7 +204,7 @@ export function DeviceSwitcherPill({
               online={device.online}
               // 离线设备点不动:隧道调用一定失败,不如在这里就说清楚。
               disabled={!device.online}
-              selected={value === device.deviceId}
+              selected={!mcprSelected && value === device.deviceId}
               onSelect={() => select(device.deviceId, device.name)}
             />
           ))}

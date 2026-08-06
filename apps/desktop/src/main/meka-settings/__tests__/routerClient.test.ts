@@ -31,6 +31,28 @@ describe('MekaRouterClient', () => {
     ).toThrow('must not contain URL credentials');
   });
 
+  it('registers an account and returns the authenticated session', async () => {
+    const fetchImpl = vi.fn(async () =>
+      Response.json(
+        { username: 'meka-user' },
+        { status: 201, headers: { 'set-cookie': 'session=registered-session; Path=/; HttpOnly' } },
+      ),
+    ) as typeof fetch;
+    const client = createMekaRouterClient({ fetchImpl });
+
+    await expect(
+      client.register('https://router.example', 'meka-user', 'secret-password'),
+    ).resolves.toBe('registered-session');
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://router.example/api/auth/register',
+      expect.objectContaining({
+        method: 'POST',
+        headers: { accept: 'application/json', 'content-type': 'application/json' },
+        body: JSON.stringify({ username: 'meka-user', password: 'secret-password' }),
+      }),
+    );
+  });
+
   it('calls the Plugin capability gateway with only the Host session cookie', async () => {
     const fetchImpl = vi.fn(async () =>
       Response.json({

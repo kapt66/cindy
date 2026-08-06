@@ -25,6 +25,7 @@ function setup(initial: Record<string, unknown> = {}) {
     ),
     normalizeMcpEndpointUrl: vi.fn((url: string) => url.trim().replace(/#.*$/, '')),
     login: vi.fn(async () => 'session-token'),
+    register: vi.fn(async () => 'registered-session-token'),
     ensureClientKey: vi.fn(async () => 'client-key'),
     getPluginCapabilityStatus: vi.fn(async () => undefined),
     callPluginCapability: vi.fn(async () => ({
@@ -200,6 +201,32 @@ describe('MekaRouterService', () => {
     });
     expect(fixture.secrets.get('meka.router.sessionToken')).toBe('session-token');
     expect(fixture.secrets.get('meka.router.clientKey')).toBe('client-key');
+  });
+
+  it('registers and persists the returned authenticated session without logging in again', async () => {
+    const fixture = setup({ p4RootPath: 'C:\\P4', unknownFutureCompatibleField: { keep: true } });
+
+    await fixture.service.register('https://router.example/', '  new-user  ', 'secret-password');
+
+    expect(fixture.client.register).toHaveBeenCalledWith(
+      'https://router.example',
+      'new-user',
+      'secret-password',
+    );
+    expect(fixture.client.login).not.toHaveBeenCalled();
+    expect(fixture.client.ensureClientKey).toHaveBeenCalledWith(
+      'https://router.example',
+      'registered-session-token',
+    );
+    expect(fixture.secrets.get('meka.router.sessionToken')).toBe('registered-session-token');
+    expect(fixture.secrets.get('meka.router.clientKey')).toBe('client-key');
+    expect(fixture.readPersisted()).toMatchObject({
+      p4RootPath: 'C:\\P4',
+      unknownFutureCompatibleField: { keep: true },
+      routerUrl: 'https://router.example',
+      routerUsername: 'new-user',
+    });
+    await expect(fixture.service.getSettings()).resolves.toMatchObject({ configured: true });
   });
 
   it('resolves anonymous default and bound registry access without session credentials', async () => {
