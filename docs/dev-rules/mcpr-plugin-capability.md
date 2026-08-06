@@ -3,9 +3,14 @@
 > **状态**：跨仓事实契约，版本 `1`（2026-08-05）
 > **适用范围**：所有显式声明 `mcpr` 卡槽的 `.cindy` 插件；不按插件来源区分。
 
-本文是 Cindy Desktop 与 `mcp-router` 仓库之间的共同约束。它只定义能力边界和 wire
+本文是 Cindy Desktop、Meka `cindy-protocol` 子仓与 `mcp-router` 仓库之间的共同约束。它只定义能力边界和 wire
 形状，不把 MCPRouter 的业务 route 清单复制进 Cindy。Host 代码、插件作者手册和
 MCPRouter 服务端实现发生冲突时，必须先修正契约和两边实现，再交付。
+
+协议正本位于 `C:\Workspace\cindy\cindy-protocol` 的
+`packages/plugin-protocol`，Meka 使用 `kapt66/cindy-protocol` 的 `meka/main` 分支。
+Desktop 的 `apps/desktop/src/shared/mcpr-plugin-capability.ts` 只是历史 import 兼容层，
+必须从 `@cindy/plugin-protocol` 转出；不要在 Desktop 或插件仓库复制协议校验器。
 
 ## 1. 能力声明
 
@@ -21,7 +26,8 @@ MCPRouter 服务端实现发生冲突时，必须先修正契约和两边实现�
 }
 ```
 
-校验规则由 `apps/desktop/src/shared/ghost.ts` 强制：route 只允许小写点分标识，最多
+校验规则由 `@cindy/plugin-protocol` 的 `validateGhostManifest` 强制，Desktop Host 在
+安装和运行期再次校验：route 只允许小写点分标识，最多
 32 条、每条最多 128 个字符；末尾 `.*` 才是通配符，且只匹配同一 namespace 下的 route。
 不能声明 URL、HTTP method、headers、Cookie、Authorization、client key 或任意
 其它 transport 字段。
@@ -72,8 +78,8 @@ Meka 设置。
 
 新增 route 只需在 MCPRouter registry 注册并在插件 manifest 中声明；不得修改 Cindy
 代码来增加业务 URL。变更字段、错误语义或认证边界时必须提升契约版本，并在两仓同时
-记录迁移/兼容策略。`cindy-protocol` 不承载本地 Desktop→MCPRouter HTTP 契约，本能力
-当前不修改该子仓，也不接入 Mobile/device-link。
+记录迁移/兼容策略。`cindy-protocol` 承载插件 manifest 与 Plugin Delivery 的共享形状，
+但不承载本地 Desktop→MCPRouter HTTP transport 契约；本能力不接入 Mobile/device-link。
 
 ## 5. 实现状态
 
@@ -93,3 +99,18 @@ private/shared/public 权限查询；无权访问与不存在统一为 `ROUTE_NO
 
 测试覆盖 manifest 校验、route 匹配、Host 拒绝未声明 route、session-only HTTP 调用、
 远端状态映射，以及 Router 对 other-config 可见性和额外 transport 字段的拒绝。
+
+## 6. 跨仓开发清单
+
+新增或调整 `mcpr` 能力时按以下顺序落地：
+
+1. 在 `kapt66/cindy-protocol` 的 `meka/main` 修改 `plugin-protocol` 源码、测试和文档，
+   先确认 `origin`、工作区干净，并避免把业务 route 清单写进协议包。
+2. 对 manifest 字段或 slot 变化，补充 `manifest.test.ts`；对插件市场详情兼容性，补充
+   `delivery.test.ts`。通过子仓 test/typecheck 后提交并推送协议 commit。
+3. 在 Cindy 父仓更新 submodule gitlink；Desktop 只保留 Host 行为和必要的兼容转出，
+   然后运行 `ghost.mcpr`、插件市场 API 定向测试和 Desktop typecheck。
+4. 新 route 只需 MCPRouter registry 注册并由插件 manifest 声明；不要为了业务 route
+   修改 `plugin-protocol` 或 Desktop URL。
+5. 若日志仍打印不含 `mcpr` 的旧 slot 白名单，优先检查 gitlink 和 `.vite/build` 构建时间，
+   再确认实际运行进程已重启。
