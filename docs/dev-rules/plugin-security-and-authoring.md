@@ -255,6 +255,13 @@
   Meka 管理页；市场详情的安装／更新按钮、已安装插件详情与列表更新按钮必须复用同一
   operation 状态，不得为更新另开无隔离的旁路。该事件不加入 device-link invoke／push
   allowlist；Mobile 不提供插件市场安装管理。
+- Cindy 与 Meka 插件目录可以复用 Renderer 页面骨架，但共用的市场操作必须先按当前
+  surface 选择一次渠道，再通过同一个适配器调用 `snapshot`、`detail`、`uninstall` 与
+  `markLocalInstall`。双市场组件不得在卡片、详情、更新等单独入口直接调用
+  `window.electronAPI.pluginMarket.*` 或 `mekaPluginMarket.*`，否则同一个插件 ID 会被送到
+  错误的 registry。只有签名确实不同的渠道专属能力可以留在显式分支中，例如 Meka 安装的
+  `operationId`／进度订阅和 Meka 已安装投影；这些分支仍须收口为页面级封装，不能散落到
+  各交互入口。`pluginMarketSurface.test.ts` 同时锁定 surface 映射，并禁止共享操作绕开适配器。
 
 ### 4.3 插件级界面打开方式
 
@@ -429,6 +436,8 @@ topic 路由；产品层多端语义见
    同步 `FORGE_GUIDE` 并在 PR 说明；漏同步 = P1。
 7. 第 7 节的已知缺口是否被触及？触及是否一并修复或留了正式跟踪？
 8. 新增 IPC／推送是否需要远程／手机版？需要就登记 device-link 白名单与 topic 路由。
+9. 复用 Cindy／Meka 插件管理页面时，共享市场操作是否全部经过当前 surface 的渠道适配器？
+   卡片快捷操作、详情页和批量操作是否有定向测试证明不会串到另一 registry？
 
 最小验证入口：
 

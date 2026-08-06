@@ -765,6 +765,12 @@ SSH 远程工作区路径；Meka 插件仓同步 `ghost.json` slot、Forge 手�
   manifest/runtime 校验、权限扩张确认和原子替换，但使用相互独立的 owner-scoped ledger；
   从页签顶部导入的本地包另由 host 侧渠道账本记录用户选择，
   避免本机插件或 Cindy 市场插件被误归为 Meka，且不信任 `ghost.json` 自报来源。
+- Renderer 复用同一插件管理页时，共享市场操作统一由当前 surface 选择渠道：普通插件页走
+  `pluginMarket`，Meka 插件页走 `mekaPluginMarket`。2026-08-06 修复了推荐卡片快捷安装在
+  预取详情时硬编码 Cindy `plugin-market:detail`、导致 MCPRouter 插件 ID 被送到 Cindy
+  registry 并返回 `PLUGIN_NOT_FOUND` 的问题；卡片快捷安装、详情页、单项更新、批量更新和
+  卸载现在共用同一 surface 适配器。定向测试锁定两种 surface 的映射，并禁止双市场页面的
+  `snapshot`／`detail`／`uninstall`／`markLocalInstall` 绕开适配器。
 - Meka 插件目录从上游“插件 / 技能”管理入口移回左侧 Meka 产品入口，作为 Meka
   “插件 / 技能 / 项目”中的“插件”页；上游插件入口只保留“插件 / 技能”。两个入口继续复用
   同一管理页骨架，但不把 Meka 市场混入上游插件分类。

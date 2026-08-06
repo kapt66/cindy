@@ -108,6 +108,7 @@ import {
   type UpdateAllMarketApi,
 } from './lib/updateAllController';
 import { formatSetupGateDescription } from './lib/ghostSetupGateModel';
+import { pluginMarketApiForSurface, type PluginMarketSurface } from './lib/pluginMarketSurface';
 import {
   PLUGIN_MANAGEMENT_CARD_GRID_CLASS,
   PluginManagementLayout,
@@ -170,12 +171,12 @@ function readIgnoredRound(storageKey: string): string {
  * real Ghost runtime. The page deliberately keeps the previous list/detail
  * interaction shape, while every displayed field comes from InstalledGhost.
  */
-export function GhostPluginPage({ surface = 'plugins' }: { surface?: 'plugins' | 'meka' }) {
+export function GhostPluginPage({ surface = 'plugins' }: { surface?: PluginMarketSurface }) {
   const { i18n, t } = useTranslation();
   const isMekaSurface = surface === 'meka';
   const marketApi = useMemo(
-    () => (isMekaSurface ? window.electronAPI.mekaPluginMarket : window.electronAPI.pluginMarket),
-    [isMekaSurface],
+    () => pluginMarketApiForSurface(surface, window.electronAPI),
+    [surface],
   );
   const marketLocale = resolveSystemLocale(i18n.resolvedLanguage ?? i18n.language);
   const navigate = useNavigate();
@@ -278,7 +279,7 @@ export function GhostPluginPage({ surface = 'plugins' }: { surface?: 'plugins' |
     if (!isMekaSurface) return undefined;
     return {
       channel: 'meka',
-      detail: (pluginId) => window.electronAPI.mekaPluginMarket.detail(pluginId),
+      detail: (pluginId) => marketApi.detail(pluginId),
       install: (pluginId, options) =>
         installFromActiveMarket(pluginId, {
           expectedReleaseId: options.expectedReleaseId,
@@ -293,7 +294,7 @@ export function GhostPluginPage({ surface = 'plugins' }: { surface?: 'plugins' |
             : {}),
         }),
     };
-  }, [installFromActiveMarket, isMekaSurface]);
+  }, [installFromActiveMarket, isMekaSurface, marketApi]);
   useEffect(() => {
     if (!isMekaSurface) {
       activeMekaInstallRef.current = null;
@@ -1424,7 +1425,7 @@ export function GhostPluginPage({ surface = 'plugins' }: { surface?: 'plugins' |
       if (!marketBusyLease) return;
       let detail: PluginMarketDetail;
       try {
-        detail = await window.electronAPI.pluginMarket.detail(pluginId);
+        detail = await marketApi.detail(pluginId);
       } catch (error) {
         if (isMarketBusyLeaseActive(marketBusyLease)) {
           toast.error(t(pluginMarketErrorKey(error)));
@@ -1435,7 +1436,14 @@ export function GhostPluginPage({ surface = 'plugins' }: { surface?: 'plugins' |
       releaseMarketBusy(marketBusyLease);
       await runMarketInstallFlow(detail);
     },
-    [acquireMarketBusy, isMarketBusyLeaseActive, releaseMarketBusy, runMarketInstallFlow, t],
+    [
+      acquireMarketBusy,
+      isMarketBusyLeaseActive,
+      marketApi,
+      releaseMarketBusy,
+      runMarketInstallFlow,
+      t,
+    ],
   );
 
   // 面板收束:aside 只挂在插件页语境里(列表/详情/市场详情共用),
