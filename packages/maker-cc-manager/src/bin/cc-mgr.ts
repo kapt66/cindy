@@ -364,6 +364,15 @@ async function runDaemon(socketPath: string): Promise<void> {
         // control 分支)—— 与 desktop 本地分支同一注入方式,经 spread 绕过类型检查。
         ...(getOAuthToken ? { getOAuthToken: getOAuthToken as any } : {}),
         ...(extraOptions ?? {}),
+        // MCPRouter downloads the Claude native runtime into its persistent
+        // cache and exposes the absolute path through CC_MGR_CLAUDE_BIN.
+        // The SDK otherwise resolves its optional platform package from the
+        // cc-mgr bundle's node_modules, which is intentionally not shipped and
+        // causes LAZY_CREATE_FAILED on linux-x64. Keep this daemon-owned path
+        // authoritative even if a caller sends a stale extraOptions value.
+        ...(process.env.CC_MGR_CLAUDE_BIN
+          ? { pathToClaudeCodeExecutable: process.env.CC_MGR_CLAUDE_BIN }
+          : {}),
         // Daemon-owned hooks must win over JSON extraOptions. They enforce
         // host routing before Claude's permission mode and setting rules.
         ...(hooks ? { hooks: hooks as any } : {}),
