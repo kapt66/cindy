@@ -32,7 +32,7 @@ export function resolveLocalCollabPolicyWorkingDir(
 }
 
 /**
- * 协同 Team 可由启用 collab 插件的普通 Lead 会话创建,项目与对话都支持;SSH 远端会话 codex 与
+ * 协同 Team 可由启用 collab 插件的普通 Lead 会话创建,项目、对话与 Meka 项目都支持;SSH 远端会话 codex 与
  * claude-code 均已接通 —— 远端 agent 经 SSH remote-forward 直连本机 HTTP
  * MCP bridge(codex 走 daemon config 注入 + persistent token,cc 走
  * per-query http 注入 + persistent token 与 ?session= 路由),cindy_orca
@@ -53,7 +53,11 @@ export function assertCollabProjectEnabled(
   isManagedDialogueWorkspace: (workingDir: string) => boolean,
 ): void {
   const workingDir = typeof context.workingDir === 'string' ? context.workingDir.trim() : null;
-  if (context.workspaceKind !== 'project' && context.workspaceKind !== 'dialogue') {
+  if (
+    context.workspaceKind !== 'project' &&
+    context.workspaceKind !== 'dialogue' &&
+    context.workspaceKind !== 'meka'
+  ) {
     throwIpcError(
       'PRECONDITION_FAILED',
       'collaboration requires a supported lead session',

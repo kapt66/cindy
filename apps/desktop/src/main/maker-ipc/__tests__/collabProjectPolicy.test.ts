@@ -75,6 +75,41 @@ describe('assertCollabProjectEnabled', () => {
     expect(checkedPath).toBe('C:\\projects\\cindy');
   });
 
+  it('allows an enabled Meka Lead and applies the project policy to its real workspace', () => {
+    const calls: Array<string | undefined> = [];
+    expect(() =>
+      assertCollabProjectEnabled(
+        {
+          workingDir: 'C:\\Workspace\\saga2\\saga2_project',
+          workspaceKind: 'meka',
+          remoteHostId: null,
+          agentKind: 'codex',
+        },
+        (_pluginId, workingDir) => {
+          calls.push(workingDir);
+          return true;
+        },
+        neverManagedDialogue,
+      ),
+    ).not.toThrow();
+    expect(calls).toEqual(['C:\\Workspace\\saga2\\saga2_project']);
+  });
+
+  it('rejects a Meka Lead when collaboration is disabled for its project', () => {
+    expect(() =>
+      assertCollabProjectEnabled(
+        {
+          workingDir: 'C:\\Workspace\\saga2\\saga2_project',
+          workspaceKind: 'meka',
+          remoteHostId: null,
+          agentKind: 'codex',
+        },
+        () => false,
+        neverManagedDialogue,
+      ),
+    ).toThrow('[PRECONDITION_FAILED] collaboration is disabled for this session');
+  });
+
   it('allows dialogue sessions using only the user/global policy', () => {
     for (const remoteHostId of [null, 'host-1'] as const) {
       const calls: Array<string | undefined> = [];

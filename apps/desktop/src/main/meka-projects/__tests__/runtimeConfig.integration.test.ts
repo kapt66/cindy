@@ -79,6 +79,15 @@ describe('Meka runtime project/role resolution', () => {
       expect(resolved.mcp.map((entry) => entry.id)).toEqual(
         hasRemote ? ['mcp-router', 'project-agent', ...(hasDesign ? ['meka-design'] : [])] : [],
       );
+      if (hasRemote) {
+        const remoteOperations = resolved.skills.find((skill) => skill.id === 'remote-operations');
+        expect(remoteOperations?.content).toContain(
+          'ask whether to create that remote worker',
+        );
+        expect(remoteOperations?.content).toContain(
+          'the underlying read/edit request alone is not authorization to create one',
+        );
+      }
     }
   });
 });

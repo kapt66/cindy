@@ -322,12 +322,7 @@ import { ensureRemoteAgentInstalledOrInstall, ensureRemoteHostReady, getRemoteSs
 import { getMekaP4SettingsService, getMekaRouterService } from '../meka-settings/ipc.js';
 import { classifyRemoteSessionTransport } from '../maker-host/remote-session-routing.js';
 import { createMekaWorkerTargetResolver } from './mekaWorkerTarget.js';
-import {
-  isMekaManagedWorkspaceDir,
-  materializeMekaRuntimeSkills,
-  resolveMekaRuntimeConfig,
-} from '../meka-projects/runtimeConfig.js';
-import { prepareMekaRuntimeMcp } from '../mcp-integrations/meka-runtime-mcp.js';
+import { applyMekaRuntimeConfig } from './mekaRuntimeInjection.js';
 import {
   recordSessionContextSnapshot,
   recordSessionTurnSpend,
@@ -5354,12 +5349,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   }
 
   /**
-   * 统一的 session bootstrap 序列（5 步，不含 markOrcaRoleIfNeeded）：
-   *   1. applyOrcaInstructions(o)            注入 Orca lead/worker system prompt
-   *   2. applyProjectContextInjection(o)     注入 project-context 知识层
-   *   3. validateExtraDirs(o.extraDirs)      过滤非法 extraDirs（仅当非空）
-   *   4. maker.createSession(o)              真正创建 session
-   *   5. markProjectContextIfNeeded + wireSessionToIpc + markOrcaMcpHydratedIfNeeded
+   * 统一的 session bootstrap 序列（6 步，不含 markOrcaRoleIfNeeded）：
+   *   1. applyMekaRuntimeConfig(o)           注入 Meka 项目/角色 prompt + MCP runtime
+   *   2. applyOrcaInstructions(o)            注入 Orca lead/worker system prompt
+   *   3. applyProjectContextInjection(o)     注入 project-context 知识层
+   *   4. validateExtraDirs(o.extraDirs)      过滤非法 extraDirs（仅当非空）
+   *   5. maker.createSession(o)              真正创建 session
+   *   6. markProjectContextIfNeeded + wireSessionToIpc + markOrcaMcpHydratedIfNeeded
    *      —— DB 落字段 + IPC 绑定 + MCP 注水
    *
    * 不负责的事（留给调用方处理，因路径差异显著）：
@@ -5415,6 +5411,33 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     didInjectProjectContext: boolean;
   }> {
     await options.waitForAccountProviderModelsReady();
+    const mekaRuntime = await applyMekaRuntimeConfig(o, {
+      readPersistedSession: async (sessionId) => {
+        const [row] = await getDbClient()
+          .drizzle.select({
+            workspaceKind: sessions.workspaceKind,
+            mekaProjectId: sessions.mekaProjectId,
+            mekaRoleId: sessions.mekaRoleId,
+            mekaRole: sessions.mekaRole,
+          })
+          .from(sessions)
+          .where(eq(sessions.id, sessionId))
+          .limit(1);
+        return row ?? null;
+      },
+    });
+    if (mekaRuntime.didApply) {
+      log.info('Meka runtime config applied before session start', {
+        sessionId: o.id,
+        projectId: o.mekaProjectId,
+        roleId: o.mekaRoleId,
+        mcpProviderIds: mekaRuntime.mcpProviderIds,
+        inlineMcpCount: mekaRuntime.inlineMcpCount,
+        skillsCount: mekaRuntime.skillsCount,
+        didMaterializeSkills: mekaRuntime.didMaterializeSkills,
+        didInlineSkills: mekaRuntime.didInlineSkills,
+      });
+    }
     const didInjectOrcaInstructions = applyOrcaInstructions(o);
     const didInjectProjectContext = await applyProjectContextInjection(o);
 

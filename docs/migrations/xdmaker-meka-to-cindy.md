@@ -459,6 +459,11 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
   使用与原版一致的确定性规范化和冲突后缀规则，中文目录名不会导致会话启动失败。
 - 角色与项目默认 MCP provider 引用直接决定本会话是否挂载 MCPRouter；
   项目绑定继续限制实例类 Router 工具。项目元数据中的 MCP 配置也参与解析。
+- 普通 Meka Lead 会话、lazy resume、context-usage lazy create、scheduler/IM 等所有经
+  `bootstrapSession` 的启动入口，都会在 `maker.createSession` 前解析当前
+  `mekaProjectId`/`mekaRoleId`，把角色 prompt 与 MCP provider 选择写入本次
+  create opts；`projectRemoteInstanceIds` 只表示当前项目可通过 MCPRouter/Worker 访问的
+  远程实例，不会被塞进 `extraDirs`，也不会伪装成本机 workspace root。
 - 角色选择 `meka-design` 时挂载独立的 `meka_design` provider，并从 OS 加密存储读取
   当前唯一 endpoint。即使同一角色也启用了 `mcp-router`，Router 的项目级工具发现会
   过滤其 MekaDesign 静态路由，直接调用同类 Router 工具也会拒绝，避免同一会话同时
@@ -1012,7 +1017,7 @@ XDMaker `meka/main` 对应实现为核对正本。
 | Lead→Worker 调度与队列 | `send_to_worker`、busy queue、恢复、状态广播、错误可见                           | Cindy 上游实现已存在                                            | 不覆盖 Cindy 新实现，只做 Meka 回归                                            |
 | 远程 Claude Worker     | 经 MCPRouter tunnel + cc-manager 运行                                            | 已有 tunnel 基础，需端到端复核 bridge/runtime config            | 补定向测试，保留 Main fail-closed                                              |
 | 远程 Codex Worker      | Phase 4 经 cc-manager `codex-bridge`、bundle revision、thread routing 运行       | 已恢复；使用直接运行时 Skill 构造最小冻结 bundle                | 保留 gateway-key fail-closed；不为此恢复整套 S1 snapshot                       |
-| 远程操作 Skill         | 先发现项目绑定实例，直接 `start_team`，再以 `remote_host_id` 建 Worker并核对回执 | 文案已在，但底层目标参数/回执缺失                               | 底层修复后同步文案和测试                                                       |
+| 远程操作 Skill         | 先发现项目绑定实例；没有匹配实例时走实例/模板/绑定确认链；创建远程 Worker 前再征得用户确认，随后 `start_team` 并以 `remote_host_id` 建 Worker、核对回执 | 文案已在，但底层目标参数/回执缺失                               | 底层修复后同步文案和测试                                                       |
 | 重启与 idle resume     | 重建 Lead/Worker 关系；Worker resume 保留目标目录和远程宿主                      | Cindy 通用 Orca 已有，Meka 身份继承需补                         | 增加 Meka Worker 持久化/恢复定向测试                                           |
 
 #### 4.8.2 已确认的目标边界
@@ -1098,9 +1103,10 @@ XDMaker `meka/main` 对应实现为核对正本。
    - busy queue、accepted 后副作用、主动 `send_to_lead` 与 auto-bridge 去重、
      手动中断不 auto-bridge、idle resume 和重启关系重建继续复用 Cindy 现有实现。
 9. **远程操作 Skill**
-   - 与 XDMaker 最终文档一致：先发现项目绑定实例，必要时完成实例/模板/绑定链，
-     直接 `start_team`，再以精确 `remote_host_id` 创建 Worker，并核对
-     `execution_target`；禁止把 MCPRouter 实例误当 SSH 主机。
+   - 先发现项目绑定实例，必要时完成实例/模板/绑定确认链；远程文件、命令或代码任务需要
+     新建 Worker 时，先向用户说明目标实例并征得创建确认。确认后直接 `start_team`
+     （该动作不另加确认），再以精确 `remote_host_id` 创建 Worker、核对
+     `execution_target` 并派发具体任务；禁止把 MCPRouter 实例误当 SSH 主机。
 
 #### 4.8.4 普通 Cindy 对话入口边界回审（2026-08-05）
 
@@ -1662,8 +1668,9 @@ thread-context gated 的本地动态代理投影这条唯一入口，Claude 继�
    使用草稿中选择的本地/远程目标。
 7. 从侧栏新建本地 Worker，确认回执 `execution_target.type=local` 且目录只可能是
    P4 根或四个识别子目录；从 Agent 调 `create_worker` 也满足同一规则。
-8. 新建远程 Worker，确认回执为 `type=remote` 和精确 `remote_host_id`，回执、Router
-   工具结果及模型消息中都不出现远端物理绝对路径。
+8. 请求远程代码/命令且没有匹配 Worker 时，Lead 必须先展示目标实例并询问是否创建；确认后
+   新建远程 Worker，回执必须为 `type=remote` 和精确 `remote_host_id`，随后才派发原任务。
+   回执、Router 工具结果及模型消息中都不出现远端物理绝对路径；拒绝创建时不产生 team/Worker。
 9. Meka Worker 重启/idle 后继续保留项目、角色、目标和 Lead 关系；项目/角色 prompt、
    Skill、MCP 与元数据仍按同一 manifest 生效。
 10. 在项目详情中添加两个额外绝对路径，重新扫描后确认两处根目录的元数据都能选择；
@@ -1826,6 +1833,66 @@ session 直接复用登录后的 client key 初始化、MekaDesign 路由发现�
 不会重复登录，也不会把 session 或持久凭证暴露给 Renderer。HTTP client、Main service 和
 Dialog 定向测试覆盖注册请求、直接连接、共享持久化与 Tab 事件边界；真实 MCPRouter 注册、
 Electron 焦点顺序及 Light/Dark 仍待手测。
+
+### 6.24 2026-08-07 Meka Lead 启动曾漏接项目/角色 runtime
+
+问题：普通 SAGA2 Meka Codex 会话虽然持久化了 `workspaceKind=meka`、`mekaProjectId=saga2`
+和角色 ID，但 `bootstrapSession` 只执行 Orca/project-context 注入，没有调用项目/角色
+runtime 解析器。结果新会话只看到本地 P4 工作目录；即使项目配置勾选了 MCPRouter 远程实例，
+角色中关于 `saga2-server`、MCPRouter 和 project-agent 的说明与 MCP provider 选择也没有进入
+本次 Agent 启动上下文。
+
+处理：新增 `maker-ipc/mekaRuntimeInjection.ts`，并在 `bootstrapSession` 的
+`maker.createSession` 前单点调用。该 helper 只消费当前项目/角色已有配置：把解析出的
+prompt 前置到本次 `userPrompt`，保留用户自定义 prompt 的末段优先级；把 `source=meka`、
+`mekaProjectId`、`mekaRoleId`、`mekaMcpProviderIds` 和 inline MCP 配置写入
+`vendorOptions`，从而让 `meka-runtime-mcp` 按角色选择挂载 `mcp_router`、`project_agent`
+或 `meka_design`。应用托管的历史兼容 workspace 会物化 runtime skills；普通 P4/自定义项目
+不会写 `.agents` 或 `.claude` 生成目录，而是把当前角色已选择的完整 Skill 正文内联到本次
+冻结 prompt，不能只注入项目/角色 prompt 后静默丢掉 Skill。
+
+本次回归覆盖：`mekaRuntimeInjection.test.ts` 验证 Meka 会话会注入 prompt/MCP、非托管项目
+内联 Skill、非 Meka 会话不变、只有本机 app-managed workspace 才物化 runtime skills；
+bootstrap 会优先用已持久化的项目/角色绑定恢复 lazy resume，并兼容旧四角色 SAGA2 会话，
+同一 create opts 重试不会重复注入；项目/角色与 MCP 解析失败继续以 `INVALID_PARAMS` 明确阻断。
+同时复跑
+`runtimeConfig.test.ts` 与 `runtimeConfig.integration.test.ts`，确认 SAGA2 角色默认项合并仍能
+解析出 MCPRouter/project-agent/MekaDesign 等配置。真实 MCPRouter 工具列表和已绑定服务器仓库
+访问仍需开发者在 Electron 内手测。
+
+### 6.25 2026-08-07 SAGA2 远程实例到 Orca Worker 链路回归
+
+实测任务 `dae68138-fa0f-4f53-92da-53fb6720dc4a` 证明 6.24 的 runtime/MCP 修复已让 Lead
+正确调用 `list_project_remote_instances` 并识别已绑定的「SAGA2服务器」；继续请求服务器根目录
+时又暴露两个后续断点：
+
+1. `assertCollabProjectEnabled` 只接受 `project/dialogue`，而 Renderer 和 Meka 产品契约都允许
+   `workspaceKind=meka` 成为 Lead，导致 `start_team` 返回
+   `collaboration requires a supported lead session`。Main 现将 `meka` 纳入支持类型，并继续按
+   真实 P4 根目录读取项目级 collab 开关；未知类型、空目录和禁用状态仍 fail closed。
+2. 6.24 初版 helper 只在 app-managed workspace 物化 Skill，却漏掉历史实现对普通 P4/自定义
+   项目的 prompt 内联兜底。结果 `remote-operations` 没进入会话，模型绕去 Router 通用工具和
+   Ghost 查目录。现恢复“托管目录物化、真实项目内联”的双路径，并记录
+   `didMaterializeSkills/didInlineSkills` 便于日志核对。
+
+远程操作 Skill 同步收敛为用户确认链：无匹配绑定实例时依次检查已有实例和模板，创建实例与
+绑定分别取得明确确认；需要新建远程 Orca Worker 时，再说明精确 `mcpr:<instanceId>` 目标并
+询问是否创建。用户确认后，`start_team` 不重复询问，`create_worker` 必须返回相同的 remote
+`execution_target`，随后才向该 Worker 派发具体任务。拒绝创建时不得改走本地目录、SSH、
+Router 管理工具或 native subagent 冒充远程仓库访问。
+
+### 6.26 2026-08-07 远程 Worker 确认回答后的 turn 中断
+
+实测任务 `34f01193-0f55-4011-806d-963ef927381c` 中，MCPRouter 实例发现和动态
+`ask_user_question` 均成功，用户答案也已落库为“同意创建并读取”。但 Codex 动态工具此前
+只返回裸答案 JSON，模型收到结果后重新生成了一段确认文案并结束 turn，未调用
+`start_team`、`create_worker` 或 `send_to_worker`；因此断点在 Lead 的确认结果消费，不在
+MCPRouter 实例绑定或 Orca Host。
+
+处理：动态 `cindy:ask_user_question` 结果现在保留结构化答案，并明确标记问题已解决、应
+继续挂起的工作流且不得重复同一确认；工具描述和 Meka 远程操作 Skill 同步声明同一规则。
+该提示不绕过 Host 独立权限校验。验证覆盖 Codex 动态回答、同一 turn 的答案复用、工具描述
+契约；真实 MCPRouter/远程 Worker 创建仍需在 Electron 内用新任务手测。
 
 ## 10. 后续继续迁移时的硬性注意事项
 
