@@ -10,6 +10,7 @@ import type {
   MekaProjectRoleDefaults,
   MekaRoleFile,
   MekaRoleMcpEntry,
+  MekaRoleRule,
   MekaRoleSkillEntry,
   MekaRoleSkillSelection,
 } from '../../shared/meka-projects.js';
@@ -81,6 +82,7 @@ export function mergeMekaProjectRoleDefaults(
 ): MekaRoleFile {
   if (role.useProjectDefaults !== true) return role;
   const excludedSkills = new Set(role.excludeDefaults?.skills ?? []);
+  const excludedRules = new Set(role.excludeDefaults?.rules ?? []);
   const excludedMcp = new Set(role.excludeDefaults?.mcp ?? []);
   const excludedMetadata = new Set((role.excludeDefaults?.metadata ?? []).map(metadataKey));
 
@@ -91,6 +93,12 @@ export function mergeMekaProjectRoleDefaults(
   for (const entry of role.skills) {
     skills.set(isLegacySkill(entry) ? entry.id : entry.skillId, entry);
   }
+
+  const rules = new Map<string, MekaRoleRule>();
+  for (const rule of defaults.rules ?? []) {
+    if (!excludedRules.has(rule.id)) rules.set(rule.id, rule);
+  }
+  for (const rule of role.rules ?? []) rules.set(rule.id, rule);
 
   const mcp = new Map<string, MekaRoleMcpEntry>();
   for (const entry of defaults.mcp ?? []) {
@@ -113,6 +121,7 @@ export function mergeMekaProjectRoleDefaults(
   return {
     ...role,
     ...(framework ? { prompt: ownPrompt ? `${framework}\n\n${ownPrompt}` : framework } : {}),
+    rules: [...rules.values()],
     skills: [...skills.values()],
     mcp: [...mcp.values()],
     projectMetadataSelection: [...metadata.values()],

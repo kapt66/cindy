@@ -317,6 +317,42 @@ describe('Meka project and role create states', () => {
     });
   });
 
+  it('persists project rules and MCP defaults into project.json', async () => {
+    const api = installApi([projectSummary()]);
+    renderRoute('/?projectId=project-a');
+
+    await screen.findByRole('heading', { name: 'meka.projectBasicInfo' });
+    fireEvent.click(screen.getByRole('button', { name: 'meka.addRule' }));
+    fireEvent.change(screen.getByPlaceholderText('meka.mcpJsonPlaceholder'), {
+      target: {
+        value:
+          '{"mcpServers":{"project-agent":{"command":"npx","args":["-y","@example/mcp-server"],"env":{"TOKEN":"{{secret:project-token}}"}}}}',
+      },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'meka.parseMcpJson' }));
+    fireEvent.click(screen.getByRole('button', { name: 'meka.save' }));
+
+    await waitFor(() => expect(api.saveProject).toHaveBeenCalledTimes(1));
+    expect(api.saveProject).toHaveBeenCalledWith({
+      projectId: 'project-a',
+      project: expect.objectContaining({
+        roleDefaults: expect.objectContaining({
+          rules: [expect.objectContaining({ text: 'meka.newRuleText', enabled: true })],
+          mcp: [
+            {
+              id: 'project-agent',
+              transport: 'stdio',
+              command: 'npx',
+              args: ['-y', '@example/mcp-server'],
+              enabled: true,
+              env: { TOKEN: '{{secret:project-token}}' },
+            },
+          ],
+        }),
+      }),
+    });
+  });
+
   it('edits bundled roles from a project file and can reset the builtin project', async () => {
     const builtinRole = {
       id: 'general-development',

@@ -79,6 +79,7 @@ export interface MekaProjectDefaultMetadataSelection {
 }
 
 export interface MekaRoleExcludeDefaults {
+  rules?: string[];
   skills?: string[];
   mcp?: string[];
   metadata?: MekaProjectDefaultMetadataSelection[];
@@ -132,6 +133,7 @@ export interface MekaProjectMetadataConfigItem extends MekaProjectMetadataEditab
 
 export interface MekaProjectRoleDefaults {
   promptFramework?: string;
+  rules?: MekaRoleRule[];
   skills?: string[];
   mcp?: MekaRoleMcpEntry[];
   projectMetadataSelection?: MekaProjectDefaultMetadataSelection[];

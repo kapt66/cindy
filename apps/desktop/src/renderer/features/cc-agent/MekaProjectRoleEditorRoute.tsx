@@ -38,6 +38,7 @@ import type {
   MekaRoleMcpEntry,
   MekaRoleMcpInlineConfig,
   MekaRoleManifestFile,
+  MekaRoleRule,
   MekaRoleSkillEntry,
   MekaRoleSkillSelection,
   MekaSkillCatalogEntry,
@@ -59,6 +60,8 @@ type DraftProject = {
   gitlabProjectUrl: string;
   disciplines: string[];
   domains: string[];
+  rules: MekaRoleRule[];
+  mcp: MekaRoleMcpEntry[];
 };
 
 const inputClass =
@@ -121,6 +124,8 @@ function projectDraft(project: MekaProject, file?: MekaProjectFile | null): Draf
     gitlabProjectUrl: basic?.gitlabProjectUrl ?? project.gitlabProjectUrl ?? '',
     disciplines: basic?.disciplines ?? [MEKA_GENERAL_DISCIPLINE],
     domains: basic?.domains ?? [],
+    rules: cloneValue(file?.roleDefaults?.rules ?? []),
+    mcp: cloneValue(file?.roleDefaults?.mcp ?? []),
   };
 }
 
@@ -196,6 +201,15 @@ function projectFileFromDraft(
       domains: [...project.domains],
     },
     metadata: metadata.map(metadataConfig),
+    ...(file.roleDefaults || project.rules.length > 0 || project.mcp.length > 0
+      ? {
+          roleDefaults: {
+            ...file.roleDefaults,
+            rules: cloneValue(project.rules),
+            mcp: cloneValue(project.mcp),
+          },
+        }
+      : {}),
   };
 }
 
@@ -206,6 +220,80 @@ function safeConfigId(value: string): string {
     .replace(/[^a-z0-9_-]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 96);
+}
+
+function parseProjectMcpJson(value: string): MekaRoleMcpInlineConfig[] {
+  const parsed: unknown = JSON.parse(value);
+  const candidates: Array<{ id?: unknown; config: unknown }> = [];
+  if (Array.isArray(parsed)) {
+    for (const config of parsed) candidates.push({ config });
+  } else if (
+    parsed &&
+    typeof parsed === 'object' &&
+    !Array.isArray(parsed) &&
+    'mcpServers' in parsed &&
+    parsed.mcpServers &&
+    typeof parsed.mcpServers === 'object' &&
+    !Array.isArray(parsed.mcpServers)
+  ) {
+    for (const [id, config] of Object.entries(parsed.mcpServers)) candidates.push({ id, config });
+  } else {
+    candidates.push({ config: parsed });
+  }
+
+  const entries = candidates.map(({ id: fallbackId, config }) => {
+    if (!config || typeof config !== 'object' || Array.isArray(config)) {
+      throw new Error('MCP JSON entries must be objects');
+    }
+    const raw = config as Record<string, unknown>;
+    const id = safeConfigId(String(raw.id ?? fallbackId ?? ''));
+    if (!id) throw new Error('MCP JSON entry requires an id');
+    const command = typeof raw.command === 'string' ? raw.command.trim() : '';
+    const url = typeof raw.url === 'string' ? raw.url.trim() : '';
+    const rawTransport = typeof raw.transport === 'string' ? raw.transport : raw.type;
+    const transport: MekaRoleMcpInlineConfig['transport'] =
+      rawTransport === 'http' || rawTransport === 'streamable-http'
+        ? 'http'
+        : rawTransport === 'sse'
+          ? 'sse'
+          : command
+            ? 'stdio'
+            : 'sse';
+    if (transport === 'stdio' && !command) throw new Error(`MCP ${id} requires command`);
+    if (transport !== 'stdio' && !url) throw new Error(`MCP ${id} requires url`);
+    const args = Array.isArray(raw.args)
+      ? raw.args.map((arg) => {
+          if (typeof arg !== 'string') throw new Error(`MCP ${id} args must be strings`);
+          return arg;
+        })
+      : undefined;
+    let env: Record<string, string> | undefined;
+    if (raw.env !== undefined) {
+      if (!raw.env || typeof raw.env !== 'object' || Array.isArray(raw.env)) {
+        throw new Error(`MCP ${id} env must be an object`);
+      }
+      env = {};
+      for (const [key, rawValue] of Object.entries(raw.env)) {
+        if (typeof rawValue !== 'string') throw new Error(`MCP ${id} env values must be strings`);
+        env[key] = rawValue;
+      }
+    }
+    return {
+      id,
+      transport,
+      enabled: raw.enabled !== false,
+      ...(command ? { command } : {}),
+      ...(args ? { args } : {}),
+      ...(url ? { url } : {}),
+      ...(env && Object.keys(env).length > 0 ? { env } : {}),
+    } satisfies MekaRoleMcpInlineConfig;
+  });
+  const ids = new Set<string>();
+  for (const entry of entries) {
+    if (ids.has(entry.id)) throw new Error(`MCP ${entry.id} is duplicated`);
+    ids.add(entry.id);
+  }
+  return entries;
 }
 
 function isRoleSkillSelection(
@@ -842,6 +930,295 @@ function RoleMcpEditor({
             <Plus size={13} aria-hidden="true" />
             {t('meka.add')}
           </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ProjectMcpEditor({
+  entries,
+  disabled,
+  onChange,
+}: {
+  entries: MekaRoleMcpEntry[];
+  disabled?: boolean;
+  onChange: (entries: MekaRoleMcpEntry[]) => void;
+}) {
+  const { t } = useTranslation();
+  const [id, setId] = useState('');
+  const [transport, setTransport] = useState<MekaRoleMcpInlineConfig['transport']>('stdio');
+  const [command, setCommand] = useState('');
+  const [args, setArgs] = useState('');
+  const [url, setUrl] = useState('');
+  const [env, setEnv] = useState('');
+  const [jsonDraft, setJsonDraft] = useState('');
+  const [jsonError, setJsonError] = useState<string | null>(null);
+
+  const parseEnv = (): Record<string, string> | undefined => {
+    if (!env.trim()) return undefined;
+    try {
+      const parsed: unknown = JSON.parse(env);
+      if (
+        !parsed ||
+        typeof parsed !== 'object' ||
+        Array.isArray(parsed) ||
+        !Object.values(parsed).every((value) => typeof value === 'string')
+      ) {
+        return undefined;
+      }
+      return parsed as Record<string, string>;
+    } catch {
+      return undefined;
+    }
+  };
+
+  const canAdd =
+    !!safeConfigId(id) &&
+    !entries.some((entry) => entry.id === safeConfigId(id)) &&
+    (transport === 'stdio' ? !!command.trim() : !!url.trim()) &&
+    (!env.trim() || parseEnv() !== undefined);
+
+  const add = () => {
+    if (!canAdd) return;
+    const entry: MekaRoleMcpInlineConfig = {
+      id: safeConfigId(id),
+      transport,
+      enabled: true,
+      ...(transport === 'stdio'
+        ? {
+            command: command.trim(),
+            ...(args.trim()
+              ? {
+                  args: args
+                    .split(/\s+/)
+                    .map((value) => value.trim())
+                    .filter(Boolean),
+                }
+              : {}),
+          }
+        : { url: url.trim() }),
+      ...(parseEnv() ? { env: parseEnv() } : {}),
+    };
+    onChange([...entries, entry]);
+    setId('');
+    setCommand('');
+    setArgs('');
+    setUrl('');
+    setEnv('');
+  };
+
+  const addJson = () => {
+    try {
+      const parsed = parseProjectMcpJson(jsonDraft);
+      const existingIds = new Set(entries.map((entry) => entry.id));
+      const duplicate = parsed.find((entry) => existingIds.has(entry.id));
+      if (duplicate) throw new Error(`MCP ${duplicate.id} already exists`);
+      onChange([...entries, ...parsed]);
+      setJsonDraft('');
+      setJsonError(null);
+    } catch (error) {
+      setJsonError(error instanceof Error ? error.message : t('meka.mcpJsonInvalid'));
+    }
+  };
+
+  return (
+    <div>
+      <div className="flex flex-col gap-3">
+        {entries.map((entry, index) => (
+          <div
+            key={`${entry.id}:${index}`}
+            className="rounded-lg border border-[var(--border-default)] bg-[var(--surface-elevated)] p-3"
+          >
+            <div className="flex items-center gap-3">
+              <input
+                type="checkbox"
+                checked={entry.enabled !== false}
+                disabled={disabled}
+                onChange={(event) =>
+                  onChange(
+                    entries.map((current, currentIndex) =>
+                      currentIndex === index
+                        ? { ...current, enabled: event.target.checked }
+                        : current,
+                    ),
+                  )
+                }
+              />
+              <span className="min-w-0 flex-1 truncate text-12 font-medium text-[var(--text-primary)]">
+                {entry.id}
+              </span>
+              <span className="text-10 text-[var(--text-tertiary)]">
+                {isInlineMcp(entry) ? entry.transport : t('meka.providerReference')}
+              </span>
+              {!disabled ? (
+                <button
+                  type="button"
+                  className="text-[var(--text-tertiary)] hover:text-[var(--error-fg-strong)]"
+                  onClick={() =>
+                    onChange(entries.filter((_, currentIndex) => currentIndex !== index))
+                  }
+                  aria-label={t('meka.remove')}
+                >
+                  <Trash2 size={14} aria-hidden="true" />
+                </button>
+              ) : null}
+            </div>
+            {isInlineMcp(entry) ? (
+              <div className="mt-3 grid gap-3 md:grid-cols-2">
+                <label className={fieldLabelClass}>
+                  <span>{entry.transport === 'stdio' ? t('meka.command') : t('meka.url')}</span>
+                  <input
+                    className={inputClass}
+                    disabled={disabled}
+                    value={entry.transport === 'stdio' ? (entry.command ?? '') : (entry.url ?? '')}
+                    onChange={(event) =>
+                      onChange(
+                        entries.map((current, currentIndex) => {
+                          if (currentIndex !== index || !isInlineMcp(current)) return current;
+                          return current.transport === 'stdio'
+                            ? { ...current, command: event.target.value }
+                            : { ...current, url: event.target.value };
+                        }),
+                      )
+                    }
+                  />
+                </label>
+                {entry.transport === 'stdio' ? (
+                  <label className={fieldLabelClass}>
+                    <span>{t('meka.arguments')}</span>
+                    <input
+                      className={inputClass}
+                      disabled={disabled}
+                      value={(entry.args ?? []).join(' ')}
+                      onChange={(event) =>
+                        onChange(
+                          entries.map((current, currentIndex) =>
+                            currentIndex === index && isInlineMcp(current)
+                              ? {
+                                  ...current,
+                                  args: event.target.value
+                                    .split(/\s+/)
+                                    .map((value) => value.trim())
+                                    .filter(Boolean),
+                                }
+                              : current,
+                          ),
+                        )
+                      }
+                    />
+                  </label>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        ))}
+      </div>
+      {!disabled ? (
+        <div className="mt-3 flex flex-col gap-4">
+          <div className="border-b border-[var(--border-default)] pb-4">
+            <label className={fieldLabelClass}>
+              <span>{t('meka.mcpJson')}</span>
+              <textarea
+                className={cn(textAreaClass, 'min-h-28 font-mono text-12')}
+                value={jsonDraft}
+                placeholder={t('meka.mcpJsonPlaceholder')}
+                onChange={(event) => {
+                  setJsonDraft(event.target.value);
+                  setJsonError(null);
+                }}
+              />
+            </label>
+            <div className="mt-2 flex items-center gap-3">
+              <button
+                type="button"
+                className={compactButtonClass}
+                onClick={addJson}
+                disabled={!jsonDraft.trim()}
+              >
+                <Plus size={13} aria-hidden="true" />
+                {t('meka.parseMcpJson')}
+              </button>
+              {jsonError ? (
+                <span className="text-12 text-[var(--error-fg-strong)]">{jsonError}</span>
+              ) : null}
+            </div>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className={fieldLabelClass}>
+            <span>{t('meka.mcpId')}</span>
+            <input
+              className={inputClass}
+              value={id}
+              placeholder={t('meka.mcpIdPlaceholder')}
+              onChange={(event) => setId(event.target.value)}
+            />
+            </label>
+            <label className={fieldLabelClass}>
+            <span>{t('meka.mcpTransport')}</span>
+            <select
+              className={inputClass}
+              value={transport}
+              onChange={(event) =>
+                setTransport(event.target.value as MekaRoleMcpInlineConfig['transport'])
+              }
+            >
+              <option value="stdio">stdio</option>
+              <option value="sse">sse</option>
+              <option value="http">http</option>
+            </select>
+            </label>
+            {transport === 'stdio' ? (
+            <>
+              <label className={fieldLabelClass}>
+                <span>{t('meka.command')}</span>
+                <input
+                  className={inputClass}
+                  value={command}
+                  placeholder={t('meka.mcpCommandPlaceholder')}
+                  onChange={(event) => setCommand(event.target.value)}
+                />
+              </label>
+              <label className={fieldLabelClass}>
+                <span>{t('meka.arguments')}</span>
+                <input
+                  className={inputClass}
+                  value={args}
+                  placeholder={t('meka.mcpArgumentsPlaceholder')}
+                  onChange={(event) => setArgs(event.target.value)}
+                />
+              </label>
+            </>
+            ) : (
+              <label className={fieldLabelClass}>
+              <span>{t('meka.url')}</span>
+              <input
+                className={inputClass}
+                value={url}
+                placeholder={t('meka.mcpUrlPlaceholder')}
+                onChange={(event) => setUrl(event.target.value)}
+              />
+              </label>
+            )}
+            <label className={cn(fieldLabelClass, 'md:col-span-2')}>
+            <span>{t('meka.mcpEnvironment')}</span>
+            <textarea
+              className={cn(textAreaClass, 'min-h-16 font-mono text-12')}
+              value={env}
+              placeholder={t('meka.mcpEnvironmentPlaceholder')}
+              onChange={(event) => setEnv(event.target.value)}
+            />
+            </label>
+            <button
+            type="button"
+            className={cn(compactButtonClass, 'md:col-span-2 md:justify-self-start')}
+            onClick={add}
+            disabled={!canAdd}
+          >
+            <Plus size={13} aria-hidden="true" />
+            {t('meka.add')}
+            </button>
+          </div>
         </div>
       ) : null}
     </div>
@@ -1940,6 +2317,132 @@ export function MekaProjectRoleEditorRoute() {
                         onChange={(domains) => setProject({ ...project, domains })}
                       />
                     </div>
+                  </div>
+                </section>
+
+                <section className={detailSectionClass}>
+                  <DetailSectionHeader
+                    icon={<BookOpen size={18} aria-hidden="true" />}
+                    title={t('meka.rules')}
+                    description={t('meka.rulesDescription')}
+                    action={
+                      !selectionReadOnly ? (
+                        <button
+                          type="button"
+                          className={compactButtonClass}
+                          onClick={() =>
+                            setProject((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    rules: [
+                                      ...current.rules,
+                                      {
+                                        id: `rule-${Date.now().toString(36)}`,
+                                        text: t('meka.newRuleText'),
+                                        enabled: true,
+                                      },
+                                    ],
+                                  }
+                                : current,
+                            )
+                          }
+                        >
+                          <Plus size={13} aria-hidden="true" />
+                          {t('meka.addRule')}
+                        </button>
+                      ) : undefined
+                    }
+                  />
+                  <div className={cn(detailSurfaceClass, 'mt-5')}>
+                    <div className="flex flex-col gap-3">
+                      {project.rules.map((ruleItem, index) => (
+                        <div key={ruleItem.id} className="flex items-start gap-3">
+                          <input
+                            className="mt-3"
+                            type="checkbox"
+                            checked={ruleItem.enabled}
+                            disabled={selectionReadOnly}
+                            onChange={(event) =>
+                              setProject((current) =>
+                                current
+                                  ? {
+                                      ...current,
+                                      rules: current.rules.map((item, itemIndex) =>
+                                        itemIndex === index
+                                          ? { ...item, enabled: event.target.checked }
+                                          : item,
+                                      ),
+                                    }
+                                  : current,
+                              )
+                            }
+                          />
+                          <textarea
+                            className={cn(textAreaClass, 'min-h-16 flex-1')}
+                            value={ruleItem.text}
+                            disabled={selectionReadOnly}
+                            onChange={(event) =>
+                              setProject((current) =>
+                                current
+                                  ? {
+                                      ...current,
+                                      rules: current.rules.map((item, itemIndex) =>
+                                        itemIndex === index
+                                          ? { ...item, text: event.target.value }
+                                          : item,
+                                      ),
+                                    }
+                                  : current,
+                              )
+                            }
+                          />
+                          {!selectionReadOnly ? (
+                            <button
+                              type="button"
+                              className="mt-3 text-[var(--text-tertiary)] hover:text-[var(--error-fg-strong)]"
+                              onClick={() =>
+                                setProject((current) =>
+                                  current
+                                    ? {
+                                        ...current,
+                                        rules: current.rules.filter(
+                                          (_, itemIndex) => itemIndex !== index,
+                                        ),
+                                      }
+                                    : current,
+                                )
+                              }
+                              aria-label={t('meka.remove')}
+                            >
+                              <Trash2 size={14} aria-hidden="true" />
+                            </button>
+                          ) : null}
+                        </div>
+                      ))}
+                      {project.rules.length === 0 ? (
+                        <p className="text-13 text-[var(--text-tertiary)]">
+                          {t('meka.rulesEmpty')}
+                        </p>
+                      ) : null}
+                    </div>
+                  </div>
+                </section>
+
+                <section className={detailSectionClass}>
+                  <DetailSectionHeader
+                    icon={<RefreshCw size={18} aria-hidden="true" />}
+                    title={t('meka.roleMcp')}
+                    description={t('meka.projectMcpDescription')}
+                  />
+                  <div className={cn(detailSurfaceClass, 'mt-5')}>
+                    <ProjectMcpEditor
+                      entries={project.mcp}
+                      disabled={selectionReadOnly}
+                      onChange={(mcp) =>
+                        setProject((current) => (current ? { ...current, mcp } : current))
+                      }
+                    />
                   </div>
                 </section>
 

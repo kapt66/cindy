@@ -210,6 +210,13 @@ function normalizeRoleDefaults(value: unknown): MekaProjectFile['roleDefaults'] 
     ...(typeof value.promptFramework === 'string' && value.promptFramework.trim()
       ? { promptFramework: value.promptFramework }
       : {}),
+    rules: Array.isArray(value.rules)
+      ? value.rules.filter(isRecord).map((rule) => ({
+          id: safeId(rule.id, 'project rule id'),
+          text: nonEmptyString(rule.text, 'project rule text'),
+          enabled: rule.enabled !== false,
+        }))
+      : [],
     skills: cleanStrings(value.skills),
     mcp: Array.isArray(value.mcp) ? value.mcp.map(validateMcpEntry) : [],
     projectMetadataSelection: normalizeDefaultMetadataSelections(value.projectMetadataSelection),
@@ -310,6 +317,7 @@ export function normalizeMekaRoleManifest(
   }
   const excludeDefaults = isRecord(input.excludeDefaults)
     ? {
+        rules: cleanStrings(input.excludeDefaults.rules),
         skills: cleanStrings(input.excludeDefaults.skills),
         mcp: cleanStrings(input.excludeDefaults.mcp),
         metadata: normalizeDefaultMetadataSelections(input.excludeDefaults.metadata),

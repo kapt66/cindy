@@ -87,6 +87,12 @@
   点击后携带冻结的项目与角色 ID 直达角色配置。
 - 侧栏新建 Meka 会话入口和按项目新建入口。
 - 项目/角色管理详情页按 Cindy 插件详情页的页面层级和视觉语言重构。
+- 项目详情页的规则与 MCP 默认配置使用项目根 `.meka/project.json` 的
+  `roleDefaults.rules` / `roleDefaults.mcp` 作为唯一数据源；启用项目默认值的角色在运行时
+  按 ID 合并项目默认项与角色自身覆盖，角色可通过 `excludeDefaults.rules` / `mcp` 排除默认项。
+  项目详情录入 MCP 时支持粘贴单个 server、数组或 `mcpServers` 容器 JSON，解析后保存 inline
+  `transport`、`command`/`url`、`args` 和受限 `env`；`providerId` 仅用于兼容引用 Main
+  已注册的宿主 provider。
 - 远程 MCPRouter 项目实例绑定和会话隧道。
 - MCPRouter 模板级本地服务器能力已接入 Cindy Main 生命周期管理：本机配置表目录由宿主
   选择并私有持久化，远端构建产物显式下载后才能启动；已下载产物保留编译时间、HEAD SHA

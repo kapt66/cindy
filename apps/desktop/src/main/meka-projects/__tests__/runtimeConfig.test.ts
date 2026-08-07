@@ -48,6 +48,7 @@ describe('Meka project and role runtime configuration', () => {
     const merged = mergeMekaProjectRoleDefaults(
       role({
         excludeDefaults: {
+          rules: ['excluded-rule'],
           skills: ['excluded-skill'],
           mcp: ['excluded-mcp'],
           metadata: [{ sourcePath: 'excluded.md', itemType: 'rule' }],
@@ -60,6 +61,10 @@ describe('Meka project and role runtime configuration', () => {
       }),
       {
         promptFramework: 'project framework',
+        rules: [
+          { id: 'excluded-rule', text: 'excluded', enabled: true },
+          { id: 'project-rule', text: 'project rule', enabled: true },
+        ],
         skills: ['shared-skill', 'excluded-skill'],
         mcp: [
           { id: 'excluded-mcp', providerId: 'project-agent' },
@@ -73,6 +78,7 @@ describe('Meka project and role runtime configuration', () => {
     );
 
     expect(merged.prompt).toBe('project framework\n\nrole prompt');
+    expect(merged.rules).toEqual([{ id: 'project-rule', text: 'project rule', enabled: true }]);
     expect(merged.skills).toEqual([
       { skillId: 'shared-skill', enabled: false },
       { skillId: 'role-skill', enabled: true },
