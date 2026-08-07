@@ -1894,6 +1894,21 @@ MCPRouter 实例绑定或 Orca Host。
 该提示不绕过 Host 独立权限校验。验证覆盖 Codex 动态回答、同一 turn 的答案复用、工具描述
 契约；真实 MCPRouter/远程 Worker 创建仍需在 Electron 内用新任务手测。
 
+### 6.27 2026-08-07 Meka 远程 Worker 派发后未收口
+
+后续复测发现，Meka 远程操作 Skill 在确认创建 Worker 后只规定了“创建并派发”，没有把
+Orca 的异步终止语义作为 Meka 流程的硬规则。通用 Orca prompt 虽然已有派发后结束要求，
+但 Meka Skill 是同一会话中后置加载的项目流程，模型可能在 send_to_worker 成功后继续
+输出确认、等待或处理下一步；Lead 保持 running 时，Worker 的 send_to_lead / auto-bridge
+只能进入输入队列。
+
+修复仅调整 Meka 远程操作 Skill：任务已知时优先使用带 initial_task 的 create_worker，
+并明确约束 create_worker / send_to_worker 的成功派发信号。一旦信号成立，当前 Lead 任务
+必须立即结束，禁止再次确认、调用工具、等待、睡眠或轮询；Worker 报告由系统作为新消息唤醒
+Lead。确认回答仍是一次性门禁，负面或无派发结果不触发静默结束。SAGA2 runtime 集成测试
+锁定这些关键约束，避免后续远程 Skill 改写时再次丢失该生命周期规则。该修复不修改
+maker-core、Orca Host 或 MCPRouter 底层运行时；真实远程实例与 Electron 交互仍需手测。
+
 ## 10. 后续继续迁移时的硬性注意事项
 
 ### 9.1 `origin/main` → `meka/main` 同步报告

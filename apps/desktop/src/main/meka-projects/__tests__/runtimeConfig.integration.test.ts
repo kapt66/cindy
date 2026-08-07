@@ -87,6 +87,15 @@ describe('Meka runtime project/role resolution', () => {
         expect(remoteOperations?.content).toContain(
           'the underlying read/edit request alone is not authorization to create one',
         );
+        expect(remoteOperations?.content).toContain(
+          'include it as `initial_task` so worker creation and dispatch are one operation',
+        );
+        expect(remoteOperations?.content).toContain(
+          'the current Lead task MUST end immediately',
+        );
+        expect(remoteOperations?.content).toContain(
+          'do not ask another confirmation, do not call another tool, and do not wait, sleep, poll, or keep the turn alive',
+        );
       }
     }
   });
