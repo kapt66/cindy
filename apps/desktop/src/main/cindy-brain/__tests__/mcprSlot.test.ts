@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { InstalledGhost } from '../../../shared/ghost';
 import type { McprStatus } from '../../../shared/mcpr-plugin-capability';
-import { GhostMcprSlot, type McprSlotDeps } from '../mcprSlot';
+import { GhostMcprSlot, summarizeMcprPreviewOutput, type McprSlotDeps } from '../mcprSlot';
 
 function mcprGhost(routes = ['other-configs.get']): InstalledGhost {
   return {
@@ -46,6 +46,23 @@ function makeSlot(overrides: Partial<McprSlotDeps> = {}) {
 }
 
 describe('GhostMcprSlot', () => {
+  it('summarizes preview response shapes without logging repository paths or commit text', () => {
+    const summary = summarizeMcprPreviewOutput({
+      changes: [{ path: 'private/runtime-output/', indexStatus: '?', worktreeStatus: '?', kind: 'untracked' }],
+      commitSha: 'secret-sha',
+      activeTurnCount: 0,
+      workspaceBusy: false,
+      latestCommit: { sha: 'secret-sha', subject: 'private subject' },
+      instance: { id: 'private-instance', name: 'private-name' },
+    });
+
+    expect(summary).toMatchObject({
+      changesType: 'array', changesCount: 1, invalidChangeCount: 0, trailingSlashPathCount: 1,
+      latestCommitType: 'object', instanceType: 'object',
+    });
+    expect(JSON.stringify(summary)).not.toMatch(/private|secret/);
+  });
+
   it('calls only a route declared by the installed manifest', async () => {
     const { slot, service } = makeSlot();
     const response = await slot.handleRequest('mcpr-ghost', {

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type { InstalledGhost } from '../../shared/ghost.js';
+import { createLogger } from '../logger.js';
 import {
   isMcprScope,
   mcprRouteMatches,
@@ -17,6 +18,8 @@ type McprService = {
   getPluginCapabilityStatus(): Promise<McprStatus>;
   callPluginCapability(request: McprCallRequest): Promise<McprCallResponse>;
 };
+
+const log = createLogger('ghosts:mcpr-slot');
 
 export type McprLocalServerService = {
   configure?(instanceId: string, inputId?: string, value?: string): Promise<unknown>;
@@ -53,9 +56,53 @@ function serializedInputSize(input: unknown): number | null {
   }
 }
 
+function valueType(value: unknown): string {
+  return value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
+}
+
+export function summarizeMcprPreviewOutput(output: unknown): Record<string, unknown> {
+  if (!isRecord(output)) return { outputType: valueType(output) };
+  const changes = output.changes;
+  const records = Array.isArray(changes) ? changes.filter(isRecord) : [];
+  return {
+    outputType: 'object',
+    outputKeys: Object.keys(output).sort(),
+    changesType: valueType(changes),
+    changesCount: Array.isArray(changes) ? changes.length : undefined,
+    invalidChangeCount: Array.isArray(changes) ? changes.length - records.length : undefined,
+    trailingSlashPathCount: records.filter(change =>
+      typeof change.path === 'string' && /[\\/]$/.test(change.path),
+    ).length,
+    summaryTypes: Object.fromEntries(
+      ['commitSha', 'targetCommitSha', 'upstreamRef', 'ahead', 'behind', 'activeTurnCount', 'workspaceBusy']
+        .map(key => [key, valueType(output[key])]),
+    ),
+    latestCommitType: valueType(output.latestCommit),
+    latestCommitKeys: isRecord(output.latestCommit) ? Object.keys(output.latestCommit).sort() : [],
+    instanceType: valueType(output.instance),
+    instanceKeys: isRecord(output.instance) ? Object.keys(output.instance).sort() : [],
+  };
+}
+
 /** mcpr slot: installed manifest gate -> shape/size gate -> authenticated Router call. */
 export class GhostMcprSlot {
+  private readonly diagnosticSignatures = new Map<string, string>();
+
   constructor(private readonly deps: McprSlotDeps) {}
+
+  private logCapabilityResult(ghostId: string, route: string, result: McprCallResponse): void {
+    if (!result.ok) {
+      log.warn('MCPRouter plugin capability call failed', { ghostId, route, code: result.code });
+      return;
+    }
+    if (route !== 'git.preview') return;
+    const output = summarizeMcprPreviewOutput(result.output);
+    const signature = JSON.stringify(output);
+    const key = `${ghostId}:${route}`;
+    if (this.diagnosticSignatures.get(key) === signature) return;
+    this.diagnosticSignatures.set(key, signature);
+    log.info('MCPRouter plugin capability response shape changed', { ghostId, route, output });
+  }
 
   async handleRequest(ghostId: string, payload: unknown): Promise<McprPluginResponse> {
     const ghost = this.deps.getGhost(ghostId);
@@ -174,6 +221,7 @@ export class GhostMcprSlot {
         // shape-checked above and never trusted as a backend identity.
         callId: randomUUID(),
       });
+      this.logCapabilityResult(ghostId, route, result);
       return { operation: 'call', result };
     } catch (error) {
       const status = isRecord(error) && typeof error.status === 'number' ? error.status : 0;

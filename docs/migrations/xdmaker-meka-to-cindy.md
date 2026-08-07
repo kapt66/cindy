@@ -95,6 +95,9 @@
 - `runtimeContract.config.inputs` 的文本输入可携带模板定义的 `suggestions`；Cindy Main 对建议值
   做有界校验后原样投影给插件，默认值、建议值和实际输入都由模板与用户决定，Host 不写入项目
   或数据库特判。目录绝对路径及文本配置仍仅在本机按实例持久化。
+- MCPRouter 插件 Slot 对 `git.preview` 的成功响应只在结构变化时写入一次脱敏摘要；日志仅含
+  route、字段类型、变更计数和尾斜杠计数，不含文件路径、提交值、实例值、URL 或凭证，便于
+  定位 Router/插件契约漂移而不扩大插件可见数据面。
 - Orca Worker 的本地 P4/远程 MCPRouter 目标解析与安全约束。
 - XDMaker Meka 0.0.11 数据库 migration lineage 兼容桥。
 - 已完成 `origin/main@24604ae4b` 向本地 `meka/main@33348870c` 的同步冲突裁决；

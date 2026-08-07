@@ -90,6 +90,11 @@ route、scope、callId 和 256 KiB JSON 预算，再使用 Host 保存的 Router
 `GET /api/plugin-capabilities/status` 或 `POST /api/plugin-capabilities/call`。插件不接触
 Router origin 或任何认证材料。
 
+`GhostMcprSlot` 对失败调用记录固定 route 与稳定错误码；对 `git.preview` 只在响应结构发生
+变化时记录一次脱敏形状摘要，包括顶层 key、字段类型、变更数量和尾斜杠路径数量。摘要不记录
+文件名、仓库路径、提交值、实例值、URL、凭证或完整响应，避免后台轮询刷屏并保留契约漂移的
+定位证据。
+
 `cindy.mcpr.local({ action, instanceId, taskId, programId })` 只对声明服务器运行 route 的插件开放。
 固定 action 为 `configure`、`describe`、`prepare`、`start`、`start-all`、`status`、`stop`、
 `stop-all` 和 `logs`；插件不能提交其它本机操作。`configure` 由 Cindy Main 打开目录选择框，
