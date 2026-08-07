@@ -83,19 +83,40 @@ Meka 设置。
 
 ## 5. 实现状态
 
-Desktop 电子脑 preload 已暴露 `cindy.mcpr.status()`、`configureLogin()` 与 `call()`；
+Desktop 电子脑 preload 已暴露 `cindy.mcpr.status()`、`configureLogin()`、`call()` 与受限的
+`local()` 固定操作；
 Main 按真实 `webContents` 反查插件身份，并在 `GhostMcprSlot` 中检查启用状态、manifest
 route、scope、callId 和 256 KiB JSON 预算，再使用 Host 保存的 Router session 调用
 `GET /api/plugin-capabilities/status` 或 `POST /api/plugin-capabilities/call`。插件不接触
 Router origin 或任何认证材料。
 
+`cindy.mcpr.local({ action, instanceId, taskId, programId })` 只对声明服务器运行 route 的插件开放。
+固定 action 为 `configure`、`describe`、`prepare`、`start`、`start-all`、`status`、`stop`、
+`stop-all` 和 `logs`；插件不能提交其它本机操作。`configure` 由 Cindy Main 打开目录选择框，
+所选配置表绝对路径仅以 `0600` 权限保存在 Cindy 用户数据中，返回插件的只有已配置状态和
+目录显示名，不返回绝对路径。
+
+模板可以在 `runtimeContract.config.steps` 中声明宿主执行的通用配置步骤。当前支持
+`mount-config`（把用户选择的配置目录以 junction/symlink 或副本放到运行目录的相对路径）
+和 `set-toml`（写入运行目录内 TOML 文件的点分字段）。步骤中的目标必须是运行目录内的
+相对路径；宿主拒绝路径逃逸和经过链接写回用户配置目录。`config.adapter` 继续作为可选的
+产物内适配器，并在声明式步骤完成后执行。平台不得根据模板、项目或程序名称选择步骤。
+
+本地服务器必须先显式 `prepare` 下载并校验远端产物，之后才能 `start`；启动操作不隐式下载
+或切换到新的构建任务。`describe` 会区分模板声明的程序与本机真实已准备状态，并返回下载时
+固化的编译时间、HEAD SHA 和提交标题。已校验产物跨插件页面和应用重启保留；应用重启会先
+终止持久状态中的残留 PID，并把程序恢复为 `stopped`，不会把旧进程视为仍在运行。Main
+Supervisor 负责产物摘要、路径边界、配置适配器、进程树和有限日志；返回值不含本地/远端
+路径、PID、命令或凭证。运行契约由模板能力在 Host 内部读取，插件不得自行提交可执行路径
+或 shell。
+
 首个已接线业务 route 为 `other-configs.get`（`account` scope / `read` risk），输入只含
 `ownerUsername` 与 `name`。Router 复用 `/api/configs/:ownerUsername/:name` 的
 private/shared/public 权限查询；无权访问与不存在统一为 `ROUTE_NOT_FOUND`。
 
-`configureLogin()` 当前只返回现有远端状态：已登录为 `connected`，其余为 `failed` 并
-引导用户在 Cindy Meka 设置中配置。宿主通用登录窗口的 Main→Renderer 交互桥尚未落地，
-因此插件不能通过该方法主动打开登录框；此限制不能通过开放 URL 或让插件收集密码绕过。
+`configureLogin()` 已登录时返回 `connected`；未认证或登录过期时会通过 Host 固定事件
+聚焦主窗口，并打开共用的 MCPRouter 登录/注册对话框。插件不能提交设置路由或 URL，
+也不能通过开放网络请求或自行收集密码绕过该宿主入口。
 
 测试覆盖 manifest 校验、route 匹配、Host 拒绝未声明 route、session-only HTTP 调用、
 远端状态映射，以及 Router 对 other-config 可见性和额外 transport 字段的拒绝。

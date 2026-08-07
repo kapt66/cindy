@@ -179,7 +179,8 @@ import { GhostPickSlot } from './pickSlot.js';
 import { recordGhostPickedDir } from './pickGrantsStore.js';
 import { GhostPreviewSlot } from './previewSlot.js';
 import { GhostRevealSlot } from './revealSlot.js';
-import { GhostMcprSlot } from './mcprSlot.js';
+import { GhostMcprSlot, type McprLocalServerService } from './mcprSlot.js';
+import { LocalServerSupervisor } from './localServerSupervisor.js';
 import { GhostWorkspaceSlot, type WorkspaceSessionService } from './workspaceSlot.js';
 import type { GhostTrustRegistry } from './ghostSignature.js';
 import { GhostNotifySlot, sanitizeGhostNoticeText } from './notifySlot.js';
@@ -3213,6 +3214,106 @@ export function getGhostNetworkSlot(): GhostNetworkSlot {
 let fsSlotSingleton: GhostFsSlot | null = null;
 let revealSlotSingleton: GhostRevealSlot | null = null;
 let mcprSlotSingleton: GhostMcprSlot | null = null;
+let localServerSupervisorSingleton: LocalServerSupervisor | null = null;
+
+function jsonOutput(result: unknown): Record<string, unknown> {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('MCPRouter returned invalid local server data');
+  const output = (result as { output?: unknown }).output;
+  if (!output || typeof output !== 'object' || Array.isArray(output)) throw new Error('MCPRouter returned invalid local server data');
+  return output as Record<string, unknown>;
+}
+
+function artifactOutput(result: unknown): { taskId: string; artifact: import('./localServerRuntime.js').LocalServerArtifactDescriptor } {
+  const output = jsonOutput(result);
+  if (typeof output.taskId !== 'string' || !output.artifact || typeof output.artifact !== 'object' || Array.isArray(output.artifact)) {
+    throw new Error('MCPRouter returned invalid build artifact data');
+  }
+  return { taskId: output.taskId, artifact: output.artifact as import('./localServerRuntime.js').LocalServerArtifactDescriptor };
+}
+
+async function localServerBuildMetadata(
+  service: ReturnType<typeof getMekaRouterService>,
+  instanceId: string,
+  taskId: string,
+): Promise<import('./localServerSupervisor.js').LocalServerBuildMetadata> {
+  const task = jsonOutput(await service.callPluginCapability({
+    contractVersion: 1,
+    route: 'server-runtime.build.status',
+    scope: 'selected-instance',
+    input: { instanceId, taskId },
+  }));
+  const commitSha = typeof task.resolvedCommitSha === 'string' && /^[0-9a-f]{40}$/i.test(task.resolvedCommitSha)
+    ? task.resolvedCommitSha
+    : undefined;
+  let commitMessage: string | undefined;
+  if (commitSha) {
+    try {
+      const show = jsonOutput(await service.callPluginCapability({
+        contractVersion: 1,
+        route: 'git.show',
+        scope: 'selected-instance',
+        input: { instanceId, commitSha },
+      }));
+      const commit = show.commit;
+      if (commit && typeof commit === 'object' && !Array.isArray(commit) && typeof (commit as { subject?: unknown }).subject === 'string') {
+        commitMessage = (commit as { subject: string }).subject.slice(0, 4096);
+      }
+    } catch { /* The build identity remains useful even when commit details are unavailable. */ }
+  }
+  const builtAt = Number.isSafeInteger(task.finishedAt) && Number(task.finishedAt) > 0
+    ? Number(task.finishedAt)
+    : Number(task.createdAt);
+  if (!Number.isSafeInteger(builtAt) || builtAt <= 0) throw new Error('MCPRouter returned invalid build metadata');
+  return {
+    taskId,
+    builtAt,
+    ...(typeof task.sourceRef === 'string' ? { sourceRef: task.sourceRef.slice(0, 4096) } : {}),
+    ...(commitSha ? { commitSha } : {}),
+    ...(commitMessage ? { commitMessage } : {}),
+  };
+}
+
+function getLocalServerSupervisor(): LocalServerSupervisor {
+  if (!localServerSupervisorSingleton) {
+    const service = getMekaRouterService();
+    localServerSupervisorSingleton = new LocalServerSupervisor({
+      userDataPath: app.getPath('userData'),
+      downloadArtifact: (instanceId, taskId, relativePath) => service.downloadBuildArtifact(instanceId, taskId, relativePath),
+      getArtifact: async (instanceId, taskId) => artifactOutput(await service.callPluginCapability({ contractVersion: 1, route: 'server-runtime.build.artifact', scope: 'selected-instance', input: { instanceId, taskId } })),
+      getBuildMetadata: (instanceId, taskId) => localServerBuildMetadata(service, instanceId, taskId),
+      getRuntimeContract: async (instanceId) => {
+        const output = jsonOutput(await service.callPluginCapability({ contractVersion: 1, route: 'server-runtime.build.contract', scope: 'selected-instance', input: { instanceId } }));
+        const contract = output.runtimeContract;
+        if (!contract || typeof contract !== 'object' || Array.isArray(contract)) throw new Error('MCPRouter returned invalid runtime contract');
+        return contract as Record<string, unknown>;
+      },
+      selectConfigDirectory: async (_instanceId, _inputId, title) => {
+        const focused = BrowserWindow.getFocusedWindow();
+        const win = isTrustedAppRendererWindow(focused)
+          ? focused
+          : BrowserWindow.getAllWindows().find(candidate => isTrustedAppRendererWindow(candidate));
+        const options: Electron.OpenDialogOptions = { title: title || '选择本地服务器配置表目录', properties: ['openDirectory'] };
+        const result = win && !win.isDestroyed()
+          ? await dialog.showOpenDialog(win, options)
+          : await dialog.showOpenDialog(options);
+        return result.canceled || !result.filePaths[0] ? null : result.filePaths[0];
+      },
+    });
+  }
+  return localServerSupervisorSingleton;
+}
+
+function openMekaRouterLoginWindow(): void {
+  const focused = BrowserWindow.getFocusedWindow();
+  const win = isTrustedAppRendererWindow(focused)
+    ? focused
+    : BrowserWindow.getAllWindows().find(candidate => isTrustedAppRendererWindow(candidate));
+  if (!win || win.isDestroyed()) return;
+  if (!win.isVisible()) win.show();
+  if (win.isMinimized()) win.restore();
+  win.focus();
+  win.webContents.send('meka-settings:router:open-login');
+}
 
 /** MCPRouter 受控路由槽；身份、地址与 session 均由 Host 持有。 */
 export function getGhostMcprSlot(): GhostMcprSlot {
@@ -3220,6 +3321,8 @@ export function getGhostMcprSlot(): GhostMcprSlot {
     mcprSlotSingleton = new GhostMcprSlot({
       getGhost: findAvailableGhost,
       getService: getMekaRouterService,
+      getLocalServerService: (): McprLocalServerService => getLocalServerSupervisor(),
+      openLoginWindow: openMekaRouterLoginWindow,
     });
   }
   return mcprSlotSingleton;
@@ -4322,9 +4425,15 @@ export function registerGhostIpc(): void {
   });
   // 主机正常退出:逐个销毁沙箱(docs/dev-rules/plugin-security-and-authoring.md 的"关完才走";
   // 主进程被强杀时 Chromium 会级联回收渲染子进程,无孤儿)。
-  app.on('before-quit', () => {
+  app.on('before-quit', (event) => {
     runtime.destroyAll();
     getGhostNodeRuntimeBroker().destroyAll();
+    const supervisor = localServerSupervisorSingleton;
+    if (supervisor) {
+      event.preventDefault();
+      localServerSupervisorSingleton = null;
+      void supervisor.stopAll().finally(() => app.quit());
+    }
   });
 
   // 启动序列(必须等 app ready:registerGhostIpc 在 bootstrap 顶层(ready 前)

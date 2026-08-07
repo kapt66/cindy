@@ -58,15 +58,25 @@ function createEncryptedVault(userDataPath: string) {
     },
     store(key: string, value: string): void {
       if (!safeStorage.isEncryptionAvailable()) {
-        throw new Error('OS credential encryption is unavailable; MCPRouter credentials were not saved');
+        throw new Error(
+          'OS credential encryption is unavailable; MCPRouter credentials were not saved',
+        );
       }
       fs.mkdirSync(userDataPath, { recursive: true });
       fs.writeFileSync(secretPath(key, 'enc'), safeStorage.encryptString(value));
-      try { fs.unlinkSync(secretPath(key, 'plain')); } catch { /* absent or locked */ }
+      try {
+        fs.unlinkSync(secretPath(key, 'plain'));
+      } catch {
+        /* absent or locked */
+      }
     },
     remove(key: string): void {
       for (const extension of ['enc', 'plain'] as const) {
-        try { fs.unlinkSync(secretPath(key, extension)); } catch { /* absent or locked */ }
+        try {
+          fs.unlinkSync(secretPath(key, extension));
+        } catch {
+          /* absent or locked */
+        }
       }
     },
   };
@@ -148,12 +158,12 @@ export function registerMekaSettingsIpc(
   );
   ipcMain.handle(MEKA_SETTINGS_CHANNELS.PROJECT_SET_BINDINGS, (_event, input: unknown) => {
     const body = requireObject(input);
-    if (!Array.isArray(body.instanceIds) || !body.instanceIds.every((id) => typeof id === 'string')) {
+    if (
+      !Array.isArray(body.instanceIds) ||
+      !body.instanceIds.every((id) => typeof id === 'string')
+    ) {
       throwIpcError('INVALID_PARAMS', 'instanceIds must be a string array');
     }
-    return router.setProjectBindings(
-      requireString(body.projectId, 'projectId'),
-      body.instanceIds,
-    );
+    return router.setProjectBindings(requireString(body.projectId, 'projectId'), body.instanceIds);
   });
 }

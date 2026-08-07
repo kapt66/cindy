@@ -4379,6 +4379,7 @@ interface ElectronAPI {
     setP4Root: (directoryPath: string) => Promise<import('../shared/meka-settings').MekaP4Settings>;
     router: {
       get: () => Promise<import('../shared/meka-router').MekaRouterSettingsView>;
+      onOpenLogin: (callback: () => void) => () => void;
       connect: (input: { routerUrl: string; username: string; password: string }) => Promise<void>;
       register: (input: { routerUrl: string; username: string; password: string }) => Promise<void>;
       disconnect: () => Promise<void>;

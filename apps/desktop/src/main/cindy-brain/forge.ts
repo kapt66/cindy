@@ -1315,8 +1315,12 @@ node 详单**不接受** \`command\` / \`args\` / \`shell\` / \`env\` 或其它�
 route 为 \`other-configs.get\`（\`account\` scope），输入只含 \`ownerUsername\` 与 \`name\`。
 插件请求不能携带 URL、HTTP method、headers、Cookie、Authorization 或 client key。
 运行期可调用 \`cindy.mcpr.status()\` 与 \`cindy.mcpr.call({ contractVersion:1, route, input,
-scope })\`。\`configureLogin()\` 目前只返回现有状态，不主动打开窗口；未登录时引导用户到
-Cindy Meka 设置配置 MCPRouter，不要在插件面板收集账号或密码。
+scope })\`。服务器运行插件还可调用 \`cindy.mcpr.local({ action, instanceId, taskId, programId })\`；
+固定 action 包含 configure/describe/prepare/start/start-all/status/stop/stop-all/logs。configure
+由宿主打开配置表目录选择框，prepare 显式下载并校验产物，start 不会隐式下载。Cindy Main
+负责本地产物、构建身份和进程生命周期，插件不会接触绝对路径、PID 或凭证。
+\`configureLogin()\` 在未认证时会打开宿主共用的 MCPRouter 登录窗口；插件不要自行
+导航设置页，也不要在插件面板收集账号或密码。
 
 \`\`\`json
 "setup": {

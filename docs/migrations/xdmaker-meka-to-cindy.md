@@ -88,6 +88,13 @@
 - 侧栏新建 Meka 会话入口和按项目新建入口。
 - 项目/角色管理详情页按 Cindy 插件详情页的页面层级和视觉语言重构。
 - 远程 MCPRouter 项目实例绑定和会话隧道。
+- MCPRouter 模板级本地服务器能力已接入 Cindy Main 生命周期管理：本机配置表目录由宿主
+  选择并私有持久化，远端构建产物显式下载后才能启动；已下载产物保留编译时间、HEAD SHA
+  和提交标题并可跨应用重启恢复，重启时只保留文件并强制终止残留进程。该机制只解释模板
+  `runtimeContract`，不包含 SAGA2 或其它业务项目分支。
+- `runtimeContract.config.inputs` 的文本输入可携带模板定义的 `suggestions`；Cindy Main 对建议值
+  做有界校验后原样投影给插件，默认值、建议值和实际输入都由模板与用户决定，Host 不写入项目
+  或数据库特判。目录绝对路径及文本配置仍仅在本机按实例持久化。
 - Orca Worker 的本地 P4/远程 MCPRouter 目标解析与安全约束。
 - XDMaker Meka 0.0.11 数据库 migration lineage 兼容桥。
 - 已完成 `origin/main@24604ae4b` 向本地 `meka/main@33348870c` 的同步冲突裁决；

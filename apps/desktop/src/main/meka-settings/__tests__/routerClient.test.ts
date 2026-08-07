@@ -96,6 +96,35 @@ describe('MekaRouterClient', () => {
     );
   });
 
+  it('downloads a build artifact through the session-authenticated project proxy', async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response('archive-bytes', {
+          status: 200,
+          headers: { 'content-type': 'application/gzip', 'content-length': '13' },
+        }),
+    ) as typeof fetch;
+    const client = createMekaRouterClient({ fetchImpl });
+
+    await expect(
+      client.downloadBuildArtifact(
+        'https://router.example',
+        'session-token',
+        'instance-1',
+        'task-1',
+      ),
+    ).resolves.toMatchObject({ status: 200 });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://router.example/api/project-agent-instances/instance-1/build-tasks/task-1/artifact',
+      expect.objectContaining({
+        headers: {
+          cookie: 'session=session-token',
+          accept: 'application/gzip, application/octet-stream',
+        },
+      }),
+    );
+  });
+
   it('keeps paging tools/list until the Router cursor is exhausted', async () => {
     const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
     const responses = [

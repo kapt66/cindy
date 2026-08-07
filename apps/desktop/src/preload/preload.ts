@@ -3020,6 +3020,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     router: {
       get: (): Promise<import('../shared/meka-router').MekaRouterSettingsView> =>
         ipcRenderer.invoke('meka-settings:router:get'),
+      onOpenLogin: (callback: () => void): (() => void) => {
+        const listener = () => callback();
+        ipcRenderer.on('meka-settings:router:open-login', listener);
+        return () => ipcRenderer.removeListener('meka-settings:router:open-login', listener);
+      },
       connect: (input: { routerUrl: string; username: string; password: string }): Promise<void> =>
         ipcRenderer.invoke('meka-settings:router:connect', input),
       register: (input: { routerUrl: string; username: string; password: string }): Promise<void> =>

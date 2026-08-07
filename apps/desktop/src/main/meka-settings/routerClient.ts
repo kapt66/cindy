@@ -232,6 +232,31 @@ export function createMekaRouterClient(deps: RouterClientDeps = {}) {
       return (await response.json()) as McprCallResponse;
     },
 
+    /** Main-only artifact channel; callers must verify size and SHA-256 before use. */
+    async downloadBuildArtifact(
+      baseUrl: string,
+      sessionToken: string,
+      instanceId: string,
+      taskId: string,
+      relativePath?: string,
+    ): Promise<Response> {
+      const query = relativePath ? `?path=${encodeURIComponent(relativePath)}` : '';
+      const response = await request(
+        deps,
+        baseUrl,
+        `/api/project-agent-instances/${encodeURIComponent(instanceId)}/build-tasks/${encodeURIComponent(taskId)}/artifact${query}`,
+        {
+          headers: {
+            cookie: `session=${sessionToken}`,
+            accept: 'application/gzip, application/octet-stream',
+          },
+        },
+        UPLOAD_REQUEST_TIMEOUT_MS,
+      );
+      if (!response.ok) throw await readError(response, 'download build artifact');
+      return response;
+    },
+
     async listOwnedMekaPlugins(
       baseUrl: string,
       sessionToken: string,

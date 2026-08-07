@@ -27,6 +27,8 @@ import { UpdateNoticeDialog } from '@/components/UpdateNoticeDialog';
 import { FeishuConflictDialogHost } from '@/components/feishuBot/FeishuConflictDialogHost';
 import { GlobalDropImportListener } from '@/components/layout/GlobalDropImportListener';
 import { SessionShareImportWizard } from '@/components/settings/SessionShareImportWizard';
+import { MekaRouterConnectDialog } from '@/components/settings/MekaRouterConnectDialog';
+import type { MekaRouterSettingsView } from '../../../shared/meka-router';
 import { ControlledBanner } from '@/features/remote-device/ControlledBanner';
 import { useDeviceLinkRemoteProjects } from '@/features/device-link/useDeviceLinkRemoteProjects';
 import { FeatureSidebarSlotProvider } from '@/features/feature-context';
@@ -207,6 +209,14 @@ function SidebarPinSpacer({ width }: { width: number }) {
 
 export function MainLayout() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(getInitialCollapsed);
+  const [routerLoginOpen, setRouterLoginOpen] = useState(false);
+  const [routerLoginSettings, setRouterLoginSettings] = useState<MekaRouterSettingsView | null>(null);
+  useEffect(() => window.electronAPI.mekaSettings.router.onOpenLogin(() => {
+    void window.electronAPI.mekaSettings.router.get()
+      .then(setRouterLoginSettings)
+      .catch(() => setRouterLoginSettings(null))
+      .finally(() => setRouterLoginOpen(true));
+  }), []);
   const [shareImportRequest, setShareImportRequest] = useState<{
     id: number;
     filePath: string;
@@ -1394,6 +1404,14 @@ export function MainLayout() {
       )}
       {/* FeiShu Bot conflict dialog -- subscribes to main process push and surfaces a global modal */}
       <FeishuConflictDialogHost />
+      <MekaRouterConnectDialog
+        open={routerLoginOpen}
+        settings={routerLoginSettings}
+        onOpenChange={setRouterLoginOpen}
+        onConnected={async () => {
+          setRouterLoginSettings(await window.electronAPI.mekaSettings.router.get());
+        }}
+      />
       {/* 窗口级拖拽兜底:拖 .cshare 进窗口空白处 → 会话导入向导 */}
       <GlobalDropImportListener onOpenShareImport={openShareImport} />
       {shareImportRequest && (

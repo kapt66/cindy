@@ -34,6 +34,7 @@ function setup(initial: Record<string, unknown> = {}) {
       route: 'other-configs.get',
       output: {},
     })),
+    downloadBuildArtifact: vi.fn(async () => new Response('archive-bytes', { status: 200 })),
     logout: vi.fn(async () => undefined),
     listTools: vi.fn(async () => []),
     callTool: vi.fn(async () => ({ content: [] })),
@@ -140,6 +141,21 @@ describe('MekaRouterService', () => {
       'https://router.example',
       'existing-session',
       expect.objectContaining({ route: 'other-configs.get' }),
+    );
+  });
+
+  it('downloads a build artifact with the stored session and opaque ids', async () => {
+    const fixture = setup({ routerUrl: 'https://router.example/' });
+    fixture.secrets.set('meka.router.sessionToken', 'existing-session');
+
+    await expect(
+      fixture.service.downloadBuildArtifact('instance-1', 'task-1'),
+    ).resolves.toMatchObject({ status: 200 });
+    expect(fixture.client.downloadBuildArtifact).toHaveBeenCalledWith(
+      'https://router.example',
+      'existing-session',
+      'instance-1',
+      'task-1',
     );
   });
 

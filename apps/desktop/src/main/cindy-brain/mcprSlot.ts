@@ -18,9 +18,22 @@ type McprService = {
   callPluginCapability(request: McprCallRequest): Promise<McprCallResponse>;
 };
 
+export type McprLocalServerService = {
+  configure?(instanceId: string, inputId?: string, value?: string): Promise<unknown>;
+  prepare(instanceId: string, taskId: string, programId?: string): Promise<unknown>;
+  describe?(instanceId: string): Promise<unknown>;
+  start(instanceId: string, taskId?: string, programId?: string): Promise<unknown>;
+  startAll?(instanceId: string, taskId?: string): Promise<unknown>;
+  status(instanceId: string, programId?: string): Promise<unknown>;
+  stop(instanceId: string, programId?: string): Promise<unknown>;
+  logs(instanceId: string, programId?: string): Promise<unknown>;
+};
+
 export interface McprSlotDeps {
   getGhost(id: string): InstalledGhost | null;
   getService(): McprService;
+  getLocalServerService?: () => McprLocalServerService | null;
+  openLoginWindow?: () => void;
 }
 
 function failure(code: McprCallFailure['code'], message: string): McprCallFailure {
@@ -67,6 +80,7 @@ export class GhostMcprSlot {
     }
     if (payload.operation === 'configure-login') {
       const status = await this.deps.getService().getPluginCapabilityStatus();
+      if (status.remote !== 'authenticated') this.deps.openLoginWindow?.();
       return {
         operation: 'configure-login',
         result:
@@ -78,6 +92,38 @@ export class GhostMcprSlot {
                 code: status.remote === 'unavailable' ? 'AUTH_UNAVAILABLE' : 'AUTH_REQUIRED',
               },
       };
+    }
+    if (payload.operation === 'local') {
+      const local = this.deps.getLocalServerService?.();
+      const localRoutes = ['server-runtime.build.start', 'server-runtime.build.artifact', 'server-runtime.run.start'];
+      if (!local || !localRoutes.some(route => ghost.manifest.mcpr?.routes.some(pattern => mcprRouteMatches(pattern, route))) || !isRecord(payload.input)) {
+        return { operation: 'call', result: failure('INVALID_REQUEST', '本地服务器能力不可用或参数无效') };
+      }
+      const action = payload.input.action;
+      const instanceId = typeof payload.input.instanceId === 'string' ? payload.input.instanceId : '';
+      const taskId = typeof payload.input.taskId === 'string' ? payload.input.taskId : '';
+      const programId = typeof payload.input.programId === 'string' ? payload.input.programId : undefined;
+      const inputId = typeof payload.input.inputId === 'string' ? payload.input.inputId : undefined;
+      const value = typeof payload.input.value === 'string' ? payload.input.value : undefined;
+      if (!/^[A-Za-z0-9._-]{1,128}$/.test(instanceId) || (taskId && !/^[A-Za-z0-9._-]{1,128}$/.test(taskId)) ||
+        (programId && !/^[A-Za-z0-9._-]{1,64}$/.test(programId)) || (inputId && !/^[A-Za-z0-9._-]{1,64}$/.test(inputId)) ||
+        (value !== undefined && (value.length > 4096 || value.includes('\0'))) || !['configure', 'describe', 'prepare', 'start', 'start-all', 'status', 'stop', 'stop-all', 'logs'].includes(String(action))) {
+        return { operation: 'call', result: failure('INVALID_REQUEST', '本地服务器参数无效') };
+      }
+      try {
+        const result = action === 'configure' ? await (local.configure ? local.configure(instanceId, inputId, value) : Promise.reject(new Error('本地服务器配置能力不可用')))
+          : action === 'describe' ? await (local.describe ? local.describe(instanceId) : local.status(instanceId))
+          : action === 'prepare' ? await (programId ? local.prepare(instanceId, taskId, programId) : local.prepare(instanceId, taskId))
+            : action === 'start' ? await (programId ? local.start(instanceId, taskId || undefined, programId) : local.start(instanceId, taskId || undefined))
+              : action === 'start-all' ? await (local.startAll ? local.startAll(instanceId, taskId || undefined) : local.start(instanceId, taskId || undefined))
+                : action === 'status' ? await local.status(instanceId, programId)
+                  : action === 'stop' ? await local.stop(instanceId, programId)
+                    : action === 'stop-all' ? await local.stop(instanceId)
+                    : await local.logs(instanceId, programId);
+        return { operation: 'call', result: { ok: true, contractVersion: MCPR_CAPABILITY_CONTRACT_VERSION, route: 'local-server', output: result } };
+      } catch (error) {
+        return { operation: 'call', result: failure('INVALID_INPUT', error instanceof Error ? error.message : '本地服务器操作失败') };
+      }
     }
     if (payload.operation !== 'call' || !isRecord(payload.request)) {
       return {
@@ -91,6 +137,7 @@ export class GhostMcprSlot {
     if (
       request.contractVersion !== MCPR_CAPABILITY_CONTRACT_VERSION ||
       route === null ||
+      route === 'server-runtime.build.contract' ||
       !ghost.manifest.mcpr.routes.some((pattern) => mcprRouteMatches(pattern, route))
     ) {
       return {

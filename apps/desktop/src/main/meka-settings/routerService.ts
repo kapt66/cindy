@@ -386,6 +386,32 @@ export function createMekaRouterService(deps: MekaRouterServiceDeps) {
       return client.callPluginCapability(baseUrl, token, request);
     },
 
+    /** Main-only binary channel. The caller owns bounded streaming and digest verification. */
+    async downloadBuildArtifact(
+      instanceId: string,
+      taskId: string,
+      relativePath?: string,
+    ): Promise<Response> {
+      if (!/^[-A-Za-z0-9._]{1,128}$/.test(instanceId))
+        throw new Error('Invalid project instance id');
+      if (!/^[-A-Za-z0-9._]{1,128}$/.test(taskId)) throw new Error('Invalid build task id');
+      if (
+        relativePath !== undefined &&
+        (!relativePath ||
+          relativePath.length > 1024 ||
+          relativePath
+            .replace(/\\/g, '/')
+            .split('/')
+            .some((part) => !part || part === '.' || part === '..'))
+      ) {
+        throw new Error('Invalid build artifact path');
+      }
+      const { baseUrl, token } = await sessionAuth();
+      return relativePath === undefined
+        ? client.downloadBuildArtifact(baseUrl, token, instanceId, taskId)
+        : client.downloadBuildArtifact(baseUrl, token, instanceId, taskId, relativePath);
+    },
+
     async getSettings(): Promise<MekaRouterSettingsView> {
       const raw = await load();
       const configuredBaseUrl = text(raw.routerUrl);
