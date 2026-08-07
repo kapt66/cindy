@@ -942,6 +942,9 @@ describe('FORGE_GUIDE', () => {
       'did-approval-{start,end}',
       'did-user-input-{start,end}',
       '不会给 reasoning、工具',
+      'probe-project-config/configure-project-config',
+      '只能在当前在途 Agent 工具调用中使用',
+      '插件不得传绝对路径',
     ]) {
       expect(FORGE_GUIDE).toContain(marker);
     }

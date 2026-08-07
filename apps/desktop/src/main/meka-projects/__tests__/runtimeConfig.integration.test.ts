@@ -79,6 +79,14 @@ describe('Meka runtime project/role resolution', () => {
       expect(resolved.mcp.map((entry) => entry.id)).toEqual(
         hasRemote ? ['mcp-router', 'project-agent', ...(hasDesign ? ['meka-design'] : [])] : [],
       );
+      const saga2Overview = resolved.skills.find((skill) => skill.id === 'saga2-overview');
+      expect(saga2Overview?.content).toContain('pass the direct child name `saga2_json`');
+      expect(saga2Overview?.content).toContain('ask the user whether to use it before adopting it');
+      expect(saga2Overview?.content).toContain('let the Host open its system');
+      expect(saga2Overview?.content).toContain('directory picker');
+      expect(saga2Overview?.content).toContain('Do not inspect or pass an absolute local path');
+      expect(saga2Overview?.content).toContain('For current-computer server lifecycle');
+      expect(saga2Overview?.content).toContain('standard `account_overview` then `start_servers` workflow');
       if (hasRemote) {
         const remoteOperations = resolved.skills.find((skill) => skill.id === 'remote-operations');
         expect(remoteOperations?.content).toContain(

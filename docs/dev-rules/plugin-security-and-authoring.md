@@ -212,6 +212,10 @@
 - 同版本内容更新成功后，逻辑沙箱／Node／Agent slot 按正常更新生命周期重启；已经可见的
   panel/settings WebView 通过专用 content revision 事件重建，确保 HTML/CSS/JS 变化即时
   生效。该事件只负责本机可见界面刷新，不进入 device-link 协议。
+- Desktop 启动或 data owner 切换完成后，Host 必须从当前 owner 的开发注册表恢复 watcher，并在
+  Agent 能唤醒已安装开发副本前，对每个已登记源码执行一次打包、校验和原子同步。不能等用户再次打开
+  “Meka 插件”页才初始化 watcher，否则重启后的新任务会继续看到上次安装的旧工具描述和面板资源。
+  单个源码同步失败仍按 fail-safe 规则保留最后一次成功快照并标记错误，不阻断其它开发插件恢复。
 - 移除开发插件先停止监听和 debounce，排空该 runtime 已进入队列或正在执行的同步链，再
   走标准卸载与清理，确保卸载是最后一次安装态 mutation；若卸载失败，恢复监听并保留
   注册记录。切换 data owner 时同样必须排空旧 owner 同步并停止 watcher，再加载新 owner

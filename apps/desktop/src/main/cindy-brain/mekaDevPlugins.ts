@@ -123,6 +123,20 @@ export class MekaDevPluginManager {
     return this.snapshot();
   }
 
+  /** Restore watchers and reconcile every registered source before it is used. */
+  async syncRegistered(): Promise<MekaDevPluginItem[]> {
+    await this.ensureNamespace();
+    const syncs: Promise<void>[] = [];
+    for (const id of this.records.keys()) {
+      const timer = this.debounceTimers.get(id);
+      if (timer) clearTimeout(timer);
+      this.debounceTimers.delete(id);
+      syncs.push(this.enqueueSync(id));
+    }
+    await Promise.all(syncs);
+    return this.snapshot();
+  }
+
   async inspect(sourceDir: string): Promise<MekaDevPluginInspection> {
     const realSourceDir = await this.resolveSourceDir(sourceDir);
     return this.withPackedDirectory(realSourceDir, async (packed) => {
@@ -517,17 +531,22 @@ export class MekaDevPluginManager {
     if (previous) clearTimeout(previous);
     const timer = setTimeout(() => {
       this.debounceTimers.delete(id);
-      const previousChain = this.syncChains.get(id) ?? Promise.resolve();
-      const chain = previousChain
-        .then(() => this.sync(id))
-        .catch((error) => this.markError(id, error))
-        .finally(() => {
-          if (this.syncChains.get(id) === chain) this.syncChains.delete(id);
-        });
-      this.syncChains.set(id, chain);
+      void this.enqueueSync(id);
     }, delay);
     timer.unref?.();
     this.debounceTimers.set(id, timer);
+  }
+
+  private enqueueSync(id: string): Promise<void> {
+    const previousChain = this.syncChains.get(id) ?? Promise.resolve();
+    const chain = previousChain
+      .then(() => this.sync(id))
+      .catch((error) => this.markError(id, error))
+      .finally(() => {
+        if (this.syncChains.get(id) === chain) this.syncChains.delete(id);
+      });
+    this.syncChains.set(id, chain);
+    return chain;
   }
 
   private async sync(runtimeId: string): Promise<void> {

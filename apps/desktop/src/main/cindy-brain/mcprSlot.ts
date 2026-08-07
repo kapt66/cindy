@@ -23,6 +23,8 @@ const log = createLogger('ghosts:mcpr-slot');
 
 export type McprLocalServerService = {
   configure?(instanceId: string, inputId?: string, value?: string): Promise<unknown>;
+  probeProjectConfig?(instanceId: string, sessionId: string, relativeDirectory: string, inputId?: string): Promise<unknown>;
+  configureProjectConfig?(instanceId: string, sessionId: string, relativeDirectory: string, inputId?: string): Promise<unknown>;
   prepare(instanceId: string, taskId: string, programId?: string): Promise<unknown>;
   describe?(instanceId: string): Promise<unknown>;
   start(instanceId: string, taskId?: string, programId?: string): Promise<unknown>;
@@ -37,6 +39,7 @@ export interface McprSlotDeps {
   getService(): McprService;
   getLocalServerService?: () => McprLocalServerService | null;
   openLoginWindow?: () => void;
+  getToolCallSessionId?: (ghostId: string, callId: string) => string | null;
 }
 
 function failure(code: McprCallFailure['code'], message: string): McprCallFailure {
@@ -152,13 +155,21 @@ export class GhostMcprSlot {
       const programId = typeof payload.input.programId === 'string' ? payload.input.programId : undefined;
       const inputId = typeof payload.input.inputId === 'string' ? payload.input.inputId : undefined;
       const value = typeof payload.input.value === 'string' ? payload.input.value : undefined;
+      const toolCallId = typeof payload.input.toolCallId === 'string' ? payload.input.toolCallId : '';
+      const relativeDirectory = typeof payload.input.relativeDirectory === 'string' ? payload.input.relativeDirectory : '';
       if (!/^[A-Za-z0-9._-]{1,128}$/.test(instanceId) || (taskId && !/^[A-Za-z0-9._-]{1,128}$/.test(taskId)) ||
         (programId && !/^[A-Za-z0-9._-]{1,64}$/.test(programId)) || (inputId && !/^[A-Za-z0-9._-]{1,64}$/.test(inputId)) ||
-        (value !== undefined && (value.length > 4096 || value.includes('\0'))) || !['configure', 'describe', 'prepare', 'start', 'start-all', 'status', 'stop', 'stop-all', 'logs'].includes(String(action))) {
+        (value !== undefined && (value.length > 4096 || value.includes('\0'))) ||
+        (toolCallId && !/^[-A-Za-z0-9._:]{1,128}$/.test(toolCallId)) ||
+        (relativeDirectory && (!/^[^\\/\0]{1,128}$/.test(relativeDirectory) || relativeDirectory === '.' || relativeDirectory === '..')) ||
+        !['configure', 'probe-project-config', 'configure-project-config', 'describe', 'prepare', 'start', 'start-all', 'status', 'stop', 'stop-all', 'logs'].includes(String(action))) {
         return { operation: 'call', result: failure('INVALID_REQUEST', '本地服务器参数无效') };
       }
       try {
+        const projectSessionId = toolCallId ? this.deps.getToolCallSessionId?.(ghostId, toolCallId) ?? '' : '';
         const result = action === 'configure' ? await (local.configure ? local.configure(instanceId, inputId, value) : Promise.reject(new Error('本地服务器配置能力不可用')))
+          : action === 'probe-project-config' ? await (local.probeProjectConfig && projectSessionId && relativeDirectory ? local.probeProjectConfig(instanceId, projectSessionId, relativeDirectory, inputId) : Promise.reject(new Error('项目配置目录探测能力不可用')))
+          : action === 'configure-project-config' ? await (local.configureProjectConfig && projectSessionId && relativeDirectory ? local.configureProjectConfig(instanceId, projectSessionId, relativeDirectory, inputId) : Promise.reject(new Error('项目配置目录设置能力不可用')))
           : action === 'describe' ? await (local.describe ? local.describe(instanceId) : local.status(instanceId))
           : action === 'prepare' ? await (programId ? local.prepare(instanceId, taskId, programId) : local.prepare(instanceId, taskId))
             : action === 'start' ? await (programId ? local.start(instanceId, taskId || undefined, programId) : local.start(instanceId, taskId || undefined))

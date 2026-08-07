@@ -172,6 +172,30 @@ describe('MekaDevPluginManager', () => {
     expect(deps.uninstallPackage).not.toHaveBeenCalled();
   });
 
+  it('启动恢复时先同步已登记源码，不继续使用上次安装的旧快照', async () => {
+    const registryPath = deps.getRegistryPath();
+    const runtimeId = mekaDevRuntimeId('demo-plugin');
+    await fs.promises.mkdir(path.dirname(registryPath), { recursive: true });
+    await fs.promises.writeFile(
+      registryPath,
+      JSON.stringify({
+        version: 2,
+        plugins: [{ runtimeId, pluginId: 'demo-plugin', sourceDir: await fs.promises.realpath(sourceDir) }],
+      }),
+    );
+    installedIds.add(runtimeId);
+    currentManifest = manifest('1.0.1');
+    const manager = new MekaDevPluginManager(deps);
+
+    await expect(manager.syncRegistered()).resolves.toMatchObject([
+      { runtimeId, pluginId: 'demo-plugin', status: 'watching' },
+    ]);
+
+    expect(deps.updatePackage).toHaveBeenCalledTimes(1);
+    expect(deps.onContentReloaded).toHaveBeenCalledWith(runtimeId);
+    expect(deps.subscribe).toHaveBeenCalledTimes(1);
+  });
+
   it('同 ID 正式安装与开发副本共存，开发副本不改变正式安装状态', async () => {
     installedIds.add('demo-plugin');
     const manager = new MekaDevPluginManager(deps);

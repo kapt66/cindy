@@ -1926,6 +1926,57 @@ Lead。确认回答仍是一次性门禁，负面或无派发结果不触发静�
 锁定这些关键约束，避免后续远程 Skill 改写时再次丢失该生命周期规则。该修复不修改
 maker-core、Orca Host 或 MCPRouter 底层运行时；真实远程实例与 Electron 交互仍需手测。
 
+### 6.29 2026-08-07 SAGA2 Agent 本地服务器启动与面板状态脱节
+
+实测任务 `1206e12c-e1ab-460d-9611-7f5f332f7aa8` 的本地工作目录为
+`C:/Workspace/saga2/saga2_project`。新建的 MCPRouter 实例尚未配置配置表目录，Agent 没有
+先识别项目内已有的 `saga2_json`，而是走 Host 目录选择框；选完后又手工枚举并逐个
+prepare 9 个程序，最后才执行 start-all。Host 中的目录配置和进程状态均已正确更新，但这条
+Agent 工具路径没有通知已打开的插件面板，因此配置 UI 仍为空，9 个服务已运行时 UI 状态仍无变化。
+
+修复后，SAGA2 Skill 在调用高层 `start_servers` 时指定安全相对子目录 `saga2_json`。Host 使用
+当前在途 tool call 的归属账本反查本地任务，校验候选是非空直接子目录且 realpath 不逃逸。
+找到候选时 Agent 必须先询问用户是否采用；用户拒绝或未找到候选时复用原 Host 系统目录选择框。插件只得到
+相对目录名和已配置投影，不接收、保存或广播任务绝对路径。该能力沿用已批准的 `mcpr` 槽和
+服务器 runtime route，不新增 manifest 权限，存量已安装插件无需重新授权或重新配置。
+
+`start_servers` 在插件内复用面板一键启动语义：配置、创建并等待本次构建、下载校验产物、
+核对 taskId/HEAD SHA，然后准备并启动全部程序；底层工具只保留给单程序控制和诊断。配置、
+启动、停止成功或构建终止后，插件 brain 通过同源 BroadcastChannel 发送仅含 `instanceId` 的
+`local-state-changed`；面板收到后从 Host 重新读取活动构建、配置和所有程序状态，不信任广播负载作为
+状态源。构建失败/取消，或后续准备、身份核对、启动失败，会清除活动任务标记；等待超时则保留 taskId 供面板恢复后续。
+
+本轮只做自动化定向验证，不再次启动真实 SAGA2 服务器。真实 Electron 中的目录候选确认、系统选择框、
+已打开面板热刷新和 Light/Dark 实机目检仍待补充。本次命中 `main/cindy-brain/` 插件基座路径，合并前必须由指定
+放行人明确 Approve；存量插件影响为无，无新 slot、无 manifest 变更、无授权数据 migration。
+
+### 6.30 2026-08-07 重启后开发插件旧快照重复启动服务器
+
+复测任务 `fbe3956a-fbd1-429b-adae-21762ab5b298` 中，Host 的
+`local-server-supervisor.json` 已持久化实例 `87d8e9bf-a5da-4069-b8d8-111fce67f794` 的 9 个
+程序为 `running`，配置表目录也已正确保存为项目内 `saga2_json`；但开发插件安装目录仍停在
+`mcpr-project-manager` `1.0.44`，源码已经是后续版本。开发注册表虽然正确指向源码目录，Desktop
+启动时却没有初始化该 owner 的 watcher，只有打开“Meka 插件”页触发 list 后才会同步。于是新任务
+拿到旧工具描述，继续绕过高层入口枚举通用 Router 工具；旧面板也不具备 Host 状态刷新，重复点击后
+进入 prepare，最终被 Supervisor 以 `A local server program is already active` 正确拒绝。
+后续恢复 watcher 时还暴露出第二个独立问题：英文 locale 的 `whenToUse` 为 358 个字符，超过 Host
+允许的 300 字符，导致新开发快照校验失败并按 fail-safe 继续保留 `1.0.44`。因此启动恢复不能只证明
+watcher 已建立，还必须让每个源码包通过完整 manifest／locale 校验并完成原子更新；locale 回归测试
+同时约束中英文 `whenToUse` 不超过 Host 上限。
+
+修复分三层。开发插件管理器在 Desktop 启动和 owner 切换稳定后，先恢复 watcher 并等待已登记源码
+完成一次正常打包、校验和原子更新，再开放后续 Agent 唤醒；单插件失败继续保留最后可用快照。
+`start_servers` 每次先读取 Host：全部程序已运行时幂等返回 `already-running`，部分活动时返回
+`LOCAL_PROGRAMS_ACTIVE`，两者都不构建、不 prepare、不改进程。面板冷打开与点击启动前也重新读取
+Host，陈旧投影只会被刷新，不会把一次“启动”点击解释为停止。SAGA2 Skill 进一步固定为先发现 MCPR
+项目管理插件并走 `account_overview → start_servers`，不先枚举通用 MCPRouter、实例工具或 Worker。
+
+本轮不停止或重启真实 SAGA2 进程，也不再次执行真实构建。自动化覆盖开发快照启动同步、全部已运行
+幂等、部分活动保护和面板点击前复核。实机中开发插件已由正常 watcher 链路更新到 `1.0.46`，已打开
+面板加载同版本资源；面板与 Host 均显示目标实例的 9 个程序为 `running`。验证期间出现的停止与再次
+启动由用户手动操作，不归因于开发快照热更新。Light/Dark 仍需手测。开发插件基座改动继续受白名单
+确认门约束，合并前需指定放行人明确 Approve。
+
 ## 10. 后续继续迁移时的硬性注意事项
 
 ### 9.1 `origin/main` → `meka/main` 同步报告

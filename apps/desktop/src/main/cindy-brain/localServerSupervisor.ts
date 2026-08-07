@@ -365,10 +365,37 @@ export class LocalServerSupervisor {
     } else if (typeof value !== 'string' || value.length > 4096 || value.includes('\0') || (selectedInput.required && !value.trim())) {
       throw new Error(`${selectedInput.label}无效`);
     }
+    return this.storeConfigValue(instanceId, selectedInput, nextValue ?? '');
+  }
+
+  /** Store a directory already authorized and canonicalized by the Host. */
+  async configureAuthorizedDirectory(instanceId: string, inputId: string | undefined, directory: string): Promise<LocalServerDescription> {
+    await this.init();
+    if (!OPAQUE_ID.test(instanceId)) throw new Error('Invalid local server identity');
+    const contract = await this.deps.getRuntimeContract(instanceId);
+    const inputs = configInputs(contract);
+    const selectedInput = inputs.find(input => input.id === (inputId || inputs.find(item => item.type === 'directory')?.id));
+    if (!selectedInput || selectedInput.type !== 'directory') throw new Error('Unknown local server config input');
+    const resolved = await fs.realpath(directory);
+    const stat = await fs.stat(resolved);
+    if (!stat.isDirectory()) throw new Error(`请选择${selectedInput.label}`);
+    if ((await fs.readdir(resolved)).length === 0) throw new Error(`${selectedInput.label}不能为空`);
+    return this.storeConfigValue(instanceId, selectedInput, resolved);
+  }
+
+  async describeProjectConfigCandidate(instanceId: string, inputId?: string): Promise<{ inputId: string; label: string }> {
+    const contract = await this.deps.getRuntimeContract(instanceId);
+    const inputs = configInputs(contract);
+    const selectedInput = inputs.find(input => input.id === (inputId || inputs.find(item => item.type === 'directory')?.id));
+    if (!selectedInput || selectedInput.type !== 'directory') throw new Error('Unknown local server config input');
+    return { inputId: selectedInput.id, label: selectedInput.label };
+  }
+
+  private async storeConfigValue(instanceId: string, selectedInput: RuntimeConfigInput, value: string): Promise<LocalServerDescription> {
     const values = this.configValues.get(instanceId) ?? new Map<string, string>();
-    values.set(selectedInput.id, nextValue ?? '');
+    values.set(selectedInput.id, value);
     this.configValues.set(instanceId, values);
-    if (selectedInput.type === 'directory') this.configDirectories.set(instanceId, nextValue!);
+    if (selectedInput.type === 'directory') this.configDirectories.set(instanceId, value);
     await this.persist();
     return this.describe(instanceId);
   }

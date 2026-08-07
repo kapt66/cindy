@@ -181,6 +181,7 @@ import { GhostPreviewSlot } from './previewSlot.js';
 import { GhostRevealSlot } from './revealSlot.js';
 import { GhostMcprSlot, type McprLocalServerService } from './mcprSlot.js';
 import { LocalServerSupervisor } from './localServerSupervisor.js';
+import { resolveLocalServerProjectDirectory } from './localServerProjectDirectory.js';
 import { GhostWorkspaceSlot, type WorkspaceSessionService } from './workspaceSlot.js';
 import type { GhostTrustRegistry } from './ghostSignature.js';
 import { GhostNotifySlot, sanitizeGhostNoticeText } from './notifySlot.js';
@@ -3321,8 +3322,36 @@ export function getGhostMcprSlot(): GhostMcprSlot {
     mcprSlotSingleton = new GhostMcprSlot({
       getGhost: findAvailableGhost,
       getService: getMekaRouterService,
-      getLocalServerService: (): McprLocalServerService => getLocalServerSupervisor(),
+      getLocalServerService: (): McprLocalServerService => {
+        const supervisor = getLocalServerSupervisor();
+        return {
+          configure: (instanceId, inputId, value) => supervisor.configure(instanceId, inputId, value),
+          probeProjectConfig: async (instanceId, sessionId, relativeDirectory, inputId) => {
+            const input = await supervisor.describeProjectConfigCandidate(instanceId, inputId);
+            const resolved = await resolveLocalServerProjectDirectory(sessionId, relativeDirectory, getSessionFsSnapshot);
+            return {
+              candidate: resolved ? { inputId: input.inputId, label: input.label, relativeDirectory } : null,
+            };
+          },
+          configureProjectConfig: async (instanceId, sessionId, relativeDirectory, inputId) => {
+            const resolved = await resolveLocalServerProjectDirectory(sessionId, relativeDirectory, getSessionFsSnapshot);
+            if (!resolved) throw new Error('当前项目中没有可用的配置表目录');
+            return supervisor.configureAuthorizedDirectory(instanceId, inputId, resolved);
+          },
+          prepare: (instanceId, taskId, programId) => supervisor.prepare(instanceId, taskId, programId),
+          describe: instanceId => supervisor.describe(instanceId),
+          start: (instanceId, taskId, programId) => supervisor.start(instanceId, taskId, programId),
+          startAll: (instanceId, taskId) => supervisor.startAll(instanceId, taskId),
+          status: (instanceId, programId) => supervisor.status(instanceId, programId),
+          stop: (instanceId, programId) => supervisor.stop(instanceId, programId),
+          logs: (instanceId, programId) => supervisor.logs(instanceId, programId),
+        };
+      },
       openLoginWindow: openMekaRouterLoginWindow,
+      getToolCallSessionId: (ghostId, callId) => {
+        const info = getGhostCardService().inFlightCallInfoOf(callId);
+        return info?.ghostId === ghostId ? info.sessionId : null;
+      },
     });
   }
   return mcprSlotSingleton;
@@ -4446,7 +4475,11 @@ export function registerGhostIpc(): void {
   // 2) 常驻意识开机点火:把"已唤醒 + launch: resident"的电子脑拉起(§4 懒加载
   //    的显式例外——作者声明过、装入确认框摊过牌)。刻意排在首次对账之后,新
   //    播种的常驻意识同一趟点火;后续对账装上的由 reconcile 自己点火。
-  const activateGhostsAndMigrateLegacyAccounts = (): void => {
+  const activateGhostsAndMigrateLegacyAccounts = async (): Promise<void> => {
+    // Registered development directories are the source of truth. Reconcile
+    // them before an early Agent turn can wake an installed snapshot from the
+    // previous Desktop run.
+    await mekaDevPlugins.syncRegistered();
     for (const ghost of manager.list()) spawnIfResident(ghost);
     const activeOwnerId = getActiveAppSession().dataOwnerId;
     const canMigrateLegacyAccounts =

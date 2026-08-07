@@ -1316,9 +1316,12 @@ route 为 \`other-configs.get\`（\`account\` scope），输入只含 \`ownerUse
 插件请求不能携带 URL、HTTP method、headers、Cookie、Authorization 或 client key。
 运行期可调用 \`cindy.mcpr.status()\` 与 \`cindy.mcpr.call({ contractVersion:1, route, input,
 scope })\`。服务器运行插件还可调用 \`cindy.mcpr.local({ action, instanceId, taskId, programId })\`；
-固定 action 包含 configure/describe/prepare/start/start-all/status/stop/stop-all/logs。configure
-由宿主打开配置表目录选择框，prepare 显式下载并校验产物，start 不会隐式下载。Cindy Main
-负责本地产物、构建身份和进程生命周期，插件不会接触绝对路径、PID 或凭证。
+固定 action 包含 configure/probe-project-config/configure-project-config/describe/prepare/start/start-all/
+status/stop/stop-all/logs。configure 由宿主打开配置表目录选择框；probe-project-config 和
+configure-project-config 只能在当前在途 Agent 工具调用中使用，只接受项目规则给出的单层安全相对
+子目录；Host 使用 callId 反查任务工作目录并验证候选为非空直接子目录，插件不得传绝对路径。
+prepare 显式下载并校验产物，start 不会隐式下载。Cindy Main 负责本地产物、构建身份和进程生命
+周期，插件不会接触绝对路径、PID 或凭证。
 \`configureLogin()\` 在未认证时会打开宿主共用的 MCPRouter 登录窗口；插件不要自行
 导航设置页，也不要在插件面板收集账号或密码。
 

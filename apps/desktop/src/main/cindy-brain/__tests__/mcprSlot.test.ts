@@ -163,6 +163,7 @@ describe('GhostMcprSlot', () => {
     const service = { prepare: vi.fn(async () => ({ instanceId: 'instance-1', taskId: 'task-1', runId: 'run-1', status: 'preparing', logs: [] })) };
     const { slot } = makeSlot({
       getGhost: () => mcprGhost(['server-runtime.build.start']),
+      getToolCallSessionId: (ghostId, callId) => ghostId === 'mcpr-ghost' && callId === 'tool-call-1' ? 'session-1' : null,
       getLocalServerService: () => ({
         prepare: service.prepare,
         start: vi.fn(), status: vi.fn(), stop: vi.fn(), logs: vi.fn(),
@@ -200,5 +201,44 @@ describe('GhostMcprSlot', () => {
       operation: 'local', input: { action: 'configure', instanceId: 'instance-1', inputId: 'databaseAddress', value: 'localhost:13000' },
     })).resolves.toMatchObject({ operation: 'call', result: { ok: true, route: 'local-server' } });
     expect(configure).toHaveBeenCalledWith('instance-1', 'databaseAddress', 'localhost:13000');
+  });
+
+  it('probes and adopts only Host-validated project config directories', async () => {
+    const probeProjectConfig = vi.fn(async () => ({ candidate: { inputId: 'dataTables', label: '配置表位置', relativeDirectory: 'saga2_json' } }));
+    const configureProjectConfig = vi.fn(async () => ({ instanceId: 'instance-1', configConfigured: true, configInputs: [], prepared: false, programs: [] }));
+    const { slot } = makeSlot({
+      getGhost: () => mcprGhost(['server-runtime.build.start']),
+      getToolCallSessionId: (ghostId, callId) => ghostId === 'mcpr-ghost' && callId === 'tool-call-1' ? 'session-1' : null,
+      getLocalServerService: () => ({
+        probeProjectConfig, configureProjectConfig,
+        prepare: vi.fn(), start: vi.fn(), status: vi.fn(), stop: vi.fn(), logs: vi.fn(),
+      }),
+    });
+
+    await expect(slot.handleRequest('mcpr-ghost', {
+      operation: 'local', input: { action: 'probe-project-config', instanceId: 'instance-1', toolCallId: 'tool-call-1', inputId: 'dataTables', relativeDirectory: 'saga2_json' },
+    })).resolves.toMatchObject({ operation: 'call', result: { ok: true, route: 'local-server' } });
+    await expect(slot.handleRequest('mcpr-ghost', {
+      operation: 'local', input: { action: 'configure-project-config', instanceId: 'instance-1', toolCallId: 'tool-call-1', inputId: 'dataTables', relativeDirectory: 'saga2_json' },
+    })).resolves.toMatchObject({ operation: 'call', result: { ok: true, route: 'local-server' } });
+    expect(probeProjectConfig).toHaveBeenCalledWith('instance-1', 'session-1', 'saga2_json', 'dataTables');
+    expect(configureProjectConfig).toHaveBeenCalledWith('instance-1', 'session-1', 'saga2_json', 'dataTables');
+  });
+
+  it('rejects project config probing without a live tool-call session binding', async () => {
+    const probeProjectConfig = vi.fn();
+    const { slot } = makeSlot({
+      getGhost: () => mcprGhost(['server-runtime.build.start']),
+      getToolCallSessionId: () => null,
+      getLocalServerService: () => ({
+        probeProjectConfig,
+        prepare: vi.fn(), start: vi.fn(), status: vi.fn(), stop: vi.fn(), logs: vi.fn(),
+      }),
+    });
+
+    await expect(slot.handleRequest('mcpr-ghost', {
+      operation: 'local', input: { action: 'probe-project-config', instanceId: 'instance-1', toolCallId: 'stale-call', inputId: 'dataTables', relativeDirectory: 'saga2_json' },
+    })).resolves.toMatchObject({ operation: 'call', result: { ok: false, code: 'INVALID_INPUT' } });
+    expect(probeProjectConfig).not.toHaveBeenCalled();
   });
 });

@@ -96,10 +96,17 @@ Router origin 或任何认证材料。
 定位证据。
 
 `cindy.mcpr.local({ action, instanceId, taskId, programId })` 只对声明服务器运行 route 的插件开放。
-固定 action 为 `configure`、`describe`、`prepare`、`start`、`start-all`、`status`、`stop`、
-`stop-all` 和 `logs`；插件不能提交其它本机操作。`configure` 由 Cindy Main 打开目录选择框，
+固定 action 为 `configure`、`probe-project-config`、`configure-project-config`、`describe`、`prepare`、
+`start`、`start-all`、`status`、`stop`、`stop-all` 和 `logs`；插件不能提交其它本机操作。
+`configure` 由 Cindy Main 打开目录选择框，
 所选配置表绝对路径仅以 `0600` 权限保存在 Cindy 用户数据中，返回插件的只有已配置状态和
 目录显示名，不返回绝对路径。
+
+`probe-project-config` / `configure-project-config` 用于 Agent 启动本地服务器时复用当前本地任务的项目
+目录。插件只能提交由项目 Skill 明确给出的单层相对子目录名和当前 `toolCallId`；Main 通过在途
+callId 账本反查真实插件和任务，拒绝远程任务、绝对路径、空目录、非直接子目录和 realpath 逃逸。
+探测只返回安全相对名；采用候选前必须由 Agent 取得用户确认。这两个 action 不是通用文件访问能力，
+不增加 slot 或 manifest 权限，已安装插件不需要重新授权。
 
 模板可以在 `runtimeContract.config.steps` 中声明宿主执行的通用配置步骤。当前支持
 `mount-config`（把用户选择的配置目录以 junction/symlink 或副本放到运行目录的相对路径）
