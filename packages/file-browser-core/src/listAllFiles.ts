@@ -37,6 +37,8 @@ export interface ListAllFilesArgs {
   rgPath: string;
   /** 自定义上限(默认 LIST_ALL_FILES_CAP);超出后 kill rg + 标记 truncated。 */
   cap?: number;
+  /** 可选 ripgrep glob 过滤；支持正向候选和 `!` 排除模式。 */
+  globs?: readonly string[];
 }
 
 export interface ListAllFilesResult {
@@ -69,7 +71,9 @@ export function listAllFiles(args: ListAllFilesArgs): Promise<ListAllFilesResult
     //   --hidden           遍历 .开头文件,但 .gitignore 仍生效
     //   --no-messages      抑制 "No such file" 之类的 stderr 噪音
     //   --                 终止 flag 解析(防止 workdir 以 - 开头)
-    const rgArgs = ['--files', '--hidden', '--no-messages', '--', '.'];
+    const rgArgs = ['--files', '--hidden', '--no-messages'];
+    for (const glob of args.globs ?? []) rgArgs.push('--glob', glob);
+    rgArgs.push('--', '.');
     let child: ChildProcessWithoutNullStreams;
     try {
       child = spawn(args.rgPath, rgArgs, {

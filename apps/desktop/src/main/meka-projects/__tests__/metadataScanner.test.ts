@@ -48,5 +48,31 @@ describe('inferMekaSubProjectPath', () => {
     ]);
     expect(discovered[0]).not.toHaveProperty('rootPath');
     expect(fileBrowser.listAllFiles).toHaveBeenCalledTimes(2);
+    expect(fileBrowser.listAllFiles).toHaveBeenCalledWith(
+      expect.objectContaining({
+        globs: expect.arrayContaining([
+          '**/AGENTS.md',
+          '**/SKILL.md',
+          '**/.mcp.json',
+          '**/.p4ignore',
+          expect.stringContaining('Library'),
+        ]),
+      }),
+    );
+  });
+
+  it('fails closed instead of replacing metadata from a truncated discovery', async () => {
+    const primary = path.resolve('meka-primary');
+    fileBrowser.readFile.mockClear();
+    fileBrowser.listAllFiles.mockResolvedValue({
+      files: ['AGENTS.md'],
+      truncated: true,
+      elapsedMs: 1,
+    });
+
+    await expect(discoverLocalMekaProjectMetadata(primary, 'rg')).rejects.toThrow(
+      /metadata scan was truncated/,
+    );
+    expect(fileBrowser.readFile).not.toHaveBeenCalled();
   });
 });

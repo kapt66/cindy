@@ -16,6 +16,18 @@ export interface DiscoveredMekaProjectMetadata {
   contentFingerprint: string;
 }
 
+const METADATA_SCAN_GLOBS = [
+  '**/AGENTS.md',
+  '**/CLAUDE.md',
+  '**/SKILL.md',
+  '**/.cursorrules',
+  '**/rules.md',
+  '**/.mcp.json',
+  '**/mcp.json',
+  '**/.p4ignore',
+  '!**/{.git,.svn,.hg,node_modules,__pycache__,vendor,.venv,.cache,.vs,.idea,.vscode-test,dist,build,out,.next,target,bin,obj,Library,library,Temp,temp,Logs,UserSettings,AssetDepotOutput,ChuangXiangEditorCache}/**',
+] as const;
+
 function metadataType(sourcePath: string): MekaProjectMetadataItemType | null {
   const name = path.posix.basename(sourcePath);
   if (name === 'AGENTS.md' || name === 'CLAUDE.md') return 'agents-md';
@@ -120,7 +132,14 @@ export async function discoverLocalMekaProjectMetadata(
   ];
   const discovered = await Promise.all(
     roots.map(async ({ root, rootPath }) => {
-      const listed = await listAllFiles({ workdir: root, rgPath });
+      const listed = await listAllFiles({
+        workdir: root,
+        rgPath,
+        globs: METADATA_SCAN_GLOBS,
+      });
+      if (listed.truncated) {
+        throw new Error(`Meka project metadata scan was truncated: ${root}`);
+      }
       const files = [
         ...new Set(listed.files.map(canonicalPath).filter((item): item is string => Boolean(item))),
       ].sort((a, b) => a.localeCompare(b));

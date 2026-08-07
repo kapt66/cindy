@@ -2,7 +2,7 @@
 
 > 状态：`origin/main@2db5c6280641` 正在同步到 `meka/main@58edde41c7c`；当前工作树已完成
 > 冲突语义收敛，尚未创建 merge commit，等待本轮迁移、类型与单测门禁
-> 最后更新：2026-08-06
+> 最后更新：2026-08-07
 > 目标仓库：`C:\Workspace\cindy`，分支 `meka/main`
 > 来源仓库：远端 `xdmaker`（`git@github.com:kapt66/XDMaker.git`），分支
 > `xdmaker/meka/main`
@@ -416,7 +416,10 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
 - 角色 manifest 的创建、读取、更新和删除。
 - 角色左侧导航只显示标题；内置角色编辑首次保存时将完整 bundled 快照写入项目文件，
   自定义角色 manifest 仍保存在应用 userData，内置角色删除仍受 bundled 角色完整性约束。
-- 项目元数据扫描：rules、skills、MCP、`AGENTS.md`。
+- 项目元数据扫描：rules、skills、MCP、`AGENTS.md`。扫描器通过 ripgrep include glob 只枚举
+  元数据候选和用于判断 P4 归属的 `.p4ignore`，并排除 Unity `Library`、`Temp` 等生成目录，
+  不再复用大项目完整文件列表的前 30000 条截断结果；如果元数据候选自身触发上限则失败
+  关闭，不得用不完整发现结果覆盖项目文件。
 - 角色技能恢复为 XDMaker 的内置技能目录选择，不再要求手工输入 Skill ID；旧版路径引用
   和目录中无法识别的历史 ID 仍可见、可保留或移除。
 - 项目正式流程配置恢复 Jira 链接剪贴板识别和 GitLab URL 从项目 Git Remote 读取。
@@ -1574,6 +1577,11 @@ thread-context gated 的本地动态代理投影这条唯一入口，Claude 继�
 - SAGA2 的完整项目快照写在已配置 P4 根目录的 `.meka/project.json`；首次保存、角色编辑
   和元数据重新发现都会更新该文件。手测前应确认 P4 根目录正确；删除该文件后重启或
   重新加载项目，应回退到包内配置和内置角色基线。
+- 2026-08-07 已使用修复后的发现链刷新生产 SAGA2 项目文件：连续扫描稳定得到 52 条项目
+  自有元数据，全部补齐名称、展示名、描述、职能、领域并启用；4 个已删除的 Unity 旧 Skill
+  路径迁移到新的细分路径。通用开发角色显式选择全部 52 条元数据，并启用全部项目默认
+  Skill/MCP 与角色自有的 Meka Design 能力。刷新前文件以同目录 `.bak` 保留，便于生产
+  配置人工回退。
 
 ### 7.4 当前工作树状态
 
@@ -1646,6 +1654,9 @@ thread-context gated 的本地动态代理投影这条唯一入口，Claude 继�
     P4 设置提供，内置项目和角色恢复包内基线版本。
 15. 清空 P4 配置后从 SAGA2 草稿发送或创建目标，确认出现跳转设置提示；取消时不发送，
     确认跳转后进入 Meka 助理设置。
+16. 在包含超过 30000 个文件的 SAGA2 根目录连续执行三次元数据重新发现；确认三次结果
+    均为 52 条项目自有元数据、不包含 Unity `Library/PackageCache` 内容，通用开发保持
+    52 条全选，且任一截断错误都不会改写现有 `.meka/project.json`。
 
 ### 8.4 正式流程
 
