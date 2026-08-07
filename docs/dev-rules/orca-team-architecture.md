@@ -167,7 +167,7 @@ Worktree 现状：Orca 与普通 session 对齐，worktree 是可选项，不强
 1. **Orca Worker 派单不得由原生 subagent 冒充（状态：不变量）**<br>
    用户把任务指派给已有 Worker 的 role／label、要求 Lead 向 Worker 派单，或在 active team
    内按多个角色并行派单时，Lead 必须先读 workspace，再按场景通过
-   `send_to_worker`（复用既有 Worker）／`create_worker`（显式新建一个 Worker）／`create_workers`（显式新建多个 Worker）进入 Orca 状态机；如果请求的 role／label 当前没有匹配的既有 Worker，Lead 必须先如实说明没有匹配项并征求是否创建，不能静默改派别的 Worker，也不能退回 native subagent。Meka 远程项目同样遵守：用户要求读取或修改远程仓库，只授权了任务本身，不等于授权创建一个持久、UI 可见且目标为 `mcpr:<instanceId>` 的 Worker；Lead 必须先说明目标实例并征得创建确认，`start_team` 本身不另加一轮确认。
+   `send_to_worker`（复用既有 Worker）／`create_worker`（显式新建一个 Worker）／`create_workers`（显式新建多个 Worker）进入 Orca 状态机；如果请求的 role／label 当前没有匹配的既有 Worker，Lead 必须先如实说明没有匹配项并征求是否创建，不能静默改派别的 Worker，也不能退回 native subagent。Meka 远程项目同样遵守：用户要求读取或修改远程仓库，只授权了任务本身，不等于授权创建一个持久、UI 可见且目标为 `mcpr:<instanceId>` 的 Worker；Lead 必须先说明目标实例并征得创建确认，`start_team` 本身不另加一轮确认。已有 MCPR 远程任务／会话应继续作为远程 Agent 执行上下文；Orca Worker 只承接远程仓库内容读写，项目／服务管理必须转给专用 MCPRouter `project-agent` 工具，不能因通用 `mcp_router` 能力更宽就改变路由。
    如果用户只泛称“Worker”且当前没有任何 Worker，Lead 同样必须先说明并询问是否创建；
    任务指派本身不等于创建授权。多角色请求必须在派发任何任务前解析全部 role／label；
    只要有目标缺失或创建授权未决，就不得部分派发，必须集中列出缺失项并先询问。全部映射

@@ -508,6 +508,7 @@ const ASK_USER_DYNAMIC_TOOL: DynamicToolSpec = {
     'Use a later follow-up call only when the next question depends on the user answer to an earlier question.',
     'Do not use it for routine implementation details; choose a reasonable default.',
     'This tool does not replace authorization for destructive or external actions.',
+    'After this tool returns, treat the submitted answer as final for the questions just asked and continue the pending workflow. Do not repeat the same question or confirmation; only ask a materially different follow-up when the answer is empty or unclear.',
   ].join(' '),
   inputSchema: {
     type: 'object',
@@ -703,7 +704,14 @@ function responseFromPermissionDecision(
 function dynamicToolResponseFromUserInput(response: ToolRequestUserInputResponse): DynamicToolCallResponse {
   return {
     success: true,
-    contentItems: [{ type: 'inputText', text: JSON.stringify(response.answers) }],
+    contentItems: [{
+      type: 'inputText',
+      text: [
+        'The user has submitted the answers below. Treat them as final for the questions just asked and continue the pending workflow.',
+        'Do not ask the same question or confirmation again. Any separate host-enforced permission check still applies.',
+        JSON.stringify(response.answers),
+      ].join('\n'),
+    }],
   };
 }
 

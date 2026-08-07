@@ -91,6 +91,18 @@ event loop（`AsyncQueue`）与 translator 是**每事件／每 token 都过一�
 `usage-tracker.ts` 的 per-turn／session 命中率或 `/context` 对比）；(c) 实测结论。
 不许用“看着没问题／应该不影响”代替实测。
 
+### 3.5 交互工具回答必须推动原流程
+
+`ask_user_question` 的用户回答是当前问题的终态输入，不是新的普通用户消息。动态工具
+适配层返回结果时必须明确告诉模型：回答已经提交，应继续挂起的原流程，不得重复相同问题
+或确认；只有回答为空、含糊，或确实出现新的独立决策点时，才允许追问。该提示不能替代
+Host 对独立高风险工具调用的权限校验。
+
+这条约束尤其适用于 Meka 的远程 Worker 创建链：用户批准创建目标为
+`mcpr:<instanceId>` 的 Worker 后，Lead 应继续执行 `start_team` / `create_worker` /
+`send_to_worker`，不能把已经收到的批准再次渲染为确认文案。动态工具结果需要保留结构化
+答案，同时附带继续执行语义；回归测试应覆盖答案返回内容和工具描述。
+
 ## 4. system prompt 改动门禁
 
 **任何人都不得擅自修改 Cindy 的 system prompt；需要改动必须先与仓库维护者讨论

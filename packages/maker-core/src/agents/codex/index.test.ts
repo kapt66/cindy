@@ -11287,6 +11287,7 @@ describe('CodexAgent MCP thread context hooks', () => {
     expect(startParams.dynamicTools?.[0]?.description).toContain('the user asks to choose');
     expect(startParams.dynamicTools?.[0]?.description).toContain('provide a generic list');
     expect(startParams.dynamicTools?.[0]?.description).toContain('Ask 1 to 3 short questions in a single call');
+    expect(startParams.dynamicTools?.[0]?.description).toContain('Do not repeat the same question or confirmation');
     expect(startParams.dynamicTools?.[0]?.inputSchema?.properties?.questions?.description).toContain('Bundle independent choices');
 
     const openAiAgent = new CodexAgent(createDeps());
@@ -11628,7 +11629,11 @@ describe('CodexAgent MCP thread context hooks', () => {
     expect(result.contentItems).toEqual([
       {
         type: 'inputText',
-        text: JSON.stringify({ 'question-1': { answers: ['Keep going'] } }),
+        text: [
+          'The user has submitted the answers below. Treat them as final for the questions just asked and continue the pending workflow.',
+          'Do not ask the same question or confirmation again. Any separate host-enforced permission check still applies.',
+          JSON.stringify({ 'question-1': { answers: ['Keep going'] } }),
+        ].join('\n'),
       },
     ]);
     expect(nativeDuplicateResult).toEqual({
@@ -11653,7 +11658,11 @@ describe('CodexAgent MCP thread context hooks', () => {
     expect(legacyResult.contentItems).toEqual([
       {
         type: 'inputText',
-        text: JSON.stringify({ 'legacy-q1': { answers: ['Keep going'] } }),
+        text: [
+          'The user has submitted the answers below. Treat them as final for the questions just asked and continue the pending workflow.',
+          'Do not ask the same question or confirmation again. Any separate host-enforced permission check still applies.',
+          JSON.stringify({ 'legacy-q1': { answers: ['Keep going'] } }),
+        ].join('\n'),
       },
     ]);
     expect(requestCount).toBe(1);
@@ -11720,10 +11729,24 @@ describe('CodexAgent MCP thread context hooks', () => {
     const firstReplay = await callQuestion('req-first-replay', 'call-first-replay', 'first', 'First question?');
     const secondReplay = await callQuestion('req-second-replay', 'call-second-replay', 'second', 'Second question?');
     expect(firstReplay?.contentItems).toEqual([
-      { type: 'inputText', text: JSON.stringify({ first: { answers: ['First answer'] } }) },
+      {
+        type: 'inputText',
+        text: [
+          'The user has submitted the answers below. Treat them as final for the questions just asked and continue the pending workflow.',
+          'Do not ask the same question or confirmation again. Any separate host-enforced permission check still applies.',
+          JSON.stringify({ first: { answers: ['First answer'] } }),
+        ].join('\n'),
+      },
     ]);
     expect(secondReplay?.contentItems).toEqual([
-      { type: 'inputText', text: JSON.stringify({ second: { answers: ['Second answer'] } }) },
+      {
+        type: 'inputText',
+        text: [
+          'The user has submitted the answers below. Treat them as final for the questions just asked and continue the pending workflow.',
+          'Do not ask the same question or confirmation again. Any separate host-enforced permission check still applies.',
+          JSON.stringify({ second: { answers: ['Second answer'] } }),
+        ].join('\n'),
+      },
     ]);
     expect(requestCount).toBe(2);
     await handle.close();
@@ -11959,7 +11982,11 @@ describe('CodexAgent MCP thread context hooks', () => {
       success: true,
       contentItems: [{
         type: 'inputText',
-        text: JSON.stringify({ 'dynamic-q1': { answers: ['fresh'] } }),
+        text: [
+          'The user has submitted the answers below. Treat them as final for the questions just asked and continue the pending workflow.',
+          'Do not ask the same question or confirmation again. Any separate host-enforced permission check still applies.',
+          JSON.stringify({ 'dynamic-q1': { answers: ['fresh'] } }),
+        ].join('\n'),
       }],
     });
 
