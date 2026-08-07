@@ -14,15 +14,23 @@ Saga2 work spans six independently governed project surfaces:
   directory candidate, pass the direct child name `saga2_json`. If the Host reports that candidate exists,
   ask the user whether to use it before adopting it; if no candidate exists, let the Host open its system
   directory picker. Do not inspect or pass an absolute local path through plugin arguments.
-- For local server start, stop, status, or logs on the current computer, go directly through
+- For local server update, start, stop, status, or logs on the current computer, go directly through
   `cindy:ghost_list`, select the plugin whose declared purpose covers MCPR project/local-server management,
-  and use its standard `account_overview` then `start_servers` workflow. Do not enumerate generic
-  `mcp_router` tools, generic MCP instances, remote Workers, or the low-level build/prepare/start operations
-  first. Never hard-code a `meka-dev-*` runtime ID because development and installed identities differ.
+  and call `account_overview` followed by the single operation matching the user's intent. Use
+  `update_servers` for update/rebuild/deploy requests, `start_servers` for start requests, and
+  `stop_servers` for stop requests. Do not enumerate generic `mcp_router` tools, generic MCP instances,
+  remote Workers, or low-level build/prepare/process operations first. Never hard-code a `meka-dev-*`
+  runtime ID because development and installed identities differ.
 - The P4 directory `saga2_unity` contains the Unity client and editor tooling.
 - The P4 directory `saga2_pm` contains long-lived PM governance, AI development-flow dashboards, reusable Agent skills for delivery assessment, and version delivery/finalization records.
-- The bound remote project contains server code and is reached through Host-provided Router tools or a remote Orca worker on the bound instance, not through the local P4 workspace.
+- The bound remote project contains server code. An existing MCPR remote task/session is the first
+  route when the user asks the remote Agent to work in its selected project context. Repository
+  content is read or written through a remote Orca worker on the bound instance; server lifecycle,
+  deployment, health, branch, update, and delivery management uses the configured Host-provided
+  `project-agent` tools. Generic `mcp_router` operations are only for remote-instance discovery or
+  provisioning, not the default way to execute work; never use a Worker, SSH host, or local P4
+  workspace as a substitute for the matching route.
 
 Read the selected repository's own `AGENTS.md` and relevant Agent Skills before acting. Treat cross-surface changes as an explicit contract: identify the source of truth, update consumers in dependency order, and verify each surface with its native checks. In game-project discussion, unqualified Chinese `技能` means a gameplay ability; do not redirect it to Agent Skill management. Do not copy version-sensitive project rules into this built-in overview.
 
-Saga2 term mapping: `服务器` / `server` = saga2-server, the game backend server project (the bound remote project — never an SSH host or a local directory); `客户端` / `client` = the `saga2_unity` subdirectory; `策划案` / `design documents` = the `saga2_design` subdirectory; `项目管理` / `PM` = the `saga2_pm` subdirectory; MekaDesign = the design platform producing system-feature UI designs importable into Unity as Prefabs; MCPRouter = the project team's internal tool platform. For current-computer server lifecycle, prefer the MCPR project-management plugin. For other routing work, prefer project-internal knowledge (client / server / config tables / design documents / project-management evidence) first, then peripheral tools (MekaDesign, MCPRouter), then platform tools (Orca workers, SSH, Ghost plugins).
+Saga2 term mapping: `服务器` / `server` = saga2-server, the game backend server project (the bound remote project — never an SSH host or a local directory); `客户端` / `client` = the `saga2_unity` subdirectory; `策划案` / `design documents` = the `saga2_design` subdirectory; `项目管理` / `PM` = the `saga2_pm` subdirectory; MekaDesign = the design platform producing system-feature UI designs importable into Unity as Prefabs; MCPRouter = the project team's internal tool platform. For current-computer server lifecycle, prefer the MCPR project-management plugin. For remote work, prefer the current MCPR remote session, then the remote Orca Worker for repository content, then the dedicated `project-agent` for remote project management, and only then generic `mcp_router` discovery/provisioning. Do not choose a broad underlying Router operation over a matching specialized route.

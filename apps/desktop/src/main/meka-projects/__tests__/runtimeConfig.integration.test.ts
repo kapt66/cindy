@@ -85,24 +85,54 @@ describe('Meka runtime project/role resolution', () => {
       expect(saga2Overview?.content).toContain('let the Host open its system');
       expect(saga2Overview?.content).toContain('directory picker');
       expect(saga2Overview?.content).toContain('Do not inspect or pass an absolute local path');
-      expect(saga2Overview?.content).toContain('For current-computer server lifecycle');
-      expect(saga2Overview?.content).toContain('standard `account_overview` then `start_servers` workflow');
+      expect(saga2Overview?.content).toContain('Use\n  `update_servers` for update/rebuild/deploy requests');
+      expect(saga2Overview?.content).toContain('`start_servers` for start requests');
+      expect(saga2Overview?.content).toContain('`stop_servers` for stop requests');
+      expect(saga2Overview?.content).toContain('single operation matching the user\'s intent');
       if (hasRemote) {
         const remoteOperations = resolved.skills.find((skill) => skill.id === 'remote-operations');
-        expect(remoteOperations?.content).toContain(
+        const orcaCoordination = resolved.skills.find((skill) => skill.id === 'orca-coordination');
+        expect(remoteOperations).toBeDefined();
+        const remoteOperationsContent = remoteOperations!.content;
+        expect(remoteOperationsContent).toContain(
+          'An existing MCPR remote task/session (`remoteHostId="mcpr:<instanceId>"`) is the first choice',
+        );
+        expect(remoteOperationsContent).toContain(
+          'Only use generic `mcp_router` tools as a control-plane fallback',
+        );
+        expect(remoteOperationsContent).toContain(
+          'generic tool merely because it can expose a broad underlying operation',
+        );
+        expect(remoteOperationsContent).toContain('The dedicated MCPRouter `project-agent` tools');
+        expect(remoteOperationsContent.indexOf('Only use generic `mcp_router` tools')).toBeGreaterThan(
+          remoteOperationsContent.indexOf('An existing MCPR remote task/session'),
+        );
+        expect(remoteOperationsContent).toContain(
           'ask whether to create that remote worker',
         );
-        expect(remoteOperations?.content).toContain(
+        expect(remoteOperationsContent).toContain(
           'the underlying read/edit request alone is not authorization to create one',
         );
-        expect(remoteOperations?.content).toContain(
+        expect(remoteOperationsContent).toContain(
           'include it as `initial_task` so worker creation and dispatch are one operation',
         );
-        expect(remoteOperations?.content).toContain(
+        expect(remoteOperationsContent).toContain(
           'the current Lead task MUST end immediately',
         );
-        expect(remoteOperations?.content).toContain(
+        expect(remoteOperationsContent).toContain(
           'do not ask another confirmation, do not call another tool, and do not wait, sleep, poll, or keep the turn alive',
+        );
+        expect(orcaCoordination?.content).toContain(
+          'continue an MCPR remote task/session',
+        );
+        expect(orcaCoordination?.content).toContain(
+          'Do not use a generic `mcp_router` operation',
+        );
+        expect(saga2Overview?.content).toContain(
+          'Generic `mcp_router` operations are only for remote-instance discovery',
+        );
+        expect(saga2Overview?.content).toContain(
+          'Do not choose a broad underlying Router operation over a matching specialized route',
         );
       }
     }

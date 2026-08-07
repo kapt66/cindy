@@ -1926,6 +1926,23 @@ Lead。确认回答仍是一次性门禁，负面或无派发结果不触发静�
 锁定这些关键约束，避免后续远程 Skill 改写时再次丢失该生命周期规则。该修复不修改
 maker-core、Orca Host 或 MCPRouter 底层运行时；真实远程实例与 Electron 交互仍需手测。
 
+### 6.28 2026-08-07 SAGA2 项目管理误路由至 Worker
+
+实测任务 `8345bdab-e1eb-4b02-853e-58c4bdb8a9e2` 中，用户请求“启动服务器”时，Lead 已识别
+到可用的「SAGA2服务器」实例，却错误地规划创建远程 Orca Worker，并把进程检查、启动和健康
+验证交给 Worker。原因不是 MCPR 实例绑定或远程会话路由故障，而是远程操作 Skill 同时描述了
+“服务器远程操作”和“Worker 执行”两套边界，缺少项目管理与仓库内容的确定性分流。
+
+现已收敛为专用能力优先：已有 MCPR 远程任务／会话承接远程 Agent 上下文；远程 Orca Worker
+只负责远程仓库目录列表、文件读取和文件写入；服务器启停、健康状态、部署、更新同步、推送、
+分支、合并、回滚等项目管理必须使用配置好的 MCPRouter `project-agent` 工具。通用
+`mcp_router` MCP 只用于实例发现、模板配置等控制面步骤，或没有专用能力时的明确兜底，不能
+因为它能提供更宽的底层接口就替代上述专用路线。Skill、Orca 架构文档和 SAGA2 runtime 集成
+测试已同步这一契约。
+
+真实 MCPRouter 工具清单、远程会话复用、`project-agent` 管理工具调用和 Electron 端手测仍待
+验证；本轮不执行真实远程启停或其它生产状态变更。
+
 ### 6.29 2026-08-07 SAGA2 Agent 本地服务器启动与面板状态脱节
 
 实测任务 `1206e12c-e1ab-460d-9611-7f5f332f7aa8` 的本地工作目录为
@@ -1941,7 +1958,8 @@ Agent 工具路径没有通知已打开的插件面板，因此配置 UI 仍为�
 服务器 runtime route，不新增 manifest 权限，存量已安装插件无需重新授权或重新配置。
 
 `start_servers` 在插件内复用面板一键启动语义：配置、创建并等待本次构建、下载校验产物、
-核对 taskId/HEAD SHA，然后准备并启动全部程序；底层工具只保留给单程序控制和诊断。配置、
+核对 taskId/HEAD SHA，然后准备并启动全部程序；底层工具只保留给插件面板实现和断线恢复，
+不再进入 Agent 操作目录。配置、
 启动、停止成功或构建终止后，插件 brain 通过同源 BroadcastChannel 发送仅含 `instanceId` 的
 `local-state-changed`；面板收到后从 Host 重新读取活动构建、配置和所有程序状态，不信任广播负载作为
 状态源。构建失败/取消，或后续准备、身份核对、启动失败，会清除活动任务标记；等待超时则保留 taskId 供面板恢复后续。
@@ -1969,13 +1987,34 @@ watcher 已建立，还必须让每个源码包通过完整 manifest／locale �
 `start_servers` 每次先读取 Host：全部程序已运行时幂等返回 `already-running`，部分活动时返回
 `LOCAL_PROGRAMS_ACTIVE`，两者都不构建、不 prepare、不改进程。面板冷打开与点击启动前也重新读取
 Host，陈旧投影只会被刷新，不会把一次“启动”点击解释为停止。SAGA2 Skill 进一步固定为先发现 MCPR
-项目管理插件并走 `account_overview → start_servers`，不先枚举通用 MCPRouter、实例工具或 Worker。
+项目管理插件并按用户意图走 `account_overview → start_servers/update_servers/stop_servers`，不先枚举
+通用 MCPRouter、实例工具或 Worker。
 
 本轮不停止或重启真实 SAGA2 进程，也不再次执行真实构建。自动化覆盖开发快照启动同步、全部已运行
 幂等、部分活动保护和面板点击前复核。实机中开发插件已由正常 watcher 链路更新到 `1.0.46`，已打开
 面板加载同版本资源；面板与 Host 均显示目标实例的 9 个程序为 `running`。验证期间出现的停止与再次
 启动由用户手动操作，不归因于开发快照热更新。Light/Dark 仍需手测。开发插件基座改动继续受白名单
 确认门约束，合并前需指定放行人明确 Approve。
+
+### 6.31 2026-08-07 MCPR 服务器操作接口按人工意图收敛
+
+项目管理插件此前虽然补了高层 `start_servers`，但 Agent 目录仍同时暴露远端构建创建、状态、事件、
+取消、产物索引，以及本地 prepare、单程序/全部程序启停等底层原语。用户提出“更新服务器”时，模型
+仍需自行拼接停止、构建、taskId 轮询、产物准备与启动，容易漏停、复用旧任务或偏离面板实际操作。
+
+现将 Agent 目录从 `account/git/build/server` 四类收敛为 `account/git/server` 三类。服务器只保留
+`update_servers`、`start_servers`、`stop_servers`、`server_status`、`server_configure` 和
+`server_logs`。`update_servers` 固定执行人工语义“停止全部并复查退出 → 触发面板同款一键构建、
+下载校验、准备和启动”；`start_servers` 与 `stop_servers` 分别对应面板的启动和停止动作。远端构建
+route、taskId、事件轮询、产物索引及 Host prepare/start-all/stop-all 仍保留在插件内部供面板与恢复
+逻辑使用，但 `list_tools` 不再返回，直接经 `call_tool` 调用会作为未知操作拒绝。Git 操作继续按面板
+按钮粒度暴露，标准工作流不再要求模型机械执行前后状态步骤。
+
+SAGA2 内置 Skill 同步区分更新、启动和停止意图，分别指向 `update_servers`、`start_servers` 与
+`stop_servers`。本次不修改 `cindy-protocol`、MCPRouter registry、Host slot、manifest routes 或授权
+数据；已安装插件无需重新授权或重新配置。自动化验证覆盖更新时的“停止 → 构建 → 准备 → 启动”顺序、
+Agent 目录不再出现底层操作，以及 SAGA2 Skill 的意图分流。真实服务器更新和 Electron 面板联动未在
+本轮执行，避免改变现有开发服务器状态。
 
 ## 10. 后续继续迁移时的硬性注意事项
 
