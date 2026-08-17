@@ -1,3 +1,4 @@
+import { GHOST_OAUTH_SCOPES_MAX } from '@cindy/plugin-protocol';
 import { findSplitChildByPanelKind, insertRootSplitPane, type Layout } from './layoutTree';
 import { DEFAULT_LOCALE, SUPPORTED_LOCALES, type SupportedLocale } from './locale';
 import {
@@ -605,8 +606,11 @@ export interface GhostSecretExchangeDecl {
   ttlSeconds?: number;
 }
 
-/** OAuth 凭证:scopes 条数上限(超出拒装;确认框逐条展示要可读)。 */
-export const GHOST_OAUTH_SCOPES_MAX = 32;
+/**
+ * OAuth 凭证 scopes 条数上限。数值正本在 `@cindy/plugin-protocol`，
+ * Desktop 只 re-export，避免市场响应 parser 与运行时 manifest 校验漂移。
+ */
+export { GHOST_OAUTH_SCOPES_MAX };
 /** OAuth broker 模式可声明的备用 clientId 上限(默认 clientId 不计入)。 */
 export const GHOST_OAUTH_CLIENT_ID_ALTERNATIVES_MAX = 8;
 /** OAuth 凭证:extraAuthorizeParams 条数上限。 */
@@ -658,7 +662,7 @@ export interface GhostSecretOauthDecl {
   clientIdAlternatives?: string[];
   /** 可选:内置 client 的 secret(与 clientId 成对;纯 PKCE 服务商可省略)。 */
   clientSecret?: string;
-  /** 申请的 scope 列表(0–32 条,确认框逐条展示;缺省 = 不带 scope 参数)。 */
+  /** 申请的 scope 列表(0–256 条,确认框逐条展示;缺省 = 不带 scope 参数)。 */
   scopes?: string[];
   /**
    * 可选:authorize URL 里 scope 参数的拼接分隔符。OAuth 标准是空格(缺省),

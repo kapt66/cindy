@@ -27,7 +27,8 @@
 | 内容                                            | 权威来源                                                                                                         |
 | ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | 编写手册（作者唯一教材，现拿现读）              | `apps/desktop/src/main/cindy-brain/forge.ts` 的 `FORGE_GUIDE`，经 `ghost_forge_guide` 工具下发                   |
-| 身份卡字段与校验、管子协议类型                  | `apps/desktop/src/shared/ghost.ts`（`validateGhostManifest`、`cindy.send` / `cindy.onHostMessage` 类型）         |
+| 身份卡跨仓字段与校验                            | `cindy-protocol/packages/plugin-protocol/src/manifest.ts`；Desktop 只复用／re-export 共享常量                    |
+| Desktop 身份卡运行时与管子协议类型              | `apps/desktop/src/shared/ghost.ts`（`validateGhostManifest`、`cindy.send` / `cindy.onHostMessage` 类型）         |
 | 打包限制                                        | `apps/desktop/src/main/cindy-brain/forge.ts` 的 `packGhostDir`                                                   |
 | 运行时、沙箱进程与生命周期                      | `apps/desktop/src/main/cindy-brain/runtime/GhostRuntime.ts`、`GhostManager.ts`                                   |
 | 能力 slot（网络／通知／文件系统／文件定位／技能／宿主／MCPRouter 等） | `apps/desktop/src/main/cindy-brain/networkSlot.ts`、`notifySlot.ts`、`fsSlot.ts`、`revealSlot.ts`、`cindySlot.ts`、`skillSlot.ts`；`mcpr` 的跨仓契约见 [`mcpr-plugin-capability.md`](mcpr-plugin-capability.md) |
@@ -39,7 +40,8 @@
 | 内容 | 权威来源 |
 |---|---|
 | 编写手册（作者唯一教材，现拿现读） | `apps/desktop/src/main/cindy-brain/forge.ts` 的 `FORGE_GUIDE`，经 `ghost_forge_guide` 工具下发 |
-| 身份卡字段与校验、管子协议类型 | `apps/desktop/src/shared/ghost.ts`（`validateGhostManifest`、`cindy.send` / `cindy.onHostMessage` 类型） |
+| 身份卡跨仓字段与校验 | `cindy-protocol/packages/plugin-protocol/src/manifest.ts`；Desktop 只复用／re-export 共享常量 |
+| Desktop 身份卡运行时与管子协议类型 | `apps/desktop/src/shared/ghost.ts`（`validateGhostManifest`、`cindy.send` / `cindy.onHostMessage` 类型） |
 | 打包限制 | `apps/desktop/src/main/cindy-brain/forge.ts` 的 `packGhostDir` |
 | 运行时、沙箱进程与生命周期 | `apps/desktop/src/main/cindy-brain/runtime/GhostRuntime.ts`、`GhostManager.ts` |
 | 能力 slot（网络／通知／确认／文件系统／技能／宿主／MCPRouter 等） | `apps/desktop/src/main/cindy-brain/networkSlot.ts`、`notifySlot.ts`、`badgeSlot.ts`（未读角标，落盘账本 `ghostUnreadStore.ts`）、`confirmSlot.ts`（往返桥 `ghostConfirmDialogBridge.ts`，renderer 落地 `cindy-brain/GhostConfirmDialogHost.tsx`）、`fsSlot.ts`、`cindySlot.ts`、`skillSlot.ts`、`agentSlot.ts`、`errandSlot.ts`（派活执行链在 `maker-ipc/ghostErrandRunner.ts`，每插件配置在 `errandPrefsStore.ts`）；`mcpr` 的跨仓契约见 [`mcpr-plugin-capability.md`](mcpr-plugin-capability.md) |
@@ -94,6 +96,12 @@
 ## 4. 网络、凭证与资源交接
 
 - network 只允许 manifest 白名单域名；凭证由主机保险库注入，**无明文读回**给沙箱。
+- `network.secrets[].oauth.scopes` 最多 256 条，数值正本是
+  `@cindy/plugin-protocol` 的 `GHOST_OAUTH_SCOPES_MAX`；Desktop 的详情响应 parser、
+  运行时 manifest 校验和作者手册必须复用同一值，不得再维护副本。该变更只放宽上限，
+  已安装且不超过旧上限的插件无需迁移或重新批准；仍使用 32 条上限的旧客户端会拒绝
+  33–256 条的 Release，因此必须先发布支持新上限的客户端，再把这类 Release 设为可见或
+  默认安装。
 - `source: "oidc-token"` 是 Host 托管的短时 Cindy Connection JWT：只对当前企业
   Membership 生效；只有当前组织的 Plugin Market organization 安装记录仍有效、且
   安装目录 manifest digest 与记录一致时，Host 才会根据当前组织和插件 id 推导 audience。

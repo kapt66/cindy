@@ -130,9 +130,25 @@ describe('ghost · oauth 凭证声明校验', () => {
       authorizeUrl: 'https://accounts.example.com/authorize',
       tokenUrl: 'https://accounts.example.com/token',
     };
+    expect(GHOST_OAUTH_SCOPES_MAX).toBe(256);
     expect(
       validateGhostManifest(
-        oauthManifest({ oauth: { ...base, scopes: Array.from({ length: GHOST_OAUTH_SCOPES_MAX + 1 }, (_, i) => `s${i}`) } }),
+        oauthManifest({
+          oauth: {
+            ...base,
+            scopes: Array.from({ length: GHOST_OAUTH_SCOPES_MAX }, (_, i) => `s${i}`),
+          },
+        }),
+      ).ok,
+    ).toBe(true);
+    expect(
+      validateGhostManifest(
+        oauthManifest({
+          oauth: {
+            ...base,
+            scopes: Array.from({ length: GHOST_OAUTH_SCOPES_MAX + 1 }, (_, i) => `s${i}`),
+          },
+        }),
       ).ok,
     ).toBe(false);
     expect(validateGhostManifest(oauthManifest({ oauth: { ...base, scopes: ['bad scope'] } })).ok).toBe(false);

@@ -841,6 +841,11 @@ SSH 远程工作区路径；Meka 插件仓同步 `ghost.json` slot、Forge 手�
   `pluginId/runtimeId` 的 v2：先装入独立开发 runtime，再清理曾占用原始 ID 的旧开发快照。
 - Cindy 与 MCPRouter 市场并存时，详情、安装、更新和卸载请求始终绑定当前页签对应的
   API 与 ledger；跨源 `ghostId` 冲突继续由既有本机安装冲突检查 fail closed。
+- Meka 的插件协议已回迁上游 OAuth scope 上限：
+  `network.secrets[].oauth.scopes` 接受 0–256 条，协议包是唯一数值正本；Desktop
+  `shared/ghost.ts` 只 re-export 该常量，市场详情 parser、运行时校验和 Forge 作者手册不再
+  各自维护 32 条副本。该放宽不改变 schema v2，也不影响已装插件的批准或凭证；旧 Meka
+  客户端仍会拒绝 33–256 条的 Release，发布顺序必须保持客户端先行。
 
 服务端落地契约见 MCPRouter 仓 `docs/meka-plugin-registry.md`；客户端关键实现：
 
@@ -860,6 +865,10 @@ SSH 远程工作区路径；Meka 插件仓同步 `ghost.json` slot、Forge 手�
 Meka、安装与更新成功后写入独立账本、Meka 创建提示的渠道约束，以及开发目录登记、
 owner 级持久化、自动同步、失败保留、双 ID 派生、v1 注册表迁移，以及远端／正式／开发
 版本共存；Desktop 与 `cindy-tools` 均有对应定向单测和类型检查。
+
+OAuth scope 上限回迁的验证覆盖协议包 256/257 边界、Desktop 共享校验器 256/257 边界、
+协议包构建与 Desktop typecheck；真实 Cindy 市场中超过旧 32 条的默认插件仍需在客户端
+更新后手测详情和自动安装。
 
 2026-07-29 开发目录模式定向验证：Desktop typecheck 通过；Forge、开发注册表双 ID
 迁移、远程／正式／开发版本共存、移除与同步串行、DEV 角标、内容刷新、插件卡片／详情
