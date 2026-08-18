@@ -446,7 +446,8 @@ function builtinRolePath(roleId: string): string {
 
 async function readJson(filePath: string): Promise<unknown | null> {
   try {
-    return JSON.parse(await readFile(filePath, 'utf8')) as unknown;
+    const content = await readFile(filePath, 'utf8');
+    return JSON.parse(content.startsWith('\uFEFF') ? content.slice(1) : content) as unknown;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw error;
@@ -597,25 +598,21 @@ export async function readProjectConfigState(
   }
 
   const projectPath = writableProjectFilePath(locator);
-  const projectInput = await readJson(projectPath);
-  if (projectInput === null) {
-    return { file: base, source: base ? 'builtin' : 'project' };
-  }
-
   try {
-    // The database row owns the project identity. A copied project file may
-    // still carry the source project or role IDs; repair those identities on
-    // first read for every registered project, regardless of provenance.
+    const projectInput = await readJson(projectPath);
+    if (projectInput === null) {
+      return { file: base, source: base ? 'builtin' : 'project' };
+    }
+    // The database row owns the effective project identity. Keep copied or
+    // stale identities as an in-memory normalization until the user saves.
     const rewriteIdentity = projectFileNeedsIdentityRewrite(projectInput, locator.projectId);
-    let projectFile = normalizeProjectFileAtRoot(
+    const projectFile = normalizeProjectFileAtRoot(
       projectInput,
       locator.projectId,
       locator.projectRoot,
       rewriteIdentity,
     );
-    if (rewriteIdentity) await atomicWriteJson(projectPath, projectFile);
-    projectFile = mergeBundledRoleFallbacks(projectFile, bundledRoles);
-    return { file: projectFile, source: 'project' };
+    return { file: mergeBundledRoleFallbacks(projectFile, bundledRoles), source: 'project' };
   } catch (error) {
     if (!base) throw error;
     // Keep the bundled catalog usable while preserving the project-owned file
@@ -624,7 +621,7 @@ export async function readProjectConfigState(
       projectId: locator.projectId,
       error: error instanceof Error ? error.message : String(error),
     });
-    return { file: base, source: 'project' };
+    return { file: base, source: 'builtin' };
   }
 }
 

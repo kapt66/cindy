@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   ArrowLeft,
   BookOpen,
@@ -1242,6 +1242,8 @@ export function MekaProjectRoleEditorRoute() {
   const [metadataEffective, setMetadataEffective] = useState<MekaProjectMetadata[]>([]);
   const [skillCatalog, setSkillCatalog] = useState<MekaSkillCatalogEntry[]>([]);
   const [busy, setBusy] = useState(false);
+  const actionRunningRef = useRef(false);
+  const [projectLoadFailed, setProjectLoadFailed] = useState(false);
   const [gitRemoteFetching, setGitRemoteFetching] = useState(false);
   const [projectsLoaded, setProjectsLoaded] = useState(false);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
@@ -1289,6 +1291,7 @@ export function MekaProjectRoleEditorRoute() {
     if (!selectedProject) {
       setProject(null);
       setProjectFile(null);
+      setProjectLoadFailed(false);
       setRole(null);
       setRoleEffective(null);
       setSelectedRoleId(null);
@@ -1297,8 +1300,9 @@ export function MekaProjectRoleEditorRoute() {
       return;
     }
     let cancelled = false;
-    setProject(projectDraft(selectedProject));
+    setProject(null);
     setProjectFile(null);
+    setProjectLoadFailed(false);
     setMetadata([]);
     setMetadataEffective([]);
     setSelectedRoleId((current) =>
@@ -1312,13 +1316,16 @@ export function MekaProjectRoleEditorRoute() {
         if (!cancelled) {
           setProjectFile(nextFile);
           setProject(projectDraft(selectedProject, nextFile));
+          setProjectLoadFailed(false);
           setMetadata(cloneValue(nextMetadata));
           setMetadataEffective(cloneValue(nextMetadata));
         }
       })
       .catch(() => {
         if (!cancelled) {
+          setProject(null);
           setProjectFile(null);
+          setProjectLoadFailed(true);
           setMetadata([]);
           setMetadataEffective([]);
         }
@@ -1359,12 +1366,15 @@ export function MekaProjectRoleEditorRoute() {
 
   const run = useCallback(
     async (action: () => Promise<void>) => {
+      if (actionRunningRef.current) return;
+      actionRunningRef.current = true;
       setBusy(true);
       try {
         await action();
       } catch (error) {
         toast.error(error instanceof Error ? error.message : t('meka.failed'));
       } finally {
+        actionRunningRef.current = false;
         setBusy(false);
       }
     },
@@ -1383,19 +1393,6 @@ export function MekaProjectRoleEditorRoute() {
       toast.success(t('meka.saved'));
     });
   };
-
-  const projectDirty = useMemo(() => {
-    if (!project || !projectFile) return false;
-    return (
-      JSON.stringify(projectFileFromDraft(projectFile, project, metadata)) !==
-      JSON.stringify(projectFile)
-    );
-  }, [metadata, project, projectFile]);
-
-  const roleDirty = useMemo(
-    () => !!role && !!roleEffective && JSON.stringify(role) !== JSON.stringify(roleEffective),
-    [role, roleEffective],
-  );
 
   const cancelProjectDraft = () => {
     if (!selectedProject || !projectFile) return;
@@ -1527,6 +1524,10 @@ export function MekaProjectRoleEditorRoute() {
 
   const saveRole = () => {
     if (!selectedProject || !role) return;
+    if (creatingRole && !role.displayName.trim()) {
+      toast.error(t('meka.roleNameRequired'));
+      return;
+    }
     void run(async () => {
       if (creatingRole) {
         const created = await window.electronAPI.localDb.mekaRoles.create({
@@ -1717,17 +1718,39 @@ export function MekaProjectRoleEditorRoute() {
     );
   }
 
+  if (!project || !projectFile || projectFile.projectId !== selectedProject.id) {
+    return (
+      <main className="flex h-full min-h-0 w-full flex-col bg-[var(--surface)] text-[var(--text-primary)]">
+        <header
+          className="flex h-[72px] w-full shrink-0 items-center gap-4 border-b border-[var(--cmd-palette-border)] px-4"
+          style={WINDOW_DRAG_STYLE}
+        >
+          <button
+            type="button"
+            onClick={() => setSelectedProjectId(null)}
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[var(--settings-section-desc)] transition-colors hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+            style={WINDOW_NO_DRAG_STYLE}
+            aria-label={t('meka.backToProjects')}
+          >
+            <ArrowLeft size={18} aria-hidden="true" />
+          </button>
+          <h1 className="truncate text-lg font-medium text-[var(--text-primary)]">
+            {selectedProject.displayName}
+          </h1>
+        </header>
+        <div className="flex min-h-0 flex-1 items-center justify-center text-13 text-[var(--text-secondary)]">
+          {t(projectLoadFailed ? 'meka.failed' : 'meka.loading')}
+        </div>
+      </main>
+    );
+  }
+
   const showingRole = creatingRole || selectedRoleId !== null;
   const selectedRoleSummary =
     selectedProject?.roles.find((item) => item.id === selectedRoleId) ?? null;
   // Bundled SAGA2 roles are editable in place; the first save materializes
   // their snapshot in the project-root .meka/project.json.
   const selectionReadOnly = false;
-  const roleCreateValid = creatingRole && !!role?.displayName.trim();
-  const canCancel = showingRole ? creatingRole || roleDirty : projectDirty;
-  const canSave = showingRole
-    ? roleCreateValid || (roleDirty && !!role)
-    : projectDirty && !!project && !!projectFile;
 
   return (
     <>
@@ -1753,9 +1776,22 @@ export function MekaProjectRoleEditorRoute() {
             <h1 className="truncate text-lg font-medium leading-none text-[var(--text-primary)]">
               {selectedProject.displayName}
             </h1>
-            <p className="truncate text-12 text-[var(--text-tertiary)]">
-              {selectedProject.path ?? selectedProject.id}
-            </p>
+            <div className="flex min-w-0 items-center gap-2 text-12 text-[var(--text-tertiary)]">
+              <p className="min-w-0 truncate">{selectedProject.path ?? selectedProject.id}</p>
+              <span
+                className="inline-flex h-5 shrink-0 items-center gap-1 rounded-full border border-[var(--border-default)] bg-[var(--surface-chip)] px-2 text-[var(--text-secondary)]"
+                data-testid="meka-project-config-source"
+              >
+                <span>{t('meka.configurationSourceLabel')}:</span>
+                <span>
+                  {t(
+                    selectedProject.configSource === 'builtin'
+                      ? 'meka.configurationSourceBuiltin'
+                      : 'meka.configurationSourceProject',
+                  )}
+                </span>
+              </span>
+            </div>
           </div>
           <div className="flex shrink-0 items-center gap-2" style={WINDOW_NO_DRAG_STYLE}>
             {showingRole && !creatingRole && selectedRoleSummary?.isBuiltin ? (
@@ -1769,14 +1805,12 @@ export function MekaProjectRoleEditorRoute() {
                 <button
                   className={buttonClass}
                   onClick={showingRole ? cancelRoleDraft : cancelProjectDraft}
-                  disabled={busy || !canCancel}
                 >
                   {t('logic.confirm.cancel')}
                 </button>
                 <button
                   className={buttonClass}
                   onClick={showingRole ? saveRole : saveProject}
-                  disabled={busy || !canSave}
                 >
                   <Save size={14} aria-hidden="true" />
                   {showingRole ? t('meka.saveRole') : t('meka.save')}

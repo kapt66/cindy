@@ -141,7 +141,12 @@ function installApi(
       return summary;
     },
   );
-  const saveProject = vi.fn(async ({ project }: { project: MekaProjectFile }) => project);
+  const saveProject = vi.fn(async ({ project }: { project: MekaProjectFile }) => {
+    projects = projects.map((item) =>
+      item.id === project.projectId ? { ...item, configSource: 'project' as const } : item,
+    );
+    return project;
+  });
   const resetBuiltin = vi.fn(async () => projects[0]);
   const showOpenDirectory = vi.fn(async () => ({
     success: true,
@@ -418,11 +423,54 @@ describe('Meka project and role create states', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'General development' }));
     const roleName = (await screen.findByLabelText('meka.roleName')) as HTMLInputElement;
+    expect(
+      (screen.getByRole('button', { name: 'logic.confirm.cancel' }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+    expect((screen.getByRole('button', { name: 'meka.saveRole' }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
     expect(roleName.disabled).toBe(false);
     fireEvent.change(roleName, { target: { value: 'Edited development' } });
     fireEvent.click(screen.getByRole('button', { name: 'meka.saveRole' }));
 
     await waitFor(() => expect(api.updateRole).toHaveBeenCalledTimes(1));
+  });
+
+  it('keeps project actions enabled and materializes bundled fallback on explicit Save', async () => {
+    const api = installApi([
+      {
+        ...projectSummary(),
+        id: 'saga2',
+        name: 'saga2',
+        isBuiltin: true,
+        configSource: 'builtin',
+      },
+    ]);
+    renderRoute('/?projectId=saga2');
+
+    expect(await screen.findByText('meka.configurationSourceBuiltin')).toBeTruthy();
+    const name = (await screen.findByLabelText('meka.projectName')) as HTMLInputElement;
+    const cancel = screen.getByRole('button', { name: 'logic.confirm.cancel' });
+    const save = screen.getByRole('button', { name: 'meka.save' });
+    expect(name.disabled).toBe(false);
+    await waitFor(() => {
+      expect((cancel as HTMLButtonElement).disabled).toBe(false);
+      expect((save as HTMLButtonElement).disabled).toBe(false);
+    });
+    fireEvent.change(name, { target: { value: 'Recovered SAGA2' } });
+    fireEvent.click(cancel);
+    expect(name.value).toBe('Project A');
+    fireEvent.click(save);
+
+    await waitFor(() => expect(api.saveProject).toHaveBeenCalledTimes(1));
+    expect(api.saveProject).toHaveBeenCalledWith(
+      expect.objectContaining({
+        project: expect.objectContaining({
+          basic: expect.objectContaining({ displayName: 'Project A' }),
+        }),
+      }),
+    );
+    expect(await screen.findByText('meka.configurationSourceProject')).toBeTruthy();
   });
 
   it('opens the full role editor and only creates the role on Save', async () => {
@@ -432,10 +480,14 @@ describe('Meka project and role create states', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'meka.newRole' }));
 
     expect(api.createRole).not.toHaveBeenCalled();
+    const save = screen.getByRole('button', { name: 'meka.saveRole' }) as HTMLButtonElement;
+    expect(save.disabled).toBe(false);
+    fireEvent.click(save);
+    expect(api.createRole).not.toHaveBeenCalled();
     fireEvent.change(screen.getByLabelText('meka.roleName'), {
       target: { value: 'New role' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'meka.saveRole' }));
+    fireEvent.click(save);
 
     await waitFor(() => expect(api.createRole).toHaveBeenCalledTimes(1));
     expect(api.createRole.mock.calls[0]?.[0]).toEqual({
