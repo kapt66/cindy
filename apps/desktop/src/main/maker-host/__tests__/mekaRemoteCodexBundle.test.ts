@@ -3,52 +3,48 @@ import { describe, expect, it } from 'vitest';
 import { buildMekaRemoteCodexBundle } from '../meka-remote-codex-bundle';
 
 describe('buildMekaRemoteCodexBundle', () => {
-  it('creates a deterministic catalog and skill file set', () => {
-    const skills = [
-      {
-        id: 'zeta',
-        name: 'Zeta',
-        description: 'Second',
-        content: '# Zeta',
-      },
-      {
-        id: 'alpha',
-        name: 'Alpha',
-        description: 'First',
-        content: '# Alpha',
-      },
-    ];
-    const first = buildMekaRemoteCodexBundle(skills);
-    const second = buildMekaRemoteCodexBundle([...skills].reverse());
+  it('projects the exact immutable snapshot bytes for a remote Worker', () => {
+    const snapshot = {
+      revision: 'a'.repeat(64),
+      pluginPath: 'C:/local-only/claude-plugin',
+      files: [
+        { relativePath: 'catalog.json', contentBase64: 'W10K', digest: 'b'.repeat(64) },
+        {
+          relativePath: 'skills/alpha/assets/icon.png',
+          contentBase64: 'AP8=',
+          digest: 'c'.repeat(64),
+        },
+      ],
+    };
+    const bundle = buildMekaRemoteCodexBundle(snapshot);
 
-    expect(second).toEqual(first);
-    expect(first.revisionHash).toMatch(/^[a-f0-9]{64}$/);
-    expect(first.files.map((file) => file.relPath)).toEqual([
-      'catalog.json',
-      'meka-runtime/skills/alpha/SKILL.md',
-      'meka-runtime/skills/zeta/SKILL.md',
+    expect(bundle.revisionHash).toBe(snapshot.revision);
+    expect(bundle.files).toEqual([
+      { relPath: 'catalog.json', contentBase64: 'W10K', digest: 'b'.repeat(64) },
+      { relPath: 'skills/alpha/assets/icon.png', contentBase64: 'AP8=', digest: 'c'.repeat(64) },
     ]);
-    expect(JSON.parse(first.files[0]!.content)).toEqual([
-      expect.objectContaining({
-        packId: 'meka-runtime',
-        skillId: 'alpha',
-        relPath: 'meka-runtime/skills/alpha/SKILL.md',
-      }),
-      expect.objectContaining({
-        packId: 'meka-runtime',
-        skillId: 'zeta',
-        relPath: 'meka-runtime/skills/zeta/SKILL.md',
-      }),
-    ]);
+    expect(JSON.stringify(bundle)).not.toContain(snapshot.pluginPath);
   });
 
-  it('changes the revision when skill content changes', () => {
-    const original = buildMekaRemoteCodexBundle([
-      { id: 'skill', name: 'Skill', description: '', content: 'one' },
+  it('preserves file ordering and binary payloads without recomputing a revision', () => {
+    const bundle = buildMekaRemoteCodexBundle({
+      revision: 'd'.repeat(64),
+      pluginPath: '/local/plugin',
+      files: [
+        { relativePath: 'skills/zeta/SKILL.md', contentBase64: 'IyBaZXRh', digest: 'e'.repeat(64) },
+        {
+          relativePath: 'skills/alpha/SKILL.md',
+          contentBase64: 'IyBBbHBoYQ==',
+          digest: 'f'.repeat(64),
+        },
+      ],
+    });
+
+    expect(bundle.revisionHash).toBe('d'.repeat(64));
+    expect(bundle.files.map((file) => file.relPath)).toEqual([
+      'skills/zeta/SKILL.md',
+      'skills/alpha/SKILL.md',
     ]);
-    const changed = buildMekaRemoteCodexBundle([
-      { id: 'skill', name: 'Skill', description: '', content: 'two' },
-    ]);
-    expect(changed.revisionHash).not.toBe(original.revisionHash);
+    expect(bundle.files[0]!.contentBase64).toBe('IyBaZXRh');
   });
 });

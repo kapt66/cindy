@@ -15,6 +15,11 @@
   `codex/<version>/<platform>/codex[.exe].gz`。同路径内容不同必须失败。
 - 每个对象同时记录 gzip SHA-256、裸二进制 SHA-256 与字节数。消费者必须完成两段校验，
   不能只以 HTTP 200、文件存在或 gzip 可解压作为成功条件。
+- `maker-cc-manager` bundle 不使用上述 runtime 版本号；它由
+  `packages/maker-cc-manager/src/protocol.ts` 的 `CC_MGR_BUNDLE_VERSION` 单独 pin。当前为
+  `0.0.7/protocol 3`，增加了任意二进制 Skill 文件的规范 base64 投递。修改该 pin 后必须运行
+  `pnpm --filter @cindy/maker-cc-manager bundle`，并让 MCPRouter 从同一 Cindy 源码重建、探测
+  和重启 daemon；只发布 Claude/Codex runtime 资产不会更新 cc-manager。
 
 ## Linux 交付
 

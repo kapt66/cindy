@@ -138,11 +138,34 @@ Meka 技能的远端事实只属于 MCPRouter：
 
 ## 5. 与 Meka 项目角色的关系
 
-第一阶段不把市场技能并入 `meka-projects/skillCatalog.ts` 的内置角色技能目录。
+第一阶段仍不把市场技能自动并入 `meka-projects/skillCatalog.ts` 的内置角色技能目录。
+安装后的市场技能继续由 Claude Code、Codex 与 Cindy 的常规原生发现链使用；以后若增加
+角色绑定市场技能，必须保存渠道、远端资源 ID 和 release ID／版本约束，不得只保存可冲突
+的技能名称。
 
-安装后的 Meka 技能由 Claude Code、Codex 与 Cindy 的原生技能发现链使用；项目角色当前的
-内置技能选择、`skillId` 和运行时投影保持不变。以后若增加角色绑定市场技能，必须保存
-渠道、远端资源 ID 和 release ID／版本约束，不得只保存可冲突的技能名称。
+项目角色显式选择的内置、旧式路径和项目元数据 Skill 则使用任务级不可变快照：
+
+- 首次启动任务时，把每个 Skill 的完整目录（`SKILL.md`、`scripts/`、`references/`、
+  `assets/` 及二进制文件）复制到
+  `<userData>/meka-skill-snapshots/revisions/<revision>/claude-plugin`；revision 对排序后的
+  逻辑路径和文件 SHA-256 内容寻址，任务绑定写在 `bindings/<sessionId>.json`。空 Skill
+  选择也会冻结为空 catalog，避免以后修改角色时改变旧任务；空快照不挂载原生插件、不创建
+  Codex revision host，也不做远程 bundle 投递。
+- 快照不写入用户 P4／自定义项目，也不生成项目内 `.agents` 或 `.claude` 目录。稳定、唯一的
+  kebab-case Skill 名称和角色描述以结构化 YAML frontmatter 写入快照入口，其它 frontmatter
+  与正文保留。
+- Claude 通过 SDK local plugin 加载快照；Codex 通过 app-server
+  `skills/extraRoots/set` 注册快照的 `skills` 根。两者启动上下文只暴露原生 Skill catalog
+  元数据，完整 `SKILL.md` 和资源只在 Agent 选中 Skill 后读取；禁止把全部 Skill 正文内联
+  到 `userPrompt` 或 system/developer prompt。
+- 角色修改只影响新任务。已有任务恢复时必须读取原绑定并重新校验 manifest、文件集合、
+  大小和 SHA-256；源目录后来变化或消失不改变快照。绑定、快照缺失或被篡改时明确阻断，
+  不得按当前角色重新解析后静默漂移。
+- 单个任务快照最多 4096 个文件、解码后共 64 MiB；拒绝绝对路径、`..`、反斜杠逻辑路径、
+  符号链接、特殊文件、重复路径和同一 Skill 根中的歧义 `SKILL.md`。
+- MCPRouter Worker 通过 cc-manager `bundle/ensure` 接收同一组已验证字节，并按 revision
+  retain/release；普通 SSH 尚无等价的安全投影能力，带角色 Skill 的任务必须明确失败，
+  不得退回全文 prompt。
 
 SAGA2 当前只保留“通用开发”和“战斗开发”两个内置角色。通用开发通过
 `includeAllProjectMetadata` 自动选择项目当前全部有效元数据；战斗开发继续显式选择战斗

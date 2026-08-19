@@ -141,6 +141,10 @@ const { MockCodexTransport, createdTransports } = vi.hoisted(() => {
         });
         return;
       }
+      if (req.method === 'skills/extraRoots/set') {
+        this.emitLine({ id: req.id, result: {} });
+        return;
+      }
       if (req.method === 'model/list') {
         if (MockCodexTransport.dropModelList) return;
         this.emitLine({ id: req.id, result: { data: [], nextCursor: null } });
@@ -3576,6 +3580,65 @@ describe('CodexAgent send', () => {
 });
 
 describe('CodexAgent MCP thread context hooks', () => {
+  it('registers native Skill roots before thread start and partitions hosts by revision', async () => {
+    const agent = new CodexAgent(createDeps());
+    const first = await agent.startSession({
+      sessionId: 'session-native-skills-a',
+      model: 'gpt-5.4',
+      workingDir: '/repo-a',
+      nativeSkillPluginPath: '/snapshots/revision-a/claude-plugin',
+      nativeSkillRevision: 'revision-a',
+    });
+    const second = await agent.startSession({
+      sessionId: 'session-native-skills-b',
+      model: 'gpt-5.4',
+      workingDir: '/repo-b',
+      nativeSkillPluginPath: '/snapshots/revision-b/claude-plugin',
+      nativeSkillRevision: 'revision-b',
+    });
+
+    expect(createdTransports).toHaveLength(2);
+    for (const [index, revision] of ['revision-a', 'revision-b'].entries()) {
+      const requests = createdTransports[index]!.lines.map(
+        (line) => JSON.parse(line) as { method?: string; params?: unknown },
+      );
+      const rootsIndex = requests.findIndex(
+        (request) => request.method === Method.SkillsExtraRootsSet,
+      );
+      const threadIndex = requests.findIndex((request) => request.method === Method.ThreadStart);
+      expect(rootsIndex).toBeGreaterThanOrEqual(0);
+      expect(rootsIndex).toBeLessThan(threadIndex);
+      expect(requests[rootsIndex]!.params).toEqual({
+        extraRoots: [path.join('/snapshots', revision, 'claude-plugin', 'skills')],
+      });
+    }
+
+    await first.close();
+    await second.close();
+    await agent.dispose();
+  });
+
+  it('fails startup when the native Skill root cannot be registered', async () => {
+    MockCodexTransport.onCreate = (transport) => {
+      transport.setMockResponse(Method.SkillsExtraRootsSet, {
+        error: { code: -32000, message: 'registration unavailable' },
+      });
+    };
+    const agent = new CodexAgent(createDeps());
+
+    await expect(
+      agent.startSession({
+        sessionId: 'session-native-skills-failure',
+        model: 'gpt-5.4',
+        workingDir: '/repo',
+        nativeSkillPluginPath: '/snapshots/revision-failure/claude-plugin',
+        nativeSkillRevision: 'revision-failure',
+      }),
+    ).rejects.toThrow(/native Skill registration failed.*registration unavailable/i);
+    expect(createdTransports[0]!.lines.some((line) => line.includes('thread/start'))).toBe(false);
+    await agent.dispose();
+  });
+
   it('passes target context to Codex extra spawn config and reuses the shared local host', async () => {
     const prepareCodexExtraSpawnConfig = vi.fn(async () => ({
       extraArgs: ['-c', 'mcp_servers.cindy_test.url="http://127.0.0.1:1234/mcp/cindy_test"'],

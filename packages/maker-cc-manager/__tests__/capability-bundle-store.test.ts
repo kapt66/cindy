@@ -38,6 +38,10 @@ function sha256(content: string): string {
   return createHash('sha256').update(content, 'utf8').digest('hex');
 }
 
+function sha256Bytes(content: Buffer): string {
+  return createHash('sha256').update(content).digest('hex');
+}
+
 function makeIpcPath(): string {
   const id = `cc-mgr-bundle-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   return process.platform === 'win32' ? `\\\\.\\pipe\\${id}` : path.join(os.tmpdir(), `${id}.sock`);
@@ -113,6 +117,50 @@ describe('capability bundle RPC', () => {
     });
     await expect(fs.stat(path.join(harness.cacheRoot, revisionHash))).rejects.toMatchObject({
       code: 'ENOENT',
+    });
+  });
+
+  it('round-trips binary bundle files from canonical base64', async () => {
+    const harness = await createHarness();
+    const revisionHash = sha256('binary-revision');
+    const pluginJson = '{"name":"binary"}\n';
+    const catalogJson = '[]\n';
+    const binary = Buffer.from([0, 255, 1, 128]);
+    const ensured = await harness.client.bundleEnsure(revisionHash, [
+      {
+        relPath: '.claude-plugin/plugin.json',
+        content: pluginJson,
+        digest: sha256(pluginJson),
+      },
+      {
+        relPath: 'assets/sample.bin',
+        contentBase64: binary.toString('base64'),
+        digest: sha256Bytes(binary),
+      },
+      {
+        relPath: 'catalog.json',
+        content: catalogJson,
+        digest: sha256(catalogJson),
+      },
+    ]);
+
+    await expect(
+      fs.readFile(path.join(ensured.pluginPath, 'assets', 'sample.bin')),
+    ).resolves.toEqual(binary);
+  });
+
+  it('rejects non-canonical base64 payloads', async () => {
+    const harness = await createHarness();
+    await expect(
+      harness.client.bundleEnsure(sha256('bad-base64'), [
+        {
+          relPath: 'assets/sample.bin',
+          contentBase64: 'AA',
+          digest: sha256Bytes(Buffer.from([0])),
+        },
+      ]),
+    ).rejects.toMatchObject({
+      rpcError: { code: 'BUNDLE_MATERIALIZE_FAILED' },
     });
   });
 

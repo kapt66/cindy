@@ -57,10 +57,19 @@ transport 身份，`agentType` 为 `claude` 或 `codex` 时才进入支持判断
 - Claude 的 MCPRouter/SSH cc-mgr `protocol/hello` 必须携带
   `CC_MGR_BUNDLE_VERSION`。客户端可以兼容旧 daemon 不回显 bundle 字段，但不能省略请求
   参数；否则新版本 daemon 会返回 `[INVALID_PARAMS] bundleVersion is required (string)`。
-- bundle `0.0.6` 的 daemon 自报最高 protocol `3`，并按连接协商版本隔离能力：protocol
+- 当前 bundle `0.0.7` 的 daemon 自报最高 protocol `3`，并按连接协商版本隔离能力：protocol
   `2` 保留 Claude query/session 与 host `toolGuards`；protocol `3` 才开放 immutable
   bundle、Codex revision/thread routing 和 tunneled MCP。manager version 相同但 protocol
   不同同样属于不可部署的 pin mismatch，MCPRouter 构建期和 tunnel 启动前都必须阻断。
+- `0.0.7/protocol 3` 的 immutable bundle 文件可二选一携带 UTF-8 `content` 或规范
+  `contentBase64`；后者用于完整投递角色 Skill 的脚本、引用和二进制资产。daemon 必须先解码、
+  校验规范 base64 与文件 SHA-256，再原子物化。Desktop 使用任务快照的 revision 和原始字节，
+  不在远端重建 `SKILL.md`。
+- MCPRouter 角色 Skill 启动先 `bundle/ensure`、再注册 revision，然后把返回的远端 plugin
+  路径交给 Claude/Codex 原生加载；会话关闭、启动失败或 revision 替换时成对 release。
+  恢复必须继续使用任务绑定的原 revision。空选择仍冻结任务绑定，但不投递空 bundle；普通
+  SSH 没有这条投影契约，仅在快照实际含 Meka 角色 Skill 时明确失败，不能把正文退化为
+  prompt。
 - Codex capability routing 依赖 app-server `0.145.0` 引入的协议能力。远程
   `codex-appserver` tunnel 使用 MCPRouter 打包的 Codex 可执行文件；当远端版本低于
   `0.145.0` 时必须 fail closed 并提示升级 MCPRouter runtime，不得为了让会话启动而关闭
@@ -69,7 +78,7 @@ transport 身份，`agentType` 为 `claude` 或 `codex` 时才进入支持判断
 这条版本契约源自 2026-08-05 的两次现场错误：Claude 握手漏传 bundleVersion，以及
 MCPRouter Worker 使用 `cindy/0.144.1` Codex runtime。
 
-同日第三次现场错误暴露了 bundle 只校验 manager version 的漏洞：MCPRouter 期待
+同日第三次现场错误暴露了 bundle 只校验 manager version 的漏洞：当时 MCPRouter 期待
 `0.0.6/protocol 3`，实际镜像仍携带 Cindy 迁移初期的 `0.0.6/protocol 2`。因此不得只 bump
 字符串版本；Cindy 的 `maker-cc-manager` 是 bundle 源码真源，MCPRouter 完整版必须通过
 `build:cc-mgr-bundle` 重新构建并探测 pin；按需 runtime manifest/cache 链路校验 Codex

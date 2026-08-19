@@ -119,17 +119,18 @@ describe('Meka runtime project/role resolution', () => {
         );
       }
       const saga2Overview = resolved.skills.find((skill) => skill.id === 'saga2-overview');
-      expect(saga2Overview?.content).toContain('pass the direct child name `saga2_json`');
-      expect(saga2Overview?.content).toContain('ask the user whether to use it before adopting it');
-      expect(saga2Overview?.content).toContain('let the Host open its system');
-      expect(saga2Overview?.content).toContain('directory picker');
-      expect(saga2Overview?.content).toContain('Do not inspect or pass an absolute local path');
-      expect(saga2Overview?.content).toContain(
+      const saga2OverviewContent = saga2Overview?.content.replace(/\r\n/g, '\n');
+      expect(saga2OverviewContent).toContain('pass the direct child name `saga2_json`');
+      expect(saga2OverviewContent).toContain('ask the user whether to use it before adopting it');
+      expect(saga2OverviewContent).toContain('let the Host open its system');
+      expect(saga2OverviewContent).toContain('directory picker');
+      expect(saga2OverviewContent).toContain('Do not inspect or pass an absolute local path');
+      expect(saga2OverviewContent).toContain(
         'Use\n  `update_servers` for update/rebuild/deploy requests',
       );
-      expect(saga2Overview?.content).toContain('`start_servers` for start requests');
-      expect(saga2Overview?.content).toContain('`stop_servers` for stop requests');
-      expect(saga2Overview?.content).toContain("single operation matching the user's intent");
+      expect(saga2OverviewContent).toContain('`start_servers` for start requests');
+      expect(saga2OverviewContent).toContain('`stop_servers` for stop requests');
+      expect(saga2OverviewContent).toContain("single operation matching the user's intent");
       {
         const remoteOperations = resolved.skills.find((skill) => skill.id === 'remote-operations');
         const orcaCoordination = resolved.skills.find((skill) => skill.id === 'orca-coordination');

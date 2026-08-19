@@ -1,9 +1,7 @@
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { app } from 'electron';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('electron', () => ({
   app: {
@@ -15,20 +13,9 @@ vi.mock('electron', () => ({
 
 import type { MekaRoleFile } from '../../../shared/meka-projects.js';
 import {
-  materializeMekaRuntimeSkills,
   mergeMekaProjectRoleDefaults,
   resolveRoleProjectMetadataSelections,
 } from '../runtimeConfig.js';
-
-const temporaryDirectories: string[] = [];
-
-afterEach(async () => {
-  await Promise.all(
-    temporaryDirectories
-      .splice(0)
-      .map((directory) => rm(directory, { recursive: true, force: true })),
-  );
-});
 
 function role(overrides: Partial<MekaRoleFile> = {}): MekaRoleFile {
   return {
@@ -117,52 +104,4 @@ describe('Meka project and role runtime configuration', () => {
     ]);
   });
 
-  it('projects configured skills to both native agent skill roots and removes stale projections', async () => {
-    const managedRoot = path.join(app.getPath('userData'), 'meka-assistants');
-    await mkdir(managedRoot, { recursive: true });
-    const workingDir = await mkdtemp(path.join(managedRoot, 'session-'));
-    temporaryDirectories.push(workingDir);
-
-    await materializeMekaRuntimeSkills(workingDir, [
-      {
-        id: 'first-skill',
-        name: 'First',
-        description: 'first',
-        content: '# First\n',
-      },
-    ]);
-    await materializeMekaRuntimeSkills(workingDir, [
-      {
-        id: 'second-skill',
-        name: 'Second',
-        description: 'second',
-        content: '# Second\n',
-      },
-    ]);
-
-    for (const root of ['.claude', '.agents']) {
-      await expect(
-        readFile(path.join(workingDir, root, 'skills', 'meka-second-skill', 'SKILL.md'), 'utf8'),
-      ).resolves.toBe('# Second\n');
-      await expect(
-        readFile(path.join(workingDir, root, 'skills', 'meka-first-skill', 'SKILL.md'), 'utf8'),
-      ).rejects.toMatchObject({ code: 'ENOENT' });
-    }
-  });
-
-  it('does not write generated skill files into a configured project workspace', async () => {
-    const workingDir = await mkdtemp(path.join(os.tmpdir(), 'cindy-meka-project-'));
-    temporaryDirectories.push(workingDir);
-
-    await expect(
-      materializeMekaRuntimeSkills(workingDir, [
-        {
-          id: 'project-skill',
-          name: 'Project',
-          description: 'project',
-          content: '# Project\n',
-        },
-      ]),
-    ).rejects.toThrow('app-managed workspace');
-  });
 });

@@ -103,7 +103,7 @@ async function makeTempDir(): Promise<string> {
 }
 
 /** 起一个裸 handle(默认不注入 interactionResolver), 暴露 SDK query 的 canUseTool。 */
-async function startBareSession() {
+async function startBareSession(options: { nativeSkillPluginPath?: string } = {}) {
   const configDir = await makeTempDir();
   process.env.CLAUDE_CONFIG_DIR = configDir;
   const workingDir = await makeTempDir();
@@ -117,6 +117,12 @@ async function startBareSession() {
     model: 'claude-opus-4-6',
     workingDir,
     permissionMode: 'default',
+    ...(options.nativeSkillPluginPath
+      ? {
+          nativeSkillPluginPath: options.nativeSkillPluginPath,
+          nativeSkillRevision: 'test-revision',
+        }
+      : {}),
   });
   const queryOptions = sdkMock.query.mock.calls.at(-1)?.[0]?.options as
     | { canUseTool?: CanUseToolFn }
@@ -137,6 +143,18 @@ afterEach(async () => {
 });
 
 describe('ClaudeCodeAgent canUseTool fail-closed (no interactionResolver)', () => {
+  it('loads a session-local native Skill plugin through the SDK', async () => {
+    const pluginPath = await makeTempDir();
+    const { handle } = await startBareSession({
+      nativeSkillPluginPath: pluginPath,
+    });
+    const queryOptions = sdkMock.query.mock.calls.at(-1)?.[0]?.options as
+      { plugins?: unknown } | undefined;
+
+    expect(queryOptions?.plugins).toEqual([{ type: 'local', path: pluginPath }]);
+    await handle.close();
+  });
+
   it('denies mutating / executing / external tools when no resolver is attached', async () => {
     const { handle, canUseTool } = await startBareSession();
 
