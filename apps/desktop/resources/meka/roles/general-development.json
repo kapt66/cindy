@@ -5,11 +5,9 @@
   "name": "general-development",
   "displayName": "通用开发",
   "description": "综合设计、本地项目与远端服务完成开发",
-  "policyProviderRefs": [
-    "meka-host-risk-policy",
-    "meka-p4-boundary-policy"
-  ],
+  "policyProviderRefs": ["meka-host-risk-policy", "meka-p4-boundary-policy"],
   "useProjectDefaults": true,
+  "includeAllProjectMetadata": true,
   "prompt": "# General development\n\nIdentify whether the target needs design, local project, configuration, or remote-service work. Establish the relevant contracts first, delegate only bounded independent slices, integrate changes across affected layers, and finish with focused tests plus an end-to-end acceptance check.",
   "rules": [],
   "skills": [
@@ -23,198 +21,13 @@
       "id": "meka-design",
       "providerId": "meka-design",
       "enabled": true
+    },
+    {
+      "id": "unity-editor",
+      "transport": "http",
+      "url": "http://127.0.0.1:7788/mcp",
+      "enabled": true
     }
   ],
-  "projectMetadataSelection": [
-    {
-      "sourcePath": "saga2_design/AGENTS.md",
-      "itemType": "agents-md",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_design/CLAUDE.md",
-      "itemType": "agents-md",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/IP组-ip/世界观-worldbuilding/AGENTS.md",
-      "itemType": "agents-md",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/IP组-ip/世界观-worldbuilding/CLAUDE.md",
-      "itemType": "agents-md",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/IP组-ip/skills/IP组工作流-ip-planning-manager/SKILL.md",
-      "itemType": "skill",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/关卡策划组-level-planning/skills/关卡策划组工作流-level-planning-manager/SKILL.md",
-      "itemType": "skill",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/关卡策划组-level-planning/skills/怪物需求拆解-monster-requirement/SKILL.md",
-      "itemType": "skill",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/战斗策划组-combat-planning/skills/saga2-alias-skill/SKILL.md",
-      "itemType": "skill",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/战斗策划组-combat-planning/skills/saga2-project-battle-designer/SKILL.md",
-      "itemType": "skill",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/战斗策划组-combat-planning/skills/战斗策划组工作流-combat-planning-manager/SKILL.md",
-      "itemType": "skill",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/数值策划组-numerical-planning/skills/数值策划组工作流-numerical-planning-manager/SKILL.md",
-      "itemType": "skill",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/数据分析组-data-analysis/skills/数据分析组工作流-data-analysis-manager/SKILL.md",
-      "itemType": "skill",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/系统策划组-system-planning/skills/交互原型制作工作流-meka-prototype-manager/SKILL.md",
-      "itemType": "skill",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/系统策划组-system-planning/skills/系统功能案生成工作流-system-proposal-manager/SKILL.md",
-      "itemType": "skill",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/系统策划组-system-planning/skills/系统策划组工作流-system-planning-manager/SKILL.md",
-      "itemType": "skill",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_unity/.agents/skills/artist-Environment/SKILL.md",
-      "itemType": "skill",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_unity/.agents/skills/artist-FX/SKILL.md",
-      "itemType": "skill",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_unity/.agents/skills/artist-Model/SKILL.md",
-      "itemType": "skill",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_unity/.agents/skills/artist-UI/SKILL.md",
-      "itemType": "skill",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_unity/.agents/skills/artist-shader/SKILL.md",
-      "itemType": "skill",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_unity/.agents/skills/doc-features-template/SKILL.md",
-      "itemType": "skill",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_unity/.agents/skills/doc-project/SKILL.md",
-      "itemType": "skill",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_unity/.agents/skills/doc-proto/SKILL.md",
-      "itemType": "skill",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_unity/.agents/skills/editor-jenkins-install/SKILL.md",
-      "itemType": "skill",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_unity/.agents/skills/editor-jenkins-pipeline/SKILL.md",
-      "itemType": "skill",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_unity/.agents/skills/editor-skill-editor-effect/SKILL.md",
-      "itemType": "skill",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_unity/.agents/skills/editor-skill-editor-module/SKILL.md",
-      "itemType": "skill",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_unity/.agents/skills/editor-skill-editor-timeline/SKILL.md",
-      "itemType": "skill",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_unity/.agents/skills/editor-unity-mcp/SKILL.md",
-      "itemType": "skill",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_unity/.agents/skills/saga2-project-battle-designer/SKILL.md",
-      "itemType": "skill",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_unity/.agents/skills/script-battle/SKILL.md",
-      "itemType": "skill",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_unity/.agents/skills/script-data/SKILL.md",
-      "itemType": "skill",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_unity/.agents/skills/script-fun/SKILL.md",
-      "itemType": "skill",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_unity/.agents/skills/script-game/SKILL.md",
-      "itemType": "skill",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_unity/.agents/skills/script-home/SKILL.md",
-      "itemType": "skill",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_unity/.agents/skills/script-test/SKILL.md",
-      "itemType": "skill",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_unity/.agents/skills/script-ui/SKILL.md",
-      "itemType": "skill",
-      "enabled": true
-    },
-    {
-      "sourcePath": "saga2_design/planning/01-治理规范-governance/skills/策划组统一工作流-planning-governance-manager/SKILL.md",
-      "itemType": "skill",
-      "enabled": true
-    }
-  ]
+  "projectMetadataSelection": []
 }

@@ -8,472 +8,900 @@
     "path": "saga2",
     "formalWorkflowEnabled": true,
     "jiraProjectKey": "SAGA",
-    "disciplines": ["通用", "程序", "策划", "美术", "QA"],
-    "domains": ["治理", "战斗", "关卡", "系统", "数值", "数据", "IP", "工程基建"],
+    "disciplines": [
+      "通用",
+      "程序",
+      "策划",
+      "美术",
+      "QA"
+    ],
+    "domains": [
+      "治理",
+      "战斗",
+      "关卡",
+      "系统",
+      "数值",
+      "数据",
+      "IP",
+      "工程基建"
+    ],
     "workflowType": "jira"
   },
   "metadata": [
     {
       "sourcePath": "AGENTS.md",
       "itemType": "agents-md",
-      "name": "AGENTS.md",
-      "subProjectPath": null,
       "disciplines": [],
-      "domains": ["治理"],
+      "domains": [
+        "治理"
+      ],
       "enabled": true,
+      "name": "AGENTS.md",
+      "contentFingerprint": "35b4812b49d6093172972730603e66b6390eee7babf910032fc337253e88a698",
+      "subProjectPath": null,
       "displayName": "项目Agent入口",
       "description": "saga2_project 工作区 Agent 主入口，说明 saga2_design / saga2_unity / saga2_json / saga2_pm 目录结构与规则索引。"
     },
     {
       "sourcePath": "saga2_design/AGENTS.md",
       "itemType": "agents-md",
-      "name": "AGENTS.md",
-      "subProjectPath": null,
-      "disciplines": ["策划"],
-      "domains": ["治理"],
+      "disciplines": [
+        "策划"
+      ],
+      "domains": [
+        "治理"
+      ],
       "enabled": true,
+      "name": "AGENTS.md",
+      "contentFingerprint": "a2ee4c9353d941bfeeb24e2a6e89347ae1d8d282a17ee79e6187fa54ab15fa51",
+      "subProjectPath": "saga2_design",
       "displayName": "策划库Agent入口",
       "description": "策划知识库 Agent 入口，含 AI 初次接入强制协议与写入授权规则。"
     },
     {
       "sourcePath": "saga2_design/CLAUDE.md",
       "itemType": "agents-md",
+      "disciplines": [
+        "策划"
+      ],
+      "domains": [
+        "治理"
+      ],
+      "enabled": false,
       "name": "CLAUDE.md",
-      "subProjectPath": null,
-      "disciplines": ["策划"],
-      "domains": ["治理"],
-      "enabled": true,
+      "contentFingerprint": "44cdd36dae535093823d78f0dc80a33a6e20e8118847caf6419d5fe00fdcbe31",
+      "subProjectPath": "saga2_design",
       "displayName": "策划库Agent入口(CLAUDE)",
-      "description": "策划知识库 Agent 入口的 CLAUDE.md 别名，内容同 saga2_design/AGENTS.md。"
+      "description": "策划知识库 Agent 入口的 CLAUDE.md 别名，内容同 saga2_design/AGENTS.md。",
+      "notes": "与 saga2_design/AGENTS.md 内容重复，保留发现记录但不注入角色上下文。"
+    },
+    {
+      "sourcePath": "saga2_design/planning/01-治理规范-governance/skills/策划组统一工作流-planning-governance-manager/SKILL.md",
+      "itemType": "skill",
+      "disciplines": [
+        "策划"
+      ],
+      "domains": [
+        "治理"
+      ],
+      "enabled": true,
+      "name": "planning-governance-manager",
+      "contentFingerprint": "da48f9e6f49248694d9bdad4ae62b74556b2ac5fbce0f8165e86dfcd0c55b484",
+      "subProjectPath": "saga2_design",
+      "displayName": "策划治理调度",
+      "description": "策划组统一工作流入口，经治理层将文档路由到正确的职能组（系统 / IP / 战斗 / 关卡 / 数值 / 数据分析）。"
+    },
+    {
+      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/关卡策划组-level-planning/skills/副本Boss需求拆解-dungeon-boss-requirement/SKILL.md",
+      "itemType": "skill",
+      "disciplines": [
+        "策划"
+      ],
+      "domains": [
+        "关卡"
+      ],
+      "enabled": true,
+      "name": "dungeon-boss-requirement",
+      "contentFingerprint": "8da4de13d6d099b4f7820486b08fd4b566ce293961779dde6e353f0b23b1a5e1",
+      "subProjectPath": "saga2_design",
+      "displayName": "副本Boss需求拆解",
+      "description": "关卡策划侧的副本 Boss 专项需求拆解，覆盖动作、特效、阶段切换、Timeline、场地和机制协作。"
+    },
+    {
+      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/关卡策划组-level-planning/skills/怪物需求拆解-monster-requirement/SKILL.md",
+      "itemType": "skill",
+      "disciplines": [
+        "策划"
+      ],
+      "domains": [
+        "关卡"
+      ],
+      "enabled": true,
+      "name": "monster-requirement",
+      "contentFingerprint": "34fc08480744f7b16fb3a61d93ca7156ddfb90076e89c346a11786cf508b9487",
+      "subProjectPath": "saga2_design",
+      "displayName": "怪物需求拆解",
+      "description": "关卡策划子技能，拆解怪物技能、动作、特效需求与 Boss 阶段机制、机制怪物等。"
+    },
+    {
+      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/关卡策划组-level-planning/skills/关卡策划组工作流-level-planning-manager/SKILL.md",
+      "itemType": "skill",
+      "disciplines": [
+        "策划"
+      ],
+      "domains": [
+        "关卡"
+      ],
+      "enabled": true,
+      "name": "level-planning-manager",
+      "contentFingerprint": "11d6f4c1e21579669cc1fb431c8b313388ecfab4c3d7f5b329529c349925fb53",
+      "subProjectPath": "saga2_design",
+      "displayName": "关卡策划工作流",
+      "description": "关卡策划组工作流，处理关卡结构、流程、地图节点、怪物配置、目标与节奏。"
+    },
+    {
+      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/数据分析组-data-analysis/skills/数据分析组工作流-data-analysis-manager/SKILL.md",
+      "itemType": "skill",
+      "disciplines": [
+        "策划"
+      ],
+      "domains": [
+        "数据"
+      ],
+      "enabled": true,
+      "name": "data-analysis-manager",
+      "contentFingerprint": "79a26be99ceb928eeed0c44f7fe0b48f66bec405d2aa71e4315f49733f7b12b1",
+      "subProjectPath": "saga2_design",
+      "displayName": "数据分析工作流",
+      "description": "数据分析组工作流，处理埋点方案、指标定义、漏斗、看板、实验与复盘。"
+    },
+    {
+      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/数值策划组-numerical-planning/skills/数值策划组工作流-numerical-planning-manager/SKILL.md",
+      "itemType": "skill",
+      "disciplines": [
+        "策划"
+      ],
+      "domains": [
+        "数值"
+      ],
+      "enabled": true,
+      "name": "numerical-planning-manager",
+      "contentFingerprint": "8376c65634eb7d3b0ad24ad7387c8e09c5e3295cdd455e9164b52b3f17eb23f3",
+      "subProjectPath": "saga2_design",
+      "displayName": "数值策划工作流",
+      "description": "数值策划组工作流，处理成长曲线、资源产出消耗、掉落、成本、平衡与模型。"
+    },
+    {
+      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/系统策划组-system-planning/skills/交互原型制作工作流-meka-prototype-manager/SKILL.md",
+      "itemType": "skill",
+      "disciplines": [
+        "策划"
+      ],
+      "domains": [
+        "系统"
+      ],
+      "enabled": true,
+      "name": "meka-prototype-manager",
+      "contentFingerprint": "3f0e277036ec776e60f754602c6ad7e4605f4b231dcee23f40303e7183b15e87",
+      "subProjectPath": "saga2_design",
+      "displayName": "交互原型制作",
+      "description": "系统策划组在 Meka Design 中制作可交互玩法原型的执行入口。"
+    },
+    {
+      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/系统策划组-system-planning/skills/系统策划组工作流-system-planning-manager/SKILL.md",
+      "itemType": "skill",
+      "disciplines": [
+        "策划"
+      ],
+      "domains": [
+        "系统"
+      ],
+      "enabled": true,
+      "name": "system-planning-manager",
+      "contentFingerprint": "621c6f9d9a18fa48156850ed50598d77c24251af78cca4f0e5d037858dbd4590",
+      "subProjectPath": "saga2_design",
+      "displayName": "系统策划工作流",
+      "description": "系统策划组工作流，处理系统功能、父系统规则、UI 流程与模块级视觉资产。"
+    },
+    {
+      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/系统策划组-system-planning/skills/系统功能案生成工作流-system-proposal-manager/SKILL.md",
+      "itemType": "skill",
+      "disciplines": [
+        "策划"
+      ],
+      "domains": [
+        "系统"
+      ],
+      "enabled": true,
+      "name": "system-proposal-manager",
+      "contentFingerprint": "ec743518de028bdc4ab7b5b9bbee4ac2fc7207f23c48f882656beef766ed58d1",
+      "subProjectPath": "saga2_design",
+      "displayName": "系统功能案生成",
+      "description": "系统策划组功能案工作流，产出系统功能案草案、来源映射与 UI 产物建议。"
+    },
+    {
+      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/系统策划组-system-planning/skills/saga2-meka-ui-authoring/SKILL.md",
+      "itemType": "skill",
+      "disciplines": [
+        "策划"
+      ],
+      "domains": [
+        "系统"
+      ],
+      "enabled": true,
+      "name": "saga2-meka-ui-authoring",
+      "contentFingerprint": "755df277d6cb0603dec1c6bc70dd156a0528e01af7d3fbfe167dd6e47aea9dd4",
+      "subProjectPath": "saga2_design",
+      "displayName": "Meka UI制作",
+      "description": "为 Saga2 项目把当前有效策划案的主界面效果预览、真实功能流程、Assets/Art/UIDesign 设计图和 saga2_unity UI 约定转换为可导入 Unity 的 Meka Design 项目。用于新建、修改、审查或验收玩法 UI 原型，决定“一个画布对应一个 Prefab”的边界，为互斥状态和可单独控制的子 UI 建立对称独立根节点，区分固定 UGUI、动态 UI 模板与运行时生成表现，强制所有文本使用 Meka 项目设置字体，并按 UGUI 规范配置布局、交互、状态、Filled 进度条与程序字段。"
+    },
+    {
+      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/战斗策划组-combat-planning/skills/战斗策划组工作流-combat-planning-manager/SKILL.md",
+      "itemType": "skill",
+      "disciplines": [
+        "策划"
+      ],
+      "domains": [
+        "战斗"
+      ],
+      "enabled": true,
+      "name": "combat-planning-manager",
+      "contentFingerprint": "ec02861ae2f958b0a403c343f296acf830ce980ce638d0afa5d2065611fbe282",
+      "subProjectPath": "saga2_design",
+      "displayName": "战斗策划工作流",
+      "description": "战斗策划组工作流，处理战斗机制、技能、怪物、Boss、节奏与体验设计稿。"
+    },
+    {
+      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/战斗策划组-combat-planning/skills/saga2-alias-skill/SKILL.md",
+      "itemType": "skill",
+      "disciplines": [
+        "策划"
+      ],
+      "domains": [
+        "战斗"
+      ],
+      "enabled": false,
+      "name": "saga2",
+      "contentFingerprint": "2fcf2a96222e210d6867f5e70bbd9d089223d9f2570e5ce7c519dfd364606bb5",
+      "subProjectPath": "saga2_design",
+      "displayName": "Saga2转接镜像",
+      "description": "战斗策划知识库内 Codex `saga2` 别名技能镜像，定位工作区后转接战斗设计技能。",
+      "notes": "本地 Codex alias 的镜像，不作为 Meka 项目运行时 Skill 注入。"
+    },
+    {
+      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/战斗策划组-combat-planning/skills/saga2-project-battle-designer/SKILL.md",
+      "itemType": "skill",
+      "disciplines": [
+        "策划",
+        "程序"
+      ],
+      "domains": [
+        "战斗"
+      ],
+      "enabled": true,
+      "name": "saga2-project-battle-designer",
+      "contentFingerprint": "8e96bcf071be1f732598ed7eb7414eeb80a60d6db430f1b9a3ff689da6ab1fef",
+      "subProjectPath": "saga2_design",
+      "displayName": "战斗设计中枢",
+      "description": "Saga2 战斗设计与项目内 battle 工作流中枢。查阅本文档当需要：battle 设计交接、程序员向 Markdown、battle 或 UI 导出包、上传或入库技能设计、校验技能描述、编写新增后端模块配置方案、从七列 CSV 生成或更新技能 Timeline、修改特效显示层级或使特效显示在最前、定位或修改 Assets/Scripts/Hot/Game/Battle、SkillEditor 或 Module 编辑器、按技能 ID 配置效果或重建 skill_entry_model_editor.json、Perforce 编辑/新增/同步流程，或当用户说“更新”“导出”“记成skill”“复盘”“battle-designer”“配置效果”“编写效果”“特效高层级”“显示在最前”“CSV配置Timeline”、【还原项目】或明确说 `【导出模块表】` 并希望沉淀 battle 相关项目约定。"
     },
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/IP组-ip/世界观-worldbuilding/AGENTS.md",
       "itemType": "agents-md",
-      "name": "AGENTS.md",
-      "subProjectPath": null,
-      "disciplines": ["策划"],
-      "domains": ["IP"],
+      "disciplines": [
+        "策划"
+      ],
+      "domains": [
+        "IP"
+      ],
       "enabled": true,
+      "name": "AGENTS.md",
+      "contentFingerprint": "532b9d4a19f21604432671bdd5c7287f928d79f97536d7e481d3685ebc1d4ddf",
+      "subProjectPath": "saga2_design",
       "displayName": "世界观Agent规则",
       "description": "IP 组世界观目录的 Agent 工作规则：本地 Markdown 变更检查、编码规则等。"
     },
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/IP组-ip/世界观-worldbuilding/CLAUDE.md",
       "itemType": "agents-md",
+      "disciplines": [
+        "策划"
+      ],
+      "domains": [
+        "IP"
+      ],
+      "enabled": false,
       "name": "CLAUDE.md",
-      "subProjectPath": null,
-      "disciplines": ["策划"],
-      "domains": ["IP"],
-      "enabled": true,
+      "contentFingerprint": "532b9d4a19f21604432671bdd5c7287f928d79f97536d7e481d3685ebc1d4ddf",
+      "subProjectPath": "saga2_design",
       "displayName": "世界观Agent规则(CLAUDE)",
-      "description": "IP 组世界观目录 Agent 规则的 CLAUDE.md 别名，内容同目录下 AGENTS.md。"
-    },
-    {
-      "sourcePath": "saga2_unity/AGENTS.md",
-      "itemType": "agents-md",
-      "name": "AGENTS.md",
-      "subProjectPath": null,
-      "disciplines": ["程序"],
-      "domains": ["治理"],
-      "enabled": true,
-      "displayName": "Unity工程Agent入口",
-      "description": "Unity 客户端 Agent 入口，含冷热更分层、调用层级、P4 流程等硬规则。"
+      "description": "IP 组世界观目录 Agent 规则的 CLAUDE.md 别名，内容同目录下 AGENTS.md。",
+      "notes": "与同目录 AGENTS.md 内容重复，保留发现记录但不注入角色上下文。"
     },
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/IP组-ip/skills/IP组工作流-ip-planning-manager/SKILL.md",
       "itemType": "skill",
-      "name": "IP组工作流-ip-planning-manager",
-      "subProjectPath": null,
-      "disciplines": ["策划"],
-      "domains": ["IP"],
+      "disciplines": [
+        "策划"
+      ],
+      "domains": [
+        "IP"
+      ],
       "enabled": true,
+      "name": "ip-planning-manager",
+      "contentFingerprint": "aa1fb14421a884e8e29f9d39b394bef260c102a9af9dc7c87f0a90d67f6574d6",
+      "subProjectPath": "saga2_design",
       "displayName": "IP组工作流",
       "description": "IP 组专业工作流，处理世界观、角色、阵营、叙事设定、术语与文本风格。"
     },
     {
-      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/关卡策划组-level-planning/skills/关卡策划组工作流-level-planning-manager/SKILL.md",
+      "sourcePath": "saga2_pm/03-skills/saga2-feature-progress-estimator/SKILL.md",
       "itemType": "skill",
-      "name": "关卡策划组工作流-level-planning-manager",
-      "subProjectPath": null,
-      "disciplines": ["策划"],
-      "domains": ["关卡"],
+      "disciplines": [
+        "通用"
+      ],
+      "domains": [
+        "治理"
+      ],
       "enabled": true,
-      "displayName": "关卡策划工作流",
-      "description": "关卡策划组工作流，处理关卡结构、流程、地图节点、怪物配置、目标与节奏。"
-    },
-    {
-      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/关卡策划组-level-planning/skills/怪物需求拆解-monster-requirement/SKILL.md",
-      "itemType": "skill",
-      "name": "怪物需求拆解-monster-requirement",
-      "subProjectPath": null,
-      "disciplines": ["策划"],
-      "domains": ["关卡"],
-      "enabled": true,
-      "displayName": "怪物需求拆解",
-      "description": "关卡策划子技能，拆解怪物技能、动作、特效需求与 Boss 阶段机制、机制怪物等。"
-    },
-    {
-      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/战斗策划组-combat-planning/skills/saga2-alias-skill/SKILL.md",
-      "itemType": "skill",
-      "name": "saga2-alias-skill",
-      "subProjectPath": null,
-      "disciplines": ["策划"],
-      "domains": ["战斗"],
-      "enabled": true,
-      "displayName": "Saga2转接镜像",
-      "description": "战斗策划知识库内 Codex `saga2` 别名技能镜像，定位工作区后转接战斗设计技能。"
-    },
-    {
-      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/战斗策划组-combat-planning/skills/saga2-project-battle-designer/SKILL.md",
-      "itemType": "skill",
-      "name": "saga2-project-battle-designer",
-      "subProjectPath": null,
-      "disciplines": ["策划", "程序"],
-      "domains": ["战斗"],
-      "enabled": true,
-      "displayName": "战斗设计中枢",
-      "description": "Saga2 战斗设计与 battle 工作流中枢（策划侧）：设计交接、导出包、SkillEditor、效果配置与 P4 流程。"
-    },
-    {
-      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/战斗策划组-combat-planning/skills/战斗策划组工作流-combat-planning-manager/SKILL.md",
-      "itemType": "skill",
-      "name": "战斗策划组工作流-combat-planning-manager",
-      "subProjectPath": null,
-      "disciplines": ["策划"],
-      "domains": ["战斗"],
-      "enabled": true,
-      "displayName": "战斗策划工作流",
-      "description": "战斗策划组工作流，处理战斗机制、技能、怪物、Boss、节奏与体验设计稿。"
-    },
-    {
-      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/数值策划组-numerical-planning/skills/数值策划组工作流-numerical-planning-manager/SKILL.md",
-      "itemType": "skill",
-      "name": "数值策划组工作流-numerical-planning-manager",
-      "subProjectPath": null,
-      "disciplines": ["策划"],
-      "domains": ["数值"],
-      "enabled": true,
-      "displayName": "数值策划工作流",
-      "description": "数值策划组工作流，处理成长曲线、资源产出消耗、掉落、成本、平衡与模型。"
-    },
-    {
-      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/数据分析组-data-analysis/skills/数据分析组工作流-data-analysis-manager/SKILL.md",
-      "itemType": "skill",
-      "name": "数据分析组工作流-data-analysis-manager",
-      "subProjectPath": null,
-      "disciplines": ["策划"],
-      "domains": ["数据"],
-      "enabled": true,
-      "displayName": "数据分析工作流",
-      "description": "数据分析组工作流，处理埋点方案、指标定义、漏斗、看板、实验与复盘。"
-    },
-    {
-      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/系统策划组-system-planning/skills/交互原型制作工作流-meka-prototype-manager/SKILL.md",
-      "itemType": "skill",
-      "name": "交互原型制作工作流-meka-prototype-manager",
-      "subProjectPath": null,
-      "disciplines": ["策划"],
-      "domains": ["系统"],
-      "enabled": true,
-      "displayName": "交互原型制作",
-      "description": "系统策划组在 Meka Design 中制作可交互玩法原型的执行入口。"
-    },
-    {
-      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/系统策划组-system-planning/skills/系统功能案生成工作流-system-proposal-manager/SKILL.md",
-      "itemType": "skill",
-      "name": "系统功能案生成工作流-system-proposal-manager",
-      "subProjectPath": null,
-      "disciplines": ["策划"],
-      "domains": ["系统"],
-      "enabled": true,
-      "displayName": "系统功能案生成",
-      "description": "系统策划组功能案工作流，产出系统功能案草案、来源映射与 UI 产物建议。"
-    },
-    {
-      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/系统策划组-system-planning/skills/系统策划组工作流-system-planning-manager/SKILL.md",
-      "itemType": "skill",
-      "name": "系统策划组工作流-system-planning-manager",
-      "subProjectPath": null,
-      "disciplines": ["策划"],
-      "domains": ["系统"],
-      "enabled": true,
-      "displayName": "系统策划工作流",
-      "description": "系统策划组工作流，处理系统功能、父系统规则、UI 流程与模块级视觉资产。"
+      "name": "saga2-feature-progress-estimator",
+      "contentFingerprint": "89192b763a2ab361d2b62df47cc46f4abed2dc9ef8685ed9dc978faf899170f8",
+      "subProjectPath": "saga2_pm",
+      "displayName": "功能进度评估",
+      "description": "用统一标准估算 SAGA2 功能开发交付进度。适用于 PM 看板、P4/Git 双仓探测、SAGA 提交单命中、版本功能进度评估、判断功能是否具备交给策划验收的开发证据。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/artist-Environment/SKILL.md",
       "itemType": "skill",
-      "name": "artist-Environment",
-      "subProjectPath": null,
-      "disciplines": ["美术"],
+      "disciplines": [
+        "美术"
+      ],
       "domains": [],
       "enabled": true,
+      "name": "artist-environment",
+      "contentFingerprint": "ab3d317440df28fdd14f5a8766ce3de8f26555f55acc50d8b50880f647242a25",
+      "subProjectPath": "saga2_unity",
       "displayName": "环境美术",
-      "description": "环境美术资源与制作规范。"
+      "description": "Saga2 美术场景资源目录说明。用于查找、整理和修改 Assets/Art/Environment 下的场景、地形、场景模型、材质、贴图、预制体和 Unity 场景资源。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/artist-FX/SKILL.md",
       "itemType": "skill",
-      "name": "artist-FX",
-      "subProjectPath": null,
-      "disciplines": ["美术"],
+      "disciplines": [
+        "美术"
+      ],
       "domains": [],
       "enabled": true,
+      "name": "artist-fx",
+      "contentFingerprint": "bc77c0f7760c1f4e745a7de658dc1c053ccf103c788d6e7377fa970f62997760",
+      "subProjectPath": "saga2_unity",
       "displayName": "特效美术",
-      "description": "特效美术资源与制作规范。"
+      "description": "Saga2 美术特效资源目录说明。用于查找、整理和修改 Assets/Art/FX 下的特效模型、贴图、材质、动画、控制器和 FX 预制体。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/artist-Model/SKILL.md",
       "itemType": "skill",
-      "name": "artist-Model",
-      "subProjectPath": null,
-      "disciplines": ["美术"],
+      "disciplines": [
+        "美术"
+      ],
       "domains": [],
       "enabled": true,
+      "name": "artist-model",
+      "contentFingerprint": "20a2e64d0462a5625734a07242697a6d4250a988c4f7d5b7ace4c42f431ad451",
+      "subProjectPath": "saga2_unity",
       "displayName": "模型美术",
-      "description": "角色与物体模型美术资源与规范。"
-    },
-    {
-      "sourcePath": "saga2_unity/.agents/skills/artist-UI/SKILL.md",
-      "itemType": "skill",
-      "name": "artist-UI",
-      "subProjectPath": null,
-      "disciplines": ["美术"],
-      "domains": [],
-      "enabled": true,
-      "displayName": "UI美术",
-      "description": "UI 美术资源与制作规范。"
+      "description": "Saga2 美术模型资源目录说明。用于查找、整理和修改 Assets/Art/Models 下的角色、怪物、头发、头饰、武器、家园模型、公共模型及其动画、材质和贴图。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/artist-shader/SKILL.md",
       "itemType": "skill",
-      "name": "artist-shader",
-      "subProjectPath": null,
-      "disciplines": ["美术", "程序"],
+      "disciplines": [
+        "美术",
+        "程序"
+      ],
       "domains": [],
       "enabled": true,
+      "name": "artist-shader",
+      "contentFingerprint": "8eae4d0e338a1a608bfdfdd956be9acdda5cf7f0ce025af5bb8851ff664765de",
+      "subProjectPath": "saga2_unity",
       "displayName": "Shader美术",
-      "description": "Shader 与材质美术资源及规范。"
+      "description": "Saga2 美术 Shader 资源目录说明。用于查找、整理和修改 Assets/Art/Shaders 下的 Shader、HLSL 公共代码、LUT 和 Shader 辅助纹理，并定位相关 TechArt 或场景局部 Shader。"
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/artist-UI/SKILL.md",
+      "itemType": "skill",
+      "disciplines": [
+        "美术"
+      ],
+      "domains": [],
+      "enabled": true,
+      "name": "artist-ui",
+      "contentFingerprint": "8b8f82dc5c4dd992750dd38f58343bd03c282c91b83cf4ed4df0b0cf5af65ed2",
+      "subProjectPath": "saga2_unity",
+      "displayName": "UI美术",
+      "description": "Saga2 美术 UI 资源目录说明。用于查找、整理和修改 Assets/Art/UI 下的 UI 预制体、图集、图片、字体、动画、材质以及各功能界面资源。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/doc-features-template/SKILL.md",
       "itemType": "skill",
-      "name": "doc-features-template",
-      "subProjectPath": null,
-      "disciplines": ["程序"],
-      "domains": [],
+      "disciplines": [
+        "程序"
+      ],
+      "domains": [
+        "工程基建"
+      ],
       "enabled": true,
+      "name": "doc-features-template",
+      "contentFingerprint": "02626908de062f53ae699a8465bd97f20b3e1cd2fd6d9766cf859522f44935ed",
+      "subProjectPath": "saga2_unity",
       "displayName": "功能文档模板",
-      "description": "功能代码 / 文档生成模板与示例（含「角色技能释放」完整示例）。"
+      "description": "提供功能设计、文档模板与示例。当需要生成功能逻辑代码、写功能说明文档、或按「功能概述与业务逻辑、提示词约定、配置、协议、数据、资源、类设计、验收节点」梳理现有功能时，使用本技能模板遵循脚本调用层级 Game→(Fun/Config/Data); Fun→(Config/Data)。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/doc-project/SKILL.md",
       "itemType": "skill",
-      "name": "doc-project",
-      "subProjectPath": null,
-      "disciplines": ["程序"],
-      "domains": [],
+      "disciplines": [
+        "程序"
+      ],
+      "domains": [
+        "工程基建"
+      ],
       "enabled": true,
+      "name": "doc-project",
+      "contentFingerprint": "9930b90f565eef7d35f326d04c51422640783d18c616ba1499ed5f88588a684c",
+      "subProjectPath": "saga2_unity",
       "displayName": "项目架构总览",
-      "description": "项目整体结构与根目录说明，子模块细节指引对应技能。"
+      "description": "描述整体目录划分与文档索引。查阅本文档当需要：了解项目结构（脚本架构、美术资源、各模块位置）"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/doc-proto/SKILL.md",
       "itemType": "skill",
-      "name": "doc-proto",
-      "subProjectPath": null,
-      "disciplines": ["程序"],
-      "domains": [],
+      "disciplines": [
+        "程序"
+      ],
+      "domains": [
+        "数据"
+      ],
       "enabled": true,
+      "name": "doc-proto",
+      "contentFingerprint": "0e7f34f2d55f2789b8e0395f59106b23c5eaf85e3467b6b49b9c3e6c05a13c0c",
+      "subProjectPath": "saga2_unity",
       "displayName": "Protobuf协议总览",
-      "description": "Protobuf 协议源文件与热更层生成代码的位置与约定。"
+      "description": "描述 Tool/protoc 下 .proto 源文件与 Assets/Scripts/Hot/Proto 生成代码、ProtoMgr 注册。查阅本文档当需要：增改协议、对齐服务端 message、查找生成 C# 类型、MID/AID 与推送定义。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/editor-jenkins-install/SKILL.md",
       "itemType": "skill",
-      "name": "editor-jenkins-install",
-      "subProjectPath": null,
-      "disciplines": ["程序"],
-      "domains": ["工程基建"],
+      "disciplines": [
+        "程序"
+      ],
+      "domains": [
+        "工程基建"
+      ],
       "enabled": true,
+      "name": "editor-jenkins-install",
+      "contentFingerprint": "791afac4a45aa013393fffd632e2b65d6e3e7e05789cca7444175d48b8b7a1bd",
+      "subProjectPath": "saga2_unity",
       "displayName": "Jenkins安装",
-      "description": "Jenkins 服务安装流程（JDK 21 等）。"
+      "description": "说明 Saga2 Unity 项目的 Jenkins Windows 节点安装与基础配置流程。查阅本文档当需要：安装 Jenkins、安装 JDK 21、解锁 Jenkins、安装 Jenkins 插件、配置构建保留数量、创建 LaunchUnityGame 计划任务、安装华为云 OBS Browser+ 或 obsutil。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/editor-jenkins-pipeline/SKILL.md",
       "itemType": "skill",
-      "name": "editor-jenkins-pipeline",
-      "subProjectPath": null,
-      "disciplines": ["程序"],
-      "domains": ["工程基建"],
+      "disciplines": [
+        "程序"
+      ],
+      "domains": [
+        "工程基建"
+      ],
       "enabled": true,
+      "name": "editor-jenkins-pipeline",
+      "contentFingerprint": "6c6744498aed5bc2092338199b211cca370859241d74a5b9dc0f8d023e140ac1",
+      "subProjectPath": "saga2_unity",
       "displayName": "Jenkins流水线",
-      "description": "项目 Jenkins 工作流与脚本职责总览。"
+      "description": "说明 Saga2 Unity 项目的 Jenkins CI 流水线、Tool/jenkins Jenkins 配置、脚本职责、环境变量和 Unity Editor 构建入口。查阅本文档当需要：理解或修改 asset/build/test/code 流水线、排查 Jenkins 构建、调整 P4 同步、Unity 打包、压缩、npkg 上传或启动测试脚本。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/editor-skill-editor-effect/SKILL.md",
       "itemType": "skill",
-      "name": "editor-skill-editor-effect",
-      "subProjectPath": null,
-      "disciplines": ["程序", "策划"],
-      "domains": ["战斗"],
+      "disciplines": [
+        "程序",
+        "策划"
+      ],
+      "domains": [
+        "战斗"
+      ],
       "enabled": true,
+      "name": "editor-skill-editor-effect",
+      "contentFingerprint": "15a6768c74ad08718a8dd7fc9e9a3380226d16350cc4104340a54b12a8eee97f",
+      "subProjectPath": "saga2_unity",
       "displayName": "技能特效编辑",
-      "description": "特效（EffectData）系统，资产位于 SkillEditor Effects 目录，被模块 effects 字段引用。"
+      "description": "Saga2 特效（EffectData）系统 — 配置/查询 EffectData 资产、effect_type（普通/Buff/弹道）、挂点（CP_x/WP_x）、同步模式、弹道类型、effect_key 唯一性校验、FX 预制体定位。当用户提到 \"特效\"、\"FX\"、\"EffectData\"、\"挂点\"、\"弹道\"、\"effect_key\"、\"FX_XXX\" 时使用。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/editor-skill-editor-module/SKILL.md",
       "itemType": "skill",
-      "name": "editor-skill-editor-module",
-      "subProjectPath": null,
-      "disciplines": ["程序", "策划"],
-      "domains": ["战斗"],
+      "disciplines": [
+        "程序",
+        "策划"
+      ],
+      "domains": [
+        "战斗"
+      ],
       "enabled": true,
+      "name": "editor-skill-editor-module",
+      "contentFingerprint": "a0f98bbd2190b9c2277f4ce326cf3e12e4d4428ea845ac4c1dd43ed3345a5372",
+      "subProjectPath": "saga2_unity",
       "displayName": "技能模块编辑",
-      "description": "技能模块（SkillModuleData）的配置、查询、增删与 JSON 导出。"
+      "description": "Saga2 技能模块系统 — 模块节点 CRUD、连线、技能模块图导出 JSON、time/target/data/dataCondition 编码规则、模块行为/目标/条件类型字典。当用户提到 \"配置技能\"、\"编写效果\"、\"模块\"、\"模块ID\"、\"模块节点\"、\"模块连线\"、\"导出 JSON\"、\"@N 技能参数\"、\"模块编辑器\"、\"当前技能\"、\"查询技能\"、\"查看模块\"、\"当前模块\" 时使用。查询当前编辑器状态也走本 skill（get_current_context），不要用 execute_code 替代。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/editor-skill-editor-timeline/SKILL.md",
       "itemType": "skill",
-      "name": "editor-skill-editor-timeline",
-      "subProjectPath": null,
-      "disciplines": ["程序", "策划"],
-      "domains": ["战斗"],
+      "disciplines": [
+        "程序",
+        "策划"
+      ],
+      "domains": [
+        "战斗"
+      ],
       "enabled": true,
+      "name": "editor-skill-editor-timeline",
+      "contentFingerprint": "bfb2d43772a5b1b0c607298ff0cce4f84dd35dfde9c715436e4c9203cad2e8a0",
+      "subProjectPath": "saga2_unity",
       "displayName": "技能Timeline编辑",
-      "description": "技能编辑器 Timeline：轨道层级、TimelineItem、ModelGroup 子组的增删改查。"
+      "description": "Saga2 技能 Timeline 系统 — 创建/修改 Timeline 轨道、TimelineItem（动画/特效/启动模块/技能状态/位移等）、模型组（ModelGroup）下的动画子组与特效子组、AddModel 事件桥接模块系统。当用户提到 \"Timeline\"、\"轨道\"、\"动画\"、\"模型组\"、\"AddModel\"、\"启动模块\"、\"配置动画\" 时使用。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/editor-unity-mcp/SKILL.md",
       "itemType": "skill",
-      "name": "editor-unity-mcp",
-      "subProjectPath": null,
-      "disciplines": ["程序"],
-      "domains": ["工程基建"],
+      "disciplines": [
+        "程序"
+      ],
+      "domains": [
+        "工程基建"
+      ],
       "enabled": true,
+      "name": "editor-unity-mcp",
+      "contentFingerprint": "260d83c813f897749b1b807aba889fa0d7bae5f63f5becbdaeced35cc64d8d29",
+      "subProjectPath": "saga2_unity",
       "displayName": "操控Unity",
       "description": "unity-editor MCP 工具参考与使用指南，40+ 工具可编程控制 Unity 编辑器。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/saga2-project-battle-designer/SKILL.md",
       "itemType": "skill",
+      "disciplines": [
+        "策划",
+        "程序"
+      ],
+      "domains": [
+        "战斗"
+      ],
+      "enabled": false,
       "name": "saga2-project-battle-designer",
-      "subProjectPath": null,
-      "disciplines": ["策划", "程序"],
-      "domains": ["战斗"],
-      "enabled": true,
+      "contentFingerprint": "81ca85c62a2e1a32848fb20d84a2d466a372b6ca69b4813eb1493bc9299f7b38",
+      "subProjectPath": "saga2_unity",
       "displayName": "战斗设计入口",
-      "description": "battle 代码结构、模块配置与 Perforce 流程的项目内入口（工程侧），沉淀「更新 / 导出 / 记成 skill」约定。"
-    },
-    {
-      "sourcePath": "saga2_unity/.agents/skills/script-battle/SKILL.md",
-      "itemType": "skill",
-      "name": "script-battle",
-      "subProjectPath": null,
-      "disciplines": ["程序"],
-      "domains": [],
-      "enabled": true,
-      "displayName": "战斗代码",
-      "description": "Battle 模块代码结构（GameBattle.asmdef，命名空间 Hot.Game.Battle）。"
+      "description": "Saga2 战斗设计与项目内 battle 工作流中枢。查阅本文档当需要：battle 设计交接、程序员向 Markdown、battle 或 UI 导出包、定位或修改 Assets/Scripts/Hot/Game/Battle、SkillEditor 或 Module 编辑器、按技能 ID 配置效果或重建 skill_entry_model_editor.json、Perforce 编辑/新增/同步流程，或当用户说“更新”“导出”“记成skill”“复盘”“battle-designer”“配置效果”“编写效果”、【还原项目】或明确说 `【导出模块表】` 并希望沉淀 battle 相关项目约定。",
+      "notes": "工程侧旧镜像；战斗设计以 saga2_design 中的同名 Skill 为权威来源。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/script-config/SKILL.md",
       "itemType": "skill",
-      "name": "script-config",
-      "subProjectPath": null,
-      "disciplines": ["程序"],
-      "domains": [],
+      "disciplines": [
+        "程序"
+      ],
+      "domains": [
+        "数据"
+      ],
       "enabled": true,
+      "name": "script-config",
+      "contentFingerprint": "0d68d543a0379eb9707899f8ec7b31380e6ebffce4a1d70ab5498b6316e29627",
+      "subProjectPath": "saga2_unity",
       "displayName": "配置代码",
-      "description": "Config 模块代码结构（Json / Luban 生成代码与 JsonConf 数据）。"
+      "description": "描述 Assets/Scripts/Hot/Config 下的配置与表结构代码。查阅本文档当需要：查找战斗动画/特效/技能轴、主线关卡、家园家具、公会钓鱼/挖矿、道具、职业、怪物等配置或 Luban 生成脚本。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/script-data/SKILL.md",
       "itemType": "skill",
-      "name": "script-data",
-      "subProjectPath": null,
-      "disciplines": ["程序"],
-      "domains": [],
+      "disciplines": [
+        "程序"
+      ],
+      "domains": [
+        "数据"
+      ],
       "enabled": true,
+      "name": "script-data",
+      "contentFingerprint": "45b0a6dcff09a082379590a3624db3232bbd8e4f896d834f9ba4fccb3339b846",
+      "subProjectPath": "saga2_unity",
       "displayName": "数据层代码",
-      "description": "Hot.Data 命名空间下静态 / 运行时数据持有方式。"
+      "description": "描述 Assets/Scripts/Hot/Data 下运行时数据层：角色、背包、战斗、家园、主线进度、公会钓鱼、聊天、登录态等内存快照。查阅本文档当需要：增改客户端持有的服务端同步数据、与 Config 区分、Data 与 Game/Fun 调用边界。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/script-fun/SKILL.md",
       "itemType": "skill",
+      "disciplines": [
+        "程序"
+      ],
+      "domains": [],
+      "enabled": true,
       "name": "script-fun",
-      "subProjectPath": null,
-      "disciplines": ["程序"],
-      "domains": [],
-      "enabled": true,
+      "contentFingerprint": "f6aa1c98bf4aceaf3b5578906cd4df7489595753fd457baeafd474d9d63ec347",
+      "subProjectPath": "saga2_unity",
       "displayName": "功能库代码",
-      "description": "Hot.Fun 模块代码结构，调用层级 Game→Fun、Fun→Config/Data。"
+      "description": "描述 Assets/Scripts/Hot/Fun 下的通用功能库与 Proto 协议收发封装。查阅本文档当需要：定义项目通用/共用函数，或修改 ProtoFun、ProtoGameXxx、ProtoGameZone、ProtoChatBase、ProtoPushBase 等收发封装。"
     },
     {
-      "sourcePath": "saga2_unity/.agents/skills/script-game/SKILL.md",
+      "sourcePath": "saga2_unity/.agents/skills/script-game-battle/SKILL.md",
       "itemType": "skill",
-      "name": "script-game",
-      "subProjectPath": null,
-      "disciplines": ["程序"],
-      "domains": [],
+      "disciplines": [
+        "程序"
+      ],
+      "domains": [
+        "战斗"
+      ],
       "enabled": true,
-      "displayName": "游戏业务代码",
-      "description": "Hot/Game 业务结构与全局编排。"
+      "name": "script-game-battle",
+      "contentFingerprint": "62714806f0024a407187f5b5e811b23172d22ddd803ee555f8f8263c8b010e02",
+      "subProjectPath": "saga2_unity",
+      "displayName": "战斗业务代码",
+      "description": "描述 Assets/Scripts/Hot/Game/Battle 下的战斗专属房间编排、战报收发与技能预警表现。查阅本文档当需要：定位或修改主线/副本/爬塔/梦魇战斗进房、战斗日志解析与上报、禁行区、技能预警及其 Shader 表现。"
     },
     {
-      "sourcePath": "saga2_unity/.agents/skills/script-home/SKILL.md",
+      "sourcePath": "saga2_unity/.agents/skills/script-game-game/SKILL.md",
       "itemType": "skill",
-      "name": "script-home",
-      "subProjectPath": null,
-      "disciplines": ["程序"],
+      "disciplines": [
+        "程序"
+      ],
       "domains": [],
       "enabled": true,
-      "displayName": "家园代码",
-      "description": "Home 模块代码结构。"
+      "name": "script-game-game",
+      "contentFingerprint": "693d977a775f9d170387c777518b2769a23a44e3f20054f387bfa943cf096450",
+      "subProjectPath": "saga2_unity",
+      "displayName": "游戏业务编排",
+      "description": "描述 Assets/Scripts/Hot/Game/Game 下的游戏业务层代码。查阅本文档当需要：定位游戏入口、登录、场景切换、聊天、GM、错误上报或跨模块业务编排。"
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/script-game-home/SKILL.md",
+      "itemType": "skill",
+      "disciplines": [
+        "程序"
+      ],
+      "domains": [
+        "系统"
+      ],
+      "enabled": true,
+      "name": "script-game-home",
+      "contentFingerprint": "147f607aba6aaecf89b705247ec571ec55d0641f7a5af92cdc12ea1bf9031587",
+      "subProjectPath": "saga2_unity",
+      "displayName": "家园业务代码",
+      "description": "描述 Assets/Scripts/Hot/Game/Home 下的个人家园房间、场景与协议适配。查阅本文档当需要：定位家园进退房、家园场景日志、家园数据到建造玩法的适配。"
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/script-game-play-build/SKILL.md",
+      "itemType": "skill",
+      "disciplines": [
+        "程序"
+      ],
+      "domains": [
+        "系统"
+      ],
+      "enabled": true,
+      "name": "script-game-play-build",
+      "contentFingerprint": "94c5095eaa0012da70382fd43445878589b5b23b739c9a6ed56b390d4f61de08",
+      "subProjectPath": "saga2_unity",
+      "displayName": "建造玩法代码",
+      "description": "描述 Assets/Scripts/Hot/Game/Play/Build 下的可复用建造玩法代码。查阅本文档当需要：修改家园或公会家园的家具/地板/方块建造、建造网格与占格判定、预览与射线命中、方块连通性、建造表面或地板 GPU 渲染时使用。"
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/script-game-play-capture/SKILL.md",
+      "itemType": "skill",
+      "disciplines": [
+        "程序"
+      ],
+      "domains": [
+        "系统"
+      ],
+      "enabled": true,
+      "name": "script-game-play-capture",
+      "contentFingerprint": "b05f94d6ff881a1db6a033445c41b7c1e27fa4498430b9c92d6bbc61ad69bfd0",
+      "subProjectPath": "saga2_unity",
+      "displayName": "捕获玩法代码",
+      "description": "描述 Assets/Scripts/Hot/Game/Play/Capture 下的可复用捕获玩法代码。查阅本文档当需要：修改捕获瞄准/投射、肩后相机、本地 MIMOO 目标、捕获背包提交或公会家园捕获接入时使用。"
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/script-game-play-fishing/SKILL.md",
+      "itemType": "skill",
+      "disciplines": [
+        "程序"
+      ],
+      "domains": [
+        "系统"
+      ],
+      "enabled": true,
+      "name": "script-game-play-fishing",
+      "contentFingerprint": "6d756b91ff6cb8d265f2234f4ccc3852bc7d5838e01491a628aa948c9a7742e2",
+      "subProjectPath": "saga2_unity",
+      "displayName": "钓鱼玩法代码",
+      "description": "描述 Assets/Scripts/Hot/Game/Play/Fishing 下的可复用钓鱼玩法代码。查阅本文档当需要：修改钓鱼状态机、抛竿/收线表现、钓鱼输入、鱼圈与水域场景、角色钓鱼表现、钓鱼配置或场景日志收发时使用。"
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/script-game-play-mining/SKILL.md",
+      "itemType": "skill",
+      "disciplines": [
+        "程序"
+      ],
+      "domains": [
+        "系统"
+      ],
+      "enabled": true,
+      "name": "script-game-play-mining",
+      "contentFingerprint": "c5277a1717b799ce224d975c32d1372ab181c152e447be4af0216c7e53baf6a8",
+      "subProjectPath": "saga2_unity",
+      "displayName": "挖矿玩法代码",
+      "description": "描述 Assets/Scripts/Hot/Game/Play/Mining 下的可复用挖矿玩法代码。查阅本文档当需要：修改挖矿输入、矿石场景、角色近矿检测、判定会话、挖矿日志或公会家园挖矿接入时使用。"
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/script-game-room/SKILL.md",
+      "itemType": "skill",
+      "disciplines": [
+        "程序"
+      ],
+      "domains": [],
+      "enabled": true,
+      "name": "script-game-room",
+      "contentFingerprint": "8222ca3845139d50dd4662ba512b98f7f22ca3ef328aa5dc7c3a47f5c9cc2a4a",
+      "subProjectPath": "saga2_unity",
+      "displayName": "房间基础代码",
+      "description": "描述 Assets/Scripts/Hot/Game/Room 下可复用的房间、场景、角色、相机、特效与日志基础代码。查阅本文档当需要：修改战斗、家园或公会共用的角色控制/输入/移动/技能、房间生命周期、场景角色调度、相机、特效、房间战报或建造/钓鱼/挖矿/捕获玩法扩展基础能力。"
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/script-game-ui/SKILL.md",
+      "itemType": "skill",
+      "disciplines": [
+        "程序"
+      ],
+      "domains": [
+        "系统"
+      ],
+      "enabled": true,
+      "name": "script-game-ui",
+      "contentFingerprint": "264d894f69b5462c30a85f10c2cac02f8435cbb10cbd788df9e773503eb2f296",
+      "subProjectPath": "saga2_unity",
+      "displayName": "UI业务代码",
+      "description": "描述项目中 UI 框架、通用组件与业务界面的代码结构。查阅本文档当需要：查找或修改 UI 框架（Attribute/Core/Module）、通用 UI 组件或游戏业务界面（含主线、公会钓鱼/挖矿/捕获）。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/script-test/SKILL.md",
       "itemType": "skill",
-      "name": "script-test",
-      "subProjectPath": null,
-      "disciplines": ["QA", "程序"],
-      "domains": [],
+      "disciplines": [
+        "QA",
+        "程序"
+      ],
+      "domains": [
+        "工程基建"
+      ],
       "enabled": true,
+      "name": "script-test",
+      "contentFingerprint": "3b808767048c457bb5c6c5abdd282b610be1f96a5819144c04585abf8cee11c5",
+      "subProjectPath": "saga2_unity",
       "displayName": "测试配置",
-      "description": "客户端自动化测试配置（TestConf）的结构、执行语义与维护规则。"
+      "description": "描述 Saga2 客户端 TestConf 测试配置与 GameTest/UITest 自动化测试规则。查阅本文档当需要：阅读、编写、修改或排查 Assets/Scripts/Hot/Config/TestConf 下的 Luban 测试 JSON，处理测试面板、全量测试、测试步骤关键词、测试链路跳转、Owners 上报或测试配置编译。"
     },
     {
-      "sourcePath": "saga2_unity/.agents/skills/script-ui/SKILL.md",
+      "sourcePath": "saga2_unity/.agents/skills/tool-config-script-create/SKILL.md",
       "itemType": "skill",
-      "name": "script-ui",
-      "subProjectPath": null,
-      "disciplines": ["程序"],
-      "domains": [],
+      "disciplines": [
+        "程序"
+      ],
+      "domains": [
+        "数据"
+      ],
       "enabled": true,
-      "displayName": "UI代码",
-      "description": "UI 相关代码结构（UI 框架、通用组件、游戏业务 UI）。"
+      "name": "tool-config-script-create",
+      "contentFingerprint": "5067a49451838f8774557c1795f9144e96fa9bc8c5cefee61538c3487b0dffde",
+      "subProjectPath": "saga2_unity",
+      "displayName": "配置解析代码生成",
+      "description": "为 Saga2 新增或更新 Luban JSON 配置表的 C# 解析代码。用户提到“创建解析 JSON 配置表”“生成配置表 C# 代码”“按 bean 生成 Luban 表”“新增 saga2_json 配置表”时使用；按表名核对 ../saga2_json 与 saga2_design 的同名 bean，并直接参照现有 Luban C# 表结构创建代码"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/tool-p4-submit/SKILL.md",
       "itemType": "skill",
-      "name": "tool-p4-submit",
-      "subProjectPath": null,
-      "disciplines": ["通用"],
-      "domains": ["工程基建"],
+      "disciplines": [
+        "通用"
+      ],
+      "domains": [
+        "工程基建"
+      ],
       "enabled": true,
+      "name": "tool-p4-submit",
+      "contentFingerprint": "85cce7e2debe8be12a99a53ab343e4654e8b6e728ffa4f2bae1dee82961a7fcc",
+      "subProjectPath": "saga2_unity",
       "displayName": "P4提交",
-      "description": "p4 submit 前必填项（SAGA 编号、版本、职能）与提交流程。"
+      "description": "Saga2 的 Perforce 提交流程。用户要求执行 p4 submit、创建或校验 changelist 描述时使用；默认以中文提交说明，并以 UTF-8 安全写入。"
     },
     {
-      "sourcePath": "saga2_design/planning/01-治理规范-governance/skills/策划组统一工作流-planning-governance-manager/SKILL.md",
+      "sourcePath": "saga2_unity/.agents/skills/tool-script-router/SKILL.md",
       "itemType": "skill",
-      "name": "策划组统一工作流-planning-governance-manager",
-      "subProjectPath": null,
-      "disciplines": ["策划"],
-      "domains": ["治理"],
+      "disciplines": [
+        "程序"
+      ],
+      "domains": [
+        "工程基建"
+      ],
       "enabled": true,
-      "displayName": "策划治理调度",
-      "description": "策划组统一工作流入口，经治理层将文档路由到正确的职能组（系统 / IP / 战斗 / 关卡 / 数值 / 数据分析）。"
+      "name": "tool-script-router",
+      "contentFingerprint": "66cef96f7736201926caa5c599173be609ac09411c1bf8f74996552ed63433e1",
+      "subProjectPath": "saga2_unity",
+      "displayName": "脚本技能路由",
+      "description": "为Assets/Scripts/Hot功能代码的生成或修改路由到现有项目技能。先使用本技能定位并完整查阅所有命中的 SKILL.md，再查找现有函数与实现。"
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/tool-skill-refresh/SKILL.md",
+      "itemType": "skill",
+      "disciplines": [
+        "程序"
+      ],
+      "domains": [
+        "工程基建"
+      ],
+      "enabled": true,
+      "name": "tool-skill-refresh",
+      "contentFingerprint": "4ba311a5b0335e7590430afd370d0ec12675409974c40ef26ce71aececabc35f",
+      "subProjectPath": "saga2_unity",
+      "displayName": "脚本技能刷新",
+      "description": "用于更新 .agents/skills 下的技能内容。当前支持刷新所有 script-* 技能；当 Hot 层代码、目录、程序集或模块职责变更，需要同步技能说明时查阅本文档。"
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/tool-ui-prefab-create/SKILL.md",
+      "itemType": "skill",
+      "disciplines": [
+        "程序",
+        "美术"
+      ],
+      "domains": [
+        "系统"
+      ],
+      "enabled": true,
+      "name": "tool-ui-prefab-create",
+      "contentFingerprint": "5f55ce9570c18875b8acc19c9d5d54bf6340dc53a3d0aa481ddaca8ba9c2bcac",
+      "subProjectPath": "saga2_unity",
+      "displayName": "UI预制体制作",
+      "description": "创建、修改、整理或审查 Saga2 Unity UI Prefab预制体时使用。适用于 Assets/Art/UI 下的功能界面、平台变体、动态子预制体、UI 节点层级、Image/Button/TextMeshPro 组件、资源引用和命名规范。"
+    },
+    {
+      "sourcePath": "saga2_unity/AGENTS.md",
+      "itemType": "agents-md",
+      "disciplines": [
+        "程序"
+      ],
+      "domains": [
+        "治理"
+      ],
+      "enabled": true,
+      "name": "AGENTS.md",
+      "contentFingerprint": "1f0301cf98db5277f5aea417e0fd847b285c11f5468a2f72960692b5538af73b",
+      "subProjectPath": "saga2_unity",
+      "displayName": "Unity工程Agent入口",
+      "description": "Unity 客户端 Agent 入口，含冷热更分层、调用层级、P4 流程等硬规则。"
+    },
+    {
+      "sourcePath": "saga2_unity/CLAUDE.md",
+      "itemType": "agents-md",
+      "disciplines": [
+        "程序"
+      ],
+      "domains": [
+        "治理"
+      ],
+      "enabled": false,
+      "name": "CLAUDE.md",
+      "contentFingerprint": "8ede080c682a7a00eb9af7603631093cdc35082ab1a34d25cc5c1e65d7a4b769",
+      "subProjectPath": "saga2_unity",
+      "displayName": "Unity工程Agent入口(CLAUDE)",
+      "description": "Unity 客户端 Agent 入口的 CLAUDE.md 别名，内容同 saga2_unity/AGENTS.md。",
+      "notes": "与 saga2_unity/AGENTS.md 内容重复，保留发现记录但不注入角色上下文。"
     }
   ],
   "roleDefaults": {

@@ -426,9 +426,9 @@ describe('Meka project and role create states', () => {
     expect(
       (screen.getByRole('button', { name: 'logic.confirm.cancel' }) as HTMLButtonElement).disabled,
     ).toBe(false);
-    expect((screen.getByRole('button', { name: 'meka.saveRole' }) as HTMLButtonElement).disabled).toBe(
-      false,
-    );
+    expect(
+      (screen.getByRole('button', { name: 'meka.saveRole' }) as HTMLButtonElement).disabled,
+    ).toBe(false);
     expect(roleName.disabled).toBe(false);
     fireEvent.change(roleName, { target: { value: 'Edited development' } });
     fireEvent.click(screen.getByRole('button', { name: 'meka.saveRole' }));
@@ -543,6 +543,7 @@ describe('Meka project and role create states', () => {
     const catalog: MekaSkillCatalogEntry[] = [
       {
         skillId: 'skill-program',
+        displayName: '程序技能',
         category: '程序',
         subCategory: '战斗',
         description: 'program skill',
@@ -550,6 +551,7 @@ describe('Meka project and role create states', () => {
       },
       {
         skillId: 'skill-design',
+        displayName: '策划技能',
         category: '策划',
         subCategory: '系统',
         description: 'design skill',
@@ -561,6 +563,8 @@ describe('Meka project and role create states', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Existing role' }));
     await screen.findByDisplayValue('New role');
+    expect(screen.getByText('程序技能')).toBeTruthy();
+    expect(screen.queryByText('skill-program')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '程序' }));
     fireEvent.click(screen.getByRole('button', { name: 'meka.saveRole' }));
 

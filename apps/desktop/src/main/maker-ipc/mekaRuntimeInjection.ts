@@ -98,12 +98,7 @@ export async function applyMekaRuntimeConfig(
   // Historical four-role Meka sessions intentionally retain their legacy role
   // column. Resolve it against today's bundled SAGA2 roles without rewriting DB.
   if (hydratedPersistedSession && projectId === 'saga2' && !roleId) {
-    roleId =
-      legacyRole === 'planner'
-        ? 'system-overview'
-        : legacyRole === 'tester'
-          ? 'system-debug'
-          : 'general-development';
+    roleId = 'general-development';
     opts.mekaRoleId = roleId;
   }
   if (!projectId || !roleId) {

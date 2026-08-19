@@ -144,6 +144,28 @@ Meka 技能的远端事实只属于 MCPRouter：
 内置技能选择、`skillId` 和运行时投影保持不变。以后若增加角色绑定市场技能，必须保存
 渠道、远端资源 ID 和 release ID／版本约束，不得只保存可冲突的技能名称。
 
+SAGA2 当前只保留“通用开发”和“战斗开发”两个内置角色。通用开发通过
+`includeAllProjectMetadata` 自动选择项目当前全部有效元数据；战斗开发继续显式选择战斗
+相关 Skill，避免无关内容占用上下文。该选择机制只决定项目内标准 Skill 的运行时投影，
+不改变 Skill 内联格式，也不把市场技能自动加入角色。
+
+内置 Skill 使用稳定英文 `name` / `skillId` 作为运行时契约，并在标准 frontmatter 的
+`metadata.display-name` 中提供中文展示名；角色编辑器优先显示中文名，描述也使用中文，
+但保存与解析仍使用稳定 ID。SAGA2 战斗开发必须在角色 manifest 中显式选择
+`remote-operations`、`orca-coordination`、`saga2-overview`、`p4-operations` 和
+`safety-boundaries`，并显式启用 `mcp-router` / `project-agent`；不能只依赖项目默认项，
+否则编辑器状态无法表达服务器链路是否完整。项目默认项仍作为其他继承角色的兜底。
+
+战斗策划发现 Unity 现有模块不足、需要服务端核对或实现时，战斗开发角色必须通过已绑定的
+MCPR 远程项目进入服务器仓，读取该仓 `AGENTS.md` 并显式调用服务器仓项目 Skill
+`battle-designer-server-development`。该 Skill 只约束战斗策划发起的跨仓流程；普通服务端
+程序员不使用它，也不继承其中的独立分支要求。远端结果只有同时返回
+`serverWorkflow.skillName: battle-designer-server-development`、
+`serverWorkflow.skillLoaded: true`，并完整说明分支、代码证据、Excel、生成物、验证、运行时
+状态和剩余联调时才可消费。Skill 缺失、加载失败或回执不完整必须阻断；远程 Worker 创建或
+派发成功本身不代表服务器流程已执行。需要配置联动时，本地 SAGA2/P4 侧负责权威 Excel 与
+导出 JSON，远端服务器侧负责代码和契约证据，两侧未对齐前不得声称端到端完成。
+
 ## 6. 目标架构
 
 客户端分为四层：

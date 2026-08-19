@@ -1,6 +1,9 @@
 ---
-description: Safe Perforce workspace and changelist procedure
-purpose: Edit, reconcile, resolve, or submit authorized P4 content
+name: p4-operations
+description: 在授权的 Perforce 工作区中安全执行编辑、变更列表整理、冲突处理与提交前验证。
+metadata:
+  display-name: Perforce 操作
+  purpose: 管理授权的 Perforce 内容和变更列表
 ---
 # Perforce operations
 

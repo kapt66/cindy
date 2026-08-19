@@ -9,9 +9,60 @@ const fileBrowser = vi.hoisted(() => ({
 
 vi.mock('@cindy/file-browser-core', () => fileBrowser);
 
-import { discoverLocalMekaProjectMetadata, inferMekaSubProjectPath } from '../metadataScanner';
+import {
+  discoverLocalMekaProjectMetadata,
+  inferMekaSubProjectPath,
+  mergeDiscoveredMekaProjectMetadata,
+} from '../metadataScanner';
 
 describe('inferMekaSubProjectPath', () => {
+  it('preserves project annotations while refreshing discovered fields', () => {
+    const current = {
+      schemaVersion: 1 as const,
+      projectId: 'saga2',
+      basic: { displayName: 'SAGA2', path: 'saga2' },
+      metadata: [
+        {
+          sourcePath: 'skills/remote/SKILL.md',
+          itemType: 'skill' as const,
+          name: 'remote-old',
+          contentFingerprint: 'old',
+          subProjectPath: 'skills',
+          disciplines: ['程序'],
+          domains: ['工程基建'],
+          enabled: false,
+          displayName: '远程项目操作',
+          description: '人工维护的中文说明',
+          notes: '默认关闭',
+        },
+      ],
+    };
+
+    expect(
+      mergeDiscoveredMekaProjectMetadata(current, [
+        {
+          sourcePath: 'skills/remote/SKILL.md',
+          itemType: 'skill',
+          name: 'remote-new',
+          description: 'New English description',
+          contentFingerprint: 'new',
+          subProjectPath: 'skills',
+        },
+      ]).metadata,
+    ).toEqual([
+      expect.objectContaining({
+        name: 'remote-new',
+        contentFingerprint: 'new',
+        disciplines: ['程序'],
+        domains: ['工程基建'],
+        enabled: false,
+        displayName: '远程项目操作',
+        description: '人工维护的中文说明',
+        notes: '默认关闭',
+      }),
+    ]);
+  });
+
   it('uses the closest Perforce owner', () => {
     const files = ['.p4ignore', 'game/.p4ignore', 'game/client/.p4ignore', 'game/client/AGENTS.md'];
     expect(inferMekaSubProjectPath('game/client/AGENTS.md', files)).toBe('game/client');

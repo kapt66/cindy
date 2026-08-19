@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import {
   MEKA_GENERAL_DISCIPLINE,
+  RETIRED_BUILTIN_MEKA_ROLE_MAPPINGS,
   parseMekaEditableMetadata,
   type MekaProjectFile,
   type MekaProjectMetadataConfigItem,
@@ -360,6 +361,9 @@ export function normalizeMekaRoleManifest(
     ...(typeof input.useProjectDefaults === 'boolean'
       ? { useProjectDefaults: input.useProjectDefaults }
       : {}),
+    ...(typeof input.includeAllProjectMetadata === 'boolean'
+      ? { includeAllProjectMetadata: input.includeAllProjectMetadata }
+      : {}),
     ...(excludeDefaults ? { excludeDefaults } : {}),
   };
 }
@@ -491,9 +495,7 @@ function anchoredProjectFile(file: MekaProjectFile, projectRoot: string): MekaPr
   };
 }
 
-export async function readBundledRoleManifests(
-  projectId: string,
-): Promise<MekaRoleManifestFile[]> {
+export async function readBundledRoleManifests(projectId: string): Promise<MekaRoleManifestFile[]> {
   const root = bundledMekaRolesRoot();
   const entries = await readdir(root, { withFileTypes: true });
   const manifests: MekaRoleManifestFile[] = [];
@@ -512,12 +514,24 @@ function mergeBundledRoleFallbacks(
   bundledRoles: readonly MekaRoleManifestFile[],
 ): MekaProjectFile {
   if (bundledRoles.length === 0) return projectFile;
-  const projectRoles = new Map((projectFile.builtinRoles ?? []).map((role) => [role.id, role]));
-  const mergedRoles = bundledRoles.map((role) => projectRoles.get(role.id) ?? role);
-  const bundledIds = new Set(bundledRoles.map((role) => role.id));
-  mergedRoles.push(
-    ...(projectFile.builtinRoles ?? []).filter((role) => !bundledIds.has(role.id)),
+  const retiredRoleIds =
+    projectFile.projectId === 'saga2'
+      ? new Set(RETIRED_BUILTIN_MEKA_ROLE_MAPPINGS.map(([roleId]) => roleId))
+      : new Set<string>();
+  const retainedProjectRoles = (projectFile.builtinRoles ?? []).filter(
+    (role) => !retiredRoleIds.has(role.id),
   );
+  const projectRoles = new Map(retainedProjectRoles.map((role) => [role.id, role]));
+  const mergedRoles = bundledRoles.map((role) => {
+    const projectRole = projectRoles.get(role.id);
+    if (!projectRole) return role;
+    return projectRole.includeAllProjectMetadata === undefined &&
+      role.includeAllProjectMetadata !== undefined
+      ? { ...projectRole, includeAllProjectMetadata: role.includeAllProjectMetadata }
+      : projectRole;
+  });
+  const bundledIds = new Set(bundledRoles.map((role) => role.id));
+  mergedRoles.push(...retainedProjectRoles.filter((role) => !bundledIds.has(role.id)));
   return { ...projectFile, builtinRoles: mergedRoles };
 }
 
@@ -555,9 +569,7 @@ function projectFileNeedsIdentityRewrite(input: unknown, expectedProjectId: stri
   }
   return (
     Array.isArray(input.builtinRoles) &&
-    input.builtinRoles.some(
-      (role) => isRecord(role) && role.projectId !== expectedProjectId,
-    )
+    input.builtinRoles.some((role) => isRecord(role) && role.projectId !== expectedProjectId)
   );
 }
 

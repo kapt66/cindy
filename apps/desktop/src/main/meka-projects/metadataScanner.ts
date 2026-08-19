@@ -4,6 +4,7 @@ import path from 'node:path';
 import { listAllFiles, readFile } from '@cindy/file-browser-core';
 import { parseFrontmatter } from '../../../../../packages/maker-core/src/agents/shared/customization-scanner.js';
 import type { MekaProjectMetadataItemType } from '../../shared/meka-projects.js';
+import type { MekaProjectFile } from '../../shared/meka-projects.js';
 
 export interface DiscoveredMekaProjectMetadata {
   itemType: MekaProjectMetadataItemType;
@@ -14,6 +15,34 @@ export interface DiscoveredMekaProjectMetadata {
   name: string;
   description?: string;
   contentFingerprint: string;
+}
+
+/** Refresh filesystem-derived fields while preserving project-owned metadata annotations. */
+export function mergeDiscoveredMekaProjectMetadata(
+  current: MekaProjectFile,
+  discovered: readonly DiscoveredMekaProjectMetadata[],
+): MekaProjectFile {
+  const previous = new Map(
+    current.metadata.map((item) => [
+      `${item.rootPath ?? ''}|${item.sourcePath}|${item.itemType}`,
+      item,
+    ]),
+  );
+  return {
+    ...current,
+    metadata: discovered.map((item) => {
+      const old = previous.get(`${item.rootPath ?? ''}|${item.sourcePath}|${item.itemType}`);
+      return {
+        ...item,
+        disciplines: old?.disciplines ?? [],
+        domains: old?.domains ?? [],
+        enabled: old?.enabled ?? true,
+        ...(old?.displayName ? { displayName: old.displayName } : {}),
+        ...(old?.description ? { description: old.description } : {}),
+        ...(old?.notes ? { notes: old.notes } : {}),
+      };
+    }),
+  };
 }
 
 const METADATA_SCAN_GLOBS = [

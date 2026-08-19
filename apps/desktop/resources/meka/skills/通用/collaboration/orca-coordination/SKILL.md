@@ -1,6 +1,9 @@
 ---
-description: Meka Orca worker coordination procedure
-purpose: Coordinate explicitly requested workers, delegation, and parallel work
+name: orca-coordination
+description: 协调明确请求的 Orca Worker、任务委派和并行工作，并保持本地与 MCPR 远程执行边界。
+metadata:
+  display-name: Orca 多智能体协作
+  purpose: 协调 Worker、委派与并行工作
 ---
 # Meka Orca coordination
 

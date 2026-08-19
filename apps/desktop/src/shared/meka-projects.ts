@@ -2,12 +2,8 @@
 
 import type Database from 'better-sqlite3';
 
-import combatConfigRole from '../../resources/meka/roles/combat-config.json';
-import combatDebugRole from '../../resources/meka/roles/combat-debug.json';
+import combatDevelopmentRole from '../../resources/meka/roles/combat-development.json';
 import generalDevelopmentRole from '../../resources/meka/roles/general-development.json';
-import systemDebugRole from '../../resources/meka/roles/system-debug.json';
-import systemDevelopmentRole from '../../resources/meka/roles/system-development.json';
-import systemOverviewRole from '../../resources/meka/roles/system-overview.json';
 
 export type MekaProjectMetadataItemType = 'agents-md' | 'skill' | 'rule' | 'mcp';
 
@@ -24,6 +20,7 @@ export interface MekaRoleSkillSelection {
 
 export interface MekaSkillCatalogEntry {
   skillId: string;
+  displayName?: string;
   category: string;
   subCategory: string;
   description: string;
@@ -99,6 +96,8 @@ export interface MekaRoleConfig {
   promptFragments: MekaRolePromptFragment[];
   mcp: MekaRoleMcpEntry[];
   useProjectDefaults?: boolean;
+  /** Include every currently enabled project metadata item before applying explicit selections. */
+  includeAllProjectMetadata?: boolean;
   excludeDefaults?: MekaRoleExcludeDefaults;
 }
 
@@ -225,13 +224,7 @@ export interface MekaProject {
   roles: readonly MekaRole[];
 }
 
-type BuiltinRoleId =
-  | 'general-development'
-  | 'combat-debug'
-  | 'combat-config'
-  | 'system-development'
-  | 'system-overview'
-  | 'system-debug';
+type BuiltinRoleId = 'general-development' | 'combat-development';
 
 interface ImportedBuiltinRoleManifest {
   id: string;
@@ -247,12 +240,16 @@ const BUILTIN_ROLE_FILES: readonly {
   manifest: ImportedBuiltinRoleManifest;
 }[] = [
   { id: 'general-development', manifest: generalDevelopmentRole },
-  { id: 'combat-debug', manifest: combatDebugRole },
-  { id: 'combat-config', manifest: combatConfigRole },
-  { id: 'system-development', manifest: systemDevelopmentRole },
-  { id: 'system-overview', manifest: systemOverviewRole },
-  { id: 'system-debug', manifest: systemDebugRole },
+  { id: 'combat-development', manifest: combatDevelopmentRole },
 ];
+
+export const RETIRED_BUILTIN_MEKA_ROLE_MAPPINGS = [
+  ['combat-config', 'combat-development'],
+  ['combat-debug', 'combat-development'],
+  ['system-development', 'general-development'],
+  ['system-overview', 'general-development'],
+  ['system-debug', 'general-development'],
+] as const;
 
 const BUILTIN_MEKA_ROLES: readonly MekaRole[] = BUILTIN_ROLE_FILES.map(
   ({ id, manifest }, sortOrder) => ({
@@ -326,8 +323,19 @@ export function seedBuiltinMekaProjects(db: Database.Database, now = Date.now())
   const projectIsBuiltin = db.prepare('SELECT is_builtin FROM meka_projects WHERE id = ?');
   const backfillSessions = db.prepare(`
     UPDATE sessions
-    SET meka_project_id = 'saga2', meka_role_id = NULL
+    SET meka_project_id = 'saga2'
     WHERE workspace_kind = 'meka' AND meka_project_id IS NULL
+  `);
+  const migrateRetiredSessionRole = db.prepare(`
+    UPDATE sessions
+    SET meka_role_id = ?
+    WHERE meka_role_id = ?
+      AND workspace_kind = 'meka'
+      AND (meka_project_id = 'saga2' OR meka_project_id IS NULL)
+  `);
+  const deleteRetiredBuiltinRole = db.prepare(`
+    DELETE FROM meka_roles
+    WHERE id = ? AND project_id = 'saga2' AND is_builtin = 1
   `);
 
   db.transaction(() => {
@@ -360,6 +368,10 @@ export function seedBuiltinMekaProjects(db: Database.Database, now = Date.now())
       }
     }
     backfillSessions.run();
+    for (const [retiredRoleId, replacementRoleId] of RETIRED_BUILTIN_MEKA_ROLE_MAPPINGS) {
+      migrateRetiredSessionRole.run(replacementRoleId, retiredRoleId);
+      deleteRetiredBuiltinRole.run(retiredRoleId);
+    }
   })();
 }
 

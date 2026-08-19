@@ -1,15 +1,12 @@
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import { parseFrontmatter } from '../../../../../packages/maker-core/src/agents/shared/customization-scanner.js';
 import type { MekaSkillCatalogEntry } from '../../shared/meka-projects.js';
 import { bundledMekaSkillsRoot } from './resourcePaths.js';
 
-function frontmatterValue(content: string, field: string): string | undefined {
-  const frontmatter = /^---\s*\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(content)?.[1];
-  if (!frontmatter) return undefined;
-  const match = new RegExp(`^${field}:\\s*(.+?)\\s*$`, 'm').exec(frontmatter);
-  const value = match?.[1]?.trim().replace(/^(['"])(.*)\1$/, '$2');
-  return value || undefined;
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
 async function childDirectories(root: string): Promise<string[]> {
@@ -39,15 +36,21 @@ export async function listMekaSkillCatalog(
         } catch {
           continue;
         }
-        const description = frontmatterValue(content, 'description') ?? skillId;
+        const parsed = parseFrontmatter(content);
+        const metadata =
+          parsed.frontmatter?.metadata && typeof parsed.frontmatter.metadata === 'object'
+            ? (parsed.frontmatter.metadata as Record<string, unknown>)
+            : undefined;
+        const description = parsed.description ?? skillId;
+        const displayName = stringValue(metadata?.['display-name']);
+        const purpose = stringValue(metadata?.purpose);
         result.push({
           skillId,
+          ...(displayName ? { displayName } : {}),
           category,
           subCategory,
           description,
-          ...(frontmatterValue(content, 'purpose')
-            ? { purpose: frontmatterValue(content, 'purpose') }
-            : {}),
+          ...(purpose ? { purpose } : {}),
           filePath: path.posix.join(category, subCategory, skillId, 'SKILL.md'),
         });
       }

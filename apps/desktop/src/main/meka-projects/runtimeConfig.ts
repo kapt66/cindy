@@ -128,6 +128,29 @@ export function mergeMekaProjectRoleDefaults(
   };
 }
 
+export function resolveRoleProjectMetadataSelections(
+  role: MekaRoleFile,
+  projectMetadata: readonly MekaProjectFile['metadata'][number][],
+): MekaProjectMetadataSelection[] {
+  const selections = new Map<string, MekaProjectMetadataSelection>();
+  if (role.includeAllProjectMetadata === true) {
+    for (const item of projectMetadata) {
+      if (item.enabled === false) continue;
+      const selection = {
+        ...(item.rootPath ? { rootPath: item.rootPath } : {}),
+        sourcePath: item.sourcePath,
+        itemType: item.itemType,
+        enabled: true,
+      } satisfies MekaProjectMetadataSelection;
+      selections.set(metadataKey(selection), selection);
+    }
+  }
+  for (const selection of role.projectMetadataSelection ?? []) {
+    selections.set(metadataKey(selection), selection);
+  }
+  return [...selections.values()];
+}
+
 function parseSkillMetadata(
   content: string,
   fallbackId: string,
@@ -377,6 +400,10 @@ export async function resolveMekaRuntimeConfig(
   const roleFile = mergeMekaProjectRoleDefaults(
     await resolveRoleFile(role, projectFile),
     projectFile.roleDefaults ?? {},
+  );
+  roleFile.projectMetadataSelection = resolveRoleProjectMetadataSelections(
+    roleFile,
+    projectFile.metadata,
   );
   const catalog = await listBundledSkills();
   const skills = new Map<string, MekaRuntimeSkill>();

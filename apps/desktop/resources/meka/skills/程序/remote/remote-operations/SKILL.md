@@ -1,6 +1,9 @@
 ---
-description: Safe allowlisted remote project repository operations
-purpose: Discover, read, and write authorized remote project repositories
+name: remote-operations
+description: 通过 MCPRouter 安全访问已授权的远程项目仓库，并区分仓库内容操作与项目服务管理。
+metadata:
+  display-name: MCPR 远程项目操作
+  purpose: 发现、读取和修改已授权的远程项目仓库
 ---
 # Remote project operations
 

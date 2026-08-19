@@ -116,16 +116,16 @@ vi.mock('../../localDb/client/current.js', () => ({
               updated_at: null,
             },
             {
-              id: 'combat-config',
+              id: 'combat-development',
               project_id: 'saga2',
-              name: 'combat-config',
-              display_name: '战斗配置',
+              name: 'combat-development',
+              display_name: '战斗开发',
               description: null,
               tags: '[]',
-              file_path: 'meka/roles/combat-config.json',
+              file_path: 'meka/roles/combat-development.json',
               is_builtin: 1,
               content_digest: null,
-              sort_order: 2,
+              sort_order: 1,
               created_at: null,
               updated_at: null,
             },
@@ -231,7 +231,10 @@ describe('Meka copied project import', () => {
       projectId: 'target-project',
       basic: { name: 'saga2', displayName: 'SAGA2', path: root },
       metadata: [],
-      builtinRoles: [role('combat-config', '战斗配置'), role('general-development', '通用开发')],
+      builtinRoles: [
+        role('combat-development', '战斗开发'),
+        role('general-development', '通用开发'),
+      ],
     };
     const handler = h.handlers.get(MEKA_PROJECT_CREATE)!;
 
@@ -242,7 +245,7 @@ describe('Meka copied project import', () => {
     };
 
     expect(created.displayName).toBe('saga2_project_git');
-    expect(created.roles.map((item) => item.displayName)).toEqual(['通用开发', '战斗配置']);
+    expect(created.roles.map((item) => item.displayName)).toEqual(['通用开发', '战斗开发']);
     expect(h.ensureDefaultRole).not.toHaveBeenCalled();
     expect(h.createRole).toHaveBeenCalledTimes(2);
     expect(h.createRole.mock.calls.map((call) => call[0].sortOrder)).toEqual([0, 1]);
@@ -316,14 +319,17 @@ describe('Meka copied project import', () => {
       metadata: [],
     };
 
-    const created = (await h.handlers.get(MEKA_PROJECT_CREATE)!({}, {
-      path: root,
-      displayName: 'SAGA2',
-    })) as { id: string };
+    const created = (await h.handlers.get(MEKA_PROJECT_CREATE)!(
+      {},
+      {
+        path: root,
+        displayName: 'SAGA2',
+      },
+    )) as { id: string };
 
     expect(h.ensureDefaultRole).not.toHaveBeenCalled();
-    expect(h.createRole).toHaveBeenCalledTimes(6);
-    expect(h.savedFile?.builtinRoles).toHaveLength(6);
+    expect(h.createRole).toHaveBeenCalledTimes(2);
+    expect(h.savedFile?.builtinRoles).toHaveLength(2);
     expect(h.savedFile?.builtinRoles?.every((item) => item.projectId === created.id)).toBe(true);
   });
 
@@ -360,10 +366,13 @@ describe('Meka copied project import', () => {
     };
     h.ensureDefaultRole.mockResolvedValue({ id: 'default-role' });
 
-    const created = (await h.handlers.get(MEKA_PROJECT_CREATE)!({}, {
-      path: root,
-      displayName: 'Copied project',
-    })) as { id: string };
+    const created = (await h.handlers.get(MEKA_PROJECT_CREATE)!(
+      {},
+      {
+        path: root,
+        displayName: 'Copied project',
+      },
+    )) as { id: string };
 
     expect(created.id).not.toBe('source-project');
     expect(h.savedFile?.projectId).toBe(created.id);

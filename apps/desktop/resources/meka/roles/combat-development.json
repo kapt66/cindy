@@ -1,0 +1,109 @@
+{
+  "schemaVersion": 1,
+  "projectId": "saga2",
+  "id": "combat-development",
+  "name": "combat-development",
+  "displayName": "战斗开发",
+  "description": "设计、配置、调试并验证客户端与服务器共同执行的战斗技能",
+  "policyProviderRefs": ["meka-host-risk-policy", "meka-p4-boundary-policy"],
+  "useProjectDefaults": true,
+  "prompt": "# Combat development\n\nOwn SAGA2 combat-skill work from design intent through Unity assets, exported configuration, client consumers, and server execution. Establish the skill ID and expected behavior first, then read the current module graph, Timeline, effects, and local configuration before changing state; determine the required server evidence from the selected Skill contract. Treat module configuration as server-executed behavior: do not infer server support from Unity authoring support alone. Use UnityMCP and the project custom tools for Unity assets, local project tools for client/configuration files, and the bound MCPRouter remote project for server repository evidence. Keep repository-content access separate from project/service management. Whenever combat design asks the server project to assess or implement a missing capability, the remote task must read the server repository AGENTS.md and explicitly invoke `battle-designer-server-development`; this role-specific workflow does not apply to normal server-programmer development. Accept the remote result only when `serverWorkflow.skillName` is `battle-designer-server-development` and `serverWorkflow.skillLoaded` is `true`, with branch, code evidence, Excel changes, generated artifacts, validation, runtime verification, and remaining integration all reported. A missing Skill, failed load, or incomplete receipt is `blocked`; worker creation, dispatch success, or ordinary server output is not proof that the instruction was consumed. Coordinate any required authoritative Excel/P4 change and exported JSON on the local project side with the remote server branch, and do not claim end-to-end completion until both sides agree. After changes, re-read the Unity data, verify exported server-facing data, inspect Unity compilation/console evidence, verify server compatibility at the level required by the selected Skill contract, and report P4 state plus any unverified runtime behavior.",
+  "rules": [],
+  "skills": [
+    {
+      "skillId": "saga2-overview",
+      "enabled": true
+    },
+    {
+      "skillId": "safety-boundaries",
+      "enabled": true
+    },
+    {
+      "skillId": "p4-operations",
+      "enabled": true
+    },
+    {
+      "skillId": "orca-coordination",
+      "enabled": true
+    },
+    {
+      "skillId": "remote-operations",
+      "enabled": true
+    }
+  ],
+  "mcp": [
+    {
+      "id": "unity-editor",
+      "transport": "http",
+      "url": "http://127.0.0.1:7788/mcp",
+      "enabled": true
+    },
+    {
+      "id": "mcp-router",
+      "providerId": "mcp-router",
+      "enabled": true
+    },
+    {
+      "id": "project-agent",
+      "providerId": "project-agent",
+      "enabled": true
+    }
+  ],
+  "projectMetadataSelection": [
+    {
+      "sourcePath": "saga2_design/AGENTS.md",
+      "itemType": "agents-md",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/战斗策划组-combat-planning/skills/saga2-project-battle-designer/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/战斗策划组-combat-planning/skills/战斗策划组工作流-combat-planning-manager/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/editor-unity-mcp/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/editor-skill-editor-module/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/editor-skill-editor-timeline/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/editor-skill-editor-effect/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/script-data/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/script-fun/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/script-game-battle/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/script-game-room/SKILL.md",
+      "itemType": "skill",
+      "enabled": true
+    }
+  ]
+}

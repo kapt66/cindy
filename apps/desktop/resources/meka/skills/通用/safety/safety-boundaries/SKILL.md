@@ -1,6 +1,9 @@
 ---
-description: Meka capability and permission safety boundaries
-purpose: Guard destructive, privileged, production, or broad mutation operations
+name: safety-boundaries
+description: 约束破坏性、高权限、生产环境和大范围修改操作，确保只使用宿主授权的能力与路径。
+metadata:
+  display-name: 安全与权限边界
+  purpose: 守住高风险操作的能力与权限边界
 ---
 # Meka safety and permission boundaries
 

@@ -26,8 +26,11 @@ describe('listMekaSkillCatalog', () => {
       path.join(skillRoot, 'SKILL.md'),
       [
         '---',
+        'name: saga2-overview',
         'description: Saga2 overview',
-        'purpose: Route repository work',
+        'metadata:',
+        '  display-name: "SAGA2 项目总览"',
+        '  purpose: Route repository work',
         '---',
         '# Saga2',
       ].join('\n'),
@@ -37,6 +40,7 @@ describe('listMekaSkillCatalog', () => {
     await expect(listMekaSkillCatalog(root)).resolves.toEqual([
       {
         skillId: 'saga2-overview',
+        displayName: 'SAGA2 项目总览',
         category: '通用',
         subCategory: 'project',
         description: 'Saga2 overview',

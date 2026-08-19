@@ -46,17 +46,13 @@ describe('Meka runtime project/role resolution', () => {
     ({ resolveMekaRuntimeConfig } = await import('../runtimeConfig.js'));
   });
 
-  it('uses the SAGA2 project and every built-in role manifest as the complete runtime source', async () => {
+  it('uses the SAGA2 project and both built-in role manifests as the complete runtime source', async () => {
     const cases = [
-      ['combat-config', '# Combat configuration', false, true],
-      ['combat-debug', '# Combat debugging', false, true],
-      ['general-development', '# General development', true, true],
-      ['system-debug', '# System debugging', false, true],
-      ['system-development', '# System development', true, true],
-      ['system-overview', '# System overview', false, false],
+      ['general-development', '# General development', true],
+      ['combat-development', '# Combat development', false],
     ] as const;
 
-    for (const [roleId, promptHeading, hasDesign, hasRemote] of cases) {
+    for (const [roleId, promptHeading, hasDesign] of cases) {
       const resolved = await resolveMekaRuntimeConfig('saga2', roleId);
 
       expect(resolved).toMatchObject({
@@ -72,24 +68,69 @@ describe('Meka runtime project/role resolution', () => {
           'p4-operations',
           'safety-boundaries',
           'saga2-overview',
-          ...(hasRemote ? ['remote-operations'] : []),
+          'remote-operations',
           ...(hasDesign ? ['meka-design-handbook'] : []),
         ].sort(),
       );
-      expect(resolved.mcp.map((entry) => entry.id)).toEqual(
-        hasRemote ? ['mcp-router', 'project-agent', ...(hasDesign ? ['meka-design'] : [])] : [],
-      );
+      expect(resolved.mcp.map((entry) => entry.id)).toEqual([
+        'mcp-router',
+        'project-agent',
+        ...(hasDesign ? ['meka-design'] : []),
+        'unity-editor',
+      ]);
+      if (roleId === 'combat-development') {
+        const roleManifest = JSON.parse(
+          await import('node:fs/promises').then(({ readFile }) =>
+            readFile(
+              path.join(desktopRoot, 'resources/meka/roles/combat-development.json'),
+              'utf8',
+            ),
+          ),
+        ) as {
+          skills: Array<{ skillId: string; enabled: boolean }>;
+          mcp: Array<{ id: string; enabled: boolean }>;
+        };
+        expect(roleManifest.skills).toEqual(
+          expect.arrayContaining([{ skillId: 'remote-operations', enabled: true }]),
+        );
+        expect(roleManifest.mcp).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ id: 'mcp-router', enabled: true }),
+            expect.objectContaining({ id: 'project-agent', enabled: true }),
+          ]),
+        );
+        expect(resolved.promptText).toContain(
+          'Treat module configuration as server-executed behavior',
+        );
+        expect(resolved.promptText).toContain(
+          'do not infer server support from Unity authoring support alone',
+        );
+        expect(resolved.promptText).toContain(
+          'explicitly invoke `battle-designer-server-development`',
+        );
+        expect(resolved.promptText).toContain(
+          '`serverWorkflow.skillLoaded` is `true`',
+        );
+        expect(resolved.promptText).toContain(
+          'this role-specific workflow does not apply to normal server-programmer development',
+        );
+        expect(resolved.promptText).toContain(
+          'worker creation, dispatch success, or ordinary server output is not proof',
+        );
+      }
       const saga2Overview = resolved.skills.find((skill) => skill.id === 'saga2-overview');
       expect(saga2Overview?.content).toContain('pass the direct child name `saga2_json`');
       expect(saga2Overview?.content).toContain('ask the user whether to use it before adopting it');
       expect(saga2Overview?.content).toContain('let the Host open its system');
       expect(saga2Overview?.content).toContain('directory picker');
       expect(saga2Overview?.content).toContain('Do not inspect or pass an absolute local path');
-      expect(saga2Overview?.content).toContain('Use\n  `update_servers` for update/rebuild/deploy requests');
+      expect(saga2Overview?.content).toContain(
+        'Use\n  `update_servers` for update/rebuild/deploy requests',
+      );
       expect(saga2Overview?.content).toContain('`start_servers` for start requests');
       expect(saga2Overview?.content).toContain('`stop_servers` for stop requests');
-      expect(saga2Overview?.content).toContain('single operation matching the user\'s intent');
-      if (hasRemote) {
+      expect(saga2Overview?.content).toContain("single operation matching the user's intent");
+      {
         const remoteOperations = resolved.skills.find((skill) => skill.id === 'remote-operations');
         const orcaCoordination = resolved.skills.find((skill) => skill.id === 'orca-coordination');
         expect(remoteOperations).toBeDefined();
@@ -104,30 +145,22 @@ describe('Meka runtime project/role resolution', () => {
           'generic tool merely because it can expose a broad underlying operation',
         );
         expect(remoteOperationsContent).toContain('The dedicated MCPRouter `project-agent` tools');
-        expect(remoteOperationsContent.indexOf('Only use generic `mcp_router` tools')).toBeGreaterThan(
-          remoteOperationsContent.indexOf('An existing MCPR remote task/session'),
-        );
-        expect(remoteOperationsContent).toContain(
-          'ask whether to create that remote worker',
-        );
+        expect(
+          remoteOperationsContent.indexOf('Only use generic `mcp_router` tools'),
+        ).toBeGreaterThan(remoteOperationsContent.indexOf('An existing MCPR remote task/session'));
+        expect(remoteOperationsContent).toContain('ask whether to create that remote worker');
         expect(remoteOperationsContent).toContain(
           'the underlying read/edit request alone is not authorization to create one',
         );
         expect(remoteOperationsContent).toContain(
           'include it as `initial_task` so worker creation and dispatch are one operation',
         );
-        expect(remoteOperationsContent).toContain(
-          'the current Lead task MUST end immediately',
-        );
+        expect(remoteOperationsContent).toContain('the current Lead task MUST end immediately');
         expect(remoteOperationsContent).toContain(
           'do not ask another confirmation, do not call another tool, and do not wait, sleep, poll, or keep the turn alive',
         );
-        expect(orcaCoordination?.content).toContain(
-          'continue an MCPR remote task/session',
-        );
-        expect(orcaCoordination?.content).toContain(
-          'Do not use a generic `mcp_router` operation',
-        );
+        expect(orcaCoordination?.content).toContain('continue an MCPR remote task/session');
+        expect(orcaCoordination?.content).toContain('Do not use a generic `mcp_router` operation');
         expect(saga2Overview?.content).toContain(
           'Generic `mcp_router` operations are only for remote-instance discovery',
         );

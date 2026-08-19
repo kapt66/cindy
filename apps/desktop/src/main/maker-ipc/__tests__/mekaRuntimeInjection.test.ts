@@ -66,8 +66,9 @@ describe('applyMekaRuntimeConfig', () => {
       resolveRuntimeConfig: vi.fn(async () => runtime()),
       prepareRuntimeMcp: vi.fn((entries: readonly MekaRoleMcpEntry[]) => ({
         providerIds: entries
-          .filter((entry): entry is Extract<typeof entry, { providerId: string }> =>
-            'providerId' in entry,
+          .filter(
+            (entry): entry is Extract<typeof entry, { providerId: string }> =>
+              'providerId' in entry,
           )
           .map((entry) => entry.providerId),
         inlineConfigs: entries.filter(
@@ -125,38 +126,46 @@ describe('applyMekaRuntimeConfig', () => {
     expect(opts.userPrompt).toBe('SAGA2 server code lives behind MCPRouter as saga2-server.');
   });
 
-  it('hydrates persisted legacy Meka bindings before resolving runtime config', async () => {
-    const opts = baseOpts({
-      id: 'legacy-session',
-      workspaceKind: undefined,
-      mekaProjectId: null,
-      mekaRoleId: null,
-      mekaRole: null,
-    });
-    const resolveRuntimeConfig = vi.fn(async (projectId: string, roleId: string) =>
-      runtime({ projectId, roleId, skills: [], mcp: [] }),
-    );
-
-    const result = await applyMekaRuntimeConfig(opts, {
-      readPersistedSession: vi.fn(async () => ({
-        workspaceKind: 'meka' as const,
-        mekaProjectId: 'saga2',
+  it.each([
+    ['planner', 'general-development'],
+    ['artist', 'general-development'],
+    ['tester', 'general-development'],
+    ['programmer', 'general-development'],
+  ] as const)(
+    'hydrates a persisted legacy %s binding as %s',
+    async (legacyRole, expectedRoleId) => {
+      const opts = baseOpts({
+        id: 'legacy-session',
+        workspaceKind: undefined,
+        mekaProjectId: null,
         mekaRoleId: null,
-        mekaRole: 'planner' as const,
-      })),
-      resolveRuntimeConfig,
-      prepareRuntimeMcp: vi.fn(() => ({ providerIds: [], inlineConfigs: [] })),
-    });
+        mekaRole: null,
+      });
+      const resolveRuntimeConfig = vi.fn(async (projectId: string, roleId: string) =>
+        runtime({ projectId, roleId, skills: [], mcp: [] }),
+      );
 
-    expect(result.didApply).toBe(true);
-    expect(resolveRuntimeConfig).toHaveBeenCalledWith('saga2', 'system-overview');
-    expect(opts).toMatchObject({
-      workspaceKind: 'meka',
-      mekaProjectId: 'saga2',
-      mekaRoleId: 'system-overview',
-      mekaRole: 'planner',
-    });
-  });
+      const result = await applyMekaRuntimeConfig(opts, {
+        readPersistedSession: vi.fn(async () => ({
+          workspaceKind: 'meka' as const,
+          mekaProjectId: 'saga2',
+          mekaRoleId: null,
+          mekaRole: legacyRole,
+        })),
+        resolveRuntimeConfig,
+        prepareRuntimeMcp: vi.fn(() => ({ providerIds: [], inlineConfigs: [] })),
+      });
+
+      expect(result.didApply).toBe(true);
+      expect(resolveRuntimeConfig).toHaveBeenCalledWith('saga2', expectedRoleId);
+      expect(opts).toMatchObject({
+        workspaceKind: 'meka',
+        mekaProjectId: 'saga2',
+        mekaRoleId: expectedRoleId,
+        mekaRole: legacyRole,
+      });
+    },
+  );
 
   it('does not duplicate prompt injection when the same create opts are bootstrapped twice', async () => {
     const opts = baseOpts({ userPrompt: 'USER PROMPT' });

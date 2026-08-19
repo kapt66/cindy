@@ -14,7 +14,11 @@ vi.mock('electron', () => ({
 }));
 
 import type { MekaRoleFile } from '../../../shared/meka-projects.js';
-import { materializeMekaRuntimeSkills, mergeMekaProjectRoleDefaults } from '../runtimeConfig.js';
+import {
+  materializeMekaRuntimeSkills,
+  mergeMekaProjectRoleDefaults,
+  resolveRoleProjectMetadataSelections,
+} from '../runtimeConfig.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -87,6 +91,29 @@ describe('Meka project and role runtime configuration', () => {
     expect(merged.projectMetadataSelection).toEqual([
       { sourcePath: 'project.md', itemType: 'agents-md', enabled: true },
       { sourcePath: 'role.md', itemType: 'agents-md', enabled: true },
+    ]);
+  });
+
+  it('expands all enabled project metadata while preserving explicit role overrides', () => {
+    expect(
+      resolveRoleProjectMetadataSelections(
+        role({
+          includeAllProjectMetadata: true,
+          projectMetadataSelection: [
+            { sourcePath: 'all-skill/SKILL.md', itemType: 'skill', enabled: false },
+            { sourcePath: 'role-only.md', itemType: 'rule', enabled: true },
+          ],
+        }),
+        [
+          { sourcePath: 'AGENTS.md', itemType: 'agents-md', enabled: true },
+          { sourcePath: 'all-skill/SKILL.md', itemType: 'skill', enabled: true },
+          { sourcePath: 'disabled.md', itemType: 'rule', enabled: false },
+        ],
+      ),
+    ).toEqual([
+      { sourcePath: 'AGENTS.md', itemType: 'agents-md', enabled: true },
+      { sourcePath: 'all-skill/SKILL.md', itemType: 'skill', enabled: false },
+      { sourcePath: 'role-only.md', itemType: 'rule', enabled: true },
     ]);
   });
 

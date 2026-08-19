@@ -1,6 +1,9 @@
 ---
-description: Saga2 cross-surface repository overview
-purpose: Route work across MekaDesign, P4 design/config/client, and the remote server
+name: saga2-overview
+description: 说明 SAGA2 在 MekaDesign、P4 策划与客户端、配置表、项目管理和 MCPR 远程服务器之间的工作边界与路由。
+metadata:
+  display-name: SAGA2 项目总览
+  purpose: 在 SAGA2 各项目面之间正确路由工作
 ---
 
 # Saga2 repository overview

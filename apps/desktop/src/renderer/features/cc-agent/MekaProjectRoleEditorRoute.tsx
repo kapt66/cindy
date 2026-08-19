@@ -646,7 +646,7 @@ function RoleSkillsEditor({
   const items: SelectableItem[] = [
     ...catalog.map((item) => ({
       key: `catalog:${item.skillId}`,
-      label: item.skillId,
+      label: item.displayName ?? item.skillId,
       description: item.description || item.purpose,
       disciplines: [item.category],
       domains: item.subCategory ? [item.subCategory] : [],

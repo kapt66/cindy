@@ -1,6 +1,9 @@
 ---
-description: MekaDesign design intent and structured handoff workflow
-purpose: Read or change MekaDesign content and hand design intent to implementation
+name: meka-design-handbook
+description: 使用 MekaDesign 读取或修改设计内容，并把结构化设计意图可靠交接给实现侧。
+metadata:
+  display-name: MekaDesign 设计协作
+  purpose: 处理 MekaDesign 内容和设计到实现的交接
 ---
 
 # MekaDesign handbook

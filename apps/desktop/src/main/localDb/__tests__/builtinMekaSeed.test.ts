@@ -38,7 +38,7 @@ function createDb(): Database.Database {
       id text PRIMARY KEY NOT NULL,
       workspace_kind text NOT NULL,
       meka_project_id text REFERENCES meka_projects(id),
-      meka_role_id text REFERENCES meka_roles(id)
+      meka_role_id text REFERENCES meka_roles(id) ON DELETE SET NULL
     );
   `);
   return db;
@@ -49,7 +49,7 @@ afterEach(() => {
 });
 
 describe('builtin Meka project registry', () => {
-  it('seeds SAGA2 and its six roles idempotently and backfills Meka sessions', () => {
+  it('seeds SAGA2 and its two roles idempotently and backfills Meka sessions', () => {
     const db = createDb();
     db.prepare("INSERT INTO sessions (id, workspace_kind) VALUES ('meka-session', 'meka')").run();
 
@@ -66,11 +66,7 @@ describe('builtin Meka project registry', () => {
         .all('saga2'),
     ).toEqual([
       { id: 'general-development', file_path: 'meka/roles/general-development.json' },
-      { id: 'combat-debug', file_path: 'meka/roles/combat-debug.json' },
-      { id: 'combat-config', file_path: 'meka/roles/combat-config.json' },
-      { id: 'system-development', file_path: 'meka/roles/system-development.json' },
-      { id: 'system-overview', file_path: 'meka/roles/system-overview.json' },
-      { id: 'system-debug', file_path: 'meka/roles/system-debug.json' },
+      { id: 'combat-development', file_path: 'meka/roles/combat-development.json' },
     ]);
     expect(
       db
@@ -102,5 +98,61 @@ describe('builtin Meka project registry', () => {
     expect(db.prepare('SELECT COUNT(*) AS count FROM meka_roles').get()).toEqual({
       count: 0,
     });
+  });
+
+  it('migrates sessions from retired SAGA2 roles before removing those builtin rows', () => {
+    const db = createDb();
+    db.prepare(
+      `INSERT INTO meka_projects
+        (id, name, path, tags, is_builtin, sort_order)
+       VALUES ('saga2', 'saga2', 'saga2', '[]', 1, 0)`,
+    ).run();
+    const insertRole = db.prepare(
+      `INSERT INTO meka_roles
+        (id, project_id, name, display_name, file_path, is_builtin, sort_order)
+       VALUES (?, 'saga2', ?, ?, ?, 1, ?)`,
+    );
+    const retired = [
+      ['combat-config', 'combat-development'],
+      ['combat-debug', 'combat-development'],
+      ['system-development', 'general-development'],
+      ['system-overview', 'general-development'],
+      ['system-debug', 'general-development'],
+    ] as const;
+    retired.forEach(([id], index) => {
+      insertRole.run(id, id, id, `meka/roles/${id}.json`, index);
+      db.prepare(
+        `INSERT INTO sessions
+          (id, workspace_kind, meka_project_id, meka_role_id)
+         VALUES (?, 'meka', 'saga2', ?)`,
+      ).run(`session-${id}`, id);
+    });
+    db.prepare(
+      `INSERT INTO sessions
+        (id, workspace_kind, meka_project_id, meka_role_id)
+       VALUES ('non-meka-session', 'chat', 'saga2', 'combat-config')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO sessions
+        (id, workspace_kind, meka_role_id)
+       VALUES ('unbound-combat-session', 'meka', 'combat-config')`,
+    ).run();
+
+    seedBuiltinMekaProjects(db, 100);
+
+    expect(
+      db.prepare('SELECT id FROM meka_roles WHERE project_id = ? ORDER BY sort_order').all('saga2'),
+    ).toEqual([{ id: 'general-development' }, { id: 'combat-development' }]);
+    const expectedSessions: Array<{ id: string; meka_role_id: string | null }> = retired.map(
+      ([retiredId, replacementId]) => ({
+        id: `session-${retiredId}`,
+        meka_role_id: replacementId,
+      }),
+    );
+    expectedSessions.push({ id: 'non-meka-session', meka_role_id: null });
+    expectedSessions.push({ id: 'unbound-combat-session', meka_role_id: 'combat-development' });
+    expect(db.prepare('SELECT id, meka_role_id FROM sessions ORDER BY id').all()).toEqual(
+      expectedSessions.sort((left, right) => left.id.localeCompare(right.id)),
+    );
   });
 });

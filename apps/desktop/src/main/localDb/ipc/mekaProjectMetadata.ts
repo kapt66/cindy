@@ -14,7 +14,7 @@ import { isIpcError } from '../../../shared/ipc-errors.js';
 import { getRipgrepBinaryPath } from '../../maker-host/runtime-configs.js';
 import {
   discoverLocalMekaProjectMetadata,
-  type DiscoveredMekaProjectMetadata,
+  mergeDiscoveredMekaProjectMetadata,
 } from '../../meka-projects/metadataScanner.js';
 import {
   readEffectiveProjectConfig,
@@ -103,31 +103,6 @@ function effectiveItem(
   };
 }
 
-function mergeDiscovered(
-  current: MekaProjectFile,
-  discovered: readonly DiscoveredMekaProjectMetadata[],
-): MekaProjectFile {
-  const previous = new Map(
-    current.metadata.map((item) => [
-      `${item.rootPath ?? ''}|${item.sourcePath}|${item.itemType}`,
-      item,
-    ]),
-  );
-  return {
-    ...current,
-    metadata: discovered.map((item) => {
-      const old = previous.get(`${item.rootPath ?? ''}|${item.sourcePath}|${item.itemType}`);
-      return {
-        ...old,
-        ...item,
-        disciplines: old?.disciplines ?? [],
-        domains: old?.domains ?? [],
-        enabled: old?.enabled ?? true,
-      };
-    }),
-  };
-}
-
 function rethrow(error: unknown, action: string): never {
   if (isIpcError(error)) throw error;
   throwIpcError('INTERNAL', `failed to ${action} Meka project metadata: ${String(error)}`);
@@ -178,7 +153,7 @@ async function discover(projectIdInput: unknown): Promise<MekaProjectMetadata[]>
       getRipgrepBinaryPath(),
       current.basic.additionalPaths ?? [],
     );
-    const next = mergeDiscovered(current, found);
+    const next = mergeDiscoveredMekaProjectMetadata(current, found);
     await saveProjectConfig(locator, next);
     return next.metadata.map((item) => effectiveItem(locator.projectId, item));
   } catch (error) {

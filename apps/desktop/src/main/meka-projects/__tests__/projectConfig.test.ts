@@ -135,7 +135,7 @@ describe('Meka project.json boundary', () => {
     expect(loaded?.basic.displayName).toBe('Project-owned SAGA2');
     expect(loaded?.basic.path).toBe(path.resolve(root));
     expect(loaded?.metadata).toEqual([]);
-    expect(loaded?.builtinRoles).toHaveLength(6);
+    expect(loaded?.builtinRoles).toHaveLength(2);
     const persisted = JSON.parse(
       await readFile(path.join(configDirectory, 'project.json'), 'utf8'),
     ) as MekaProjectFile;
@@ -167,7 +167,7 @@ describe('Meka project.json boundary', () => {
     expect(state.file?.basic.displayName).toBe('SAGA2 with BOM');
   });
 
-  it('prefers project-owned role snapshots and falls back per missing bundled role', async () => {
+  it('prefers project-owned role snapshots, removes retired SAGA2 roles, and preserves custom roles', async () => {
     const root = await tempRoot();
     const locator = {
       projectId: 'saga2',
@@ -179,26 +179,37 @@ describe('Meka project.json boundary', () => {
     const overriddenRole = {
       ...bundled!.builtinRoles!.find((role) => role.id === 'general-development')!,
       displayName: 'Project-owned development',
+      includeAllProjectMetadata: undefined,
     };
+    const retiredRole = roleManifest('combat-config', 'saga2');
+    const customRole = roleManifest('custom-role', 'saga2');
     const configPath = path.join(root, '.meka', 'project.json');
     await mkdir(path.dirname(configPath), { recursive: true });
     await writeFile(
       configPath,
       `${JSON.stringify({
         ...bundled,
-        builtinRoles: [overriddenRole],
+        builtinRoles: [overriddenRole, retiredRole, customRole],
       })}\n`,
       'utf8',
     );
 
     const loaded = await readEffectiveProjectConfig(locator);
 
-    expect(loaded?.builtinRoles).toHaveLength(6);
+    expect(loaded?.builtinRoles?.map((role) => role.id)).toEqual([
+      'combat-development',
+      'general-development',
+      'custom-role',
+    ]);
     expect(
       loaded?.builtinRoles?.find((role) => role.id === 'general-development')?.displayName,
     ).toBe('Project-owned development');
+    expect(
+      loaded?.builtinRoles?.find((role) => role.id === 'general-development')
+        ?.includeAllProjectMetadata,
+    ).toBe(true);
     const persisted = JSON.parse(await readFile(configPath, 'utf8')) as MekaProjectFile;
-    expect(persisted.builtinRoles).toHaveLength(1);
+    expect(persisted.builtinRoles).toHaveLength(3);
   });
 
   it.each(['', path.resolve(path.sep, 'previous-checkout')])(
@@ -324,10 +335,7 @@ describe('Meka project.json boundary', () => {
       displayName: 'saga2_project_git',
     });
 
-    const suffixed = renameImportedProjectOnConflict(source, root, [
-      'SAGA2',
-      'saga2_project_git',
-    ]);
+    const suffixed = renameImportedProjectOnConflict(source, root, ['SAGA2', 'saga2_project_git']);
     expect(suffixed.basic.displayName).toBe('saga2_project_git (2)');
     expect(renameImportedProjectOnConflict(source, root, ['Another project'])).toBe(source);
   });
@@ -335,24 +343,24 @@ describe('Meka project.json boundary', () => {
   it('restores source role order by id and then display name for copied role ids', () => {
     const references = [
       roleSummary('general-development', '通用开发', 0),
-      roleSummary('combat-config', '战斗配置', 2),
+      roleSummary('combat-development', '战斗开发', 1),
     ];
     const copiedRoles = [
       roleManifest('copied-combat', 'copied-project'),
       roleManifest('copied-general', 'copied-project'),
     ];
-    copiedRoles[0].displayName = '战斗配置';
+    copiedRoles[0].displayName = '战斗开发';
     copiedRoles[1].displayName = '通用开发';
 
     expect(
       sortImportedRoleManifests(copiedRoles, references).map((role) => role.displayName),
-    ).toEqual(['通用开发', '战斗配置']);
+    ).toEqual(['通用开发', '战斗开发']);
     expect(
       sortImportedRoleManifests(
-        [roleManifest('combat-config', 'saga2'), roleManifest('general-development', 'saga2')],
+        [roleManifest('combat-development', 'saga2'), roleManifest('general-development', 'saga2')],
         references,
       ).map((role) => role.id),
-    ).toEqual(['general-development', 'combat-config']);
+    ).toEqual(['general-development', 'combat-development']);
   });
 
   it('creates exclusively, normalizes vocabularies, and round-trips atomically', async () => {
@@ -478,7 +486,7 @@ describe('Meka project.json boundary', () => {
       appIsPackaged: false,
     };
     const base = await readEffectiveProjectConfig(locator);
-    expect(base?.builtinRoles).toHaveLength(6);
+    expect(base?.builtinRoles).toHaveLength(2);
     const configPath = path.join(root, '.meka', 'project.json');
     await mkdir(path.dirname(configPath), { recursive: true });
     await writeFile(
@@ -495,7 +503,7 @@ describe('Meka project.json boundary', () => {
 
     expect(state.source).toBe('project');
     expect(state.file?.projectId).toBe('saga2');
-    expect(state.file?.builtinRoles).toHaveLength(6);
+    expect(state.file?.builtinRoles).toHaveLength(2);
     expect(state.file?.builtinRoles?.every((role) => role.projectId === 'saga2')).toBe(true);
     const persisted = JSON.parse(await readFile(configPath, 'utf8')) as MekaProjectFile;
     expect(persisted.projectId).toBe('source-project');
@@ -587,10 +595,10 @@ describe('Meka role manifest boundary', () => {
   });
 
   it('loads an immutable builtin role manifest from application resources', async () => {
-    await expect(readBuiltinRoleManifest('combat-debug', 'saga2')).resolves.toMatchObject({
-      id: 'combat-debug',
+    await expect(readBuiltinRoleManifest('combat-development', 'saga2')).resolves.toMatchObject({
+      id: 'combat-development',
       projectId: 'saga2',
-      displayName: '战斗调试',
+      displayName: '战斗开发',
     });
   });
 });

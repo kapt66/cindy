@@ -7628,13 +7628,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         mekaProjectId: leadRow.mekaProjectId ?? null,
         mekaRoleId:
           leadRow.mekaRoleId ??
-          (leadRow.mekaProjectId === 'saga2'
-            ? leadRow.mekaRole === 'planner'
-              ? 'system-overview'
-              : leadRow.mekaRole === 'tester'
-                ? 'system-debug'
-                : 'general-development'
-            : null),
+          (leadRow.mekaProjectId === 'saga2' ? 'general-development' : null),
         model: leadRow.model,
         effort: leadRow.effort,
         permissionMode: leadRow.permissionMode,

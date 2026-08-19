@@ -35,7 +35,7 @@
 | 远程 Codex Worker  | 已恢复                   | MCPRouter protocol 3 / bundle 0.0.6 控制通道与 app-server 隧道        |
 | Orca Worker 微调   | 迁移                     | 仅迁入 Meka 目标选择和远程约束所需改动                                |
 | 打包发布           | 已迁移                   | 打包/发布分层；RustFS 上传、canary、stable promote 与 rollback 已接入 |
-| 项目与角色         | 迁移                     | 项目、角色、元数据、内置 SAGA2 与 6 个角色                            |
+| 项目与角色         | 迁移                     | 项目、角色、元数据、内置 SAGA2 与通用开发/战斗开发 2 个角色           |
 | 原 Meka 用户数据   | 必须兼容                 | 新建 `CindyMeka`，从 `xdmaker-meka` 只读复制并运行 lineage bridge     |
 | Windows/macOS 签名 | 沿用原证书/服务          | Windows 原签名服务；macOS 原证书私钥和 self-signed 模式               |
 | 热更新             | 新建 Cindy Meka 渠道     | 不承诺旧 Meka 原地热更新；新应用安装后迁移旧数据                      |
@@ -67,7 +67,7 @@
   refresh token。
 - Meka 设置：P4、MCPRouter、MekaDesign。
 - Meka 项目、角色、项目元数据和内置 SAGA2 数据。
-- SAGA2 内置项目在没有项目文件时使用包内基线；首次编辑后将完整项目配置和 6 个内置
+- SAGA2 内置项目在没有项目文件时使用包内基线；首次编辑后将完整项目配置和 2 个内置
   角色快照写入已配置 P4 根目录下的 `.meka/project.json`，该文件存在期间作为唯一运行时
   数据源，不再与包内配置合并。删除该文件即可重置并回退到包内项目和角色。
 - 项目/角色配置直达 Agent 运行时：项目默认项、角色提示词/规则、Skill、项目元数据和
@@ -439,23 +439,28 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
   获得焦点时使用 focus border，Light/Dark 共用设计变量。
 - 原始 MCP 凭证拒绝写入；只允许 `{{secret:name}}` 引用。
 - 内置 SAGA2 项目。
-- 6 个内置角色：
-  - 通用开发
-  - 战斗配置
-  - 战斗调试
-  - 系统开发
-  - 系统调试
-  - 系统总览
+- 2 个内置角色：
+  - 通用开发：启用项目当前全部有效元数据，项目后续新增或重命名知识入口时无需同步维护
+    角色枚举；同时挂载 MekaDesign、UnityMCP、MCPRouter 和项目管理能力。
+  - 战斗开发：只选择战斗设计、SkillEditor、战斗客户端与数据相关知识，挂载 UnityMCP、
+    MCPRouter 和项目管理能力；模块配置按服务端执行契约处理，不能用 Unity 编辑能力推断
+    服务端已经支持。
+- `combat-config` / `combat-debug` 历史会话迁移到 `combat-development`；
+  `system-development` / `system-overview` / `system-debug` 迁移到
+  `general-development`。项目文件中的这些旧内置快照从有效配置中过滤，但其他自定义角色
+  保留不变。
 - 内置项目/角色幂等播种。
 - 旧 Meka 会话缺少项目绑定时回填到 SAGA2。
 
 项目与角色配置的运行时契约：
 
-- SAGA2 包内 `project.json` 与 6 个内置角色 manifest 已按 JSON 结构逐项核对，与
-  `xdmaker/meka/main` 当前内容一致；迁移只改变 Cindy 内的资源落点和直接运行时适配，
-  不重新解释或删减角色选择。
-- 进一步以 `xdmaker/meka/main` Git 对象做逐文件 hash/逐行核对：SAGA2 `project.json`
-  和 6 个角色 manifest 均逐字节一致；6 个内置 Skill 中 P4 Skill 逐字节一致，其余
+- SAGA2 包内 `project.json` 保留当前项目基线；角色已从原 6 个角色收敛为
+  `general-development` 与 `combat-development`，不再与 `xdmaker/meka/main` 的历史角色
+  清单逐字节一致。
+- 原 Meka 的 6 个内置 Skill 继续保留；稳定英文 `name` / `skillId` 继续作为运行时契约，
+  中文名称和中文描述写入标准 Skill frontmatter，其中展示名位于
+  `metadata.display-name`。角色编辑器优先显示中文名，不再直接把 `remote-operations` 等
+  英文 ID 当作用户可见标题。其中 P4 Skill 的操作约束与历史版本一致，其余
   Skill 只保留 Cindy 架构所需的最小术语适配（capability/snapshot → 当前项目与角色配置，
   allowlist → 当前项目实例绑定）。远程操作 Skill 的实例发现、创建模板、绑定确认、
   Remote Orca Worker 目标校验、报告和失败分支已完整保留，不能再压缩成摘要。
@@ -472,6 +477,9 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
   生成的同类投影。
 - 项目元数据总开关优先于角色选择；项目禁用的条目不能被角色重新启用。项目 Skill id
   使用与原版一致的确定性规范化和冲突后缀规则，中文目录名不会导致会话启动失败。
+- 角色可用 `includeAllProjectMetadata` 选择项目当前全部有效元数据，显式角色选择仍按
+  `rootPath + sourcePath + itemType` 覆盖自动选择。当前仅通用开发角色开启；战斗开发继续
+  使用精确选择，避免无关知识占用上下文。
 - 角色与项目默认 MCP provider 引用直接决定本会话是否挂载 MCPRouter；
   项目绑定继续限制实例类 Router 工具。项目元数据中的 MCP 配置也参与解析。
 - 普通 Meka Lead 会话、lazy resume、context-usage lazy create、scheduler/IM 等所有经
@@ -488,6 +496,34 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
   `tools/list` / `tools/call` 时读取最新加密配置和可信 thread context；运行中新增或替换
   endpoint 不需要重启 Codex host。非 Meka 会话或未选择 `meka-design` 的角色只得到空
   工具列表，不能借进程级 bridge 越权访问 endpoint。
+- SAGA2 当前项目元数据基线按实际工作区完整发现 55 项：48 个项目 Skill、7 个 Agent
+  入口。每项都保存内容指纹、子项目归属、中文展示名与描述、职能、领域和启用状态；
+  `CLAUDE.md` 重复入口、Codex alias 镜像与 Unity 侧旧战斗设计镜像保留发现记录但默认禁用，
+  避免通用开发的全量元数据注入产生重复或非权威上下文。后续发现按
+  `rootPath + sourcePath + itemType` 刷新文件来源字段和内容指纹，同时保留项目人工维护的
+  中文展示名、描述、备注、职能、领域与启用状态；新文件再进入人工归类流程。
+- 两个 SAGA2 内置角色都显式挂载 `http://127.0.0.1:7788/mcp` 的 `unity-editor`；连接失败
+  只表示本机 UnityMCP 不可用，不得转而手写 EditorScript 绕过项目 Skill 的工具边界。
+  战斗角色在自身 manifest 中显式选择 `remote-operations`、`orca-coordination`、
+  `saga2-overview`、`p4-operations`、`safety-boundaries`，并显式挂载 `mcp-router` /
+  `project-agent`，使角色编辑器可直接审查服务器链路；项目默认项仍提供继承兜底。服务端
+  仓库内容检查走已绑定 MCPR 远程项目，不能把本地 Unity 文件或 UnityMCP 查询当作服务端
+  实现证据。
+- 战斗模块配置每次都执行服务端契约门，但远程代码实查采用分级策略：完全复用既有模块
+  契约时，可引用与当前远程项目同一基线、能定位到具体服务器路径或符号的既有证据；新增或
+  改变模块类型、字段编码、参数形态、执行语义，或证据缺失、过期、基线不明时，必须通过
+  MCPR 读取当前服务器实现。需要实查而 MCPR 不可用或无授权时，在 Unity 资产写入前停止。
+  Unity 类型表、资产保存和 JSON 导出成功都不能替代服务端证据。
+- 战斗策划需要服务器补能力时，战斗角色的远端任务必须先读取服务器仓 `AGENTS.md`，再显式
+  调用服务器仓项目 Skill `battle-designer-server-development`。该流程只作用于战斗策划
+  发起的跨仓开发，不改变普通服务端程序员的分支习惯。调用方必须校验远端回执中的
+  `serverWorkflow.skillName` 与 `serverWorkflow.skillLoaded: true`，并检查独立分支、代码
+  证据、Excel/导出 JSON、验证、运行时状态和剩余联调；Skill 缺失、加载失败、Worker 仅派发
+  成功或回执不完整均按阻断处理。本地 SAGA2/P4 侧与远端服务器侧分别维护配置源和实现证据，
+  两侧未对齐时不得报告完整交付。
+- 战斗角色只加载策划库中的权威 `saga2-project-battle-designer`，不再同时加载 Unity 工程内
+  被其标记为历史副本的同名 Skill；具体 Unity 模块、Timeline、特效和代码 Skill 仍从
+  `saga2_unity/.agents/skills/` 精确选择。
 - `meka-host-risk-policy` 与 `meka-p4-boundary-policy` 是当前内置角色允许的 Host
   policy 引用；未知 policy 引用会阻断启动，避免配置被静默忽略。MCPRouter 每次调用
   都重新核对工具、项目实例绑定和风险元数据，高风险调用复用 Cindy permission
@@ -540,9 +576,10 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
 - 历史 schema 中仍保留 `capability_snapshot_json` 兼容列，但应用 DTO、创建参数和
   Renderer Session 类型已移除 snapshot 字段；Main 不读取或写入该列，新会话依赖数据库
   默认 `NULL`，项目/角色运行时也不把该列作为配置来源。
-- 历史四角色会话没有 `meka_role_id` 时，不改写旧数据库行；启动时只读映射到当前
-  SAGA2 角色配置：planner → system-overview、tester → system-debug、
-  artist/programmer/未选角色 → general-development。新会话仍必须显式提交项目和角色。
+- 历史四角色会话没有 `meka_role_id` 时，不改写旧数据库行；启动时将
+  planner / tester / artist / programmer / 未选角色统一只读映射到
+  `general-development`，避免把历史程序角色误解释成新的战斗开发角色。新会话仍必须显式
+  提交项目和角色。
 
 创建时冻结项目、角色和正式流程数据，后续普通 session patch 不能偷偷替换这些身份字段。
 
@@ -1025,24 +1062,24 @@ XDMaker `meka/main` 对应实现为核对正本。
 
 #### 4.8.1 XDMaker 功能清单与 Cindy 迁移核对
 
-| 功能                   | XDMaker 行为                                                                     | 本轮核对时 Cindy 状态                                           | 迁移动作                                                                       |
-| ---------------------- | -------------------------------------------------------------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| Meka 会话协同入口      | 已有 Meka Lead 会话显示协同开关                                                  | 缺失：仅允许 `workspaceKind=project`                            | 恢复 Meka 会话资格，继续排除 Worker、远程 Lead 和 device-link                  |
-| Meka 草稿协同入口      | Meka 新会话草稿可直接开启协同，发送前完成 Lead/首个 Worker 建立                  | 缺失：草稿因无本地 `workingDir` 被隐藏并强制关闭                | 允许 Meka 草稿显示和启用；由 Main 为 Meka 会话分配工作区                       |
-| 首个 Worker 目标       | 开启协同时可把本地目录或远程实例交给首个 Worker                                  | 部分：选择器能产出参数，但 `enableOrca` 调用链丢弃参数          | 补齐 Renderer、preload、IPC、lifecycle 全链透传                                |
-| 后续 Worker 目标       | 协同侧栏新建 Worker 可选择目标                                                   | 已有 UI 和调用，但需连同 Main/运行时复核                        | 保留 Cindy 现有侧栏布局与选择器                                                |
-| 本地 P4 目标           | 默认 P4 根；可选受设置管理的 SAGA2 子目录                                        | 已有 Main allowlist；当前包括 `saga2_design/json/unity/pm`      | 保留绝对路径归一化和 Main 侧精确白名单                                         |
-| 远程 MCPRouter 目标    | 仅当前项目已绑定、受支持且 available 的实例可选；远端物理路径不暴露给 Agent      | Main 校验已有；MCP 工具回执缺失                                 | 保留项目绑定重校验，恢复 `remote_host_id` 和安全回执                           |
-| Agent 主动建 Worker    | `create_worker` 支持 `working_dir` / `remote_host_id`                            | 缺失：schema 和 adapter 均未暴露目标字段                        | 恢复参数并复用同一个 Main 创建服务                                             |
-| 执行位置回执           | `create_worker` 返回 `execution_target`，防止远程请求静默落到本地                | 缺失                                                            | 恢复 local/remote 结构化回执；远程不返回物理路径                               |
-| Worker 项目/角色继承   | Worker 继承 Lead 的 Meka 项目、角色和冻结能力                                    | 严重缺失：Worker 只继承 cwd，未继承 `workspaceKind`、项目和角色 | 按 Cindy 已移除 snapshot 的现状，继承项目/角色绑定并重新解析同一直接运行时配置 |
-| Worker 目录展示        | Meka Worker 列表显示 P4 根、子目录或远程实例标签                                 | 缺失：Worker view model 未带 cwd/remoteHostId                   | 恢复字段和标签；普通 Cindy Worker 不显示 Meka 目录标签                         |
-| Worker→Lead 桥接       | 远程 Claude Worker 注入 `orca_worker_bridge`，结果可回传 Lead                    | 需复核：本地 bridge 已有，MCPRouter transport 投影需核对        | 以 XDMaker `8d2354939` 和 Cindy 当前 transport 对照                            |
-| Lead→Worker 调度与队列 | `send_to_worker`、busy queue、恢复、状态广播、错误可见                           | Cindy 上游实现已存在                                            | 不覆盖 Cindy 新实现，只做 Meka 回归                                            |
-| 远程 Claude Worker     | 经 MCPRouter tunnel + cc-manager 运行                                            | 已有 tunnel 基础，需端到端复核 bridge/runtime config            | 补定向测试，保留 Main fail-closed                                              |
-| 远程 Codex Worker      | Phase 4 经 cc-manager `codex-bridge`、bundle revision、thread routing 运行       | 已恢复；使用直接运行时 Skill 构造最小冻结 bundle                | 保留 gateway-key fail-closed；不为此恢复整套 S1 snapshot                       |
+| 功能                   | XDMaker 行为                                                                                                                                            | 本轮核对时 Cindy 状态                                           | 迁移动作                                                                       |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| Meka 会话协同入口      | 已有 Meka Lead 会话显示协同开关                                                                                                                         | 缺失：仅允许 `workspaceKind=project`                            | 恢复 Meka 会话资格，继续排除 Worker、远程 Lead 和 device-link                  |
+| Meka 草稿协同入口      | Meka 新会话草稿可直接开启协同，发送前完成 Lead/首个 Worker 建立                                                                                         | 缺失：草稿因无本地 `workingDir` 被隐藏并强制关闭                | 允许 Meka 草稿显示和启用；由 Main 为 Meka 会话分配工作区                       |
+| 首个 Worker 目标       | 开启协同时可把本地目录或远程实例交给首个 Worker                                                                                                         | 部分：选择器能产出参数，但 `enableOrca` 调用链丢弃参数          | 补齐 Renderer、preload、IPC、lifecycle 全链透传                                |
+| 后续 Worker 目标       | 协同侧栏新建 Worker 可选择目标                                                                                                                          | 已有 UI 和调用，但需连同 Main/运行时复核                        | 保留 Cindy 现有侧栏布局与选择器                                                |
+| 本地 P4 目标           | 默认 P4 根；可选受设置管理的 SAGA2 子目录                                                                                                               | 已有 Main allowlist；当前包括 `saga2_design/json/unity/pm`      | 保留绝对路径归一化和 Main 侧精确白名单                                         |
+| 远程 MCPRouter 目标    | 仅当前项目已绑定、受支持且 available 的实例可选；远端物理路径不暴露给 Agent                                                                             | Main 校验已有；MCP 工具回执缺失                                 | 保留项目绑定重校验，恢复 `remote_host_id` 和安全回执                           |
+| Agent 主动建 Worker    | `create_worker` 支持 `working_dir` / `remote_host_id`                                                                                                   | 缺失：schema 和 adapter 均未暴露目标字段                        | 恢复参数并复用同一个 Main 创建服务                                             |
+| 执行位置回执           | `create_worker` 返回 `execution_target`，防止远程请求静默落到本地                                                                                       | 缺失                                                            | 恢复 local/remote 结构化回执；远程不返回物理路径                               |
+| Worker 项目/角色继承   | Worker 继承 Lead 的 Meka 项目、角色和冻结能力                                                                                                           | 严重缺失：Worker 只继承 cwd，未继承 `workspaceKind`、项目和角色 | 按 Cindy 已移除 snapshot 的现状，继承项目/角色绑定并重新解析同一直接运行时配置 |
+| Worker 目录展示        | Meka Worker 列表显示 P4 根、子目录或远程实例标签                                                                                                        | 缺失：Worker view model 未带 cwd/remoteHostId                   | 恢复字段和标签；普通 Cindy Worker 不显示 Meka 目录标签                         |
+| Worker→Lead 桥接       | 远程 Claude Worker 注入 `orca_worker_bridge`，结果可回传 Lead                                                                                           | 需复核：本地 bridge 已有，MCPRouter transport 投影需核对        | 以 XDMaker `8d2354939` 和 Cindy 当前 transport 对照                            |
+| Lead→Worker 调度与队列 | `send_to_worker`、busy queue、恢复、状态广播、错误可见                                                                                                  | Cindy 上游实现已存在                                            | 不覆盖 Cindy 新实现，只做 Meka 回归                                            |
+| 远程 Claude Worker     | 经 MCPRouter tunnel + cc-manager 运行                                                                                                                   | 已有 tunnel 基础，需端到端复核 bridge/runtime config            | 补定向测试，保留 Main fail-closed                                              |
+| 远程 Codex Worker      | Phase 4 经 cc-manager `codex-bridge`、bundle revision、thread routing 运行                                                                              | 已恢复；使用直接运行时 Skill 构造最小冻结 bundle                | 保留 gateway-key fail-closed；不为此恢复整套 S1 snapshot                       |
 | 远程操作 Skill         | 先发现项目绑定实例；没有匹配实例时走实例/模板/绑定确认链；创建远程 Worker 前再征得用户确认，随后 `start_team` 并以 `remote_host_id` 建 Worker、核对回执 | 文案已在，但底层目标参数/回执缺失                               | 底层修复后同步文案和测试                                                       |
-| 重启与 idle resume     | 重建 Lead/Worker 关系；Worker resume 保留目标目录和远程宿主                      | Cindy 通用 Orca 已有，Meka 身份继承需补                         | 增加 Meka Worker 持久化/恢复定向测试                                           |
+| 重启与 idle resume     | 重建 Lead/Worker 关系；Worker resume 保留目标目录和远程宿主                                                                                             | Cindy 通用 Orca 已有，Meka 身份继承需补                         | 增加 Meka Worker 持久化/恢复定向测试                                           |
 
 #### 4.8.2 已确认的目标边界
 
