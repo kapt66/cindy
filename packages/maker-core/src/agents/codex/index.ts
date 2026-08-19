@@ -176,6 +176,7 @@ import {
   type SandboxPolicy,
   type ServiceTier,
   type SkillMetadata,
+  type SkillsExtraRootsSetResponse,
   type SkillsListResponse,
   type ThreadForkParams,
   type ThreadForkResponse,
@@ -346,6 +347,18 @@ function buildCodexDeveloperInstructions(parts: {
  */
 export function hostKey(remoteHostId?: string | null): string {
   return remoteHostId ? `remote:${remoteHostId}` : 'local';
+}
+
+function sessionHostKey(
+  remoteHostId: string | undefined,
+  skillRevision: string | undefined,
+): string {
+  const target = hostKey(remoteHostId);
+  return skillRevision ? `${target}:skills:${skillRevision}` : target;
+}
+
+function isLocalSessionHostKey(key: string): boolean {
+  return key === hostKey() || key.startsWith(`${hostKey()}:skills:`);
 }
 
 const LOCAL_CONTROL_PLANE_HOST_PREFIX = 'local-control:';
@@ -1286,6 +1299,8 @@ export class CodexAgent extends BaseAgent {
    * 当前切换完成,不能继续把新 session 挂到即将 retire 的旧 host 上。
    */
   private hostCredentialModeSwitches = new Map<string, Promise<void>>();
+  /** Blocks every local session host while a desktop-wide credential change commits. */
+  private localHostCredentialChange: Promise<void> | null = null;
 
   /**
    * app-server 启动时返回的 $CODEX_HOME 绝对路径 (InitializeResponse.codexHome)。
@@ -1375,7 +1390,6 @@ export class CodexAgent extends BaseAgent {
     const response = await host.request<SkillsListResponse>(Method.SkillsList, {
       cwds: [workingDir],
       forceReload,
-      perCwdExtraUserRoots: null,
     });
     const entry = response.data.find((item) => item.cwd === workingDir) ?? response.data[0];
     return {
@@ -1531,6 +1545,11 @@ export class CodexAgent extends BaseAgent {
 
   private async waitForHostCredentialModeSwitch(key: string): Promise<void> {
     while (true) {
+      const globalSwitch = isLocalSessionHostKey(key) ? this.localHostCredentialChange : null;
+      if (globalSwitch) {
+        await globalSwitch.catch(() => undefined);
+        continue;
+      }
       const switching = this.hostCredentialModeSwitches.get(key);
       if (!switching) return;
       await switching.catch(() => undefined);
@@ -1552,6 +1571,7 @@ export class CodexAgent extends BaseAgent {
       releaseSwitch = resolve;
     });
     this.hostCredentialModeSwitches.set(key, switchPromise);
+    this.localHostCredentialChange = switchPromise;
     let released = false;
 
     const cleanup = (): void => {
@@ -1560,14 +1580,26 @@ export class CodexAgent extends BaseAgent {
       if (this.hostCredentialModeSwitches.get(key) === switchPromise) {
         this.hostCredentialModeSwitches.delete(key);
       }
+      if (this.localHostCredentialChange === switchPromise) {
+        this.localHostCredentialChange = null;
+      }
       releaseSwitch();
     };
 
     const activeUseCount = (): number => {
-      const host = this.hosts.get(key);
-      return host
-        ? this.hostActiveUseCount(key, host)
-        : (this.hostSessionBindingLeases.get(key) ?? 0);
+      const keys = new Set<string>([key]);
+      for (const candidate of this.hosts.keys()) {
+        if (isLocalSessionHostKey(candidate)) keys.add(candidate);
+      }
+      for (const candidate of this.hostSessionBindingLeases.keys()) {
+        if (isLocalSessionHostKey(candidate)) keys.add(candidate);
+      }
+      return [...keys].reduce((total, candidate) => {
+        const host = this.hosts.get(candidate);
+        return total + (host
+          ? this.hostActiveUseCount(candidate, host)
+          : (this.hostSessionBindingLeases.get(candidate) ?? 0));
+      }, 0);
     };
 
     return {
@@ -1582,7 +1614,18 @@ export class CodexAgent extends BaseAgent {
       finalize: async () => {
         if (released) return;
         try {
-          await this.disposeLocalHostForCredentialChangeUnlocked(key, reason);
+          const keys = new Set<string>([key]);
+          for (const candidate of this.hosts.keys()) {
+            if (isLocalSessionHostKey(candidate)) keys.add(candidate);
+          }
+          for (const candidate of this.hostPromises.keys()) {
+            if (isLocalSessionHostKey(candidate)) keys.add(candidate);
+          }
+          await Promise.all(
+            [...keys].map((candidate) =>
+              this.disposeLocalHostForCredentialChangeUnlocked(candidate, reason),
+            ),
+          );
         } finally {
           cleanup();
         }
@@ -2870,7 +2913,12 @@ export class CodexAgent extends BaseAgent {
           providerId: opts.providerId,
           model: opts.model,
         });
-    const currentHostKey = hostKey(opts.remoteHostId);
+    const nativeSkillRevision = opts.nativeSkillRevision?.trim() || undefined;
+    const nativeSkillPluginPath = opts.nativeSkillPluginPath?.trim() || undefined;
+    if ((nativeSkillRevision === undefined) !== (nativeSkillPluginPath === undefined)) {
+      throw new Error('Codex native Skills require both a revision and plugin path');
+    }
+    const currentHostKey = sessionHostKey(opts.remoteHostId, nativeSkillRevision);
     let releaseHostBindingLease: (() => void) | null = null;
     const acquireHostBindingLeaseIfNeeded = (): void => {
       if (opts.remoteHostId || releaseHostBindingLease) return;
@@ -2882,12 +2930,19 @@ export class CodexAgent extends BaseAgent {
       release?.();
     };
     const getSessionHost = async (): Promise<AppServerHost> => {
-      if (opts.remoteHostId) return await this.getHost(opts.remoteHostId, credentialMode);
+      if (opts.remoteHostId) {
+        return await this.getHost(opts.remoteHostId, credentialMode, {
+          keyOverride: currentHostKey,
+        });
+      }
       // 本地会话先等已有 credential switch 完成，再占用 startup reservation。否则
       // session 已拿到旧 host、但尚未 thread/start 订阅时，credential 切换看不到它。
       await this.waitForHostCredentialModeSwitch(currentHostKey);
       acquireHostBindingLeaseIfNeeded();
-      return await this.getHost(opts.remoteHostId, credentialMode, { ignoreBindingLeases: 1 });
+      return await this.getHost(opts.remoteHostId, credentialMode, {
+        ignoreBindingLeases: 1,
+        keyOverride: currentHostKey,
+      });
     };
     const host = await getSessionHost().catch((error) => {
       releaseHostBindingLeaseIfNeeded();
@@ -2934,6 +2989,21 @@ export class CodexAgent extends BaseAgent {
       throw error;
     }
     if (initResp.codexHome) this.codexHome = initResp.codexHome;
+    if (nativeSkillPluginPath) {
+      const skillsRoot = path.join(nativeSkillPluginPath, 'skills');
+      try {
+        assertCurrentHost('skills/extraRoots/set');
+        await host.request<SkillsExtraRootsSetResponse>(Method.SkillsExtraRootsSet, {
+          extraRoots: [skillsRoot],
+        });
+        assertCurrentHost('skills/extraRoots/set');
+      } catch (error) {
+        releaseHostBindingLeaseIfNeeded();
+        throw new Error(
+          `Codex native Skill registration failed for revision ${nativeSkillRevision}: ${String(error)}`,
+        );
+      }
+    }
     // reviewer 路由的凭证模式判定: 远程 daemon 用的是 auth sync 推过去的
     // 同一份订阅凭证, reviewer 调用发生在 daemon 本地 — 订阅下走 daemon →
     // chatgpt.com 直连, 与本地订阅同构 (远端出网由用户网络或 agent-proxy
@@ -3440,7 +3510,13 @@ export class CodexAgent extends BaseAgent {
       if (!slash) return toAppServerInput(content, opts.workingDir);
 
       try {
-        const { skills } = await this.listSkillsForCwd(opts.workingDir, false);
+        const response = await host.request<SkillsListResponse>(Method.SkillsList, {
+          cwds: [opts.workingDir],
+          forceReload: false,
+        });
+        const skills =
+          (response.data.find((item) => item.cwd === opts.workingDir) ?? response.data[0])
+            ?.skills ?? [];
         const skill = skills.find(
           (item) => item.enabled && item.name.toLowerCase() === slash.name.toLowerCase(),
         );
@@ -9282,6 +9358,7 @@ export class CodexAgent extends BaseAgent {
     this.hostEffectiveCredentialModes.clear();
     this.hostSessionBindingLeases.clear();
     this.hostCredentialModeSwitches.clear();
+    this.localHostCredentialChange = null;
     // 进程重启后 server 端 in-memory enablement 会丢, 重置 push flag 让下次 ensure 再 push 一次
     this.memoryOverridePushedByHost.clear();
     // codexHome 也跟着 host 走: 下次 ensureStarted() 会用新 server 的返回值重新填,
@@ -9317,10 +9394,10 @@ export class CodexAgent extends BaseAgent {
   async forceDisposeLocalHostForAuthChange(reason = 'CodexAgent local auth changed'): Promise<void> {
     const keys = new Set<string>([hostKey()]);
     for (const key of this.hosts.keys()) {
-      if (isLocalControlPlaneHostKey(key)) keys.add(key);
+      if (isLocalControlPlaneHostKey(key) || isLocalSessionHostKey(key)) keys.add(key);
     }
     for (const key of this.hostPromises.keys()) {
-      if (isLocalControlPlaneHostKey(key)) keys.add(key);
+      if (isLocalControlPlaneHostKey(key) || isLocalSessionHostKey(key)) keys.add(key);
     }
     await Promise.all(Array.from(keys, (key) =>
       this.retireHostKey(key, reason, {

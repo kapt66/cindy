@@ -1,10 +1,13 @@
 import type { MekaRoleMcpEntry } from '../../shared/meka-projects.js';
 import {
-  isMekaManagedWorkspaceDir,
-  materializeMekaRuntimeSkills,
   resolveMekaRuntimeConfig,
   type MekaRuntimeConfig,
 } from '../meka-projects/runtimeConfig.js';
+import {
+  hasMekaSkillSnapshotEntries,
+  materializeMekaSkillSnapshot,
+  type MekaSkillSnapshot,
+} from '../meka-projects/skillSnapshot.js';
 import { prepareMekaRuntimeMcp } from '../mcp-integrations/meka-runtime-mcp.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
 import type { MakerSessionCreateOpts } from './sessionRequest.js';
@@ -22,11 +25,10 @@ export interface ApplyMekaRuntimeConfigDeps {
     providerIds: string[];
     inlineConfigs: Array<Extract<MekaRoleMcpEntry, { transport: unknown }>>;
   };
-  isManagedWorkspaceDir?: (workingDir: string) => boolean;
-  materializeRuntimeSkills?: (
-    workingDir: string,
+  materializeSkillSnapshot?: (
+    sessionId: string,
     skills: readonly MekaRuntimeConfig['skills'][number][],
-  ) => Promise<void>;
+  ) => Promise<MekaSkillSnapshot | null>;
   readPersistedSession?: (sessionId: string) => Promise<PersistedMekaSessionBinding | null>;
 }
 
@@ -35,8 +37,7 @@ export interface AppliedMekaRuntimeConfig {
   mcpProviderIds: string[];
   inlineMcpCount: number;
   skillsCount: number;
-  didMaterializeSkills: boolean;
-  didInlineSkills: boolean;
+  skillSnapshot: MekaSkillSnapshot | null;
 }
 
 function emptyResult(): AppliedMekaRuntimeConfig {
@@ -45,8 +46,7 @@ function emptyResult(): AppliedMekaRuntimeConfig {
     mcpProviderIds: [],
     inlineMcpCount: 0,
     skillsCount: 0,
-    didMaterializeSkills: false,
-    didInlineSkills: false,
+    skillSnapshot: null,
   };
 }
 
@@ -65,8 +65,25 @@ export async function applyMekaRuntimeConfig(
   opts: MakerSessionCreateOpts,
   deps: ApplyMekaRuntimeConfigDeps = {},
 ): Promise<AppliedMekaRuntimeConfig> {
+  const materializeSnapshot = deps.materializeSkillSnapshot ?? materializeMekaSkillSnapshot;
   if ((opts.vendorOptions as Record<string, unknown> | undefined)?.mekaRuntimeResolved === true) {
-    return emptyResult();
+    if (typeof opts.id !== 'string' || !opts.id.trim()) return emptyResult();
+    let skillSnapshot: MekaSkillSnapshot | null;
+    try {
+      skillSnapshot = await materializeSnapshot(opts.id, []);
+    } catch (error) {
+      throwIpcError(
+        'INVALID_PARAMS',
+        `Meka native Skill snapshot failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    if (skillSnapshot && hasMekaSkillSnapshotEntries(skillSnapshot) && !opts.remoteHostId) {
+      opts.nativeSkillPluginPath = skillSnapshot.pluginPath;
+      opts.nativeSkillRevision = skillSnapshot.revision;
+    }
+    return { ...emptyResult(), skillSnapshot };
   }
 
   let workspaceKind = opts.workspaceKind;
@@ -112,8 +129,6 @@ export async function applyMekaRuntimeConfig(
 
   const resolveRuntime = deps.resolveRuntimeConfig ?? resolveMekaRuntimeConfig;
   const prepareMcp = deps.prepareRuntimeMcp ?? prepareMekaRuntimeMcp;
-  const isManagedDir = deps.isManagedWorkspaceDir ?? isMekaManagedWorkspaceDir;
-  const materializeSkills = deps.materializeRuntimeSkills ?? materializeMekaRuntimeSkills;
 
   let runtime: MekaRuntimeConfig;
   try {
@@ -139,30 +154,26 @@ export async function applyMekaRuntimeConfig(
     );
   }
 
-  let didMaterializeSkills = false;
-  if (runtime.skills.length > 0 && !opts.remoteHostId && isManagedDir(opts.workingDir)) {
-    await materializeSkills(opts.workingDir, runtime.skills);
-    didMaterializeSkills = true;
+  if (typeof opts.id !== 'string' || !opts.id.trim()) {
+    throwIpcError('INVALID_PARAMS', 'Meka native Skills require a persisted session id');
+  }
+  let skillSnapshot: MekaSkillSnapshot | null;
+  try {
+    skillSnapshot = await materializeSnapshot(opts.id, runtime.skills);
+  } catch (error) {
+    throwIpcError(
+      'INVALID_PARAMS',
+      `Meka native Skill snapshot failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  if (skillSnapshot && hasMekaSkillSnapshotEntries(skillSnapshot) && !opts.remoteHostId) {
+    opts.nativeSkillPluginPath = skillSnapshot.pluginPath;
+    opts.nativeSkillRevision = skillSnapshot.revision;
   }
 
-  // Native agents discover materialized skills from app-managed workspaces. Real
-  // project roots (for example SAGA2's P4 workspace) must not be mutated, so keep
-  // the historical fallback: inline the selected Skill contracts into the frozen
-  // session prompt instead of silently dropping them.
-  const didInlineSkills = runtime.skills.length > 0 && !didMaterializeSkills;
-  const runtimePrompt = [
-    runtime.promptText.trim(),
-    ...(didInlineSkills
-      ? [
-          '# Configured Meka Agent Skills',
-          ...runtime.skills.map((skill) =>
-            [`## ${skill.name} (${skill.id})`, skill.content.trim()].join('\n\n'),
-          ),
-        ]
-      : []),
-  ]
-    .filter(Boolean)
-    .join('\n\n');
+  const runtimePrompt = runtime.promptText.trim();
   if (runtimePrompt) {
     opts.userPrompt = prependPromptSection(opts.userPrompt, runtimePrompt);
   }
@@ -183,7 +194,6 @@ export async function applyMekaRuntimeConfig(
     mcpProviderIds: mcp.providerIds,
     inlineMcpCount: mcp.inlineConfigs.length,
     skillsCount: runtime.skills.length,
-    didMaterializeSkills,
-    didInlineSkills,
+    skillSnapshot,
   };
 }

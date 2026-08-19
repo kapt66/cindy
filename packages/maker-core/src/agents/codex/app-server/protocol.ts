@@ -539,8 +539,13 @@ export interface ThreadSettingsUpdatedNotification {
 export interface SkillsListParams {
   cwds?: string[];
   forceReload?: boolean;
-  perCwdExtraUserRoots?: Array<{ cwd: string; extraUserRoots: string[] }> | null;
 }
+
+export interface SkillsExtraRootsSetParams {
+  extraRoots: string[];
+}
+
+export type SkillsExtraRootsSetResponse = Record<string, never>;
 
 export type SkillScope = 'user' | 'repo' | 'system' | 'admin';
 
@@ -1165,6 +1170,7 @@ export const Method = {
   Initialize: 'initialize',
   ModelList: 'model/list',
   SkillsList: 'skills/list',
+  SkillsExtraRootsSet: 'skills/extraRoots/set',
   ThreadStart: 'thread/start',
   ThreadResume: 'thread/resume',
   ThreadFork: 'thread/fork',

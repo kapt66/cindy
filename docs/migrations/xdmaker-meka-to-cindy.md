@@ -32,7 +32,7 @@
 | Meka 设置          | 迁移                     | P4、MCPRouter、MekaDesign 兼容设置                                    |
 | Meka 会话          | 迁移                     | 独立 workspace、项目/角色绑定、正式流程、侧栏分组                     |
 | 远程 MCPR          | 迁移                     | Router 登录、实例、绑定、隧道和 Worker 目标                           |
-| 远程 Codex Worker  | 已恢复                   | MCPRouter protocol 3 / bundle 0.0.6 控制通道与 app-server 隧道        |
+| 远程 Codex Worker  | 已恢复                   | MCPRouter protocol 3 / bundle 0.0.7 控制通道与 app-server 隧道        |
 | Orca Worker 微调   | 迁移                     | 仅迁入 Meka 目标选择和远程约束所需改动                                |
 | 打包发布           | 已迁移                   | 打包/发布分层；RustFS 上传、canary、stable promote 与 rollback 已接入 |
 | 项目与角色         | 迁移                     | 项目、角色、元数据、内置 SAGA2 与 6 个角色                            |
@@ -1105,7 +1105,7 @@ XDMaker `meka/main` 对应实现为核对正本。
    - Meka Worker 的列表、tab 与提示显示 P4 根/子目录名或
      “远程：实例名”；普通 Cindy Worker 不新增目录标签。
 6. **远程 Claude 协同工具隧道**
-   - Cindy 的 cc-manager bundle `0.0.6` 自报最高 protocol v3：v2 保留 Claude
+   - Cindy 的 cc-manager bundle `0.0.7` 自报最高 protocol v3：v2 保留 Claude
      query/session 与 host `toolGuards`，v3 才开放 tunneled MCP、immutable bundle 和
      Codex revision/thread routing。
    - 远端 daemon 为白名单服务建立 stdio `mcp-shim`，经 reverse request 回到
@@ -1146,12 +1146,13 @@ helper 套到普通草稿，会造成入口消失；该断链已修复并由策�
 `bundle/ensure`、revision register 和 thread register/unregister。远程侧只允许
 gateway-key；本地 OAuth、`auth.json` 与 loopback proxy 不跨机器分发。
 
-本次没有因此恢复 S1 snapshot 系统。Cindy 直接运行时已经解析出的项目/角色 Skill 会
-被稳定排序并冻结为 `catalog.json + SKILL.md` 最小 bundle；revision 对完整文件集做
-内容寻址。`maker-cc-manager` 现在是 MCPRouter 完整版 bundle 的源码真源，并同时携带
-`codex-bridge`、daemon loopback capability MCP 与最小 immutable Skill bundle 缓存；这些
-能力只投递 Cindy 已解析的项目/角色 Skill，不恢复 S1 capability snapshot/activation
-体系。MCPRouter 构建从 `CINDY_SRC` 重建并探测 `0.0.6/protocol 3`；按需下载的 runtime
+本次没有因此恢复 S1 capability snapshot/activation 系统。Cindy 直接运行时已经解析出的
+项目/角色 Skill 会以任务为单位冻结完整目录，revision 对排序后的路径和文件 SHA-256 做
+内容寻址；本地 Claude/Codex 通过原生 Skill 接口按需加载，MCPRouter 收到同一组快照字节。
+`maker-cc-manager` 现在是 MCPRouter 完整版 bundle 的源码真源，并同时携带
+`codex-bridge`、daemon loopback capability MCP 与 immutable Skill bundle 缓存；这些能力
+只投递 Cindy 已解析的项目/角色 Skill，不恢复 S1 的 activation 体系。MCPRouter 构建从
+`CINDY_SRC` 重建并探测 `0.0.7/protocol 3`；按需下载的 runtime
 manifest/cache 链路另行拒绝低于 `0.145.0` 的 Codex，并校验压缩包与裸二进制哈希。
 
 ### 4.9 Mobile 与 device-link
@@ -1874,7 +1875,7 @@ runtime 解析器。结果新会话只看到本地 P4 工作目录；即使项�
 角色中关于 `saga2-server`、MCPRouter 和 project-agent 的说明与 MCP provider 选择也没有进入
 本次 Agent 启动上下文。
 
-处理：新增 `maker-ipc/mekaRuntimeInjection.ts`，并在 `bootstrapSession` 的
+当时的处理是新增 `maker-ipc/mekaRuntimeInjection.ts`，并在 `bootstrapSession` 的
 `maker.createSession` 前单点调用。该 helper 只消费当前项目/角色已有配置：把解析出的
 prompt 前置到本次 `userPrompt`，保留用户自定义 prompt 的末段优先级；把 `source=meka`、
 `mekaProjectId`、`mekaRoleId`、`mekaMcpProviderIds` 和 inline MCP 配置写入
@@ -1882,6 +1883,9 @@ prompt 前置到本次 `userPrompt`，保留用户自定义 prompt 的末段优�
 或 `meka_design`。应用托管的历史兼容 workspace 会物化 runtime skills；普通 P4/自定义项目
 不会写 `.agents` 或 `.claude` 生成目录，而是把当前角色已选择的完整 Skill 正文内联到本次
 冻结 prompt，不能只注入项目/角色 prompt 后静默丢掉 Skill。
+
+上述“项目目录物化／正文内联”是 2026-08-07 的过渡实现，已由 6.32 的任务级原生 Skill
+快照替代；保留本段只用于解释当时事故与修复顺序，不代表当前行为。
 
 本次回归覆盖：`mekaRuntimeInjection.test.ts` 验证 Meka 会话会注入 prompt/MCP、非托管项目
 内联 Skill、非 Meka 会话不变、只有本机 app-managed workspace 才物化 runtime skills；
@@ -1902,9 +1906,9 @@ bootstrap 会优先用已持久化的项目/角色绑定恢复 lazy resume，并
    `workspaceKind=meka` 成为 Lead，导致 `start_team` 返回
    `collaboration requires a supported lead session`。Main 现将 `meka` 纳入支持类型，并继续按
    真实 P4 根目录读取项目级 collab 开关；未知类型、空目录和禁用状态仍 fail closed。
-2. 6.24 初版 helper 只在 app-managed workspace 物化 Skill，却漏掉历史实现对普通 P4/自定义
+2. 6.24 初版 helper 只在 app-managed workspace 物化 Skill，却漏掉当时对普通 P4/自定义
    项目的 prompt 内联兜底。结果 `remote-operations` 没进入会话，模型绕去 Router 通用工具和
-   Ghost 查目录。现恢复“托管目录物化、真实项目内联”的双路径，并记录
+   Ghost 查目录。当时恢复了“托管目录物化、真实项目内联”的双路径，并记录
    `didMaterializeSkills/didInlineSkills` 便于日志核对。
 
 远程操作 Skill 同步收敛为用户确认链：无匹配绑定实例时依次检查已有实例和模板，创建实例与
@@ -2030,6 +2034,34 @@ SAGA2 内置 Skill 同步区分更新、启动和停止意图，分别指向 `up
 数据；已安装插件无需重新授权或重新配置。自动化验证覆盖更新时的“停止 → 构建 → 准备 → 启动”顺序、
 Agent 目录不再出现底层操作，以及 SAGA2 Skill 的意图分流。真实服务器更新和 Electron 面板联动未在
 本轮执行，避免改变现有开发服务器状态。
+
+### 6.32 2026-08-18 Meka 角色 Skill 改为任务级原生渐进加载
+
+定位两个新任务的上下文差异后确认：通用角色选择了 36 个项目 Skill，加上 6 个内置 Skill，
+完整正文约 258k 字符；过渡实现为避免写入真实 P4／自定义项目，把所有正文内联到
+`userPrompt`，Claude/Codex 最终把它放入 system/developer 上下文。空任务约 5.2k tokens，
+通用角色因此达到约 149.8k system tokens。Skill 的 `description` 本应只用于初始匹配，完整
+`SKILL.md` 应在选中后读取。
+
+当前实现以 `<userData>/meka-skill-snapshots` 为宿主：首次启动按完整 Skill 目录生成内容寻址
+revision，并用原子 session binding 固定任务选择；空 catalog 同样冻结。快照保留脚本、引用、
+资产和二进制文件，只把稳定 Skill 名称／角色描述结构化写入入口 frontmatter，不写用户 workspace。
+恢复时按 binding 读取并逐文件验证大小、SHA-256、文件集合和路径安全；源角色后来变化或消失
+不改变已冻结字节，快照缺失、损坏或多出文件则明确阻断，绝不重新解析当前角色替代。
+
+Claude 使用 SDK local plugin；Codex 使用 app-server `skills/extraRoots/set`，并因该状态属于
+进程级而按 revision 隔离 host。两者都只在初始上下文暴露原生 catalog，完整 Skill 在选择后
+按需加载，不再存在正文 prompt fallback。MCPRouter Worker 通过 cc-manager
+`0.0.7/protocol 3` 的 `bundle/ensure` 接收同一快照字节，支持规范 base64 二进制文件并在
+会话生命周期成对 retain/release；空选择只冻结绑定而不投递空 bundle，普通 SSH 仅在实际
+含角色 Skill 时因没有等价投影而明确失败。单任务上限为 4096 个文件／64 MiB。本轮不修改
+数据库 schema、`cindy-protocol`、市场 Skill 绑定模型或用户项目。
+
+自动化覆盖完整目录和二进制资源、结构化 frontmatter、空 catalog、并发首次绑定、角色源消失
+后的恢复、快照篡改／额外文件／符号链接失败、Claude plugin 注入、Codex 注册时序与 revision
+host 隔离、注册失败早于 `thread/start`、MCPRouter 原始字节投递和远端引用释放；跨平台集成断言
+按 LF 规范化后兼容 Windows CRLF checkout。真实 Electron 任务的 `/context` 前后对比、macOS
+文件系统和真实 MCPRouter Worker 仍需发布前手测。
 
 ## 10. 后续继续迁移时的硬性注意事项
 

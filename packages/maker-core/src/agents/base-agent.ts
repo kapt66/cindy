@@ -934,6 +934,16 @@ export interface StartSessionOptions {
    */
   userPrompt?: string;
   /**
+   * Host-owned immutable Agent Skills plugin for this session. The path must be
+   * absolute on the machine running the harness. Claude loads it as a local
+   * plugin; Codex registers its `skills` directory as an extra native root.
+   *
+   * The companion revision partitions shared harness processes so sessions
+   * with different catalogs never observe one another's role skills.
+   */
+  nativeSkillPluginPath?: string;
+  nativeSkillRevision?: string;
+  /**
    * 是否启用 Maker Memory (本次 session 内). 跟 userPrompt 同模式 — renderer 启 session
    * 时透传当前 memoryMode='maker' → true, 'native' / 'off' → false。main 不持久化。
    *

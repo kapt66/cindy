@@ -2614,6 +2614,9 @@ export class ClaudeCodeAgent extends BaseAgent {
             includePartialMessages: true,
             ...thinkingOpts,
             ...(currentSdkEffort ? { effort: currentSdkEffort } : {}),
+            ...(opts.nativeSkillPluginPath
+              ? { plugins: [{ type: 'local', path: opts.nativeSkillPluginPath }] }
+              : {}),
             // settings 对象跟本地分支同源 — 不透传则远端 SDK 拿不到
             // showThinkingSummaries / autoMemoryEnabled, 远端行为跟本地分歧。
             settings: buildSettings(),
@@ -3080,6 +3083,9 @@ export class ClaudeCodeAgent extends BaseAgent {
             : {}),
           canUseTool,
           settingSources: ["user", "project", "local"],
+          ...(opts.nativeSkillPluginPath
+            ? { plugins: [{ type: 'local' as const, path: opts.nativeSkillPluginPath }] }
+            : {}),
           // Settings (SDK "flag settings" 层, 优先级最高 — 覆盖 user/project/local 文件层):
           //  - showThinkingSummaries        : reasoning summary 展示开关
           //  - autoMemoryEnabled / autoDream: memory 联动 (host 通过 runtimeConfig.memoryEnabled 或

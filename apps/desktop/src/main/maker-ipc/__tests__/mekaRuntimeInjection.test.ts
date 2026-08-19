@@ -9,6 +9,7 @@ import type { MakerSessionCreateOpts } from '../sessionRequest.js';
 
 function baseOpts(overrides: Partial<MakerSessionCreateOpts> = {}): MakerSessionCreateOpts {
   return {
+    id: 'session-1',
     agentKind: 'codex',
     model: 'gpt-test',
     workingDir: 'C:/Workspace/saga2/saga2_project',
@@ -30,6 +31,8 @@ function runtime(overrides: Partial<MekaRuntimeConfig> = {}): MekaRuntimeConfig 
         name: 'Remote Operation',
         description: 'Use bound MCPRouter instances.',
         content: '# Remote Operation',
+        sourceDirectory: 'C:/skills/remote-operation',
+        sourceEntryPath: 'C:/skills/remote-operation/SKILL.md',
       },
     ],
     mcp: [
@@ -60,7 +63,18 @@ describe('applyMekaRuntimeConfig', () => {
       userPrompt: 'USER PROMPT',
       vendorOptions: { onStderrLine: 'keep-me', orcaRole: 'lead' },
     });
-    const materialize = vi.fn();
+    const snapshot = {
+      revision: 'a'.repeat(64),
+      pluginPath: 'C:/CindyMeka/meka-skill-snapshots/revisions/a/claude-plugin',
+      files: [
+        {
+          relativePath: 'skills/remote-operation/SKILL.md',
+          contentBase64: 'IyBSZW1vdGUgT3BlcmF0aW9u',
+          digest: '1'.repeat(64),
+        },
+      ],
+    };
+    const materialize = vi.fn(async () => snapshot);
 
     const result = await applyMekaRuntimeConfig(opts, {
       resolveRuntimeConfig: vi.fn(async () => runtime()),
@@ -74,8 +88,7 @@ describe('applyMekaRuntimeConfig', () => {
           (entry): entry is Extract<typeof entry, { transport: unknown }> => 'transport' in entry,
         ),
       })),
-      isManagedWorkspaceDir: vi.fn(() => false),
-      materializeRuntimeSkills: materialize,
+      materializeSkillSnapshot: materialize,
     });
 
     expect(result).toMatchObject({
@@ -83,16 +96,14 @@ describe('applyMekaRuntimeConfig', () => {
       mcpProviderIds: ['mcp-router', 'project-agent', 'meka-design'],
       inlineMcpCount: 1,
       skillsCount: 1,
-      didMaterializeSkills: false,
-      didInlineSkills: true,
+      skillSnapshot: snapshot,
     });
     expect(opts.userPrompt).toBe(
-      'SAGA2 server code lives behind MCPRouter as saga2-server.\n\n' +
-        '# Configured Meka Agent Skills\n\n' +
-        '## Remote Operation (remote-operation)\n\n' +
-        '# Remote Operation\n\n' +
-        'USER PROMPT',
+      'SAGA2 server code lives behind MCPRouter as saga2-server.\n\nUSER PROMPT',
     );
+    expect(opts.userPrompt).not.toContain('# Remote Operation');
+    expect(opts.nativeSkillPluginPath).toBe(snapshot.pluginPath);
+    expect(opts.nativeSkillRevision).toBe(snapshot.revision);
     expect(opts.vendorOptions).toMatchObject({
       onStderrLine: 'keep-me',
       orcaRole: 'lead',
@@ -104,25 +115,57 @@ describe('applyMekaRuntimeConfig', () => {
         { id: 'local-http', transport: 'http', url: 'https://example.invalid/mcp' },
       ],
     });
-    expect(materialize).not.toHaveBeenCalled();
+    expect(materialize).toHaveBeenCalledWith(opts.id, runtime().skills);
   });
 
-  it('materializes configured runtime skills only for app-managed workspaces', async () => {
-    const opts = baseOpts({ workingDir: 'C:/Users/AppData/CindyMeka/meka-assistants/session-1' });
+  it('uses an immutable native Skill snapshot without mutating the workspace', async () => {
+    const opts = baseOpts({ workingDir: 'C:/Workspace/real-project' });
     const resolved = runtime();
-    const materialize = vi.fn(async () => undefined);
+    const snapshot = {
+      revision: 'b'.repeat(64),
+      pluginPath: 'C:/CindyMeka/meka-skill-snapshots/revisions/b/claude-plugin',
+      files: [
+        {
+          relativePath: 'skills/remote-operation/SKILL.md',
+          contentBase64: 'IyBSZW1vdGUgT3BlcmF0aW9u',
+          digest: '2'.repeat(64),
+        },
+      ],
+    };
+    const materialize = vi.fn(async () => snapshot);
 
     const result = await applyMekaRuntimeConfig(opts, {
       resolveRuntimeConfig: vi.fn(async () => resolved),
       prepareRuntimeMcp: vi.fn(() => ({ providerIds: [], inlineConfigs: [] })),
-      isManagedWorkspaceDir: vi.fn(() => true),
-      materializeRuntimeSkills: materialize,
+      materializeSkillSnapshot: materialize,
     });
 
-    expect(result.didMaterializeSkills).toBe(true);
-    expect(result.didInlineSkills).toBe(false);
-    expect(materialize).toHaveBeenCalledWith(opts.workingDir, resolved.skills);
+    expect(result.skillSnapshot).toBe(snapshot);
+    expect(materialize).toHaveBeenCalledWith(opts.id, resolved.skills);
+    expect(opts.nativeSkillPluginPath).toBe(snapshot.pluginPath);
+    expect(opts.nativeSkillRevision).toBe(snapshot.revision);
     expect(opts.userPrompt).toBe('SAGA2 server code lives behind MCPRouter as saga2-server.');
+  });
+
+  it('freezes an empty selection without mounting an empty native Skill plugin', async () => {
+    const opts = baseOpts();
+    const snapshot = {
+      revision: '0'.repeat(64),
+      pluginPath: 'C:/CindyMeka/meka-skill-snapshots/revisions/0/claude-plugin',
+      files: [
+        { relativePath: 'catalog.json', contentBase64: 'W10K', digest: '4'.repeat(64) },
+      ],
+    };
+
+    const result = await applyMekaRuntimeConfig(opts, {
+      resolveRuntimeConfig: vi.fn(async () => runtime({ skills: [], mcp: [] })),
+      prepareRuntimeMcp: vi.fn(() => ({ providerIds: [], inlineConfigs: [] })),
+      materializeSkillSnapshot: vi.fn(async () => snapshot),
+    });
+
+    expect(result.skillSnapshot).toBe(snapshot);
+    expect(opts.nativeSkillPluginPath).toBeUndefined();
+    expect(opts.nativeSkillRevision).toBeUndefined();
   });
 
   it('hydrates persisted legacy Meka bindings before resolving runtime config', async () => {
@@ -146,6 +189,7 @@ describe('applyMekaRuntimeConfig', () => {
       })),
       resolveRuntimeConfig,
       prepareRuntimeMcp: vi.fn(() => ({ providerIds: [], inlineConfigs: [] })),
+      materializeSkillSnapshot: vi.fn(async () => null),
     });
 
     expect(result.didApply).toBe(true);
@@ -162,39 +206,61 @@ describe('applyMekaRuntimeConfig', () => {
     const opts = baseOpts({ userPrompt: 'USER PROMPT' });
     const resolveRuntimeConfig = vi.fn(async () => runtime({ skills: [], mcp: [] }));
     const prepareRuntimeMcp = vi.fn(() => ({ providerIds: [], inlineConfigs: [] }));
+    const materializeSkillSnapshot = vi.fn(async () => null);
 
     const first = await applyMekaRuntimeConfig(opts, {
       resolveRuntimeConfig,
       prepareRuntimeMcp,
+      materializeSkillSnapshot,
     });
     const promptAfterFirstBootstrap = opts.userPrompt;
     const second = await applyMekaRuntimeConfig(opts, {
       resolveRuntimeConfig,
       prepareRuntimeMcp,
+      materializeSkillSnapshot,
     });
 
     expect(first.didApply).toBe(true);
     expect(second.didApply).toBe(false);
     expect(resolveRuntimeConfig).toHaveBeenCalledTimes(1);
     expect(prepareRuntimeMcp).toHaveBeenCalledTimes(1);
+    expect(materializeSkillSnapshot).toHaveBeenCalledTimes(2);
     expect(opts.userPrompt).toBe(promptAfterFirstBootstrap);
   });
 
-  it('inlines rather than materializes skills for remote sessions', async () => {
+  it('freezes remote skills without exposing the local snapshot path to the remote harness', async () => {
     const opts = baseOpts({ remoteHostId: 'mcpr:instance-1' });
-    const materialize = vi.fn(async () => undefined);
+    const snapshot = {
+      revision: 'c'.repeat(64),
+      pluginPath: 'C:/CindyMeka/meka-skill-snapshots/revisions/c/claude-plugin',
+      files: [
+        {
+          relativePath: 'skills/remote-operation/SKILL.md',
+          contentBase64: 'IyBSZW1vdGUgT3BlcmF0aW9u',
+          digest: '3'.repeat(64),
+        },
+      ],
+    };
+    const materialize = vi.fn(async () => snapshot);
 
     const result = await applyMekaRuntimeConfig(opts, {
       resolveRuntimeConfig: vi.fn(async () => runtime()),
       prepareRuntimeMcp: vi.fn(() => ({ providerIds: [], inlineConfigs: [] })),
-      isManagedWorkspaceDir: vi.fn(() => true),
-      materializeRuntimeSkills: materialize,
+      materializeSkillSnapshot: materialize,
     });
 
-    expect(result.didMaterializeSkills).toBe(false);
-    expect(result.didInlineSkills).toBe(true);
-    expect(materialize).not.toHaveBeenCalled();
-    expect(opts.userPrompt).toContain('# Configured Meka Agent Skills');
+    expect(result.skillSnapshot).toBe(snapshot);
+    expect(materialize).toHaveBeenCalledWith(opts.id, runtime().skills);
+    expect(opts.nativeSkillPluginPath).toBeUndefined();
+    expect(opts.nativeSkillRevision).toBeUndefined();
+    expect(opts.userPrompt).not.toContain('# Remote Operation');
+
+    const retried = await applyMekaRuntimeConfig(opts, {
+      materializeSkillSnapshot: materialize,
+    });
+    expect(retried.skillSnapshot).toBe(snapshot);
+    expect(opts.userPrompt).toBe('SAGA2 server code lives behind MCPRouter as saga2-server.');
+    expect(materialize).toHaveBeenCalledTimes(2);
   });
 
   it.each([

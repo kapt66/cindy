@@ -276,12 +276,15 @@ import {
   bindSessionRemoteCodex,
   ensureRemoteCodexCapability,
   releaseRemoteCodexCapability,
+  releaseSessionRemoteCodexCapability,
   unbindSessionRemoteCodex,
 } from '../maker-host/mcpr-codex-capability.js';
 import {
   buildMekaRemoteCodexBundle,
   type MekaRemoteCodexBundle,
 } from '../maker-host/meka-remote-codex-bundle.js';
+import { parseMcprRemoteHostId } from '../../shared/meka-router.js';
+import { hasMekaSkillSnapshotEntries } from '../meka-projects/skillSnapshot.js';
 import {
   clearSessionPersistState,
   consumeLastAssistantPersistId,
@@ -4317,6 +4320,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
     }
     if (status === 'closed') {
       try {
+        void releaseSessionRemoteCodexCapability(session.id);
         cleanupPendingInteractionsForSession(session.id, 'session_closed');
         // 会话关闭同样是"终止":退避窗口有 3–20 秒,期间会话可能被独立关掉(切 agent、
         // 远端断开、宿主回收)。只清 coordinator 不够 —— 排期中的定时器与悬空的重连记录
@@ -5405,11 +5409,14 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     return verdict.kind === 'reroute' ? verdict.providerId : undefined;
   }
 
-  async function bootstrapSession(o: CreateOpts): Promise<{
+  type BootstrapSessionResult = {
     session: Awaited<ReturnType<typeof maker.createSession>>;
     didInjectOrcaInstructions: boolean;
     didInjectProjectContext: boolean;
-  }> {
+  };
+  const inFlightSessionBootstraps = new Map<string, Promise<BootstrapSessionResult>>();
+
+  async function bootstrapSessionOnce(o: CreateOpts): Promise<BootstrapSessionResult> {
     await options.waitForAccountProviderModelsReady();
     const mekaRuntime = await applyMekaRuntimeConfig(o, {
       readPersistedSession: async (sessionId) => {
@@ -5434,8 +5441,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         mcpProviderIds: mekaRuntime.mcpProviderIds,
         inlineMcpCount: mekaRuntime.inlineMcpCount,
         skillsCount: mekaRuntime.skillsCount,
-        didMaterializeSkills: mekaRuntime.didMaterializeSkills,
-        didInlineSkills: mekaRuntime.didInlineSkills,
+        skillRevision: mekaRuntime.skillSnapshot?.revision ?? null,
       });
     }
     const didInjectOrcaInstructions = applyOrcaInstructions(o);
@@ -5478,7 +5484,58 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         if (reroute && !o.providerId) o.providerId = reroute;
       }
     }
-    const session = await maker.createSession(o);
+    const mcprInstanceId = parseMcprRemoteHostId(o.remoteHostId);
+    const skillSnapshot = mekaRuntime.skillSnapshot;
+    const hasNativeSkills = skillSnapshot ? hasMekaSkillSnapshotEntries(skillSnapshot) : false;
+    const remoteBundle = skillSnapshot && hasNativeSkills
+      ? buildMekaRemoteCodexBundle(skillSnapshot)
+      : null;
+    let remoteCapabilityRetained = false;
+    let previousRemoteHandle: ReturnType<typeof bindSessionRemoteCodex>;
+    if (hasNativeSkills && o.remoteHostId && !mcprInstanceId) {
+      throwIpcError(
+        'INVALID_PARAMS',
+        'Meka native Skills are not available on legacy SSH sessions; use a local or MCPRouter Worker task',
+      );
+    }
+    if (remoteBundle && mcprInstanceId) {
+      try {
+        const remotePluginPath = await ensureRemoteCodexCapability(mcprInstanceId, remoteBundle);
+        o.nativeSkillPluginPath = remotePluginPath;
+        o.nativeSkillRevision = remoteBundle.revisionHash;
+        if (typeof o.id === 'string') {
+          previousRemoteHandle = bindSessionRemoteCodex(o.id, {
+            instanceId: mcprInstanceId,
+            revisionHash: remoteBundle.revisionHash,
+          });
+          remoteCapabilityRetained = true;
+        }
+      } catch (error) {
+        throwIpcError(
+          'INVALID_PARAMS',
+          `Meka remote native Skill delivery failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+    let session: Awaited<ReturnType<typeof maker.createSession>>;
+    try {
+      session = await maker.createSession(o);
+      if (previousRemoteHandle) {
+        await releaseRemoteCodexCapability(
+          previousRemoteHandle.instanceId,
+          previousRemoteHandle.revisionHash,
+        );
+      }
+    } catch (error) {
+      if (remoteCapabilityRetained && typeof o.id === 'string' && remoteBundle && mcprInstanceId) {
+        unbindSessionRemoteCodex(o.id);
+        if (previousRemoteHandle) bindSessionRemoteCodex(o.id, previousRemoteHandle);
+        await releaseRemoteCodexCapability(mcprInstanceId, remoteBundle.revisionHash);
+      }
+      throw error;
+    }
     await markProjectContextIfNeeded(session.id, didInjectProjectContext);
     wireSessionToIpc(session);
     markOrcaMcpHydratedIfNeeded(session.id, o);
@@ -5551,6 +5608,30 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     }
 
     return { session, didInjectOrcaInstructions, didInjectProjectContext };
+  }
+
+  async function bootstrapSession(o: CreateOpts): Promise<BootstrapSessionResult> {
+    const sessionId = typeof o.id === 'string' && o.id ? o.id : null;
+    if (!sessionId) return bootstrapSessionOnce(o);
+    const active = maker.getSession(sessionId);
+    if (active) {
+      return {
+        session: active,
+        didInjectOrcaInstructions: false,
+        didInjectProjectContext: false,
+      };
+    }
+    const pending = inFlightSessionBootstraps.get(sessionId);
+    if (pending) return pending;
+    const bootstrap = bootstrapSessionOnce(o);
+    inFlightSessionBootstraps.set(sessionId, bootstrap);
+    try {
+      return await bootstrap;
+    } finally {
+      if (inFlightSessionBootstraps.get(sessionId) === bootstrap) {
+        inFlightSessionBootstraps.delete(sessionId);
+      }
+    }
   }
 
   // switchFocus 和 sendToWorker 都可能唤醒 idle worker；统一走这里才能保留 extraDirs。

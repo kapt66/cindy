@@ -68,6 +68,17 @@ per-workdir MEMORY.md index 快照 → per-call userPrompt，见 `claude-code/in
 - 在会话中途增删或重排 tool 定义、MCP server 注册。
 - 破坏 MEMORY.md「会话启动时快照、rewind 不刷新」的语义。
 
+Meka 项目角色 Skill 不属于 system prompt 正文。Host 只向 maker-core 传任务级不可变
+`nativeSkillPluginPath` 与 `nativeSkillRevision`：Claude 把路径交给 SDK local plugin，Codex
+在 `thread/start` 前调用 app-server `skills/extraRoots/set`。不得为兼容某个工作目录或远端
+transport 把完整 Skill 正文拼入 `userPrompt`；这会让每个 Skill 在尚未被选中前占用上下文，
+同时破坏稳定前缀的缓存收益。
+
+Codex 的 extra roots 是 app-server 进程级状态，因此共享 host 必须按 Skill revision 分区；
+同 revision 可复用，revision 不同必须使用不同 host。本地凭证切换、登出和 dispose 必须覆盖
+这些 revision host。显式 `/skill` 查询也必须走当前会话 host，不能借用未注册该 revision 的
+utility host。原生根注册失败必须发生在 `thread/start` 前并阻断启动。
+
 ### 3.2 性能／返回速度
 
 event loop（`AsyncQueue`）与 translator 是**每事件／每 token 都过一遍的热路径**。禁止在

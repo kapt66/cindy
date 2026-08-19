@@ -1,8 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('electron', () => ({
+  app: {
+    isPackaged: false,
+    getAppPath: vi.fn(() => process.cwd()),
+    getPath: vi.fn(() => process.cwd()),
+  },
+}));
+
 const hello = vi.fn(async () => ({
   protocolVersion: 3,
-  bundleVersion: '0.0.6',
+  bundleVersion: '0.0.7',
   capabilityMcpUrl: 'http://127.0.0.1:43210/mcp/lizi_capabilities',
   capabilityMcpToken: 'daemon-token',
 }));
@@ -14,6 +22,7 @@ const bundleRelease = vi.fn(async () => ({ released: true, removed: false }));
 const rpcOptions: unknown[] = [];
 
 vi.mock('@cindy/maker-cc-manager', () => ({
+  CC_MGR_BUNDLE_VERSION: '0.0.7',
   RpcClient: class {
     constructor(_stream: unknown, options: unknown) {
       rpcOptions.push(options);
@@ -59,6 +68,7 @@ import {
   bindSessionRemoteCodex,
   buildRemoteCodexBridgeHeader,
   ensureRemoteCodexCapability,
+  releaseSessionRemoteCodexCapability,
   resetMcprCodexCapabilityForTests,
   routeCodexThreadRegister,
   routeCodexThreadUnregister,
@@ -71,19 +81,19 @@ beforeEach(() => {
   readKey.mockReturnValue('gateway-key');
   hello.mockResolvedValue({
     protocolVersion: 3,
-    bundleVersion: '0.0.6',
+    bundleVersion: '0.0.7',
     capabilityMcpUrl: 'http://127.0.0.1:43210/mcp/lizi_capabilities',
     capabilityMcpToken: 'daemon-token',
   });
 });
 
 describe('MCPRouter Codex capability control', () => {
-  it('pins protocol 3 / bundle 0.0.6 and builds a gateway-only spawn header', async () => {
+  it('pins protocol 3 / bundle 0.0.7 and builds a gateway-only spawn header', async () => {
     const header = await buildRemoteCodexBridgeHeader('instance-1');
 
     expect(rpcOptions).toContainEqual(expect.objectContaining({
       protocolVersion: 3,
-      bundleVersion: '0.0.6',
+      bundleVersion: '0.0.7',
       enforceBundleVersion: true,
     }));
     expect(header).toMatchObject({
@@ -120,15 +130,30 @@ describe('MCPRouter Codex capability control', () => {
   });
 
   it('ensures the bundle before registering the revision', async () => {
-    await ensureRemoteCodexCapability('instance-1', {
-      revisionHash: 'revision-1',
-      files: [],
-    });
+    await expect(
+      ensureRemoteCodexCapability('instance-1', {
+        revisionHash: 'revision-1',
+        files: [],
+      }),
+    ).resolves.toBe('/remote/cache/revision');
     expect(bundleEnsure).toHaveBeenCalledWith('revision-1', [], expect.anything());
     expect(revisionRegister).toHaveBeenCalledWith('revision-1', expect.anything());
     expect(bundleEnsure.mock.invocationCallOrder[0]).toBeLessThan(
       revisionRegister.mock.invocationCallOrder[0]!,
     );
+  });
+
+  it('releases the retained bundle when revision registration fails', async () => {
+    revisionRegister.mockRejectedValueOnce(new Error('registration failed'));
+
+    await expect(
+      ensureRemoteCodexCapability('instance-1', {
+        revisionHash: 'revision-1',
+        files: [],
+      }),
+    ).rejects.toThrow('registration failed');
+
+    expect(bundleRelease).toHaveBeenCalledWith('revision-1', expect.anything());
   });
 
   it('routes thread registration to the remote daemon for a bound session', async () => {
@@ -156,6 +181,19 @@ describe('MCPRouter Codex capability control', () => {
     });
     expect(localRegister).not.toHaveBeenCalled();
     expect(localUnregister).not.toHaveBeenCalled();
+  });
+
+  it('releases the retained bundle once when its session closes', async () => {
+    bindSessionRemoteCodex('session-1', {
+      instanceId: 'instance-1',
+      revisionHash: 'revision-1',
+    });
+
+    await releaseSessionRemoteCodexCapability('session-1');
+    await releaseSessionRemoteCodexCapability('session-1');
+
+    expect(bundleRelease).toHaveBeenCalledTimes(1);
+    expect(bundleRelease).toHaveBeenCalledWith('revision-1', expect.anything());
   });
 
   it('fails closed when the gateway key is unavailable', async () => {

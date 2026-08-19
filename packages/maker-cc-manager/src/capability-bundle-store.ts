@@ -125,12 +125,22 @@ function validateFiles(files: unknown): asserts files is BundleFile[] {
       throw new BundleMaterializeError('bundle contains duplicate relPath', { relPath: candidate.relPath });
     }
     seen.add(candidate.relPath);
-    if (typeof candidate.content !== 'string' || !SHA256_RE.test(candidate.digest ?? '')) {
+    const hasText = typeof candidate.content === 'string';
+    const hasBase64 = typeof candidate.contentBase64 === 'string';
+    if (hasText === hasBase64 || !SHA256_RE.test(candidate.digest ?? '')) {
       throw new BundleMaterializeError('bundle file content or digest is invalid', {
         relPath: candidate.relPath,
       });
     }
-    const actualDigest = createHash('sha256').update(candidate.content, 'utf8').digest('hex');
+    const content = hasText
+      ? Buffer.from(candidate.content!, 'utf8')
+      : Buffer.from(candidate.contentBase64!, 'base64');
+    if (hasBase64 && content.toString('base64') !== candidate.contentBase64) {
+      throw new BundleMaterializeError('bundle file base64 payload is not canonical', {
+        relPath: candidate.relPath,
+      });
+    }
+    const actualDigest = createHash('sha256').update(content).digest('hex');
     if (actualDigest !== candidate.digest) {
       throw new BundleMaterializeError('bundle file digest mismatch', {
         relPath: candidate.relPath,
@@ -266,7 +276,11 @@ export class CapabilityBundleStore {
         for (const file of params.files) {
           const targetPath = await resolvePathInsideRoot(stagingPluginPath, file.relPath);
           await fs.mkdir(path.dirname(targetPath), { recursive: true });
-          await fs.writeFile(targetPath, file.content, 'utf8');
+          const content =
+            file.content !== undefined
+              ? Buffer.from(file.content, 'utf8')
+              : Buffer.from(file.contentBase64!, 'base64');
+          await fs.writeFile(targetPath, content);
         }
 
         try {

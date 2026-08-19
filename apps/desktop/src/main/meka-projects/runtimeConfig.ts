@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 import { app } from 'electron';
+import matter from 'gray-matter';
 
 import type {
   MekaProjectDefaultMetadataSelection,
@@ -48,6 +49,8 @@ export interface MekaRuntimeSkill {
   name: string;
   description: string;
   content: string;
+  sourceDirectory: string;
+  sourceEntryPath: string;
 }
 
 export interface MekaRuntimeConfig {
@@ -135,17 +138,18 @@ function parseSkillMetadata(
   name: string;
   description: string;
 } {
-  const block = /^(?:\uFEFF)?---\s*\r?\n([\s\S]*?)\r?\n---(?:\s*\r?\n|$)/.exec(content);
-  if (!block) return { name: fallbackId, description: '' };
-  let name = fallbackId;
-  let description = '';
-  for (const line of block[1]!.split(/\r?\n/)) {
-    const match = /^([A-Za-z][A-Za-z0-9_-]*):\s*(.*)$/.exec(line);
-    if (!match) continue;
-    const value = match[2]!.trim().replace(/^['"]|['"]$/g, '');
-    if (match[1]!.toLowerCase() === 'name' && value) name = value;
-    if (match[1]!.toLowerCase() === 'description') description = value;
+  let data: Record<string, unknown>;
+  try {
+    data = matter(content).data as Record<string, unknown>;
+  } catch (error) {
+    throw new Error(
+      `invalid Meka Skill frontmatter for ${fallbackId}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
   }
+  const name = typeof data.name === 'string' && data.name.trim() ? data.name.trim() : fallbackId;
+  const description = typeof data.description === 'string' ? data.description.trim() : '';
   return { name, description };
 }
 
@@ -322,13 +326,17 @@ function roleManifestDirectory(row: RoleRow): string {
 }
 
 async function readRoleRelativeFile(row: RoleRow, relativePath: string): Promise<string> {
+  return fs.readFile(resolveRoleRelativePath(row, relativePath), 'utf8');
+}
+
+function resolveRoleRelativePath(row: RoleRow, relativePath: string): string {
   const root = path.resolve(roleManifestDirectory(row));
   const candidate = path.resolve(root, relativePath);
   const relative = path.relative(root, candidate);
   if (path.isAbsolute(relative) || relative === '..' || relative.startsWith(`..${path.sep}`)) {
     throw new Error(`Meka role resource escapes the role directory: ${relativePath}`);
   }
-  return fs.readFile(candidate, 'utf8');
+  return candidate;
 }
 
 async function resolveRoleFile(row: RoleRow, projectFile: MekaProjectFile): Promise<MekaRoleFile> {
@@ -401,13 +409,16 @@ export async function resolveMekaRuntimeConfig(
       if (!SAFE_SKILL_ID_RE.test(selected.id)) {
         throw new Error(`invalid path-based Meka role skill id: ${selected.id}`);
       }
-      const content = await readRoleRelativeFile(role, selected.path);
+      const source = resolveRoleRelativePath(role, selected.path);
+      const content = await fs.readFile(source, 'utf8');
       const metadata = parseSkillMetadata(content, selected.id);
       skills.set(selected.id, {
         id: selected.id,
         name: metadata.name,
         description: selected.description ?? metadata.description,
         content,
+        sourceDirectory: path.dirname(source),
+        sourceEntryPath: source,
       });
       continue;
     }
@@ -421,6 +432,8 @@ export async function resolveMekaRuntimeConfig(
       name: metadata.name,
       description: metadata.description,
       content,
+      sourceDirectory: path.dirname(source),
+      sourceEntryPath: source,
     });
   }
 
@@ -453,6 +466,16 @@ export async function resolveMekaRuntimeConfig(
           description:
             configuredMetadata?.description ?? metadata.description ?? selection.sourcePath,
           content,
+          sourceDirectory: path.dirname(
+            path.resolve(
+              selection.rootPath ?? projectRoot ?? '',
+              ...selection.sourcePath.split('/'),
+            ),
+          ),
+          sourceEntryPath: path.resolve(
+            selection.rootPath ?? projectRoot ?? '',
+            ...selection.sourcePath.split('/'),
+          ),
         });
         break;
       }
@@ -489,80 +512,4 @@ export async function resolveMekaRuntimeConfig(
     mcp: [...mcp.values()],
     policyProviderRefs,
   };
-}
-
-function safeGeneratedSkillId(value: string): string {
-  return (
-    value
-      .toLowerCase()
-      .replace(/[^a-z0-9_-]+/g, '-')
-      .replace(/^-+|-+$/g, '') || 'skill'
-  );
-}
-
-async function writeRuntimeSkillRoot(
-  root: string,
-  skills: readonly MekaRuntimeSkill[],
-): Promise<void> {
-  await fs.mkdir(root, { recursive: true });
-  const manifestPath = path.join(root, '.meka-runtime-skills.json');
-  let previous: string[] = [];
-  try {
-    const parsed: unknown = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
-    if (Array.isArray(parsed) && parsed.every((item) => typeof item === 'string')) {
-      previous = parsed;
-    }
-  } catch {
-    // No previous generated projection.
-  }
-  const next = skills.map((skill) => `meka-${safeGeneratedSkillId(skill.id)}`);
-  for (const directory of previous) {
-    if (next.includes(directory) || !/^meka-[a-z0-9_-]+$/.test(directory)) continue;
-    const target = path.resolve(root, directory);
-    const relative = path.relative(path.resolve(root), target);
-    if (!relative || path.isAbsolute(relative) || relative.startsWith(`..${path.sep}`)) continue;
-    await fs.rm(target, { recursive: true, force: true });
-  }
-  for (let index = 0; index < skills.length; index += 1) {
-    const skill = skills[index]!;
-    const directory = next[index]!;
-    const target = path.join(root, directory);
-    await fs.mkdir(target, { recursive: true });
-    await fs.writeFile(path.join(target, 'SKILL.md'), skill.content, 'utf8');
-  }
-  await fs.writeFile(manifestPath, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
-}
-
-/** Materialize configured Skills into both native agent project-skill locations. */
-export async function materializeMekaRuntimeSkills(
-  workingDir: string,
-  skills: readonly MekaRuntimeSkill[],
-): Promise<void> {
-  if (!path.isAbsolute(workingDir)) throw new Error('Meka working directory must be absolute');
-  const managedRoot = path.resolve(app.getPath('userData'), 'meka-assistants');
-  const relative = path.relative(managedRoot, path.resolve(workingDir));
-  if (
-    !relative ||
-    path.isAbsolute(relative) ||
-    relative === '..' ||
-    relative.startsWith(`..${path.sep}`)
-  ) {
-    throw new Error('Meka runtime skills may only be written to an app-managed workspace');
-  }
-  await Promise.all([
-    writeRuntimeSkillRoot(path.join(workingDir, '.claude', 'skills'), skills),
-    writeRuntimeSkillRoot(path.join(workingDir, '.agents', 'skills'), skills),
-  ]);
-}
-
-export function isMekaManagedWorkspaceDir(workingDir: string): boolean {
-  if (!path.isAbsolute(workingDir)) return false;
-  const managedRoot = path.resolve(app.getPath('userData'), 'meka-assistants');
-  const relative = path.relative(managedRoot, path.resolve(workingDir));
-  return (
-    relative.length > 0 &&
-    !path.isAbsolute(relative) &&
-    relative !== '..' &&
-    !relative.startsWith(`..${path.sep}`)
-  );
 }

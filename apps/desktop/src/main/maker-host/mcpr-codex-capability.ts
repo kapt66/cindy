@@ -5,7 +5,7 @@
  * `codex-appserver` tunnel carries only Codex app-server NDJSON.
  */
 
-import { RpcClient } from '@cindy/maker-cc-manager';
+import { CC_MGR_BUNDLE_VERSION, RpcClient } from '@cindy/maker-cc-manager';
 import type { BundleFile, HelloResult } from '@cindy/maker-cc-manager';
 
 import { createLogger } from '../logger.js';
@@ -31,7 +31,6 @@ import { openMcprTunnel } from './mcpr-tunnel.js';
 const log = createLogger('mcpr-codex-capability');
 const CAPABILITY_SERVER_NAME = 'lizi_capabilities';
 const MCPR_CODEX_PROTOCOL_VERSION = 3;
-const MCPR_CODEX_BUNDLE_VERSION = '0.0.6';
 
 interface McprControlChannel {
   client: RpcClient;
@@ -72,7 +71,7 @@ async function getMcprControlChannel(instanceId: string): Promise<McprControlCha
     });
     const client = new RpcClient(bridgeStreamToDuplex(stream), {
       protocolVersion: MCPR_CODEX_PROTOCOL_VERSION,
-      bundleVersion: MCPR_CODEX_BUNDLE_VERSION,
+      bundleVersion: CC_MGR_BUNDLE_VERSION,
       enforceBundleVersion: true,
       clientId: 'cindy-meka-remote-codex',
     });
@@ -111,16 +110,30 @@ export interface RemoteCodexCapabilityBundle {
 export async function ensureRemoteCodexCapability(
   instanceId: string,
   bundle: RemoteCodexCapabilityBundle,
-): Promise<void> {
+): Promise<string> {
   const { client, closeState } = await getMcprControlChannel(instanceId);
+  let retained = false;
   try {
-    await client.bundleEnsure(bundle.revisionHash, bundle.files, {
+    const ensured = await client.bundleEnsure(bundle.revisionHash, bundle.files, {
       timeoutMs: RPC_REQUEST_TIMEOUT_MS,
     });
+    retained = true;
     await client.capabilityRevisionRegister(bundle.revisionHash, {
       timeoutMs: RPC_REQUEST_TIMEOUT_MS,
     });
+    return ensured.pluginPath;
   } catch (error) {
+    if (retained) {
+      await client.bundleRelease(bundle.revisionHash, {
+        timeoutMs: RPC_REQUEST_TIMEOUT_MS,
+      }).catch((releaseError) => {
+        log.warn('remote Codex capability rollback release failed', {
+          instanceId,
+          revisionHash: bundle.revisionHash,
+          error: releaseError instanceof Error ? releaseError.message : String(releaseError),
+        });
+      });
+    }
     throw enrichStreamClosedError(error, instanceId, closeState.info);
   }
 }
@@ -184,8 +197,10 @@ const remoteCodexByThread = new Map<
 export function bindSessionRemoteCodex(
   sessionId: string,
   handle: SessionRemoteCodexHandle,
-): void {
+): SessionRemoteCodexHandle | undefined {
+  const previous = remoteCodexBySession.get(sessionId);
   remoteCodexBySession.set(sessionId, handle);
+  return previous;
 }
 
 export function unbindSessionRemoteCodex(
@@ -197,6 +212,13 @@ export function unbindSessionRemoteCodex(
     if (binding.sessionId === sessionId) remoteCodexByThread.delete(threadId);
   }
   return handle;
+}
+
+/** Drop a session binding and release the daemon's matching bundle reference. */
+export async function releaseSessionRemoteCodexCapability(sessionId: string): Promise<void> {
+  const handle = unbindSessionRemoteCodex(sessionId);
+  if (!handle) return;
+  await releaseRemoteCodexCapability(handle.instanceId, handle.revisionHash);
 }
 
 export function routeCodexThreadRegister(
