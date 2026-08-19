@@ -828,6 +828,23 @@ export class AppServerHost {
     return rootThreadId ? this.subscribers.get(rootThreadId) : undefined;
   }
 
+  /**
+   * Register an app-server-confirmed parent/child relationship before the
+   * corresponding thread/started notification arrives. The Codex HTTP proxy
+   * can observe a collab_spawn request first; routing that explicit lineage
+   * here prevents the child's approval request from racing the notification.
+   * Unknown parents remain fail-closed.
+   */
+  registerDescendantThread(parentThreadId: string, childThreadId: string): boolean {
+    if (!parentThreadId || !childThreadId || parentThreadId === childThreadId) return false;
+    this.routeDescendantThreadStarted({
+      thread: { id: childThreadId, parentThreadId },
+    });
+    const rootThreadId = this.lineageRoots.get(parentThreadId)
+      ?? (this.subscribers.has(parentThreadId) ? parentThreadId : null);
+    return Boolean(rootThreadId && this.lineageRoots.get(childThreadId) === rootThreadId);
+  }
+
   private routeDescendantThreadStarted(params: ThreadStartedNotification['params']): void {
     const childThreadId = params.thread.id;
     const parentThreadId = params.thread.parentThreadId;

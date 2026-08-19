@@ -84,6 +84,9 @@ const sessionToThreads = new Map<string, Set<string>>();
 const threadToSession = new Map<string, string>();
 const reviewerModelBySession = new Map<string, string>();
 const httpRecoveryReasonByThread = new Map<string, string>();
+let childThreadRouteListener:
+  | ((args: { parentThreadId: string; childThreadId: string }) => void)
+  | null = null;
 
 const CODEX_AUTO_REVIEW_MODEL = 'codex-auto-review';
 const CODEX_GUARDIAN_SUBAGENT = 'guardian';
@@ -2647,6 +2650,15 @@ export function registerChildThread(parentThreadId: string, childThreadId: strin
   sessionToThreads.set(sessionId, threads);
   threadToSession.set(childThreadId, sessionId);
   registry.set(childThreadId, text);
+  try {
+    childThreadRouteListener?.({ parentThreadId, childThreadId });
+  } catch (error) {
+    log.error('codex child thread lineage listener failed', {
+      parentThreadId,
+      childThreadId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
   log.debug('registered codex child thread route', {
     sessionId,
     parentThreadId,
@@ -2654,6 +2666,16 @@ export function registerChildThread(parentThreadId: string, childThreadId: strin
     registrySize: registry.size,
   });
   return true;
+}
+
+/**
+ * Connect the proxy's early collab_spawn observation to maker-core's
+ * app-server lineage router. The Desktop owns one active CodexAgent instance.
+ */
+export function setCodexChildThreadRouteListener(
+  listener: typeof childThreadRouteListener,
+): void {
+  childThreadRouteListener = listener;
 }
 
 function clearSessionThreads(sessionId: string): string[] {

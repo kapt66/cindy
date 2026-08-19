@@ -14,6 +14,7 @@ import type {
   MekaRoleRule,
   MekaRoleSkillEntry,
   MekaRoleSkillSelection,
+  MekaRoleWorkflow,
 } from '../../shared/meka-projects.js';
 import { getDbClient } from '../localDb/client/current.js';
 import { createLogger } from '../logger.js';
@@ -56,10 +57,13 @@ export interface MekaRuntimeSkill {
 export interface MekaRuntimeConfig {
   projectId: string;
   roleId: string;
+  roleDisplayName: string;
+  workflowRecoveredFromRole: boolean;
   promptText: string;
   skills: MekaRuntimeSkill[];
   mcp: MekaRoleMcpEntry[];
   policyProviderRefs: string[];
+  workflow?: MekaRoleWorkflow;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -362,14 +366,81 @@ function resolveRoleRelativePath(row: RoleRow, relativePath: string): string {
   return candidate;
 }
 
-async function resolveRoleFile(row: RoleRow, projectFile: MekaProjectFile): Promise<MekaRoleFile> {
-  const manifest =
-    row.is_builtin === 1
-      ? (projectFile.builtinRoles?.find((role) => role.id === row.id) ??
-        (await readBuiltinRoleManifest(row.id, row.project_id)))
-      : await readCustomRoleManifest(row.id, app.getPath('userData'), row.project_id);
+function mergeById<T extends { id: string }>(
+  current: readonly T[],
+  required: readonly T[],
+): T[] {
+  const merged = new Map(current.map((entry) => [entry.id, entry]));
+  for (const entry of required) merged.set(entry.id, entry);
+  return [...merged.values()];
+}
+
+function mergeSkills(
+  current: readonly (MekaRoleSkillSelection | MekaRoleSkillEntry)[],
+  required: readonly (MekaRoleSkillSelection | MekaRoleSkillEntry)[],
+): Array<MekaRoleSkillSelection | MekaRoleSkillEntry> {
+  const key = (entry: MekaRoleSkillSelection | MekaRoleSkillEntry) =>
+    isLegacySkill(entry) ? entry.id : entry.skillId;
+  const merged = new Map(current.map((entry) => [key(entry), entry]));
+  for (const entry of required) merged.set(key(entry), entry);
+  return [...merged.values()];
+}
+
+function mergeMetadataSelections(
+  current: readonly MekaProjectMetadataSelection[],
+  required: readonly MekaProjectMetadataSelection[],
+): MekaProjectMetadataSelection[] {
+  const merged = new Map(current.map((entry) => [metadataKey(entry), entry]));
+  for (const entry of required) merged.set(metadataKey(entry), entry);
+  return [...merged.values()];
+}
+
+function upgradeLegacyBundledWorkflowRole(
+  manifest: MekaRoleFile,
+  bundled: MekaRoleFile,
+): { role: MekaRoleFile; recovered: boolean } {
+  if (manifest.workflow || !bundled.workflow) return { role: manifest, recovered: false };
+
+  // Project-owned role snapshots predate Host workflows. Missing workflow is
+  // the version marker: restore the current built-in contract in memory while
+  // retaining project-specific additions. Do not rewrite the P4-owned file.
+  return {
+    recovered: true,
+    role: {
+      ...manifest,
+      displayName: bundled.displayName,
+      description: bundled.description,
+      policyProviderRefs: bundled.policyProviderRefs,
+      workflow: bundled.workflow,
+      prompt: bundled.prompt,
+      promptFragments: bundled.promptFragments,
+      useProjectDefaults: bundled.useProjectDefaults,
+      skills: mergeSkills(manifest.skills, bundled.skills),
+      mcp: mergeById(manifest.mcp, bundled.mcp),
+      projectMetadataSelection: mergeMetadataSelections(
+        manifest.projectMetadataSelection ?? [],
+        bundled.projectMetadataSelection ?? [],
+      ),
+    },
+  };
+}
+
+async function resolveRoleFile(
+  row: RoleRow,
+  projectFile: MekaProjectFile,
+): Promise<{ role: MekaRoleFile; workflowRecoveredFromRole: boolean }> {
+  if (row.is_builtin === 1) {
+    const bundled = await readBuiltinRoleManifest(row.id, row.project_id);
+    const manifest = projectFile.builtinRoles?.find((role) => role.id === row.id) ?? bundled;
+    const upgraded = upgradeLegacyBundledWorkflowRole(manifest, bundled);
+    return {
+      role: upgraded.role,
+      workflowRecoveredFromRole: upgraded.recovered,
+    };
+  }
+  const manifest = await readCustomRoleManifest(row.id, app.getPath('userData'), row.project_id);
   if (!manifest) throw new Error(`Meka role manifest is missing: ${row.id}`);
-  return manifest;
+  return { role: manifest, workflowRecoveredFromRole: false };
 }
 
 /**
@@ -405,8 +476,9 @@ export async function resolveMekaRuntimeConfig(
   });
   if (!projectFile) throw new Error(`Meka project config is missing: ${projectId}`);
 
+  const resolvedRole = await resolveRoleFile(role, projectFile);
   const roleFile = mergeMekaProjectRoleDefaults(
-    await resolveRoleFile(role, projectFile),
+    resolvedRole.role,
     projectFile.roleDefaults ?? {},
   );
   roleFile.projectMetadataSelection = resolveRoleProjectMetadataSelections(
@@ -534,9 +606,12 @@ export async function resolveMekaRuntimeConfig(
   return {
     projectId,
     roleId,
+    roleDisplayName: roleFile.displayName,
+    workflowRecoveredFromRole: resolvedRole.workflowRecoveredFromRole,
     promptText: prompts.filter(Boolean).join('\n\n'),
     skills: [...skills.values()],
     mcp: [...mcp.values()],
     policyProviderRefs,
+    ...(roleFile.workflow ? { workflow: roleFile.workflow } : {}),
   };
 }

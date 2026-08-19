@@ -73,7 +73,10 @@ export {
   type AutoReviewDelegate,
   type AutoReviewRequest,
 } from './shared/auto-review-decision.js';
-export type { ReviewableAction } from './shared/auto-review.js';
+export {
+  classifyShellCommand,
+  type ReviewableAction,
+} from './shared/auto-review.js';
 // host 侧会话分享(导出/导入 .xdtshare)需要按 cwd 复算 CLI 转录目录、
 // 定位/落位 jsonl。规则单点维护在 claude-projects-fs.ts,这里仅 re-export。
 export {

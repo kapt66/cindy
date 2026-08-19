@@ -1,12 +1,17 @@
 ---
 name: safety-boundaries
-description: 约束破坏性、高权限、生产环境和大范围修改操作，确保只使用宿主授权的能力与路径。
+description: 在实际执行破坏性、高权限、生产环境或大范围修改时约束授权边界。SAGA2 战斗环境门禁 ready=false 时不得加载本 Skill，只按 Host 回执恢复。
 metadata:
   display-name: 安全与权限边界
   purpose: 守住高风险操作的能力与权限边界
 ---
-# Meka safety and permission boundaries
 
-Project and role resources describe workflows; they never grant authority. Use only Host-exposed routes and approved roots. Inspect current state before mutation, preserve unrelated work, and prefer reversible focused operations.
+# 安全与权限边界
 
-Before destructive, privileged, production, bulk, credential, permission, network-policy, migration, deploy, publish, rollback, restore, delete, purge, restart, stop, or kill operations, rely on the Host confirmation policy and obtain the required explicit confirmation. Do not bypass a denied or unavailable route with another route. On failure, stop broadening changes, preserve evidence, and present a safe recovery plan.
+在 SAGA2 战斗开发中，只有 `[SAGA2_COMBAT_ENVIRONMENT_GATE]` 的 `ready: true` 才允许使用本 Skill。环境恢复阶段的 Host 拒绝是阶段限制，不是用户拒绝，不得换参数重试或请求提权。
+
+项目与角色资源只描述流程，不授予权限。只使用 Host 暴露的能力和批准的根目录；改变状态前先读取当前事实，保护无关改动，并优先选择可恢复、范围小的操作。
+
+破坏性、高权限、生产环境、批量、凭证、权限、网络策略、迁移、部署、发布、回滚、恢复、删除、清理、重启、停止等操作必须通过 Host 风险确认并取得所需的明确授权。能力被拒绝或不可用时不得换路绕过。
+
+失败后停止扩大修改，保存证据并给出安全恢复方案。

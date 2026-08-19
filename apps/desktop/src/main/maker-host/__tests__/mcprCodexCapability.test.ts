@@ -36,14 +36,16 @@ vi.mock('@cindy/maker-cc-manager', () => ({
   },
 }));
 
-const listInstances = vi.fn(async () => [{
-  id: 'instance-1',
-  instanceId: 'instance-1',
-  agentType: 'codex',
-  workingDir: '/workspace/project',
-  supported: true,
-  available: true,
-}]);
+const listInstances = vi.fn(async () => [
+  {
+    id: 'instance-1',
+    instanceId: 'instance-1',
+    agentType: 'codex',
+    workingDir: '/workspace/project',
+    supported: true,
+    available: true,
+  },
+]);
 vi.mock('../../meka-settings/ipc.js', () => ({
   getMekaRouterService: () => ({ listInstances }),
 }));
@@ -68,6 +70,7 @@ import {
   bindSessionRemoteCodex,
   buildRemoteCodexBridgeHeader,
   ensureRemoteCodexCapability,
+  probeRemoteCodexCapability,
   releaseSessionRemoteCodexCapability,
   resetMcprCodexCapabilityForTests,
   routeCodexThreadRegister,
@@ -91,11 +94,13 @@ describe('MCPRouter Codex capability control', () => {
   it('pins protocol 3 / bundle 0.0.7 and builds a gateway-only spawn header', async () => {
     const header = await buildRemoteCodexBridgeHeader('instance-1');
 
-    expect(rpcOptions).toContainEqual(expect.objectContaining({
-      protocolVersion: 3,
-      bundleVersion: '0.0.7',
-      enforceBundleVersion: true,
-    }));
+    expect(rpcOptions).toContainEqual(
+      expect.objectContaining({
+        protocolVersion: 3,
+        bundleVersion: '0.0.7',
+        enforceBundleVersion: true,
+      }),
+    );
     expect(header).toMatchObject({
       version: 1,
       cwd: '/workspace/project',
@@ -143,6 +148,13 @@ describe('MCPRouter Codex capability control', () => {
     );
   });
 
+  it('probes the exact remote capability runtime without materializing a bundle', async () => {
+    await expect(probeRemoteCodexCapability('instance-1')).resolves.toBeUndefined();
+    expect(hello).toHaveBeenCalledTimes(1);
+    expect(bundleEnsure).not.toHaveBeenCalled();
+    expect(revisionRegister).not.toHaveBeenCalled();
+  });
+
   it('releases the retained bundle when revision registration fails', async () => {
     revisionRegister.mockRejectedValueOnce(new Error('registration failed'));
 
@@ -164,16 +176,9 @@ describe('MCPRouter Codex capability control', () => {
     const localRegister = vi.fn();
     const localUnregister = vi.fn();
 
-    routeCodexThreadRegister(
-      { threadId: 'thread-1', sessionId: 'session-1' },
-      localRegister,
-    );
+    routeCodexThreadRegister({ threadId: 'thread-1', sessionId: 'session-1' }, localRegister);
     await vi.waitFor(() => {
-      expect(threadRegister).toHaveBeenCalledWith(
-        'thread-1',
-        'revision-1',
-        expect.anything(),
-      );
+      expect(threadRegister).toHaveBeenCalledWith('thread-1', 'revision-1', expect.anything());
     });
     routeCodexThreadUnregister('thread-1', localUnregister);
     await vi.waitFor(() => {

@@ -107,6 +107,14 @@ export interface RemoteCodexCapabilityBundle {
   files: readonly BundleFile[];
 }
 
+/**
+ * Verify the exact remote capability runtime before a workflow reports MCPR as ready.
+ * The hello handshake enforces protocol/bundle compatibility and capability MCP presence.
+ */
+export async function probeRemoteCodexCapability(instanceId: string): Promise<void> {
+  await getMcprControlChannel(instanceId);
+}
+
 export async function ensureRemoteCodexCapability(
   instanceId: string,
   bundle: RemoteCodexCapabilityBundle,
@@ -124,15 +132,17 @@ export async function ensureRemoteCodexCapability(
     return ensured.pluginPath;
   } catch (error) {
     if (retained) {
-      await client.bundleRelease(bundle.revisionHash, {
-        timeoutMs: RPC_REQUEST_TIMEOUT_MS,
-      }).catch((releaseError) => {
-        log.warn('remote Codex capability rollback release failed', {
-          instanceId,
-          revisionHash: bundle.revisionHash,
-          error: releaseError instanceof Error ? releaseError.message : String(releaseError),
+      await client
+        .bundleRelease(bundle.revisionHash, {
+          timeoutMs: RPC_REQUEST_TIMEOUT_MS,
+        })
+        .catch((releaseError) => {
+          log.warn('remote Codex capability rollback release failed', {
+            instanceId,
+            revisionHash: bundle.revisionHash,
+            error: releaseError instanceof Error ? releaseError.message : String(releaseError),
+          });
         });
-      });
     }
     throw enrichStreamClosedError(error, instanceId, closeState.info);
   }
@@ -165,10 +175,7 @@ async function registerRemoteCodexThread(
   });
 }
 
-async function unregisterRemoteCodexThread(
-  instanceId: string,
-  threadId: string,
-): Promise<void> {
+async function unregisterRemoteCodexThread(instanceId: string, threadId: string): Promise<void> {
   try {
     const { client } = await getMcprControlChannel(instanceId);
     await client.capabilityThreadUnregister(threadId, {
@@ -189,10 +196,7 @@ export interface SessionRemoteCodexHandle {
 }
 
 const remoteCodexBySession = new Map<string, SessionRemoteCodexHandle>();
-const remoteCodexByThread = new Map<
-  string,
-  SessionRemoteCodexHandle & { sessionId: string }
->();
+const remoteCodexByThread = new Map<string, SessionRemoteCodexHandle & { sessionId: string }>();
 
 export function bindSessionRemoteCodex(
   sessionId: string,
@@ -203,9 +207,7 @@ export function bindSessionRemoteCodex(
   return previous;
 }
 
-export function unbindSessionRemoteCodex(
-  sessionId: string,
-): SessionRemoteCodexHandle | undefined {
+export function unbindSessionRemoteCodex(sessionId: string): SessionRemoteCodexHandle | undefined {
   const handle = remoteCodexBySession.get(sessionId);
   remoteCodexBySession.delete(sessionId);
   for (const [threadId, binding] of remoteCodexByThread) {
@@ -249,10 +251,7 @@ export function routeCodexThreadRegister(
   });
 }
 
-export function routeCodexThreadUnregister(
-  threadId: string,
-  localUnregister: () => void,
-): void {
+export function routeCodexThreadUnregister(threadId: string, localUnregister: () => void): void {
   const handle = remoteCodexByThread.get(threadId);
   remoteCodexByThread.delete(threadId);
   if (!handle) {
@@ -279,9 +278,7 @@ export async function buildRemoteCodexBridgeHeader(
   const target = (await getMekaRouterService().listInstances()).find(
     // `instanceId` here is parsed from `mcpr:<remoteHostId>`. The host ID is
     // built from the API record's stable `id`, not its display/name field.
-    (instance) => instance.id === instanceId
-      && instance.supported
-      && instance.available,
+    (instance) => instance.id === instanceId && instance.supported && instance.available,
   );
   if (!target) {
     throw new Error(

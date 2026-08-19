@@ -1,39 +1,26 @@
 ---
 name: saga2-overview
-description: 说明 SAGA2 在 MekaDesign、P4 策划与客户端、配置表、项目管理和 MCPR 远程服务器之间的工作边界与路由。
+description: 在项目环境已就绪后，说明 SAGA2 在 MekaDesign、P4、配置表、客户端、项目管理和 MCPR 远程服务器之间的边界。战斗环境门禁 ready=false 时不得加载。
 metadata:
   display-name: SAGA2 项目总览
   purpose: 在 SAGA2 各项目面之间正确路由工作
 ---
 
-# Saga2 repository overview
+# SAGA2 项目总览
 
-Saga2 work spans six independently governed project surfaces:
+SAGA2 的完整交付由六个独立治理的表面组成：
 
-- MekaDesign contains design-platform content and structured handoff data.
-- The P4 directory `saga2_design` contains product and gameplay design documentation.
-- The P4 directory `saga2_json` contains table/configuration sources plus their validation rules.
-- When the dedicated project-management tool starts local SAGA2 servers and asks for a project config
-  directory candidate, pass the direct child name `saga2_json`. If the Host reports that candidate exists,
-  ask the user whether to use it before adopting it; if no candidate exists, let the Host open its system
-  directory picker. Do not inspect or pass an absolute local path through plugin arguments.
-- For local server update, start, stop, status, or logs on the current computer, go directly through
-  `cindy:ghost_list`, select the plugin whose declared purpose covers MCPR project/local-server management,
-  and call `account_overview` followed by the single operation matching the user's intent. Use
-  `update_servers` for update/rebuild/deploy requests, `start_servers` for start requests, and
-  `stop_servers` for stop requests. Do not enumerate generic `mcp_router` tools, generic MCP instances,
-  remote Workers, or low-level build/prepare/process operations first. Never hard-code a `meka-dev-*`
-  runtime ID because development and installed identities differ.
-- The P4 directory `saga2_unity` contains the Unity client and editor tooling.
-- The P4 directory `saga2_pm` contains long-lived PM governance, AI development-flow dashboards, reusable Agent skills for delivery assessment, and version delivery/finalization records.
-- The bound remote project contains server code. An existing MCPR remote task/session is the first
-  route when the user asks the remote Agent to work in its selected project context. Repository
-  content is read or written through a remote Orca worker on the bound instance; server lifecycle,
-  deployment, health, branch, update, and delivery management uses the configured Host-provided
-  `project-agent` tools. Generic `mcp_router` operations are only for remote-instance discovery or
-  provisioning, not the default way to execute work; never use a Worker, SSH host, or local P4
-  workspace as a substitute for the matching route.
+- MekaDesign：设计平台内容与结构化交接数据。
+- `saga2_design`：P4 中的产品和玩法策划文档。
+- `saga2_json`：表格、配置源与校验规则。
+- `saga2_unity`：Unity 客户端与编辑器工具。
+- `saga2_pm`：项目治理、开发流程看板、交付评估 Skill 和版本记录。
+- MCPR 绑定远程项目：服务器代码，只能通过允许的远程项目能力访问。
 
-Read the selected repository's own `AGENTS.md` and relevant Agent Skills before acting. Treat cross-surface changes as an explicit contract: identify the source of truth, update consumers in dependency order, and verify each surface with its native checks. In game-project discussion, unqualified Chinese `技能` means a gameplay ability; do not redirect it to Agent Skill management. Do not copy version-sensitive project rules into this built-in overview.
+进入选定仓库后读取其 `AGENTS.md` 和命中的 Agent Skill。跨表面修改必须明确事实源，按依赖顺序更新消费者，并用各自的原生检查验证。项目内未限定的“技能”表示游戏玩法技能，不要误解为 Agent Skill。
 
-Saga2 term mapping: `服务器` / `server` = saga2-server, the game backend server project (the bound remote project — never an SSH host or a local directory); `客户端` / `client` = the `saga2_unity` subdirectory; `策划案` / `design documents` = the `saga2_design` subdirectory; `项目管理` / `PM` = the `saga2_pm` subdirectory; MekaDesign = the design platform producing system-feature UI designs importable into Unity as Prefabs; MCPRouter = the project team's internal tool platform. For current-computer server lifecycle, prefer the MCPR project-management plugin. For remote work, prefer the current MCPR remote session, then the remote Orca Worker for repository content, then the dedicated `project-agent` for remote project management, and only then generic `mcp_router` discovery/provisioning. Do not choose a broad underlying Router operation over a matching specialized route.
+术语映射：`服务器` 指绑定的 saga2-server 远程项目，不是 SSH 主机或本地目录；`客户端` 指 `saga2_unity`；`策划案` 指 `saga2_design`；`项目管理` 指 `saga2_pm`。
+
+远程工作优先继续现有 MCPR 任务；仓库内容使用远程 Orca Worker；项目和服务管理使用专用 `project-agent`；通用 `mcp_router` 只做发现和配置。不得用 SSH 或本地 P4 路径替代服务器远程项目。
+
+当前电脑上的 SAGA2 本地服务管理通过声明 MCPR 本地项目管理能力的插件执行：先用 `cindy:ghost_list` 发现能力，再调用 `account_overview` 和与用户意图唯一匹配的操作。配置目录候选只传直接子目录名 `saga2_json`；Host 确认存在后让用户确认，找不到时由 Host 打开系统目录选择器。不要把绝对本地路径传给插件，也不要硬编码开发期插件 ID。

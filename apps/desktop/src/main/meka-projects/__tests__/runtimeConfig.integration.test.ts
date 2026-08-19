@@ -1,8 +1,11 @@
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 
 const desktopRoot = path.resolve(__dirname, '../../../..');
+const environment = vi.hoisted(() => ({ p4RootPath: null as string | null }));
 
 vi.mock('electron', () => ({
   app: {
@@ -35,7 +38,11 @@ vi.mock('../../localDb/client/current.js', () => ({
 
 vi.mock('../../meka-settings/ipc.js', () => ({
   getMekaP4SettingsService: () => ({
-    get: async () => ({ p4RootPath: null, subfolders: [], extraDirs: [] }),
+    get: async () => ({
+      p4RootPath: environment.p4RootPath,
+      subfolders: [],
+      extraDirs: [],
+    }),
   }),
 }));
 
@@ -49,7 +56,7 @@ describe('Meka runtime project/role resolution', () => {
   it('uses the SAGA2 project and both built-in role manifests as the complete runtime source', async () => {
     const cases = [
       ['general-development', '# General development', true],
-      ['combat-development', '# Combat development', false],
+      ['combat-development', '# SAGA2 战斗开发', false],
     ] as const;
 
     for (const [roleId, promptHeading, hasDesign] of cases) {
@@ -58,10 +65,17 @@ describe('Meka runtime project/role resolution', () => {
       expect(resolved).toMatchObject({
         projectId: 'saga2',
         roleId,
+        roleDisplayName: roleId === 'combat-development' ? '战斗开发' : '通用开发',
+        workflowRecoveredFromRole: false,
         policyProviderRefs: ['meka-host-risk-policy', 'meka-p4-boundary-policy'],
       });
       expect(resolved.promptText).toContain('# Meka target framework');
       expect(resolved.promptText).toContain(promptHeading);
+      if (roleId === 'combat-development') {
+        expect(resolved.workflow).toBe('saga2-combat-development-v1');
+      } else {
+        expect(resolved.workflow).toBeUndefined();
+      }
       expect(resolved.skills.map((skill) => skill.id).sort()).toEqual(
         [
           'orca-coordination',
@@ -99,76 +113,87 @@ describe('Meka runtime project/role resolution', () => {
             expect.objectContaining({ id: 'project-agent', enabled: true }),
           ]),
         );
-        expect(resolved.promptText).toContain(
-          'Treat module configuration as server-executed behavior',
-        );
-        expect(resolved.promptText).toContain(
-          'do not infer server support from Unity authoring support alone',
-        );
-        expect(resolved.promptText).toContain(
-          'explicitly invoke `battle-designer-server-development`',
-        );
-        expect(resolved.promptText).toContain(
-          '`serverWorkflow.skillLoaded` is `true`',
-        );
-        expect(resolved.promptText).toContain(
-          'this role-specific workflow does not apply to normal server-programmer development',
-        );
-        expect(resolved.promptText).toContain(
-          'worker creation, dispatch success, or ordinary server output is not proof',
-        );
+        expect(resolved.promptText).toContain('## 0. 环境恢复');
+        expect(resolved.promptText).toContain('## 1. 只读探索');
+        expect(resolved.promptText).toContain('## 2. 集中澄清');
+        expect(resolved.promptText).toContain('## 3. 方案与审批');
+        expect(resolved.promptText).toContain('## 4. 实施与闭环');
+        expect(resolved.promptText).toContain('禁止从 Unity 当前窗口、当前选择、缓存');
+        expect(resolved.promptText).toContain('服务器代码');
+        expect(resolved.promptText).toContain('[SAGA2_COMBAT_SOLUTION]');
+        expect(resolved.promptText).toContain('targetSkillId:');
+        expect(resolved.promptText).toContain('battle-designer-server-development');
+        expect(resolved.promptText).toContain('validate_server_workflow_receipt');
+        expect(resolved.promptText).toContain('普通服务器程序员不走这条策划分支流程');
       }
       const saga2Overview = resolved.skills.find((skill) => skill.id === 'saga2-overview');
       const saga2OverviewContent = saga2Overview?.content.replace(/\r\n/g, '\n');
-      expect(saga2OverviewContent).toContain('pass the direct child name `saga2_json`');
-      expect(saga2OverviewContent).toContain('ask the user whether to use it before adopting it');
-      expect(saga2OverviewContent).toContain('let the Host open its system');
-      expect(saga2OverviewContent).toContain('directory picker');
-      expect(saga2OverviewContent).toContain('Do not inspect or pass an absolute local path');
-      expect(saga2OverviewContent).toContain(
-        'Use\n  `update_servers` for update/rebuild/deploy requests',
-      );
-      expect(saga2OverviewContent).toContain('`start_servers` for start requests');
-      expect(saga2OverviewContent).toContain('`stop_servers` for stop requests');
-      expect(saga2OverviewContent).toContain("single operation matching the user's intent");
+      expect(saga2OverviewContent).toContain('配置目录候选只传直接子目录名 `saga2_json`');
+      expect(saga2OverviewContent).toContain('由 Host 打开系统目录选择器');
+      expect(saga2OverviewContent).toContain('不要把绝对本地路径传给插件');
       {
         const remoteOperations = resolved.skills.find((skill) => skill.id === 'remote-operations');
         const orcaCoordination = resolved.skills.find((skill) => skill.id === 'orca-coordination');
         expect(remoteOperations).toBeDefined();
         const remoteOperationsContent = remoteOperations!.content;
-        expect(remoteOperationsContent).toContain(
-          'An existing MCPR remote task/session (`remoteHostId="mcpr:<instanceId>"`) is the first choice',
-        );
-        expect(remoteOperationsContent).toContain(
-          'Only use generic `mcp_router` tools as a control-plane fallback',
-        );
-        expect(remoteOperationsContent).toContain(
-          'generic tool merely because it can expose a broad underlying operation',
-        );
-        expect(remoteOperationsContent).toContain('The dedicated MCPRouter `project-agent` tools');
-        expect(
-          remoteOperationsContent.indexOf('Only use generic `mcp_router` tools'),
-        ).toBeGreaterThan(remoteOperationsContent.indexOf('An existing MCPR remote task/session'));
-        expect(remoteOperationsContent).toContain('ask whether to create that remote worker');
-        expect(remoteOperationsContent).toContain(
-          'the underlying read/edit request alone is not authorization to create one',
-        );
-        expect(remoteOperationsContent).toContain(
-          'include it as `initial_task` so worker creation and dispatch are one operation',
-        );
-        expect(remoteOperationsContent).toContain('the current Lead task MUST end immediately');
-        expect(remoteOperationsContent).toContain(
-          'do not ask another confirmation, do not call another tool, and do not wait, sleep, poll, or keep the turn alive',
-        );
-        expect(orcaCoordination?.content).toContain('continue an MCPR remote task/session');
-        expect(orcaCoordination?.content).toContain('Do not use a generic `mcp_router` operation');
-        expect(saga2Overview?.content).toContain(
-          'Generic `mcp_router` operations are only for remote-instance discovery',
-        );
-        expect(saga2Overview?.content).toContain(
-          'Do not choose a broad underlying Router operation over a matching specialized route',
-        );
+        expect(remoteOperationsContent).toContain('`remote_host_id="mcpr:<instanceId>"`');
+        expect(remoteOperationsContent).toContain('`execution_target.type="remote"`');
+        expect(remoteOperationsContent).toContain('`initial_task`');
+        expect(remoteOperationsContent).toContain('当前 Lead 回合立即结束');
+        expect(remoteOperationsContent).toContain('专用 `project-agent`');
+        expect(orcaCoordination?.content).toContain('远程任务优先继续已有 MCPR 任务');
+        expect(orcaCoordination?.content).toContain('不要用通用 `mcp_router`');
+        expect(saga2Overview?.content).toContain('通用 `mcp_router` 只做发现和配置');
       }
+    }
+  });
+
+  it('upgrades a legacy project-owned combat role to the current Host workflow in memory', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'cindy-meka-combat-role-'));
+    environment.p4RootPath = root;
+    try {
+      const project = JSON.parse(
+        await readFile(path.join(desktopRoot, 'resources/meka/projects/saga2/project.json'), 'utf8'),
+      ) as Record<string, unknown>;
+      const bundledRole = JSON.parse(
+        await readFile(path.join(desktopRoot, 'resources/meka/roles/combat-development.json'), 'utf8'),
+      ) as Record<string, unknown>;
+      const legacyRole = {
+        ...bundledRole,
+        workflow: undefined,
+        promptFragments: undefined,
+        displayName: 'Legacy combat role',
+        prompt: '# Legacy combat prompt',
+        skills: [
+          { skillId: 'meka-design-handbook', enabled: true },
+          ...(bundledRole.skills as unknown[]),
+        ],
+      };
+      await mkdir(path.join(root, '.meka'), { recursive: true });
+      await writeFile(
+        path.join(root, '.meka', 'project.json'),
+        `${JSON.stringify({ ...project, builtinRoles: [legacyRole] }, null, 2)}\n`,
+        'utf8',
+      );
+
+      const resolved = await resolveMekaRuntimeConfig('saga2', 'combat-development');
+
+      expect(resolved).toMatchObject({
+        roleDisplayName: '战斗开发',
+        workflow: 'saga2-combat-development-v1',
+        workflowRecoveredFromRole: true,
+      });
+      expect(resolved.promptText).toContain('# SAGA2 战斗开发');
+      expect(resolved.promptText).not.toContain('# Legacy combat prompt');
+      expect(resolved.skills.map((skill) => skill.id)).toEqual(
+        expect.arrayContaining(['meka-design-handbook', 'remote-operations']),
+      );
+      const persisted = await readFile(path.join(root, '.meka', 'project.json'), 'utf8');
+      expect(persisted).toContain('# Legacy combat prompt');
+      expect(persisted).not.toContain('saga2-combat-development-v1');
+    } finally {
+      environment.p4RootPath = null;
+      await rm(root, { recursive: true, force: true });
     }
   });
 });

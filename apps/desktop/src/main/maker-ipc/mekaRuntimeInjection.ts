@@ -1,5 +1,9 @@
 import type { MekaRoleMcpEntry } from '../../shared/meka-projects.js';
 import {
+  formatCombatEnvironmentGateReceipt,
+  runCombatEnvironmentGate,
+} from '../meka-projects/combatEnvironmentGate.js';
+import {
   resolveMekaRuntimeConfig,
   type MekaRuntimeConfig,
 } from '../meka-projects/runtimeConfig.js';
@@ -9,6 +13,8 @@ import {
   type MekaSkillSnapshot,
 } from '../meka-projects/skillSnapshot.js';
 import { prepareMekaRuntimeMcp } from '../mcp-integrations/meka-runtime-mcp.js';
+import { getMekaP4SettingsService, getMekaRouterService } from '../meka-settings/ipc.js';
+import { probeRemoteCodexCapability } from '../maker-host/mcpr-codex-capability.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
 import type { MakerSessionCreateOpts } from './sessionRequest.js';
 
@@ -38,6 +44,9 @@ export interface AppliedMekaRuntimeConfig {
   inlineMcpCount: number;
   skillsCount: number;
   skillSnapshot: MekaSkillSnapshot | null;
+  workflow: MekaRuntimeConfig['workflow'] | null;
+  workflowRecoveredFromRole: boolean;
+  combatEnvironmentReady: boolean | null;
 }
 
 function emptyResult(): AppliedMekaRuntimeConfig {
@@ -47,6 +56,9 @@ function emptyResult(): AppliedMekaRuntimeConfig {
     inlineMcpCount: 0,
     skillsCount: 0,
     skillSnapshot: null,
+    workflow: null,
+    workflowRecoveredFromRole: false,
+    combatEnvironmentReady: null,
   };
 }
 
@@ -54,6 +66,25 @@ function prependPromptSection(existing: unknown, section: string): string {
   const trimmedSection = section.trim();
   const existingPrompt = typeof existing === 'string' ? existing.trim() : '';
   return [trimmedSection, existingPrompt].filter(Boolean).join('\n\n');
+}
+
+const COMBAT_SERVER_WORKER_PROMPT = [
+  '[SAGA2_COMBAT_REMOTE_SERVER_WORKER]',
+  '当前任务是 MCPR 服务器仓 Worker，不是本地战斗开发 Lead。跳过本地主任务的 P4/UnityMCP 启动门禁。',
+  '先读取远端仓库 AGENTS.md，并在分析或修改前显式加载 battle-designer-server-development。',
+  '方案批准前只能只读探索；完成后必须返回该 Skill 要求的完整 serverWorkflow 回执。',
+  '[/SAGA2_COMBAT_REMOTE_SERVER_WORKER]',
+].join('\n');
+
+function roleContextPrompt(runtime: MekaRuntimeConfig): string {
+  return [
+    '[MEKA_ROLE_CONTEXT]',
+    `projectId: ${runtime.projectId}`,
+    `roleId: ${runtime.roleId}`,
+    `displayName: ${runtime.roleDisplayName}`,
+    '这是当前任务的权威角色绑定。不得根据打开的窗口、缓存文件或其它项目角色推断或替换当前角色。',
+    '[/MEKA_ROLE_CONTEXT]',
+  ].join('\n');
 }
 
 /**
@@ -89,7 +120,6 @@ export async function applyMekaRuntimeConfig(
   let workspaceKind = opts.workspaceKind;
   let projectId = opts.mekaProjectId ?? null;
   let roleId = opts.mekaRoleId ?? null;
-  let legacyRole = opts.mekaRole ?? null;
   let hydratedPersistedSession = false;
   if (
     typeof opts.id === 'string' &&
@@ -103,7 +133,6 @@ export async function applyMekaRuntimeConfig(
       workspaceKind = persisted.workspaceKind;
       projectId = persisted.mekaProjectId;
       roleId = persisted.mekaRoleId;
-      legacyRole = persisted.mekaRole;
       opts.workspaceKind = persisted.workspaceKind;
       opts.mekaProjectId = persisted.mekaProjectId;
       opts.mekaRoleId = persisted.mekaRoleId;
@@ -172,6 +201,55 @@ export async function applyMekaRuntimeConfig(
   if (runtimePrompt) {
     opts.userPrompt = prependPromptSection(opts.userPrompt, runtimePrompt);
   }
+  opts.userPrompt = prependPromptSection(opts.userPrompt, roleContextPrompt(runtime));
+
+  let combatEnvironmentReceipt: string | undefined;
+  let combatEnvironmentReady = false;
+  let isCombatServerWorker = false;
+  if (runtime.workflow === 'saga2-combat-development-v1') {
+    const isRemoteServerWorker =
+      Boolean(opts.remoteHostId) &&
+      ((opts.vendorOptions as Record<string, unknown> | undefined)?.orcaRole === 'worker' ||
+        opts.orcaRole === 'worker');
+    isCombatServerWorker = isRemoteServerWorker;
+    if (opts.agentKind !== 'claude-code' && opts.agentKind !== 'codex') {
+      throwIpcError(
+        'INVALID_PARAMS',
+        'SAGA2 combat workflow enforcement currently requires Claude Code or Codex',
+      );
+    }
+    if (opts.remoteHostId && !isRemoteServerWorker) {
+      throwIpcError(
+        'INVALID_PARAMS',
+        'SAGA2 combat development must run in the local P4/Unity workspace; use MCPRouter for server access',
+      );
+    }
+    if (isRemoteServerWorker) {
+      opts.userPrompt = prependPromptSection(opts.userPrompt, COMBAT_SERVER_WORKER_PROMPT);
+    } else {
+      const [p4Settings, router] = await Promise.all([
+        getMekaP4SettingsService().get(),
+        Promise.resolve(getMekaRouterService()),
+      ]);
+      const gate = await runCombatEnvironmentGate({
+        p4: p4Settings,
+        listInstances: () => router.listInstances(),
+        listProjectBindings: (selectedProjectId) => router.listProjectBindings(selectedProjectId),
+        probeRemoteCodexCapability,
+        projectId: runtime.projectId,
+      });
+      combatEnvironmentReady = gate.ready;
+      combatEnvironmentReceipt = formatCombatEnvironmentGateReceipt(gate, {
+        projectId: runtime.projectId,
+        roleId: runtime.roleId,
+        displayName: runtime.roleDisplayName,
+        workflow: runtime.workflow,
+        workflowRecoveredFromRole: runtime.workflowRecoveredFromRole,
+      });
+      opts.userPrompt = prependPromptSection(opts.userPrompt, combatEnvironmentReceipt);
+      opts.planMode = true;
+    }
+  }
 
   opts.vendorOptions = {
     ...(opts.vendorOptions ?? {}),
@@ -182,6 +260,29 @@ export async function applyMekaRuntimeConfig(
     mekaMcpProviderIds: mcp.providerIds,
     mekaMcpInlineConfigs: mcp.inlineConfigs,
     mekaPolicyProviderRefs: runtime.policyProviderRefs,
+    ...(runtime.workflow === 'saga2-combat-development-v1'
+      ? { codexNativeSubagentsDisabled: true }
+      : {}),
+    ...(runtime.workflow
+      ? {
+          mekaWorkflow:
+            runtime.workflow === 'saga2-combat-development-v1' &&
+            Boolean(opts.remoteHostId) &&
+            ((opts.vendorOptions as Record<string, unknown> | undefined)?.orcaRole === 'worker' ||
+              opts.orcaRole === 'worker')
+              ? 'saga2-combat-server-worker-v1'
+              : runtime.workflow,
+        }
+      : {}),
+    ...(runtime.workflow === 'saga2-combat-development-v1' && !isCombatServerWorker
+      ? {
+          mekaCombatEnvironmentReady: combatEnvironmentReady,
+          mekaCombatPlanApproved: false,
+          mekaCombatServerReceiptRequired: false,
+          mekaCombatServerReceiptValidated: true,
+          mekaCombatPhase: combatEnvironmentReady ? 'exploration' : 'environment-recovery',
+        }
+      : {}),
   };
 
   return {
@@ -190,5 +291,11 @@ export async function applyMekaRuntimeConfig(
     inlineMcpCount: mcp.inlineConfigs.length,
     skillsCount: runtime.skills.length,
     skillSnapshot,
+    workflow: runtime.workflow ?? null,
+    workflowRecoveredFromRole: runtime.workflowRecoveredFromRole,
+    combatEnvironmentReady:
+      runtime.workflow === 'saga2-combat-development-v1' && !isCombatServerWorker
+        ? combatEnvironmentReady
+        : null,
   };
 }

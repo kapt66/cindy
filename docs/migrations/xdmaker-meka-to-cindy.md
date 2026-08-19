@@ -68,8 +68,10 @@
 - Meka 设置：P4、MCPRouter、MekaDesign。
 - Meka 项目、角色、项目元数据和内置 SAGA2 数据。
 - SAGA2 内置项目在没有项目文件时使用包内基线；首次编辑后将完整项目配置和 2 个内置
-  角色快照写入已配置 P4 根目录下的 `.meka/project.json`，该文件存在期间作为唯一运行时
-  数据源，不再与包内配置合并。删除该文件即可重置并回退到包内项目和角色。
+  角色快照写入已配置 P4 根目录下的 `.meka/project.json`，该文件存在期间作为可编辑运行时
+  数据源。唯一例外是旧版内置战斗角色快照缺少 Host `workflow` 版本标记时，启动阶段在内存中
+  恢复当前包内战斗流程、提示词和必需 Skill/MCP，同时保留项目额外项且不改写文件；否则产品
+  升级后旧快照会永久绕过新门禁。删除项目文件仍可完整重置并回退到包内项目和角色。
 - 项目/角色配置直达 Agent 运行时：项目默认项、角色提示词/规则、Skill、项目元数据和
   MCP 均从当前项目与角色配置解析，不经过 capability snapshot。
 - Meka 项目配置支持 `basic.additionalPaths` 作为额外的只读绝对路径（最多 10 个，规范化
@@ -448,7 +450,9 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
     角色枚举；同时挂载 MekaDesign、UnityMCP、MCPRouter 和项目管理能力。
   - 战斗开发：只选择战斗设计、SkillEditor、战斗客户端与数据相关知识，挂载 UnityMCP、
     MCPRouter 和项目管理能力；模块配置按服务端执行契约处理，不能用 Unity 编辑能力推断
-    服务端已经支持。
+    服务端已经支持；生产流程先执行 P4、UnityMCP、MCPR 三项环境门，再进入只读探索、集中
+    澄清、方案确认、执行验证，目标技能 ID 和修改范围未由用户明确确认前不得从 Unity 当前
+    窗口、选中项、缓存或历史技能推断。
 - `combat-config` / `combat-debug` 历史会话迁移到 `combat-development`；
   `system-development` / `system-overview` / `system-debug` 迁移到
   `general-development`。项目文件中的这些旧内置快照从有效配置中过滤，但其他自定义角色
@@ -513,11 +517,29 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
   `project-agent`，使角色编辑器可直接审查服务器链路；项目默认项仍提供继承兜底。服务端
   仓库内容检查走已绑定 MCPR 远程项目，不能把本地 Unity 文件或 UnityMCP 查询当作服务端
   实现证据。
+- `combat-development` 绑定 `saga2-combat-development-v1` Host 工作流。任务启动时 Main
+  实际检查 P4 映射/写权限、UnityMCP 项目发现/进程与健康状态、MCPRouter 服务器项目绑定/
+  可用性；任一项失败即进入仅环境恢复状态并返回恢复指引，不开始业务探索。运行中通过自动挂载的
+  `mcp_router.check_combat_environment` 重跑同一检查；不新增插件选择步骤。
 - 战斗模块配置每次都执行服务端契约门，但远程代码实查采用分级策略：完全复用既有模块
   契约时，可引用与当前远程项目同一基线、能定位到具体服务器路径或符号的既有证据；新增或
   改变模块类型、字段编码、参数形态、执行语义，或证据缺失、过期、基线不明时，必须通过
   MCPR 读取当前服务器实现。需要实查而 MCPR 不可用或无授权时，在 Unity 资产写入前停止。
   Unity 类型表、资产保存和 JSON 导出成功都不能替代服务端证据。
+- 战斗角色中的资料与 Agent Skill 只用于定位；能力语义仍需以权威表/Schema 和导出格式、
+  客户端运行时消费代码、当前服务器实现组成确定性证据链。首次只读探索不得绑定 Unity 当前
+  窗口技能；探索后集中澄清技能 ID、修改模式、修改范围和未决业务语义。目标确认后完成专属
+  取证，明确给出模块/Timeline/客户端/服务器/配置的组合方案并取得用户同意，才允许修改
+  资产、表格、JSON、P4、分支或代码。证据不足时报告能力缺口，不得把需求硬套进可编辑的
+  Timeline 或既有模块。远端实例标识按不透明值处理，回复与项目内容均不得泄露 endpoint、
+  API key 或凭证。
+- 战斗角色在任何需求探索前必须用当前只读证据确认三条执行链：Meka P4 或命令行 `p4` 能
+  覆盖当前 SAGA2 客户端工作区并提供 edit/checkout，UnityMCP 连接正确 Unity 项目，已绑定的
+  SAGA2 服务器 MCPR 远程项目可达且可用。配置存在、缓存状态、可见窗口和历史成功都不能代替
+  当次检查。任一项失败时先协助完成设置、启动、绑定或诊断，不得继续战斗业务，也不得换用
+  直接文件写入、本地服务器猜测或 SSH。阶段切换与首次写操作前重新检查；中途出现断连、过期、
+  不可用或项目错配时，立即回到环境门并重跑全部三项，完整恢复后才继续，同时刷新可能因中断
+  而过期的 revision 与运行时证据。
 - 战斗策划需要服务器补能力时，战斗角色的远端任务必须先读取服务器仓 `AGENTS.md`，再显式
   调用服务器仓项目 Skill `battle-designer-server-development`。该流程只作用于战斗策划
   发起的跨仓开发，不改变普通服务端程序员的分支习惯。调用方必须校验远端回执中的
@@ -2119,6 +2141,142 @@ Session 的重建显式要求原 thread ID，只允许
 handle 并保留旧关联。主动 `/clear`、Agent 切换、消息删除后的显式上下文重建和新任务不带
 错误恢复标记，仍可合法 `thread/start`。定向验证覆盖 DB ID 覆盖陈旧快照、`SQLITE_BUSY`
 早停、恢复只调用 resume、返回 ID 不一致不覆写，以及 Agent 切换继续允许新建。
+
+### 6.34 2026-08-19 SAGA2 战斗开发改为 Host 强制工作流
+
+战斗开发此前主要依赖角色 prompt 和 Skill 自觉遵循环境门与阶段顺序，Full access、远端
+daemon 权限路径、Codex 进程级 HTTP MCP 冻结及远端 Worker 状态复用都可能绕开约束。本次在
+maker-core 增加通用 Host 工具/方案裁决接口，由 Desktop 以任务 `vendorOptions` 实现
+`saga2-combat-development-v1` 状态机；普通任务和通用开发角色不启用该门禁。
+
+本地 Lead 启动时实际检查 P4、UnityMCP、MCPR，并固定进入原生计划模式。环境失败只能恢复，
+环境通过后只读探索；方案卡必须提供目标技能 ID、修改方式、实现面、表/客户端/服务器证据、
+验证和剩余未知项，用户批准后每次写入前复检三项环境。UnityMCP HTTP 入口改为会话感知代理，
+Codex 冻结桥只保留代理定义，实际调用按当前任务选择和阶段裁决；连接异常回退环境恢复。
+方案字段使用占位值、非法修改模式或不含实际实现面时不能进入审批。
+
+服务器只读探索通过带固定标记的 MCPR Orca Worker，远端 Worker 使用独立
+`saga2-combat-server-worker-v1`，不继承或伪造本地主任务环境状态。Lead 批准记录只在当前
+Desktop 进程保留且有 24 小时上限，重启后保守地要求重新批准。战斗策划服务器流程必须加载
+`battle-designer-server-development`，并通过 `validate_server_workflow_receipt` 返回完整结构化
+证据；阻断态分支、Excel、生成物或运行时字段不能通过，`implemented` 必须证明独立工作分支。
+Worker 创建成功不等于服务器流程完成。本轮未新增用户需选择的插件，未修改 system
+prompt、translator、事件映射、数据库 schema 或 `cindy-protocol`。
+
+实际旧进程任务暴露出 `mekaRoleId=combat-development` 已持久化、但衍生 `mekaWorkflow`
+漏注入时门禁会 fail-open，模型随后扫描用户数据中的无关自定义角色并把当前角色误报成
+“通用开发”。当前改为以 SAGA2 战斗角色稳定 ID 兜底激活门禁；workflow 缺失时忽略任何残留
+ready 状态，只允许环境恢复，`check_combat_environment` 实查后修复标准 workflow。新任务从
+已解析角色配置注入 `[MEKA_ROLE_CONTEXT]`；环境回执也固定返回项目、角色、展示名、workflow
+恢复状态和三条链路结果，因此无须也不得再扫描角色缓存确认身份。服务器 Worker workflow
+仍优先于 Lead 兜底识别，避免把远端 Worker 套入本地 P4/UnityMCP 门禁。
+
+后续会话复盘又发现两个门禁缺口：完全访问下，`ghost_list` 和 Unity `telemetry_ping` 被
+误判成业务高风险调用；MCPR `call_tool(mcp_instance_tools)` 也因控制面工具未在项目工具表
+中而被拒绝，模型于是错误地改走本地技能扫描。当前补充启动诊断与 Router 控制面只读白名单，
+并在 MCPR 列表/调用失败或只读策略探针异常时立即清除 `mekaCombatEnvironmentReady`，只允许
+重新执行环境恢复，不允许继续本地业务探索。Claude Host 工作流任务继续先执行不可绕过的
+Host 与 capability 门禁；门禁允许后，Full access 不再进入普通 MCP 权限审批。
+
+真实 Codex 任务 `dc48d8c9-6fcd-4054-bf1e-9f622cffa289` 进一步证明 Codex 的
+`mcpServerElicitation` 仍让 `prompt-each-time` 覆盖 Full access，导致
+`mcp_router.check_combat_environment` 在用户已选完全访问且再次明确允许后仍连续被拒绝；同时
+实际 SAGA2 `.meka/project.json` 中的战斗角色是早于 workflow 字段的旧快照，运行时仍会读取旧
+英文提示。当前 Codex 改为先执行 capability route 与 Host workflow 裁决，二者允许后按 Full
+access 静默接受普通 MCP elicitation；Host deny 仍不可绕过。内置战斗角色旧快照在 agent 启动
+前按稳定 ID 进行只读内存迁移，并在 Main 日志记录 workflow 恢复状态与环境门总体结果。定向
+回归使用真实 `mcp_router/check_combat_environment` 元数据形态，另覆盖 Host deny 的反向边界。
+同一任务的运行态复测进一步发现 app-server 的实际 elicitation `_meta` 可能没有 `tool_name`；
+此时从同一 turn、同一 server 的唯一活动 `mcpToolCall` 补全后再执行 Host 裁决，匹配不唯一则
+保持未知并安全拒绝，避免把环境检查误判为方案前写操作。运行态连续调用进一步证明已完成的
+MCP item 不能残留到 turn 结束，否则后续 `list_tools`/复检会因多候选再次被拒；当前在 item
+完成边界立即清理。Windows 只读探索中的纯 `Select-String` 也纳入战斗 Host 白名单，但只接受
+无变量展开、命令串联、管道、重定向或敏感 PowerShell provider 的单一查询，不能放大为通用
+PowerShell 免审入口。
+
+第三次真实任务复测还显示，Host 启动 preflight 虽然先于 Agent 且三项均为 ready，模型仍会
+先加载 Skill、创建本地子任务，之后才在对话中报告环境；Codex 读取完整 Skill 时生成的
+`$s=Get-Content ...; $s.Length; $s` 只读探针也会被误显示为用户拒绝；同时通用远程 Skill
+又要求用户重复授权战斗流程强制的只读 MCPR Worker。当前启动回执改为要求首条可见消息先回显
+“战斗开发”与 P4、UnityMCP、MCPR 三项状态，回显前禁止 Skill/Worker/其它工具；战斗 Lead
+不再创建本地 Worker 代替服务器核对。Host 仅对白名单快照内单个 `SKILL.md` 的上述固定只读
+探针，以及固定 `$paths` / `Test-Path` / `Get-Content | Measure-Object -Line` 的多入口行数统计
+循环放行；所有路径仍必须是内容寻址快照内的 `SKILL.md`，并继续拒绝其它文件、路径穿越、写入、
+重定向、任意附加命令和脚本变体。已绑定可用实例上的、带
+`[SAGA2_SERVER_EXPLORATION_READ_ONLY]` 且由 Host 限制为只读的 MCPR Worker 不再重复询问
+授权；绑定实例、服务器写入、分支与服务管理仍保持原确认边界。
+
+第五次真实任务 `31daa9cc-bff2-464e-8f02-f6ef7e0d4023` 的启动身份、三项环境回显和 Full
+access 首轮行为已经正确，但继续暴露两条运行时竞态。第一，Codex 原生子任务的
+`collab_spawn` 请求早于 app-server `thread/started` 时，proxy 虽已继承业务任务与产品 prompt，
+app-server 审批路由尚不知道 child lineage，因而把只读 `Get-Content` 记为
+`approval without subscriber` 并拒绝。当前 proxy 在确认父任务 owner 后同步通知
+`CodexAgent`，由持有父订阅的 Host 幂等登记后代；未知父和 owner 冲突仍 fail-closed。
+
+第二，Codex code mode 调用 `cindy_orca.create_worker` 和 `cindy.ghost_call` 时，真实
+elicitation 缺少 `tool_name`，完整实参只存在 `toolParams`。战斗 Host 现在只按第一方 schema 的
+唯一形态识别带只读标记的 MCPR `create_worker` 与 `meka-p4/p4_status`，不按 server 名整体放行；
+缺标记、远端目标错误、P4 写操作和未知结构继续拒绝。角色同时固定方案前本地 Skill/规则/表格/
+客户端代码由 Lead 自己读取，禁止本地原生子任务；服务器证据仍只走 MCPR Worker。环境 ready
+回执不再诱导逐项重复探针，阶段切换和故障恢复统一使用 `check_combat_environment`。
+
+第六次真实任务 `615bb372-dc3c-466d-9367-e2bb2de7b9b1` 验证了三项启动门和角色身份回显均已
+正确，但也暴露“禁止本地原生子任务”仅靠角色 prompt 无法生效：Codex 的 Multi-Agent V2
+developer 段要求优先委派仓库规则读取，模型因此创建本地只读子任务；子任务的组合命令随后进入
+只读审批并记录为 `exec command rejected by user`，与用户选择的完全访问不一致。当前把该约束
+下沉到 Host：战斗 runtime 注入 `codexNativeSubagentsDisabled`，maker-core 将它纳入 Host 隔离键，
+Desktop 对该 Host 启动参数注入 `agents.enabled=false`。普通角色仍保留全局按需委派，不受影响。
+
+第七次真实任务 `8d710e7b-5cbe-4298-9223-21b9e3a0d47b` 验证了战斗角色、完全访问、三项
+启动回显和 `agents.enabled=false` Host 隔离，但继续发现两项真实环境缺口。其一，Codex 读取
+内置 Skill 快照时生成 `(Get-Content -LiteralPath '<snapshot>/SKILL.md').Count`，原白名单未覆盖，
+因此被错误记录为 `exec command rejected by user`；当前仅对内容寻址快照内单个 `SKILL.md` 的
+这一精确形态静默放行，继续拒绝其它文件、路径逃逸、写入和附加命令。其二，MCPR 实例虽在线
+且已绑定，创建远端 Worker 时 capability 返回客户端 bundle `0.0.7`、服务端 `0.0.6` 不匹配；
+旧环境复检只看在线/绑定，错误地重新报告 ready 并允许继续澄清需求。当前启动和运行期环境门
+都会对候选服务器执行真实 capability hello，只有 cc-manager bundle/protocol 精确匹配且支持
+原生 Skill 投递才算 MCPR ready。版本错配在 Skill、Worker 和业务探索前进入环境恢复，并以
+不含 endpoint、实例 ID、路径或凭证的回执明确显示两端 bundle 版本；不允许客户端降级绕过。
+
+第八次真实任务 `af0c3b1c-7e24-42d0-a3ab-60e4ea1cf145` 的首条回复已正确回显战斗开发、
+P4/UnityMCP ready、MCPR blocked 及客户端 `0.0.7`/远端 `0.0.6`，且没有加载 Skill、创建
+Worker 或进入需求澄清；但模型随后在环境恢复阶段调用 `mcp_router.list_tools` 时仍收到
+`user rejected MCP tool call`。根因不是 Full access 映射或 elicitation 血缘，而是状态机只在
+环境 ready 分支把 `list_tools` 识别为只读，blocked 分支的恢复白名单漏了同一工具。当前将
+`list_tools` 纳入环境恢复窄白名单并增加 blocked + `mcp:mcp_router` 实际元数据形态回归；它只
+允许查询可用恢复能力，不放行远端升级、重启或其它副作用操作。
+
+第九次真实任务 `106d9dfb-5065-46d4-b1e9-e548db1803b5` 证明 `list_tools` 已在 Full access
+下静默成功，启动身份、版本阻断和统一复检也正确；随后 `call_tool(mcp_list_instances)` 仍被
+记录为 `user rejected MCP tool call`。原因是恢复白名单只检查外层 `call_tool` 名称，没有复用
+ready 分支已有的内层 `READ_ONLY_ROUTER_CONTROL_TOOLS` 分类。当前 blocked 分支仅对该固定集合
+中的 `mcp_list_instances`、`mcp_instance_tools` 等只读查询放行；`mcp_create_key` 等变更调用仍
+被拒绝，并以真实 code-mode `toolParams.name` 形态覆盖正反向测试。
+
+第十次真实任务 `306a01d1-3e05-4a3c-b5d3-d486f81111e9` 首轮已正确在版本错配处停止，补充
+环境诊断时也证明 `call_tool(mcp_list_instances)` 可静默通过 Host；但上游原始结果把静态实例
+endpoint 连同可复用 query key 返回给 Agent 并写入本地 rollout。界面未展示该值不构成安全，
+因为模型输入和持久任务记录同样是凭证边界。当前战斗环境 blocked 时 `list_tools` 只返回恢复态
+说明，不再暴露通用控制面目录；旧上下文直接调用固定只读控制面工具时，客户端返回安全恢复
+指引且不访问上游。所有正常 MCPRouter 工具结果再经过递归文本脱敏，包含敏感 query 的 URL
+整体替换为 `[REDACTED_ENDPOINT]`。安全项目实例投影继续只返回不透明 ID、可用性和展示信息。
+
+第十一次真实任务 `ccca4ca4-48ee-4325-9654-690f4dd5a1f2` 首轮没有权限弹窗，正确显示
+“战斗开发”和 P4/UnityMCP ready、MCPR `0.0.7/0.0.6` blocked，且 Router 安全回执不再泄露
+endpoint/key。但用户要求继续恢复时，Codex 的原生 Skill 触发规则仍自动命中
+`remote-operations` / `safety-boundaries`，并将 Host 阶段限制误述为权限拒绝后换参
+重试。当前角色增加独立环境恢复 prompt fragment，同时收窄五个内置 Skill 的自然语言
+触发条件：blocked 首轮报告后结束，后续恢复只调一次统一复检，仅实例缺失/未绑定
+才追加安全实例投影。远端 runtime 版本/协议不匹配明确为部署方升级并重启，客户端
+不扫描工具、不加载 Skill、不请求提权、不把 Host 拒绝说成用户拒绝。
+
+第十二次真实任务 `0d7bff0b-da2c-401a-a72f-00dea329a255` 在重启 Desktop 后验证修复生效。
+任务明确选择“战斗开发 + 完全访问 + Codex GPT-5.6 Sol（高）”；首轮在 7 秒内回显
+正确角色、P4/UnityMCP ready 和 MCPR `0.0.7/0.0.6` blocked 后立即结束，rollout 为零工具
+调用。用户再要求继续恢复后，第二轮只调用一次
+`mcp_router.check_combat_environment`，再次确认版本错配并结束。两轮均没有 Skill 读取、
+`ALL_TOOLS`、`list_tools`、通用实例控制面、Worker、业务探索、权限弹窗、拒绝误报或
+`sandbox_permissions` 调用；本地 rollout 检查也未命中敏感 URL、Bearer 或 key。
 
 ## 10. 后续继续迁移时的硬性注意事项
 

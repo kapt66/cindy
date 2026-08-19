@@ -18,13 +18,13 @@ Orca 多 Agent 协同另见 [`orca-team-architecture.md`](orca-team-architecture
 
 ## 事实来源
 
-| 内容 | 权威来源 |
-|---|---|
-| Claude system prompt 拼接与 model 路由 | `packages/maker-core/src/agents/claude-code/index.ts` |
-| Codex 侧对应实现 | `packages/maker-core/src/agents/codex/`（对应 index／translator） |
-| vendor 事件到 `AgentEvent` 的映射 | `packages/maker-core/src/agents/*/translator.ts` |
-| 缓存率／token 计量 | `packages/maker-core/src/agents/shared/usage-tracker.ts` |
-| Agent 抽象与共用逻辑 | `packages/maker-core` 的 `BaseAgent` 及子类 |
+| 内容                                   | 权威来源                                                          |
+| -------------------------------------- | ----------------------------------------------------------------- |
+| Claude system prompt 拼接与 model 路由 | `packages/maker-core/src/agents/claude-code/index.ts`             |
+| Codex 侧对应实现                       | `packages/maker-core/src/agents/codex/`（对应 index／translator） |
+| vendor 事件到 `AgentEvent` 的映射      | `packages/maker-core/src/agents/*/translator.ts`                  |
+| 缓存率／token 计量                     | `packages/maker-core/src/agents/shared/usage-tracker.ts`          |
+| Agent 抽象与共用逻辑                   | `packages/maker-core` 的 `BaseAgent` 及子类                       |
 
 文档与实现冲突时以代码为准，但必须在同一改动内同步修正本文。
 
@@ -113,6 +113,65 @@ Host 对独立高风险工具调用的权限校验。
 `mcpr:<instanceId>` 的 Worker 后，Lead 应继续执行 `start_team` / `create_worker` /
 `send_to_worker`，不能把已经收到的批准再次渲染为确认文案。动态工具结果需要保留结构化
 答案，同时附带继续执行语义；回归测试应覆盖答案返回内容和工具描述。
+
+### 3.6 Host 工作流工具门禁
+
+maker-core 提供通用、可选的 Host 工作流裁决接口：Host 可以声明当前任务是否启用门禁，在工具
+执行前返回 allow/deny，在原生方案展示前校验方案结构，并在用户实际批准后接收批准事件。
+maker-core 不包含 SAGA2 业务常量；Desktop 负责按任务 `vendorOptions` 实现具体状态机。
+业务 Host 的策略激活不得只依赖单个可选衍生字段；存在权威项目/角色绑定时，应以稳定 ID 提供
+fail-closed 兜底，并显式排除语义不同的 Worker workflow。衍生 workflow 缺失或状态不完整时，
+只能放行恢复工具；恢复检查必须修复运行时字段并返回可审计的身份与状态回执，不能让模型从
+工作区、缓存或其它角色文件推断当前身份。
+Host 识别只读 MCP 时必须覆盖会话启动诊断与 MCPRouter 控制面查询，不得把未知控制面工具
+一律当作业务写入；远端控制面/传输异常必须触发业务状态失效，否则模型可能在 MCPR 断连后
+改走本地文件探索。Codex 的 MCP elicitation 元数据不保证携带 `tool_name`；Host 裁决前只能在
+同一 turn、同一 MCP server 恰好存在一个活动 `mcpToolCall` 时，用该调用的工具名补全，零个或
+多个匹配都必须保持未知并 fail-closed；工具完成后必须立即移出活动上下文，不能等整个 turn
+结束，否则同 server 的下一次调用会被旧项制造成歧义。用户选择 Full access 时，Host deny 和
+capability route 仍不可绕过；两者明确允许后必须保持 Full access 的静默放行语义，不能再落入
+普通 MCP 权限弹窗。
+
+若工作流把远端原生 Skill 作为必需能力，启动和恢复环境门还必须实际执行远端 capability
+hello，精确校验 cc-manager bundle/protocol，不能只检查实例 online 或项目绑定。版本错配必须
+在任何 Skill 读取、Worker 创建和业务探索前进入环境恢复。blocked 首轮只报告 Host 回执并
+结束，不调用工具；后续恢复请求只运行一次统一复检，只有实例缺失/未绑定才追加一次安全实例
+投影。该阶段不得触发原生 Skill 读取规则、扫描工具全集或把 Host 阶段拒绝误报为用户拒绝，
+也不得通过 `sandbox_permissions` 或改参数重试。Host 对环境 ready 后 Codex 读取内容寻址 Skill
+快照的静默只读白名单应覆盖模型实际生成且可严格证明无副作用的固定形态，包括单个
+`SKILL.md` 的 `(Get-Content -LiteralPath ...).Count`；白名单仍须拒绝其它文件、路径穿越、写入、
+重定向和附加命令，不能扩成通用 PowerShell 放行。
+
+Codex code mode 通过 `exec` 间接调用 MCP 时，app-server 的 elicitation 可能同时缺少
+`tool_name` 和可关联的活动 `mcpToolCall`，但保留完整 `_meta.tool_params`。业务 Host 只能对
+第一方 server 的 schema 唯一形态做窄推断，例如 `cindy_orca.create_worker` 的
+`role/agent/label/remote_host_id/initial_task`，或 `cindy.ghost_call` 的
+`ghost_id/tool/args`；不得按 server namespace 整体放行，也不得从自然语言 message 猜动作。
+未命中精确形态时继续 fail-closed。
+
+Codex 原生子任务的首个 `collab_spawn` HTTP 请求可能早于 app-server `thread/started`。proxy 在
+确认父 thread 已属于某业务任务后，必须把明确父子关系同步回持有父订阅的 `AppServerHost`；
+子 thread 的 command/file/MCP/permissions/user-input request 随即复用 root handler。未知父、
+跨任务 owner 冲突或找不到持有者时不得继承，仍按无 subscriber 拒绝。随后到达的原生
+`thread/started` 必须幂等，不能重复登记或重复投递。
+
+工作流若必须禁止 Codex 原生子任务，不能只在角色 prompt 中写“不要创建”。Sol/Terra 的
+Multi-Agent V2 会以更高层 developer 指令注入默认委派策略；该工作流必须在任务
+`vendorOptions` 中声明 `codexNativeSubagentsDisabled: true`。maker-core 将该标志纳入本地
+app-server Host key，Desktop 为这类隔离 Host 启动时注入 `agents.enabled=false`。带标志与不带
+标志的任务不得复用同一 Host；新建、恢复及引用目录 profile 切换还必须在 thread config 重申
+`agents.enabled=false`，覆盖远端 app-server 与恢复线程。普通任务继续使用用户的全局子任务设置。
+
+Host deny 是不可覆盖的业务不变量：Claude 的本地 `PreToolUse`、`canUseTool` 和远端
+`onApprovalRequest` 都必须执行同一裁决；门禁启用时底层 SDK 使用 `default` 权限，确保远端
+daemon 不因 Full access 跳过回调。Codex 门禁任务的每轮以 `untrusted` + `read-only` 发起，
+命令、文件和 MCP elicitation 都回到 Host 裁决。普通任务未启用门禁时保持既有权限映射。
+
+门禁只位于工具和方案审批边界，不进入 translator、token/event 队列或 usage 计量热路径，
+也不改变 system prompt 拼接、稳定前缀和事件映射。业务 Host 如在写前执行网络或进程探针，
+该延迟属于被保护写操作的显式前置成本，不能移入首 token 或逐事件路径。测试至少覆盖 Full
+access 不能绕过 deny、方案缺失结构不能批准、批准事件只在用户允许后发生，以及普通任务不受
+影响。
 
 ## 4. system prompt 改动门禁
 

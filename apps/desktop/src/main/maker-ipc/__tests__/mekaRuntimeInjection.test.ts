@@ -7,6 +7,19 @@ import type { MekaRuntimeConfig } from '../../meka-projects/runtimeConfig.js';
 import { applyMekaRuntimeConfig } from '../mekaRuntimeInjection.js';
 import type { MakerSessionCreateOpts } from '../sessionRequest.js';
 
+const environmentServices = vi.hoisted(() => ({
+  p4: { get: vi.fn(async () => ({ p4RootPath: null })) },
+  router: {
+    listInstances: vi.fn(async () => []),
+    listProjectBindings: vi.fn(async () => []),
+  },
+}));
+
+vi.mock('../../meka-settings/ipc.js', () => ({
+  getMekaP4SettingsService: () => environmentServices.p4,
+  getMekaRouterService: () => environmentServices.router,
+}));
+
 function baseOpts(overrides: Partial<MakerSessionCreateOpts> = {}): MakerSessionCreateOpts {
   return {
     id: 'session-1',
@@ -24,6 +37,8 @@ function runtime(overrides: Partial<MekaRuntimeConfig> = {}): MekaRuntimeConfig 
   return {
     projectId: 'saga2',
     roleId: 'general-development',
+    roleDisplayName: '通用开发',
+    workflowRecoveredFromRole: false,
     promptText: 'SAGA2 server code lives behind MCPRouter as saga2-server.',
     skills: [
       {
@@ -80,8 +95,9 @@ describe('applyMekaRuntimeConfig', () => {
       resolveRuntimeConfig: vi.fn(async () => runtime()),
       prepareRuntimeMcp: vi.fn((entries: readonly MekaRoleMcpEntry[]) => ({
         providerIds: entries
-          .filter((entry): entry is Extract<typeof entry, { providerId: string }> =>
-            'providerId' in entry,
+          .filter(
+            (entry): entry is Extract<typeof entry, { providerId: string }> =>
+              'providerId' in entry,
           )
           .map((entry) => entry.providerId),
         inlineConfigs: entries.filter(
@@ -97,8 +113,14 @@ describe('applyMekaRuntimeConfig', () => {
       inlineMcpCount: 1,
       skillsCount: 1,
       skillSnapshot: snapshot,
+      workflow: null,
+      workflowRecoveredFromRole: false,
+      combatEnvironmentReady: null,
     });
-    expect(opts.userPrompt).toBe(
+    expect(opts.userPrompt).toContain('[MEKA_ROLE_CONTEXT]');
+    expect(opts.userPrompt).toContain('roleId: general-development');
+    expect(opts.userPrompt).toContain('displayName: 通用开发');
+    expect(opts.userPrompt).toContain(
       'SAGA2 server code lives behind MCPRouter as saga2-server.\n\nUSER PROMPT',
     );
     expect(opts.userPrompt).not.toContain('# Remote Operation');
@@ -144,7 +166,69 @@ describe('applyMekaRuntimeConfig', () => {
     expect(materialize).toHaveBeenCalledWith(opts.id, resolved.skills);
     expect(opts.nativeSkillPluginPath).toBe(snapshot.pluginPath);
     expect(opts.nativeSkillRevision).toBe(snapshot.revision);
-    expect(opts.userPrompt).toBe('SAGA2 server code lives behind MCPRouter as saga2-server.');
+    expect(opts.userPrompt).toContain('[MEKA_ROLE_CONTEXT]');
+    expect(opts.userPrompt).toContain('SAGA2 server code lives behind MCPRouter as saga2-server.');
+  });
+
+  it('enters environment-recovery mode before combat exploration when the gate is blocked', async () => {
+    const opts = baseOpts({ mekaRoleId: 'combat-development' });
+
+    await applyMekaRuntimeConfig(opts, {
+      resolveRuntimeConfig: vi.fn(async () =>
+        runtime({
+          roleId: 'combat-development',
+          roleDisplayName: '战斗开发',
+          workflow: 'saga2-combat-development-v1',
+        }),
+      ),
+      prepareRuntimeMcp: vi.fn(() => ({ providerIds: [], inlineConfigs: [] })),
+      materializeSkillSnapshot: vi.fn(async () => null),
+    });
+
+    expect(opts.userPrompt).toContain('[SAGA2_COMBAT_ENVIRONMENT_GATE]');
+    expect(opts.userPrompt).toContain('roleId: combat-development');
+    expect(opts.userPrompt).toContain('displayName: 战斗开发');
+    expect(opts.userPrompt).toContain('ready: false');
+    expect(opts.userPrompt).toContain('BLOCKED TURN CONTRACT');
+    expect(opts.userPrompt).toContain('Do not load Skills or AGENTS.md');
+    expect(opts.userPrompt).toContain('without any tool call');
+    expect(opts.userPrompt).toContain('first user-visible assistant message');
+    expect(opts.vendorOptions).toMatchObject({
+      mekaCombatEnvironmentReady: false,
+      codexNativeSubagentsDisabled: true,
+    });
+  });
+
+  it('isolates remote server workers from local combat environment state', async () => {
+    const opts = baseOpts({
+      mekaRoleId: 'combat-development',
+      remoteHostId: 'mcpr:server-1',
+      orcaRole: 'worker',
+      vendorOptions: { orcaRole: 'worker', orcaLeadSessionId: 'lead-1' },
+    });
+
+    await applyMekaRuntimeConfig(opts, {
+      resolveRuntimeConfig: vi.fn(async () =>
+        runtime({
+          roleId: 'combat-development',
+          roleDisplayName: '战斗开发',
+          workflow: 'saga2-combat-development-v1',
+        }),
+      ),
+      prepareRuntimeMcp: vi.fn(() => ({ providerIds: [], inlineConfigs: [] })),
+      materializeSkillSnapshot: vi.fn(async () => null),
+    });
+
+    expect(opts.vendorOptions).toMatchObject({
+      mekaWorkflow: 'saga2-combat-server-worker-v1',
+      source: 'meka',
+      mekaProjectId: 'saga2',
+      codexNativeSubagentsDisabled: true,
+    });
+    expect(opts.vendorOptions).not.toHaveProperty('mekaCombatEnvironmentReady');
+    expect(opts.vendorOptions).not.toHaveProperty('mekaCombatPlanApproved');
+    expect(opts.userPrompt).toContain('[SAGA2_COMBAT_REMOTE_SERVER_WORKER]');
+    expect(opts.userPrompt).toContain('battle-designer-server-development');
   });
 
   it('freezes an empty selection without mounting an empty native Skill plugin', async () => {
@@ -152,9 +236,7 @@ describe('applyMekaRuntimeConfig', () => {
     const snapshot = {
       revision: '0'.repeat(64),
       pluginPath: 'C:/CindyMeka/meka-skill-snapshots/revisions/0/claude-plugin',
-      files: [
-        { relativePath: 'catalog.json', contentBase64: 'W10K', digest: '4'.repeat(64) },
-      ],
+      files: [{ relativePath: 'catalog.json', contentBase64: 'W10K', digest: '4'.repeat(64) }],
     };
 
     const result = await applyMekaRuntimeConfig(opts, {
@@ -267,7 +349,8 @@ describe('applyMekaRuntimeConfig', () => {
       materializeSkillSnapshot: materialize,
     });
     expect(retried.skillSnapshot).toBe(snapshot);
-    expect(opts.userPrompt).toBe('SAGA2 server code lives behind MCPRouter as saga2-server.');
+    expect(opts.userPrompt).toContain('[MEKA_ROLE_CONTEXT]');
+    expect(opts.userPrompt).toContain('SAGA2 server code lives behind MCPRouter as saga2-server.');
     expect(materialize).toHaveBeenCalledTimes(2);
   });
 

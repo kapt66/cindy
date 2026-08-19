@@ -335,6 +335,13 @@ export function normalizeMekaRoleManifest(
       : {}),
     tags: cleanStrings(input.tags),
     policyProviderRefs: cleanStrings(input.policyProviderRefs),
+    ...(input.workflow === 'saga2-combat-development-v1'
+      ? { workflow: input.workflow }
+      : input.workflow === undefined
+        ? {}
+        : (() => {
+            throw new Error('unknown Meka role workflow');
+          })()),
     ...(typeof input.prompt === 'string' && input.prompt.trim() ? { prompt: input.prompt } : {}),
     rules: Array.isArray(input.rules)
       ? input.rules.filter(isRecord).map((rule) => ({

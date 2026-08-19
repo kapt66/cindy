@@ -20,6 +20,10 @@
   `0.0.7/protocol 3`，增加了任意二进制 Skill 文件的规范 base64 投递。修改该 pin 后必须运行
   `pnpm --filter @cindy/maker-cc-manager bundle`，并让 MCPRouter 从同一 Cindy 源码重建、探测
   和重启 daemon；只发布 Claude/Codex runtime 资产不会更新 cc-manager。
+- 依赖 MCPRouter 原生 Skill 投递的强制工作流必须在业务探索前执行 capability hello，并以
+  `CC_MGR_BUNDLE_VERSION` 与 protocol 精确匹配作为环境 ready 条件。实例 online、项目已绑定或
+  普通 route 可查询都不能替代该握手；不得把旧 bundle 兼容降级成成功。版本错配时应停止业务
+  流程并要求从同一 Cindy 源码重建、探测和重启远端 daemon。
 
 ## Linux 交付
 

@@ -68,6 +68,8 @@ export interface MekaRoleMcpInlineConfig {
 
 export type MekaRoleMcpEntry = MekaRoleMcpProviderRef | MekaRoleMcpInlineConfig;
 
+export type MekaRoleWorkflow = 'saga2-combat-development-v1';
+
 export interface MekaProjectDefaultMetadataSelection {
   /** Absolute metadata root; omitted for the primary project path. */
   rootPath?: string;
@@ -89,6 +91,8 @@ export interface MekaRoleConfig {
   description?: string;
   tags?: string[];
   policyProviderRefs?: string[];
+  /** Host-enforced workflow attached automatically with the role. */
+  workflow?: MekaRoleWorkflow;
   prompt?: string;
   rules?: MekaRoleRule[];
   skills: Array<MekaRoleSkillSelection | MekaRoleSkillEntry>;

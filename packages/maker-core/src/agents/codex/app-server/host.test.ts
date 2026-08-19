@@ -482,6 +482,54 @@ describe('AppServerHost descendant thread routing', () => {
     await subscription.release();
     await host.shutdown();
   });
+
+  it('routes a child approval when proxy lineage arrives before thread/started', async () => {
+    const transport = new NotificationTransport();
+    const host = new AppServerHost({
+      createTransport: () => transport,
+      logger,
+      clientInfo: { name: 'cindy-test', version: '0.0.0' },
+    });
+    await host.ensureStarted();
+
+    const commandExecutionApproval = vi.fn(async () => ({ decision: 'accept' as const }));
+    const descendantThreadStarted = vi.fn();
+    const subscription = host.subscribeThread('root-thread', {
+      commandExecutionApproval,
+      descendantThreadStarted,
+    });
+
+    expect(host.registerDescendantThread('unknown-parent', 'unknown-child')).toBe(false);
+    expect(host.registerDescendantThread('root-thread', 'early-child')).toBe(true);
+    expect(descendantThreadStarted).toHaveBeenCalledWith({
+      thread: { id: 'early-child', parentThreadId: 'root-thread' },
+    });
+
+    const initialLineCount = transport.lines.length;
+    transport.emit({
+      id: 'early-approval',
+      method: 'item/commandExecution/requestApproval',
+      params: { threadId: 'early-child', turnId: 'turn-1', itemId: 'item-1' },
+    });
+
+    await vi.waitFor(() => {
+      expect(transport.lines.length).toBe(initialLineCount + 1);
+    });
+    expect(JSON.parse(transport.lines.at(-1)!)).toEqual({
+      id: 'early-approval',
+      result: { decision: 'accept' },
+    });
+
+    // The later native notification is idempotent and does not double-register.
+    transport.emit({
+      method: 'thread/started',
+      params: { thread: { id: 'early-child', parentThreadId: 'root-thread' } },
+    });
+    expect(descendantThreadStarted).toHaveBeenCalledTimes(1);
+
+    await subscription.release();
+    await host.shutdown();
+  });
 });
 
 describe('AppServerHost descendant notification routing', () => {

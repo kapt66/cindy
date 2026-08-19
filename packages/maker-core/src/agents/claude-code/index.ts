@@ -33,8 +33,10 @@ import {
 import type {
   Query,
   CanUseTool,
+  HookCallback,
   McpServerConfig,
   PermissionUpdate,
+  PreToolUseHookInput,
   Settings,
 } from "@anthropic-ai/claude-agent-sdk";
 import { discoverSubagentDefinitions } from "./subagent-definitions.js";
@@ -56,6 +58,7 @@ import {
   type OneShotOptions,
   type SendOptions,
   type TurnPermissionPolicy,
+  type HostToolExecutionAction,
 } from '../base-agent.js';
 import { SYSTEM_PROMPT_APPEND as MAKER_SYSTEM_PROMPT_APPEND } from './system-prompt-append.js';
 import { MAKER_MEMORY_RULES } from '../../memory/system-prompt.js';
@@ -1372,21 +1375,6 @@ export class ClaudeCodeAgent extends BaseAgent {
         .filter(Boolean)
         .join('\n');
     };
-    const localClaudeHooks = mergeClaudeHookSets(
-      buildClaudeLocalToolGuardHooks(
-        this.deps.capabilityRouting,
-        () => activeCapabilitySelectionText,
-        (toolName, route) => {
-          log.warn('downstream MCP source denied by host PreToolUse route', {
-            toolName,
-            capabilityId: route.capabilityId,
-            replacement: route.replacement?.id,
-          });
-        },
-        () => nonHarnessMcpServerNames,
-      ),
-      this.deps.claudeHooks,
-    );
     const deniedCapabilityRoute = (toolName: string) => {
       const route = findClaudeMcpCapabilityRoute(
         this.deps.capabilityRouting,
@@ -1413,6 +1401,80 @@ export class ClaudeCodeAgent extends BaseAgent {
         return true;
       }
     };
+    const hostPolicyContext = () => ({
+      agentKind: 'claude-code' as const,
+      sessionId: opts.sessionId,
+      workingDir: opts.workingDir,
+      ...(opts.remoteHostId ? { remoteHostId: opts.remoteHostId } : {}),
+      vendorOptions: vo,
+    });
+    const hostExecutionPolicyActive = (): boolean =>
+      this.deps.isHostToolExecutionPolicyActive?.(hostPolicyContext()) === true;
+    const evaluateHostExecution = async (
+      toolName: string,
+      input: unknown,
+      action: HostToolExecutionAction,
+    ): Promise<string | null> => {
+      if (!hostExecutionPolicyActive() || !this.deps.evaluateHostToolExecution) return null;
+      try {
+        const decision = await this.deps.evaluateHostToolExecution({
+          ...hostPolicyContext(),
+          toolName,
+          input,
+          action,
+        });
+        return decision.behavior === 'deny' ? decision.reason : null;
+      } catch (error) {
+        log.error('host tool execution policy threw -> deny', {
+          toolName,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return 'Host workflow policy failed; the tool was blocked safely.';
+      }
+    };
+    const normalizeHostAction = (toolName: string, input: unknown): HostToolExecutionAction => {
+      if (toolName === 'AskUserQuestion' || toolName === 'ExitPlanMode') {
+        return { kind: 'session-state' };
+      }
+      if (toolName.startsWith('mcp__')) return { kind: 'mcp' };
+      return normalizeBuiltinToolForAutoReview(toolName, input);
+    };
+    const hostWorkflowGuard: HookCallback = async (input) => {
+      if (input.hook_event_name !== 'PreToolUse') return { continue: true };
+      const pre = input as PreToolUseHookInput;
+      const denial = await evaluateHostExecution(
+        pre.tool_name,
+        pre.tool_input,
+        normalizeHostAction(pre.tool_name, pre.tool_input),
+      );
+      if (!denial) return { continue: true };
+      return {
+        continue: true,
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: denial,
+        },
+      };
+    };
+    const localClaudeHooks = mergeClaudeHookSets(
+      hostExecutionPolicyActive()
+        ? { PreToolUse: [{ hooks: [hostWorkflowGuard] }] }
+        : undefined,
+      buildClaudeLocalToolGuardHooks(
+        this.deps.capabilityRouting,
+        () => activeCapabilitySelectionText,
+        (toolName, route) => {
+          log.warn('downstream MCP source denied by host PreToolUse route', {
+            toolName,
+            capabilityId: route.capabilityId,
+            replacement: route.replacement?.id,
+          });
+        },
+        () => nonHarnessMcpServerNames,
+      ),
+      this.deps.claudeHooks,
+    );
     // 事件队列预先声明 —— canUseTool 路径要 push interaction_dismissed 事件
     const eventQueue = createAsyncQueue<AgentEvent>();
 
@@ -1668,6 +1730,13 @@ export class ClaudeCodeAgent extends BaseAgent {
           // 空 plan 直接放过(老链路 agentManager.ts:1118-1120 同样处理)
           return { behavior: "allow", updatedInput: input };
         }
+        const hostPlanDecision = await this.deps.evaluateHostPlanReview?.({
+          ...hostPolicyContext(),
+          plan,
+        });
+        if (hostPlanDecision?.behavior === 'deny') {
+          return { behavior: 'deny', message: hostPlanDecision.reason };
+        }
         // 计划审批期间用户可能继续发消息(currentAutoReviewIntent 会被覆盖);实施阶段的审查意图
         // 必须是"发起计划时的原始请求 + 最终获批计划",不能掺进审批期间的内部跟进消息(codex 报)。
         const planRequestAutoReviewIntent = currentAutoReviewIntent;
@@ -1720,6 +1789,10 @@ export class ClaudeCodeAgent extends BaseAgent {
           });
         }
         const finalPlan = decision.editedPlan ?? plan;
+        await this.deps.onHostPlanApproved?.({
+          ...hostPolicyContext(),
+          plan: finalPlan,
+        });
         // 计划获批后,后续实施动作要按"原始意图 + 获批计划"审查 —— 否则轻量 reviewer 仍按批准前的
         // 过期意图裁决,计划里明确授权的动作会被误 block(或反之)。
         setAutoReviewIntent(composeAutoReviewIntentWithApprovedPlan(
@@ -1736,6 +1809,12 @@ export class ClaudeCodeAgent extends BaseAgent {
       }
 
       // ── 3. 其他工具 → permission kind ──
+      const normalizedAction = normalizeHostAction(toolName, input);
+      const hostDenial = await evaluateHostExecution(toolName, input, normalizedAction);
+      if (hostDenial) {
+        log.warn('tool denied by host workflow policy', { toolName });
+        return { behavior: 'deny', message: hostDenial };
+      }
       const capabilityRoute = deniedCapabilityRoute(toolName);
       if (capabilityRoute) {
         log.warn('downstream MCP source denied by host capability route', {
@@ -1749,6 +1828,12 @@ export class ClaudeCodeAgent extends BaseAgent {
             ? `This downstream source was not selected. Use Cindy capability ${capabilityRoute.replacement.id}.`
             : 'This downstream source was not selected.',
         };
+      }
+      // Host workflow deny and capability routing remain non-bypassable. Once
+      // both have allowed the action, Full access keeps its normal no-prompt
+      // semantics instead of falling through to ordinary MCP approval UI.
+      if (mutablePermissionMode === 'bypassPermissions') {
+        return { behavior: 'allow', updatedInput: input };
       }
       // 没接 resolver → 普通档与 MCP 工具继续 fail-closed；Auto 的内置工具例外，
       // 因为 allow/block 可以由本地规则或轻量 reviewer 完成，并不需要 UI。只有最终
@@ -2024,7 +2109,9 @@ export class ClaudeCodeAgent extends BaseAgent {
     const effectiveSdkPermissionMode = (): SdkPermissionMode =>
       mutablePlanMode || planTurnActive
         ? "plan"
-        : toSdkPermissionMode(mutablePermissionMode);
+        : hostExecutionPolicyActive()
+          ? 'default'
+          : toSdkPermissionMode(mutablePermissionMode);
 
     /**
      * **本次 turn** 目标 SDK 权限档: 只看 `planTurnActive`(本轮是否 plan turn), **不含**
@@ -2034,7 +2121,11 @@ export class ClaudeCodeAgent extends BaseAgent {
      * 意外跑成 plan turn (Codex review 3535660068)。
      */
     const currentTurnSdkPermissionMode = (): SdkPermissionMode =>
-      planTurnActive ? "plan" : toSdkPermissionMode(mutablePermissionMode);
+      planTurnActive
+        ? "plan"
+        : hostExecutionPolicyActive()
+          ? 'default'
+          : toSdkPermissionMode(mutablePermissionMode);
     // Fast 模式运行时态:启动取 opts.fastMode 快照,setFastMode 覆盖。buildSettings 每次读最新值;
     // host 只在「该 model 支持 + 走官方供应商」时才传 true(renderer 配置门控),agent 忠实消费。
     let mutableFastMode = opts.fastMode === true;
@@ -2756,6 +2847,15 @@ export class ClaudeCodeAgent extends BaseAgent {
             }
             // permission kind
             const remoteToolName = params.toolName ?? '';
+            const remoteInput = params.input ?? {};
+            const hostDenial = await evaluateHostExecution(
+              remoteToolName || 'unknown',
+              remoteInput,
+              normalizeHostAction(remoteToolName, remoteInput),
+            );
+            if (hostDenial) {
+              return { kind: 'permission', behavior: 'deny', reason: hostDenial };
+            }
             // Remote cc-manager checks the route with authoritative scoped MCP
             // provenance before forwarding canUseTool. Old managers do not add
             // this attestation, so retain the desktop-side fail-closed fallback.
@@ -2773,8 +2873,11 @@ export class ClaudeCodeAgent extends BaseAgent {
                 behavior: 'deny',
                 reason: capabilityRoute.replacement
                   ? `This downstream source was not selected. Use Cindy capability ${capabilityRoute.replacement.id}.`
-                  : 'This downstream source was not selected.',
+                : 'This downstream source was not selected.',
               };
+            }
+            if (mutablePermissionMode === 'bypassPermissions') {
+              return { kind: 'permission', behavior: 'allow' };
             }
             // 没接 resolver 时，Auto 的内置工具仍可由本地规则/轻量 reviewer 完成
             // allow 或 block；只有真正 ask 才需要 UI。非 Auto 与 MCP 保持 fail-closed。
@@ -2793,9 +2896,6 @@ export class ClaudeCodeAgent extends BaseAgent {
                 reason:
                   "no interaction resolver attached; denying non-read-only tool (fail-closed)",
               };
-            }
-            if (mutablePermissionMode === 'bypassPermissions') {
-              return { kind: 'permission', behavior: 'allow' };
             }
             // 远端会话走同一份 host MCP 策略 —— 否则 SSH 会话里可信 server 又要逐次
             // 弹窗, prompt-each-time 的"禁止持久化授权"保护也整套缺失。

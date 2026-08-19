@@ -68,6 +68,20 @@ describe('buildCodexSubagentSpawnArgs', () => {
     ).toEqual(['-c', 'agents.enabled=false']);
   });
 
+  it('forces native subagents off for a workflow-specific isolated host', () => {
+    expect(
+      buildCodexSubagentSpawnArgs(
+        settings({
+          codexSubagentsEnabled: true,
+          codex: 'gpt-5.6-sol',
+          codexEffort: 'high',
+          codexMaxConcurrentSubagents: 4,
+        }),
+        { forceDisabled: true },
+      ),
+    ).toEqual(['-c', 'agents.enabled=false']);
+  });
+
   it('quotes string values and keeps numbers bare (TOML forms)', () => {
     const args = buildCodexSubagentSpawnArgs(
       settings({
@@ -132,9 +146,9 @@ describe('buildCodexSubagentSpawnArgs', () => {
       if (!arg.startsWith('features.multi_agent_v2')) continue;
       expect(DELEGATION_ARGS_PREFIXES.some((prefix) => arg.startsWith(prefix))).toBe(true);
     }
-    expect(
-      exhaustive.some((arg) => arg.includes('features.multi_agent_v2.max_concurrent')),
-    ).toBe(false);
+    expect(exhaustive.some((arg) => arg.includes('features.multi_agent_v2.max_concurrent'))).toBe(
+      false,
+    );
   });
 
   it('emits no features.multi_agent_v2.* keys when the master switch is off', () => {
@@ -147,9 +161,7 @@ describe('buildCodexSubagentSpawnArgs', () => {
 
   it('escapes TOML-breaking characters defensively', () => {
     expect(
-      withoutDelegationArgs(
-        buildCodexSubagentSpawnArgs(settings({ codex: 'weird"model\\id' })),
-      ),
+      withoutDelegationArgs(buildCodexSubagentSpawnArgs(settings({ codex: 'weird"model\\id' }))),
     ).toEqual(['-c', 'agents.default_subagent_model="weird\\"model\\\\id"']);
   });
 });

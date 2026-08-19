@@ -128,6 +128,29 @@ export interface McpToolApprovalContext {
   toolParams?: unknown;
 }
 
+export type HostToolExecutionAction =
+  | { kind: "read" | "session-state" | "network" | "mcp" }
+  | { kind: "file-write"; path?: string }
+  | { kind: "exec"; command: string; cwd?: string; cwdUnknown?: boolean }
+  | { kind: "other" };
+
+export interface HostToolExecutionContext {
+  agentKind: AgentKind;
+  sessionId?: string;
+  workingDir: string;
+  remoteHostId?: string;
+  vendorOptions: Record<string, unknown>;
+  toolName: string;
+  input: unknown;
+  action: HostToolExecutionAction;
+}
+
+export type HostToolExecutionDecision =
+  { behavior: "allow" } | { behavior: "deny"; reason: string };
+
+export type HostPlanReviewDecision =
+  { behavior: "allow" } | { behavior: "deny"; reason: string };
+
 export type McpToolApprovalPolicy =
   "auto-approve" | "prompt" | "prompt-each-time";
 
@@ -162,12 +185,12 @@ export interface PiExtraSpawnConfig {
 
 /** pi models.json 原生 provider 的 api 形态(BYOM 用;不过 anthropic-compat 代理)。 */
 export type PiNativeApi =
-  | 'anthropic-messages'
-  | 'openai-responses'
-  | 'openai-completions'
-  | 'google-generative-ai';
+  | "anthropic-messages"
+  | "openai-responses"
+  | "openai-completions"
+  | "google-generative-ai";
 
-export type PiNativeThinkingLevel = Exclude<Effort, 'ultra'>;
+export type PiNativeThinkingLevel = Exclude<Effort, "ultra">;
 
 /** BYOM:写进 pi models.json 的一个模型(原生 provider 块内)。 */
 export interface PiNativeModelSpec {
@@ -178,7 +201,7 @@ export interface PiNativeModelSpec {
   thinkingLevelMap?: Partial<Record<PiNativeThinkingLevel, string | null>>;
   contextWindow?: number;
   maxTokens?: number;
-  input?: Array<'text' | 'image'>;
+  input?: Array<"text" | "image">;
 }
 
 /**
@@ -237,7 +260,9 @@ export interface CodexExtraSpawnConfig {
    * config only supplies the unbound base URL; thread/start|resume must add the
    * opaque route identity for the concrete Session using this callback.
    */
-  buildSessionMcpConfig?: (sessionInstanceId: string) => Record<string, unknown>;
+  buildSessionMcpConfig?: (
+    sessionInstanceId: string,
+  ) => Record<string, unknown>;
   codexProxyActive?: boolean;
   /**
    * spawn args 中定义的「OpenAI 身份」provider id(name 逐字为 "OpenAI",
@@ -290,7 +315,7 @@ export interface ClaudeSubagentTaskUsage {
 export class CodexResumePreparationBlockedError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = 'CodexResumePreparationBlockedError';
+    this.name = "CodexResumePreparationBlockedError";
   }
 }
 
@@ -352,7 +377,10 @@ export interface AgentDeps {
    * PiAgent creates a high-entropy token per session, registers it before spawn,
    * and disposes the exact registration when startup fails or the session closes.
    */
-  registerPiProxySession?: (sessionId: string, token: string) => (() => void) | void;
+  registerPiProxySession?: (
+    sessionId: string,
+    token: string,
+  ) => (() => void) | void;
 
   /**
    * BYOM:host 解析出当前会话可用的 pi **原生 provider**(用户自定义/本地模型)+ 需注入的
@@ -361,9 +389,10 @@ export interface AgentDeps {
    *
    * 缺省 / 返回空 → 只有网关 provider `cindy`(现状,行为不变)。keyless provider 的 key 可省。
    */
-  resolvePiNativeProviders?: (
-    ctx: { workingDir: string; remoteHostId?: string | null },
-  ) => Promise<PiNativeProvidersResult | null>;
+  resolvePiNativeProviders?: (ctx: {
+    workingDir: string;
+    remoteHostId?: string | null;
+  }) => Promise<PiNativeProvidersResult | null>;
 
   /**
    * Pi-only:按实际 provider/model 路由解析运行时描述符。用于启动前校验已持久化 effort，
@@ -448,6 +477,8 @@ export interface AgentDeps {
     ctx: {
       remoteHostId?: string;
       credentialMode?: AgentCredentialMode;
+      /** Host-level process isolation for workflows that must not expose native subagents. */
+      nativeSubagentsDisabled?: boolean;
       /** Marks one-off app-server work (e.g. model/list) that must not alter session routing. */
       hostPurpose?: "control-plane";
     },
@@ -575,7 +606,9 @@ export interface AgentDeps {
    *
    * 缺省 / undefined → 两段都不注入 (host 未接线, 与改造前行为一致)。
    */
-  getContactsPromptState?: (ctx: { workingDir?: string }) => ContactsPromptState;
+  getContactsPromptState?: (ctx: {
+    workingDir?: string;
+  }) => ContactsPromptState;
 
   /**
    * Host-side MCP approval policy, shared by **both** agents. `auto-approve`
@@ -604,6 +637,40 @@ export interface AgentDeps {
   getMcpToolApprovalPolicy?: (
     context: McpToolApprovalContext,
   ) => McpToolApprovalPolicy;
+
+  /**
+   * Optional host-owned workflow gate evaluated immediately before a tool can
+   * execute. Unlike ordinary approval policy, a deny result cannot be
+   * overridden by Full access or a remembered permission grant.
+   */
+  isHostToolExecutionPolicyActive?: (context: {
+    agentKind: AgentKind;
+    sessionId?: string;
+    workingDir: string;
+    remoteHostId?: string;
+    vendorOptions: Record<string, unknown>;
+  }) => boolean;
+  evaluateHostToolExecution?: (
+    context: HostToolExecutionContext,
+  ) => Promise<HostToolExecutionDecision> | HostToolExecutionDecision;
+  /** Validates a proposed plan before it is shown as an approvable plan. */
+  evaluateHostPlanReview?: (context: {
+    agentKind: AgentKind;
+    sessionId?: string;
+    workingDir: string;
+    remoteHostId?: string;
+    vendorOptions: Record<string, unknown>;
+    plan: string;
+  }) => Promise<HostPlanReviewDecision> | HostPlanReviewDecision;
+  /** Called only after the user explicitly approves a native plan review. */
+  onHostPlanApproved?: (context: {
+    agentKind: AgentKind;
+    sessionId?: string;
+    workingDir: string;
+    remoteHostId?: string;
+    vendorOptions: Record<string, unknown>;
+    plan: string;
+  }) => Promise<void> | void;
 
   /**
    * Codex 专用钩子：resume / fork 外部本地 thread 前由 host 准备底层 session state。
@@ -658,9 +725,9 @@ export interface AgentDeps {
    * thread 首个网络请求前完成登记。
    */
   registerCodexChildThreadForParent?: (args: {
-     parentThreadId: string;
-     childThreadId: string;
-   }) => void;
+    parentThreadId: string;
+    childThreadId: string;
+  }) => void;
 
   /**
    * Claude 专用: host 明确认定可无提示执行的只读工具名, 透传到 SDK
@@ -1234,7 +1301,10 @@ export interface AgentSessionHandle {
   setInteractionResolver(resolver: InteractionResolver): void;
 
   /** 运行时切换模型 —— 不支持时抛 NotSupportedError */
-  setModel?(model: string, opts?: { providerId?: string | null; effort?: Effort }): Promise<void>;
+  setModel?(
+    model: string,
+    opts?: { providerId?: string | null; effort?: Effort },
+  ): Promise<void>;
 
   /** 运行时切换 effort */
   setEffort?(effort: Effort): Promise<void>;

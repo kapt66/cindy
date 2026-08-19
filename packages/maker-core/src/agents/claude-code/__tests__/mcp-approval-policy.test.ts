@@ -194,6 +194,7 @@ async function startSession(
     capabilityRouting?: CapabilityRoutingPolicy;
     initMcpServerNames?: readonly string[];
     failedInitMcpServerNames?: readonly string[];
+    hostWorkflowDecision?: 'allow' | 'deny';
     mcpServerStatuses?: ReadonlyArray<{
       name: string;
       status: string;
@@ -213,6 +214,13 @@ async function startSession(
   sdkMock.query.mockReturnValue(fakeQuery);
 
   const deps = createDeps(policy, options?.mcpServerNames);
+  if (options?.hostWorkflowDecision) {
+    deps.isHostToolExecutionPolicyActive = () => true;
+    deps.evaluateHostToolExecution = () =>
+      options.hostWorkflowDecision === 'allow'
+        ? { behavior: 'allow' }
+        : { behavior: 'deny', reason: 'workflow blocked' };
+  }
   deps.capabilityRouting = options?.capabilityRouting;
   const agent = new ClaudeCodeAgent(deps);
   const handle = await agent.startSession({
@@ -930,6 +938,7 @@ describe('remote sessions share the same permission semantics', () => {
       permissionMode?: PermissionMode;
       initMcpServerNames?: readonly string[];
       failedInitMcpServerNames?: readonly string[];
+      hostWorkflowDenyReason?: string;
     },
   ) {
     const configDir = await makeTempDir();
@@ -938,6 +947,13 @@ describe('remote sessions share the same permission semantics', () => {
 
     let onApprovalRequest: ((raw: unknown) => Promise<{ behavior?: string }>) | undefined;
     const deps = createDeps(policy);
+    if (options?.hostWorkflowDenyReason) {
+      deps.isHostToolExecutionPolicyActive = () => true;
+      deps.evaluateHostToolExecution = () => ({
+        behavior: 'deny',
+        reason: options.hostWorkflowDenyReason!,
+      });
+    }
     deps.capabilityRouting = options?.capabilityRouting;
     // 远端只装得到 stdio / sse / http 类 server —— in-process 的会被 filter 掉。
     deps.mcpProviders = (
@@ -1012,6 +1028,89 @@ describe('remote sessions share the same permission semantics', () => {
 
     expect(result.behavior).toBe('allow');
     expect(seen).toHaveLength(0);
+    await handle.close();
+  });
+
+  it('keeps Full access silent after an active host workflow allows the tool', async () => {
+    const { handle, canUseTool, seen } = await startSession(() => 'prompt-each-time', {
+      permissionMode: 'bypassPermissions',
+      hostWorkflowDecision: 'allow',
+    });
+
+    await expect(
+      canUseTool('mcp__cindy_browser__call_tool', { name: 'browser_snapshot' }, {
+        toolUseID: 't-full-host-allow',
+      }),
+    ).resolves.toMatchObject({ behavior: 'allow' });
+    expect(seen).toHaveLength(0);
+    await handle.close();
+  });
+
+  it('keeps an active host workflow deny non-bypassable in Full access', async () => {
+    const { handle, canUseTool, seen } = await startSession(() => 'auto-approve', {
+      permissionMode: 'bypassPermissions',
+      hostWorkflowDecision: 'deny',
+    });
+
+    await expect(
+      canUseTool('Read', { file_path: 'blocked.txt' }, { toolUseID: 't-full-host-deny' }),
+    ).resolves.toMatchObject({ behavior: 'deny', message: 'workflow blocked' });
+    expect(seen).toHaveLength(0);
+    await handle.close();
+  });
+
+  it('keeps the host workflow gate active for remote Full access sessions', async () => {
+    const { handle, onApprovalRequest, remoteStartParams } = await startRemoteSession(
+      () => 'auto-approve',
+      {
+        permissionMode: 'bypassPermissions',
+        hostWorkflowDenyReason: 'workflow blocked',
+      },
+    );
+
+    expect(remoteStartParams?.permissionMode).toBe('default');
+    await expect(
+      onApprovalRequest({
+        requestId: 'r-host-gate',
+        kind: 'permission',
+        toolName: 'Write',
+        input: { file_path: 'server.go' },
+      }),
+    ).resolves.toMatchObject({ behavior: 'deny', reason: 'workflow blocked' });
+    await handle.close();
+  });
+
+  it('keeps remote Full access silent after an active host workflow allows the tool', async () => {
+    const configDir = await makeTempDir();
+    process.env.CLAUDE_CONFIG_DIR = configDir;
+    const workingDir = await makeTempDir();
+    let onApprovalRequest: ((raw: unknown) => Promise<{ behavior?: string }>) | undefined;
+    const deps = createDeps(() => 'prompt-each-time');
+    deps.isHostToolExecutionPolicyActive = () => true;
+    deps.evaluateHostToolExecution = () => ({ behavior: 'allow' });
+    deps.remoteCcQueryFactory = (async (args: {
+      onApprovalRequest: (raw: unknown) => Promise<{ behavior?: string }>;
+    }) => {
+      onApprovalRequest = args.onApprovalRequest;
+      return createFakeQuery() as never;
+    }) as NonNullable<AgentDeps['remoteCcQueryFactory']>;
+    const handle = await new ClaudeCodeAgent(deps).startSession({
+      sessionId: 'session-remote-full-host-allow',
+      model: 'claude-opus-4-6',
+      workingDir,
+      remoteHostId: 'remote-1',
+      permissionMode: 'bypassPermissions',
+    });
+    if (!onApprovalRequest) throw new Error('expected remote onApprovalRequest');
+
+    await expect(
+      onApprovalRequest({
+        requestId: 'r-full-host-allow',
+        kind: 'permission',
+        toolName: 'mcp__cindy_browser__call_tool',
+        input: { name: 'browser_snapshot' },
+      }),
+    ).resolves.toMatchObject({ behavior: 'allow' });
     await handle.close();
   });
 

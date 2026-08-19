@@ -51,9 +51,12 @@ function tomlString(value: string): string {
   return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 
-export function buildCodexSubagentSpawnArgs(settings: SubagentModelSettings): string[] {
+export function buildCodexSubagentSpawnArgs(
+  settings: SubagentModelSettings,
+  options: { forceDisabled?: boolean } = {},
+): string[] {
   const args: string[] = [];
-  if (!settings.codexSubagentsEnabled) {
+  if (options.forceDisabled || !settings.codexSubagentsEnabled) {
     // 总开关关死后其余键无意义,不再注入。
     args.push('-c', 'agents.enabled=false');
     return args;

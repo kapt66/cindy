@@ -994,6 +994,23 @@ describe('chatBridgeCapabilitiesForRoute', () => {
     host.setCodexProxyGatewayKeyReader(() => null);
   });
 
+  it('reports proxy-discovered collab child lineage before app-server notification', async () => {
+    const host = await freshCodexProxyHost();
+    const listener = vi.fn();
+    host.setCodexChildThreadRouteListener(listener);
+    host.registerComposed('session-child-lineage', 'thread-parent', 'PRODUCT_PROMPT');
+
+    expect(host.registerChildThread('thread-parent', 'thread-child')).toBe(true);
+    expect(listener).toHaveBeenCalledOnce();
+    expect(listener).toHaveBeenCalledWith({
+      parentThreadId: 'thread-parent',
+      childThreadId: 'thread-child',
+    });
+
+    expect(host.registerChildThread('missing-parent', 'orphan-child')).toBe(false);
+    expect(listener).toHaveBeenCalledOnce();
+  });
+
   it('routes an implicit XD Claude-only model through the Anthropic bridge', async () => {
     const host = await freshCodexProxyHost();
     const {

@@ -130,6 +130,7 @@ import {
   isCodexProxyHandleReady,
   setCodexProxyAuthInjection,
   setCodexProxyGatewayKeyReader,
+  setCodexChildThreadRouteListener,
   registerComposed as registerCodexProxyComposed,
   registerChildThread as registerCodexProxyChildThread,
   unregister as unregisterCodexProxyPrompt,
@@ -212,6 +213,13 @@ import {
 import { mapCodexAppServerModelsToCatalog } from './codex-model-discovery.js';
 import { prepareSharedProjectSkillLinks } from './shared-global-skills.js';
 import { DESKTOP_CAPABILITY_ROUTING_POLICY } from './capability-routing.js';
+import {
+  evaluateCombatToolExecution,
+  evaluateCombatPlanReview,
+  isCombatToolPolicyActive,
+  markCombatPlanApproved,
+  resetCombatPlanApprovals,
+} from '../meka-projects/combatWorkflowPolicy.js';
 export { withRehydrateCloseSuppressed };
 
 type RemoteCcQuery = Awaited<
@@ -797,6 +805,10 @@ export function getMaker(): Maker {
       // 行时, Claude 只剩上面那份静态只读白名单, 可信第一方 server 的 call_tool
       // (浏览器自动化等高频入口)会逐次弹窗, 与 Codex 侧的静默执行行为分叉。
       getMcpToolApprovalPolicy: getDesktopMcpToolApprovalPolicy,
+      isHostToolExecutionPolicyActive: isCombatToolPolicyActive,
+      evaluateHostToolExecution: evaluateCombatToolExecution,
+      evaluateHostPlanReview: evaluateCombatPlanReview,
+      onHostPlanApproved: markCombatPlanApproved,
       // 模型清单 SSoT = 目录（providers.json，OSS 运行时真源 / bundled 兜底）。maker-core 的
       // CLAUDE_MODELS 已删、availableModels 起始为空；host 从账号可选目录派生 cc 列表注入
       // （含 claude 订阅模型 + XD 网关路由的 gpt / 国产 / gemini 等）。active catalog 已在 splash 期
@@ -1212,7 +1224,9 @@ export function getMaker(): Maker {
           // model/list 无影响,不加 hostPurpose 分支。
           extraArgs: [
             ...mcpExtraArgs,
-            ...buildCodexSubagentSpawnArgs(readSubagentModelSettings()),
+            ...buildCodexSubagentSpawnArgs(readSubagentModelSettings(), {
+              forceDisabled: ctx.nativeSubagentsDisabled === true,
+            }),
             ...buildCodexProxySpawnArgs(endpoint, authInjection),
           ],
           extraEnv: mcpExtraEnv,
@@ -1322,7 +1336,20 @@ export function getMaker(): Maker {
           },
         });
       },
+      isHostToolExecutionPolicyActive: isCombatToolPolicyActive,
+      evaluateHostToolExecution: evaluateCombatToolExecution,
+      evaluateHostPlanReview: evaluateCombatPlanReview,
+      onHostPlanApproved: markCombatPlanApproved,
       resolveRemoteCodexCredentialMode,
+    });
+
+    setCodexChildThreadRouteListener(({ parentThreadId, childThreadId }) => {
+      if (!codexAgent.registerProxyDiscoveredChildThread(parentThreadId, childThreadId)) {
+        desktopMakerLogger.warn('proxy-discovered Codex child has no app-server parent lineage', {
+          parentThreadId,
+          childThreadId,
+        });
+      }
     });
 
     // 模块级回填 codexAgent 引用 —— restartCodexAfterAuthModeChange() 需要它在
@@ -1623,6 +1650,7 @@ export function resetMaker(): void {
   resetPluginRegistry();
   resetCustomMcpRegistry();
   resetMekaRuntimeMcpRegistryForTests();
+  resetCombatPlanApprovals();
 }
 
 /**
