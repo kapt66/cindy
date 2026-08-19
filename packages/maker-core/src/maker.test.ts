@@ -542,6 +542,38 @@ describe('Maker session close events', () => {
     expect(closeAttempts).toBe(2);
     expect(startSession).toHaveBeenCalledTimes(2);
   });
+
+  it('does not replace the persisted Codex thread when required recovery returns a new id', async () => {
+    const storage = createStorage();
+    await storage.create({
+      id: 'session-recovery-mismatch',
+      agentKind: 'codex',
+      workDir: '/repo',
+      title: 'Recovery',
+      model: 'gpt-5.4',
+      sdkSessionId: '11111111-1111-1111-1111-111111111111',
+    });
+    const mismatchedHandle = createHandle({ id: '22222222-2222-2222-2222-222222222222' });
+    mismatchedHandle.close = vi.fn(async () => undefined);
+    const maker = new Maker({
+      agents: { codex: createAgent(vi.fn(async () => mismatchedHandle)) },
+      storage,
+      logger: createLogger(),
+    });
+
+    await expect(maker.createSession({
+      id: 'session-recovery-mismatch',
+      agentKind: 'codex',
+      workingDir: '/repo',
+      model: 'gpt-5.4',
+      resumeSessionId: '11111111-1111-1111-1111-111111111111',
+      requireResumeSessionId: true,
+    })).rejects.toThrow('Codex recovery returned a different thread id');
+
+    expect(mismatchedHandle.close).toHaveBeenCalledOnce();
+    expect((await storage.get('session-recovery-mismatch'))?.sdkSessionId)
+      .toBe('11111111-1111-1111-1111-111111111111');
+  });
 });
 
 describe('Maker before-start lifecycle hook', () => {

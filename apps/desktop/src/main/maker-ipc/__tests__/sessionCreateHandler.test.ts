@@ -152,6 +152,7 @@ describe('maker session CREATE_SESSION IPC handler', () => {
       workspaceKind: 'meka',
       mekaProjectId: 'forged-project',
       mekaRoleId: 'forged-role',
+      requireResumeSessionId: true,
     });
 
     expect(reconcileCreateOptsWithDb).toHaveBeenCalledWith(
@@ -164,6 +165,7 @@ describe('maker session CREATE_SESSION IPC handler', () => {
         workspaceKind: 'meka',
         mekaProjectId: 'project-1',
         mekaRoleId: 'role-1',
+        requireResumeSessionId: undefined,
       }),
     );
   });

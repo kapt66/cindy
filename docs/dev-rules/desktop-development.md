@@ -142,3 +142,17 @@ pnpm test:unit
 
 OAuth loopback 单测的浏览器回调夹具在监听器建立后立即发起 loopback 请求，不额外排队
 `setImmediate`；这样在 Windows CI 的并发 Vitest worker 负载下不会把合法回调延迟到测试超时。
+
+## 错误任务的原生会话恢复
+
+Desktop 在已注册 Session 进入 `error` 后收到继续消息时，必须把该路径视为恢复已有任务，
+不能视为普通新建。lazy-create 前必须成功读取 `sessions` 权威行；读库失败（包括
+`SQLITE_BUSY`）时应在 bootstrap 前失败，不能沿用 renderer／队列中的旧 `createOpts`；
+对明确处于错误恢复的 Session，记录缺失也必须失败。真正的全新 lazy create 没有历史行，
+允许在确认“无行”后按请求创建。DB 行中的 Agent、模型、provider 和 `sdk_session_id` 始终
+覆盖调用快照。
+
+Codex 错误恢复还必须携带有效的持久化 thread ID，并调用 `thread/resume`。该路径禁止降级为
+`thread/start`；app-server 返回的 handle ID 也必须等于预期 ID，否则关闭新 handle、保留原
+`sdk_session_id` 并报告失败。该约束只适用于错误 Session 的原地恢复；显式 `/clear`、切换
+Agent、删除消息后重建上下文及全新任务仍允许创建新的原生会话。

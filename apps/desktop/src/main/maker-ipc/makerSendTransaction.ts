@@ -182,7 +182,11 @@ export interface MakerSendTransactionDeps {
    * 用它 spawn 会把消息发回旧引擎且丢交接注入;此钩子读 sessions 行,发现漂移时
    * 原地覆写 agentKind/model/resumeSessionId/providerId。undefined = 不校正(测试用)。
    */
-  reconcileCreateOptsWithDb?(sessionId: string, createOpts: CreateOpts): Promise<void>;
+  reconcileCreateOptsWithDb?(
+    sessionId: string,
+    createOpts: CreateOpts,
+    options?: { requirePersistedSession?: boolean; failClosedOnReadError?: boolean },
+  ): Promise<void>;
   /**
    * session-agent-switch:turn 运行中登记的切换意图在**发送时刻**执行(先于
    * getSession——apply 会 close 旧引擎,随后本事务按 DB 新值 lazy-create 新引擎,
@@ -497,12 +501,14 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
       // 让下方走 lazy-create 按 DB 新值 spawn 新引擎。
       await deps.applyPendingAgentSwitch?.(sessionId);
       let sess = deps.getSession(sessionId);
+      let requireCodexErrorRecovery = false;
       // Maker keeps a failed Session registered until its real handle cleanup
       // succeeds. It is not a reusable send target: route it through the
       // existing lazy bootstrap path so Maker.createSession() can retry close
       // and rebuild the handle before dispatching the message.
       if (sess?.getStatus?.() === 'error') {
         deps.log.info('send: error session requires recovery before dispatch', { sessionId });
+        requireCodexErrorRecovery = sess.agentKind === 'codex';
         sess = undefined;
       }
       if (sess?.isTurnRunning()) {
@@ -536,7 +542,16 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
       if (!sess) {
         if (!createOpts) throwIpcError('NOT_FOUND', `Session ${sessionId} not found and no createOpts provided`);
         const co = deps.buildCreateOptsWithStderr({ ...(createOpts as CreateOpts), id: sessionId });
-        await deps.reconcileCreateOptsWithDb?.(sessionId, co);
+        // Internal recovery intent is decided from the live Session above. IPC and
+        // queued snapshots must not be able to arm it themselves.
+        co.requireResumeSessionId = undefined;
+        await deps.reconcileCreateOptsWithDb?.(sessionId, co, {
+          requirePersistedSession: requireCodexErrorRecovery,
+          failClosedOnReadError: true,
+        });
+        if (requireCodexErrorRecovery && co.agentKind === 'codex') {
+          co.requireResumeSessionId = true;
+        }
         const lazy = await lazyCreateSession(sessionId, co);
         if (lazy.kind === 'failure') return lazy.result;
         sess = lazy.session;

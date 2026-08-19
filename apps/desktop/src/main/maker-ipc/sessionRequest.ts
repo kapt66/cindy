@@ -139,6 +139,8 @@ export function readCreateSessionOpts(
     : requireString(body.workingDir, 'workingDir');
   return {
     ...body,
+    // Host-owned recovery invariant; never accept it from an IPC payload.
+    requireResumeSessionId: undefined,
     id,
     agentKind,
     workspaceKind,

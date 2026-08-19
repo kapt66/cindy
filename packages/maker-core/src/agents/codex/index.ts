@@ -3614,6 +3614,9 @@ export class CodexAgent extends BaseAgent {
     // 看到不像 UUID 就走新 thread/start, 不让 ghost id 阻塞用户。
     const isLikelyValidThreadId = (id: string | undefined): id is string =>
       typeof id === 'string' && id.length > 0 && !id.startsWith('<') && /^[0-9a-fA-F-]+$/.test(id);
+    if (opts.requireResumeSessionId && !isLikelyValidThreadId(opts.resumeSessionId)) {
+      throw new Error('Codex recovery requires a valid resumeSessionId; refusing thread/start');
+    }
     if (opts.resumeSessionId && !isLikelyValidThreadId(opts.resumeSessionId)) {
       log.warn('resumeSessionId looks invalid, falling back to thread/start', {
         resumeSessionId: opts.resumeSessionId,

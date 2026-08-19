@@ -2359,6 +2359,49 @@ describe('CodexAgent.refreshLocalModels', () => {
 });
 
 describe('CodexAgent.startSession developerInstructions', () => {
+  it('refuses recovery without a valid thread id before thread/start', async () => {
+    const agent = new CodexAgent(createDeps());
+    const host = installFakeHost(agent);
+
+    await expect(agent.startSession({
+      sessionId: 'session-recovery-missing-thread',
+      model: 'gpt-5.4',
+      workingDir: path.join('workspace', 'repo'),
+      requireResumeSessionId: true,
+    })).rejects.toThrow('Codex recovery requires a valid resumeSessionId');
+    expect(host.request).not.toHaveBeenCalledWith(
+      Method.ThreadStart,
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it('uses thread/resume exclusively when recovery requires the persisted thread', async () => {
+    const threadId = '11111111-1111-1111-1111-111111111111';
+    const agent = new CodexAgent(createDeps());
+    const host = installFakeHost(agent);
+
+    const handle = await agent.startSession({
+      sessionId: 'session-recovery-existing-thread',
+      model: 'gpt-5.4',
+      workingDir: path.join('workspace', 'repo'),
+      resumeSessionId: threadId,
+      requireResumeSessionId: true,
+    });
+
+    expect(host.request).toHaveBeenCalledWith(
+      Method.ThreadResume,
+      expect.objectContaining({ threadId }),
+      expect.anything(),
+    );
+    expect(host.request).not.toHaveBeenCalledWith(
+      Method.ThreadStart,
+      expect.anything(),
+      expect.anything(),
+    );
+    await handle.close();
+  });
+
   it('rejects session creation when thread/start fails', async () => {
     const workingDir = path.join('workspace', 'repo');
     const agent = new CodexAgent(createDeps());

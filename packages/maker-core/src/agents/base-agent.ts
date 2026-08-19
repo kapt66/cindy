@@ -896,6 +896,13 @@ export interface StartSessionOptions {
    * 暴露成模型或插件可控的工具参数。
    */
   sessionInstanceId?: string;
+  /**
+   * Recovery-only invariant: this startup must resume the native session named by
+   * `resumeSessionId`; it must never degrade to creating a fresh native session.
+   * Hosts set this only while rebuilding a failed live session. Explicit context
+   * resets and agent switches intentionally leave it unset.
+   */
+  requireResumeSessionId?: boolean;
   workingDir: string;
   /**
    * Product workspace classification. `dialogue` sessions may still receive an

@@ -473,6 +473,7 @@ import {
 import { hydrateQueuedAgentReferences } from './agentInputReferences.js';
 import { agentHandoffPending } from './agentHandoffPendingSingleton.js';
 import { type MakerSessionCreateOpts, withCreateSessionStderr } from './sessionRequest.js';
+import { reconcileCreateOptsFromPersistedSession } from './sessionCreateReconciliation.js';
 import { persistAndHydrateSessionProvider } from './sessionProviderBootstrap.js';
 import { registerMakerSessionSendHandler } from './sessionSendHandler.js';
 import { registerStopAgentTaskHandler } from './stopAgentTaskHandler.js';
@@ -6026,58 +6027,72 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   // 残留在 renderer store / 排队项里的旧 agentKind/resumeSessionId 若原样 spawn,
   // 会把会话劫持回旧引擎且丢交接注入(规则 9:代码兜底)。send 事务与
   // GET_CONTEXT_USAGE 的 lazy 分支共用(后者无校正曾是审计实锤缺口)。
-  async function reconcileCreateOptsAgainstDb(sessionId: string, co: CreateOpts): Promise<void> {
-    try {
-      const db = getDbClient().drizzle;
-      const [row] = await db
-        .select({
-          agentKind: sessions.agentKind,
-          model: sessions.model,
-          sdkSessionId: sessions.sdkSessionId,
-          providerId: sessions.providerId,
-          effort: sessions.effort,
-          fastMode: sessions.fastMode,
-          workingDir: sessions.workingDir,
-          workspaceKind: sessions.workspaceKind,
-          mekaProjectId: sessions.mekaProjectId,
-          mekaRoleId: sessions.mekaRoleId,
-        })
-        .from(sessions)
-        .where(eq(sessions.id, sessionId))
-        .limit(1);
-      if (!row) return;
-      const dbMakerKind = dbToMakerAgentKind(row.agentKind);
-      if (co.agentKind !== dbMakerKind) {
-        log.warn('lazy-create: createOpts agentKind drifted from DB (agent switch); reconciling', {
-          sessionId,
-          staleAgentKind: co.agentKind,
-          dbAgentKind: dbMakerKind,
-        });
-        co.agentKind = dbMakerKind;
-      }
-      // 意图制切换 / 凭证形态切换下,renderer 与排队项的 createOpts 快照构建于 send
-      // 事务内 apply 之前。agentKind 可能已一致,但 model/resume/providerId/effort/fast
-      // 仍是旧值；
-      // 尤其 resumeSessionId 可能是**旧引擎**的原生会话 id——resume 会以错误引擎
-      // 解释它)。lazy-create 时刻 DB 行是唯一真源,执行字段无条件对齐。
-      co.model = row.model ?? undefined;
-      co.resumeSessionId = row.sdkSessionId ?? undefined;
-      co.providerId = row.providerId;
-      co.effort = (row.effort ?? undefined) as CreateOpts['effort'];
-      co.fastMode = !!row.fastMode;
-      if (row.workspaceKind === 'meka') {
-        if (!row.workingDir || !row.mekaProjectId || !row.mekaRoleId) {
-          throw new Error(`Meka session ${sessionId} is missing its persisted project binding`);
+  async function reconcileCreateOptsAgainstDb(
+    sessionId: string,
+    co: CreateOpts,
+    options: { requirePersistedSession?: boolean; failClosedOnReadError?: boolean } = {},
+  ): Promise<void> {
+    await reconcileCreateOptsFromPersistedSession({
+      sessionId,
+      requirePersistedSession: options.requirePersistedSession,
+      failClosedOnReadError: options.failClosedOnReadError,
+      readRow: async () => {
+        const db = getDbClient().drizzle;
+        const [row] = await db
+          .select({
+            agentKind: sessions.agentKind,
+            model: sessions.model,
+            sdkSessionId: sessions.sdkSessionId,
+            providerId: sessions.providerId,
+            effort: sessions.effort,
+            fastMode: sessions.fastMode,
+            workingDir: sessions.workingDir,
+            workspaceKind: sessions.workspaceKind,
+            mekaProjectId: sessions.mekaProjectId,
+            mekaRoleId: sessions.mekaRoleId,
+          })
+          .from(sessions)
+          .where(eq(sessions.id, sessionId))
+          .limit(1);
+        return row ?? null;
+      },
+      applyRow: async (row) => {
+        const dbMakerKind = dbToMakerAgentKind(row.agentKind);
+        if (co.agentKind !== dbMakerKind) {
+          log.warn('lazy-create: createOpts agentKind drifted from DB (agent switch); reconciling', {
+            sessionId,
+            staleAgentKind: co.agentKind,
+            dbAgentKind: dbMakerKind,
+          });
+          co.agentKind = dbMakerKind;
         }
-        co.workingDir = row.workingDir;
-        co.workspaceKind = 'meka';
-        co.mekaProjectId = row.mekaProjectId;
-        co.mekaRoleId = row.mekaRoleId;
-        co.extraDirs = await readSessionExtraDirsFromDb(sessionId);
-      }
-    } catch {
-      // 校正读库失败按原 opts 继续(与切换功能上线前行为一致)。
-    }
+        // 意图制切换 / 凭证形态切换下,renderer 与排队项的 createOpts 快照构建于 send
+        // 事务内 apply 之前。agentKind 可能已一致,但 model/resume/providerId/effort/fast
+        // 仍是旧值；尤其 resumeSessionId 可能是**旧引擎**的原生会话 id。
+        // lazy-create 时刻 DB 行是唯一真源,执行字段无条件对齐。
+        co.model = row.model ?? undefined;
+        co.resumeSessionId = row.sdkSessionId ?? undefined;
+        co.providerId = row.providerId;
+        co.effort = (row.effort ?? undefined) as CreateOpts['effort'];
+        co.fastMode = !!row.fastMode;
+        if (row.workspaceKind === 'meka') {
+          if (!row.workingDir || !row.mekaProjectId || !row.mekaRoleId) {
+            throw new Error(`Meka session ${sessionId} is missing its persisted project binding`);
+          }
+          co.workingDir = row.workingDir;
+          co.workspaceKind = 'meka';
+          co.mekaProjectId = row.mekaProjectId;
+          co.mekaRoleId = row.mekaRoleId;
+          co.extraDirs = await readSessionExtraDirsFromDb(sessionId);
+        }
+      },
+      onRequiredFailure: (err) => {
+        log.error('lazy-create: authoritative session reconciliation failed; refusing bootstrap', {
+          sessionId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      },
+    });
   }
 
   const agentSwitchDeps: MakerSessionAgentSwitchHandlerDeps = {
@@ -8452,7 +8467,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       // session-agent-switch:先按 DB 行校正再判 claude-only——否则切到 codex 后
       // 残留的 claude createOpts 会在这里 spawn 出旧引擎的 live session 并被后续
       // send 复用(会话被劫持回旧引擎,2026-07-20 审计实锤)。
-      await reconcileCreateOptsAgainstDb(sessionId, co);
+      await reconcileCreateOptsAgainstDb(sessionId, co, {
+        requirePersistedSession: true,
+        failClosedOnReadError: true,
+      });
       if (co.agentKind !== 'claude-code') {
         throwIpcError('UNSUPPORTED_CAPABILITY', `Agent ${co.agentKind} does not support context usage`);
       }

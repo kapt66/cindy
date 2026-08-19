@@ -2100,6 +2100,22 @@ host 隔离、注册失败早于 `thread/start`、MCPRouter 原始字节投递�
 按 LF 规范化后兼容 Windows CRLF checkout。真实 Electron 任务的 `/context` 前后对比、macOS
 文件系统和真实 MCPRouter Worker 仍需发布前手测。
 
+### 6.33 2026-08-19 Codex 错误任务恢复保持原 thread
+
+任务 `c53d6e8d-198d-4588-aff8-81a6c305414c` 在流错误后继续时，错误 Session 被送入
+lazy-create；当 DB reconciliation 短暂失败时，旧实现会吞掉异常并使用缺少
+`resumeSessionId` 的排队快照，最终调用 `thread/start`，再用新 thread ID 覆盖任务的
+`sdk_session_id`，导致 Agent 看不到此前上下文。原 rollout 仍在用户目录，丢失的是任务到
+原生 thread 的关联。
+
+当前恢复链路改为 fail-closed：lazy-create 的权威 DB 读取失败时不启动 Agent；明确处于错误
+恢复的 Session 还要求任务行必须存在。真正的新任务在确认 DB 无行后仍可创建。错误 Codex
+Session 的重建显式要求原 thread ID，只允许
+`thread/resume`。maker-core 在持久化前再次核对返回 handle ID，发现与预期不一致时关闭该
+handle 并保留旧关联。主动 `/clear`、Agent 切换、消息删除后的显式上下文重建和新任务不带
+错误恢复标记，仍可合法 `thread/start`。定向验证覆盖 DB ID 覆盖陈旧快照、`SQLITE_BUSY`
+早停、恢复只调用 resume、返回 ID 不一致不覆写，以及 Agent 切换继续允许新建。
+
 ## 10. 后续继续迁移时的硬性注意事项
 
 ### 9.1 `origin/main` → `meka/main` 同步报告

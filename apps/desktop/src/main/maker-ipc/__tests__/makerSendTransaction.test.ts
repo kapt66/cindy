@@ -706,6 +706,9 @@ describe('maker SEND transaction', () => {
     };
     const { deps } = createDeps({
       getSession: vi.fn(() => failedSession),
+      reconcileCreateOptsWithDb: vi.fn(async (_sessionId, opts) => {
+        opts.resumeSessionId = '11111111-1111-1111-1111-111111111111';
+      }),
       bootstrapSession: vi.fn(async () => ({
         session: recoveredSession,
         didInjectOrcaInstructions: false,
@@ -720,7 +723,11 @@ describe('maker SEND transaction', () => {
     });
 
     expect(failedSession.send).not.toHaveBeenCalled();
-    expect(deps.bootstrapSession).toHaveBeenCalledWith(createOpts);
+    expect(deps.bootstrapSession).toHaveBeenCalledWith({
+      ...createOpts,
+      resumeSessionId: '11111111-1111-1111-1111-111111111111',
+      requireResumeSessionId: true,
+    });
     expect(recoveredSession.send).toHaveBeenCalled();
   });
 
@@ -1195,7 +1202,7 @@ describe('session-agent-switch handoff injection', () => {
   it('lazy-create 前调用 reconcileCreateOptsWithDb 以 DB 行校正 createOpts', async () => {
     const reconcile = vi.fn(async (_sessionId: string, co: MakerSessionCreateOpts) => {
       co.agentKind = 'codex';
-      co.resumeSessionId = undefined;
+      co.resumeSessionId = '11111111-1111-1111-1111-111111111111';
     });
     const { deps } = createDeps({
       getSession: vi.fn(() => undefined),
@@ -1206,13 +1213,69 @@ describe('session-agent-switch handoff injection', () => {
     await transaction.sendToAgentAccepted(
       'session-1',
       'hi',
-      { agentKind: 'claude-code', workingDir: '/tmp/w', resumeSessionId: 'stale-sdk' },
+      {
+        agentKind: 'claude-code',
+        workingDir: '/tmp/w',
+        resumeSessionId: 'stale-sdk',
+        requireResumeSessionId: true,
+      },
       {},
     );
     expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(reconcile).toHaveBeenCalledWith(
+      'session-1',
+      expect.anything(),
+      { requirePersistedSession: false, failClosedOnReadError: true },
+    );
     const bootstrapOpts = vi.mocked(deps.bootstrapSession).mock.calls[0][0];
     expect(bootstrapOpts.agentKind).toBe('codex');
-    expect(bootstrapOpts.resumeSessionId).toBeUndefined();
+    expect(bootstrapOpts.resumeSessionId).toBe('11111111-1111-1111-1111-111111111111');
+    expect(bootstrapOpts.requireResumeSessionId).toBeUndefined();
+  });
+
+  it('错误 Codex session 重建必须使用 DB 中的原 thread，不能静默新建', async () => {
+    const failedSession = createSession({
+      getStatus: vi.fn(() => 'error' as const),
+    });
+    const reconcile = vi.fn(async (_sessionId: string, co: MakerSessionCreateOpts) => {
+      co.agentKind = 'codex';
+      co.resumeSessionId = '11111111-1111-1111-1111-111111111111';
+    });
+    const { deps } = createDeps({
+      getSession: vi.fn(() => failedSession),
+      reconcileCreateOptsWithDb: reconcile,
+    });
+    const transaction = createMakerSendTransaction(deps);
+
+    await transaction.sendToAgentAccepted(
+      'session-1',
+      'continue',
+      { agentKind: 'codex', workingDir: '/tmp/w' },
+      {},
+    );
+
+    const bootstrapOpts = vi.mocked(deps.bootstrapSession).mock.calls[0][0];
+    expect(bootstrapOpts.resumeSessionId).toBe('11111111-1111-1111-1111-111111111111');
+    expect(bootstrapOpts.requireResumeSessionId).toBe(true);
+  });
+
+  it('lazy-create 的 DB 真源读取失败时在 bootstrap 前终止', async () => {
+    const reconcileError = new Error('SQLITE_BUSY');
+    const { deps } = createDeps({
+      getSession: vi.fn(() => undefined),
+      reconcileCreateOptsWithDb: vi.fn(async () => {
+        throw reconcileError;
+      }),
+    });
+    const transaction = createMakerSendTransaction(deps);
+
+    await expect(transaction.sendToAgentAccepted(
+      'session-1',
+      'continue',
+      { agentKind: 'codex', workingDir: '/tmp/w' },
+      {},
+    )).rejects.toBe(reconcileError);
+    expect(deps.bootstrapSession).not.toHaveBeenCalled();
   });
 
   it('排队 drain 端到端:切换在派发时刻落实(关旧引擎)→ createOpts 按 DB 对齐新引擎 → 交接注入新引擎首条 + scheduler origin 透传', async () => {
@@ -1278,6 +1341,7 @@ describe('session-agent-switch handoff injection', () => {
     const bootstrapOpts = vi.mocked(deps.bootstrapSession).mock.calls[0][0];
     expect(bootstrapOpts.agentKind).toBe('codex');
     expect(bootstrapOpts.resumeSessionId).toBeUndefined();
+    expect(bootstrapOpts.requireResumeSessionId).toBeUndefined();
     // 3. 交接前缀注入发往新引擎的首条 wire 消息,且 scheduler origin 透传。
     expect(newEngineSession).not.toBeNull();
     const newSend = vi.mocked((newEngineSession as unknown as MakerSendTransactionSession).send);

@@ -409,6 +409,24 @@ export class Maker {
       codexThreadClaim?.release();
       throw error;
     }
+    if (
+      opts.agentKind === 'codex' &&
+      startOpts.requireResumeSessionId &&
+      handle.id !== startOpts.resumeSessionId
+    ) {
+      try {
+        await handle.close();
+      } catch (closeError) {
+        this.logger.warn('failed to close Codex handle after recovery thread mismatch', {
+          sessionId: id,
+          error: String(closeError),
+        });
+      }
+      codexThreadClaim?.release();
+      throw new Error(
+        `Codex recovery returned a different thread id; expected ${startOpts.resumeSessionId}, got ${handle.id}`,
+      );
+    }
     if (opts.agentKind === 'codex' && isClaimableCodexThreadId(handle.id)) {
       try {
         if (codexThreadClaim) {
