@@ -14,3 +14,18 @@ export function classifyRemoteSessionTransport(
   // misclassifying them as SSH hosts and reporting SSH_HOST_NOT_FOUND.
   return remoteHostId.startsWith(MCPR_REMOTE_HOST_PREFIX) ? 'mcpr' : 'ssh';
 }
+
+/**
+ * Resolve the credential source owned by a remote Codex transport.
+ *
+ * MCPRouter's codex-appserver bridge receives only the Cindy AI Gateway key;
+ * Desktop OAuth is deliberately never copied to it. SSH keeps its established
+ * fallback behavior because its isolated CODEX_HOME owns that host's auth.
+ */
+export function resolveRemoteCodexCredentialMode(
+  remoteHostId: string,
+): 'gateway-key' | undefined {
+  return classifyRemoteSessionTransport(remoteHostId) === 'mcpr'
+    ? 'gateway-key'
+    : undefined;
+}

@@ -74,6 +74,13 @@ transport 身份，`agentType` 为 `claude` 或 `codex` 时才进入支持判断
   `codex-appserver` tunnel 使用 MCPRouter 打包的 Codex 可执行文件；当远端版本低于
   `0.145.0` 时必须 fail closed 并提示升级 MCPRouter runtime，不得为了让会话启动而关闭
   capability routing。
+- MCPRouter Codex 的凭证来源固定为 Cindy AI Gateway key。Desktop 只在 bridge spawn
+  header 中注入该 key，绝不把本机 Codex OAuth 复制到远端；因此 maker-core 启动前的鉴权
+  也必须由 Host 按 transport 显式解析为 `gateway-key`，不能使用本机 fallback OAuth 状态。
+  即使本机 OAuth 因 `token_revoked` 进入恢复态，只要 Gateway key 有效，`mcpr:` Codex 仍应
+  正常启动。SSH Codex 继续使用其隔离 `CODEX_HOME` 的既有 fallback 语义。凭证模式解析与
+  transport 分类必须共同复用 `remote-session-routing.ts`，不得在 maker-core 解析 `mcpr:`
+  前缀。
 
 这条版本契约源自 2026-08-05 的两次现场错误：Claude 握手漏传 bundleVersion，以及
 MCPRouter Worker 使用 `cindy/0.144.1` Codex runtime。

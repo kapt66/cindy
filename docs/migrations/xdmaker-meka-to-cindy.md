@@ -94,6 +94,10 @@
   `transport`、`command`/`url`、`args` 和受限 `env`；`providerId` 仅用于兼容引用 Main
   已注册的宿主 provider。
 - 远程 MCPRouter 项目实例绑定和会话隧道。
+- MCPRouter Codex 远端任务固定使用 Cindy AI Gateway key：Desktop OAuth 不复制到远端，
+  maker-core 由 Host 按 transport 显式取得 `gateway-key` 鉴权模式。本机 Codex OAuth 即使因
+  `token_revoked` 进入恢复态，也不会再阻断 Gateway key 有效的远端 lazy-create；SSH Codex
+  保持隔离 `CODEX_HOME` 的既有 fallback 语义。
 - MCPRouter 模板级本地服务器能力已接入 Cindy Main 生命周期管理：本机配置表目录由宿主
   选择并私有持久化，远端构建产物显式下载后才能启动；已下载产物保留编译时间、HEAD SHA
   和提交标题并可跨应用重启恢复，重启时只保留文件并强制终止残留进程。该机制只解释模板

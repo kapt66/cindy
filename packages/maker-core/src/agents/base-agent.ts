@@ -515,6 +515,20 @@ export interface AgentDeps {
   ) => import("./codex/app-server/transport.js").Transport;
 
   /**
+   * Codex 专用：解析某个远端 transport 启动 app-server 时必须使用的凭证形态。
+   *
+   * 远端 transport 的鉴权边界由 host 掌握，maker-core 不解析 `remoteHostId` 的命名
+   * 约定。返回显式模式后，CodexAgent 会用它完成启动前鉴权并贯穿 host 生命周期；
+   * 返回 undefined / 缺省则保留远端已有的 fallback 语义。
+   *
+   * 例如 MCPRouter Codex 的远端 bridge 只注入 AI Gateway key，不复制 Desktop OAuth，
+   * 因此 host 必须为它返回 `gateway-key`，避免无关的本机 OAuth 失效阻断远端启动。
+   */
+  resolveRemoteCodexCredentialMode?: (
+    remoteHostId: string,
+  ) => AgentCredentialMode | undefined;
+
+  /**
    * Codex 专用:读**这个 thread 本次实际出口**的出站代理路径判定,用于把「后端不可达」
    * 的通用猜测换成实测事实(走了哪个代理 / 确认直连 / 配了但用不了 / 判定没问出来)。
    *

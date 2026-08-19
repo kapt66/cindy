@@ -75,7 +75,10 @@ import { getRemoteAgentProxyEnv, reconcileCodexAgentProxyEnv } from '../remote-s
 import { openCcManagerSession } from './cc-manager-client.js';
 import { openMcprTunnel } from './mcpr-tunnel.js';
 import { parseMcprRemoteHostId } from '../../shared/meka-router.js';
-import { classifyRemoteSessionTransport } from './remote-session-routing.js';
+import {
+  classifyRemoteSessionTransport,
+  resolveRemoteCodexCredentialMode,
+} from './remote-session-routing.js';
 import { getRemoteClaudeBinaryPath } from '../remote-ssh/cc-manager-install.js';
 import {
   createBashConcurrencyHooks,
@@ -1319,6 +1322,7 @@ export function getMaker(): Maker {
           },
         });
       },
+      resolveRemoteCodexCredentialMode,
     });
 
     // 模块级回填 codexAgent 引用 —— restartCodexAfterAuthModeChange() 需要它在

@@ -5272,6 +5272,50 @@ describe('CodexAgent MCP thread context hooks', () => {
     await handle.close();
   });
 
+  it('uses the host-owned remote credential mode instead of unrelated local OAuth state', async () => {
+    const getState = vi.fn(async (options?: { credentialMode?: string }) => (
+      options?.credentialMode === 'gateway-key'
+        ? { authenticated: true, authSource: 'api-key' as const }
+        : { authenticated: false, errorReason: 'token_revoked' }
+    ));
+    const getAuthEnv = vi.fn(async (options?: { credentialMode?: string }): Promise<Record<string, string>> => (
+      options?.credentialMode === 'gateway-key' ? { XDT_CODEX_API_KEY: 'test-key' } : {}
+    ));
+    const getRemoteCodexTransport = vi.fn(() => {
+      const transport = new MockCodexTransport();
+      createdTransports.push(transport);
+      return transport;
+    });
+    const resolveRemoteCodexCredentialMode = vi.fn(() => 'gateway-key' as const);
+    const agent = new CodexAgent(createDeps({}, {
+      auth: {
+        getState,
+        async triggerLogin() {
+          return { authenticated: true };
+        },
+        async logout() {},
+        getAuthEnv,
+      },
+      getRemoteCodexTransport,
+      resolveRemoteCodexCredentialMode,
+    }));
+
+    const handle = await agent.startSession({
+      sessionId: 'session-mcpr-ignores-revoked-oauth',
+      model: 'gpt-5.4',
+      workingDir: '/repo',
+      remoteHostId: 'mcpr:instance-1',
+    });
+
+    expect(resolveRemoteCodexCredentialMode).toHaveBeenCalledWith('mcpr:instance-1');
+    expect(getState).toHaveBeenCalledWith({ credentialMode: 'gateway-key' });
+    expect(getState).not.toHaveBeenCalledWith(undefined);
+    expect(getAuthEnv).toHaveBeenCalledWith({ credentialMode: 'gateway-key' });
+    expect(getRemoteCodexTransport).toHaveBeenCalledWith('mcpr:instance-1');
+    await handle.close();
+    await agent.dispose();
+  });
+
   it('registers and unregisters Codex MCP thread context for local sessions', async () => {
     const registerCodexMcpThreadContext = vi.fn();
     const unregisterCodexMcpThreadContext = vi.fn();
