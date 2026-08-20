@@ -26,10 +26,7 @@ import {
   createCodexModelBackfillCoordinator,
   type CodexModelBackfillCoordinator,
 } from './codex-model-backfill.js';
-import {
-  createOrcaWorkerBridgeMcpProvider,
-  type OrcaBridgeMcpDeps,
-} from '@cindy/orca-workflow';
+import { createOrcaWorkerBridgeMcpProvider, type OrcaBridgeMcpDeps } from '@cindy/orca-workflow';
 import { LspServerPool } from '@cindy/mcps';
 
 import { createMessage } from '../localDb/ipc/messages.js';
@@ -218,8 +215,11 @@ import {
   evaluateCombatPlanReview,
   isCombatToolPolicyActive,
   markCombatPlanApproved,
-  resetCombatPlanApprovals,
 } from '../meka-projects/combatWorkflowPolicy.js';
+import {
+  clearCombatServerCapabilitySession,
+  resetCombatServerCapabilityState,
+} from '../meka-projects/combatServerCapabilityState.js';
 export { withRehydrateCloseSuppressed };
 
 type RemoteCcQuery = Awaited<
@@ -513,9 +513,9 @@ export async function ensureCodexMcpBridgeStartedForRemote(): Promise<{
             const ids = new Set<string>();
             for (const s of _maker?.listActiveSessions() ?? []) {
               if (
-                s.remoteHostId
-                && s.agentKind === 'codex'
-                && classifyRemoteSessionTransport(s.remoteHostId) === 'ssh'
+                s.remoteHostId &&
+                s.agentKind === 'codex' &&
+                classifyRemoteSessionTransport(s.remoteHostId) === 'ssh'
               ) {
                 ids.add(s.remoteHostId);
               }
@@ -1014,7 +1014,9 @@ export function getMaker(): Maker {
               onApprovalRequest: onApprovalRequest as Parameters<
                 typeof openCcManagerSession
               >[0]['onApprovalRequest'],
-              onOAuthRefresh: onOAuthRefresh as Parameters<typeof openCcManagerSession>[0]['onOAuthRefresh'],
+              onOAuthRefresh: onOAuthRefresh as Parameters<
+                typeof openCcManagerSession
+              >[0]['onOAuthRefresh'],
               forceFreshQuery,
             });
           } catch (err) {
@@ -1145,8 +1147,7 @@ export function getMaker(): Maker {
         let mcpExtraArgs: string[] = [];
         let mcpExtraEnv: Record<string, string> = {};
         let buildSessionMcpConfig:
-          | ((sessionInstanceId: string) => Record<string, unknown>)
-          | undefined;
+          ((sessionInstanceId: string) => Record<string, unknown>) | undefined;
         try {
           const cfg = await getCodexExtraSpawnConfig({
             mcpProviders: providers,
@@ -1517,15 +1518,14 @@ export function getMaker(): Maker {
       lifecycleHooks: {
         prepareStartOptions: async (sessionId, opts) => {
           const providerScopeKey = activeOwnerScopeKey();
-          const providerReady = await accountProviderReadinessBarrier.waitForScope(providerScopeKey);
+          const providerReady =
+            await accountProviderReadinessBarrier.waitForScope(providerScopeKey);
           if (
             !providerReady ||
             activeOwnerScopeKey() !== providerScopeKey ||
             isAppSessionBoundaryPending()
           ) {
-            throw new Error(
-              'Account provider models are not ready for this app session; retry.',
-            );
+            throw new Error('Account provider models are not ready for this app session; retry.');
           }
           await preparePersistedOrcaSessionStart(sessionId, opts as MakerSessionCreateOpts);
         },
@@ -1563,6 +1563,7 @@ export function getMaker(): Maker {
           await writeCodexHistoryHasProductPrompt(sessionId, historyHasProductPrompt);
         },
         onClose: async (sessionId) => {
+          clearCombatServerCapabilitySession(sessionId);
           // rehydrate close suppression 只跳过 worktree / temp file 这类重副作用;
           // registry 必须先清,后续 resume 会在首个 /responses 前重新登记,避免旧 thread prompt 驻留。
           unregisterCodexProxyPrompt(sessionId);
@@ -1649,8 +1650,10 @@ export function resetMaker(): void {
   _initialCustomMcpRefresh = undefined;
   resetPluginRegistry();
   resetCustomMcpRegistry();
+  // 不保留已关闭 Maker 会话的战斗服务器核查回执或派发 token。
+  // resume 会在新的 runtime 注入后重新通过环境门和 Worker 核查。
+  resetCombatServerCapabilityState();
   resetMekaRuntimeMcpRegistryForTests();
-  resetCombatPlanApprovals();
 }
 
 /**

@@ -65,6 +65,9 @@ describe('SAGA2 combat environment gate', () => {
     expect(receipt).toContain('first user-visible assistant message');
     expect(receipt).toContain('战斗开发');
     expect(receipt).toContain('before loading any Skill');
+    expect(receipt).toContain('可启动远端 Codex 只读 Worker');
+    expect(receipt).toContain('本流程不执行服务管理或服务器修改');
+    expect(receipt).not.toContain('原生 Skill 投递');
     expect(receipt).not.toContain('127.0.0.1');
     expect(receipt).not.toContain('mcpr:server-1');
   });
@@ -80,7 +83,7 @@ describe('SAGA2 combat environment gate', () => {
     expect(formatCombatEnvironmentGateReceipt(gate)).toContain('BLOCKED TURN CONTRACT');
   });
 
-  it('blocks before exploration when the bound server cannot deliver native Skills', async () => {
+  it('blocks before exploration when the bound server cannot start a compatible Codex Worker', async () => {
     const deps = readyDeps();
     deps.probeRemoteCodexCapability = vi.fn(async () => {
       throw new Error(

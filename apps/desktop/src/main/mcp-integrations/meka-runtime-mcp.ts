@@ -19,6 +19,10 @@ import {
   isCombatEnvironmentRecoveryControlTool,
   isCombatWorkflowPolicyActive,
 } from '../meka-projects/combatWorkflowPolicy.js';
+import {
+  consumeTrustedCombatServerCapabilityReport,
+  resetCombatServerCapabilityFlow,
+} from '../meka-projects/combatServerCapabilityState.js';
 
 const ROUTER_PROVIDER_IDS = new Set(['mcp-router', 'project-agent']);
 const MEKA_DESIGN_PROVIDER_ID = 'meka-design';
@@ -44,80 +48,57 @@ interface MekaRuntimeVendorOptions extends Record<string, unknown> {
   mekaWorkflow?: unknown;
   mekaCombatEnvironmentReady?: unknown;
   mekaCombatPhase?: unknown;
-  mekaCombatServerReceiptRequired?: unknown;
-  mekaCombatServerReceiptValidated?: unknown;
+  mekaCombatServerCapabilityStatus?: unknown;
 }
 
-const serverWorkflowReceiptSchema = z
+const serverCapabilityReportSchema = z
   .object({
-    skillName: z.string().trim().min(1),
-    skillLoaded: z.boolean(),
-    role: z.string().trim().min(1),
-    status: z.enum(['already-supported', 'implemented', 'partial', 'blocked']),
+    supportStatus: z.enum(['supported', 'unsupported', 'uncertain']),
+    readOnlyConfirmed: z.literal(true),
     repository: z.string().trim().min(1),
-    head: z.string().trim().min(1),
-    baseBranch: z.string().trim().min(1),
-    workBranch: z.string().trim().min(1),
+    head: z
+      .string()
+      .trim()
+      .regex(/^[0-9a-f]{7,64}$/i),
     codeEvidence: z.array(z.string().trim().min(1)).min(1),
-    excelChanges: z.object({
-      status: z.enum(['changed', 'pending-caller', 'not-applicable', 'blocked']),
-      evidence: z.string().trim().min(1),
-    }),
-    generatedArtifacts: z.object({
-      status: z.enum(['changed', 'verified', 'pending-caller', 'not-applicable', 'blocked']),
-      evidence: z.string().trim().min(1),
-    }),
-    validation: z.array(z.string().trim().min(1)).min(1),
-    runtimeVerification: z.string().trim().min(1),
-    remainingIntegration: z.array(z.string().trim().min(1)),
+    capabilityGap: z.string().trim().min(1),
+    programmerAction: z.string().trim().min(1),
+    affectedSurfaces: z.array(z.string().trim().min(1)).min(1),
+    validationSuggestion: z.string().trim().min(1),
   })
   .strict();
 
-const INCOMPLETE_RECEIPT_VALUE =
-  /(?:\b(?:unknown|tbd|todo|pending|blocked|not run)\b|当前|未知|待确认|待定|未确定|未执行|阻塞)/i;
+const INCOMPLETE_REPORT_VALUE =
+  /^(?:unknown|tbd|todo|pending|not run|未知|待确认|待定|未确定|未执行|未取得(?:回执)?|未获得(?:回执)?|未返回(?:回执)?|未核实)(?:\s*|[：:].*)$/i;
 
-function isConcreteReceiptText(value: string): boolean {
-  return value.trim().length > 0 && !INCOMPLETE_RECEIPT_VALUE.test(value) && !/^<.*>$/.test(value);
+function isConcreteReportText(value: string): boolean {
+  return value.trim().length > 0 && !INCOMPLETE_REPORT_VALUE.test(value) && !/^<.*>$/.test(value);
 }
 
-function validateCompletedServerWorkflow(
-  receipt: z.infer<typeof serverWorkflowReceiptSchema>,
+function validateServerCapabilityReport(
+  report: z.infer<typeof serverCapabilityReportSchema>,
 ): string[] {
   const problems: string[] = [];
-  if (receipt.skillName !== 'battle-designer-server-development') {
-    problems.push('skillName');
-  }
-  if (!receipt.skillLoaded) problems.push('skillLoaded');
-  if (receipt.role !== 'combat-designer') problems.push('role');
-  if (!['already-supported', 'implemented'].includes(receipt.status)) problems.push('status');
   for (const [field, value] of [
-    ['repository', receipt.repository],
-    ['head', receipt.head],
-    ['baseBranch', receipt.baseBranch],
-    ['runtimeVerification', receipt.runtimeVerification],
+    ['repository', report.repository],
+    ['head', report.head],
+    ['validationSuggestion', report.validationSuggestion],
   ] as const) {
-    if (!isConcreteReceiptText(value)) problems.push(field);
+    if (!isConcreteReportText(value)) problems.push(field);
   }
-  if (receipt.status === 'implemented') {
-    if (!isConcreteReceiptText(receipt.workBranch) || receipt.workBranch === receipt.baseBranch) {
-      problems.push('workBranch');
+  if (!report.codeEvidence.every(isConcreteReportText)) problems.push('codeEvidence');
+  if (!report.affectedSurfaces.every(isConcreteReportText)) problems.push('affectedSurfaces');
+  const noGap = /^(?:none|无|无需|not-applicable|n\/a)$/i;
+  if (report.supportStatus === 'supported') {
+    if (!noGap.test(report.capabilityGap)) problems.push('capabilityGap');
+    if (!noGap.test(report.programmerAction)) problems.push('programmerAction');
+  } else {
+    if (!isConcreteReportText(report.capabilityGap) || noGap.test(report.capabilityGap)) {
+      problems.push('capabilityGap');
     }
-  } else if (
-    !isConcreteReceiptText(receipt.workBranch) &&
-    !/^(?:not-applicable|n\/a)$/i.test(receipt.workBranch)
-  ) {
-    problems.push('workBranch');
-  }
-  if (!receipt.codeEvidence.every(isConcreteReceiptText)) problems.push('codeEvidence');
-  if (!receipt.validation.every(isConcreteReceiptText)) problems.push('validation');
-  if (receipt.excelChanges.status === 'blocked') problems.push('excelChanges.status');
-  if (!isConcreteReceiptText(receipt.excelChanges.evidence)) problems.push('excelChanges.evidence');
-  if (receipt.generatedArtifacts.status === 'blocked') problems.push('generatedArtifacts.status');
-  if (!isConcreteReceiptText(receipt.generatedArtifacts.evidence)) {
-    problems.push('generatedArtifacts.evidence');
-  }
-  if (!receipt.remainingIntegration.every(isConcreteReceiptText)) {
-    problems.push('remainingIntegration');
+    if (!isConcreteReportText(report.programmerAction) || noGap.test(report.programmerAction)) {
+      problems.push('programmerAction');
+    }
   }
   return problems;
 }
@@ -229,7 +210,11 @@ function markCombatEnvironmentUnavailable(context: McpProviderContext): void {
   const runtimeOptions = options(context);
   if (!isCombatWorkflowPolicyActive({ vendorOptions: runtimeOptions })) return;
   runtimeOptions.mekaCombatEnvironmentReady = false;
-  runtimeOptions.mekaCombatPhase = 'environment-recovery';
+  resetCombatServerCapabilityFlow({
+    leadSessionId: activeSessionId(context),
+    vendorOptions: runtimeOptions,
+    phase: 'environment-recovery',
+  });
 }
 
 function createRouterServer(context: McpProviderContext): McpServer {
@@ -256,7 +241,11 @@ function createRouterServer(context: McpProviderContext): McpServer {
           projectId: selectedProjectId,
         });
         runtimeOptions.mekaCombatEnvironmentReady = gate.ready;
-        runtimeOptions.mekaCombatPhase = gate.ready ? 'exploration' : 'environment-recovery';
+        resetCombatServerCapabilityFlow({
+          leadSessionId: activeSessionId(context),
+          vendorOptions: runtimeOptions,
+          phase: gate.ready ? 'exploration' : 'environment-recovery',
+        });
         const observedWorkflow =
           typeof runtimeOptions.mekaWorkflow === 'string' ? runtimeOptions.mekaWorkflow : null;
         runtimeOptions.mekaWorkflow = COMBAT_WORKFLOW;
@@ -284,31 +273,49 @@ function createRouterServer(context: McpProviderContext): McpServer {
   );
 
   server.tool(
-    'validate_server_workflow_receipt',
-    '校验战斗策划发起的服务器任务是否真实加载指定 Skill，并记录完整跨仓回执。',
-    { serverWorkflow: serverWorkflowReceiptSchema },
-    async ({ serverWorkflow }) => {
+    'validate_server_capability_report',
+    '校验 MCPR 服务器 Worker 的只读能力核查报告；不授权或记录任何服务器修改。',
+    { serverCapabilityReport: serverCapabilityReportSchema },
+    async ({ serverCapabilityReport }) => {
       const runtimeOptions = options(context);
       if (!isCombatWorkflowPolicyActive({ vendorOptions: runtimeOptions })) {
         return jsonResult({ ok: false, error: 'SAGA2 combat workflow is not enabled' }, true);
       }
-      const problems = validateCompletedServerWorkflow(serverWorkflow);
+      const problems = validateServerCapabilityReport(serverCapabilityReport);
       const valid = problems.length === 0;
-      runtimeOptions.mekaCombatServerReceiptValidated = valid;
       if (!valid) {
         return jsonResult(
           {
             ok: false,
-            error: `Server workflow receipt is blocked or incomplete: ${problems.join(', ')}`,
+            error: `Server capability report is incomplete: ${problems.join(', ')}`,
           },
           true,
         );
       }
+      const trusted = consumeTrustedCombatServerCapabilityReport({
+        leadSessionId: activeSessionId(context),
+        report: serverCapabilityReport,
+      });
+      if (!trusted.ok) {
+        return jsonResult(
+          {
+            ok: false,
+            error:
+              trusted.reason === 'report-mismatch'
+                ? 'Server capability report does not match the auto-bridged Worker result'
+                : 'No trusted auto-bridged Worker report is ready for validation',
+          },
+          true,
+        );
+      }
+      runtimeOptions.mekaCombatServerCapabilityStatus = serverCapabilityReport.supportStatus;
+      const implementationBlocked = serverCapabilityReport.supportStatus !== 'supported';
+      if (implementationBlocked) runtimeOptions.mekaCombatPhase = 'server-programmer-handoff';
       return jsonResult({
         ok: true,
-        skillName: serverWorkflow.skillName,
-        status: serverWorkflow.status,
-        receiptValidated: true,
+        supportStatus: serverCapabilityReport.supportStatus,
+        reportValidated: true,
+        implementationBlocked,
       });
     },
   );

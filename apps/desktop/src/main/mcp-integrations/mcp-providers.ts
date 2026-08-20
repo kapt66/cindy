@@ -46,6 +46,21 @@ import {
   readChatHistoryMessages,
   type ChatHistoryReaderDeps,
 } from './remoteChatHistory.js';
+import { settleCombatServerCapabilityDispatch } from '../meka-projects/combatServerCapabilityState.js';
+
+function hasAcceptedInitialWorkerDispatch(result: unknown): boolean {
+  if (!result || typeof result !== 'object') return false;
+  const record = result as Record<string, unknown>;
+  if (record.ok !== true) return false;
+  if (record.dispatched === true || typeof record.queuedMessageId === 'string') return true;
+  const outcome = record.dispatchOutcome;
+  if (!outcome || typeof outcome !== 'object') return false;
+  const dispatch = outcome as Record<string, unknown>;
+  return (
+    (dispatch.kind === 'session-dispatch' && dispatch.dispatched === true) ||
+    (dispatch.kind === 'host-send' && dispatch.accepted === true)
+  );
+}
 
 export interface DesktopMcpProvidersDeps {
   getMakerMemoryManager: () => MakerMemoryManager;
@@ -66,12 +81,21 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
 
   // 辅助桥接 OrcaCollabService → OrcaMcpDeps / sendToSession，
   // 并在边界捕获 HOST_NOT_READY / INTERNAL。
-  function wrap<Args extends unknown[], R>(fn: (svc: NonNullable<ReturnType<typeof tryGetOrcaCollabService>>, ...args: Args) => Promise<R>): (...args: Args) => Promise<R> {
+  function wrap<Args extends unknown[], R>(
+    fn: (svc: NonNullable<ReturnType<typeof tryGetOrcaCollabService>>, ...args: Args) => Promise<R>,
+    onFailure?: (...args: Args) => void,
+  ): (...args: Args) => Promise<R> {
     return async (...args) => {
       const s = tryGetOrcaCollabService();
-      if (!s) return { ok: false, errorCode: 'HOST_NOT_READY' as const, message: 'orca collab service not initialized' } as R;
+      if (!s) {
+        onFailure?.(...args);
+        return { ok: false, errorCode: 'HOST_NOT_READY' as const, message: 'orca collab service not initialized' } as R;
+      }
       try { return await fn(s, ...args); }
-      catch (err) { return { ok: false, errorCode: 'INTERNAL' as const, message: err instanceof Error ? err.message : String(err) } as R; }
+      catch (err) {
+        onFailure?.(...args);
+        return { ok: false, errorCode: 'INTERNAL' as const, message: err instanceof Error ? err.message : String(err) } as R;
+      }
     };
   }
 
@@ -363,10 +387,55 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
     // cindy_orca: 多 worker 协同 team 工具集。创建权限由 Main handler 实时校验。
     orca: {
       startTeam: wrap((s, params) => s.startTeam(params)),
-      createWorker: wrap((s, params) => s.createWorker(params)),
+      createWorker: wrap(async (s, params) => {
+        let result: Awaited<ReturnType<typeof s.createWorker>> | undefined;
+        try {
+          result = await s.createWorker(params);
+          return result;
+        } finally {
+          settleCombatServerCapabilityDispatch({
+            leadSessionId: params.leadSessionId,
+            kind: 'create_worker',
+            task: params.initialTask ?? '',
+            accepted: hasAcceptedInitialWorkerDispatch(result),
+            ...(result?.ok === true
+              ? { workerId: result.workerId, workerSessionId: result.workerSessionId }
+              : {}),
+          });
+        }
+      }, (params) => {
+        settleCombatServerCapabilityDispatch({
+          leadSessionId: params.leadSessionId,
+          kind: 'create_worker',
+          task: params.initialTask ?? '',
+          accepted: false,
+        });
+      }),
       listWorkers: wrap((s, params) => s.listWorkers(params)),
       switchFocus: wrap((s, params) => s.switchFocus(params)),
-      sendToWorker: wrap((s, params) => s.sendToWorker(params)),
+      sendToWorker: wrap(async (s, params) => {
+        let result: Awaited<ReturnType<typeof s.sendToWorker>> | undefined;
+        try {
+          result = await s.sendToWorker(params);
+          return result;
+        } finally {
+          settleCombatServerCapabilityDispatch({
+            leadSessionId: params.callerLeadSessionId,
+            kind: 'send_to_worker',
+            task: params.message,
+            accepted: result?.ok === true,
+            workerSessionId: params.targetSessionId,
+          });
+        }
+      }, (params) => {
+        settleCombatServerCapabilityDispatch({
+          leadSessionId: params.callerLeadSessionId,
+          kind: 'send_to_worker',
+          task: params.message,
+          accepted: false,
+          workerSessionId: params.targetSessionId,
+        });
+      }),
       listWorkerQueuedMessages: wrap((s, params) => s.listWorkerQueuedMessages(params)),
       updateWorkerQueuedMessage: wrap((s, params) => s.updateWorkerQueuedMessage(params)),
       cancelWorkerQueuedMessage: wrap((s, params) => s.cancelWorkerQueuedMessage(params)),

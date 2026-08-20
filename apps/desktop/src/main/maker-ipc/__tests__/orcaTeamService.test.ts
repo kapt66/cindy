@@ -260,6 +260,13 @@ describe('OrcaTeamService', () => {
     });
 
     expect(leadMessages).toEqual(['[Auto-bridged: worker 完成但未调 send_to_lead]\n\n完成了']);
+    expect(deps.sendAutoBridgeToLead).toHaveBeenCalledWith(
+      'lead-1',
+      '[Auto-bridged: worker 完成但未调 send_to_lead]\n\n完成了',
+      'worker-1',
+      'worker-session-1',
+      'done',
+    );
   });
 
   it('marks only a non-running worker session running on direct turn start', async () => {

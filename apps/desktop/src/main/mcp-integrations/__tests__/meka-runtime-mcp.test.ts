@@ -27,6 +27,12 @@ import {
   resetMekaRuntimeMcpRegistryForTests,
 } from '../meka-runtime-mcp';
 import { getCodexExtraSpawnConfig, shutdownCodexEnvironment } from '../codexEnvironment';
+import {
+  beginCombatServerCapabilityDispatch,
+  recordCombatServerCapabilityAutoBridge,
+  resetCombatServerCapabilityStateForTests,
+  settleCombatServerCapabilityDispatch,
+} from '../../meka-projects/combatServerCapabilityState.js';
 
 function noopLogger(): Logger {
   const logger: Logger = {
@@ -45,6 +51,7 @@ function noopLogger(): Logger {
 
 beforeEach(() => {
   resetMekaRuntimeMcpRegistryForTests();
+  resetCombatServerCapabilityStateForTests();
   for (const mock of Object.values(routerService)) mock.mockReset();
   routerService.getMekaDesignEndpoint.mockReturnValue(null);
   p4Service.get.mockReset();
@@ -226,7 +233,7 @@ describe('Meka runtime MCP remote instance projection', () => {
     await config.instance.close();
   });
 
-  it('validates only a complete combat server workflow receipt', async () => {
+  it('validates and consumes only the actual auto-bridged combat server report', async () => {
     const providers: McpProvider[] = [];
     registerMekaRuntimeMcpArrays(providers);
     const provider = providers.find((candidate) => candidate.name === 'mcp_router');
@@ -243,51 +250,95 @@ describe('Meka runtime MCP remote instance projection', () => {
       },
     };
     const config = provider?.toClaudeSdkConfig?.(context) as { instance: McpServer };
-    const client = new Client({ name: 'combat-receipt-test', version: '1.0.0' });
+    const client = new Client({ name: 'combat-capability-report-test', version: '1.0.0' });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([config.instance.connect(serverTransport), client.connect(clientTransport)]);
     const base = {
-      skillName: 'battle-designer-server-development',
-      skillLoaded: true,
-      role: 'combat-designer',
-      status: 'implemented',
+      supportStatus: 'supported',
+      readOnlyConfirmed: true,
       repository: 'saga2-server',
-      head: 'abc',
-      baseBranch: 'develop',
-      workBranch: 'combat/123',
+      head: 'abcdef1',
       codeEvidence: ['server/module.ts'],
-      excelChanges: { status: 'changed', evidence: 'export.json' },
-      generatedArtifacts: { status: 'verified', evidence: 'artifact.json' },
-      validation: ['unit tests passed'],
-      runtimeVerification: 'verified in unit tests',
-      remainingIntegration: [],
+      capabilityGap: 'none',
+      programmerAction: 'none',
+      affectedSurfaces: ['skill module runtime'],
+      validationSuggestion: 'verify exported module data against the current reader',
     };
+    const trustReport = (report: Record<string, unknown>, suffix: string) => {
+      const task = `[SAGA2_SERVER_EXPLORATION_READ_ONLY] [SAGA2_MODULE_FIRST] skill-entry-model atomic capability matrix residual gap ${suffix}`;
+      expect(
+        beginCombatServerCapabilityDispatch({
+          leadSessionId: context.sessionId,
+          vendorOptions: context.vendorOptions,
+          kind: 'create_worker',
+          task,
+          remoteHostId: 'mcpr:server-1',
+        }),
+      ).toBe(true);
+      expect(
+        settleCombatServerCapabilityDispatch({
+          leadSessionId: context.sessionId,
+          kind: 'create_worker',
+          task,
+          accepted: true,
+          workerId: `worker-${suffix}`,
+          workerSessionId: `worker-session-${suffix}`,
+        }),
+      ).toBe(true);
+      expect(
+        recordCombatServerCapabilityAutoBridge({
+          leadSessionId: context.sessionId,
+          workerId: `worker-${suffix}`,
+          workerSessionId: `worker-session-${suffix}`,
+          message: `[Auto-bridged: worker 完成但未调 send_to_lead]\n\n${JSON.stringify(report)}`,
+          accepted: true,
+        }),
+      ).toBe('report-ready');
+    };
+
+    const rejectedWithoutWorker = await client.callTool({
+      name: 'validate_server_capability_report',
+      arguments: { serverCapabilityReport: base },
+    });
+    expect(rejectedWithoutWorker).toMatchObject({ isError: true });
+
+    trustReport(base, 'supported');
     const accepted = await client.callTool({
-      name: 'validate_server_workflow_receipt',
-      arguments: { serverWorkflow: base },
+      name: 'validate_server_capability_report',
+      arguments: { serverCapabilityReport: base },
     });
-    expect(JSON.stringify(accepted)).toContain('receiptValidated');
+    expect(JSON.stringify(accepted)).toContain('reportValidated');
+    expect(JSON.stringify(accepted)).toContain('\\"implementationBlocked\\":false');
     expect(accepted).not.toHaveProperty('isError');
-    const blocked = await client.callTool({
-      name: 'validate_server_workflow_receipt',
-      arguments: { serverWorkflow: { ...base, skillLoaded: false } },
+    const replayed = await client.callTool({
+      name: 'validate_server_capability_report',
+      arguments: { serverCapabilityReport: base },
     });
-    expect(blocked).toMatchObject({ isError: true });
-    const blockedBranch = await client.callTool({
-      name: 'validate_server_workflow_receipt',
-      arguments: { serverWorkflow: { ...base, workBranch: 'blocked' } },
+    expect(replayed).toMatchObject({ isError: true });
+
+    const unsupportedReport = {
+      ...base,
+      supportStatus: 'unsupported',
+      capabilityGap: 'dynamic world-space center is not consumed by the current module',
+      programmerAction: 'Lead 立即停止当前实现并将报告交给服务器程序，补充随机点运行时消费。',
+      affectedSurfaces: ['server runtime', 'local blocked: module/table/export/client'],
+    };
+    trustReport(unsupportedReport, 'unsupported');
+    const mismatched = await client.callTool({
+      name: 'validate_server_capability_report',
+      arguments: { serverCapabilityReport: { ...unsupportedReport, head: '1234567' } },
     });
-    expect(blockedBranch).toMatchObject({ isError: true });
-    const blockedArtifact = await client.callTool({
-      name: 'validate_server_workflow_receipt',
-      arguments: {
-        serverWorkflow: {
-          ...base,
-          generatedArtifacts: { status: 'blocked', evidence: '等待导出' },
-        },
-      },
+    expect(mismatched).toMatchObject({ isError: true });
+    const unsupported = await client.callTool({
+      name: 'validate_server_capability_report',
+      arguments: { serverCapabilityReport: unsupportedReport },
     });
-    expect(blockedArtifact).toMatchObject({ isError: true });
+    expect(JSON.stringify(unsupported)).toContain('\\"implementationBlocked\\":true');
+    expect(context.vendorOptions).toMatchObject({
+      mekaCombatServerCapabilityStatus: 'unsupported',
+      mekaCombatPhase: 'server-programmer-handoff',
+    });
+
     await client.close();
     await config.instance.close();
   });

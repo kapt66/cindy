@@ -529,8 +529,9 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
 - 战斗角色中的资料与 Agent Skill 只用于定位；能力语义仍需以权威表/Schema 和导出格式、
   客户端运行时消费代码、当前服务器实现组成确定性证据链。首次只读探索不得绑定 Unity 当前
   窗口技能；探索后集中澄清技能 ID、修改模式、修改范围和未决业务语义。目标确认后完成专属
-  取证，明确给出模块/Timeline/客户端/服务器/配置的组合方案并取得用户同意，才允许修改
-  资产、表格、JSON、P4、分支或代码。证据不足时报告能力缺口，不得把需求硬套进可编辑的
+  取证，明确给出模块/Timeline/客户端/配置的组合方案，并把服务器代码仅作为现有能力证据；
+  取得用户同意后才允许修改本地资产、表格、JSON、P4 或客户端代码。服务器能力证据不足或
+  明确缺失时停止并转交服务器程序，不得把需求硬套进可编辑的
   Timeline 或既有模块。远端实例标识按不透明值处理，回复与项目内容均不得泄露 endpoint、
   API key 或凭证。
 - 战斗角色在任何需求探索前必须用当前只读证据确认三条执行链：Meka P4 或命令行 `p4` 能
@@ -539,14 +540,42 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
   当次检查。任一项失败时先协助完成设置、启动、绑定或诊断，不得继续战斗业务，也不得换用
   直接文件写入、本地服务器猜测或 SSH。阶段切换与首次写操作前重新检查；中途出现断连、过期、
   不可用或项目错配时，立即回到环境门并重跑全部三项，完整恢复后才继续，同时刷新可能因中断
-  而过期的 revision 与运行时证据。
-- 战斗策划需要服务器补能力时，战斗角色的远端任务必须先读取服务器仓 `AGENTS.md`，再显式
-  调用服务器仓项目 Skill `battle-designer-server-development`。该流程只作用于战斗策划
-  发起的跨仓开发，不改变普通服务端程序员的分支习惯。调用方必须校验远端回执中的
-  `serverWorkflow.skillName` 与 `serverWorkflow.skillLoaded: true`，并检查独立分支、代码
-  证据、Excel/导出 JSON、验证、运行时状态和剩余联调；Skill 缺失、加载失败、Worker 仅派发
-  成功或回执不完整均按阻断处理。本地 SAGA2/P4 侧与远端服务器侧分别维护配置源和实现证据，
-  两侧未对齐时不得报告完整交付。
+  而过期的 revision 与运行时证据。普通业务查询无匹配、路径/引号错误、文件缺失、非零退出或
+  Unity 临时锁文件读取失败不表示三条链路断开，不得据此重复环境复检。
+- 战斗策划需要核对服务器能力时，战斗角色的远端任务必须先读取服务器仓 `AGENTS.md`，并由
+  Host 永久限制为只读；不加载战斗策划服务器 Skill，只允许文件读取和 Host 可证明只读的命令，
+  不修改文件或分支、不改 Excel、不生成文件。服务器 Worker 不继承 Lead 角色的 Meka Skill、
+  Skill snapshot 或项目 MCP，业务/项目 MCP 全部拒绝。MCPR Codex 当前不具备回连本机
+  `orca_worker_bridge` 的传输通道；专用提示词要求 Worker 不搜索或重试该工具，只输出一次结构化
+  终态报告，由 Orca auto-bridge 可靠投递给 Lead。Host 仍保留精确的 `send_to_lead` 白名单供未来
+  显式暴露该工具的传输使用；这样既避免 Windows
+  本地 Skill 根路径被错误注册到远端 Linux Runtime。Worker 返回简短
+  `serverCapabilityReport`，由
+  `mcp_router.validate_server_capability_report` 校验。`supported` 可作为当前 HEAD 的能力证据；
+  `unsupported` 或 `uncertain` 立即停止当前实现并生成程序交接报告，服务器程序在独立流程中
+  实现。战斗方案的实施面不得包含 `server`。
+- 战斗 Lead 与服务器 Worker 的 Shell 探索只使用单一 `rg`、`rg --files`、`Get-Content`、`cat`
+  或 `git status/diff/show`，不使用变量、管道、重定向、命令串联或自行拼装脚本。远端 Codex
+  Runtime 自动生成的标准 `/bin/bash -c`、`/bin/bash -lc` 单命令包装由 Host 窄解析 payload 后
+  再走既有 shell 安全分类，不放宽写命令。这样 Full access 下可静默执行可证明只读的远端命令，
+  同时继续拒绝不可解析的组合脚本；拒绝后不得切换到 Web、计算器、SSH 或其它无关工具绕过。
+  需求足以描述服务器语义后，Lead 在读取最少必要规则和本地证据后立即创建远端 Codex Worker，
+  不等待本地穷尽扫描；本地查询限定文本文件和具体目录，不递归扫描 Unity 根目录、Library、Temp、
+  Logs、二进制资源或锁文件。
+- MCPR Worker 工具获准时先进入 `dispatching`；只有 `create_worker` 返回真实 dispatched/queued
+  信号，或 `send_to_worker` 返回成功唤醒状态后，Host 才进入 `pending`。工具失败、首任务未派发
+  或调用异常会回滚为 `retry-required`，不会永久锁死任务。`dispatching` / `pending` 拒绝方案审批、
+  客户端读取、Shell、业务 MCP 和 Orca 主动轮询，但始终允许 `check_combat_environment` 清理旧
+  派发并重跑 P4、UnityMCP、MCPR 三项门禁；环境恢复后必须重新派发。
+- Worker 完成后输出可直接 `JSON.parse` 的原始报告对象，由 Orca auto-bridge 以新消息唤醒 Lead。
+  auto-bridge 实际成功投递后，Host 才按 Lead、Worker ID、Worker session 和本次派发记录进入
+  `report-ready`。`validate_server_capability_report` 只接受与实际回传 JSON 结构完全一致的报告并
+  一次性消费；回传前伪造、改写、串用其它 Worker 报告或重复提交均拒绝，无效 JSON 则进入
+  `retry-required`。Lead 不得自行代写报告；报告 `head` 必须是远端真实 Git SHA，“未取得回执”
+  等占位内容不能通过。
+- 服务器核查 Worker 固定创建为 Codex Agent，使用 Host 当前 Codex 默认模型路由；Host 会拒绝
+  其它 Agent 的服务器核查 Worker 创建。核查改为最小充分证据：任一必要语义明确不支持时立即
+  返回 `unsupported`，不再穷尽其它能力；只有证据冲突或读取失败时返回 `uncertain`。
 - 战斗角色只加载策划库中的权威 `saga2-project-battle-designer`，不再同时加载 Unity 工程内
   被其标记为历史副本的同名 Skill；具体 Unity 模块、Timeline、特效和代码 Skill 仍从
   `saga2_unity/.agents/skills/` 精确选择。
@@ -2155,13 +2184,12 @@ maker-core 增加通用 Host 工具/方案裁决接口，由 Desktop 以任务 `
 Codex 冻结桥只保留代理定义，实际调用按当前任务选择和阶段裁决；连接异常回退环境恢复。
 方案字段使用占位值、非法修改模式或不含实际实现面时不能进入审批。
 
-服务器只读探索通过带固定标记的 MCPR Orca Worker，远端 Worker 使用独立
-`saga2-combat-server-worker-v1`，不继承或伪造本地主任务环境状态。Lead 批准记录只在当前
-Desktop 进程保留且有 24 小时上限，重启后保守地要求重新批准。战斗策划服务器流程必须加载
-`battle-designer-server-development`，并通过 `validate_server_workflow_receipt` 返回完整结构化
-证据；阻断态分支、Excel、生成物或运行时字段不能通过，`implemented` 必须证明独立工作分支。
-Worker 创建成功不等于服务器流程完成。本轮未新增用户需选择的插件，未修改 system
-prompt、translator、事件映射、数据库 schema 或 `cindy-protocol`。
+服务器探索通过带固定标记的 MCPR Orca Worker，远端 Worker 使用独立
+`saga2-combat-server-worker-v1`，不继承或伪造本地主任务环境状态。当前最终契约已收敛为
+方案前后永久只读，并通过 `validate_server_capability_report` 消费简短能力报告；不再加载
+服务器 Skill，也不存在服务器分支、Excel、生成物或实施完成回执。Worker 创建成功不等于
+能力核查完成。本轮未新增用户需选择的插件，未修改 system prompt、translator、事件映射、
+数据库 schema 或 `cindy-protocol`。
 
 实际旧进程任务暴露出 `mekaRoleId=combat-development` 已持久化、但衍生 `mekaWorkflow`
 漏注入时门禁会 fail-open，模型随后扫描用户数据中的无关自定义角色并把当前角色误报成
@@ -2204,7 +2232,7 @@ PowerShell 免审入口。
 循环放行；所有路径仍必须是内容寻址快照内的 `SKILL.md`，并继续拒绝其它文件、路径穿越、写入、
 重定向、任意附加命令和脚本变体。已绑定可用实例上的、带
 `[SAGA2_SERVER_EXPLORATION_READ_ONLY]` 且由 Host 限制为只读的 MCPR Worker 不再重复询问
-授权；绑定实例、服务器写入、分支与服务管理仍保持原确认边界。
+授权；绑定实例仍保持原确认边界，服务器写入、分支与服务管理则不属于战斗开发流程。
 
 第五次真实任务 `31daa9cc-bff2-464e-8f02-f6ef7e0d4023` 的启动身份、三项环境回显和 Full
 access 首轮行为已经正确，但继续暴露两条运行时竞态。第一，Codex 原生子任务的
@@ -2277,6 +2305,29 @@ endpoint/key。但用户要求继续恢复时，Codex 的原生 Skill 触发规�
 `mcp_router.check_combat_environment`，再次确认版本错配并结束。两轮均没有 Skill 读取、
 `ALL_TOOLS`、`list_tools`、通用实例控制面、Worker、业务探索、权限弹窗、拒绝误报或
 `sandbox_permissions` 调用；本地 rollout 检查也未命中敏感 URL、Bearer 或 key。
+
+### 6.35 2026-08-20 SAGA2 战斗能力核查改为模块优先
+
+真实任务 `3ca8f77f-90f2-40d6-a29a-9828aaed4e60` 暴露了第 6.34 节状态机的判断缺口：Lead 在
+没有读取 `skill-entry-model` 导出、模块资产或同类配置的情况下直接派发 MCPR Worker；Worker
+因找不到一个覆盖完整需求的专用服务器函数而返回 `unsupported`，Host 随即把整组技能阻断。
+这错误地把“被动不走主动 Timeline”解释成“被动模块不可执行”，也漏掉了现有模块组合已经覆盖
+入口、周期、随机点、延迟、范围伤害和位置特效的证据。
+
+战斗开发现在明确以 `skill-entry-model` 为默认逻辑实现面：Lead 必须先建立模块优先证据包，
+按原子能力标记模块直接支持、模块组合支持、剩余服务器核查或未知；服务器 Worker 只核对剩余
+窄缺口。新增 `[SAGA2_MODULE_FIRST]` 派发标记，Host 拒绝没有模块证据和原子能力矩阵的服务器
+Worker 任务。方案审批卡新增 `moduleEvidence` 与 `capabilityMatrix` 字段，防止只凭“有/无完整函数”
+通过审批。服务器报告只有在具体剩余原子语义缺失时才可标记 `unsupported`；模块组合已覆盖时应
+标记 `supported`。本轮未修改服务器仓库、技能资产或协议。
+
+最终交付审查又补齐三条 Host 边界。服务器 Worker 目标不再只校验 `mcpr:` 前缀：创建前必须
+精确匹配当前 SAGA2 绑定、在线服务器实例并重新通过 Codex capability hello；`send_to_worker`
+只能复用当前 Lead 已在合格实例上记录过的 worker/session，未知或本地 Worker 直接拒绝。方案
+批准后，未识别 Orca 变更、批量/本地 Worker 和非只读 MCPRouter 调用也不再落入普通复检后放行
+路径。auto-bridge 回调新增 terminal status，只有 `done` 且实际投递 accepted 的 JSON 才能进入
+`report-ready`；`error` 终态即使包含合法 JSON 也转入重试，临时投递失败则保留 pending 等待 Orca
+重试。本轮仍未修改服务器仓库、数据库 schema、协议或插件权限。
 
 ## 10. 后续继续迁移时的硬性注意事项
 

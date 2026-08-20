@@ -5,14 +5,21 @@ import {
 } from '@cindy/maker-core';
 
 import { runCombatEnvironmentGate } from './combatEnvironmentGate.js';
+import {
+  beginCombatServerCapabilityDispatch,
+  COMBAT_MODULE_FIRST_MARKER,
+  getTrustedCombatServerWorkerRemoteHost,
+  hasTrustedCombatServerCapabilityReport,
+  isModuleFirstCombatServerExplorationTask,
+  isCombatServerExplorationTask,
+  resetCombatServerCapabilityFlow,
+} from './combatServerCapabilityState.js';
+import { parseMcprRemoteHostId, type MekaRouterInstance } from '../../shared/meka-router.js';
 import { getMekaP4SettingsService, getMekaRouterService } from '../meka-settings/ipc.js';
 import { probeRemoteCodexCapability } from '../maker-host/mcpr-codex-capability.js';
 
 const WORKFLOW = 'saga2-combat-development-v1';
 const SERVER_WORKER_WORKFLOW = 'saga2-combat-server-worker-v1';
-const SERVER_EXPLORATION_MARKER = '[SAGA2_SERVER_EXPLORATION_READ_ONLY]';
-const APPROVAL_TTL_MS = 24 * 60 * 60 * 1000;
-const approvedLeadSessions = new Map<string, number>();
 const READ_ONLY_MCP_TOOL_NAMES =
   /^(?:check_|get_|list_|read_|search_|find_|inspect_|query_|validate_|describe_|status$)/i;
 const READ_ONLY_CUSTOM_FUNCTIONS =
@@ -44,9 +51,7 @@ type CombatVendorOptions = Record<string, unknown> & {
   mekaCombatEnvironmentReady?: unknown;
   mekaCombatPlanApproved?: unknown;
   mekaCombatPhase?: unknown;
-  mekaCombatServerReceiptRequired?: unknown;
-  mekaCombatServerReceiptValidated?: unknown;
-  orcaLeadSessionId?: unknown;
+  mekaCombatServerCapabilityStatus?: unknown;
 };
 
 function combatOptions(value: Record<string, unknown>): CombatVendorOptions {
@@ -82,18 +87,6 @@ export function isCombatToolPolicyActive(context: {
   return isCombatWorkflowPolicyActive(context) || isCombatServerWorkerPolicyActive(context);
 }
 
-function pruneApprovals(now = Date.now()): void {
-  for (const [sessionId, approvedAt] of approvedLeadSessions) {
-    if (now - approvedAt > APPROVAL_TTL_MS) approvedLeadSessions.delete(sessionId);
-  }
-}
-
-function approvedLeadSession(options: CombatVendorOptions): boolean {
-  pruneApprovals();
-  const leadSessionId = text(options.orcaLeadSessionId);
-  return Boolean(leadSessionId && approvedLeadSessions.has(leadSessionId));
-}
-
 export function markCombatPlanApproved(context: {
   vendorOptions: Record<string, unknown>;
   plan?: string;
@@ -103,19 +96,6 @@ export function markCombatPlanApproved(context: {
   const options = combatOptions(context.vendorOptions);
   options.mekaCombatPlanApproved = true;
   options.mekaCombatPhase = 'solution-approved';
-  const surfaces = context.plan?.match(/^surfaces:\s*(.+)$/im)?.[1] ?? '';
-  const needsServer = /server|服务器/i.test(surfaces);
-  options.mekaCombatServerReceiptRequired = needsServer;
-  options.mekaCombatServerReceiptValidated = !needsServer;
-  if (context.sessionId) {
-    pruneApprovals();
-    approvedLeadSessions.set(context.sessionId, Date.now());
-  }
-}
-
-/** Test and account-boundary helper; approvals are intentionally process-local. */
-export function resetCombatPlanApprovals(): void {
-  approvedLeadSessions.clear();
 }
 
 export function evaluateCombatPlanReview(context: {
@@ -130,6 +110,8 @@ export function evaluateCombatPlanReview(context: {
     'targetSkillId',
     'changeMode',
     'surfaces',
+    'moduleEvidence',
+    'capabilityMatrix',
     'evidence',
     'validation',
     'remainingUnknowns',
@@ -153,10 +135,40 @@ export function evaluateCombatPlanReview(context: {
     invalidFields.includes('targetSkillId') || !/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(target);
   const invalidChangeMode = !['create', 'rebuild', 'incremental'].includes(changeMode);
   const surfaces = fields.get('surfaces') ?? '';
+  const includesServerImplementation = /(?:^|[\s,，/+|])(?:server|服务器)(?:$|[\s,，/+|])/i.test(
+    surfaces,
+  );
   const invalidSurfaces =
-    !/(?:^|[\s,，/+|])(?:module|timeline|table|export|client|server)(?:$|[\s,，/+|])/i.test(
-      surfaces,
-    );
+    !/(?:^|[\s,，/+|])(?:module|timeline|table|export|client)(?:$|[\s,，/+|])/i.test(surfaces);
+  const serverCapabilityStatus = text(
+    combatOptions(context.vendorOptions).mekaCombatServerCapabilityStatus,
+  );
+  if (includesServerImplementation) {
+    return {
+      behavior: 'deny',
+      reason:
+        '战斗开发服务器 Worker 仅用于只读能力核查，server/服务器不能作为本轮实施面。若现有能力不足，请提交简短程序交接报告并结束当前实现；服务器程序应在独立开发流程中处理。',
+    };
+  }
+  if (serverCapabilityStatus === 'unsupported' || serverCapabilityStatus === 'uncertain') {
+    return {
+      behavior: 'deny',
+      reason:
+        '服务器能力报告已标记当前实现为阻断状态。请停止提交实施方案，向用户返回程序交接报告。',
+    };
+  }
+  if (
+    serverCapabilityStatus === 'dispatching' ||
+    serverCapabilityStatus === 'pending' ||
+    serverCapabilityStatus === 'report-ready' ||
+    serverCapabilityStatus === 'retry-required'
+  ) {
+    return {
+      behavior: 'deny',
+      reason:
+        '服务器只读能力核查尚未由 Host 完整结算。请先完成真实 Worker 派发、auto-bridge 回传和 validate_server_capability_report 一次性消费；失败时重新检查环境并重试，不得代写报告或提交实施方案。',
+    };
+  }
   if (
     !envelope ||
     missing.length > 0 ||
@@ -168,7 +180,7 @@ export function evaluateCombatPlanReview(context: {
     return {
       behavior: 'deny',
       reason:
-        '方案尚未满足 SAGA2 战斗开发审批契约。请补充 [SAGA2_COMBAT_SOLUTION] 回执：targetSkillId 必须是用户确认的具体 ID，changeMode 必须是 create/rebuild/incremental，surfaces 必须列出实际实现面，evidence、validation 和 remainingUnknowns 不能使用占位内容。',
+        '方案尚未满足 SAGA2 战斗开发审批契约。请补充 [SAGA2_COMBAT_SOLUTION] 回执：targetSkillId 必须是用户确认的具体 ID，changeMode 必须是 create/rebuild/incremental，surfaces 必须列出实际实现面，moduleEvidence 必须引用 skill-entry-model 节点/字段，capabilityMatrix 必须逐项列出原子能力结论，evidence、validation 和 remainingUnknowns 不能使用占位内容。',
     };
   }
   return { behavior: 'allow' };
@@ -218,7 +230,9 @@ function effectiveMcpTarget(
     inferredTool = 'call_tool';
   }
   if (!inferredTool && target.server === 'cindy_orca') {
-    if (
+    if (Array.isArray(toolParams?.workers)) {
+      inferredTool = 'create_workers';
+    } else if (
       text(toolParams?.initial_task) &&
       text(toolParams?.remote_host_id) &&
       text(toolParams?.role) &&
@@ -269,7 +283,8 @@ function isUnityReadOnly(tool: string, input: unknown): boolean {
 }
 
 async function isRouterReadOnly(projectId: string, tool: string, input: unknown): Promise<boolean> {
-  if (tool === 'check_combat_environment' || tool.startsWith('list_')) return true;
+  if (tool === 'check_combat_environment' || tool.startsWith('list_'))
+    return true;
   if (tool !== 'call_tool') return false;
   const inner = progressiveInnerCall(input);
   if (!inner) return false;
@@ -417,6 +432,14 @@ function isReadOnlySkillSnapshotCount(command: string): boolean {
   return Boolean(probe?.[1] && isMekaSkillSnapshotEntrypoint(probe[1]));
 }
 
+function posixShellCommandPayload(command: string): string | null {
+  const wrapper = command.match(
+    /^(?:\/bin\/|\/usr\/bin\/)?(?:bash|sh)\s+-(?:c|lc)\s+'([^'\r\n]*)'\s*$/i,
+  );
+  const payload = wrapper?.[1]?.trim();
+  return payload || null;
+}
+
 function isCombatReadOnlyExec(
   command: string,
   workingDir: string,
@@ -430,6 +453,12 @@ function isCombatReadOnlyExec(
     platform,
   };
   if (classifyShellCommand(command, [workingDir], reviewOptions) === 'auto-approve') return true;
+  const posixPayload = posixShellCommandPayload(command);
+  if (
+    posixPayload &&
+    classifyShellCommand(posixPayload, [workingDir], reviewOptions) === 'auto-approve'
+  )
+    return true;
   if (
     isReadOnlySkillSnapshotProbe(command) ||
     isReadOnlySkillSnapshotLineCount(command) ||
@@ -442,18 +471,137 @@ function isCombatReadOnlyExec(
   return classifyShellCommand(normalized, [workingDir], reviewOptions) === 'auto-approve';
 }
 
-function orcaExplorationInfrastructure(context: HostToolExecutionContext): boolean {
+function combatServerDispatchRequest(context: HostToolExecutionContext): {
+  kind: 'create_worker' | 'send_to_worker';
+  task: string;
+  requestedWorkerRef?: string;
+  remoteHostId?: string;
+} | null {
   const target = effectiveMcpTarget(context.toolName, context.input);
-  if (target?.server !== 'cindy_orca') return false;
-  if (/^(?:get_|list_|start_team$)/i.test(target.tool)) return true;
-  if (target.tool !== 'create_worker' && target.tool !== 'send_to_worker') return false;
+  if (
+    target?.server !== 'cindy_orca' ||
+    (target.tool !== 'create_worker' && target.tool !== 'send_to_worker')
+  ) {
+    return null;
+  }
   const args = mcpToolArguments(context.input);
   const task = text(args.initial_task) || text(args.message) || text(args.task);
   const remoteHostId = text(args.remote_host_id);
-  return (
-    task.includes(SERVER_EXPLORATION_MARKER) &&
-    (target.tool === 'send_to_worker' || remoteHostId.startsWith('mcpr:'))
+  if (target.tool === 'create_worker' && text(args.agent) !== 'codex') return null;
+  if (
+    !isModuleFirstCombatServerExplorationTask(task) ||
+    (target.tool === 'create_worker' && !remoteHostId.startsWith('mcpr:'))
+  ) {
+    return null;
+  }
+  return {
+    kind: target.tool,
+    task,
+    ...(target.tool === 'create_worker'
+      ? { remoteHostId }
+      : { requestedWorkerRef: text(args.target_session_id) }),
+  };
+}
+
+function looksLikeCombatServer(instance: MekaRouterInstance): boolean {
+  return /server|服务器|saga2[-_ ]?server/i.test(
+    `${instance.projectName} ${instance.projectDescription ?? ''}`,
   );
+}
+
+async function authorizeCombatServerDispatch(
+  context: HostToolExecutionContext,
+  dispatch: NonNullable<ReturnType<typeof combatServerDispatchRequest>>,
+): Promise<string | null> {
+  const remoteHostId =
+    dispatch.kind === 'create_worker'
+      ? dispatch.remoteHostId
+      : getTrustedCombatServerWorkerRemoteHost(
+          context.sessionId,
+          dispatch.requestedWorkerRef,
+        );
+  const instanceId = parseMcprRemoteHostId(remoteHostId);
+  if (!instanceId) return null;
+
+  const router = getMekaRouterService();
+  const [bindings, instances] = await Promise.all([
+    router.listProjectBindings('saga2'),
+    router.listInstances(),
+  ]);
+  const instance = instances.find((candidate) => candidate.id === instanceId);
+  if (!bindings.includes(instanceId) || !instance?.available || !looksLikeCombatServer(instance)) {
+    return null;
+  }
+  await probeRemoteCodexCapability(instanceId);
+  return remoteHostId ?? null;
+}
+
+async function beginAuthorizedCombatServerDispatch(
+  context: HostToolExecutionContext,
+  dispatch: NonNullable<ReturnType<typeof combatServerDispatchRequest>>,
+): Promise<boolean> {
+  const remoteHostId = await authorizeCombatServerDispatch(context, dispatch);
+  if (!remoteHostId) return false;
+  return beginCombatServerCapabilityDispatch({
+    leadSessionId: context.sessionId,
+    vendorOptions: context.vendorOptions,
+    ...dispatch,
+    remoteHostId,
+  });
+}
+
+function isUnscopedServerExplorationRequest(context: HostToolExecutionContext): boolean {
+  const target = effectiveMcpTarget(context.toolName, context.input);
+  if (
+    target?.server !== 'cindy_orca' ||
+    (target.tool !== 'create_worker' && target.tool !== 'send_to_worker')
+  ) {
+    return false;
+  }
+  const args = mcpToolArguments(context.input);
+  const task = text(args.initial_task) || text(args.message) || text(args.task);
+  return isCombatServerExplorationTask(task) && !isModuleFirstCombatServerExplorationTask(task);
+}
+
+function orcaExplorationInfrastructure(context: HostToolExecutionContext): boolean {
+  const target = effectiveMcpTarget(context.toolName, context.input);
+  if (target?.server !== 'cindy_orca') return false;
+  return /^(?:get_|list_|start_team$)/i.test(target.tool) || combatServerDispatchRequest(context) !== null;
+}
+
+function isServerWorkerReportBridge(context: HostToolExecutionContext): boolean {
+  if (context.action.kind !== 'mcp') return false;
+  const target = effectiveMcpTarget(context.toolName, context.input);
+  if (target?.server !== 'orca_worker_bridge' || target.tool !== 'send_to_lead') return false;
+  const args = mcpToolArguments(context.input);
+  return Boolean(text(args.worker_id) && text(args.message));
+}
+
+function isServerCapabilityReportValidation(context: HostToolExecutionContext): boolean {
+  if (context.action.kind !== 'mcp') return false;
+  const target = effectiveMcpTarget(context.toolName, context.input);
+  if (target?.server !== 'mcp_router') return false;
+  if (target.tool === 'validate_server_capability_report') return true;
+  return (
+    target.tool === 'call_tool' &&
+    progressiveInnerCall(context.input)?.name === 'validate_server_capability_report'
+  );
+}
+
+function isCombatEnvironmentCheck(context: HostToolExecutionContext): boolean {
+  if (context.action.kind !== 'mcp') return false;
+  const target = effectiveMcpTarget(context.toolName, context.input);
+  if (target?.server !== 'mcp_router') return false;
+  if (target.tool === 'check_combat_environment') return true;
+  return (
+    target.tool === 'call_tool' &&
+    progressiveInnerCall(context.input)?.name === 'check_combat_environment'
+  );
+}
+
+function isBatchedWorkerCreation(context: HostToolExecutionContext): boolean {
+  const target = effectiveMcpTarget(context.toolName, context.input);
+  return target?.server === 'cindy_orca' && target.tool === 'create_workers';
 }
 
 async function refreshEnvironment(
@@ -500,24 +648,10 @@ export async function evaluateCombatToolExecution(
       )
         return { behavior: 'allow' };
     }
-    if (context.action.kind === 'mcp') {
-      try {
-        if (await isReadOnlyMcpCall(context)) return { behavior: 'allow' };
-      } catch {
-        options.mekaCombatEnvironmentReady = false;
-        options.mekaCombatPhase = 'environment-recovery';
-        return deny(
-          'MCPRouter 只读探查失败，已回到环境恢复阶段；请重新检查 P4、UnityMCP 和 MCPR。',
-        );
-      }
-    }
-    if (!approvedLeadSession(options)) {
-      return deny('服务器 Worker 仍处于方案前只读探索阶段；本地 Lead 方案批准前禁止修改远端仓库。');
-    }
-    if (!(await refreshEnvironment(options, false))) {
-      return deny('本地 Lead 的 P4、UnityMCP 或 MCPRouter 复检失败；服务器修改已暂停。');
-    }
-    return { behavior: 'allow' };
+    if (isServerWorkerReportBridge(context)) return { behavior: 'allow' };
+    return deny(
+      '战斗开发服务器 Worker 永久只读，仅允许文件读取、Host 可证明只读的命令，以及精确的 orca_worker_bridge.send_to_lead 报告回传；禁止修改文件、创建分支、改 Excel、生成文件或调用其它 MCP。能力不足时请停止并返回程序实现报告。',
+    );
   }
   if (context.remoteHostId) {
     return deny('战斗开发主任务必须运行在本机 SAGA2 P4/Unity 工作区；服务器访问请使用 MCPRouter。');
@@ -537,6 +671,65 @@ export async function evaluateCombatToolExecution(
       '这是 Host 的战斗环境恢复阶段限制，不是用户拒绝或授权不足。不得加载 Skill/AGENTS.md、读取业务文件、扫描工具全集或换 sandbox_permissions 重试。只允许统一环境复检和必要的安全实例投影；报告恢复步骤后结束回合。',
     );
   }
+  if (
+    options.mekaCombatServerCapabilityStatus === 'unsupported' ||
+    options.mekaCombatServerCapabilityStatus === 'uncertain'
+  ) {
+    return deny(
+      '服务器能力核查已要求程序介入。当前战斗开发实现必须停止，只向用户返回简短程序交接报告；不得继续读取或修改客户端、配置或服务器内容。',
+    );
+  }
+  const serverCapabilityStatus = text(options.mekaCombatServerCapabilityStatus);
+  if (
+    serverCapabilityStatus === 'dispatching' ||
+    serverCapabilityStatus === 'pending' ||
+    serverCapabilityStatus === 'report-ready' ||
+    serverCapabilityStatus === 'retry-required'
+  ) {
+    if (isCombatEnvironmentCheck(context)) return { behavior: 'allow' };
+    if (
+      serverCapabilityStatus === 'report-ready' &&
+      isServerCapabilityReportValidation(context) &&
+      hasTrustedCombatServerCapabilityReport(context.sessionId)
+    ) {
+      return { behavior: 'allow' };
+    }
+    if (serverCapabilityStatus === 'retry-required') {
+      const retry = combatServerDispatchRequest(context);
+      if (retry) {
+        try {
+          if (await beginAuthorizedCombatServerDispatch(context, retry)) {
+            return { behavior: 'allow' };
+          }
+        } catch {
+          options.mekaCombatEnvironmentReady = false;
+          resetCombatServerCapabilityFlow({
+            leadSessionId: context.sessionId,
+            vendorOptions: context.vendorOptions,
+            phase: 'environment-recovery',
+          });
+          return deny('MCPR 目标能力复检失败，已回到环境恢复阶段；请重新检查三条环境链路。');
+        }
+      }
+    }
+    return deny(
+      serverCapabilityStatus === 'report-ready'
+        ? 'Host 已收到服务器 Worker 的 auto-bridge 终态报告。只能原样调用 validate_server_capability_report；不得改写或代写报告。'
+        : serverCapabilityStatus === 'retry-required'
+          ? '服务器 Worker 派发或报告回传未完成。请重新调用 check_combat_environment；环境 ready 后重新派发带只读标记的 MCPR Worker，不得绕过服务器核查继续实施。'
+          : '服务器只读 Worker 正在派发或运行。立即结束当前回合并等待 Orca auto-bridge 自动回传；等待期间禁止继续探索或主动轮询。若 MCPR 断开，可直接调用 check_combat_environment 回到环境恢复。',
+    );
+  }
+  if (context.action.kind === 'mcp' && isBatchedWorkerCreation(context)) {
+    return deny(
+      'SAGA2 服务器能力核查必须使用单个带只读标记的 MCPR create_worker 或已有 Worker 的 send_to_worker；禁止用 create_workers 绕过 Host 可信回执状态。',
+    );
+  }
+  if (context.action.kind === 'mcp' && isUnscopedServerExplorationRequest(context)) {
+    return deny(
+      `服务器能力核查必须先完成 ${COMBAT_MODULE_FIRST_MARKER} 模块优先取证：读取 skill-entry-model 模块图/导出与同类配置，列出原子能力矩阵，并只把剩余服务器语义作为核查问题；不得用“没有完整专用函数”替代模块组合判断。`,
+    );
+  }
   if (context.action.kind === 'read') return { behavior: 'allow' };
   if (context.action.kind === 'exec') {
     if (
@@ -554,12 +747,44 @@ export async function evaluateCombatToolExecution(
       if (await isReadOnlyMcpCall(context)) return { behavior: 'allow' };
     } catch {
       options.mekaCombatEnvironmentReady = false;
-      options.mekaCombatPhase = 'environment-recovery';
+      resetCombatServerCapabilityFlow({
+        leadSessionId: context.sessionId,
+        vendorOptions: context.vendorOptions,
+        phase: 'environment-recovery',
+      });
       return deny('MCPRouter 只读探查失败，已回到环境恢复阶段；请重新检查 P4、UnityMCP 和 MCPR。');
     }
-  }
-  if (context.action.kind === 'mcp' && orcaExplorationInfrastructure(context)) {
-    return { behavior: 'allow' };
+    const target = effectiveMcpTarget(context.toolName, context.input);
+    if (target?.server === 'mcp_router') {
+      return deny(
+        '战斗开发中的 MCPRouter 只允许环境恢复和只读查询；服务器修改、服务管理或其它有副作用的 Router 调用必须停止并交给服务器程序。',
+      );
+    }
+    if (target?.server === 'cindy_orca') {
+      const dispatch = combatServerDispatchRequest(context);
+      if (dispatch) {
+        try {
+          if (await beginAuthorizedCombatServerDispatch(context, dispatch)) {
+            return { behavior: 'allow' };
+          }
+        } catch {
+          options.mekaCombatEnvironmentReady = false;
+          resetCombatServerCapabilityFlow({
+            leadSessionId: context.sessionId,
+            vendorOptions: context.vendorOptions,
+            phase: 'environment-recovery',
+          });
+          return deny('MCPR 目标能力复检失败，已回到环境恢复阶段；请重新检查三条环境链路。');
+        }
+        return deny(
+          '服务器核查 Worker 必须位于当前 SAGA2 已绑定、在线且 capability-ready 的 MCPR 服务器实例；已有 Worker 只有在本任务中经过 Host 验证后才能复用。',
+        );
+      }
+      if (orcaExplorationInfrastructure(context)) return { behavior: 'allow' };
+      return deny(
+        '战斗开发禁止创建本地 Worker、批量 Worker 或执行未识别的 Orca 变更；服务器核查只能使用 Host 验证的单个只读 MCPR Worker。',
+      );
+    }
   }
   if (context.action.kind === 'network' && options.mekaCombatEnvironmentReady === true) {
     return { behavior: 'allow' };

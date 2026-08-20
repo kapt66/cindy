@@ -285,6 +285,7 @@ import {
 } from '../maker-host/meka-remote-codex-bundle.js';
 import { parseMcprRemoteHostId } from '../../shared/meka-router.js';
 import { hasMekaSkillSnapshotEntries } from '../meka-projects/skillSnapshot.js';
+import { recordCombatServerCapabilityAutoBridge } from '../meka-projects/combatServerCapabilityState.js';
 import {
   clearSessionPersistState,
   consumeLastAssistantPersistId,
@@ -7685,7 +7686,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     },
     replaceQueuedMessage: (sessionId, clientId, next) =>
       inputCoordinator.replaceQueuedMessage(sessionId, clientId, next),
-    sendAutoBridgeToLead: async (leadSessionId, message, workerId) => {
+    sendAutoBridgeToLead: async (
+      leadSessionId,
+      message,
+      workerId,
+      workerSessionId,
+      terminalStatus,
+    ) => {
       const result = await dispatchInterAgentMessage({
         targetSessionId: leadSessionId,
         rawContent: message,
@@ -7696,6 +7703,14 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           source: 'maker-ipc/auto-bridge',
           context: `worker_auto_bridge/${leadSessionId}/${workerId}`,
         },
+      });
+      recordCombatServerCapabilityAutoBridge({
+        leadSessionId,
+        workerId,
+        workerSessionId,
+        message,
+        accepted: result.ok,
+        terminalStatus,
       });
       return { accepted: result.ok };
     },

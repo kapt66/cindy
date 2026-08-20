@@ -216,6 +216,11 @@ Worktree 现状：Orca 与普通 session 对齐，worktree 是可选项，不强
 3. **queued accepted 也要同样结算（状态：不变量）**<br>
    如果 inter-agent 消息进入队列，accepted callback 必须与直发路径保持同样的 settle / rollback / discard 语义，避免 auto-bridge pending 泄漏。实现指针：`orcaInterAgentDispatcher.ts` 的 queued accepted callback API，以及 `register.ts` 的 `AgentInputCoordinator` callbacks。
 
+   auto-bridge 的 Host 回调同时携带 `workerId`、`workerSessionId` 与 terminal status，且只有
+   `done` 终态实际向 Lead 投递 accepted 后才允许领域状态机记录“报告已送达”；不得只凭 Worker
+   terminal、`error` 终态或待发送文本推进上层工作流。投递 rejected 时保留 pending，允许 Orca
+   重试同一终态投递。SAGA2 战斗服务器核查据此把报告绑定到实际派发 Worker，拒绝跨 Worker 冒领。
+
 4. **worker 主动回报会结清自动回报态（状态：不变量）**<br>
    worker 主动 `send_to_lead` 一旦入队或 accepted，就必须清掉该 worker 的 auto-bridge pending，防止 Lead 同时收到手动回报和 auto-bridge 双份结果。实现指针：`orca-bridge-mcp.ts` 的 `send_to_lead` tool handler，以及 `orcaTeamService.ts` 的 `clearAutoBridgeState` / `clearRuntimeState`。
 

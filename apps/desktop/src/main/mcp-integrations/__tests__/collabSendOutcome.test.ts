@@ -92,6 +92,10 @@ import {
   resolveCollabDispatchResult,
 } from '../../maker-ipc/collabSendOutcome.js';
 import { createDesktopMcpProviders } from '../mcp-providers.js';
+import {
+  beginCombatServerCapabilityDispatch,
+  resetCombatServerCapabilityStateForTests,
+} from '../../meka-projects/combatServerCapabilityState.js';
 
 function collabMeta(overrides: Record<string, unknown> = {}) {
   return {
@@ -133,6 +137,7 @@ function createCollabService(overrides: Record<string, ReturnType<typeof vi.fn>>
 
 describe('collab send outcome semantics', () => {
   afterEach(() => {
+    resetCombatServerCapabilityStateForTests();
     mockState.logger.warn.mockClear();
     mockState.logger.info.mockClear();
     mockState.logger.debug.mockClear();
@@ -382,6 +387,131 @@ describe('collab send outcome semantics', () => {
       ok: false,
       errorCode: 'BUDGET_MODEL_REQUIRES_API_MODE',
       message: 'Budget Codex models require API key mode',
+    });
+  });
+
+  it('settles the combat server gate only from the actual create_worker result', async () => {
+    const task = '[SAGA2_SERVER_EXPLORATION_READ_ONLY] [SAGA2_MODULE_FIRST] skill-entry-model atomic capabilities residual server gap: inspect runtime support';
+    const vendorOptions = {
+      source: 'meka',
+      mekaProjectId: 'saga2',
+      mekaRoleId: 'combat-development',
+      mekaWorkflow: 'saga2-combat-development-v1',
+      mekaCombatEnvironmentReady: true,
+    };
+    expect(
+      beginCombatServerCapabilityDispatch({
+        leadSessionId: 'combat-lead',
+        vendorOptions,
+        kind: 'create_worker',
+        task,
+        remoteHostId: 'mcpr:server-1',
+      }),
+    ).toBe(true);
+    mockState.collabService = createCollabService({
+      createWorker: vi.fn().mockResolvedValue({
+        ok: true,
+        workerSessionId: 'worker-session-1',
+        workerId: 'worker-1',
+        dispatched: false,
+        dispatchOutcome: {
+          kind: 'session-dispatch',
+          dispatched: false,
+        },
+      }),
+    });
+    createDesktopMcpProviders({
+      getMakerMemoryManager: vi.fn(),
+      lspPool: {} as never,
+      pluginRegistry: { isEnabled: () => true } as never,
+      invokeRemote: vi.fn(),
+    });
+    const firstOrca = (mockState.capturedProvidersConfig?.orca ?? {}) as {
+      createWorker: (params: Record<string, unknown>) => Promise<Record<string, unknown>>;
+    };
+    await firstOrca.createWorker({
+      leadSessionId: 'combat-lead',
+      role: 'server-capability-reviewer',
+      agent: 'codex',
+      label: 'server-review',
+      initialTask: task,
+    });
+    expect(vendorOptions).toMatchObject({
+      mekaCombatServerCapabilityStatus: 'retry-required',
+      mekaCombatPhase: 'server-capability-retry',
+    });
+
+    expect(
+      beginCombatServerCapabilityDispatch({
+        leadSessionId: 'combat-lead',
+        vendorOptions,
+        kind: 'create_worker',
+        task,
+        remoteHostId: 'mcpr:server-1',
+      }),
+    ).toBe(true);
+    mockState.collabService.createWorker.mockResolvedValue({
+      ok: true,
+      workerSessionId: 'worker-session-2',
+      workerId: 'worker-2',
+      dispatched: true,
+      dispatchOutcome: {
+        kind: 'session-dispatch',
+        dispatched: true,
+      },
+    });
+    await firstOrca.createWorker({
+      leadSessionId: 'combat-lead',
+      role: 'server-capability-reviewer',
+      agent: 'codex',
+      label: 'server-review-2',
+      initialTask: task,
+    });
+    expect(vendorOptions).toMatchObject({
+      mekaCombatServerCapabilityStatus: 'pending',
+      mekaCombatPhase: 'server-capability-check',
+    });
+  });
+
+  it('rolls back the combat gate when the Orca host is unavailable before dispatch', async () => {
+    const task = '[SAGA2_SERVER_EXPLORATION_READ_ONLY] [SAGA2_MODULE_FIRST] skill-entry-model atomic capabilities residual server gap: inspect runtime support';
+    const vendorOptions = {
+      source: 'meka',
+      mekaProjectId: 'saga2',
+      mekaRoleId: 'combat-development',
+      mekaWorkflow: 'saga2-combat-development-v1',
+      mekaCombatServerCapabilityStatus: 'dispatching',
+    };
+    expect(
+      beginCombatServerCapabilityDispatch({
+        leadSessionId: 'combat-lead-not-ready',
+        vendorOptions,
+        kind: 'create_worker',
+        task,
+        remoteHostId: 'mcpr:server-1',
+      }),
+    ).toBe(true);
+    createDesktopMcpProviders({
+      getMakerMemoryManager: vi.fn(),
+      lspPool: {} as never,
+      pluginRegistry: { isEnabled: () => true } as never,
+      invokeRemote: vi.fn(),
+    });
+    const orca = (mockState.capturedProvidersConfig?.orca ?? {}) as {
+      createWorker: (params: Record<string, unknown>) => Promise<Record<string, unknown>>;
+    };
+    await expect(
+      orca.createWorker({
+        leadSessionId: 'combat-lead-not-ready',
+        role: 'server-capability-reviewer',
+        agent: 'codex',
+        label: 'server-review',
+        initialTask: task,
+      }),
+    ).resolves.toMatchObject({ errorCode: 'HOST_NOT_READY' });
+    expect(vendorOptions).toMatchObject({
+      mekaCombatServerCapabilityStatus: 'retry-required',
+      mekaCombatPhase: 'server-capability-retry',
     });
   });
 

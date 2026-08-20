@@ -71,8 +71,13 @@ function prependPromptSection(existing: unknown, section: string): string {
 const COMBAT_SERVER_WORKER_PROMPT = [
   '[SAGA2_COMBAT_REMOTE_SERVER_WORKER]',
   '当前任务是 MCPR 服务器仓 Worker，不是本地战斗开发 Lead。跳过本地主任务的 P4/UnityMCP 启动门禁。',
-  '先读取远端仓库 AGENTS.md，并在分析或修改前显式加载 battle-designer-server-development。',
-  '方案批准前只能只读探索；完成后必须返回该 Skill 要求的完整 serverWorkflow 回执。',
+  '先读取远端仓库 AGENTS.md，只读核查当前 HEAD 的现有服务器能力；不要加载战斗策划服务器 Skill。',
+  '整个任务永久只读：只允许文件读取和 Host 可证明只读的命令；禁止修改文件、创建或切换分支、改 Excel、生成文件或调用业务/项目 MCP。',
+  '命令只使用单一 rg、rg --files、Get-Content 或 git status/diff/show 查询；不要使用变量、管道、重定向、命令串联或脚本包装。需要多项证据时逐条调用并用工具输出上限控制结果。',
+  'Lead 已在任务正文提供 [SAGA2_MODULE_FIRST] 的 skill-entry-model 模块证据和原子能力矩阵；只核查其中标记为剩余服务器缺口的窄语义。没有完整专用函数不等于模块组合不支持：模块图已覆盖的能力必须按 supported 处理，只有具体剩余原子语义缺少运行时消费者时才返回 unsupported，证据冲突或读取失败才返回 uncertain。',
+  '结束时必须把 serverCapabilityReport 作为唯一一次完整终态回复输出：supportStatus、readOnlyConfirmed、repository、head、codeEvidence、capabilityGap、programmerAction、affectedSurfaces、validationSuggestion。MCPR Codex 不暴露 orca_worker_bridge；不要搜索或重试该工具，Orca 会把终态回复自动桥接给 Lead。',
+  'head 必须是当前仓库真实 Git SHA。必须完成核查并返回最终报告；不得用“未取得回执”、占位值或普通进度消息代替。',
+  '若能力不支持或证据不足，supportStatus 使用 unsupported 或 uncertain，并明确要求 Lead 停止当前实现、把简短报告交给服务器程序。',
   '[/SAGA2_COMBAT_REMOTE_SERVER_WORKER]',
 ].join('\n');
 
@@ -166,9 +171,17 @@ export async function applyMekaRuntimeConfig(
     );
   }
 
+  const isCombatServerWorker =
+    runtime.workflow === 'saga2-combat-development-v1' &&
+    Boolean(opts.remoteHostId) &&
+    ((opts.vendorOptions as Record<string, unknown> | undefined)?.orcaRole === 'worker' ||
+      opts.orcaRole === 'worker');
+  const runtimeMcpEntries = isCombatServerWorker ? [] : runtime.mcp;
+  const runtimeSkills = isCombatServerWorker ? [] : runtime.skills;
+
   let mcp: ReturnType<typeof prepareMcp>;
   try {
-    mcp = prepareMcp(runtime.mcp);
+    mcp = prepareMcp(runtimeMcpEntries);
   } catch (error) {
     throwIpcError(
       'INVALID_PARAMS',
@@ -183,7 +196,7 @@ export async function applyMekaRuntimeConfig(
   }
   let skillSnapshot: MekaSkillSnapshot | null;
   try {
-    skillSnapshot = await materializeSnapshot(opts.id, runtime.skills);
+    skillSnapshot = await materializeSnapshot(opts.id, runtimeSkills);
   } catch (error) {
     throwIpcError(
       'INVALID_PARAMS',
@@ -197,34 +210,30 @@ export async function applyMekaRuntimeConfig(
     opts.nativeSkillRevision = skillSnapshot.revision;
   }
 
-  const runtimePrompt = runtime.promptText.trim();
-  if (runtimePrompt) {
-    opts.userPrompt = prependPromptSection(opts.userPrompt, runtimePrompt);
+  if (!isCombatServerWorker) {
+    const runtimePrompt = runtime.promptText.trim();
+    if (runtimePrompt) {
+      opts.userPrompt = prependPromptSection(opts.userPrompt, runtimePrompt);
+    }
+    opts.userPrompt = prependPromptSection(opts.userPrompt, roleContextPrompt(runtime));
   }
-  opts.userPrompt = prependPromptSection(opts.userPrompt, roleContextPrompt(runtime));
 
   let combatEnvironmentReceipt: string | undefined;
   let combatEnvironmentReady = false;
-  let isCombatServerWorker = false;
   if (runtime.workflow === 'saga2-combat-development-v1') {
-    const isRemoteServerWorker =
-      Boolean(opts.remoteHostId) &&
-      ((opts.vendorOptions as Record<string, unknown> | undefined)?.orcaRole === 'worker' ||
-        opts.orcaRole === 'worker');
-    isCombatServerWorker = isRemoteServerWorker;
     if (opts.agentKind !== 'claude-code' && opts.agentKind !== 'codex') {
       throwIpcError(
         'INVALID_PARAMS',
         'SAGA2 combat workflow enforcement currently requires Claude Code or Codex',
       );
     }
-    if (opts.remoteHostId && !isRemoteServerWorker) {
+    if (opts.remoteHostId && !isCombatServerWorker) {
       throwIpcError(
         'INVALID_PARAMS',
         'SAGA2 combat development must run in the local P4/Unity workspace; use MCPRouter for server access',
       );
     }
-    if (isRemoteServerWorker) {
+    if (isCombatServerWorker) {
       opts.userPrompt = prependPromptSection(opts.userPrompt, COMBAT_SERVER_WORKER_PROMPT);
     } else {
       const [p4Settings, router] = await Promise.all([
@@ -278,8 +287,7 @@ export async function applyMekaRuntimeConfig(
       ? {
           mekaCombatEnvironmentReady: combatEnvironmentReady,
           mekaCombatPlanApproved: false,
-          mekaCombatServerReceiptRequired: false,
-          mekaCombatServerReceiptValidated: true,
+          mekaCombatServerCapabilityStatus: 'unchecked',
           mekaCombatPhase: combatEnvironmentReady ? 'exploration' : 'environment-recovery',
         }
       : {}),
@@ -289,7 +297,7 @@ export async function applyMekaRuntimeConfig(
     didApply: true,
     mcpProviderIds: mcp.providerIds,
     inlineMcpCount: mcp.inlineConfigs.length,
-    skillsCount: runtime.skills.length,
+    skillsCount: runtimeSkills.length,
     skillSnapshot,
     workflow: runtime.workflow ?? null,
     workflowRecoveredFromRole: runtime.workflowRecoveredFromRole,

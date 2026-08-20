@@ -18,14 +18,22 @@ vi.mock('../combatEnvironmentGate.js', () => ({
   runCombatEnvironmentGate: vi.fn(),
 }));
 
+vi.mock('../../maker-host/mcpr-codex-capability.js', () => ({
+  probeRemoteCodexCapability: vi.fn(async () => ({ ok: true })),
+}));
+
 import { runCombatEnvironmentGate } from '../combatEnvironmentGate.js';
 import {
   evaluateCombatToolExecution,
   evaluateCombatPlanReview,
   isCombatWorkflowPolicyActive,
   markCombatPlanApproved,
-  resetCombatPlanApprovals,
 } from '../combatWorkflowPolicy.js';
+import {
+  recordCombatServerCapabilityAutoBridge,
+  resetCombatServerCapabilityStateForTests,
+  settleCombatServerCapabilityDispatch,
+} from '../combatServerCapabilityState.js';
 
 function vendor(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -55,9 +63,18 @@ function context(vendorOptions: Record<string, unknown>, overrides: Record<strin
 
 beforeEach(() => {
   vi.resetAllMocks();
-  resetCombatPlanApprovals();
+  resetCombatServerCapabilityStateForTests();
   services.p4.get.mockResolvedValue({ p4RootPath: 'C:\\Workspace\\saga2\\saga2_project' });
   services.router.listProjectTools.mockResolvedValue([]);
+  services.router.listProjectBindings.mockResolvedValue(['server-1']);
+  services.router.listInstances.mockResolvedValue([
+    {
+      id: 'server-1',
+      projectName: 'saga2-server',
+      projectDescription: 'SAGA2 server',
+      available: true,
+    },
+  ]);
 });
 
 describe('combat workflow host policy', () => {
@@ -182,6 +199,28 @@ describe('combat workflow host policy', () => {
         }),
       ),
     ).resolves.toMatchObject({ behavior: 'deny' });
+    await expect(
+      evaluateCombatToolExecution(
+        context(vendor({ mekaCombatPlanApproved: true }), {
+          toolName: 'mcp__cindy_orca__create_workers',
+          input: {
+            workers: [
+              {
+                role: 'server-capability-reviewer',
+                agent: 'codex',
+                label: 'server-batch',
+                remote_host_id: 'mcpr:server-1',
+                initial_task: '[SAGA2_SERVER_EXPLORATION_READ_ONLY] [SAGA2_MODULE_FIRST] skill-entry-model atomic capabilities residual server gap: inspect server',
+              },
+            ],
+          },
+          action: { kind: 'mcp' },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      behavior: 'deny',
+      reason: expect.stringContaining('禁止用 create_workers'),
+    });
   });
 
   it('allows read-only exploration but blocks mutation before plan approval', async () => {
@@ -429,6 +468,64 @@ describe('combat workflow host policy', () => {
     ).resolves.toEqual({ behavior: 'allow' });
   });
 
+  it('allows report validation only after accepted dispatch and trusted auto-bridge delivery', async () => {
+    const options = vendor();
+    const task = '[SAGA2_SERVER_EXPLORATION_READ_ONLY] [SAGA2_MODULE_FIRST] skill-entry-model atomic capabilities residual server gap: inspect runtime support';
+    await expect(
+      evaluateCombatToolExecution(
+        context(options, {
+          toolName: 'mcp__cindy_orca__create_worker',
+          input: {
+            role: 'server-capability-reviewer',
+            agent: 'codex',
+            label: 'server-readonly',
+            remote_host_id: 'mcpr:server-1',
+            initial_task: task,
+          },
+          action: { kind: 'mcp' },
+        }),
+      ),
+    ).resolves.toEqual({ behavior: 'allow' });
+    expect(options).toMatchObject({ mekaCombatServerCapabilityStatus: 'dispatching' });
+
+    const validation = context(options, {
+      toolName: 'mcp:mcp_router',
+      input: {
+        serverName: 'mcp_router',
+        toolName: 'validate_server_capability_report',
+        toolParams: { serverCapabilityReport: { supportStatus: 'unsupported' } },
+      },
+      action: { kind: 'mcp' },
+    });
+    await expect(evaluateCombatToolExecution(validation)).resolves.toMatchObject({
+      behavior: 'deny',
+    });
+
+    settleCombatServerCapabilityDispatch({
+      leadSessionId: 'session-1',
+      kind: 'create_worker',
+      task,
+      accepted: true,
+      workerId: 'worker-1',
+      workerSessionId: 'worker-session-1',
+    });
+    await expect(evaluateCombatToolExecution(validation)).resolves.toMatchObject({
+      behavior: 'deny',
+    });
+    recordCombatServerCapabilityAutoBridge({
+      leadSessionId: 'session-1',
+      workerId: 'worker-1',
+      workerSessionId: 'worker-session-1',
+      message:
+        '[Auto-bridged: worker 完成但未调 send_to_lead]\n\n' +
+        JSON.stringify({ supportStatus: 'unsupported' }),
+      accepted: true,
+    });
+    await expect(
+      evaluateCombatToolExecution(validation),
+    ).resolves.toEqual({ behavior: 'allow' });
+  });
+
   it('requires a fresh environment gate for every mutation after approval', async () => {
     const options = vendor();
     markCombatPlanApproved({ vendorOptions: options });
@@ -484,7 +581,7 @@ describe('combat workflow host policy', () => {
     ).toMatchObject({
       behavior: 'deny',
     });
-    const plan = `[SAGA2_COMBAT_SOLUTION]\ntargetSkillId: 123\nchangeMode: incremental\nsurfaces: module/server\nevidence: table + code\nvalidation: tests\nremainingUnknowns: none\n[/SAGA2_COMBAT_SOLUTION]`;
+    const plan = `[SAGA2_COMBAT_SOLUTION]\ntargetSkillId: 123\nchangeMode: incremental\nsurfaces: module/client\nmoduleEvidence: skill-entry-model 10104 -> 10000\ncapabilityMatrix: passive, periodic, random point, delay, damage, effect\nevidence: table + code\nvalidation: tests\nremainingUnknowns: none\n[/SAGA2_COMBAT_SOLUTION]`;
     expect(evaluateCombatPlanReview({ vendorOptions: options, plan })).toEqual({
       behavior: 'allow',
     });
@@ -506,9 +603,18 @@ describe('combat workflow host policy', () => {
         plan: plan.replace('changeMode: incremental', 'changeMode: modify'),
       }),
     ).toMatchObject({ behavior: 'deny' });
+    expect(
+      evaluateCombatPlanReview({
+        vendorOptions: options,
+        plan: plan.replace('surfaces: module/client', 'surfaces: module/server'),
+      }),
+    ).toMatchObject({
+      behavior: 'deny',
+      reason: expect.stringContaining('仅用于只读能力核查'),
+    });
   });
 
-  it('keeps remote server workers read-only until the local Lead approves', async () => {
+  it('keeps remote server workers permanently read-only after the local Lead approves', async () => {
     const options = vendor({
       mekaWorkflow: 'saga2-combat-server-worker-v1',
       orcaLeadSessionId: 'lead-remote-1',
@@ -527,13 +633,6 @@ describe('combat workflow host policy', () => {
 
     const lead = vendor();
     markCombatPlanApproved({ vendorOptions: lead, sessionId: 'lead-remote-1' });
-    vi.mocked(runCombatEnvironmentGate).mockResolvedValueOnce({
-      checkedAt: new Date(0).toISOString(),
-      ready: true,
-      p4: { status: 'ready', summary: 'ok' },
-      unityMcp: { status: 'ready', summary: 'ok' },
-      mcpr: { status: 'ready', summary: 'ok' },
-    });
     await expect(
       evaluateCombatToolExecution(
         context(options, {
@@ -541,9 +640,145 @@ describe('combat workflow host policy', () => {
           action: { kind: 'file-write', path: 'server.ts' },
         }),
       ),
+    ).resolves.toMatchObject({
+      behavior: 'deny',
+      reason: expect.stringContaining('永久只读'),
+    });
+    await expect(
+      evaluateCombatToolExecution(
+        context(options, {
+          remoteHostId: 'mcpr:server-1',
+          action: { kind: 'exec', command: 'git status --short' },
+        }),
+      ),
     ).resolves.toEqual({ behavior: 'allow' });
+    for (const command of [
+      "/bin/bash -lc 'rg --files'",
+      "/bin/bash -c 'git show -s --format=%H HEAD'",
+      "/usr/bin/sh -c 'cat AGENTS.md'",
+    ]) {
+      await expect(
+        evaluateCombatToolExecution(
+          context(options, {
+            remoteHostId: 'mcpr:server-1',
+            action: { kind: 'exec', command },
+          }),
+        ),
+      ).resolves.toEqual({ behavior: 'allow' });
+    }
+    await expect(
+      evaluateCombatToolExecution(
+        context(options, {
+          remoteHostId: 'mcpr:server-1',
+          action: { kind: 'exec', command: 'printf changed > server.ts' },
+        }),
+      ),
+    ).resolves.toMatchObject({ behavior: 'deny' });
+    await expect(
+      evaluateCombatToolExecution(
+        context(options, {
+          remoteHostId: 'mcpr:server-1',
+          action: { kind: 'exec', command: "/bin/bash -lc 'printf changed > server.ts'" },
+        }),
+      ),
+    ).resolves.toMatchObject({ behavior: 'deny' });
+    await expect(
+      evaluateCombatToolExecution(
+        context(options, {
+          remoteHostId: 'mcpr:server-1',
+          toolName: 'mcp__server__get_status',
+          action: { kind: 'mcp' },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      behavior: 'deny',
+      reason: expect.stringContaining('禁止'),
+    });
+    await expect(
+      evaluateCombatToolExecution(
+        context(options, {
+          remoteHostId: 'mcpr:server-1',
+          toolName: 'mcp__orca_worker_bridge__send_to_lead',
+          input: { worker_id: 'worker-1', message: '{"supportStatus":"unsupported"}' },
+          action: { kind: 'mcp' },
+        }),
+      ),
+    ).resolves.toEqual({ behavior: 'allow' });
+    await expect(
+      evaluateCombatToolExecution(
+        context(options, {
+          remoteHostId: 'mcpr:server-1',
+          toolName: 'mcp:orca_worker_bridge',
+          input: {
+            serverName: 'orca_worker_bridge',
+            toolName: 'send_to_lead',
+            toolParams: {
+              worker_id: 'worker-1',
+              message: '{"supportStatus":"unsupported"}',
+            },
+          },
+          action: { kind: 'mcp' },
+        }),
+      ),
+    ).resolves.toEqual({ behavior: 'allow' });
+    for (const blockedMcp of [
+      {
+        toolName: 'mcp__orca_worker_bridge__read_lead',
+        input: { worker_id: 'worker-1' },
+      },
+      {
+        toolName: 'mcp__orca_worker_bridge__send_to_lead',
+        input: { worker_id: 'worker-1' },
+      },
+      {
+        toolName: 'mcp:orca_worker_bridge',
+        input: {
+          serverName: 'orca_worker_bridge',
+          toolParams: {
+            worker_id: 'worker-1',
+            message: '{"supportStatus":"unsupported"}',
+          },
+        },
+      },
+      {
+        toolName: 'mcp__cindy_orca__send_to_worker',
+        input: { worker_id: 'worker-2', message: 'continue' },
+      },
+    ]) {
+      await expect(
+        evaluateCombatToolExecution(
+          context(options, {
+            remoteHostId: 'mcpr:server-1',
+            ...blockedMcp,
+            action: { kind: 'mcp' },
+          }),
+        ),
+      ).resolves.toMatchObject({ behavior: 'deny' });
+    }
     expect(options).not.toHaveProperty('mekaCombatEnvironmentReady');
     expect(options).not.toHaveProperty('mekaCombatPhase');
+    expect(runCombatEnvironmentGate).not.toHaveBeenCalled();
+  });
+
+  it('stops the Lead after a server capability report requires programmer handoff', async () => {
+    const options = vendor({
+      mekaCombatServerCapabilityStatus: 'unsupported',
+      mekaCombatPhase: 'server-programmer-handoff',
+    });
+    await expect(evaluateCombatToolExecution(context(options))).resolves.toMatchObject({
+      behavior: 'deny',
+      reason: expect.stringContaining('程序介入'),
+    });
+    const plan = `[SAGA2_COMBAT_SOLUTION]\ntargetSkillId: 123\nchangeMode: incremental\nsurfaces: module\nmoduleEvidence: skill-entry-model 10104 -> 10000\ncapabilityMatrix: periodic random point damage chain\nevidence: table + code\nvalidation: tests\nremainingUnknowns: none\n[/SAGA2_COMBAT_SOLUTION]`;
+    expect(evaluateCombatPlanReview({ vendorOptions: options, plan })).toMatchObject({
+      behavior: 'deny',
+      reason: expect.stringContaining('程序交接报告'),
+    });
+    const pending = vendor({ mekaCombatServerCapabilityStatus: 'pending' });
+    expect(evaluateCombatPlanReview({ vendorOptions: pending, plan })).toMatchObject({
+      behavior: 'deny',
+      reason: expect.stringContaining('Host 完整结算'),
+    });
   });
 
   it('allows only marked read-only server exploration workers before approval', async () => {
@@ -553,16 +788,71 @@ describe('combat workflow host policy', () => {
         context(options, {
           toolName: 'mcp__cindy_orca__create_worker',
           input: {
+            role: 'server-capability-reviewer',
+            agent: 'codex',
+            label: 'server-readonly-direct',
             remote_host_id: 'mcpr:server-1',
-            initial_task: '[SAGA2_SERVER_EXPLORATION_READ_ONLY] inspect AGENTS.md',
+            initial_task: '[SAGA2_SERVER_EXPLORATION_READ_ONLY] [SAGA2_MODULE_FIRST] skill-entry-model atomic capabilities residual server gap: inspect AGENTS.md',
           },
           action: { kind: 'mcp' },
         }),
       ),
     ).resolves.toEqual({ behavior: 'allow' });
+    expect(options).toMatchObject({
+      mekaCombatServerCapabilityStatus: 'dispatching',
+      mekaCombatPhase: 'server-capability-dispatch',
+    });
+    for (const pendingAction of [
+      {
+        toolName: 'Read',
+        action: { kind: 'read' as const, path: 'Assets/Skill.cs' },
+      },
+      {
+        toolName: 'exec',
+        action: { kind: 'exec' as const, command: 'rg -n Skill Assets' },
+      },
+      {
+        toolName: 'mcp__cindy_orca__list_workers',
+        action: { kind: 'mcp' as const },
+      },
+      {
+        toolName: 'mcp__cindy_orca__read_worker',
+        input: { worker_id: 'worker-1' },
+        action: { kind: 'mcp' as const },
+      },
+    ]) {
+      await expect(
+        evaluateCombatToolExecution(context(options, pendingAction)),
+      ).resolves.toMatchObject({
+        behavior: 'deny',
+        reason: expect.stringContaining('正在派发或运行'),
+      });
+    }
+
     await expect(
       evaluateCombatToolExecution(
         context(options, {
+          toolName: 'mcp__mcp_router__check_combat_environment',
+          action: { kind: 'mcp' },
+        }),
+      ),
+    ).resolves.toEqual({ behavior: 'allow' });
+
+    settleCombatServerCapabilityDispatch({
+      leadSessionId: 'session-1',
+      kind: 'create_worker',
+      task: '[SAGA2_SERVER_EXPLORATION_READ_ONLY] [SAGA2_MODULE_FIRST] skill-entry-model atomic capabilities residual server gap: inspect AGENTS.md',
+      accepted: false,
+    });
+    expect(options).toMatchObject({
+      mekaCombatServerCapabilityStatus: 'retry-required',
+      mekaCombatPhase: 'server-capability-retry',
+    });
+
+    const wrappedOptions = vendor();
+    await expect(
+      evaluateCombatToolExecution(
+        context(wrappedOptions, {
           toolName: 'mcp:cindy_orca',
           input: {
             serverName: 'cindy_orca',
@@ -572,22 +862,187 @@ describe('combat workflow host policy', () => {
               agent: 'codex',
               label: 'server-readonly',
               remote_host_id: 'mcpr:server-1',
-              initial_task: '[SAGA2_SERVER_EXPLORATION_READ_ONLY] inspect AGENTS.md',
+              initial_task: '[SAGA2_SERVER_EXPLORATION_READ_ONLY] [SAGA2_MODULE_FIRST] skill-entry-model atomic capabilities residual server gap: inspect AGENTS.md',
             },
           },
           action: { kind: 'mcp' },
         }),
       ),
     ).resolves.toEqual({ behavior: 'allow' });
+    expect(wrappedOptions).toMatchObject({
+      mekaCombatServerCapabilityStatus: 'dispatching',
+      mekaCombatPhase: 'server-capability-dispatch',
+    });
     await expect(
       evaluateCombatToolExecution(
         context(options, {
           toolName: 'mcp__cindy_orca__create_worker',
-          input: { remote_host_id: 'mcpr:server-1', initial_task: 'inspect server' },
+          input: {
+            role: 'server-capability-reviewer',
+            agent: 'codex',
+            label: 'server-unmarked',
+            remote_host_id: 'mcpr:server-1',
+            initial_task: 'inspect server',
+          },
           action: { kind: 'mcp' },
         }),
       ),
     ).resolves.toMatchObject({ behavior: 'deny' });
+    await expect(
+      evaluateCombatToolExecution(
+        context(options, {
+          toolName: 'mcp__cindy_orca__create_worker',
+          input: {
+            role: 'server-capability-reviewer',
+            agent: 'claude-code',
+            label: 'server-wrong-agent',
+            remote_host_id: 'mcpr:server-1',
+            initial_task: '[SAGA2_SERVER_EXPLORATION_READ_ONLY] [SAGA2_MODULE_FIRST] skill-entry-model atomic capabilities residual server gap: inspect AGENTS.md',
+          },
+          action: { kind: 'mcp' },
+        }),
+      ),
+    ).resolves.toMatchObject({ behavior: 'deny' });
+  });
+
+  it('rejects a server worker that lacks module-first atomic evidence', async () => {
+    const options = vendor();
+    await expect(
+      evaluateCombatToolExecution(
+        context(options, {
+          toolName: 'mcp__cindy_orca__create_worker',
+          input: {
+            role: 'server-capability-reviewer',
+            agent: 'codex',
+            label: 'server-readonly-unscoped',
+            remote_host_id: 'mcpr:server-1',
+            initial_task: '[SAGA2_SERVER_EXPLORATION_READ_ONLY] inspect the whole skill support',
+          },
+          action: { kind: 'mcp' },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      behavior: 'deny',
+      reason: expect.stringContaining('skill-entry-model'),
+    });
+    expect(options).not.toHaveProperty('mekaCombatServerCapabilityStatus');
+  });
+
+  it('requires the exact bound capability-ready MCPR target and only reuses Host-known workers', async () => {
+    const options = vendor();
+    const task =
+      '[SAGA2_SERVER_EXPLORATION_READ_ONLY] [SAGA2_MODULE_FIRST] skill-entry-model atomic capability matrix residual server gap';
+    await expect(
+      evaluateCombatToolExecution(
+        context(options, {
+          toolName: 'mcp__cindy_orca__create_worker',
+          input: {
+            role: 'server-capability-reviewer',
+            agent: 'codex',
+            label: 'wrong-server',
+            remote_host_id: 'mcpr:other-server',
+            initial_task: task,
+          },
+          action: { kind: 'mcp' },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      behavior: 'deny',
+      reason: expect.stringContaining('已绑定'),
+    });
+
+    await expect(
+      evaluateCombatToolExecution(
+        context(options, {
+          toolName: 'mcp__cindy_orca__send_to_worker',
+          input: { target_session_id: 'untrusted-worker', message: task },
+          action: { kind: 'mcp' },
+        }),
+      ),
+    ).resolves.toMatchObject({ behavior: 'deny' });
+
+    await expect(
+      evaluateCombatToolExecution(
+        context(options, {
+          toolName: 'mcp__cindy_orca__create_worker',
+          input: {
+            role: 'server-capability-reviewer',
+            agent: 'codex',
+            label: 'trusted-server',
+            remote_host_id: 'mcpr:server-1',
+            initial_task: task,
+          },
+          action: { kind: 'mcp' },
+        }),
+      ),
+    ).resolves.toEqual({ behavior: 'allow' });
+    settleCombatServerCapabilityDispatch({
+      leadSessionId: 'session-1',
+      kind: 'create_worker',
+      task,
+      accepted: false,
+      workerId: 'worker-1',
+      workerSessionId: 'worker-session-1',
+    });
+    await expect(
+      evaluateCombatToolExecution(
+        context(options, {
+          toolName: 'mcp__cindy_orca__send_to_worker',
+          input: { target_session_id: 'worker-session-1', message: task },
+          action: { kind: 'mcp' },
+        }),
+      ),
+    ).resolves.toEqual({ behavior: 'allow' });
+  });
+
+  it('keeps Router and Orca server-side mutations blocked after plan approval', async () => {
+    const options = vendor();
+    markCombatPlanApproved({ vendorOptions: options });
+    await expect(
+      evaluateCombatToolExecution(
+        context(options, {
+          toolName: 'mcp__mcp_router__call_tool',
+          input: { name: 'mcp_create_key', args: { type: 'client' } },
+          action: { kind: 'mcp' },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      behavior: 'deny',
+      reason: expect.stringContaining('只允许环境恢复和只读查询'),
+    });
+    await expect(
+      evaluateCombatToolExecution(
+        context(options, {
+          toolName: 'mcp__cindy_orca__create_worker',
+          input: {
+            role: 'local-helper',
+            agent: 'codex',
+            label: 'local-helper',
+            initial_task: 'inspect local files',
+          },
+          action: { kind: 'mcp' },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      behavior: 'deny',
+      reason: expect.stringContaining('禁止创建本地 Worker'),
+    });
+    await expect(
+      evaluateCombatToolExecution(
+        context(options, {
+          toolName: 'mcp:cindy_orca',
+          input: {
+            serverName: 'cindy_orca',
+            toolParams: { workers: [{ role: 'helper', initial_task: 'inspect' }] },
+          },
+          action: { kind: 'mcp' },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      behavior: 'deny',
+      reason: expect.stringContaining('禁止用 create_workers'),
+    });
+    expect(runCombatEnvironmentGate).not.toHaveBeenCalled();
   });
 
   it('recognizes the exact read-only P4 status call from Codex code-mode approval metadata', async () => {

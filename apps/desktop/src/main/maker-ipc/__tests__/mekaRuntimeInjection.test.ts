@@ -207,7 +207,9 @@ describe('applyMekaRuntimeConfig', () => {
       vendorOptions: { orcaRole: 'worker', orcaLeadSessionId: 'lead-1' },
     });
 
-    await applyMekaRuntimeConfig(opts, {
+    const materialize = vi.fn(async () => null);
+    const prepareRuntimeMcp = vi.fn(() => ({ providerIds: [], inlineConfigs: [] }));
+    const result = await applyMekaRuntimeConfig(opts, {
       resolveRuntimeConfig: vi.fn(async () =>
         runtime({
           roleId: 'combat-development',
@@ -215,10 +217,21 @@ describe('applyMekaRuntimeConfig', () => {
           workflow: 'saga2-combat-development-v1',
         }),
       ),
-      prepareRuntimeMcp: vi.fn(() => ({ providerIds: [], inlineConfigs: [] })),
-      materializeSkillSnapshot: vi.fn(async () => null),
+      prepareRuntimeMcp,
+      materializeSkillSnapshot: materialize,
     });
 
+    expect(result).toMatchObject({
+      didApply: true,
+      mcpProviderIds: [],
+      inlineMcpCount: 0,
+      skillsCount: 0,
+      skillSnapshot: null,
+    });
+    expect(prepareRuntimeMcp).toHaveBeenCalledWith([]);
+    expect(materialize).toHaveBeenCalledWith(opts.id, []);
+    expect(opts.nativeSkillPluginPath).toBeUndefined();
+    expect(opts.nativeSkillRevision).toBeUndefined();
     expect(opts.vendorOptions).toMatchObject({
       mekaWorkflow: 'saga2-combat-server-worker-v1',
       source: 'meka',
@@ -228,7 +241,19 @@ describe('applyMekaRuntimeConfig', () => {
     expect(opts.vendorOptions).not.toHaveProperty('mekaCombatEnvironmentReady');
     expect(opts.vendorOptions).not.toHaveProperty('mekaCombatPlanApproved');
     expect(opts.userPrompt).toContain('[SAGA2_COMBAT_REMOTE_SERVER_WORKER]');
-    expect(opts.userPrompt).toContain('battle-designer-server-development');
+    expect(opts.userPrompt).toContain('整个任务永久只读');
+    expect(opts.userPrompt).toContain('serverCapabilityReport');
+    expect(opts.userPrompt).toContain('唯一一次完整终态回复');
+    expect(opts.userPrompt).toContain('MCPR Codex 不暴露 orca_worker_bridge');
+    expect(opts.userPrompt).toContain('Orca 会把终态回复自动桥接给 Lead');
+    expect(opts.userPrompt).toContain('[SAGA2_MODULE_FIRST]');
+    expect(opts.userPrompt).toContain('只核查其中标记为剩余服务器缺口的窄语义');
+    expect(opts.userPrompt).toContain('没有完整专用函数不等于模块组合不支持');
+    expect(opts.userPrompt).not.toContain('battle-designer-server-development');
+    expect(opts.userPrompt).not.toContain(
+      'SAGA2 server code lives behind MCPRouter as saga2-server.',
+    );
+    expect(opts.userPrompt).not.toContain('[MEKA_ROLE_CONTEXT]');
   });
 
   it('freezes an empty selection without mounting an empty native Skill plugin', async () => {

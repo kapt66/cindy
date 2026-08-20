@@ -114,7 +114,7 @@ describe('Meka runtime project/role resolution', () => {
           ]),
         );
         expect(resolved.promptText).toContain('## 0. 环境恢复');
-        expect(resolved.promptText).toContain('## 1. 只读探索');
+        expect(resolved.promptText).toContain('## 1. 模块优先的只读探索');
         expect(resolved.promptText).toContain('## 2. 集中澄清');
         expect(resolved.promptText).toContain('## 3. 方案与审批');
         expect(resolved.promptText).toContain('## 4. 实施与闭环');
@@ -122,9 +122,13 @@ describe('Meka runtime project/role resolution', () => {
         expect(resolved.promptText).toContain('服务器代码');
         expect(resolved.promptText).toContain('[SAGA2_COMBAT_SOLUTION]');
         expect(resolved.promptText).toContain('targetSkillId:');
-        expect(resolved.promptText).toContain('battle-designer-server-development');
-        expect(resolved.promptText).toContain('validate_server_workflow_receipt');
-        expect(resolved.promptText).toContain('普通服务器程序员不走这条策划分支流程');
+        expect(resolved.promptText).toContain('validate_server_capability_report');
+        expect(resolved.promptText).toContain('服务器 Worker 始终只读');
+        expect(resolved.promptText).toContain('交给服务器程序');
+        expect(resolved.promptText).toContain('必须立即结束当前回合');
+        expect(resolved.promptText).toContain('`list_workers`、`read_worker`、`worker_status`');
+        expect(resolved.promptText).not.toContain('必须保持任务运行并通过 Orca 状态/消息接口等待');
+        expect(resolved.promptText).not.toContain('battle-designer-server-development');
       }
       const saga2Overview = resolved.skills.find((skill) => skill.id === 'saga2-overview');
       const saga2OverviewContent = saga2Overview?.content.replace(/\r\n/g, '\n');
@@ -153,10 +157,16 @@ describe('Meka runtime project/role resolution', () => {
     environment.p4RootPath = root;
     try {
       const project = JSON.parse(
-        await readFile(path.join(desktopRoot, 'resources/meka/projects/saga2/project.json'), 'utf8'),
+        await readFile(
+          path.join(desktopRoot, 'resources/meka/projects/saga2/project.json'),
+          'utf8',
+        ),
       ) as Record<string, unknown>;
       const bundledRole = JSON.parse(
-        await readFile(path.join(desktopRoot, 'resources/meka/roles/combat-development.json'), 'utf8'),
+        await readFile(
+          path.join(desktopRoot, 'resources/meka/roles/combat-development.json'),
+          'utf8',
+        ),
       ) as Record<string, unknown>;
       const legacyRole = {
         ...bundledRole,

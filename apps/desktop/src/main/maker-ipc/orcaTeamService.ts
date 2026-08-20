@@ -210,7 +210,13 @@ export interface OrcaTeamServiceDeps {
     onAccepted?: () => void | Promise<void>;
     onAcceptedRollback?: () => void | Promise<void>;
   }): Promise<DispatchWorkerMessageResult>;
-  sendAutoBridgeToLead(leadSessionId: string, message: string, workerId: string): Promise<{ accepted: boolean }>;
+  sendAutoBridgeToLead(
+    leadSessionId: string,
+    message: string,
+    workerId: string,
+    workerSessionId: string,
+    terminalStatus: 'done' | 'error',
+  ): Promise<{ accepted: boolean }>;
   /**
    * 读取目标 session 输入队列的当前快照(pendingQueue + steering 中的 clientId)。
    * 实现方(register.ts)须先 ensureQueueRestored 再读,保证崩溃恢复条目可见。
@@ -402,7 +408,13 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
       : '[Auto-bridged: worker 完成但未调 send_to_lead]';
     const bridgeText = `${header}\n\n${finalText}`;
     try {
-      const result = await deps.sendAutoBridgeToLead(state.leadSessionId, bridgeText, state.workerId);
+      const result = await deps.sendAutoBridgeToLead(
+        state.leadSessionId,
+        bridgeText,
+        state.workerId,
+        sessionId,
+        turn.status,
+      );
       const latest = autoBridge.get(sessionId);
       if (latest !== state || latest.version !== version) return 'skipped';
       if (result.accepted) {

@@ -179,6 +179,14 @@ describe("renderOrcaWorkerSystemPrompt", () => {
     expect(local).not.toContain("you are running on a REMOTE host");
   });
 
+  it("uses the deterministic auto-bridge when a transport has no worker bridge tool", () => {
+    const prompt = renderOrcaWorkerSystemPrompt(workerMeta);
+
+    expect(prompt).toContain("When send_to_lead is exposed");
+    expect(prompt).toContain("do not search for it or retry alternate MCP names");
+    expect(prompt).toContain("system will auto-bridge that response to the lead");
+  });
+
   it("tells a worker without a native subagent mechanism to be honest rather than substitute Orca", () => {
     // worker 侧同规:没有原生机制时如实告知,不拿 Orca 顶替、不自己起进程。
     const prompt = renderOrcaWorkerSystemPrompt(workerMeta);

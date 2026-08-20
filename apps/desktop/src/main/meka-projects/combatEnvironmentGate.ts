@@ -244,7 +244,7 @@ async function checkMcpr(deps: CombatEnvironmentGateDeps): Promise<CombatEnviron
       );
       const evidence = mismatch
         ? `cc-manager bundle mismatch: client=${mismatch[1] ?? mismatch[4]}; server=${mismatch[2] ?? mismatch[3]}`
-        : '远端原生 Skill 投递握手失败';
+        : '远端 Codex Worker capability 握手失败';
       const versionSummary = mismatch
         ? `（客户端 ${mismatch[1] ?? mismatch[4]}，远端 ${mismatch[2] ?? mismatch[3]}）`
         : '';
@@ -257,9 +257,9 @@ async function checkMcpr(deps: CombatEnvironmentGateDeps): Promise<CombatEnviron
     }
     return result(
       'ready',
-      'MCPRouter 已连接，且 SAGA2 服务器项目支持原生 Skill 投递',
+      'MCPRouter 已连接，且 SAGA2 服务器项目可启动远端 Codex 只读 Worker',
       `available=${available.length}; capabilityReady=${capabilityReady}`,
-      '服务器代码读取和服务管理必须继续通过 MCPR 专用能力',
+      '服务器现有能力只通过带只读标记的 MCPR Worker 核查；本流程不执行服务管理或服务器修改',
     );
   } catch (error) {
     return result(
