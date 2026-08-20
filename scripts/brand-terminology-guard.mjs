@@ -26,7 +26,7 @@ function isAllowedLegacyAgentToolIdentifier(file, line, term) {
     (file === 'packages/maker-core/src/agents/codex/index.ts' &&
       line.includes('LEGACY_ASK_USER_DYNAMIC_TOOL_NAMESPACE')) ||
     (file === 'packages/maker-core/src/agents/codex/index.test.ts' &&
-      line.includes("namespace: '" + 'xdt_' + "maker'"))
+      new RegExp(`namespace:\\s*[\"']${'xdt_' + 'maker'}[\"']`).test(line))
   );
 }
 
