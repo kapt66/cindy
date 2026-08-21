@@ -72,7 +72,7 @@ describe('SAGA2 combat environment gate', () => {
     expect(receipt).not.toContain('mcpr:server-1');
   });
 
-  it('blocks the complete gate when one required path is unavailable', async () => {
+  it('reports degraded exploration when one path is unavailable', async () => {
     const deps = readyDeps();
     deps.listInstances = vi.fn(async () => []);
 
@@ -80,10 +80,12 @@ describe('SAGA2 combat environment gate', () => {
 
     expect(gate.ready).toBe(false);
     expect(gate.mcpr).toMatchObject({ status: 'blocked' });
-    expect(formatCombatEnvironmentGateReceipt(gate)).toContain('BLOCKED TURN CONTRACT');
+    const receipt = formatCombatEnvironmentGateReceipt(gate);
+    expect(receipt).toContain('DEGRADED EXPLORATION CONTRACT');
+    expect(receipt).toContain('continue the task normally');
   });
 
-  it('blocks before exploration when the bound server cannot start a compatible Codex Worker', async () => {
+  it('keeps independent exploration available when the bound server runtime is incompatible', async () => {
     const deps = readyDeps();
     deps.probeRemoteCodexCapability = vi.fn(async () => {
       throw new Error(
@@ -102,8 +104,8 @@ describe('SAGA2 combat environment gate', () => {
     });
     const receipt = formatCombatEnvironmentGateReceipt(gate);
     expect(receipt).toContain('客户端 0.0.7，远端 0.0.6');
-    expect(receipt).toContain('without any tool call');
-    expect(receipt).toContain('Do not load Skills or AGENTS.md');
+    expect(receipt).toContain('does not block independent local exploration');
+    expect(receipt).toContain('load relevant Skills');
   });
 
   it('rejects a reachable UnityMCP that advertises a different project', async () => {

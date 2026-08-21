@@ -114,6 +114,8 @@ describe('Meka runtime project/role resolution', () => {
           ]),
         );
         expect(resolved.promptText).toContain('## 0. 环境恢复');
+        expect(resolved.promptText).toContain('不是任务级开关');
+        expect(resolved.promptText).toContain('阻止该次调用');
         expect(resolved.promptText).toContain('## 1. 模块优先的只读探索');
         expect(resolved.promptText).toContain('## 2. 集中澄清');
         expect(resolved.promptText).toContain('## 3. 方案与审批');

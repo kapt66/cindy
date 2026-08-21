@@ -1,6 +1,6 @@
 ---
 name: remote-operations
-description: 在远程项目环境已就绪后，通过 MCPRouter 安全访问已授权仓库，并区分仓库内容与服务管理。SAGA2 战斗环境门禁 ready=false 时不得加载本 Skill，只按 Host 回执恢复。
+description: 通过 MCPRouter 安全访问已授权仓库，并区分仓库内容与服务管理。SAGA2 战斗环境未完全就绪时仍可加载；MCPR 不可用只阻止实际远程调用。
 metadata:
   display-name: MCPR 远程项目操作
   purpose: 发现、读取和修改已授权的远程项目仓库
@@ -8,7 +8,7 @@ metadata:
 
 # MCPR 远程项目操作
 
-在 SAGA2 战斗开发中，只有 `[SAGA2_COMBAT_ENVIRONMENT_GATE]` 的 `ready: true` 才允许使用本 Skill。环境恢复阶段不读取本文件，不用它寻找升级或重启路径。
+在 SAGA2 战斗开发中，`[SAGA2_COMBAT_ENVIRONMENT_GATE]` 的 `ready: false` 不阻止读取本 Skill。实际远程工具依赖 MCPR 时，Host 才按当前状态裁决；被拒绝时报告回执中的具体原因与恢复方案，不改走 SSH 或本地路径。
 
 远程项目是绑定到当前 Meka 项目的 MCPRouter 项目实例，不是本地目录，也不是 SSH 主机。进入远程仓库后先读该仓的 `AGENTS.md` 和命中的 Agent Skill；本 Skill 只负责路由，不替代远端项目规则。
 
@@ -26,6 +26,22 @@ metadata:
 ## 发现与配置
 
 先调用 `list_project_remote_instances`。存在匹配且 `available` 的实例时，按上述优先级路由。
+
+远程调用失败时必须先帮助恢复，不能只复述错误或把整个任务暂停：
+
+1. 优先读取工具回执里的 `reasonCode`、`recovery` 和 `retryTool`。Host 已检查本地连接状态时，
+   不要盲目改调其它远程列表工具；它们依赖同一连接。
+2. 旧回执没有结构化恢复信息时，只调用一次 `diagnose_mcp_router_connection`。该工具不联网，也不
+   返回 endpoint、用户名或凭证；确认未配置时会直接打开现有登录框，必须继续读取其
+   `recovery.loginPromptOpened`，不能诊断后再次只给手动设置说明。
+3. `MCPR_NOT_CONNECTED` 或 `MCPR_AUTH_REQUIRED` 时先读取 `recovery.loginPromptOpened`。为 `true`
+   表示 Host 已打开登录框，只需请用户在该框完成连接；为 `false` 时才引导到 Cindy 的
+   “设置 → Meka 助理”。Agent 不能索取或代填账号、密码、token。保留当前进度，并继续所有不依赖
+   MCPR 的本地探索；用户恢复后重试回执指定的 `retryTool`。
+4. `MCPR_PROJECT_NOT_BOUND` 表示登录材料存在，不要再要求登录。继续 `list_remote_instances`、
+   `list_remote_project_templates`、用户确认后的创建和绑定流程。
+5. `MCPR_RUNTIME_INCOMPATIBLE` 明确交给部署方升级并重启 Runtime；`MCPR_UNAVAILABLE` 引导检查
+   网络和连接。两者都只阻止当前远程调用，不得冻结本地 P4、Unity、表格、澄清或方案工作。
 
 没有绑定匹配项时依次执行：
 

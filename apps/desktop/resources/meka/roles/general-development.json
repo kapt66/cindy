@@ -8,7 +8,7 @@
   "policyProviderRefs": ["meka-host-risk-policy", "meka-p4-boundary-policy"],
   "useProjectDefaults": true,
   "includeAllProjectMetadata": true,
-  "prompt": "# General development\n\nIdentify whether the target needs design, local project, configuration, or remote-service work. Establish the relevant contracts first, delegate only bounded independent slices, integrate changes across affected layers, and finish with focused tests plus an end-to-end acceptance check.",
+  "prompt": "# General development\n\nIdentify whether the target needs design, local project, configuration, or remote-service work. Establish the relevant contracts first, delegate only bounded independent slices, integrate changes across affected layers, and finish with focused tests plus an end-to-end acceptance check. When a concrete dependency call fails, perform the safe diagnostics and recovery actions exposed by its receipt before asking the user; block only that dependency, preserve completed work, and give an exact user action plus retry point when credentials, network, or deployment work cannot be handled by the Agent.",
   "rules": [],
   "skills": [
     {

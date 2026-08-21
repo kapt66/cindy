@@ -178,6 +178,19 @@ describe('MekaRouterService', () => {
     );
   });
 
+  it('checks local connection material without contacting MCPRouter', async () => {
+    const configured = setup({ routerUrl: 'https://router.example/' });
+    configured.secrets.set('meka.router.sessionToken', 'existing-session');
+    configured.secrets.set('meka.router.clientKey', 'existing-client-key');
+    await expect(configured.service.getConnectionStatus()).resolves.toEqual({ configured: true });
+    expect(configured.client.listRoutes).not.toHaveBeenCalled();
+
+    const incomplete = setup({ routerUrl: 'https://router.example/' });
+    incomplete.secrets.set('meka.router.sessionToken', 'existing-session');
+    await expect(incomplete.service.getConnectionStatus()).resolves.toEqual({ configured: false });
+    expect(incomplete.client.listRoutes).not.toHaveBeenCalled();
+  });
+
   it('routes a previously saved HTTP origin through the production HTTPS Router', async () => {
     const fixture = setup({ routerUrl: 'http://retired-router.example/' });
     fixture.secrets.set('meka.router.sessionToken', 'existing-session');

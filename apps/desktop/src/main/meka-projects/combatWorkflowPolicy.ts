@@ -4,7 +4,11 @@ import {
   type HostToolExecutionDecision,
 } from '@cindy/maker-core';
 
-import { runCombatEnvironmentGate } from './combatEnvironmentGate.js';
+import {
+  combatEnvironmentAvailability,
+  runCombatEnvironmentGate,
+  type CombatEnvironmentGateResult,
+} from './combatEnvironmentGate.js';
 import {
   beginCombatServerCapabilityDispatch,
   COMBAT_MODULE_FIRST_MARKER,
@@ -49,6 +53,7 @@ type CombatVendorOptions = Record<string, unknown> & {
   mekaRoleId?: unknown;
   mekaWorkflow?: unknown;
   mekaCombatEnvironmentReady?: unknown;
+  mekaCombatEnvironmentChecks?: unknown;
   mekaCombatPlanApproved?: unknown;
   mekaCombatPhase?: unknown;
   mekaCombatServerCapabilityStatus?: unknown;
@@ -283,8 +288,7 @@ function isUnityReadOnly(tool: string, input: unknown): boolean {
 }
 
 async function isRouterReadOnly(projectId: string, tool: string, input: unknown): Promise<boolean> {
-  if (tool === 'check_combat_environment' || tool.startsWith('list_'))
-    return true;
+  if (tool === 'check_combat_environment' || tool.startsWith('list_')) return true;
   if (tool !== 'call_tool') return false;
   const inner = progressiveInnerCall(input);
   if (!inner) return false;
@@ -318,6 +322,7 @@ function isEnvironmentRecoveryMcp(context: HostToolExecutionContext): boolean {
   if (
     [
       'check_combat_environment',
+      'diagnose_mcp_router_connection',
       'list_tools',
       'list_project_remote_instances',
       'list_remote_instances',
@@ -337,6 +342,53 @@ function isEnvironmentDiagnosticCommand(command: string): boolean {
   return /^(?:where(?:\.exe)? p4|where(?:\.exe)? unity|p4 (?:-ztag )?(?:info|where|client -o|protects\b|login -s\b)|get-process\b|test-netconnection\b|netstat\b)/.test(
     normalized,
   );
+}
+
+type CombatEnvironmentDependency = 'p4' | 'unityMcp' | 'mcpr';
+
+function combatToolDependency(
+  context: HostToolExecutionContext,
+): CombatEnvironmentDependency | null {
+  if (context.action.kind === 'file-write') return 'p4';
+  if (context.action.kind === 'exec') {
+    if (isEnvironmentDiagnosticCommand(context.action.command)) return null;
+    const normalized = context.action.command
+      .trim()
+      .replace(/^['"]+/, '')
+      .toLowerCase();
+    if (/^(?:p4\b|p4\.exe\b)/.test(normalized)) return 'p4';
+    return null;
+  }
+  if (context.action.kind !== 'mcp') return null;
+  const target = effectiveMcpTarget(context.toolName, context.input);
+  if (!target) return null;
+  if (target.server === 'unity-editor') return 'unityMcp';
+  if (target.server === 'mcp_router') {
+    return isCombatEnvironmentCheck(context) ? null : 'mcpr';
+  }
+  if (target.server === 'cindy' && target.tool === 'ghost_call') {
+    const args = mcpToolArguments(context.input);
+    return text(args.ghost_id) === 'meka-p4' ? 'p4' : null;
+  }
+  if (target.server === 'cindy_orca' && combatServerDispatchRequest(context)) return 'mcpr';
+  return null;
+}
+
+function blockedDependencyReason(
+  options: CombatVendorOptions,
+  dependency: CombatEnvironmentDependency,
+): string | null {
+  const checks = record(options.mekaCombatEnvironmentChecks);
+  const check = record(checks?.[dependency]);
+  const status = text(check?.status);
+  if (status === 'ready') return null;
+  if (status !== 'blocked' && options.mekaWorkflow === WORKFLOW) return null;
+
+  const label = dependency === 'p4' ? 'P4' : dependency === 'unityMcp' ? 'UnityMCP' : 'MCPRouter';
+  const summary = text(check?.summary) || `${label} 当前状态尚未完成校验`;
+  const nextAction =
+    text(check?.nextAction) || '调用 mcp_router.check_combat_environment 刷新三条链路状态后重试';
+  return `当前工具实际依赖 ${label}，因此只阻止本次调用，不冻结整个任务。原因：${summary}。解决方案：${nextAction}。不依赖 ${label} 的探索、澄清和其它工具仍可继续。`;
 }
 
 function readOnlySelectStringPayload(command: string): string | null {
@@ -516,10 +568,7 @@ async function authorizeCombatServerDispatch(
   const remoteHostId =
     dispatch.kind === 'create_worker'
       ? dispatch.remoteHostId
-      : getTrustedCombatServerWorkerRemoteHost(
-          context.sessionId,
-          dispatch.requestedWorkerRef,
-        );
+      : getTrustedCombatServerWorkerRemoteHost(context.sessionId, dispatch.requestedWorkerRef);
   const instanceId = parseMcprRemoteHostId(remoteHostId);
   if (!instanceId) return null;
 
@@ -566,7 +615,10 @@ function isUnscopedServerExplorationRequest(context: HostToolExecutionContext): 
 function orcaExplorationInfrastructure(context: HostToolExecutionContext): boolean {
   const target = effectiveMcpTarget(context.toolName, context.input);
   if (target?.server !== 'cindy_orca') return false;
-  return /^(?:get_|list_|start_team$)/i.test(target.tool) || combatServerDispatchRequest(context) !== null;
+  return (
+    /^(?:get_|list_|start_team$)/i.test(target.tool) ||
+    combatServerDispatchRequest(context) !== null
+  );
 }
 
 function isServerWorkerReportBridge(context: HostToolExecutionContext): boolean {
@@ -607,7 +659,7 @@ function isBatchedWorkerCreation(context: HostToolExecutionContext): boolean {
 async function refreshEnvironment(
   options: CombatVendorOptions,
   updateLocalState = true,
-): Promise<boolean> {
+): Promise<CombatEnvironmentGateResult> {
   const router = getMekaRouterService();
   const gate = await runCombatEnvironmentGate({
     p4: await getMekaP4SettingsService().get(),
@@ -618,9 +670,10 @@ async function refreshEnvironment(
   });
   if (updateLocalState) {
     options.mekaCombatEnvironmentReady = gate.ready;
+    options.mekaCombatEnvironmentChecks = combatEnvironmentAvailability(gate);
     options.mekaCombatPhase = gate.ready ? 'execution' : 'environment-recovery';
   }
-  return gate.ready;
+  return gate;
 }
 
 function deny(reason: string): HostToolExecutionDecision {
@@ -660,25 +713,15 @@ export async function evaluateCombatToolExecution(
   if (context.action.kind === 'session-state') {
     return { behavior: 'allow' };
   }
-  if (options.mekaWorkflow !== WORKFLOW || options.mekaCombatEnvironmentReady !== true) {
-    if (context.action.kind === 'mcp' && isEnvironmentRecoveryMcp(context)) {
-      return { behavior: 'allow' };
-    }
-    if (context.action.kind === 'exec' && isEnvironmentDiagnosticCommand(context.action.command)) {
-      return { behavior: 'allow' };
-    }
-    return deny(
-      '这是 Host 的战斗环境恢复阶段限制，不是用户拒绝或授权不足。不得加载 Skill/AGENTS.md、读取业务文件、扫描工具全集或换 sandbox_permissions 重试。只允许统一环境复检和必要的安全实例投影；报告恢复步骤后结束回合。',
-    );
+  if (context.action.kind === 'mcp' && isEnvironmentRecoveryMcp(context)) {
+    return { behavior: 'allow' };
   }
-  if (
-    options.mekaCombatServerCapabilityStatus === 'unsupported' ||
-    options.mekaCombatServerCapabilityStatus === 'uncertain'
-  ) {
-    return deny(
-      '服务器能力核查已要求程序介入。当前战斗开发实现必须停止，只向用户返回简短程序交接报告；不得继续读取或修改客户端、配置或服务器内容。',
-    );
+  if (context.action.kind === 'exec' && isEnvironmentDiagnosticCommand(context.action.command)) {
+    return { behavior: 'allow' };
   }
+  const dependency = combatToolDependency(context);
+  const dependencyReason = dependency ? blockedDependencyReason(options, dependency) : null;
+  if (dependencyReason) return deny(dependencyReason);
   const serverCapabilityStatus = text(options.mekaCombatServerCapabilityStatus);
   if (
     serverCapabilityStatus === 'dispatching' ||
@@ -793,8 +836,18 @@ export async function evaluateCombatToolExecution(
   if (options.mekaCombatPlanApproved !== true) {
     return deny('战斗开发仍处于只读探索/澄清/方案阶段。请通过方案审批后再执行写操作。');
   }
-  if (!(await refreshEnvironment(options))) {
-    return deny('P4、UnityMCP 或 MCPRouter 环境复检失败，已回到环境恢复阶段；恢复三项后重新检查。');
+  if (
+    options.mekaCombatServerCapabilityStatus === 'unsupported' ||
+    options.mekaCombatServerCapabilityStatus === 'uncertain'
+  ) {
+    return deny(
+      '当前操作依赖的服务器能力尚不支持或证据不确定，因此只阻止本次实施调用。请按服务器能力报告完成程序交接或补齐证据；不涉及该缺口的探索和方案工作仍可继续。',
+    );
+  }
+  if (dependency) {
+    await refreshEnvironment(options);
+    const refreshedReason = blockedDependencyReason(options, dependency);
+    if (refreshedReason) return deny(refreshedReason);
   }
   return { behavior: 'allow' };
 }

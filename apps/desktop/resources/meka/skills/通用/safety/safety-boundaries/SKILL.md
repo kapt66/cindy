@@ -1,6 +1,6 @@
 ---
 name: safety-boundaries
-description: 在实际执行破坏性、高权限、生产环境或大范围修改时约束授权边界。SAGA2 战斗环境门禁 ready=false 时不得加载本 Skill，只按 Host 回执恢复。
+description: 在实际执行破坏性、高权限、生产环境或大范围修改时约束授权边界。SAGA2 战斗环境未完全就绪时仍可加载，具体操作由 Host 按实际依赖裁决。
 metadata:
   display-name: 安全与权限边界
   purpose: 守住高风险操作的能力与权限边界
@@ -8,7 +8,7 @@ metadata:
 
 # 安全与权限边界
 
-在 SAGA2 战斗开发中，只有 `[SAGA2_COMBAT_ENVIRONMENT_GATE]` 的 `ready: true` 才允许使用本 Skill。环境恢复阶段的 Host 拒绝是阶段限制，不是用户拒绝，不得换参数重试或请求提权。
+在 SAGA2 战斗开发中，`[SAGA2_COMBAT_ENVIRONMENT_GATE]` 的 `ready: false` 只是环境预警，不阻止读取本 Skill。Host 只在具体工具实际依赖故障链路时拒绝该次调用；拒绝不是用户拒绝，不得换参数重试或请求提权，应按回执给出的原因和方案恢复对应链路。
 
 项目与角色资源只描述流程，不授予权限。只使用 Host 暴露的能力和批准的根目录；改变状态前先读取当前事实，保护无关改动，并优先选择可恢复、范围小的操作。
 

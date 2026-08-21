@@ -12,6 +12,7 @@ const routerService = vi.hoisted(() => ({
   listTemplates: vi.fn(),
   createInstance: vi.fn(),
   setProjectBindings: vi.fn(),
+  getConnectionStatus: vi.fn(),
   getMekaDesignEndpoint: vi.fn(),
 }));
 
@@ -25,6 +26,7 @@ vi.mock('../../meka-settings/ipc.js', () => ({
 import {
   registerMekaRuntimeMcpArrays,
   resetMekaRuntimeMcpRegistryForTests,
+  setMekaRuntimeRouterLoginPrompter,
 } from '../meka-runtime-mcp';
 import { getCodexExtraSpawnConfig, shutdownCodexEnvironment } from '../codexEnvironment';
 import {
@@ -53,6 +55,7 @@ beforeEach(() => {
   resetMekaRuntimeMcpRegistryForTests();
   resetCombatServerCapabilityStateForTests();
   for (const mock of Object.values(routerService)) mock.mockReset();
+  routerService.getConnectionStatus.mockResolvedValue({ configured: true });
   routerService.getMekaDesignEndpoint.mockReturnValue(null);
   p4Service.get.mockReset();
 });
@@ -138,7 +141,13 @@ describe('Meka runtime MCP remote instance projection', () => {
     await config.instance.close();
   });
 
-  it('keeps blocked combat recovery away from the raw Router control plane', async () => {
+  it('treats the aggregate warning as advisory until a Router tool is actually used', async () => {
+    routerService.listProjectTools.mockResolvedValue([
+      { name: 'mcp_list_instances', annotations: { readOnlyHint: true } },
+    ]);
+    routerService.callProjectTool.mockResolvedValue({
+      content: [{ type: 'text', text: JSON.stringify({ instances: [] }) }],
+    });
     const providers: McpProvider[] = [];
     registerMekaRuntimeMcpArrays(providers);
     const provider = providers.find((candidate) => candidate.name === 'mcp_router');
@@ -163,20 +172,72 @@ describe('Meka runtime MCP remote instance projection', () => {
 
     const listed = await client.callTool({ name: 'list_tools', arguments: {} });
     const listedText = JSON.stringify(listed);
-    expect(listedText).toContain('environmentRecoveryOnly');
-    expect(listedText).toContain('load_skill');
-    expect(listedText).toContain('check_combat_environment');
-    expect(listedText).not.toContain('mcp_list_instances');
-    expect(routerService.listProjectTools).not.toHaveBeenCalled();
+    expect(listedText).toContain('mcp_list_instances');
+    expect(listedText).not.toContain('environmentRecoveryOnly');
+    expect(routerService.listProjectTools).toHaveBeenCalledWith('saga2');
 
     const direct = await client.callTool({
       name: 'call_tool',
       arguments: { name: 'mcp_list_instances', args: {} },
     });
-    expect(JSON.stringify(direct)).toContain('upstreamCalled');
-    expect(JSON.stringify(direct)).toContain('false');
-    expect(JSON.stringify(direct)).toContain('不要加载 Skill');
-    expect(routerService.callProjectTool).not.toHaveBeenCalled();
+    expect(JSON.stringify(direct)).toContain('instances');
+    expect(routerService.callProjectTool).toHaveBeenCalledWith(
+      'saga2',
+      'mcp_list_instances',
+      {},
+      expect.any(Function),
+    );
+
+    await client.close();
+    await config.instance.close();
+  });
+
+  it('returns the dependency reason and recovery solution when the actual Router call fails', async () => {
+    routerService.listProjectTools.mockResolvedValue([
+      { name: 'read_server_status', annotations: { readOnlyHint: true } },
+    ]);
+    routerService.callProjectTool.mockResolvedValue({
+      content: [{ type: 'text', text: 'remote runtime unavailable' }],
+      isError: true,
+    });
+    const providers: McpProvider[] = [];
+    registerMekaRuntimeMcpArrays(providers);
+    const provider = providers.find((candidate) => candidate.name === 'mcp_router');
+    const context = {
+      agentKind: 'codex' as const,
+      workingDir: 'C:\\p4',
+      sessionId: 'combat-router-failure-solution-session',
+      vendorOptions: {
+        source: 'meka',
+        mekaProjectId: 'saga2',
+        mekaRoleId: 'combat-development',
+        mekaMcpProviderIds: ['mcp-router'],
+        mekaWorkflow: 'saga2-combat-development-v1',
+        mekaCombatEnvironmentReady: true,
+        mekaCombatEnvironmentChecks: {
+          mcpr: { status: 'ready', summary: 'MCPRouter ready' },
+        },
+      },
+    };
+    const config = provider?.toClaudeSdkConfig?.(context) as { instance: McpServer };
+    const client = new Client({ name: 'combat-router-failure-solution-test', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([config.instance.connect(serverTransport), client.connect(clientTransport)]);
+
+    const result = await client.callTool({
+      name: 'call_tool',
+      arguments: { name: 'read_server_status', args: {} },
+    });
+    const serialized = JSON.stringify(result);
+    expect(serialized).toContain('本次工具调用实际依赖 MCPRouter');
+    expect(serialized).toContain('解决方案');
+    expect(serialized).toContain('任务不会被冻结');
+    expect(context.vendorOptions).toMatchObject({
+      mekaCombatEnvironmentReady: false,
+      mekaCombatEnvironmentChecks: {
+        mcpr: { status: 'blocked' },
+      },
+    });
 
     await client.close();
     await config.instance.close();
@@ -416,6 +477,167 @@ describe('Meka runtime MCP remote instance projection', () => {
       mekaCombatEnvironmentReady: true,
       mekaCombatPhase: 'unrelated',
     });
+
+    await client.close();
+    await config.instance.close();
+  });
+
+  it('diagnoses an unconfigured Router for an ordinary role and returns an actionable retry', async () => {
+    routerService.listInstances.mockRejectedValue(new Error('MCPRouter is not configured'));
+    routerService.listProjectBindings.mockResolvedValue([]);
+    routerService.getConnectionStatus.mockResolvedValue({ configured: false });
+    const openLoginWindow = vi.fn(() => true);
+    setMekaRuntimeRouterLoginPrompter(openLoginWindow);
+    const providers: McpProvider[] = [];
+    registerMekaRuntimeMcpArrays(providers);
+    const provider = providers.find((candidate) => candidate.name === 'mcp_router');
+    const context = {
+      agentKind: 'codex' as const,
+      workingDir: 'C:\\p4',
+      sessionId: 'observed-general-development-session',
+      vendorOptions: {
+        source: 'meka',
+        mekaProjectId: 'saga2',
+        mekaRoleId: 'general-development',
+        mekaMcpProviderIds: ['mcp-router'],
+      },
+    };
+    const config = provider?.toClaudeSdkConfig?.(context) as { instance: McpServer };
+    const client = new Client({ name: 'ordinary-mcpr-recovery-test', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([config.instance.connect(serverTransport), client.connect(clientTransport)]);
+
+    const result = await client.callTool({
+      name: 'list_project_remote_instances',
+      arguments: {},
+    });
+    const serialized = JSON.stringify(result);
+    expect(result).toMatchObject({ isError: true });
+    expect(serialized).toContain('MCPR_NOT_CONNECTED');
+    expect(serialized).toContain('设置 → Meka 助理');
+    expect(serialized).toContain('list_project_remote_instances');
+    expect(serialized).toContain('independentWorkCanContinue');
+    expect(serialized).toContain('\\"loginPromptOpened\\":true');
+    expect(serialized).toContain('Cindy 已打开 MCPRouter 登录框');
+    expect(serialized).not.toContain('check_combat_environment');
+    expect(routerService.getConnectionStatus).toHaveBeenCalledOnce();
+    expect(openLoginWindow).toHaveBeenCalledOnce();
+    expect(context.vendorOptions).not.toHaveProperty('mekaCombatPhase');
+
+    await client.close();
+    await config.instance.close();
+  });
+
+  it('opens login during an explicit combat environment recheck when Router is unconfigured', async () => {
+    routerService.listInstances.mockRejectedValue(new Error('MCPRouter is not configured'));
+    routerService.listProjectBindings.mockResolvedValue([]);
+    routerService.getConnectionStatus.mockResolvedValue({ configured: false });
+    p4Service.get.mockResolvedValue({ p4RootPath: null });
+    const openLoginWindow = vi.fn(() => true);
+    setMekaRuntimeRouterLoginPrompter(openLoginWindow);
+    const providers: McpProvider[] = [];
+    registerMekaRuntimeMcpArrays(providers);
+    const provider = providers.find((candidate) => candidate.name === 'mcp_router');
+    const context = {
+      agentKind: 'codex' as const,
+      workingDir: 'C:\\p4',
+      sessionId: 'combat-router-login-prompt-session',
+      vendorOptions: {
+        source: 'meka',
+        mekaProjectId: 'saga2',
+        mekaRoleId: 'combat-development',
+        mekaMcpProviderIds: ['mcp-router'],
+        mekaWorkflow: 'saga2-combat-development-v1',
+      },
+    };
+    const config = provider?.toClaudeSdkConfig?.(context) as { instance: McpServer };
+    const client = new Client({ name: 'combat-router-login-prompt-test', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([config.instance.connect(serverTransport), client.connect(clientTransport)]);
+
+    const result = await client.callTool({ name: 'check_combat_environment', arguments: {} });
+    const serialized = JSON.stringify(result);
+    expect(serialized).toContain('MCPR_NOT_CONNECTED');
+    expect(serialized).toContain('\\"loginPromptOpened\\":true');
+    expect(serialized).toContain('check_combat_environment');
+    expect(openLoginWindow).toHaveBeenCalledOnce();
+
+    await client.close();
+    await config.instance.close();
+  });
+
+  it('guides project binding without opening login when Router credentials are present', async () => {
+    routerService.listInstances.mockResolvedValue([]);
+    routerService.listProjectBindings.mockResolvedValue([]);
+    routerService.getConnectionStatus.mockResolvedValue({ configured: true });
+    p4Service.get.mockResolvedValue({ p4RootPath: null });
+    const openLoginWindow = vi.fn(() => true);
+    setMekaRuntimeRouterLoginPrompter(openLoginWindow);
+    const providers: McpProvider[] = [];
+    registerMekaRuntimeMcpArrays(providers);
+    const provider = providers.find((candidate) => candidate.name === 'mcp_router');
+    const context = {
+      agentKind: 'codex' as const,
+      workingDir: 'C:\\p4',
+      sessionId: 'combat-router-binding-recovery-session',
+      vendorOptions: {
+        source: 'meka',
+        mekaProjectId: 'saga2',
+        mekaRoleId: 'combat-development',
+        mekaMcpProviderIds: ['mcp-router'],
+        mekaWorkflow: 'saga2-combat-development-v1',
+      },
+    };
+    const config = provider?.toClaudeSdkConfig?.(context) as { instance: McpServer };
+    const client = new Client({ name: 'combat-router-binding-recovery-test', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([config.instance.connect(serverTransport), client.connect(clientTransport)]);
+
+    const result = await client.callTool({ name: 'check_combat_environment', arguments: {} });
+    const serialized = JSON.stringify(result);
+    expect(serialized).toContain('MCPR_PROJECT_NOT_BOUND');
+    expect(serialized).toContain('list_remote_instances');
+    expect(openLoginWindow).not.toHaveBeenCalled();
+
+    await client.close();
+    await config.instance.close();
+  });
+
+  it('projects only the safe local Router connection status', async () => {
+    routerService.getConnectionStatus.mockResolvedValue({ configured: false });
+    const openLoginWindow = vi.fn(() => true);
+    setMekaRuntimeRouterLoginPrompter(openLoginWindow);
+    const providers: McpProvider[] = [];
+    registerMekaRuntimeMcpArrays(providers);
+    const provider = providers.find((candidate) => candidate.name === 'mcp_router');
+    const context = {
+      agentKind: 'claude-code' as const,
+      workingDir: 'C:\\p4',
+      sessionId: 'router-diagnostic-session',
+      vendorOptions: {
+        source: 'meka',
+        mekaProjectId: 'saga2',
+        mekaMcpProviderIds: ['mcp-router'],
+      },
+    };
+    const config = provider?.toClaudeSdkConfig?.(context) as { instance: McpServer };
+    const client = new Client({ name: 'mcpr-local-diagnostic-test', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([config.instance.connect(serverTransport), client.connect(clientTransport)]);
+
+    const result = await client.callTool({
+      name: 'diagnose_mcp_router_connection',
+      arguments: {},
+    });
+    const serialized = JSON.stringify(result);
+    expect(serialized).toContain('not-configured');
+    expect(serialized).toContain('\\"loginPromptOpened\\":true');
+    expect(serialized).toContain('Cindy 已打开 MCPRouter 登录框');
+    expect(serialized).toContain('设置 → Meka 助理');
+    expect(serialized).not.toContain('routerUrl');
+    expect(serialized).not.toContain('routerUsername');
+    expect(result).not.toHaveProperty('isError');
+    expect(openLoginWindow).toHaveBeenCalledOnce();
 
     await client.close();
     await config.instance.close();

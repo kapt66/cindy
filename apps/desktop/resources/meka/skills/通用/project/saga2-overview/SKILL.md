@@ -1,6 +1,6 @@
 ---
 name: saga2-overview
-description: 在项目环境已就绪后，说明 SAGA2 在 MekaDesign、P4、配置表、客户端、项目管理和 MCPR 远程服务器之间的边界。战斗环境门禁 ready=false 时不得加载。
+description: 说明 SAGA2 在 MekaDesign、P4、配置表、客户端、项目管理和 MCPR 远程服务器之间的边界。战斗环境未完全就绪时仍可加载，不可用链路只限制实际依赖它的工具。
 metadata:
   display-name: SAGA2 项目总览
   purpose: 在 SAGA2 各项目面之间正确路由工作

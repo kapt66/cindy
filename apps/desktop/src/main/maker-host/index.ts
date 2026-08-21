@@ -152,7 +152,9 @@ import {
   registerMekaRuntimeMcpArrays,
   resetMekaRuntimeMcpRegistryForTests,
   setMekaRuntimeHighRiskAuthorizer,
+  setMekaRuntimeRouterLoginPrompter,
 } from '../mcp-integrations/meka-runtime-mcp.js';
+import { openMekaRouterLoginWindow } from '../meka-settings/routerLoginWindow.js';
 import { cleanupComputerDriverSession } from '../mcp-integrations/computer.js';
 import { createPluginRegistry, resetPluginRegistry } from './plugins/index.js';
 import {
@@ -1363,6 +1365,7 @@ export function getMaker(): Maker {
     // 此后每次 CRUD（mcpHandlers.afterChange）也会 refresh。
     registerMekaRuntimeMcpArrays(claudeMcpProviders, codexMcpProviders);
     setMekaRuntimeHighRiskAuthorizer(authorizeMekaHighRiskCallViaDesktop);
+    setMekaRuntimeRouterLoginPrompter(openMekaRouterLoginWindow);
     registerCustomMcpArrays(claudeMcpProviders, codexMcpProviders);
     _initialCustomMcpRefresh = refreshCustomMcpProviders();
 

@@ -170,7 +170,7 @@ describe('applyMekaRuntimeConfig', () => {
     expect(opts.userPrompt).toContain('SAGA2 server code lives behind MCPRouter as saga2-server.');
   });
 
-  it('enters environment-recovery mode before combat exploration when the gate is blocked', async () => {
+  it('injects a degraded exploration warning when the gate is not fully ready', async () => {
     const opts = baseOpts({ mekaRoleId: 'combat-development' });
 
     await applyMekaRuntimeConfig(opts, {
@@ -189,12 +189,16 @@ describe('applyMekaRuntimeConfig', () => {
     expect(opts.userPrompt).toContain('roleId: combat-development');
     expect(opts.userPrompt).toContain('displayName: 战斗开发');
     expect(opts.userPrompt).toContain('ready: false');
-    expect(opts.userPrompt).toContain('BLOCKED TURN CONTRACT');
-    expect(opts.userPrompt).toContain('Do not load Skills or AGENTS.md');
-    expect(opts.userPrompt).toContain('without any tool call');
+    expect(opts.userPrompt).toContain('DEGRADED EXPLORATION CONTRACT');
+    expect(opts.userPrompt).toContain('continue the task normally');
     expect(opts.userPrompt).toContain('first user-visible assistant message');
     expect(opts.vendorOptions).toMatchObject({
       mekaCombatEnvironmentReady: false,
+      mekaCombatEnvironmentChecks: {
+        p4: { status: 'blocked', summary: 'P4 工作区未配置' },
+        unityMcp: { status: 'blocked' },
+        mcpr: { status: 'blocked' },
+      },
       codexNativeSubagentsDisabled: true,
     });
   });

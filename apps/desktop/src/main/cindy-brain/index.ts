@@ -316,6 +316,7 @@ import { MEKA_PLUGIN_VISIBILITIES } from '../../shared/mekaDevPlugin.js';
 import { packGhostDir } from './forge.js';
 import { MekaDevPluginError, MekaDevPluginManager } from './mekaDevPlugins.js';
 import { getMekaRouterService } from '../meka-settings/ipc.js';
+import { openMekaRouterLoginWindow } from '../meka-settings/routerLoginWindow.js';
 import { watcherHostClient } from '../watcher-host/index.js';
 import { isIpcErrorCode, type IpcErrorCode } from '../../shared/ipc-errors.js';
 
@@ -3302,18 +3303,6 @@ function getLocalServerSupervisor(): LocalServerSupervisor {
     });
   }
   return localServerSupervisorSingleton;
-}
-
-function openMekaRouterLoginWindow(): void {
-  const focused = BrowserWindow.getFocusedWindow();
-  const win = isTrustedAppRendererWindow(focused)
-    ? focused
-    : BrowserWindow.getAllWindows().find(candidate => isTrustedAppRendererWindow(candidate));
-  if (!win || win.isDestroyed()) return;
-  if (!win.isVisible()) win.show();
-  if (win.isMinimized()) win.restore();
-  win.focus();
-  win.webContents.send('meka-settings:router:open-login');
 }
 
 /** MCPRouter 受控路由槽；身份、地址与 session 均由 Host 持有。 */

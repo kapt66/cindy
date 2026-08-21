@@ -23,6 +23,26 @@ export type CombatEnvironmentGateResult = {
   mcpr: CombatEnvironmentCheck;
 };
 
+export type CombatEnvironmentAvailability = Pick<
+  CombatEnvironmentGateResult,
+  'p4' | 'unityMcp' | 'mcpr'
+>;
+
+export function combatEnvironmentAvailability(
+  gate: CombatEnvironmentGateResult,
+): CombatEnvironmentAvailability {
+  const safeCheck = (check: CombatEnvironmentCheck): CombatEnvironmentCheck => ({
+    status: check.status,
+    summary: check.summary,
+    ...(check.nextAction ? { nextAction: check.nextAction } : {}),
+  });
+  return {
+    p4: safeCheck(gate.p4),
+    unityMcp: safeCheck(gate.unityMcp),
+    mcpr: safeCheck(gate.mcpr),
+  };
+}
+
 export type CombatEnvironmentReceiptContext = {
   projectId: string;
   roleId: string;
@@ -314,8 +334,8 @@ export function formatCombatEnvironmentGateReceipt(
     'Startup order: this Host check completed before the Agent started. The first user-visible assistant message must identify the role as "战斗开发" and report all three statuses from this receipt before loading any Skill, spawning any Worker, or using any other tool.',
     'Do not ask the user to authorize this environment check. Full access still does not bypass the Host workflow gate.',
     gate.ready
-      ? 'After reporting the ready result, continue with Skill loading and read-only exploration. Treat this receipt as the authoritative startup result; do not repeat separate P4, Unity, or Router probes. Re-run only mcp_router.check_combat_environment at every phase transition and after any tool or transport failure.'
-      : 'BLOCKED TURN CONTRACT: report the role, all three statuses, and each next action, then end this turn without any tool call. Do not load Skills or AGENTS.md, read files/code/tables, inspect ALL_TOOLS, call list_tools/Ghost/Worker/Unity business tools, or start business clarification. On a later explicit recovery request, call mcp_router.check_combat_environment exactly once. Only when its reason is a missing or unbound instance may you additionally call list_project_remote_instances once. A runtime/protocol version mismatch has no client-side automatic upgrade path: report the deployment-side upgrade/restart action and end the turn. Never pass sandbox_permissions, request elevation, describe a Host phase denial as user rejection, or retry a denied action with different parameters. Continue only when ready=true.',
+      ? 'After reporting the ready result, continue with Skill loading and read-only exploration. Treat this receipt as the authoritative startup result; do not repeat separate P4, Unity, or Router probes. Re-run only mcp_router.check_combat_environment at every phase transition and after a real P4, UnityMCP, or MCPRouter connection/transport failure.'
+      : 'DEGRADED EXPLORATION CONTRACT: report the role, all three statuses, and each next action before using tools. Then continue the task normally. This aggregate warning is not a task gate: load relevant Skills, clarify requirements, read local files/code/tables, and use tools backed by dependencies that remain ready. Host blocks only a concrete tool call whose own dependency is unavailable (or whose ordinary plan/risk approval is missing), and that denial must name the dependency, reason, and recovery action. Do not substitute local guesses for missing server evidence. Re-run mcp_router.check_combat_environment only at a phase transition, before implementation, or after a real P4, UnityMCP, or MCPRouter connection or transport failure; do not repeat it for ordinary missing files or inconclusive evidence. A runtime/protocol version mismatch has no client-side automatic upgrade path, but does not block independent local exploration. Never pass sandbox_permissions, request elevation, describe a Host phase denial as user rejection, or retry a denied action with different parameters.',
     '[/SAGA2_COMBAT_ENVIRONMENT_GATE]',
   ].join('\n');
 }

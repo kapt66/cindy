@@ -132,15 +132,25 @@ Host 识别只读 MCP 时必须覆盖会话启动诊断与 MCPRouter 控制面�
 capability route 仍不可绕过；两者明确允许后必须保持 Full access 的静默放行语义，不能再落入
 普通 MCP 权限弹窗。
 
-若工作流把远端原生 Skill 作为必需能力，启动和恢复环境门还必须实际执行远端 capability
-hello，精确校验 cc-manager bundle/protocol，不能只检查实例 online 或项目绑定。版本错配必须
-在任何 Skill 读取、Worker 创建和业务探索前进入环境恢复。blocked 首轮只报告 Host 回执并
-结束，不调用工具；后续恢复请求只运行一次统一复检，只有实例缺失/未绑定才追加一次安全实例
-投影。该阶段不得触发原生 Skill 读取规则、扫描工具全集或把 Host 阶段拒绝误报为用户拒绝，
-也不得通过 `sandbox_permissions` 或改参数重试。Host 对环境 ready 后 Codex 读取内容寻址 Skill
+若工作流把远端原生 Skill 作为必需能力，启动和恢复环境检查还必须实际执行远端 capability
+hello，精确校验 cc-manager bundle/protocol，不能只检查实例 online 或项目绑定。聚合 blocked
+只能作为预警，不能冻结整个任务；Host 保存每条依赖的状态，并在具体工具实际使用时只检查该
+工具依赖的链路。拒绝必须返回依赖、原因和解决方案，不依赖该链路的 Skill、本地读取、澄清与
+其它工具继续可用。不得把 Host 拒绝误报为用户拒绝，也不得通过 `sandbox_permissions` 或改参数
+重试。Host 对 Codex 读取内容寻址 Skill
 快照的静默只读白名单应覆盖模型实际生成且可严格证明无副作用的固定形态，包括单个
 `SKILL.md` 的 `(Get-Content -LiteralPath ...).Count`；白名单仍须拒绝其它文件、路径穿越、写入、
 重定向和附加命令，不能扩成通用 PowerShell 放行。
+
+实际依赖失败的回执不能只返回原始异常。Desktop 的 MCP facade 应先执行不会触网、不会暴露
+秘密的本地状态诊断，再以结构化字段说明故障分类、阻断范围、已做诊断、所需用户动作和精确
+重试工具。Agent 可安全完成的诊断必须继续执行；登录、凭证、网络或部署方 Runtime 升级无法
+代办时才要求用户动作。MCPRouter 的启动预检只写状态，不弹窗；真实 Router 工具调用、显式环境
+复检或 `diagnose_mcp_router_connection` 确认“未配置/认证失效”时，由 Desktop Main 自动打开现有
+登录框，并在安全回执中报告是否尝试及是否成功打开。项目实例未绑定、Runtime 不兼容或普通网络故障不得误触发登录框，而要返回
+各自的实例绑定、部署升级或网络恢复路径。连接状态投影只返回是否配置，不得返回 Router URL、
+用户名、endpoint 或任何凭证，也不得借诊断修改其它 Meka 设置。普通角色与业务工作流使用相同
+故障语义；仅业务状态失效写回仍由对应 workflow 决定，不能污染普通任务的 `vendorOptions`。
 
 Codex code mode 通过 `exec` 间接调用 MCP 时，app-server 的 elicitation 可能同时缺少
 `tool_name` 和可关联的活动 `mcpToolCall`，但保留完整 `_meta.tool_params`。业务 Host 只能对

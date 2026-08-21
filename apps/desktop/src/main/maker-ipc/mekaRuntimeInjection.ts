@@ -1,5 +1,6 @@
 import type { MekaRoleMcpEntry } from '../../shared/meka-projects.js';
 import {
+  combatEnvironmentAvailability,
   formatCombatEnvironmentGateReceipt,
   runCombatEnvironmentGate,
 } from '../meka-projects/combatEnvironmentGate.js';
@@ -220,6 +221,7 @@ export async function applyMekaRuntimeConfig(
 
   let combatEnvironmentReceipt: string | undefined;
   let combatEnvironmentReady = false;
+  let combatEnvironmentChecks: ReturnType<typeof combatEnvironmentAvailability> | undefined;
   if (runtime.workflow === 'saga2-combat-development-v1') {
     if (opts.agentKind !== 'claude-code' && opts.agentKind !== 'codex') {
       throwIpcError(
@@ -248,6 +250,7 @@ export async function applyMekaRuntimeConfig(
         projectId: runtime.projectId,
       });
       combatEnvironmentReady = gate.ready;
+      combatEnvironmentChecks = combatEnvironmentAvailability(gate);
       combatEnvironmentReceipt = formatCombatEnvironmentGateReceipt(gate, {
         projectId: runtime.projectId,
         roleId: runtime.roleId,
@@ -286,6 +289,7 @@ export async function applyMekaRuntimeConfig(
     ...(runtime.workflow === 'saga2-combat-development-v1' && !isCombatServerWorker
       ? {
           mekaCombatEnvironmentReady: combatEnvironmentReady,
+          mekaCombatEnvironmentChecks: combatEnvironmentChecks,
           mekaCombatPlanApproved: false,
           mekaCombatServerCapabilityStatus: 'unchecked',
           mekaCombatPhase: combatEnvironmentReady ? 'exploration' : 'environment-recovery',

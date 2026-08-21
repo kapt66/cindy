@@ -519,8 +519,9 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
   实现证据。
 - `combat-development` 绑定 `saga2-combat-development-v1` Host 工作流。任务启动时 Main
   实际检查 P4 映射/写权限、UnityMCP 项目发现/进程与健康状态、MCPRouter 服务器项目绑定/
-  可用性；任一项失败即进入仅环境恢复状态并返回恢复指引，不开始业务探索。运行中通过自动挂载的
-  `mcp_router.check_combat_environment` 重跑同一检查；不新增插件选择步骤。
+  可用性；任一项失败时返回预警与恢复指引，但不停止业务探索。Host 在具体工具实际使用时只按
+  该工具依赖的 P4、UnityMCP 或 MCPRouter 状态裁决，并返回原因与解决方案。运行中通过自动挂载的
+  `mcp_router.check_combat_environment` 重跑同一检查并刷新各依赖状态；不新增插件选择步骤。
 - 战斗模块配置每次都执行服务端契约门，但远程代码实查采用分级策略：完全复用既有模块
   契约时，可引用与当前远程项目同一基线、能定位到具体服务器路径或符号的既有证据；新增或
   改变模块类型、字段编码、参数形态、执行语义，或证据缺失、过期、基线不明时，必须通过
@@ -2328,6 +2329,47 @@ Worker 任务。方案审批卡新增 `moduleEvidence` 与 `capabilityMatrix` �
 路径。auto-bridge 回调新增 terminal status，只有 `done` 且实际投递 accepted 的 JSON 才能进入
 `report-ready`；`error` 终态即使包含合法 JSON 也转入重试，临时投递失败则保留 pending 等待 Orca
 重试。本轮仍未修改服务器仓库、数据库 schema、协议或插件权限。
+
+### 6.36 2026-08-21 SAGA2 战斗环境门改为依赖级提示与工具时阻断
+
+真实战斗任务表明，原 Host 把 P4、UnityMCP、MCPR 三项聚合 `ready` 当作任务总开关：任一项
+失败都会禁止 Skill、AGENTS、代码、表格、需求澄清和所有业务工具，导致与故障链路无关的工作
+也无法推进。当前保留启动实查和三项状态回显，但 `ready=false` 只作为预警，不再结束回合或
+冻结任务。
+
+Host 在任务运行态保存三条链路各自不含凭证的状态、原因与恢复动作。具体工具实际调用时才按
+依赖裁决：受管本地写入和 P4 工具检查 P4，Unity 工具检查 UnityMCP，服务器查询与远程 Worker
+检查 MCPRouter。某条链路 blocked 时只拒绝该次调用，回执明确说明依赖、原因、解决方案及其它
+独立工作仍可继续；其余 Skill、本地只读探索、需求澄清和状态为 ready 的工具不受影响。方案
+审批、服务器 Worker 永久只读、MCPR 凭证脱敏和禁止 SSH/本地路径替代服务器证据等边界保持
+不变。定向回归覆盖聚合预警不阻止读取、P4 故障不阻止 Unity、UnityMCP 故障不阻止 MCPR、
+MCPR 故障只在实际远程调用时返回对应恢复方案。
+
+### 6.37 2026-08-21 MCPRouter 具体调用失败后的主动恢复
+
+任务 `7c97e9a6-038e-49a1-a7c9-672ae58f1069` 证明只把聚合门改成预警仍不够：该任务实际是
+`general-development`（`workflow=null`），P4 `info/status` 已成功，但
+`list_project_remote_instances` 返回 `MCPRouter is not configured` 后，Agent 仍把服务器证据
+缺失提升成整个客户端写入前置，只给方案草稿和笼统的“恢复或绑定 MCPRouter”，没有定位连接
+入口、给出重试点或继续独立本地工作。因此该问题不能只在战斗 Host 门内修复。
+
+当前 MCPRouter facade 新增不联网的本地连接状态投影和
+`diagnose_mcp_router_connection`。远程实例、模板、项目工具、创建与绑定入口真实失败时，Main
+自动把安全脱敏后的错误分类为未连接、认证失效、项目未绑定、Runtime 不兼容或暂不可用，返回只阻止当前
+调用的结构化回执、已执行诊断、精确用户动作和原工具 `retryTool`。未连接与认证问题明确引导
+“设置 → Meka 助理”，不会索取或回显凭证；Agent 继续不依赖 MCPR 的 P4、Unity、表格、澄清和
+方案工作。通用开发 prompt、远程操作 Skill、P4 Skill 和战斗恢复 fragment 同步要求先做安全
+诊断，只有登录、网络、客户端映射或部署方升级确实无法代办时才停在对应依赖边界。本轮未修改
+服务器仓、协议、数据库 schema 或真实 P4/MCPRouter 状态。
+
+任务 `971e5726-33c1-4671-848c-2c5831ade4dd` 进一步暴露恢复入口仍只存在于文字说明：产品已有
+MCPRouter 登录框，但 Agent 的 Router facade 没有接线，用户只能看到 blocked。现在启动预检仍
+保持无打扰预警；具体 Router 工具失败或显式 `check_combat_environment` 复检确认未配置/认证
+失效时，Main 会聚焦可信 Cindy 主窗口并打开现有登录框；恢复诊断确认未配置时同样直接弹框，
+避免 Agent 在诊断后再次只给手动设置说明。回执同步返回弹框结果和原工具重试点。
+项目实例未绑定时不会误弹登录，而是返回 `MCPR_PROJECT_NOT_BOUND` 并继续实例列表、模板、创建与
+绑定流程；Runtime 不兼容和网络故障仍分别要求部署升级或网络恢复。本改动不把凭证、URL、用户名
+或 endpoint 暴露给 Agent/Renderer 新边界，也不在启动预检阶段抢焦点。
 
 ## 10. 后续继续迁移时的硬性注意事项
 

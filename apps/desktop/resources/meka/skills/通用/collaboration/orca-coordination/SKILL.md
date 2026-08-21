@@ -1,6 +1,6 @@
 ---
 name: orca-coordination
-description: 在项目环境已就绪后协调明确请求的 Orca Worker、任务委派和并行工作。SAGA2 战斗环境门禁 ready=false 时不得加载本 Skill 或创建 Worker。
+description: 协调明确请求的 Orca Worker、任务委派和并行工作。SAGA2 战斗环境未完全就绪时仍可加载；MCPR 不可用只阻止实际依赖它的远程 Worker 调用。
 metadata:
   display-name: Orca 多智能体协作
   purpose: 协调 Worker、委派与并行工作

@@ -453,6 +453,15 @@ export function createMekaRouterService(deps: MekaRouterServiceDeps) {
       };
     },
 
+    async getConnectionStatus(): Promise<{ configured: boolean }> {
+      const raw = await load();
+      const configuredBaseUrl = text(raw.routerUrl);
+      const routerUrl = configuredBaseUrl ? client.normalizeBaseUrl(configuredBaseUrl) : null;
+      const token = deps.vault.read(SECRET_KEYS.sessionToken);
+      const clientKey = deps.vault.read(SECRET_KEYS.clientKey);
+      return { configured: !!routerUrl && !!token && !!clientKey };
+    },
+
     async connect(routerUrl: string, username: string, password: string): Promise<void> {
       const baseUrl = client.normalizeBaseUrl(routerUrl.trim() || DEFAULT_MEKA_MCPROUTER_URL);
       const normalizedUsername = username.trim();

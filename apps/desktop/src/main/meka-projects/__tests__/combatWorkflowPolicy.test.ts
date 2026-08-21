@@ -16,6 +16,11 @@ vi.mock('../../meka-settings/ipc.js', () => ({
 
 vi.mock('../combatEnvironmentGate.js', () => ({
   runCombatEnvironmentGate: vi.fn(),
+  combatEnvironmentAvailability: (gate: Record<string, unknown>) => ({
+    p4: gate.p4,
+    unityMcp: gate.unityMcp,
+    mcpr: gate.mcpr,
+  }),
 }));
 
 vi.mock('../../maker-host/mcpr-codex-capability.js', () => ({
@@ -42,6 +47,11 @@ function vendor(overrides: Record<string, unknown> = {}): Record<string, unknown
     mekaRoleId: 'combat-development',
     mekaWorkflow: 'saga2-combat-development-v1',
     mekaCombatEnvironmentReady: true,
+    mekaCombatEnvironmentChecks: {
+      p4: { status: 'ready', summary: 'P4 ready' },
+      unityMcp: { status: 'ready', summary: 'UnityMCP ready' },
+      mcpr: { status: 'ready', summary: 'MCPRouter ready' },
+    },
     mekaCombatPlanApproved: false,
     mekaCombatPhase: 'exploration',
     ...overrides,
@@ -100,29 +110,23 @@ describe('combat workflow host policy', () => {
     ).toBe(true);
   });
 
-  it('blocks business reads but still allows environment checks when workflow metadata is absent', async () => {
+  it('allows independent reads and repairs workflow metadata only when a dependent tool is used', async () => {
     const options = vendor({
       mekaWorkflow: undefined,
       mekaCombatEnvironmentReady: true,
     });
-    await expect(evaluateCombatToolExecution(context(options))).resolves.toMatchObject({
-      behavior: 'deny',
-      reason: expect.stringContaining('不是用户拒绝'),
+    delete options.mekaCombatEnvironmentChecks;
+    await expect(evaluateCombatToolExecution(context(options))).resolves.toEqual({
+      behavior: 'allow',
     });
     await expect(
       evaluateCombatToolExecution(
         context(options, {
-          toolName: 'exec',
-          action: {
-            kind: 'exec',
-            command: 'Get-Content -Raw C:\\\\snapshot\\\\remote-operations\\\\SKILL.md',
-          },
+          toolName: 'Read',
+          action: { kind: 'read', path: 'C:\\snapshot\\remote-operations\\SKILL.md' },
         }),
       ),
-    ).resolves.toMatchObject({
-      behavior: 'deny',
-      reason: expect.stringContaining('不得加载 Skill/AGENTS.md'),
-    });
+    ).resolves.toEqual({ behavior: 'allow' });
     await expect(
       evaluateCombatToolExecution(
         context(options, {
@@ -142,10 +146,21 @@ describe('combat workflow host policy', () => {
     ).resolves.toEqual({ behavior: 'allow' });
   });
 
-  it('allows only recovery diagnostics while the environment is blocked', async () => {
-    const options = vendor({ mekaCombatEnvironmentReady: false });
-    await expect(evaluateCombatToolExecution(context(options))).resolves.toMatchObject({
-      behavior: 'deny',
+  it('only blocks a tool whose own dependency is unavailable', async () => {
+    const options = vendor({
+      mekaCombatEnvironmentReady: false,
+      mekaCombatEnvironmentChecks: {
+        p4: { status: 'ready', summary: 'P4 ready' },
+        unityMcp: {
+          status: 'blocked',
+          summary: 'UnityMCP 未连接目标工程',
+          nextAction: '打开目标工程并启动 UnityMCP',
+        },
+        mcpr: { status: 'ready', summary: 'MCPRouter ready' },
+      },
+    });
+    await expect(evaluateCombatToolExecution(context(options))).resolves.toEqual({
+      behavior: 'allow',
     });
     await expect(
       evaluateCombatToolExecution(
@@ -156,6 +171,27 @@ describe('combat workflow host policy', () => {
         }),
       ),
     ).resolves.toEqual({ behavior: 'allow' });
+    await expect(
+      evaluateCombatToolExecution(
+        context(options, {
+          toolName: 'mcp__unity-editor__get_status',
+          action: { kind: 'mcp' },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      behavior: 'deny',
+      reason: expect.stringContaining('只阻止本次调用'),
+    });
+    await expect(
+      evaluateCombatToolExecution(
+        context(options, {
+          toolName: 'mcp__unity-editor__get_status',
+          action: { kind: 'mcp' },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      reason: expect.stringContaining('打开目标工程并启动 UnityMCP'),
+    });
     await expect(
       evaluateCombatToolExecution(
         context(options, {
@@ -210,7 +246,8 @@ describe('combat workflow host policy', () => {
                 agent: 'codex',
                 label: 'server-batch',
                 remote_host_id: 'mcpr:server-1',
-                initial_task: '[SAGA2_SERVER_EXPLORATION_READ_ONLY] [SAGA2_MODULE_FIRST] skill-entry-model atomic capabilities residual server gap: inspect server',
+                initial_task:
+                  '[SAGA2_SERVER_EXPLORATION_READ_ONLY] [SAGA2_MODULE_FIRST] skill-entry-model atomic capabilities residual server gap: inspect server',
               },
             ],
           },
@@ -221,6 +258,73 @@ describe('combat workflow host policy', () => {
       behavior: 'deny',
       reason: expect.stringContaining('禁止用 create_workers'),
     });
+  });
+
+  it('includes the dependency reason and recovery action without blocking other paths', async () => {
+    const options = vendor({
+      mekaCombatEnvironmentReady: false,
+      mekaCombatEnvironmentChecks: {
+        p4: {
+          status: 'blocked',
+          summary: 'P4 客户端映射不可用',
+          nextAction: '修复 P4CLIENT 和工作区映射',
+        },
+        unityMcp: { status: 'ready', summary: 'UnityMCP ready' },
+        mcpr: {
+          status: 'blocked',
+          summary: '远端 Runtime 版本不匹配',
+          nextAction: '升级并重启远端 Runtime',
+        },
+      },
+    });
+    await expect(
+      evaluateCombatToolExecution(
+        context(options, {
+          toolName: 'mcp__unity-editor__get_status',
+          action: { kind: 'mcp' },
+        }),
+      ),
+    ).resolves.toEqual({ behavior: 'allow' });
+    await expect(
+      evaluateCombatToolExecution(
+        context(options, {
+          toolName: 'Write',
+          action: { kind: 'file-write', path: 'x.ts' },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      behavior: 'deny',
+      reason: expect.stringContaining('修复 P4CLIENT 和工作区映射'),
+    });
+    await expect(
+      evaluateCombatToolExecution(
+        context(options, {
+          toolName: 'mcp__mcp_router__diagnose_mcp_router_connection',
+          action: { kind: 'mcp' },
+        }),
+      ),
+    ).resolves.toEqual({ behavior: 'allow' });
+    await expect(
+      evaluateCombatToolExecution(
+        context(options, {
+          toolName: 'mcp__mcp_router__call_tool',
+          input: { name: 'read_server_status', args: {} },
+          action: { kind: 'mcp' },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      behavior: 'deny',
+      reason: expect.stringContaining('升级并重启远端 Runtime'),
+    });
+    options.mekaCombatPlanApproved = true;
+    await expect(
+      evaluateCombatToolExecution(
+        context(options, {
+          toolName: 'Bash',
+          action: { kind: 'exec', command: 'pnpm test' },
+        }),
+      ),
+    ).resolves.toEqual({ behavior: 'allow' });
   });
 
   it('allows read-only exploration but blocks mutation before plan approval', async () => {
@@ -470,7 +574,8 @@ describe('combat workflow host policy', () => {
 
   it('allows report validation only after accepted dispatch and trusted auto-bridge delivery', async () => {
     const options = vendor();
-    const task = '[SAGA2_SERVER_EXPLORATION_READ_ONLY] [SAGA2_MODULE_FIRST] skill-entry-model atomic capabilities residual server gap: inspect runtime support';
+    const task =
+      '[SAGA2_SERVER_EXPLORATION_READ_ONLY] [SAGA2_MODULE_FIRST] skill-entry-model atomic capabilities residual server gap: inspect runtime support';
     await expect(
       evaluateCombatToolExecution(
         context(options, {
@@ -521,9 +626,7 @@ describe('combat workflow host policy', () => {
         JSON.stringify({ supportStatus: 'unsupported' }),
       accepted: true,
     });
-    await expect(
-      evaluateCombatToolExecution(validation),
-    ).resolves.toEqual({ behavior: 'allow' });
+    await expect(evaluateCombatToolExecution(validation)).resolves.toEqual({ behavior: 'allow' });
   });
 
   it('requires a fresh environment gate for every mutation after approval', async () => {
@@ -551,7 +654,7 @@ describe('combat workflow host policy', () => {
     });
   });
 
-  it('falls back to environment recovery when the pre-mutation recheck fails', async () => {
+  it('does not block a P4 write when only UnityMCP is unavailable', async () => {
     const options = vendor({ mekaCombatPlanApproved: true });
     vi.mocked(runCombatEnvironmentGate).mockResolvedValueOnce({
       checkedAt: new Date(0).toISOString(),
@@ -567,7 +670,7 @@ describe('combat workflow host policy', () => {
           action: { kind: 'file-write', path: 'x.ts' },
         }),
       ),
-    ).resolves.toMatchObject({ behavior: 'deny' });
+    ).resolves.toEqual({ behavior: 'allow' });
     expect(options).toMatchObject({
       mekaCombatEnvironmentReady: false,
       mekaCombatPhase: 'environment-recovery',
@@ -760,14 +863,13 @@ describe('combat workflow host policy', () => {
     expect(runCombatEnvironmentGate).not.toHaveBeenCalled();
   });
 
-  it('stops the Lead after a server capability report requires programmer handoff', async () => {
+  it('keeps read-only work available after a server capability report requires programmer handoff', async () => {
     const options = vendor({
       mekaCombatServerCapabilityStatus: 'unsupported',
       mekaCombatPhase: 'server-programmer-handoff',
     });
-    await expect(evaluateCombatToolExecution(context(options))).resolves.toMatchObject({
-      behavior: 'deny',
-      reason: expect.stringContaining('程序介入'),
+    await expect(evaluateCombatToolExecution(context(options))).resolves.toEqual({
+      behavior: 'allow',
     });
     const plan = `[SAGA2_COMBAT_SOLUTION]\ntargetSkillId: 123\nchangeMode: incremental\nsurfaces: module\nmoduleEvidence: skill-entry-model 10104 -> 10000\ncapabilityMatrix: periodic random point damage chain\nevidence: table + code\nvalidation: tests\nremainingUnknowns: none\n[/SAGA2_COMBAT_SOLUTION]`;
     expect(evaluateCombatPlanReview({ vendorOptions: options, plan })).toMatchObject({
@@ -792,7 +894,8 @@ describe('combat workflow host policy', () => {
             agent: 'codex',
             label: 'server-readonly-direct',
             remote_host_id: 'mcpr:server-1',
-            initial_task: '[SAGA2_SERVER_EXPLORATION_READ_ONLY] [SAGA2_MODULE_FIRST] skill-entry-model atomic capabilities residual server gap: inspect AGENTS.md',
+            initial_task:
+              '[SAGA2_SERVER_EXPLORATION_READ_ONLY] [SAGA2_MODULE_FIRST] skill-entry-model atomic capabilities residual server gap: inspect AGENTS.md',
           },
           action: { kind: 'mcp' },
         }),
@@ -862,7 +965,8 @@ describe('combat workflow host policy', () => {
               agent: 'codex',
               label: 'server-readonly',
               remote_host_id: 'mcpr:server-1',
-              initial_task: '[SAGA2_SERVER_EXPLORATION_READ_ONLY] [SAGA2_MODULE_FIRST] skill-entry-model atomic capabilities residual server gap: inspect AGENTS.md',
+              initial_task:
+                '[SAGA2_SERVER_EXPLORATION_READ_ONLY] [SAGA2_MODULE_FIRST] skill-entry-model atomic capabilities residual server gap: inspect AGENTS.md',
             },
           },
           action: { kind: 'mcp' },
@@ -897,7 +1001,8 @@ describe('combat workflow host policy', () => {
             agent: 'claude-code',
             label: 'server-wrong-agent',
             remote_host_id: 'mcpr:server-1',
-            initial_task: '[SAGA2_SERVER_EXPLORATION_READ_ONLY] [SAGA2_MODULE_FIRST] skill-entry-model atomic capabilities residual server gap: inspect AGENTS.md',
+            initial_task:
+              '[SAGA2_SERVER_EXPLORATION_READ_ONLY] [SAGA2_MODULE_FIRST] skill-entry-model atomic capabilities residual server gap: inspect AGENTS.md',
           },
           action: { kind: 'mcp' },
         }),
