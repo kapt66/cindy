@@ -8,6 +8,9 @@ const netRequest = vi.hoisted(() => vi.fn());
 const canaryRead = vi.hoisted(() => vi.fn(() => false));
 const isBetaChannelEnabled = vi.hoisted(() => vi.fn(() => false));
 const getClientEndpoint = vi.hoisted(() => vi.fn(() => TEST_CDN_BASE_URL));
+const endpointManifestBaseUrl = vi.hoisted(
+  () => 'https://manifest.test.invalid/cindy-meka',
+);
 
 vi.mock('electron', () => ({
   app: {
@@ -27,6 +30,10 @@ vi.mock('../updateChannelStore', () => ({
 
 vi.mock('../clientEndpointsService', () => ({
   getClientEndpoint,
+}));
+
+vi.mock('../../shared/endpoints', () => ({
+  ENDPOINT_MANIFEST_BASE_URL: endpointManifestBaseUrl,
 }));
 
 vi.mock('../logger', () => ({
@@ -57,6 +64,35 @@ function mockManifestResponse(body: string, onEnd?: () => void): void {
 
 const RELEASE_MANIFEST = JSON.stringify({
   app: { version: '0.0.65' },
+});
+
+describe('getBaseUrl', () => {
+  const originalOverride = process.env.XDT_CDN_BASE_URL;
+
+  beforeEach(() => {
+    delete process.env.XDT_CDN_BASE_URL;
+    getClientEndpoint.mockReset();
+  });
+
+  afterEach(() => {
+    if (originalOverride === undefined) delete process.env.XDT_CDN_BASE_URL;
+    else process.env.XDT_CDN_BASE_URL = originalOverride;
+  });
+
+  it('falls back to the baked Meka manifest root when the remote CDN field is empty', async () => {
+    getClientEndpoint.mockReturnValue('');
+    const service = await import('../manifestService');
+
+    expect(service.getBaseUrl()).toBe(endpointManifestBaseUrl);
+  });
+
+  it('keeps an explicit runtime override ahead of endpoint sources', async () => {
+    process.env.XDT_CDN_BASE_URL = 'https://override.example.test/cindy-meka/';
+    getClientEndpoint.mockReturnValue('');
+    const service = await import('../manifestService');
+
+    expect(service.getBaseUrl()).toBe('https://override.example.test/cindy-meka');
+  });
 });
 
 describe('manifestService cache channel identity', () => {

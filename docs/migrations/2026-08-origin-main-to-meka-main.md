@@ -462,6 +462,33 @@ maker-shared、lizi-im 及全部可运行协议包均 PASS。受影响包按仓�
   SQLite/migration 错误。应用自动在 profile 保留 migration backup，另有系统临时 online
   backup 作为本次验证的回滚依据；验证实例已正常关闭。
 - macOS 尚未实测；插件基座路径必须取得指定放行人的明确 `Approve` 后才可合并。
+- 2026-08-24 首轮正式 Canary 验证中，Windows x64 已成功发布；macOS x64 首次在 packaged
+  smoke 启动后弹出 `Safe Storage` 钥匙串授权并在 60 秒无结果后失败；人工授权后的重跑
+  已由 smoke 正常输出 schema 95 与核心表结果，但随后仍命中下述缺失定义。macOS arm64
+  在 Intel Runner 完成交叉构建、drizzle
+  校验、Mach-O 校验和整包签名后，因 `hostCanExecArch` 定义在本次 merge 中被删除但两处
+  调用仍保留而抛出 `ReferenceError`。arm64 失败发生在 DMG/热更新 ZIP 归集及快捷发布的
+  本地复核/上传之前，未改动 arm64 Canary、Stable 或既有版本对象。对照线上 0.0.16 对象
+  时间与 Meka first-parent 后确认正式版源码基线为 `d17186e42`：smoke 原本就在最终签名前，
+  因此不调整 make、smoke、签名、公证、iOS gate、DMG/ZIP、上传或 manifest 写入顺序。
+  当前只恢复同步新增 iOS gate 丢失的架构判定，并以 Intel/Apple Silicon × x64/arm64 四象限
+  测试锁定；macOS smoke 子进程增加 `--use-mock-keychain`，与临时 userData 一起隔离产品
+  Safe Storage，避免 Forge 临时签名触发钥匙串授权，不跳过 smoke、不延长超时。
+- 同轮 Windows 0.0.17 从 0.0.16 热更新时已完成 292539872 字节 ZIP 下载、安装目录替换与
+  新进程验证，但新进程读取 Meka 公开 `endpoint.json` 后把有意留空的 `cdnBaseUrl` 拼成
+  `/manifest-win32-x64-canary.json`，应用/Agent manifest 全部失败并显示“环境初始化失败”。
+  对照 `d17186e42` 确认同步时删除了正式版已有的 `resolveUpdateBaseUrl` 接线；0.0.17 Canary
+  已回退到 0.0.16 且热更新对象已删除。当前原样恢复 `XDT_CDN_BASE_URL` → 清单非空
+  `cdnBaseUrl` → 烘焙 `VITE_ENDPOINT_MANIFEST_BASE_URL` 的优先级，不修改 updater
+  替换/回滚状态机、构建发布分发流程或数据库。现场中更新前 0.0.16 的 migration identity
+  报错来自当天候选包已把该机器共享 profile 升至 schema 95 后再用旧版打开；0.0.17 新进程
+  未再次报 migration 错误，数据库保护门禁按设计 fail closed，数据未被降级或改写。
+- 2026-08-24 修复后，本地发布/公证/架构定向测试 52/52 PASS，Desktop 更新 URL 与 iOS
+  Simulator gate 测试 30/30 PASS（另 1 项按平台跳过），`db:validate`、Desktop typecheck、
+  `git diff --check` 及全仓 `pnpm test:unit` 均 PASS；Desktop、Mobile、全部 required
+  workspace 与 `cindy-protocol` submodule 无失败。本机为 Windows，尚未替代 macOS x64/
+  arm64 Runner 的真实签名、smoke、DMG/ZIP 和 Canary 复验；该复验应继续使用现有发布任务，
+  不调整签名、公证、上传或 manifest 写入流程。
 - 2026-08-24 在本地 `meka/main` 合并提交 `7eb9757ea61803a9c7c72c39e750681c35c68a8b`
   上按提交门禁重新运行 `pnpm test:unit`：Desktop、Mobile、全部 required workspace 与
   `cindy-protocol` submodule 均 PASS；`desktop`、`@cindy/maker-core` typecheck、

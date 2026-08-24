@@ -61,3 +61,16 @@ Windows 热更包会直接覆盖安装目录，不会重新执行 NSIS。新进�
 
 验证命令按 [`desktop-development.md`](desktop-development.md) 选择；更新链路的真实行为
 无法靠单测完全覆盖，评估与实测结论必须如实记录。
+
+## 更新与运行时资产根地址
+
+`manifestService.getBaseUrl()` 同时服务应用热更新与 Claude Code、Codex、ripgrep 等运行时
+资产下载。解析顺序固定为：显式 `XDT_CDN_BASE_URL` → 启动端点清单的非空
+`cdnBaseUrl` → 构建期烘焙的 `VITE_ENDPOINT_MANIFEST_BASE_URL`。最后一层是 Cindy Meka
+私有渠道的兼容边界：其公开 `endpoint.json` 有意把 `cdnBaseUrl` 留空，避免继承上游 Cindy
+更新渠道；正式构建必须回到发布时已批准并烘焙的同一清单根。不得把空值直接拼成
+`/manifest-*.json` 相对路径。
+
+该优先级由 `updateBaseUrl.test.ts` 的纯函数测试与 `manifestService.test.ts` 的服务接线测试
+共同锁定。修改端点清单解析时必须同时验证应用 manifest 与 Agent 运行时资产下载，不能只
+验证 `endpoint.json` 自举成功。

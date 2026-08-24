@@ -169,6 +169,10 @@ const TIMEOUT_MS = 60_000;
 const child = spawn(
   exePath,
   [
+    // The scratch profile must not consult the product Safe Storage item. A
+    // temporary Forge signature has a different Keychain requirement and can
+    // otherwise block an unattended macOS release behind an authorization UI.
+    ...(platform === 'darwin' ? ['--use-mock-keychain'] : []),
     '--smoke-test',
     `--smoke-user=${SMOKE_USER}`,
     ...(pluginStorage ? ['--smoke-plugin-storage'] : []),

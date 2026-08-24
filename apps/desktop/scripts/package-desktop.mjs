@@ -77,6 +77,7 @@ import {
   artifactBaseName,
   buildBuildInfo,
   debianArch,
+  hostCanExecArch,
 } from './ci/package-lib.mjs';
 import {
   applyMacSigningConfigToEnv,
@@ -427,7 +428,7 @@ async function finishDarwin({ artifactDir, baseName, appName, arch, versionless,
       signingMode = 'self-signed';
     }
 
-    if (hostCanExecArch(arch)) {
+    if (hostCanExecArch(arch, isPhysicalArm64Mac())) {
       runIOSSimulatorReleaseGate(
         appPath,
         arch,
@@ -470,7 +471,7 @@ async function finishDarwin({ artifactDir, baseName, appName, arch, versionless,
         'CINDY_IOS_SIMULATOR_RELEASE_NATIVE_SMOKE=1 requires a Developer ID signed and notarized package',
       );
     }
-    if (hostCanExecArch(arch)) {
+    if (hostCanExecArch(arch, isPhysicalArm64Mac())) {
       runIOSSimulatorReleaseGate(appPath, arch, 'untrusted');
     } else {
       verifyMacBinaryArch(appName, arch);

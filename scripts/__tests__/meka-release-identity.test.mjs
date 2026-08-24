@@ -83,6 +83,11 @@ test('release packaging can pin the endpoint bootstrap to the Cindy Meka CDN', (
   );
 });
 
+test('macOS packaged smoke isolates its temporary profile from the product keychain', () => {
+  const smoke = read('apps/desktop/scripts/smoke-packaged.mjs');
+  assert.match(smoke, /platform === 'darwin' \? \['--use-mock-keychain'\] : \[\]/);
+});
+
 test('release completion prints installer and hotfix download URLs', () => {
   const publisher = read('apps/desktop/scripts/publish-desktop.mjs');
   assert.match(publisher, /storage\.cdnUrl\(installerKey\)/);

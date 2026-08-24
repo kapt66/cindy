@@ -78,6 +78,9 @@ stable 回滚不删除对象；内网 RustFS 的 canary 撤回清理还需要对
 `release:publish` 会从仓内 `config/endpoint.json` 自动生成并上传公开副本：保留
 CindyAI、登录与插件市场等 HTTPS 业务端点，将其中的 `cdnBaseUrl` 留空，使
 Cindy Meka 回退到构建时显式批准并烘焙的同一发布根地址，不继承上游 Cindy 更新渠道。
+应用热更新与 Claude Code、Codex、ripgrep 资产共用该回退：显式环境覆盖优先，其次使用
+清单非空值，最后使用构建期 `VITE_ENDPOINT_MANIFEST_BASE_URL`。禁止把空值拼成
+`/manifest-*.json`；更新验收必须确认新进程日志打印完整 HTTPS manifest URL。
 
 CDN 必须允许匿名 `GET` / `HEAD`，RustFS 凭证不能暴露给客户端。manifest 使用
 `no-store`；版本化安装包和 ZIP 使用一年 immutable cache。
@@ -155,6 +158,24 @@ pnpm --filter desktop release:package -- \
 
 macOS 缺省同时构建 arm64 与 x64；每个架构有独立 `build-info.json`。正式发布只接受
 `self-signed` 或 `developer-id+notarized`，拒绝 ad-hoc 包。
+
+macOS 允许交叉构建，但 packaged smoke 和 iOS Simulator release gate 只在物理宿主能
+原生执行目标架构时启动应用。Intel 构建 arm64、Apple Silicon 构建 x64 时先用 `lipo`
+确认主 Mach-O 架构，再跳过启动型门禁；构建、签名、DMG/ZIP 归集和后续真机验收仍按目标
+架构执行。该判定由 `package-lib.mjs` 的纯函数和四象限回归测试锁定，避免上游同步只保留
+调用却丢失定义后，在签名完成阶段才失败。
+
+打包步骤保持线上正式版顺序：Forge make → drizzle 校验 → packaged smoke → 最终签名／公证
+→ iOS Simulator release gate → DMG/ZIP。macOS smoke 子进程除临时 userData 外还使用
+`--use-mock-keychain`，避免 Forge 临时签名访问产品 Safe Storage 并弹出钥匙串授权；该参数
+不进入正常应用启动。发布脚本的签名、产物归集、上传和 manifest 写入顺序不做调整。
+
+2026-08-24 的 Windows 0.0.17 Canary 热更成功完成下载、校验、安装目录替换和新进程启动，
+但同步上游后 `manifestService` 漏接了正式版已有的 Meka CDN 回退；公开 `endpoint.json`
+的空 `cdnBaseUrl` 被拼成 `/manifest-win32-x64-canary.json`，导致应用 manifest 与 Agent
+运行时资产无法下载，界面进入“环境初始化失败”。Canary 已回退到 0.0.16，0.0.17 热更新
+对象已删除。修复仅恢复正式版三层基址解析，不改 updater 替换/回滚状态机、构建发布分发
+步骤或用户数据库。
 
 产物位于：
 

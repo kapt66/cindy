@@ -270,12 +270,24 @@ macOS：
 - 原 Meka 证书可通过 `APPLE_SIGN_IDENTITY` 继续使用。
 - `self-signed` 模式关闭 timestamp，不要求 notarization 账号。
 - 有版本发布默认不允许无意间产出未签名包；显式放行需使用对应参数。
+- macOS 交叉构建的启动型门禁只在物理宿主能原生执行目标架构时运行；跨架构时以 `lipo`
+  验证主 Mach-O 后跳过 packaged smoke / iOS Simulator release gate，并保留目标架构真机
+  安装、启动与热更新验收。宿主/目标四象限由 `package-lib.mjs` 纯函数测试覆盖。
+- 保持线上正式版的 make → drizzle 校验 → packaged smoke → 最终签名／公证 → iOS gate →
+  DMG/ZIP 顺序。macOS smoke 使用临时 userData + `--use-mock-keychain`，不访问产品 Safe
+  Storage 条目；签名、归集、上传和 manifest 写入流程不调整。
 
 打包入口只产出本地安装包、热更 ZIP 和 `build-info.json`，不会上传 OSS/CDN。发布侧由
 `publish-desktop.mjs` 读取该文件，重新校验签名状态、文件大小与 SHA256 后，把 installer/
 hotfix 上传到 Cindy Meka 独立 RustFS bucket，最后写 canary manifest；经真实验收后由
 `promote-desktop.mjs` 备份并推进 stable，`rollback-desktop.mjs` 可恢复指定 stable 备份。
 版本化产物在正常发布链路中保持不可变；同路径内容不同的同版本重发会被拒绝。
+
+Cindy Meka 的公开 `endpoint.json` 可以有意留空 `cdnBaseUrl`，以隔离上游 Cindy 更新渠道；
+应用热更新与 Agent 运行时下载依次使用显式 `XDT_CDN_BASE_URL`、清单非空 `cdnBaseUrl`、
+构建期 `VITE_ENDPOINT_MANIFEST_BASE_URL`。2026-08-24 的 0.0.17 Canary 暴露出同步后服务层
+漏接最后一级回退，已按线上 0.0.16 正式版 `d17186e42` 的行为恢复；更新器替换/回滚、
+发布分发流程和存量数据库均未改变。
 内网 RustFS 撤回 canary 时，`reset-canary-desktop.mjs` 会先校验 stable 引用资产，按
 版本与内容哈希备份当前 canary manifest，将 canary 指针对齐到 stable 并完成反向校验，
 再删除被撤回版本的 installer/hotfix；删除前确认最终 stable/canary 均不引用目标，且

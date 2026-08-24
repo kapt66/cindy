@@ -11,6 +11,7 @@ import {
   PLATFORM_ARCHS,
   VERSIONLESS_VERSION,
   debianArch,
+  hostCanExecArch,
   parsePackageArgs,
 } from '../../apps/desktop/scripts/ci/package-lib.mjs';
 
@@ -91,8 +92,8 @@ test('parsePackageArgs: linux 拒绝跨架构打包(两个方向)', () => {
   );
 });
 
-// darwin 不受上面的约束:Rosetta 2 让 Apple Silicon 主机能打并 smoke darwin-x64,
-// 这是发布侧一直在用的路径,别被 linux 的收紧顺手掐掉。
+// darwin 不受上面的约束:macOS 支持交叉构建，但跨架构产物只做静态 Mach-O
+// 校验，不运行 packaged smoke 或其它需要启动应用的 release gate。
 test('parsePackageArgs: darwin 仍允许显式跨架构', () => {
   assert.deepEqual(
     parsePackageArgs(['--platform', 'darwin', '--arch', 'x64'], {
@@ -100,6 +101,17 @@ test('parsePackageArgs: darwin 仍允许显式跨架构', () => {
       arch: 'arm64',
     }).archs,
     ['x64'],
+  );
+});
+
+test('hostCanExecArch: macOS 只启动与物理宿主匹配的架构', () => {
+  assert.equal(hostCanExecArch('x64', false), true);
+  assert.equal(hostCanExecArch('arm64', false), false);
+  assert.equal(hostCanExecArch('arm64', true), true);
+  assert.equal(hostCanExecArch('x64', true), false);
+  assert.throws(
+    () => hostCanExecArch('ia32', false),
+    /darwin 不支持 arch: ia32/,
   );
 });
 

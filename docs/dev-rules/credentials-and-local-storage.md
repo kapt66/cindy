@@ -56,6 +56,10 @@
   加解密降级失败，authManager 的 safeStorage helpers 会按原因落一次 warn 日志。
 - 不要在启动路径主动调用 `safeStorage.isEncryptionAvailable()` 做探测——macOS 上探测
   本身可能触发钥匙串授权弹窗，把弹窗时机提前到与用户动作无关的启动期。
+- macOS packaged release smoke 沿用正式版的签名前执行顺序，但临时子进程必须同时使用
+  独立 `--user-data-dir` 与 Chromium `--use-mock-keychain`。smoke 只验证空库 migration，
+  不得访问产品 `CindyMeka Safe Storage` 条目；否则 Forge 临时签名可能触发钥匙串授权并
+  阻塞无人值守发布。该开关只用于 smoke 子进程，不得进入正常安装包启动参数。
 
 ## 路径与生命周期
 

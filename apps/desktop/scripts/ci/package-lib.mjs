@@ -28,6 +28,19 @@ export const PLATFORM_ARCHS = Object.freeze({
 });
 
 /**
+ * macOS build host 是否能原生执行目标架构产物。跨架构产物仍可构建、签名并用
+ * lipo 校验，但不能运行 packaged smoke 或需要启动应用的 release gate。
+ * @param {string} arch
+ * @param {boolean} isPhysicalArm64Host
+ */
+export function hostCanExecArch(arch, isPhysicalArm64Host) {
+  if (!PLATFORM_ARCHS.darwin.includes(arch)) {
+    throw new Error(`darwin 不支持 arch: ${arch}(可选 ${PLATFORM_ARCHS.darwin.join('/')})`);
+  }
+  return arch === 'arm64' ? isPhysicalArm64Host : !isPhysicalArm64Host;
+}
+
+/**
  * node arch → Debian 包架构名(deb 文件名与 control 的 Architecture 字段用它)。
  * 必须与 @electron-forge/maker-deb 的同名函数保持一致:归集产物时要按 maker
  * 实际写出的文件名命名,错了会把 arm64 包标成 amd64,用户装上直接起不来。
@@ -116,8 +129,8 @@ export function parsePackageArgs(argv, defaults = {}) {
     // linux 跨架构必须在参数层就拒。放行只会把失败推迟到 forge 的原生模块
     // rebuild:普通构建机没有交叉编译工具链,烧掉整个 package 阶段才吐一堆
     // 编译错误;而带 --skip-smoke 时连启动校验都不剩,能静默产出一个跑不起来
-    // 的 deb。darwin 不受此限——Rosetta 2 让 Apple Silicon 主机能打并 smoke
-    // darwin-x64,那是经验证的支持路径。
+    // 的 deb。darwin 不受此限——macOS 支持交叉构建；跨架构产物由后续
+    // hostCanExecArch 门禁跳过启动，并用 lipo 校验目标 Mach-O。
     if (out.platform === 'linux' && archFlag !== hostArch) {
       throw new Error(
         `linux 不支持交叉打包(当前 ${hostArch},目标 ${archFlag});请在目标架构的机器上执行。`,
@@ -125,8 +138,8 @@ export function parsePackageArgs(argv, defaults = {}) {
     }
     out.archs = [archFlag];
   } else if (out.platform === 'darwin') {
-    // mac 缺省双架构连打:Apple Silicon 主机经 Rosetta 2 能跑 darwin-x64,
-    // smoke test 同样可过(老一体式 release-macos.mjs 验证过的模式)。
+    // mac 缺省双架构连打；与宿主不匹配的那一架构只做静态 Mach-O 校验，
+    // 不运行 packaged smoke 或其它需要启动应用的 release gate。
     out.archs = [...PLATFORM_ARCHS.darwin];
   } else {
     if (!supportedArchs.includes(hostArch)) {
