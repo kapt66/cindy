@@ -73,6 +73,8 @@ export type {
   McpTunnelCallParams,
   OAuthRefreshParams,
   OAuthRefreshResult,
+  SubagentModelAccessParams,
+  SubagentModelAccessResult,
   QueryEventNotification,
   SessionClosedNotification,
   ClientReplacedNotification,

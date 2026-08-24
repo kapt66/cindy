@@ -87,8 +87,7 @@ function parseListMarker(text: string): ListMarker | null {
       // CJK ordered markers are valid with or without a following space.
       // Keep that space in the item body so serialization preserves the
       // user's original form without adding another list attribute.
-      prefixLength:
-        marker === '、' ? ordered[1].length + marker.length : ordered[0].length,
+      prefixLength: marker === '、' ? ordered[1].length + marker.length : ordered[0].length,
       marker,
       separator: marker === '、' ? '' : ordered[3],
       start: Number(ordered[1]),
@@ -146,9 +145,7 @@ function listFromLines(
 
 function sameListMarker(left: ListMarker, right: ListMarker): boolean {
   return (
-    left.kind === right.kind &&
-    left.marker === right.marker &&
-    left.separator === right.separator
+    left.kind === right.kind && left.marker === right.marker && left.separator === right.separator
   );
 }
 
@@ -296,9 +293,7 @@ export function normalizeComposerDocumentJSON(document: JSONContent): JSONConten
   let fence: FenceState | null = null;
   for (const node of document.content) {
     const result: { blocks: JSONContent[]; fence: FenceState | null } =
-      node.type === 'paragraph'
-        ? paragraphToBlocks(node, fence)
-        : { blocks: [node], fence };
+      node.type === 'paragraph' ? paragraphToBlocks(node, fence) : { blocks: [node], fence };
     fence = result.fence;
     for (const block of result.blocks) {
       const previous = normalized.at(-1);
@@ -310,6 +305,109 @@ export function normalizeComposerDocumentJSON(document: JSONContent): JSONConten
     }
   }
   return { ...document, content: normalized };
+}
+
+/**
+ * Remove Host capability chips (`mentionChip` with `attrs.kind === 'plugin-capability'`)
+ * from a composer document, recursively.
+ *
+ * Host capability chips carry routing intent that only makes sense on a
+ * confirmed-local composer. They are serialized into the saved draft's `text`,
+ * so when a draft that was authored locally is restored into a remote/unresolved
+ * session (SSH `remoteHostId`, or device-link `deviceLinkDeviceId !== null`), the
+ * generic `setContent` restore path would otherwise bring the chip back and make
+ * the send path abort with TARGET_UNAVAILABLE — forcing the user to delete it by
+ * hand. Stripping the chip at restore time keeps that path consistent with the
+ * `pendingHostCapabilityGhostId` guard, which already refuses to place the chip
+ * for non-local sessions.
+ */
+export function stripHostCapabilityChips(document: JSONContent): JSONContent {
+  if (!document || typeof document !== 'object' || !Array.isArray(document.content)) {
+    return document;
+  }
+  const nextContent = document.content
+    .map((node) => {
+      if (node?.type === 'mentionChip' && node.attrs?.kind === 'plugin-capability') {
+        return null;
+      }
+      return stripHostCapabilityChips(node);
+    })
+    .filter((node): node is JSONContent => node !== null);
+  return { ...document, content: nextContent };
+}
+
+/**
+ * Whether a composer document contains at least one Host capability chip
+ * (`mentionChip` with `attrs.kind === 'plugin-capability'`), recursively.
+ *
+ * Used to decide whether a confirmed-remote ownership resolution needs to
+ * re-run {@link stripHostCapabilityChips} over the live editor content, without
+ * rebuilding the whole document (and resetting the caret) when there is nothing
+ * to strip.
+ */
+export function composerDocumentContainsHostCapabilityChip(document: JSONContent): boolean {
+  if (!document || typeof document !== 'object' || !Array.isArray(document.content)) {
+    return false;
+  }
+  return document.content.some((node) => {
+    if (!node || typeof node !== 'object') return false;
+    if (node.type === 'mentionChip' && node.attrs?.kind === 'plugin-capability') {
+      return true;
+    }
+    return composerDocumentContainsHostCapabilityChip(node);
+  });
+}
+
+export interface ComposerRestoreInsertion {
+  document: JSONContent;
+  insertedBlocks: JSONContent[];
+  nextInsertAt: number;
+}
+
+function emptyComposerParagraph(): JSONContent {
+  return { type: 'paragraph' };
+}
+
+/**
+ * Insert one failed optimistic send at a stable top-level block cursor.
+ *
+ * Each failed document contributes a trailing empty paragraph. It is the
+ * structural equivalent of Mobile's `\n\n` recovery separator and prevents a
+ * later editor hydration/normalization pass from merging compatible lists
+ * across FIFO message boundaries. When there is no newer draft, keep one extra
+ * empty tail paragraph so the user can type without mutating that separator.
+ */
+export function insertComposerDocumentForRestore(
+  failedSendDocument: JSONContent,
+  currentDraftDocument: JSONContent,
+  insertAt = 0,
+): ComposerRestoreInsertion {
+  const normalizedFailed = normalizeComposerDocumentJSON(failedSendDocument);
+  const normalizedCurrent = normalizeComposerDocumentJSON(currentDraftDocument);
+  const insertedBlocks =
+    normalizedFailed.type === 'doc' && Array.isArray(normalizedFailed.content)
+      ? [...normalizedFailed.content, emptyComposerParagraph()]
+      : [];
+  const normalizedCurrentBlocks =
+    normalizedCurrent.type === 'doc' && Array.isArray(normalizedCurrent.content)
+      ? normalizedCurrent.content
+      : [];
+  const currentBlocks =
+    normalizedCurrentBlocks.length > 0 ? normalizedCurrentBlocks : [emptyComposerParagraph()];
+  const boundedInsertAt = Math.max(0, Math.min(insertAt, currentBlocks.length));
+
+  return {
+    document: {
+      type: 'doc',
+      content: [
+        ...currentBlocks.slice(0, boundedInsertAt),
+        ...insertedBlocks,
+        ...currentBlocks.slice(boundedInsertAt),
+      ],
+    },
+    insertedBlocks,
+    nextInsertAt: boundedInsertAt + insertedBlocks.length,
+  };
 }
 
 /** Build a normalized composer document from plain clipboard/history text. */

@@ -24,6 +24,7 @@ import type { MakerVendor } from '@/lib/ccAgent.types';
 import { isSelectableVendor } from '@/lib/agentVendors';
 import type { Effort, PermissionMode } from '@/lib/userPreferences.types';
 import { getDefaultModelForVendor } from '@/lib/modelDefinitions';
+import type { OrcaWorkerPermissionMode } from '../../shared/orca-worker-permission-mode';
 import { normalizeWorkingDirForStorage } from '../../shared/workingDir';
 import { getManagedWorktreeBasePath } from '../../shared/managedWorktreePaths';
 
@@ -79,6 +80,8 @@ export interface CollabWorkerConfig {
   providerId?: string | null;
   /** 首条派工任务。一次性,故意不跨重启持久化(sanitize 加载时丢弃,见下方解析)。 */
   initialTask?: string;
+  /** 当前协同 Team 后续新 Worker 共用的默认权限。 */
+  workerPermissionMode?: OrcaWorkerPermissionMode;
 }
 
 export interface CollabDraft {
@@ -109,8 +112,9 @@ export interface NewMakerDraft {
    * 语义是「这台工作端上新建会话时 worktree 开关的默认状态」——桌面本机草稿与手机 /
    * 桌面控制端远程草稿读写同一份(读经 maker:get-new-maker-defaults 镜像,写经
    * maker:apply-new-maker-worktree-pref 写穿)。
-   * 只在用户**显式**切换开关时写入;资格探测失败(非 git 仓库 / 已在 worktree 内等)
-   * 触发的自动关闭只改 UI 态、不写这里,避免环境因素抹掉用户偏好。
+   * 只在用户**显式**切换开关时写入;切项目、选分支、资格探测、重连等其它操作
+   * 一律保持原值,避免环境因素抹掉用户偏好。
+   * 直接复用 Cindy 现有 newMakerDraft 配置命名空间,不另建 worktree 专用配置。
    * 有效值由系统默认 + worktreePreferenceCustomized override 合成。
    */
   worktreeEnabled: boolean;
@@ -143,13 +147,14 @@ export interface NewMakerDraft {
   /** 每个 vendor 的"上次使用配置"——切回该 vendor 时自动恢复。 */
   lastByVendor: Record<MakerVendor, VendorPrefs>;
   /**
-   * 用户是否在 New Maker 界面**显式**选过该 vendor 的模型。
+   * 用户是否**显式**选过该 vendor 的模型（新建页 picker，或已有任务里换模）。
    * lastByVendor 整个快照随任意 draft 写入落盘,model 即使从没被用户碰过也会带上
    * sanitize 的种子默认值 —— 仅凭 lastByVendor 无法区分"真选过"和"默认回填"。
    * 调度任务默认模型的三级回退(getPersistedVendorModel 消费)只认这里标记过的
    * vendor,否则全新 / 没用过该 vendor 的用户会被对话侧 Opus 种子默认顶掉
-   * 成本保守兜底。patchVendorPrefs 收到 New Maker 显式 model 时置 true;会话同步 model
-   * 覆盖 lastByVendor 时清掉,避免把会话侧模型误当成 New Maker picker 选择。
+   * 成本保守兜底。patchVendorPrefs 收到显式 model 时置 true;只改思考档 / Fast
+   * 的会话回写走 patchVendorPrefsPreservingModelChoice：不得打标、不得清标，
+   * 也不得在已打标后改写 lastByVendor.model / providerId / effort。
    */
   modelChosenByVendor: Partial<Record<MakerVendor, boolean>>;
 }
@@ -319,9 +324,11 @@ function sanitize(raw: unknown): NewMakerDraft {
         typeof wc.providerId === 'string' && wc.providerId.trim()
           ? wc.providerId.trim()
           : undefined,
+      workerPermissionMode:
+        wc.workerPermissionMode === 'bypassPermissions' ? 'bypassPermissions' : 'auto',
       // initialTask 是一次性任务,**故意不跨重启持久化**(同 deviceLinkDeviceId 先例):
       // 重启后 Send/New Goal 会静默把过期任务当 delegateTask 发出去,而收起态 pill
-      // 无从看见/编辑(codex P2)。耐久保留的只有 role/model/effort/fast/providerId。
+      // 无从看见/编辑(codex P2)。其余 Worker 配置(含 Team 默认权限)可耐久保留。
     };
   })();
   const collab: CollabDraft = { enabled: collabEnabled, worker: collabWorker, workerConfig };
@@ -632,6 +639,10 @@ export function setWorktreePreference(enabled: boolean): void {
 
 export function patchDraft(patch: Partial<NewMakerDraft>): void {
   const normalizedPatch: Partial<NewMakerDraft> = { ...patch };
+  // worktree 偏好只能经 setWorktreePreference 写入。把这条约束放在 store 边界，
+  // 避免项目切换、草稿恢复或未来的通用 patch 调用方绕过「仅 checkbox 修改」契约。
+  delete normalizedPatch.worktreeEnabled;
+  delete normalizedPatch.worktreePreferenceCustomized;
   if ('workingDir' in normalizedPatch) {
     normalizedPatch.workingDir = normalizeDraftWorkingDir(normalizedPatch.workingDir);
   }
@@ -678,11 +689,7 @@ export function patchDraft(patch: Partial<NewMakerDraft>): void {
   // 协同与项目/对话形态正交,切 workingDir 不再改 enabled。device-link 与 SSH 的 Worker
   // 创建和团队读写都在对应执行端完成;Worker 子会话不能嵌套协同,由会话侧入口判定兜住。
   currentDraft = next;
-  scheduleWrite({
-    preserveStoredWorktreePreference:
-      !('worktreeEnabled' in patch)
-      && !('worktreePreferenceCustomized' in patch),
-  });
+  scheduleWrite({ preserveStoredWorktreePreference: true });
   emit();
 }
 
@@ -744,20 +751,27 @@ function patchVendorPrefsInternal(
   opts: { markModelChoice: boolean },
 ): void {
   const modelChosen = { ...currentDraft.modelChosenByVendor };
-  if (typeof patch.model === 'string' && patch.model.length > 0) {
+  const nextPatch = { ...patch };
+  if (typeof nextPatch.model === 'string' && nextPatch.model.length > 0) {
     if (opts.markModelChoice) {
-      // New Maker 显式 model 选择 → 打标记(见 modelChosenByVendor 注释)。
+      // 新建页 picker 或已有任务换模 → 打标记,下次新建跟随这次选择,不再回落区域默认。
       modelChosen[vendor] = true;
-    } else if (
-      currentDraft.modelChosenByVendor[vendor] &&
-      currentDraft.lastByVendor[vendor].model === patch.model
-    ) {
-      // 会话同步的是同一个 model:保留原 New Maker picker 选择语义。
-      modelChosen[vendor] = true;
-    } else {
-      // 会话同步 model 会覆盖 lastByVendor[vendor].model。若 model 发生变化,旧标记已不能继续代表
-      // "New Maker picker 选过这个 model",否则 scheduler 会把会话侧模型误当成显式选择。
-      delete modelChosen[vendor];
+    }
+    // markModelChoice=false 仍可写回当前活动模型(远程草稿 / 旧控制端 wire
+    // 会带 modelId),但不得打标,也不得清掉已有标记。
+  }
+  if (!opts.markModelChoice && modelChosen[vendor] === true) {
+    const savedModel = currentDraft.lastByVendor[vendor].model;
+    const incomingModel =
+      typeof nextPatch.model === 'string' && nextPatch.model.length > 0
+        ? nextPatch.model
+        : savedModel;
+    // 已显式选过时,不得替换那次选择的模型或来源。没带 model 视为仍在已保存
+    // 模型上改档;带了不同 model 则丢掉这次 effort,避免 A/B 错配。
+    delete nextPatch.model;
+    delete nextPatch.providerId;
+    if (incomingModel !== savedModel) {
+      delete nextPatch.effort;
     }
   }
   currentDraft = {
@@ -765,7 +779,7 @@ function patchVendorPrefsInternal(
     modelChosenByVendor: modelChosen,
     lastByVendor: {
       ...currentDraft.lastByVendor,
-      [vendor]: { ...currentDraft.lastByVendor[vendor], ...patch },
+      [vendor]: { ...currentDraft.lastByVendor[vendor], ...nextPatch },
     },
   };
   scheduleWrite();
@@ -777,9 +791,11 @@ export function patchVendorPrefs(vendor: MakerVendor, patch: Partial<VendorPrefs
 }
 
 /**
- * 已创建会话把最近一次成功应用的模型偏好同步回 New Maker 草稿默认时使用。
- * 这会更新 lastByVendor 供下一次新建聊天复用,但不把 modelChosenByVendor 打成
- * "用户在 New Maker 显式选过模型",避免影响 scheduler 的成本保守默认模型兜底。
+ * 已创建任务把思考档、以及 wire 上的当前活动模型同步回新建草稿时使用。
+ * 未打标时可以更新 lastByVendor.model / providerId / effort,方便远程草稿 /
+ * 旧控制端把活动值写回,但不把这次当成显式选模。已打标后不得替换那次选择的
+ * 模型、来源或思考档;只有活动模型与已保存模型一致时才更新 effort。
+ * 本机已有任务里换模型应走 patchVendorPrefs。
  */
 export function patchVendorPrefsPreservingModelChoice(
   vendor: MakerVendor,
@@ -864,11 +880,11 @@ export function getCurrentVendorPrefs(): VendorPrefs {
  * 与 getDraft().lastByVendor[v].model 的区别:后者永远非空 —— sanitize 会用
  * getDefaultModelForVendor 兜底填充,且 lastByVendor 整个快照随任意 draft 写入
  * 落盘,即使用户从没碰过该 vendor 的模型,持久化里也躺着种子默认值。
- * 所以这里要求 modelChosenByVendor[vendor] === true(只在 patchVendorPrefs
- * 收到显式 model 时打的标)才返回,否则一律 ''。
+ * 所以这里要求 modelChosenByVendor[vendor] === true(新建页 picker 或已有
+ * 任务换模经 patchVendorPrefs 打的标)才返回,否则一律 ''。
  * 调度任务的默认模型三级回退(useScheduleForm getScheduleDefaultModel)依赖这个
  * 区分:没显式选过的用户应落到调度自己的成本保守兜底(Sonnet),而不是被
- * 对话侧的 Opus 默认顶掉。读 raw localStorage 而非 getDraft(),解析失败 → ''。
+ * 对话侧的 Opus 种子默认顶掉。读 raw localStorage 而非 getDraft(),解析失败 → ''。
  */
 export function getPersistedVendorModel(vendor: MakerVendor): string {
   if (typeof window === 'undefined') return '';

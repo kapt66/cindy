@@ -1,4 +1,9 @@
 ﻿import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 import { EventEmitter } from 'node:events';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -21,9 +26,19 @@ import {
   repairToolExchangeAdjacency,
   stripEncryptedContentFromBody,
 } from './transform.js';
+import { createXaiModelInputRecoveryRule } from './xai-model-input.js';
 import { listenOnAvailableLoopbackPort } from './test-loopback-server.js';
 import { createThreadStripController } from './thread-strip-controller.js';
 import type { ProxyHandle } from './types.js';
+
+const TEST_REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+const TEST_PI_BINARY = path.join(
+  TEST_REPO_ROOT,
+  'apps',
+  'pi-bin',
+  `${process.platform}-${process.arch}`,
+  process.platform === 'win32' ? 'pi.exe' : 'pi',
+);
 
 function startFakeUpstream(
   handler: (reqIndex: number, body: string, res: ServerResponse) => void,
@@ -302,6 +317,112 @@ describe('anthropic-compat-proxy tool_use provider field compatibility', () => {
 });
 
 describe('anthropic-compat-proxy encrypted content retry', () => {
+  it('preserves readable agent progress when foreign reasoning ciphertext triggers recovery', async () => {
+    const upstream = await startFakeUpstream((_idx, rawBody, res) => {
+      const body = JSON.parse(rawBody) as {
+        input?: Array<{ type?: string; content?: unknown[]; encrypted_content?: unknown }>;
+      };
+      const encryptedParts = (body.input ?? [])
+        .filter((item) => item.type === 'agent_message' && Array.isArray(item.content))
+        .flatMap((item) => item.content ?? [])
+        .filter((part): part is Record<string, unknown> => (
+          typeof part === 'object'
+          && part !== null
+          && 'type' in part
+          && part.type === 'encrypted_content'
+        ));
+      const foreignReasoning = (body.input ?? []).some((item) => (
+        item.type === 'reasoning'
+        && item.encrypted_content === 'gAAAAA-foreign-reasoning'
+      ));
+      if (encryptedParts.some((part) => typeof part.encrypted_content !== 'string')) {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          error: {
+            message: "Missing required parameter: 'input[2].content[1].encrypted_content'.",
+            code: 'missing_required_parameter',
+          },
+        }));
+      } else if (foreignReasoning) {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(ENC_ERROR_BODY);
+      } else {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      }
+    });
+    upstreamClose = upstream.close;
+    const controller = createThreadStripController();
+    proxy = await createAnthropicCompatProxy({
+      upstream: upstream.url,
+      transformRequest: [createActiveStripTransform({
+        controller,
+        enabled: () => true,
+        strip: stripEncryptedContentFromBody,
+      })],
+      recoveryRules: [createEncryptedContentRecoveryRule({
+        enabled: () => true,
+        onRetry: (threadId, model) => controller.markActive(threadId, model),
+      })],
+    });
+    const request = {
+      model: 'gpt-5.6-sol',
+      input: [
+        { type: 'message', role: 'user', content: 'go' },
+        {
+          type: 'reasoning',
+          id: 'foreign-reasoning',
+          summary: [],
+          encrypted_content: 'gAAAAA-foreign-reasoning',
+        },
+        {
+          type: 'agent_message',
+          author: '/root/progress_test',
+          recipient: '/root',
+          content: [
+            { type: 'input_text', text: 'progress' },
+            { type: 'encrypted_content', encrypted_content: 'gAAAAA-progress' },
+          ],
+          internal_chat_message_metadata_passthrough: { source: 'send_message' },
+        },
+        {
+          type: 'agent_message',
+          author: '/root/progress_test',
+          recipient: '/root',
+          content: [{ type: 'input_text', text: 'complete' }],
+        },
+        {
+          type: 'agent_message',
+          author: '/root/opaque',
+          content: [{ type: 'encrypted_content', encrypted_content: 'gAAAAA-only' }],
+        },
+      ],
+    };
+
+    expect((await post(proxy.url, request)).status).toBe(200);
+    expect(upstream.bodies).toHaveLength(2);
+    expect(JSON.parse(upstream.bodies[1]).input).toEqual([
+      { type: 'message', role: 'user', content: 'go' },
+      {
+        type: 'agent_message',
+        author: '/root/progress_test',
+        recipient: '/root',
+        content: [{ type: 'input_text', text: 'progress' }],
+        internal_chat_message_metadata_passthrough: { source: 'send_message' },
+      },
+      {
+        type: 'agent_message',
+        author: '/root/progress_test',
+        recipient: '/root',
+        content: [{ type: 'input_text', text: 'complete' }],
+      },
+    ]);
+
+    expect((await post(proxy.url, request)).status).toBe(200);
+    expect(upstream.bodies).toHaveLength(3);
+    expect(upstream.bodies[2]).toBe(upstream.bodies[1]);
+  });
+
   it('retries invalid_encrypted_content once when enabled and marks the thread active', async () => {
     const upstream = await startFakeUpstream((idx, _body, res) => {
       if (idx === 0) {
@@ -357,6 +478,124 @@ describe('anthropic-compat-proxy encrypted content retry', () => {
     expect(upstream.bodies).toHaveLength(2);
     expect(upstream.bodies[0]).toContain('encrypted_content');
     expect(upstream.bodies[1]).not.toContain('encrypted_content');
+  });
+
+  it('retries LiteLLM-wrapped xAI ModelInput 422 after sanitizing input', async () => {
+    const upstream = await startFakeUpstream((idx, _body, res) => {
+      if (idx === 0) {
+        res.writeHead(422, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          error: 'litellm.BadRequestError: XaiException - {"error":"Failed to deserialize the JSON body into the target type: data did not match any variant of untagged enum ModelInput"}',
+        }));
+      } else {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, attempt: idx }));
+      }
+    });
+    upstreamClose = upstream.close;
+    proxy = await createAnthropicCompatProxy({
+      upstream: upstream.url,
+      transformRequest: [],
+      recoveryRules: [createXaiModelInputRecoveryRule()],
+    });
+
+    const r = await post(proxy.url, {
+      model: 'my-custom-grok',
+      input: [
+        { type: 'message', role: 'user', content: 'hi' },
+        { type: 'agent_message', author: 'bot', content: 'done' },
+      ],
+    });
+
+    expect(r.status).toBe(200);
+    expect(JSON.parse(r.text)).toMatchObject({ ok: true });
+    expect(upstream.bodies).toHaveLength(2);
+    expect(upstream.bodies[0]).toContain('agent_message');
+    expect(upstream.bodies[1]).not.toContain('agent_message');
+    expect(JSON.parse(upstream.bodies[1]).input).toEqual([
+      { type: 'message', role: 'user', content: 'hi' },
+      {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: '[collab bot]\ndone' }],
+      },
+    ]);
+  });
+
+  it('does not rewrite OpenAI collab history when another recovery rule retries', async () => {
+    const upstream = await startFakeUpstream((idx, _body, res) => {
+      if (idx === 0) {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(ENC_ERROR_BODY);
+      } else {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, attempt: idx }));
+      }
+    });
+    upstreamClose = upstream.close;
+    proxy = await createAnthropicCompatProxy({
+      upstream: upstream.url,
+      transformRequest: [],
+      recoveryRules: [
+        createEncryptedContentRecoveryRule({ enabled: () => true }),
+        createXaiModelInputRecoveryRule(),
+      ],
+    });
+
+    const r = await post(proxy.url, {
+      model: 'gpt-5.5',
+      input: [
+        { type: 'reasoning', encrypted_content: 'gAAAsecret' },
+        { type: 'agent_message', author: 'bot', content: 'keep me' },
+      ],
+    });
+
+    expect(r.status).toBe(200);
+    expect(upstream.bodies).toHaveLength(2);
+    expect(JSON.parse(upstream.bodies[1]).input).toEqual([
+      { type: 'agent_message', author: 'bot', content: 'keep me' },
+    ]);
+  });
+
+  it('does not stack encrypted-content strip onto a ModelInput 422 retry', async () => {
+    const upstream = await startFakeUpstream((idx, _body, res) => {
+      if (idx === 0) {
+        res.writeHead(422, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          error: 'litellm.BadRequestError: XaiException - {"error":"data did not match any variant of untagged enum ModelInput"}',
+        }));
+      } else {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, attempt: idx }));
+      }
+    });
+    upstreamClose = upstream.close;
+    proxy = await createAnthropicCompatProxy({
+      upstream: upstream.url,
+      transformRequest: [],
+      recoveryRules: [
+        createEncryptedContentRecoveryRule({ enabled: () => true }),
+        createXaiModelInputRecoveryRule(),
+      ],
+    });
+
+    const r = await post(proxy.url, {
+      model: 'grok-4.5',
+      input: [
+        { type: 'reasoning', id: 'rs_1', summary: [], encrypted_content: 'gAAAkeep' },
+        { type: 'agent_message', author: 'bot', content: 'done' },
+      ],
+    });
+
+    expect(r.status).toBe(200);
+    expect(JSON.parse(upstream.bodies[1]).input).toEqual([
+      { type: 'reasoning', id: 'rs_1', summary: [], encrypted_content: 'gAAAkeep' },
+      {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: '[collab bot]\ndone' }],
+      },
+    ]);
   });
 
   it('keeps proactive stripping active when a provider transform rewrites the model id', async () => {
@@ -1152,6 +1391,74 @@ const THINKING_ERROR_BODY = JSON.stringify({
   },
 });
 
+// 混合 sync + async transform：锁定 runTransforms 的串行 await 语义（顺序保持、
+// async 被 await、null 透传、失败回退）。防止后续改动误并行化破坏链式顺序依赖。
+describe('anthropic-compat-proxy mixed sync+async transform chain', () => {
+  it('awaits async transforms in order and keeps sync passthrough', async () => {
+    const order: string[] = [];
+    const custom = await startFakeUpstream((_i, body, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ echoed: JSON.parse(body) }));
+    });
+    upstreamClose = custom.close;
+
+    proxy = await createAnthropicCompatProxy({
+      upstream: custom.url,
+      transformRequest: [
+        // 第一个：sync transform 透传（返回 null），不改 body。
+        (_body) => {
+          order.push('sync-passthrough');
+          return null;
+        },
+        // 第二个：async transform，模拟视觉桥（延迟后改写 body）。
+        async (body) => {
+          order.push('async-begin');
+          await new Promise((r) => setTimeout(r, 20));
+          order.push('async-end');
+          return { ...(body as Record<string, unknown>), model: 'rewritten-by-async' };
+        },
+        // 第三个：sync transform，在 async 结果上再改。
+        (body) => {
+          order.push('sync-after-async');
+          return { ...(body as Record<string, unknown>), extra: true };
+        },
+      ],
+    });
+
+    await post(proxy.url, { model: 'original', messages: [{ role: 'user', content: 'x' }] });
+    // 顺序：sync 透传 → async 开始 → async 结束 → sync 尾改（严格串行，无并行交错）。
+    expect(order).toEqual(['sync-passthrough', 'async-begin', 'async-end', 'sync-after-async']);
+    // async 的结果被下游消费：final body 同时含 async 与 sync 的改写。
+    expect(custom.bodies).toHaveLength(1);
+    const sent = JSON.parse(custom.bodies[0]);
+    expect(sent.model).toBe('rewritten-by-async');
+    expect(sent.extra).toBe(true);
+  });
+
+  it('recovers from a throwing async transform by skipping it (passthrough)', async () => {
+    const custom = await startFakeUpstream((_i, body, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ echoed: JSON.parse(body) }));
+    });
+    upstreamClose = custom.close;
+
+    proxy = await createAnthropicCompatProxy({
+      upstream: custom.url,
+      transformRequest: [
+        async () => {
+          throw new Error('boom');
+        },
+        (body) => ({ ...(body as Record<string, unknown>), survived: true }),
+      ],
+    });
+
+    await post(proxy.url, { model: 'original', messages: [] });
+    expect(custom.bodies).toHaveLength(1);
+    // 抛错的 async transform 被跳过，后续 sync transform 照常执行。
+    expect(JSON.parse(custom.bodies[0]).survived).toBe(true);
+  });
+});
+
 // 跨厂商切回 Anthropic 模型: 历史里 gpt 留下的空壳 thinking 块 + 后面一句 text。
 function anthropicBodyWithEmptyThinking(): unknown {
   return {
@@ -1706,6 +2013,167 @@ describe('anthropic-compat-proxy empty-assistant-message recovery (moonshot/kimi
 });
 
 describe('anthropic-compat-proxy localHandler(路由决策交本地 handler,不转发上游)', () => {
+  it.skipIf(!existsSync(TEST_PI_BINARY))(
+    'real PI zstd request crosses the proxy parse boundary and reaches the raw local handler',
+    { timeout: 30_000 },
+    async () => {
+      const gateway = await startFakeUpstream((_i, _b, res) => {
+        res.writeHead(500);
+        res.end('default upstream must not be reached');
+      });
+      upstreamClose = gateway.close;
+      let seen: { raw: Buffer; encoding: string | undefined; parsed: unknown; url: string } | null = null;
+      let resolveSeen: (() => void) | null = null;
+      const seenPromise = new Promise<void>((resolve) => { resolveSeen = resolve; });
+      proxy = await createAnthropicCompatProxy({
+        upstream: gateway.url,
+        transformRequest: [],
+        routingTransform: (body, ctx) => {
+          if (ctx.headers['x-native-route'] !== 'openai') return null;
+          return {
+            localHandler: async ({ rawBody, parsedBody, res }) => {
+              seen = {
+                raw: Buffer.from(rawBody),
+                encoding: ctx.headers['content-encoding'],
+                parsed: parsedBody,
+                url: ctx.url,
+              };
+              resolveSeen?.();
+              res.writeHead(401, { 'content-type': 'application/json' });
+              res.end('{"error":{"message":"intentional test stop"}}');
+            },
+          };
+        },
+      });
+      const configHome = mkdtempSync(path.join(tmpdir(), 'pi-zstd-proxy-e2e-'));
+      const encode = (value: unknown): string => Buffer.from(JSON.stringify(value)).toString('base64url');
+      const placeholderJwt = `${encode({ alg: 'none', typ: 'JWT' })}.${encode({
+        'https://api.openai.com/auth': { chatgpt_account_id: 'cindy-pi-proxy' },
+      })}.`;
+      let child: ChildProcessWithoutNullStreams | null = null;
+      try {
+        writeFileSync(path.join(configHome, 'models.json'), JSON.stringify({
+          providers: {
+            'openai-codex': {
+              baseUrl: proxy.url,
+              apiKey: '$CINDY_PI_OPENAI_PROXY_KEY',
+              headers: { 'x-native-route': 'openai' },
+              models: [{
+                id: 'gpt-cindy-zstd-test',
+                name: 'GPT Cindy zstd test',
+                reasoning: false,
+                input: ['text'],
+                contextWindow: 128_000,
+                maxTokens: 16_000,
+              }],
+            },
+          },
+        }));
+        writeFileSync(path.join(configHome, 'settings.json'), JSON.stringify({ transport: 'sse' }));
+        child = spawn(TEST_PI_BINARY, [
+          '--provider', 'openai-codex',
+          '--model', 'gpt-cindy-zstd-test',
+          '--no-session',
+          '--no-tools',
+          '--no-extensions',
+          '--no-skills',
+          '--no-prompt-templates',
+          '--no-context-files',
+          '--mode', 'rpc',
+        ], {
+          cwd: TEST_REPO_ROOT,
+          env: {
+            ...process.env,
+            PI_CODING_AGENT_DIR: configHome,
+            CINDY_PI_OPENAI_PROXY_KEY: placeholderJwt,
+          },
+        });
+        let stderr = '';
+        child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
+        child.stdin.write(JSON.stringify({ id: 'test-prompt', type: 'prompt', message: 'ping' }) + '\n');
+        let reachTimeout: NodeJS.Timeout | undefined;
+        try {
+          await Promise.race([
+            seenPromise,
+            new Promise<never>((_resolve, reject) => {
+              reachTimeout = setTimeout(
+                () => reject(new Error(`real PI did not reach proxy: ${stderr}`)),
+                10_000,
+              );
+            }),
+          ]);
+        } finally {
+          if (reachTimeout) clearTimeout(reachTimeout);
+        }
+
+        const observed = seen as {
+          raw: Buffer;
+          encoding: string | undefined;
+          parsed: unknown;
+          url: string;
+        } | null;
+        expect(observed).not.toBeNull();
+        expect(observed?.url).toBe('/codex/responses');
+        expect(observed?.encoding).toBe('zstd');
+        expect(observed?.parsed).toBeUndefined();
+        expect([...observed!.raw.subarray(0, 4)]).toEqual([0x28, 0xb5, 0x2f, 0xfd]);
+        expect(gateway.bodies).toHaveLength(0);
+      } finally {
+        if (child && child.exitCode === null && child.signalCode === null) {
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(() => {
+              if (child?.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+              resolve();
+            }, 1_000);
+            child!.once('close', () => {
+              clearTimeout(timer);
+              resolve();
+            });
+            child!.kill('SIGTERM');
+          });
+        }
+        rmSync(configHome, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('JSON content-type with compressed bytes still routes by headers and preserves raw body', async () => {
+    const gateway = await startFakeUpstream((_i, _b, res) => { res.writeHead(200); res.end('{}'); });
+    upstreamClose = gateway.close;
+    const compressed = gzipSync(Buffer.from(JSON.stringify({ model: 'gpt-native' })));
+    let seen: Buffer | null = null;
+    proxy = await createAnthropicCompatProxy({
+      upstream: gateway.url,
+      transformRequest: [],
+      routingTransform: (body, ctx) => {
+        expect(body).toBeUndefined();
+        if (ctx.headers['x-native-route'] !== 'openai') return null;
+        return {
+          localHandler: async ({ rawBody, parsedBody, res }) => {
+            seen = Buffer.from(rawBody);
+            expect(parsedBody).toBeUndefined();
+            res.writeHead(204);
+            res.end();
+          },
+        };
+      },
+    });
+
+    const response = await fetch(`${proxy.url}/codex/responses`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'content-encoding': 'gzip',
+        'x-native-route': 'openai',
+      },
+      body: compressed,
+    });
+
+    expect(response.status).toBe(204);
+    expect(seen).toEqual(compressed);
+    expect(gateway.bodies).toHaveLength(0);
+  });
+
   it('命中 handler:收到原始字节 + 已解析 body + ctx,自写响应(含 SSE 流式),上游零请求', async () => {
     const gateway = await startFakeUpstream((_i, _b, res) => { res.writeHead(200); res.end('{}'); });
     upstreamClose = gateway.close;
@@ -2131,5 +2599,436 @@ describe('anthropic-compat-proxy 入站请求体 dump 开关(debugDumpRequestBod
     const inbound = debugs.find((d) => d.msg.includes('inbound request'));
     expect(inbound).toBeDefined();
     expect(inbound?.ctx).not.toHaveProperty('body');
+  });
+});
+
+describe('tool_use id 响应流去重改写(kimi 撞车自愈)', () => {
+  const SSE_BODY =
+    'event: message_start\n' +
+    'data: {"type":"message_start","message":{"id":"chatcmpl-x","role":"assistant","content":[]}}\n\n' +
+    'event: content_block_start\n' +
+    'data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"想"}}\n\n' +
+    'event: content_block_start\n' +
+    'data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"Bash_210","name":"Bash","input":{}}}\n\n' +
+    'event: content_block_start\n' +
+    'data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"Bash_999","name":"Bash","input":{}}}\n\n' +
+    'event: message_stop\n' +
+    'data: {"type":"message_stop"}\n\n';
+
+  function sseUpstream() {
+    return startFakeUpstream((_i, _b, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(SSE_BODY);
+    });
+  }
+
+  it('请求历史带铸造形态 id 时, 响应里撞车的 tool_use id 被改名, 新 id 不动', async () => {
+    const upstream = await sseUpstream();
+    upstreamClose = upstream.close;
+    const infos: Array<{ msg: string; ctx?: Record<string, unknown> }> = [];
+    proxy = await createAnthropicCompatProxy({
+      upstream: upstream.url,
+      transformRequest: [],
+      logger: { info: (msg, ctx) => infos.push({ msg, ctx }) },
+    });
+
+    const res = await post(proxy.url, {
+      model: 'kimi-k3',
+      messages: [
+        { role: 'user', content: '分析' },
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'Bash_210', name: 'Bash', input: {} }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'Bash_210', content: 'ok' }] },
+      ],
+    });
+    expect(res.status).toBe(200);
+    // 撞车 id 被改名; 新 id(Bash_999)与历史无关 → 不动
+    expect(res.text).toContain('"id":"Bash_210_dup2"');
+    expect(res.text).toContain('"id":"Bash_999"');
+    expect(res.text).not.toContain('"id":"Bash_210"');
+    // thinking / 事件框架行原样
+    expect(res.text).toContain('event: message_stop');
+    expect(
+      infos.some(
+        (l) => l.msg.includes('renamed duplicate tool_use id') && l.ctx?.from === 'Bash_210' && l.ctx?.to === 'Bash_210_dup2',
+      ),
+    ).toBe(true);
+  });
+
+  it('请求历史无铸造形态 id 时, 响应流字节透传(零干预)', async () => {
+    const upstream = await sseUpstream();
+    upstreamClose = upstream.close;
+    proxy = await createAnthropicCompatProxy({
+      upstream: upstream.url,
+      transformRequest: [],
+    });
+
+    const res = await post(proxy.url, {
+      model: 'claude-sonnet-4',
+      messages: [
+        { role: 'user', content: '分析' },
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_01Jx4AbC', name: 'Bash', input: {} }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_01Jx4AbC', content: 'ok' }] },
+      ],
+    });
+    expect(res.status).toBe(200);
+    expect(res.text).toBe(SSE_BODY);
+  });
+
+  it('非 SSE 响应不接管(字节透传)', async () => {
+    const upstream = await startFakeUpstream((_i, _b, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          id: 'chatcmpl-x',
+          content: [{ type: 'tool_use', id: 'Bash_210', name: 'Bash', input: {} }],
+        }),
+      );
+    });
+    upstreamClose = upstream.close;
+    proxy = await createAnthropicCompatProxy({
+      upstream: upstream.url,
+      transformRequest: [],
+    });
+
+    const res = await post(proxy.url, {
+      model: 'kimi-k3',
+      messages: [
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'Bash_210', name: 'Bash', input: {} }] },
+      ],
+    });
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('"id":"Bash_210"');
+  });
+
+  it('SSE 改写长度变化时自动剥离 content-length,客户端不截断(GPT-5.5 第 5 轮 P1)', async () => {
+    const upstream = await startFakeUpstream((_i, _b, res) => {
+      const sseBody =
+        'event: content_block_start\n' +
+        'data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"Bash_210","name":"Bash","input":{}}}\n\n' +
+        'event: message_stop\n' +
+        'data: {"type":"message_stop"}\n\n';
+      // upstream 发出定长 content-length(改写后 body 会变得更长)
+      res.writeHead(200, {
+        'content-type': 'text/event-stream',
+        'content-length': String(Buffer.byteLength(sseBody)),
+      });
+      res.end(sseBody);
+    });
+    upstreamClose = upstream.close;
+    proxy = await createAnthropicCompatProxy({
+      upstream: upstream.url,
+      transformRequest: [],
+    });
+
+    const res = await post(proxy.url, {
+      model: 'kimi-k3',
+      messages: [
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'Bash_210', name: 'Bash', input: {} }] },
+      ],
+    });
+    expect(res.status).toBe(200);
+    // 改写后 id 被改名,且完整的 SSE 帧无截断(message_stop 存在)
+    expect(res.text).toContain('"id":"Bash_210_dup2"');
+    expect(res.text).toContain('"type":"message_stop"');
+  });
+});
+
+describe('压缩 SSE 不接管(Greptile review)', () => {
+  it('content-encoding 存在时保持字节透传,不改名、不删 content-length', async () => {
+    const { gzipSync } = await import('node:zlib');
+    const upstream = await startFakeUpstream((_i, _b, res) => {
+      const sseBody =
+        'event: content_block_start\n' +
+        'data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"Bash_210","name":"Bash","input":{}}}\n\n';
+      // 真实 gzip 压缩的 SSE:改写器不得接管(压缩字节按明文行切分会漏改/误改)
+      const gzipped = gzipSync(Buffer.from(sseBody, 'utf8'));
+      res.writeHead(200, {
+        'content-type': 'text/event-stream',
+        'content-encoding': 'gzip',
+        'content-length': String(gzipped.length),
+      });
+      res.end(gzipped);
+    });
+    upstreamClose = upstream.close;
+    proxy = await createAnthropicCompatProxy({
+      upstream: upstream.url,
+      transformRequest: [],
+    });
+
+    const res = await post(proxy.url, {
+      model: 'kimi-k3',
+      messages: [
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'Bash_210', name: 'Bash', input: {} }] },
+      ],
+    });
+    expect(res.status).toBe(200);
+    // 字节透传:客户端自解压后内容完整、id 不改名(未进入改写器)
+    expect(res.text).toContain('"id":"Bash_210"');
+    expect(res.text).not.toContain('Bash_210_dup2');
+  });
+
+  it('content-encoding: identity(明文,不压缩)仍接管改写(Greptile P1)', async () => {
+    const upstream = await startFakeUpstream((_i, _b, res) => {
+      const sseBody =
+        'event: content_block_start\n' +
+        'data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"Bash_210","name":"Bash","input":{}}}\n\n';
+      res.writeHead(200, {
+        'content-type': 'text/event-stream',
+        'content-encoding': 'identity',
+        'content-length': String(Buffer.byteLength(sseBody)),
+      });
+      res.end(sseBody);
+    });
+    upstreamClose = upstream.close;
+    proxy = await createAnthropicCompatProxy({
+      upstream: upstream.url,
+      transformRequest: [],
+    });
+
+    const res = await post(proxy.url, {
+      model: 'kimi-k3',
+      messages: [
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'Bash_210', name: 'Bash', input: {} }] },
+      ],
+    });
+    expect(res.status).toBe(200);
+    // identity 是明文:必须接管并改名(改写后长度变化,content-length 被剥离)
+    expect(res.text).toContain('"id":"Bash_210_dup2"');
+  });
+});
+
+describe('per-thread 已见 id 缓存(codex-connector P1:请求体缺席历史 id 时仍拦截重铸)', () => {
+  const MINTED_SSE =
+    'event: content_block_start\n' +
+    'data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"Bash_210","name":"Bash","input":{}}}\n\n';
+
+  function mintingUpstream() {
+    return startFakeUpstream((_i, _b, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(MINTED_SSE);
+    });
+  }
+
+  // per-thread 缓存需要**同一 proxy 实例**跨请求累积(每个请求独立建 proxy 会丢缓存),
+  // 因此 postAs 复用同一个 upstream + proxy。
+  async function setupSingleProxy(): Promise<void> {
+    const upstream = await mintingUpstream();
+    upstreamClose = upstream.close;
+    proxy = await createAnthropicCompatProxy({ upstream: upstream.url, transformRequest: [] });
+  }
+
+  async function postAs(sessionId: string, body: unknown): Promise<string> {
+    const res = await fetch(`${proxy!.url}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-claude-code-session-id': sessionId },
+      body: JSON.stringify(body),
+    });
+    return res.text();
+  }
+
+  it('全新 kimi 会话(无 minted id 历史)仍接管并记录首个 streamed id(codex-connector P1)', async () => {
+    await setupSingleProxy();
+    // 全新 kimi 会话: 请求体无任何铸造形态 id → requestedIds null, cache 空;
+    // 修复前 responseToolUseIds 也 null → 不接管 → 首 fresh id 未记录。
+    // 修复后: 请求体 model=kimi 判定接管, onObserved 记录 Bash_210。
+    const r1 = await postAs('sess-fresh', {
+      model: 'moonshot/kimi-k3',
+      messages: [{ role: 'user', content: '你好' }],
+    });
+    expect(r1).toContain('"id":"Bash_210"'); // fresh id 透传(无撞车)
+
+    // 第二次请求(同 session, 无铸造 id 历史, 模拟 rewind): 缓存里已有 Bash_210
+    // → 响应铸 Bash_210 仍被拦截改名
+    const r2 = await postAs('sess-fresh', {
+      model: 'moonshot/kimi-k3',
+      messages: [{ role: 'user', content: '继续' }],
+    });
+    expect(r2).not.toContain('"id":"Bash_210"');
+    expect(r2).toMatch(/Bash_210_dup\d+/);
+  });
+
+  it('Kimi Code 的 k3 模型 id 同样判定为 kimi 会话(codex-connector P1)', async () => {
+    await setupSingleProxy();
+    // catalog 里 moonshot-kimi-code provider 的 claude-code runtime model id 是裸 `k3`
+    // (Kimi K3), 不带 kimi 前缀 —— 修复前 isKimiRequest 对 k3 返回 false → 不接管
+    const r1 = await postAs('sess-k3', {
+      model: 'k3',
+      messages: [{ role: 'user', content: '你好' }],
+    });
+    expect(r1).toContain('"id":"Bash_210"'); // fresh id 透传(无撞车)
+
+    // 第二次请求(同 session, 模拟 rewind): 缓存里已有 Bash_210 → 拦截改名
+    const r2 = await postAs('sess-k3', {
+      model: 'k3',
+      messages: [{ role: 'user', content: '继续' }],
+    });
+    expect(r2).not.toContain('"id":"Bash_210"');
+    expect(r2).toMatch(/Bash_210_dup\d+/);
+  });
+
+  it('请求1(历史含 Bash_210)改名;请求2(同 session,历史不含 Bash_210)仍拦截重铸', async () => {
+    await setupSingleProxy();
+    // 请求1: 历史带 Bash_210 → 响应铸 Bash_210 → 撞车 → 改名; Bash_210 进线程缓存
+    const r1 = await postAs('sess-1', {
+      model: 'kimi-k3',
+      messages: [
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'Bash_210', name: 'Bash', input: {} }] },
+      ],
+    });
+    expect(r1).toContain('"id":"Bash_210_dup2"');
+
+    // 请求2: 同 session, 历史**不含** Bash_210(模拟 rewind 后历史缺席)
+    // → 若只从请求体建 usedIds, 该 id 会被当「新 id」放行; per-thread 缓存必须拦截
+    const r2 = await postAs('sess-1', {
+      model: 'kimi-k3',
+      messages: [{ role: 'user', content: '继续分析' }],
+    });
+    // 缓存让 r2 仍设防:响应铸 Bash_210 被改名(后缀可能顺延为 _dup3,因为 r1
+    // 的 onRename 已把 _dup2 写进缓存),绝不能原样放行 Bash_210
+    expect(r2).not.toContain('"id":"Bash_210"');
+    expect(r2).toMatch(/Bash_210_dup\d+/);
+  });
+
+  it('请求2 仍含部分铸造 id 时,缓存里缺席的旧 id 也并入种子(codex-connector P1)', async () => {
+    await setupSingleProxy();
+    // 请求1: 历史带 Bash_210 → 改名 → 进缓存
+    const r1 = await postAs('sess-partial', {
+      model: 'kimi-k3',
+      messages: [
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'Bash_210', name: 'Bash', input: {} }] },
+      ],
+    });
+    expect(r1).toContain('"id":"Bash_210_dup2"');
+
+    // 请求2: 同 session, 请求体**仍含另一个**铸造 id(Read_5, 使 requestedIds 非空),
+    // 但 Bash_210 缺席 —— 若只从请求体建种子, Bash_210 会漏; 缓存必须并入。
+    // fake upstream 恒铸 Bash_210 → 必须仍被改名, 不得原样放行。
+    const r2 = await postAs('sess-partial', {
+      model: 'kimi-k3',
+      messages: [
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'Read_5', name: 'Read', input: {} }] },
+      ],
+    });
+    expect(r2).not.toContain('"id":"Bash_210"');
+    expect(r2).toMatch(/Bash_210_dup\d+/);
+  });
+
+  it('不同 session 的缓存互不串扰', async () => {
+    await setupSingleProxy();
+    // 请求1 在 sess-A 铸 Bash_210(缓存入 sess-A)
+    await postAs('sess-A', {
+      model: 'kimi-k3',
+      messages: [
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'Bash_210', name: 'Bash', input: {} }] },
+      ],
+    });
+    // 请求2 在 sess-B(全新会话, 无缓存)铸 Bash_210 → 请求体不带历史 id → 应放行
+    const r2 = await postAs('sess-B', {
+      model: 'kimi-k3',
+      messages: [{ role: 'user', content: '你好' }],
+    });
+    expect(r2).toContain('"id":"Bash_210"');
+    expect(r2).not.toContain('Bash_210_dup2');
+  });
+});
+
+describe('streaming response validity gate (#2242)', () => {
+  const SSE_HEADERS = { 'content-type': 'text/event-stream; charset=utf-8' };
+  const SSE_BODY = 'event: message_start\ndata: {"type":"message_start"}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n';
+
+  it('流式请求收到空 2xx → 结构化 502(empty_stream_response)', async () => {
+    const upstream = await startFakeUpstream((_idx, _body, res) => {
+      res.writeHead(200, SSE_HEADERS);
+      res.end();
+    });
+    upstreamClose = upstream.close;
+    proxy = await createAnthropicCompatProxy({ upstream: upstream.url });
+
+    const result = await post(proxy.url, { model: 'test-model', stream: true });
+    expect(result.status).toBe(502);
+    const parsed = JSON.parse(result.text) as { error: { type: string; code?: string } };
+    expect(parsed.error.type).toBe('proxy_error');
+    expect(parsed.error.code).toBe('empty_stream_response');
+  });
+
+  it('流式请求收到非 SSE 2xx → 502(non_sse_stream_response)', async () => {
+    const upstream = await startFakeUpstream((_idx, _body, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { type: 'gateway_hiccup', message: 'nope' } }));
+    });
+    upstreamClose = upstream.close;
+    proxy = await createAnthropicCompatProxy({ upstream: upstream.url });
+
+    const result = await post(proxy.url, { model: 'test-model', stream: true });
+    expect(result.status).toBe(502);
+    expect((JSON.parse(result.text) as { error: { code?: string } }).error.code)
+      .toBe('non_sse_stream_response');
+  });
+
+  it('零事件 SSE(只有注释/心跳)正常结束 → 502(sse_without_events)', async () => {
+    const upstream = await startFakeUpstream((_idx, _body, res) => {
+      res.writeHead(200, SSE_HEADERS);
+      res.write(': ping\n\n');
+      res.end(': bye\n\n');
+    });
+    upstreamClose = upstream.close;
+    proxy = await createAnthropicCompatProxy({ upstream: upstream.url });
+
+    const result = await post(proxy.url, { model: 'test-model', stream: true });
+    expect(result.status).toBe(502);
+    expect((JSON.parse(result.text) as { error: { code?: string } }).error.code)
+      .toBe('sse_without_events');
+  });
+
+  it('合法 SSE 原样透传,事件前的注释心跳不丢', async () => {
+    const upstream = await startFakeUpstream((_idx, _body, res) => {
+      res.writeHead(200, SSE_HEADERS);
+      res.write(': keepalive\n\n');
+      res.end(SSE_BODY);
+    });
+    upstreamClose = upstream.close;
+    proxy = await createAnthropicCompatProxy({ upstream: upstream.url });
+
+    const result = await post(proxy.url, { model: 'test-model', stream: true });
+    expect(result.status).toBe(200);
+    expect(result.text).toBe(`: keepalive\n\n${SSE_BODY}`);
+  });
+
+  it('压缩 SSE 不按明文扫行:首字节提交并透传', async () => {
+    const gz = gzipSync(Buffer.from(SSE_BODY, 'utf8'));
+    const upstream = await startFakeUpstream((_idx, _body, res) => {
+      res.writeHead(200, { ...SSE_HEADERS, 'content-encoding': 'gzip' });
+      res.end(gz);
+    });
+    upstreamClose = upstream.close;
+    proxy = await createAnthropicCompatProxy({ upstream: upstream.url });
+
+    const result = await post(proxy.url, { model: 'test-model', stream: true });
+    expect(result.status).toBe(200);
+    expect(result.text).toBe(SSE_BODY);
+  });
+
+  it('非流式请求不受门控:空 200 照旧字节透传(行为保持)', async () => {
+    const upstream = await startFakeUpstream((_idx, _body, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end();
+    });
+    upstreamClose = upstream.close;
+    proxy = await createAnthropicCompatProxy({ upstream: upstream.url });
+
+    const result = await post(proxy.url, { model: 'test-model' });
+    expect(result).toEqual({ status: 200, text: '' });
+  });
+
+  it('已提交后的截断保持连接失败语义,不补成正常结束', async () => {
+    const upstream = await startFakeUpstream((_idx, _body, res) => {
+      res.writeHead(200, SSE_HEADERS);
+      res.write('event: message_start\ndata: {"type":"message_start"}\n\n');
+      setTimeout(() => res.destroy(), 30);
+    });
+    upstreamClose = upstream.close;
+    proxy = await createAnthropicCompatProxy({ upstream: upstream.url });
+
+    await expect(post(proxy.url, { model: 'test-model', stream: true })).rejects.toThrow();
   });
 });

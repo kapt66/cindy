@@ -289,3 +289,14 @@ export function allUserDataDirNames(
 ): readonly string[] {
   return [identity.userDataDirNameByRegion[region], ...identity.legacyUserDataDirNames];
 }
+
+/**
+ * 持久化 dialogue cwd 的历史 userData 目录名。Cindy Meka 的正式服务区共享
+ * 安装身份，因此两区都只读扫描同一组 XDMaker Meka 历史迁移来源。
+ */
+export function legacyDialogueUserDataDirNames(
+  _region: CindyRegion = DEFAULT_CINDY_REGION,
+  identity: BrandIdentity = BRAND_IDENTITY,
+): readonly string[] {
+  return identity.legacyUserDataDirNames;
+}

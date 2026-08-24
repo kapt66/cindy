@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   DEEP_LINK_PRIMARY_SCHEME,
+  DEEP_LINK_PROVIDER_CONNECT_ID_MAX_LENGTH,
   DEEP_LINK_REGISTERED_SCHEMES,
   DEEP_LINK_SCHEMES,
   DEEP_LINK_SCHEME_RE_GROUP,
@@ -15,6 +16,7 @@ import {
   buildDeepLink,
   hasDeepLinkPathPrefix,
   isDeepLinkProtocol,
+  isDeepLinkProviderConnectId,
   isDeepLinkUrl,
   matchDeepLinkPrefix,
   stripDeepLinkPathPrefix,
@@ -34,11 +36,7 @@ describe('deepLinkSchemes constants', () => {
   });
 
   it('上游 cindy:// 只解析、不注册，避免抢占同机 Cindy', () => {
-    expect(DEEP_LINK_REGISTERED_SCHEMES).toEqual([
-      'cindy-meka',
-      'xdmaker-meka',
-      'xdt-maker',
-    ]);
+    expect(DEEP_LINK_REGISTERED_SCHEMES).toEqual(['cindy-meka', 'xdmaker-meka', 'xdt-maker']);
     expect(DEEP_LINK_REGISTERED_SCHEMES).not.toContain('cindy');
   });
 
@@ -98,6 +96,22 @@ describe('stripDeepLinkPathPrefix / hasDeepLinkPathPrefix', () => {
       true,
     );
     expect(hasDeepLinkPathPrefix('cindy://session/a', 'session-card/')).toBe(false);
+  });
+});
+
+describe('isDeepLinkProviderConnectId', () => {
+  it('accepts provider and preset ids while bounding untrusted URL input', () => {
+    expect(isDeepLinkProviderConnectId('openrouter')).toBe(true);
+    expect(isDeepLinkProviderConnectId('Vendor_2')).toBe(true);
+    expect(isDeepLinkProviderConnectId('a'.repeat(DEEP_LINK_PROVIDER_CONNECT_ID_MAX_LENGTH))).toBe(
+      true,
+    );
+    expect(isDeepLinkProviderConnectId('')).toBe(false);
+    expect(isDeepLinkProviderConnectId('a.b')).toBe(false);
+    expect(isDeepLinkProviderConnectId('a b')).toBe(false);
+    expect(
+      isDeepLinkProviderConnectId('a'.repeat(DEEP_LINK_PROVIDER_CONNECT_ID_MAX_LENGTH + 1)),
+    ).toBe(false);
   });
 });
 

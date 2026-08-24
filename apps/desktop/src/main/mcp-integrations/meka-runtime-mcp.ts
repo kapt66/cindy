@@ -557,10 +557,11 @@ function createRouterServer(context: McpProviderContext): McpServer {
       const selectedProjectId = projectId(context);
       if (!selectedProjectId)
         return jsonResult({ ok: false, error: 'Meka project MCP is not enabled' }, true);
+      const sessionId = activeSessionId(context);
+      if (!sessionId) return jsonResult({ ok: false, error: 'Meka session is not active' }, true);
       try {
         const workflowDecision = await evaluateCombatToolExecution({
-          agentKind: context.agentKind,
-          sessionId: activeSessionId(context),
+          sessionId,
           workingDir: context.getSessionContext?.()?.workingDir ?? context.workingDir,
           vendorOptions: options(context),
           toolName: 'mcp__mcp_router__call_tool',
@@ -849,9 +850,12 @@ class InlineMekaMcpProvider implements McpProvider {
     server.setRequestHandler(CallToolRequestSchema, async (request) => {
       try {
         if (isCombatWorkflowPolicyActive({ vendorOptions: options(context) })) {
+          const sessionId = activeSessionId(context);
+          if (!sessionId) {
+            return jsonResult({ ok: false, error: 'Meka session is not active' }, true);
+          }
           const decision = await evaluateCombatToolExecution({
-            agentKind: context.agentKind,
-            sessionId: activeSessionId(context),
+            sessionId,
             workingDir: context.getSessionContext?.()?.workingDir ?? context.workingDir,
             vendorOptions: options(context),
             toolName: `mcp__${this.name}__${request.params.name}`,

@@ -1,19 +1,28 @@
 # `origin/main` → `meka/main` 同步报告
 
+> 本轮（2026-08-21）在隔离 worktree `C:\Workspace\cindy-upstream-sync-20260821`
+> 已启动真实 merge，并已在本隔离分支创建本地 merge commit。基线为
+> `HEAD=d17186e42b724791b212bc55437587ce84069c2e`、
+> `origin/main=625a7d714f199cb6770b5d1f556bb1f0322e9fbb`、
+> `merge-base=58060cd4cde6682cdf0881885f4f9ff6f4489579`；目标侧独有 86 个提交，
+> 上游侧独有 1790 个提交。Git 产生的 139 个冲突已按能力组完成语义解决，当前没有
+> unmerged path；按用户决定保留 Meka `cindy-protocol` submodule 与 gitlink
+> `35fe6bfca4f24046eba0a3ba2826a5079eb0cb8e`。merge 未 push、未创建 PR。
+
 ## 1. 范围与基线
 
-- 工作区：`C:\Workspace\cindy`
-- 目标分支：`meka/main`
+- 工作区：`C:\Workspace\cindy-upstream-sync-20260821`
+- 目标分支：`codex/sync-origin-main-20260821`（合并目标为 `meka/main`）
 - 来源：`origin/main`
-- 来源 SHA：`58060cd4c`（本轮最新 `origin/main`；前一阶段基线为 `2db5c6280641`）
-- 目标合并前 SHA：`58edde41c7c8f2b712a9e2899742e519d37f0ca4`
-- merge-base：`e4b464a2efcc56110dd71251c654eab72e9b70b0`
-- 执行时间：2026-08-04（Asia/Shanghai）
-- 交付状态：本轮 merge 正在收敛冲突，尚未 commit、push 或创建 PR。
+- 来源 SHA：`625a7d714f199cb6770b5d1f556bb1f0322e9fbb`
+- 目标合并前 SHA：`d17186e42b724791b212bc55437587ce84069c2e`
+- merge-base：`58060cd4cde6682cdf0881885f4f9ff6f4489579`
+- 执行时间：2026-08-21（Asia/Shanghai）
+- 交付状态：冲突和定向验证已收敛，merge commit 已在隔离分支创建，尚未 push 或创建 PR；插件基座仍待白名单批准。
 
-本次只处理客户端仓库已有范围，并按用户确认纳入 Meka fork 的 `cindy-protocol` gitlink
-同步；未修改协议子仓源码、服务端仓库或无关存量问题；没有执行 `git merge --abort`、
-破坏性回退或覆盖用户已有改动。
+本次只处理客户端仓库已有范围；按用户确认保留 Meka fork 的 `cindy-protocol` submodule
+及当前 gitlink，不修改协议子仓源码。未修改服务端仓库或无关存量问题；没有执行
+`git merge --abort`、破坏性回退或覆盖主 worktree 的已有改动。
 
 ## 2. 决策记录
 
@@ -21,13 +30,13 @@
 | --- | --- | --- |
 | 两边有效内容都保留，采用语义双向合并 | 用户 | 不使用盲目的 ours/theirs；冲突按产品边界逐组处理 |
 | Desktop 新包身份采用 Meka 命名 | 用户 | 采用 `CindyMeka/CindyMekaDev`；旧 `Cindy/CindyDev` 仅做 dev marker 只读兼容，不回退 Meka 安装、数据、协议和更新器身份 |
-| 数据库 migration 采用追加方式 | 用户 | 保留 Meka `0082`-`0089` lineage；不重放已被 Meka `0089` 覆盖的上游 `0082`/`0083` |
-| 新增 `0090` | 用户确认后的实现 | 用于两边共同需要的新字段；nullable `cost_currency` 先以 USD 回填 |
+| 数据库 migration 采用追加方式 | 用户 | 冻结 Meka `0082`-`0091` lineage；上游 schema 和 companion 行为从 `0092` 追加到 `0095`，不改写已发布编号或 checksum |
 | 格式、重复 import、类型接口并集 | Agent | 仅处理可证明不改变功能的结构冲突 |
 | Agent/IPC、插件权限、身份、远程路由冲突 | 用户定下“双向保留”原则；Agent 按现有产品边界落地 | 保留双方语义并恢复完整边界；没有用类型强转或删除路径掩盖不确定性。若后续行为测试显示真实产品取舍，暂停并回请用户决策 |
+| 存量插件迁移时机 | 用户 | 本轮先完成上游同步；迁移入口和兼容验证保留，但不对真实存量插件目录执行迁移，待同步完成后由用户单独决定 |
 | 合并后新增代码造成的括号/函数闭合断裂 | Agent | 仅补齐结构闭合并保留双方新增内容；未改变运行时语义 |
 | `@` 资源 Provider 运行入口 | 用户 | 接受上游移除两阶段 Provider 搜索、IPC、preload 和权限展示；保留历史 `plugin-resource` 解析、序列化、正文投影与旧 manifest 宽容读取 |
-| `cindy-protocol` gitlink | 用户 | 协议仓也是 Meka fork，接收上游 `ff055be58` 协议包回到源码直发的指针；不在本次修改子仓源码 |
+| `cindy-protocol` gitlink | 用户 | 保留 Meka submodule 与原 gitlink `35fe6bfca4f24046eba0a3ba2826a5079eb0cb8e`；不接入上游本地化同名协议包，不修改子仓源码 |
 
 ## 3. 冲突内容与最终处理
 
@@ -69,14 +78,15 @@
 
 ### 3.4 数据库 migration
 
-涉及 `apps/desktop/drizzle/0082`-`0089`、`0090_rich_phalanx.sql`、snapshot、
-script 和 journal。
+涉及 `apps/desktop/drizzle/0082`-`0095`、snapshot、companion script 和 journal。
 
-- 保留 Meka `0082`-`0089` lineage；上游同义 `0082`/`0083` 不再次应用，避免重复建表
-  或改变历史 checksum。
-- 新增 `0090` 采用追加 schema；历史 nullable `cost_currency` 使用
-  `COALESCE("cost_currency", 'USD')` 回填，再进入后续约束路径。
-- 该决策由用户确认；迁移脚本不删除历史 migration，不重写已有 snapshot。
+- 冻结 Meka `0082`-`0091` lineage；上游同编号 migration 不覆盖、不重放，避免改变历史
+  runtime identity 或 checksum。
+- 上游新增 schema 合并为 `0092_sync_upstream_20260821`，xAI provider provenance、session
+  plan 和 media 修复依次追加为 `0093`-`0095`。上游 `0085_skinny_iron_man` 的
+  `daily_spend` 重建行为也并入 `0092`，不占用 Meka 已发布的 `0085` 编号。
+- companion 使用表/列守卫兼容 fresh DB、Meka 历史库和合成 partial-schema fixture；不删除
+  历史 migration，不重写已有 snapshot。
 
 ### 3.5 生成文档与测试辅助代码
 
@@ -108,14 +118,12 @@ script 和 journal。
   需要搜索资源的能力应迁移到普通插件 command/tool。已有消息中的资源正文和 session/
   message 元数据仍可展示与投影。决策人：用户；实施人：Codex。
 
-### 3.7 `cindy-protocol` 指针同步（本轮新增冲突）
+### 3.7 `cindy-protocol` submodule 保留（本轮新增冲突）
 
-- 上游将协议包从预构建产物切回源码直发，目标 commit 为 `ff055be58e05a082bb5eb6327de115ad8bf127b9`；
-  Desktop dev/typecheck/bundle 不再依赖撤销的预构建 `@cindy/model-access-protocol`，
-  Mobile 增加 `.js` → `.ts` fallback。
-- 子仓 `origin` 已核对为 Meka 官方 fork `https://github.com/kapt66/cindy-protocol.git`。
-  本次只在已有 fork 提交之间合并并更新父仓 gitlink，不修改协议源码；跨仓发布前服务端需
-  同步使用同一协议 commit，避免 wire protocol 漂移。用户确认将该 fork 纳入本轮同步。
+- 上游提交 `b247c2d32` 将共享协议从 submodule 本地化；Meka 的协议仓仍承载私有扩展和
+  独立发布边界，不能用上游同名本地 package 覆盖。
+- 最终按用户决定保留 Meka submodule，workspace 只从该 submodule 提供协议包，父仓 gitlink
+  保持 `35fe6bfca4f24046eba0a3ba2826a5079eb0cb8e`。本轮不修改协议源码、子仓 remote 或服务端。
 
 ## 4. 验证与剩余风险
 
@@ -130,11 +138,11 @@ NODE_OPTIONS=--max-old-space-size=8192 pnpm --filter desktop exec tsc --noEmit -
 当前没有未解决 merge marker。已完成的定向验证如下：
 
 - Desktop TypeScript：`pnpm --filter desktop exec tsc --noEmit --pretty false` 通过。
-- Desktop 数据库：`pnpm --filter desktop db:validate` 通过。
-- migration replay：直接运行 `migrationReplay.test.ts` 的 6 项通过；标准
-  `test:migration-replay` 在准备 Pi 二进制时被 GitHub API 403 rate limit 阻断。
-- 合并相关定向回归：7 个文件、185 项通过；结构修复后 maker-cc-manager 32 项、
-  lizi-mcps 9 项、orca-workflow 11 项通过。
+- Desktop 数据库：`pnpm --filter desktop db:validate` 通过；标准 migration replay 8/8 通过。
+- Orca 输入队列 294/294、maker-cc-manager 120/120、cindy-tools 68/68、lizi-mcps 18/18、
+  maker-core native Skill/远程 MCP 投影 24/24、Mobile 设计契约 10/10 通过。
+- Desktop、Mobile、cindy-tools、lizi-mcps 和 maker-cc-manager TypeScript 检查通过；
+  maker-core 没有仓库门禁定义的 `typecheck` script。
 - Telegram 个人群窗口测试夹具已直接修复：原测试错误执行 `0083_*`，未创建上游新增的
   `hook_group_messages` 表；改为按表定位并执行包含该表的 migration 后，12 项通过。
 - 身份测试基线按用户决策改为 `CindyMeka/CindyMekaDev`；`devKeychainName` 运行时仍接受
@@ -147,7 +155,7 @@ NODE_OPTIONS=--max-old-space-size=8192 pnpm --filter desktop exec tsc --noEmit -
 相关 package 测试分别通过 32、9、11 项，且不再有 collect/transform 失败。该快照中的剩余项
 随后按 5.1-5.4 逐项复测、归因并处理；最终门禁结果见下方最新验证记录。
 
-尚未 commit、push；后续提交必须按仓库要求使用 `git commit -s` 并先完成完整门禁。
+merge commit 已创建但尚未 push；后续提交必须按仓库要求使用 `git commit -s` 并先完成完整门禁。
 
 ## 5. 决策记录与验证追踪
 
@@ -332,3 +340,202 @@ maker-shared、lizi-im 及全部可运行协议包均 PASS。受影响包按仓�
   不可复现，最终提交以这次默认门禁结果为准。
 - 决策人：无需产品取舍；实施人：Codex。该结果覆盖此前 5.7 中“全量未重复执行”的旧记录，
   以本节为最终验证事实。
+
+### 5.11 2026-08-21 新一轮上游同步
+
+- 本轮使用新 worktree `C:\Workspace\cindy-upstream-sync-20260821`，从
+  `meka/main@d17186e42b724791b212bc55437587ce84069c2e` 启动真实
+  `git merge --no-commit --no-ff origin/main`。
+- fetch 后来源为 `origin/main@625a7d714f199cb6770b5d1f556bb1f0322e9fbb`，Git 选出的
+  merge-base 为 `58060cd4cde6682cdf0881885f4f9ff6f4489579`；目标侧独有 86 个提交，来源侧
+  独有 1790 个提交。
+- Git 首次列出 139 个冲突：测试 48、产品代码 41、UI 25、数据库生成物 6、治理规则 6、
+  本地化 5、构建配置 3、协议/子模块 2、脚本 2、文档 1。全部冲突已按能力域完成三方
+  语义解决，`git diff --name-only --diff-filter=U` 为空。
+- 上游提交 `b247c2d32` 将共享协议从 submodule 本地化。用户明确决定保留 Meka submodule；
+  最终 workspace 只从该 submodule 提供同名协议包，不接入上游本地副本，gitlink 固定为
+  `35fe6bfca4f24046eba0a3ba2826a5079eb0cb8e`。本轮未修改协议子仓源码或服务端仓库。
+
+#### 5.11.1 Meka 能力审计
+
+| ID | 能力 | Meka 不变量 | 上游对应变化 | 最终关系与实现 | 状态 |
+| --- | --- | --- | --- | --- | --- |
+| `CAP-IDENTITY` | 身份、深链与旧数据 | `CindyMeka` / `cindy-meka` / `cindy-meka://`；旧 `xdmaker-meka` 只读迁移 | 区域、认证、正式 profile 和更新生命周期重构 | 接纳上游生命周期；保留 Meka 身份、互操作解析和更新渠道 | 已验证 |
+| `CAP-PROTOCOL` | Meka 协议与 MCPR 扩展 | 保留 Meka submodule 和 `mcpr-plugin-capability` | 上游协议包本地化 | 用户决定的保留例外；只保留一套 workspace 包来源 | 已验证 |
+| `CAP-DATABASE` | 历史数据库升级 | 已发布 migration/runtime identity 不改写 | 上游 `0086`-`0092` 新 schema、FTS、统计和数据迁移 | Meka `0082`-`0091` 冻结；合并 schema 与 guarded companion 追加为 `0092`-`0095` | 已验证 |
+| `CAP-MEKA-PROJECT` | 项目、角色、正式事项 | 草稿和历史任务继续绑定 Meka 项目/角色 | 上游 Draft/Composer、侧栏和 session route 重构 | 在上游 route owner/historyLoaded 与 Composer 状态层上恢复 Meka 投影 | 已验证 |
+| `CAP-MCPR-REMOTE` | MCPRouter 远程任务 | `mcpr:<instanceId>` 独立于 SSH；保留目标目录与标签 | 上游 Worker 权限、远程 worktree phase 和生命周期 | 共享 Worker 创建流程，Meka adapter 保留 MCPRouter target/workingDir | 已验证 |
+| `CAP-AGENT-ORCA` | Agent/Orca 行为 | Meka combat/runtime/高风险 Host 门禁不降级 | 上游 Review、Provider、队列、Pi 与权限模式 | 重建 `maker-ipc/register.ts`，按契约并集接纳上游并保留 Meka Host 强制边界 | 已验证 |
+| `CAP-MEKA-PLUGIN` | Meka 插件渠道 | 独立 ledger/channel、大小与 SHA、staged review、旧批准继续有效 | 上游 receipt、package review、自定义来源与批量更新 | 共享市场/批量控制器；Meka adapter 保留渠道隔离，review token 绑定实际批准和包 SHA | 同步代码已验证；存量迁移待本轮结束后由用户决定，插件基座仍待白名单批准 |
+| `CAP-MEKA-SKILL` | Meka 技能与项目角色 | MCPRouter 市场技能不混入 Cindy SkillHub | 上游技能页与导航演进 | 接纳共享 UI/详情行为，保留 Meka provenance、目录和返回落点 | 已验证 |
+| `CAP-I18N` | 五语用户界面 | Meka 文案不因新增 locale 丢失 | 上游新增 `zh-TW` 并扩充四语 catalog | 四语结构化上游优先合并；Meka 独有键生成台湾繁中投影并遵守术语表 | 已验证 |
+
+#### 5.11.2 上游变化接纳审计
+
+| 变化 ID | 上游行为 | 能力 | 接纳方式 | Meka 动作与兼容边界 | 验证 | 状态 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `UP-20260821-01` | Review/Provider、输入队列和生命周期重构 | `CAP-AGENT-ORCA` | 适配接纳 | 保留 MCPRouter runtime/combat 和 fail-closed Host 门禁 | Desktop typecheck、Orca/IPC 定向测试 | 已验证 |
+| `UP-20260821-02` | Worker 权限、route owner、remote phase、Composer 状态层 | `CAP-MEKA-PROJECT` / `CAP-MCPR-REMOTE` | 适配接纳 | Meka 草稿、项目/角色、远程目标和目录标签映射到新状态层 | renderer/Main 定向测试 | 已验证 |
+| `UP-20260821-03` | 插件 receipt、实际包权限复核与批量更新 | `CAP-MEKA-PLUGIN` | 适配接纳 | Meka staged review 持久化 `reviewedApproval`，批准时继续绑定 package SHA；不放宽权限；不在本轮触发存量插件迁移 | `updateAllController` 49/49 及插件组定向测试 | 已验证；存量迁移决策延期，插件基座待批准 |
+| `UP-20260821-04` | 上游数据库 `0086`-`0092` | `CAP-DATABASE` | 适配接纳 | 生成合并 schema；FTS/统计触发器与数据迁移用 guarded companion 追加，不改历史 checksum | `db:validate`、migration replay 8/8 | 已验证 |
+| `UP-20260821-05` | `zh-TW` locale | `CAP-I18N` | 适配接纳 | 保留上游繁中，缺失 Meka 键由简中语义转换为台湾繁中；产品术语固定为“插件” | `check:i18n`、`check:i18n-glossary` | 已验证 |
+| `UP-20260821-06` | 协议包从 submodule 本地化 | `CAP-PROTOCOL` | 保留例外 | 用户明确要求保留 Meka submodule；不同时装入上游同名包 | gitlink/workspace 审计 | 已验证 |
+| `UP-20260821-07` | 正式 profile migration 写保护 | `CAP-IDENTITY` / `CAP-DATABASE` | 适配接纳 | 启动入口恢复 `XDT_OFFICIAL_SHARED_PROFILE` 和 isolated-on-production 拒绝，错误身份改为 Cindy Meka | policy/dev flags 定向测试 | 已验证 |
+| `UP-20260821-08` | Worker provider 与执行目标扩展 | `CAP-MCPR-REMOTE` | 并集接纳 | 创建 Worker 同时保留上游 `provider_id` 与 Meka `working_dir` / `remote_host_id` / `execution_target` | lizi-mcps 18/18、typecheck | 已验证 |
+| `UP-20260821-09` | Claude 远端环境与 protocol v4 | `CAP-MCPR-REMOTE` / `CAP-MEKA-SKILL` | 适配接纳 | 恢复 capability bundle ensure/release、revision/thread register、MCP tunnel、`CapabilityMcpRouter`、`mcp-shim`、`codex-bridge` 及关闭清理；协商版本 `>=3` 可通过 v3 能力门 | maker-cc-manager 120/120、typecheck | 已验证 |
+| `UP-20260821-10` | Claude native Skill plugin 与远程 MCP 投影 | `CAP-MEKA-SKILL` / `CAP-AGENT-ORCA` | 适配接纳 | 本地恢复 `nativeSkillPluginPath` / `nativeSkillRevision`；远端仅投影 `orca_worker_bridge`、`lizi_orca` 到 tunnel 与 in-process MCP | maker-core 24/24 | 已验证 |
+| `UP-20260821-11` | Orca 自动报告与队列恢复 | `CAP-AGENT-ORCA` | 适配接纳 | 自动报告可穿过 `active-turn` Retry 但不消费 Retry/error；`queue-head` recovery 继续严格阻塞 | Orca 队列 294/294 | 已验证 |
+| `UP-20260821-12` | Mobile session 切换与分享设计契约 | `CAP-I18N` | 完整接纳 | 恢复 session-switch 品牌 loading、conversation-share footer、approved 标记及 wordmark 尺寸间距 | Mobile 设计契约 10/10 | 已验证 |
+| `UP-20260821-13` | 共享 session header/menu 与协同重试策略 | `CAP-MEKA-PROJECT` / `CAP-AGENT-ORCA` | 适配接纳 | 恢复 tooltip、包含 archived session 的 fork family 发现和协同 disabled/retry 行为；Meka 继续显示角色 scope，不把 Pi 专属 `exportHtml` / `compact` 注入共享菜单 | Renderer 定向回归 | 已验证 |
+| `UP-20260821-14` | 新草稿 worktree 资格与项目选择器重构 | `CAP-MEKA-PROJECT` / `CAP-MCPR-REMOTE` | 适配接纳 | confirmed-ineligible 目录回退 plain session，未完成 probe 时 fail closed；Meka 项目选择器继续只列 MCPRouter 目标 | Renderer/Main 定向回归 | 已验证 |
+| `UP-20260821-15` | 侧栏分组与运行时 edition 投影 | `CAP-MEKA-PROJECT` / `CAP-IDENTITY` | 保留例外 | Meka session 保持在普通 pinned groups 之外并位于侧栏既定入口；Login 已改由运行时 edition selector 驱动，不再要求消费 build-region pill keys | source contract 与 sidebar 定向回归 | 已验证 |
+| `UP-20260821-16` | Windows 文件身份与测试锁兼容 | `CAP-AGENT-ORCA` | 完整接纳 | symlink 因 `EPERM` / `ENOSYS` 不可用时，PI package-store TOCTOU 测试改用 hard link 继续验证 identity replacement；真实 test-gate 锁测试恢复上游分散端口参数，不改生产锁或跳过测试 | PI security 66/66（另 3 项平台 skip）、runner 454 项 | 已验证 |
+| `UP-20260821-17` | 存量插件迁移的可读 demo | `CAP-MEKA-PLUGIN` / `CAP-MEKA-SKILL` | 保留迁移能力，延期实际执行 | 独立 `tsx` 宿主复用正式技能快照 worker；demo 只操作临时副本，不触碰真实用户目录；迁移失败、快照失配、一次性门失效或安装目录被改写均非零退出 | `pnpm demo:legacy-migration`、GhostManager 234 pass / 1 platform skip | 验证完成；用户将在同步完成后决定是否执行存量迁移，插件基座仍待批准 |
+
+#### 5.11.3 数据库与验证事实
+
+- Meka `0082`-`0091` SQL、snapshot 和 companion runtime identity 保持原样；上游新增 schema
+  合并为 `0092_sync_upstream_20260821`，上游 xAI provenance、session plan 和 media 修复作为
+  `0093`-`0095` 追加。`0092` 对强制 replay 使用 `IF NOT EXISTS` 和表/列守卫；冻结的 Meka
+  `0091` 只在完整 Meka sessions shape 上执行重建，合成 partial-schema fixture 无对应外键时 no-op。
+- `pnpm --filter desktop db:validate` 通过：`0000..0095` 连续、96 份 journal/snapshot 对齐、
+  Drizzle schema 无漂移、32 个 companion 均为 CJS；固定基线 80 条 SQL + 23 个 runtime、
+  canonical 基线 92 条 SQL + 28 个 runtime identity 均未改写。
+- `pnpm --filter desktop test:migration-replay` 8/8 通过，覆盖 fresh DB、Meka session 历史、
+  v39 Orca、v59 重放、旧 lineage bridge、Worker label 归一化和 history side-write 失败路径。
+- `pnpm check:i18n` 通过：五语 8232 个 key 一致；`pnpm check:i18n-glossary` 通过，仅保留
+  6 个 `status: proposed` 的既有告警。
+- Meka 发布身份与写入保护 50/50 通过，覆盖独立 artifact/updater 命名、Windows 旧签名
+  服务、macOS Meka 证书、RustFS bucket/prefix 隔离、Claude/Codex/ripgrep runtime manifest
+  以及 publish/promote 的 `--execute` / `--yes` 门。插件与技能平行投影 13 个文件、116 项
+  通过，覆盖 Meka 批量更新 adapter、独立 channel ledger、包权限复核、下载策略、Meka
+  技能 API/source manager 和共享详情页的 Meka 路由/动作边界。
+- `pnpm demo:legacy-migration` 首次演练发现独立 `tsx` 宿主没有 Electron 打包后的技能快照
+  utility worker 路径：普通 receipt 可迁移，但带技能旧插件被 demo 误报失败；生产
+  `GhostManager` 对应旧布局回归本身通过。demo 现显式复用同一
+  `ghostSnapshotWorkerProcess` 请求处理器，并把迁移结果、技能快照、一次性门和安装目录
+  不变性改为硬断言。修复后市场插件、用户停用插件、带技能插件三类 fixture 全部迁移，
+  `GhostManager` 234 项通过、1 项平台 skip。演练全程只使用 `os.tmpdir()`，未读取真实用户数据。
+- 末轮定向回归 11 个文件共 302 项通过、3 项平台 skip；PI package-store security 66 项通过、
+  3 项平台 skip。Windows 无文件 symlink 权限时只将 replacement fixture 降级为 hard link，
+  被测的文件身份变化与 fail-closed 行为不变，没有扩大 skip。
+- 根 `pnpm test:unit` 最终完整通过：runner 454 项（447 pass、7 skip），Desktop、Mobile、
+  maker-core 及其余全部 required unit workspace 均 PASS。此前三次在 runner 真实锁用例结束，
+  原因是冲突落地漏掉上游为该用例提供的 `lockPortStart` / `lockPortCount` / `lockPortStride`，
+  导致 Windows 连续动态/排除端口可能全被判为 collision；恢复 `origin/main` 的测试专用
+  `10000..39999` 分散候选后通过。生产锁默认范围、串行语义和 `--no-lock` 策略均未修改。
+- Desktop、Mobile 和四个受影响 bridge package 的最终 typecheck 通过；较早完成的 cindy-tools、
+  lizi-mcps、maker-cc-manager 检查及插件/更新器/深链/Orca 定向测试仍通过。
+- Windows 真实 Electron 已通过 `pnpm restart:desktop:remote -- --isolated=@worktree` 在隔离
+  profile `upstream-sync-20260821-3d9898` 启动，得到 `DESKTOP_DEV_VERDICT=ready`。首次运行审计
+  发现并修复三项合并后运行期断链：未登录 xAI 后台 discovery 在 token 读取处形成
+  `unhandledRejection`、Remote SSH pending-upgrade 快照早于 Main handler 注册、Meka `localDb`
+  的五组 preload 投影在冲突解决时遗漏。xAI 现在把未登录预热视为 no-op，后台调用另有异常
+  边界；Remote SSH IPC 在首个 renderer 窗口前注册；Meka 项目、角色、元数据、技能目录与
+  正式流程 bridge 全部恢复，并由 source contract 回归锁定。
+- 修复后再次完整重启，启动日志未再出现上述 `FATAL` / `unhandledRejection` / `No handler`
+  或 Meka renderer crash。通过 Electron CDP 实际进入本地模式，确认 Meka 助理、SAGA2、
+  正式流程和普通对话入口；Meka 项目页成功读取内置 SAGA2。Light 与 Dark 均在 1280x800
+  实测，document 尺寸与 viewport 一致、无 renderer console error 或可见重叠。
+- Windows x64 版本无关本地产物已由 `electron-forge package` 生成。首次使用 Node 默认约
+  4 GB heap 在 renderer production bundle 阶段 OOM；按仓库 Desktop typecheck 同级的
+  `NODE_OPTIONS=--max-old-space-size=8192` 重跑后完整通过。产物为
+  `out/CindyMeka-win32-x64/CindyMeka.exe`，包内 metadata 为 `productName=CindyMeka`、
+  `version=0.0.0`，并包含 `cindy-meka-updater.exe`、ripgrep、Android platform-tools、
+  Windows function-key listener、原生 SQLite/PTY 与 sqlite-vec。标准 packaged smoke 和
+  `--plugin-storage` smoke 均通过，临时库升级到 schema 95，核心表与 owner-scoped 插件目录、
+  安装账本可用。构建产生的 updater 工作树二进制已恢复为 merge index 中的审计版本；
+  `out/` 与下载 tools 保持 ignored。未签名开发包只验证构建/启动，不替代正式签名验收。
+- 真实旧 `xdmaker-meka` 数据已在 2026-08-22 通过只读来源、系统临时目录目标完成升级
+  验证：先用生产 `copyDatabaseVerified` online backup 合入 WAL，再以精确旧 user ID 走
+  `runLegacyUserDataMigration`，随后重放 8 条 migration 到 schema 95。迁移前后 118 个任务、
+  1848 条消息、2 个 Meka 项目、7 个角色、109 个 Meka 工作区任务和 15 个正式流程任务计数
+  一致，`quick_check=ok`；非敏感设置与角色文件完成复制，smoke DB 未被选择。验证未读取或
+  输出消息、凭证、邮箱和身份锚内容，未写真实旧目录，临时副本已删除。旧安装包到正式签名
+  新包的原地升级仍属于发布验收，不影响本次数据兼容门结论。
+- 2026-08-24 按用户要求使用现有 `CindyMeka` profile（非隔离目录）启动已构建的
+  `CindyMeka.exe`，实际扫描到 schema 91 的 4 条待执行 migration（0092-0095），并全部
+  `apply.ok` 完成到 schema 95。启动后的 worker 报告 `pendingCount=0`、`schemaDrift=clean`，
+  `quick_check=ok`；任务/消息/ Meka 项目/角色聚合计数为 6/782/1/2，与迁移前一致。Electron
+  CDP 9223 主窗口 `readyState=complete`，实际显示 Meka、插件、SAGA2、正式流程和普通对话；
+  启动日志未发现 FATAL、unhandled rejection、缺失 IPC handler、renderer crash 或
+  SQLite/migration 错误。应用自动在 profile 保留 migration backup，另有系统临时 online
+  backup 作为本次验证的回滚依据；验证实例已正常关闭。
+- macOS 尚未实测；插件基座路径必须取得指定放行人的明确 `Approve` 后才可合并。
+- 当前 merge 已提交到隔离分支；未 push、未创建 PR、未发布。
+- 2026-08-24 在当前 merge commit 上重新启动隔离 Desktop：首轮启动器返回
+  `DESKTOP_DEV_VERDICT=ready`，但默认 `desktop:whoami` 暴露出 Windows crashpad
+  `/prefetch:4` 被误识别为 userData 后缀。已过滤 `crashpad-handler` 并补回归测试；修复后
+  第二轮 PID `73920` 同时通过默认 `desktop:whoami -- --all`（`MATCH`、root/HEAD/ready
+  全匹配）、显式隔离 userData、CDP `9222` 和主窗口响应检查。CDP 主页面
+  `document.readyState=complete`，viewport `1535x800`、scroll width `1535`，DOM 可读到
+  `Meka`、`插件`、`SAGA2`、`正式流程`、`普通对话`；隔离库 migration 日志显示
+  `currentVersion=95`、`pendingCount=0`、`schema-drift-repair.no-op`。
+- 该未登录隔离沙箱的日志没有 FATAL、unhandled rejection、renderer crash、缺失 IPC handler、
+  `SQLITE_ERROR` 或 migration/database error。Device Link 的 `PERMISSION_DENIED` 是未登录
+  沙箱按设计拒绝账号能力；DB ready 前的少量 `DbClient not ready` 属于启动竞态，DB ready 后
+  完成接管并继续注册 IPC/调度器，Review 入口保留 retry。随后将该 verifier 修复纳入最终
+  merge commit `f44b86a3210d9e1366c3f7a12b44726dcc819fc1`，第三轮 PID `58232` 再次通过
+  启动器 `DESKTOP_DEV_VERDICT=ready`、默认 whoami `MATCH`、root/HEAD/ready 对齐、CDP
+  `9222`、Electron 响应和主页面 DOM 检查；页面显示 `Meka`、`插件`、`SAGA2`、`正式流程`、
+  `普通对话`，viewport/scroll 均为 `1280x800`。
+
+#### 5.11.4 全路径接纳完成性审计
+
+- 以 `merge-base..origin/main` 的 3352 条变化路径为全集，首次逐路径比对得到：3055 条
+  原样接纳、212 条已经做三方语义整合、85 条结果仍完全等于合并前 Meka HEAD。继续沿调用链
+  审计后补接 24 条静默遗漏；隔离验收又将上游 legacy migration demo 适配到当前技能快照
+  worker。最终 index 重新按三树逐路径比对得到 3060 条与上游字节/模式一致、231 条同时
+  不同于两父线的适配接纳、61 条与合并前 Meka 等值的有意例外，总和 3352。该可复现结果
+  取代处理过程中的中间计数；能力级适配另由 5.11.2 的 `UP-*` 表记录，不混入文件等值分类。
+- 最终 61 条例外均有明确边界：17 条是 Meka 已发布数据库 migration SQL/snapshot/companion
+  冻结历史；36 条属于用户决定保留的 submodule 拓扑（`.gitmodules`、`cindy-protocol`、
+  `pnpm-workspace.yaml` 与上游同名本地 protocol packages）；6 条 hook-control 文件依赖当前
+  Meka protocol 尚未提供的 message operations、durable request ledger 或 `turn.delivery`
+  wire 符号；`remoteSessionMakerMemory.test.ts` 保留 MCPRouter transport 不走 SSH preflight
+  的 Meka 契约；`protocol-and-submodules.md` 保留 submodule 权威规则。
+- protocol 门控的缺失符号为 `HOOK_FEATURE_MESSAGE_OPS`、`makeMessageOp`、
+  `MessageOpResultPayload`、`HOOK_FEATURE_TURN_DELIVERY`、`makeTurnDelivery` 与
+  `TurnDeliveryPayload`。本轮没有在 Desktop 私造 wire adapter，也没有修改协议子仓或服务端；
+  对应 `ackReactions`、request ledger、`turn.delivery` 及 transport/defaults 测试等待协议仓
+  单独授权升级后再接入。
+
+#### 5.11.5 补接的上游行为与 Meka 适配
+
+- Settings 使用上游双栏导航、返回提示、Vision Bridge、stream fade、Pi packages、catalog
+  panel 与 query 清理，同时保留账户删除和 Meka 助理设置入口；插件 legacy tab 仍回到
+  `/settings?tab=ghosts`。Light/Dark 继续走现有语义 token。
+- hook-control 接入失效任务 replacement、共享交互卡/TurnPresenter/出站附件、Telegram cursor
+  提交时机、同 session 串行、lane-only 群历史、计划对账、Auto 审批回退、Slack retry 与 Pi
+  扩展命令路由；Meka transport 不支持的 wire 能力按上节门控。全目录 18 个测试文件、477 项
+  通过。
+- 旧数据迁移接入 Electron `original-fs` 读取真实 `.asar`，仍保留 Meka identity anchor、
+  smoke DB 排除、SQLite online backup 及设置/角色迁移。Global/CN 正式包继续共用
+  `CindyMeka`，未打包开发 profile 使用 `CindyMekaDev`，并接受 `XDT_USER_DATA_DIR` override。
+  真实旧数据临时副本已按上述生产路径升级到 schema 95，并通过聚合数据保持检查；深链继续
+  只注册 `cindy-meka://`，兼容 provider connect ID 与跨端 `cindy://` 解析。
+- Forge 完整接纳上游受管根双向隔离、workdir/realpath 门、stable-parent scaffold、TOCTOU
+  防护、Unix mode、required node/icon、Manual 校验与最新作者手册；Meka 开发目录仍可用
+  `outputDir` 直接写独立临时卷，`reveal` 与 `channel: 'meka'` 归属语义继续保留。公开作者手册
+  因上游 `ios-simulator` 与 Meka `reveal` 同时存在，按实际清单记为十九个卡槽。Forge 与市场
+  session boundary 定向测试 78 项通过、2 项平台 skip；插件基座白名单批准要求不变。
+- 本轮新增语义组复测：旧数据、region、深链、远程 query/memory 与 Settings sidebar 71 项
+  通过；真实 `.asar` 子进程回归包含在内。demo 修复后最终再次执行根 `pnpm test:unit`：
+  runner 454 项（447 pass、7 skip）及 Desktop、Mobile、maker-core、Meka protocol submodule 等全部 required
+  workspace 均 PASS；串行 `pnpm -r --workspace-concurrency=1 --if-present run typecheck` 的 8 个可运行
+  workspace 全部通过。随后再次执行 `db:validate`（96 条 SQL，`0000..0095`）、migration replay
+  8/8、`check:i18n` 与 `check:i18n-glossary`，均通过。i18n 仍报告 851 条存量非阻塞提示，术语表
+  仍报告 6 处 `status=proposed` 命中；本次同步没有新增违规。
+- 最终隔离启动再次得到 `DESKTOP_DEV_VERDICT=ready`。CDP 在 1280×800 实测 Settings 通用、
+  Meka 助理、插件和 Pi 扩展 panel，Dark/Light 均无 viewport 越界、可见重叠或 renderer
+  exception/console error；主任务页继续显示 Meka 助理、SAGA2、正式流程与普通对话入口。
+- 2026-08-22 完成性复审重新 fetch `origin/main`，tip 仍为本次 `MERGE_HEAD`
+  `625a7d714f199cb6770b5d1f556bb1f0322e9fbb`。直接从 HEAD、MERGE_HEAD 与 index 三棵树复算
+  3352 条上游变化，结果仍为 3060 条上游等值、231 条适配接纳、61 条有意 Meka 例外；没有
+  新增未解释分歧。插件/技能 13 个直接覆盖文件 131/131 通过，发布核心门禁 30/30、品牌/
+  打包参数/macOS 公证契约补充门禁 36/36 通过。现有 Windows 包的 ASAR 再次确认
+  `productName=CindyMeka`，`cindy-meka-updater.exe` 存在；标准与 plugin-storage packaged smoke
+  均通过 schema 95。最后一次命名沙箱启动由 `desktop:whoami` 返回
+  `DESKTOP_DEV_VERDICT=ready`，CDP 主窗口为 `CindyMekaDev/0.0.0`、1280×800、无横向溢出，
+  同时可见 Meka、插件、SAGA2、正式流程和普通对话入口；本次启动日志未命中 FATAL、
+  unhandled rejection、缺失 IPC handler、renderer crash 或 SQLite/migration 错误。

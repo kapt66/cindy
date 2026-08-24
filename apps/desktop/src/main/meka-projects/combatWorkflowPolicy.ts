@@ -201,7 +201,8 @@ function text(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-function mcpParts(toolName: string): { server: string; tool: string } | null {
+function mcpParts(toolName: string | undefined): { server: string; tool: string } | null {
+  if (!toolName) return null;
   if (toolName.startsWith('mcp__')) {
     const parts = toolName.slice(5).split('__');
     return parts.length >= 2 ? { server: parts[0]!, tool: parts.slice(1).join('__') } : null;
@@ -211,7 +212,7 @@ function mcpParts(toolName: string): { server: string; tool: string } | null {
 }
 
 function effectiveMcpTarget(
-  toolName: string,
+  toolName: string | undefined,
   input: unknown,
 ): { server: string; tool: string } | null {
   const target = mcpParts(toolName);
@@ -252,6 +253,7 @@ function effectiveMcpTarget(
       inferredTool = 'send_to_worker';
     }
   }
+  if (!inferredTool) return null;
   return {
     ...target,
     tool: inferredTool,

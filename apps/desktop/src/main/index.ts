@@ -17,15 +17,14 @@ import { createLogger, initLogger } from './logger.js';
 import { beginDesktopDevInstance, type DesktopDevMode } from './devStartupStatus.js';
 import { ensureSystemBinPathForMachineId } from './deviceId.js';
 
-// 同机双装(cn/global):global 构建把 userData 切到区域目录(CindyMekaGlobal),
-// 与 cn 版(productName 默认 'CindyMeka')彻底分库;数据库 / 登录态 / 单实例锁 /
-// sessionData 随 userData 目录天然隔离。必须在 initLogger()(packaged 日志
-// 目录)、crashReporter、单实例锁与一切 userData 读取之前执行。cn 构建与
-// dev 返回 null,零行为变化(dev 隔离语义由下方 devCliFlags 的 --isolated 承载)。
+// Meka 正式区共用 productName 默认的 CindyMeka；dev 使用 CindyMekaDev。
+// 必须在 initLogger()(packaged 日志目录)、crashReporter、单实例锁与一切
+// userData 读取之前完成区域映射。
 const regionUserDataDirName = resolveRegionUserDataDirName({
   isPackaged: app.isPackaged,
   region: CURRENT_CINDY_REGION,
   argv: process.argv,
+  envUserDataDir: process.env.XDT_USER_DATA_DIR,
 });
 if (regionUserDataDirName) {
   app.setPath('userData', path.join(app.getPath('appData'), regionUserDataDirName));
@@ -88,14 +87,8 @@ installInvokeCapture();
 // 必须在 app 'ready' 和 authManager 动态加载前完成。CLI/目录覆写仅 dev 生效；
 // 产品 deviceId 命名空间对 dev 与 packaged 一律生效。
 import { machineIdSync } from 'node-machine-id';
-import {
-  resolveDevCliFlags,
-  shouldEnforcePassiveMigrationCompatibility,
-} from './devCliFlags.js';
-import {
-  KEYCHAIN_IDENTITY_MARKER_FILE,
-  resolveDevKeychainDecision,
-} from './devKeychainName.js';
+import { resolveDevCliFlags, shouldEnforcePassiveMigrationCompatibility } from './devCliFlags.js';
+import { KEYCHAIN_IDENTITY_MARKER_FILE, resolveDevKeychainDecision } from './devKeychainName.js';
 import { createKeychainMarkerIo } from './devKeychainMarkerIo.js';
 
 const devFlags = resolveDevCliFlags({
@@ -103,6 +96,7 @@ const devFlags = resolveDevCliFlags({
   isPackaged: app.isPackaged,
   envUserDataDir: process.env.XDT_USER_DATA_DIR,
   defaultUserDataDir: app.getPath('userData'),
+  appDataDir: app.getPath('appData'),
   envIsolated: process.env.XDT_ISOLATED,
   envIsolationName: process.env.XDT_ISOLATED_NAME,
   envUserDataDirEpoch: process.env.XDT_USER_DATA_DIR_EPOCH,
@@ -110,16 +104,36 @@ const devFlags = resolveDevCliFlags({
   envSchedulerPassive: process.env.XDT_SCHEDULER_PASSIVE,
   envEndpointsCdn: process.env.XDT_ENDPOINTS_CDN,
 });
+if (devFlags.isolatedOnProductionProfile) {
+  // isolated 身份会换独立 deviceId；正式 profile 上的 refresh token 属于正式版设备。
+  // 两者叠在同一目录 = 必然 DEVICE_MISMATCH，再删盘会把正式版踢下线(2026-08-16)。
+  // 报实际目标目录：可能是当前区域，也可能是另一地区的正式 profile。
+  const targetDir = devFlags.userDataDirOverride ?? app.getPath('userData');
+  stderr.write(
+    `[cindy] FATAL: --isolated cannot use the official Cindy profile (${targetDir}). ` +
+      'Use the default sandbox, --isolated=<name>, or a directory that is not an official userData.\n',
+  );
+  exit(1);
+}
+if (!app.isPackaged && devFlags.profileKind === 'production-shared') {
+  // 正式 profile 上的 unpackaged writer 不得应用 pending migration。
+  // 已合入 main、但安装包还没带上的序号会把安装版打挂（2026-08-16 schema 91）。
+  process.env.XDT_OFFICIAL_SHARED_PROFILE = '1';
+} else {
+  delete process.env.XDT_OFFICIAL_SHARED_PROFILE;
+}
 if (devFlags.schedulerPassive) {
   // 统一收敛到 env:scheduler-host 只认 XDT_SCHEDULER_PASSIVE,不重复解析 argv。
   process.env.XDT_SCHEDULER_PASSIVE = '1';
   stderr.write('[cindy] dev scheduler passive mode (--passive)\n');
 }
-if (shouldEnforcePassiveMigrationCompatibility({
-  isPackaged: app.isPackaged,
-  schedulerPassive: devFlags.schedulerPassive,
-  isolated: devFlags.isolated,
-})) {
+if (
+  shouldEnforcePassiveMigrationCompatibility({
+    isPackaged: app.isPackaged,
+    schedulerPassive: devFlags.schedulerPassive,
+    profileKind: devFlags.profileKind,
+  })
+) {
   // 内部启动契约：共享 userData 的 passive dev 只能打开与当前 checkout migration
   // 完全一致的数据库，且不得自行迁移。localDb 在用户数据库首次打开时消费本标记。
   process.env.XDT_PASSIVE_SHARED_USER_DATA = '1';
@@ -218,27 +232,32 @@ if (devFlags.needsIsolatedDeviceId) {
   let commit: string | null = null;
   if (!app.isPackaged) {
     try {
-      commit = execFileSync('git', ['rev-parse', 'HEAD'], {
-        cwd: rootDir,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-      }).trim() || null;
+      commit =
+        execFileSync('git', ['rev-parse', 'HEAD'], {
+          cwd: rootDir,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'ignore'],
+        }).trim() || null;
     } catch {
       // Source provenance remains useful without a commit in exported/unusual checkouts.
     }
   }
   const declaredMode = process.env.XDT_DESKTOP_DEV_MODE;
-  const mode: DesktopDevMode = declaredMode === 'remote' || declaredMode === 'local'
-    ? declaredMode
-    : 'unknown';
+  const mode: DesktopDevMode =
+    declaredMode === 'remote' || declaredMode === 'local' ? declaredMode : 'unknown';
   const cleanupDevInstance = beginDesktopDevInstance({
     userDataDir: app.getPath('userData'),
     rootDir,
     commit,
     mode,
+    region: CURRENT_CINDY_REGION,
     passive: devFlags.schedulerPassive,
-    isolated: Boolean(devFlags.userDataDirOverride),
+    isolated: devFlags.profileKind === 'isolated-sandbox',
+    isolationIntent: devFlags.isolated,
+    profileKind: devFlags.profileKind,
   });
+  // Windows updater forceQuit() ends in process.exit(0), which bypasses Electron will-quit.
+  process.once('exit', cleanupDevInstance);
   app.once('will-quit', cleanupDevInstance);
 }
 

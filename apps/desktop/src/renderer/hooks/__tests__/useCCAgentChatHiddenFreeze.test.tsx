@@ -17,6 +17,7 @@ vi.mock('react-i18next', async (importOriginal) => {
 });
 
 vi.mock('@/features/device-link/remoteProjectsStore', () => ({
+  getSessionDeviceId: () => undefined,
   remoteProjectsStore: {
     getSessionDeviceId: () => undefined,
     subscribe: vi.fn(() => () => undefined),
@@ -104,6 +105,7 @@ vi.mock('@/lib/imageRef', () => ({
 
 vi.mock('@/lib/composerDraftStore', () => ({
   saveDraft: vi.fn(),
+  setRemoteOptimisticAttachmentUrls: vi.fn(),
   plainTextToTiptapDoc: (text: string) => ({
     type: 'doc',
     content: [{ type: 'paragraph', content: [{ type: 'text', text }] }],
@@ -247,12 +249,14 @@ describe('useCCAgentChat hidden chat snapshot freeze', () => {
   });
 
   it('keeps chat realtime separate from read visibility and does not remount MessageStream', () => {
-    const pluginSource = rendererSource('features/right-sidebar/plugins/orca-workers/index.tsx');
+    const tabBodySource = rendererSource(
+      'features/right-sidebar/plugins/orca-workers/OrcaWorkersTabBody.tsx',
+    );
     const panelSource = rendererSource('features/cc-agent/OrcaWorkerPanel.tsx');
     const sessionViewSource = rendererSource('features/cc-agent/CCAgentSessionView.tsx');
     const messageStreamSource = rendererSource('components/chat/MessageStream.tsx');
 
-    expect(pluginSource).toContain(
+    expect(tabBodySource).toContain(
       'const chatRealtime = Boolean(active && shellVisible && documentVisible);',
     );
     expect(panelSource).toContain('viewVisible={viewVisible}');

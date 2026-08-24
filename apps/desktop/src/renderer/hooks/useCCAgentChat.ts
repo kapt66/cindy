@@ -55,6 +55,7 @@ import type { AttachedFile, MentionedResource } from '@/lib/fileTypes';
 import type { PastedTextRange, SlashCommandRange } from '@/lib/imageRef';
 import type { AgentInputReference } from '@cindy/maker-shared/agent-input-projection';
 import { createLogger } from '@/lib/logger';
+import { isRemoteSessionSticky } from '@/lib/makerTransport';
 import type { UsageLimitRecoveryHint } from '@/lib/usageLimitRecovery';
 
 const log = createLogger('UseCCAgentChat');
@@ -126,6 +127,8 @@ interface UseCCAgentChatReturn {
       agentReferences?: AgentInputReference[];
       pastedTextRanges?: PastedTextRange[];
       slashCommandRanges?: SlashCommandRange[];
+      beforeEnqueue?: () => Promise<boolean>;
+      onRemoteOptimisticFailure?: (clientId: string, error?: unknown) => void;
     },
   ) => Promise<boolean>;
   compactSession: (
@@ -149,6 +152,8 @@ interface UseCCAgentChatReturn {
       agentReferences?: AgentInputReference[];
       pastedTextRanges?: PastedTextRange[];
       slashCommandRanges?: SlashCommandRange[];
+      beforeEnqueue?: () => Promise<boolean>;
+      onRemoteOptimisticFailure?: (clientId: string, error?: unknown) => void;
     },
   ) => Promise<boolean>;
   steerQueuedMessage: (clientId: string) => Promise<boolean>;
@@ -190,8 +195,8 @@ interface UseCCAgentChatReturn {
   continuationTurnClientId: string | null;
   /** 续跑边界投影能力；legacy 时保留旧被控端的兼容兜底。 */
   continuationInFlightProjectionCapability: ContinuationInFlightProjectionCapability;
-  /** F-SYNC-2: Load older messages (prepend to top) */
-  loadOlderMessages: () => void;
+  /** F-SYNC-2: Load older messages; automatic=true remembers a successful auto-fill. */
+  loadOlderMessages: (automatic?: boolean) => Promise<boolean>;
   isLoadingMore: boolean;
   hasMoreMessages: boolean;
   historyWindowHasIsland: boolean;
@@ -238,6 +243,7 @@ interface UseCCAgentChatReturn {
           title: string;
           body: string;
           type: 'bug' | 'feature';
+          submissionIdentity: PendingIssueConfirm['submissionIdentity'];
           publicName?: string;
           uiLanguage: string;
         }
@@ -400,6 +406,8 @@ export function useCCAgentChat(
         agentReferences?: AgentInputReference[];
         pastedTextRanges?: PastedTextRange[];
         slashCommandRanges?: SlashCommandRange[];
+        beforeEnqueue?: () => Promise<boolean>;
+        onRemoteOptimisticFailure?: (clientId: string, error?: unknown) => void;
       },
     ): Promise<boolean> => {
       if (!sessionId) return Promise.resolve(false);
@@ -454,6 +462,8 @@ export function useCCAgentChat(
         agentReferences?: AgentInputReference[];
         pastedTextRanges?: PastedTextRange[];
         slashCommandRanges?: SlashCommandRange[];
+        beforeEnqueue?: () => Promise<boolean>;
+        onRemoteOptimisticFailure?: (clientId: string, error?: unknown) => void;
       },
     ) => {
       if (!sessionId) return Promise.resolve(false);
@@ -540,9 +550,9 @@ export function useCCAgentChat(
     [sessionId],
   );
 
-  const loadOlderMessages = useCallback(() => {
-    if (!sessionId) return;
-    makerChatStore.loadOlderMessages(sessionId);
+  const loadOlderMessages = useCallback((automatic = false): Promise<boolean> => {
+    if (!sessionId) return Promise.resolve(false);
+    return makerChatStore.loadOlderMessages(sessionId, automatic);
   }, [sessionId]);
 
   const respondToPermission = useCallback(
@@ -561,6 +571,7 @@ export function useCCAgentChat(
             title: string;
             body: string;
             type: 'bug' | 'feature';
+            submissionIdentity: PendingIssueConfirm['submissionIdentity'];
             publicName?: string;
             uiLanguage: string;
           }
@@ -738,6 +749,11 @@ export function useCCAgentChat(
     lightState.isStreaming ||
     lightState.agentStatus.isRunning ||
     hasPendingSteer ||
+    // 远程会话豁免 pendingTaskWake:device-link 与 SSH 镜像事件有设计内的丢失
+    // 窗口(断连/重连),taskUpdates 不在 reconcile 对账覆盖内,终态 drop 后无自愈
+    // 路径。与 makerChatStore.hasBackgroundAgentWork 的远程豁免同口径。
+    (lightState.pendingTaskWake > 0 && sessionId && !isRemoteSessionSticky(sessionId) && !makerChatStore.getSnapshot(sessionId)?.remoteHostId) ||
+    (sessionId != null && makerChatStore.hasBackgroundAgentWork(sessionId)) ||
     (pendingQueueLength > 0 && !lightState.queuePaused);
 
   const setQueueExpanded = useCallback(
@@ -833,7 +849,9 @@ export function useCCAgentChat(
     errorReason:
       lightState.error != null
         ? (lightState.errorReason ?? null)
-        : (lightState.recoverableError != null ? (lightState.errorReason ?? null) : null),
+        : lightState.recoverableError != null
+          ? (lightState.errorReason ?? null)
+          : null,
     // 当前 error 是非终止 recoverableError(turn 在跑,daemon 自动重试中):
     // ErrorBanner 网络分支据此显示「正在自动重试…」而非「可点击重试」。
     errorIsRecoverable: !lightState.error && lightState.recoverableError != null,
@@ -841,8 +859,7 @@ export function useCCAgentChat(
     credentialSwitchWait: lightState.credentialSwitchWait,
     continuationInFlightClientId: lightState.continuationInFlightClientId,
     continuationTurnClientId: lightState.continuationTurnClientId,
-    continuationInFlightProjectionCapability:
-      lightState.continuationInFlightProjectionCapability,
+    continuationInFlightProjectionCapability: lightState.continuationInFlightProjectionCapability,
     loadOlderMessages,
     isLoadingMore: lightState.isLoadingMore,
     hasMoreMessages: lightState.hasMoreMessages,

@@ -129,6 +129,8 @@ export function SessionContentHeader({
 }: SessionContentHeaderProps) {
   const { t } = useTranslation();
   const { sessions, patchLocal } = useCCSessions();
+  // Fork-family discovery must include archived parents and children.
+  const { sessions: familySessions } = useCCSessions({ includeArchived: 'all' });
   const remoteProjectSessions = useRemoteProjectSessions();
   const routeSessionById = useMemo(
     () => new Map([...sessions, ...remoteProjectSessions].map((s) => [s.id, s])),
@@ -172,19 +174,6 @@ export function SessionContentHeader({
     && !isArchived;
   const canExportShare =
     !isEmpty && !session.remoteHostId && !session.orcaRole && !session.deviceLinkDeviceId;
-  // 导出 HTML:pi 原生 export_html。仅当前打开的本地 pi 会话(需 live 进程应答 RPC),
-  // 排除空会话 / 远程 / device-link / archived(archived 无 live 进程)。
-  const canExportHtml =
-    session.agentKind === 'pi' &&
-    !isEmpty &&
-    !session.remoteHostId &&
-    !session.deviceLinkDeviceId &&
-    !isArchived;
-  // 手动压缩:pi 原生 compact,同一 live 本地 pi 会话前提(斜杠转义后用户无法手输
-  // /compact,这是 pi 会话手动压缩的唯一入口)。回合运行中 pi 拒绝压缩 → 禁用而非隐藏。
-  const canCompact = canExportHtml;
-  const [compacting, setCompacting] = useState(false);
-  const compactDisabled = compacting || runningSessionIds.has(session.id);
   const projectOptions = useProjectPickerOptions();
   // heartbeat schedule 绑定标识,与 SessionItem 同源数据;删除/过期后自动消失。
   const boundSchedules = useSessionBoundSchedules(session.id);
@@ -414,66 +403,18 @@ export function SessionContentHeader({
   const [shareExportOpen, setShareExportOpen] = useState(false);
   const [branchTreeOpen, setBranchTreeOpen] = useState(false);
   const allKnownSessions = useMemo(
-    () => [...sessions, ...remoteProjectSessions],
-    [remoteProjectSessions, sessions],
+    () => [...familySessions, ...remoteProjectSessions],
+    [familySessions, remoteProjectSessions],
   );
   const hasSessionFamily = useMemo(
-    () => allKnownSessions.some((item) =>
-      item.parentSessionId === session.id || item.id === session.parentSessionId),
+    () =>
+      Boolean(session.parentSessionId) ||
+      allKnownSessions.some(
+        (item) => item.parentSessionId === session.id || item.id === session.parentSessionId,
+      ),
     [allKnownSessions, session.id, session.parentSessionId],
   );
-  const canShowBranchTree = !isEmpty && (session.agentKind === 'pi' || hasSessionFamily);
-
-  /* ---- 手动压缩(pi 原生 compact)---- 长操作(LLM 摘要),压缩边界经事件流自动进聊天;
-   * 回合运行中 pi 会拒绝,菜单项据 running 态禁用。compacting 状态在上方派生区声明。 */
-  const handleCompactSession = useCallback(async () => {
-    if (compacting) return;
-    setCompacting(true);
-    try {
-      const result = await window.electronAPI.maker.compactSession(session.id);
-      if (result?.noop) {
-        // 良性:上下文太小,无可压缩内容。信息性提示,不是失败。
-        toast.info(t('ccAgent.sidebar.sessionMenu.compactNothing'));
-      } else if (result) {
-        const hasNumbers =
-          typeof result.tokensBefore === 'number' && typeof result.estimatedTokensAfter === 'number';
-        toast.success(
-          hasNumbers
-            ? t('ccAgent.sidebar.sessionMenu.compactSuccessWithTokens', {
-                before: Math.round((result.tokensBefore ?? 0) / 1000),
-                after: Math.round((result.estimatedTokensAfter ?? 0) / 1000),
-              })
-            : t('ccAgent.sidebar.sessionMenu.compactSuccess'),
-        );
-      }
-      // null:会话无 live 进程 / 不支持(入口已按 gate 隐藏,极少走到)。静默即可。
-    } catch (err) {
-      log.warn('manual compact failed', err);
-      toast.warning(t('ccAgent.sidebar.sessionMenu.compactFailed'));
-    } finally {
-      setCompacting(false);
-    }
-  }, [compacting, session.id, t]);
-
-  /* ---- 导出 HTML(pi 原生 export_html)---- 主进程弹保存对话框 + 导出 + 在文件管理器显示。 */
-  const [exportingHtml, setExportingHtml] = useState(false);
-  const handleExportHtml = useCallback(async () => {
-    if (exportingHtml) return;
-    setExportingHtml(true);
-    try {
-      const written = await window.electronAPI.maker.exportSessionHtml(session.id);
-      if (written) {
-        toast.success(t('ccAgent.sidebar.sessionMenu.exportHtmlSuccess'));
-      }
-      // written == null:用户取消保存对话框,或会话无 live 进程(未打开)。取消是正常路径,
-      // 不打扰;后者极少(本入口只对当前打开会话可见),静默即可。
-    } catch (err) {
-      log.warn('export session html failed', err);
-      toast.warning(t('ccAgent.sidebar.sessionMenu.exportHtmlFailed'));
-    } finally {
-      setExportingHtml(false);
-    }
-  }, [exportingHtml, session.id, t]);
+  const canShowBranchTree = !isEmpty && hasSessionFamily;
 
   /* ---- Archive / Delete / Unarchive ----
    * 执行序列共用 useSessionLifecycleActions（与 CCAgentSidebarUpper 同一实现）；
@@ -687,18 +628,20 @@ export function SessionContentHeader({
           }}
         >
           <DropdownMenuTrigger asChild>
-            <button
-              className={cn(
-                'flex h-7 w-7 shrink-0 items-center justify-center rounded-md',
-                'text-[var(--cmd-palette-item-meta)] transition-colors',
-                'hover:bg-titlebar-button-hover hover:text-foreground',
-                'focus-visible:outline-none data-[state=open]:bg-titlebar-button-hover',
-              )}
-              aria-label={t('ccAgent.sessionHeader.moreActions')}
-              style={WINDOW_NO_DRAG_STYLE}
-            >
-              <Ellipsis size={15} />
-            </button>
+            <Tip text={t('ccAgent.sessionHeader.moreActions')} side="bottom">
+              <button
+                className={cn(
+                  'flex h-7 w-7 shrink-0 items-center justify-center rounded-md',
+                  'text-[var(--cmd-palette-item-meta)] transition-colors',
+                  'hover:bg-titlebar-button-hover hover:text-foreground',
+                  'focus-visible:outline-none data-[state=open]:bg-titlebar-button-hover',
+                )}
+                aria-label={t('ccAgent.sessionHeader.moreActions')}
+                style={WINDOW_NO_DRAG_STYLE}
+              >
+                <Ellipsis size={15} />
+              </button>
+            </Tip>
           </DropdownMenuTrigger>
           <DropdownMenuContent
             align="start"
@@ -861,26 +804,6 @@ export function SessionContentHeader({
                     className={MENU_ITEM_CLASS}
                   >
                     {t('ccAgent.sidebar.sessionMenu.exportShare')}
-                  </DropdownMenuItem>
-                )}
-                {canExportHtml && (
-                  <DropdownMenuItem
-                    disabled={exportingHtml}
-                    onSelect={() => void handleExportHtml()}
-                    className={MENU_ITEM_CLASS}
-                  >
-                    {t('ccAgent.sidebar.sessionMenu.exportHtml')}
-                  </DropdownMenuItem>
-                )}
-                {canCompact && (
-                  <DropdownMenuItem
-                    disabled={compactDisabled}
-                    onSelect={() => void handleCompactSession()}
-                    className={MENU_ITEM_CLASS}
-                  >
-                    {compacting
-                      ? t('ccAgent.sidebar.sessionMenu.compacting')
-                      : t('ccAgent.sidebar.sessionMenu.compact')}
                   </DropdownMenuItem>
                 )}
                 <DropdownMenuSeparator className={MENU_SEPARATOR_CLASS} />

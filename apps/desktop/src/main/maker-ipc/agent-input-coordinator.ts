@@ -31,7 +31,11 @@ import { createMessage as createDbMessage } from '../localDb/ipc/messages.js';
 import { touchUserSendInDb } from '../localDb/ipc/sessions.js';
 import type { InterruptedTurnErrorSignals } from './interruptedTurnAutoResume.js';
 import type { SuppressedTurnErrorOwner } from './autoResumeBookkeeping.js';
-import type { HostSendFailureCode, HostSendOutcome } from '../maker-host/send-outcome.js';
+import type {
+  DesktopSessionDispatchFailure,
+  HostSendFailureCode,
+  HostSendOutcome,
+} from '../maker-host/send-outcome.js';
 import type {
   AgentInputCreateOpts,
   AgentInputDelivery,
@@ -41,11 +45,13 @@ import type {
   AgentInputRecovery,
   AgentInputSessionReferenceContext,
   AutoResumeInfo,
+  RecoveryCheckpoint,
 } from '../../shared/agentInputQueue.js';
 import {
   buildMakerUserMessage,
   getAgentInputAttachmentBlockType,
   getAgentFacingText,
+  normalizeAgentInputClearBoundaryMs,
   projectionRetryText,
   sanitizeQueuedMessageForPersistence,
   updateQueuedMessageContent,
@@ -53,6 +59,16 @@ import {
 } from '../../shared/agentInputQueue.js';
 import { CONTINUE_AFTER_ERROR_PROMPT, syntheticTriggerKind } from '../../shared/interruptedTurn.js';
 import { attachSessionReferenceMetadata } from '../../shared/sessionReferenceMetadata.js';
+import {
+  appendRecoveryCheckpointPrompt,
+  buildRecoveryCheckpoint,
+  RECOVERY_CHECKPOINT_MARKER,
+  type RecoveryContextSnapshot,
+} from './recoveryCoordinator.js';
+import {
+  projectSessionQueueForInspection,
+  type SessionQueueInspectionEntry,
+} from './sessionQueueInspection.js';
 
 const log = createLogger('maker-input-coordinator');
 const SESSION_RUNNING_RETRY_DELAY_MS = 250;
@@ -153,10 +169,12 @@ function stripQueuedMessageImages(item: AgentInputQueuedMessage): AgentInputQueu
 }
 
 function hasRetryableQueuedContent(item: AgentInputQueuedMessage): boolean {
-  return getAgentFacingText(item).trim().length > 0
-    || (item.files?.length ?? 0) > 0
-    || (item.mentions?.length ?? 0) > 0
-    || (item.sessionRefs?.length ?? 0) > 0;
+  return (
+    getAgentFacingText(item).trim().length > 0 ||
+    (item.files?.length ?? 0) > 0 ||
+    (item.mentions?.length ?? 0) > 0 ||
+    (item.sessionRefs?.length ?? 0) > 0
+  );
 }
 
 export interface AgentInputSendOpts {
@@ -180,17 +198,28 @@ export interface AgentInputSendOpts {
    * 最终 wire 消息。**由 main 构造,不是 wire 输入。**
    */
   fromMobileClient?: boolean;
+  /** Main-owned clear token captured when this input became active. */
+  expectedClearBoundaryMs?: number | null;
+  /** Main-owned input generation captured before async preparation. */
+  expectedInputGeneration?: number;
+  /** Main-owned Session identity for a control-plane same-turn steer. */
+  expectedTurnSession?: object;
+  /** Main-owned maker-core turn generation for a control-plane same-turn steer. */
+  expectedTurnGeneration?: number;
   persistUserMessage?: {
     clientId: string;
     content: string;
     sdkSessionId?: string;
     delivery: AgentInputDelivery;
+    expectedClearBoundaryMs?: number | null;
+    expectedInputGeneration?: number;
     /**
      * 本条是自动补发的续跑指令(见 AgentInputQueuedMessage.autoResume)。host 把它合进
      * 落库 agentMeta.autoResume:renderer 据此隐藏气泡,充值判据据此排除自动消息。
      */
     autoResume?: boolean;
     autoResumeInfo?: AutoResumeInfo;
+    recoveryCheckpoint?: RecoveryCheckpoint;
     /**
      * 仅写入 user 行的 agentMeta,不传给 maker-core。Orca 等自动队列来源没有
      * 对应的 SendOrigin 变体,但仍不能被 host 当成真人输入来给 episode 充值。
@@ -199,6 +228,7 @@ export interface AgentInputSendOpts {
     shouldBroadcast?: () => boolean;
     onPersisting?: () => void;
     onPersisted?: () => void | Promise<void>;
+    onPersistFailed?: () => void;
   };
 }
 
@@ -217,7 +247,7 @@ export type AgentInputSendResult =
       kind: 'session-dispatch';
       source: string;
       dispatched: false;
-      reason: 'cancelled-before-dispatch';
+      reason: DesktopSessionDispatchFailure['reason'];
       message: string;
       context: string;
     };
@@ -238,6 +268,8 @@ export interface AgentInputCoordinatorDeps {
   isTurnRunning: (sessionId: string) => boolean;
   /** maker-core turn 代号；steer 跨 await 后据此验证仍属于开始时的同一 vendor turn。 */
   getTurnGeneration?: (sessionId: string) => number | null;
+  /** maker-core Session object identity; control-plane steer uses it to reject session reuse. */
+  getTurnSessionIdentity?: (sessionId: string) => object | null;
   /**
    * Reconcile the host's live session/tracker view after an abort or a
    * maker-core NO_ACTIVE_TURN. The event-driven tracker can stay stale when a
@@ -250,6 +282,19 @@ export interface AgentInputCoordinatorDeps {
   hasPendingInteraction: (sessionId: string) => boolean;
   getAgentKind: (sessionId: string) => AgentInputCreateOpts['agentKind'] | null;
   getSdkSessionId: (sessionId: string) => Promise<string | undefined>;
+  /** Read a bounded, durable progress snapshot before a retry is re-enqueued. */
+  getRecoveryContextSnapshot?: (
+    sessionId: string,
+    userClientId: string,
+  ) => Promise<RecoveryContextSnapshot>;
+  /**
+   * Durable user-row writer shared with direct maker sends.  The fallback keeps
+   * the coordinator usable in narrow unit harnesses, while the registered host
+   * injects its FIFO writer so steer and drain persistence share one ordering.
+   */
+  createUserMessage?: typeof createDbMessage;
+  /** Hide a user row that was written after `/clear` won the persistence race. */
+  rewindPersistedUserMessageAfterClear?: (sessionId: string, clientId: string) => Promise<void>;
   /**
    * interrupted-turn-resume:判断某条已派发 user 消息之后 agent 是否已产出内容
    * (assistant / tool_use / thinking 持久化行)。retryLastError 用它决定语义:
@@ -323,6 +368,7 @@ export interface AgentInputCoordinatorDeps {
   screenUserMessage?: (
     sessionId: string,
     agentFacingText: string,
+    item: AgentInputQueuedMessage,
   ) => Promise<
     | { action: 'allow' }
     | { action: 'block'; ghostId: string; ghostName: string; reason: string }
@@ -356,9 +402,32 @@ export interface AgentInputCoordinatorDeps {
     item: AgentInputQueuedMessage,
     disposition: 'cancelled' | 'failed',
   ) => void;
+  /** Called immediately before the durable user-row write begins. */
+  onUserMessagePersisting?: (sessionId: string, item: AgentInputQueuedMessage) => void;
+  /** Called after the durable user row exists; ownership of staged attachments may be released. */
+  onUserMessagePersisted?: (sessionId: string, item: AgentInputQueuedMessage) => void;
+  /** Called only after the durable row also survives the current clear/rewind generation. */
+  onUserMessageQueryable?: (sessionId: string, item: AgentInputQueuedMessage) => void;
+  /**
+   * Called when the user-row write failed. A queued turn remains retryable;
+   * an accepted steer does not, because replay could duplicate model input.
+   */
+  onUserMessagePersistenceFailed?: (
+    sessionId: string,
+    item: AgentInputQueuedMessage,
+    opts: { retainForRetry: boolean },
+  ) => void;
+  /**
+   * The delivery pipeline rejected this item for a technical/policy reason
+   * before vendor dispatch. Unlike Stop/remove/clear, this is a real failed
+   * attempt rather than explicit user cancellation.
+   */
   /** Technical or policy rejection before vendor dispatch. */
   onRejectedUserTurn?: (sessionId: string, item: AgentInputQueuedMessage) => void;
-  onAcceptedQueuedMessage?: (sessionId: string, item: AgentInputQueuedMessage) => void | Promise<void>;
+  onAcceptedQueuedMessage?: (
+    sessionId: string,
+    item: AgentInputQueuedMessage,
+  ) => void | Promise<void>;
   /**
    * Awaited only after vendor dispatch is irreversible (`accepted=true`).
    * Hosts use this for side effects that must not run on cancelled-before-dispatch
@@ -418,12 +487,14 @@ export interface AgentInputCoordinatorDeps {
   /**
    * 排队输入崩溃恢复(issue #761)。persistQueueSnapshot:队列内容变化时覆盖写
    * 快照(items 为空 = 删行),实现方自行 fire-and-forget + 保序,绝不阻塞派发;
-   * loadQueueSnapshot:ensureQueueRestored 懒恢复时读回。两者要么都注入要么都不注入。
+   * loadClearBoundary:ensureQueueRestored 恢复快照前先水合 durable /clear 边界；
+   * loadQueueSnapshot:随后读回快照。生产侧三者一起注入，任一读取失败都保持未恢复态。
    */
   persistQueueSnapshot?: (
     sessionId: string,
     items: AgentInputQueuedMessage[],
   ) => void | Promise<void>;
+  loadClearBoundary?: (sessionId: string) => Promise<unknown>;
   loadQueueSnapshot?: (sessionId: string) => Promise<AgentInputQueuedMessage[]>;
   getPersistedClientIds?: (sessionId: string, clientIds: string[]) => Promise<Set<string>>;
 }
@@ -434,6 +505,7 @@ interface ActiveTurn {
   messageUuid: string;
   createdAt: string;
   generation: number;
+  clearBoundaryMs: number | null;
   persisted: boolean;
   persisting: boolean;
   sendStarted: boolean;
@@ -484,6 +556,10 @@ interface SessionInputState {
   pendingQueue: AgentInputQueuedMessage[];
   pendingCompacts: PendingCompactRequest[];
   steeringQueueClientIds: string[];
+  /** Identity of the currently owned steer transaction for each visible clientId. */
+  steeringRequestTokens: Map<string, symbol>;
+  /** Direct composer steers have no pendingQueue row while delivery is still reversible. */
+  directSteeringItems: AgentInputQueuedMessage[];
   queuePaused: boolean;
   /**
    * 当前 queuePaused 是否来自崩溃快照恢复(restoreQueueSnapshot 的静默会话分支),
@@ -553,6 +629,8 @@ interface SessionInputState {
    */
   recentEnqueuedClientIds: string[];
   generation: number;
+  /** Latest authoritative `/clear` token for device-link optimistic input preconditions. */
+  clearBoundaryMs: number | null;
 }
 
 interface PendingAutoResumeRecovery {
@@ -565,11 +643,16 @@ interface PendingAutoResumeRecovery {
   attemptToken: number;
 }
 
-function createInitialInputState(generation = 0): SessionInputState {
+function createInitialInputState(
+  generation = 0,
+  clearBoundaryMs: number | null = null,
+): SessionInputState {
   return {
     pendingQueue: [],
     pendingCompacts: [],
     steeringQueueClientIds: [],
+    steeringRequestTokens: new Map(),
+    directSteeringItems: [],
     queuePaused: false,
     queuePausedByRestore: false,
     queueExpanded: false,
@@ -599,9 +682,9 @@ function createInitialInputState(generation = 0): SessionInputState {
     credentialSwitchRetryGeneration: null,
     recentEnqueuedClientIds: [],
     generation,
+    clearBoundaryMs,
   };
 }
-
 /**
  * 首次进入 main 队列边界时冻结原始合成指令意图。IPC payload 属不可信输入，
  * 因此即使 renderer 带了同名字段也必须从当下原始 text 重新计算。
@@ -611,6 +694,23 @@ function captureOriginalSyntheticTrigger(item: AgentInputQueuedMessage): AgentIn
     ...item,
     originalSyntheticTrigger: syntheticTriggerKind(item.text) ?? undefined,
   };
+}
+
+/**
+ * Stamp the acceptance boundary with the controlled host's clock.  Remote
+ * renderer timestamps are presentation data and may come from a device with a
+ * different wall clock; they must never decide whether a crash-restored item
+ * predates a host-side /clear.
+ */
+function stampHostAcceptedAt(
+  item: AgentInputQueuedMessage,
+  clearBoundaryMs: number | null,
+): AgentInputQueuedMessage {
+  // The restore fence is inclusive (`<=`).  If a clear and acceptance share a
+  // millisecond, the acceptance must still belong to the new epoch; otherwise
+  // a crash in that millisecond would silently drop the user's message.
+  const minimumPostClearAt = clearBoundaryMs === null ? 0 : clearBoundaryMs + 1;
+  return { ...item, hostAcceptedAtMs: Math.max(Date.now(), minimumPostClearAt) };
 }
 
 /**
@@ -629,6 +729,11 @@ type PersistAcceptedUserMessageResult = 'persisted' | 'stale' | 'failed';
 function isNoActiveTurnError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   return /\[NO_ACTIVE_TURN\]|no active .*turn|has no active turn/i.test(msg);
+}
+
+function isStaleTurnError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /\[STALE_TURN\]/i.test(msg);
 }
 
 /**
@@ -721,11 +826,9 @@ function isUiContinuationItem(item: AgentInputQueuedMessage): boolean {
 function isActiveTurnBeforeVendorDispatch(active: ActiveTurn): boolean {
   return (
     !isActiveTurnDispatched(active) &&
-    (
-      !active.sendStarted ||
+    (!active.sendStarted ||
       active.persisting ||
-      active.dispatchLifecycle === 'awaiting-dispatch-hooks'
-    )
+      active.dispatchLifecycle === 'awaiting-dispatch-hooks')
   );
 }
 
@@ -761,6 +864,25 @@ export class AgentInputCoordinator {
   private readonly states = new Map<string, SessionInputState>();
   private readonly steerAbortControllers = new Map<string, Map<string, AbortController>>();
   /**
+   * Stop clears visible steer markers before the provider promise necessarily settles. Retain
+   * the latest request identity until every older request with the same clientId has settled so
+   * a cancelled request cannot regain ownership after a replacement request has already won.
+   */
+  private readonly steerRequestLineages = new Map<
+    string,
+    Map<string, { latestToken: symbol; unsettledTokens: Set<symbol> }>
+  >();
+  /**
+   * One clear/stop-scoped cancellation boundary per session generation.  The
+   * vendor adapters can spend time converting attachments after the final
+   * synchronous fence; aborting this signal keeps that late work from reaching
+   * the provider after the input epoch has been superseded.
+   */
+  private readonly inputBoundaryAbortControllers = new Map<
+    string,
+    { generation: number; controller: AbortController }
+  >();
+  /**
    * 队列快照恢复簿记(issue #761)。故意放在 SessionInputState **外面**:
    * clearSession 会整体重建 state,若 restored 标记跟着 state 走,清空后的
    * emit 会因"未恢复"跳过持久化,旧快照删不掉,下次打开会话又诈尸。
@@ -791,6 +913,9 @@ export class AgentInputCoordinator {
     for (const state of this.states.values()) {
       if (state.pendingQueue.length > 0) texts.push(JSON.stringify(state.pendingQueue));
       if (state.activeTurn?.item) texts.push(JSON.stringify(state.activeTurn.item));
+      if (state.directSteeringItems.length > 0) {
+        texts.push(JSON.stringify(state.directSteeringItems));
+      }
       if (state.recovery) texts.push(JSON.stringify(state.recovery));
     }
     return texts;
@@ -798,6 +923,100 @@ export class AgentInputCoordinator {
 
   getProjection(sessionId: string): AgentInputProjection {
     return this.toProjection(sessionId, this.getState(sessionId));
+  }
+
+  /**
+   * Main-only control snapshot. Queue mutation services need the authoritative
+   * item rather than the renderer/device-link projection: projected rows omit
+   * host receipts and trusted reference context that edits must either retain
+   * or deliberately invalidate while rebuilding the message.
+   */
+  getQueueControlSnapshot(
+    sessionId: string,
+  ): Pick<AgentInputProjection, 'pendingQueue' | 'steeringQueueClientIds'> {
+    const state = this.getState(sessionId);
+    return {
+      pendingQueue: [...state.pendingQueue],
+      steeringQueueClientIds: [...state.steeringQueueClientIds],
+    };
+  }
+
+  /** Main-only inspection view for cindy_helper; never crosses renderer/device-link IPC. */
+  getQueueInspection(sessionId: string): SessionQueueInspectionEntry[] {
+    const state = this.getState(sessionId);
+    return this.projectQueueInspection(state);
+  }
+
+  /** Cold sessions return null for SQLite counting; live-but-unrestored sessions stay unknown. */
+  getQueueInspectionIfRestored(
+    sessionId: string,
+  ): SessionQueueInspectionEntry[] | null | undefined {
+    if (!this.isQueueRestored(sessionId)) {
+      // A cold session can be counted directly from SQLite. Once live state exists, however,
+      // combining it with an unread snapshot without clientIds could double-count or omit rows.
+      if (this.states.has(sessionId)) {
+        return undefined;
+      }
+      return null;
+    }
+    const state = this.states.get(sessionId);
+    return state ? this.projectQueueInspection(state) : [];
+  }
+
+  /**
+   * Capture/check the session input generation around IPC-side async
+   * preparation.  clearSession replaces the state and increments this value;
+   * a handler that started before that boundary must return the current
+   * projection instead of committing stale input into the new queue.
+   */
+  getGeneration(sessionId: string): number {
+    return this.getState(sessionId).generation;
+  }
+
+  /** Main-only signal for a content-bearing input transaction. */
+  getInputAbortSignal(sessionId: string, generation = this.getGeneration(sessionId)): AbortSignal {
+    if (!this.isGenerationCurrent(sessionId, generation)) {
+      const stale = new AbortController();
+      stale.abort();
+      return stale.signal;
+    }
+    const current = this.inputBoundaryAbortControllers.get(sessionId);
+    if (current && current.generation === generation && !current.controller.signal.aborted) {
+      return current.controller.signal;
+    }
+    const controller = new AbortController();
+    this.inputBoundaryAbortControllers.set(sessionId, { generation, controller });
+    return controller.signal;
+  }
+
+  private abortInputBoundary(sessionId: string): void {
+    const current = this.inputBoundaryAbortControllers.get(sessionId);
+    if (!current) return;
+    current.controller.abort();
+    this.inputBoundaryAbortControllers.delete(sessionId);
+  }
+
+  isGenerationCurrent(sessionId: string, generation: number): boolean {
+    return this.getState(sessionId).generation === generation;
+  }
+
+  getClearBoundaryMs(sessionId: string): number | null {
+    return this.getState(sessionId).clearBoundaryMs;
+  }
+
+  /**
+   * Rehydrate the authoritative clear token after a host restart.  The
+   * coordinator state is intentionally in-memory, while `sessions.cleared_at`
+   * survives restart; remote preconditions must compare against the latter
+   * before accepting the first post-restart input.
+   */
+  observeClearBoundary(sessionId: string, clearedAt: unknown): void {
+    const boundary = normalizeAgentInputClearBoundaryMs(clearedAt);
+    if (typeof boundary !== 'number') return;
+    const state = this.getState(sessionId);
+    if (state.clearBoundaryMs === null || boundary > state.clearBoundaryMs) {
+      state.clearBoundaryMs = boundary;
+    }
   }
 
   /**
@@ -827,6 +1046,18 @@ export class AgentInputCoordinator {
   private async restoreQueueSnapshot(sessionId: string): Promise<void> {
     const preState = this.getState(sessionId);
     const preGeneration = preState.generation;
+    if (this.deps.loadClearBoundary) {
+      try {
+        const clearedAt = await this.deps.loadClearBoundary(sessionId);
+        this.observeClearBoundary(sessionId, clearedAt);
+      } catch (err) {
+        log.warn('load queue clear boundary failed; will retry on next entry', {
+          sessionId,
+          error: errorMessage(err),
+        });
+        throw err;
+      }
+    }
     let items: AgentInputQueuedMessage[];
     try {
       items = (await this.deps.loadQueueSnapshot!(sessionId)).map(
@@ -858,6 +1089,20 @@ export class AgentInputCoordinator {
           sessionId,
           items.map((i) => i.clientId),
         );
+        const currentState = this.getState(sessionId);
+        if (currentState !== preState || currentState.generation !== preGeneration) {
+          // Clear/stop may win while the durable de-duplication query is in
+          // flight. Do not merge the stale snapshot into the new generation;
+          // close the restore window and let the current in-memory state own
+          // the next persisted snapshot.
+          this.restoredQueueSessions.add(sessionId);
+          this.queueRestorePromises.delete(sessionId);
+          for (const item of items) {
+            this.deps.onDiscardedQueuedMessage?.(sessionId, item);
+          }
+          this.maybePersistQueueSnapshot(sessionId);
+          return;
+        }
         for (const cid of persisted) existingIds.add(cid);
       } catch (err) {
         log.warn('getPersistedClientIds failed during restore; will retry on next entry', {
@@ -867,19 +1112,55 @@ export class AgentInputCoordinator {
         throw err;
       }
     }
+    // A clear boundary survives process restart while the queue snapshot is
+    // only an optimization. Compare it with the host-owned acceptance receipt;
+    // chatMessage.createdAt belongs to the controller and can be skewed by
+    // hours across devices. An old/invalid receipt is fail-closed once a
+    // boundary is known so it cannot resurrect pre-clear content after a
+    // weak-network restart.
+    const clearBoundaryMs = state.clearBoundaryMs;
+    const staleClearItems: AgentInputQueuedMessage[] = [];
+    const boundaryFilteredItems = items.filter((item) => {
+      if (clearBoundaryMs === null) return true;
+      const acceptedAtMs = item.hostAcceptedAtMs;
+      if (
+        typeof acceptedAtMs !== 'number' ||
+        !Number.isFinite(acceptedAtMs) ||
+        acceptedAtMs <= clearBoundaryMs
+      ) {
+        staleClearItems.push(item);
+        return false;
+      }
+      return true;
+    });
+    if (staleClearItems.length > 0) {
+      for (const item of staleClearItems) {
+        this.deps.onDiscardedQueuedMessage?.(sessionId, item);
+      }
+      log.info('dropped pre-clear queue item(s) from crash snapshot', {
+        sessionId,
+        boundaryMs: clearBoundaryMs,
+        dropped: staleClearItems.length,
+      });
+    }
     // 标记恢复完成:所有 async 工作已结束,此后 getDrainableHead 放行、
     // maybePersistQueueSnapshot 开闸。
     this.restoredQueueSessions.add(sessionId);
-    // 用读回内容预热变更检测缓存:内存态与 DB 一致时(最常见:空快照 + 空队列)
-    // 收口点直接跳过,避免每次打开会话都发一次冗余覆盖写/删除。
-    this.lastQueueSnapshotJson.set(sessionId, JSON.stringify(items));
+    // 用读回内容预热变更检测缓存:没有丢弃/去重项时(最常见:空快照 + 空队列)
+    // 收口点直接跳过,避免每次打开会话都发一次冗余覆盖写/删除。只要有丢弃项就
+    // 留空，让 maybePersistQueueSnapshot 把清理后的快照写回盘面。
+    if (staleClearItems.length === 0) {
+      this.lastQueueSnapshotJson.set(sessionId, JSON.stringify(items));
+    } else {
+      this.lastQueueSnapshotJson.delete(sessionId);
+    }
     // scheduler 撞忙排队项不跨重启恢复(persist 侧已不再写入,这里兜老快照):
     // 静默会话的恢复队列处于 queuePausedByRestore 暂停态,自动化项等不来"用户
     // 显式输入"的放行,会永远滞留;同任务去重又会把它当在途,后续每轮 fire 都
     // 判 duplicate 顺延 —— 无人值守自动化整体停摆(PR #972 review P1)。直接
     // 丢弃并走 onDiscarded 释放回调注册表;下一轮 cron fire 按当下状态重新走
     // 排队/直发,不丢任务只丢陈旧副本。
-    const restorable = items.filter((item) => !existingIds.has(item.clientId));
+    const restorable = boundaryFilteredItems.filter((item) => !existingIds.has(item.clientId));
     const staleSchedulerItems = restorable.filter((item) => item.origin?.kind === 'scheduler');
     const restored = restorable.filter((item) => item.origin?.kind !== 'scheduler');
     if (staleSchedulerItems.length > 0) {
@@ -974,6 +1255,23 @@ export class AgentInputCoordinator {
     return recovery?.kind === 'active-turn' ? predicate(recovery.item) : false;
   }
 
+  /** Includes the recent idempotency window used by remote weak-link retries. */
+  hasKnownClientId(sessionId: string, clientId: string): boolean {
+    if (!clientId) return false;
+    const state = this.getState(sessionId);
+    return (
+      state.pendingQueue.some((item) => item.clientId === clientId) ||
+      state.activeTurn?.item?.clientId === clientId ||
+      state.steeringQueueClientIds.includes(clientId) ||
+      state.recentEnqueuedClientIds.includes(clientId) ||
+      (state.recovery?.kind === 'active-turn' && state.recovery.item.clientId === clientId)
+    );
+  }
+
+  hasPendingQueueItem(sessionId: string, clientId: string): boolean {
+    return this.getState(sessionId).pendingQueue.some((item) => item.clientId === clientId);
+  }
+
   /**
    * 崩溃恢复快照是否已成功读回(无快照配置视为已恢复)。ensureQueueRestored
    * 读快照失败时**内部吞错**并保持未恢复态(下次入口重试),调用方无法从
@@ -1055,6 +1353,12 @@ export class AgentInputCoordinator {
 
   private rememberEnqueuedClientId(state: SessionInputState, clientId: string): void {
     if (!clientId) return;
+    // Treat the bounded list as an MRU window. A queued item may be accepted
+    // later as a same-turn steer; refreshing it here keeps the post-acceptance
+    // weak-link retry window intact without growing a second dedupe mechanism.
+    state.recentEnqueuedClientIds = state.recentEnqueuedClientIds.filter(
+      (knownClientId) => knownClientId !== clientId,
+    );
     state.recentEnqueuedClientIds.push(clientId);
     if (
       state.recentEnqueuedClientIds.length > AgentInputCoordinator.RECENT_ENQUEUED_CLIENT_IDS_LIMIT
@@ -1066,7 +1370,12 @@ export class AgentInputCoordinator {
   enqueue(
     sessionId: string,
     item: AgentInputQueuedMessage,
-    opts?: { wasFirst?: boolean; sendAtMs?: number; resumeRestorePausedQueue?: boolean },
+    opts?: {
+      wasFirst?: boolean;
+      sendAtMs?: number;
+      resumeRestorePausedQueue?: boolean;
+      onDuplicate?: () => void;
+    },
   ): AgentInputProjection {
     const state = this.getState(sessionId);
     item = captureOriginalSyntheticTrigger(item);
@@ -1081,8 +1390,10 @@ export class AgentInputCoordinator {
         sessionId,
         clientId: item.clientId,
       });
+      opts?.onDuplicate?.();
       return this.getProjection(sessionId);
     }
+    item = stampHostAcceptedAt(item, state.clearBoundaryMs);
     this.rememberEnqueuedClientId(state, item.clientId);
     // 真的有一条**新**消息进队了 = 这个会话被别的内容推进(见 deps.onUserEnqueue)。
     // 必须放在幂等去重**之后**: 被去重丢弃的重传(弱网 / 移动端补发)压根没推进任何
@@ -1104,7 +1415,15 @@ export class AgentInputCoordinator {
       this.cancelPreparedAutoResume(sessionId, state);
     }
     if (isUiContinuationItem(item)) {
-      this.deps.onUiRetry?.(sessionId, item.clientId, 'manual');
+      // queue-head recovery 时**跳过** onUiRetry:那条消息在派发前就失败了,
+      // 从未成为一个 turn,与之前失败的 hook turn 无关(与 retryLastError 对
+      // queue-head 刻意不发 onUiRetry 的语义一致,见 performRetryLastError 注释)。
+      // 下方 queue-head 特判分支会清 recovery 重发队首 A,合成 continue 项不入队;
+      // 若在这里发 onUiRetry(无论用哪个 clientId)会让无关的排队桌面消息认领
+      // 并改写旧 hook/channel 的待续跑记账。
+      if (state.recovery?.kind !== 'queue-head') {
+        this.deps.onUiRetry?.(sessionId, item.clientId, 'manual');
+      }
     } else if (automaticOrigin && !schedulerOrigin) {
       this.deps.onAutomaticEnqueue?.(sessionId);
     } else if (!automaticOrigin) {
@@ -1138,6 +1457,53 @@ export class AgentInputCoordinator {
     }
     if (!schedulerOrigin) {
       this.clearErrorUnlessQueueHeadBlocked(state);
+    }
+    // —— queue-head recovery 解锁(2026-08 事故复盘)——
+    // queue-head recovery 表示队首消息从未跨过 accepted 边界(派发前失败 /
+    // cancelled-before-dispatch)。getDrainableHead 见 recovery 即返回 null,
+    // 队列永久静止,后续所有消息(含用户新输入)全部排队不派发。
+    // 用户显式动作按 2026-07-13 口径表态(与 active-turn 对齐:「新消息 = 不重试旧消息」):
+    //  - 普通新消息(composer 直发,非 scheduler/orca/自愈续跑):放弃从未 accepted
+    //    的队首消息 A(摘除 + 清理回调),让 B 正常派发——无静默重发、无静默丢失;
+    //  - UI 续跑(「继续」按钮,sendUiTrigger):等价 retryLastError——清 recovery
+    //    重发队首 A(原样重发是既有 retryLastError 对 queue-head 的语义),合成
+    //    continue 项不入队,避免 A 与 continue 双发。
+    // 自动来源(scheduler / orca)不代表用户表态,维持「不清」语义。暂停队列的
+    // Continue 则由 resume 原子清除与当前队首匹配的 recovery 后重发原消息。
+    if (state.recovery?.kind === 'queue-head' && !automaticOrigin) {
+      const abandonedClientId = state.recovery.clientId;
+      if (isUiContinuationItem(item)) {
+        state.error = null;
+        state.stickyError = null;
+        state.recovery = null;
+        log.info('ui continue resets queue-head recovery; resending failed head', {
+          sessionId,
+          clientId: abandonedClientId,
+        });
+        // 手动「继续」是真人介入,与 retryLastError 同口径刷新 userSendAt(否则
+        // 会话活跃信号 / 列表排序不会反映这次人工动作)。
+        this.touchUserSend(sessionId, opts?.sendAtMs);
+        this.emit(sessionId);
+        this.scheduleDrain(sessionId, 'ui-continue-queue-head-unlock');
+        return this.getProjection(sessionId);
+      }
+      const abandoned = state.pendingQueue.find((q) => q.clientId === abandonedClientId);
+      if (abandoned) {
+        state.pendingQueue = state.pendingQueue.filter((q) => q.clientId !== abandonedClientId);
+        this.removePendingCompactWaitClientId(state, abandonedClientId);
+        // 与 remove() 同口径:摘除消息时同步清其 edit lock,否则留下指向不存在
+        // clientId 的孤儿锁,shouldQueueNewTurn 会把后续新输入误导向排队。
+        state.queueEditLocks = state.queueEditLocks.filter((id) => id !== abandonedClientId);
+        this.deps.onDiscardedQueuedMessage?.(sessionId, abandoned);
+        // 脱敏:只记 id/布尔,不记消息文本(白名单方向,见 log-upload-and-redaction)。
+        log.info('explicit user input abandoned queue-head message (never accepted)', {
+          sessionId,
+          clientId: abandonedClientId,
+        });
+      }
+      state.error = null;
+      state.stickyError = null;
+      state.recovery = null;
     }
     // 用户点「继续任务」表达的是恢复刚才中断/失败的 turn，必须先于此前
     // 已排队的新任务执行；普通 composer / Orca / scheduler 输入仍保持 FIFO。
@@ -1245,6 +1611,7 @@ export class AgentInputCoordinator {
       messageUuid: crypto.randomUUID(),
       createdAt: new Date().toISOString(),
       generation: state.generation,
+      clearBoundaryMs: state.clearBoundaryMs,
       persisted: false,
       persisting: false,
       sendStarted: false,
@@ -1267,6 +1634,8 @@ export class AgentInputCoordinator {
           messageUuid: active.messageUuid,
           userName: request.userName,
           throwOnStartFailure: true,
+          expectedClearBoundaryMs: active.clearBoundaryMs,
+          expectedInputGeneration: active.generation,
         },
       );
       if (!this.isActiveTurnCurrent(sessionId, active)) return this.getProjection(sessionId);
@@ -1333,12 +1702,34 @@ export class AgentInputCoordinator {
   async steer(
     sessionId: string,
     item: AgentInputQueuedMessage,
-    opts?: { removeFromQueue?: boolean; touchUserSend?: boolean },
+    opts?: {
+      removeFromQueue?: boolean;
+      touchUserSend?: boolean;
+      /** 控制面插话不允许在 turn 结束竞态下退化成下一轮普通输入。 */
+      fallbackToTurn?: boolean;
+      /** 控制面初检捕获的 live Session 对象，防 session id 被新实例复用。 */
+      expectedTurnSession?: object;
+      /** 控制面初检捕获的 maker-core turn generation。 */
+      expectedTurnGeneration?: number;
+    },
   ): Promise<boolean> {
+    const matchesExpectedTurn = () =>
+      (opts?.expectedTurnSession === undefined ||
+        this.deps.getTurnSessionIdentity?.(sessionId) === opts.expectedTurnSession) &&
+      (opts?.expectedTurnGeneration === undefined ||
+        this.deps.getTurnGeneration?.(sessionId) === opts.expectedTurnGeneration);
+    if (!matchesExpectedTurn()) return false;
     const state = this.getState(sessionId);
+    // Capture the clear boundary before any screening/reference/steer await.  The
+    // live state may advance when `/clear` wins the race; this turn must retain
+    // the token from the moment it entered the steer transaction.
+    const steerClearBoundaryMs = state.clearBoundaryMs;
+    let itemAlreadyOwnedByHost = false;
+    let steersStoredQueueItem = false;
     if (opts?.removeFromQueue) {
       const storedItem = state.pendingQueue.find((queued) => queued.clientId === item.clientId);
       if (storedItem) {
+        steersStoredQueueItem = true;
         // Renderer projections intentionally omit trusted reference bodies. The main-owned
         // queue row is authoritative for identity/text. A restored device-link row can retain
         // only the fail-closed marker, though; in that case the validated inbound snapshot is
@@ -1366,8 +1757,28 @@ export class AgentInputCoordinator {
         item = canRestoreSnapshot
           ? { ...storedItem, trustedSessionReferenceContexts: incomingContexts }
           : storedItem;
+        itemAlreadyOwnedByHost =
+          typeof item.hostAcceptedAtMs === 'number' && Number.isFinite(item.hostAcceptedAtMs);
       }
     }
+    if (state.steeringQueueClientIds.includes(item.clientId)) {
+      log.info('steer ignored: duplicate in-flight clientId (control-side resend)', {
+        sessionId,
+        clientId: item.clientId,
+      });
+      return true;
+    }
+    if (!steersStoredQueueItem && this.isDuplicateEnqueueClientId(state, item.clientId)) {
+      log.info('steer ignored: duplicate clientId (control-side resend)', {
+        sessionId,
+        clientId: item.clientId,
+      });
+      return true;
+    }
+    // A row already owned by the host keeps its original receipt.  A direct
+    // composer steer has no host-owned row yet, so stamp it before any async
+    // screening/dispatch work begins.
+    if (!itemAlreadyOwnedByHost) item = stampHostAcceptedAt(item, steerClearBoundaryMs);
     if (
       state.steeringQueueClientIds.length > 0 ||
       state.queueAbortPending ||
@@ -1390,6 +1801,7 @@ export class AgentInputCoordinator {
     }
 
     if (!this.isTurnSteerable(sessionId, state)) {
+      if (opts?.fallbackToTurn === false) return false;
       this.fallbackPreparedAsTurn(sessionId, item, opts?.removeFromQueue === true);
       if (opts?.touchUserSend) this.touchUserSend(sessionId);
       return true;
@@ -1401,6 +1813,11 @@ export class AgentInputCoordinator {
     const messageUuid = crypto.randomUUID();
     const createdAt = new Date().toISOString();
     const steerGeneration = state.generation;
+    const steerRequestToken = this.beginSteerRequest(sessionId, item.clientId);
+    const finishSteerRequest = (result: boolean): boolean => {
+      this.settleSteerRequest(sessionId, item.clientId, steerRequestToken);
+      return result;
+    };
     // steer ack 期间原 turn 可能先收到 terminal 事件并清掉 activeTurn。owner 是本次
     // 注入开始时就已确定的 vendor-turn 身份，必须在 await 前快照，不能等 ack 后再从
     // 可能已经清空的 activeTurn 读取。
@@ -1411,7 +1828,15 @@ export class AgentInputCoordinator {
     if (!state.steeringQueueClientIds.includes(item.clientId)) {
       state.steeringQueueClientIds.push(item.clientId);
     }
+    state.steeringRequestTokens.set(item.clientId, steerRequestToken);
+    if (!steersStoredQueueItem) {
+      state.directSteeringItems = [
+        ...state.directSteeringItems.filter((entry) => entry.clientId !== item.clientId),
+        item,
+      ];
+    }
     const steerAbort = new AbortController();
+    const inputBoundarySignal = this.getInputAbortSignal(sessionId, steerGeneration);
     this.registerSteerAbortController(sessionId, item.clientId, steerAbort);
     this.emit(sessionId);
 
@@ -1421,20 +1846,44 @@ export class AgentInputCoordinator {
     // marker 已置位,筛查期间并发 steer / drain 被挡;stop / clearSession 竞态
     // 由筛查后的 marker 复查兜底。
     if (!item.bypassGhostHooks && this.deps.screenUserMessage) {
-      const verdict = await this.deps.screenUserMessage(sessionId, getAgentFacingText(item));
+      const verdict = await this.deps.screenUserMessage(
+        sessionId,
+        getAgentFacingText(item),
+        item,
+      );
       const cur = this.getState(sessionId);
-      if (!cur.steeringQueueClientIds.includes(item.clientId)) {
+      const ownsCurrentRequest = this.isCurrentSteerRequest(
+        cur,
+        item.clientId,
+        steerGeneration,
+        steerRequestToken,
+      );
+      if (
+        !ownsCurrentRequest ||
+        !matchesExpectedTurn()
+      ) {
         // stop/close/clearSession 赢在筛查期间:steer 事务已被取消,静默放弃。
-        this.clearSteerAbortController(sessionId, item.clientId);
-        return false;
+        if (
+          ownsCurrentRequest &&
+          this.clearSteeringMarker(cur, item.clientId, {
+            generation: steerGeneration,
+            token: steerRequestToken,
+          })
+        ) {
+          this.clearDirectSteeringItem(cur, item.clientId);
+          this.emit(sessionId);
+        }
+        this.clearSteerAbortController(sessionId, item.clientId, steerAbort);
+        return finishSteerRequest(false);
       }
       if (verdict.action === 'block') {
         // 拦截即终态:不注入、不落库,气泡由 onUserMessageBlocked 广播降级;
         // 返回 true(已处置),renderer 不再回滚重试。
-        this.clearSteerAbortController(sessionId, item.clientId);
-        cur.steeringQueueClientIds = cur.steeringQueueClientIds.filter(
-          (id) => id !== item.clientId,
-        );
+        this.clearSteerAbortController(sessionId, item.clientId, steerAbort);
+        this.clearSteeringMarker(cur, item.clientId, {
+          generation: steerGeneration,
+          token: steerRequestToken,
+        });
         if (opts?.removeFromQueue) {
           cur.pendingQueue = cur.pendingQueue.filter((q) => q.clientId !== item.clientId);
           this.removePendingCompactWaitClientId(cur, item.clientId);
@@ -1446,7 +1895,9 @@ export class AgentInputCoordinator {
         this.deps.onDiscardedQueuedMessage?.(sessionId, item);
         this.emit(sessionId);
         this.scheduleDrain(sessionId, 'steer-ghost-blocked');
-        return true;
+        // 普通 UI steer 的 true 表示“已处置”，避免 renderer 把被策略拦截的内容
+        // 重新入队；控制面要求严格的 same-turn 投递结果，不能把 blocked 报成成功。
+        return finishSteerRequest(opts?.fallbackToTurn === false ? false : true);
       }
       if (verdict.action === 'rewrite') {
         // 与 drain 的 rewrite 同构:JSON-aware 只换 text 字段并保留附件信封；
@@ -1471,30 +1922,78 @@ export class AgentInputCoordinator {
 
     try {
       const referenceContexts = await this.resolveReferenceContexts(item);
+      if (!matchesExpectedTurn()) {
+        const latest = this.getState(sessionId);
+        if (
+          this.clearSteeringMarker(latest, item.clientId, {
+            generation: steerGeneration,
+            token: steerRequestToken,
+          })
+        ) {
+          this.clearDirectSteeringItem(latest, item.clientId);
+          this.emit(sessionId);
+        }
+        this.clearSteerAbortController(sessionId, item.clientId, steerAbort);
+        return finishSteerRequest(false);
+      }
       item.persistedContent = attachSessionReferenceMetadata(
         item.persistedContent,
         referenceContexts,
       );
-      await this.deps.steerToAgent(
-        sessionId,
-        buildMakerUserMessage(item, referenceContexts),
-        {
-          messageUuid,
-          userName: item.userName,
-          signal: steerAbort.signal,
-          // 同 drain:steer 投递也在入队时的 async context 之外。
-          ...(item.fromMobileClient ? { fromMobileClient: true } : {}),
-        },
-      );
+      await this.deps.steerToAgent(sessionId, buildMakerUserMessage(item, referenceContexts), {
+        messageUuid,
+        userName: item.userName,
+        signal: AbortSignal.any([inputBoundarySignal, steerAbort.signal]),
+        expectedClearBoundaryMs: steerClearBoundaryMs,
+        expectedInputGeneration: steerGeneration,
+        ...(opts?.expectedTurnSession !== undefined
+          ? { expectedTurnSession: opts.expectedTurnSession }
+          : {}),
+        ...(opts?.expectedTurnGeneration !== undefined
+          ? { expectedTurnGeneration: opts.expectedTurnGeneration }
+          : {}),
+        // 同 drain:steer 投递也在入队时的 async context 之外。
+        ...(item.fromMobileClient ? { fromMobileClient: true } : {}),
+      });
     } catch (err) {
-      this.clearSteerAbortController(sessionId, item.clientId);
       const latest = this.getState(sessionId);
-      const markerStillPresent = latest.steeringQueueClientIds.includes(item.clientId);
-      latest.steeringQueueClientIds = latest.steeringQueueClientIds.filter(
-        (id) => id !== item.clientId,
-      );
+      if (latest.generation !== steerGeneration) {
+        // clearSession owns the replacement state. The old callback may only release its own
+        // controller; it must not alter the replacement generation or Stop boundary.
+        this.clearSteerAbortController(sessionId, item.clientId, steerAbort);
+        log.info('ignoring stale steer completion after input generation changed', {
+          sessionId,
+          clientId: item.clientId,
+          steerGeneration,
+          currentGeneration: latest.generation,
+        });
+        return finishSteerRequest(false);
+      }
+      const markerStillPresent = this.clearSteeringMarker(latest, item.clientId, {
+        generation: steerGeneration,
+        token: steerRequestToken,
+      });
+      this.clearSteerAbortController(sessionId, item.clientId, steerAbort);
+
+      if (isStaleTurnError(err)) {
+        if (markerStillPresent) {
+          this.clearDirectSteeringItem(latest, item.clientId);
+          this.emit(sessionId);
+        }
+        return finishSteerRequest(false);
+      }
 
       if (isNoActiveTurnError(err)) {
+        if (!markerStillPresent) {
+          // Stop/close owns the abort boundary after clearing this marker. Its token-guarded
+          // reconciliation path is the only code allowed to release that lock.
+          log.info('steer no-active-turn after marker cancelled (stop/close raced)', {
+            sessionId,
+            clientId: item.clientId,
+          });
+          this.emit(sessionId);
+          return finishSteerRequest(false);
+        }
         // maker-core 权威判定无活跃 turn — 先让 host 校准可能 stale 的 busy
         // tracker, 否则下面 fallback / drain 仍会被假忙挡住 (见 deps 注释)。
         this.deps.reconcileTurnIdle?.(sessionId);
@@ -1510,23 +2009,19 @@ export class AgentInputCoordinator {
           });
           this.onTurnEvent(sessionId, 'done');
         }
-        if (!markerStillPresent) {
-          log.info('steer no-active-turn after marker cancelled (stop/close raced)', {
-            sessionId,
-            clientId: item.clientId,
-          });
-          this.releaseAbortLockAndDrain(sessionId, 'steer-no-active-cancelled');
-          this.emit(sessionId);
-          return false;
-        }
         log.info('steer fallback to normal turn dispatch (no active turn)', {
           sessionId,
           clientId: item.clientId,
         });
+        if (opts?.fallbackToTurn === false) {
+          this.clearDirectSteeringItem(latest, item.clientId);
+          this.emit(sessionId);
+          return finishSteerRequest(false);
+        }
         this.emit(sessionId);
         this.fallbackPreparedAsTurn(sessionId, item, opts?.removeFromQueue === true);
         if (opts?.touchUserSend) this.touchUserSend(sessionId);
-        return true;
+        return finishSteerRequest(true);
       }
 
       log.warn('steer hard failure', {
@@ -1560,11 +2055,18 @@ export class AgentInputCoordinator {
           // 不确定投递的保护性暂停必须由用户显式处置,不许新输入静默放行。
           latest.queuePausedByRestore = false;
         }
-      } else if (isSteerDeliveryUncertainError(err) && latest.generation === steerGeneration) {
+      } else if (
+        isSteerDeliveryUncertainError(err) &&
+        latest.generation === steerGeneration &&
+        (steerVendorTurnGeneration === null ||
+          this.deps.getTurnGeneration?.(sessionId) === steerVendorTurnGeneration) &&
+        this.isLatestSteerRequest(sessionId, item.clientId, steerRequestToken)
+      ) {
         // Stop/close 赢在 ack 返回前(marker 已被 stop 清):RPC 已发出,结果同样
         // 不确定,消息必须有落点(尤其 composer 入口无队列行的场景,review #939
-        // 第四轮)。物化进暂停队列交用户处置。generation 守卫:clearSession 是
-        // 用户显式重置,不把消息塞回已清空的会话。
+        // 第四轮)。只有本请求仍是该 clientId 的最新身份时才物化；同 generation
+        // 内的后续请求一旦取代它，迟到结果不得复活旧消息或暂停新队列。
+        // generation 守卫:clearSession 是用户显式重置,不把消息塞回已清空的会话。
         this.prependQueueHeadIfMissing(latest, item);
         latest.queuePaused = true;
         // 同上:不确定投递的保护性暂停,不许新输入静默放行。
@@ -1576,25 +2078,77 @@ export class AgentInputCoordinator {
       }
       this.emit(sessionId);
       this.scheduleDrain(sessionId, 'steer-hard-failure');
-      return false;
+      return finishSteerRequest(false);
     }
-    this.clearSteerAbortController(sessionId, item.clientId);
-
     const accepted = this.getState(sessionId);
-    if (!accepted.steeringQueueClientIds.includes(item.clientId)) {
-      log.warn(
-        'steer accepted by agent but marker already cancelled (stop/close raced); dropping',
-        {
+    const ownsCurrentSteerMarker = this.isCurrentSteerRequest(
+      accepted,
+      item.clientId,
+      steerGeneration,
+      steerRequestToken,
+    );
+    if (!ownsCurrentSteerMarker) {
+      this.clearSteerAbortController(sessionId, item.clientId, steerAbort);
+      if (
+        accepted.generation !== steerGeneration ||
+        accepted.clearBoundaryMs !== steerClearBoundaryMs
+      ) {
+        // Provider acceptance is still irreversible, so report success instead of inviting a
+        // duplicate retry. A concurrent clear owns the replacement generation and intentionally
+        // prevents the accepted row from being reintroduced into cleared history.
+        log.info('steer accepted after session clear; preserving cleared replacement state', {
           sessionId,
           clientId: item.clientId,
-        },
-      );
+          steerGeneration,
+          currentGeneration: accepted.generation,
+        });
+        return finishSteerRequest(true);
+      }
+
+      // Stop/close clears the visible marker and direct item before the provider promise must
+      // settle. A resolved provider call has crossed the irreversible boundary nonetheless:
+      // persist it and remember the clientId without rebuilding activeTurn or releasing the
+      // Stop/close boundary that now owns the session lifecycle.
+      this.clearDirectSteeringItem(accepted, item.clientId);
+      this.rememberEnqueuedClientId(accepted, item.clientId);
+      if (opts?.removeFromQueue) {
+        accepted.pendingQueue = accepted.pendingQueue.filter(
+          (queued) => queued.clientId !== item.clientId,
+        );
+        this.removePendingCompactWaitClientId(accepted, item.clientId);
+        accepted.queueEditLocks = accepted.queueEditLocks.filter((id) => id !== item.clientId);
+        if (accepted.pendingQueue.length === 0) accepted.queuePaused = false;
+      }
+      const detachedAcceptedTurn: ActiveTurn = {
+        item,
+        delivery: 'steer',
+        messageUuid,
+        createdAt,
+        generation: steerGeneration,
+        clearBoundaryMs: steerClearBoundaryMs,
+        persisted: false,
+        persisting: true,
+        sendStarted: true,
+        dispatchLifecycle: 'dispatched',
+        pendingTerminalEvent: null,
+        continuationOwnerClientId: null,
+      };
+      const persisted = await this.persistAcceptedUserMessage(sessionId, detachedAcceptedTurn);
+      if (opts?.touchUserSend && persisted === 'persisted') this.touchUserSend(sessionId);
+      log.info('steer accepted after marker cancellation; persisted without reopening boundary', {
+        sessionId,
+        clientId: item.clientId,
+        persisted,
+      });
       this.emit(sessionId);
-      return false;
+      return finishSteerRequest(true);
     }
-    accepted.steeringQueueClientIds = accepted.steeringQueueClientIds.filter(
-      (id) => id !== item.clientId,
-    );
+    this.clearDirectSteeringItem(accepted, item.clientId);
+    this.clearSteerAbortController(sessionId, item.clientId, steerAbort);
+    // steerToAgent has crossed the irreversible delivery boundary. Keep the
+    // clientId known even if the subsequent user-row persistence or terminal
+    // event fails, otherwise an ACK-loss retry can inject the same text twice.
+    this.rememberEnqueuedClientId(accepted, item.clientId);
     if (opts?.removeFromQueue) {
       accepted.pendingQueue = accepted.pendingQueue.filter((q) => q.clientId !== item.clientId);
       this.removePendingCompactWaitClientId(accepted, item.clientId);
@@ -1619,23 +2173,48 @@ export class AgentInputCoordinator {
       delivery: 'steer',
       messageUuid,
       createdAt,
-      generation: accepted.generation,
+      generation: steerGeneration,
+      clearBoundaryMs: steerClearBoundaryMs,
       persisted: false,
       persisting: true,
       sendStarted: true,
       dispatchLifecycle: 'dispatched',
       pendingTerminalEvent: null,
-      continuationOwnerClientId:
-        isUiContinuationItem(item)
-          ? item.clientId
-          : sameVendorTurn
-            ? steerContinuationOwnerClientId
-            : null,
+      continuationOwnerClientId: isUiContinuationItem(item)
+        ? item.clientId
+        : sameVendorTurn
+          ? steerContinuationOwnerClientId
+          : null,
     };
     this.emit(sessionId);
 
     const persisted = await this.persistAcceptedUserMessage(sessionId, accepted.activeTurn);
-    if (persisted !== 'persisted') return false;
+    const settled = this.getState(sessionId);
+    let releasedSteerMarker = false;
+    if (
+      this.isCurrentSteerRequest(
+        settled,
+        item.clientId,
+        steerGeneration,
+        steerRequestToken,
+      )
+    ) {
+      releasedSteerMarker = this.clearSteeringMarker(settled, item.clientId, {
+        generation: steerGeneration,
+        token: steerRequestToken,
+      });
+      if (releasedSteerMarker) {
+        this.emit(sessionId);
+      }
+    }
+    if (persisted !== 'persisted') {
+      if (releasedSteerMarker) this.scheduleDrain(sessionId, 'steer-persistence-settled');
+      // Provider 已确认接收后就是不可逆投递边界。落库失败仍保留上面的 sticky
+      // error，但不能向调用方报告“未投递”诱导它用新 clientId 重发，造成模型
+      // 在同一 turn 内消费两份。accepted clientId 已在 rememberEnqueuedClientId
+      // 登记，原 id 的幂等重试也会直接收口。
+      return finishSteerRequest(true);
+    }
     if (opts?.touchUserSend) this.touchUserSend(sessionId);
     // 已投递收口(review #939 第二轮 P1):steer ack 可能与 turn 终态乱序——
     // maker-core 对"server 已接受注入但本地 turn 已终结"按已投递成功返回
@@ -1673,7 +2252,7 @@ export class AgentInputCoordinator {
       this.clearSessionRunningRetry(accepted);
     }
     this.scheduleDrain(sessionId, 'steer-accepted');
-    return true;
+    return finishSteerRequest(true);
   }
 
   stop(
@@ -1684,6 +2263,7 @@ export class AgentInputCoordinator {
     const preserveQueue = opts?.keepQueue === true;
     this.supersedePendingAutoResumeRecoveries(sessionId);
     this.cancelPreparedAutoResume(sessionId, state);
+    this.abortInputBoundary(sessionId);
     this.abortSteerTransactions(sessionId);
     this.clearAbortReconcileRetry(state);
     // Stop 是用户显式收手:凭证切换等待随之取消(保留队列时队首仍在,恢复后会重新进入等待)。
@@ -1704,7 +2284,9 @@ export class AgentInputCoordinator {
       }
       // 整批丢弃的排队消息同样从未派发:从弱网重发幂等窗口遗忘,允许再次入队。
       const droppedIds = new Set(droppedQueue.map((q) => q.clientId));
-      state.recentEnqueuedClientIds = state.recentEnqueuedClientIds.filter((id) => !droppedIds.has(id));
+      state.recentEnqueuedClientIds = state.recentEnqueuedClientIds.filter(
+        (id) => !droppedIds.has(id),
+      );
       state.pendingCompacts = [];
       state.queueInteractionLocks = state.queueInteractionLocks.filter((lockId) =>
         state.interactionLocksPreservedOnStop.includes(lockId),
@@ -1732,7 +2314,7 @@ export class AgentInputCoordinator {
     const abortBoundaryToken = Symbol('agent-input-abort-boundary');
     const abortBoundaryGeneration = state.generation;
     state.abortBoundaryToken = abortBoundaryToken;
-    state.steeringQueueClientIds = [];
+    this.clearAllSteeringMarkers(state);
     state.queueExpanded = false;
     this.emit(sessionId);
 
@@ -1775,9 +2357,27 @@ export class AgentInputCoordinator {
 
   resume(sessionId: string): AgentInputProjection {
     const state = this.getState(sessionId);
+    const recovery = state.recovery;
+    const pausedQueueHeadRecoveryClientId =
+      state.queuePaused &&
+      recovery?.kind === 'queue-head' &&
+      state.pendingQueue[0]?.clientId === recovery.clientId
+        ? recovery.clientId
+        : null;
     state.queuePaused = false;
     state.queuePausedByRestore = false;
-    this.clearErrorUnlessQueueHeadBlocked(state);
+    if (pausedQueueHeadRecoveryClientId !== null) {
+      state.error = null;
+      state.stickyError = null;
+      state.recovery = null;
+      log.info('paused queue resume resets queue-head recovery', {
+        sessionId,
+        clientId: pausedQueueHeadRecoveryClientId,
+      });
+      this.touchUserSend(sessionId);
+    } else {
+      this.clearErrorUnlessQueueHeadBlocked(state);
+    }
     this.emit(sessionId);
     this.scheduleDrain(sessionId, 'resume');
     this.scheduleExternalTurnRetryIfNeeded(sessionId, state, 'resume');
@@ -1801,10 +2401,7 @@ export class AgentInputCoordinator {
    *  - `superseded`：目标已消失（用户自己接手 / 清了会话）——他已经在处理，别再弹横幅。
    *  - `no-progress`：保留给无法构造安全重试项的异常路径（例如 image-only fallback）。
    */
-  async autoRetryLastError(
-    sessionId: string,
-    attemptToken: number,
-  ): Promise<AutoRetryOutcome> {
+  async autoRetryLastError(sessionId: string, attemptToken: number): Promise<AutoRetryOutcome> {
     const { outcome } = await this.performRetryLastError(sessionId, {
       auto: true,
       attemptToken,
@@ -1851,8 +2448,9 @@ export class AgentInputCoordinator {
     let continueItem: AgentInputQueuedMessage | null = null;
     let progressKnown = false;
     const previousAutoResumeInfo = opts?.auto ? state.autoResumePending : null;
-    const attemptToken = opts?.auto ? opts.attemptToken ?? null : null;
-    const continueText = CONTINUE_AFTER_ERROR_PROMPT;
+    const attemptToken = opts?.auto ? (opts.attemptToken ?? null) : null;
+    let continueText = CONTINUE_AFTER_ERROR_PROMPT;
+    let recoveryCheckpoint: RecoveryCheckpoint | undefined;
     if (recovery.kind === 'active-turn' && this.deps.hasAssistantProgressAfter) {
       let hasProgress = false;
       try {
@@ -1879,6 +2477,56 @@ export class AgentInputCoordinator {
         return { projection: this.getProjection(sessionId), outcome: 'superseded' };
       }
       if (hasProgress) {
+        if (this.deps.getRecoveryContextSnapshot) {
+          try {
+            const snapshot = await this.deps.getRecoveryContextSnapshot(
+              sessionId,
+              recovery.item.clientId,
+            );
+            // Revalidate after the second await: the snapshot read may race
+            // enqueue/clearError/session close that cancel the recovery intent.
+            const stateAfterSnapshot = this.getState(sessionId);
+            if (stateAfterSnapshot.recovery !== recovery) {
+              return { projection: this.getProjection(sessionId), outcome: 'superseded' };
+            }
+            if (
+              opts?.auto &&
+              (!stateAfterSnapshot.autoResumePending ||
+                stateAfterSnapshot.autoResumeAttemptToken !== attemptToken)
+            ) {
+              return { projection: this.getProjection(sessionId), outcome: 'superseded' };
+            }
+            recoveryCheckpoint = buildRecoveryCheckpoint(
+              opts?.auto ? 'automatic' : 'manual',
+              recovery.item.clientId,
+              recovery.item.recoveryCheckpoint,
+              snapshot,
+              opts?.auto ? previousAutoResumeInfo?.attempt : undefined,
+            );
+            continueText = appendRecoveryCheckpointPrompt(continueText, recoveryCheckpoint);
+          } catch (err) {
+            // Recovery must remain available if the optional read races DB
+            // shutdown. The generic continuation is the safe fallback.
+            log.warn('recovery checkpoint read failed; using generic continuation', {
+              sessionId,
+              error: errorMessage(err),
+            });
+            // Revalidate after the failed await: user may have sent a new
+            // message, cleared the error, or closed the session while the
+            // snapshot read was failing.
+            const stateAfterCatch = this.getState(sessionId);
+            if (stateAfterCatch.recovery !== recovery) {
+              return { projection: this.getProjection(sessionId), outcome: 'superseded' };
+            }
+            if (
+              opts?.auto &&
+              (!stateAfterCatch.autoResumePending ||
+                stateAfterCatch.autoResumeAttemptToken !== attemptToken)
+            ) {
+              return { projection: this.getProjection(sessionId), outcome: 'superseded' };
+            }
+          }
+        }
         const clientId = crypto.randomUUID();
         continueItem = {
           ...recovery.item,
@@ -1887,9 +2535,10 @@ export class AgentInputCoordinator {
           originalSyntheticTrigger: 'continue',
           persistedContent: continueText,
           autoResume: opts?.auto ? true : undefined,
+          recoveryCheckpoint,
           // 人工 Retry 是新的真人介入周期，不能继承上一轮隐藏自动消息的标记；自动路径
           // 则把展示信息随消息落库，成为「已重新连接」活动行的 param 位与展开详情。
-          autoResumeInfo: opts?.auto ? previousAutoResumeInfo ?? undefined : undefined,
+          autoResumeInfo: opts?.auto ? (previousAutoResumeInfo ?? undefined) : undefined,
           // 附件 / mention 属于原始消息,已在失败 turn 里送达过模型,续跑指令不重带。
           files: undefined,
           mentions: undefined,
@@ -1913,10 +2562,7 @@ export class AgentInputCoordinator {
     // queue-head recovery 表示消息从未跨过 accepted 边界，自动重发仍然可能重复一条
     // 尚未确认是否落库的输入；这条路径继续交给用户。active-turn recovery 则已经落库，
     // 零产出克隆重发是安全的，连续失败次数由 host 守卫负责止损。
-    if (
-      opts?.auto &&
-      (recovery.kind !== 'active-turn' || (!continueItem && !progressKnown))
-    ) {
+    if (opts?.auto && (recovery.kind !== 'active-turn' || (!continueItem && !progressKnown))) {
       log.debug('auto retry skipped — progress state is not safe to resend', {
         sessionId,
         recoveryKind: recovery.kind,
@@ -1928,9 +2574,9 @@ export class AgentInputCoordinator {
     const previousStickyError = state.stickyError;
     let retryItem = recovery.kind === 'active-turn' ? recovery.item : null;
     if (
-      !continueItem
-      && retryItem
-      && isUnsupportedResponsesImageErrorPayload(state.error ?? state.stickyError)
+      !continueItem &&
+      retryItem &&
+      isUnsupportedResponsesImageErrorPayload(state.error ?? state.stickyError)
     ) {
       retryItem = stripQueuedMessageImages(retryItem);
       if (!hasRetryableQueuedContent(retryItem)) {
@@ -1955,7 +2601,7 @@ export class AgentInputCoordinator {
           ...(retryItem ?? recovery.item),
           clientId,
           autoResume: opts?.auto ? true : undefined,
-          autoResumeInfo: opts?.auto ? previousAutoResumeInfo ?? undefined : undefined,
+          autoResumeInfo: opts?.auto ? (previousAutoResumeInfo ?? undefined) : undefined,
           // 自动 clone 自身会被 renderer 隐藏，不能再软删原始可见 user 行；人工 Retry
           // 才用可见克隆取代旧行。显式覆盖也避免继承上一轮的隐藏标记。
           supersedesUserClientId: opts?.auto ? undefined : recovery.item.clientId,
@@ -2100,21 +2746,40 @@ export class AgentInputCoordinator {
     clientId: string,
     next: AgentInputQueuedMessage,
   ): AgentInputProjection {
-    if (!next.text.trim() && !(next.files && next.files.length > 0)) {
-      return this.getProjection(sessionId);
-    }
-    const state = this.getState(sessionId);
-    if (state.steeringQueueClientIds.includes(clientId)) return this.getProjection(sessionId);
-    state.pendingQueue = state.pendingQueue.map((entry) =>
-      entry.clientId === clientId ? updateQueuedMessageContent(entry, next) : entry,
-    );
-    this.emit(sessionId);
-    return this.getProjection(sessionId);
+    return this.updateContentWithResult(sessionId, clientId, next).projection;
   }
 
   /**
-   * 整条排队消息原位替换(main 侧受信调用方专用;当前唯一消费者是 Orca lead 的
-   * 「修改排队消息」工具)。与 updateText / updateContent 的差别:替换体由调用方
+   * Content replacement variant that exposes whether a pending row was
+   * actually replaced.  The IPC attachment lifecycle needs this distinction:
+   * an update can legitimately become a no-op when the row was dispatched,
+   * removed, or rejected by a concurrent steer, and newly materialised local
+   * media must then be cleaned instead of being treated as durable.
+   */
+  updateContentWithResult(
+    sessionId: string,
+    clientId: string,
+    next: AgentInputQueuedMessage,
+  ): { projection: AgentInputProjection; updated: boolean } {
+    if (!next.text.trim() && !(next.files && next.files.length > 0)) {
+      return { projection: this.getProjection(sessionId), updated: false };
+    }
+    const state = this.getState(sessionId);
+    if (state.steeringQueueClientIds.includes(clientId)) {
+      return { projection: this.getProjection(sessionId), updated: false };
+    }
+    const index = state.pendingQueue.findIndex((entry) => entry.clientId === clientId);
+    if (index < 0) return { projection: this.getProjection(sessionId), updated: false };
+    const nextQueue = [...state.pendingQueue];
+    nextQueue[index] = updateQueuedMessageContent(state.pendingQueue[index], next);
+    state.pendingQueue = nextQueue;
+    this.emit(sessionId);
+    return { projection: this.getProjection(sessionId), updated: true };
+  }
+
+  /**
+   * 整条排队消息原位替换(main 侧受信调用方专用；Orca lead 与会话控制面共用)。
+   * 与 updateText / updateContent 的差别:替换体由调用方
    * 全量构造 —— orca 条目的 text / persistedContent / origin.displayText 之间存在
    * 派发格式耦合(formatAgentMessage / formatOrcaCommunicationMessage),必须由
    * dispatcher 侧按原格式重建,coordinator 不理解也不该理解该格式。
@@ -2132,8 +2797,17 @@ export class AgentInputCoordinator {
     if (state.steeringQueueClientIds.includes(clientId)) return false;
     const index = state.pendingQueue.findIndex((q) => q.clientId === clientId);
     if (index < 0) return false;
+    const current = state.pendingQueue[index];
+    if (!current) return false;
+    // The receipt is stamped by this host at first acceptance and is not part
+    // of public projections. Never let an edit erase or forge the clear/restart
+    // recovery boundary even if a future caller accidentally rebuilds from a
+    // projected row again.
+    const replacement = { ...next };
+    if (current.hostAcceptedAtMs === undefined) delete replacement.hostAcceptedAtMs;
+    else replacement.hostAcceptedAtMs = current.hostAcceptedAtMs;
     const nextQueue = [...state.pendingQueue];
-    nextQueue[index] = next;
+    nextQueue[index] = replacement;
     state.pendingQueue = nextQueue;
     this.emit(sessionId);
     return true;
@@ -2233,10 +2907,16 @@ export class AgentInputCoordinator {
     this.deps.noteSessionClearBoundary?.(sessionId, clearedAt);
     const prev = this.getState(sessionId);
     this.supersedePendingAutoResumeRecoveries(sessionId);
+    const observedClearBoundaryMs = normalizeAgentInputClearBoundaryMs(clearedAt) ?? Date.now();
+    const clearBoundaryMs =
+      prev.clearBoundaryMs === null
+        ? observedClearBoundaryMs
+        : Math.max(prev.clearBoundaryMs, observedClearBoundaryMs);
     this.clearAbortReconcileRetry(prev);
     this.clearSessionRunningRetry(prev);
     this.clearCredentialSwitchWait(prev);
     this.clearPendingExternalTerminalDone(prev);
+    this.abortInputBoundary(sessionId);
     this.abortSteerTransactions(sessionId);
     for (const item of prev.pendingQueue) {
       this.deps.onDiscardedQueuedMessage?.(sessionId, item);
@@ -2245,7 +2925,7 @@ export class AgentInputCoordinator {
     // 显式清上下文:强制开启持久化闸门,让 emit 写出空快照(删行),
     // 即使此前该会话从未触发恢复(否则旧快照残留,下次打开会诈尸)。
     this.restoredQueueSessions.add(sessionId);
-    this.states.set(sessionId, createInitialInputState(prev.generation + 1));
+    this.states.set(sessionId, createInitialInputState(prev.generation + 1, clearBoundaryMs));
     this.emit(sessionId);
     return this.getProjection(sessionId);
   }
@@ -2286,11 +2966,7 @@ export class AgentInputCoordinator {
         state.activeTurn = null;
         state.stickyError = null;
         const schedulerItem = active.item && isSchedulerOriginItem(active.item);
-        const resumableCandidate = this.isResumableTurnErrorCandidate(
-          sessionId,
-          message,
-          signals,
-        );
+        const resumableCandidate = this.isResumableTurnErrorCandidate(sessionId, message, signals);
         const outcome = this.setActiveTurnRecovery(state, active.item, {
           allowSchedulerAutoResume: Boolean(schedulerItem && resumableCandidate),
         });
@@ -2338,9 +3014,6 @@ export class AgentInputCoordinator {
           }
         }
         this.emit(sessionId);
-        // Orca reports may cross this recovery gate; ordinary queued input
-        // remains blocked until the user resolves the failed turn.
-        this.scheduleDrain(sessionId, 'terminal-error-active-turn');
         return;
       }
       if (active?.persisting) {
@@ -2462,14 +3135,30 @@ export class AgentInputCoordinator {
     this.scheduleDrain(sessionId, 'turn-done');
   }
 
-  onSessionClosed(sessionId: string): void {
+  /**
+   * @param opts.preserveInputBoundary 为 true 时跳过 abortInputBoundary。
+   * @param opts.preserveAutoResumeIntent 为 true 时保留当前自动续跑接管态。
+   *   仅用于 provider rebuild 在退避 timer 触发前关闭旧 Session 的交棒窗口；
+   *   active turn / steer / drain 等旧实例运行态仍照常清理。
+   *   用于 rehydrate / 凭证切换 close-rebuild 窗口:abort 会取消驱动本次重建的
+   *   input signal(#1930),但**其余清理必须照常**(activeTurn / steer / queue
+   *   状态不能残留,否则 rebuild 失败或 close 后不 rebuild 时 coordinator
+   *   残留旧状态阻塞后续发送)。
+   */
+  onSessionClosed(
+    sessionId: string,
+    opts?: { preserveInputBoundary?: boolean; preserveAutoResumeIntent?: boolean },
+  ): void {
     const state = this.getState(sessionId);
-    this.supersedePendingAutoResumeRecoveries(sessionId);
+    if (!opts?.preserveAutoResumeIntent) {
+      this.supersedePendingAutoResumeRecoveries(sessionId);
+    }
     const releasedAbortLock = state.queueAbortPending;
     this.cancelScheduledDrain(state);
     this.clearAbortReconcileRetry(state);
     this.clearSessionRunningRetry(state);
     this.clearPendingExternalTerminalDone(state);
+    if (!opts?.preserveInputBoundary) this.abortInputBoundary(sessionId);
     this.abortSteerTransactions(sessionId);
     const active = state.activeTurn;
     if (active && !isActiveTurnDispatched(active)) {
@@ -2480,16 +3169,68 @@ export class AgentInputCoordinator {
       }
       state.queueAbortPending = false;
       state.abortBoundaryToken = null;
-      state.steeringQueueClientIds = [];
+      this.clearAllSteeringMarkers(state);
       this.emit(sessionId);
       return;
     }
     state.activeTurn = null;
     state.queueAbortPending = false;
     state.abortBoundaryToken = null;
-    state.steeringQueueClientIds = [];
+    this.clearAllSteeringMarkers(state);
     this.emit(sessionId);
     if (releasedAbortLock) this.scheduleDrain(sessionId, 'session-closed-abort-boundary');
+  }
+
+  private projectQueueInspection(state: SessionInputState): SessionQueueInspectionEntry[] {
+    const activeItem =
+      state.activeTurn?.item && !isActiveTurnDispatched(state.activeTurn)
+        ? state.activeTurn.item
+        : null;
+    return projectSessionQueueForInspection(
+      state.pendingQueue,
+      state.steeringQueueClientIds,
+      activeItem,
+      state.directSteeringItems,
+    );
+  }
+
+  private isCurrentSteerRequest(
+    state: SessionInputState,
+    clientId: string,
+    generation: number,
+    token: symbol,
+  ): boolean {
+    return state.generation === generation && state.steeringRequestTokens.get(clientId) === token;
+  }
+
+  private clearSteeringMarker(
+    state: SessionInputState,
+    clientId: string,
+    expected?: { generation: number; token: symbol },
+  ): boolean {
+    if (
+      expected &&
+      !this.isCurrentSteerRequest(state, clientId, expected.generation, expected.token)
+    ) {
+      return false;
+    }
+    const existed = state.steeringQueueClientIds.includes(clientId);
+    state.steeringQueueClientIds = state.steeringQueueClientIds.filter((id) => id !== clientId);
+    state.steeringRequestTokens.delete(clientId);
+    this.clearDirectSteeringItem(state, clientId);
+    return existed;
+  }
+
+  private clearDirectSteeringItem(state: SessionInputState, clientId: string): void {
+    state.directSteeringItems = state.directSteeringItems.filter(
+      (item) => item.clientId !== clientId,
+    );
+  }
+
+  private clearAllSteeringMarkers(state: SessionInputState): void {
+    state.steeringQueueClientIds = [];
+    state.steeringRequestTokens.clear();
+    state.directSteeringItems = [];
   }
 
   private getState(sessionId: string): SessionInputState {
@@ -2561,6 +3302,11 @@ export class AgentInputCoordinator {
     return {
       sessionId,
       pendingQueue,
+      // Modern projections always carry the explicit null token for a session
+      // that has never been cleared.  Only an older controlled Desktop can
+      // omit the field at the wire boundary; keeping null here lets a remote
+      // sender safely fence clear/send races from the very first message.
+      clearBoundaryMs: state.clearBoundaryMs,
       continuationInFlightClientId:
         state.activeTurn?.item && isUiContinuationItem(state.activeTurn.item)
           ? state.activeTurn.item.clientId
@@ -2588,8 +3334,28 @@ export class AgentInputCoordinator {
   /** Renderer projection may carry routing hints, but never quoted history bodies. */
   private toProjectedItem(item: AgentInputQueuedMessage): AgentInputQueuedMessage {
     const projected = { ...item };
+    delete projected.hostAcceptedAtMs;
     delete projected.trustedSessionReferenceContexts;
     delete projected.sessionReferencesRequireTrustedSnapshot;
+    // Recovery hints are main-owned evidence for the next vendor turn, not
+    // renderer/device-link payload. Keep the projection minimal and avoid
+    // echoing transcript-derived summaries to remote controllers.
+    delete projected.recoveryCheckpoint;
+    if (typeof projected.text === 'string' && projected.text.includes(RECOVERY_CHECKPOINT_MARKER)) {
+      projected.text = projected.text.slice(0, projected.text.indexOf(RECOVERY_CHECKPOINT_MARKER));
+    }
+    if (typeof projected.persistedContent === 'string' && projected.persistedContent.includes(RECOVERY_CHECKPOINT_MARKER)) {
+      projected.persistedContent = projected.persistedContent.slice(0, projected.persistedContent.indexOf(RECOVERY_CHECKPOINT_MARKER));
+    }
+    // chatMessage.content is the outbound payload sent to remote controllers
+    // (device-link); it must mirror the same strip so the checkpoint marker
+    // never leaks past transport boundaries.
+    if (projected.chatMessage && typeof projected.chatMessage.content === 'string' && projected.chatMessage.content.includes(RECOVERY_CHECKPOINT_MARKER)) {
+      projected.chatMessage = {
+        ...projected.chatMessage,
+        content: projected.chatMessage.content.slice(0, projected.chatMessage.content.indexOf(RECOVERY_CHECKPOINT_MARKER)),
+      };
+    }
     return projected;
   }
 
@@ -2632,26 +3398,40 @@ export class AgentInputCoordinator {
     return state.activeTurn !== null || this.deps.isTurnRunning(sessionId);
   }
 
+  /**
+   * 队首为何不可派发 —— getDrainableHead 的解释版,两者共用同一份 gate 序列
+   * (#2506 wake/drain 可观测性:此前 drain 被 gate 挡住时零日志,排队输入
+   * 静默滞留后无从定位断点)。返回 null = 队首可派发。
+   */
+  private explainDrainBlockGate(sessionId: string, state: SessionInputState): string | null {
+    if (this.queueRestorePromises.has(sessionId)) return 'queue-restore-in-progress';
+    if (this.restoreAttempted.has(sessionId) && !this.restoredQueueSessions.has(sessionId))
+      return 'queue-restore-failed';
+    if (state.pendingQueue.length === 0) return 'queue-empty';
+    if (state.queuePaused)
+      return state.queuePausedByRestore ? 'queue-paused-by-restore' : 'queue-paused';
+    if (state.queueAbortPending) return 'abort-pending';
+    if (state.queueInteractionLocks.length > 0) return 'interaction-lock';
+    if (state.steeringQueueClientIds.length > 0) return 'steering-in-flight';
+    const head = state.pendingQueue[0];
+    if (!head) return 'queue-empty';
+    if (
+      state.recovery?.kind === 'queue-head'
+      || (state.recovery && head.origin?.kind !== 'orca')
+    ) return 'recovery-pending';
+    if (this.deps.hasPendingCredentialSwitch?.(sessionId)) return 'credential-switch-gate';
+    if (this.isDispatchBoundaryBusy(sessionId, state)) return 'dispatch-boundary-busy';
+    if (this.getDrainableCompact(sessionId, state)) return 'compact-first';
+    if (state.queueEditLocks.includes(head.clientId)) return 'edit-lock';
+    return null;
+  }
+
   private getDrainableHead(
     sessionId: string,
     state: SessionInputState,
   ): AgentInputQueuedMessage | null {
-    if (this.queueRestorePromises.has(sessionId)) return null;
-    if (this.restoreAttempted.has(sessionId) && !this.restoredQueueSessions.has(sessionId))
-      return null;
-    if (state.pendingQueue.length === 0) return null;
-    if (state.queuePaused) return null;
-    if (state.queueAbortPending) return null;
-    if (state.queueInteractionLocks.length > 0) return null;
-    if (state.steeringQueueClientIds.length > 0) return null;
-    const head = state.pendingQueue[0];
-    if (!head) return null;
-    if (state.recovery && head.origin?.kind !== 'orca') return null;
-    if (this.deps.hasPendingCredentialSwitch?.(sessionId)) return null;
-    if (this.isDispatchBoundaryBusy(sessionId, state)) return null;
-    if (this.getDrainableCompact(sessionId, state)) return null;
-    if (state.queueEditLocks.includes(head.clientId)) return null;
-    return head;
+    if (this.explainDrainBlockGate(sessionId, state) !== null) return null;
+    return state.pendingQueue[0] ?? null;
   }
 
   private getDrainableCompact(
@@ -2705,6 +3485,32 @@ export class AgentInputCoordinator {
     }
     const head = this.getDrainableHead(sessionId, state);
     if (!head) {
+      // #2506 结果级诊断:排队输入被 gate 挡住时留痕(此前零日志,gate-clear
+      // 到成功 drain 之间的静默滞留无从定位)。只记 id / 布尔 / 枚举,不记正文;
+      // 空队列的例行 drain 不记,避免每次 turn-done 都产生噪音。
+      // 级别按 gate 分层(Codex review):turn 运行中排队、恢复暂停、交互锁等
+      // 都是**正常态**,每次 drain 尝试都会进这里 —— packaged 默认 info,记
+      // info 会让普通排队持续刷日志、淹没真正的异常断点,复现期排障走 DEBUG
+      // (工程规范)。只有 queue-restore-failed(快照恢复确已失败,队列滞留到
+      // 人工介入,非瞬态)保留 info 常驻观测。
+      const gate = this.explainDrainBlockGate(sessionId, state);
+      if (gate !== null && gate !== 'queue-empty') {
+        const logAt = gate === 'queue-restore-failed' ? log.info : log.debug;
+        logAt('drain blocked', {
+          sessionId,
+          reason,
+          gate,
+          queueLength: state.pendingQueue.length,
+          headClientId: state.pendingQueue[0]?.clientId ?? null,
+          queuePaused: state.queuePaused,
+          queuePausedByRestore: state.queuePausedByRestore,
+          queueRestoreInProgress: this.queueRestorePromises.has(sessionId),
+          recoveryKind: state.recovery?.kind ?? null,
+          hasActiveTurn: state.activeTurn !== null,
+          turnRunning: this.deps.isTurnRunning(sessionId),
+          credentialSwitchGate: this.deps.hasPendingCredentialSwitch?.(sessionId) === true,
+        });
+      }
       this.scheduleExternalTurnRetryIfNeeded(sessionId, state, `drain-blocked:${reason}`);
       return;
     }
@@ -2723,13 +3529,13 @@ export class AgentInputCoordinator {
       messageUuid: crypto.randomUUID(),
       createdAt: new Date().toISOString(),
       generation: state.generation,
+      clearBoundaryMs: state.clearBoundaryMs,
       persisted: false,
       persisting: false,
       sendStarted: false,
       dispatchLifecycle: 'preparing',
       pendingTerminalEvent: null,
-      continuationOwnerClientId:
-        isUiContinuationItem(head) ? head.clientId : null,
+      continuationOwnerClientId: isUiContinuationItem(head) ? head.clientId : null,
     };
     state.activeTurn = active;
     this.emit(sessionId);
@@ -2741,7 +3547,11 @@ export class AgentInputCoordinator {
       // 留痕署名后照常派发。activeTurn 已置位,并发 drain 被挡住,询问期间
       // 不会抢发下一条。
       if (!head.bypassGhostHooks && this.deps.screenUserMessage) {
-        const verdict = await this.deps.screenUserMessage(sessionId, getAgentFacingText(head));
+        const verdict = await this.deps.screenUserMessage(
+          sessionId,
+          getAgentFacingText(head),
+          head,
+        );
         if (!this.isActiveTurnCurrent(sessionId, active)) return;
         if (verdict.action === 'block') {
           this.getState(sessionId).activeTurn = null;
@@ -2801,6 +3611,9 @@ export class AgentInputCoordinator {
           ...(head.autoResume && typeof head.autoResumeInfo?.sessionTotal === 'number'
             ? { turnAttemptToken: head.autoResumeInfo.sessionTotal }
             : {}),
+          signal: this.getInputAbortSignal(sessionId, active.generation),
+          expectedClearBoundaryMs: active.clearBoundaryMs,
+          expectedInputGeneration: active.generation,
           ...(head.origin?.kind === 'scheduler' ? { origin: head.origin } : {}),
           // 手机来源透传到 send 事务:drain 已脱离入队时的 async context。
           ...(head.fromMobileClient ? { fromMobileClient: true } : {}),
@@ -2809,22 +3622,32 @@ export class AgentInputCoordinator {
             content: head.persistedContent,
             sdkSessionId,
             delivery: active.delivery,
+            expectedClearBoundaryMs: active.clearBoundaryMs,
+            expectedInputGeneration: active.generation,
             // 自动续跑标记必须一路透到落库:renderer 靠 agentMeta.autoResume 隐藏气泡,
             // host 靠它跳过额度充值(见 AgentInputQueuedMessage.autoResume)。
             ...(head.autoResume ? { autoResume: true } : {}),
             ...(head.autoResumeInfo ? { autoResumeInfo: head.autoResumeInfo } : {}),
+            ...(head.recoveryCheckpoint ? { recoveryCheckpoint: head.recoveryCheckpoint } : {}),
             ...(head.origin ? { origin: head.origin } : {}),
             shouldBroadcast: () => this.isTurnGenerationCurrent(sessionId, active),
             onPersisting: () => {
+              this.notifyUserMessagePersisting(sessionId, head);
               if (this.isTurnGenerationCurrent(sessionId, active)) {
                 active.persisting = true;
               }
             },
             onPersisted: async () => {
+              // The DB row already owns any staged attachment references. This
+              // callback intentionally runs before generation checks: a clear
+              // or Stop may win the pre-vendor race after persistence, but it
+              // must not delete media that the durable row now references.
+              this.notifyUserMessagePersisted(sessionId, head);
               if (this.isTurnGenerationCurrent(sessionId, active)) {
                 active.persisted = true;
                 active.persisting = false;
                 active.dispatchLifecycle = 'awaiting-dispatch-hooks';
+                this.notifyUserMessageQueryable(sessionId, head);
                 // 跨过 DB 持久化边界即刻收窄快照:此后崩溃属 interrupted-turn
                 // 辖区,若等到下一次 emit(turn done)才写,长 turn 内崩溃会把
                 // 已送达的消息二次恢复(issue #761)。
@@ -2846,6 +3669,11 @@ export class AgentInputCoordinator {
                 );
               }
               active.dispatchLifecycle = 'sending';
+            },
+            onPersistFailed: () => {
+              this.notifyUserMessagePersistenceFailed(sessionId, head, {
+                retainForRetry: true,
+              });
             },
           },
         },
@@ -2944,6 +3772,7 @@ export class AgentInputCoordinator {
       }
       latest.error = errorMessage(err);
       latest.stickyError = null;
+      const piImageCapabilityRejected = isPiImageInputUnsupportedError(err);
       // 同 handleSendNotDispatched:调度来源的 prompt 不留可被人手动 Retry 的 recovery
       // (review #944 第九轮 P1;判据内建在 setActiveTurnRecovery)。
       const schedulerOrigin = this.setActiveTurnRecovery(latest, head) === 'dropped-scheduler';
@@ -2953,6 +3782,10 @@ export class AgentInputCoordinator {
         // (用户 Retry / clearError)—— 现在没有了,不主动清就等于把会话永久钉在"有活跃
         // turn":之后所有用户与调度消息全部积压到 coordinator 被重置
         // (review #944 第十轮 P1)。
+        latest.activeTurn = null;
+      } else if (piImageCapabilityRejected) {
+        // Pi 图片能力拒绝发生在 vendor RPC 之前，不会再有 terminal event 来释放 activeTurn；
+        // 已持久化的用户行仍保留 active-turn recovery，供用户切换到视觉模型后重试。
         latest.activeTurn = null;
       }
       this.notifyRejectedUserTurn(sessionId, head);
@@ -3042,7 +3875,11 @@ export class AgentInputCoordinator {
       item,
       cancelledByUserBoundary ? 'cancelled' : 'failed',
     );
-    if (cancelledByUserBoundary) {
+    if (
+      latest.queueAbortPending &&
+      result.kind === 'session-dispatch' &&
+      result.reason === 'cancelled-before-dispatch'
+    ) {
       latest.queueAbortPending = false;
     }
     log.warn(
@@ -3108,7 +3945,9 @@ export class AgentInputCoordinator {
     const latest = this.getState(sessionId);
     if (!this.isActiveTurnCurrent(sessionId, active)) return;
     latest.activeTurn = null;
-    if (this.abandonAutoResumeAfterTransientFailure(sessionId, latest, item, 'credential-switch-busy')) {
+    if (
+      this.abandonAutoResumeAfterTransientFailure(sessionId, latest, item, 'credential-switch-busy')
+    ) {
       return;
     }
     this.prependQueueHeadIfMissing(latest, item);
@@ -3430,6 +4269,7 @@ export class AgentInputCoordinator {
   ): void {
     const active = state.activeTurn;
     if (!active || !isActiveTurnBeforeVendorDispatch(active)) return;
+    this.abortInputBoundary(sessionId);
     state.generation += 1;
     state.activeTurn = null;
     const item = active.item;
@@ -3470,11 +4310,7 @@ export class AgentInputCoordinator {
    * 自动续跑项在 pre-vendor 边界被丢弃时恢复原错误入口。
    * 返回 false 表示它已经被用户动作取代、会话已清空，或已跨过 dispatch 边界。
    */
-  restoreAutoResumeRecovery(
-    sessionId: string,
-    clientId: string,
-    attemptToken: number,
-  ): boolean {
+  restoreAutoResumeRecovery(sessionId: string, clientId: string, attemptToken: number): boolean {
     const pending = this.pendingAutoResumeRecoveries.get(clientId);
     if (!pending) return false;
     const state = this.states.get(sessionId);
@@ -3495,10 +4331,7 @@ export class AgentInputCoordinator {
     return true;
   }
 
-  private discardAutoResumeBeforeDispatch(
-    sessionId: string,
-    item: AgentInputQueuedMessage,
-  ): void {
+  private discardAutoResumeBeforeDispatch(sessionId: string, item: AgentInputQueuedMessage): void {
     // This item has already left pendingQueue but never crossed vendor dispatch. Reuse the
     // existing host cleanup boundary; register owns the single recovery/finalize operation.
     this.autoResumeDispatchAttempts.delete(item.clientId);
@@ -3506,10 +4339,7 @@ export class AgentInputCoordinator {
   }
 
   /** 自动续跑项已真正进入 vendor，之后不再需要 pre-vendor 回滚信息。 */
-  private commitAutoResumeDispatch(
-    sessionId: string,
-    item: AgentInputQueuedMessage,
-  ): void {
+  private commitAutoResumeDispatch(sessionId: string, item: AgentInputQueuedMessage): void {
     this.pendingAutoResumeRecoveries.delete(item.clientId);
     this.autoResumeDispatchAttempts.delete(item.clientId);
     const attemptToken = item.autoResumeInfo?.sessionTotal;
@@ -3566,10 +4396,7 @@ export class AgentInputCoordinator {
    * 持久化前走 discard 回调，持久化后走 undispatched 回调，两条既有 host 边界都会结算
    * suppressed error 与 guard pending 状态。
    */
-  private cancelPreparedAutoResume(
-    sessionId: string,
-    state: SessionInputState,
-  ): boolean {
+  private cancelPreparedAutoResume(sessionId: string, state: SessionInputState): boolean {
     const queuedClientIds = state.pendingQueue
       .filter((item) => item.autoResume)
       .map((item) => item.clientId);
@@ -3578,11 +4405,7 @@ export class AgentInputCoordinator {
 
     const active = state.activeTurn;
     const item = active?.item;
-    if (
-      !active ||
-      !item?.autoResume ||
-      !isActiveTurnBeforeVendorDispatch(active)
-    ) {
+    if (!active || !item?.autoResume || !isActiveTurnBeforeVendorDispatch(active)) {
       return queuedClientIds.length > 0;
     }
     const persisted = active.persisted;
@@ -3617,9 +4440,7 @@ export class AgentInputCoordinator {
     this.abandonActiveTurnRecoveryForUserAction(state);
     this.clearErrorUnlessQueueHeadBlocked(state, item.clientId);
     state.queuePaused = false;
-    state.steeringQueueClientIds = state.steeringQueueClientIds.filter(
-      (id) => id !== item.clientId,
-    );
+    this.clearSteeringMarker(state, item.clientId);
     state.queueEditLocks = state.queueEditLocks.filter((id) => id !== item.clientId);
     this.movePreparedItemToQueueFront(state, item, removeFromQueue);
     this.emit(sessionId);
@@ -3812,9 +4633,14 @@ export class AgentInputCoordinator {
     byClientId.set(clientId, controller);
   }
 
-  private clearSteerAbortController(sessionId: string, clientId: string): void {
+  private clearSteerAbortController(
+    sessionId: string,
+    clientId: string,
+    expectedController?: AbortController,
+  ): void {
     const byClientId = this.steerAbortControllers.get(sessionId);
     if (!byClientId) return;
+    if (expectedController && byClientId.get(clientId) !== expectedController) return;
     byClientId.delete(clientId);
     if (byClientId.size === 0) this.steerAbortControllers.delete(sessionId);
   }
@@ -3827,6 +4653,39 @@ export class AgentInputCoordinator {
     // injecting the message after the user has already stopped the task.
     for (const controller of byClientId.values()) controller.abort();
     this.steerAbortControllers.delete(sessionId);
+  }
+
+  private beginSteerRequest(sessionId: string, clientId: string): symbol {
+    const token = Symbol('agent-input-steer-request');
+    let byClientId = this.steerRequestLineages.get(sessionId);
+    if (!byClientId) {
+      byClientId = new Map();
+      this.steerRequestLineages.set(sessionId, byClientId);
+    }
+    const existing = byClientId.get(clientId);
+    if (existing) {
+      existing.latestToken = token;
+      existing.unsettledTokens.add(token);
+    } else {
+      byClientId.set(clientId, { latestToken: token, unsettledTokens: new Set([token]) });
+    }
+    return token;
+  }
+
+  private isLatestSteerRequest(sessionId: string, clientId: string, token: symbol): boolean {
+    return this.steerRequestLineages.get(sessionId)?.get(clientId)?.latestToken === token;
+  }
+
+  private settleSteerRequest(sessionId: string, clientId: string, token: symbol): void {
+    const byClientId = this.steerRequestLineages.get(sessionId);
+    const lineage = byClientId?.get(clientId);
+    if (!byClientId || !lineage) return;
+    lineage.unsettledTokens.delete(token);
+    // Keep latestToken as a tombstone while an older callback is still pending. Otherwise a
+    // replacement that settles first would make the old request look current again.
+    if (lineage.unsettledTokens.size > 0) return;
+    byClientId.delete(clientId);
+    if (byClientId.size === 0) this.steerRequestLineages.delete(sessionId);
   }
 
   private touchUserSend(sessionId: string, atMs?: number): void {
@@ -3947,11 +4806,9 @@ export class AgentInputCoordinator {
   ): AutoResumeInfo | null {
     if (!this.deps.onResumableTurnError) return null;
     try {
-      return this.deps.onResumableTurnError(
-        sessionId,
-        { ...(signals ?? {}), message },
-        item,
-      ) ?? null;
+      return (
+        this.deps.onResumableTurnError(sessionId, { ...(signals ?? {}), message }, item) ?? null
+      );
     } catch (err) {
       log.warn('onResumableTurnError failed', { sessionId, error: errorMessage(err) });
       return null;
@@ -4080,16 +4937,9 @@ export class AgentInputCoordinator {
     }
   }
 
-  abandonAutoResume(
-    sessionId: string,
-    message?: string,
-    attemptToken?: number,
-  ): void {
+  abandonAutoResume(sessionId: string, message?: string, attemptToken?: number): void {
     const state = this.getState(sessionId);
-    if (
-      attemptToken !== undefined &&
-      state.autoResumeAttemptToken !== attemptToken
-    ) {
+    if (attemptToken !== undefined && state.autoResumeAttemptToken !== attemptToken) {
       return;
     }
     const hadPendingTakeover = state.autoResumePending !== null;
@@ -4112,6 +4962,58 @@ export class AgentInputCoordinator {
       this.deps.onUndispatchedUserTurn?.(sessionId, item, disposition);
     } catch (err) {
       log.warn('onUndispatchedUserTurn failed', {
+        sessionId,
+        clientId: item.clientId,
+        error: errorMessage(err),
+      });
+    }
+  }
+
+  private notifyUserMessagePersisted(sessionId: string, item: AgentInputQueuedMessage): void {
+    try {
+      this.deps.onUserMessagePersisted?.(sessionId, item);
+    } catch (err) {
+      log.warn('onUserMessagePersisted failed', {
+        sessionId,
+        clientId: item.clientId,
+        error: errorMessage(err),
+      });
+    }
+  }
+
+  private notifyUserMessageQueryable(sessionId: string, item: AgentInputQueuedMessage): void {
+    try {
+      this.deps.onUserMessageQueryable?.(sessionId, item);
+    } catch (err) {
+      log.warn('onUserMessageQueryable failed', {
+        sessionId,
+        clientId: item.clientId,
+        error: errorMessage(err),
+      });
+    }
+  }
+
+  private notifyUserMessagePersisting(sessionId: string, item: AgentInputQueuedMessage): void {
+    try {
+      this.deps.onUserMessagePersisting?.(sessionId, item);
+    } catch (err) {
+      log.warn('onUserMessagePersisting failed', {
+        sessionId,
+        clientId: item.clientId,
+        error: errorMessage(err),
+      });
+    }
+  }
+
+  private notifyUserMessagePersistenceFailed(
+    sessionId: string,
+    item: AgentInputQueuedMessage,
+    opts: { retainForRetry: boolean },
+  ): void {
+    try {
+      this.deps.onUserMessagePersistenceFailed?.(sessionId, item, opts);
+    } catch (err) {
+      log.warn('onUserMessagePersistenceFailed failed', {
         sessionId,
         clientId: item.clientId,
         error: errorMessage(err),
@@ -4150,8 +5052,10 @@ export class AgentInputCoordinator {
     const sdkSessionId = await this.deps.getSdkSessionId(sessionId).catch(() => undefined);
     const transcriptParentUuid = this.deps.getLastAssistantTranscriptUuid?.(sessionId);
     if (!this.isTurnGenerationCurrent(sessionId, active)) return 'stale';
+    this.notifyUserMessagePersisting(sessionId, item);
     try {
-      await createDbMessage(
+      const createUserMessage = this.deps.createUserMessage ?? createDbMessage;
+      await createUserMessage(
         sessionId,
         {
           clientId: item.clientId,
@@ -4166,15 +5070,42 @@ export class AgentInputCoordinator {
         },
         {
           shouldBroadcast: () => this.isTurnGenerationCurrent(sessionId, active),
+          expectedClearBoundaryMs: active.clearBoundaryMs,
         },
       );
+      // Persistence is the ownership boundary for staged media. Do this
+      // before the generation check so a clear racing the DB write cannot
+      // clean up a file that the row now references.
+      this.notifyUserMessagePersisted(sessionId, item);
+      const current = this.getState(sessionId);
+      if (
+        current.clearBoundaryMs !== active.clearBoundaryMs ||
+        current.generation !== active.generation
+      ) {
+        try {
+          await this.deps.rewindPersistedUserMessageAfterClear?.(sessionId, item.clientId);
+        } catch (err) {
+          // The clear generation still prevents stale in-memory state from
+          // proceeding. Keep the cleanup best-effort so a transient rewind
+          // failure cannot turn an accepted vendor input into a duplicate retry.
+          log.warn('rewind stale user row after clear failed', {
+            sessionId,
+            clientId: item.clientId,
+            error: errorMessage(err),
+          });
+        }
+      }
       if (!this.isTurnGenerationCurrent(sessionId, active)) return 'stale';
       active.persisted = true;
       active.persisting = false;
+      this.notifyUserMessageQueryable(sessionId, item);
       // 同 drain onPersisted:steer 消息落库后立即收窄快照,避免长 turn 内崩溃二次恢复。
       this.maybePersistQueueSnapshot(sessionId);
       this.settlePendingTerminalEventAfterPersist(sessionId, active);
     } catch (err) {
+      this.notifyUserMessagePersistenceFailed(sessionId, item, {
+        retainForRetry: false,
+      });
       if (!this.isTurnGenerationCurrent(sessionId, active)) return 'stale';
       const state = this.getState(sessionId);
       state.error = `Failed to persist user message: ${errorMessage(err)}`;
@@ -4277,10 +5208,7 @@ export class AgentInputCoordinator {
           state.recovery = null;
           this.markPendingExternalTerminalDone(sessionId, state);
           this.emit(sessionId);
-          this.scheduleDrainAfterExternalTurnSettles(
-            sessionId,
-            'scheduler-prompt-terminal-error',
-          );
+          this.scheduleDrainAfterExternalTurnSettles(sessionId, 'scheduler-prompt-terminal-error');
           return;
         }
       }

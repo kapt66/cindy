@@ -6,6 +6,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { AccountDeletionStatus, SocialProvider, VerificationKind } from '@cindy/auth-client';
 
 import { useAuth } from '@/auth/AuthContext';
+import { LoginCaptchaWebView } from '@/auth/LoginCaptchaWebView';
 import { useLoginFirstLaunchLight } from '@/auth/loginFirstLaunchGate';
 import { resolveStartupSplashHandoff } from '@/auth/startupSplashContinuity';
 import {
@@ -20,6 +21,10 @@ import { canResumePendingConsent, makeConsentStamp, type ConsentStamp } from '@/
 import { acceptPrivacyConsent } from '@/analytics/analyticsConsentStore';
 import { initMobileTapdb } from '@/analytics/mobileTapdb';
 import { isNativeSocialProviderSupported } from '@/auth/nativeSocial';
+import {
+  resolveMobileSocialLoginMode,
+  type MobileSocialLoginMode,
+} from '@/auth/mobileSocialLoginMode';
 import { Text, TextInput } from '@/components/AppText';
 import { useTheme, useThemedStyles, type ThemeColors } from '@/theme';
 import {
@@ -72,7 +77,7 @@ import {
   MobileLoginHandoffStage,
   useLoginSurface,
 } from '@/components/MobileLoginHandoffStage';
-import { AUTH_REGION, getMobileConfigIssues } from '@/config/env';
+import { AUTH_REGION, BUILD_AUTH_REGION, getMobileConfigIssues } from '@/config/env';
 import { resolveIdentifierMethod } from '@/auth/loginIdentifierMethod';
 import { fontWeight, lineHeight, loginPalettes, loginSizes, radius, spacing, typeScale } from '@/theme/tokens';
 
@@ -355,11 +360,21 @@ export default function LoginScreen() {
     const state = auth.loginState;
     if (state?.step !== 'identifier') return null;
     const providers = state.providers;
-    const socialProviders = providers.social.filter(
-      isNativeSocialProviderSupported,
+    const socialProviderModes = new Map<SocialProvider, MobileSocialLoginMode>();
+    for (const provider of providers.social) {
+      const mode = resolveMobileSocialLoginMode({
+        provider,
+        region: BUILD_AUTH_REGION,
+        platform: Platform.OS,
+        nativeSupported: isNativeSocialProviderSupported(provider),
+      });
+      if (mode) socialProviderModes.set(provider, mode);
+    }
+    const socialProviders = providers.social.filter((provider) =>
+      socialProviderModes.has(provider),
     );
-    // App Store 合规:Apple 必须用官方 Sign in with Apple 按钮(不可皮肤化),
-    // 从统一社交圆钮行中拆出、单独全宽渲染;其余(Google/微信/SSO)保留皮肤圆钮。
+    // Apple 保持官方 Logo-only 样式:iOS 走原生凭据,Global Android
+    // 走系统浏览器 PKCE;其余(Google/微信/SSO)保留原有圆钮。
     const nonAppleProviders = socialProviders.filter(
       // type guard 收窄为 Google/微信(SSO 由行内末位单独渲染),与 LoginSocialGlyph
       // 收窄后的 provider 类型对齐;Apple 走圆钮行第一颗(AppleLogoGlyph,variant='apple')。
@@ -518,9 +533,8 @@ export default function LoginScreen() {
           />
           {identifierErrorNode}
         </LoginPanel>
-        {/* App Store 合规(Guideline 4):Apple 入口为圆钮行第一颗(iOS only,沿用
-            socialProviders.includes('apple') 即 isNativeSocialProviderSupported 判定,
-            Android 自动无此钮)。圆钮底色用 ADR 官方 Black/White 配色(appleCircleBg)、
+        {/* Apple 入口为圆钮行第一颗:iOS 走原生 Sign in with Apple,
+            Global Android 复用系统浏览器 PKCE。圆钮底色用 ADR 官方 Black/White 配色(appleCircleBg)、
             logo 用官方 Logo-only artwork(AppleLogoGlyph,path 逐字节原样未改)、无描边。
             HIG 允许 logo-only 自定义按钮(圆形),artwork 来自 Apple Design Resources。 */}
         <LoginSocialRow
@@ -539,13 +553,22 @@ export default function LoginScreen() {
               onPress={() => {
                 // SC-SOC-7: in-flight 期间 no-op(行为层 guard,无 disabled 视觉回填)。
                 if (disabled) return;
-                // Apple 属个人登录链路,过协议门(未勾选先弹协议弹窗,同意后续接原路径)
-                requireConsent(() =>
+                // Apple 属个人登录链路,过协议门(未勾选先弹协议弹窗,同意后续接当前平台路径)
+                requireConsent(() => {
+                  const mode = socialProviderModes.get('apple');
+                  if (mode === 'browser') {
+                    void auth.dispatchLoginAction({
+                      type: 'start-social-browser',
+                      provider: 'apple',
+                      label: loginText('apple'),
+                    });
+                    return;
+                  }
                   void auth.dispatchLoginAction({
                     type: 'native-social',
                     provider: 'apple',
-                  }),
-                );
+                  });
+                });
               }}
               testID="login.appleButton"
             >
@@ -1165,8 +1188,9 @@ export default function LoginScreen() {
   // 只管渲染与命中,读屏仍会念出不可见的注销状态)。iOS 走 accessibilityElementsHidden、
   // Android 走 importantForAccessibility,两端都要给(PR #464 codex)。
   const realmConsentOpen = realmConfirmation !== null;
+  const captchaChallengeOpen = auth.captchaChallenge !== null;
   const deletionBubbleA11yHidden =
-    consentDialogOpen || realmConsentOpen || handoffPhase !== 'done';
+    consentDialogOpen || realmConsentOpen || captchaChallengeOpen || handoffPhase !== 'done';
 
   return (
     <MobileLoginHandoffStage
@@ -1188,7 +1212,9 @@ export default function LoginScreen() {
         // Android 读屏:弹窗打开时隐藏背景登录组(accessibilityViewIsModal 仅 iOS
         // 生效;codex 审查 P2)。iOS 忽略此属性,无副作用。
         importantForAccessibility={
-          consentDialogOpen || realmConsentOpen ? 'no-hide-descendants' : 'auto'
+          consentDialogOpen || realmConsentOpen || captchaChallengeOpen
+            ? 'no-hide-descendants'
+            : 'auto'
         }
         onLayout={measureBaseline}
         ref={outerGroupRef}
@@ -1291,6 +1317,14 @@ export default function LoginScreen() {
           }
           onOpenTerms={() => undefined}
           onOpenPrivacy={() => undefined}
+        />
+      ) : null}
+      {/* 人机验证挑战层(global 邮箱发码前置闸):incognito WebView 装载
+          auth-server 托管的 Turnstile 页,结果回 AuthContext 挂起的发码动作。 */}
+      {auth.captchaChallenge ? (
+        <LoginCaptchaWebView
+          url={auth.captchaChallenge.url}
+          onResult={auth.resolveCaptchaChallenge}
         />
       ) : null}
     </MobileLoginHandoffStage>

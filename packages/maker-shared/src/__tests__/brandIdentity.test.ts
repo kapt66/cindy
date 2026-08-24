@@ -15,6 +15,7 @@ import {
   brandExecutableName,
   brandFileAssociationProgId,
   brandUserDataDirName,
+  legacyDialogueUserDataDirNames,
   resolveCindyRegion,
 } from '../brandIdentity.js';
 
@@ -109,6 +110,11 @@ describe('BRAND_IDENTITY invariants', () => {
     expect(BRAND_IDENTITY.updaterName).toBe('cindy-meka-updater');
     expect(brandFileAssociationProgId()).toBe('CindyMeka.CindyGhost');
     expect(BRAND_IDENTITY.legacyDbFilePrefixes).toEqual(['xdt-maker']);
+  });
+
+  it('dialogue cwd 迁移在两服务区只读扫描 Meka 历史目录', () => {
+    expect(legacyDialogueUserDataDirNames('cn')).toEqual(['xdmaker-meka', 'xdt-maker']);
+    expect(legacyDialogueUserDataDirNames('global')).toEqual(['xdmaker-meka', 'xdt-maker']);
   });
 
   it('档案与内嵌数组已冻结,消费方无法运行时篡改', () => {

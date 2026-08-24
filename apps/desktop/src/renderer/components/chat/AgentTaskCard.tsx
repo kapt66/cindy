@@ -12,6 +12,10 @@ import {
   Workflow,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import {
+  deriveAgentTaskStatus,
+  type AgentTaskTerminalStatus,
+} from '@cindy/maker-shared/agent-task';
 
 import { useExpandedBlockMemory } from '@/hooks/useExpandedBlockMemory';
 import { Collapse } from '@/components/ui/collapse';
@@ -29,7 +33,11 @@ import { useSidebarPanelReachable } from '@/features/cc-agent/embeddedSessionNav
 import { cn } from '@/lib/utils';
 import { formatModelShortLabel } from '@/lib/modelShortLabel';
 import { CODEX_SUBAGENT_EFFORTS } from '../../../shared/subagentModelSettings';
-import { PI_SUBAGENT_TOOL_NAME, subagentSpawnReceiptName } from '@cindy/maker-shared/agent-task';
+import {
+  PI_SUBAGENT_TOOL_NAME,
+  subagentSpawnReceiptName,
+  subagentSpawnResultIndicatesRunning,
+} from '@cindy/maker-shared/agent-task';
 
 // 徽标可显示的思考强度档:协议全部合法档(效果词表 effortLevels 四语齐)。
 const EFFORT_BADGE_LEVELS = new Set<string>(['minimal', ...CODEX_SUBAGENT_EFFORTS]);
@@ -38,6 +46,7 @@ interface AgentTaskCardProps {
   toolCall?: ChatMessage;
   update?: AgentTaskUpdate;
   result?: string;
+  persistedStatus?: AgentTaskTerminalStatus;
   /**
    * subagent-model-chip: 子代理实际跑的模型 raw id,由 MessageStream 用
    * parentToolUseId→model 映射(从子消息 agentMeta 反查)解析后传入,作为
@@ -59,6 +68,13 @@ function readInputString(input: unknown, keys: string[]): string | undefined {
     if (typeof value === 'string' && value.trim()) return value.trim();
   }
   return undefined;
+}
+
+function readInputStringArray(input: unknown, key: string): string[] {
+  if (!input || typeof input !== 'object') return [];
+  const value = (input as Record<string, unknown>)[key];
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === 'string' && item.length > 0);
 }
 
 function compactText(text: string | undefined, max = 260): string | undefined {
@@ -128,15 +144,37 @@ function readHistoryFileStatus(
   return pending;
 }
 
-export function AgentTaskCard({ toolCall, update, result, subagentModel, sessionId }: AgentTaskCardProps) {
+export function AgentTaskCard({
+  toolCall,
+  update,
+  result,
+  persistedStatus,
+  subagentModel,
+  sessionId,
+}: AgentTaskCardProps) {
   const { t } = useTranslation();
   const blockId = `task:${toolCall?.clientId ?? update?.taskId ?? 'unknown'}`;
   // subagent-model-chip: 子代理模型 —— 实时态优先 update.model(progress 事件
-  // 带),历史重载(update 缺省)回退到从子消息反查的 subagentModel;两者皆无时
-  // 再回退 spawn 参数里显式指定的 model(codex collab 卡,translator 透传
-  // item.model)。默认继承主模型时 spawn 无 model 字段——不猜继承值,不渲染。
+  // 带),历史重载(update 缺省)回退到从子消息反查的 subagentModel。Claude
+  // Agent/Task 的 input.model 只是请求值,可能被运行时个性化配置覆盖,不能冒充
+  // 实际模型；Codex collab spawn 沿用既有显式模型展示。`model: null` 是实时聚合卡
+  // 的显式清除指令,不能再落到历史/输入兜底,
+  // 否则多 receiver 模型冲突时旧徽标会被重新显示。V1 多 receiver 的实时聚合结论
+  // 不落库;重载后既无法证明所有 receiver 都已上报、也无法证明模型一致,所以历史态
+  // 同样不从首条子消息或 spawn 参数猜回单一徽标。默认继承主模型时 Codex live tracker
+  // 会按 spawn 当刻的运行时模型冻结到 update.model；历史态若没有这条事实仍不猜。
+  const receiverThreadIds = readInputStringArray(toolCall?.toolInput, 'receiverThreadIds');
+  const codexSpawnModel = toolCall?.toolName?.startsWith('collab:') === true
+    ? readInputString(toolCall.toolInput, ['model'])
+    : undefined;
+  const ambiguousMultiReceiverHistory =
+    !update && toolCall?.toolName?.startsWith('collab:') === true && receiverThreadIds.length > 1;
   const modelLabel = formatModelShortLabel(
-    update?.model ?? subagentModel ?? readInputString(toolCall?.toolInput, ['model']),
+    update?.model === null
+      ? undefined
+      : update?.model ?? (ambiguousMultiReceiverHistory
+        ? undefined
+        : subagentModel ?? codexSpawnModel),
   );
   // codex spawn 可为子代理显式指定思考强度(translator 透传 reasoningEffort);
   // 已知档位才走 effortLevels 词表,未知值不显示。CC 无此参数,行为不变。
@@ -181,9 +219,14 @@ export function AgentTaskCard({ toolCall, update, result, subagentModel, session
     };
   }, [isWorkflow, update?.status, sessionId, workflowTaskId]);
 
-  const status =
-    update?.status ??
-    (isWorkflow ? (historyFileStatus ?? (result ? 'completed' : 'running')) : result ? 'completed' : 'running');
+  const status = isWorkflow
+    ? (update?.status ?? historyFileStatus ?? (result ? 'completed' : 'running'))
+    : deriveAgentTaskStatus(update?.status, result, {
+        persistedStatus,
+        resultIsLaunchReceipt:
+          subagentSpawnReceiptName(toolCall?.toolName, toolCall?.toolInput, result) !== undefined
+          || subagentSpawnResultIndicatesRunning(toolCall?.toolName, result),
+      });
   const StatusIcon = statusIcon(status);
   const statusIconClassName = cn(
     'text-[var(--text-secondary)]',

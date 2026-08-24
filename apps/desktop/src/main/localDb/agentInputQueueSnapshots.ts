@@ -7,8 +7,8 @@
  * sessionActiveTurn 的 chainWrite),避免"后发先至"让旧快照覆盖新快照。
  *
  * 体量守卫:payload 超过 MAX_PAYLOAD_BYTES 时先剥离 files[].base64(剪贴板
- * 图片的内联兜底,路径型附件不受影响)重试;仍超限则放弃本次写入并保留旧
- * 快照(宁可恢复到稍旧的队列,不写入截断的坏数据)。
+ * 图片的内联兜底,路径型附件不受影响)重试;仍超限则显式失败并保留旧快照
+ * (宁可让上层保留可重试的输入,不把未持久化误报成成功)。
  */
 
 import { eq } from 'drizzle-orm';
@@ -25,18 +25,74 @@ const log = createLogger('agent-input-queue-snapshots');
 
 /** 单会话快照体量上限(16MB):正常队列远小于此,超限基本是多张大图的 base64。 */
 const MAX_PAYLOAD_BYTES = 16 * 1024 * 1024;
+const SNAPSHOT_COUNT_QUERY_BATCH_SIZE = 200;
 
 /** per-session 写链:只做覆盖写/删除排队保序,无读改写。 */
 const _writeChains = new Map<string, Promise<void>>();
+/** 当前 session 最近一次写操作的真实结果(保留 reject 供 durable boundary 等待者观察)。 */
+const _latestWriteResults = new Map<string, Promise<void>>();
+
+/**
+ * A queue snapshot that cannot fit in the durable row is not a successful
+ * persistence operation.  Callers use this distinction to retain remote OSS
+ * objects and retry instead of treating the in-memory queue as crash-safe.
+ */
+export class AgentInputQueueSnapshotTooLargeError extends Error {
+  readonly code = 'AGENT_INPUT_QUEUE_SNAPSHOT_TOO_LARGE';
+
+  constructor(
+    readonly sessionId: string,
+    readonly itemCount: number,
+    readonly payloadBytes: number,
+  ) {
+    super(
+      `agent input queue snapshot exceeds ${MAX_PAYLOAD_BYTES} bytes after sanitization ` +
+        `(session=${sessionId}, items=${itemCount}, bytes=${payloadBytes})`,
+    );
+    this.name = 'AgentInputQueueSnapshotTooLargeError';
+  }
+}
 
 function chainWrite(sessionId: string, op: () => Promise<void>): Promise<void> {
   const prev = _writeChains.get(sessionId) ?? Promise.resolve();
   const opResult = prev.then(op);
+  // The operation promise is returned to the caller and may be intentionally
+  // observed later through awaitAgentInputQueueSnapshotPersistence(). Attach a
+  // no-op rejection observer now so a fire-and-forget caller cannot create an
+  // unhandled-rejection warning while the durable waiter still sees the error.
+  void opResult.catch(() => undefined);
   const chainNext = opResult.catch(() => undefined).finally(() => {
     if (_writeChains.get(sessionId) === chainNext) _writeChains.delete(sessionId);
   });
+  // Keep a settled failure visible to the next durable-boundary waiter until
+  // a later successful write replaces it.  Treating a rejected write as
+  // "nothing pending" would let attachment ownership advance past a snapshot
+  // that never became crash-recoverable.
+  void opResult.then(
+    () => {
+      if (_latestWriteResults.get(sessionId) === opResult) {
+        _latestWriteResults.delete(sessionId);
+      }
+    },
+    () => undefined,
+  );
   _writeChains.set(sessionId, chainNext);
+  _latestWriteResults.set(sessionId, opResult);
   return opResult;
+}
+
+/**
+ * Wait for the snapshot write(s) already queued for a session at call time.
+ *
+ * `saveAgentInputQueueSnapshot` remains non-blocking for the coordinator, but
+ * remote attachment cleanup needs a durable boundary before deleting the
+ * controller's OSS object.  The input handler calls this immediately after
+ * accepting an item, so the returned promise covers that acceptance snapshot;
+ * later writes are chained after it and are not silently skipped.  A session
+ * with no pending write is already at the latest known durable boundary.
+ */
+export function awaitAgentInputQueueSnapshotPersistence(sessionId: string): Promise<void> {
+  return _latestWriteResults.get(sessionId) ?? Promise.resolve();
 }
 
 function stripInlineBase64(items: AgentInputQueuedMessage[]): AgentInputQueuedMessage[] {
@@ -86,7 +142,7 @@ export function saveAgentInputQueueSnapshot(
             items: items.length,
             bytes: payload.length,
           });
-          return;
+          throw new AgentInputQueueSnapshotTooLargeError(sessionId, items.length, payload.length);
         }
         log.warn('queue snapshot stripped inline base64 attachments to fit size cap', {
           sessionId,
@@ -122,6 +178,89 @@ export async function loadAllQueueSnapshotPayloads(): Promise<string[]> {
     .select({ payload: agentInputQueueSnapshots.payload })
     .from(agentInputQueueSnapshots);
   return rows.map((r) => r.payload);
+}
+
+/**
+ * Count restorable snapshot rows in SQLite without returning or parsing their message bodies in JS.
+ *
+ * The messages anti-join closes the crash window where the user row committed before the
+ * snapshot-delete write: restoreQueueSnapshot applies the same clientId de-duplication, so cold
+ * list_sessions counts cannot temporarily disagree with list_session_queue after restoration.
+ */
+export async function loadAgentInputQueueSnapshotCounts(
+  sessionIds: readonly string[],
+): Promise<Record<string, number>> {
+  const uniqueIds = [...new Set(sessionIds)];
+  const counts = Object.fromEntries(uniqueIds.map((sessionId) => [sessionId, 0]));
+  for (let offset = 0; offset < uniqueIds.length; offset += SNAPSHOT_COUNT_QUERY_BATCH_SIZE) {
+    const batch = uniqueIds.slice(offset, offset + SNAPSHOT_COUNT_QUERY_BATCH_SIZE);
+    if (batch.length === 0) continue;
+    const placeholders = batch.map(() => '?').join(', ');
+    const rows = await getDbClient().query<{
+      sessionId: string;
+      itemCount: number | null;
+    }>(
+      `SELECT snapshot.session_id AS sessionId,
+              CASE
+                WHEN json_valid(snapshot.payload) = 1 AND json_type(snapshot.payload) = 'array'
+                THEN (
+                  SELECT COUNT(*)
+                  FROM json_each(snapshot.payload) AS snapshot_item
+                  WHERE CASE
+                    WHEN snapshot_item.type = 'object'
+                    THEN
+                      json_type(snapshot_item.value, '$.clientId') = 'text'
+                      AND length(json_extract(snapshot_item.value, '$.clientId')) > 0
+                      AND json_type(snapshot_item.value, '$.text') = 'text'
+                      AND json_type(snapshot_item.value, '$.persistedContent') = 'text'
+                      AND json_type(snapshot_item.value, '$.chatMessage') = 'object'
+                      AND json_type(snapshot_item.value, '$.createOpts') = 'object'
+                      AND json_extract(snapshot_item.value, '$.createOpts.agentKind')
+                          IN ('claude-code', 'codex', 'pi')
+                      AND COALESCE(
+                        json_extract(snapshot_item.value, '$.origin.kind'),
+                        ''
+                      ) <> 'scheduler'
+                    ELSE 0
+                  END
+                    AND (
+                      session.cleared_at IS NULL
+                      OR (
+                        json_type(snapshot_item.value, '$.hostAcceptedAtMs')
+                            IN ('integer', 'real')
+                        AND json_extract(snapshot_item.value, '$.hostAcceptedAtMs')
+                            > session.cleared_at
+                        AND json_extract(snapshot_item.value, '$.hostAcceptedAtMs')
+                            <= 1.7976931348623157e308
+                      )
+                    )
+                    AND NOT EXISTS (
+                      SELECT 1
+                      FROM messages
+                      WHERE messages.session_id = snapshot.session_id
+                        AND messages.client_id = json_extract(
+                          snapshot_item.value,
+                          '$.clientId'
+                        )
+                    )
+                )
+                ELSE NULL
+              END AS itemCount
+       FROM agent_input_queue_snapshots AS snapshot
+       JOIN sessions AS session ON session.id = snapshot.session_id
+       WHERE snapshot.session_id IN (${placeholders})`,
+      batch,
+    );
+    for (const row of rows) {
+      if (!Number.isSafeInteger(row.itemCount) || (row.itemCount ?? -1) < 0) {
+        // One malformed snapshot is session-local damage. Keep its fail-closed zero while
+        // preserving valid counts from the same list_sessions page; query failures still throw.
+        continue;
+      }
+      counts[row.sessionId] = row.itemCount!;
+    }
+  }
+  return counts;
 }
 
 export function isRestorableQueuedMessage(value: unknown): value is AgentInputQueuedMessage {

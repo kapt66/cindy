@@ -2,6 +2,8 @@ import { join as pathJoin } from 'node:path';
 
 import {
   createLiziMcpProviders,
+  resolveLiziMcpSessionContext,
+  type IOSSimulatorMcpAccessDecision,
   type LiziMcpProvider,
   type LiziMcpSessionContext,
   type LspServerPool,
@@ -9,8 +11,14 @@ import {
 import type { OrcaMcpDeps } from '@cindy/mcps';
 import { createCindyGhostsMcpServer } from 'cindy-tools';
 import type { MakerMemoryManager } from '@cindy/maker-core';
-import { getCindyGhostsMcpDeps, type GhostGrantLiveSessionState } from './ghost.js';
+import {
+  getCindyGhostsMcpDeps,
+  type GhostGrantLiveSessionState,
+  type ToolResultImageDescription,
+} from './ghost.js';
+import { createGroupHistoryMcpServer } from './groupHistoryMcpServer.js';
 import { getAndroidMcpDeps } from './android.js';
+import { getIOSSimulatorMcpDeps } from './ios-simulator.js';
 import { getBrowserMcpDeps } from './browser.js';
 import { getComputerMcpDeps } from './computer.js';
 import { feishuIm, wechatIm } from '../im';
@@ -27,7 +35,7 @@ import {
   listSessionsForHistory,
   getMessagesForHistory,
 } from '../localDb/chatHistoryReader.js';
-import { tryGetDbClient } from '../localDb/client/current.js';
+import { isDbClientNotReadyError, tryGetDbClient } from '../localDb/client/current.js';
 import { searchChatHistoryHybrid } from '../localDb/chatHistorySearch.js';
 import {
   patchSessionMetaInDb,
@@ -40,12 +48,12 @@ import { getDesktopContactsManager } from '../maker-host/maker-contacts-host.js'
 import { broadcastContactsChanged } from '../maker-host/contacts-change-broadcast.js';
 import { readContactsSettings } from '../maker-host/contacts-settings-store.js';
 import { readSystemContacts, writeSystemContacts } from '../maker-host/system-contacts.js';
-import { BUILTIN_LIZI_MCP_IDS, pluginIdForProviderName } from '../maker-host/plugins/builtin-plugins.js';
-import { GLOBAL_PLUGIN_IDS } from '../maker-host/plugins/types.js';
 import {
-  readChatHistoryMessages,
-  type ChatHistoryReaderDeps,
-} from './remoteChatHistory.js';
+  BUILTIN_LIZI_MCP_IDS,
+  pluginIdForProviderName,
+} from '../maker-host/plugins/builtin-plugins.js';
+import { GLOBAL_PLUGIN_IDS } from '../maker-host/plugins/types.js';
+import { readChatHistoryMessages, type ChatHistoryReaderDeps } from './remoteChatHistory.js';
 import { settleCombatServerCapabilityDispatch } from '../meka-projects/combatServerCapabilityState.js';
 
 function hasAcceptedInitialWorkerDispatch(result: unknown): boolean {
@@ -67,6 +75,8 @@ export interface DesktopMcpProvidersDeps {
   lspPool: LspServerPool;
   /** 按会话控制启用状态的 plugin registry。 */
   pluginRegistry: PluginRegistry;
+  /** Live installed/enabled plugin gate; evaluated again for every tool call. */
+  resolveIOSSimulatorAccess: (context?: { workingDir?: string }) => IOSSimulatorMcpAccessDecision;
   /** Device-link transport stays host-injected so provider tests do not load Electron runtime services. */
   invokeRemote: ChatHistoryReaderDeps['invokeRemote'];
   /** 插件文件交接只认活跃 Session 的实时权限；缺失时由 ghost.ts fail closed。 */
@@ -74,6 +84,17 @@ export interface DesktopMcpProvidersDeps {
     sessionId: string,
     sessionInstanceId: string,
   ) => GhostGrantLiveSessionState | null;
+  /** 把工具结果图片转成文字描述（视觉桥，最佳努力）。缺失 = 不处理。
+   *  返回结构区分「有意跳过」(skipped:true, 视觉桥未开/模型不命中, 不告警)与
+   *  「真正尝试但失败」(skipped:false + null, 计入 attemptedCount 供告警)。 */
+  describeToolResultImage?: (input: {
+    imageUrl: string;
+    sessionId: string | null;
+    sessionInstanceId: string | null;
+    signal?: AbortSignal;
+  }) => Promise<ToolResultImageDescription>;
+  /** 工具结果图片全部描述失败时回调（视觉桥不可用告警）。缺失 = 不告警。 */
+  onToolResultImagesFailed?: (sessionId: string, attemptedCount: number) => void;
 }
 
 export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMcpProvider[] {
@@ -89,12 +110,19 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
       const s = tryGetOrcaCollabService();
       if (!s) {
         onFailure?.(...args);
-        return { ok: false, errorCode: 'HOST_NOT_READY' as const, message: 'orca collab service not initialized' } as R;
+        return {
+          ok: false,
+          errorCode: 'HOST_NOT_READY' as const,
+          message: 'orca collab service not initialized',
+        } as R;
       }
-      try { return await fn(s, ...args); }
-      catch (err) {
+      try {
+        return await fn(s, ...args);
+      } catch (err) {
         onFailure?.(...args);
-        return { ok: false, errorCode: 'INTERNAL' as const, message: err instanceof Error ? err.message : String(err) } as R;
+        const message = err instanceof Error ? err.message : String(err);
+        const errorCode = isDbClientNotReadyError(err) ? 'HOST_NOT_READY' : 'INTERNAL';
+        return { ok: false, errorCode, message } as R;
       }
     };
   }
@@ -108,6 +136,9 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
         // Keep that snapshot for a busy turn when a disable refresh is deferred;
         // a successfully rebuilt bridge omits this provider via the outer gate.
         context?.agentKind === 'codex' || pluginRegistry.isEnabled('android'),
+    }),
+    iosSimulator: getIOSSimulatorMcpDeps({
+      resolveAccess: deps.resolveIOSSimulatorAccess,
     }),
     browser: getBrowserMcpDeps(),
     computer: getComputerMcpDeps({
@@ -155,7 +186,9 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
           const { messageId } = await feishuIm.sendMarkdownText(chatId, markdown);
           return { ok: true, messageId };
         } catch (err) {
-          const r = (err as { response?: { data?: { code?: number; msg?: string }; status?: number } }).response;
+          const r = (
+            err as { response?: { data?: { code?: number; msg?: string }; status?: number } }
+          ).response;
           const detail = r
             ? `status=${r.status ?? 'n/a'} code=${r.data?.code ?? '?'} msg=${r.data?.msg ?? '?'}`
             : err instanceof Error
@@ -172,8 +205,7 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
       logger: createLogger('mcp/cindy_feishu_bot'),
     },
     wechatBot: {
-      getActivePeerIdForSession: (sessionId) =>
-        wechatIm.getActivePeerIdForSession(sessionId),
+      getActivePeerIdForSession: (sessionId) => wechatIm.getActivePeerIdForSession(sessionId),
       getMostRecentPeerId: () => wechatIm.getMostRecentPeerId(),
       sendMessage: async (peerId, text) => {
         try {
@@ -299,6 +331,19 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
     // (LLM 调工具时) registerMakerIpc 早已执行完毕, holder 已 ready。
     xdtHelper: {
       logger: createLogger('mcp/cindy_helper'),
+      sessionQueue: {
+        listSessionQueue: wrap((service, sessionId: string) => service.listSessionQueue(sessionId)),
+        listSessionQueuedCounts: wrap((service, sessionIds: string[]) =>
+          service.listSessionQueuedCounts(sessionIds),
+        ),
+      },
+      sessionControl: {
+        updateQueuedMessage: wrap((service, params) => service.updateSessionQueuedMessage(params)),
+        cancelQueuedMessage: wrap((service, params) => service.cancelSessionQueuedMessage(params)),
+        steerSession: wrap((service, params) => service.steerSession(params)),
+        stopSessionTurn: wrap((service, params) => service.stopSessionTurn(params)),
+        getSessionRuntime: wrap((service, params) => service.getSessionRuntime(params)),
+      },
       setCurrentSessionTitle: async ({ sessionId, title }) => {
         if (!tryGetDbClient()) {
           return { ok: false, errorCode: 'HOST_NOT_READY', message: 'localDb not ready' };
@@ -309,7 +354,7 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           if (isIpcError(err) && err.code === 'NOT_FOUND') {
-            return { ok: false, errorCode: 'NOT_FOUND', message };
+            return { ok: false, errorCode: err.code, message };
           }
           return { ok: false, errorCode: 'INTERNAL', message };
         }
@@ -343,31 +388,86 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
           return { ok: true, changed };
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          if (isIpcError(err) && err.code === 'NOT_FOUND') {
-            return { ok: false, errorCode: 'NOT_FOUND', message };
+          if (isIpcError(err)) {
+            if (err.code === 'NOT_FOUND' || err.code === 'PRECONDITION_FAILED') {
+              return { ok: false, errorCode: err.code, message };
+            }
           }
           return { ok: false, errorCode: 'INTERNAL', message };
         }
       },
-      sendToSession: async ({ targetSessionId, message, dispatcherSessionId, title, useWorktree, workingDir }) => {
+      sendToSession: async ({
+        targetSessionId,
+        message,
+        dispatcherSessionId,
+        title,
+        useWorktree,
+        workingDir,
+        agentKind,
+        model,
+        effort,
+        fast,
+      }) => {
         const svc = tryGetOrcaCollabService();
         if (!svc) {
-          return { ok: false, errorCode: 'HOST_NOT_READY', message: 'orca collab service not initialized' };
+          return {
+            ok: false,
+            errorCode: 'HOST_NOT_READY',
+            message: 'orca collab service not initialized',
+          };
         }
         try {
-          return await svc.sendToSession({ targetSessionId, message, dispatcherSessionId, title, useWorktree, workingDir });
+          const hasExecutionOverrides =
+            agentKind !== undefined ||
+            model !== undefined ||
+            effort !== undefined ||
+            fast !== undefined;
+          return await svc.sendToSession({
+            targetSessionId,
+            message,
+            dispatcherSessionId,
+            title,
+            useWorktree,
+            workingDir,
+            ...(hasExecutionOverrides
+              ? {
+                  execution: {
+                    agentKind,
+                    model,
+                    effort,
+                    fastMode: fast,
+                  },
+                }
+              : {}),
+          });
         } catch (err) {
-          return { ok: false, errorCode: 'INTERNAL', message: err instanceof Error ? err.message : String(err) };
+          return {
+            ok: false,
+            errorCode: 'INTERNAL',
+            message: err instanceof Error ? err.message : String(err),
+          };
         }
       },
       history: {
         listWorkdirs: async (args) => {
-          try { const page = await listWorkdirsForHistory(args); return { ok: true, page }; }
-          catch (err) { const msg = err instanceof Error ? err.message : String(err); const errorCode = /localDb not ready/i.test(msg) ? 'HOST_NOT_READY' : 'INTERNAL'; return { ok: false, errorCode, message: msg }; }
+          try {
+            const page = await listWorkdirsForHistory(args);
+            return { ok: true, page };
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            const errorCode = isDbClientNotReadyError(err) ? 'HOST_NOT_READY' : 'INTERNAL';
+            return { ok: false, errorCode, message: msg };
+          }
         },
         listSessions: async (args) => {
-          try { const page = await listSessionsForHistory(args); return { ok: true, page }; }
-          catch (err) { const msg = err instanceof Error ? err.message : String(err); const errorCode = /localDb not ready/i.test(msg) ? 'HOST_NOT_READY' : 'INTERNAL'; return { ok: false, errorCode, message: msg }; }
+          try {
+            const page = await listSessionsForHistory(args);
+            return { ok: true, page };
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            const errorCode = isDbClientNotReadyError(err) ? 'HOST_NOT_READY' : 'INTERNAL';
+            return { ok: false, errorCode, message: msg };
+          }
         },
         getMessages: async (args) => {
           return readChatHistoryMessages(args, {
@@ -376,8 +476,14 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
           });
         },
         searchChatHistory: async (args) => {
-          try { const result = await searchChatHistoryHybrid(args); return { ok: true, result }; }
-          catch (err) { const msg = err instanceof Error ? err.message : String(err); const errorCode = /localDb not ready/i.test(msg) ? 'HOST_NOT_READY' : 'INTERNAL'; return { ok: false, errorCode, message: msg }; }
+          try {
+            const result = await searchChatHistoryHybrid(args);
+            return { ok: true, result };
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            const errorCode = isDbClientNotReadyError(err) ? 'HOST_NOT_READY' : 'INTERNAL';
+            return { ok: false, errorCode, message: msg };
+          }
         },
       },
       // submit_github_issue: 官方反馈提交(确认卡片 → serverApiFetch)。
@@ -387,55 +493,61 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
     // cindy_orca: 多 worker 协同 team 工具集。创建权限由 Main handler 实时校验。
     orca: {
       startTeam: wrap((s, params) => s.startTeam(params)),
-      createWorker: wrap(async (s, params) => {
-        let result: Awaited<ReturnType<typeof s.createWorker>> | undefined;
-        try {
-          result = await s.createWorker(params);
-          return result;
-        } finally {
+      createWorker: wrap(
+        async (s, params) => {
+          let result: Awaited<ReturnType<typeof s.createWorker>> | undefined;
+          try {
+            result = await s.createWorker(params);
+            return result;
+          } finally {
+            settleCombatServerCapabilityDispatch({
+              leadSessionId: params.leadSessionId,
+              kind: 'create_worker',
+              task: params.initialTask ?? '',
+              accepted: hasAcceptedInitialWorkerDispatch(result),
+              ...(result?.ok === true
+                ? { workerId: result.workerId, workerSessionId: result.workerSessionId }
+                : {}),
+            });
+          }
+        },
+        (params) => {
           settleCombatServerCapabilityDispatch({
             leadSessionId: params.leadSessionId,
             kind: 'create_worker',
             task: params.initialTask ?? '',
-            accepted: hasAcceptedInitialWorkerDispatch(result),
-            ...(result?.ok === true
-              ? { workerId: result.workerId, workerSessionId: result.workerSessionId }
-              : {}),
+            accepted: false,
           });
-        }
-      }, (params) => {
-        settleCombatServerCapabilityDispatch({
-          leadSessionId: params.leadSessionId,
-          kind: 'create_worker',
-          task: params.initialTask ?? '',
-          accepted: false,
-        });
-      }),
+        },
+      ),
       listWorkers: wrap((s, params) => s.listWorkers(params)),
       switchFocus: wrap((s, params) => s.switchFocus(params)),
-      sendToWorker: wrap(async (s, params) => {
-        let result: Awaited<ReturnType<typeof s.sendToWorker>> | undefined;
-        try {
-          result = await s.sendToWorker(params);
-          return result;
-        } finally {
+      sendToWorker: wrap(
+        async (s, params) => {
+          let result: Awaited<ReturnType<typeof s.sendToWorker>> | undefined;
+          try {
+            result = await s.sendToWorker(params);
+            return result;
+          } finally {
+            settleCombatServerCapabilityDispatch({
+              leadSessionId: params.callerLeadSessionId,
+              kind: 'send_to_worker',
+              task: params.message,
+              accepted: result?.ok === true,
+              workerSessionId: params.targetSessionId,
+            });
+          }
+        },
+        (params) => {
           settleCombatServerCapabilityDispatch({
             leadSessionId: params.callerLeadSessionId,
             kind: 'send_to_worker',
             task: params.message,
-            accepted: result?.ok === true,
+            accepted: false,
             workerSessionId: params.targetSessionId,
           });
-        }
-      }, (params) => {
-        settleCombatServerCapabilityDispatch({
-          leadSessionId: params.callerLeadSessionId,
-          kind: 'send_to_worker',
-          task: params.message,
-          accepted: false,
-          workerSessionId: params.targetSessionId,
-        });
-      }),
+        },
+      ),
       listWorkerQueuedMessages: wrap((s, params) => s.listWorkerQueuedMessages(params)),
       updateWorkerQueuedMessage: wrap((s, params) => s.updateWorkerQueuedMessage(params)),
       cancelWorkerQueuedMessage: wrap((s, params) => s.cancelWorkerQueuedMessage(params)),
@@ -466,15 +578,20 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
         // 全局启用但项目停用的工具仍暴露、反向配置则永久缺席，codex review）。机器级工具
         // 仍沿用现有 spawn-time gate + 环境重建语义。
         const deferOrdinaryGate =
-          (ctx.agentKind === 'codex' || ctx.agentKind === 'pi')
-          && !ctx.workingDir
-          && !GLOBAL_PLUGIN_IDS.has(pluginId);
+          (ctx.agentKind === 'codex' || ctx.agentKind === 'pi') &&
+          !ctx.workingDir &&
+          !GLOBAL_PLUGIN_IDS.has(pluginId);
         // Orca 工具面必须在会话生命周期内保持稳定：Claude query 不会在项目策略
         // 动态启用后重建 MCP。创建入口仍由 Main 按调用时的项目策略 fail closed。
         const keepOrcaProviderStable = pluginId === 'collab';
+        // Keep the lightweight gateway visible even before the public plugin
+        // is installed. Its live call gate returns an actionable install/enable
+        // result, while every runtime mutation remains blocked in Main.
+        const keepIOSSimulatorGatewayStable = pluginId === 'ios-simulator';
         // Plugin gate：registry 负责 essential / machine / project / user / default 判定。
         if (
           !keepOrcaProviderStable &&
+          !keepIOSSimulatorGatewayStable &&
           !deferOrdinaryGate &&
           !pluginRegistry.isEnabled(pluginId, ctx.workingDir)
         ) {
@@ -493,6 +610,18 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
   // plugin gate——工具面恒定是缓存前缀稳定的前提,"没装任何意识"表现为
   // ghost_list 返回空清单而非 server 消失,LLM 不困惑、老会话即时生效。
   gated.push({
+    name: 'cindy_group_history',
+    isEnabled: () => true,
+    toClaudeSdkConfig: (ctx) => ({
+      type: 'sdk',
+      name: 'cindy_group_history',
+      instance: createGroupHistoryMcpServer({
+        getSessionContext: () => resolveLiziMcpSessionContext(ctx),
+      }),
+    }),
+  });
+
+  gated.push({
     name: 'cindy',
     isEnabled: () => true,
     // ctx 闭包进 deps:claude in-process 路径的 tool-call 没有 ALS 语境,
@@ -504,6 +633,8 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
       instance: createCindyGhostsMcpServer(
         getCindyGhostsMcpDeps(ctx, {
           getLiveSessionGrantState: deps.getLiveSessionGrantState,
+          describeToolResultImage: deps.describeToolResultImage,
+          onToolResultImagesFailed: deps.onToolResultImagesFailed,
         }),
       ),
     }),

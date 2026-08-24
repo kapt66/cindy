@@ -3,7 +3,9 @@ import type { SessionSource } from '../../shared/sessionSource';
 import type { FormalSessionData } from '../../shared/meka-formal';
 import type { TurnUsageDetails } from '../../shared/turnUsageDetails';
 import type { RegionalMoney } from '../../shared/regionalMoney';
-import type { AutoResumeInfo } from '../../shared/agentInputQueue';
+import type { AutoResumeInfo, RecoveryCheckpoint } from '../../shared/agentInputQueue';
+import type { ReviewRunMeta } from '../../shared/reviewRun';
+import type { AgentTaskTerminalStatus } from '@cindy/maker-shared/agent-task';
 
 export type SessionStatus = 'active' | 'archived' | 'deleted';
 export type WorkspaceKind = 'project' | 'dialogue' | 'meka';
@@ -66,6 +68,8 @@ export interface CcMeta {
   durationApiMs?: number;
   totalCostUsd?: number;
   fastModeState?: string;
+  /** Host-persisted terminal lifecycle for the originating Agent/Task tool call. */
+  agentTaskStatus?: AgentTaskTerminalStatus;
 
   /**
    * Host-side delivery marker. SDKs generally do not echo user steer messages in
@@ -96,6 +100,9 @@ export interface CcMeta {
    * 所以这是中断原因唯一的用户可见出口。
    */
   autoResumeInfo?: AutoResumeInfo;
+
+  /** Bounded handoff shared by manual Retry and automatic resume. */
+  recoveryCheckpoint?: RecoveryCheckpoint;
 
   /**
    * 这次自动续跑的**结果**,由后续事件回填(见 main 的 markAutoResumeOutcome)。
@@ -162,6 +169,9 @@ export interface CcMeta {
    * 不进 prompt。
    */
   goalNotice?: 'usage-resumed' | 'capacity-resumed';
+
+  /** /review 创建的独立只读审查任务及其来源卡状态。 */
+  reviewRun?: ReviewRunMeta;
 
   /**
    * Host-side marker:这条 user 消息是一个 /goal 目标的设定 / 更新(goal-host 在新建或

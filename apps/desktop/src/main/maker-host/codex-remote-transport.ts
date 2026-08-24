@@ -95,7 +95,6 @@ import type {
   CodexAppServerTransport as Transport,
   CodexAppServerCloseInfo as TransportCloseInfo,
 } from '@cindy/maker-core';
-import type { CcManagerByteStream } from './cc-manager-client.js';
 import type { CodexBridgeSpawnHeader } from './mcpr-codex-capability.js';
 import { openMcprTunnel } from './mcpr-tunnel.js';
 
@@ -615,7 +614,7 @@ export interface McprCodexTransportOptions {
   instanceId: string;
   buildHeader: () => Promise<CodexBridgeSpawnHeader>;
   logger: Logger;
-  openStream?: (instanceId: string) => Promise<CcManagerByteStream>;
+  openStream?: (instanceId: string) => Promise<ExecStreamHandle>;
   handshakeTimeoutMs?: number;
 }
 
@@ -644,7 +643,7 @@ export function createMcprCodexTransport(opts: McprCodexTransportOptions): Trans
   }> = [];
 
   let state: State = 'connecting';
-  let stream: CcManagerByteStream | null = null;
+  let stream: ExecStreamHandle | null = null;
   const decoder = new StringDecoder('utf8');
   let incomingRemainder = '';
   let handshakeTimer: NodeJS.Timeout | null = null;

@@ -9,7 +9,12 @@ import { describe, expect, it } from 'vitest';
 import path from 'node:path';
 
 import { Session } from './session.js';
-import type { AgentSessionHandle } from './agents/base-agent.js';
+import {
+  MAIN_OWNED_SEND_CONTEXT,
+  type AgentSessionHandle,
+  type SendOptions,
+  type TurnContinuationState,
+} from './agents/base-agent.js';
 import type { AgentEvent, InteractionDecision, InteractionRequest, SendOrigin } from './types/events.js';
 import type { AgentKind } from './types/common.js';
 
@@ -40,13 +45,16 @@ function createControllableHandle(opts?: {
   let releaseDispatch: (() => void) | null = null;
   let sendCount = 0;
   const buffered: AgentEvent[] = [];
+  const continuationStates = new Map<number, TurnContinuationState>();
   let interactionResolver: ((req: InteractionRequest) => Promise<InteractionDecision>) | null = null;
+  let lastSendOptions: SendOptions | undefined;
 
   const handle: AgentSessionHandle = {
     id: 'thread-1',
     agentKind: opts?.agentKind ?? 'codex',
     model: 'gpt-5.4',
-    async send() {
+    async send(_message, sendOptions) {
+      lastSendOptions = sendOptions;
       sendCount += 1;
       if (opts?.sendError && (opts.sendErrorOnSend ?? 1) === sendCount) {
         throw opts.sendError; // 模拟 dispatch 失败(SESSION_RUNNING race)
@@ -84,6 +92,9 @@ function createControllableHandle(opts?: {
       interactionResolver = resolver;
     },
     isTurnRunning: () => turnRunning,
+    beginTurnContinuationWait(continuationId?: number) {
+      return continuationId === undefined ? null : continuationStates.get(continuationId) ?? null;
+    },
   } as unknown as AgentSessionHandle;
 
   return {
@@ -110,6 +121,9 @@ function createControllableHandle(opts?: {
     setTurnRunning(running: boolean) {
       turnRunning = running;
     },
+    setContinuationState(continuationId: number, state: TurnContinuationState) {
+      continuationStates.set(continuationId, state);
+    },
     releaseDispatch() {
       releaseDispatch?.();
     },
@@ -118,6 +132,7 @@ function createControllableHandle(opts?: {
       else buffered.push(event);
     },
     closeCalls: () => closeCalls,
+    lastSendOptions: () => lastSendOptions,
   };
 }
 
@@ -181,6 +196,18 @@ describe('Session interaction fallback', () => {
 });
 
 describe('Session per-turn origin 打标', () => {
+  it('preserves symbol-keyed Main context through the Session wrapper', async () => {
+    const { handle, lastSendOptions } = createControllableHandle();
+    const session = makeSession(handle);
+    const context = {
+      origin: { kind: 'im' as const, channel: 'feishu' as const, taskId: 'message-1' },
+    };
+
+    await session.send('go', { [MAIN_OWNED_SEND_CONTEXT]: context });
+
+    expect(lastSendOptions()?.[MAIN_OWNED_SEND_CONTEXT]).toBe(context);
+  });
+
   it('host turn lease serializes a new send across a vendor idle edge', async () => {
     const { handle, emit } = createControllableHandle();
     const session = makeSession(handle);
@@ -470,6 +497,27 @@ describe('Session per-turn origin 打标', () => {
     expect(secondText?.turnAttemptToken).toBe(2);
   });
 
+  it('background late child events stay visible without inheriting the next turn', async () => {
+    const { handle, emit } = createControllableHandle();
+    const session = makeSession(handle);
+    const seen: AgentEvent[] = [];
+    session.onEvent((event) => seen.push({ ...event }));
+
+    await session.send('first', { origin: SCHED_ORIGIN, turnAttemptToken: 1 });
+    await emit({ type: 'done', data: {} });
+    await session.send('second', { turnAttemptToken: 2 });
+    await emit({
+      type: 'agent_task_update',
+      turnScope: 'background',
+      data: { taskId: 'child-1', status: 'completed' },
+    });
+
+    const late = seen.find((event) => event.type === 'agent_task_update');
+    expect(late).toMatchObject({ turnScope: 'background' });
+    expect(late?.turnOrigin).toBeUndefined();
+    expect(late?.turnAttemptToken).toBeUndefined();
+  });
+
   it('event loop crash emits a terminal error and closes the poisoned session', async () => {
     let releaseCrash!: () => void;
     const crashReady = new Promise<void>((resolve) => {
@@ -654,6 +702,93 @@ describe('Session per-turn origin 打标', () => {
     expect(seen[1]!.turnOrigin).toEqual(SCHED_ORIGIN);
     expect(seen[2]!.turnOrigin).toBeUndefined();
     expect(seen[3]!.turnOrigin).toBeUndefined();
+  });
+
+  it('continuation-bearing done keeps origin/token until the automatic continuation really ends', async () => {
+    const { handle, emit, setContinuationState } = createControllableHandle({
+      agentKind: 'claude-code',
+    });
+    const session = makeSession(handle, 'claude-code');
+    const seen: AgentEvent[] = [];
+    session.onEvent((event) => seen.push({ ...event }));
+
+    await session.send('go', { origin: SCHED_ORIGIN, turnAttemptToken: 42 });
+    setContinuationState(1, 'awaiting');
+    await emit(
+      { type: 'done', data: { reason: 'foreground-done' }, turnContinuationId: 1 },
+      { keepRunning: true },
+    );
+
+    // The provider claim is still the same product turn. Session must keep
+    // attribution for the auto-continuation instead of clearing it at the
+    // foreground SDK boundary.
+    await emit(
+      { type: 'text', data: { text: 'background result', isFinal: true } },
+      { keepRunning: true },
+    );
+    setContinuationState(1, 'active');
+    await emit({ type: 'done', data: { reason: 'continuation-done' } });
+    await emit({ type: 'status', data: { status: 'idle', isRunning: false } });
+
+    expect(seen[0]?.turnOrigin).toEqual(SCHED_ORIGIN);
+    expect(seen[0]?.turnAttemptToken).toBe(42);
+    expect(seen[1]?.turnOrigin).toEqual(SCHED_ORIGIN);
+    expect(seen[1]?.turnAttemptToken).toBe(42);
+    expect(seen[2]?.turnOrigin).toEqual(SCHED_ORIGIN);
+    expect(seen[2]?.turnAttemptToken).toBe(42);
+    expect(seen[3]?.turnOrigin).toBeUndefined();
+    expect(seen[3]?.turnAttemptToken).toBeUndefined();
+  });
+
+  it('cancelled continuation closes on the ordered terminal done before the next result-only turn', async () => {
+    const origin1: SendOrigin = {
+      kind: 'scheduler',
+      scheduleId: 'cancelled-turn-1',
+      scheduleName: 'cancelled turn 1',
+    };
+    const origin2: SendOrigin = {
+      kind: 'scheduler',
+      scheduleId: 'result-only-turn-2',
+      scheduleName: 'result-only turn 2',
+    };
+    const { handle, emit, setContinuationState } = createControllableHandle({
+      agentKind: 'claude-code',
+    });
+    const session = makeSession(handle, 'claude-code');
+    const seen: AgentEvent[] = [];
+    session.onEvent((event) => seen.push({ ...event }));
+
+    await session.send('go-1', { origin: origin1, turnAttemptToken: 11 });
+    // Cancellation may win before Session consumes the original foreground
+    // done. The claim-bearing event remains an SDK boundary; the stopped task
+    // and provider's following unclaimed done still belong to turn 1.
+    setContinuationState(7, 'cancelled');
+    await emit(
+      { type: 'done', data: { reason: 'foreground-done' }, turnContinuationId: 7 },
+      { keepRunning: true },
+    );
+    await emit(
+      {
+        type: 'agent_task_update',
+        data: { taskId: 'task-1', status: 'stopped', taskType: 'local_agent' },
+      },
+      { keepRunning: true },
+    );
+    await emit({ type: 'done', data: { reason: 'turn_continuation_cancelled' } });
+
+    await session.send('go-2', { origin: origin2, turnAttemptToken: 22 });
+    // No text event: a result-only provider turn must still be adopted as the
+    // new generation instead of inheriting turn 1's origin/token.
+    await emit({ type: 'done', data: { reason: 'result-only' } });
+
+    expect(seen[0]?.turnOrigin).toEqual(origin1);
+    expect(seen[0]?.turnAttemptToken).toBe(11);
+    expect(seen[1]?.turnOrigin).toEqual(origin1);
+    expect(seen[1]?.turnAttemptToken).toBe(11);
+    expect(seen[2]?.turnOrigin).toEqual(origin1);
+    expect(seen[2]?.turnAttemptToken).toBe(11);
+    expect(seen[3]?.turnOrigin).toEqual(origin2);
+    expect(seen[3]?.turnAttemptToken).toBe(22);
   });
 
   it('终止型 error 也触发清空,下一轮不被污染', async () => {

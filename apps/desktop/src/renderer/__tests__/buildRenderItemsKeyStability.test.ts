@@ -21,15 +21,20 @@ import { join } from 'node:path';
 import {
   assistantHasFollowingUserBoundary,
   buildRenderItems,
+  collectDeleteAnchorClientIds,
   collectStableLocalFileRefs,
   collectTurnFinalAssistantClientIds,
   findRestorableViewportItemIdx,
   groupWorkRuns,
   insertForkOriginItem,
+  isScrollNavigationKey,
+  pickDeleteCompensationAnchorKey,
   shouldBlockAssistantFork,
   type RenderItem,
 } from '../components/chat/MessageStream';
+import { shouldHandleNavigationKey } from '../components/chat/useNavigationKeyListener';
 import type { ChatMessage } from '@/lib/makerChatStore';
+import type { TurnChangeSetSummary } from '../../shared/turnChangeSet';
 
 // ── 工厂 / 用例构造工具 ────────────────────────────────────────────────────
 
@@ -274,6 +279,161 @@ describe('collectTurnFinalAssistantClientIds', () => {
 // ── case 1: 流式追加 token 不改变 message item key ────────────────────────
 
 describe('buildRenderItems — key stability', () => {
+  it('anchors exact change sets to the owning visible user turn', () => {
+    const firstUser = mkUser('u1');
+    const secondUser = mkUser('u2');
+    const firstSet: TurnChangeSetSummary = {
+      id: 'cs1',
+      sessionId: 's1',
+      anchorClientId: 'u1',
+      provider: 'codex',
+      providerTurnId: 'turn-1',
+      cwd: 'C:/work',
+      state: 'complete',
+      workspaceState: 'applied',
+      isReversible: true,
+      incompleteReasons: [],
+      createdAt: 1,
+      completedAt: 2,
+      files: [{
+        id: 'turn-1:a.ts',
+        path: 'a.ts',
+        oldPath: null,
+        status: 'modified',
+        additions: 2,
+        deletions: 1,
+      }],
+      fileCount: 1,
+      additions: 2,
+      deletions: 1,
+    };
+    const secondSet = {
+      ...firstSet,
+      id: 'cs2',
+      anchorClientId: 'u2',
+      providerTurnId: 'turn-2',
+      createdAt: 3,
+      completedAt: 4,
+    };
+
+    const { items } = buildRenderItems(
+      [firstUser, mkAssistant('a1'), secondUser, mkAssistant('a2')],
+      undefined,
+      undefined,
+      { turnChangeSets: [firstSet, secondSet] },
+    );
+    const cards = items.filter(
+      (item): item is Extract<RenderItem, { type: 'turn_changes' }> => item.type === 'turn_changes',
+    );
+
+    expect(cards.map((card) => card.key)).toEqual(['turnchanges-cs1', 'turnchanges-cs2']);
+    expect(cards.map((card) => card.changeSet.id)).toEqual(['cs1', 'cs2']);
+    expect(items.indexOf(cards[0])).toBeGreaterThan(items.findIndex((item) => item.key === 'msg-a1'));
+  });
+
+  it('hides all zero-file change cards because they have no reviewable content', () => {
+    const base: TurnChangeSetSummary = {
+      id: 'cs-base',
+      sessionId: 's1',
+      anchorClientId: 'u1',
+      provider: 'claude-code',
+      providerTurnId: null,
+      cwd: 'C:/work',
+      state: 'partial',
+      workspaceState: 'applied',
+      isReversible: false,
+      incompleteReasons: [],
+      createdAt: 1,
+      completedAt: 2,
+      files: [],
+      fileCount: 0,
+      additions: 0,
+      deletions: 0,
+    };
+    const opaque: TurnChangeSetSummary = {
+      ...base,
+      id: 'cs-noise',
+      incompleteReasons: ['opaque-tool', 'turn-failed', 'concurrent-workspace'],
+    };
+    const truncated: TurnChangeSetSummary = {
+      ...base,
+      id: 'cs-too-large',
+      incompleteReasons: ['opaque-tool', 'diff-too-large'],
+      createdAt: 3,
+      completedAt: 4,
+    };
+    const escaped: TurnChangeSetSummary = {
+      ...base,
+      id: 'cs-escape',
+      incompleteReasons: ['outside-workspace'],
+      createdAt: 5,
+      completedAt: 6,
+    };
+
+    const { items } = buildRenderItems(
+      [mkUser('u1'), mkAssistant('a1'), mkUser('u2')],
+      undefined,
+      undefined,
+      { turnChangeSets: [opaque, truncated, escaped] },
+    );
+    const cards = items.filter(
+      (item): item is Extract<RenderItem, { type: 'turn_changes' }> => item.type === 'turn_changes',
+    );
+    expect(cards).toEqual([]);
+  });
+
+  it('keeps opaque command artifacts as fallback chips without duplicating exact files', () => {
+    const messages = [
+      mkUser('u1'),
+      mkTool('bash-1', 'Bash', { command: 'python gen.py > C:/work/out/report.xlsx' }),
+      mkResult('bash-result', 'tu-bash-1'),
+      mkUser('u2'),
+    ];
+    const exact: TurnChangeSetSummary = {
+      id: 'cs-opaque',
+      sessionId: 's1',
+      anchorClientId: 'u1',
+      provider: 'codex',
+      providerTurnId: 'turn-1',
+      cwd: 'C:/work',
+      state: 'partial',
+      workspaceState: 'applied',
+      isReversible: false,
+      incompleteReasons: ['opaque-tool'],
+      createdAt: 1,
+      completedAt: 2,
+      files: [],
+      fileCount: 0,
+      additions: 0,
+      deletions: 0,
+    };
+    const fallback = buildRenderItems(messages, undefined, undefined, {
+      workingDir: 'C:/work',
+      turnChangeSets: [exact],
+    }).items.filter((item): item is Extract<RenderItem, { type: 'generated_files' }> => item.type === 'generated_files');
+    expect(fallback).toHaveLength(1);
+    expect(fallback[0]?.files[0]?.name).toBe('report.xlsx');
+
+    const exactFile = {
+      ...exact,
+      files: [{
+        id: 'turn-1:out/report.xlsx',
+        path: 'out/report.xlsx',
+        oldPath: null,
+        status: 'added' as const,
+        additions: 1,
+        deletions: 0,
+      }],
+      fileCount: 1,
+      additions: 1,
+    };
+    const deduped = buildRenderItems(messages, undefined, undefined, {
+      workingDir: 'C:/work',
+      turnChangeSets: [exactFile],
+    }).items.filter((item): item is Extract<RenderItem, { type: 'generated_files' }> => item.type === 'generated_files');
+    expect(deduped).toHaveLength(0);
+  });
+
   it('streaming token append to an assistant message keeps the same item key', () => {
     const m1: ChatMessage = { ...mkAssistant('a1', 'partial'), isStreaming: true };
     const before = buildRenderItems([mkUser('u1'), m1]);
@@ -1182,5 +1342,130 @@ describe('collectStableLocalFileRefs — reference stability', () => {
       mkFileRef('foo.ts'),
       mkFileRef('bar.ts'),
     ]);
+  });
+});
+
+// ── pickDeleteCompensationAnchorKey ──────────────────────────────────────────
+
+describe('pickDeleteCompensationAnchorKey', () => {
+  it('picks the first surviving neighbor after the deleted range', () => {
+    // 旧全量: 窗口 [w1,w2,v,w3] 被整段清掉, 邻居 after 是 next, 会话尾是 tail
+    const prevAll = ['head', 'w1', 'w2', 'v', 'w3', 'next', 'mid', 'tail'];
+    const curAll = ['head', 'next', 'mid', 'tail'];
+    expect(pickDeleteCompensationAnchorKey(prevAll, curAll, 'v')).toBe('next');
+  });
+
+  it('falls back to the nearest surviving predecessor when no successor remains', () => {
+    const prevAll = ['head', 'keep', 'v', 'gone1', 'gone2'];
+    const curAll = ['head', 'keep'];
+    expect(pickDeleteCompensationAnchorKey(prevAll, curAll, 'v')).toBe('keep');
+  });
+
+  it('does not rebuild at conversation tail when prev is the full old sequence', () => {
+    // 回归: 窗口整段被清时旧可见窗与 cur 全量无交集, helper 会落到 cur 末项(会话尾);
+    // 调用方必须传旧全量序列才能保住删除区间后的邻居。
+    const prevVisibleOnly = ['w1', 'w2', 'v', 'w3']; // 整窗被清, 无存活邻接
+    const prevAll = ['head', 'w1', 'w2', 'v', 'w3', 'next', 'mid', 'tail'];
+    const curAll = ['head', 'next', 'mid', 'tail'];
+    expect(pickDeleteCompensationAnchorKey(prevVisibleOnly, curAll, 'v')).toBe('tail');
+    expect(pickDeleteCompensationAnchorKey(prevAll, curAll, 'v')).toBe('next');
+  });
+
+  it('returns null when deleted key is absent from prevKeys', () => {
+    expect(pickDeleteCompensationAnchorKey(['a', 'b'], ['a', 'b', 'c'], 'missing')).toBeNull();
+  });
+
+  it('picks the intervening tool row when a focused child is deleted from a surviving work group', () => {
+    const before = groupWorkRuns(
+      buildRenderItems([
+        mkUser('u1'),
+        mkAssistant('a-intro', 'Starting.'),
+        mkTool('t1', 'Read'),
+        mkAssistant('a-draft', 'Progress update.'),
+        mkTool('t2', 'Bash'),
+        mkAssistant('a-final', 'done'),
+      ]).items,
+      false,
+    );
+    const after = groupWorkRuns(
+      buildRenderItems([
+        mkUser('u1'),
+        mkAssistant('a-intro', 'Starting.'),
+        mkTool('t1', 'Read'),
+        mkTool('t2', 'Bash'),
+        mkAssistant('a-final', 'done'),
+      ]).items,
+      false,
+    );
+    const previousAnchorIds = collectDeleteAnchorClientIds(before);
+    const currentAnchorIds = collectDeleteAnchorClientIds(after);
+    const previousGroup = before.find((item) => item.type === 'work_group');
+    const currentGroup = after.find((item) => item.type === 'work_group');
+
+    expect(previousGroup).toBeDefined();
+    expect(currentGroup).toBeDefined();
+    expect(previousGroup?.key).toBe(currentGroup?.key);
+    expect(previousAnchorIds).toEqual(['u1', 'a-intro', 't1', 'a-draft', 't2', 'a-final']);
+    expect(currentAnchorIds).toEqual(['u1', 'a-intro', 't1', 't2', 'a-final']);
+    expect(pickDeleteCompensationAnchorKey(previousAnchorIds, currentAnchorIds, 'a-draft')).toBe(
+      't2',
+    );
+  });
+
+  it('picks the next message when an anchored task card is deleted from a surviving work group', () => {
+    const messagesBefore = [
+      mkUser('u1'),
+      mkTool('t1', 'Read'),
+      mkResult('r-t1', 'tu-t1'),
+      mkTool('task1', 'Agent', { description: 'Review auth flow', prompt: 'Check auth' }),
+      mkResult('r-task1', 'tu-task1', 'done'),
+      mkAssistant('a-final', 'done'),
+    ];
+    const before = groupWorkRuns(buildRenderItems(messagesBefore).items, false);
+    const after = groupWorkRuns(
+      buildRenderItems(
+        messagesBefore.filter((message) => !['task1', 'r-task1'].includes(message.clientId)),
+      ).items,
+      false,
+    );
+    const previousAnchorIds = collectDeleteAnchorClientIds(before);
+    const currentAnchorIds = collectDeleteAnchorClientIds(after);
+    const previousGroup = before.find((item) => item.type === 'work_group');
+    const currentGroup = after.find((item) => item.type === 'work_group');
+
+    expect(previousGroup?.key).toBe('work-t1');
+    expect(currentGroup?.key).toBe(previousGroup?.key);
+    expect(previousAnchorIds).toEqual(['u1', 't1', 'task1', 'a-final']);
+    expect(currentAnchorIds).toEqual(['u1', 't1', 'a-final']);
+    expect(
+      pickDeleteCompensationAnchorKey(previousAnchorIds, currentAnchorIds, 'task1'),
+    ).toBe('a-final');
+  });
+
+  it('keeps an intervening non-message render item after a top-level message is deleted', () => {
+    const previousItemKeys = ['msg-user', 'work-tool', 'msg-assistant'];
+    const currentItemKeys = ['work-tool', 'msg-assistant'];
+    const previousMessageIds = ['user', 'assistant'];
+    const currentMessageIds = ['assistant'];
+
+    expect(
+      pickDeleteCompensationAnchorKey(previousMessageIds, currentMessageIds, 'user'),
+    ).toBe('assistant');
+    expect(
+      pickDeleteCompensationAnchorKey(previousItemKeys, currentItemKeys, 'msg-user'),
+    ).toBe('work-tool');
+  });
+});
+
+describe('focus scroll takeover keys', () => {
+  it('treats Space as user-controlled scrolling', () => {
+    expect(isScrollNavigationKey(' ')).toBe(true);
+    expect(isScrollNavigationKey('Enter')).toBe(false);
+  });
+
+  it('does not treat Space in an editable target as scroll takeover', () => {
+    expect(shouldHandleNavigationKey(' ', null)).toBe(true);
+    expect(shouldHandleNavigationKey('PageUp', null)).toBe(true);
+    expect(shouldHandleNavigationKey('Enter', null)).toBe(false);
   });
 });

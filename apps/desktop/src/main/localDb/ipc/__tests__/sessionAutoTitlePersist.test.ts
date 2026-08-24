@@ -30,7 +30,10 @@ vi.mock('../../../git-context/prRefsStore', () => ({
 }));
 vi.mock('../../../imageCacheStore', () => ({ removeSession: vi.fn(async () => undefined) }));
 vi.mock('../recentWorkdirs', () => ({ upsertRecentWorkdir: vi.fn(async () => undefined) }));
-vi.mock('../../../device-link/broadcast-tap.js', () => ({ tapWindowBroadcast: vi.fn() }));
+vi.mock('../../../device-link/broadcast-tap.js', () => ({
+  getSafeDataOwnerPushStamp: vi.fn(() => undefined),
+  tapWindowBroadcast: vi.fn(),
+}));
 vi.mock('../../agentIslandSessionPatch', () => ({ notifyAgentIslandSessionPatch: vi.fn() }));
 vi.mock('../../../messagePersistBroadcaster', () => ({ noteSessionClearBoundary: vi.fn() }));
 vi.mock('../../../sessionIds', () => ({ resolveBusinessSessionId: (id: string) => id }));
@@ -82,9 +85,20 @@ function createDb(initialTitle: string): void {
       extra_dirs TEXT NOT NULL DEFAULT '[]',
       one_m INTEGER NOT NULL DEFAULT 0,
       workspace_kind TEXT NOT NULL DEFAULT 'project',
+      meka_role TEXT,
+      meka_target_json TEXT,
+      meka_project_id TEXT,
+      meka_role_id TEXT,
+      is_formal INTEGER NOT NULL DEFAULT 0,
+      formal_type TEXT,
+      formal_link TEXT,
+      formal_ref TEXT,
+      formal_content_json TEXT,
       orca_role TEXT,
       remote_host_id TEXT,
+      capability_snapshot_json TEXT,
       codex_history_has_product_prompt INTEGER,
+      codex_plan_json TEXT,
       im_bot_context_id TEXT,
       im_user_id TEXT,
       summary TEXT,

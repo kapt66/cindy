@@ -50,6 +50,10 @@
 - 启动、调试或验证 Desktop 时，必须先读 `docs/dev-rules/desktop-development.md`。
 - 修改 Desktop Renderer、preload、BrowserWindow、WebView、IPC、CSP、导航或 Electron
   特权能力前，必须先读 `docs/dev-rules/electron-security-and-process-boundaries.md`。
+- 新增或修改 Desktop 独立窗口、辅助窗口或弹出型 `BrowserWindow` 前，必须遵守
+  `docs/dev-rules/electron-security-and-process-boundaries.md` 的「独立辅助窗口统一生命周期
+  基线」：复用既有控制器／基础设施，不得另造平行的预热、就绪握手、隐藏复用与崩溃恢复
+  状态机。
 - 修改凭证或授权信息处理、文件落盘位置、用户持久数据、临时文件或测试目录前，必须
   先读 `docs/dev-rules/credentials-and-local-storage.md`。
 - 新增或修改媒体生成、导入、缓存、附件、持久化、协议解析或回收逻辑前，必须先读
@@ -68,6 +72,8 @@
 - 新增或修改 Meka 技能入口、标准技能包兼容、MCPRouter 技能分发、安装来源记录或
   Meka 项目角色与市场技能的关系前，必须先读
   `docs/product-rules/meka-skills.md`。
+- 新增或修改 `/review`、Reviewer 任务、成果快照、Finding 协议、复核入口、结果呈现或
+  复核生命周期前，必须先读 `docs/product-rules/review-product-direction.md`。
 - 新增或修改按区域（`cn` / `global`）分支的逻辑、构建身份与命名、端点选择、区域相关
   UI 标注，或涉及两个版本关系的对外文案前，必须先读
   `docs/product-rules/region-and-editions.md`：**无限定词身份归 Global，未显式指定
@@ -79,6 +85,10 @@
   的术语照用，不自造译法；表里没有或拿不准的，在 `i18n/glossary.json` 加
   `status: "proposed"` 条目再讨论。门禁为 `pnpm check:i18n-glossary`，规则见
   `docs/dev-rules/engineering-conventions.md` §5.1。
+- 新增或修改**任一 Telegram bot 的用户可见行为**（命令、消息呈现、收口策略、群行为、
+  权限口径、附件与表情）前，必须先读能力台账 `docs/product-rules/telegram-bot-parity.md`：
+  两个 bot 是两套架构，差异可以有但必须登记在表里；表里标「有意不同」的行不得直接
+  统一，动它要先推翻对应裁决。
 - 文案里出现**任务 / 对话 / 消息**这几个词时，必须先读
   `docs/product-rules/task-and-conversation-naming.md`：`session` 面向用户叫「任务」，
   「对话」只用于任务内的交流过程与内容，单条往来叫「消息」；**「任务」与 `task` 同句出现
@@ -110,6 +120,11 @@
 - 新增或修改插件的 `mcpr` 卡槽、MCPRouter route 白名单、Host 鉴权注入或跨仓能力调用时，
   还必须先读 `docs/dev-rules/mcpr-plugin-capability.md`，并同步核对 MCPRouter 仓库的
   `docs/mcpr-plugin-capability-gateway.md` 与 `packages/server/src/capabilities/` 契约。
+- 修改插件发现链（花名册注入、`ghost_list` / `ghost_info` / `ghost_call`）、插件运行期
+  可见性门禁或 FORGE_GUIDE 作者契约前，必须先读 `docs/ghost-progressive-discovery.md`。
+- 新增或修改插件持久 Library（library 槽、binding / 目录选择、随时迁移、回收站删除、
+  SQLite 语句门或 `/library/` 面板投影）前，必须先读
+  `docs/dev-rules/plugin-library-storage.md`。
 - 修改客户端自动更新链路（`cindy-updater` 或 Electron 侧更新服务）前，必须先读
   `docs/dev-rules/cindy-updater.md`。
 - 修改 Claude/Codex runtime 版本 pin、RustFS 运行时资产发布或 MCPRouter Linux runtime
@@ -117,11 +132,18 @@
 - 新增或修改 Desktop 日志、IPC 错误处理、main 侧业务逻辑与测试、跨平台（macOS／
   Windows）行为，或任何 UI 文案的 i18n 落地前，必须先读
   `docs/dev-rules/engineering-conventions.md`。
+- 修改客户端日志采集／脱敏／上报链路（`apps/desktop/src/main/log-upload/**`）、`logger.ts`
+  的 main 日志行格式、崩溃判定或待补传标记前，必须先读
+  `docs/dev-rules/log-upload-and-redaction.md`。其中记录边界、deny-by-default 白名单、标记
+  代次与原子清除是隐私不变量；脱敏规则只增不减，放宽必须重新评审。
 - 升级或修改 `cindy-protocol`、修改插件分发来源边界或 device-link
   协议／relay／隧道 payload／IPC allowlist，或任何改动跨端 wire protocol 前，必须先读
   `docs/dev-rules/protocol-and-submodules.md`。**非必要不得修改协议子仓；确需修改时，
   必须先向用户说明必要性、替代方案与跨仓影响并取得明确确认，同时核对并纠正子仓
   `origin` 为官方上游后才能动手。**
+- 修改客户端本地协议消费兼容层时还必须先读
+  `docs/dev-rules/protocol-compatibility.md`；Meka 的 submodule 权威来源和修改准入仍以
+  `docs/dev-rules/protocol-and-submodules.md` 为准。
 - 修改 package 依赖方向、main 进程模块加载方式，或主界面布局树结构前，必须先读
   `docs/dev-rules/architecture-invariants.md`。
 - 新增或修改 Settings UI、配置文件、本地偏好、运行时 profile，或 agent／MCP／provider

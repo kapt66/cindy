@@ -233,6 +233,8 @@ describe('forkSessionAtMessage', () => {
       upToMessageId: 'sdk-msg-uuid-1',
       title: '[Fork] Project A',
       workingDir: '/work',
+      // 轮 26:Pi fork 守卫透传 remoteHostId(本地源 → null)。
+      remoteHostId: null,
     });
 
     // fork.session tx: cost 重置、context 快照写入、parent/forkedAt 落对、userSendAt 不为 null
@@ -313,10 +315,14 @@ describe('forkSessionAtMessage', () => {
 
     expect(forkSdkSessionMock).toHaveBeenCalledWith('codex', {
       sourceSdkSessionId: 'codex-thread-source',
+      model: 'gpt-5.4',
+      providerId: 'xd',
       upToMessageId: undefined,
       tailTurnsToDrop: 2,
       title: '[Fork] Project A',
       workingDir: '/work',
+      // 轮 26:Pi fork 守卫透传 remoteHostId(本地源 → null)。
+      remoteHostId: null,
     });
 
     const txCall = txCalls.find((c) => c.name === 'fork.session');
@@ -404,10 +410,14 @@ describe('forkSessionAtMessage', () => {
 
     expect(forkSdkSessionMock).toHaveBeenCalledWith('codex', {
       sourceSdkSessionId: 'codex-thread-source',
+      model: 'gpt-5.5',
+      providerId: 'xd',
       upToMessageId: undefined,
       title: '[Fork·已剥离] Project A',
       workingDir: '/work',
       stripEncryptedReasoning: true,
+      // 轮 26:Pi fork 守卫透传 remoteHostId(本地源 → null)。
+      remoteHostId: null,
     });
 
     const txCall = txCalls.find((c) => c.name === 'fork.session');
@@ -614,6 +624,8 @@ describe('forkSessionAtMessage', () => {
       upToMessageId: 'historical-claude-uuid',
       title: '[Fork] Project A',
       workingDir: '/work',
+      // 轮 26:Pi fork 守卫透传 remoteHostId(本地源 → null)。
+      remoteHostId: null,
     });
     const txArgs = txCalls.find((call) => call.name === 'fork.session')!.args as {
       targetCreatedAt: number;
@@ -748,10 +760,14 @@ describe('forkSessionAtMessage', () => {
 
     expect(forkSdkSessionMock).toHaveBeenCalledWith('codex', {
       sourceSdkSessionId: 'parked-codex-thread',
+      model: 'gpt-5.4',
+      providerId: null,
       upToMessageId: undefined,
       tailTurnsToDrop: 2,
       title: '[Fork] Project A',
       workingDir: '/work',
+      // 轮 26:Pi fork 守卫透传 remoteHostId(本地源 → null)。
+      remoteHostId: null,
     });
     const txArgs = txCalls.find((call) => call.name === 'fork.session')!.args as {
       newSession: Record<string, unknown>;
@@ -801,6 +817,8 @@ describe('forkSessionAtMessage', () => {
       upToMessageId: 'uuid-a2',
       title: '[Fork] Project A',
       workingDir: '/work',
+      // 轮 26:Pi fork 守卫透传 remoteHostId(本地源 → null)。
+      remoteHostId: null,
     });
 
     const txCall = txCalls.find((c) => c.name === 'fork.session');
@@ -859,6 +877,8 @@ describe('forkSessionAtMessage', () => {
       upToMessageId: '4652fd61-a4df-411a-87e7-cdc0b311cc39',
       title: '[Fork] Project A',
       workingDir: '/work',
+      // 轮 26:Pi fork 守卫透传 remoteHostId(本地源 → null)。
+      remoteHostId: null,
     });
     const txCall = txCalls.find((c) => c.name === 'fork.session');
     expect(txCall).toBeDefined();
@@ -923,6 +943,8 @@ describe('forkSessionAtMessage', () => {
       upToMessageId: 'real-imported-assistant-uuid',
       title: '[Fork] Project A',
       workingDir: '/work',
+      // 轮 26:Pi fork 守卫透传 remoteHostId(本地源 → null)。
+      remoteHostId: null,
     });
     const txCall = txCalls.find((call) => call.name === 'fork.session');
     expect(txCall?.args).toMatchObject({
@@ -971,6 +993,8 @@ describe('forkSessionAtMessage', () => {
       upToMessageId: 'isolated-real-assistant-uuid',
       title: '[Fork] Project A',
       workingDir: '/work',
+      // 轮 26:Pi fork 守卫透传 remoteHostId(本地源 → null)。
+      remoteHostId: null,
     });
   });
 
@@ -1023,6 +1047,8 @@ describe('forkSessionAtMessage', () => {
       upToMessageId: 'top-level-assistant-uuid',
       title: '[Fork] Project A',
       workingDir: '/work',
+      // 轮 26:Pi fork 守卫透传 remoteHostId(本地源 → null)。
+      remoteHostId: null,
     });
     const txCall = txCalls.find((call) => call.name === 'fork.session');
     expect(((txCall?.args as { legacyTranscriptParentUuids?: string[] }).legacyTranscriptParentUuids ?? []))
@@ -1052,6 +1078,8 @@ describe('forkSessionAtMessage', () => {
       upToMessageId: 'uuid-last',
       title: '[Fork] Project A',
       workingDir: '/work',
+      // 轮 26:Pi fork 守卫透传 remoteHostId(本地源 → null)。
+      remoteHostId: null,
     });
     const txCall = txCalls.find((c) => c.name === 'fork.session');
     const txArgs = txCall!.args as { targetCreatedAt: number };
@@ -1091,10 +1119,14 @@ describe('forkSessionAtMessage', () => {
 
     expect(forkSdkSessionMock).toHaveBeenCalledWith('codex', {
       sourceSdkSessionId: 'codex-thread-source',
+      model: 'claude-sonnet-4-6',
+      providerId: 'xd',
       upToMessageId: undefined,
       tailTurnsToDrop: 1,
       title: '[Fork] Project A',
       workingDir: '/work',
+      // 轮 26:Pi fork 守卫透传 remoteHostId(本地源 → null)。
+      remoteHostId: null,
     });
   });
 

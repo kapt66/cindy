@@ -11,9 +11,12 @@ import {
   filterGhostPluginItems,
   ghostFallbackIconKind,
   ghostPanelOwnerKey,
+  ghostPrimaryAction,
   marketPresentationForInstalledGhost,
   nextOpenPanelIdForOwner,
   sortGhostPluginItemsByRecentUse,
+  installedVisibleCount,
+  sortInstalledForDisplay,
   toGhostPluginDetail,
   toGhostPluginListItem,
   type GhostPluginListItem,
@@ -56,6 +59,7 @@ function installed(overrides: Partial<InstalledGhost> = {}): InstalledGhost {
     manifest: manifest(),
     dir: '/tmp/cindy-brain/xd-mivo',
     enabled: true,
+    approval: { state: 'approved', revision: '00000000-0000-4000-8000-000000000001' },
     ...overrides,
   };
 }
@@ -105,7 +109,10 @@ describe('ghostPluginViewModel', () => {
         version: '1',
         enabled: true,
         canUse: true,
+        approvalState: 'approved',
+        builtin: false,
         tabPanel: false,
+        hostCapability: null,
       },
       {
         id: 'lizi-mivo',
@@ -114,7 +121,10 @@ describe('ghostPluginViewModel', () => {
         version: '1',
         enabled: true,
         canUse: true,
+        approvalState: 'approved',
+        builtin: false,
         tabPanel: false,
+        hostCapability: null,
       },
       {
         id: 'slack',
@@ -123,7 +133,10 @@ describe('ghostPluginViewModel', () => {
         version: '1',
         enabled: true,
         canUse: true,
+        approvalState: 'approved',
+        builtin: false,
         tabPanel: false,
+        hostCapability: null,
       },
     ] satisfies GhostPluginListItem[];
 
@@ -140,6 +153,72 @@ describe('ghostPluginViewModel', () => {
     ).toEqual(['third', 'first', 'second', 'fourth']);
   });
 
+  describe('sortInstalledForDisplay', () => {
+    const items = [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }];
+
+    it('surfaces unread notifications first, newest badge on top', () => {
+      expect(
+        sortInstalledForDisplay(items, {
+          recentIds: [],
+          unreadAtById: new Map([
+            ['c', 100],
+            ['a', 300],
+          ]),
+        }).map((item) => item.id),
+      ).toEqual(['a', 'c', 'b', 'd']);
+    });
+
+    it('ranks unread above recently-used, then recent, then base order', () => {
+      // b is unread (top); d & a are recently used (d newest); c falls to base tail.
+      expect(
+        sortInstalledForDisplay(items, {
+          recentIds: ['d', 'a'],
+          unreadAtById: new Map([['b', 5]]),
+        }).map((item) => item.id),
+      ).toEqual(['b', 'd', 'a', 'c']);
+    });
+
+    it('keeps base order stable when no signal applies and ignores marketUpdate entirely', () => {
+      // No unread / no recent → untouched. marketUpdate is not an input, so it cannot reorder.
+      expect(
+        sortInstalledForDisplay(items, { recentIds: [], unreadAtById: new Map() }).map(
+          (item) => item.id,
+        ),
+      ).toEqual(['a', 'b', 'c', 'd']);
+    });
+
+    it('breaks unread ties on the same badge time by stable base order', () => {
+      expect(
+        sortInstalledForDisplay(items, {
+          recentIds: [],
+          unreadAtById: new Map([
+            ['d', 7],
+            ['b', 7],
+          ]),
+        }).map((item) => item.id),
+      ).toEqual(['b', 'd', 'a', 'c']);
+    });
+  });
+
+  describe('installedVisibleCount (unread never folded)', () => {
+    const items = Array.from({ length: 12 }, (_, index) => ({ id: `p-${index}` }));
+
+    it('keeps the base cap when unread count is within it', () => {
+      expect(installedVisibleCount(items, new Map([['p-0', 9]]), 8)).toBe(8);
+      expect(installedVisibleCount(items, new Map(), 8)).toBe(8);
+    });
+
+    it('expands the window to cover every unread plugin beyond the cap', () => {
+      const unread = new Map(Array.from({ length: 10 }, (_, i) => [`p-${i}`, i]));
+      // 10 unread > cap 8 → window grows to 10 so no unread plugin is folded.
+      expect(installedVisibleCount(items, unread, 8)).toBe(10);
+    });
+
+    it('ignores unread ids that are not in the installed list', () => {
+      expect(installedVisibleCount(items, new Map([['not-installed', 1]]), 8)).toBe(8);
+    });
+  });
+
   it('maps install-record facts onto the list item', () => {
     const item = toGhostPluginListItem(installed());
 
@@ -148,9 +227,25 @@ describe('ghostPluginViewModel', () => {
       name: 'XD Mivo',
       enabled: true,
       canUse: true,
-      hasPanel: false,
+      hostCapability: null,
       version: '1.5.10',
     });
+  });
+
+  it('projects the iOS Simulator slot as an explicit Host capability action', () => {
+    const item = toGhostPluginListItem(
+      installed({
+        manifest: manifest({
+          command: undefined,
+          slots: ['skill', 'ios-simulator'],
+          tools: undefined,
+          network: undefined,
+        }),
+      }),
+    );
+
+    expect(item.hostCapability).toBe('ios-simulator');
+    expect(ghostPrimaryAction(item)).toBe('capability');
   });
 
   it('overlays exact installed market presentation without changing runtime facts', () => {
@@ -182,12 +277,31 @@ describe('ghostPluginViewModel', () => {
     ]);
   });
 
-  it('treats a market null icon as an explicit presentation override', () => {
+  it('treats a server market null icon as an explicit presentation override', () => {
     const ghost = installed({ iconDataUrl: 'data:image/png;base64,OLD' });
     const presentation = marketPresentationForInstalledGhost(ghost, marketItem({ icon: null }));
 
     expect(presentation).not.toBeNull();
     expect(toGhostPluginListItem(ghost, presentation)).not.toHaveProperty('iconDataUrl');
+  });
+
+  it('uses the installed package icon for an exact Git market mapping', () => {
+    const ghost = installed({ iconDataUrl: 'data:image/png;base64,LOCAL' });
+    const presentation = marketPresentationForInstalledGhost(
+      ghost,
+      marketItem({
+        sourceType: 'git-market',
+        sourceMarketName: 'community-plugins',
+        icon: null,
+      }),
+    );
+
+    expect(toGhostPluginListItem(ghost, presentation)).toMatchObject({
+      iconDataUrl: 'data:image/png;base64,LOCAL',
+    });
+    expect(toGhostPluginDetail(ghost, presentation)).toMatchObject({
+      iconDataUrl: 'data:image/png;base64,LOCAL',
+    });
   });
 
   it.each([
@@ -218,6 +332,16 @@ describe('ghostPluginViewModel', () => {
     expect(item).not.toHaveProperty('usageCount');
     expect(item).not.toHaveProperty('certified');
     expect(item).not.toHaveProperty('whenToUse');
+  });
+
+  it('carries the Host approval state so the list can explain an unrunnable install', () => {
+    expect(toGhostPluginListItem(installed()).approvalState).toBe('approved');
+    expect(
+      toGhostPluginListItem(installed({ approval: { state: 'legacy-unapproved' } })).approvalState,
+    ).toBe('legacy-unapproved');
+    expect(
+      toGhostPluginDetail(installed({ approval: { state: 'invalid' } })).approvalState,
+    ).toBe('invalid');
   });
 
   it('derives detail permissions and runtime declarations from the manifest', () => {
@@ -273,7 +397,6 @@ describe('ghostPluginViewModel', () => {
     );
 
     expect(detail.panelMinWidth).toBe(360);
-    expect(detail.hasPanel).toBe(true);
     expect(detail).not.toHaveProperty('manifest');
   });
 });
@@ -298,7 +421,9 @@ describe('plugin panel owner isolation', () => {
     // A 打开着面板 → 切到 B:必须关掉,不许因为 B 也装了同 id 的插件就留着。
     expect(nextOpenPanelIdForOwner(a, b, 'ghost-shared')).toBeNull();
     // 云 → 本地同样算换身份。
-    expect(nextOpenPanelIdForOwner(a, ghostPanelOwnerKey('local', null), 'ghost-shared')).toBeNull();
+    expect(
+      nextOpenPanelIdForOwner(a, ghostPanelOwnerKey('local', null), 'ghost-shared'),
+    ).toBeNull();
     // 身份没变则原样保留(别把用户正在用的面板关掉)。
     expect(nextOpenPanelIdForOwner(a, a, 'ghost-shared')).toBe('ghost-shared');
     expect(nextOpenPanelIdForOwner(a, a, null)).toBeNull();

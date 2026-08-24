@@ -1,8 +1,8 @@
 /**
- * 个人 Telegram 群窗口单测: 入窗幂等、按键 GC、TTL、上下文拼装(trigger 剔重 /
+ * 个人 Telegram 群窗口单测: 入窗幂等、永久保留、上下文拼装(trigger 剔重 /
  * 游标 commit 延迟 / 字符预算 / 栅栏中和)、与官方通道行(provider='telegram')
  * 的隔离。harness 与 hook-control/groupWindow.test.ts 同款: 内存 better-sqlite3
- * 执行包含 hook_group_messages 的 migration, drizzle 同步 driver 假装 DbClient。
+ * 执行 0083 / 0086 / 0087 / 0088 migration, drizzle 同步 driver 假装 DbClient。
  */
 
 import fs from 'node:fs';
@@ -18,6 +18,7 @@ const holder = vi.hoisted(() => ({ drizzle: null as unknown }));
 
 vi.mock('../../../localDb/client/current', () => ({
   getDbClient: () => ({ drizzle: holder.drizzle }),
+  tryGetDbClient: () => ({ drizzle: holder.drizzle }),
 }));
 
 import {
@@ -28,16 +29,20 @@ import {
   TELEGRAM_PERSONAL_WINDOW_PROVIDER,
 } from '../groupWindow';
 
+const { run: runSyncUpstreamMigration } = require(
+  '../../../../../drizzle/scripts/0092_sync_upstream_20260821.ts',
+) as { run: (db: Database.Database) => void };
+
 function migrationSql(): string {
   const dir = path.resolve(__dirname, '../../../../../drizzle');
-  for (const file of fs.readdirSync(dir).filter((name) => name.endsWith('.sql'))) {
-    const sql = fs.readFileSync(path.join(dir, file), 'utf8');
-    const table = sql.indexOf('CREATE TABLE IF NOT EXISTS `hook_group_messages`');
-    if (table !== -1) {
-      return sql.slice(table).replaceAll('--> statement-breakpoint', ';');
-    }
-  }
-  throw new Error('hook_group_messages migration not found');
+  return ['0089_', '0092_']
+    .map((prefix) => {
+      const file = fs.readdirSync(dir).find((name) => name.startsWith(prefix));
+      if (!file) throw new Error(`${prefix} migration not found`);
+      return fs.readFileSync(path.join(dir, file), 'utf8');
+    })
+    .join('\n')
+    .replaceAll('--> statement-breakpoint', ';');
 }
 
 let entrySeq = 0;
@@ -61,11 +66,12 @@ const LANE = { botId: 'bot-1', chatId: '-900', threadId: '' };
 
 let sqlite: InstanceType<typeof Database>;
 
-beforeEach(() => {
+beforeEach(async () => {
   sqlite = new Database(':memory:');
   sqlite.exec(migrationSql());
+  runSyncUpstreamMigration(sqlite);
   holder.drizzle = drizzle(sqlite);
-  resetTelegramGroupContextCursors();
+  await resetTelegramGroupContextCursors();
 });
 
 afterEach(() => {
@@ -73,7 +79,9 @@ afterEach(() => {
 });
 
 function rowCount(): number {
-  return (sqlite.prepare('SELECT COUNT(*) AS n FROM hook_group_messages').get() as { n: number }).n;
+  return (
+    sqlite.prepare('SELECT COUNT(*) AS n FROM hook_group_messages').get() as { n: number }
+  ).n;
 }
 
 describe('recordTelegramGroupMessage', () => {
@@ -105,6 +113,48 @@ describe('recordTelegramGroupMessage', () => {
     };
     expect(row.is_bot).toBe(1);
   });
+
+  it('正文全文入库, 但拼 prompt 仍按 500 字符截断', async () => {
+    const text = 'x'.repeat(700);
+    await recordTelegramGroupMessage(entry({ messageId: 'long', text }));
+    const row = sqlite
+      .prepare('SELECT text FROM hook_group_messages WHERE message_id = ?')
+      .get('long') as { text: string };
+    expect(row.text).toBe(text);
+
+    const prefix = (
+      await buildTelegramGroupContextPrefix({ ...LANE, triggerMessageId: 'none' })
+    ).prefix;
+    expect(prefix).toContain('x'.repeat(500));
+    expect(prefix).not.toContain('x'.repeat(501));
+  });
+
+  it('重置只删除个人 Telegram provider 的持久游标', async () => {
+    await recordTelegramGroupMessage(entry({ messageId: 'cursor-reset' }));
+    const assembly = await buildTelegramGroupContextPrefix({
+      ...LANE,
+      triggerMessageId: 'none',
+    });
+    await assembly.commit();
+    sqlite
+      .prepare(
+        `INSERT INTO hook_group_context_cursors
+          (provider, cursor_key, cursor_id, updated_at) VALUES (?, ?, ?, ?)`,
+      )
+      .run('telegram:9', 'telegram:group:1:-900:9', 99, Date.now());
+
+    await resetTelegramGroupContextCursors();
+    expect(
+      sqlite
+        .prepare('SELECT 1 FROM hook_group_context_cursors WHERE provider = ?')
+        .get('telegram-personal:bot-1'),
+    ).toBeUndefined();
+    expect(
+      sqlite
+        .prepare('SELECT cursor_id FROM hook_group_context_cursors WHERE provider = ?')
+        .get('telegram:9') as { cursor_id: number },
+    ).toEqual({ cursor_id: 99 });
+  });
 });
 
 describe('buildTelegramGroupContextPrefix', () => {
@@ -127,7 +177,17 @@ describe('buildTelegramGroupContextPrefix', () => {
     // 不 commit → 第二次拼装仍包含
     const again = await buildTelegramGroupContextPrefix({ ...LANE, triggerMessageId: 't1' });
     expect(again.prefix).toContain('旧消息');
-    again.commit();
+    await again.commit();
+    expect(
+      sqlite
+        .prepare(
+          'SELECT cursor_id FROM hook_group_context_cursors WHERE provider = ? AND cursor_key = ?',
+        )
+        .get('telegram-personal:bot-1', 'bot-1:-900:') as { cursor_id: number },
+    ).toEqual({ cursor_id: 1 });
+
+    // 模拟进程重启: 清掉内存态但保留 DB, 恢复后不重复已提交消息。
+    await resetTelegramGroupContextCursors({ clearPersisted: false });
     // commit 后 → 增量为空
     const after = await buildTelegramGroupContextPrefix({ ...LANE, triggerMessageId: 't2' });
     expect(after.prefix).toBe('');
@@ -138,7 +198,7 @@ describe('buildTelegramGroupContextPrefix', () => {
     await recordTelegramGroupMessage(entry({ messageId: 'only', text: '@bot hi' }));
     const asm = await buildTelegramGroupContextPrefix({ ...LANE, triggerMessageId: 'only' });
     expect(asm.prefix).toBe('');
-    asm.commit();
+    await asm.commit();
     await recordTelegramGroupMessage(entry({ messageId: 'next', text: '新消息' }));
     const after = await buildTelegramGroupContextPrefix({ ...LANE, triggerMessageId: 't' });
     expect(after.prefix).toContain('新消息');
@@ -157,9 +217,7 @@ describe('buildTelegramGroupContextPrefix', () => {
 
   it('超出字符预算保新丢旧并标注省略', async () => {
     for (let i = 0; i < 12; i += 1) {
-      await recordTelegramGroupMessage(
-        entry({ messageId: `big-${i}`, text: `${i}-${'x'.repeat(480)}` }),
-      );
+      await recordTelegramGroupMessage(entry({ messageId: `big-${i}`, text: `${i}-${'x'.repeat(480)}` }));
     }
     const asm = await buildTelegramGroupContextPrefix({ ...LANE, triggerMessageId: 'none' });
     expect(asm.prefix).toContain('[... 更早的消息已省略 ...]');
@@ -169,9 +227,7 @@ describe('buildTelegramGroupContextPrefix', () => {
 
   it('不同 threadId lane 互不串扰', async () => {
     await recordTelegramGroupMessage(entry({ messageId: 'main-1', text: '主群流' }));
-    await recordTelegramGroupMessage(
-      entry({ messageId: 'topic-1', threadId: '77', text: '话题里' }),
-    );
+    await recordTelegramGroupMessage(entry({ messageId: 'topic-1', threadId: '77', text: '话题里' }));
     const main = await buildTelegramGroupContextPrefix({ ...LANE, triggerMessageId: 'n' });
     const topic = await buildTelegramGroupContextPrefix({
       ...LANE,

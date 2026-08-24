@@ -7,6 +7,7 @@
 
 import { CC_MGR_BUNDLE_VERSION, RpcClient } from '@cindy/maker-cc-manager';
 import type { BundleFile, HelloResult } from '@cindy/maker-cc-manager';
+import type { ExecStreamHandle } from '@cindy/maker-remote-ssh';
 
 import { createLogger } from '../logger.js';
 import {
@@ -19,7 +20,6 @@ import { readClaudeApiKey } from './auth-adapters.js';
 import {
   bridgeStreamToDuplex,
   RPC_REQUEST_TIMEOUT_MS,
-  type CcManagerByteStream,
 } from './cc-manager-client.js';
 import {
   buildCodexGatewayBaseUrl,
@@ -34,7 +34,7 @@ const MCPR_CODEX_PROTOCOL_VERSION = 3;
 
 interface McprControlChannel {
   client: RpcClient;
-  stream: CcManagerByteStream;
+  stream: ExecStreamHandle;
   hello: HelloResult;
   closeState: {
     info: { code: number | null; signal: string | null } | null;

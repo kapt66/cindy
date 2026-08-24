@@ -5,13 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const presentation = vi.hoisted(() => ({ modal: true }));
 
 vi.mock('@/cindy-brain/GhostPanelModal', () => ({
-  GhostPanelModal: ({
-    ghost,
-    open,
-  }: {
-    ghost: { manifest: { id: string } };
-    open: boolean;
-  }) => (
+  GhostPanelModal: ({ ghost, open }: { ghost: { manifest: { id: string } }; open: boolean }) => (
     <div
       data-testid="plugin-panel-modal-host"
       data-ghost-id={ghost.manifest.id}
@@ -32,14 +26,12 @@ import type { NavigateFunction } from 'react-router-dom';
 
 import type { InstalledGhost } from '../../../../shared/ghost';
 import { createDefaultLayout } from '../../../../shared/layoutTree';
-import {
-  useGhostPanelLauncher,
-  type GhostPanelLauncher,
-} from '../useGhostPanelLauncher';
+import { useGhostPanelLauncher, type GhostPanelLauncher } from '../useGhostPanelLauncher';
 
 const ghost = (id: string): InstalledGhost => ({
   enabled: true,
   dir: `/plugins/${id}`,
+  approval: { state: 'approved', revision: '00000000-0000-4000-8000-000000000001' },
   manifest: {
     schemaVersion: 2,
     id,

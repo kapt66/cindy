@@ -38,6 +38,7 @@ import { cn } from '@/lib/utils';
 import { useProviders } from '@/hooks/useProviders';
 import { isChatGptConnectionConnected, useCodexAuth } from '@/hooks/useCodexAuth';
 import { useApiKey } from '@/hooks/useApiKey';
+import { extractIpcError } from '@/utils/ipcError';
 import { useModelAccessStatus } from '@/hooks/useModelAccessStatus';
 import { useModelAccessCreditUsage } from '@/hooks/useModelAccessCreditUsage';
 import { useReducedMotion } from '@/hooks/useReducedMotion';
@@ -70,6 +71,14 @@ import {
 import { BILLING_CURRENCY, formatBillingAmount } from '@/features/billing/money';
 import { canAccessBillingSettings } from './billingVisibility';
 import { resolveXdAssetModuleState } from './providerAssetModule';
+import {
+  requestXaiSubscriptionRefresh,
+  useXaiSubscriptionUsage,
+} from '@/hooks/useXaiSubscriptionUsage';
+import {
+  formatXaiProductLabel,
+  isXaiWeeklyUsageCurrent,
+} from '../../../shared/xaiSubscriptionUsage';
 import { CustomProviderDialog } from './CustomProviderDialog';
 import { AddProviderWizard, type WizardEntry } from './AddProviderWizard';
 import { OAuthDeviceCodeCard } from './OAuthDeviceCodeCard';
@@ -91,14 +100,15 @@ import type { CustomProviderConfig, ProviderView } from '@cindy/model-providers'
 // ---------------------------------------------------------------------------
 
 function providerHasModels(provider: ProviderView): boolean {
-  // 专属媒体清单(imageModels/videoModels)也算「有模型」:XD 动态对话目录不可用时
-  // 内置的图像/视频模型仍可用且可被停用管理,UnifiedModelList 的 buildUnionRows
-  // 会为它们合成能力行 —— 只看 models[agent] 会让整个列表不渲染
-  // (PR #744 review 第十五轮)。
+  // 专属媒体清单(imageModels/videoModels/embeddingModels)也算「有模型」:XD 动态
+  // 对话目录不可用时内置的图像/视频/向量模型仍可用且可被停用管理,
+  // UnifiedModelList 的 buildUnionRows 会为它们合成能力行 —— 只看 models[agent]
+  // 会让整个列表不渲染(PR #744 review 第十五轮;向量补入见 PR #1707 review)。
   return (
     provider.agents.some((a) => (provider.models[a]?.length ?? 0) > 0) ||
     (provider.imageModels?.length ?? 0) > 0 ||
-    (provider.videoModels?.length ?? 0) > 0
+    (provider.videoModels?.length ?? 0) > 0 ||
+    (provider.embeddingModels?.length ?? 0) > 0
   );
 }
 
@@ -339,42 +349,50 @@ function DetailHeader({
             不被卡片 overflow-hidden 裁掉(PR #1102 review 第三轮)。 */}
         <div className="flex flex-wrap items-center gap-3 gap-y-2">
           <div
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg"
-            style={{
-              backgroundColor: 'var(--settings-integration-avatar-bg)',
-              border: '1px solid var(--settings-integration-avatar-border)',
-              color: 'var(--settings-integration-avatar-icon)',
-            }}
+            data-testid="provider-detail-identity"
+            className="flex min-w-0 flex-auto items-center gap-3"
           >
-            {icon}
-          </div>
-
-          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-            <div className="flex items-center gap-2">
-              <span
-                className="min-w-0 truncate text-14 font-medium leading-tight"
-                style={{ color: 'var(--settings-section-title)' }}
-              >
-                {title}
-              </span>
-              {modelCount !== null && <ModelCountChip count={modelCount} />}
-              {subscriptionProduct && (
-                <CustomTag
-                  label={t('settings.providers.models.subscriptionProduct', {
-                    product: subscriptionProduct,
-                  })}
-                />
-              )}
-              {provider?.suspended && <CustomTag label={t('settings.providers.pill.suspended')} />}
-              {badge}
-            </div>
-            <span
-              className="truncate text-13 leading-tight"
-              style={{ color: 'var(--settings-integration-subtitle)' }}
+            <div
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg"
+              style={{
+                backgroundColor: 'var(--settings-integration-avatar-bg)',
+                border: '1px solid var(--settings-integration-avatar-border)',
+                color: 'var(--settings-integration-avatar-icon)',
+              }}
             >
-              {subtitle}
-              {singleAgentNote ? ` · ${singleAgentNote}` : ''}
-            </span>
+              {icon}
+            </div>
+
+            <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+              <div
+                data-testid="provider-detail-metadata"
+                className="flex min-w-0 flex-wrap items-center gap-2"
+              >
+                <span
+                  className="min-w-0 truncate text-14 font-medium leading-tight"
+                  style={{ color: 'var(--settings-section-title)' }}
+                >
+                  {title}
+                </span>
+                {modelCount !== null && <ModelCountChip count={modelCount} />}
+                {subscriptionProduct && (
+                  <CustomTag
+                    label={t('settings.providers.models.subscriptionProduct', {
+                      product: subscriptionProduct,
+                    })}
+                  />
+                )}
+                {provider?.suspended && <CustomTag label={t('settings.providers.pill.suspended')} />}
+                {badge}
+              </div>
+              <span
+                className="truncate text-13 leading-tight"
+                style={{ color: 'var(--settings-integration-subtitle)' }}
+              >
+                {subtitle}
+                {singleAgentNote ? ` · ${singleAgentNote}` : ''}
+              </span>
+            </div>
           </div>
 
           {trailing}
@@ -582,17 +600,8 @@ function OpenAiHeader({ provider, onChanged }: { provider?: ProviderView; onChan
       await refresh();
       return;
     }
-    if (credentialScope === 'system-shared') {
-      try {
-        const result = await window.electronAPI.openChatGPTApp();
-        if (!result.success) toast.error(t('chatgptAuthRecovery.openAppFailed'));
-      } catch {
-        toast.error(t('chatgptAuthRecovery.openAppFailed'));
-      }
-      return;
-    }
     await handleLogin();
-  }, [credentialScope, handleLogin, loggingIn, recoveryCheck, refresh, t]);
+  }, [handleLogin, loggingIn, recoveryCheck, refresh]);
 
   const recoveryDetail = reconnectRequired ? (
     <p className="text-12 leading-relaxed text-[var(--settings-integration-subtitle)]">
@@ -623,9 +632,7 @@ function OpenAiHeader({ provider, onChanged }: { provider?: ProviderView; onChan
             ? 'chatgptAuthRecovery.checking'
             : recoveryCheck === 'failed'
               ? 'chatgptAuthRecovery.recheck'
-              : credentialScope === 'system-shared'
-                ? 'chatgptAuthRecovery.openApp'
-                : 'chatgptAuthRecovery.relogin',
+              : 'chatgptAuthRecovery.relogin',
         )}
         onClick={() => void handleRecovery()}
         disabled={recoveryCheck === 'checking' || loggingIn}
@@ -771,6 +778,89 @@ function ImageApiKeyRow({
 // xAI —— OAuth(SuperGrok 订阅),复用 maker.xaiOAuth*。
 // ---------------------------------------------------------------------------
 
+function formatXaiResetLabel(resetsAt: number | null | undefined, locale: string): string | null {
+  if (typeof resetsAt !== 'number' || !Number.isFinite(resetsAt) || resetsAt <= 0) return null;
+  try {
+    return new Date(resetsAt * 1000).toLocaleString(locale, {
+      month: 'numeric',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return null;
+  }
+}
+
+function XaiAssetModule({ connected }: { connected: boolean }) {
+  const { t, i18n } = useTranslation();
+  const usage = useXaiSubscriptionUsage(connected);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!connected) return undefined;
+    const timer = window.setInterval(() => setNowMs(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, [connected]);
+  useEffect(() => {
+    if (!connected) return;
+    if (isXaiWeeklyUsageCurrent(usage, nowMs)) return;
+    requestXaiSubscriptionRefresh();
+  }, [connected, usage, nowMs]);
+  if (!connected || !usage) return null;
+  const hasWeekly = isXaiWeeklyUsageCurrent(usage, nowMs);
+  if (!usage.planLabel && !hasWeekly) return null;
+  const resetLabel = formatXaiResetLabel(usage.resetsAt, i18n.resolvedLanguage ?? i18n.language);
+  return (
+    <div
+      className="flex flex-wrap justify-between gap-x-6 gap-y-4 border-t px-5 py-5"
+      style={{ borderColor: 'var(--settings-theme-card-border)' }}
+    >
+      <div className="min-w-0">
+        <p className="text-12 leading-tight" style={{ color: 'var(--text-secondary)' }}>
+          {usage.planLabel ?? t('settings.providers.xai.asset.weeklyTitle')}
+        </p>
+        {hasWeekly && (
+          <p
+            className="mt-1.5 text-20 font-medium leading-[1.3] tracking-[-0.02em] tabular-nums"
+            style={{ color: 'var(--text-primary)' }}
+          >
+            {t('settings.providers.xai.asset.weeklyUsed', {
+              percent: Math.round(usage.creditUsagePercent ?? 0),
+            })}
+          </p>
+        )}
+        {hasWeekly && resetLabel && (
+          <p className="mt-1 text-12 leading-tight" style={{ color: 'var(--text-secondary)' }}>
+            {t('settings.providers.xai.asset.resetsAt', { at: resetLabel })}
+          </p>
+        )}
+        {hasWeekly && (usage.productUsage ?? []).map((product) => (
+          <p
+            key={product.product}
+            className="mt-1 text-12 leading-tight tabular-nums"
+            style={{ color: 'var(--text-secondary)' }}
+          >
+            {t('settings.providers.xai.asset.productLine', {
+              product: formatXaiProductLabel(product.product),
+              percent: Math.round(product.usagePercent),
+            })}
+          </p>
+        ))}
+      </div>
+      <div className="flex shrink-0 items-center pt-3.5">
+        <button
+          type="button"
+          onClick={() => void window.electronAPI.openExternal('https://grok.com')}
+          className="text-13 transition-colors hover:text-[var(--text-primary)]"
+          style={{ color: 'var(--text-secondary)' }}
+        >
+          {t('settings.providers.xai.asset.openUsage')}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function XaiHeader({ provider, onChanged }: { provider?: ProviderView; onChanged: () => void }) {
   const { t } = useTranslation();
   const { confirm } = useConfirmDialog();
@@ -851,6 +941,7 @@ function XaiHeader({ provider, onChanged }: { provider?: ProviderView; onChanged
       })}
       trailing={trailing}
       provider={provider}
+      assetModule={<XaiAssetModule connected={connected} />}
     />
   );
 }
@@ -1496,9 +1587,10 @@ function CindySigninRow({ selected, onSelect }: { selected: boolean; onSelect: (
       aria-current={selected}
       className={cn(
         'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors',
-        !selected && 'hover:bg-[var(--surface-hover)]',
+        selected
+          ? 'bg-[var(--settings-menu-bg-selected)]'
+          : 'hover:bg-[var(--settings-menu-bg-hover)]',
       )}
-      style={selected ? { backgroundColor: 'var(--surface-chip)' } : undefined}
     >
       <div
         className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg"
@@ -1518,7 +1610,7 @@ function CindySigninRow({ selected, onSelect }: { selected: boolean; onSelect: (
       </span>
       {/* 徽标不大写不加字距:224px 窄栏里 en「RECOMMENDED」会把行名挤成「Cin…」。 */}
       <span
-        className="shrink-0 rounded-full border px-1.5 py-px text-[10px] font-medium"
+        className="shrink-0 rounded-full border px-1.5 py-px text-10 font-medium"
         style={{ borderColor: 'var(--border-default)', color: 'var(--text-tertiary)' }}
       >
         {t('settings.providers.xdSignin.badge')}
@@ -1556,9 +1648,10 @@ function ListRow({
     <div
       className={cn(
         'relative flex w-full items-center rounded-lg text-left transition-colors',
-        !selected && 'hover:bg-[var(--surface-hover)]',
+        selected
+          ? 'bg-[var(--settings-menu-bg-selected)]'
+          : 'hover:bg-[var(--settings-menu-bg-hover)]',
       )}
-      style={selected ? { backgroundColor: 'var(--surface-chip)' } : undefined}
     >
       {sortable && (
         <button
@@ -1664,7 +1757,7 @@ function SuggestionRow({
           : 'settings.providers.detect.hintInstalled',
         { cli: cliName },
       )}
-      className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-[var(--surface-hover)]"
+      className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-[var(--settings-menu-bg-hover)]"
     >
       <div
         className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg opacity-70"
@@ -1728,6 +1821,7 @@ export function ProvidersSection() {
   const [dialog, setDialog] = useState<
     null | { mode: 'create' } | { mode: 'edit'; config: CustomProviderConfig }
   >(null);
+  const addProviderButtonRef = useRef<HTMLButtonElement>(null);
   const [detections, setDetections] = useState<LocalCliDetection[]>([]);
   const [rediscovering, setRediscovering] = useState(false);
   const [refreshingProviderId, setRefreshingProviderId] = useState<string | null>(null);
@@ -2087,8 +2181,16 @@ export function ProvidersSection() {
         await window.electronAPI.maker.refreshBuiltinProviderModels(p.id);
         toast.success(t('settings.providers.models.refreshDone'));
         refetch();
-      } catch {
-        toast.error(t('settings.providers.models.refreshFailed'));
+      } catch (err) {
+        // 目录拉取被禁用(XDT_DISABLE_MODELS_FETCH)时 main 根本没
+        // 发起请求——这是预期内的跳过,用 info 如实提示,不和真实网络失败
+        // 混为一谈地报「刷新失败,请稍后再试」。
+        const ipcError = extractIpcError(err);
+        if (ipcError?.code === 'MODEL_CATALOG_FETCH_DISABLED') {
+          toast.info(t('settings.providers.models.refreshFetchDisabled'));
+        } else {
+          toast.error(t('settings.providers.models.refreshFailed'));
+        }
       } finally {
         finishProviderRefresh(p.id);
       }
@@ -2244,6 +2346,7 @@ export function ProvidersSection() {
               style={{ borderColor: 'var(--settings-theme-card-border)' }}
             >
               <button
+                ref={addProviderButtonRef}
                 type="button"
                 onClick={() => setWizard({})}
                 className="flex h-9 w-full items-center justify-center gap-1.5 rounded-full border border-dashed text-13 font-medium transition-colors hover:bg-[var(--surface-hover)]"
@@ -2467,6 +2570,7 @@ export function ProvidersSection() {
         <CustomProviderDialog
           initial={dialog.mode === 'edit' ? dialog.config : undefined}
           existingIds={providers.map((p) => p.id)}
+          returnFocusRef={dialog.mode === 'create' ? addProviderButtonRef : undefined}
           onClose={() => setDialog(null)}
           onSaved={() => {
             setDialog(null);

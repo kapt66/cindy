@@ -1,15 +1,17 @@
 /**
- * regionUserData — packaged userData 覆写兼容入口。
+ * regionUserData — 按构建区域选择 Electron userData 目录。
  *
  * Cindy Meka 正式版已收敛为固定安装身份，cn / global 都使用 Electron 默认的
- * `CindyMeka` 目录；dev 保持独立。本模块保留纯函数和早期调用位，兼容上游结构。
+ * `CindyMeka` 目录；内部 dev 身份使用 `CindyMekaDev`，避免开发启动触碰正式数据。
  *
  * 语义边界:
  *  - cn / global 目录名 = productName 默认派生目录 → 返回 null。
- *  - dev(非 packaged)永远返回 null:dev 的隔离语义由 --isolated /
- *    XDT_USER_DATA_DIR(devCliFlags)承载,不与区域身份耦合。
+ *  - 非 packaged 启动同样按区域选正式 profile；`--isolated` 再由 devCliFlags
+ *    基于这个区域目录派生隔离目录。
  *  - 命令行显式传了 Chromium 原生 `--user-data-dir` 时返回 null,尊重调用方
  *    (smoke-packaged.mjs 用它把假库指到 os.tmpdir 临时目录)。
+ *    `XDT_USER_DATA_DIR` 是 devCliFlags 的最终覆写；这里仍先建立区域默认
+ *    profile，确保隔离 epoch comparison 以 CindyMeka / CindyMekaDev 为基线。
  *  - 只决定**目录名**,拼绝对路径(appData 基址)留给调用方——本模块保持
  *    零 Electron 依赖,可直接单测。
  */
@@ -33,8 +35,8 @@ export function resolveRegionUserDataDirName(input: {
   isPackaged: boolean;
   region: CindyRegion;
   argv: readonly string[];
+  envUserDataDir?: string;
 }): string | null {
-  if (!input.isPackaged) return null;
   if (hasExplicitUserDataDir(input.argv)) return null;
   const dirName = brandUserDataDirName(input.region);
   // 与 productName 默认派生目录同名 → 不覆写,走 Electron 原生路径。

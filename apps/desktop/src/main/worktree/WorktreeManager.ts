@@ -15,20 +15,19 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 
 import {
+  blocksManagedWorktreeBranchNamespace,
   generateUniqueName,
   avoidCollision,
   getBranchName,
+  getManagedWorktreeNameFromBranch,
+  getManagedWorktreeReservedName,
+  isManagedWorktreeBranchForName,
   validateWorktreeName,
 } from './nameGenerator';
-import {
-  classifyError,
-  type ClassifyInput,
-} from './errorClassifier';
+import { readAttachedWorktreeBranch } from './attachedBranch';
+import { classifyError, type ClassifyInput } from './errorClassifier';
 import { gitExec, GitExecError } from './gitExec';
-import {
-  applyWorktreeIncludeFile,
-  listChangedWorktreeIncludeFiles,
-} from './includePatternsEngine';
+import { applyWorktreeIncludeFile, listChangedWorktreeIncludeFiles } from './includePatternsEngine';
 import { hasKeepSentinel, isManagedWorktreePath } from './safety';
 import {
   isWorktreeDirty,
@@ -133,7 +132,10 @@ async function withCreateWorktreeQueue<T>(baseRepo: string, fn: () => Promise<T>
   const current = new Promise<void>((resolve) => {
     releaseCurrent = resolve;
   });
-  const queued = previous.then(() => current, () => current);
+  const queued = previous.then(
+    () => current,
+    () => current,
+  );
   createWorktreeQueues.set(key, queued);
 
   await previous.catch(() => {});
@@ -161,7 +163,10 @@ async function withPrecreatedWorktreeOperationQueue<T>(
   const current = new Promise<void>((resolve) => {
     releaseCurrent = resolve;
   });
-  const queued = previous.then(() => current, () => current);
+  const queued = previous.then(
+    () => current,
+    () => current,
+  );
   precreatedWorktreeOperationQueues.set(sessionId, queued);
 
   await previous.catch(() => {});
@@ -254,10 +259,7 @@ export async function detectCwd(cwd: string): Promise<DetectCwdResp> {
  * 用 `git branch --format=%(refname:short)` 拿干净的分支列表。
  */
 export async function listBranches(baseRepo: string): Promise<ListBranchesResp> {
-  const { stdout } = await gitExec(
-    ['branch', '--format=%(refname:short)'],
-    baseRepo,
-  );
+  const { stdout } = await gitExec(['branch', '--format=%(refname:short)'], baseRepo);
   const branches = stdout
     .split(/\r?\n/)
     .map((s) => s.trim())
@@ -286,7 +288,7 @@ export async function revParseCommit(repoDir: string, ref: string): Promise<stri
 }
 
 /**
- * 列出已被本仓库占用的名字: store 里 sessionId → name + git 分支 xdt/* 去前缀。
+ * 列出已被本仓库占用的名字: store 里 sessionId → name + 当前/历史托管分支去前缀。
  * 用于 nameGenerator 冲突避让 + create 阶段二次校验。
  */
 async function getTakenNames(baseRepo: string): Promise<string[]> {
@@ -297,15 +299,41 @@ async function getTakenNames(baseRepo: string): Promise<string[]> {
       taken.add(meta.name);
     }
   }
-  // git branches: 仅 xdt/* 前缀
+  // 本地与 origin tracking 分支都纳入占用判定：否则本地无 xdt/foo、
+  // 远端尚有 origin/xdt/foo 时又新建 cindy/foo，回收后会出现双候选歧义。
+  // 必须保留完整 ref namespace；短名 `origin/cindy` 既可能是本地
+  // refs/heads/origin/cindy，也可能是 refs/remotes/origin/cindy，不能靠字符串去前缀猜。
+  let branchesOutput: string;
   try {
-    const { stdout } = await gitExec(['branch', '--format=%(refname:short)'], baseRepo);
-    for (const line of stdout.split(/\r?\n/)) {
-      const t = line.trim();
-      if (t.startsWith('xdt/')) taken.add(t.slice('xdt/'.length));
-    }
+    ({ stdout: branchesOutput } = await gitExec(
+      ['branch', '--all', '--format=%(refname)'],
+      baseRepo,
+    ));
   } catch {
     // ignore — 拿不到 git 分支时仅用 store
+    return [...taken];
+  }
+  const localRefPrefix = 'refs/heads/';
+  const originRefPrefix = 'refs/remotes/origin/';
+  for (const line of branchesOutput.split(/\r?\n/)) {
+    const ref = line.trim();
+    const isLocal = ref.startsWith(localRefPrefix);
+    const isOriginTracking = ref.startsWith(originRefPrefix);
+    if (!isLocal && !isOriginTracking) continue;
+
+    const branch = ref.slice((isLocal ? localRefPrefix : originRefPrefix).length);
+    const displayBranch = isLocal ? branch : `origin/${branch}`;
+    if (isLocal && blocksManagedWorktreeBranchNamespace(branch)) {
+      throw new Error(
+        `无法创建 Cindy Worktree：分支 "${displayBranch}" 占用了 "cindy/*" 命名空间。请先重命名或删除该分支。`,
+      );
+    }
+    // 本地 current-prefix 后代 ref 会在 refs/heads 下真实阻塞父级，需预留首段；
+    // origin tracking refs 与本地 heads 分属不同 namespace，仅精确托管分支参与占用。
+    const reservedName = isLocal
+      ? getManagedWorktreeReservedName(branch)
+      : getManagedWorktreeNameFromBranch(branch);
+    if (reservedName) taken.add(reservedName);
   }
   return [...taken];
 }
@@ -316,6 +344,14 @@ async function getTakenNames(baseRepo: string): Promise<string[]> {
 export async function suggestName(baseRepo: string): Promise<string> {
   const taken = await getTakenNames(baseRepo);
   return generateUniqueName(taken);
+}
+
+/** Pool 与完整创建流程共用的显式名称避让入口。 */
+export async function resolveAvailableWorktreeName(
+  baseRepo: string,
+  requestedName: string,
+): Promise<string> {
+  return avoidCollision(requestedName, await getTakenNames(baseRepo));
 }
 
 export function getForSession(sessionId: string): WorktreeMeta | null {
@@ -462,9 +498,7 @@ async function configureHooksPath(worktreePath: string, baseRepo: string): Promi
   // 让 worktree 的 hooks 仍指向源 repo 的 .git/hooks(共享 husky / pre-commit 等)
   // git config 的路径以正斜杠书写最稳妥(Windows 下反斜杠会被转义), 这里统一标准化
   const hooksPath = path.join(baseRepo, '.git', 'hooks').replace(/\\/g, '/');
-  await gitExec(
-    ['-C', worktreePath, 'config', 'core.hooksPath', hooksPath],
-  );
+  await gitExec(['-C', worktreePath, 'config', 'core.hooksPath', hooksPath]);
 }
 
 const CLAUDE_COPY_EXCLUDED_TOP_LEVEL_DIRS = new Set(['worktrees']);
@@ -565,7 +599,7 @@ async function listProtectedClaudeSiviPaths(
 /**
  * git worktree add 参数(导出仅供单测断言)。--no-track 是分支边界约束:sourceBranch
  * 现在常是远端跟踪引用(refs/remotes/<remote>/<默认分支>),不加它 git 会按
- * branch.autoSetupMerge 默认给新 xdt/* 分支挂上对远端默认分支的 upstream 配置
+ * branch.autoSetupMerge 默认给新托管分支挂上对远端默认分支的 upstream 配置
  * (branch.<name>.remote/merge)——此后裸 git push/pull 可能误推/误并默认分支,
  * 破坏自动 worktree 的独立分支边界;起点是本地分支时 --no-track 为无害 no-op。
  */
@@ -620,7 +654,7 @@ export async function copyClaudeSiviDirs(
  *   2. listBranches 校验 sourceBranch 存在
  *   3. 计算 path = baseRepo/.cindy-worktrees/<name>; 已存在 → 重新 avoidCollision 拿一个
  *   4. mkdirp parent
- *   5. git worktree add -b xdt/<name> <path> <sourceBranch>
+ *   5. git worktree add -b cindy/<name> <path> <sourceBranch>
  *      失败时若 stderr 含 core.longpaths → 自动 git config --global core.longpaths true 重试一次
  *   6. configureHooksPath
  *   7. copyClaudeSiviDirs(跳过 .claude/worktrees 这类历史工作区状态)
@@ -628,50 +662,41 @@ export async function copyClaudeSiviDirs(
  *   9. git config --global --add safe.directory <path>
  *  10. worktreeStore.set(sessionId, meta) → 同步写 sessions.worktree_path
  */
-export async function createWorktree(
-  req: CreateWorktreeReq,
-): Promise<CreateWorktreeResp> {
-  const create = () => withCreateWorktreeQueue(
-    req.baseRepo,
-    () => createWorktreeInner(req),
-  );
+export async function createWorktree(req: CreateWorktreeReq): Promise<CreateWorktreeResp> {
+  const create = () => withCreateWorktreeQueue(req.baseRepo, () => createWorktreeInner(req));
   return req.recoveryKey === undefined
     ? create()
     : withPrecreatedWorktreeOperationQueue(req.sessionId, create);
 }
 
-async function createWorktreeInner(
-  req: CreateWorktreeReq,
-): Promise<CreateWorktreeResp> {
+async function createWorktreeInner(req: CreateWorktreeReq): Promise<CreateWorktreeResp> {
   const snap: CreatedSnapshot = {};
   const totalStartedAt = Date.now();
   try {
-    // 0. 防御性校验 worktree name(IPC 不可信, UI 当前虽然只走自动生成,
-    //    但调试 / 未来扩展 / 误用都可能传入非法值)。
+    // 0. 防御性校验显式 worktree name(IPC 不可信, 调试 / 未来扩展 / 误用
+    //    都可能传入非法值)。只有空白名是生成请求；包括 auto-* 在内的合法非空名
+    //    都按显式名称保留。
     //    要求: [a-z0-9-], 首尾字母数字, 无连续 --, 长度 ≤20。
     //    符合 git ref + Windows/POSIX 路径 + cli flag 安全的交集。
-    const nameError = validateWorktreeName(req.name);
-    if (nameError) {
+    const shouldGenerateName = typeof req.name === 'string' && req.name.trim().length === 0;
+    const explicitNameError = shouldGenerateName ? null : validateWorktreeName(req.name);
+    if (explicitNameError) {
       return {
         ok: false,
         error: {
           kind: 'unknown',
-          message: `worktree 名称非法: ${nameError}`,
+          message: `worktree 名称非法: ${explicitNameError}`,
           hint: `示例合法值: pensive-lederberg, auto-3l9k0c`,
         },
       };
     }
-    const recoveryKey = typeof req.recoveryKey === 'string'
-      ? req.recoveryKey.trim()
-      : null;
+    const recoveryKey = typeof req.recoveryKey === 'string' ? req.recoveryKey.trim() : null;
     if (
-      req.recoveryKey !== undefined
-      && (
-        !recoveryKey
-        || recoveryKey.length < MIN_RECOVERY_KEY_LENGTH
-        || recoveryKey.length > MAX_RECOVERY_KEY_LENGTH
-        || !RECOVERY_KEY_PATTERN.test(recoveryKey)
-      )
+      req.recoveryKey !== undefined &&
+      (!recoveryKey ||
+        recoveryKey.length < MIN_RECOVERY_KEY_LENGTH ||
+        recoveryKey.length > MAX_RECOVERY_KEY_LENGTH ||
+        !RECOVERY_KEY_PATTERN.test(recoveryKey))
     ) {
       return {
         ok: false,
@@ -685,7 +710,10 @@ async function createWorktreeInner(
     // 1. detect
     const cwdInfo = await timed('detect cwd', () => detectCwd(req.baseRepo));
     if (!cwdInfo.gitInstalled) {
-      return { ok: false, error: classifyError({ cause: { code: 'ENOENT', syscall: 'spawn git' } }) };
+      return {
+        ok: false,
+        error: classifyError({ cause: { code: 'ENOENT', syscall: 'spawn git' } }),
+      };
     }
     if (!cwdInfo.isGitRepo) {
       return { ok: false, error: classifyError({ stderr: 'not a git repository' }) };
@@ -722,11 +750,20 @@ async function createWorktreeInner(
 
     // 3. 路径冲突避让
     const taken = await timed('collect taken names', () => getTakenNames(baseRepo));
-    let name = req.name;
-    // 显式 collision: 用户给的 name 与已用冲突 → avoidCollision 加后缀
-    if (taken.includes(name)) {
-      name = avoidCollision(name, taken);
+    const requestedName = shouldGenerateName ? generateUniqueName(taken) : req.name;
+    const nameError = validateWorktreeName(requestedName);
+    if (nameError) {
+      return {
+        ok: false,
+        error: {
+          kind: 'unknown',
+          message: `worktree 名称非法: ${nameError}`,
+          hint: `示例合法值: pensive-lederberg, auto-3l9k0c`,
+        },
+      };
     }
+    // 显式 collision（含大小写与 ref 层级冲突）统一走 avoidCollision。
+    let name = avoidCollision(requestedName, taken);
     let worktreePath = path.join(baseRepo, MANAGED_WORKTREE_DIR_NAME, name);
     // 文件系统 collision(store 没记录但目录已存在): 多走一次 avoid
     let attempts = 0;
@@ -750,10 +787,7 @@ async function createWorktreeInner(
     try {
       await timed('git worktree add', () => gitExec(addArgs, baseRepo));
     } catch (err) {
-      if (
-        err instanceof GitExecError &&
-        /filename too long|core\.longpaths/i.test(err.stderr)
-      ) {
+      if (err instanceof GitExecError && /filename too long|core\.longpaths/i.test(err.stderr)) {
         // 启用 core.longpaths 后重试一次
         try {
           await gitExec(['config', '--global', 'core.longpaths', 'true']);
@@ -805,7 +839,9 @@ async function createWorktreeInner(
 
     // 8. include patterns
     try {
-      const results = await timed('apply include file', () => applyWorktreeIncludeFile(baseRepo, worktreePath));
+      const results = await timed('apply include file', () =>
+        applyWorktreeIncludeFile(baseRepo, worktreePath),
+      );
       const failed = results.filter((r) => r.status === 'failed');
       if (failed.length > 0) {
         log.warn(
@@ -822,7 +858,9 @@ async function createWorktreeInner(
 
     // 9. safe.directory
     try {
-      await timed('add safe.directory', () => gitExec(['config', '--global', '--add', 'safe.directory', worktreePath]));
+      await timed('add safe.directory', () =>
+        gitExec(['config', '--global', '--add', 'safe.directory', worktreePath]),
+      );
     } catch (err) {
       // 非致命 — 仅日志
       log.warn(
@@ -884,6 +922,8 @@ const removeWorktreeQueues = new Map<string, Promise<void>>();
 export interface RemoveWorktreeOptions {
   /** destructive remove 前确认 owning session 仍处于允许回收的状态。 */
   canRemove?: () => Promise<boolean>;
+  /** archived/deleted 引用只有在对应 runtime 已关闭时才可忽略。 */
+  isSessionRuntimeAlive?: (sessionId: string) => boolean | undefined;
   /**
    * 预创建补偿回收不能把用户可能已经手动写入的内容变成无会话可恢复的快照；
    * 命中 dirty 时保留整个 worktree，而不是走常规删除/归档的 auto-stash 流程。
@@ -900,8 +940,8 @@ export interface RemoveWorktreeOptions {
  *
  * 流程:
  *   1. meta = store.get(sid); null → return
- *   2. live-ref 守卫: 其它未删除会话仍引用该路径 → 保留(排除 sid 自身,
- *      归档会话自己的行不算引用)
+ *   2. live-ref 守卫: 其它会话仍引用该路径 → 保留(排除 sid 自身；其它终态会话
+ *      只有在 runtime 已确认关闭时才不阻挡)
  *   3. dirty → auto-stash(失败 → 保留);成功后先撤销 store 登记，阻断 SEND
  *   4. try git worktree remove --force <meta.path>
  *   5. fail → isManagedWorktreePath 三条校验通过 → fs.rm -rf
@@ -933,13 +973,8 @@ async function removeWorktreeForSessionInner(
 ): Promise<void> {
   let meta = store.get(sessionId);
   if (!meta) return;
-  if (
-    meta.quarantinePath
-    && !isExpectedQuarantinePath(meta, meta.quarantinePath)
-  ) {
-    log.warn(
-      `[worktree] preserved worktree at ${meta.path}: invalid persisted quarantine path`,
-    );
+  if (meta.quarantinePath && !isExpectedQuarantinePath(meta, meta.quarantinePath)) {
+    log.warn(`[worktree] preserved worktree at ${meta.path}: invalid persisted quarantine path`);
     return;
   }
   const hadPersistedQuarantine = Boolean(meta.quarantinePath);
@@ -962,9 +997,7 @@ async function removeWorktreeForSessionInner(
       meta = repaired;
     }
   }
-  const removalOptions = hadPersistedQuarantine
-    ? { ...options, preserveDirty: true }
-    : options;
+  const removalOptions = hadPersistedQuarantine ? { ...options, preserveDirty: true } : options;
   const worktreePath = activeWorktreePath(meta);
 
   // 哨兵守卫: 用户放了 .worktree-keep ⇒ 无条件保留(必须在 dirty/stash 之前——
@@ -975,15 +1008,41 @@ async function removeWorktreeForSessionInner(
     return;
   }
 
-  // live-ref 守卫: worktree 路径仍被其它未删除会话的 workingDir / worktreePath
-  // 指向时不删(典型: 用户在该目录另开了会话)。查询失败按"在用"保守处理。
+  // live-ref 守卫: worktree 路径仍被其它会话的 workingDir / worktreePath 指向时不删。
+  // 产品终态不代表 runtime 已关闭；显式回收路径用 Maker 的运行态观察器确认。
   const liveKeys = await loadLiveSessionPathKeys({
     contextPath: worktreePath,
     excludeSessionId: sessionId,
+    isSessionRuntimeAlive: options.isSessionRuntimeAlive,
   });
   if (hasLiveSessionReference(meta, liveKeys)) {
     log.info(
       `[worktree] preserved worktree at ${worktreePath}: still referenced by another live session`,
+    );
+    return;
+  }
+
+  // Store 只持久化创建时的托管分支；若用户/Agent 后来切到其它分支或 detached
+  // HEAD，当前恢复协议无法在目录删除后可靠重建那个基底。必须在任何 snapshot、
+  // quarantine 或 remove 前 fail closed，保留完整 worktree。
+  if (!isManagedWorktreeBranchForName(meta.branch, meta.name)) {
+    log.warn(
+      `[worktree] preserved worktree at ${worktreePath}: registered branch ${meta.branch} ` +
+        `is not a managed branch for ${meta.name}`,
+    );
+    return;
+  }
+  const attachedBranch = await readAttachedWorktreeBranch(worktreePath);
+  if (!attachedBranch) {
+    log.warn(
+      `[worktree] preserved worktree at ${worktreePath}: cannot confirm an attached HEAD branch`,
+    );
+    return;
+  }
+  if (attachedBranch !== meta.branch) {
+    log.warn(
+      `[worktree] preserved worktree at ${worktreePath}: HEAD branch ${attachedBranch} ` +
+        `does not match registered branch ${meta.branch}`,
     );
     return;
   }
@@ -1046,8 +1105,8 @@ async function removeWorktreeForSessionInner(
           await store.set(sessionId, meta);
         } else {
           log.warn(
-            `[worktree] recycle cancelled for ${meta.path}, but snapshot reapply failed; `
-            + 'worktree stays unregistered so SEND remains blocked until restore succeeds',
+            `[worktree] recycle cancelled for ${meta.path}, but snapshot reapply failed; ` +
+              'worktree stays unregistered so SEND remains blocked until restore succeeds',
           );
         }
       }
@@ -1060,10 +1119,7 @@ async function removeWorktreeForSessionInner(
       if (!quarantinePath) return true;
       const currentQuarantinePath = quarantinePath;
       try {
-        await gitExec(
-          ['worktree', 'move', currentQuarantinePath, meta.path],
-          meta.baseRepo,
-        );
+        await gitExec(['worktree', 'move', currentQuarantinePath, meta.path], meta.baseRepo);
         quarantinePath = null;
         try {
           await store.set(sessionId, clearQuarantinePath(meta));
@@ -1093,7 +1149,32 @@ async function removeWorktreeForSessionInner(
       }
     };
 
-    if (removalOptions.preserveDirty && !quarantinePath && await pathExists(meta.path)) {
+    const restorePreservedWorktree = async (): Promise<void> => {
+      if (!(await restoreQuarantine())) return;
+      if (!snapshotted) return;
+      if (await restoreAutoStashToPreservedWorktree(meta.path, sessionId)) {
+        await store.set(sessionId, meta);
+      } else {
+        log.warn(
+          `[worktree] recycle cancelled for ${meta.path}, but snapshot reapply failed; ` +
+            'worktree stays unregistered so SEND remains blocked until restore succeeds',
+        );
+      }
+    };
+
+    const hasCurrentLiveReference = async (): Promise<boolean> => {
+      const currentLiveKeys = await loadLiveSessionPathKeys({
+        contextPath: removalPath,
+        excludeSessionId: sessionId,
+        isSessionRuntimeAlive: removalOptions.isSessionRuntimeAlive,
+      });
+      return hasLiveSessionReference(
+        quarantinePath ? { ...meta, quarantinePath } : meta,
+        currentLiveKeys,
+      );
+    };
+
+    if (removalOptions.preserveDirty && !quarantinePath && (await pathExists(meta.path))) {
       const candidate = `${meta.path}.xdt-removing-${randomUUID()}`;
       try {
         // Persist the intended quarantine path before the rename. This closes both
@@ -1148,6 +1229,14 @@ async function removeWorktreeForSessionInner(
       }
     }
 
+    if (await hasCurrentLiveReference()) {
+      log.info(
+        `[worktree] preserved worktree at ${removalPath}: another session referenced it before removal`,
+      );
+      await restorePreservedWorktree();
+      return;
+    }
+
     let removedByGit = false;
     try {
       // 预创建补偿回收必须让 git 在删除瞬间再次确认 worktree 仍然干净：
@@ -1169,8 +1258,17 @@ async function removeWorktreeForSessionInner(
         await restoreQuarantine();
         return;
       }
+      if (await hasCurrentLiveReference()) {
+        log.info(
+          `[worktree] preserved worktree at ${removalPath}: another session referenced it before fallback removal`,
+        );
+        await restorePreservedWorktree();
+        return;
+      }
       // fallback: fs.rm —— 必须三条校验通过
-      if (isManagedWorktreePath(removalPath, meta.baseRepo, [...store.getAllPaths(), removalPath])) {
+      if (
+        isManagedWorktreePath(removalPath, meta.baseRepo, [...store.getAllPaths(), removalPath])
+      ) {
         try {
           await fs.rm(removalPath, { recursive: true, force: true });
           // 让 git worktree 状态自洽
@@ -1203,8 +1301,8 @@ async function removeWorktreeForSessionInner(
         await store.set(sessionId, meta);
       } else {
         log.warn(
-          `[worktree] remove failed for ${meta.path}, and snapshot reapply also failed; `
-          + 'worktree stays unregistered until restore succeeds',
+          `[worktree] remove failed for ${meta.path}, and snapshot reapply also failed; ` +
+            'worktree stays unregistered until restore succeeds',
         );
       }
     }
@@ -1219,9 +1317,7 @@ async function removeWorktreeForSessionInner(
     }
     await withWorktreeRestoreMutation(sessionId, async () => {
       if (!(await autoStashDirtyWorktree(worktreePath, sessionId))) {
-        log.warn(
-          `[worktree] worktree at ${worktreePath} has uncommitted changes, preserving`,
-        );
+        log.warn(`[worktree] worktree at ${worktreePath} has uncommitted changes, preserving`);
         return;
       }
       await finishRemoval(true);
@@ -1264,7 +1360,8 @@ export async function discardPrecreatedWorktreeByRecoveryKey(
  * - expectedPath 必须与 store 中该 sessionId 的受管路径精确匹配，控制端不能指定任意目录；
  * - ephemeral / dirty / keep sentinel / include-file 变化 / live-ref 冲突一律保留；
  * - canRemove 由宿主反复核对「session 未落库且无 live handle」，挡住晚到的 create；
- * - 正常创建后尚无独有 commit 的 xdt/* 分支才随目录删除；存在独有 commit 时保留分支。
+ * - 正常创建后尚无独有 commit 的 cindy/* 或历史 xdt/* 分支才随目录删除；
+ *   存在独有 commit 时保留分支。
  */
 export async function discardPrecreatedWorktree(
   sessionId: string,
@@ -1274,10 +1371,9 @@ export async function discardPrecreatedWorktree(
   const meta = store.get(sessionId);
   if (!meta) return { status: 'absent' };
   const expected = path.resolve(expectedPath);
-  const matchesRegisteredPath = (
-    path.resolve(meta.path) === expected
-    || (meta.quarantinePath !== undefined && path.resolve(meta.quarantinePath) === expected)
-  );
+  const matchesRegisteredPath =
+    path.resolve(meta.path) === expected ||
+    (meta.quarantinePath !== undefined && path.resolve(meta.quarantinePath) === expected);
   if (!matchesRegisteredPath) {
     return { status: 'path-mismatch' };
   }
@@ -1291,7 +1387,7 @@ export async function discardPrecreatedWorktree(
 
   // 目录成功移除后再读分支，封住用户在 dirty check 与 worktree remove 之间刚完成
   // commit 的窗口。store 元数据损坏时也绝不删除非本记录自动推导出的分支。
-  const isGeneratedBranch = meta.branch === getBranchName(meta.name);
+  const isGeneratedBranch = isManagedWorktreeBranchForName(meta.branch, meta.name);
   let branchTipToDelete: string | null = null;
   if (isGeneratedBranch) {
     try {
