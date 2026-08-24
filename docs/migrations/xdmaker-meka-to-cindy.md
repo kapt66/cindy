@@ -909,7 +909,10 @@ SSH 远程工作区路径；Meka 插件仓同步 `ghost.json` slot、Forge 手�
   预取详情时硬编码 Cindy `plugin-market:detail`、导致 MCPRouter 插件 ID 被送到 Cindy
   registry 并返回 `PLUGIN_NOT_FOUND` 的问题；卡片快捷安装、详情页、单项更新、批量更新和
   卸载现在共用同一 surface 适配器。定向测试锁定两种 surface 的映射，并禁止双市场页面的
-  `snapshot`／`detail`／`uninstall`／`markLocalInstall` 绕开适配器。
+  `snapshot`／`detail`／`uninstall`／`markLocalInstall` 绕开适配器。Meka 安装包装层只追加
+  operation-scoped 进度 ID，完整透传共享更新控制器已经绑定的安装事务 options；批量更新与
+  真实包复核重试都会保留 `expectedInstalledApproval`、目标 manifest 和来源替换约束，避免
+  Main 因批准态未绑定而安全拒绝更新，也不放宽 Main 的 receipt 新鲜度检查。
 - Meka 插件目录从上游“插件 / 技能”管理入口移回左侧 Meka 产品入口，作为 Meka
   “插件 / 技能 / 项目”中的“插件”页；上游插件入口只保留“插件 / 技能”。两个入口继续复用
   同一管理页骨架，但不把 Meka 市场混入上游插件分类。
@@ -1007,7 +1010,9 @@ OAuth scope 上限回迁的验证覆盖协议包 256/257 边界、Desktop 共享
 2026-08-05 第二轮插件/技能映射回审：Meka 插件列表补回与 Cindy 一致的更新横幅和“全部更新”
 入口，并复用批量权限复核弹窗；批次启动时绑定 Meka 独立 market adapter，不混用 Cindy API 或
 ledger。Meka IPC 同步透传共享安装服务已有的 `reviewedBaseline` 与
-`approvedPackageSha256`，因此扩权和实际包权限复核仍由用户明确确认。Meka 技能首页与市场页
+`approvedPackageSha256`；2026-08-24 补齐同一适配器对完整安装事务 options 的透传，修复批量
+更新及真实包复核重试丢失 `expectedInstalledApproval` 后被 Main fail closed 的回归，同时保留
+目标 manifest 和来源替换约束。因此扩权和实际包权限复核仍由用户明确确认。Meka 技能首页与市场页
 已覆盖 Cindy 基础推荐、本地分组、预览、安装目标、工具栏和筛选，Meka 独立目录、发布、访问
 范围、删除等管理能力继续保留。Cindy 首页“导入本地技能”仍未接入 Meka；因 Meka 独立目录
 授权/安装 IPC 尚不存在，且本节已将独立 ZIP 安装、本地卸载和持久开发来源列为后续增量，

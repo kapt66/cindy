@@ -3,7 +3,8 @@
  *
  * Inputs: installed Ghost snapshots and user actions. `embedded` mounts the same
  * catalog inside Settings; `onSelectCatalogTab` keeps Plugins / Skills in-panel.
- * Outputs: the Plugin list/detail UI, focus-stable installed queue, and Plugin action flows.
+ * Outputs: the Plugin list/detail UI, focus-stable installed queue, and channel-bound install
+ * flows that preserve the complete permission-review transaction context.
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  */
 
@@ -445,15 +446,7 @@ export function GhostPluginPage({
     return {
       channel: 'meka',
       detail: (pluginId) => marketApi.detail(pluginId),
-      install: (pluginId, options) =>
-        installFromActiveMarket(pluginId, {
-          expectedReleaseId: options.expectedReleaseId,
-          ...(options.allowPermissionExpansion ? { allowPermissionExpansion: true } : {}),
-          ...(options.reviewedBaseline ? { reviewedBaseline: options.reviewedBaseline } : {}),
-          ...(options.approvedPackageSha256
-            ? { approvedPackageSha256: options.approvedPackageSha256 }
-            : {}),
-        }),
+      install: (pluginId, options) => installFromActiveMarket(pluginId, options),
     };
   }, [installFromActiveMarket, isMekaSurface, marketApi]);
   useEffect(() => {
@@ -1015,6 +1008,7 @@ export function GhostPluginPage({
 
       const retried = isMekaSurface
         ? await installFromActiveMarket(input.detail.pluginId, {
+            ...input.options,
             expectedReleaseId: input.options.expectedReleaseId,
             allowPermissionExpansion: review.installedBaseline !== null,
             reviewedBaseline: review.installedBaseline ?? undefined,

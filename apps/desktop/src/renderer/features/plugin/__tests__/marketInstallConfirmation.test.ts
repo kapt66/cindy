@@ -31,4 +31,10 @@ describe('market install confirmation', () => {
       'await refreshVisibleMarketDetail(marketDetail.pluginId).catch(() => undefined);',
     );
   });
+
+  it('preserves the reviewed install transaction when Meka retries a verified package', () => {
+    expect(pageSource).toMatch(
+      /const retried = isMekaSurface\s+\? await installFromActiveMarket\(input\.detail\.pluginId, \{\s+\.\.\.input\.options,/,
+    );
+  });
 });

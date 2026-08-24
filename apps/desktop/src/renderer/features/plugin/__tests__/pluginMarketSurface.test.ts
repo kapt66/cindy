@@ -46,4 +46,10 @@ describe('Plugin market surface routing', () => {
 
     expect(channelBypasses).toEqual([]);
   });
+
+  it('preserves the complete update transaction when adapting Meka installs', () => {
+    expect(pageSource).toContain(
+      'install: (pluginId, options) => installFromActiveMarket(pluginId, options)',
+    );
+  });
 });

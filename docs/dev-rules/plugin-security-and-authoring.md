@@ -370,7 +370,11 @@
   `window.electronAPI.pluginMarket.*` 或 `mekaPluginMarket.*`，否则同一个插件 ID 会被送到
   错误的 registry。只有签名确实不同的渠道专属能力可以留在显式分支中，例如 Meka 安装的
   `operationId`／进度订阅和 Meka 已安装投影；这些分支仍须收口为页面级封装，不能散落到
-  各交互入口。`pluginMarketSurface.test.ts` 同时锁定 surface 映射，并禁止共享操作绕开适配器。
+  各交互入口。Meka 安装包装层只能追加 `operationId`，必须完整保留调用方已经绑定的安装事务
+  options；批量更新适配器和真实包复核重试尤其不得丢失 `expectedInstalledApproval`、
+  `expectedManifest`、`allowSourceReplacement` 或后续新增的安全前置条件，否则 Main 必须
+  fail closed，用户会看到更新被拒。`pluginMarketSurface.test.ts` 同时锁定 surface 映射、
+  安装事务透传，并禁止共享操作绕开适配器。
 
 ### 4.3 插件级界面打开方式
 
