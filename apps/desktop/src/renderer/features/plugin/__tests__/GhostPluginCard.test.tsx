@@ -194,23 +194,23 @@ describe('GhostPluginCard', () => {
     expect(onManage).not.toHaveBeenCalled();
   });
 
-  it('keeps the development identity and package action on the installed card', () => {
+  it('keeps the development package action isolated from the installed card navigation', () => {
     const onPackage = vi.fn();
+    const onManage = vi.fn();
     const { container } = render(
       <GhostPluginCard
         item={{ ...commandPlugin, id: 'meka-dev-demo-plugin' }}
         development
         onPrimary={vi.fn()}
-        onManage={vi.fn()}
+        onManage={onManage}
         onDevelopmentPackage={onPackage}
       />,
     );
 
     expect(container.querySelector('[data-testid="plugin-dev-ribbon"]')).toBeTruthy();
-    fireEvent.click(
-      screen.getByRole('button', { name: 'settings.ghosts.meka.dev.packageAction' }),
-    );
+    fireEvent.click(screen.getByRole('button', { name: 'settings.ghosts.meka.dev.packageAction' }));
     expect(onPackage).toHaveBeenCalledTimes(1);
+    expect(onManage).not.toHaveBeenCalled();
   });
 
   it('projects Meka update progress into the card action', () => {

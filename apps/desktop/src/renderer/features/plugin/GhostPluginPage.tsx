@@ -2836,7 +2836,7 @@ export function GhostPluginCard({
         {onDevelopmentPackage ? (
           <button
             type="button"
-            onClick={onDevelopmentPackage}
+            onClick={stopAnd(onDevelopmentPackage)}
             aria-label={t('settings.ghosts.meka.dev.packageAction')}
             className="inline-flex h-7 shrink-0 items-center justify-center rounded-full border border-[var(--border-default)] bg-transparent px-2.5 text-11 font-medium text-[var(--text-secondary)] transition-colors duration-150 hover:border-[var(--text-tertiary)] hover:bg-[var(--surface-hover-soft)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
           >
