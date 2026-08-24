@@ -462,7 +462,15 @@ maker-shared、lizi-im 及全部可运行协议包均 PASS。受影响包按仓�
   SQLite/migration 错误。应用自动在 profile 保留 migration backup，另有系统临时 online
   backup 作为本次验证的回滚依据；验证实例已正常关闭。
 - macOS 尚未实测；插件基座路径必须取得指定放行人的明确 `Approve` 后才可合并。
-- 当前 merge 已提交到隔离分支；未 push、未创建 PR、未发布。
+- 2026-08-24 在本地 `meka/main` 合并提交 `7eb9757ea61803a9c7c72c39e750681c35c68a8b`
+  上按提交门禁重新运行 `pnpm test:unit`：Desktop、Mobile、全部 required workspace 与
+  `cindy-protocol` submodule 均 PASS；`desktop`、`@cindy/maker-core` typecheck、
+  `db:validate` 与 migration replay 8/8 也 PASS。
+- 同一提交随后以共享现有 `%APPDATA%\CindyMeka` profile 执行
+  `pnpm restart:desktop:remote --wait-ready`，`desktop:whoami` 返回 `MATCH`，
+  `DESKTOP_DEV_VERDICT=ready`。只读核验显示 `migration_meta.schema_version=95`，
+  `migration_history` 的 0092-0095 均已落账，新增表/列存在；原 profile 仍可读取 6 个任务、
+  782 条消息。该 shared Desktop 进程保持运行供用户手测；本次未 push、未创建 PR、未发布。
 - 2026-08-24 在当前 merge commit 上重新启动隔离 Desktop：首轮启动器返回
   `DESKTOP_DEV_VERDICT=ready`，但默认 `desktop:whoami` 暴露出 Windows crashpad
   `/prefetch:4` 被误识别为 userData 后缀。已过滤 `crashpad-handler` 并补回归测试；修复后

@@ -2464,8 +2464,13 @@ migration 到 schema 95。`quick_check=ok`；迁移前后 118 个任务、1848 �
 SAGA2、正式流程和普通对话入口；启动日志无致命、未处理拒绝、缺 handler、renderer crash
 或数据库 migration 错误。
 
-本轮同步已合并到本地 `meka/main`。macOS 尚未实测；插件基座改动仍需指定放行人明确
-`Approve`，满足前不得声称已完成插件基座交付。
+本轮同步已合并到本地 `meka/main`，合并提交为
+`7eb9757ea61803a9c7c72c39e750681c35c68a8b`。2026-08-24 在该提交上以共享现有
+`%APPDATA%\CindyMeka` profile 执行 `pnpm restart:desktop:remote --wait-ready`，
+`desktop:whoami` 为 `MATCH`、`DESKTOP_DEV_VERDICT=ready`；只读数据库核验为
+`migration_meta.schema_version=95`、0092-0095 全部在 `migration_history`，原有 6 个任务和
+782 条消息仍可读取，证明共享数据目录迁移已实际生效。macOS 尚未实测；插件基座改动仍需
+指定放行人明确 `Approve`，满足前不得声称已完成插件基座交付。
 
 ## 10. 后续继续迁移时的硬性注意事项
 
