@@ -273,6 +273,9 @@ macOS：
 - macOS 交叉构建的启动型门禁只在物理宿主能原生执行目标架构时运行；跨架构时以 `lipo`
   验证主 Mach-O 后跳过 packaged smoke / iOS Simulator release gate，并保留目标架构真机
   安装、启动与热更新验收。宿主/目标四象限由 `package-lib.mjs` 纯函数测试覆盖。
+- iOS Simulator release gate runner 继续由 `ci/lib.mjs` 统一实现，`package-desktop.mjs`
+  必须显式导入后在最终签名之后、DMG/ZIP 之前调用；源码契约测试同时锁定导入和阶段顺序，
+  防止上游同步只保留调用或只保留实现。
 - 保持线上正式版的 make → drizzle 校验 → packaged smoke → 最终签名／公证 → iOS gate →
   DMG/ZIP 顺序。macOS smoke 使用临时 userData + `--use-mock-keychain`，不访问产品 Safe
   Storage 条目；签名、归集、上传和 manifest 写入流程不调整。

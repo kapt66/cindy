@@ -489,6 +489,16 @@ maker-shared、lizi-im 及全部可运行协议包均 PASS。受影响包按仓�
   workspace 与 `cindy-protocol` submodule 无失败。本机为 Windows，尚未替代 macOS x64/
   arm64 Runner 的真实签名、smoke、DMG/ZIP 和 Canary 复验；该复验应继续使用现有发布任务，
   不调整签名、公证、上传或 manifest 写入流程。
+- 同日基于 `ae07e3a97` 的真实 macOS 复验中，arm64 Canary 已成功；Intel Runner 的 x64
+  packaged smoke 使用 mock Keychain 后无授权弹窗并成功输出 schema 95，最终自签名与
+  `codesign --verify --deep --strict` 也通过。x64 随后在签名后 iOS Simulator gate 处暴露
+  第二个同步遗漏：`ci/lib.mjs` 仍导出 `runIOSSimulatorReleaseGate`，两处调用仍在，但
+  `package-desktop.mjs` 的具名 import 被删除，因而抛出 `ReferenceError`。arm64 在 Intel
+  宿主按设计跳过该启动型 gate，所以未触发。修复只恢复历史已有 import，并由源码契约测试
+  同时锁定“接线存在”和签名后、归集前的原顺序；x64 在 DMG/ZIP 与上传前失败，未写入 x64
+  0.0.17 Canary，已成功的 arm64 对象无需回滚或重发。修复后 iOS Simulator 打包/gate
+  定向测试 26 项 PASS（另 1 项按平台跳过），发布/公证/架构测试 52/52 PASS；Desktop
+  typecheck 与全仓 `pnpm test:unit` 均 PASS。
 - 2026-08-24 在本地 `meka/main` 合并提交 `7eb9757ea61803a9c7c72c39e750681c35c68a8b`
   上按提交门禁重新运行 `pnpm test:unit`：Desktop、Mobile、全部 required workspace 与
   `cindy-protocol` submodule 均 PASS；`desktop`、`@cindy/maker-core` typecheck、

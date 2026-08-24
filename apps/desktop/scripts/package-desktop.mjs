@@ -59,6 +59,7 @@ import {
   runDbValidate,
   verifyPackagedDrizzle,
   runSmokeTest,
+  runIOSSimulatorReleaseGate,
   fetchExistingManifestIfAvailable,
   findInstallerArtifact,
   ensureLinuxRuntimeAssets,

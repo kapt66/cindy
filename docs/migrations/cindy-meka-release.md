@@ -165,6 +165,10 @@ macOS 允许交叉构建，但 packaged smoke 和 iOS Simulator release gate 只
 架构执行。该判定由 `package-lib.mjs` 的纯函数和四象限回归测试锁定，避免上游同步只保留
 调用却丢失定义后，在签名完成阶段才失败。
 
+`package-desktop.mjs` 必须从 `ci/lib.mjs` 显式导入签名后 gate runner；打包契约测试同时
+锁定该接线与 gate 位于最终签名之后、DMG/ZIP 之前。仅保留调用而丢失 import 会让原生可
+执行架构在签名完成后抛出 `ReferenceError`，而跨架构跳过分支会掩盖问题。
+
 打包步骤保持线上正式版顺序：Forge make → drizzle 校验 → packaged smoke → 最终签名／公证
 → iOS Simulator release gate → DMG/ZIP。macOS smoke 子进程除临时 userData 外还使用
 `--use-mock-keychain`，避免 Forge 临时签名访问产品 Safe Storage 并弹出钥匙串授权；该参数

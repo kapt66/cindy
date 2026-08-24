@@ -363,6 +363,9 @@ describe('packaged iOS Simulator sidecar artifact verification', () => {
     const testDirectory = path.dirname(fileURLToPath(import.meta.url));
     const sourcePath = path.resolve(testDirectory, '../../../../scripts/package-desktop.mjs');
     const source = await readFile(sourcePath, 'utf8');
+    const ciLibImportEnd = source.indexOf("} from './ci/lib.mjs';");
+    const ciLibImportStart = source.lastIndexOf('import {', ciLibImportEnd);
+    const ciLibImport = source.slice(ciLibImportStart, ciLibImportEnd);
     const finishDarwinBody = source.slice(
       source.indexOf('async function finishDarwin'),
       source.indexOf('async function finishLinux'),
@@ -376,6 +379,8 @@ describe('packaged iOS Simulator sidecar artifact verification', () => {
     );
     const appZipIndex = finishDarwinBody.indexOf('Creating app ZIP (ad-hoc signed)');
 
+    expect(ciLibImportEnd).toBeGreaterThan(ciLibImportStart);
+    expect(ciLibImport).toContain('runIOSSimulatorReleaseGate,');
     expect(notarizeIndex).toBeGreaterThan(-1);
     expect(releaseGateIndex).toBeGreaterThan(notarizeIndex);
     expect(finishDarwinBody).toContain("iosSimulatorHelperSigned ? 'verified' : 'untrusted'");
