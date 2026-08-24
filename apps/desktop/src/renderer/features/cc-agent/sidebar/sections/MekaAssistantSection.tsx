@@ -16,6 +16,7 @@ import type { Session } from '@/lib/ccAgent.types';
 import { listMekaProjects } from '@/ipc/mekaProjects';
 import { onMekaProjectsRolesChanged } from '@/lib/mekaProjectsRolesBus';
 import { cn } from '@/lib/utils';
+import { useSidebarMainViewMode } from '@/hooks/useSidebarCardMode';
 import type { MekaProject } from '../../../../../shared/meka-projects';
 import type {
   AutomationScheduleAction,
@@ -198,6 +199,9 @@ export function MekaAssistantSection({
   onManage,
 }: MekaAssistantSectionProps) {
   const { t } = useTranslation();
+  // Meka 保留自己的项目 / 正式流程分组树,但会话行复用主列表的显示偏好。
+  const { mode: mainViewMode } = useSidebarMainViewMode();
+  const mainSessionVariant: 'text' | 'list' = mainViewMode === 'list' ? 'list' : 'text';
   const [collapsed, setCollapsed] = useState(false);
   const [collapsedProjects, setCollapsedProjects] = useState<ReadonlySet<string>>(new Set());
   const [collapsedFormalGroups, setCollapsedFormalGroups] = useState<ReadonlySet<string>>(
@@ -252,6 +256,7 @@ export function MekaAssistantSection({
         collapseLimit={getDialogueCollapseLimit()}
         sectionCollapsed={sectionCollapsed}
         indented
+        sessionVariant={mainSessionVariant}
       />
     </div>
   );

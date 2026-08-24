@@ -1,9 +1,17 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import type { Session } from '@/lib/ccAgent.types';
 import type { MekaProject } from '../../../../shared/meka-projects';
 import { buildMekaProjectSessionGroups } from '../sidebar/sections/MekaAssistantSection';
 import { buildMekaRoleEditorRoute, resolveMekaSessionScope } from '../useMekaSessionScope';
+
+const mekaAssistantSectionSource = readFileSync(
+  resolve(__dirname, '..', 'sidebar', 'sections', 'MekaAssistantSection.tsx'),
+  'utf8',
+);
 
 const project: MekaProject = {
   id: 'project-a',
@@ -54,6 +62,16 @@ function session(id: string, patch: Partial<Session> = {}): Session {
 }
 
 describe('Meka session presentation', () => {
+  it('applies the shared sidebar list style without changing Meka grouping', () => {
+    expect(mekaAssistantSectionSource).toContain(
+      "import { useSidebarMainViewMode } from '@/hooks/useSidebarCardMode';",
+    );
+    expect(mekaAssistantSectionSource).toContain(
+      "const mainSessionVariant: 'text' | 'list' = mainViewMode === 'list' ? 'list' : 'text';",
+    );
+    expect(mekaAssistantSectionSource).toContain('sessionVariant={mainSessionVariant}');
+  });
+
   it('groups formal and regular sessions under the frozen project binding', () => {
     const groups = buildMekaProjectSessionGroups(
       [project],
