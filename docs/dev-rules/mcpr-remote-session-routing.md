@@ -57,11 +57,12 @@ transport 身份，`agentType` 为 `claude` 或 `codex` 时才进入支持判断
 - Claude 的 MCPRouter/SSH cc-mgr `protocol/hello` 必须携带
   `CC_MGR_BUNDLE_VERSION`。客户端可以兼容旧 daemon 不回显 bundle 字段，但不能省略请求
   参数；否则新版本 daemon 会返回 `[INVALID_PARAMS] bundleVersion is required (string)`。
-- 当前 bundle `0.0.7` 的 daemon 自报最高 protocol `3`，并按连接协商版本隔离能力：protocol
+- 当前 bundle `0.0.9` 的 daemon 自报最高 protocol `4`，并按连接协商版本隔离能力：protocol
   `2` 保留 Claude query/session 与 host `toolGuards`；protocol `3` 才开放 immutable
-  bundle、Codex revision/thread routing 和 tunneled MCP。manager version 相同但 protocol
+  bundle、Codex revision/thread routing 和 tunneled MCP；protocol `4` 增加 Full access 前的
+  subagent 模型能力预检。manager version 相同但 protocol
   不同同样属于不可部署的 pin mismatch，MCPRouter 构建期和 tunnel 启动前都必须阻断。
-- `0.0.7/protocol 3` 的 immutable bundle 文件可二选一携带 UTF-8 `content` 或规范
+- `0.0.9/protocol 4` 的 immutable bundle 文件可二选一携带 UTF-8 `content` 或规范
   `contentBase64`；后者用于完整投递角色 Skill 的脚本、引用和二进制资产。daemon 必须先解码、
   校验规范 base64 与文件 SHA-256，再原子物化。Desktop 使用任务快照的 revision 和原始字节，
   不在远端重建 `SKILL.md`。
@@ -90,3 +91,8 @@ MCPRouter Worker 使用 `cindy/0.144.1` Codex runtime。
 字符串版本；Cindy 的 `maker-cc-manager` 是 bundle 源码真源，MCPRouter 完整版必须通过
 `build:cc-mgr-bundle` 重新构建并探测 pin；按需 runtime manifest/cache 链路校验 Codex
 最低版本。部署后还必须重启 runtime。
+
+2026-08-24 上游同步再次暴露跨仓发布漏项：Cindy 已升级到
+`0.0.9/protocol 4`，MCPRouter 生产仍携带 `0.0.7/protocol 3`。当前 MCPRouter 在完整构建前
+静态核对构建脚本、daemon 和 smoke 三处 pin，再探测从指定 `CINDY_SRC` 生成的真实 bundle；
+因此只改 Cindy、只改某一处 MCPRouter 常量或复用旧构建产物都不能通过发布构建。

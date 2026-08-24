@@ -62,11 +62,13 @@ describe('SAGA2 combat environment gate', () => {
     expect(gate.mcpr.status).toBe('ready');
     const receipt = formatCombatEnvironmentGateReceipt(gate);
     expect(receipt).toContain('ready: true');
-    expect(receipt).toContain('first user-visible assistant message');
-    expect(receipt).toContain('战斗开发');
-    expect(receipt).toContain('before loading any Skill');
-    expect(receipt).toContain('可启动远端 Codex 只读 Worker');
-    expect(receipt).toContain('本流程不执行服务管理或服务器修改');
+    expect(receipt).toContain('list_remote_directory');
+    expect(receipt).toContain('use the real root read as evidence');
+    expect(receipt).toContain('only when the read returns a user-action fallback');
+    expect(receipt).toContain('without a fixed environment-status preamble');
+    expect(receipt).not.toContain('After reporting the ready result');
+    expect(receipt).toContain('远程项目可作为只读参考工作面');
+    expect(receipt).toContain('创建 MCPR Agent/Worker 时再单独检查');
     expect(receipt).not.toContain('原生 Skill 投递');
     expect(receipt).not.toContain('127.0.0.1');
     expect(receipt).not.toContain('mcpr:server-1');
@@ -82,10 +84,13 @@ describe('SAGA2 combat environment gate', () => {
     expect(gate.mcpr).toMatchObject({ status: 'blocked' });
     const receipt = formatCombatEnvironmentGateReceipt(gate);
     expect(receipt).toContain('DEGRADED EXPLORATION CONTRACT');
-    expect(receipt).toContain('continue the task normally');
+    expect(receipt).toContain('list_remote_directory');
+    expect(receipt).toContain('report only a fallbackUserAction');
+    expect(receipt).not.toContain('report the role, all three statuses, and each next action');
+    expect(receipt).not.toContain('在 MCPRouter 中连接并绑定');
   });
 
-  it('keeps independent exploration available when the bound server runtime is incompatible', async () => {
+  it('keeps the remote project reference available when the Worker runtime is incompatible', async () => {
     const deps = readyDeps();
     deps.probeRemoteCodexCapability = vi.fn(async () => {
       throw new Error(
@@ -95,17 +100,16 @@ describe('SAGA2 combat environment gate', () => {
 
     const gate = await runCombatEnvironmentGate(deps);
 
-    expect(gate.ready).toBe(false);
+    expect(gate.ready).toBe(true);
     expect(gate.mcpr).toMatchObject({
-      status: 'blocked',
-      summary:
-        'MCPRouter 已连接，但远端 Agent Runtime 与当前客户端不兼容（客户端 0.0.7，远端 0.0.6）',
-      evidence: 'cc-manager bundle mismatch: client=0.0.7; server=0.0.6',
+      status: 'ready',
+      summary: 'MCPRouter 已连接，且 SAGA2 服务器远程项目可作为只读参考工作面',
     });
+    expect(deps.probeRemoteCodexCapability).not.toHaveBeenCalled();
     const receipt = formatCombatEnvironmentGateReceipt(gate);
-    expect(receipt).toContain('客户端 0.0.7，远端 0.0.6');
-    expect(receipt).toContain('does not block independent local exploration');
-    expect(receipt).toContain('load relevant Skills');
+    expect(receipt).toContain('创建 MCPR Agent/Worker 时再单独检查');
+    expect(receipt).toContain('远程项目可作为只读参考工作面');
+    expect(receipt).toContain('ready: true');
   });
 
   it('rejects a reachable UnityMCP that advertises a different project', async () => {

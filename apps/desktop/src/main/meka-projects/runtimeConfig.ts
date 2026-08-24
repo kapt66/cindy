@@ -31,6 +31,7 @@ const log = createLogger('meka-projects:runtime-config');
 const SAFE_SKILL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SAFE_DISCOVERED_SKILL_ID_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const KNOWN_POLICY_PROVIDER_REFS = new Set(['meka-host-risk-policy', 'meka-p4-boundary-policy']);
+const MEKA_PLATFORM_SKILL_IDS = ['platform-capabilities'] as const;
 
 interface ProjectRow {
   id: string;
@@ -237,6 +238,30 @@ async function listBundledSkills(): Promise<Map<string, string>> {
 
   await walk(root);
   return result;
+}
+
+async function readBundledRuntimeSkill(
+  catalog: ReadonlyMap<string, string>,
+  id: string,
+): Promise<MekaRuntimeSkill> {
+  const source = catalog.get(id);
+  if (!source) throw new Error(`unknown bundled Meka skill: ${id}`);
+  const content = await fs.readFile(source, 'utf8');
+  const metadata = parseSkillMetadata(content, id);
+  return {
+    id,
+    name: metadata.name,
+    description: metadata.description,
+    content,
+    sourceDirectory: path.dirname(source),
+    sourceEntryPath: source,
+  };
+}
+
+/** Host-owned capabilities that every ordinary Meka session receives. */
+export async function resolveMekaPlatformRuntimeSkills(): Promise<MekaRuntimeSkill[]> {
+  const catalog = await listBundledSkills();
+  return Promise.all(MEKA_PLATFORM_SKILL_IDS.map((id) => readBundledRuntimeSkill(catalog, id)));
 }
 
 async function resolveProjectWorkspace(project: ProjectRow): Promise<string | null> {
@@ -522,18 +547,7 @@ export async function resolveMekaRuntimeConfig(
       continue;
     }
     if (!selected.enabled) continue;
-    const source = catalog.get(selected.skillId);
-    if (!source) throw new Error(`unknown bundled Meka skill: ${selected.skillId}`);
-    const content = await fs.readFile(source, 'utf8');
-    const metadata = parseSkillMetadata(content, selected.skillId);
-    skills.set(selected.skillId, {
-      id: selected.skillId,
-      name: metadata.name,
-      description: metadata.description,
-      content,
-      sourceDirectory: path.dirname(source),
-      sourceEntryPath: source,
-    });
+    skills.set(selected.skillId, await readBundledRuntimeSkill(catalog, selected.skillId));
   }
 
   for (const entry of roleFile.mcp) {

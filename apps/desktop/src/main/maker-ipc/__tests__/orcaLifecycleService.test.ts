@@ -252,8 +252,8 @@ describe('OrcaLifecycleService', () => {
     ]);
   });
 
-  it('requires an active team before creating a worker', async () => {
-    const { deps, service } = createDeps();
+  it('automatically starts a team before creating the first worker', async () => {
+    const { calls, deps, service } = createDeps();
 
     await expect(
       service.createWorker({
@@ -262,13 +262,46 @@ describe('OrcaLifecycleService', () => {
         agent: 'codex' as AgentKind,
         label: 'reviewer',
       }),
-    ).resolves.toEqual({
-      ok: false,
-      errorCode: 'NOT_FOUND',
-      message: 'no active team for this lead',
+    ).resolves.toMatchObject({
+      ok: true,
+      teamId: 'team-1',
+      workerId: 'worker-1',
     });
 
-    expect(deps.createWorkerInTeam).not.toHaveBeenCalled();
+    expect(deps.createWorkerInTeam).toHaveBeenCalledWith(
+      expect.objectContaining({ teamId: 'team-1', label: 'reviewer' }),
+    );
+    expect(calls.slice(0, 5)).toEqual([
+      'createActiveTeam:lead-1',
+      'setSessionOrcaRole:lead-1:lead',
+      'clearKnownNonOrcaSession:lead-1',
+      'setLeadVendorOptions:lead-1:undefined',
+      'createWorkerInTeam:team-1:reviewer',
+    ]);
+  });
+
+  it('rolls back an automatically started team when worker preflight fails', async () => {
+    const { calls, service } = createDeps({
+      createWorkerInTeam: vi.fn(async () => ({
+        ok: false as const,
+        errorCode: 'INTERNAL' as const,
+        message: 'client bundle 0.0.9 does not match server bundle 0.0.7',
+      })),
+    });
+
+    await expect(service.createWorker({
+      leadSessionId: 'lead-1', role: 'reviewer', agent: 'codex' as AgentKind, label: 'reviewer',
+    })).resolves.toMatchObject({ ok: false, errorCode: 'INTERNAL' });
+
+    expect(calls).toEqual([
+      'createActiveTeam:lead-1',
+      'setSessionOrcaRole:lead-1:lead',
+      'clearKnownNonOrcaSession:lead-1',
+      'setLeadVendorOptions:lead-1:undefined',
+      'markTeamEnded:team-1:failed',
+      'setSessionOrcaRole:lead-1:null',
+      'clearLeadVendorOptions:lead-1',
+    ]);
   });
 
   it('creates a worker in an existing team and dispatches the initial task before broadcasting', async () => {

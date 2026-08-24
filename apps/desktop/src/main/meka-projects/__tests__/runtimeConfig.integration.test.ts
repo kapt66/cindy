@@ -48,9 +48,18 @@ vi.mock('../../meka-settings/ipc.js', () => ({
 
 describe('Meka runtime project/role resolution', () => {
   let resolveMekaRuntimeConfig: typeof import('../runtimeConfig.js').resolveMekaRuntimeConfig;
+  let resolveMekaPlatformRuntimeSkills: typeof import('../runtimeConfig.js').resolveMekaPlatformRuntimeSkills;
 
   beforeAll(async () => {
-    ({ resolveMekaRuntimeConfig } = await import('../runtimeConfig.js'));
+    ({ resolveMekaRuntimeConfig, resolveMekaPlatformRuntimeSkills } =
+      await import('../runtimeConfig.js'));
+  });
+
+  it('loads Host platform Skills independently from project and role configuration', async () => {
+    const skills = await resolveMekaPlatformRuntimeSkills();
+
+    expect(skills.map((skill) => skill.id)).toEqual(['platform-capabilities']);
+    expect(skills[0]?.content).toContain('mcp_router.list_remote_directory');
   });
 
   it('uses the SAGA2 project and both built-in role manifests as the complete runtime source', async () => {
@@ -83,11 +92,11 @@ describe('Meka runtime project/role resolution', () => {
           'safety-boundaries',
           'saga2-overview',
           'remote-operations',
+          'saga2-server-reference',
           ...(hasDesign ? ['meka-design-handbook'] : []),
         ].sort(),
       );
       expect(resolved.mcp.map((entry) => entry.id)).toEqual([
-        'mcp-router',
         'project-agent',
         ...(hasDesign ? ['meka-design'] : []),
         'unity-editor',
@@ -109,23 +118,22 @@ describe('Meka runtime project/role resolution', () => {
         );
         expect(roleManifest.mcp).toEqual(
           expect.arrayContaining([
-            expect.objectContaining({ id: 'mcp-router', enabled: true }),
             expect.objectContaining({ id: 'project-agent', enabled: true }),
           ]),
         );
         expect(resolved.promptText).toContain('## 0. 环境恢复');
         expect(resolved.promptText).toContain('不是任务级开关');
         expect(resolved.promptText).toContain('阻止该次调用');
-        expect(resolved.promptText).toContain('## 1. 模块优先的只读探索');
+        expect(resolved.promptText).toContain('## 1. 模块优先与服务器参考项目');
         expect(resolved.promptText).toContain('## 2. 集中澄清');
         expect(resolved.promptText).toContain('## 3. 方案与审批');
         expect(resolved.promptText).toContain('## 4. 实施与闭环');
-        expect(resolved.promptText).toContain('禁止从 Unity 当前窗口、当前选择、缓存');
+        expect(resolved.promptText).toContain('服务器是绑定在 MCPRouter 上的远程项目参考工作面');
         expect(resolved.promptText).toContain('服务器代码');
         expect(resolved.promptText).toContain('[SAGA2_COMBAT_SOLUTION]');
         expect(resolved.promptText).toContain('targetSkillId:');
         expect(resolved.promptText).toContain('validate_server_capability_report');
-        expect(resolved.promptText).toContain('服务器 Worker 始终只读');
+        expect(resolved.promptText).toContain('整个任务永久只读');
         expect(resolved.promptText).toContain('交给服务器程序');
         expect(resolved.promptText).toContain('必须立即结束当前回合');
         expect(resolved.promptText).toContain('`list_workers`、`read_worker`、`worker_status`');
@@ -140,15 +148,16 @@ describe('Meka runtime project/role resolution', () => {
       {
         const remoteOperations = resolved.skills.find((skill) => skill.id === 'remote-operations');
         const orcaCoordination = resolved.skills.find((skill) => skill.id === 'orca-coordination');
+        const serverReference = resolved.skills.find((skill) => skill.id === 'saga2-server-reference');
         expect(remoteOperations).toBeDefined();
         const remoteOperationsContent = remoteOperations!.content;
-        expect(remoteOperationsContent).toContain('`remote_host_id="mcpr:<instanceId>"`');
-        expect(remoteOperationsContent).toContain('`execution_target.type="remote"`');
-        expect(remoteOperationsContent).toContain('`initial_task`');
-        expect(remoteOperationsContent).toContain('当前 Lead 回合立即结束');
+        expect(remoteOperationsContent).toContain('`mcpr:<instanceId>`');
+        expect(remoteOperationsContent).toContain('远程项目只读能力');
+        expect(remoteOperationsContent).toContain('只有直接只读能力不足');
         expect(remoteOperationsContent).toContain('专用 `project-agent`');
-        expect(orcaCoordination?.content).toContain('远程任务优先继续已有 MCPR 任务');
-        expect(orcaCoordination?.content).toContain('不要用通用 `mcp_router`');
+        expect(orcaCoordination?.content).toContain('先使用远程项目只读能力');
+        expect(orcaCoordination?.content).toContain('通用 `mcp_router` 代替');
+        expect(serverReference?.content).toContain('像本地参考目录一样');
         expect(saga2Overview?.content).toContain('通用 `mcp_router` 只做发现和配置');
       }
     }

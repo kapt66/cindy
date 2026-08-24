@@ -66,6 +66,8 @@
   旧 XDMaker Meka 与显式隔离 sandbox 各占独立设备槽，登录/续期不会互相轮换
   refresh token。
 - Meka 设置：P4、MCPRouter、MekaDesign。
+- MCPRouter 自动恢复失败而需要用户登录时，登录弹窗事件只投递到 Cindy 主壳窗口；当前聚焦的
+  独立右侧栏、资源用量窗、utility、插件面板或会话副窗不会再被误当成登录承载窗口。
 - Meka 项目、角色、项目元数据和内置 SAGA2 数据。
 - SAGA2 内置项目在没有项目文件时使用包内基线；首次编辑后将完整项目配置和 2 个内置
   角色快照写入已配置 P4 根目录下的 `.meka/project.json`，该文件存在期间作为可编辑运行时
@@ -487,8 +489,22 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
 - 角色可用 `includeAllProjectMetadata` 选择项目当前全部有效元数据，显式角色选择仍按
   `rootPath + sourcePath + itemType` 覆盖自动选择。当前仅通用开发角色开启；战斗开发继续
   使用精确选择，避免无关知识占用上下文。
-- 角色与项目默认 MCP provider 引用直接决定本会话是否挂载 MCPRouter；
-  项目绑定继续限制实例类 Router 工具。项目元数据中的 MCP 配置也参与解析。
+- 普通 Meka 任务由 Host 动态挂载 `mcp-router`，不受项目默认项、角色 provider 选择或旧任务
+  角色配置影响；角色与项目默认项只决定额外业务 provider。项目绑定继续限制实例类 Router
+  工具，项目元数据中的 MCP 配置也参与解析。专用 MCPR 远端 Worker 保留窄能力隔离。
+- Meka 外部能力现分为平台层与业务层：平台 Skill 负责本地、MCP、MCPRouter 远程项目、
+  远程 Agent 和 Orca Worker 的选择、配置与恢复；业务 Skill 负责项目工作面和证据优先级。
+  SAGA2 的 `saga2-server` 是绑定 MCPRouter 的远程项目参考工作面。服务器请求先由 Host 自动
+  恢复已保存登录、复用/绑定唯一匹配实例，或从唯一匹配模板创建并绑定，然后直接走远程项目
+  只读能力；自动恢复只有在返回 `fallbackUserAction` 或失败时才提示用户。不再把创建只读 Orca
+  Worker 作为默认入口；Worker 仅在只读能力不足或用户明确要求独立远程执行时升级使用。远程项目只读能力与远程 Agent runtime 分开判断，服务器写入、
+  分支、服务管理和部署仍保持独立权限边界。战斗环境启动检查仍在 Host 内部执行，但不再要求
+  首轮固定回显角色身份、三项状态或连接/绑定动作；用户请求依赖服务器时直接先自动确保并读取。
+- 普通 Meka 任务启动还会把 `platform-capabilities` 的不可变快照和
+  `[MEKA_PLATFORM_CAPABILITIES]` 契约动态加入 create opts。用户询问能否访问服务器/远程项目
+  时，模型必须直接调用 `mcp_router.list_remote_directory` 读取根目录，不得用启动或绑定状态
+  回答能否访问，不得先建议 SSH、设置页或手工连接；只有读取工具返回 `fallbackUserAction`
+  才提示最小动作。独立准备/绑定探测不再向 Agent 暴露。
 - 普通 Meka Lead 会话、lazy resume、context-usage lazy create、scheduler/IM 等所有经
   `bootstrapSession` 的启动入口，都会在 `maker.createSession` 前解析当前
   `mekaProjectId`/`mekaRoleId`，把角色 prompt 与 MCP provider 选择写入本次
@@ -512,8 +528,9 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
 - 两个 SAGA2 内置角色都显式挂载 `http://127.0.0.1:7788/mcp` 的 `unity-editor`；连接失败
   只表示本机 UnityMCP 不可用，不得转而手写 EditorScript 绕过项目 Skill 的工具边界。
   战斗角色在自身 manifest 中显式选择 `remote-operations`、`orca-coordination`、
-  `saga2-overview`、`p4-operations`、`safety-boundaries`，并显式挂载 `mcp-router` /
-  `project-agent`，使角色编辑器可直接审查服务器链路；项目默认项仍提供继承兜底。服务端
+  `saga2-overview`、`p4-operations`、`safety-boundaries`，并显式挂载业务层
+  `project-agent`；平台层 `platform-capabilities` / `mcp-router` 由 Host 动态注入，不出现在
+  项目或角色开关中。服务端
   仓库内容检查走已绑定 MCPR 远程项目，不能把本地 Unity 文件或 UnityMCP 查询当作服务端
   实现证据。
 - `combat-development` 绑定 `saga2-combat-development-v1` Host 工作流。任务启动时 Main
@@ -2333,8 +2350,8 @@ Worker 任务。方案审批卡新增 `moduleEvidence` 与 `capabilityMatrix` �
 
 真实战斗任务表明，原 Host 把 P4、UnityMCP、MCPR 三项聚合 `ready` 当作任务总开关：任一项
 失败都会禁止 Skill、AGENTS、代码、表格、需求澄清和所有业务工具，导致与故障链路无关的工作
-也无法推进。当前保留启动实查和三项状态回显，但 `ready=false` 只作为预警，不再结束回合或
-冻结任务。
+也无法推进。当时保留了启动实查和三项状态回显，并把 `ready=false` 改为只预警、不再结束回合
+或冻结任务；2026-08-24 的远程项目自动确保收口继续移除了固定首轮回显，只保留 Host 内部实查。
 
 Host 在任务运行态保存三条链路各自不含凭证的状态、原因与恢复动作。具体工具实际调用时才按
 依赖裁决：受管本地写入和 P4 工具检查 P4，Unity 工具检查 UnityMCP，服务器查询与远程 Worker
@@ -2369,6 +2386,16 @@ MCPRouter 登录框，但 Agent 的 Router facade 没有接线，用户只能看
 项目实例未绑定时不会误弹登录，而是返回 `MCPR_PROJECT_NOT_BOUND` 并继续实例列表、模板、创建与
 绑定流程；Runtime 不兼容和网络故障仍分别要求部署升级或网络恢复。本改动不把凭证、URL、用户名
 或 endpoint 暴露给 Agent/Renderer 新边界，也不在启动预检阶段抢焦点。
+
+2026-08-24 实机进一步证明“成功发送打开事件”仍不是完整恢复：登录框虽能落到主壳，MCP 工具却
+立即返回失败，Agent 在用户提交账号前结束本轮，登录成功也不会恢复原调用。现在 Main 为显式
+Router 工具维护单个可等待登录请求，Renderer 在弹窗实际展示和取消时回传请求状态，连接或注册
+成功则直接完成该请求；原始目录/文件/搜索工具随后在同一调用中继续实例发现、唯一模板创建、
+项目绑定和真实读取。并发调用共用一次请求；取消、五分钟超时或主壳不可用才返回 fallback。
+凭证仍只经过既有加密存储链，Renderer 回传不含账号、密码、Router 地址或令牌。定向测试覆盖
+主壳/独立侧栏选择、展示确认、并发去重、取消、成功唤醒以及登录后继续创建和绑定；共享实例的
+真实 Router 连接与服务器读取另做 Desktop 实机验证。
+
 ### 6.38 2026-08-21 Cindy 上游同步
 
 在隔离 worktree 将 `origin/main@625a7d714f199cb6770b5d1f556bb1f0322e9fbb` 语义合并到
@@ -2471,6 +2498,56 @@ SAGA2、正式流程和普通对话入口；启动日志无致命、未处理拒
 `migration_meta.schema_version=95`、0092-0095 全部在 `migration_history`，原有 6 个任务和
 782 条消息仍可读取，证明共享数据目录迁移已实际生效。macOS 尚未实测；插件基座改动仍需
 指定放行人明确 `Approve`，满足前不得声称已完成插件基座交付。
+
+### 6.39 2026-08-24 MCPRouter 远程参考接口与跨仓版本收口
+
+真实任务反复询问“你能访问服务器吗”时，原链路把远程项目读取错误升级为 Orca Worker，或在
+MCPRouter 未登录时先结束 Agent 回复；上游同步还把 Cindy cc-manager 升到
+`0.0.9/protocol 4`，而 MCPRouter 生产 bundle 仍是 `0.0.7/protocol 3`。此前同步报告用
+“协商版本 `>=3`”描述通过条件也不准确：可部署条件始终是 manager/protocol 精确 pin。
+
+当前平台基线由 Host 动态注入普通 Meka 任务，不受项目和角色能力选择影响。Desktop 新增
+`list_remote_directory`、`read_remote_file`、`search_remote_files` 一方工具；每次调用内部自动
+恢复登录、复用或创建实例并绑定当前项目，模型不接收实例 ID。MCPRouter 对应新增
+`git.tree`、`git.read`、`git.search`，固定读取 Git `HEAD` 快照并返回 commit SHA，不暴露未提交、
+未跟踪或二进制内容。用户问能否访问服务器时直接列根目录，成功路径不再先发连接/绑定提示，
+也不创建 Worker；只有明确需要远端命令、持续上下文、独立可见历史或异步回传时才升级 Orca。
+
+首次生产实测发现 Desktop 曾错误地通过通用 `/mcp/:clientKey` 的 `tools/list` 查找上述三条
+route，因而即使 Router 已注册 capability 也恒定返回 `MCPRouter tool is not available:
+git.tree`。当前实现改为走 session-authenticated `POST /api/plugin-capabilities/call`，使用
+`selected-instance` scope，并在 Router 请求前再次校验实例属于当前项目绑定。通用 MCP 工具
+仍走 `/mcp`，两类能力不共享发现清单。`ROUTE_NOT_FOUND` 现在稳定映射为
+`MCPR_CAPABILITY_NOT_DEPLOYED`，只提示更新并重启 MCPRouter 服务，不再误导用户检查网络、
+Cindy 设置或 SSH。
+
+登录弹窗由主壳展示后保持原工具等待，登录成功继续原调用；自动恢复失败才返回最小
+`fallbackUserAction`。`create_worker` 在没有 active team 时由 Host 自动启动 team，远端 preflight
+或创建失败会回滚该自动 team，不再向用户暴露 `no active team for this lead`。MCPRouter 的
+构建脚本、daemon 启动探针和 tunnel smoke 现统一到 `0.0.9/protocol 4`，完整构建先静态核对
+三处 pin，再对指定 `CINDY_SRC` 构建出的 bundle 执行真实版本探针；发布后仍必须部署新镜像并
+重启 runtime。真实构建还发现上游 v4 合并时丢失了 daemon 将
+`CC_MGR_CLAUDE_BIN` 传给 SDK `pathToClaudeCodeExecutable` 的接线；当前恢复该 daemon-owned
+覆盖，避免远端误用镜像内不存在的默认 Claude CLI。服务端发布由维护者手工执行，本轮 Agent
+不 push、不部署。
+
+验证：maker-cc-manager 120/120、Desktop 远程能力/登录/Orca 定向 131/131、MCPRouter
+capability 16/16、remote runtime Git 13/13 通过；Desktop、maker-cc-manager 与 MCPRouter
+server/runtime typecheck 通过。MCPRouter 从当前 Cindy 源码真实构建 bundle 成功，tunnel smoke
+确认 `0.0.9/protocol 4`、远程 Skill 读取和 Codex app-server 初始化；Windows 隔离 Desktop
+启动得到 `DESKTOP_DEV_VERDICT=ready`。
+
+新 Router 镜像部署后又以共享正式 `%APPDATA%\\CindyMeka` profile 完成两轮真实任务。任务
+`2e2a0724-4591-42d5-b599-e84d2085736e` 虽回复可访问，但 rollout 只调用准备/绑定探测，没有读取
+仓库，按验收规则判定为假成功；随后从 Agent 可见工具中删除独立准备探测，保留三条读取工具
+内部的自动恢复、实例复用/创建和绑定。最终任务
+`87724f03-4603-4df4-8f57-bf9d9af44659` 的 rollout 真实调用
+`list_remote_directory=1`、`read_remote_file=1`、`search_remote_files=1`，准备探测和 Worker 均为
+0；根目录列出 `cmd`、`internal`、`pkg`、`proto`、`tests` 等条目，`AGENTS.md` 第一行为
+`# AGENTS`，固定字符串 `package main` 返回 3 条结果。三次调用均返回仓库 HEAD
+`565cc7ab89d088d48f5c0777e129804b04d0f716`，回复未提示 SSH、设置、手工连接或 Worker。
+由此关闭“你能访问服务器吗”的生产端到端验收项；后续变更仍必须以真实任务 rollout 为证，
+不得以准备状态、UI 回显或单元测试替代。
 
 ## 10. 后续继续迁移时的硬性注意事项
 

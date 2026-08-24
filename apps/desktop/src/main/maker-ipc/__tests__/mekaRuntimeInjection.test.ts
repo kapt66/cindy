@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { MekaRoleMcpEntry } from '../../../shared/meka-projects.js';
 import type { MekaRuntimeConfig } from '../../meka-projects/runtimeConfig.js';
-import { applyMekaRuntimeConfig } from '../mekaRuntimeInjection.js';
+import { applyMekaRuntimeConfig as applyMekaRuntimeConfigImpl } from '../mekaRuntimeInjection.js';
 import type { MakerSessionCreateOpts } from '../sessionRequest.js';
 
 const environmentServices = vi.hoisted(() => ({
@@ -19,6 +19,26 @@ vi.mock('../../meka-settings/ipc.js', () => ({
   getMekaP4SettingsService: () => environmentServices.p4,
   getMekaRouterService: () => environmentServices.router,
 }));
+
+type ApplyDeps = NonNullable<Parameters<typeof applyMekaRuntimeConfigImpl>[1]>;
+
+function applyMekaRuntimeConfig(opts: MakerSessionCreateOpts, deps: ApplyDeps = {}) {
+  return applyMekaRuntimeConfigImpl(opts, {
+    resolvePlatformSkills: async () => [],
+    ...deps,
+  });
+}
+
+function platformSkill() {
+  return {
+    id: 'platform-capabilities',
+    name: 'platform-capabilities',
+    description: 'Host-owned Meka platform capabilities.',
+    content: '# Platform Capabilities',
+    sourceDirectory: 'C:/skills/platform-capabilities',
+    sourceEntryPath: 'C:/skills/platform-capabilities/SKILL.md',
+  };
+}
 
 function baseOpts(overrides: Partial<MakerSessionCreateOpts> = {}): MakerSessionCreateOpts {
   return {
@@ -140,6 +160,45 @@ describe('applyMekaRuntimeConfig', () => {
     expect(materialize).toHaveBeenCalledWith(opts.id, runtime().skills);
   });
 
+  it('injects Host platform capabilities even when the project and role select none', async () => {
+    const opts = baseOpts({ userPrompt: 'USER PROMPT' });
+    const materialize = vi.fn(async () => null);
+    const prepareRuntimeMcp = vi.fn((entries: readonly MekaRoleMcpEntry[]) => ({
+      providerIds: entries
+        .filter(
+          (entry): entry is Extract<typeof entry, { providerId: string }> =>
+            'providerId' in entry,
+        )
+        .map((entry) => entry.providerId),
+      inlineConfigs: [],
+    }));
+
+    const result = await applyMekaRuntimeConfig(opts, {
+      resolveRuntimeConfig: vi.fn(async () => runtime({ skills: [], mcp: [] })),
+      resolvePlatformSkills: vi.fn(async () => [platformSkill()]),
+      prepareRuntimeMcp,
+      materializeSkillSnapshot: materialize,
+    });
+
+    expect(result).toMatchObject({
+      didApply: true,
+      mcpProviderIds: ['mcp-router'],
+      skillsCount: 1,
+      platformSkillsCount: 1,
+    });
+    expect(prepareRuntimeMcp).toHaveBeenCalledWith([
+      { id: 'mcp-router', providerId: 'mcp-router', enabled: true },
+    ]);
+    expect(materialize).toHaveBeenCalledWith(opts.id, [platformSkill()]);
+    expect(opts.userPrompt).toContain('[MEKA_PLATFORM_CAPABILITIES]');
+    expect(opts.userPrompt).toContain('mcp_router.list_remote_directory');
+    expect(opts.userPrompt).toContain('绑定或准备状态不是读取成功的证据');
+    expect(opts.userPrompt).toContain('先建议 SSH、设置页或手工连接');
+    expect(opts.userPrompt).toContain('不要发送“我先连接、确认、绑定或检查”等预告或进度消息');
+    expect(opts.userPrompt).toContain('等待期间不得提前生成终态回复');
+    expect(opts.userPrompt).toContain('只有读取工具明确返回 fallbackUserAction');
+  });
+
   it('uses an immutable native Skill snapshot without mutating the workspace', async () => {
     const opts = baseOpts({ workingDir: 'C:/Workspace/real-project' });
     const resolved = runtime();
@@ -190,8 +249,8 @@ describe('applyMekaRuntimeConfig', () => {
     expect(opts.userPrompt).toContain('displayName: 战斗开发');
     expect(opts.userPrompt).toContain('ready: false');
     expect(opts.userPrompt).toContain('DEGRADED EXPLORATION CONTRACT');
-    expect(opts.userPrompt).toContain('continue the task normally');
-    expect(opts.userPrompt).toContain('first user-visible assistant message');
+    expect(opts.userPrompt).toContain('call mcp_router.list_remote_directory');
+    expect(opts.userPrompt).not.toContain('first user-visible assistant message');
     expect(opts.vendorOptions).toMatchObject({
       mekaCombatEnvironmentReady: false,
       mekaCombatEnvironmentChecks: {
@@ -213,6 +272,7 @@ describe('applyMekaRuntimeConfig', () => {
 
     const materialize = vi.fn(async () => null);
     const prepareRuntimeMcp = vi.fn(() => ({ providerIds: [], inlineConfigs: [] }));
+    const resolvePlatformSkills = vi.fn(async () => [platformSkill()]);
     const result = await applyMekaRuntimeConfig(opts, {
       resolveRuntimeConfig: vi.fn(async () =>
         runtime({
@@ -221,6 +281,7 @@ describe('applyMekaRuntimeConfig', () => {
           workflow: 'saga2-combat-development-v1',
         }),
       ),
+      resolvePlatformSkills,
       prepareRuntimeMcp,
       materializeSkillSnapshot: materialize,
     });
@@ -234,6 +295,7 @@ describe('applyMekaRuntimeConfig', () => {
     });
     expect(prepareRuntimeMcp).toHaveBeenCalledWith([]);
     expect(materialize).toHaveBeenCalledWith(opts.id, []);
+    expect(resolvePlatformSkills).not.toHaveBeenCalled();
     expect(opts.nativeSkillPluginPath).toBeUndefined();
     expect(opts.nativeSkillRevision).toBeUndefined();
     expect(opts.vendorOptions).toMatchObject({
@@ -258,6 +320,7 @@ describe('applyMekaRuntimeConfig', () => {
       'SAGA2 server code lives behind MCPRouter as saga2-server.',
     );
     expect(opts.userPrompt).not.toContain('[MEKA_ROLE_CONTEXT]');
+    expect(opts.userPrompt).not.toContain('[MEKA_PLATFORM_CAPABILITIES]');
   });
 
   it('freezes an empty selection without mounting an empty native Skill plugin', async () => {
@@ -326,17 +389,20 @@ describe('applyMekaRuntimeConfig', () => {
     const resolveRuntimeConfig = vi.fn(async () => runtime({ skills: [], mcp: [] }));
     const prepareRuntimeMcp = vi.fn(() => ({ providerIds: [], inlineConfigs: [] }));
     const materializeSkillSnapshot = vi.fn(async () => null);
+    const resolvePlatformSkills = vi.fn(async () => [platformSkill()]);
 
     const first = await applyMekaRuntimeConfig(opts, {
       resolveRuntimeConfig,
       prepareRuntimeMcp,
       materializeSkillSnapshot,
+      resolvePlatformSkills,
     });
     const promptAfterFirstBootstrap = opts.userPrompt;
     const second = await applyMekaRuntimeConfig(opts, {
       resolveRuntimeConfig,
       prepareRuntimeMcp,
       materializeSkillSnapshot,
+      resolvePlatformSkills,
     });
 
     expect(first.didApply).toBe(true);
@@ -345,6 +411,7 @@ describe('applyMekaRuntimeConfig', () => {
     expect(prepareRuntimeMcp).toHaveBeenCalledTimes(1);
     expect(materializeSkillSnapshot).toHaveBeenCalledTimes(2);
     expect(opts.userPrompt).toBe(promptAfterFirstBootstrap);
+    expect(opts.userPrompt?.match(/\[MEKA_PLATFORM_CAPABILITIES\]/g)).toHaveLength(1);
   });
 
   it('freezes remote skills without exposing the local snapshot path to the remote harness', async () => {

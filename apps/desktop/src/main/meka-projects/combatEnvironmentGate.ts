@@ -243,50 +243,21 @@ async function checkMcpr(deps: CombatEnvironmentGateDeps): Promise<CombatEnviron
         'blocked',
         'MCPRouter 未找到可用的 SAGA2 服务器远程项目',
         `bound=${bound.length}`,
-        '在 MCPRouter 中连接并绑定 SAGA2 服务器项目，然后重新检查',
-      );
-    }
-    const probes = await Promise.allSettled(
-      available.map((instance) => deps.probeRemoteCodexCapability(instance.id)),
-    );
-    const capabilityReady = probes.filter((probe) => probe.status === 'fulfilled').length;
-    if (capabilityReady === 0) {
-      const firstFailure = probes.find(
-        (probe): probe is PromiseRejectedResult => probe.status === 'rejected',
-      );
-      const message = firstFailure
-        ? firstFailure.reason instanceof Error
-          ? firstFailure.reason.message
-          : String(firstFailure.reason)
-        : '';
-      const mismatch = message.match(
-        /(?:client bundle ([^\s]+) does not match server bundle ([^\s]+)|server bundle ([^\s]+) does not match client bundle ([^\s]+))/i,
-      );
-      const evidence = mismatch
-        ? `cc-manager bundle mismatch: client=${mismatch[1] ?? mismatch[4]}; server=${mismatch[2] ?? mismatch[3]}`
-        : '远端 Codex Worker capability 握手失败';
-      const versionSummary = mismatch
-        ? `（客户端 ${mismatch[1] ?? mismatch[4]}，远端 ${mismatch[2] ?? mismatch[3]}）`
-        : '';
-      return result(
-        'blocked',
-        `MCPRouter 已连接，但远端 Agent Runtime 与当前客户端不兼容${versionSummary}`,
-        evidence,
-        '升级并重启 MCPRouter 远端 runtime，确认 cc-manager bundle 与 protocol 精确匹配后重新检查',
+        '当请求需要服务器证据时，直接调用 mcp_router.list_remote_directory、read_remote_file 或 search_remote_files；读取工具内部自动恢复、创建或绑定',
       );
     }
     return result(
       'ready',
-      'MCPRouter 已连接，且 SAGA2 服务器项目可启动远端 Codex 只读 Worker',
-      `available=${available.length}; capabilityReady=${capabilityReady}`,
-      '服务器现有能力只通过带只读标记的 MCPR Worker 核查；本流程不执行服务管理或服务器修改',
+      'MCPRouter 已连接，且 SAGA2 服务器远程项目可作为只读参考工作面',
+      `available=${available.length}`,
+      '优先使用远程项目只读能力；创建 MCPR Agent/Worker 时再单独检查远端 runtime capability',
     );
   } catch (error) {
     return result(
       'blocked',
       'MCPRouter 连接或项目绑定不可用',
       error instanceof Error ? error.message : String(error),
-      '在 Meka 设置中恢复 MCPRouter 连接并确认 SAGA2 服务器项目绑定',
+      '当请求需要服务器证据时，直接调用对应远程读取工具自动恢复；仅按读取工具的 fallbackUserAction 提示人工处理',
     );
   }
 }
@@ -331,11 +302,11 @@ export function formatCombatEnvironmentGateReceipt(
     line('p4', gate.p4),
     line('unityMcp', gate.unityMcp),
     line('mcpr', gate.mcpr),
-    'Startup order: this Host check completed before the Agent started. The first user-visible assistant message must identify the role as "战斗开发" and report all three statuses from this receipt before loading any Skill, spawning any Worker, or using any other tool.',
+    'Startup order: this Host check completed before the Agent started. Do not merely repeat a blocked status. If the user asks whether the SAGA2 server is accessible, call mcp_router.list_remote_directory and use the real root read as evidence. For specific evidence, call read_remote_file or search_remote_files directly. These tools automatically recover and bind the remote project. Report a configuration action only when the read returns a user-action fallback. Do not spawn a Worker for ordinary reference reads.',
     'Do not ask the user to authorize this environment check. Full access still does not bypass the Host workflow gate.',
     gate.ready
-      ? 'After reporting the ready result, continue with Skill loading and read-only exploration. Treat this receipt as the authoritative startup result; do not repeat separate P4, Unity, or Router probes. Re-run only mcp_router.check_combat_environment at every phase transition and after a real P4, UnityMCP, or MCPRouter connection/transport failure.'
-      : 'DEGRADED EXPLORATION CONTRACT: report the role, all three statuses, and each next action before using tools. Then continue the task normally. This aggregate warning is not a task gate: load relevant Skills, clarify requirements, read local files/code/tables, and use tools backed by dependencies that remain ready. Host blocks only a concrete tool call whose own dependency is unavailable (or whose ordinary plan/risk approval is missing), and that denial must name the dependency, reason, and recovery action. Do not substitute local guesses for missing server evidence. Re-run mcp_router.check_combat_environment only at a phase transition, before implementation, or after a real P4, UnityMCP, or MCPRouter connection or transport failure; do not repeat it for ordinary missing files or inconclusive evidence. A runtime/protocol version mismatch has no client-side automatic upgrade path, but does not block independent local exploration. Never pass sandbox_permissions, request elevation, describe a Host phase denial as user rejection, or retry a denied action with different parameters.',
+      ? 'Continue with Skill loading and read-only exploration without a fixed environment-status preamble. Treat this receipt as the authoritative startup result; do not repeat separate P4, Unity, or Router probes. Re-run only mcp_router.check_combat_environment at every phase transition and after a real P4, UnityMCP, or MCPRouter connection/transport failure.'
+      : 'DEGRADED EXPLORATION CONTRACT: do not turn this aggregate warning into a user-facing preamble or task gate. Load relevant Skills, clarify requirements, read local files/code/tables, and use tools backed by dependencies that remain ready. When the request depends on the SAGA2 server, call list_remote_directory, read_remote_file, or search_remote_files directly; report only a fallbackUserAction that remains after the read tool automatic recovery. Host blocks only a concrete tool call whose own dependency is unavailable (or whose ordinary plan/risk approval is missing), and that denial must name the dependency, reason, and recovery action. Do not substitute local guesses for missing server evidence. Re-run mcp_router.check_combat_environment only at a phase transition, before implementation, or after a real P4, UnityMCP, or MCPRouter connection or transport failure; do not repeat it for ordinary missing files or inconclusive evidence. A runtime/protocol version mismatch has no client-side automatic upgrade path, but does not block independent local exploration. Never pass sandbox_permissions, request elevation, describe a Host phase denial as user rejection, or retry a denied action with different parameters.',
     '[/SAGA2_COMBAT_ENVIRONMENT_GATE]',
   ].join('\n');
 }

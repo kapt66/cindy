@@ -368,6 +368,10 @@ describe('isMainShellWindowUrl（投给哪个窗口的判据）', () => {
     ['插件面板独立窗(query)', 'file:///app/index.html?ghostPanelWindow=sign#/ghost-panel-window'],
     ['插件面板独立窗(仅 hash)', 'file:///app/index.html#/ghost-panel-window'],
     ['右侧栏独立窗(query)', 'file:///app/index.html?sidebarWindow=1#/sidebar-window'],
+    [
+      '资源用量独立窗(query)',
+      'file:///app/index.html?resourceUsageWindow=1#/resource-usage-window',
+    ],
     ['右侧栏独立窗(仅 hash)', 'file:///app/index.html#/sidebar-window'],
     // utility 窗:统一带 ?view=<名字>,一律接不住草稿(review 第三轮)。
     ['语音浮窗', 'file:///app/index.html?view=voice-input-overlay'],
@@ -380,7 +384,10 @@ describe('isMainShellWindowUrl（投给哪个窗口的判据）', () => {
     ['插件沙箱窗(自定义协议)', 'cindy-ghost://codex-reset-planner/__boot__'],
     // 会话副窗:挂完整壳、技术上接得住,但不是用户建任务时看的窗口(review 第二轮)。
     ['会话副窗(secondaryWindow=1)', 'file:///app/index.html?secondaryWindow=1#/cc-agent'],
-    ['会话副窗带 bootSession', 'file:///app/index.html?secondaryWindow=1&bootSession=abc#/cc-agent/x'],
+    [
+      '会话副窗带 bootSession',
+      'file:///app/index.html?secondaryWindow=1&bootSession=abc#/cc-agent/x',
+    ],
     ['about:blank', 'about:blank'],
     ['空串', ''],
     ['非法 URL', 'not a url'],
@@ -394,6 +401,10 @@ describe('isMainShellWindowUrl（投给哪个窗口的判据）', () => {
    * 可投窗口,草稿就投给了一个接不住它的窗口,用户点了什么都不会发生。
    */
   it('插件面板独立窗绝不能被当作可投窗口(本能力的主使用路径)', () => {
-    expect(isMainShellWindowUrl('file:///app/index.html?ghostPanelWindow=codex-reset-planner#/ghost-panel-window')).toBe(false);
+    expect(
+      isMainShellWindowUrl(
+        'file:///app/index.html?ghostPanelWindow=codex-reset-planner#/ghost-panel-window',
+      ),
+    ).toBe(false);
   });
 });

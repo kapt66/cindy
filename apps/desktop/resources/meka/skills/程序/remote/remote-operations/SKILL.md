@@ -1,69 +1,45 @@
 ---
 name: remote-operations
-description: 通过 MCPRouter 安全访问已授权仓库，并区分仓库内容与服务管理。SAGA2 战斗环境未完全就绪时仍可加载；MCPR 不可用只阻止实际远程调用。
+description: 通过 MCPRouter 访问已授权远程项目，并按只读参考、远程 Agent、Orca Worker 和项目管理能力选择最窄路径。
 metadata:
   display-name: MCPR 远程项目操作
-  purpose: 发现、读取和修改已授权的远程项目仓库
+  purpose: 统一远程项目发现、读取、Agent 和管理路由
 ---
 
 # MCPR 远程项目操作
 
-在 SAGA2 战斗开发中，`[SAGA2_COMBAT_ENVIRONMENT_GATE]` 的 `ready: false` 不阻止读取本 Skill。实际远程工具依赖 MCPR 时，Host 才按当前状态裁决；被拒绝时报告回执中的具体原因与恢复方案，不改走 SSH 或本地路径。
-
-远程项目是绑定到当前 Meka 项目的 MCPRouter 项目实例，不是本地目录，也不是 SSH 主机。进入远程仓库后先读该仓的 `AGENTS.md` 和命中的 Agent Skill；本 Skill 只负责路由，不替代远端项目规则。
+远程项目是绑定到当前 Meka 项目的 MCPRouter 项目实例。它是一个外部项目工作面，不是本地目录，也不是 SSH 主机。远端物理路径由 Host 解析，不查询、不猜测、不传给本地参数。
 
 ## 路由优先级
 
-按最窄且已经存在的能力选择：
-
 1. 用户要求继续已有 MCPR 远程任务时，继续该任务。
-2. 读取或编辑远程仓库内容时，使用绑定在 `mcpr:<instanceId>` 上的 Orca Worker。
-3. 服务启停、健康检查、部署、更新、分支切换、提交、推送、合并、回滚等项目管理操作，使用专用 `project-agent` 工具。
-4. 通用 `mcp_router` 只用于实例发现、创建和绑定，或没有更窄能力时的控制面操作。
+2. 读取、搜索或核对远程仓库内容时，优先调用 `mcp_router.list_remote_directory`、
+   `mcp_router.read_remote_file`、`mcp_router.search_remote_files`，再按需使用 Git
+   preview/show/diff/log。把结果作为当前任务的参考证据；这些读取成功时禁止创建 Worker。
+3. 只有直接只读能力不足，或用户明确要求独立可见历史、持续执行、远程命令或报告回传时，才使用 MCPRouter Agent tunnel 或明确授权的 Orca Worker。
+4. 服务启停、健康检查、部署、更新、分支切换、提交、推送、合并和回滚使用专用 `project-agent` 能力，并接受对应风险确认。
+5. 通用 `mcp_router` 只用于实例发现、模板、绑定和明确注册的项目能力，不替代更窄的项目 route。
 
-不得用 SSH、本地 P4 路径或通用 Shell 替代 MCPR。远端物理路径由 Host 解析，不查询、不猜测、不向本地参数传递。
+不得用 SSH、本地 P4 路径或本地 Shell 冒充 MCPR 远程项目。`mcpr:<instanceId>` 是 MCPRouter 目标身份，不能进入 SSH host pool。
 
 ## 发现与配置
 
-先调用 `list_project_remote_instances`。存在匹配且 `available` 的实例时，按上述优先级路由。
+有业务读取依赖远程项目时，直接调用上述目录/文件/搜索工具；Host 会在同一次调用内自动尝试
+已保存凭证重连、复用并绑定唯一匹配实例，或从唯一匹配模板创建并绑定。只有纯准备/绑定状态
+查询也直接使用最小只读工具完成真实探测。只有工具返回 `fallbackUserAction`、候选有
+歧义、没有匹配模板或自动恢复失败时，才向用户说明最小必要动作。不要先把未配置状态复述给
+用户，也不要因为没有实例就改走本地仓库或 SSH。
 
-远程调用失败时必须先帮助恢复，不能只复述错误或把整个任务暂停：
+远程项目只读能力和远程 Agent runtime 分开判断：项目 route 可用但 Agent runtime 不兼容时，仍可继续只读参考；只有创建 Agent/Worker 时才阻止该次执行并引导 Runtime 恢复。
 
-1. 优先读取工具回执里的 `reasonCode`、`recovery` 和 `retryTool`。Host 已检查本地连接状态时，
-   不要盲目改调其它远程列表工具；它们依赖同一连接。
-2. 旧回执没有结构化恢复信息时，只调用一次 `diagnose_mcp_router_connection`。该工具不联网，也不
-   返回 endpoint、用户名或凭证；确认未配置时会直接打开现有登录框，必须继续读取其
-   `recovery.loginPromptOpened`，不能诊断后再次只给手动设置说明。
-3. `MCPR_NOT_CONNECTED` 或 `MCPR_AUTH_REQUIRED` 时先读取 `recovery.loginPromptOpened`。为 `true`
-   表示 Host 已打开登录框，只需请用户在该框完成连接；为 `false` 时才引导到 Cindy 的
-   “设置 → Meka 助理”。Agent 不能索取或代填账号、密码、token。保留当前进度，并继续所有不依赖
-   MCPR 的本地探索；用户恢复后重试回执指定的 `retryTool`。
-4. `MCPR_PROJECT_NOT_BOUND` 表示登录材料存在，不要再要求登录。继续 `list_remote_instances`、
-   `list_remote_project_templates`、用户确认后的创建和绑定流程。
-5. `MCPR_RUNTIME_INCOMPATIBLE` 明确交给部署方升级并重启 Runtime；`MCPR_UNAVAILABLE` 引导检查
-   网络和连接。两者都只阻止当前远程调用，不得冻结本地 P4、Unity、表格、澄清或方案工作。
+调用失败时优先读取结构化 `reasonCode`、`recovery` 和 `retryTool`。登录、认证、网络和部署方 Runtime 升级由用户或部署方完成；保留当前进度，并继续不依赖 MCPR 的本地工作。
 
-没有绑定匹配项时依次执行：
+## Worker 升级路径
 
-1. `list_remote_instances`：一个候选需用户确认；多个候选必须让用户选择。绑定前取得明确确认，再调用 `bind_remote_instance`。
-2. 没有实例候选时调用 `list_remote_project_templates`。创建前展示模板名称和说明并取得确认，再调用 `create_remote_instance`，随后确认是否绑定。
-3. 实例和模板都没有匹配项时，如实报告未配置并停止，不切换到 SSH 或本地目录。
+创建持久、可见的远程 Worker 通常属于独立动作。只有用户明确要求，或当前业务流程明确授权窄范围只读核查时，才说明目标并创建 Worker。Worker 只处理已授权的仓库内容，不执行服务管理、部署、分支、提交或推送。
 
-## 仓库内容 Worker
+派发成功后以 `create_worker` 的 accepted/queued 信号或 `send_to_worker` 的成功唤醒信号为准；没有真实派发信号不得等待或声称完成。
 
-创建持久、可见的远程 Worker 通常属于独立动作。先说明目标实例并取得确认；已经在当前任务明确确认过则不重复询问。若当前权威角色工作流明确要求带专用只读标记的 MCPR Worker，且 Host 会限制该 Worker 只能读，则角色选择与当前任务已构成这一步只读核对的授权，不再追加“是否允许只读核对”问题；该例外不授权绑定新实例、写仓库、分支或服务管理。确认或命中该窄例外后：
+## 项目管理
 
-1. 尚未开启协同时调用 `start_team`；`ALREADY_ENABLED` 表示已经开启。
-2. 调用 `create_worker`，传入准确的 `remote_host_id="mcpr:<instanceId>"`，不要传 `working_dir`。
-3. 已知具体任务时用 `initial_task` 一次完成创建和派发。
-4. 校验 `execution_target.type="remote"` 且 `remote_host_id` 与目标一致；返回本地目标时不得声称成功。
-
-Worker 只处理仓库内容读写，不执行服务管理、构建测试、部署、分支管理、提交或推送。已有 Worker 用 `send_to_worker` 继续派发。
-
-派发成功的唯一证据：`create_worker` 返回 `dispatched=true`、`queued_message_id` 或成功的 `dispatch_outcome`；`send_to_worker` 返回 `ok=true` 且 `wake_kind` 为 `resumed`、`already-active` 或 `queued`。出现这些信号后当前 Lead 回合立即结束，不输出确认、不轮询；Worker 结果会通过回传消息到达。缺少派发信号时报告失败并停止。
-
-## 项目与服务管理
-
-使用专用 `project-agent` 工具操作匹配实例，并核对工具返回的状态或健康证据。高风险动作继续走 Host 确认。专用能力缺失时明确报告并停止，不改派 Worker、SSH、Shell 或本地目录。
-
-用户要求原始列表、日志或命令输出时原样转交；只有用户要求分析或输出过大时才摘要，并说明省略内容。实例不可用时报告实例和可用状态，引导恢复连接与绑定。
+项目实例、绑定、模板、健康和服务管理使用专用 `project-agent` 能力。需要写入或有副作用的 route 仍由 Host 进行风险确认；远程项目作为参考工作面不等于获得服务器写权限。

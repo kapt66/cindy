@@ -1,6 +1,6 @@
 ---
 name: orca-coordination
-description: 协调明确请求的 Orca Worker、任务委派和并行工作。SAGA2 战斗环境未完全就绪时仍可加载；MCPR 不可用只阻止实际依赖它的远程 Worker 调用。
+description: 协调明确请求的 Orca Worker、任务委派和并行工作；Worker 是可见执行单元，不是默认的远程仓库访问方式。
 metadata:
   display-name: Orca 多智能体协作
   purpose: 协调 Worker、委派与并行工作
@@ -8,10 +8,10 @@ metadata:
 
 # Orca 多智能体协作
 
-仅为边界明确、可独立推进的子任务创建 Worker。每个本地 Worker 必须使用 Host 允许的工作目录，并继承 Lead 的项目与角色配置。派发内容需写明交付物、约束、证据要求和集成边界。
+仅为边界明确、可独立推进的执行单元创建 Worker。读取一个远程项目文件、查看 Git 证据或确认服务器代码时，先使用远程项目只读能力；不要为普通参考读取默认创建 Worker。
 
-远程任务优先继续已有 MCPR 任务；远程仓库内容读写使用绑定实例上的 Orca Worker；服务生命周期、健康、部署、更新、分支和交付管理使用专用 `project-agent`。不要用通用 `mcp_router` 覆盖已有专用能力。
+创建 Worker 前说明交付物、目标、约束、证据和集成边界。远程 Worker 使用 `remote_host_id="mcpr:<instanceId>"`，不传本地 `working_dir`；其目标必须由 Host 按当前项目绑定和 capability 状态重新验证。
 
-远程仓库 Worker 使用 `remote_host_id="mcpr:<instanceId>"`，不传 `working_dir`。创建持久、可见的 Worker 前通常要说明目标并取得用户确认；底层仓库请求本身不等于创建授权。若当前权威角色工作流明确要求带专用只读标记的 MCPR Worker，且 Host 会限制该 Worker 只能读，则不重复询问这一步只读核对；绑定新实例、写入、分支和服务管理不适用该例外。确认或命中该窄例外后按需调用 `start_team`，再创建并派发 Worker。Worker 只处理仓库内容读写，不执行服务管理、构建测试、部署、提交或推送。
+以下情况才升级为 Worker：需要独立可见历史、Lead 派单、持续运行、多轮追问、远程命令、结构化报告回传或用户接管。持久、可见 Worker 通常需要用户明确授权；业务流程明确授权的窄范围只读核查可以复用该授权，但不扩大到绑定、写入、分支或服务管理。
 
-共享决策留在 Lead。整合前按原始目标、仓库规则、实际改动和验证结果审查 Worker 回执。Worker 输出是证据，不是自动批准；委派不得扩大路由、凭证、写入根或角色能力。
+Worker 的结果是证据或交付物，不自动批准 Lead 的业务方案。共享决策、权限、目标归属和最终验收留在 Lead/Host；项目服务管理继续使用专用 `project-agent`，不通过 Worker 或通用 `mcp_router` 代替。

@@ -81,10 +81,7 @@ import { resolveSessionCcDebugFile } from '../logger.js';
 import { resetProviderModelAutoRefreshCooldowns } from './provider-model-auto-refresh.js';
 import { createSshDaemonTransport } from './codex-remote-transport.js';
 import { getRemoteSshPool, broadcastSilentInstallStatus } from '../remote-ssh/index.js';
-import {
-  getRemoteAgentProxyEnv,
-  reconcileCodexAgentProxyEnv,
-} from '../remote-ssh/agent-proxy.js';
+import { getRemoteAgentProxyEnv, reconcileCodexAgentProxyEnv } from '../remote-ssh/agent-proxy.js';
 import {
   createSshPiDaemonTransport,
   createRemotePiFileOps,
@@ -186,7 +183,7 @@ import {
   setMekaRuntimeHighRiskAuthorizer,
   setMekaRuntimeRouterLoginPrompter,
 } from '../mcp-integrations/meka-runtime-mcp.js';
-import { openMekaRouterLoginWindow } from '../meka-settings/routerLoginWindow.js';
+import { requestMekaRouterLogin } from '../meka-settings/routerLoginWindow.js';
 import { cleanupComputerDriverSession } from '../mcp-integrations/computer.js';
 import { createPluginRegistry, resetPluginRegistry } from './plugins/index.js';
 import {
@@ -690,11 +687,12 @@ function broadcastVisionBridgeEvent(
     _visionBridgeDedup.set(key, now);
   }
 
-  const message = reason === 'vision-bridge-recognizing'
-    ? '正在识别图片中…'
-    : reason === 'vision-bridge-fallback'
-      ? '视觉桥使用了备用视觉后端（主后端不可用）'
-      : '视觉桥当前不可用，图片无法转成文字描述，已以文字提示代替';
+  const message =
+    reason === 'vision-bridge-recognizing'
+      ? '正在识别图片中…'
+      : reason === 'vision-bridge-fallback'
+        ? '视觉桥使用了备用视觉后端（主后端不可用）'
+        : '视觉桥当前不可用，图片无法转成文字描述，已以文字提示代替';
   const payload = {
     sessionId,
     event: {
@@ -903,7 +901,7 @@ export function getMaker(): Maker {
         return {
           items: page.items.map((item) => ({
             id: item.id,
-            role: item.role === 'assistant' ? 'assistant' as const : 'user' as const,
+            role: item.role === 'assistant' ? ('assistant' as const) : ('user' as const),
             content: item.content,
             agentMeta: item.agentMeta,
             createdAt: item.createdAt,
@@ -985,7 +983,12 @@ export function getMaker(): Maker {
         availableModels: deriveAvailableModels(getDesktopSelectableCatalog(), 'claude-code'),
       },
       resolveVerifiedContextWindow: (providerId, modelId) =>
-        resolveVerifiedContextWindow(getDesktopSelectableCatalog(), 'claude-code', providerId, modelId),
+        resolveVerifiedContextWindow(
+          getDesktopSelectableCatalog(),
+          'claude-code',
+          providerId,
+          modelId,
+        ),
       // SDK PreToolUse / PostToolUse 等 in-process hook 注入点。host 自己定义 hook
       // 实现 (./claude-hooks/*.ts), maker-core 不感知具体逻辑。
       //
@@ -1351,8 +1354,7 @@ export function getMaker(): Maker {
         let mcpExtraArgs: string[] = [];
         let mcpExtraEnv: Record<string, string> = {};
         let buildSessionMcpConfig:
-          | ((sessionInstanceId: string) => Record<string, unknown>)
-          | undefined;
+          ((sessionInstanceId: string) => Record<string, unknown>) | undefined;
         if (!isReview) {
           try {
             const cfg = await getCodexExtraSpawnConfig({
@@ -1448,10 +1450,10 @@ export function getMaker(): Maker {
           : undefined;
         let subagentProviderViews: ProviderView[] | undefined;
         if (
-          !isReview
-          && !ctx.remoteHostId
-          && subagentModelSettings.codexSubagentsEnabled
-          && subagentModelSettings.codex?.trim()
+          !isReview &&
+          !ctx.remoteHostId &&
+          subagentModelSettings.codexSubagentsEnabled &&
+          subagentModelSettings.codex?.trim()
         ) {
           // 显式来源同样必须按当前目录严格校验；读取失败时保留空数组，令下面的路由
           // 解析 fail-closed，而不是信任可能已经断连或删除模型的旧设置。
@@ -1474,10 +1476,12 @@ export function getMaker(): Maker {
             )
           : undefined;
         let forceDisableSubagents = false;
-        if (codexSubagentRouteResolutionFailed(subagentModelSettings, subagentRoute, {
-          remoteHostId: ctx.remoteHostId,
-          isReview,
-        })) {
+        if (
+          codexSubagentRouteResolutionFailed(subagentModelSettings, subagentRoute, {
+            remoteHostId: ctx.remoteHostId,
+            isReview,
+          })
+        ) {
           // 未显式保存 Provider 时依赖目录做隐式解析。解析失败不能继承父任务来源继续
           // 运行，否则默认子代理模型会静默跑到错误上游。
           desktopMakerLogger.warn(
@@ -1496,12 +1500,13 @@ export function getMaker(): Maker {
           forceDisableSubagents = true;
           subagentRoute = undefined;
         } else if (subagentRoute) {
-          const selectedRouting = subagentProviderViews
-            ?.find((provider) => provider.id === subagentRoute?.providerId)
-            ?.routing.codex;
-          const hasRequiredOAuth = selectedRouting?.authStrategy === 'oauth-passthrough'
-            ? await desktopCodexAuthAdapter.hasCodexOAuthLogin().catch(() => false)
-            : false;
+          const selectedRouting = subagentProviderViews?.find(
+            (provider) => provider.id === subagentRoute?.providerId,
+          )?.routing.codex;
+          const hasRequiredOAuth =
+            selectedRouting?.authStrategy === 'oauth-passthrough'
+              ? await desktopCodexAuthAdapter.hasCodexOAuthLogin().catch(() => false)
+              : false;
           const credentialPlan = resolveCodexSubagentHostCredentialPlan(
             subagentRoute,
             subagentProviderViews,
@@ -1591,12 +1596,7 @@ export function getMaker(): Maker {
       },
       unregisterCodexMcpThreadContext,
       prepareCodexResumeSession: prepareExternalCodexSessionForResume,
-      registerCodexSystemPromptForThread: ({
-        sessionId,
-        threadId,
-        text,
-        subagentRoute,
-      }) =>
+      registerCodexSystemPromptForThread: ({ sessionId, threadId, text, subagentRoute }) =>
         registerCodexProxyComposed(sessionId, threadId, text, { subagentRoute }),
       armCodexHttpRecovery,
       registerCodexChildThreadForParent: ({ parentThreadId, childThreadId }) => {
@@ -1663,7 +1663,7 @@ export function getMaker(): Maker {
 
     registerMekaRuntimeMcpArrays(claudeMcpProviders, codexMcpProviders);
     setMekaRuntimeHighRiskAuthorizer(authorizeMekaHighRiskCallViaDesktop);
-    setMekaRuntimeRouterLoginPrompter(openMekaRouterLoginWindow);
+    setMekaRuntimeRouterLoginPrompter(requestMekaRouterLogin);
     // 装配第二步: 把 agents 引用挂回 manager (manager.enable() 时遍历 setMemory(false))。
     attachAgentsToMakerMemory(makerMemoryManager, {
       'claude-code': claudeAgent,
@@ -1869,10 +1869,14 @@ export function getMaker(): Maker {
       ) => {
         const remoteHost = getRemoteSshPool().get(remoteHostId);
         if (!remoteHost) {
-          throw new Error(`remote SSH host "${remoteHostId}" not found in pool — connect it first under Settings → Remote`);
+          throw new Error(
+            `remote SSH host "${remoteHostId}" not found in pool — connect it first under Settings → Remote`,
+          );
         }
         if (remoteHost.getStatus() !== 'ready') {
-          throw new Error(`remote SSH host "${remoteHostId}" is not connected (status=${remoteHost.getStatus()}) — connect it under Settings → Remote first`);
+          throw new Error(
+            `remote SSH host "${remoteHostId}" is not connected (status=${remoteHost.getStatus()}) — connect it under Settings → Remote first`,
+          );
         }
         // 远端必须用远端安装的 pi 二进制(probe 出 $INSTALL_DIR/pi/pi),不能用本地
         // binaryPath —— 那是本机 userData 下的路径,远端不存在(连带 plan-mode 扩展
@@ -1880,7 +1884,8 @@ export function getMaker(): Maker {
         // 轮 29 MEDIUM:优先用 PiAgent startSession 已 resolve 并传入的
         // remoteBinaryPath(接口契约「host 已 probe」)—— 只在缺失时自己 probe
         // 兜底, 避免两次 resolve 语义分叉(cache 失效窗口)。
-        const remoteBinaryPath = providedRemoteBinaryPath ?? await resolveRemotePiBinaryPath(remoteHost);
+        const remoteBinaryPath =
+          providedRemoteBinaryPath ?? (await resolveRemotePiBinaryPath(remoteHost));
         // daemon 持久模式:远端 pi-manager(TS 单例 daemon)持有 pi 进程,ssh 断链后
         // 会话继续跑,重连 attach(对齐 codex app-server daemon / cc-mgr)。
         // 首次 ensure 前确保 pi-manager bundle 装好 + daemon 在跑。
@@ -1890,7 +1895,12 @@ export function getMaker(): Maker {
         await ensurePiManagerInstalled(remoteHost, desktopMakerLogger, (event) => {
           const hostId = remoteHost.id;
           if (event.kind === 'error') {
-            broadcastSilentInstallStatus({ hostId, agentKind: 'pi', phase: 'failed', message: event.message });
+            broadcastSilentInstallStatus({
+              hostId,
+              agentKind: 'pi',
+              phase: 'failed',
+              message: event.message,
+            });
           } else if (event.kind === 'ready') {
             broadcastSilentInstallStatus({ hostId, agentKind: 'pi', phase: 'done' });
           } else {
@@ -1905,8 +1915,8 @@ export function getMaker(): Maker {
             });
           }
         });
-        const providerForwardLease = createPiRemoteProviderForwardLease(
-          (spec) => remoteHost.ensureRemoteForward(spec),
+        const providerForwardLease = createPiRemoteProviderForwardLease((spec) =>
+          remoteHost.ensureRemoteForward(spec),
         );
         try {
           for (const spec of hostProxyForwards ?? []) {
@@ -1960,7 +1970,9 @@ export function getMaker(): Maker {
       getRemotePiFileOps: (remoteHostId) => {
         const remoteHost = getRemoteSshPool().get(remoteHostId);
         if (!remoteHost) {
-          throw new Error(`remote SSH host "${remoteHostId}" not found in pool — connect it first under Settings → Remote`);
+          throw new Error(
+            `remote SSH host "${remoteHostId}" not found in pool — connect it first under Settings → Remote`,
+          );
         }
         return createRemotePiFileOps(remoteHost);
       },
@@ -1968,7 +1980,9 @@ export function getMaker(): Maker {
       resolveRemotePiBinaryPath: async (remoteHostId) => {
         const remoteHost = getRemoteSshPool().get(remoteHostId);
         if (!remoteHost) {
-          throw new Error(`remote SSH host "${remoteHostId}" not found in pool — connect it first under Settings → Remote`);
+          throw new Error(
+            `remote SSH host "${remoteHostId}" not found in pool — connect it first under Settings → Remote`,
+          );
         }
         return resolveRemotePiBinaryPath(remoteHost);
       },
@@ -1990,7 +2004,9 @@ export function getMaker(): Maker {
       rewriteRemotePiMcpBridgeUrl: async (remoteHostId, localUrl) => {
         const remoteHost = getRemoteSshPool().get(remoteHostId);
         if (!remoteHost) {
-          throw new Error(`remote SSH host "${remoteHostId}" not found in pool — connect it first under Settings → Remote`);
+          throw new Error(
+            `remote SSH host "${remoteHostId}" not found in pool — connect it first under Settings → Remote`,
+          );
         }
         // 用 URL 解析改端口再序列化, 避免字符串 replace 误伤 query 参数
         // (R2 MCP BUG-3) 与 Number('')=0 传非法端口 (R2 MCP BUG-7)。
@@ -2014,7 +2030,9 @@ export function getMaker(): Maker {
       getRemotePiAgentProxyEnv: async (remoteHostId) => {
         const remoteHost = getRemoteSshPool().get(remoteHostId);
         if (!remoteHost) {
-          throw new Error(`remote SSH host "${remoteHostId}" not found in pool — connect it first under Settings → Remote`);
+          throw new Error(
+            `remote SSH host "${remoteHostId}" not found in pool — connect it first under Settings → Remote`,
+          );
         }
         return getRemoteAgentProxyEnv(remoteHost);
       },

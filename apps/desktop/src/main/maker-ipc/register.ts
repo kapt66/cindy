@@ -6913,6 +6913,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         mcpProviderIds: mekaRuntime.mcpProviderIds,
         inlineMcpCount: mekaRuntime.inlineMcpCount,
         skillsCount: mekaRuntime.skillsCount,
+        platformSkillsCount: mekaRuntime.platformSkillsCount,
         skillRevision: mekaRuntime.skillSnapshot?.revision ?? null,
         workflow: mekaRuntime.workflow,
         workflowRecoveredFromRole: mekaRuntime.workflowRecoveredFromRole,

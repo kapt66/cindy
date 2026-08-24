@@ -1,11 +1,18 @@
 import path from 'node:path';
 import fs from 'node:fs';
 
-import { app, ipcMain, net, safeStorage } from 'electron';
+import { app, BrowserWindow, ipcMain, net, safeStorage } from 'electron';
 
 import { createMekaP4SettingsService, type MekaP4SettingsService } from './service.js';
 import { createMekaRouterClient } from './routerClient.js';
 import { createMekaRouterService, type MekaRouterService } from './routerService.js';
+import {
+  cancelMekaRouterLogin,
+  completeMekaRouterLogin,
+  markMekaRouterLoginPresented,
+} from './routerLoginWindow.js';
+import { isMainShellWindowUrl } from '../cindy-brain/scheduleSlot.js';
+import { isTrustedAppRendererWindow } from '../security/trustedAppRenderer.js';
 import { requireObject, requireString, throwIpcError } from '../utils/ipcValidate.js';
 
 export const MEKA_SETTINGS_CHANNELS = {
@@ -14,6 +21,7 @@ export const MEKA_SETTINGS_CHANNELS = {
   ROUTER_GET: 'meka-settings:router:get',
   ROUTER_CONNECT: 'meka-settings:router:connect',
   ROUTER_REGISTER: 'meka-settings:router:register',
+  ROUTER_LOGIN_STATE: 'meka-settings:router:login-state',
   ROUTER_DISCONNECT: 'meka-settings:router:disconnect',
   ROUTER_LIST_TOOLS: 'meka-settings:router:list-tools',
   ROUTER_SET_ROUTE: 'meka-settings:router:set-route',
@@ -114,21 +122,42 @@ export function registerMekaSettingsIpc(
 
   const router = getMekaRouterService();
   ipcMain.handle(MEKA_SETTINGS_CHANNELS.ROUTER_GET, () => router.getSettings());
-  ipcMain.handle(MEKA_SETTINGS_CHANNELS.ROUTER_CONNECT, (_event, input: unknown) => {
+  ipcMain.handle(MEKA_SETTINGS_CHANNELS.ROUTER_CONNECT, async (_event, input: unknown) => {
     const body = requireObject(input);
-    return router.connect(
+    await router.connect(
       requireString(body.routerUrl, 'routerUrl'),
       requireString(body.username, 'username'),
       requireString(body.password, 'password'),
     );
+    completeMekaRouterLogin();
   });
-  ipcMain.handle(MEKA_SETTINGS_CHANNELS.ROUTER_REGISTER, (_event, input: unknown) => {
+  ipcMain.handle(MEKA_SETTINGS_CHANNELS.ROUTER_REGISTER, async (_event, input: unknown) => {
     const body = requireObject(input);
-    return router.register(
+    await router.register(
       requireString(body.routerUrl, 'routerUrl'),
       requireString(body.username, 'username'),
       requireString(body.password, 'password'),
     );
+    completeMekaRouterLogin();
+  });
+  ipcMain.handle(MEKA_SETTINGS_CHANNELS.ROUTER_LOGIN_STATE, (event, input: unknown) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (
+      !isTrustedAppRendererWindow(win) ||
+      !win ||
+      !isMainShellWindowUrl(win.webContents.getURL())
+    ) {
+      throwIpcError('PERMISSION_DENIED', 'MCPRouter login state requires the main Cindy window');
+    }
+    const body = requireObject(input);
+    const requestId = requireString(body.requestId, 'requestId');
+    if (body.state === 'presented') {
+      return markMekaRouterLoginPresented(requestId);
+    }
+    if (body.state === 'cancelled') {
+      return cancelMekaRouterLogin(requestId);
+    }
+    throwIpcError('INVALID_PARAMS', 'state must be presented or cancelled');
   });
   ipcMain.handle(MEKA_SETTINGS_CHANNELS.ROUTER_DISCONNECT, () => router.disconnect());
   ipcMain.handle(MEKA_SETTINGS_CHANNELS.ROUTER_LIST_TOOLS, () => router.listToolsAndRoutes());

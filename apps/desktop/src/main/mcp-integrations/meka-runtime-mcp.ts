@@ -8,6 +8,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { z } from 'zod';
 
 import type { MekaRoleMcpEntry } from '../../shared/meka-projects.js';
+import type { MekaRouterInstance } from '../../shared/meka-router.js';
 import {
   combatEnvironmentAvailability,
   formatCombatEnvironmentGateReceipt,
@@ -15,6 +16,7 @@ import {
 } from '../meka-projects/combatEnvironmentGate.js';
 import { probeRemoteCodexCapability } from '../maker-host/mcpr-codex-capability.js';
 import { getMekaP4SettingsService, getMekaRouterService } from '../meka-settings/ipc.js';
+import type { MekaRouterLoginResult } from '../meka-settings/routerLoginWindow.js';
 import {
   evaluateCombatToolExecution,
   isCombatWorkflowPolicyActive,
@@ -38,7 +40,7 @@ let authorizeHighRiskCall:
       risk: string;
     }) => Promise<boolean>)
   | null = null;
-let promptRouterLogin: (() => boolean) | null = null;
+let promptRouterLogin: (() => Promise<MekaRouterLoginResult>) | null = null;
 
 interface MekaRuntimeVendorOptions extends Record<string, unknown> {
   source?: unknown;
@@ -259,6 +261,7 @@ type McprRecoveryCode =
   | 'MCPR_NOT_CONNECTED'
   | 'MCPR_AUTH_REQUIRED'
   | 'MCPR_PROJECT_NOT_BOUND'
+  | 'MCPR_CAPABILITY_NOT_DEPLOYED'
   | 'MCPR_RUNTIME_INCOMPATIBLE'
   | 'MCPR_UNAVAILABLE';
 
@@ -274,6 +277,13 @@ function classifyMcprFailure(reason: string, configured: boolean | null): McprRe
   if (/project binding|项目绑定|未找到可用.*远程项目|bound=0/i.test(reason)) {
     return 'MCPR_PROJECT_NOT_BOUND';
   }
+  if (
+    /ROUTE_NOT_FOUND|route (?:is )?not (?:found|deployed)|tool is not available|能力路由未部署/i.test(
+      reason,
+    )
+  ) {
+    return 'MCPR_CAPABILITY_NOT_DEPLOYED';
+  }
   if (/version|protocol|capability|unsupported|版本|协议|能力不支持/i.test(reason)) {
     return 'MCPR_RUNTIME_INCOMPATIBLE';
   }
@@ -288,6 +298,8 @@ function mcprRecoveryAction(code: McprRecoveryCode): string {
       return '打开 Cindy 的“设置 → Meka 助理”，重新连接 MCPRouter 以刷新登录状态；不要在任务消息中发送账号、密码或令牌。';
     case 'MCPR_PROJECT_NOT_BOUND':
       return 'MCPRouter 已连接。先调用 list_remote_instances 查找可用实例并由用户确认后调用 bind_remote_instance；若没有实例，再调用 list_remote_project_templates，并由用户确认后创建和绑定。';
+    case 'MCPR_CAPABILITY_NOT_DEPLOYED':
+      return '当前 MCPRouter 服务端没有部署远程项目读取能力；由部署方更新并重启 MCPRouter 服务后重试。无需修改 Cindy 设置或 SSH 配置。';
     case 'MCPR_RUNTIME_INCOMPATIBLE':
       return '由 MCPRouter 部署方升级并重启目标 Runtime；客户端无法代替部署方升级。完成后回到当前任务重试。';
     case 'MCPR_UNAVAILABLE':
@@ -295,33 +307,213 @@ function mcprRecoveryAction(code: McprRecoveryCode): string {
   }
 }
 
-function promptForRouterLogin(code: McprRecoveryCode): {
-  attempted: boolean;
-  opened: boolean;
-} {
+type RouterLoginPromptAttempt = MekaRouterLoginResult & { attempted: boolean };
+
+async function promptForRouterLogin(code: McprRecoveryCode): Promise<RouterLoginPromptAttempt> {
   if (code !== 'MCPR_NOT_CONNECTED' && code !== 'MCPR_AUTH_REQUIRED') {
-    return { attempted: false, opened: false };
+    return { attempted: false, opened: false, outcome: 'unavailable' };
   }
-  if (!promptRouterLogin) return { attempted: false, opened: false };
+  if (!promptRouterLogin) {
+    return { attempted: false, opened: false, outcome: 'unavailable' };
+  }
   try {
-    return { attempted: true, opened: promptRouterLogin() };
+    return { attempted: true, ...(await promptRouterLogin()) };
   } catch {
-    return { attempted: true, opened: false };
+    return { attempted: true, opened: false, outcome: 'unavailable' };
   }
 }
 
-function promptedMcprRecoveryAction(code: McprRecoveryCode, opened: boolean): string {
-  if (!opened) return mcprRecoveryAction(code);
-  return code === 'MCPR_AUTH_REQUIRED'
-    ? 'Cindy 已打开 MCPRouter 登录框（也可从“设置 → Meka 助理”进入）。请重新登录以刷新认证；完成后回到当前任务重试原工具。不要在任务消息中发送账号、密码或令牌。'
-    : 'Cindy 已打开 MCPRouter 登录框（也可从“设置 → Meka 助理”进入）。请完成登录或注册；连接成功后回到当前任务重试原工具。';
+function promptedMcprRecoveryAction(
+  code: McprRecoveryCode,
+  loginPrompt: RouterLoginPromptAttempt,
+): string {
+  if (loginPrompt.outcome === 'connected') {
+    return 'MCPRouter 登录已完成，无需额外配置；立即重试原工具。';
+  }
+  if (loginPrompt.outcome === 'cancelled') {
+    return 'MCPRouter 登录已取消。需要远程项目时重新触发原工具即可再次打开登录流程。';
+  }
+  if (loginPrompt.outcome === 'timed-out') {
+    return '等待 MCPRouter 登录超时。需要远程项目时重新触发原工具即可再次打开登录流程。';
+  }
+  return mcprRecoveryAction(code);
+}
+
+function compactIdentity(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, '');
+}
+
+function isProjectServerReference(
+  candidate: {
+    name: string;
+    description: string | null;
+    projectId?: string | null;
+  },
+  selectedProjectId: string,
+): boolean {
+  const identity = `${candidate.name} ${candidate.description ?? ''}`;
+  const compact = compactIdentity(identity);
+  const projectKey = compactIdentity(selectedProjectId);
+  const isServer = /server|服务器/i.test(identity);
+  return isServer && (candidate.projectId === selectedProjectId || compact.includes(projectKey));
+}
+
+function safeInstance(instance: MekaRouterInstance) {
+  return {
+    instanceId: instance.id,
+    projectName: instance.projectName,
+    projectDescription: instance.projectDescription,
+    availability: instance.available
+      ? 'available'
+      : instance.supported
+        ? 'provisioning-or-unavailable'
+        : 'unsupported',
+    remoteHostId: instance.remoteHostId,
+  };
+}
+
+function publicRemoteProjectReference(
+  result: Awaited<ReturnType<typeof ensureRemoteProjectReference>>,
+) {
+  if (!result.ok) {
+    return {
+      ...result,
+      ...('candidates' in result && result.candidates
+        ? {
+            candidates: result.candidates.map(
+              ({ instanceId: _instanceId, remoteHostId: _remoteHostId, ...item }) => item,
+            ),
+          }
+        : {}),
+      ...('templates' in result && result.templates
+        ? {
+            templates: result.templates.map(({ templateId: _templateId, ...item }) => item),
+          }
+        : {}),
+    };
+  }
+  return {
+    ...result,
+    reference: 'current-project-server',
+    instances: result.instances.map(
+      ({ instanceId: _instanceId, remoteHostId: _remoteHostId, ...item }) => item,
+    ),
+  };
+}
+
+async function ensureRemoteProjectReference(
+  service: ReturnType<typeof getMekaRouterService>,
+  selectedProjectId: string,
+) {
+  const [boundIds, instances] = await Promise.all([
+    service.listProjectBindings(selectedProjectId),
+    service.listInstances(),
+  ]);
+  const bound = new Set(boundIds);
+  const boundServers = instances.filter(
+    (instance) =>
+      bound.has(instance.id) &&
+      isProjectServerReference(
+        {
+          name: instance.projectName,
+          description: instance.projectDescription,
+          projectId: instance.projectId,
+        },
+        selectedProjectId,
+      ),
+  );
+  if (boundServers.length > 0) {
+    return {
+      ok: true as const,
+      status: boundServers.some((instance) => instance.available) ? 'ready' : 'provisioning',
+      automaticActions: [] as string[],
+      instances: boundServers.map(safeInstance),
+    };
+  }
+
+  const matchingInstances = instances.filter((instance) =>
+    isProjectServerReference(
+      {
+        name: instance.projectName,
+        description: instance.projectDescription,
+        projectId: instance.projectId,
+      },
+      selectedProjectId,
+    ),
+  );
+  const preferredInstances = matchingInstances.filter((instance) => instance.available);
+  const reusable =
+    preferredInstances.length === 1
+      ? preferredInstances[0]
+      : preferredInstances.length === 0 && matchingInstances.length === 1
+        ? matchingInstances[0]
+        : null;
+  if (reusable) {
+    await service.setProjectBindings(selectedProjectId, [...new Set([...boundIds, reusable.id])]);
+    return {
+      ok: true as const,
+      status: reusable.available ? 'ready' : 'provisioning',
+      automaticActions: ['bound-existing-instance'],
+      instances: [safeInstance(reusable)],
+    };
+  }
+  if (matchingInstances.length > 1) {
+    return {
+      ok: false as const,
+      reasonCode: 'MCPR_PROJECT_SELECTION_REQUIRED',
+      automaticActions: [] as string[],
+      candidates: matchingInstances.map(safeInstance),
+      fallbackUserAction:
+        '找到多个匹配当前项目的服务器实例，无法安全自动选择。请确认要使用哪一个实例。',
+    };
+  }
+
+  const templates = await service.listTemplates();
+  const matchingTemplates = templates.filter((template) =>
+    isProjectServerReference(template, selectedProjectId),
+  );
+  if (matchingTemplates.length !== 1) {
+    return {
+      ok: false as const,
+      reasonCode:
+        matchingTemplates.length === 0
+          ? 'MCPR_PROJECT_TEMPLATE_NOT_FOUND'
+          : 'MCPR_PROJECT_SELECTION_REQUIRED',
+      automaticActions: [] as string[],
+      templates: matchingTemplates.map((template) => ({
+        templateId: template.id,
+        name: template.name,
+        description: template.description,
+      })),
+      fallbackUserAction:
+        matchingTemplates.length === 0
+          ? 'MCPRouter 中没有与当前项目匹配的服务器模板。请由平台管理员补充模板后重试。'
+          : '找到多个匹配当前项目的服务器模板，无法安全自动选择。请确认要使用哪一个模板。',
+    };
+  }
+
+  const created = await service.createInstance(
+    matchingTemplates[0]!.id,
+    `${selectedProjectId}-server`,
+  );
+  await service.setProjectBindings(selectedProjectId, [...new Set([...boundIds, created.id])]);
+  return {
+    ok: true as const,
+    status: created.available ? 'ready' : 'provisioning',
+    automaticActions: ['created-from-template', 'bound-created-instance'],
+    instances: [safeInstance(created)],
+  };
 }
 
 function createRouterServer(context: McpProviderContext): McpServer {
   const server = new McpServer({ name: 'mcp_router', version: '1.0.0' });
   const service = getMekaRouterService();
 
-  const routerFailureResult = async (error: unknown, retryTool: string) => {
+  const routerFailureResult = async (
+    error: unknown,
+    retryTool: string,
+    completedLoginPrompt?: RouterLoginPromptAttempt,
+  ) => {
     markCombatEnvironmentUnavailable(context);
     const rawReason =
       error instanceof Error ? error.message : error ? String(error) : 'MCPRouter 返回错误';
@@ -333,8 +525,8 @@ function createRouterServer(context: McpProviderContext): McpServer {
       // The original dependency error remains authoritative if local settings cannot be read.
     }
     const reasonCode = classifyMcprFailure(reason, configured);
-    const loginPrompt = promptForRouterLogin(reasonCode);
-    const userAction = promptedMcprRecoveryAction(reasonCode, loginPrompt.opened);
+    const loginPrompt = completedLoginPrompt ?? (await promptForRouterLogin(reasonCode));
+    const userAction = promptedMcprRecoveryAction(reasonCode, loginPrompt);
     return jsonResult(
       {
         ok: false,
@@ -344,17 +536,113 @@ function createRouterServer(context: McpProviderContext): McpServer {
         reason,
         recovery: {
           diagnosisAttempted: 'inspected-local-connection-state',
-          requiresUserAction: true,
+          requiresUserAction: loginPrompt.outcome !== 'connected',
           userAction,
           retryTool,
           loginPromptAttempted: loginPrompt.attempted,
           loginPromptOpened: loginPrompt.opened,
+          loginPromptOutcome: loginPrompt.outcome,
         },
         independentWorkCanContinue: true,
         message: `本次工具调用实际依赖 MCPRouter，当前调用失败，但任务不会被冻结。原因：${reason}。解决方案：${userAction}。不依赖 MCPRouter 的工作可以继续。`,
       },
       true,
     );
+  };
+
+  class RemoteReferenceRecoveryError extends Error {
+    constructor(
+      readonly originalError: unknown,
+      readonly loginPrompt?: RouterLoginPromptAttempt,
+    ) {
+      super(originalError instanceof Error ? originalError.message : String(originalError));
+    }
+  }
+
+  const automaticallyEnsureReference = async (selectedProjectId: string) => {
+    try {
+      return await ensureRemoteProjectReference(service, selectedProjectId);
+    } catch (initialError) {
+      let configured: boolean | null = null;
+      try {
+        configured = (await service.getConnectionStatus()).configured;
+      } catch {
+        // Preserve the dependency failure when local connection state is unavailable.
+      }
+      const reason = initialError instanceof Error ? initialError.message : String(initialError);
+      const reasonCode = classifyMcprFailure(reason, configured);
+      if (reasonCode !== 'MCPR_NOT_CONNECTED' && reasonCode !== 'MCPR_AUTH_REQUIRED') {
+        throw new RemoteReferenceRecoveryError(initialError);
+      }
+      try {
+        if (await service.reconnectStored()) {
+          const recovered = await ensureRemoteProjectReference(service, selectedProjectId);
+          return {
+            ...recovered,
+            automaticActions: ['reconnected-from-stored-credentials', ...recovered.automaticActions],
+          };
+        }
+        const loginPrompt = await promptForRouterLogin(reasonCode);
+        if (loginPrompt.outcome === 'connected') {
+          const recovered = await ensureRemoteProjectReference(service, selectedProjectId);
+          return {
+            ...recovered,
+            automaticActions: ['connected-through-login-dialog', ...recovered.automaticActions],
+          };
+        }
+        throw new RemoteReferenceRecoveryError(initialError, loginPrompt);
+      } catch (recoveryError) {
+        if (recoveryError instanceof RemoteReferenceRecoveryError) throw recoveryError;
+        throw new RemoteReferenceRecoveryError(recoveryError);
+      }
+    }
+  };
+
+  const callRemoteReferenceTool = async (
+    selectedProjectId: string,
+    route: 'git.tree' | 'git.read' | 'git.search',
+    args: Record<string, unknown>,
+    retryTool: string,
+  ) => {
+    try {
+      const reference = await automaticallyEnsureReference(selectedProjectId);
+      if (!reference.ok) return jsonResult(publicRemoteProjectReference(reference), true);
+      const available = reference.instances.filter(item => item.availability === 'available');
+      if (available.length !== 1) {
+        return jsonResult(
+          {
+            ok: false,
+            reasonCode:
+              available.length === 0
+                ? 'MCPR_PROJECT_NOT_READY'
+                : 'MCPR_PROJECT_SELECTION_REQUIRED',
+            fallbackUserAction:
+              available.length === 0
+                ? '远程项目仍在准备中，请稍后重试原读取。'
+                : '当前项目绑定了多个可用服务器实例，无法安全自动选择。请确认要使用哪一个。',
+          },
+          true,
+        );
+      }
+      const result = await service.callProjectCapability(
+        selectedProjectId,
+        route,
+        { ...args, instanceId: available[0]!.instanceId },
+      );
+      if (!result.ok) {
+        const reason =
+          result.code === 'ROUTE_NOT_FOUND'
+            ? `[${result.code}] MCPRouter capability route is not deployed: ${route}`
+            : `[${result.code}] ${result.message}`;
+        return routerFailureResult(reason, retryTool);
+      }
+      return jsonResult(sanitizeRouterToolValue(result.output));
+    } catch (error) {
+      if (error instanceof RemoteReferenceRecoveryError) {
+        return routerFailureResult(error.originalError, retryTool, error.loginPrompt);
+      }
+      return routerFailureResult(error, retryTool);
+    }
   };
 
   server.tool(
@@ -368,28 +656,31 @@ function createRouterServer(context: McpProviderContext): McpServer {
       try {
         const { configured } = await service.getConnectionStatus();
         const loginPrompt = configured
-          ? { attempted: false, opened: false }
-          : promptForRouterLogin('MCPR_NOT_CONNECTED');
+          ? ({
+              attempted: false,
+              opened: false,
+              outcome: 'unavailable',
+            } satisfies RouterLoginPromptAttempt)
+          : await promptForRouterLogin('MCPR_NOT_CONNECTED');
+        const connected = configured || loginPrompt.outcome === 'connected';
         return jsonResult({
           ok: true,
           dependency: 'MCPRouter',
-          status: configured ? 'configured' : 'not-configured',
-          readyForRemoteCalls: configured,
-          recovery: configured
+          status: connected ? 'configured' : 'not-configured',
+          readyForRemoteCalls: connected,
+          recovery: connected
             ? null
             : {
                 reasonCode: 'MCPR_NOT_CONNECTED',
                 requiresUserAction: true,
-                userAction: promptedMcprRecoveryAction(
-                  'MCPR_NOT_CONNECTED',
-                  loginPrompt.opened,
-                ),
+                userAction: promptedMcprRecoveryAction('MCPR_NOT_CONNECTED', loginPrompt),
                 loginPromptAttempted: loginPrompt.attempted,
                 loginPromptOpened: loginPrompt.opened,
+                loginPromptOutcome: loginPrompt.outcome,
               },
-          nextAction: configured
+          nextAction: connected
             ? '本地连接材料完整；重试原远程工具。若仍失败，按该工具回执处理网络、认证或 Runtime 问题。'
-            : promptedMcprRecoveryAction('MCPR_NOT_CONNECTED', loginPrompt.opened),
+            : promptedMcprRecoveryAction('MCPR_NOT_CONNECTED', loginPrompt),
         });
       } catch (error) {
         return routerFailureResult(error, 'diagnose_mcp_router_connection');
@@ -423,6 +714,7 @@ function createRouterServer(context: McpProviderContext): McpServer {
               retryTool: 'check_combat_environment';
               loginPromptAttempted: boolean;
               loginPromptOpened: boolean;
+              loginPromptOutcome: MekaRouterLoginResult['outcome'];
             }
           | undefined;
         if (gate.mcpr.status === 'blocked') {
@@ -436,13 +728,14 @@ function createRouterServer(context: McpProviderContext): McpServer {
             `${gate.mcpr.summary}\n${gate.mcpr.evidence ?? ''}`,
             configured,
           );
-          const loginPrompt = promptForRouterLogin(reasonCode);
+          const loginPrompt = await promptForRouterLogin(reasonCode);
           mcprRecovery = {
             reasonCode,
-            userAction: promptedMcprRecoveryAction(reasonCode, loginPrompt.opened),
+            userAction: promptedMcprRecoveryAction(reasonCode, loginPrompt),
             retryTool: 'check_combat_environment',
             loginPromptAttempted: loginPrompt.attempted,
             loginPromptOpened: loginPrompt.opened,
+            loginPromptOutcome: loginPrompt.outcome,
           };
         }
         runtimeOptions.mekaCombatEnvironmentReady = gate.ready;
@@ -545,6 +838,61 @@ function createRouterServer(context: McpProviderContext): McpServer {
       return routerFailureResult(error, 'list_tools');
     }
   });
+
+  server.tool(
+    'list_remote_directory',
+    '列出当前 Meka 项目服务器仓库 HEAD 快照中的一个目录。Host 自动解析和确保远程项目，不要先调用 Router 管理或 Worker 工具。',
+    { path: z.string().max(1024).optional() },
+    async ({ path }) => {
+      const selectedProjectId = projectId(context);
+      if (!selectedProjectId) return jsonResult({ ok: false, error: 'Meka project MCP is not enabled' }, true);
+      return callRemoteReferenceTool(
+        selectedProjectId,
+        'git.tree',
+        path ? { path } : {},
+        'list_remote_directory',
+      );
+    },
+  );
+
+  server.tool(
+    'read_remote_file',
+    '读取当前 Meka 项目服务器仓库 HEAD 快照中的一个 UTF-8 文本文件。Host 自动解析和确保远程项目，不需要实例 ID。',
+    {
+      path: z.string().min(1).max(1024),
+      maxBytes: z.number().int().min(1).max(1024 * 1024).optional(),
+    },
+    async ({ path, maxBytes }) => {
+      const selectedProjectId = projectId(context);
+      if (!selectedProjectId) return jsonResult({ ok: false, error: 'Meka project MCP is not enabled' }, true);
+      return callRemoteReferenceTool(
+        selectedProjectId,
+        'git.read',
+        { path, ...(maxBytes ? { maxBytes } : {}) },
+        'read_remote_file',
+      );
+    },
+  );
+
+  server.tool(
+    'search_remote_files',
+    '在当前 Meka 项目服务器仓库 HEAD 快照的已跟踪文本文件中按固定字符串搜索。Host 自动解析和确保远程项目，不需要实例 ID。',
+    {
+      query: z.string().min(1).max(256),
+      path: z.string().max(1024).optional(),
+      maxResults: z.number().int().min(1).max(200).optional(),
+    },
+    async ({ query, path, maxResults }) => {
+      const selectedProjectId = projectId(context);
+      if (!selectedProjectId) return jsonResult({ ok: false, error: 'Meka project MCP is not enabled' }, true);
+      return callRemoteReferenceTool(
+        selectedProjectId,
+        'git.search',
+        { query, ...(path ? { path } : {}), ...(maxResults ? { maxResults } : {}) },
+        'search_remote_files',
+      );
+    },
+  );
 
   server.tool(
     'call_tool',

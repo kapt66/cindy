@@ -1390,9 +1390,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       request: import('../shared/mekaDevPlugin').MekaDevPluginInstallRequest,
     ): Promise<import('../shared/mekaDevPlugin').MekaDevPluginInstallResult> =>
       ipcRenderer.invoke('meka-dev-plugins:install', request),
-    package: (
-      id: string,
-    ): Promise<import('../shared/mekaDevPlugin').MekaDevPluginPackageResult> =>
+    package: (id: string): Promise<import('../shared/mekaDevPlugin').MekaDevPluginPackageResult> =>
       ipcRenderer.invoke('meka-dev-plugins:package', id),
     uploadInfo: (id: string): Promise<import('../shared/mekaDevPlugin').MekaDevPluginUploadInfo> =>
       ipcRenderer.invoke('meka-dev-plugins:upload-info', id),
@@ -3343,11 +3341,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     router: {
       get: (): Promise<import('../shared/meka-router').MekaRouterSettingsView> =>
         ipcRenderer.invoke('meka-settings:router:get'),
-      onOpenLogin: (callback: () => void): (() => void) => {
-        const listener = () => callback();
+      onOpenLogin: (callback: (requestId: string | null) => void): (() => void) => {
+        const listener = (_event: Electron.IpcRendererEvent, input?: { requestId?: unknown }) =>
+          callback(typeof input?.requestId === 'string' ? input.requestId : null);
         ipcRenderer.on('meka-settings:router:open-login', listener);
         return () => ipcRenderer.removeListener('meka-settings:router:open-login', listener);
       },
+      reportLoginState: (requestId: string, state: 'presented' | 'cancelled'): Promise<boolean> =>
+        ipcRenderer.invoke('meka-settings:router:login-state', { requestId, state }),
       connect: (input: { routerUrl: string; username: string; password: string }): Promise<void> =>
         ipcRenderer.invoke('meka-settings:router:connect', input),
       register: (input: { routerUrl: string; username: string; password: string }): Promise<void> =>
@@ -4887,7 +4888,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.invoke('meka-project:create', input),
       resetBuiltin: (id: string): Promise<unknown> =>
         ipcRenderer.invoke('meka-project:reset-builtin', id),
-      update: (input: unknown): Promise<unknown> => ipcRenderer.invoke('meka-project:update', input),
+      update: (input: unknown): Promise<unknown> =>
+        ipcRenderer.invoke('meka-project:update', input),
       delete: (id: string): Promise<void> => ipcRenderer.invoke('meka-project:delete', id),
       resolvePath: (id: string): Promise<unknown> =>
         ipcRenderer.invoke('meka-project:resolve-path', id),
@@ -4922,7 +4924,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.invoke('meka-formal:check-auth', input),
       fetchIssues: (input: unknown): Promise<unknown> =>
         ipcRenderer.invoke('meka-formal:fetch-issues', input),
-      prepare: (input: unknown): Promise<unknown> => ipcRenderer.invoke('meka-formal:prepare', input),
+      prepare: (input: unknown): Promise<unknown> =>
+        ipcRenderer.invoke('meka-formal:prepare', input),
     },
     conversations: {
       search: (request: unknown): Promise<unknown> =>

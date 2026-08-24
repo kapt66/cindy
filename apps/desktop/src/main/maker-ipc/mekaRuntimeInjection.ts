@@ -6,7 +6,9 @@ import {
 } from '../meka-projects/combatEnvironmentGate.js';
 import {
   resolveMekaRuntimeConfig,
+  resolveMekaPlatformRuntimeSkills,
   type MekaRuntimeConfig,
+  type MekaRuntimeSkill,
 } from '../meka-projects/runtimeConfig.js';
 import {
   hasMekaSkillSnapshotEntries,
@@ -28,6 +30,7 @@ export interface PersistedMekaSessionBinding {
 
 export interface ApplyMekaRuntimeConfigDeps {
   resolveRuntimeConfig?: (projectId: string, roleId: string) => Promise<MekaRuntimeConfig>;
+  resolvePlatformSkills?: () => Promise<MekaRuntimeSkill[]>;
   prepareRuntimeMcp?: (entries: readonly MekaRoleMcpEntry[]) => {
     providerIds: string[];
     inlineConfigs: Array<Extract<MekaRoleMcpEntry, { transport: unknown }>>;
@@ -44,6 +47,7 @@ export interface AppliedMekaRuntimeConfig {
   mcpProviderIds: string[];
   inlineMcpCount: number;
   skillsCount: number;
+  platformSkillsCount: number;
   skillSnapshot: MekaSkillSnapshot | null;
   workflow: MekaRuntimeConfig['workflow'] | null;
   workflowRecoveredFromRole: boolean;
@@ -56,6 +60,7 @@ function emptyResult(): AppliedMekaRuntimeConfig {
     mcpProviderIds: [],
     inlineMcpCount: 0,
     skillsCount: 0,
+    platformSkillsCount: 0,
     skillSnapshot: null,
     workflow: null,
     workflowRecoveredFromRole: false,
@@ -81,6 +86,38 @@ const COMBAT_SERVER_WORKER_PROMPT = [
   '若能力不支持或证据不足，supportStatus 使用 unsupported 或 uncertain，并明确要求 Lead 停止当前实现、把简短报告交给服务器程序。',
   '[/SAGA2_COMBAT_REMOTE_SERVER_WORKER]',
 ].join('\n');
+
+const MEKA_PLATFORM_CAPABILITY_CONTEXT = [
+  '[MEKA_PLATFORM_CAPABILITIES]',
+  '这是 Host 为所有普通 Meka 任务提供的平台能力，不受项目、角色、旧任务配置或角色能力选择影响。',
+  '当用户询问能否访问服务器或远程项目时，必须直接调用 mcp_router.list_remote_directory 读取仓库根目录，以真实读取结果回答；读取具体文件用 mcp_router.read_remote_file，搜索内容用 mcp_router.search_remote_files。不要根据启动或绑定状态回答能否访问，也不要先建议 SSH、设置页或手工连接。三条读取工具内部会自动恢复登录、复用或创建并绑定远程项目。',
+  '调用该工具前不要发送“我先连接、确认、绑定或检查”等预告或进度消息，直接调用工具。Host 打开登录框后，保持本次工具调用等待登录结果并自动继续；等待期间不得提前生成终态回复。',
+  '只有读取工具明确返回 fallbackUserAction 时，才向用户说明最小必要动作；没有 fallbackUserAction 时不得要求用户配置连接。绑定或准备状态不是读取成功的证据。',
+  '远程项目只读能力、MCP、远程 Agent 与 Orca Worker 是递进能力：普通读取优先使用远程项目，只在直接能力不足或用户明确需要独立执行时升级。',
+  '[/MEKA_PLATFORM_CAPABILITIES]',
+].join('\n');
+
+const MEKA_PLATFORM_MCP: MekaRoleMcpEntry = {
+  id: 'mcp-router',
+  providerId: 'mcp-router',
+  enabled: true,
+};
+
+function mergePlatformSkills(
+  current: readonly MekaRuntimeSkill[],
+  platform: readonly MekaRuntimeSkill[],
+): MekaRuntimeSkill[] {
+  const merged = new Map(current.map((skill) => [skill.id, skill]));
+  for (const skill of platform) merged.set(skill.id, skill);
+  return [...merged.values()];
+}
+
+function mergePlatformMcp(current: readonly MekaRoleMcpEntry[]): MekaRoleMcpEntry[] {
+  if (current.some((entry) => 'providerId' in entry && entry.providerId === 'mcp-router')) {
+    return [...current];
+  }
+  return [MEKA_PLATFORM_MCP, ...current];
+}
 
 function roleContextPrompt(runtime: MekaRuntimeConfig): string {
   return [
@@ -158,6 +195,7 @@ export async function applyMekaRuntimeConfig(
   }
 
   const resolveRuntime = deps.resolveRuntimeConfig ?? resolveMekaRuntimeConfig;
+  const resolvePlatformSkills = deps.resolvePlatformSkills ?? resolveMekaPlatformRuntimeSkills;
   const prepareMcp = deps.prepareRuntimeMcp ?? prepareMekaRuntimeMcp;
 
   let runtime: MekaRuntimeConfig;
@@ -177,8 +215,23 @@ export async function applyMekaRuntimeConfig(
     Boolean(opts.remoteHostId) &&
     ((opts.vendorOptions as Record<string, unknown> | undefined)?.orcaRole === 'worker' ||
       opts.orcaRole === 'worker');
-  const runtimeMcpEntries = isCombatServerWorker ? [] : runtime.mcp;
-  const runtimeSkills = isCombatServerWorker ? [] : runtime.skills;
+  let platformSkills: MekaRuntimeSkill[] = [];
+  if (!isCombatServerWorker) {
+    try {
+      platformSkills = await resolvePlatformSkills();
+    } catch (error) {
+      throwIpcError(
+        'INVALID_PARAMS',
+        `Meka platform capabilities failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+  const runtimeMcpEntries = isCombatServerWorker ? [] : mergePlatformMcp(runtime.mcp);
+  const runtimeSkills = isCombatServerWorker
+    ? []
+    : mergePlatformSkills(runtime.skills, platformSkills);
 
   let mcp: ReturnType<typeof prepareMcp>;
   try {
@@ -217,6 +270,7 @@ export async function applyMekaRuntimeConfig(
       opts.userPrompt = prependPromptSection(opts.userPrompt, runtimePrompt);
     }
     opts.userPrompt = prependPromptSection(opts.userPrompt, roleContextPrompt(runtime));
+    opts.userPrompt = prependPromptSection(opts.userPrompt, MEKA_PLATFORM_CAPABILITY_CONTEXT);
   }
 
   let combatEnvironmentReceipt: string | undefined;
@@ -302,6 +356,7 @@ export async function applyMekaRuntimeConfig(
     mcpProviderIds: mcp.providerIds,
     inlineMcpCount: mcp.inlineConfigs.length,
     skillsCount: runtimeSkills.length,
+    platformSkillsCount: platformSkills.length,
     skillSnapshot,
     workflow: runtime.workflow ?? null,
     workflowRecoveredFromRole: runtime.workflowRecoveredFromRole,

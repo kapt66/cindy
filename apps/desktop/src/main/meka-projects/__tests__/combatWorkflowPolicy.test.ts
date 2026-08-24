@@ -343,6 +343,30 @@ describe('combat workflow host policy', () => {
     ).resolves.toMatchObject({ behavior: 'deny' });
   });
 
+  it('treats bound remote-project reference routes as read-only evidence without a Worker', async () => {
+    const options = vendor();
+    services.router.listProjectTools.mockResolvedValue([]);
+    await expect(
+      evaluateCombatToolExecution(
+        context(options, {
+          toolName: 'mcp__mcp_router__call_tool',
+          input: { name: 'git.show', args: { sha: 'a'.repeat(40) } },
+          action: { kind: 'mcp' },
+        }),
+      ),
+    ).resolves.toEqual({ behavior: 'allow' });
+
+    await expect(
+      evaluateCombatToolExecution(
+        context(options, {
+          toolName: 'mcp__mcp_router__call_tool',
+          input: { name: 'git.commit', args: { message: 'should remain blocked' } },
+          action: { kind: 'mcp' },
+        }),
+      ),
+    ).resolves.toMatchObject({ behavior: 'deny' });
+  });
+
   it('allows a plain Select-String inspection but rejects PowerShell side effects', async () => {
     const options = vendor();
     const readOnlyCommand =

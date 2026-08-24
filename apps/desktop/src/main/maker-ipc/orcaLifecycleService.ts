@@ -220,9 +220,18 @@ export function createOrcaLifecycleService(deps: OrcaLifecycleDeps): OrcaLifecyc
   }
 
   async function createWorker(params: OrcaWorkerCreateParams): Promise<OrcaWorkerCreationResult> {
-    const team = await deps.getActiveTeamByLead(params.leadSessionId);
+    let team = await deps.getActiveTeamByLead(params.leadSessionId);
+    let automaticallyStartedTeam = false;
     if (!team) {
-      return { ok: false, errorCode: 'NOT_FOUND', message: 'no active team for this lead' };
+      const started = await startTeam({
+        leadSessionId: params.leadSessionId,
+        workerPermissionMode: params.workerPermissionMode,
+      });
+      if (!started.ok) {
+        return { ok: false, errorCode: 'INTERNAL', message: started.message };
+      }
+      team = { id: started.teamId, leadSessionId: params.leadSessionId };
+      automaticallyStartedTeam = true;
     }
     const initialTask = hasNonEmptyInitialTask(params.initialTask) ? params.initialTask : undefined;
     const workerPermissionMode = workerPermissionModeForCreate(params.workerPermissionMode);
@@ -231,7 +240,14 @@ export function createOrcaLifecycleService(deps: OrcaLifecycleDeps): OrcaLifecyc
       teamId: team.id,
       workerPermissionMode,
     });
-    if (!created.ok) return created;
+    if (!created.ok) {
+      if (automaticallyStartedTeam) {
+        await deps.markTeamEnded(team.id, 'failed').catch(() => undefined);
+        await deps.setSessionOrcaRole(params.leadSessionId, null).catch(() => undefined);
+        await deps.clearLeadVendorOptions(params.leadSessionId).catch(() => undefined);
+      }
+      return created;
+    }
 
     const dispatchResult = initialTask
       ? await dispatchInitialTask({

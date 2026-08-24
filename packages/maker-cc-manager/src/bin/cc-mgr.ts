@@ -380,6 +380,11 @@ async function runDaemon(socketPath: string): Promise<void> {
         // control 分支)—— 与 desktop 本地分支同一注入方式,经 spread 绕过类型检查。
         ...(getOAuthToken ? { getOAuthToken: getOAuthToken as any } : {}),
         ...(extraOptions ?? {}),
+        // MCPRouter resolves and verifies the remote runtime binary before
+        // starting this daemon. Its explicit path must win over session input.
+        ...(process.env.CC_MGR_CLAUDE_BIN
+          ? { pathToClaudeCodeExecutable: process.env.CC_MGR_CLAUDE_BIN }
+          : {}),
         // Daemon-owned hooks must win over JSON extraOptions. They enforce
         // host routing before Claude's permission mode and setting rules.
         ...(hooks ? { hooks: hooks as any } : {}),

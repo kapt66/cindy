@@ -16,9 +16,23 @@ vi.mock('../../security/trustedAppRenderer.js', () => ({
   isTrustedAppRendererWindow: trusted,
 }));
 
-import { MEKA_ROUTER_OPEN_LOGIN_CHANNEL, openMekaRouterLoginWindow } from '../routerLoginWindow.js';
+import {
+  cancelMekaRouterLogin,
+  completeMekaRouterLogin,
+  markMekaRouterLoginPresented,
+  MEKA_ROUTER_OPEN_LOGIN_CHANNEL,
+  openMekaRouterLoginWindow,
+  requestMekaRouterLogin,
+} from '../routerLoginWindow.js';
 
-function fakeWindow(input: { visible?: boolean; minimized?: boolean; destroyed?: boolean } = {}) {
+function fakeWindow(
+  input: {
+    visible?: boolean;
+    minimized?: boolean;
+    destroyed?: boolean;
+    url?: string;
+  } = {},
+) {
   return {
     isDestroyed: vi.fn(() => input.destroyed ?? false),
     isVisible: vi.fn(() => input.visible ?? true),
@@ -26,7 +40,10 @@ function fakeWindow(input: { visible?: boolean; minimized?: boolean; destroyed?:
     show: vi.fn(),
     restore: vi.fn(),
     focus: vi.fn(),
-    webContents: { send: vi.fn() },
+    webContents: {
+      getURL: vi.fn(() => input.url ?? 'https://app.example/#/cc-agent/new'),
+      send: vi.fn(),
+    },
   };
 }
 
@@ -56,5 +73,78 @@ describe('MCPRouter login window presenter', () => {
 
     expect(openMekaRouterLoginWindow()).toBe(false);
     expect(untrusted.webContents.send).not.toHaveBeenCalled();
+  });
+
+  it('ignores a focused detached sidebar and sends the login event to the main shell', () => {
+    const sidebar = fakeWindow({ url: 'https://app.example/?sidebarWindow=1#/sidebar-window' });
+    const main = fakeWindow();
+    electron.getFocusedWindow.mockReturnValue(sidebar);
+    electron.getAllWindows.mockReturnValue([sidebar, main]);
+    trusted.mockReturnValue(true);
+
+    expect(openMekaRouterLoginWindow()).toBe(true);
+    expect(sidebar.webContents.send).not.toHaveBeenCalled();
+    expect(main.webContents.send).toHaveBeenCalledWith(MEKA_ROUTER_OPEN_LOGIN_CHANNEL);
+    expect(main.focus).toHaveBeenCalledOnce();
+  });
+
+  it('does not report success when only utility app windows exist', () => {
+    const utility = fakeWindow({ url: 'https://app.example/?view=voice-input-overlay' });
+    electron.getFocusedWindow.mockReturnValue(utility);
+    electron.getAllWindows.mockReturnValue([utility]);
+    trusted.mockReturnValue(true);
+
+    expect(openMekaRouterLoginWindow()).toBe(false);
+    expect(utility.webContents.send).not.toHaveBeenCalled();
+  });
+
+  it('ignores the resource usage window when selecting the login target', () => {
+    const resourceUsage = fakeWindow({
+      url: 'https://app.example/?resourceUsageWindow=1#/resource-usage-window',
+    });
+    const main = fakeWindow();
+    electron.getFocusedWindow.mockReturnValue(resourceUsage);
+    electron.getAllWindows.mockReturnValue([resourceUsage, main]);
+    trusted.mockReturnValue(true);
+
+    expect(openMekaRouterLoginWindow()).toBe(true);
+    expect(resourceUsage.webContents.send).not.toHaveBeenCalled();
+    expect(main.webContents.send).toHaveBeenCalledWith(MEKA_ROUTER_OPEN_LOGIN_CHANNEL);
+  });
+
+  it('waits for the presented login dialog and resumes after a successful connection', async () => {
+    const main = fakeWindow();
+    electron.getAllWindows.mockReturnValue([main]);
+    trusted.mockReturnValue(true);
+
+    const resultPromise = requestMekaRouterLogin();
+    const request = main.webContents.send.mock.calls[0]?.[1] as { requestId: string };
+    expect(request.requestId).toBeTruthy();
+    expect(markMekaRouterLoginPresented(request.requestId)).toBe(true);
+    expect(completeMekaRouterLogin()).toBe(true);
+
+    await expect(resultPromise).resolves.toEqual({ opened: true, outcome: 'connected' });
+  });
+
+  it('deduplicates concurrent login requests and lets the renderer cancel the shared wait', async () => {
+    const main = fakeWindow();
+    electron.getAllWindows.mockReturnValue([main]);
+    trusted.mockReturnValue(true);
+
+    const first = requestMekaRouterLogin();
+    const second = requestMekaRouterLogin();
+    const request = main.webContents.send.mock.calls[0]?.[1] as { requestId: string };
+    expect(first).toBe(second);
+    expect(main.webContents.send).toHaveBeenCalledOnce();
+    expect(cancelMekaRouterLogin(request.requestId)).toBe(true);
+
+    await expect(first).resolves.toEqual({ opened: false, outcome: 'cancelled' });
+  });
+
+  it('returns unavailable when no main shell can present the login dialog', async () => {
+    await expect(requestMekaRouterLogin()).resolves.toEqual({
+      opened: false,
+      outcome: 'unavailable',
+    });
   });
 });

@@ -79,6 +79,48 @@ function setup(initial: Record<string, unknown> = {}) {
 }
 
 describe('MekaRouterService', () => {
+  it('reconnects from Host-owned stored credentials without user configuration', async () => {
+    const fixture = setup({
+      routerUrl: 'https://router.example/',
+      routerUsername: 'meka-user',
+    });
+    fixture.secrets.set('meka.router.password', 'stored-password');
+
+    await expect(fixture.service.reconnectStored()).resolves.toBe(true);
+
+    expect(fixture.client.login).toHaveBeenCalledWith(
+      'https://router.example',
+      'meka-user',
+      'stored-password',
+    );
+    expect(fixture.secrets.get('meka.router.sessionToken')).toBe('session-token');
+    expect(fixture.secrets.get('meka.router.clientKey')).toBe('client-key');
+  });
+
+  it('automatically reconnects before a real remote read', async () => {
+    const fixture = setup({
+      routerUrl: 'https://router.example/',
+      routerUsername: 'meka-user',
+    });
+    fixture.secrets.set('meka.router.password', 'stored-password');
+    vi.mocked(fixture.client.listInstances).mockResolvedValue([]);
+
+    await expect(fixture.service.listInstances()).resolves.toEqual([]);
+
+    expect(fixture.client.login).toHaveBeenCalledOnce();
+    expect(fixture.client.listInstances).toHaveBeenCalledWith(
+      'https://router.example',
+      'session-token',
+    );
+  });
+
+  it('does not invent credentials when automatic reconnect has no saved account', async () => {
+    const fixture = setup();
+
+    await expect(fixture.service.reconnectStored()).resolves.toBe(false);
+    expect(fixture.client.login).not.toHaveBeenCalled();
+  });
+
   it('normalizes Claude and Codex instances with the stable API id as remote identity', async () => {
     const fixture = setup({ routerUrl: 'https://router.example/' });
     fixture.secrets.set('meka.router.sessionToken', 'existing-session');
@@ -141,6 +183,42 @@ describe('MekaRouterService', () => {
       'https://router.example',
       'existing-session',
       expect.objectContaining({ route: 'other-configs.get' }),
+    );
+  });
+
+  it('calls a project capability only for an instance bound to that project', async () => {
+    const fixture = setup({
+      routerUrl: 'https://router.example/',
+      projectRemoteInstanceIds: { 'project-1': ['instance-1'] },
+    });
+    fixture.secrets.set('meka.router.sessionToken', 'existing-session');
+    vi.mocked(fixture.client.callPluginCapability).mockResolvedValue({
+      ok: true,
+      contractVersion: 1,
+      route: 'git.tree',
+      output: { entries: [] },
+    });
+
+    await expect(
+      fixture.service.callProjectCapability('project-1', 'git.tree', {
+        instanceId: 'instance-1',
+      }),
+    ).resolves.toMatchObject({ ok: true, route: 'git.tree' });
+    await expect(
+      fixture.service.callProjectCapability('project-1', 'git.tree', {
+        instanceId: 'instance-2',
+      }),
+    ).rejects.toThrow('instance is not bound to project project-1');
+
+    expect(fixture.client.callPluginCapability).toHaveBeenCalledWith(
+      'https://router.example',
+      'existing-session',
+      {
+        contractVersion: 1,
+        route: 'git.tree',
+        scope: 'selected-instance',
+        input: { instanceId: 'instance-1' },
+      },
     );
   });
 

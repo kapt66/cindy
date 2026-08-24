@@ -6743,7 +6743,9 @@ interface ElectronAPI {
     router: {
       get: () => Promise<import('../shared/meka-router').MekaRouterSettingsView>;
 
-      onOpenLogin: (callback: () => void) => () => void;
+      onOpenLogin: (callback: (requestId: string | null) => void) => () => void;
+
+      reportLoginState: (requestId: string, state: 'presented' | 'cancelled') => Promise<boolean>;
 
       connect: (input: { routerUrl: string; username: string; password: string }) => Promise<void>;
 

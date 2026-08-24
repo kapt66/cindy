@@ -200,6 +200,7 @@ export function createMekaRouterService(deps: MekaRouterServiceDeps) {
     deps.mkdir ??
     ((directoryPath) => fs.mkdir(directoryPath, { recursive: true }).then(() => undefined));
   let sequence = 0;
+  let reconnectInFlight: Promise<boolean> | null = null;
 
   async function load(): Promise<JsonRecord> {
     const content = await readFile(deps.configPath);
@@ -228,20 +229,33 @@ export function createMekaRouterService(deps: MekaRouterServiceDeps) {
   }
 
   async function auth(): Promise<{ baseUrl: string; token: string; clientKey: string }> {
-    const raw = await load();
-    const configuredBaseUrl = text(raw.routerUrl);
-    const baseUrl = configuredBaseUrl ? client.normalizeBaseUrl(configuredBaseUrl) : null;
-    const token = deps.vault.read(SECRET_KEYS.sessionToken);
-    const clientKey = deps.vault.read(SECRET_KEYS.clientKey);
+    let raw = await load();
+    let configuredBaseUrl = text(raw.routerUrl);
+    let baseUrl = configuredBaseUrl ? client.normalizeBaseUrl(configuredBaseUrl) : null;
+    let token = deps.vault.read(SECRET_KEYS.sessionToken);
+    let clientKey = deps.vault.read(SECRET_KEYS.clientKey);
+    if ((!baseUrl || !token || !clientKey) && (await reconnectStoredCredentials())) {
+      raw = await load();
+      configuredBaseUrl = text(raw.routerUrl);
+      baseUrl = configuredBaseUrl ? client.normalizeBaseUrl(configuredBaseUrl) : null;
+      token = deps.vault.read(SECRET_KEYS.sessionToken);
+      clientKey = deps.vault.read(SECRET_KEYS.clientKey);
+    }
     if (!baseUrl || !token || !clientKey) throw new Error('MCPRouter is not configured');
     return { baseUrl, token, clientKey };
   }
 
   async function sessionAuth(): Promise<{ baseUrl: string; token: string }> {
-    const raw = await load();
-    const configuredBaseUrl = text(raw.routerUrl);
-    const baseUrl = configuredBaseUrl ? client.normalizeBaseUrl(configuredBaseUrl) : null;
-    const token = deps.vault.read(SECRET_KEYS.sessionToken);
+    let raw = await load();
+    let configuredBaseUrl = text(raw.routerUrl);
+    let baseUrl = configuredBaseUrl ? client.normalizeBaseUrl(configuredBaseUrl) : null;
+    let token = deps.vault.read(SECRET_KEYS.sessionToken);
+    if ((!baseUrl || !token) && (await reconnectStoredCredentials())) {
+      raw = await load();
+      configuredBaseUrl = text(raw.routerUrl);
+      baseUrl = configuredBaseUrl ? client.normalizeBaseUrl(configuredBaseUrl) : null;
+      token = deps.vault.read(SECRET_KEYS.sessionToken);
+    }
     if (!baseUrl || !token) throw new Error('MCPRouter is not configured');
     return { baseUrl, token };
   }
@@ -332,6 +346,27 @@ export function createMekaRouterService(deps: MekaRouterServiceDeps) {
     }
   }
 
+  async function reconnectStoredCredentials(): Promise<boolean> {
+    if (reconnectInFlight) return reconnectInFlight;
+    const attempt = (async () => {
+      const raw = await load();
+      const username = text(raw.routerUsername);
+      const password = deps.vault.read(SECRET_KEYS.password);
+      if (!username || !password) return false;
+      const configuredBaseUrl = text(raw.routerUrl);
+      const baseUrl = client.normalizeBaseUrl(configuredBaseUrl ?? DEFAULT_MEKA_MCPROUTER_URL);
+      const token = await client.login(baseUrl, username, password);
+      await completeConnection(baseUrl, username, password, token);
+      return true;
+    })();
+    reconnectInFlight = attempt;
+    try {
+      return await attempt;
+    } finally {
+      if (reconnectInFlight === attempt) reconnectInFlight = null;
+    }
+  }
+
   async function saveMekaDesignEndpoint(raw: JsonRecord, url: string): Promise<void> {
     const previousUrl = deps.vault.read(SECRET_KEYS.mekaDesignUrl);
     deps.vault.store(SECRET_KEYS.mekaDesignUrl, url);
@@ -384,6 +419,34 @@ export function createMekaRouterService(deps: MekaRouterServiceDeps) {
     async callPluginCapability(request: McprCallRequest): Promise<McprCallResponse> {
       const { baseUrl, token } = await sessionAuth();
       return client.callPluginCapability(baseUrl, token, request);
+    },
+
+    async callProjectCapability(
+      projectId: string,
+      route: string,
+      input: Record<string, unknown>,
+    ): Promise<McprCallResponse> {
+      const raw = await load();
+      const bindings = isRecord(raw.projectRemoteInstanceIds) ? raw.projectRemoteInstanceIds : {};
+      const selected = bindings[projectId];
+      const allowed = new Set(
+        Array.isArray(selected)
+          ? selected.filter((item): item is string => typeof item === 'string')
+          : [],
+      );
+      const instanceId = text(input.instanceId);
+      if (!instanceId || !allowed.has(instanceId)) {
+        throw new Error(
+          `MCPRouter instance is not bound to project ${projectId}: ${instanceId ?? 'missing'}`,
+        );
+      }
+      const { baseUrl, token } = await sessionAuth();
+      return client.callPluginCapability(baseUrl, token, {
+        contractVersion: MCPR_CAPABILITY_CONTRACT_VERSION,
+        route,
+        scope: 'selected-instance',
+        input,
+      });
     },
 
     /** Main-only binary channel. The caller owns bounded streaming and digest verification. */
@@ -460,6 +523,11 @@ export function createMekaRouterService(deps: MekaRouterServiceDeps) {
       const token = deps.vault.read(SECRET_KEYS.sessionToken);
       const clientKey = deps.vault.read(SECRET_KEYS.clientKey);
       return { configured: !!routerUrl && !!token && !!clientKey };
+    },
+
+    /** Re-establish the Router session from Host-owned encrypted credentials. */
+    async reconnectStored(): Promise<boolean> {
+      return reconnectStoredCredentials();
     },
 
     async connect(routerUrl: string, username: string, password: string): Promise<void> {

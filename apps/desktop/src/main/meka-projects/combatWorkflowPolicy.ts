@@ -39,6 +39,22 @@ const READ_ONLY_ROUTER_CONTROL_TOOLS = new Set([
   'mcp_list_servers',
   'mcp_list_resources',
 ]);
+const READ_ONLY_ROUTER_PROJECT_TOOLS = new Set([
+  'projects.list',
+  'project-instances.list',
+  'git.preview',
+  'git.tree',
+  'git.read',
+  'git.search',
+  'git.diff',
+  'git.log',
+  'git.branches',
+  'git.show',
+]);
+
+function isKnownReadOnlyRouterProjectTool(tool: string): boolean {
+  return READ_ONLY_ROUTER_PROJECT_TOOLS.has(tool);
+}
 
 export function isCombatEnvironmentRecoveryControlTool(name: string): boolean {
   return READ_ONLY_ROUTER_CONTROL_TOOLS.has(name);
@@ -295,6 +311,7 @@ async function isRouterReadOnly(projectId: string, tool: string, input: unknown)
   const inner = progressiveInnerCall(input);
   if (!inner) return false;
   if (READ_ONLY_ROUTER_CONTROL_TOOLS.has(inner.name)) return true;
+  if (isKnownReadOnlyRouterProjectTool(inner.name)) return true;
   const tools = await getMekaRouterService().listProjectTools(projectId);
   const definition = tools.find((candidate) => text(candidate.name) === inner.name);
   const annotations = record(definition?.annotations);
@@ -329,6 +346,9 @@ function isEnvironmentRecoveryMcp(context: HostToolExecutionContext): boolean {
       'list_project_remote_instances',
       'list_remote_instances',
       'list_remote_project_templates',
+      'list_remote_directory',
+      'read_remote_file',
+      'search_remote_files',
       'create_remote_instance',
       'bind_remote_instance',
     ].includes(target.tool)

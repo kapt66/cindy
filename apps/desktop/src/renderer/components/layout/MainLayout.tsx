@@ -225,13 +225,40 @@ export function MainLayout() {
   const splitGroup = useSplitGroup();
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(getInitialCollapsed);
   const [routerLoginOpen, setRouterLoginOpen] = useState(false);
-  const [routerLoginSettings, setRouterLoginSettings] = useState<MekaRouterSettingsView | null>(null);
-  useEffect(() => window.electronAPI.mekaSettings.router.onOpenLogin(() => {
-    void window.electronAPI.mekaSettings.router.get()
-      .then(setRouterLoginSettings)
-      .catch(() => setRouterLoginSettings(null))
-      .finally(() => setRouterLoginOpen(true));
-  }), []);
+  const [routerLoginSettings, setRouterLoginSettings] = useState<MekaRouterSettingsView | null>(
+    null,
+  );
+  const [routerLoginRequestId, setRouterLoginRequestId] = useState<string | null>(null);
+  useEffect(
+    () =>
+      window.electronAPI.mekaSettings.router.onOpenLogin((requestId) => {
+        void window.electronAPI.mekaSettings.router
+          .get()
+          .then(setRouterLoginSettings)
+          .catch(() => setRouterLoginSettings(null))
+          .finally(() => {
+            setRouterLoginRequestId(requestId);
+            setRouterLoginOpen(true);
+          });
+      }),
+    [],
+  );
+  useEffect(() => {
+    if (!routerLoginOpen || !routerLoginRequestId) return;
+    void window.electronAPI.mekaSettings.router.reportLoginState(routerLoginRequestId, 'presented');
+  }, [routerLoginOpen, routerLoginRequestId]);
+  const handleRouterLoginOpenChange = useCallback(
+    (open: boolean) => {
+      setRouterLoginOpen(open);
+      if (open) return;
+      const requestId = routerLoginRequestId;
+      setRouterLoginRequestId(null);
+      if (requestId) {
+        void window.electronAPI.mekaSettings.router.reportLoginState(requestId, 'cancelled');
+      }
+    },
+    [routerLoginRequestId],
+  );
   const [shareImportRequest, setShareImportRequest] = useState<{
     id: number;
     filePath: string;
@@ -1010,9 +1037,7 @@ export function MainLayout() {
     writeCollapsedFor(rightSidebarSessionId, false);
     const snapshot = getTabSnapshot(rightSidebarSessionId);
     const handoff = snapshot ? { snapshots: [snapshot] } : undefined;
-    void window.electronAPI.rightSidebarWindow
-      .setDetached(true, handoff)
-      .catch(() => undefined);
+    void window.electronAPI.rightSidebarWindow.setDetached(true, handoff).catch(() => undefined);
   }, [rightSidebarSessionId]);
 
   const handlePageZoomIn = useCallback(() => {
@@ -1600,21 +1625,21 @@ export function MainLayout() {
           rightSidebarAvailable &&
           rsbWindow.loaded &&
           (rsbDetached || isRightSidebarCollapsed) && (
-          <div
-            className="absolute right-0 top-0 z-50 flex h-[46px] items-center gap-1 pr-2"
-            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-          >
-            {/* 固定唤起入口只负责显示 / 聚焦。detach / maximize / 收起属于面板自身，
+            <div
+              className="absolute right-0 top-0 z-50 flex h-[46px] items-center gap-1 pr-2"
+              style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+            >
+              {/* 固定唤起入口只负责显示 / 聚焦。detach / maximize / 收起属于面板自身，
                 在 RightSidebarShell 的顶栏内渲染，不再与本入口混用。 */}
-            <RightSidebarToggle
-              size="toolbar"
-              action="show"
-              collapsed={rsbDetached ? !rsbWindow.open : isRightSidebarCollapsed}
-              onToggle={handleOpenRightSidebar}
-              side={rightSidebarSide}
-            />
-          </div>
-        )}
+              <RightSidebarToggle
+                size="toolbar"
+                action="show"
+                collapsed={rsbDetached ? !rsbWindow.open : isRightSidebarCollapsed}
+                onToggle={handleOpenRightSidebar}
+                side={rightSidebarSide}
+              />
+            </div>
+          )}
       </div>
       {/* Update notice dialog -- mounted inside FeatureSidebarSlotProvider (ThemeProvider scope) */}
       {releaseNotes && (
@@ -1632,7 +1657,7 @@ export function MainLayout() {
       <MekaRouterConnectDialog
         open={routerLoginOpen}
         settings={routerLoginSettings}
-        onOpenChange={setRouterLoginOpen}
+        onOpenChange={handleRouterLoginOpenChange}
         onConnected={async () => {
           setRouterLoginSettings(await window.electronAPI.mekaSettings.router.get());
         }}

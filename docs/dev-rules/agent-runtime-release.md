@@ -17,9 +17,13 @@
   不能只以 HTTP 200、文件存在或 gzip 可解压作为成功条件。
 - `maker-cc-manager` bundle 不使用上述 runtime 版本号；它由
   `packages/maker-cc-manager/src/protocol.ts` 的 `CC_MGR_BUNDLE_VERSION` 单独 pin。当前为
-  `0.0.7/protocol 3`，增加了任意二进制 Skill 文件的规范 base64 投递。修改该 pin 后必须运行
+  `0.0.9/protocol 4`，在 protocol 3 的任意二进制 Skill 文件规范 base64 投递之上增加了
+  Full access 前的 subagent 模型能力预检。修改该 pin 后必须运行
   `pnpm --filter @cindy/maker-cc-manager bundle`，并让 MCPRouter 从同一 Cindy 源码重建、探测
   和重启 daemon；只发布 Claude/Codex runtime 资产不会更新 cc-manager。
+- MCPRouter 的构建探针、daemon 启动探针和 agent-tunnel smoke 必须声明同一精确 pin，且
+  完整构建必须对 `CINDY_SRC` 当场生成的 bundle 执行 `--version` 探针。任一消费者或源码
+  checkout 不一致都必须在镜像构建前失败，不能等到用户创建远程 Worker 才发现。
 - 依赖 MCPRouter 原生 Skill 投递的强制工作流必须在业务探索前执行 capability hello，并以
   `CC_MGR_BUNDLE_VERSION` 与 protocol 精确匹配作为环境 ready 条件。实例 online、项目已绑定或
   普通 route 可查询都不能替代该握手；不得把旧 bundle 兼容降级成成功。版本错配时应停止业务

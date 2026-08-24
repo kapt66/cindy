@@ -89,7 +89,8 @@ function fail(
  *    `voice-input-dictionary-toast`、权限引导 `computer-permission-guide` 与它的
  *    backdrop。这里按 **`view` 这个 key** 排除而不是枚举取值 —— 它是 app 的 utility
  *    窗约定,枚举取值就等着下一个新窗口再漏一次(review 第三轮)。
- * 3. **插件面板独立窗**(`?ghostPanelWindow=<id>`)与**右侧栏独立窗**(`?sidebarWindow=1`):
+ * 3. **插件面板独立窗**(`?ghostPanelWindow=<id>`)、**右侧栏独立窗**(`?sidebarWindow=1`)
+ *    与**资源用量窗**(`?resourceUsageWindow=1`):
  *    与 MainLayout **平级**(router.tsx 两条根路由),只挂轻壳,**没有草稿订阅、也去不了
  *    自动化页** → 投过去静默丢失。而插件面板恰恰可以被用户拉成独立窗口,「在插件面板
  *    上点一下」正是本能力的主使用路径(编写手册 §4.11.2 第 1 步)——那一刻 focused 就是
@@ -120,6 +121,7 @@ export function isMainShellWindowUrl(rawUrl: string): boolean {
     parsed.searchParams.has('view') ||
     parsed.searchParams.has('ghostPanelWindow') ||
     parsed.searchParams.has('sidebarWindow') ||
+    parsed.searchParams.has('resourceUsageWindow') ||
     // 会话副窗:挂完整壳、技术上接得住,但它不是用户建任务时看的那个窗口。
     // 取 === '1' 而不是 has():带 secondaryWindow=0 的主窗不该被误排除。
     parsed.searchParams.get('secondaryWindow') === '1'
@@ -172,7 +174,10 @@ export class GhostScheduleSlot {
       }
     }
 
-    const name = sanitizeGhostNoticeText(request.name).slice(0, GHOST_SCHEDULE_DRAFT_NAME_MAX_CHARS);
+    const name = sanitizeGhostNoticeText(request.name).slice(
+      0,
+      GHOST_SCHEDULE_DRAFT_NAME_MAX_CHARS,
+    );
     const prompt = sanitizeGhostNoticeText(request.prompt).slice(
       0,
       GHOST_SCHEDULE_DRAFT_PROMPT_MAX_CHARS,
@@ -193,10 +198,7 @@ export class GhostScheduleSlot {
     // 频率建议只上调不下调(见文件头注释)。
     const intervalMs =
       typeof request.intervalMs === 'number'
-        ? Math.max(
-            Math.floor(request.intervalMs),
-            GHOST_SCHEDULE_DRAFT_MIN_INTERVAL_SUGGESTION_MS,
-          )
+        ? Math.max(Math.floor(request.intervalMs), GHOST_SCHEDULE_DRAFT_MIN_INTERVAL_SUGGESTION_MS)
         : undefined;
 
     const delivered = this.deps.sendToWindow({
