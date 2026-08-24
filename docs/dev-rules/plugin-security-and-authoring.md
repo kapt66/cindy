@@ -488,6 +488,12 @@
 用户确认安装或更新成功后写入 Meka 独立账本；不得写入 `ghost.json`，普通 Forge、
 拖入和双击安装也不得自行推断 Meka 归属。
 
+两个市场服务必须通过各自注入的 owner-scoped ledger resolver 绑定账本：Cindy 使用
+`plugin-market/ledger.v1.json`，Meka 使用 `plugin-market/meka-ledger.v1.json`。
+`PluginMarketService` 的 owner 绑定不得硬编码任一渠道文件名；否则历史 Cindy 默认安装会
+被 Meka 当成 MCPRouter 安装，或 Meka 安装会污染 Cindy 市场。回归测试必须同时写入两份
+账本并断言每个 service 只读自己的来源。
+
 反向同样成立：改校验必须同步手册；改手册宣称的新能力必须真有实现。`forge.test.ts` 的
 关键章节存在性测试只是最低闸，不替代逐条人工核对。
 

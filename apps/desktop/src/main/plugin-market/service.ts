@@ -2755,7 +2755,11 @@ export class PluginMarketService {
 
   private ledgerForOwner(owner: ActiveAppSession): PluginMarketLedger {
     requireSameMarketOwner(owner);
-    return this.ledger.bind(ownerScopedUserDataPath('plugin-market', 'ledger.v1.json'));
+    // The ledger instance is channel-specific: Cindy uses ledger.v1.json while
+    // Meka injects meka-ledger.v1.json. Bind the injected resolver at operation
+    // start so owner changes cannot move a captured operation to another owner,
+    // without collapsing the two distribution channels back onto one file.
+    return this.ledger.bind();
   }
 
   private withLedgerMutation<T>(

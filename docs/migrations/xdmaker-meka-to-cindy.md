@@ -1028,6 +1028,15 @@ ledger。Meka IPC 同步透传共享安装服务已有的 `reviewedBaseline` 与
 Desktop typecheck 通过；共享详情返回 Meka 首页且不再显示 Cindy 市场动作，真实 Router 数据
 和 Light/Dark 实机检查仍待开发者手测。
 
+2026-08-24 市场账本隔离修复：Meka 服务虽然注入了 `meka-ledger.v1.json`，旧的
+`PluginMarketService.ledgerForOwner()` 却在 owner 绑定时硬编码回 `ledger.v1.json`，导致
+上游 Cindy 企业市场的历史默认安装被错误投影到 Meka 已安装集合。现改为使用服务实例注入的
+ledger resolver，在操作开始时完成 owner-safe bind；普通 Cindy 仍使用 `ledger.v1.json`，
+Meka 只使用 `meka-ledger.v1.json`，且继续关闭 Meka defaultInstall 与 legacy adoption。
+两份账本交叉写入的隔离回归已加入 Desktop plugin-market service tests。该修复不迁移、不删除
+已有插件目录或凭证；存量 Cindy 安装继续由原账本读取，Meka 历史误读不会被自动复制到 Meka
+账本。
+
 2026-08-05 Meka 插件来源筛选回审补齐动态 `all` 选项的四语文案；页面使用上游来源筛选并集，
 Meka locale 需同步提供 `settings.ghosts.meka.origin.all`，避免把 i18n key 直接显示给用户。
 

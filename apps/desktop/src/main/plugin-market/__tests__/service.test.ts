@@ -303,6 +303,38 @@ function mockUninstallDropsGhost(failFor?: string): void {
 }
 
 describe('PluginMarketService migration and defaultInstall', () => {
+  it('keeps Cindy and Meka installation ledgers isolated by their injected resolvers', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-plugin-ledger-isolation-'));
+    roots.push(root);
+    const cindyItem = summary({ ghostId: 'cindy-channel-plugin' });
+    const mekaItem = summary({
+      id: `c${'d'.repeat(24)}`,
+      ghostId: 'meka-channel-plugin',
+    });
+    runtime.ghosts = [ghostEntry(cindyItem.ghostId), ghostEntry(mekaItem.ghostId)];
+
+    const cindyLedger = new PluginMarketLedger(() => path.join(root, 'ledger.v1.json'));
+    const mekaLedger = new PluginMarketLedger(() => path.join(root, 'meka-ledger.v1.json'));
+    cindyLedger.upsertInstallation(recordForTest(cindyItem));
+    mekaLedger.upsertInstallation(recordForTest(mekaItem));
+
+    const cindyService = new PluginMarketService(undefined, cindyLedger);
+    const mekaService = new PluginMarketService(undefined, mekaLedger, {
+      adoptLegacyInstallations: false,
+      applyDefaultInstalls: false,
+    });
+
+    await expect(cindyService.installedGhostIds()).resolves.toEqual([cindyItem.ghostId]);
+    await expect(mekaService.installedGhostIds()).resolves.toEqual([mekaItem.ghostId]);
+
+    const completeMekaUninstall = mekaService.prepareLocalUninstallTracking(mekaItem.ghostId);
+    expect(completeMekaUninstall).not.toBeNull();
+    await completeMekaUninstall?.();
+
+    expect(cindyLedger.installationForGhost(cindyItem.ghostId)?.installed).toBe(true);
+    expect(mekaLedger.installationForGhost(mekaItem.ghostId)?.installed).toBe(false);
+  });
+
   it('projects same-release display metadata without reinstalling the package', async () => {
     runtime.ghosts = [
       {
