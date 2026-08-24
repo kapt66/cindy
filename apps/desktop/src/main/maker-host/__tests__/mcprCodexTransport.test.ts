@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { ExecStreamHandle } from '@cindy/maker-remote-ssh';
 
-import type { CcManagerByteStream } from '../cc-manager-client';
 import { createMcprCodexTransport } from '../codex-remote-transport';
 
 const logger = {
@@ -11,7 +11,7 @@ const logger = {
   child: () => logger,
 };
 
-interface FakeStream extends CcManagerByteStream {
+interface FakeStream extends ExecStreamHandle {
   written: string[];
   ended: boolean;
   emitBytes(chunk: Buffer): void;
@@ -20,21 +20,23 @@ interface FakeStream extends CcManagerByteStream {
 
 function fakeStream(): FakeStream {
   const byteHandlers = new Set<(chunk: Buffer) => void>();
-  const closeHandlers = new Set<
-    (info: { code: number | null; signal: string | null }) => void
-  >();
+  const closeHandlers = new Set<(info: { code: number | null; signal: string | null }) => void>();
   const errorHandlers = new Set<(error: Error) => void>();
   const stream: FakeStream = {
     written: [],
     ended: false,
     write(data) {
       stream.written.push(String(data));
+      return true;
     },
     end(data) {
       if (data !== undefined) stream.written.push(String(data));
       stream.ended = true;
     },
     kill() {},
+    onStdout() {
+      return () => undefined;
+    },
     onStdoutBytes(handler) {
       byteHandlers.add(handler);
       return () => byteHandlers.delete(handler);
@@ -46,6 +48,12 @@ function fakeStream(): FakeStream {
     onError(handler) {
       errorHandlers.add(handler);
       return () => errorHandlers.delete(handler);
+    },
+    onStderr() {
+      return () => undefined;
+    },
+    onDrain() {
+      return () => undefined;
     },
     emitBytes(chunk) {
       for (const handler of byteHandlers) handler(chunk);

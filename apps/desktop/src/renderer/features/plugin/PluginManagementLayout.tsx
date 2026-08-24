@@ -3,6 +3,8 @@
  *
  * Inputs: active tab, shared search state, optional labels with tab-derived defaults, and actions.
  * Outputs: one width, focus-order-aligned adaptive toolbar, scrolling frame, and transitions.
+ * Settings embeds the same catalog and can intercept Plugins / Skills tab
+ * clicks via `onSelectTab` so the switcher stays inside Settings.
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  */
 
@@ -16,11 +18,7 @@ import { cn } from '@/lib/utils';
 import './plugin-motion.css';
 
 export type PluginManagementTab =
-  | 'meka-plugins'
-  | 'meka-skills'
-  | 'meka-projects'
-  | 'plugins'
-  | 'skills';
+  'meka-plugins' | 'meka-skills' | 'meka-projects' | 'plugins' | 'skills';
 
 interface PluginManagementLayoutProps {
   activeTab: PluginManagementTab;
@@ -30,6 +28,9 @@ interface PluginManagementLayoutProps {
   searchPlaceholder?: string;
   clearSearchLabel?: string;
   headerActions?: ReactNode;
+  showPrimaryTabs?: boolean;
+  embedded?: boolean;
+  onSelectTab?: (tab: 'plugins' | 'skills') => void;
 }
 
 interface PluginManagementHeaderProps {
@@ -39,6 +40,8 @@ interface PluginManagementHeaderProps {
   onQueryChange?: (query: string) => void;
   searchPlaceholder?: string;
   clearSearchLabel?: string;
+  showPrimaryTabs?: boolean;
+  onSelectTab?: (tab: 'plugins' | 'skills') => void;
 }
 
 interface PluginManagementPageProps {
@@ -60,6 +63,15 @@ export const PLUGIN_MANAGEMENT_FRAME_CLASS = 'mx-auto w-full max-w-[920px] px-8 
 export const PLUGIN_MANAGEMENT_CARD_GRID_CLASS =
   'grid grid-cols-[repeat(auto-fit,minmax(min(100%,22.5rem),1fr))] gap-3';
 
+export const PLUGIN_MANAGEMENT_CONTENT_CONTAINER_CLASS = 'plugin-management-content-frame';
+
+/**
+ * Installed cards keep the two-column catalog track even when only one card is
+ * present, so a lone installed plugin does not stretch across the whole page.
+ * The plugin catalog container collapses this to one column at narrow widths.
+ */
+export const PLUGIN_INSTALLED_CARD_GRID_CLASS = 'plugin-installed-card-grid grid grid-cols-2 gap-3';
+
 const PLUGIN_MANAGEMENT_STACKED_MAX_WIDTH = 720;
 
 export function PluginManagementLayout({
@@ -70,15 +82,25 @@ export function PluginManagementLayout({
   searchPlaceholder,
   clearSearchLabel,
   headerActions,
+  showPrimaryTabs = true,
+  embedded = false,
+  onSelectTab,
 }: PluginManagementLayoutProps) {
   return (
-    <div className="plugin-management-layout-root plugin-motion-root flex h-full min-h-0 w-full flex-col bg-[var(--surface)]">
+    <div
+      className={cn(
+        'plugin-management-layout-root plugin-motion-root flex h-full min-h-0 w-full flex-col',
+        embedded ? 'bg-transparent' : 'bg-[var(--surface)]',
+      )}
+    >
       <PluginManagementHeader
         activeTab={activeTab}
         query={query}
         onQueryChange={onQueryChange}
         searchPlaceholder={searchPlaceholder}
         clearSearchLabel={clearSearchLabel}
+        showPrimaryTabs={showPrimaryTabs}
+        onSelectTab={onSelectTab}
       >
         {headerActions}
       </PluginManagementHeader>
@@ -95,6 +117,8 @@ export function PluginManagementHeader({
   onQueryChange,
   searchPlaceholder,
   clearSearchLabel,
+  showPrimaryTabs = true,
+  onSelectTab,
 }: PluginManagementHeaderProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -102,9 +126,7 @@ export function PluginManagementHeader({
   const [stacked, setStacked] = useState(false);
   const searchable = query !== undefined && onQueryChange !== undefined;
   const isMekaTab =
-    activeTab === 'meka-plugins' ||
-    activeTab === 'meka-skills' ||
-    activeTab === 'meka-projects';
+    activeTab === 'meka-plugins' || activeTab === 'meka-skills' || activeTab === 'meka-projects';
   const searchInputId = `plugin-management-${activeTab}-search`;
   const resolvedSearchPlaceholder =
     searchPlaceholder ??
@@ -162,7 +184,7 @@ export function PluginManagementHeader({
         { id: 'skills', label: t('skillhub.home.title'), to: '/skillhub/local' },
       ];
 
-  const tabs = (
+  const tabs = showPrimaryTabs ? (
     <div
       key="plugin-management-tabs"
       className="plugin-motion-tabs inline-flex shrink-0 rounded-full border p-0.5 backdrop-blur-md"
@@ -175,16 +197,31 @@ export function PluginManagementHeader({
         boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--surface-elevated) 24%, transparent)',
       }}
     >
-      {tabItems.map((tab) => (
-        <TabButton
-          key={tab.id}
-          active={activeTab === tab.id}
-          label={tab.label}
-          onClick={() => navigate(tab.to)}
-        />
-      ))}
+      {isMekaTab ? (
+        tabItems.map((tab) => (
+          <TabButton
+            key={tab.id}
+            active={activeTab === tab.id}
+            label={tab.label}
+            onClick={() => navigate(tab.to)}
+          />
+        ))
+      ) : (
+        <>
+          <TabButton
+            active={activeTab === 'plugins'}
+            label={t('settings.ghosts.title')}
+            onClick={() => (onSelectTab ? onSelectTab('plugins') : navigate('/plugins'))}
+          />
+          <TabButton
+            active={activeTab === 'skills'}
+            label={t('skillhub.home.title')}
+            onClick={() => (onSelectTab ? onSelectTab('skills') : navigate('/skillhub/local'))}
+          />
+        </>
+      )}
     </div>
-  );
+  ) : null;
 
   const tools =
     searchable || children ? (
@@ -271,7 +308,14 @@ export function PluginManagementHeader({
 /** Shared breathing room and page-enter hook for the top-level catalogs. */
 export function PluginManagementPage({ children, className }: PluginManagementPageProps) {
   return (
-    <div className={cn(PLUGIN_MANAGEMENT_FRAME_CLASS, 'flex flex-col pb-16 pt-8', className)}>
+    <div
+      className={cn(
+        PLUGIN_MANAGEMENT_FRAME_CLASS,
+        PLUGIN_MANAGEMENT_CONTENT_CONTAINER_CLASS,
+        'flex flex-col pb-16 pt-8',
+        className,
+      )}
+    >
       {children}
     </div>
   );
@@ -296,17 +340,9 @@ function TabButton({
         'plugin-management-tab h-8 min-w-[88px] select-none rounded-full border border-transparent px-4 text-13 font-medium transition-colors',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
         active
-          ? 'plugin-motion-selected text-[var(--text-primary)] shadow-[var(--plugin-card-shadow)]'
+          ? 'plugin-motion-selected text-[var(--text-primary)]'
           : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]',
       )}
-      style={
-        active
-          ? {
-              background: 'color-mix(in srgb, var(--surface-elevated) 86%, transparent)',
-              borderColor: 'color-mix(in srgb, var(--border-default) 48%, transparent)',
-            }
-          : undefined
-      }
     >
       {label}
     </button>

@@ -1,10 +1,10 @@
 import { EventEmitter } from 'node:events';
 
 import WebSocket, { type RawData } from 'ws';
+import type { ExecStreamHandle } from '@cindy/maker-remote-ssh';
 
 import { parseMcprRemoteHostId } from '../../shared/meka-router.js';
 import { getMekaRouterService } from '../meka-settings/ipc.js';
-import type { CcManagerByteStream } from './cc-manager-client.js';
 
 type WebSocketLike = {
   readyState: number;
@@ -16,7 +16,10 @@ type WebSocketLike = {
   on(event: 'message', callback: (data: RawData) => void): unknown;
   on(event: 'close', callback: (code: number, reason: Buffer) => void): unknown;
   on(event: 'error', callback: (error: Error) => void): unknown;
-  on(event: 'unexpected-response', callback: (_request: unknown, response: { statusCode?: number; resume(): void }) => void): unknown;
+  on(
+    event: 'unexpected-response',
+    callback: (_request: unknown, response: { statusCode?: number; resume(): void }) => void,
+  ): unknown;
 };
 
 type WebSocketConstructor = new (
@@ -46,7 +49,7 @@ export async function openMcprTunnel(
     WebSocketCtor?: WebSocketConstructor;
     mode?: 'cc-mgr' | 'codex-appserver';
   } = {},
-): Promise<CcManagerByteStream> {
+): Promise<ExecStreamHandle> {
   const instanceId = parseMcprRemoteHostId(remoteHostId);
   if (!instanceId) throw new Error('[MCPR_INSTANCE_INVALID] invalid MCPRouter host id');
   const auth = await (deps.getAuth ?? (() => getMekaRouterService().getTunnelAuth()))();
@@ -56,12 +59,16 @@ export async function openMcprTunnel(
   });
   socket.binaryType = 'nodebuffer';
 
-  return new Promise<CcManagerByteStream>((resolve, reject) => {
+  return new Promise<ExecStreamHandle>((resolve, reject) => {
     let opened = false;
     const fail = (error: Error) => {
       if (opened) return;
       opened = true;
-      try { socket.terminate?.(); } catch { /* no-op */ }
+      try {
+        socket.terminate?.();
+      } catch {
+        /* no-op */
+      }
       reject(error);
     };
     socket.on('open', () => {
@@ -72,17 +79,19 @@ export async function openMcprTunnel(
     socket.on('error', (error) => fail(classifyError(error)));
     socket.on('unexpected-response', (_request, response) => {
       response.resume();
-      fail(new Error(
-        response.statusCode === 401 || response.statusCode === 403
-          ? `[MCPR_TUNNEL_AUTH] authentication rejected (${response.statusCode})`
-          : `[MCPR_TUNNEL_UNREACHABLE] handshake failed (${response.statusCode ?? 0})`,
-      ));
+      fail(
+        new Error(
+          response.statusCode === 401 || response.statusCode === 403
+            ? `[MCPR_TUNNEL_AUTH] authentication rejected (${response.statusCode})`
+            : `[MCPR_TUNNEL_UNREACHABLE] handshake failed (${response.statusCode ?? 0})`,
+        ),
+      );
     });
     socket.on('close', (code, reason) => fail(classifyClose(code, reason)));
   });
 }
 
-function toByteStream(socket: WebSocketLike): CcManagerByteStream {
+function toByteStream(socket: WebSocketLike): ExecStreamHandle {
   const events = new EventEmitter();
   let closed = false;
   socket.on('message', (data) => events.emit('stdout', toBuffer(data)));
@@ -95,10 +104,12 @@ function toByteStream(socket: WebSocketLike): CcManagerByteStream {
   });
   return {
     write(data) {
-      if (socket.readyState !== WebSocket.OPEN) throw new Error('[MCPR_TUNNEL_UNREACHABLE] tunnel closed');
+      if (socket.readyState !== WebSocket.OPEN)
+        throw new Error('[MCPR_TUNNEL_UNREACHABLE] tunnel closed');
       socket.send(data, (error) => {
         if (error) events.emit('stream-error', classifyError(error));
       });
+      return true;
     },
     end(data) {
       if (data !== undefined) this.write(data);
@@ -111,6 +122,19 @@ function toByteStream(socket: WebSocketLike): CcManagerByteStream {
     onStdoutBytes(callback) {
       events.on('stdout', callback);
       return () => events.off('stdout', callback);
+    },
+    onStdout(callback) {
+      const onBytes = (chunk: Buffer) => callback(chunk.toString('utf8'));
+      events.on('stdout', onBytes);
+      return () => events.off('stdout', onBytes);
+    },
+    onStderr(callback) {
+      events.on('stderr', callback);
+      return () => events.off('stderr', callback);
+    },
+    onDrain(callback) {
+      events.on('drain', callback);
+      return () => events.off('drain', callback);
     },
     onClose(callback) {
       events.on('close', callback);
@@ -139,6 +163,7 @@ function classifyError(error: Error): Error {
 function classifyClose(code: number, reason: Buffer): Error {
   const detail = reason.length ? `: ${reason.toString('utf8')}` : '';
   if (code === 4003) return new Error(`[MCPR_TUNNEL_AUTH] authentication rejected${detail}`);
-  if (code === 4004) return new Error(`[MCPR_INSTANCE_NOT_READY] project instance is not ready${detail}`);
+  if (code === 4004)
+    return new Error(`[MCPR_INSTANCE_NOT_READY] project instance is not ready${detail}`);
   return new Error(`[MCPR_TUNNEL_UNREACHABLE] tunnel closed (${code})${detail}`);
 }

@@ -3,7 +3,7 @@
  *
  * 组成:
  *   - 分支 chip:GitBranch 图标 + 分支名(detached 显示短 sha)。分支按信任度取:
- *     遥测/worktree 推断出的真实工作目录 HEAD(可信)→ PR 源分支(head.ref,
+ *     遥测/worktree/远端执行端推断出的真实工作目录 HEAD(可信)→ PR 源分支(head.ref,
  *     worktree 已删时兜底)→ working_dir HEAD(低信任,仅在无 PR 时最后兜底)。
  *     HEAD 变化(用户/agent 切分支)由 useSessionGitContext 实时推送刷新。
  *   - PR chip(最多 MAX_STATUS_QUERIES 条,lastSeenAt 最近优先):状态图标 + #号,
@@ -25,11 +25,8 @@ import { Tooltip } from '@/components/ui/tooltip';
 import { WINDOW_NO_DRAG_STYLE } from '@/components/layout/windowDrag';
 import type { Session } from '@/lib/ccAgent.types';
 import type { PrStatusKind, PrStatusResult, SessionPrRef } from '@/lib/gitContext.types';
-import {
-  useSessionGitContext,
-  prStatusKey,
-  MAX_STATUS_QUERIES,
-} from '@/hooks/useSessionGitContext';
+import { useSessionGitContext } from '@/hooks/useSessionGitContext';
+import { prStatusKey, MAX_STATUS_QUERIES } from '@/lib/prStatus';
 import { PR_STATUS_COLOR, PR_STATUS_ICON, pickBranchLabel } from './gitContextPrVisuals';
 
 export function GitContextBadge({ session }: { session: Session }) {
@@ -122,7 +119,7 @@ function PrChip({ prRef, status }: { prRef: SessionPrRef; status: PrStatusResult
           <span>#{prRef.prNumber}</span>
           {unresolved > 0 && (
             <span
-              className="inline-flex items-center gap-0.5 text-[10px] font-medium leading-none"
+              className="inline-flex items-center gap-0.5 text-10 font-medium leading-none"
               style={{ color: 'var(--status-bar-accent)' }}
               aria-label={t('ccAgent.gitContext.pr.unresolved', { count: unresolved })}
             >

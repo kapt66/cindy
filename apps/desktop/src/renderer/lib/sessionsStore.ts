@@ -57,6 +57,7 @@ import {
   onPatch,
   onRefresh,
 } from '@/lib/sessionsBus';
+import { isDataOwnerPushCurrent } from '@/contexts/dataOwnerGeneration';
 
 // V1.7：取消 16 条上限，全量拉取由 Sidebar 中部滚动条承载。
 // 后端硬上限 1000，覆盖几乎所有真实用户的 Session 总数。
@@ -497,11 +498,14 @@ export const sessionsStore = {
    */
   prependCreated(session: Session): void {
     if (!session?.id) return;
+    // 插入前叠乐观预览:createSession 往往先于 sessions:created 刷新返回,但预览
+    // 必须在入库前就登记。若不在这里叠,第一帧仍是哨兵,用户会先看到「未命名任务」。
+    const [withPreview] = applyAutoTitlePreviews([session]);
     let touched = false;
     for (const [k, list] of cache) {
       if (k === 'archived') continue;
       if (list.some((s) => s.id === session.id)) continue;
-      cache.set(k, [session, ...list]);
+      cache.set(k, [withPreview, ...list]);
       touched = true;
     }
     if (touched) notify();
@@ -568,7 +572,8 @@ if (typeof window !== 'undefined') {
   });
 
   window.electronAPI?.onUsageSessionSpendChanged?.(
-    ({ sessionId, totalMoney, totalCostUsd }) => {
+    ({ sessionId, totalMoney, totalCostUsd }, ownerStamp) => {
+      if (!isDataOwnerPushCurrent(ownerStamp)) return;
       sessionsStore.patchLocal(sessionId, {
         ...(totalMoney ? { totalMoney } : {}),
         ...(typeof totalCostUsd === 'number' ? { totalCostUsd } : {}),
@@ -578,10 +583,12 @@ if (typeof window !== 'undefined') {
 
   const sessionsPush = window.electronAPI?.localDb?.sessionsPush;
   if (sessionsPush) {
-    sessionsPush.onPatched(({ sessionId, patch }) =>
-      sessionsStore.patchLocal(sessionId, patch),
-    );
-    sessionsPush.onCreated(() => {
+    sessionsPush.onPatched(({ sessionId, patch }, ownerStamp) => {
+      if (!isDataOwnerPushCurrent(ownerStamp)) return;
+      sessionsStore.patchLocal(sessionId, patch);
+    });
+    sessionsPush.onCreated((_payload, ownerStamp) => {
+      if (!isDataOwnerPushCurrent(ownerStamp)) return;
       // payload 只有 sessionId 不带完整 Session row，prependCreated 用不上 ——
       // 直接重拉所有已加载桶让新 session 出现在 sidebar。
       void sessionsStore.forceRefreshAll();
@@ -590,7 +597,8 @@ if (typeof window !== 'undefined') {
 
   const scheduleApi = window.electronAPI?.maker?.schedule;
   if (scheduleApi) {
-    scheduleApi.onEvent((event: unknown) => {
+    scheduleApi.onEvent((event: unknown, ownerStamp) => {
+      if (!isDataOwnerPushCurrent(ownerStamp)) return;
       if (
         event &&
         typeof event === 'object' &&

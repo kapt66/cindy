@@ -19,7 +19,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { Effort, PermissionMode, PermissionModeState } from '@cindy/maker-core';
+import type { AgentEvent, Effort, PermissionMode, PermissionModeState } from '@cindy/maker-core';
 import type { CatalogModel, ProviderView } from '@cindy/model-providers';
 
 const h = vi.hoisted(() => {
@@ -38,6 +38,17 @@ const h = vi.hoisted(() => {
     createMessage: vi.fn(async () => {
       calls.push('createMessage');
     }),
+    listMessagesForAgentHandoff: vi.fn(async () => [] as Array<{
+      clientId: string;
+      role: string;
+      content: unknown;
+      createdAt: number;
+      agentMeta: Record<string, unknown> | null;
+    }>),
+    beginTurnChangeSetAtDispatch: vi.fn(async (session: { id: string }, anchorClientId: string) => {
+      calls.push(`beginChangeSet:${session.id}:${anchorClientId}`);
+    }),
+    clearPendingTurnChangeSets: vi.fn(),
     setSessionProviderIdInDb: vi.fn(async (id: string, providerId: string) => {
       calls.push(`providerDb:${id}:${providerId}`);
     }),
@@ -54,15 +65,7 @@ const h = vi.hoisted(() => {
     useActualDefaults: false,
     /** 每个 fake session 的事件监听回调(emit done 用)。 */
     statusCbs: new Map<string, (status: 'active' | 'aborting' | 'closed' | 'error') => void>(),
-    eventCbs: new Map<
-      string,
-      (ev: {
-        type: string;
-        data: unknown;
-        source?: string;
-        agentMeta?: Record<string, unknown>;
-      }) => void
-    >(),
+    eventCbs: new Map<string, (ev: AgentEvent) => void>(),
     /** 每个 fake session 被装上的 interaction listener(交互测试驱动用)。 */
     interactionListeners: new Map<string, (req: unknown) => Promise<unknown>>(),
     headlessDuringSend: [] as boolean[],
@@ -92,6 +95,8 @@ vi.mock('electron', () => ({
 vi.mock('@cindy/maker-core', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@cindy/maker-core')>();
   return {
+    MAIN_OWNED_SEND_CONTEXT: actual.MAIN_OWNED_SEND_CONTEXT,
+    isAutoReviewConfirmUndeliveredNotice: actual.isAutoReviewConfirmUndeliveredNotice,
     isAutoReviewUnavailableNotice: actual.isAutoReviewUnavailableNotice,
     isTerminalAgentErrorEvent: actual.isTerminalAgentErrorEvent,
     parseOverloadError: actual.parseOverloadError,
@@ -100,23 +105,33 @@ vi.mock('@cindy/maker-core', async (importOriginal) => {
   };
 });
 vi.mock('../../device-link/broadcast-tap.js', () => ({
+  getSafeDataOwnerPushStamp: vi.fn(() => undefined),
   tapWindowBroadcast: h.tapWindowBroadcast,
 }));
 vi.mock('../../maker-ipc/register.js', () => ({
+  beginTurnChangeSetAtDispatch: h.beginTurnChangeSetAtDispatch,
   wireSessionToIpc: vi.fn(),
   isSessionInTurn: () => false,
   installDesktopInteractionListener: h.installDesktopInteractionListener,
   noteSilentStopUserSend: vi.fn(),
   onSilentStopSettled: vi.fn(() => () => {}),
 }));
+vi.mock('../../turn-change-set/store.js', () => ({
+  clearPendingTurnChangeSets: h.clearPendingTurnChangeSets,
+}));
 vi.mock('../../maker-host/send-outcome.js', () => ({
   toDesktopSessionDispatchOutcome: () => ({ dispatched: true as const }),
 }));
+vi.mock('../../messagePersistBroadcaster.js', () => ({
+  enqueueDurableWrite: vi.fn(async (_label: string, fn: () => unknown) => fn()),
+}));
 vi.mock('../../localDb/ipc/messages.js', () => ({
   createMessage: h.createMessage,
+  listMessagesForAgentHandoff: h.listMessagesForAgentHandoff,
 }));
 vi.mock('../../localDb/ipc/sessions.js', () => ({
   getSessionRowSnapshot: vi.fn(async () => null),
+  getSessionRowSnapshotStrict: vi.fn(async () => null),
   setSessionProviderIdInDb: h.setSessionProviderIdInDb,
   setSessionSourceInDb: h.setSessionSourceInDb,
   setWorktreePathInDb: vi.fn(async () => undefined),
@@ -302,6 +317,7 @@ vi.mock('../../maker-host/index.js', () => ({
 }));
 
 import { createMakerHookSessionRunner, extractToolResultImageUrls } from '../session-runner.js';
+import { MAIN_OWNED_SEND_CONTEXT } from '@cindy/maker-core';
 import { observeHookTurn } from '../turnObserver.js';
 import { buildHookPromptNote, SLACK_HOOK_PROMPT_NOTE } from '../outbound.js';
 import { resolveSafe as resolveXdtImage } from '../../imageCacheStore.js';
@@ -377,6 +393,8 @@ beforeEach(() => {
   h.resolvedConfig.permissionMode = 'bypassPermissions';
   h.resolvedConfig.providerId = null;
   h.peekPendingHandoff.mockResolvedValue(null);
+  h.listMessagesForAgentHandoff.mockReset();
+  h.listMessagesForAgentHandoff.mockResolvedValue([]);
 });
 
 describe('hook session 精确接管边界', () => {
@@ -800,7 +818,7 @@ describe('进度快照(turn.progress 链路)', () => {
     for (let i = 0; i < times; i++) await Promise.resolve();
   }
 
-  it('多消息 turn: isFinal 逐条追加不整体替换, 先答一句再思考再终答两段都保留', async () => {
+  it('完成态复用桌面分组: 动作前的短旁白折叠，只保留动作后的正式答复', async () => {
     vi.useFakeTimers();
     try {
       fakeMaker.createSession.mockImplementationOnce(async (opts: { id?: string }) =>
@@ -824,9 +842,8 @@ describe('进度快照(turn.progress 链路)', () => {
 
       const outcome = await p;
       expect(outcome.status).toBe('ok');
-      // 两段都在, 且以定稿顺序拼接 —— 整体替换语义会丢掉其中一段。
-      expect(outcome.finalText).toContain('我正在追溯');
-      expect(outcome.finalText).toContain('PR #527');
+      expect(outcome.finalText).toBe('查到了: 是 PR #527 引入的。');
+      expect(outcome.finalText).not.toContain('我正在追溯');
     } finally {
       vi.useRealTimers();
     }
@@ -936,7 +953,7 @@ describe('进度快照(turn.progress 链路)', () => {
     }
   });
 
-  it('X: 最后一条收口时仍在流(无 isFinal)也只取它, 不带上一条', async () => {
+  it('X: 最后一条收口时仍在流(无 isFinal)也纳入同一条正式正文', async () => {
     vi.useFakeTimers();
     try {
       fakeMaker.createSession.mockImplementationOnce(async (opts: { id?: string }) =>
@@ -954,8 +971,7 @@ describe('进度快照(turn.progress 链路)', () => {
       cb({ type: 'done', data: null });
 
       const outcome = await p;
-      expect(outcome.finalText).toBe('答案是 42。');
-      expect(outcome.finalText).not.toContain('先查一下');
+      expect(outcome.finalText).toBe('先查一下提交记录。\n\n答案是 42。');
     } finally {
       vi.useRealTimers();
     }
@@ -999,15 +1015,15 @@ describe('进度快照(turn.progress 链路)', () => {
       cb({ type: 'done', data: null });
 
       const outcome = await p;
-      // 同一条消息的两个 block 必须都在, 且不带上一条的过程叙述。
-      expect(outcome.finalText).toBe('结论: 分成两块说。第二块也属于同一条。');
-      expect(outcome.finalText).not.toContain('我先看看');
+      // 同一条消息的两个 block 必须都在。前一条没有动作边界,按桌面规则也是
+      // 正文消息,因此不会凭空套用「只取最后一条」的 X 特殊启发式。
+      expect(outcome.finalText).toBe('我先看看。\n\n结论: 分成两块说。第二块也属于同一条。');
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('X: claude 的 fallbackTail 自成一段, 旁白不被粘进公开回帖', async () => {
+  it('X: claude 的 fallbackTail 自成一段, 短旁白不被粘进公开正文', async () => {
     // fallbackTail 刻意不带 agentMeta, hook 层拿不到它属于哪条消息。translator
     // 点名覆盖的场景是「前面 call 推过旁白、最后一次 call 的最终回复被截断」——
     // 即尾段是**新的一条**。并入上一条会把旁白和终答一起发到公开时间线
@@ -1033,14 +1049,13 @@ describe('进度快照(turn.progress 链路)', () => {
       cb({ type: 'done', data: null });
 
       const outcome = await p;
-      expect(outcome.finalText).toBe('结论: 已修复。');
-      expect(outcome.finalText).not.toContain('我先去看看');
+      expect(outcome.finalText).toBe('我先去看看。\n\n结论: 已修复。');
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('X: 正文只取末段, 但附件引用仍按整轮扫描(贴在中间那条的图不能丢)', async () => {
+  it('X: 正文按桌面规则投影, 但附件引用仍按整轮扫描(工作过程里的图不能丢)', async () => {
     // agent 的常态是"中间那条贴图 -> 最后一条只写结论"。正文范围和引用扫描范围
     // 绑在一起的话, 只取末段会把那些图静默丢掉(PR #1272 review 指出)。
     // 这里让 resolveSafe 抛错 -> 收集失败计数 -> 正文追加"附件未送达"警告:
@@ -1064,9 +1079,11 @@ describe('进度快照(turn.progress 链路)', () => {
 
       const outcome = await p;
       expect(outcome.status).toBe('ok');
-      // 公开正文仍然只有最后一条 + 收集失败的警告, 不带上一条的过程叙述。
+      // 公开正文按桌面规则保留可见正文; 引用扫描仍覆盖整轮, 所以中间图片会
+      // 被转换为可读标签, 并在收集失败时追加警告。
       expect(outcome.finalText).toContain('结论: 趋势向上。');
-      expect(outcome.finalText).not.toContain('图在这里');
+      expect(outcome.finalText).toContain('图在这里');
+      expect(outcome.finalText).toContain('🖼️ _图_');
       expect(outcome.finalText).toContain('Attachment delivery incomplete');
     } finally {
       vi.mocked(resolveXdtImage).mockReset();

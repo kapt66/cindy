@@ -34,7 +34,7 @@ export function PluginPanelPresentationPreference({ ghostId }: { ghostId: string
     <div className="flex min-w-0 flex-col gap-3 rounded-xl border border-[color-mix(in_srgb,var(--border-default)_72%,transparent)] bg-[color-mix(in_srgb,var(--surface-elevated)_82%,var(--surface))] px-5 py-4">
       <div className="flex items-center gap-2">
         <PanelsTopLeft size={14} className="text-[var(--text-tertiary)]" aria-hidden="true" />
-        <p className="text-14 font-medium leading-[22px] text-[var(--text-primary)]">
+        <p className="text-14 font-medium leading-[1.571] text-[var(--text-primary)]">
           {t('settings.ghosts.detail.panelPresentation.title')}
         </p>
       </div>

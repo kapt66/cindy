@@ -12,6 +12,7 @@ import {
   BellDot,
   BadgeCheck,
   Bot,
+  BookOpen,
   ChevronDown,
   Cpu,
   FileCode2,
@@ -22,14 +23,16 @@ import {
   GraduationCap,
   KeyRound,
   LayoutTemplate,
+  Library,
   MapPin,
-  Network,
   Megaphone,
   MessageCircleQuestion,
+  Network,
   PanelLeft,
   PanelRight,
   Sparkles,
   ShieldAlert,
+  Smartphone,
   Terminal,
   Wrench,
   type LucideIcon,
@@ -38,11 +41,7 @@ import { useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { cn } from '@/lib/utils';
-import type {
-  GhostPermissionDiff,
-  GhostPermissionItem,
-  GhostTrustInfo,
-} from '../../shared/ghost';
+import type { GhostPermissionDiff, GhostPermissionItem, GhostTrustInfo } from '../../shared/ghost';
 
 const KIND_ICON: Record<GhostPermissionItem['kind'], LucideIcon> = {
   cindy: Sparkles, // 与详情页「Cindy 能力」区同款图标
@@ -58,6 +57,7 @@ const KIND_ICON: Record<GhostPermissionItem['kind'], LucideIcon> = {
   notify: Megaphone,
   confirm: MessageCircleQuestion,
   fs: FilePen,
+  library: Library,
   'session-context': MapPin,
   pick: FolderOpen,
   preview: AppWindow,
@@ -65,6 +65,7 @@ const KIND_ICON: Record<GhostPermissionItem['kind'], LucideIcon> = {
   reveal: FolderOpen,
   workspace: FolderPlus,
   mcpr: Network,
+  'ios-simulator': Smartphone,
 };
 
 function itemIcon(item: GhostPermissionItem): LucideIcon {
@@ -77,6 +78,7 @@ function itemIcon(item: GhostPermissionItem): LucideIcon {
   if (
     item.labelKey === 'networkSecret' ||
     item.labelKey === 'networkSecretOauth' ||
+    item.labelKey === 'networkSecretGhCli' ||
     item.labelKey === 'networkSecretOrganizationIdentity' ||
     item.labelKey === 'nodeSecret'
   )
@@ -84,7 +86,13 @@ function itemIcon(item: GhostPermissionItem): LucideIcon {
   return KIND_ICON[item.kind];
 }
 
-function PermRow({ item, badge }: { item: GhostPermissionItem; badge?: 'added' | 'removed' }) {
+function PermRow({
+  item,
+  badge,
+}: {
+  item: GhostPermissionItem;
+  badge?: 'added' | 'removed' | 'updated';
+}) {
   const { t } = useTranslation();
   const Icon = itemIcon(item);
   // 主机固定说明(detailKey)与作者自由文本(detail)可以并存(oauth 凭证:
@@ -125,13 +133,14 @@ function PermRow({ item, badge }: { item: GhostPermissionItem; badge?: 'added' |
       </div>
       {badge && (
         // diff 语义豁免色(docs/design-rules/cindy-design-system.md §2 / 规则 16):权限新增/移除就是一次 diff,
-        // 用 GitHub diff 红绿 token,跨主题一致;徽章是 chrome,select-none。
+        // 用 GitHub diff 红绿 token,跨主题一致;「更新」(同 key 说明变化)既不是纯增也不是纯减,
+        // 用中性 chip,不占用 diff 色。徽章是 chrome,select-none。
         <span
           className={cn(
             'mt-[2px] shrink-0 select-none rounded px-1.5 py-px text-11 font-medium',
-            badge === 'added'
-              ? 'bg-[var(--diff-add-bg)] text-[var(--diff-add-fg)]'
-              : 'bg-[var(--diff-del-bg)] text-[var(--diff-del-fg)]',
+            badge === 'added' && 'bg-[var(--diff-add-bg)] text-[var(--diff-add-fg)]',
+            badge === 'removed' && 'bg-[var(--diff-del-bg)] text-[var(--diff-del-fg)]',
+            badge === 'updated' && 'bg-[var(--surface-chip)] text-[var(--text-secondary)]',
           )}
         >
           {t(`settings.ghosts.perm.${badge}`)}
@@ -269,6 +278,37 @@ export function GhostTrustSummary({ trust }: { trust: GhostTrustInfo }) {
   );
 }
 
+export function GhostOauthClientChangedAlert({ className }: { className?: string }) {
+  const { t } = useTranslation();
+  return (
+    <div
+      role="alert"
+      className={cn(
+        'flex items-start gap-2 rounded-lg bg-[var(--warning-bg-soft)] px-3 py-2 text-13 leading-5 text-[var(--text-secondary)]',
+        className,
+      )}
+    >
+      <ShieldAlert
+        size={16}
+        className="mt-0.5 shrink-0 text-[var(--warning-fg)]"
+        aria-hidden="true"
+      />
+      <span>{t('settings.ghosts.updateConfirm.oauthClientChanged')}</span>
+    </div>
+  );
+}
+
+export function GhostManualSummary({ count }: { count: number }) {
+  const { t } = useTranslation();
+  if (count <= 0) return null;
+  return (
+    <div className="mt-3 flex items-center gap-2 text-12 leading-[1.5] text-[var(--text-tertiary)]">
+      <BookOpen size={14} className="shrink-0" aria-hidden="true" />
+      <span>{t('settings.ghosts.installConfirm.manualCount', { count })}</span>
+    </div>
+  );
+}
+
 /**
  * 安装确认的紧凑内容区:简介可折叠,作者/版本单列。
  * 安全相关权限不做总折叠,避免为了短而牺牲知情确认。
@@ -283,11 +323,16 @@ export function GhostInstallReview({
   meta,
   trust,
   items,
+  manualCount = 0,
+  extra,
 }: {
   description?: string;
   meta: string;
   trust: GhostTrustInfo;
   items: GhostPermissionItem[];
+  manualCount?: number;
+  /** 追加内容(如 library 槽的存储位置行),渲染在权限清单下方。 */
+  extra?: ReactNode;
 }) {
   const { t } = useTranslation();
   const [descriptionExpanded, setDescriptionExpanded] = useState(false);
@@ -327,9 +372,11 @@ export function GhostInstallReview({
         {meta}
       </p>
       <GhostTrustSummary trust={trust} />
+      <GhostManualSummary count={manualCount} />
       <div className="mt-3 border-t border-[var(--border-default)] pt-3">
         <GhostPermissionList items={items} />
       </div>
+      {extra ? <div className="mt-3">{extra}</div> : null}
     </div>
   );
 }
@@ -354,8 +401,21 @@ export function GhostPermissionDiffView({ diff }: { diff: GhostPermissionDiff })
     );
   }
   const isTool = (item: GhostPermissionItem) => item.kind === 'tool';
-  const addedSensitive = diff.added.filter((item) => !isTool(item));
-  const removedSensitive = diff.removed.filter((item) => !isTool(item));
+  // 同 key 同时出现在 added 与 removed = 内容变化(工具说明重写、固定说明
+  // detailKey/detailArgs 随声明变化——如新增 network 槽后 code 的说明换版本)。
+  // 渲染成「移除+新增」两条会误读成权限被撤销又重加;配对成一条「更新」行,
+  // 仍然亮在第一屏(说明变化也是权限面变化,要知情),但语义如实。
+  const removedSensitiveByKey = new Map(
+    diff.removed.filter((item) => !isTool(item)).map((item) => [item.key, item] as const),
+  );
+  const updatedSensitive: GhostPermissionItem[] = [];
+  const addedSensitive: GhostPermissionItem[] = [];
+  for (const item of diff.added) {
+    if (isTool(item)) continue;
+    if (removedSensitiveByKey.delete(item.key)) updatedSensitive.push(item);
+    else addedSensitive.push(item);
+  }
+  const removedSensitive = [...removedSensitiveByKey.values()];
   const addedTools = diff.added.filter(isTool);
   const removedTools = diff.removed.filter(isTool);
   const toolChangeCount = addedTools.length + removedTools.length;
@@ -363,6 +423,9 @@ export function GhostPermissionDiffView({ diff }: { diff: GhostPermissionDiff })
     <div>
       {addedSensitive.map((item) => (
         <PermRow key={`added:${item.key}`} item={item} badge="added" />
+      ))}
+      {updatedSensitive.map((item) => (
+        <PermRow key={`updated:${item.key}`} item={item} badge="updated" />
       ))}
       {removedSensitive.map((item) => (
         <PermRow key={`removed:${item.key}`} item={item} badge="removed" />
@@ -400,14 +463,20 @@ export function GhostPermissionDiffView({ diff }: { diff: GhostPermissionDiff })
 export function GhostUpdateReview({
   trust,
   diff,
+  manualCount = 0,
 }: {
   trust?: GhostTrustInfo;
   diff: GhostPermissionDiff;
+  manualCount?: number;
 }) {
   return (
     <div>
       {trust && <GhostTrustSummary trust={trust} />}
-      <div className={cn(trust && 'mt-3')}>
+      {diff.builtinOauthClientChanged ? (
+        <GhostOauthClientChangedAlert className={trust ? 'mt-3' : undefined} />
+      ) : null}
+      <GhostManualSummary count={manualCount} />
+      <div className={cn((trust || diff.builtinOauthClientChanged || manualCount > 0) && 'mt-3')}>
         <GhostPermissionDiffView diff={diff} />
       </div>
     </div>

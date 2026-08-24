@@ -74,62 +74,28 @@ export function getChatAttachmentCacheRoot(): string {
   return chatAttachmentCacheDir();
 }
 
-function isInsideChatAttachmentCache(p: string): boolean {
-  return path.resolve(p).startsWith(`${chatAttachmentCacheDir()}${path.sep}`);
-}
-
-/**
- * Extract persisted file paths from a user-message content JSON document.
- * This is deliberately format-tolerant: malformed/legacy content contributes
- * no paths, and the actual deletion function still applies its cache-root and
- * `.bin` guards before touching anything on disk.
- */
-export function extractChatAttachmentPathsFromPersistedContent(content: string): string[] {
-  try {
-    const parsed = JSON.parse(content) as { files?: unknown };
-    if (!Array.isArray(parsed.files)) return [];
-    return parsed.files.flatMap((entry) => {
-      if (!entry || typeof entry !== 'object') return [];
-      const candidate = (entry as { path?: unknown }).path;
-      return typeof candidate === 'string' ? [candidate] : [];
-    });
-  } catch {
-    return [];
-  }
-}
-
-/** Remove one staged attachment if it is a safe, controlled cache file. */
-export async function removeStagedChatAttachment(filePath: string): Promise<boolean> {
-  if (
-    typeof filePath !== 'string' ||
-    !path.isAbsolute(filePath) ||
-    !isInsideChatAttachmentCache(filePath) ||
-    path.extname(filePath).toLowerCase() !== '.bin'
-  ) {
-    return false;
-  }
-  try {
-    const stat = await fs.lstat(filePath);
-    if (!stat.isFile() && !stat.isSymbolicLink()) return false;
-    await fs.unlink(filePath);
-    return true;
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException | null)?.code;
-    if (code !== 'ENOENT') {
-      log.warn('staged chat attachment cleanup failed', {
-        filePath,
-        error: String(err),
-      });
-    }
-    return false;
-  }
-}
-
-/** Best-effort batch cleanup used by draft/message/session lifecycle hooks. */
-export async function cleanupStagedChatAttachments(
-  filePaths: readonly string[],
-): Promise<void> {
-  await Promise.all(filePaths.map((filePath) => removeStagedChatAttachment(filePath)));
+/** Remove staged chat copies after the owning session has been deleted. */
+export async function cleanupStagedChatAttachments(filePaths: readonly string[]): Promise<void> {
+  const root = normalizePathForComparison(chatAttachmentCacheDir());
+  await Promise.all(
+    filePaths.map(async (filePath) => {
+      if (
+        typeof filePath !== 'string' ||
+        !path.isAbsolute(filePath) ||
+        path.extname(filePath).toLowerCase() !== '.bin'
+      ) return;
+      const normalized = normalizePathForComparison(filePath);
+      if (!normalized.startsWith(`${root}${path.sep}`)) return;
+      try {
+        const stat = await fs.lstat(filePath);
+        if (stat.isFile() || stat.isSymbolicLink()) await fs.unlink(filePath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          log.warn('staged chat attachment cleanup failed', { filePath, error: String(error) });
+        }
+      }
+    }),
+  );
 }
 
 function normalizePathForComparison(filePath: string): string {
@@ -192,20 +158,27 @@ export interface StartupStagedChatAttachmentSweepResult {
  * created by an earlier process and not referenced by persisted messages is
  * unreachable after restart. Files created by this process are left alone to
  * avoid racing a draft that is still being assembled.
+ *
+ * Filesystem is the source of work: persisted-path lookup only runs when the
+ * owner cache already has stale `.bin` / `.bin.part` files. A LIKE + json_tree
+ * scan over a multi-GB message table otherwise blocks startup for tens of
+ * seconds even when the cache directory does not exist.
  */
 export async function sweepStagedChatAttachmentsOnStartup(params: {
   ownerId: string;
-  protectedPaths: readonly string[];
   createdBeforeMs: number;
+  protectedPaths?: readonly string[];
+  loadProtectedPaths?: () => Promise<readonly string[]>;
+  canContinue?: () => boolean;
 }): Promise<StartupStagedChatAttachmentSweepResult> {
   const result: StartupStagedChatAttachmentSweepResult = {
     inspected: 0,
     removed: 0,
     protected: 0,
   };
-  const protectedPaths = new Set(params.protectedPaths.map(normalizePathForComparison));
   const ownerDir = chatAttachmentOwnerCacheDir(params.ownerId);
   const entries = await fs.readdir(ownerDir, { withFileTypes: true }).catch(() => []);
+  const stalePaths: string[] = [];
   for (const entry of entries) {
     if (!entry.isFile() && !entry.isSymbolicLink()) continue;
     if (!entry.name.endsWith('.bin') && !entry.name.endsWith('.bin.part')) continue;
@@ -215,10 +188,33 @@ export async function sweepStagedChatAttachmentsOnStartup(params: {
     try {
       const stat = await fs.lstat(filePath);
       if (stat.mtimeMs >= params.createdBeforeMs) continue;
-      if (protectedPaths.has(normalizePathForComparison(filePath))) {
-        result.protected += 1;
-        continue;
+      stalePaths.push(filePath);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException | null)?.code;
+      if (code !== 'ENOENT') {
+        log.warn('startup staged chat attachment sweep failed for file', {
+          filePath,
+          error: String(err),
+        });
       }
+    }
+  }
+  if (stalePaths.length === 0) return result;
+  if (params.canContinue && !params.canContinue()) return result;
+
+  const protectedList =
+    params.protectedPaths ??
+    (params.loadProtectedPaths ? await params.loadProtectedPaths() : []);
+  if (params.canContinue && !params.canContinue()) return result;
+  const protectedPaths = new Set(protectedList.map(normalizePathForComparison));
+
+  for (const filePath of stalePaths) {
+    if (protectedPaths.has(normalizePathForComparison(filePath))) {
+      result.protected += 1;
+      continue;
+    }
+    try {
+      if (params.canContinue && !params.canContinue()) return result;
       await fs.unlink(filePath);
       result.removed += 1;
     } catch (err) {

@@ -645,6 +645,34 @@
       "when": 1785900731510,
       "tag": "0091_meka_project_history_reference",
       "breakpoints": true
+    },
+    {
+      "idx": 92,
+      "version": "6",
+      "when": 1787315227818,
+      "tag": "0092_sync_upstream_20260821",
+      "breakpoints": true
+    },
+    {
+      "idx": 93,
+      "version": "6",
+      "when": 1787315276196,
+      "tag": "0093_distinguish_xai_provider_provenance",
+      "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "6",
+      "when": 1787315276898,
+      "tag": "0094_amazing_blur",
+      "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "6",
+      "when": 1787315277600,
+      "tag": "0095_fixed_zeigeist",
+      "breakpoints": true
     }
   ]
 }

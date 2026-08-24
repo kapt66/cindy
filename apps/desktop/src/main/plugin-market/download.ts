@@ -5,17 +5,10 @@ import type { FileHandle } from 'node:fs/promises';
 import { net } from 'electron';
 
 const MAX_PLUGIN_BYTES = 8 * 1024 * 1024;
+const PLUGIN_DOWNLOAD_TIMEOUT_MS = 60_000;
 
 export interface PluginDownloadOptions {
-  /**
-   * Channel-specific compressed package ceiling. Callers may only raise this
-   * after validating the release manifest against the host runtime contract.
-   */
   maxBytes?: number;
-  /**
-   * Best-effort observer for renderer status. Observer failures must never
-   * change the verified download result.
-   */
   onProgress?: (progress: { downloadedBytes: number; totalBytes: number }) => void;
 }
 
@@ -23,12 +16,7 @@ async function writeAll(handle: FileHandle, bytes: Uint8Array): Promise<void> {
   const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let offset = 0;
   while (offset < buffer.byteLength) {
-    const { bytesWritten } = await handle.write(
-      buffer,
-      offset,
-      buffer.byteLength - offset,
-      null,
-    );
+    const { bytesWritten } = await handle.write(buffer, offset, buffer.byteLength - offset, null);
     if (bytesWritten <= 0) throw new Error('Plugin 下载临时文件写入失败');
     offset += bytesWritten;
   }
@@ -64,6 +52,7 @@ export async function downloadVerifiedPlugin(
     method: 'GET',
     cache: 'no-store',
     redirect: 'error',
+    signal: AbortSignal.timeout(PLUGIN_DOWNLOAD_TIMEOUT_MS),
   });
   if (!response.ok) throw new Error(`Plugin 下载失败 (${response.status})`);
   if (!response.body) throw new Error('Plugin 下载响应体为空');
@@ -107,9 +96,7 @@ export async function downloadVerifiedPlugin(
     }
     await handle.close();
     handle = null;
-    if (reportedPercent !== 100) {
-      reportProgress(options.onProgress, size, expected.sizeBytes);
-    }
+    if (reportedPercent !== 100) reportProgress(options.onProgress, size, expected.sizeBytes);
     verified = true;
   } catch (error) {
     await reader.cancel().catch(() => undefined);

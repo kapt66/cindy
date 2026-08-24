@@ -19,10 +19,12 @@ import {
   brandExecutableName,
   resolveCindyRegion,
 } from '@cindy/maker-shared/brand-identity';
+import { stageMacIOSSimulatorHelper } from './forge-ios-simulator-helper';
 import { stagePackagedThirdPartyNotices } from './forge-third-party-notices';
 import { assertMekaResourceTree, assertPackagedMekaResources } from './forge-meka-resources';
 
 const _require = createRequire(__filename);
+const DESKTOP_PACKAGE_VERSION = (_require('./package.json') as { version: string }).version;
 
 // ── 构建期身份(Cindy Meka 独立渠道) ────────────────────────────────────────────
 // 区域默认 global;现有 Meka 发布快捷链显式注入 CINDY_AUTH_REGION=cn。正式版 appId
@@ -791,6 +793,7 @@ function extraResourcesForTarget(targetPlatform: string): string[] {
   // macOS 「帮助 → 安装到命令行」symlink 的目标脚本(<App>/Contents/Resources/cli/cindy)。
   // 仅 darwin 有此功能,其它平台不打进包。exec 位由 git 跟踪,extraResource 拷贝时保留。
   if (targetPlatform === 'darwin') {
+    base.push('resources/ios-simulator');
     base.push('resources/cli');
   }
 
@@ -885,9 +888,35 @@ function isMacForgePlatform(platform: ForgePlatform): boolean {
   return platform === 'darwin' || platform === 'mas';
 }
 
+function ensureMacIOSSimulatorWdaArchive(platform: ForgePlatform): void {
+  if (process.platform !== 'darwin' || !isMacForgePlatform(platform)) return;
+  const script = path.join(__dirname, 'scripts', 'ensure-wda-source-archive.mjs');
+  console.log(`[forge:prePackage] preparing pinned iOS Simulator WDA archive via ${script}...`);
+  const result = spawnSync(process.execPath, [script], {
+    cwd: __dirname,
+    stdio: 'inherit',
+  });
+  if (result.error) {
+    throw new Error(
+      `[forge] iOS Simulator WDA archive preparation failed: ${result.error.message}`,
+    );
+  }
+  if (result.signal) {
+    throw new Error(
+      `[forge] iOS Simulator WDA archive preparation terminated by signal ${result.signal}`,
+    );
+  }
+  if (result.status !== 0) {
+    throw new Error(
+      `[forge] iOS Simulator WDA archive preparation failed with exit code ${result.status}`,
+    );
+  }
+}
+
 const MACOS_VOICE_HELPER_DEPLOYMENT_TARGET = 'macos10.15';
 const MACOS_AGENT_ISLAND_HELPER_DEPLOYMENT_TARGET = 'macos14.0';
 const MACOS_COMPUTER_PERMISSION_GUIDE_HELPER_DEPLOYMENT_TARGET = 'macos13.0';
+const MACOS_SESSION_DRAG_RELEASE_HELPER_DEPLOYMENT_TARGET = 'macos10.15';
 
 function swiftTargetTriple(cpuArch: 'arm64' | 'x86_64', deploymentTarget: string): string {
   return `${cpuArch}-apple-${deploymentTarget}`;
@@ -913,6 +942,52 @@ function swiftArchLabel(arch: ForgeArch, deploymentTarget: string): string {
   return swiftTargetTriplesForForgeArch(arch, deploymentTarget)
     .map((target) => target.split('-')[0])
     .join('+');
+}
+
+function iosSimulatorSidecarArch(arch: ForgeArch): 'arm64' | 'x86_64' | 'universal' {
+  switch (arch) {
+    case 'arm64':
+      return 'arm64';
+    case 'x64':
+      return 'x86_64';
+    case 'universal':
+      return 'universal';
+    default:
+      throw new Error(`[forge] unsupported iOS Simulator helper arch: ${arch}`);
+  }
+}
+
+function buildMacIOSSimulatorHelper(platform: ForgePlatform, arch: ForgeArch): void {
+  if (process.platform !== 'darwin' || !isMacForgePlatform(platform)) return;
+  const script = path.join(
+    __dirname,
+    '..',
+    '..',
+    'packages',
+    'ios-simulator-runtime',
+    'scripts',
+    'build-native-sidecar.mjs',
+  );
+  const helperArch = iosSimulatorSidecarArch(arch);
+  const result = spawnSync(process.execPath, [script], {
+    cwd: path.join(__dirname, '..', '..'),
+    env: {
+      ...process.env,
+      CINDY_IOS_SIDECAR_ARCH: helperArch,
+      CINDY_IOS_SIDECAR_OUTPUT_MODE: 'helper',
+      CINDY_IOS_SIDECAR_BUNDLE_ID: `${CINDY_APP_ID}.ios-simulator-helper`,
+      CINDY_IOS_SIDECAR_VERSION: process.env.APP_VERSION ?? DESKTOP_PACKAGE_VERSION,
+    },
+    stdio: 'inherit',
+  });
+  if (result.error) {
+    throw new Error(`[forge] iOS Simulator helper build failed: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    throw new Error(
+      `[forge] iOS Simulator helper build failed for ${helperArch} with exit code ${result.status}`,
+    );
+  }
 }
 
 function runSwiftcForTarget(
@@ -1019,6 +1094,53 @@ function buildMacVoiceInputModifierShortcutListener(
   );
 }
 
+function buildWindowsVoiceInputFunctionKeyListener(targetPlatform: string): void {
+  if (process.platform !== 'win32' || targetPlatform !== 'win32') return;
+  const sourceRoot = path.join(__dirname, 'native', 'voice-input', 'windows-function-key-listener');
+  const manifest = path.join(sourceRoot, 'Cargo.toml');
+  if (!fs.existsSync(manifest)) {
+    throw new Error(
+      `[forge] Windows voice input function key listener source missing at ${manifest}`,
+    );
+  }
+  const cargoBin = process.env.USERPROFILE
+    ? path.join(process.env.USERPROFILE, '.cargo', 'bin', 'cargo.exe')
+    : 'cargo';
+  const cargo = fs.existsSync(cargoBin) ? cargoBin : 'cargo';
+  const result = spawnSync(cargo, ['build', '--release', '--manifest-path', manifest], {
+    stdio: 'inherit',
+  });
+  if (result.error) {
+    throw new Error(
+      `[forge] failed to invoke cargo (${cargo}) for Windows function key listener: ${result.error.message}`,
+    );
+  }
+  if (result.status !== 0) {
+    throw new Error(
+      `[forge] Windows function key listener cargo build failed with exit code ${result.status}`,
+    );
+  }
+  const builtExe = path.join(
+    sourceRoot,
+    'target',
+    'release',
+    'cindy-windows-function-key-listener.exe',
+  );
+  const destDir = path.join(__dirname, 'resources', 'tools', 'voice-input');
+  const dest = path.join(destDir, 'cindy-windows-function-key-listener.exe');
+  if (!fs.existsSync(builtExe)) {
+    throw new Error(
+      `[forge] Windows function key listener build succeeded but ${builtExe} is missing`,
+    );
+  }
+  fs.mkdirSync(destDir, { recursive: true });
+  fs.copyFileSync(builtExe, dest);
+  const sizeMb = (fs.statSync(dest).size / (1024 * 1024)).toFixed(2);
+  console.log(
+    `[forge:prePackage] Windows voice input function key listener -> ${dest} (${sizeMb} MB)`,
+  );
+}
+
 function buildMacAgentIslandHelper(platform: ForgePlatform, arch: ForgeArch): void {
   if (process.platform !== 'darwin' || !isMacForgePlatform(platform)) return;
   const src = path.join(__dirname, 'native', 'agent-island', 'macos-agent-island-helper.swift');
@@ -1089,6 +1211,35 @@ function buildMacComputerPermissionGuideHelper(platform: ForgePlatform, arch: Fo
   const sizeMb = (fs.statSync(dest).size / (1024 * 1024)).toFixed(2);
   console.log(
     `[forge:prePackage] macOS computer permission guide helper (${swiftArchLabel(arch, MACOS_COMPUTER_PERMISSION_GUIDE_HELPER_DEPLOYMENT_TARGET)}) -> ${dest} (${sizeMb} MB)`,
+  );
+}
+
+function buildMacSessionDragReleaseHelper(platform: ForgePlatform, arch: ForgeArch): void {
+  if (process.platform !== 'darwin' || !isMacForgePlatform(platform)) return;
+  const src = path.join(
+    __dirname,
+    'native',
+    'session-drag-release',
+    'macos-session-drag-release-helper.swift',
+  );
+  const destDir = path.join(__dirname, 'resources', 'tools', 'session-drag-release');
+  const dest = path.join(destDir, 'xdt-macos-session-drag-release-helper');
+  if (!fs.existsSync(src)) {
+    throw new Error(`[forge] macOS session drag release helper source missing at ${src}`);
+  }
+  fs.mkdirSync(destDir, { recursive: true });
+  buildSwiftHelperForForgeArch(
+    src,
+    dest,
+    arch,
+    MACOS_SESSION_DRAG_RELEASE_HELPER_DEPLOYMENT_TARGET,
+    ['-O'],
+    'session drag release helper',
+  );
+  fs.chmodSync(dest, 0o755);
+  const sizeMb = (fs.statSync(dest).size / (1024 * 1024)).toFixed(2);
+  console.log(
+    `[forge:prePackage] macOS session drag release helper (${swiftArchLabel(arch, MACOS_SESSION_DRAG_RELEASE_HELPER_DEPLOYMENT_TARGET)}) -> ${dest} (${sizeMb} MB)`,
   );
 }
 
@@ -1364,15 +1515,19 @@ const config: ForgeConfig = {
       const targetPlatform = requestedTargetPlatform();
       const targetArch = requestedTargetArch();
       assertMekaResourceTree(path.join(__dirname, 'resources', 'meka'));
+      ensureMacIOSSimulatorWdaArchive(platform);
       if (targetPlatform === 'win32') {
         buildCindyUpdater();
       }
       stageRipgrep(targetPlatform, targetArch);
       stageAndroidPlatformTools(targetPlatform, targetArch);
+      buildWindowsVoiceInputFunctionKeyListener(targetPlatform);
+      buildMacIOSSimulatorHelper(platform, arch);
       buildMacVoiceInputTextInsertionHelper(platform, arch);
       buildMacVoiceInputModifierShortcutListener(platform, arch);
       buildMacAgentIslandHelper(platform, arch);
       buildMacComputerPermissionGuideHelper(platform, arch);
+      buildMacSessionDragReleaseHelper(platform, arch);
     },
     // packaged dir 产出后、makers 跑之前签内部 .exe。这样 NSIS 包出来的
     // Setup.exe 内嵌的、和 publish 阶段从同一 packagedDir 打的热更 ZIP 内嵌的，
@@ -1388,6 +1543,7 @@ const config: ForgeConfig = {
         );
         console.log('[forge:postPackage] verified bundled Meka resource tree');
         signPackagedExes(buildPath);
+        stageMacIOSSimulatorHelper(buildPath, opts.platform, opts.arch);
         applyMacPackagedDisplayName(buildPath, opts.platform);
       }
     },
@@ -1412,6 +1568,13 @@ const config: ForgeConfig = {
           target: 'preload',
         },
         {
+          entry: 'src/main/cindy-brain/libraryDbWorker.ts',
+          config: 'vite.library-db-worker.config.ts',
+          // 插件 Library SQLite 隔离在 per-plugin worker：恶意慢查询只饿死
+          // 自己的线程，宿主可 terminate（WAL 保证不损坏库）。
+          target: 'preload',
+        },
+        {
           entry: 'src/main/im/wechat/silkWorker.ts',
           config: 'vite.silk-worker.config.ts',
           // SILK/WASM 解码隔离在线程中，避免阻塞 Electron main。
@@ -1431,10 +1594,24 @@ const config: ForgeConfig = {
           target: 'preload',
         },
         {
+          entry: 'src/main/reviewer/reviewPdfUtilityProcess.ts',
+          config: 'vite.review-pdf-process.config.ts',
+          // 正式包关闭 RunAsNode；PDF.js 在一次性 utility process 中执行，
+          // 超时直接 kill，不阻塞 Electron main。
+          target: 'preload',
+        },
+        {
           entry: 'src/main/watcher-host/watcherHostProcess.ts',
           config: 'vite.watcher-host.config.ts',
           // 同 dbWorker:借 preload target 出 CJS 单文件；运行时是 Electron
           // utilityProcess（@parcel/watcher 的 native 崩溃隔离，见 watcher-host/）。
+          target: 'preload',
+        },
+        {
+          entry: 'src/main/worklouder-codex/workLouderCodexHostProcess.ts',
+          config: 'vite.preload.config.ts',
+          // 私有 Work Louder SDK + node-hid 只在独立 utilityProcess 内加载；
+          // SDK 缺失或原生崩溃都不能影响 Electron main。
           target: 'preload',
         },
         {
@@ -1452,7 +1629,38 @@ const config: ForgeConfig = {
           target: 'preload',
         },
         {
+          entry: 'src/main/cindy-brain/forgeScaffoldWorkerProcess.ts',
+          config: 'vite.preload.config.ts',
+          // Stable-parent scaffold publish/cleanup runs in a utility process;
+          // the worker's cwd is the validated parent directory capability.
+          target: 'preload',
+        },
+        {
+          entry: 'src/main/cindy-brain/ghostSnapshotWorkerProcess.ts',
+          config: 'vite.preload.config.ts',
+          // Approval snapshot mutation is cwd-relative inside a stable-parent worker.
+          target: 'preload',
+        },
+        {
           entry: 'src/preload/preload.ts',
+          config: 'vite.preload.config.ts',
+          target: 'preload',
+        },
+        {
+          // 资源用量独立窗不加载主应用的通用 bridge 与模块级同步初始化。
+          entry: 'src/preload/resourceUsagePreload.ts',
+          config: 'vite.preload.config.ts',
+          target: 'preload',
+        },
+        {
+          // 右侧栏独立子窗口专用 preload:最小权限 bridge,不加载主 preload 完整桥。
+          entry: 'src/preload/sidebarWindowPreload.ts',
+          config: 'vite.preload.config.ts',
+          target: 'preload',
+        },
+        {
+          // 插件面板独立窗口专用 preload:最小权限 bridge。
+          entry: 'src/preload/ghostPanelWindowPreload.ts',
           config: 'vite.preload.config.ts',
           target: 'preload',
         },

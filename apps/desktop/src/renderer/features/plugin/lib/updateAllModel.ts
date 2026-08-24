@@ -8,22 +8,14 @@
  */
 
 import type { GhostManifest, GhostPermissionDiff } from '../../../../shared/ghost';
-import type {
-  PluginMarketItem,
-  PluginMarketPackageReview,
-} from '../../../../shared/pluginMarket';
+import type { PluginMarketItem, PluginMarketPackageReview } from '../../../../shared/pluginMarket';
 
 /**
  * 批量更新策略(设计定稿):权限无变化的自动串行完成;权限有扩张的
  * 停在 `needs-confirm`,由用户逐项同意或跳过,绝不自动放行扩权。
  */
 export type UpdateAllRowStatus =
-  | 'pending'
-  | 'installing'
-  | 'done'
-  | 'needs-confirm'
-  | 'skipped'
-  | 'failed';
+  'pending' | 'installing' | 'done' | 'needs-confirm' | 'skipped' | 'failed';
 
 export interface UpdateAllRow {
   pluginId: string;
@@ -44,17 +36,21 @@ export interface UpdateAllRow {
   /**
    * 审阅所依据的**已装 manifest 权限指纹**(不是版本号)。
    * `ghosts.update()` 允许同版本整体替换 manifest,所以版本号不是可靠的
-   * 审阅基线——同版本换入不同权限声明时,旧 diff 与它换来的
-   * allowPermissionExpansion 会把未审阅的新权限一并放行。批准前必须拿
-   * 当前已装 manifest 重算指纹比对,不一致即作废重审。
+   * 审阅基线。Renderer 先检查、Main 在安装锁内复核。
    */
   reviewedBaseline?: string;
   /**
-   * 非 server 源在审阅时取得的 manifest:主进程对这类来源强制要求安装时
-   * 传回同一份 reviewed manifest,approve 必须原样带上,否则 INVALID_PARAMS。
+   * 审阅时 Host 下发的批准态 token。manifest 权限指纹相同也不代表授权事实
+   * 相同：approved receipt 失效成 invalid / legacy-unapproved 后，旧的局部 diff
+   * 必须作废并按“无批准基线”重新展示全部权限。
+   */
+  reviewedApproval?: string;
+  /**
+   * 审阅时取得的 manifest:主进程强制要求安装时传回同一份清单，
+   * approve 必须原样带上，否则 INVALID_PARAMS。
    */
   expectedManifest?: GhostManifest;
-  /** 实际下载包等待用户确认的权限事实。 */
+  /** Meka 下载后由 Main 返回、等待用户确认的真实包权限事实。 */
   packageReview?: PluginMarketPackageReview;
   /** status 为 failed 时的用户可读错误(已经过 i18n 映射)。 */
   errorText?: string;

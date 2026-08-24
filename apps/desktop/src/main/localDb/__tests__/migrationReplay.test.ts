@@ -225,7 +225,11 @@ describeMigrationReplay('migration replay', () => {
         END;`);
 
       const result = runMigrationReplay(db, { drizzleDir: drizzleDir(), currentVersion: 90 });
-      expect(result.applied.map((migration) => migration.seq)).toEqual([91]);
+      expect(result.applied.map((migration) => migration.seq)).toEqual(
+        listMigrations(drizzleDir())
+          .filter((migration) => migration.seq > 90)
+          .map((migration) => migration.seq),
+      );
       expect(db.prepare('SELECT count(*) AS count FROM messages').get()).toEqual({ count: 1 });
       expect(db.prepare('SELECT meka_role_id FROM sessions WHERE id = ?').get('session-1')).toEqual({
         meka_role_id: 'role-1',

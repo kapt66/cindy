@@ -9,11 +9,14 @@ import {
   type ReactNode,
 } from 'react';
 import { useTranslation } from 'react-i18next';
+import { soleLoginMethod } from '@cindy/auth-client';
 import type { CindyRegion } from '@cindy/maker-shared/brand-identity';
 
 import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
 import { clearWorkersCache } from '@/features/cc-agent/hooks/useWorkers';
+import { setSelectedMachineOwner } from '@/features/device-link/selectedMachineStore';
 import { createLogger } from '@/lib/logger';
+import { getLoginEmailCaptchaGate } from '@/lib/loginCaptchaGate';
 import { toast } from '@/lib/toast';
 import {
   createAuthService,
@@ -24,23 +27,28 @@ import {
   type DesktopLoginActionResult,
   type User,
 } from '@/lib/authService';
-import { setCurrentUserName } from '@/lib/makerChatStore';
+import {
+  cancelRemoteOptimisticSendsForDataOwnerBoundary,
+  setCurrentUserName,
+} from '@/lib/makerChatStore';
 import { isSecondaryWindow } from '@/lib/secondaryWindow';
 import { setUserPromptOwner } from '@/lib/userPromptStore';
 import { bootstrapMemorySettingsFromMain, setMemorySettingsOwner } from '@/lib/memorySettingsStore';
 import { sessionsStore } from '@/lib/sessionsStore';
 import { isSidebarWindow } from '@/lib/sidebarWindow';
 import { isGhostPanelWindow } from '@/lib/ghostPanelWindow';
+import { setModelEnginePrefsOwner } from '@/state/modelEnginePrefs';
+import { setModelFavoritesOwner } from '@/state/modelFavorites';
+import { setFavoriteAnchorMemoryOwner } from '@/state/favoriteAnchorMemory';
 import { setNewMakerDraftOwner } from '@/state/newMakerDraft';
+import { setModelVisibilityOwner } from '@/state/modelVisibilityPrefs';
 import { setComposerDraftOwner } from '@/lib/composerDraftStore';
-import { CURRENT_CINDY_REGION } from '../../shared/brandRegion';
 import { setPendingHandoffOwner } from '@/state/pendingFirstMessage';
+import { setDeferredUiAssignmentOwner } from '@/features/cc-agent/deferredUiAssignment';
 import { invalidateProvidersSnapshot } from '@/lib/providersSnapshotStore';
 import { preloadLocalCatalogSnapshot } from '@/lib/localCatalogSnapshot';
-import {
-  getDataOwnerGeneration,
-  setDataOwnerGeneration,
-} from './dataOwnerGeneration';
+import { getDataOwnerGeneration, setDataOwnerGeneration } from './dataOwnerGeneration';
+import { CURRENT_CINDY_REGION } from '../../shared/brandRegion';
 
 /**
  * 登录态上下文：user / isAuthenticated / isCanary / deviceId 全部来自 main 的
@@ -55,6 +63,8 @@ export interface AuthContextValue {
   mode: 'signed-out' | 'local' | 'cloud';
   edition: CindyRegion;
   dataOwnerId: string | null;
+  /** Failed auth boundaries remount owner-scoped routes so stale generations can rehydrate. */
+  dataOwnerRecoveryEpoch: number;
   canEnterApp: boolean;
   isAuthenticated: boolean;
   /** 当前账号是否加入 Canary 发布通道。 */
@@ -71,29 +81,49 @@ export interface AuthContextValue {
   exitLocalMode: () => Promise<void>;
   hasAccountDeletionReceipt: boolean;
   accountDeletionRestored: boolean;
-  getAccountDeletionAvailability: ReturnType<typeof createAuthService>['getAccountDeletionAvailability'];
-  requestAccountDeletionChallenge: ReturnType<typeof createAuthService>['requestAccountDeletionChallenge'];
+  /** 持久凭证库(safeStorage)连续多个刷新周期不可用(#1687);全局警示条据此显隐。 */
+  credentialStoreUnavailable: boolean;
+  getAccountDeletionAvailability: ReturnType<
+    typeof createAuthService
+  >['getAccountDeletionAvailability'];
+  requestAccountDeletionChallenge: ReturnType<
+    typeof createAuthService
+  >['requestAccountDeletionChallenge'];
   confirmAccountDeletion: ReturnType<typeof createAuthService>['confirmAccountDeletion'];
   getAccountDeletionStatus: ReturnType<typeof createAuthService>['getAccountDeletionStatus'];
   clearAccountDeletionReceipt: ReturnType<typeof createAuthService>['clearAccountDeletionReceipt'];
-  consumeAccountDeletionRestoredNotice: ReturnType<typeof createAuthService>['consumeAccountDeletionRestoredNotice'];
+  consumeAccountDeletionRestoredNotice: ReturnType<
+    typeof createAuthService
+  >['consumeAccountDeletionRestoredNotice'];
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 const log = createLogger('AuthContext');
 
-function publishDataOwnerGeneration(dataOwnerId: string | null): void {
+function publishDataOwnerGeneration(dataOwnerId: string | null, ownerGeneration?: number): void {
   const previousOwnerId = getDataOwnerGeneration().dataOwnerId;
-  setDataOwnerGeneration(dataOwnerId);
+  if (previousOwnerId !== dataOwnerId) {
+    cancelRemoteOptimisticSendsForDataOwnerBoundary();
+  }
+  setDataOwnerGeneration(dataOwnerId, ownerGeneration);
+  setSelectedMachineOwner(dataOwnerId);
   if (previousOwnerId !== dataOwnerId) invalidateProvidersSnapshot();
 }
 
-export function AuthProvider({ children }: { children: ReactNode }) {
+export function AuthProvider({
+  children,
+  enableSessionExpiredPrompt = true,
+}: {
+  children: ReactNode;
+  /** Secondary renderers keep auth state for owner scoping but do not own global prompts. */
+  enableSessionExpiredPrompt?: boolean;
+}) {
   const [user, setUser] = useState<User | null>(null);
   const [mode, setMode] = useState<'signed-out' | 'local' | 'cloud'>('signed-out');
   const [edition, setEdition] = useState<CindyRegion>(CURRENT_CINDY_REGION);
   const [dataOwnerId, setDataOwnerId] = useState<string | null>(null);
+  const [dataOwnerRecoveryEpoch, setDataOwnerRecoveryEpoch] = useState(0);
   const [canEnterApp, setCanEnterApp] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isCanary, setIsCanary] = useState(false);
@@ -101,6 +131,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [deviceId, setDeviceId] = useState<string | null>(null);
   const [hasAccountDeletionReceipt, setHasAccountDeletionReceipt] = useState(false);
   const [accountDeletionRestored, setAccountDeletionRestored] = useState(false);
+  const [credentialStoreUnavailable, setCredentialStoreUnavailable] = useState(false);
   const [loginState, setLoginState] = useState<AuthFlowState | null>(null);
   const { confirm } = useConfirmDialog();
   const { t } = useTranslation();
@@ -112,6 +143,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const activeUserIdRef = useRef<string | null>(null);
   const activeDataOwnerIdRef = useRef<string | null>(null);
+  const activeDataOwnerGenerationRef = useRef(0);
   const authStateVersionRef = useRef(0);
 
   // Auth mutations invalidate owner-bound in-flight reads before crossing IPC. If Main rejects
@@ -122,7 +154,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       return await operation();
     } catch (error) {
-      publishDataOwnerGeneration(activeDataOwnerIdRef.current);
+      // Restore the exact main-owned generation. Recomputing it locally would
+      // make every stamped push from the still-active owner look stale after a
+      // rejected auth transition.
+      publishDataOwnerGeneration(
+        activeDataOwnerIdRef.current,
+        activeDataOwnerGenerationRef.current,
+      );
+      setDataOwnerRecoveryEpoch((epoch) => epoch + 1);
       void preloadLocalCatalogSnapshot();
       throw error;
     }
@@ -143,16 +182,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const applyIncomingState = useCallback(
     (state: AuthState) => {
       const ownerChanged = activeDataOwnerIdRef.current !== state.dataOwnerId;
-      publishDataOwnerGeneration(state.dataOwnerId);
+      publishDataOwnerGeneration(state.dataOwnerId, state.ownerGeneration);
       if (ownerChanged) {
         sessionsStore.reset();
         clearWorkersCache();
       }
       activeDataOwnerIdRef.current = state.dataOwnerId;
+      activeDataOwnerGenerationRef.current = state.ownerGeneration;
       setNewMakerDraftOwner(state.dataOwnerId);
+      // 统一模型选择器的两根新轴与 newMakerDraft 同待遇:同一处、同一个 dataOwnerId、
+      // 登出时同样传 null(state.dataOwnerId 在 signed-out 快照里就是 null,分区键退回
+      // 无后缀的默认槽)。漏接 = 多账号串号(providerModelMemory 的旧教训)。
+      setModelEnginePrefsOwner(state.dataOwnerId);
+      setModelFavoritesOwner(state.dataOwnerId);
+      // 收藏**锚点**记忆(面板上哪一行打勾)与收藏本体同分区:漏接同样是多账号串号。
+      setFavoriteAnchorMemoryOwner(state.dataOwnerId);
       setComposerDraftOwner(state.dataOwnerId);
       setPendingHandoffOwner(state.dataOwnerId);
+      setDeferredUiAssignmentOwner(state.dataOwnerId);
       setUserPromptOwner(state.dataOwnerId);
+      setModelVisibilityOwner(state.dataOwnerId, state.ownerGeneration, state.mode);
       if (ownerChanged) {
         setMemorySettingsOwner(state.dataOwnerId);
         void bootstrapMemorySettingsFromMain();
@@ -166,6 +215,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setDeviceId(state.deviceId);
       setHasAccountDeletionReceipt(state.hasAccountDeletionReceipt);
       setAccountDeletionRestored(state.accountDeletionRestored);
+      setCredentialStoreUnavailable(state.credentialStoreUnavailable);
       if (state.user) {
         setLoginState(null);
         if (ownerChanged) {
@@ -223,6 +273,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setLoginState(null);
         clearWorkersCache();
         setUser(null);
+        setCredentialStoreUnavailable(false);
       })
       .finally(() => setIsInitializing(false));
 
@@ -251,6 +302,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [accountDeletionRestored, isAuthenticated, t]);
 
   useEffect(() => {
+    if (!enableSessionExpiredPrompt) return;
     let handling = false;
     return window.electronAPI.onAuthSessionExpired((payload) => {
       if (handling) return;
@@ -280,10 +332,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setIsAuthenticated(false);
         setIsCanary(false);
         setLoginState(null);
+        setCredentialStoreUnavailable(false);
         handling = false;
       });
     });
-  }, [confirm, t]);
+  }, [confirm, enableSessionExpiredPrompt, t]);
 
   const loadLoginState = useCallback(async (): Promise<DesktopLoginActionResult> => {
     const result = await authServiceRef.current!.getLoginState();
@@ -299,6 +352,37 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setLoginState({ step: 'browser-redirect', label: action.label });
       }
       const result = await authServiceRef.current!.dispatchLoginAction(action);
+      // 没有真正选择时不停留 method-choice：唯一 SSO 改派 start-browser
+      //（确认窗立刻消失、露出等待态）；唯一邮箱验证码直接发码进输码页。
+      if (result.success && result.state.step === 'method-choice') {
+        const sole = soleLoginMethod(result.state.methods);
+        if (sole?.type === 'sso') {
+          return dispatchLoginAction({
+            type: 'start-browser',
+            kind: 'sso',
+            providerOrConnectionId: sole.connectionId,
+            label: sole.connectionName || sole.orgName,
+          });
+        }
+        if (sole?.type === 'email_code' && result.state.email) {
+          // 自动发码同样要先过人机验证闸（LoginPage 注册的挑战 overlay）：
+          // 这条快捷链不经过 LoginPage 的 dispatchRequestCode，不过闸会在
+          // global 开启 captcha 后不带 token 发码直接吃 400。
+          const captchaGate = getLoginEmailCaptchaGate();
+          const captchaToken = captchaGate ? await captchaGate() : undefined;
+          if (captchaToken === null) {
+            // 用户取消挑战：停在 method-choice，个人行可再次发起（会重新过闸）
+            setLoginState(result.state);
+            return result;
+          }
+          return dispatchLoginAction({
+            type: 'request-code',
+            kind: 'email',
+            identifier: result.state.email,
+            captchaToken,
+          });
+        }
+      }
       setLoginState(result.state);
       return result;
     },
@@ -313,10 +397,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const enterLocalMode = useCallback(async () => {
     const state = await runDataOwnerBoundary(() => authServiceRef.current!.enterLocalMode());
-    publishDataOwnerGeneration(state.dataOwnerId);
+    publishDataOwnerGeneration(state.dataOwnerId, state.ownerGeneration);
     activeDataOwnerIdRef.current = state.dataOwnerId;
+    activeDataOwnerGenerationRef.current = state.ownerGeneration;
+    // 统一模型选择器的两根轴与本地模式的其它 owner 分区同待遇(2026-08-17 review 第五轮 M5):
+    // 本地模式也是一次 dataOwnerId 切换,漏接这两个 setter 会让本地模式下的收藏 / 引擎 override
+    // 继续读写**上一个身份**的分区 —— 跨身份可见,还会把改动写进别人的账号。
+    setModelEnginePrefsOwner(state.dataOwnerId);
+    setModelFavoritesOwner(state.dataOwnerId);
+    // 收藏**锚点**记忆(面板上哪一行打勾)与收藏本体同分区:漏接同样是多账号串号。
+    setFavoriteAnchorMemoryOwner(state.dataOwnerId);
     setComposerDraftOwner(state.dataOwnerId);
     setPendingHandoffOwner(state.dataOwnerId);
+    setDeferredUiAssignmentOwner(state.dataOwnerId);
     setMode(state.mode);
     setEdition(state.edition);
     setDataOwnerId(state.dataOwnerId);
@@ -327,10 +420,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const exitLocalMode = useCallback(async () => {
     const state = await runDataOwnerBoundary(() => authServiceRef.current!.exitLocalMode());
-    publishDataOwnerGeneration(state.dataOwnerId);
+    publishDataOwnerGeneration(state.dataOwnerId, state.ownerGeneration);
     activeDataOwnerIdRef.current = state.dataOwnerId;
+    activeDataOwnerGenerationRef.current = state.ownerGeneration;
+    // 退出本地模式同样是一次 owner 切换:两根轴必须一起跟过去(见 enterLocalMode 的注释)。
+    setModelEnginePrefsOwner(state.dataOwnerId);
+    setModelFavoritesOwner(state.dataOwnerId);
+    // 收藏**锚点**记忆(面板上哪一行打勾)与收藏本体同分区:漏接同样是多账号串号。
+    setFavoriteAnchorMemoryOwner(state.dataOwnerId);
     setComposerDraftOwner(state.dataOwnerId);
     setPendingHandoffOwner(state.dataOwnerId);
+    setDeferredUiAssignmentOwner(state.dataOwnerId);
     setMode(state.mode);
     setEdition(state.edition);
     setDataOwnerId(state.dataOwnerId);
@@ -383,6 +483,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       mode,
       edition,
       dataOwnerId,
+      dataOwnerRecoveryEpoch,
       canEnterApp,
       isAuthenticated,
       isCanary,
@@ -396,6 +497,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       exitLocalMode,
       hasAccountDeletionReceipt,
       accountDeletionRestored,
+      credentialStoreUnavailable,
       getAccountDeletionAvailability,
       requestAccountDeletionChallenge,
       confirmAccountDeletion,
@@ -408,6 +510,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       mode,
       edition,
       dataOwnerId,
+      dataOwnerRecoveryEpoch,
       canEnterApp,
       isAuthenticated,
       isCanary,
@@ -421,6 +524,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       exitLocalMode,
       hasAccountDeletionReceipt,
       accountDeletionRestored,
+      credentialStoreUnavailable,
       getAccountDeletionAvailability,
       requestAccountDeletionChallenge,
       confirmAccountDeletion,

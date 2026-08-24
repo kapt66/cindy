@@ -15,10 +15,9 @@ import {
   __setGhostPanelWindowsStateForTest,
 } from '../../lib/ghostPanelWindowState';
 import {
-  __resetGhostPanelPresentationPreferenceForTest,
-  setGhostPanelModalPresentationEnabled,
-  setGhostPanelPresentationOverride,
-} from '../../lib/ghostPanelPresentationPreference';
+  __resetGhostPanelRestoreModeForTest,
+  setGhostPanelRestoreMode,
+} from '../../hooks/useGhostPanelRestoreMode';
 import { __resetInstalledGhostsStoreForTest } from '../useInstalledGhosts';
 import { GhostPanelBubbleLayer } from '../GhostPanelBubbleLayer';
 
@@ -41,7 +40,12 @@ function ghost(id: string, enabled = true): InstalledGhost {
     slots: ['panel'],
     panel: { title: `${id} 面板`, html: 'panel.html' },
   };
-  return { manifest, dir: `/fake/${id}`, enabled };
+  return {
+    manifest,
+    dir: `/fake/${id}`,
+    enabled,
+    approval: { state: 'approved', revision: '00000000-0000-4000-8000-000000000001' },
+  };
 }
 
 function stubGhostsBridge(ghosts: InstalledGhost[]): void {
@@ -56,10 +60,11 @@ function stubGhostsBridge(ghosts: InstalledGhost[]): void {
 afterEach(() => {
   cleanup();
   __resetGhostPanelBubbleStateForTest();
+  __resetGhostPanelRestoreModeForTest();
   __resetGhostPanelWindowsStateForTest();
-  __resetGhostPanelPresentationPreferenceForTest();
   __resetInstalledGhostsStoreForTest();
   window.localStorage.removeItem('xdt:ghostPanelBubbleStack:v1');
+  window.localStorage.removeItem('ghostPanel.restoreMode');
   delete (window as unknown as { electronAPI?: unknown }).electronAPI;
 });
 
@@ -78,6 +83,14 @@ describe('GhostPanelBubbleLayer', () => {
 
   it('全部面板都开着(无最小化)整层不渲染', () => {
     stubGhostsBridge([ghost('a'), ghost('b')]);
+    render(<GhostPanelBubbleLayer />);
+    expect(screen.queryByTestId('ghost-panel-bubble-stack')).toBeNull();
+  });
+
+  it('选择侧栏恢复入口时不渲染浮动幽灵球', () => {
+    stubGhostsBridge([ghost('a')]);
+    minimizeGhostPanel('a');
+    setGhostPanelRestoreMode('sidebar');
     render(<GhostPanelBubbleLayer />);
     expect(screen.queryByTestId('ghost-panel-bubble-stack')).toBeNull();
   });
@@ -108,7 +121,7 @@ describe('GhostPanelBubbleLayer', () => {
     __setGhostPanelWindowsStateForTest({ a: { detached: true, lastOpen: true, open: true } });
     const { rerender } = render(<GhostPanelBubbleLayer />);
     expect(screen.queryByTestId('ghost-panel-bubble-stack')).toBeNull();
-    __setGhostPanelWindowsStateForTest({});
+    act(() => __setGhostPanelWindowsStateForTest({}));
     rerender(<GhostPanelBubbleLayer />);
     expect(screen.getByTestId('ghost-panel-bubble-stack')).toBeTruthy();
   });

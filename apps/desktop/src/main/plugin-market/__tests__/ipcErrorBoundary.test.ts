@@ -31,8 +31,8 @@ describe('Plugin Market IPC error boundary', () => {
     expect(body).toContain("throwIpcError('INTERNAL', 'Plugin market operation failed');");
     // The merged client intentionally keeps ordinary-market, Meka-market, and
     // custom-source handlers. Each registration must stay behind the same
-    // structured error boundary; the union currently has sixteen call sites.
-    expect(registerSource.match(/return invokePluginMarket\(/g)?.length).toBe(16);
+    // structured error boundary; the union currently has nineteen call sites.
+    expect(registerSource.match(/return invokePluginMarket\(/g)?.length).toBe(19);
   });
 
   it('refuses renderer-supplied local paths and only grants them via the picker', () => {
@@ -51,37 +51,29 @@ describe('Plugin Market IPC error boundary', () => {
     expect(serviceSource).toContain("throwIpcError('PERMISSION_DENIED'");
   });
 
-  it('runs default plugin reconciliation on cold start and stable owner changes', () => {
+  it('runs default plugin reconciliation through the stable-owner post-commit retry path', () => {
     const syncStart = registerSource.indexOf(
-      'export async function syncDefaultMarketPlugins(): Promise<void>',
+      'export async function syncDefaultMarketPlugins(): Promise<DefaultMarketPluginSyncOutcome>',
     );
     const syncEnd = registerSource.indexOf('\n}\n\n/**\n * Preserve stable IPC errors', syncStart);
     const syncBody = registerSource.slice(syncStart, syncEnd);
-    expect(syncBody).toContain('await service().snapshot();');
+    expect(syncBody).toContain('await snapshotAndSignalRemovalNotice({');
+    expect(syncBody).toContain('onDefaultReconciliationOutcome: (outcome) => {');
+    expect(syncBody).toContain("log.warn('default plugin startup sync incomplete'");
     expect(syncBody).toContain("log.warn('default plugin startup sync failed'");
 
     const ownerSyncStart = bootstrapSource.indexOf(
-      'function syncDefaultPluginsForActiveOwner(): void',
+      'authManager.setStableOwnerPostCommitTask(async ({ reason, scopeKey, dataOwnerId }) => {',
     );
-    const ownerSyncEnd = bootstrapSource.indexOf('\n}\n\nconst registerIpcHandlers', ownerSyncStart);
+    const ownerSyncEnd = bootstrapSource.indexOf('\n});\n\n// ── Custom protocol', ownerSyncStart);
     const ownerSyncBody = bootstrapSource.slice(ownerSyncStart, ownerSyncEnd);
+    expect(ownerSyncStart).toBeGreaterThan(-1);
+    expect(ownerSyncBody).toContain('if (dataOwnerId === null)');
+    expect(ownerSyncBody).toContain('const marketOutcome = await syncDefaultMarketPlugins();');
+    expect(ownerSyncBody).toContain("if (marketOutcome === 'failed') needsRetry = true;");
+    expect(ownerSyncBody).toContain("if (marketOutcome === 'deferred') deferred = true;");
     expect(ownerSyncBody).toContain(
-      'if (!session.dataOwnerId || isAppSessionBoundaryPending()) return;',
+      "return needsRetry ? 'failed' : deferred ? 'deferred' : 'completed';",
     );
-    expect(ownerSyncBody).toContain('if (scope === defaultPluginSyncInFlightScope) return;');
-    expect(ownerSyncBody).toContain('void syncDefaultMarketPlugins().finally(() => {');
-    expect(ownerSyncBody).toContain('defaultPluginSyncInFlightScope = null;');
-
-    const listenerStart = bootstrapSource.indexOf(
-      'disposePluginMarketAuthListener = authManager.onAuthStateChange',
-    );
-    expect(listenerStart).toBeGreaterThan(-1);
-    expect(
-      bootstrapSource.indexOf(
-        'queueMicrotask(syncDefaultPluginsForActiveOwner);',
-        listenerStart,
-      ),
-    ).toBeGreaterThan(listenerStart);
-    expect(bootstrapSource).toContain("'plugin-market-auth-listener'");
   });
 });

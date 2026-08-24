@@ -2,11 +2,9 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
 // Migration companion scripts intentionally use CommonJS so the runtime loader can replay them.
-const migration0085 =
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  require('../../../../drizzle/scripts/0085_skinny_iron_man.ts') as {
-    run(db: Database.Database): void;
-  };
+const { default: migration0092 } = (await import(
+  '../../../../drizzle/scripts/0092_sync_upstream_20260821'
+)) as { default: { run(db: Database.Database): void } };
 
 function setupDb(): Database.Database {
   const db = new Database(':memory:');
@@ -70,7 +68,7 @@ function spendRows(db: Database.Database): Array<Record<string, unknown>> {
     .all() as Array<Record<string, unknown>>;
 }
 
-describe('0085 daily_spend rebuild from message ledger', () => {
+describe('0092 daily_spend rebuild from message ledger', () => {
   it('restores a day total that the old single-row schema had overwritten', () => {
     // 复现真实事故:当天先累计了 CNY,账本币种翻成 USD 后旧写入路径用新金额覆盖整行,
     // 149.13 永久消失、只剩 15.44。消息级 turnCost 从未丢过,据此重建。
@@ -83,7 +81,7 @@ describe('0085 daily_spend rebuild from message ledger', () => {
     insertMessage(db, 'm2', dayTs('2026-07-31', 10), cny(49.13));
     insertMessage(db, 'm3', dayTs('2026-07-31', 20), usd(15.44));
 
-    migration0085.run(db);
+    migration0092.run(db);
 
     expect(spendRows(db)).toEqual([
       { day: '2026-07-31', cost_currency: 'CNY', cost_amount: 149.13 },
@@ -100,7 +98,7 @@ describe('0085 daily_spend rebuild from message ledger', () => {
     ).run('2026-07-30', 500, 'USD', 1);
     insertMessage(db, 'm1', dayTs('2026-07-30', 9), usd(12));
 
-    migration0085.run(db);
+    migration0092.run(db);
 
     expect(spendRows(db)).toEqual([
       { day: '2026-07-30', cost_currency: 'USD', cost_amount: 500 },
@@ -112,7 +110,7 @@ describe('0085 daily_spend rebuild from message ledger', () => {
     insertMessage(db, 'm1', dayTs('2026-07-29', 9), usd(10));
     insertMessage(db, 'm2', dayTs('2026-07-29', 10), usd(99), 123);
 
-    migration0085.run(db);
+    migration0092.run(db);
 
     expect(spendRows(db)).toEqual([
       { day: '2026-07-29', cost_currency: 'USD', cost_amount: 10 },
@@ -124,9 +122,9 @@ describe('0085 daily_spend rebuild from message ledger', () => {
     insertMessage(db, 'm1', dayTs('2026-07-28', 9), usd(3));
     insertMessage(db, 'm2', dayTs('2026-07-28', 11), usd(4));
 
-    migration0085.run(db);
+    migration0092.run(db);
     const first = spendRows(db);
-    migration0085.run(db);
+    migration0092.run(db);
 
     expect(spendRows(db)).toEqual(first);
     expect(first).toEqual([{ day: '2026-07-28', cost_currency: 'USD', cost_amount: 7 }]);
@@ -144,7 +142,7 @@ describe('0085 daily_spend rebuild from message ledger', () => {
       '{"turnCost": not json',
     );
 
-    expect(() => migration0085.run(db)).not.toThrow();
+    expect(() => migration0092.run(db)).not.toThrow();
     expect(spendRows(db)).toEqual([
       { day: '2026-07-27', cost_currency: 'USD', cost_amount: 2 },
     ]);
@@ -156,7 +154,7 @@ describe('0085 daily_spend rebuild from message ledger', () => {
       `INSERT INTO daily_spend (day, cost_amount, cost_currency, updated_at) VALUES (?, ?, ?, ?)`,
     ).run('2026-07-26', 42, 'USD', 1);
 
-    migration0085.run(db);
+    migration0092.run(db);
 
     expect(spendRows(db)).toEqual([
       { day: '2026-07-26', cost_currency: 'USD', cost_amount: 42 },

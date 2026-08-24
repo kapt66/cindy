@@ -18,7 +18,6 @@
 import type {
   InteractionRequest,
   AgentKind,
-  AskUserQuestionItem,
   Effort,
   PermissionModeDescriptor,
 } from '@cindy/maker-core';
@@ -26,21 +25,24 @@ import type { ProviderSection } from '@cindy/model-providers';
 import type { Schedule, ScheduleRun } from '@cindy/maker-scheduler';
 import type { InteractiveCardSpec } from '@cindy/im';
 
+import { autoReviewUnavailablePromptLine } from './autoReviewUnavailablePrompt';
 import type { ImUiTextPack } from './types';
+import {
+  composeInteractionModel,
+  truncateBlock,
+  BTN_LABEL_MAX,
+  IM_PERMISSION_INPUT_PREVIEW_MAX,
+  MAX_PLAN_LEN,
+} from './interactionCardModel';
 import type { ControlProject, ControlSession, RecentControlSession } from './controlProjects';
 
-const MAX_PLAN_LEN = 1500;
-const MAX_INPUT_PREVIEW = 800;
-const MAX_OPTIONS = 6;
+/** IM 卡片文本截断(实现见 interactionCardModel.truncateBlock)。 */
+const truncate = truncateBlock;
 
-function truncate(s: string, max: number): string {
-  if (!s) return '';
-  return s.length > max ? `${s.slice(0, max)}\n\n…(已截断)` : s;
-}
-
+/** 工具入参 -> pretty JSON 预览(IM 卡片正文有排版空间, 与 hook 侧的单行摘要不同)。 */
 function previewInput(input: Record<string, unknown>): string {
   try {
-    return truncate(JSON.stringify(input, null, 2), MAX_INPUT_PREVIEW);
+    return truncate(JSON.stringify(input, null, 2), IM_PERMISSION_INPUT_PREVIEW_MAX);
   } catch {
     return '<unserializable>';
   }
@@ -104,6 +106,17 @@ export interface ImCardBuilders {
     sessions: RecentControlSession[];
   }): InteractiveCardSpec;
   buildResolvedCard(label: string): InteractiveCardSpec;
+  /** 「群会话不能用完全访问」失败时的私聊修复卡(仅提供 permissionModeFix 文案的渠道)。 */
+  buildPermissionModeFixCard(args: {
+    sessionId: string;
+    agentKind: AgentKind;
+    sessionTitle: string;
+  }): InteractiveCardSpec;
+  /** 授权卡收口: 保留原始正文 + 追加决策结果, 去掉按钮。 */
+  buildResolvedPermissionCard(
+    original: { title: string; body: string },
+    label: string,
+  ): InteractiveCardSpec;
 }
 
 export function createCardBuilders(
@@ -114,9 +127,12 @@ export function createCardBuilders(
     // ── permission ──────────────────────────────────────────────────────────
 
     buildPermissionCard(req) {
+      const model = composeInteractionModel(req);
+      const params = `${ui.cards.permission.paramsLabel}\n\`\`\`json\n${previewInput(model.input)}\n\`\`\``;
+      const unavailable = autoReviewUnavailablePromptLine(req);
       return {
-        title: ui.cards.permission.title(req.toolName),
-        body: `${ui.cards.permission.paramsLabel}\n\`\`\`json\n${previewInput(req.input)}\n\`\`\``,
+        title: ui.cards.permission.title(model.toolName),
+        body: unavailable ? `${unavailable}\n\n${params}` : params,
         buttons: [
           {
             id: 'permission:allow:once',
@@ -124,12 +140,14 @@ export function createCardBuilders(
             type: 'primary',
             payload: { requestId: req.requestId },
           },
-          {
+          // Auto 故障降级会标 forcePrompt：Claude 丢 permissionUpdates，
+          // Codex 把 acceptForSession 收成单次 allow。展示「总是允许」等于说谎。
+          ...(!unavailable ? [{
             id: 'permission:allow:always',
             label: ui.cards.permission.btnAllowAlways,
-            type: 'default',
+            type: 'default' as const,
             payload: { requestId: req.requestId },
-          },
+          }] : []),
           {
             id: 'permission:deny',
             label: ui.cards.permission.btnDeny,
@@ -141,22 +159,17 @@ export function createCardBuilders(
     },
 
     // ── ask_user_question ───────────────────────────────────────────────────
-    // v1 simplification (mirrors legacy cardRenderer behaviour):
-    // - render only the FIRST question
-    // - max 6 options (single-select); multiSelect is downgraded to single-select
+    // v1 简化(只渲染第一问 / 至多 6 个选项 / multiSelect 降级单选)已收进
+    // interactionCardModel.composeInteractionModel — 这里只做渲染。
 
     buildAskUserCard(req) {
-      const question: AskUserQuestionItem | undefined = req.questions[0];
-      if (!question) return null;
+      const model = composeInteractionModel(req);
+      if (!model) return null;
 
-      const headerText = question.header || question.question;
-      const options = (question.options ?? []).slice(0, MAX_OPTIONS);
-      const bodyExtra =
-        question.header && question.header !== question.question
-          ? `\n${question.question}`
-          : '';
+      const { headerText, question } = model;
+      const bodyExtra = model.questionBody ? `\n${model.questionBody}` : '';
 
-      if (options.length === 0) {
+      if (model.degraded) {
         return {
           title: ui.cards.ask.title(headerText),
           body: bodyExtra
@@ -165,7 +178,7 @@ export function createCardBuilders(
           buttons: [
             {
               id: 'ask:noop',
-              label: '继续',
+              label: model.choices[0].label ?? '',
               type: 'default',
               payload: {
                 requestId: req.requestId,
@@ -174,7 +187,7 @@ export function createCardBuilders(
                 // headerText 只作卡片标题, 不参与 answers 匹配。
                 questionText: question.question,
                 questionHeader: headerText,
-                optionLabel: '',
+                optionLabel: model.choices[0].answerText ?? '',
               },
             },
           ],
@@ -184,15 +197,15 @@ export function createCardBuilders(
       return {
         title: ui.cards.ask.title(headerText),
         body: bodyExtra || ' ',
-        buttons: options.map((opt) => ({
+        buttons: model.choices.map((choice) => ({
           id: 'ask:pick',
-          label: truncate(opt.label, 30),
+          label: truncate(choice.label ?? '', BTN_LABEL_MAX),
           type: 'default' as const,
           payload: {
             requestId: req.requestId,
             questionText: question.question,
             questionHeader: headerText,
-            optionLabel: opt.label,
+            optionLabel: choice.answerText ?? '',
           },
         })),
       };
@@ -201,9 +214,10 @@ export function createCardBuilders(
     // ── plan_review ─────────────────────────────────────────────────────────
 
     buildPlanReviewCard(req) {
+      const model = composeInteractionModel(req);
       return {
         title: ui.cards.plan.title,
-        body: truncate(req.plan, MAX_PLAN_LEN),
+        body: truncate(model.plan, MAX_PLAN_LEN),
         buttons: [
           {
             id: 'plan:approve',
@@ -521,6 +535,52 @@ export function createCardBuilders(
     buildResolvedCard(label) {
       return {
         body: label,
+        buttons: [],
+      };
+    },
+
+    /**
+     * 「群会话不能用完全访问」的私聊修复卡 — 一键把会话切回 auto。payload
+     * 带 sessionId + agentKind(cardAction 通道只带 senderId, 业务 id 走 payload)。
+     */
+    buildPermissionModeFixCard(args: {
+      sessionId: string;
+      agentKind: AgentKind;
+      sessionTitle: string;
+    }): InteractiveCardSpec {
+      const fixUi = ui.cards.permissionModeFix;
+      if (!fixUi) {
+        throw new Error('buildPermissionModeFixCard requires ui.cards.permissionModeFix (feishu)');
+      }
+      return {
+        title: fixUi.title,
+        body: fixUi.body(args.sessionTitle),
+        buttons: [
+          {
+            id: 'permissionMode:fix-auto',
+            label: fixUi.btnFix,
+            type: 'primary' as const,
+            payload: {
+              sessionId: args.sessionId,
+              agentKind: args.agentKind,
+            },
+          },
+        ],
+      };
+    },
+
+    /**
+     * 授权卡被点击后的收口形态: **保留原始正文**(工具名 + 参数预览 — 用户
+     * 需要看到自己刚刚批准的是什么), 去掉按钮, 末尾追加决策结果一行。
+     * 与 buildResolvedCard 的差异正在于不吞掉决策正文。
+     */
+    buildResolvedPermissionCard(
+      original: { title: string; body: string },
+      label: string,
+    ): InteractiveCardSpec {
+      return {
+        title: original.title,
+        body: `${original.body}\n\n${label}`,
         buttons: [],
       };
     },

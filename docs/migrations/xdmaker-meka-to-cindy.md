@@ -142,7 +142,6 @@
 
 ### 3.3 等待手测或发布环境验证
 
-- 真实旧 Meka userData 副本到 `CindyMeka` 的只读迁移。
 - 真实 Jira/GitLab 账号和 Issue 创建流程。
 - 真实 MCPRouter 登录、实例创建、绑定和远程会话。
 - Orca Worker 对真实 P4 根目录和远程实例的运行。
@@ -1641,7 +1640,6 @@ thread-context gated 的本地动态代理投影这条唯一入口，Claude 继�
 ### 7.2 尚未真实环境验收
 
 - 旧 Meka 安装包热更升级。
-- 真实旧 userData/DB 原地升级。
 - 原 Windows 签名服务。
 - 原 macOS 证书私钥、自签名和钥匙串行为。
 - 真实 MCPRouter、Jira、GitLab、P4 网络和权限环境。
@@ -1830,7 +1828,8 @@ thread-context gated 的本地动态代理投影这条唯一入口，Claude 继�
 
 ## 9. 最终提交前门禁
 
-本轮未提交改动已完成代码审查与本地自动化门禁；真实安装、升级和 UI 验收仍待完成。
+本轮未提交改动已完成代码审查、本地自动化门禁、Windows UI 与真实旧数据临时副本验收；
+macOS、正式签名安装升级和外部服务验收仍待完成。
 
 最终至少需要：
 
@@ -1842,7 +1841,7 @@ thread-context gated 的本地动态代理投影这条唯一入口，Claude 继�
 6. release identity、签名配置和产物命名专项测试。
 7. Windows 与 macOS 打包 smoke。
 8. Light/Dark UI 验收。
-9. 真实旧 Meka 数据副本升级测试。
+9. 真实旧 Meka 数据副本升级测试（2026-08-22 已完成）。
 10. 旧签名版本 → 新版本热更新测试。
 
 本轮最终代码门禁结果：
@@ -2329,29 +2328,127 @@ Worker 任务。方案审批卡新增 `moduleEvidence` 与 `capabilityMatrix` �
 `report-ready`；`error` 终态即使包含合法 JSON 也转入重试，临时投递失败则保留 pending 等待 Orca
 重试。本轮仍未修改服务器仓库、数据库 schema、协议或插件权限。
 
+### 6.36 2026-08-21 Cindy 上游同步
+
+在隔离 worktree 将 `origin/main@625a7d714f199cb6770b5d1f556bb1f0322e9fbb` 语义合并到
+`meka/main@d17186e42b724791b212bc55437587ce84069c2e`。139 个 Git 冲突已清空；上游的
+Agent/Provider、输入队列、Worker 权限、route owner、remote worktree、Composer、正式 profile
+写保护、更新器 SemVer、插件 receipt/package review 和五语 UI 已接纳，同时保留 Meka 项目/
+角色/正式事项、MCPRouter 远程目标、combat Host 门禁、插件独立 channel/ledger/SHA/staged
+review、技能 provenance、`CindyMeka` 身份和旧数据只读迁移。
+
+用户明确决定保留 Meka `cindy-protocol` submodule，gitlink 为
+`35fe6bfca4f24046eba0a3ba2826a5079eb0cb8e`；不接入上游同名本地协议包，也未修改协议子仓或
+服务端。数据库继续冻结 Meka `0082`-`0091`，上游新增 schema 与 guarded companion 追加为
+`0092`-`0095`；`db:validate` 与 migration replay 8/8 通过。上游新增 `zh-TW` 后，Meka 独有键
+已补齐台湾繁中投影，五语 8232 个 key 和术语门禁通过。详细能力审计、决定归属与验证见
+[`2026-08-origin-main-to-meka-main.md`](./2026-08-origin-main-to-meka-main.md) §5.11。
+
+远程 Agent 合并结果继续保留 Meka capability bundle、revision/thread register、MCP tunnel、
+`CapabilityMcpRouter`、`mcp-shim` 与 `codex-bridge`，同时接纳上游 protocol v4、provider
+routing 和远程环境准备；Worker 创建同时携带上游 `provider_id` 与 Meka execution target。
+Claude 本地 runtime 恢复 native Skill plugin，远端只投影 Orca bridge MCP。Orca 自动报告只可
+穿过 `active-turn` Retry，不能消费 Retry/error，`queue-head` recovery 继续严格阻塞。上游
+Mobile session-switch loading、conversation-share footer 与 approved 尺寸契约也已完整恢复。
+对应定向测试分别为 maker-cc-manager 120/120、lizi-mcps 18/18、maker-core 24/24、Orca 队列
+294/294、Mobile 设计契约 10/10；Desktop、Mobile 及所有带脚本的受影响 package typecheck
+结果以本期同步报告最终门禁记录为准。
+
+合并后回审继续采用上游共享 session header/menu、archived-inclusive fork family、协同
+disabled/retry 和 worktree fail-closed 行为；Meka 只保留角色 scope、MCPRouter-only 项目目标、
+侧栏独立分组和草稿占位等明确投影。Login 已由运行时 edition selector 决定身份，不再保留旧的
+build-region pill 消费断言。Windows 无文件 symlink 权限时，PI package-store 安全测试使用 hard
+link 继续验证 TOCTOU identity replacement，不跳过安全覆盖；runner 真实锁测试也恢复上游的
+测试专用分散端口范围，生产锁策略不变。
+
+最终根 `pnpm test:unit` 完整通过，runner 454 项以及全部 required unit workspace 均 PASS；
+`db:validate`、migration replay 8/8、五语/i18n 术语门禁、Desktop、Mobile 和四个受影响 bridge
+package 的 typecheck 通过。末轮 Renderer/Main 定向回归 302 项通过、3 项平台 skip，PI
+package-store security 66 项通过、3 项平台 skip。
+
+Windows 隔离 profile 的真实 Electron 启动回审又发现三项仅在运行期可见的合并断链：未登录
+xAI discovery 后台 Promise 未收口、Remote SSH pending-upgrade snapshot 早于 handler 注册、
+以及 Meka 项目/角色/元数据/技能目录/正式流程五组 `localDb` preload bridge 遗漏。当前分别以
+未登录 no-op + 后台异常边界、窗口创建前注册 Remote SSH IPC、恢复 Meka 父线 bridge 并增加
+source contract 回归修复。再次完整重启得到 `DESKTOP_DEV_VERDICT=ready`，日志不再出现对应
+FATAL、unhandled rejection、缺 handler 或 renderer crash；CDP 实测本地模式可见 Meka 助理、
+SAGA2 和正式/普通对话入口，项目页成功读取内置 SAGA2，Light/Dark 1280x800 均无可见重叠或
+renderer console error。
+
+最终又以 `merge-base..origin/main` 的 3352 条变化路径做完整接纳审计：首次分类为 3055 条
+原样接纳、212 条语义整合、85 条仍等于旧 Meka HEAD；补接 Settings 双栏导航与 Pi/catalog、
+hook-control 非协议能力、`original-fs` 真实 `.asar` 迁移、开发 profile override 及 Forge 安全
+实现并将 legacy migration demo 适配到当前技能快照 worker 后，最终 index 的可复现三树
+比对为 3060 条上游等值、231 条同时不同于两父线的适配接纳、61 条 Meka 等值例外；该结果
+取代处理过程中的中间计数。例外只包含 17 条冻结
+migration 历史、36 条用户决定的 protocol submodule/本地包拓扑、6 条受缺失 wire 符号门控的
+hook-control 路径、MCPRouter transport 不走 SSH preflight 的测试，以及 submodule 权威规则。
+
+Forge 已采用上游受管根双向隔离、workdir/realpath、stable-parent scaffold、TOCTOU、Unix mode、
+required node/icon 与 Manual 校验，同时保留 Meka 开发目录 `outputDir`、`reveal` 和
+`channel: 'meka'`；对应 Forge/市场边界 78 项通过、2 项平台 skip。hook-control 已接入 replacement、
+共享交互卡/TurnPresenter、provider 受理后提交 cursor、同 session 串行、lane-only 群历史、计划
+对账、审批回退、Slack retry 与 Pi 命令，18 个文件 477 项通过。message operations、durable
+request ledger 与 `turn.delivery` 因当前保留的 Meka protocol 未导出所需六个符号而未接入；
+本轮没有修改协议子仓、服务端或在 Desktop 私造 wire adapter。
+
+补接及 demo 修复后再次运行根 `pnpm test:unit`，runner 454 项（447 pass、7 skip）及全部 required workspace
+均 PASS；串行全仓 typecheck 的 8 个带脚本 workspace、96 条 SQL（`0000..0095`）数据库验证、
+migration replay 8/8、i18n 与术语门禁通过。i18n 的 851 条存量提示和术语表 6 处
+`status=proposed` 命中均为非阻塞，本次同步没有新增违规。最终隔离 Electron 再次得到
+`DESKTOP_DEV_VERDICT=ready`；Settings 通用、Meka 助理、插件、
+Pi 扩展及主任务页在 1280×800 的 Dark/Light 下无可见重叠或 renderer error，Meka 助理、SAGA2、
+正式流程与普通对话入口仍在。
+
+发布与升级补充验收：Meka 发布身份/写入门 50 项、插件与技能平行投影 116 项通过。隔离
+`pnpm demo:legacy-migration` 发现并修复 CLI 未接入正式技能快照 worker 而产生的假阴性，现由
+同一 `ghostSnapshotWorkerProcess` 处理器执行并硬断言；市场插件、用户停用插件和带技能插件
+均无感迁移，技能快照可验证，一次性门与回滚目录不变性成立。Windows x64 版本无关
+`CindyMeka` 本地产物在 8 GB Node heap 下构建成功，标准 packaged smoke 与 plugin-storage
+smoke 均通过 schema 95 和 owner-scoped 插件存储检查；未签名开发包不替代正式签名验收。
+
+2026-08-22 又以真实旧 `xdmaker-meka` 为只读来源、系统临时目录为目标完成数据副本升级：
+生产 SQLite online backup 合入 WAL 后，以精确旧 user ID 运行正式首登迁移，再连续执行 8 条
+migration 到 schema 95。`quick_check=ok`；迁移前后 118 个任务、1848 条消息、2 个 Meka 项目、
+7 个角色、109 个 Meka 工作区任务和 15 个正式流程任务计数一致；非敏感设置与角色文件迁移
+成功，smoke DB 排除成立。验证未读取或输出消息、凭证、邮箱或身份锚内容，未写真实旧目录，
+临时副本已删除。该结果关闭数据兼容验证门；旧安装包到正式签名新包的原地升级仍保留为发布
+验收项。
+
+2026-08-22 完成性复审确认重新 fetch 后 `origin/main` 仍等于本次 `MERGE_HEAD`；三树重新复算
+的 3352 条路径仍为 3060 条原样接纳、231 条适配接纳和 61 条已分类 Meka 例外。插件/技能
+直接覆盖复测 131/131、发布与跨平台打包契约复测 66/66 通过；Windows ASAR 身份、updater、
+标准及 plugin-storage packaged smoke 均再次通过。最后一次隔离 Desktop 启动返回
+`DESKTOP_DEV_VERDICT=ready`，CDP 主窗口保持 1280×800 无横向溢出，并同时显示 Meka、插件、
+SAGA2、正式流程和普通对话入口；启动日志无致命、未处理拒绝、缺 handler、renderer crash
+或数据库 migration 错误。
+
+本轮仍处于未提交 merge。macOS 尚未实测；插件基座改动仍需指定放行人明确 `Approve`，满足前
+不得声称可合并。
+
 ## 10. 后续继续迁移时的硬性注意事项
 
 ### 9.1 `origin/main` → `meka/main` 同步报告
 
-2026-08-04 的上游同步、冲突逐项说明、用户决策归属和本次验证状态见
+2026-08-21 的最新上游同步、冲突逐项说明、用户决策归属和本次验证状态见
 [`docs/migrations/2026-08-origin-main-to-meka-main.md`](./2026-08-origin-main-to-meka-main.md)。
 该报告的当前结论优先于本文较早阶段记录的“全量门禁通过”描述：本次同步已完成文件级
 冲突收敛并修复合并结构断裂；首次并发门禁中的浏览器 prompt 扫描测试出现资源时延超时，
 单测单跑、官方串行复跑及随后默认并发门禁复跑均已通过，因此代码测试门禁已达到通过状态。
-仍有两项交付前置条件：
-命中插件基座路径的改动必须取得指定放行人的明确 `Approve`，以及真实 Electron、Light/Dark
-和旧版 Meka 数据升级验证尚未完成；在这些条件满足前不得声称已达到可合并状态。
+真实 Windows Electron、Light/Dark 与真实旧数据临时副本升级已按 6.36 及本节记录完成；当前
+交付前置条件为命中插件基座路径的改动必须取得指定放行人的明确 `Approve`，另需在 macOS
+完成平台验收。在这些条件满足前不得声称已达到可合并状态。
 
 1. 不直接 merge `xdmaker/meka/main`。
 2. 不以“文件有差异”为迁移理由，必须说明 Meka 产品意图。
 3. 不恢复服务端代码。
 4. 不复制旧协议实现覆盖 Cindy 当前协议/子仓库。
 5. 不把 S1 能力包当成“插件目录复制”处理；它涉及 prompt、tool/MCP、权限、快照和恢复。
-6. 不改已发布 migration；0080–0088 发布后视为冻结历史。
+6. 不改已发布 migration；当前 `0080`–`0091` 视为冻结历史，只能从 `0092` 以后追加。
 7. 不用开发版未 canonical migration 直接写共享 userData。
 8. 不把 Desktop 安装身份和 device-link wire protocol 再次耦合。
 9. 不把 Windows/macOS 证书、Token、密码或授权文件写入仓库。
-10. 不因 UI 来自 Meka 就保留旧视觉；进入 Cindy 后必须遵循 `DESIGN.md` 和四语言要求。
+10. 不因 UI 来自 Meka 就保留旧视觉；进入 Cindy 后必须遵循 `DESIGN.md` 和五语言要求。
 11. 不因 Meka 新需求删除、移动或替换 Cindy 页面原有内容；优先在现有同语义布局中增量接入。
 12. 新增 Meka IPC、文件落盘、凭证、远程工具或协议字段时，先核对对应 dev rules。
 13. 每次手测反馈修复后同步更新本文的状态、风险和验收结果。

@@ -465,6 +465,20 @@ const FROZEN_REPLAY_DEFECT_GUARDS: Record<string, (db: Database.Database) => boo
       .all() as Array<{ name: string }>;
     return columns.some((column) => column.name === 'notify_wecom_group');
   },
+  // Meka 0091 predates the upstream partial-schema replay fixtures. Its table
+  // rebuild only applies to databases that already carry the complete Meka
+  // sessions shape; synthetic legacy fixtures without those columns have no
+  // Meka project foreign key to remove, so the migration is a no-op for them.
+  '0091_meka_project_history_reference.sql': (db) => {
+    const columns = new Set(
+      (db.prepare(`PRAGMA table_info('sessions')`).all() as Array<{ name: string }>).map(
+        (column) => column.name,
+      ),
+    );
+    return ['title', 'workspace_kind', 'meka_project_id'].some(
+      (column) => !columns.has(column),
+    );
+  },
 };
 
 // SQLite ignores PRAGMA foreign_keys changes made inside an active transaction. 0091 rebuilds

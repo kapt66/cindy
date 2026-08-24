@@ -13,11 +13,9 @@ describe('Meka sidebar order', () => {
     const mekaIndex = sidebarSource.indexOf('<MekaAssistantSection');
     const pinnedIndex = sidebarSource.indexOf('<PinnedSection');
     const projectsIndex = sidebarSource.indexOf('<ProjectsSection');
-    const dialogueIndex = sidebarSource.indexOf('<DialogueSection');
 
     expect(mekaIndex).toBeGreaterThan(-1);
     expect(mekaIndex).toBeLessThan(pinnedIndex);
     expect(mekaIndex).toBeLessThan(projectsIndex);
-    expect(mekaIndex).toBeLessThan(dialogueIndex);
   });
 });

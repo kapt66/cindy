@@ -33,18 +33,36 @@ import { BrowserWindow } from 'electron';
 import { desc, eq } from 'drizzle-orm';
 
 import {
+  broadcastMessageRow,
   broadcastMessageAgentMetaUpdate,
   createMessage as createDbMessage,
+  findVisibleToolUseMessageByAliases,
   patchMessageAgentMetaWithResult,
   updateMessageContent as updateDbMessageContent,
 } from './localDb/ipc/messages.js';
 import { getDbClient } from './localDb/client/current.js';
+import {
+  markCodexPlanInterrupted,
+  parseCodexPlanTerminal,
+  parseCodexPlanUpdate,
+  writeCodexPlanTerminal,
+  writeCodexPlanUpdate,
+} from './localDb/codexPlanState.js';
 import { isTopLevelTitleAssistant } from './localDb/latestMessageText.logic.js';
 import { messages as messagesTable } from './localDb/schema.js';
+import { getSubagentRunDetail } from './localDb/subagentRuns.js';
 import { createLogger } from './logger.js';
-import { tapWindowBroadcast } from './device-link/broadcast-tap.js';
+import * as broadcastTap from './device-link/broadcast-tap.js';
 import { takeMediaToolResult } from './mcp-integrations/mediaToolResultFallback.js';
 import { redactSensitiveText } from '@cindy/maker-shared/error-redaction';
+import {
+  isAgentTaskToolName,
+  normalizeAgentTaskTerminalStatus,
+  normalizeAgentTaskUpdate,
+  type AgentTaskTerminalStatus,
+} from '@cindy/maker-shared/agent-task';
+import { normalizeSubagentObservation } from '@cindy/maker-shared/subagent-observation';
+import { stripInternalWebCitations } from '@cindy/maker-shared/internal-citation';
 import { getSessionProvider } from './maker-host/session-provider-store.js';
 import type { AgentMeta } from '../renderer/lib/ccAgent.types';
 
@@ -71,10 +89,31 @@ export function noteSessionClearBoundary(sessionId: string, clearedAt: string | 
   const current = clearBoundaryBySession.get(sessionId);
   if (current === undefined || parsed > current) {
     clearBoundaryBySession.set(sessionId, parsed);
+    // A cleared transcript must not be revived by a late terminal update from an
+    // older background task. New tool calls repopulate this linkage after the boundary.
+    clearAgentTaskPersistState(sessionId);
   }
 }
 
+/**
+ * Background work belongs to an earlier provider turn, so its local turn-start
+ * time—not the late event's arrival time—decides whether a /clear boundary
+ * hides it. Missing/non-finite ownership is fail-closed only when a clear
+ * boundary exists; sessions that were never cleared keep the legacy behavior.
+ */
+export function backgroundTurnPredatesSessionClear(
+  sessionId: string,
+  turnStartedAt: unknown,
+): boolean {
+  const clearBoundary = clearBoundaryBySession.get(sessionId);
+  if (clearBoundary === undefined) return false;
+  return typeof turnStartedAt !== 'number'
+    || !Number.isFinite(turnStartedAt)
+    || turnStartedAt <= clearBoundary;
+}
+
 type CreateDbMessageBody = Parameters<typeof createDbMessage>[1];
+type OwnerScope = ReturnType<typeof broadcastTap.captureDataOwnerBroadcastScope> | null;
 
 /**
  * session-agent-switch:每会话当前 agent 引擎('cc'/'codex'),由 register.ts
@@ -99,18 +138,24 @@ function withAgentKindStamp(sessionId: string, body: CreateDbMessageBody): Creat
   return kind ? { ...body, agentKind: kind } : body;
 }
 
-function createVisibleDbMessage(sessionId: string, body: CreateDbMessageBody): ReturnType<typeof createDbMessage> {
+function createVisibleDbMessage(
+  sessionId: string,
+  body: CreateDbMessageBody,
+  ownerScope: OwnerScope,
+): ReturnType<typeof createDbMessage> {
   const createdAt = typeof body.createdAt === 'number' && Number.isFinite(body.createdAt)
     ? body.createdAt
     : undefined;
-  if (createdAt === undefined) {
-    return createDbMessage(sessionId, body);
-  }
   return createDbMessage(sessionId, body, {
-    shouldBroadcast: () => {
-      const latestBoundary = clearBoundaryBySession.get(sessionId);
-      return latestBoundary === undefined || createdAt > latestBoundary;
-    },
+    ...(createdAt === undefined
+      ? {}
+      : {
+          shouldBroadcast: () => {
+            const latestBoundary = clearBoundaryBySession.get(sessionId);
+            return latestBoundary === undefined || createdAt > latestBoundary;
+          },
+        }),
+    broadcastOwnerScope: ownerScope,
   });
 }
 
@@ -129,6 +174,7 @@ const lastAgentMetaBySession = new Map<string, AgentMeta>();
  * 若 turnStartedAt <= clearBoundary，该 error 行必须 cap 在 clear 边界之下，防止出现在清空后的新会话。
  * resetTurnPersistState / clearSessionPersistState 时清除。 */
 const _turnStartedAtBySession = new Map<string, number>();
+const _turnAttemptTokenBySession = new Map<string, number>();
 const _turnDedupIdBySession = new Map<string, string>();
 let _turnDedupSeq = 0;
 
@@ -142,10 +188,13 @@ const _savedTurnDedupIdForDeferred = new Map<string, string>();
  * 只在首次调用（Map 中无条目）时写入，忽略后续 isRunning:true 的覆盖，
  * 防止 Claude 工具进度 / Codex stage 等 mid-turn 进度事件在 /clear 之后
  * 用 post-clear 时间戳覆盖原始 pre-clear 起点，导致 /clear 竞态 cap 失效。 */
-export function noteTurnStarted(sessionId: string): void {
+export function noteTurnStarted(sessionId: string, turnAttemptToken?: number): void {
   if (!_turnStartedAtBySession.has(sessionId)) {
     const now = Date.now();
     _turnStartedAtBySession.set(sessionId, now);
+    if (typeof turnAttemptToken === 'number') {
+      _turnAttemptTokenBySession.set(sessionId, turnAttemptToken);
+    }
     _turnDedupIdBySession.set(sessionId, `${now}:${++_turnDedupSeq}`);
     // 新 turn 第一次记录时，旧的 deferred 保存值已无效，清掉防止 deferred IPC 用到旧 turn 的时刻。
     _savedTurnStartedAtForDeferred.delete(sessionId);
@@ -243,12 +292,12 @@ function markAssistantTurnBoundary(
   completed: boolean,
 ): Promise<boolean> {
   if (!sessionId || !clientId) return Promise.resolve(false);
-  return enqueueDurableWrite(`turn-boundary:${sessionId}:${clientId}:${completed}`, async () => {
+  return enqueueDurableWrite(`turn-boundary:${sessionId}:${clientId}:${completed}`, async (ownerScope) => {
     const patched = await patchMessageAgentMetaWithResult(sessionId, clientId, {
       turnCompleted: completed,
     });
     if (!patched) return false;
-    return broadcastMessageAgentMetaUpdate(sessionId, clientId);
+    return broadcastMessageAgentMetaUpdate(sessionId, clientId, ownerScope);
   });
 }
 
@@ -276,6 +325,20 @@ export function markAssistantTurnFailed(
 }
 
 /**
+ * Codex emits `done` for every terminal turn, including user interruption and
+ * failure. Only the successful variant may create a persisted completion seal;
+ * otherwise historical plan recovery would later treat partial work as done.
+ */
+export function isSuccessfulCodexDoneEventData(data: unknown): boolean {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+  const done = data as { cancelled?: unknown; raw?: unknown };
+  if (done.cancelled === true) return false;
+  if (!done.raw || typeof done.raw !== 'object' || Array.isArray(done.raw)) return false;
+  const status = (done.raw as { status?: unknown }).status;
+  return status === 'completed';
+}
+
+/**
  * 给一条自动续跑（中断自愈）的 user 消息补上**结果**。
  *
  * 为什么必须有这一步:那条消息在「续跑指令发出去」的瞬间就落库了,而那时还完全不知道
@@ -291,12 +354,12 @@ export function markAutoResumeOutcome(
   outcome: 'succeeded' | 'failed',
 ): Promise<boolean> {
   if (!sessionId || !clientId) return Promise.resolve(false);
-  return enqueueDurableWrite(`auto-resume-outcome:${sessionId}:${clientId}`, async () => {
+  return enqueueDurableWrite(`auto-resume-outcome:${sessionId}:${clientId}`, async (ownerScope) => {
     const patched = await patchMessageAgentMetaWithResult(sessionId, clientId, {
       autoResumeOutcome: outcome,
     });
     if (!patched) return false;
-    return broadcastMessageAgentMetaUpdate(sessionId, clientId);
+    return broadcastMessageAgentMetaUpdate(sessionId, clientId, ownerScope);
   });
 }
 
@@ -305,9 +368,42 @@ export function markAutoResumeOutcome(
  * 序列化(sqlite 本就单写者)。每个 link 单独 catch,失败只 warn、不打断后续写。
  */
 let writeChain: Promise<unknown> = Promise.resolve();
-function enqueueWrite(label: string, fn: () => Promise<unknown>): void {
+const OWNER_SCOPE_SUPERSEDED = 'OWNER_SCOPE_SUPERSEDED';
+
+function captureOwnerScope(): ReturnType<typeof broadcastTap.captureDataOwnerBroadcastScope> | null {
+  return broadcastTap.captureDataOwnerBroadcastScope?.() ?? null;
+}
+
+function isOwnerScopeCurrent(
+  scope: ReturnType<typeof broadcastTap.captureDataOwnerBroadcastScope> | null,
+): boolean {
+  return scope === null || broadcastTap.isDataOwnerBroadcastScopeCurrent?.(scope) !== false;
+}
+
+function ownerScopeSupersededError(): Error & { code: string } {
+  return Object.assign(new Error('durable write superseded by an app-session boundary'), {
+    code: OWNER_SCOPE_SUPERSEDED,
+  });
+}
+
+function isOwnerScopeSupersededError(error: unknown): boolean {
+  return (
+    error !== null &&
+    typeof error === 'object' &&
+    (error as { code?: unknown }).code === OWNER_SCOPE_SUPERSEDED
+  );
+}
+
+function enqueueWrite(label: string, fn: (ownerScope: OwnerScope) => Promise<unknown>): void {
+  const ownerScope = captureOwnerScope();
   writeChain = writeChain
-    .then(fn)
+    .then(() => {
+      if (!isOwnerScopeCurrent(ownerScope)) {
+        log.debug('message persist skipped after app-session boundary', { label });
+        return;
+      }
+      return fn(ownerScope);
+    })
     .catch((err) => {
       log.warn('message persist failed', {
         label,
@@ -323,7 +419,7 @@ function enqueueVisibleDbMessage(
   body: CreateDbMessageBody,
 ): void {
   const stamped = withAgentKindStamp(sessionId, body);
-  enqueueWrite(label, () => createVisibleDbMessage(sessionId, stamped));
+  enqueueWrite(label, (ownerScope) => createVisibleDbMessage(sessionId, stamped, ownerScope));
 }
 
 /**
@@ -336,18 +432,33 @@ function enqueueVisibleDbMessage(
  * `fn` 在 microtask 里跑, 内部用 sync drizzle write OK; reject 透传给调用方, 单
  * 个 link reject 不打断后续 chain (跟 enqueueWrite 的吞错语义对齐, log.warn 即可)。
  */
-export function enqueueDurableWrite<T>(label: string, fn: () => Promise<T> | T): Promise<T> {
+export function enqueueDurableWrite<T>(
+  label: string,
+  fn: (ownerScope: OwnerScope) => Promise<T> | T,
+): Promise<T> {
+  const ownerScope = captureOwnerScope();
   return new Promise<T>((resolve, reject) => {
     writeChain = writeChain
       .then(async () => {
+        if (!isOwnerScopeCurrent(ownerScope)) {
+          reject(ownerScopeSupersededError());
+          return;
+        }
         try {
-          const value = await fn();
+          const value = await fn(ownerScope);
+          // The durable side effect may have committed just before an app
+          // session boundary becomes observable.  Keep that commit's result:
+          // callers must not retry or compensate a row/ledger write merely
+          // because its owner-scoped broadcast is now stale.  Each fn owns
+          // suppressing its old-owner broadcast via ownerScope.
           resolve(value);
         } catch (err) {
-          log.warn('durable write failed', {
-            label,
-            error: err instanceof Error ? err.message : String(err),
-          });
+          if (!isOwnerScopeSupersededError(err)) {
+            log.warn('durable write failed', {
+              label,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
           reject(err);
         }
       })
@@ -412,8 +523,318 @@ const toolUseCreatedAtBySession = new Map<string, Map<string, number>>();
  * 每会话 toolUseId → { toolName, input }。媒体 echo 兜底用:flushOrphanToolResults
  * 需要按 tool_use 的 input.args 去 mediaToolResultFallback 池里认领结果。
  */
+/**
+ * Codex 计划行的持久化引用,按 `plan:<turnId>` 存活到**产品 turn** 结束。
+ *
+ * 为什么不能复用 toolUseInfoBySession / updatableToolUsePersistIdBySession:
+ * 那两张表是 per-SDK-segment 的,每个 continuation boundary 都会被
+ * resetTurnPersistState 清空。分段 turn(S1 产出计划 → continuation done →
+ * S2 最终 done)在最终 done 时已经查不到计划行,既不写终态章也不写
+ * turnCompleted:false,重载后胶囊走旧版全勾完兜底 → 永久钉住(review P1-1)。
+ * 计划行的归属键是 turnId,与 SDK 分段无关,所以单独存一张按 turnId 的表,
+ * 只在同一 turnId 被新计划覆盖或 finalize 后清理。
+ */
+const codexPlanRowByTurnToolUseId = new Map<
+  string,
+  Map<string, { persistId: string; input: unknown }>
+>();
+
 const toolUseInfoBySession = new Map<string, Map<string, { toolName: string; input: unknown }>>();
 const updatableToolUsePersistIdBySession = new Map<string, Map<string, string>>();
+/**
+ * Agent/Task terminal events are live-only, while the originating tool_use is durable.
+ * Keep their row id beyond per-turn resets so late background completion can patch the
+ * original row. Session cleanup owns reclamation.
+ */
+const agentTaskToolUsePersistIdBySession = new Map<string, Map<string, string>>();
+const pendingAgentTaskStatusBySession = new Map<string, Map<string, AgentTaskTerminalStatus>>();
+const agentTaskPersistScopeBySession = new Map<string, object>();
+
+type AgentTaskPersistLink = { alias: string; persistId: string };
+
+function clearAgentTaskPersistState(sessionId: string): void {
+  agentTaskToolUsePersistIdBySession.delete(sessionId);
+  pendingAgentTaskStatusBySession.delete(sessionId);
+  // An in-flight database recovery must not restore links after /clear or
+  // session cleanup. Deleting this identity invalidates its captured scope.
+  agentTaskPersistScopeBySession.delete(sessionId);
+}
+
+function captureAgentTaskPersistScope(sessionId: string): object {
+  const existing = agentTaskPersistScopeBySession.get(sessionId);
+  if (existing) return existing;
+  const scope = {};
+  agentTaskPersistScopeBySession.set(sessionId, scope);
+  return scope;
+}
+
+function findAgentTaskPersistLink(
+  sessionId: string,
+  aliases: readonly string[],
+): AgentTaskPersistLink | undefined {
+  const persistIds = agentTaskToolUsePersistIdBySession.get(sessionId);
+  for (const alias of aliases) {
+    const persistId = persistIds?.get(alias);
+    if (persistId) return { alias, persistId };
+  }
+  return undefined;
+}
+
+function rememberAgentTaskAliases(
+  sessionId: string,
+  aliases: readonly string[],
+  persistId: string,
+): void {
+  const persistIds = getOrCreateSessionMap(agentTaskToolUsePersistIdBySession, sessionId);
+  for (const alias of aliases) persistIds.set(alias, persistId);
+}
+
+async function patchAgentTaskTerminalStatus(
+  sessionId: string,
+  link: AgentTaskPersistLink,
+  status: AgentTaskTerminalStatus,
+  ownerScope: OwnerScope,
+): Promise<void> {
+  const isLinkCurrent = () =>
+    agentTaskToolUsePersistIdBySession.get(sessionId)?.get(link.alias) === link.persistId;
+  // /clear and session cleanup synchronously discard the linkage. Recheck at
+  // both async boundaries so an already-queued terminal update cannot patch
+  // or rebroadcast a row that no longer belongs to the visible transcript.
+  if (!isLinkCurrent()) return;
+  const patched = await patchMessageAgentMetaWithResult(sessionId, link.persistId, {
+    agentTaskStatus: status,
+  });
+  if (patched && isLinkCurrent()) {
+    await broadcastMessageAgentMetaUpdate(sessionId, link.persistId, ownerScope);
+  }
+}
+
+function clearRecoveredPendingAgentTaskStatus(
+  sessionId: string,
+  aliases: readonly string[],
+  status: AgentTaskTerminalStatus,
+): void {
+  const pending = pendingAgentTaskStatusBySession.get(sessionId);
+  if (!pending) return;
+  for (const alias of aliases) {
+    if (pending.get(alias) === status) pending.delete(alias);
+  }
+  if (pending.size === 0) pendingAgentTaskStatusBySession.delete(sessionId);
+}
+
+function agentTaskMetaForToolUse(
+  sessionId: string,
+  toolUseId: string,
+  toolName: string,
+  agentMeta: AgentMeta | null,
+): AgentMeta | null {
+  if (!toolUseId || !isAgentTaskToolName(toolName)) return agentMeta;
+  const pendingStatus = pendingAgentTaskStatusBySession.get(sessionId)?.get(toolUseId);
+  if (!pendingStatus) return agentMeta;
+  pendingAgentTaskStatusBySession.get(sessionId)?.delete(toolUseId);
+  return { ...(agentMeta ?? {}), agentTaskStatus: pendingStatus };
+}
+
+function rememberAgentTaskToolUse(
+  sessionId: string,
+  toolUseId: string,
+  toolName: string,
+  persistId: string,
+): void {
+  if (!toolUseId || !isAgentTaskToolName(toolName)) return;
+  rememberAgentTaskAliases(sessionId, [toolUseId], persistId);
+}
+
+/** Persist an exact terminal lifecycle fact for history replay. */
+export function onAgentTaskUpdateEvent(sessionId: string, data: unknown): boolean {
+  const update = normalizeAgentTaskUpdate(data);
+  if (
+    !update
+    || update.taskType === 'local_bash'
+    || update.taskType === 'local_workflow'
+  ) {
+    return false;
+  }
+
+  const aliases = [update.parentToolUseId, update.taskId]
+    .filter((value): value is string => typeof value === 'string' && value.length > 0);
+  let link = findAgentTaskPersistLink(sessionId, aliases);
+
+  // A provider may introduce taskId beside parentToolUseId on a running update,
+  // then send a terminal update with taskId alone. Learn every alias as soon as
+  // any one of them resolves; running progress remains live-only.
+  if (link) rememberAgentTaskAliases(sessionId, aliases, link.persistId);
+
+  const observation = data && typeof data === 'object' && !Array.isArray(data)
+    ? normalizeSubagentObservation(
+        (data as Record<string, unknown>).subagentObservation,
+      )
+    : null;
+  // Codex spawn/control items can report `completed` while their descendants
+  // are still running. Only the harness-neutral terminal marker is lifecycle
+  // authority; status-only summaries remain live progress and must not win
+  // over later running updates during history replay.
+  const status = observation?.kind === 'terminal'
+    ? normalizeAgentTaskTerminalStatus(update.status)
+    : undefined;
+  if (!status) return false;
+  if (!link) {
+    const pending = getOrCreateSessionMap(pendingAgentTaskStatusBySession, sessionId);
+    const pendingAlias = update.parentToolUseId ?? update.taskId;
+    pending.set(pendingAlias, status);
+    const persistScope = captureAgentTaskPersistScope(sessionId);
+    const isTerminalStillPending = () =>
+      pendingAgentTaskStatusBySession.get(sessionId)?.get(pendingAlias) === status;
+    const isRecoveryCurrent = () =>
+      agentTaskPersistScopeBySession.get(sessionId) === persistScope
+      && isTerminalStillPending();
+    enqueueWrite(`agent_task_terminal_rehydrate:${sessionId}:${aliases.join(':')}`, async (ownerScope) => {
+      if (!isRecoveryCurrent()) return;
+
+      link = findAgentTaskPersistLink(sessionId, aliases);
+      if (!link) {
+        let resolvedAliases = aliases;
+        let persisted = await findVisibleToolUseMessageByAliases(sessionId, resolvedAliases);
+        if (!isRecoveryCurrent()) return;
+
+        // Claude task_updated events may carry only the runtime taskId. After
+        // restart, recover its durable parent tool-use alias from the existing
+        // Subagent projection before looking up the originating message row.
+        if (!persisted) {
+          const run = await getSubagentRunDetail(sessionId, update.provider, update.taskId);
+          if (!isRecoveryCurrent()) return;
+          if (run?.parentToolUseId && !resolvedAliases.includes(run.parentToolUseId)) {
+            resolvedAliases = [...resolvedAliases, run.parentToolUseId];
+            persisted = await findVisibleToolUseMessageByAliases(sessionId, resolvedAliases);
+            if (!isRecoveryCurrent()) return;
+          }
+        }
+        if (!persisted) return;
+        rememberAgentTaskAliases(
+          sessionId,
+          [...resolvedAliases, persisted.toolUseId],
+          persisted.clientId,
+        );
+        link = { alias: persisted.toolUseId, persistId: persisted.clientId };
+      } else {
+        rememberAgentTaskAliases(sessionId, aliases, link.persistId);
+      }
+
+      clearRecoveredPendingAgentTaskStatus(sessionId, aliases, status);
+      await patchAgentTaskTerminalStatus(sessionId, link, status, ownerScope);
+    });
+    return true;
+  }
+
+  const linkedTask = link;
+  enqueueWrite(`agent_task_terminal:${sessionId}:${linkedTask.persistId}`, async (ownerScope) => {
+    await patchAgentTaskTerminalStatus(sessionId, linkedTask, status, ownerScope);
+  });
+  return true;
+}
+
+interface BackgroundTurnPersistState {
+  agentMeta: AgentMeta | null;
+  knownToolUseIds: Set<string>;
+  pendingToolUseIds: Set<string>;
+  toolUseCreatedAt: Map<string, number>;
+  toolResultIdByToolUseId: Map<string, string>;
+  pendingFullTextByToolUseId: Map<string, { text: string; createdAt: number }>;
+  toolResultContentByClientId: Map<string, string>;
+}
+
+/**
+ * Late child results are still useful after a parent turn has ended, but must
+ * not borrow the next turn's persistence context. Keep snapshots keyed by the
+ * in-flight collab tool ids for events explicitly marked `turnScope=background`.
+ */
+const backgroundTurnPersistStatesBySession = new Map<string, BackgroundTurnPersistState[]>();
+
+export function preserveTurnPersistStateForBackground(sessionId: string): void {
+  const knownToolUseIds = knownToolUseIdsBySession.get(sessionId) ?? new Set<string>();
+  const toolUseInfo = toolUseInfoBySession.get(sessionId);
+  const collabToolUseIds = new Set(
+    [...knownToolUseIds].filter((toolUseId) =>
+      toolUseInfo?.get(toolUseId)?.toolName.startsWith('collab:') === true,
+    ),
+  );
+  const resultIds = toolResultIdByToolUseId.get(sessionId) ?? new Map<string, string>();
+  const pendingToolUseIds = new Set(
+    [...collabToolUseIds].filter((toolUseId) => !resultIds.has(toolUseId)),
+  );
+  // Only retain contexts that can still receive a late background result. A
+  // completed collab result already has its normal persistence row and needs
+  // no snapshot; this also keeps the state bounded by in-flight tool ids.
+  if (pendingToolUseIds.size === 0) return;
+  const snapshot: BackgroundTurnPersistState = {
+    agentMeta: lastAgentMetaBySession.get(sessionId) ?? null,
+    knownToolUseIds: new Set(collabToolUseIds),
+    pendingToolUseIds,
+    toolUseCreatedAt: new Map(
+      [...(toolUseCreatedAtBySession.get(sessionId) ?? [])]
+        .filter(([toolUseId]) => collabToolUseIds.has(toolUseId)),
+    ),
+    toolResultIdByToolUseId: new Map(
+      [...resultIds].filter(([toolUseId]) => collabToolUseIds.has(toolUseId)),
+    ),
+    pendingFullTextByToolUseId: new Map(
+      [...(pendingFullTextByToolUseId.get(sessionId) ?? [])]
+        .filter(([toolUseId]) => collabToolUseIds.has(toolUseId)),
+    ),
+    toolResultContentByClientId: new Map(
+      [...(toolResultContentByClientId.get(sessionId) ?? [])]
+        .filter(([persistId]) => [...resultIds.values()].includes(persistId)),
+    ),
+  };
+  const snapshots = backgroundTurnPersistStatesBySession.get(sessionId) ?? [];
+  snapshots.push(snapshot);
+  backgroundTurnPersistStatesBySession.set(sessionId, snapshots);
+}
+
+function backgroundStateForToolUse(
+  sessionId: string,
+  toolUseIds: string[],
+): BackgroundTurnPersistState | null {
+  const snapshots = backgroundTurnPersistStatesBySession.get(sessionId);
+  if (!snapshots || snapshots.length === 0) return null;
+  for (let i = snapshots.length - 1; i >= 0; i -= 1) {
+    const state = snapshots[i];
+    if (toolUseIds.some((id) =>
+      state.knownToolUseIds.has(id) ||
+      state.toolResultIdByToolUseId.has(id) ||
+      state.pendingFullTextByToolUseId.has(id))) {
+      return state;
+    }
+  }
+  return null;
+}
+
+function backgroundResultPredatesSessionClear(
+  sessionId: string,
+  state: BackgroundTurnPersistState,
+  toolUseIds: string[],
+): boolean {
+  const clearBoundary = clearBoundaryBySession.get(sessionId);
+  if (clearBoundary === undefined) return false;
+  return toolUseIds.some((toolUseId) => {
+    const toolUseCreatedAt = state.toolUseCreatedAt.get(toolUseId);
+    return toolUseCreatedAt !== undefined && toolUseCreatedAt <= clearBoundary;
+  });
+}
+
+function releaseBackgroundStateForToolUses(
+  sessionId: string,
+  state: BackgroundTurnPersistState,
+  toolUseIds: string[],
+): void {
+  for (const toolUseId of toolUseIds) state.pendingToolUseIds.delete(toolUseId);
+  if (state.pendingToolUseIds.size !== 0 || state.pendingFullTextByToolUseId.size !== 0) return;
+  const snapshots = backgroundTurnPersistStatesBySession.get(sessionId);
+  if (!snapshots) return;
+  const index = snapshots.indexOf(state);
+  if (index >= 0) snapshots.splice(index, 1);
+  if (snapshots.length === 0) backgroundTurnPersistStatesBySession.delete(sessionId);
+}
 
 function rememberToolUseId(sessionId: string, toolUseId: string, createdAt: number): void {
   let set = knownToolUseIdsBySession.get(sessionId);
@@ -430,14 +851,23 @@ function rememberToolUseId(sessionId: string, toolUseId: string, createdAt: numb
   createdAtMap.set(toolUseId, createdAt);
 }
 
-function clampAfterToolUse(sessionId: string, toolUseId: string, createdAt: number): number {
-  const toolUseCreatedAt = toolUseCreatedAtBySession.get(sessionId)?.get(toolUseId);
+function clampAfterToolUse(
+  sessionId: string,
+  toolUseId: string,
+  createdAt: number,
+  createdAtMap = toolUseCreatedAtBySession.get(sessionId),
+): number {
+  const toolUseCreatedAt = createdAtMap?.get(toolUseId);
   if (toolUseCreatedAt === undefined || createdAt > toolUseCreatedAt) return createdAt;
   return toolUseCreatedAt + 1;
 }
 
-function clampAfterLatestToolUse(sessionId: string, toolUseIds: string[], createdAt: number): number {
-  const createdAtMap = toolUseCreatedAtBySession.get(sessionId);
+function clampAfterLatestToolUse(
+  sessionId: string,
+  toolUseIds: string[],
+  createdAt: number,
+  createdAtMap = toolUseCreatedAtBySession.get(sessionId),
+): number {
   if (!createdAtMap) return createdAt;
   let latestToolUseCreatedAt: number | undefined;
   for (const toolUseId of toolUseIds) {
@@ -453,6 +883,23 @@ function clampAfterLatestToolUse(sessionId: string, toolUseIds: string[], create
 
 function isUpdatableToolUse(toolName: string): boolean {
   return toolName === 'update_plan' || toolName === 'web_search';
+}
+
+/**
+ * 计划行进按 turnId 的表:它要活过 continuation boundary 的 map 清空,直到产品
+ * turn 真正结束才用得上(review P1-1)。**每次 update_plan 都要调**——同一 turn 的
+ * 重复更新走 onToolUseEvent 的复用分支,只在首次记录会让终态写入拿首版快照覆盖
+ * 已更新的计划(review P1)。
+ */
+function rememberCodexPlanRow(
+  sessionId: string,
+  toolName: string,
+  toolUseId: string,
+  persistId: string,
+  input: unknown,
+): void {
+  if (toolName !== 'update_plan' || !toolUseId) return;
+  getOrCreateSessionMap(codexPlanRowByTurnToolUseId, sessionId).set(toolUseId, { persistId, input });
 }
 
 function rememberUpdatableToolUsePersistId(sessionId: string, toolUseId: string, persistId: string): void {
@@ -474,10 +921,70 @@ export function onToolUseEvent(
   sessionId: string,
   data: { toolUseId?: unknown; toolName?: unknown; input?: unknown },
   agentMeta: AgentMeta | null,
-): string {
+  scope: 'turn' | 'background' = 'turn',
+  backgroundTurnStartedAt?: number,
+  turnAttemptToken?: number,
+): string | undefined {
   const createdAt = Date.now();
   const toolUseId = typeof data.toolUseId === 'string' ? data.toolUseId : '';
   const toolName = typeof data.toolName === 'string' ? data.toolName : '';
+
+  if (scope === 'turn' && getSessionDbAgentKind(sessionId) === 'codex') {
+    const planUpdate = parseCodexPlanUpdate(data);
+    const currentTurnAttemptToken = _turnAttemptTokenBySession.get(sessionId);
+    const turnStartedAt =
+      currentTurnAttemptToken !== undefined && currentTurnAttemptToken !== turnAttemptToken
+        ? undefined
+        : _turnStartedAtBySession.get(sessionId);
+    if (planUpdate && !backgroundTurnPredatesSessionClear(sessionId, turnStartedAt)) {
+      const clearBoundaryAtEnqueue = clearBoundaryBySession.get(sessionId);
+      enqueueWrite(`codex_plan_state_update:${sessionId}:${planUpdate.turnId}`, () => {
+        if (
+          clearBoundaryBySession.get(sessionId) !== clearBoundaryAtEnqueue ||
+          backgroundTurnPredatesSessionClear(sessionId, turnStartedAt)
+        ) {
+          return Promise.resolve();
+        }
+        return writeCodexPlanUpdate(sessionId, planUpdate);
+      });
+    }
+  }
+
+  if (scope === 'background') {
+    if (backgroundTurnPredatesSessionClear(sessionId, backgroundTurnStartedAt)) {
+      return undefined;
+    }
+    // A late completed-only collab item has no live-turn tool_use to snapshot.
+    // Give its background result an isolated context instead of touching the
+    // next turn's maps, metadata, or adjacent-message dedup state.
+    if (toolUseId) {
+      const state: BackgroundTurnPersistState = {
+        agentMeta,
+        knownToolUseIds: new Set([toolUseId]),
+        pendingToolUseIds: new Set([toolUseId]),
+        toolUseCreatedAt: new Map([[toolUseId, createdAt]]),
+        toolResultIdByToolUseId: new Map(),
+        pendingFullTextByToolUseId: new Map(),
+        toolResultContentByClientId: new Map(),
+      };
+      const snapshots = backgroundTurnPersistStatesBySession.get(sessionId) ?? [];
+      snapshots.push(state);
+      backgroundTurnPersistStatesBySession.set(sessionId, snapshots);
+    }
+    const persistId = createId();
+    const persistedMeta = agentTaskMetaForToolUse(sessionId, toolUseId, toolName, agentMeta);
+    rememberAgentTaskToolUse(sessionId, toolUseId, toolName, persistId);
+    enqueueVisibleDbMessage(`tool_use:${sessionId}:${persistId}`, sessionId, {
+      clientId: persistId,
+      role: 'tool_use',
+      content: { toolUseId, toolName, input: data.input },
+      toolUseId: toolUseId || undefined,
+      agentMeta: persistedMeta,
+      createdAt,
+    });
+    return persistId;
+  }
+
   if (toolUseId) {
     rememberToolUseId(sessionId, toolUseId, createdAt);
     getOrCreateSessionMap(toolUseInfoBySession, sessionId).set(toolUseId, {
@@ -493,11 +1000,20 @@ export function onToolUseEvent(
     enqueueWrite(`tool_use_update:${sessionId}:${existingPersistId}`, () =>
       updateDbMessageContent(sessionId, existingPersistId, content),
     );
+    // 同一 turn 的第二次 update_plan 走这条复用分支,按-turn 缓存必须跟着刷新:
+    // 终态写入优先读它,停在首版快照会把已更新的计划整行盖回第一版(review P1)。
+    rememberCodexPlanRow(sessionId, toolName, toolUseId, existingPersistId, data.input);
     notePersistedMessage(sessionId, 'tool_use', existingPersistId);
     return existingPersistId;
   }
   const persistId = createId();
-  const meta = agentMeta ?? lastAgentMetaBySession.get(sessionId) ?? null;
+  const meta = agentTaskMetaForToolUse(
+    sessionId,
+    toolUseId,
+    toolName,
+    agentMeta ?? lastAgentMetaBySession.get(sessionId) ?? null,
+  );
+  rememberAgentTaskToolUse(sessionId, toolUseId, toolName, persistId);
   noteAssistantTranscriptUuid(sessionId, meta);
   enqueueVisibleDbMessage(`tool_use:${sessionId}:${persistId}`, sessionId, {
     clientId: persistId,
@@ -510,8 +1026,132 @@ export function onToolUseEvent(
   if (isUpdatableToolUse(toolName) && toolUseId) {
     rememberUpdatableToolUsePersistId(sessionId, toolUseId, persistId);
   }
+  rememberCodexPlanRow(sessionId, toolName, toolUseId, persistId, data.input);
   notePersistedMessage(sessionId, 'tool_use', persistId);
   return persistId;
+}
+
+/**
+ * Persist the same terminal Codex plan convergence that the renderer applies
+ * immediately on `done`. Without this DB update, switching tasks or reloading
+ * the renderer resurrects the last in-progress snapshot and leaves the pinned
+ * plan visible forever even though the turn completed successfully.
+ *
+ * The turn id is the ownership boundary: only `plan:<raw.id>` may be updated.
+ * Failed, interrupted, or unrelated turns never infer completion. A matching
+ * failed turn still stamps `turnCompleted: false` on its plan row because the
+ * turn may have ended before any assistant row existed to carry that seal.
+ */
+export function persistCodexPlanOnDone(
+  sessionId: string,
+  data:
+    | { cancelled?: unknown; plan?: unknown; raw?: { id?: unknown; status?: unknown } }
+    | null
+    | undefined,
+): boolean {
+  const planTerminal = parseCodexPlanTerminal(data);
+  if (planTerminal) {
+    enqueueWrite(`codex_plan_state_terminal:${sessionId}:${planTerminal.turnId}`, () =>
+      writeCodexPlanTerminal(sessionId, planTerminal),
+    );
+  }
+  const turnId = typeof data?.raw?.id === 'string' ? data.raw.id : null;
+  if (!turnId) return false;
+
+  const toolUseId = `plan:${turnId}`;
+  // 归属键是 turnId,与 SDK 分段无关:优先读活过 continuation boundary 的
+  // 按-turn 表,per-segment 表仅作兼容兜底(review P1-1)。
+  const planRowMap = codexPlanRowByTurnToolUseId.get(sessionId);
+  const planRow = planRowMap?.get(toolUseId);
+  const infoMap = toolUseInfoBySession.get(sessionId);
+  const info = infoMap?.get(toolUseId);
+  const persistId =
+    planRow?.persistId ?? updatableToolUsePersistIdBySession.get(sessionId)?.get(toolUseId);
+  const rawInput = planRow?.input ?? (info?.toolName === 'update_plan' ? info.input : undefined);
+  if (!persistId) return false;
+
+  const input = rawInput && typeof rawInput === 'object' && !Array.isArray(rawInput)
+    ? rawInput as Record<string, unknown>
+    : null;
+  if (!input || !Array.isArray(input.plan)) return false;
+
+  const isSuccessfulTerminal = isSuccessfulCodexDoneEventData(data);
+  // Only an explicit snapshot from Codex may change step statuses. A successful
+  // turn that left items open is recorded as-is and closed by the seal below —
+  // ticking them here would make the stored plan claim work the agent never
+  // reported doing.
+  const nextPlan = Array.isArray(data?.plan) ? data.plan : input.plan;
+  // Even when Codex already emitted the exact completed/empty plan, stamp the
+  // durable row at done. Renderer must distinguish this authoritative write
+  // from an older ordinary DB echo that merely happens to look completed.
+  const terminalPlanAtMs = Date.now();
+  const nextInput = { ...input, plan: nextPlan };
+  if (info) infoMap?.set(toolUseId, { ...info, input: nextInput });
+  // 终态已定,这份计划行不再需要跨段引用;同时保留最新 input 供同 turn 的
+  // 重复 done(罕见)幂等复用。
+  planRowMap?.set(toolUseId, { persistId, input: nextInput });
+  enqueueWrite(`codex_plan_done:${sessionId}:${persistId}`, async (ownerScope) => {
+    const updated = await updateDbMessageContent(sessionId, persistId, {
+      toolUseId,
+      toolName: 'update_plan',
+      input: nextInput,
+      ...(isSuccessfulTerminal
+        ? { terminalPlanSnapshot: true, terminalPlanAtMs }
+        : { turnCompleted: false }),
+    });
+    // Reuse the existing upsert-style row broadcast so a renderer that mounts
+    // between `done` and this queued write, plus remote mirrors, receives the
+    // durable terminal snapshot instead of keeping its stale local copy.
+    if (updated) broadcastMessageRow(sessionId, updated, ownerScope);
+  });
+  return true;
+}
+
+/**
+ * Codex can end a turn with a terminal `error` that never gets a `done` (the
+ * agent explicitly suppresses a late `turnCompleted` after a terminal error).
+ * That path used to leave the turn's plan row with neither a seal nor a
+ * `turnCompleted:false` stamp, so plan-liveness consumers (the pinned capsule)
+ * had no durable evidence the task is still alive and could retire an all-done
+ * plan as if it were legacy history. Stamp the failure marker here — the
+ * per-turn maps only ever hold rows belonging to the current turn, so the scope
+ * is exact. Never seals, never touches step statuses.
+ */
+export function persistCodexPlanOnTerminalError(sessionId: string, turnId?: string | null): boolean {
+  // 按-turn 表跨 continuation 存活,是这里的首选来源(同 persistCodexPlanOnDone)。
+  const planRowMap = codexPlanRowByTurnToolUseId.get(sessionId);
+  if (!planRowMap || planRowMap.size === 0) return false;
+  // turn 归属边界:调用方给出 turnId 时只盖该 turn 的计划行,不误伤同会话里
+  // 其它 turn 的行(review P2)。拿不到 turnId(Codex 的 terminal error 常不带)
+  // 时退回全表——本会话的未收口计划行本就只应有当前 turn 的那一份。
+  const expectedToolUseId = typeof turnId === 'string' && turnId ? `plan:${turnId}` : null;
+  let stamped = false;
+  for (const [toolUseId, planRow] of planRowMap) {
+    if (expectedToolUseId && toolUseId !== expectedToolUseId) continue;
+    const persistId = planRow.persistId;
+    if (!persistId) continue;
+    const input = planRow.input && typeof planRow.input === 'object' && !Array.isArray(planRow.input)
+      ? planRow.input as Record<string, unknown>
+      : null;
+    if (!input || !Array.isArray(input.plan)) continue;
+    const ownedTurnId = toolUseId.startsWith('plan:') ? toolUseId.slice('plan:'.length) : '';
+    if (ownedTurnId) {
+      enqueueWrite(`codex_plan_state_error:${sessionId}:${ownedTurnId}`, () =>
+        markCodexPlanInterrupted(sessionId, ownedTurnId),
+      );
+    }
+    enqueueWrite(`codex_plan_terminal_error:${sessionId}:${persistId}`, async (ownerScope) => {
+      const updated = await updateDbMessageContent(sessionId, persistId, {
+        toolUseId,
+        toolName: 'update_plan',
+        input,
+        turnCompleted: false,
+      });
+      if (updated) broadcastMessageRow(sessionId, updated, ownerScope);
+    });
+    stamped = true;
+  }
+  return stamped;
 }
 
 /**
@@ -635,15 +1275,29 @@ export function onToolResultEvent(
   sessionId: string,
   data: { summary?: unknown; toolUseIds?: unknown },
   agentMeta: AgentMeta | null,
+  scope: 'turn' | 'background' = 'turn',
 ): { persistId: string; content: string } | null {
   const summary = typeof data.summary === 'string' ? data.summary : '';
   const ids = Array.isArray(data.toolUseIds)
     ? data.toolUseIds.filter((x): x is string => typeof x === 'string' && x.length > 0)
     : [];
+  if (scope === 'background' && ids.length === 0) return null;
 
-  const idMap = getOrCreateSessionMap(toolResultIdByToolUseId, sessionId);
-  const pending = getOrCreateSessionMap(pendingFullTextByToolUseId, sessionId);
-  const contentMap = getOrCreateSessionMap(toolResultContentByClientId, sessionId);
+  const backgroundState = scope === 'background'
+    ? backgroundStateForToolUse(sessionId, ids)
+    : null;
+  if (scope === 'background' && !backgroundState) return null;
+  if (backgroundState && backgroundResultPredatesSessionClear(sessionId, backgroundState, ids)) {
+    releaseBackgroundStateForToolUses(sessionId, backgroundState, ids);
+    return null;
+  }
+  const idMap = backgroundState?.toolResultIdByToolUseId ??
+    getOrCreateSessionMap(toolResultIdByToolUseId, sessionId);
+  const pending = backgroundState?.pendingFullTextByToolUseId ??
+    getOrCreateSessionMap(pendingFullTextByToolUseId, sessionId);
+  const contentMap = backgroundState?.toolResultContentByClientId ??
+    getOrCreateSessionMap(toolResultContentByClientId, sessionId);
+  const createdAtMap = backgroundState?.toolUseCreatedAt ?? toolUseCreatedAtBySession.get(sessionId);
   let createdAt = Date.now();
   let usedBufferedContent = false;
 
@@ -653,13 +1307,13 @@ export function onToolResultEvent(
     const buffered = pending.get(id);
     if (buffered && buffered.text.length > content.length) {
       content = buffered.text;
-      createdAt = clampAfterToolUse(sessionId, id, buffered.createdAt);
+      createdAt = clampAfterToolUse(sessionId, id, buffered.createdAt, createdAtMap);
       usedBufferedContent = true;
     }
     pending.delete(id);
   }
   if (usedBufferedContent) {
-    createdAt = clampAfterLatestToolUse(sessionId, ids, createdAt);
+    createdAt = clampAfterLatestToolUse(sessionId, ids, createdAt, createdAtMap);
   }
   const primaryToolUseId = ids[0];
 
@@ -678,13 +1332,15 @@ export function onToolResultEvent(
     const prev = contentMap.get(existing);
     // 内容没增长 → 不写库;renderer 已显示该条,返回现有内容即可(upsert 命中后无变化)。
     if (prev === undefined || content.length <= prev.length) {
+      if (backgroundState) releaseBackgroundStateForToolUses(sessionId, backgroundState, ids);
       return { persistId: existing, content: prev ?? content };
     }
     contentMap.set(existing, content);
     enqueueWrite(`tool_result_update:${sessionId}:${existing}`, () =>
       updateDbMessageContent(sessionId, existing!, content),
     );
-    notePersistedMessage(sessionId, 'tool_result', existing);
+    if (scope !== 'background') notePersistedMessage(sessionId, 'tool_result', existing);
+    if (backgroundState) releaseBackgroundStateForToolUses(sessionId, backgroundState, ids);
     return { persistId: existing, content };
   }
 
@@ -696,10 +1352,11 @@ export function onToolResultEvent(
     role: 'tool_result',
     content,
     toolUseId: primaryToolUseId,
-    agentMeta: toolResultMeta(sessionId, agentMeta),
+    agentMeta: backgroundState ? backgroundState.agentMeta : toolResultMeta(sessionId, agentMeta),
     createdAt,
   });
-  notePersistedMessage(sessionId, 'tool_result', persistId);
+  if (scope !== 'background') notePersistedMessage(sessionId, 'tool_result', persistId);
+  if (backgroundState) releaseBackgroundStateForToolUses(sessionId, backgroundState, ids);
   return { persistId, content };
 }
 
@@ -715,19 +1372,31 @@ export function onToolResultFullEvent(
   sessionId: string,
   data: { toolUseId?: unknown; fullText?: unknown },
   agentMeta: AgentMeta | null,
+  scope: 'turn' | 'background' = 'turn',
 ): { persistId: string; content: string } | null {
   const toolUseId = typeof data.toolUseId === 'string' ? data.toolUseId : '';
   const fullText = typeof data.fullText === 'string' ? data.fullText : null;
   if (!toolUseId || fullText === null) return null; // guard,对齐老 renderer
 
-  const idMap = getOrCreateSessionMap(toolResultIdByToolUseId, sessionId);
-  const pending = getOrCreateSessionMap(pendingFullTextByToolUseId, sessionId);
-  const contentMap = getOrCreateSessionMap(toolResultContentByClientId, sessionId);
+  const backgroundState = scope === 'background'
+    ? backgroundStateForToolUse(sessionId, [toolUseId])
+    : null;
+  if (scope === 'background' && !backgroundState) return null;
+  if (backgroundState && backgroundResultPredatesSessionClear(sessionId, backgroundState, [toolUseId])) {
+    releaseBackgroundStateForToolUses(sessionId, backgroundState, [toolUseId]);
+    return null;
+  }
+  const idMap = backgroundState?.toolResultIdByToolUseId ??
+    getOrCreateSessionMap(toolResultIdByToolUseId, sessionId);
+  const pending = backgroundState?.pendingFullTextByToolUseId ??
+    getOrCreateSessionMap(pendingFullTextByToolUseId, sessionId);
+  const contentMap = backgroundState?.toolResultContentByClientId ??
+    getOrCreateSessionMap(toolResultContentByClientId, sessionId);
   const createdAt = Date.now();
 
   const target = idMap.get(toolUseId);
   if (!target) {
-    const known = knownToolUseIdsBySession.get(sessionId);
+    const known = backgroundState?.knownToolUseIds ?? knownToolUseIdsBySession.get(sessionId);
     if (known?.has(toolUseId)) {
       // tool_use 已到但还没 tool_result 摘要 → 直接建一条带全文的 tool_result。
       const persistId = createId();
@@ -739,10 +1408,15 @@ export function onToolResultFullEvent(
         role: 'tool_result',
         content: fullText,
         toolUseId,
-        agentMeta: toolResultMeta(sessionId, agentMeta),
-        createdAt,
+        agentMeta: backgroundState ? backgroundState.agentMeta : toolResultMeta(sessionId, agentMeta),
+        createdAt: clampAfterToolUse(
+          sessionId,
+          toolUseId,
+          createdAt,
+          backgroundState?.toolUseCreatedAt ?? toolUseCreatedAtBySession.get(sessionId),
+        ),
       });
-      notePersistedMessage(sessionId, 'tool_result', persistId);
+      if (scope !== 'background') notePersistedMessage(sessionId, 'tool_result', persistId);
       return { persistId, content: fullText };
     }
     // tool_use 也没到 → buffer,等 tool_result 摘要 / done 兜底消费;renderer 不显示。
@@ -756,7 +1430,7 @@ export function onToolResultFullEvent(
   enqueueWrite(`tool_result_full:${sessionId}:${target}`, () =>
     updateDbMessageContent(sessionId, target, fullText),
   );
-  notePersistedMessage(sessionId, 'tool_result', target);
+  if (scope !== 'background') notePersistedMessage(sessionId, 'tool_result', target);
   return { persistId: target, content: fullText };
 }
 
@@ -947,8 +1621,12 @@ export function resetTurnPersistState(sessionId: string): void {
   toolUseCreatedAtBySession.delete(sessionId);
   toolUseInfoBySession.delete(sessionId);
   updatableToolUsePersistIdBySession.delete(sessionId);
+  // 刻意不清 codexPlanRowByTurnToolUseId:它按 turnId 归属,必须活过每个
+  // continuation boundary 的 per-segment 清空(review P1-1)。由
+  // clearCodexPlanRowsForSession(逻辑 turn 结束 / 会话清理)负责回收。
   lastAgentMetaBySession.delete(sessionId);
   _turnStartedAtBySession.delete(sessionId);
+  _turnAttemptTokenBySession.delete(sessionId);
   _turnDedupIdBySession.delete(sessionId);
   // turn 边界必须清 lastPersistedMsgBySession:within-turn 的重复 isFinal / result 兜底
   // 补推都在 done 之前已去重(translator fallback isFinal@translator.ts:897 早于 done@922,
@@ -974,45 +1652,54 @@ export function resetTurnPersistState(sessionId: string): void {
  */
 export function onAssistantTextEvent(
   sessionId: string,
-  data: { text?: unknown; isFinal?: unknown },
+  data: { text?: unknown; isFinal?: unknown; isFullText?: unknown },
   agentMeta: AgentMeta | null,
 ): string | undefined {
-  const text = typeof data.text === 'string' ? data.text : '';
+  const rawText = typeof data.text === 'string' ? data.text : '';
   const isFinal = data.isFinal === true;
+  const isFullText = data.isFullText === true;
 
   if (isFinal) {
     const block = assistantBlocks.get(sessionId);
     if (block) {
-      // 流式确认:不落库,留给边界 flush。delta 已累积全文,isFinal.text 是冗余确认;
-      // 仅当 isFinal 带了更全的文本时兜底覆盖。meta 若带则更新。
-      if (text.length > block.text.length) block.text = text;
+      // 流式确认:不落库,留给边界 flush。显式 isFullText 表示 SDK 权威全文；
+      // Claude Code 的 local text block 没有该标记，但在 text_delta 丢失时仍可能携带
+      // 已完整的、更长前缀文本。只接受以当前增量为前缀的更长文本，避免同一 assistant
+      // 消息中相邻 text block 互相覆盖。
+      if (
+        isFullText ||
+        (rawText.length > block.text.length && rawText.startsWith(block.text))
+      ) {
+        block.text = rawText;
+      }
       if (agentMeta) block.agentMeta = agentMeta;
       return block.persistId;
     }
     // 非流式 isFinal burst(result 兜底补推也走这):无在飞 block,立即落库。
-    if (text) {
+    const visible = stripInternalWebCitations(rawText);
+    if (visible) {
       // DUP-SKIP(对齐 renderer 老 757-762):若紧邻的上一条已落库消息正是内容完全
       // 相同的 assistant(典型:重复 isFinal / block flush 后又来同内容补推),复用其
       // persistId、不再 create,把重复行挡在 main 落库层。中间夹过别的消息则 last.role
       // 不是 assistant,不会误删合法的相同文本回复。
       const last = lastPersistedMsgBySession.get(sessionId);
-      if (last && last.role === 'assistant' && last.text === text) {
+      if (last && last.role === 'assistant' && last.text === visible) {
         return last.persistId;
       }
       const persistId = createId();
-      enqueuePersistAssistant(sessionId, persistId, text, agentMeta, Date.now());
+      enqueuePersistAssistant(sessionId, persistId, visible, agentMeta, Date.now());
       return persistId;
     }
     return undefined;
   }
 
-  // delta
+  // delta: accumulate the raw snapshot; strip only the completed block.
   let block = assistantBlocks.get(sessionId);
   if (!block) {
-    block = { persistId: createId(), text, agentMeta, createdAt: Date.now() };
+    block = { persistId: createId(), text: rawText, agentMeta, createdAt: Date.now() };
     assistantBlocks.set(sessionId, block);
   } else {
-    block.text += text;
+    block.text += rawText;
     if (agentMeta) block.agentMeta = agentMeta;
   }
   return block.persistId;
@@ -1033,11 +1720,12 @@ export function flushAssistantBlock(
   const block = assistantBlocks.get(sessionId);
   if (!block) return;
   assistantBlocks.delete(sessionId);
-  if (!block.text) return;
+  const visible = stripInternalWebCitations(block.text);
+  if (!visible) return;
   // 三级兜底,对齐 renderer 老逻辑:本 block 自带 meta → 边界事件 meta(tool_use/done
   // 同属或携带这条 assistant 的 meta)→ 会话最近一次非空 meta(interaction 边界靠这级)。
   const meta = block.agentMeta ?? agentMetaFallback ?? lastAgentMetaBySession.get(sessionId) ?? null;
-  enqueuePersistAssistant(sessionId, block.persistId, block.text, meta, block.createdAt);
+  enqueuePersistAssistant(sessionId, block.persistId, visible, meta, block.createdAt);
 }
 
 /**
@@ -1110,6 +1798,7 @@ export function onTurnErrorEvent(
 ): string | undefined {
   const message = typeof data?.message === 'string' ? redactSensitiveText(data.message) : '';
   if (!message) return undefined;
+  const ownerScope = captureOwnerScope();
   const capturedAt = Date.now();
   const recordedTurnStartedAt =
     _turnStartedAtBySession.get(sessionId) ??
@@ -1206,29 +1895,50 @@ export function onTurnErrorEvent(
       },
       { shouldBroadcast: () => false },
     );
+    if (!isOwnerScopeCurrent(ownerScope)) return;
+    const ownerStamp = ownerScope ? ownerScope.ownerStamp : broadcastTap.getSafeDataOwnerPushStamp?.();
     for (const win of BrowserWindow.getAllWindows()) {
       if (win.isDestroyed()) continue;
       try {
-        win.webContents.send('local-db:session:error-persisted', { sessionId });
+        if (ownerScope === null) {
+          win.webContents.send('local-db:session:error-persisted', { sessionId });
+        } else {
+          win.webContents.send('local-db:session:error-persisted', { sessionId }, ownerStamp);
+        }
       } catch {
         /* swallow per-window broadcast failures */
       }
     }
     // device-link:把脏信号也转发给远控端,让已加载该会话历史的控制端窗口同样失效。
-    tapWindowBroadcast('local-db:session:error-persisted', { sessionId });
+    if (ownerScope === null) {
+      broadcastTap.tapWindowBroadcast('local-db:session:error-persisted', { sessionId });
+    } else {
+      broadcastTap.tapWindowBroadcast('local-db:session:error-persisted', { sessionId }, ownerStamp);
+    }
   });
   notePersistedMessage(sessionId, 'error', persistId);
   return persistId;
 }
 
 /** session 关闭时清掉该会话所有 per-session 持久化状态,避免 Map 泄漏 / 跨会话串状态。 */
+/**
+ * 回收按-turn 的计划行引用。逻辑 turn 真正结束(非 continuation boundary 的
+ * done / 终止 error 之后)与会话清理时调用——只有到那时跨段引用才不再需要。
+ */
+export function clearCodexPlanRowsForSession(sessionId: string): void {
+  codexPlanRowByTurnToolUseId.delete(sessionId);
+}
+
 export function clearSessionPersistState(sessionId: string): void {
+  clearCodexPlanRowsForSession(sessionId);
   assistantBlocks.delete(sessionId);
+  backgroundTurnPersistStatesBySession.delete(sessionId);
   lastAgentMetaBySession.delete(sessionId);
   knownToolUseIdsBySession.delete(sessionId);
   toolUseCreatedAtBySession.delete(sessionId);
   toolUseInfoBySession.delete(sessionId);
   updatableToolUsePersistIdBySession.delete(sessionId);
+  clearAgentTaskPersistState(sessionId);
   toolResultIdByToolUseId.delete(sessionId);
   pendingFullTextByToolUseId.delete(sessionId);
   toolResultContentByClientId.delete(sessionId);
@@ -1238,6 +1948,7 @@ export function clearSessionPersistState(sessionId: string): void {
   lastAssistantTranscriptUuidBySession.delete(sessionId);
   dbAgentKindBySession.delete(sessionId);
   _turnStartedAtBySession.delete(sessionId);
+  _turnAttemptTokenBySession.delete(sessionId);
   _turnDedupIdBySession.delete(sessionId);
   _savedTurnStartedAtForDeferred.delete(sessionId);
   _savedTurnDedupIdForDeferred.delete(sessionId);

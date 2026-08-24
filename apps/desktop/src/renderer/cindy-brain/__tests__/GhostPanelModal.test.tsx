@@ -28,6 +28,7 @@ import { GhostPanelModal } from '../GhostPanelModal';
 const ghost: InstalledGhost = {
   enabled: true,
   dir: '/fake/modal-plugin',
+  approval: { state: 'approved', revision: '00000000-0000-4000-8000-000000000001' },
   manifest: {
     schemaVersion: 2,
     id: 'modal-plugin',
@@ -56,15 +57,11 @@ describe('GhostPanelModal', () => {
     expect(header.className).toContain('cursor-default');
     expect(screen.getByRole('heading', { name: 'Modal Plugin UI' })).toBeTruthy();
     expect(screen.getByTestId('shared-plugin-panel-body').dataset.autoFocusWebview).toBe('true');
-    expect(
-      screen.getByRole('button', { name: 'settings.ghosts.detail.closePanel' }),
-    ).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'settings.ghosts.detail.closePanel' })).toBeTruthy();
   });
 
   it('keeps the panel body mounted while the modal is closed', () => {
-    const { rerender } = render(
-      <GhostPanelModal ghost={ghost} open onOpenChange={vi.fn()} />,
-    );
+    const { rerender } = render(<GhostPanelModal ghost={ghost} open onOpenChange={vi.fn()} />);
     const body = screen.getByTestId('shared-plugin-panel-body');
 
     rerender(<GhostPanelModal ghost={ghost} open={false} onOpenChange={vi.fn()} />);

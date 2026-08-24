@@ -8,6 +8,7 @@ import {
   RefreshCw,
   X,
 } from 'lucide-react';
+import { useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { cn } from '@/lib/utils';
@@ -115,7 +116,7 @@ interface FolderPickerPopoverProps {
     folderPath: string,
     source: FolderPickerSelectSource,
     option?: FolderPickerOption,
-  ) => void;
+  ) => void | Promise<void>;
   projectOptions?: readonly FolderPickerOption[];
   /** Additional Meka project identities shown in the existing project picker. */
   mekaProjectOptions?: readonly FolderPickerOption[];
@@ -168,14 +169,30 @@ export function FolderPickerPopover({
   const effectiveProjectOptions = projectOptions ?? [];
   const effectiveMekaProjectOptions = mekaProjectOptions ?? [];
   const recentFolders = open && !isProjectPicker ? getRecentFolders() : [];
+  const selectionPendingRef = useRef(false);
+  const [selectionPending, setSelectionPending] = useState(false);
 
-  const handleSelectPath = (
+  const handleSelectPath = async (
     folderPath: string,
     source: FolderPickerSelectSource,
     option?: FolderPickerOption,
-  ) => {
-    onSelect(folderPath, source, option);
-    onOpenChange(false);
+  ): Promise<void> => {
+    // The popover stays open while onSelect persists its target. Guard before
+    // the first await so a rapid second click cannot be silently rejected by
+    // the parent and then close the popover as though that newer choice won.
+    if (selectionPendingRef.current) return;
+    selectionPendingRef.current = true;
+    setSelectionPending(true);
+    try {
+      await onSelect(folderPath, source, option);
+    } finally {
+      selectionPendingRef.current = false;
+      setSelectionPending(false);
+      // Selection callbacks may persist the directory before handing a pending
+      // send back to the parent. Close only after that hand-off completes so a
+      // controlled popover cannot clear the pending payload first.
+      onOpenChange(false);
+    }
   };
 
   const handleRemoveProject = (project: FolderPickerOption) => {
@@ -205,6 +222,7 @@ export function FolderPickerPopover({
       >
         <button
           type="button"
+          disabled={selectionPending}
           onClick={() => handleSelectPath(project.path, 'project', project)}
           className={cn(
             'flex min-w-0 flex-1 cursor-pointer items-center gap-3 text-left',
@@ -248,6 +266,7 @@ export function FolderPickerPopover({
         {canRemove && (
           <button
             type="button"
+            disabled={selectionPending}
             aria-label={t('newChat.folderPicker.removeFromList')}
             onClick={() => handleRemoveProject(project)}
             className={cn(
@@ -285,8 +304,7 @@ export function FolderPickerPopover({
     }
     const result = await window.electronAPI.showOpenDirectoryDialog();
     if (!result.canceled && result.path) {
-      onSelect(result.path, 'browse');
-      onOpenChange(false);
+      await handleSelectPath(result.path, 'browse');
     }
     // If canceled, popover stays open per spec
   };
@@ -305,6 +323,7 @@ export function FolderPickerPopover({
           'border border-[var(--folder-picker-border)]',
         )}
         onWheel={handleFolderPickerWheel}
+        aria-busy={selectionPending}
       >
         {isProjectPicker && !mcprRemoteOnly && (
           <>
@@ -315,6 +334,7 @@ export function FolderPickerPopover({
             </div>
             <button
               type="button"
+              disabled={selectionPending}
               onClick={() => handleSelectPath('', 'dialogue')}
               className={cn(
                 'flex w-full items-center gap-3 rounded-[8px] px-3 py-[10px] text-left',
@@ -359,6 +379,7 @@ export function FolderPickerPopover({
                       {deviceScope.retry && (
                         <button
                           type="button"
+                          disabled={selectionPending}
                           onClick={deviceScope.retry}
                           className="mt-1 inline-flex h-6 items-center gap-1 rounded-full px-2 text-xs font-medium text-[var(--error-fg-strong)] hover:bg-[var(--surface-hover)]"
                         >
@@ -381,6 +402,7 @@ export function FolderPickerPopover({
                   </span>
                   <button
                     type="button"
+                    disabled={selectionPending}
                     onClick={() => {
                       onAddRemoteProject(deviceScope.deviceId);
                       onOpenChange(false);
@@ -480,6 +502,7 @@ export function FolderPickerPopover({
                 <button
                   key={folder.path}
                   type="button"
+                  disabled={selectionPending}
                   onClick={() => handleSelectPath(folder.path, 'recent')}
                   className={cn(
                     'flex w-full items-center gap-3 rounded-[8px] px-3 py-[10px] text-left',
@@ -506,6 +529,7 @@ export function FolderPickerPopover({
         {/* Choose a different folder */}
         {!mcprRemoteOnly ? <button
           type="button"
+          disabled={selectionPending}
           onClick={handleChooseDifferent}
           className={cn(
             'flex w-full items-center gap-3 rounded-[8px] px-3 py-[10px] text-left',
@@ -539,6 +563,7 @@ export function FolderPickerPopover({
         {isProjectPicker && !mcprRemoteOnly && onAddRemoteProject && !deviceScope && (
           <button
             type="button"
+            disabled={selectionPending}
             onClick={() => {
               onAddRemoteProject();
               onOpenChange(false);

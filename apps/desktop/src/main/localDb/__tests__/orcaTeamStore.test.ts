@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { DbClient } from '../client/DbClient.js';
 import { clearCurrentDbClient, setCurrentDbClient } from '../client/current.js';
+import { tx as runInprocTx } from '../worker/opHandlers/tx.js';
 import * as schema from '../schema.js';
 
 const h = vi.hoisted(() => ({
@@ -17,6 +18,7 @@ vi.mock('electron', () => ({
   },
 }));
 vi.mock('../../device-link/broadcast-tap.js', () => ({
+  getSafeDataOwnerPushStamp: vi.fn(() => undefined),
   tapWindowBroadcast: h.tapWindowBroadcast,
 }));
 vi.mock('../agentIslandSessionPatch.js', () => ({
@@ -104,6 +106,55 @@ describe('orcaTeamStore', () => {
     });
   });
 
+  it('never archives or broadcasts a worker task that is already deleted', async () => {
+    const { archiveWorkersByTeam } = await import('../orcaTeamStore.js');
+    const client = createTestDbClient();
+    setCurrentDbClient(client, 'test-user');
+
+    await seedOrcaWorkers(client);
+    await client.exec('UPDATE sessions SET status = ? WHERE id = ?', [
+      'deleted',
+      'worker-session-2',
+    ]);
+
+    await expect(archiveWorkersByTeam('team-1')).resolves.toEqual(['worker-session-1']);
+    await expect(
+      client.queryOne<{ status: string }>('SELECT status FROM sessions WHERE id = ?', [
+        'worker-session-2',
+      ]),
+    ).resolves.toEqual({ status: 'deleted' });
+    expect(h.tapWindowBroadcast).not.toHaveBeenCalledWith('local-db:sessions:patched', {
+      sessionId: 'worker-session-2',
+      patch: { status: 'archived' },
+    });
+  });
+
+  it('reconciles only still-active workers from inactive teams', async () => {
+    const { reconcileInactiveTeamWorkersForLead } = await import('../orcaTeamStore.js');
+    const client = createTestDbClient();
+    setCurrentDbClient(client, 'test-user');
+
+    await seedOrcaWorkers(client);
+    await client.exec('UPDATE orca_teams SET status = ? WHERE id = ?', ['completed', 'team-1']);
+    await client.exec('UPDATE sessions SET status = ? WHERE id = ?', [
+      'deleted',
+      'worker-session-2',
+    ]);
+
+    await expect(reconcileInactiveTeamWorkersForLead('lead-session-1')).resolves.toEqual([
+      'worker-session-1',
+    ]);
+    await expect(
+      client.query<{ id: string; status: string }>(
+        'SELECT id, status FROM sessions WHERE id IN (?, ?) ORDER BY id',
+        ['worker-session-1', 'worker-session-2'],
+      ),
+    ).resolves.toEqual([
+      { id: 'worker-session-1', status: 'archived' },
+      { id: 'worker-session-2', status: 'deleted' },
+    ]);
+  });
+
   it('preserves Pi worker identity in Orca projections', async () => {
     const { listWorkersByLead } = await import('../orcaTeamStore.js');
     const client = createTestDbClient();
@@ -112,8 +163,9 @@ describe('orcaTeamStore', () => {
     await seedOrcaWorkers(client);
     const workers = await listWorkersByLead('lead-session-1');
 
-    expect(workers.find((worker) => worker.sessionId === 'worker-session-2')?.session.agentKind)
-      .toBe('pi');
+    expect(
+      workers.find((worker) => worker.sessionId === 'worker-session-2')?.session.agentKind,
+    ).toBe('pi');
   });
 
   it('returns complete active worker projections grouped by lead in one batch', async () => {
@@ -184,6 +236,15 @@ describe('orcaTeamStore', () => {
         title TEXT NOT NULL DEFAULT 'New Maker',
         working_dir TEXT,
         workspace_kind TEXT NOT NULL DEFAULT 'project',
+        meka_role TEXT,
+        meka_target_json TEXT,
+        meka_project_id TEXT,
+        meka_role_id TEXT,
+        is_formal INTEGER NOT NULL DEFAULT 0,
+        formal_type TEXT,
+        formal_link TEXT,
+        formal_ref TEXT,
+        formal_content_json TEXT,
         model TEXT NOT NULL DEFAULT 'gpt-5.4',
         effort TEXT NOT NULL DEFAULT 'high',
         permission_mode TEXT NOT NULL DEFAULT 'ask',
@@ -213,9 +274,11 @@ describe('orcaTeamStore', () => {
         im_bot_context_id TEXT,
         im_user_id TEXT,
         used_project_context INTEGER NOT NULL DEFAULT 0,
-        codex_history_has_product_prompt INTEGER,
+      codex_history_has_product_prompt INTEGER,
+      codex_plan_json TEXT,
         extra_dirs TEXT NOT NULL DEFAULT '[]',
-        remote_host_id TEXT,
+      remote_host_id TEXT,
+      capability_snapshot_json TEXT,
         provider_id TEXT,
         active_turn_started_at INTEGER,
         active_turn_pid INTEGER,
@@ -254,9 +317,8 @@ describe('orcaTeamStore', () => {
       queryOne: async <T = unknown>(sql: string, params: unknown[] = []) =>
         dbHandle.prepare(sql).get(...params) as T | undefined,
       exec: async (sql, params = []) => dbHandle.prepare(sql).run(...params),
-      tx: async () => {
-        throw new Error('tx is not used by this test');
-      },
+      tx: (async (name: string, args: unknown) =>
+        runInprocTx(dbHandle, { name, args })) as DbClient['tx'],
       drizzle: db,
       vecAvailable: false,
       dispose: async () => {},

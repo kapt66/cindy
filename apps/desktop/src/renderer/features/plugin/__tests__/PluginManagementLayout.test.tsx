@@ -27,6 +27,8 @@ vi.mock('react-i18next', () => ({
 }));
 
 import {
+  PLUGIN_INSTALLED_CARD_GRID_CLASS,
+  PLUGIN_MANAGEMENT_CONTENT_CONTAINER_CLASS,
   PLUGIN_MANAGEMENT_CARD_GRID_CLASS,
   PluginManagementLayout,
   PluginManagementPage,
@@ -120,6 +122,21 @@ describe('PluginManagementLayout', () => {
     });
   });
 
+  it('keeps Plugins / Skills inside Settings when onSelectTab is provided', () => {
+    const onSelectTab = vi.fn();
+    render(
+      <MemoryRouter initialEntries={['/settings?tab=ghosts']}>
+        <PluginManagementLayout activeTab="plugins" embedded onSelectTab={onSelectTab}>
+          <CurrentPath />
+        </PluginManagementLayout>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Skills' }));
+    expect(onSelectTab).toHaveBeenCalledWith('skills');
+    expect(screen.getByTestId('current-path').textContent).toBe('/settings');
+  });
+
   it('keeps the Plugin sidebar view active for a direct Skill deep link', () => {
     render(
       <MemoryRouter initialEntries={['/skillhub/local/skill/global/example']}>
@@ -169,12 +186,18 @@ describe('PluginManagementLayout', () => {
     expect(tabFrame?.className).toContain('max-w-[920px]');
     expect(tabFrame?.parentElement?.className).toContain('px-3');
     expect(pageFrame?.className).toContain('max-w-[920px]');
+    expect(pageFrame?.className).toContain(PLUGIN_MANAGEMENT_CONTENT_CONTAINER_CLASS);
   });
 
   it('uses a content-width responsive card grid for both catalogs', () => {
     expect(PLUGIN_MANAGEMENT_CARD_GRID_CLASS).toContain('auto-fit');
     expect(PLUGIN_MANAGEMENT_CARD_GRID_CLASS).toContain('min(100%,22.5rem)');
     expect(PLUGIN_MANAGEMENT_CARD_GRID_CLASS).not.toMatch(/\b(?:sm|md|lg):grid-cols-/);
+  });
+
+  it('keeps a lone installed card on one of the two catalog tracks', () => {
+    expect(PLUGIN_INSTALLED_CARD_GRID_CLASS).toContain('grid-cols-2');
+    expect(PLUGIN_INSTALLED_CARD_GRID_CLASS).not.toContain('auto-fit');
   });
 
   it('keeps catalog children in a height-constrained flex column so their main area can scroll', () => {

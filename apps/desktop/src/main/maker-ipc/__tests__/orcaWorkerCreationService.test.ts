@@ -73,6 +73,7 @@ function createDeps(overrides: Partial<OrcaWorkerCreationDeps> = {}) {
       ...(lead.remoteHostId ? { remoteHostId: lead.remoteHostId } : {}),
     })),
     getWorkerDefaults: vi.fn(() => ({})),
+    getWorkerPermissionMode: vi.fn(() => 'auto' as const),
     getAvailableModels: vi.fn((agent: AgentKind) =>
       agent === 'codex'
         ? [
@@ -1018,7 +1019,7 @@ describe('OrcaWorkerCreationService', () => {
         providerId: 'xd',
         effort: 'high',
         fastMode: true,
-        permissionMode: 'bypassPermissions',
+        permissionMode: 'auto',
         title: 'Worker · reviewer · reviewer',
         orcaRole: 'worker',
         vendorOptions: expect.objectContaining({

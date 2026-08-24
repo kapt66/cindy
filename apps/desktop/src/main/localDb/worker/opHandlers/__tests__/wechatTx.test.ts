@@ -775,7 +775,10 @@ function createDb(): Database.Database {
     );
     INSERT INTO sessions (id) VALUES ('session-1'), ('session-2');
   `);
-  const migrationPath = path.resolve(__dirname, '../../../../../../drizzle/0082_daffy_calypso.sql');
+  const migrationPath = path.resolve(
+    __dirname,
+    '../../../../../../drizzle/0089_upstream_wechat_and_group_messages.sql',
+  );
   db.exec(readFileSync(migrationPath, 'utf8').replaceAll('--> statement-breakpoint', ''));
   return db;
 }

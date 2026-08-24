@@ -151,6 +151,7 @@ export function registerCreateWorkersTool(
           role: worker.role,
           agent: worker.agent,
           model: worker.model,
+          providerId: worker.provider_id,
           effort: worker.effort,
           fast: worker.fast,
           workingDir: worker.working_dir,

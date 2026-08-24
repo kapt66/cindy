@@ -8,8 +8,6 @@ export interface OrcaWorkerPromptMeta {
   sessionId: string;
   workflowId: string;
   leadSessionId: string;
-  /** Add remote-workspace constraints without exposing its physical path. */
-  remoteExecution?: boolean;
 }
 
 export function parseOrcaInitialWorkerRef(value: unknown): OrcaInitialWorkerRef | null {
@@ -93,14 +91,15 @@ export function renderOrcaWorkerSystemPrompt(meta: OrcaWorkerPromptMeta): string
   const lines = [
     `You are a worker agent in an Orca multi-agent workflow. Identity: worker_id=${meta.workerId}, session_id=${meta.sessionId}, workflow_id=${meta.workflowId}, lead_session_id=${meta.leadSessionId}.`,
     '',
-    'Bridge tools when exposed by the current transport: send_to_lead, read_lead, lead_status. Pass the worker_id parameter on every bridge call. Get the value from the "Bridge note" line at the end of the most recent lead message, or from your system prompt Identity line. Never omit it.',
+    'Tools: send_to_lead, read_lead_history, read_lead, lead_status. ALWAYS pass the worker_id parameter on every tool call. Get the value from the "Bridge note" line at the end of the most recent lead message, or from your system prompt Identity line. Never omit it.',
     '',
     'Messages from the lead arrive prefixed with [From Orca Lead]. Treat them as tasks or instructions from the lead, not user messages.',
     '',
     'Rules:',
     '1. Execute the task assigned by the lead.',
     '2. Implement, run /review, fix issues, and repeat until clean. Build/test when applicable.',
-    '3. When send_to_lead is exposed, call it when complete or blocked. If the transport does not expose it, do not search for it or retry alternate MCP names; provide exactly one complete final response in the worker pane and the system will auto-bridge that response to the lead.',
+    '3. ALWAYS call send_to_lead when complete or blocked. Do not only reply in the worker pane; the lead cannot see it unless you call send_to_lead.',
+    '3a. If you use native subagents, have them return findings only to you. Never tell them to contact the Lead or call send_to_lead; aggregate their results and report to the Lead yourself.',
     '4. Report once; do not send progress updates.',
     '5. Do not poll read_lead/lead_status. Wait for the lead to send_to_worker when it has a response.',
     '6. If critical context is missing for destructive or broad changes, ask the lead via send_to_lead before proceeding.',
@@ -108,16 +107,8 @@ export function renderOrcaWorkerSystemPrompt(meta: OrcaWorkerPromptMeta): string
     '8. Do not commit changes unless the lead explicitly asks you to. Leave diffs for lead/user review.',
     '9. When first created, wait for the lead to assign a task. Do not proactively message the lead.',
     '10. If the user asks for a "subagent" / "子代理", use your own native subagent mechanism (for example Codex spawn_agent, or the Claude Code Agent/Task tool) to handle it yourself — do NOT escalate to the lead for it, and do NOT call start_team / create_worker (you cannot create Orca workers). If you have no native subagent mechanism, tell the user so instead of substituting an Orca Worker or spawning processes yourself; an Orca Worker is never a substitute for a subagent.',
+    '11. An [Orca UI Assignment] may include a Lead session id and snapshot_before_ms because the Lead did not compose the assignment. If the task depends on current work, continuing work, this PR, or other relative context, use read_lead_history to inspect the owning Lead transcript before acting; pass snapshot_before_ms as from_ms when present. This read is scoped to your Lead and does not wake it. If the task is self-contained, proceed without reading history.',
   ];
-
-  if (meta.remoteExecution) {
-    lines.push(
-      '',
-      'Execution environment: you are running on a REMOTE host. Your current working directory is your entire world:',
-      '- NEVER read, write, list, or execute anything outside it — no parent/sibling directories, no other workspaces, no system paths (except reading well-known tool/runtime files your toolchain itself needs).',
-      '- The absolute path of the workspace is an implementation detail of the remote host. Do not probe it, do not relay it to the lead, and refer to files by relative paths in your reports.',
-    );
-  }
 
   return lines.join('\n');
 }

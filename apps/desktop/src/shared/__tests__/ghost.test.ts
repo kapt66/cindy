@@ -3,9 +3,13 @@ import { describe, expect, it } from 'vitest';
 import {
   GHOST_CARD_ACTION_ID_RE,
   GHOST_CINDY_DEPOSIT_QUOTA_BYTES,
+  GHOST_CINDY_EMBED_MAX_TEXTS,
+  GHOST_MANIFEST_SUMMARY_MAX_CHARS,
   GHOST_SLOTS,
+  changedBuiltinOauthClientSecretKeys,
   deriveGhostSessionContext,
   diffGhostPermissionItems,
+  ghostAppContextLocale,
   ghostContentKeys,
   ghostExternalLinkUrls,
   ghostLocalePathFor,
@@ -16,6 +20,7 @@ import {
   parseGhostNodeChildToHostMessage,
   ghostPartition,
   ghostPermissionItems,
+  ghostPermissionProjectionFingerprint,
   unreviewedGhostPermissionItems,
   ghostWebviewEntryPaths,
   isGhostCallToolName,
@@ -27,6 +32,7 @@ import {
   resolveGhostManifestLocale,
   validateGhostManifest,
   validateGhostManifestLocaleResource,
+  validateNormalizedGhostManifest,
   withGhostResolvedLocale,
   type GhostManifest,
 } from '../ghost';
@@ -88,7 +94,18 @@ describe('ghost · id 规则', () => {
   });
 
   it('非法:大写/下划线/路径字符/连字符开头/超长/非字符串', () => {
-    for (const id of ['Hello', 'a_b', '../evil', 'a/b', 'a\\b', '-abc', '', 'x'.repeat(33), 42, null]) {
+    for (const id of [
+      'Hello',
+      'a_b',
+      '../evil',
+      'a/b',
+      'a\\b',
+      '-abc',
+      '',
+      'x'.repeat(33),
+      42,
+      null,
+    ]) {
       expect(isValidGhostId(id), String(id)).toBe(false);
     }
   });
@@ -123,38 +140,6 @@ describe('ghost · id 规则', () => {
 });
 
 describe('ghost · 清单校验', () => {
-  it('更新保留已安装清单中已批准的权限，即使发布元数据遗漏这些权限', () => {
-    const makeToolManifest = (tools: Array<{ name: string; description: string }>) => {
-      const raw = { ...goodManifest(), slots: ['tool'], tools } as Record<string, unknown>;
-      delete raw.panel;
-      const result = validateGhostManifest(raw);
-      if (!result.ok) throw new Error(result.reason);
-      return result.manifest;
-    };
-    const installed = makeToolManifest([{ name: 'gen_image', description: 'Generate images' }]);
-    const reviewed = makeToolManifest([{ name: 'gen_image', description: 'Projected description' }]);
-    const samePackage = makeToolManifest([{ name: 'gen_image', description: 'Generate images' }]);
-    const expandedPackage = makeToolManifest([
-      { name: 'gen_image', description: 'Generate images' },
-      { name: 'edit_image', description: 'Edit images' },
-    ]);
-    const changedPackage = makeToolManifest([
-      { name: 'gen_image', description: 'A third, unreviewed description' },
-    ]);
-
-    expect(unreviewedGhostPermissionItems(reviewed, installed, samePackage)).toEqual([]);
-    expect(
-      unreviewedGhostPermissionItems(reviewed, installed, expandedPackage).map((item) => item.key),
-    ).toEqual([
-      'tool:edit_image',
-    ]);
-    expect(
-      unreviewedGhostPermissionItems(reviewed, installed, changedPackage).map((item) => item.key),
-    ).toEqual([
-      'tool:gen_image',
-    ]);
-  });
-
   it('全字段合法清单通过,并按已知字段收窄输出', () => {
     const v = validateGhostManifest({ ...goodManifest(), unknownField: 'ignored' });
     expect(v.ok).toBe(true);
@@ -189,6 +174,14 @@ describe('ghost · 清单校验', () => {
     expect(validateGhostManifest({ ...goodManifest(), version: 'v'.repeat(33) }).ok).toBe(false);
   });
 
+  it('minCindyVersion 缺省兼容旧插件，声明时只接受 SemVer', () => {
+    expect(validateGhostManifest(goodManifest()).ok).toBe(true);
+    const declared = validateGhostManifest({ ...goodManifest(), minCindyVersion: '1.2.3' });
+    expect(declared.ok && declared.manifest.minCindyVersion).toBe('1.2.3');
+    expect(validateGhostManifest({ ...goodManifest(), minCindyVersion: 'v1.2.3' }).ok).toBe(false);
+    expect(validateGhostManifest({ ...goodManifest(), minCindyVersion: '1.2' }).ok).toBe(false);
+  });
+
   it('kind 可省略:缺省归一化为 chip(2026-07-12 晚定案,单形态后纯冗余)', () => {
     const m = goodManifest();
     delete m.kind;
@@ -221,7 +214,9 @@ describe('ghost · 清单校验', () => {
     expect(validateGhostManifest({ ...goodManifest(), panel: 'not-object' }).ok).toBe(false);
     // html 必填(declaration 时代的静态 body 面板已随单形态定案移除)
     expect(validateGhostManifest({ ...goodManifest(), panel: { title: 'X' } }).ok).toBe(false);
-    expect(validateGhostManifest({ ...goodManifest(), panel: { title: 'X', body: '正文' } }).ok).toBe(false);
+    expect(
+      validateGhostManifest({ ...goodManifest(), panel: { title: 'X', body: '正文' } }).ok,
+    ).toBe(false);
     expect(withPanel({ title: '' }).ok).toBe(false);
     expect(withPanel({ title: 'x'.repeat(65) }).ok).toBe(false);
     expect(withPanel({ minWidth: 119 }).ok).toBe(false);
@@ -241,23 +236,29 @@ describe('ghost · 清单校验', () => {
       validateGhostManifest({ ...goodManifest(), panel: { html: 'panel.html', ...panel } });
     // 合法:关掉 maximize / detach / 空对象(= 全默认) / 显式 true / 双键并存
     const off = withPanel({ systemButtons: { maximize: false } });
-    expect(off.ok && (off as { ok: true; manifest: GhostManifest }).manifest.panel?.systemButtons).toEqual({
+    expect(
+      off.ok && (off as { ok: true; manifest: GhostManifest }).manifest.panel?.systemButtons,
+    ).toEqual({
       maximize: false,
     });
     const detachOff = withPanel({ systemButtons: { detach: false } });
     expect(
-      detachOff.ok && (detachOff as { ok: true; manifest: GhostManifest }).manifest.panel?.systemButtons,
+      detachOff.ok &&
+        (detachOff as { ok: true; manifest: GhostManifest }).manifest.panel?.systemButtons,
     ).toEqual({ detach: false });
     const bothOff = withPanel({ systemButtons: { maximize: false, detach: false } });
     expect(
-      bothOff.ok && (bothOff as { ok: true; manifest: GhostManifest }).manifest.panel?.systemButtons,
+      bothOff.ok &&
+        (bothOff as { ok: true; manifest: GhostManifest }).manifest.panel?.systemButtons,
     ).toEqual({ maximize: false, detach: false });
     const minimizeOff = withPanel({ systemButtons: { minimize: false } });
     expect(
       minimizeOff.ok &&
         (minimizeOff as { ok: true; manifest: GhostManifest }).manifest.panel?.systemButtons,
     ).toEqual({ minimize: false });
-    const allOff = withPanel({ systemButtons: { maximize: false, detach: false, minimize: false } });
+    const allOff = withPanel({
+      systemButtons: { maximize: false, detach: false, minimize: false },
+    });
     expect(
       allOff.ok && (allOff as { ok: true; manifest: GhostManifest }).manifest.panel?.systemButtons,
     ).toEqual({ maximize: false, detach: false, minimize: false });
@@ -279,41 +280,6 @@ describe('ghost · 清单校验', () => {
     ).toBeUndefined();
   });
 
-  it('panel.allowUserPresentationOverride:仅允许停靠面板声明布尔值', () => {
-    const enabled = validateGhostManifest({
-      ...goodManifest(),
-      panel: {
-        html: 'panel.html',
-        position: 'left',
-        allowUserPresentationOverride: true,
-      },
-    });
-    expect(enabled.ok).toBe(true);
-    if (enabled.ok) {
-      expect(enabled.manifest.panel?.allowUserPresentationOverride).toBe(true);
-    }
-
-    expect(
-      validateGhostManifest({
-        ...goodManifest(),
-        panel: {
-          html: 'panel.html',
-          allowUserPresentationOverride: 'yes',
-        },
-      }).ok,
-    ).toBe(false);
-    expect(
-      validateGhostManifest({
-        ...goodManifest(),
-        panel: {
-          html: 'panel.html',
-          position: 'tab',
-          allowUserPresentationOverride: true,
-        },
-      }).ok,
-    ).toBe(false);
-  });
-
   it('author:可选展示名,1–64 字符,原样输出', () => {
     const base = validateGhostManifest({ ...goodManifest(), author: 'Lizi' });
     expect(base.ok && (base as { ok: true; manifest: GhostManifest }).manifest.author).toBe('Lizi');
@@ -325,7 +291,7 @@ describe('ghost · 清单校验', () => {
     expect(validateGhostManifest({ ...goodManifest(), author: 42 }).ok).toBe(false);
   });
 
-  it('locales 只接受宿主四种语言、安全 JSON 路径且必须提供英文', () => {
+  it('locales 只接受插件协议四种语言、安全 JSON 路径且必须提供英文', () => {
     const valid = validateGhostManifest({
       ...goodManifest(),
       locales: {
@@ -338,30 +304,219 @@ describe('ghost · 清单校验', () => {
     expect(valid.ok).toBe(true);
     expect(valid.ok && valid.manifest.locales?.en).toBe('locales/en.json');
 
+    expect(
+      validateGhostManifest({
+        ...goodManifest(),
+        locales: { 'zh-CN': 'locales/zh-CN.json' },
+      }).ok,
+    ).toBe(false);
+    expect(
+      validateGhostManifest({
+        ...goodManifest(),
+        locales: { en: '../en.json' },
+      }).ok,
+    ).toBe(false);
+    expect(
+      validateGhostManifest({
+        ...goodManifest(),
+        locales: { en: 'locales/en.json', fr: 'locales/fr.json' },
+      }).ok,
+    ).toBe(false);
+    expect(
+      validateGhostManifest({
+        ...goodManifest(),
+        locales: { en: 'locales/en.json', ja: 'locales/en.json' },
+      }).ok,
+    ).toBe(false);
+    expect(
+      validateGhostManifest({
+        ...goodManifest(),
+        locales: { en: 'locales/en.json', ja: 'Locales/EN.json' },
+      }).ok,
+    ).toBe(false);
+    expect(
+      validateGhostManifest({
+        ...goodManifest(),
+        locales: { en: 'GHOST.JSON' },
+      }).ok,
+    ).toBe(false);
     expect(validateGhostManifest({
       ...goodManifest(),
-      locales: { 'zh-CN': 'locales/zh-CN.json' },
+      locales: { en: 'locales/en.json', 'zh-TW': 'locales/zh-TW.json' },
     }).ok).toBe(false);
-    expect(validateGhostManifest({
+  });
+
+  it('无 manual 时保持 origin/main 的 locale 路径兼容语义', () => {
+    expect(
+      validateGhostManifest({
+        ...goodManifest(),
+        entry: 'assets/main.js',
+        locales: { en: 'assets/main.js/en.json' },
+      }).ok,
+    ).toBe(true);
+
+    expect(
+      validateGhostManifest({
+        ...goodManifest(),
+        slots: ['panel', 'skill'],
+        locales: { en: 'skills/helper.json' },
+        skill: {
+          items: [
+            {
+              dir: 'skills/helper.json/subskill',
+              name: 'helper',
+              description: 'Help with example tasks.',
+            },
+          ],
+        },
+      }).ok,
+    ).toBe(true);
+  });
+
+  it('有 manual 时拒绝 manual 目录与 locale 路径任一方向嵌套', () => {
+    const withPaths = (localePath: string, manualDir: string) =>
+      validateGhostManifest({
+        ...goodManifest(),
+        locales: { en: localePath },
+        manual: {
+          items: [{ dir: manualDir, name: 'guide', description: 'Manual guide.' }],
+        },
+      });
+
+    expect(withPaths('manual/guide/en.json', 'manual/guide').ok).toBe(false);
+    expect(withPaths('content/en.json', 'content/en.json/manual').ok).toBe(false);
+  });
+
+  it('有意允许不同逻辑名称的 manual 单元使用祖先/后代目录', () => {
+    const items = [
+      { dir: 'manual', name: 'overview', description: 'Overview.' },
+      { dir: 'manual/advanced', name: 'advanced', description: 'Advanced topics.' },
+    ];
+
+    expect(validateGhostManifest({ ...goodManifest(), manual: { items } })).toMatchObject({
+      ok: true,
+      manifest: expect.objectContaining({ manual: { items } }),
+    });
+  });
+
+  it('manual 目录与声明文件路径任一方向嵌套时拒绝', () => {
+    const withManual = (manifest: Record<string, unknown>, dir: string) =>
+      validateGhostManifest({
+        ...manifest,
+        manual: { items: [{ dir, name: 'guide', description: 'Manual guide.' }] },
+      });
+    const declaredFileCases: Array<{
+      label: string;
+      manifest: Record<string, unknown>;
+      dir: string;
+    }> = [
+      { label: 'ghost.json', manifest: goodManifest(), dir: 'ghost.json' },
+      {
+        label: 'entry',
+        manifest: { ...goodManifest(), entry: 'manual/entry/main.js' },
+        dir: 'manual/entry',
+      },
+      {
+        label: 'icon',
+        manifest: { ...goodManifest(), icon: 'manual/icon/icon.png' },
+        dir: 'manual/icon',
+      },
+      {
+        label: 'settingsHtml',
+        manifest: { ...goodManifest(), settingsHtml: 'manual/settings/settings.html' },
+        dir: 'manual/settings',
+      },
+      {
+        label: 'panel.html',
+        manifest: {
+          ...goodManifest(),
+          panel: {
+            title: 'Hello',
+            html: 'manual/panel/panel.html',
+            minWidth: 240,
+            defaultFraction: 0.18,
+          },
+        },
+        dir: 'manual/panel',
+      },
+      {
+        label: 'node.entry',
+        manifest: {
+          ...goodManifest(),
+          slots: ['panel', 'node'],
+          node: { entry: 'manual/node/main.cjs', protocol: 'mcp-stdio' },
+        },
+        dir: 'manual/node',
+      },
+      {
+        label: 'node.entries',
+        manifest: {
+          ...goodManifest(),
+          slots: ['panel', 'node'],
+          node: {
+            entry: 'node/main.cjs',
+            entries: ['manual/node-extra/child.cjs'],
+            protocol: 'mcp-stdio',
+          },
+        },
+        dir: 'manual/node-extra',
+      },
+    ];
+
+    for (const { label, manifest, dir } of declaredFileCases) {
+      expect(withManual(manifest, dir), label).toMatchObject({
+        ok: false,
+        reason: expect.stringContaining('与插件声明文件路径'),
+      });
+    }
+
+    expect(
+      withManual({ ...goodManifest(), entry: 'assets/main.js' }, 'assets/main.js/manual'),
+    ).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining('与插件声明文件路径'),
+    });
+    expect(
+      withManual({ ...goodManifest(), entry: 'Manual/Case/main.js' }, 'manual/case'),
+    ).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining('与插件声明文件路径'),
+    });
+    expect(withManual({ ...goodManifest(), entry: 'src/main.js' }, 'manual/guide')).toMatchObject({
+      ok: true,
+      manifest: expect.objectContaining({
+        manual: {
+          items: [{ dir: 'manual/guide', name: 'guide', description: 'Manual guide.' }],
+        },
+      }),
+    });
+  });
+
+  it('locale description / whenToUse 共用本地协议包字符上限', () => {
+    const manifest = validateGhostManifest({
       ...goodManifest(),
-      locales: { en: '../en.json' },
-    }).ok).toBe(false);
-    expect(validateGhostManifest({
-      ...goodManifest(),
-      locales: { en: 'locales/en.json', fr: 'locales/fr.json' },
-    }).ok).toBe(false);
-    expect(validateGhostManifest({
-      ...goodManifest(),
-      locales: { en: 'locales/en.json', ja: 'locales/en.json' },
-    }).ok).toBe(false);
-    expect(validateGhostManifest({
-      ...goodManifest(),
-      locales: { en: 'locales/en.json', ja: 'Locales/EN.json' },
-    }).ok).toBe(false);
-    expect(validateGhostManifest({
-      ...goodManifest(),
-      locales: { en: 'GHOST.JSON' },
-    }).ok).toBe(false);
+      description: 'Base description',
+      whenToUse: 'Base recall',
+    });
+    expect(manifest.ok).toBe(true);
+    if (!manifest.ok) return;
+    expect(
+      validateGhostManifestLocaleResource(
+        {
+          description: 'x'.repeat(GHOST_MANIFEST_SUMMARY_MAX_CHARS),
+          whenToUse: 'y'.repeat(GHOST_MANIFEST_SUMMARY_MAX_CHARS),
+        },
+        manifest.manifest,
+      ).ok,
+    ).toBe(true);
+    expect(
+      validateGhostManifestLocaleResource(
+        {
+          description: 'x'.repeat(GHOST_MANIFEST_SUMMARY_MAX_CHARS + 1),
+        },
+        manifest.manifest,
+      ).ok,
+    ).toBe(false);
   });
 
   it('locale 选择完全跟随宿主，插件不支持或宿主值未知时固定回退英文', () => {
@@ -373,9 +528,20 @@ describe('ghost · 清单校验', () => {
     if (!parsed.ok) return;
     expect(ghostLocalePathFor(parsed.manifest, 'ja')).toBe('locales/ja.json');
     expect(ghostLocalePathFor(parsed.manifest, 'zh-CN')).toBe('locales/en.json');
+    expect(ghostLocalePathFor(parsed.manifest, 'zh-TW')).toBe('locales/en.json');
     expect(ghostLocalePathFor(parsed.manifest, 'fr-FR')).toBe('locales/en.json');
     expect(withGhostResolvedLocale(parsed.manifest, 'ko').resolvedLocale).toBe('ko');
+    expect(withGhostResolvedLocale(parsed.manifest, 'zh-TW').resolvedLocale).toBe('zh-TW');
     expect(withGhostResolvedLocale(parsed.manifest, 'fr-FR').resolvedLocale).toBe('en');
+  });
+
+  it('app-context locale 保持插件协议旧四语，新增宿主语言固定回退英文', () => {
+    expect(ghostAppContextLocale('zh-CN')).toBe('zh-CN');
+    expect(ghostAppContextLocale('zh-TW')).toBe('en');
+    expect(ghostAppContextLocale('en')).toBe('en');
+    expect(ghostAppContextLocale('ja')).toBe('ja');
+    expect(ghostAppContextLocale('ko')).toBe('ko');
+    expect(ghostAppContextLocale('fr-FR')).toBe('en');
   });
 
   it('locale 资源按稳定 tool name 合并;翻译可部分提供、缺译回退原文,错位仍拒', () => {
@@ -415,26 +581,29 @@ describe('ghost · 清单校验', () => {
     });
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-    const resource = validateGhostManifestLocaleResource({
-      name: 'Localized',
-      description: 'Localized description',
-      whenToUse: 'Localized routing',
-      tools: {
-        beta: { description: 'Localized beta' },
-        alpha: {
-          description: 'Localized alpha',
-          parameters: {
-            '': { title: 'Localized arguments' },
-            '/properties/query': {
-              title: 'Localized query',
-              description: 'Localized query description',
+    const resource = validateGhostManifestLocaleResource(
+      {
+        name: 'Localized',
+        description: 'Localized description',
+        whenToUse: 'Localized routing',
+        tools: {
+          beta: { description: 'Localized beta' },
+          alpha: {
+            description: 'Localized alpha',
+            parameters: {
+              '': { title: 'Localized arguments' },
+              '/properties/query': {
+                title: 'Localized query',
+                description: 'Localized query description',
+              },
+              '/properties/mode/oneOf/0': { title: 'Localized fast mode' },
+              '/properties/mode/oneOf/1': { title: 'Localized safe mode' },
             },
-            '/properties/mode/oneOf/0': { title: 'Localized fast mode' },
-            '/properties/mode/oneOf/1': { title: 'Localized safe mode' },
           },
         },
       },
-    }, parsed.manifest);
+      parsed.manifest,
+    );
     expect(resource.ok).toBe(true);
     if (!resource.ok) return;
     expect(resolveGhostManifestLocale(parsed.manifest, resource.resource)).toMatchObject({
@@ -453,10 +622,7 @@ describe('ghost · 清单校验', () => {
                 description: 'Localized query description',
               },
               mode: {
-                oneOf: [
-                  { title: 'Localized fast mode' },
-                  { title: 'Localized safe mode' },
-                ],
+                oneOf: [{ title: 'Localized fast mode' }, { title: 'Localized safe mode' }],
               },
             },
           },
@@ -466,10 +632,13 @@ describe('ghost · 清单校验', () => {
     });
     // 部分翻译是合法状态:只翻 alpha 的 description(不翻参数、不翻 beta),
     // 缺失条目解析时回退原文。
-    const partial = validateGhostManifestLocaleResource({
-      name: 'Partial',
-      tools: { alpha: { description: 'Only alpha' } },
-    }, parsed.manifest);
+    const partial = validateGhostManifestLocaleResource(
+      {
+        name: 'Partial',
+        tools: { alpha: { description: 'Only alpha' } },
+      },
+      parsed.manifest,
+    );
     expect(partial.ok, JSON.stringify(partial)).toBe(true);
     if (!partial.ok) return;
     expect(resolveGhostManifestLocale(parsed.manifest, partial.resource)).toMatchObject({
@@ -494,17 +663,28 @@ describe('ghost · 清单校验', () => {
     if (!empty.ok) return;
     expect(resolveGhostManifestLocale(parsed.manifest, empty.resource)).toMatchObject({
       name: 'Base',
-      tools: [{ name: 'alpha', description: 'Base alpha' }, { name: 'beta', description: 'Base beta' }],
+      tools: [
+        { name: 'alpha', description: 'Base alpha' },
+        { name: 'beta', description: 'Base beta' },
+      ],
     });
     // 参数翻译允许只覆盖部分 pointer,未覆盖的回退。
-    const partialParams = validateGhostManifestLocaleResource({
-      tools: {
-        alpha: {
-          description: 'Localized alpha',
-          parameters: { '/properties/query': { title: 'Localized query', description: 'Localized query description' } },
+    const partialParams = validateGhostManifestLocaleResource(
+      {
+        tools: {
+          alpha: {
+            description: 'Localized alpha',
+            parameters: {
+              '/properties/query': {
+                title: 'Localized query',
+                description: 'Localized query description',
+              },
+            },
+          },
         },
       },
-    }, parsed.manifest);
+      parsed.manifest,
+    );
     expect(partialParams.ok, JSON.stringify(partialParams)).toBe(true);
     if (!partialParams.ok) return;
     expect(resolveGhostManifestLocale(parsed.manifest, partialParams.resource)).toMatchObject({
@@ -513,30 +693,59 @@ describe('ghost · 清单校验', () => {
           name: 'alpha',
           parameters: {
             title: 'Base arguments',
-            properties: { query: { title: 'Localized query', description: 'Localized query description' } },
+            properties: {
+              query: { title: 'Localized query', description: 'Localized query description' },
+            },
           },
         },
         { name: 'beta', description: 'Base beta' },
       ],
     });
     // 翻译错位仍是硬错误:未知工具 / 未知 pointer / 未知字段 / 提供了条目却缺 description。
-    expect(validateGhostManifestLocaleResource({
-      tools: { gamma: { description: 'No such tool' } },
-    }, parsed.manifest).ok).toBe(false);
-    expect(validateGhostManifestLocaleResource({
-      tools: { alpha: { description: 'x', parameters: { '/properties/nope': { title: 'x' } } } },
-    }, parsed.manifest).ok).toBe(false);
-    expect(validateGhostManifestLocaleResource({
-      tools: { beta: { description: 'x', parameters: { '': { title: 'x' } } } },
-    }, parsed.manifest).ok).toBe(false);
-    expect(validateGhostManifestLocaleResource({
-      tools: { alpha: {} },
-    }, parsed.manifest).ok).toBe(false);
-    expect(validateGhostManifestLocaleResource({
-      description: 'x',
-      whenToUse: 'x',
-      extra: 'x',
-    }, parsed.manifest).ok).toBe(false);
+    expect(
+      validateGhostManifestLocaleResource(
+        {
+          tools: { gamma: { description: 'No such tool' } },
+        },
+        parsed.manifest,
+      ).ok,
+    ).toBe(false);
+    expect(
+      validateGhostManifestLocaleResource(
+        {
+          tools: {
+            alpha: { description: 'x', parameters: { '/properties/nope': { title: 'x' } } },
+          },
+        },
+        parsed.manifest,
+      ).ok,
+    ).toBe(false);
+    expect(
+      validateGhostManifestLocaleResource(
+        {
+          tools: { beta: { description: 'x', parameters: { '': { title: 'x' } } } },
+        },
+        parsed.manifest,
+      ).ok,
+    ).toBe(false);
+    expect(
+      validateGhostManifestLocaleResource(
+        {
+          tools: { alpha: {} },
+        },
+        parsed.manifest,
+      ).ok,
+    ).toBe(false);
+    expect(
+      validateGhostManifestLocaleResource(
+        {
+          description: 'x',
+          whenToUse: 'x',
+          extra: 'x',
+        },
+        parsed.manifest,
+      ).ok,
+    ).toBe(false);
   });
 
   it('locale 资源覆盖宿主持有的面板、凭证、连接与 setup 标签;标签可部分提供', () => {
@@ -551,28 +760,34 @@ describe('ghost · 清单校验', () => {
       panel: { title: 'Base panel', html: 'panel.html' },
       network: {
         hosts: ['api.example.com'],
-        secrets: [{
-          key: 'api_key',
-          label: 'Base API key',
-          hint: 'Base secret hint',
-          inject: { header: 'Authorization', format: 'Bearer {value}' },
-        }],
-        connections: [{
-          key: 'instance',
-          label: 'Base instance',
-          hint: 'Base connection hint',
-          inject: { header: 'Authorization', format: 'Bearer {value}' },
-        }],
+        secrets: [
+          {
+            key: 'api_key',
+            label: 'Base API key',
+            hint: 'Base secret hint',
+            inject: { header: 'Authorization', format: 'Bearer {value}' },
+          },
+        ],
+        connections: [
+          {
+            key: 'instance',
+            label: 'Base instance',
+            hint: 'Base connection hint',
+            inject: { header: 'Authorization', format: 'Bearer {value}' },
+          },
+        ],
       },
       node: {
         entry: 'node/worker.cjs',
         protocol: 'json-rpc-stdio',
-        secretBindings: [{
-          key: 'worker_key',
-          label: 'Base worker key',
-          hint: 'Base worker hint',
-          methods: ['run'],
-        }],
+        secretBindings: [
+          {
+            key: 'worker_key',
+            label: 'Base worker key',
+            hint: 'Base worker hint',
+            methods: ['run'],
+          },
+        ],
       },
       setup: {
         requires: [{ anyOf: [{ kv: 'default_repo', label: 'Base repository' }] }],
@@ -580,62 +795,76 @@ describe('ghost · 清单校验', () => {
     });
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-    const resource = validateGhostManifestLocaleResource({
-      name: 'Localized',
-      panel: { title: 'Localized panel' },
-      network: {
-        secrets: {
-          api_key: { label: 'Localized API key', hint: 'Localized secret hint' },
+    const resource = validateGhostManifestLocaleResource(
+      {
+        name: 'Localized',
+        panel: { title: 'Localized panel' },
+        network: {
+          secrets: {
+            api_key: { label: 'Localized API key', hint: 'Localized secret hint' },
+          },
+          connections: {
+            instance: { label: 'Localized instance', hint: 'Localized connection hint' },
+          },
         },
-        connections: {
-          instance: { label: 'Localized instance', hint: 'Localized connection hint' },
+        node: {
+          secretBindings: {
+            worker_key: { label: 'Localized worker key', hint: 'Localized worker hint' },
+          },
+        },
+        setup: {
+          kv: {
+            default_repo: { label: 'Localized repository' },
+          },
         },
       },
-      node: {
-        secretBindings: {
-          worker_key: { label: 'Localized worker key', hint: 'Localized worker hint' },
-        },
-      },
-      setup: {
-        kv: {
-          default_repo: { label: 'Localized repository' },
-        },
-      },
-    }, parsed.manifest);
+      parsed.manifest,
+    );
     expect(resource.ok).toBe(true);
     if (!resource.ok) return;
     expect(resolveGhostManifestLocale(parsed.manifest, resource.resource)).toMatchObject({
       panel: { title: 'Localized panel' },
       network: {
-        secrets: [{
-          key: 'api_key',
-          label: 'Localized API key',
-          hint: 'Localized secret hint',
-        }],
-        connections: [{
-          key: 'instance',
-          label: 'Localized instance',
-          hint: 'Localized connection hint',
-        }],
+        secrets: [
+          {
+            key: 'api_key',
+            label: 'Localized API key',
+            hint: 'Localized secret hint',
+          },
+        ],
+        connections: [
+          {
+            key: 'instance',
+            label: 'Localized instance',
+            hint: 'Localized connection hint',
+          },
+        ],
       },
       node: {
-        secretBindings: [{
-          key: 'worker_key',
-          label: 'Localized worker key',
-          hint: 'Localized worker hint',
-        }],
+        secretBindings: [
+          {
+            key: 'worker_key',
+            label: 'Localized worker key',
+            hint: 'Localized worker hint',
+          },
+        ],
       },
       setup: {
-        requires: [{
-          anyOf: [{ kind: 'kv', key: 'default_repo', label: 'Localized repository' }],
-        }],
+        requires: [
+          {
+            anyOf: [{ kind: 'kv', key: 'default_repo', label: 'Localized repository' }],
+          },
+        ],
       },
     });
     // 只翻面板标题、不翻凭证/连接/kv 也合法,缺失标签回退原文。
-    const panelOnly = validateGhostManifestLocaleResource({
-      name: 'Partial labels',
-      panel: { title: 'Localized panel' },
-    }, parsed.manifest);
+    const panelOnly = validateGhostManifestLocaleResource(
+      {
+        name: 'Partial labels',
+        panel: { title: 'Localized panel' },
+      },
+      parsed.manifest,
+    );
     expect(panelOnly.ok, JSON.stringify(panelOnly)).toBe(true);
     if (!panelOnly.ok) return;
     expect(resolveGhostManifestLocale(parsed.manifest, panelOnly.resource)).toMatchObject({
@@ -645,12 +874,17 @@ describe('ghost · 清单校验', () => {
         connections: [{ key: 'instance', label: 'Base instance' }],
       },
       node: { secretBindings: [{ key: 'worker_key', label: 'Base worker key' }] },
-      setup: { requires: [{ anyOf: [{ kind: 'kv', key: 'default_repo', label: 'Base repository' }] }] },
+      setup: {
+        requires: [{ anyOf: [{ kind: 'kv', key: 'default_repo', label: 'Base repository' }] }],
+      },
     });
     // 提供的标签条目 label 必填、hint 可省(缺 hint 回退原文);未知 key 仍拒。
-    const labelNoHint = validateGhostManifestLocaleResource({
-      network: { secrets: { api_key: { label: 'Localized API key' } } },
-    }, parsed.manifest);
+    const labelNoHint = validateGhostManifestLocaleResource(
+      {
+        network: { secrets: { api_key: { label: 'Localized API key' } } },
+      },
+      parsed.manifest,
+    );
     expect(labelNoHint.ok, JSON.stringify(labelNoHint)).toBe(true);
     if (!labelNoHint.ok) return;
     expect(resolveGhostManifestLocale(parsed.manifest, labelNoHint.resource)).toMatchObject({
@@ -658,15 +892,30 @@ describe('ghost · 清单校验', () => {
         secrets: [{ key: 'api_key', label: 'Localized API key', hint: 'Base secret hint' }],
       },
     });
-    expect(validateGhostManifestLocaleResource({
-      network: { secrets: { nope: { label: 'x' } } },
-    }, parsed.manifest).ok).toBe(false);
-    expect(validateGhostManifestLocaleResource({
-      network: { secrets: { api_key: { hint: 'hint without label' } } },
-    }, parsed.manifest).ok).toBe(false);
-    expect(validateGhostManifestLocaleResource({
-      setup: { kv: { default_repo: { label: 'x', hint: 'kv 未声明 hint' } } },
-    }, parsed.manifest).ok).toBe(false);
+    expect(
+      validateGhostManifestLocaleResource(
+        {
+          network: { secrets: { nope: { label: 'x' } } },
+        },
+        parsed.manifest,
+      ).ok,
+    ).toBe(false);
+    expect(
+      validateGhostManifestLocaleResource(
+        {
+          network: { secrets: { api_key: { hint: 'hint without label' } } },
+        },
+        parsed.manifest,
+      ).ok,
+    ).toBe(false);
+    expect(
+      validateGhostManifestLocaleResource(
+        {
+          setup: { kv: { default_repo: { label: 'x', hint: 'kv 未声明 hint' } } },
+        },
+        parsed.manifest,
+      ).ok,
+    ).toBe(false);
   });
 
   it('locale 外部 key 累加器使用无原型字典，JSON 自有 __proto__ 属性不会丢失', () => {
@@ -688,8 +937,12 @@ describe('ghost · 清单校验', () => {
     expect(resource.ok).toBe(true);
     if (!resource.ok) return;
     expect(Object.getPrototypeOf(resource.resource.setup?.kv)).toBeNull();
-    expect(Object.prototype.hasOwnProperty.call(resource.resource.setup?.kv, '__proto__')).toBe(true);
-    expect(resolveGhostManifestLocale(manifest, resource.resource).setup?.requires[0]?.anyOf[0]).toEqual({
+    expect(Object.prototype.hasOwnProperty.call(resource.resource.setup?.kv, '__proto__')).toBe(
+      true,
+    );
+    expect(
+      resolveGhostManifestLocale(manifest, resource.resource).setup?.requires[0]?.anyOf[0],
+    ).toEqual({
       kind: 'kv',
       key: '__proto__',
       label: 'Localized label',
@@ -698,9 +951,13 @@ describe('ghost · 清单校验', () => {
 
   it('icon:可选包内相对路径,扩展名白名单;非法路径/扩展名 → 拒', () => {
     const base = validateGhostManifest({ ...goodManifest(), icon: 'assets/icon.png' });
-    expect(base.ok && (base as { ok: true; manifest: GhostManifest }).manifest.icon).toBe('assets/icon.png');
+    expect(base.ok && (base as { ok: true; manifest: GhostManifest }).manifest.icon).toBe(
+      'assets/icon.png',
+    );
     const chip = validateGhostManifest({ ...goodChipManifest(), icon: 'icon.webp' });
-    expect(chip.ok && (chip as { ok: true; manifest: GhostManifest }).manifest.icon).toBe('icon.webp');
+    expect(chip.ok && (chip as { ok: true; manifest: GhostManifest }).manifest.icon).toBe(
+      'icon.webp',
+    );
     // 大小写不敏感的扩展名
     expect(validateGhostManifest({ ...goodManifest(), icon: 'ICON.PNG' }).ok).toBe(true);
     for (const icon of ['../evil.png', '/abs.png', 'a\\b.png', 'icon.svg', 'icon.js', 'icon', 42]) {
@@ -733,8 +990,12 @@ describe('ghost · 芯片型清单(schemaVersion 2)', () => {
   it('slots 必填非空、只认已知卡槽、不许重复', () => {
     expect(validateGhostManifest({ ...goodChipManifest(), slots: undefined }).ok).toBe(false);
     expect(validateGhostManifest({ ...goodChipManifest(), slots: [] }).ok).toBe(false);
-    expect(validateGhostManifest({ ...goodChipManifest(), slots: ['panel', 'filesystem'] }).ok).toBe(false);
-    expect(validateGhostManifest({ ...goodChipManifest(), slots: ['model', 'model'] }).ok).toBe(false);
+    expect(
+      validateGhostManifest({ ...goodChipManifest(), slots: ['panel', 'filesystem'] }).ok,
+    ).toBe(false);
+    expect(validateGhostManifest({ ...goodChipManifest(), slots: ['model', 'model'] }).ok).toBe(
+      false,
+    );
     const noPanel = goodChipManifest();
     noPanel.slots = ['subscribe', 'tool', 'card', 'model'];
     noPanel.tools = [{ name: 'do_thing', description: '做点事' }];
@@ -779,7 +1040,83 @@ describe('ghost · 芯片型清单(schemaVersion 2)', () => {
     expect(diff.removed).toHaveLength(0);
   });
 
-  it('agent 详单必须与槽成对，且只接受 background / errand 两项加档', () => {
+  it('agent.schedule 加档:单列一档权限,可与 background / errand 并存(2026-08-04)', () => {
+    const sched = validateGhostManifest({
+      ...goodChipManifest(),
+      slots: ['panel', 'agent'],
+      agent: { schedule: true },
+    });
+    expect(sched.ok).toBe(true);
+    if (!sched.ok) return;
+    expect(sched.manifest.agent).toEqual({ schedule: true });
+    expect(ghostPermissionItems(sched.manifest)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: 'agent:schedule',
+          kind: 'agent',
+          labelKey: 'agentSchedule',
+          detailKey: 'agentScheduleDetail',
+        }),
+      ]),
+    );
+
+    const all = validateGhostManifest({
+      ...goodChipManifest(),
+      slots: ['panel', 'agent'],
+      agent: { background: true, errand: true, schedule: true },
+    });
+    expect(all.ok).toBe(true);
+    if (!all.ok) return;
+    expect(all.manifest.agent).toEqual({ background: true, errand: true, schedule: true });
+
+    // 扩权复核必须看得见它:只加 schedule 的更新,added 恰好是这一项。
+    const userActionOnly = validateGhostManifest({
+      ...goodChipManifest(),
+      slots: ['panel', 'agent'],
+    });
+    expect(userActionOnly.ok).toBe(true);
+    if (!userActionOnly.ok) return;
+    const diff = diffGhostPermissionItems(userActionOnly.manifest, sched.manifest);
+    expect(diff.added.map((item) => item.key)).toEqual(['agent:schedule']);
+    expect(diff.removed).toHaveLength(0);
+
+    // schedule: false 且其余非 true = 详单没意义,拒(应省略字段)。
+    expect(
+      validateGhostManifest({
+        ...goodChipManifest(),
+        slots: ['panel', 'agent'],
+        agent: { schedule: false },
+      }).ok,
+    ).toBe(false);
+    // schedule 非布尔 → 拒。
+    expect(
+      validateGhostManifest({
+        ...goodChipManifest(),
+        slots: ['panel', 'agent'],
+        agent: { schedule: 'yes' },
+      }).ok,
+    ).toBe(false);
+  });
+
+  it('存量兼容红线:不声明 agent.schedule 的清单,权限项与内容键逐字不变', () => {
+    // 这条钉的是仓规红线(plugin-security-and-authoring.md §5):用户升级客户端后
+    // 什么都不做,已装插件必须照旧可用 —— 不能因为新增了 schedule 加档,就让任何
+    // 老清单多出/少掉一项权限或内容键(那会触发扩权复核、要求用户重新确认)。
+    for (const agentNeeds of [undefined, { background: true }, { errand: true }]) {
+      const result = validateGhostManifest({
+        ...goodChipManifest(),
+        slots: ['panel', 'agent'],
+        ...(agentNeeds ? { agent: agentNeeds } : {}),
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const keys = ghostPermissionItems(result.manifest).map((item) => item.key);
+      expect(keys).not.toContain('agent:schedule');
+      expect(ghostContentKeys(result.manifest)).not.toContain('slotSchedule');
+    }
+  });
+
+  it('agent 详单必须与槽成对，且只接受 background / errand / schedule 三项加档', () => {
     expect(
       validateGhostManifest({
         ...goodChipManifest(),
@@ -890,12 +1227,12 @@ describe('ghost · 芯片型清单(schemaVersion 2)', () => {
     expect(withNode({ entry: 'node/a.txt', protocol: 'json-rpc-stdio' }).ok).toBe(false);
     expect(withNode({ entry: 'node/a.mjs', protocol: 'json-rpc-stdio' }).ok).toBe(false);
     expect(withNode({ entry: 'node/a.cjs', protocol: 'stdio' }).ok).toBe(false);
-    expect(
-      withNode({ entry: 'node/a.cjs', protocol: 'json-rpc-stdio', command: 'node' }).ok,
-    ).toBe(false);
-    expect(
-      withNode({ entry: 'node/a.cjs', protocol: 'json-rpc-stdio', args: ['--x'] }).ok,
-    ).toBe(false);
+    expect(withNode({ entry: 'node/a.cjs', protocol: 'json-rpc-stdio', command: 'node' }).ok).toBe(
+      false,
+    );
+    expect(withNode({ entry: 'node/a.cjs', protocol: 'json-rpc-stdio', args: ['--x'] }).ok).toBe(
+      false,
+    );
     expect(
       withNode({
         entry: 'node/a.cjs',
@@ -905,7 +1242,9 @@ describe('ghost · 芯片型清单(schemaVersion 2)', () => {
       }).ok,
     ).toBe(false);
     expect(withNode({ entry: 'node/a.cjs', protocol: 'json-rpc-stdio' }, ['panel']).ok).toBe(false);
-    expect(validateGhostManifest({ ...goodChipManifest(), slots: ['panel', 'node'] }).ok).toBe(false);
+    expect(validateGhostManifest({ ...goodChipManifest(), slots: ['panel', 'node'] }).ok).toBe(
+      false,
+    );
   });
 
   it('node.secretBindings 逐方法声明保险库凭证并生成单独权限项', () => {
@@ -1060,17 +1399,24 @@ describe('ghost · 芯片型清单(schemaVersion 2)', () => {
     const withTools = (slots: string[], tools: unknown) =>
       validateGhostManifest({ ...goodChipManifest(), slots, tools });
     // 成对:有 tool 槽必须有 tools,反之亦然
-    expect(validateGhostManifest({ ...goodChipManifest(), slots: ['panel', 'tool'] }).ok).toBe(false);
+    expect(validateGhostManifest({ ...goodChipManifest(), slots: ['panel', 'tool'] }).ok).toBe(
+      false,
+    );
     expect(withTools(['panel'], [{ name: 'x', description: 'y' }]).ok).toBe(false);
     // 合法
-    expect(withTools(['panel', 'tool'], [{ name: 'gen_image', description: '生成图片' }]).ok).toBe(true);
+    expect(withTools(['panel', 'tool'], [{ name: 'gen_image', description: '生成图片' }]).ok).toBe(
+      true,
+    );
     // 名字非法 / 重名 / 描述空 / 超 16 条
     expect(withTools(['panel', 'tool'], [{ name: 'Bad', description: 'y' }]).ok).toBe(false);
     expect(
-      withTools(['panel', 'tool'], [
-        { name: 'a', description: 'y' },
-        { name: 'a', description: 'z' },
-      ]).ok,
+      withTools(
+        ['panel', 'tool'],
+        [
+          { name: 'a', description: 'y' },
+          { name: 'a', description: 'z' },
+        ],
+      ).ok,
     ).toBe(false);
     expect(withTools(['panel', 'tool'], [{ name: 'a', description: '' }]).ok).toBe(false);
     expect(
@@ -1111,14 +1457,7 @@ describe('ghost · 芯片型清单(schemaVersion 2)', () => {
       slots: ['panel', 'tool'],
       tools: [{ name: 'search_issues', description: '只读搜索议题' }],
     };
-    for (const legacyValue of [
-      null,
-      true,
-      'legacy',
-      [],
-      {},
-      { label: 'Issues' },
-    ]) {
+    for (const legacyValue of [null, true, 'legacy', [], {}, { label: 'Issues' }]) {
       const result = validateGhostManifest({
         ...base,
         atResourceProvider: legacyValue,
@@ -1129,12 +1468,14 @@ describe('ghost · 芯片型清单(schemaVersion 2)', () => {
 
   it('@ 资源入口复用 tool 槽，不新增硬白名单 slot', () => {
     expect(GHOST_SLOTS).not.toContain('at-resource');
-    expect(validateGhostManifest({
-      ...goodChipManifest(),
-      slots: ['panel', 'tool', 'at-resource'],
-      tools: [{ name: 'search_issues', description: '只读搜索议题' }],
-      atResourceProvider: { tool: 'search_issues' },
-    }).ok).toBe(false);
+    expect(
+      validateGhostManifest({
+        ...goodChipManifest(),
+        slots: ['panel', 'tool', 'at-resource'],
+        tools: [{ name: 'search_issues', description: '只读搜索议题' }],
+        atResourceProvider: { tool: 'search_issues' },
+      }).ok,
+    ).toBe(false);
   });
 
   it('@ 资源入口复用原工具执行权，但作为新增调用入口单独披露', () => {
@@ -1165,58 +1506,83 @@ describe('ghost · 芯片型清单(schemaVersion 2)', () => {
     };
 
     for (const key of reservedKeys) {
-      expect(validateGhostManifest(withoutPanel({
-        ...goodManifest(),
-        slots: ['tool'],
-        tools: [{ name: key, description: 'Reserved tool' }],
-      })).ok, `tool ${key}`).toBe(false);
+      expect(
+        validateGhostManifest(
+          withoutPanel({
+            ...goodManifest(),
+            slots: ['tool'],
+            tools: [{ name: key, description: 'Reserved tool' }],
+          }),
+        ).ok,
+        `tool ${key}`,
+      ).toBe(false);
 
-      expect(validateGhostManifest({
-        ...goodManifest(),
-        settingsHtml: 'settings.html',
-        slots: ['panel', 'network'],
-        network: {
-          hosts: ['api.example.com'],
-          secrets: [{
-            key,
-            label: 'Reserved secret',
-            inject: { header: 'Authorization', format: 'Bearer {value}' },
-          }],
-        },
-      }).ok, `network secret ${key}`).toBe(false);
+      expect(
+        validateGhostManifest({
+          ...goodManifest(),
+          settingsHtml: 'settings.html',
+          slots: ['panel', 'network'],
+          network: {
+            hosts: ['api.example.com'],
+            secrets: [
+              {
+                key,
+                label: 'Reserved secret',
+                inject: { header: 'Authorization', format: 'Bearer {value}' },
+              },
+            ],
+          },
+        }).ok,
+        `network secret ${key}`,
+      ).toBe(false);
 
-      expect(validateGhostManifest({
-        ...goodManifest(),
-        settingsHtml: 'settings.html',
-        slots: ['panel', 'network'],
-        network: {
-          hosts: [],
-          connections: [{
-            key,
-            label: 'Reserved connection',
-            inject: { header: 'Authorization', format: 'Bearer {value}' },
-          }],
-        },
-      }).ok, `network connection ${key}`).toBe(false);
+      expect(
+        validateGhostManifest({
+          ...goodManifest(),
+          settingsHtml: 'settings.html',
+          slots: ['panel', 'network'],
+          network: {
+            hosts: [],
+            connections: [
+              {
+                key,
+                label: 'Reserved connection',
+                inject: { header: 'Authorization', format: 'Bearer {value}' },
+              },
+            ],
+          },
+        }).ok,
+        `network connection ${key}`,
+      ).toBe(false);
 
-      expect(validateGhostManifest({
-        ...goodManifest(),
-        settingsHtml: 'settings.html',
-        slots: ['panel', 'node'],
-        node: {
-          entry: 'node/worker.cjs',
-          protocol: 'json-rpc-stdio',
-          secretBindings: [{ key, label: 'Reserved node secret', methods: ['run'] }],
-        },
-      }).ok, `node secret ${key}`).toBe(false);
+      expect(
+        validateGhostManifest({
+          ...goodManifest(),
+          settingsHtml: 'settings.html',
+          slots: ['panel', 'node'],
+          node: {
+            entry: 'node/worker.cjs',
+            protocol: 'json-rpc-stdio',
+            secretBindings: [{ key, label: 'Reserved node secret', methods: ['run'] }],
+          },
+        }).ok,
+        `node secret ${key}`,
+      ).toBe(false);
 
-      expect(validateGhostManifest(JSON.parse(JSON.stringify({
-        ...goodManifest(),
-        settingsHtml: 'settings.html',
-        setup: {
-          requires: [{ anyOf: [{ kv: key, label: 'Reserved setup value' }] }],
-        },
-      }))).ok, `setup kv ${key}`).toBe(false);
+      expect(
+        validateGhostManifest(
+          JSON.parse(
+            JSON.stringify({
+              ...goodManifest(),
+              settingsHtml: 'settings.html',
+              setup: {
+                requires: [{ anyOf: [{ kv: key, label: 'Reserved setup value' }] }],
+              },
+            }),
+          ),
+        ).ok,
+        `setup kv ${key}`,
+      ).toBe(false);
     }
   });
 
@@ -1247,8 +1613,12 @@ describe('ghost · 芯片型清单(schemaVersion 2)', () => {
   });
 
   it('settingsHtml 可选,给了必须是安全相对路径', () => {
-    expect(validateGhostManifest({ ...goodChipManifest(), settingsHtml: 'settings.html' }).ok).toBe(true);
-    expect(validateGhostManifest({ ...goodChipManifest(), settingsHtml: '../s.html' }).ok).toBe(false);
+    expect(validateGhostManifest({ ...goodChipManifest(), settingsHtml: 'settings.html' }).ok).toBe(
+      true,
+    );
+    expect(validateGhostManifest({ ...goodChipManifest(), settingsHtml: '../s.html' }).ok).toBe(
+      false,
+    );
   });
 });
 
@@ -1384,6 +1754,8 @@ describe('ghost · cindy 能力详单校验(字段旧名 model 别名兼容)', (
       'image',
       { media: ['upload'] }, // media 类目只有 deposit
       { media: [] },
+      { search: ['deep'] },
+      { search: [] },
     ]) {
       const v = validateGhostManifest(chipWithModel(bad));
       expect(v.ok, JSON.stringify(bad)).toBe(false);
@@ -1432,11 +1804,45 @@ describe('ghost · cindy 能力详单校验(字段旧名 model 别名兼容)', (
     );
   });
 
-  it('text 类目未知动作 / 空数组 → 拒;四类目可同时声明', () => {
+  // 2026-08-04 文本转向量:embed 类目独立落位(同 #784 的落位纪律),权限清单
+  // 单独成行,说明里插值单次条数上限(常量单源,四份 locale 自动跟随)。
+  it('embed 类目落进 cindy.embed,并生成带条数上限的 cindy:embed.text 权限行', () => {
+    const v = validateGhostManifest(chipWithModel({ embed: ['text'] }));
+    expect(v.ok, JSON.stringify(v)).toBe(true);
+    if (!v.ok) return;
+    expect(v.manifest.cindy).toEqual({ embed: ['text'] });
+    expect(v.manifest.cindy?.text).toBeUndefined();
+    expect(v.manifest.cindy?.image).toBeUndefined();
+    expect(ghostPermissionItems(v.manifest)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: 'cindy:embed.text',
+          kind: 'cindy',
+          labelKey: 'cindyEmbedText',
+          detailKey: 'cindyEmbedTextDetail',
+          detailArgs: { max: String(GHOST_CINDY_EMBED_MAX_TEXTS) },
+        }),
+      ]),
+    );
+  });
+
+  it('embed 类目未知动作 / 空数组 → 拒', () => {
+    expect(validateGhostManifest(chipWithModel({ embed: ['image'] })).ok).toBe(false);
+    expect(validateGhostManifest(chipWithModel({ embed: ['vector'] })).ok).toBe(false);
+    expect(validateGhostManifest(chipWithModel({ embed: [] })).ok).toBe(false);
+  });
+
+  it('text 类目未知动作 / 空数组 → 拒;五类目可同时声明', () => {
     expect(validateGhostManifest(chipWithModel({ text: ['complete'] })).ok).toBe(false);
     expect(validateGhostManifest(chipWithModel({ text: [] })).ok).toBe(false);
     const v = validateGhostManifest(
-      chipWithModel({ image: ['generate'], video: ['edit'], media: ['deposit'], text: ['oneshot'] }),
+      chipWithModel({
+        image: ['generate'],
+        video: ['edit'],
+        media: ['deposit'],
+        text: ['oneshot'],
+        embed: ['text'],
+      }),
     );
     expect(v.ok, JSON.stringify(v)).toBe(true);
     expect(v.ok && v.manifest.cindy).toEqual({
@@ -1444,7 +1850,118 @@ describe('ghost · cindy 能力详单校验(字段旧名 model 别名兼容)', (
       video: ['edit'],
       media: ['deposit'],
       text: ['oneshot'],
+      embed: ['text'],
     });
+  });
+
+  it('search 类目落进 cindy.search，并生成独立的 Web Search 权限行', () => {
+    const manifest = chipWithModel({ search: ['web'] });
+    manifest.slots = ['panel', 'cindy', 'tool'];
+    manifest.tools = [{ name: 'research', description: '查询资料' }];
+    const v = validateGhostManifest(manifest);
+    expect(v.ok, JSON.stringify(v)).toBe(true);
+    if (!v.ok) return;
+    expect(v.manifest.cindy).toEqual({ search: ['web'] });
+    expect(ghostPermissionItems(v.manifest)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: 'cindy:search.web',
+          kind: 'cindy',
+          labelKey: 'cindySearchWeb',
+          detailKey: 'cindySearchWebDetail',
+        }),
+      ]),
+    );
+  });
+
+  // 2026-08-05:oneshotModel 快问快答偏好模型(标量意图键,不是类目;
+  // 必须与 text.oneshot 成对;权限行说明换带模型版本,装入即知情)。
+  it('oneshotModel 合法声明:落 cindy.oneshotModel,权限行说明带模型', () => {
+    const v = validateGhostManifest(
+      chipWithModel({ text: ['oneshot'], oneshotModel: 'codex/gpt-5.5' }),
+    );
+    expect(v.ok, JSON.stringify(v)).toBe(true);
+    if (!v.ok) return;
+    expect(v.manifest.cindy).toEqual({ text: ['oneshot'], oneshotModel: 'codex/gpt-5.5' });
+    expect(ghostPermissionItems(v.manifest)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: 'cindy:text.oneshot',
+          detailKey: 'cindyTextOneshotModelDetail',
+          detailArgs: { model: 'codex/gpt-5.5' },
+        }),
+      ]),
+    );
+  });
+
+  it('search.web 缺少 tool 槽或工具声明时拒装', () => {
+    const withoutTool = validateGhostManifest(chipWithModel({ search: ['web'] }));
+    expect(withoutTool.ok).toBe(false);
+    expect(!withoutTool.ok && withoutTool.reason).toContain('tool');
+  });
+
+  it('oneshotModel 形态非法 / 无 text.oneshot 本体单挂 → 拒', () => {
+    for (const bad of [
+      { text: ['oneshot'], oneshotModel: '' },
+      { text: ['oneshot'], oneshotModel: '   ' },
+      { text: ['oneshot'], oneshotModel: 42 },
+      { text: ['oneshot'], oneshotModel: 'x'.repeat(129) },
+      { oneshotModel: 'codex/gpt-5.5' },
+      { image: ['generate'], oneshotModel: 'gpt-5.5' },
+    ]) {
+      const v = validateGhostManifest(chipWithModel(bad));
+      expect(v.ok, JSON.stringify(bad)).toBe(false);
+    }
+  });
+
+  // 2026-08-05 review:权限指纹必须含 detailKey/detailArgs——同一 key 的固定说明
+  // 随声明变(新增/改/删 oneshotModel),只看 key+detail 会把变化漏判成"权限面
+  // 没变",更新时用户看不到重新确认。
+  it('oneshotModel 新增/变更/移除都算权限面变化(diff/基线/未审三条路径)', () => {
+    const plain = validateGhostManifest(chipWithModel({ text: ['oneshot'] }));
+    const declared = validateGhostManifest(
+      chipWithModel({ text: ['oneshot'], oneshotModel: 'codex/gpt-5.5' }),
+    );
+    const declared2 = validateGhostManifest(
+      chipWithModel({ text: ['oneshot'], oneshotModel: 'gpt-5.5' }),
+    );
+    if (!plain.ok || !declared.ok || !declared2.ok) throw new Error('fixture 应合法');
+
+    // 新增声明:diff 标 added+removed(key 同、说明变),基线不同,未审列出。
+    const addDiff = diffGhostPermissionItems(plain.manifest, declared.manifest);
+    expect(addDiff.added.map((i) => i.key)).toEqual(['cindy:text.oneshot']);
+    expect(addDiff.removed.map((i) => i.key)).toEqual(['cindy:text.oneshot']);
+    expect(ghostPermissionBaselineKey(plain.manifest)).not.toBe(
+      ghostPermissionBaselineKey(declared.manifest),
+    );
+    expect(
+      unreviewedGhostPermissionItems(plain.manifest, plain.manifest, declared.manifest).map(
+        (i) => i.key,
+      ),
+    ).toEqual(['cindy:text.oneshot']);
+
+    // 改模型:同样算变化。
+    expect(
+      diffGhostPermissionItems(declared.manifest, declared2.manifest).added.map((i) => i.key),
+    ).toEqual(['cindy:text.oneshot']);
+
+    // 移除声明:同样算变化。
+    expect(
+      diffGhostPermissionItems(declared.manifest, plain.manifest).added.map((i) => i.key),
+    ).toEqual(['cindy:text.oneshot']);
+
+    // 声明原样:三条路径都认为无变化。
+    const same = validateGhostManifest(
+      chipWithModel({ text: ['oneshot'], oneshotModel: 'codex/gpt-5.5' }),
+    );
+    if (!same.ok) throw new Error('fixture 应合法');
+    expect(diffGhostPermissionItems(declared.manifest, same.manifest).added).toEqual([]);
+    expect(ghostPermissionBaselineKey(declared.manifest)).toBe(
+      ghostPermissionBaselineKey(same.manifest),
+    );
+    expect(
+      unreviewedGhostPermissionItems(declared.manifest, declared.manifest, same.manifest),
+    ).toEqual([]);
   });
 });
 
@@ -1470,7 +1987,10 @@ describe('ghost · model → cindy 旧名兼容(2026-07-11 更名)', () => {
     });
     expect(both.ok && both.manifest.cindy).toEqual({ image: ['generate', 'edit'] });
 
-    const dup = validateGhostManifest({ ...goodChipManifest(), slots: ['panel', 'model', 'cindy'] });
+    const dup = validateGhostManifest({
+      ...goodChipManifest(),
+      slots: ['panel', 'model', 'cindy'],
+    });
     expect(dup.ok).toBe(false);
   });
 });
@@ -1503,13 +2023,15 @@ describe('ghost · subscribe 订阅详单校验(卡槽①,2026-07-12)', () => {
 
   it('未知主题/钩子/空对象/空数组/无槽有详单一律拒', () => {
     expect(validateGhostManifest(withSub({ topics: ['messages'] })).ok).toBe(false);
-    expect(validateGhostManifest(withSub({ hooks: ['will-tool-call'] }, { launch: 'resident' })).ok).toBe(false);
+    expect(
+      validateGhostManifest(withSub({ hooks: ['will-tool-call'] }, { launch: 'resident' })).ok,
+    ).toBe(false);
     expect(validateGhostManifest(withSub({})).ok).toBe(false);
     expect(validateGhostManifest(withSub({ topics: [] })).ok).toBe(false);
     expect(validateGhostManifest(withSub({ topics: ['turn', 'turn'] })).ok).toBe(false);
-    expect(
-      validateGhostManifest({ ...goodManifest(), subscribe: { topics: ['turn'] } }).ok,
-    ).toBe(false); // slots 没含 subscribe
+    expect(validateGhostManifest({ ...goodManifest(), subscribe: { topics: ['turn'] } }).ok).toBe(
+      false,
+    ); // slots 没含 subscribe
   });
 
   it('有槽无详单允许装入(零事件,老包语义)', () => {
@@ -1546,7 +2068,9 @@ describe('ghost · subscribe 订阅详单校验(卡槽①,2026-07-12)', () => {
       'subscribe:topics:activity',
     );
     expect(
-      ghostPermissionItems(withActivity.manifest).find((i) => i.key === 'subscribe:topics:activity'),
+      ghostPermissionItems(withActivity.manifest).find(
+        (i) => i.key === 'subscribe:topics:activity',
+      ),
     ).toMatchObject({ labelKey: 'subscribeActivity', detailKey: 'subscribeActivityDetail' });
 
     // 存量插件更新时新增 activity 必须被权限扩张检测抓到(plugin-market 要求复核)。
@@ -1555,9 +2079,9 @@ describe('ghost · subscribe 订阅详单校验(卡槽①,2026-07-12)', () => {
 
     // 只动 turn / session 的存量插件权限清单不 churn(批准状态不受影响)。
     expect(diffGhostPermissionItems(turnOnly.manifest, turnAndSession.manifest).added).toEqual([]);
-    expect(ghostPermissionItems(turnAndSession.manifest).filter((i) => i.kind === 'subscribe')).toEqual(
-      ghostPermissionItems(turnOnly.manifest).filter((i) => i.kind === 'subscribe'),
-    );
+    expect(
+      ghostPermissionItems(turnAndSession.manifest).filter((i) => i.kind === 'subscribe'),
+    ).toEqual(ghostPermissionItems(turnOnly.manifest).filter((i) => i.kind === 'subscribe'));
 
     // 取消订阅 activity 应报为 removed。
     expect(
@@ -1590,10 +2114,7 @@ describe('ghost · subscribe 订阅详单校验(卡槽①,2026-07-12)', () => {
     expect(noResident.ok).toBe(false); // resident 要求 key 在 hooks 非空,自动覆盖新钩子
 
     const both = validateGhostManifest(
-      withSub(
-        { hooks: ['will-user-message', 'will-assistant-message'] },
-        { launch: 'resident' },
-      ),
+      withSub({ hooks: ['will-user-message', 'will-assistant-message'] }, { launch: 'resident' }),
     );
     expect(both.ok).toBe(true);
     if (both.ok) {
@@ -1624,8 +2145,11 @@ describe('ghost · description(自我介绍)', () => {
     const chip = validateGhostManifest({ ...goodChipManifest(), description: '画图小助手' });
     expect(chip.ok && chip.manifest.description).toBe('画图小助手');
 
-    for (const bad of ['', '  ', 'x'.repeat(301), 42]) {
-      expect(validateGhostManifest({ ...goodManifest(), description: bad }).ok, JSON.stringify(bad)).toBe(false);
+    for (const bad of ['', '  ', 'x'.repeat(GHOST_MANIFEST_SUMMARY_MAX_CHARS + 1), 42]) {
+      expect(
+        validateGhostManifest({ ...goodManifest(), description: bad }).ok,
+        JSON.stringify(bad),
+      ).toBe(false);
     }
   });
 });
@@ -1658,7 +2182,11 @@ describe('ghost · panel.position 校验', () => {
     expect(tab.ok && tab.manifest.panel?.position).toBe('tab');
 
     // 页签没有拖缝宽度语义:带停靠专属字段必须明确拒绝,不静默忽略(规则 9)。
-    for (const extra of [{ minWidth: 240 }, { defaultFraction: 0.2 }, { minWidth: 240, defaultFraction: 0.2 }]) {
+    for (const extra of [
+      { minWidth: 240 },
+      { defaultFraction: 0.2 },
+      { minWidth: 240, defaultFraction: 0.2 },
+    ]) {
       const v = validateGhostManifest({
         ...goodManifest(),
         panel: { title: 'Hello', html: 'panel.html', position: 'tab', ...extra },
@@ -1674,7 +2202,12 @@ describe('ghost · whenToUse(语义召回线索)', () => {
     const chip = validateGhostManifest({ ...goodChipManifest(), whenToUse: '需要出图时找我' });
     expect(chip.ok && chip.manifest.whenToUse).toBe('需要出图时找我');
     expect(validateGhostManifest({ ...goodChipManifest(), whenToUse: '' }).ok).toBe(false);
-    expect(validateGhostManifest({ ...goodChipManifest(), whenToUse: 'x'.repeat(301) }).ok).toBe(false);
+    expect(
+      validateGhostManifest({
+        ...goodChipManifest(),
+        whenToUse: 'x'.repeat(GHOST_MANIFEST_SUMMARY_MAX_CHARS + 1),
+      }).ok,
+    ).toBe(false);
   });
 });
 
@@ -1732,16 +2265,21 @@ describe('ghost · cindy 详单 video 类目', () => {
   });
 
   it('权限清单推导:video 详单产出对应权限项(确认框自动吃到)', () => {
-    const v = validateGhostManifest(withCindy({ image: ['generate'], video: ['generate', 'edit'] }));
+    const v = validateGhostManifest(
+      withCindy({ image: ['generate'], video: ['generate', 'edit'] }),
+    );
     expect(v.ok).toBe(true);
     if (!v.ok) return;
-    const keys = ghostPermissionItems(v.manifest).filter((i) => i.kind === 'cindy').map((i) => i.key);
+    const keys = ghostPermissionItems(v.manifest)
+      .filter((i) => i.kind === 'cindy')
+      .map((i) => i.key);
     expect(keys).toEqual(['cindy:image.generate', 'cindy:video.generate', 'cindy:video.edit']);
-    const labels = ghostPermissionItems(v.manifest).filter((i) => i.kind === 'cindy').map((i) => i.labelKey);
+    const labels = ghostPermissionItems(v.manifest)
+      .filter((i) => i.kind === 'cindy')
+      .map((i) => i.labelKey);
     expect(labels).toContain('cindyVideoGenerate');
     expect(labels).toContain('cindyVideoEdit');
   });
-
 });
 
 describe('ghost · 逐项权限清单', () => {
@@ -1775,7 +2313,12 @@ describe('ghost · 逐项权限清单', () => {
       'code',
     ]);
     const tool = items.find((i) => i.key === 'tool:gen_image');
-    expect(tool).toMatchObject({ kind: 'tool', labelKey: 'tool', labelArgs: { name: 'gen_image' }, detail: '出图' });
+    expect(tool).toMatchObject({
+      kind: 'tool',
+      labelKey: 'tool',
+      labelArgs: { name: 'gen_image' },
+      detail: '出图',
+    });
     const panel = items.find((i) => i.kind === 'panel');
     expect(panel).toMatchObject({ labelKey: 'panelLeft', labelArgs: { title: '画廊' } });
     expect(items.find((i) => i.kind === 'code')).toMatchObject({ detailKey: 'codeDetail' });
@@ -1797,7 +2340,10 @@ describe('ghost · 逐项权限清单', () => {
     expect(items[0]).toMatchObject({ labelKey: 'panelLeft', labelArgs: { title: '说明书' } });
 
     // 页签形态在确认框同样逐项如实展示(labelKey 独立成 panelTab)。
-    const tabbed = ghostPermissionItems({ ...plain, panel: { html: 'panel.html', position: 'tab' } });
+    const tabbed = ghostPermissionItems({
+      ...plain,
+      panel: { html: 'panel.html', position: 'tab' },
+    });
     expect(tabbed.map((i) => i.key)).toEqual(['panel:tab', 'code']);
     expect(tabbed[0]).toMatchObject({ labelKey: 'panelTab', labelArgs: { title: '说明书' } });
 
@@ -1840,6 +2386,41 @@ describe('ghost · 逐项权限清单', () => {
     expect(d.added).toEqual([]);
     expect(d.removed).toEqual([]);
     expect(d.unchanged.length).toBe(7);
+    expect(d.builtinOauthClientChanged).toBe(false);
+  });
+
+  it('diff:同一凭证槽的内置直连 OAuth clientId 变化会标记授权失效风险', () => {
+    const oauthManifest = (clientId: string): GhostManifest => ({
+      schemaVersion: 2,
+      id: 'oauth-plugin',
+      name: 'OAuth Plugin',
+      version: '1.0.0',
+      kind: 'chip',
+      entry: 'main.js',
+      slots: ['network'],
+      network: {
+        hosts: ['api.example.com'],
+        secrets: [
+          {
+            key: 'account',
+            label: 'Account',
+            source: 'oauth',
+            inject: { header: 'Authorization', format: 'Bearer {value}' },
+            oauth: {
+              authorizeUrl: 'https://accounts.example.com/authorize',
+              tokenUrl: 'https://accounts.example.com/token',
+              clientId,
+            },
+          },
+        ],
+      },
+    });
+    const previous = oauthManifest('old-client');
+    const current = oauthManifest('new-client');
+
+    expect(changedBuiltinOauthClientSecretKeys(previous, current)).toEqual(['account']);
+    expect(diffGhostPermissionItems(previous, current).builtinOauthClientChanged).toBe(true);
+    expect(changedBuiltinOauthClientSecretKeys(oauthManifest(''), current)).toEqual([]);
   });
 });
 
@@ -1858,12 +2439,29 @@ describe('ghost · setup 就绪声明校验(使用前置检查,2026-07-21)', () 
       network: {
         hosts: ['api.example.com'],
         secrets: [
-          { key: 'api_key_a', label: 'Key A', inject: { header: 'Authorization', format: 'Bearer {value}' } },
-          { key: 'api_key_b', label: 'Key B', inject: { header: 'Authorization', format: 'Bearer {value}' } },
-          { key: 'mail_ident', label: '登录身份', source: 'login-email', inject: { header: 'X-User', format: '{value}' } },
+          {
+            key: 'api_key_a',
+            label: 'Key A',
+            inject: { header: 'Authorization', format: 'Bearer {value}' },
+          },
+          {
+            key: 'api_key_b',
+            label: 'Key B',
+            inject: { header: 'Authorization', format: 'Bearer {value}' },
+          },
+          {
+            key: 'mail_ident',
+            label: '登录身份',
+            source: 'login-email',
+            inject: { header: 'X-User', format: '{value}' },
+          },
         ],
         connections: [
-          { key: 'inst_conn', label: '实例连接', inject: { header: 'PRIVATE-TOKEN', format: '{value}' } },
+          {
+            key: 'inst_conn',
+            label: '实例连接',
+            inject: { header: 'PRIVATE-TOKEN', format: '{value}' },
+          },
         ],
       },
     };
@@ -1883,10 +2481,40 @@ describe('ghost · setup 就绪声明校验(使用前置检查,2026-07-21)', () 
     if (!result.ok) return;
     expect(result.manifest.setup).toEqual({
       requires: [
-        { anyOf: [{ kind: 'secret', key: 'api_key_a' }, { kind: 'secret', key: 'api_key_b' }] },
-        { anyOf: [{ kind: 'connection', key: 'inst_conn' }, { kind: 'kv', key: 'default_repo', label: '默认仓库' }] },
+        {
+          anyOf: [
+            { kind: 'secret', key: 'api_key_a' },
+            { kind: 'secret', key: 'api_key_b' },
+          ],
+        },
+        {
+          anyOf: [
+            { kind: 'connection', key: 'inst_conn' },
+            { kind: 'kv', key: 'default_repo', label: '默认仓库' },
+          ],
+        },
       ],
     });
+  });
+
+  it('Host 标准化清单可重复校验，但作者入口仍拒绝内部 setup 格式', () => {
+    const parsed = validateGhostManifest({
+      ...setupBase(),
+      setup: {
+        requires: [
+          { anyOf: ['secret:api_key_a'] },
+          { anyOf: ['connection:inst_conn', { kv: 'default_repo', label: '默认仓库' }] },
+        ],
+      },
+    });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    expect(validateGhostManifest(parsed.manifest).ok).toBe(false);
+    const repeated = validateNormalizedGhostManifest(parsed.manifest);
+    expect(repeated.ok).toBe(true);
+    if (!repeated.ok) return;
+    expect(repeated.manifest).toEqual(parsed.manifest);
   });
 
   it('不声明 setup 时清单不带该字段(缺省走宿主启发式)', () => {
@@ -1983,7 +2611,9 @@ describe('ghost · setup 就绪声明校验(使用前置检查,2026-07-21)', () 
     const optOut = validateGhostManifest({ ...setupBase(), setup: { requires: [] } });
     expect(optOut.ok).toBe(true);
     if (optOut.ok) expect(optOut.manifest.setup).toEqual({ requires: [] });
-    expect(validateGhostManifest({ ...setupBase(), setup: { requires: [{ anyOf: [] }] } }).ok).toBe(false);
+    expect(validateGhostManifest({ ...setupBase(), setup: { requires: [{ anyOf: [] }] } }).ok).toBe(
+      false,
+    );
   });
 });
 
@@ -2045,9 +2675,20 @@ describe('ghost · network 域名条目格式与匹配', () => {
 
   it('非法条目:裸 TLD/单段/IP/端口/路径/协议/大写/中缀通配', () => {
     for (const p of [
-      'com', '*.com', 'localhost', '127.0.0.1', 'api.example.com:8080',
-      'api.example.com/v1', 'https://api.example.com', 'API.Example.com',
-      'a.*.example.com', 'api.*.com', '', 42, null, '-bad.example.com',
+      'com',
+      '*.com',
+      'localhost',
+      '127.0.0.1',
+      'api.example.com:8080',
+      'api.example.com/v1',
+      'https://api.example.com',
+      'API.Example.com',
+      'a.*.example.com',
+      'api.*.com',
+      '',
+      42,
+      null,
+      '-bad.example.com',
     ]) {
       expect(isValidGhostNetworkHostPattern(p), String(p)).toBe(false);
     }
@@ -2084,19 +2725,28 @@ describe('ghost · network 详单校验', () => {
   it('hosts 合法放行并归一化(小写化/去首尾空白)', () => {
     const r = validateGhostManifest(withNet({ hosts: [' API.Search.Brave.com ', '*.tavily.com'] }));
     expect(r.ok).toBe(true);
-    if (r.ok) expect(r.manifest.network).toEqual({ hosts: ['api.search.brave.com', '*.tavily.com'] });
+    if (r.ok)
+      expect(r.manifest.network).toEqual({ hosts: ['api.search.brave.com', '*.tavily.com'] });
   });
 
   it('hosts 缺失/空/超上限/重复/非法条目一律拒', () => {
     expect(validateGhostManifest(withNet({})).ok).toBe(false);
     expect(validateGhostManifest(withNet({ hosts: [] })).ok).toBe(false);
-    expect(validateGhostManifest(withNet({ hosts: Array.from({ length: 9 }, (_, i) => `h${i}.example.com`) })).ok).toBe(false);
-    expect(validateGhostManifest(withNet({ hosts: ['a.example.com', 'A.Example.com'] })).ok).toBe(false);
+    expect(
+      validateGhostManifest(
+        withNet({ hosts: Array.from({ length: 9 }, (_, i) => `h${i}.example.com`) }),
+      ).ok,
+    ).toBe(false);
+    expect(validateGhostManifest(withNet({ hosts: ['a.example.com', 'A.Example.com'] })).ok).toBe(
+      false,
+    );
     expect(validateGhostManifest(withNet({ hosts: ['localhost'] })).ok).toBe(false);
   });
 
   it('成对约束:有详单必有槽;有槽无详单允许装入(零能力)', () => {
-    expect(validateGhostManifest({ ...goodManifest(), network: { hosts: ['api.example.com'] } }).ok).toBe(false);
+    expect(
+      validateGhostManifest({ ...goodManifest(), network: { hosts: ['api.example.com'] } }).ok,
+    ).toBe(false);
     const bare = validateGhostManifest({ ...goodManifest(), slots: ['panel', 'network'] });
     expect(bare.ok).toBe(true);
     if (bare.ok) expect(bare.manifest.network).toBeUndefined();
@@ -2117,10 +2767,53 @@ describe('ghost · network 详单校验', () => {
       withNet({ hosts: ['api.example.com'], secrets: [{ ...goodSecret(), url }] });
     const ok = validateGhostManifest(withUrl('https://example.com/settings/keys'));
     expect(ok.ok).toBe(true);
-    if (ok.ok) expect(ok.manifest.network?.secrets?.[0]?.url).toBe('https://example.com/settings/keys');
-    for (const bad of ['http://example.com/keys', 'https://user:pw@example.com/', 'not-a-url', '', 42]) {
+    if (ok.ok)
+      expect(ok.manifest.network?.secrets?.[0]?.url).toBe('https://example.com/settings/keys');
+    for (const bad of [
+      'http://example.com/keys',
+      'https://user:pw@example.com/',
+      'not-a-url',
+      '',
+      42,
+    ]) {
       expect(validateGhostManifest(withUrl(bad)).ok, String(bad)).toBe(false);
     }
+  });
+
+  it('ghostExternalLinkUrls 同时聚合 network secret 与 node secret binding 地址', () => {
+    const parsed = validateGhostManifest({
+      ...goodChipManifest(),
+      settingsHtml: 'settings.html',
+      slots: ['panel', 'network', 'node'],
+      network: {
+        hosts: ['api.example.com'],
+        secrets: [
+          {
+            ...goodSecret(),
+            url: 'https://network.example.com/settings/keys',
+          },
+        ],
+      },
+      node: {
+        entry: 'node/worker.cjs',
+        protocol: 'json-rpc-stdio',
+        secretBindings: [
+          {
+            key: 'worker_token',
+            label: 'Worker Token',
+            methods: ['worker/run'],
+            url: 'https://node.example.com/settings/keys',
+          },
+        ],
+      },
+    });
+
+    expect(parsed.ok, JSON.stringify(parsed)).toBe(true);
+    if (!parsed.ok) return;
+    expect(ghostExternalLinkUrls(parsed.manifest)).toEqual([
+      'https://network.example.com/settings/keys',
+      'https://node.example.com/settings/keys',
+    ]);
   });
 
   it('secrets.source:login-email 收入清单;user 归一化省略;野值拒;login-email 带 url 拒', () => {
@@ -2185,6 +2878,114 @@ describe('ghost · network 详单校验', () => {
     if (!r.ok) expect(r.reason).toContain('source');
   });
 
+  it('secrets.source:gh-cli 仅允许官方 GitHub 插件的固定 GitHub API 注入形态', () => {
+    const valid = validateGhostManifest({
+      ...goodManifest(),
+      id: 'cindy-github',
+      slots: ['panel', 'network'],
+      settingsHtml: 'settings.html',
+      network: {
+        hosts: ['api.github.com'],
+        secrets: [
+          {
+            key: 'github_pat',
+            label: 'GitHub authentication',
+            source: 'gh-cli',
+            url: 'https://github.com/settings/tokens',
+            inject: {
+              header: 'Authorization',
+              format: 'Bearer {value}',
+              hosts: ['api.github.com'],
+            },
+          },
+        ],
+      },
+    });
+    expect(valid.ok, valid.ok ? '' : valid.reason).toBe(true);
+    if (valid.ok) {
+      const item = ghostPermissionItems(valid.manifest).find(
+        (entry) => entry.key === 'network:secret:github_pat',
+      );
+      expect(item?.labelKey).toBe('networkSecretGhCli');
+      expect(item?.detailKey).toBe('networkSecretGhCliDetail');
+
+      const prior = validateGhostManifest({
+        ...goodManifest(),
+        id: 'cindy-github',
+        slots: ['panel', 'network'],
+        settingsHtml: 'settings.html',
+        network: {
+          hosts: ['api.github.com'],
+          secrets: [
+            {
+              key: 'github_pat',
+              label: 'GitHub authentication',
+              inject: {
+                header: 'Authorization',
+                format: 'Bearer {value}',
+                hosts: ['api.github.com'],
+              },
+            },
+          ],
+        },
+      });
+      expect(prior.ok).toBe(true);
+      if (prior.ok) {
+        expect(diffGhostPermissionItems(prior.manifest, valid.manifest).added).toEqual([]);
+        expect(ghostPermissionBaselineKey(prior.manifest)).toBe(
+          ghostPermissionBaselineKey(valid.manifest),
+        );
+        expect(
+          unreviewedGhostPermissionItems(prior.manifest, prior.manifest, valid.manifest),
+        ).toEqual([]);
+      }
+    }
+
+    for (const fixture of [
+      { id: 'github-helper' },
+      { header: 'X-GitHub-Token' },
+      { format: 'token {value}' },
+      { hosts: undefined },
+      { hosts: ['objects.githubusercontent.com'] },
+      {
+        exchange: {
+          url: 'https://api.github.com/token',
+          bodyFormat: '{"token":"{value}"}',
+          tokenPath: 'token',
+        },
+      },
+    ]) {
+      const id = 'id' in fixture ? fixture.id : 'cindy-github';
+      const result = validateGhostManifest({
+        ...goodManifest(),
+        id,
+        slots: ['panel', 'network'],
+        settingsHtml: 'settings.html',
+        network: {
+          hosts: ['api.github.com', 'objects.githubusercontent.com'],
+          secrets: [
+            {
+              key: 'github_pat',
+              label: 'GitHub authentication',
+              source: 'gh-cli',
+              inject: {
+                header: 'header' in fixture ? fixture.header : 'Authorization',
+                format: 'format' in fixture ? fixture.format : 'Bearer {value}',
+                ...('hosts' in fixture
+                  ? fixture.hosts === undefined
+                    ? {}
+                    : { hosts: fixture.hosts }
+                  : { hosts: ['api.github.com'] }),
+              },
+              ...('exchange' in fixture ? { exchange: fixture.exchange } : {}),
+            },
+          ],
+        },
+      });
+      expect(result.ok, JSON.stringify(fixture)).toBe(false);
+    }
+  });
+
   it('权限清单:login-email 凭证用"将使用登录邮箱"分档文案,key 与 user 凭证同构', () => {
     const r = validateGhostManifest(
       withNet({
@@ -2238,7 +3039,12 @@ describe('ghost · network 详单校验', () => {
     const ok = validateGhostManifest(
       withNet({
         hosts: ['api.brave.com', 'api.tavily.com'],
-        secrets: [{ ...goodSecret(), inject: { header: 'X-Token', format: '{value}', hosts: ['api.brave.com'] } }],
+        secrets: [
+          {
+            ...goodSecret(),
+            inject: { header: 'X-Token', format: '{value}', hosts: ['api.brave.com'] },
+          },
+        ],
       }),
     );
     expect(ok.ok).toBe(true);
@@ -2246,7 +3052,12 @@ describe('ghost · network 详单校验', () => {
     const outside = validateGhostManifest(
       withNet({
         hosts: ['api.brave.com'],
-        secrets: [{ ...goodSecret(), inject: { header: 'X-Token', format: '{value}', hosts: ['api.other.com'] } }],
+        secrets: [
+          {
+            ...goodSecret(),
+            inject: { header: 'X-Token', format: '{value}', hosts: ['api.other.com'] },
+          },
+        ],
       }),
     );
     expect(outside.ok).toBe(false);
@@ -2254,7 +3065,12 @@ describe('ghost · network 详单校验', () => {
     const literal = validateGhostManifest(
       withNet({
         hosts: ['*.tavily.com'],
-        secrets: [{ ...goodSecret(), inject: { header: 'X-Token', format: '{value}', hosts: ['api.tavily.com'] } }],
+        secrets: [
+          {
+            ...goodSecret(),
+            inject: { header: 'X-Token', format: '{value}', hosts: ['api.tavily.com'] },
+          },
+        ],
       }),
     );
     expect(literal.ok).toBe(false);
@@ -2275,20 +3091,24 @@ describe('ghost · network 详单校验', () => {
     const full = validateGhostManifest(
       withNet({
         hosts: ['api.example.com'],
-        secrets: [{
-          ...goodSecret(),
-          exchange: {
-            ...exchange,
-            contentType: 'application/x-www-form-urlencoded',
-            tokenPath: 'data.token',
-            ttlSeconds: 86400,
+        secrets: [
+          {
+            ...goodSecret(),
+            exchange: {
+              ...exchange,
+              contentType: 'application/x-www-form-urlencoded',
+              tokenPath: 'data.token',
+              ttlSeconds: 86400,
+            },
           },
-        }],
+        ],
       }),
     );
     expect(full.ok).toBe(true);
     if (full.ok) {
-      expect(full.manifest.network?.secrets?.[0]?.exchange?.contentType).toBe('application/x-www-form-urlencoded');
+      expect(full.manifest.network?.secrets?.[0]?.exchange?.contentType).toBe(
+        'application/x-www-form-urlencoded',
+      );
       expect(full.manifest.network?.secrets?.[0]?.exchange?.ttlSeconds).toBe(86400);
     }
   });
@@ -2342,13 +3162,19 @@ describe('ghost · network 详单校验', () => {
     expect(keys).toContain('network:host:*.tavily.com');
     expect(keys).toContain('network:secret:api_token');
     const secretItem = items.find((i) => i.key === 'network:secret:api_token');
-    expect(secretItem).toMatchObject({ kind: 'network', labelKey: 'networkSecret', labelArgs: { name: 'Example API Token' } });
+    expect(secretItem).toMatchObject({
+      kind: 'network',
+      labelKey: 'networkSecret',
+      labelArgs: { name: 'Example API Token' },
+    });
     const code = items.find((i) => i.key === 'code');
     expect(code?.detailKey).toBe('codeDetailNetwork');
     // 无 network 槽的意识维持原说明
     const plain = validateGhostManifest(goodManifest());
     if (plain.ok) {
-      expect(ghostPermissionItems(plain.manifest).find((i) => i.key === 'code')?.detailKey).toBe('codeDetail');
+      expect(ghostPermissionItems(plain.manifest).find((i) => i.key === 'code')?.detailKey).toBe(
+        'codeDetail',
+      );
     }
   });
 
@@ -2473,7 +3299,9 @@ describe('ghost · network 多连接声明(connections)', () => {
   });
 
   it('合法声明放行并归一化(hint/maxConnections 透传;未声明的可选字段不落清单)', () => {
-    const r = validateGhostManifest(withNet({ hosts: ['api.example.com'], connections: [goodConn()] }));
+    const r = validateGhostManifest(
+      withNet({ hosts: ['api.example.com'], connections: [goodConn()] }),
+    );
     expect(r.ok, r.ok ? '' : r.reason).toBe(true);
     if (!r.ok) return;
     expect(r.manifest.network?.connections).toEqual([
@@ -2487,7 +3315,10 @@ describe('ghost · network 多连接声明(connections)', () => {
     ]);
     // 可选字段缺省不落清单(权限 diff 不 churn)。
     const minimal = validateGhostManifest(
-      withNet({ hosts: ['api.example.com'], connections: [{ key: 'gl', label: 'GL', inject: { header: 'X-T', format: '{value}' } }] }),
+      withNet({
+        hosts: ['api.example.com'],
+        connections: [{ key: 'gl', label: 'GL', inject: { header: 'X-T', format: '{value}' } }],
+      }),
     );
     expect(minimal.ok).toBe(true);
     if (!minimal.ok) return;
@@ -2509,7 +3340,10 @@ describe('ghost · network 多连接声明(connections)', () => {
 
   it('声明了 connections 必须同时声明 settingsHtml(没人收地址和 token)', () => {
     const r = validateGhostManifest(
-      withNet({ hosts: ['api.example.com'], connections: [goodConn()] }, { settingsHtml: undefined }),
+      withNet(
+        { hosts: ['api.example.com'], connections: [goodConn()] },
+        { settingsHtml: undefined },
+      ),
     );
     expect(r.ok).toBe(false);
     expect(!r.ok && r.reason).toContain('settingsHtml');
@@ -2537,7 +3371,12 @@ describe('ghost · network 多连接声明(connections)', () => {
     const withHosts = validateGhostManifest(
       withNet({
         hosts: ['api.example.com'],
-        connections: [{ ...goodConn(), inject: { header: 'X-T', format: '{value}', hosts: ['api.example.com'] } }],
+        connections: [
+          {
+            ...goodConn(),
+            inject: { header: 'X-T', format: '{value}', hosts: ['api.example.com'] },
+          },
+        ],
       }),
     );
     expect(withHosts.ok).toBe(false);
@@ -2545,12 +3384,18 @@ describe('ghost · network 多连接声明(connections)', () => {
     // 协议关键头拒;format 必须恰含一个 {value}。
     expect(
       validateGhostManifest(
-        withNet({ hosts: ['api.example.com'], connections: [{ ...goodConn(), inject: { header: 'Cookie', format: '{value}' } }] }),
+        withNet({
+          hosts: ['api.example.com'],
+          connections: [{ ...goodConn(), inject: { header: 'Cookie', format: '{value}' } }],
+        }),
       ).ok,
     ).toBe(false);
     expect(
       validateGhostManifest(
-        withNet({ hosts: ['api.example.com'], connections: [{ ...goodConn(), inject: { header: 'X-T', format: 'no-placeholder' } }] }),
+        withNet({
+          hosts: ['api.example.com'],
+          connections: [{ ...goodConn(), inject: { header: 'X-T', format: 'no-placeholder' } }],
+        }),
       ).ok,
     ).toBe(false);
   });
@@ -2569,7 +3414,10 @@ describe('ghost · network 多连接声明(connections)', () => {
     expect(three.ok).toBe(false);
     for (const bad of [0, 9, 1.5, '4', Number.NaN]) {
       const r = validateGhostManifest(
-        withNet({ hosts: ['api.example.com'], connections: [{ ...goodConn(), maxConnections: bad }] }),
+        withNet({
+          hosts: ['api.example.com'],
+          connections: [{ ...goodConn(), maxConnections: bad }],
+        }),
       );
       expect(r.ok, String(bad)).toBe(false);
     }
@@ -2582,7 +3430,9 @@ describe('ghost · network 多连接声明(connections)', () => {
   });
 
   it('权限清单:每条连接声明生成一条 networkConnections 条目(带 label 与主机说明)', () => {
-    const r = validateGhostManifest(withNet({ hosts: ['api.example.com'], connections: [goodConn()] }));
+    const r = validateGhostManifest(
+      withNet({ hosts: ['api.example.com'], connections: [goodConn()] }),
+    );
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     const item = ghostPermissionItems(r.manifest).find((i) => i.key === 'connections:gitlab');
@@ -2635,11 +3485,19 @@ describe('ghost · settingsHtml 自绘设置区 + settingsHeight', () => {
 
   it('settingsHeight:160/800 边界过,159/801/NaN/字符串拒,归一化透传', () => {
     for (const h of [160, 360, 800]) {
-      const r = validateGhostManifest({ ...goodManifest(), settingsHtml: 'settings.html', settingsHeight: h });
+      const r = validateGhostManifest({
+        ...goodManifest(),
+        settingsHtml: 'settings.html',
+        settingsHeight: h,
+      });
       expect(r.ok && r.manifest.settingsHeight, String(h)).toBe(h);
     }
     for (const h of [159, 801, Number.NaN, Number.POSITIVE_INFINITY, '360', null]) {
-      const r = validateGhostManifest({ ...goodManifest(), settingsHtml: 'settings.html', settingsHeight: h });
+      const r = validateGhostManifest({
+        ...goodManifest(),
+        settingsHtml: 'settings.html',
+        settingsHeight: h,
+      });
       expect(r.ok, String(h)).toBe(false);
     }
   });
@@ -2657,7 +3515,10 @@ describe('ghost · settingsHtml 自绘设置区 + settingsHeight', () => {
 
   it('ghostWebviewEntryPaths:只 panel / 只 settings / 双声明 / 都无 / 同文件去重', () => {
     const both = validateGhostManifest({ ...goodManifest(), settingsHtml: 'settings.html' });
-    expect(both.ok && ghostWebviewEntryPaths(both.manifest)).toEqual(['/panel.html', '/settings.html']);
+    expect(both.ok && ghostWebviewEntryPaths(both.manifest)).toEqual([
+      '/panel.html',
+      '/settings.html',
+    ]);
 
     const panelOnly = validateGhostManifest(goodManifest());
     expect(panelOnly.ok && ghostWebviewEntryPaths(panelOnly.manifest)).toEqual(['/panel.html']);
@@ -2761,8 +3622,17 @@ describe('ghost · 权限清单凭证分档(知情同意面不许说过头话)',
       network: {
         hosts: ['api.example.com'],
         secrets: [
-          { key: 'user_key', label: 'U', inject: { header: 'Authorization', format: 'Bearer {value}' } },
-          { key: 'pages_token', label: 'P', source: 'login-email', inject: { header: 'X-Pages-Token', format: 'pages_{value}' } },
+          {
+            key: 'user_key',
+            label: 'U',
+            inject: { header: 'Authorization', format: 'Bearer {value}' },
+          },
+          {
+            key: 'pages_token',
+            label: 'P',
+            source: 'login-email',
+            inject: { header: 'X-Pages-Token', format: 'pages_{value}' },
+          },
         ],
       },
     });
@@ -2809,9 +3679,7 @@ describe('ghost · 2026-07-23 通用能力四件套(session-context / pick / pre
     // 有槽必有详单
     expect(validateGhostManifest({ ...base, slots: ['panel', 'preview'] }).ok).toBe(false);
     // 有详单必有槽
-    expect(
-      validateGhostManifest({ ...base, preview: { hosts: ['example.com'] } }).ok,
-    ).toBe(false);
+    expect(validateGhostManifest({ ...base, preview: { hosts: ['example.com'] } }).ok).toBe(false);
     const good = validateGhostManifest({
       ...base,
       slots: ['panel', 'preview'],
@@ -2829,15 +3697,18 @@ describe('ghost · 2026-07-23 通用能力四件套(session-context / pick / pre
     expect(withPreview({ hosts: ['a.example.com'], extra: 1 }).ok).toBe(false);
   });
 
-  it('session-context / pick / preview / reveal / workspace 槽:纯槽声明即可装入,并生成对应权限项', () => {
+  it('session-context / pick / workspace / ios-simulator 槽可装入并生成权限项', () => {
     const r = validateGhostManifest({
       ...goodChipManifest(),
-      slots: ['panel', 'session-context', 'pick', 'preview', 'reveal', 'workspace'],
+      minCindyVersion: '1.2.3',
+      slots: ['panel', 'session-context', 'pick', 'preview', 'workspace', 'ios-simulator'],
       preview: { hosts: ['example.com'] },
     });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
+    expect(r.manifest.minCindyVersion).toBe('1.2.3');
     expect(ghostContentKeys(r.manifest)).toContain('slotWorkspace');
+    expect(ghostContentKeys(r.manifest)).toContain('slotIOSSimulator');
     const items = ghostPermissionItems(r.manifest);
     expect(items).toEqual(
       expect.arrayContaining([
@@ -2860,14 +3731,22 @@ describe('ghost · 2026-07-23 通用能力四件套(session-context / pick / pre
           detailKey: 'workspaceDetail',
         }),
         expect.objectContaining({
-          key: 'reveal',
-          kind: 'reveal',
-          labelKey: 'reveal',
-          detailKey: 'revealDetail',
+          key: 'ios-simulator',
+          kind: 'ios-simulator',
+          labelKey: 'iosSimulator',
+          detailKey: 'iosSimulatorDetail',
         }),
       ]),
     );
-    expect(ghostContentKeys(r.manifest)).toContain('slotReveal');
+  });
+
+  it('ios-simulator 槽必须声明最低 Cindy 版本', () => {
+    const r = validateGhostManifest({
+      ...goodChipManifest(),
+      slots: ['panel', 'ios-simulator'],
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toContain('minCindyVersion');
   });
 
   it('ghostPreviewUrlAllowed:https + 白名单命中放行;http 仅 loopback;凭证/越界/畸形拒', () => {
@@ -2894,7 +3773,8 @@ describe('ghost · 2026-07-23 通用能力四件套(session-context / pick / pre
     // 未声明详单的清单恒拒
     const none = validateGhostManifest(goodChipManifest());
     expect(none.ok).toBe(true);
-    if (none.ok) expect(ghostPreviewUrlAllowed(none.manifest, 'https://demo.example.dev/')).toBe(false);
+    if (none.ok)
+      expect(ghostPreviewUrlAllowed(none.manifest, 'https://demo.example.dev/')).toBe(false);
   });
 
   it('deriveGhostSessionContext:证明不了本地就 fail closed', () => {
@@ -2997,9 +3877,9 @@ describe('ghost · 宿主代启子进程(node.childSpawn,2026-07-23)', () => {
     const off = withNode({ entry: 'node/a.cjs', protocol: 'json-rpc-stdio' });
     expect(off.ok).toBe(true);
     if (off.ok) {
-      expect(
-        ghostPermissionItems(off.manifest).some((i) => i.key === 'node:child-spawn'),
-      ).toBe(false);
+      expect(ghostPermissionItems(off.manifest).some((i) => i.key === 'node:child-spawn')).toBe(
+        false,
+      );
     }
   });
 
@@ -3011,7 +3891,12 @@ describe('ghost · 宿主代启子进程(node.childSpawn,2026-07-23)', () => {
         entry: 'node/maker.cjs',
         args: ['__maker-proxy'],
       }),
-    ).toEqual({ type: 'spawn-child', reqId: 'r1', entry: 'node/maker.cjs', args: ['__maker-proxy'] });
+    ).toEqual({
+      type: 'spawn-child',
+      reqId: 'r1',
+      entry: 'node/maker.cjs',
+      args: ['__maker-proxy'],
+    });
     expect(
       parseGhostNodeChildToHostMessage({ type: 'child-stdin', childId: 'c1', b64: 'aGk=' }),
     ).toEqual({ type: 'child-stdin', childId: 'c1', b64: 'aGk=' });
@@ -3026,9 +3911,7 @@ describe('ghost · 宿主代启子进程(node.childSpawn,2026-07-23)', () => {
     // 畸形:类型不认 / id 形状不对 / args 超条数 / 单参超长 / b64 超帧
     expect(parseGhostNodeChildToHostMessage(null)).toBeNull();
     expect(parseGhostNodeChildToHostMessage({ type: 'evil' })).toBeNull();
-    expect(
-      parseGhostNodeChildToHostMessage({ type: 'child-kill', childId: 'bad id!' }),
-    ).toBeNull();
+    expect(parseGhostNodeChildToHostMessage({ type: 'child-kill', childId: 'bad id!' })).toBeNull();
     expect(
       parseGhostNodeChildToHostMessage({
         type: 'spawn-child',
@@ -3058,17 +3941,17 @@ describe('ghost · 宿主代启子进程(node.childSpawn,2026-07-23)', () => {
 describe('ghost · skill 槽(捆绑 Agent Skills,2026-07-25)', () => {
   const withSkill = (skill: unknown, slots: string[] = ['panel', 'skill']) =>
     validateGhostManifest({ ...goodChipManifest(), slots, skill });
-  const goodItems = [
-    { dir: 'skills/foo', name: 'foo', description: '教 Agent 用 foo' },
-  ];
+  const goodItems = [{ dir: 'skills/foo', name: 'foo', description: '教 Agent 用 foo' }];
 
   it('槽与详单严格成对;合法声明原样收录', () => {
     // 有槽必有详单
-    expect(validateGhostManifest({ ...goodChipManifest(), slots: ['panel', 'skill'] }).ok).toBe(false);
+    expect(validateGhostManifest({ ...goodChipManifest(), slots: ['panel', 'skill'] }).ok).toBe(
+      false,
+    );
     // 有详单必有槽
-    expect(
-      validateGhostManifest({ ...goodChipManifest(), skill: { items: goodItems } }).ok,
-    ).toBe(false);
+    expect(validateGhostManifest({ ...goodChipManifest(), skill: { items: goodItems } }).ok).toBe(
+      false,
+    );
     const good = withSkill({ items: goodItems });
     expect(good.ok).toBe(true);
     if (good.ok) expect(good.manifest.skill?.items).toEqual(goodItems);
@@ -3079,9 +3962,7 @@ describe('ghost · skill 槽(捆绑 Agent Skills,2026-07-25)', () => {
     expect(withSkill({}).ok).toBe(false);
     expect(withSkill({ items: goodItems, extra: 1 }).ok).toBe(false);
     expect(withSkill({ items: ['skills/foo'] }).ok).toBe(false);
-    expect(
-      withSkill({ items: [{ ...goodItems[0], scope: 'global' }] }).ok,
-    ).toBe(false);
+    expect(withSkill({ items: [{ ...goodItems[0], scope: 'global' }] }).ok).toBe(false);
     const five = Array.from({ length: 5 }, (_, i) => ({
       dir: `skills/s${i}`,
       name: `s${i}`,
@@ -3103,7 +3984,8 @@ describe('ghost · skill 槽(捆绑 Agent Skills,2026-07-25)', () => {
   });
 
   it('name:小写字母数字单连字符分段;禁首尾/连续连字符(链接名 <id>--<name> 的无歧义前提)', () => {
-    const named = (name: string) => withSkill({ items: [{ dir: 'skills/foo', name, description: 'x' }] });
+    const named = (name: string) =>
+      withSkill({ items: [{ dir: 'skills/foo', name, description: 'x' }] });
     expect(named('foo-bar').ok).toBe(true);
     expect(named('foo2').ok).toBe(true);
     expect(named('Foo').ok).toBe(false);
@@ -3196,5 +4078,85 @@ describe('ghost · skill 槽(捆绑 Agent Skills,2026-07-25)', () => {
     expect(diff.added.map((i) => i.key)).toContain('skill:alpha');
     expect(diff.removed.map((i) => i.key)).toContain('skill:alpha');
     expect(diff.unchanged.map((i) => i.key)).not.toContain('skill:alpha');
+  });
+});
+
+describe('ghostPermissionProjectionFingerprint', () => {
+  it('same-key/different-labelArgs 同时作废 baseline、diff 与真实包复核', () => {
+    const reviewed = validateGhostManifest({
+      ...goodChipManifest(),
+      panel: { title: '已审阅面板', html: 'panel.html', minWidth: 240 },
+    });
+    const actual = validateGhostManifest({
+      ...goodChipManifest(),
+      panel: { title: '实际下载面板', html: 'panel.html', minWidth: 240 },
+    });
+    expect(reviewed.ok && actual.ok).toBe(true);
+    if (!reviewed.ok || !actual.ok) return;
+
+    expect(ghostPermissionBaselineKey(reviewed.manifest)).not.toBe(
+      ghostPermissionBaselineKey(actual.manifest),
+    );
+    const diff = diffGhostPermissionItems(reviewed.manifest, actual.manifest);
+    expect(diff.added).toEqual([
+      expect.objectContaining({ key: expect.stringMatching(/^panel:/) }),
+    ]);
+    expect(diff.removed).toEqual([
+      expect.objectContaining({ key: expect.stringMatching(/^panel:/) }),
+    ]);
+    expect(diff.unchanged.some((item) => item.key.startsWith('panel:'))).toBe(false);
+    expect(
+      unreviewedGhostPermissionItems(reviewed.manifest, undefined, actual.manifest),
+    ).toEqual([expect.objectContaining({ key: expect.stringMatching(/^panel:/) })]);
+  });
+
+  it('same-key/different-detail 必须判不同(preview hosts / 工具描述都在 detail 侧)', () => {
+    const base = {
+      ...goodChipManifest(),
+      slots: ['panel', 'preview'],
+      preview: { hosts: ['*.example.dev', 'localhost'] },
+    };
+    const a = validateGhostManifest(base);
+    // 同一个 key(preview 的 key 不随 hosts 变),hosts 换成别的域 —— 用户在确认卡
+    // 看到的授权范围完全不同,只比 key 的旧判据放行,指纹必须拒。
+    const b = validateGhostManifest({
+      ...base,
+      preview: { hosts: ['evil.example.com'] },
+    });
+    expect(a.ok && b.ok).toBe(true);
+    if (!a.ok || !b.ok) return;
+    const keysA = ghostPermissionItems(a.manifest).map((i) => i.key).sort();
+    const keysB = ghostPermissionItems(b.manifest).map((i) => i.key).sort();
+    expect(keysA).toEqual(keysB); // 前提成立:key 集相同
+    expect(ghostPermissionProjectionFingerprint(a.manifest)).not.toBe(
+      ghostPermissionProjectionFingerprint(b.manifest),
+    );
+
+    // 工具描述(作者自由文本,经 detail 展示)漂移同样必须判不同。
+    const toolBase = {
+      ...goodChipManifest(),
+      slots: ['panel', 'model', 'tool'],
+      tools: [{ name: 'do_thing', description: '做点事' }],
+    };
+    const toolA = validateGhostManifest(toolBase);
+    const toolB = validateGhostManifest({
+      ...toolBase,
+      tools: [{ name: 'do_thing', description: '现在顺便读取你的邮箱' }],
+    });
+    expect(toolA.ok && toolB.ok).toBe(true);
+    if (!toolA.ok || !toolB.ok) return;
+    expect(ghostPermissionProjectionFingerprint(toolA.manifest)).not.toBe(
+      ghostPermissionProjectionFingerprint(toolB.manifest),
+    );
+  });
+
+  it('语义相同时指纹稳定(与字段/条目顺序无关)', () => {
+    const a = validateGhostManifest(goodChipManifest());
+    const b = validateGhostManifest(JSON.parse(JSON.stringify(goodChipManifest())));
+    expect(a.ok && b.ok).toBe(true);
+    if (!a.ok || !b.ok) return;
+    expect(ghostPermissionProjectionFingerprint(a.manifest)).toBe(
+      ghostPermissionProjectionFingerprint(b.manifest),
+    );
   });
 });

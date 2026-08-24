@@ -17,6 +17,10 @@ import * as schema from '../schema.js';
 import { createDbClient, type DbClient } from '../client/DbClient.js';
 import { DESKTOP_VISIBLE_SESSION_SOURCES } from '../../../shared/sessionSource.js';
 
+const { run: runMekaProductSchemaMigration } = require(
+  '../../../../drizzle/scripts/0082_meka_product_schema.ts',
+) as { run: (db: Database.Database) => void };
+
 type Sqlite = Database.Database;
 type DrizzleDb = BetterSQLite3Database<typeof schema>;
 type SeedTarget = Sqlite | DbClient;
@@ -118,6 +122,16 @@ async function runMigrationStatement(target: DbClient, statement: string): Promi
     await target.exec(statement);
   } catch (err) {
     if (isOptionalVecStatement(statement)) return;
+    if (/more than one statement/i.test(err instanceof Error ? err.message : String(err))) {
+      const statements = statement
+        .split(/;\s*(?=(?:CREATE|INSERT|ALTER|DROP|UPDATE|DELETE|PRAGMA)\b)/i)
+        .map((part) => part.trim())
+        .filter(Boolean);
+      if (statements.length > 1) {
+        for (const part of statements) await target.exec(part);
+        return;
+      }
+    }
     throw err;
   }
 }
@@ -202,6 +216,13 @@ function applyMigrationScriptSync(db: Sqlite, fileName: string): void {
     );
     return;
   }
+  if (fileName === '0082_meka_product_schema.sql') {
+    runMekaProductSchemaMigration(db);
+    return;
+  }
+  if (fileName === '0092_sync_upstream_20260821.sql') {
+    ensureColumnSync(db, 'sessions', 'codex_plan_json', 'text');
+  }
 }
 
 async function applyMigrationScript(target: DbClient, fileName: string): Promise<void> {
@@ -281,6 +302,54 @@ async function applyMigrationScript(target: DbClient, fileName: string): Promise
       'integer DEFAULT 0 NOT NULL',
     );
     return;
+  }
+  if (fileName === '0082_meka_product_schema.sql') {
+    await target.exec(`
+      CREATE TABLE IF NOT EXISTS meka_projects (
+        id text PRIMARY KEY NOT NULL,
+        name text NOT NULL,
+        path text,
+        tags text,
+        is_builtin integer DEFAULT false NOT NULL,
+        sort_order integer DEFAULT 0 NOT NULL,
+        created_at integer,
+        updated_at integer
+      )
+    `);
+    await target.exec(`
+      CREATE TABLE IF NOT EXISTS meka_roles (
+        id text PRIMARY KEY NOT NULL,
+        project_id text NOT NULL,
+        name text NOT NULL,
+        display_name text NOT NULL,
+        description text,
+        tags text,
+        file_path text NOT NULL,
+        is_builtin integer DEFAULT false NOT NULL,
+        content_digest text,
+        sort_order integer DEFAULT 0 NOT NULL,
+        created_at integer,
+        updated_at integer
+      )
+    `);
+    for (const [name, definition] of [
+      ['meka_role', 'text'],
+      ['meka_target_json', 'text'],
+      ['meka_project_id', 'text'],
+      ['meka_role_id', 'text'],
+      ['is_formal', 'integer DEFAULT 0 NOT NULL'],
+      ['formal_type', 'text'],
+      ['formal_link', 'text'],
+      ['formal_ref', 'text'],
+      ['formal_content_json', 'text'],
+      ['capability_snapshot_json', 'text'],
+    ] as const) {
+      await ensureColumn(target, 'sessions', name, definition);
+    }
+    return;
+  }
+  if (fileName === '0092_sync_upstream_20260821.sql') {
+    await ensureColumn(target, 'sessions', 'codex_plan_json', 'text');
   }
 }
 

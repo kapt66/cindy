@@ -6,9 +6,11 @@ const readSource = (): string =>
   readFileSync(new URL('../index.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 
 describe('cindy media catalog edition wiring', () => {
-  it('projects plugin image and video capabilities with the runtime edition', () => {
+  it('projects plugin media capabilities with the runtime edition', () => {
     const source = readSource();
-    const start = source.indexOf("function getCatalogMediaConfig(kind: 'image' | 'video')");
+    const start = source.indexOf(
+      'function getCatalogMediaConfig(kind: CindyCapabilityKind)',
+    );
     const end = source.indexOf('\n}\n\nconst getCatalogImageConfig', start);
 
     expect(start).toBeGreaterThanOrEqual(0);

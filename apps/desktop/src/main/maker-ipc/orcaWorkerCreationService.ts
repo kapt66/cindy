@@ -9,6 +9,10 @@ import type {
   OrcaWorkerStatus,
 } from './orcaTeamService.js';
 import type { MakerSessionCreateOpts } from './sessionRequest.js';
+import {
+  resolveOrcaWorkerPermissionMode,
+  type OrcaWorkerPermissionMode,
+} from '../../shared/orca-worker-permission-mode.js';
 
 /** active team 的最小快照；创建 service 不直接持有 Drizzle row。 */
 export interface OrcaTeamSnapshot {
@@ -158,7 +162,7 @@ export type OrcaWorkerCreationResult =
         providerId: string | null;
         role: string;
         label: string;
-        workingDir: string;
+        workingDir?: string;
         remoteHostId?: string;
       };
     }
@@ -189,11 +193,14 @@ export interface OrcaWorkerCreateParams {
    */
   providerId?: string | null;
   initialTask?: string;
+  /** Explicit value for this creation; otherwise use the shared Worker preference. */
+  workerPermissionMode?: OrcaWorkerPermissionMode;
 }
 
 /** enableOrca 已经创建 team 后，可复用同一 worker 创建内核。 */
 export interface OrcaWorkerCreateInTeamParams extends OrcaWorkerCreateParams {
   teamId: string;
+  workerPermissionMode: OrcaWorkerPermissionMode;
 }
 
 /** creation service 的 I/O 边界；register.ts 负责把 DB、Maker 与 broadcast 注入进来。 */
@@ -213,6 +220,7 @@ export interface OrcaWorkerCreationDeps {
     | { ok: false; errorCode: 'INVALID_PARAMS' | 'NOT_FOUND'; message: string }
   >;
   getWorkerDefaults(agent: AgentKind): OrcaWorkerDefaultsSnapshot;
+  getWorkerPermissionMode(): OrcaWorkerPermissionMode;
   getAvailableModels(agent: AgentKind): OrcaWorkerModelCapabilities[];
   /**
    * 从同一次 provider registry 读取构造 Worker 路由上下文。
@@ -530,7 +538,14 @@ export function createOrcaWorkerCreationService(
     if (!team) {
       return { ok: false, errorCode: 'NOT_FOUND', message: 'no active team for this lead' };
     }
-    return createWorkerInTeam({ ...params, teamId: team.id });
+    return createWorkerInTeam({
+      ...params,
+      teamId: team.id,
+      workerPermissionMode:
+        params.workerPermissionMode === undefined
+          ? deps.getWorkerPermissionMode()
+          : resolveOrcaWorkerPermissionMode(params.workerPermissionMode),
+    });
   }
 
   async function createWorkerInTeam(
@@ -944,7 +959,7 @@ export function createOrcaWorkerCreationService(
         providerId: resolved.providerId,
         effort: resolved.effort as MakerSessionCreateOpts['effort'],
         fastMode: resolved.fastMode,
-        permissionMode: 'bypassPermissions',
+        permissionMode: resolveOrcaWorkerPermissionMode(params.workerPermissionMode),
         title: `Worker · ${role.value} · ${label.value}`,
         orcaRole: 'worker',
         vendorOptions: workerVendorOptions,

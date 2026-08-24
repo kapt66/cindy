@@ -53,6 +53,7 @@ describe('MekaDevPluginManager', () => {
       manifest: packageManifest,
       dir: path.join(workDir, 'installed', packageManifest.id),
       enabled: true,
+      approval: { state: 'legacy-unapproved' },
     });
     deps = {
       getRegistryPath: () => path.join(workDir, 'owner', '.meka-dev-plugins.json'),

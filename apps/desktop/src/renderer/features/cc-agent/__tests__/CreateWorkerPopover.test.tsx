@@ -30,8 +30,14 @@ const mocks = vi.hoisted(() => ({
     }>,
   },
   capabilitiesByAgent: {
-    codex: null as { availableModels: Array<{ id: string }> } | null,
-    'claude-code': null as { availableModels: Array<{ id: string }> } | null,
+    codex: null as {
+      availableModels: Array<{ id: string }>;
+      supportsOrcaWorkerPermissionMode?: boolean;
+    } | null,
+    'claude-code': null as {
+      availableModels: Array<{ id: string }>;
+      supportsOrcaWorkerPermissionMode?: boolean;
+    } | null,
   },
   capabilitiesLoading: false,
   providersLoading: false,
@@ -74,6 +80,7 @@ const mocks = vi.hoisted(() => ({
     >;
   }>,
   sidebarWindow: false,
+  confirm: vi.fn(async () => true),
 }));
 
 function model(id: string, efforts = ['high'], defaultEffort = 'high') {
@@ -174,6 +181,32 @@ vi.mock('@/components/new-chat/ModelSelector', () => ({
   ),
 }));
 
+vi.mock('@/components/new-chat/PermissionSelector', () => ({
+  PermissionSelector: (props: {
+    permissionMode: 'auto' | 'bypassPermissions';
+    onPermissionModeChange: (mode: 'auto' | 'bypassPermissions') => void;
+    allowedModes?: string[];
+  }) => (
+    <button
+      type="button"
+      data-testid="permission-selector"
+      data-mode={props.permissionMode}
+      data-allowed={props.allowedModes?.join(',') ?? ''}
+      onClick={() =>
+        props.onPermissionModeChange(
+          props.permissionMode === 'auto' ? 'bypassPermissions' : 'auto',
+        )
+      }
+    >
+      {props.permissionMode}
+    </button>
+  ),
+}));
+
+vi.mock('@/components/ui/confirm-dialog-provider', () => ({
+  useConfirmDialog: () => ({ confirm: mocks.confirm }),
+}));
+
 vi.mock('@/state/modelVisibilityPrefs', () => ({
   isModelEnabled: (_agent: string, providerId: string, m: { id: string }) =>
     !mocks.hiddenModels.includes(`${providerId}:${m.id}`),
@@ -201,6 +234,8 @@ describe('CreateWorkerPopover', () => {
     mocks.remoteProviders = [];
     mocks.hiddenModels = [];
     mocks.sidebarWindow = false;
+    mocks.confirm.mockReset();
+    mocks.confirm.mockResolvedValue(true);
     Object.defineProperty(window, 'electronAPI', {
       configurable: true,
       value: {

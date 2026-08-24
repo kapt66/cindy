@@ -57,6 +57,7 @@ export interface CreateWorkerDeps {
     role: string;
     agent: ControlWorkerAgent;
     model?: string;
+    providerId?: string;
     effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
     fast?: boolean;
     workingDir?: string;
@@ -80,6 +81,13 @@ export const createWorkerSpecSchema = z.object({
     .string()
     .optional()
     .describe('可选, worker 使用的模型 id; 不传走 host 端默认 fallback'),
+  provider_id: z
+    .string()
+    .trim()
+    .min(1)
+    .max(128)
+    .optional()
+    .describe('可选, 模型来源 provider id; 应使用 list_available_models 返回的 provider_id, 不传则由 host 按当前可用来源解析'),
   effort: z
     .enum(['low', 'medium', 'high', 'xhigh', 'max', 'ultra'])
     .optional()
@@ -134,6 +142,7 @@ const DESCRIPTION = [
   '- role: worker 角色 (developer / reviewer / tester / merger 或自定义 string)',
   '- agent: worker agent 类型 (codex / claude-code / pi)',
   '- model: 可选, worker 使用的模型 id; 不传走 host 端默认 fallback',
+  '- provider_id: 可选, 模型来源 provider id。优先使用 list_available_models 对应模型返回的 provider_id；显式传入后 host 会严格校验该来源已连接且提供所选模型。',
   '- effort: 可选, reasoning/thinking 强度 (low / medium / high / xhigh / max / ultra)。Codex: 映射 OpenAI reasoning effort(max/ultra 仅部分模型如 GPT-5.6 Sol 支持); Claude Code: 映射 extended thinking token 预算(无 ultra,自动降级为 max)。显式传入时必须匹配所选 model 能力；当前 worker 模型都不把 minimal 作为可选思考档。',
   '- fast: 可选 boolean, 是否给 worker 开启 Fast 模式 (更快输出)。用户明确说「fast / 快速 / 开/关 fast」时显式传。对 codex 与 pi worker 生效 (且需所选模型声明 supportsFastMode; 否则自动降级为关); claude-code worker 忽略此参数 (其 fast mode 在 agent 层为 no-op)。不传则继承默认 (New Maker 面板默认或 lead session 的 fastMode)。',
   '- working_dir: Meka Lead 创建本地 Worker 时可选，只能使用设置中允许的 P4 根目录或识别子目录。',
@@ -167,6 +176,7 @@ export function registerCreateWorkerTool(
       role,
       agent,
       model,
+      provider_id,
       effort,
       fast,
       working_dir,
@@ -189,6 +199,7 @@ export function registerCreateWorkerTool(
         role,
         agent,
         model,
+        providerId: provider_id,
         effort,
         fast,
         workingDir: working_dir,

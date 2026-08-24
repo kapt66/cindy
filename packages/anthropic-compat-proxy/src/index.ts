@@ -48,6 +48,7 @@ export {
   repairToolExchangeAdjacency,
   repairToolExchangeAdjacencyFromBody,
   repairToolExchangeStructureFromBody,
+  replaceToolResultImagesWithNotice,
   stripEmptyAssistantMessagesFromBody,
   stripEmptyTextFromBody,
   stripEmptyThinkingFromBody,
@@ -57,8 +58,23 @@ export {
   stripToolUseProviderSpecificFields,
   stripToolUseProviderSpecificFieldsFromBody,
 } from './transform.js';
+export {
+  createXaiModelInputRecoveryRule,
+  createXaiModelInputSanitizeTransform,
+  looksLikeXaiResponsesModel,
+  sanitizeXaiModelInputBody,
+  sanitizeXaiModelInputFromBody,
+  supportsXaiReasoningModel,
+  xaiBareModelId,
+} from './xai-model-input.js';
+export { createVisionBridgeTransform } from './vision-bridge-transform.js';
 export { createThreadStripController } from './thread-strip-controller.js';
 export type { ThreadStripController } from './thread-strip-controller.js';
+export {
+  collectToolUseIdsForResponseRewrite,
+  ToolUseIdDedupeRewriter,
+  ToolUseIdRewriteTransform,
+} from './tool-use-id-stream-rewrite.js';
 export type {
   InstructionsInjectionTransformOptions,
   InstructionsRegistry,

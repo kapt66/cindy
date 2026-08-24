@@ -15,7 +15,7 @@ const sessionViewSource = readFileSync(
 
 describe('NewMakerDraftRoute worktree send flow', () => {
   it('enters a real session before creating the worktree in the background', () => {
-    // 2026-07-29 状态契约:生效条件 = 勾选 && baseRepo 就绪(不合格静默普通启动)。
+    // 发送门已保证用户勾选时资格就绪；副作用分支仍以勾选 + baseRepo 双重防御。
     const worktreeBranch = source.indexOf(
       'if (!isRemoteProjectDraft && wt.enabled && wt.baseRepo) {',
     );
@@ -33,6 +33,39 @@ describe('NewMakerDraftRoute worktree send flow', () => {
     expect(statusCard).toBeGreaterThan(touchUserSend);
     expect(navigate).toBeGreaterThan(statusCard);
     expect(worktreeCreate).toBeGreaterThan(navigate);
+  });
+
+  it('never silently downgrades an explicit worktree request to a normal session', () => {
+    const selected = source.indexOf('const selectedWorktree = { ...wtRef.current };');
+    const guard = source.indexOf(
+      '&& selectedWorktree.confirmedIneligible !== true',
+      selected,
+    );
+    const markInFlight = source.indexOf('markSendInFlight(true);', guard);
+    const guardedSource = source.slice(guard, markInFlight);
+
+    expect(selected).toBeGreaterThan(-1);
+    expect(guard).toBeGreaterThan(selected);
+    expect(markInFlight).toBeGreaterThan(guard);
+    expect(guardedSource).toContain('!selectedWorktree.baseRepo');
+    expect(guardedSource).toContain('!selectedWorktree.branchPreferenceReady');
+    expect(guardedSource).toContain('selectedWorktree.supportsRecoveryKeyDiscard !== true');
+    expect(guardedSource).toContain('return false;');
+  });
+
+  it('lets a confirmed-ineligible directory create a plain session while keeping the ON memory', () => {
+    // 2026-08-07 裁决:探测成功且确认不合格(非 git / 无 git / 已在 worktree 内)时,
+    // 勾选记忆不生效——发送 / Goal 门、worktree 副作用分支全部按普通会话放行;
+    // confirmedIneligible === null(探测中 / 失败)必须仍走 fail closed。
+    // Send 门与 Goal 门各有一处放行条件;Goal 的本地 worktree 使用点同样排除。
+    expect(
+      source.match(/&& selectedWorktree\.confirmedIneligible !== true/g)?.length ?? 0,
+    ).toBeGreaterThanOrEqual(3);
+    // device-link 预创建两条路径(Send / Goal)同样不得对确认不合格目录发起 worktree:create。
+    expect(source).toContain('wt.confirmedIneligible !== true');
+    // 确认态来源:WorktreeChipsRow 的探测回包,null 表示未确认。
+    expect(source).toContain('const [wtConfirmedIneligible, setWtConfirmedIneligible]');
+    expect(source).toContain('onConfirmedIneligibleChange={handleWtConfirmedIneligibleChange}');
   });
 
   it('keeps the first message as a session draft when background worktree creation fails', () => {
@@ -56,6 +89,18 @@ describe('NewMakerDraftRoute worktree send flow', () => {
   it('uses the current checkout as the safe source when branch discovery is not ready', () => {
     expect(source.match(/sourceBranch: wt\.sourceBranch\.trim\(\) \|\| 'HEAD'/g)).toHaveLength(2);
     expect(source).not.toContain("sourceBranch: wt.sourceBranch.trim() || 'main'");
+  });
+
+  it('uses the shared Cindy branch helper and adopts the authoritative created branch', () => {
+    const previewBranch = source.indexOf('let branchName = getBranchName(name);');
+    const worktreeCreate = source.indexOf('window.electronAPI.worktreeCreate', previewBranch);
+    const authoritativeBranch = source.indexOf('branchName = resp.meta.branch;', worktreeCreate);
+    const creatingStateRefresh = source.indexOf("status: 'creating'", authoritativeBranch);
+
+    expect(source).not.toContain('`xdt/${name}`');
+    expect(previewBranch).toBeGreaterThan(-1);
+    expect(authoritativeBranch).toBeGreaterThan(worktreeCreate);
+    expect(creatingStateRefresh).toBeGreaterThan(authoritativeBranch);
   });
 
   it('treats remote session creation as committed before the shared non-blocking handoff', () => {
@@ -96,7 +141,12 @@ describe('NewMakerDraftRoute worktree send flow', () => {
     expect(reservationGuard).toBeGreaterThan(retainedGuard);
     expect(worktreeCreate).toBeGreaterThan(reservationGuard);
     expect(worktreeCreate).toBeGreaterThan(retainedGuard);
-    expect(source.slice(worktreeCreate, worktreeCreate + 420)).toContain('recoveryKey,');
+    const createRequest = source.lastIndexOf(
+      'const createRequest: RemoteWorktreeCreateRequest = {',
+      worktreeCreate,
+    );
+    expect(createRequest).toBeGreaterThan(reservationGuard);
+    expect(source.slice(createRequest, worktreeCreate)).toContain('recoveryKey,');
     expect(ledgerRegistration).toBeGreaterThan(worktreeCreate);
     expect(source.slice(ledgerRegistration, ledgerRegistration + 220)).toContain('deviceId,');
   });

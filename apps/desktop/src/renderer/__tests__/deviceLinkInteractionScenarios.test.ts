@@ -19,6 +19,10 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import type { Session } from '@/lib/ccAgent.types';
+import {
+  __testing as dataOwnerTesting,
+  setDataOwnerGeneration,
+} from '@/contexts/dataOwnerGeneration';
 
 vi.mock('@/lib/messageService', () => ({
   list: vi.fn(async () => []),
@@ -41,6 +45,7 @@ vi.mock('@/lib/imageRef', () => ({
 }));
 vi.mock('@/lib/composerDraftStore', () => ({
   saveDraft: vi.fn(),
+  setRemoteOptimisticAttachmentUrls: vi.fn(),
   plainTextToTiptapDoc: (s: string) => ({
     type: 'doc',
     content: [{ type: 'paragraph', content: [{ type: 'text', text: s }] }],
@@ -52,7 +57,13 @@ import { remoteProjectsStore } from '@/features/device-link/remoteProjectsStore'
 import * as messageService from '@/lib/messageService';
 import { getIssueConfirmDraft, saveIssueConfirmDraft } from '@/lib/issueConfirmDraftStore';
 
-type RemotePush = { deviceId: string; channel: string; payload: unknown };
+const TEST_OWNER_STAMP = { dataOwnerId: 'test-owner', ownerGeneration: 0 } as const;
+type RemotePush = {
+  deviceId: string;
+  channel: string;
+  payload: unknown;
+  ownerStamp?: typeof TEST_OWNER_STAMP;
+};
 type ResolveCall = { requestId: string; decision: Record<string, unknown> };
 
 /** 被控端内存替身:转发 interaction push,记录 resolve-interaction,并提供挂起交互快照。 */
@@ -95,7 +106,7 @@ function makeFakeHost(deviceId: string) {
       pending.set(sessionId, arr);
     },
     registerPush(cb: (p: RemotePush) => void): () => void {
-      pushCb = cb;
+      pushCb = (push) => cb({ ...push, ownerStamp: push.ownerStamp ?? TEST_OWNER_STAMP });
       return () => {
         pushCb = null;
       };
@@ -207,6 +218,8 @@ function openRemoteSession(): string {
 }
 
 beforeEach(() => {
+  dataOwnerTesting.reset();
+  setDataOwnerGeneration(TEST_OWNER_STAMP.dataOwnerId, TEST_OWNER_STAMP.ownerGeneration);
   host = makeFakeHost(DEVICE_ID);
   local = stubElectronApi(host);
   makerChatStore.initGlobalListeners();
@@ -217,6 +230,7 @@ afterEach(() => {
   remoteProjectsStore.clear();
   delete (globalThis as { window?: unknown }).window;
   vi.clearAllMocks();
+  dataOwnerTesting.reset();
 });
 
 describe('device-link 远程交互往返 — permission', () => {
@@ -665,6 +679,38 @@ describe('device-link 交互快照重建 — 窗口在交互挂起之后才打�
     makerChatStore.purgeSession(s);
   });
 
+  it('兼容旧 Main 已固定的 GitHub 身份，不静默丢弃确认卡', async () => {
+    const s = sid();
+    local.localGetPendingInteractions.mockResolvedValue([
+      {
+        request: {
+          kind: 'issue_confirm',
+          requestId: 'issue-legacy-github',
+          draft: { title: '旧版标题', body: '旧版正文', type: 'bug' },
+          env: {
+            appVersion: '0.1.33',
+            platform: 'win32',
+            arch: 'x64',
+            osVersion: '10.0',
+          },
+          submissionIdentity: { kind: 'github-user', login: 'legacy-user' },
+        },
+      },
+    ]);
+
+    makerChatStore.ensureInitialMessages(s);
+    await flush();
+    await flush();
+
+    expect(makerChatStore.getSnapshot(s).pendingIssueConfirm).toMatchObject({
+      requestId: 'issue-legacy-github',
+      submissionIdentity: { kind: 'github-user', login: 'legacy-user' },
+    });
+    expect(makerChatStore.getSnapshot(s).pendingIssueConfirm?.githubUserIdentity).toBeUndefined();
+    expect(makerChatStore.getSnapshot(s).pendingIssueConfirm?.suggestedPublicName).toBeUndefined();
+    makerChatStore.purgeSession(s);
+  });
+
   it('permission:被控端已挂起 + 不发 push → ensureInitialMessages 后重建 pendingPermission', async () => {
     const s = openRemoteSession();
     host.seedPending(s, {
@@ -775,7 +821,7 @@ describe('远程交互接线不变式', () => {
 
   it('makerChatStore 不向 device-link 远程 session 透传本地 Maker Memory 开关;SSH 跟随全局设置', () => {
     const src = read('lib/makerChatStore.ts');
-    expect(src).toContain('const deviceLinkRemote = isRemoteSession(sessionId);');
+    expect(src).toContain('const deviceLinkRemote = isRemoteSessionSticky(sessionId);');
     // 该表达式可能被 prettier 折成多行:先把空白折叠成单空格,只锁 token 序列。
     // SSH remote 与本地同语义 (memory 按 hostId+远端路径 scope 存本机),
     // 不再出现 ssh 强制 false 的三元;device-link 仍整体省略该字段。
@@ -830,10 +876,10 @@ describe('远程交互接线不变式', () => {
     const body = src.slice(start, start + 2200);
     expect(body).toContain('const persisted = await persistFastModeChange(enabled, {');
     expect(body).toContain('remoteDeviceId: sourceRemoteDeviceId');
-    expect(body.indexOf('if (!persisted) return;')).toBeLessThan(
+    expect(body.indexOf('if (!persisted) return false;')).toBeLessThan(
       body.indexOf('syncSessionDraftModelPrefs'),
     );
-    expect(body.indexOf('if (!persisted) return;')).toBeLessThan(
+    expect(body.indexOf('if (!persisted) return false;')).toBeLessThan(
       body.indexOf('modelMemory?.setFast'),
     );
     expect(body.indexOf('modelMemory?.setFast')).toBeLessThan(
@@ -868,7 +914,9 @@ describe('远程交互接线不变式', () => {
     const sync = body.indexOf('syncSessionDraftModelPrefs(');
     expect(atomic).toBeGreaterThan(-1);
     expect(fallback).toBeGreaterThan(atomic);
-    expect(persist).toBeGreaterThan(body.indexOf('await remoteMaker.setEffort(sessionId, newEffort);'));
+    expect(persist).toBeGreaterThan(
+      body.indexOf('await remoteMaker.setEffort(sessionId, newEffort);'),
+    );
     expect(persist).toBeGreaterThan(-1);
     expect(sync).toBeGreaterThan(-1);
     expect(persist).toBeLessThan(sync);
@@ -891,7 +939,9 @@ describe('远程交互接线不变式', () => {
     const finalize = body.indexOf('onModelDidChange?.(targetModel);');
     expect(atomic).toBeGreaterThan(-1);
     expect(fallback).toBeGreaterThan(atomic);
-    expect(persist).toBeGreaterThan(body.indexOf('await remoteMaker.setEffort(sessionId, targetEffort);'));
+    expect(persist).toBeGreaterThan(
+      body.indexOf('await remoteMaker.setEffort(sessionId, targetEffort);'),
+    );
     expect(persist).toBeGreaterThan(-1);
     expect(sync).toBeGreaterThan(-1);
     expect(body.slice(persist, sync)).not.toContain('return;');
@@ -901,28 +951,48 @@ describe('远程交互接线不变式', () => {
     expect(finalize).toBeGreaterThan(sync);
   });
 
-  it('会话同步 New Maker 草稿默认不应打 modelChosenByVendor 显式选择标记', () => {
+  it('已有任务换模会打选模标记,只改思考档 / Fast 不会', () => {
     const chatInputSrc = read('components/new-chat/ChatInput.tsx');
     const syncStart = chatInputSrc.indexOf('const syncSessionDraftModelPrefs');
+    const syncEnd = chatInputSrc.indexOf('const persistFastModeChange', syncStart);
     expect(syncStart).toBeGreaterThan(-1);
-    const syncBody = chatInputSrc.slice(syncStart, syncStart + 1900);
+    expect(syncEnd).toBeGreaterThan(syncStart);
+    const syncBody = chatInputSrc.slice(syncStart, syncEnd);
     expect(syncBody).toContain('patchVendorPrefsPreservingModelChoice');
-    expect(syncBody).toContain('markModelChoice: false');
+    expect(syncBody).toContain('markModelChoice ? patchVendorPrefs : patchVendorPrefsPreservingModelChoice');
+    expect(syncBody).toContain("opts.markModelChoice === true");
+    expect(syncBody).toContain('markModelChoice');
+    expect(syncBody).toContain('{ model: modelId, providerId: activeProviderId ?? null }');
+    expect(syncBody).not.toContain(': { model: modelId }');
     expect(syncBody).toContain(
       'opts.remoteDeviceId ?? getSessionDeviceId(sessionId) ?? deviceLinkDeviceId',
     );
     expect(syncBody).toContain(".invoke(remoteDeviceId, 'maker:apply-new-maker-draft-pref'");
-    expect(syncBody).not.toContain('patchVendorPrefs(vendor');
+
+    expect(chatInputSrc).toContain('markModelChoice: true');
+    expect(chatInputSrc).toContain('agentKind: targetAgentKind');
 
     const appSrc = read('App.tsx');
     expect(appSrc).toContain(
       'markModelChoice === false ? patchVendorPrefsPreservingModelChoice : patchVendorPrefs',
     );
+    expect(appSrc).toContain('model: modelId');
+    expect(appSrc).not.toContain("markModelChoice === false ? {} : { model: modelId }");
+
+    const draftSrc = read('state/newMakerDraft.ts');
+    expect(draftSrc).toContain('if (!opts.markModelChoice && modelChosen[vendor] === true)');
+    expect(draftSrc).toContain('delete nextPatch.model');
+    expect(draftSrc).toContain('delete nextPatch.providerId');
+    expect(draftSrc).toContain('if (incomingModel !== savedModel)');
+    expect(draftSrc).toContain('delete nextPatch.effort');
 
     const newMakerDraftRouteSrc = read('features/cc-agent/NewMakerDraftRoute.tsx');
     const pushActiveStart = newMakerDraftRouteSrc.indexOf('const pushActiveDraftPref');
     expect(pushActiveStart).toBeGreaterThan(-1);
-    const pushActiveBody = newMakerDraftRouteSrc.slice(pushActiveStart, pushActiveStart + 1400);
+    // 切到函数体结束(catch 兜底那一行)再断言,别按固定字符数截 —— 注释一长就漏断言。
+    const pushActiveEnd = newMakerDraftRouteSrc.indexOf('.catch(() => {});', pushActiveStart);
+    expect(pushActiveEnd).toBeGreaterThan(pushActiveStart);
+    const pushActiveBody = newMakerDraftRouteSrc.slice(pushActiveStart, pushActiveEnd);
     expect(pushActiveBody).toContain('active: true');
     expect(pushActiveBody).toContain('markModelChoice: false');
   });
@@ -993,8 +1063,15 @@ describe('远程交互接线不变式', () => {
       'makerChatStore.setFastMode(sessionId, enabled, sourceRemoteDeviceId)',
     );
     const storeSrc = read('lib/makerChatStore.ts');
-    expect(storeSrc).toContain('sourceRemoteDeviceId || isRemoteSession(sessionId)');
-    expect(storeSrc).toContain('makerApiForDevice(sourceRemoteDeviceId)');
+    const setFastStart = storeSrc.indexOf('async function setFastMode(');
+    const setFastEnd = storeSrc.indexOf('async function setPlanMode(', setFastStart);
+    expect(setFastStart).toBeGreaterThan(-1);
+    expect(setFastEnd).toBeGreaterThan(setFastStart);
+    const setFastBody = storeSrc.slice(setFastStart, setFastEnd);
+    expect(setFastBody).toContain(
+      'const remoteDeviceId = sourceRemoteDeviceId ?? getStickySessionDeviceId(sessionId);',
+    );
+    expect(setFastBody).toContain('makerApiForDevice(remoteDeviceId)');
   });
 
   it('effort 回调必须追踪 sticky deviceId 并向父级保留远程 scope', () => {
@@ -1042,16 +1119,55 @@ describe('远程交互接线不变式', () => {
     const src = read('features/cc-agent/NewMakerDraftRoute.tsx');
     const start = src.indexOf('const pushActiveDraftPref');
     expect(start).toBeGreaterThan(-1);
-    const body = src.slice(start, start + 1500);
+    const end = src.indexOf('.catch(() => {});', start);
+    expect(end).toBeGreaterThan(start);
+    const body = src.slice(start, end);
     const activeEffort = body.indexOf('const activeEffort =');
     const payloadEffort = body.indexOf(
       '...(activeEffort !== undefined ? { effort: activeEffort } : {})',
     );
     expect(activeEffort).toBeGreaterThan(-1);
+    // 没有显式目标(既有的 effort / fast 编辑入口)时仍回落当前 dlSel / seed 的档。
     expect(body).toMatch(
-      /patch\.fast !== undefined\s*\?\s*\(?dlSel\?\.effort \?\? deviceLinkInitial\?\.effort\)?\s*:\s*undefined/,
+      /dlSel\?\.effort \?\? deviceLinkInitial\?\.effort/,
     );
     expect(payloadEffort).toBeGreaterThan(activeEffort);
+  });
+
+  /**
+   * 选中一行时的写穿必须用**本次 selection 的目标值**,不能读闭包里的旧运行配置:
+   * `setDlSel` 尚未提交、跨引擎时 `switchVendor` 还在途,读闭包会把 B 的 effort / Fast
+   * 以 active:true 写到 A 的偏好上(跨引擎连 agent 都是旧的)。
+   */
+  it('device-link draft 选中一行的写穿按目标 (agent, provider, model) 走,不读闭包旧值', () => {
+    const src = read('features/cc-agent/NewMakerDraftRoute.tsx');
+
+    // 1) pushActiveDraftPref 接收显式目标,且目标优先于当前状态。
+    const pushStart = src.indexOf('const pushActiveDraftPref');
+    const pushEnd = src.indexOf('.catch(() => {});', pushStart);
+    expect(pushStart).toBeGreaterThan(-1);
+    const pushBody = src.slice(pushStart, pushEnd);
+    expect(pushBody).toContain('target?: {');
+    expect(pushBody).toContain("const model = target?.modelId ?? dlSel?.model ?? deviceLinkInitial?.model;");
+    expect(pushBody).toContain('agent: target?.agent ?? capabilityAgentKind');
+    expect(pushBody).toMatch(/providerId: target\s*\r?\n?\s*\?\s*\(target\.providerId \?\? ''\)/);
+    // 给了目标就**只**认目标的档 —— 不许再回落到上一个模型的 dlSel.effort。
+    expect(pushBody).toMatch(/target\s*\r?\n?\s*\?\s*target\.effort/);
+
+    // 2) handleUnifiedDraftSelect 的远程分支按本次 selection 传目标(跨引擎按目标 vendor 算 agent)。
+    const selStart = src.indexOf('const handleUnifiedDraftSelect');
+    expect(selStart).toBeGreaterThan(-1);
+    const selEnd = src.indexOf('// ─── 用户改 workingDir', selStart);
+    expect(selEnd).toBeGreaterThan(selStart);
+    const selBody = src.slice(selStart, selEnd);
+    const pushCall = selBody.indexOf('pushActiveDraftPref(');
+    expect(pushCall).toBeGreaterThan(-1);
+    const pushCallBody = selBody.slice(pushCall, selEnd);
+    expect(pushCallBody).toContain(
+      'agent: dbToMakerAgentKind(normalizeDbAgentKind(selection.vendor))',
+    );
+    expect(pushCallBody).toContain('providerId: selection.providerId');
+    expect(pushCallBody).toContain('modelId: selection.modelId');
   });
 
   it('App active Fast-only 写穿不能改 lastByVendor model/effort 配对', () => {
@@ -1086,7 +1202,9 @@ describe('远程交互接线不变式', () => {
     expect(applyStart).toBeGreaterThan(-1);
     const applyBody = src.slice(applyStart, applyStart + 3200);
     expect(applyBody).toContain('modelMemory?.setFast(');
-    expect(applyBody).toContain('newProviderId,\n              modelId,\n              restoredFast,');
+    expect(applyBody).toMatch(
+      /modelMemory\?\.setFast\(\s*currentModelAgentKind,\s*newProviderId,\s*modelId,\s*restoredFast,?\s*\)/,
+    );
   });
 
   it('ChatInput 本地切来源把完整选择交给 main 原子落定后再更新 UI', () => {
@@ -1137,8 +1255,8 @@ describe('远程交互接线不变式', () => {
     // handler 可以只委托 helper,但 helper 必须负责 resolved 广播和权威落库。
     // 截取窗口用下一个语法边界而非固定字符数:handler/helper 体量会随入参校验、
     // 注释增长,固定窗口会在无行为回归时误报(#329 曾把调用挤出 1000 字符窗口)。
-    const handlerStart =
-      /ipcMain\.handle\(\s*MAKER_INVOKE\.RESOLVE_INTERACTION/.exec(src)?.index ?? -1;
+    const handlerMatch = /ipcMain\.handle\(\s*MAKER_INVOKE\.RESOLVE_INTERACTION/.exec(src);
+    const handlerStart = handlerMatch?.index ?? -1;
     expect(handlerStart).toBeGreaterThan(-1);
     const handlerEnd = src.indexOf('ipcMain.handle(', handlerStart + 1);
     const handlerBody = src.slice(handlerStart, handlerEnd === -1 ? undefined : handlerEnd);
@@ -1198,6 +1316,8 @@ describe('远程交互接线不变式', () => {
     expect(src).toContain('let linkOnline = false');
     expect(src).toContain("if (!linkStatusPushSeen) linkOnline = state.linkStatus === 'online'");
     expect(src).toContain('linkStatusPushSeen = true');
+    // debounce 排队后 relay 可能已进入 connecting；执行时必须重查实时状态，不能离线重试。
+    expect(src).toContain('if (!disposed && linkOnline && eligible.has(deviceId))');
   });
 
   it('F4: extraDirs 远程跳过 sessionService.update(getSessionDeviceId 守卫,避免阻断 setExtraDirs)', () => {

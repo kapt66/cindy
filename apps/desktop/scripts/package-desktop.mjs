@@ -363,6 +363,7 @@ async function finishDarwin({ artifactDir, baseName, appName, arch, versionless,
   writeMacEntitlements(mainEntitlementsPath, { appleEvents: true });
 
   const wantsRealSigning = !versionless && !noSign;
+  const requireNativeReleaseGate = process.env.CINDY_IOS_SIMULATOR_RELEASE_NATIVE_SMOKE === '1';
   const requestedSigningMode = process.env.MAC_SIGNING_MODE?.trim() || 'developer-id';
   if (!['developer-id', 'self-signed', 'adhoc'].includes(requestedSigningMode)) {
     throw new Error('MAC_SIGNING_MODE must be developer-id, self-signed, or adhoc');
@@ -406,13 +407,46 @@ async function finishDarwin({ artifactDir, baseName, appName, arch, versionless,
         ? '==> Signing (existing Meka self-signed identity)...'
         : '==> Signing (Developer ID)...',
     );
-    signMacAppWithIdentity(appPath, helperEntitlementsPath, mainEntitlementsPath, identity);
+    const iosSimulatorHelperSigned = signMacAppWithIdentity(
+      appPath,
+      helperEntitlementsPath,
+      mainEntitlementsPath,
+      identity,
+      { arch },
+    );
+    if (requireNativeReleaseGate && !iosSimulatorHelperSigned) {
+      throw new Error(
+        'CINDY_IOS_SIMULATOR_RELEASE_NATIVE_SMOKE=1 requires a packaged Native Helper',
+      );
+    }
     if (canDeveloperSign) {
       console.log('==> Notarizing...');
       notarizeMacApp(appPath, identity);
       signingMode = 'developer-id+notarized';
     } else {
       signingMode = 'self-signed';
+    }
+
+    if (hostCanExecArch(arch)) {
+      runIOSSimulatorReleaseGate(
+        appPath,
+        arch,
+        canDeveloperSign
+          ? (iosSimulatorHelperSigned ? 'verified' : 'untrusted')
+          : 'untrusted',
+        requireNativeReleaseGate,
+      );
+    } else if (requireNativeReleaseGate) {
+      throw new Error(
+        `CINDY_IOS_SIMULATOR_RELEASE_NATIVE_SMOKE=1 requires a host that can natively run the ${arch} package`,
+      );
+    } else {
+      verifyMacBinaryArch(appName, arch);
+      console.log(
+        `==> Skipping iOS Simulator release gate: ${arch} app is not runnable on this ${
+          isPhysicalArm64Mac() ? 'arm64' : 'Intel'
+        } host (Mach-O arch verified)`,
+      );
     }
 
     const dmgPath = path.join(artifactDir, `${baseName}-${arch}.dmg`);
@@ -430,7 +464,22 @@ async function finishDarwin({ artifactDir, baseName, appName, arch, versionless,
     files.push(fileEntry('hotfix', hotfixZipPath));
   } else {
     // 版本无关(或显式放行)→ ad-hoc 签名,产出 .app 的 zip 供本机/内部试用。
-    adhocSignMacApp(appPath, helperEntitlementsPath, mainEntitlementsPath);
+    adhocSignMacApp(appPath, helperEntitlementsPath, mainEntitlementsPath, arch);
+    if (requireNativeReleaseGate) {
+      throw new Error(
+        'CINDY_IOS_SIMULATOR_RELEASE_NATIVE_SMOKE=1 requires a Developer ID signed and notarized package',
+      );
+    }
+    if (hostCanExecArch(arch)) {
+      runIOSSimulatorReleaseGate(appPath, arch, 'untrusted');
+    } else {
+      verifyMacBinaryArch(appName, arch);
+      console.log(
+        `==> Skipping iOS Simulator release gate: ${arch} app is not runnable on this ${
+          isPhysicalArm64Mac() ? 'arm64' : 'Intel'
+        } host (Mach-O arch verified)`,
+      );
+    }
     const appZipPath = path.join(artifactDir, `${baseName}-${arch}.zip`);
     console.log('==> Creating app ZIP (ad-hoc signed)...');
     if (fs.existsSync(appZipPath)) fs.unlinkSync(appZipPath);

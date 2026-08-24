@@ -20,10 +20,21 @@ import path from 'node:path';
 import { ManagerServer } from '../server.js';
 import { SessionRegistry, type SdkQueryFactoryOptions, type SdkQueryLike } from '../session-registry.js';
 import { wireSdkHandlers } from '../sdk-handlers.js';
+import { ensureRemoteClaudeConfigDir } from '../remote-claude-env.js';
 import { runMcpShim } from '../mcp-shim.js';
 import { runCodexBridge } from '../codex-bridge.js';
 import { CapabilityMcpRouter } from '../capability-mcp-router.js';
-import { CC_MGR_BUNDLE_VERSION, PROTOCOL_VERSION, SERVER_METHODS, type ApprovalRequestParams, type ApprovalRequestResult, type OAuthRefreshParams, type OAuthRefreshResult } from '../protocol.js';
+import {
+  CC_MGR_BUNDLE_VERSION,
+  PROTOCOL_VERSION,
+  SERVER_METHODS,
+  type ApprovalRequestParams,
+  type ApprovalRequestResult,
+  type OAuthRefreshParams,
+  type OAuthRefreshResult,
+  type SubagentModelAccessParams,
+  type SubagentModelAccessResult,
+} from '../protocol.js';
 
 const MANAGER_VERSION = CC_MGR_BUNDLE_VERSION;
 
@@ -63,6 +74,7 @@ const SENSITIVE_ANTHROPIC_ENV_KEYS = [
   'CLAUDE_CODE_OAUTH_SCOPES',
   'CLAUDE_CODE_SUBSCRIPTION_TYPE',
   'CLAUDE_CODE_RATE_LIMIT_TIER',
+  'CLAUDE_CODE_SUBAGENT_MODEL',
   'ANTHROPIC_BASE_URL',
   'ANTHROPIC_UNIX_SOCKET',
   'ANTHROPIC_CUSTOM_HEADERS',
@@ -329,6 +341,10 @@ async function runDaemon(socketPath: string): Promise<void> {
   if (stripped.length > 0) {
     console.error('[cc-mgr] stripped sensitive env keys at boot:', stripped.join(', '));
   }
+  // Keep all Cindy-managed Claude state outside the user's repository and
+  // outside the host's global ~/.claude directory. query/start independently
+  // overwrites the per-session env with the same daemon-owned path.
+  process.env.CLAUDE_CONFIG_DIR = ensureRemoteClaudeConfigDir();
 
   // Lazy import the SDK so --version doesn't pay the SDK load cost.
   const sdkModule = await import('@anthropic-ai/claude-agent-sdk');
@@ -364,15 +380,6 @@ async function runDaemon(socketPath: string): Promise<void> {
         // control 分支)—— 与 desktop 本地分支同一注入方式,经 spread 绕过类型检查。
         ...(getOAuthToken ? { getOAuthToken: getOAuthToken as any } : {}),
         ...(extraOptions ?? {}),
-        // MCPRouter downloads the Claude native runtime into its persistent
-        // cache and exposes the absolute path through CC_MGR_CLAUDE_BIN.
-        // The SDK otherwise resolves its optional platform package from the
-        // cc-mgr bundle's node_modules, which is intentionally not shipped and
-        // causes LAZY_CREATE_FAILED on linux-x64. Keep this daemon-owned path
-        // authoritative even if a caller sends a stale extraOptions value.
-        ...(process.env.CC_MGR_CLAUDE_BIN
-          ? { pathToClaudeCodeExecutable: process.env.CC_MGR_CLAUDE_BIN }
-          : {}),
         // Daemon-owned hooks must win over JSON extraOptions. They enforce
         // host routing before Claude's permission mode and setting rules.
         ...(hooks ? { hooks: hooks as any } : {}),
@@ -434,6 +441,19 @@ async function runDaemon(socketPath: string): Promise<void> {
         SERVER_METHODS.APPROVAL_REQUEST,
         params,
         { timeoutMs: 120_000 },
+      );
+    },
+    onSubagentModelAccessRequest: async (
+      sessionId: string,
+      params: SubagentModelAccessParams,
+    ): Promise<SubagentModelAccessResult> => {
+      const ctx = getAttachedClientCtx?.(sessionId);
+      if (!ctx) return { status: 'unknown' };
+      return await server.sendRequest<SubagentModelAccessResult>(
+        ctx,
+        SERVER_METHODS.SUBAGENT_MODEL_ACCESS,
+        params,
+        { timeoutMs: 15_000 },
       );
     },
     onOAuthRefresh: async (sessionId: string, params: OAuthRefreshParams): Promise<OAuthRefreshResult> => {

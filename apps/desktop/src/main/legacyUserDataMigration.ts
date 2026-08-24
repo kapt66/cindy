@@ -29,7 +29,7 @@
  * 动态 import)。
  */
 
-import fsp from 'node:fs/promises';
+import originalFs from 'original-fs';
 import path from 'node:path';
 import { app, BrowserWindow, ipcMain } from 'electron';
 import { BRAND_IDENTITY } from '@cindy/maker-shared/brand-identity';
@@ -42,6 +42,10 @@ import {
   resolveBetterSqliteNativeBinding,
 } from './localDb/betterSqliteFactory';
 import { createLogger } from './logger';
+
+// Electron patches node:fs to treat .asar paths as virtual directories. Migration
+// copies user workspace files, so every operation here must target the physical disk.
+const fsp = originalFs.promises;
 
 /** marker 文件名(userData 根下)。存在 = 本 profile 已做过首登轻量迁移。 */
 export const LEGACY_MIGRATION_MARKER_FILENAME = 'mToc';

@@ -15,8 +15,11 @@ import { app, BrowserWindow } from 'electron';
 import WebSocket from 'ws';
 import {
   DeviceLinkClient,
+  CONTROLLER_CAPABILITY_MAKER_EVENT_BATCH_V1,
   CONTROLLER_CAPABILITY_PROVIDER_LOGO_KINDS_V2,
   CONTROLLER_CAPABILITY_SET_MODEL_EXPLICIT_PROVIDER_NULL_V1,
+  MAKER_EVENT_BATCH_CHANNEL,
+  expandMakerEventBatchPayload,
   DL_CONTACTS_SYNC_CHANNEL,
   DL_SUBSCRIBE_CHANNEL,
   DL_UNSUBSCRIBE_CHANNEL,
@@ -34,10 +37,12 @@ import {
   INVOKE_TIMEOUT_OVERRIDES_MS,
 } from '@cindy/device-link';
 import * as authManager from '../authManager';
+import { getActiveDataOwnerPushStamp } from '../appSessionState.js';
 import { createLogger } from '../logger';
 import { onQuit } from '../lifecycle';
 import { tryGetDbClient } from '../localDb/client/current';
 import { createOutboundHttpAgent } from '../maker-host/outbound-fetch';
+import { serverApiFetch } from '../serverApiClient';
 import {
   DeviceLinkOwnershipArbiter,
   createDbClientOwnershipStore,
@@ -50,28 +55,48 @@ import {
   shouldAbortTransportTimeoutReopen,
 } from './transportTimeoutReopen';
 import {
+  forgetLastKnownDeviceName,
+  normalizeCachedDeviceName,
   readDeviceLinkSettings,
+  readLastKnownDeviceNames,
   rememberLastKnownDeviceName,
   updateDeviceLinkSetting,
   writeDeviceLinkSetting,
 } from './settings-store';
 import { keepAwakeController } from './power-blocker';
+import { MAKER_PUSH } from '../maker-ipc/channels.js';
 import { createDnsFallbackLookup } from './dnsFallbackLookup';
 import {
   wireInboundDispatch,
   setControllersChangedListener,
   setRemoteInvokeBusyChangedListener,
   dropAllControllers,
+  flushMakerEventBatchesOnReconnect,
   flushRemoteInvokeResultOutboxOnReconnect,
   forgetControllerInvokeState,
   handleControllerOffline,
   purgeRevokedController,
+  setControllerDisplayName,
+  setControllerFallbackDisplayName,
+  clearControllerDisplayNames,
+  setDispatchPresenceOfflineCheck,
 } from './dispatch';
 import {
   clearControllerPlatforms,
   getControllerPlatform,
   setControllerPlatform,
 } from './controllerPlatform';
+import {
+  applyControllerDisplayNameDirectorySnapshot,
+  applyControllerDisplayNamePresence,
+  beginControllerDisplayNameDirectoryRequest,
+  createControllerDisplayNameFreshnessTracker,
+  getControllerDisplayNameFreshnessSince,
+  isLatestControllerDisplayNameDirectoryRequest,
+  resetControllerDisplayNameFreshness,
+  seedControllerDisplayNamesFromCache,
+  type ControllerDisplayNameDirectoryDevice,
+} from './controllerDisplayNameFreshness';
 import { setBusyProbe, helloBusy, pollBusyChange, resetBusyDedupe } from './busyReporter';
 import {
   DL_VOICE_DICTIONARY_SYNC_CHANNEL,
@@ -90,6 +115,7 @@ import {
   buildSessionNotifyPayload,
   type MobileSessionEventKind,
 } from './mobileNotify';
+import { getSessionNotificationBody } from '../sessionNotificationCopy';
 import { getClientEndpoint } from '../clientEndpointsService';
 import {
   handleContactsDeviceLinkStatusChanged,
@@ -126,6 +152,141 @@ const WS_PATH = '/api/device-link/ws';
 /** relay REST base(media presign / devices 等);供 mediaTransfer / ipc 复用。 */
 export function deviceLinkApiBase(): string {
   return getClientEndpoint('deviceLinkApiBaseUrl');
+}
+
+type DeviceDirectoryResponse = {
+  devices?: Array<{ deviceId?: unknown; name?: unknown }>;
+};
+let controllerDisplayNameRefreshGeneration = 0;
+const controllerDisplayNameFreshness = createControllerDisplayNameFreshnessTracker();
+let latestControllerDisplayNameDirectoryRefresh: {
+  sequence: number;
+  promise: Promise<void>;
+} | null = null;
+
+export function captureControllerDisplayNameRequestEpoch(): number {
+  return controllerDisplayNameFreshness.epoch;
+}
+
+export function beginControllerDisplayNameDirectoryRefresh(): number {
+  return beginControllerDisplayNameDirectoryRequest(controllerDisplayNameFreshness);
+}
+
+export function isLatestControllerDisplayNameDirectoryRefresh(sequence: number): boolean {
+  return isLatestControllerDisplayNameDirectoryRequest(
+    controllerDisplayNameFreshness,
+    sequence,
+  );
+}
+
+export async function waitForNewerControllerDisplayNameDirectoryRefresh(
+  sequence: number,
+): Promise<void> {
+  let pending = latestControllerDisplayNameDirectoryRefresh;
+  while (pending && pending.sequence > sequence) {
+    await pending.promise;
+    const latest = latestControllerDisplayNameDirectoryRefresh;
+    if (!latest || latest.sequence <= pending.sequence) return;
+    pending = latest;
+  }
+}
+
+export function readControllerDisplayNameFreshnessSince(
+  deviceId: string,
+  requestEpoch: number,
+): { changedAfterRequest: boolean; authoritativeName: string | null } {
+  return getControllerDisplayNameFreshnessSince(
+    controllerDisplayNameFreshness,
+    deviceId,
+    requestEpoch,
+  );
+}
+
+/**
+ * renderer 的设备列表刷新同样来自权威目录。把最新响应同步进被控提示元数据，
+ * 让 REST 改名/清空无需等待 presence 或 relay 重连；last-known 落盘仍由 IPC
+ * reconcile 负责，避免同一目录响应重复排队写入。
+ */
+export function applyControllerDisplayNameListSnapshot(
+  devices: readonly ControllerDisplayNameDirectoryDevice[],
+  requestEpoch: number,
+): void {
+  applyControllerDisplayNameDirectorySnapshot({
+    devices,
+    cachedNames: readLastKnownDeviceNames(),
+    freshness: controllerDisplayNameFreshness,
+    requestEpoch,
+    normalizeName: normalizeCachedDeviceName,
+    setDisplayName: setControllerDisplayName,
+    rememberName: () => {},
+    forgetName: () => {},
+  });
+}
+
+function seedControllerDisplayNamesFromLastKnown(): void {
+  seedControllerDisplayNamesFromCache(
+    readLastKnownDeviceNames(),
+    controllerDisplayNameFreshness,
+    setControllerDisplayName,
+  );
+}
+
+/**
+ * presence 是增量流，新建连接不会收到已在线设备的历史快照；每个 relay 连接代
+ * 上线时从现有设备目录补齐展示名，避免 link-open 抢先时长期停在主机名回退。
+ */
+async function runControllerDisplayNamesFromDirectory(
+  generation: number,
+  directoryRequestSequence: number,
+  requestEpoch: number,
+): Promise<void> {
+  try {
+    const result = await serverApiFetch<DeviceDirectoryResponse>('/api/device-link/devices', {
+      baseUrl: deviceLinkApiBase,
+      timeoutMs: 10_000,
+    });
+    if (
+      generation !== controllerDisplayNameRefreshGeneration
+      || !isLatestControllerDisplayNameDirectoryRefresh(directoryRequestSequence)
+      || linkTornDown
+      || client?.getStatus() !== 'online'
+    ) {
+      return;
+    }
+    const cachedNames = readLastKnownDeviceNames();
+    applyControllerDisplayNameDirectorySnapshot({
+      devices: result.devices ?? [],
+      cachedNames,
+      freshness: controllerDisplayNameFreshness,
+      requestEpoch,
+      normalizeName: normalizeCachedDeviceName,
+      setDisplayName: setControllerDisplayName,
+      rememberName: (deviceId, name) => {
+        void rememberLastKnownDeviceName(deviceId, name);
+      },
+      forgetName: (deviceId) => {
+        void forgetLastKnownDeviceName(deviceId);
+      },
+    });
+  } catch (err) {
+    // 目录补齐是展示层 best-effort；失败时保留控制帧自报名 / 短 ID 回退，不影响建链。
+    log.warn(`device directory display-name refresh failed (non-fatal): ${String(err)}`);
+  }
+}
+
+function refreshControllerDisplayNamesFromDirectory(generation: number): Promise<void> {
+  const directoryRequestSequence = beginControllerDisplayNameDirectoryRefresh();
+  const requestEpoch = controllerDisplayNameFreshness.epoch;
+  const promise = runControllerDisplayNamesFromDirectory(
+    generation,
+    directoryRequestSequence,
+    requestEpoch,
+  );
+  latestControllerDisplayNameDirectoryRefresh = {
+    sequence: directoryRequestSequence,
+    promise,
+  };
+  return promise;
 }
 
 let client: DeviceLinkClient | null = null;
@@ -229,6 +390,8 @@ let appliedKeepAwake: boolean | null = null;
 /** 退出路径的持有权 DELETE 完成信号:sync 阶段发起,async 阶段 disposer await(见 onQuit 注释) */
 let pendingQuitOwnershipRelease: Promise<void> | null = null;
 const openLinkInFlight = new Map<string, Promise<LinkAcceptPayload>>();
+/** 对端已对本机撤权：自动 recover/probe 不得再 openLink；用户显式重试可清掉。 */
+const revokedByRemote = new Set<string>();
 const presenceAvailableByDevice = new Map<string, boolean>();
 /**
  * 「目标设备无响应」熔断(弱网 / 对端卡死时收敛请求风暴,见 responsivenessTracker)。
@@ -242,7 +405,37 @@ const RESPONSIVENESS_PROBE_TICK_MS = 5_000;
  * 词典同步的对端选择只看「在线 + 是桌面」,不看 remoteControlEnabled ——
  * push 帧不属于 relay 的控制类帧,自己设备之间同步词典不该要求对方开放被控。
  */
+/**
+ * 本机**作为控制端**声明的端到端能力(append-only)。`openLink` 与 `subscribe` 两处
+ * 必须用同一份 —— 只在一处声明会让另一条路径静默降级(mobile 侧 review 实测过这个坑)。
+ */
+const CONTROLLER_CAPABILITIES = [
+  CONTROLLER_CAPABILITY_PROVIDER_LOGO_KINDS_V2,
+  CONTROLLER_CAPABILITY_SET_MODEL_EXPLICIT_PROVIDER_NULL_V1,
+  // 桌面控制桌面时同样收微批:批的收益是**relay 帧数**,只要有一个控制端不支持,
+  // 被控端就得为它保留逐帧流,聚合出站速率照旧能招来 1013 并连带踢掉已启用微批的
+  // 手机(review P1)。拆包在 main 完成(见 onFrame 的批分支),renderer 的既有
+  // maker:event 订阅者零改动。
+  CONTROLLER_CAPABILITY_MAKER_EVENT_BATCH_V1,
+] as const;
+
 const presenceOnlineByDevice = new Map<string, boolean>();
+
+/**
+ * 发送门禁判据:**当代 presence 已明确宣告**该设备离线(供 dispatch 的
+ * invoke-result outbox 全量轮跳过盲发,见 setDispatchPresenceOfflineCheck)。
+ *
+ * 刻意只读当代视图、不做任何跨连接代的记忆:
+ * - presence-changed 是**只发给当时在线设备的增量广播,新连接没有全量重放**
+ *   (mobile 侧同一结论已固化在 presenceRecovery.resetPresenceAvailabilityForConnection
+ *   的注释里)。断线期间恢复上线的设备,重连后不会有任何 presence 帧来纠正一条
+ *   转存下来的 offline 结论——跨代保留会把它永久挡在门外,拿不到订阅与在途回包。
+ * - 因此门禁的作用域被限定为「同一连接代内、presence 已明说离线」这一段:视图为空
+ *   (刚重连、尚无首帧 presence)一律 fail-open。它是减量优化,不是安全边界。
+ */
+function isPresenceExplicitlyOffline(deviceId: string): boolean {
+  return presenceOnlineByDevice.get(deviceId) === false;
+}
 
 const presenceNameByDevice = new Map<string, string>();
 let unsubscribeDictionaryChanged: (() => void) | null = null;
@@ -424,6 +617,7 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
       client?.getStatus() === 'online' &&
       arbiter?.isOwner() === true &&
       presenceAvailableByDevice.get(deviceId) === true &&
+      !revokedByRemote.has(deviceId) &&
       !readDeviceLinkSettings().disabledControlDeviceIds.includes(deviceId),
     // observed:false 且是唯一豁免熔断快速拒绝的建链入口:recoverLink 是探测
     // 周期的延伸(业务/探测超时已由 tracker 记账,不重复观测),且 open 期间
@@ -432,7 +626,12 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
     // 拒绝,review P2)。频度由探测退避与 openLinkInFlight 单飞约束。open
     // 期间 transport-timeout 重建照旧让位(观测入口被快速拒绝,熔断关闭后
     // 下一次触发生效),恢复统一由探测循环驱动。
-    recoverLink: (deviceId) => openRemoteLink(deviceId, { observed: false }),
+    recoverLink: (deviceId) => {
+      if (revokedByRemote.has(deviceId)) {
+        return Promise.reject(new DeviceLinkError('ACCESS_REVOKED', 'access revoked by target device'));
+      }
+      return openRemoteLink(deviceId, { observed: false });
+    },
     log: {
       info: (...args) => log.info(...args),
       warn: (...args) => log.warn(...args),
@@ -447,6 +646,7 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
 
   client.onStatusChange((status) => {
     if (status !== 'online') {
+      controllerDisplayNameRefreshGeneration += 1;
       // 不清 openLinkInFlight:登记生命周期的唯一判据是 promise settle(每个
       // 请求 settle 时自清理,closeRemoteLink 的显式删除有取消代次兜底)。建链
       // 可能正 park 在上线等待里,状态抖动时提前删登记会让同设备的下一次调用
@@ -466,10 +666,19 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
     if (status !== 'online') {
       presenceOnlineByDevice.clear();
       presenceAvailableByDevice.clear();
+      resetControllerDisplayNameFreshness(controllerDisplayNameFreshness);
     }
     broadcast(DEVICE_LINK_PUSH.STATUS_CHANGED, { status });
     handleContactsDeviceLinkStatusChanged(status === 'online');
     if (status === 'online') {
+      // 本地 last-known 先同步种入，覆盖 REST 返回前的 link-open 竞态；随后用
+      // 当前设备目录刷新，补齐本连接代没有历史 presence 的已在线设备。
+      seedControllerDisplayNamesFromLastKnown();
+      const displayNameGeneration = ++controllerDisplayNameRefreshGeneration;
+      void refreshControllerDisplayNamesFromDirectory(displayNameGeneration);
+      // 断线前攒的 maker:event 批最先出去:它在时间上早于离线积压与重连后的
+      // 一切新推送,晚发会让控制端在终态之后又收到旧文本(见 dispatch 注释)。
+      flushMakerEventBatchesOnReconnect();
       replayActiveSubscriptions('ws-online');
       // 重连即投递被控端积压的 invoke-result:离线期间 outbox 只做慢速 TTL 出清,
       // 不再自旋重试,上线事件是它的主投递触发点。
@@ -514,8 +723,24 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
     // (review P2)。翻转判据统一为「观察到进入某状态(含从未知)即触发一次」。
     if (!available && wasAvailable !== false) responsivenessTracker?.clearDevice(snap.deviceId);
     setControllerPlatform(snap.deviceId, snap.platform);
+    applyControllerDisplayNamePresence({
+      deviceId: snap.deviceId,
+      name: snap.deviceName,
+      ...(Object.prototype.hasOwnProperty.call(snap, 'selfName')
+        ? { selfName: snap.selfName }
+        : {}),
+      freshness: controllerDisplayNameFreshness,
+      normalizeName: normalizeCachedDeviceName,
+      setDisplayName: setControllerDisplayName,
+      setFallbackDisplayName: setControllerFallbackDisplayName,
+      rememberName: (deviceId, name) => {
+        void rememberLastKnownDeviceName(deviceId, name);
+      },
+      forgetName: (deviceId) => {
+        void forgetLastKnownDeviceName(deviceId);
+      },
+    });
     presenceNameByDevice.set(snap.deviceId, snap.selfName || snap.deviceName);
-    void rememberLastKnownDeviceName(snap.deviceId, snap.deviceName); // best-effort 名称缓存,不阻塞 presence 处理
     broadcast(DEVICE_LINK_PUSH.PRESENCE_CHANGED, snap);
     // 被控端兜底:对等控制端下线 → 清掉它在本机的订阅 registry(防僵尸订阅持续 sendPush)。
     if (!snap.online) handleControllerOffline(snap.deviceId);
@@ -562,6 +787,8 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
 
   // 被控端:接线入站隧道(link-open / invoke / link-close → 本机 handler dispatch)
   wireInboundDispatch(client);
+  // outbox flush 的 presence 显式离线门禁(运行期接线,模块顶层会撞 import 环 TDZ)
+  setDispatchPresenceOfflineCheck(isPresenceExplicitlyOffline);
 
   // busy presence:每 5s 探一次本机是否有 turn 在跑,变化才上报(dedupe by value)
   startBusyReporting();
@@ -583,6 +810,7 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
       if (reason === 'revoked') {
         // 撤权后在途请求会陆续超时——那不是「设备无响应」,是访问被收回。清熔断并
         // 作废在途结果(翻代),避免 unresponsive 状态与撤权状态并存(对齐 mobile 语义)。
+        revokedByRemote.add(env.src);
         responsivenessTracker?.clearDevice(env.src);
         broadcast(DEVICE_LINK_PUSH.ACCESS_REVOKED, { deviceId: env.src });
       }
@@ -619,10 +847,26 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
       }
       return;
     }
+    // 微批拆包放在 main:renderer 侧有多个按 channel 过滤的 onRemotePush 订阅者
+    // (会话视图 / 草稿路由 / learn / 文件浏览),在这里展开成原样的 maker:event
+    // 事件流,它们全都零改动。批内条目的 sessionId 与顶层不一致即跳过(topic 隔离
+    // fail-closed,与 mobile 拆包同判据)。
+    if (p.channel === MAKER_EVENT_BATCH_CHANNEL) {
+      for (const event of expandMakerEventBatchPayload(p.payload)) {
+        broadcast(DEVICE_LINK_PUSH.REMOTE_PUSH, {
+          deviceId: env.src,
+          channel: MAKER_PUSH.EVENT,
+          payload: event,
+          ...(p.ownerStamp ? { ownerStamp: p.ownerStamp } : {}),
+        });
+      }
+      return;
+    }
     broadcast(DEVICE_LINK_PUSH.REMOTE_PUSH, {
       deviceId: env.src,
       channel: p.channel,
       payload: p.payload,
+      ...(p.ownerStamp ? { ownerStamp: p.ownerStamp } : {}),
     });
   });
 
@@ -871,6 +1115,7 @@ export function getMobileNotifyGeneration(): number {
 function teardownActiveLink(): void {
   if (!client || linkTornDown) return;
   linkTornDown = true;
+  controllerDisplayNameRefreshGeneration += 1;
   mobileNotifyGeneration += 1;
   if (relayAuthRecoveryRetryTimer !== null) {
     clearTimeout(relayAuthRecoveryRetryTimer);
@@ -882,12 +1127,15 @@ function teardownActiveLink(): void {
   for (const timer of subscriptionReplayRetryTimers.values()) clearTimeout(timer);
   subscriptionReplayRetryTimers.clear();
   presenceAvailableByDevice.clear();
+  revokedByRemote.clear();
   // 词典同步驱动是进程级的,**不随单次链路起停**:多实例仲裁的 demote → acquire
   // 只会 client.start(),不会重跑 initDeviceLinkService,在这里 stop 掉它会让词典
   // 同步在降级过一次之后永久失效。清空 presence 就够了 —— 没有对端就不会发送,
   // client 为 null 时 sendPush 也是 no-op。
   presenceOnlineByDevice.clear();
+  resetControllerDisplayNameFreshness(controllerDisplayNameFreshness);
   clearControllerPlatforms();
+  clearControllerDisplayNames();
   presenceNameByDevice.clear();
   resetSubscriptionRefs();
   resetBusyDedupe(); // 重置 busy dedupe,避免重连后首个真实 busy 状态被旧值压掉
@@ -902,6 +1150,15 @@ function replayActiveSubscriptions(reason: string, deviceId?: string): void {
     `device-link replay subscriptions (${reason}): devices=${refs.length} topics=${topicCount}`,
   );
   for (const { deviceId, topics } of refs) {
+    // 这里**不套** presence 离线门禁(2026-08-08 review 的收敛结论,别再加回来):
+    //  - 唯一的广播型调用者是 ws-online,而它跑在「非 online 时清空视图」之后、
+    //    本代首帧 presence 之前,当代 presence 必然为空 → 门禁在此恒不成立,是死码;
+    //  - 其余三个调用者都是定向的(link-reopen / responsiveness-recovered /
+    //    presence-online),各自的触发证据(收到 link-accept、探测 invoke 刚成功、
+    //    presence 刚翻成 online)都比 presence 视图更新更强,拿更旧的 presence 去
+    //    拦它们只会把恢复事件拦死——与 dispatch 侧「定向 flush 不受门禁约束」同构。
+    // 已知离线目标的无效 subscribe 由 replayDeviceSubscription 的重试前置门
+    // (presenceAvailableByDevice !== true)在当代内收敛,首发放行一帧即可。
     replayDeviceSubscription(deviceId, topics, reason, 0);
   }
 }
@@ -1312,6 +1569,8 @@ export async function openRemoteLink(
   assertNotStandby();
   assertRemoteControlTargetEnabled(deviceId);
   if (!client) throw new Error('[DEVICE_LINK_NOT_CONNECTED] device-link client not initialized');
+  // 自动 recover/probe 由 recoverLink + isProbeEligible 挡。presence / subscribe
+  // 可以在对端重新授权后走这里接回；终态只在成功建链后清除,失败重试不得提前解闩。
   const existing = openLinkInFlight.get(deviceId);
   if (existing) return existing;
 
@@ -1328,15 +1587,14 @@ export async function openRemoteLink(
       throw new DeviceLinkError('LINK_NOT_OPEN', 'link closed while waiting to reconnect');
     }
     if (!client) throw new Error('[DEVICE_LINK_NOT_CONNECTED] device-link client not initialized');
-    return client.openLink(deviceId, {
+    const accepted = await client.openLink(deviceId, {
       controllerName: deviceName(),
       protocolVersion: 1,
       appVersion: app.getVersion(),
-      capabilities: [
-        CONTROLLER_CAPABILITY_PROVIDER_LOGO_KINDS_V2,
-        CONTROLLER_CAPABILITY_SET_MODEL_EXPLICIT_PROVIDER_NULL_V1,
-      ],
+      capabilities: [...CONTROLLER_CAPABILITIES],
     });
+    revokedByRemote.delete(deviceId);
+    return accepted;
   };
   // 结算所有权由 tracker.guardInvoke 统一声明(第一个 settle 的 guard 打标,
   // 后续 guard 见标不定论):observed 发起、unobserved 发起被多个业务加入者
@@ -1490,10 +1748,7 @@ export async function remoteSubscribe(
         {
           topics: liveTopics,
           controllerName: deviceName(),
-          capabilities: [
-            CONTROLLER_CAPABILITY_PROVIDER_LOGO_KINDS_V2,
-            CONTROLLER_CAPABILITY_SET_MODEL_EXPLICIT_PROVIDER_NULL_V1,
-          ],
+          capabilities: [...CONTROLLER_CAPABILITIES],
         },
       ],
     });
@@ -1562,6 +1817,7 @@ export function sendMobileSessionNotify(payload: {
       title: payload.title,
       kind: payload.kind,
       selfDeviceId,
+      fallbackBody: getSessionNotificationBody(payload.kind),
       detail: payload.detail,
     }),
   );
@@ -1572,10 +1828,12 @@ export function sendMobileSessionNotify(payload: {
 }
 
 export function broadcast(channel: string, payload: unknown): void {
+  const ownerStamp = getActiveDataOwnerPushStamp();
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed()) continue;
     try {
-      win.webContents.send(channel, payload);
+      if (ownerStamp === undefined) win.webContents.send(channel, payload);
+      else win.webContents.send(channel, payload, ownerStamp);
     } catch (err) {
       log.warn(`broadcast '${channel}' failed (non-fatal)`, err);
     }

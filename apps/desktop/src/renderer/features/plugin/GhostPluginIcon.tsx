@@ -14,7 +14,7 @@ import {
   Workflow,
   type LucideIcon,
 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type Ref } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { cn } from '@/lib/utils';
@@ -62,6 +62,8 @@ export function GhostPluginIcon({
   iconDataUrl,
   iconId,
   iconName,
+  iconContainerRef,
+  onIconLoad,
   onIconLoadError,
   development = false,
   size = 'md',
@@ -69,6 +71,8 @@ export function GhostPluginIcon({
   iconDataUrl?: string;
   iconId: string;
   iconName: string;
+  iconContainerRef?: Ref<HTMLSpanElement>;
+  onIconLoad?: () => void;
   onIconLoadError?: () => void;
   development?: boolean;
   size?: GhostPluginIconSize;
@@ -85,6 +89,7 @@ export function GhostPluginIcon({
 
   return (
     <span
+      ref={iconContainerRef}
       className={cn(
         'relative inline-flex shrink-0 items-center justify-center overflow-hidden border-[0.5px] border-[var(--border-default)]',
         resolvedIconDataUrl
@@ -99,6 +104,7 @@ export function GhostPluginIcon({
           alt=""
           draggable={false}
           referrerPolicy="no-referrer"
+          onLoad={onIconLoad}
           onError={() => {
             setFailedSrc(resolvedIconDataUrl);
             onIconLoadError?.();
@@ -121,8 +127,8 @@ export function GhostPluginIcon({
           className={cn(
             'pointer-events-none absolute z-[1] flex -rotate-45 items-center justify-center bg-[var(--accent-emphasis)] font-medium tracking-[0.08em] text-[var(--accent-pure-cta-fg)]',
             size === 'detail'
-              ? '-left-[18px] top-[8px] h-[14px] w-[72px] text-[8px]'
-              : '-left-[15px] top-[6px] h-[12px] w-[60px] text-[7px]',
+              ? '-left-[18px] top-[8px] h-[14px] w-[72px] text-10 leading-none'
+              : '-left-[15px] top-[6px] h-[12px] w-[60px] text-10 leading-none',
           )}
           aria-label={t('settings.ghosts.meka.dev.ribbon')}
         >

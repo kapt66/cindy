@@ -5,7 +5,12 @@
  * providers and models exposed as selectable capabilities to product surfaces.
  */
 
-import { classifyModel, type Catalog, type Provider } from '@cindy/model-providers';
+import {
+  classifyModel,
+  type Catalog,
+  type CatalogXdMediaKind,
+  type Provider,
+} from '@cindy/model-providers';
 import type { CindyRegion } from '@cindy/maker-shared/brand-identity';
 
 export interface ProviderAccessContext {
@@ -17,6 +22,12 @@ const CINDY_AI_PROVIDER_ID = 'xd';
 const MAINLAND_VIDEO_MODEL_IDS: ReadonlySet<string> = new Set([
   'seedance-fast',
   'seedance-pro',
+  'bytedance/seedance-2.5',
+]);
+const ALL_XD_MEDIA_KINDS: ReadonlySet<CatalogXdMediaKind> = new Set([
+  'image',
+  'video',
+  'embedding',
 ]);
 
 function projectVideoDefaults(
@@ -29,6 +40,54 @@ function projectVideoDefaults(
     ...(defaults.draft && allowedIds.has(defaults.draft) ? { draft: defaults.draft } : {}),
     ...(defaults.best && allowedIds.has(defaults.best) ? { best: defaults.best } : {}),
   };
+}
+
+/** Project only unverified Cindy-owned fallback media for regional builds. */
+export function projectUnverifiedCatalogFallbackForBuildRegion(
+  catalog: Catalog,
+  region: CindyRegion,
+  unverifiedKinds: ReadonlySet<CatalogXdMediaKind> = ALL_XD_MEDIA_KINDS,
+): Catalog {
+  if (region === 'global' || unverifiedKinds.size === 0) return catalog;
+  let changed = false;
+  const providers = catalog.providers.map((provider) => {
+    if (provider.id !== CINDY_AI_PROVIDER_ID) return provider;
+    const projectImage = unverifiedKinds.has('image');
+    const projectVideo = unverifiedKinds.has('video');
+    const projectEmbedding = unverifiedKinds.has('embedding');
+    const videoModels = projectVideo
+      ? (provider.videoModels ?? []).filter((model) => MAINLAND_VIDEO_MODEL_IDS.has(model.id))
+      : provider.videoModels;
+    const videoIds = new Set((videoModels ?? []).map((model) => model.id));
+    const videoDefaults = projectVideo
+      ? projectVideoDefaults(provider.videoDefaults, videoIds)
+      : provider.videoDefaults;
+    const models = Object.fromEntries(
+      Object.entries(provider.models).map(([agent, list]) => [
+        agent,
+        (list ?? []).filter((model) => {
+          const group = classifyModel(model);
+          if (group === 'image' && projectImage) return false;
+          if (group === 'embedding' && projectEmbedding) return false;
+          return group !== 'video' || !projectVideo || MAINLAND_VIDEO_MODEL_IDS.has(model.id);
+        }),
+      ]),
+    ) as Provider['models'];
+    const projected: Provider = {
+      ...provider,
+      models,
+      ...(projectImage ? { imageModels: [] } : {}),
+      ...(projectVideo ? { videoModels } : {}),
+      ...(projectEmbedding ? { embeddingModels: [] } : {}),
+    };
+    if (projectImage) delete projected.imageDefaults;
+    if (projectVideo) delete projected.videoDefaults;
+    if (projectEmbedding) delete projected.embeddingDefaults;
+    if (videoDefaults) projected.videoDefaults = videoDefaults;
+    changed = true;
+    return projected;
+  });
+  return changed ? { ...catalog, providers } : catalog;
 }
 
 /**
@@ -108,6 +167,15 @@ export function projectProviderCatalogForBuildRegion(
 /** Cindy AI requires a Cindy account session; every membership kind may select it. */
 export function isProviderSelectable(providerId: string, context: ProviderAccessContext): boolean {
   return !(providerId === CINDY_AI_PROVIDER_ID && context.canUseCindyGateway === false);
+}
+
+/** Whether the projected account catalog can route a Cindy-managed embedding model. */
+export function isCindyEmbeddingModelAvailable(catalog: Catalog, modelId: string): boolean {
+  return (
+    catalog.providers
+      .find((provider) => provider.id === CINDY_AI_PROVIDER_ID)
+      ?.embeddingModels?.some((model) => model.id === modelId) ?? false
+  );
 }
 
 /**

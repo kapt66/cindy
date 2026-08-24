@@ -18,11 +18,19 @@ export type IpcErrorCode =
   // 分开:后者是"本会话在跑"的短时状态;混用会让「新建会话/切模型」场景弹出误导性的
   // "会话运行中"文案(实际是别的会话挡住了凭证切换)。
   | 'CREDENTIAL_SWITCH_BUSY'
+  // Pi 热切 SuperGrok 时 switch_session 未确认，任务已终止。
+  | 'PI_CATALOG_RELOAD_UNCONFIRMED'
   // 远端 Claude 路由 materialization 失败(remote-claude-route.ts):
   // 供应商凭证 mutation 窗口(稍后重试)/ 远端不可表达(换来源)/ 订阅未连接(连接 Claude.ai)。
   | 'REMOTE_PROVIDER_UPDATING'
   | 'REMOTE_PROVIDER_UNSUPPORTED'
   | 'REMOTE_NATIVE_OAUTH_UNAVAILABLE'
+  // 远端 Pi 会话启动时 Cindy AI gateway endpoint 未就绪(登录后自动下发):
+  // renderer 走 logic.errors.remoteError.REMOTE_GATEWAY_ENDPOINT_UNAVAILABLE。
+  | 'REMOTE_GATEWAY_ENDPOINT_UNAVAILABLE'
+  // 远端 Pi 会话选了 baseUrl 指向本机 loopback 的 BYOM provider(Ollama 等):
+  // 远端进程连不到本机服务, 创建时拒绝并引导换网关/远端可达 BYOM。
+  | 'REMOTE_LOCAL_ONLY_PROVIDER'
   // 远端切模/切来源需要不同路由(claude-code setModel 守卫):提示重建会话。
   | 'REMOTE_MODEL_SWITCH_ROUTE_CHANGE'
   | 'NO_LIVE_QUERY'
@@ -49,6 +57,7 @@ export type IpcErrorCode =
   | 'REWIND_GIT_FAILED'
   | 'REWIND_UNSUPPORTED_HISTORY'
   | 'REWIND_TARGET_NOT_LATEST'
+  | 'TURN_CHANGE_GIT_UNAVAILABLE'
   // multi-worker
   | 'DUPLICATE_LABEL'
   | 'WORKER_CREATION_IN_PROGRESS'
@@ -59,6 +68,9 @@ export type IpcErrorCode =
   | 'BUDGET_MODEL_REQUIRES_API_MODE'
   | 'NO_PROVIDER_FOR_AGENT'
   | 'PROVIDER_ROUTE_UNAVAILABLE'
+  // AI 重新命名：仅暴露用户可以采取明确行动的失败原因。
+  | 'TITLE_NO_MATERIAL'
+  | 'TITLE_PROVIDER_UNSUPPORTED'
   // 会话内 /goal
   | 'GOAL_ALREADY_ACTIVE'
   | 'GOAL_NOT_FOUND'
@@ -70,6 +82,10 @@ export type IpcErrorCode =
   | 'SSH_AUTH_FAILED'
   | 'SSH_CONFIG_IO_FAILED'
   | 'SSH_HOST_NOT_FOUND'
+  // remote-ssh：配置的私钥文件在磁盘上不存在/不可读。与 SSH_CONNECT_FAILED 分开——
+  // 这是本机路径问题（缺失 / ~ 未展开 / 路径被改写），不是网络或服务器错误，renderer
+  // 据此显示明确的路径错误并允许重新选择密钥 / 编辑主机。
+  | 'SSH_KEY_FILE_NOT_FOUND'
   // remote-ssh：远端 agent 阶段
   | 'SSH_NOT_CONNECTED'
   | 'SSH_INSTALL_FAILED'
@@ -113,6 +129,52 @@ export type IpcErrorCode =
   | 'RIGHT_SIDEBAR_TOO_MANY_TABS' // 单 session 超 20 个 tab
   | 'RIGHT_SIDEBAR_UNKNOWN_KIND' // kind 不在 plugin registry 里
   | 'RIGHT_SIDEBAR_STATE_TOO_LARGE' // 单 tab state JSON 序列化 > 16KB
+  // iOS Simulator Host。code 是可跨 IPC 暴露的稳定业务分类；底层命令、路径和
+  // subprocess message 必须只留在 Main 日志，不能作为 IpcError.message 返回。
+  | 'IOS_SIMULATOR_PLUGIN_REQUIRED'
+  | 'IOS_SIMULATOR_PLUGIN_DISABLED'
+  | 'IOS_SIMULATOR_DISABLED'
+  | 'IOS_SIMULATOR_PLUGIN_SESSION_UNAVAILABLE'
+  | 'INVALID_ARGUMENT'
+  | 'INSTANCE_NOT_FOUND'
+  | 'INSTANCE_NOT_OWNED'
+  | 'SIMULATOR_ATTACHED_ELSEWHERE'
+  | 'SESSION_INSTANCE_LIMIT_REACHED'
+  | 'DEVICE_CONTROL_NOT_GRANTED'
+  | 'DEVICE_BUSY'
+  | 'AGENT_MUTATION_PAUSED'
+  | 'MUTATION_CANCELLED'
+  | 'PI_PACKAGE_LIST_FAILED'
+  | 'PI_PACKAGE_MUTATION_FAILED'
+  | 'LEASE_EXPIRED'
+  | 'STALE_GENERATION'
+  | 'STALE_UI_SNAPSHOT'
+  | 'UI_WAIT_TIMEOUT'
+  | 'NATIVE_INPUT_UNAVAILABLE'
+  | 'INVALID_INSTANCE_STATE'
+  | 'SIMULATOR_NOT_FOUND'
+  | 'SIMULATOR_BOOT_FAILED'
+  | 'SIMULATOR_BOOT_TIMEOUT'
+  | 'SIMULATOR_SHUTDOWN_FAILED'
+  | 'SIMULATOR_CONTROL_FAILED'
+  | 'SIMULATOR_CREATE_FAILED'
+  | 'SIMULATOR_DELETE_FORBIDDEN'
+  | 'SIMULATOR_DELETE_FAILED'
+  | 'PROJECT_NOT_FOUND'
+  | 'AMBIGUOUS_XCODE_PROJECT'
+  | 'APP_BUILD_FAILED'
+  | 'APP_ARTIFACT_INVALID'
+  | 'APP_INSTALL_FAILED'
+  | 'APP_LAUNCH_FAILED'
+  | 'METRO_NOT_READY'
+  | 'APP_TERMINATE_FAILED'
+  | 'OPEN_URL_FAILED'
+  | 'SCREENSHOT_CAPTURE_FAILED'
+  | 'RESOURCE_LIMIT_REACHED'
+  | 'MEMORY_PRESSURE'
+  | 'RECORDING_ALREADY_ACTIVE'
+  | 'RECORDING_NOT_FOUND'
+  | 'RECORDING_FAILED'
   // RSB terminal tab(PTY 后端 + xterm.js)
   | 'TERMINAL_NOT_FOUND' // 指定 ptyId 不存在(可能已 dispose / 从未创建)
   | 'TERMINAL_SPAWN_FAILED' // node-pty spawn 抛错(权限 / 路径不可达等)
@@ -120,6 +182,7 @@ export type IpcErrorCode =
   | 'TERMINAL_ALREADY_DISPOSED' // 在已 dispose 的 session 上调 restart 等操作
   // 意识(.cindy 装入)
   | 'GHOST_FILE_INVALID' // 不是合法 zip / 缺 ghost.json / 清单不合格 / 超限
+  | 'GHOST_HOST_UNSUPPORTED' // 插件包合法，但当前 Cindy 不认识其 schema / capability slot
   | 'GHOST_COMMAND_CONFLICT' // 显式指令与已装意识撞名(装入拒绝)
   | 'GHOST_ID_RESERVED' // id 属官方保留前缀(cindy-),用户通道拒装(防抢注蹭凭证别名)
   // 自定义插件市场源(Git / 本地文件夹)
@@ -133,7 +196,9 @@ export type IpcErrorCode =
   | 'MODEL_ACCESS_FAILED' // 拉取/轮换失败(网络或服务端错误),可重试
   | 'MODEL_ACCESS_DISABLED' // 服务端灰度未启用(503)——走手填兜底
   | 'MODEL_ACCESS_UNSUPPORTED' // 企业未接入(403)——XD 网关不可用,不重试
+  | 'MODEL_CATALOG_FETCH_DISABLED' // 模型目录远程拉取被禁用(XDT_DISABLE_MODELS_FETCH),未发起请求
   | 'PLAN_CHANGE_NOT_AVAILABLE' // 当前订阅不能切换到目标套餐，可返回候选列表重选
+  | 'RESUME_NOT_AVAILABLE' // 当前订阅已到期、渠道协议失效或状态不可恢复
   // 钉钉机器人连接
   | 'DINGTALK_AUTH_FAILED' // Client ID / Client Secret 被钉钉拒绝
   | 'DINGTALK_NETWORK_FAILED' // 钉钉凭证校验接口不可达
@@ -164,7 +229,14 @@ export type IpcErrorCode =
   | 'THEME_CONTRAST_UNSUPPORTED' // 主题色板无法满足控件对比度约束
   | 'THEME_USES_INCLUDE' // VSCode 主题含 include(需基底才能完整解析)
   | 'THEME_WRITE_ERROR' // 落盘失败(权限/磁盘)
-  | 'THEME_IMPORT_INTERNAL'; // 意外异常
+  | 'THEME_IMPORT_INTERNAL' // 意外异常
+  // 客户端日志上报(log-upload:upload-now)。四种失败要能被 renderer 区分成不同文案:
+  // 「本构建没配上报目标」「还没同意隐私政策」「采到 0 条」「网络失败」是四种不同的用户处置。
+  | 'LOG_UPLOAD_UNAVAILABLE' // 本构建未配置上报目标 = 功能整体关闭
+  | 'PRIVACY_CONSENT_REQUIRED' // 未明示同意《隐私政策》
+  | 'LOG_UPLOAD_EMPTY' // 采集后没有任何可上报的记录
+  | 'LOG_UPLOAD_FAILED' // 上传失败(离线 / 被拒 / 超时)
+  | 'LOG_UPLOAD_BUSY'; // 已有一次上报在进行中
 
 export interface IpcError {
   code: IpcErrorCode;
@@ -185,9 +257,13 @@ const IPC_ERROR_CODES: ReadonlySet<IpcErrorCode> = new Set<IpcErrorCode>([
   'APP_SHORTCUTS_WRITE_FAILED',
   'NO_ACTIVE_TURN',
   'SESSION_RUNNING',
+  'CREDENTIAL_SWITCH_BUSY',
+  'PI_CATALOG_RELOAD_UNCONFIRMED',
   'REMOTE_PROVIDER_UPDATING',
   'REMOTE_PROVIDER_UNSUPPORTED',
   'REMOTE_NATIVE_OAUTH_UNAVAILABLE',
+  'REMOTE_GATEWAY_ENDPOINT_UNAVAILABLE',
+  'REMOTE_LOCAL_ONLY_PROVIDER',
   'REMOTE_MODEL_SWITCH_ROUTE_CHANGE',
   'NO_LIVE_QUERY',
   'MEKA_PROJECT_NOT_FOUND',
@@ -209,6 +285,7 @@ const IPC_ERROR_CODES: ReadonlySet<IpcErrorCode> = new Set<IpcErrorCode>([
   'REWIND_GIT_FAILED',
   'REWIND_UNSUPPORTED_HISTORY',
   'REWIND_TARGET_NOT_LATEST',
+  'TURN_CHANGE_GIT_UNAVAILABLE',
   'DUPLICATE_LABEL',
   'WORKER_CREATION_IN_PROGRESS',
   'WORKER_LIMIT_HARD_EXCEEDED',
@@ -218,6 +295,8 @@ const IPC_ERROR_CODES: ReadonlySet<IpcErrorCode> = new Set<IpcErrorCode>([
   'BUDGET_MODEL_REQUIRES_API_MODE',
   'NO_PROVIDER_FOR_AGENT',
   'PROVIDER_ROUTE_UNAVAILABLE',
+  'TITLE_NO_MATERIAL',
+  'TITLE_PROVIDER_UNSUPPORTED',
   'GOAL_ALREADY_ACTIVE',
   'GOAL_NOT_FOUND',
   'LEARN_BUSY',
@@ -226,6 +305,7 @@ const IPC_ERROR_CODES: ReadonlySet<IpcErrorCode> = new Set<IpcErrorCode>([
   'SSH_AUTH_FAILED',
   'SSH_CONFIG_IO_FAILED',
   'SSH_HOST_NOT_FOUND',
+  'SSH_KEY_FILE_NOT_FOUND',
   'SSH_NOT_CONNECTED',
   'SSH_INSTALL_FAILED',
   'SSH_EXEC_FAILED',
@@ -257,11 +337,56 @@ const IPC_ERROR_CODES: ReadonlySet<IpcErrorCode> = new Set<IpcErrorCode>([
   'RIGHT_SIDEBAR_TOO_MANY_TABS',
   'RIGHT_SIDEBAR_UNKNOWN_KIND',
   'RIGHT_SIDEBAR_STATE_TOO_LARGE',
+  'IOS_SIMULATOR_PLUGIN_REQUIRED',
+  'IOS_SIMULATOR_PLUGIN_DISABLED',
+  'IOS_SIMULATOR_DISABLED',
+  'IOS_SIMULATOR_PLUGIN_SESSION_UNAVAILABLE',
+  'INVALID_ARGUMENT',
+  'INSTANCE_NOT_FOUND',
+  'INSTANCE_NOT_OWNED',
+  'SIMULATOR_ATTACHED_ELSEWHERE',
+  'SESSION_INSTANCE_LIMIT_REACHED',
+  'DEVICE_CONTROL_NOT_GRANTED',
+  'DEVICE_BUSY',
+  'AGENT_MUTATION_PAUSED',
+  'MUTATION_CANCELLED',
+  'PI_PACKAGE_LIST_FAILED',
+  'PI_PACKAGE_MUTATION_FAILED',
+  'LEASE_EXPIRED',
+  'STALE_GENERATION',
+  'STALE_UI_SNAPSHOT',
+  'UI_WAIT_TIMEOUT',
+  'NATIVE_INPUT_UNAVAILABLE',
+  'INVALID_INSTANCE_STATE',
+  'SIMULATOR_NOT_FOUND',
+  'SIMULATOR_BOOT_FAILED',
+  'SIMULATOR_BOOT_TIMEOUT',
+  'SIMULATOR_SHUTDOWN_FAILED',
+  'SIMULATOR_CONTROL_FAILED',
+  'SIMULATOR_CREATE_FAILED',
+  'SIMULATOR_DELETE_FORBIDDEN',
+  'SIMULATOR_DELETE_FAILED',
+  'PROJECT_NOT_FOUND',
+  'AMBIGUOUS_XCODE_PROJECT',
+  'APP_BUILD_FAILED',
+  'APP_ARTIFACT_INVALID',
+  'APP_INSTALL_FAILED',
+  'APP_LAUNCH_FAILED',
+  'METRO_NOT_READY',
+  'APP_TERMINATE_FAILED',
+  'OPEN_URL_FAILED',
+  'SCREENSHOT_CAPTURE_FAILED',
+  'RESOURCE_LIMIT_REACHED',
+  'MEMORY_PRESSURE',
+  'RECORDING_ALREADY_ACTIVE',
+  'RECORDING_NOT_FOUND',
+  'RECORDING_FAILED',
   'TERMINAL_NOT_FOUND',
   'TERMINAL_SPAWN_FAILED',
   'TERMINAL_SHELL_NOT_FOUND',
   'TERMINAL_ALREADY_DISPOSED',
   'GHOST_FILE_INVALID',
+  'GHOST_HOST_UNSUPPORTED',
   'GHOST_COMMAND_CONFLICT',
   'GHOST_ID_RESERVED',
   'MARKET_SOURCE_INVALID',
@@ -273,7 +398,9 @@ const IPC_ERROR_CODES: ReadonlySet<IpcErrorCode> = new Set<IpcErrorCode>([
   'MODEL_ACCESS_FAILED',
   'MODEL_ACCESS_DISABLED',
   'MODEL_ACCESS_UNSUPPORTED',
+  'MODEL_CATALOG_FETCH_DISABLED',
   'PLAN_CHANGE_NOT_AVAILABLE',
+  'RESUME_NOT_AVAILABLE',
   'DINGTALK_AUTH_FAILED',
   'DINGTALK_NETWORK_FAILED',
   'DINGTALK_STREAM_CONNECTION_FAILED',
@@ -300,10 +427,29 @@ const IPC_ERROR_CODES: ReadonlySet<IpcErrorCode> = new Set<IpcErrorCode>([
   'THEME_USES_INCLUDE',
   'THEME_WRITE_ERROR',
   'THEME_IMPORT_INTERNAL',
+  'LOG_UPLOAD_UNAVAILABLE',
+  'PRIVACY_CONSENT_REQUIRED',
+  'LOG_UPLOAD_EMPTY',
+  'LOG_UPLOAD_FAILED',
+  'LOG_UPLOAD_BUSY',
 ]);
 
 export function isIpcErrorCode(code: unknown): code is IpcErrorCode {
   return typeof code === 'string' && IPC_ERROR_CODES.has(code as IpcErrorCode);
+}
+
+/**
+ * 标准 IpcError 构造器 —— main 的 throwIpcError 与 renderer 侧预检共用同一形状
+ * (`[code] message` + err.code),避免两处手写漂移。isIpcError 按 err.code 判定,
+ * 不依赖 err.name。
+ */
+export function createIpcError(
+  code: IpcErrorCode,
+  message: string,
+): Error & { code: IpcErrorCode } {
+  const err = new Error(`[${code}] ${message}`) as Error & { code: IpcErrorCode };
+  err.code = code;
+  return err;
 }
 
 export function isIpcError(err: unknown): err is Error & { code: IpcErrorCode } {

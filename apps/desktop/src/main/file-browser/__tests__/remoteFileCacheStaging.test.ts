@@ -22,11 +22,9 @@ vi.mock('../../logger.js', () => ({
 
 const {
   cleanupOwnedUnpersistedStagedChatAttachments,
-  cleanupStagedChatAttachments,
   getChatAttachmentCacheRoot,
   getChatAttachmentOwnerCacheRoot,
   getRemoteFileCacheRoot,
-  removeStagedChatAttachment,
   stageLocalFileToCache,
   sweepCacheOnStartup,
   sweepStagedChatAttachmentsOnStartup,
@@ -116,24 +114,81 @@ describe('chat attachment staging cache', () => {
     await expect(fs.stat(otherOwnerPath)).resolves.toBeDefined();
   });
 
-  it('removes only controlled .bin files', async () => {
-    const root = getChatAttachmentCacheRoot();
-    await fs.mkdir(root, { recursive: true });
-    const stagedPath = path.join(root, 'staged.bin');
-    const safeNamePath = path.join(root, 'staged.exe');
-    const directoryPath = path.join(root, 'directory.bin');
-    const outsidePath = path.join(userDataDir, 'outside.bin');
-    await fs.writeFile(stagedPath, 'staged');
-    await fs.writeFile(safeNamePath, 'safe');
-    await fs.mkdir(directoryPath);
-    await fs.writeFile(outsidePath, 'outside');
+  it('does not load persisted paths when the owner cache has no stale files', async () => {
+    const loadProtectedPaths = vi.fn(async () => {
+      throw new Error('must not query message bodies when there is nothing to sweep');
+    });
 
-    await cleanupStagedChatAttachments([stagedPath, safeNamePath, directoryPath, outsidePath]);
+    await expect(
+      sweepStagedChatAttachmentsOnStartup({
+        ownerId: 'owner-empty',
+        createdBeforeMs: Date.now() - 1_000,
+        loadProtectedPaths,
+      }),
+    ).resolves.toMatchObject({ inspected: 0, removed: 0, protected: 0 });
+    expect(loadProtectedPaths).not.toHaveBeenCalled();
 
-    await expect(fs.stat(stagedPath)).rejects.toMatchObject({ code: 'ENOENT' });
-    await expect(fs.stat(safeNamePath)).resolves.toBeDefined();
-    await expect(fs.stat(directoryPath)).resolves.toBeDefined();
-    await expect(fs.stat(outsidePath)).resolves.toBeDefined();
+    const ownerRoot = getChatAttachmentOwnerCacheRoot('owner-fresh');
+    await fs.mkdir(ownerRoot, { recursive: true });
+    const freshPath = path.join(ownerRoot, 'fresh.bin');
+    await fs.writeFile(freshPath, 'fresh');
+
+    await expect(
+      sweepStagedChatAttachmentsOnStartup({
+        ownerId: 'owner-fresh',
+        createdBeforeMs: Date.now() - 1_000,
+        loadProtectedPaths,
+      }),
+    ).resolves.toMatchObject({ inspected: 1, removed: 0, protected: 0 });
+    expect(loadProtectedPaths).not.toHaveBeenCalled();
+    await expect(fs.stat(freshPath)).resolves.toBeDefined();
+  });
+
+  it('loads persisted paths only after it finds stale cache files', async () => {
+    const ownerId = 'owner-stale';
+    const ownerRoot = getChatAttachmentOwnerCacheRoot(ownerId);
+    await fs.mkdir(ownerRoot, { recursive: true });
+    const orphanPath = path.join(ownerRoot, 'orphan.bin');
+    const protectedPath = path.join(ownerRoot, 'protected.bin');
+    await Promise.all([fs.writeFile(orphanPath, 'orphan'), fs.writeFile(protectedPath, 'kept')]);
+    const oldTime = new Date(Date.now() - 60_000);
+    await Promise.all([
+      fs.utimes(orphanPath, oldTime, oldTime),
+      fs.utimes(protectedPath, oldTime, oldTime),
+    ]);
+    const loadProtectedPaths = vi.fn(async () => [protectedPath]);
+
+    await expect(
+      sweepStagedChatAttachmentsOnStartup({
+        ownerId,
+        createdBeforeMs: Date.now() - 1_000,
+        loadProtectedPaths,
+      }),
+    ).resolves.toMatchObject({ inspected: 2, removed: 1, protected: 1 });
+    expect(loadProtectedPaths).toHaveBeenCalledOnce();
+    await expect(fs.stat(orphanPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(fs.stat(protectedPath)).resolves.toBeDefined();
+  });
+
+  it('stops before deleting when the owner is no longer current', async () => {
+    const ownerId = 'owner-switch';
+    const ownerRoot = getChatAttachmentOwnerCacheRoot(ownerId);
+    await fs.mkdir(ownerRoot, { recursive: true });
+    const orphanPath = path.join(ownerRoot, 'orphan.bin');
+    await fs.writeFile(orphanPath, 'orphan');
+    await fs.utimes(orphanPath, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
+    const loadProtectedPaths = vi.fn(async () => []);
+
+    await expect(
+      sweepStagedChatAttachmentsOnStartup({
+        ownerId,
+        createdBeforeMs: Date.now() - 1_000,
+        loadProtectedPaths,
+        canContinue: () => false,
+      }),
+    ).resolves.toMatchObject({ inspected: 1, removed: 0, protected: 0 });
+    expect(loadProtectedPaths).not.toHaveBeenCalled();
+    await expect(fs.stat(orphanPath)).resolves.toBeDefined();
   });
 
   it('renderer cleanup removes only current-owner files not retained by messages', async () => {
@@ -181,11 +236,5 @@ describe('chat attachment staging cache', () => {
     });
 
     await expect(fs.stat(draftPath)).resolves.toBeDefined();
-  });
-
-  it('is idempotent when the staged file is already gone', async () => {
-    await expect(removeStagedChatAttachment(path.join(getChatAttachmentCacheRoot(), 'gone.bin'))).resolves.toBe(
-      false,
-    );
   });
 });

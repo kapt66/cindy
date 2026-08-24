@@ -36,6 +36,11 @@ vi.mock('@cindy/mcps', () => ({
     mockState.capturedProvidersConfig = config;
     return [
       {
+        name: 'cindy_ios_simulator',
+        isEnabled: () => true,
+        toClaudeSdkConfig: () => null,
+      },
+      {
         name: 'cindy_orca',
         isEnabled: () => true,
         toClaudeSdkConfig: () => null,
@@ -46,7 +51,8 @@ vi.mock('@cindy/mcps', () => ({
 
 vi.mock('../../maker-host/plugins/builtin-plugins.js', () => ({
   BUILTIN_LIZI_MCP_IDS: ['cindy_orca', 'cindy_helper'],
-  pluginIdForProviderName: (name: string) => (name === 'cindy_orca' ? 'collab' : name),
+  pluginIdForProviderName: (name: string) =>
+    name === 'cindy_orca' ? 'collab' : name === 'cindy_ios_simulator' ? 'ios-simulator' : name,
 }));
 
 vi.mock('../../maker-host/index.js', () => ({
@@ -131,6 +137,13 @@ function createCollabService(overrides: Record<string, ReturnType<typeof vi.fn>>
     getWorkspaceInfo: vi.fn(),
     getWorkerStatus: vi.fn(),
     readWorker: vi.fn(),
+    listSessionQueue: vi.fn(),
+    listSessionQueuedCounts: vi.fn(),
+    updateSessionQueuedMessage: vi.fn(),
+    cancelSessionQueuedMessage: vi.fn(),
+    steerSession: vi.fn(),
+    stopSessionTurn: vi.fn(),
+    getSessionRuntime: vi.fn(),
     ...overrides,
   };
 }
@@ -154,13 +167,23 @@ describe('collab send outcome semantics', () => {
       getMakerMemoryManager: vi.fn(),
       lspPool: {} as never,
       pluginRegistry: { isEnabled: () => false } as never,
+      resolveIOSSimulatorAccess: () => ({ allowed: true }),
       invokeRemote: vi.fn(),
     });
     const orcaProvider = providers.find((provider) => provider.name === 'cindy_orca');
+    const iosSimulatorProvider = providers.find(
+      (provider) => provider.name === 'cindy_ios_simulator',
+    );
 
     expect(orcaProvider).toBeDefined();
     expect(
       orcaProvider?.isEnabled?.({
+        agentKind: 'claude-code',
+        workingDir: 'C:/projects/cindy',
+      } as never),
+    ).toBe(true);
+    expect(
+      iosSimulatorProvider?.isEnabled?.({
         agentKind: 'claude-code',
         workingDir: 'C:/projects/cindy',
       } as never),
@@ -185,7 +208,11 @@ describe('collab send outcome semantics', () => {
 
   it('reports enable_collab_mode delegate_task created-but-not-dispatched distinctly', async () => {
     const result = await resolveCollabDispatchResult(
-      () => Promise.resolve({ accepted: false, reason: 'cancelled-before-dispatch' } satisfies SessionSendResult),
+      () =>
+        Promise.resolve({
+          accepted: false,
+          reason: 'cancelled-before-dispatch',
+        } satisfies SessionSendResult),
       collabMeta(),
     );
 
@@ -203,7 +230,11 @@ describe('collab send outcome semantics', () => {
 
   it('keeps createWorker initialTask accepted false out of running state', async () => {
     const result = await resolveCollabDispatchResult(
-      () => Promise.resolve({ accepted: false, reason: 'cancelled-before-dispatch' } satisfies SessionSendResult),
+      () =>
+        Promise.resolve({
+          accepted: false,
+          reason: 'cancelled-before-dispatch',
+        } satisfies SessionSendResult),
       collabMeta({
         context: 'create_worker/worker-session-2/initial_task',
       }),
@@ -218,12 +249,16 @@ describe('collab send outcome semantics', () => {
   });
 
   it('maps thrown send errors, SESSION_RUNNING, and onAccepted rejects to typed host outcomes', async () => {
-    const sessionRunningError = new Error('SESSION_RUNNING: prompt text USER_MESSAGE TOKEN_VALUE file body') as Error & { code?: string };
+    const sessionRunningError = new Error(
+      'SESSION_RUNNING: prompt text USER_MESSAGE TOKEN_VALUE file body',
+    ) as Error & { code?: string };
     sessionRunningError.code = 'SESSION_RUNNING';
     const genericSendError = new Error('PROMPT_SECRET full user message TOKEN_VALUE file body');
     const onAcceptedReject = new Error('USER_MESSAGE token value file contents');
 
-    await expect(resolveCollabDispatchResult(() => Promise.reject(sessionRunningError), collabMeta())).resolves.toMatchObject({
+    await expect(
+      resolveCollabDispatchResult(() => Promise.reject(sessionRunningError), collabMeta()),
+    ).resolves.toMatchObject({
       dispatched: false,
       dispatchOutcome: {
         kind: 'host-send',
@@ -231,7 +266,9 @@ describe('collab send outcome semantics', () => {
         code: 'SESSION_RUNNING',
       },
     });
-    await expect(resolveCollabDispatchResult(() => Promise.reject(genericSendError), collabMeta())).resolves.toMatchObject({
+    await expect(
+      resolveCollabDispatchResult(() => Promise.reject(genericSendError), collabMeta()),
+    ).resolves.toMatchObject({
       dispatched: false,
       dispatchOutcome: {
         kind: 'host-send',
@@ -239,7 +276,10 @@ describe('collab send outcome semantics', () => {
         code: 'SEND_FAILED',
       },
     });
-    const onAcceptedResult = await resolveCollabDispatchResult(() => Promise.reject(onAcceptedReject), collabMeta());
+    const onAcceptedResult = await resolveCollabDispatchResult(
+      () => Promise.reject(onAcceptedReject),
+      collabMeta(),
+    );
     expect(onAcceptedResult).toMatchObject({
       dispatched: false,
       dispatchOutcome: {
@@ -251,7 +291,9 @@ describe('collab send outcome semantics', () => {
   });
 
   it('logs required ownership fields without prompt text, full messages, tokens, or file contents', async () => {
-    const err = new Error('PROMPT_SECRET full user message TOKEN_VALUE file body') as Error & { code?: string };
+    const err = new Error('PROMPT_SECRET full user message TOKEN_VALUE file body') as Error & {
+      code?: string;
+    };
     err.code = 'SESSION_RUNNING';
     const result = await resolveCollabDispatchResult(() => Promise.reject(err), collabMeta());
     expect(result.dispatched).toBe(false);
@@ -306,7 +348,8 @@ describe('collab send outcome semantics', () => {
           dispatched: false,
           reason: 'cancelled-before-dispatch',
           context: 'enable_collab_mode/worker-session-1/delegate_task',
-          message: 'Session send was cancelled before vendor dispatch: enable_collab_mode/worker-session-1/delegate_task',
+          message:
+            'Session send was cancelled before vendor dispatch: enable_collab_mode/worker-session-1/delegate_task',
         },
       }),
     });
@@ -315,6 +358,7 @@ describe('collab send outcome semantics', () => {
       getMakerMemoryManager: vi.fn(),
       lspPool: {} as never,
       pluginRegistry: { isEnabled: () => true } as never,
+      resolveIOSSimulatorAccess: () => ({ allowed: true }),
       invokeRemote: vi.fn(),
     });
     const orca = (mockState.capturedProvidersConfig?.orca ?? {}) as {
@@ -363,6 +407,7 @@ describe('collab send outcome semantics', () => {
       getMakerMemoryManager: vi.fn(),
       lspPool: {} as never,
       pluginRegistry: { isEnabled: () => true } as never,
+      resolveIOSSimulatorAccess: () => ({ allowed: true }),
       invokeRemote: vi.fn(),
     });
     const orca = (mockState.capturedProvidersConfig?.orca ?? {}) as {
@@ -391,7 +436,8 @@ describe('collab send outcome semantics', () => {
   });
 
   it('settles the combat server gate only from the actual create_worker result', async () => {
-    const task = '[SAGA2_SERVER_EXPLORATION_READ_ONLY] [SAGA2_MODULE_FIRST] skill-entry-model atomic capabilities residual server gap: inspect runtime support';
+    const task =
+      '[SAGA2_SERVER_EXPLORATION_READ_ONLY] [SAGA2_MODULE_FIRST] skill-entry-model atomic capabilities residual server gap: inspect runtime support';
     const vendorOptions = {
       source: 'meka',
       mekaProjectId: 'saga2',
@@ -424,6 +470,7 @@ describe('collab send outcome semantics', () => {
       getMakerMemoryManager: vi.fn(),
       lspPool: {} as never,
       pluginRegistry: { isEnabled: () => true } as never,
+      resolveIOSSimulatorAccess: () => ({ allowed: true }),
       invokeRemote: vi.fn(),
     });
     const firstOrca = (mockState.capturedProvidersConfig?.orca ?? {}) as {
@@ -474,7 +521,8 @@ describe('collab send outcome semantics', () => {
   });
 
   it('rolls back the combat gate when the Orca host is unavailable before dispatch', async () => {
-    const task = '[SAGA2_SERVER_EXPLORATION_READ_ONLY] [SAGA2_MODULE_FIRST] skill-entry-model atomic capabilities residual server gap: inspect runtime support';
+    const task =
+      '[SAGA2_SERVER_EXPLORATION_READ_ONLY] [SAGA2_MODULE_FIRST] skill-entry-model atomic capabilities residual server gap: inspect runtime support';
     const vendorOptions = {
       source: 'meka',
       mekaProjectId: 'saga2',
@@ -495,6 +543,7 @@ describe('collab send outcome semantics', () => {
       getMakerMemoryManager: vi.fn(),
       lspPool: {} as never,
       pluginRegistry: { isEnabled: () => true } as never,
+      resolveIOSSimulatorAccess: () => ({ allowed: true }),
       invokeRemote: vi.fn(),
     });
     const orca = (mockState.capturedProvidersConfig?.orca ?? {}) as {
@@ -547,34 +596,49 @@ describe('collab send outcome semantics', () => {
       getMakerMemoryManager: vi.fn(),
       lspPool: {} as never,
       pluginRegistry: { isEnabled: () => true } as never,
+      resolveIOSSimulatorAccess: () => ({ allowed: true }),
       invokeRemote: vi.fn(),
     });
     const orca = (mockState.capturedProvidersConfig?.orca ?? {}) as {
       getWorkspaceInfo: (params: { leadSessionId: string }) => Promise<Record<string, unknown>>;
-      getWorkerStatus: (params: { leadSessionId: string; workerId: string }) => Promise<Record<string, unknown>>;
-      readWorker: (params: { leadSessionId: string; workerId: string }) => Promise<Record<string, unknown>>;
+      getWorkerStatus: (params: {
+        leadSessionId: string;
+        workerId: string;
+      }) => Promise<Record<string, unknown>>;
+      readWorker: (params: {
+        leadSessionId: string;
+        workerId: string;
+      }) => Promise<Record<string, unknown>>;
     };
 
-    await expect(orca.getWorkspaceInfo({ leadSessionId: 'lead-without-active-team' })).resolves.toMatchObject({
+    await expect(
+      orca.getWorkspaceInfo({ leadSessionId: 'lead-without-active-team' }),
+    ).resolves.toMatchObject({
       ok: true,
       workflow: null,
       ui_capacity: 1,
       worker_count: 0,
       workers: [],
     });
-    await expect(orca.getWorkerStatus({ leadSessionId: 'lead-1', workerId: 'worker-1' })).resolves.toMatchObject({
+    await expect(
+      orca.getWorkerStatus({ leadSessionId: 'lead-1', workerId: 'worker-1' }),
+    ).resolves.toMatchObject({
       ok: true,
       worker_id: 'worker-1',
       session_id: 'worker-session-1',
       session_status: 'not_running',
       restored_from_storage: true,
     });
-    await expect(orca.readWorker({ leadSessionId: 'lead-1', workerId: 'worker-1' })).resolves.toMatchObject({
+    await expect(
+      orca.readWorker({ leadSessionId: 'lead-1', workerId: 'worker-1' }),
+    ).resolves.toMatchObject({
       ok: true,
       worker_id: 'worker-1',
       result: 'latest assistant output',
     });
-    expect(mockState.collabService.getWorkspaceInfo).toHaveBeenCalledWith({ leadSessionId: 'lead-without-active-team' });
+    expect(mockState.collabService.getWorkspaceInfo).toHaveBeenCalledWith({
+      leadSessionId: 'lead-without-active-team',
+    });
     expect(mockState.collabService.getWorkerStatus).toHaveBeenCalledWith({
       leadSessionId: 'lead-1',
       workerId: 'worker-1',
@@ -585,5 +649,89 @@ describe('collab send outcome semantics', () => {
     });
     expect(mockState.collabService.startTeam).not.toHaveBeenCalled();
     expect(mockState.collabService.createWorker).not.toHaveBeenCalled();
+  });
+
+  it('exposes arbitrary session queue reads through cindy_helper without Lead ownership', async () => {
+    mockState.collabService = createCollabService({
+      listSessionQueue: vi.fn().mockResolvedValue({
+        ok: true,
+        messages: [{ queuedMessageId: 'q-1', position: 0 }],
+      }),
+      listSessionQueuedCounts: vi.fn().mockResolvedValue({
+        ok: true,
+        counts: { 'session-1': 1 },
+      }),
+    });
+
+    createDesktopMcpProviders({
+      getMakerMemoryManager: vi.fn(),
+      lspPool: {} as never,
+      pluginRegistry: { isEnabled: () => true } as never,
+      resolveIOSSimulatorAccess: () => ({ allowed: true }),
+      invokeRemote: vi.fn(),
+    });
+    const xdtHelper = mockState.capturedProvidersConfig?.xdtHelper as {
+      sessionQueue: {
+        listSessionQueue: (sessionId: string) => Promise<Record<string, unknown>>;
+        listSessionQueuedCounts: (sessionIds: string[]) => Promise<Record<string, unknown>>;
+      };
+    };
+
+    await expect(xdtHelper.sessionQueue.listSessionQueue('session-1')).resolves.toMatchObject({
+      ok: true,
+      messages: [{ queuedMessageId: 'q-1', position: 0 }],
+    });
+    await expect(xdtHelper.sessionQueue.listSessionQueuedCounts(['session-1'])).resolves.toEqual({
+      ok: true,
+      counts: { 'session-1': 1 },
+    });
+    expect(mockState.collabService.listSessionQueue).toHaveBeenCalledWith('session-1');
+    expect(mockState.collabService.listSessionQueuedCounts).toHaveBeenCalledWith(['session-1']);
+  });
+
+  it('preserves retryable host-readiness errors at the cindy_helper control boundary', async () => {
+    mockState.collabService = createCollabService({
+      listSessionQueue: vi.fn().mockRejectedValue(new Error('DbClient not ready')),
+      listSessionQueuedCounts: vi.fn().mockRejectedValue(new Error('localDb not ready')),
+      stopSessionTurn: vi.fn().mockRejectedValue({
+        code: 'HOST_NOT_READY',
+        message: 'database owner unavailable',
+      }),
+      getSessionRuntime: vi.fn().mockRejectedValue(new Error('storage read failed')),
+    });
+
+    createDesktopMcpProviders({
+      getMakerMemoryManager: vi.fn(),
+      lspPool: {} as never,
+      pluginRegistry: { isEnabled: () => true } as never,
+      resolveIOSSimulatorAccess: () => ({ allowed: true }),
+      invokeRemote: vi.fn(),
+    });
+    const xdtHelper = mockState.capturedProvidersConfig?.xdtHelper as {
+      sessionQueue: {
+        listSessionQueue: (sessionId: string) => Promise<Record<string, unknown>>;
+        listSessionQueuedCounts: (sessionIds: string[]) => Promise<Record<string, unknown>>;
+      };
+      sessionControl: {
+        stopSessionTurn: (params: { targetSessionId: string }) => Promise<Record<string, unknown>>;
+        getSessionRuntime: (params: {
+          targetSessionId: string;
+        }) => Promise<Record<string, unknown>>;
+      };
+    };
+
+    await expect(xdtHelper.sessionQueue.listSessionQueue('session-1')).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'HOST_NOT_READY',
+    });
+    await expect(
+      xdtHelper.sessionQueue.listSessionQueuedCounts(['session-1']),
+    ).resolves.toMatchObject({ ok: false, errorCode: 'HOST_NOT_READY' });
+    await expect(
+      xdtHelper.sessionControl.stopSessionTurn({ targetSessionId: 'session-1' }),
+    ).resolves.toMatchObject({ ok: false, errorCode: 'HOST_NOT_READY' });
+    await expect(
+      xdtHelper.sessionControl.getSessionRuntime({ targetSessionId: 'session-1' }),
+    ).resolves.toMatchObject({ ok: false, errorCode: 'INTERNAL' });
   });
 });

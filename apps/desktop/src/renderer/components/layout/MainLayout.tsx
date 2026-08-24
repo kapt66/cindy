@@ -1,16 +1,17 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import { BrowserWebviewPool } from '@/components/layout/BrowserWebviewPool';
 import { ChromeActions } from '@/components/layout/ChromeActions';
+import { shouldReserveLeftChromeActions } from '@/components/layout/chromeActionsLayout';
 import { ContentHeaderSlot } from '@/components/layout/ContentHeader';
 import { rightSidebarOwnsRailChromeActions as resolveRightSidebarRailChromeActionsOwner } from '@/components/layout/railChromeActions';
 import { FadeSwitcher } from '@/components/layout/FadeSwitcher';
 import { RightSidebar, type RightSidebarHandle } from '@/components/layout/RightSidebar';
-import { RightSidebarMaximize } from '@/components/layout/RightSidebarMaximize';
 import { RightSidebarToggle } from '@/components/layout/RightSidebarToggle';
 import { Sidebar } from '@/components/sidebar/Sidebar';
+import { getSplitSessionIds, useSplitGroup } from '@/features/cc-agent/splitGroupStore';
 import { LayoutRoot } from '@/layout/LayoutRoot';
 import { PanelDragController } from '@/layout/PanelDragController';
 import { GhostMediaLightboxHost } from '@/cindy-brain/GhostMediaLightboxHost';
@@ -30,7 +31,9 @@ import { SessionShareImportWizard } from '@/components/settings/SessionShareImpo
 import { MekaRouterConnectDialog } from '@/components/settings/MekaRouterConnectDialog';
 import type { MekaRouterSettingsView } from '../../../shared/meka-router';
 import { ControlledBanner } from '@/features/remote-device/ControlledBanner';
+import { CredentialStoreBanner } from '@/components/layout/CredentialStoreBanner';
 import { useDeviceLinkRemoteProjects } from '@/features/device-link/useDeviceLinkRemoteProjects';
+import { pluginScheduleNavigationState } from '@/features/scheduler/lib/pluginScheduleCreateIntent';
 import { FeatureSidebarSlotProvider } from '@/features/feature-context';
 import { useAppShortcut } from '@/hooks/useAppShortcut';
 import { useCloseShortcutShellOwner } from '@/hooks/useCloseWindowShortcut';
@@ -39,7 +42,9 @@ import {
   closeTab,
   ensureHydrated,
   getBucket,
-  invalidateSessionCaches,
+  getTabSnapshot,
+  importTabSnapshot,
+  resetCachesForHostTransition,
 } from '@/features/right-sidebar/store';
 import { browserWebviewPool } from '@/features/right-sidebar/lib/browserWebviewPool';
 import { markAllPtyDetached } from '@/features/right-sidebar/plugins/terminal/lib/xtermPool';
@@ -52,7 +57,7 @@ import { didUserCloseDetachedSidebarWindow } from '@/lib/rsbWindowTransitions';
 import { routeSidebarCommand } from '@/features/right-sidebar/lib/detachedSidebarRouting';
 import { openTerminalFromShortcut } from '@/features/right-sidebar/lib/openTerminalShortcut';
 import { executeSidebarCommand } from '@/features/right-sidebar/lib/executeSidebarCommand';
-import { RightSidebarDetach } from '@/components/layout/RightSidebarDetach';
+import { openUrlInSidebarBrowser } from '@/features/right-sidebar/lib/openInSidebarBrowser';
 import { useSidebarResize } from '@/hooks/useSidebarResize';
 import { useSidebarCardMode } from '@/hooks/useSidebarCardMode';
 import { useSidebarPeek } from '@/hooks/useSidebarPeek';
@@ -64,24 +69,32 @@ import {
 import { isSecondaryWindow } from '@/lib/secondaryWindow';
 import { useUpdateNotice } from '@/hooks/useUpdateNotice';
 import { syncNotificationsEnabledToMain } from '@/hooks/useNotificationSettings';
-import { isAgentIslandSupported, toggleAgentIslandSoundEnabled } from '@/hooks/useAgentIslandSettings';
+import {
+  isAgentIslandSupported,
+  toggleAgentIslandSoundEnabled,
+} from '@/hooks/useAgentIslandSettings';
 import { requestNewWorkerFromShortcut } from '@/features/cc-agent/lib/newWorkerShortcut';
 // chat-data-localization F1 V0.4 / M-FE6
 import { useCorruptionRestoredToast } from '@/hooks/useCorruptionRestoredToast';
 // #37 schema-drift release-side toast
 import { useSchemaDriftWarningToast } from '@/hooks/useSchemaDriftWarningToast';
 import { useVoiceInputShortcutRecoveryToast } from '@/hooks/useVoiceInputShortcutRecoveryToast';
+import { usePluginRemovalNoticeToast } from '@/hooks/usePluginRemovalNoticeToast';
+import { usePluginUpgradeNoticeToast } from '@/hooks/usePluginUpgradeNoticeToast';
 import { requestProjectFocus } from '@/state/pendingProjectFocus';
 import { patchDraft } from '@/state/newMakerDraft';
 import { cn } from '@/lib/utils';
 import { checkForUpdateWithToast } from '@/lib/checkForUpdateWithToast';
 import { createLogger } from '@/lib/logger';
+import { subscribeWorkLouderCodexAction } from '@/lib/workLouderCodexActions';
 import { cleanupLegacyGlobalKeys } from '@/lib/sessionLayoutPrefs';
 import {
   onRequestRightSidebarVisibility,
   requestRightSidebarVisibility,
   shouldAnimateSidebarVisibilityRequest,
 } from '@/features/right-sidebar/lib/sidebarCommands';
+import { requestSessionSwitch } from '@/features/cc-agent/lib/sessionSwitchCommands';
+import { makeFolderPickerNewMakerRouteState } from '@/features/cc-agent/lib/newMakerRouteState';
 import { resolveSessionRoute } from '@/lib/orcaSessionIdentity';
 import { remoteProjectsStore } from '@/features/device-link/remoteProjectsStore';
 import {
@@ -122,6 +135,7 @@ interface RightSidebarSessionDeclarationOptions {
 }
 
 const applicationMenuLog = createLogger('ApplicationMenu');
+const log = createLogger('MainLayout');
 // Keep in sync with single-segment static routes under /cc-agent in router.tsx.
 const CC_AGENT_STATIC_SEGMENTS = ['boot', 'files', 'new', 'new-dialogue', 'orca', 'scheduled'];
 
@@ -208,6 +222,7 @@ function SidebarPinSpacer({ width }: { width: number }) {
 }
 
 export function MainLayout() {
+  const splitGroup = useSplitGroup();
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(getInitialCollapsed);
   const [routerLoginOpen, setRouterLoginOpen] = useState(false);
   const [routerLoginSettings, setRouterLoginSettings] = useState<MekaRouterSettingsView | null>(null);
@@ -272,6 +287,10 @@ export function MainLayout() {
   const [rightSidebarSessionId, setRightSidebarSessionId] = useState<string | null>(null);
   const rightSidebarSessionIdRef = useRef(rightSidebarSessionId);
   rightSidebarSessionIdRef.current = rightSidebarSessionId;
+  const isRightSidebarCollapsedRef = useRef(isRightSidebarCollapsed);
+  isRightSidebarCollapsedRef.current = isRightSidebarCollapsed;
+  const rsbDetachedRef = useRef(rsbDetached);
+  rsbDetachedRef.current = rsbDetached;
   const declareRightSidebarSessionId = useCallback(
     (sessionId: string | null, opts: RightSidebarSessionDeclarationOptions = {}) => {
       rightSidebarSessionIdRef.current = sessionId;
@@ -429,14 +448,22 @@ export function MainLayout() {
     }
   }, [sidebarPeek.peekState, isRailMode, handleRailModeChange]);
 
+  const routeSessionId = resolveAgentIslandVisibleSessionIdFromPath(location.pathname);
+  const splitVisibleSessionIds = useMemo(() => {
+    const splitSessionIds = getSplitSessionIds(splitGroup.root);
+    return routeSessionId && splitSessionIds.length >= 2
+      ? [...new Set([routeSessionId, ...splitSessionIds])]
+      : [];
+  }, [routeSessionId, splitGroup.root]);
+
   const syncAgentIslandVisibleSession = useCallback(() => {
     if (!isAgentIslandSupported()) return;
     if (!document.hasFocus()) return;
     if (isAgentIslandVisibleSessionOwnedByWorkdirBrowseRoute(location.pathname)) return;
     void window.electronAPI.agentIsland?.setVisibleSession?.(
-      resolveAgentIslandVisibleSessionIdFromPath(location.pathname),
+      splitVisibleSessionIds.length >= 2 ? splitVisibleSessionIds : routeSessionId,
     );
-  }, [location.pathname]);
+  }, [location.pathname, routeSessionId, splitVisibleSessionIds]);
 
   useEffect(() => {
     syncAgentIslandVisibleSession();
@@ -477,6 +504,9 @@ export function MainLayout() {
   useSchemaDriftWarningToast();
   // 语音快捷键在设置页之外自动恢复失败 —— 那时设置页的 toast 不在,只能由常挂载的这里提示。
   useVoiceInputShortcutRecoveryToast();
+  // 冷启动市场对账可能早于 Renderer 挂载；Main pending + 常驻 consume 保证清理不静默。
+  usePluginRemovalNoticeToast();
+  usePluginUpgradeNoticeToast();
   // device-link 跨设备远程控制:同账号在线 + 开了被控的设备,其项目自动并入侧边栏
   useDeviceLinkRemoteProjects();
 
@@ -538,6 +568,54 @@ export function MainLayout() {
     return unsubscribe;
   }, [navigateToSession]);
 
+  // 插件请求新建自动化(agent 槽的 schedule 加档):main 的 scheduleSlot 已做资格审 /
+  // 净化截断 / 频率钳制 / 限速,这里只负责把用户带到自动化页并把预填内容交过去。
+  // 挂在 MainLayout 的理由同上面那条:它在 ProtectedRoute + LocalDbGate 之内,用户
+  // 必然已登录、可以安全 navigate;而插件请求可能在任何路由下到达(用户当时正在
+  // 插件面板里),SchedulerPage 那时还没挂载,接不到这条推送。
+  //
+  // main 侧**只投一个主壳窗**(见 cindy-brain 的 isMainShellWindowUrl):独立的插件
+  // 面板窗 / 右侧栏窗与 MainLayout 平级、没有本订阅,所以别在那两个轻壳里再加一份
+  // 处理——它们收不到,加了也是死代码。同一窗口内仍需去重(下游 SchedulerPage 的
+  // handledScheduleCreateRequestRef):navigate 带的 state 可能被 effect 重复消费。
+  //
+  // ⚠️ 这里**只导航**。任务落库只发生在用户于面板上点保存之后 —— 插件全程没有
+  // 直接建任务的通道(scheduleSlot 的 deps 里压根没有 schedule storage)。
+  useEffect(() => {
+    const unsubscribe = window.electronAPI.ghosts?.onScheduleDraft?.((payload) => {
+      if (!payload || typeof payload !== 'object') return;
+      const { requestId, ghostId, ghostName, name, prompt, intervalMs } = payload;
+      if (
+        typeof requestId !== 'string' ||
+        !requestId ||
+        typeof ghostId !== 'string' ||
+        !ghostId ||
+        typeof ghostName !== 'string' ||
+        !ghostName ||
+        typeof name !== 'string' ||
+        !name ||
+        typeof prompt !== 'string' ||
+        !prompt
+      ) {
+        return;
+      }
+      navigate('/cc-agent/scheduled', {
+        state: pluginScheduleNavigationState({
+          kind: 'plugin-schedule-draft',
+          requestId,
+          ghostId,
+          ghostName,
+          name,
+          prompt,
+          ...(typeof intervalMs === 'number' && Number.isFinite(intervalMs) && intervalMs > 0
+            ? { intervalMs }
+            : {}),
+        }),
+      });
+    });
+    return unsubscribe;
+  }, [navigate]);
+
   // cindy://(+ 历史 xdt-maker://)深度链接 + --open-folder 右键菜单订阅 —— main 端解析后推 payload,
   // 这里按 type 分发。
   // session:     canonicalize 后 navigate 到对应路由(与 onNotificationFocusSession 同语义)
@@ -558,7 +636,7 @@ export function MainLayout() {
         | { type: 'project'; workingDir: string }
         | { type: 'new-session'; workingDir: string }
         | { type: 'share-import'; filePath: string }
-        | { type: 'settings'; tab: 'voice-input' | 'providers' },
+        | { type: 'settings'; tab: 'voice-input' | 'providers'; connect?: string },
     ) => {
       if (payload.type === 'session') {
         navigateToSession(payload.id, payload.messageClientId);
@@ -583,7 +661,14 @@ export function MainLayout() {
         return;
       }
       if (payload.type === 'settings') {
-        navigate(`/settings?tab=${payload.tab}`);
+        // connect 透传给 ProvidersSection 已有的 ?connect=<providerId> 消费逻辑
+        // (可指向内置 provider 或 preset;providers 就绪后一次性消费、消费即从
+        // URL 摘除),与「连接供应商」引导卡的 navigate 形态保持一致。
+        const connect =
+          payload.tab === 'providers' && payload.connect
+            ? `&connect=${encodeURIComponent(payload.connect)}`
+            : '';
+        navigate(`/settings?tab=${payload.tab}${connect}`);
       }
     },
     [navigate, navigateToSession, openShareImport],
@@ -630,32 +715,59 @@ export function MainLayout() {
   // (sessionId 切换 / 草稿切换 / init)都不调,RightSidebar 默认走"直接同步"无动画。
   const rightSidebarRef = useRef<RightSidebarHandle>(null);
 
-  const handleToggleRightSidebar = useCallback(() => {
+  const handleOpenRightSidebar = useCallback(() => {
     if (!rsbWindow.loaded) return;
-    // 偏好「在新窗口显示侧边栏」开启时,toggle 语义改为子窗口开/关:
-    // 展开 = 打开/聚焦子窗口,收起 = 关闭子窗口。内嵌折叠态不动
-    // (按钮显隐由 rsbWindow.open 镜像驱动,见下方渲染处)。
+    // 主窗口固定入口只负责显示 / 聚焦，不承担关闭语义。
     if (rsbDetached) {
-      if (rsbWindow.open) {
-        writeCollapsedFor(rightSidebarSessionId, true);
-        void window.electronAPI.rightSidebarWindow.close().catch(() => undefined);
-      } else {
-        writeCollapsedFor(rightSidebarSessionId, false);
-        void window.electronAPI.rightSidebarWindow.open().catch(() => undefined);
-      }
+      writeCollapsedFor(rightSidebarSessionId, false);
+      void window.electronAPI.rightSidebarWindow
+        .open()
+        .catch((err) => log.warn('show detached right sidebar failed', err));
       return;
     }
+    if (!isRightSidebarCollapsed) return;
     // 打开时沿用上次记住的比例（useRightSidebarResize 持久化的 fraction）：展开后
     // 右栏 = fraction × 可用宽、中间 flex-1 吸收剩余，窗口缩放时两栏按比例同步变化。
     // 持久化按 rightSidebarSessionId 分桶 —— 各 session 独立记忆开关状态(切 session 不串扰)。
-    // 显式 prime RightSidebar 走动画 —— 这是唯一会触发 250ms 折叠动画的入口。
+    // 显式 prime RightSidebar 走动画。
     rightSidebarRef.current?.requestAnimateNextChange();
-    setIsRightSidebarCollapsed((prev) => {
-      const next = !prev;
-      writeCollapsedFor(rightSidebarSessionId, next);
-      return next;
-    });
-  }, [rightSidebarSessionId, rsbDetached, rsbWindow.loaded, rsbWindow.open]);
+    writeCollapsedFor(rightSidebarSessionId, false);
+    setIsRightSidebarCollapsed(false);
+  }, [isRightSidebarCollapsed, rightSidebarSessionId, rsbDetached, rsbWindow.loaded]);
+
+  // 面板自身的关闭按钮继续只负责收起内嵌面板。
+  const handleCloseRightSidebar = useCallback(() => {
+    if (rsbDetached || isRightSidebarCollapsed) return;
+    rightSidebarRef.current?.requestAnimateNextChange();
+    writeCollapsedFor(rightSidebarSessionId, true);
+    setIsRightSidebarCollapsed(true);
+  }, [isRightSidebarCollapsed, rightSidebarSessionId, rsbDetached]);
+
+  const handleToggleRightSidebar = useCallback(() => {
+    if (!rsbWindow.loaded) return;
+    if (rsbDetached) {
+      if (rsbWindow.open) {
+        void window.electronAPI.rightSidebarWindow
+          .close()
+          .catch((err) => log.warn('hide detached right sidebar failed', err));
+        return;
+      }
+      handleOpenRightSidebar();
+      return;
+    }
+    if (isRightSidebarCollapsed) {
+      handleOpenRightSidebar();
+      return;
+    }
+    handleCloseRightSidebar();
+  }, [
+    handleCloseRightSidebar,
+    handleOpenRightSidebar,
+    isRightSidebarCollapsed,
+    rsbDetached,
+    rsbWindow.loaded,
+    rsbWindow.open,
+  ]);
 
   // 关掉右侧栏最后一个 tab 时自动收起(由 RightSidebarShell 在 tab 数 >0→0 时回调)。
   // detached 子窗口形态不在此处理(那时主窗根本不渲染内嵌 Shell,也收不到此回调)。
@@ -669,6 +781,16 @@ export function MainLayout() {
     setIsRightSidebarCollapsed(true);
     writeCollapsedFor(sessionId, true);
   }, [rsbDetached]);
+
+  // 分离侧栏合并回主窗时，main 先转发不可持久化 session 的 tab 快照，
+  // 再广播 detached=false 让这里重挂内嵌 Shell。快照必须在 cache invalidation
+  // 之前接收；store 会把它保留到本次 hydrate，避免远程/草稿会话回到空栏。
+  useEffect(() => {
+    if (isSecondaryWindow()) return;
+    return window.electronAPI.rightSidebarWindow.onTabHandoff((handoff) => {
+      for (const snapshot of handoff.snapshots) importTabSnapshot(snapshot);
+    });
+  }, []);
 
   // sessionId 切换时按新 session 的存档刷新折叠态。无需 prime 动画 —— RightSidebar 默认
   // 直接同步,切 session "瞬间生效"(用户体感:不应看着一栏慢慢展开/收起)。
@@ -850,55 +972,47 @@ export function MainLayout() {
       // 过期(PTY sink 会被对方窗口 re-attach 抢走),两个方向都要复位,否则
       // "弹出 → 合并回主窗"往返后 guard 跳过 re-attach,终端失活。
       markAllPtyDetached();
-      invalidateSessionCaches();
+      resetCachesForHostTransition();
     } else {
       markAllPtyDetached();
-      invalidateSessionCaches();
+      resetCachesForHostTransition();
       const sessionId = rightSidebarSessionIdRef.current;
       if (sessionId) {
+        // The attached shell can mount before this parent transition effect.
+        // Its initial hydrate then belongs to the cache generation that the
+        // reset above invalidates. Start a fresh hydrate after the reset so a
+        // persisted Windows session cannot remain on EMPTY_BUCKET forever.
+        void ensureHydrated(sessionId).catch((err) => {
+          applicationMenuLog.warn('rehydrate right sidebar after host transition failed', {
+            sessionId,
+            err,
+          });
+        });
         writeCollapsedFor(sessionId, false);
         setIsRightSidebarCollapsed(false);
       }
     }
   }, [rsbDetached]);
 
-  // 3) 重启恢复:detached && lastOpen(上次退出时窗口开着)→ 自动重开子窗口。
-  //    时机对齐 takePendingDeepLink 的 pull-on-mount(ProtectedRoute + LocalDbGate
-  //    之内,登录态天然就绪);ref 守护 strict-mode 双跑。open 幂等,已开则 focus。
-  const rsbWindowRestoredRef = useRef(false);
+  // 3) 启动期只从 main 拉取当前进程状态。分离状态不跨客户端重启恢复；main 在
+  //    controller 创建前已重置 detached / lastOpen，并清理旧版本遗留的偏好文件。
+  const rsbWindowBootstrappedRef = useRef(false);
   useEffect(() => {
-    if (rsbWindowRestoredRef.current) return;
-    rsbWindowRestoredRef.current = true;
+    if (rsbWindowBootstrappedRef.current) return;
+    rsbWindowBootstrappedRef.current = true;
     if (isSecondaryWindow()) return;
-    void bootstrapRsbWindowState().then((s) => {
-      if (!s) return;
-      if (s.detached && s.lastOpen && !s.open) {
-        // 启动恢复不是用户当次手势:窗口照常回到上次位置,但走 showInactive,
-        // 不在冷启动瞬间把焦点从主窗(或用户别的应用)抢过去。
-        void window.electronAPI.rightSidebarWindow
-          .open({ userInitiated: false })
-          .catch(() => undefined);
-      }
-    });
-    // 插件面板独立窗口的重启恢复(同款语义,按 ghostId 逐个):detached &&
-    // lastOpen 的条目重开。open 走 main 复验资格(卸载/停用过的自动清)。
-    try {
-      const ghostWindows = window.electronAPI.ghostPanelWindow?.getStateSync() ?? {};
-      for (const [ghostId, entry] of Object.entries(ghostWindows)) {
-        if (entry.detached && entry.lastOpen && !entry.open) {
-          void window.electronAPI.ghostPanelWindow.open(ghostId).catch(() => undefined);
-        }
-      }
-    } catch {
-      // 桥不可用(测试环境)= 没有可恢复窗口
-    }
+    void bootstrapRsbWindowState();
   }, []);
 
   // 4) 「在新窗口打开」入口(mac 浮层 / win TabBar 按钮共用):开偏好 + 弹出。
   const handleDetachRightSidebar = useCallback(() => {
     if (isSecondaryWindow()) return;
     writeCollapsedFor(rightSidebarSessionId, false);
-    void window.electronAPI.rightSidebarWindow.setDetached(true).catch(() => undefined);
+    const snapshot = getTabSnapshot(rightSidebarSessionId);
+    const handoff = snapshot ? { snapshots: [snapshot] } : undefined;
+    void window.electronAPI.rightSidebarWindow
+      .setDetached(true, handoff)
+      .catch(() => undefined);
   }, [rightSidebarSessionId]);
 
   const handlePageZoomIn = useCallback(() => {
@@ -1022,7 +1136,7 @@ export function MainLayout() {
     [rightSidebarSessionId],
   );
 
-  useAppShortcut('open-terminal', () => {
+  const openTerminalForCurrentTask = useCallback((): boolean => {
     const sessionId = rightSidebarSessionId;
     if (!rightSidebarAvailable || !sessionId) return false;
     openTerminalShortcutAbortRef.current?.abort();
@@ -1053,7 +1167,103 @@ export function MainLayout() {
         }
       });
     return true;
-  });
+  }, [rightSidebarAvailable, rightSidebarSessionId]);
+
+  useAppShortcut('open-terminal', openTerminalForCurrentTask);
+
+  useEffect(() => {
+    return subscribeWorkLouderCodexAction((action) => {
+      if (action.type === 'keyboard') {
+        const target =
+          document.activeElement instanceof HTMLElement ? document.activeElement : document.body;
+        target.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: action.key,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+        return true;
+      }
+      if (action.type !== 'command') return false;
+      switch (action.commandId) {
+        case 'newTask':
+          navigate('/cc-agent/new');
+          return true;
+        case 'settings':
+          navigate('/settings?tab=shortcuts&workLouderCodex=1');
+          return true;
+        case 'manageTasks':
+          navigate('/cc-agent/scheduled');
+          return true;
+        case 'openSkills':
+          navigate('/skillhub/local');
+          return true;
+        case 'feedback':
+          navigate('/issues');
+          return true;
+        case 'openFolder':
+          navigate('/cc-agent/new', { state: makeFolderPickerNewMakerRouteState() });
+          return true;
+        case 'navigateBack':
+          navigate(-1);
+          return true;
+        case 'navigateForward':
+          navigate(1);
+          return true;
+        case 'toggleSidebar':
+          handleToggleSidebar();
+          return true;
+        case 'toggleRightSidebar':
+          // Goes through the same handler as the UI button so the detached
+          // (separate window) preference keeps its open/close semantics.
+          handleToggleRightSidebar();
+          return true;
+        case 'session.selectPrevious':
+          requestSessionSwitch('previous');
+          return true;
+        case 'session.selectNext':
+          requestSessionSwitch('next');
+          return true;
+        case 'toggleTerminal':
+          return openTerminalForCurrentTask();
+        case 'openBrowserTab': {
+          const sessionId = rightSidebarSessionIdRef.current;
+          if (!sessionId) return false;
+          void openUrlInSidebarBrowser(sessionId, 'about:blank').catch((error) =>
+            applicationMenuLog.warn('Codex Micro browser action failed', error),
+          );
+          return true;
+        }
+        case 'toggleReviewTab': {
+          const sessionId = rightSidebarSessionIdRef.current;
+          if (!sessionId) return false;
+          void (async () => {
+            const routed = await routeSidebarCommand({ type: 'toggle-review-tab', sessionId });
+            if (routed !== 'attached') return;
+            if (rightSidebarSessionIdRef.current !== sessionId) return;
+            await ensureHydrated(sessionId);
+            if (rightSidebarSessionIdRef.current !== sessionId) return;
+            const bucket = getBucket(sessionId);
+            const reviewTab = bucket.tabs.find((tab) => tab.kind === 'review');
+            const reviewIsActive =
+              !isRightSidebarCollapsedRef.current &&
+              reviewTab != null &&
+              bucket.activeTabId === reviewTab.id;
+            if (reviewIsActive && reviewTab) {
+              await closeTab(sessionId, reviewTab.id);
+              return;
+            }
+            requestRightSidebarVisibility('open', { sessionId });
+            await addOrFocusSingletonTab(sessionId, 'review', null);
+          })().catch((error) => applicationMenuLog.warn('Codex Micro review action failed', error));
+          return true;
+        }
+        default:
+          return false;
+      }
+    });
+  }, [handleToggleRightSidebar, handleToggleSidebar, navigate, openTerminalForCurrentTask]);
 
   // ⌘W / Ctrl+W ('close-tab-or-window', 不可改绑): 用户"在右侧栏内"且有激活
   // tab → 只关那个 tab (与点 tab 上的 × 同路径, terminal 走 onBeforeClose
@@ -1184,6 +1394,7 @@ export function MainLayout() {
               isRail={sidebarPeek.isPeekVisible ? false : isRailMode}
               width={sidebarWidth}
               isDragging={isDragging}
+              forceMountFeatureContent={location.pathname === '/cc-agent/new'}
               onDragStart={handleDragStart}
               onResetWidth={resetWidth}
               onOpenUpdateNotice={openNotice}
@@ -1221,7 +1432,7 @@ export function MainLayout() {
                 // 手势面是 ContentHeader(Windows),窗体长按亦可。
                 data-panel-drag-root="chat-main"
                 className={cn(
-                  'flex flex-1 flex-col overflow-hidden bg-content-area',
+                  'relative flex flex-1 flex-col overflow-hidden bg-content-area',
                   isSettingsRoute ? 'min-w-0' : 'min-w-[400px]',
                   // RSB Maximize(Phase 6):主区彻底 display:none,把整个非左栏空间让给 RSB。
                   isRightSidebarMaximized && 'hidden',
@@ -1248,15 +1459,43 @@ export function MainLayout() {
                     重跑导致的"刷新一帧"闪烁。
                     ContentHeader 在 FadeSwitcher 之外 —— header chrome 不参与路由切换
                     动画，只有注入的中部内容随路由变化。 */}
+                  {/* 持久凭证库故障全局警示条(#1687):ContentHeader 之下、路由内容之上,
+                      shrink-0 在 main 的 flex 列里独占一行把内容推下(不遮盖)。放在
+                      FadeSwitcher 之外 —— 它是全局状态提示,不参与路由切换动画。 */}
+                  <CredentialStoreBanner />
+                  {!isMac &&
+                    rightSidebarAvailable &&
+                    rsbWindow.loaded &&
+                    (rsbDetached || isRightSidebarCollapsed) && (
+                      <div
+                        data-testid="right-sidebar-fixed-trigger"
+                        className={cn(
+                          'pointer-events-none absolute z-50',
+                          rightSidebarSide === 'left' ? 'left-2' : 'right-2',
+                        )}
+                        style={
+                          {
+                            top: 'calc(var(--content-header-h) + 0.25rem)',
+                            WebkitAppRegion: 'no-drag',
+                          } as React.CSSProperties
+                        }
+                      >
+                        <RightSidebarToggle
+                          action="show"
+                          collapsed
+                          onToggle={handleOpenRightSidebar}
+                          side={rightSidebarSide}
+                        />
+                      </div>
+                    )}
                   <FadeSwitcher key={location.pathname.split('/')[1] || 'root'}>
                     <Outlet
                       context={{
                         sidebarWidth,
-                        // detached 模式下"折叠态"= 子窗口是否关闭(chip / 按钮显示口径统一)
-                        rightSidebarCollapsed: rsbDetached
-                          ? !rsbWindow.open
-                          : isRightSidebarCollapsed,
-                        onToggleRightSidebar: handleToggleRightSidebar,
+                        // detached 时主窗口没有内嵌侧栏，始终按折叠态布局；子窗口开闭
+                        // 不改变主窗口浮动控件的占位语义。
+                        rightSidebarCollapsed: rsbDetached || isRightSidebarCollapsed,
+                        onToggleRightSidebar: handleOpenRightSidebar,
                         // B2b:面板所在侧,聊天视图据此决定展开入口落左上还是右上。
                         rightSidebarSide,
                         setRightSidebarAvailable,
@@ -1283,10 +1522,14 @@ export function MainLayout() {
                   isMac={isMac}
                   // Windows 展开态的折叠入口归属工具面板自身,放回 TabBar 右端;
                   // 收起后聊天区角上才显示展开入口。mac 仍走窗口右上浮层。
-                  onCloseSidebar={isMac ? undefined : handleToggleRightSidebar}
+                  onCloseSidebar={handleCloseRightSidebar}
                   onMaximize={handleMaximizeRightSidebar}
                   isMaximized={isRightSidebarMaximized}
-                  reserveLeftChromeActions={isRightSidebarMaximized && isSidebarCollapsed}
+                  reserveLeftChromeActions={shouldReserveLeftChromeActions({
+                    isSidebarCollapsed,
+                    rightSidebarSide,
+                    isRightSidebarMaximized,
+                  })}
                   railChromeActionsHitHole={rightSidebarOwnsRailChromeActions}
                   sessionId={rightSidebarSessionId}
                   workdir={rightSidebarWorkdirInfo.workdir}
@@ -1331,11 +1574,11 @@ export function MainLayout() {
             （含设置页），永远钉在窗口角，开/关右栏都不动 —— 解决「右栏作为 <main>
             sibling 会把窗口按钮挤左」的问题。no-drag（按钮可点），周围窗口拖拽区由
             ContentHeader / 左栏顶行提供。
-            mac 不渲染本块（用系统红绿灯）。
-            （Windows 折叠态的展开入口走聊天视图 chip,展开态的折叠入口在右栏 TabBar。） */}
+            mac 不渲染本块（用系统红绿灯）。Windows 固定侧栏入口保留在内容区
+            右上角（系统按钮下一行），与截图中的原位置一致。 */}
         {!isMac && (
           <div
-            className="absolute right-0 top-0 z-50 flex h-[46px] items-center"
+            className="absolute right-0 top-0 z-50 flex h-[46px] items-center pr-2"
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           >
             <WindowControls />
@@ -1353,39 +1596,21 @@ export function MainLayout() {
             左上角的左栏折叠按钮(ChromeActions)对称、不跟面板跑;detach/maximize
             是面板自属控件,贴右(或 maximize 撑满)时在浮层里(视觉落在面板顶栏
             右端),贴左时跟面板走进 Shell 顶栏右端(见 RightSidebarShell)。 */}
-        {isMac && rightSidebarAvailable && rsbWindow.loaded && (
+        {isMac &&
+          rightSidebarAvailable &&
+          rsbWindow.loaded &&
+          (rsbDetached || isRightSidebarCollapsed) && (
           <div
             className="absolute right-0 top-0 z-50 flex h-[46px] items-center gap-1 pr-2"
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           >
-            {/* Mac 端:maximize + 折叠按钮浮在窗口右上 46px 区,与 macOS 系统标题栏规范
-                对齐;视觉上与最右 pane 顶部 46px chrome 共占同一 y 区间(z-50 覆盖,
-                RSB chrome / ContentHeader 内部留占位让位)。Win 端不渲染浮层
-                (maximize/折叠在 TabBar 内右端)。
-                detach / maximize 仅在 RSB 展开**且是最右 pane**(贴右或 maximize
-                撑满)时显示 —— 贴左时它们跟面板走(Shell 顶栏),折叠态 maximize
-                无作用语义,只留 toggle 作为"打开"入口。 */}
-            {!isRightSidebarCollapsed &&
-              !rsbDetached &&
-              (rightSidebarSide === 'right' || isRightSidebarMaximized) && (
-                <>
-                  {/* 「在新窗口打开」:开偏好 + 弹出子窗口(win 端此按钮在 TabBar 内)。 */}
-                  {!isSecondaryWindow() && (
-                    <RightSidebarDetach size="toolbar" onDetach={handleDetachRightSidebar} />
-                  )}
-                  <RightSidebarMaximize
-                    size="toolbar"
-                    onMaximize={handleMaximizeRightSidebar}
-                    isMaximized={isRightSidebarMaximized}
-                  />
-                </>
-              )}
-            {/* detached:toggle 的"折叠态"跟随子窗口开闭(收起 = 关子窗口)。
-                side 只管图标方向(画"面板贴哪条边"),按钮位置恒在窗口右上。 */}
+            {/* 固定唤起入口只负责显示 / 聚焦。detach / maximize / 收起属于面板自身，
+                在 RightSidebarShell 的顶栏内渲染，不再与本入口混用。 */}
             <RightSidebarToggle
               size="toolbar"
+              action="show"
               collapsed={rsbDetached ? !rsbWindow.open : isRightSidebarCollapsed}
-              onToggle={handleToggleRightSidebar}
+              onToggle={handleOpenRightSidebar}
               side={rightSidebarSide}
             />
           </div>

@@ -136,7 +136,7 @@ export function VendorSegmentedSwitcher({
               'flex h-full flex-1 items-center justify-center rounded-full',
               'disabled:cursor-not-allowed disabled:opacity-40',
               !iconOnly && 'gap-1.5',
-              dense ? 'text-[12px] leading-none transition-colors' : 'text-[14px] leading-none transition-colors',
+              dense ? 'text-12 leading-none transition-colors' : 'text-14 leading-none transition-colors',
               isActive
                 ? cn(
                     'font-medium',

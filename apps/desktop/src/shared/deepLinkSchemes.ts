@@ -37,6 +37,19 @@ export const DEEP_LINK_URL_PREFIX = `${DEEP_LINK_PRIMARY_SCHEME}://`;
 /** 带 deviceId 的跨设备链接使用上游 Cindy wire scheme；不用于 OS 注册。 */
 export const DEEP_LINK_INTEROP_URL_PREFIX = `${CINDY_INTEROP_PRIMARY_SCHEME}://`;
 
+/** settings/providers 深链 connect id 的外部输入边界。 */
+const DEEP_LINK_PROVIDER_CONNECT_ID_RE = /^[A-Za-z0-9_-]+$/;
+export const DEEP_LINK_PROVIDER_CONNECT_ID_MAX_LENGTH = 128;
+
+export function isDeepLinkProviderConnectId(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= DEEP_LINK_PROVIDER_CONNECT_ID_MAX_LENGTH &&
+    DEEP_LINK_PROVIDER_CONNECT_ID_RE.test(value)
+  );
+}
+
 /** 解析侧要认的全部 URL 前缀(与 DEEP_LINK_SCHEMES 同序,主前缀恒为首位)。 */
 export const DEEP_LINK_URL_PREFIXES: readonly string[] = DEEP_LINK_SCHEMES.map(
   (scheme) => `${scheme}://`,

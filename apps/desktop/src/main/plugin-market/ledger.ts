@@ -227,6 +227,69 @@ export class PluginMarketLedger {
     this.write(data);
   }
 
+  /** 换源落位前失败时，将旧路由和原有默认安装退订状态一起原子恢复。 */
+  restoreInstallation(
+    record: PluginMarketInstallationRecord,
+    optOut?: { userId: string; suppressed: boolean },
+  ): void {
+    const data = this.read();
+    data.installations[record.ghostId] = record;
+    if (optOut) {
+      const suppressedPluginIds = data.defaultInstallOptOuts[optOut.userId] ?? [];
+      if (optOut.suppressed) {
+        data.defaultInstallOptOuts[optOut.userId] = [
+          ...new Set([...suppressedPluginIds, record.pluginId]),
+        ];
+      } else {
+        const restored = suppressedPluginIds.filter((pluginId) => pluginId !== record.pluginId);
+        if (restored.length > 0) data.defaultInstallOptOuts[optOut.userId] = restored;
+        else delete data.defaultInstallOptOuts[optOut.userId];
+      }
+    }
+    this.write(data);
+  }
+
+  /**
+   * Reconnect a historical server update route after the approved receipt proves
+   * its original package identity. That receipt does not attest the current
+   * directory bytes, so an organization-scoped market record is demoted to
+   * legacy-adopted until a verified market update installs fresh bytes. This
+   * keeps automatic updates available without restoring Connection JWT trust
+   * from audit-only evidence. The compare-and-write prevents a concurrent
+   * uninstall or source replacement from being overwritten by a stale snapshot.
+   */
+  restoreDisconnectedInstallation(
+    expected: PluginMarketInstallationRecord,
+    userId: string,
+  ): boolean {
+    const data = this.read();
+    const current = data.installations[expected.ghostId];
+    if (
+      !current
+      || current.installed
+      || (current.source !== 'market' && current.source !== 'legacy-adopted')
+      || canonicalJson(current) !== canonicalJson(expected)
+    ) {
+      return false;
+    }
+    data.installations[current.ghostId] = {
+      ...current,
+      source:
+        current.scope === 'organization' && current.source === 'market'
+          ? 'legacy-adopted'
+          : current.source,
+      installed: true,
+      updatedAt: new Date().toISOString(),
+    };
+    const remainingOptOuts = (data.defaultInstallOptOuts[userId] ?? []).filter(
+      (pluginId) => pluginId !== current.pluginId,
+    );
+    if (remainingOptOuts.length > 0) data.defaultInstallOptOuts[userId] = remainingOptOuts;
+    else delete data.defaultInstallOptOuts[userId];
+    this.write(data);
+    return true;
+  }
+
   markRemoved(ghostId: string, userId: string | null): void {
     const data = this.read();
     const record = data.installations[ghostId];

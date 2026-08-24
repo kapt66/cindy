@@ -24,8 +24,8 @@
 import catalogJson from '../catalog/providers.json' with { type: 'json' };
 import modelRegistryJson from '../catalog/model-registry.json' with { type: 'json' };
 
-import type { ModelRegistry } from '@cindy/model-access-protocol';
-import type { Catalog, Provider } from './types.js';
+import type { ModelRegistry } from './modelAccessBean.js';
+import type { Catalog, CatalogModel, Provider } from './types.js';
 
 /** 仓内 v2 目录文件(xai 清单 + presets;同一文件发布到 OSS `cfg/providers.json`)。 */
 const catalogFile = catalogJson as unknown as Catalog;
@@ -63,7 +63,18 @@ if (!xaiRaw) {
   // 仓内目录文件被误删 xai 段属于构建期错误,越早炸越好(import 期即失败)。
   throw new Error('[model-providers] catalog/providers.json missing builtin provider "xai"');
 }
+if (!xaiRaw.routing.pi?.wireProtocol) {
+  throw new Error('[model-providers] catalog/providers.json missing explicit xai Pi protocol');
+}
 const xaiFromCatalog = withVerifiedStaticWindows(xaiRaw);
+const withoutPiApi = (model: CatalogModel): CatalogModel => {
+  if (model.piApi === undefined) return model;
+  const rest = { ...model };
+  delete rest.piApi;
+  return rest;
+};
+const xaiClaudeModels = xaiFromCatalog.models['claude-code'] ?? [];
+const xaiCodexModels = xaiFromCatalog.models.codex ?? [];
 
 /** xAI 静态清单同时供 Claude bridge、Codex 与 Pi bridge 使用。 */
 const XAI_PROVIDER: Provider = {
@@ -73,11 +84,15 @@ const XAI_PROVIDER: Provider = {
     : [...xaiFromCatalog.agents, 'pi'],
   routing: {
     ...xaiFromCatalog.routing,
-    pi: xaiFromCatalog.routing.pi ?? xaiFromCatalog.routing['claude-code'],
+    pi: xaiFromCatalog.routing.pi,
   },
   models: {
     ...xaiFromCatalog.models,
-    pi: xaiFromCatalog.models.pi ?? xaiFromCatalog.models['claude-code'] ?? [],
+    'claude-code': xaiClaudeModels.map(withoutPiApi),
+    codex: xaiCodexModels.map(withoutPiApi),
+    // providers.json 的 piApi 只属于 Pi；源文件仍与 xAI 静态根同表维护，
+    // bundled 投影在这里拆开，避免协议注解污染 Claude/Codex 快照契约。
+    pi: xaiFromCatalog.models.pi ?? xaiClaudeModels,
   },
 };
 
@@ -109,6 +124,7 @@ const ANTHROPIC_PROVIDER: Provider = {
     },
     pi: {
       upstream: 'https://api.anthropic.com',
+      wireProtocol: 'anthropic-messages',
       authStrategy: 'provider-oauth-header',
       headerOverride: {
         'anthropic-version': '2023-06-01',
@@ -133,7 +149,14 @@ const OPENAI_PROVIDER: Provider = {
   // image_generation tool;用户另配 `openai-images` Platform key 时优先走 public
   // Images API。id 带 openai/ 前缀(跨供应商数据契约,防 first-wins 归属漂移);
   // 不声明 imageDefaults(xd 默认地位不动)。
-  imageModels: [{ id: 'openai/gpt-image-2', name: 'GPT Image 2' }],
+  imageModels: [
+    {
+      id: 'openai/gpt-image-2',
+      name: 'GPT Image 2',
+      modalities: { input: ['text', 'image'], output: ['image'] },
+      officialDocs: 'https://platform.openai.com/docs/guides/image-generation',
+    },
+  ],
   routing: {
     codex: {
       upstream: 'https://chatgpt.com/backend-api/codex',
@@ -146,6 +169,7 @@ const OPENAI_PROVIDER: Provider = {
     },
     pi: {
       upstream: 'https://chatgpt.com/backend-api/codex',
+      wireProtocol: 'anthropic-messages',
       authStrategy: 'oauth-passthrough',
       modelPrefixes: ['chatgpt/'],
     },
@@ -174,11 +198,36 @@ const XD_PROVIDER: Provider = {
   videoModels: [
     { id: 'seedance-fast', name: 'Seedance 快速' },
     { id: 'seedance-pro', name: 'Seedance Pro' },
+    { id: 'bytedance/seedance-2.5', name: 'Seedance 2.5' },
     { id: 'happyhorse', name: 'HappyHorse 1.0' },
   ],
+  // 2.5 刻意不接管 best:它只到 720p,而 seedance-pro 有 1080p —— 让 tier=best
+  // 指向 2.5 会把"要 1080p"的单子从可用变成明拒。2.5 需显式点名。
   videoDefaults: {
     standard: 'seedance-fast',
     best: 'seedance-pro',
+  },
+  // 向量模型:id 必须与 @cindy/embedding-client 的 EmbeddingModelId 逐字一致
+  // (执行侧按 id 查 catalog 拿 provider 做 input_type 值域翻译,对不上就翻译不了)。
+  // 只列 2026-08-04 经网关实测确认可用的型号 + 同族高置信的 3-large。
+  // voyage-context-4 经同一 OpenAI 形态端点支持:索引侧把 input 传二维数组
+  // (客户端 embedDocuments,按文档分组),查询侧仍传一维。注意它的响应形状由
+  // **型号**决定而不是请求维度 —— 两侧都返两层嵌套 data,解析走同一个 parser。
+  embeddingModels: [
+    { id: 'voyage/voyage-4', name: 'Voyage 4' },
+    { id: 'voyage/voyage-4-large', name: 'Voyage 4 Large' },
+    { id: 'voyage/voyage-context-4', name: 'Voyage Context 4' },
+    { id: 'voyage/voyage-code-3', name: 'Voyage Code 3' },
+    { id: 'text-embedding-3-small', name: 'OpenAI Embedding 3 Small' },
+    { id: 'text-embedding-3-large', name: 'OpenAI Embedding 3 Large' },
+    { id: 'gemini-embedding-2-preview', name: 'Gemini Embedding 2 (Preview)' },
+  ],
+  // standard 取 voyage-4:1024 维、32K 单条上限、中等价格,且是四个候选里唯一
+  // 实测确定性的多语通用型号。preview 型号不作默认(catalog 注释同口径)。
+  embeddingDefaults: {
+    standard: 'voyage/voyage-4',
+    draft: 'text-embedding-3-small',
+    best: 'voyage/voyage-4-large',
   },
   // XD 网关真实推理入口运行时由 model-access server 随凭据成对下发
   // (见 main/model-access/effectiveEndpoint.ts;端点清单/静态值已退役)。

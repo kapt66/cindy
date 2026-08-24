@@ -39,12 +39,15 @@ export interface AuthState {
   mode: 'signed-out' | 'local' | 'cloud';
   edition: CindyRegion;
   dataOwnerId: string | null;
+  ownerGeneration: number;
   canEnterApp: boolean;
   isAuthenticated: boolean;
   isCanary: boolean;
   deviceId: string;
   hasAccountDeletionReceipt: boolean;
   accountDeletionRestored: boolean;
+  /** 持久凭证库(safeStorage)连续多个刷新周期不可用(#1687);恢复后自动回 false。 */
+  credentialStoreUnavailable: boolean;
 }
 
 export interface AuthService {
@@ -73,12 +76,14 @@ export function createAuthService(): AuthService {
       mode: rawState.mode,
       edition: rawState.edition ?? CURRENT_CINDY_REGION,
       dataOwnerId: rawState.dataOwnerId,
+      ownerGeneration: rawState.ownerGeneration,
       canEnterApp: rawState.canEnterApp,
       isAuthenticated: rawState.isAuthenticated,
       isCanary: rawState.isCanary === true,
       deviceId: rawState.deviceId,
       hasAccountDeletionReceipt: rawState.hasAccountDeletionReceipt === true,
       accountDeletionRestored: rawState.accountDeletionRestored === true,
+      credentialStoreUnavailable: rawState.credentialStoreUnavailable === true,
     };
     listeners.forEach((listener) => listener(normalized));
   });
@@ -91,12 +96,14 @@ export function createAuthService(): AuthService {
         mode: raw.mode,
         edition: raw.edition ?? CURRENT_CINDY_REGION,
         dataOwnerId: raw.dataOwnerId,
+        ownerGeneration: raw.ownerGeneration,
         canEnterApp: raw.canEnterApp,
         isAuthenticated: raw.isAuthenticated,
         isCanary: raw.isCanary === true,
         deviceId: raw.deviceId,
         hasAccountDeletionReceipt: raw.hasAccountDeletionReceipt === true,
         accountDeletionRestored: raw.accountDeletionRestored === true,
+        credentialStoreUnavailable: raw.credentialStoreUnavailable === true,
       };
     },
 

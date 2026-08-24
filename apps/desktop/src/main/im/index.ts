@@ -211,7 +211,14 @@ export function startImOrchestrators(): void {
 
   ipcMain.on('desktop:cc-prefs-changed', (_e: IpcMainEvent, prefs: unknown) => {
     if (prefs && typeof prefs === 'object') {
-      _desktopCcPrefs = prefs as DesktopCcPrefs;
+      // providerId 是新增字段，老 renderer 版本不推；非字符串的脏值（renderer 不可信）
+      // 会一路流到路由裁决的 .trim() 调用，在这里归一成 string | null | undefined。
+      const p = prefs as Partial<DesktopCcPrefs>;
+      _desktopCcPrefs = {
+        ...(prefs as DesktopCcPrefs),
+        providerId:
+          typeof p.providerId === 'string' ? p.providerId : p.providerId === null ? null : undefined,
+      };
     }
   });
 
@@ -419,6 +426,20 @@ async function initializeImConnection(): Promise<void> {
     const msg = err instanceof Error ? err.message : String(err);
     log.warn(`feishu sessions workspaceKind backfill failed (non-fatal): ${msg}`);
   }
+  // Discord personal DM sessions use the same managed dialogue bucket as
+  // Feishu/Telegram. Older Discord rows were created before the adapter
+  // declared workspaceKind='dialogue' and otherwise remain grouped under the
+  // synthetic `discord-{appId}` working directory. Idempotent and deliberately
+  // does not bump updatedAt, so the migration does not reorder the sidebar.
+  try {
+    await getDbClient()
+      .drizzle.update(sessions)
+      .set({ workspaceKind: 'dialogue' })
+      .where(and(eq(sessions.source, 'discord'), ne(sessions.workspaceKind, 'dialogue')));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.warn(`discord sessions workspaceKind backfill failed (non-fatal): ${msg}`);
+  }
   // 存量 feishu 会话的旧默认标题 `飞书 · {后6位}` 迁到新风格 `[飞书·DM] {后6位}`。
   try {
     await getDbClient()
@@ -536,7 +557,7 @@ async function reconcileOwnerScopedImWorkingDirs(): Promise<void> {
 
 const connectionLifecycle = createSerializedConnectionLifecycle({
   startConnection: initializeImConnection,
-  stopConnection: async () => {
+  stopConnection: async (reason) => {
     // Transports stop first so no new message can enter while account-scoped
     // orchestrator and binding caches are being discarded.
     try {
@@ -551,9 +572,10 @@ const connectionLifecycle = createSerializedConnectionLifecycle({
         }
       }
       bindingStore.resetRuntime();
-      // 群上下文游标是账号内存态 — 登出/换号必须清零, 防止新账号复用旧游标
-      // 造成上下文窗口被静默跳过。
-      resetTelegramGroupContextCursors();
+      // 普通退出、登出、换账号与模式切换都只清内存热缓存, 保留本地 DB 游标；
+      // 只有明确删除账号数据时才清持久表。Telegram bot 解绑由 hook-control 的
+      // binding identity reset 单独处理, 不把 auth logout 误当成数据删除。
+      await resetTelegramGroupContextCursors({ clearPersisted: reason === 'account-deletion' });
     }
   },
   onStartError: (err) => {
@@ -637,5 +659,5 @@ export async function stopImConnection(reason: string): Promise<void> {
     // are released, so old-account work cannot resume against a new account.
     await waitForImAccountGenerationIdle(closingGeneration);
   }
-  await connectionLifecycle.stop();
+  await connectionLifecycle.stop(reason);
 }

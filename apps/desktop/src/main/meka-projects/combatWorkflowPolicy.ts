@@ -196,7 +196,8 @@ function text(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-function mcpParts(toolName: string): { server: string; tool: string } | null {
+function mcpParts(toolName: string | undefined): { server: string; tool: string } | null {
+  if (!toolName) return null;
   if (toolName.startsWith('mcp__')) {
     const parts = toolName.slice(5).split('__');
     return parts.length >= 2 ? { server: parts[0]!, tool: parts.slice(1).join('__') } : null;
@@ -206,7 +207,7 @@ function mcpParts(toolName: string): { server: string; tool: string } | null {
 }
 
 function effectiveMcpTarget(
-  toolName: string,
+  toolName: string | undefined,
   input: unknown,
 ): { server: string; tool: string } | null {
   const target = mcpParts(toolName);
@@ -247,6 +248,7 @@ function effectiveMcpTarget(
       inferredTool = 'send_to_worker';
     }
   }
+  if (!inferredTool) return null;
   return {
     ...target,
     tool: inferredTool,
@@ -283,8 +285,7 @@ function isUnityReadOnly(tool: string, input: unknown): boolean {
 }
 
 async function isRouterReadOnly(projectId: string, tool: string, input: unknown): Promise<boolean> {
-  if (tool === 'check_combat_environment' || tool.startsWith('list_'))
-    return true;
+  if (tool === 'check_combat_environment' || tool.startsWith('list_')) return true;
   if (tool !== 'call_tool') return false;
   const inner = progressiveInnerCall(input);
   if (!inner) return false;
@@ -516,10 +517,7 @@ async function authorizeCombatServerDispatch(
   const remoteHostId =
     dispatch.kind === 'create_worker'
       ? dispatch.remoteHostId
-      : getTrustedCombatServerWorkerRemoteHost(
-          context.sessionId,
-          dispatch.requestedWorkerRef,
-        );
+      : getTrustedCombatServerWorkerRemoteHost(context.sessionId, dispatch.requestedWorkerRef);
   const instanceId = parseMcprRemoteHostId(remoteHostId);
   if (!instanceId) return null;
 
@@ -566,7 +564,10 @@ function isUnscopedServerExplorationRequest(context: HostToolExecutionContext): 
 function orcaExplorationInfrastructure(context: HostToolExecutionContext): boolean {
   const target = effectiveMcpTarget(context.toolName, context.input);
   if (target?.server !== 'cindy_orca') return false;
-  return /^(?:get_|list_|start_team$)/i.test(target.tool) || combatServerDispatchRequest(context) !== null;
+  return (
+    /^(?:get_|list_|start_team$)/i.test(target.tool) ||
+    combatServerDispatchRequest(context) !== null
+  );
 }
 
 function isServerWorkerReportBridge(context: HostToolExecutionContext): boolean {

@@ -85,6 +85,10 @@ test("root unit and all scripts run runner self-tests before workspace sweep", (
 		scripts["test:unit"],
 		/^pnpm test:runner && node scripts\/test-workspaces\.mjs --tier unit$/,
 	);
+	assert.equal(
+		scripts["test:unit:related"],
+		"node scripts/test-workspaces.mjs --tier unit --related",
+	);
 	assert.match(
 		scripts["test:all"],
 		/^pnpm test:runner && node scripts\/test-workspaces\.mjs --all$/,
@@ -777,6 +781,7 @@ test("parseCliOptions rejects --tier without a value", () => {
 		excludeWorkspaces: [],
 		workspaceConcurrency: undefined,
 		noLock: false,
+		related: false,
 	});
 });
 
@@ -799,6 +804,7 @@ test("parseCliOptions supports workspace include and exclude selectors", () => {
 			excludeWorkspaces: ["packages/orca-workflow"],
 			workspaceConcurrency: undefined,
 			noLock: false,
+			related: false,
 		},
 	);
 	assert.deepEqual(parseWorkspaceSelectorValue(" desktop, apps/server "), [
@@ -836,6 +842,11 @@ test("workspace concurrency defaults to a bounded CPU count and accepts both CLI
 		/requires a positive integer/,
 	);
 	assert.equal(parseCliOptions(["--no-lock"]).noLock, true);
+	assert.equal(parseCliOptions(["--related"]).related, true);
+	assert.throws(
+		() => parseCliOptions(["--related", "--all"]),
+		/--related cannot be combined with --all/,
+	);
 });
 
 test("unit CI shard arguments cover valid halves and reject malformed input", () => {
@@ -938,6 +949,20 @@ test("test gate lock decision prefers an existing owner over an earlier free por
 	assert.equal(classifyTestGateLockProbeError("ETIMEDOUT"), "collision");
 });
 
+test("test gate lock rejects invalid port counts before deriving candidates", async () => {
+	for (const lockPortCount of [0, -1, 1.5, Number.NaN]) {
+		await assert.rejects(
+			() =>
+				acquireTestGateLock({
+					repoRoot: "unused",
+					owner: { pid: 99, tier: "unit", cwd: "unused" },
+					lockPortCount,
+				}),
+			/lockPortCount must be a positive integer/,
+		);
+	}
+});
+
 test("test gate lock reports the holder, waits, and acquires after release", async () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "test-gate-lock-"));
 	let probeRound = 0;
@@ -994,6 +1019,12 @@ test("test gate lock reports the holder, waits, and acquires after release", asy
 // fails for reasons unrelated to the lock protocol.
 const REAL_LOCK_WAIT_WINDOW_MS = 30_000;
 const REAL_LOCK_ACQUIRE_TIMEOUT_MS = 60_000;
+// Windows assigns 49152+ as its default dynamic client-port range. Keep this
+// real socket test outside that range so unrelated CI network traffic cannot
+// occupy all deterministic candidates while preserving the production range.
+const REAL_LOCK_TEST_PORT_START = 10_000;
+const REAL_LOCK_TEST_PORT_COUNT = 30_000;
+const REAL_LOCK_TEST_PORT_STRIDE = 997;
 
 function raceWithDeadline(candidates, deadlineMs, deadlineValue) {
 	let timer;
@@ -1017,11 +1048,17 @@ test("two real test gate lock holders serialize on the same identity", async () 
 		firstLock = await acquireTestGateLock({
 			repoRoot: root,
 			owner: { pid: 41, tier: "unit", cwd: path.join(root, "first") },
+			lockPortStart: REAL_LOCK_TEST_PORT_START,
+			lockPortCount: REAL_LOCK_TEST_PORT_COUNT,
+			lockPortStride: REAL_LOCK_TEST_PORT_STRIDE,
 			output: () => {},
 		});
 		secondLockPromise = acquireTestGateLock({
 			repoRoot: root,
 			owner: { pid: 42, tier: "db", cwd: path.join(root, "second") },
+			lockPortStart: REAL_LOCK_TEST_PORT_START,
+			lockPortCount: REAL_LOCK_TEST_PORT_COUNT,
+			lockPortStride: REAL_LOCK_TEST_PORT_STRIDE,
 			timeoutMs: REAL_LOCK_ACQUIRE_TIMEOUT_MS,
 			retryDelayMs: 10,
 			output: reportWaiting,
@@ -1043,7 +1080,10 @@ test("two real test gate lock holders serialize on the same identity", async () 
 		await firstLock.release();
 		firstLock = undefined;
 		const secondLock = await secondLockPromise;
-		assert.ok(secondLock.port >= 49_152);
+		assert.ok(secondLock.port >= REAL_LOCK_TEST_PORT_START);
+		assert.ok(
+			secondLock.port < REAL_LOCK_TEST_PORT_START + REAL_LOCK_TEST_PORT_COUNT,
+		);
 	} finally {
 		// Order matters: releasing the first lock lets the second acquisition
 		// settle immediately instead of waiting out its own timeout.
@@ -1864,6 +1904,32 @@ test("buildPnpmArgs rejects selected files outside the workspace", () => {
 			),
 		/Selected test file is outside workspace packages\/orca-workflow: packages\/other\/src\/foo\.test\.ts/,
 	);
+});
+
+test("buildPnpmArgs switches vitest to related mode when related files are provided", () => {
+	const args = buildPnpmArgs(
+		"F:/repo",
+		{ cwd: "apps/desktop" },
+		{
+			type: "packageBin",
+			bin: "vitest",
+			args: ["run", "--pool=threads", "--maxWorkers=1"],
+		},
+		{ exclude: ["**/*.bench.ts"] },
+		["apps/desktop/src/main/foo.test.ts"],
+		["apps/desktop/src/main/foo.ts"],
+	);
+	assert.equal(args[3], "vitest");
+	assert.deepEqual(args.slice(4, 9), [
+		"related",
+		"--run",
+		"--pool=threads",
+		"--maxWorkers=1",
+		"--passWithNoTests",
+	]);
+	assert.equal(args.includes("src/main/foo.ts"), true);
+	assert.equal(args.includes("src/main/foo.test.ts"), false);
+	assert.deepEqual(args.slice(-2), ["--exclude", "**/*.bench.ts"]);
 });
 
 test("buildPnpmArgs only loosens Vitest sharding for undersized workspaces", () => {
