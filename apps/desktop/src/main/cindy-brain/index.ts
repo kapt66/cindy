@@ -442,8 +442,11 @@ import type {
   MekaDevPluginUploadRequest,
 } from '../../shared/mekaDevPlugin.js';
 import { MEKA_PLUGIN_VISIBILITIES } from '../../shared/mekaDevPlugin.js';
-import { packGhostDir } from './forge.js';
-import { MekaDevPluginError, MekaDevPluginManager } from './mekaDevPlugins.js';
+import {
+  MekaDevPluginError,
+  MekaDevPluginManager,
+  packMekaDevPluginSource,
+} from './mekaDevPlugins.js';
 import { getMekaRouterService } from '../meka-settings/ipc.js';
 import { openMekaRouterLoginWindow } from '../meka-settings/routerLoginWindow.js';
 import { watcherHostClient } from '../watcher-host/index.js';
@@ -5840,7 +5843,11 @@ export function registerGhostIpc(): void {
   const mekaDevPlugins = new MekaDevPluginManager({
     getRegistryPath: () => path.join(brainRootDir(), '.meka-dev-plugins.json'),
     getTempRoot: () => path.join(app.getPath('temp'), 'cindy-meka-dev-plugins'),
-    packDirectory: (sourceDir, { outputDir }) => packGhostDir(sourceDir, { outputDir }),
+    packDirectory: (sourceDir, { outputDir }) =>
+      packMekaDevPluginSource(sourceDir, {
+        outputDir,
+        forbiddenRootDirs: ghostForgeForbiddenRootDirs(),
+      }),
     inspectPackage: async (cindyPath) => {
       const inspected = await inspectDevelopmentPackage(cindyPath);
       return { manifest: inspected.manifest, trust: inspected.trust };

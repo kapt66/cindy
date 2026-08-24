@@ -1007,6 +1007,14 @@ OAuth scope 上限回迁的验证覆盖协议包 256/257 边界、Desktop 共享
 跨卷搬运，不改写源码目录；原 manifest／签名检查、内容指纹确认、派生开发身份
 与原子 install/update 链路均不变。定向 Forge 回归测试锁定输出位置与源码目录无污染。
 
+2026-08-24 上游 Forge workdir 安全门接纳后，Meka 开发目录仍沿用旧的
+`packGhostDir({ outputDir })` 接线，导致设置页在没有活动任务时选择任何目录都会以
+`Forge pack requires an active session workdir` 失败。当前以用户显式选择并经 Main
+`realpath` 校验的源码目录作为开发模式专属打包根，同时继续传入安装内容、批准状态与随包
+seed 禁区；因此检查、登记、监听同步和发布打包不依赖活动任务，Agent Forge 的会话 workdir
+门禁没有放宽。定向测试锁定无任务成功路径与受管根拒绝路径；仍需在真实 Meka 插件页完成
+一次目录选择、权限确认、安装和热更新手测。
+
 2026-08-05 第二轮插件/技能映射回审：Meka 插件列表补回与 Cindy 一致的更新横幅和“全部更新”
 入口，并复用批量权限复核弹窗；批次启动时绑定 Meka 独立 market adapter，不混用 Cindy API 或
 ledger。Meka IPC 同步透传共享安装服务已有的 `reviewedBaseline` 与

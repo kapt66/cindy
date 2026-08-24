@@ -20,7 +20,7 @@ import {
   type GhostTrustInfo,
   type InstalledGhost,
 } from '../../shared/ghost.js';
-import type { ForgePackResult } from './forge.js';
+import { packGhostDir, type ForgePackResult } from './forge.js';
 import { GHOST_SIGNATURE_FILE } from './ghostSignature.js';
 import type {
   WatcherHostEventsHandler,
@@ -89,6 +89,23 @@ export interface MekaDevPluginManagerDeps {
     info(message: string, meta?: Record<string, unknown>): void;
     warn(message: string, meta?: Record<string, unknown>): void;
   };
+}
+
+/**
+ * Meka development sources are authorized by the user's directory picker, not
+ * by an active Agent session. The manager resolves the selected directory
+ * before calling this adapter; Forge still enforces its realpath boundary and
+ * the Host-managed root denylist.
+ */
+export function packMekaDevPluginSource(
+  sourceDir: string,
+  options: { outputDir: string; forbiddenRootDirs: readonly string[] },
+): Promise<ForgePackResult> {
+  return packGhostDir(sourceDir, {
+    outputDir: options.outputDir,
+    sessionWorkdir: sourceDir,
+    forbiddenRootDirs: options.forbiddenRootDirs,
+  });
 }
 
 export class MekaDevPluginError extends Error {

@@ -10,6 +10,7 @@ import type { WatcherHostEventsHandler } from '../../watcher-host/WatcherHostCli
 import {
   MekaDevPluginManager,
   mekaDevRuntimeId,
+  packMekaDevPluginSource,
   type MekaDevPluginError,
   type MekaDevPluginManagerDeps,
 } from '../mekaDevPlugins';
@@ -149,6 +150,30 @@ describe('MekaDevPluginManager', () => {
       { timeout: 2_000 },
     );
     expect(deps.onContentReloaded).toHaveBeenCalledTimes(2);
+  });
+
+  it('用户选择的开发目录无需活动任务 workdir 即可打包，并继续拒绝 Host 受管根', async () => {
+    await fs.promises.writeFile(path.join(sourceDir, 'ghost.json'), JSON.stringify(manifest()));
+    await fs.promises.writeFile(path.join(sourceDir, 'main.js'), '// development Plugin');
+    const outputDir = path.join(workDir, 'packed');
+
+    await expect(
+      packMekaDevPluginSource(sourceDir, { outputDir, forbiddenRootDirs: [] }),
+    ).resolves.toMatchObject({
+      ok: true,
+      manifest: { id: 'demo-plugin' },
+    });
+    await expect(fs.promises.stat(path.join(outputDir, 'demo-plugin-1.0.0.cindy'))).resolves.toBeTruthy();
+
+    await expect(
+      packMekaDevPluginSource(sourceDir, {
+        outputDir,
+        forbiddenRootDirs: [sourceDir],
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'SOURCE_IS_INSTALLED_PLUGIN',
+    });
   });
 
   it('自动更新失败时保留已安装副本，并将开发条目标记为错误', async () => {
