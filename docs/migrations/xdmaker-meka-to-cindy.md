@@ -1093,6 +1093,20 @@ MCPRouter registry 24 个测试、Server 72 个测试及两个 package typecheck
 均通过；完整 plugin-market 加 shared payload validator、renderer 进度按钮共 9 个测试文件、
 67 个测试通过。真实 MCPRouter 下载 Meka Docs 并完成安装仍待开发者手测。
 
+2026-08-25 Meka P4 插件补齐 Agent 侧的 `p4_revert`、`p4_clean` 与 `p4_force_sync`，解决
+正式任务只能检查状态、却在明确还原或强制恢复请求前因能力缺失而停止的问题。实现归属独立
+`cindy-meka-plugins` 仓，不修改 Cindy 插件基座、服务端或 `cindy-protocol`。三项能力都要求
+用户当前消息明确提出对应动作，并逐次通过 Host `confirm` 槽；文字授权不能替代真实点击，
+取消、超时、无窗口、限速或 Host 错误一律 fail closed。revert 复用既有工作区、启用子目录、
+当前 P4 状态复验与审计边界；新增文件默认保留，只有用户明确要求时才永久删除。clean 和
+force sync 在确认前只做无副作用预检，确认后重新预检并核对目标指纹，状态变化则拒绝执行。
+普通 `p4_sync` 保持非强制语义。插件版本升至 `1.0.59`，新增 `confirm` 权限会在更新确认中
+如实展示；插件 id、command、安装身份、KV、设置与其它既有批准数据不迁移、不清空。
+首次导入 `1.0.59` 包时发现英文 locale 顶层 `description` 为 334 字符，超过 Host 的 300
+字符上限，插件在安装前被拒。英文摘要已压缩为 267 字符，并补充双语 locale 顶层
+`description`／`whenToUse` 1–300、工具描述 1–1024 的自动化门禁；当前 Cindy 正式
+`validateGhostManifest` 与 `validateGhostLocaleResourcesInDirectory` 已对源码目录验证通过。
+
 #### 4.7.2 MCPRouter Meka 技能仓库
 
 2026-07-31 起新增 Meka 技能独立分发链。Meka 技能复用 Cindy 上游 Agent Skill 的
