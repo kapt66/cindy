@@ -996,6 +996,11 @@ SSH 远程工作区路径；Meka 插件仓同步 `ghost.json` slot、Forge 手�
 `reveal` 与 `cindy.media: ["deposit"]`，使 MCPRouter 市场详情响应与 Desktop 已落地的
 文件定位、媒体寄存运行时契约一致；父仓只能
 锁定已经提交并可从该 fork 拉取的协议提交，客户端与 MCPRouter 服务端需同步升级 parser。
+2026-08-25 进一步把 Desktop 已落地的 `confirm` slot 补入同一共享白名单，并以
+`MekaPluginMarketApi.detail()` 回归锁定带该 slot 的 `currentRelease.manifest` 可通过详情响应
+解析；否则协议 parser 会在 Desktop 本地权限校验之前先抛
+`response.plugin.currentRelease.manifest 不合法`。该枚举扩展不提升 schema v2，旧客户端仍会
+fail closed，因此必须先升级协议消费方，再发布依赖确认槽的插件版本。
 
 - `apps/desktop/src/main/meka-settings/routerService.ts`
 - `apps/desktop/src/main/plugin-market/api.ts`
@@ -1095,11 +1100,16 @@ MCPRouter registry 24 个测试、Server 72 个测试及两个 package typecheck
 
 2026-08-25 Meka P4 插件补齐 Agent 侧的 `p4_revert`、`p4_clean` 与 `p4_force_sync`，解决
 正式任务只能检查状态、却在明确还原或强制恢复请求前因能力缺失而停止的问题。实现归属独立
-`cindy-meka-plugins` 仓，不修改 Cindy 插件基座、服务端或 `cindy-protocol`。三项能力都要求
-用户当前消息明确提出对应动作，并逐次通过 Host `confirm` 槽；文字授权不能替代真实点击，
+`cindy-meka-plugins` 仓；为使 MCPRouter 市场能够分发该 manifest，本轮同步修改
+`cindy-protocol` 的 `confirm` slot 白名单与 Desktop 详情响应回归，但不修改 Cindy Host
+运行时或服务端。三项恢复能力与既有 `p4_submit` 都要求用户当前消息明确提出对应动作，并
+逐次通过 Host `confirm` 槽；文字授权不能替代真实点击，
 取消、超时、无窗口、限速或 Host 错误一律 fail closed。revert 复用既有工作区、启用子目录、
 当前 P4 状态复验与审计边界；新增文件默认保留，只有用户明确要求时才永久删除。clean 和
 force sync 在确认前只做无副作用预检，确认后重新预检并核对目标指纹，状态变化则拒绝执行。
+submit 同样先预检，再把规范化提交信息、文件路径和当前 P4 action 写入稳定指纹；确认后只有
+复验完全一致才创建临时 changelist 并提交。面板内由用户直接点击的提交入口保持原流程，
+新增 Host 确认只约束 Agent 工具路径。
 普通 `p4_sync` 保持非强制语义。插件版本升至 `1.0.59`，新增 `confirm` 权限会在更新确认中
 如实展示；插件 id、command、安装身份、KV、设置与其它既有批准数据不迁移、不清空。
 首次导入 `1.0.59` 包时发现英文 locale 顶层 `description` 为 334 字符，超过 Host 的 300

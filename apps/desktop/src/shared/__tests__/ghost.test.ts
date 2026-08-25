@@ -3248,7 +3248,7 @@ describe('ghost · network 详单校验', () => {
   });
 
   it('来源投影丢掉 badge 槽时,包里的 badge 必须被识别成「未审权限」', () => {
-    // 场景:服务端市场那份平行校验器不认识 `badge` 槽(它连 `confirm` 都还没有),
+    // 场景:旧服务端市场或未来再次漂移的平行校验器不认识 `badge` 槽,
     // 投影出的 manifest 少了这一档 → 确认框漏列;而下载的 .cindy 包里 ghost.json
     // 原样带着。装入出口就是拿这个 diff 拦下的(codex review P1)。
     const reviewed = validateGhostManifest({ ...goodManifest(), slots: ['panel'] });

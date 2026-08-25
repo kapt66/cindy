@@ -207,6 +207,37 @@ describe('PluginMarketApi', () => {
     expect(sources.serverApiFetch.mock.calls[1]?.[0]).toContain('/api/plugins?');
   });
 
+  it('accepts Meka Plugin details that declare the Host confirm slot', async () => {
+    const item = summary(PLUGIN_A, 'meka-p4');
+    sources.serverApiFetch.mockResolvedValue({
+      schemaVersion: 2,
+      plugin: {
+        ...item,
+        currentRelease: {
+          ...item.currentRelease,
+          manifest: {
+            schemaVersion: 2,
+            id: item.ghostId,
+            name: item.name,
+            version: item.currentRelease.version,
+            kind: 'chip',
+            entry: 'main.js',
+            slots: ['tool', 'confirm'],
+            tools: [{ name: 'submit', description: 'Submit confirmed files' }],
+          },
+        },
+      },
+    });
+
+    await expect(new MekaPluginMarketApi().detail(PLUGIN_A)).resolves.toMatchObject({
+      currentRelease: { manifest: { slots: ['tool', 'confirm'] } },
+    });
+    expect(sources.serverApiFetch).toHaveBeenCalledWith(
+      `/api/plugins/${PLUGIN_A}`,
+      expect.objectContaining({ token: 'meka-client-key' }),
+    );
+  });
+
   it('uses the anonymous public surface without credentials when MCPRouter is unbound', async () => {
     sources.mekaAccess.clientKey = null;
     sources.serverApiFetch
