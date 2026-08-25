@@ -11,6 +11,7 @@ import {
   brandAppId,
   brandBundleIdPrefix,
   brandDesktopDeviceId,
+  brandDesktopDeviceIdOverride,
   brandDesktopIsolatedDeviceId,
   brandExecutableName,
   brandFileAssociationProgId,
@@ -167,6 +168,15 @@ describe('派生 helper', () => {
     expect(brandDesktopDeviceId(machineId)).toMatch(/^cindy-meka-/);
     expect(brandDesktopDeviceId(machineId)).not.toBe(machineId.slice(0, 64));
     expect(() => brandDesktopDeviceId('   ')).toThrow('machine id is required');
+  });
+
+  it('显式 Desktop deviceId override 也必须落在 Cindy Meka 命名空间', () => {
+    expect(brandDesktopDeviceIdOverride(' machine-id ')).toBe('cindy-meka-machine-id');
+    expect(brandDesktopDeviceIdOverride('cindy-meka-machine-id')).toBe(
+      'cindy-meka-machine-id',
+    );
+    expect(brandDesktopDeviceIdOverride('a'.repeat(100))).toHaveLength(64);
+    expect(() => brandDesktopDeviceIdOverride('   ')).toThrow('machine id is required');
   });
 
   it('isolated Desktop deviceId 在产品前缀下继续按沙箱分家', () => {

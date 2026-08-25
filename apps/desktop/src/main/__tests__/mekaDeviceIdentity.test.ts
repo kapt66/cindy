@@ -10,15 +10,21 @@ describe('Cindy Meka Desktop device identity bootstrap', () => {
     const source = fs.readFileSync(path.join(mainRoot, 'index.ts'), 'utf8');
     const normalAssignment =
       'process.env.XDT_DEVICE_ID_OVERRIDE = brandDesktopDeviceId(machineIdSync())';
+    const overrideNormalization =
+      'process.env.XDT_DEVICE_ID_OVERRIDE = brandDesktopDeviceIdOverride(';
     const isolatedDerivation =
       'brandDesktopIsolatedDeviceId(machineIdSync(), devFlags.isolationName)';
 
     expect(source).toContain(normalAssignment);
+    expect(source).toContain(overrideNormalization);
     expect(source).toContain(isolatedDerivation);
     expect(source.indexOf(normalAssignment)).toBeLessThan(
       source.indexOf("import('./bootstrap-electron.js')"),
     );
     expect(source.indexOf(isolatedDerivation)).toBeLessThan(
+      source.indexOf("import('./bootstrap-electron.js')"),
+    );
+    expect(source.indexOf(overrideNormalization)).toBeLessThan(
       source.indexOf("import('./bootstrap-electron.js')"),
     );
   });

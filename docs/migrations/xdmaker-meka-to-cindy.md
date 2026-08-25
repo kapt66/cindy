@@ -172,9 +172,15 @@
   为 `cindy-meka-dev-[<sandbox>-]<machineId>`，统一限制在 64 字符内。普通 Cindy
   继续使用裸机器指纹，旧 XDMaker Meka 使用 `meka-`，三者互不覆盖服务端
   `(userId, deviceId)` 设备槽。
-- 自动验证：身份派生与启动顺序回归、Desktop typecheck、变更文件 ESLint 及根目录
-  `pnpm test:unit` 已通过；仍需用正式 Cindy 与 Cindy Meka 同账号跨 token 刷新周期
-  完成一次双开实机验证。
+- 启动器显式传入的 `XDT_DEVICE_ID_OVERRIDE` 仍支持开发多实例联调，但 Meka 主进程会在
+  加载认证模块前把裸值和已带前缀的值统一归一化为 `cindy-meka-*`；该环境变量不能覆盖
+  产品命名空间。官方 profile 判定同时保护 Cindy 与 Cindy Meka 的正式目录，避免隔离
+  启动误用另一产品的 refresh token。
+- 自动验证：身份派生与启动顺序回归、Desktop typecheck、Desktop 变更文件 ESLint、
+  Prettier、根目录 `pnpm test:unit` 及 61 项身份/profile 定向测试已通过；maker-shared
+  全文件 ESLint 仍报告 HEAD 已存在的 `_region` 未使用告警（`brandIdentity.ts:316`），
+  本轮未扩大范围修复。仍需用正式 Cindy 与 Cindy Meka 同账号跨 token 刷新周期完成一次
+  双开实机验证。
 - DB 文件前缀：`cindy-meka`
 - 更新器名：`cindy-meka-updater`
 - 更新/CDN 前缀：`cindy-meka`

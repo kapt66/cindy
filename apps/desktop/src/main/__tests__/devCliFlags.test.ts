@@ -69,6 +69,20 @@ describe('resolveDevCliFlags', () => {
     expect(flags.userDataDirOverride).toBeNull();
   });
 
+  it('Meka 正式与 dev profile 都属于官方保护集合', () => {
+    const meka = resolveDevCliFlags({
+      ...base,
+      defaultUserDataDir: '/AppData/CindyMeka',
+    });
+    expect(meka.profileKind).toBe('production-shared');
+
+    const mekaDev = resolveDevCliFlags({
+      ...base,
+      defaultUserDataDir: '/AppData/CindyMekaDev',
+    });
+    expect(mekaDev.profileKind).toBe('production-shared');
+  });
+
   it('原生 --user-data-dir 自定义默认 + XDT_USER_DATA_DIR 指向正式目录,仍判正式 profile',
     () => {
       const flags = resolveDevCliFlags({

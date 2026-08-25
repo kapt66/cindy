@@ -360,7 +360,7 @@ maker-shared、lizi-im 及全部可运行协议包均 PASS。受影响包按仓�
 
 | ID | 能力 | Meka 不变量 | 上游对应变化 | 最终关系与实现 | 状态 |
 | --- | --- | --- | --- | --- | --- |
-| `CAP-IDENTITY` | 身份、深链与旧数据 | `CindyMeka` / `cindy-meka` / `cindy-meka://`；旧 `xdmaker-meka` 只读迁移 | 区域、认证、正式 profile 和更新生命周期重构 | 接纳上游生命周期；保留 Meka 身份、互操作解析和更新渠道 | 已验证 |
+| `CAP-IDENTITY` | 身份、深链与旧数据 | `CindyMeka` / `cindy-meka` / `cindy-meka://`；旧 `xdmaker-meka` 只读迁移 | 区域、认证、正式 profile 和更新生命周期重构 | 接纳上游生命周期；保留 Meka 身份、互操作解析和更新渠道；override 归一化到 `cindy-meka-*`，Cindy/Meka 正式 profile 均受保护 | 已验证 |
 | `CAP-PROTOCOL` | Meka 协议与 MCPR 扩展 | 保留 Meka submodule 和 `mcpr-plugin-capability` | 上游协议包本地化 | 用户决定的保留例外；只保留一套 workspace 包来源 | 已验证 |
 | `CAP-DATABASE` | 历史数据库升级 | 已发布 migration/runtime identity 不改写 | 上游 `0086`-`0092` 新 schema、FTS、统计和数据迁移 | Meka `0082`-`0091` 冻结；合并 schema 与 guarded companion 追加为 `0092`-`0095` | 已验证 |
 | `CAP-MEKA-PROJECT` | 项目、角色、正式事项 | 草稿和历史任务继续绑定 Meka 项目/角色 | 上游 Draft/Composer、侧栏和 session route 重构 | 在上游 route owner/historyLoaded 与 Composer 状态层上恢复 Meka 投影 | 已验证 |
@@ -426,6 +426,11 @@ maker-shared、lizi-im 及全部可运行协议包均 PASS。受影响包按仓�
   `10000..39999` 分散候选后通过。生产锁默认范围、串行语义和 `--no-lock` 策略均未修改。
 - Desktop、Mobile 和四个受影响 bridge package 的最终 typecheck 通过；较早完成的 cindy-tools、
   lizi-mcps、maker-cc-manager 检查及插件/更新器/深链/Orca 定向测试仍通过。
+- 2026-08-25 针对 Meka deviceId override 与官方 profile 保护的修复完成提交前复核：
+  `pnpm test:unit` 默认并发完整通过（runner 456 项，449 pass、7 skip；全部 required
+  workspace PASS），Desktop typecheck、Desktop 变更文件 ESLint、Prettier 与 61 项身份/profile
+  定向测试均通过。maker-shared 全文件 ESLint 仍报告 HEAD 已存在的 `_region` 未使用告警
+  （`brandIdentity.ts:316`），本轮未扩大范围修复；不影响类型检查或测试结果。
 - Windows 真实 Electron 已通过 `pnpm restart:desktop:remote -- --isolated=@worktree` 在隔离
   profile `upstream-sync-20260821-3d9898` 启动，得到 `DESKTOP_DEV_VERDICT=ready`。首次运行审计
   发现并修复三项合并后运行期断链：未登录 xAI 后台 discovery 在 token 读取处形成

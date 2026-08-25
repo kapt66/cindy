@@ -94,10 +94,18 @@ checkout 占用而中止，不要换命令绕过，应把 verdict 交给用户�
 已手动设 `XDT_USER_DATA_DIR` 时尊重用户值，不覆盖，也不探测或迁移正式区域目录。
 唯一例外：`--isolated` / `XDT_ISOLATED=1` 把该目录指到正式 profile 时直接拒绝启动。
 
-正式版目录保持历史兼容：CN → `Cindy`，Global → `CindyGlobal`，不在启动时改名或搬迁用户数据。
+正式版目录保持历史兼容：上游 Cindy 使用 `Cindy` / `CindyGlobal`，Cindy Meka 使用
+`CindyMeka`；两套目录都不在启动时改名或搬迁用户数据。
 非隔离 dev 也使用当前区域对应的正式 profile；`--isolated` 沙箱再按相同区域映射派生目录。
 **dev writer 不得把正式 profile 升到当前 checkout 比安装版更新的 schema**：有 pending
 migration 就拒绝启动，改用 `--isolated=<名字>`。`--preserve-running` / 共库 passive 仍只读。
+
+Desktop 服务端 `deviceId` 是产品身份边界的一部分。Meka 正常实例使用
+`cindy-meka-<machineId>`，显式 `XDT_DEVICE_ID_OVERRIDE` 仅用于同机多实例联调，启动时也
+会归一化为 `cindy-meka-*`；不得让上游 Cindy 的裸机器指纹穿透到 Meka。这样登录、换 token
+和 refresh 都不会共用 auth-server 的 `(userId, deviceId)` 设备槽。官方 profile 保护集合
+同时包含 Cindy 的 `Cindy` / `CindyGlobal` / `CindyDev` 与 Meka 的
+`CindyMeka` / `CindyMekaDev`，隔离启动指向任一正式目录都必须拒绝。
 跨区域共享、登录态迁移或旧版本回滚应使用显式隔离目录，避免不同构建误用同一 profile。
 
 ### 并行多开 dev

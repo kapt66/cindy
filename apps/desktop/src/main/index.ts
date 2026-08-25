@@ -9,6 +9,7 @@ import {
   BRAND_IDENTITY,
   MAX_DESKTOP_DEVICE_ID_LENGTH,
   brandDesktopDeviceId,
+  brandDesktopDeviceIdOverride,
   brandDesktopIsolatedDeviceId,
 } from '@cindy/maker-shared/brand-identity';
 import { CURRENT_CINDY_REGION } from '../shared/brandRegion.js';
@@ -82,7 +83,7 @@ installInvokeCapture();
 //     与同机普通 Cindy 的裸指纹分家。服务端 refresh token 按 (user, device)
 //     一对一存,若共用裸指纹,任一产品登录/续期都会覆盖另一边并造成同机互踢。
 //   - 隔离模式在产品前缀下继续派生 cindy-meka-dev-<沙箱>-<机器指纹>；
-//     显式设 XDT_DEVICE_ID_OVERRIDE 时尊重用户值。
+//     显式设 XDT_DEVICE_ID_OVERRIDE 时保留联调值，但统一补齐产品前缀。
 //   - --passive / XDT_SCHEDULER_PASSIVE:定时任务自动触发让位给同机另一实例。
 // 必须在 app 'ready' 和 authManager 动态加载前完成。CLI/目录覆写仅 dev 生效；
 // 产品 deviceId 命名空间对 dev 与 packaged 一律生效。
@@ -216,7 +217,13 @@ if (devFlags.needsIsolatedDeviceId) {
   }
   process.env.XDT_DEVICE_ID_OVERRIDE = isolatedDeviceId;
   stderr.write(`[cindy] dev isolated deviceId → ${isolatedDeviceId}\n`);
-} else if (!process.env.XDT_DEVICE_ID_OVERRIDE?.trim()) {
+} else if (process.env.XDT_DEVICE_ID_OVERRIDE?.trim()) {
+  // 显式 override 仍支持同机多实例联调,但不得把上游 Cindy 的裸机器指纹
+  // 穿透到 Meka；最终 wire deviceId 必须保留产品命名空间。
+  process.env.XDT_DEVICE_ID_OVERRIDE = brandDesktopDeviceIdOverride(
+    process.env.XDT_DEVICE_ID_OVERRIDE,
+  );
+} else {
   // 普通 dev 与 packaged 都必须在 authManager 动态 import 前固定产品设备身份。
   process.env.XDT_DEVICE_ID_OVERRIDE = brandDesktopDeviceId(machineIdSync());
 }

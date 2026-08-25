@@ -237,6 +237,24 @@ export function brandDesktopDeviceId(
 }
 
 /**
+ * 将启动器显式传入的 Desktop deviceId 收敛到产品命名空间。
+ *
+ * override 仍可用于同机多实例联调,但不能让上游 Cindy 的裸机器指纹穿透到
+ * Meka；已带本产品前缀的值保持语义不变,避免重复加前缀。
+ */
+export function brandDesktopDeviceIdOverride(
+  override: string,
+  identity: BrandIdentity = BRAND_IDENTITY,
+): string {
+  const normalized = requireMachineId(override);
+  const prefix = identity.desktopDeviceIdPrefix;
+  const machineSegment = normalized.startsWith(prefix)
+    ? normalized.slice(prefix.length)
+    : normalized;
+  return brandDesktopDeviceId(machineSegment, identity);
+}
+
+/**
  * 为显式 `--isolated[=<name>]` 沙箱派生独立 deviceId。
  * isolationName 已由 Desktop CLI 限制为安全的 ≤32 字符段；这里再次校验，
  * 避免未来新增调用方绕过入口约束并挤掉全部机器指纹预算。
