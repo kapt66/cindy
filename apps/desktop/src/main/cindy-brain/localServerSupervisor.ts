@@ -488,6 +488,8 @@ export class LocalServerSupervisor {
         run.phase = 'ready';
         this.append(run, '本地运行目录已准备');
       }
+      const executable = relativePath(spec.run.executable, 'run.executable');
+      run.executablePath = await this.materializeExecutable(run, spec.id, executable);
       await this.persist();
       return publicRun(run);
     } catch (error) {
@@ -537,7 +539,7 @@ export class LocalServerSupervisor {
     const executable = relativePath(runSpec.executable, 'run.executable');
     const args = stringArray(runSpec.args, 'run.args');
     const workingDir = runSpec.workingDir === undefined ? '.' : relativeDirectory(runSpec.workingDir, 'run.workingDir');
-    const executablePath = path.resolve(run.runDir, executable);
+    const executablePath = await this.materializeExecutable(run, selectedProgramId, executable);
     const cwd = path.resolve(run.runDir, workingDir);
     if (!cwd.startsWith(`${run.runDir}${path.sep}`) && cwd !== run.runDir) throw new Error('Invalid runtime working directory');
     const configValues = await this.requireConfigInputs(instanceId, contract);
@@ -624,6 +626,24 @@ export class LocalServerSupervisor {
   private key(instanceId: string, programId: string): string { return `${instanceId}:${programId}`; }
   private contractPort(runSpec: Record<string, unknown>): number {
     return Number.isSafeInteger(runSpec.port) && Number(runSpec.port) > 0 ? Number(runSpec.port) : 0;
+  }
+
+  private stableExecutablePath(instanceId: string, programId: string, executable: string): string {
+    const root = path.resolve(this.deps.userDataPath, 'local-server-binaries');
+    const target = path.resolve(root, instanceId, programId, ...executable.split('/'));
+    if (!target.startsWith(`${root}${path.sep}`)) throw new Error('Invalid stable executable path');
+    return target;
+  }
+
+  private async materializeExecutable(run: InternalRun, programId: string, executable: string): Promise<string> {
+    const source = path.resolve(run.runDir, executable);
+    const sourceStat = await fs.stat(source).catch(() => null);
+    if (!sourceStat?.isFile()) throw new Error(`构建产物缺少运行程序：${executable}`);
+    const target = this.stableExecutablePath(run.instanceId, programId, executable);
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.copyFile(source, target);
+    if (process.platform !== 'win32') await fs.chmod(target, sourceStat.mode & 0o777);
+    return target;
   }
 
   private async ensureRunDirectories(runDir: string, value: unknown): Promise<void> {

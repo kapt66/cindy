@@ -153,6 +153,45 @@ describe('LocalServerRuntime', () => {
     });
   });
 
+  it('materializes the executable at one stable path across build tasks', async () => {
+    const userDataPath = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-stable-executable-test-'));
+    const first = Buffer.from('server-build-1');
+    const second = Buffer.from('server-build-2');
+    const descriptor = (data: Buffer): LocalServerArtifactDescriptor => {
+      const file = { path: 'server.exe', size: data.length, sha256: createHash('sha256').update(data).digest('hex') };
+      return {
+        fileName: 'artifact-manifest', size: data.length,
+        sha256: createHash('sha256').update(`${file.path}\0${file.sha256}\0${file.size}`).digest('hex'),
+        expiresAt: Date.now() + 60_000, files: [file],
+      };
+    };
+    const artifacts = new Map([
+      ['task-1', { taskId: 'task-1', artifact: descriptor(first), data: first }],
+      ['task-2', { taskId: 'task-2', artifact: descriptor(second), data: second }],
+    ]);
+    const supervisor = new LocalServerSupervisor({
+      userDataPath,
+      downloadArtifact: async (_instance, taskId) => new Response(artifacts.get(taskId)?.data as unknown as BodyInit),
+      getArtifact: async (_instance, taskId) => {
+        const artifact = artifacts.get(taskId);
+        if (!artifact) throw new Error('missing test artifact');
+        return { taskId: artifact.taskId, artifact: artifact.artifact };
+      },
+      getBuildMetadata: async (_instance, taskId) => ({ taskId, builtAt: Date.now() }),
+      getRuntimeContract: async () => ({ apiVersion: 1, run: { programs: [{ id: 'server', executable: 'server.exe' }] } }),
+    });
+
+    await supervisor.prepare('instance-1', 'task-1', 'server');
+    const stablePath = path.join(userDataPath, 'local-server-binaries', 'instance-1', 'server', 'server.exe');
+    const [firstRuntimeName] = await fs.readdir(path.join(userDataPath, 'local-server-runtimes'));
+    await expect(fs.readFile(stablePath)).resolves.toEqual(first);
+
+    await supervisor.prepare('instance-1', 'task-2', 'server');
+    await expect(fs.readFile(stablePath)).resolves.toEqual(second);
+    const [secondRuntimeName] = await fs.readdir(path.join(userDataPath, 'local-server-runtimes'));
+    expect(secondRuntimeName).not.toBe(firstRuntimeName);
+  });
+
   it('rejects a downloaded artifact when a contract entry executable is missing', async () => {
     const userDataPath = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-missing-program-test-'));
     const server = Buffer.from('server');

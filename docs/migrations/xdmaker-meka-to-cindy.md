@@ -2638,6 +2638,17 @@ Codex 修复后的实机链路也已单独复验：相同 MCPRouter 实例、Gat
 `/v1/responses` stream disconnect 随后无法复现，归为 Gateway/网络瞬时故障，不扩大本次合并
 回归的代码范围，也不修改 MCPRouter 服务端或远端 runtime pin。
 
+### 6.41 2026-08-25 MCPRouter 本地服务器入口路径稳定化
+
+Windows 防火墙按可执行文件路径识别应用；本地服务器之前从每次 `prepare` 生成的随机运行目录
+启动，同一实例的新构建因此可能再次触发防火墙弹窗。本次仅在 Desktop Main 的
+`LocalServerSupervisor` 中将每个声明的服务器入口复制到
+`userData/local-server-binaries/<instanceId>/<programId>/...` 的稳定路径后启动，运行目录、
+工作目录、配置适配器、端口监听和 MCPRouter 插件协议均保持不变。稳定副本在新构建准备时刷新，
+不增加防火墙规则写入、管理员权限或插件授权；首次允许该稳定路径及对应网络配置后，后续构建
+不会因为随机 exe 路径变化而重复触发同一确认。定向回归覆盖不同构建任务复用同一稳定入口路径；
+真实 Windows 防火墙首次确认仍需在 Electron 环境手测。
+
 ## 10. 后续继续迁移时的硬性注意事项
 
 ### 9.1 `origin/main` → `meka/main` 同步报告

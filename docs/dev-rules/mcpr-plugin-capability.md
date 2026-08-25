@@ -120,7 +120,10 @@ callId 账本反查真实插件和任务，拒绝远程任务、绝对路径、�
 终止持久状态中的残留 PID，并把程序恢复为 `stopped`，不会把旧进程视为仍在运行。Main
 Supervisor 负责产物摘要、路径边界、配置适配器、进程树和有限日志；返回值不含本地/远端
 路径、PID、命令或凭证。运行契约由模板能力在 Host 内部读取，插件不得自行提交可执行路径
-或 shell。
+或 shell。服务器入口文件会由 Main 复制到用户数据目录下按 `instanceId`、程序 ID 和
+契约相对路径确定的稳定路径 `local-server-binaries/<instance>/<program>/...` 后再启动；
+随机运行目录仍仅用于工作目录、配置和日志。该路径变更不新增防火墙 API、提权 helper、
+插件权限或协议字段，首次启动时仍由 Windows 按既有流程决定是否显示防火墙确认。
 
 首个已接线业务 route 为 `other-configs.get`（`account` scope / `read` risk），输入只含
 `ownerUsername` 与 `name`。Router 复用 `/api/configs/:ownerUsername/:name` 的
