@@ -401,6 +401,48 @@ describe('Meka runtime MCP remote instance projection', () => {
     await config.instance.close();
   });
 
+  it('treats a combat environment recheck outside the combat workflow as advisory', async () => {
+    const providers: McpProvider[] = [];
+    registerMekaRuntimeMcpArrays(providers);
+    const provider = providers.find((candidate) => candidate.name === 'mcp_router');
+    const context = {
+      agentKind: 'claude-code' as const,
+      workingDir: 'C:\\p4',
+      sessionId: 'general-role-combat-gate-advisory-session',
+      vendorOptions: {
+        source: 'meka',
+        mekaProjectId: 'saga2',
+        mekaRoleId: 'general-development',
+        mekaMcpProviderIds: ['mcp-router'],
+      },
+    };
+    const config = provider?.toClaudeSdkConfig?.(context) as { instance: McpServer };
+    const client = new Client({ name: 'combat-gate-advisory-test', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([config.instance.connect(serverTransport), client.connect(clientTransport)]);
+
+    const result = await client.callTool({ name: 'check_combat_environment', arguments: {} });
+    const payload = JSON.parse(
+      (result.content as Array<{ type: string; text: string }>)[0]!.text,
+    ) as Record<string, unknown>;
+    expect(result).not.toHaveProperty('isError');
+    expect(payload).toMatchObject({
+      ok: true,
+      status: 'advisory',
+      workflowActive: false,
+      dependencyChecksRun: false,
+      blockedScope: null,
+      independentWorkCanContinue: true,
+    });
+    expect(JSON.stringify(payload)).toContain('这不是任务级阻断');
+    expect(p4Service.get).not.toHaveBeenCalled();
+    expect(routerService.listInstances).not.toHaveBeenCalled();
+    expect(routerService.listProjectBindings).not.toHaveBeenCalled();
+
+    await client.close();
+    await config.instance.close();
+  });
+
   it('checks the environment from the combat role binding when workflow metadata is missing', async () => {
     p4Service.get.mockResolvedValue({ p4RootPath: null });
     routerService.listInstances.mockResolvedValue([]);

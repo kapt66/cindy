@@ -2436,6 +2436,11 @@ Host 在任务运行态保存三条链路各自不含凭证的状态、原因与
 不变。定向回归覆盖聚合预警不阻止读取、P4 故障不阻止 Unity、UnityMCP 故障不阻止 MCPR、
 MCPR 故障只在实际远程调用时返回对应恢复方案。
 
+普通角色或缺少战斗 workflow 的任务调用 `check_combat_environment` 也不再返回
+`SAGA2 combat workflow is not enabled` 错误：Host 返回未执行三项探针的 advisory，明确该结果
+不代表任一依赖不可用且不冻结任务。真实依赖仍在 P4、UnityMCP、MCPRouter 或 Worker 工具实际
+使用时分别校验和拦截。
+
 ### 6.37 2026-08-21 MCPRouter 具体调用失败后的主动恢复
 
 任务 `7c97e9a6-038e-49a1-a7c9-672ae58f1069` 证明只把聚合门改成预警仍不够：该任务实际是

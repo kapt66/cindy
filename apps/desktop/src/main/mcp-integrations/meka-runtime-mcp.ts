@@ -696,7 +696,16 @@ function createRouterServer(context: McpProviderContext): McpServer {
       const selectedProjectId = projectId(context);
       const runtimeOptions = options(context);
       if (!selectedProjectId || !isCombatWorkflowPolicyActive({ vendorOptions: runtimeOptions })) {
-        return jsonResult({ ok: false, error: 'SAGA2 combat workflow is not enabled' }, true);
+        return jsonResult({
+          ok: true,
+          status: 'advisory',
+          workflowActive: false,
+          dependencyChecksRun: false,
+          blockedScope: null,
+          independentWorkCanContinue: true,
+          message:
+            '当前任务未绑定 SAGA2 战斗开发工作流；这不是任务级阻断，也不表示 P4、UnityMCP 或 MCPRouter 不可用。继续当前探索、澄清和其它独立工作；实际调用依赖这些能力的工具时，再按该工具自己的回执处理。',
+        });
       }
       try {
         const p4 = await getMekaP4SettingsService().get();
