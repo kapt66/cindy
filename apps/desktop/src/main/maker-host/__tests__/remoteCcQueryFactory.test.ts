@@ -23,6 +23,50 @@ const ccManagerClientSource = readFileSync(
   'utf8',
 ).replace(/\r\n?/g, '\n');
 
+describe('MCPRouter remote transport wiring', () => {
+  it('routes Claude through the MCPRouter tunnel before any SSH pool lookup', () => {
+    const factoryStart = source.indexOf('remoteCcQueryFactory: async ({');
+    const factoryEnd = source.indexOf('\n    });\n    const codexMcpProviders', factoryStart);
+    const factory = source.slice(factoryStart, factoryEnd);
+    const mcprGuard = factory.indexOf("classifyRemoteSessionTransport(remoteHostId) === 'mcpr'");
+    const tunnelOpen = factory.indexOf('await openMcprTunnel(remoteHostId)', mcprGuard);
+    const sshLookup = factory.indexOf('getRemoteSshPool().get(remoteHostId)', mcprGuard);
+
+    expect(factoryStart).toBeGreaterThan(-1);
+    expect(factoryEnd).toBeGreaterThan(factoryStart);
+    expect(mcprGuard).toBeGreaterThan(-1);
+    expect(tunnelOpen).toBeGreaterThan(mcprGuard);
+    expect(sshLookup).toBeGreaterThan(tunnelOpen);
+    expect(factory.slice(mcprGuard, sshLookup)).toContain('inProcessMcpServers');
+    expect(factory.slice(mcprGuard, sshLookup)).toContain('onSubagentModelAccessRequest');
+  });
+
+  it('routes Codex through the MCPRouter transport before any SSH pool lookup', () => {
+    const factoryStart = source.indexOf('getRemoteCodexTransport: (remoteHostId) => {');
+    const factoryEnd = source.indexOf(
+      '\n      },\n      resolveRemoteCodexCredentialMode,',
+      factoryStart,
+    );
+    const factory = source.slice(factoryStart, factoryEnd);
+    const mcprGuard = factory.indexOf("classifyRemoteSessionTransport(remoteHostId) === 'mcpr'");
+    const mcprTransport = factory.indexOf('createMcprCodexTransport({', mcprGuard);
+    const sshLookup = factory.indexOf('getRemoteSshPool().get(remoteHostId)', mcprGuard);
+
+    expect(factoryStart).toBeGreaterThan(-1);
+    expect(factoryEnd).toBeGreaterThan(factoryStart);
+    expect(mcprGuard).toBeGreaterThan(-1);
+    expect(mcprTransport).toBeGreaterThan(mcprGuard);
+    expect(sshLookup).toBeGreaterThan(mcprTransport);
+  });
+
+  it('keeps byte-stream MCP projection and v4 model access on the shared cc-manager client', () => {
+    expect(ccManagerClientSource).toContain('stream?: CcManagerByteStream;');
+    expect(ccManagerClientSource).toContain('inProcessMcpServers?: Record<string, unknown>;');
+    expect(ccManagerClientSource).toContain('SERVER_METHODS.MCP_TUNNEL_CALL');
+    expect(ccManagerClientSource).toContain('SERVER_METHODS.SUBAGENT_MODEL_ACCESS');
+  });
+});
+
 describe('remoteCcQueryFactory cleanup wiring', () => {
   it('finalizes OAuth Auto after MCP injection and before opening the remote query', () => {
     const injection = source.indexOf('mutableParams.mcpServers =');

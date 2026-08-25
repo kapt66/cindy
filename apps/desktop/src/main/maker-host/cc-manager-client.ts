@@ -26,6 +26,10 @@
 
 import { Duplex } from 'node:stream';
 
+import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+
 import {
   CC_MGR_BUNDLE_VERSION,
   RpcClient,
@@ -39,6 +43,7 @@ import type {
   SessionListResult,
   ApprovalRequestParams,
   ApprovalRequestResult,
+  McpTunnelCallParams,
   OAuthRefreshParams,
   OAuthRefreshResult,
   SubagentModelAccessParams,
@@ -52,12 +57,21 @@ import {
   REMOTE_CC_MGR_SOCK_PATH,
   REMOTE_XDT_NODE_PATH,
 } from '@cindy/maker-remote-ssh';
-import type { RemoteHost, ExecStreamHandle } from '@cindy/maker-remote-ssh';
+import type { RemoteHost } from '@cindy/maker-remote-ssh';
 
 import { createLogger } from '../logger.js';
 import { drainPersistQueue } from '../messagePersistBroadcaster.js';
 
 const log = createLogger('cc-manager-client');
+
+export interface CcManagerByteStream {
+  write(data: string | Buffer): void;
+  end(data?: string | Buffer): void;
+  kill(signal?: string): void;
+  onStdoutBytes(cb: (chunk: Buffer) => void): () => void;
+  onClose(cb: (info: { code: number | null; signal: string | null }) => void): () => void;
+  onError(cb: (err: Error) => void): () => void;
+}
 
 /* ============================== 远端路径常量 ============================== */
 // 跟 `packages/maker-remote-ssh/src/bootstrap/cc-manager-installer.ts` 保持一致;
@@ -215,9 +229,7 @@ echo "$DAEMON_PID" > "${REMOTE_PID}"
  * SSH 自身的 channel window flow control (ssh2 库内部处理)。实测 NDJSON RPC
  * 流量小, 不会触发反压, best-effort 即可。
  */
-export type CcManagerByteStream = Duplex;
-
-export function bridgeStreamToDuplex(handle: ExecStreamHandle): CcManagerByteStream {
+export function bridgeStreamToDuplex(handle: CcManagerByteStream): Duplex {
   const duplex = new Duplex({
     read(): void {
       /* push-driven, 无主动 pull 逻辑 */
@@ -278,7 +290,9 @@ export function bridgeStreamToDuplex(handle: ExecStreamHandle): CcManagerByteStr
  *   旧版, 用户需要重装)
  */
 export async function openCcManagerSession(opts: {
-  host: RemoteHost;
+  host?: RemoteHost;
+  stream?: CcManagerByteStream;
+  transportId?: string;
   sessionId: string;
   startParams: QueryStartParams;
   /**
@@ -288,7 +302,7 @@ export async function openCcManagerSession(opts: {
    * `@anthropic-ai/claude-cli-<plat>-<arch>` optional dep on a different
    * platform than the desktop build. Resolved by `getRemoteClaudeBinaryPath`.
    */
-  claudeBinaryPath: string;
+  claudeBinaryPath?: string;
   /**
    * Callback invoked when the remote daemon needs a permission/approval decision.
    * Maps to maker-core's InteractionResolver. If not provided, all approvals
@@ -299,6 +313,8 @@ export async function openCcManagerSession(opts: {
   onSubagentModelAccessRequest?: (
     params: SubagentModelAccessParams,
   ) => Promise<SubagentModelAccessResult>;
+  /** Desktop-owned SDK MCP instances projected through an MCPRouter cc-mgr tunnel. */
+  inProcessMcpServers?: Record<string, unknown>;
   /**
    * 强制 fresh start:daemon 侧 session alive 时也先 kill 再走 start 路径
    * (而非 attach)。用于本机 HTTP MCP bridge 重启 (app 重启) 后首轮注入:
@@ -321,18 +337,20 @@ export async function openCcManagerSession(opts: {
   dispose: () => Promise<void>;
   detach: () => Promise<void>;
 }> {
-  await ensureDaemonRunning(opts.host);
+  if (!opts.host && !opts.stream) throw new Error('cc-manager transport is required');
+  if (opts.host && !opts.claudeBinaryPath) throw new Error('remote Claude binary path is required');
+  const transportId = opts.transportId ?? opts.host?.id ?? 'mcpr';
+  if (opts.host) await ensureDaemonRunning(opts.host);
 
-  // Merge `pathToClaudeCodeExecutable` into extraOptions, preserving any
-  // caller-provided extras. Done here (the wire layer) rather than in maker-core
-  // so the IO-free core stays unaware of remote filesystem paths.
-  const startParamsWithBinary: QueryStartParams = {
-    ...opts.startParams,
-    extraOptions: {
-      ...(opts.startParams.extraOptions ?? {}),
-      pathToClaudeCodeExecutable: opts.claudeBinaryPath,
-    },
-  };
+  const startParamsWithBinary: QueryStartParams = opts.host
+    ? {
+        ...opts.startParams,
+        extraOptions: {
+          ...(opts.startParams.extraOptions ?? {}),
+          pathToClaudeCodeExecutable: opts.claudeBinaryPath,
+        },
+      }
+    : opts.startParams;
 
   // round-15 fix #5 (P2): 弃 `nc -U` — 太多最小 Linux / BusyBox 镜像没装
   // OpenBSD nc (-U 不支持 unix socket),会让 cc-manager 装好但 session 起不来。
@@ -342,18 +360,28 @@ export async function openCcManagerSession(opts: {
   // 下来的同款), 已经在 REMOTE_XDT_NODE_PATH; cc-mgr.mjs 也已经在 REMOTE_BUNDLE,
   // 两个都不依赖远端系统额外软件。比 `nc -U` 多 1 个 node 启动开销 (~30ms),
   // 换"任意 Linux 镜像都能跑"的稳定性。
-  const handle = await opts.host.execStream(
-    `"${REMOTE_NODE}" "${REMOTE_BUNDLE}" bridge --socket "${REMOTE_SOCK}"`,
-  );
+  const handle: CcManagerByteStream =
+    opts.stream ??
+    (await opts.host!.execStream(
+      `"${REMOTE_NODE}" "${REMOTE_BUNDLE}" bridge --socket "${REMOTE_SOCK}"`,
+    ));
   const duplex = bridgeStreamToDuplex(handle);
   const client = new RpcClient(duplex, {
     bundleVersion: CC_MGR_BUNDLE_VERSION,
   });
+  const tunnelProxies = new Map<string, { proxy: McpClient; instance: McpServer }>();
+  const closeTunnelProxies = async (): Promise<void> => {
+    for (const [name, entry] of tunnelProxies) {
+      tunnelProxies.delete(name);
+      await entry.proxy.close().catch(() => undefined);
+      await entry.instance.close().catch(() => undefined);
+    }
+  };
 
   try {
     const hello = await client.hello({ timeoutMs: RPC_REQUEST_TIMEOUT_MS });
     log.debug('cc-mgr hello ok', {
-      hostId: opts.host.id,
+      hostId: transportId,
       protocolVersion: hello.protocolVersion,
       managerVersion: hello.managerVersion,
     });
@@ -366,11 +394,22 @@ export async function openCcManagerSession(opts: {
         try {
           return await opts.onApprovalRequest(p);
         } catch (err) {
-          log.warn('approval request handler rejected', { kind: p.kind, error: (err as Error)?.message });
-          return { kind: p.kind, behavior: 'deny', reason: (err as Error)?.message ?? 'handler error' } satisfies ApprovalRequestResult;
+          log.warn('approval request handler rejected', {
+            kind: p.kind,
+            error: (err as Error)?.message,
+          });
+          return {
+            kind: p.kind,
+            behavior: 'deny',
+            reason: (err as Error)?.message ?? 'handler error',
+          } satisfies ApprovalRequestResult;
         }
       }
-      return { kind: p.kind, behavior: 'deny', reason: 'no approval handler registered' } satisfies ApprovalRequestResult;
+      return {
+        kind: p.kind,
+        behavior: 'deny',
+        reason: 'no approval handler registered',
+      } satisfies ApprovalRequestResult;
     });
 
     client.setRequestHandler(SERVER_METHODS.SUBAGENT_MODEL_ACCESS, async (params) => {
@@ -387,6 +426,36 @@ export async function openCcManagerSession(opts: {
       }
     });
 
+    for (const [name, cfg] of Object.entries(opts.inProcessMcpServers ?? {})) {
+      const instance = (cfg as { instance?: McpServer } | null | undefined)?.instance;
+      if (!instance) continue;
+      try {
+        const proxy = new McpClient({ name: `cc-mgr-tunnel:${name}`, version: '1.0.0' });
+        const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+        await Promise.all([instance.connect(serverTransport), proxy.connect(clientTransport)]);
+        tunnelProxies.set(name, { proxy, instance });
+      } catch (error) {
+        log.error('cc-mgr tunnel MCP proxy setup failed; server unavailable remotely', {
+          hostId: transportId,
+          sessionId: opts.sessionId,
+          server: name,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    if (tunnelProxies.size > 0) {
+      client.setRequestHandler(SERVER_METHODS.MCP_TUNNEL_CALL, async (params) => {
+        const p = params as McpTunnelCallParams;
+        const entry = tunnelProxies.get(p.server);
+        if (!entry) throw new Error(`no tunnel MCP proxy for server ${p.server}`);
+        if (p.operation === 'listTools') return await entry.proxy.listTools();
+        return await entry.proxy.callTool({
+          name: p.name ?? '',
+          arguments: p.arguments ?? {},
+        });
+      });
+    }
+
     // OAuth refresh handler — daemon sends these when the remote cc SDK's
     // getOAuthToken fires (subscription token expired mid-turn). token=null
     // on any failure: the daemon passes it to the SDK, which surfaces the
@@ -397,7 +466,10 @@ export async function openCcManagerSession(opts: {
         try {
           return await opts.onOAuthRefresh(p);
         } catch (err) {
-          log.warn('oauth refresh handler rejected', { sessionId: p.sessionId, error: (err as Error)?.message });
+          log.warn('oauth refresh handler rejected', {
+            sessionId: p.sessionId,
+            error: (err as Error)?.message,
+          });
           return { token: null } satisfies OAuthRefreshResult;
         }
       }
@@ -412,9 +484,13 @@ export async function openCcManagerSession(opts: {
     //
     // 一次 SESSION_LIST RPC ≈ daemon 内 in-memory Map 遍历, 本地 desktop 看是
     // 1 个额外 RTT (~10ms over ssh), 远比 race 后 fallback 干净。
-    const list = await client.request<SessionListResult>(METHODS.SESSION_LIST, {}, {
-      timeoutMs: RPC_REQUEST_TIMEOUT_MS,
-    });
+    const list = await client.request<SessionListResult>(
+      METHODS.SESSION_LIST,
+      {},
+      {
+        timeoutMs: RPC_REQUEST_TIMEOUT_MS,
+      },
+    );
 
     const listedSession = list.sessions.find((s) => s.sessionId === opts.sessionId);
     // dead session 处理(对齐 codex 模式):alive → attach live-only,
@@ -424,13 +500,15 @@ export async function openCcManagerSession(opts: {
     if (listedSession && !listedSession.alive) {
       // dead 条目的 kill 只是注册表清理, 失败可吞:start 路径对 dead 条目
       // 不撞 SESSION_ALREADY_EXISTS (该错误只对 alive 条目)。
-      await client.request(
-        METHODS.SESSION_KILL,
-        { sessionId: opts.sessionId },
-        { timeoutMs: RPC_REQUEST_TIMEOUT_MS },
-      ).catch(() => undefined);
+      await client
+        .request(
+          METHODS.SESSION_KILL,
+          { sessionId: opts.sessionId },
+          { timeoutMs: RPC_REQUEST_TIMEOUT_MS },
+        )
+        .catch(() => undefined);
       log.info('cc-mgr: dead session killed (fresh start, 对齐 codex 模式)', {
-        hostId: opts.host.id,
+        hostId: transportId,
         sessionId: opts.sessionId,
         daemonLastSeq: listedSession.lastSeq,
       });
@@ -465,9 +543,13 @@ export async function openCcManagerSession(opts: {
       const killWaitDeadline = Date.now() + 30_000;
       let pollDelayMs = 150;
       for (;;) {
-        const after = await client.request<SessionListResult>(METHODS.SESSION_LIST, {}, {
-          timeoutMs: RPC_REQUEST_TIMEOUT_MS,
-        });
+        const after = await client.request<SessionListResult>(
+          METHODS.SESSION_LIST,
+          {},
+          {
+            timeoutMs: RPC_REQUEST_TIMEOUT_MS,
+          },
+        );
         const stillAlive =
           after.sessions.find((s) => s.sessionId === opts.sessionId)?.alive === true;
         if (!stillAlive) break;
@@ -482,7 +564,7 @@ export async function openCcManagerSession(opts: {
         pollDelayMs = Math.min(pollDelayMs * 2, 1_000);
       }
       log.info('cc-mgr: alive session killed for forced fresh start (bridge MCP re-inject)', {
-        hostId: opts.host.id,
+        hostId: transportId,
         sessionId: opts.sessionId,
         daemonLastSeq: listedSession.lastSeq,
       });
@@ -501,7 +583,7 @@ export async function openCcManagerSession(opts: {
           attach: { sinceSeq: existing.lastSeq },
           onReplayLossy: (result) => {
             log.warn('cc-mgr: replay buffer lossy during reattach (MVP: 断开期间历史不恢复)', {
-              hostId: opts.host.id,
+              hostId: transportId,
               sessionId: opts.sessionId,
               currentSeq: result.currentSeq,
             });
@@ -511,13 +593,16 @@ export async function openCcManagerSession(opts: {
       : await createRemoteQuery({
           client,
           sessionId: opts.sessionId,
-          startParams: startParamsWithBinary,
+          startParams: {
+            ...startParamsWithBinary,
+            ...(tunnelProxies.size > 0 ? { tunneledMcpServers: [...tunnelProxies.keys()] } : {}),
+          },
           rpcTimeoutMs: RPC_REQUEST_TIMEOUT_MS,
         });
 
     if (existing) {
       log.info('cc-mgr: reattached to existing session', {
-        hostId: opts.host.id,
+        hostId: transportId,
         sessionId: opts.sessionId,
         daemonLastSeq: existing.lastSeq,
       });
@@ -536,6 +621,7 @@ export async function openCcManagerSession(opts: {
 
     const closeTransport = async (): Promise<void> => {
       client.dispose();
+      await closeTunnelProxies();
       // round-9 重构: cursor 在 writeChain 里跟 message 同 FIFO 序列化, drain
       // 一次就保证 (该 sessionId 的) cursor + 对应 message 全部落盘。closeTransport
       // 关 SSH channel 前 await drain, 反序列化窗口里不会有 cursor 已推但 message
@@ -555,7 +641,7 @@ export async function openCcManagerSession(opts: {
           await originalRemoteQueryClose();
         } catch (e) {
           log.warn('remoteQuery.close threw (best-effort)', {
-            hostId: opts.host.id,
+            hostId: transportId,
             sessionId: opts.sessionId,
             error: String((e as Error)?.message ?? e),
           });
@@ -567,7 +653,7 @@ export async function openCcManagerSession(opts: {
           await originalRemoteQueryDetach();
         } catch (e) {
           log.warn('remoteQuery.detach threw (best-effort)', {
-            hostId: opts.host.id,
+            hostId: transportId,
             sessionId: opts.sessionId,
             error: String((e as Error)?.message ?? e),
           });
@@ -577,6 +663,7 @@ export async function openCcManagerSession(opts: {
     };
   } catch (err) {
     // 出错前 cleanup: 不然 client + handle 泄漏
+    await closeTunnelProxies();
     client.dispose();
     try {
       handle.kill();

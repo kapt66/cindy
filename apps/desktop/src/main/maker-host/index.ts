@@ -79,7 +79,12 @@ import { buildPiVisionBridgeEnv } from '../vision-bridge/pi-vision-bridge-env.js
 import { resolveVisionBackendRoute, setVisionGatewayKeyReader } from './provider-route.js';
 import { resolveSessionCcDebugFile } from '../logger.js';
 import { resetProviderModelAutoRefreshCooldowns } from './provider-model-auto-refresh.js';
-import { createSshDaemonTransport } from './codex-remote-transport.js';
+import { createMcprCodexTransport, createSshDaemonTransport } from './codex-remote-transport.js';
+import {
+  buildRemoteCodexBridgeHeader,
+  routeCodexThreadRegister,
+  routeCodexThreadUnregister,
+} from './mcpr-codex-capability.js';
 import { getRemoteSshPool, broadcastSilentInstallStatus } from '../remote-ssh/index.js';
 import { getRemoteAgentProxyEnv, reconcileCodexAgentProxyEnv } from '../remote-ssh/agent-proxy.js';
 import {
@@ -90,6 +95,12 @@ import {
 import { ensurePiManagerInstalled } from './pi-manager-client.js';
 import { createPiRemoteProviderForwardLease } from './pi-remote-provider-forward.js';
 import { openCcManagerSession } from './cc-manager-client.js';
+import { openMcprTunnel } from './mcpr-tunnel.js';
+import { parseMcprRemoteHostId } from '../../shared/meka-router.js';
+import {
+  classifyRemoteSessionTransport,
+  resolveRemoteCodexCredentialMode,
+} from './remote-session-routing.js';
 import { routeInjectedRemoteMcpApprovalsThroughCindy } from './remote-claude-permission-mode.js';
 import { getRemoteClaudeBinaryPath } from '../remote-ssh/cc-manager-install.js';
 import {
@@ -1033,12 +1044,38 @@ export function getMaker(): Maker {
         sessionId,
         sessionInstanceId,
         startParams,
+        inProcessMcpServers,
         vendorOptions,
         onApprovalRequest,
         onSubagentModelAccessRequest,
         onOAuthRefresh,
         makerMemoryEnabled,
       }) => {
+        if (classifyRemoteSessionTransport(remoteHostId) === 'mcpr') {
+          const stream = await openMcprTunnel(remoteHostId);
+          const { remoteQuery, dispose, detach } = await openCcManagerSession({
+            stream,
+            transportId: remoteHostId,
+            sessionId,
+            startParams: startParams as unknown as Parameters<
+              typeof openCcManagerSession
+            >[0]['startParams'],
+            onApprovalRequest: onApprovalRequest as Parameters<
+              typeof openCcManagerSession
+            >[0]['onApprovalRequest'],
+            onSubagentModelAccessRequest: onSubagentModelAccessRequest as Parameters<
+              typeof openCcManagerSession
+            >[0]['onSubagentModelAccessRequest'],
+            onOAuthRefresh: onOAuthRefresh as Parameters<
+              typeof openCcManagerSession
+            >[0]['onOAuthRefresh'],
+            ...(inProcessMcpServers ? { inProcessMcpServers } : {}),
+          });
+          return Object.assign(remoteQuery, {
+            close: dispose,
+            detach,
+          }) as unknown as RemoteCcQuery;
+        }
         const host = getRemoteSshPool().get(remoteHostId);
         if (host?.getStatus() !== 'ready') {
           throw new Error(`remote ssh host not ready: ${remoteHostId}`);
@@ -1579,22 +1616,28 @@ export function getMaker(): Maker {
         const disabledPluginIds =
           readDisabledBuiltinPluginIds(vendorOptions) ??
           getPluginRegistry().getDisabledRuntimePluginIds(workingDir);
-        registerCodexMcpThreadContext(threadId, {
-          agentKind: 'codex',
-          sessionId,
-          mcpCallerKind,
-          mcpCallerAttested,
-          ...(sessionInstanceId ? { sessionInstanceId } : {}),
-          workingDir,
-          // remote thread ctx: scope key 语义见 buildMemoryScopeKey。
-          ...(remoteHostId ? { remoteHostId } : {}),
-          vendorOptions: {
-            ...vendorOptions,
-            [CODEX_DISABLED_BUILTIN_PLUGIN_IDS_KEY]: disabledPluginIds,
-          },
+        routeCodexThreadRegister({ threadId, sessionId }, () => {
+          registerCodexMcpThreadContext(threadId, {
+            agentKind: 'codex',
+            sessionId,
+            mcpCallerKind,
+            mcpCallerAttested,
+            ...(sessionInstanceId ? { sessionInstanceId } : {}),
+            workingDir,
+            // SSH remote thread ctx: scope key 语义见 buildMemoryScopeKey。
+            ...(remoteHostId ? { remoteHostId } : {}),
+            vendorOptions: {
+              ...vendorOptions,
+              [CODEX_DISABLED_BUILTIN_PLUGIN_IDS_KEY]: disabledPluginIds,
+            },
+          });
         });
       },
-      unregisterCodexMcpThreadContext,
+      unregisterCodexMcpThreadContext: (threadId, expectedSessionInstanceId) => {
+        routeCodexThreadUnregister(threadId, () =>
+          unregisterCodexMcpThreadContext(threadId, expectedSessionInstanceId),
+        );
+      },
       prepareCodexResumeSession: prepareExternalCodexSessionForResume,
       registerCodexSystemPromptForThread: ({ sessionId, threadId, text, subagentRoute }) =>
         registerCodexProxyComposed(sessionId, threadId, text, { subagentRoute }),
@@ -1621,6 +1664,19 @@ export function getMaker(): Maker {
       // 这里包一层把 RemoteHost + SshDaemonTransport 装起来。
       // 远端机器没在 pool / 未连接 → 抛错, CodexAgent 把它当 startSession 失败传上去。
       getRemoteCodexTransport: (remoteHostId) => {
+        if (classifyRemoteSessionTransport(remoteHostId) === 'mcpr') {
+          const mcprInstanceId = parseMcprRemoteHostId(remoteHostId);
+          if (!mcprInstanceId) {
+            throw new Error(
+              `[MCPR_INSTANCE_NOT_READY] Invalid MCPRouter Worker target: ${remoteHostId}`,
+            );
+          }
+          return createMcprCodexTransport({
+            instanceId: mcprInstanceId,
+            buildHeader: () => buildRemoteCodexBridgeHeader(mcprInstanceId),
+            logger: desktopMakerLogger,
+          });
+        }
         const remoteHost = getRemoteSshPool().get(remoteHostId);
         if (!remoteHost) {
           throw new Error(
@@ -1655,6 +1711,7 @@ export function getMaker(): Maker {
           },
         });
       },
+      resolveRemoteCodexCredentialMode,
     });
 
     // 模块级回填 codexAgent 引用 —— restartCodexAfterAuthModeChange() 需要它在

@@ -799,6 +799,15 @@ export interface AgentDeps {
   getRemoteCodexTransport?: (remoteHostId: string) => import('./codex/app-server/transport.js').Transport;
 
   /**
+   * Host-owned credential source for a remote Codex transport. MCPRouter uses
+   * the Cindy AI Gateway key and must not inherit unrelated Desktop OAuth state.
+   * Undefined preserves the remote host's existing fallback semantics.
+   */
+  resolveRemoteCodexCredentialMode?: (
+    remoteHostId: string,
+  ) => AgentCredentialMode | undefined;
+
+  /**
    * Pi 专用:为远端机器构造一个 pi `--mode rpc` transport。
    *
    * 当 session 标了 remoteHostId, PiAgent 会调这个钩子拿一个连远端 pi 进程的

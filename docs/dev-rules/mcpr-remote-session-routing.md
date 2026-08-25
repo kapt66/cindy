@@ -41,6 +41,11 @@ transport 分类，再执行 transport 专属动作。MCPRouter 会话不得因�
    `mcpr:<instanceId>` 放入 SSH pool；
 4. 运行 `remote-session-routing` 与 `remoteSessionMakerMemory` 回归测试，并检查最终
    合并结果，而不是只检查某一个父提交。
+5. `maker-host/index.ts` 的 Claude `remoteCcQueryFactory` 必须在 SSH pool 查询前打开
+   MCPRouter tunnel；共享 `cc-manager-client` 必须同时支持 SSH host 与 MCPRouter byte stream，
+   并在两种 transport 上保留当前协议的 approval、subagent model access 与 bundle hello。
+6. Codex 的 MCPRouter 分支必须成组保留 transport、remote credential mode 以及 capability
+   thread register/unregister；只恢复其中一项仍会在启动鉴权或远端 Skill 路由阶段失败。
 
 这条契约源自 2026-08-04 的回归：`4d1e01b7f` 合并 `origin/main` 时，第一父提交已有的
 MCPRouter preflight 分支被上游版本覆盖，最终把 `mcpr:<id>` 送进 SSH pool，产生
@@ -51,6 +56,19 @@ bridge 曾按后者查找，而 `remoteHostId` 按前者构造；同时实例规
 supported，导致合法 Codex 实例在 bootstrap 阶段被误报为不可用。修复要求：`id` 是唯一
 transport 身份，`agentType` 为 `claude` 或 `codex` 时才进入支持判断，UI/Main 的 Agent
 选择与实例类型保持一致。
+
+2026-08-25 实机再次发现合并回归：新建 MCPRouter Claude 任务后首次发送报
+`LAZY_CREATE_FAILED: remote ssh host not ready: mcpr:<id>`。外围 preflight 已正确跳过 SSH，
+但 maker-host 的 lazy create factory、`cc-manager-client` byte-stream 形态以及 Codex 配套接线
+被同步结果覆盖，导致最终 transport 创建仍查询 SSH pool。修复按本节不变量恢复完整闭环，并以
+`remoteCcQueryFactory`、Codex remote credential 与既有 routing 测试共同守住。
+
+同次实机验证还区分了 transport 回归与上游瞬时失败：修复后两个 Codex 任务曾在同一约
+24 秒窗口内同时收到 `/v1/responses` `stream disconnected before completion`，但随后使用同一
+实例、同一 Gateway key、同一 Codex 0.145.0 Linux runtime，分别覆盖无 MCP、远端
+`lizi_capabilities` MCP、dynamic tool 及生产 `Full access` thread/turn 配置的请求均完成。
+因此这类错误不得重新归因为 `mcpr:` 被送入 SSH pool，也不得据此回退 capability routing；先用
+同实例最小 app-server 请求复验，只有稳定复现后再按请求形状或 Gateway 链路继续定位。
 
 ## 4. 远端运行时版本门禁
 

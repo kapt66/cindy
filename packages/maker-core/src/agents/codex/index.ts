@@ -2152,7 +2152,7 @@ export class CodexAgent extends BaseAgent {
     //   仲裁路径:快路径不等时,才把隐式诉求懒解析成归一化形态(同一次 getHost 内
     //           memo,显式诉求无需解析),与登记的归一化形态(createHost 时零额外
     //           IO 推出)做 canReuseCodexHostForCredentialMode 同族比较。
-    const spawnMode = remoteHostId ? undefined : credentialMode;
+    const spawnMode = credentialMode;
     let requestedEffectiveMemo: { value: AgentCredentialMode | undefined } | null =
       remoteHostId || credentialMode ? { value: spawnMode } : null;
     const resolveRequestedEffective = async (): Promise<AgentCredentialMode | undefined> => {
@@ -3704,7 +3704,7 @@ export class CodexAgent extends BaseAgent {
       ...(!reviewMode ? hostDynamicTools : []),
     ];
     const credentialMode = opts.remoteHostId
-      ? undefined
+      ? this.deps.resolveRemoteCodexCredentialMode?.(opts.remoteHostId)
       : resolveAgentCredentialMode({
           agentKind: 'codex',
           providerId: opts.providerId,

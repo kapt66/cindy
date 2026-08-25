@@ -2600,6 +2600,30 @@ server/runtime typecheck 通过。MCPRouter 从当前 Cindy 源码真实构建 b
 由此关闭“你能访问服务器吗”的生产端到端验收项；后续变更仍必须以真实任务 rollout 为证，
 不得以准备状态、UI 回显或单元测试替代。
 
+### 6.40 2026-08-25 MCPRouter 会话 lazy create 路由回归
+
+真实新建任务选择 MCPRouter 远程项目后，Claude 首次发送返回
+`LAZY_CREATE_FAILED: remote ssh host not ready: mcpr:<id>`。上游同步后的 IPC preflight 仍能
+正确识别 `mcpr:`，但 maker-host 的最终 Claude query factory 已丢失 MCPRouter 分支，直接把
+逻辑实例身份查询 SSH pool；同批结果还覆盖了 `cc-manager-client` 的 byte-stream transport、
+Codex MCPRouter transport、远端 Gateway 凭证模式和 capability thread 路由接线。
+
+当前恢复发生在 Cindy 客户端仓，不修改 MCPRouter 服务端、`cindy-protocol`、数据库或用户数据。
+Claude 在任何 SSH 查询前打开账号隧道，复用同一 cc-manager 协议并保留 approval、原生 MCP
+投影、OAuth refresh 与 protocol 4 subagent model access；Codex 同样先分流到 app-server
+tunnel，并继续只使用 Cindy AI Gateway key 和远端 capability thread registration。普通 SSH
+仍走原连接池、代理与 daemon 安装链路。Desktop MCPRouter 定向回归共 6 个文件、46 项通过，
+maker-core 远端凭证回归 2 项通过，`desktop` 与 `@cindy/maker-core` typecheck 均通过；提交前
+完整 `pnpm test:unit` 全部通过，其中 Desktop 与 maker-core unit workspace 分别耗时约
+243 秒和 144 秒。
+
+Codex 修复后的实机链路也已单独复验：相同 MCPRouter 实例、Gateway key、
+`codex/gpt-5.6-sol` 与 Linux Codex 0.145.0 下，app-server tunnel 的最小请求、
+`lizi_capabilities`（`list_skills` / `read_skill`）、canonical dynamic tool 以及生产
+`Full access` thread/turn 配置均成功完成。此前两个任务在同一时间窗同时出现的
+`/v1/responses` stream disconnect 随后无法复现，归为 Gateway/网络瞬时故障，不扩大本次合并
+回归的代码范围，也不修改 MCPRouter 服务端或远端 runtime pin。
+
 ## 10. 后续继续迁移时的硬性注意事项
 
 ### 9.1 `origin/main` → `meka/main` 同步报告
