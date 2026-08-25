@@ -132,6 +132,15 @@ function releaseGateEnvironment() {
   return environment;
 }
 
+export function packagedGateArguments(options, userDataPath) {
+  return [
+    `--ios-simulator-release-gate=${options.requireNative ? 'native' : 'static'}`,
+    // The gate uses a disposable profile and must never access product Safe Storage.
+    '--use-mock-keychain',
+    `--user-data-dir=${userDataPath}`,
+  ];
+}
+
 export function runIOSSimulatorReleaseGateCli(options) {
   if (process.platform !== 'darwin') {
     throw new Error('Packaged iOS Simulator release gate requires macOS');
@@ -145,10 +154,7 @@ export function runIOSSimulatorReleaseGateCli(options) {
   try {
     const result = spawnSync(
       executablePath,
-      [
-        `--ios-simulator-release-gate=${options.requireNative ? 'native' : 'static'}`,
-        `--user-data-dir=${userDataPath}`,
-      ],
+      packagedGateArguments(options, userDataPath),
       {
         encoding: 'utf8',
         env: releaseGateEnvironment(),

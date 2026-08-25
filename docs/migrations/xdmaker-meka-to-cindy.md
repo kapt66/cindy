@@ -277,8 +277,9 @@ macOS：
   必须显式导入后在最终签名之后、DMG/ZIP 之前调用；源码契约测试同时锁定导入和阶段顺序，
   防止上游同步只保留调用或只保留实现。
 - 保持线上正式版的 make → drizzle 校验 → packaged smoke → 最终签名／公证 → iOS gate →
-  DMG/ZIP 顺序。macOS smoke 使用临时 userData + `--use-mock-keychain`，不访问产品 Safe
-  Storage 条目；签名、归集、上传和 manifest 写入流程不调整。
+  DMG/ZIP 顺序。macOS smoke 与签名后的 iOS Simulator release gate 使用独立临时 userData
+  + `--use-mock-keychain`，不访问产品 Safe Storage 条目；该开关仅限测试子进程，不进入
+  正常启动参数；签名、归集、上传和 manifest 写入流程不调整。
 
 打包入口只产出本地安装包、热更 ZIP 和 `build-info.json`，不会上传 OSS/CDN。发布侧由
 `publish-desktop.mjs` 读取该文件，重新校验签名状态、文件大小与 SHA256 后，把 installer/

@@ -170,9 +170,10 @@ macOS 允许交叉构建，但 packaged smoke 和 iOS Simulator release gate 只
 执行架构在签名完成后抛出 `ReferenceError`，而跨架构跳过分支会掩盖问题。
 
 打包步骤保持线上正式版顺序：Forge make → drizzle 校验 → packaged smoke → 最终签名／公证
-→ iOS Simulator release gate → DMG/ZIP。macOS smoke 子进程除临时 userData 外还使用
-`--use-mock-keychain`，避免 Forge 临时签名访问产品 Safe Storage 并弹出钥匙串授权；该参数
-不进入正常应用启动。发布脚本的签名、产物归集、上传和 manifest 写入顺序不做调整。
+→ iOS Simulator release gate → DMG/ZIP。macOS smoke 与 iOS Simulator release gate 子进程
+均使用独立临时 userData 和 `--use-mock-keychain`，避免 Forge 临时签名访问产品 Safe
+Storage 并弹出钥匙串授权；该参数不进入正常应用启动。发布脚本的签名、产物归集、上传和
+manifest 写入顺序不做调整。
 
 2026-08-24 的 Windows 0.0.17 Canary 热更成功完成下载、校验、安装目录替换和新进程启动，
 但同步上游后 `manifestService` 漏接了正式版已有的 Meka CDN 回退；公开 `endpoint.json`

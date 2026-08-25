@@ -498,7 +498,14 @@ maker-shared、lizi-im 及全部可运行协议包均 PASS。受影响包按仓�
   同时锁定“接线存在”和签名后、归集前的原顺序；x64 在 DMG/ZIP 与上传前失败，未写入 x64
   0.0.17 Canary，已成功的 arm64 对象无需回滚或重发。修复后 iOS Simulator 打包/gate
   定向测试 26 项 PASS（另 1 项按平台跳过），发布/公证/架构测试 52/52 PASS；Desktop
-  typecheck 与全仓 `pnpm test:unit` 均 PASS。
+   typecheck 与全仓 `pnpm test:unit` 均 PASS。
+- 2026-08-25 的下一次 Intel Runner x64 Canary 复验中，packaged smoke、schema 95、最终
+  自签名和 `codesign --verify --deep --strict` 均通过；失败收敛到签名后的 static iOS
+  Simulator release gate。该 gate 使用了临时 `userData` 但遗漏 `--use-mock-keychain`，
+  导致 Electron 子进程等待 macOS Safe Storage 授权，最终被 job 的 SIGTERM 终止。arm64
+  在 Intel 宿主按设计跳过启动型 gate，因此不受该遗漏影响并成功完成。x64 未到达 DMG/ZIP、
+  上传或 manifest 写入，也未写入已有版本对象；本次修复仅为 gate 临时子进程补回
+  `--use-mock-keychain`，不改变线上正式版阶段顺序、正常启动参数、更新器、数据库或用户数据。
 - 2026-08-24 在本地 `meka/main` 合并提交 `7eb9757ea61803a9c7c72c39e750681c35c68a8b`
   上按提交门禁重新运行 `pnpm test:unit`：Desktop、Mobile、全部 required workspace 与
   `cindy-protocol` submodule 均 PASS；`desktop`、`@cindy/maker-core` typecheck、

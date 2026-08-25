@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   extractReleaseGateReport,
+  packagedGateArguments,
   parseIOSSimulatorReleaseGateCli,
   validateReleaseGateReport,
 } from './ios-simulator-release-gate.mjs';
@@ -37,6 +38,19 @@ const BASE_REPORT = {
 };
 
 describe('iOS Simulator packaged release gate CLI', () => {
+  it('isolates the packaged gate from product Safe Storage', () => {
+    expect(
+      packagedGateArguments(
+        { requireNative: false },
+        '/tmp/cindy-ios-release-gate-profile',
+      ),
+    ).toEqual([
+      '--ios-simulator-release-gate=static',
+      '--use-mock-keychain',
+      '--user-data-dir=/tmp/cindy-ios-release-gate-profile',
+    ]);
+  });
+
   it('parses strict trust and native requirements', () => {
     expect(
       parseIOSSimulatorReleaseGateCli([
