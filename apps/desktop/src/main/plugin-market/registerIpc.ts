@@ -405,6 +405,7 @@ export function registerPluginMarketIpc(): void {
     'meka-plugin-market:install',
     (event, pluginId: unknown, options: unknown) => {
       assertTrustedAppRendererEvent(event);
+      trackPackageReviewRequester(event.sender);
       const obj =
         typeof options === 'object' && options !== null
           ? (options as {
@@ -443,26 +444,40 @@ export function registerPluginMarketIpc(): void {
       const operationId = requireInstallOperationId(obj?.operationId);
       const sender = event.sender;
       return invokePluginMarket(() =>
-        mekaService().install(normalizedPluginId, {
-          expectedReleaseId,
-          ...(expectedInstalledApproval !== undefined ? { expectedInstalledApproval } : {}),
-          ...(expectedManifest !== undefined ? { expectedManifest } : {}),
-          allowPermissionExpansion: obj?.allowPermissionExpansion === true,
-          ...(reviewedBaseline !== undefined ? { reviewedBaseline } : {}),
-          ...(approvedPackageSha256 !== undefined ? { approvedPackageSha256 } : {}),
-          ...(typeof obj?.allowSourceReplacement === 'boolean'
-            ? { allowSourceReplacement: obj.allowSourceReplacement }
-            : {}),
-          onProgress: (progress) => {
-            if (sender.isDestroyed()) return;
-            const payload: PluginMarketInstallProgress = {
-              operationId,
-              pluginId: normalizedPluginId,
-              ...progress,
-            };
-            sender.send(MEKA_PLUGIN_MARKET_INSTALL_PROGRESS_CHANNEL, payload);
+        mekaService().install(
+          normalizedPluginId,
+          {
+            expectedReleaseId,
+            ...(expectedInstalledApproval !== undefined ? { expectedInstalledApproval } : {}),
+            ...(expectedManifest !== undefined ? { expectedManifest } : {}),
+            allowPermissionExpansion: obj?.allowPermissionExpansion === true,
+            ...(reviewedBaseline !== undefined ? { reviewedBaseline } : {}),
+            ...(approvedPackageSha256 !== undefined ? { approvedPackageSha256 } : {}),
+            ...(typeof obj?.allowSourceReplacement === 'boolean'
+              ? { allowSourceReplacement: obj.allowSourceReplacement }
+              : {}),
+            onProgress: (progress) => {
+              if (sender.isDestroyed()) return;
+              const payload: PluginMarketInstallProgress = {
+                operationId,
+                pluginId: normalizedPluginId,
+                ...progress,
+              };
+              sender.send(MEKA_PLUGIN_MARKET_INSTALL_PROGRESS_CHANNEL, payload);
+            },
           },
-        }),
+          (facts) =>
+            packagePermissionReviewBridge.request(
+              sender.id,
+              facts,
+              getActiveDataOwnerPushStamp(),
+              (request) => {
+                if (sender.isDestroyed()) return false;
+                sender.send(PACKAGE_PERMISSION_REVIEW_CHANNEL, request);
+                return true;
+              },
+            ),
+        ),
       );
     },
   );

@@ -2664,6 +2664,21 @@ Windows 防火墙按可执行文件路径识别应用；本地服务器之前从
 不会因为随机 exe 路径变化而重复触发同一确认。定向回归覆盖不同构建任务复用同一稳定入口路径；
 真实 Windows 防火墙首次确认仍需在 Electron 环境手测。
 
+### 6.42 2026-08-26 Meka 市场真实包复核桥接修复
+
+Meka 市场安装已经下载到 100% 但回到“安装”图标且没有错误时，日志会出现
+`market package requires permission review`。根因是 Meka 专用安装 IPC 没有把真实包权限复核
+请求接入共享的 Main ↔ Renderer bridge；服务层在没有 reviewer 的情况下会按设计返回
+`{ cancelled: true }`，Renderer 因而把它显示成普通取消。该路径不代表下载失败，也不代表
+S3 或平台二进制不兼容。
+
+现已与 Cindy 市场安装保持同一行为：Meka 安装登记发起窗口的销毁／导航清理，并把真实包
+复核请求投递到现有 `PluginMarketPermissionReviewHost`；用户确认后服务层继续绑定实际包
+SHA-256 的提交，用户取消时才返回取消结果。Meka Renderer 原有的权限复核与二次安装流程、
+`approvedPackageSha256`、owner/session 防漂移约束均保持不变。回归测试锁定 Meka IPC 不得
+遗漏复核 bridge；最终验收需在 Windows 与 macOS 各安装一次，并确认 100% 后出现权限复核或
+明确错误，不能静默回到安装按钮。
+
 ## 10. 后续继续迁移时的硬性注意事项
 
 ### 9.1 `origin/main` → `meka/main` 同步报告

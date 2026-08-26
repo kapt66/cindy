@@ -51,6 +51,18 @@ describe('Plugin Market IPC error boundary', () => {
     expect(serviceSource).toContain("throwIpcError('PERMISSION_DENIED'");
   });
 
+  it('routes Meka real-package review through the shared requester bridge', () => {
+    const start = registerSource.indexOf("'meka-plugin-market:install'");
+    const end = registerSource.indexOf("ipcMain.handle('meka-plugin-market:uninstall'", start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const body = registerSource.slice(start, end);
+
+    expect(body).toContain('trackPackageReviewRequester(event.sender);');
+    expect(body).toContain('packagePermissionReviewBridge.request(');
+    expect(body).toContain('sender.send(PACKAGE_PERMISSION_REVIEW_CHANNEL, request);');
+  });
+
   it('runs default plugin reconciliation through the stable-owner post-commit retry path', () => {
     const syncStart = registerSource.indexOf(
       'export async function syncDefaultMarketPlugins(): Promise<DefaultMarketPluginSyncOutcome>',
