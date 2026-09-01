@@ -87,6 +87,8 @@
   `process.resourcesPath/meka`，并在 Forge 打包后校验源码树与包内树的文件和内容一致。
 - Meka 普通会话与 Jira/GitLab 正式流程会话。
 - Meka 会话侧栏、项目层级、正式流程/普通会话二级分组。
+- Meka 会话启动阶段不执行战斗环境聚合检查；`saga2_json`/P4 配置提交不触发 MCPRouter
+  登录引导，普通任务也不主动点名未安装插件。
 - Meka 会话侧栏沿用 Cindy 的主列表显示偏好：文字/列表形态和任务信息复选同时作用于
   Meka 的正式流程、普通会话和旧项目会话；Meka 自己的项目及正式流程分组树保持不变。
 - 侧栏“Meka 助理”区固定在滚动列表首位；会话顶部的项目/角色绑定胶囊只显示角色名，
@@ -522,13 +524,9 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
   恢复已保存登录、复用/绑定唯一匹配实例，或从唯一匹配模板创建并绑定，然后直接走远程项目
   只读能力；自动恢复只有在返回 `fallbackUserAction` 或失败时才提示用户。不再把创建只读 Orca
   Worker 作为默认入口；Worker 仅在只读能力不足或用户明确要求独立远程执行时升级使用。远程项目只读能力与远程 Agent runtime 分开判断，服务器写入、
-  分支、服务管理和部署仍保持独立权限边界。战斗环境启动检查仍在 Host 内部执行，但不再要求
-  首轮固定回显角色身份、三项状态或连接/绑定动作；用户请求依赖服务器时直接先自动确保并读取。
-- 普通 Meka 任务启动还会把 `platform-capabilities` 的不可变快照和
-  `[MEKA_PLATFORM_CAPABILITIES]` 契约动态加入 create opts。用户询问能否访问服务器/远程项目
-  时，模型必须直接调用 `mcp_router.list_remote_directory` 读取根目录，不得用启动或绑定状态
-  回答能否访问，不得先建议 SSH、设置页或手工连接；只有读取工具返回 `fallbackUserAction`
-  才提示最小动作。独立准备/绑定探测不再向 Agent 暴露。
+  分支、服务管理和部署仍保持独立权限边界。战斗环境不在 Host 启动阶段聚合检查；实际工具
+  调用失败时再按具体依赖返回引导或阻塞。普通 Meka 任务不注入业务插件主动指引，插件信息
+  通过 Ghost 发现链被动提供。
 - 普通 Meka Lead 会话、lazy resume、context-usage lazy create、scheduler/IM 等所有经
   `bootstrapSession` 的启动入口，都会在 `maker.createSession` 前解析当前
   `mekaProjectId`/`mekaRoleId`，把角色 prompt 与 MCP provider 选择写入本次

@@ -160,7 +160,7 @@ describe('applyMekaRuntimeConfig', () => {
     expect(materialize).toHaveBeenCalledWith(opts.id, runtime().skills);
   });
 
-  it('injects Host platform capabilities even when the project and role select none', async () => {
+  it('does not inject active Router guidance into ordinary Meka tasks', async () => {
     const opts = baseOpts({ userPrompt: 'USER PROMPT' });
     const materialize = vi.fn(async () => null);
     const prepareRuntimeMcp = vi.fn((entries: readonly MekaRoleMcpEntry[]) => ({
@@ -190,13 +190,28 @@ describe('applyMekaRuntimeConfig', () => {
       { id: 'mcp-router', providerId: 'mcp-router', enabled: true },
     ]);
     expect(materialize).toHaveBeenCalledWith(opts.id, [platformSkill()]);
-    expect(opts.userPrompt).toContain('[MEKA_PLATFORM_CAPABILITIES]');
-    expect(opts.userPrompt).toContain('mcp_router.list_remote_directory');
-    expect(opts.userPrompt).toContain('绑定或准备状态不是读取成功的证据');
-    expect(opts.userPrompt).toContain('先建议 SSH、设置页或手工连接');
-    expect(opts.userPrompt).toContain('不要发送“我先连接、确认、绑定或检查”等预告或进度消息');
-    expect(opts.userPrompt).toContain('等待期间不得提前生成终态回复');
-    expect(opts.userPrompt).toContain('只有读取工具明确返回 fallbackUserAction');
+    expect(opts.userPrompt).not.toContain('[MEKA_PLATFORM_CAPABILITIES]');
+    expect(opts.userPrompt).not.toContain('mcp_router.list_remote_directory');
+  });
+
+  it('does not inject the combat startup gate prompt for a combat role', async () => {
+    const opts = baseOpts({ mekaRoleId: 'combat-development' });
+    await applyMekaRuntimeConfig(opts, {
+      resolveRuntimeConfig: vi.fn(async () =>
+        runtime({
+          roleId: 'combat-development',
+          roleDisplayName: '战斗开发',
+          workflow: 'saga2-combat-development-v1',
+        }),
+      ),
+      prepareRuntimeMcp: vi.fn(() => ({ providerIds: [], inlineConfigs: [] })),
+      materializeSkillSnapshot: vi.fn(async () => null),
+    });
+    expect(environmentServices.p4.get).not.toHaveBeenCalled();
+    expect(environmentServices.router.listInstances).not.toHaveBeenCalled();
+    expect(opts.userPrompt).not.toContain('[SAGA2_COMBAT_ENVIRONMENT_GATE]');
+    expect(opts.userPrompt).not.toContain('# SAGA2 战斗开发');
+    expect(opts.vendorOptions).not.toHaveProperty('mekaCombatEnvironmentReady');
   });
 
   it('uses an immutable native Skill snapshot without mutating the workspace', async () => {
@@ -229,7 +244,7 @@ describe('applyMekaRuntimeConfig', () => {
     expect(opts.userPrompt).toContain('SAGA2 server code lives behind MCPRouter as saga2-server.');
   });
 
-  it('injects a degraded exploration warning when the gate is not fully ready', async () => {
+  it('does not run an aggregate combat environment gate at session startup', async () => {
     const opts = baseOpts({ mekaRoleId: 'combat-development' });
 
     await applyMekaRuntimeConfig(opts, {
@@ -244,22 +259,13 @@ describe('applyMekaRuntimeConfig', () => {
       materializeSkillSnapshot: vi.fn(async () => null),
     });
 
-    expect(opts.userPrompt).toContain('[SAGA2_COMBAT_ENVIRONMENT_GATE]');
-    expect(opts.userPrompt).toContain('roleId: combat-development');
-    expect(opts.userPrompt).toContain('displayName: 战斗开发');
-    expect(opts.userPrompt).toContain('ready: false');
-    expect(opts.userPrompt).toContain('DEGRADED EXPLORATION CONTRACT');
-    expect(opts.userPrompt).toContain('call mcp_router.list_remote_directory');
-    expect(opts.userPrompt).not.toContain('first user-visible assistant message');
+    expect(environmentServices.p4.get).not.toHaveBeenCalled();
+    expect(environmentServices.router.listInstances).not.toHaveBeenCalled();
+    expect(opts.userPrompt).not.toContain('[SAGA2_COMBAT_ENVIRONMENT_GATE]');
     expect(opts.vendorOptions).toMatchObject({
-      mekaCombatEnvironmentReady: false,
-      mekaCombatEnvironmentChecks: {
-        p4: { status: 'blocked', summary: 'P4 工作区未配置' },
-        unityMcp: { status: 'blocked' },
-        mcpr: { status: 'blocked' },
-      },
       codexNativeSubagentsDisabled: true,
     });
+    expect(opts.vendorOptions).not.toHaveProperty('mekaCombatEnvironmentReady');
   });
 
   it('isolates remote server workers from local combat environment state', async () => {
@@ -411,7 +417,7 @@ describe('applyMekaRuntimeConfig', () => {
     expect(prepareRuntimeMcp).toHaveBeenCalledTimes(1);
     expect(materializeSkillSnapshot).toHaveBeenCalledTimes(2);
     expect(opts.userPrompt).toBe(promptAfterFirstBootstrap);
-    expect(opts.userPrompt?.match(/\[MEKA_PLATFORM_CAPABILITIES\]/g)).toHaveLength(1);
+    expect(opts.userPrompt).not.toContain('[MEKA_PLATFORM_CAPABILITIES]');
   });
 
   it('freezes remote skills without exposing the local snapshot path to the remote harness', async () => {

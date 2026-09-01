@@ -1,10 +1,5 @@
 import type { MekaRoleMcpEntry } from '../../shared/meka-projects.js';
 import {
-  combatEnvironmentAvailability,
-  formatCombatEnvironmentGateReceipt,
-  runCombatEnvironmentGate,
-} from '../meka-projects/combatEnvironmentGate.js';
-import {
   resolveMekaRuntimeConfig,
   resolveMekaPlatformRuntimeSkills,
   type MekaRuntimeConfig,
@@ -16,8 +11,6 @@ import {
   type MekaSkillSnapshot,
 } from '../meka-projects/skillSnapshot.js';
 import { prepareMekaRuntimeMcp } from '../mcp-integrations/meka-runtime-mcp.js';
-import { getMekaP4SettingsService, getMekaRouterService } from '../meka-settings/ipc.js';
-import { probeRemoteCodexCapability } from '../maker-host/mcpr-codex-capability.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
 import type { MakerSessionCreateOpts } from './sessionRequest.js';
 
@@ -74,6 +67,13 @@ function prependPromptSection(existing: unknown, section: string): string {
   return [trimmedSection, existingPrompt].filter(Boolean).join('\n\n');
 }
 
+function removeCombatStartupGate(prompt: string): string {
+  return prompt.replace(
+    /## 0\. 环境恢复\n\n任务启动时先读取 `\[SAGA2_COMBAT_ENVIRONMENT_GATE\]`。[\s\S]*?不得换 SSH、本地服务器路径或其它工具绕过。\n\n/i,
+    '## 0. 依赖按需处理\n\n仅在实际调用 P4、UnityMCP 或 MCPRouter 工具时处理对应依赖；单项依赖失败只阻止该次调用，继续其它不相关工作。\n\n',
+  );
+}
+
 const COMBAT_SERVER_WORKER_PROMPT = [
   '[SAGA2_COMBAT_REMOTE_SERVER_WORKER]',
   '当前任务是 MCPR 服务器仓 Worker，不是本地战斗开发 Lead。跳过本地主任务的 P4/UnityMCP 启动门禁。',
@@ -85,16 +85,6 @@ const COMBAT_SERVER_WORKER_PROMPT = [
   'head 必须是当前仓库真实 Git SHA。必须完成核查并返回最终报告；不得用“未取得回执”、占位值或普通进度消息代替。',
   '若能力不支持或证据不足，supportStatus 使用 unsupported 或 uncertain，并明确要求 Lead 停止当前实现、把简短报告交给服务器程序。',
   '[/SAGA2_COMBAT_REMOTE_SERVER_WORKER]',
-].join('\n');
-
-const MEKA_PLATFORM_CAPABILITY_CONTEXT = [
-  '[MEKA_PLATFORM_CAPABILITIES]',
-  '这是 Host 为所有普通 Meka 任务提供的平台能力，不受项目、角色、旧任务配置或角色能力选择影响。',
-  '当用户询问能否访问服务器或远程项目时，必须直接调用 mcp_router.list_remote_directory 读取仓库根目录，以真实读取结果回答；读取具体文件用 mcp_router.read_remote_file，搜索内容用 mcp_router.search_remote_files。不要根据启动或绑定状态回答能否访问，也不要先建议 SSH、设置页或手工连接。三条读取工具内部会自动恢复登录、复用或创建并绑定远程项目。',
-  '调用该工具前不要发送“我先连接、确认、绑定或检查”等预告或进度消息，直接调用工具。Host 打开登录框后，保持本次工具调用等待登录结果并自动继续；等待期间不得提前生成终态回复。',
-  '只有读取工具明确返回 fallbackUserAction 时，才向用户说明最小必要动作；没有 fallbackUserAction 时不得要求用户配置连接。绑定或准备状态不是读取成功的证据。',
-  '远程项目只读能力、MCP、远程 Agent 与 Orca Worker 是递进能力：普通读取优先使用远程项目，只在直接能力不足或用户明确需要独立执行时升级。',
-  '[/MEKA_PLATFORM_CAPABILITIES]',
 ].join('\n');
 
 const MEKA_PLATFORM_MCP: MekaRoleMcpEntry = {
@@ -265,56 +255,15 @@ export async function applyMekaRuntimeConfig(
   }
 
   if (!isCombatServerWorker) {
-    const runtimePrompt = runtime.promptText.trim();
+    const runtimePrompt = removeCombatStartupGate(runtime.promptText.trim());
     if (runtimePrompt) {
       opts.userPrompt = prependPromptSection(opts.userPrompt, runtimePrompt);
     }
     opts.userPrompt = prependPromptSection(opts.userPrompt, roleContextPrompt(runtime));
-    opts.userPrompt = prependPromptSection(opts.userPrompt, MEKA_PLATFORM_CAPABILITY_CONTEXT);
   }
 
-  let combatEnvironmentReceipt: string | undefined;
-  let combatEnvironmentReady = false;
-  let combatEnvironmentChecks: ReturnType<typeof combatEnvironmentAvailability> | undefined;
-  if (runtime.workflow === 'saga2-combat-development-v1') {
-    if (opts.agentKind !== 'claude-code' && opts.agentKind !== 'codex') {
-      throwIpcError(
-        'INVALID_PARAMS',
-        'SAGA2 combat workflow enforcement currently requires Claude Code or Codex',
-      );
-    }
-    if (opts.remoteHostId && !isCombatServerWorker) {
-      throwIpcError(
-        'INVALID_PARAMS',
-        'SAGA2 combat development must run in the local P4/Unity workspace; use MCPRouter for server access',
-      );
-    }
-    if (isCombatServerWorker) {
-      opts.userPrompt = prependPromptSection(opts.userPrompt, COMBAT_SERVER_WORKER_PROMPT);
-    } else {
-      const [p4Settings, router] = await Promise.all([
-        getMekaP4SettingsService().get(),
-        Promise.resolve(getMekaRouterService()),
-      ]);
-      const gate = await runCombatEnvironmentGate({
-        p4: p4Settings,
-        listInstances: () => router.listInstances(),
-        listProjectBindings: (selectedProjectId) => router.listProjectBindings(selectedProjectId),
-        probeRemoteCodexCapability,
-        projectId: runtime.projectId,
-      });
-      combatEnvironmentReady = gate.ready;
-      combatEnvironmentChecks = combatEnvironmentAvailability(gate);
-      combatEnvironmentReceipt = formatCombatEnvironmentGateReceipt(gate, {
-        projectId: runtime.projectId,
-        roleId: runtime.roleId,
-        displayName: runtime.roleDisplayName,
-        workflow: runtime.workflow,
-        workflowRecoveredFromRole: runtime.workflowRecoveredFromRole,
-      });
-      opts.userPrompt = prependPromptSection(opts.userPrompt, combatEnvironmentReceipt);
-      opts.planMode = true;
-    }
+  if (isCombatServerWorker) {
+    opts.userPrompt = prependPromptSection(opts.userPrompt, COMBAT_SERVER_WORKER_PROMPT);
   }
 
   opts.vendorOptions = {
@@ -326,7 +275,7 @@ export async function applyMekaRuntimeConfig(
     mekaMcpProviderIds: mcp.providerIds,
     mekaMcpInlineConfigs: mcp.inlineConfigs,
     mekaPolicyProviderRefs: runtime.policyProviderRefs,
-    ...(runtime.workflow === 'saga2-combat-development-v1'
+    ...(runtime.workflow === 'saga2-combat-development-v1' || isCombatServerWorker
       ? { codexNativeSubagentsDisabled: true }
       : {}),
     ...(runtime.workflow
@@ -340,15 +289,6 @@ export async function applyMekaRuntimeConfig(
               : runtime.workflow,
         }
       : {}),
-    ...(runtime.workflow === 'saga2-combat-development-v1' && !isCombatServerWorker
-      ? {
-          mekaCombatEnvironmentReady: combatEnvironmentReady,
-          mekaCombatEnvironmentChecks: combatEnvironmentChecks,
-          mekaCombatPlanApproved: false,
-          mekaCombatServerCapabilityStatus: 'unchecked',
-          mekaCombatPhase: combatEnvironmentReady ? 'exploration' : 'environment-recovery',
-        }
-      : {}),
   };
 
   return {
@@ -360,9 +300,6 @@ export async function applyMekaRuntimeConfig(
     skillSnapshot,
     workflow: runtime.workflow ?? null,
     workflowRecoveredFromRole: runtime.workflowRecoveredFromRole,
-    combatEnvironmentReady:
-      runtime.workflow === 'saga2-combat-development-v1' && !isCombatServerWorker
-        ? combatEnvironmentReady
-        : null,
+    combatEnvironmentReady: null,
   };
 }

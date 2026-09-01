@@ -138,7 +138,7 @@ Meka 技能的远端事实只属于 MCPRouter：
 
 ## 5. 与 Meka 项目角色的关系
 
-Meka Skill 分为两层：平台层说明能力类型、选择顺序、配置层级、恢复和安全边界；业务层说明项目工作面、证据优先级和业务流程。平台层不包含 SAGA2 服务器等业务名称，业务层不重新定义 MCP、远程 Agent 或 Orca transport。Desktop Host 在每个普通 Meka 任务启动时动态加入 `platform-capabilities`、`mcp-router` 和自动路由契约；这组基线不经过项目默认项、角色选择或旧任务角色配置，项目/角色不能排除。专用远端 Worker 仍保持窄能力隔离。需要交互式 Router 登录时，Host 等待主壳登录框的完成回执并继续原工具，取消或超时后才向 Agent 返回恢复动作。完整契约见 [`meka-capability-layers.md`](meka-capability-layers.md)。
+Meka Skill 分为两层：平台层说明能力类型、选择顺序、配置层级、恢复和安全边界；业务层说明项目工作面、证据优先级和业务流程。平台层不包含 SAGA2 服务器等业务名称，业务层不重新定义 MCP、远程 Agent 或 Orca transport。Desktop Host 在每个普通 Meka 任务启动时动态加入 `mcp-router` 能力引用，但只有明确的服务器任务才注入主动读取/登录契约；其它任务通过 Ghost 被动发现。专用远端 Worker 仍保持窄能力隔离。需要交互式 Router 登录时，Host 等待主壳登录框的完成回执并继续原工具，取消或超时后才向 Agent 返回恢复动作。完整契约见 [`meka-capability-layers.md`](meka-capability-layers.md)。
 
 MCPRouter 绑定的远程项目可以作为当前项目的外部参考工作面。真实 Router 读取发现会话或 client key 缺失时，Router Service 先使用 Host 加密保存的账号材料单飞重连。业务请求依赖远程项目时，Host 再复用并绑定唯一匹配实例，或从唯一匹配模板创建并绑定；成功后默认优先使用远程项目只读 route。只有自动恢复返回 `fallbackUserAction` 或失败，才向用户提示最小必要动作；只有只读能力不足，或用户明确需要持续执行、独立历史、远程命令、结构化报告或人工接管时，才升级为远程 Agent/Orca Worker。远程项目只读能力与远程 Agent runtime 分开检查。
 
@@ -176,8 +176,11 @@ SAGA2 当前只保留“通用开发”和“战斗开发”两个内置角色�
 相关 Skill，避免无关内容占用上下文。该选择机制只决定项目内标准 Skill 的运行时投影，
 不改变 Skill 内联格式，也不把市场技能自动加入角色。
 
-战斗开发角色先执行“环境检查”，再按“只读探索 → 集中澄清 → 方案确认 → 执行验证”四阶段
-工作。环境检查必须用当次只读证据分别确认：Meka P4 或命令行 `p4` 能操作当前 SAGA2 工作区且
+普通任务通过 Ghost 清单/信息链被动发现插件，P4 插件缺失时由 P4 技能回退命令行诊断；
+Host 不在会话启动阶段主动选择或引导某个业务插件。
+
+战斗开发角色按“只读探索 → 集中澄清 → 方案确认 → 执行验证”四阶段工作。仅在实际调用依赖
+工具时按当次只读证据确认：Meka P4 或命令行 `p4` 能操作当前 SAGA2 工作区且
 预期客户端文件具备 edit/checkout 路径；UnityMCP 已连接正确的 SAGA2 Unity 项目；MCPRouter
 已连接且绑定的 SAGA2 服务器远程项目可达、可用。仅有配置项、缓存状态、Unity 可见窗口或
 上一轮成功记录不算当前可用证据。客户端资产或代码编辑必须有可用 P4，不允许直接改受管文件
@@ -244,12 +247,12 @@ Host 必须立即将 MCPR 这一条依赖标记为失效；后续 MCPR 调用给
 
 任务启动时还会从本次已解析角色配置注入 `[MEKA_ROLE_CONTEXT]`，明确提供 `projectId`、稳定
 `roleId` 与展示名；模型不得用其它项目的自定义角色、用户数据缓存或当前窗口覆盖这组绑定。
-Host 激活战斗门禁时以 `source=meka + projectId=saga2 + roleId=combat-development` 作为
-`mekaWorkflow` 丢失时的 fail-closed 兜底，并优先识别独立的服务器 Worker workflow。缺少
+Host 不在任务启动时执行聚合战斗环境门禁；角色/工作流只用于选择实际工具调用策略，依赖失败
+时按调用点自动引导或阻塞，并优先识别独立的服务器 Worker workflow。缺少
 workflow 元数据的旧版项目内置战斗角色快照会在任务启动时按稳定项目/角色 ID 恢复当前包内
 战斗 workflow、中文提示词及必需 Skill/MCP；项目额外添加的规则、Skill、MCP 和元数据继续
-保留，P4 下的 `.meka/project.json` 不被后台改写。Host 随即执行真实环境门，不允许先启动一个
-无门禁任务再由模型自行补救。检查回执必须同时携带权威角色身份、workflow 是否由旧快照恢复
+保留，P4 下的 `.meka/project.json` 不被后台改写。检查回执只在实际依赖工具调用时生成，必须同时
+携带权威角色身份、workflow 是否由旧快照恢复
 及三条链路状态，禁止通过扫描角色缓存自行判断当前角色。Main 启动日志只记录这组非敏感状态，
 不记录 endpoint、实例标识、路径或凭证。
 
