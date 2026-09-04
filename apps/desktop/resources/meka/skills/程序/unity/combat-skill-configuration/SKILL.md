@@ -54,6 +54,9 @@ metadata:
 `legacy_module_export_json` 的参数只接受上述三个位置参数：命令名、十进制技能 ID、绝对 JSON
 路径。临时目录必须原样取 Host 注入的 `legacyModuleJsonTempRoot`，不得猜测 `C:\Windows\Temp`
 或其它系统目录。不得改成 `--skill-id`、`--skill_id`、`--output`、`--output_path` 或其它旗标。
+成功回执中的 `data.legacyModuleExport.payload` 是本次导出的结构化 JSON，必须直接消费；不得
+再调用 Shell `Get-Content` 回读临时路径。只有在该字段缺失、文件无效或工具明确失败时，才按
+导出传输失败处理，不得自行放宽 Shell 白名单。
 status 成功后立即执行目标导出，不插入任何其它工具调用。若 status 返回没有实例、未就绪、
 Pipeline 缺失或其它不可用回执，Meka Unity 插件会返回 `UNITY_EDITOR_NOT_RUNNING`；此时先询问
 用户是否由 Cindy 帮忙启动目标工程，只有明确同意后才能调用 `unity_execute(action=open)`，不得
@@ -89,8 +92,9 @@ Host 会把用户确认的技能 ID 绑定到当前任务。所有写入、最�
   `remote_host_id` 必须原样使用其中的 `serverRemoteHostId`，`agent` 必须原样使用其中的
   `serverWorkerAgent`；不得调用 `get_workspace_info`、实例列表或其它发现工具，也不得把项目 ID、
   显示名或 `saga2` 拼成 `mcpr:saga2`；
-- 立即用 `legacy_module_export_json` 导出目标技能到操作系统临时目录。只有这次结构化回执明确
-  返回目标资产不存在时，才把任务判为新建；文件搜索、旧导出、当前选中项和共享 JSON 都不能
+- 立即用 `legacy_module_export_json` 导出目标技能到操作系统临时目录。成功时直接消费回执中的
+  `data.legacyModuleExport.payload`。只有这次结构化回执明确返回目标资产不存在时，才把任务判为
+  新建；文件搜索、旧导出、当前选中项和共享 JSON 都不能
   证明目标不存在；
 - 目标导出后，先单独完整读取 `unityAgentsPath`，再单独完整读取
   `legacyModuleProtocolCodecPath`。这两个读取不得和搜索或其它命令放进同一个并行调用；禁止对

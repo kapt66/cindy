@@ -3070,6 +3070,29 @@ SAGA2 战斗 follow-up 的目标补丁改为消息事务：纯准备阶段只生
 目标、完成／尝试证据和补丁，不恢复旧证据；已派发时仅释放 token。歧义输入也会使当前证据代次
 立即失效，因此重新选择旧技能 ID 后必须重新取得该目标的首导出证据，不能复用历史完成态。
 
+### 11.23 2026-09-04 Meka Unity 对齐官方 CLI beta.8 与只读查询面
+
+Meka Unity 插件继续以 Unity 官方 CLI 为唯一 Unity 连接实现；本机官方 `unity skill install codex`
+已处于 `up-to-date`，其完整命令手册作为 CLI 语义参考，但不会由插件改写 Codex 的全局 Skill，也
+不会把全局 `unity` PATH 当作运行时回退。插件工具仍只通过包内固定二进制和 Host/Node 边界执行。
+
+随包 CLI 从官方 `1.0.0-beta.6` 升级到 `1.0.0-beta.8`，六个平台 pin、响应配置和 SHA-256 均已同步；
+发布前必须重新运行插件仓的 `prepare:unity-cli`，并在最终 staging 目录复验六个平台文件。插件的
+`unity_inspect` 现在覆盖官方 beta.8 的 `logs`、`changelog`、`templates` 只读查询；Worker 对
+`projects`、`editors`、`templates`、`license` 下的写入型子命令 fail closed，写入仍必须显式选择
+`unity_execute`。Meka Unity 版本升至 `1.0.15`，其设计、手册和 23 项插件定向测试已同步更新。
+本次尚未完成 Cindy 内 `ghost_forge_pack(channel:"meka")` 的真实试装；需在正式发布前补做包级
+校验与安装后版本/Worker 内容哈希检查。
+
+### 11.24 2026-09-04 SAGA2 导出结果改由 Meka Unity 插件交接
+
+SAGA2 战斗配置的 `legacy_module_export_json` 成功回执现在由 Meka Unity Node worker 在插件内
+读取本次命令生成的绝对 JSON 文件，并以 `data.legacyModuleExport.payload`、`skillId`、
+`targetPath` 和 `byteLength` 随结构化工具结果返回。战斗 Skill 必须直接消费该回执，不得再用
+通用 Shell 回读操作系统临时目录；Cindy Host 的 Shell 白名单保持不变。文件缺失、超过 192 KiB
+或不是有效 JSON 时，插件调用失败，不得把导出当作完成证据。该业务交接属于 Meka Unity 插件
+适配，不新增 Host 对 SAGA2 的业务特判。
+
 本文是本次严格迁移的事实正本。后续变更应在同一次代码调整中同步更新：
 
 - 模块状态变化：更新第 3、4、7 节。
