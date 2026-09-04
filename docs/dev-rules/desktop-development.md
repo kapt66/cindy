@@ -26,13 +26,18 @@ pnpm restart:desktop:remote -- --isolated=@worktree
 只有用户明确说「共享登录 / 不要重新登录 / 用现有数据 / 不要关当前实例」时才加
 `--preserve-running`。不要把「用户没提模式」理解成共享。
 
-启动命令结束时必须出现 `DESKTOP_DEV_VERDICT=ready` 才算成功；看到
+启动命令等待冷启动的 main/preload 编译以及窗口、认证和数据库就绪，最长 600 秒。Windows
+冷缓存下编译超过五分钟也可能发生，等待期间不得并行重复启动。启动命令结束时必须出现
+`DESKTOP_DEV_VERDICT=ready` 才算成功；看到
 `DESKTOP_DEV_VERDICT=failed` 或没有 verdict 行，不得声称开发版已启动。失败时报告
 `code` / `message`；有 `next=` 且用户未指定必须共享时，可执行该命令重试。
 Desktop 连接的是你自己的 Cindy 云端账号（remote）。这与登录页中免 Cindy 账号的
 「跳过登录」（应用内显示为「未登录」，无需账号即可使用本机 agent；代码内部标识仍为
 `local` mode）不是同一个概念。Agent 不得自行改用
 `pnpm dev:desktop` 或 `pnpm dev:desktop:remote` 绕过包装脚本。
+高负载机器已经确认 600 秒仍不足时，可为单次诊断设置
+`XDT_DESKTOP_STARTUP_TIMEOUT_MS`；只接受毫秒正整数并限制在 30 秒至 30 分钟，不能用它
+掩盖明确的编译错误或数据库失败。
 
 启动包装会先停止**当前 checkout** 已有的 Desktop dev 进程；其他 worktree／命名沙箱的
 实例不受影响。必须尊重宿主提供的并行或保活工作流。脚本只在宿主是**当前 checkout**

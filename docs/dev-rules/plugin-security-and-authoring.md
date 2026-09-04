@@ -24,20 +24,20 @@
 
 ## 事实来源
 
-| 内容                                                  | 权威来源                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 编写手册（作者唯一教材，现拿现读）                    | `apps/desktop/src/main/cindy-brain/forge.ts` 的 `FORGE_GUIDE`，经 `ghost_forge_guide` 工具下发                                                                                                                                                                                                                                                                                                                                                                                           |
-| 身份卡字段与校验、管子协议类型                        | `apps/desktop/src/shared/ghost.ts`（`validateGhostManifest`、`cindy.send` / `cindy.onHostMessage` 类型）                                                                                                                                                                                                                                                                                                                                                                                 |
-| 打包限制                                              | `apps/desktop/src/main/cindy-brain/forge.ts` 的 `packGhostDir`                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| 运行时、沙箱进程与生命周期                            | `apps/desktop/src/main/cindy-brain/runtime/GhostRuntime.ts`、`GhostManager.ts`                                                                                                                                                                                                                                                                                                                                                                                                           |
-| 安装批准事实(receipt / 技能快照 / revision)           | `apps/desktop/src/main/cindy-brain/ghostInstallReceipt.ts`，批准态投影见 `shared/ghost.ts` 的 `GhostInstallApproval`                                                                                                                                                                                                                                                                                                                                                                      |
+| 内容                                                  | 权威来源                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 编写手册（作者唯一教材，现拿现读）                    | `apps/desktop/src/main/cindy-brain/forge.ts` 的 `FORGE_GUIDE`，经 `ghost_forge_guide` 工具下发                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| 身份卡字段与校验、管子协议类型                        | `apps/desktop/src/shared/ghost.ts`（`validateGhostManifest`、`cindy.send` / `cindy.onHostMessage` 类型）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| 打包限制                                              | `apps/desktop/src/main/cindy-brain/forge.ts` 的 `packGhostDir`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| 运行时、沙箱进程与生命周期                            | `apps/desktop/src/main/cindy-brain/runtime/GhostRuntime.ts`、`GhostManager.ts`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| 安装批准事实(receipt / 技能快照 / revision)           | `apps/desktop/src/main/cindy-brain/ghostInstallReceipt.ts`，批准态投影见 `shared/ghost.ts` 的 `GhostInstallApproval`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | 能力 slot（网络／通知／确认／文件系统／技能／宿主等） | `apps/desktop/src/main/cindy-brain/networkSlot.ts`、`notifySlot.ts`、`badgeSlot.ts`（未读角标，落盘账本 `ghostUnreadStore.ts`）、`confirmSlot.ts`（往返桥 `ghostConfirmDialogBridge.ts`，renderer 落地 `cindy-brain/GhostConfirmDialogHost.tsx`）、`fsSlot.ts`、`cindySlot.ts`、`skillSlot.ts`、`agentSlot.ts`、`errandSlot.ts`（派活执行链在 `maker-ipc/ghostErrandRunner.ts`，每插件配置在 `errandPrefsStore.ts`）、`iosSimulatorSlot.ts`（当前台前任务的公开状态与 Host viewer 入口）；library 槽（持久作品库：文件层/SQLite 语句门/binding/迁移/回收站）见 [`plugin-library-storage.md`](plugin-library-storage.md)，主实现在 `libraryVault.ts`、`librarySlot.ts`、`libraryDbCore.ts` |
-| 面板供片、注入主题 token 与协议                       | `apps/desktop/src/renderer/cindy-brain/ghostPanelTheme.ts`、`cindy-ghost://` 分支                                                                                                                                                                                                                                                                                                                                                                                                        |
-| 权限注入／更新确认 UI                                 | `apps/desktop/src/renderer/cindy-brain/GhostPermissionList.tsx`                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| 远程／手机版能力准入白名单                            | `packages/device-link/src/allowlist.ts`                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| 行为与安全不变量                                      | `apps/desktop/src/main/cindy-brain/__tests__/`、`forge.test.ts`                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| Meka 身份卡跨仓字段与校验 | `cindy-protocol/packages/plugin-protocol/src/manifest.ts`；Desktop 只复用／re-export 共享常量 |
-| Meka MCPRouter 能力 | [`mcpr-plugin-capability.md`](mcpr-plugin-capability.md) 与 MCPRouter 对端契约 |
+| 面板供片、注入主题 token 与协议                       | `apps/desktop/src/renderer/cindy-brain/ghostPanelTheme.ts`、`cindy-ghost://` 分支                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| 权限注入／更新确认 UI                                 | `apps/desktop/src/renderer/cindy-brain/GhostPermissionList.tsx`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| 远程／手机版能力准入白名单                            | `packages/device-link/src/allowlist.ts`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| 行为与安全不变量                                      | `apps/desktop/src/main/cindy-brain/__tests__/`、`forge.test.ts`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Meka 身份卡跨仓字段与校验                             | `cindy-protocol/packages/plugin-protocol/src/manifest.ts`；Desktop 只复用／re-export 共享常量                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Meka MCPRouter 能力                                   | [`mcpr-plugin-capability.md`](mcpr-plugin-capability.md) 与 MCPRouter 对端契约                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 
 文档与实现冲突时以代码为准，但必须在同一改动内同步修正本文与手册。
 
@@ -105,9 +105,13 @@
     安装目录加载，`packageSha256` 只是批准时点的来源指纹、运行时不校验（见第 7 节）。
 - **Forge 的源码区与 Host 受管根互斥。** `ghost_forge_scaffold` / `ghost_forge_pack` 的目标
   必须是当前会话工作目录里的独立作者目录；命中安装根或批准状态根一律拒
-  （pack 返回 `SOURCE_IS_INSTALLED_PLUGIN`）。判定按 realpath 比对受管根，同时挡住大小写
-  折叠与软链／junction 别名。理由不是洁癖：在已安装目录里就地制作"更新包"会让版本与
-  权限 diff 以被改过的现场为基线，把未经确认的 manifest 送进运行时授权。
+  （pack 返回 `SOURCE_IS_INSTALLED_PLUGIN`）。Agent 传入的 `channel` 仅是业务元数据，
+  `channel: "meka"` 也不得授予会话外源码根。只有 Host 托管的 `MekaDevPluginManager` 可在
+  当前 data owner 的开发注册表明确授权后，直接调用 Forge 打包实现并传入该条目对应的规范化
+  源码根；源码根本身不可直接打包。所有判定按 realpath 比对受管根与白名单，同时挡住大小写
+  折叠和软链／junction 别名。理由不是
+  洁癖：在已安装目录里就地制作"更新包"会让版本与权限 diff 以被改过的现场为基线，把未经
+  确认的 manifest 送进运行时授权。
 - `skill` 槽是唯一**越出沙箱**的能力：技能指令由主 Agent 以用户全部权限执行、全局
   生效、不随 workdir 级停用隐藏。其安全边界是**声明一致性**（manifest 里的
   name／description 必须与 SKILL.md frontmatter 逐字一致，`skillSlot.ts` 的
@@ -154,7 +158,7 @@
     能在其中一处找到没覆盖的角落，补一处、下一轮换另一处。
   - 新增任何"读插件内容目录"的代码一律从这里取判据，**不要就地 `readdir` + `isDirectory()`
     或 `stat` 直读**。只 `lstat` 最终段等于没判：中间段被换成软链／junction 时 OS 会
-     静默穿透，最终段报的是"真目录、非链接"，字节却来自插件目录之外。
+    静默穿透，最终段报的是"真目录、非链接"，字节却来自插件目录之外。
   - `hashGhostContentFiles` 的摘要编码必须保持无歧义 framing（当前为
     `cindy-ghost-content-v2` + UTF-8 路径长度前缀 + 每文件摘要），不得恢复成
     `path + NUL + bytes + NUL`；文件内容本身允许包含 NUL，分隔符编码会产生不同文件树
@@ -164,8 +168,8 @@
     receipt（安全水位与旧版本已提供的保证等价），只有对不上（真漂移）才 fail closed 到
     重新确认——不得把一次纯格式升级直接变成全体用户重新确认。
   - 同理，"源目录与受管根的包含关系"必须**双向**判（既不能落在受管根内，也不能是受管
-     根的祖先）：单向判定下只要在 owner 数据目录里放一个 `ghost.json`，递归打包就会把
-     已安装插件字节、批准 receipt 与技能快照打进 `.cindy`。
+    根的祖先）：单向判定下只要在 owner 数据目录里放一个 `ghost.json`，递归打包就会把
+    已安装插件字节、批准 receipt 与技能快照打进 `.cindy`。
   - 随包种子是第一方输入；发现链接、junction、FIFO 等非普通条目必须整颗跳过并告警，
     不得在复制时静默丢弃后继续写批准 receipt。
 
@@ -293,6 +297,10 @@
   runtime ID 做运行时操作，展示仍使用原始 plugin ID。由此远端未安装卡、正式安装卡和
   开发卡可按原市场规则共存：开发副本既不把远端版本判成“已安装”，也不覆盖或隐藏正式版。
   开发卡片、快捷入口和详情图标必须显示使用语义颜色 token 的斜向 `DEV` 角标。
+- Agent 按逻辑插件 ID 查找或调用插件时，Host 必须先匹配正式安装插件的精确 ID；只有当前
+  data owner 的开发注册表存在该逻辑 ID 到 runtime ID 的明确记录时，才回落到对应开发副本。
+  禁止通过重新计算或猜测 `meka-dev-*` ID 探测开发插件，避免跨 owner 复用陈旧身份或让开发
+  副本遮蔽正式安装版本。
 - 目录首次登记必须展示与正式安装相同的 manifest、信任等级和权限清单，并取得一次明确
   确认。确认必须绑定到已检查快照的稳定内容指纹（排序后的包内路径与逐文件内容），安装
   前重新打包不一致时以 `PRECONDITION_FAILED` 拒绝并要求用户重新选择；不得仅凭目录路径
@@ -624,18 +632,18 @@ topic 路由；产品层多端语义见
 6. Forge（scaffold／pack）是否排除了 Host 受管根（安装根 + 批准状态根），且按 realpath
    **双向**判定（源目录既不在受管根内、也不是它的祖先）、挡住大小写与软链／junction
    别名？递归收集是否不跟随链接进受管根？
-6.5. 新增的"读插件内容目录"代码是否走 `ghostContentTree.ts` 取判据（`lstat` 分类 +
+   6.5. 新增的"读插件内容目录"代码是否走 `ghostContentTree.ts` 取判据（`lstat` 分类 +
    相对路径逐段解析 + 统一指纹格式），而不是就地 `readdir` + `isDirectory()` 或 `stat`
    直读？策略差异（点开头条目算不算内容、非普通条目 throw 还是 flag）是否以显式参数
    表达而不是复制一份实现？
-6.5a. **新增的路径式 worker（skill snapshot、Forge scaffold 等）是否采用
+   6.5a. **新增的路径式 worker（skill snapshot、Forge scaffold 等）是否采用
    「操作前检查（fast fail）→ 原子操作 → 操作后复验 → identity-guarded cleanup」
    模式，而不是仅靠操作前检查判定安全？** 操作后复验是否落在原子操作**之后**、
    无 TOCTOU 间隙的位置（如 `rename` 之后立刻 `lstat` + identity compare，而不是
    在 `rename` 之前加更多 `lstat`）？pre-check 与 rename 之间的间隙是 Node.js 未暴露
    `renameat` 等 fd-relative 原语的硬边界，不可消除——因此安全判定必须在操作之后做。
    cleanup 时是否按 `dev`/`ino` identity 守卫而非仅按 pathname 删除？
-6.6. **存量插件升级后还能不能用（第 5 节红线）**：本次是否改了 receipt schema／必填
+   6.6. **存量插件升级后还能不能用（第 5 节红线）**：本次是否改了 receipt schema／必填
    字段／落盘位置、指纹或摘要编码、manifest 校验、slot 形态、快照与链接命名、安装根或
    状态根路径、`.cindy` 包格式、管子协议、内置 id？命中就逐条问：用户升级后**什么都不做**
    时，已装、已批准、已启用的插件是否照旧可用？新增的必填字段／新校验是否自带从旧版

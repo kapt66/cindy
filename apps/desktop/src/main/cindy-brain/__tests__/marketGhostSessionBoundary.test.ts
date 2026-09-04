@@ -55,9 +55,12 @@ describe('market Ghost session boundary', () => {
     const end = source.indexOf('\n}', start);
     const body = source.slice(start, end);
     expect(body).toContain('if (isAppSessionBoundaryPending()) return [];');
-    expect(source).toContain(
-      'return availableGhosts().find((ghost) => ghost.manifest.id === id) ?? null;',
-    );
+    const lookupStart = source.indexOf('function findAvailableGhost(id: string)');
+    const lookupEnd = source.indexOf('\n}', lookupStart);
+    const lookupBody = source.slice(lookupStart, lookupEnd);
+    expect(lookupBody).toContain('const ghosts = availableGhosts();');
+    expect(lookupBody).toContain('mekaDevPluginsSingleton?.runtimeIdFor(id)');
+    expect(lookupBody).not.toContain('mekaDevRuntimeId(id)');
     expect(source.match(/getGhost: findAvailableGhost/g)?.length ?? 0).toBeGreaterThanOrEqual(3);
     expect(source).toContain('return findAvailableGhost(id)?.manifest.name ?? null;');
   });

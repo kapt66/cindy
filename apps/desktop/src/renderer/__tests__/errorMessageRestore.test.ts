@@ -16,6 +16,11 @@ import { makerChatStore } from '@/lib/makerChatStore';
 import type { Message } from '@/lib/ccAgent.types';
 import { ERROR_REASON_I18N_KEYS } from '@/components/chat/errorReasonI18n';
 import { UPSTREAM_OVERLOAD_REASON } from '@/utils/overloadError';
+import en from '@/i18n/locales/en/common.json';
+import ja from '@/i18n/locales/ja/common.json';
+import ko from '@/i18n/locales/ko/common.json';
+import zhCN from '@/i18n/locales/zh-CN/common.json';
+import zhTW from '@/i18n/locales/zh-TW/common.json';
 
 const SESSION_ID = 's-err';
 
@@ -31,6 +36,14 @@ function errorRow(clientId: string, content: unknown): Message {
 }
 
 describe('mapServerMessages — persisted terminal error rows', () => {
+  it('keeps host shell policy copy task-generic across locales', () => {
+    const copies = [en, ja, ko, zhCN, zhTW].map(
+      (locale) => locale.logic.errors.hostShellCommandBlocked,
+    );
+    expect(copies.every((copy) => typeof copy === 'string' && copy.length > 0)).toBe(true);
+    expect(copies.join('\n')).not.toMatch(/iOS|模拟器|シミュレータ|시뮬레이터/i);
+  });
+
   it('maps Codex Auto reviewer failures to the stable localized reason key', () => {
     expect(ERROR_REASON_I18N_KEYS['codex-auto-review-unavailable']).toBe(
       'logic.errors.codexAutoReviewUnavailable',

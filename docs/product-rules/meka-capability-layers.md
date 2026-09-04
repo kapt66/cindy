@@ -58,7 +58,7 @@ Router 做账号与实例所有权校验。不得通过 `tools/list` 探测 `git
 5. Host 的确定性权限裁决。
 
 `mcp-router` 是普通 Meka 任务的平台 provider，不是角色开关；角色只决定
-`project-agent`、`meka-design`、UnityMCP 等额外业务能力。运行时事实以 Host 返回的目标、
+`project-agent`、`meka-design`、Meka Unity 官方 CLI 等额外业务能力。运行时事实以 Host 返回的目标、
 能力状态、绑定关系和恢复动作为准。业务 Skill 不得在
 prompt 中写入 Router URL、实例内部 ID、凭证或远端物理路径；实例 ID 只由 Host 从当前
 项目绑定中解析和校验。

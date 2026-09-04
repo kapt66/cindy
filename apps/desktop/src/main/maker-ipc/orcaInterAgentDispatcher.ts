@@ -1,8 +1,10 @@
-import {
-  formatAgentMessage,
-  formatOrcaCommunicationMessage,
-} from '@cindy/orca-workflow';
-import type { AgentKind, SessionSendOptions, SessionSendResult, UserMessage } from '@cindy/maker-core';
+import { formatAgentMessage, formatOrcaCommunicationMessage } from '@cindy/orca-workflow';
+import type {
+  AgentKind,
+  SessionSendOptions,
+  SessionSendResult,
+  UserMessage,
+} from '@cindy/maker-core';
 
 import type {
   AgentInputCreateOpts,
@@ -17,10 +19,7 @@ import type {
   CollabDirectDispatchResult,
 } from './collabSendOutcome.js';
 import { resolveCollabDispatchResult } from './collabSendOutcome.js';
-import type {
-  AgentInputSendOpts,
-  AgentInputSendResult,
-} from './agent-input-coordinator.js';
+import type { AgentInputSendOpts, AgentInputSendResult } from './agent-input-coordinator.js';
 import { runAcceptedCallback, runAcceptedRollback } from './acceptedCallbackRunner.js';
 
 const defaultLog = createLogger('maker-ipc');
@@ -52,6 +51,8 @@ export interface DispatchOrcaInterAgentMessageParams {
   source: OrcaInterAgentMessageSource;
   senderLabel: string;
   workerId?: string;
+  /** Worker session identity used by combat report trust registration. */
+  workerSessionId?: string;
   onAccepted?: () => void | Promise<void>;
   onAcceptedRollback?: () => void | Promise<void>;
   meta: {
@@ -65,10 +66,7 @@ interface PersistedUserMessageSession {
   id: string;
   agentKind?: AgentKind;
   isTurnRunning?: () => boolean;
-  send: (
-    message: UserMessage,
-    opts?: SessionSendOptions,
-  ) => Promise<SessionSendResult>;
+  send: (message: UserMessage, opts?: SessionSendOptions) => Promise<SessionSendResult>;
 }
 
 /** 判断目标 session 是否可投递所需的最小 DB 快照。 */
@@ -191,7 +189,10 @@ export function createOrcaInterAgentDispatcher<TSessionMeta>(
   deps: OrcaInterAgentDispatcherDeps<TSessionMeta>,
 ): OrcaInterAgentDispatcher {
   const log = deps.log ?? defaultLog;
-  const queuedOrcaInterAgentAcceptedCallbacks = new Map<string, QueuedOrcaInterAgentAcceptedCallback>();
+  const queuedOrcaInterAgentAcceptedCallbacks = new Map<
+    string,
+    QueuedOrcaInterAgentAcceptedCallback
+  >();
 
   const registerQueuedOrcaInterAgentAcceptedCallback = (
     clientId: string,
@@ -270,7 +271,10 @@ export function createOrcaInterAgentDispatcher<TSessionMeta>(
       return {
         ok: false,
         dispatchOutcome: {
-          ...createHostSendFailure('SEND_FAILED', `session ${params.targetSessionId} is ${dbRow.status}`),
+          ...createHostSendFailure(
+            'SEND_FAILED',
+            `session ${params.targetSessionId} is ${dbRow.status}`,
+          ),
           source: params.meta.source,
           context: params.meta.context,
         },
@@ -285,7 +289,9 @@ export function createOrcaInterAgentDispatcher<TSessionMeta>(
       acceptedDidRun = true;
       await params.onAccepted?.();
     };
-    const failureResult = async (dispatchOutcome: CollabDispatchFailureOutcome): Promise<DispatchOrcaInterAgentMessageResult> => {
+    const failureResult = async (
+      dispatchOutcome: CollabDispatchFailureOutcome,
+    ): Promise<DispatchOrcaInterAgentMessageResult> => {
       if (acceptedDidRun) {
         await runAcceptedRollback(params.onAcceptedRollback, params.targetSessionId, clientId, log);
       }
@@ -293,9 +299,8 @@ export function createOrcaInterAgentDispatcher<TSessionMeta>(
     };
     const dispatchReceipt = {
       targetTitle: dbRow.title,
-      targetLastUserSendAt: dbRow.userSendAt !== null
-        ? new Date(dbRow.userSendAt).toISOString()
-        : null,
+      targetLastUserSendAt:
+        dbRow.userSendAt !== null ? new Date(dbRow.userSendAt).toISOString() : null,
     };
     // senderLabel 口径 = worker 的 role。包侧路径只有 workerId 可传, host 这里反查 role 覆盖。
     const resolveSenderLabel = async (): Promise<string> => {
@@ -306,7 +311,9 @@ export function createOrcaInterAgentDispatcher<TSessionMeta>(
         return params.senderLabel;
       }
     };
-    const enqueueQueuedMessage = async (logEvent: string): Promise<DispatchOrcaInterAgentMessageResult> => {
+    const enqueueQueuedMessage = async (
+      logEvent: string,
+    ): Promise<DispatchOrcaInterAgentMessageResult> => {
       const createOpts = await deps.buildCreateOptsForQueuedSession(params.targetSessionId, meta);
       const queued = buildQueuedOrcaInterAgentMessage({
         clientId,
@@ -317,7 +324,11 @@ export function createOrcaInterAgentDispatcher<TSessionMeta>(
         createOpts,
       });
       if (params.onAccepted) {
-        registerQueuedOrcaInterAgentAcceptedCallback(clientId, params.onAccepted, params.onAcceptedRollback);
+        registerQueuedOrcaInterAgentAcceptedCallback(
+          clientId,
+          params.onAccepted,
+          params.onAcceptedRollback,
+        );
       }
       deps.enqueueQueuedMessage(params.targetSessionId, queued);
       log.info(logEvent, {
@@ -336,9 +347,10 @@ export function createOrcaInterAgentDispatcher<TSessionMeta>(
       };
     };
 
-    const shouldQueue = deps.shouldQueueNewTurn(params.targetSessionId)
-      || deps.hasSendToSessionLock(params.targetSessionId)
-      || deps.getLiveSession(params.targetSessionId)?.isTurnRunning?.() === true;
+    const shouldQueue =
+      deps.shouldQueueNewTurn(params.targetSessionId) ||
+      deps.hasSendToSessionLock(params.targetSessionId) ||
+      deps.getLiveSession(params.targetSessionId)?.isTurnRunning?.() === true;
     if (shouldQueue) {
       return enqueueQueuedMessage('orca inter-agent message queued');
     }
@@ -356,9 +368,18 @@ export function createOrcaInterAgentDispatcher<TSessionMeta>(
           onAccepted: runAccepted,
         });
         if (result.dispatched) {
-          return { ok: true, mode: 'dispatched', clientId, dispatchOutcome: result.dispatchOutcome, ...dispatchReceipt };
+          return {
+            ok: true,
+            mode: 'dispatched',
+            clientId,
+            dispatchOutcome: result.dispatchOutcome,
+            ...dispatchReceipt,
+          };
         }
-        if (result.dispatchOutcome.kind === 'host-send' && result.dispatchOutcome.code === 'SESSION_RUNNING') {
+        if (
+          result.dispatchOutcome.kind === 'host-send' &&
+          result.dispatchOutcome.code === 'SESSION_RUNNING'
+        ) {
           return enqueueQueuedMessage('orca inter-agent message queued after SESSION_RUNNING race');
         }
         return failureResult(result.dispatchOutcome);
@@ -382,25 +403,32 @@ export function createOrcaInterAgentDispatcher<TSessionMeta>(
           ok: true,
           mode: result.wakeKind === 'queued' ? 'queued' : 'dispatched',
           clientId,
-          dispatchOutcome: result.wakeKind === 'queued'
-            ? makeQueuedDispatchOutcome(params.meta.source)
-            : {
-                kind: 'session-dispatch',
-                source: params.meta.source,
-                dispatched: true,
-              },
+          dispatchOutcome:
+            result.wakeKind === 'queued'
+              ? makeQueuedDispatchOutcome(params.meta.source)
+              : {
+                  kind: 'session-dispatch',
+                  source: params.meta.source,
+                  dispatched: true,
+                },
           targetTitle: result.targetTitle,
           targetLastUserSendAt: result.targetLastUserSendAt,
         };
       }
       return failureResult({
-        ...createHostSendFailure(result.errorCode === 'BUSY' ? 'SESSION_RUNNING' : 'SEND_FAILED', result.message),
+        ...createHostSendFailure(
+          result.errorCode === 'BUSY' ? 'SESSION_RUNNING' : 'SEND_FAILED',
+          result.message,
+        ),
         source: params.meta.source,
         context: params.meta.context,
       });
     } catch (err) {
       return failureResult({
-        ...createHostSendFailure(deps.isSessionRunningError(err) ? 'SESSION_RUNNING' : 'SEND_FAILED', err instanceof Error ? err.message : String(err)),
+        ...createHostSendFailure(
+          deps.isSessionRunningError(err) ? 'SESSION_RUNNING' : 'SEND_FAILED',
+          err instanceof Error ? err.message : String(err),
+        ),
         source: params.meta.source,
         context: params.meta.context,
       });
@@ -429,24 +457,33 @@ async function sendPersistedUserMessageToSession<TSessionMeta>(
     onAccepted?: () => void | Promise<void>;
   },
 ): Promise<CollabDirectDispatchResult> {
-  const { session, dbContent, agentMessage, clientId = deps.createId(), source, context, onAccepted } = params;
+  const {
+    session,
+    dbContent,
+    agentMessage,
+    clientId = deps.createId(),
+    source,
+    context,
+    onAccepted,
+  } = params;
   let turnChangeSetStarted = false;
   const result = await resolveCollabDispatchResult(
-    () => session.send(agentMessage, {
-      planMode: false,
-      throwOnStartFailure: true,
-      onAccepted: async () => {
-        // maker-core 会在 vendor handle.send 前 await 此 hook；必须先落库，再运行 accepted 副作用。
-        await deps.createDbMessage(session.id, {
-          clientId,
-          role: 'user',
-          content: dbContent,
-        });
-        await deps.beginDirectTurnChangeSet(session.id, clientId);
-        turnChangeSetStarted = true;
-        await runAcceptedCallback(onAccepted, session.id, clientId, deps.log ?? defaultLog);
-      },
-    }),
+    () =>
+      session.send(agentMessage, {
+        planMode: false,
+        throwOnStartFailure: true,
+        onAccepted: async () => {
+          // maker-core 会在 vendor handle.send 前 await 此 hook；必须先落库，再运行 accepted 副作用。
+          await deps.createDbMessage(session.id, {
+            clientId,
+            role: 'user',
+            content: dbContent,
+          });
+          await deps.beginDirectTurnChangeSet(session.id, clientId);
+          turnChangeSetStarted = true;
+          await runAcceptedCallback(onAccepted, session.id, clientId, deps.log ?? defaultLog);
+        },
+      }),
     { source, context },
   );
   if (turnChangeSetStarted && !result.dispatched) {

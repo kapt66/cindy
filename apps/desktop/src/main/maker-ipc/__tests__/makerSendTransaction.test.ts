@@ -15,17 +15,16 @@ import {
 import type { MakerSessionCreateOpts } from '../sessionRequest';
 import { CredentialModeSwitchBusyError } from '../../maker-host/codex-credential-switch';
 
-function createSession(overrides: Partial<MakerSendTransactionSession> = {}): MakerSendTransactionSession {
+function createSession(
+  overrides: Partial<MakerSendTransactionSession> = {},
+): MakerSendTransactionSession {
   return {
     id: 'session-1',
     agentKind: 'codex',
     workDir: 'C:\\repo',
     remoteHostId: null,
     isTurnRunning: vi.fn(() => false),
-    send: vi.fn(async (
-      _message: UserMessage | string,
-      opts?: SessionSendOptions,
-    ) => {
+    send: vi.fn(async (_message: UserMessage | string, opts?: SessionSendOptions) => {
       await opts?.onAccepted?.();
       await opts?.onTranscriptUserEntry?.('pi-user-entry');
       opts?.onDispatching?.();
@@ -99,31 +98,32 @@ describe('maker SEND transaction', () => {
     const onPersisted = vi.fn();
 
     await expect(
-      transaction.sendToAgentAccepted(
-        'session-1',
-        { type: 'user', content: 'hello' },
-        undefined,
-        {
-          messageUuid: 'message-uuid',
-          userName: 'Lizi',
-          persistUserMessage: {
-            clientId: 'client-1',
-            content: 'hello',
-            sdkSessionId: 'sdk-1',
-            delivery: 'turn',
-            shouldBroadcast,
-            onPersisting,
-            onPersisted,
-          },
+      transaction.sendToAgentAccepted('session-1', { type: 'user', content: 'hello' }, undefined, {
+        messageUuid: 'message-uuid',
+        userName: 'Lizi',
+        persistUserMessage: {
+          clientId: 'client-1',
+          content: 'hello',
+          sdkSessionId: 'sdk-1',
+          delivery: 'turn',
+          shouldBroadcast,
+          onPersisting,
+          onPersisted,
         },
-      ),
+      }),
     ).resolves.toEqual({
       accepted: true,
       outcome: { kind: 'session-dispatch', source: 'maker-ipc', dispatched: true },
     });
 
-    expect(deps.ensureRemoteReadyForSessionStart).toHaveBeenCalledWith({ session, createOpts: undefined });
-    expect(deps.prepareSendUserMessage).toHaveBeenCalledWith('session-1', { type: 'user', content: 'hello' });
+    expect(deps.ensureRemoteReadyForSessionStart).toHaveBeenCalledWith({
+      session,
+      createOpts: undefined,
+    });
+    expect(deps.prepareSendUserMessage).toHaveBeenCalledWith('session-1', {
+      type: 'user',
+      content: 'hello',
+    });
     expect(session.send).toHaveBeenCalledWith(
       { type: 'user', content: 'hello' },
       expect.objectContaining({
@@ -134,14 +134,10 @@ describe('maker SEND transaction', () => {
     );
     expect(onPersisting).toHaveBeenCalled();
     expect(beforeDispatchDirectUserTurn).not.toHaveBeenCalled();
-    expect(deps.previewUserPrompt).toHaveBeenCalledWith(
-      session,
-      'hello',
-      {
-        source: 'maker_send:onPersisting',
-        clientId: 'client-1',
-      },
-    );
+    expect(deps.previewUserPrompt).toHaveBeenCalledWith(session, 'hello', {
+      source: 'maker_send:onPersisting',
+      clientId: 'client-1',
+    });
     expect(deps.createDbMessage).toHaveBeenCalledWith(
       'session-1',
       {
@@ -345,7 +341,9 @@ describe('maker SEND transaction', () => {
 
     expect(deps.createDbMessage).toHaveBeenCalledWith(
       'session-1',
-      expect.objectContaining({ agentMeta: expect.objectContaining({ recoveryCheckpoint: checkpoint }) }),
+      expect.objectContaining({
+        agentMeta: expect.objectContaining({ recoveryCheckpoint: checkpoint }),
+      }),
       undefined,
     );
   });
@@ -365,8 +363,7 @@ describe('maker SEND transaction', () => {
     );
 
     const persisted = vi.mocked(deps.createDbMessage).mock.calls[0]?.[1] as
-      | { agentMeta?: Record<string, unknown> }
-      | undefined;
+      { agentMeta?: Record<string, unknown> } | undefined;
     expect(persisted?.agentMeta).not.toHaveProperty('autoResume');
   });
 
@@ -397,17 +394,15 @@ describe('maker SEND transaction', () => {
 
   it('materializes direct OSS attachments after session/workdir preflight', async () => {
     const events: string[] = [];
-    const materializeDirectSendOssAttachments = vi.fn(async (
-      _sessionId: string,
-      message: unknown,
-      sendOpts: unknown,
-    ) => {
-      events.push('materialize');
-      return {
-        message: { ...(message as object), materialized: true },
-        sendOpts: { ...(sendOpts as object), materialized: true },
-      };
-    });
+    const materializeDirectSendOssAttachments = vi.fn(
+      async (_sessionId: string, message: unknown, sendOpts: unknown) => {
+        events.push('materialize');
+        return {
+          message: { ...(message as object), materialized: true },
+          sendOpts: { ...(sendOpts as object), materialized: true },
+        };
+      },
+    );
     const session = createSession({
       send: vi.fn(async (message) => {
         events.push('send');
@@ -426,7 +421,9 @@ describe('maker SEND transaction', () => {
     const transaction = createMakerSendTransaction(deps);
 
     await expect(
-      transaction.sendToAgentAccepted('session-1', { type: 'user', content: 'hello' }, undefined, { marker: true }),
+      transaction.sendToAgentAccepted('session-1', { type: 'user', content: 'hello' }, undefined, {
+        marker: true,
+      }),
     ).resolves.toMatchObject({ accepted: true });
 
     expect(events).toEqual(['materialize', 'normalize', 'send']);
@@ -450,7 +447,9 @@ describe('maker SEND transaction', () => {
     });
     const transaction = createMakerSendTransaction(deps);
 
-    await expect(transaction.sendToAgentAccepted('session-1', 'hello')).rejects.toThrow('normalize failed');
+    await expect(transaction.sendToAgentAccepted('session-1', 'hello')).rejects.toThrow(
+      'normalize failed',
+    );
     expect(cleanupBeforeAcceptance).toHaveBeenCalledTimes(1);
   });
 
@@ -462,10 +461,13 @@ describe('maker SEND transaction', () => {
       cleanupBeforeAcceptance,
     }));
     const session = createSession({
-      send: vi.fn(async () => ({
-        accepted: false,
-        reason: 'cancelled-before-dispatch',
-      } satisfies SessionSendResult)),
+      send: vi.fn(
+        async () =>
+          ({
+            accepted: false,
+            reason: 'cancelled-before-dispatch',
+          }) satisfies SessionSendResult,
+      ),
     });
     const { deps } = createDeps({
       getSession: vi.fn(() => session),
@@ -504,22 +506,110 @@ describe('maker SEND transaction', () => {
     const transaction = createMakerSendTransaction(deps);
 
     await expect(
-      transaction.sendToAgentAccepted(
-        'session-1',
-        { type: 'user', content: 'hello' },
-        undefined,
-        {
-          persistUserMessage: {
-            clientId: 'client-1',
-            content: 'hello',
-          },
+      transaction.sendToAgentAccepted('session-1', { type: 'user', content: 'hello' }, undefined, {
+        persistUserMessage: {
+          clientId: 'client-1',
+          content: 'hello',
         },
-      ),
+      }),
     ).resolves.toMatchObject({ accepted: false });
 
     expect(deps.createDbMessage).toHaveBeenCalledTimes(1);
     expect(cleanupBeforeAcceptance).not.toHaveBeenCalled();
     expect(cleanupAfterAcceptance).toHaveBeenCalledTimes(1);
+  });
+
+  it('commits prepared message state after persistence and finalizes it after dispatch', async () => {
+    const events: string[] = [];
+    const onUndispatched = vi.fn(async () => {
+      events.push('rollback');
+    });
+    const { deps } = createDeps({
+      createDbMessage: vi.fn(async () => {
+        events.push('persist');
+      }),
+      prepareSendUserMessage: vi.fn(async () => ({
+        message: { type: 'user' as const, content: 'prepared' },
+        onAccepted: async () => {
+          events.push('commit');
+        },
+        onUndispatched,
+        onDispatched: async () => {
+          events.push('dispatched');
+        },
+      })),
+    });
+    const transaction = createMakerSendTransaction(deps);
+
+    await expect(
+      transaction.sendToAgentAccepted('session-1', 'hello', undefined, {
+        persistUserMessage: { clientId: 'prepared-1', content: 'hello' },
+      }),
+    ).resolves.toMatchObject({ accepted: true });
+
+    expect(events).toEqual(['persist', 'commit', 'dispatched']);
+    expect(onUndispatched).not.toHaveBeenCalled();
+  });
+
+  it('does not commit prepared message state when durable persistence fails', async () => {
+    const onAccepted = vi.fn(async () => undefined);
+    const onUndispatched = vi.fn(async () => undefined);
+    const { deps, session } = createDeps({
+      createDbMessage: vi.fn(async () => {
+        throw new Error('write failed');
+      }),
+      prepareSendUserMessage: vi.fn(async () => ({
+        message: { type: 'user' as const, content: 'prepared' },
+        onAccepted,
+        onUndispatched,
+      })),
+    });
+    const transaction = createMakerSendTransaction(deps);
+
+    await expect(
+      transaction.sendToAgentAccepted('session-1', 'hello', undefined, {
+        persistUserMessage: { clientId: 'prepared-write-failure', content: 'hello' },
+      }),
+    ).rejects.toThrow('write failed');
+
+    expect(session.send).toHaveBeenCalledTimes(1);
+    expect(onAccepted).not.toHaveBeenCalled();
+    expect(onUndispatched).not.toHaveBeenCalled();
+  });
+
+  it('rolls back prepared message state when acceptance does not reach dispatch', async () => {
+    const events: string[] = [];
+    const session = createSession({
+      send: vi.fn(async (_message, opts) => {
+        await opts?.onAccepted?.();
+        return {
+          accepted: false,
+          reason: 'cancelled-before-dispatch',
+        } satisfies SessionSendResult;
+      }),
+    });
+    const { deps } = createDeps({
+      getSession: vi.fn(() => session),
+      prepareSendUserMessage: vi.fn(async () => ({
+        message: { type: 'user' as const, content: 'prepared' },
+        onAccepted: async () => {
+          events.push('commit');
+        },
+        onUndispatched: async () => {
+          events.push('rollback');
+        },
+        onDispatched: async () => {
+          events.push('dispatched');
+        },
+      })),
+    });
+    const transaction = createMakerSendTransaction(deps);
+
+    await expect(transaction.sendToAgentAccepted('session-1', 'hello')).resolves.toMatchObject({
+      accepted: false,
+    });
+
+    expect(events).toEqual(['commit', 'rollback']);
   });
 
   it('rewinds a persisted user row when clear wins during onPersisted before dispatch', async () => {
@@ -660,9 +750,10 @@ describe('maker SEND transaction', () => {
     const beforeDispatchDirectUserTurn = vi.fn(async () => {});
     const onUndispatchedDirectUserTurn = vi.fn();
     const session = createSession({
-      send: vi.fn(async () => (
-        { accepted: false, reason: 'cancelled-before-dispatch' } satisfies SessionSendResult
-      )),
+      send: vi.fn(
+        async () =>
+          ({ accepted: false, reason: 'cancelled-before-dispatch' }) satisfies SessionSendResult,
+      ),
     });
     const { deps } = createDeps({
       getSession: vi.fn(() => session),
@@ -695,7 +786,9 @@ describe('maker SEND transaction', () => {
     });
     const transaction = createMakerSendTransaction(deps);
 
-    await expect(transaction.sendToAgentAccepted('session-1', 'hello')).rejects.toThrow('start failed');
+    await expect(transaction.sendToAgentAccepted('session-1', 'hello')).rejects.toThrow(
+      'start failed',
+    );
 
     expect(beforeDispatchDirectUserTurn).toHaveBeenCalledWith('session-1');
     expect(onUndispatchedDirectUserTurn).toHaveBeenCalledWith('session-1');
@@ -735,9 +828,10 @@ describe('maker SEND transaction', () => {
   it('does not ack an interrupted turn when direct dispatch is rejected', async () => {
     const ackInterruptedTurnDispatched = vi.fn(async () => {});
     const session = createSession({
-      send: vi.fn(async () => (
-        { accepted: false, reason: 'cancelled-before-dispatch' } satisfies SessionSendResult
-      )),
+      send: vi.fn(
+        async () =>
+          ({ accepted: false, reason: 'cancelled-before-dispatch' }) satisfies SessionSendResult,
+      ),
     });
     const { deps } = createDeps({
       getSession: vi.fn(() => session),
@@ -801,28 +895,19 @@ describe('maker SEND transaction', () => {
     const transaction = createMakerSendTransaction(deps);
 
     await expect(
-      transaction.sendToAgentAccepted(
-        'session-1',
-        { type: 'user', content: 'hello' },
-        undefined,
-        {
-          persistUserMessage: {
-            clientId: 'client-1',
-            content: 'hello',
-          },
+      transaction.sendToAgentAccepted('session-1', { type: 'user', content: 'hello' }, undefined, {
+        persistUserMessage: {
+          clientId: 'client-1',
+          content: 'hello',
         },
-      ),
+      }),
     ).rejects.toThrow('write failed');
 
     expect(session.send).toHaveBeenCalled();
-    expect(deps.previewUserPrompt).toHaveBeenCalledWith(
-      session,
-      'hello',
-      {
-        source: 'maker_send:onPersisting',
-        clientId: 'client-1',
-      },
-    );
+    expect(deps.previewUserPrompt).toHaveBeenCalledWith(session, 'hello', {
+      source: 'maker_send:onPersisting',
+      clientId: 'client-1',
+    });
     expect(deps.commitUserPromptPreview).not.toHaveBeenCalled();
     expect(deps.rollbackUserPromptPreview).toHaveBeenCalledWith(
       'session-1',
@@ -876,7 +961,9 @@ describe('maker SEND transaction', () => {
     });
     const transaction = createMakerSendTransaction(deps);
 
-    await expect(transaction.sendToAgentAccepted('session-1', 'hello', createOpts)).resolves.toMatchObject({
+    await expect(
+      transaction.sendToAgentAccepted('session-1', 'hello', createOpts),
+    ).resolves.toMatchObject({
       accepted: true,
       outcome: { kind: 'session-dispatch', dispatched: true },
     });
@@ -894,7 +981,9 @@ describe('maker SEND transaction', () => {
     // 场景:输入队列崩溃快照回放,createOpts 内嵌启动 sweep 改写前的老路径。
     const staleDir = '/data/xdt-maker/dialogues/2026-06-22/lazy-1';
     const dbDir = '/data/Cindy/dialogues/2026-06-22/lazy-1';
-    const checkWorkDirExists = vi.fn(async (_sid: string, dir: string | undefined | null) => dir === dbDir);
+    const checkWorkDirExists = vi.fn(
+      async (_sid: string, dir: string | undefined | null) => dir === dbDir,
+    );
     const { deps } = createDeps({
       getSession: vi.fn(() => undefined),
       checkWorkDirExists,
@@ -916,7 +1005,9 @@ describe('maker SEND transaction', () => {
     });
     expect(checkWorkDirExists).toHaveBeenNthCalledWith(2, 'lazy-1', dbDir, 'codex', undefined);
     // bootstrap 用采纳后的 DB 路径 spawn。
-    expect(deps.bootstrapSession).toHaveBeenCalledWith(expect.objectContaining({ workingDir: dbDir }));
+    expect(deps.bootstrapSession).toHaveBeenCalledWith(
+      expect.objectContaining({ workingDir: dbDir }),
+    );
   });
 
   it('lazy-create still fails with WORKDIR_MISSING when caller and DB workdirs are both gone', async () => {
@@ -943,9 +1034,11 @@ describe('maker SEND transaction', () => {
     });
     const transaction = createMakerSendTransaction(deps);
 
-    await expect(transaction.sendToAgentAccepted('missing-session', 'hello')).rejects.toMatchObject({
-      code: 'NOT_FOUND',
-    });
+    await expect(transaction.sendToAgentAccepted('missing-session', 'hello')).rejects.toMatchObject(
+      {
+        code: 'NOT_FOUND',
+      },
+    );
     expect(deps.ensureRemoteReadyForSessionStart).toHaveBeenCalledWith({
       session: undefined,
       createOpts: undefined,
@@ -971,12 +1064,19 @@ describe('maker SEND transaction', () => {
       model: 'claude-opus-4-7',
     };
 
-    await expect(transaction.sendToAgentAccepted('lazy-session', 'hello', createOpts)).resolves.toMatchObject({
+    await expect(
+      transaction.sendToAgentAccepted('lazy-session', 'hello', createOpts),
+    ).resolves.toMatchObject({
       accepted: true,
       outcome: { kind: 'session-dispatch', dispatched: true },
     });
 
-    expect(deps.checkWorkDirExists).toHaveBeenCalledWith('lazy-session', 'D:\\lazy', 'claude-code', undefined);
+    expect(deps.checkWorkDirExists).toHaveBeenCalledWith(
+      'lazy-session',
+      'D:\\lazy',
+      'claude-code',
+      undefined,
+    );
     expect(deps.synthesizeOrcaVendorOptionsFromDb).toHaveBeenCalledWith('lazy-session', createOpts);
     expect(deps.bootstrapSession).toHaveBeenCalledWith(createOpts);
     expect(deps.markOrcaRoleIfNeeded).toHaveBeenCalledWith('lazy-session', undefined);
@@ -1097,15 +1197,22 @@ describe('maker SEND transaction', () => {
       orcaRole: 'lead',
     };
 
-    await expect(transaction.sendToAgentAccepted('orca-session', 'hello', createOpts)).resolves.toMatchObject({
+    await expect(
+      transaction.sendToAgentAccepted('orca-session', 'hello', createOpts),
+    ).resolves.toMatchObject({
       accepted: true,
     });
 
-    expect(deps.withRehydrateCloseSuppressed).toHaveBeenCalledWith('orca-session', expect.any(Function));
+    expect(deps.withRehydrateCloseSuppressed).toHaveBeenCalledWith(
+      'orca-session',
+      expect.any(Function),
+    );
     expect(deps.closeSession).toHaveBeenCalledWith('orca-session');
-    expect(deps.bootstrapSession).toHaveBeenCalledWith(expect.objectContaining({
-      extraDirs: ['C:\\shared'],
-    }));
+    expect(deps.bootstrapSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        extraDirs: ['C:\\shared'],
+      }),
+    );
     expect(deps.markOrcaRoleIfNeeded).toHaveBeenCalledWith('orca-session', 'lead');
     expect(oldSession.send).not.toHaveBeenCalled();
     expect(newSession.send).toHaveBeenCalled();
@@ -1265,9 +1372,10 @@ describe('maker SEND transaction', () => {
 
   it('maps cancelled-before-dispatch send results to accepted false', async () => {
     const session = createSession({
-      send: vi.fn(async () => (
-        { accepted: false, reason: 'cancelled-before-dispatch' } satisfies SessionSendResult
-      )),
+      send: vi.fn(
+        async () =>
+          ({ accepted: false, reason: 'cancelled-before-dispatch' }) satisfies SessionSendResult,
+      ),
     });
     const { deps } = createDeps({
       getSession: vi.fn(() => session),
@@ -1382,9 +1490,17 @@ describe('session-agent-switch handoff injection', () => {
     });
     const transaction = createMakerSendTransaction(deps);
 
-    await transaction.sendToAgentAccepted('session-1', { type: 'user', content: '新消息' }, undefined, {
-      persistUserMessage: { clientId: 'client-1', content: '{"text":"新消息","images":[],"files":[]}' },
-    });
+    await transaction.sendToAgentAccepted(
+      'session-1',
+      { type: 'user', content: '新消息' },
+      undefined,
+      {
+        persistUserMessage: {
+          clientId: 'client-1',
+          content: '{"text":"新消息","images":[],"files":[]}',
+        },
+      },
+    );
 
     // wire:前缀注入
     expect(session.send).toHaveBeenCalledWith(
@@ -1400,7 +1516,9 @@ describe('session-agent-switch handoff injection', () => {
   it('dispatch 未 accepted 时不 consume(pending 保留下次重试)', async () => {
     const consumePendingHandoff = vi.fn();
     const session = createSession({
-      send: vi.fn(async () => ({ accepted: false, reason: 'cancelled-before-dispatch' }) as SessionSendResult),
+      send: vi.fn(
+        async () => ({ accepted: false, reason: 'cancelled-before-dispatch' }) as SessionSendResult,
+      ),
     });
     const { deps } = createDeps({
       getSession: vi.fn(() => session),
@@ -1421,8 +1539,16 @@ describe('session-agent-switch handoff injection', () => {
     });
     const transaction = createMakerSendTransaction(deps);
 
-    await transaction.sendToAgentAccepted('session-1', { type: 'user', content: '新消息' }, undefined, {});
-    expect(session.send).toHaveBeenCalledWith({ type: 'user', content: '新消息' }, expect.anything());
+    await transaction.sendToAgentAccepted(
+      'session-1',
+      { type: 'user', content: '新消息' },
+      undefined,
+      {},
+    );
+    expect(session.send).toHaveBeenCalledWith(
+      { type: 'user', content: '新消息' },
+      expect.anything(),
+    );
     expect(consumePendingHandoff).not.toHaveBeenCalled();
   });
 
@@ -1432,9 +1558,17 @@ describe('session-agent-switch handoff injection', () => {
     });
     const transaction = createMakerSendTransaction(deps);
 
-    await transaction.sendToAgentAccepted('session-1', { type: 'user', content: '新消息' }, undefined, {
-      persistUserMessage: { clientId: 'client-1', content: '{"text":"新消息","images":[],"files":[]}' },
-    });
+    await transaction.sendToAgentAccepted(
+      'session-1',
+      { type: 'user', content: '新消息' },
+      undefined,
+      {
+        persistUserMessage: {
+          clientId: 'client-1',
+          content: '{"text":"新消息","images":[],"files":[]}',
+        },
+      },
+    );
 
     expect(session.send).toHaveBeenCalledWith(
       { type: 'user', content: 'RECONCILE-NOTE\n\n新消息' },
@@ -1452,9 +1586,17 @@ describe('session-agent-switch handoff injection', () => {
     });
     const transaction = createMakerSendTransaction(deps);
 
-    await transaction.sendToAgentAccepted('session-1', { type: 'user', content: '新消息' }, undefined, {
-      persistUserMessage: { clientId: 'client-1', content: '{"text":"新消息","images":[],"files":[]}' },
-    });
+    await transaction.sendToAgentAccepted(
+      'session-1',
+      { type: 'user', content: '新消息' },
+      undefined,
+      {
+        persistUserMessage: {
+          clientId: 'client-1',
+          content: '{"text":"新消息","images":[],"files":[]}',
+        },
+      },
+    );
     expect(session.send).toHaveBeenCalledWith(
       { type: 'user', content: 'RECONCILE-NOTE\n\nHANDOFF-TEXT\n\n新消息' },
       expect.anything(),
@@ -1467,43 +1609,71 @@ describe('session-agent-switch handoff injection', () => {
     const transaction = createMakerSendTransaction(deps);
 
     // scheduler 定时消息(顶层 origin)
-    await transaction.sendToAgentAccepted('session-1', { type: 'user', content: '定时活' }, undefined, {
-      origin: { kind: 'scheduler', scheduleId: 's1', scheduleName: 'n' },
-    });
+    await transaction.sendToAgentAccepted(
+      'session-1',
+      { type: 'user', content: '定时活' },
+      undefined,
+      {
+        origin: { kind: 'scheduler', scheduleId: 's1', scheduleName: 'n' },
+      },
+    );
     expect(session.send).toHaveBeenLastCalledWith(
       { type: 'user', content: '定时活' },
       expect.anything(),
     );
 
     // 自动续跑(persistUserMessage.autoResume)
-    await transaction.sendToAgentAccepted('session-1', { type: 'user', content: '继续' }, undefined, {
-      persistUserMessage: { clientId: 'c2', content: '继续', autoResume: true },
-    });
+    await transaction.sendToAgentAccepted(
+      'session-1',
+      { type: 'user', content: '继续' },
+      undefined,
+      {
+        persistUserMessage: { clientId: 'c2', content: '继续', autoResume: true },
+      },
+    );
     expect(session.send).toHaveBeenLastCalledWith(
       { type: 'user', content: '继续' },
       expect.anything(),
     );
 
     // /compact 等斜杠控制消息(落库是 stringifyUserContent 信封,判据须解开信封)
-    await transaction.sendToAgentAccepted('session-1', { type: 'user', content: '/compact' }, undefined, {
-      persistUserMessage: { clientId: 'c3', content: '{"text":"/compact","images":[],"files":[]}' },
-    });
+    await transaction.sendToAgentAccepted(
+      'session-1',
+      { type: 'user', content: '/compact' },
+      undefined,
+      {
+        persistUserMessage: {
+          clientId: 'c3',
+          content: '{"text":"/compact","images":[],"files":[]}',
+        },
+      },
+    );
     expect(session.send).toHaveBeenLastCalledWith(
       { type: 'user', content: '/compact' },
       expect.anything(),
     );
 
     // coordinator 的合成续跑指令([UI_ACTION_TRIGGER] 前缀,信封形态)
-    await transaction.sendToAgentAccepted('session-1', { type: 'user', content: '[UI_ACTION_TRIGGER]Continue' }, undefined, {
-      persistUserMessage: { clientId: 'c4', content: '{"text":"[UI_ACTION_TRIGGER]Continue"}' },
-    });
+    await transaction.sendToAgentAccepted(
+      'session-1',
+      { type: 'user', content: '[UI_ACTION_TRIGGER]Continue' },
+      undefined,
+      {
+        persistUserMessage: { clientId: 'c4', content: '{"text":"[UI_ACTION_TRIGGER]Continue"}' },
+      },
+    );
     expect(session.send).toHaveBeenLastCalledWith(
       { type: 'user', content: '[UI_ACTION_TRIGGER]Continue' },
       expect.anything(),
     );
 
     // 不落可显示 user 行的派发(无 persistUserMessage)
-    await transaction.sendToAgentAccepted('session-1', { type: 'user', content: '内部控制' }, undefined, {});
+    await transaction.sendToAgentAccepted(
+      'session-1',
+      { type: 'user', content: '内部控制' },
+      undefined,
+      {},
+    );
     expect(session.send).toHaveBeenLastCalledWith(
       { type: 'user', content: '内部控制' },
       expect.anything(),
@@ -1527,7 +1697,8 @@ describe('session-agent-switch handoff injection', () => {
       {
         persistUserMessage: {
           clientId: 'c-path',
-          content: '{"text":"/tmp/build.log 为什么失败","images":[],"files":[],"slashCommandRanges":[]}',
+          content:
+            '{"text":"/tmp/build.log 为什么失败","images":[],"files":[],"slashCommandRanges":[]}',
         },
       },
     );
@@ -1544,7 +1715,8 @@ describe('session-agent-switch handoff injection', () => {
       {
         persistUserMessage: {
           clientId: 'c-cmd',
-          content: '{"text":"/compact","images":[],"files":[],"slashCommandRanges":[{"start":0,"end":8}]}',
+          content:
+            '{"text":"/compact","images":[],"files":[],"slashCommandRanges":[{"start":0,"end":8}]}',
         },
       },
     );
@@ -1561,7 +1733,8 @@ describe('session-agent-switch handoff injection', () => {
       {
         persistUserMessage: {
           clientId: 'c-mid',
-          content: '{"text":"解释一下 /compact 做了什么","images":[],"files":[],"slashCommandRanges":[{"start":5,"end":13}]}',
+          content:
+            '{"text":"解释一下 /compact 做了什么","images":[],"files":[],"slashCommandRanges":[{"start":5,"end":13}]}',
         },
       },
     );
@@ -1573,7 +1746,7 @@ describe('session-agent-switch handoff injection', () => {
 
   it('计划对账覆盖仅附件轮次(正文空,带图片/文件)', async () => {
     const peekPlanReconcileNote = vi.fn(async () => ({ note: 'RECONCILE-NOTE' }));
-    const { deps, session } = createDeps({ peekPlanReconcileNote });
+    const { deps } = createDeps({ peekPlanReconcileNote });
     const transaction = createMakerSendTransaction(deps);
 
     await transaction.sendToAgentAccepted(
@@ -1599,8 +1772,16 @@ describe('session-agent-switch handoff injection', () => {
     });
     const transaction = createMakerSendTransaction(deps);
 
-    await transaction.sendToAgentAccepted('session-1', { type: 'user', content: '新消息' }, undefined, {});
-    expect(session.send).toHaveBeenCalledWith({ type: 'user', content: '新消息' }, expect.anything());
+    await transaction.sendToAgentAccepted(
+      'session-1',
+      { type: 'user', content: '新消息' },
+      undefined,
+      {},
+    );
+    expect(session.send).toHaveBeenCalledWith(
+      { type: 'user', content: '新消息' },
+      expect.anything(),
+    );
   });
 
   it('仅在 sealed 保护已被 vendor accepted 后消费', async () => {
@@ -1614,9 +1795,14 @@ describe('session-agent-switch handoff injection', () => {
     });
     const transaction = createMakerSendTransaction(deps);
 
-    await transaction.sendToAgentAccepted('session-1', { type: 'user', content: '继续' }, undefined, {
-      persistUserMessage: { clientId: 'guard-accepted', content: '继续' },
-    });
+    await transaction.sendToAgentAccepted(
+      'session-1',
+      { type: 'user', content: '继续' },
+      undefined,
+      {
+        persistUserMessage: { clientId: 'guard-accepted', content: '继续' },
+      },
+    );
 
     expect(consumeSealedPlanReconcileNote).toHaveBeenCalledWith('session-1', 'turn-sealed');
   });
@@ -1624,7 +1810,9 @@ describe('session-agent-switch handoff injection', () => {
   it('vendor 未 accepted 时保留 sealed 保护供重试', async () => {
     const consumeSealedPlanReconcileNote = vi.fn(async () => undefined);
     const session = createSession({
-      send: vi.fn(async () => ({ accepted: false, reason: 'cancelled-before-dispatch' }) as SessionSendResult),
+      send: vi.fn(
+        async () => ({ accepted: false, reason: 'cancelled-before-dispatch' }) as SessionSendResult,
+      ),
     });
     const { deps } = createDeps({
       getSession: vi.fn(() => session),
@@ -1636,9 +1824,14 @@ describe('session-agent-switch handoff injection', () => {
     });
     const transaction = createMakerSendTransaction(deps);
 
-    await transaction.sendToAgentAccepted('session-1', { type: 'user', content: '继续' }, undefined, {
-      persistUserMessage: { clientId: 'guard-rejected', content: '继续' },
-    });
+    await transaction.sendToAgentAccepted(
+      'session-1',
+      { type: 'user', content: '继续' },
+      undefined,
+      {
+        persistUserMessage: { clientId: 'guard-rejected', content: '继续' },
+      },
+    );
 
     expect(consumeSealedPlanReconcileNote).not.toHaveBeenCalled();
   });
@@ -1692,11 +1885,10 @@ describe('session-agent-switch handoff injection', () => {
       {},
     );
     expect(reconcile).toHaveBeenCalledTimes(1);
-    expect(reconcile).toHaveBeenCalledWith(
-      'session-1',
-      expect.anything(),
-      { requirePersistedSession: false, failClosedOnReadError: true },
-    );
+    expect(reconcile).toHaveBeenCalledWith('session-1', expect.anything(), {
+      requirePersistedSession: false,
+      failClosedOnReadError: true,
+    });
     const bootstrapOpts = vi.mocked(deps.bootstrapSession).mock.calls[0][0];
     expect(bootstrapOpts.agentKind).toBe('codex');
     expect(bootstrapOpts.resumeSessionId).toBe('11111111-1111-1111-1111-111111111111');
@@ -1739,12 +1931,14 @@ describe('session-agent-switch handoff injection', () => {
     });
     const transaction = createMakerSendTransaction(deps);
 
-    await expect(transaction.sendToAgentAccepted(
-      'session-1',
-      'continue',
-      { agentKind: 'codex', workingDir: '/tmp/w' },
-      {},
-    )).rejects.toBe(reconcileError);
+    await expect(
+      transaction.sendToAgentAccepted(
+        'session-1',
+        'continue',
+        { agentKind: 'codex', workingDir: '/tmp/w' },
+        {},
+      ),
+    ).rejects.toBe(reconcileError);
     expect(deps.bootstrapSession).not.toHaveBeenCalled();
   });
 
@@ -1780,7 +1974,11 @@ describe('session-agent-switch handoff injection', () => {
           agentKind: opts.agentKind as AgentKind,
           workDir: opts.workingDir,
         });
-        return { session: newEngineSession, didInjectOrcaInstructions: false, didInjectProjectContext: false };
+        return {
+          session: newEngineSession,
+          didInjectOrcaInstructions: false,
+          didInjectProjectContext: false,
+        };
       }),
       peekPendingHandoff: vi.fn(async () => '[切换交接] 之前在 claude-code 的进展摘要'),
       consumePendingHandoff,

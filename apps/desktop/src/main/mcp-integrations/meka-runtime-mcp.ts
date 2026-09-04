@@ -20,6 +20,8 @@ import type { MekaRouterLoginResult } from '../meka-settings/routerLoginWindow.j
 import {
   evaluateCombatToolExecution,
   isCombatWorkflowPolicyActive,
+  markCombatTargetExportCompleted,
+  markCombatTargetExportAttempted,
 } from '../meka-projects/combatWorkflowPolicy.js';
 import {
   consumeTrustedCombatServerCapabilityReport,
@@ -55,8 +57,35 @@ interface MekaRuntimeVendorOptions extends Record<string, unknown> {
   mekaCombatServerCapabilityStatus?: unknown;
 }
 
+const serverCapabilityEvidenceSchema = z.union([
+  z.string().trim().min(1),
+  z
+    .object({
+      path: z.string().trim().min(1),
+      symbols: z.array(z.string().trim().min(1)).optional(),
+      details: z.string().trim().min(1).optional(),
+    })
+    .strict()
+    .transform((value) =>
+      [
+        value.path,
+        value.symbols?.length ? `symbols=${value.symbols.join(',')}` : '',
+        value.details ?? '',
+      ]
+        .filter(Boolean)
+        .join(': '),
+    ),
+]);
+
 const serverCapabilityReportSchema = z
   .object({
+    targetSkillId: z.union([
+      z.number().int().positive(),
+      z
+        .string()
+        .trim()
+        .regex(/^[1-9]\d*$/),
+    ]),
     supportStatus: z.enum(['supported', 'unsupported', 'uncertain']),
     readOnlyConfirmed: z.literal(true),
     repository: z.string().trim().min(1),
@@ -64,7 +93,7 @@ const serverCapabilityReportSchema = z
       .string()
       .trim()
       .regex(/^[0-9a-f]{7,64}$/i),
-    codeEvidence: z.array(z.string().trim().min(1)).min(1),
+    codeEvidence: z.array(serverCapabilityEvidenceSchema).min(1),
     capabilityGap: z.string().trim().min(1),
     programmerAction: z.string().trim().min(1),
     affectedSurfaces: z.array(z.string().trim().min(1)).min(1),
@@ -94,8 +123,10 @@ function validateServerCapabilityReport(
   if (!report.affectedSurfaces.every(isConcreteReportText)) problems.push('affectedSurfaces');
   const noGap = /^(?:none|无|无需|not-applicable|n\/a)$/i;
   if (report.supportStatus === 'supported') {
-    if (!noGap.test(report.capabilityGap)) problems.push('capabilityGap');
-    if (!noGap.test(report.programmerAction)) problems.push('programmerAction');
+    // A supported Worker may explain why no gap or programmer action remains.
+    // Keep the fields concrete so the report cannot hide an incomplete result.
+    if (!isConcreteReportText(report.capabilityGap)) problems.push('capabilityGap');
+    if (!isConcreteReportText(report.programmerAction)) problems.push('programmerAction');
   } else {
     if (!isConcreteReportText(report.capabilityGap) || noGap.test(report.capabilityGap)) {
       problems.push('capabilityGap');
@@ -212,7 +243,7 @@ function sanitizeRouterToolValue(value: unknown): unknown {
 
 function markCombatEnvironmentUnavailable(
   context: McpProviderContext,
-  dependency: 'unityMcp' | 'mcpr' = 'mcpr',
+  dependency: 'unityCli' | 'mcpr' = 'mcpr',
 ): void {
   const runtimeOptions = options(context);
   if (!isCombatWorkflowPolicyActive({ vendorOptions: runtimeOptions })) return;
@@ -227,10 +258,10 @@ function markCombatEnvironmentUnavailable(
     [dependency]: {
       status: 'blocked',
       summary:
-        dependency === 'unityMcp' ? 'UnityMCP 工具连接或传输失败' : 'MCPRouter 工具连接或传输失败',
+        dependency === 'unityCli' ? 'Unity CLI 工具连接或传输失败' : 'MCPRouter 工具连接或传输失败',
       nextAction:
-        dependency === 'unityMcp'
-          ? '确认目标 Unity 工程及 UnityMCP 服务可用后重新检查'
+        dependency === 'unityCli'
+          ? '不要调用 ask_user_question，也不要在聊天正文询问启动。直接调用 Meka Unity 的 unity_execute(action=open)；Host 会在需要时展示 Cindy 通用启动确认，并在用户批准后只重试一次原操作'
           : '恢复 MCPRouter 连接、项目绑定和远端 Runtime 后重新检查',
     },
   };
@@ -245,14 +276,14 @@ function markCombatEnvironmentUnavailable(
   }
 }
 
-function combatDependencyFailureMessage(dependency: 'unityMcp' | 'mcpr', error?: unknown): string {
-  const label = dependency === 'unityMcp' ? 'UnityMCP' : 'MCPRouter';
+function combatDependencyFailureMessage(dependency: 'unityCli' | 'mcpr', error?: unknown): string {
+  const label = dependency === 'unityCli' ? 'Unity CLI' : 'MCPRouter';
   const reason =
     error instanceof Error ? error.message : error ? String(error) : `${label} 返回错误`;
   const safeReason = redactSensitiveText(redactSensitiveRouterUrls(reason));
   const solution =
-    dependency === 'unityMcp'
-      ? '确认目标 Unity 工程已打开且 UnityMCP 服务健康，然后运行 check_combat_environment 刷新状态'
+    dependency === 'unityCli'
+      ? '不要调用 ask_user_question，也不要在聊天正文询问启动。直接调用 Meka Unity 的 unity_execute(action=open)；Host 会在需要时展示 Cindy 通用启动确认，并在用户批准后只重试一次原工具'
       : '恢复 MCPRouter 连接与项目绑定；若为 Runtime 版本不匹配，升级并重启远端 Runtime，然后运行 check_combat_environment 刷新状态';
   return `本次工具调用实际依赖 ${label}，当前调用失败，但任务不会被冻结。原因：${safeReason}。解决方案：${solution}。不依赖 ${label} 的工作可以继续。`;
 }
@@ -380,14 +411,21 @@ function publicRemoteProjectReference(
       ...result,
       ...('candidates' in result && result.candidates
         ? {
-            candidates: result.candidates.map(
-              ({ instanceId: _instanceId, remoteHostId: _remoteHostId, ...item }) => item,
-            ),
+            candidates: result.candidates.map((candidate) => {
+              const { instanceId, remoteHostId, ...item } = candidate;
+              void instanceId;
+              void remoteHostId;
+              return item;
+            }),
           }
         : {}),
       ...('templates' in result && result.templates
         ? {
-            templates: result.templates.map(({ templateId: _templateId, ...item }) => item),
+            templates: result.templates.map((template) => {
+              const { templateId, ...item } = template;
+              void templateId;
+              return item;
+            }),
           }
         : {}),
     };
@@ -395,9 +433,12 @@ function publicRemoteProjectReference(
   return {
     ...result,
     reference: 'current-project-server',
-    instances: result.instances.map(
-      ({ instanceId: _instanceId, remoteHostId: _remoteHostId, ...item }) => item,
-    ),
+    instances: result.instances.map((instance) => {
+      const { instanceId, remoteHostId, ...item } = instance;
+      void instanceId;
+      void remoteHostId;
+      return item;
+    }),
   };
 }
 
@@ -508,6 +549,39 @@ async function ensureRemoteProjectReference(
 function createRouterServer(context: McpProviderContext): McpServer {
   const server = new McpServer({ name: 'mcp_router', version: '1.0.0' });
   const service = getMekaRouterService();
+  const rawTool = server.tool.bind(server) as (
+    name: string,
+    description: string,
+    inputShape: z.ZodRawShape,
+    handler: (args: Record<string, unknown>) => Promise<unknown>,
+  ) => void;
+  const registerRouterTool = <T extends z.ZodRawShape>(
+    name: string,
+    description: string,
+    inputShape: T,
+    handler: (args: { [K in keyof T]: z.infer<T[K]> }) => Promise<unknown>,
+  ): void => {
+    rawTool(name, description, inputShape, async (args) => {
+      if (isCombatWorkflowPolicyActive({ vendorOptions: options(context) })) {
+        const sessionId = activeSessionId(context);
+        if (!sessionId) {
+          return jsonResult({ ok: false, error: 'Meka session is not active' }, true);
+        }
+        const decision = await evaluateCombatToolExecution({
+          sessionId,
+          workingDir: context.getSessionContext?.()?.workingDir ?? context.workingDir,
+          vendorOptions: options(context),
+          toolName: `mcp__mcp_router__${name}`,
+          input: args,
+          action: { kind: 'mcp' },
+        });
+        if (decision.behavior === 'deny') {
+          return jsonResult({ ok: false, error: decision.reason }, true);
+        }
+      }
+      return handler(args as { [K in keyof T]: z.infer<T[K]> });
+    });
+  };
 
   const routerFailureResult = async (
     error: unknown,
@@ -579,7 +653,10 @@ function createRouterServer(context: McpProviderContext): McpServer {
           const recovered = await ensureRemoteProjectReference(service, selectedProjectId);
           return {
             ...recovered,
-            automaticActions: ['reconnected-from-stored-credentials', ...recovered.automaticActions],
+            automaticActions: [
+              'reconnected-from-stored-credentials',
+              ...recovered.automaticActions,
+            ],
           };
         }
         const loginPrompt = await promptForRouterLogin(reasonCode);
@@ -607,15 +684,13 @@ function createRouterServer(context: McpProviderContext): McpServer {
     try {
       const reference = await automaticallyEnsureReference(selectedProjectId);
       if (!reference.ok) return jsonResult(publicRemoteProjectReference(reference), true);
-      const available = reference.instances.filter(item => item.availability === 'available');
+      const available = reference.instances.filter((item) => item.availability === 'available');
       if (available.length !== 1) {
         return jsonResult(
           {
             ok: false,
             reasonCode:
-              available.length === 0
-                ? 'MCPR_PROJECT_NOT_READY'
-                : 'MCPR_PROJECT_SELECTION_REQUIRED',
+              available.length === 0 ? 'MCPR_PROJECT_NOT_READY' : 'MCPR_PROJECT_SELECTION_REQUIRED',
             fallbackUserAction:
               available.length === 0
                 ? '远程项目仍在准备中，请稍后重试原读取。'
@@ -624,11 +699,10 @@ function createRouterServer(context: McpProviderContext): McpServer {
           true,
         );
       }
-      const result = await service.callProjectCapability(
-        selectedProjectId,
-        route,
-        { ...args, instanceId: available[0]!.instanceId },
-      );
+      const result = await service.callProjectCapability(selectedProjectId, route, {
+        ...args,
+        instanceId: available[0]!.instanceId,
+      });
       if (!result.ok) {
         const reason =
           result.code === 'ROUTE_NOT_FOUND'
@@ -645,7 +719,7 @@ function createRouterServer(context: McpProviderContext): McpServer {
     }
   };
 
-  server.tool(
+  registerRouterTool(
     'diagnose_mcp_router_connection',
     '检查 Cindy 本地是否已配置 MCPRouter 连接；不联网，也不返回 endpoint、用户名或凭证。未配置时打开现有登录框。',
     {},
@@ -688,9 +762,9 @@ function createRouterServer(context: McpProviderContext): McpServer {
     },
   );
 
-  server.tool(
+  registerRouterTool(
     'check_combat_environment',
-    '重新检查 SAGA2 战斗开发所需的 P4、UnityMCP 和 MCPRouter 三条链路。只返回不含凭证的结构化回执。',
+    '重新检查 SAGA2 战斗开发所需的 P4、Meka Unity 官方 CLI 和 MCPRouter 三条链路。只返回不含凭证的结构化回执。',
     {},
     async () => {
       const selectedProjectId = projectId(context);
@@ -704,7 +778,7 @@ function createRouterServer(context: McpProviderContext): McpServer {
           blockedScope: null,
           independentWorkCanContinue: true,
           message:
-            '当前任务未绑定 SAGA2 战斗开发工作流；这不是任务级阻断，也不表示 P4、UnityMCP 或 MCPRouter 不可用。继续当前探索、澄清和其它独立工作；实际调用依赖这些能力的工具时，再按该工具自己的回执处理。',
+            '当前任务未绑定 SAGA2 战斗开发工作流；这不是任务级阻断，也不表示 P4、Meka Unity CLI 或 MCPRouter 不可用。继续当前探索、澄清和其它独立工作；实际调用依赖这些能力的工具时，再按该工具自己的回执处理。',
         });
       }
       try {
@@ -781,7 +855,7 @@ function createRouterServer(context: McpProviderContext): McpServer {
     },
   );
 
-  server.tool(
+  registerRouterTool(
     'validate_server_capability_report',
     '校验 MCPR 服务器 Worker 的只读能力核查报告；不授权或记录任何服务器修改。',
     { serverCapabilityReport: serverCapabilityReportSchema },
@@ -789,6 +863,19 @@ function createRouterServer(context: McpProviderContext): McpServer {
       const runtimeOptions = options(context);
       if (!isCombatWorkflowPolicyActive({ vendorOptions: runtimeOptions })) {
         return jsonResult({ ok: false, error: 'SAGA2 combat workflow is not enabled' }, true);
+      }
+      const expectedTargetSkillId = String(runtimeOptions.mekaCombatTargetSkillId ?? '').trim();
+      if (
+        !expectedTargetSkillId ||
+        String(serverCapabilityReport.targetSkillId) !== expectedTargetSkillId
+      ) {
+        return jsonResult(
+          {
+            ok: false,
+            error: `Server capability report targetSkillId must match the bound skill ${expectedTargetSkillId || '<missing>'}`,
+          },
+          true,
+        );
       }
       const problems = validateServerCapabilityReport(serverCapabilityReport);
       const valid = problems.length === 0;
@@ -829,32 +916,38 @@ function createRouterServer(context: McpProviderContext): McpServer {
     },
   );
 
-  server.tool('list_tools', '列出当前 Meka 项目允许使用的 MCPRouter 工具。', {}, async () => {
-    const selectedProjectId = projectId(context);
-    if (!selectedProjectId)
-      return jsonResult({ ok: false, error: 'Meka project MCP is not enabled' }, true);
-    try {
-      const tools = await service.listProjectTools(selectedProjectId);
-      return jsonResult({
-        ok: true,
-        tools: tools.map((tool) => ({
-          name: tool.name,
-          description: tool.description,
-          annotations: tool.annotations,
-        })),
-      });
-    } catch (error) {
-      return routerFailureResult(error, 'list_tools');
-    }
-  });
+  registerRouterTool(
+    'list_tools',
+    '列出当前 Meka 项目允许使用的 MCPRouter 工具。',
+    {},
+    async () => {
+      const selectedProjectId = projectId(context);
+      if (!selectedProjectId)
+        return jsonResult({ ok: false, error: 'Meka project MCP is not enabled' }, true);
+      try {
+        const tools = await service.listProjectTools(selectedProjectId);
+        return jsonResult({
+          ok: true,
+          tools: tools.map((tool) => ({
+            name: tool.name,
+            description: tool.description,
+            annotations: tool.annotations,
+          })),
+        });
+      } catch (error) {
+        return routerFailureResult(error, 'list_tools');
+      }
+    },
+  );
 
-  server.tool(
+  registerRouterTool(
     'list_remote_directory',
     '列出当前 Meka 项目服务器仓库 HEAD 快照中的一个目录。Host 自动解析和确保远程项目，不要先调用 Router 管理或 Worker 工具。',
     { path: z.string().max(1024).optional() },
     async ({ path }) => {
       const selectedProjectId = projectId(context);
-      if (!selectedProjectId) return jsonResult({ ok: false, error: 'Meka project MCP is not enabled' }, true);
+      if (!selectedProjectId)
+        return jsonResult({ ok: false, error: 'Meka project MCP is not enabled' }, true);
       return callRemoteReferenceTool(
         selectedProjectId,
         'git.tree',
@@ -864,16 +957,22 @@ function createRouterServer(context: McpProviderContext): McpServer {
     },
   );
 
-  server.tool(
+  registerRouterTool(
     'read_remote_file',
     '读取当前 Meka 项目服务器仓库 HEAD 快照中的一个 UTF-8 文本文件。Host 自动解析和确保远程项目，不需要实例 ID。',
     {
       path: z.string().min(1).max(1024),
-      maxBytes: z.number().int().min(1).max(1024 * 1024).optional(),
+      maxBytes: z
+        .number()
+        .int()
+        .min(1)
+        .max(1024 * 1024)
+        .optional(),
     },
     async ({ path, maxBytes }) => {
       const selectedProjectId = projectId(context);
-      if (!selectedProjectId) return jsonResult({ ok: false, error: 'Meka project MCP is not enabled' }, true);
+      if (!selectedProjectId)
+        return jsonResult({ ok: false, error: 'Meka project MCP is not enabled' }, true);
       return callRemoteReferenceTool(
         selectedProjectId,
         'git.read',
@@ -883,7 +982,7 @@ function createRouterServer(context: McpProviderContext): McpServer {
     },
   );
 
-  server.tool(
+  registerRouterTool(
     'search_remote_files',
     '在当前 Meka 项目服务器仓库 HEAD 快照的已跟踪文本文件中按固定字符串搜索。Host 自动解析和确保远程项目，不需要实例 ID。',
     {
@@ -893,7 +992,8 @@ function createRouterServer(context: McpProviderContext): McpServer {
     },
     async ({ query, path, maxResults }) => {
       const selectedProjectId = projectId(context);
-      if (!selectedProjectId) return jsonResult({ ok: false, error: 'Meka project MCP is not enabled' }, true);
+      if (!selectedProjectId)
+        return jsonResult({ ok: false, error: 'Meka project MCP is not enabled' }, true);
       return callRemoteReferenceTool(
         selectedProjectId,
         'git.search',
@@ -903,7 +1003,7 @@ function createRouterServer(context: McpProviderContext): McpServer {
     },
   );
 
-  server.tool(
+  registerRouterTool(
     'call_tool',
     '调用 list_tools 返回的 MCPRouter 工具。',
     {
@@ -914,20 +1014,7 @@ function createRouterServer(context: McpProviderContext): McpServer {
       const selectedProjectId = projectId(context);
       if (!selectedProjectId)
         return jsonResult({ ok: false, error: 'Meka project MCP is not enabled' }, true);
-      const sessionId = activeSessionId(context);
-      if (!sessionId) return jsonResult({ ok: false, error: 'Meka session is not active' }, true);
       try {
-        const workflowDecision = await evaluateCombatToolExecution({
-          sessionId,
-          workingDir: context.getSessionContext?.()?.workingDir ?? context.workingDir,
-          vendorOptions: options(context),
-          toolName: 'mcp__mcp_router__call_tool',
-          input: { name, args },
-          action: { kind: 'mcp' },
-        });
-        if (workflowDecision.behavior === 'deny') {
-          return jsonResult({ ok: false, error: workflowDecision.reason }, true);
-        }
         const result = await service.callProjectTool(
           selectedProjectId,
           name,
@@ -966,7 +1053,7 @@ function createRouterServer(context: McpProviderContext): McpServer {
     },
   );
 
-  server.tool(
+  registerRouterTool(
     'list_project_remote_instances',
     '列出当前 Meka 项目已绑定的远程项目实例。',
     {},
@@ -1002,7 +1089,7 @@ function createRouterServer(context: McpProviderContext): McpServer {
     },
   );
 
-  server.tool(
+  registerRouterTool(
     'list_remote_instances',
     '列出 MCPRouter 中当前用户的全部远程项目实例。',
     {},
@@ -1037,7 +1124,7 @@ function createRouterServer(context: McpProviderContext): McpServer {
     },
   );
 
-  server.tool(
+  registerRouterTool(
     'list_remote_project_templates',
     '列出 MCPRouter 可创建的远程项目模板。',
     {},
@@ -1052,7 +1139,7 @@ function createRouterServer(context: McpProviderContext): McpServer {
     },
   );
 
-  server.tool(
+  registerRouterTool(
     'create_remote_instance',
     '用户明确确认后，基于模板创建或复用远程项目实例。',
     { templateId: z.string(), name: z.string() },
@@ -1067,7 +1154,7 @@ function createRouterServer(context: McpProviderContext): McpServer {
     },
   );
 
-  server.tool(
+  registerRouterTool(
     'bind_remote_instance',
     '用户明确确认后，将远程项目实例绑定到当前 Meka 项目。',
     { instanceId: z.string() },
@@ -1199,7 +1286,7 @@ class InlineMekaMcpProvider implements McpProvider {
       try {
         return await withClient((client) => client.listTools());
       } catch (error) {
-        const dependency = this.name === 'unity-editor' ? 'unityMcp' : 'mcpr';
+        const dependency = this.name === 'meka-unity' ? 'unityCli' : 'mcpr';
         markCombatEnvironmentUnavailable(context, dependency);
         throw new Error(combatDependencyFailureMessage(dependency, error));
       }
@@ -1223,16 +1310,51 @@ class InlineMekaMcpProvider implements McpProvider {
             return jsonResult({ ok: false, error: decision.reason }, true);
           }
         }
-        return await withClient((client) =>
+        const result = await withClient((client) =>
           client.callTool({
             name: request.params.name,
             arguments: request.params.arguments ?? {},
           }),
         );
+        const sessionId = activeSessionId(context);
+        if (sessionId) {
+          markCombatTargetExportAttempted({
+            sessionId,
+            workingDir: context.getSessionContext?.()?.workingDir ?? context.workingDir,
+            vendorOptions: options(context),
+            toolName: `mcp__${this.name}__${request.params.name}`,
+            input: { name: request.params.name, args: request.params.arguments ?? {} },
+            action: { kind: 'mcp' },
+          });
+        }
+        if (result.isError !== true) {
+          if (sessionId) {
+            markCombatTargetExportCompleted({
+              sessionId,
+              workingDir: context.getSessionContext?.()?.workingDir ?? context.workingDir,
+              vendorOptions: options(context),
+              toolName: `mcp__${this.name}__${request.params.name}`,
+              input: { name: request.params.name, args: request.params.arguments ?? {} },
+              action: { kind: 'mcp' },
+            });
+          }
+        }
+        return result;
       } catch (error) {
         const runtimeOptions = options(context);
-        const dependency = this.name === 'unity-editor' ? 'unityMcp' : 'mcpr';
+        const dependency = this.name === 'meka-unity' ? 'unityCli' : 'mcpr';
         if (isCombatWorkflowPolicyActive({ vendorOptions: runtimeOptions })) {
+          const sessionId = activeSessionId(context);
+          if (sessionId) {
+            markCombatTargetExportAttempted({
+              sessionId,
+              workingDir: context.getSessionContext?.()?.workingDir ?? context.workingDir,
+              vendorOptions: runtimeOptions,
+              toolName: `mcp__${this.name}__${request.params.name}`,
+              input: { name: request.params.name, args: request.params.arguments ?? {} },
+              action: { kind: 'mcp' },
+            });
+          }
           markCombatEnvironmentUnavailable(context, dependency);
         }
         return jsonResult(
@@ -1294,6 +1416,9 @@ export function prepareMekaRuntimeMcp(entries: readonly MekaRoleMcpEntry[]): {
   const inlineConfigs: Array<Extract<MekaRoleMcpEntry, { transport: unknown }>> = [];
   for (const entry of entries) {
     if (entry.enabled === false) continue;
+    if ('transport' in entry && /unity/i.test(entry.id)) {
+      throw new Error(`Unity inline transport is not supported: ${entry.id}`);
+    }
     if ('providerId' in entry) {
       if (
         !ROUTER_PROVIDER_IDS.has(entry.providerId) &&

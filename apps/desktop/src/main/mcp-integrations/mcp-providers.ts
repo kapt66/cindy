@@ -55,6 +55,7 @@ import {
 import { GLOBAL_PLUGIN_IDS } from '../maker-host/plugins/types.js';
 import { readChatHistoryMessages, type ChatHistoryReaderDeps } from './remoteChatHistory.js';
 import { settleCombatServerCapabilityDispatch } from '../meka-projects/combatServerCapabilityState.js';
+import { evaluateCombatToolExecution } from '../meka-projects/combatWorkflowPolicy.js';
 
 function hasAcceptedInitialWorkerDispatch(result: unknown): boolean {
   if (!result || typeof result !== 'object') return false;
@@ -492,6 +493,18 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
     },
     // cindy_orca: 多 worker 协同 team 工具集。创建权限由 Main handler 实时校验。
     orca: {
+      authorizeToolCall: async ({ toolName, input, sessionContext }) => {
+        if (!sessionContext?.sessionId) return { behavior: 'allow' as const };
+        return evaluateCombatToolExecution({
+          sessionId: sessionContext.sessionId,
+          workingDir: sessionContext.workingDir,
+          remoteHostId: sessionContext.remoteHostId,
+          vendorOptions: sessionContext.vendorOptions ?? {},
+          toolName: `mcp__cindy_orca__${toolName}`,
+          input,
+          action: { kind: 'mcp' },
+        });
+      },
       startTeam: wrap((s, params) => s.startTeam(params)),
       createWorker: wrap(
         async (s, params) => {

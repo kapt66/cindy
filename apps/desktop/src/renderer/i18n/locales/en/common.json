@@ -4536,7 +4536,11 @@
         "dialogMessage": "Plugin “{{name}}” is asking you to choose a project folder to create a session in the sidebar"
       },
       "confirm": {
-        "dialogTitle": "Plugin “{{name}}” needs your confirmation"
+        "dialogTitle": "Plugin “{{name}}” needs your confirmation",
+        "unityStartBody": "The target Unity project is not running. Cindy will start it to continue this task.",
+        "unityStartConfirm": "Start Unity",
+        "unityStartCancel": "Cancel",
+        "unityStartCancelled": "Unity start was not confirmed, so this operation was cancelled."
       },
       "panelHost": {
         "close": "Close panel"
@@ -9804,7 +9808,7 @@
       "codexAutoReviewUnavailable": "Auto-review is temporarily unavailable. The current action was blocked and permissions switched to Default. Retry the request; Cindy will ask when needed.",
       "upstreamResponseIdleTimeout": "The model stopped responding for a long time, so this turn was interrupted to avoid hanging forever. Completed tool calls are preserved — send the next message to continue.",
       "turnNoEventTimeout": "This turn showed no activity for a long time (model, tools and background processes were all silent), so it was interrupted to avoid hanging forever. Send the next message to continue.",
-      "hostShellCommandBlocked": "Cindy blocked a shell command that would bypass the embedded iOS Simulator. Use the iOS Simulator tool for device control, app launches, interaction, screenshots, and diagnostics.",
+      "hostShellCommandBlocked": "Cindy blocked a shell command under this task's safety policy. Continue with the task's designated tool or read-only evidence path.",
       "codexCompactionNotConverging": "Codex kept compacting the context without making progress, so this turn was interrupted to stop the loop. What's taking up the space usually isn't the conversation — the system prompt and tool definitions can't be compacted away. Start a new task to continue.",
       "codexCompactionNotConvergingModelSwitch": "Codex kept compacting the context without making progress, so this turn was interrupted to stop the loop. This task switched model midway, and Codex still evaluates the context limit against the previous model. Switch back to that model to continue, or start a new task."
     },

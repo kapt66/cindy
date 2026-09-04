@@ -8,23 +8,8 @@
     "path": "saga2",
     "formalWorkflowEnabled": true,
     "jiraProjectKey": "SAGA",
-    "disciplines": [
-      "通用",
-      "程序",
-      "策划",
-      "美术",
-      "QA"
-    ],
-    "domains": [
-      "治理",
-      "战斗",
-      "关卡",
-      "系统",
-      "数值",
-      "数据",
-      "IP",
-      "工程基建"
-    ],
+    "disciplines": ["通用", "程序", "策划", "美术", "QA"],
+    "domains": ["治理", "战斗", "关卡", "系统", "数值", "数据", "IP", "工程基建"],
     "workflowType": "jira"
   },
   "metadata": [
@@ -32,9 +17,7 @@
       "sourcePath": "AGENTS.md",
       "itemType": "agents-md",
       "disciplines": [],
-      "domains": [
-        "治理"
-      ],
+      "domains": ["治理"],
       "enabled": true,
       "name": "AGENTS.md",
       "contentFingerprint": "35b4812b49d6093172972730603e66b6390eee7babf910032fc337253e88a698",
@@ -45,12 +28,8 @@
     {
       "sourcePath": "saga2_design/AGENTS.md",
       "itemType": "agents-md",
-      "disciplines": [
-        "策划"
-      ],
-      "domains": [
-        "治理"
-      ],
+      "disciplines": ["策划"],
+      "domains": ["治理"],
       "enabled": true,
       "name": "AGENTS.md",
       "contentFingerprint": "a2ee4c9353d941bfeeb24e2a6e89347ae1d8d282a17ee79e6187fa54ab15fa51",
@@ -61,12 +40,8 @@
     {
       "sourcePath": "saga2_design/CLAUDE.md",
       "itemType": "agents-md",
-      "disciplines": [
-        "策划"
-      ],
-      "domains": [
-        "治理"
-      ],
+      "disciplines": ["策划"],
+      "domains": ["治理"],
       "enabled": false,
       "name": "CLAUDE.md",
       "contentFingerprint": "44cdd36dae535093823d78f0dc80a33a6e20e8118847caf6419d5fe00fdcbe31",
@@ -78,12 +53,8 @@
     {
       "sourcePath": "saga2_design/planning/01-治理规范-governance/skills/策划组统一工作流-planning-governance-manager/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "策划"
-      ],
-      "domains": [
-        "治理"
-      ],
+      "disciplines": ["策划"],
+      "domains": ["治理"],
       "enabled": true,
       "name": "planning-governance-manager",
       "contentFingerprint": "da48f9e6f49248694d9bdad4ae62b74556b2ac5fbce0f8165e86dfcd0c55b484",
@@ -94,12 +65,8 @@
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/关卡策划组-level-planning/skills/副本Boss需求拆解-dungeon-boss-requirement/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "策划"
-      ],
-      "domains": [
-        "关卡"
-      ],
+      "disciplines": ["策划"],
+      "domains": ["关卡"],
       "enabled": true,
       "name": "dungeon-boss-requirement",
       "contentFingerprint": "8da4de13d6d099b4f7820486b08fd4b566ce293961779dde6e353f0b23b1a5e1",
@@ -110,12 +77,8 @@
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/关卡策划组-level-planning/skills/怪物需求拆解-monster-requirement/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "策划"
-      ],
-      "domains": [
-        "关卡"
-      ],
+      "disciplines": ["策划"],
+      "domains": ["关卡"],
       "enabled": true,
       "name": "monster-requirement",
       "contentFingerprint": "34fc08480744f7b16fb3a61d93ca7156ddfb90076e89c346a11786cf508b9487",
@@ -126,12 +89,8 @@
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/关卡策划组-level-planning/skills/关卡策划组工作流-level-planning-manager/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "策划"
-      ],
-      "domains": [
-        "关卡"
-      ],
+      "disciplines": ["策划"],
+      "domains": ["关卡"],
       "enabled": true,
       "name": "level-planning-manager",
       "contentFingerprint": "11d6f4c1e21579669cc1fb431c8b313388ecfab4c3d7f5b329529c349925fb53",
@@ -142,12 +101,8 @@
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/数据分析组-data-analysis/skills/数据分析组工作流-data-analysis-manager/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "策划"
-      ],
-      "domains": [
-        "数据"
-      ],
+      "disciplines": ["策划"],
+      "domains": ["数据"],
       "enabled": true,
       "name": "data-analysis-manager",
       "contentFingerprint": "79a26be99ceb928eeed0c44f7fe0b48f66bec405d2aa71e4315f49733f7b12b1",
@@ -158,12 +113,8 @@
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/数值策划组-numerical-planning/skills/数值策划组工作流-numerical-planning-manager/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "策划"
-      ],
-      "domains": [
-        "数值"
-      ],
+      "disciplines": ["策划"],
+      "domains": ["数值"],
       "enabled": true,
       "name": "numerical-planning-manager",
       "contentFingerprint": "8376c65634eb7d3b0ad24ad7387c8e09c5e3295cdd455e9164b52b3f17eb23f3",
@@ -174,12 +125,8 @@
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/系统策划组-system-planning/skills/交互原型制作工作流-meka-prototype-manager/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "策划"
-      ],
-      "domains": [
-        "系统"
-      ],
+      "disciplines": ["策划"],
+      "domains": ["系统"],
       "enabled": true,
       "name": "meka-prototype-manager",
       "contentFingerprint": "3f0e277036ec776e60f754602c6ad7e4605f4b231dcee23f40303e7183b15e87",
@@ -190,12 +137,8 @@
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/系统策划组-system-planning/skills/系统策划组工作流-system-planning-manager/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "策划"
-      ],
-      "domains": [
-        "系统"
-      ],
+      "disciplines": ["策划"],
+      "domains": ["系统"],
       "enabled": true,
       "name": "system-planning-manager",
       "contentFingerprint": "621c6f9d9a18fa48156850ed50598d77c24251af78cca4f0e5d037858dbd4590",
@@ -206,12 +149,8 @@
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/系统策划组-system-planning/skills/系统功能案生成工作流-system-proposal-manager/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "策划"
-      ],
-      "domains": [
-        "系统"
-      ],
+      "disciplines": ["策划"],
+      "domains": ["系统"],
       "enabled": true,
       "name": "system-proposal-manager",
       "contentFingerprint": "ec743518de028bdc4ab7b5b9bbee4ac2fc7207f23c48f882656beef766ed58d1",
@@ -222,12 +161,8 @@
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/系统策划组-system-planning/skills/saga2-meka-ui-authoring/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "策划"
-      ],
-      "domains": [
-        "系统"
-      ],
+      "disciplines": ["策划"],
+      "domains": ["系统"],
       "enabled": true,
       "name": "saga2-meka-ui-authoring",
       "contentFingerprint": "755df277d6cb0603dec1c6bc70dd156a0528e01af7d3fbfe167dd6e47aea9dd4",
@@ -238,12 +173,8 @@
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/战斗策划组-combat-planning/skills/战斗策划组工作流-combat-planning-manager/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "策划"
-      ],
-      "domains": [
-        "战斗"
-      ],
+      "disciplines": ["策划"],
+      "domains": ["战斗"],
       "enabled": true,
       "name": "combat-planning-manager",
       "contentFingerprint": "ec02861ae2f958b0a403c343f296acf830ce980ce638d0afa5d2065611fbe282",
@@ -254,12 +185,8 @@
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/战斗策划组-combat-planning/skills/saga2-alias-skill/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "策划"
-      ],
-      "domains": [
-        "战斗"
-      ],
+      "disciplines": ["策划"],
+      "domains": ["战斗"],
       "enabled": false,
       "name": "saga2",
       "contentFingerprint": "2fcf2a96222e210d6867f5e70bbd9d089223d9f2570e5ce7c519dfd364606bb5",
@@ -271,13 +198,8 @@
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/战斗策划组-combat-planning/skills/saga2-project-battle-designer/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "策划",
-        "程序"
-      ],
-      "domains": [
-        "战斗"
-      ],
+      "disciplines": ["策划", "程序"],
+      "domains": ["战斗"],
       "enabled": true,
       "name": "saga2-project-battle-designer",
       "contentFingerprint": "8e96bcf071be1f732598ed7eb7414eeb80a60d6db430f1b9a3ff689da6ab1fef",
@@ -288,12 +210,8 @@
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/IP组-ip/世界观-worldbuilding/AGENTS.md",
       "itemType": "agents-md",
-      "disciplines": [
-        "策划"
-      ],
-      "domains": [
-        "IP"
-      ],
+      "disciplines": ["策划"],
+      "domains": ["IP"],
       "enabled": true,
       "name": "AGENTS.md",
       "contentFingerprint": "532b9d4a19f21604432671bdd5c7287f928d79f97536d7e481d3685ebc1d4ddf",
@@ -304,12 +222,8 @@
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/IP组-ip/世界观-worldbuilding/CLAUDE.md",
       "itemType": "agents-md",
-      "disciplines": [
-        "策划"
-      ],
-      "domains": [
-        "IP"
-      ],
+      "disciplines": ["策划"],
+      "domains": ["IP"],
       "enabled": false,
       "name": "CLAUDE.md",
       "contentFingerprint": "532b9d4a19f21604432671bdd5c7287f928d79f97536d7e481d3685ebc1d4ddf",
@@ -321,12 +235,8 @@
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/IP组-ip/skills/IP组工作流-ip-planning-manager/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "策划"
-      ],
-      "domains": [
-        "IP"
-      ],
+      "disciplines": ["策划"],
+      "domains": ["IP"],
       "enabled": true,
       "name": "ip-planning-manager",
       "contentFingerprint": "aa1fb14421a884e8e29f9d39b394bef260c102a9af9dc7c87f0a90d67f6574d6",
@@ -337,12 +247,8 @@
     {
       "sourcePath": "saga2_pm/03-skills/saga2-feature-progress-estimator/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "通用"
-      ],
-      "domains": [
-        "治理"
-      ],
+      "disciplines": ["通用"],
+      "domains": ["治理"],
       "enabled": true,
       "name": "saga2-feature-progress-estimator",
       "contentFingerprint": "89192b763a2ab361d2b62df47cc46f4abed2dc9ef8685ed9dc978faf899170f8",
@@ -353,9 +259,7 @@
     {
       "sourcePath": "saga2_unity/.agents/skills/artist-Environment/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "美术"
-      ],
+      "disciplines": ["美术"],
       "domains": [],
       "enabled": true,
       "name": "artist-environment",
@@ -367,9 +271,7 @@
     {
       "sourcePath": "saga2_unity/.agents/skills/artist-FX/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "美术"
-      ],
+      "disciplines": ["美术"],
       "domains": [],
       "enabled": true,
       "name": "artist-fx",
@@ -381,9 +283,7 @@
     {
       "sourcePath": "saga2_unity/.agents/skills/artist-Model/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "美术"
-      ],
+      "disciplines": ["美术"],
       "domains": [],
       "enabled": true,
       "name": "artist-model",
@@ -395,10 +295,7 @@
     {
       "sourcePath": "saga2_unity/.agents/skills/artist-shader/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "美术",
-        "程序"
-      ],
+      "disciplines": ["美术", "程序"],
       "domains": [],
       "enabled": true,
       "name": "artist-shader",
@@ -410,9 +307,7 @@
     {
       "sourcePath": "saga2_unity/.agents/skills/artist-UI/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "美术"
-      ],
+      "disciplines": ["美术"],
       "domains": [],
       "enabled": true,
       "name": "artist-ui",
@@ -424,12 +319,8 @@
     {
       "sourcePath": "saga2_unity/.agents/skills/doc-features-template/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "程序"
-      ],
-      "domains": [
-        "工程基建"
-      ],
+      "disciplines": ["程序"],
+      "domains": ["工程基建"],
       "enabled": true,
       "name": "doc-features-template",
       "contentFingerprint": "02626908de062f53ae699a8465bd97f20b3e1cd2fd6d9766cf859522f44935ed",
@@ -440,12 +331,8 @@
     {
       "sourcePath": "saga2_unity/.agents/skills/doc-project/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "程序"
-      ],
-      "domains": [
-        "工程基建"
-      ],
+      "disciplines": ["程序"],
+      "domains": ["工程基建"],
       "enabled": true,
       "name": "doc-project",
       "contentFingerprint": "9930b90f565eef7d35f326d04c51422640783d18c616ba1499ed5f88588a684c",
@@ -456,12 +343,8 @@
     {
       "sourcePath": "saga2_unity/.agents/skills/doc-proto/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "程序"
-      ],
-      "domains": [
-        "数据"
-      ],
+      "disciplines": ["程序"],
+      "domains": ["数据"],
       "enabled": true,
       "name": "doc-proto",
       "contentFingerprint": "0e7f34f2d55f2789b8e0395f59106b23c5eaf85e3467b6b49b9c3e6c05a13c0c",
@@ -472,12 +355,8 @@
     {
       "sourcePath": "saga2_unity/.agents/skills/editor-jenkins-install/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "程序"
-      ],
-      "domains": [
-        "工程基建"
-      ],
+      "disciplines": ["程序"],
+      "domains": ["工程基建"],
       "enabled": true,
       "name": "editor-jenkins-install",
       "contentFingerprint": "791afac4a45aa013393fffd632e2b65d6e3e7e05789cca7444175d48b8b7a1bd",
@@ -488,12 +367,8 @@
     {
       "sourcePath": "saga2_unity/.agents/skills/editor-jenkins-pipeline/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "程序"
-      ],
-      "domains": [
-        "工程基建"
-      ],
+      "disciplines": ["程序"],
+      "domains": ["工程基建"],
       "enabled": true,
       "name": "editor-jenkins-pipeline",
       "contentFingerprint": "6c6744498aed5bc2092338199b211cca370859241d74a5b9dc0f8d023e140ac1",
@@ -504,13 +379,8 @@
     {
       "sourcePath": "saga2_unity/.agents/skills/editor-skill-editor-effect/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "程序",
-        "策划"
-      ],
-      "domains": [
-        "战斗"
-      ],
+      "disciplines": ["程序", "策划"],
+      "domains": ["战斗"],
       "enabled": true,
       "name": "editor-skill-editor-effect",
       "contentFingerprint": "15a6768c74ad08718a8dd7fc9e9a3380226d16350cc4104340a54b12a8eee97f",
@@ -521,30 +391,20 @@
     {
       "sourcePath": "saga2_unity/.agents/skills/editor-skill-editor-module/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "程序",
-        "策划"
-      ],
-      "domains": [
-        "战斗"
-      ],
+      "disciplines": ["程序", "策划"],
+      "domains": ["战斗"],
       "enabled": true,
       "name": "editor-skill-editor-module",
       "contentFingerprint": "a0f98bbd2190b9c2277f4ce326cf3e12e4d4428ea845ac4c1dd43ed3345a5372",
       "subProjectPath": "saga2_unity",
       "displayName": "技能模块编辑",
-      "description": "Saga2 技能模块系统 — 模块节点 CRUD、连线、技能模块图导出 JSON、time/target/data/dataCondition 编码规则、模块行为/目标/条件类型字典。当用户提到 \"配置技能\"、\"编写效果\"、\"模块\"、\"模块ID\"、\"模块节点\"、\"模块连线\"、\"导出 JSON\"、\"@N 技能参数\"、\"模块编辑器\"、\"当前技能\"、\"查询技能\"、\"查看模块\"、\"当前模块\" 时使用。查询当前编辑器状态也走本 skill（get_current_context），不要用 execute_code 替代。"
+      "description": "Saga2 技能模块系统 — 模块节点、连线、老版模块编辑器 JSON 导入/导出及 time/target/data/dataCondition 编码规则。当用户提到配置技能、模块节点、模块连线、导出 JSON 或模块字段时使用。Unity 操作统一经 Meka Unity 官方 CLI。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/editor-skill-editor-timeline/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "程序",
-        "策划"
-      ],
-      "domains": [
-        "战斗"
-      ],
+      "disciplines": ["程序", "策划"],
+      "domains": ["战斗"],
       "enabled": true,
       "name": "editor-skill-editor-timeline",
       "contentFingerprint": "bfb2d43772a5b1b0c607298ff0cce4f84dd35dfde9c715436e4c9203cad2e8a0",
@@ -553,31 +413,10 @@
       "description": "Saga2 技能 Timeline 系统 — 创建/修改 Timeline 轨道、TimelineItem（动画/特效/启动模块/技能状态/位移等）、模型组（ModelGroup）下的动画子组与特效子组、AddModel 事件桥接模块系统。当用户提到 \"Timeline\"、\"轨道\"、\"动画\"、\"模型组\"、\"AddModel\"、\"启动模块\"、\"配置动画\" 时使用。"
     },
     {
-      "sourcePath": "saga2_unity/.agents/skills/editor-unity-mcp/SKILL.md",
-      "itemType": "skill",
-      "disciplines": [
-        "程序"
-      ],
-      "domains": [
-        "工程基建"
-      ],
-      "enabled": true,
-      "name": "editor-unity-mcp",
-      "contentFingerprint": "260d83c813f897749b1b807aba889fa0d7bae5f63f5becbdaeced35cc64d8d29",
-      "subProjectPath": "saga2_unity",
-      "displayName": "操控Unity",
-      "description": "unity-editor MCP 工具参考与使用指南，40+ 工具可编程控制 Unity 编辑器。"
-    },
-    {
       "sourcePath": "saga2_unity/.agents/skills/saga2-project-battle-designer/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "策划",
-        "程序"
-      ],
-      "domains": [
-        "战斗"
-      ],
+      "disciplines": ["策划", "程序"],
+      "domains": ["战斗"],
       "enabled": false,
       "name": "saga2-project-battle-designer",
       "contentFingerprint": "81ca85c62a2e1a32848fb20d84a2d466a372b6ca69b4813eb1493bc9299f7b38",
@@ -589,12 +428,8 @@
     {
       "sourcePath": "saga2_unity/.agents/skills/script-config/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "程序"
-      ],
-      "domains": [
-        "数据"
-      ],
+      "disciplines": ["程序"],
+      "domains": ["数据"],
       "enabled": true,
       "name": "script-config",
       "contentFingerprint": "0d68d543a0379eb9707899f8ec7b31380e6ebffce4a1d70ab5498b6316e29627",
@@ -605,12 +440,8 @@
     {
       "sourcePath": "saga2_unity/.agents/skills/script-data/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "程序"
-      ],
-      "domains": [
-        "数据"
-      ],
+      "disciplines": ["程序"],
+      "domains": ["数据"],
       "enabled": true,
       "name": "script-data",
       "contentFingerprint": "45b0a6dcff09a082379590a3624db3232bbd8e4f896d834f9ba4fccb3339b846",
@@ -621,9 +452,7 @@
     {
       "sourcePath": "saga2_unity/.agents/skills/script-fun/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "程序"
-      ],
+      "disciplines": ["程序"],
       "domains": [],
       "enabled": true,
       "name": "script-fun",
@@ -635,12 +464,8 @@
     {
       "sourcePath": "saga2_unity/.agents/skills/script-game-battle/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "程序"
-      ],
-      "domains": [
-        "战斗"
-      ],
+      "disciplines": ["程序"],
+      "domains": ["战斗"],
       "enabled": true,
       "name": "script-game-battle",
       "contentFingerprint": "62714806f0024a407187f5b5e811b23172d22ddd803ee555f8f8263c8b010e02",
@@ -651,9 +476,7 @@
     {
       "sourcePath": "saga2_unity/.agents/skills/script-game-game/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "程序"
-      ],
+      "disciplines": ["程序"],
       "domains": [],
       "enabled": true,
       "name": "script-game-game",
@@ -665,12 +488,8 @@
     {
       "sourcePath": "saga2_unity/.agents/skills/script-game-home/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "程序"
-      ],
-      "domains": [
-        "系统"
-      ],
+      "disciplines": ["程序"],
+      "domains": ["系统"],
       "enabled": true,
       "name": "script-game-home",
       "contentFingerprint": "147f607aba6aaecf89b705247ec571ec55d0641f7a5af92cdc12ea1bf9031587",
@@ -681,12 +500,8 @@
     {
       "sourcePath": "saga2_unity/.agents/skills/script-game-play-build/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "程序"
-      ],
-      "domains": [
-        "系统"
-      ],
+      "disciplines": ["程序"],
+      "domains": ["系统"],
       "enabled": true,
       "name": "script-game-play-build",
       "contentFingerprint": "94c5095eaa0012da70382fd43445878589b5b23b739c9a6ed56b390d4f61de08",
@@ -697,12 +512,8 @@
     {
       "sourcePath": "saga2_unity/.agents/skills/script-game-play-capture/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "程序"
-      ],
-      "domains": [
-        "系统"
-      ],
+      "disciplines": ["程序"],
+      "domains": ["系统"],
       "enabled": true,
       "name": "script-game-play-capture",
       "contentFingerprint": "b05f94d6ff881a1db6a033445c41b7c1e27fa4498430b9c92d6bbc61ad69bfd0",
@@ -713,12 +524,8 @@
     {
       "sourcePath": "saga2_unity/.agents/skills/script-game-play-fishing/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "程序"
-      ],
-      "domains": [
-        "系统"
-      ],
+      "disciplines": ["程序"],
+      "domains": ["系统"],
       "enabled": true,
       "name": "script-game-play-fishing",
       "contentFingerprint": "6d756b91ff6cb8d265f2234f4ccc3852bc7d5838e01491a628aa948c9a7742e2",
@@ -729,12 +536,8 @@
     {
       "sourcePath": "saga2_unity/.agents/skills/script-game-play-mining/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "程序"
-      ],
-      "domains": [
-        "系统"
-      ],
+      "disciplines": ["程序"],
+      "domains": ["系统"],
       "enabled": true,
       "name": "script-game-play-mining",
       "contentFingerprint": "c5277a1717b799ce224d975c32d1372ab181c152e447be4af0216c7e53baf6a8",
@@ -745,9 +548,7 @@
     {
       "sourcePath": "saga2_unity/.agents/skills/script-game-room/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "程序"
-      ],
+      "disciplines": ["程序"],
       "domains": [],
       "enabled": true,
       "name": "script-game-room",
@@ -759,12 +560,8 @@
     {
       "sourcePath": "saga2_unity/.agents/skills/script-game-ui/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "程序"
-      ],
-      "domains": [
-        "系统"
-      ],
+      "disciplines": ["程序"],
+      "domains": ["系统"],
       "enabled": true,
       "name": "script-game-ui",
       "contentFingerprint": "264d894f69b5462c30a85f10c2cac02f8435cbb10cbd788df9e773503eb2f296",
@@ -775,13 +572,8 @@
     {
       "sourcePath": "saga2_unity/.agents/skills/script-test/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "QA",
-        "程序"
-      ],
-      "domains": [
-        "工程基建"
-      ],
+      "disciplines": ["QA", "程序"],
+      "domains": ["工程基建"],
       "enabled": true,
       "name": "script-test",
       "contentFingerprint": "3b808767048c457bb5c6c5abdd282b610be1f96a5819144c04585abf8cee11c5",
@@ -792,12 +584,8 @@
     {
       "sourcePath": "saga2_unity/.agents/skills/tool-config-script-create/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "程序"
-      ],
-      "domains": [
-        "数据"
-      ],
+      "disciplines": ["程序"],
+      "domains": ["数据"],
       "enabled": true,
       "name": "tool-config-script-create",
       "contentFingerprint": "5067a49451838f8774557c1795f9144e96fa9bc8c5cefee61538c3487b0dffde",
@@ -808,12 +596,8 @@
     {
       "sourcePath": "saga2_unity/.agents/skills/tool-p4-submit/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "通用"
-      ],
-      "domains": [
-        "工程基建"
-      ],
+      "disciplines": ["通用"],
+      "domains": ["工程基建"],
       "enabled": true,
       "name": "tool-p4-submit",
       "contentFingerprint": "85cce7e2debe8be12a99a53ab343e4654e8b6e728ffa4f2bae1dee82961a7fcc",
@@ -824,12 +608,8 @@
     {
       "sourcePath": "saga2_unity/.agents/skills/tool-script-router/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "程序"
-      ],
-      "domains": [
-        "工程基建"
-      ],
+      "disciplines": ["程序"],
+      "domains": ["工程基建"],
       "enabled": true,
       "name": "tool-script-router",
       "contentFingerprint": "66cef96f7736201926caa5c599173be609ac09411c1bf8f74996552ed63433e1",
@@ -840,12 +620,8 @@
     {
       "sourcePath": "saga2_unity/.agents/skills/tool-skill-refresh/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "程序"
-      ],
-      "domains": [
-        "工程基建"
-      ],
+      "disciplines": ["程序"],
+      "domains": ["工程基建"],
       "enabled": true,
       "name": "tool-skill-refresh",
       "contentFingerprint": "4ba311a5b0335e7590430afd370d0ec12675409974c40ef26ce71aececabc35f",
@@ -856,13 +632,8 @@
     {
       "sourcePath": "saga2_unity/.agents/skills/tool-ui-prefab-create/SKILL.md",
       "itemType": "skill",
-      "disciplines": [
-        "程序",
-        "美术"
-      ],
-      "domains": [
-        "系统"
-      ],
+      "disciplines": ["程序", "美术"],
+      "domains": ["系统"],
       "enabled": true,
       "name": "tool-ui-prefab-create",
       "contentFingerprint": "5f55ce9570c18875b8acc19c9d5d54bf6340dc53a3d0aa481ddaca8ba9c2bcac",
@@ -873,12 +644,8 @@
     {
       "sourcePath": "saga2_unity/AGENTS.md",
       "itemType": "agents-md",
-      "disciplines": [
-        "程序"
-      ],
-      "domains": [
-        "治理"
-      ],
+      "disciplines": ["程序"],
+      "domains": ["治理"],
       "enabled": true,
       "name": "AGENTS.md",
       "contentFingerprint": "1f0301cf98db5277f5aea417e0fd847b285c11f5468a2f72960692b5538af73b",
@@ -889,12 +656,8 @@
     {
       "sourcePath": "saga2_unity/CLAUDE.md",
       "itemType": "agents-md",
-      "disciplines": [
-        "程序"
-      ],
-      "domains": [
-        "治理"
-      ],
+      "disciplines": ["程序"],
+      "domains": ["治理"],
       "enabled": false,
       "name": "CLAUDE.md",
       "contentFingerprint": "8ede080c682a7a00eb9af7603631093cdc35082ab1a34d25cc5c1e65d7a4b769",

@@ -207,7 +207,7 @@ describe('Meka project.json boundary', () => {
     expect(
       loaded?.builtinRoles?.find((role) => role.id === 'general-development')
         ?.includeAllProjectMetadata,
-    ).toBe(true);
+    ).toBe(false);
     const persisted = JSON.parse(await readFile(configPath, 'utf8')) as MekaProjectFile;
     expect(persisted.builtinRoles).toHaveLength(3);
   });

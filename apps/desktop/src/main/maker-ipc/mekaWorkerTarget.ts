@@ -4,7 +4,10 @@ import path from 'node:path';
 import { parseMcprRemoteHostId } from '../../shared/meka-router.js';
 import type { MekaP4SettingsService } from '../meka-settings/service.js';
 import type { MekaRouterService } from '../meka-settings/routerService.js';
+import { createLogger } from '../logger.js';
 import type { OrcaLeadSessionSnapshot } from './orcaWorkerCreationService.js';
+
+const log = createLogger('meka-worker-target');
 
 export interface MekaWorkerTargetInput {
   lead: OrcaLeadSessionSnapshot;
@@ -16,6 +19,64 @@ export interface MekaWorkerTargetInput {
 export type MekaWorkerTargetResult =
   | { ok: true; workingDir: string; remoteHostId?: string }
   | { ok: false; errorCode: 'INVALID_PARAMS' | 'NOT_FOUND'; message: string };
+
+function looksLikeMekaServer(projectName: string, projectDescription: string | null): boolean {
+  return /server|服务器|saga2[-_ ]?server/i.test(`${projectName} ${projectDescription ?? ''}`);
+}
+
+export interface MekaCombatServerWorkerTarget {
+  remoteHostId: string;
+  workerAgent: Extract<AgentKind, 'claude-code' | 'codex'>;
+}
+
+function workerAgentForInstance(
+  agentType: string,
+): MekaCombatServerWorkerTarget['workerAgent'] | null {
+  if (agentType === 'claude') return 'claude-code';
+  if (agentType === 'codex') return 'codex';
+  return null;
+}
+
+export async function resolveUniqueBoundMekaServerTarget(deps: {
+  router: Pick<MekaRouterService, 'listProjectBindings' | 'listInstances'>;
+  projectId: string;
+  probeCodexCapability: (instanceId: string) => Promise<void>;
+  probeClaudeCapability: (instanceId: string) => Promise<void>;
+}): Promise<MekaCombatServerWorkerTarget | null> {
+  const [bindings, instances] = await Promise.all([
+    deps.router.listProjectBindings(deps.projectId),
+    deps.router.listInstances(),
+  ]);
+  const candidates = instances.flatMap((instance) => {
+    const workerAgent = workerAgentForInstance(instance.agentType);
+    return bindings.includes(instance.id) &&
+      instance.supported &&
+      instance.available &&
+      looksLikeMekaServer(instance.projectName, instance.projectDescription) &&
+      workerAgent
+      ? [{ instance, workerAgent }]
+      : [];
+  });
+  const probed = await Promise.allSettled(
+    candidates.map(async ({ instance, workerAgent }) => {
+      if (workerAgent === 'claude-code') await deps.probeClaudeCapability(instance.id);
+      else await deps.probeCodexCapability(instance.id);
+      return { remoteHostId: instance.remoteHostId, workerAgent };
+    }),
+  );
+  const ready = probed.flatMap((result) => (result.status === 'fulfilled' ? [result.value] : []));
+  for (const [index, result] of probed.entries()) {
+    if (result.status === 'fulfilled') continue;
+    const candidate = candidates[index];
+    log.warn('bound Meka server capability hello failed', {
+      projectId: deps.projectId,
+      instanceId: candidate?.instance.id ?? '<unknown>',
+      workerAgent: candidate?.workerAgent ?? '<unknown>',
+      error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+    });
+  }
+  return ready.length === 1 ? ready[0]! : null;
+}
 
 export function createMekaWorkerTargetResolver(deps: {
   p4: Pick<MekaP4SettingsService, 'get'>;

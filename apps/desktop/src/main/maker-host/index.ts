@@ -9,7 +9,6 @@
  */
 
 import { app, BrowserWindow } from 'electron';
-import path from 'node:path';
 
 import {
   Maker,
@@ -52,8 +51,8 @@ import { tapWindowBroadcast } from '../device-link/broadcast-tap.js';
 import { remoteInvoke } from '../device-link/index.js';
 import { WorktreePool } from '../worktree/index.js';
 import { getReadyBinaryPath, getCachedBinaryStatus } from '../agent-binaries/index.js';
-import { activeOwnerScopeKey, isAppSessionBoundaryPending } from '../appSessionState.js';
 import { getIOSSimulatorPluginAccessDecision } from '../cindy-brain/index.js';
+import { evaluateCombatShellCommandExecution } from '../meka-projects/combatWorkflowPolicy.js';
 import {
   desktopClaudeAuthAdapter,
   desktopCodexAuthAdapter,
@@ -69,12 +68,7 @@ import { desktopMakerLogger } from './logger-adapter.js';
 import { outboundFetch } from './outbound-fetch.js';
 import { readCustomProviderKey } from '../secrets/providerSecretStore.js';
 import { createVisionBridge } from '../vision-bridge/vision-bridge.js';
-import {
-  getVisionBridgeController,
-  setVisionBridgeController,
-} from '../vision-bridge/vision-bridge-controller.js';
-import { createToolResultImageDescriptor } from '../vision-bridge/tool-result-image-descriptor.js';
-import * as blobStore from '../cindy-media/blobStore.js';
+import { setVisionBridgeController } from '../vision-bridge/vision-bridge-controller.js';
 import { buildPiVisionBridgeEnv } from '../vision-bridge/pi-vision-bridge-env.js';
 import { resolveVisionBackendRoute, setVisionGatewayKeyReader } from './provider-route.js';
 import { resolveSessionCcDebugFile } from '../logger.js';
@@ -190,7 +184,6 @@ import {
 } from '../mcp-integrations/custom-mcp-registry.js';
 import {
   registerMekaRuntimeMcpArrays,
-  resetMekaRuntimeMcpRegistryForTests,
   setMekaRuntimeHighRiskAuthorizer,
   setMekaRuntimeRouterLoginPrompter,
 } from '../mcp-integrations/meka-runtime-mcp.js';
@@ -1362,6 +1355,26 @@ export function getMaker(): Maker {
         return origin ? getOutboundPathSnapshotFor([origin]) : null;
       },
       reviewAutoPermissionAction,
+      getShellCommandPolicy: ({
+        sessionId,
+        command,
+        cwd,
+        workingDir,
+        remoteHostId,
+        vendorOptions,
+      }) => {
+        const decision = evaluateCombatShellCommandExecution({
+          sessionId,
+          workingDir,
+          remoteHostId,
+          vendorOptions,
+          toolName: 'exec',
+          action: { kind: 'exec', command, ...(cwd ? { cwd } : {}) },
+        });
+        return decision.behavior === 'deny'
+          ? { decision: 'deny' as const, reason: decision.reason }
+          : undefined;
+      },
       prepareCodexLocalCredentialModeSwitch: async (ctx) => {
         const maker = _maker;
         if (!maker) throw new Error('Maker is not initialized for Codex credential mode switch');
@@ -1387,6 +1400,7 @@ export function getMaker(): Maker {
         }
         const isControlPlane = ctx.hostPurpose === 'control-plane';
         const isReview = ctx.hostPurpose === 'review';
+        const disableNativeSubagents = ctx.codexNativeSubagentsDisabled === true;
         const usesIsolatedProxy = isControlPlane || isReview;
         let mcpExtraArgs: string[] = [];
         let mcpExtraEnv: Record<string, string> = {};
@@ -1575,7 +1589,7 @@ export function getMaker(): Maker {
             ...mcpExtraArgs,
             ...(!isReview && !ctx.remoteHostId
               ? buildCodexSubagentSpawnArgs(subagentModelSettings, subagentRoute, {
-                  forceDisableSubagents,
+                  forceDisableSubagents: forceDisableSubagents || disableNativeSubagents,
                 })
               : []),
             ...buildCodexProxySpawnArgs(endpoint, authInjection, { openAiWebSocketsEnabled }),
@@ -1914,7 +1928,6 @@ export function getMaker(): Maker {
       getRemotePiTransport: async (
         remoteHostId,
         {
-          binaryPath: _localBinaryPath,
           remoteBinaryPath: providedRemoteBinaryPath,
           args,
           cwd,

@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import type { Logger, McpProvider } from '@cindy/maker-core';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -38,6 +40,11 @@ import {
   settleCombatServerCapabilityDispatch,
 } from '../../meka-projects/combatServerCapabilityState.js';
 
+const runtimeSource = readFileSync(
+  resolve(process.cwd(), 'src/main/mcp-integrations/meka-runtime-mcp.ts'),
+  'utf8',
+);
+
 function noopLogger(): Logger {
   const logger: Logger = {
     trace() {},
@@ -74,17 +81,25 @@ afterEach(async () => {
 });
 
 describe('Meka runtime MCP remote instance projection', () => {
+  it('keeps Unity start recovery in the Host flow instead of Agent chat questions', () => {
+    expect(runtimeSource).toContain('不要调用 ask_user_question，也不要在聊天正文询问启动');
+    expect(runtimeSource).toContain('直接调用 Meka Unity 的 unity_execute(action=open)');
+    expect(runtimeSource).not.toContain('先询问用户是否由 Cindy 帮忙启动 Unity');
+  });
+
   it('reads the bound remote project through first-party tools without exposing or accepting instance ids', async () => {
     routerService.listProjectBindings.mockResolvedValue(['server-1']);
-    routerService.listInstances.mockResolvedValue([{
-      id: 'server-1',
-      projectId: 'saga2',
-      projectName: 'SAGA2 Server',
-      projectDescription: 'saga2 server project',
-      available: true,
-      supported: true,
-      remoteHostId: 'mcpr:server-1',
-    }]);
+    routerService.listInstances.mockResolvedValue([
+      {
+        id: 'server-1',
+        projectId: 'saga2',
+        projectName: 'SAGA2 Server',
+        projectDescription: 'saga2 server project',
+        available: true,
+        supported: true,
+        remoteHostId: 'mcpr:server-1',
+      },
+    ]);
     routerService.callProjectCapability.mockResolvedValue({
       ok: true,
       contractVersion: 1,
@@ -115,18 +130,16 @@ describe('Meka runtime MCP remote instance projection', () => {
     await Promise.all([config.instance.connect(serverTransport), client.connect(clientTransport)]);
 
     const tools = await client.listTools();
-    const directoryTool = tools.tools.find(tool => tool.name === 'list_remote_directory');
+    const directoryTool = tools.tools.find((tool) => tool.name === 'list_remote_directory');
     expect(directoryTool?.inputSchema).not.toHaveProperty('properties.instanceId');
-    expect(tools.tools.some(tool => tool.name === 'ensure_remote_project_reference')).toBe(false);
+    expect(tools.tools.some((tool) => tool.name === 'ensure_remote_project_reference')).toBe(false);
     const result = await client.callTool({ name: 'list_remote_directory', arguments: {} });
 
     expect(result).not.toHaveProperty('isError');
     expect(JSON.stringify(result)).toContain('AGENTS.md');
-    expect(routerService.callProjectCapability).toHaveBeenCalledWith(
-      'saga2',
-      'git.tree',
-      { instanceId: 'server-1' },
-    );
+    expect(routerService.callProjectCapability).toHaveBeenCalledWith('saga2', 'git.tree', {
+      instanceId: 'server-1',
+    });
     expect(routerService.listProjectTools).not.toHaveBeenCalled();
 
     await client.close();
@@ -221,11 +234,9 @@ describe('Meka runtime MCP remote instance projection', () => {
     expect(result).not.toHaveProperty('isError');
     expect(routerService.createInstance).toHaveBeenCalledWith('template-server', 'saga2-server');
     expect(routerService.setProjectBindings).toHaveBeenCalledWith('saga2', ['server-1']);
-    expect(routerService.callProjectCapability).toHaveBeenCalledWith(
-      'saga2',
-      'git.tree',
-      { instanceId: 'server-1' },
-    );
+    expect(routerService.callProjectCapability).toHaveBeenCalledWith('saga2', 'git.tree', {
+      instanceId: 'server-1',
+    });
 
     await client.close();
     await config.instance.close();
@@ -274,11 +285,9 @@ describe('Meka runtime MCP remote instance projection', () => {
     expect(login).toHaveBeenCalledOnce();
     expect(routerService.createInstance).toHaveBeenCalledWith('template-server', 'saga2-server');
     expect(routerService.setProjectBindings).toHaveBeenCalledWith('saga2', ['server-1']);
-    expect(routerService.callProjectCapability).toHaveBeenCalledWith(
-      'saga2',
-      'git.tree',
-      { instanceId: 'server-1' },
-    );
+    expect(routerService.callProjectCapability).toHaveBeenCalledWith('saga2', 'git.tree', {
+      instanceId: 'server-1',
+    });
 
     await client.close();
     await config.instance.close();
@@ -319,11 +328,9 @@ describe('Meka runtime MCP remote instance projection', () => {
     expect(result).not.toHaveProperty('isError');
     expect(routerService.setProjectBindings).toHaveBeenCalledWith('saga2', ['server-1']);
     expect(routerService.createInstance).not.toHaveBeenCalled();
-    expect(routerService.callProjectCapability).toHaveBeenCalledWith(
-      'saga2',
-      'git.tree',
-      { instanceId: 'server-1' },
-    );
+    expect(routerService.callProjectCapability).toHaveBeenCalledWith('saga2', 'git.tree', {
+      instanceId: 'server-1',
+    });
 
     await client.close();
     await config.instance.close();
@@ -387,6 +394,7 @@ describe('Meka runtime MCP remote instance projection', () => {
         source: 'meka',
         mekaProjectId: 'saga2',
         mekaRoleId: 'combat-development',
+        mekaCombatTargetSkillId: '1019',
         mekaMcpProviderIds: ['mcp-router'],
         mekaWorkflow: 'saga2-combat-development-v1',
       },
@@ -397,6 +405,43 @@ describe('Meka runtime MCP remote instance projection', () => {
     await Promise.all([config.instance.connect(serverTransport), client.connect(clientTransport)]);
     const blocked = await client.callTool({ name: 'check_combat_environment', arguments: {} });
     expect(JSON.stringify(blocked)).toContain('P4 工作区未配置');
+    await client.close();
+    await config.instance.close();
+  });
+
+  it('guards direct Router tools before their handlers run in a ready combat task', async () => {
+    const providers: McpProvider[] = [];
+    registerMekaRuntimeMcpArrays(providers);
+    const provider = providers.find((candidate) => candidate.name === 'mcp_router');
+    const context = {
+      agentKind: 'codex' as const,
+      workingDir: 'C:\\Workspace\\saga2\\saga2_project',
+      sessionId: 'combat-direct-router-policy-session',
+      vendorOptions: {
+        source: 'meka',
+        mekaProjectId: 'saga2',
+        mekaRoleId: 'combat-development',
+        mekaWorkflow: 'saga2-combat-development-v1',
+        mekaMcpProviderIds: ['mcp-router'],
+        mekaCombatTargetSkillId: '1020',
+        mekaCombatTargetSkillIdState: 'confirmed',
+        mekaCombatTargetExportCompleted: true,
+        mekaCombatEnvironmentReady: true,
+        mekaCombatPhase: 'exploration',
+        mekaCombatServerCapabilityStatus: 'supported',
+      },
+    };
+    const config = provider?.toClaudeSdkConfig?.(context) as { instance: McpServer };
+    const client = new Client({ name: 'combat-direct-router-policy-test', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([config.instance.connect(serverTransport), client.connect(clientTransport)]);
+
+    const result = await client.callTool({ name: 'check_combat_environment', arguments: {} });
+    expect(result).toMatchObject({ isError: true });
+    expect(JSON.stringify(result)).toContain('禁止立即重复调用');
+    expect(p4Service.get).not.toHaveBeenCalled();
+    expect(routerService.listInstances).not.toHaveBeenCalled();
+
     await client.close();
     await config.instance.close();
   });
@@ -458,6 +503,7 @@ describe('Meka runtime MCP remote instance projection', () => {
         source: 'meka',
         mekaProjectId: 'saga2',
         mekaRoleId: 'combat-development',
+        mekaCombatTargetSkillId: '1019',
         mekaRoleDisplayName: '通用开发',
         mekaMcpProviderIds: ['mcp-router'],
       },
@@ -510,6 +556,7 @@ describe('Meka runtime MCP remote instance projection', () => {
         source: 'meka',
         mekaProjectId: 'saga2',
         mekaRoleId: 'combat-development',
+        mekaCombatTargetSkillId: '1019',
         mekaMcpProviderIds: ['mcp-router'],
         mekaWorkflow: 'saga2-combat-development-v1',
         mekaCombatEnvironmentReady: false,
@@ -523,9 +570,9 @@ describe('Meka runtime MCP remote instance projection', () => {
 
     const listed = await client.callTool({ name: 'list_tools', arguments: {} });
     const listedText = JSON.stringify(listed);
-    expect(listedText).toContain('mcp_list_instances');
-    expect(listedText).not.toContain('environmentRecoveryOnly');
-    expect(routerService.listProjectTools).toHaveBeenCalledWith('saga2');
+    expect(listed).toMatchObject({ isError: true });
+    expect(listedText).toContain('禁止调用 list_tools');
+    expect(routerService.listProjectTools).not.toHaveBeenCalled();
 
     const direct = await client.callTool({
       name: 'call_tool',
@@ -562,9 +609,11 @@ describe('Meka runtime MCP remote instance projection', () => {
         source: 'meka',
         mekaProjectId: 'saga2',
         mekaRoleId: 'combat-development',
+        mekaCombatTargetSkillId: '1019',
         mekaMcpProviderIds: ['mcp-router'],
         mekaWorkflow: 'saga2-combat-development-v1',
         mekaCombatEnvironmentReady: true,
+        mekaCombatTargetExportCompleted: true,
         mekaCombatEnvironmentChecks: {
           mcpr: { status: 'ready', summary: 'MCPRouter ready' },
         },
@@ -620,9 +669,11 @@ describe('Meka runtime MCP remote instance projection', () => {
         source: 'meka',
         mekaProjectId: 'saga2',
         mekaRoleId: 'combat-development',
+        mekaCombatTargetSkillId: '1019',
         mekaMcpProviderIds: ['mcp-router'],
         mekaWorkflow: 'saga2-combat-development-v1',
         mekaCombatEnvironmentReady: true,
+        mekaCombatTargetExportCompleted: true,
         mekaCombatPhase: 'exploration',
       },
     };
@@ -657,8 +708,10 @@ describe('Meka runtime MCP remote instance projection', () => {
         source: 'meka',
         mekaProjectId: 'saga2',
         mekaRoleId: 'combat-development',
+        mekaCombatTargetSkillId: '1019',
         mekaMcpProviderIds: ['mcp-router'],
         mekaWorkflow: 'saga2-combat-development-v1',
+        mekaCombatTargetExportCompleted: true,
       },
     };
     const config = provider?.toClaudeSdkConfig?.(context) as { instance: McpServer };
@@ -666,13 +719,16 @@ describe('Meka runtime MCP remote instance projection', () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([config.instance.connect(serverTransport), client.connect(clientTransport)]);
     const base = {
+      targetSkillId: 1019,
       supportStatus: 'supported',
       readOnlyConfirmed: true,
       repository: 'saga2-server',
       head: 'abcdef1',
-      codeEvidence: ['server/module.ts'],
-      capabilityGap: 'none',
-      programmerAction: 'none',
+      codeEvidence: [
+        { path: 'server/module.ts', symbols: ['entryTypeDamageHit'], details: 'consumer' },
+      ],
+      capabilityGap: '无运行时原子能力缺口；当前模块组合可以表达需求。',
+      programmerAction: '无需服务器程序改动；Lead 可继续本地配置。',
       affectedSurfaces: ['skill module runtime'],
       validationSuggestion: 'verify exported module data against the current reader',
     };
@@ -715,6 +771,12 @@ describe('Meka runtime MCP remote instance projection', () => {
     expect(rejectedWithoutWorker).toMatchObject({ isError: true });
 
     trustReport(base, 'supported');
+    const wrongTarget = await client.callTool({
+      name: 'validate_server_capability_report',
+      arguments: { serverCapabilityReport: { ...base, targetSkillId: 1020 } },
+    });
+    expect(wrongTarget).toMatchObject({ isError: true });
+    expect(JSON.stringify(wrongTarget)).toContain('targetSkillId');
     const accepted = await client.callTool({
       name: 'validate_server_capability_report',
       arguments: { serverCapabilityReport: base },
@@ -771,9 +833,11 @@ describe('Meka runtime MCP remote instance projection', () => {
         source: 'meka',
         mekaProjectId: 'saga2',
         mekaRoleId: 'combat-development',
+        mekaCombatTargetSkillId: '1019',
         mekaMcpProviderIds: ['mcp-router'],
         mekaWorkflow: 'saga2-combat-development-v1',
         mekaCombatEnvironmentReady: true,
+        mekaCombatTargetExportCompleted: true,
       },
     };
     const config = provider?.toClaudeSdkConfig?.(context) as { instance: McpServer };
@@ -897,6 +961,7 @@ describe('Meka runtime MCP remote instance projection', () => {
         source: 'meka',
         mekaProjectId: 'saga2',
         mekaRoleId: 'combat-development',
+        mekaCombatTargetSkillId: '1019',
         mekaMcpProviderIds: ['mcp-router'],
         mekaWorkflow: 'saga2-combat-development-v1',
       },
@@ -935,6 +1000,7 @@ describe('Meka runtime MCP remote instance projection', () => {
         source: 'meka',
         mekaProjectId: 'saga2',
         mekaRoleId: 'combat-development',
+        mekaCombatTargetSkillId: '1019',
         mekaMcpProviderIds: ['mcp-router'],
         mekaWorkflow: 'saga2-combat-development-v1',
       },

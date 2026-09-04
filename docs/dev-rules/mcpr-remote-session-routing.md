@@ -21,6 +21,20 @@
 
 空值表示本地任务，不进入任一远程 preflight。
 
+SAGA2 战斗 Lead 需要创建服务器只读 Worker 时，不得让模型从项目 ID、显示名或实例
+`instanceId` 拼接 `mcpr:`。Host 只在用户已经绑定技能 ID 后，读取当前项目绑定、筛选唯一的
+available/supported 服务器实例，并按实例 `agentType` 执行 Claude cc-manager 或 Codex 控制通道
+的 capability hello；随后把 `remoteHostId` 与匹配的 `workerAgent` 作为一组任务级可信字段
+注入，模型必须原样传给 `create_worker`。Worker 创建入口仍需重新核对稳定记录 `id`、项目绑定、
+在线状态、实例 Agent 类型和 capability，不能把 prompt 字段当成授权事实。零个或多个
+capability-ready 服务器目标都不得猜选，Agent 类型不一致也必须拒绝。
+
+服务器能力核查 Worker 与 Lead 运行在不同设备时，`initial_task` 只能携带逻辑证据（技能 ID、
+导出结论、协议字段和待核查语义），不得依赖 Lead 主机的绝对项目路径或临时导出路径。
+Host 在统一 `create_worker` 请求及后续首任务派发边界，对带
+`[SAGA2_COMBAT_REMOTE_SERVER_WORKER]` 标记的任务移除 Windows/Unix 主机绝对路径；Worker
+使用自身的远程工作目录和当前 `HEAD`。普通 Worker 任务不经过该处理，保持原始消息内容。
+
 ## 2. 启动与恢复不变量
 
 所有会话创建、lazy resume、send 前置和 Main 发起的 Worker bootstrap 都必须先完成

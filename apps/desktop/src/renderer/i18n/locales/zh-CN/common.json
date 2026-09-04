@@ -4534,7 +4534,11 @@
         "dialogMessage": "插件「{{name}}」请求你选择一个项目文件夹，用于在侧边栏创建任务"
       },
       "confirm": {
-        "dialogTitle": "插件「{{name}}」请你确认"
+        "dialogTitle": "插件「{{name}}」请你确认",
+        "unityStartBody": "目标 Unity 工程尚未启动。Cindy 将启动该工程以继续当前任务。",
+        "unityStartConfirm": "启动 Unity",
+        "unityStartCancel": "取消",
+        "unityStartCancelled": "用户未确认启动 Unity，本次操作已取消。"
       },
       "panelHost": {
         "close": "关闭面板"
@@ -9791,7 +9795,7 @@
       "codexAutoReviewUnavailable": "自动审批暂时不可用，当前操作已阻止并切换为默认权限。请重试，需要时会询问你。",
       "upstreamResponseIdleTimeout": "模型长时间没有任何响应，本轮已自动中断以免无限等待。已完成的工具调用都保留，可以直接发下一条消息继续。",
       "turnNoEventTimeout": "本轮长时间没有任何进展（模型、工具与后台进程都没有动静），已自动中断以免无限等待。可以直接发下一条消息继续。",
-      "hostShellCommandBlocked": "Cindy 已阻止会绕过内嵌模拟器的 Shell 命令。请改用模拟器工具控制设备、启动应用、操作界面、截图和诊断。",
+      "hostShellCommandBlocked": "Cindy 已根据当前任务的安全策略阻止了 Shell 命令。请使用当前任务要求的专用工具或只读证据入口继续。",
       "codexCompactionNotConverging": "Codex 反复压缩上下文却压不动，本轮已自动中断以免无限循环。压不动的部分通常不在对话里——system prompt 与工具定义占掉的空间压缩清不掉。新开一个任务可以继续。",
       "codexCompactionNotConvergingModelSwitch": "Codex 反复压缩上下文却压不动，本轮已自动中断以免无限循环。本任务中途切换过模型，而 Codex 仍按切换前那个模型的上下文上限来判断。切回原模型可以继续，或者新开一个任务。"
     },

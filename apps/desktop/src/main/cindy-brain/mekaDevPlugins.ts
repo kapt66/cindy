@@ -135,6 +135,18 @@ export class MekaDevPluginManager {
 
   constructor(private readonly deps: MekaDevPluginManagerDeps) {}
 
+  /** Resolve a source/plugin id to its currently registered development runtime. */
+  runtimeIdFor(pluginId: string): string | null {
+    for (const record of this.records.values()) {
+      if (record.pluginId === pluginId) return record.runtimeId;
+    }
+    return null;
+  }
+
+  pluginIdFor(runtimeId: string): string | null {
+    return this.records.get(runtimeId)?.pluginId ?? null;
+  }
+
   async list(): Promise<MekaDevPluginItem[]> {
     await this.ensureNamespace();
     return this.snapshot();

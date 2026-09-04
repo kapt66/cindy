@@ -108,6 +108,12 @@ export function toolNotFoundMessage(
   declaredTools: GhostToolDecl[] | undefined,
 ): string {
   const names = (declaredTools ?? []).map((t) => t.name);
+  if (ghostId === 'meka-unity') {
+    return (
+      `插件 ${ghostId} 没有工具 ${tool};可用工具: ${names.length > 0 ? names.join(', ') : '(未声明任何工具)'}` +
+      '。该插件不提供 list_tools 动态清单接口；请直接使用已声明的 unity_inspect 或 unity_execute，不要重试未知工具。'
+    );
+  }
   if (names.includes('call_tool')) {
     return (
       `插件 ${ghostId} 没有名为 ${tool} 的顶层工具——它采用二级分派:具体操作经 call_tool 下发,` +
@@ -159,14 +165,29 @@ export class GhostPipeDispatcher {
       return { ok: false, errorCode: 'GHOST_NOT_FOUND', message: `插件 ${ghostId} 未安装或已卸载` };
     }
     if (!ghost.enabled) {
-      return { ok: false, errorCode: 'GHOST_ASLEEP', message: `插件 ${ghostId} 未启用(可在主界面侧边栏「插件」中启用)` };
+      return {
+        ok: false,
+        errorCode: 'GHOST_ASLEEP',
+        message: `插件 ${ghostId} 未启用(可在主界面侧边栏「插件」中启用)`,
+      };
     }
+    // The requested id may be a logical Meka plugin id backed by a development
+    // runtime id. All lifecycle and pipe operations must use the installed id.
+    const runtimeGhostId = ghost.manifest.id;
     const declared = ghost.manifest.tools?.some((t) => t.name === tool);
     if (!declared) {
-      return { ok: false, errorCode: 'TOOL_NOT_FOUND', message: toolNotFoundMessage(ghostId, tool, ghost.manifest.tools) };
+      return {
+        ok: false,
+        errorCode: 'TOOL_NOT_FOUND',
+        message: toolNotFoundMessage(ghostId, tool, ghost.manifest.tools),
+      };
     }
-    if (this.deps.runtimeStateOf(ghostId) === 'fused') {
-      return { ok: false, errorCode: 'GHOST_CRASHED', message: `插件 ${ghostId} 已熔断(反复崩溃),重载或重新启用后再试` };
+    if (this.deps.runtimeStateOf(runtimeGhostId) === 'fused') {
+      return {
+        ok: false,
+        errorCode: 'GHOST_CRASHED',
+        message: `插件 ${ghostId} 已熔断(反复崩溃),重载或重新启用后再试`,
+      };
     }
     let ownerScopeSnapshot: unknown;
     try {
@@ -176,13 +197,13 @@ export class GhostPipeDispatcher {
     }
 
     // ── 按需拉起 ────────────────────────────────────────────────────────
-    if (this.deps.runtimeStateOf(ghostId) !== 'running') {
+    if (this.deps.runtimeStateOf(runtimeGhostId) !== 'running') {
       const spawned = await this.deps.spawn(ghost);
       if (!spawned.ok) {
         return { ok: false, errorCode: 'GHOST_CRASHED', message: `插件启动失败:${spawned.reason}` };
       }
     }
-    if (!this.ownerScopeUsable(ghostId, ownerScopeSnapshot)) {
+    if (!this.ownerScopeUsable(runtimeGhostId, ownerScopeSnapshot)) {
       return this.ownerBoundaryResult();
     }
 
@@ -194,7 +215,7 @@ export class GhostPipeDispatcher {
       const startedAt = Date.now();
       const baseTimeoutMs = this.baseTimeoutMs(request.timeoutMs);
       const entry: PendingCall = {
-        ghostId,
+        ghostId: runtimeGhostId,
         tool,
         ownerScopeSnapshot,
         claimedBindings: new Map(),
@@ -209,13 +230,17 @@ export class GhostPipeDispatcher {
       this.pending.set(callId, entry);
       this.armTimer(callId, entry);
 
-      if (!this.ownerScopeUsable(ghostId, ownerScopeSnapshot)) {
+      if (!this.ownerScopeUsable(runtimeGhostId, ownerScopeSnapshot)) {
         this.settle(callId, this.ownerBoundaryResult());
         return;
       }
-      if (!this.deps.sendToGhost(ghostId, payload)) {
+      if (!this.deps.sendToGhost(runtimeGhostId, payload)) {
         // 逻辑页不在线(拉起后瞬时死亡等):立即收卷。
-        this.settle(callId, { ok: false, errorCode: 'GHOST_CRASHED', message: '电子脑离线,派发失败' });
+        this.settle(callId, {
+          ok: false,
+          errorCode: 'GHOST_CRASHED',
+          message: '电子脑离线,派发失败',
+        });
       }
     });
   }
@@ -291,7 +316,7 @@ export class GhostPipeDispatcher {
   private baseTimeoutMs(override?: number): number {
     const requested = Number.isFinite(override)
       ? Math.max(1, Math.floor(override as number))
-      : this.deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+      : (this.deps.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     return Math.min(requested, GHOST_PIPE_CALL_MAX_TOTAL_MS);
   }
 
@@ -299,21 +324,24 @@ export class GhostPipeDispatcher {
   private armTimer(callId: string, entry: PendingCall): void {
     (this.deps.clearTimeoutFn ?? clearTimeout)(entry.timer);
     const setT = this.deps.setTimeoutFn ?? setTimeout;
-    entry.timer = setT(() => {
-      if (this.pending.delete(callId)) {
-        this.deps.log?.warn('ghost tool call timed out', {
-          ghostId: entry.ghostId,
-          tool: entry.tool,
-          callId,
-          totalMs: Date.now() - entry.startedAt,
-        });
-        entry.resolve({
-          ok: false,
-          errorCode: 'TIMEOUT',
-          message: `工具 ${entry.tool} 执行超时(任务可能仍在后台继续,稍后重试或许能直接取回已完成的结果)`,
-        });
-      }
-    }, Math.max(0, entry.deadlineAt - Date.now()));
+    entry.timer = setT(
+      () => {
+        if (this.pending.delete(callId)) {
+          this.deps.log?.warn('ghost tool call timed out', {
+            ghostId: entry.ghostId,
+            tool: entry.tool,
+            callId,
+            totalMs: Date.now() - entry.startedAt,
+          });
+          entry.resolve({
+            ok: false,
+            errorCode: 'TIMEOUT',
+            message: `工具 ${entry.tool} 执行超时(任务可能仍在后台继续,稍后重试或许能直接取回已完成的结果)`,
+          });
+        }
+      },
+      Math.max(0, entry.deadlineAt - Date.now()),
+    );
   }
 
   /**
@@ -361,7 +389,10 @@ export class GhostPipeDispatcher {
     if (!entry || entry.ghostId !== ghostId) return;
     entry.holds = Math.max(0, entry.holds - 1);
     if (entry.holds > 0) return;
-    const target = Math.max(entry.startedAt + entry.baseTimeoutMs, Date.now() + HOLD_SETTLE_GRACE_MS);
+    const target = Math.max(
+      entry.startedAt + entry.baseTimeoutMs,
+      Date.now() + HOLD_SETTLE_GRACE_MS,
+    );
     if (target < entry.deadlineAt) {
       entry.deadlineAt = target;
       this.armTimer(callId, entry);
@@ -373,7 +404,10 @@ export class GhostPipeDispatcher {
    * 不是派给你的即拒(拒因只进日志,不给沙箱探测面)。每次心跳把窗口
    * 重新续满一个基础档;天花板由 extendDeadline 统一钳制。
    */
-  handleToolProgress(senderGhostId: string, payload: unknown): { accepted: boolean; reason?: string } {
+  handleToolProgress(
+    senderGhostId: string,
+    payload: unknown,
+  ): { accepted: boolean; reason?: string } {
     const p = payload as { callId?: unknown };
     if (typeof p?.callId !== 'string') {
       return { accepted: false, reason: 'tool-progress 载荷形状不合法' };
@@ -400,7 +434,10 @@ export class GhostPipeDispatcher {
    * senderGhostId 来自主机按 webContents 反查的身份——callId 配对之外再验
    * "这份卷子当初是不是派给你的",别的意识拿到 callId 也交不了。
    */
-  handleToolResult(senderGhostId: string, payload: unknown): { accepted: boolean; reason?: string } {
+  handleToolResult(
+    senderGhostId: string,
+    payload: unknown,
+  ): { accepted: boolean; reason?: string } {
     const p = payload as {
       callId?: unknown;
       ok?: unknown;
@@ -483,7 +520,8 @@ export class GhostPipeDispatcher {
     return {
       ok: false,
       errorCode: 'GHOST_ASLEEP',
-      message: 'Plugin owner boundary changed before dispatch; retry after the active session settles.',
+      message:
+        'Plugin owner boundary changed before dispatch; retry after the active session settles.',
     };
   }
 }

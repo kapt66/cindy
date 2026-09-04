@@ -36,7 +36,17 @@ type CombatServerDispatch = {
 
 const activeDispatches = new Map<string, CombatServerDispatch>();
 const trustedWorkerRemoteHosts = new Map<string, Map<string, string>>();
+const workerReadCounts = new Map<string, number>();
+const leadEvidenceCounts = new Map<string, number>();
+/** A server worker gets a small, deterministic evidence budget per dispatch. */
+export const COMBAT_SERVER_WORKER_READ_LIMIT = 6;
+/** Local Lead exploration is bounded so repetitive reads cannot consume a turn. */
+export const COMBAT_LEAD_EVIDENCE_READ_LIMIT = 8;
 let nextGeneration = 1;
+
+function normalizeDispatchTask(task: string): string {
+  return task.replace(/\r\n?/g, '\n').trim();
+}
 
 function isCombatLead(options: CombatVendorOptions): boolean {
   return (
@@ -55,9 +65,15 @@ export function isModuleFirstCombatServerExplorationTask(task: string): boolean 
   if (!isCombatServerExplorationTask(task) || !task.includes(COMBAT_MODULE_FIRST_MARKER)) {
     return false;
   }
-  const hasModuleEvidence = /skill-entry-model|entrymodel|模块(?:图|链|能力)/i.test(task);
+  const hasModuleEvidence =
+    /(?:legacy_module_export_json|saga2-entry-model|skill-entry-model|entrymodel|模块(?:图|链|能力|协议)|老版[^\n]{0,60}导出|目标技能(?:的)?模块资产(?:不存在|存在)|skill_id\s*=)/i.test(
+      task,
+    );
   const hasAtomicMatrix = /(?:atomic|原子)(?:[\s_-]*(?:capabilit|能力|matrix|矩阵))/i.test(task);
-  const hasResidualQuestion = /(?:residual|remaining|gap|缺口|待核查|剩余)/i.test(task);
+  const hasResidualQuestion =
+    /(?:residual|remaining|gap|缺口|待核查|待确认|剩余|(?:需|需要|尚需|必须)核实|请[^\n]{0,120}(?:核实|核对))/i.test(
+      task,
+    );
   return hasModuleEvidence && hasAtomicMatrix && hasResidualQuestion;
 }
 
@@ -89,7 +105,7 @@ export function beginCombatServerCapabilityDispatch(input: {
     leadSessionId,
     vendorOptions: options,
     kind: input.kind,
-    task: input.task,
+    task: normalizeDispatchTask(input.task),
     requestedWorkerRef: input.requestedWorkerRef?.trim() || null,
     remoteHostId,
     workerId: null,
@@ -111,7 +127,13 @@ export function settleCombatServerCapabilityDispatch(input: {
   workerSessionId?: string;
 }): boolean {
   const current = activeDispatches.get(input.leadSessionId);
-  if (!current || current.kind !== input.kind || current.task !== input.task) return false;
+  if (
+    !current ||
+    current.kind !== input.kind ||
+    current.task !== normalizeDispatchTask(input.task)
+  ) {
+    return false;
+  }
 
   if (current.kind === 'create_worker' && (input.workerId || input.workerSessionId)) {
     const refs = trustedWorkerRemoteHosts.get(input.leadSessionId) ?? new Map<string, string>();
@@ -131,6 +153,7 @@ export function settleCombatServerCapabilityDispatch(input: {
 
   current.workerId = input.workerId?.trim() || null;
   current.workerSessionId = input.workerSessionId?.trim() || current.requestedWorkerRef;
+  if (current.workerSessionId) workerReadCounts.set(current.workerSessionId, 0);
   current.state = 'pending';
   current.vendorOptions.mekaCombatServerCapabilityStatus = 'pending';
   current.vendorOptions.mekaCombatPhase = 'server-capability-check';
@@ -153,6 +176,31 @@ function parseAutoBridgeReport(message: string): Record<string, unknown> | null 
   } catch {
     return null;
   }
+}
+
+/**
+ * The MCP report schema projects structured evidence entries to display
+ * strings before the tool handler receives them. Store and compare the same
+ * representation so a trusted auto-bridge report survives that projection.
+ */
+function normalizeCapabilityReport(report: Record<string, unknown>): Record<string, unknown> {
+  if (!Array.isArray(report.codeEvidence)) return report;
+  const codeEvidence = report.codeEvidence.map((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
+    const value = entry as Record<string, unknown>;
+    if (typeof value.path !== 'string' || !value.path.trim()) return entry;
+    const symbols = Array.isArray(value.symbols)
+      ? value.symbols
+          .filter((item): item is string => typeof item === 'string')
+          .map((item) => item.trim())
+          .filter(Boolean)
+      : [];
+    const details = typeof value.details === 'string' ? value.details.trim() : '';
+    return [value.path.trim(), symbols.length ? `symbols=${symbols.join(',')}` : '', details]
+      .filter(Boolean)
+      .join(': ');
+  });
+  return { ...report, codeEvidence };
 }
 
 export function recordCombatServerCapabilityAutoBridge(input: {
@@ -189,11 +237,40 @@ export function recordCombatServerCapabilityAutoBridge(input: {
     return 'retry-required';
   }
 
-  current.report = report;
+  current.report = normalizeCapabilityReport(report);
   current.state = 'report-ready';
   current.vendorOptions.mekaCombatServerCapabilityStatus = 'report-ready';
   current.vendorOptions.mekaCombatPhase = 'server-capability-report-validation';
   return 'report-ready';
+}
+
+/** Undo only the exact receipt whose accepted delivery was rolled back. */
+export function rollbackCombatServerCapabilityAutoBridge(input: {
+  leadSessionId: string;
+  workerId: string;
+  workerSessionId: string;
+  message: string;
+}): boolean {
+  const current = activeDispatches.get(input.leadSessionId);
+  if (!current || current.state !== 'report-ready' || !current.report) return false;
+  const matchesWorker =
+    current.workerId === input.workerId ||
+    current.workerSessionId === input.workerSessionId ||
+    current.requestedWorkerRef === input.workerId ||
+    current.requestedWorkerRef === input.workerSessionId;
+  const report = parseAutoBridgeReport(input.message);
+  if (
+    !matchesWorker ||
+    !report ||
+    canonicalJson(current.report) !== canonicalJson(normalizeCapabilityReport(report))
+  ) {
+    return false;
+  }
+  current.report = null;
+  current.state = 'pending';
+  current.vendorOptions.mekaCombatServerCapabilityStatus = 'pending';
+  current.vendorOptions.mekaCombatPhase = 'server-capability-check';
+  return true;
 }
 
 function canonicalJson(value: unknown): string {
@@ -217,16 +294,14 @@ export function consumeTrustedCombatServerCapabilityReport(input: {
   if (current?.state !== 'report-ready' || !current.report) {
     return { ok: false, reason: 'not-ready' };
   }
-  if (canonicalJson(current.report) !== canonicalJson(input.report)) {
+  if (canonicalJson(current.report) !== canonicalJson(normalizeCapabilityReport(input.report))) {
     return { ok: false, reason: 'report-mismatch' };
   }
   activeDispatches.delete(leadSessionId);
   return { ok: true };
 }
 
-export function rejectTrustedCombatServerCapabilityReport(
-  leadSessionId: string | undefined,
-): void {
+export function rejectTrustedCombatServerCapabilityReport(leadSessionId: string | undefined): void {
   const id = leadSessionId?.trim();
   if (!id) return;
   const current = activeDispatches.get(id);
@@ -254,16 +329,60 @@ export function resetCombatServerCapabilityFlow(input: {
   options.mekaCombatPhase = input.phase;
 }
 
-export function hasTrustedCombatServerCapabilityReport(
-  leadSessionId: string | undefined,
-): boolean {
+export function hasTrustedCombatServerCapabilityReport(leadSessionId: string | undefined): boolean {
   const id = leadSessionId?.trim();
   return Boolean(id && activeDispatches.get(id)?.state === 'report-ready');
+}
+
+export function consumeCombatServerWorkerReadBudget(workerSessionId: string | undefined): {
+  allowed: boolean;
+  used: number;
+  remaining: number;
+} {
+  const id = workerSessionId?.trim();
+  if (!id) {
+    return { allowed: false, used: COMBAT_SERVER_WORKER_READ_LIMIT, remaining: 0 };
+  }
+  const used = workerReadCounts.get(id) ?? 0;
+  if (used >= COMBAT_SERVER_WORKER_READ_LIMIT) {
+    return { allowed: false, used, remaining: 0 };
+  }
+  const next = used + 1;
+  workerReadCounts.set(id, next);
+  return {
+    allowed: true,
+    used: next,
+    remaining: COMBAT_SERVER_WORKER_READ_LIMIT - next,
+  };
+}
+
+export function consumeCombatLeadEvidenceBudget(sessionId: string | undefined): {
+  allowed: boolean;
+  used: number;
+  remaining: number;
+} {
+  const id = sessionId?.trim();
+  if (!id) {
+    return { allowed: false, used: COMBAT_LEAD_EVIDENCE_READ_LIMIT, remaining: 0 };
+  }
+  const used = leadEvidenceCounts.get(id) ?? 0;
+  if (used >= COMBAT_LEAD_EVIDENCE_READ_LIMIT) {
+    return { allowed: false, used, remaining: 0 };
+  }
+  const next = used + 1;
+  leadEvidenceCounts.set(id, next);
+  return {
+    allowed: true,
+    used: next,
+    remaining: COMBAT_LEAD_EVIDENCE_READ_LIMIT - next,
+  };
 }
 
 export function resetCombatServerCapabilityState(): void {
   activeDispatches.clear();
   trustedWorkerRemoteHosts.clear();
+  workerReadCounts.clear();
+  leadEvidenceCounts.clear();
   nextGeneration = 1;
 }
 
@@ -272,6 +391,8 @@ export const resetCombatServerCapabilityStateForTests = resetCombatServerCapabil
 export function clearCombatServerCapabilitySession(sessionId: string): void {
   activeDispatches.delete(sessionId);
   trustedWorkerRemoteHosts.delete(sessionId);
+  workerReadCounts.delete(sessionId);
+  leadEvidenceCounts.delete(sessionId);
 }
 
 export function getTrustedCombatServerWorkerRemoteHost(

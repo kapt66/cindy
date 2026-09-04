@@ -18,6 +18,24 @@ import {
 export const ORCA_WORKER_READY_MESSAGE =
   '[系统] Orca Worker 已就绪，当前没有待执行任务。不要调用任何工具来等待、观察或轮询 Lead。只回复一句简短确认并立即结束本轮；Lead 后续会主动发送任务。';
 
+const COMBAT_SERVER_WORKER_MARKER = '[SAGA2_COMBAT_REMOTE_SERVER_WORKER]';
+const LEAD_HOST_PATH_PLACEHOLDER = '[lead-host-path-omitted]';
+
+/**
+ * Server-capability Workers run on MCPRouter's repository host. Lead evidence
+ * may contain the local Unity/project or temp-export path; forwarding those
+ * paths makes the Worker attempt to read an inaccessible machine. Keep the
+ * semantic evidence while removing only absolute host paths, and leave all
+ * non-combat Worker tasks byte-for-byte unchanged.
+ */
+export function sanitizeCombatServerWorkerTask(task: string): string {
+  if (!task.includes(COMBAT_SERVER_WORKER_MARKER)) return task;
+  return task.replace(
+    /(?:\b[A-Za-z]:[\\/]|\/(?:Users|home|workspace|mnt|private\/var|tmp)\/)[^\s`"'<>]+/g,
+    LEAD_HOST_PATH_PLACEHOLDER,
+  );
+}
+
 /** 开启协同时的一次性入参；负责把 UI/MCP 的 worker 偏好归一到 worker 创建内核。 */
 export interface OrcaEnableTeamParams {
   leadSessionId: string;
@@ -154,15 +172,19 @@ function normalizeEnableParams(params: OrcaEnableTeamParams): OrcaWorkerCreatePa
 }
 
 function createDefaultWorkerLabel(role: string): string {
-  return role
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 24) || 'worker';
+  return (
+    role
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 24) || 'worker'
+  );
 }
 
-function validateEnableParams(normalized: OrcaWorkerCreateParams): Extract<OrcaEnableTeamResult, { ok: false }> | null {
+function validateEnableParams(
+  normalized: OrcaWorkerCreateParams,
+): Extract<OrcaEnableTeamResult, { ok: false }> | null {
   if (normalized.role.length < 1 || normalized.role.length > 32) {
     return { ok: false, errorCode: 'INVALID_PARAMS', message: 'role must be 1-32 chars' };
   }
@@ -198,7 +220,7 @@ export function createOrcaLifecycleService(deps: OrcaLifecycleDeps): OrcaLifecyc
     try {
       return await deps.dispatchWorkerTask({
         targetSessionId: params.workerSessionId,
-        message: params.message,
+        message: sanitizeCombatServerWorkerTask(params.message),
         dispatchMeta: {
           source: dispatchSource,
           context: params.context,
@@ -235,8 +257,11 @@ export function createOrcaLifecycleService(deps: OrcaLifecycleDeps): OrcaLifecyc
     }
     const initialTask = hasNonEmptyInitialTask(params.initialTask) ? params.initialTask : undefined;
     const workerPermissionMode = workerPermissionModeForCreate(params.workerPermissionMode);
+    const workerCreateParams = initialTask
+      ? { ...params, initialTask: sanitizeCombatServerWorkerTask(initialTask) }
+      : params;
     const created = await deps.createWorkerInTeam({
-      ...params,
+      ...workerCreateParams,
       teamId: team.id,
       workerPermissionMode,
     });
@@ -265,10 +290,12 @@ export function createOrcaLifecycleService(deps: OrcaLifecycleDeps): OrcaLifecyc
           context: `create_worker/${created.workerSessionId}/worker-ready-placeholder`,
         });
       } catch (err) {
-        await deps.rollbackCreatedWorker({
-          workerId: created.workerId,
-          workerSessionId: created.workerSessionId,
-        }).catch(() => undefined);
+        await deps
+          .rollbackCreatedWorker({
+            workerId: created.workerId,
+            workerSessionId: created.workerSessionId,
+          })
+          .catch(() => undefined);
         return internalFailure(err);
       }
     }
@@ -278,7 +305,9 @@ export function createOrcaLifecycleService(deps: OrcaLifecycleDeps): OrcaLifecyc
       ...created,
       ...(initialTask ? { dispatched: dispatchResult?.dispatched ?? false } : {}),
       ...(dispatchResult ? { dispatchOutcome: dispatchResult.dispatchOutcome } : {}),
-      ...(dispatchResult?.queued === true ? { queuedMessageId: dispatchResult.queuedMessageId } : {}),
+      ...(dispatchResult?.queued === true
+        ? { queuedMessageId: dispatchResult.queuedMessageId }
+        : {}),
     };
   }
 
@@ -292,10 +321,12 @@ export function createOrcaLifecycleService(deps: OrcaLifecycleDeps): OrcaLifecyc
     failure?: Extract<OrcaEnableTeamResult, { ok: false }>;
   }): Promise<Extract<OrcaEnableTeamResult, { ok: false }>> {
     if (params.workerId && params.workerSessionId) {
-      await deps.rollbackCreatedWorker({
-        workerId: params.workerId,
-        workerSessionId: params.workerSessionId,
-      }).catch(() => undefined);
+      await deps
+        .rollbackCreatedWorker({
+          workerId: params.workerId,
+          workerSessionId: params.workerSessionId,
+        })
+        .catch(() => undefined);
     }
     await deps.markTeamEnded(params.teamId, 'failed').catch(() => undefined);
     await deps.setSessionOrcaRole(params.leadSessionId, null).catch(() => undefined);

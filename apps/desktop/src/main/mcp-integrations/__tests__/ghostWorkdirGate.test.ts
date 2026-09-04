@@ -38,6 +38,7 @@ const captureMutationOwnerMock = vi.fn(() => ({
 }));
 const acquireMutationLeaseMock = vi.fn(() => releaseMutationMock);
 const confirmRequestMock = vi.fn(async () => ({ confirmed: true, allowDirs: false }));
+const hostConfirmMock = vi.fn(async () => true);
 const classifyLocalAttachmentPathMock = vi.fn();
 const resolveGhostAttachmentUrlMock = vi.fn();
 type TestLedgerRef = {
@@ -56,15 +57,14 @@ const ledgerHasRefMock = vi.fn(async (params: TestLedgerRef) =>
       (params.originKind === undefined || ref.originKind === params.originKind),
   ),
 );
-const ledgerHasGhostToolGrantMock = vi.fn(
-  async (params: { hash: string; ghostId: string }) =>
-    ledgerRefs.some(
-      (ref) =>
-        ref.hash === params.hash &&
-        ref.refId === params.ghostId &&
-        ref.originKind === 'tool' &&
-        (ref.refKind === 'ghost-tool-grant' || ref.refKind === 'ghost-grant'),
-    ),
+const ledgerHasGhostToolGrantMock = vi.fn(async (params: { hash: string; ghostId: string }) =>
+  ledgerRefs.some(
+    (ref) =>
+      ref.hash === params.hash &&
+      ref.refId === params.ghostId &&
+      ref.originKind === 'tool' &&
+      (ref.refKind === 'ghost-tool-grant' || ref.refKind === 'ghost-grant'),
+  ),
 );
 const ledgerAddRefMock = vi.fn(async (params: TestLedgerRef) => {
   ledgerRefs.push({ ...params });
@@ -76,6 +76,31 @@ const saveDepositMock = vi.fn(() => ({ ok: true, receipt: { token: 'save-ticket'
 const liveGrantStateMock = vi.fn();
 const alsSessionContextMock = vi.fn();
 const resolvedAttachmentOrigins: Array<'user' | 'tool' | undefined> = [];
+
+vi.mock('../../meka-projects/combatEnvironmentGate.js', () => ({
+  combatEnvironmentAvailability: () => ({
+    p4: { status: 'ready', summary: 'ok' },
+    unityCli: { status: 'ready', summary: 'ok' },
+    mcpr: { status: 'ready', summary: 'ok' },
+  }),
+  runCombatEnvironmentGate: vi.fn(async () => ({
+    checkedAt: new Date(0).toISOString(),
+    ready: true,
+    p4: { status: 'ready', summary: 'ok' },
+    unityCli: { status: 'ready', summary: 'ok' },
+    mcpr: { status: 'ready', summary: 'ok' },
+  })),
+}));
+vi.mock('../../meka-settings/ipc.js', () => ({
+  getMekaP4SettingsService: () => ({ get: vi.fn(async () => ({})) }),
+  getMekaRouterService: () => ({
+    listInstances: vi.fn(async () => []),
+    listProjectBindings: vi.fn(async () => []),
+  }),
+}));
+vi.mock('../../maker-host/mcpr-codex-capability.js', () => ({
+  probeRemoteCodexCapability: vi.fn(async () => ({ ok: true })),
+}));
 
 vi.mock('electron', () => ({ app: { getPath: () => tmpUserData } }));
 vi.mock('../../appSessionState.js', () => ({
@@ -102,8 +127,17 @@ vi.mock('@cindy/mcps', () => ({ getLiziMcpSessionContext: () => alsSessionContex
 
 const WORKDIR = '/proj/alpha';
 const listMock = vi.fn<() => unknown[]>(() => []);
-const activeSessionAvailableMock = vi.fn((_ghostId: string) => true);
-const dispatchMock = vi.fn(async () => ({ ok: true as const, result: 'done' }));
+const activeSessionAvailableMock = vi.fn(() => true);
+const dispatchMock = vi.fn(
+  async (): Promise<
+    | { ok: true; result: string }
+    | {
+        ok: false;
+        errorCode: 'INTERNAL' | 'UNITY_EDITOR_START_CONFIRM_REQUIRED';
+        message: string;
+      }
+  > => ({ ok: true, result: 'done' }),
+);
 const setupAssessmentMock = vi.fn((_ghostId: string) => {
   void _ghostId;
   return {
@@ -121,26 +155,33 @@ const ensureReadyMock = vi.fn(
     };
   },
 );
-const sessionSnapshotMock = vi.fn(async (): Promise<{
-  workingDir: string;
-  permissionMode: string;
-  planModeEnabled: boolean;
-  remoteHostId: string | null;
-}> => ({
-  workingDir: WORKDIR,
-  permissionMode: 'auto',
-  planModeEnabled: false,
-  remoteHostId: null,
-}));
+const sessionSnapshotMock = vi.fn(
+  async (): Promise<{
+    workingDir: string;
+    permissionMode: string;
+    planModeEnabled: boolean;
+    remoteHostId: string | null;
+  }> => ({
+    workingDir: WORKDIR,
+    permissionMode: 'auto',
+    planModeEnabled: false,
+    remoteHostId: null,
+  }),
+);
 vi.mock('../../cindy-brain/index.js', () => ({
   getGhostManager: () => ({ list: listMock, managedRootDirs: () => [] }),
+  resolveGhostRuntimeId: (id: string) => id,
+  resolveGhostLogicalId: (id: string) => id,
+  ensureMekaDevPluginsReady: vi.fn(async () => undefined),
   ghostForgeForbiddenRootDirs: () => [],
   listAvailableGhostsForAuthorization: () => listMock(),
   findAvailableGhostForAuthorization: (id: string) =>
-    listMock().find((ghost: any) => ghost.manifest?.id === id) ?? null,
+    listMock().find((ghost) => (ghost as { manifest?: { id?: unknown } }).manifest?.id === id) ??
+    null,
   captureGhostMutationOwnerForMcp: captureMutationOwnerMock,
   acquireGhostMutationLeaseForMcp: acquireMutationLeaseMock,
   getGhostPipeDispatcher: () => ({ callGhostTool: dispatchMock }),
+  requestGhostHostConfirmation: hostConfirmMock,
   getGhostCardService: () => ({ registerCall: () => {}, finalizeCall: () => null }),
   getGhostSetupAssessment: setupAssessmentMock,
   isGhostAvailableForActiveSession: activeSessionAvailableMock,
@@ -223,11 +264,13 @@ function makeDeps(
   agentKind: TestAgentKind = 'claude-code',
   sessionId: string | null = 's1',
   sessionInstanceId: string | null = sessionId ? `${sessionId}-instance` : null,
+  vendorOptions: Record<string, unknown> = {},
+  workingDir = WORKDIR,
 ) {
   const ctx = {
     agentKind,
-    workingDir: WORKDIR,
-    vendorOptions: {},
+    workingDir,
+    vendorOptions,
     ...(sessionId ? { sessionId } : {}),
     ...(sessionInstanceId ? { sessionInstanceId } : {}),
   } as unknown as LiziMcpSessionContext;
@@ -255,6 +298,8 @@ beforeEach(() => {
   activeSessionAvailableMock.mockReset();
   activeSessionAvailableMock.mockReturnValue(true);
   dispatchMock.mockClear();
+  hostConfirmMock.mockReset();
+  hostConfirmMock.mockResolvedValue(true);
   setupAssessmentMock.mockReset();
   setupAssessmentMock.mockReturnValue({ state: 'ready', revision: 0, groups: [] });
   ensureReadyMock.mockReset();
@@ -409,7 +454,12 @@ describe('Forge session workdir gate', () => {
     });
     const deps = makeDeps();
     await expect(
-      deps.forgeScaffold({ dir: path.join(WORKDIR, 'new-plugin'), template: 'plain', id: 'x', name: 'X' }),
+      deps.forgeScaffold({
+        dir: path.join(WORKDIR, 'new-plugin'),
+        template: 'plain',
+        id: 'x',
+        name: 'X',
+      }),
     ).resolves.toMatchObject({ ok: false, errorCode: 'WORKDIR_READ_ONLY' });
   });
 });
@@ -649,6 +699,270 @@ describe('花名册 / ghost_list 过滤', () => {
 });
 
 describe('ghost_call 兜底拒绝', () => {
+  const combatVendorOptions = {
+    source: 'meka',
+    mekaProjectId: 'saga2',
+    mekaRoleId: 'combat-development',
+    mekaWorkflow: 'saga2-combat-development-v1',
+    mekaCombatTargetSkillId: '1019',
+    mekaCombatTargetSkillIdState: 'confirmed',
+    mekaCombatExecutionMode: 'autonomous-user-request',
+    mekaCombatServerCapabilityStatus: 'supported',
+    mekaCombatEnvironmentReady: true,
+    mekaCombatEnvironmentChecks: {
+      p4: { status: 'ready', summary: 'ok' },
+      unityCli: { status: 'ready', summary: 'ok' },
+      mcpr: { status: 'ready', summary: 'ok' },
+    },
+  };
+  const sagaWorkdir = path.join(
+    path.parse(process.cwd()).root,
+    'workspace',
+    'saga2',
+    'saga2_project',
+  );
+
+  it('战斗任务在公共 ghost_call 入口拒绝跨技能和缺少 JSON 路径的老版模块调用', async () => {
+    listMock.mockReturnValue([
+      chipGhost('meka-unity', ['tool'], {
+        tools: [{ name: 'unity_execute', description: 'd' }],
+      }),
+    ]);
+    const deps = makeDeps(
+      'codex',
+      'combat-1',
+      'combat-1-instance',
+      combatVendorOptions,
+      sagaWorkdir,
+    );
+
+    const crossSkill = await deps.callGhostTool({
+      ghostId: 'meka-unity',
+      tool: 'unity_execute',
+      args: {
+        action: 'command',
+        arguments: ['legacy_module_export_json', '1010', path.join(os.tmpdir(), '1010.json')],
+      },
+    });
+    expect(crossSkill).toMatchObject({
+      ok: false,
+      errorCode: 'COMBAT_WORKFLOW_POLICY_DENIED',
+      message: expect.stringContaining('本轮目标技能 ID 是 1019'),
+    });
+
+    const missingPath = await deps.callGhostTool({
+      ghostId: 'meka-unity',
+      tool: 'unity_execute',
+      args: {
+        action: 'command',
+        projectPath: path.join(sagaWorkdir, 'saga2_unity'),
+        arguments: ['legacy_module_export_json', '1019'],
+      },
+    });
+    expect(missingPath).toMatchObject({
+      ok: false,
+      errorCode: 'COMBAT_WORKFLOW_POLICY_DENIED',
+      message: expect.stringContaining('必须使用绝对 .json 路径'),
+    });
+    expect(ensureReadyMock).not.toHaveBeenCalled();
+    expect(dispatchMock).not.toHaveBeenCalled();
+  });
+
+  it('战斗任务拒绝 saga2_json 临时产物，并放行 temp 和 saga2_unity 内的当前技能 JSON', async () => {
+    listMock.mockReturnValue([
+      chipGhost('meka-unity', ['tool'], {
+        tools: [{ name: 'unity_execute', description: 'd' }],
+      }),
+    ]);
+    const deps = makeDeps(
+      'codex',
+      'combat-2',
+      'combat-2-instance',
+      { ...combatVendorOptions, mekaCombatTargetExportCompleted: true },
+      sagaWorkdir,
+    );
+    const callImport = (jsonPath: string) =>
+      deps.callGhostTool({
+        ghostId: 'meka-unity',
+        tool: 'unity_execute',
+        args: {
+          action: 'command',
+          projectPath: path.join(sagaWorkdir, 'saga2_unity'),
+          arguments: ['legacy_module_import_json', '1019', jsonPath, 'true'],
+        },
+      });
+
+    await expect(
+      callImport(path.join(sagaWorkdir, 'saga2_json', '1019.import.json')),
+    ).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'COMBAT_WORKFLOW_POLICY_DENIED',
+      message: expect.stringContaining('JSON 路径超出授权范围'),
+    });
+    await expect(callImport(path.join(os.tmpdir(), '1019.import.json'))).resolves.toMatchObject({
+      ok: true,
+    });
+    await expect(
+      callImport(path.join(sagaWorkdir, 'saga2_unity', 'Temp', '1019.import.json')),
+    ).resolves.toMatchObject({ ok: true });
+    expect(dispatchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('仅在公共 ghost_call 的目标导出成功后结算完成证据', async () => {
+    listMock.mockReturnValue([
+      chipGhost('meka-unity', ['tool'], {
+        tools: [{ name: 'unity_execute', description: 'd' }],
+      }),
+    ]);
+    const exportArgs = {
+      action: 'command',
+      projectPath: path.join(sagaWorkdir, 'saga2_unity'),
+      arguments: ['legacy_module_export_json', '1019', path.join(os.tmpdir(), '1019.export.json')],
+    };
+    const failedOptions = { ...combatVendorOptions, mekaCombatTargetExportCompleted: undefined };
+    dispatchMock.mockResolvedValueOnce({
+      ok: false as const,
+      errorCode: 'INTERNAL' as const,
+      message: 'export failed',
+    });
+
+    await expect(
+      makeDeps(
+        'codex',
+        'combat-export-failed',
+        'combat-export-failed-instance',
+        failedOptions,
+        sagaWorkdir,
+      ).callGhostTool({ ghostId: 'meka-unity', tool: 'unity_execute', args: exportArgs }),
+    ).resolves.toMatchObject({ ok: false });
+    expect(failedOptions.mekaCombatTargetExportCompleted).toBeUndefined();
+
+    const completedOptions = { ...combatVendorOptions, mekaCombatTargetExportCompleted: undefined };
+    await expect(
+      makeDeps(
+        'codex',
+        'combat-export-completed',
+        'combat-export-completed-instance',
+        completedOptions,
+        sagaWorkdir,
+      ).callGhostTool({ ghostId: 'meka-unity', tool: 'unity_execute', args: exportArgs }),
+    ).resolves.toMatchObject({ ok: true });
+    expect(completedOptions.mekaCombatTargetExportCompleted).toBe(true);
+  });
+
+  it('普通角色和非战斗插件不受战斗工作流门禁影响', async () => {
+    listMock.mockReturnValue([chipGhost('art', ['tool'])]);
+
+    await expect(
+      makeDeps('codex', 'general-1', 'general-1-instance', {
+        source: 'meka',
+        mekaProjectId: 'saga2',
+        mekaRoleId: 'general-development',
+      }).callGhostTool({ ghostId: 'art', tool: 'run', args: { skill_id: 1010 } }),
+    ).resolves.toMatchObject({ ok: true });
+    expect(dispatchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('把 Meka Unity action=open 交给插件幂等检查与用户恢复流程', async () => {
+    listMock.mockReturnValue([
+      chipGhost('meka-unity', ['tool'], {
+        tools: [{ name: 'unity_execute', description: 'd' }],
+      }),
+    ]);
+
+    const result = await makeDeps().callGhostTool({
+      ghostId: 'meka-unity',
+      tool: 'unity_execute',
+      args: {
+        action: 'open',
+        projectPath: 'C:\\Workspace\\saga2\\saga2_project\\saga2_unity',
+      },
+    });
+
+    expect(result).toEqual({ ok: true, result: 'done' });
+    expect(ensureReadyMock).toHaveBeenCalled();
+    expect(dispatchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('Unity 未启动时由 Host 通用确认框批准并在同一调用内只重试一次 open', async () => {
+    listMock.mockReturnValue([
+      chipGhost('meka-unity', ['tool'], {
+        tools: [{ name: 'unity_execute', description: 'd' }],
+      }),
+    ]);
+    dispatchMock
+      .mockResolvedValueOnce({
+        ok: false,
+        errorCode: 'UNITY_EDITOR_START_CONFIRM_REQUIRED',
+        message: 'confirm required',
+      })
+      .mockResolvedValueOnce({ ok: true, result: 'opened' });
+
+    await expect(
+      makeDeps().callGhostTool({
+        ghostId: 'meka-unity',
+        tool: 'unity_execute',
+        args: {
+          action: 'open',
+          projectPath: 'C:\\Workspace\\saga2\\saga2_project\\saga2_unity',
+        },
+      }),
+    ).resolves.toMatchObject({ ok: true, result: 'opened' });
+    expect(hostConfirmMock).toHaveBeenCalledTimes(1);
+    expect(dispatchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('Editor 依赖命令未启动时先由 Host 打开工程再重试原命令', async () => {
+    listMock.mockReturnValue([
+      chipGhost('meka-unity', ['tool'], {
+        tools: [{ name: 'unity_execute', description: 'd' }],
+      }),
+    ]);
+    dispatchMock
+      .mockResolvedValueOnce({
+        ok: false,
+        errorCode: 'UNITY_EDITOR_START_CONFIRM_REQUIRED',
+        message: 'confirm required',
+      })
+      .mockResolvedValueOnce({ ok: true, result: 'opened' })
+      .mockResolvedValueOnce({ ok: true, result: 'exported' });
+
+    await expect(
+      makeDeps().callGhostTool({
+        ghostId: 'meka-unity',
+        tool: 'unity_execute',
+        args: {
+          action: 'command',
+          projectPath: 'C:\\Workspace\\saga2\\saga2_project\\saga2_unity',
+          arguments: ['legacy_module_export_json', '1021', 'C:\\Temp\\1021.json'],
+        },
+      }),
+    ).resolves.toMatchObject({ ok: true, result: 'exported' });
+    expect(hostConfirmMock).toHaveBeenCalledTimes(1);
+    expect(dispatchMock).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        tool: 'unity_execute',
+        args: expect.objectContaining({ action: 'open' }),
+      }),
+    );
+    expect(dispatchMock).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
+        tool: 'unity_execute',
+        args: expect.objectContaining({ action: 'command' }),
+      }),
+    );
+  });
+
+  it('does not let the Agent-controlled Meka channel relax the session workdir gate', async () => {
+    await makeDeps().forgePack({ dir: path.join(WORKDIR, 'plugin-src'), channel: 'meka' });
+    expect(packGhostDirMock).toHaveBeenCalledWith(path.join(WORKDIR, 'plugin-src'), {
+      sessionWorkdir: WORKDIR,
+      forbiddenRootDirs: [],
+    });
+  });
+
   it('不存在优先于未登录与残留目录偏好返回 GHOST_NOT_FOUND', async () => {
     listMock.mockReturnValue([]);
     activeSessionAvailableMock.mockReturnValue(false);
@@ -1190,7 +1504,12 @@ describe('Full Access 插件文件交接', () => {
         { hash, refKind: 'ghost-tool-grant', refId: 'art', originKind: 'tool' },
       ]),
     );
-    expect(ledgerRefs).not.toContainEqual({ hash, refKind: 'ghost-grant', refId: 'art', originKind: 'user' });
+    expect(ledgerRefs).not.toContainEqual({
+      hash,
+      refKind: 'ghost-grant',
+      refId: 'art',
+      originKind: 'user',
+    });
 
     liveGrantStateMock.mockReturnValue({ permissionMode: 'auto', remoteHostId: null });
     const downgradedResult = await deps.callGhostTool({
@@ -1203,7 +1522,12 @@ describe('Full Access 插件文件交接', () => {
     expect(downgradedResult).toMatchObject({ ok: true, result: 'done' });
     expect(confirmRequestMock).toHaveBeenCalledTimes(1);
     expect(resolvedAttachmentOrigins).toEqual(['tool', 'user']);
-    expect(ledgerRefs).toContainEqual({ hash, refKind: 'ghost-grant', refId: 'art', originKind: 'user' });
+    expect(ledgerRefs).toContainEqual({
+      hash,
+      refKind: 'ghost-grant',
+      refId: 'art',
+      originKind: 'user',
+    });
 
     await deps.callGhostTool({
       ghostId: 'art',

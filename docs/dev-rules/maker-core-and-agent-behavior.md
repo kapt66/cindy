@@ -139,8 +139,26 @@ hello，精确校验 cc-manager bundle/protocol，不能只检查实例 online �
 其它工具继续可用。不得把 Host 拒绝误报为用户拒绝，也不得通过 `sandbox_permissions` 或改参数
 重试。Host 对 Codex 读取内容寻址 Skill
 快照的静默只读白名单应覆盖模型实际生成且可严格证明无副作用的固定形态，包括单个
-`SKILL.md` 的 `(Get-Content -LiteralPath ...).Count`；白名单仍须拒绝其它文件、路径穿越、写入、
+`SKILL.md` 的完整 `Get-Content`/`Get-Content -Raw` 和
+`(Get-Content -LiteralPath ...).Count`；白名单仍须拒绝截断读取、其它文件、路径穿越、写入、
 重定向和附加命令，不能扩成通用 PowerShell 放行。
+
+业务工作流若对白名单中的单一权威文件允许完整 `Get-Content`，必须覆盖 Codex 在 Windows
+实际产生的等价 PowerShell 参数顺序及 `pwsh -Command` 包装层，例如
+`Get-Content -LiteralPath '<file>' -Raw`；审批层不得因为参数顺序差异中断已经证明只读且路径
+精确的读取。Code Mode 上报命令时还可能保留 JavaScript 字符串中的重复反斜杠，路径白名单应
+先统一分隔符再做完整路径匹配。该兼容不能放宽到其它文件、通配符、管道、重定向或附加命令。
+
+业务角色若把某个原生 Skill 声明为确定性工作流入口，不得仅挂载 Skill 目录后在角色提示中声称
+正文已经注入。需要保证首轮调用顺序时，Host 应从任务冻结快照取出该唯一入口正文，以带边界
+标记的任务级可信段同时注入新建和恢复消息；原生 Skill 与完整通用工具继续保留，不能靠隐藏
+工具弥补上下文缺失。
+
+Codex 原生命令的可选 `getShellCommandPolicy` 回调必须携带当前业务 `sessionId`、会话
+`workingDir`、`remoteHostId` 和 `vendorOptions`，不能只给 Host 一段命令文本后按路径猜角色。
+Desktop 只对明确绑定的业务 workflow 应用专用 Shell 门禁，普通任务返回未裁决并保持原权限
+行为。回调同时覆盖审批请求和已经开始上报的 command item；Host deny 必须中断该 turn 并把
+产品原因呈现给模型，不能表现成用户点击拒绝。
 
 实际依赖失败的回执不能只返回原始异常。Desktop 的 MCP facade 应先执行不会触网、不会暴露
 秘密的本地状态诊断，再以结构化字段说明故障分类、阻断范围、已做诊断、所需用户动作和精确
@@ -168,8 +186,9 @@ Codex 原生子任务的首个 `collab_spawn` HTTP 请求可能早于 app-server
 工作流若必须禁止 Codex 原生子任务，不能只在角色 prompt 中写“不要创建”。Sol/Terra 的
 Multi-Agent V2 会以更高层 developer 指令注入默认委派策略；该工作流必须在任务
 `vendorOptions` 中声明 `codexNativeSubagentsDisabled: true`。maker-core 将该标志纳入本地
-app-server Host key，Desktop 为这类隔离 Host 启动时注入 `agents.enabled=false`。带标志与不带
-标志的任务不得复用同一 Host；新建、恢复及引用目录 profile 切换还必须在 thread config 重申
+app-server Host key，并透传到 `prepareCodexExtraSpawnConfig`；Desktop 为这类隔离 Host 启动时
+注入 `agents.enabled=false`。带标志与不带标志的任务不得复用同一 Host；新建、恢复及引用目录
+profile 切换还必须在 thread config 重申
 `agents.enabled=false`，覆盖远端 app-server 与恢复线程。普通任务继续使用用户的全局子任务设置。
 
 Host deny 是不可覆盖的业务不变量：Claude 的本地 `PreToolUse`、`canUseTool` 和远端

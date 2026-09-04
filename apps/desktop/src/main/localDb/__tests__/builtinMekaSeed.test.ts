@@ -1,6 +1,9 @@
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import combatDevelopmentRole from '../../../../resources/meka/roles/combat-development.json';
+import generalDevelopmentRole from '../../../../resources/meka/roles/general-development.json';
+
 import { BUILTIN_MEKA_PROJECTS, seedBuiltinMekaProjects } from '../../../shared/meka-projects.js';
 
 const databases: Database.Database[] = [];
@@ -49,6 +52,33 @@ afterEach(() => {
 });
 
 describe('builtin Meka project registry', () => {
+  it('keeps SAGA2 gameplay roles business-first for non-technical planners', () => {
+    expect(combatDevelopmentRole.prompt).toContain('面向策划的工作契约');
+    expect(combatDevelopmentRole.prompt).toContain('不得要求策划填写 typ');
+    expect(combatDevelopmentRole.prompt).toContain('只有以下情况可以向策划提问');
+    expect(combatDevelopmentRole.promptFragments).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'combat-evidence-budget',
+          path: 'prompts/combat-evidence-budget.md',
+        }),
+      ]),
+    );
+    expect(generalDevelopmentRole.prompt).toContain(
+      'natural-language business intent as the input contract',
+    );
+    expect(generalDevelopmentRole.prompt).toContain('Do not ask the user for module types');
+    expect(generalDevelopmentRole.includeAllProjectMetadata).toBe(false);
+    expect(generalDevelopmentRole.promptFragments).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'combat-evidence-budget',
+          path: 'prompts/combat-evidence-budget.md',
+        }),
+      ]),
+    );
+  });
+
   it('seeds SAGA2 and its two roles idempotently and backfills Meka sessions', () => {
     const db = createDb();
     db.prepare("INSERT INTO sessions (id, workspace_kind) VALUES ('meka-session', 'meka')").run();

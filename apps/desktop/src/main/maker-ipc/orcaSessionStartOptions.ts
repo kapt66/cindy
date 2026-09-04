@@ -7,10 +7,7 @@ import {
 import { getSessionOrcaRole, getWorkerLink } from '../localDb/orcaTeamStore.js';
 import { createLogger } from '../logger.js';
 import type { MakerSessionCreateOpts } from './sessionRequest.js';
-import {
-  knownNonOrcaSessionIds,
-  readOrcaRoleFromVendorOptions,
-} from './orcaMcpHydrationCache.js';
+import { knownNonOrcaSessionIds, readOrcaRoleFromVendorOptions } from './orcaMcpHydrationCache.js';
 
 type OrcaRole = 'lead' | 'worker';
 
@@ -106,26 +103,28 @@ export function applyOrcaInstructions(o: MakerSessionCreateOpts): boolean {
     const initialWorker = parseOrcaInitialWorkerRef(vendorOptions.initialWorker);
     prompt = renderOrcaLeadSystemPrompt(initialWorker);
   } else if (role === 'worker') {
-    const workerId = typeof vendorOptions.orcaWorkerId === 'string'
-      ? vendorOptions.orcaWorkerId
-      : null;
-    const sessionId = typeof vendorOptions.orcaWorkerSessionId === 'string'
-      ? vendorOptions.orcaWorkerSessionId
-      : typeof o.id === 'string'
-        ? o.id
-        : null;
-    const teamId = typeof vendorOptions.orcaWorkflowId === 'string'
-      ? vendorOptions.orcaWorkflowId
-      : null;
-    const leadSessionId = typeof vendorOptions.orcaLeadSessionId === 'string'
-      ? vendorOptions.orcaLeadSessionId
-      : null;
+    const workerId =
+      typeof vendorOptions.orcaWorkerId === 'string' ? vendorOptions.orcaWorkerId : null;
+    const sessionId =
+      typeof vendorOptions.orcaWorkerSessionId === 'string'
+        ? vendorOptions.orcaWorkerSessionId
+        : typeof o.id === 'string'
+          ? o.id
+          : null;
+    const teamId =
+      typeof vendorOptions.orcaWorkflowId === 'string' ? vendorOptions.orcaWorkflowId : null;
+    const leadSessionId =
+      typeof vendorOptions.orcaLeadSessionId === 'string' ? vendorOptions.orcaLeadSessionId : null;
     if (workerId && sessionId && teamId && leadSessionId) {
       prompt = renderOrcaWorkerSystemPrompt({
         workerId,
         sessionId,
         workflowId: teamId,
         leadSessionId,
+        reportDelivery:
+          vendorOptions.mekaWorkflow === 'saga2-combat-server-worker-v1'
+            ? 'terminal-auto-bridge'
+            : 'explicit-bridge',
       });
     }
   }

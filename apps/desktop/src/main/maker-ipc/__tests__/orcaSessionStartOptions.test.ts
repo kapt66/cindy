@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { knownNonOrcaSessionIds } from '../orcaMcpHydrationCache';
-import { preparePersistedOrcaSessionStart } from '../orcaSessionStartOptions';
+import {
+  applyOrcaInstructions,
+  preparePersistedOrcaSessionStart,
+} from '../orcaSessionStartOptions';
 import type { MakerSessionCreateOpts } from '../sessionRequest';
 
 function baseOpts(id: string): MakerSessionCreateOpts {
@@ -22,11 +25,13 @@ describe('persisted Orca session start options', () => {
     const opts = baseOpts('lead-session');
     const getWorkerLink = vi.fn();
 
-    await expect(preparePersistedOrcaSessionStart('lead-session', opts, {
-      getSessionRole: vi.fn().mockResolvedValue('lead'),
-      getWorkerLink,
-      warn: vi.fn(),
-    })).resolves.toBe(true);
+    await expect(
+      preparePersistedOrcaSessionStart('lead-session', opts, {
+        getSessionRole: vi.fn().mockResolvedValue('lead'),
+        getWorkerLink,
+        warn: vi.fn(),
+      }),
+    ).resolves.toBe(true);
 
     expect(opts.orcaRole).toBe('lead');
     expect(opts.vendorOptions).toMatchObject({
@@ -41,15 +46,17 @@ describe('persisted Orca session start options', () => {
   it('reconstructs persisted Worker link, vendor options, and instructions', async () => {
     const opts = baseOpts('worker-session');
 
-    await expect(preparePersistedOrcaSessionStart('worker-session', opts, {
-      getSessionRole: vi.fn().mockResolvedValue('worker'),
-      getWorkerLink: vi.fn().mockResolvedValue({
-        workerId: 'worker-1',
-        teamId: 'team-1',
-        leadSessionId: 'lead-session',
+    await expect(
+      preparePersistedOrcaSessionStart('worker-session', opts, {
+        getSessionRole: vi.fn().mockResolvedValue('worker'),
+        getWorkerLink: vi.fn().mockResolvedValue({
+          workerId: 'worker-1',
+          teamId: 'team-1',
+          leadSessionId: 'lead-session',
+        }),
+        warn: vi.fn(),
       }),
-      warn: vi.fn(),
-    })).resolves.toBe(true);
+    ).resolves.toBe(true);
 
     expect(opts.orcaRole).toBe('worker');
     expect(opts.vendorOptions).toMatchObject({
@@ -71,11 +78,13 @@ describe('persisted Orca session start options', () => {
     knownNonOrcaSessionIds.add('worker-session');
     const getSessionRole = vi.fn().mockResolvedValue(null);
 
-    await expect(preparePersistedOrcaSessionStart('worker-session', opts, {
-      getSessionRole,
-      getWorkerLink: vi.fn(),
-      warn: vi.fn(),
-    })).resolves.toBe(false);
+    await expect(
+      preparePersistedOrcaSessionStart('worker-session', opts, {
+        getSessionRole,
+        getWorkerLink: vi.fn(),
+        warn: vi.fn(),
+      }),
+    ).resolves.toBe(false);
 
     expect(getSessionRole).toHaveBeenCalledWith('worker-session');
     expect(knownNonOrcaSessionIds.has('worker-session')).toBe(false);
@@ -96,5 +105,24 @@ describe('persisted Orca session start options', () => {
 
     expect(opts.userPrompt).toBe(promptWithProjectContext);
     expect(deps.getSessionRole).toHaveBeenCalledTimes(1);
+  });
+
+  it('injects terminal auto-bridge instructions only for a combat server worker', () => {
+    const opts = {
+      ...baseOpts('combat-worker-session'),
+      vendorOptions: {
+        orcaRole: 'worker' as const,
+        orcaWorkflowId: 'team-1',
+        orcaLeadSessionId: 'lead-session',
+        orcaWorkerId: 'worker-1',
+        orcaWorkerSessionId: 'combat-worker-session',
+        mekaWorkflow: 'saga2-combat-server-worker-v1',
+      },
+    };
+
+    expect(applyOrcaInstructions(opts)).toBe(true);
+    expect(opts.userPrompt).toContain('terminal auto-bridge delivery');
+    expect(opts.userPrompt).toContain('Do NOT call send_to_lead');
+    expect(opts.userPrompt).not.toContain('ALWAYS call send_to_lead');
   });
 });

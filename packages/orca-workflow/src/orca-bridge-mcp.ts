@@ -1,13 +1,13 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID } from "node:crypto";
 
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { z } from 'zod';
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { z } from "zod";
 import {
   isTerminalAgentErrorEvent,
   ORCA_NESTED_REPORT_ERROR_CODE,
   ORCA_NESTED_REPORT_ERROR_MESSAGE,
   toSessionDispatchOutcome,
-} from '@cindy/maker-core';
+} from "@cindy/maker-core";
 import type {
   AgentEvent,
   AgentKind,
@@ -17,15 +17,15 @@ import type {
   McpProviderContext,
   Session,
   SessionDispatchOutcome,
-} from '@cindy/maker-core';
+} from "@cindy/maker-core";
 import {
   isProductTurnDoneEvent,
   isTurnContinuationBoundaryEvent,
-} from '@cindy/maker-shared/turn-continuation';
+} from "@cindy/maker-shared/turn-continuation";
 
 const MAX_CAPTURED_TEXT = 64 * 1024;
 
-export type OrcaWorkerStatus = 'idle' | 'running' | 'done' | 'error';
+export type OrcaWorkerStatus = "idle" | "running" | "done" | "error";
 
 export interface OrcaPersistedSession {
   sessionId: string;
@@ -33,8 +33,9 @@ export interface OrcaPersistedSession {
   workingDir: string;
   model: string;
   providerId?: string | null;
-  effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
-  permissionMode?: 'ask' | 'auto' | 'bypassPermissions' | 'acceptEdits' | 'plan' | 'default';
+  effort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+  permissionMode?:
+    "ask" | "auto" | "bypassPermissions" | "acceptEdits" | "plan" | "default";
   fastMode?: boolean;
   sdkSessionId?: string;
   title?: string;
@@ -59,7 +60,10 @@ export interface OrcaTeamStore {
     workerId?: string;
     workerSessionId?: string;
   }) => Promise<OrcaWorkerLink | null>;
-  updateWorkerStatus: (workerId: string, status: OrcaWorkerStatus) => Promise<void>;
+  updateWorkerStatus: (
+    workerId: string,
+    status: OrcaWorkerStatus,
+  ) => Promise<void>;
 }
 
 export interface OrcaLeadHistoryCursor {
@@ -70,7 +74,7 @@ export interface OrcaLeadHistoryCursor {
 
 export interface OrcaLeadHistoryMessage {
   id: string;
-  role: 'user' | 'assistant';
+  role: "user" | "assistant";
   content: unknown;
   agentMeta: unknown;
   createdAt: number;
@@ -106,12 +110,12 @@ class CapturedSessionRegistry {
 }
 
 export interface OrcaLeadVendorOptions extends Record<string, unknown> {
-  orcaRole: 'lead';
+  orcaRole: "lead";
   orcaLeadSessionId?: string;
 }
 
 export interface OrcaWorkerVendorOptions extends Record<string, unknown> {
-  orcaRole: 'worker';
+  orcaRole: "worker";
   orcaWorkflowId?: string;
   orcaLeadSessionId?: string;
   orcaWorkerId?: string;
@@ -126,7 +130,10 @@ export interface OrcaBridgeMcpDeps {
     message: { clientId: string; content: string },
   ) => Promise<void>;
   wireSession: (session: Session) => void;
-  hydrateSessionRoute?: (sessionId: string, providerId: string | null) => void | Promise<void>;
+  hydrateSessionRoute?: (
+    sessionId: string,
+    providerId: string | null,
+  ) => void | Promise<void>;
   /**
    * 远端 session 重建前的 preflight (SSH 重连 / agent install / 远端 MCP
    * 注入), 与宿主 IPC create/send 路径的 remote ensure 同语义。bridge
@@ -164,36 +171,40 @@ export interface OrcaBridgeMcpDeps {
   dispatchInterAgentMessage?: (params: {
     targetSessionId: string;
     rawContent: string;
-    source: 'lead' | 'worker';
+    source: "lead" | "worker";
     senderLabel: string;
     workerId?: string;
+    workerSessionId?: string;
     onAccepted?: () => void | Promise<void>;
     onAcceptedRollback?: () => void | Promise<void>;
     meta: {
       source: string;
       context: string;
     };
-  }) => Promise<{
-    ok: true;
-    mode: 'dispatched' | 'queued';
-    clientId: string;
-    dispatchOutcome?: unknown;
-  } | {
-    ok: false;
-    dispatchOutcome?: unknown;
-  }>;
+  }) => Promise<
+    | {
+        ok: true;
+        mode: "dispatched" | "queued";
+        clientId: string;
+        dispatchOutcome?: unknown;
+      }
+    | {
+        ok: false;
+        dispatchOutcome?: unknown;
+      }
+  >;
 }
 
 function text(data: unknown, isError = false) {
   return {
-    content: [{ type: 'text' as const, text: JSON.stringify(data) }],
+    content: [{ type: "text" as const, text: JSON.stringify(data) }],
     isError,
   };
 }
 
 type OrcaToolResult = ReturnType<typeof text>;
 
-type OrcaSendSource = 'mcp-tool' | 'auto-bridge';
+type OrcaSendSource = "mcp-tool" | "auto-bridge";
 type HostOrcaDispatch = { hostDispatched: true; queued: boolean };
 
 interface OrcaSendMeta {
@@ -216,24 +227,31 @@ interface SanitizedOrcaSendError {
   safeMessage?: string;
 }
 
-const ORCA_SEND_OWNER = 'orca-workflow';
+const ORCA_SEND_OWNER = "orca-workflow";
 const SAFE_ERROR_NAME_RE = /^[A-Za-z][A-Za-z0-9]{0,63}$/;
-const SAFE_SEND_ERROR_CODES = new Set(['SESSION_RUNNING']);
+const SAFE_SEND_ERROR_CODES = new Set(["SESSION_RUNNING"]);
 
 export const SEND_TO_LEAD_TOOL_DESCRIPTION = [
-  'Pass the worker_id from the latest Lead message.',
-  'This tool is the assigned Orca Worker\'s direct reporting channel to the Lead.',
-  'Native subagents are internal helpers, so they return findings to the Worker instead of calling this tool.',
-  'Call once per turn, only with the final report or one blocking question.',
-  'After a question, stop and wait for send_to_worker.',
-  'Combine all results; do not send progress, partial findings, or same-turn corrections.',
-].join(' ');
+  "Pass the worker_id from the latest Lead message.",
+  "This tool is the assigned Orca Worker's direct reporting channel to the Lead.",
+  "Native subagents are internal helpers, so they return findings to the Worker instead of calling this tool.",
+  "Call once per turn, only with the final report or one blocking question.",
+  "After a question, stop and wait for send_to_worker.",
+  "Combine all results; do not send progress, partial findings, or same-turn corrections.",
+].join(" ");
 
 export function authorizeSendToLeadCaller(ctx: McpProviderContext):
   | { ok: true }
-  | { ok: false; error: { error: string; code: 'NESTED_AGENT_NOT_ALLOWED' | 'CALLER_PROVENANCE_REQUIRED' } } {
-  if (ctx.mcpCallerAttested === true && ctx.mcpCallerKind === 'root') return { ok: true };
-  if (ctx.mcpCallerAttested === true && ctx.mcpCallerKind === 'descendant') {
+  | {
+      ok: false;
+      error: {
+        error: string;
+        code: "NESTED_AGENT_NOT_ALLOWED" | "CALLER_PROVENANCE_REQUIRED";
+      };
+    } {
+  if (ctx.mcpCallerAttested === true && ctx.mcpCallerKind === "root")
+    return { ok: true };
+  if (ctx.mcpCallerAttested === true && ctx.mcpCallerKind === "descendant") {
     return {
       ok: false,
       error: {
@@ -245,27 +263,34 @@ export function authorizeSendToLeadCaller(ctx: McpProviderContext):
   return {
     ok: false,
     error: {
-      error: 'caller provenance is required to report directly to the lead',
-      code: 'CALLER_PROVENANCE_REQUIRED',
+      error: "caller provenance is required to report directly to the lead",
+      code: "CALLER_PROVENANCE_REQUIRED",
     },
   };
 }
 
-function makeOrcaSendContext(entrypoint: string, sessionId: string, action: string): string {
+function makeOrcaSendContext(
+  entrypoint: string,
+  sessionId: string,
+  action: string,
+): string {
   return `${entrypoint}/${sessionId}/${action}`;
 }
 
 function sanitizeOrcaSendError(err: unknown): SanitizedOrcaSendError {
   if (!(err instanceof Error)) return { errorKind: typeof err };
-  const rawName = typeof err.name === 'string' ? err.name : '';
-  const errorName = SAFE_ERROR_NAME_RE.test(rawName) ? rawName : 'Error';
+  const rawName = typeof err.name === "string" ? err.name : "";
+  const errorName = SAFE_ERROR_NAME_RE.test(rawName) ? rawName : "Error";
   const rawCode = (err as { code?: unknown }).code;
-  const errorCode = typeof rawCode === 'string' && SAFE_SEND_ERROR_CODES.has(rawCode)
-    ? rawCode
-    : undefined;
+  const errorCode =
+    typeof rawCode === "string" && SAFE_SEND_ERROR_CODES.has(rawCode)
+      ? rawCode
+      : undefined;
   return {
     errorName,
-    ...(errorName === 'Error' && rawName !== 'Error' ? { errorKind: 'unknown' } : {}),
+    ...(errorName === "Error" && rawName !== "Error"
+      ? { errorKind: "unknown" }
+      : {}),
     ...(errorCode ? { errorCode } : {}),
     safeMessage: errorCode ?? errorName,
   };
@@ -277,8 +302,8 @@ function logOrcaSendNotDispatched(
   reason: string,
   extra?: Record<string, unknown>,
 ): void {
-  log.warn('orca bridge session send not dispatched', {
-    kind: 'session-dispatch',
+  log.warn("orca bridge session send not dispatched", {
+    kind: "session-dispatch",
     source: meta.source,
     owner: ORCA_SEND_OWNER,
     entrypoint: meta.entrypoint,
@@ -297,21 +322,24 @@ function logOrcaSendNotDispatched(
 
 function makeOrcaDispatchToolError(
   meta: OrcaSendMeta,
-  reason: Extract<SessionDispatchOutcome, { dispatched: false }>['reason'],
+  reason: Extract<SessionDispatchOutcome, { dispatched: false }>["reason"],
   extra?: Record<string, unknown>,
 ): OrcaToolResult {
-  return text({
-    error: 'session send not dispatched',
-    kind: 'session-dispatch',
-    source: meta.source,
-    dispatched: false,
-    reason,
-    context: meta.context,
-    worker_id: meta.workerId,
-    session_id: meta.sessionId,
-    lead_session_id: meta.leadSessionId,
-    ...extra,
-  }, true);
+  return text(
+    {
+      error: "session send not dispatched",
+      kind: "session-dispatch",
+      source: meta.source,
+      dispatched: false,
+      reason,
+      context: meta.context,
+      worker_id: meta.workerId,
+      session_id: meta.sessionId,
+      lead_session_id: meta.leadSessionId,
+      ...extra,
+    },
+    true,
+  );
 }
 
 function makeOrcaRejectedToolError(
@@ -320,51 +348,68 @@ function makeOrcaRejectedToolError(
   extra?: Record<string, unknown>,
 ): OrcaToolResult {
   const error = sanitizeOrcaSendError(err);
-  return text({
-    error: 'session send failed',
-    kind: 'session-dispatch',
-    source: meta.source,
-    dispatched: false,
-    reason: 'send-rejected',
-    code: error.errorCode,
-    context: meta.context,
-    worker_id: meta.workerId,
-    session_id: meta.sessionId,
-    lead_session_id: meta.leadSessionId,
-    ...extra,
-  }, true);
+  return text(
+    {
+      error: "session send failed",
+      kind: "session-dispatch",
+      source: meta.source,
+      dispatched: false,
+      reason: "send-rejected",
+      code: error.errorCode,
+      context: meta.context,
+      worker_id: meta.workerId,
+      session_id: meta.sessionId,
+      lead_session_id: meta.leadSessionId,
+      ...extra,
+    },
+    true,
+  );
 }
 
-function isHostOrcaDispatch(result: OrcaToolResult | HostOrcaDispatch | null): result is HostOrcaDispatch {
-  return result !== null && typeof result === 'object' && 'hostDispatched' in result && result.hostDispatched === true;
+function isHostOrcaDispatch(
+  result: OrcaToolResult | HostOrcaDispatch | null,
+): result is HostOrcaDispatch {
+  return (
+    result !== null &&
+    typeof result === "object" &&
+    "hostDispatched" in result &&
+    result.hostDispatched === true
+  );
 }
 
 async function dispatchOrcaToolMessage(input: {
   session: Session;
-  message: Parameters<Session['send']>[0];
+  message: Parameters<Session["send"]>[0];
   deps?: OrcaBridgeMcpDeps;
   rawContent?: string;
-  source?: 'lead' | 'worker';
+  source?: "lead" | "worker";
   senderLabel?: string;
+  workerSessionId?: string;
   log: Logger;
   meta: OrcaSendMeta;
   errorExtra?: Record<string, unknown>;
   onAccepted?: () => void | Promise<void>;
   hostOnAccepted?: () => void | Promise<void>;
   hostOnAcceptedRollback?: () => void | Promise<void>;
-  getLogState?: () => Pick<OrcaSendMeta, 'workerStatus' | 'autoBridgePending'>;
+  getLogState?: () => Pick<OrcaSendMeta, "workerStatus" | "autoBridgePending">;
 }): Promise<OrcaToolResult | HostOrcaDispatch | null> {
   const readMeta = () => ({
     ...input.meta,
     ...input.getLogState?.(),
   });
-  if (input.deps?.dispatchInterAgentMessage && input.rawContent && input.source && input.senderLabel) {
+  if (
+    input.deps?.dispatchInterAgentMessage &&
+    input.rawContent &&
+    input.source &&
+    input.senderLabel
+  ) {
     const result = await input.deps.dispatchInterAgentMessage({
       targetSessionId: input.session.id,
       rawContent: input.rawContent,
       source: input.source,
       senderLabel: input.senderLabel,
       workerId: input.meta.workerId,
+      workerSessionId: input.workerSessionId,
       onAccepted: input.hostOnAccepted ?? input.onAccepted,
       onAcceptedRollback: input.hostOnAcceptedRollback,
       meta: {
@@ -372,12 +417,17 @@ async function dispatchOrcaToolMessage(input: {
         context: input.meta.context,
       },
     });
-    if (result.ok) return { hostDispatched: true, queued: result.mode === 'queued' };
+    if (result.ok)
+      return { hostDispatched: true, queued: result.mode === "queued" };
     const meta = readMeta();
-    logOrcaSendNotDispatched(input.log, meta, 'send-rejected', {
+    logOrcaSendNotDispatched(input.log, meta, "send-rejected", {
       dispatchOutcome: result.dispatchOutcome,
     });
-    return makeOrcaRejectedToolError(meta, new Error('host dispatch failed'), input.errorExtra);
+    return makeOrcaRejectedToolError(
+      meta,
+      new Error("host dispatch failed"),
+      input.errorExtra,
+    );
   }
   try {
     const result = await input.session.send(input.message, {
@@ -392,7 +442,7 @@ async function dispatchOrcaToolMessage(input: {
   } catch (err) {
     const meta = readMeta();
     const error = sanitizeOrcaSendError(err);
-    logOrcaSendNotDispatched(input.log, meta, 'send-rejected', {
+    logOrcaSendNotDispatched(input.log, meta, "send-rejected", {
       code: error.errorCode,
       error,
     });
@@ -405,43 +455,48 @@ async function dispatchOrcaToolMessage(input: {
 // session 用 formatAgentMessage), 才能保证 MCP 工具 + 手动 toggle 两条入口的
 // 派活效果完全一致。
 export function formatOrcaCommunicationMessage(
-  orcaSource: 'lead' | 'worker',
+  orcaSource: "lead" | "worker",
   content: string,
 ): string {
   return JSON.stringify({ orcaSource, content });
 }
 
-export function formatAgentMessage(source: 'lead' | 'worker', content: string, workerId?: string): string {
-  const label = source === 'lead' ? '[From Orca Lead]' : '[From Orca Worker]';
-  if (source === 'lead' && workerId) {
+export function formatAgentMessage(
+  source: "lead" | "worker",
+  content: string,
+  workerId?: string,
+): string {
+  const label = source === "lead" ? "[From Orca Lead]" : "[From Orca Worker]";
+  if (source === "lead" && workerId) {
     return `${label}\n${content}\n\n---\n(Bridge note: your worker_id for tool calls is ${workerId}.)`;
   }
   return `${label}\n${content}`;
 }
 
 function captureSessionOutput(
-  entry: Pick<CapturedSessionEntry, 'finalText' | 'lastEventAt' | 'status'>,
+  entry: Pick<CapturedSessionEntry, "finalText" | "lastEventAt" | "status">,
   ev: AgentEvent,
 ): void {
   entry.lastEventAt = Date.now();
-  if (ev.type === 'text') {
+  if (ev.type === "text") {
     const data = ev.data as { text?: unknown; isFinal?: unknown } | null;
-    if (typeof data?.text !== 'string') return;
-    entry.finalText = data.isFinal === true
-      ? data.text
-      : (entry.finalText + data.text).slice(-MAX_CAPTURED_TEXT);
+    if (typeof data?.text !== "string") return;
+    entry.finalText =
+      data.isFinal === true
+        ? data.text
+        : (entry.finalText + data.text).slice(-MAX_CAPTURED_TEXT);
     return;
   }
-  if (ev.type === 'done') {
+  if (ev.type === "done") {
     const result = (ev.data as { result?: unknown } | null)?.result;
-    if (typeof result === 'string' && result.length > 0) {
+    if (typeof result === "string" && result.length > 0) {
       entry.finalText = result;
     }
-    if (isProductTurnDoneEvent(ev)) entry.status = 'done';
+    if (isProductTurnDoneEvent(ev)) entry.status = "done";
     return;
   }
   if (isTerminalAgentErrorEvent(ev) && !isTurnContinuationBoundaryEvent(ev)) {
-    entry.status = 'error';
+    entry.status = "error";
   }
 }
 
@@ -454,7 +509,7 @@ interface AutoBridgeState {
   version: number;
   deferred?: {
     finalText: string;
-    status: 'done' | 'error';
+    status: "done" | "error";
   };
 }
 
@@ -512,7 +567,6 @@ function attachSessionCapture(entry: CapturedSessionEntry): void {
   });
 }
 
-
 async function ensureSessionFromMeta(
   deps: OrcaBridgeMcpDeps,
   meta: OrcaPersistedSession,
@@ -556,7 +610,10 @@ async function ensureSessionFromMeta(
     ...(meta.sdkSessionId ? { resumeSessionId: meta.sdkSessionId } : {}),
     // 远端 lead 在同一台 SSH 主机上重建; 本地 lead 无这两个字段。
     ...(meta.remoteHostId
-      ? { remoteHostId: meta.remoteHostId, makerMemoryEnabled: remoteMakerMemoryEnabled }
+      ? {
+          remoteHostId: meta.remoteHostId,
+          makerMemoryEnabled: remoteMakerMemoryEnabled,
+        }
       : {}),
   });
   deps.wireSession(session);
@@ -570,7 +627,11 @@ function updatePersistedWorkerStatus(
   log: Logger,
 ): void {
   deps.orcaTeamStore?.updateWorkerStatus(workerId, status).catch((err) => {
-    log.warn('update worker status failed', { err: String(err), workerId, status });
+    log.warn("update worker status failed", {
+      err: String(err),
+      workerId,
+      status,
+    });
   });
 }
 
@@ -578,14 +639,16 @@ function readWorkerIdentity(
   vendorOptions: Record<string, unknown> | undefined,
   workerIdParam?: string,
 ): { workerId?: string; workerSessionId?: string } {
-  const workerId = typeof workerIdParam === 'string' && workerIdParam.trim()
-    ? workerIdParam.trim()
-    : typeof vendorOptions?.orcaWorkerId === 'string'
-      ? vendorOptions.orcaWorkerId
+  const workerId =
+    typeof workerIdParam === "string" && workerIdParam.trim()
+      ? workerIdParam.trim()
+      : typeof vendorOptions?.orcaWorkerId === "string"
+        ? vendorOptions.orcaWorkerId
+        : undefined;
+  const workerSessionId =
+    typeof vendorOptions?.orcaWorkerSessionId === "string"
+      ? vendorOptions.orcaWorkerSessionId
       : undefined;
-  const workerSessionId = typeof vendorOptions?.orcaWorkerSessionId === 'string'
-    ? vendorOptions.orcaWorkerSessionId
-    : undefined;
   return { workerId, workerSessionId };
 }
 
@@ -593,12 +656,16 @@ function resolveRuntimeMcpContext(ctx: McpProviderContext): McpProviderContext {
   return ctx.getSessionContext?.() ?? ctx;
 }
 
-function readWorkerCallerSessionId(ctx: McpProviderContext): string | undefined {
-  if (typeof ctx.sessionId === 'string' && ctx.sessionId.trim()) {
+function readWorkerCallerSessionId(
+  ctx: McpProviderContext,
+): string | undefined {
+  if (typeof ctx.sessionId === "string" && ctx.sessionId.trim()) {
     return ctx.sessionId.trim();
   }
   const sessionId = ctx.vendorOptions?.orcaWorkerSessionId;
-  return typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : undefined;
+  return typeof sessionId === "string" && sessionId.trim()
+    ? sessionId.trim()
+    : undefined;
 }
 
 async function resolveWorkerLink(
@@ -611,18 +678,19 @@ async function resolveWorkerLink(
 > {
   const store = deps.orcaTeamStore;
   if (!store) {
-    return { ok: false, error: { error: 'orca workflow store unavailable' } };
+    return { ok: false, error: { error: "orca workflow store unavailable" } };
   }
   const runtimeCtx = resolveRuntimeMcpContext(ctx);
   const identity = readWorkerIdentity(runtimeCtx.vendorOptions, workerIdParam);
   const callerSessionId = readWorkerCallerSessionId(runtimeCtx);
-  if (runtimeCtx.vendorOptions?.orcaRole !== 'worker' || !callerSessionId) {
+  if (runtimeCtx.vendorOptions?.orcaRole !== "worker" || !callerSessionId) {
     return {
       ok: false,
       error: {
-        error: 'not an orca worker session',
+        error: "not an orca worker session",
         worker_id: identity.workerId,
-        detail: 'Start the worker with Orca worker vendorOptions and call from the owning worker session.',
+        detail:
+          "Start the worker with Orca worker vendorOptions and call from the owning worker session.",
       },
     };
   }
@@ -634,7 +702,7 @@ async function resolveWorkerLink(
     return {
       ok: false,
       error: {
-        error: 'orca worker mapping not found',
+        error: "orca worker mapping not found",
         worker_id: identity.workerId,
         worker_session_id: identity.workerSessionId,
       },
@@ -644,7 +712,7 @@ async function resolveWorkerLink(
     return {
       ok: false,
       error: {
-        error: 'worker identity mismatch',
+        error: "worker identity mismatch",
         worker_id: identity.workerId,
         resolved_worker_id: link.workerId,
       },
@@ -654,7 +722,7 @@ async function resolveWorkerLink(
     return {
       ok: false,
       error: {
-        error: 'worker session mismatch',
+        error: "worker session mismatch",
         worker_id: link.workerId,
         worker_session_id: callerSessionId,
         resolved_worker_session_id: link.workerSessionId,
@@ -675,7 +743,7 @@ async function ensureCapturedSession(
     // 缓存里的 session 引用可能已被 active-orca rehydrate 关闭并重建；这里检测
     // stale 引用并重新订阅 live Session，避免 bridge 继续监听已关闭实例。
     const status = existing.session.getStatus();
-    if (status !== 'closed' && status !== 'error') return existing;
+    if (status !== "closed" && status !== "error") return existing;
     existing.captureDispose?.();
     existing.captureDispose = undefined;
     existing.session = null;
@@ -684,8 +752,8 @@ async function ensureCapturedSession(
   const entry: CapturedSessionEntry = existing ?? {
     sessionId: meta.sessionId,
     session,
-    status: 'idle',
-    finalText: '',
+    status: "idle",
+    finalText: "",
     lastEventAt: Date.now(),
     eventSeq: 0,
     terminalEventSeq: 0,
@@ -696,37 +764,42 @@ async function ensureCapturedSession(
   return entry;
 }
 
-
 // 契约锚点：归属校验与 auto-bridge settle 见 docs/dev-rules/orca-team-architecture.md「协同运行时行为契约」「坑点与不变量 #3」。
 // Codex MCP HTTP bridge 仍然从全局 ctx 注册 server 名称，所以 worker bridge 必须
 // 对 Codex 可见。真正的执行边界在工具调用时 fail-closed：resolveWorkerLink 会读
 // 本次调用绑定的 session ctx，并校验它确实拥有解析出的 worker link。
-export function createOrcaWorkerBridgeMcpProvider(deps: OrcaBridgeMcpDeps): McpProvider {
-  const log = deps.logger.child('mcp/orca_worker_bridge');
+export function createOrcaWorkerBridgeMcpProvider(
+  deps: OrcaBridgeMcpDeps,
+): McpProvider {
+  const log = deps.logger.child("mcp/orca_worker_bridge");
   const leadCaptures = new CapturedSessionRegistry();
   return {
-    name: 'orca_worker_bridge',
+    name: "orca_worker_bridge",
     // Global HTTP bridges (Codex and Pi) bind the real session only at request time.
     // Keep the server registered when a dynamic context resolver exists; every tool
     // call still fails closed in resolveWorkerLink against that runtime identity.
     isEnabled: (ctx) =>
-      ctx.vendorOptions?.orcaRole === 'worker'
-      || ctx.agentKind === 'codex'
-      || typeof ctx.getSessionContext === 'function',
+      ctx.vendorOptions?.orcaRole === "worker" ||
+      ctx.agentKind === "codex" ||
+      typeof ctx.getSessionContext === "function",
     toClaudeSdkConfig: (ctx) => {
       if (
-        ctx.vendorOptions?.orcaRole !== 'worker'
-        && ctx.agentKind !== 'codex'
-        && typeof ctx.getSessionContext !== 'function'
-      ) return null;
-      const server = new McpServer({ name: 'orca_worker_bridge', version: '0.1.0' });
+        ctx.vendorOptions?.orcaRole !== "worker" &&
+        ctx.agentKind !== "codex" &&
+        typeof ctx.getSessionContext !== "function"
+      )
+        return null;
+      const server = new McpServer({
+        name: "orca_worker_bridge",
+        version: "0.1.0",
+      });
 
       async function resolveLead(workerId?: string) {
         const resolved = await resolveWorkerLink(deps, ctx, workerId);
         if (!resolved.ok) return resolved;
         const link = resolved.link;
         const leadVendorOptions: OrcaLeadVendorOptions = {
-          orcaRole: 'lead',
+          orcaRole: "lead",
           orcaLeadSessionId: link.leadSessionId,
         };
         const entry = await ensureCapturedSession(
@@ -739,25 +812,37 @@ export function createOrcaWorkerBridgeMcpProvider(deps: OrcaBridgeMcpDeps): McpP
       }
 
       server.tool(
-        'send_to_lead',
+        "send_to_lead",
         SEND_TO_LEAD_TOOL_DESCRIPTION,
         {
           message: z.string().min(1),
-          worker_id: z.string().min(1).describe('Required. Your assigned worker_id. Find it in the Bridge note at the end of the most recent lead message, or in the system prompt Identity line.'),
+          worker_id: z
+            .string()
+            .min(1)
+            .describe(
+              "Required. Your assigned worker_id. Find it in the Bridge note at the end of the most recent lead message, or in the system prompt Identity line.",
+            ),
         },
         async ({ message, worker_id }) => {
-          const authorization = authorizeSendToLeadCaller(resolveRuntimeMcpContext(ctx));
+          const authorization = authorizeSendToLeadCaller(
+            resolveRuntimeMcpContext(ctx),
+          );
           if (!authorization.ok) return text(authorization.error, true);
           const resolved = await resolveLead(worker_id);
           if (!resolved.ok) return text(resolved.error, true);
           const { link, entry } = resolved;
           if (!entry.session) {
-            return text({
-              error: 'lead session is not running',
-              lead_session_id: link.leadSessionId,
-            }, true);
+            return text(
+              {
+                error: "lead session is not running",
+                lead_session_id: link.leadSessionId,
+              },
+              true,
+            );
           }
-          const liveEntry = entry as CapturedSessionEntry & { session: Session };
+          const liveEntry = entry as CapturedSessionEntry & {
+            session: Session;
+          };
           const previousStatus = liveEntry.status;
           const previousFinalText = liveEntry.finalText;
           const previousLastEventAt = liveEntry.lastEventAt;
@@ -772,10 +857,13 @@ export function createOrcaWorkerBridgeMcpProvider(deps: OrcaBridgeMcpDeps): McpP
             if (liveEntry.terminalEventSeq !== previousTerminalEventSeq) {
               return;
             }
-            if (!observedEventDuringDispatch || liveEntry.finalText === previousFinalText) {
-              liveEntry.finalText = '';
+            if (
+              !observedEventDuringDispatch ||
+              liveEntry.finalText === previousFinalText
+            ) {
+              liveEntry.finalText = "";
             }
-            liveEntry.status = 'running';
+            liveEntry.status = "running";
             liveEntry.lastEventAt = Date.now();
           };
           // worker 回报被 host 接收(直发 accept 或入队成功)即视为"已回报": 立刻标 done +
@@ -787,31 +875,35 @@ export function createOrcaWorkerBridgeMcpProvider(deps: OrcaBridgeMcpDeps): McpP
           const settleWorkerReport = () => {
             if (workerReportSettled) return;
             workerReportSettled = true;
-            updatePersistedWorkerStatus(deps, link.workerId, 'done', log);
+            updatePersistedWorkerStatus(deps, link.workerId, "done", log);
             setAutoBridgePending(link.workerId, false);
           };
           const dispatchError = await dispatchOrcaToolMessage({
             session: liveEntry.session,
-            message: { type: 'user', content: formatAgentMessage('worker', message) },
+            message: {
+              type: "user",
+              content: formatAgentMessage("worker", message),
+            },
             deps,
             rawContent: message,
-            source: 'worker',
+            source: "worker",
             senderLabel: link.workerId,
             log,
             meta: {
-              source: 'mcp-tool',
-              entrypoint: 'orca_worker_bridge.send_to_lead',
+              source: "mcp-tool",
+              entrypoint: "orca_worker_bridge.send_to_lead",
               sessionId: link.leadSessionId,
               agentKind: link.leadSession.agentKind,
-              action: 'dispatch-to-lead',
+              action: "dispatch-to-lead",
               context: makeOrcaSendContext(
-                'orca_worker_bridge.send_to_lead',
+                "orca_worker_bridge.send_to_lead",
                 link.leadSessionId,
-                'dispatch-to-lead',
+                "dispatch-to-lead",
               ),
               workerId: link.workerId,
               leadSessionId: link.leadSessionId,
             },
+            workerSessionId: link.workerSessionId,
             getLogState: () => ({
               workerStatus: liveEntry.status,
               autoBridgePending: hasAutoBridgePending(link.workerId),
@@ -838,16 +930,18 @@ export function createOrcaWorkerBridgeMcpProvider(deps: OrcaBridgeMcpDeps): McpP
             return dispatchError;
           }
           markLeadDispatchAccepted();
-          await deps.persistUserMessage(link.leadSessionId, {
-            clientId: randomUUID(),
-            content: formatOrcaCommunicationMessage('worker', message),
-          }).catch((err) => {
-            log.warn('persist lead message failed', {
-              err: String(err),
-              workerId: link.workerId,
-              leadSessionId: link.leadSessionId,
+          await deps
+            .persistUserMessage(link.leadSessionId, {
+              clientId: randomUUID(),
+              content: formatOrcaCommunicationMessage("worker", message),
+            })
+            .catch((err) => {
+              log.warn("persist lead message failed", {
+                err: String(err),
+                workerId: link.workerId,
+                leadSessionId: link.leadSessionId,
+              });
             });
-          });
           settleWorkerReport();
           return text({
             ok: true,
@@ -858,16 +952,21 @@ export function createOrcaWorkerBridgeMcpProvider(deps: OrcaBridgeMcpDeps): McpP
       );
 
       server.tool(
-        'read_lead_history',
-        'Read user/assistant transcript rows from your owning Lead without waking or modifying the Lead. Use only when an [Orca UI Assignment] depends on Lead context. You MUST pass your worker_id.',
+        "read_lead_history",
+        "Read user/assistant transcript rows from your owning Lead without waking or modifying the Lead. Use only when an [Orca UI Assignment] depends on Lead context. You MUST pass your worker_id.",
         {
-          worker_id: z.string().min(1).describe('Required. Your assigned worker_id.'),
+          worker_id: z
+            .string()
+            .min(1)
+            .describe("Required. Your assigned worker_id."),
           from_ms: z
             .number()
             .int()
             .nonnegative()
             .optional()
-            .describe('Optional inclusive Unix-ms lower bound, such as the UI assignment snapshot_before_ms.'),
+            .describe(
+              "Optional inclusive Unix-ms lower bound, such as the UI assignment snapshot_before_ms.",
+            ),
           limit: z.number().int().min(1).max(200).default(100),
           cursor: z
             .object({
@@ -876,13 +975,13 @@ export function createOrcaWorkerBridgeMcpProvider(deps: OrcaBridgeMcpDeps): McpP
               rowid: z.number().int().positive().optional(),
             })
             .optional()
-            .describe('next_cursor from the previous page.'),
+            .describe("next_cursor from the previous page."),
         },
         async ({ worker_id, from_ms, limit, cursor }) => {
           const resolved = await resolveWorkerLink(deps, ctx, worker_id);
           if (!resolved.ok) return text(resolved.error, true);
           if (!deps.readLeadHistory) {
-            return text({ error: 'lead history unavailable' }, true);
+            return text({ error: "lead history unavailable" }, true);
           }
           let page: OrcaLeadHistoryPage;
           try {
@@ -894,17 +993,19 @@ export function createOrcaWorkerBridgeMcpProvider(deps: OrcaBridgeMcpDeps): McpP
                 ? {
                     createdAt: cursor.created_at_ms,
                     id: cursor.id,
-                    ...(cursor.rowid !== undefined ? { rowid: cursor.rowid } : {}),
+                    ...(cursor.rowid !== undefined
+                      ? { rowid: cursor.rowid }
+                      : {}),
                   }
                 : null,
             });
           } catch (err) {
-            log.warn('read lead history failed', {
+            log.warn("read lead history failed", {
               workerId: resolved.link.workerId,
               leadSessionId: resolved.link.leadSessionId,
               errorName: err instanceof Error ? err.name : undefined,
             });
-            return text({ error: 'lead history read failed' }, true);
+            return text({ error: "lead history read failed" }, true);
           }
           return text({
             worker_id: resolved.link.workerId,
@@ -931,10 +1032,15 @@ export function createOrcaWorkerBridgeMcpProvider(deps: OrcaBridgeMcpDeps): McpP
       );
 
       server.tool(
-        'read_lead',
-        'You MUST pass your worker_id (see the Bridge note at the end of the most recent lead message). Read captured output from the lead session.',
+        "read_lead",
+        "You MUST pass your worker_id (see the Bridge note at the end of the most recent lead message). Read captured output from the lead session.",
         {
-          worker_id: z.string().min(1).describe('Required. Your assigned worker_id. Find it in the Bridge note at the end of the most recent lead message, or in the system prompt Identity line.'),
+          worker_id: z
+            .string()
+            .min(1)
+            .describe(
+              "Required. Your assigned worker_id. Find it in the Bridge note at the end of the most recent lead message, or in the system prompt Identity line.",
+            ),
         },
         async ({ worker_id }) => {
           const resolved = await resolveLead(worker_id);
@@ -944,7 +1050,7 @@ export function createOrcaWorkerBridgeMcpProvider(deps: OrcaBridgeMcpDeps): McpP
             worker_id: link.workerId,
             lead_session_id: link.leadSessionId,
             status: entry.status,
-            session_status: entry.session?.getStatus() ?? 'not_running',
+            session_status: entry.session?.getStatus() ?? "not_running",
             idle_ms: Date.now() - entry.lastEventAt,
             result: entry.finalText,
           });
@@ -952,10 +1058,15 @@ export function createOrcaWorkerBridgeMcpProvider(deps: OrcaBridgeMcpDeps): McpP
       );
 
       server.tool(
-        'lead_status',
-        'You MUST pass your worker_id (see the Bridge note at the end of the most recent lead message). Check the lead session state.',
+        "lead_status",
+        "You MUST pass your worker_id (see the Bridge note at the end of the most recent lead message). Check the lead session state.",
         {
-          worker_id: z.string().min(1).describe('Required. Your assigned worker_id. Find it in the Bridge note at the end of the most recent lead message, or in the system prompt Identity line.'),
+          worker_id: z
+            .string()
+            .min(1)
+            .describe(
+              "Required. Your assigned worker_id. Find it in the Bridge note at the end of the most recent lead message, or in the system prompt Identity line.",
+            ),
         },
         async ({ worker_id }) => {
           const resolved = await resolveLead(worker_id);
@@ -965,15 +1076,15 @@ export function createOrcaWorkerBridgeMcpProvider(deps: OrcaBridgeMcpDeps): McpP
             worker_id: link.workerId,
             lead_session_id: link.leadSessionId,
             status: entry.status,
-            session_status: entry.session?.getStatus() ?? 'not_running',
+            session_status: entry.session?.getStatus() ?? "not_running",
             idle_ms: Date.now() - entry.lastEventAt,
           });
         },
       );
 
       return {
-        type: 'sdk',
-        name: 'orca_worker_bridge',
+        type: "sdk",
+        name: "orca_worker_bridge",
         instance: server,
       };
     },

@@ -51,7 +51,6 @@ import { upsertRecentWorkdir } from '../localDb/ipc/recentWorkdirs.js';
 import type { AgentMeta } from '../../renderer/lib/ccAgent.types';
 import {
   deriveAutoTitleSeed,
-  getAgentFacingText,
   normalizeAgentInputClearBoundaryMs,
   serializeSessionReferencePayload,
   type AgentInputClearBoundaryOpts,
@@ -95,6 +94,7 @@ import {
   getGhostSetupAssessment,
   getIOSSimulatorPluginAccessDecision,
   isGhostAvailableForActiveSession,
+  resolveGhostRuntimeId,
 } from '../cindy-brain/index.js';
 import {
   assertTrustedAppRendererEvent,
@@ -111,10 +111,7 @@ import {
   getActiveCodexBridgeServerNames,
   shutdownCodexEnvironment,
 } from '../mcp-integrations/codexEnvironment.js';
-import {
-  invalidatePiEnvironment,
-  shutdownPiEnvironment,
-} from '../mcp-integrations/piEnvironment.js';
+import { invalidatePiEnvironment } from '../mcp-integrations/piEnvironment.js';
 import { REMOTE_MEMORY_SERVER_NAME } from '../mcp-integrations/codexHttpBridge.js';
 import { getRemoteMcpBridgeToken } from '../mcp-integrations/remoteMcpBridgeToken.js';
 import {
@@ -401,13 +398,13 @@ import {
   releaseSessionRemoteCodexCapability,
   unbindSessionRemoteCodex,
 } from '../maker-host/mcpr-codex-capability.js';
-import {
-  buildMekaRemoteCodexBundle,
-  type MekaRemoteCodexBundle,
-} from '../maker-host/meka-remote-codex-bundle.js';
+import { buildMekaRemoteCodexBundle } from '../maker-host/meka-remote-codex-bundle.js';
 import { parseMcprRemoteHostId } from '../../shared/meka-router.js';
 import { hasMekaSkillSnapshotEntries } from '../meka-projects/skillSnapshot.js';
-import { recordCombatServerCapabilityAutoBridge } from '../meka-projects/combatServerCapabilityState.js';
+import {
+  recordCombatServerCapabilityAutoBridge,
+  rollbackCombatServerCapabilityAutoBridge,
+} from '../meka-projects/combatServerCapabilityState.js';
 import {
   backgroundTurnPredatesSessionClear,
   clearSessionPersistState,
@@ -463,8 +460,20 @@ import {
 } from '../remote-ssh/index.js';
 import { getMekaP4SettingsService, getMekaRouterService } from '../meka-settings/ipc.js';
 import { classifyRemoteSessionTransport } from '../maker-host/remote-session-routing.js';
-import { createMekaWorkerTargetResolver } from './mekaWorkerTarget.js';
-import { applyMekaRuntimeConfig } from './mekaRuntimeInjection.js';
+import {
+  createMekaWorkerTargetResolver,
+  resolveUniqueBoundMekaServerTarget,
+} from './mekaWorkerTarget.js';
+import { probeRemoteCodexCapability } from '../maker-host/mcpr-codex-capability.js';
+import { probeRemoteClaudeCapability } from '../maker-host/mcpr-claude-capability.js';
+import {
+  invalidateCombatTargetBinding,
+  refreshCombatTargetBinding,
+} from '../meka-projects/combatWorkflowPolicy.js';
+import {
+  applyMekaRuntimeConfig,
+  prepareCombatFollowupRuntimeContext,
+} from './mekaRuntimeInjection.js';
 import {
   recordSessionContextSnapshot,
   recordSessionTurnSpend,
@@ -474,7 +483,6 @@ import {
   codexUsageToTokens,
   piUsageToTokens,
   recordSchedulerTurnCost,
-  recordTurnCostOnMessage,
   recordTurnUsageOnMessage,
 } from '../turnCostBroadcaster.js';
 import { recordModelMismatchOnMessage } from '../modelMismatchBroadcaster.js';
@@ -644,7 +652,6 @@ import {
   normalizeUserMessage,
   materializeDirectSendOssAttachments,
   materializeQueuedOssAttachmentsDeferred,
-  materializeQueuedOssAttachments,
 } from './normalizeAttachments.js';
 import { QueuedAttachmentOwnershipRegistry } from './queuedAttachmentOwnership.js';
 import { AGENT_ISLAND_DISPLAY_CONFIG } from '../agent-island/displayConfig.js';
@@ -706,6 +713,7 @@ import {
   type MakerSessionAgentSwitchHandlerDeps,
 } from './sessionAgentSwitchHandler.js';
 import {
+  extractPlainText,
   prependNoteToWireUserMessage,
   prependHandoffToUserMessage,
   type HandoffWireMessage,
@@ -1908,7 +1916,46 @@ export async function dispatchInterAgentMessage(
       },
     };
   }
-  return dispatch(params);
+  // Register a combat report inside the accepted callback. The dispatcher may
+  // wait for the Lead turn to finish before returning, which is too late for
+  // validate_server_capability_report in that same turn.
+  const isCombatReport =
+    params.source === 'worker' &&
+    params.meta.source === 'mcp-tool' &&
+    Boolean(params.workerId) &&
+    Boolean(params.workerSessionId) &&
+    /(?:serverCapabilityReport|supportStatus)/i.test(params.rawContent);
+  if (!isCombatReport) return dispatch(params);
+
+  const workerId = params.workerId!;
+  const workerSessionId = params.workerSessionId!;
+  let receiptRecorded = false;
+  return dispatch({
+    ...params,
+    onAccepted: async () => {
+      await params.onAccepted?.();
+      receiptRecorded =
+        recordCombatServerCapabilityAutoBridge({
+          leadSessionId: params.targetSessionId,
+          workerId,
+          workerSessionId,
+          message: params.rawContent,
+          accepted: true,
+          terminalStatus: 'done',
+        }) === 'report-ready';
+    },
+    onAcceptedRollback: async () => {
+      if (receiptRecorded) {
+        rollbackCombatServerCapabilityAutoBridge({
+          leadSessionId: params.targetSessionId,
+          workerId,
+          workerSessionId,
+          message: params.rawContent,
+        });
+      }
+      await params.onAcceptedRollback?.();
+    },
+  });
 }
 
 /** 模块级 idle watcher；停止后不再持有可能已经失效的 maker 引用。 */
@@ -2197,6 +2244,7 @@ initGhostSetupCoordinator({
     // ensureReady 结果回到模型，因此与 ghost_info / ghost_call 共用同一口径。
     const visibility = classifyGhostVisibility(ghostId, workingDir ?? null, {
       listGhosts: () => getGhostManager().list(),
+      resolveGhostId: resolveGhostRuntimeId,
       isAvailableForActiveSession: isGhostAvailableForActiveSession,
       isDisabledForWorkdir: isGhostDisabledForWorkdir,
     });
@@ -2212,9 +2260,10 @@ initGhostSetupCoordinator({
     return { ok: true };
   },
   getGhostIdentity: (ghostId) => {
+    const runtimeGhostId = resolveGhostRuntimeId(ghostId);
     const ghost = getGhostManager()
       .list()
-      .find((candidate) => candidate.manifest.id === ghostId);
+      .find((candidate) => candidate.manifest.id === runtimeGhostId);
     return ghost
       ? {
           id: ghostId,
@@ -6891,6 +6940,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     await options.waitForAccountProviderModelsReady();
     await applyPersistedReviewMode(o);
     const mekaRuntime = await applyMekaRuntimeConfig(o, {
+      resolveCombatServerTarget: (projectId) =>
+        resolveUniqueBoundMekaServerTarget({
+          router: getMekaRouterService(),
+          projectId,
+          probeCodexCapability: probeRemoteCodexCapability,
+          probeClaudeCapability: probeRemoteClaudeCapability,
+        }),
       readPersistedSession: async (sessionId) => {
         const [row] = await getDbClient()
           .drizzle.select({
@@ -10117,24 +10173,39 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       workerSessionId,
       terminalStatus,
     ) => {
+      let receiptRecorded = false;
       const result = await dispatchInterAgentMessage({
         targetSessionId: leadSessionId,
         rawContent: message,
         source: 'worker',
         senderLabel: 'Worker',
         workerId,
+        workerSessionId,
         meta: {
           source: 'maker-ipc/auto-bridge',
           context: `worker_auto_bridge/${leadSessionId}/${workerId}`,
         },
-      });
-      recordCombatServerCapabilityAutoBridge({
-        leadSessionId,
-        workerId,
-        workerSessionId,
-        message,
-        accepted: result.ok,
-        terminalStatus,
+        onAccepted: () => {
+          receiptRecorded =
+            recordCombatServerCapabilityAutoBridge({
+              leadSessionId,
+              workerId,
+              workerSessionId,
+              message,
+              accepted: true,
+              terminalStatus,
+            }) === 'report-ready';
+        },
+        onAcceptedRollback: () => {
+          if (receiptRecorded) {
+            rollbackCombatServerCapabilityAutoBridge({
+              leadSessionId,
+              workerId,
+              workerSessionId,
+              message,
+            });
+          }
+        },
       });
       return { accepted: result.ok };
     },
@@ -10874,6 +10945,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     }
   };
 
+  const combatFollowupSendTokenBySession = new Map<string, symbol>();
   const { sendToAgentAccepted: sendToAgentAcceptedUnlocked } = createMakerSendTransaction({
     getSession: (sessionId) => maker.getSession(sessionId),
     closeSession: (sessionId) => maker.closeSession(sessionId),
@@ -10891,8 +10963,88 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     bootstrapSession,
     markOrcaRoleIfNeeded,
     broadcastSessionCreated,
-    prepareSendUserMessage: (sessionId, message) =>
-      prepareUserMessageForAgent(sessionId, message, 'send'),
+    prepareSendUserMessage: async (sessionId, message) => {
+      const prepared = await prepareUserMessageForAgent(sessionId, message, 'send');
+      const content =
+        prepared && typeof prepared === 'object' && 'content' in prepared
+          ? prepared.content
+          : prepared;
+      const combatPrompt = extractPlainText(content);
+      if (combatPrompt.trim()) {
+        const [binding] = await getDbClient()
+          .drizzle.select({
+            projectId: sessions.mekaProjectId,
+            roleId: sessions.mekaRoleId,
+            workingDir: sessions.workingDir,
+          })
+          .from(sessions)
+          .where(eq(sessions.id, sessionId))
+          .limit(1);
+        if (binding?.projectId === 'saga2' && binding.roleId === 'combat-development') {
+          const combatContext = await prepareCombatFollowupRuntimeContext({
+            prompt: combatPrompt,
+            projectId: binding.projectId,
+            workingDir: binding.workingDir,
+            sessionId,
+            resolveCombatServerTarget: (projectId) =>
+              resolveUniqueBoundMekaServerTarget({
+                router: getMekaRouterService(),
+                projectId,
+                probeCodexCapability: probeRemoteCodexCapability,
+                probeClaudeCapability: probeRemoteClaudeCapability,
+              }),
+          });
+          if (!combatContext) return prepared;
+          const messageWithCombatContext = combatContext.promptSection
+            ? prependNoteToWireUserMessage(
+                prepared as HandoffWireMessage,
+                combatContext.promptSection,
+              )
+            : prepared;
+          const sendToken = Symbol(sessionId);
+          const rollbackPatch: Record<string, unknown> = Object.fromEntries(
+            Object.keys(combatContext.vendorOptionsPatch).map((key) => [key, undefined]),
+          );
+          rollbackPatch.mekaCombatTargetSkillIdState = 'missing';
+          return {
+            message: messageWithCombatContext,
+            onAccepted: async () => {
+              const liveSession = maker.getSession(sessionId);
+              if (!liveSession) {
+                throw new Error(`Combat session ${sessionId} disappeared before target binding`);
+              }
+              combatFollowupSendTokenBySession.set(sessionId, sendToken);
+              const targetSkillId = combatContext.vendorOptionsPatch.mekaCombatTargetSkillId;
+              if (typeof targetSkillId === 'string' && /^[1-9]\d*$/.test(targetSkillId)) {
+                refreshCombatTargetBinding(sessionId, targetSkillId);
+              } else {
+                invalidateCombatTargetBinding(sessionId);
+              }
+              await liveSession.setVendorOptions(combatContext.vendorOptionsPatch);
+              log.info('combat skill target refreshed from accepted user message', {
+                sessionId,
+                state: combatContext.vendorOptionsPatch.mekaCombatTargetSkillIdState,
+                targetSkillId,
+                serverTargetReady:
+                  typeof combatContext.vendorOptionsPatch.mekaCombatServerRemoteHostId === 'string',
+              });
+            },
+            onUndispatched: async () => {
+              if (combatFollowupSendTokenBySession.get(sessionId) !== sendToken) return;
+              combatFollowupSendTokenBySession.delete(sessionId);
+              invalidateCombatTargetBinding(sessionId);
+              await maker.getSession(sessionId)?.setVendorOptions(rollbackPatch);
+            },
+            onDispatched: () => {
+              if (combatFollowupSendTokenBySession.get(sessionId) === sendToken) {
+                combatFollowupSendTokenBySession.delete(sessionId);
+              }
+            },
+          };
+        }
+      }
+      return prepared;
+    },
     materializeDirectSendOssAttachments,
     createDbMessage: createUserMessageDurably,
     rewindPersistedUserMessageAfterClear: (sessionId, clientId) =>

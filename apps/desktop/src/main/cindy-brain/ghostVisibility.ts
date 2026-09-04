@@ -22,6 +22,8 @@ export type GhostVisibilityResult =
 
 export interface GhostVisibilityDeps {
   listGhosts: () => InstalledGhost[];
+  /** Optional host alias resolver (for development Meka plugin identities). */
+  resolveGhostId?: (ghostId: string) => string;
   isAvailableForActiveSession: (ghostId: string) => boolean;
   isDisabledForWorkdir: (ghostId: string, workdir: string | null) => boolean;
 }
@@ -31,7 +33,8 @@ export function classifyGhostVisibility(
   workdir: string | null,
   deps: GhostVisibilityDeps,
 ): GhostVisibilityResult {
-  const ghost = deps.listGhosts().find((candidate) => candidate.manifest.id === ghostId);
+  const resolvedGhostId = deps.resolveGhostId?.(ghostId) ?? ghostId;
+  const ghost = deps.listGhosts().find((candidate) => candidate.manifest.id === resolvedGhostId);
   if (!ghost) {
     return {
       ok: false,
@@ -39,7 +42,7 @@ export function classifyGhostVisibility(
       message: t('newChat.pluginSetup.targetNotFound'),
     };
   }
-  if (!deps.isAvailableForActiveSession(ghostId)) {
+  if (!deps.isAvailableForActiveSession(resolvedGhostId)) {
     return {
       ok: false,
       errorCode: 'GHOST_NOT_FOUND',
@@ -48,7 +51,7 @@ export function classifyGhostVisibility(
       message: '该插件需要 Cindy 账号，未登录状态不可用；不要重试，改用本地可用方式。',
     };
   }
-  if (deps.isDisabledForWorkdir(ghostId, workdir)) {
+  if (deps.isDisabledForWorkdir(resolvedGhostId, workdir)) {
     return {
       ok: false,
       errorCode: 'GHOST_DISABLED_IN_WORKDIR',

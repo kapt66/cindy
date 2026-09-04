@@ -152,6 +152,15 @@ describe('MekaDevPluginManager', () => {
     expect(deps.onContentReloaded).toHaveBeenCalledTimes(2);
   });
 
+  it('按源码 pluginId 提供开发 runtime ID 解析', async () => {
+    const manager = new MekaDevPluginManager(deps);
+    const runtimeId = mekaDevRuntimeId('demo-plugin');
+    expect(manager.runtimeIdFor('demo-plugin')).toBeNull();
+    await manager.install(sourceDir, (await manager.inspect(sourceDir)).packageSha256);
+    expect(manager.runtimeIdFor('demo-plugin')).toBe(runtimeId);
+    expect(manager.runtimeIdFor('missing-plugin')).toBeNull();
+  });
+
   it('用户选择的开发目录无需活动任务 workdir 即可打包，并继续拒绝 Host 受管根', async () => {
     await fs.promises.writeFile(path.join(sourceDir, 'ghost.json'), JSON.stringify(manifest()));
     await fs.promises.writeFile(path.join(sourceDir, 'main.js'), '// development Plugin');
@@ -163,7 +172,9 @@ describe('MekaDevPluginManager', () => {
       ok: true,
       manifest: { id: 'demo-plugin' },
     });
-    await expect(fs.promises.stat(path.join(outputDir, 'demo-plugin-1.0.0.cindy'))).resolves.toBeTruthy();
+    await expect(
+      fs.promises.stat(path.join(outputDir, 'demo-plugin-1.0.0.cindy')),
+    ).resolves.toBeTruthy();
 
     await expect(
       packMekaDevPluginSource(sourceDir, {
@@ -206,7 +217,9 @@ describe('MekaDevPluginManager', () => {
       registryPath,
       JSON.stringify({
         version: 2,
-        plugins: [{ runtimeId, pluginId: 'demo-plugin', sourceDir: await fs.promises.realpath(sourceDir) }],
+        plugins: [
+          { runtimeId, pluginId: 'demo-plugin', sourceDir: await fs.promises.realpath(sourceDir) },
+        ],
       }),
     );
     installedIds.add(runtimeId);

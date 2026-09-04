@@ -173,29 +173,85 @@ MCPRouter 绑定的远程项目可以作为当前项目的外部参考工作面�
 
 SAGA2 当前只保留“通用开发”和“战斗开发”两个内置角色。通用开发通过
 `includeAllProjectMetadata` 自动选择项目当前全部有效元数据；战斗开发继续显式选择战斗
-相关 Skill，避免无关内容占用上下文。该选择机制只决定项目内标准 Skill 的运行时投影，
+相关 Skill，避免无关内容占用上下文。战斗开发固定包含内置 `combat-skill-configuration`
+Skill，负责把模块节点模型、JSON 导入和逐字段验证串成配置闭环；客户端项目内的
+`editor-skill-editor-module`、Timeline、Effect 与服务器 Skill 仍是字段和运行时事实源。
+该选择机制只决定项目内标准 Skill 的运行时投影，
 不改变 Skill 内联格式，也不把市场技能自动加入角色。
 
 普通任务通过 Ghost 清单/信息链被动发现插件，P4 插件缺失时由 P4 技能回退命令行诊断；
 Host 不在会话启动阶段主动选择或引导某个业务插件。
 
-战斗开发角色按“只读探索 → 集中澄清 → 方案确认 → 执行验证”四阶段工作。仅在实际调用依赖
-工具时按当次只读证据确认：Meka P4 或命令行 `p4` 能操作当前 SAGA2 工作区且
-预期客户端文件具备 edit/checkout 路径；UnityMCP 已连接正确的 SAGA2 Unity 项目；MCPRouter
+战斗开发角色按“只读探索 → 集中澄清 → 内部方案检查 → 执行验证”四阶段工作。用户明确要求
+实施时，结构化方案是 Agent 内部检查点，不再要求额外方案审批交互；只有范围不明、证据冲突
+或高风险越界时才暂停。仅在实际调用依赖
+工具时按当次只读证据确认：Meka P4 插件能操作当前 SAGA2 工作区且
+预期客户端文件具备 edit/checkout 路径；Meka Unity 官方 CLI 已可检查正确的 SAGA2 Unity 项目；MCPRouter
 已连接且绑定的 SAGA2 服务器远程项目可达、可用。仅有配置项、缓存状态、Unity 可见窗口或
 上一轮成功记录不算当前可用证据。客户端资产或代码编辑必须有可用 P4，不允许直接改受管文件
 绕过 checkout。
 
+`saga2_design` 战斗策划库的待修改项与冲突口径单独记录在
+[`saga2-design-combat-skill-followups.md`](saga2-design-combat-skill-followups.md)。该清单只供审查，
+不构成写入授权；当前任务对 `saga2_design/planning` 保持只读。
+
+Meka Unity 的 Unity Editor 通常由用户长期保持打开。需要启动目标工程时，插件先检查 status 并复用
+匹配的 ready Editor；明确没有可用 Editor/Pipeline 实例时，Host 在公共工具入口弹出 Cindy 通用确认框。
+确认框不写入 Agent 对话正文，只有用户点击同意后 Host 才在同一工具调用内执行一次
+`meka-unity/unity_execute(action=open)`。取消、超时、启动失败或状态无法证明“无实例”时均 fail closed，
+不得循环重试或静默启动。插件内部仍保留 status 后复用作为兼容性最后一道保护，避免 Unity“项目已有
+进程”弹窗及重复实例登记。
+
+Meka 插件源码可以来自独立的 `cindy-meka-plugins` checkout。`ghost_forge_pack` 只有在创建入口
+明确传 `channel: "meka"` 时，才使用 Host 配置的 Meka 源码根白名单；普通插件制作仍要求源码位于
+当前任务工作目录。白名单只覆盖源码根下的具体插件子目录，不覆盖源码根本身，并继续与已安装插件根、
+批准状态根和 seed 根互斥。该渠道字段只影响 Host 归属，不写入 `ghost.json`，也不扩大任何插件运行时
+文件权限。
+
+战斗技能配置的默认验收是静态闭环，不要求进入游戏、Play Mode 或启动服务器。Agent 应以客户端
+消费者、老版模块编辑器导出 JSON、MCPRouter 服务器权威代码和 P4 范围为事实源，使用官方 CLI
+的 `legacy_module_export_json` / `legacy_module_import_json` 完成字段回读与 round-trip。通用
+Unity CLI 仍完整暴露所有工具和接口，但战斗角色不应为发现命令而反复调用 `unity_inspect(action=list)`
+并把完整清单灌入上下文；已知命令直接调用，只有名称未知时才窄范围筛选清单。当前官方 CLI
+模块回读不得编造或重试未登记的模块查询接口。只有用户明确提出运行时联调时，
+才追加运行时命令与运行入口检查；静态任务不得自行进入 Play Mode。
+
+若 `unity_inspect(action=status)` 返回没有实例、未就绪或 Pipeline 缺失，Agent 不得自行安装
+Pipeline、打开或重启 Unity。对明确依赖 Editor 的原子操作，Meka Unity 插件返回结构化的
+`UNITY_EDITOR_START_CONFIRM_REQUIRED`，由 Host 统一弹出启动确认；用户同意后 Host 只执行一次
+`unity_execute(action=open)` 并重试原操作，取消、超时或启动失败均返回结构化失败，不在对话正文中
+追加一条“是否启动 Unity”的业务询问。若用户未同意或导出传输仍失败，Unity 部分标记为 `uncertain`，
+不允许进入写入阶段，随后继续不依赖 Unity 的服务器只读核查。
+
+老版模块资产的导入成功必须经过磁盘持久化验证，不能以同一 Editor 内存中的即时导出代替。
+`legacy_module_import_json` 保存后强制重新导入目标资产，并逐字段比较协议 JSON；只有返回
+`persistenceVerified=true` 且 `persistedNodeCount` 与导入数一致才算成功。导入前，已有资产
+必须通过 Meka P4 插件实际执行 `p4_edit`；新资产先用 `legacy_module_prepare_asset` 创建空白
+`.asset`/`.meta`，再对两者执行 `p4_add`。仅查看 P4 状态不能替代这些动作。战斗任务的导入源
+和回读 JSON 只允许使用操作系统临时目录或 `saga2_unity`，不得写入 `saga2_json`、
+`saga2_design` 或其它目录。上述目标技能 ID、老版模块命令参数和 JSON 路径裁决必须同时覆盖
+直连 Meka MCP 与公共 `cindy.ghost_call` 路由；公共入口在插件 setup、附件授权、目录票据和真实
+派发前执行同一战斗策略。普通角色、非战斗插件和未启用该 workflow 的任务不受此专用裁决影响。
+
+技能 ID 允许在同一任务内按“首轮纯业务需求 → Agent 追问 → 用户补充 ID”的方式提供。Host
+不得只在任务创建或恢复时解析 ID；每条真实用户消息在进入模型前都要重新检查明确标注的技能 ID，
+并在数据库确认当前任务属于 `saga2/combat-development` 后刷新在线会话的目标绑定。没有标注 ID
+的普通续聊保留既有绑定，多个 ID 切换到歧义态并停止工具调用。用户补充了唯一 ID 后，无需重开
+任务、重启 Agent 或重复完整业务描述，当前回合的公共 Ghost 与直连工具门禁必须立即看到新值。
+一个战斗任务只允许用户提供的这一个目标技能 ID。参考技能、历史样例、第二个 ID 及
+`[SAGA2_REFERENCE_SKILL_ID: ...]` marker 均不得进入读取、导出、Worker 任务或结论；需要判断
+模块组合时，以当前目标导出、最窄客户端消费者和当前服务器 HEAD 为证据。
+
 三项聚合 `ready=false` 只作为 Host 内部预警，不是任务级开关，也不要求角色先向用户播报环境
 状态。角色继续加载相关 Skill、澄清需求、读取本地代码/表格并使用仍然可用链路上的工具。Host 只在具体
-工具实际依赖故障链路时阻止该次调用：受管本地写入依赖 P4，Unity 工具依赖 UnityMCP，服务器
+工具实际依赖故障链路时阻止该次调用：受管本地写入依赖 P4，Unity 工具依赖 Meka Unity 官方 CLI，服务器
 查询和远程 Worker 依赖 MCPRouter；一个依赖失败不得冻结其它表面。拒绝回执必须明确依赖、当前
 原因和可执行解决方案，并说明其它独立工作仍可继续。不能退化为本地猜测、用 Unity 文件代替
 服务器证据、用 SSH 或本地路径代替 MCPR。
 
 普通角色或缺少战斗 workflow 的任务误调用 `check_combat_environment` 时，只返回
 `status=advisory`、`workflowActive=false` 和 `dependencyChecksRun=false` 的非错误提醒；不得把
-“未绑定战斗工作流”描述成 P4、UnityMCP 或 MCPRouter 不可用，也不得因此结束回合。三项依赖的
+“未绑定战斗工作流”描述成 P4、Meka Unity 官方 CLI 或 MCPRouter 不可用，也不得因此结束回合。三项依赖的
 真实失败仍只在对应工具实际调用时按该工具回执处理。
 
 每次阶段切换、具体实施前，以及出现真实工具/transport 连接错误或任一连接过期、断开、不可用、
@@ -203,7 +259,7 @@ Host 不在会话启动阶段主动选择或引导某个业务插件。
 放行，不要求三项全部恢复才能继续其它表面。普通无匹配、文件不存在或证据不足不触发复检。
 
 战斗角色的环境门由 Host 在任务启动时实际执行，不是只写在提示词里的约定：P4 检查当前
-工作区映射、客户端信息和目标客户端路径的写权限；UnityMCP 检查项目发现文件、项目根目录
+工作区映射、客户端信息和目标客户端路径的写权限；Meka Unity 官方 CLI 检查项目根目录
 和 `/health`；MCPRouter 检查当前项目绑定且可用的服务器实例是否可作为远程项目参考工作面。
 只有真正创建远程 Agent/Worker 时才执行 capability hello，确认 cc-manager bundle 与 protocol
 和当前客户端精确匹配。实例在线或项目已绑定不能单独判定为 Worker ready；远程项目只读参考
@@ -218,7 +274,7 @@ Host 不在会话启动阶段主动选择或引导某个业务插件。
 “用户拒绝”，也不授权执行远端升级、重启或其它有副作用操作。所有 MCPRouter 工具文本回执在
 交给 Agent 前必须脱敏，带敏感 query 的完整 URL、
 API key、token、物理路径不得进入任务消息或 rollout。
-启动回执不得要求首条用户可见消息先回显角色身份或 P4、UnityMCP、MCPR 三项状态。用户请求
+启动回执不得要求首条用户可见消息先回显角色身份或 P4、Unity CLI、MCPR 三项状态。用户请求
 依赖服务器时先自动确保并读取；只有自动处理返回 `fallbackUserAction` 时才提示用户。
 启动门已经由 Host 执行，完全访问下不得把这项检查再次包装成权限请求。恢复阶段的 Host 拒绝
 是工作流阶段限制，不是用户拒绝；模型不得改传 `sandbox_permissions`、换参数重试或要求提权。
@@ -233,8 +289,8 @@ PowerShell 形态：读取单个内容寻址快照中的 `SKILL.md` 并输出长
 数量有上限，且不允许路径穿越、其它文件、写入、重定向、附加命令或脚本变体。完全访问下
 符合该契约的读取不得显示为用户拒绝；任何不匹配形态仍由普通 Host 策略拒绝。
 
-允许的 MCP 只读白名单包含 Host 启动诊断（`cindy.ghost_list`、Unity
-`manage_editor(telemetry_ping/get_status/get_current_context)`）和 MCPRouter 控制面发现。
+允许的 MCP 只读白名单包含 Host 启动诊断（`cindy.ghost_list`、Meka Unity 官方 CLI
+`unity_inspect(action=status)`）和 MCPRouter 控制面发现。
 聚合状态 blocked 时仍按具体工具依赖裁决；任何阶段都不放行 key、route、grant 或其它
 未经授权的变更调用。MCPRouter
 `list_tools`、实例查询或业务只读调用发生连接/传输错误，
@@ -242,7 +298,7 @@ Host 必须立即将 MCPR 这一条依赖标记为失效；后续 MCPR 调用给
 探索可继续。模型不能用本地 Glob/Grep/Read 冒充缺失的远端证据。
 业务 Shell 查询无匹配、文件不存在、路径或引号错误、非零退出、Unity 临时锁文件读取失败，
 以及单项证据不足均不属于环境断线，不得触发统一环境复检；Lead 只可修正或收窄一次查询，仍
-失败则把对应证据标为不确定。只有 P4、UnityMCP 或 MCPR 的连接、认证、传输错误，或 Host 明确
+失败则把对应证据标为不确定。只有 P4、Unity CLI 或 MCPR 的连接、认证、传输错误，或 Host 明确
 将门禁状态置为失效时，才重新执行三项环境恢复流程。
 
 任务启动时还会从本次已解析角色配置注入 `[MEKA_ROLE_CONTEXT]`，明确提供 `projectId`、稳定
@@ -250,80 +306,116 @@ Host 必须立即将 MCPR 这一条依赖标记为失效；后续 MCPR 调用给
 Host 不在任务启动时执行聚合战斗环境门禁；角色/工作流只用于选择实际工具调用策略，依赖失败
 时按调用点自动引导或阻塞，并优先识别独立的服务器 Worker workflow。缺少
 workflow 元数据的旧版项目内置战斗角色快照会在任务启动时按稳定项目/角色 ID 恢复当前包内
-战斗 workflow、中文提示词及必需 Skill/MCP；项目额外添加的规则、Skill、MCP 和元数据继续
-保留，P4 下的 `.meka/project.json` 不被后台改写。检查回执只在实际依赖工具调用时生成，必须同时
+战斗 workflow、中文提示词及必需 Skill/MCP；项目额外添加的规则、MCP 和非旧版辅助 Skill 继续
+保留，旧版战斗角色曾内置的通用导航、P4、Orca、远程操作、服务器参考、EntryModel 辅助 Skill
+以及模块编辑器元数据选择会按当前精简契约在内存中移除，P4 下的 `.meka/project.json` 不被后台
+改写。检查回执只在实际依赖工具调用时生成，必须同时
 携带权威角色身份、workflow 是否由旧快照恢复
-及三条链路状态，禁止通过扫描角色缓存自行判断当前角色。Main 启动日志只记录这组非敏感状态，
+及三条链路状态，禁止通过扫描角色缓存自行判断当前角色。SAGA2 战斗角色的已知 bundled Skill
+重命名（当前 `skill-entry-model` → `saga2-entry-model`）也只在运行时按项目/角色范围做内存
+迁移，保留旧快照以便用户编辑和回退。Main 启动日志只记录这组非敏感状态，
 不记录 endpoint、实例标识、路径或凭证。
 
-首次探索可以读取
-通用文档、表结构和代码路径，但在用户明确技能 ID 前不得把 Unity 当前窗口、当前选中项、
-编辑器上下文、缓存或历史技能当作目标，也不得向目标专属工具传入由这些状态推断的 ID。
-探索后必须集中确认技能 ID、新建/整段重建/增量修改方式、允许修改的层面及尚未被证据解决的
+生成、修改或检查技能时，用户明确提供正整数技能 ID 之前不得开始任何探索：不读取通用文档、
+表结构、代码、模块或编辑器上下文，也不调用 Unity CLI、P4、MCPRouter 或其它项目工具；只原样
+回复“请提供要生成、修改或检查的正整数技能 ID。”，不追加技术解释或其它问题。不得把 Unity 当前窗口、当前选中项、缓存或历史技能当作目标，
+也不得向目标专属工具传入由这些状态推断的 ID。
+ID 一旦由 Host 绑定到当前任务，后续业务澄清回复不要求重复携带；一个任务始终只有一个目标
+技能 ID。用户一次给出多个 ID 时仍只返回同一句单目标追问，不选择其中一个，也不批量处理。
+探索后必须集中确认目标 ID 对应的新建/整段重建/增量修改方式、允许修改的层面及尚未被证据解决的
 空间、时序、目标、伤害、资源、叠加和生命周期语义；关键信息缺失时不得修改资产、表格、
-JSON、P4、分支或客户端/服务器代码。完成目标专属取证后，角色必须明确给出模块、Timeline、
-客户端代码、服务器代码、表格/导出的组合结论和验证计划，并取得用户对方案的明确同意才可
-实施。
+JSON、P4、分支或客户端/服务器代码。用户已经明确要求生成、修改、导入、导出或验证时，
+该请求本身提供实施授权；角色在内部完成模块、Timeline、客户端代码、服务器代码、表格/导出的
+组合结论和验证计划后直接实施。Host 仍强制目标技能导出、服务器 supported 回执、P4 和写入范围
+门禁，不因该授权跳过证据或把服务器只读能力变成写权限。
 
 SAGA2 战斗的默认实现面是技能的 `skill-entry-model` 模块图；项目文档和 Agent Skill 只负责
-导航，不能单独证明运行时能力。Lead 必须先读取模块知识、模块导出/资产和至少一个同类模块图，
+导航，不能单独证明运行时能力。技能 ID 确认后，Lead 先校验 Meka Unity 官方 CLI 的常驻实例，
+第一条内容证据必须是目标技能的老版编辑器 JSON 导出；只有该结构化回执能判定目标资产是否
+存在。随后只读取最窄客户端消费者，
 把被动入口、周期、位置、随机落点、NavMesh、目标继承、延迟、范围、伤害、特效和清理拆成原子
 能力，并标记“已有模块直接支持 / 可由模块组合支持 / 仍需服务器核查 / 未知”。能力描述不明确时，
 继续核对权威表/Schema 与导出格式、客户端运行时消费代码以及当前服务器实现；Unity 编辑、预览、
-资产保存或 JSON 导出成功都不能证明服务端已实现。既有服务器证据只有在能证明与当前远端仓
-同一 revision 且定位到具体实现符号时才能复用，否则通过 MCPR 实查。证据不足时应报告能力
+资产保存或 JSON 导出成功都不能证明服务端已实现。生成、修改和检查任务都必须为当前技能 ID
+取得本任务、当前远端 HEAD 的服务器证据，即使现有资产已经完全符合需求也不能省略。历史任务、
+本地客户端代码或旧 revision 只能作为候选线索，不能作为本轮 `supported` 结论。证据不足时应报告能力
 缺口并提出补能力方案，不得因为某个 Timeline 可编辑或缺少完整专用函数就否定已有模块组合。Router 实例与远端
 Host 标识按不透明值处理，不得在回复或项目内容中暴露 endpoint、API key 或凭证。
 
 内置 Skill 使用稳定英文 `name` / `skillId` 作为运行时契约，并在标准 frontmatter 的
 `metadata.display-name` 中提供中文展示名；角色编辑器优先显示中文名，描述也使用中文，
-但保存与解析仍使用稳定 ID。SAGA2 战斗开发必须在角色 manifest 中显式选择
-`remote-operations`、`orca-coordination`、`saga2-overview`、`p4-operations` 和
-`safety-boundaries`，并显式启用业务层的 `project-agent`；平台层的
+但保存与解析仍使用稳定 ID。SAGA2 战斗开发的角色 manifest 只显式选择一个总控
+`combat-skill-configuration` Skill，并显式启用业务层的 `project-agent`；P4、Orca、MCPRouter、
+Meka Unity 官方 CLI 和全部通用工具接口仍由 Host/插件照常暴露，不通过重复 Skill 正文提供。平台层的
 `platform-capabilities` / `mcp-router` 不写入角色 manifest 或项目默认项，由 Host 动态注入。
 角色编辑器只表达业务能力选择，不承担平台基线开关。
+战斗任务运行时不得再读取 `saga2_unity/.agents/skills`、用户 Skill、插件 Skill 或其它位置的
+`SKILL.md`，也不得调用 `ghost_info`、Skill 列表或项目管理 `list_tools` 发现辅助 Skill。不得使用
+历史导出或共享 `skill_entry_model_editor.json` 代替目标技能导出，也不得扫描 `Library`、`Temp`、
+`Logs` 或整个 Unity 根目录；这些限制只改变战斗流程的工具选择，不隐藏通用工具接口。
 
 战斗策划发现 Unity 现有模块不足或需要核对服务端能力时，战斗开发角色必须通过已绑定的
 MCPR 远程项目进入服务器仓，并先读取该仓 `AGENTS.md`。远端 Worker 在整个任务中永久只读，
 不加载战斗策划服务器 Skill，不修改服务器文件、不创建或切换分支、不改 Excel、不生成文件，
-只允许文件读取和 Host 可证明只读的命令，业务/项目 MCP 全部拒绝。MCPR Codex 当前不具备
-回连本机 `orca_worker_bridge` 的传输通道，Worker 不得搜索或重试该工具；它把结构化报告作为
+只允许文件读取和 Host 可证明只读的命令，业务/项目 MCP 全部拒绝。Worker 不依赖
+`orca_worker_bridge`，不得搜索或重试该工具；它把结构化报告作为
 唯一一次终态回复输出，由 Orca auto-bridge 可靠投递给 Lead。服务器 Worker 不继承 Lead 角色
 选中的任何 Meka Skill、Skill snapshot 或项目 MCP，只注入专用只读 Worker 提示词；
 避免本地 Skill 根路径被投递到远端 Runtime，也避免服务器会话暴露本地 P4、Unity 或项目管理工具。
 远端只返回当前 HEAD 的能力结论与代码证据；创建或派发 Worker 本身不代表核查完成。
-Host 在每次创建前精确校验目标实例属于当前 SAGA2 绑定、在线、具备服务器项目语义且通过
-Codex capability hello，不能只检查 `mcpr:` 前缀。已有 Worker 只有在当前 Lead 生命周期中曾由
+Host 在每次创建前精确校验目标实例属于当前 SAGA2 绑定、在线、具备服务器项目语义、Agent 类型
+与请求一致且通过该 Agent 的 capability hello，不能只检查 `mcpr:` 前缀。已有 Worker 只有在当前 Lead 生命周期中曾由
 Host 在该合格实例上验证并记录 worker/session 身份时才可复用；未知、本地或其它任务的 Worker
 必须拒绝并新建合格的远端 Worker。
 
-战斗 Lead 和服务器 Worker 的 Shell 只读探索统一使用可审计的单一命令：`rg`、`rg --files`、
-`Get-Content`、`cat`、`git status/diff/show`。不得用变量、管道、重定向、命令串联或自行拼装脚本；
-远端 Codex Runtime 自动生成的标准 `/bin/bash -c`、`/bin/bash -lc` 单命令包装除外。Host 仅窄解析
-无嵌套单引号的 payload，并继续交给既有 shell 安全分类器判定，不因包装放宽写入或运行型命令。
-多项证据逐条调用，并通过工具输出上限控制结果。Host 拒绝后不能改走 Web、计算器、SSH 或其它
-无关工具；缩成上述形态仍失败时，按证据不确定停止并报告。
+战斗 Lead 和服务器 Worker 的 Shell 只读探索契约统一使用可审计的单一命令：本地为范围明确的
+`rg`、`Get-Content` 或 Git 只读查询；远端只允许 `git show`、`git grep`、`git status`、
+`git diff`，不得调用 `Read` 或 `rg`，也不得读取 Claude 为超长工具输出生成的临时结果文件。
+变量、管道、重定向、命令串联和自行拼装脚本一律拒绝；远端 Codex
+Runtime 自动生成的标准 `/bin/bash -c`、`/bin/bash -lc` 单命令包装除外。Codex
+`getShellCommandPolicy` 已传入任务上下文并由 Desktop 注入 `combatWorkflowPolicy`，因此缺 ID、
+根 `AGENTS.md`、AGENTS 枚举、客户端 Assets 根搜索、其它 Skill、开发中编辑器实现和共享 JSON
+都会在执行前被 Host 拒绝。普通角色仍保留全部通用 Shell 与工具接口。证据命令失败时不得改走
+Web、计算器、SSH 或其它无关工具，应按证据不确定停止并报告。
+服务器 Worker 的 `git grep` 必须显式指定 `HEAD`，不得读取远端工作树状态作为权威语义。默认
+先用 `git grep -l -E <精确符号> HEAD -- internal/battle` 取得真实路径，再在最多三条路径上用
+`git grep -n -C 24 -E <精确符号> HEAD -- <path>` 读取定义、注册和执行分支附近的有限上下文；
+禁止用 `git show` 打开会被工具截断的大型实现文件。Host 只允许最多 40 行上下文。普通伤害、
+攻击力百分比、等待/重复和技能目标锁定可由战斗总控 Skill 提供
+`entryTypeDamageHit`、`dataFunRoleAtk`、`entryTypeTimeWait`、`entryTypeSetSkillTarget` 作为候选
+搜索锚点；它们仍须在本轮远端 HEAD 逐项验证，不能作为历史免检事实。策划只需提供业务需求和
+正整数技能 ID，不承担任何服务器符号或协议字段输入。
 环境 ready 且需求已足以描述待核查的服务器语义后，Lead 必须先完成上述模块优先证据包，再
-创建服务器 Worker；不得在没有 `skill-entry-model` 原子能力矩阵时派发。Worker 任务正文必须包含
-`[SAGA2_MODULE_FIRST]`，明确列出本地模块证据和仅剩的服务器问题；Worker 只核查这些窄缺口，不能
-把“没有完整专用函数”推导成整组技能不支持。客户端查询从已知配置、导出和消费者路径开始，必须
+创建服务器 Worker；不得在没有目标技能老版导出和原子能力矩阵时派发。Worker 任务正文必须包含
+`[SAGA2_MODULE_FIRST]`，明确列出本地模块证据和当前技能仍需服务器确认的目标、时序、数据函数、
+条件及生命周期语义；Worker 只核查该原子矩阵，不扩大到无关能力，也不能把“没有完整专用函数”
+推导成整组技能不支持。客户端查询从已知配置、导出和消费者路径开始，必须
 限定文本文件或具体目录，不递归读取 Unity 根目录、Library、Temp、Logs、二进制资源或锁文件。
 
-远端结果使用简短 `serverCapabilityReport`，至少包含 `supportStatus`、`readOnlyConfirmed`、
+远端结果使用简短 `serverCapabilityReport`，至少包含与当前任务绑定值一致的正整数
+`targetSkillId`、`supportStatus`、`readOnlyConfirmed`、
 `repository`、`head`、`codeEvidence`、`capabilityGap`、`programmerAction`、
 `affectedSurfaces` 和 `validationSuggestion`。Lead 必须调用
 `mcp_router.validate_server_capability_report` 校验。`supported` 可作为现有服务器能力证据；
 `unsupported` 或 `uncertain` 会把任务切到程序交接阻断状态，Lead 必须停止当前实现并把报告
 交给服务器程序，不能继续修改客户端、配置或服务器内容。服务器程序后续实现属于独立开发流程，
 不由战斗开发角色代办。
+Host 在消费可信 auto-bridge 回执前校验 `targetSkillId`；错误或缺失的 ID 会被拒绝且不消费回执，
+防止其它技能的服务器结论污染当前任务。
+
+其中 `codeEvidence` 允许使用简短字符串，或使用带 `path`、`symbols`、`details` 的结构化证据
+对象；Host 会在严格字段校验后规范化为可审计文本，避免真实 Worker 使用结构化取证时被误判为
+无效报告。
 
 Worker 工具调用获准时，Host 先记录与 Lead、任务正文和目标绑定的 `dispatching` 状态；只有
 `create_worker` 返回 `dispatched=true`、队列句柄或 accepted dispatch outcome，或
 `send_to_worker` 返回成功唤醒状态后，才进入 `pending`。创建失败、首任务未派发、Host 调用异常
 都回滚为 `retry-required`，不能留下永久 pending，也不能当作正常消费。`dispatching` / `pending`
-状态下方案审批、客户端读取、Shell、业务 MCP 和 Orca 主动轮询全部拒绝，但始终允许
-`check_combat_environment`；该工具会清理未结算派发并重新执行 P4、UnityMCP、MCPR 三项门禁，
-环境恢复后必须重新派发。
+状态下方案审批、客户端读取、Shell、业务 MCP、环境复检和 Orca 主动轮询全部拒绝；Lead 结束
+当前回合并等待 auto-bridge 投递。只有派发回滚为 `retry-required`、任务明确处于
+`environment-recovery`，或具体工具返回真实传输失败时，才允许调用
+`check_combat_environment` 清理未结算派发并重新执行 P4、Unity CLI、MCPR 三项门禁；环境恢复后
+必须重新派发。普通无匹配、文件不存在、业务字段待澄清或证据不足均不触发环境复检。
 
 Lead 收到有效派发信号后必须立即结束当前回合，不输出等待说明，也不调用 `list_workers`、
 `read_worker` 或 `worker_status`。Worker 终态使用可直接解析的原始 JSON 对象；Orca auto-bridge
@@ -333,14 +425,46 @@ Lead 收到有效派发信号后必须立即结束当前回合，不输出等待
 `retry-required`，不会解锁本地实施。Lead 不能自行代写报告；报告 `head` 必须是远端当前仓库
 真实 Git SHA，“未取得回执”等占位内容不能通过 `validate_server_capability_report`。只有工具返回
 `reportValidated: true` 才算真正消费远端结果。
+首次建 Team 必须显式请求 `worker_permission_mode=auto`。Host 对
+`saga2-combat-development-v1` 再做确定性收敛：即使模型传入 `bypassPermissions`，实际交给 Orca
+生命周期服务的模式仍为 `auto`，不弹出 Full access 升级确认；其它角色和普通 Orca 任务继续使用
+用户保存的通用权限偏好。
 只有 Worker 的 `done` 终态可进入 `report-ready`；`error` 终态即使包含结构合法的 JSON 也转为
 `retry-required`。auto-bridge 投递暂时失败时保持 pending，允许 Orca 重试同一终态投递；不得把
 尚未送达的文本提前登记成可信报告。
 
-服务器核查 Worker 固定使用 Codex Agent 和 Host 当前 Codex 默认模型路由，避免项目默认 Agent/
-模型差异改变流程可靠性。核查采用最小充分证据：任一剩余原子语义有具体代码证据证明不支持时才
-返回 `unsupported`；如果模块图已经通过组合表达需求，即使没有同名完整服务器函数也应返回
-`supported`。不为补齐其它能力做穷尽扫描；仅在证据冲突或读取失败时使用 `uncertain`。
+战斗任务新建或恢复时，Host 将服务器能力状态显式初始化为 `unchecked`。该状态允许读取当前技能、
+客户端消费者、同类配置，以及通过老版编辑器执行 `legacy_module_export_json`，从而形成模块优先
+证据包；但禁止 P4 checkout/add、资产创建、`legacy_module_import_json` 和其它实施操作。只有
+auto-bridge 报告经 `validate_server_capability_report` 一次性消费并得到 `supported` 后才解锁写入。
+结构化方案同样要求该状态，避免 autonomous execution 绕过服务器事实源。最终回复宣称
+`serverCompatibility: supported` 时必须带本轮远端 `head` 和具体 `codeEvidence`；没有验证回执时
+只能写 `uncertain`，且不得把 `remainingRisks` 写成 `none`。
+
+服务器核查 Worker 使用 Host 从唯一合格实例解析并注入的 Agent：Claude 实例使用
+`claude-code`，Codex 实例使用 `codex`；模型省略并走 Host 对应 Agent 的默认路由。Lead 不得自行
+选择 Agent，Host 会拒绝 Agent 与实例或注入值不一致的请求。核查采用最多 6 次只读调用内的最小充分证据，并覆盖当前原子能力矩阵
+要求的直接消费者；不得自行缩成“一次搜索 + 一次读取”而制造不必要的 `uncertain`。任一剩余
+原子语义有具体代码证据证明不支持时才返回 `unsupported`；如果模块图已经通过组合表达需求，
+即使没有同名完整服务器函数也应返回 `supported`。不为补齐其它能力做穷尽扫描；仅在证据冲突、
+读取失败或 6 次调用后仍无法判定时使用 `uncertain`。
+
+业务平衡参数尚未由策划决定，不是服务器能力缺失。如果服务器消费者和数据函数已经证明某种
+伤害、倍率、时序或条件编码可执行，Worker 应返回 `supported`，并把待定比例或数值留给 Lead 用
+业务语言集中询问；不得仅因需求写了“较低伤害”“短暂”或其它相对描述就返回 `uncertain`，更
+不得把它升级为程序修改阻断。只有运行时语义本身缺少代码证据或证据冲突时才使用
+`uncertain`。
+
+服务器能力报告的 `codeEvidence`、`affectedSurfaces` 必须是数组，`capabilityGap`、
+`programmerAction`、`validationSuggestion` 必须是非空字符串；即使没有能力缺口也写明确字符串，
+不能用 `[]` 或 `null`，否则 Host 校验会拒绝该报告并保持实施阻断。
+
+这 6 次调用的默认顺序是 `git show HEAD:AGENTS.md`、读取 HEAD SHA、一次只包含任务精确
+typ 数字/枚举名/数据函数名的 `internal/battle` 定向搜索，以及最多三次命中消费者读取。搜索中
+禁止加入 `time`、`target`、`skill`、`damage`、`next`、`trigger` 或中文描述等通用词；后续
+路径必须真实出现在搜索回执中，不能按目录印象猜测。空查询、重复读取 AGENTS、先读架构总览或通用生命周期文件都不属于有效预算使用；只有具体符号完全无命中时才能
+转查行为注册表或相邻枚举。战斗任务同时由 Host 注入从真实 `workingDir` 解析出的
+`projectRoot` 与 `unityClientRoot`，Agent 不自行拼接或猜测 `C:\Workspace\saga2` 下的其它路径。
 
 上述阶段顺序由 Desktop Host 状态机强制执行，不只依赖角色提示词。战斗 Lead 新任务固定进入
 原生计划模式；环境检查未全部通过时仍允许读取业务文件、加载 Skill、澄清和使用状态为 ready
@@ -354,7 +478,7 @@ Lead 收到有效派发信号后必须立即结束当前回合，不输出等待
 变更、批量/本地 Worker 和服务器服务管理在批准后仍永久拒绝，不能落入普通“环境复检后放行”分支。
 用户通过原生方案字段不能使用“待确认”“当前选择”“unknown”等占位内容，`targetSkillId` 必须是具体 ID，
 `changeMode` 只能是 `create`、`rebuild` 或 `incremental`，`surfaces` 必须包含实际实现面。方案
-卡批准后，Host 在每次写文件、执行非只读命令或调用有副作用 MCP 前重新执行 P4、UnityMCP
+卡批准后，Host 在每次写文件、执行非只读命令或调用有副作用 MCP 前重新执行 P4、Unity CLI
 与 MCPR 三项检查；任一失败立即退回环境恢复阶段。该拒绝优先于 Full access、会话记忆授权和
 普通工具审批。
 
@@ -374,10 +498,11 @@ Agent 无法代办登录、网络和部署方升级，但必须保留进度、�
 
 服务端深度探索在直接远程项目只读能力不足，或用户明确要求独立远程执行时，才使用 MCPR Orca Worker，并与本地 Lead 状态隔离。只有任务正文同时包含
 `[SAGA2_SERVER_EXPLORATION_READ_ONLY]` 与 `[SAGA2_MODULE_FIRST]` 的远端 Worker 创建或派发可通过；Worker 自身使用
-`saga2-combat-server-worker-v1`，不伪造本机 P4/UnityMCP 已就绪状态，并由 Host 在方案前后
+`saga2-combat-server-worker-v1`，不伪造本机 P4/Unity CLI 已就绪状态，并由 Host 在方案前后
 永久限制为只读。Lead 批准方案不会扩大 Worker 权限，任何服务器写入、分支、Excel、生成物或
-业务/项目 MCP 调用都直接拒绝。若未来某个传输显式暴露 `orca_worker_bridge.send_to_lead`，Host
-只精确放行这一终态报告回传工具；当前 MCPR Codex 使用 auto-bridge。
+业务/项目 MCP 调用都直接拒绝。服务器 Worker 不调用 `orca_worker_bridge.send_to_lead`；Host
+对该 workflow 确定性拒绝 bridge MCP，Claude 与 Codex 都只输出唯一终态 JSON，由 Orca
+auto-bridge 投递。普通 Orca Worker 仍保留原有手动回传能力。
 选择战斗开发角色已授权该工作流强制要求的、带上述标记且由 Host 限制为只读的服务器核对；
 当目标实例已经绑定且可用时，不再询问“是否允许创建只读 Worker”。这个窄例外不适用于绑定
 或创建实例、远端写入、分支、服务管理、提交或推送。本地 Lead 也不能创建本地 Worker 来
@@ -407,10 +532,9 @@ Codex 原生 Skill 加载可能生成严格形如
 长度和内容；其它路径、扩展名、管道、附加命令、写入或路径穿越仍按非只读操作拒绝。这类
 Host 拒绝不得显示成用户主动拒绝。
 
-UnityMCP 的 HTTP 配置通过会话感知代理投影到 Claude/Codex，避免 Codex 进程级 MCP 配置冻结后
-跨任务暴露或绕过 Host。普通任务未选择 UnityMCP 时不能调用；战斗任务中的自定义 Unity 工具
-仅 `get_`、`list_`、`read_`、`search_`、`find_`、`inspect_`、`query_`、`validate_`、
-`describe_` 前缀按只读处理，其余按写操作处理。UnityMCP 连接异常会把 Lead 状态退回环境恢复。
+Unity 操作统一通过 Meka Unity 插件提供的官方 CLI 工具 `unity_inspect`/`unity_execute`，不注册
+HTTP MCP 或旧版 Unity 路由。普通任务按插件发现链使用；战斗任务中仅 `unity_inspect` 的只读动作
+按只读处理，`unity_execute` 按用户明确请求执行并受 Host 范围门禁。Unity CLI 连接异常会把 Lead 状态退回环境恢复。
 服务器能力报告必须调用 `mcp_router.validate_server_capability_report` 校验。报告仅证明远端
 Worker 对当前 HEAD 做过只读核查，不代表实施过服务器修改；`unsupported` 或 `uncertain` 会
 设置服务器实施交接阻断状态，Host 只拒绝依赖该缺口的客户端实施调用，不阻止本地探索或其它
@@ -458,6 +582,11 @@ MCPRouter 新增独立 Meka Skill Registry，拥有独立资源、release、共�
 - 支持私有／指定用户／公开、版本冲突和并发 release 防护；
 - 上传字节不经过 Renderer 长期持有，凭证和签名地址不落盘。
 
+开发来源使用 Host 派生的独立 runtime ID，以便与同 ID 正式插件共存；角色和
+`ghost_call` 仍使用源码清单中的逻辑 `pluginId`。Host 在可见性、设置门和管子派发
+前解析到当前开发 runtime，已安装的正式插件仍优先按原始 ID 精确匹配。该别名只存在
+于运行期，不改写源码包、批准回执或发布包身份，也不要求重新安装或授权。
+
 ### 阶段 D：生产化
 
 - RustFS 预签名直传与 finalize；
@@ -470,3 +599,60 @@ MCPRouter 新增独立 Meka Skill Registry，拥有独立资源、release、共�
 - 修改 `cindy-protocol`；
 - 自动同步、自动更新或自动删除；
 - 将市场技能自动加入 Meka 项目角色。
+
+## 8. SAGA2 战斗任务的目标首证据顺序
+
+SAGA2 战斗角色继续暴露 Cindy 的通用工具集合。生成、修改和检查都必须先由用户提供一个正整数
+技能 ID；缺少 ID 时不得调用任何工具，
+只回复“请提供要生成、修改或检查的正整数技能 ID。”。ID 绑定后只允许先读取
+`combat-skill-configuration` 总控 Skill、调用 `unity_inspect(action=status)`，再通过老版模块
+编辑器对目标 ID 执行 `legacy_module_export_json`。目标导出尝试之前，不得读取项目规则、客户端
+源码、其它技能或服务器证据。MCP、公共 Ghost、Orca 直接工具和普通 Shell 均由 Host 的同一战斗
+策略按任务上下文确定性裁决；缺少 ID、目标首证据前越序、根规则枚举、Assets 根搜索、其它
+Skill、共享 JSON 和开发中编辑器关键词都会在执行前拒绝。普通角色仍保留完整通用工具行为。
+
+战斗角色不通过 `get_workspace_info`、`ghost_info`、`ghost_list` 或 `list_tools` 重新发现 Host
+已注入的路径和能力；启动门禁已经是 `ready` 时也不得立即重复
+`check_combat_environment`。这些工具没有从 Cindy 或通用角色中移除，只在战斗 workflow 中被
+顺序门禁拒绝。目标导出后仍禁止枚举 `AGENTS.md`、读取 `ModuleV2` 或共享
+`skill_entry_model_editor.json`；项目规则只读取 Host 注入路径下已知的
+`saga2_unity/AGENTS.md`，配置证据始终来自当前技能的老版编辑器导出。
+
+目标导出后，Lead 只按 Host 注入的绝对路径分别完整读取 `saga2_unity/AGENTS.md` 和
+`SkillModuleProtocolCodec.cs`。协议文件读取结束后的下一项项目动作固定为
+`start_team(worker_permission_mode=auto)`；不得先搜索 `Assets/Editor/SkillEditor`、模块目录或
+其它客户端目录来发现伤害、目标、数据函数或模块枚举，这些运行时语义交给当前服务器 HEAD 的
+只读 Worker 核实。协议源码中的类型名、命名空间和 `using` 不构成继续搜索客户端的授权；仅当
+服务器报告明确留下具体客户端消费者缺口时，才按完整路径读取一个直接消费者。
+
+内容寻址的 Meka Skill 快照白名单同样只接受
+`combat-skill-configuration/SKILL.md`。其它 Skill 的批量行数探针、完整读取和项目 Skill
+扫描均失败关闭，避免提示词约束被工具调用绕开。
+
+战斗任务在新建和恢复时，Host 还会从该任务已经冻结的内容寻址快照中取出唯一总控 Skill 正文，
+以 `[SAGA2_COMBAT_CONTROLLER_SKILL]` 可信段直接注入当前消息。原生 Skill 目录和 Cindy 通用工具
+仍完整保留，但 Agent 不再依赖主动读取或发现 Skill 才能获得首证据顺序。若 Codex 仍生成原生
+Skill 的完整单文件读取，Host 只接受 `Get-Content '<path>'` 或
+`Get-Content -Raw '<path>'`（可由固定 PowerShell `-Command` 包装）；`-First`、管道、串联、
+通配符、路径穿越和其它 Skill 一律拒绝。
+
+目标技能导出成功或取得结构化失败回执后，战斗任务仍可用 Shell 做最小客户端证据核查。
+Host 静默放行 `saga2_unity` 内单个已知 C# 消费者的完整 `Get-Content`，以及带单一精确
+`-Path` / `-LiteralPath` 和字面 `-Pattern` 的 `Select-String`；路径只限
+`Assets/Scripts/Hot` 与老版模块协议所在的 `Assets/Editor/SkillEditor/Common`。这些等价的
+PowerShell 只读形态不得因为通用审批器返回 `prompt` 而被业务门禁误报为非法 Shell。
+通配符、目录枚举、其它 Skill、路径穿越、环境变量、管道、重定向、命令串联和任何写入仍须
+拒绝；配置写入继续只走 Meka P4、Meka Unity 官方 CLI 和老版模块编辑器入口。
+
+技能 ID 只由用户提供。中文自然表达中的“技能 1009”“技能ID：1009”“技能编号 1009”以及
+“1009技能”都视为明确标注；其它未与“技能”明确绑定的数字仍不得猜作 ID。首轮缺少 ID 时固定零工具追问；用户在追问后只回复一个正整数，也视为
+明确绑定，不要求重复“技能 ID”标签。伤害、时长、次数等混在业务描述中的未标注数字仍不得被
+猜作 ID。若同一任务后续明确切换到另一个唯一技能 ID，Host 必须清空旧目标的导出尝试、导出完成、
+方案批准和服务器能力状态，要求新目标重新完成老版导出与服务器核查；旧目标的状态不能作为新目标证据。
+
+用户绑定技能 ID 后，Host 同时解析当前 SAGA2 项目唯一的 capability-ready 服务器实例，并以
+`[SAGA2_COMBAT_SERVER_TARGET]` 注入真实 `serverRemoteHostId` 与 `serverWorkerAgent`。战斗 Lead
+创建 Worker 时只能分别原样使用这两个值，不能调用 `get_workspace_info`、按项目名拼
+`mcpr:saga2` 或自行选择 Agent；无唯一目标时按服务器证据不可用停止实施。这些字段只帮助模型
+正确路由，不是授权：Host 在 `create_worker` 前仍重新核对项目绑定、在线状态、服务器身份、
+Agent 类型和 capability hello。

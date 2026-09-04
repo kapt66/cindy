@@ -39,8 +39,6 @@ import {
   ghostWebviewEntryPaths,
   isCindyAccountGhostId,
   isOfficialGhostId,
-  ghostPermissionItems,
-  ghostPermissionProjectionFingerprint,
   isValidGhostId,
   layoutWithGhostPanel,
   type GhostHostNoticeKey,
@@ -115,10 +113,7 @@ import { serverApiFetch } from '../serverApiClient.js';
 import { getClientEndpoint } from '../clientEndpointsService.js';
 import { createGhostOauthBrokerClient } from './ghostOauthBroker.js';
 import { readRefImagesWithinBudget } from './refImageBudget.js';
-import {
-  resolveCachedGhostRepoRoot,
-  type GhostRepoRootCacheEntry,
-} from './repoRoot.js';
+import { resolveCachedGhostRepoRoot, type GhostRepoRootCacheEntry } from './repoRoot.js';
 import { takePendingCindyInstall } from './openFileInstall.js';
 import { GhostRuntime } from './runtime/GhostRuntime.js';
 import {
@@ -144,10 +139,7 @@ import {
 } from './ghostSetupStatus.js';
 import { getGhostSetupChangeBus } from './ghostSetupChangeBus.js';
 import { GhostSetupManifestTracker } from './ghostSetupManifestTracker.js';
-import {
-  getGhostSetupCoordinator,
-  type GhostSetupActionResult,
-} from './ghostSetupCoordinator.js';
+import { getGhostSetupCoordinator, type GhostSetupActionResult } from './ghostSetupCoordinator.js';
 import {
   getGhostSetupInteractionBridge,
   type GhostSetupInteractionResponseTarget,
@@ -299,7 +291,10 @@ import { LibrarySqlService, defaultLibraryDbWorkerPath } from './librarySqlServi
 import { trashGhostLibrary } from './libraryTrash.js';
 import { migrateGhostLibrary } from './libraryMigrate.js';
 import { setGhostLibraryFileResolver } from './runtime/electronSandboxAdapter.js';
-import { createBetterSqliteDatabase, resolveBetterSqliteModuleEntry } from '../localDb/betterSqliteFactory.js';
+import {
+  createBetterSqliteDatabase,
+  resolveBetterSqliteModuleEntry,
+} from '../localDb/betterSqliteFactory.js';
 import { getGhostGrantConfirmBridge } from './ghostGrantConfirmBridge.js';
 import { getSessionFsSnapshot, getSessionRowSnapshot } from '../localDb/ipc/sessions.js';
 import { getTeamByWorkerSession } from '../localDb/orcaTeamStore.js';
@@ -344,11 +339,7 @@ import {
   hasGrokOAuthLogin,
 } from '../maker-host/grok-oauth-login.js';
 import { invalidateXaiBridgeAuth } from '../maker-host/xai-auth-invalidation-host.js';
-import {
-  isModelDisabled,
-  isProviderDisabled,
-  type MediaCapability,
-} from '@cindy/model-providers';
+import { isModelDisabled, isProviderDisabled, type MediaCapability } from '@cindy/model-providers';
 import { readModelDisableOverrides } from '../maker-host/model-disable-store.js';
 import { readProviderOrder } from '../maker-host/provider-order-store.js';
 import { outboundFetch } from '../maker-host/outbound-fetch.js';
@@ -554,6 +545,11 @@ let managerSingleton: GhostManager | null = null;
 let ghostSetupManifestTrackerSingleton: GhostSetupManifestTracker | null = null;
 let mekaDevPluginsSingleton: MekaDevPluginManager | null = null;
 
+/** Wait for registered development sources to reconcile before first tool use. */
+export async function ensureMekaDevPluginsReady(): Promise<void> {
+  await mekaDevPluginsSingleton?.syncRegistered();
+}
+
 function getGhostSetupManifestTracker(): GhostSetupManifestTracker {
   if (!ghostSetupManifestTrackerSingleton) {
     ghostSetupManifestTrackerSingleton = new GhostSetupManifestTracker(
@@ -618,9 +614,9 @@ const ghostOwnerScope: GhostOwnerScope = {
   isCurrent: (scope) =>
     !!scope && isSameAppSession(scope as ActiveAppSession, getActiveAppSession()),
   isStable: (scope) =>
-    !!scope
-    && !isAppSessionBoundaryPending()
-    && isSameAppSession(scope as ActiveAppSession, getActiveAppSession()),
+    !!scope &&
+    !isAppSessionBoundaryPending() &&
+    isSameAppSession(scope as ActiveAppSession, getActiveAppSession()),
   onInvalidated: (ghostId) => {
     try {
       getGhostRuntime().stop(ghostId);
@@ -660,10 +656,13 @@ function getLegacyGhostRecoveryStatusForActiveSession(): LegacyGhostRecoveryStat
               // 与重试都经此)。降级为"该根无墓碑"并记录;漏掉的 builtin 排除仍由 backfill 的
               // isTrustedBundledId 闸兜底,不会因此把随包 id 误迁 —— 对齐 ghosts:builtin-status
               // 的降级语义,而不是让 recovery UI 整体不可用(§5 恢复入口必须可用)。
-              log.warn('legacy builtin tombstone root unreadable during recovery status; treated as empty', {
-                root,
-                error: err instanceof Error ? err.message : String(err),
-              });
+              log.warn(
+                'legacy builtin tombstone root unreadable during recovery status; treated as empty',
+                {
+                  root,
+                  error: err instanceof Error ? err.message : String(err),
+                },
+              );
               return [] as string[];
             }
           }),
@@ -807,11 +806,7 @@ async function retryLegacyGhostRecoveryForActiveSession(): Promise<LegacyGhostRe
       throw error;
     }
     if (shouldAbort()) return getLegacyGhostRecoveryStatusForActiveSession();
-    if (
-      result.moved === 0 &&
-      !result.provisioningStateMoved &&
-      !result.recoveredIds?.length
-    ) {
+    if (result.moved === 0 && !result.provisioningStateMoved && !result.recoveredIds?.length) {
       restartStoppedActiveGhosts();
       return getLegacyGhostRecoveryStatusForActiveSession();
     }
@@ -892,9 +887,7 @@ export function isGhostAvailableForActiveSession(id: string): boolean {
 }
 
 /** Live Host capability gate shared by Agent transports and Renderer IPC. */
-export function getIOSSimulatorPluginAccessDecision(
-  workingDir: string | null = null,
-) {
+export function getIOSSimulatorPluginAccessDecision(workingDir: string | null = null) {
   return resolveIOSSimulatorPluginAccess(getGhostManager().list(), workingDir, {
     isAvailableForActiveSession: isGhostAvailableForActiveSession,
     isDisabledForWorkdir: isGhostDisabledForWorkdir,
@@ -903,9 +896,9 @@ export function getIOSSimulatorPluginAccessDecision(
 
 function availableGhosts(): InstalledGhost[] {
   if (isAppSessionBoundaryPending()) return [];
-  return getGhostManager().list().filter((ghost) =>
-    isGhostAvailableForActiveSession(ghost.manifest.id),
-  );
+  return getGhostManager()
+    .list()
+    .filter((ghost) => isGhostAvailableForActiveSession(ghost.manifest.id));
 }
 
 function projectGhostForRenderer(ghost: InstalledGhost): InstalledGhost {
@@ -915,17 +908,14 @@ function projectGhostForRenderer(ghost: InstalledGhost): InstalledGhost {
     const expiredAccountCount = (runtimeManifest.network?.secrets ?? []).reduce(
       (count, secret) =>
         secret.source === 'oauth' && secret.oauth
-          ? count +
-            oauthManager.clientMigrationExpiredAccountCount(runtimeManifest.id, secret.key)
+          ? count + oauthManager.clientMigrationExpiredAccountCount(runtimeManifest.id, secret.key)
           : count,
       0,
     );
     const suggest = getGhostOauthReauthSuggest(runtimeManifest);
     return {
       ...ghost,
-      ...(expiredAccountCount > 0
-        ? { oauthAuthorizationExpired: { expiredAccountCount } }
-        : {}),
+      ...(expiredAccountCount > 0 ? { oauthAuthorizationExpired: { expiredAccountCount } } : {}),
       ...(suggest
         ? {
             oauthScopeStale: {
@@ -946,7 +936,28 @@ function projectGhostForRenderer(ghost: InstalledGhost): InstalledGhost {
 }
 
 function findAvailableGhost(id: string): InstalledGhost | null {
-  return availableGhosts().find((ghost) => ghost.manifest.id === id) ?? null;
+  const ghosts = availableGhosts();
+  const exact = ghosts.find((ghost) => ghost.manifest.id === id);
+  if (exact) return exact;
+  const developmentRuntimeId = mekaDevPluginsSingleton?.runtimeIdFor(id);
+  if (!developmentRuntimeId) return null;
+  return ghosts.find((ghost) => ghost.manifest.id === developmentRuntimeId) ?? null;
+}
+
+/** Canonical runtime id used internally when a logical Meka plugin id is requested. */
+export function resolveGhostRuntimeId(id: string): string {
+  if (
+    getGhostManager()
+      .list()
+      .some((ghost) => ghost.manifest.id === id)
+  )
+    return id;
+  return mekaDevPluginsSingleton?.runtimeIdFor(id) ?? id;
+}
+
+/** Stable logical id exposed to Agent/role policy for a development runtime. */
+export function resolveGhostLogicalId(id: string): string {
+  return mekaDevPluginsSingleton?.pluginIdFor(id) ?? id;
 }
 
 /** Runtime-authorized lookup for integrations outside this module. */
@@ -997,12 +1008,14 @@ export async function interruptGhostCallsForAccountBoundary(): Promise<void> {
 
 function listGhostOwnerProjectionRoots(): string[] {
   const activeOwnerRoot = ownerScopedUserDataPath();
-  return [...new Set([
-    path.join(activeOwnerRoot, 'brain'),
-    path.join(activeOwnerRoot, 'cindy-brain'),
-    path.join(activeOwnerRoot, 'ghost-install-state'),
-    ...listLegacyOwnerProjectionRoots(app.getPath('userData')),
-  ])];
+  return [
+    ...new Set([
+      path.join(activeOwnerRoot, 'brain'),
+      path.join(activeOwnerRoot, 'cindy-brain'),
+      path.join(activeOwnerRoot, 'ghost-install-state'),
+      ...listLegacyOwnerProjectionRoots(app.getPath('userData')),
+    ]),
+  ];
 }
 
 /** Stop every sandbox and revoke global skill projections before changing the active data owner. */
@@ -1027,16 +1040,12 @@ let ipcRegistered = false;
 /** 意识仓库根(userData/cindy-brain;旧 brain 目录首次解析时原地迁移)。 */
 let brainRootCache: GhostRepoRootCacheEntry | null = null;
 function brainRootDir(): string {
-  brainRootCache = resolveCachedGhostRepoRoot(
-    brainRootCache,
-    activeOwnerScopeKey(),
-    {
-      userDataDir: ownerScopedUserDataPath(),
-      exists: (p) => fs.existsSync(p),
-      rename: (from, to) => fs.renameSync(from, to),
-      log,
-    },
-  );
+  brainRootCache = resolveCachedGhostRepoRoot(brainRootCache, activeOwnerScopeKey(), {
+    userDataDir: ownerScopedUserDataPath(),
+    exists: (p) => fs.existsSync(p),
+    rename: (from, to) => fs.renameSync(from, to),
+    log,
+  });
   return brainRootCache.rootDir;
 }
 
@@ -1300,10 +1309,7 @@ async function reconcileBuiltinGhostsLocked(
       if (renameBuiltinTombstone(brainRootDir(), fromId, toId, log)) {
         log.info('builtin ghost tombstone carried over rename', { fromId, toId });
       }
-      renameDisabledCarry.set(
-        toId,
-        hasDisabledMarker(path.join(brainRootDir(), fromId)),
-      );
+      renameDisabledCarry.set(toId, hasDisabledMarker(path.join(brainRootDir(), fromId)));
     }
   }
   // "播种进行中"胶囊提示:只在真的动手(装/覆盖/回收)时亮起,no-op 对账
@@ -2896,6 +2902,42 @@ export function getGhostConfirmSlot(): GhostConfirmSlot {
   return confirmSlotSingleton;
 }
 
+/**
+ * Host-owned confirmation for built-in recovery flows. This deliberately
+ * bypasses the plugin `confirm` slot permission: the request is initiated by
+ * Cindy's own tool gateway, not by an untrusted plugin. The UI is still the
+ * same generic ConfirmDialogProvider used by the confirm slot.
+ */
+export async function requestGhostHostConfirmation(params: {
+  ghostId: string;
+  body: string;
+  confirmText?: string;
+  cancelText?: string;
+  danger?: boolean;
+}): Promise<boolean> {
+  const ghost = findAvailableGhost(params.ghostId);
+  if (!ghost) return false;
+  // Lazily install the bridge in headless/unit-test startup just like the
+  // regular confirm slot does, then use the bridge directly so no plugin slot
+  // declaration is required for a Cindy-owned recovery action.
+  getGhostConfirmSlot();
+  const bridge = getGhostConfirmDialogBridge();
+  if (!bridge) return false;
+  try {
+    return await bridge.request({
+      ghostId: params.ghostId,
+      ghostName: ghost.manifest.name,
+      ...(ghost.iconDataUrl ? { iconDataUrl: ghost.iconDataUrl } : {}),
+      body: params.body,
+      confirmText: params.confirmText ?? null,
+      cancelText: params.cancelText ?? null,
+      danger: params.danger === true,
+    });
+  } catch {
+    return false;
+  }
+}
+
 let pickSlotSingleton: GhostPickSlot | null = null;
 
 /**
@@ -2923,7 +2965,10 @@ export function getGhostPickSlot(): GhostPickSlot {
       showFileDialog: async ({ ghostName, purpose }) => {
         const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
         if (!win || win.isDestroyed()) throw new Error('没有可挂靠的宿主窗口');
-        const message = t('settings.ghosts.pick.fileDialogMessage').replaceAll('{{name}}', ghostName);
+        const message = t('settings.ghosts.pick.fileDialogMessage').replaceAll(
+          '{{name}}',
+          ghostName,
+        );
         const result = await dialog.showOpenDialog(win, {
           title: t('settings.ghosts.pick.fileDialogTitle'),
           message: purpose ? `${message}\n${purpose}` : message,
@@ -3255,9 +3300,7 @@ interface CindyMediaPreferenceConfig {
 }
 
 /** Art 等插件的媒体偏好统一合并已就绪 Provider 与 Gateway 可执行模型。 */
-function getMediaPreferenceConfig(
-  capability: GhostMediaCapability,
-): CindyMediaPreferenceConfig {
+function getMediaPreferenceConfig(capability: GhostMediaCapability): CindyMediaPreferenceConfig {
   const kind = capability.startsWith('image.') ? 'image' : 'video';
   const coreCapability: MediaCapability =
     capability === 'video.edit' ? 'video.image_to_video' : capability;
@@ -3359,10 +3402,7 @@ async function getGhostConfigurableMediaModels(
     const availability = await listExecutableMediaModels();
     const mode = type === 'image' ? 'image_generation' : 'video_generation';
     const models = availability.models.filter((model) => model.mode === mode);
-    if (
-      models.length === 0 &&
-      availability.unavailable.some((model) => model.retryable)
-    ) {
+    if (models.length === 0 && availability.unavailable.some((model) => model.retryable)) {
       return {
         ok: false,
         errorCode: 'NOT_AVAILABLE',
@@ -3392,7 +3432,8 @@ async function getGhostConfigurableMediaModels(
             }
           : {}),
       })),
-      defaultModelId: models.find((model) => model.providerId === 'xd')?.id ?? models[0]?.id ?? null,
+      defaultModelId:
+        models.find((model) => model.providerId === 'xd')?.id ?? models[0]?.id ?? null,
       defaultProviderId:
         models.find((model) => model.providerId === 'xd')?.providerId ??
         models[0]?.providerId ??
@@ -3679,8 +3720,7 @@ function getImageChannelRegistry(): ImageChannelRegistry {
       },
       brandLabel: 'OpenAI',
       missingKeyMessage: 'OpenAI 图像 API key 未配置,请到「设置 → 模型供应商 → OpenAI」填入后重试',
-      beforeDispatch: (model) =>
-        assertMediaModelStillEnabled('image', `openai/${model}`, 'openai'),
+      beforeDispatch: (model) => assertMediaModelStillEnabled('image', `openai/${model}`, 'openai'),
     });
     const stripOpenaiPrefix = (id: string) =>
       id.startsWith('openai/') ? id.slice('openai/'.length) : id;
@@ -4048,21 +4088,8 @@ export function getGhostCindySlot(): GhostCindySlot {
         getGhostPipeDispatcher().holdCall(ghostId, callId, budgetMs),
       releasePipeCall: (ghostId, callId) => getGhostPipeDispatcher().releaseCall(ghostId, callId),
       claimPipeCall: (ghostId, callId, callerTool, binding, requestKey) =>
-        getGhostPipeDispatcher().claimPendingCall(
-          ghostId,
-          callId,
-          callerTool,
-          binding,
-          requestKey,
-        ),
-      settlePipeCallClaim: (
-        ghostId,
-        callId,
-        callerTool,
-        binding,
-        requestKey,
-        allowRetry,
-      ) =>
+        getGhostPipeDispatcher().claimPendingCall(ghostId, callId, callerTool, binding, requestKey),
+      settlePipeCallClaim: (ghostId, callId, callerTool, binding, requestKey, allowRetry) =>
         getGhostPipeDispatcher().settlePendingCallClaim(
           ghostId,
           callId,
@@ -4248,9 +4275,7 @@ export async function reconcileGhostOauthAccountsForActiveOwner(): Promise<boole
         if (reconciliation.retryPending) retryPending = true;
       });
     }
-    return !retryPending
-      && !isAppSessionBoundaryPending()
-      && activeOwnerScopeKey() === ownerScope;
+    return !retryPending && !isAppSessionBoundaryPending() && activeOwnerScopeKey() === ownerScope;
   });
 }
 
@@ -4379,7 +4404,8 @@ function getGhostOauthReauthSuggest(
  * errors block dispatch.
  */
 export function getGhostSetupAssessment(ghostId: string): GhostSetupAssessment {
-  const ghost = findAvailableGhost(ghostId);
+  const runtimeGhostId = resolveGhostRuntimeId(ghostId);
+  const ghost = findAvailableGhost(runtimeGhostId);
   if (!ghost || !ghostSetupKvStore) {
     throw new Error(`ghost setup unavailable: ${ghostId}`);
   }
@@ -4390,24 +4416,24 @@ export function getGhostSetupAssessment(ghostId: string): GhostSetupAssessment {
   const assessment = evaluateGhostSetupAssessment(
     runtimeManifest,
     {
-      secretSaved: (key) => ghostSecretSaved(ghostId, key),
+      secretSaved: (key) => ghostSecretSaved(runtimeGhostId, key),
       oauthStatus: (key) => {
         const decl = runtimeManifest.network?.secrets?.find((secret) => secret.key === key)?.oauth;
-        const accounts = oauthManager.listAccounts(ghostId, key);
+        const accounts = oauthManager.listAccounts(runtimeGhostId, key);
         return {
-          clientConfigured: oauthManager.clientConfigured(ghostId, key, decl),
+          clientConfigured: oauthManager.clientConfigured(runtimeGhostId, key, decl),
           connected: accounts.filter((account) => account.status === 'connected').length,
           expired: accounts.filter((account) => account.status === 'expired').length,
         };
       },
-      connectionCount: (key) => connectionManager.list(ghostId, key).length,
+      connectionCount: (key) => connectionManager.list(runtimeGhostId, key).length,
       kvValue: (key) => {
-        if (kvSnapshot === null) kvSnapshot = ghostSetupKvStore?.readStrict(ghostId) ?? {};
+        if (kvSnapshot === null) kvSnapshot = ghostSetupKvStore?.readStrict(runtimeGhostId) ?? {};
         return kvSnapshot[key];
       },
     },
     {
-      revision: getGhostSetupChangeBus().currentRevision(ghostId),
+      revision: getGhostSetupChangeBus().currentRevision(runtimeGhostId),
       strict: true,
       additionalGroups: assessGhostHostSetupRequirements(runtimeManifest, {
         clientConfigReady: (configId) => configId === 'model-provider' && isModelAccessReady(),
@@ -4700,18 +4726,31 @@ let mcprSlotSingleton: GhostMcprSlot | null = null;
 let localServerSupervisorSingleton: LocalServerSupervisor | null = null;
 
 function jsonOutput(result: unknown): Record<string, unknown> {
-  if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('MCPRouter returned invalid local server data');
+  if (!result || typeof result !== 'object' || Array.isArray(result))
+    throw new Error('MCPRouter returned invalid local server data');
   const output = (result as { output?: unknown }).output;
-  if (!output || typeof output !== 'object' || Array.isArray(output)) throw new Error('MCPRouter returned invalid local server data');
+  if (!output || typeof output !== 'object' || Array.isArray(output))
+    throw new Error('MCPRouter returned invalid local server data');
   return output as Record<string, unknown>;
 }
 
-function artifactOutput(result: unknown): { taskId: string; artifact: import('./localServerRuntime.js').LocalServerArtifactDescriptor } {
+function artifactOutput(result: unknown): {
+  taskId: string;
+  artifact: import('./localServerRuntime.js').LocalServerArtifactDescriptor;
+} {
   const output = jsonOutput(result);
-  if (typeof output.taskId !== 'string' || !output.artifact || typeof output.artifact !== 'object' || Array.isArray(output.artifact)) {
+  if (
+    typeof output.taskId !== 'string' ||
+    !output.artifact ||
+    typeof output.artifact !== 'object' ||
+    Array.isArray(output.artifact)
+  ) {
     throw new Error('MCPRouter returned invalid build artifact data');
   }
-  return { taskId: output.taskId, artifact: output.artifact as import('./localServerRuntime.js').LocalServerArtifactDescriptor };
+  return {
+    taskId: output.taskId,
+    artifact: output.artifact as import('./localServerRuntime.js').LocalServerArtifactDescriptor,
+  };
 }
 
 async function localServerBuildMetadata(
@@ -4719,34 +4758,48 @@ async function localServerBuildMetadata(
   instanceId: string,
   taskId: string,
 ): Promise<import('./localServerSupervisor.js').LocalServerBuildMetadata> {
-  const task = jsonOutput(await service.callPluginCapability({
-    contractVersion: 1,
-    route: 'server-runtime.build.status',
-    scope: 'selected-instance',
-    input: { instanceId, taskId },
-  }));
-  const commitSha = typeof task.resolvedCommitSha === 'string' && /^[0-9a-f]{40}$/i.test(task.resolvedCommitSha)
-    ? task.resolvedCommitSha
-    : undefined;
+  const task = jsonOutput(
+    await service.callPluginCapability({
+      contractVersion: 1,
+      route: 'server-runtime.build.status',
+      scope: 'selected-instance',
+      input: { instanceId, taskId },
+    }),
+  );
+  const commitSha =
+    typeof task.resolvedCommitSha === 'string' && /^[0-9a-f]{40}$/i.test(task.resolvedCommitSha)
+      ? task.resolvedCommitSha
+      : undefined;
   let commitMessage: string | undefined;
   if (commitSha) {
     try {
-      const show = jsonOutput(await service.callPluginCapability({
-        contractVersion: 1,
-        route: 'git.show',
-        scope: 'selected-instance',
-        input: { instanceId, commitSha },
-      }));
+      const show = jsonOutput(
+        await service.callPluginCapability({
+          contractVersion: 1,
+          route: 'git.show',
+          scope: 'selected-instance',
+          input: { instanceId, commitSha },
+        }),
+      );
       const commit = show.commit;
-      if (commit && typeof commit === 'object' && !Array.isArray(commit) && typeof (commit as { subject?: unknown }).subject === 'string') {
+      if (
+        commit &&
+        typeof commit === 'object' &&
+        !Array.isArray(commit) &&
+        typeof (commit as { subject?: unknown }).subject === 'string'
+      ) {
         commitMessage = (commit as { subject: string }).subject.slice(0, 4096);
       }
-    } catch { /* The build identity remains useful even when commit details are unavailable. */ }
+    } catch {
+      /* The build identity remains useful even when commit details are unavailable. */
+    }
   }
-  const builtAt = Number.isSafeInteger(task.finishedAt) && Number(task.finishedAt) > 0
-    ? Number(task.finishedAt)
-    : Number(task.createdAt);
-  if (!Number.isSafeInteger(builtAt) || builtAt <= 0) throw new Error('MCPRouter returned invalid build metadata');
+  const builtAt =
+    Number.isSafeInteger(task.finishedAt) && Number(task.finishedAt) > 0
+      ? Number(task.finishedAt)
+      : Number(task.createdAt);
+  if (!Number.isSafeInteger(builtAt) || builtAt <= 0)
+    throw new Error('MCPRouter returned invalid build metadata');
   return {
     taskId,
     builtAt,
@@ -4761,24 +4814,48 @@ function getLocalServerSupervisor(): LocalServerSupervisor {
     const service = getMekaRouterService();
     localServerSupervisorSingleton = new LocalServerSupervisor({
       userDataPath: app.getPath('userData'),
-      downloadArtifact: (instanceId, taskId, relativePath) => service.downloadBuildArtifact(instanceId, taskId, relativePath),
-      getArtifact: async (instanceId, taskId) => artifactOutput(await service.callPluginCapability({ contractVersion: 1, route: 'server-runtime.build.artifact', scope: 'selected-instance', input: { instanceId, taskId } })),
-      getBuildMetadata: (instanceId, taskId) => localServerBuildMetadata(service, instanceId, taskId),
+      downloadArtifact: (instanceId, taskId, relativePath) =>
+        service.downloadBuildArtifact(instanceId, taskId, relativePath),
+      getArtifact: async (instanceId, taskId) =>
+        artifactOutput(
+          await service.callPluginCapability({
+            contractVersion: 1,
+            route: 'server-runtime.build.artifact',
+            scope: 'selected-instance',
+            input: { instanceId, taskId },
+          }),
+        ),
+      getBuildMetadata: (instanceId, taskId) =>
+        localServerBuildMetadata(service, instanceId, taskId),
       getRuntimeContract: async (instanceId) => {
-        const output = jsonOutput(await service.callPluginCapability({ contractVersion: 1, route: 'server-runtime.build.contract', scope: 'selected-instance', input: { instanceId } }));
+        const output = jsonOutput(
+          await service.callPluginCapability({
+            contractVersion: 1,
+            route: 'server-runtime.build.contract',
+            scope: 'selected-instance',
+            input: { instanceId },
+          }),
+        );
         const contract = output.runtimeContract;
-        if (!contract || typeof contract !== 'object' || Array.isArray(contract)) throw new Error('MCPRouter returned invalid runtime contract');
+        if (!contract || typeof contract !== 'object' || Array.isArray(contract))
+          throw new Error('MCPRouter returned invalid runtime contract');
         return contract as Record<string, unknown>;
       },
       selectConfigDirectory: async (_instanceId, _inputId, title) => {
         const focused = BrowserWindow.getFocusedWindow();
         const win = isTrustedAppRendererWindow(focused)
           ? focused
-          : BrowserWindow.getAllWindows().find(candidate => isTrustedAppRendererWindow(candidate));
-        const options: Electron.OpenDialogOptions = { title: title || '选择本地服务器配置表目录', properties: ['openDirectory'] };
-        const result = win && !win.isDestroyed()
-          ? await dialog.showOpenDialog(win, options)
-          : await dialog.showOpenDialog(options);
+          : BrowserWindow.getAllWindows().find((candidate) =>
+              isTrustedAppRendererWindow(candidate),
+            );
+        const options: Electron.OpenDialogOptions = {
+          title: title || '选择本地服务器配置表目录',
+          properties: ['openDirectory'],
+        };
+        const result =
+          win && !win.isDestroyed()
+            ? await dialog.showOpenDialog(win, options)
+            : await dialog.showOpenDialog(options);
         return result.canceled || !result.filePaths[0] ? null : result.filePaths[0];
       },
     });
@@ -4795,21 +4872,33 @@ export function getGhostMcprSlot(): GhostMcprSlot {
       getLocalServerService: (): McprLocalServerService => {
         const supervisor = getLocalServerSupervisor();
         return {
-          configure: (instanceId, inputId, value) => supervisor.configure(instanceId, inputId, value),
+          configure: (instanceId, inputId, value) =>
+            supervisor.configure(instanceId, inputId, value),
           probeProjectConfig: async (instanceId, sessionId, relativeDirectory, inputId) => {
             const input = await supervisor.describeProjectConfigCandidate(instanceId, inputId);
-            const resolved = await resolveLocalServerProjectDirectory(sessionId, relativeDirectory, getSessionFsSnapshot);
+            const resolved = await resolveLocalServerProjectDirectory(
+              sessionId,
+              relativeDirectory,
+              getSessionFsSnapshot,
+            );
             return {
-              candidate: resolved ? { inputId: input.inputId, label: input.label, relativeDirectory } : null,
+              candidate: resolved
+                ? { inputId: input.inputId, label: input.label, relativeDirectory }
+                : null,
             };
           },
           configureProjectConfig: async (instanceId, sessionId, relativeDirectory, inputId) => {
-            const resolved = await resolveLocalServerProjectDirectory(sessionId, relativeDirectory, getSessionFsSnapshot);
+            const resolved = await resolveLocalServerProjectDirectory(
+              sessionId,
+              relativeDirectory,
+              getSessionFsSnapshot,
+            );
             if (!resolved) throw new Error('当前项目中没有可用的配置表目录');
             return supervisor.configureAuthorizedDirectory(instanceId, inputId, resolved);
           },
-          prepare: (instanceId, taskId, programId) => supervisor.prepare(instanceId, taskId, programId),
-          describe: instanceId => supervisor.describe(instanceId),
+          prepare: (instanceId, taskId, programId) =>
+            supervisor.prepare(instanceId, taskId, programId),
+          describe: (instanceId) => supervisor.describe(instanceId),
           start: (instanceId, taskId, programId) => supervisor.start(instanceId, taskId, programId),
           startAll: (instanceId, taskId) => supervisor.startAll(instanceId, taskId),
           status: (instanceId, programId) => supervisor.status(instanceId, programId),
@@ -4902,7 +4991,9 @@ export function getGhostLibrarySlot(): GhostLibrarySlot {
     // 面板只读投影(cindy-ghost://<id>/library/<relPath>)的解析器:与电子脑
     // read 同源校验(binding 根 + vault 路径纪律),失败折叠 404。
     setGhostLibraryFileResolver((ghostId, relPath) =>
-      librarySlotSingleton ? librarySlotSingleton.resolvePanelFilePath(ghostId, relPath) : Promise.resolve(null),
+      librarySlotSingleton
+        ? librarySlotSingleton.resolvePanelFilePath(ghostId, relPath)
+        : Promise.resolve(null),
     );
   }
   return librarySlotSingleton;
@@ -4924,9 +5015,10 @@ async function relocateGhostLibraryTo(
   try {
     await slot.disposeGhost(id);
     const resolution = await getGhostLibraryBindingStore().resolveLibraryRoot(id);
-    const fromRoot = resolution.kind === 'custom' && resolution.root !== null
-      ? resolution.root
-      : ownerScopedUserDataPath('libraries', id);
+    const fromRoot =
+      resolution.kind === 'custom' && resolution.root !== null
+        ? resolution.root
+        : ownerScopedUserDataPath('libraries', id);
     let fromExists = true;
     try {
       await fs.promises.stat(fromRoot);
@@ -4935,9 +5027,14 @@ async function relocateGhostLibraryTo(
     }
     if (!fromExists) {
       // 无数据迁移:直接改 binding(等价 bind)。
-      const set = await getGhostLibraryBindingStore().setBinding(id, candidate, (root) => statfsFreeBytes(root), {
-        allowInsideManagedRoot: opts?.allowInsideManagedRoot,
-      });
+      const set = await getGhostLibraryBindingStore().setBinding(
+        id,
+        candidate,
+        (root) => statfsFreeBytes(root),
+        {
+          allowInsideManagedRoot: opts?.allowInsideManagedRoot,
+        },
+      );
       await slot.disposeGhost(id);
       return set.ok ? { ok: true } : { ok: false, message: set.message };
     }
@@ -4962,7 +5059,8 @@ async function relocateGhostLibraryTo(
         checkSqliteHealthy: async (abs) => {
           const db = createBetterSqliteDatabase(abs, { readonly: true });
           try {
-            const row = db.prepare('PRAGMA quick_check').get() as { quick_check?: string } | undefined;
+            const row = db.prepare('PRAGMA quick_check').get() as
+              { quick_check?: string } | undefined;
             return row?.quick_check === 'ok';
           } finally {
             db.close();
@@ -4996,9 +5094,10 @@ export async function getGhostLibraryOverview(ghostId: string): Promise<GhostLib
   const store = getGhostLibraryBindingStore();
   const binding = await store.getBinding(ghostId);
   const resolution = await store.resolveLibraryRoot(ghostId);
-  const root = resolution.kind === 'custom' && resolution.root !== null
-    ? resolution.root
-    : ownerScopedUserDataPath('libraries', ghostId);
+  const root =
+    resolution.kind === 'custom' && resolution.root !== null
+      ? resolution.root
+      : ownerScopedUserDataPath('libraries', ghostId);
   let usedBytes = 0;
   let fileCount = 0;
   let orphaned = false;
@@ -5009,12 +5108,16 @@ export async function getGhostLibraryOverview(ghostId: string): Promise<GhostLib
     reason = resolution.drift;
   } else {
     try {
-      const meta = JSON.parse(await fs.promises.readFile(path.join(root, '.cindy-library', 'meta.json'), 'utf8')) as {
+      const meta = JSON.parse(
+        await fs.promises.readFile(path.join(root, '.cindy-library', 'meta.json'), 'utf8'),
+      ) as {
         orphaned?: unknown;
       };
       orphaned = meta.orphaned !== undefined;
       try {
-        const usage = JSON.parse(await fs.promises.readFile(path.join(root, '.cindy-library', 'usage.json'), 'utf8')) as {
+        const usage = JSON.parse(
+          await fs.promises.readFile(path.join(root, '.cindy-library', 'usage.json'), 'utf8'),
+        ) as {
           files?: number;
           bytes?: number;
         };
@@ -5053,7 +5156,9 @@ export async function getGhostLibraryOverview(ghostId: string): Promise<GhostLib
  * 库根 rename 进 owner 级回收站(30 天回滚窗),撤销 binding。调用方(设置页
  * IPC,后续 commit 接线)必须先取得用户对「删除作品数据」的独立破坏性确认。
  */
-export async function deleteGhostLibraryForActiveOwner(ghostId: string): Promise<{ ok: boolean; message?: string }> {
+export async function deleteGhostLibraryForActiveOwner(
+  ghostId: string,
+): Promise<{ ok: boolean; message?: string }> {
   if (!isValidGhostId(ghostId)) return { ok: false, message: '非法插件 id' };
   await getGhostLibrarySlot().disposeGhost(ghostId);
   const result = await trashGhostLibrary(ghostId, {
@@ -5061,7 +5166,9 @@ export async function deleteGhostLibraryForActiveOwner(ghostId: string): Promise
     // 引导恢复位置,不误删)。
     resolveLibraryRoot: async (id) => {
       const resolution = await getGhostLibraryBindingStore().resolveLibraryRoot(id);
-      return resolution.kind === 'custom' ? resolution.root : ownerScopedUserDataPath('libraries', id);
+      return resolution.kind === 'custom'
+        ? resolution.root
+        : ownerScopedUserDataPath('libraries', id);
     },
     trashRoot: () => ownerScopedUserDataPath('libraries-trash'),
     removeBinding: async (id) => {
@@ -5135,21 +5242,21 @@ function rejectUnauthorizedTokenBroker(manifest: GhostManifest): void {
 function throwInstallError(rejection: InstallRejection): never {
   switch (rejection.code) {
     case 'source-not-found':
-      throwIpcError('NOT_FOUND', rejection.reason);
+      return throwIpcError('NOT_FOUND', rejection.reason);
     case 'file-invalid':
-      throwIpcError('GHOST_FILE_INVALID', rejection.reason);
+      return throwIpcError('GHOST_FILE_INVALID', rejection.reason);
     case 'host-unsupported':
-      throwIpcError('GHOST_HOST_UNSUPPORTED', rejection.reason);
+      return throwIpcError('GHOST_HOST_UNSUPPORTED', rejection.reason);
     case 'already-installed':
-      throwIpcError('ALREADY_EXISTS', rejection.reason);
+      return throwIpcError('ALREADY_EXISTS', rejection.reason);
     case 'not-installed':
-      throwIpcError('NOT_FOUND', rejection.reason);
+      return throwIpcError('NOT_FOUND', rejection.reason);
     case 'command-conflict':
-      throwIpcError('GHOST_COMMAND_CONFLICT', rejection.reason);
+      return throwIpcError('GHOST_COMMAND_CONFLICT', rejection.reason);
     case 'state-changed':
-      throwIpcError('PRECONDITION_FAILED', rejection.reason);
+      return throwIpcError('PRECONDITION_FAILED', rejection.reason);
     default:
-      throwIpcError('INTERNAL', rejection.reason);
+      return throwIpcError('INTERNAL', rejection.reason);
   }
 }
 
@@ -5157,22 +5264,19 @@ function throwInstallError(rejection: InstallRejection): never {
 function throwUninstallError(rejection: UninstallRejection): never {
   switch (rejection.code) {
     case 'invalid-id':
-      throwIpcError('INVALID_PARAMS', rejection.reason);
+      return throwIpcError('INVALID_PARAMS', rejection.reason);
     case 'not-installed':
-      throwIpcError('NOT_FOUND', rejection.reason);
+      return throwIpcError('NOT_FOUND', rejection.reason);
     case 'approval-required':
-      throwIpcError('PRECONDITION_FAILED', rejection.reason);
+      return throwIpcError('PRECONDITION_FAILED', rejection.reason);
     default:
-      throwIpcError('INTERNAL', rejection.reason);
+      return throwIpcError('INTERNAL', rejection.reason);
   }
 }
 
 function assertGhostSupportsCurrentCindy(manifest: GhostManifest): void {
   if (supportsCindyVersion(app.getVersion(), manifest.minCindyVersion)) return;
-  throwIpcError(
-    'GHOST_FILE_INVALID',
-    `该插件需要 Cindy ${manifest.minCindyVersion} 或更高版本`,
-  );
+  throwIpcError('GHOST_FILE_INVALID', `该插件需要 Cindy ${manifest.minCindyVersion} 或更高版本`);
 }
 
 /**
@@ -5213,9 +5317,7 @@ async function installAndDockLocked(
   // "立即开启"才带电;沉睡态面板不渲染、总机不列、沙箱不拉起。
   const result = await manager.install(lizFilePath, {
     initiallyEnabled: opts.enable ?? false,
-    ...(opts.expectedPackageSha256
-      ? { expectedPackageSha256: opts.expectedPackageSha256 }
-      : {}),
+    ...(opts.expectedPackageSha256 ? { expectedPackageSha256: opts.expectedPackageSha256 } : {}),
     ...(opts.trustOverride ? { trustOverride: opts.trustOverride } : {}),
   });
   if ('rejection' in result) throwInstallError(result.rejection);
@@ -5740,9 +5842,7 @@ function readLegacyJson<T>(
 ): LegacyMigrationRead<T> {
   try {
     const parsed = parse(JSON.parse(fs.readFileSync(file, 'utf-8')) as unknown);
-    return parsed === null
-      ? LEGACY_MIGRATION_RETRYABLE_FAILURE
-      : legacyMigrationAvailable(parsed);
+    return parsed === null ? LEGACY_MIGRATION_RETRYABLE_FAILURE : legacyMigrationAvailable(parsed);
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === 'ENOENT'
       ? LEGACY_MIGRATION_MISSING
@@ -5875,10 +5975,7 @@ export function registerGhostIpc(): void {
         typeof error === 'object' &&
         isIpcErrorCode((error as { code?: unknown }).code)
       ) {
-        throwIpcError(
-          (error as { code: IpcErrorCode }).code,
-          describeMekaDevPluginError(error),
-        );
+        throwIpcError((error as { code: IpcErrorCode }).code, describeMekaDevPluginError(error));
       }
       log.error('Meka development Plugin IPC failed', error);
       throwIpcError('INTERNAL', describeMekaDevPluginError(error));
@@ -6223,9 +6320,7 @@ export function registerGhostIpc(): void {
       ? networkSecretDecls.filter((s) => s.source === 'gh-cli')
       : [];
     const ghCliAvailable =
-      ghCliSecretDecls.length > 0
-        ? await getSharedGhCliTokenSource().probeAvailability()
-        : false;
+      ghCliSecretDecls.length > 0 ? await getSharedGhCliTokenSource().probeAvailability() : false;
     return handleGhostSecretsRequest({
       method,
       pathname,
@@ -6569,8 +6664,8 @@ export function registerGhostIpc(): void {
     const outcome = await scheduleBuiltinReconcile(reason, scope);
     if (outcome === 'deferred') return outcome;
     if (
-      activeOwnerScopeKey() !== scope.scopeKey
-      || getActiveAppSession().dataOwnerId !== scope.dataOwnerId
+      activeOwnerScopeKey() !== scope.scopeKey ||
+      getActiveAppSession().dataOwnerId !== scope.dataOwnerId
     ) {
       return 'deferred';
     }
@@ -6581,8 +6676,8 @@ export function registerGhostIpc(): void {
     return outcome === 'failed'
       ? 'failed'
       : outcome === 'retry-pending' || activationOutcome === 'retry-pending'
-      ? 'retry-pending'
-      : 'completed';
+        ? 'retry-pending'
+        : 'completed';
   };
 
   // ── 管子(脑机接口)main 侧 handler(docs/dev-rules/plugin-security-and-authoring.md)──────────────
@@ -6999,9 +7094,10 @@ export function registerGhostIpc(): void {
     // 行如实说出当前实际跟的是谁。
     const textChain = getUtilityModelChainProfiles();
     const textDefaultId = textChain[0]?.id ?? null;
-    const textDefaultLabel = textDefaultId === null
-      ? null
-      : (utilityModelPinOptions().find((o) => o.id === textDefaultId)?.label ?? textDefaultId);
+    const textDefaultLabel =
+      textDefaultId === null
+        ? null
+        : (utilityModelPinOptions().find((o) => o.id === textDefaultId)?.label ?? textDefaultId);
     const textOptions = buildTextOneshotPinOptions(
       getActiveCatalog(),
       readModelDisableOverrides(),
@@ -7010,9 +7106,12 @@ export function registerGhostIpc(): void {
     );
     // 纯展示口径,不走 findAvailableGhost 的"当前会话可用"闸:插件被当前项目
     // 停用时卡片的其余部分(overrides/options)照常渲染,声明偏好也不该凭空消失。
-    const declaredRaw = typeof ghostId === 'string'
-      ? getGhostManager().list().find((g) => g.manifest.id === ghostId)?.manifest.cindy?.oneshotModel
-      : undefined;
+    const declaredRaw =
+      typeof ghostId === 'string'
+        ? getGhostManager()
+            .list()
+            .find((g) => g.manifest.id === ghostId)?.manifest.cindy?.oneshotModel
+        : undefined;
     const declaredResolved = declaredRaw
       ? resolveOneshotCatalogModel(
           getActiveCatalog(),
@@ -7034,12 +7133,17 @@ export function registerGhostIpc(): void {
           textDefaultId === null || textDefaultLabel === null
             ? null
             : { id: textDefaultId, label: textDefaultLabel },
-        declaredModel: declaredResolved && declaredRaw
-          ? {
-              id: encodeCatalogPin(declaredResolved.providerId, declaredResolved.agentKind, declaredResolved.model),
-              label: declaredRaw,
-            }
-          : null,
+        declaredModel:
+          declaredResolved && declaredRaw
+            ? {
+                id: encodeCatalogPin(
+                  declaredResolved.providerId,
+                  declaredResolved.agentKind,
+                  declaredResolved.model,
+                ),
+                label: declaredRaw,
+              }
+            : null,
         // 存量轻量档位钉(目录扩展前钉下的合法值)的展示名表:渲染层据此给
         // 老钉值回显友好名,而不是把合法档位钉当 stale 原样露出 id。
         utilityProfiles: utilityModelPinOptions(),
@@ -7108,10 +7212,7 @@ export function registerGhostIpc(): void {
           ).models,
           embed: getCatalogEmbedConfig().models,
           textPinIds: buildTextOneshotPinOptions(
-            projectProviderCatalogForBuildRegion(
-              getActiveCatalog(),
-              getAuthState().edition,
-            ),
+            projectProviderCatalogForBuildRegion(getActiveCatalog(), getAuthState().edition),
             readModelDisableOverrides(),
           ).map((o) => o.id),
         })
@@ -7225,10 +7326,7 @@ export function registerGhostIpc(): void {
       throwIpcError('INVALID_PARAMS', 'expectedPackageSha256 must come from ghosts:inspect');
     }
     if (!isGhostInstallApprovalToken(expectedInstalledApproval)) {
-      throwIpcError(
-        'INVALID_PARAMS',
-        'expectedInstalledApproval must come from ghosts:list',
-      );
+      throwIpcError('INVALID_PARAMS', 'expectedInstalledApproval must come from ghosts:list');
     }
     const marketLedger = getPluginMarketLedger().bind(
       ownerScopedUserDataPath('plugin-market', 'ledger.v1.json'),
@@ -7264,10 +7362,7 @@ export function registerGhostIpc(): void {
           ) {
             marketInstallSubject = getCurrentUserId() ?? mutationOwner.dataOwnerId;
             marketRecordWasSuppressed = marketInstallSubject
-              ? marketLedger.isDefaultInstallSuppressed(
-                  marketInstallSubject,
-                  marketRecord.pluginId,
-                )
+              ? marketLedger.isDefaultInstallSuppressed(marketInstallSubject, marketRecord.pluginId)
               : false;
           }
         } catch (error) {
@@ -7348,7 +7443,9 @@ export function registerGhostIpc(): void {
             if (previousGhost) spawnIfResident(previousGhost);
             throw err;
           }
-          const placed = manager.list().find((ghost) => ghost.manifest.id === inspected.manifest.id);
+          const placed = manager
+            .list()
+            .find((ghost) => ghost.manifest.id === inspected.manifest.id);
           if (!placed) throw err;
           log.warn('local ghost post-placement notification failed', {
             ghostId: inspected.manifest.id,
@@ -7365,8 +7462,10 @@ export function registerGhostIpc(): void {
           if (!(result.rejection.code === 'io' && result.rejection.rollbackFailed)) {
             restoreMarketRecord();
           }
-          if (previousGhost &&
-            !(result.rejection.code === 'io' && result.rejection.rollbackFailed)) {
+          if (
+            previousGhost &&
+            !(result.rejection.code === 'io' && result.rejection.rollbackFailed)
+          ) {
             spawnIfResident(previousGhost);
           }
           throwInstallError(result.rejection);
@@ -7483,7 +7582,10 @@ export function registerGhostIpc(): void {
       typeof options.expectedManifestSha256 !== 'string' ||
       !/^[a-f0-9]{64}$/.test(options.expectedManifestSha256)
     ) {
-      throwIpcError('INVALID_PARAMS', 'expectedManifestSha256 must come from ghosts:reapprove-inspect');
+      throwIpcError(
+        'INVALID_PARAMS',
+        'expectedManifestSha256 must come from ghosts:reapprove-inspect',
+      );
     }
     if (
       typeof options.expectedApprovalProjectionSha256 !== 'string' ||
@@ -7515,10 +7617,10 @@ export function registerGhostIpc(): void {
     const releaseMutation = beginGhostMutation(ticket.owner);
     try {
       const result = await manager.reapproveInstalled(id, {
-          enable: options.enable,
-          expectedManifestSha256: options.expectedManifestSha256,
-          expectedApprovalProjectionSha256: options.expectedApprovalProjectionSha256,
-          expectedInstalledApproval: options.expectedInstalledApproval,
+        enable: options.enable,
+        expectedManifestSha256: options.expectedManifestSha256,
+        expectedApprovalProjectionSha256: options.expectedApprovalProjectionSha256,
+        expectedInstalledApproval: options.expectedInstalledApproval,
       });
       if ('rejection' in result) throwInstallError(result.rejection);
       // 与装入/更新同款收尾:面板停靠(已有位置则 no-op)+ 常驻点火。
@@ -7528,7 +7630,10 @@ export function registerGhostIpc(): void {
       if (docked) {
         const applied = store.setLayout(docked);
         if ('rejection' in applied) {
-          log.warn('ghost panel dock rejected', { id: result.ghost.manifest.id, reason: applied.rejection });
+          log.warn('ghost panel dock rejected', {
+            id: result.ghost.manifest.id,
+            reason: applied.rejection,
+          });
         }
       }
       spawnIfResident(result.ghost);
@@ -7745,12 +7850,14 @@ export function registerGhostIpc(): void {
    * 共用同一裁决链(原生选择器 → 候选校验 → binding/迁移)。 */
   ipcMain.handle('ghosts:library-overview', async (event, id: unknown) => {
     assertTrustedAppRendererEvent(event);
-    if (typeof id !== 'string' || !isValidGhostId(id)) throwIpcError('INVALID_PARAMS', '非法插件 id');
+    if (typeof id !== 'string' || !isValidGhostId(id))
+      throwIpcError('INVALID_PARAMS', '非法插件 id');
     return getGhostLibraryOverview(id);
   });
   ipcMain.handle('ghosts:library-pick-location', async (event, id: unknown) => {
     assertTrustedAppRendererEvent(event);
-    if (typeof id !== 'string' || !isValidGhostId(id)) throwIpcError('INVALID_PARAMS', '非法插件 id');
+    if (typeof id !== 'string' || !isValidGhostId(id))
+      throwIpcError('INVALID_PARAMS', '非法插件 id');
     const win = BrowserWindow.fromWebContents(event.sender);
     const picked = win
       ? await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'] })
@@ -7769,7 +7876,8 @@ export function registerGhostIpc(): void {
       },
       getDiskFreeBytes: (root) => statfsFreeBytes(root),
     });
-    if (!validation.ok) return { ok: false as const, cancelled: false as const, message: validation.message };
+    if (!validation.ok)
+      return { ok: false as const, cancelled: false as const, message: validation.message };
     return { ok: true as const, candidate, warnings: validation.warnings };
   });
   // 装入确认时的「更改位置」:空库(或首次启用),直接记 binding,无需迁移。
@@ -7781,7 +7889,9 @@ export function registerGhostIpc(): void {
     }
     const releaseMutation = beginGhostMutation();
     try {
-      const set = await getGhostLibraryBindingStore().setBinding(id, candidate, (root) => statfsFreeBytes(root));
+      const set = await getGhostLibraryBindingStore().setBinding(id, candidate, (root) =>
+        statfsFreeBytes(root),
+      );
       if (!set.ok) return { ok: false as const, message: set.message };
       await getGhostLibrarySlot().disposeGhost(id); // 作废会话,下一请求用新根
       return { ok: true as const, warnings: set.warnings };
@@ -7800,7 +7910,8 @@ export function registerGhostIpc(): void {
   // 撤销自定义位置:迁回系统默认并清 binding(反向同一状态机)。
   ipcMain.handle('ghosts:library-revert-default', async (event, id: unknown) => {
     assertTrustedAppRendererEvent(event);
-    if (typeof id !== 'string' || !isValidGhostId(id)) throwIpcError('INVALID_PARAMS', '非法插件 id');
+    if (typeof id !== 'string' || !isValidGhostId(id))
+      throwIpcError('INVALID_PARAMS', '非法插件 id');
     const defaultParent = path.dirname(ownerScopedUserDataPath('libraries', id));
     try {
       await fs.promises.mkdir(defaultParent, { recursive: true });
@@ -7818,7 +7929,8 @@ export function registerGhostIpc(): void {
   // 用户可手工找回;不自动猜测)。
   ipcMain.handle('ghosts:library-unbind', async (event, id: unknown) => {
     assertTrustedAppRendererEvent(event);
-    if (typeof id !== 'string' || !isValidGhostId(id)) throwIpcError('INVALID_PARAMS', '非法插件 id');
+    if (typeof id !== 'string' || !isValidGhostId(id))
+      throwIpcError('INVALID_PARAMS', '非法插件 id');
     const releaseMutation = beginGhostMutation();
     try {
       await getGhostLibraryBindingStore().removeBinding(id);
@@ -7830,7 +7942,8 @@ export function registerGhostIpc(): void {
   });
   ipcMain.handle('ghosts:library-delete', async (event, id: unknown) => {
     assertTrustedAppRendererEvent(event);
-    if (typeof id !== 'string' || !isValidGhostId(id)) throwIpcError('INVALID_PARAMS', '非法插件 id');
+    if (typeof id !== 'string' || !isValidGhostId(id))
+      throwIpcError('INVALID_PARAMS', '非法插件 id');
     // **唯一有效的删除确认在 Main**:preload 即使被其它 trusted renderer
     // 调用也绕不过用户点击(review:Renderer 确认可被内部调用方绕过)。文案走
     // main i18n(与 Renderer 五语同一资源),壳由系统绘制；取消不取得 mutation
@@ -8154,20 +8267,17 @@ function scheduleGhostSkillReconcile(): void {
             skillReconcileInFlight = false;
             return;
           }
-          const result = await withGhostSkillProjectionReconcile(
-            owner.dataOwnerId,
-            async () => {
-              releaseLease = beginGhostMutation(owner);
-              return reconcileGhostSkillLinks({
-                ghosts: getGhostManager().list(),
-                brainRoot: brainRootDir(),
-                approvalStateRoot: getGhostManager().approvalStateRoot(),
-                assertOwnerStable: () => assertGhostSkillProjectionStableOwner(owner.dataOwnerId!),
-                validateApprovedSkillSnapshot: (ghost) =>
-                  getGhostManager().verifyApprovedSkillSnapshot(ghost),
-              });
-            },
-          );
+          const result = await withGhostSkillProjectionReconcile(owner.dataOwnerId, async () => {
+            releaseLease = beginGhostMutation(owner);
+            return reconcileGhostSkillLinks({
+              ghosts: getGhostManager().list(),
+              brainRoot: brainRootDir(),
+              approvalStateRoot: getGhostManager().approvalStateRoot(),
+              assertOwnerStable: () => assertGhostSkillProjectionStableOwner(owner.dataOwnerId!),
+              validateApprovedSkillSnapshot: (ghost) =>
+                getGhostManager().verifyApprovedSkillSnapshot(ghost),
+            });
+          });
           if (result.warnings.length > 0) {
             log.warn('ghost skill reconcile warnings', { warnings: result.warnings });
           }
@@ -8179,9 +8289,9 @@ function scheduleGhostSkillReconcile(): void {
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           if (
-            isAppSessionBoundaryPending()
-            || message.includes('projection is not stable')
-            || message.includes('boundary lock is busy or unavailable')
+            isAppSessionBoundaryPending() ||
+            message.includes('projection is not stable') ||
+            message.includes('boundary lock is busy or unavailable')
           ) {
             // 账号边界期:本轮不动盘,保留 pending 等换号完成后的广播重跑。
             scheduleGhostSkillReconcileRetry();

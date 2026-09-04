@@ -7,25 +7,21 @@
   "description": "综合设计、本地项目与远端服务完成开发",
   "policyProviderRefs": ["meka-host-risk-policy", "meka-p4-boundary-policy"],
   "useProjectDefaults": true,
-  "includeAllProjectMetadata": true,
-  "prompt": "# General development\n\nIdentify whether the target needs design, local project, configuration, or remote-service work. Establish the relevant contracts first, delegate only bounded independent slices, integrate changes across affected layers, and finish with focused tests plus an end-to-end acceptance check. When a concrete dependency call fails, perform the safe diagnostics and recovery actions exposed by its receipt before asking the user; block only that dependency, preserve completed work, and give an exact user action plus retry point when credentials, network, or deployment work cannot be handled by the Agent.",
+  "includeAllProjectMetadata": false,
+  "prompt": "# General development\n\nIdentify whether the target needs design, local project, configuration, or remote-service work. Establish the relevant contracts first, integrate changes across affected layers, and finish with focused tests plus an acceptance check appropriate to the request.\n\nFor any SAGA2 gameplay request, treat the user's natural-language business intent as the input contract. The user should only need to describe desired player-facing behavior, trigger, target, timing, effect, repetition, stacking, termination, and relevant balance or presentation goals. Do not ask the user for module types, target arrays, protocol fields, JSON, editor commands, P4 operations, server paths, or Unity CLI commands. Translate the business intent into technical work internally, infer details from project evidence, and ask only one focused business question when an unresolved choice would change gameplay. If a client/server capability is missing, report the business effect that cannot be guaranteed and the smallest business-level alternatives; never invent a field or make the user design the implementation.\n\nWhen a request concerns SAGA2 combat skills, EntryModel modules, skill_entry_model_editor.json, battle mechanics, or configuring a skill through Unity, treat it as a combat-development workflow even though this session uses the general role: load the bundled combat-skill-configuration and saga2-entry-model Skills, use the Meka Unity official Unity CLI only, use the legacy module editor JSON import/export path only, and read server semantics only through the bound MCPRouter remote project. Do not create a generic local subagent to rediscover the workflow, do not use a local server checkout, and do not call Unity open or restart an already-ready Editor. The default acceptance is static: client consumer evidence, server-authoritative semantics, legacy JSON import/export round-trip, and P4 scope. Do not enter a game, Play Mode, or start a server unless the user explicitly requests runtime integration. Keep all generic Unity CLI tools exposed, but avoid dumping the full command list into context and do not invent or retry unregistered module-query interfaces; use `legacy_module_export_json` for module readback.\n\nWhen a concrete dependency call fails, perform the safe diagnostics and recovery actions exposed by its receipt before asking the user; block only that dependency, preserve completed work, and give an exact user action plus retry point when credentials, network, or deployment work cannot be handled by the Agent.",
   "rules": [],
   "skills": [
-    {
-      "skillId": "meka-design-handbook",
-      "enabled": true
-    }
+    { "skillId": "meka-design-handbook", "enabled": true },
+    { "skillId": "combat-skill-configuration", "enabled": true },
+    { "skillId": "saga2-entry-model", "enabled": true }
+  ],
+  "promptFragments": [
+    { "id": "combat-evidence-budget", "path": "prompts/combat-evidence-budget.md" }
   ],
   "mcp": [
     {
       "id": "meka-design",
       "providerId": "meka-design",
-      "enabled": true
-    },
-    {
-      "id": "unity-editor",
-      "transport": "http",
-      "url": "http://127.0.0.1:7788/mcp",
       "enabled": true
     }
   ],

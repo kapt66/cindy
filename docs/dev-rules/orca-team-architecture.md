@@ -41,6 +41,7 @@ Orca 是 Cindy Desktop 内的多 agent 协同能力：一个 **Lead session** �
 - 本地 Claude Code、Codex 与 Pi 的普通 Lead 无论是项目还是对话都可开启协同，本地 Worker 也支持这三类 agent；Pi 当前仅支持本地 Lead / Worker，不支持 SSH 远程协同。SSH 远端会话的 Claude Code 与 Codex 两端均可作 Lead（远端 agent 经 SSH remote-forward 直连本机 HTTP MCP bridge，`cindy_orca` 在两端都可用：codex 走 daemon config 注入，cc 走 per-query http 注入）；device-link 被控端的项目与对话同样可作 Lead（Lead / Worker / team 的真身都在被控端，控制端只是镜像）。renderer 的入口判定收敛在 `apps/desktop/src/renderer/features/cc-agent/collabEntryPolicy.ts` 的 `resolveCollabEntryPolicy`，新建草稿（`NewMakerDraftRoute`）与会话视图（`CCAgentSessionView` 的 `allowCollabToggle`）共用同一份：普通 Lead 都显示入口，只排除不能嵌套协同的 Orca Worker 子会话。项目按项目级策略查询；Main 的 `resolveLocalCollabPolicyWorkingDir` 同时服务入口状态查询与最终授权，只有 workspace kind 为 dialogue 且 Main 确认目录位于 app 托管 dialogue root 时才只查用户级/全局级策略（即使 cwd 内出现 `.cindy/plugins.json`），显式绑定真实目录的对话仍按该目录的项目级策略查询，不能靠自报 `workspaceKind` 绕过项目禁用。
 - Codex Lead 使用全局注册的 `cindy_orca`，调用时通过 context 恢复身份并在 handler 内拒绝越权。远端 Codex 同样走 `params._meta.threadId` 路由——remote thread 与本地 thread 一样注册进 `CodexMcpThreadContextStore`（`packages/maker-core/src/agents/codex/index.ts` 的 `registerCodexMcpContext` 不再跳过 remoteHostId）。远端 cc 没有 threadId，身份走持久 bearer token + URL `?session=<id>` 路由（`codexHttpBridge.registerSessionCtx`），审批归属快照在 `remoteCcQueryFactory` 注入后按 `startParams.mcpServers` 最终清单定稿。
 - SSH 远端 Codex 的 MCP 桥接：本机 `codexHttpBridge` 在原有 per-run 主 token 之外接受一个 persistent bearer token（safeStorage）；`remote-ssh/codex-remote-mcp.ts` 在 session start/resume 前置完成 per-host 固定端口 remote-forward（`RemoteHost.openRemoteForward`，重连自动 rebind）、远端 `$CODEX_HOME/config.toml` 的 `mcp_servers` 管理段漂移检测（行级 marker + 剥离用户同名 table）与 daemon 幂等 bootstrap（token 只经 stdin 的 KEY=value 块注入，不进 argv）；config 漂移需要重启 daemon 时若同 host 有 live turn 则本次降级（留待下次 ensure）。worker 创建经 `OrcaLeadSessionSnapshot.remoteHostId` 继承在同一台远端主机 spawn，创建前走 `ensureRemoteReadyForSessionStart`（SSH 重连 / agent 安装 / MCP 注入）；lazy resume 与 Orca worker 唤醒路径同样先 ensure 再 bootstrap。
+- SAGA2 战斗 Lead 的服务器只读 Worker 不固定某一种 Agent。Host 从当前项目唯一绑定且 capability-ready 的 MCPRouter 服务器实例解析 `remoteHostId` 与 `workerAgent`（Claude 实例映射为 `claude-code`，Codex 实例映射为 `codex`），并把两者一起注入任务；`create_worker` 入口再次核对项目绑定、实例类型、hello 与注入值完全一致。模型不得自行发现、猜测或替换其中任一值，Pi 不进入这条远端核查链。
 - PR #107 提供 side_chat 的底层 fork 数据动作：user/assistant 消息都能 fork，assistant 按 turn 粒度复制，Claude 用 uuid 锚点，Codex 用 ThreadFork + ThreadRollback。当前作为普通 session 跳转；未来要登记为 side activity 并挂入统一 pane。
 
 当前边界：
@@ -55,13 +56,13 @@ Orca 是 Cindy Desktop 内的多 agent 协同能力：一个 **Lead session** �
 
 ### 核心概念与数据模型
 
-| 概念 | 当前含义 | 载体 |
-|---|---|---|
-| Lead session | 主线会话，负责开 team、创建 worker、派活与验收 | `sessions.orca_role = 'lead'` |
+| 概念           | 当前含义                                                    | 载体                                                        |
+| -------------- | ----------------------------------------------------------- | ----------------------------------------------------------- |
+| Lead session   | 主线会话，负责开 team、创建 worker、派活与验收              | `sessions.orca_role = 'lead'`                               |
 | Worker session | 被 Lead 派出的完整 side session，有独立 agent/model/context | `sessions.orca_role = 'worker'` + `orca_workers.session_id` |
-| Team | 一个 Lead 当前 active 的协同上下文 | `orca_teams` |
-| Worker record | worker 在 team 内的 role、label、status、focused 等元数据 | `orca_workers` |
-| Fork relation | 普通 session fork 来源关系，为 side_chat 底座 | `sessions.parent_session_id` + `forked_at_message_id` |
+| Team           | 一个 Lead 当前 active 的协同上下文                          | `orca_teams`                                                |
+| Worker record  | worker 在 team 内的 role、label、status、focused 等元数据   | `orca_workers`                                              |
+| Fork relation  | 普通 session fork 来源关系，为 side_chat 底座               | `sessions.parent_session_id` + `forked_at_message_id`       |
 
 `orcaRole` 和 fork parent 是两个字段，不能混用。schema 明确写着 `orca_role` 用于 Orca split-session role，`parent_session_id` 保留给 fork/session-branch，见 `apps/desktop/src/main/localDb/schema.ts` 的 `sessions` schema。fork 关系不能承载 Orca 派单语义，这是后续把 side_chat 纳入 side activity 的数据前提。
 
@@ -78,12 +79,12 @@ fork/session-branch 的最小 provenance 当前只有两列：
 
 PR #101 之后，Orca 的 main 侧业务由独立 service 承接，`register.ts` 只负责依赖装配、IPC/MCP wiring 和 host adapter。服务边界如下：
 
-| 服务 | 文件 | 责任 |
-|---|---|---|
-| `OrcaLifecycleService` | `apps/desktop/src/main/maker-ipc/orcaLifecycleService.ts` | `start_team`、开启协同 `enableTeam`、创建 team、读取或更新 Worker 创建权限偏好、设置 Lead `orcaRole`、首个 worker 创建补偿 |
+| 服务                        | 文件                                                           | 责任                                                                                                                                                                                    |
+| --------------------------- | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OrcaLifecycleService`      | `apps/desktop/src/main/maker-ipc/orcaLifecycleService.ts`      | `start_team`、开启协同 `enableTeam`、创建 team、读取或更新 Worker 创建权限偏好、设置 Lead `orcaRole`、首个 worker 创建补偿                                                              |
 | `OrcaWorkerCreationService` | `apps/desktop/src/main/maker-ipc/orcaWorkerCreationService.ts` | 既有 team 下创建 worker，统一 role/label/model/effort/fast 校验与默认值；新 Worker 使用 `workerCreationPrefs` 的权限偏好，不继承 Lead 当前模式；创建 worker session 并写 `orca_workers` |
-| `OrcaTeamService` | `apps/desktop/src/main/maker-ipc/orcaTeamService.ts` | 给既有 worker 派活、resume、idle、archive、terminal turn 处理与 auto-bridge |
-| `OrcaInterAgentDispatcher` | `apps/desktop/src/main/maker-ipc/orcaInterAgentDispatcher.ts` | Lead/Worker 之间的消息直发或排队、accepted callback、rollback/settle 语义 |
+| `OrcaTeamService`           | `apps/desktop/src/main/maker-ipc/orcaTeamService.ts`           | 给既有 worker 派活、resume、idle、archive、terminal turn 处理与 auto-bridge                                                                                                             |
+| `OrcaInterAgentDispatcher`  | `apps/desktop/src/main/maker-ipc/orcaInterAgentDispatcher.ts`  | Lead/Worker 之间的消息直发或排队、accepted callback、rollback/settle 语义                                                                                                               |
 
 契约：team lifecycle、worker creation、worker lifecycle/auto-bridge、inter-agent dispatch 四类职责不能互相偷跑；所有入口都必须复用这组 service，不能在 IPC 或 MCP handler 内各自实现一套状态机。关键实现入口是 `OrcaLifecycleService.startTeam/enableTeam`、`OrcaWorkerCreationService.createWorkerInTeam`、`OrcaTeamService.dispatchWorkerTask/handleWorkerTerminalTurn`、`OrcaInterAgentDispatcher.dispatchOrEnqueueOrcaInterAgentMessage`。
 
@@ -116,11 +117,17 @@ PR #101 之后，Orca 的 main 侧业务由独立 service 承接，`register.ts`
 
 `cindy_orca` 直接注册到顶层，而不是藏在 `list_tools/call_tool` 后面；模型在“开协同 / 派 worker”时需要稳定发现 `start_team/create_worker`。实现见 `packages/lizi-mcps/src/orca/server.ts` 的 `createOrcaMcpServer`、`DirectToolSink`、`OrcaMcpDeps`。
 
+直接注册不等于绕过业务工作流。`DirectToolSink` 在每个 handler 前调用可选的
+`OrcaMcpDeps.authorizeToolCall`，并传入调用时从 AsyncLocalStorage 解析出的完整 session context；
+Desktop 用它执行 SAGA2 战斗 Host 策略。拒绝发生在 `getWorkspaceInfo`、Worker 创建或其它 Host
+副作用之前。未注入回调时行为保持兼容，工具仍对所有角色可见。
+
 Worker 权限是 **Worker 创建偏好**，与 Agent、模型、effort、Fast 的“下次创建默认值”同类，不是 Lead 权限的继承项，也不是 Team 数据库字段：
 
 - 真源是 renderer `workerCreationPrefs` localStorage；main 只保存内存镜像，应用启动和偏好变化时由 renderer 同步。
 - 没有保存过权限偏好时，产品默认是 `bypassPermissions`（Full access）；这只是可选择的初始值，不是固定模式。UI 每次创建 Worker 都可改选 `auto` 或 `bypassPermissions`，提交后成为下一次默认值；已经保存过的选择继续优先，不随产品默认值变化而改写。
 - MCP `start_team` 可显式指定 `worker_permission_mode`；省略时沿用当前偏好。显式从 `auto` 升级到 `bypassPermissions` 时，Main 必须在写入偏好或创建 Team 前等待宿主持有的用户确认，不能只依赖 MCP 审批、tool 描述或 prompt；取消／超时不得产生副作用。确认通过后才更新 main 镜像，并通知 renderer 回写同一份 localStorage。已由用户保存为 `bypassPermissions` 时，后续沿用不重复确认。
+- SAGA2 战斗开发 `saga2-combat-development-v1` 的服务器核查 Worker 永久只读。`start_team` 工具边界对该 workflow 强制使用 `auto`，即使模型传入 `bypassPermissions` 也不得触发 Full access 升级确认或改写通用 Worker 偏好；其它 workflow 保持上述通用规则。
 - `create_worker` / `create_workers` 省略权限参数，统一读取当前偏好；不继承 Lead 的 `sessions.permission_mode`，也不修改已经创建的 Worker。
 - device-link 新控制端只有在被控端 capabilities 明确声明支持 Worker 权限选择时才允许开启协同；已有旧版远程 Team 继续兼容旧创建行为，不宣称或回写该端不支持的偏好。
 
@@ -393,11 +400,11 @@ Orca 的长期方向不是“进入一个固定协同模式”，而是在主线
 
 未来所有可见执行单元都要拆开三件事：
 
-| 维度 | 问题 | 示例取值 |
-|---|---|---|
-| 对象在不在 | 身份、历史、上下文是否保留 | exists / deleted |
-| UI 显不显示 | 是否挂在当前面板或 sidebar | active / archived |
-| 后台醒没醒 | SDK/进程是否 live、能否马上接活 | live / dormant |
+| 维度        | 问题                            | 示例取值          |
+| ----------- | ------------------------------- | ----------------- |
+| 对象在不在  | 身份、历史、上下文是否保留      | exists / deleted  |
+| UI 显不显示 | 是否挂在当前面板或 sidebar      | active / archived |
+| 后台醒没醒  | SDK/进程是否 live、能否马上接活 | live / dormant    |
 
 不要再让 `idle`、`archive`、`close` 混着表达这三件事。archive 是 UI/可见性，dormant 是后台活性，delete 才是对象删除。
 
@@ -407,10 +414,10 @@ Orca 的长期方向不是“进入一个固定协同模式”，而是在主线
 
 Worker 计划分两类：
 
-| 类型 | 语义 | 默认回收策略 |
-|---|---|---|
-| persistent | 长期协作者，价值是上下文延续与可介入 | 允许无损 hibernate/resume；不自动 archive/delete |
-| ephemeral | 可观测的一次性执行单元，像“看得见的 subagent” | done/error 后可优先进入回收候选 |
+| 类型       | 语义                                          | 默认回收策略                                     |
+| ---------- | --------------------------------------------- | ------------------------------------------------ |
+| persistent | 长期协作者，价值是上下文延续与可介入          | 允许无损 hibernate/resume；不自动 archive/delete |
+| ephemeral  | 可观测的一次性执行单元，像“看得见的 subagent” | done/error 后可优先进入回收候选                  |
 
 `role` 与 lifecycle 正交。`developer/reviewer/tester/merger` 是职责，不表示长期或一次性。分型落地后，创建时可以声明 lifecycle；运行中升降级放后续。
 
@@ -420,10 +427,10 @@ Worker 计划分两类：
 
 第一层是顶层 side activity：
 
-| 类型 | 可视化对象 | 介入深度 |
-|---|---|---|
-| `worker` | 单条 side session 的过程流 | 深：派活、追问、接管、回传 |
-| `side_chat` | 分支对话的过程流 | 深：用户自己驱动，可选择回传 |
+| 类型           | 可视化对象                 | 介入深度                               |
+| -------------- | -------------------------- | -------------------------------------- |
+| `worker`       | 单条 side session 的过程流 | 深：派活、追问、接管、回传             |
+| `side_chat`    | 分支对话的过程流           | 深：用户自己驱动，可选择回传           |
 | `workflow_run` | 编排树、进度、失败点、产物 | 编排级：pause/cancel/retry/skip/看产物 |
 
 第二层是 workflow_run 内部 step 树：每个 step 有 runner，默认是 subagent；高风险、长耗时、失败、需要用户介入的 step 可以使用 worker runner 或被接手成 worker。
@@ -434,11 +441,11 @@ workflow step 不是顶层类型；它属于 workflow_run 内部。`subagent` �
 
 side_chat 和 worker 共用同一套 pane 外壳。区别不在 UI 壳，而在关系契约：
 
-| 维度 | worker | side_chat |
-|---|---|---|
-| 发起者 | Lead 派单或用户显式创建 worker | 用户从当前消息/turn fork |
-| 默认通信 | Lead ↔ Worker，可自动/手动回传 | 用户 ↔ Side chat，默认不回传 |
-| 结果归属 | 默认回给 Lead，由 Lead 验收 | 默认留在分支，可选采纳/回传 |
+| 维度     | worker                                             | side_chat                                               |
+| -------- | -------------------------------------------------- | ------------------------------------------------------- |
+| 发起者   | Lead 派单或用户显式创建 worker                     | 用户从当前消息/turn fork                                |
+| 默认通信 | Lead ↔ Worker，可自动/手动回传                     | 用户 ↔ Side chat，默认不回传                            |
+| 结果归属 | 默认回给 Lead，由 Lead 验收                        | 默认留在分支，可选采纳/回传                             |
 | 关系字段 | task、role、label、return_to、communication policy | source session/message/turn、fork reason、return policy |
 
 PR #107 已完成 side_chat 的底层 fork 数据动作：
@@ -502,3 +509,31 @@ side_chat 待落地的是：
 4. persistent/ephemeral 默认值：side_chat 默认 persistent 还是 ephemeral。
 5. workflow step 何时自动接手为 worker：失败、超时、高风险文件、用户点名，判据需要收紧。
 6. budget / quality routing 作为 skill+memory 决策，还是主进程 deterministic policy，如何与用户偏好并存。
+
+### SAGA2 战斗 Lead 的派发前边界
+
+SAGA2 战斗 Lead 不使用 Orca 的 `get_workspace_info` 重新发现工作区，也不使用 Ghost 或
+`list_tools` 枚举已由 Host 暴露的能力。Lead 必须先完成当前技能 ID 的老版模块导出，再形成
+原子能力矩阵并派发唯一的 MCPR 只读服务器 Worker。`start_team` 在该 workflow 中固定使用
+`auto` 权限，即使模型请求 Full access 也会由 Host 收敛；其它 workflow 的权限选择保持不变。
+服务器 Worker 的 `remote_host_id` 只取自 Host 在当前任务注入的
+`[SAGA2_COMBAT_SERVER_TARGET]`；Host 仅在项目绑定中恰好存在一个通过 capability hello 的服务器
+实例时提供该值。Lead 不得把项目 ID 拼成 `mcpr:saga2`，也不得为发现实例调用
+`get_workspace_info`。Worker 创建时继续执行第二次绑定和 capability 校验。
+
+Worker 派发后，Lead 在环境仍为 ready 时不得通过 `check_combat_environment`、worker 列表或
+读取接口主动轮询；它应结束当前轮并等待 auto-bridge。只有真实传输失败将状态切入
+`environment-recovery`，或 Host 标记 `retry-required` 时，环境复检才重新放行。
+`saga2-combat-server-worker-v1` 使用专用的 Worker 系统提示：不继承普通 Orca Worker 的
+`ALWAYS call send_to_lead` 规则，不调用任何 bridge 工具，只把要求格式的报告作为唯一终态回复。
+Host 同时拒绝该 workflow 的 `orca_worker_bridge` 调用，终态由现有 auto-bridge 生命周期服务
+投递；普通 Orca Worker 的手动 `send_to_lead` 行为保持不变。
+
+该专用 Worker 的 6 次证据预算按当前远端 `HEAD` 固定：AGENTS、SHA、一次精确符号路径检索、
+最多三次消费者上下文检索。所有 `git grep` 都必须带 `HEAD`；Host 允许 `-l` 和最多 40 行的
+`-C/--context`，继续拒绝管道、脚本、工作树 grep 和其它 Shell。Worker 应先取得真实路径，再以
+精确枚举名、typ 或数据函数名读取小段上下文，避免 `git show` 大文件触发工具层截断；这项特例
+不改变普通 Worker 或通用角色的 Shell 能力。
+专用 Worker 的终态报告还必须携带当前 Lead 绑定的正整数 `targetSkillId`。Meka Router 校验工具在
+消费可信 auto-bridge 回执前比对该值；不匹配或缺失时拒绝但保留本次回执，允许 Lead 使用正确的
+原始报告重试，不允许跨技能复用结论。

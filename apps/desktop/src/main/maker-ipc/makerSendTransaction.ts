@@ -5,9 +5,7 @@ import {
   type SessionSendResult,
   type UserMessage,
 } from '@cindy/maker-core';
-import {
-  CODEX_RESUME_NOT_READY_WIRE_MESSAGE,
-} from '@cindy/maker-shared/agent-input-projection';
+import { CODEX_RESUME_NOT_READY_WIRE_MESSAGE } from '@cindy/maker-shared/agent-input-projection';
 
 import {
   createHostSendFailure,
@@ -33,6 +31,22 @@ type CreateOpts = MakerSessionCreateOpts;
 
 type IpcUserMessage =
   string | { type: 'user'; content: string | Array<{ type: string; [k: string]: unknown }> };
+
+export interface PreparedSendUserMessage {
+  message: IpcUserMessage;
+  /** Runs only after the durable user row, when present, has committed. */
+  onAccepted?: () => void | Promise<void>;
+  /** Compensates an accepted preparation that never crossed vendor dispatch. */
+  onUndispatched?: () => void | Promise<void>;
+  /** Releases preparation bookkeeping after irreversible dispatch. */
+  onDispatched?: () => void | Promise<void>;
+}
+
+function isPreparedSendUserMessage(
+  value: IpcUserMessage | PreparedSendUserMessage,
+): value is PreparedSendUserMessage {
+  return typeof value === 'object' && value !== null && 'message' in value;
+}
 
 type MakerSendOptions = {
   messageUuid?: string;
@@ -145,7 +159,10 @@ export interface MakerSendTransactionDeps {
     role: 'lead' | 'worker' | null | undefined,
   ): Promise<void>;
   broadcastSessionCreated(sessionId: string): void;
-  prepareSendUserMessage(sessionId: string, message: unknown): Promise<IpcUserMessage>;
+  prepareSendUserMessage(
+    sessionId: string,
+    message: unknown,
+  ): Promise<IpcUserMessage | PreparedSendUserMessage>;
   /**
    * Direct device-link sends may carry OSS attachment references that need to
    * become local paths before normalization. Keep this after the transaction's
@@ -750,8 +767,15 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
         }
       };
       let normalized: IpcUserMessage;
+      let preparedHooks: Omit<PreparedSendUserMessage, 'message'> | null = null;
       try {
-        normalized = await deps.prepareSendUserMessage(sessionId, outgoingMessage);
+        const prepared = await deps.prepareSendUserMessage(sessionId, outgoingMessage);
+        if (isPreparedSendUserMessage(prepared)) {
+          normalized = prepared.message;
+          preparedHooks = prepared;
+        } else {
+          normalized = prepared;
+        }
       } catch (err) {
         await cleanupRejectedMaterialization();
         throw err;
@@ -818,9 +842,7 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
       })();
       const startsWithSlashCommand =
         reconcileSlashRanges !== undefined
-          ? reconcileSlashRanges.some(
-              (range) => (range as { start?: unknown } | null)?.start === 0,
-            )
+          ? reconcileSlashRanges.some((range) => (range as { start?: unknown } | null)?.start === 0)
           : reconcilePersistText.startsWith('/');
       const isOrdinaryUserTurn =
         soForReconcile.origin === undefined &&
@@ -844,8 +866,8 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
       // 两个来源:直连 maker:send 走 async context(deps 注入);排队 / 插入路径走
       // coordinator 从队列项透传的 so.fromMobileClient(drain 时 context 已结束)。
       const mobileClientNote =
-        (deps.isMobileClientInvoke?.() === true || so.fromMobileClient === true)
-        && shouldPrependMobileClientPromptNote(normalized, sess.agentKind)
+        (deps.isMobileClientInvoke?.() === true || so.fromMobileClient === true) &&
+        shouldPrependMobileClientPromptNote(normalized, sess.agentKind)
           ? buildMobileClientPromptNote()
           : null;
       const outgoing = mobileClientNote
@@ -933,6 +955,26 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
       let directPreDispatchHookStarted = false;
       let userPromptPreviewSessionId: string | null = null;
       let userPromptPreviewClientId: string | null = null;
+      let preparedSideEffectStarted = false;
+      let preparedSideEffectRolledBack = false;
+      const rollbackPreparedSideEffect = async (): Promise<void> => {
+        if (
+          !preparedSideEffectStarted ||
+          preparedSideEffectRolledBack ||
+          !preparedHooks?.onUndispatched
+        ) {
+          return;
+        }
+        preparedSideEffectRolledBack = true;
+        try {
+          await preparedHooks.onUndispatched();
+        } catch (err) {
+          deps.log.warn('send: prepared user-message rollback failed', {
+            sessionId,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        }
+      };
       try {
         if (directPreDispatchHook) {
           await directPreDispatchHook(sessionId);
@@ -992,68 +1034,78 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
                 },
               }
             : {}),
-          onAccepted: persistUserMessage
-            ? async () => {
-                persistUserMessage.onPersisting?.();
-                deps.previewUserPrompt?.(sess, persistUserMessage.content, {
-                  source: 'maker_send:onPersisting',
-                  clientId: persistUserMessage.clientId,
-                });
-                userPromptPreviewSessionId = sessionId;
-                userPromptPreviewClientId = persistUserMessage.clientId;
-                try {
-                  await deps.createDbMessage(
-                    sessionId,
-                    {
+          onAccepted:
+            persistUserMessage || preparedHooks?.onAccepted
+              ? async () => {
+                  if (persistUserMessage) {
+                    persistUserMessage.onPersisting?.();
+                    deps.previewUserPrompt?.(sess, persistUserMessage.content, {
+                      source: 'maker_send:onPersisting',
                       clientId: persistUserMessage.clientId,
-                      role: 'user',
-                      content: persistUserMessage.content,
-                      agentMeta: {
-                        uuid: so.messageUuid,
-                        sdkSessionId: persistUserMessage.sdkSessionId,
-                        ...(persistUserMessage.delivery
-                          ? { delivery: persistUserMessage.delivery }
-                          : {}),
-                        // 自动补发的续跑指令:renderer 隐藏气泡 + 渲染「已重新连接」活动行,
-                        // 同时也是 host 跳过额度充值的判据(见 register 的 createDbMessage)。
-                        ...(persistUserMessage.autoResume ? { autoResume: true } : {}),
-                        ...(persistUserMessage.autoResumeInfo
-                          ? { autoResumeInfo: persistUserMessage.autoResumeInfo }
-                          : {}),
-                        ...(persistUserMessage.recoveryCheckpoint
-                          ? { recoveryCheckpoint: persistUserMessage.recoveryCheckpoint }
-                          : {}),
-                        ...(persistUserMessage.origin ? { origin: persistUserMessage.origin } : {}),
-                        // scheduler 排队消息:与 runner 直发路径落库的 agentMeta.origin
-                        // 对齐,renderer 据此渲染"由自动化任务发送"标签。
-                        ...(so.origin ? { origin: so.origin } : {}),
-                      },
-                    },
-                    persistUserMessage.shouldBroadcast ||
-                      persistUserMessage.expectedClearBoundaryMs !== undefined
-                      ? {
-                          ...(persistUserMessage.shouldBroadcast
-                            ? { shouldBroadcast: persistUserMessage.shouldBroadcast }
-                            : {}),
-                          ...(persistUserMessage.expectedClearBoundaryMs !== undefined
-                            ? {
-                                expectedClearBoundaryMs: persistUserMessage.expectedClearBoundaryMs,
-                              }
-                            : {}),
-                        }
-                      : undefined,
-                  );
-                } catch (err) {
-                  persistUserMessage.onPersistFailed?.();
-                  throw err;
+                    });
+                    userPromptPreviewSessionId = sessionId;
+                    userPromptPreviewClientId = persistUserMessage.clientId;
+                    try {
+                      await deps.createDbMessage(
+                        sessionId,
+                        {
+                          clientId: persistUserMessage.clientId,
+                          role: 'user',
+                          content: persistUserMessage.content,
+                          agentMeta: {
+                            uuid: so.messageUuid,
+                            sdkSessionId: persistUserMessage.sdkSessionId,
+                            ...(persistUserMessage.delivery
+                              ? { delivery: persistUserMessage.delivery }
+                              : {}),
+                            // 自动补发的续跑指令:renderer 隐藏气泡 + 渲染「已重新连接」活动行,
+                            // 同时也是 host 跳过额度充值的判据(见 register 的 createDbMessage)。
+                            ...(persistUserMessage.autoResume ? { autoResume: true } : {}),
+                            ...(persistUserMessage.autoResumeInfo
+                              ? { autoResumeInfo: persistUserMessage.autoResumeInfo }
+                              : {}),
+                            ...(persistUserMessage.recoveryCheckpoint
+                              ? { recoveryCheckpoint: persistUserMessage.recoveryCheckpoint }
+                              : {}),
+                            ...(persistUserMessage.origin
+                              ? { origin: persistUserMessage.origin }
+                              : {}),
+                            // scheduler 排队消息:与 runner 直发路径落库的 agentMeta.origin
+                            // 对齐,renderer 据此渲染"由自动化任务发送"标签。
+                            ...(so.origin ? { origin: so.origin } : {}),
+                          },
+                        },
+                        persistUserMessage.shouldBroadcast ||
+                          persistUserMessage.expectedClearBoundaryMs !== undefined
+                          ? {
+                              ...(persistUserMessage.shouldBroadcast
+                                ? { shouldBroadcast: persistUserMessage.shouldBroadcast }
+                                : {}),
+                              ...(persistUserMessage.expectedClearBoundaryMs !== undefined
+                                ? {
+                                    expectedClearBoundaryMs:
+                                      persistUserMessage.expectedClearBoundaryMs,
+                                  }
+                                : {}),
+                            }
+                          : undefined,
+                      );
+                    } catch (err) {
+                      persistUserMessage.onPersistFailed?.();
+                      throw err;
+                    }
+                    userMessagePersisted = true;
+                    await rewindPersistedUserMessageAfterClearIfStale();
+                    // onPersisted 里可能挂着排队 orca 消息的 accepted 副作用(置 running /
+                    // autoBridgePending), 必须 await 完再放行 turn(同直发路径语义)。
+                    await persistUserMessage.onPersisted?.();
+                  }
+                  if (preparedHooks?.onAccepted) {
+                    preparedSideEffectStarted = true;
+                    await preparedHooks.onAccepted();
+                  }
                 }
-                userMessagePersisted = true;
-                await rewindPersistedUserMessageAfterClearIfStale();
-                // onPersisted 里可能挂着排队 orca 消息的 accepted 副作用(置 running /
-                // autoBridgePending), 必须 await 完再放行 turn(同直发路径语义)。
-                await persistUserMessage.onPersisted?.();
-              }
-            : undefined,
+              : undefined,
           onDispatching: () => {
             if (persistUserMessage?.shouldBroadcast && !persistUserMessage.shouldBroadcast()) {
               throwIpcError(
@@ -1074,7 +1126,18 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
         if (sendAccepted) {
           cleanupAfterAcceptance?.();
           await cleanupAcceptedNonPersistedMaterialization();
+          if (preparedSideEffectStarted && preparedHooks?.onDispatched) {
+            try {
+              await preparedHooks.onDispatched();
+            } catch (err) {
+              deps.log.warn('send: dispatched user-message cleanup failed', {
+                sessionId,
+                err: err instanceof Error ? err.message : String(err),
+              });
+            }
+          }
         } else {
+          await rollbackPreparedSideEffect();
           await rewindPersistedUserMessageAfterClearIfStale();
           await cleanupRejectedMaterialization();
         }
@@ -1127,6 +1190,7 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
         );
       } catch (err) {
         if (!sendAccepted) {
+          await rollbackPreparedSideEffect();
           await rewindPersistedUserMessageAfterClearIfStale();
           await cleanupRejectedMaterialization();
         }

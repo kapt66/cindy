@@ -66,6 +66,10 @@ import {
   getGhostManager,
   getGhostPipeDispatcher,
   getGhostSetupAssessment,
+  resolveGhostRuntimeId,
+  resolveGhostLogicalId,
+  ensureMekaDevPluginsReady,
+  requestGhostHostConfirmation,
   ghostForgeForbiddenRootDirs,
   captureGhostMutationOwnerForMcp,
   acquireGhostMutationLeaseForMcp,
@@ -88,13 +92,22 @@ import { resolveGhostAttachmentUrl } from './ghostAttachmentResolve.js';
 import { ghostSetupInteractionSessionId } from './ghostSetupInteractionSurface.js';
 import { createForgeIconConverter } from './forgeIconConversion.js';
 import { forkForgeIconConversionHost } from './forgeIconConversionHost.js';
+import {
+  evaluateCombatToolExecution,
+  isCombatWorkflowPolicyActive,
+  markCombatTargetExportCompleted,
+  markCombatTargetExportAttempted,
+} from '../meka-projects/combatWorkflowPolicy.js';
 import { t } from '../i18n.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('mcp/cindy');
 const MAX_FORGE_ICON_SOURCE_BYTES = 25 * 1024 * 1024;
-const GHOST_NO_TOOLS_MESSAGE =
-  '该插件未声明任何可供调用的工具;不要重试,改用其它方式完成。';
+const GHOST_NO_TOOLS_MESSAGE = '该插件未声明任何可供调用的工具;不要重试,改用其它方式完成。';
+
+function text(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
 
 const convertForgeIconToPng = createForgeIconConverter({
   fork: forkForgeIconConversionHost,
@@ -1016,10 +1029,7 @@ export async function buildToolResultImageDescriptions(params: {
           sessionInstanceId: params.sessionInstanceId,
           signal: budgetAbort.signal,
         }).catch(() => ({ skipped: false, description: null }));
-        result = await Promise.race([
-          raw,
-          racePromise.then(() => null),
-        ]);
+        result = await Promise.race([raw, racePromise.then(() => null)]);
       } catch {
         // 单张失败/预算 abort 静默跳过(视觉桥不可用/后端错误/超时),不阻塞其余图。
       }
@@ -1038,7 +1048,10 @@ export async function buildToolResultImageDescriptions(params: {
     // Promise.race:预算到期(或全部 worker 收敛)即返回,不依赖底层响应 signal。
     await Promise.race([
       Promise.all(
-        Array.from({ length: Math.min(TOOL_RESULT_DESCRIBE_CONCURRENCY, imageUrls.length) }, worker),
+        Array.from(
+          { length: Math.min(TOOL_RESULT_DESCRIBE_CONCURRENCY, imageUrls.length) },
+          worker,
+        ),
       ),
       racePromise,
     ]);
@@ -1111,6 +1124,7 @@ function visibleChipGhosts(workdir: string | null): InstalledGhost[] {
 
 const ghostVisibilityDeps = {
   listGhosts: () => getGhostManager().list(),
+  resolveGhostId: resolveGhostRuntimeId,
   isAvailableForActiveSession: isGhostAvailableForActiveSession,
   isDisabledForWorkdir: isGhostDisabledForWorkdir,
 };
@@ -1125,7 +1139,7 @@ export function getGhostRosterPrompt({ workingDir }: { workingDir?: string }): s
   const items = visibleChipGhosts(workingDir).map((ghost) => {
     const recall = ghostRecall(ghost);
     return {
-      id: ghost.manifest.id,
+      id: resolveGhostLogicalId(ghost.manifest.id),
       name: ghost.manifest.name,
       ...(ghost.manifest.command ? { command: ghost.manifest.command } : {}),
       ...(recall ? { recall } : {}),
@@ -1148,7 +1162,7 @@ function toCindyGhostInfo(ghost: InstalledGhost): CindyGhostInfo {
     });
   }
   return {
-    id: ghost.manifest.id,
+    id: resolveGhostLogicalId(ghost.manifest.id),
     name: ghost.manifest.name,
     ...(ghost.manifest.command ? { command: ghost.manifest.command } : {}),
     ...(recall ? { recall } : {}),
@@ -1222,30 +1236,28 @@ export function getCindyGhostsMcpDeps(
     getRosterItems() {
       const workdir = resolveSessionContext()?.workingDir;
       if (!workdir) return [];
-      return visibleChipGhosts(workdir)
-        .map((g) => {
-          const recall = ghostRecall(g);
-          return {
-            id: g.manifest.id,
-            name: g.manifest.name,
-            ...(g.manifest.command ? { command: g.manifest.command } : {}),
-            ...(recall ? { recall } : {}),
-          };
-        });
+      return visibleChipGhosts(workdir).map((g) => {
+        const recall = ghostRecall(g);
+        return {
+          id: resolveGhostLogicalId(g.manifest.id),
+          name: g.manifest.name,
+          ...(g.manifest.command ? { command: g.manifest.command } : {}),
+          ...(recall ? { recall } : {}),
+        };
+      });
     },
     async listAwakeGhosts(): Promise<CindyGhostInfo[]> {
       // 现查同样按会话 workdir 滤掉目录级禁用的意识(ALS 恢复的真实语境
       // 优先)——模型主动 ghost_list 也看不到被禁用的条目,清单层面干净。
       const workdir = resolveSessionContext()?.workingDir ?? null;
-      return visibleChipGhosts(workdir)
-        .map(toCindyGhostInfo);
+      return visibleChipGhosts(workdir).map(toCindyGhostInfo);
     },
     async getAwakeGhost(ghostId) {
       const workdir = resolveSessionContext()?.workingDir ?? null;
       const visibility = classifyGhostVisibility(ghostId, workdir, ghostVisibilityDeps);
       if (!visibility.ok) return visibility;
       const visible = visibleChipGhosts(workdir).find(
-        (ghost) => ghost.manifest.id === ghostId,
+        (ghost) => resolveGhostLogicalId(ghost.manifest.id) === ghostId,
       );
       if (visible) {
         return { ok: true, ghost: toCindyGhostInfo(visible) };
@@ -1290,15 +1302,65 @@ export function getCindyGhostsMcpDeps(
       grantOnly,
       setupPlan,
     }) {
+      await ensureMekaDevPluginsReady();
       const sessionContext = resolveSessionContext();
       const sessionIdForConfirm = sessionContext?.sessionId ?? null;
       const sessionInstanceIdForGrant = sessionContext?.sessionInstanceId ?? null;
       const sessionWorkdir = sessionContext?.workingDir ?? null;
-      const initialVisibility = classifyGhostVisibility(
-        ghostId,
-        sessionWorkdir,
-        ghostVisibilityDeps,
-      );
+      const vendorOptions = sessionContext?.vendorOptions ?? {};
+      if (isCombatWorkflowPolicyActive({ vendorOptions })) {
+        if (!sessionIdForConfirm || !sessionWorkdir) {
+          return {
+            ok: false,
+            errorCode: 'COMBAT_WORKFLOW_CONTEXT_MISSING',
+            message:
+              '无法确认当前 SAGA2 战斗任务的会话或工作目录，已阻止插件调用。请恢复当前任务后重试。',
+          };
+        }
+        const workflowDecision = await evaluateCombatToolExecution({
+          sessionId: sessionIdForConfirm,
+          workingDir: sessionWorkdir,
+          remoteHostId: sessionContext?.remoteHostId ?? null,
+          vendorOptions,
+          toolName: 'mcp__cindy__ghost_call',
+          input: { ghost_id: ghostId, tool, args },
+          action: { kind: 'mcp' },
+        });
+        if (workflowDecision.behavior === 'deny') {
+          return {
+            ok: false,
+            errorCode: 'COMBAT_WORKFLOW_POLICY_DENIED',
+            message: workflowDecision.reason,
+          };
+        }
+      }
+      // Record a target export attempt before visibility/setup checks. A
+      // missing or disabled Meka Unity plugin can fail at classifyGhostVisibility
+      // before dispatch, but that failure is still the required first export
+      // evidence and must not send the lead into an invalid Shell fallback.
+      if (sessionIdForConfirm && sessionWorkdir) {
+        markCombatTargetExportAttempted({
+          sessionId: sessionIdForConfirm,
+          workingDir: sessionWorkdir,
+          remoteHostId: sessionContext?.remoteHostId ?? null,
+          vendorOptions,
+          toolName: 'mcp__cindy__ghost_call',
+          input: { ghost_id: ghostId, tool, args },
+          action: { kind: 'mcp' },
+        });
+      }
+      let initialVisibility = classifyGhostVisibility(ghostId, sessionWorkdir, ghostVisibilityDeps);
+      // Development sources are reconciled asynchronously at startup. A
+      // first lookup can observe the registry before its derived Ghost has
+      // been committed; refresh once before exposing a false not-found error.
+      if (
+        !initialVisibility.ok &&
+        initialVisibility.errorCode === 'GHOST_NOT_FOUND' &&
+        ghostId === 'meka-unity'
+      ) {
+        await ensureMekaDevPluginsReady();
+        initialVisibility = classifyGhostVisibility(ghostId, sessionWorkdir, ghostVisibilityDeps);
+      }
       if (!initialVisibility.ok) return initialVisibility;
       const target = initialVisibility.ghost;
       // 媒体过户:显式 attachments 逐张落媒体总仓 + 记可读引用
@@ -1635,23 +1697,99 @@ export function getCindyGhostsMcpDeps(
       });
       // GhostToolCallResult 与 CindyGhostCallResult 同构(错误码枚举一致),
       // 原样透传;类型层若有漂移 tsc 会拦。
-      const result = await getGhostPipeDispatcher().callGhostTool({
+      let result = await getGhostPipeDispatcher().callGhostTool({
         ghostId,
         tool,
         args: mergedArgs,
         callId,
       });
+      // Unity's Editor bootstrap is a Host-owned recovery action. The plugin
+      // returns a structured sentinel for every Editor-dependent action (not
+      // only open); Cindy presents the generic confirmation dialog, opens the
+      // requested project after approval, and retries the original call once.
+      if (
+        !result.ok &&
+        ghostId === 'meka-unity' &&
+        tool === 'unity_execute' &&
+        result.errorCode === 'UNITY_EDITOR_START_CONFIRM_REQUIRED'
+      ) {
+        const approved = await requestGhostHostConfirmation({
+          ghostId,
+          body: t('settings.ghosts.confirm.unityStartBody'),
+          confirmText: t('settings.ghosts.confirm.unityStartConfirm'),
+          cancelText: t('settings.ghosts.confirm.unityStartCancel'),
+        });
+        if (approved) {
+          if (text(mergedArgs.action) !== 'open') {
+            const openResult = await getGhostPipeDispatcher().callGhostTool({
+              ghostId,
+              tool: 'unity_execute',
+              args: {
+                action: 'open',
+                projectPath: mergedArgs.projectPath,
+                format: 'json',
+              },
+            });
+            if (!openResult.ok) {
+              result = openResult;
+            } else {
+              result = await getGhostPipeDispatcher().callGhostTool({
+                ghostId,
+                tool,
+                args: mergedArgs,
+                callId,
+              });
+            }
+          } else {
+            result = await getGhostPipeDispatcher().callGhostTool({
+              ghostId,
+              tool,
+              args: mergedArgs,
+              callId,
+            });
+          }
+        } else {
+          result = {
+            ok: false,
+            errorCode: 'UNITY_EDITOR_START_CANCELLED',
+            message: t('settings.ghosts.confirm.unityStartCancelled'),
+          };
+        }
+      }
       // 收口取账(ghostMediaLedger):本次调用期间主机实际入库的媒体地址。
       // 失败也 drain(清账防泄漏),但只在成功结果上附带——cindy-tools 层
       // 在意识未声明媒体字段时以 xdt_media_produced 注入,兜底 IM/hook 送达。
       const producedMedia = drainGhostCallMedia(ghostId, callId);
       const finalized = withCardToken(result, cardService.finalizeCall(callId), callId);
+      if (sessionIdForConfirm && sessionWorkdir) {
+        markCombatTargetExportAttempted({
+          sessionId: sessionIdForConfirm,
+          workingDir: sessionWorkdir,
+          remoteHostId: sessionContext?.remoteHostId ?? null,
+          vendorOptions,
+          toolName: 'mcp__cindy__ghost_call',
+          input: { ghost_id: ghostId, tool, args },
+          action: { kind: 'mcp' },
+        });
+      }
       if (!finalized.ok) return finalized;
+      if (sessionIdForConfirm && sessionWorkdir) {
+        markCombatTargetExportCompleted({
+          sessionId: sessionIdForConfirm,
+          workingDir: sessionWorkdir,
+          remoteHostId: sessionContext?.remoteHostId ?? null,
+          vendorOptions,
+          toolName: 'mcp__cindy__ghost_call',
+          input: { ghost_id: ghostId, tool, args },
+          action: { kind: 'mcp' },
+        });
+      }
       // 附最后一道 gate(postCtx)的快照:它是派发前最新的 ready 判定。
       const advisory = postCtxAssessment.reauthSuggest ? { setup: postCtxAssessment } : {};
-      const base = producedMedia.length > 0
-        ? { ...finalized, ...advisory, producedMedia }
-        : { ...finalized, ...advisory };
+      const base =
+        producedMedia.length > 0
+          ? { ...finalized, ...advisory, producedMedia }
+          : { ...finalized, ...advisory };
       // 视觉桥工具结果图片描述(最佳努力,不阻塞):把工具返回的 cindy-media://
       // 图片 URL 转成文字描述,附加为 xdt_media_descriptions——纯文本模型
       // (deepseek 等)拿不到 image block,只能看到 URL 文本,易幻觉编造图片
@@ -1674,8 +1812,15 @@ export function getCindyGhostsMcpDeps(
             return { ...base, xdt_media_descriptions: mediaDescriptions.xdt_media_descriptions };
           }
           // 预算超时中止（aborted）不是后端不可用：不告警，避免把慢后端/长图误报成故障。
-          if (!mediaDescriptions.aborted && mediaDescriptions.attemptedCount > 0 && sessionContext?.sessionId) {
-            hostDeps.onToolResultImagesFailed?.(sessionContext.sessionId, mediaDescriptions.attemptedCount);
+          if (
+            !mediaDescriptions.aborted &&
+            mediaDescriptions.attemptedCount > 0 &&
+            sessionContext?.sessionId
+          ) {
+            hostDeps.onToolResultImagesFailed?.(
+              sessionContext.sessionId,
+              mediaDescriptions.attemptedCount,
+            );
           }
         }
       }
@@ -1752,7 +1897,11 @@ export function getCindyGhostsMcpDeps(
         // 与双击 .cindy 同一条转交通道:renderer 弹标准确认框(同 id 已装则
         // 自动转"更新 vX → vY"),用户点头才真装。lease 持到转交完成。
         await handleIncomingCindyFile(packed.cindyPath, 'ghost-forge');
-        log.info('ghost forge packed', { dir, cindyPath: packed.cindyPath, id: packed.manifest.id });
+        log.info('ghost forge packed', {
+          dir,
+          cindyPath: packed.cindyPath,
+          id: packed.manifest.id,
+        });
         return {
           ok: true,
           cindyPath: packed.cindyPath,

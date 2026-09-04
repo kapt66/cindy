@@ -333,6 +333,57 @@ describe('packGhostDir', () => {
     }
   });
 
+  it('allows an explicit Meka source root outside the session workdir', async () => {
+    const mekaRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'cindy-meka-plugins-'));
+    try {
+      const sourceDir = path.join(mekaRoot, 'meka-p4');
+      await fs.promises.mkdir(sourceDir, { recursive: true });
+      await fs.promises.writeFile(
+        path.join(sourceDir, 'ghost.json'),
+        JSON.stringify({ ...GOOD_MANIFEST, id: 'meka-p4' }),
+      );
+      await fs.promises.writeFile(path.join(sourceDir, 'main.js'), 'export default {}');
+      const packed = await packGhostDirRaw(sourceDir, {
+        sessionWorkdir: workDir,
+        channel: 'meka',
+        allowedSourceRoots: [mekaRoot],
+      });
+      expect(packed).toMatchObject({ ok: true });
+      if (packed.ok) {
+        expect(packed.cindyPath).toBe(path.join(sourceDir, 'meka-p4-1.0.0.cindy'));
+      }
+    } finally {
+      await fs.promises.rm(mekaRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('does not allow the Meka source root itself or an unlisted root', async () => {
+    const mekaRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'cindy-meka-plugins-'));
+    try {
+      await fs.promises.writeFile(
+        path.join(mekaRoot, 'ghost.json'),
+        JSON.stringify({ ...GOOD_MANIFEST, id: 'meka-root' }),
+      );
+      await fs.promises.writeFile(path.join(mekaRoot, 'main.js'), 'export default {}');
+      await expect(
+        packGhostDirRaw(mekaRoot, {
+          sessionWorkdir: workDir,
+          channel: 'meka',
+          allowedSourceRoots: [mekaRoot],
+        }),
+      ).resolves.toMatchObject({ ok: false, errorCode: 'SOURCE_OUTSIDE_WORKDIR' });
+      await expect(
+        packGhostDirRaw(mekaRoot, {
+          sessionWorkdir: workDir,
+          channel: 'meka',
+          allowedSourceRoots: [],
+        }),
+      ).resolves.toMatchObject({ ok: false, errorCode: 'SOURCE_OUTSIDE_WORKDIR' });
+    } finally {
+      await fs.promises.rm(mekaRoot, { recursive: true, force: true });
+    }
+  });
+
   it('rejects Host-managed roots, descendants, case aliases, and junction aliases', async () => {
     const managedRoot = path.join(workDir, 'managed');
     const installedDir = path.join(managedRoot, 'demo');

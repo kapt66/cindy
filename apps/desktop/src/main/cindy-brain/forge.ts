@@ -1268,6 +1268,13 @@ export async function packGhostDir(
     outputDir?: string;
     sessionWorkdir?: string | null;
     forbiddenRootDirs?: readonly string[];
+    /**
+     * Explicitly authorized source roots for a non-session authoring channel.
+     * This is intentionally separate from forbiddenRootDirs: callers must opt
+     * into a named channel before a root can relax the session-workdir gate.
+     */
+    channel?: 'meka';
+    allowedSourceRoots?: readonly string[];
   } = {},
 ): Promise<ForgePackResult> {
   // Forge 打包出口专属安全门(C-4 + #7):source 必须在会话 workdir 内、且不得是受管根
@@ -1298,11 +1305,35 @@ export async function packGhostDir(
     return { ok: false, errorCode: 'DIR_NOT_FOUND', message: `目录不存在:${dir}` };
   }
   if (!isPathInsideDir(realWorkdir, realSourceDir)) {
-    return {
-      ok: false,
-      errorCode: 'SOURCE_OUTSIDE_WORKDIR',
-      message: 'Forge source must be inside the current session workdir',
-    };
+    // Meka development sources live in the separately checked-out
+    // cindy-meka-plugins repository.  Only an explicit Meka channel plus a
+    // Host-provided allowlist may cross the session workdir boundary; generic
+    // Forge calls remain fail-closed.
+    const sourceIsInAllowedMekaRoot =
+      options.channel === 'meka' &&
+      (
+        await Promise.all(
+          (options.allowedSourceRoots ?? []).map(async (root) => {
+            try {
+              const realRoot = await realpathNative(root);
+              const samePath =
+                process.platform === 'win32'
+                  ? realRoot.toLowerCase() === realSourceDir.toLowerCase()
+                  : realRoot === realSourceDir;
+              return !samePath && isPathInsideDir(realRoot, realSourceDir);
+            } catch {
+              return false;
+            }
+          }),
+        )
+      ).some(Boolean);
+    if (!sourceIsInAllowedMekaRoot) {
+      return {
+        ok: false,
+        errorCode: 'SOURCE_OUTSIDE_WORKDIR',
+        message: 'Forge source must be inside the current session workdir',
+      };
+    }
   }
   for (const forbiddenRoot of options.forbiddenRootDirs ?? []) {
     const resolvedForbiddenRoot = await resolveThroughExistingAncestor(forbiddenRoot);
@@ -4273,9 +4304,11 @@ const opened = await cindy.iosSimulator.request({
 1. 新插件先调 \`ghost_forge_scaffold\` 生成骨架，或把已有源码放在用户工作目录下的
    一个文件夹里(如 \`my-ghost/\`)；脚手架目标必须是新目录，绝不覆盖已有文件，
    其父目录必须是工作目录内已存在的普通目录；也不能落在已安装插件目录或 Host 状态目录内(会被拒，理由同下一条)；
-   **Forge 源码必须是当前会话工作目录里的独立作者目录**。已安装插件目录以及
-   Host 管理的状态目录都不是源码区，禁止直接修改、打包或用路径别名绕过；若要继续
-   开发已有插件，先把源码复制/迁出到工作目录中的新目录，再从该副本制作;
+   **Forge 源码默认必须是当前会话工作目录里的独立作者目录**。Meka 创建入口显式传
+   \`channel: 'meka'\` 时，Host 才会允许配置的 \`cindy-meka-plugins\` 源码根下的具体插件
+   子目录跨出会话工作目录；源码根本身、已安装插件目录以及 Host 管理的状态目录都不是
+   源码区，禁止直接修改、打包或用路径别名绕过；其它外部目录仍应先迁出到工作目录中的
+   新目录（复制/迁出），再从该副本制作;
 2. 普通创建任务调 \`ghost_forge_pack({ dir: '<绝对路径>' })\`——校验 + 打包 + 弹装入确认框。
    仅当当前任务明确来自 Meka 创建入口时，调
    \`ghost_forge_pack({ dir: '<绝对路径>', channel: 'meka' })\`。channel 只供 Host

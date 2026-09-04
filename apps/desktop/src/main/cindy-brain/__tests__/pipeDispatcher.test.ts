@@ -6,7 +6,11 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-import { GhostPipeDispatcher, toolNotFoundMessage, type PipeDispatcherDeps } from '../pipeDispatcher';
+import {
+  GhostPipeDispatcher,
+  toolNotFoundMessage,
+  type PipeDispatcherDeps,
+} from '../pipeDispatcher';
 import type { GhostPipeToolCall, InstalledGhost } from '../../../shared/ghost';
 import type { GhostRuntimeState } from '../runtime/GhostRuntime';
 
@@ -51,12 +55,14 @@ interface Harness {
   sent: GhostPipeToolCall[];
 }
 
-function makeHarness(opts: {
-  ghost?: InstalledGhost | null;
-  state?: GhostRuntimeState;
-  timeoutMs?: number;
-  ownerScope?: PipeDispatcherDeps['ownerScope'];
-} = {}): Harness {
+function makeHarness(
+  opts: {
+    ghost?: InstalledGhost | null;
+    state?: GhostRuntimeState;
+    timeoutMs?: number;
+    ownerScope?: PipeDispatcherDeps['ownerScope'];
+  } = {},
+): Harness {
   const sent: GhostPipeToolCall[] = [];
   const deps = {
     getGhost: vi.fn(() => (opts.ghost === undefined ? fakeGhost() : opts.ghost)),
@@ -135,6 +141,17 @@ describe('资格审(结构化错误分类)', () => {
 });
 
 describe('toolNotFoundMessage(纯函数直测)', () => {
+  it('Meka Unity 未知工具不回填 list_tools，直接指向官方 CLI 工具', () => {
+    const msg = toolNotFoundMessage('meka-unity', 'list_tools', [
+      { name: 'unity_inspect', description: '' },
+      { name: 'unity_execute', description: '' },
+    ]);
+    expect(msg).toContain('不提供 list_tools 动态清单接口');
+    expect(msg).toContain('unity_inspect');
+    expect(msg).toContain('unity_execute');
+    expect(msg).not.toContain('tool:"call_tool"');
+  });
+
   it('分派型插件:回填 agent 想调的名字并给出 call_tool 形态', () => {
     const msg = toolNotFoundMessage('cindy-github', 'create_pull_request', [
       { name: 'list_tools', description: '' },
@@ -160,6 +177,30 @@ describe('toolNotFoundMessage(纯函数直测)', () => {
 });
 
 describe('按需拉起', () => {
+  it('开发版逻辑 ID 解析后以实际 runtime ID 派发和收卷', async () => {
+    const runtimeGhost = fakeGhost({
+      manifest: { ...fakeGhost().manifest, id: 'meka-dev-meka-unity-02ef16d0' },
+      dir: '/fake/brain/meka-dev-meka-unity-02ef16d0',
+    });
+    const h = makeHarness({ ghost: runtimeGhost, state: 'off' });
+    const p = h.dispatcher.callGhostTool({
+      ghostId: 'meka-unity',
+      tool: 'gen_image',
+      args: {},
+    });
+    await vi.waitFor(() => expect(h.sent).toHaveLength(1));
+    expect(h.deps.runtimeStateOf).toHaveBeenCalledWith('meka-dev-meka-unity-02ef16d0');
+    expect(h.deps.spawn).toHaveBeenCalledWith(runtimeGhost);
+    expect(h.deps.sendToGhost).toHaveBeenCalledWith('meka-dev-meka-unity-02ef16d0', h.sent[0]);
+    h.dispatcher.handleToolResult('meka-dev-meka-unity-02ef16d0', {
+      type: 'tool-result',
+      callId: h.sent[0].callId,
+      ok: true,
+      result: { done: 1 },
+    });
+    await expect(p).resolves.toMatchObject({ ok: true });
+  });
+
   it('off 状态先 spawn 再派发', async () => {
     const h = makeHarness({ state: 'off' });
     const p = h.dispatcher.callGhostTool(CALL);
@@ -225,7 +266,11 @@ describe('配对交卷', () => {
     const h = makeHarness();
     const p = h.dispatcher.callGhostTool(CALL);
     await vi.waitFor(() => expect(h.sent).toHaveLength(1));
-    expect(h.sent[0]).toMatchObject({ type: 'tool-call', tool: 'gen_image', args: { prompt: '一只猫' } });
+    expect(h.sent[0]).toMatchObject({
+      type: 'tool-call',
+      tool: 'gen_image',
+      args: { prompt: '一只猫' },
+    });
     const outcome = h.dispatcher.handleToolResult('art', {
       type: 'tool-result',
       callId: h.sent[0].callId,
@@ -305,7 +350,11 @@ describe('配对交卷', () => {
       ok: false,
       message: '画布爆炸',
     });
-    await expect(p).resolves.toMatchObject({ ok: false, errorCode: 'INTERNAL', message: '画布爆炸' });
+    await expect(p).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'INTERNAL',
+      message: '画布爆炸',
+    });
   });
 
   it('透传合法插件业务错误码，但不允许覆盖主机错误码', async () => {
@@ -359,7 +408,8 @@ describe('配对交卷', () => {
     const h = makeHarness();
     expect(h.dispatcher.handleToolResult('art', { type: 'tool-result' }).accepted).toBe(false);
     expect(
-      h.dispatcher.handleToolResult('art', { type: 'tool-result', callId: 'ghost-town', ok: true }).accepted,
+      h.dispatcher.handleToolResult('art', { type: 'tool-result', callId: 'ghost-town', ok: true })
+        .accepted,
     ).toBe(false);
   });
 });
@@ -381,31 +431,13 @@ describe('tool-call 宿主能力绑定', () => {
       ),
     ).toBe(false);
     expect(
-      h.dispatcher.claimPendingCall(
-        'art',
-        callId,
-        'other_tool',
-        'cindy.search.web',
-        'request-a',
-      ),
+      h.dispatcher.claimPendingCall('art', callId, 'other_tool', 'cindy.search.web', 'request-a'),
     ).toBe(false);
     expect(
-      h.dispatcher.claimPendingCall(
-        'art',
-        callId,
-        'gen_image',
-        'cindy.search.web',
-        'request-a',
-      ),
+      h.dispatcher.claimPendingCall('art', callId, 'gen_image', 'cindy.search.web', 'request-a'),
     ).toBe(true);
     expect(
-      h.dispatcher.claimPendingCall(
-        'art',
-        callId,
-        'gen_image',
-        'cindy.search.web',
-        'request-a',
-      ),
+      h.dispatcher.claimPendingCall('art', callId, 'gen_image', 'cindy.search.web', 'request-a'),
     ).toBe(false);
     expect(
       h.dispatcher.settlePendingCallClaim(
@@ -418,22 +450,10 @@ describe('tool-call 宿主能力绑定', () => {
       ),
     ).toBe(true);
     expect(
-      h.dispatcher.claimPendingCall(
-        'art',
-        callId,
-        'gen_image',
-        'cindy.search.web',
-        'request-b',
-      ),
+      h.dispatcher.claimPendingCall('art', callId, 'gen_image', 'cindy.search.web', 'request-b'),
     ).toBe(false);
     expect(
-      h.dispatcher.claimPendingCall(
-        'art',
-        callId,
-        'gen_image',
-        'cindy.search.web',
-        'request-a',
-      ),
+      h.dispatcher.claimPendingCall('art', callId, 'gen_image', 'cindy.search.web', 'request-a'),
     ).toBe(true);
     expect(
       h.dispatcher.settlePendingCallClaim(
@@ -446,13 +466,7 @@ describe('tool-call 宿主能力绑定', () => {
       ),
     ).toBe(true);
     expect(
-      h.dispatcher.claimPendingCall(
-        'art',
-        callId,
-        'gen_image',
-        'cindy.search.web',
-        'request-a',
-      ),
+      h.dispatcher.claimPendingCall('art', callId, 'gen_image', 'cindy.search.web', 'request-a'),
     ).toBe(false);
 
     h.dispatcher.handleToolResult('art', {
@@ -471,13 +485,7 @@ describe('tool-call 宿主能力绑定', () => {
     const callId = h.sent[0].callId;
 
     expect(
-      h.dispatcher.claimPendingCall(
-        'art',
-        callId,
-        'gen_image',
-        'cindy.search.web',
-        'request-a',
-      ),
+      h.dispatcher.claimPendingCall('art', callId, 'gen_image', 'cindy.search.web', 'request-a'),
     ).toBe(true);
     expect(
       h.dispatcher.settlePendingCallClaim(
@@ -490,13 +498,7 @@ describe('tool-call 宿主能力绑定', () => {
       ),
     ).toBe(true);
     expect(
-      h.dispatcher.claimPendingCall(
-        'art',
-        callId,
-        'gen_image',
-        'cindy.search.web',
-        'request-a',
-      ),
+      h.dispatcher.claimPendingCall('art', callId, 'gen_image', 'cindy.search.web', 'request-a'),
     ).toBe(false);
 
     h.dispatcher.handleToolResult('art', {
@@ -535,9 +537,11 @@ describe('超时与收卷', () => {
     expect(h.sent).toHaveLength(2);
 
     vi.advanceTimersByTime(40);
-    expect(h.dispatcher.handleToolProgress('art', {
-      callId: h.sent[0].callId,
-    }).accepted).toBe(true);
+    expect(
+      h.dispatcher.handleToolProgress('art', {
+        callId: h.sent[0].callId,
+      }).accepted,
+    ).toBe(true);
     vi.advanceTimersByTime(10);
     await expect(short).resolves.toMatchObject({ ok: false, errorCode: 'TIMEOUT' });
     expect(h.dispatcher.pendingCount()).toBe(1);
@@ -596,7 +600,7 @@ describe('长任务续命(hold / release / tool-progress)', () => {
     vi.advanceTimersByTime(10_000);
 
     h.dispatcher.releaseCall('art', callId); // 还有一单在途:不收
-    vi.advanceTimersByTime(120_000);  // t=130_000,若已收(70_000 到点)早超了
+    vi.advanceTimersByTime(120_000); // t=130_000,若已收(70_000 到点)早超了
     expect(h.dispatcher.pendingCount()).toBe(1);
 
     h.dispatcher.releaseCall('art', callId); // 全部收工:收到 now + 60_000 余量

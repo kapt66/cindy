@@ -83,6 +83,87 @@ function isLegacySkill(
   return 'path' in value;
 }
 
+/**
+ * Keep editable SAGA2 project snapshots compatible when a bundled skill is
+ * renamed. The project file remains the user's source of truth; migration is
+ * deliberately in-memory so an upgrade never rewrites P4-owned data.
+ */
+function migrateSAGA2CombatSkillSelection(
+  value: MekaRoleSkillSelection | MekaRoleSkillEntry,
+): MekaRoleSkillSelection | MekaRoleSkillEntry {
+  if (isLegacySkill(value)) return value;
+  return value.skillId === 'skill-entry-model' ? { ...value, skillId: 'saga2-entry-model' } : value;
+}
+
+function migrateSAGA2CombatRoleSkills(
+  role: MekaRoleFile,
+  projectId: string,
+  roleId: string,
+  bundled: MekaRoleFile,
+): MekaRoleFile {
+  // Ordinary SAGA2 conversations may start with general-development and are
+  // promoted to the combat workflow from the natural-language request. They
+  // must receive the same in-memory snapshot migration before skill loading;
+  // otherwise an old project file fails on the retired skill id first.
+  if (projectId !== 'saga2' || !new Set(['combat-development', 'general-development']).has(roleId))
+    return role;
+  const legacyAuxiliarySkillIds = new Set([
+    'saga2-overview',
+    'safety-boundaries',
+    'p4-operations',
+    'orca-coordination',
+    'remote-operations',
+    'saga2-server-reference',
+    'saga2-entry-model',
+    'skill-entry-model',
+  ]);
+  const hasRenamedSkill = role.skills.some(
+    (skill) => !isLegacySkill(skill) && skill.skillId === 'skill-entry-model',
+  );
+  const hasLegacyAuxiliarySkills = role.skills.some(
+    (skill) => !isLegacySkill(skill) && legacyAuxiliarySkillIds.has(skill.skillId),
+  );
+  const hasCurrentIdContract = role.promptFragments?.some(
+    (fragment) => fragment.id === 'combat-skill-id-contract',
+  );
+  const hasLegacyMetadata = (role.projectMetadataSelection ?? []).some((selection) =>
+    /(?:saga2_design|saga2-project-battle-designer|editor-skill-editor-module)/i.test(
+      selection.sourcePath,
+    ),
+  );
+  const hasLegacyDefaults =
+    role.useProjectDefaults === true || role.includeAllProjectMetadata === true;
+  if (
+    !hasRenamedSkill &&
+    !hasLegacyAuxiliarySkills &&
+    hasCurrentIdContract &&
+    !hasLegacyMetadata &&
+    !hasLegacyDefaults
+  ) {
+    return role;
+  }
+  return {
+    ...role,
+    // This marker identifies the pre-rename built-in snapshot. Refresh its
+    // bundled prompt contract as well as the skill id; otherwise the old
+    // prompt can direct the Agent back to the retired global skill name.
+    prompt: bundled.prompt,
+    promptFragments: bundled.promptFragments,
+    // The old snapshot enabled project defaults, which would re-add the
+    // retired skill id and broad metadata after this migration. The bundled
+    // combat role deliberately owns its complete runtime contract now.
+    useProjectDefaults: bundled.useProjectDefaults,
+    includeAllProjectMetadata: bundled.includeAllProjectMetadata,
+    projectMetadataSelection: bundled.projectMetadataSelection,
+    skills: mergeSkills(
+      role.skills
+        .map(migrateSAGA2CombatSkillSelection)
+        .filter((skill) => isLegacySkill(skill) || !legacyAuxiliarySkillIds.has(skill.skillId)),
+      bundled.skills,
+    ),
+  };
+}
+
 /** Project defaults are part of the project/role contract, not a separate capability state. */
 export function mergeMekaProjectRoleDefaults(
   role: MekaRoleFile,
@@ -318,6 +399,9 @@ function parseDiscoveredMcp(content: string, fallbackId: string): MekaRoleMcpEnt
   return Object.entries(container).map(([id, raw]) => {
     if (!isRecord(raw)) throw new Error(`Meka MCP metadata ${id} must be an object`);
     if (!SAFE_SKILL_ID_RE.test(id)) throw new Error(`Meka MCP metadata has an invalid id: ${id}`);
+    if (/unity/i.test(id)) {
+      throw new Error(`Unity inline MCP metadata is not supported: ${id}`);
+    }
     if (typeof raw.providerId === 'string') {
       if (!SAFE_SKILL_ID_RE.test(raw.providerId)) {
         throw new Error(`Meka MCP metadata ${id} has an invalid providerId`);
@@ -391,10 +475,7 @@ function resolveRoleRelativePath(row: RoleRow, relativePath: string): string {
   return candidate;
 }
 
-function mergeById<T extends { id: string }>(
-  current: readonly T[],
-  required: readonly T[],
-): T[] {
+function mergeById<T extends { id: string }>(current: readonly T[], required: readonly T[]): T[] {
   const merged = new Map(current.map((entry) => [entry.id, entry]));
   for (const entry of required) merged.set(entry.id, entry);
   return [...merged.values()];
@@ -459,7 +540,7 @@ async function resolveRoleFile(
     const manifest = projectFile.builtinRoles?.find((role) => role.id === row.id) ?? bundled;
     const upgraded = upgradeLegacyBundledWorkflowRole(manifest, bundled);
     return {
-      role: upgraded.role,
+      role: migrateSAGA2CombatRoleSkills(upgraded.role, row.project_id, row.id, bundled),
       workflowRecoveredFromRole: upgraded.recovered,
     };
   }
@@ -502,10 +583,7 @@ export async function resolveMekaRuntimeConfig(
   if (!projectFile) throw new Error(`Meka project config is missing: ${projectId}`);
 
   const resolvedRole = await resolveRoleFile(role, projectFile);
-  const roleFile = mergeMekaProjectRoleDefaults(
-    resolvedRole.role,
-    projectFile.roleDefaults ?? {},
-  );
+  const roleFile = mergeMekaProjectRoleDefaults(resolvedRole.role, projectFile.roleDefaults ?? {});
   roleFile.projectMetadataSelection = resolveRoleProjectMetadataSelections(
     roleFile,
     projectFile.metadata,
@@ -551,6 +629,9 @@ export async function resolveMekaRuntimeConfig(
   }
 
   for (const entry of roleFile.mcp) {
+    if (/unity/i.test(entry.id)) {
+      throw new Error(`Unity inline MCP configuration is not supported: ${entry.id}`);
+    }
     if (entry.enabled !== false) mcp.set(entry.id, entry);
   }
 
