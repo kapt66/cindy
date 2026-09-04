@@ -105,6 +105,9 @@ test('Windows release keeps the old Meka signing service without exposing its to
   assert.match(packager, /delete forgeEnv\.NPKG_TOKEN/);
   assert.match(signer, /os\.environ\.get\("NPKG_TOKEN"/);
   assert.doesNotMatch(signer, /sys\.argv\[2\]/);
+  assert.match(signer, /SIGNING_POLL_ATTEMPTS = 200/);
+  assert.match(signer, /SIGNING_POLL_INTERVAL_SECONDS = 3/);
+  assert.match(signer, /range\(SIGNING_POLL_ATTEMPTS\)/);
 });
 
 test('macOS release accepts the existing Meka certificate without requiring notarization credentials', () => {

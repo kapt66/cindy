@@ -29,6 +29,8 @@ except ImportError:
 
 SERVICE_ORIGIN = "https://npkg.xindong.com"
 REQUEST_TIMEOUT_SECONDS = 60
+SIGNING_POLL_ATTEMPTS = 200
+SIGNING_POLL_INTERVAL_SECONDS = 3
 DOWNLOAD_TIMEOUT_SECONDS = 3600
 
 
@@ -94,7 +96,7 @@ try:
 
     print(f"[sign.py] Waiting for package {package_id}...")
     signed_file_url = None
-    for _ in range(30):
+    for _ in range(SIGNING_POLL_ATTEMPTS):
         status_response = requests.get(
             f"{SERVICE_ORIGIN}/api/v1/packages/{package_id}/",
             headers=headers,
@@ -107,7 +109,7 @@ try:
             break
         if status.get("sign_status") == "failed":
             fail("Signing failed on the server")
-        time.sleep(3)
+        time.sleep(SIGNING_POLL_INTERVAL_SECONDS)
 
     if not signed_file_url:
         fail("Signing timed out")

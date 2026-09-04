@@ -276,6 +276,8 @@ Windows：
 - 支持原 `NPKG_TOKEN` 签名服务。
 - Token 只从环境读取，不进入命令行参数、仓库或构建产物。
 - 包内 exe、installer 和 uninstaller 走统一签名入口。
+- NPKG 签名状态最多轮询 200 次、每次间隔 3 秒（正常响应下约 10 分钟）；单次 HTTP
+  请求超时仍为 60 秒，超出轮询上限则 fail closed，不生成未签名发布产物。
 
 macOS：
 
