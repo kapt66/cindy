@@ -3165,6 +3165,18 @@ SAGA2 战斗配置的 `legacy_module_export_json` 成功回执现在由 Meka Uni
   `/model` 继续按空快照判成不显示，故在清单写入成功后重推一次。详见
   [`2026-09-origin-main-to-meka-main.md`](./2026-09-origin-main-to-meka-main.md) §4.6，
   以及 `docs/dev-rules/configuration-and-overrides.md` §2 的 Meka 谱系条款。
+- **开发插件「从目录加载」整条链路失效（用户报告的产品回归，同属上游覆盖 Meka 分歧）**：
+  上游本轮把 v2 的 `slots` 从 `validateGhostManifest` 的**归一化**产物里移除（只保留
+  `tools` / `panel` / `notify` / `reveal` 等直接字段），而 Meka 的
+  `mekaDevPlugins.createDevelopmentPackage` 一直把归一化清单当作者清单二次校验
+  （合并前后该函数逐字节相同，差异全在 `ghost.ts`）。于是选中源码目录即报
+  `无法生成独立开发身份：schemaVersion 2 的 slots 必须是数组`，开发插件无法登记。
+  修复：派生包改以包内**作者格式**的 `ghost.json`（`packed.buf` 内存快照，不回读磁盘）
+  为基底，只叠加派生的 `id` / `command`；不用 `ghostManifestToAuthorFormat` 反向重建，
+  以免丢掉没有能力详单的槽与未识别的历史槽。全 `src/main` 仅此一处把归一化清单当作者
+  清单用。详见 [`2026-09-origin-main-to-meka-main.md`](./2026-09-origin-main-to-meka-main.md)
+  §4.7，规则落在 `docs/dev-rules/plugin-security-and-authoring.md` §4.1（该文件属插件基座，
+  改动需白名单 Approve）。
 
 **保留的 Meka 分歧**（本轮逐条核对仍在，均写在本期同步报告）：Meka 原生项目会话与
 角色／正式事项（schema 列、`'meka'` workspace kind、scheduler 域排除、IM `/sessions`

@@ -416,6 +416,17 @@
   临时目录，禁止先在源码目录生成再用 `rename` 搬运：Windows 上源码盘与系统临时盘
   不同时会报 `EXDEV`，且失败会在源码目录遗留或覆盖同名包。临时 `.cindy` 必须
   在每次尝试后清理；回归测试至少断言独立输出目录生效且源码目录无打包产物。
+- **派生包的 `ghost.json` 必须是作者格式，且只改写身份字段**。Forge 的
+  `ForgePackResult.manifest` 是 Host **归一化后**的运行时模型（v2 的 `slots` 已被投影成
+  `tools` / `panel` / `notify` / `reveal` 等直接字段，`setup` 已是内部 `{ kind, key }` 形态），
+  不是可回写的作者清单；把它再当作者清单序列化或校验，会因缺 `slots` 被
+  `validateGhostManifest` 拒成“schemaVersion 2 的 slots 必须是数组”，装包入口读到的
+  归一化 `setup` 同样会被拒（`validateNormalizedGhostManifest` 才是这类快照的入口）。
+  Host 派生 runtime ID / command 时必须以包内**作者格式**的 `ghost.json`
+  （`packed.buf` 里的那一份快照，不经磁盘回读）为基底，只叠加 `id` 与被派生的 `command`，
+  不得从归一化清单反向重建（反向投影会丢掉没有对应能力详单的槽与未识别的历史槽）。
+  回归测试须断言派生包内 `ghost.json` 除身份字段外与源码作者清单逐字段一致，且用装包
+  入口同一道校验（`validateGhostManifest`）能通过。
 - 开发目录检查、首次登记、自动同步和本地／远端打包不依赖活动任务。Main 以用户通过目录
   选择器授权且已规范化的源码目录作为该次 Forge 打包根，并始终同时传入安装内容根、批准
   状态根和随包 seed 根的禁区列表；这项适配只属于 Meka 开发目录，不得放宽 Agent 的

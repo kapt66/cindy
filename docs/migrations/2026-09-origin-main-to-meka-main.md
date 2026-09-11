@@ -266,6 +266,70 @@ not left empty` 锁定该行为。
 「被合并后版本写过空清单后的修复」「`followCatalogKeys` 路线仍跟随目录」
 「`pending` / 定性缺失 fail-closed」各补一条用例。
 
+### 4.7 Meka 开发插件「从目录加载」直接失败（P0，属 (b) 覆盖而非 (a) 解错）
+
+**症状**：Meka 插件页「从目录加载（开发模式）」选中源码目录后立即报
+`无法生成独立开发身份：schemaVersion 2 的 slots 必须是数组`，插件无法登记，重试无效。
+
+**归因**：`mekaDevPlugins.createDevelopmentPackage` 把 Host **归一化后**的清单
+（`packed.manifest`）当作者清单用：叠加派生 `id` / `command` 后交给
+`validateGhostManifest`。上游本轮把 v2 的 `slots` 从归一化产物里彻底移除了——
+`validateGhostManifest` 现在返回的运行时模型只保留 `tools` / `panel` / `notify` /
+`reveal` 等直接字段（`ghost.ts` 头部注、`prepareGhostManifestForValidation` 的 v2 分支），
+作者格式的 `slots` 只在兼容解析入口出现。于是同一份清单二次校验必然命中
+“schemaVersion 2 的 slots 必须是数组”（`ghost.ts:4092`）。
+
+**为什么合并前能用**：Meka 侧的 `createDevelopmentPackage` 与合并前**逐字节相同**
+（`git show 5917437271:…/mekaDevPlugins.ts` 对比），差异全在 `ghost.ts`：合并前
+`validateGhostManifest` 的返回体里带 `slots`（旧 `ghost.ts:5395`），归一化清单**本身就是**
+合法作者清单，所以二次校验能过；上游把归一化产物改成“无 slots 的运行时投影”后，
+这一处调用随即失效。属 (b) 上游改语义、Meka 侧调用点前提被覆盖。
+
+**排查范围**：`git grep 'validateGhostManifest('` 在 `src/main` 共 27 处，逐处核对输入格式后
+**只有这一处**把归一化清单当作者清单用；`ghostInstallReceipt`、`GhostManager` 用的是专用
+`validateNormalizedGhostManifest`，`plugin-market`、`installedGhostManifest`、`forge`、
+`ghostSignature` 的输入本来就是作者格式（或与其自身同格式比较），均不受影响。
+
+**修复**（`mekaDevPlugins.ts`，最小改动）：派生包改为以包内**作者格式**的 `ghost.json`
+为基底——即 `packed.buf`（内存快照，仍不回读磁盘，保持 Forge 不变量）里的那一份，只叠加
+派生的 `id` 与被改写的 `command`，再走同一道 `validateGhostManifest`。不采用
+`ghostManifestToAuthorFormat` 反向重建：反向投影依赖 field↔slot 映射，会丢掉没有对应能力
+详单的槽（`dropEmptyLegacyCapabilitySlots` 已在归一化时丢弃）与未识别的历史槽，等于让开发
+副本静默缩水；直接沿用作者字节与正式打包（`forge` 写进 zip 的就是作者字节）同口径。同时把
+“缺少 `ghost.json`”与校验失败区分开，避免内部错误被包成同一句文案。
+
+**验证**：新增用例 `真实打包派生开发身份后仍是合法作者清单，且只改身份字段` —— 用生产
+`packMekaDevPluginSource` 真实打包（不再用 mock 打包器，mock 无法暴露该缺陷），并在
+`inspectPackage` / `installPackage` 里跑**装包入口同一道** `validateGhostManifest`，
+断言派生包 `ghost.json` 与源码作者清单逐字段一致、只有 `id`/`command` 不同、签名已移除。
+修复前该用例以用户报告的原句失败，修复后通过。定向回归：`mekaDevPlugins` 13 / `ghost`
+199 / `forge` 81 / `marketGhostSessionBoundary` 13 全通过；desktop `typecheck` 0 错误。
+
+**实机端到端证据（用户真实插件 `meka-unity`，隔离沙箱 `dev`）**：用户 19:48 在
+「Meka 插件 → 从目录加载」的实际失败原文留在 `apps/desktop/logs/main-2026-09-11.log:3278`
+（`Error occurred in handler for 'meka-dev-plugins:install': … 无法生成独立开发身份：schemaVersion 2 的
+slots 必须是数组`）；修复后把该源码目录登记进沙箱开发注册表并重启，启动同步的同一个
+`createDevelopmentPackage` 在 20:04 成功：`main-2026-09-11.log:3543`
+`ghost installed { id: 'meka-dev-meka-unity-02ef16d0', version: '1.0.15' }`，
+`ghost-install-state/meka-dev-meka-unity-02ef16d0.json` 落盘。逐字段核对派生清单：
+`slots: ["tool","node"]`、`tools`、`node.entry`、`manual.items`、`locales`、`icon`、`entry`
+与源码 `ghost.json` 完全一致，只有 `id` 为派生 runtime ID、`command` 为
+`unity-dev-ef16d0`——即「只改身份字段」在真实节点上成立，作者声明的卡槽与能力没有缩水。
+（沙箱开发注册表里这一条是本次验证写入的，需要时可从「Meka 插件」页移除。）
+
+**同一根因的第二个受害面（一并修）**：写归一化清单不只影响 v2 的 `slots`。归一化后的
+`setup` 是内部 `{ kind, key }` 形态，而装包入口对 `ghost.json` 跑的是 `validateGhostManifest`
+—— 上游在 `ghost.test.ts:2747` 显式断言 `validateGhostManifest(归一化清单).ok === false`，
+并要求这类快照改走 `validateNormalizedGhostManifest`。所以修复前，**任何声明了 `setup` 的
+插件**（v2 或 v3）派生成开发包后，会在**装包**阶段以另一个理由失败。改写成作者格式后该面
+同时消失：`meka-unity` 虽未声明 `setup`，但派生清单里的 `tools` / `node` / `manual` / `slots`
+逐字段与作者清单一致，已证明不存在「归一化往返」这一层。
+
+**规则落点**：`docs/dev-rules/plugin-security-and-authoring.md` §4.1 新增
+「派生包的 `ghost.json` 必须是作者格式，且只改写身份字段」条款。该文件属插件基座，
+本次改动落在插件打包判据上，按仓库白名单确认门需放行人明确 Approve。
+
+
 ## 5. 保留的 Meka 分歧（有意为之，非缺陷）
 
 | 分歧 | 保护的不变量 |
@@ -331,7 +395,8 @@ not left empty` 锁定该行为。
    **Meka 技能链真实分发**。
 6. **插件基座白名单批准**：D3 属插件基座改动（能力 slot / 装入与权限确认 UI / 已装列表
    投影），按 `AGENTS.md` 与 `docs/dev-rules/plugin-security-and-authoring.md` 仍需仓库
-   指定把关人明确 Approve 才能合并。
+   指定把关人明确 Approve 才能合并。§4.7 的修复同样落在插件打包判据上（派生包 manifest
+   格式），按同一条白名单门**一并需要 Approve**——它不因“是 bugfix”豁免。
 7. **`pnpm check:dco` 报 9 个未签名提交（全部是 meka 侧历史，非本次合并引入）**：
    `bbcef9d6`、`298a3991`、`1303745e`、`fc7a77b6`、`50e98ebf`、`33348870`、`fed5702c`、
    `775bce95`、`f6a5025f` —— 均已确认为**合并前 HEAD `5917437271` 的祖先**、且**不在
@@ -341,6 +406,19 @@ not left empty` 锁定该行为。
    需用户决定是否单独整改。
 8. **工作区有大量上一轮遗留的未跟踪脚手架**（`.tmp-*` 约 590 个，另有 `out.txt`、
    `10`、`14`）。它们未被 stage、不在 merge commit 内，建议清理或加入 ignore。
+   （已处理：清理 593 项并补 ignore 规则，见 `daf9db31b0`。）
+9. **`scripts/desktop-whoami.mjs` 的进程父子图缺环保护（存量，上游与本仓共有的同一实现，
+   非本次引入）**：`descendants()` 只用 `queue`/`byParent` 做向下遍历，没有 visited 集合。
+   Windows 上父进程退出后 PID 被复用、或 `ParentProcessId` 自指/互指时（`Get-CimInstance
+   Win32_Process` 如实返回），遍历进入环 → `result.push` 无限增长 → 抛
+   `RangeError: Invalid array length`（实测栈：`desktop-whoami.mjs:136` → `:168`
+   → `collectDesktopWhoamiReport`）。后果是 `pnpm restart:desktop:remote` 在**应用已
+   `state:'ready'`** 的情况下仍打印 `DESKTOP_DEV_VERDICT=failed / code=STARTUP_FAILED`，
+   属工具假红；`node scripts/desktop-whoami.mjs` 可独立复现（exit 2）。`descendants` 在
+   `5917437271`（Meka 合并前）与 `4f03ea9a7b`（上游）中**逐字节相同**，故既非本轮合并引入、
+   也非本轮解错。建议修法是遍历时带 visited 集合（或在 `identifyDesktopProcesses` 里跳过
+   `ppid === pid` 与 `ppid === 0` 的条目），并补一条成环夹具的自测。按「非本次修改引入的
+   存量问题不擅自修复」**未处理**，待用户决定是否纳入。
 9. **`tools/codex-package/updates/0.154.0/` 有约 573 MB 的未完成下载**（gitignore，
    不进入提交）。这是本轮诊断时误触 `tools/codex-package/update.mjs`（它忽略 `--help`
    直接抓最新版）留下的；`latest.json` 仍锁定 `0.153.4`，不受影响。可安全删除。
@@ -378,6 +456,8 @@ not left empty` 锁定该行为。
 | hook-control 定向 | `vitest run src/main/hook-control` | 22 文件 / 627 通过 |
 | 模型可见性（§4.6） | `vitest run src/renderer/__tests__/modelVisibilityPrefs.test.ts` | 64 通过 / 0 失败 |
 | 模型选择器相关（§4.6） | `vitest run src/renderer/__tests__/{unifiedModelList,unifiedModelPanelRendering,modelSelectorProviderGroups,gatewayModelArrival,localCatalogSnapshot,modelSelectorTriggerVariant}` | 6 文件 / 256 通过 |
+| 开发插件派生包（§4.7） | `vitest run src/main/cindy-brain/__tests__/{mekaDevPlugins,marketGhostSessionBoundary,forge}` + `src/shared/__tests__/ghost` | 4 文件 / 306 tests（304 通过 + 2 skipped） |
+| 开发插件实机装载（§4.7） | 沙箱登记真实插件 `meka-unity` + `pnpm restart:desktop:remote` | 修复前 `main-2026-09-11.log:3278` 报 slots 拒装；修复后 20:04 `ghost installed { id: 'meka-dev-meka-unity-02ef16d0' }`，派生清单逐字段核对只改身份字段 |
 | i18n | `pnpm check:i18n` | ✅ 五语 9946 key 全一致 |
 | 术语表 | `pnpm check:i18n-glossary` | ✅ 无新增违规 |
 | 品牌术语 | `pnpm check:brand-terminology` | ✅ PASS |

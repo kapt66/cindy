@@ -15,6 +15,7 @@ import JSZip from 'jszip';
 
 import type { MekaDevPluginInspection, MekaDevPluginItem } from '../../shared/mekaDevPlugin.js';
 import {
+  GHOST_MANIFEST_FILE,
   validateGhostManifest,
   type GhostManifest,
   type GhostTrustInfo,
@@ -462,22 +463,36 @@ export class MekaDevPluginManager {
     runtimeId: string,
     outputDir: string,
   ): Promise<Extract<ForgePackResult, { ok: true }>> {
-    const developmentManifest: GhostManifest = {
-      ...packed.manifest,
-      id: runtimeId,
-      ...(packed.manifest.command
-        ? { command: mekaDevCommand(packed.manifest.command, runtimeId) }
-        : {}),
-    };
-    const validated = validateGhostManifest(developmentManifest);
-    if (!validated.ok) {
-      throw new MekaDevPluginError('invalid-plugin', `无法生成独立开发身份：${validated.reason}`);
-    }
     try {
       // 从 pack 结果内存里的字节装载,不从 cindyPath 回读(forge.ts 的不变量):
       // 源码目录可被并发改写,只有 `buf` 与刚校验过的那一份快照逐字节一致。
       const zip = await JSZip.loadAsync(packed.buf);
-      zip.file('ghost.json', `${JSON.stringify(validated.manifest, null, 2)}\n`);
+      const manifestEntry = zip.file(GHOST_MANIFEST_FILE);
+      if (!manifestEntry) {
+        throw new MekaDevPluginError(
+          'invalid-plugin',
+          `生成开发插件包失败：源码包缺少 ${GHOST_MANIFEST_FILE}`,
+        );
+      }
+      // 派生包必须携带**作者格式**清单。`packed.manifest` 是 Host 归一化后的运行时
+      // 模型(v2 的 `slots` 已被投影成 `tools` / `panel` / `notify` 等直接字段),拿它
+      // 当作者清单再校验会因缺 `slots` 被拒("schemaVersion 2 的 slots 必须是数组"),
+      // 装包入口也读不懂。forge 写进 zip 的 `ghost.json` 就是作者格式的那一份内存快照,
+      // 这里只叠加 Host 派生的身份字段 —— 与正式打包保留作者字节同一口径,作者的卡槽与
+      // 能力详单不因归一化往返而缩水。
+      const sourceManifest = JSON.parse(await manifestEntry.async('text')) as Record<string, unknown>;
+      const developmentManifest: Record<string, unknown> = {
+        ...sourceManifest,
+        id: runtimeId,
+        ...(packed.manifest.command
+          ? { command: mekaDevCommand(packed.manifest.command, runtimeId) }
+          : {}),
+      };
+      const validated = validateGhostManifest(developmentManifest);
+      if (!validated.ok) {
+        throw new MekaDevPluginError('invalid-plugin', `无法生成独立开发身份：${validated.reason}`);
+      }
+      zip.file(GHOST_MANIFEST_FILE, `${JSON.stringify(developmentManifest, null, 2)}\n`);
       // Host 派生 runtime id / command 后，源码包签名不再对应实际字节。
       // 源码快照已在改写前通过 GhostManager.inspect；派生包必须移除失效签名，
       // 再由安装入口按未签名开发快照重新做完整包校验，不能携带一份必然失真的信任声明。
@@ -496,6 +511,7 @@ export class MekaDevPluginManager {
         buf,
       };
     } catch (error) {
+      if (error instanceof MekaDevPluginError) throw error;
       throw new MekaDevPluginError(
         'invalid-plugin',
         `生成开发插件包失败：${error instanceof Error ? error.message : String(error)}`,

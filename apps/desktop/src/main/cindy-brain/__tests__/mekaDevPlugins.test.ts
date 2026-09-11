@@ -6,7 +6,9 @@ import JSZip from 'jszip';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { GhostManifest, InstalledGhost } from '../../../shared/ghost';
+import { GHOST_MANIFEST_FILE, validateGhostManifest } from '../../../shared/ghost';
 import type { WatcherHostEventsHandler } from '../../watcher-host/WatcherHostClient';
+import { GHOST_SIGNATURE_FILE } from '../ghostSignature';
 import {
   MekaDevPluginManager,
   mekaDevRuntimeId,
@@ -347,6 +349,80 @@ describe('MekaDevPluginManager', () => {
 
     expect(installedIds.has(installed.item.runtimeId)).toBe(false);
     expect(await manager.list()).toEqual([]);
+  });
+
+  it('真实打包派生开发身份后仍是合法作者清单，且只改身份字段', async () => {
+    // 回归:派生包曾被写入 **归一化** 清单(v2 的 slots 已被投影成运行时能力字段),
+    // 于是 `validateGhostManifest` 按作者清单拒绝它,从目录加载直接报
+    // 「无法生成独立开发身份:schemaVersion 2 的 slots 必须是数组」。
+    const sourceManifestRaw = {
+      ...manifest(),
+      slots: ['tool', 'panel', 'notify'],
+      panel: { html: 'panel.html' },
+    };
+    await fs.promises.writeFile(
+      path.join(sourceDir, GHOST_MANIFEST_FILE),
+      `${JSON.stringify(sourceManifestRaw, null, 2)}\n`,
+    );
+    await fs.promises.writeFile(path.join(sourceDir, 'main.js'), '// development Plugin');
+    await fs.promises.writeFile(path.join(sourceDir, 'panel.html'), '<!doctype html>');
+
+    const derived: Buffer[] = [];
+    const realDeps: MekaDevPluginManagerDeps = {
+      ...deps,
+      packDirectory: (dir, { outputDir }) =>
+        packMekaDevPluginSource(dir, { outputDir, forbiddenRootDirs: [] }),
+      // 装包入口(inspectDevelopmentPackage → GhostManager.inspect)对 zip 里的
+      // ghost.json 跑的正是 validateGhostManifest,这里用同一道门,不放水。
+      inspectPackage: async (cindyPath) => {
+        const zip = await JSZip.loadAsync(await fs.promises.readFile(cindyPath));
+        const parsed = validateGhostManifest(
+          JSON.parse(await zip.file(GHOST_MANIFEST_FILE)!.async('text')),
+        );
+        if (!parsed.ok) throw new Error(`派生包作者清单非法:${parsed.reason}`);
+        return {
+          manifest: parsed.manifest,
+          trust: {
+            level: 'unverified' as const,
+            publisherSigned: false,
+            publisherVerified: false,
+            reviewed: false,
+          },
+        };
+      },
+      installPackage: vi.fn(async (cindyPath): Promise<InstalledGhost> => {
+        derived.push(await fs.promises.readFile(cindyPath));
+        const zip = await JSZip.loadAsync(await fs.promises.readFile(cindyPath));
+        const parsed = validateGhostManifest(
+          JSON.parse(await zip.file(GHOST_MANIFEST_FILE)!.async('text')),
+        );
+        if (!parsed.ok) throw new Error(`派生包作者清单非法:${parsed.reason}`);
+        installedIds.add(parsed.manifest.id);
+        return {
+          manifest: parsed.manifest,
+          dir: path.join(workDir, 'installed', parsed.manifest.id),
+          enabled: true,
+          approval: { state: 'legacy-unapproved' },
+        };
+      }),
+    };
+    const manager = new MekaDevPluginManager(realDeps);
+    const runtimeId = mekaDevRuntimeId('demo-plugin');
+    await manager.install(sourceDir, (await manager.inspect(sourceDir)).packageSha256);
+
+    expect(installedIds.has(runtimeId)).toBe(true);
+    const zip = await JSZip.loadAsync(derived[0]!);
+    const written = JSON.parse(await zip.file(GHOST_MANIFEST_FILE)!.async('text')) as Record<
+      string,
+      unknown
+    >;
+    // 只改身份:作者声明的卡槽与能力详单原样保留,不因归一化往返而缩水。
+    expect(written).toEqual({
+      ...sourceManifestRaw,
+      id: runtimeId,
+      command: expect.stringMatching(/^demo-dev-[0-9a-f]{6}$/),
+    });
+    expect(zip.file(GHOST_SIGNATURE_FILE)).toBeNull();
   });
 
   it('rejects a source directory that changes after approval', async () => {
