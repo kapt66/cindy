@@ -3,6 +3,9 @@
  * ---------------------------------------------------------------------------
  * 回归 state/modelVisibilityPrefs.ts 的核心约定:
  *   1. 新配置首次目录初始化；已初始化或既有配置不因目录默认改变
+ *   1b. Meka 谱系一次性补种:没有任何有效初始化清单的既有配置(含被合并后版本写成空清单的)
+ *       按「升级那一刻的目录默认值」冻结一份快照,否则模型选择器整张列表为空
+ *       (上游把没有清单的路线一律当关闭,而既有 Meka 配置全都落在「早就存在」这一支)
  *   2. set override 覆盖目录默认(把默认开的关掉 / 把默认关的打开)
  *   3. set/get 往返 + owner-scoped localStorage 持久化(模拟 app 重启)
  *   4. 按 (agent, providerId, modelId) 分槽:同名模型在 cc / codex 互不覆盖
@@ -834,25 +837,96 @@ describe('compact model defaults upgrade', () => {
   });
 
   it('does not initialize an existing owner even when its override map is empty', async () => {
+    // Main 还没把这份配置定性(harness 默认 profileOrigin 'new' 且 override 表非 null):
+    // 不补种、不初始化,与上游口径一致。
     memStorage.setItem(scopedKey, '{}');
     const prefs = await upgrade();
     expect(prefs.isModelEnabled('pi', 'xd', { id: 'gemini', defaultEnabled: true })).toBe(false);
   });
 
-  it.each(['existing', undefined] as const)('does not infer a new profile from empty model storage (origin: %s)', async (origin) => {
-    ownerClaim.profileOrigin = origin;
+  it('seeds a frozen upgrade snapshot for a pre-merge Meka profile', async () => {
+    // `existing` = Main 定性「数据库早于可见性初始化机制就存在」= Meka 老配置。
+    // 合并前它们的有效可见性是「跟随目录 defaultEnabled」,所以必须补种一份快照,
+    // 否则模型选择器整张列表为空(上游把没有清单的路线一律当关闭)。
+    ownerClaim.profileOrigin = 'existing';
     const prefs = await upgrade();
+    // 快照 = 升级那一刻的目录默认值,即合并前的实际可见集合。
     for (const agent of provider.agents) {
       for (const model of provider.models[agent]!) {
-        expect(prefs.isModelEnabled(agent, 'xd', { ...model, defaultEnabled: true })).toBe(false);
+        expect(prefs.isModelEnabled(agent, 'xd', model)).toBe(model.defaultEnabled !== false);
       }
     }
-    expect(JSON.parse(memStorage.getItem(markerKey)!)).toMatchObject({ eligibleForDefaults: false, defaults: {} });
+    expect(JSON.parse(memStorage.getItem(markerKey)!)).toMatchObject({ eligibleForDefaults: true });
+    // 冻结:补种之后新增的模型不随目录默认开启。
+    await prefs.migrateModelVisibilityDefaults('owner-a', 1, [{
+      ...provider,
+      models: { ...provider.models, pi: [...provider.models.pi!, {
+        ...provider.models.pi![0]!, id: 'brand-new', defaultEnabled: true,
+      }] },
+    }]);
+    expect(prefs.isModelEnabled('pi', 'xd', { id: 'brand-new', defaultEnabled: true })).toBe(false);
+    // 显式开关照旧跨重启保留。
     await prefs.setModelVisibility('pi', 'xd', 'gemini', true);
     vi.resetModules();
     const restarted = await upgrade();
     expect(restarted.isModelEnabled('pi', 'xd', { id: 'gemini' })).toBe(true);
     expect(restarted.isModelEnabled('pi', 'xd', { id: 'fable-5' })).toBe(false);
+  });
+
+  it('mirrors the seeded snapshot to main so IM /model is not left empty', async () => {
+    // main 侧的可见性快照由 `effectiveMap` 从 `initialization.defaults` 派生,而 `load()`
+    // 在本模块把 cache 置非空后不会再走镜像分支 —— 补种只落盘不重推的话,应用内选择器有模型、
+    // IM `/model` 仍按旧(空)快照把所有模型判成不显示(本文件头注承诺两侧同一套可见性)。
+    ownerClaim.profileOrigin = 'existing';
+    await upgrade();
+    // 快照非空且带上补种出来的逐模型可见性:目录里 pi 的 gemini 默认开、fable-5 默认关,
+    // 补种后 IM `/model` 拿到的就是这份(合并前的实际可见集合)。
+    expect(syncModelVisibility).toHaveBeenLastCalledWith('owner-a', 1,
+      expect.objectContaining({ 'pi:xd:gemini': true, 'pi:xd:fable-5': false }),
+      expect.anything());
+  });
+
+  it('keeps unknown profile provenance fail-closed (no upgrade seed)', async () => {
+    // profileOrigin 缺失 = 旧 Main / preload 不提供定性。宁可维持上游的「未知路线关闭」,
+    // 也不给一个无法归属的配置补种 —— 本仓 Main 与 renderer 同版本发布,该分支实际不可达。
+    ownerClaim = { ...ownerClaim, profileOrigin: undefined };
+    const prefs = await upgrade();
+    expect(prefs.isModelEnabled('pi', 'xd', { id: 'gemini', defaultEnabled: true })).toBe(false);
+    expect(memStorage.getItem('xdt:modelVisibilityPrefs:v1.meka-upgrade-seed.v1.owner.owner-a')).toBeNull();
+  });
+
+  it('repairs a profile the merged build already recorded with an empty initialization', async () => {
+    // 合并后的版本已经跑过一遍时写下的空清单(eligibleForDefaults:false + 空 defaults +
+    // 已记录 scopes)。空清单与「没有清单」在读取侧等价,都会被解析成关闭,必须一起补种。
+    ownerClaim.profileOrigin = 'existing';
+    memStorage.setItem(markerKey, JSON.stringify({
+      eligibleForDefaults: false,
+      defaults: {},
+      scopes: [JSON.stringify(['xd', 'pi'])],
+      followCatalogKeys: [],
+    }));
+    memStorage.setItem(scopedKey, JSON.stringify({ 'pi:xd:fable-5': true }));
+    const prefs = await upgrade();
+    expect(prefs.isModelEnabled('pi', 'xd', { id: 'gemini', defaultEnabled: true })).toBe(true);
+    // 显式 override 仍然最高优先:用户自己打开的冷门版本不会被补种覆盖掉。
+    expect(prefs.isModelEnabled('pi', 'xd', { id: 'fable-5', defaultEnabled: false })).toBe(true);
+  });
+
+  it('keeps restore-default routes following the catalog while seeding the rest', async () => {
+    ownerClaim.profileOrigin = 'existing';
+    memStorage.setItem(markerKey, JSON.stringify({
+      eligibleForDefaults: false,
+      defaults: {},
+      scopes: [JSON.stringify(['xd', 'pi'])],
+      followCatalogKeys: ['pi:xd:gemini'],
+    }));
+    const prefs = await upgrade();
+    // 具名「恢复推荐」路线继续动态跟随目录默认值(补种不参与判定)。
+    expect(prefs.isModelEnabled('pi', 'xd', { id: 'gemini', defaultEnabled: true })).toBe(true);
+    expect(prefs.isModelEnabled('pi', 'xd', { id: 'gemini', defaultEnabled: false })).toBe(false);
+    // 其余路线按补种快照:目录默认开的可见,目录默认关的仍关。
+    expect(prefs.isModelEnabled('pi', 'xd', { id: 'fable-5-1', defaultEnabled: true })).toBe(true);
+    expect(prefs.isModelEnabled('pi', 'xd', { id: 'fable-5', defaultEnabled: false })).toBe(false);
   });
 
   it('waits for Main profile creation before writing migration artifacts or consuming defaults', async () => {

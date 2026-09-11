@@ -48,6 +48,26 @@ const INITIALIZATION_KEY_PREFIX = `${LEGACY_STORAGE_KEY}.initialization.owner`;
 const DEFAULTS_MIGRATION_KEY_PREFIX = `${LEGACY_STORAGE_KEY}.defaults-migration.v1.owner`;
 const MIGRATION_COMPLETE_KEY_PREFIX = `${LEGACY_STORAGE_KEY}.migration-complete.owner`;
 const LOCAL_ADOPTION_KEY_PREFIX = `${LEGACY_STORAGE_KEY}.local-adoption.owner`;
+/**
+ * Meka 谱系一次性补种标记(2026 上游同步,见 `migrateModelVisibilityDefaults`)。
+ *
+ * 合并前 Meka 的可见性口径是「显式 override 优先,否则跟随当前目录的 `defaultEnabled`」
+ * —— 老用户不需要任何初始化记录就能看到模型。上游 2026-09-05 起逐版引入的
+ * 「初始化清单」机制把没有清单的路线一律当作**关闭**(见本文件 `isModelEnabled`),
+ * 而该清单只发给 Main 判定为 `profileOrigin === 'new'` 的全新配置。
+ *
+ * Meka 之所以被整群命中,是**机制的到达时间**而非库名前缀:`ownerDatabasePath` 用同一个
+ * `dbFilePrefix` 拼出路径再查同名文件,前缀两端互相抵消,上游同形态的老配置同样会被判成
+ * `existing`。真正的原因是 Meka 谱系在本轮同步之前完全没有这套机制
+ * (`eligibleForDefaults` / `INITIALIZATION_KEY_PREFIX` / `profileOrigin` 在合并前的
+ * `meka/main` 中出现 0 次),**没有任何既有 Meka 配置可能持有清单** ⇒ 整个存量用户群
+ * 同时落到「无清单、也没有任何显式 override」⇒ 模型选择器整张列表为空。
+ *
+ * 这个标记把「升级那一刻的有效可见性」冻结一次(与目录 `defaultEnabled !== false` 逐条一致,
+ * 也就是合并前的实际可见集合),之后不再随目录变化 —— 与上游「新用户初始化一次」同一语义,
+ * 只是把 Meka 老用户也纳入这次初始化。
+ */
+const MEKA_UPGRADE_SEED_KEY_PREFIX = `${LEGACY_STORAGE_KEY}.meka-upgrade-seed.v1.owner`;
 const LOCAL_OWNER_ID = 'local-v1';
 
 /** override 表:key=`${agent}:${providerId}:${modelId}` → 用户显式设定的可见性。 */
@@ -492,10 +512,31 @@ export async function setModelVisibilityOwner(
 }
 
 /**
+ * 这份配置是不是在「模型可见性初始化清单」机制到达本仓之前就存在(Main 侧的定性)。
+ *
+ * Main 按该 owner 的库文件与迁移标记是否存在给出 `profileOrigin`
+ * (见 main/localDb/modelDefaultsProfile.ts;与库名前缀无关,拼路径与查文件用同一个
+ * `dbFilePrefix`):
+ *   - `existing` / `adopted-local` = 早就存在的配置 —— Meka 谱系从来没有过这套机制,
+ *     所以**全部**既有 Meka 配置都落在这两支;
+ *   - `new` = Main 亲手新建的配置(走既有初始化,不需要补种);
+ *   - `pending` = 还没定性 —— 等它,不要猜。
+ *
+ * 归属或代次对不上(切账号 / 换代)一律不补种:补种是给「已经确定的这份配置」做的一次性迁移。
+ */
+function profilePrecedesVisibilityInitialization(ownerId: string, ownerGeneration: number): boolean {
+  const claim = window.electronAPI?.maker?.claimLegacyModelVisibilityOwner?.();
+  if (claim?.dataOwnerId !== ownerId || claim.ownerGeneration !== ownerGeneration) return false;
+  return claim.profileOrigin === 'existing' || claim.profileOrigin === 'adopted-local';
+}
+
+/**
  * Initialize a new profile's first nonempty provider/agent catalogs once. Existing profiles
  * keep their explicit switches; history/favorites never grant permission to enable a model.
  * Missing routes remain off. Baselines are separate from user overrides so customization
  * and Restore defaults retain their meaning. No remote catalog enters this path.
+ *
+ * 例外:Meka 谱系的老配置在 2026 上游同步时补种一次(见 MEKA_UPGRADE_SEED_KEY_PREFIX)。
  */
 export async function migrateModelVisibilityDefaults(
   ownerId: string | null,
@@ -510,7 +551,37 @@ export async function migrateModelVisibilityDefaults(
     try {
       const stored = readInitialization(ownerId);
       // Re-read other windows' completed scopes and overrides before adding anything.
-      const state = stored ?? initialization ?? emptyInitialization();
+      const base = stored ?? initialization ?? emptyInitialization();
+      /**
+       * Meka 谱系一次性补种(2026 上游同步,见 `MEKA_UPGRADE_SEED_KEY_PREFIX`)。
+       *
+       * 命中条件:
+       *   1. Main 把这份配置定性为「早就存在」(`existing` / `adopted-local`)—— Meka 的既有
+       *      配置全部落这两支(与库名前缀无关,见 `profilePrecedesVisibilityInitialization`),
+       *      拿不到新用户资格;
+       *   2. 这份配置从来没有过有效的初始化清单:资格位不为真、默认值表为空。两种真实状态
+       *      都算:合并前就在用的配置(从没写过记录),以及已经被合并后版本跑过一遍、被写成
+       *      `{eligibleForDefaults:false, defaults:{}, scopes:[...]}` 的配置 —— 空清单与
+       *      「没有清单」在读取侧等价(都解析成关闭),必须一起修。
+       *
+       * 不命中:全新配置(`new`,走既有初始化)、`pending`(等 Main 定性)、已经有非空默认值
+       * 表的配置(含 `does not grant fresh defaults to old initialization records without
+       * eligibility` 覆盖的历史记录)、以及已经补种过的配置(标记)。`followCatalogKeys`
+       * 不参与判定:它只管具名路线的动态跟随(`isModelEnabled` 里优先于 defaults),补种
+       * 既不会覆盖它也不会关掉它。
+       *
+       * 补种只影响 defaults 基线,**显式 override 永远优先**,所以用户自己关掉的模型不会
+       * 被重新打开。
+       */
+      const seedKey = `${MEKA_UPGRADE_SEED_KEY_PREFIX}.${encodeURIComponent(ownerId)}`;
+      const needsMekaSeed = window.localStorage.getItem(seedKey) === null
+        && base.eligibleForDefaults !== true
+        && Object.keys(base.defaults).length === 0
+        && profilePrecedesVisibilityInitialization(ownerId, ownerGeneration);
+      const state: InitializationState = needsMekaSeed
+        // scopes 一并清空:上面第 2 类配置已经把这些来源/引擎标成「完成」,不清就永远不会补种子。
+        ? { ...base, eligibleForDefaults: true, defaults: {}, scopes: [] }
+        : base;
       const next: InitializationState = { ...state, defaults: { ...state.defaults }, scopes: [...state.scopes], followCatalogKeys: [...state.followCatalogKeys] };
       const map = readStoredMap(window.localStorage.getItem(ownerStorageKey(ownerId)));
       const aliases = { ...map };
@@ -543,7 +614,22 @@ export async function migrateModelVisibilityDefaults(
         return true;
       }
       if (!saveInitialization(next)) return false;
+      // 只有真的观察到了目录(至少一个 scope)才落补种标记:目录还没到就落标记,等于把这次
+      // 补种永久作废(与既有「目录到达前退出不消耗资格」同一条)。
+      if (needsMekaSeed && next.scopes.length > 0) {
+        try {
+          window.localStorage.setItem(seedKey, '1');
+        } catch (error) {
+          // 标记写失败 = 下次再补种一次;defaults 已经写好,重放是幂等的。
+          log.warn('model visibility upgrade seed marker write failed', error);
+        }
+      }
       cache = aliases;
+      // 初始化清单变了就必须重新镜像给 main:main 侧的可见性快照由 `effectiveMap` 从
+      // `initialization.defaults` 派生,而 `load()` 在本函数把 cache 置非空后不会再走镜像分支
+      // ——只落盘不重推,IM `/model` 会继续按旧(空)快照把所有模型判成不显示,与应用内列表
+      // 不一致(本文件头注承诺两侧同一套可见性)。补种与首次初始化都要覆盖。
+      mirrorToMain(cache ?? {});
       return true;
     } catch (error) {
       log.warn('model visibility initialization deferred', error);

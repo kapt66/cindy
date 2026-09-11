@@ -3147,6 +3147,24 @@ SAGA2 战斗配置的 `legacy_module_export_json` 成功回执现在由 Meka Uni
 - 其余按能力组修复的合并断链（session binding registry、edition 持久化 key、
   `workspaceKind: 'meka'` 的上游 tx 类型、`BROKER_FORBIDDEN` 错误联合、
   Meka 开发插件包接上游 `buf` 契约、登录页两输入框显式 key 防 DOM 复用等）见本期同步报告。
+- **模型可见性整张清空（用户报告的产品回归，属上游覆盖 Meka 分歧）**：上游 2026-09-05
+  `053b000be7` / 09-07 `b91b78c507` / 09-10 `54bbf3abca` 把 `isModelEnabled` 改成
+  「没有初始化清单的路线一律不显示」，而该清单只发给 Main 判定的全新配置。Meka 谱系在
+  本轮同步之前完全没有这套机制（`eligibleForDefaults` / `INITIALIZATION_KEY_PREFIX` /
+  `profileOrigin` 在合并前的 `meka/main` 中出现 0 次），**没有任何既有 Meka 配置可能持有
+  清单**，于是整个存量用户群一起落到「无清单」分支 ⇒ **既没有清单也没有任何显式 override
+  ⇒ 新建任务草稿的模型选择器整张为空**（设置 → 模型供应商页不受影响：行是否渲染只看准入轴）。
+  这与库名前缀无关：`ownerDatabasePath` 两端用同一个 `dbFilePrefix`，上游同形态的老配置
+  同样被判成 `existing`；差异只在机制的到达时间。合并前 Meka 的判定是
+  `override ?? defaultEnabled !== false`，不依赖清单。
+  修复：`migrateModelVisibilityDefaults` 增加一次性补种 —— 对 `existing`/`adopted-local`
+  且清单为空(含被合并后版本写成空清单)的配置，按首次观察到的目录冻结一份
+  `defaultEnabled !== false` 基线；显式 override 优先级、`followCatalogKeys` 语义与
+  「新增模型不自动开启」的冻结语义全部保持。同一根因的第二个受害面一并修：main 侧快照由
+  `initialization.defaults` 派生且 `load()` 置 cache 后不再镜像，补种只落盘会让 IM
+  `/model` 继续按空快照判成不显示，故在清单写入成功后重推一次。详见
+  [`2026-09-origin-main-to-meka-main.md`](./2026-09-origin-main-to-meka-main.md) §4.6，
+  以及 `docs/dev-rules/configuration-and-overrides.md` §2 的 Meka 谱系条款。
 
 **保留的 Meka 分歧**（本轮逐条核对仍在，均写在本期同步报告）：Meka 原生项目会话与
 角色／正式事项（schema 列、`'meka'` workspace kind、scheduler 域排除、IM `/sessions`

@@ -53,6 +53,30 @@ token）与 [`engineering-conventions.md`](engineering-conventions.md)（i18n）
   允许这些路线重新跟随目录默认值；这不授权未来新增路线自动开启。
 - 桌面、IM 与远端模型列表使用同一有效开关；旧客户端通过普通布尔开关快照获得结果。
 
+**Meka 谱系条款（2026-09-10 上游同步定稿）**：初始化资格由 Main 按**该 owner 的库文件 /
+迁移标记是否存在**判定（库已在 ⇒ `existing`），只有判成 `new` 的配置才会拿到初始化清单。
+Meka 谱系在本轮同步之前完全没有这套机制（`eligibleForDefaults` / `INITIALIZATION_KEY_PREFIX`
+/ `profileOrigin` 在合并前的 `meka/main` 中出现 0 次），所以**没有任何既有 Meka 配置可能持有
+清单**，整个存量用户群都会落到「无清单」分支。注意这与库名前缀无关：`ownerDatabasePath`
+两端使用同一个 `dbFilePrefix`，上游同形态的老配置同样被判成 `existing`。合并前 Meka 的
+可见性口径是「显式 override 优先，否则跟随目录 `defaultEnabled`」，老用户不需要任何初始化
+记录就能看到模型。
+
+- 因此 `state/modelVisibilityPrefs.ts` 对「没有任何有效初始化清单」的老配置(资格位不为真
+  且 `defaults` 为空，含被该机制跑过一遍写下的空清单)**补种一次快照**：按首次观察到的
+  目录冻结 `defaultEnabled !== false` 的基线，并落下一次性标记。这是上一条「新用户首次初始化」
+  在 Meka 谱系上的等价物，不是新的可见性语义。
+- 补种不得跨越：显式 override 永远最高优先；「恢复默认」的具名路线(`followCatalogKeys`)
+  继续动态跟随目录；补种后新增模型不随目录默认开启；`pending`(Main 尚未定性)不得猜测，
+  定性缺失时失败关闭。
+- 该机制只存在于客户端 renderer；Server 目录不下发也不覆盖它。调整目录 `defaultEnabled` 时
+  按 `docs/dev-rules/model-catalog-maintenance.md` 先确认实际下发目录与数据归属 ——
+  已补种的老配置**不会**因目录改动而跟随，只有新用户与「恢复默认」路线会。
+- 初始化清单一旦变化必须**重新镜像给 main**：main 侧快照由 `effectiveMap` 从
+  `initialization.defaults` 派生，而 `load()` 在 cache 置非空后不再触发镜像。补种/首次
+  初始化只落盘不重推，会让应用内列表与 IM `/model` 卡片不一致（后者继续按空快照把模型
+  判成不显示）。
+
 ## 3. 默认值演进与迁移
 
 - 默认值变化时，分别说明新用户、未自定义老用户、已自定义老用户的行为。

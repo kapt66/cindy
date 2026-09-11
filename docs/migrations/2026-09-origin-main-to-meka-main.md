@@ -188,6 +188,84 @@
 该工具的判定逻辑有单测覆盖（`scripts/__tests__/audit-merge-resolution.test.mjs`，
 23 条，含在临时仓库里真实跑 merge 的端到端用例），已登记进 `pnpm test:runner`。
 
+### 4.6 Meka 老用户模型可见性被整张清空（P0，静默；属 (b) 覆盖而非 (a) 解错）
+
+**症状**：合并后「新建任务」草稿的模型选择器**一条模型都不显示**，而「设置 → 模型供应商」
+页照常列出全部模型与开关。数据、凭据、供应商连接全部正常。
+
+**归因**：上游 2026-09-05 `053b000be7`、09-07 `b91b78c507`、09-10 `54bbf3abca` 三个提交
+引入「模型可见性初始化清单」机制（规则见 `docs/dev-rules/configuration-and-overrides.md`
+§2「模型可见性例外」）。上游把这两者写成**上下位关系**，客户端新逻辑覆盖了 Meka 旧语义：
+
+| | 合并前 Meka | 合并后（= 上游） |
+| --- | --- | --- |
+| `isModelEnabled` 判定 | `isModelVisible(override, defaultEnabled)` = `override ?? defaultEnabled !== false` | 显式 override → `followCatalogKeys` 跟随目录 → **初始化清单 `defaults[key] ?? false`** → 兜底 `mayInitializeDefaults ? defaultEnabled : false` |
+| 无记录路线的默认 | 可见（跟随目录） | **不可见**（除非拿到新用户初始化资格） |
+
+初始化清单只由 `migrateModelVisibilityDefaults` 写入，而它只对 Main 判定为
+`profileOrigin === 'new'` 的配置开放（`readOwnerState` → `claimLegacyModelVisibilityOwner`）。
+`profileOrigin` 由 `readModelDefaultsProfileOrigin(ownerDatabasePath(userData, owner))` 按
+**该 owner 的库文件 / 迁移标记是否存在**定性：库已在 ⇒ `existing`。
+
+**Meka 之所以被整群命中，不是库名前缀的差异**：`ownerDatabasePath` 用
+`BRAND_IDENTITY.dbFilePrefix` 拼出路径再查**同名**文件，前缀在「拼」与「查」两端互相抵消，
+上游同形态的老配置同样会被判成 `existing`（`cindy-meka` 与 `cindy` 在这里语义等价）。
+真正的差异是**机制的到达时间**：
+
+- 上游自 2026-09-05 起逐版引入该机制（`053b000be7` → `b91b78c507` → `54bbf3abca`），
+  期间新建的配置走 `new` 初始化、持有清单；上游只有「9/5 之前就存在且没有任何历史证据」
+  的老配置会落到无清单分支。
+- 而 Meka 谱系在本轮同步之前**完全没有这套机制**：`eligibleForDefaults`、
+  `INITIALIZATION_KEY_PREFIX`、`profileOrigin`、`followCatalogKeys` 在合并前的 `meka/main`
+  中出现次数均为 **0**（`git grep -c` 实测），且 Meka 自 merge-base 起从未改过该文件
+  （`git log 625a7d714..5917437271 -- <path>` 为空）。
+
+因此**没有任何一个既有 Meka 配置可能持有初始化记录**，整个存量用户群同时落到
+「无清单 ⇒ 该配置下所有模型解析为『不显示』」。
+
+草稿选择器（`unifiedModelEntries` 的 `isVisible` 谓词 → `isModelEnabled`）因此整张空；
+设置页不受影响，因为 `UnifiedModelList` 的**行是否渲染**只看 `isAgentSelectableModel`
+与停用轴，显示轴只决定开关态与「未启用」沉底区（上游「保存过的选择不出行」契约）。
+
+**三方对比证据**：工作区的 `apps/desktop/src/renderer/state/modelVisibilityPrefs.ts`
+与上游 `4f03ea9a7b` **逐字节相同**（`git diff 4f03ea9a7b -- <path>` 为空）⇒ 上游实现被
+完整接受。该语义在 `b91b78c507` 时仍是旧的 `isModelVisible(...)`，到 `54bbf3abca` 才改成
+严格清单语义；两个提交都只存在于上游一侧（`merge-base 625a7d714` 之前不存在）。
+故这不是「合并解错」，而是**有意的 Meka 分歧被上游覆盖**：上游改的是决策函数的语义，
+而 Meka 的产品前提（既有配置也必须看得见模型）没有被表达出来。
+
+**修复**（`modelVisibilityPrefs.ts`，最小改动、只加不删）：给 Meka 谱系补一次
+一次性快照初始化。`migrateModelVisibilityDefaults` 的锁内新增：当
+① 该 owner 的补种标记不存在，② 现有清单资格位不为真且 `defaults` 为空，
+③ Main 把这份配置定性为 `existing` / `adopted-local` 时，
+按「同一次调用观察到的目录」写一份 `defaults[key] = defaultEnabled !== false` 基线
+（= 合并前的实际可见集合），并落下补种标记；`pending`（Main 还没定性）一律不猜、
+等它，`new` 走既有初始化，`profileOrigin` 缺失则失败关闭（保持上游「未知路线关闭」）。
+
+不变量保持：显式 override 仍最高优先（用户关掉的不会被重新打开）；`followCatalogKeys`
+（「恢复推荐」）不参与判定也不被改写；补种后新增模型不随目录默认开启（冻结语义与上游
+新用户一致）；补种标记只在真的观察到目录后落盘，目录未到时重放幂等。
+条件 ② 同时覆盖「已经被合并后版本跑过一遍、写成 `{eligibleForDefaults:false,
+defaults:{}, scopes:[...]}`」的配置 —— 空清单与「没有清单」在读取侧等价，必须一起修。
+
+**同一根因的第二个受害面（一并修）**：main 侧的可见性快照由 `effectiveMap` 从
+`initialization.defaults` 派生（`model-visibility-mirror.ts` 在 `strict` 模式下对快照外的
+任何 key 返回 `false`），而 `mirrorToMain` 只在 `setModelVisibilityOwner` 与 `persist` 里
+触发、`load()` 在本模块把 `cache` 置非空后不再走镜像分支。补种发生在目录到达之后，因此
+「只落盘、不重推」会让应用内选择器已有模型而 **IM `/model` 卡片仍按旧空快照把所有模型判成
+不显示**，违反本文件头注承诺的「两侧同一套可见性」。故在 `saveInitialization` 成功后
+补一次 `mirrorToMain(cache ?? {})`；这同时覆盖上游「新配置首次初始化」路径（同样只落盘
+不重推，属上游原有缺口）。新增用例 `mirrors the seeded snapshot to main so IM /model is
+not left empty` 锁定该行为。
+
+**同时修正的测试口径**：`modelVisibilityPrefs.test.ts` 里两条用例断言的是上游
+「`existing` 配置一律不出模型」口径（`does not initialize an existing owner…`、
+`does not infer a new profile from empty model storage`）。它们**不是被弱化**，而是
+按新的、经用户裁决的 Meka 事实改写：`existing` + 空清单现在必须补种（新增
+`seeds a frozen upgrade snapshot for a pre-merge Meka profile`），并为「已补种后冻结」
+「被合并后版本写过空清单后的修复」「`followCatalogKeys` 路线仍跟随目录」
+「`pending` / 定性缺失 fail-closed」各补一条用例。
+
 ## 5. 保留的 Meka 分歧（有意为之，非缺陷）
 
 | 分歧 | 保护的不变量 |
@@ -298,6 +376,8 @@
 | 沙箱 migration 实跑 | `migration_history` 查询 | 已应用到 `0107_schedule-model-harness.sql` |
 | 手工 db tier | 112 文件（同 runner include/exclude 集合） | 112 passed / 1331 passed + 6 skipped |
 | hook-control 定向 | `vitest run src/main/hook-control` | 22 文件 / 627 通过 |
+| 模型可见性（§4.6） | `vitest run src/renderer/__tests__/modelVisibilityPrefs.test.ts` | 64 通过 / 0 失败 |
+| 模型选择器相关（§4.6） | `vitest run src/renderer/__tests__/{unifiedModelList,unifiedModelPanelRendering,modelSelectorProviderGroups,gatewayModelArrival,localCatalogSnapshot,modelSelectorTriggerVariant}` | 6 文件 / 256 通过 |
 | i18n | `pnpm check:i18n` | ✅ 五语 9946 key 全一致 |
 | 术语表 | `pnpm check:i18n-glossary` | ✅ 无新增违规 |
 | 品牌术语 | `pnpm check:brand-terminology` | ✅ PASS |
