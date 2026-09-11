@@ -10,8 +10,14 @@ import fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { BRAND_IDENTITY } from '@cindy/maker-shared/brand-identity';
+
 import { createKeychainMarkerIo } from '../devKeychainMarkerIo';
-import { KEYCHAIN_IDENTITY_MARKER_FILE } from '../devKeychainName';
+import {
+  ISOLATED_AUTH_LAUNCH_PROOF_FILE,
+  KEYCHAIN_IDENTITY_MARKER_FILE,
+  resolveDevKeychainDecision,
+} from '../devKeychainName';
 
 
 // Windows 上创建 symlink 需要管理员或开发者模式;拿不到权限时(EPERM)按仓内
@@ -177,5 +183,31 @@ describe('createKeychainMarkerIo', () => {
     expect(io.profileHasData()).toBe(false);
     fs.writeFileSync(join(profileDir, 'config.json'), '{}');
     expect(io.profileHasData()).toBe(true);
+  });
+
+  it('proof-only isolated-auth profile 仍认领 Meka dev 身份', () => {
+    fs.writeFileSync(join(profileDir, ISOLATED_AUTH_LAUNCH_PROOF_FILE), '{}\n');
+    fs.writeFileSync(
+      join(profileDir, `${ISOLATED_AUTH_LAUNCH_PROOF_FILE}.123-${'b'.repeat(64)}.tmp`),
+      '{}\n',
+    );
+    const io = makeIo();
+
+    expect(io.profileHasData()).toBe(false);
+    // Meka 分歧(有意保留):新认领写的是 Meka 的 dev 条目名(CindyMekaDev),不是上游
+    // 的 CindyDev;旧 CindyDev 标记只作为**兼容输入**被读成同一 dev 身份(见
+    // devKeychainName.ts 的 LEGACY_DEV_NAME 归一)。
+    expect(
+      resolveDevKeychainDecision({
+        isPackaged: false,
+        isolated: true,
+        hasDirOverride: true,
+        io,
+      }),
+    ).toEqual({ kind: 'rename', appName: BRAND_IDENTITY.executableNameByRegion.dev });
+    expect(io.readMarker()).toEqual({
+      kind: 'present',
+      value: `${BRAND_IDENTITY.executableNameByRegion.dev}\n`,
+    });
   });
 });

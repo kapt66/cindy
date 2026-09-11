@@ -50,7 +50,7 @@ export class GhostRevealSlot {
 
   handleRequest(ghostId: string, payload: unknown): GhostPipeRevealResult {
     const ghost = this.deps.getGhost(ghostId);
-    if (!ghost?.enabled || !ghost.manifest.slots.includes('reveal')) {
+    if (!ghost?.enabled || ghost.manifest.reveal !== true) {
       return fail('PERMISSION_DENIED', '插件未申请文件定位权限(reveal 槽),或当前未启用');
     }
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {

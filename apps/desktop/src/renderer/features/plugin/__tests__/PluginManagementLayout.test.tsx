@@ -6,7 +6,7 @@
  */
 
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter, useLocation } from 'react-router-dom';
+import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('react-i18next', () => ({
@@ -55,6 +55,18 @@ function MainViewNavigation() {
         Open plugin management
       </button>
       <CurrentPath />
+    </>
+  );
+}
+
+function ActiveMainViewNavigationProbe() {
+  const navigate = useNavigate();
+  return (
+    <>
+      <ActiveMainView />
+      <button type="button" onClick={() => navigate('/apps/workspace')}>
+        Open main view
+      </button>
     </>
   );
 }
@@ -167,6 +179,20 @@ describe('PluginManagementLayout', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open plugin management' }));
     await waitFor(() => {
       expect(screen.getByTestId('current-path').textContent).toBe('/plugins');
+    });
+  });
+
+  it('clears the sticky Plugin active state when entering a plugin main view', async () => {
+    render(
+      <MemoryRouter initialEntries={['/plugins']}>
+        <ActiveMainViewNavigationProbe />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId('active-main-view').textContent).toBe('plugins');
+    fireEvent.click(screen.getByRole('button', { name: 'Open main view' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('active-main-view').textContent).toBe('');
     });
   });
 

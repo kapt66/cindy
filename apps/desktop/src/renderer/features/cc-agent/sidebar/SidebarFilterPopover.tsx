@@ -3,7 +3,7 @@
  * ---------------------------------------------------------------------------
  * 菜单分四段语义（侧边栏重设计,docs/product-rules/sidebar-redesign-plan.md §3）：
  *   - 分组：独立复选——按项目分组 / 按设备分组(仅远程连接时出现)/ 对话归为一组
- *   - 排序：任务排序（recency / priority）+ 按项目分组时的项目顺序
+ *   - 排序：任务排序（recency / created / priority）+ 按项目分组时的项目顺序
  *     （activity / custom）
  *   - 筛选：一级只占一行，右侧显示摘要（「无」/「N 项生效」），展开二级子菜单
  *     承载 Status / Project / Agent / Last activity 四维度 + 重置筛选
@@ -56,6 +56,14 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { projectOrderWriteLedger, resolveDisplayedProjectOrder } from '@cindy/maker-shared/project-order-sync';
+import { useEffectiveSelectedMachineId } from '@/features/device-link/useMachineSwitcher';
+import {
+  controllerManualOrderForDevice,
+  projectOrderWriteScopeForSelection,
+  useLocalHostProjectOrder,
+  useRemoteHostProjectOrders,
+} from '../hooks/useRemoteHostProjectOrders';
 import type { ProjectNode as ProjectNodeData } from '../lib/projectGrouping';
 import { getRemoteProjectMachineIdentity } from '../lib/remoteProjectIdentity';
 import type {
@@ -118,7 +126,8 @@ const LAST_ACTIVITY_OPTIONS: ReadonlyArray<Option<FilterLastActivity>> = [
 
 /** 「最早优先」(旧 time)与旧「手动排序」都已从任务排序里拿掉。 */
 const SORT_BY_OPTIONS: ReadonlyArray<Option<FilterSortBy>> = [
-  { value: 'recency', labelKey: 'ccAgent.sidebar.filterSortBy.recency' },
+  { value: 'recency', labelKey: 'ccAgent.sidebar.filterSortBy.activity' },
+  { value: 'created', labelKey: 'ccAgent.sidebar.filterSortBy.created' },
   {
     value: 'priority',
     labelKey: 'ccAgent.sidebar.filterSortBy.priority',
@@ -343,6 +352,10 @@ export function SidebarFilterPopover({
 }: SidebarFilterPopoverProps) {
   const { t } = useTranslation();
   const localPlatform = window.electronAPI.platform;
+  const selectedMachineForOrder = useEffectiveSelectedMachineId();
+  const localHostProjectOrder = useLocalHostProjectOrder();
+  const remoteHostProjectOrders = useRemoteHostProjectOrders(selectedMachineForOrder);
+  const projectOrderScope = projectOrderWriteScopeForSelection(selectedMachineForOrder);
   // 受控光标模式 = 调用方传了 contextMenuPos 这个 prop(值为 null 表示"当前关闭",
   // 仍算受控);段头按钮模式则完全不传。用 !== undefined 而非真值判断。
   const isContextMode = contextMenuPos !== undefined;
@@ -359,6 +372,7 @@ export function SidebarFilterPopover({
     groupDevice,
     sortBy,
     projectOrder,
+    manualProjectOrder,
     setStatus,
     toggleProject,
     setProjectsAll,
@@ -368,7 +382,7 @@ export function SidebarFilterPopover({
     setGroupDialogue,
     setGroupDevice,
     setSortBy,
-    setProjectOrder,
+    setProjectOrder: setViewerProjectOrder,
     resetContentFilters,
   } = filter;
 
@@ -387,6 +401,76 @@ export function SidebarFilterPopover({
       : 'ccAgent.sidebar.filterGroupBy.flat',
   );
   const sortByValue = optionLabel(SORT_BY_OPTIONS, sortBy, t);
+  const hostSnapshotForWrite = projectOrderScope.kind === 'host' && projectOrderScope.deviceId === null
+    ? localHostProjectOrder.snapshot
+    : projectOrderScope.kind === 'host' && projectOrderScope.deviceId
+      ? remoteHostProjectOrders.orders.get(projectOrderScope.deviceId)
+      : undefined;
+  const scopedProjectOrder: FilterProjectOrder = resolveDisplayedProjectOrder(
+    projectOrderScope,
+    hostSnapshotForWrite,
+    { manualProjectOrder, projectOrder },
+    projectOrderScope.kind === 'host' && projectOrderScope.deviceId === null
+      ? localHostProjectOrder.snapshot.manualProjectOrder
+      : projectOrderScope.kind === 'host' && projectOrderScope.deviceId
+        ? controllerManualOrderForDevice(
+          projectOrderScope.deviceId,
+          hostSnapshotForWrite,
+        ) ?? []
+        : [],
+  ).projectOrder;
+  const setProjectOrder = (next: FilterProjectOrder) => {
+    if (
+      projectOrderScope.kind === 'viewer'
+      || groupBy !== 'project'
+      || projectOrderWriteLedger(projectOrderScope, hostSnapshotForWrite) === 'viewer'
+    ) {
+      setViewerProjectOrder(next);
+      return;
+    }
+    const hostKeys = projectOrderScope.deviceId === null
+      ? allKnownProjects.map((project) => project.projectKey).filter((key) => key.startsWith('local:'))
+      : allKnownProjects.map((project) => project.projectKey).filter((key) =>
+        key.startsWith(`device:${encodeURIComponent(projectOrderScope.deviceId!)}:`));
+    if (next === 'custom') {
+      if (projectOrderScope.deviceId === null) {
+        void localHostProjectOrder.apply({
+          manualProjectOrder: localHostProjectOrder.snapshot.manualProjectOrder.length > 0
+            ? localHostProjectOrder.snapshot.manualProjectOrder
+            : hostKeys,
+          projectOrder: 'custom',
+        }).then((result) => {
+          if (result.kind === 'unavailable') setViewerProjectOrder('custom');
+        });
+        return;
+      }
+      const current = controllerManualOrderForDevice(
+        projectOrderScope.deviceId,
+        remoteHostProjectOrders.orders.get(projectOrderScope.deviceId),
+      ) ?? hostKeys;
+      void remoteHostProjectOrders.apply(projectOrderScope.deviceId, {
+        manualProjectOrder: current,
+        projectOrder: 'custom',
+      }).then((result) => {
+        if (result.kind === 'unavailable') setViewerProjectOrder('custom');
+      });
+      return;
+    }
+    if (projectOrderScope.deviceId === null) {
+      void localHostProjectOrder.apply({
+        manualProjectOrder: localHostProjectOrder.snapshot.manualProjectOrder,
+        projectOrder: 'activity',
+      });
+      return;
+    }
+    void remoteHostProjectOrders.apply(projectOrderScope.deviceId, {
+      manualProjectOrder: controllerManualOrderForDevice(
+        projectOrderScope.deviceId,
+        remoteHostProjectOrders.orders.get(projectOrderScope.deviceId),
+      ) ?? [],
+      projectOrder: 'activity',
+    });
+  };
   const projectValue =
     projects === 'all'
       ? t('ccAgent.sidebar.filterAllText')
@@ -519,7 +603,21 @@ export function SidebarFilterPopover({
           <div className="px-2 py-1.5 text-xs font-medium text-[var(--cmd-palette-item-meta)]">
             {t('ccAgent.sidebar.filterTaskSortHeading')}
           </div>
-          {SORT_BY_OPTIONS.map((option) => (
+          <MenuSubRow
+            label={t('ccAgent.sidebar.filterSortBy.recency')}
+            value={sortBy === 'priority' ? '' : sortByValue}
+            valueEmphasized={sortBy !== 'priority'}
+          >
+            {SORT_BY_OPTIONS.filter((option) => option.value !== 'priority').map((option) => (
+              <SelectMenuItem
+                key={option.value}
+                label={t(option.labelKey)}
+                selected={sortBy === option.value}
+                onSelect={() => setSortBy(option.value)}
+              />
+            ))}
+          </MenuSubRow>
+          {SORT_BY_OPTIONS.filter((option) => option.value === 'priority').map((option) => (
             <SelectMenuItem
               key={option.value}
               label={t(option.labelKey)}
@@ -539,7 +637,7 @@ export function SidebarFilterPopover({
                 <SelectMenuItem
                   key={option.value}
                   label={t(option.labelKey)}
-                  selected={projectOrder === option.value}
+                  selected={scopedProjectOrder === option.value}
                   onSelect={() => setProjectOrder(option.value)}
                   tip={option.tipKey ? t(option.tipKey) : undefined}
                 />

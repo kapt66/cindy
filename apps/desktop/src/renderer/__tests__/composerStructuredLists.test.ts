@@ -1816,4 +1816,37 @@ describe('composer structured list serialization', () => {
       description: 'Open issue',
     }]);
   });
+
+  it('serializes a Bot mention as a structured delegation target, not a filesystem mention', () => {
+    const editor = makeEditor({
+      type: 'doc',
+      content: [{
+        type: 'paragraph',
+        content: [{
+          type: 'mentionChip',
+          attrs: {
+            kind: 'bot',
+            label: 'Dash Bot',
+            path: 'bot-dash-1',
+          },
+        }],
+      }],
+    });
+
+    const serialized = serializeEditorContent(editor);
+    // Bot chip 的 href 是**生成值**(buildBotReferenceHref → 深链主 scheme),不像
+    // plugin-resource / browser-tab 那样透传 attrs.path。Cindy Meka 的主 scheme 是
+    // `cindy-meka://`(解析侧仍接受上游 `cindy://`),所以这里期望主 scheme。
+    const href = 'cindy-meka://bot/bot-dash-1';
+    expect(serialized.text).toBe(`[Dash Bot](${href})`);
+    expect(serialized.mentions).toEqual([]);
+    expect(serialized.agentReferences).toEqual([{
+      kind: 'bot',
+      start: 0,
+      end: serialized.text.length,
+      href,
+      botId: 'bot-dash-1',
+      name: 'Dash Bot',
+    }]);
+  });
 });

@@ -5,7 +5,13 @@ export type AtlassianTokenResult =
   | { ok: true; accessToken: string; accountId: string }
   | {
       ok: false;
-      error: 'NO_CLIENT_CONFIG' | 'NO_ACCOUNT' | 'AUTH_EXPIRED' | 'REFRESH_FAILED' | 'NETWORK';
+      error:
+        | 'NO_CLIENT_CONFIG'
+        | 'NO_ACCOUNT'
+        | 'AUTH_EXPIRED'
+        | 'REFRESH_FAILED'
+        | 'NETWORK'
+        | 'BROKER_FORBIDDEN';
       detail?: string;
     };
 
@@ -43,6 +49,11 @@ function tokenError(result: Exclude<AtlassianTokenResult, { ok: true }>): Formal
   }
   if (result.error === 'AUTH_EXPIRED') {
     return { ok: false, error: 'AUTH_EXPIRED', detail: result.detail };
+  }
+  // 上游新增:授权 broker 拒绝当前身份。这不是瞬时网络失败,重试与重新授权
+  // 都不会改变结果,因此按原样上报,不再折叠成 NETWORK。
+  if (result.error === 'BROKER_FORBIDDEN') {
+    return { ok: false, error: 'BROKER_FORBIDDEN', detail: result.detail };
   }
   return { ok: false, error: 'NETWORK', detail: result.detail };
 }

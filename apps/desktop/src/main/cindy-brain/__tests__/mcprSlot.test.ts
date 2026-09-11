@@ -7,13 +7,13 @@ import { GhostMcprSlot, summarizeMcprPreviewOutput, type McprSlotDeps } from '..
 function mcprGhost(routes = ['other-configs.get']): InstalledGhost {
   return {
     manifest: {
-      schemaVersion: 2,
+      schemaVersion: 3,
       id: 'mcpr-ghost',
       name: 'MCPR Ghost',
       version: '1.0.0',
+      minCindyVersion: '3.0.0',
       kind: 'chip',
       entry: 'main.js',
-      slots: ['mcpr'],
       mcpr: { routes },
     },
     dir: '/fake/mcpr-ghost',

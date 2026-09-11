@@ -3093,6 +3093,69 @@ SAGA2 战斗配置的 `legacy_module_export_json` 成功回执现在由 Meka Uni
 或不是有效 JSON 时，插件调用失败，不得把导出当作完成证据。该业务交接属于 Meka Unity 插件
 适配，不新增 Host 对 SAGA2 的业务特判。
 
+### 11.25 2026-09-10 Cindy 上游同步（origin/main → meka/main）
+
+本轮把 `origin/main@4f03ea9a7b5f6425e517acd91071df6d397c6079` 合并进
+`meka/main@5917437271f29eb97b0a36d828430020e17d7176`（merge-base
+`625a7d714f199cb6770b5d1f556bb1f0322e9fbb`，即上一轮同步的上游来源）。目标侧独有 112 个
+提交，上游侧独有 1383 个，Git 报告 133 个冲突路径，全部已解除。完整能力审计、逐文件
+分类与验证记录见 [`2026-09-origin-main-to-meka-main.md`](./2026-09-origin-main-to-meka-main.md)。
+
+用户裁决的四个方向已落地：
+
+- **D1 协议包归属**：`cindy-protocol` **没有特意处理**，按上游做——移除 submodule
+  （`.gitmodules`、gitlink、`pnpm-workspace.yaml` 的 `cindy-protocol/packages/*`），改用上游
+  仓内 `packages/plugin-protocol`、`packages/slack-hook-protocol`、
+  `packages/device-link-protocol` 与 `packages/design-tokens`。协议包权威来源与修改准入已同步
+  改写为仓内 workspace（`docs/dev-rules/protocol-and-submodules.md`、根 `AGENTS.md`）。
+  全仓已无代码级 `cindy-protocol` 路径引用，`pnpm-lock.yaml` 已按新 workspace 重新生成。
+- **D2 启动／区域策略**：**身份保留**，启动语义同步上游。`BRAND_IDENTITY` 仍为
+  `CindyMeka`／`CindyMekaDev`（cn 与 global 同目录，dev 独立）、主深链 `cindy-meka`、
+  兼容 `xdmaker-meka`/`xdt-maker` 与只解析不注册的 `cindy`、`cdnPrefix`/`dbFilePrefix` =
+  `cindy-meka`、`updaterName` = `cindy-meka-updater`、`desktopDeviceIdPrefix` =
+  `cindy-meka-`；旧目录 `xdmaker-meka` 仍是只读迁移来源。
+- **D3 插件市场能力与安装批准解耦**：同步上游，客户端市场权限二次确认（`approveUpdateExpansion`
+  / `skipUpdateExpansion` / `diffMarketUpdatePermissionItems`）随上游删除；Meka 开发模式装载保留
+  自有 `MekaDevInstallReview` 确认面。该项属插件基座，仍需仓库白名单批准门。
+- **D4 migration 编号**：冻结 Meka 已发布 `0082`–`0095`，上游 schema 顺移追加为
+  `0096`–`0107`（与上游 `0093`–`0104` 一一对应），不手改 snapshot。
+  `pnpm --filter desktop run db:validate` 6/6 步通过（108 个 SQL、journal/snapshot 对齐、
+  无 schema drift、历史身份冻结）。
+
+**本轮合并产物缺陷（非产品决策，已修复）**：本轮 merge 在若干能力组上解成了「上一轮同步前」
+的旧世代，且 Git 因上游未触碰这些文件而**静默接受删除、不报冲突**。已确认并修复：
+
+- `apps/desktop/src/main/hook-control/**`：整组被解成旧世代，上游的 request ledger /
+  ack reactions / turn delivery（`ackReactions.ts`、`requestLedger.ts`、
+  `dispatcher.ts` 的 `setEmojiReactionsMode`/`settleAckReactions`/`onMessageOpResult`/
+  `handleTurnDelivery`/`terminalLedger`）被丢掉，而 `manager.ts` 是完整上游版本仍在调用它们
+  → `pnpm --filter desktop typecheck` 必然失败，且 X 渠道 `turn.delivery` 每帧抛
+  TypeError、`deactivateAccount()` 中断、Telegram 表情档位与 👀 收口整体缺失。
+  逐行集合比对确认**上游是这些文件的严格超集**（Meka 相对上一轮 HEAD 新增的行全部已在上游
+  存在），故按上游恢复；仅保留两处 Meka 分歧：`recentSessions.ts` 的
+  `workspaceKind: 'meka'` 跳过（Meka 项目工作区不得投影进 IM `/sessions` 选择器）与
+  `__tests__/groupWindow.test.ts` 的 Meka migration 谱系夹具。恢复后
+  `vitest run src/main/hook-control` 22 文件 627 测试通过。
+- **并发编辑竞态**：过程中发现工作区文件被多个并行 workstream 同时修改，一度出现
+  「typecheck 先 0 错、后又有错」的假象。所有结论最终以 index blob 与最新一次全量
+  验证为准。
+- **i18n**：合并丢掉了 4 条 Meka 独有的 SkillHub i18n key（`skillhub.home.browseTitle` /
+  `recommended` / `recommendedEmpty`、`skillhub.market.chipAvailable`，五语全缺，消费方是
+  Meka 独有组件 `MekaSkillHomeView.tsx`／`MekaSkillMarketListView.tsx`）；另有 19 条
+  `zh-TW` 条目因 locale 文件按 Meka 侧解决而落后于其余四语。均已按合并前 Meka 值补回
+  （不自造译法），`pnpm check:i18n` 恢复为五语 9946 key 全一致。
+- 其余按能力组修复的合并断链（session binding registry、edition 持久化 key、
+  `workspaceKind: 'meka'` 的上游 tx 类型、`BROKER_FORBIDDEN` 错误联合、
+  Meka 开发插件包接上游 `buf` 契约、登录页两输入框显式 key 防 DOM 复用等）见本期同步报告。
+
+**保留的 Meka 分歧**（本轮逐条核对仍在，均写在本期同步报告）：Meka 原生项目会话与
+角色／正式事项（schema 列、`'meka'` workspace kind、scheduler 域排除、IM `/sessions`
+排除）、Meka 技能链独立 provenance 与 MCPRouter 市场、Meka 渠道独立账本与「忽略本轮」分桶键
+（保持旧键 `cindy.pluginUpdates.ignoredRound.<mode>.<owner>` 不变，插件基座向下兼容）、
+Meka 插件/Skill 管理入口与 `/cc-agent/meka/*` 路由、`meka-formal` 正式工作流、
+Meka 开发插件链路、插件市场独立 endpoint/凭证、`edition` 运行期区域选择器，以及
+`onLocalRenamed` 的 Meka 改名实现。
+
 本文是本次严格迁移的事实正本。后续变更应在同一次代码调整中同步更新：
 
 - 模块状态变化：更新第 3、4、7 节。

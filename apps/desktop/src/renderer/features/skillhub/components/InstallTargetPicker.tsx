@@ -27,6 +27,7 @@ import {
   joinSkillInstallPath,
   normalizeInstallPathKey,
 } from '../lib/installTargetPaths';
+import type { SkillhubCatalogScope } from '../../../../shared/skillhubCatalog';
 
 /** Minimal skill identity for the picker (market Clone or local import). */
 export interface InstallTargetSkill {
@@ -36,6 +37,7 @@ export interface InstallTargetSkill {
   /** Market Clone passes latestVersion; used when versionLabel is absent. */
   latestVersion?: string | number;
   description?: string;
+  catalogScope?: SkillhubCatalogScope;
 }
 
 export type InstallTargetActionResult =
@@ -68,6 +70,7 @@ interface InstallTargetPickerProps {
     name: string;
     installPath?: string;
     force?: boolean;
+    catalogScope?: SkillhubCatalogScope;
   }) => Promise<InstallTargetActionResult>;
   /** i18n key override for dialog title (default installPicker.title). */
   titleKey?: string;
@@ -88,11 +91,13 @@ async function runMarketInstall(params: {
   name: string;
   installPath?: string;
   force?: boolean;
+  catalogScope?: SkillhubCatalogScope;
 }): Promise<InstallTargetActionResult> {
   return window.electronAPI.skillhub.install({
     name: params.name,
     installPath: params.installPath,
     force: params.force,
+    catalogScope: params.catalogScope,
   });
 }
 
@@ -161,7 +166,10 @@ export function InstallTargetPicker({
     setBannerError(null);
     setInstalling(true);
     try {
-      const res = await (installSkill ?? runAction)({ name: skill.name, installPath });
+      // Meka 本地导入走自己的 installSkill 通道；市场安装仍带上上游的 catalogScope。
+      const res = installSkill
+        ? await installSkill({ name: skill.name, installPath })
+        : await runAction({ name: skill.name, installPath, catalogScope: skill.catalogScope });
       if (res.success) {
         toast.success(
           t(successToastKey, {
@@ -184,7 +192,14 @@ export function InstallTargetPicker({
           cancelText: t('skillhub.installPicker.conflictDialog.cancel'),
         });
         if (!ok) return;
-        const forced = await (installSkill ?? runAction)({ name: skill.name, installPath, force: true });
+        const forced = installSkill
+          ? await installSkill({ name: skill.name, installPath, force: true })
+          : await runAction({
+              name: skill.name,
+              installPath,
+              force: true,
+              catalogScope: skill.catalogScope,
+            });
         if (forced.success) {
           toast.success(
             t(successToastKey, {

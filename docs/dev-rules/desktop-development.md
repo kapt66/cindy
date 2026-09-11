@@ -7,24 +7,39 @@
 
 ## Agent 启动入口
 
-Agent 启动 Desktop 只使用仓库根的安全包装命令。Cindy Meka 常规开发不需要指定
-`--region`；用户只说「启动开发版 / 启动测试版 / 看当前改动」且没有指定模式时，
-使用当前 worktree 的命名隔离沙箱，不默认共享正式登录态：
+Agent 启动 Desktop 只使用仓库根的安全包装命令。restart 命令默认使用固定的 `dev` 命名
+隔离沙箱（等价于自动附加 `--isolated=dev`），不再默认共享 Cindy Meka 账号登录态与业务
+数据。OpenAI 模型登录态是刻意保留的例外：普通 Dev 可只读复用同区域 Release／本机
+Codex 已有登录态，能够调用模型，但不能在 Dev 内发起 OpenAI 登录或断开共享登录态。
+
+Cindy Meka 常规开发不需要指定 `--region`：命令以 Global endpoint manifest 自举，并把
+Global 作为未登录时的产品 edition 默认值；登录页显式选择 CN / Global 后，该选择随认证
+会话保存并优先于启动默认，登出后清除。只有验证特定 endpoint manifest 或 edition 默认值
+时才显式传 `--region=cn|global|dev`。该参数不改变 Cindy Meka 的安装身份、userData 或
+更新渠道。
+
+默认 `dev` 沙箱与 checkout 路径无关：无论从主仓还是哪个 worktree 启动，Global 都落在
+同一个 dev 沙箱，CN 也落在同一个 CN dev 沙箱；登录态与 dev 数据持续保留。
+
+```bash
+pnpm restart:desktop:remote
+```
+
+需要按 worktree 拆分数据时才显式传 `--isolated=@worktree`，它会按 checkout 目录名派生
+稳定沙箱名（去掉前导 `cindy-`，再加路径短哈希）。同一 worktree 下次仍使用这个名字，
+登录态保留在该沙箱：
 
 ```bash
 pnpm restart:desktop:remote -- --isolated=@worktree
 ```
 
-该命令以 Global endpoint manifest 自举，并把 Global 作为未登录时的产品 edition 默认值；
-登录页显式选择 CN / Global 后，该选择随认证会话保存并优先于启动默认，登出后清除。只有
-验证特定 endpoint manifest 或 edition 默认值时才显式传 `--region=cn|global|dev`。该参数
-不改变 Cindy Meka 的安装身份、userData 或更新渠道。
+只有用户明确说「共享登录 / 不要重新登录 / 用现有数据」时才加 `--shared`；用户明确
+「不要关当前实例」时才加 `--preserve-running`。不要把「用户没提模式」理解成共享。
+需要复用旧的共享正式 profile 时，命令是：
 
-`--isolated=@worktree` 按 checkout 目录名派生稳定沙箱名（去掉前导 `cindy-`，
-再加路径短哈希）。同一 worktree 下次仍使用这个名字，登录态保留在该沙箱。
-
-只有用户明确说「共享登录 / 不要重新登录 / 用现有数据 / 不要关当前实例」时才加
-`--preserve-running`。不要把「用户没提模式」理解成共享。
+```bash
+pnpm restart:desktop:remote -- --shared
+```
 
 启动命令等待冷启动的 main/preload 编译以及窗口、认证和数据库就绪，最长 600 秒。Windows
 冷缓存下编译超过五分钟也可能发生，等待期间不得并行重复启动。启动命令结束时必须出现
@@ -48,15 +63,22 @@ checkout 占用而中止，不要换命令绕过，应把 verdict 交给用户�
 
 ## 可选启动参数
 
-两个 restart 命令都支持下列参数。脚本本身不加这些旗标时仍是共库 + 正常调度（给人在
-终端里手跑）。**Agent 例外**见上一节：用户只说启动开发版时必须加
-`--isolated=@worktree`。这些参数只对 dev 生效，不影响用户机器上的正式版。
+两个 restart 命令都支持下列参数。不加任何模式旗标时默认走固定的 `--isolated=dev`
+命名沙箱；要回到旧的共库行为必须显式加 `--shared`。这些参数只对 dev 生效，不影响
+用户机器上的正式版。
 
 - `--region=cn|global|dev`（默认 `global`）：切换 endpoint bootstrap 与仓内端点清单；
   验证中国大陆清单时显式传 `--region=cn`。它也是没有登录页 override 时的 edition
   默认值；登录页选择优先，企业 SSO 自动发现只改变认证服务区，不改变有效 edition。
-- `--isolated` / `--isolated=<名字>` / `--isolated=@worktree`：使用独立 userData 沙箱，数据库、登录态、会话、定时
-  任务与设备身份都与正式版彻底隔离（首次需重新登录）；命名沙箱每个名字一条独立沙箱，
+  remote 开发启动忽略环境里的 `XDT_ENDPOINT_MANIFEST_FILE`，始终按所选区域重设
+  端点文件，避免继承宿主的其它区域或自定义服务器。`--endpoints-cdn` 仍走所选区域的
+  线上 CDN；本地服务调试（local）仍保留本地端点文件配置。
+- `--shared`：显式选择共享 userData（旧默认行为）：dev 与正式版共用当前区域的正式
+  profile，数据库、登录态、会话完全共享。仅当用户明确要求「共享登录 / 复用现有数据」
+  时使用；禁止与 `--isolated` 或环境里的 `XDT_ISOLATED=1` 组合。
+- `--isolated` / `--isolated=<名字>` / `--isolated=@worktree`：使用独立 userData 沙箱，数据库、Cindy Meka 登录态、会话、定时
+  任务与设备身份都与正式版彻底隔离（首次需重新登录）；OpenAI 模型登录态按上述只读例外复用。命名沙箱每个名字一条独立沙箱，
+
   名字限 `A-Za-z0-9_-`、≤32 字符。`@worktree` 是保留名，按当前 checkout 目录派生沙箱名。
   用户说「独立数据库／隔离数据／沙箱启动／不要动正式版
   数据」时用；Agent 把「启动开发版」也落在这条路径。**未合入主干的 migration 必须在 `--isolated` 沙箱里跑，不得连共享 userData**
@@ -101,7 +123,8 @@ checkout 占用而中止，不要换命令绕过，应把 verdict 交给用户�
 
 正式版目录保持历史兼容：上游 Cindy 使用 `Cindy` / `CindyGlobal`，Cindy Meka 使用
 `CindyMeka`；两套目录都不在启动时改名或搬迁用户数据。
-非隔离 dev 也使用当前区域对应的正式 profile；`--isolated` 沙箱再按相同区域映射派生目录。
+`--shared` dev 使用当前区域对应的正式 profile；`--isolated` 沙箱再按相同区域映射派生目录。
+
 **dev writer 不得把正式 profile 升到当前 checkout 比安装版更新的 schema**：有 pending
 migration 就拒绝启动，改用 `--isolated=<名字>`。`--preserve-running` / 共库 passive 仍只读。
 
@@ -117,8 +140,9 @@ Desktop 服务端 `deviceId` 是产品身份边界的一部分。Meka 正常实�
 
 restart 的 kill 作用域是**当前 checkout（worktree）**：只停自己这份 checkout 的 dev
 进程，其他 worktree／命名沙箱的实例一律保留（2026-07-30 约束：并行沙箱不得被另一个
-checkout 的启动器顶掉）。因此并行多开的标准姿势是：**每个实例一个独立 worktree +
-`--isolated=<名字>` 命名沙箱**，互不干扰地各自 restart。
+checkout 的启动器顶掉）。因此并行多开的标准姿势是：**每个 worktree 显式传
+`--isolated=@worktree` 或 `--isolated=<名字>`**，各自使用独立沙箱；默认 `dev`
+沙箱跨 worktree 共用，适合单人常规开发但不能并行多开同一份 userData。
 
 配套护栏与工具：
 

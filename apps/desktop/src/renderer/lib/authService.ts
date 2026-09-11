@@ -7,9 +7,11 @@ import type {
   DesktopAccountDeletionConfirmInput,
   DesktopAccountDeletionConfirmResult,
   DesktopAccountDeletionStatusResult,
+  DesktopAccountSwitcherSnapshot,
   DesktopLoginAction,
   DesktopLoginActionResult,
 } from '../../shared/authIpc';
+export type { DesktopSavedAccount } from '../../shared/authIpc';
 import type { Effort } from '@/lib/userPreferences.types';
 import { CURRENT_CINDY_REGION } from '../../shared/brandRegion';
 
@@ -55,6 +57,11 @@ export interface AuthService {
   getLoginState(): Promise<DesktopLoginActionResult>;
   dispatchLoginAction(action: DesktopLoginAction): Promise<DesktopLoginActionResult>;
   logout(): Promise<void>;
+  listAccounts(): Promise<DesktopAccountSwitcherSnapshot>;
+  syncAccounts(): Promise<DesktopAccountSwitcherSnapshot>;
+  switchAccount(accountKey: string): Promise<void>;
+  beginAddAccount(): Promise<DesktopLoginActionResult>;
+  cancelAddAccount(): Promise<void>;
   enterLocalMode(): Promise<AuthState>;
   exitLocalMode(): Promise<AuthState>;
   getAccountDeletionAvailability(): Promise<DesktopAccountDeletionAvailabilityResult>;
@@ -119,6 +126,26 @@ export function createAuthService(): AuthService {
       await window.electronAPI.authLogout();
     },
 
+    listAccounts() {
+      return window.electronAPI.authListAccounts();
+    },
+
+    syncAccounts() {
+      return window.electronAPI.authSyncAccounts();
+    },
+
+    switchAccount(accountKey) {
+      return window.electronAPI.authSwitchAccount(accountKey);
+    },
+
+    beginAddAccount() {
+      return window.electronAPI.authBeginAddAccount();
+    },
+
+    cancelAddAccount() {
+      return window.electronAPI.authCancelAddAccount();
+    },
+
     async enterLocalMode(): Promise<AuthState> {
       return window.electronAPI.authEnterLocal() as Promise<AuthState>;
     },
@@ -161,6 +188,7 @@ export function createAuthService(): AuthService {
 export type {
   AuthFlowState,
   DesktopAccountDeletionChallenge,
+  DesktopAccountSwitcherSnapshot,
   DesktopLoginAction,
   DesktopLoginActionResult,
 };

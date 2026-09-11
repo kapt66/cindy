@@ -474,7 +474,9 @@ export class MekaDevPluginManager {
       throw new MekaDevPluginError('invalid-plugin', `无法生成独立开发身份：${validated.reason}`);
     }
     try {
-      const zip = await JSZip.loadAsync(await fs.promises.readFile(packed.cindyPath));
+      // 从 pack 结果内存里的字节装载,不从 cindyPath 回读(forge.ts 的不变量):
+      // 源码目录可被并发改写,只有 `buf` 与刚校验过的那一份快照逐字节一致。
+      const zip = await JSZip.loadAsync(packed.buf);
       zip.file('ghost.json', `${JSON.stringify(validated.manifest, null, 2)}\n`);
       // Host 派生 runtime id / command 后，源码包签名不再对应实际字节。
       // 源码快照已在改写前通过 GhostManager.inspect；派生包必须移除失效签名，
@@ -484,14 +486,14 @@ export class MekaDevPluginManager {
         outputDir,
         `${validated.manifest.id}-${validated.manifest.version}.cindy`,
       );
-      await fs.promises.writeFile(
-        cindyPath,
-        await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }),
-      );
+      // 派生包的真实字节:与落盘内容同一份,作为 ForgePackResult.buf 交给调用方。
+      const buf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+      await fs.promises.writeFile(cindyPath, buf);
       return {
         ok: true,
         cindyPath,
         manifest: validated.manifest,
+        buf,
       };
     } catch (error) {
       throw new MekaDevPluginError(

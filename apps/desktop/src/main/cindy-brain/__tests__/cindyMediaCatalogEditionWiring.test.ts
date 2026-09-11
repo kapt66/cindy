@@ -8,9 +8,9 @@ const readSource = (): string =>
 describe('cindy media catalog edition wiring', () => {
   it('projects plugin media capabilities with the runtime edition', () => {
     const source = readSource();
-    const start = source.indexOf(
-      'function getCatalogMediaConfig(kind: CindyCapabilityKind)',
-    );
+    // 上游把签名重构成多行（`kind` 之外还有 `action` / `selectedProviderId`），
+    // 这里只锚定函数名，函数体边界由下面的 end 标记切出。
+    const start = source.indexOf('function getCatalogMediaConfig(');
     const end = source.indexOf('\n}\n\nconst getCatalogImageConfig', start);
 
     expect(start).toBeGreaterThanOrEqual(0);

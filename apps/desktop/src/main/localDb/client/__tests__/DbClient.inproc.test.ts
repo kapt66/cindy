@@ -157,6 +157,25 @@ describe('DbClient in-proc fallback', () => {
       ),
     ).resolves.toEqual({ id: 1, name: 'alice' });
 
+    await client.exec(
+      'INSERT INTO sessions (id, status, working_dir, worktree_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+      [
+        'inproc-session',
+        'active',
+        userDataDir,
+        path.join(userDataDir, 'worktree'),
+        Date.now(),
+        Date.now(),
+      ],
+    );
+    await expect(client.readLocalWorktreeReferences?.()).resolves.toEqual([
+      expect.objectContaining({
+        id: 'inproc-session',
+        status: 'active',
+        currentDatabase: true,
+      }),
+    ]);
+
     const sourceId = `inproc-source-${Date.now()}`;
     await expect(
       client.tx('embedding.enqueue', {

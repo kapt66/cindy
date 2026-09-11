@@ -66,8 +66,9 @@ describe('MekaDevPluginManager', () => {
         zip.file('ghost.json', JSON.stringify(currentManifest));
         zip.file('main.js', '// development Plugin');
         zip.file('cindy-signatures.json', '{}');
-        await fs.promises.writeFile(cindyPath, await zip.generateAsync({ type: 'nodebuffer' }));
-        return { ok: true as const, cindyPath, manifest: currentManifest };
+        const buf = await zip.generateAsync({ type: 'nodebuffer' });
+        await fs.promises.writeFile(cindyPath, buf);
+        return { ok: true as const, cindyPath, manifest: currentManifest, buf };
       }),
       inspectPackage: vi.fn(async (cindyPath) => ({
         manifest: await readPackageManifest(cindyPath),

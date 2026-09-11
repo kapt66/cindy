@@ -673,6 +673,90 @@
       "when": 1787315277600,
       "tag": "0095_fixed_zeigeist",
       "breakpoints": true
+    },
+    {
+      "idx": 96,
+      "version": "6",
+      "when": 1789051033780,
+      "tag": "0096_parched_switch",
+      "breakpoints": true
+    },
+    {
+      "idx": 97,
+      "version": "6",
+      "when": 1789051034545,
+      "tag": "0097_repair_custom_provider_timestamps",
+      "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "6",
+      "when": 1789051035300,
+      "tag": "0098_scope_messages_fts_update_trigger",
+      "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "6",
+      "when": 1789051036068,
+      "tag": "0099_stabilize_messages_fts_rows",
+      "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "6",
+      "when": 1789051036832,
+      "tag": "0100_fresh_stryfe",
+      "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "6",
+      "when": 1789051037605,
+      "tag": "0101_bright_baron_zemo",
+      "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "6",
+      "when": 1789051038385,
+      "tag": "0102_boring_champions",
+      "breakpoints": true
+    },
+    {
+      "idx": 103,
+      "version": "6",
+      "when": 1789051039151,
+      "tag": "0103_segment_messages_fts_cjk",
+      "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "6",
+      "when": 1789051039913,
+      "tag": "0104_repair_cjk_fts_missing_rows",
+      "breakpoints": true
+    },
+    {
+      "idx": 105,
+      "version": "6",
+      "when": 1789051040695,
+      "tag": "0105_optimal_ender_wiggin",
+      "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "6",
+      "when": 1789051041495,
+      "tag": "0106_bot_mode",
+      "breakpoints": true
+    },
+    {
+      "idx": 107,
+      "version": "6",
+      "when": 1789051042301,
+      "tag": "0107_schedule-model-harness",
+      "breakpoints": true
     }
   ]
 }

@@ -1,10 +1,12 @@
-import type { GhostManifest, GhostPermissionDiff, InstalledGhost } from './ghost';
+import type { GhostManifest, InstalledGhost } from './ghost';
 import type { PluginIconMetadata } from '@cindy/plugin-protocol';
-import type { DataOwnerPushStamp } from './dataOwnerPush';
 
 export type PluginMarketScope = 'public' | 'organization' | 'personal';
 export type PluginMarketInstallState =
-  'not-installed' | 'installed' | 'update-available' | 'conflict';
+  | 'not-installed'
+  | 'installed'
+  | 'update-available'
+  | 'conflict';
 
 /** 市场项来源：服务端市场，或用户添加的 Git / 本地自定义市场。 */
 export type PluginMarketItemSource = 'server' | 'git-market' | 'local-market';
@@ -51,22 +53,6 @@ export interface PluginRemovalUserNotice {
   count: number;
   /** 累计单条且插件名经安全过滤后非空时为插件名；其余情况为 null，只展示数量。 */
   name: string | null;
-}
-
-export interface PluginUpgradePermissionNotice {
-  /** Shared permission item identity; Renderer resolves labelKey through i18n. */
-  key: string;
-  labelKey: string;
-  labelArgs?: Record<string, string>;
-}
-
-export interface PluginUpgradeUserNotice {
-  count: number;
-  name: string | null;
-  /** Added permissions for the sole upgraded plugin; null for multi-plugin batches. */
-  permissions: PluginUpgradePermissionNotice[] | null;
-  /** Whether any upgrade in the aggregate added permissions. */
-  hasPermissionExpansion: boolean;
 }
 
 /** 详情携带安装前展示给用户的 manifest；官方来自 release，自定义来自本地发现。 */
@@ -145,50 +131,11 @@ export type PluginMarketLocalIconResult =
   | (PluginMarketLocalIconRequest & { status: 'loaded'; dataUrl: string })
   | (PluginMarketLocalIconRequest & { status: 'missing' | 'retryable' });
 
-/** Main 从已验证真实包中提取的权限复核事实。 */
-export interface PluginMarketPackageReviewFacts {
-  /** 已按当前界面语言本地化，仅用于展示；安全指纹由 Main 基于原始清单计算。 */
-  manifest: GhostManifest;
-  /** Main 基于当前已装原始清单与真实包原始清单算出的权限差异；无可靠基线时为 null。 */
-  permissionDiff: GhostPermissionDiff | null;
-  /** Main 根据安装锁内的实际落位状态判定；不从 permissionDiff 间接推断。 */
-  isUpdate: boolean;
-  packageSha256: string;
-  /** 产生复核结果时的可靠已装权限基线；null 也可能是旧安装基线不可读。 */
-  installedBaseline: string | null;
-  /** 只用于让确认卡如实说明包来自官方还是用户添加的市场。 */
-  sourceType: PluginMarketItemSource;
-  /** 与 permissionDiff 独立:完整权限卡也要能展示 OAuth 身份变化。 */
-  builtinOauthClientChanged?: boolean;
-}
-
-/** Compatibility name used by the Meka staged-review flow. */
-export type PluginMarketPackageReview = PluginMarketPackageReviewFacts;
-
-/** Main 在安装事务内请求当前窗口立即确认真实包权限；不暴露内部批准绑定。 */
-export interface PluginMarketPackageReviewRequest {
-  requestId: string;
-  /** Main 投递这份私有包事实时的账号代际；Renderer 必须匹配后才可展示。 */
-  ownerStamp: DataOwnerPushStamp;
-  manifest: GhostManifest;
-  permissionDiff: GhostPermissionDiff | null;
-  isUpdate: boolean;
-  sourceType: PluginMarketItemSource;
-  /** 与 permissionDiff 独立:完整权限卡也要能展示 OAuth 身份变化。 */
-  builtinOauthClientChanged?: boolean;
-}
-
 export interface PluginMarketInstallOptions {
   /** 用户点击时看到的目标 release；Main 会在下载前重新核对。 */
   expectedReleaseId: string;
   /** 安装前展示给用户的完整清单；Main 会与当前来源事实重新核对。 */
   expectedManifest?: GhostManifest;
-  /** 仅用于自定义市场确认其本地真实 manifest 的扩权。 */
-  allowPermissionExpansion?: boolean;
-  /** 用户审阅目标权限时的已装权限基线。 */
-  reviewedBaseline?: string;
-  /** 用户确认过的真实下载包；Main 会重新下载并核对 SHA。 */
-  approvedPackageSha256?: string;
   /** Main-only best-effort progress callback; never crosses the renderer boundary. */
   onProgress?: (progress: {
     phase: PluginMarketInstallPhase;
@@ -203,11 +150,10 @@ export interface PluginMarketInstallOptions {
   allowSourceReplacement?: boolean;
 }
 
-/** 安装成功、事务内取消，或 Meka 下载后需要分阶段复核真实包。 */
-export type PluginMarketInstallResult =
-  | { ghost: InstalledGhost; cancelled?: never; reviewRequired?: never }
-  | { ghost?: never; cancelled: true; reviewRequired?: never }
-  | { ghost?: never; cancelled?: never; reviewRequired: PluginMarketPackageReview };
+/** 市场安装成功后返回已落位插件。 */
+export interface PluginMarketInstallResult {
+  ghost: InstalledGhost;
+}
 
 /* ------------------------------------------------------------------------ */
 /* 自定义市场源（Git / 本地文件夹）                                           */
@@ -292,10 +238,6 @@ export function parseCustomMarketPluginId(
  * 自定义市场插件的合成 releaseId。版本变化即产生新 releaseId，
  * 从而复用服务端市场既有的 update-available / expectedReleaseId 机制。
  */
-export function customMarketReleaseId(
-  marketName: string,
-  ghostId: string,
-  version: string,
-): string {
+export function customMarketReleaseId(marketName: string, ghostId: string, version: string): string {
   return `custom:${encodeURIComponent(marketName)}:${encodeURIComponent(ghostId)}:${encodeURIComponent(version)}`;
 }

@@ -59,6 +59,8 @@ describe('desktop Claude read-only allowlist', () => {
       'mcp__cindy_scheduler__list_tools',
       'mcp__cindy_ssh__list_tools',
       'mcp__cindy_helper__list_tools',
+      'mcp__cindy_docs__read_sheet',
+      'mcp__cindy_docs__inspect_pdf',
       'mcp__cindy_memory__list_tools',
       'mcp__cindy_contacts__list_tools',
       'mcp__cindy_slack__slack_status',
@@ -104,6 +106,40 @@ describe('desktop MCP approval policy', () => {
     expect(getDesktopMcpToolApprovalPolicy({ serverName: 'cindy_contacts' })).toBe(
       'prompt-each-time',
     );
+  });
+
+  // cindy_docs 是渐进披露 server:对外只有 list_tools / call_tool。read_sheet 与
+  // inspect_pdf 只读会话工作目录内的文件(路径由 @cindy/mcps 确定性钳制),免审批;
+  // 四个落盘工具必须继续走常规审批链 —— 一次"同意 call_tool"不能变成写盘的通行证。
+  it('auto-approves only the two read-only docs tools', () => {
+    // cindy_docs 六个工具自 2026-08-21 起顶层暴露(此前藏在 call_tool 二级分派后,
+    // 模型看不见、从没调用过)。审批因此改按 `<server>::<tool>` 精确匹配。
+    for (const tool of ['read_sheet', 'inspect_pdf']) {
+      expect(
+        getDesktopMcpToolApprovalPolicy({
+          serverName: 'cindy_docs',
+          toolName: tool,
+          toolParams: { path: 'a.pdf' },
+        }),
+        `${tool} should be auto-approved`,
+      ).toBe('auto-approve');
+    }
+
+    // 四个落盘工具继续逐次确认。
+    for (const tool of ['make_docx', 'make_pptx', 'make_xlsx', 'render_pdf']) {
+      expect(
+        getDesktopMcpToolApprovalPolicy({
+          serverName: 'cindy_docs',
+          toolName: tool,
+          toolParams: { outPath: 'a.docx' },
+        }),
+        `${tool} must not be auto-approved`,
+      ).toBe('prompt');
+    }
+
+    // 工具名读不出来时 fail closed;cindy_docs 也不在 TRUSTED_MCP_SERVERS 里,
+    // 不按 server 整体静默。
+    expect(getDesktopMcpToolApprovalPolicy({ serverName: 'cindy_docs' })).toBe('prompt');
   });
 
   it('auto-approves only explicitly reviewed builtin servers', () => {
@@ -320,6 +356,61 @@ describe('desktop MCP approval policy', () => {
     expect(getDesktopMcpToolApprovalPolicy({ serverName: 'cindy', toolName: 'ghost_call' })).toBe(
       'prompt',
     );
+  });
+
+  it('auto-approves first-party Cindy Art media ghost_call tools without prompting', () => {
+    for (const tool of ['gen_image', 'edit_image', 'gen_video', 'edit_video']) {
+      expect(
+        getDesktopMcpToolApprovalPolicy({
+          serverName: 'cindy',
+          toolName: 'ghost_call',
+          toolParams: { ghost_id: 'cindy-art', tool, args: { prompt: 'a cat' } },
+        }),
+        `${tool} should be auto-approved`,
+      ).toBe('auto-approve');
+    }
+
+    // Codex elicitation 可能省略外层 toolName，仍按内层 ghost_id / tool 判定。
+    expect(
+      getDesktopMcpToolApprovalPolicy({
+        serverName: 'cindy',
+        toolParams: { ghost_id: 'cindy-art', tool: 'gen_image', args: { prompt: 'a cat' } },
+      }),
+    ).toBe('auto-approve');
+    expect(
+      getDesktopMcpToolApprovalPolicy({
+        serverName: 'cindy',
+        toolName: 'ghost_call',
+        toolParams: JSON.stringify({
+          ghost_id: 'cindy-art',
+          tool: 'gen_image',
+          args: { prompt: 'a cat' },
+        }),
+      }),
+    ).toBe('auto-approve');
+
+    // 其它插件、未知工具、缺内层身份仍 fail closed。
+    expect(
+      getDesktopMcpToolApprovalPolicy({
+        serverName: 'cindy',
+        toolName: 'ghost_call',
+        toolParams: { ghost_id: 'google-gmail', tool: 'gmail', args: { action: 'send' } },
+      }),
+    ).toBe('prompt');
+    expect(
+      getDesktopMcpToolApprovalPolicy({
+        serverName: 'cindy',
+        toolName: 'ghost_call',
+        toolParams: { ghost_id: 'cindy-art', tool: 'unknown_tool' },
+      }),
+    ).toBe('prompt');
+    expect(
+      getDesktopMcpToolApprovalPolicy({
+        serverName: 'cindy',
+        toolName: 'ghost_call',
+        toolParams: { tool: 'gen_image' },
+      }),
+    ).toBe('prompt');
   });
 
   it('auto-approves the browser call_tool entry that Claude used to prompt for every time', () => {

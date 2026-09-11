@@ -100,9 +100,11 @@ const log = createLogger('SessionContentHeader');
 export function SessionContentHeaderRegistration({
   session,
   remoteSessionUnavailable = false,
+  readOnly = false,
 }: {
   session: Session;
   remoteSessionUnavailable?: boolean;
+  readOnly?: boolean;
 }) {
   useRegisterContentHeader(
     useMemo(
@@ -110,9 +112,10 @@ export function SessionContentHeaderRegistration({
         <SessionContentHeader
           session={session}
           remoteSessionUnavailable={remoteSessionUnavailable}
+          readOnly={readOnly}
         />
       ),
-      [session, remoteSessionUnavailable],
+      [readOnly, session, remoteSessionUnavailable],
     ),
   );
   return null;
@@ -121,11 +124,13 @@ export function SessionContentHeaderRegistration({
 interface SessionContentHeaderProps {
   session: Session;
   remoteSessionUnavailable?: boolean;
+  readOnly?: boolean;
 }
 
 export function SessionContentHeader({
   session: sessionProp,
   remoteSessionUnavailable = false,
+  readOnly = false,
 }: SessionContentHeaderProps) {
   const { t } = useTranslation();
   const { sessions, patchLocal } = useCCSessions();
@@ -164,7 +169,7 @@ export function SessionContentHeader({
   // Draft 判定与 SessionItem 同口径:标题仍是默认哨兵且无消息。
   const isEmpty = isEmptyDraftSession(session);
   const remoteWritesBlocked =
-    remoteSessionUnavailable || isRemoteSessionWriteBlocked(session);
+    readOnly || remoteSessionUnavailable || isRemoteSessionWriteBlocked(session);
   // 「移动到项目」/「导出会话…」可见性与 SessionItem 同条件。
   const canMoveToProject =
     session.workspaceKind !== 'meka'
@@ -619,7 +624,7 @@ export function SessionContentHeader({
           </span>
         )}
 
-      {!isEditing && (
+      {!isEditing && !readOnly && (
         // 菜单打开就把归档/删除的 dirty 预检发出去:用户从展开菜单到点条目至少
         // 一次反应时间,足够这次 git status 跑完,点下去时命中缓存、零等待。
         <DropdownMenu

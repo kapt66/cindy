@@ -3,11 +3,7 @@ import type { AuthStrategy } from '@cindy/model-providers';
 
 import { isCredentialModeSwitchBusyError } from '../maker-host/codex-credential-switch.js';
 import { isSubscriptionDirectModel } from '../../shared/subscriptionModels.js';
-import type {
-  DispatchWorkerTaskResult,
-  OrcaWorkerEffort,
-  OrcaWorkerStatus,
-} from './orcaTeamService.js';
+import type { DispatchWorkerTaskResult, OrcaWorkerEffort, OrcaWorkerStatus } from './orcaTeamService.js';
 import type { MakerSessionCreateOpts } from './sessionRequest.js';
 import {
   resolveOrcaWorkerPermissionMode,
@@ -48,7 +44,10 @@ export interface OrcaWorkerListSnapshot {
   status: OrcaWorkerStatus;
 }
 
-/** New Maker 面板传来的按 agent 默认值缓存；undefined/null 都表示继续 fallback。 */
+/**
+ * New Maker 面板传来的按 agent 默认值缓存；undefined/null 都表示继续 fallback，
+ * providerId 的空串或纯空白也按未选择处理。
+ */
 export interface OrcaWorkerDefaultsSnapshot {
   model?: string | null;
   effort?: string | null;
@@ -61,6 +60,11 @@ export interface OrcaWorkerProviderSnapshot {
   id: string;
   name: string;
   models: readonly string[];
+  /**
+   * 运行 model id 对应的 Model Registry 稳定身份。缺失表示目录无法证明该路由 model
+   * 与规范身份相同；这种情况下只能使用精确 ID，不能仅凭后缀推断 managed alias。
+   */
+  registryIdentityByModel?: Readonly<Record<string, string>>;
   /**
    * 该来源下 supportsFastMode 的模型 id 集合。Fast 能力是 per-(provider, model) 的,
    * 同 id 模型在不同来源可分叉;缺省 = 该快照来源未提供 Fast 元数据,Fast 判定
@@ -79,26 +83,24 @@ export interface OrcaWorkerProviderSnapshot {
   /** true 表示该来源必须写入 session provider store 才能注入自己的 API key/OAuth token。 */
   requiresExplicitRoute?: boolean;
   /**
-   * true 表示 chat-bridged codex 供应商 (wireProtocol=openai-chat, 与
-   * renderer/lib/providerModels.ts 的 isChatBridgedCodexProvider 同语义):
-   * 其 Responses→Chat 翻译只挂在本地 codex-proxy, SSH 远端 worker 不兼容
-   * (codex-connector R23 P2 的拒绝依据)。
+   * Local execution required for this provider/agent pair. Shares
+   * isLocalOnlyProviderForAgent with the picker.
    */
-  chatBridgedCodex?: boolean;
+  localOnlyForSsh?: boolean;
 }
 
 /** 自带凭证或明确无鉴权的第三方路由都不能回落到 worker/lead 的默认上游。 */
 export function providerRouteRequiresExplicitSelection(
   authStrategy: AuthStrategy | undefined,
 ): boolean {
-  return (
-    authStrategy === 'api-key-header' || authStrategy === 'oauth-token' || authStrategy === 'none'
-  );
+  return authStrategy === 'api-key-header'
+    || authStrategy === 'oauth-token'
+    || authStrategy === 'none';
 }
 
 /** 同一次 provider registry 快照派生出的可用性与默认模型路由，避免两次读取产生竞态。 */
 export interface OrcaWorkerProviderRoutingContext {
-  availability: Partial<Record<AgentKind, OrcaWorkerProviderSnapshot[]>>;
+  availability: Record<AgentKind, OrcaWorkerProviderSnapshot[]>;
   resolveDefaultProviderIdForModel(agent: AgentKind, model: string): string | null;
 }
 
@@ -188,12 +190,12 @@ export interface OrcaWorkerCreateParams {
   /**
    * 显式选定的模型来源(标准模型选择面板的 per-worker 选择)。string = 显式来源,
    * 走下方精确 preflight 校验「已连接且提供该模型」,不满足即失败,不静默换路由;
-   * undefined / null = 未显式选择,沿用 defaults 缓存 / Lead 继承 / spawn-aware
-   * 默认路由的既有解析(含 requiresExplicitRoute 唯一来源救援与 stale 回落)。
+   * undefined / null = 未显式选择,沿用兼容的 Lead / defaults 来源,否则解析并保存
+   * 当前默认来源。Lead 已绑定但当前断连的来源会在创建前失败,不静默改走其它凭证。
    */
   providerId?: string | null;
   initialTask?: string;
-  /** Explicit value for this creation; otherwise use the shared Worker preference. */
+  /** 显式值用于本次创建；缺省读取全局 Worker 创建偏好。 */
   workerPermissionMode?: OrcaWorkerPermissionMode;
 }
 
@@ -237,10 +239,7 @@ export interface OrcaWorkerCreationDeps {
     leaseMs: number;
   }): Promise<
     | { ok: true; occupiedSlotsBefore: number }
-    | {
-        ok: false;
-        errorCode: 'DUPLICATE_LABEL' | 'WORKER_CREATION_IN_PROGRESS' | 'WORKER_LIMIT_HARD_EXCEEDED';
-      }
+    | { ok: false; errorCode: 'DUPLICATE_LABEL' | 'WORKER_CREATION_IN_PROGRESS' | 'WORKER_LIMIT_HARD_EXCEEDED' }
   >;
   renewWorkerCreationReservation(reservationId: string, leaseMs: number): Promise<boolean>;
   releaseWorkerCreationReservation(reservationId: string): Promise<void>;
@@ -305,10 +304,7 @@ function toInternalFailure(err: unknown): Extract<OrcaWorkerCreationResult, { ok
   };
 }
 
-function normalizeRequiredText(
-  value: string,
-  field: string,
-): { ok: true; value: string } | { ok: false; message: string } {
+function normalizeRequiredText(value: string, field: string): { ok: true; value: string } | { ok: false; message: string } {
   const trimmed = value.trim();
   if (!trimmed) return { ok: false, message: `${field} required` };
   return { ok: true, value: trimmed };
@@ -318,19 +314,14 @@ const ORCA_WORKER_LABEL_MAX_LENGTH = 32;
 const ORCA_WORKER_LABEL_PATTERN = /^[a-z0-9_-]+$/i;
 
 /** worker label 是 switch_focus 的稳定定位键，所有创建入口都走同一组 slug 约束。 */
-export function normalizeOrcaWorkerLabel(
-  value: string,
-): { ok: true; value: string } | { ok: false; message: string } {
+export function normalizeOrcaWorkerLabel(value: string): { ok: true; value: string } | { ok: false; message: string } {
   const label = normalizeRequiredText(value, 'label');
   if (!label.ok) return label;
   if (label.value.length > ORCA_WORKER_LABEL_MAX_LENGTH) {
     return { ok: false, message: 'label must be 1-32 chars' };
   }
   if (!ORCA_WORKER_LABEL_PATTERN.test(label.value)) {
-    return {
-      ok: false,
-      message: 'label may only contain letters, numbers, hyphens and underscores',
-    };
+    return { ok: false, message: 'label may only contain letters, numbers, hyphens and underscores' };
   }
   return { ok: true, value: label.value.toLowerCase() };
 }
@@ -339,7 +330,7 @@ const ORCA_WORKER_CREATION_RESERVATION_LEASE_MS = 5 * 60 * 1000;
 
 function isWorkerLabelConstraintError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
-  return err.message.includes('uniq_orca_workers_team_label');
+  return err.message.includes("uniq_orca_workers_team_label");
 }
 
 type ResolveWorkerConfigResult =
@@ -362,6 +353,111 @@ type ResolveWorkerConfigResult =
       ok: false;
       message: string;
     };
+
+type ResolveWorkerModelIdResult =
+  | { ok: true; model: string }
+  | { ok: false; message: string };
+
+const ORCA_MANAGED_GATEWAY_PROVIDER_ID = 'xd';
+
+/** Worker 的候选 model；此函数只读快照，不迁移 Lead/default 的持久化值。 */
+function selectWorkerModel(params: {
+  input: OrcaWorkerCreateParams;
+  lead: OrcaLeadSessionSnapshot;
+  defaults: OrcaWorkerDefaultsSnapshot;
+}): string {
+  const { input, lead, defaults } = params;
+  return input.model
+    ?? defaults.model
+    // pi 显式列出(与 model-defaults.ts 对齐,避免将来改 cc 默认时 pi 静默跟随)。
+    ?? (input.agent === lead.agentKind ? lead.model
+        : input.agent === 'codex' ? 'gpt-5.5'
+        : input.agent === 'pi' ? 'claude-sonnet-4-6'
+        : 'claude-sonnet-4-6');
+}
+
+/**
+ * 将旧短 ID 解析为 managed Gateway 的规范 ID。
+ *
+ * 精确匹配只在目标/默认路由可用集内判定；否则扁平 availableModels 中来自未连接
+ * Custom Provider 的短 ID 会错误地遮蔽 managed alias。alias 只接受无 namespace 的
+ * 输入，并要求 managed 路由中恰好一个 `namespace/short-id` 候选且该规范 ID 同时
+ * 存在于 capabilities（list_available_models 的数据源）中。
+ */
+function resolveWorkerModelId(params: {
+  agent: AgentKind;
+  model: string;
+  providerId: string | null;
+  /** cached defaults 可在自身路由不可用时搜索当前已连接来源；显式/Lead 配对来源保持严格。 */
+  allowProviderFallback?: boolean;
+  availableModels: OrcaWorkerModelCapabilities[];
+  providers: OrcaWorkerProviderSnapshot[];
+}): ResolveWorkerModelIdResult {
+  const {
+    agent,
+    model,
+    providerId,
+    allowProviderFallback = false,
+    availableModels,
+    providers,
+  } = params;
+  const listedModelIds = new Set(availableModels.map((candidate) => candidate.id));
+  const scopedRouteProviders = providerId === null
+    ? providers
+    : providers.filter((provider) => provider.id === providerId);
+  const providerCanResolveInput = (provider: OrcaWorkerProviderSnapshot): boolean => {
+    if (listedModelIds.has(model) && provider.models.includes(model)) return true;
+    if (model.includes('/') || provider.id !== ORCA_MANAGED_GATEWAY_PROVIDER_ID) return false;
+    return provider.models.some(
+      (candidate) => candidate.endsWith(`/${model}`)
+        && listedModelIds.has(candidate)
+        && provider.registryIdentityByModel?.[candidate] === candidate,
+    );
+  };
+  // 成对缓存的 defaults model/provider 只有在该来源无法解析当前模型时，才允许回退到
+  // 当前已连接来源；显式来源与 Lead 配对来源不会进入此分支。
+  const routeProviders = providerId !== null
+    && allowProviderFallback
+    && !scopedRouteProviders.some(providerCanResolveInput)
+    ? providers
+    : scopedRouteProviders;
+
+  if (
+    listedModelIds.has(model)
+    && routeProviders.some((provider) => provider.models.includes(model))
+  ) {
+    return { ok: true, model };
+  }
+
+  const canonicalCandidates = new Set<string>();
+  if (!model.includes('/')) {
+    for (const provider of routeProviders) {
+      if (provider.id !== ORCA_MANAGED_GATEWAY_PROVIDER_ID) continue;
+      for (const candidate of provider.models) {
+        if (
+          candidate.endsWith(`/${model}`)
+          && listedModelIds.has(candidate)
+          && provider.registryIdentityByModel?.[candidate] === candidate
+        ) {
+          canonicalCandidates.add(candidate);
+        }
+      }
+    }
+  }
+  if (canonicalCandidates.size === 1) {
+    return { ok: true, model: [...canonicalCandidates][0] };
+  }
+  if (canonicalCandidates.size > 1) {
+    return {
+      ok: false,
+      message:
+        `model alias "${model}" is ambiguous for ${agent} on a managed Gateway provider. `
+        + `candidates: ${[...canonicalCandidates].join(', ')}. `
+        + 'Use an exact model ID returned by list_available_models.',
+    };
+  }
+  return { ok: true, model };
+}
 
 function modelValidEfforts(model: OrcaWorkerModelCapabilities): readonly string[] {
   return model.efforts ?? [];
@@ -405,15 +501,10 @@ function resolveWorkerConfig(params: {
   lead: OrcaLeadSessionSnapshot;
   defaults: OrcaWorkerDefaultsSnapshot;
   availableModels: OrcaWorkerModelCapabilities[];
+  model: string;
+  providerId: string | null;
 }): ResolveWorkerConfigResult {
-  const { input, lead, defaults, availableModels } = params;
-  const model = input.model
-    ?? defaults.model
-    // pi 显式列出(与 model-defaults.ts 对齐,避免将来改 cc 默认时 pi 静默跟随)。
-    ?? (input.agent === lead.agentKind ? lead.model
-        : input.agent === 'codex' ? 'gpt-5.5'
-        : input.agent === 'pi' ? 'claude-sonnet-4-6'
-        : 'claude-sonnet-4-6');
+  const { input, lead, defaults, availableModels, model, providerId } = params;
   const modelCapabilities = availableModels.find((candidate) => candidate.id === model);
   if (!modelCapabilities) {
     return {
@@ -433,26 +524,16 @@ function resolveWorkerConfig(params: {
     // 来源的档位表裁决(见 pendingEffortError 注);其余字段照常解析。
     effort: normalizedEffort.ok ? normalizedEffort.effort : null,
     ...(normalizedEffort.ok ? {} : { pendingEffortError: normalizedEffort.message }),
-    providerId:
-      defaults.providerId !== undefined
-        ? defaults.providerId
-        : input.agent === lead.agentKind
-          ? lead.providerId
-          : null,
-    fastMode:
-      modelCapabilities.supportsFastMode === false
-        ? false
-        : agentConsumesExplicitFast(input.agent) && input.fast !== undefined
+    providerId,
+    fastMode: modelCapabilities.supportsFastMode === false
+      ? false
+      : ((agentConsumesExplicitFast(input.agent) && input.fast !== undefined)
           ? input.fast
-          : (defaults.fastMode ?? !!lead.fastMode),
+          : (defaults.fastMode ?? !!lead.fastMode)),
   };
 }
 
-export function budgetModelRequiresApiKey(
-  agent: AgentKind,
-  model: string,
-  hasApiKey: boolean,
-): boolean {
+export function budgetModelRequiresApiKey(agent: AgentKind, model: string, hasApiKey: boolean): boolean {
   return agent === 'codex' && model.startsWith('codex/') && !hasApiKey;
 }
 
@@ -481,7 +562,7 @@ function agentConsumesExplicitFast(agent: AgentKind): boolean {
  */
 export function buildNoProviderMessage(
   agent: AgentKind,
-  availability: Partial<Record<AgentKind, OrcaWorkerProviderSnapshot[]>>,
+  availability: Record<AgentKind, OrcaWorkerProviderSnapshot[]>,
 ): string {
   const base = `${agentDisplayName(agent)} 当前没有可用的模型供应商(provider)。请在「设置 → 模型供应商」连接一个支持 ${agentDisplayName(agent)} 的供应商后重试`;
   const others = (['claude-code', 'codex', 'pi'] as AgentKind[]).filter(
@@ -489,10 +570,7 @@ export function buildNoProviderMessage(
   );
   if (others.length === 0) return `${base}。`;
   const suggestion = others
-    .map(
-      (a) =>
-        `${agentDisplayName(a)}(已连接:${(availability[a] ?? []).map((provider) => provider.name).join(' / ')})`,
-    )
+    .map((a) => `${agentDisplayName(a)}(已连接:${availability[a].map((provider) => provider.name).join(' / ')})`)
     .join('、');
   return `${base},或改用已连接供应商的 agent 创建 worker(可用:${suggestion})。`;
 }
@@ -512,9 +590,7 @@ function buildProviderRouteUnavailableMessage(
   return `${agentDisplayName(agent)} Worker 选择的供应商 "${provider.name}" 不提供模型 "${model}",请调整供应商或模型后重试。`;
 }
 
-export function createOrcaWorkerCreationService(
-  deps: OrcaWorkerCreationDeps,
-): OrcaWorkerCreationService {
+export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): OrcaWorkerCreationService {
   function limitSnapshot(workerHardLimit: number, occupiedSlots: number): OrcaWorkerLimitSnapshot {
     return {
       workerHardLimit,
@@ -548,9 +624,7 @@ export function createOrcaWorkerCreationService(
     });
   }
 
-  async function createWorkerInTeam(
-    params: OrcaWorkerCreateInTeamParams,
-  ): Promise<OrcaWorkerCreationResult> {
+  async function createWorkerInTeam(params: OrcaWorkerCreateInTeamParams): Promise<OrcaWorkerCreationResult> {
     const role = normalizeRequiredText(params.role, 'role');
     if (!role.ok) return { ok: false, errorCode: 'INVALID_PARAMS', message: role.message };
     if (role.value.length > 32) {
@@ -561,17 +635,11 @@ export function createOrcaWorkerCreationService(
 
     const existing = await deps.listWorkersByLead(params.leadSessionId);
     if (existing.some((worker) => worker.label?.toLowerCase() === label.value)) {
-      return {
-        ok: false,
-        errorCode: 'DUPLICATE_LABEL',
-        message: `label "${label.value}" already used in this team`,
-      };
+      return { ok: false, errorCode: 'DUPLICATE_LABEL', message: `label "${label.value}" already used in this team` };
     }
 
     const settings = deps.readCollaborationSettings();
-    const activeCount = existing.filter((worker) =>
-      deps.isActiveWorkerStatus(worker.status),
-    ).length;
+    const activeCount = existing.filter((worker) => deps.isActiveWorkerStatus(worker.status)).length;
     if (activeCount >= settings.workerHardLimit) {
       return {
         ok: false,
@@ -581,21 +649,45 @@ export function createOrcaWorkerCreationService(
       };
     }
     const availableModels = deps.getAvailableModels(params.agent);
-    if (params.model) {
-      const validModels = availableModels.map((model) => model.id);
-      if (!validModels.includes(params.model)) {
-        return {
-          ok: false,
-          errorCode: 'INVALID_PARAMS',
-          message: `model "${params.model}" not available for ${params.agent}. valid: ${validModels.join(', ')}`,
-        };
-      }
-    }
-
-    // 先保留无 provider 的快速失败；精确的 provider + model 校验要等 Lead/defaults 解析完成。
+    // 标准面板显式选定的来源(非空 string)直接生效,由下方精确 preflight 把关「已连接且
+    // 提供该模型」;空串/null/undefined 一律按未显式处理(与 IPC 边界同口径,service 作为
+    // 共用内核自防调用方漏归一)。
+    const explicitSourceId =
+      typeof params.providerId === 'string' && params.providerId.trim().length > 0
+        ? params.providerId.trim()
+        : null;
     const providerRouting = await deps.getProviderRoutingContext();
     const providerAvailability = providerRouting.availability;
     const agentProviders = providerAvailability[params.agent] ?? [];
+    const explicitModelResolution = params.model !== undefined
+      ? resolveWorkerModelId({
+          agent: params.agent,
+          model: params.model,
+          providerId: explicitSourceId,
+          availableModels,
+          providers: agentProviders,
+        })
+      : null;
+    if (explicitModelResolution?.ok === false) {
+      return {
+        ok: false,
+        errorCode: 'INVALID_PARAMS',
+        message: explicitModelResolution.message,
+      };
+    }
+    if (
+      explicitModelResolution
+      && !availableModels.some((model) => model.id === explicitModelResolution.model)
+    ) {
+      const validModels = availableModels.map((model) => model.id);
+      return {
+        ok: false,
+        errorCode: 'INVALID_PARAMS',
+        message: `model "${explicitModelResolution.model}" not available for ${params.agent}. valid: ${validModels.join(', ')}`,
+      };
+    }
+
+    // 先保留无 provider 的快速失败；精确的 provider + model 校验要等 Lead/defaults 解析完成。
     if (agentProviders.length === 0) {
       return {
         ok: false,
@@ -606,11 +698,7 @@ export function createOrcaWorkerCreationService(
 
     const lead = await deps.getLeadSessionRow(params.leadSessionId);
     if (!lead) {
-      return {
-        ok: false,
-        errorCode: 'NOT_FOUND',
-        message: `lead session ${params.leadSessionId} not found`,
-      };
+      return { ok: false, errorCode: 'NOT_FOUND', message: `lead session ${params.leadSessionId} not found` };
     }
     const target = await deps.resolveWorkerTarget({
       lead,
@@ -627,77 +715,135 @@ export function createOrcaWorkerCreationService(
       };
     }
 
-    // Pi 尚无远程 runtime:PiAgent.startSession 对 remoteHostId 一律 NotSupportedError,
-    // 远端 ensure 又对 pi 跳过,SSH 远程 Lead + Pi worker 必然在 bootstrap 期被包成笼统
-    // INTERNAL —— 在 preflight 就以可操作信息拒绝(codex-connector 报)。lead 侧的
-    // capabilities 层已拒 Pi 远程会话,此闸补上 worker 创建(UI popover / MCP / 批量)路径。
-    if (lead.remoteHostId && params.agent === 'pi') {
-      return {
-        ok: false,
-        errorCode: 'INVALID_PARAMS',
-        message:
-          'Pi workers are not available for SSH remote leads: pi sessions are local-only for now — pick Claude Code or Codex for this worker',
-      };
-    }
-
+    // 轮 42:解除「SSH remote lead 禁 Pi worker」闸 —— 该闸写于 Pi SSH remote 能力
+    // 落地之前(前提「PiAgent.startSession 对 remoteHostId 一律 NotSupportedError」
+    // 已不成立, 现 remote pi 会话全链路可用)。worker 创建走通用 remote 路径:
+    // createWorkerInTeam 里 worker 继承 lead.remoteHostId(同远端主机 spawn, 共享远端
+    // workingDir), ensureRemoteReadyForSessionStart 对 pi 已支持 silent install +
+    // pi-manager 预上传, orca_worker_bridge 工具面经 SSH remote-forward 隧道注入。
+    // 与 CC/Codex remote worker 同构;此闸会让 remote pi lead 完全无法使用 pi worker。
     const defaults = deps.getWorkerDefaults(params.agent);
-    // 标准面板显式选定的来源(非空 string)直接生效,由下方精确 preflight 把关「已连接且
-    // 提供该模型」;空串/null/undefined 一律按未显式处理(与 IPC 边界同口径,service 作为
-    // 共用内核自防调用方漏归一),维持既有解析,包括「显式 model 不等于显式来源」的
-    // 强制默认路由与 requiresExplicitRoute 唯一来源救援。
-    const explicitSourceId =
-      typeof params.providerId === 'string' && params.providerId.trim().length > 0
-        ? params.providerId.trim()
+    const workerDefaultProviderId =
+      typeof defaults.providerId === 'string' && defaults.providerId.trim()
+        ? defaults.providerId.trim()
         : null;
-    const resolvedConfig = resolveWorkerConfig({ input: params, lead, defaults, availableModels });
+    const inheritedModelComesFromDefaults =
+      params.model === undefined
+      && defaults.model !== undefined
+      && defaults.model !== null;
+    const selectedModel = explicitModelResolution?.model ?? selectWorkerModel({
+      input: params,
+      lead,
+      defaults,
+    });
+    const leadProviderId =
+      params.agent === lead.agentKind && typeof lead.providerId === 'string' && lead.providerId.trim()
+        ? lead.providerId.trim()
+        : null;
+    const leadProviderSnapshot = leadProviderId === null
+      ? undefined
+      : agentProviders.find((provider) => provider.id === leadProviderId);
+    const leadRouteModelResolution = explicitSourceId === null && leadProviderSnapshot
+      ? resolveWorkerModelId({
+          agent: params.agent,
+          model: selectedModel,
+          providerId: leadProviderId,
+          availableModels,
+          providers: agentProviders,
+        })
+      : null;
+    const routableLeadModelResolution =
+      leadRouteModelResolution?.ok === true
+      && leadProviderSnapshot?.models.includes(leadRouteModelResolution.model)
+        ? leadRouteModelResolution
+        : null;
+    const explicitModelKeepsLeadRoute =
+      params.model !== undefined
+      && explicitModelResolution?.ok === true
+      && (
+        selectedModel === lead.model
+        || explicitModelResolution.model === lead.model
+        || leadProviderSnapshot?.models.includes(explicitModelResolution.model) === true
+      );
+    const compatibleLeadModelResolution =
+      routableLeadModelResolution !== null
+      && (params.model === undefined || explicitModelKeepsLeadRoute)
+        ? routableLeadModelResolution
+        : null;
+    const compatibleLeadProviderId = compatibleLeadModelResolution === null
+      ? null
+      : leadProviderId;
+    const inheritedLeadProviderUnusable =
+      explicitSourceId === null
+      && leadProviderId !== null
+      && selectedModel === lead.model
+      && routableLeadModelResolution === null;
+    const inheritedProviderComesFromDefaults =
+      explicitSourceId === null
+      && compatibleLeadModelResolution === null
+      && !inheritedLeadProviderUnusable
+      && inheritedModelComesFromDefaults;
+    const inheritedProviderId = explicitSourceId
+      ?? compatibleLeadProviderId
+      ?? (inheritedLeadProviderUnusable
+        ? leadProviderId
+        : inheritedProviderComesFromDefaults
+          ? workerDefaultProviderId
+          : null);
+    const cachedProviderMayFallback =
+      inheritedProviderComesFromDefaults
+      && workerDefaultProviderId !== null;
+    const modelResolution = compatibleLeadModelResolution
+      ?? explicitModelResolution
+      ?? resolveWorkerModelId({
+        agent: params.agent,
+        model: selectedModel,
+        providerId: inheritedProviderId,
+        allowProviderFallback: cachedProviderMayFallback,
+        availableModels,
+        providers: agentProviders,
+      });
+    if (!modelResolution.ok) {
+      return { ok: false, errorCode: 'INVALID_PARAMS', message: modelResolution.message };
+    }
+    const resolvedConfig = resolveWorkerConfig({
+      input: params,
+      lead,
+      defaults,
+      availableModels,
+      model: modelResolution.model,
+      providerId: inheritedProviderId,
+    });
     if (!resolvedConfig.ok) {
       return { ok: false, errorCode: 'INVALID_PARAMS', message: resolvedConfig.message };
     }
-    const explicitModelDefaultProviderId =
-      params.model !== undefined
-        ? providerRouting.resolveDefaultProviderIdForModel(params.agent, resolvedConfig.model)
-        : null;
-    const explicitModelProviders =
-      params.model !== undefined
-        ? agentProviders.filter((provider) => provider.models.includes(resolvedConfig.model))
-        : [];
-    const explicitModelProvider =
-      explicitModelDefaultProviderId === null
-        ? undefined
-        : agentProviders.find((provider) => provider.id === explicitModelDefaultProviderId);
-    const cachedProviderRouteIsStale =
-      params.model === undefined &&
-      defaults.providerId !== undefined &&
-      defaults.providerId !== null &&
-      !agentProviders.some(
+    const defaultProviderId = providerRouting.resolveDefaultProviderIdForModel(
+      params.agent,
+      resolvedConfig.model,
+    );
+    const cachedProviderRouteIsStale = params.model === undefined
+      && inheritedProviderComesFromDefaults
+      && workerDefaultProviderId !== null
+      && !agentProviders.some(
         (provider) =>
-          provider.id === defaults.providerId && provider.models.includes(resolvedConfig.model),
+          provider.id === workerDefaultProviderId
+          && provider.models.includes(resolvedConfig.model),
       );
-    const cachedProviderFallbackId = cachedProviderRouteIsStale
-      ? providerRouting.resolveDefaultProviderIdForModel(params.agent, resolvedConfig.model)
-      : null;
-    const cachedProviderFallback =
-      cachedProviderFallbackId === null
-        ? undefined
-        : agentProviders.find((provider) => provider.id === cachedProviderFallbackId);
+    const inheritedProviderSnapshot = inheritedProviderId === null
+      ? undefined
+      : agentProviders.find((provider) => provider.id === inheritedProviderId);
+    const inheritedProvider = inheritedProviderSnapshot?.models.includes(resolvedConfig.model)
+      ? inheritedProviderSnapshot
+      : undefined;
     const resolved = {
       ...resolvedConfig,
-      // 仅显式指定 model 不等于显式选择来源：providerId=null 必须保留 spawn-aware 默认路由。
-      // 例外是该模型只有一个来源且它必须依赖 session provider store 注入自己的凭证。
-      providerId:
-        explicitSourceId !== null
-          ? explicitSourceId
-          : params.model !== undefined &&
-              explicitModelProviders.length === 1 &&
-              explicitModelProvider?.requiresExplicitRoute
-            ? explicitModelProvider.id
-            : params.model !== undefined
-              ? null
-              : cachedProviderRouteIsStale
-                ? cachedProviderFallback?.requiresExplicitRoute
-                  ? cachedProviderFallback.id
-                  : null
-                : resolvedConfig.providerId,
+      // Worker session 必须保存实际生效的来源身份，凭证层才能把官方订阅解析为
+      // oauth-bearer。显式来源优先；否则先保留仍提供目标模型的 Lead 来源，再看 defaults；
+      // Lead 已绑定但当前断连时保留其意图交给下方 preflight 明确拒绝，不能静默改走
+      // Cindy AI；仅 defaults 失效或来源不提供目标模型时回落当前默认来源。
+      providerId: explicitSourceId
+        ?? inheritedProvider?.id
+        ?? (inheritedLeadProviderUnusable ? leadProviderId : defaultProviderId),
     };
     const isRemoteMcprCodex =
       params.agent === 'codex' && target.remoteHostId?.startsWith('mcpr:') === true;
@@ -738,10 +884,9 @@ export function createOrcaWorkerCreationService(
       : (explicitSourceId ??
         resolved.providerId ??
         providerRouting.resolveDefaultProviderIdForModel(params.agent, resolved.model));
-    const routeProvider =
-      routeProviderId === null
-        ? undefined
-        : agentProviders.find((provider) => provider.id === routeProviderId);
+    const routeProvider = routeProviderId === null
+      ? undefined
+      : agentProviders.find((provider) => provider.id === routeProviderId);
     // 只有该来源确实带了 Fast 元数据才覆盖;无元数据(旧组装方)保留拍平解析。
     if (routeProvider?.fastModels) {
       const providerSupportsFast = routeProvider.fastModels.includes(resolved.model);
@@ -776,20 +921,13 @@ export function createOrcaWorkerCreationService(
     } else if (resolvedConfig.pendingEffortError) {
       return { ok: false, errorCode: 'INVALID_PARAMS', message: resolvedConfig.pendingEffortError };
     }
-    const budgetRouteProviderId =
-      explicitSourceId !== null
-        ? explicitSourceId
-        : params.model !== undefined
-          ? explicitModelDefaultProviderId
-          : cachedProviderRouteIsStale
-            ? cachedProviderFallbackId
-            : resolved.providerId;
+    const budgetRouteProviderId = resolved.providerId;
 
     // codex/ 预算模型依赖 Cindy AI API key；XD/default 路由即使因 provider 缺失，
     // 也要先返回这条可操作的凭证错误，避免被下方通用的精确路由失败遮蔽。
     if (
-      budgetModelRequiresApiKey(params.agent, resolved.model, deps.readClaudeApiKey() != null) &&
-      (budgetRouteProviderId === null || budgetRouteProviderId === 'xd')
+      budgetModelRequiresApiKey(params.agent, resolved.model, deps.readClaudeApiKey() != null)
+      && (budgetRouteProviderId === null || budgetRouteProviderId === 'xd')
     ) {
       return {
         ok: false,
@@ -815,24 +953,24 @@ export function createOrcaWorkerCreationService(
             'subscription-direct models require the local proxy path — pick an SSH-compatible model',
         };
       }
-      // 默认路由 (resolved.providerId=null) 同样要闸 — 且必须按
-      // routeProviderId/routeProvider (上方 583 行) 判定:它已经
-      // 「显式来源 → resolved → resolveDefaultProviderIdForModel」解析出
-      // 实际落点;budgetRouteProviderId 在 worker 未显式传 model 时仍为
-      // null, 只查它会让默认路由的 chat-bridged 漏过 (codex-connector
-      // R24 P2)。
-      if (routeProvider?.chatBridgedCodex === true) {
+      // 未显式来源的 Worker 也必须按最终持久化的实际 routeProvider 判定；否则
+      // 默认来源上的 chat-bridged provider 会漏过远端兼容闸。
+      if (routeProvider?.localOnlyForSsh === true) {
         return {
           ok: false,
           errorCode: 'INVALID_PARAMS',
           message:
             `provider "${routeProvider.id}" is not available for SSH remote workers: ` +
-            'chat-bridged Codex providers require the local proxy path — pick an SSH-compatible provider',
+            'this provider requires local execution — pick an SSH-compatible provider',
         };
       }
     }
 
-    if (params.model !== undefined && explicitModelDefaultProviderId === null) {
+    if (
+      params.model !== undefined
+      && defaultProviderId === null
+      && explicitSourceId === null
+    ) {
       return {
         ok: false,
         errorCode: 'PROVIDER_ROUTE_UNAVAILABLE',
@@ -845,7 +983,7 @@ export function createOrcaWorkerCreationService(
       };
     }
 
-    if (cachedProviderRouteIsStale && cachedProviderFallbackId === null) {
+    if (cachedProviderRouteIsStale && defaultProviderId === null) {
       return {
         ok: false,
         errorCode: 'PROVIDER_ROUTE_UNAVAILABLE',
@@ -875,14 +1013,25 @@ export function createOrcaWorkerCreationService(
         };
       }
     }
+    if (
+      resolved.providerId === null
+      && !agentProviders.some((provider) => provider.models.includes(resolved.model))
+    ) {
+      return {
+        ok: false,
+        errorCode: 'PROVIDER_ROUTE_UNAVAILABLE',
+        message: buildProviderRouteUnavailableMessage(
+          params.agent,
+          null,
+          resolved.model,
+          undefined,
+        ),
+      };
+    }
     const workerId = deps.createId();
     let reservation:
       | { ok: true; occupiedSlotsBefore: number }
-      | {
-          ok: false;
-          errorCode:
-            'DUPLICATE_LABEL' | 'WORKER_CREATION_IN_PROGRESS' | 'WORKER_LIMIT_HARD_EXCEEDED';
-        };
+      | { ok: false; errorCode: 'DUPLICATE_LABEL' | 'WORKER_CREATION_IN_PROGRESS' | 'WORKER_LIMIT_HARD_EXCEEDED' };
     try {
       reservation = await deps.reserveWorkerCreation({
         reservationId: workerId,
@@ -896,18 +1045,10 @@ export function createOrcaWorkerCreationService(
     }
     if (!reservation.ok) {
       if (reservation.errorCode === 'DUPLICATE_LABEL') {
-        return {
-          ok: false,
-          errorCode: 'DUPLICATE_LABEL',
-          message: `label "${label.value}" already used in this team`,
-        };
+        return { ok: false, errorCode: 'DUPLICATE_LABEL', message: `label "${label.value}" already used in this team` };
       }
       if (reservation.errorCode === 'WORKER_CREATION_IN_PROGRESS') {
-        return {
-          ok: false,
-          errorCode: 'WORKER_CREATION_IN_PROGRESS',
-          message: `label "${label.value}" is currently being created`,
-        };
+        return { ok: false, errorCode: 'WORKER_CREATION_IN_PROGRESS', message: `label "${label.value}" is currently being created` };
       }
       return {
         ok: false,
@@ -918,19 +1059,11 @@ export function createOrcaWorkerCreationService(
     }
     const softLimitExceeded = reservation.occupiedSlotsBefore >= settings.workerSoftLimit;
     let reservationValid = true;
-    const renewalTimer = setInterval(
-      () => {
-        void deps
-          .renewWorkerCreationReservation(workerId, ORCA_WORKER_CREATION_RESERVATION_LEASE_MS)
-          .then((renewed) => {
-            if (!renewed) reservationValid = false;
-          })
-          .catch(() => {
-            reservationValid = false;
-          });
-      },
-      Math.floor(ORCA_WORKER_CREATION_RESERVATION_LEASE_MS / 3),
-    );
+    const renewalTimer = setInterval(() => {
+      void deps.renewWorkerCreationReservation(workerId, ORCA_WORKER_CREATION_RESERVATION_LEASE_MS)
+        .then((renewed) => { if (!renewed) reservationValid = false; })
+        .catch(() => { reservationValid = false; });
+    }, Math.floor(ORCA_WORKER_CREATION_RESERVATION_LEASE_MS / 3));
     renewalTimer.unref?.();
 
     try {
@@ -959,6 +1092,7 @@ export function createOrcaWorkerCreationService(
         providerId: resolved.providerId,
         effort: resolved.effort as MakerSessionCreateOpts['effort'],
         fastMode: resolved.fastMode,
+        // 所有创建入口先解析 Worker 创建偏好，再统一透传到这里；不继承 Lead 权限。
         permissionMode: resolveOrcaWorkerPermissionMode(params.workerPermissionMode),
         title: `Worker · ${role.value} · ${label.value}`,
         orcaRole: 'worker',
@@ -990,19 +1124,12 @@ export function createOrcaWorkerCreationService(
           return toInternalFailure(err);
         }
       }
-
       const renewed = reservationValid
-        ? await deps
-            .renewWorkerCreationReservation(workerId, ORCA_WORKER_CREATION_RESERVATION_LEASE_MS)
-            .catch(() => false)
+        ? await deps.renewWorkerCreationReservation(workerId, ORCA_WORKER_CREATION_RESERVATION_LEASE_MS).catch(() => false)
         : false;
       if (!renewed) {
         await cleanupBootstrappedWorkerSession(workerSession.id);
-        return {
-          ok: false,
-          errorCode: 'INTERNAL',
-          message: 'worker creation reservation expired before persistence',
-        };
+        return { ok: false, errorCode: 'INTERNAL', message: 'worker creation reservation expired before persistence' };
       }
 
       try {
@@ -1018,11 +1145,7 @@ export function createOrcaWorkerCreationService(
       } catch (err) {
         await cleanupBootstrappedWorkerSession(workerSession.id);
         if (isWorkerLabelConstraintError(err)) {
-          return {
-            ok: false,
-            errorCode: 'DUPLICATE_LABEL',
-            message: `label "${label.value}" already used in this team`,
-          };
+          return { ok: false, errorCode: 'DUPLICATE_LABEL', message: `label "${label.value}" already used in this team` };
         }
         return toInternalFailure(err);
       }
@@ -1048,10 +1171,10 @@ export function createOrcaWorkerCreationService(
           effort: resolved.effort,
           fastMode: resolved.fastMode,
           providerId: resolved.providerId,
-          role: role.value,
-          label: label.value,
           workingDir: target.workingDir,
           ...(target.remoteHostId ? { remoteHostId: target.remoteHostId } : {}),
+          role: role.value,
+          label: label.value,
         },
       };
     } finally {

@@ -3,6 +3,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { messages, sessions } from '../../schema';
+import { tx as runInprocTx } from '../../worker/opHandlers/tx';
 
 const h = vi.hoisted(() => ({
   db: null as ReturnType<typeof drizzle> | null,
@@ -63,7 +64,10 @@ function createDb(): Database.Database {
     CREATE TABLE sessions (
       id TEXT PRIMARY KEY,
       cleared_at INTEGER,
-      status TEXT NOT NULL DEFAULT 'active'
+      status TEXT NOT NULL DEFAULT 'active',
+      list_preview TEXT,
+      list_preview_role TEXT,
+      list_message_count INTEGER
     );
     CREATE TABLE messages (
       id TEXT PRIMARY KEY,
@@ -85,13 +89,15 @@ function createDb(): Database.Database {
   h.db = db;
   h.client = {
     drizzle: db,
-    exec: vi.fn(async (sql: string, params: unknown[] = []) => {
-      // Model /clear winning between the preflight SELECT and the guarded
-      // INSERT. The single SQL statement must then insert zero rows.
-      if (h.raceOnInsert && sql.startsWith('INSERT INTO messages')) {
+    exec: vi.fn(async (sql: string, params: unknown[] = []) => sqlite.prepare(sql).run(...params)),
+    // 写事务走真实 in-proc 事务处理器:guarded INSERT 的 CAS 语句必须是被测代码
+    // 真正下发的那一条。竞态在事务入口注入,等价于 /clear 在预检 SELECT 与
+    // guarded INSERT 之间生效。
+    tx: vi.fn(async (name: string, args: unknown) => {
+      if (h.raceOnInsert && name === 'message.insert') {
         sqlite.prepare('UPDATE sessions SET cleared_at = ? WHERE id = ?').run(200, 's1');
       }
-      return sqlite.prepare(sql).run(...params);
+      return runInprocTx(sqlite, { name, args }) as never;
     }),
   };
   return sqlite;

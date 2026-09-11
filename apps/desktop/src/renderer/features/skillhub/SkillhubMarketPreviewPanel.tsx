@@ -1,9 +1,12 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Download, FileText, GraduationCap, X } from 'lucide-react';
 
 import { MarkdownRenderer } from '@/components/chat/MarkdownRenderer';
+import { Button } from '@/components/ui/button';
 import { WINDOW_NO_DRAG_STYLE } from '@/components/layout/windowDrag';
+import { useAuth } from '@/contexts/AuthContext';
+import { getDataOwnerGeneration, isDataOwnerGenerationCurrent, type DataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
 import { useNavigate } from 'react-router-dom';
 
 import { cn } from '@/lib/utils';
@@ -18,9 +21,11 @@ import {
   previewBodyForFile,
   type HubPreviewFile,
   type HubPreviewFileMeta,
+  type MarketCardPrimaryAction,
 } from './lib/marketDetailViewModel';
 import { marketActionErrorMessage } from './lib/marketErrors';
 import { marketVisibilityLabelKey } from './lib/marketVisibility';
+import { skillPublisherLabel } from './lib/publisherLabel';
 import {
   effectivePublishedStatus,
   effectivePublishedStatusVersion,
@@ -28,6 +33,7 @@ import {
   publishedStatusLabelKey,
 } from './lib/publishedStatus';
 import { MarketPreviewTree } from './components/MarketPreviewTree';
+import { MarketLocalSkills } from './components/MarketLocalSkills';
 import { ManageButton, ManageMenu, type MarketCardManageAction } from './components/MarketCard';
 import { ScanResultDialog } from './ScanResultDialog';
 import type { ScanResultPayload } from './PublishDialog';
@@ -35,6 +41,8 @@ import type { ScanResultPayload } from './PublishDialog';
 interface SkillhubMarketPreviewPanelProps {
   skill: MarketSkill | null;
   open: boolean;
+  /** 与卡片同口径的主操作:clone / manage / none。头部据此渲染操作按钮；省略时回落到 marketDetailActions 口径(Meka 复用同一面板) */
+  primaryAction?: MarketCardPrimaryAction;
   onClose: () => void;
   onClone?: (skill: MarketSkill) => void;
   onManageAction?: (skill: MarketSkill, action: MarketCardManageAction) => void;
@@ -63,6 +71,7 @@ async function loadSkillhubFiles(
   return window.electronAPI.skillhub.getPublishedFiles({
     name: skill.name,
     version: skill.latestVersion,
+    catalogScope: skill.catalogScope,
   });
 }
 
@@ -74,6 +83,7 @@ async function readSkillhubFile(
     name: skill.name,
     path,
     version: skill.latestVersion,
+    catalogScope: skill.catalogScope,
   });
 }
 
@@ -83,12 +93,13 @@ async function readSkillhubFile(
  * 结构:
  *   Hero 头部 — 标题行(标题+可见性 chip | 操作按钮),元信息行,描述(满宽)
  *   正文 — 左栏(FILES 树) + 右侧 Markdown
- * 遮罩盖整个内容区,sidebar 保持可见可点(本地安装位置只看 sidebar 的 MarketSelectionPanel)。
+ * 遮罩盖整个内容区,sidebar 保持可见可点；头部显示本地安装位置及管理操作。
  */
 export function SkillhubMarketPreviewPanel({
   skill,
   open,
   onClose,
+  primaryAction,
   onClone,
   onManageAction,
   onManage,
@@ -98,6 +109,8 @@ export function SkillhubMarketPreviewPanel({
 }: SkillhubMarketPreviewPanelProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const { dataOwnerId } = useAuth();
+  const owner = getDataOwnerGeneration();
   const skillName = skill?.name ?? null;
   const skillVersion = skill?.latestVersion;
   const panelOpen = open && skillName !== null;
@@ -106,6 +119,13 @@ export function SkillhubMarketPreviewPanel({
     canClone: onClone !== undefined,
     canManage: onManage !== undefined || onManageAction !== undefined,
   });
+  // 上游以 primaryAction 表达主操作;Meka 复用同一面板时省略该 prop,
+  // 回落到 marketDetailActions 口径(注入的 onManage + isMine)。
+  const legacyActions = primaryAction === undefined;
+  const showLearn = legacyActions ? detailActions.clone && allowLearn : primaryAction === 'clone';
+  const showClone = legacyActions ? detailActions.clone : primaryAction === 'clone';
+  const showManageButton = legacyActions && detailActions.manage;
+  const showManageMenu = legacyActions ? detailActions.manage : primaryAction === 'manage';
   const [files, setFiles] = useState<HubPreviewFileMeta[]>([]);
   const [filesLoading, setFilesLoading] = useState(false);
   const [filesError, setFilesError] = useState<string | null>(null);
@@ -115,7 +135,18 @@ export function SkillhubMarketPreviewPanel({
   // 审核状态徽标点击 → 拉取扫描结果,复用发布完成时的 ScanResultDialog
   const [scanResult, setScanResult] = useState<ScanResultPayload | null>(null);
   const [scanDialogOpen, setScanDialogOpen] = useState(false);
+  const [scanResultOwner, setScanResultOwner] = useState<DataOwnerGeneration | null>(null);
   const status = skill ? effectivePublishedStatus(skill) : null;
+  const reviewVersion = skill ? effectivePublishedStatusVersion(skill) ?? skill.latestVersion : undefined;
+  const scanRequestId = useRef(0);
+
+  useEffect(() => {
+    setScanDialogOpen(false);
+    setScanResult(null);
+    setScanResultOwner(null);
+    // A late reply must not show another Skill/version's private review feedback.
+    return () => { scanRequestId.current += 1; };
+  }, [panelOpen, skillName, reviewVersion, status, skill?.catalogScope, skill?.canManage, dataOwnerId, owner]);
 
   // ESC 关闭
   useEffect(() => {
@@ -194,6 +225,7 @@ export function SkillhubMarketPreviewPanel({
   }, [panelOpen, readFile, selectedPath, skill, skillName, skillVersion, t]);
 
   const tree = useMemo(() => buildPreviewTree(files), [files]);
+  const currentScanResult = scanResultOwner && isDataOwnerGenerationCurrent(scanResultOwner) ? scanResult : null;
 
   return (
     <>
@@ -224,8 +256,8 @@ export function SkillhubMarketPreviewPanel({
           <div className="flex h-full min-h-0 flex-col">
             {/* Hero 头部 — 仅标题行与操作同排,元信息/描述满宽 */}
             <header className="shrink-0 border-b border-[var(--cmd-palette-border)] px-6 pb-5 pt-5">
-              <div className="flex items-center justify-between gap-4">
-                <div className="flex min-w-0 items-center gap-2.5">
+              <div className="flex items-center gap-3">
+                <div className="flex min-w-24 flex-1 items-center gap-2.5 overflow-hidden">
                   <h2 className="truncate text-lg font-semibold leading-tight">
                     {skill.displayName || skill.name}
                   </h2>
@@ -246,23 +278,28 @@ export function SkillhubMarketPreviewPanel({
                       type="button"
                       title={t('skillhub.marketActions.viewScanResult')}
                       onClick={() => {
+                        if (!isDataOwnerGenerationCurrent(owner)) return;
+                        const requestId = ++scanRequestId.current;
+                        const isCurrentRequest = () => requestId === scanRequestId.current && isDataOwnerGenerationCurrent(owner);
                         void window.electronAPI.skillhub
                           .getScanStatus({
                             slug: skill.name,
-                            version: effectivePublishedStatusVersion(skill) ?? skill.latestVersion,
+                            version: reviewVersion,
+                            // Catalog reads only expose approved releases; owners read failed/rejected releases natively.
+                            catalogScope: status === 'rejected' && skill.canManage ? undefined : skill.catalogScope,
                           })
                           .then((res) => {
-                            setScanResult(
-                              res.success
-                                ? {
-                                    status: res.status,
-                                    gates: res.gates as ScanResultPayload['gates'],
-                                  }
-                                : {
-                                    status: 'scan_status_unavailable',
-                                    gates: [{ name: 'scan-status', status: 'unavailable' }],
-                                  },
-                            );
+                            if (!isCurrentRequest()) return;
+                            setScanResultOwner(owner);
+                            setScanResult(res.success
+                              ? { status: res.status, gates: res.gates as ScanResultPayload['gates'], rejectionReason: res.rejectionReason }
+                              : { status: 'scan_status_unavailable', gates: [{ name: 'scan-status', status: 'unavailable' }] });
+                            setScanDialogOpen(true);
+                          })
+                          .catch(() => {
+                            if (!isCurrentRequest()) return;
+                            setScanResultOwner(owner);
+                            setScanResult({ status: 'scan_status_unavailable', gates: [{ name: 'scan-status', status: 'unavailable' }] });
                             setScanDialogOpen(true);
                           });
                       }}
@@ -277,17 +314,17 @@ export function SkillhubMarketPreviewPanel({
                   ) : null}
                 </div>
 
-                <div className="flex shrink-0 items-center gap-2">
-                  {detailActions.clone && allowLearn ? (
-                    <button
-                      type="button"
+                <div className="flex min-w-0 items-center gap-2 overflow-x-auto py-1">
+                  {showLearn ? (
+                    <Button
+                      variant="secondary"
                       onClick={() => {
                         // Learn = 以该 skill 为参考蒸馏本地技能(不安装原件)。
                         // 不预创建会话:把 `/learn hub:<slug> ` 预填进系统原生的
                         // New Maker 草稿,用户在那里用原生入口选 agent/模型/项目,
                         // 发送时走正常建会话路径(蒸馏会话继承该会话的模型)。
                         saveComposerDraft(NEW_MAKER_DRAFT_KEY, {
-                          text: plainTextToTiptapDoc(`/learn hub:${skill.name} `),
+                          text: plainTextToTiptapDoc(`/learn hub:${skill.catalogScope ?? 'market'}:${skill.name} `),
                           attachments: [],
                         });
                         // 草稿目标重置为本地对话:残留的 device-link 远程草稿
@@ -298,58 +335,44 @@ export function SkillhubMarketPreviewPanel({
                         onClose();
                         navigate('/cc-agent/new');
                       }}
-                      className={cn(
-                        'flex shrink-0 items-center gap-1.5 rounded-full border border-[var(--border-default)] transition-colors',
-                        'text-[var(--text-secondary)] hover:bg-[var(--surface-chip)]',
-                      )}
-                      style={{
-                        height: '32px',
-                        padding: '0 14px',
-                        fontSize: '13px',
-                        fontWeight: 500,
-                      }}
+                      className="gap-1.5 px-3.5"
                     >
                       <GraduationCap size={14} className="shrink-0" />
-                      <span className="leading-none">{t('learn.hub.learnButton')}</span>
-                    </button>
+                      <span className="leading-none">{t("learn.hub.learnButton")}</span>
+                    </Button>
                   ) : null}
-                  {detailActions.clone && onClone ? (
-                    <button
-                      type="button"
+                  {onClone && showClone ? (
+                    <Button
+                      variant="cta"
                       onClick={() => onClone(skill)}
-                      className={cn(
-                        'flex shrink-0 items-center gap-1.5 rounded-full transition-colors',
-                        'bg-[var(--lightbox-cta-bg)] text-[var(--lightbox-cta-fg)] hover:bg-[var(--lightbox-cta-hover)]',
-                      )}
-                      style={{
-                        height: '32px',
-                        padding: '0 14px',
-                        fontSize: '13px',
-                        fontWeight: 500,
-                      }}
+                      className="gap-1.5 px-3.5"
                     >
                       <Download size={14} className="shrink-0" />
-                      <span className="leading-none">{t('skillhub.marketCard.clone')}</span>
-                    </button>
+                      <span className="leading-none">{t("skillhub.marketCard.clone")}</span>
+                    </Button>
                   ) : null}
-                  {detailActions.manage && onManage ? (
+                  {onManage && showManageButton ? (
                     <ManageButton onClick={() => onManage(skill)} />
-                  ) : detailActions.manage && onManageAction ? (
+                  ) : null}
+                  {onManageAction && showManageMenu ? (
                     <ManageMenu skill={skill} onAction={onManageAction} />
                   ) : null}
-                  <button
-                    type="button"
-                    onClick={onClose}
-                    aria-label={t('diffPanel.shell.closeAria')}
-                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[var(--text-secondary)] hover:bg-[var(--surface-chip)]"
-                  >
-                    <X size={16} />
-                  </button>
+                  {legacyActions ? null : (
+                    <MarketLocalSkills key={`${skill.catalogScope}:${skill.name}`} skill={skill} />
+                  )}
                 </div>
+                <button
+                  type="button"
+                  onClick={onClose}
+                  aria-label={t('diffPanel.shell.closeAria')}
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[var(--text-secondary)] hover:bg-[var(--surface-chip)]"
+                >
+                  <X size={16} />
+                </button>
               </div>
 
               <p className="mt-1 truncate text-xs text-[var(--cmd-palette-item-meta)]">
-                {skill.authorName} · {skill.name} · v{skill.latestVersion}
+                {skillPublisherLabel(skill)} · {skill.name} · v{skill.latestVersion}
               </p>
               {skill.description && (
                 <p className="mt-3 text-sm leading-[1.55] text-[var(--text-secondary-mid)]">
@@ -364,7 +387,7 @@ export function SkillhubMarketPreviewPanel({
                 <h3 className="mb-2 shrink-0 text-xs font-medium uppercase tracking-wider text-[var(--cmd-palette-item-meta)]">
                   {t('skillhub.marketDetail.files')}
                 </h3>
-                <div className="min-h-0 flex-1 overflow-y-auto">
+                <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
                   {filesLoading ? null : tree.length === 0 ? (
                     <p className="px-1 text-xs text-[var(--cmd-palette-item-meta)]">
                       {t('skillhub.marketDetail.noPreviewFiles')}
@@ -381,7 +404,7 @@ export function SkillhubMarketPreviewPanel({
 
               <main
                 className={cn(
-                  'flex min-w-0 flex-1 flex-col overflow-y-auto bg-[hsl(var(--content-area))]',
+                  'flex min-w-0 flex-1 flex-col overflow-y-auto overscroll-contain bg-[hsl(var(--content-area))]',
                   'text-15 font-normal leading-[1.65] text-[var(--text-primary)]',
                 )}
               >
@@ -425,9 +448,9 @@ export function SkillhubMarketPreviewPanel({
       </aside>
 
       <ScanResultDialog
-        open={scanDialogOpen}
-        onClose={() => setScanDialogOpen(false)}
-        result={scanResult}
+        open={scanDialogOpen && currentScanResult !== null}
+        onClose={() => { scanRequestId.current += 1; setScanDialogOpen(false); }}
+        result={currentScanResult}
       />
     </>
   );

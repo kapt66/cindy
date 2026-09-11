@@ -223,6 +223,22 @@ function applyMigrationScriptSync(db: Sqlite, fileName: string): void {
   if (fileName === '0092_sync_upstream_20260821.sql') {
     ensureColumnSync(db, 'sessions', 'codex_plan_json', 'text');
   }
+  // 上游 2026-09 同步新增的占位 SQL + 配套脚本迁移(加列真身在
+  // drizzle/scripts/0100|0102|0107_*.ts),此处同样按文件名等价模拟。
+  if (fileName === '0100_fresh_stryfe.sql') {
+    ensureColumnSync(db, 'sessions', 'list_preview', 'text');
+    ensureColumnSync(db, 'sessions', 'list_preview_role', 'text');
+    ensureColumnSync(db, 'sessions', 'list_message_count', 'integer');
+    return;
+  }
+  if (fileName === '0102_boring_champions.sql') {
+    ensureColumnSync(db, 'sessions', 'writable_dirs', "text DEFAULT '[]' NOT NULL");
+    return;
+  }
+  if (fileName === '0107_schedule-model-harness.sql') {
+    ensureColumnSync(db, 'schedules', 'model_agent_kind', 'text');
+    return;
+  }
 }
 
 async function applyMigrationScript(target: DbClient, fileName: string): Promise<void> {
@@ -350,6 +366,20 @@ async function applyMigrationScript(target: DbClient, fileName: string): Promise
   }
   if (fileName === '0092_sync_upstream_20260821.sql') {
     await ensureColumn(target, 'sessions', 'codex_plan_json', 'text');
+  }
+  if (fileName === '0100_fresh_stryfe.sql') {
+    await ensureColumn(target, 'sessions', 'list_preview', 'text');
+    await ensureColumn(target, 'sessions', 'list_preview_role', 'text');
+    await ensureColumn(target, 'sessions', 'list_message_count', 'integer');
+    return;
+  }
+  if (fileName === '0102_boring_champions.sql') {
+    await ensureColumn(target, 'sessions', 'writable_dirs', "text DEFAULT '[]' NOT NULL");
+    return;
+  }
+  if (fileName === '0107_schedule-model-harness.sql') {
+    await ensureColumn(target, 'schedules', 'model_agent_kind', 'text');
+    return;
   }
 }
 

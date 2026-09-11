@@ -40,11 +40,15 @@ import {
   makeInteractionCancel,
   makeInteractionRequest,
   makeTaskAck,
+  type MessageOpResultPayload,
+  type TelegramEmojiReactions,
   makeTurnEnd,
   makeTurnProgress,
   makeTurnReopen,
+  HOOK_FEATURE_TURN_DELIVERY,
   HOOK_FEATURE_TURN_REOPEN,
   type HookMessage,
+  type HookTurnEndMessage,
   type InteractionButton,
   type InteractionDecisionPayload,
   type TaskAckPayload,
@@ -52,15 +56,21 @@ import {
   type TaskDispatchPayload,
   type TaskRejectReason,
   type TaskSource,
+  type QueryRequestPayload,
+  type TurnDeliveryPayload,
   type TurnEndPayload,
 } from '@cindy/slack-hook-protocol';
+import { createTelegramMessageLifecycle, type TelegramMessageLifecycle } from '@cindy/im';
 
 import { HOOK_CHAT_WORKSPACE_ALIAS } from '../../shared/hookControlIpc.js';
 import type { GroupHistoryAccessScope } from '../im/shared/groupHistoryAccess.js';
 import { groupHistoryAccessForExternalKey } from './groupHistoryScope.js';
 import { isPathWithin } from './paths.js';
+import { createAckReactions, type AckReactionTask } from './ackReactions.js';
 import type { HookConnectionConfig } from './store.js';
 import type { HookBindingStore } from './bindings.js';
+import { terminalDeliveryExpired } from './requestLedger.js';
+import type { HookRequestLedger, HookTerminalRecord } from './requestLedger.js';
 
 /** 会话执行器抽象 —— 生产实现 session-runner.ts(包 maker), 测试注入假的。 */
 export interface HookSessionRunner {
@@ -144,6 +154,8 @@ export interface HookRunRequest {
   laneKind?: 'dm' | 'group';
   /** true = 新建 session(workingDir/title 生效); false = 复用/接管已有。 */
   isNew: boolean;
+  /** Create and expose the task without sending an Agent turn (`/new`). */
+  createOnly?: boolean;
   /**
    * 新建任务替换了哪条不可投递的旧任务。runner 用它从旧任务仍可读取的
    * 本地消息构造一次性 Agent 交接；省略 = 普通新建，不补旧任务上下文。
@@ -239,6 +251,8 @@ export type PrepareWorktreeResult =
 export interface HookDispatcherDeps {
   getConnection: (id: string) => HookConnectionConfig | null;
   bindings: HookBindingStore;
+  /** Durable terminal request state, injected by the Electron owner boundary. */
+  terminalLedger?: HookRequestLedger;
   runner: HookSessionRunner;
   /**
    * 可选: 为新建 hook 会话预建独立 git worktree(并发隔离 —— 每个
@@ -346,6 +360,28 @@ export interface HookDispatcher {
   /** transport 离线或失去已协商能力时调用，禁止继续向旧 socket 发送帧。 */
   onDisconnected(connectionId: string): void;
   /**
+   * msg.op.result: 消息操作的回执。当前只有 ack 表情用它 —— 表情是纯装饰,
+   * 失败只记一行, 不重试、不影响任务本身。
+   */
+  onMessageOpResult(payload: MessageOpResultPayload): void;
+  /**
+   * 用户的表情档位(off / minimal / expressive)。服务端经 provider.behavior.state
+   * 下发, manager 收到即转告。
+   *
+   * `null` = **有效值还不知道**(连接刚起、behavior.state 还没到)。这时一帧都
+   * 不发: 拿基线先斩后奏, 设置里关掉表情的用户会在每次重启后又被打一次。
+   */
+  setEmojiReactionsMode(mode: TelegramEmojiReactions | null): void;
+  /**
+   * 在 manager 关 transport / 重置档位**之前**结清 👀 欠账。
+   *
+   * deactivateAccount 里那次 onAccountTeardown 是兜底 —— 走到那里时 manager
+   * 已经 reset 了档位(null → 一帧不发)、stopAll 也删光了发送函数, 什么都发
+   * 不出去。真正有效的结账必须在两者之前, 由 manager 显式触发。幂等: opId
+   * 不变, 服务端去重, 兜底那次重复发也只是同一答复。
+   */
+  settleAckReactions(): void;
+  /**
    * task.cancel: 中断指定 requestId 的任务。排队中的直接摘除并回
    * turn.end(cancelled); 执行中的标记取消并 abort 对应 session, 收口时以
    * cancelled 回推; 未知 / 已收口的静默忽略(server 侧幂等消化竞态)。
@@ -357,11 +393,18 @@ export interface HookDispatcher {
    * 走同一条串行链, 不与在途的会话定位竞争。
    */
   handleSessionArchive(connectionId: string, externalKey: string): void;
+  /** Create the next provider task immediately and return only after it exists. */
+  createSession(
+    connectionId: string,
+    request: NonNullable<QueryRequestPayload['sessionNew']>,
+  ): Promise<{ sessionId: string }>;
   /**
    * interaction.decision: 交互卡按钮回流。归属校验(requestId 必须是本连接
    * 正在执行的任务)后按 interactionId 配对 resolve; 未知 / 迟到的静默忽略。
    */
   handleInteractionDecision(connectionId: string, payload: InteractionDecisionPayload): void;
+  /** X server 对普通 turn.end 的持久接管 / 渠道发布状态回执。 */
+  handleTurnDelivery(connectionId: string, payload: TurnDeliveryPayload): void;
   /** Re-open ingress after the next account DB is ready. */
   activateAccount(): void;
   /** Close ingress, abort old-account turns and await their final async boundary. */
@@ -378,6 +421,10 @@ export interface HookDispatcher {
 const MAX_QUEUE_PER_SESSION = 20;
 /** 单连接离线 turn.end 缓存上限(FIFO 丢最老)。 */
 const MAX_PENDING_TURN_ENDS = 100;
+/** ACK 能力启用后，普通 turn.end 在未获 server 接管确认前的首轮等待。 */
+const TURN_DELIVERY_ACK_TIMEOUT_MS = 10_000;
+/** 重发退避封顶；完整正文仍保留到 ACK、账号切换或容量淘汰。 */
+const TURN_DELIVERY_ACK_MAX_DELAY_MS = 60_000;
 
 /**
  * 失败任务的续跑记账保留时长。
@@ -513,6 +560,8 @@ type ContextCursorCommit = (
 interface PendingTask {
   connectionId: string;
   requestId: string;
+  /** ACK sent when this task was accepted or queued; persisted at terminal state. */
+  ack: TaskAckPayload;
   externalKey: string;
   run: HookRunRequest;
   accountGeneration: number;
@@ -538,6 +587,17 @@ interface PendingTask {
    * 认领的孤儿, 反复改映射会累积(PR #733 review 指出)。
    */
   cleanupWorktree?: () => Promise<void>;
+}
+
+interface PendingTurnEnd {
+  message: HookTurnEndMessage;
+  terminal: Omit<HookTerminalRecord, 'completedAt' | 'delivery'>;
+  /**
+   * 与账本行同一个时间戳 —— 这条缓冲项是「我方主动补发」的出箱项, 同样受投递
+   * 时效约束(见 HOOK_TERMINAL_DELIVERY_TTL_MS 的不变量)。缺了它, 守卫就只对
+   * 落盘那份生效, 行为取决于断线期间进程有没有重启过。
+   */
+  completedAt: number;
 }
 
 /** 一条等待续跑的失败任务(见 pendingReopens)。 */
@@ -569,10 +629,27 @@ interface PendingReopen {
   expiresAt: number;
 }
 
+/**
+ * 官方 legacy adapter 的消息生命周期。
+ *
+ * Slack / X 继续沿用原路径；只有 Telegram 任务接入共享内核。当前服务端仍由
+ * `turn.progress` / `turn.end` 实际发布，所以这里的 sent 表示终态已进入客户端
+ * 可靠发布边界，不冒充 Telegram Bot API 的最终回执。
+ */
+function telegramLegacyLifecycle(
+  connectionId: string,
+  requestId: string,
+  source: TaskSource | undefined,
+): TelegramMessageLifecycle | null {
+  if (source?.im !== 'telegram') return null;
+  return createTelegramMessageLifecycle(`telegram-official:${connectionId}:${requestId}`);
+}
+
 export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
   const {
     getConnection,
     bindings,
+    terminalLedger,
     runner,
     prepareWorktree,
     buildContextPrefix,
@@ -608,8 +685,7 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
     return result;
   }
 
-  /** (connectionId, requestId) -> 已回放的 ack(幂等表, 进程内)。app 重启后
-   *  server 重投会真重跑一次 —— 原任务已随进程死亡, 重跑正是期望行为。 */
+  /** (connectionId, requestId) -> 已回放的 ack(快速幂等表, 进程内)。 */
   const ackHistory = new Map<string, TaskAckPayload>();
   /** 幂等表容量上限: 超出淘汰最老条目(Map 迭代序即插入序), 防长驻进程无界增长。 */
   const MAX_ACK_HISTORY = 2000;
@@ -623,7 +699,7 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
    * 段的两帧在同一 tick 送达, 生产可达)。链式 promise 保证同 key 严格按序。
    */
   const keyChains = new Map<string, Promise<void>>();
-  function serializeByKey(key: string, fn: () => Promise<void>): void {
+  function serializeByKey(key: string, fn: () => Promise<void>): Promise<void> {
     const prev = keyChains.get(key) ?? Promise.resolve();
     const next = prev.then(fn, fn);
     const stored = next.catch(() => undefined);
@@ -631,6 +707,7 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
     void stored.finally(() => {
       if (keyChains.get(key) === stored) keyChains.delete(key);
     });
+    return next;
   }
   /** 同一 session 的受理段串行化，避免不同 externalKey 并发判断空闲并同时占槽。 */
   const sessionAdmissionChains = new Map<string, Promise<void>>();
@@ -662,8 +739,23 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
   }
   /** 每连接当前发送函数(transport 重建后由 onConnected / handleDispatch 刷新)。 */
   const sendFns = new Map<string, (m: HookMessage) => boolean>();
-  /** 离线积压的 turn.end, 按连接缓存。 */
-  const pendingTurnEnds = new Map<string, HookMessage[]>();
+  /** 离线积压的 turn.end, 按连接缓存; durable terminal 先记 pending, 发送成功后标 sent。 */
+  const pendingTurnEnds = new Map<string, PendingTurnEnd[]>();
+  /** 双向 ACK 已协商时，等待 server durable accepted 的完整 turn.end 副本。 */
+  const pendingDeliveryTurnEnds = new Map<
+    string,
+    {
+      connectionId: string;
+      message: HookTurnEndMessage;
+      attempts: number;
+      timer: ReturnType<typeof setTimeout> | null;
+      /**
+       * 这份结果算完的时刻(与账本行同一个数)。退避重发没有次数上限(只有延迟
+       * 上限), 所以投递时效是它唯一的收口条件。
+       */
+      completedAt: number;
+    }
+  >();
   /** 正在执行 turn 的 session(本模块发起的)。 */
   const running = new Set<string>();
   /**
@@ -722,6 +814,16 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
   const cancelRequested = new Set<string>();
   /** 每连接最近一次 welcome 宣告的能力集(turn.reopen 的 feature gate)。 */
   const serverFeatures = new Map<string, readonly string[]>();
+  // 官方 bot 的 ack 表情(👀 → 👍/👎) —— 个人 bot 早有, 官方侧靠 msg.op 补上。
+  // null = 档位未就绪(见 setEmojiReactionsMode), 就绪前一帧不发。
+  let emojiReactionsMode: TelegramEmojiReactions | null = null;
+  /** 连接不在时的发送器: 恒失败, 于是终态表情落进待补发队列。 */
+  const OFFLINE_SEND = (): boolean => false;
+  const ackReactions = createAckReactions({
+    serverFeatures,
+    emojiReactions: () => emojiReactionsMode,
+    log,
+  });
   /**
    * 以失败收口、**还等着被续跑**的任务, 按 sessionId 记账(见协议阶段 18)。
    *
@@ -876,21 +978,164 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
     return `${connectionId}\u0000${externalKey}`;
   }
 
-  function sendOrBuffer(connectionId: string, msg: HookMessage): void {
+  function persistTerminalRecord(record: HookTerminalRecord): boolean {
+    if (!terminalLedger) return false;
+    try {
+      if (!terminalLedger.set(record)) {
+        log.warn('hook terminal request was not persisted; using in-memory dedupe only');
+        return false;
+      }
+      return true;
+    } catch {
+      // Storage is a reliability layer, not part of the task result. A disk
+      // failure must not hide an answer that is otherwise ready to send.
+      log.warn('hook terminal request persistence threw; using in-memory dedupe only');
+      return false;
+    }
+  }
+
+  function persistTerminal(
+    record: Omit<HookTerminalRecord, 'completedAt'>,
+    completedAt: number = Date.now(),
+  ): boolean {
+    return persistTerminalRecord({ ...record, completedAt });
+  }
+
+  function markTerminalSent(connectionId: string, requestId: string): boolean {
+    if (!terminalLedger) return false;
+    try {
+      if (!terminalLedger.markSent(connectionId, requestId)) {
+        log.warn('hook terminal request stayed pending after a transport send');
+        return false;
+      }
+      return true;
+    } catch {
+      log.warn('hook terminal request delivery update threw; it will be retried after reconnect');
+      return false;
+    }
+  }
+
+  function durableTurnEnd(turnEnd: TurnEndPayload): TurnEndPayload {
+    // Binary attachment bytes belong to the existing media/transport path,
+    // not a new JSON persistence store. The in-process offline queue keeps the
+    // original frame; cross-restart recovery retains the terminal text only.
+    const { attachments: _attachments, ...withoutAttachments } = turnEnd;
+    return withoutAttachments;
+  }
+
+  function supportsDeliveryAck(connectionId: string): boolean {
+    return serverFeatures.get(connectionId)?.includes(HOOK_FEATURE_TURN_DELIVERY) === true;
+  }
+
+  function clearPendingDelivery(key: string): void {
+    const pending = pendingDeliveryTurnEnds.get(key);
+    if (pending?.timer) clearTimeout(pending.timer);
+    pendingDeliveryTurnEnds.delete(key);
+  }
+
+  function enforcePendingDeliveryLimit(connectionId: string): void {
+    const keys = [...pendingDeliveryTurnEnds]
+      .filter(([, pending]) => pending.connectionId === connectionId)
+      .map(([key]) => key);
+    while (keys.length > MAX_PENDING_TURN_ENDS) {
+      const oldest = keys.shift();
+      if (oldest !== undefined) {
+        const evictedRequestId = pendingDeliveryTurnEnds.get(oldest)?.message.payload.requestId;
+        clearPendingDelivery(oldest);
+        log.warn(
+          `turn.end ACK buffer full; oldest result evicted: connectionId=${connectionId} requestId=${evictedRequestId ?? 'unknown'}`,
+        );
+      }
+    }
+  }
+
+  function sendPendingDelivery(
+    key: string,
+    pending: NonNullable<ReturnType<typeof pendingDeliveryTurnEnds.get>>,
+    sendOverride?: (m: HookMessage) => boolean,
+  ): void {
+    if (pendingDeliveryTurnEnds.get(key) !== pending) return;
+    if (pending.timer) clearTimeout(pending.timer);
+    pending.timer = null;
+    // 退避重发只有延迟上限、没有次数上限, 时效是唯一的终止条件。
+    if (terminalDeliveryExpired(pending.completedAt, Date.now())) {
+      log.warn(
+        `turn.end ACK retry abandoned (past delivery horizon): ${pending.message.payload.requestId}`,
+      );
+      pendingDeliveryTurnEnds.delete(key);
+      return;
+    }
+    const send = sendOverride ?? sendFns.get(pending.connectionId);
+    if (!send || !send(pending.message)) return;
+    pending.attempts += 1;
+    const delay = Math.min(
+      TURN_DELIVERY_ACK_TIMEOUT_MS * 2 ** Math.min(3, Math.max(0, pending.attempts - 1)),
+      TURN_DELIVERY_ACK_MAX_DELAY_MS,
+    );
+    const timer = setTimeout(() => {
+      if (pendingDeliveryTurnEnds.get(key) !== pending) return;
+      pending.timer = null;
+      log.warn(
+        `turn.end ACK timed out; replaying unchanged result: ${pending.message.payload.requestId}`,
+      );
+      sendPendingDelivery(key, pending);
+    }, delay);
+    timer.unref?.();
+    pending.timer = timer;
+  }
+
+  function trackPendingDelivery(
+    connectionId: string,
+    msg: HookTurnEndMessage,
+    completedAt: number,
+  ): void {
+    const key = ackKey(connectionId, msg.payload.requestId);
+    const existing = pendingDeliveryTurnEnds.get(key);
+    if (existing !== undefined) {
+      sendPendingDelivery(key, existing);
+      return;
+    }
+    const pending = { connectionId, message: msg, attempts: 0, timer: null, completedAt };
+    pendingDeliveryTurnEnds.set(key, pending);
+    enforcePendingDeliveryLimit(connectionId);
+    if (pendingDeliveryTurnEnds.get(key) === pending) sendPendingDelivery(key, pending);
+  }
+
+  function sendOrBuffer(
+    connectionId: string,
+    message: HookTurnEndMessage,
+    terminal: Omit<HookTerminalRecord, 'completedAt' | 'delivery'>,
+  ): void {
+    // 一次取时, 账本行与两条内存队列共用同一个 completedAt —— 三个出口据以判定
+    // 时效的年龄必须是同一个数, 否则「同一份结果」在不同出口有不同寿命。
+    const completedAt = Date.now();
+    const durable = persistTerminal({ ...terminal, delivery: 'pending' }, completedAt);
+    if (supportsDeliveryAck(connectionId)) {
+      // ACK 模式: 会话内重发由 pendingDeliveryTurnEnds 负责; 账本保持 pending,
+      // 收到任一 turn.delivery 回执才收口为 sent(见 handleTurnDelivery), 跨重启
+      // 由账本补发兜底「accepted 前进程崩溃」的窗口。
+      trackPendingDelivery(connectionId, message, completedAt);
+      return;
+    }
     const send = sendFns.get(connectionId);
-    if (send && send(msg)) return;
+    if (send && send(message)) {
+      if (durable) {
+        if (!markTerminalSent(terminal.connectionId, terminal.requestId)) {
+          persistTerminal({ ...terminal, delivery: 'sent' }, completedAt);
+        }
+      } else {
+        persistTerminal({ ...terminal, delivery: 'sent' }, completedAt);
+      }
+      return;
+    }
     const buf = pendingTurnEnds.get(connectionId) ?? [];
-    buf.push(msg);
+    buf.push({ message, terminal, completedAt });
     if (buf.length > MAX_PENDING_TURN_ENDS) buf.shift();
     pendingTurnEnds.set(connectionId, buf);
     log.warn(`turn.end buffered (connection offline): ${connectionId}`);
   }
 
-  function reply(
-    connectionId: string,
-    send: (m: HookMessage) => boolean,
-    ack: TaskAckPayload,
-  ): void {
+  function cacheAck(connectionId: string, ack: TaskAckPayload): void {
     const key = ackKey(connectionId, ack.requestId);
     ackHistory.set(key, ack);
     inflightRequests.delete(key);
@@ -898,7 +1143,31 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
       const oldest = ackHistory.keys().next().value;
       if (oldest !== undefined) ackHistory.delete(oldest);
     }
-    send(makeTaskAck(ack));
+  }
+
+  /**
+   * ack 表情要的三个字段。triggerMessageId 只有 server 下发了才有 —— 老 server
+   * 不发, 此时整个表情动作跳过(而不是猜一个 id)。
+   */
+  function ackTaskOf(task: PendingTask): AckReactionTask {
+    return {
+      connectionId: task.connectionId,
+      requestId: task.requestId,
+      externalKey: task.externalKey,
+      triggerMessageId: task.run.source?.triggerMessageId ?? null,
+    };
+  }
+
+  function reply(
+    connectionId: string,
+    send: (m: HookMessage) => boolean,
+    ack: TaskAckPayload,
+  ): void {
+    cacheAck(connectionId, ack);
+    const delivered = send(makeTaskAck(ack));
+    if (ack.result === 'rejected' && delivered) {
+      persistTerminal({ connectionId, requestId: ack.requestId, ack, delivery: 'sent' });
+    }
   }
 
   function rejected(requestId: string, reason: TaskRejectReason): TaskAckPayload {
@@ -1016,6 +1285,11 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
     }
     const requestId = randomUUID();
     const requestKey = ackKey(entry.connectionId, requestId);
+    const messageLifecycle = telegramLegacyLifecycle(
+      entry.connectionId,
+      requestId,
+      entry.source,
+    );
     let claimed = false;
     // runner 可能在 watch() 里**同步**收口(会话已不在进程里就直接 onAbandon),
     // 那时 cancelWatch 还没赋值 —— 用这个标记决定要不要登记, 不去碰它。
@@ -1100,6 +1374,7 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
       },
       onProgress: (text) => {
         if (revoked || !claimed || !isCurrentGeneration(entry.accountGeneration)) return;
+        if (messageLifecycle && !messageLifecycle.acceptProgress()) return;
         const send = sendFns.get(entry.connectionId);
         if (send) send(makeTurnProgress({ requestId, text }));
       },
@@ -1112,6 +1387,9 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
         if (revoked || !claimed || !isCurrentGeneration(entry.accountGeneration)) return;
         const status: 'ok' | 'error' | 'cancelled' = wasCancelled ? 'cancelled' : outcome.status;
         const isError = status === 'error';
+        // Fence progress before the legacy terminal frame. Continuation
+        // callbacks can race the async attachment-collection tail.
+        const finalIntent = messageLifecycle?.beginFinal() ?? null;
         // 续跑轮的 turn.end **直发不缓存**, 与普通任务(sendOrBuffer 断线补发)刻意
         // 相反: 普通任务的消息由 server 建、断线期间没人动它, 补发就能定稿; 而续跑
         // 轮的消息在断连那一刻已被 server 的孤儿收口改写并解绑 requestId, 迟到的
@@ -1134,10 +1412,15 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
             }),
           ) === true;
         if (!delivered) {
+          if (messageLifecycle && finalIntent) messageLifecycle.markFinalFailed(finalIntent);
           // 没发出去 => server 已把这条消息收口并解绑本轮 requestId, 再拿它当
           // reopenOf 只会被静默忽略。这条消息线到此为止, 不再登记可续跑。
           log.warn(`hook continuation turn.end dropped (connection offline): ${requestId}`);
           return;
+        }
+        if (messageLifecycle && finalIntent) {
+          messageLifecycle.markFinalSent(finalIntent);
+          if (messageLifecycle.beginCleanup()) messageLifecycle.finishCleanup();
         }
         // 续跑又失败了 -> 允许再续一次(用户还得再点一次重试, 天然限流)。
         // reopenOf 换成这一轮的 requestId: server 侧那条消息现在挂在它上面。
@@ -1210,11 +1493,17 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
     // 发收口帧把那条旧消息定稿; 但不再记待续跑(它已经不是"最新一轮"了)。
     dropContinuation(sessionId, { silent: false, remember: false });
     runningByRequest.set(requestKey, { sessionId, connectionId: task.connectionId });
+    const messageLifecycle = telegramLegacyLifecycle(
+      task.connectionId,
+      task.requestId,
+      task.run.source,
+    );
 
     // 进度快照直发不缓存: 断线期间的中间帧没有补发价值(turn.end 会带最终
     // 结果), 发送失败静默丢弃即可
     const onProgress = (text: string): void => {
       if (!isCurrentGeneration(task.accountGeneration)) return;
+      if (messageLifecycle && !messageLifecycle.acceptProgress()) return;
       const send = sendFns.get(task.connectionId);
       if (send) send(makeTurnProgress({ requestId: task.requestId, text }));
     };
@@ -1312,20 +1601,42 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
         ? `${task.notice}\n\n${outcome.finalText}`
         : task.notice
       : outcome.finalText;
-    sendOrBuffer(
-      task.connectionId,
-      makeTurnEnd({
-        requestId: task.requestId,
-        externalKey: task.externalKey,
-        sessionId,
-        status,
-        finalText,
-        errorMessage: isError ? outcome.errorMessage || 'unknown error' : null,
-        usage: { durationMs: outcome.durationMs },
-        ...(outcome.attachments !== undefined && outcome.attachments.length > 0
-          ? { attachments: outcome.attachments }
-          : {}),
-      }),
+    const turnEnd: TurnEndPayload = {
+      requestId: task.requestId,
+      externalKey: task.externalKey,
+      sessionId,
+      status,
+      finalText,
+      errorMessage: isError ? outcome.errorMessage || 'unknown error' : null,
+      usage: { durationMs: outcome.durationMs },
+      ...(outcome.attachments !== undefined && outcome.attachments.length > 0
+        ? { attachments: outcome.attachments }
+        : {}),
+    };
+    // Open the final fence before the legacy terminal frame enters any async
+    // outbox path. A late progress callback from the observer must never write
+    // over the answer after this point.
+    const finalIntent = messageLifecycle?.beginFinal() ?? null;
+    // Protocol idempotency replays only the original ACK. The terminal record
+    // is written as a pending outbox entry before sending; an offline frame
+    // stays buffered in memory until onConnected flushes the full payload.
+    sendOrBuffer(task.connectionId, makeTurnEnd(turnEnd), {
+      connectionId: task.connectionId,
+      requestId: task.requestId,
+      ack: task.ack,
+      turnEnd: durableTurnEnd(turnEnd),
+    });
+    if (messageLifecycle && finalIntent) {
+      messageLifecycle.markFinalSent(finalIntent);
+      if (messageLifecycle.beginCleanup()) messageLifecycle.finishCleanup();
+    }
+    // 表情换终态。连接断了也要**调**一次 —— 传一个必然失败的发送器, 让
+    // ackReactions 把它记进待补发队列; 直接跳过的话那条消息会永远挂着 👀,
+    // 而重连补发拿不到任何东西可补。
+    ackReactions.onFinished(
+      ackTaskOf(task),
+      status,
+      sendFns.get(task.connectionId) ?? OFFLINE_SEND,
     );
     running.delete(sessionId);
     // 失败收口 -> 记一笔"等着被续跑"。只有 error 记: cancelled 是用户按了停止,
@@ -1419,7 +1730,22 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
       errorMessage: null,
       usage: { durationMs: null },
     };
-    sendOrBuffer(task.connectionId, makeTurnEnd(turnEnd));
+    sendOrBuffer(task.connectionId, makeTurnEnd(turnEnd), {
+      connectionId: task.connectionId,
+      requestId: task.requestId,
+      ack: task.ack,
+      turnEnd: durableTurnEnd(turnEnd),
+    });
+    // 👀 必须换成终态, 否则取消掉的消息会永远挂着「在做」。取消的三个入口
+    // (排队中被 cancel、account deactivation 清队、群上下文 admission 作废)
+    // 都收敛到本方法, 所以这一处就覆盖全部 —— 不要在各入口分别补。
+    // deactivateAccount 里 sendFns.clear() 在本方法之后, 表情发得出去; 真断线
+    // 时同样要调, 让终态进待补发队列而不是消失。
+    ackReactions.onFinished(
+      ackTaskOf(task),
+      'cancelled',
+      sendFns.get(task.connectionId) ?? OFFLINE_SEND,
+    );
   }
 
   /**
@@ -1862,8 +2188,71 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
     const dispatchPayload = source === undefined ? payload : { ...payload, source };
     sendFns.set(connectionId, send);
 
-    // 幂等: 已回过 ack 的重投只回放, 不重跑
+    // Durable terminal replay comes first: an auto-update restarts the process
+    // and clears ackHistory, while the server may still redeliver a completed
+    // requestId. Replaying its recorded ACK and terminal payload closes that
+    // gap without invoking the runner again. The server owns requestId
+    // idempotency, so replaying a persisted terminal frame is safe even when
+    // the local transport had already accepted an earlier attempt.
     const rKey = ackKey(connectionId, payload.requestId);
+    let terminalReplay: HookTerminalRecord | null = null;
+    try {
+      terminalReplay = terminalLedger?.get(connectionId, payload.requestId) ?? null;
+    } catch {
+      log.warn('hook terminal request lookup threw; using in-memory dedupe only');
+    }
+    if (terminalReplay) {
+      cacheAck(connectionId, terminalReplay.ack);
+      const ackDelivered = send(makeTaskAck(terminalReplay.ack));
+      if (!terminalReplay.turnEnd) return;
+      // 投递时效在这里也生效, 规则统一: **过线的终稿一律不再发出**, 包括 server
+      // 显式重投这一支。ack 已经回放了 —— server 由此知道这个 requestId 我们受理并
+      // 处理过, 不会再叫一次 Agent; 缺的只是一份它自己也已经放弃发布的终稿(服务端
+      // 的放弃线同为 ≈24h, 而结果总比请求更晚, 所以它索取一份过线结果时自己的
+      // outbox 早已过放弃点)。
+      //
+      // 这里刻意**不**给重投开豁免。豁免曾经存在过, 但它在持久记录里没有位置
+      // (HookTerminalRecord 没有来源字段), 于是每加一条路径就要再传播一次 ——
+      // 连续三轮 review 提的都是「豁免漏了某条路径」。统一规则把那一整类问题删掉,
+      // 代价只是「已被放弃的请求拿不到终稿」, 而它本来也不会被发布。
+      if (terminalDeliveryExpired(terminalReplay.completedAt, Date.now())) {
+        log.warn(
+          `terminal replay dropped (past delivery horizon): ${payload.requestId}; ack replayed only`,
+        );
+        return;
+      }
+      if (supportsDeliveryAck(connectionId)) {
+        // ACK 模式的重放帧与 sendOrBuffer 同语义: 经 ACK 缓冲重发, 账本保持
+        // pending 直到 turn.delivery 回执收口(handleTurnDelivery)。server 既然
+        // 重投了这个 requestId, 就说明它没有该结果的持久收据。
+        if (terminalReplay.delivery === 'sent') {
+          persistTerminalRecord({ ...terminalReplay, delivery: 'pending' });
+        }
+        trackPendingDelivery(
+          connectionId,
+          makeTurnEnd(terminalReplay.turnEnd),
+          terminalReplay.completedAt,
+        );
+        return;
+      }
+      if (!ackDelivered) {
+        persistTerminalRecord({ ...terminalReplay, delivery: 'pending' });
+        return;
+      }
+      if (!send(makeTurnEnd(terminalReplay.turnEnd))) {
+        persistTerminalRecord({ ...terminalReplay, delivery: 'pending' });
+        return;
+      }
+      if (
+        terminalReplay.delivery === 'pending' &&
+        !markTerminalSent(connectionId, payload.requestId)
+      ) {
+        persistTerminalRecord({ ...terminalReplay, delivery: 'sent' });
+      }
+      return;
+    }
+
+    // 幂等: 已回过 ack 的重投只回放, 不重跑
     const replay = ackHistory.get(rKey);
     if (replay) {
       send(makeTaskAck(replay));
@@ -1911,7 +2300,7 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
           return;
         }
         const groupHistoryAccess = groupHistoryAccessForExternalKey(payload.externalKey);
-        const task: PendingTask = {
+        const taskBase: Omit<PendingTask, 'ack'> = {
           connectionId,
           requestId: payload.requestId,
           externalKey: payload.externalKey,
@@ -1946,16 +2335,25 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
           // 排队任务只保存 commit 回调；provider 尚未受理，不得提前推进 durable cursor。
           const queue = queues.get(sessionId) ?? [];
           if (running.has(sessionId) || runner.isBusy(sessionId) || queue.length > 0) {
-            rememberSessionPrompt(sessionId, task.run.prompt);
-            queue.push(task);
-            queues.set(sessionId, queue);
-            reply(connectionId, send, {
+            const ack: TaskAckPayload = {
               requestId: payload.requestId,
               result: 'queued',
               reason: null,
               sessionId,
-              queuePosition: queue.length - 1,
-            });
+              queuePosition: queue.length,
+            };
+            const task: PendingTask = {
+              ...taskBase,
+              ack,
+            };
+            rememberSessionPrompt(sessionId, task.run.prompt);
+            queue.push(task);
+            queues.set(sessionId, queue);
+            reply(connectionId, send, ack);
+            // 排队也要给 👀: 用户看到的是「消息发出去了但没人理」, 分不清是在
+            // 排队还是丢了。表情只在**进队列这一刻**发一次 —— 出队启动走的是
+            // startExecution, 那里不再补发, 否则同一条消息会被打两次。
+            ackReactions.onAccepted(ackTaskOf(task), send);
             // 排队时目标 session 可能是 desktop 侧用户手动在跑(runner.isBusy),
             // 没有本模块的收口点 —— 轮询兜底: 空闲即 drain
             if (!running.has(sessionId)) scheduleDrainPoll(sessionId);
@@ -1963,14 +2361,17 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
           }
 
           running.add(sessionId);
-          rememberSessionPrompt(sessionId, task.run.prompt);
-          reply(connectionId, send, {
+          const ack: TaskAckPayload = {
             requestId: payload.requestId,
             result: 'accepted',
             reason: null,
             sessionId,
             queuePosition: null,
-          });
+          };
+          const task: PendingTask = { ...taskBase, ack };
+          rememberSessionPrompt(sessionId, task.run.prompt);
+          reply(connectionId, send, ack);
+          ackReactions.onAccepted(ackTaskOf(task), send);
           startExecution(task);
         });
       } catch (err) {
@@ -2044,12 +2445,20 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
           if (task.commitContextCursor) finishTaskAsCancelled(task);
         }
       }
+      // 👀 的欠账要在 sendFns 清理**之前**结: 运行中的任务会因账号代次失效
+      // 跳过 onFinished, 排队任务被直接清 —— 直接 reset 会把它们的消息永远留在
+      // 处理中。
+      ackReactions.onAccountTeardown((cid) => sendFns.get(cid));
       queues.clear();
       sendFns.clear();
       pendingTurnEnds.clear();
+      for (const key of [...pendingDeliveryTurnEnds.keys()]) clearPendingDelivery(key);
       // 能力快照按连接存, 而连接身份含账号指纹 —— 换账号后旧条目永远不会再被
       // 命中, 但留着会让 supportsReopen 对"同名连接"给出上一个账号的答案。
       serverFeatures.clear();
+      // ack 的待补发与可回落表随账号走 —— 换账号后它们指向的连接与消息都不再
+      // 属于当前主人, 留着既补不出去也是一份只涨不落的内存。
+      ackReactions.reset();
       // 续跑记账与在观察的续跑轮都属于上一个账号, 一并清掉(记账里带
       // accountGeneration 只是第二道防线, 表本身不该跨账号留存)。
       for (const sessionId of [...activeContinuations.keys()]) {
@@ -2167,6 +2576,85 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
         }
       });
     },
+    async createSession(connectionId, request) {
+      if (!accountActive) throw new Error('hook account is disabled');
+      if (request.externalKey === request.previousExternalKey) {
+        throw new Error('new task external key must advance');
+      }
+      const admittedGeneration = accountGeneration;
+      const config = getConnection(connectionId);
+      if (!config?.enabled) throw new Error('hook connection is disabled');
+      const source = request.source === undefined ? undefined : normalizeTaskSource(request.source);
+      let createdSessionId: string | null = null;
+      const createAndRetire = async (): Promise<void> => {
+        await serializeByKey(`${connectionId} ${request.previousExternalKey}`, async () => {
+          await serializeByKey(`${connectionId} ${request.externalKey}`, async () => {
+            if (!isCurrentGeneration(admittedGeneration)) {
+              throw new Error('hook account changed while creating the task');
+            }
+            const resolved = await resolveTarget(
+              connectionId,
+              config,
+              {
+                requestId: randomUUID(),
+                externalKey: request.externalKey,
+                workspace: request.workspace,
+                sessionId: null,
+                prompt: '',
+                ...(request.options ? { options: request.options } : {}),
+                ...(source ? { source } : {}),
+              },
+              admittedGeneration,
+            );
+            if ('reject' in resolved) {
+              throw new Error(`session creation rejected: ${resolved.reject}`);
+            }
+            if (resolved.run.isNew) {
+              const outcome = await runner.run({
+                ...resolved.run,
+                createOnly: true,
+                ...(source ? { source } : {}),
+              });
+              if (outcome.status !== 'ok') {
+                bindings.remove(connectionId, request.externalKey);
+                awaitingPersist.delete(resolved.run.sessionId);
+                await resolved.cleanupWorktree?.().catch(() => undefined);
+                throw new Error(outcome.errorMessage || 'failed to create task');
+              }
+              awaitingPersist.delete(resolved.run.sessionId);
+            }
+            // A newer Telegram update may already have materialized this same
+            // generation while `/new` was waiting on the desktop. Reuse that
+            // task instead of creating a second one for the same external key.
+            createdSessionId = resolved.run.sessionId;
+          });
+
+          // The new binding is live before the old one is retired. A failure to
+          // archive history must never route subsequent messages back to it.
+          const previous = bindings.get(connectionId, request.previousExternalKey);
+          bindings.remove(connectionId, request.previousExternalKey);
+          staleTakeoverReplacements.delete(bindingKey(connectionId, request.previousExternalKey));
+          if (previous && previous !== createdSessionId && archiveSessionRow) {
+            const info = await runner.inspect(previous);
+            if (
+              isCurrentGeneration(admittedGeneration) &&
+              info?.usable === true &&
+              info.workingDir !== null &&
+              dirStillAllowed(connectionId, info.workingDir)
+            ) {
+              await archiveSessionRow(previous).catch((err) => {
+                log.warn(
+                  `archive previous hook session ${previous} failed after /new: ${err instanceof Error ? err.message : String(err)}`,
+                );
+              });
+            }
+          }
+        });
+      };
+      await createAndRetire();
+      if (!createdSessionId) throw new Error('task was not created');
+      return { sessionId: createdSessionId };
+    },
     handleInteractionDecision(connectionId, payload) {
       if (!accountActive) return;
       // 归属校验: requestId 必须是本连接正在执行的任务(排队中的任务不可能有
@@ -2185,6 +2673,29 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
       const resolved = resolveInteraction(payload.interactionId, payload.buttonId);
       log.info(
         `interaction.decision ${payload.interactionId} button=${payload.buttonId} resolved=${resolved}`,
+      );
+    },
+    handleTurnDelivery(connectionId, payload) {
+      if (!accountActive) return;
+      const key = ackKey(connectionId, payload.requestId);
+      clearPendingDelivery(key);
+      // 任一回执都表示 server 已持久接管: 账本从 pending 收口为 sent, 重启后
+      // 不再补发。标记失败时保持 pending, 由重连补发 + server 收据幂等兜底。
+      if (terminalLedger) markTerminalSent(connectionId, payload.requestId);
+      if (payload.state === 'retrying') {
+        log.warn(
+          `turn.end accepted; X publish retrying: requestId=${payload.requestId} attempt=${payload.attempt} retryAt=${payload.retryAt ?? 'unknown'} code=${payload.error?.code ?? 'unknown'}`,
+        );
+        return;
+      }
+      if (payload.state === 'failed') {
+        log.warn(
+          `turn.end delivery failed: requestId=${payload.requestId} attempt=${payload.attempt} code=${payload.error?.code ?? 'unknown'}`,
+        );
+        return;
+      }
+      log.info(
+        `turn.end delivery ${payload.state}: requestId=${payload.requestId} attempt=${payload.attempt}`,
       );
     },
     cancel(connectionId, requestId) {
@@ -2224,6 +2735,11 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
     },
     onDisconnected(connectionId) {
       sendFns.delete(connectionId);
+      for (const pending of pendingDeliveryTurnEnds.values()) {
+        if (pending.connectionId !== connectionId || pending.timer === null) continue;
+        clearTimeout(pending.timer);
+        pending.timer = null;
+      }
       // 断连是续跑回流的终局(协议阶段 18): server 此刻会收口那条消息并解绑这一轮
       // 的 requestId。观察器若活到重连后, 它的 progress / turn.end 会带着那个已被
       // 解绑的 id 发到新 socket(dispatchId 在重连间稳定, 所以真的发得出去), 被当
@@ -2254,6 +2770,19 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
       latestPromptBySession.clear();
       serverFeatures.clear();
       sendFns.clear();
+      pendingTurnEnds.clear();
+      for (const key of [...pendingDeliveryTurnEnds.keys()]) clearPendingDelivery(key);
+    },
+    onMessageOpResult(payload: MessageOpResultPayload) {
+      // 带上按连接取发送函数的钩子: 群限制了可用表情时要用基础款回落一次,
+      // 而该发到哪条连接由 ackReactions 自己记的 task 决定。
+      ackReactions.onResult(payload, (connectionId) => sendFns.get(connectionId));
+    },
+    setEmojiReactionsMode(mode: TelegramEmojiReactions | null) {
+      emojiReactionsMode = mode;
+    },
+    settleAckReactions() {
+      ackReactions.onAccountTeardown((cid) => sendFns.get(cid));
     },
     onConnected(connectionId, send, features) {
       if (!accountActive) return;
@@ -2261,14 +2790,100 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
       // 老实例不宣告 turn.reopen 时必须立刻停用回流, 不能拿上一次的快照发帧。
       serverFeatures.set(connectionId, features ? [...features] : []);
       sendFns.set(connectionId, send);
-      const buf = pendingTurnEnds.get(connectionId);
-      if (!buf?.length) return;
-      // 按序补发; 发送失败(又断了)停下, 剩余留在缓存
-      while (buf.length > 0) {
-        if (!send(buf[0])) break;
-        buf.shift();
+      // 断线时没送出去的终态表情在这里补 —— 否则那条消息永远挂着 👀。
+      // opId 由 requestId 派生, 服务端按它去重, 补发不会打出第二个。
+      ackReactions.onReconnected(connectionId, send);
+      const deliveryAck = supportsDeliveryAck(connectionId);
+      // ACK 缓冲有**两个**消费分支: 下面的 ACK 重放走 sendPendingDelivery(自带
+      // 时效守卫), 能力降级回落则直接 send()。所以时效在**入口**一次性收口, 而不是
+      // 在每个分支各加一道判据 —— 后者漏过的正是降级这一支, 而且以后再多一个消费
+      // 分支还会再漏一次。清在这里, 后面无论谁取帧都取不到过线的我方主动条目。
+      for (const [key, pending] of [...pendingDeliveryTurnEnds]) {
+        if (pending.connectionId !== connectionId) continue;
+        if (!terminalDeliveryExpired(pending.completedAt, Date.now())) continue;
+        log.warn(
+          `ACK buffer entry dropped (past delivery horizon): ${pending.message.payload.requestId}`,
+        );
+        clearPendingDelivery(key);
       }
-      if (buf.length === 0) pendingTurnEnds.delete(connectionId);
+      for (const [key, pending] of [...pendingDeliveryTurnEnds]) {
+        if (pending.connectionId !== connectionId) continue;
+        if (deliveryAck) {
+          sendPendingDelivery(key, pending, send);
+          continue;
+        }
+        // 同 socket 能力降级(refreshHello/welcome 重新协商为无 ACK)不经过
+        // onDisconnected, ACK 世代武装的退避 timer 可能仍在计时; 若下面这次
+        // 回落发送恰好失败, 到点的 timer 会向永远不回 turn.delivery 的老
+        // server 无限重放。进入无 ACK 世界先无条件缴械。
+        if (pending.timer) {
+          clearTimeout(pending.timer);
+          pending.timer = null;
+        }
+        if (send(pending.message)) {
+          // 滚动发布回落到老 server：按历史 fire-and-forget 语义收口。
+          clearPendingDelivery(key);
+        }
+      }
+      const buf = pendingTurnEnds.get(connectionId);
+      const flushedRequestIds = new Set<string>();
+      if (buf?.length) {
+        // 当前进程的完整帧优先(可能带附件); 发送失败时保留剩余项。
+        // 新 server 转入 ACK 缓冲重放, 老 server 沿用 fire-and-forget。
+        while (buf.length > 0) {
+          const pending = buf[0];
+          // 与持久出箱同一条时效判据: 过线的结果不再主动补发。少了这一条, 一个
+          // 长期不重启的进程会在重连瞬间把隔日回复一起吐出去 —— 而重启过的进程
+          // 不会, 同一件事有两种行为。
+          if (terminalDeliveryExpired(pending.completedAt, Date.now())) {
+            log.warn(
+              `buffered turn.end dropped (past delivery horizon): ${pending.terminal.requestId}`,
+            );
+            buf.shift();
+            flushedRequestIds.add(pending.terminal.requestId);
+            continue;
+          }
+          if (deliveryAck) {
+            // 账本保持 pending, 收到 turn.delivery 回执才收口(见 handleTurnDelivery)。
+            trackPendingDelivery(connectionId, pending.message, pending.completedAt);
+          } else {
+            if (!send(pending.message)) return;
+            if (!markTerminalSent(connectionId, pending.terminal.requestId)) {
+              persistTerminalRecord({
+                ...pending.terminal,
+                delivery: 'sent',
+                completedAt: pending.completedAt,
+              });
+            }
+          }
+          buf.shift();
+          flushedRequestIds.add(pending.terminal.requestId);
+        }
+        pendingTurnEnds.delete(connectionId);
+      }
+      let durablePending: HookTerminalRecord[] = [];
+      try {
+        durablePending = terminalLedger?.listPending(connectionId) ?? [];
+      } catch {
+        log.warn('hook durable turn.end outbox lookup threw; waiting for request replay');
+      }
+      for (const pending of durablePending) {
+        // The full in-memory frame was already accepted above. If updating the
+        // ledger failed, do not immediately duplicate it with the text-only
+        // durable frame during the same reconnect attempt.
+        if (flushedRequestIds.has(pending.requestId)) continue;
+        if (!pending.turnEnd) continue;
+        if (deliveryAck) {
+          // 已在 ACK 缓冲中的条目由本函数开头的循环重放, 不再用文本帧重复补发。
+          if (pendingDeliveryTurnEnds.has(ackKey(connectionId, pending.requestId))) continue;
+          trackPendingDelivery(connectionId, makeTurnEnd(pending.turnEnd), pending.completedAt);
+          continue;
+        }
+        if (!send(makeTurnEnd(pending.turnEnd))) return;
+        if (!markTerminalSent(connectionId, pending.requestId)) {
+          persistTerminalRecord({ ...pending, delivery: 'sent' });
+        }
+      }
     },
   };
 }

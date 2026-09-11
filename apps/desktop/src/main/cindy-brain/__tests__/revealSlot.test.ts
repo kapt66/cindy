@@ -9,16 +9,17 @@ import { describe, expect, it, vi } from 'vitest';
 import type { InstalledGhost } from '../../../shared/ghost';
 import { GhostRevealSlot, type RevealSlotDeps } from '../revealSlot';
 
-function revealGhost(options: { slots?: string[]; enabled?: boolean } = {}): InstalledGhost {
+function revealGhost(options: { reveal?: boolean; enabled?: boolean } = {}): InstalledGhost {
   return {
     manifest: {
-      schemaVersion: 2,
+      schemaVersion: 3,
       id: 'reveal-ghost',
       name: 'Reveal Ghost',
       version: '1.0.0',
+      minCindyVersion: '3.0.0',
       kind: 'chip',
       entry: 'main.js',
-      slots: options.slots ?? ['reveal'],
+      ...(options.reveal === false ? {} : { reveal: true as const }),
     },
     dir: '/fake/reveal-ghost',
     enabled: options.enabled ?? true,
@@ -38,7 +39,7 @@ function makeSlot(overrides: Partial<RevealSlotDeps> = {}) {
 
 describe('revealSlot · 资格审与输入校验', () => {
   it('未声明 reveal 槽 / 未启用一律拒绝', () => {
-    const noSlot = makeSlot({ getGhost: () => revealGhost({ slots: ['panel'] }) });
+    const noSlot = makeSlot({ getGhost: () => revealGhost({ reveal: false }) });
     expect(noSlot.slot.handleRequest('reveal-ghost', { path: 'C:\\file.txt' })).toMatchObject({
       ok: false,
       errorCode: 'PERMISSION_DENIED',

@@ -109,7 +109,7 @@ export class GhostMcprSlot {
 
   async handleRequest(ghostId: string, payload: unknown): Promise<McprPluginResponse> {
     const ghost = this.deps.getGhost(ghostId);
-    if (!ghost?.enabled || !ghost.manifest.slots.includes('mcpr') || !ghost.manifest.mcpr) {
+    if (!ghost?.enabled || !ghost.manifest.mcpr) {
       return {
         operation: 'call',
         result: failure('FORBIDDEN', '插件未申请 MCPRouter 权限(mcpr 槽),或当前未启用'),

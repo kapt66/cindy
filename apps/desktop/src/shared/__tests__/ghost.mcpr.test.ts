@@ -9,13 +9,13 @@ import { ghostContentKeys, ghostPermissionItems, validateGhostManifest } from '.
 
 function manifest(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     id: 'mcpr-plugin',
     name: 'MCPRouter plugin',
     version: '1.0.0',
+    minCindyVersion: '3.0.0',
     kind: 'chip',
     entry: 'main.js',
-    slots: ['mcpr'],
     mcpr: { routes: ['mcp.tools.list', 'meka.design.*'] },
     ...overrides,
   };
@@ -36,10 +36,10 @@ describe('mcpr plugin contract', () => {
     expect(mcprRouteMatches('meka.design.*', 'meka.asset.create')).toBe(false);
   });
 
-  it('requires a route allowlist whenever the mcpr slot is declared', () => {
+  it('requires a route allowlist whenever the mcpr capability is declared', () => {
     expect(validateGhostManifest(manifest()).ok).toBe(true);
-    expect(validateGhostManifest(manifest({ mcpr: undefined })).ok).toBe(false);
-    expect(validateGhostManifest(manifest({ slots: ['tool'] })).ok).toBe(false);
+    expect(validateGhostManifest(manifest({ mcpr: undefined })).ok).toBe(true);
+    expect(validateGhostManifest(manifest({ mcpr: {} })).ok).toBe(false);
     expect(
       validateGhostManifest(manifest({ mcpr: { routes: ['meka.design.*', 'meka.design.*'] } })).ok,
     ).toBe(false);

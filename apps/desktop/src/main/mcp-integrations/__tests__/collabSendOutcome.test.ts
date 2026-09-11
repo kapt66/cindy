@@ -103,6 +103,11 @@ import {
   resetCombatServerCapabilityStateForTests,
 } from '../../meka-projects/combatServerCapabilityState.js';
 
+const botCapabilities = {
+  list: vi.fn(async () => ({ ok: true as const, capabilities: [] })),
+  select: vi.fn(async () => ({ ok: true as const, joined: true, effective: 'next-turn' as const })),
+};
+
 function collabMeta(overrides: Record<string, unknown> = {}) {
   return {
     source: 'maker-ipc/collab',
@@ -164,6 +169,7 @@ describe('collab send outcome semantics', () => {
 
   it('keeps cindy_orca registered when project policy is disabled at session startup', () => {
     const providers = createDesktopMcpProviders({
+      botCapabilities,
       getMakerMemoryManager: vi.fn(),
       lspPool: {} as never,
       pluginRegistry: { isEnabled: () => false } as never,
@@ -171,6 +177,7 @@ describe('collab send outcome semantics', () => {
       invokeRemote: vi.fn(),
     });
     const orcaProvider = providers.find((provider) => provider.name === 'cindy_orca');
+    expect(mockState.capturedProvidersConfig?.xdtHelper).toMatchObject({ botCapabilities });
     const iosSimulatorProvider = providers.find(
       (provider) => provider.name === 'cindy_ios_simulator',
     );
@@ -355,6 +362,7 @@ describe('collab send outcome semantics', () => {
     });
 
     createDesktopMcpProviders({
+      botCapabilities,
       getMakerMemoryManager: vi.fn(),
       lspPool: {} as never,
       pluginRegistry: { isEnabled: () => true } as never,
@@ -404,6 +412,7 @@ describe('collab send outcome semantics', () => {
     });
 
     createDesktopMcpProviders({
+      botCapabilities,
       getMakerMemoryManager: vi.fn(),
       lspPool: {} as never,
       pluginRegistry: { isEnabled: () => true } as never,
@@ -467,6 +476,7 @@ describe('collab send outcome semantics', () => {
       }),
     });
     createDesktopMcpProviders({
+      botCapabilities,
       getMakerMemoryManager: vi.fn(),
       lspPool: {} as never,
       pluginRegistry: { isEnabled: () => true } as never,
@@ -540,6 +550,7 @@ describe('collab send outcome semantics', () => {
       }),
     ).toBe(true);
     createDesktopMcpProviders({
+      botCapabilities,
       getMakerMemoryManager: vi.fn(),
       lspPool: {} as never,
       pluginRegistry: { isEnabled: () => true } as never,
@@ -593,6 +604,7 @@ describe('collab send outcome semantics', () => {
     });
 
     createDesktopMcpProviders({
+      botCapabilities,
       getMakerMemoryManager: vi.fn(),
       lspPool: {} as never,
       pluginRegistry: { isEnabled: () => true } as never,
@@ -664,6 +676,7 @@ describe('collab send outcome semantics', () => {
     });
 
     createDesktopMcpProviders({
+      botCapabilities,
       getMakerMemoryManager: vi.fn(),
       lspPool: {} as never,
       pluginRegistry: { isEnabled: () => true } as never,
@@ -701,6 +714,7 @@ describe('collab send outcome semantics', () => {
     });
 
     createDesktopMcpProviders({
+      botCapabilities,
       getMakerMemoryManager: vi.fn(),
       lspPool: {} as never,
       pluginRegistry: { isEnabled: () => true } as never,
