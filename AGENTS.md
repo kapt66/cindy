@@ -174,6 +174,10 @@
   host 是不同 transport，不能共享 SSH pool 前置。
 - 在 Cindy 内嵌 worktree 会话里工作、准备提交或直推、或做 code review 前，必须先读
   `docs/dev-rules/development-workflow.md`。
+- 把上游 `origin/main` 同步进 `meka/main` 前，必须先读
+  `docs/dev-rules/development-workflow.md` 第 4 节：冲突清单不是完整的迁移范围，
+  交付前必须跑 `pnpm audit:merge` 逐条确认没有静默丢失（该门禁与 `pnpm test:unit`
+  并行生效，不能互相替代）。
 
 ## 文档同步（硬性要求）
 

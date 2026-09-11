@@ -147,6 +147,47 @@
 `subagentRunsBroadcast`（Windows 路径分隔符改走 `path.join`）、`conversationSearch`
 （源码形态断言读取后归一化 CRLF）。Meka 生产列/表/迁移**零改动**。
 
+### 4.5 新增同步审计门禁 `pnpm audit:merge`
+
+本轮把当时手工做的三类机械审计固化成 `scripts/audit-merge-resolution.mjs`
+（`pnpm audit:merge`），并挂进 `docs/dev-rules/development-workflow.md` 第 4 节与根
+`AGENTS.md` 的同步前置规则。它专抓** Git 不报的静默丢失**，与本轮两个 P0 同源：
+
+- 上游新增的能力（文件或整块代码）而 Meka 从未碰过 → Git 无冲突，结果里却没有；
+- 两侧都改过、解决时整体取了单侧；
+- 生成物被手工解决。
+
+判定分三档：**BLOCKER**（未解决冲突／冲突标记残留）与 **DROPPED**（一侧实质新增的
+内容缺失）阻断；**REVIEW**（结果整体等于单侧、疑似按编号顺移）与 **GENERATED**
+（生成物被改动）只提示。为压低误报做了：内容归一化（行尾/空白）、token 多重集兜底
+（区分"重排"与"真丢"）、生成物与二进制跳过内容比对、按 blob/内容/路径三种 key 识别
+搬迁、以及"对方也删了"的合法删除识别。
+
+自查结果（对本次 merge commit 运行）：
+
+- 10406 路径，`hand-merged=287`、`took-ours=3`、`took-theirs=27`、
+  `additive-ours=383`、`additive-theirs=4048`；`blockers=0`、`dropped=8`、`review=53`。
+- 8 条 DROPPED 已逐条确认为合理，不需要恢复：
+  - `apps/desktop/src/renderer/features/plugin/lib/updateAllController.ts`、
+    `maker-host/__tests__/codex-subagent-config.test.ts` —— D3（插件市场能力与安装批准
+    解耦）与上游 Codex 子代理协议废弃后的**有意删除/替换**；
+  - `.gitmodules` —— D1 移除 submodule；
+  - `apps/desktop/src/main/updateVersion.ts`、
+    `apps/desktop/src/shared/cindyVersion.ts` —— 已被上游
+    `updateVersionPolicy.ts`（`compareAppUpdateVersions`）与 `@cindy/plugin-protocol`
+    （`supportsCindyVersion`）取代，属**孤儿清理**，引用已全部改向；
+  - `apps/desktop/src/main/__tests__/updateVersion.test.ts` —— 随之移除。
+- 工具同时抓出**上一轮同步的真实事故**作为正向验证：对
+  `01391448e9`（2026-08-24 那次同步）运行会报出 48 条 DROPPED，其中包含本次修复的
+  `hook-control` 相关丢失与 drizzle 迁移文件缺失——即该门禁若当时存在，事故在提交前
+  就会被拦下。
+- 反向验证：对本次已修复的 merge 运行结果为 `blockers=0`；对同一批文件用
+  `git read-tree -m --aggressive` 只读复现 Git 的自动三方合并，确认上述被删文件
+  **被 Git 自动合并保留**，即删除来自上一轮解冲突时的误操作而非 Git 行为。
+
+该工具的判定逻辑有单测覆盖（`scripts/__tests__/audit-merge-resolution.test.mjs`，
+23 条，含在临时仓库里真实跑 merge 的端到端用例），已登记进 `pnpm test:runner`。
+
 ## 5. 保留的 Meka 分歧（有意为之，非缺陷）
 
 | 分歧 | 保护的不变量 |
@@ -246,6 +287,8 @@
 | --- | --- | --- |
 | 冲突清零 | `git diff --name-only --diff-filter=U` | 空 |
 | 冲突标记 | index 内 `<<<<<<<`/`>>>>>>>` 扫描 | 无（仅既有行尾空白告警） |
+| **静默丢失审计** | `pnpm audit:merge -- --merge-commit HEAD` | blockers=0；dropped=8 已逐条确认合理（见 §4.5）；review=53；1.7s |
+| 审计工具单测 | `node --test scripts/__tests__/audit-merge-resolution.test.mjs` | 23 pass / 0 fail |
 | 全量单元测试（提交前门禁） | `pnpm test:unit` | **PASS 56 / FAIL 0**（含 `apps/desktop`、`apps/mobile`、全部 required unit workspace） |
 | runner 自测 | `pnpm test:runner` | 554 pass / 0 fail |
 | Desktop 类型 | `pnpm --filter desktop typecheck` | exit 0，0 个 TS 错误 |

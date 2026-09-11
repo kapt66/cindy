@@ -118,3 +118,43 @@ worktree 会话契约、提交组织、直推 `main` 的额外门禁与 review �
 - **P2**（可选优化 / 风格偏好）：不报。
 
 发现 P0／P1 必须先修复再合入或推送。
+
+## 4. 上游同步 merge 的静默丢失门禁
+
+把上游 `origin/main` 合进 `meka/main` 时，**冲突清单不是完整的迁移范围**。真正危险的是
+Git 不报的那些：
+
+- 上游新增的能力（文件或整块代码）而本产品线从未碰过 → Git 认为无事发生，
+  解决结果里没有它。**这类丢失永远不会出现在冲突清单里**，且如果代码和它的测试被一起
+  解成旧版本，测试还会全绿；
+- 两侧都改过、解决时整体取了自己那一侧 → Git 只报“已解决”；
+- 生成物（`pnpm-lock.yaml`、drizzle snapshot）被手工解决。
+
+2026-08→09 那次同步就踩过第一条：`hook-control` 的 request-ledger / ack-reactions /
+turn-delivery 整组丢失，`typecheck` 是唯一信号。因此同步交付前**必须**跑：
+
+```bash
+pnpm audit:merge                      # merge 进行中：审 index（commit 将包含的内容）
+pnpm audit:merge -- --worktree        # 审工作区实际文件（含未 stage 的手工修复）
+pnpm audit:merge -- --merge-commit HEAD   # merge 已提交：审那个 merge commit
+```
+
+判定与处理：
+
+- **BLOCKER**（未解决冲突／冲突标记残留）——必须修完再继续。
+- **DROPPED**（一侧实质新增的内容在结果里缺失）——**必须逐条确认**。确认是
+  “接受上游删除”“被上游新实现取代的孤儿清理”“有意移除”等合理形态后，用
+  `--allow <path>` 记入本次豁免；确认是误删就恢复内容。**不得直接忽略。**
+- **REVIEW**（结果整体等于某一侧、或疑似按编号顺移）——逐条确认另一侧没丢东西。
+- **GENERATED**（生成物被改动）——提示性质，不阻断；按其提示重新生成并跑对应校验
+  （`pnpm install` / `pnpm --filter desktop db:generate` + `db:validate`），不要手解。
+
+该脚本只读 git 对象与工作区，不写任何文件。它与「提交前测试门禁」并行生效：
+`pnpm test:unit` 证明行为没坏，本门禁证明**没有东西被静默丢掉**——两者都不能替代对方。
+
+同步完成后，除迁移总账外还要在 `docs/migrations/` 下当期同步报告里登记：基线 SHA、
+DROPPED／REVIEW 的逐条确认结论与豁免理由。
+
+高误报会让人绕过门禁，所以脚本刻意做了降噪（内容归一化、token 兜底、生成物与二进制
+跳过、搬迁识别）；改动它的判定逻辑时必须同步跑
+`node --test scripts/__tests__/audit-merge-resolution.test.mjs`。
