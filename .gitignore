@@ -193,6 +193,15 @@ apps/mobile/e2e/visual-baselines/
 # 会话工具临时产物(永不入仓)
 tmp/
 github-result-*.json
+# Agent 解冲突/审计时提取的三方对比脚手架(ours/theirs/base 副本、diff、
+# 等价性分类输出)。它们只服务于单次分析,不得进入提交。
+.tmp-*
+.tmp/
+# 误重定向产物:把分析输出写成了裸文件名(`> out.txt` / `> 10`)。约定只在
+# 仓库根生效,避免误伤真实源码目录。
+/out.txt
+/10
+/14
 
 # 内置插件种子已废弃(改走 plugin-store 安装);历史克隆含私有插件与凭证,永不入仓。
 apps/desktop/resources/builtin-ghosts/
