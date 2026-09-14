@@ -759,14 +759,19 @@ pnpm desktop:ui-smoke
 - `pnpm restart:desktop:remote` → 期望 `DESKTOP_DEV_VERDICT=ready`。
 - `pnpm desktop:whoami` → 确认沙箱实例就是本次要验收的 checkout 与 commit。
 - `pnpm desktop:ui-smoke` → **程序化 GUI 验收**（CDP 驱动真实鼠标事件），覆盖
-  WL-1.1 / WL-1.2-1.5 / WL-2.1 / WL-2.2 / WL-2.3 / WL-2.4 / WL-2.5+WL-3.3 / WL-3.2 /
-  WL-5.5+WL-6.1 / WL-6.5 / WL-10 / WL-13 共 12 项，逐项打印 `PASS / FAIL / UNVERIFIED`
-  与证据，`FAIL` 时退出码 1。它同时校验**跑着的实例是否就是 HEAD**
-  （版本行里的 commit 与 `git rev-parse --short HEAD` 比对）——实例陈旧会直接 FAIL，
-  这正是一次同步验收最容易犯的错。
-- **仍需人工的部分**：五语的视觉目检（`ui-smoke` 只校验语言选项齐全与无裸 key 泄漏）、
-  MCPRouter/WL-4 的端到端（缺账号与实例）、真实签名与发布（需授权）、共享 profile 的
-  旧库只读迁移。这些必须如实登记「未验证 + 原因」。
+  WL-1.1 / WL-1.2 / WL-1.3 / WL-1.5 / WL-1.2-1.5（四卡）/ WL-2.1 / WL-2.2 / WL-2.3 /
+  WL-2.4 / WL-2.5+WL-3.3 / WL-3.2 / WL-5.5+WL-6.1 / WL-6.5 / WL-10 / WL-13 共 15 项，
+  逐项打印 `PASS / FAIL / UNVERIFIED` 与证据，`FAIL` 时退出码 1。
+  它会自行处理两件容易出错的事：① **校验跑着的实例是否就是 HEAD**（版本行里的 commit 与
+  `git rev-parse --short HEAD` 比对）——实例陈旧会直接 FAIL，这正是同步验收最容易犯的错；
+  ② **把语言归一到简体中文并在结束时还原**，使断言与用户当前语言无关（否则中文文案断言在
+  英文界面下会整片假红）。
+- 于是 WL-13 的**五语横切**也进了程序：`ui-smoke` 会逐一切换到 English / 简体中文 / 繁体中文 /
+  日本語 / 한국어，断言每种语言下 Meka 页签与面板都渲染、且界面没有裸 i18n key，
+  并记录各语言的页签实际文案。
+- **仍需人工的部分**：纯视觉观感（配色/间距/暗色模式目检）、MCPRouter/WL-4 的端到端
+  （缺账号与实例）、真实签名与发布（需授权）、共享 profile 的旧库只读迁移。
+  这些必须如实登记「未验证 + 原因」。
 
 手工部分按 §3 各条「实机验证」逐项过，顺序建议：
 WL-5（先确认区域与链路）→ WL-6（身份/更新）→ WL-1（设置）→ WL-2/WL-3（导航与会话分类）

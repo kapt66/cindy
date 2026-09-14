@@ -51,6 +51,7 @@ function parseArgs(argv) {
     else if (arg === '--filter') options.filter = next();
     else if (arg === '--json') options.json = true;
     else if (arg === '--help' || arg === '-h') options.help = true;
+    else if (arg === '--') continue; // pnpm 透传的分隔符
     else throw new Error(`unknown argument: ${arg}`);
   }
   return options;
@@ -201,6 +202,41 @@ const SIDEBAR_NAV_LABELS = `[...document.querySelectorAll('button')]
   .map((b) => (b.textContent || '').trim())
   .filter((t) => ['新建', '自动化', 'Meka', '插件', '伙伴', '站点', '搜索'].includes(t))`;
 
+/**
+ * 语言选择器是 Radix `Select.Trigger`：`aria-label` 会被本地化（「显示语言选择」/「Show
+ * language selector」），没有 testid，所以**只能用 `role=combobox` 这个与语言无关的钩子**。
+ * 本工具因此假定运行在简体中文下，并在启动时把语言归一到 zh-CN、结束时还原（见 `main`）。
+ */
+const LANGUAGE_TRIGGER = '[role=combobox]';
+const LANGUAGE_OPTION = '[role=option]';
+const LANGUAGE_TAB = '#/settings?tab=general';
+
+async function openLanguageMenu(session) {
+  if (!(await session.clickSelector(LANGUAGE_TRIGGER))) return null;
+  await sleep(700);
+  const labels = await session.evaluate(
+    `[...document.querySelectorAll(${JSON.stringify(LANGUAGE_OPTION)})].map((o) => (o.textContent || '').trim())`,
+  );
+  return labels.length ? labels : null;
+}
+
+async function closeLanguageMenu(session) {
+  await session.pressEscape();
+  await sleep(250);
+}
+
+async function selectLanguageByIndex(session, index) {
+  if (!(await session.clickSelector(LANGUAGE_TRIGGER))) return false;
+  await sleep(700);
+  const ok = await session.clickSelector(LANGUAGE_OPTION, index);
+  await sleep(1100); // 切语言会整树重渲染
+  return ok;
+}
+
+async function currentLanguageLabel(session) {
+  return session.evaluate(`document.querySelector(${JSON.stringify(LANGUAGE_TRIGGER)})?.textContent?.trim() ?? null`);
+}
+
 const CHECKS = [
   {
     id: 'WL-2.1',
@@ -292,6 +328,93 @@ const CHECKS = [
       return hash.startsWith('#/cc-agent/meka/plugins')
         ? ctx.pass(`#/meka-plugins → ${hash}`)
         : ctx.fail(`旧深链未重定向，落在 ${hash}`);
+    },
+  },
+  {
+    id: 'WL-1.2',
+    name: 'MCPRouter「配置」可打开连接对话框（HTTPS 生产默认地址）',
+    async run(ctx) {
+      await ctx.goto('#/settings?tab=meka-assistant');
+      const index = await ctx.session.evaluate(
+        `[...document.querySelectorAll('#settings-panel-meka-assistant button')].findIndex((b) => (b.textContent || '').trim() === '配置')`,
+      );
+      if (index < 0) return ctx.fail('面板里找不到「配置」按钮');
+      if (!(await ctx.session.clickSelector('#settings-panel-meka-assistant button', index))) {
+        return ctx.fail('「配置」按钮不可点击');
+      }
+      let opened = 0;
+      try {
+        opened = await ctx.session.waitFor(`document.querySelectorAll('[role=dialog]').length`, { label: '配置对话框' });
+      } catch {
+        return ctx.fail('点击「配置」后没有出现 [role=dialog]');
+      }
+      const info = await ctx.session.evaluate(`(() => {
+        const d = document.querySelector('[role=dialog]');
+        const inputs = [...(d?.querySelectorAll('input') ?? [])].map((i) => ({ type: i.type, placeholder: i.getAttribute('placeholder') }));
+        return { text: (d?.innerText || '').replace(/\\n+/g, ' | ').slice(0, 160), inputs };
+      })()`);
+      await ctx.session.pressEscape();
+      await sleep(400);
+      const closed = await ctx.session.evaluate(`document.querySelectorAll('[role=dialog]').length`);
+      if (closed !== 0) return ctx.fail(`对话框未能关闭（仍剩 ${closed} 个）`);
+      const url = info.inputs.find((i) => i.type === 'url');
+      if (!url) return ctx.fail(`对话框里没有 URL 输入：${JSON.stringify(info.inputs)}`);
+      if (!/^https:\/\//.test(url.placeholder ?? '')) {
+        return ctx.fail(`MCPRouter 默认地址不是 HTTPS：placeholder=${JSON.stringify(url.placeholder)}`);
+      }
+      return ctx.pass(`对话框「${info.text}」；输入=${JSON.stringify(info.inputs)}；可关闭`);
+    },
+  },
+  {
+    id: 'WL-1.3',
+    name: 'MekaDesign「配置」可打开独立连接对话框',
+    async run(ctx) {
+      await ctx.goto('#/settings?tab=meka-assistant');
+      const indexes = await ctx.session.evaluate(
+        `[...document.querySelectorAll('#settings-panel-meka-assistant button')].map((b, i) => ((b.textContent || '').trim() === '配置' ? i : -1)).filter((i) => i >= 0)`,
+      );
+      if (indexes.length < 2) return ctx.fail(`面板里只有 ${indexes.length} 个「配置」按钮，MekaDesign 卡片可能缺失`);
+      if (!(await ctx.session.clickSelector('#settings-panel-meka-assistant button', indexes[1]))) {
+        return ctx.fail('MekaDesign「配置」按钮不可点击');
+      }
+      let opened = 0;
+      try {
+        opened = await ctx.session.waitFor(`document.querySelectorAll('[role=dialog]').length`, { label: 'MekaDesign 对话框' });
+      } catch {
+        return ctx.fail('点击 MekaDesign「配置」后没有出现 [role=dialog]');
+      }
+      const text = await ctx.session.evaluate(
+        `(document.querySelector('[role=dialog]')?.innerText || '').replace(/\\n+/g, ' | ').slice(0, 160)`,
+      );
+      await ctx.session.pressEscape();
+      await sleep(400);
+      const closed = await ctx.session.evaluate(`document.querySelectorAll('[role=dialog]').length`);
+      if (closed !== 0) return ctx.fail(`对话框未能关闭（仍剩 ${closed} 个）`);
+      return ctx.pass(`独立对话框「${text}」；可关闭`);
+    },
+  },
+  {
+    id: 'WL-1.5',
+    name: '插件默认打开方式开关可切换（aria-checked 翻转并还原）',
+    async run(ctx) {
+      await ctx.goto('#/settings?tab=meka-assistant');
+      const sel = 'button[role=switch]';
+      const before = await ctx.session.evaluate(`document.querySelector(${JSON.stringify(sel)})?.getAttribute('aria-checked')`);
+      if (before === null || before === undefined) return ctx.fail('面板里找不到插件打开方式开关（button[role=switch]）');
+      const label = await ctx.session.evaluate(`document.querySelector(${JSON.stringify(sel)})?.getAttribute('aria-label')`);
+      if (!(await ctx.session.clickSelector(sel))) return ctx.fail('开关不可点击');
+      const flipped = await ctx.session
+        .waitFor(
+          `(() => { const v = document.querySelector(${JSON.stringify(sel)})?.getAttribute('aria-checked'); return v !== ${JSON.stringify(before)} ? v : null; })()`,
+          { label: '开关 aria-checked 翻转' },
+        )
+        .catch(() => null);
+      if (flipped === null) return ctx.fail(`点击后 aria-checked 未翻转（仍为 ${before}）`);
+      await ctx.session.clickSelector(sel); // 还原
+      await sleep(400);
+      const restored = await ctx.session.evaluate(`document.querySelector(${JSON.stringify(sel)})?.getAttribute('aria-checked')`);
+      if (restored !== before) return ctx.fail(`还原失败：期望 ${before}，实际 ${restored}`);
+      return ctx.pass(`开关「${label}」aria-checked ${before}→${flipped}→${restored}`);
     },
   },
   {
@@ -443,30 +566,49 @@ const CHECKS = [
   },
   {
     id: 'WL-13',
-    name: '显示语言选择器可用且列出五语（含裸 key 泄漏检查）',
+    name: '五语逐一横切：Meka 页签与面板在每种语言下都正常（无裸 key）',
     async run(ctx) {
-      // 语言选择器位于设置页头部；Meka 助理 tab 下由该面板自己的头部替代，故用默认 tab。
-      await ctx.goto('#/settings');
-      const selector = 'button[aria-label="显示语言选择"]';
-      const exists = await ctx.session.evaluate(`!!document.querySelector(${JSON.stringify(selector)})`);
-      if (!exists) return ctx.unverified('未找到「显示语言选择」按钮（UI 结构可能已变）');
-      await ctx.session.clickSelector(selector);
-      await sleep(800);
-      const options = await ctx.session.evaluate(
-        `[...document.querySelectorAll('[role=option],[role=menuitemradio]')].map((e) => (e.textContent || '').trim()).filter(Boolean)`,
-      );
-      await ctx.session.pressEscape();
-      await sleep(300);
-      // 原始 i18n key 泄漏检查：渲染文本里不应出现 settings.meka.* / meka.* / sidebar.* 这类裸 key。
-      const rawKeys = await ctx.session.evaluate(
-        `((document.body.innerText || '').match(/(settings|meka|sidebar)\\.[a-zA-Z][a-zA-Z0-9_.]{3,}/g) || []).slice(0, 5)`,
-      );
-      if (rawKeys.length) return ctx.fail(`界面出现裸 i18n key：${JSON.stringify(rawKeys)}`);
-      const languages = options.filter((o) => o !== '跟随系统');
-      if (languages.length < 5) {
-        return ctx.unverified(`语言菜单只列出 ${languages.length} 种语言：${JSON.stringify(options)}`);
+      await ctx.goto(LANGUAGE_TAB);
+      const labels = await openLanguageMenu(ctx.session);
+      await closeLanguageMenu(ctx.session);
+      if (!labels || labels.length < 6) {
+        return ctx.unverified(`语言菜单只列出 ${labels ? labels.length : 0} 项：${JSON.stringify(labels)}`);
       }
-      return ctx.pass(`语言选项=${JSON.stringify(options)}；无裸 key 泄漏（逐语言视觉目检仍需人工）`);
+
+      const readState = `(() => {
+        const panel = document.querySelector('#settings-panel-meka-assistant');
+        const tab = document.querySelector('#settings-tab-meka-assistant')
+          ?? [...document.querySelectorAll('[role=tab]')].find((t) => (t.getAttribute('aria-controls') || '') === 'settings-panel-meka-assistant');
+        const rawKeys = ((document.body.innerText || '').match(/(settings|meka|sidebar)\\.[a-zA-Z][a-zA-Z0-9_.]{3,}/g) || []);
+        return { panel: !!panel, tabLabel: tab ? (tab.textContent || '').trim() : null, rawKeys: rawKeys.slice(0, 3) };
+      })()`;
+
+      const evidence = [];
+      try {
+        // 索引 0 是「跟随系统」，其余为具体语言。注意选项文案本身也会被本地化，
+        // 所以 language 名取自**切换前**读到的标签，切换一律按索引点击。
+        for (let index = 1; index < labels.length; index += 1) {
+          const language = labels[index];
+          // 语言选择器只存在于 general tab（meka-assistant tab 下由面板自己的头部替代），
+          // 每轮都必须先回到 general 才能点到它。
+          await ctx.goto(LANGUAGE_TAB);
+          if (!(await selectLanguageByIndex(ctx.session, index))) {
+            return ctx.fail(`语言选项索引 ${index}（${language}）不可点击`);
+          }
+          await ctx.goto('#/settings?tab=meka-assistant');
+          const state = await ctx.session.evaluate(readState);
+          if (!state.panel) return ctx.fail(`切到 ${language} 后 Meka 助理面板不再渲染`);
+          if (!state.tabLabel) return ctx.fail(`切到 ${language} 后找不到 Meka 助理页签（语言无关 id 也缺失）`);
+          if (state.tabLabel.includes('.')) return ctx.fail(`切到 ${language} 后页签显示裸 key：${state.tabLabel}`);
+          if (state.rawKeys.length) return ctx.fail(`切到 ${language} 后界面出现裸 i18n key：${JSON.stringify(state.rawKeys)}`);
+          evidence.push(`${language}→「${state.tabLabel}」`);
+        }
+      } finally {
+        // 无论成败都切回「跟随系统」，不让检查留下语言副作用（main 还会再还原一次原值）。
+        await ctx.goto(LANGUAGE_TAB).catch(() => {});
+        await selectLanguageByIndex(ctx.session, 0).catch(() => false);
+      }
+      return ctx.pass(`${evidence.join('，')}；已切回「${await currentLanguageLabel(ctx.session)}」`);
     },
   },
 ];
@@ -496,6 +638,7 @@ async function main() {
 
   const session = await CdpSession.connect(target.webSocketDebuggerUrl);
   const results = [];
+  let summaryLanguageRestored = null;
   const ctx = {
     session,
     hash: () => session.evaluate('location.hash'),
@@ -514,15 +657,45 @@ async function main() {
       timeoutMs: READY_TIMEOUT_MS,
       label: 'renderer ready',
     });
-    for (const check of CHECKS) {
-      if (options.filter && !check.id.includes(options.filter) && !check.name.includes(options.filter)) continue;
-      let outcome;
-      try {
-        outcome = await check.run(ctx);
-      } catch (error) {
-        outcome = { status: 'fail', evidence: `执行异常：${error instanceof Error ? error.message : String(error)}` };
+
+    // 多数断言依赖中文文案（侧栏「Meka」「插件」、面板卡片名等），而语言选择器的
+    // aria-label 会被本地化、没有稳定 testid。因此先把语言归一到简体中文，跑完再还原：
+    // 这样检查结果与用户当前语言无关，也不会把语言偏好留在被改过的状态。
+    let originalLanguageIndex = null;
+    let languageOptions = null;
+    try {
+      await ctx.goto(LANGUAGE_TAB);
+      languageOptions = await openLanguageMenu(session);
+      await closeLanguageMenu(session);
+      const current = await currentLanguageLabel(session);
+      if (languageOptions && current) {
+        originalLanguageIndex = Math.max(0, languageOptions.indexOf(current));
+        const zhIndex = languageOptions.indexOf('简体中文');
+        if (zhIndex > 0 && zhIndex !== originalLanguageIndex) {
+          await selectLanguageByIndex(session, zhIndex);
+        }
       }
-      results.push({ id: check.id, name: check.name, ...outcome });
+    } catch {
+      // 归一失败不阻断：检查自身会在语言不符时给出 FAIL/UNVERIFIED。
+    }
+
+    try {
+      for (const check of CHECKS) {
+        if (options.filter && !check.id.includes(options.filter) && !check.name.includes(options.filter)) continue;
+        let outcome;
+        try {
+          outcome = await check.run(ctx);
+        } catch (error) {
+          outcome = { status: 'fail', evidence: `执行异常：${error instanceof Error ? error.message : String(error)}` };
+        }
+        results.push({ id: check.id, name: check.name, ...outcome });
+      }
+    } finally {
+      if (originalLanguageIndex !== null && languageOptions) {
+        await ctx.goto(LANGUAGE_TAB).catch(() => {});
+        await selectLanguageByIndex(session, originalLanguageIndex).catch(() => false);
+        summaryLanguageRestored = await currentLanguageLabel(session).catch(() => null);
+      }
     }
     await ctx.goto('#/cc-agent/new').catch(() => {});
   } finally {
@@ -538,6 +711,7 @@ async function main() {
     pass: results.filter((r) => r.status === 'pass').length,
     fail: failed.length,
     unverified: unverified.length,
+    languageRestoredTo: summaryLanguageRestored,
     results,
   };
 

@@ -617,7 +617,7 @@ review=51 generated=14`，`verdict: FAIL`（DROPPED 阻断）。8 条逐条确�
 
 GUI 项本轮**改为程序化验收**（不再靠手点）：新增 `scripts/meka-ui-smoke.mjs`
 （`pnpm desktop:ui-smoke`），用 CDP 连到 dev 实例的调试端口、以**真实鼠标事件**
-（`Input.dispatchMouseEvent`）驱动 UI，12 项检查全部 PASS：
+（`Input.dispatchMouseEvent`）驱动 UI，15 项检查全部 PASS：
 
 | 检查 | 结果与证据 |
 | --- | --- |
@@ -625,14 +625,17 @@ GUI 项本轮**改为程序化验收**（不再靠手点）：新增 `scripts/me
 | WL-2.2 折叠态入口 | ✅ rail 态仍有 `aria-label="Meka"` 按钮 |
 | WL-2.3 三页签与路由 | ✅ `["插件","技能","项目"]`；`plugins→#/cc-agent/meka/plugins`、`技能→#/cc-agent/meka/skills`、`项目→#/cc-agent/meka` |
 | WL-2.4 旧深链重定向 | ✅ `#/meka-plugins → #/cc-agent/meka/plugins` |
+| WL-1.2 MCPRouter 配置对话框 | ✅ 点「配置」弹出 `[role=dialog]`「连接 MCPRouter」，含 url/账号/密码三输入；URL 占位符=`https://mcpr.meka.pawdy.fun/`（**HTTPS 生产默认地址**，与 `config.ts` 一致）；Esc 可关 |
+| WL-1.3 MekaDesign 配置对话框 | ✅ 独立对话框「连接 MekaDesign」，含链接输入，可关 |
+| WL-1.5 插件打开方式开关 | ✅ `button[role=switch]` `aria-checked false→true→false`（真实点击并还原） |
 | WL-2.5+WL-3.3 段头折叠 | ✅ `aria-expanded true→false`（折叠控件 label=`收起 Meka 对话`） |
 | WL-3.2 分组树 | ✅ 「Meka 助理」段存在，可见子分组 `["正式流程","普通对话"]` |
 | WL-1.1 设置页签与面板 | ✅ `#settings-panel-meka-assistant` 渲染；导航位次=3/17（在「模型供应商」之后） |
 | WL-1.2-1.5 面板四卡 | ✅ 插件默认打开方式 / P4 功能路径 / MCPRouter 连接 / MekaDesign 齐全；P4 已匹配 5 个 `saga2_*` 子目录 |
-| WL-5.5+WL-6.1 版本行 | ✅ `Global · 0.0.0 · meka/main@081a034` 与 `HEAD=081a034` 一致（该检查曾正确报出「实例跑在旧 commit」并因此 FAIL，重启后通过） |
+| WL-5.5+WL-6.1 版本行 | ✅ `Global · 0.0.0 · meka/main@51fe4c4` 与 `HEAD=51fe4c4` 一致（该检查曾正确报出「实例跑在旧 commit」并 FAIL，重启后通过） |
 | WL-6.5 Beta 渠道徽标 | ✅ 可见 |
 | WL-10 模型选择器（P0 回归点） | ✅ 触发器 label=`选择模型。当前：GLM 5.3 Flash，推理强度：最高`；展开后**选项数=11** |
-| WL-13 语言选择器 | ✅ `["跟随系统","English","简体中文","繁体中文","日本語","한국어"]`；无裸 i18n key 泄漏 |
+| WL-13 五语横切 | ✅ `English→「Meka Assistant」`、`简体中文/繁体中文→「Meka 助理」`、`日本語→「Meka アシスタント」`、`한국어→「Meka 어시스턴트」`；各语言下面板均渲染且无裸 i18n key；结束切回「跟随系统」 |
 
 **仍无法由执行者完成的实机项**（如实登记，不得记为通过）：
 
@@ -640,7 +643,7 @@ GUI 项本轮**改为程序化验收**（不再靠手点）：新增 `scripts/me
 | --- | --- |
 | WL-4.1.4 / 4.1.5 / 4.1.7 / 4.2.2 / 4.2.3 端到端 | ⏳ **未验证 —— 缺 MCPRouter 账号、实例与 Gateway key** |
 | WL-6.4 签名、WL-6.5 真实更新拉取、WL-6.6 旧库只读迁移 | ⏳ **未验证 —— 需真实签名/发布授权与共享 profile** |
-| WL-13 五语视觉目检 | ⏳ 部分未验证 —— `ui-smoke` 只覆盖语言选项齐全与无裸 key 泄漏 |
+| 纯视觉观感（配色/间距/Light-Dark 目检） | ⏳ 未验证 —— CDP 检查断言结构与状态，不做像素判读 |
 | WL-8/WL-9/WL-10/WL-11/WL-12 的自动化面 | ✅ 由 unit/db/runner 定向覆盖并通过 |
 
 #### 阶段 D — 结论
