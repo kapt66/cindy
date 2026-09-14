@@ -39,6 +39,11 @@ Git 的冲突清单回答不了这个问题。本仓 2026-09 同步实测的两�
 
 ## 2. 每次同步后的执行顺序
 
+> **硬性规范（2026-09-11 定）：合并完成后必须**实际运行**本节的检查，而不是阅读清单或
+> 凭印象判断。逐项给出结论并落到当期同步报告；**只有全部通过（或明确登记「未验证 + 原因」
+> 并经维护者书面接受）才允许宣告本次合并完成**。只看 diff、只跑 `test:unit`、或把清单当
+> 参考资料读过一遍，都不构成完成。没有实跑记录就宣告完成，等同于虚报。
+
 四阶段，顺序固定；每个阶段的证据都写进当期同步报告
 （`docs/migrations/<年>-<月>-origin-main-to-meka-main.md`）。
 
@@ -47,12 +52,13 @@ Git 的冲突清单回答不了这个问题。本仓 2026-09 同步实测的两�
 2. **阶段 B — 自动化验收**：跑完 §4 的「最小自动化集合」，全绿。任何一项红都不得进入
    阶段 C 之后的下结论。
 3. **阶段 C — 实机验收**：按 §3 每一项的「实机验证」逐项走一遍，记录现象而不是结论。
-   无法在本机验证的（缺账号、缺远端实例、需正式签名）必须显式标注「未验证 + 原因 +
-   风险」，不得含糊成「已通过」。
+   无法在本机验证的（缺账号、缺远端实例、需正式签名、需人手点 GUI）必须显式标注
+   「未验证 + 原因 + 风险」，不得含糊成「已通过」。
 4. **阶段 D — 结论**：任一项失败 ⇒ 本次同步**不可交付**。要么修，要么在当期报告里登记
    「已知未修 + 用户可见影响 + 是否阻断 + 由谁决定」。不存在「先合了再说」。
 
 证据要求：命令 + 结果 + 现象。不接受「看起来没坏」「复用了同一套实现所以应该没问题」。
+报告里的每一行都必须是**跑出来的**，不是推断出来的；跑不动就写跑不动。
 
 ## 3. Meka 能力白名单
 
@@ -757,6 +763,8 @@ WL-5（先确认区域与链路）→ WL-6（身份/更新）→ WL-1（设置�
 
 - **硬性**：任何 Meka 专属或与上游不同的改动，必须在**同一次交付**里新增或更新清单项；
   没有清单落点的 Meka 能力改动视为未完成（与根 `AGENTS.md`「文档同步」同级）。
+- **硬性**：上游同步的完成判定 = **实跑本清单并逐项记录结论**（§2）。除维护者书面接受
+  的「未验证 + 原因」外，全部通过才算完成；**未实跑就宣告完成等同于虚报**。
 - 删除或放弃某项能力时，同步删除条目并在当期同步报告写明理由；**编号不复用**，允许留空号。
   当前空号：**WL-7**（初版曾占位「数据谱系与 migration 冻结」，2026-09-11 复核后移除，
   理由见 §8.3）。结构契约测试只要求编号唯一且升序，不要求连续。
@@ -854,6 +862,27 @@ WL-5（先确认区域与链路）→ WL-6（身份/更新）→ WL-1（设置�
 4. **真实升级链路**（旧 `xdmaker-meka` 目录只读迁移、`cindy-meka://` 深链注册、更新渠道
    实际拉取）无法在沙箱内完成，需要一次真实安装/升级验证；未完成前不得声称发布就绪。
    注意 8.2 第 2 条未决时，这条验证的预期行为本身也没定死。
+5. **Codex 子代理策略被上游重设计取代（2026-09-11 白名单实跑带出，未登记的能力移除）**：
+   合并前 Meka 的 `SubagentModelSettings` 有 7 个字段（`codex` / `codexProviderId` /
+   `codexEffort` / `codexSubagentsEnabled` 默认 **true** / `codexUseCindySubagentPolicy`
+   默认 **true** / `codexMaxConcurrentSubagents` / `codexAllowNestedSubagents`），现在只剩
+   `codexSmartSubagentRouting`（默认 **false** = Codex 原生 Sol/Terra 调配）。
+   `apps/desktop/src/main/maker-host/codex-subagent-config.ts` 由 203 行缩到 68 行（= 上游版本），
+   `resolveCodexSubagentHostCredentialPlan`（oauth-passthrough 路由的 fail-fast 凭据闸）、
+   `forceDisableSubagents`、`MODEL_OVERRIDE_PREFIX` 全仓归零。
+   **迁移本身是刻意且有测试的**（`subagent-model-settings-store.test.ts:121`「removes retired
+   Codex fixed-route and guardrail keys when settings are opened」断言旧键被丢弃、仅含旧键时
+   设置文件被删除）；**但它没有被登记** —— 同步报告、迁移总账与 D1–D4 决策里都没有。
+   用户可见影响：① 配过这些项的 Meka 用户设置被静默丢弃；② **默认行为翻转**（Cindy 策略
+   开 → Codex 原生）；③ `agents.enabled=false` 硬闸、`agents.max_depth`、并发上限不再可注入。
+   **未受影响**：SAGA2 远端只读 worker 的硬禁用仍在链路里（`mekaRuntimeInjection.ts:622` 设
+   `codexNativeSubagentsDisabled` → `maker-host/index.ts:1618` 读取 → `:1831`
+   `buildCodexSubagentSpawnArgs`），WL-4.2.3 不因此失效。
+   **需裁决**：接受上游重设计并补登为一条决策（承认默认翻转与设置退场），**或**把 Meka 的
+   子代理策略移植到上游新的 `codexSmartSubagentRouting` 机制上。
+   > 注意：本条**暂不占 WL 编号** —— 按 §6 的判据，白名单只登记「当前存在、需要防上游覆盖」
+   的能力；若裁决为「恢复」，则应补一条 WL-15 并在其中钉住这些不变量。详细实跑证据见
+   [`../migrations/2026-09-origin-main-to-meka-main.md`](../migrations/2026-09-origin-main-to-meka-main.md) §7.1。
 
 
 ### 8.3 已移除：migration 谱系冻结不单列为白名单项（2026-09-11 复核）

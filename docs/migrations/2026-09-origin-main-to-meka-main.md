@@ -516,6 +516,132 @@ WL-4.1.6 已把该 pin 登记为清单项，阶段 C 实机验收必须核对。
 > 另有一次 `restart-desktop-remote.test.mjs` 因 Windows 文件锁瞬时 EPERM 假红，
 > 单独重跑 71/71 通过。二者均非仓库缺陷。
 
+### 7.1 白名单实跑记录（2026-09-11，首次按 `meka-whitelist-verification.md` 执行）
+
+**规范**：按白名单清单 §2，合并完成后必须**实际运行**清单并逐项记录结论，只有全部通过
+（或明确登记「未验证 + 原因」并经维护者书面接受）才允许宣告合并完成。本节是该次执行的原始
+记录，写在这里而不是「凭印象通过」。
+
+#### 阶段 A — 结构审计
+
+`pnpm audit:merge -- --merge-commit bdc8397a7e` 首跑 → `paths=10406 blockers=0 dropped=8
+review=51 generated=14`，`verdict: FAIL`（DROPPED 阻断）。8 条逐条确认后以 `--allow` 记账，
+复跑 → **`verdict: PASS`**（`blockers=0 dropped=0`；`review=51` 与 `generated=14` 为非阻断提示）。
+
+| DROPPED 路径 | 形态 | 逐条确认结论 |
+| --- | --- | --- |
+| `.gitmodules` | ours 整文件被丢 | D1 移除 `cindy-protocol` submodule；上游无此文件，协议包已在 `packages/{plugin,slack-hook,device-link}-protocol` |
+| `apps/desktop/src/main/updateVersion.ts`<br>`…/__tests__/updateVersion.test.ts` | ours 整文件被丢 | 被上游 `updateVersionPolicy.ts`（`compareAppUpdateVersions`）与其同名测试取代 |
+| `apps/desktop/src/shared/cindyVersion.ts` | ours 整文件被丢 | 被 `@cindy/plugin-protocol` 的 `supportsCindyVersion`（`manifest.ts:1123`）取代 |
+| `docs/dev-rules/protocol-and-submodules.md` | 51/94 行缺失 | D1 规则重写（去掉 submodule 权威与 Meka 私仓地址） |
+| `scripts/test-workspaces.config.mjs` | 6/6 行缺失 | 子模块路径 → `packages/*`（实测已登记 `packages/plugin-protocol`、`packages/device-link-protocol`） |
+| `…/features/plugin/lib/updateAllController.ts` | 59/91 行缺失 | D3 解耦：`diffGhostPermissionItems`、`PluginMarketPackageReview` 全仓归零；`channel: 'cindy' \| 'meka'` 账本逻辑保留 |
+| `…/maker-host/__tests__/codex-subagent-config.test.ts` | 49/49 行缺失 | 结构性合法（被上游重设计取代），**但伴随一处未登记的用户可见能力移除 → 见下** |
+
+#### 🔴 阶段 A 带出：一处**未登记**的用户可见能力移除（阻断完成判定）
+
+- **事实**：合并前 Meka 的 `SubagentModelSettings` 有 7 个字段 —— `codex` / `codexProviderId` /
+  `codexEffort` / `codexSubagentsEnabled`（默认 **true**）/ `codexUseCindySubagentPolicy`
+  （默认 **true**）/ `codexMaxConcurrentSubagents` / `codexAllowNestedSubagents`；现在只剩
+  `codexSmartSubagentRouting`（默认 **false** = Codex 原生）。`maker-host/codex-subagent-config.ts`
+  从 203 行缩到 68 行（= 上游版本），`resolveCodexSubagentHostCredentialPlan`（oauth-passthrough
+  路由的 fail-fast 凭据闸）、`forceDisableSubagents`、`MODEL_OVERRIDE_PREFIX` 全仓归零。
+- **迁移是刻意且带测试的**：`subagent-model-settings-store.test.ts:121`「removes retired Codex
+  fixed-route and guardrail keys when settings are opened」断言旧键被丢弃、仅含旧键时设置文件被
+  删除；`shared/subagentModelSettings.ts` 头注写明「旧版 Codex 固定模型、固定来源、固定 effort
+  与护栏字段不再属于有效设置协议」。
+- **但它没有被登记**：同步报告、迁移总账、D1–D4 决策里都没有这条（`grep -E
+  'forceDisableSubagents|codexSmartSubagentRouting|固定模型|智能调配'` 在两份迁移文档中零命中）。
+- **用户可见影响**：① 配过 Codex 子代理模型/来源/effort/并发/嵌套开关的 Meka 用户，这些设置被
+  静默丢弃（设置文件被删）；② **默认行为翻转**（Meka 原默认 Cindy 策略开 → 现默认 Codex 原生
+  Sol/Terra 调配）；③ `agents.enabled=false` 硬闸、`agents.max_depth`、并发上限不再可注入。
+- **未受影响的相邻能力**：SAGA2 远端只读 worker 的硬禁用仍在链路里 ——
+  `mekaRuntimeInjection.ts:622` 设 `codexNativeSubagentsDisabled` → `maker-host/index.ts:1618`
+  读取 → `:1831` 走 `buildCodexSubagentSpawnArgs`（WL-4.2.3 不因此失效）。
+- **需裁决**：接受上游重设计并补登为一条决策（承认默认翻转与设置退场），**或**把 Meka 的
+  子代理策略移植到上游新的 `codexSmartSubagentRouting` 机制上。
+
+#### 阶段 B — 最小自动化集合（逐条实跑）
+
+| 命令 | 结果 |
+| --- | --- |
+| `pnpm audit:merge -- --merge-commit <sha>` | ✅ PASS（8 条豁免，`blockers=0 dropped=0`） |
+| `pnpm test:runner` | ✅ 596 tests / 589 pass / 0 fail / 7 skipped |
+| `pnpm --filter desktop run db:validate` | ✅ 6/6（108 SQL `0000..0107`、journal/snapshot 对齐、无 schema drift、companion CJS、固定基线 80 SQL+23 脚本 / canonical 基线 108 SQL+43 脚本） |
+| `pnpm check:i18n` | ✅ 五语 9946 key 一致（1234 处告警，非失败） |
+| `pnpm check:i18n-glossary` | ✅ 无新增违规（33 条已裁决 / 79 条待讨论） |
+| `pnpm check:brand-terminology` | ✅ PASS |
+| `pnpm check:endpoints` | ✅ endpoint source guard passed |
+| `pnpm check:design-inventory` | ✅ GENERATED 最新（53 surface） |
+| `pnpm check:dev-docs` | ✅ 9/9 |
+| `pnpm test:unit` | ⚠️ 首跑 `apps/desktop unit` 红 → 定位为**端口偶发**（见下）；**第二次全量 ✅ PASS**（`EXIT=0`，runner 596/589/0，desktop unit 2609 文件 / 35704 通过） |
+| `pnpm --filter desktop typecheck` | ✅ `EXIT=0` |
+| `pnpm test:db` | ⚠️ **本机无法稳定全绿**：同一用例两次在 tier 内超时（`codexLocalSessions.test.ts:316`「applies the import cap after filtering subagent threads」15000ms），隔离复跑该文件 ✅ 122/122、**单用例隔离耗时实测 8617ms / 预算 15000ms** → 属**临界超时**在 tier 并行下被推过阈值；该用例在 merge-base、合并前 Meka、上游三处都存在，**非本次引入** |
+| `pnpm test:guard` | ❌ 3 条（`makerSendToSessionOrdering.test.ts`）—— 与 §6.2 记录的**上游自身红**一致，非本次引入，且不在 §4 最小集合内 |
+
+**三处环境性偶发（非仓库缺陷，均已在隔离环境复现通过）**：
+
+1. `codexHttpBridge.test.ts` 两条用例 `TypeError: fetch failed` → `Caused by: Error: bad port`。
+   根因：`codexHttpBridge.ts:429` 用 `httpServer.listen(0)` 取随机端口，而**本机 Windows 动态
+   端口范围是 `1024..15000`**（`netsh` 实测 1024 + 13977），其中 19 个端口落在 undici 的受限
+   端口黑名单内（1719/1720/1723/2049/3659/4045/4190/5060/5061/6000/6566/6665–6669/6679/6697/10080）。
+   命中即 `fetch` 报 `bad port`。隔离复跑 25/25 通过两次，desktop unit 定向复跑 ✅ PASS。
+   该模式上游与合并前一致，属**既存**的测试健壮性问题（建议避开受限端口或对 `bad port` 重试）。
+2. `packages/lizi-mcps` 一次 `COMMAND_FAILED`（11.2s 死亡，正常 31.8s）：单独复跑 56 文件 /
+   769 通过 / 3 skipped 正常，全量复跑亦绿。
+3. `apps/desktop` db tier 同一用例超时两次（`codexLocalSessions.test.ts:316` 的 15000ms 上限）：
+   隔离复跑 122/122 通过，且**单用例隔离耗时实测 8617ms**（预算 15000ms）→ 临界超时，tier 并行
+   时被推过阈值。该用例在 merge-base / 合并前 Meka / 上游三处都存在，非本次引入。
+   前两处共同点是**在机器同时跑其它重型任务时发生**——全量门禁应在机器空闲时跑，或修掉这几处
+   对负载/端口敏感的用例（属独立工单，不在本次合并范围）。
+
+#### 阶段 C — 实机验收
+
+隔离沙箱（`pnpm restart:desktop:remote`）：`DESKTOP_DEV_VERDICT=ready`、`mode=isolated`、
+`sandbox=dev`、`region=global`、`commit=60f2d99d04`、`pid=64216`。
+
+日志级证据（`apps/desktop/logs/main-2026-09-11.log`）：
+
+- **WL-11 / migration 谱系**：沙箱库已应用到 `0107_schedule-model-harness.sql`
+  （`localDb.migrate.scan currentVersion=95 pendingCount=12` → 逐条应用到 `seq=107`），
+  即 Meka 谱系 `0082`–`0095` 与上游追加的 `0096`–`0107` 在真实节点上串成一条链。
+- **WL-9 开发插件链**：两个真实开发副本成功装载 ——
+  `ghost installed { id: 'meka-dev-meka-unity-02ef16d0', version: '1.0.15' }`（20:04）
+  与 `ghost installed { id: 'meka-dev-meka-p4-865543f5', version: '1.0.61' }`（20:30）。
+  这是本轮 §4.7 修复（派生包必须是作者格式）之后的真实端到端证据。
+- **WL-6.1 身份**：`dbPath = …\CindyMeka-dev2-dev\cindy-meka-<owner>.db` ——
+  userData 用 `CindyMeka`、库文件用 `cindy-meka` 前缀，与 `brandIdentity` 一致。
+
+**逐项结论**：WL-1…WL-14 的「自动化门禁」一栏已由本次 `pnpm test:unit`（2609 文件 / 35704
+通过）+ `db:validate` + `test:runner` + 6 项 `check:*` 覆盖并通过。但清单里的**实机验证**多数
+需要人工点击 GUI（设置页四张卡、侧栏入口与高亮、会话分组与角色 chip、五语切换目检）或外部
+前置（MCPRouter 账号 + 已绑定实例 + Gateway key、真实签名与发布授权、真实安装/升级），
+**本次无法由执行者完成**，逐项状态如下：
+
+| 分组 | 状态 |
+| --- | --- |
+| 沙箱启动 / 区域 / 身份（WL-5.1、WL-6.1、WL-6.3） | ✅ 可验证部分通过（verdict=ready、region=global、userData 名正确） |
+| WL-1/WL-2/WL-3/WL-13 的 GUI 目检项 | ⏳ **未验证 —— 需人工点击**（执行者无 GUI 自动化能力） |
+| WL-4.1.4 / 4.1.5 / 4.1.7 / 4.2.2 / 4.2.3 端到端 | ⏳ **未验证 —— 缺 MCPRouter 账号、实例与 Gateway key** |
+| WL-6.4 签名、WL-6.5 真实更新拉取、WL-6.6 旧库只读迁移 | ⏳ **未验证 —— 需真实签名/发布授权与共享 profile** |
+| WL-8/WL-9/WL-10/WL-11/WL-12 的自动化面 | ✅ 由 unit/db/runner 定向覆盖并通过 |
+
+#### 阶段 D — 结论
+
+**本次合并尚不能宣告完成**，依据（按白名单 §2 的完成判定）：
+
+1. **🔴 阻断**：§7.1 记录的「Codex 子代理策略被上游重设计取代」是**未登记的用户可见能力移除**
+   （7 个设置字段退场、默认行为翻转、fail-fast 凭据闸消失）。必须先裁决「接受并补登决策」或
+   「把 Meka 策略移植回上游机制」。
+2. **⚠️ 需维护者书面接受**：`pnpm test:db` 在本机因一条既有的临界超时用例（8617ms/15000ms）
+   无法稳定全绿——隔离可过，tier 并行不过。
+3. **⏳ 未验证**：清单中依赖人工 GUI 与外部前置的实机项（上表），需在具备条件时补齐；
+   未补齐前不得声称发布就绪。
+
+**已确认通过的部分**（可安全作为本次交付的证据）：阶段 A 结构审计（8 条豁免逐条确认）、
+`test:unit`、`test:runner`、`typecheck`、`db:validate`、6 项 `check:*`、沙箱启动裁决；
+WL-7 于本次复核中被移除（非业务能力）。
+
 ## 8. 交接状态
 
 - **已完成**：133 个冲突全部语义解决；上述能力组与 typecheck/测试断链全部修复；

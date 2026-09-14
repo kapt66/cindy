@@ -3224,6 +3224,21 @@ Meka 开发插件链路、插件市场独立 endpoint/凭证、`edition` 运行�
   3. **两处待裁决登记在白名单 §8.2**：IM `/session` + `/ctr` 是否应排除 Meka 会话（`hook-control`
      侧已有守卫，IM 侧没有，属同一类面上的一致性问题）；旧数据迁移的构建区门是否应改为跟随
      首次登录生效的 edition（运行期可切区后「global 构建 = global 身份」已不成立）。
+- **2026-09-11 白名单实跑带出：Codex 子代理策略被上游重设计取代（未登记的能力移除，待裁决）**：
+  合并前 Meka 的 `SubagentModelSettings` 有 7 个字段（锁定模型/来源/effort、子代理总开关
+  `codexSubagentsEnabled` 默认 **true**、Cindy 策略开关 `codexUseCindySubagentPolicy` 默认
+  **true**、并发上限、嵌套开关），现在只剩 `codexSmartSubagentRouting`（默认 **false** =
+  Codex 原生 Sol/Terra 调配）；`maker-host/codex-subagent-config.ts` 由 203 行缩到 68 行
+  （= 上游版本），`resolveCodexSubagentHostCredentialPlan`（oauth-passthrough 路由的 fail-fast
+  凭据闸）、`forceDisableSubagents`、`MODEL_OVERRIDE_PREFIX` 全仓归零。
+  **迁移本身刻意且有测试**（`subagent-model-settings-store.test.ts`
+  「removes retired Codex fixed-route and guardrail keys when settings are opened」断言旧键被丢弃、
+  仅含旧键时设置文件被删除），**但此前没有任何文档登记**。用户可见影响：已配置项被静默丢弃、
+  默认行为翻转、`agents.enabled=false` 硬闸与并发上限不再可注入。**未受影响**：SAGA2 远端只读
+  worker 的硬禁用仍在链路里（`mekaRuntimeInjection.ts:622` → `maker-host/index.ts:1618` →
+  `buildCodexSubagentSpawnArgs`）。需裁决「接受并补登」或「移植回上游新机制」，
+  详见 [`2026-09-origin-main-to-meka-main.md`](./2026-09-origin-main-to-meka-main.md) §7.1 与
+  白名单清单 §8.2 第 5 条。
 
 本文是本次严格迁移的事实正本。后续变更应在同一次代码调整中同步更新：
 
