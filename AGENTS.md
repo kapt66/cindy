@@ -178,6 +178,10 @@
   `docs/dev-rules/development-workflow.md` 第 4 节：冲突清单不是完整的迁移范围，
   交付前必须跑 `pnpm audit:merge` 逐条确认没有静默丢失（该门禁与 `pnpm test:unit`
   并行生效，不能互相替代）。
+- 同步完成、得出任何交付或发布结论**之前**，必须逐项走完
+  `docs/dev-rules/meka-whitelist-verification.md`（Meka 能力白名单与合并后验证清单）：
+  结构审计抓不到「代码都在、语义被上游覆盖」这类静默回归，只有该清单的语义验收能拦住。
+  新增任何 Meka 专属能力时也必须同一次交付里登记清单项。
 
 ## 文档同步（硬性要求）
 

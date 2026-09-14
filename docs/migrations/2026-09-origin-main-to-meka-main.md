@@ -329,6 +329,48 @@ slots 必须是数组`）；修复后把该源码目录登记进沙箱开发注�
 「派生包的 `ghost.json` 必须是作者格式，且只改写身份字段」条款。该文件属插件基座，
 本次改动落在插件打包判据上，按仓库白名单确认门需放行人明确 Approve。
 
+### 4.8 cc-mgr 协议 pin 的规则正文漂移（本轮合并引入，已修）
+
+**症状**：`docs/dev-rules/mcpr-remote-session-routing.md` §4 写「当前 bundle `0.0.9` 的 daemon
+自报最高 protocol `4`」，而代码实际是 bundle `0.0.10` / `PROTOCOL_VERSION = 5`
+（`packages/maker-cc-manager/src/protocol.ts:42,51`，包内 `protocol.test.ts:23,27` 硬断言这两个值）。
+
+**归因**：合并前代码与文档**一致**（`5917437271` 侧是 protocol `4` / bundle `0.0.9`，文档也这么写）；
+上游把 pin 提到 `0.0.10` / protocol `5`（v5 语义：root-only `toolGuards` 接受原生
+`AskUserQuestion`），本轮**接纳了上游代码但没更新 Meka 侧的规则正文**——该文件是 Meka 独有正文
+（上游没有），不会被上游改动带走。
+
+**危害**：这不是文案瑕疵。规则正文是后续同步者的判断依据，读错一版会让人对着**错误的 pin**
+做「远端运行时版本门禁」核对，或据此误判 MCPRouter 侧的 pin mismatch。
+
+**修复**：改 `mcpr-remote-session-routing.md` §4 —— 写明当前 pin 是 `0.0.10` / protocol `5`，
+保留 protocol `2/3/4` 作为协商历史并补上 v5 的语义，并加一条提醒：**每次上游同步后都要重新
+核对本节版本号与代码一致**，同时记录本次漂移。历史事故段（2026-08-24 记录的
+「Cindy `0.0.9/p4` vs MCPRouter 生产 `0.0.7/p3`」）保持原样，它是历史事实。
+
+**同类风险**：这是「Meka 独有的规则正文描述上游可变的常量」这一模式的必然弱点。
+[`../dev-rules/meka-whitelist-verification.md`](../dev-rules/meka-whitelist-verification.md)
+WL-4.1.6 已把该 pin 登记为清单项，阶段 C 实机验收必须核对。
+
+### 4.9 新增「Meka 能力白名单与合并后验证清单」
+
+本轮同步暴露出结构审计抓不到的一类回归：**代码都在、语义被上游覆盖**（§4.6 模型可见性、
+§4.7 开发插件都是这个形态，两边各自自洽、冲突标记为零）。为此新增
+[`../dev-rules/meka-whitelist-verification.md`](../dev-rules/meka-whitelist-verification.md)：
+把 Meka 专属能力定义成 **WL-1…WL-14** 的白名单，每一项给出保护的不变量、可核实的代码锚点、
+现有自动化门禁与可操作的实机步骤；**清单内全绿即判定可以安全接纳这批上游**。
+
+- 与既有门禁的分工写在该文 §1：`audit:merge` 管结构层静默丢失、`test:unit` 管实现自洽、
+  白名单清单管语义未退化，三者不可互相替代。
+- 结构由新增的 `scripts/__tests__/meka-whitelist-contract.test.mjs` 强制（字段完整性、
+  命令可解析、编号唯一、被 `AGENTS.md` 与 `development-workflow.md` 索引）。
+- 同次把 `scripts/__tests__/meka-release-identity.test.mjs` 登记进 `pnpm test:runner` ——
+  它此前**没有被任何门禁引用**，自己通过但永远不会跑。
+- 清单 §8 汇总了**当前无自动化覆盖**的条目（含本轮真实坏过的 `mekaRow`、scheduler 5 处
+  `meka` 跳过、`recentSessions` 的 meka 跳过等），以及一处**已核实的存量缺陷**：
+  `sidebarProjectVisibility.ts:125` 会把隐藏项目下的 Meka 会话降级成普通对话（上游与合并前
+  逐字相同，属 Meka 新增 kind 后未补豁免，未擅自修复）。
+
 
 ## 5. 保留的 Meka 分歧（有意为之，非缺陷）
 

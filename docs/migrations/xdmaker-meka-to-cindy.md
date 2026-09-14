@@ -3186,6 +3186,26 @@ Meka 插件/Skill 管理入口与 `/cc-agent/meka/*` 路由、`meka-formal` 正�
 Meka 开发插件链路、插件市场独立 endpoint/凭证、`edition` 运行期区域选择器，以及
 `onLocalRenamed` 的 Meka 改名实现。
 
+- **Meka 能力白名单与合并后验证清单（新增，权威）**：本轮同步暴露出一类结构审计抓不到的
+  回归——**代码都在、语义被上游覆盖**（模型可见性整张清空、开发插件从目录加载失败，两边
+  各自自洽、冲突标记为零）。因此新增
+  [`../dev-rules/meka-whitelist-verification.md`](../dev-rules/meka-whitelist-verification.md)，
+  把 Meka 专属能力登记为 **WL-1…WL-14** 白名单（设置页 Meka 设置、左侧栏 Meka 入口、
+  Meka 代理对话单独分类、MCPRouter 远程会话含 ORCA worker、登录页 CN/GLOBAL 与实际链路、
+  构建更新链路与项目标识，外加坡口补齐的数据谱系 / 技能链 / 插件链 / 模型可见性 /
+  项目角色正式事项 / 横切域守卫 / 文案 i18n / 同步工具链）。每一项给出保护的不变量、
+  可核实代码锚点、现有自动化门禁与可操作实机步骤；**清单内全绿即判定可以安全接纳上游**。
+  与 `pnpm audit:merge`（结构层）、`pnpm test:unit`（实现自洽）互补，三者不可互相替代。
+  结构由 `scripts/__tests__/meka-whitelist-contract.test.mjs` 强制；同次把此前无人引用的
+  `scripts/__tests__/meka-release-identity.test.mjs` 登记进 `pnpm test:runner`。
+  清单 §8 汇总当前无自动化覆盖的条目与一处已核实的存量缺陷（隐藏项目会把 Meka 会话降级成
+  普通对话，未擅自修复）。
+- **cc-mgr 协议 pin 的规则正文漂移（本轮合并引入，已修）**：
+  `docs/dev-rules/mcpr-remote-session-routing.md` §4 曾写 bundle `0.0.9` / protocol `4`，
+  而本轮接纳的上游代码已是 bundle `0.0.10` / `PROTOCOL_VERSION = 5`。合并前两侧一致，
+  漂移由「接纳上游代码但未更新 Meka 独有规则正文」造成；已按实际 pin 改写并加同步后复核提醒。
+  详见 [`2026-09-origin-main-to-meka-main.md`](./2026-09-origin-main-to-meka-main.md) §4.8。
+
 本文是本次严格迁移的事实正本。后续变更应在同一次代码调整中同步更新：
 
 - 模块状态变化：更新第 3、4、7 节。

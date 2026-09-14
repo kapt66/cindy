@@ -89,12 +89,17 @@ transport 身份，`agentType` 为 `claude` 或 `codex` 时才进入支持判断
 - Claude 的 MCPRouter/SSH cc-mgr `protocol/hello` 必须携带
   `CC_MGR_BUNDLE_VERSION`。客户端可以兼容旧 daemon 不回显 bundle 字段，但不能省略请求
   参数；否则新版本 daemon 会返回 `[INVALID_PARAMS] bundleVersion is required (string)`。
-- 当前 bundle `0.0.9` 的 daemon 自报最高 protocol `4`，并按连接协商版本隔离能力：protocol
-  `2` 保留 Claude query/session 与 host `toolGuards`；protocol `3` 才开放 immutable
-  bundle、Codex revision/thread routing 和 tunneled MCP；protocol `4` 增加 Full access 前的
-  subagent 模型能力预检。manager version 相同但 protocol
-  不同同样属于不可部署的 pin mismatch，MCPRouter 构建期和 tunnel 启动前都必须阻断。
-- `0.0.9/protocol 4` 的 immutable bundle 文件可二选一携带 UTF-8 `content` 或规范
+- 当前 pin 是 bundle `0.0.10` / protocol `5`（`packages/maker-cc-manager/src/protocol.ts`
+  的 `PROTOCOL_VERSION` 与 `CC_MGR_BUNDLE_VERSION`，包内 `protocol.test.ts` 硬断言这两个值）。
+  daemon 按连接协商版本隔离能力：protocol `2` 保留 Claude query/session 与 host
+  `toolGuards`；protocol `3` 才开放 immutable bundle、Codex revision/thread routing 和
+  tunneled MCP；protocol `4` 增加 Full access 前的 subagent 模型能力预检；protocol `5`
+  让 root-only `toolGuards` 接受原生 `AskUserQuestion` 工具名（旧 daemon 会把这个 guard
+  当成非法 root-only 工具而拒，因此必须先升级 daemon 再下发）。manager version 相同但
+  protocol 不同同样属于不可部署的 pin mismatch，MCPRouter 构建期和 tunnel 启动前都必须阻断。
+  ⚠️ 每次上游同步后都要重新核对本节版本号与实际代码一致——2026-09 同步把 pin 从
+  `0.0.9/protocol 4` 提升到 `0.0.10/protocol 5`，本节曾因此落后一版。
+- protocol `4` 起的 immutable bundle 文件可二选一携带 UTF-8 `content` 或规范
   `contentBase64`；后者用于完整投递角色 Skill 的脚本、引用和二进制资产。daemon 必须先解码、
   校验规范 base64 与文件 SHA-256，再原子物化。Desktop 使用任务快照的 revision 和原始字节，
   不在远端重建 `SKILL.md`。
