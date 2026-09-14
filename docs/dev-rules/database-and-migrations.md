@@ -38,6 +38,20 @@
   migration 继续由 Git 基线冻结。两部分都由 `db:validate` 检查。
 - `drizzle/meta/_journal.json` 与 `*_snapshot.json` 只能由 Drizzle 生成，不得手工修改。
 - migration 序号必须从 `0000` 连续递增，不得重复或跳号。
+- **Meka 谱系 `0082`–`0095` 的形态与本仓约定不同，不要当垃圾清理**：这一段是迁仓时导入的
+  XDMaker Meka 谱系，既有真实 SQL（`0089`、`0090`、`0091`、`0092`），也有**占位谱系槽**。
+  占位槽分两类，都必须留在链上：
+  - `.sql` 内容为 `SELECT 1;` **且带同名 runtime script**（`0082_meka_product_schema.ts` 建
+    `meka_projects` / `meka_roles` 与 `sessions` 的 meka 列；`0088_bridge_meka_0_0_11_lineage.ts`
+    做 0.0.11 谱系桥接；`0093`–`0095` 各自有脚本）—— 真实工作由脚本做，SQL 只是占位；
+  - `.sql` 为 `SELECT 1;` **且无任何配套脚本**（`0083`–`0087` 的 `*_meka_lineage_slot_*`）——
+    纯粹的编号占位，用来保持与已发布 Meka 链的序号一致。
+  它们必须原样保留：序号连续是对已升级用户的 `migration_history` 承诺，删掉或换号会让存量
+  Meka 安装的迁移历史对不上。本轮同步把上游 schema 追加为 `0096`–`0107`，正是按「冻结 Meka
+  已发布编号、上游顺移追加」处理（见 `docs/migrations/2026-09-origin-main-to-meka-main.md` 的 D4）。
+  这段编号不在 `migration-baseline.json` 的 SHA256 清单里（该清单只覆盖迁仓前的
+  `0000`–`0079`，实测 80 条 SQL + 23 条脚本），由上面第 3 段的 **Git 基线冻结** 保护
+  （`db:validate` 第 6 步另报 canonical 基线 108 条 SQL + 43 条脚本）。
 - 生成 migration 前先基于最新 canonical 产品分支：Cindy Meka 使用 `meka/main`，上游
   checkout 使用 `origin/main`。同步上游时还要显式检查 `origin/main` 的新编号是否与
   Meka 已发布 lineage 冲突。多人分支撞号时，保留自己的 schema 意图，以最新产品分支

@@ -3192,7 +3192,7 @@ Meka 开发插件链路、插件市场独立 endpoint/凭证、`edition` 运行�
   [`../dev-rules/meka-whitelist-verification.md`](../dev-rules/meka-whitelist-verification.md)，
   把 Meka 专属能力登记为 **WL-1…WL-14** 白名单（设置页 Meka 设置、左侧栏 Meka 入口、
   Meka 代理对话单独分类、MCPRouter 远程会话含 ORCA worker、登录页 CN/GLOBAL 与实际链路、
-  构建更新链路与项目标识，外加坡口补齐的数据谱系 / 技能链 / 插件链 / 模型可见性 /
+  构建更新链路与项目标识，外加坡口补齐的技能链 / 插件链 / 模型可见性 /
   项目角色正式事项 / 横切域守卫 / 文案 i18n / 同步工具链）。每一项给出保护的不变量、
   可核实代码锚点、现有自动化门禁与可操作实机步骤；**清单内全绿即判定可以安全接纳上游**。
   与 `pnpm audit:merge`（结构层）、`pnpm test:unit`（实现自洽）互补，三者不可互相替代。
@@ -3200,6 +3200,11 @@ Meka 开发插件链路、插件市场独立 endpoint/凭证、`edition` 运行�
   `scripts/__tests__/meka-release-identity.test.mjs` 登记进 `pnpm test:runner`。
   清单 §8 汇总当前无自动化覆盖的条目与一处已核实的存量缺陷（隐藏项目会把 Meka 会话降级成
   普通对话，未擅自修复）。
+  **编号 WL-7 留空**：初版曾把「Meka 数据谱系与 migration 冻结」列为 WL-7，2026-09-11 复核
+  后移除 —— 它不是 Meka 业务能力，而是谱系导入形态（运行时 TS 脚本 + `SELECT 1;` 占位槽），
+  保护它的是上游自带机制（`db:validate` + `migration-baseline.json` + Git 基线冻结）与本仓
+  `docs/dev-rules/database-and-migrations.md`，且上游仓根本没有这些文件故不存在被覆盖风险；
+  业务实质（meka 表与列）已并入 WL-11。判定判据与结论见清单 §7、§8.3。
 - **cc-mgr 协议 pin 的规则正文漂移（本轮合并引入，已修）**：
   `docs/dev-rules/mcpr-remote-session-routing.md` §4 曾写 bundle `0.0.9` / protocol `4`，
   而本轮接纳的上游代码已是 bundle `0.0.10` / `PROTOCOL_VERSION = 5`。合并前两侧一致，

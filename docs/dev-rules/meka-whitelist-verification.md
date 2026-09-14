@@ -527,38 +527,6 @@ edition 与端点自举）；② 登录页实际认证的 **realm**;③ 运行�
 - **自动化门禁**：**无自动化覆盖**（`forgeMekaResources` 覆盖的是随包 Meka 资源树，不是应用 icon）
 - **实机验证**：打包后看 exe/dmg/窗口/托盘图标为 Meka 图标；`resources/icon.*` 三个文件都存在且非空
 
-### WL-7 Meka 数据谱系与 migration 冻结
-
-**保护的不变量**：Meka 已发布的 migration 编号永不重写；Meka 的产品 schema 由
-**运行时 TS 脚本**承载、SQL 谱系槽只占位（与上游的纯 SQL 形态不同）；上游新增 schema
-只能**追加**在 Meka 谱系之后。
-
-- Meka 谱系 `0082`–`0095` 冻结：`0082_meka_product_schema.ts` 建
-  `meka_projects` / `meka_roles` 与 `sessions` 的 `meka_project_id` / `meka_role_id` /
-  `is_formal` / `formal_*` 列及索引；`0088_bridge_meka_0_0_11_lineage.ts` 做 0.0.11 谱系桥接。
-- 对应的 `.sql`（`0082`–`0087`）是 `SELECT 1;` **占位谱系槽**，不是「空 migration 可以删」。
-- 上游 schema 本轮追加为 `0096`–`0107`；不得为了让编号连续而重排任何一侧。
-- 冻结指纹在 `apps/desktop/drizzle/migration-baseline.json`（含 `sourceCommit` 与逐文件
-  SHA256），`db:validate` 第 6 步比对。
-
-**代码锚点**
-- `apps/desktop/drizzle/scripts/0082_meka_product_schema.ts:68-96`
-- `apps/desktop/drizzle/scripts/0088_bridge_meka_0_0_11_lineage.ts:286-366`
-- `apps/desktop/drizzle/migration-baseline.json`
-- `apps/desktop/src/main/localDb/schema.ts:86`（`workspace_kind` 枚举含 `'meka'`）
-- `apps/desktop/src/main/localDb/mapper.ts:396-409`（meka 身份只对 `'meka'` 绑定）
-
-**自动化门禁**
-- `pnpm --filter desktop run db:validate`（6/6：`0000..0107` 完整、journal/snapshot 对齐、
-  无 schema drift、companion CJS、历史身份冻结）
-- `pnpm test:db`（db tier，CI 不跑，必须本地跑）
-
-**实机验证**：隔离沙箱启动，查 `migration_history` 已应用到 `0107_schedule-model-harness.sql`；
-`meka_projects` / `meka_roles` 表存在且 `sessions` 具备 meka 列。
-旧身份只读迁移用 `pnpm demo:legacy-migration` 走一遍（不写新目录以外的位置）。
-
-**历史回归**：合并前的 D4 决策即为此设（冻结 `0082`–`0095`、上游顺移为 `0096`–`0107`）。
-
 ### WL-8 Meka 技能链与技能市场
 
 **保护的不变量**：Meka 技能有**独立 provenance 与分发渠道**，不被上游 Cindy 技能市场动作
@@ -645,10 +613,14 @@ Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台。
 
 ### WL-11 Meka 项目、角色与正式事项
 
-**保护的不变量**：Meka 原生项目/角色/正式事项是**本地事实源**，schema、IPC 与 UI 入口
+**保护的不变量**：Meka 原生项目/角色/正式事项是**本地事实源**，其 schema、IPC 与 UI 入口
 独立于上游；`'meka'` 会话必须绑定项目+角色身份；Meka 资源树随包发布。
 
 **代码锚点**
+- `apps/desktop/drizzle/scripts/0082_meka_product_schema.ts:68-96`（建 `meka_projects` /
+  `meka_roles` 与 `sessions` 的 `meka_project_id` / `meka_role_id` / `is_formal` /
+  `formal_*` 列及索引）、`apps/desktop/drizzle/scripts/0088_bridge_meka_0_0_11_lineage.ts:286-366`（0.0.11 谱系桥接）
+- `apps/desktop/src/main/localDb/schema.ts:86`（`workspace_kind` 枚举含 `'meka'`）、`localDb/mapper.ts:396-409`（meka 身份只对 `'meka'` 绑定）
 - `apps/desktop/src/main/localDb/ipc/mekaProjects.ts`、`mekaRoles.ts`、`mekaProjectMetadata.ts`
 - `apps/desktop/src/main/localDb/ipc/mekaFormal.ts:9-12`（`meka-formal:*` 四个 channel）
 - `apps/desktop/src/main/localDb/ipc/mekaSkillCatalog.ts:5`
@@ -657,13 +629,21 @@ Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台。
 - `apps/desktop/src/main/localDb/ipc/sessions.ts:1287,1317,1725`
 
 **自动化门禁**
+- `pnpm --filter desktop run db:validate`（meka 表与列存在、`0000..0107` 完整、journal/snapshot
+  对齐、无 schema drift、companion CJS、历史身份冻结）
+- `pnpm test:db`（db tier，CI 不跑，必须本地跑）
 - `pnpm --filter desktop exec vitest run src/main/meka-projects src/main/localDb/__tests__/mekaWorkspace.test.ts`
 - `pnpm --filter desktop exec vitest run src/main/localDb/__tests__/mapperMekaFormal.test.ts src/main/localDb/__tests__/builtinMekaSeed.test.ts`
 - `pnpm --filter desktop exec vitest run src/main/__tests__/forgeMekaResources.test.ts`
 - `pnpm --filter desktop exec vitest run src/main/localDb/__tests__/meka0011MigrationLineageBridge.test.ts`
 
-**实机验证**：创建 Meka 项目与角色 → 新建 Meka 会话绑定二者 → 发起正式事项并走通
-`meka-formal` 的 provider/auth/issue 流程 → 会话在项目下正确归类。
+**实机验证**：隔离沙箱启动后 `migration_history` 已应用到 `0107_schedule-model-harness.sql`，
+`meka_projects` / `meka_roles` 表存在且 `sessions` 具备 meka 列；创建 Meka 项目与角色 →
+新建 Meka 会话绑定二者 → 发起正式事项并走通 `meka-formal` 的 provider/auth/issue 流程 →
+会话在项目下正确归类。
+
+> migration 编号与冻结**不单列为白名单项**：那部分是上游自己的机制（`db:validate` +
+> `migration-baseline.json` + Git 基线冻结）加上本仓工程规则，见 §7。
 
 ### WL-12 Meka 会话在横切域的守卫
 
@@ -747,9 +727,9 @@ hook-control 相关丢失）—— 证明门禁不是空转。
 | `pnpm audit:merge -- --merge-commit <sha>` | 结构层静默丢失（先决条件） |
 | `pnpm test:runner` | WL-14 + 发布/身份自测（`meka-release-flow`、`meka-release-identity`、`brand-identity-sync`） |
 | `pnpm --filter desktop typecheck` | 全部 WL 的编译面 |
-| `pnpm --filter desktop run db:validate` | WL-7 |
-| `pnpm test:db` | WL-7、WL-11 |
-| `pnpm test:unit` | 全量单元（含 WL-1…WL-13 的定向用例） |
+| `pnpm --filter desktop run db:validate` | WL-11（Meka schema 与列存在；migration 冻结本身是上游机制，见 §7） |
+| `pnpm test:db` | WL-11 |
+| `pnpm test:unit` | 全量单元（含各 WL 项的定向用例） |
 | `pnpm check:i18n` | WL-13 |
 | `pnpm check:i18n-glossary` | WL-13 |
 | `pnpm check:brand-terminology` | WL-6、WL-13 |
@@ -777,11 +757,16 @@ WL-5（先确认区域与链路）→ WL-6（身份/更新）→ WL-1（设置�
 
 - **硬性**：任何 Meka 专属或与上游不同的改动，必须在**同一次交付**里新增或更新清单项；
   没有清单落点的 Meka 能力改动视为未完成（与根 `AGENTS.md`「文档同步」同级）。
-- 删除或放弃某项能力时，同步删除条目并在当期同步报告写明理由；**编号不复用**。
+- 删除或放弃某项能力时，同步删除条目并在当期同步报告写明理由；**编号不复用**，允许留空号。
+  当前空号：**WL-7**（初版曾占位「数据谱系与 migration 冻结」，2026-09-11 复核后移除，
+  理由见 §8.3）。结构契约测试只要求编号唯一且升序，不要求连续。
 - 每一项必须同时具备：可定位的代码锚点、至少一个自动化门禁**或**明确的可操作实机步骤。
   只写「能力名 + 一句描述」的条目会在结构契约测试里失败。
+- 新增条目前先按本节第 1 段的判据自问：**它是不是「上游可能覆盖掉的 Meka 业务能力」？**
+  如果它其实是上游自带的机制、或只是导入/搬迁留下的实现形态，就不该占白名单编号
+  （见 §7 与 §8.3 的判定示例）。
 - 结构由 `scripts/__tests__/meka-whitelist-contract.test.mjs` 强制：字段完整性、命令可解析、
-  编号唯一且连续、本文被 `AGENTS.md` 与 `development-workflow.md` 索引。
+  编号唯一且升序、本文被 `AGENTS.md` 与 `development-workflow.md` 索引。
 - 上游同步报告必须引用本文并逐项给出结论（通过 / 失败 / 未验证+原因）。
 
 ## 7. 明确不属于白名单的内容
@@ -801,6 +786,11 @@ WL-5（先确认区域与链路）→ WL-6（身份/更新）→ WL-1（设置�
   与 `region-and-editions.md` §2.1「无后缀归 Global」相反。这是**上游共有的历史例外**，
   不是 Meka 分歧；但因为它与 Meka 的 cn/global 共享安装身份叠加时更容易误用
   （WL-5.2 的映射就依赖它），**任何「顺手统一后缀」的改动都会让 dev 默认区读到 CN 清单**。
+- **migration 谱系与冻结**（含 `Meka 谱系 0082`–`0095`、`SELECT 1;` 占位谱系槽、编号不得重排）：
+  这不是 Meka 业务能力，而是谱系导入形态；保护它的是**上游自己的机制**
+  （`db:validate` + `migration-baseline.json` + Git 基线冻结）与本仓工程规则
+  [`database-and-migrations.md`](database-and-migrations.md)。上游仓里没有这些文件，
+  不存在被覆盖的风险。业务实质（meka 表与列）已在 **WL-11**；详细复核结论见 §8.3。
 
 ## 8. 裁决记录与已知缺口
 
@@ -866,7 +856,31 @@ WL-5（先确认区域与链路）→ WL-6（身份/更新）→ WL-1（设置�
    注意 8.2 第 2 条未决时，这条验证的预期行为本身也没定死。
 
 
-### 8.3 已知缺口：Meka 会被「隐藏项目」降级成普通对话（真实缺陷，无覆盖）
+### 8.3 已移除：migration 谱系冻结不单列为白名单项（2026-09-11 复核）
+
+初版曾有一条 `WL-7 Meka 数据谱系与 migration 冻结`，复核后**删除**，理由：
+
+1. **它不是 Meka 业务能力**，而是谱系导入的实现形态：Meka 谱系 `0082`–`0095` 里既有真实 SQL
+   （`0089`–`0092`），也有占位槽 —— 带同名 runtime script 的（`0082` / `0088` / `0093`–`0095`，
+   真实工作在脚本里）和纯编号占位的（`0083`–`0087` 的 `*_meka_lineage_slot_*`）。
+   这些文件是「怎么搬进来的」的痕迹，不是用户能感知的能力。
+2. **保护它的是上游自己的机制**，不是 Meka 特例：`docs/dev-rules/database-and-migrations.md:36-38`
+   写明冻结分两部分 —— 迁仓前的 `0000`–`0079` 由 `migration-baseline.json` 固定 SHA256
+   （实测 `sourceCommit=51440f675c`，是上游祖先），**新仓进入 canonical 产品分支的 migration
+   由 Git 基线冻结**（`db:validate` 拿当前树与 `meka/main` 对比）。两部分的门禁都是
+   `pnpm --filter desktop run db:validate`，§4 已经无条件跑它。
+3. **不存在「被上游戏覆盖」的风险**：上游仓里根本没有 `0082`–`0095` 这些文件，冲突解不出来、
+   也覆盖不掉。白名单的用途是防上游覆盖 Meka 能力，这一条不属该风险面。
+
+**业务实质已归位**：`meka_projects` / `meka_roles` / `sessions` 的 meka 列是 WL-11
+（项目、角色与正式事项）的事实基础，其锚点与 `db:validate` / `pnpm test:db` 门禁已并入 WL-11。
+编号工程规则（不得手改文件名/journal/snapshot 强行换号、`origin/main` 新编号与 Meka 已发布
+lineage 撞号的处理、migration 文件本体不写注释）留在
+[`database-and-migrations.md`](database-and-migrations.md)，那才是它的归属。
+
+**编号留空不复用**：WL-7 从此空缺（见 §6 的编号规则）。
+
+### 8.4 已知缺口：Meka 会被「隐藏项目」降级成普通对话（真实缺陷，无覆盖）
 
 `apps/desktop/src/renderer/features/cc-agent/lib/sidebarProjectVisibility.ts:108-127` 的
 `sidebarSessionsWithHiddenProjectsAsDialogues` 会把落在「已隐藏项目」key 内的会话改写成
@@ -883,7 +897,7 @@ WL-5（先确认区域与链路）→ WL-6（身份/更新）→ WL-1（设置�
 按「非本次修改引入的存量问题不擅自修复」**未处理**，需用户决定是否纳入；
 修法是加 `session.workspaceKind === 'meka'` 豁免并补一条用例。
 
-### 8.4 无自动化覆盖的清单项汇总（人工核对清单）
+### 8.5 无自动化覆盖的清单项汇总（人工核对清单）
 
 以下条目当前**只能人工核对**；它们同时是补测试的候选（成本低、价值高）：
 
@@ -912,7 +926,7 @@ WL-5（先确认区域与链路）→ WL-6（身份/更新）→ WL-1（设置�
 补测试时应优先覆盖**本轮同步真实坏过**的位置（WL-2.1、WL-9 派生包、WL-10 补种、WL-12），
 而不是平均用力。
 
-### 8.5 本轮顺带修掉的门禁缺口（记录在案）
+### 8.6 本轮顺带修掉的门禁缺口（记录在案）
 
 `scripts/__tests__/meka-release-identity.test.mjs`（7 条，覆盖打包产物名、更新器落点、
 端点自举、签名服务与 macOS 证书）此前**没有被任何门禁引用**——它自己通过，但永远不会在
