@@ -662,6 +662,60 @@ GUI 项本轮**改为程序化验收**（不再靠手点）：新增 `scripts/me
 `test:unit`、`test:runner`、`typecheck`、`db:validate`、6 项 `check:*`、沙箱启动裁决；
 WL-7 于本次复核中被移除（非业务能力）。
 
+### 7.2 Meka 会话端到端实跑记录（2026-09-14）
+
+§7.1 的 WL-3.2 / WL-11 当时**没有被真正执行**：`ui-smoke` 对 WL-3.2 只断言了段头与子组文案，
+WL-11 全部落在「自动化面由 unit/db 覆盖」上，**从未开启过一个真实 Meka 会话**。因此本轮补做
+运行期验收，并把它固化成可重复执行的工具。
+
+**新增工具**：`scripts/meka-session-smoke.mjs`（`pnpm desktop:session-smoke`，9 项检查，
+CDP 真实鼠标事件 + 真实模型轮次，交叉核对库行 / main 日志 / 技能快照）。
+
+**实跑结果：9/9 PASS**（命令：`pnpm desktop:session-smoke`；实例先经 `pnpm restart:desktop:remote`
+重启，版本行 `Global · 0.0.0 · meka/main@9dbb938` 与 `HEAD=9dbb938` 一致）
+
+| 检查 | 证据 |
+| --- | --- |
+| WL-3.2 | `项目=SAGA2；新建入口=["在 SAGA2 中新建正式流程对话","在 SAGA2 中新建普通对话"]` |
+| WL-11.1 | 真实重挂载后 `项目=SAGA2 默认角色=通用开发`（= 该项目 `roles[0]`） |
+| WL-11.2 | 角色选项 2 个（含各自 description）；切换为「战斗开发」 |
+| WL-11.3 | `session=<每次新建> workspace_kind=meka project=saga2 role=combat-development is_formal=0 workdir=C:/Workspace/saga2/saga2_project` |
+| WL-11.4 | `回复="收到"`（真实模型轮次完成，`stopReason=stop`，tokens 计入） |
+| WL-11.5 | 运行中会话回显 `projectId=saga2 roleId=combat-development displayName="战斗开发"` |
+| WL-11.6 | `workflow=saga2-combat-development-v1 mcp=mcp-router,project-agent skillsCount=2 快照技能=combat-skill-configuration,platform-capabilities` |
+| WL-11.7 | 会话在项目「SAGA2」DOM 容器内；普通「对话」分组已核对不含该行 |
+| WL-11.8 | `fresh 默认=「通用开发」；切到「战斗开发」后同项目重进仍为「战斗开发」` |
+
+**首次真机运行还暴露了 3 个「断言写法」问题（均已修，不是产品缺陷）**：
+
+1. **陈旧实例**：首跑时实例仍是 `51fe4c4` 而 `HEAD` 已到 `9dbb938`（差一个只改
+   `scripts/meka-ui-smoke.mjs` 的提交）。已把「版本行 commit 必须等于 HEAD」做成
+   `session-smoke` 的**硬前置**（不一致直接退出码 2），避免拿旧代码的结论冒充 HEAD 的结论。
+2. **`WL-11.7` 曾假通过**：首版用「文本包含项目名」判断侧栏归属，实际匹配到的是会话正文里的
+   `projectId: saga2`。现改为 DOM 容器包含关系（`项目行.parentElement.contains(会话行)`）并
+   轮询等待侧栏刷新。
+3. **`WL-11.5` 不能断言模型逐字复述**：实测模型会把注入内容**按输出语言改写**
+   （`displayName: 战斗开发` → `Combat Development`，中文说明句译成英文）。身份判定改为锚在
+   不可翻译的 `projectId` / `roleId` 上。
+
+**过程中被工具抓出的两个产品侧行为**（已登记，见白名单 §8.2 第 6 条）：同路径 `navigate` 不
+重挂载，导致同一项目内重进「新建」入口会保留草稿已选角色（WL-11.8 显式钉住该行为）。
+
+**角色维度对照**（同一配置、两个角色，证明角色不是装饰）：
+
+| | `general-development` | `combat-development` |
+| --- | --- | --- |
+| 运行期 `workflow` | `null` | `saga2-combat-development-v1` |
+| 运行期 `mcpProviderIds` | `mcp-router, project-agent, meka-design` | `mcp-router, project-agent` |
+| 该会话技能快照 | 12 个（含角色声明的 3 个） | 2 个（含角色声明的 1 个） |
+| `skillRevision` | `73d69fa9…` | `fd5891aa…` |
+
+**本轮仍未验证**（同 §7.1 表，未变）：MCPRouter 端到端、真实签名与更新拉取、旧库只读迁移、
+纯视觉目检；WL-11 新增未覆盖面：自定义项目/角色创建、项目删除后落「不可用」组、
+`meka-formal` provider/auth/issue 全链路（需 Jira/GitLab 凭据）。
+
+**阶段 D 结论未变**：合并仍**不能**宣告完成（阻断项见下）。
+
 ## 8. 交接状态
 
 - **已完成**：133 个冲突全部语义解决；上述能力组与 typecheck/测试断链全部修复；

@@ -102,6 +102,7 @@
     "restart:desktop:local": "node scripts/desktop-restart-runner.mjs --local --wait-ready",
     "desktop:whoami": "node scripts/desktop-whoami.mjs",
     "desktop:ui-smoke": "node scripts/meka-ui-smoke.mjs",
+    "desktop:session-smoke": "node scripts/meka-session-smoke.mjs",
     "dev:desktop:inspect": "node scripts/ensure-deps.mjs && node scripts/ensure-dev-runtime-assets.mjs && pnpm --filter desktop dev:inspect",
     "benchmark:voice-input": "node scripts/voice-input-benchmark.mjs",
     "benchmark:browser": "node --import tsx scripts/browser-capability-benchmark.mjs",

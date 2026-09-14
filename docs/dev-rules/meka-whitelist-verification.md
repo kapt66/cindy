@@ -51,9 +51,12 @@ Git 的冲突清单回答不了这个问题。本仓 2026-09 同步实测的两�
    `BLOCKER` / `DROPPED` 必须为 0，或有逐条书面确认（哪些是合理形态、为什么）。
 2. **阶段 B — 自动化验收**：跑完 §4 的「最小自动化集合」，全绿。任何一项红都不得进入
    阶段 C 之后的下结论。
-3. **阶段 C — 实机验收**：按 §3 每一项的「实机验证」逐项走一遍，记录现象而不是结论。
-   无法在本机验证的（缺账号、缺远端实例、需正式签名、需人手点 GUI）必须显式标注
+3. **阶段 C — 实机验收**：先跑 §5 的一键序列（`desktop:ui-smoke` + `desktop:session-smoke`），
+   再按 §3 每一项的「实机验证」逐项走一遍，记录现象而不是结论。
+   无法在本机验证的（缺账号、缺远端实例、需正式签名、需特定 profile 数据）必须显式标注
    「未验证 + 原因 + 风险」，不得含糊成「已通过」。
+   **「要人手点 GUI」不再是可接受的理由**：GUI 项已有 §5 的程序化驱动工具，应当扩检查表而不是
+   退回人工目检（见 §6）。
 4. **阶段 D — 结论**：任一项失败 ⇒ 本次同步**不可交付**。要么修，要么在当期报告里登记
    「已知未修 + 用户可见影响 + 是否阻断 + 由谁决定」。不存在「先合了再说」。
 
@@ -205,8 +208,9 @@ P4 项目根、插件面板呈现方式等 Meka 专属配置；这些配置落�
 
 - **代码锚点**：`apps/desktop/src/renderer/features/cc-agent/sidebar/sections/MekaAssistantSection.tsx:125-164`（`buildMekaProjectSessionGroups`：按 `mekaProjectId` 建桶、已配置项目在前、孤儿桶在后；`formalWorkflowActive` 判据 = 启用且 `jira+jiraProjectKey` 或 `gitlab+gitlabProjectUrl`）、`:313-457`（树渲染）、`:344-346`（不可用项目 / 旧版会话分组标题）
 - **不变量**：`mekaProjectId` 是**历史软引用**，项目删除后不清空（否则历史会话整条消失）
-- **自动化门禁**：`pnpm --filter desktop exec vitest run src/renderer/features/cc-agent/__tests__/mekaSessionPresentation.test.ts`（6 条：正式/普通分组、无会话项目可见、无正式流程时扁平、项目删除后进「不可用」组、旧版会话可见且置顶在前、会话头只显示角色名）
+- **自动化门禁**：`pnpm --filter desktop exec vitest run src/renderer/features/cc-agent/__tests__/mekaSessionPresentation.test.ts`（6 条：正式/普通分组、无会话项目可见、无正式流程时扁平、项目删除后进「不可用」组、旧版会话可见且置顶在前、会话头只显示角色名）；**实机项已自动化**：`pnpm desktop:session-smoke` 的 `WL-3.2` 用真实鼠标事件展开 Meka 段与项目行，断言项目行可见、hover 出的项目作用域入口存在且标签带项目名（`在 <项目> 中新建正式流程对话` / `在 <项目> 中新建普通对话`）
 - **实机验证**：新建项目（无会话也应显示）→ 配 Jira Key/GitLab URL 并启用正式流程 → 出现「正式 / 普通」子分组；删除项目后其会话仍在「不可用的 Meka 项目」下
+- **执行记录**（2026-09-14）：`pnpm desktop:session-smoke` 9/9 PASS，`WL-3.2` 证据 = `项目=SAGA2；新建入口=["在 SAGA2 中新建正式流程对话","在 SAGA2 中新建普通对话"]`
 
 #### WL-3.3 段头、折叠与管理按钮
 
@@ -633,6 +637,9 @@ Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台。
 - `apps/desktop/src/shared/meka-formal.ts`、`apps/desktop/src/shared/meka-projects.ts`
 - `apps/desktop/src/main/meka-projects/`（`projectConfig.ts:451`、`resourcePaths.ts:21`）
 - `apps/desktop/src/main/localDb/ipc/sessions.ts:1287,1317,1725`
+- 项目/角色**绑定链**（WL-11.1–11.3）：`apps/desktop/src/renderer/features/cc-agent/CCAgentSidebarUpper.tsx:2404-2416`（项目入口 → `makeNewMakerRouteState('meka')` + `mekaProjectId`）、`apps/desktop/src/renderer/features/cc-agent/NewMakerDraftRoute.tsx:865-912`（草稿项目/角色态；默认角色 = `roles.find(routeMekaDraft.mekaRoleId) ?? roles[0]`）、`:579-699`（角色选择器 `MekaRolePicker`）、`:4532-4533`（发送时写入 project/role）
+- 角色**运行期注入链**（WL-11.5–11.6）：`apps/desktop/src/main/maker-ipc/mekaRuntimeInjection.ts:490-522`（解析并强制「项目+角色都必须有」）、`:558-561`（角色级 MCP/技能与平台能力合并）、`:589-592`（技能快照落到会话）、`:594-606`（角色 prompt + 角色上下文注入）、`:401-410`（`[MEKA_ROLE_CONTEXT]` 区块）、`:612-623`（`mekaMcpProviderIds` / `mekaWorkflow` 进 `vendorOptions`）
+- 角色清单事实源：`apps/desktop/resources/meka/roles/*.json`（`prompt` / `skills[]` / `mcp[]` / `workflow` / `policyProviderRefs`）
 
 **自动化门禁**
 - `pnpm --filter desktop run db:validate`（meka 表与列存在、`0000..0107` 完整、journal/snapshot
@@ -642,11 +649,42 @@ Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台。
 - `pnpm --filter desktop exec vitest run src/main/localDb/__tests__/mapperMekaFormal.test.ts src/main/localDb/__tests__/builtinMekaSeed.test.ts`
 - `pnpm --filter desktop exec vitest run src/main/__tests__/forgeMekaResources.test.ts`
 - `pnpm --filter desktop exec vitest run src/main/localDb/__tests__/meka0011MigrationLineageBridge.test.ts`
+- **实机项已自动化**：`pnpm desktop:session-smoke`（CDP 真实鼠标事件 + 真实模型轮次，覆盖
+  WL-11.1–WL-11.8，见下）
 
-**实机验证**：隔离沙箱启动后 `migration_history` 已应用到 `0107_schedule-model-harness.sql`，
-`meka_projects` / `meka_roles` 表存在且 `sessions` 具备 meka 列；创建 Meka 项目与角色 →
-新建 Meka 会话绑定二者 → 发起正式事项并走通 `meka-formal` 的 provider/auth/issue 流程 →
-会话在项目下正确归类。
+**实机验证**（已自动化，2026-09-14 实跑 9/9 PASS）
+
+`pnpm desktop:session-smoke` 用真实鼠标事件从侧栏项目入口建草稿、切角色、发消息，并交叉核对
+运行期件（库行 / main 日志 / 技能快照），逐项结论：
+
+| 检查 | 断言的不变量 | 实跑证据 |
+| --- | --- | --- |
+| WL-11.1 | 真实重挂载后，草稿绑定该项目并默认为该项目 `roles[0]` | `项目=SAGA2 默认角色=通用开发` |
+| WL-11.2 | 角色选择器列出该项目全部角色，切换后草稿角色随之变化 | 选项 2 个（含各自 description）；切换为「战斗开发」 |
+| WL-11.3 | 会话行绑定 project/role、工作目录解析为存在的绝对路径、`is_formal=0` | `workspace_kind=meka project=saga2 role=combat-development is_formal=0 workdir=C:/Workspace/saga2/saga2_project` |
+| WL-11.4 | Agent 真实跑完一轮并产出回复 | `回复="收到"` |
+| WL-11.5 | 角色上下文注入运行期（由运行中会话回显字段行证明；身份判定锚在 `projectId`/`roleId`，`displayName` 可能被模型按输出语言改写，见 §6） | `projectId=saga2 roleId=combat-development displayName="战斗开发"`（该次逐字复述；另一次实测被改写为 `Combat Development`，仍判通过） |
+| WL-11.6 | 运行期按角色解析 workflow / 角色级 MCP / 技能快照含角色声明的技能 | `workflow=saga2-combat-development-v1 mcp=mcp-router,project-agent skillsCount=2 快照技能=combat-skill-configuration,platform-capabilities` |
+| WL-11.7 | 新会话在 Meka 分区该项目容器内，且不在普通「对话」分组内 | `会话在项目「SAGA2」容器内；普通对话分组排除=已核对` |
+| WL-11.8 | 同一项目内再次点击新建入口时保留当前草稿已选角色（现行行为，裁决见 §8.2 第 6 条） | `fresh 默认=「通用开发」；切到「战斗开发」后同项目重进仍为「战斗开发」` |
+
+**同一配置下角色差异必须真实生效**（WL-11.6 的对照证据，2026-09-14 实测）：
+
+| | `general-development`（通用开发） | `combat-development`（战斗开发） |
+| --- | --- | --- |
+| 运行期 `workflow` | `null` | `saga2-combat-development-v1`（角色清单声明，运行期生效） |
+| 运行期 `mcpProviderIds` | `mcp-router, project-agent, meka-design` | `mcp-router, project-agent` |
+| 该会话技能快照 | 12 个（含角色声明的 3 个） | 2 个（含角色声明的 1 个） |
+| `skillRevision` | `73d69fa9…` | `fd5891aa…` |
+
+> 只验「能建会话」不足以证明角色机制：角色级 MCP 是**按角色取并集**而非全量继承，技能是
+> **按角色 + 平台合并后固化到该会话快照**。上表的差异正是这两条的实测对照。
+> 角色取值也不是硬编码：`general-development` 的 `mcpProviderIds` 里出现 `meka-design`
+> 只能来自该角色清单的 `mcp[0].providerId`。
+
+**未自动化 / 未覆盖的实机项**：新建**自定义**项目与角色（本机 profile 只有内置 SAGA2）、
+删除项目后落入「不可用的 Meka 项目」组、正式事项（`meka-formal`）的 provider/auth/issue
+全链路（需 Jira/GitLab 凭据）。这些仍按上文「实机验证」人工执行。
 
 > migration 编号与冻结**不单列为白名单项**：那部分是上游自己的机制（`db:validate` +
 > `migration-baseline.json` + Git 基线冻结）加上本仓工程规则，见 §7。
@@ -743,6 +781,9 @@ hook-control 相关丢失）—— 证明门禁不是空转。
 | `pnpm check:design-inventory` | UI 台账（Meka 面板计入） |
 | `pnpm check:dev-docs` | 文档契约与内链 |
 
+> 阶段 B 的命令行门禁**不能替代**阶段 C 的实机验收：项目/角色的绑定、注入与侧栏归属
+> 都是运行期语义，只有真实起实例才成立（见 §5）。
+
 风险追加：跨模块/基础设施改动按 `docs/dev-rules/development-workflow.md` 追加
 `pnpm test:all`；插件基座改动另需白名单批准（见 `plugin-security-and-authoring.md`）。
 
@@ -754,6 +795,7 @@ hook-control 相关丢失）—— 证明门禁不是空转。
 pnpm restart:desktop:remote
 pnpm desktop:whoami
 pnpm desktop:ui-smoke
+pnpm desktop:session-smoke
 ```
 
 - `pnpm restart:desktop:remote` → 期望 `DESKTOP_DEV_VERDICT=ready`。
@@ -766,6 +808,11 @@ pnpm desktop:ui-smoke
   `git rev-parse --short HEAD` 比对）——实例陈旧会直接 FAIL，这正是同步验收最容易犯的错；
   ② **把语言归一到简体中文并在结束时还原**，使断言与用户当前语言无关（否则中文文案断言在
   英文界面下会整片假红）。
+- `pnpm desktop:session-smoke` → **程序化会话验收**（WL-3.2 + WL-11.1–WL-11.8 共 9 项）：
+  从侧栏项目入口建草稿 → 断默认角色 → 切角色 → 真实发消息 → 交叉核对库行 / main 日志里的
+  运行期配置 / 该会话的技能快照 / 侧栏归属。**它是唯一会真正建会话并调用模型的验收命令**
+  （刻意如此：项目/角色机制的语义只在真实运行期成立）；用 `--dry-run` 可只跑前 3 项草稿
+  断言而不建会话。退出码同 `ui-smoke`（0 无 FAIL / 1 有 FAIL / 2 前置不满足）。
 - 于是 WL-13 的**五语横切**也进了程序：`ui-smoke` 会逐一切换到 English / 简体中文 / 繁体中文 /
   日本語 / 한국어，断言每种语言下 Meka 页签与面板都渲染、且界面没有裸 i18n key，
   并记录各语言的页签实际文案。
@@ -792,6 +839,19 @@ WL-5（先确认区域与链路）→ WL-6（身份/更新）→ WL-1（设置�
   覆盖的，必须在条目的「实机验证」里写上该检查项，并把人工部分限定为真正需要人眼的范围
   （如视觉观感、五语逐一目检）。新增 GUI 能力时应同时扩 `scripts/meka-ui-smoke.mjs` 的
   检查表——否则该能力在下一次同步里仍然只能靠手点。
+- **运行期语义项同样不得只写「人工点击」**：项目/角色绑定、角色注入、会话落库与侧栏归属
+  这类只在真实运行期成立的不变量，归 `pnpm desktop:session-smoke`
+  （`scripts/meka-session-smoke.mjs`）；新增或改动这些链路时必须同步扩它的检查表。
+- **断言要落在结构上，不要落在文案上**：实机检查里禁止用「某段文本包含项目名」这类判断——
+  2026-09-14 的首版 `WL-11.7` 就因此**假通过**过：它比对的字符串是会话回显正文里的
+  `projectId: saga2`，而不是侧栏结构。现在它断言的是 DOM 容器包含关系
+  （`项目行.parentElement.contains(会话行)`），并且必须同时核对普通「对话」分组不含该行。
+  同理，`WL-11.5` 的硬断言只放 `projectId` / `roleId` 两个**不可翻译的标识符**，
+  字面标记行 `[MEKA_ROLE_CONTEXT]` 只是附加证据。
+- **不要断言模型逐字复述注入内容**：`WL-11.5` 用「让会话吐回 `[MEKA_ROLE_CONTEXT]`」证明角色
+  上下文确实注入了运行期，但实测模型会**按输出语言改写**注入文本（`displayName: 战斗开发` →
+  `Combat Development`，中文说明句也会被译成英文）。因此身份判定必须锚在 `projectId` /
+  `roleId` 这类标识符上；`displayName` 只作为证据记录，允许与清单值不同。
 - 新增条目前先按本节第 1 段的判据自问：**它是不是「上游可能覆盖掉的 Meka 业务能力」？**
   如果它其实是上游自带的机制、或只是导入/搬迁留下的实现形态，就不该占白名单编号
   （见 §7 与 §8.3 的判定示例）。
@@ -905,6 +965,21 @@ WL-5（先确认区域与链路）→ WL-6（身份/更新）→ WL-1（设置�
    > 注意：本条**暂不占 WL 编号** —— 按 §6 的判据，白名单只登记「当前存在、需要防上游覆盖」
    的能力；若裁决为「恢复」，则应补一条 WL-15 并在其中钉住这些不变量。详细实跑证据见
    [`../migrations/2026-09-origin-main-to-meka-main.md`](../migrations/2026-09-origin-main-to-meka-main.md) §7.1。
+6. **同一项目内重进「新建」入口时是否应重置草稿角色（2026-09-14 白名单实跑带出）**：
+   `NewMakerDraftRoute` 的项目/角色是 `useState` 初值（`:865-882`）+ 一个依赖
+   `[routeMekaDraft.mekaProjectId, routeMekaDraft.mekaRoleId]` 的同步 effect（`:884-912`）。
+   侧栏入口走 `navigate('/cc-agent/new', { state: { mekaProjectId } })`
+   （`CCAgentSidebarUpper.tsx:2404-2416`）：当用户**已经**停在 `#/cc-agent/new` 时，路由不变、
+   组件不重挂载、effect 的两个依赖也不变，于是**草稿里已选的角色被保留**，而不是回到该项目
+   的 `roles[0]`。实测：真正重挂载时默认 `roles[0]=通用开发`；同路径重进时保留已选的
+   `战斗开发`（`pnpm desktop:session-smoke` 的 WL-11.1 / WL-11.8 对照）。
+   **我的判断是保留现状**：它等价于「同一草稿里点新建不清空当前选择」，与草稿正文本来也不会
+   被清空一致；切换项目时 effect 依赖变化仍会重置为新项目的 `roles[0]`，不会跨项目串角色。
+   **需要维护者确认**，因为这是用户可见的默认值语义，且实现上更像「effect 依赖缺一个草稿
+   实例标识」的副作用而非显式设计。无论怎么定，WL-11.8 已把它钉成可执行断言：**改行为必须
+   同步改 WL-11.8**，不允许静默漂移。
+   跨项目重置那一半在**本机 profile 无法验证**（只有内置 SAGA2 一个项目），已在
+   WL-11.8 的通过证据里如实标注。
 
 
 ### 8.3 已移除：migration 谱系冻结不单列为白名单项（2026-09-11 复核）
