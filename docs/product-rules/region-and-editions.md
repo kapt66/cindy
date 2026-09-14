@@ -45,10 +45,32 @@ Cindy Meka 使用单一安装身份，并允许用户在登录页选择 CN / Glo
 必须读取认证快照的 `edition`。企业 SSO home-realm 发现只改变认证与账号业务端点，不改变
 用户显式选择的 edition。
 
+**为什么这条例外必须存在（2026-09-11 裁决）**：上游把区域当**构建期**维度、运行期不可切换
+（本文 §2.4）；但 Cindy Meka 的**不同服务区暴露的模型能力不同**，用户需要按自己可用的模型
+选择服务区，因此运行期切换是产品需求而非实现选择。**上游同步时不得把区域收敛回「只由安装包
+决定」**：删掉登录页服务区选择器、把 `activeProductEdition` 退回只读构建常量、或把区域消费点
+改回 `CURRENT_CINDY_REGION`，都属于回归，必须拒绝。核对清单见
+[`../dev-rules/meka-whitelist-verification.md`](../dev-rules/meka-whitelist-verification.md) WL-5.6。
+
+**配套不变量**：跨区（personal / org）既有会话一律可恢复 —— 见
+`apps/desktop/src/main/authRealmPolicy.ts`（恒返回 `true`）。少了它，用户切区后另一区凭证会被
+静默作废、被迫重新登录；它使 `authManager.ts` 的跨区拒绝分支成为有意保留的死代码。
+跨区恢复**不做 UID 映射**，同一时刻的登录态属于单一 realm。
+
 以下能力必须跟随运行期 edition：普通供应商可选目录、插件 `cindy.image` / `cindy.video`
 媒体目录，以及后续明确归类为“产品能力”的区域分支。安装身份、appId、userData、更新渠道、
 文件关联和插件 app-context 中作者契约定义的“宿主构建身份”仍保持构建期静态，不得因服务区
 切换而重派生。
+
+**尚未收敛到运行期 edition 的消费点**（已知缺口，改它们前先确认产品意图）：供应商空态引导
+（`apps/desktop/src/renderer/hooks/useProviderOnboarding.ts`）与 IM 机器人可见性
+（`apps/desktop/src/renderer/components/settings/ImBotSection.tsx`）仍读构建期
+`CURRENT_CINDY_REGION`。
+
+**旧数据迁移的构建区门待裁决**：`apps/desktop/src/main/legacyUserDataMigration.ts` 的
+`if (CURRENT_CINDY_REGION !== 'cn') return;` 只看构建区。既然允许运行期切到 CN，
+「global 构建 = global 身份」的前提不再成立（Global 包 + 选 CN 的用户其库就是 CN 库，
+却既不迁移也无提示）。跟构建区还是跟首次登录生效的 edition 需维护者裁决，见清单 §8.2 第 2 条。
 
 ## 2. 产品不变量
 

@@ -354,6 +354,10 @@ edition 与端点自举）；② 登录页实际认证的 **realm**;③ 运行�
 [`region-and-editions.md`](../product-rules/region-and-editions.md)（**无限定词身份归 Global，
 未显式指定区域一律落 `global`，只标注中国大陆版**）。
 
+> ⚠️ **本节的第 6 项最容易被合并吃掉**：上游把区域当构建期维度、运行期不可切换（该文件 §2.4），
+> 而 Meka 必须允许运行期切换（见 WL-5.6）。区域相关的消费点一律走**运行期 edition**，
+> 不得回退 `CURRENT_CINDY_REGION`。
+
 #### WL-5.1 构建期区域烘焙与默认落区
 
 - **不变量**：未注入区域一律默认 `global`；非法值**抛错**（宁可构建失败也不打出身份错误的包）
@@ -408,6 +412,33 @@ edition 与端点自举）；② 登录页实际认证的 **realm**;③ 运行�
   - `regionCode.consistency.test.ts` 要求新增区域消费链路时把它的 i18n 命名空间登记进去
 - **实机验证**：切到 CN edition 后，版本行前缀、货币、法务链接、可用供应商集合同步改变；
   用户数据目录不变（仍是 `CindyMeka`，dev 为 `CindyMekaDev`）
+- **已知未收敛的消费点**（上游同步不要误以为它们已改好）：供应商空态引导
+  `apps/desktop/src/renderer/hooks/useProviderOnboarding.ts:166,184` 与 IM 机器人可见性
+  `apps/desktop/src/renderer/components/settings/ImBotSection.tsx:121` **仍读构建期**
+  `CURRENT_CINDY_REGION`。改它们前先按 `region-and-editions.md` §1.2 确认产品意图
+
+#### WL-5.6 运行期切区是 Meka 的刻意分歧（必须保留）
+
+- **不变量**：**上游把区域当构建期维度、运行期不可切换**（`region-and-editions.md` §2.4）；
+  **Meka 必须在登录页提供运行期服务区切换**，因为不同区**暴露的模型能力不同**，用户要按
+  可用模型选服务区。上游同步若把区域收敛回「只由安装包决定」——例如删掉
+  `LoginRealmSelector`、把 `activeProductEdition` 退回只读构建常量、或把
+  `getAuthState().edition` 的消费点改回 `CURRENT_CINDY_REGION`——即为**回归**，不得接纳。
+- **配套不变量（同一设计）**：跨区既有会话一律可恢复 ——
+  `apps/desktop/src/main/authRealmPolicy.ts:7-15` 恒返回 `true`，否则用户切区后另一区凭证
+  被静默作废、被迫重新登录；它使 `authManager.ts:4814-4820` 与 `:5712-5717` 的跨区拒绝分支
+  成为死代码，这是**有意**的，不是遗漏。
+- **代码锚点**：`apps/desktop/src/renderer/components/login/LoginRealmSelector.tsx:5,8,33,41`（只呈现 `cn` / `global`，**不暴露内部 `dev`**）；`LoginPage.tsx:702-710`（`select-realm` 动作）；`authManager.ts:4937-4942`（`selectLoginRealm` 同时落 `pendingAuthRealm` 与 `activeProductEdition`）、`:4944-4979`（企业 SSO 发现**只改 realm、不改 edition**）、`:5219-5255`（确认/取消只回写发现结果与 pending realm）；`authRealmPolicy.ts:7-15`
+- **自动化门禁**：`pnpm --filter desktop exec vitest run src/renderer/components/login/__tests__/LoginPage.regionPill.test.tsx src/main/__tests__/authRealmPolicy.test.ts src/main/__tests__/authLoginFlowReset.test.ts`（含 `点击另一区派发显式 select-realm 动作`、`requires confirmation only when enterprise discovery crosses the selected realm`、`canRestoreAuthSessionForMembership` 三条恒真断言）
+- **覆盖缺口**：现有门禁以**源码形态断言**为主（实现与断言可被同时覆盖）；建议补一条行为级用例：驱动 `select-realm` 后断言 `activeProductEdition`、`pendingAuthRealm`、生效 `authApiBaseUrl` 三者同时变、而 `getBuildClientEndpoint('cdnBaseUrl')` 不变
+- **文档落点**：`region-and-editions.md` §1.2（Meka 例外）+ 本节；**改这两处前不要按 §2.4 删掉选择器**
+- **实机验证**：① 默认 Global 启动 → 登录页显式选 CN → 登录后得 **CN 模型目录**；
+  ② 登录页选 Global 后走**企业 SSO 登录进 CN 组织** → 产品 edition **仍为 Global**（模型目录仍
+  Global），只有认证/账号业务端点走 CN；③ 侧栏版本行在 dev 构建显示 `Global · <版本>`，
+  正式 Global 构建只有版本号
+- **历史回归**：本轮同步后 `UserInfoSection.tsx` 的源码形态断言因 Meka 保留「运行期
+  edition 解构」而无法匹配单行 needle，断言被迫改为格式无关 —— 即这条分歧确实会让上游形态的
+  断言失败，**不要据此把 Meka 改回构建期常量**
 
 ### WL-6 构建、更新链路与项目标识
 
@@ -486,7 +517,8 @@ edition 与端点自举）；② 登录页实际认证的 **realm**;③ 运行�
   `xdt-maker` 更早期身份继续被 orphan reaper / Codex HOME 接管 / owner namespace 逻辑识别
 - **代码锚点**：`apps/desktop/src/main/legacyUserDataMigration.ts:972-973`（`legacyUserDataDirNames` / `legacyDbPrefixes`）；`apps/desktop/src/main/localDb/dialogueWorkdirSelfHeal.ts:67-70,205`；`apps/desktop/src/main/bootstrap-electron.ts:8634`
 - **自动化门禁**：`pnpm --filter desktop exec vitest run src/main/__tests__/legacyUserDataMigration.test.ts src/main/localDb/__tests__/dialogueWorkdirSelfHeal.test.ts`
-- **实机验证**：`pnpm demo:legacy-migration` 走一遍只读迁移演示；真实升级验证见 §8.1
+- **实机验证**：`pnpm demo:legacy-migration` 走一遍只读迁移演示；真实升级验证见 §8.2 第 4 条，
+  且该验证的预期行为取决于 §8.2 第 2 条（迁移门跟构建区还是跟运行期 edition）的裁决
 
 #### WL-6.7 应用 icon 与打包资源
 
@@ -770,44 +802,71 @@ WL-5（先确认区域与链路）→ WL-6（身份/更新）→ WL-1（设置�
   不是 Meka 分歧；但因为它与 Meka 的 cn/global 共享安装身份叠加时更容易误用
   （WL-5.2 的映射就依赖它），**任何「顺手统一后缀」的改动都会让 dev 默认区读到 CN 清单**。
 
-## 8. 待裁决与已知缺口
+## 8. 裁决记录与已知缺口
 
-### 8.1 待裁决
+### 8.1 已裁决（2026-09-11）
 
-1. **提交前测试门禁的措辞在仓库内不一致**（存量问题，非本轮同步引入）：
-   根 `AGENTS.md` 与 `cindy-meka-upstream-sync` skill 写「跑完 `pnpm test:unit`（全部单元测试）」，
-   而 `docs/dev-rules/development-workflow.md` §2 写 `pnpm test:unit:related`（相关单测，
-   触到测试调度/依赖/配置时自动退回全量）。合并前 `5917437271` 就已是这个状态。
-   需仓库维护者裁决以哪一处为准并对齐（本清单阶段 B 暂按**全量**执行，因此不受影响）。
-2. **IM `/session` 与 `/ctr` 是否应排除 Meka 会话**（已核实的代码事实，意图待定）：
+1. **提交前测试门禁措辞** → **按上游**。Meka 从未改过这条门禁的核心语义，两边写法不一致
+   只是合并时 `AGENTS.md` 没跟着上游更新，因此以上游为准：无参数跑
+   `pnpm test:unit:related`（相关单测），改到测试调度/依赖清单/workspace 配置/Vitest 配置/
+   单测 CI 时自动退回全量 `pnpm test:unit`。`AGENTS.md` 已逐字对齐上游；
+   `development-workflow.md` §2 本来就是上游文本；`cindy-meka-upstream-sync` skill 已同步改写。
+   **注意这条对齐不改变本清单阶段 B 的结论**：上游同步必然改动 `package.json` /
+   `pnpm-lock.yaml`，而这两个正是 related 门禁的退回条件，所以同步交付实际总会跑**全量**。
+   §4 按全量安排时间，不是特例。
+   **实测证据**（2026-09-11，本仓 `meka/main`）：`pnpm test:unit:related` 首行打印
+   `RELATED full: wide files changed: apps/desktop/package.json, package.json,
+   packages/maker-cc-manager/package.json, packages/plugin-protocol/package.json, pnpm-lock.yaml`
+   —— 即它自己判定退回全量。原因是 `scripts/test-related.mjs:48` 以
+   `origin/main` 为基准取 merge-base，而在本仓 `origin/main` 是**上游**主线：
+   merge-base 就是上次同步点，区间覆盖整条 Meka 产品线（实测 691 个文件，含上述宽文件）。
+   **操作含义**：在 `meka/main` 上不要期待 related 门禁带来时间上的节省，
+   它事实上等价于全量；外层超时按全量给足（见 `development-workflow.md` §2 的 15 分钟下限）。
+2. **运行期切换服务区（edition）是 Meka 的刻意分歧**，必须保留：上游把区域当**构建期**维度、
+   运行期不可切换；Meka 允许在登录页切换，因为**不同区暴露的模型能力不同**，用户需要按
+   可用模型选服务区。→ 已登记为 WL-5.6 的不变量。
+3. **`authRealmPolicy` 的放宽是运行期切区的配套**：Meka 让跨区（personal / org）既有会话
+   一律可恢复（`authRealmPolicy.ts:7-15` 恒 `true`），否则用户切区后另一区凭证被静默作废、
+   被迫重新登录——这与「安装身份固定、运行期可切区」是同一套设计。→ 与 WL-5.6 同处登记。
+
+### 8.2 待裁决
+
+1. **IM `/session` 与 `/ctr` 是否应排除 Meka 会话**：
    `apps/desktop/src/main/im/shared/controlProjects.ts:26-31` 的 `attachableSessionPredicate()`
    只排除 Orca worker；`:186/:229` 的过滤条件是 `source ∈ DESKTOP_VISIBLE_SESSION_SOURCES`
    + `status='active'` + `workingDir NOT NULL`。Meka 会话落库时**有** workingDir
    （`localDb/ipc/sessions.ts:1385-1386`：Meka 项目目录或 `ensureMekaWorkspaceDir`），
    `source` 默认 `'desktop'`（`localDb/mapper.ts:447`）—— 满足全部条件。
-   而 `docs/migrations/2026-09-origin-main-to-meka-main.md` §5 的裁决写的是「Meka 项目工作区
-   **不进** IM `/sessions` 选择器」（针对 `hook-control/recentSessions.ts`）。
-   两条 IM 取数路径口径不一致：要么补排除（同时要改
-   `src/main/__tests__/controlProjects.test.ts:59-61` 对 `attachableSessionPredicate()` 出现
-   次数的断言），要么明确「IM 可接管 Meka 会话」是产品意图。**需产品裁决后二选一**。
+   **两条选择器是不同路径**：`hook-control/recentSessions.ts` 的守卫服务的是 **hook 侧**
+   `session-picker-v1` 投影（`hook-control/ipc.ts:596` → `manager.ts:2445`），
+   而 IM 的 `/session`（`im/shared/slashCommands.ts:480`）与 `/ctr` 走 `controlProjects.ts`
+   —— 后者**没有**守卫。因此 §5 表那句「Meka 项目工作区不进 IM `/sessions` 选择器」只覆盖了
+   前者的语义，后者是**同一类面上的一致性问题**，不是已裁决的差异。
+   **建议**：两条都排除。理由：① 与已登记的 Meka 意图一致（对端选择器不承载 Meka 项目/角色
+   身份）；② IM 侧无法呈现 `(mekaProjectId, mekaRoleId)`，用户看不出自己在跟哪个角色说话，
+   而 Meka **正式工作流**（Jira/GitLab 冻结事项）对角色敏感，误接管代价高；③ `/ctr` 的项目名
+   取 workingDir basename，会把本地路径显示进可能是群聊的渠道。
+   实现上是给该谓词加 `workspaceKind != 'meka'`（并同步
+   `src/main/__tests__/controlProjects.test.ts:59-61` 对谓词出现次数的断言 + 补一条 meka 用例）。
+   若产品反而要「IM 可驱动 Meka 会话」，那应当作为**独立能力**显式设计（含角色展示），
+   而不是留着这个缺过滤的副作用。
+2. **旧数据迁移的「构建区门」跟不跟随运行期 edition**：
+   `apps/desktop/src/main/legacyUserDataMigration.ts:955` 是
+   `if (CURRENT_CINDY_REGION !== 'cn') return;` —— 只看**构建区**，其理由是「旧 XDMaker Meka
+   数据属于 cn 身份，把 cn 历史数据导进 global 库会跨区串台」。但既然 Meka **允许**运行期
+   切到 CN（8.1 第 2 条），「global 构建 = global 身份」这个前提就不成立了：Global 构建 +
+   登录页选 CN 的用户，其库就是 CN 库，却既不迁移也无提示。
+   **建议**：把门从构建区改为**首次登录时生效的 edition / 已提交 realm**（即 `realm === 'cn'`
+   才迁移），并在 `region-and-editions.md` §1.2 写明该组合的行为；同时补一条门级用例
+   （当前**完全无覆盖**）。这是**数据迁移行为变更**，需维护者明确批准后才动手。
 3. **`apps/desktop/src/main/meka-settings/mekaRiskPolicy.ts`** 的风险档位语义需要补一条
-   实机验证路径（当前无独立自动化门禁，已列为 WL-1 的子项，待补）。
+   实机验证路径（当前无独立自动化门禁，已列为 WL-1.6，待补）。
 4. **真实升级链路**（旧 `xdmaker-meka` 目录只读迁移、`cindy-meka://` 深链注册、更新渠道
    实际拉取）无法在沙箱内完成，需要一次真实安装/升级验证；未完成前不得声称发布就绪。
-5. **旧数据迁移的「构建区门」与登录页运行期切区存在语义缝隙**（已核实的代码事实，意图待定）：
-   `apps/desktop/src/main/legacyUserDataMigration.ts:955` 是 `if (CURRENT_CINDY_REGION !== 'cn') return;`
-   —— 只看**构建区**。而登录页允许把服务区切到 CN（WL-5.1/WL-5.4）。于是
-   **Global 构建 + 登录页选 CN** 的用户既不会触发旧 `xdmaker-meka` 迁移、也没有任何提示。
-   若意图是「旧数据只跟随 CN **安装包**」，应把这句话写进
-   [`region-and-editions.md`](../product-rules/region-and-editions.md) §1.2 并显式声明该组合不迁移；
-   若意图是「跟随运行期 edition」，则该门需改判并补迁移测试。**当前无自动化覆盖，也无文档裁决。**
-6. **`authRealmPolicy` 的放宽缺书面落点**：`apps/desktop/src/main/authRealmPolicy.ts:7-15` 对
-   跨区 personal / org 会话一律返回 `true`（Meka 有意允许任一区的既有会话被恢复），使
-   `authManager.ts:4814-4820` 与 `:5712-5717` 的跨区拒绝分支成为死代码。该放宽**未在
-   `region-and-editions.md` §1.2 或迁移总账中登记**。建议补一条：保护的是「单一安装身份可
-   承载任一区会话」，并说明跨区恢复不做 UID 映射。
+   注意 8.2 第 2 条未决时，这条验证的预期行为本身也没定死。
 
-### 8.2 已知缺口：Meka 会被「隐藏项目」降级成普通对话（真实缺陷，无覆盖）
+
+### 8.3 已知缺口：Meka 会被「隐藏项目」降级成普通对话（真实缺陷，无覆盖）
 
 `apps/desktop/src/renderer/features/cc-agent/lib/sidebarProjectVisibility.ts:108-127` 的
 `sidebarSessionsWithHiddenProjectsAsDialogues` 会把落在「已隐藏项目」key 内的会话改写成
@@ -824,7 +883,7 @@ WL-5（先确认区域与链路）→ WL-6（身份/更新）→ WL-1（设置�
 按「非本次修改引入的存量问题不擅自修复」**未处理**，需用户决定是否纳入；
 修法是加 `session.workspaceKind === 'meka'` 豁免并补一条用例。
 
-### 8.3 无自动化覆盖的清单项汇总（人工核对清单）
+### 8.4 无自动化覆盖的清单项汇总（人工核对清单）
 
 以下条目当前**只能人工核对**；它们同时是补测试的候选（成本低、价值高）：
 
@@ -848,12 +907,12 @@ WL-5（先确认区域与链路）→ WL-6（身份/更新）→ WL-1（设置�
 | WL-8 / WL-9 技能与插件的 Meka 渠道账本 | 有间接覆盖，缺「Cindy 忽略本轮不压掉 Meka」这类跨渠道断言 |
 | WL-12 scheduler 5 处 `meka` 跳过 | 无直接断言 |
 | WL-12 `recentSessions.ts:37` 的 `meka` 跳过 | 现有 5 条用例均未放入 meka 行 |
-| WL-12 `im/shared/controlProjects.ts` 的 IM 取数 | 未排除 meka（见 §8.1 第 2 条） |
+| WL-12 `im/shared/controlProjects.ts` 的 IM 取数 | 未排除 meka（见 §8.2 第 1 条） |
 
 补测试时应优先覆盖**本轮同步真实坏过**的位置（WL-2.1、WL-9 派生包、WL-10 补种、WL-12），
 而不是平均用力。
 
-### 8.4 本轮顺带修掉的门禁缺口（记录在案）
+### 8.5 本轮顺带修掉的门禁缺口（记录在案）
 
 `scripts/__tests__/meka-release-identity.test.mjs`（7 条，覆盖打包产物名、更新器落点、
 端点自举、签名服务与 macOS 证书）此前**没有被任何门禁引用**——它自己通过，但永远不会在
