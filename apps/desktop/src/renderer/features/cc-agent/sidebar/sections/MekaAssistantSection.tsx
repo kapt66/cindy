@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   BriefcaseBusiness,
   ChevronDown,
   ChevronRight,
+  ChevronsDownUp,
+  ChevronsUpDown,
   Folder,
   FolderOpen,
   MessageSquare,
@@ -24,16 +26,14 @@ import type {
   AutomationSessionGroup,
 } from '../../lib/automationSidebarGrouping';
 import { sessionActivityMs } from '../../lib/dateSessionGrouping';
+import type { ProjectNode as ProjectNodeData } from '../../lib/projectGrouping';
+import type { UseSidebarFilterReturn } from '../../hooks/useSidebarFilter';
 import { getDialogueCollapseLimit } from '../../lib/sidebarCollapseConfig';
 import { SectionCollapse } from '../SectionCollapse';
 import { SessionEntryList } from '../SessionEntryList';
+import { SidebarFilterPopover } from '../SidebarFilterPopover';
+import { HEADER_ACTIONS_CLASS, HEADER_HOVER_ACTION_CLASS, SidebarFoldAllButton } from '../SidebarHeaderActions';
 import type { SessionClickHandler } from '../SessionItem';
-
-const HEADER_HOVER_ACTION_CLASS = cn(
-  'pointer-events-none opacity-0 transition-opacity duration-150',
-  'group-hover/sidebar-header:pointer-events-auto group-hover/sidebar-header:opacity-100',
-  'has-[:focus-visible]:pointer-events-auto has-[:focus-visible]:opacity-100',
-);
 
 function MekaTreeAction({ label, onClick }: { label: string; onClick: () => void }) {
   return (
@@ -122,6 +122,33 @@ export interface MekaProjectSessionGroup {
   regularSessions: Session[];
 }
 
+/**
+ * 项目分组的折叠 key:已删除/未配置项目的孤儿桶(projectId 为 null)共用一个 key。
+ * 渲染与段头「收起所有分组」必须走同一个函数,否则批量收起会漏掉孤儿桶。
+ */
+export function mekaProjectGroupKey(projectId: string | null): string {
+  return projectId ?? '__legacy__';
+}
+
+/**
+ * 段头「收起所有分组」按钮的状态(null = 不渲染):
+ *   - 项目分组层就是 Meka 的分组层 → 收起项目行即连带隐藏其下全部会话;
+ *   - 没有项目分组时无分组可收,退场;
+ *   - 整段已收起(标题旁箭头)时也退场:此时一个分组都看不见,按钮点了看不出变化。
+ */
+export function resolveMekaFoldState({
+  groupKeys,
+  collapsedProjectKeys,
+  sectionCollapsed,
+}: {
+  groupKeys: readonly string[];
+  collapsedProjectKeys: ReadonlySet<string>;
+  sectionCollapsed: boolean;
+}): 'collapse' | 'expand' | null {
+  if (sectionCollapsed || groupKeys.length === 0) return null;
+  return groupKeys.every((key) => collapsedProjectKeys.has(key)) ? 'expand' : 'collapse';
+}
+
 export function buildMekaProjectSessionGroups(
   projects: readonly MekaProject[],
   sessions: readonly Session[],
@@ -179,6 +206,18 @@ interface MekaAssistantSectionProps {
   onCreateRegular: (projectId: string) => void;
   onCreateFormal: (project: MekaProject) => void;
   onManage: () => void;
+  /**
+   * 段头右侧的「侧边栏显示设置」入口(2026-09-15 用户裁决:与「全部任务」段头同一份
+   * 全局菜单,不是 Meka 专属菜单)。Meka 段本就消费其中的 Agent 筛选、最近活跃、
+   * 显示形态与任务信息复选,所以这里传的仍是主列表那套 filter。
+   */
+  filter: UseSidebarFilterReturn;
+  /** 供显示设置菜单里的项目筛选列表(与「全部任务」段头同源,不含 Meka 项目)。 */
+  allKnownProjects: ProjectNodeData[];
+  /** 当前范围内无项目任务数,用于菜单里的「对话」选项。 */
+  dialogueCount?: number;
+  /** 是否有远程设备连接:「按设备分组」选项的出现条件。 */
+  hasRemoteDevices?: boolean;
 }
 
 export function MekaAssistantSection({
@@ -197,6 +236,10 @@ export function MekaAssistantSection({
   onCreateRegular,
   onCreateFormal,
   onManage,
+  filter,
+  allKnownProjects,
+  dialogueCount = 0,
+  hasRemoteDevices = false,
 }: MekaAssistantSectionProps) {
   const { t } = useTranslation();
   // Meka 保留自己的项目 / 正式流程分组树,但会话行复用主列表的显示偏好。
@@ -237,6 +280,35 @@ export function MekaAssistantSection({
   );
   const ToggleIcon = collapsed ? ChevronRight : ChevronDown;
 
+  // 段头「收起所有分组」(2026-09-15 用户裁决:与「全部任务」段头同款按钮)。分组层
+  // 就是项目行,批量收起用渲染同一份 key(含孤儿桶)。整段收起仍由标题旁箭头负责,
+  // 不在这里重复。
+  const groupKeys = useMemo(
+    () => groups.map((group) => mekaProjectGroupKey(group.projectId)),
+    [groups],
+  );
+  const foldState = resolveMekaFoldState({
+    groupKeys,
+    collapsedProjectKeys: collapsedProjects,
+    sectionCollapsed: collapsed,
+  });
+  const FoldIcon = foldState === 'expand' ? ChevronsUpDown : ChevronsDownUp;
+  const foldLabel = t(
+    foldState === 'expand'
+      ? 'ccAgent.sidebar.foldAll.expandAll'
+      : 'ccAgent.sidebar.foldAll.collapseGroups',
+  );
+  const handleFoldAll = useCallback(() => {
+    if (foldState === 'expand') {
+      // 展开所有:项目行与「正式流程 / 普通会话」子分组一起复位。
+      setCollapsedProjects(new Set());
+      setCollapsedFormalGroups(new Set());
+      setCollapsedRegularGroups(new Set());
+      return;
+    }
+    setCollapsedProjects(new Set(groupKeys));
+  }, [foldState, groupKeys]);
+
   const renderSessions = (entries: Session[], sectionCollapsed: boolean, nested = false) => (
     <div className={cn(nested && 'pl-3')}>
       <SessionEntryList
@@ -269,7 +341,11 @@ export function MekaAssistantSection({
             type="button"
             onClick={() => setCollapsed((value) => !value)}
             aria-expanded={!collapsed}
-            className="text-sm font-medium text-[var(--sidebar-list-muted)] transition-colors hover:text-[var(--sidebar-nav-text)]"
+            // min-w-0 + truncate = 与「全部任务」段头标题同款(那边是 span 上的 truncate):
+            // 段头右侧现在有三个 28px 动作钮,窄侧栏(下限 180px)下标题必须能缩到省略号,
+            // 否则 14px 文案会在 h-6 的行里折行、盖住下面的项目树。窄到装不下时截断,
+            // 完整文案仍在 DOM 里(读屏与搜索不受影响)。
+            className="min-w-0 truncate text-sm font-medium text-[var(--sidebar-list-muted)] transition-colors hover:text-[var(--sidebar-nav-text)]"
           >
             {t('meka.sessionListTitle')}
           </button>
@@ -294,7 +370,16 @@ export function MekaAssistantSection({
             </Tip>
           </div>
         </div>
-        <div className={cn('flex -mt-px items-center gap-0.5', HEADER_HOVER_ACTION_CLASS)}>
+        <div className={HEADER_ACTIONS_CLASS}>
+          {foldState ? (
+            <SidebarFoldAllButton label={foldLabel} Icon={FoldIcon} onClick={handleFoldAll} />
+          ) : null}
+          <SidebarFilterPopover
+            filter={filter}
+            allKnownProjects={allKnownProjects}
+            dialogueCount={dialogueCount}
+            hasRemoteDevices={hasRemoteDevices}
+          />
           <Tip text={t('meka.openManagement')} side="bottom">
             <button
               type="button"
@@ -311,7 +396,7 @@ export function MekaAssistantSection({
       <SectionCollapse collapsed={collapsed}>
         <div className="flex flex-col gap-1 pt-1 pr-0 pl-3">
           {groups.map((group) => {
-            const key = group.projectId ?? '__legacy__';
+            const key = mekaProjectGroupKey(group.projectId);
             const projectCollapsed = collapsedProjects.has(key);
             const formalGroupCollapsed = collapsedFormalGroups.has(key);
             const regularGroupCollapsed = collapsedRegularGroups.has(key);

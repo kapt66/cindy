@@ -214,15 +214,15 @@ P4 项目根、插件面板呈现方式等 Meka 专属配置；这些配置落�
 
 #### WL-3.3 段头、折叠与管理按钮
 
-- **代码锚点**：`MekaAssistantSection.tsx:264-309`（段头；`:274` 标题、`:276-296` 折叠、`:297-308` 管理按钮 → `/cc-agent/meka/plugins`）、`:205-212`（四层折叠 state）
-- **不变量**：折叠状态是组件内 state、**不持久化**（刻意：重挂载即展开）
-- **自动化门禁**：`mekaSessionPresentation.test.ts` 的 `applies the shared sidebar list style without changing Meka grouping`
-- **实机验证**：段头可见并可整段收起/展开；hover 出的管理按钮进入 `/cc-agent/meka/plugins`
+- **代码锚点**：`MekaAssistantSection.tsx:338-394`（段头；`:340-351` 标题（`:348` 截断类）、`:352-371` 整段折叠、`:374-376` 「收起所有分组」、`:377-382` 「侧边栏显示设置」、`:383-392` 管理按钮 → `/cc-agent/meka/plugins`）、`:139-151`（`resolveMekaFoldState`）、`:248-256`（四层折叠 state）
+- **不变量**：折叠状态是组件内 state、**不持久化**（刻意：重挂载即展开）；段头右侧两个按钮与「全部任务」段头**共用实现**（`sidebar/SidebarHeaderActions.tsx` 的 hover 规则 + `SidebarFoldAllButton`），两处不得各写一套；显示设置打开的是**全局**侧栏菜单（`SidebarFilterPopover`），不是 Meka 专属菜单——它**只**新增入口，不改写分组 / 排序 / 筛选中与 WL-3.4 冲突的语义；「收起所有分组」的作用域只到 Meka 自己的项目分组（含孤儿桶），整段已收起或没有项目分组时退场；段头标题必须带 `min-w-0 truncate`（与「全部任务」标题同款）——右侧三个 28px 动作钮把 Meka 段头压到侧栏最小展开宽（`useSidebarResize` 的 `MIN_WIDTH = 180`，rail 阈值 120）只剩 44px 给标题文案，缺截断就会在 `h-6` 行里折行盖住项目树
+- **自动化门禁**：`mekaSessionPresentation.test.ts` 的 `applies the shared sidebar list style without changing Meka grouping`、`mirrors the main-list header actions in the Meka section header`（含父层 prop 传递）、`offers the fold-all action only while Meka project groups are actually visible`（纯函数状态机）；`projectsSidebarSection.test.ts` 的 `only shows project header actions while hovering or focusing the Projects header row`（hover 规则正本在共用模块）
+- **实机验证**：段头可见并可整段收起/展开；hover 出的管理按钮进入 `/cc-agent/meka/plugins`；hover 出的「收起所有分组」收齐全部项目行（含「不可用项目」/「旧版 Meka 会话」）后图标与 tooltip 切「展开所有分组」；「侧边栏显示设置」出现主列表段头那一份全局菜单，菜单展开期间该排按钮保持可见
 
 #### WL-3.4 组内排序与置顶语义
 
-- **代码锚点**：`MekaAssistantSection.tsx:144-147`（置顶优先 → 活动时间 → id 稳定序三级排序）、`:26`（复用 `sessionActivityMs`）
-- **不变量**：Meka 段**不消费** `filter.sortBy` 与 `filter.manualPinnedOrder`（有意分歧）
+- **代码锚点**：`MekaAssistantSection.tsx:171-174`（置顶优先 → 活动时间 → id 稳定序三级排序——行号随段头改动移动，认函数体不认行号）、`:28`（复用 `sessionActivityMs`）
+- **不变量**：Meka 段**不消费** `filter.sortBy` 与 `filter.manualPinnedOrder`（有意分歧）。段头新增的「侧边栏显示设置」入口**不改变**这条：那份全局菜单里的分组三开关、任务排序与项目顺序仍不作用于 Meka 段
 - **自动化门禁**：`mekaSessionPresentation.test.ts` 的 `keeps legacy sessions visible and pinned sessions first within their project`
 - **实机验证**：置顶较早的会话排到最前；切换侧栏排序与手动拖拽序时 Meka 段内顺序**不变**
 

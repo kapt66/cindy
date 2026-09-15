@@ -3558,6 +3558,12 @@ function ExpandedView({
                   onCreateRegular={handleCreateRegularMeka}
                   onCreateFormal={handleCreateFormalMeka}
                   onManage={handleManageMeka}
+                  // 段头右侧与「全部任务」段头同源(2026-09-15 用户裁决):折叠按钮收 Meka
+                  // 自己的项目分组,显示设置打开同一份全局侧栏菜单。
+                  filter={filter}
+                  allKnownProjects={visibleProjectUniverse}
+                  dialogueCount={allGroups.dialogues.length}
+                  hasRemoteDevices={deviceGroupingAvailable}
                 />
                 {remoteSessionBootstrapFailures.length > 0 && (
                   <RemoteSidebarLoadNotice
