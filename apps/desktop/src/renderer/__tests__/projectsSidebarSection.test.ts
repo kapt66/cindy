@@ -78,17 +78,30 @@ describe('Projects sidebar section', () => {
       ),
       'utf8',
     );
+    // hover 显隐规则的正本在共用模块(SidebarHeaderActions):「全部任务」与
+    // 「Meka 助理」两个段头共用一份实现,段头自己只挂这组 class。
+    const actionsSource = readFileSync(
+      resolve(
+        __dirname,
+        '..',
+        'features',
+        'cc-agent',
+        'sidebar',
+        'SidebarHeaderActions.tsx',
+      ),
+      'utf8',
+    );
     expect(headerSource).toContain('group/sidebar-header flex h-6');
-    expect(headerSource).toContain(
+    expect(actionsSource).toContain(
       'pointer-events-none opacity-0 transition-opacity duration-150',
     );
-    expect(headerSource).toContain(
+    expect(actionsSource).toContain(
       'group-hover/sidebar-header:pointer-events-auto group-hover/sidebar-header:opacity-100',
     );
-    expect(headerSource).toContain(
+    expect(actionsSource).toContain(
       'has-[:focus-visible]:pointer-events-auto has-[:focus-visible]:opacity-100',
     );
-    expect(headerSource).not.toContain(
+    expect(actionsSource).not.toContain(
       'group-focus-within/sidebar-header:pointer-events-auto',
     );
     expect(headerSource).toContain('className={HEADER_ACTIONS_CLASS}');
