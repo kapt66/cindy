@@ -538,6 +538,7 @@ WL-4.1.6 已把该 pin 登记为清单项，阶段 C 实机验收必须核对。
 | Windows promote 真实占用归因（§6.4） | 对目标 `codex.exe` 施加 `FileShare.None` 后重跑 | 报错为 `local install failed, not a download problem`（含 errno/路径/尝试次数/耗时），不再误报下载失败 |
 | GitHub API 限流降级（§6.15） | `node --test scripts/__tests__/github-release-pin.test.mjs` | 7/7：限流（403+rate limit / 429）降级为 pin 直链；404/digest 漂移/坏 pin 一律 fail closed |
 | 限流下端到端安装（§6.15） | 把 `api.github.com` 强制成 403 后跑真实 `ensureBinary`（清空缓存，从 pin 直链下载） | codex 与 pi 均 `RESULT ok`：下载完成 + `sha256 ok` + 落位成功（`.version` = pin 版本） |
+| 提交门禁复跑（§7 注） | tier 同命令复跑 `apps/desktop` unit（`--pool=forks --maxWorkers=8` + 同组 `--exclude`） | **2609/2609 文件通过、35708 通过 / 0 失败**：确认 `unsupportedBrowserPrompt.test.ts` 的 20s 超时是负载型临界超时，非本次回归 |
 | 提交前门禁（相关单测） | `pnpm test:unit:related`（PATH 前置 Git Bash） | 见下方 §7.2 本轮记录 |
 | i18n | `pnpm check:i18n` | ✅ 五语 9946 key 全一致 |
 | 术语表 | `pnpm check:i18n-glossary` | ✅ 无新增违规 |
@@ -554,6 +555,26 @@ WL-4.1.6 已把该 pin 登记为清单项，阶段 C 实机验收必须核对。
 > 把 Git 的 `bash.exe` 放到 PATH 前面即可通过（`bash -c 'echo $FOO'` 可自查）。
 > 另有一次 `restart-desktop-remote.test.mjs` 因 Windows 文件锁瞬时 EPERM 假红，
 > 单独重跑 71/71 通过。二者均非仓库缺陷。
+>
+> **2026-09-16 复现同一类假红（本机负载型临界超时，非回归）**：合并 §6.4/§6.14 两条修复后跑
+> `pnpm test:unit:related`，`apps/desktop` unit 报
+> `src/renderer/__tests__/unsupportedBrowserPrompt.test.ts > keeps renderer product code free of
+> browser prompt calls` **Test timed out in 20000ms**（该文件 2609 个文件中唯一失败，35742 通过）。
+> 判定为**负载型临界超时，不是代码或测试行为回归**，证据链：
+> 1. 该用例扫描 `src/renderer` 全部 2633 个 ts/tsx（27.5 MB）并用 TypeScript AST 逐文件解析，
+>    隔离复跑稳定通过但耗时 6.96s / 6.56s / 5.81s / 5.41s（预算 20s）——全量 worker 池竞争下
+>    再叠加 collect/transform 阶段峰值即被推过阈值；
+> 2. 该文件自 `9841caa6a8`（引入）后**从未改动**，两次修复的 diff 也**不含任何 `apps/desktop`
+>    或 renderer 文件**（改动集中在 `tools/**` 与 `scripts/**`）；
+> 3. 用与 tier 完全相同的 vitest 命令（同一组 `--exclude`、`--pool=forks --maxWorkers=8`）
+>    复跑整个 desktop unit workspace：**2609/2609 文件通过、35708 通过 / 0 失败**；
+> 4. 同类超时在本仓已有两次先例与一致裁决：`2026-08-origin-main-to-meka-main.md` §5.10
+>    （2026-08-05：该文件单独复跑 2/2 通过、串行全量通过，归因全量并发下的资源/扫描时延波动）
+>    与 `xdmaker-meka-to-cindy.md`（2026-08-21 同一结论）。
+>
+> 因此**未修改测试超时、未降低覆盖率**（与 §5.10 的处置一致），也不把该次超时算作本次回归；
+> 提交以复跑结果为准。若后续希望根治，应按 §5.10 同样的方式单独立项（例如给该扫描用例放宽
+> 单文件超时或缓存解析结果），不属本次修复范围。
 
 ### 7.1 白名单实跑记录（2026-09-11，首次按 `meka-whitelist-verification.md` 执行）
 
