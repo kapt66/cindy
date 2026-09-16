@@ -33,6 +33,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { fetchJsonWithTimeout, downloadToFileWithTimeout, createDownloadProgressLogger } from '../shared/fetch-with-timeout.mjs';
 import { normalizeExpectedSha256, verifyFileSha256OrRemove, sha256File } from '../shared/verify-sha256.mjs';
 import { writeDirDistManifest, verifyDirDistManifest } from '../shared/dir-dist-manifest.mjs';
+import { pinnedAssetDescriptor, resolveInstallReleaseMeta } from '../shared/github-release-pin.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '../..');
@@ -431,13 +432,33 @@ export function readPinnedVersion() {
 }
 
 /**
+ * 解析本次安装要用的 release 元数据：优先上游 API + pin 交叉校验，仅在上游限流时降级为
+ * pin 直链（未认证 api.github.com 只有 60 次/小时；内容仍由 pin 的 sha256 强制校验）。
+ * 导出以便单测注入 fetchMeta。
+ */
+export async function resolvePiInstallMeta({ version, platformKey, entry, fetchMeta = fetchReleaseMeta, warn }) {
+  return resolveInstallReleaseMeta({
+    fetchLiveMeta: () => fetchMeta(`v${version}`),
+    assertPinned: (meta) => assertPinnedRuntimeAsset(readCache(), meta, version, platformKey, entry.asset),
+    pinnedMeta: () => ({
+      assets: [
+        pinnedAssetDescriptor(readCache(), platformKey, {
+          assetName: entry.asset,
+          label: `pi ${version}`,
+        }),
+      ],
+    }),
+    warn,
+  });
+}
+
+/**
  * 确保单个平台的产物就位：解析对应 release tag、下载并 promote 到 apps/pi-bin/<platformKey>/。
  */
 export async function ensurePlatform({ version, platformKey, force = false }) {
   const entry = PLATFORMS.find((p) => p.key === platformKey);
   if (!entry) throw new Error(`Unknown platform key for pi: ${platformKey}`);
-  const meta = await fetchReleaseMeta(`v${version}`);
-  assertPinnedRuntimeAsset(readCache(), meta, version, platformKey, entry.asset);
+  const { meta } = await resolvePiInstallMeta({ version, platformKey, entry });
   await downloadAsset(meta, version, platformKey, entry.asset, entry.binFile, { force, throughputGuard: true });
   promoteOnePlatform(version, platformKey, entry.binFile);
 }

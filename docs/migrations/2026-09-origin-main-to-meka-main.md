@@ -496,6 +496,21 @@ WL-4.1.6 已把该 pin 登记为清单项，阶段 C 实机验收必须核对。
     协议包归属与准入（不再是 submodule）；`docs/migrations/xdmaker-meka-to-cindy.md` 已追加
     §11.25 本轮同步记录。`docs/migrations/2026-08-origin-main-to-meka-main.md` 中「保留
     Meka `cindy-protocol` submodule」的旧裁决已被本轮 D1 推翻，属历史记录（未改写历史）。
+14. **`tools/pi/update.mjs` 与 `tools/codex-package/update.mjs` 的 release 元数据依赖
+    `api.github.com`（2026-09-16 已修）**：未认证的 GitHub API 配额是**每出口 IP 60 次/小时**，
+    Windows runner 与开发机同机同 IP，2026-09-16 第二个 `release:windows:canary` 在同一个 job
+    内耗尽配额后，release 步骤解析 pin 元数据直接 403
+    （`HTTP 403 rate limit exceeded: https://api.github.com/repos/openai/codex/releases/tags/rust-v0.153.4`），
+    codex 与 pi 都装不上、发布再次被阻断（此时 §6.4 的 promote 问题已修复，失败点已前移）。
+    **已处理**：安装链路的信任锚回到**已复核的 pin**——新增
+    `tools/shared/github-release-pin.mjs`（`isGitHubRateLimitError` / `pinnedAssetDescriptor` /
+    `resolveInstallReleaseMeta`），codex-package 与 pi 的 `ensurePlatform` 在**仅限流**时降级为
+    pin 直链（内容仍按 pin 的 sha256 强制校验，来源仍限 `https://github.com/…`），404 / digest
+    漂移 / pin 不完整一律 fail closed；`fetch-with-timeout.mjs` 的非 2xx 错误现在带 `status`。
+    同时发现并纠正了 CI 侧的一处浪费：`release:windows:canary` 是唯一没有在 `pnpm install` 前
+    设 `XDT_SKIP_AGENT_BIN_INSTALL=1` 的 job，postinstall 会多下 ~380 MB（claude/codex/pi）并
+    为 codex/pi 各花一次 API 配额——正是在同一个 job 内把配额花掉的直接原因（cicd 仓已补）。
+    规则见 `docs/dev-rules/agent-runtime-release.md`「pin 是下载信任锚：上游 API 限流不得阻断安装」。
 
 ## 7. 验证记录
 
@@ -518,9 +533,11 @@ WL-4.1.6 已把该 pin 登记为清单项，阶段 C 实机验收必须核对。
 | 模型选择器相关（§4.6） | `vitest run src/renderer/__tests__/{unifiedModelList,unifiedModelPanelRendering,modelSelectorProviderGroups,gatewayModelArrival,localCatalogSnapshot,modelSelectorTriggerVariant}` | 6 文件 / 256 通过 |
 | 开发插件派生包（§4.7） | `vitest run src/main/cindy-brain/__tests__/{mekaDevPlugins,marketGhostSessionBoundary,forge}` + `src/shared/__tests__/ghost` | 4 文件 / 306 tests（304 通过 + 2 skipped） |
 | 开发插件实机装载（§4.7） | 沙箱登记真实插件 `meka-unity` + `pnpm restart:desktop:remote` | 修复前 `main-2026-09-11.log:3278` 报 slots 拒装；修复后 20:04 `ghost installed { id: 'meka-dev-meka-unity-02ef16d0' }`，派生清单逐字段核对只改身份字段 |
-| Windows 目录落位重试（§6.4 跟进） | `node --test scripts/__tests__/rename-with-retry.test.mjs scripts/__tests__/codex-package-update-layout.test.mjs scripts/__tests__/ensure-binary-fallback.test.mjs` | 7 + 13 + 6 用例全通过：瞬时锁重试与预算、退避耗尽后保 errno、不可重试快速失败、落位失败回滚、"备份删不掉不算失败"、阶段化归因 |
+| Windows 目录落位重试（§6.4 跟进） | `node --test scripts/__tests__/rename-with-retry.test.mjs scripts/__tests__/codex-package-update-layout.test.mjs scripts/__tests__/ensure-binary-fallback.test.mjs` | 7 + 16 + 6 用例全通过：瞬时锁重试与预算、退避耗尽后保 errno、不可重试快速失败、落位失败回滚、"备份删不掉不算失败"、阶段化归因、限流降级与 fail-closed |
 | Windows promote 端到端（修复前/后，§6.4） | 干净 checkout 条件下跑 `ensure-agent-binaries --kinds=codex --platform=win32-x64` | 修复前 0/3 成功（复现 CI 原文案 `target locked (probably running)`）；修复后 3/3 落地 `0.153.4` |
 | Windows promote 真实占用归因（§6.4） | 对目标 `codex.exe` 施加 `FileShare.None` 后重跑 | 报错为 `local install failed, not a download problem`（含 errno/路径/尝试次数/耗时），不再误报下载失败 |
+| GitHub API 限流降级（§6.15） | `node --test scripts/__tests__/github-release-pin.test.mjs` | 7/7：限流（403+rate limit / 429）降级为 pin 直链；404/digest 漂移/坏 pin 一律 fail closed |
+| 限流下端到端安装（§6.15） | 把 `api.github.com` 强制成 403 后跑真实 `ensureBinary`（清空缓存，从 pin 直链下载） | codex 与 pi 均 `RESULT ok`：下载完成 + `sha256 ok` + 落位成功（`.version` = pin 版本） |
 | 提交前门禁（相关单测） | `pnpm test:unit:related`（PATH 前置 Git Bash） | 见下方 §7.2 本轮记录 |
 | i18n | `pnpm check:i18n` | ✅ 五语 9946 key 全一致 |
 | 术语表 | `pnpm check:i18n-glossary` | ✅ 无新增违规 |

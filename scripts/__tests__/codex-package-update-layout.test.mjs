@@ -13,6 +13,7 @@ import {
   isTargetLockError,
   readCachedAssetDigest,
   replaceDirectory,
+  resolveCodexPackageInstallMeta,
   validateCodexPackageDirectory,
 } from '../../tools/codex-package/update.mjs';
 
@@ -178,6 +179,84 @@ test('Codex package updater treats locked promotion targets as failures', () => 
     assert.equal(isTargetLockError(Object.assign(new Error('locked'), { code })), true);
   }
   assert.equal(isTargetLockError(Object.assign(new Error('missing'), { code: 'ENOENT' })), false);
+});
+
+// ── GitHub API 限流不得阻断已 pin 的安装（2026-09-16 canary 第二次失败）──────────
+// 未认证 api.github.com 只有 60 次/小时，runner 与开发机共用出口 IP；配额耗尽后取元数据
+// 直接 403，codex-package 装不上、发布被阻断。降级只放弃"与上游元数据交叉比对"，
+// "下载物必须等于 pin 的 sha256"这条硬门禁必须保留。
+
+test('resolveCodexPackageInstallMeta: 上游限流 → 用真实 pin 的直链与 sha256（不再阻断发布）', async () => {
+  const platform = WINDOWS_PLATFORM;
+  const pin = JSON.parse(fs.readFileSync(new URL('../../tools/codex-package/latest.json', import.meta.url), 'utf8'));
+  const warnings = [];
+  const result = await resolveCodexPackageInstallMeta({
+    version: pin.version,
+    platform,
+    fetchMeta: async () => {
+      throw Object.assign(new Error(`HTTP 403 rate limit exceeded: https://api.github.com/…`), {
+        status: 403,
+        statusText: 'rate limit exceeded',
+      });
+    },
+    warn: (message) => warnings.push(message),
+  });
+
+  assert.equal(result.pinOnly, true);
+  const asset = result.meta.assets[0];
+  assert.equal(asset.name, platform.asset);
+  assert.equal(asset.browser_download_url, pin.runtimeAssets[platform.key].url);
+  assert.equal(asset.digest, `sha256:${pin.runtimeAssets[platform.key].sha256}`);
+  assert.equal(warnings.length, 1);
+});
+
+test('resolveCodexPackageInstallMeta: 上游正常时仍走 API 并做 pin 交叉校验', async () => {
+  const platform = WINDOWS_PLATFORM;
+  const pin = JSON.parse(fs.readFileSync(new URL('../../tools/codex-package/latest.json', import.meta.url), 'utf8'));
+  const result = await resolveCodexPackageInstallMeta({
+    version: pin.version,
+    platform,
+    fetchMeta: async () => ({
+      assets: [{
+        name: platform.asset,
+        browser_download_url: pin.runtimeAssets[platform.key].url,
+        digest: `sha256:${pin.runtimeAssets[platform.key].sha256}`,
+      }],
+    }),
+  });
+  assert.equal(result.pinOnly, false);
+  assert.equal(result.meta.assets[0].digest, `sha256:${pin.runtimeAssets[platform.key].sha256}`);
+});
+
+test('resolveCodexPackageInstallMeta: 上游元数据与 pin 不一致（或 pin 失效）仍然 fail closed', async () => {
+  const platform = WINDOWS_PLATFORM;
+  const pin = JSON.parse(fs.readFileSync(new URL('../../tools/codex-package/latest.json', import.meta.url), 'utf8'));
+  // digest 漂移：API 可用但内容与 pin 不符 → 必须报错，不能降级
+  await assert.rejects(
+    resolveCodexPackageInstallMeta({
+      version: pin.version,
+      platform,
+      fetchMeta: async () => ({
+        assets: [{
+          name: platform.asset,
+          browser_download_url: pin.runtimeAssets[platform.key].url,
+          digest: `sha256:${'b'.repeat(64)}`,
+        }],
+      }),
+    }),
+    /digest does not match pin/,
+  );
+  // 404：pin 指向的 release 不存在 → 不得当作限流降级
+  await assert.rejects(
+    resolveCodexPackageInstallMeta({
+      version: pin.version,
+      platform,
+      fetchMeta: async () => {
+        throw Object.assign(new Error('HTTP 404 Not Found: https://api.github.com/…'), { status: 404, statusText: 'Not Found' });
+      },
+    }),
+    /HTTP 404/,
+  );
 });
 
 // ── 目录落位（replaceDirectory）───────────────────────────────────────────────

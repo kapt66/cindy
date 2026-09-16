@@ -44,6 +44,7 @@ import {
   asRuntimeInstallError,
   describeErrorChain,
 } from '../shared/runtime-install-error.mjs';
+import { pinnedAssetDescriptor, resolveInstallReleaseMeta } from '../shared/github-release-pin.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '../..');
@@ -546,11 +547,33 @@ export function readPinnedVersion() {
   return readCachedVersion();
 }
 
+/**
+ * 解析本次安装要用的 release 元数据：优先上游 API + pin 交叉校验，仅在上游限流时降级为
+ * pin 直链（未认证 api.github.com 只有 60 次/小时，是与开发机共用出口 IP 的 runner 上的真实
+ * 阻断点；内容仍由 pin 的 sha256 强制校验）。导出以便单测注入 fetchMeta。
+ */
+export async function resolveCodexPackageInstallMeta({ version, platform, fetchMeta = fetchReleaseMeta, warn }) {
+  return resolveInstallReleaseMeta({
+    fetchLiveMeta: () => fetchMeta(`rust-v${version}`),
+    assertPinned: (meta) => assertPinnedRuntimeAsset(readCache(), meta, version, platform),
+    pinnedMeta: () => ({
+      assets: [
+        pinnedAssetDescriptor(readCache(), platform.key, {
+          assetName: platform.asset,
+          label: `codex-package ${version}`,
+          expectedTarget: platform.target,
+          expectedEntrypoint: platform.entrypoint,
+        }),
+      ],
+    }),
+    warn,
+  });
+}
+
 export async function ensurePlatform({ version, platformKey, force = false }) {
   const platform = CODEX_PACKAGE_PLATFORMS.find((candidate) => candidate.key === platformKey);
   if (!platform) throw new Error(`Unknown platform key for codex-package: ${platformKey}`);
-  const meta = await fetchReleaseMeta(`rust-v${version}`);
-  assertPinnedRuntimeAsset(readCache(), meta, version, platform);
+  const { meta } = await resolveCodexPackageInstallMeta({ version, platform });
   try {
     // 下载 / 解压 / 校验 / 缓存落位：只有这一段失败才可能值得走网络侧兜底。
     await downloadAsset(meta, version, platform, { force, throughputGuard: true });

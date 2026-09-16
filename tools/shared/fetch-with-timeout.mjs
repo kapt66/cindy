@@ -90,6 +90,19 @@ function rethrowAbort(err, controller) {
 /** JSON 元数据请求的默认 deadline——小请求不适用下载的 30min 默认，挂住 60s 就该报错。 */
 const JSON_TOTAL_TIMEOUT_MS = 60_000;
 
+/**
+ * 非 2xx → 带 `status` 的错误。调用方需要据此区分"配额/限流"与"真正的失败"：
+ * 未认证的 api.github.com 只有每 IP 60 次/小时，耗尽后是 403（upstream 的 statusText 为
+ * "rate limit exceeded"），把它当成普通失败会阻断发布（2026-09-16 实测）。
+ */
+function httpStatusError(res, url) {
+  const error = new Error(`HTTP ${res.status} ${res.statusText}: ${url}`);
+  error.status = res.status;
+  error.statusText = res.statusText;
+  error.url = url;
+  return error;
+}
+
 /** 进度行渲染（纯函数，便于测试）：`42% 84.0/200.0MB @ 1.2MB/s`；总大小未知时省略百分比。 */
 export function formatProgressLine({ receivedBytes, totalBytes, bytesPerSec }) {
   const mb = (n) => (n / 1024 / 1024).toFixed(1);
@@ -159,7 +172,7 @@ export async function fetchJsonWithTimeout(url, init = {}, overrides = {}) {
   );
   try {
     const res = await fetch(url, { ...init, signal: controller.signal });
-    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}: ${url}`);
+    if (!res.ok) throw httpStatusError(res, url);
     return await res.json();
   } catch (err) {
     throw rethrowAbort(err, controller);
@@ -229,7 +242,7 @@ export async function downloadToFileWithTimeout(url, destPath, init = {}, overri
   try {
     const res = await fetch(url, { ...init, signal: controller.signal });
     clearTimeout(connectTimer); // 响应头已到，连接超时解除（stall + total + throughput 接管 body 阶段）
-    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}: ${url}`);
+    if (!res.ok) throw httpStatusError(res, url);
     if (!res.body) throw new Error(`Empty response body: ${url}`);
 
     fs.mkdirSync(path.dirname(destPath), { recursive: true });

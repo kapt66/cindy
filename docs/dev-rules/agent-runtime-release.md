@@ -29,6 +29,37 @@
   普通 route 可查询都不能替代该握手；不得把旧 bundle 兼容降级成成功。版本错配时应停止业务
   流程并要求从同一 Cindy 源码重建、探测和重启远端 daemon。
 
+## pin 是下载信任锚：上游 API 限流不得阻断安装
+
+**事实**：未认证的 `api.github.com` 配额是**每出口 IP 60 次/小时**。Windows runner 与开发机
+是同一台机器、共用出口 IP，2026-09-16 的第二个 `release:windows:canary` 就在同一个 job 里把配额
+耗尽（`pnpm install` 的 best-effort postinstall 会为 codex/pi 各取一次 release 元数据，加上
+其它 job 的调用），随后 release 步骤解析 pin 元数据时直接
+`HTTP 403 rate limit exceeded: https://api.github.com/repos/openai/codex/releases/tags/rust-v0.153.4`，
+codex 与 pi 都装不上、发布被阻断。
+
+**契约**：
+
+- 安装链路的信任锚是**已复核并随仓库分发**的 pin（`tools/<kind>/latest.json` 的
+  `runtimeAssets.<platformKey>`：官方资产直链 + sha256 + 字节数），不是可变的 API 元数据。
+- **内容校验永不降级**：始终从 pin 记录的直链下载，并按 pin 的 sha256 逐字节校验（不符即失败），
+  同时校验来源必须是 `https://github.com/...` 的 release 资产。
+- **交叉校验尽力而为**：取到 API 元数据时照旧用 `assertPinnedRuntimeAsset` 比对；**仅**在限流
+  （429，或 403 且带 rate limit 信号）时降级为纯 pin 模式，并打印明确告警
+  （`WARN: GitHub API rate limit hit (...); installing from the reviewed pin instead (the pinned
+  sha256 is still enforced).`）。降级只放弃"上游元数据是否仍与 pin 一致"这一层，不影响
+  "下载物必须等于 pin 的 sha256"。
+- **其它 API 错误仍 fail closed**：404（pin 指向的 release 已不存在）或 pin 不完整/字段非法时
+  不得降级——降级路径同样要能拒绝坏 pin。
+- 实现：`tools/shared/github-release-pin.mjs`（`isGitHubRateLimitError` /
+  `pinnedAssetDescriptor` / `resolveInstallReleaseMeta`），由
+  `tools/codex-package/update.mjs`、`tools/pi/update.mjs` 的 `ensurePlatform` 使用；
+  HTTP 非 2xx 由 `tools/shared/fetch-with-timeout.mjs` 抛出带 `status` 的错误，供限流判定。
+- `claude` 不走 GitHub API（用 `downloads.claude.ai` 的 per-version manifest），不受影响；
+  `ripgrep` / 旧 `codex` 单文件链路仍会取 API 元数据（CI 已用 `Install-PinnedWindowsRipgrep`
+  预置 ripgrep；如后续再遇到配额问题，按同一模式改）。需要更高配额时，开发机可自行
+  设 `GITHUB_TOKEN`（工具已支持）。
+
 ## 本地落位（promote）与 Windows 目录改名
 
 `apps/<kind>-bin/<platform>/` 是 gitignore 的构建产物，干净 checkout（CI 每个 job、新的
@@ -101,6 +132,9 @@ Canary/Stable 应用 manifest，也不创建 GitHub tag；完整 release 必须�
 - 本地落位重试与阶段化归因（改 `tools/codex-package/update.mjs`、
   `scripts/ensure-agent-binaries.mjs`、`tools/shared/rename-with-retry.mjs` 后必须跑）：
   `node --test scripts/__tests__/rename-with-retry.test.mjs scripts/__tests__/codex-package-update-layout.test.mjs scripts/__tests__/ensure-binary-fallback.test.mjs`
+- pin 降级与限流判定（改 `tools/shared/github-release-pin.mjs`、
+  `tools/shared/fetch-with-timeout.mjs`、任一 `ensurePlatform` 后必须跑）：
+  `node --test scripts/__tests__/github-release-pin.test.mjs scripts/__tests__/fetch-with-timeout.test.mjs scripts/__tests__/pi-update-layout.test.mjs`
 - 干净 checkout 端到端（复现 CI 的 promote：目标目录不存在）：
   用只含 `tools/{shared,codex-package}` + `scripts/{ensure-agent-binaries.mjs,agent-binary-cdn-fallback.mjs,shared}`
   的临时 harness，先 `rm -rf apps/codex-package-bin`，再跑
