@@ -12,7 +12,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { ensureBinary } from '../ensure-agent-binaries.mjs';
+import { ensureBinary, planEnsurePlatformFailure, ENSURE_FAILURE_ACTIONS } from '../ensure-agent-binaries.mjs';
+import { RuntimeInstallError } from '../../tools/shared/runtime-install-error.mjs';
 
 const PLATFORM = 'test-fallback-platform'; // 假平台：上游立即抛 unknown，不打网络、不碰真实二进制
 const CLAUDE_PIN = JSON.parse(fs.readFileSync('tools/claude/latest.json', 'utf8')).version;
@@ -83,4 +84,63 @@ test('ensureBinary(ripgrep): 上游失败 → 回退 CDN，落地正确二进制
   assert.ok(fs.readFileSync(binPath).equals(BIN), 'binary content == mock CDN binary');
   const ver = fs.readFileSync(path.join(path.dirname(binPath), '.version'), 'utf8').trim();
   assert.equal(ver, RIPGREP_PIN);
+});
+
+// ── 失败阶段归因（2026-09-16 Windows canary 回归）────────────────────────────
+// 当时下载命中了缓存、真正失败的是本地目录 promote，却被包装成
+// "Failed to download ... from upstream"，把排查引向网络和"应用是否在运行"。
+// 下面把"只有 download 阶段才考虑网络侧兜底"这条编排契约固定下来。
+
+function promoteFailure(message = '落位失败：EPERM: operation not permitted') {
+  return new RuntimeInstallError('promote', message, {
+    cause: Object.assign(new Error('EPERM: operation not permitted, rename a -> b'), { code: 'EPERM' }),
+  });
+}
+
+test('planEnsurePlatformFailure: promote 阶段失败按本地落位失败上报，绝不再走 CDN/网络兜底', () => {
+  for (const kind of ['codex', 'claude', 'ripgrep', 'pi']) {
+    const plan = planEnsurePlatformFailure({
+      kind,
+      platformKey: 'win32-x64',
+      version: '0.153.4',
+      error: promoteFailure(),
+    });
+    assert.equal(plan.action, ENSURE_FAILURE_ACTIONS.LOCAL_INSTALL_FAILED, kind);
+    assert.match(plan.error.message, /local install failed, not a download problem/);
+    assert.match(plan.error.message, /EPERM/);
+    assert.doesNotMatch(plan.error.message, /Failed to download/);
+    assert.match(plan.error.message, new RegExp(`pnpm update:${kind}`));
+  }
+});
+
+test('planEnsurePlatformFailure: 阶段未知的目录分发仍 fail closed（不得退化成单文件 CDN）', () => {
+  const plan = planEnsurePlatformFailure({
+    kind: 'codex',
+    platformKey: 'win32-x64',
+    version: '0.153.4',
+    error: new Error('Unknown platform key for codex-package: test-fallback-platform'),
+  });
+  assert.equal(plan.action, ENSURE_FAILURE_ACTIONS.FAIL_CLOSED_DIR_DIST);
+  assert.match(plan.error.message, /directory distribution.*pnpm update:codex-package/s);
+});
+
+test('planEnsurePlatformFailure: 单文件分发的 download 阶段失败才回退 CDN', () => {
+  const plan = planEnsurePlatformFailure({
+    kind: 'claude',
+    platformKey: 'win32-x64',
+    version: '2.1.259',
+    error: new RuntimeInstallError('download', 'download failed: connect timeout', {
+      cause: new Error('connect timeout'),
+    }),
+  });
+  assert.equal(plan.action, ENSURE_FAILURE_ACTIONS.CDN_FALLBACK);
+  assert.match(plan.detail, /connect timeout/);
+  // 未标注阶段的普通错误保持既有行为（claude/ripgrep 仍可回退）
+  const untagged = planEnsurePlatformFailure({
+    kind: 'claude',
+    platformKey: 'win32-x64',
+    version: '2.1.259',
+    error: new Error('fetch failed'),
+  });
+  assert.equal(untagged.action, ENSURE_FAILURE_ACTIONS.CDN_FALLBACK);
 });

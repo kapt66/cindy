@@ -22,6 +22,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { downloadFromCdn } from './agent-binary-cdn-fallback.mjs';
 import { verifyDirDistManifest } from '../tools/shared/dir-dist-manifest.mjs';
+import { describeErrorChain, runtimeInstallStageOf } from '../tools/shared/runtime-install-error.mjs';
 
 const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const LFS_POINTER_HEADER = 'version https://git-lfs.github.com/spec/v1';
@@ -217,6 +218,54 @@ export function tryReuseFromSiblingWorktree({ candidates, binFile, version, dest
 }
 
 /**
+ * ensurePlatform 失败的处置方案。三条分支互斥，且必须按"失败发生在哪个阶段"决定：
+ *
+ * - `local-install-failed`：runtime 已经在本地（下载完成或命中缓存），失败在 promote。
+ *   重下 / 回退 CDN 都不会改变结果，所以直接抛带真实原因的错误，不再包装成下载失败。
+ *   2026-09-16 Windows canary 发布失败正是这一类被误报成 "Failed to download ... from upstream"。
+ * - `fail-closed-dir-dist`：阶段未知（或明确是下载阶段）且该 kind 是目录分发时，绝不能退化成
+ *   单文件 CDN 兜底——目录分发的运行时资产不止主执行文件（见 isValidDirDist）。
+ * - `cdn-fallback`：阶段未知且是单文件分发（claude/ripgrep）：按上游慢/失败处理，回退公司 CDN。
+ */
+export const ENSURE_FAILURE_ACTIONS = Object.freeze({
+  LOCAL_INSTALL_FAILED: 'local-install-failed',
+  FAIL_CLOSED_DIR_DIST: 'fail-closed-dir-dist',
+  CDN_FALLBACK: 'cdn-fallback',
+});
+
+export function planEnsurePlatformFailure({ kind, platformKey, version, error }) {
+  const detail = describeErrorChain(error);
+  const updateScript = updateScriptForKind(kind);
+
+  if (runtimeInstallStageOf(error) === 'promote') {
+    return {
+      action: ENSURE_FAILURE_ACTIONS.LOCAL_INSTALL_FAILED,
+      detail,
+      // 工具侧消息已经带完整原因链（errno + 路径 + 尝试次数/耗时）与占用提示，
+      // 这里只补"不是下载问题"的定性和修复入口，避免把同一链条再抄一遍。
+      error: new Error(
+        `${kind} ${platformKey}@${version}: local install failed, not a download problem. ${error?.message ?? detail} ` +
+          `After closing the app, re-run it, or run "pnpm update:${updateScript}" manually.`,
+      ),
+    };
+  }
+
+  if (!supportsCdnFallback(kind)) {
+    return {
+      action: ENSURE_FAILURE_ACTIONS.FAIL_CLOSED_DIR_DIST,
+      detail,
+      error: new Error(
+        `Failed to install ${kind} ${platformKey}@${version} from upstream: ${detail}. ` +
+          `This runtime is a directory distribution, so the single-binary CDN fallback is unsafe. ` +
+          `Run "pnpm update:${updateScript}" manually or check network availability.`,
+      ),
+    };
+  }
+
+  return { action: ENSURE_FAILURE_ACTIONS.CDN_FALLBACK, detail };
+}
+
+/**
  * 确保 <kind> 在 <platformKey> 平台的二进制就位。已存在合法文件且非 force 时跳过。
  * 返回最终二进制的绝对路径。
  */
@@ -275,17 +324,14 @@ export async function ensureBinary(kind, platformKey = currentPlatformKey(), { f
     log(`${kind} ${platformKey}: ensuring pinned version ${version}...`);
     try {
       await mod.ensurePlatform({ version, platformKey, force });
-    } catch (upstreamErr) {
-      if (!supportsCdnFallback(kind)) {
-        throw new Error(
-          `Failed to download ${kind} ${platformKey}@${version} from upstream: ${upstreamErr.message}. ` +
-            `This runtime is a directory distribution, so the single-binary CDN fallback is unsafe. ` +
-            `Run "pnpm update:${updateScript}" manually or check network availability.`,
-        );
+    } catch (installErr) {
+      const plan = planEnsurePlatformFailure({ kind, platformKey, version, error: installErr });
+      if (plan.action !== ENSURE_FAILURE_ACTIONS.CDN_FALLBACK) {
+        throw plan.error;
       }
       // claude / ripgrep：上游慢/失败（含 fetch-with-timeout 的 connect/stall/total/throughput 超时）→
       // 回退公司 CDN（国内快，.gz gunzip 后与上游裸二进制字节一致）。
-      warn(`${kind} ${platformKey}: upstream failed/slow (${upstreamErr.message}); falling back to CDN...`);
+      warn(`${kind} ${platformKey}: upstream failed/slow (${plan.detail}); falling back to CDN...`);
       try {
         const r = await downloadFromCdn({ kind, version, platformKey, binPath });
         // CDN 兜底直接落 binPath（不走 updates/promote），手动写版本标记供后续 skip 判定与终检。
@@ -294,8 +340,8 @@ export async function ensureBinary(kind, platformKey = currentPlatformKey(), { f
       } catch (cdnErr) {
         throw new Error(
           `Failed to download ${kind} ${platformKey}@${version} from both upstream and CDN fallback:\n` +
-            `  upstream: ${upstreamErr.message}\n` +
-            `  CDN:      ${cdnErr.message}\n` +
+            `  upstream: ${plan.detail}\n` +
+            `  CDN:      ${describeErrorChain(cdnErr)}\n` +
             `  Fix: run "pnpm update:${updateScript}" manually, or check network / CDN availability.`,
         );
       }

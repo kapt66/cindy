@@ -29,7 +29,37 @@
   普通 route 可查询都不能替代该握手；不得把旧 bundle 兼容降级成成功。版本错配时应停止业务
   流程并要求从同一 Cindy 源码重建、探测和重启远端 daemon。
 
-## Linux 交付
+## 本地落位（promote）与 Windows 目录改名
+
+`apps/<kind>-bin/<platform>/` 是 gitignore 的构建产物，干净 checkout（CI 每个 job、新的
+git worktree、首次 dev 启动）必然不存在，因此**每次都要走一次本地落位**。这条路径的正确性
+与"本机恰好已有安装"无关，必须按下面的契约实现。
+
+- **目录分发 runtime 的落位必须用有界退避重试**：`tools/codex-package/update.mjs` 的
+  `replaceDirectory` 走 `tools/shared/rename-with-retry.mjs`。两处改名的预算刻意不同：
+  - 落位（`staging → 目标`）用 `PLACEMENT_RENAME_RETRY_DELAYS_MS`（累计 ≥3.75s）；
+  - 换下旧目录（`目标 → 备份`）用 `SWAP_RENAME_RETRY_DELAYS_MS`（很短）——这里的锁多半是
+    "应用正在运行"，不会自己消失，不能让 dev 启动白等十几秒才报错。
+- **事实（为什么必须重试）**：2026-09-16 在 Windows 发布机（XINDONG-PC）实测，
+  `cpSync 整包 → writeDirDistManifest/verifyDirDistManifest → 立即 rename 目录` 这条
+  promote 尾部稳定拿到 `EPERM`（faithful 路径连续实测 5/6、6/6 失败；`C:\Workspace` 与
+  `%TEMP%` 下都复现）；同一 rename 推迟约 1s 成功，100/300ms 仍可能失败。对照实验把触发
+  条件收窄到"**目录里含刚写入的 `.exe`**"：同一字节改名成 `data.bin` 或内容清零后 0/4 失败，
+  单文件 rename 4/4 成功，失败瞬间仍能往目录里写新文件、也能删除目录。即这是系统级安全
+  扫描/预读组件对可执行文件的瞬时占用，**与"是否有应用在运行"无关**；把它读成
+  `target locked (probably running)` 是错误归因（2026-09-16 的 Windows canary 发布失败即如此）。
+- **失败必须带阶段标签**：`tools/<kind>/update.mjs` 的 `ensurePlatform` 用
+  `RuntimeInstallError`（`tools/shared/runtime-install-error.mjs`）区分 `download` 与
+  `promote`。只有 `download` 阶段才允许上层考虑 CDN/网络兜底；`promote` 阶段失败**不得**
+  包装成 `Failed to download ... from upstream`，也不得回退 CDN——下载/缓存其实已经成功，
+  再下一次只会重蹈同一个本地失败。
+- **成功不能被误报成失败**：落位完成后旧备份删不掉只告警
+  （`WARN: 旧 runtime 备份未能删除，可手动清理：…`）；只有"要么新、要么旧"的不变量被破坏
+  才算失败（新目录没落位时回滚旧目录）。
+- 其它 kind 的现状：`pi` 的 promote 是"清目标 + 直接 cpSync 进最终目录"（不改名目录），
+  `claude`/`ripgrep` 是单文件写入/改名，两者都不会踩这条 Windows 目录改名路径；它们的
+  lock 分支只 warn，最终由 `scripts/ensure-agent-binaries.mjs` 的就位终检兜底。
+
 
 桌面安装包发布只覆盖 Windows/macOS。MCPRouter 生产容器使用 `linux-x64`，因此 Linux
 runtime 由独立发布入口负责：
@@ -68,6 +98,14 @@ Canary/Stable 应用 manifest，也不创建 GitHub tag；完整 release 必须�
 ## 验证
 
 - `node --test scripts/__tests__/meka-release-flow.test.mjs`
+- 本地落位重试与阶段化归因（改 `tools/codex-package/update.mjs`、
+  `scripts/ensure-agent-binaries.mjs`、`tools/shared/rename-with-retry.mjs` 后必须跑）：
+  `node --test scripts/__tests__/rename-with-retry.test.mjs scripts/__tests__/codex-package-update-layout.test.mjs scripts/__tests__/ensure-binary-fallback.test.mjs`
+- 干净 checkout 端到端（复现 CI 的 promote：目标目录不存在）：
+  用只含 `tools/{shared,codex-package}` + `scripts/{ensure-agent-binaries.mjs,agent-binary-cdn-fallback.mjs,shared}`
+  的临时 harness，先 `rm -rf apps/codex-package-bin`，再跑
+  `node scripts/ensure-agent-binaries.mjs --kinds=codex --platform=win32-x64`；
+  修复前应在 `[win32-x64] skip (cached, …)` 之后报 promote 失败，修复后应落地并写出 `.version`。
 - CLI dry-run：
   `node apps/desktop/scripts/publish-agent-runtimes.mjs --platform linux-x64 --region cn`
 - CI 发布后确认公开 `runtime-manifest-linux-x64.json` 及其两个资产均返回 200，大小与 manifest

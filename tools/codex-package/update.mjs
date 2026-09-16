@@ -34,6 +34,16 @@ import {
   verifyDirDistManifest,
   writeDirDistManifest,
 } from '../shared/dir-dist-manifest.mjs';
+import {
+  PLACEMENT_RENAME_RETRY_DELAYS_MS,
+  SWAP_RENAME_RETRY_DELAYS_MS,
+  renameWithRetry,
+} from '../shared/rename-with-retry.mjs';
+import {
+  RuntimeInstallError,
+  asRuntimeInstallError,
+  describeErrorChain,
+} from '../shared/runtime-install-error.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '../..');
@@ -345,25 +355,63 @@ export async function extractArchive(archivePath, destDir) {
   }
 }
 
-function replaceDirectory(stagingDir, destinationDir) {
+/**
+ * 用同卷原子改名把 staging 目录换成 destinationDir。
+ *
+ * 两处改名都走有界退避重试：Windows 上刚写入的 `.exe` 会被安全扫描/预读组件短暂持有，
+ * rename 一个包含它的目录会返回 EPERM（2026-09-16 Windows canary 发布失败的真因；
+ * 实测数据见 docs/dev-rules/agent-runtime-release.md）。落位成功后旧备份删不掉只告警——
+ * 那时候新 runtime 已经生效，不能把成功报成失败。
+ *
+ * @param {string} stagingDir
+ * @param {string} destinationDir
+ * @param {{ renameSync?: Function, sleep?: Function, remove?: Function, warn?: Function }} [deps]
+ *   单测注入缝（注入的是最底层 rename/sleep/rm，重试逻辑本身仍走生产实现），生产不传。
+ */
+export function replaceDirectory(stagingDir, destinationDir, deps = {}) {
+  const {
+    renameSync = fs.renameSync,
+    sleep,
+    remove = (targetPath) => fs.rmSync(targetPath, { recursive: true, force: true }),
+    warn = (message) => console.warn(message),
+  } = deps;
+
   const backupDir = `${destinationDir}.backup-${process.pid}-${Date.now()}`;
   let backedUp = false;
   try {
     if (fs.existsSync(destinationDir)) {
-      fs.renameSync(destinationDir, backupDir);
+      // 旧目录里可能有正在运行的镜像：那不是会自动消失的锁，预算刻意短（见 rename-with-retry）。
+      renameWithRetry(destinationDir, backupDir, {
+        delaysMs: SWAP_RENAME_RETRY_DELAYS_MS,
+        rename: renameSync,
+        sleep,
+      });
       backedUp = true;
     }
-    fs.renameSync(stagingDir, destinationDir);
-    if (backedUp) fs.rmSync(backupDir, { recursive: true, force: true });
-  } catch (error) {
-    if (!fs.existsSync(destinationDir) && backedUp && fs.existsSync(backupDir)) {
-      try { fs.renameSync(backupDir, destinationDir); } catch { /* preserve original error */ }
+    try {
+      renameWithRetry(stagingDir, destinationDir, {
+        delaysMs: PLACEMENT_RENAME_RETRY_DELAYS_MS,
+        rename: renameSync,
+        sleep,
+      });
+    } catch (error) {
+      // 新运行时没落位就还原旧目录，保持"要么新、要么旧"的不变量。
+      if (!fs.existsSync(destinationDir) && backedUp && fs.existsSync(backupDir)) {
+        try { renameSync(backupDir, destinationDir); } catch { /* 保留原始错误 */ }
+      }
+      throw error;
     }
-    throw error;
+    if (backedUp && fs.existsSync(backupDir)) {
+      try {
+        remove(backupDir);
+      } catch (error) {
+        warn(`  WARN: 旧 runtime 备份未能删除，可手动清理：${backupDir}（${describeErrorChain(error)}）`);
+      }
+    }
   } finally {
-    try { fs.rmSync(stagingDir, { recursive: true, force: true }); } catch { /* ignore */ }
-    if (fs.existsSync(destinationDir)) {
-      try { fs.rmSync(backupDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { remove(stagingDir); } catch { /* ignore */ }
+    if (backedUp && fs.existsSync(destinationDir)) {
+      try { remove(backupDir); } catch { /* ignore */ }
     }
   }
 }
@@ -465,13 +513,17 @@ function promoteOnePlatform(version, platform) {
     }
     replaceDirectory(stagingDir, destinationDir);
   } catch (error) {
-    if (isTargetLockError(error)) {
-      throw new Error(
-        `[${platform.key}] target locked (probably running). Close the app and re-run.`,
-        { cause: error },
-      );
-    }
-    throw error;
+    // 落位是本地动作：这里失败与下载无关，必须带上阶段标签，避免上层误报成
+    // "Failed to download ... from upstream" 并去走无用的 CDN 兜底。
+    const lockHint = isTargetLockError(error)
+      ? ' 目标目录（或其中刚写入的 runtime 文件）仍被占用——应用正在运行就关掉它再重试。'
+      : '';
+    throw new RuntimeInstallError(
+      'promote',
+      `codex-package ${platform.key}@${version}: 落位到 ${destinationDir} 失败：` +
+        `${describeErrorChain(error)}。${lockHint}`,
+      { cause: error },
+    );
   } finally {
     try { fs.rmSync(stagingDir, { recursive: true, force: true }); } catch { /* ignore */ }
   }
@@ -499,7 +551,12 @@ export async function ensurePlatform({ version, platformKey, force = false }) {
   if (!platform) throw new Error(`Unknown platform key for codex-package: ${platformKey}`);
   const meta = await fetchReleaseMeta(`rust-v${version}`);
   assertPinnedRuntimeAsset(readCache(), meta, version, platform);
-  await downloadAsset(meta, version, platform, { force, throughputGuard: true });
+  try {
+    // 下载 / 解压 / 校验 / 缓存落位：只有这一段失败才可能值得走网络侧兜底。
+    await downloadAsset(meta, version, platform, { force, throughputGuard: true });
+  } catch (error) {
+    throw asRuntimeInstallError('download', error);
+  }
   promoteOnePlatform(version, platform);
 }
 

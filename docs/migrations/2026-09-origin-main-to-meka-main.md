@@ -431,8 +431,26 @@ WL-4.1.6 已把该 pin 登记为清单项，阶段 C 实机验收必须核对。
    在本 checkout 里只有空目录、缺 `.version` 与 `.manifest`，于是每次启动都强制走 promote
    分支并踩中上述竞态。已用仓库自身的 `writeDirDistManifest` 补齐该目录
    （8 条清单项、`verifyDirDistManifest` 通过），启动随即可用。
-   **建议**：把 `replaceDirectory` 的重试/退避（或改成 copy 到位）作为独立上游修复跟进，
-   不要依赖本机时序。本轮**未改该工具代码**（超出合并范围）。
+   **已处理（2026-09-16）**：按上述建议的"重试/退避"路线做了修复，不再依赖本机时序。
+   - `tools/shared/rename-with-retry.mjs`：目录改名有界退避（落位预算累计 ≥3.75s；
+     换下旧目录预算刻意短，因为那里多半是"应用正在运行"这种不会自愈的锁）。
+   - `tools/codex-package/update.mjs`：`replaceDirectory` 两处改名都走重试；"落位已成功、
+     旧备份删不掉"从失败降级为告警。
+   - `tools/shared/runtime-install-error.mjs` + `scripts/ensure-agent-binaries.mjs`：错误按
+     `download`/`promote` 阶段标注，只有下载阶段才考虑网络/CDN 兜底；本地落位失败**不再**
+     被包装成 `Failed to download ... from upstream`。
+   - **根因收窄（对照实验）**：触发条件是"**目录里含刚写入的 `.exe`**"被系统级安全扫描/预读
+     组件短暂持有句柄——同一字节改名成 `data.bin`、内容清零、单文件 rename 都不复现；失败
+     瞬间仍能往目录里写新文件、也能删除目录。因此它与"应用是否在运行"无关：2026-09-16
+     `release:windows:canary` 失败时 `apps/codex-package-bin/win32-x64` 根本不存在（本 job
+     的 worktree 是新建的），CI 侧 `target locked (probably running)` 的归因据此纠正
+     （cicd 仓 `docs/setup.md` §2.1 同步改写）。
+   - **端到端验证**：在"干净 checkout"条件下（目标目录不存在）跑真实
+     `ensure-agent-binaries --kinds=codex --platform=win32-x64`，修复前 0/3 成功并复现同一条
+     CI 报错文案，修复后 3/3 成功落地 `0.153.4`；再对目标目录里的 `codex.exe` 施加
+     `FileShare.None` 独占句柄，修复后报错为
+     `local install failed, not a download problem`（带 errno/路径/尝试次数）。规则与实测
+     数据见 `docs/dev-rules/agent-runtime-release.md`「本地落位（promote）与 Windows 目录改名」。
 5. **未验证真实 MCPRouter 市场下载/安装**（D3 解耦后客户端不再弹二次确认）与
    **Meka 技能链真实分发**。
 6. **插件基座白名单批准**：D3 属插件基座改动（能力 slot / 装入与权限确认 UI / 已装列表
@@ -500,6 +518,10 @@ WL-4.1.6 已把该 pin 登记为清单项，阶段 C 实机验收必须核对。
 | 模型选择器相关（§4.6） | `vitest run src/renderer/__tests__/{unifiedModelList,unifiedModelPanelRendering,modelSelectorProviderGroups,gatewayModelArrival,localCatalogSnapshot,modelSelectorTriggerVariant}` | 6 文件 / 256 通过 |
 | 开发插件派生包（§4.7） | `vitest run src/main/cindy-brain/__tests__/{mekaDevPlugins,marketGhostSessionBoundary,forge}` + `src/shared/__tests__/ghost` | 4 文件 / 306 tests（304 通过 + 2 skipped） |
 | 开发插件实机装载（§4.7） | 沙箱登记真实插件 `meka-unity` + `pnpm restart:desktop:remote` | 修复前 `main-2026-09-11.log:3278` 报 slots 拒装；修复后 20:04 `ghost installed { id: 'meka-dev-meka-unity-02ef16d0' }`，派生清单逐字段核对只改身份字段 |
+| Windows 目录落位重试（§6.4 跟进） | `node --test scripts/__tests__/rename-with-retry.test.mjs scripts/__tests__/codex-package-update-layout.test.mjs scripts/__tests__/ensure-binary-fallback.test.mjs` | 7 + 13 + 6 用例全通过：瞬时锁重试与预算、退避耗尽后保 errno、不可重试快速失败、落位失败回滚、"备份删不掉不算失败"、阶段化归因 |
+| Windows promote 端到端（修复前/后，§6.4） | 干净 checkout 条件下跑 `ensure-agent-binaries --kinds=codex --platform=win32-x64` | 修复前 0/3 成功（复现 CI 原文案 `target locked (probably running)`）；修复后 3/3 落地 `0.153.4` |
+| Windows promote 真实占用归因（§6.4） | 对目标 `codex.exe` 施加 `FileShare.None` 后重跑 | 报错为 `local install failed, not a download problem`（含 errno/路径/尝试次数/耗时），不再误报下载失败 |
+| 提交前门禁（相关单测） | `pnpm test:unit:related`（PATH 前置 Git Bash） | 见下方 §7.2 本轮记录 |
 | i18n | `pnpm check:i18n` | ✅ 五语 9946 key 全一致 |
 | 术语表 | `pnpm check:i18n-glossary` | ✅ 无新增违规 |
 | 品牌术语 | `pnpm check:brand-terminology` | ✅ PASS |
