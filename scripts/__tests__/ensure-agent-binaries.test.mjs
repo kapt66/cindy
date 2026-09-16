@@ -16,6 +16,7 @@ import {
   isValidBinary,
   isValidDirDist,
   listSiblingWorktreeRoots,
+  PUBLISHED_RUNTIME_KINDS,
   readInstalledVersion,
   SUPPORTED_BINARY_KINDS,
   supportsCdnFallback,
@@ -37,6 +38,29 @@ test('dev startup prepares every supported runtime, including Pi', () => {
     'utf8',
   );
   assert.match(devGuard, /const AGENT_KINDS = SUPPORTED_BINARY_KINDS;/);
+});
+
+// 发布链路（apps/desktop/scripts/ci/runtime-release.mjs 的 RUNTIME_DEFINITIONS）读的是
+// apps/<sourceDir>/<platform>，其中的 codex 是**单文件** runtime，与桌面端打包用的
+// codex-package 目录分发不是同一份产物。2026-09-03 迁移只改了 KINDS.codex，导致 canary 打包
+// 成功后在收集本地 runtime 资产时 ENOENT 失败；下面固定住"发布 kind 必须存在且不进 dev 自举"。
+
+test('published runtime kinds cover the single-file runtimes the release collects', () => {
+  assert.deepEqual(PUBLISHED_RUNTIME_KINDS, ['claude', 'codex-single', 'ripgrep']);
+  // 单文件 codex 不在 dev/postinstall 自举集合里（dev 用 codex-package，不该多下 ~120MB）
+  assert.equal(SUPPORTED_BINARY_KINDS.includes('codex-single'), false);
+});
+
+test('codex-single installs the single-file runtime into apps/codex-bin via the codex updater', () => {
+  assert.equal(binaryRelativePathFor('codex-single', 'win32-x64'), 'codex.exe');
+  assert.equal(binaryRelativePathFor('codex-single', 'darwin-arm64'), 'codex');
+  assert.equal(updateScriptForKind('codex-single'), 'codex');
+  // 目录分发判定必须是单文件（发布链路要的是裸二进制，不是目录）
+  assert.equal(supportsCdnFallback('codex-single'), true);
+  // 与桌面端打包用的 codex 是两种产物：目录分发 + 另一个 pin
+  assert.equal(binaryRelativePathFor('codex', 'win32-x64'), path.join('bin', 'codex.exe'));
+  assert.equal(updateScriptForKind('codex'), 'codex-package');
+  assert.equal(supportsCdnFallback('codex'), false);
 });
 
 const LFS_POINTER = [

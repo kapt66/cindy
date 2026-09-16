@@ -31,6 +31,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { fetchJsonWithTimeout, downloadToFileWithTimeout, createDownloadProgressLogger } from '../shared/fetch-with-timeout.mjs';
 import { normalizeExpectedSha256, verifyFileSha256OrRemove, sha256File } from '../shared/verify-sha256.mjs';
+import { pinnedAssetDescriptor, resolveInstallReleaseMeta } from '../shared/github-release-pin.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '../..');
@@ -94,10 +95,14 @@ function versionFromTag(tag) {
 }
 
 function readCachedVersion() {
+  return readCache()?.version || null;
+}
+
+/** 读整份 pin 缓存（`tools/codex/latest.json`）；缺失/损坏返回 null。 */
+function readCache() {
   if (!fs.existsSync(CACHE_FILE)) return null;
   try {
-    const json = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
-    return json.version || null;
+    return JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
   } catch {
     return null;
   }
@@ -323,10 +328,41 @@ export function readPinnedVersion() {
  * 确保单个平台的二进制就位：解析对应 release tag、下载并 promote 到 apps/codex-bin/<platformKey>/。
  * downloadAsset 对已存在文件会自动跳过（除非 force）。
  */
+/**
+ * 解析本次安装要用的 release 元数据：优先上游 API + pin 交叉校验，仅在上游限流时降级为
+ * pin 直链（未认证 api.github.com 只有 60 次/小时/IP；内容仍由 pin 的 sha256 强制校验）。
+ * 导出以便单测注入 fetchMeta。
+ */
+export async function resolveCodexInstallMeta({ version, platformKey, entry, fetchMeta = fetchReleaseMeta, warn }) {
+  return resolveInstallReleaseMeta({
+    fetchLiveMeta: () => fetchMeta(`rust-v${version}`),
+    assertPinned: (meta) => {
+      const asset = (meta.assets || []).find((candidate) => candidate.name === entry.asset);
+      const liveSha256 = normalizeExpectedSha256(asset?.digest);
+      const pin = readCache()?.runtimeAssets?.[platformKey];
+      if (!pin || !asset || !liveSha256 || liveSha256 !== pin.sha256) {
+        throw new Error(`Codex runtime asset digest does not match pin for ${platformKey}@${version}`);
+      }
+      if (asset.browser_download_url !== pin.url) {
+        throw new Error(`Codex runtime asset URL does not match pin for ${platformKey}@${version}`);
+      }
+    },
+    pinnedMeta: () => ({
+      assets: [
+        pinnedAssetDescriptor(readCache(), platformKey, {
+          assetName: entry.asset,
+          label: `codex ${version}`,
+        }),
+      ],
+    }),
+    warn,
+  });
+}
+
 export async function ensurePlatform({ version, platformKey, force = false }) {
   const entry = PLATFORMS.find((p) => p.key === platformKey);
   if (!entry) throw new Error(`Unknown platform key for codex: ${platformKey}`);
-  const meta = await fetchReleaseMeta(`rust-v${version}`);
+  const { meta } = await resolveCodexInstallMeta({ version, platformKey, entry });
   // install 链路（ensure-agent-binaries）有 CDN 兜底，开启吞吐守卫尽早切换
   await downloadAsset(meta, version, platformKey, entry.asset, entry.binFile, { force, throughputGuard: true });
   promoteOnePlatform(version, platformKey, entry.binFile);

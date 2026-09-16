@@ -29,6 +29,34 @@
   普通 route 可查询都不能替代该握手；不得把旧 bundle 兼容降级成成功。版本错配时应停止业务
   流程并要求从同一 Cindy 源码重建、探测和重启远端 daemon。
 
+## 发布物 runtime ≠ 桌面端打包 runtime
+
+两侧是**两种产物、两个 pin**，改任何一侧都必须同时核对另一侧：
+
+| 用途 | 产物形态 | 落点 | pin |
+| --- | --- | --- | --- |
+| 桌面端运行／打包（应用内 agent runtime） | codex **目录分发** | `apps/codex-package-bin/<platform>/` | `tools/codex-package/latest.json` |
+| 发布到 CDN 的 runtime 对象 | codex **单文件** | `apps/codex-bin/<platform>/codex[.exe]` | `tools/codex/latest.json` |
+| 两侧共用 | claude / ripgrep 单文件 | `apps/claude-code-bin/`、`apps/ripgrep-bin/` | `tools/claude/latest.json`、`tools/ripgrep/latest.json` |
+
+- CDN runtime 对象是单二进制 gz（`codex/<version>/<platform>/codex[.exe].gz` + `binarySha256`），
+  形态由 `apps/desktop/scripts/ci/runtime-release.mjs` 的 `RUNTIME_DEFINITIONS` 定义。
+  `publish-desktop.mjs` 在 `collectLocalRuntimeAssets` **之前**必须就位这些 runtime。
+- 契约：`scripts/ensure-agent-binaries.mjs` 的 `PUBLISHED_RUNTIME_KINDS`
+  （claude / `codex-single` / ripgrep）与 `ensurePublishedRuntimes()` 和 `RUNTIME_DEFINITIONS`
+  **一一对应**——改一边必须同时改另一边，否则发布会在收集本地资产时失败。
+- `codex-single` 带 `publicationOnly`：它**不进** `SUPPORTED_BINARY_KINDS`（dev/postinstall 自举集合），
+  否则每次 dev 安装/启动都会多下 ~120MB，而 dev 根本不用单文件 codex。
+- `codex-single` 的 `ensurePlatform` 同样支持 pin 降级（见上一节）：发布链路上配额耗尽时仍能从
+  `tools/codex/latest.json` 的直链 + sha256 就位。
+- **历史教训（2026-09-16）**：2026-09-03 的 codex-package 迁移把 `KINDS.codex` 从 `codex-bin` 换成
+  `codex-package-bin`，却没有同步发布链路。于是 `release:windows:canary` 打包、签名、冒烟全部成功后，
+  在「本地发布校验」阶段读 `apps/codex-bin/win32-x64/.version` 直接 ENOENT 失败（macOS canary
+  同构，只是先被别的阻断挡住）。它长期不可见有两个原因：干净 worktree 里 `apps/codex-bin` 不存在
+  （构建产物不进 git），且前面还有 promote 竞态与 API 配额两个更早的阻断点，任务走不到发布阶段。
+- `collectLocalRuntimeAssets` 在缺 `.version` 时必须报出**点名 runtime + 路径 + 补齐命令**的错误，
+  不得抛裸 ENOENT（无上下文的 ENOENT 让这条链多花了一轮排查）。
+
 ## pin 是下载信任锚：上游 API 限流不得阻断安装
 
 **事实**：未认证的 `api.github.com` 配额是**每出口 IP 60 次/小时**。Windows runner 与开发机
@@ -92,13 +120,18 @@ git worktree、首次 dev 启动）必然不存在，因此**每次都要走一�
   lock 分支只 warn，最终由 `scripts/ensure-agent-binaries.mjs` 的就位终检兜底。
 
 
+## Linux 交付
+
 桌面安装包发布只覆盖 Windows/macOS。MCPRouter 生产容器使用 `linux-x64`，因此 Linux
 runtime 由独立发布入口负责：
 
 ```bash
-node scripts/ensure-agent-binaries.mjs --kinds=claude,codex --platform=linux-x64
+node scripts/ensure-agent-binaries.mjs --kinds=claude,codex-single --platform=linux-x64
 pnpm release:runtime:linux-x64
 ```
+
+（`publish-agent-runtimes.mjs` 自己在收集本地资产前也会确保 `claude` + `codex-single` 就位；
+`codex` 是目录分发、只服务桌面端打包，**不参与 CDN runtime 发布**。）
 
 该入口先上传/复用 immutable runtime 对象，最后更新
 `runtime-manifest-linux-x64.json`。manifest schemaVersion 为 `1`，包含 `platformKey`、
@@ -134,7 +167,12 @@ Canary/Stable 应用 manifest，也不创建 GitHub tag；完整 release 必须�
   `node --test scripts/__tests__/rename-with-retry.test.mjs scripts/__tests__/codex-package-update-layout.test.mjs scripts/__tests__/ensure-binary-fallback.test.mjs`
 - pin 降级与限流判定（改 `tools/shared/github-release-pin.mjs`、
   `tools/shared/fetch-with-timeout.mjs`、任一 `ensurePlatform` 后必须跑）：
-  `node --test scripts/__tests__/github-release-pin.test.mjs scripts/__tests__/fetch-with-timeout.test.mjs scripts/__tests__/pi-update-layout.test.mjs`
+  `node --test scripts/__tests__/github-release-pin.test.mjs scripts/__tests__/fetch-with-timeout.test.mjs scripts/__tests__/pi-update-layout.test.mjs scripts/__tests__/codex-single-pin-fallback.test.mjs`
+- 发布物 runtime 就位（改 `PUBLISHED_RUNTIME_KINDS` / `RUNTIME_DEFINITIONS` / `publish-desktop.mjs` 后必须跑）：
+  `node --test scripts/__tests__/ensure-agent-binaries.test.mjs scripts/__tests__/meka-release-flow.test.mjs scripts/__tests__/codex-single-pin-fallback.test.mjs`
+- 干净 checkout 复现（发布链路）：把 `apps/codex-bin/<platform>` 移走后
+  `node scripts/ensure-agent-binaries.mjs --kinds=claude,codex-single,ripgrep --platform=<platform>`
+  应把它补回，随后 `collectLocalRuntimeAssets('<platform>')` 必须成功。
 - 干净 checkout 端到端（复现 CI 的 promote：目标目录不存在）：
   用只含 `tools/{shared,codex-package}` + `scripts/{ensure-agent-binaries.mjs,agent-binary-cdn-fallback.mjs,shared}`
   的临时 harness，先 `rm -rf apps/codex-package-bin`，再跑

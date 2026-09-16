@@ -14,6 +14,7 @@ import {
   publishRuntimeAssets,
   runtimeManifestKey,
 } from './ci/runtime-release.mjs';
+import { ensurePublishedRuntimes } from '../../../scripts/ensure-agent-binaries.mjs';
 
 const RELEASE_DIR = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -54,6 +55,9 @@ export async function putAgentRuntimeManifestIfChanged(storage, manifestKey, man
 async function main() {
   loadDotenv(undefined, { refreshReleaseConfig: false });
   const args = parseAgentRuntimePublishArgs(process.argv.slice(2));
+  // 发布物是**单文件** runtime（claude + codex 单文件），与桌面端打包用的 codex-package 不是
+  // 同一份产物；这里先按 AGENT_RUNTIME_DEFINITIONS 的集合确保就位。
+  await ensurePublishedRuntimes(args.platform, ['claude', 'codex-single']);
   const localAssets = collectLocalRuntimeAssets(args.platform, {
     definitions: AGENT_RUNTIME_DEFINITIONS,
   });

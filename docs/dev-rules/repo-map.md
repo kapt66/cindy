@@ -24,7 +24,7 @@
 |---|---|
 | `apps/desktop` | Cindy 桌面客户端（Electron + Vite），源码分 `main/`（主进程：业务逻辑、maker-host／maker-ipc、localDb、device-link、mcp-integrations、cindy-brain 等）、`renderer/`（纯渲染 UI：features、panels、themes、i18n 等）、`preload/`（最小桥接层）、`shared/`（主／渲染共享类型与常量）；SQLite migration 在 `apps/desktop/drizzle/` |
 | `apps/mobile` | Cindy 手机客户端（Expo / React Native）：同账号登录、发现并远程控制桌面设备、镜像会话 |
-| `apps/claude-code-bin`、`apps/codex-bin`、`apps/ripgrep-bin` | 随桌面端分发的预编译 CLI 二进制（按平台分目录）。不是构建包、不进 git 历史；版本由 `tools/<kind>/latest.json` pin，`pnpm install` postinstall 按需下载 |
+| `apps/claude-code-bin`、`apps/codex-bin`、`apps/ripgrep-bin`、`apps/codex-package-bin` | agent runtime 二进制（按平台分目录），不进 git 历史。桌面端运行／打包用的是**目录分发**的 `apps/codex-package-bin`（pin `tools/codex-package/latest.json`）；`apps/codex-bin` 是**发布链路专用**的**单文件** codex runtime（pin `tools/codex/latest.json`，CDN runtime 对象用它），不参与 dev/postinstall 自举。见 `docs/dev-rules/agent-runtime-release.md`「发布物 runtime ≠ 桌面端打包 runtime」 |
 | `apps/android-platform-tools-bin` | Android platform-tools（adb 等）二进制，当前仅 win32-x64，用于连接安卓设备 |
 
 ## packages/

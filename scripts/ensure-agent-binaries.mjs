@@ -54,13 +54,47 @@ const KINDS = {
     dirDist: true,
     requiredDirDistFiles: ['theme/dark.json', 'theme/light.json', 'theme/theme-schema.json'],
   },
+  /**
+   * 单文件 codex runtime（`apps/codex-bin/`）——**发布链路专用，不参与 dev/打包**。
+   *
+   * CDN 的 runtime 对象是单二进制形态（`codex/<version>/<platform>/codex[.exe].gz` +
+   * binarySha256，见 `apps/desktop/scripts/ci/runtime-release.mjs`），所以发布侧必须就位的是
+   * 这份单文件 runtime；而桌面端自身运行/打包用的是目录分发的 `codex`（`codex-package-bin`）。
+   * 两者 pin 也不同：本 kind 用 `tools/codex/latest.json`，`codex` 用
+   * `tools/codex-package/latest.json`。
+   *
+   * 2026-09-03 的 codex-package 迁移把 KINDS.codex 从 codex-bin 改成 codex-package-bin，但没有
+   * 同步发布链路：`release:windows:canary` 打包全部成功后在
+   * `publish-desktop.mjs → collectLocalRuntimeAssets` 读 `apps/codex-bin/<platform>/.version`
+   * 直接 ENOENT 失败，macOS canary 同样会中。所以这里必须有独立的 kind，且 `publicationOnly`
+   * 让它不进入 dev/postinstall 的自举集合（否则每次 dev 启动都多下 ~120MB）。
+   */
+  'codex-single': {
+    binDir: 'codex-bin',
+    base: 'codex',
+    module: '../tools/codex/update.mjs',
+    updateScript: 'codex',
+    publicationOnly: true,
+  },
 };
 
 /**
- * Dev 启动 guard 与 postinstall 的共享真源。新增 runtime kind 时只改 KINDS，
- * 避免“安装脚本已支持，但全新 checkout 的 dev 首启不会准备”。
+ * dev / postinstall 自举集合：桌面端开发与打包需要的 runtime。
+ *
+ * 注意这是 `KINDS` 的**子集**——`publicationOnly` 的 kind（单文件 codex）只在发布链路按需
+ * 就位，不能进这里。追加 kind 时必须显式判断它是否属于 dev 自举。
  */
-export const SUPPORTED_BINARY_KINDS = Object.freeze(Object.keys(KINDS));
+export const SUPPORTED_BINARY_KINDS = Object.freeze(
+  Object.keys(KINDS).filter((kind) => KINDS[kind].publicationOnly !== true),
+);
+
+/**
+ * 发布 CDN runtime 对象所需的 kind（claude / codex 单文件 / ripgrep）。
+ * 与 `RUNTIME_DEFINITIONS`（`apps/desktop/scripts/ci/runtime-release.mjs`）一一对应；
+ * 改任何一边都必须同时改另一边，否则发布会在收集本地资产时失败。
+ */
+export const PUBLISHED_RUNTIME_KINDS = Object.freeze(['claude', 'codex-single', 'ripgrep']);
+
 
 const log = (msg) => console.log(`\x1b[36m[ensure-agent-binaries]\x1b[0m ${msg}`);
 const warn = (msg) => console.log(`\x1b[33m[ensure-agent-binaries]\x1b[0m ${msg}`);
@@ -362,6 +396,26 @@ export async function ensureBinary(kind, platformKey = currentPlatformKey(), { f
     );
   }
   return binPath;
+}
+
+/**
+ * 就位"发布 CDN runtime 对象"所需的 runtime（claude / codex 单文件 / ripgrep）。
+ *
+ * 发布链路（`publish-desktop.mjs` → `collectLocalRuntimeAssets`）读的是
+ * `apps/<sourceDir>/<platform>/.version` 与单文件二进制，和桌面端打包用的
+ * `codex-package-bin` 不是同一份产物；所以发布前必须显式确保这三个 kind 就位，
+ * 否则会在收集本地资产时以 ENOENT 失败（2026-09-16 canary 的实际失败点）。
+ *
+ * @param {string} platformKey
+ * @param {readonly string[]} [kinds] 默认全部三个；只发布 claude/codex 的入口
+ *   （`publish-agent-runtimes.mjs` 的 linux 链路）传对应子集即可。
+ */
+export async function ensurePublishedRuntimes(platformKey = currentPlatformKey(), kinds = PUBLISHED_RUNTIME_KINDS) {
+  const paths = [];
+  for (const kind of kinds) {
+    paths.push(await ensureBinary(kind, platformKey));
+  }
+  return paths;
 }
 
 // ── CLI ──────────────────────────────────────────────────────────────────────

@@ -23,6 +23,7 @@ import {
   collectLocalRuntimeAssets,
   publishRuntimeAssets,
 } from './ci/runtime-release.mjs';
+import { ensurePublishedRuntimes } from '../../../scripts/ensure-agent-binaries.mjs';
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const ENDPOINT_MANIFEST_FILE_BY_REGION = Object.freeze({
@@ -60,6 +61,10 @@ async function main() {
   loadDotenv(undefined, { refreshReleaseConfig: false });
   const args = parseArgs(process.argv.slice(2));
   const release = validateBuildInfo(args.buildInfo);
+  // 发布物里的 runtime 是**单文件**形态（claude / codex 单文件 / ripgrep），与桌面端打包用的
+  // codex-package 目录分发不是同一份产物。这里先确保它们就位，否则 collectLocalRuntimeAssets
+  // 会在读 apps/<dir>/<platform>/.version 时 ENOENT（2026-09-16 canary 的失败点）。
+  await ensurePublishedRuntimes(release.platformKey);
   const localRuntimeAssets = collectLocalRuntimeAssets(release.platformKey);
   const endpointManifestText = buildPublishedEndpointManifest(
     fs.readFileSync(endpointManifestPath(release.region), 'utf8'),

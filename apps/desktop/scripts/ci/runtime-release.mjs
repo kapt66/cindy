@@ -53,7 +53,17 @@ export function collectLocalRuntimeAssets(
   return Object.fromEntries(
     definitions.map((definition) => {
       const sourceRoot = path.join(projectRoot, 'apps', definition.sourceDir, platformKey);
-      const version = fs.readFileSync(path.join(sourceRoot, '.version'), 'utf8').trim();
+      const versionFile = path.join(sourceRoot, '.version');
+      if (!fs.existsSync(versionFile)) {
+        // 不吞错也不抛裸 ENOENT：点名是哪个 runtime、缺哪个路径、用哪条命令补齐
+        // （2026-09-16 canary 就是在这里以一个无上下文的 ENOENT 失败的）。
+        throw new Error(
+          `${definition.field} 本地 runtime 未就位：缺少 ${versionFile}。` +
+            `发布物里的 runtime 是单文件形态，需先执行 ` +
+            `"node scripts/ensure-agent-binaries.mjs --kinds=claude,codex-single,ripgrep --platform=${platformKey}"。`,
+        );
+      }
+      const version = fs.readFileSync(versionFile, 'utf8').trim();
       if (!VERSION_RE.test(version)) {
         throw new Error(`${definition.field} 本地版本非法: ${version || '<empty>'}`);
       }

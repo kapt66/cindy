@@ -511,6 +511,32 @@ WL-4.1.6 已把该 pin 登记为清单项，阶段 C 实机验收必须核对。
     设 `XDT_SKIP_AGENT_BIN_INSTALL=1` 的 job，postinstall 会多下 ~380 MB（claude/codex/pi）并
     为 codex/pi 各花一次 API 配额——正是在同一个 job 内把配额花掉的直接原因（cicd 仓已补）。
     规则见 `docs/dev-rules/agent-runtime-release.md`「pin 是下载信任锚：上游 API 限流不得阻断安装」。
+15. **发布链路的单文件 codex runtime 自 2026-09-03 起无人就位（2026-09-16 已修）**：
+    `635977dd9c`（「use Codex package in development」）把 `KINDS.codex` 从 `apps/codex-bin`
+    （单文件）改成 `apps/codex-package-bin`（目录分发），但**没有同步发布链路**：
+    `apps/desktop/scripts/ci/runtime-release.mjs` 的 `RUNTIME_DEFINITIONS` 仍按
+    `sourceDir: 'codex-bin'` 收集本地 runtime，`publish-desktop.mjs` 在
+    `collectLocalRuntimeAssets` 里读 `apps/codex-bin/<platform>/.version` 时直接 ENOENT。于是
+    `release:windows:canary` 在打包、Rust 编译、签名、NSIS、冒烟**全部成功**之后，倒在
+    「本地发布校验」这一步；macOS canary 同构（先被更早的阻断挡住）。它长期不可见的原因有两条：
+    干净 worktree 里 `apps/codex-bin` 不存在（构建产物不进 git，CI 每个 job 都是新 worktree），
+    且前面还有 promote 竞态（§6.4）与 API 配额（§6.14）两个更早的阻断点——本仓最后一次成功发布
+    （stable 0.0.20）早于该迁移。
+    **已处理**：
+    - `scripts/ensure-agent-binaries.mjs` 新增 kind `codex-single`（`apps/codex-bin` +
+      `tools/codex/update.mjs`，`publicationOnly: true`）以及 `PUBLISHED_RUNTIME_KINDS` /
+      `ensurePublishedRuntimes()`；`SUPPORTED_BINARY_KINDS`（dev/postinstall 自举集合）保持
+      `claude/codex/ripgrep/pi` 不变，dev 不会多下 ~120MB 的单文件 codex。
+    - `publish-desktop.mjs` 在 `collectLocalRuntimeAssets` 之前调用 `ensurePublishedRuntimes`，
+      覆盖 Windows/macOS 两条 canary 链。
+    - `tools/codex/update.mjs` 同样接入 pin 降级（单文件 codex 的 pin 已含直链 + sha256），
+      使该步骤在 GitHub 配额耗尽时仍能就位；`runtime-release.mjs` 缺 `.version` 时改为报出
+      **点名 runtime + 路径 + 补齐命令**，不再抛裸 ENOENT。
+    - **验证**：把 `apps/codex-bin/win32-x64` 移走后，`collectLocalRuntimeAssets` 报出可执行提示；
+      跑 `ensure-agent-binaries --kinds=claude,codex-single,ripgrep --platform=win32-x64` 补回
+      （本机命中兄弟 worktree 复用，零网络），随后收集得到
+      `claudeCode 2.1.259 / codex 0.145.0 / ripgrep 15.1.0`。规则与契约见
+      `docs/dev-rules/agent-runtime-release.md`「发布物 runtime ≠ 桌面端打包 runtime」。
 
 ## 7. 验证记录
 
@@ -536,8 +562,10 @@ WL-4.1.6 已把该 pin 登记为清单项，阶段 C 实机验收必须核对。
 | Windows 目录落位重试（§6.4 跟进） | `node --test scripts/__tests__/rename-with-retry.test.mjs scripts/__tests__/codex-package-update-layout.test.mjs scripts/__tests__/ensure-binary-fallback.test.mjs` | 7 + 16 + 6 用例全通过：瞬时锁重试与预算、退避耗尽后保 errno、不可重试快速失败、落位失败回滚、"备份删不掉不算失败"、阶段化归因、限流降级与 fail-closed |
 | Windows promote 端到端（修复前/后，§6.4） | 干净 checkout 条件下跑 `ensure-agent-binaries --kinds=codex --platform=win32-x64` | 修复前 0/3 成功（复现 CI 原文案 `target locked (probably running)`）；修复后 3/3 落地 `0.153.4` |
 | Windows promote 真实占用归因（§6.4） | 对目标 `codex.exe` 施加 `FileShare.None` 后重跑 | 报错为 `local install failed, not a download problem`（含 errno/路径/尝试次数/耗时），不再误报下载失败 |
-| GitHub API 限流降级（§6.15） | `node --test scripts/__tests__/github-release-pin.test.mjs` | 7/7：限流（403+rate limit / 429）降级为 pin 直链；404/digest 漂移/坏 pin 一律 fail closed |
-| 限流下端到端安装（§6.15） | 把 `api.github.com` 强制成 403 后跑真实 `ensureBinary`（清空缓存，从 pin 直链下载） | codex 与 pi 均 `RESULT ok`：下载完成 + `sha256 ok` + 落位成功（`.version` = pin 版本） |
+| GitHub API 限流降级（§6.14） | `node --test scripts/__tests__/github-release-pin.test.mjs` | 7/7：限流（403+rate limit / 429）降级为 pin 直链；404/digest 漂移/坏 pin 一律 fail closed |
+| 限流下端到端安装（§6.14） | 把 `api.github.com` 强制成 403 后跑真实 `ensureBinary`（清空缓存，从 pin 直链下载） | codex 与 pi 均 `RESULT ok`：下载完成 + `sha256 ok` + 落位成功（`.version` = pin 版本） |
+| 发布物 runtime 就位（§6.15） | 移走 `apps/codex-bin/win32-x64` 后跑 `ensure-agent-binaries --kinds=claude,codex-single,ripgrep --platform=win32-x64` | 补回 `codex-single @ 0.145.0`（兄弟 worktree 复用，零网络）；随后 `collectLocalRuntimeAssets('win32-x64')` 成功返回 claudeCode 2.1.259 / codex 0.145.0 / ripgrep 15.1.0 |
+| 发布物 runtime 缺失报错（§6.15） | 对缺 `.version` 的 `collectLocalRuntimeAssets` 断言 | 报出「点名 runtime + 缺失路径 + 补齐命令」，不再抛裸 ENOENT（`codex-single-pin-fallback.test.mjs` 3/3） |
 | 提交门禁复跑（§7 注） | tier 同命令复跑 `apps/desktop` unit（`--pool=forks --maxWorkers=8` + 同组 `--exclude`） | **2609/2609 文件通过、35708 通过 / 0 失败**：确认 `unsupportedBrowserPrompt.test.ts` 的 20s 超时是负载型临界超时，非本次回归 |
 | 提交前门禁（相关单测） | `pnpm test:unit:related`（PATH 前置 Git Bash） | 见下方 §7.2 本轮记录 |
 | i18n | `pnpm check:i18n` | ✅ 五语 9946 key 全一致 |
