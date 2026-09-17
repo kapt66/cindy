@@ -415,6 +415,8 @@ export async function prepare(
           broadcastProgress,
           broadcastFailure: false,
           linuxCdnBudget: true,
+          // 这是降级第一环,不是终局判决:失败后还要回落官方源。
+          finalVerdict: false,
         });
       } catch (err) {
         log.warn(`CDN chain failed, falling back to linux runtime fallback: ${String((err as Error)?.message ?? err)}`);
@@ -498,10 +500,15 @@ async function prepareViaCdn(
     broadcastProgress,
     broadcastFailure,
     linuxCdnBudget,
+    // 本段失败是否即“该 vendor 不可用”的终局判决。mac/win 的 CDN 腿就是终局(true);
+    // packaged Linux 上它只是**设计内的降级第一环**(调用方随后回落官方源并可能成功),
+    // 那里必须传 false,否则会把预期内降级记成 "runtime not ready" 的假告警。
+    finalVerdict = true,
   }: {
     broadcastProgress: boolean;
     broadcastFailure: boolean;
     linuxCdnBudget: boolean;
+    finalVerdict?: boolean;
   },
 ): Promise<PrepareResult> {
   const cfg = CONFIG[kind];
@@ -632,6 +639,18 @@ async function prepareViaCdn(
         totalSteps,
         vendor: cfg.vendorTag,
       });
+    }
+    // 启动期 splash 失败态 UI 不显示 error 字段，这行日志是 vendor runtime 失败的唯一
+    // 诊断出口。2026-09-16 Windows canary 0.0.21 的「环境初始化失败」= manifest 缺
+    // codexPackage → 这里返回 asset_missing，而当时**一行日志都没有**，只能靠日志考古
+    // 才定位到「发布链路没发目录分发资产」。带上 manifestField 才能一眼看出对不上哪个字段。
+    // finalVerdict=false 时（Linux 降级第一环）不打：那条链已经在 :420 记了准确的
+    // "CDN chain failed, falling back to linux runtime fallback"，这里再报会把**预期内
+    // 降级**说成运行时不可用。
+    if (finalVerdict) {
+      log.warn(
+        `${kind} runtime not ready: ${result.error ?? 'unknown'} (manifest field "${cfg.manifestField}")`,
+      );
     }
     return { ready: false, error: result.error ?? 'unknown', downloaded: didDownload };
   } finally {

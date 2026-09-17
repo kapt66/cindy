@@ -6041,6 +6041,15 @@ const registerIpcHandlers = () => {
         ? AbortSignal.timeout(LINUX_AGENT_INSTALL_STARTUP_DEADLINE_MS)
         : undefined;
 
+    // 启动失败必须留痕：splash 失败态 UI 不渲染 error 字段，renderer 也只在
+    // 控制台拿不到 main 的归因。2026-09-16 Windows canary 0.0.21 的「环境初始化
+    // 失败」= manifest 缺 codexPackage 段，就是在这条**零日志**路径上发生的。
+    // 每个失败 return 前都要打，日志里带 stage 与底层 error code。
+    const logEnvCheckFailure = (stage: string, detail: unknown): void => {
+      const message = detail instanceof Error ? detail.message : String(detail);
+      console.error(`[bootstrap-electron] check-environment failed at ${stage}: ${message}`);
+    };
+
     // ── Phase 0: peek 各 vendor 是否需要下载（决定 (x/y) 标签）────────────────
     const needySteps: AgentBinaryKind[] = [];
     for (const kind of ['claude-code', 'codex', 'pi'] as const) {
@@ -6074,6 +6083,7 @@ const registerIpcHandlers = () => {
       });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
+      logEnvCheckFailure('claude-code', message);
       return {
         claudeCode: { status: 'failed' as const, error: message },
         codex: { status: 'skipped' as const },
@@ -6084,6 +6094,7 @@ const registerIpcHandlers = () => {
     }
 
     if (!claudeRes.ready || !claudeRes.path) {
+      logEnvCheckFailure('claude-code', claudeRes.error ?? 'Claude Code binary not available');
       return {
         claudeCode: {
           status: 'failed' as const,
@@ -6110,6 +6121,7 @@ const registerIpcHandlers = () => {
       });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
+      logEnvCheckFailure('codex', message);
       return {
         claudeCode: { status: 'passed' as const, path: claudeRes.path },
         codex: { status: 'failed' as const, error: message },
@@ -6120,6 +6132,7 @@ const registerIpcHandlers = () => {
     }
 
     if (!codexRes.ready || !codexRes.path) {
+      logEnvCheckFailure('codex', codexRes.error ?? 'Codex binary not available');
       return {
         claudeCode: { status: 'passed' as const, path: claudeRes.path },
         codex: { status: 'failed' as const, error: codexRes.error ?? 'Codex binary not available' },
