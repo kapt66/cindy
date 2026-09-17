@@ -310,7 +310,7 @@ Cindy Meka 的公开 `endpoint.json` 可以有意留空 `cdnBaseUrl`，以隔离
 内网 RustFS 撤回 canary 时，`reset-canary-desktop.mjs` 会先校验 stable 引用资产，按
 版本与内容哈希备份当前 canary manifest，将 canary 指针对齐到 stable 并完成反向校验，
 再删除被撤回版本的 installer/hotfix；删除前确认最终 stable/canary 均不引用目标，且
-Claude/Codex/ripgrep runtime 不参与清理。脚本自动扫描并清理当前架构中版本高于 stable 的标准
+Claude/Codex/ripgrep/codex-package runtime 不参与清理。脚本自动扫描并清理当前架构中版本高于 stable 的标准
 installer/hotfix，因此指针已提前对齐时仍可直接重复运行同一 reset 命令处理遗留对象。
 该操作不会让已安装更高 canary 的客户端降级。
 Claude、Codex 与 ripgrep 三个 agent runtime 也按 pin 版本写入独立的 immutable 路径；
@@ -321,6 +321,13 @@ GitHub Releases API 限流；客户端仍保留 RustFS/CDN fallback，发现同�
 gzip SHA-256 与裸二进制 SHA-256 全部匹配的 fallback。更新 pin 或首次补齐 CDN 时必须
 重新走官方 checksum 验证和上传后 HEAD 校验，不得把临时下载结果或未经校验的对象写入
 release storage。
+桌面端 ≥0.0.21 的 Codex 走**目录分发**：应用 manifest 除单文件 `codex` 外还必须带
+`codexPackage` 段（`codex-package/<pin 版本>/<platform>/codex-package.tar.gz`，字节取自
+`tools/codex-package/latest.json` 的 pin 直链并按其 sha256 校验），单文件段保留给
+≤0.0.20 客户端与 MCPRouter 的 linux runtime manifest。2026-09-16 的 0.0.21 Canary
+漏发该段，热更后新进程卡在「环境初始化失败」（`asset_missing`），已更新用户只能重装；
+不变量与发布自检见 `docs/dev-rules/agent-runtime-release.md`「应用 manifest 必须同时
+记录 codex 与 codexPackage」。
 正式 S3 API 与公开对象入口为 `https://s3.meka.pawdy.fun/`，管理控制台为
 `https://s3-admin.meka.pawdy.fun/`；控制台地址不进入客户端或发布脚本配置。发布 S3 与
 客户端下载均强制 HTTPS，不再保留内网 HTTP 放行开关。

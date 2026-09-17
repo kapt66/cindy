@@ -193,6 +193,19 @@ export function buildCanaryManifest(baseManifest, release, options = {}) {
     manifest.claudeCode = structuredClone(options.runtimeAssets.claudeCode);
     manifest.codex = structuredClone(options.runtimeAssets.codex);
     manifest.ripgrep = structuredClone(options.runtimeAssets.ripgrep);
+    // 桌面端 ≥0.0.21 启动时读的是目录分发的 codexPackage（agent-binaries 的
+    // CONFIG.codex）；单文件 codex 保留给 MCPRouter linux runtime manifest 与
+    // ≤0.0.20 客户端。缺 codexPackage 会让客户端卡在「环境初始化失败」，见
+    // docs/dev-rules/agent-runtime-release.md。
+    //
+    // 与其它三段一样**无条件覆盖**：本函数从 baseManifest（上一版 canary）clone 而来，
+    // 若只在“本轮有值”时才写入，调用方漏传就会让上一版的陈旧 codexPackage 顶包，而
+    // assertRuntimeManifestAssets 依然会通过——守卫便无法证明本轮的该段真的发布过。
+    if (options.runtimeAssets.codexPackage) {
+      manifest.codexPackage = structuredClone(options.runtimeAssets.codexPackage);
+    } else {
+      delete manifest.codexPackage;
+    }
   }
   return manifest;
 }

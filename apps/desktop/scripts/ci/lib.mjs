@@ -282,8 +282,11 @@ export function createLinuxFirstReleaseManifest(version, baseManifest, installer
   // Packaged Linux resolves Claude/Codex from a compatible system install,
   // migrates the legacy local cache, or downloads the pinned official asset.
   // Ripgrep remains bundled in the .deb by forge and needs no manifest entry.
+  // codexPackage（桌面端 ≥0.0.21 的目录分发 codex）同理属于 agent 资产，Linux 安装包
+  // 不带它，必须一起剥掉——否则会把上一版 manifest 里的该段原样带进 Linux 清单。
   delete manifest.claudeCode;
   delete manifest.codex;
+  delete manifest.codexPackage;
   delete manifest.ripgrep;
   return manifest;
 }

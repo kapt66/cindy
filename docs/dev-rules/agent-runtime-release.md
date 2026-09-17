@@ -39,9 +39,57 @@
 | 发布到 CDN 的 runtime 对象 | codex **单文件** | `apps/codex-bin/<platform>/codex[.exe]` | `tools/codex/latest.json` |
 | 两侧共用 | claude / ripgrep 单文件 | `apps/claude-code-bin/`、`apps/ripgrep-bin/` | `tools/claude/latest.json`、`tools/ripgrep/latest.json` |
 
-- CDN runtime 对象是单二进制 gz（`codex/<version>/<platform>/codex[.exe].gz` + `binarySha256`），
-  形态由 `apps/desktop/scripts/ci/runtime-release.mjs` 的 `RUNTIME_DEFINITIONS` 定义。
-  `publish-desktop.mjs` 在 `collectLocalRuntimeAssets` **之前**必须就位这些 runtime。
+### 应用 manifest 必须同时记录 `codex` 与 `codexPackage`
+
+**硬契约：两侧字段都要发**（`publish-desktop.mjs` → `buildCanaryManifest`）：
+
+| manifest 字段 | 形态 | 谁在读 |
+| --- | --- | --- |
+| `codex` | 单文件 gz（`codex/<ver>/<platform>/codex[.exe].gz` + `binarySha256`） | ≤0.0.20 的桌面客户端；MCPRouter 侧的 `runtime-manifest-linux-*.json` 是同形资产的独立入口，不在应用 manifest 内 |
+| `codexPackage` | 整目录 tar.gz（`codex-package/<ver>/<platform>/codex-package.tar.gz`） | **≥0.0.21 桌面端启动**：`agent-binaries` 的 `CONFIG.codex` = `manifestField: 'codexPackage'` + `artifactKind: 'tar-gz-dir'` + `installSubdir: 'codex-package'` |
+
+- 目录分发资产**直接复用 pin 记录的上游官方整包**（`tools/codex-package/latest.json` 的
+  `runtimeAssets.<platformKey>`：直链 + sha256 + 字节数），**不在发版机重新打包本地
+  `apps/codex-package-bin`**：字节可复现、sha256 与 pin 同源，也不会因为「本机再打一次包 →
+  字节不同」在同一个不可覆盖对象上撞车。下载走 `downloadToFileWithTimeout` 并显式
+  `minThroughputBytesPerSec: 0`（发布链路没有退路，掐断只会把"慢但能成"变成失败）；落盘后按
+  pin 的 sha256 校验，上传后回读 `size` + `metadata.sha256` 复核，失败即中止。
+- 定义在 `apps/desktop/scripts/ci/runtime-release.mjs`：`DIR_DIST_RUNTIME_DEFINITIONS`（发布什么）、
+  `RELEASE_RUNTIME_DEFINITIONS = RUNTIME_DEFINITIONS + DIR_DIST_*`（应用 manifest 必须齐全的判据）。
+  `publish-desktop.mjs` 与 `reset-canary-desktop.mjs` 都用它断言；reset 侧
+  `allowMissing: ['ripgrep','codexPackage']` 以兼容 0.0.20 及更早的 stable manifest（字段**存在就必须校验**）。
+- 对象路径含平台段（`/<platformKey>/`），这是发布侧 `assertRuntimeManifestAssets` /
+  `validRuntimeManifestAsset`（`apps/desktop/scripts/ci/runtime-release.mjs`）的既有路径约束。
+- pin 的 `target` / `entrypoint` 元数据在发布侧也做**交叉校验**，且**要求字段存在**：缺任一
+  即 fail closed。校验真值是安装侧维护的规范表 `tools/codex-package/update.mjs` 的
+  `CODEX_PACKAGE_PLATFORMS`（发布侧 import 复用，不另造平台映射）。**只比 `entrypoint` 不够**：
+  `bin/codex` / `bin/codex.exe` 各覆盖两个平台，跨架构整段粘贴（如把 win32-arm64 条目放进
+  win32-x64 槽位）能骗过它，结果是把 arm64 字节发到 x64 路径——必须连 `target` 一起比。
+  这与安装侧 `validateCodexPackageDirectory` 的 `pin.target !== platform.target` 同口径。
+- `buildCanaryManifest` 对四段 runtime **一律无条件覆盖**（本轮无值时 `delete`）：该函数从
+  baseManifest（上一版 canary）clone 而来，只在「本轮有值」时写入会让上一版的陈旧段顶包，
+  而齐备断言仍然通过——守卫就证明不了本轮的段真的发布过。
+- **历史事故（2026-09-16，Windows canary 0.0.21「环境初始化失败」）**：上游 `b43ee771ad`
+  （2026-09-03，use Codex package in production）把生产侧 codex 换成目录分发，`bdc8397a7e`
+  （2026-09-11）合并进 `meka/main`，**0.0.21 是合并后第一个包**；本仓发布链路却仍只发单文件
+  `codex`。后果链条：canary 热更成功、新进程启动 → `prepare('codex')` 读不到
+  `manifest.codexPackage` → `asset_missing`（`factory.ts` 取 vendor asset **先于**本地回退，
+  本机既有的旧 `userData/codex/<ver>` 也救不回来）→ `check-environment` `allPassed=false` →
+  splash 停在「环境初始化失败」。影响面是所有已升到该版本的客户端，且**无法自愈**：splash
+  失败态下 renderer 不会消费 Phase 1 的 relaunch 结论，后台轮询即使下好补丁，
+  `autoRelaunchOnIdle` 默认 `false`（`auto-update-settings-store.ts`）也会拦住自动重启——
+  只能重装安装包。
+  定位代价极高，原因是这条失败路径当时**一行日志都没有**。现已补两处：`agent-binaries` 在
+  `prepareViaCdn` 失败时 `log.warn` 带 `manifest field`；`bootstrap-electron` 的
+  `check-environment` 在每个失败分支 `console.error` 带 stage。
+- 通用教训：改桌面端 runtime 消费契约（vendor kind 的 manifest 字段／产物形态）时，**必须同时**
+  改发布链路，并把「该字段必须存在」写进发布侧断言。只改客户端会在下一个 canary 上炸，而且是在
+  「打包、签名、冒烟全部成功之后」才炸给用户。
+
+- CDN 的**单文件** runtime 对象是单二进制 gz（`codex/<version>/<platform>/codex[.exe].gz` +
+  `binarySha256`），形态由 `apps/desktop/scripts/ci/runtime-release.mjs` 的 `RUNTIME_DEFINITIONS`
+  定义。`publish-desktop.mjs` 在 `collectLocalRuntimeAssets` **之前**必须就位这些 runtime。
+  目录分发的 `codexPackage` 不走这条本地收集链（见上一节）。
 - 契约：`scripts/ensure-agent-binaries.mjs` 的 `PUBLISHED_RUNTIME_KINDS`
   （claude / `codex-single` / ripgrep）与 `ensurePublishedRuntimes()` 和 `RUNTIME_DEFINITIONS`
   **一一对应**——改一边必须同时改另一边，否则发布会在收集本地资产时失败。
@@ -49,11 +97,13 @@
   否则每次 dev 安装/启动都会多下 ~120MB，而 dev 根本不用单文件 codex。
 - `codex-single` 的 `ensurePlatform` 同样支持 pin 降级（见上一节）：发布链路上配额耗尽时仍能从
   `tools/codex/latest.json` 的直链 + sha256 就位。
-- **历史教训（2026-09-16）**：2026-09-03 的 codex-package 迁移把 `KINDS.codex` 从 `codex-bin` 换成
-  `codex-package-bin`，却没有同步发布链路。于是 `release:windows:canary` 打包、签名、冒烟全部成功后，
-  在「本地发布校验」阶段读 `apps/codex-bin/win32-x64/.version` 直接 ENOENT 失败（macOS canary
-  同构，只是先被别的阻断挡住）。它长期不可见有两个原因：干净 worktree 里 `apps/codex-bin` 不存在
-  （构建产物不进 git），且前面还有 promote 竞态与 API 配额两个更早的阻断点，任务走不到发布阶段。
+- **历史教训（2026-09-16，发布校验阶段 ENOENT）**：2026-09-03 的 codex-package 迁移把
+  `KINDS.codex` 从 `codex-bin` 换成 `codex-package-bin`，却没有同步发布链路。于是
+  `release:windows:canary` 打包、签名、冒烟全部成功后，在「本地发布校验」阶段读
+  `apps/codex-bin/win32-x64/.version` 直接 ENOENT 失败（macOS canary 同构，只是先被别的阻断挡住）。
+  它长期不可见有两个原因：干净 worktree 里 `apps/codex-bin` 不存在（构建产物不进 git），
+  且前面还有 promote 竞态与 API 配额两个更早的阻断点，任务走不到发布阶段。它只解释了"发不出去"，
+  **不能**解释"发出去了但客户端起不来"——后者是同一次迁移漏发的 `codexPackage` 段，见上一节。
 - `collectLocalRuntimeAssets` 在缺 `.version` 时必须报出**点名 runtime + 路径 + 补齐命令**的错误，
   不得抛裸 ENOENT（无上下文的 ENOENT 让这条链多花了一轮排查）。
 
@@ -170,6 +220,22 @@ Canary/Stable 应用 manifest，也不创建 GitHub tag；完整 release 必须�
   `node --test scripts/__tests__/github-release-pin.test.mjs scripts/__tests__/fetch-with-timeout.test.mjs scripts/__tests__/pi-update-layout.test.mjs scripts/__tests__/codex-single-pin-fallback.test.mjs`
 - 发布物 runtime 就位（改 `PUBLISHED_RUNTIME_KINDS` / `RUNTIME_DEFINITIONS` / `publish-desktop.mjs` 后必须跑）：
   `node --test scripts/__tests__/ensure-agent-binaries.test.mjs scripts/__tests__/meka-release-flow.test.mjs scripts/__tests__/codex-single-pin-fallback.test.mjs`
+- 应用 manifest 的 `codexPackage` 段（改 `runtime-release.mjs` 的
+  `DIR_DIST_RUNTIME_DEFINITIONS` / `RELEASE_RUNTIME_DEFINITIONS`、`release-lib.mjs` 的
+  `buildCanaryManifest`、`publish-desktop.mjs`、`reset-canary-desktop.mjs` 后必须跑）：
+  `node --test scripts/__tests__/codex-package-cdn-release.test.mjs scripts/__tests__/meka-release-flow.test.mjs`
+  （覆盖：pin 锚定与 fail closed、上传/幂等复用、字节数/sha256/同版本内容冲突必须失败、
+  manifest 缺 `codexPackage` 必须报错）。
+- 发版前 dry-run（不写 RustFS）：`pnpm release:win patch` 之前的
+  `publish-desktop.mjs --build-info <path>` 预览必须打印
+  `codex 目录分发 -> codexPackage <pin 版本> (codex-package/<ver>/<platform>/codex-package.tar.gz)`；
+  发布后必须从 CDN 回读 canary manifest 确认 `codexPackage` 段与 `codex` 段**同时存在**。
+- **定「manifest 字段缺失 → 启动失败」这类因果，不能只看静态事实**：2026-09-16 的定案方式是
+  「同一份打包产物 + 唯一变量」的真机受控实验——现场 `electron-forge package` 出应用，用
+  `XDT_CDN_BASE_URL`（`manifestService.getBaseUrl` 第一优先级）指向本地 mock CDN，两组 manifest
+  仅差目标字段，并在隔离 userData 里预置旧单文件 runtime 复刻现场；用户可见文案用 CDP
+  `Runtime.evaluate` 取 `document.body.innerText`。结论必须同时对上「main 日志」与「窗口真实文本」，
+  只有一条链路的推断不算定案（当时的失败路径连日志都没有，见上一节的补日志改动）。
 - 干净 checkout 复现（发布链路）：把 `apps/codex-bin/<platform>` 移走后
   `node scripts/ensure-agent-binaries.mjs --kinds=claude,codex-single,ripgrep --platform=<platform>`
   应把它补回，随后 `collectLocalRuntimeAssets('<platform>')` 必须成功。

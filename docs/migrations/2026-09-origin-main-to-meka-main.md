@@ -537,6 +537,76 @@ WL-4.1.6 已把该 pin 登记为清单项，阶段 C 实机验收必须核对。
       （本机命中兄弟 worktree 复用，零网络），随后收集得到
       `claudeCode 2.1.259 / codex 0.145.0 / ripgrep 15.1.0`。规则与契约见
       `docs/dev-rules/agent-runtime-release.md`「发布物 runtime ≠ 桌面端打包 runtime」。
+16. **canary 0.0.21「环境初始化失败」：发布链路漏发目录分发 codex runtime（2026-09-16 已修）**：
+    0.0.21 是本次同步后第一个 Meka 包（`bdc8397a7e` 带入了上游 `b43ee771ad`「use Codex package
+    in production」），桌面端 `agent-binaries` 的 codex 消费契约随之变成
+    `manifestField: 'codexPackage'` + `artifactKind: 'tar-gz-dir'` + `installSubdir: 'codex-package'`；
+    而 `runtime-release.mjs` 的 `RUNTIME_DEFINITIONS` 与 `release-lib.mjs` 的
+    `buildCanaryManifest` 仍只发**单文件** `codex`（全仓 `grep codexPackage` 只命中客户端源码与
+    测试，没有任何发布方）。于是 0.0.20 → 0.0.21 热更链路本身完全成功（下载、校验、替换、
+    `LAUNCH VERIFIED`），新进程也起来了，但启动环境检查的 codex 段直接 `asset_missing`：
+    `factory.ts` 取 vendor asset **先于**本地回退，本机既有的 `userData/codex/0.145.0`（旧单文件
+    布局）也救不回来 → `check-environment` `allPassed=false` → splash「环境初始化失败」。
+    **影响面与不可自愈性**：所有已升到 0.0.21 的客户端；splash 失败态下 renderer 不会消费
+    Phase 1 的 relaunch 结论（`EnvCheckContext` 在 Phase 2 失败即 `return`），后台轮询即便下好
+    补丁也被 `autoRelaunchOnIdle` 默认 `false` 拦住 → 只能重装安装包。诊断代价高，因为这条路径
+    **一行日志都没有**（实测日志里只有 `manifestService` 拉取成功与退出时的
+    `Codex binary not provisioned`）。
+    **已处理**：
+    - `apps/desktop/scripts/ci/runtime-release.mjs` 新增 `DIR_DIST_RUNTIME_DEFINITIONS`
+      （`codexPackage` → `codex-package/<pinVer>/<platform>/codex-package.tar.gz`）与
+      `RELEASE_RUNTIME_DEFINITIONS`（单文件三个 + 目录分发一个的发布侧齐备判据）、
+      `collectPinnedDirDistAssets` / `publishDirDistAssets`。字节直接取
+      `tools/codex-package/latest.json` 的 pin 直链并按 pin sha256 校验（不重打本地目录，
+      保证可复现、不依赖发版机本地落位），失败即中止；上传后回读 `size` + `metadata.sha256`。
+    - `release-lib.mjs` 的 `buildCanaryManifest` 写入 `manifest.codexPackage`，**同时保留**
+      `manifest.codex`：≤0.0.20 客户端与 MCPRouter 的 linux runtime manifest 仍读单文件，
+      修复版必须向下兼容，否则老用户会在热更到修复版之前就被同一处卡死。
+    - `publish-desktop.mjs` 接线并在 dry-run 打印 `codexPackage`；`reset-canary-desktop.mjs`
+      把 `codexPackage` 纳入 stable 引用对象校验（`allowMissing` 兼容 0.0.20 及更早 stable）。
+    - 客户端补齐诊断：`agent-binaries.prepareViaCdn` 失败时 `log.warn` 带 `manifest field`；
+      `bootstrap-electron` 的 `check-environment` 在每个失败分支 `console.error` 带 stage。
+    - **验证（真机受控实验，2026-09-16）**：仅靠静态事实不足以定案，本次按
+      「同一份打包产物 + 唯一变量」做了真机复现。用当前 HEAD 现场 `electron-forge package`
+      出 `CindyMeka.exe`，用产品自带的 `XDT_CDN_BASE_URL` 覆盖（`manifestService.getBaseUrl`
+      第一优先级）指向本地 mock CDN；两次运行都在隔离 userData 里预置旧单文件
+      `codex/0.145.0` + `.verified`（复刻出问题机器的真实状态）。两组 manifest 除
+      `codexPackage` 外完全一致：
+
+      | 组 | manifest 字段 | main 日志 | 窗口实际渲染文本（CDP 读 `document.body.innerText`） |
+      | --- | --- | --- | --- |
+      | A | `app,claudeCode,codex,ripgrep`（= 线上 0.0.21 真实形态） | `codex runtime not ready: asset_missing` → `check-environment failed at codex` | **「环境初始化失败」/「重试」** |
+      | B | A + `codexPackage` | 不再有 codex 失败（仅 pi 按设计跳过） | **「欢迎使用 Cindy」/ 登录页** |
+
+      另有三条独立证据：① 真实入口 `agent-binaries/index.ts` 的 `prepare('codex')`：
+      A → `asset_missing`；B → `ready:true`，真实下载 141 MB、sha256 校验通过、解压出
+      `codex-package/0.153.4/bin/codex.exe`。② A 组运行期间 `userData/codex/0.145.0` 始终存在
+      却仍失败，实证「asset 查找先于本地回退、旧本机 runtime 救不回来」。③ 发布链路用真实 pin
+      从 GitHub 拉 `codex-package-x86_64-pc-windows-msvc.tar.gz`（`size` 与 `sha256` 均与 pin
+      一致），`publishDirDistAssets` 上传 + 回读校验通过，产出的 manifest 含
+      `app,claudeCode,codex,ripgrep,codexPackage` 五段；删掉 `codexPackage` 后
+      `assertRuntimeManifestAssets` 按预期报错。
+      **追加（消除“验证字节 ≠ 生产字节”的覆盖缺口）**：B 组最初用的是从本地
+      `apps/codex-package-bin` **重打**的归档（含安装工具补写的 `.manifest`/`.version` 等标记），
+      而发布链路下发的是**上游原始包**——两者字节不同。为闭环，改为把**真实 pin 原始包**
+      （`sha256` 与 pin 一致）作为 mock CDN 的 `codexPackage` 资产重跑真机 B 组：应用正常进入
+      登录页，`codex-package/0.153.4/bin/codex.exe` 落盘 295 MB，日志无
+      `check-environment failed`，`available: claude-code, codex`（仅 pi 按设计缺省）。
+      即「生产将下发的字节 → 客户端可用」这条链也有真机证据。同时复跑 A 组确认诊断仍在：
+      `codex runtime not ready: asset_missing (manifest field "codexPackage")`。
+      离线单测：`node --test scripts/__tests__/codex-package-cdn-release.test.mjs`（新增，
+      5/5：pin 锚定与 fail closed、上传/幂等复用、字节数/sha256/同版本内容冲突必须失败、
+      manifest 齐备判据）与 `scripts/__tests__/meka-release-flow.test.mjs`（24/24，
+      `canary manifest records every published runtime asset` 已扩到 `codexPackage`）。
+      规则见 `docs/dev-rules/agent-runtime-release.md`「应用 manifest 必须同时记录 codex 与
+      codexPackage」，发布自检见 `docs/migrations/cindy-meka-release.md` §3。
+    - **未验证**：真实 RustFS 发布（`release:* --execute`）与「老版本 → 修复版」真实热更验收
+      需发版机凭证与授权，本次未执行。**已升到 0.0.21 的用户无法自愈，必须重装修复版安装包**
+      （这是修复版必须发 installer 的原因）。
+    - **发布前置条件（关键，别漏）**：`cindy-meka-cicd` 的 release pipeline 固定
+      `kapt66/cindy:meka/main` HEAD 后执行发布入口。因此本修复**必须先进 `meka/main`**，
+      否则流水线产出的包仍然是缺 `codexPackage` 的坏 manifest——「改了代码但线上照旧失败」
+      就是这个原因，不是另一个根因。
 
 ## 7. 验证记录
 
@@ -566,6 +636,11 @@ WL-4.1.6 已把该 pin 登记为清单项，阶段 C 实机验收必须核对。
 | 限流下端到端安装（§6.14） | 把 `api.github.com` 强制成 403 后跑真实 `ensureBinary`（清空缓存，从 pin 直链下载） | codex 与 pi 均 `RESULT ok`：下载完成 + `sha256 ok` + 落位成功（`.version` = pin 版本） |
 | 发布物 runtime 就位（§6.15） | 移走 `apps/codex-bin/win32-x64` 后跑 `ensure-agent-binaries --kinds=claude,codex-single,ripgrep --platform=win32-x64` | 补回 `codex-single @ 0.145.0`（兄弟 worktree 复用，零网络）；随后 `collectLocalRuntimeAssets('win32-x64')` 成功返回 claudeCode 2.1.259 / codex 0.145.0 / ripgrep 15.1.0 |
 | 发布物 runtime 缺失报错（§6.15） | 对缺 `.version` 的 `collectLocalRuntimeAssets` 断言 | 报出「点名 runtime + 缺失路径 + 补齐命令」，不再抛裸 ENOENT（`codex-single-pin-fallback.test.mjs` 3/3） |
+| **codexPackage 真机受控实验（§6.16）** | 现场 `electron-forge package` 出的 `CindyMeka.exe` + `XDT_CDN_BASE_URL` 指向本地 mock CDN，两组 manifest 仅差 `codexPackage`，均在隔离 userData 预置旧单文件 `codex/0.145.0` | A（无该段）= 日志 `check-environment failed at codex: asset_missing`，窗口文本 **「环境初始化失败」/「重试」**；B（有该段）= 登录页。唯一变量，因果确定 |
+| **codexPackage 真机（上游原始包字节，§6.16）** | 同上，但 mock CDN 的 `codexPackage` 换成**真实 pin 原始包**（`sha256`/`size` 与 pin 一致） | 应用进入登录页；`codex-package/0.153.4/bin/codex.exe` 落盘 295 MB；日志无 `check-environment failed`、`available: claude-code, codex`。消除“验证字节 ≠ 生产字节”缺口；A 组复跑诊断仍报 `asset_missing (manifest field "codexPackage")` |
+| **codexPackage 真实入口 prepare（§6.16）** | 真实 `agent-binaries/index.ts` 的 `prepare('codex')` | A → `asset_missing`；B → `ready:true`，真实下载 141 MB + sha256 校验 + 解压出 `codex-package/0.153.4/bin/codex.exe` |
+| **codexPackage 发布链路（§6.16）** | 真实 pin 拉 GitHub `codex-package-x86_64-pc-windows-msvc.tar.gz` → `publishDirDistAssets` → `buildCanaryManifest` | `size`/`sha256` 与 pin 完全一致；上传 + 回读校验通过；manifest 含 `codexPackage`；删该段后 `assertRuntimeManifestAssets` 按预期报错 |
+| **codexPackage 单测（§6.16）** | `node --test scripts/__tests__/codex-package-cdn-release.test.mjs scripts/__tests__/meka-release-flow.test.mjs` | 5/5 + 24/24 全通过 |
 | 提交门禁复跑（§7 注） | tier 同命令复跑 `apps/desktop` unit（`--pool=forks --maxWorkers=8` + 同组 `--exclude`） | **2609/2609 文件通过、35708 通过 / 0 失败**：确认 `unsupportedBrowserPrompt.test.ts` 的 20s 超时是负载型临界超时，非本次回归 |
 | 提交前门禁（相关单测） | `pnpm test:unit:related`（PATH 前置 Git Bash） | 见下方 §7.2 本轮记录 |
 | i18n | `pnpm check:i18n` | ✅ 五语 9946 key 全一致 |

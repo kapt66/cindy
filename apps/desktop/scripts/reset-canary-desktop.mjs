@@ -15,7 +15,7 @@ import {
   assertArtifactsUnreferenced,
   resetCanaryArtifactCandidates,
 } from './ci/reset-canary-lib.mjs';
-import { assertRuntimeManifestAssets } from './ci/runtime-release.mjs';
+import { assertRuntimeManifestAssets, RELEASE_RUNTIME_DEFINITIONS } from './ci/runtime-release.mjs';
 
 function parseArgs(argv) {
   const result = {
@@ -41,13 +41,19 @@ function parseArgs(argv) {
 }
 
 function referencedAssetKeys(manifest, platformKey) {
-  assertRuntimeManifestAssets(manifest, platformKey, { allowMissing: ['ripgrep'] });
+  // ripgrep 字段引入前的历史 stable 没有它；codexPackage（目录分发）同理——0.0.20 及更早的
+  // stable manifest 只有单文件 codex。两者缺失都不该阻断 reset，但**存在就必须校验**。
+  assertRuntimeManifestAssets(manifest, platformKey, {
+    allowMissing: ['ripgrep', 'codexPackage'],
+    definitions: RELEASE_RUNTIME_DEFINITIONS,
+  });
   return [
     manifest.app.installer.file,
     manifest.app.hotfix.file,
     manifest.claudeCode.file,
     manifest.codex.file,
     ...(manifest.ripgrep?.file ? [manifest.ripgrep.file] : []),
+    ...(manifest.codexPackage?.file ? [manifest.codexPackage.file] : []),
   ];
 }
 
@@ -128,7 +134,7 @@ async function main() {
     }
     console.log(`已删除: ${key}`);
   }
-  console.log('仅清理被撤回版本的 installer/hotfix；Claude/Codex/ripgrep runtime 不参与删除。');
+  console.log('仅清理被撤回版本的 installer/hotfix；Claude/Codex/ripgrep/codex-package runtime 不参与删除。');
   console.log('已安装更高 canary 的客户端不会自动降级。');
 }
 

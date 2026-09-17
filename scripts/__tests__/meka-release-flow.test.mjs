@@ -43,6 +43,7 @@ import {
 } from "../../apps/desktop/scripts/ci/reset-canary-lib.mjs";
 import {
   AGENT_RUNTIME_DEFINITIONS,
+  RELEASE_RUNTIME_DEFINITIONS,
   assertRuntimeManifestAssets,
   buildAgentRuntimeManifest,
   collectLocalRuntimeAssets,
@@ -558,6 +559,14 @@ test("canary manifest records every published runtime asset", () => {
     claudeCode: runtimeAsset("claude-code", "claude.exe"),
     codex: runtimeAsset("codex", "codex.exe"),
     ripgrep: runtimeAsset("ripgrep", "rg.exe"),
+    // 桌面端 ≥0.0.21 启动读的是这个目录分发段（单文件 codex 只留给 MCPRouter 的
+    // linux runtime manifest 与 ≤0.0.20 客户端）。漏发它会直接卡在「环境初始化失败」。
+    codexPackage: {
+      version: "1.2.3",
+      file: "codex-package/1.2.3/win32-x64/codex-package.tar.gz",
+      sha256: "c".repeat(64),
+      size: 456,
+    },
   };
   const manifest = buildCanaryManifest(
     {
@@ -579,6 +588,22 @@ test("canary manifest records every published runtime asset", () => {
   assert.deepEqual(manifest.claudeCode, runtimeAssets.claudeCode);
   assert.deepEqual(manifest.codex, runtimeAssets.codex);
   assert.deepEqual(manifest.ripgrep, runtimeAssets.ripgrep);
+  assert.deepEqual(manifest.codexPackage, runtimeAssets.codexPackage);
+
+  // 发布侧守卫：canary manifest 少任何一个桌面端启动必需的 runtime 段都必须失败，
+  // 而不是发出去让用户卡在 splash。
+  assertRuntimeManifestAssets(manifest, "win32-x64", {
+    definitions: RELEASE_RUNTIME_DEFINITIONS,
+  });
+  const withoutPackage = { ...manifest };
+  delete withoutPackage.codexPackage;
+  assert.throws(
+    () =>
+      assertRuntimeManifestAssets(withoutPackage, "win32-x64", {
+        definitions: RELEASE_RUNTIME_DEFINITIONS,
+      }),
+    /codexPackage/,
+  );
 });
 
 test("published endpoint manifest keeps CN services but does not inherit Cindy updates", () => {

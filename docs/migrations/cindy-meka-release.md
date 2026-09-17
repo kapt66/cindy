@@ -91,8 +91,8 @@ CDN 必须允许匿名 `GET` / `HEAD`，RustFS 凭证不能暴露给客户端。
 
 发版机已经固定使用 Cindy Meka 的 CN/RustFS 配置时，优先使用与旧 Meka 一致的快捷
 入口。`release:*` 会完成“打包、签名、本地复核、上传版本化产物、写 canary manifest”
-整个流程，并保证 manifest 同时包含首启环境初始化所需的 Claude Code、Codex 与
-ripgrep 运行时资产；它不是仅打包命令。
+整个流程，并保证 manifest 同时包含首启环境初始化所需的 Claude Code、Codex（单文件
+与目录分发 `codexPackage` 两种形态）、ripgrep 运行时资产；它不是仅打包命令。
 
 ```powershell
 # Windows x64：明确版本或按远端 canary/stable 基线自动 bump
@@ -182,6 +182,19 @@ manifest 写入顺序不做调整。
 对象已删除。修复仅恢复正式版三层基址解析，不改 updater 替换/回滚状态机、构建发布分发
 步骤或用户数据库。
 
+2026-09-16 的 Windows 0.0.21 Canary 是**同一句用户可见症状、完全不同的根因**：热更本身
+成功、新进程也起来了，但 manifest 缺 `codexPackage` 段（桌面端 ≥0.0.21 读的是目录分发的
+codex runtime），`check-environment` 的 codex 段直接 `asset_missing` → `allPassed=false`
+→「环境初始化失败」。已更新到 0.0.21 的客户端**无法自愈**（splash 失败态不会消费 Phase 1
+的 relaunch 结论，且 `autoRelaunchOnIdle` 默认关闭），只能重装安装包；未更新的 ≤0.0.20
+客户端仍读单文件 `codex`，所以修复版 manifest 必须**同时**保留 `codex` 与 `codexPackage`。
+发布链路修复与不变量见 `docs/dev-rules/agent-runtime-release.md`「应用 manifest 必须同时
+记录 codex 与 codexPackage」。
+
+**发布自检（本次修复后，每次发布都要做）**：canary 发布后必须从 CDN 回读 manifest，确认
+`claudeCode` / `codex` / `codexPackage` / `ripgrep` 四段齐全，再让老版本做热更验收；
+只确认「热更成功、进程起来」不足以判定发布可用。
+
 产物位于：
 
 ```text
@@ -214,14 +227,20 @@ pnpm --filter desktop release:publish -- `
 1. `claude-code/<version>/<platformKey>/claude[.exe].gz`
 2. `codex/<version>/<platformKey>/codex[.exe].gz`
 3. `ripgrep/<version>/<platformKey>/rg[.exe].gz`
-4. `app/<platformKey>/<installer>`
-5. `hotfix/<platformKey>/<zip>`
-6. `manifest-<platformKey>-canary.json`
+4. `codex-package/<version>/<platformKey>/codex-package.tar.gz`（桌面端启动消费的目录分发
+   runtime，字节取自 `tools/codex-package/latest.json` 的 pin 直链，版本号是 **pin 版本**
+   而非应用版本；上传后回读 `size` + `metadata.sha256` 复核）
+5. `app/<platformKey>/<installer>`
+6. `hotfix/<platformKey>/<zip>`
+7. `endpoint.json`
+8. `manifest-<platformKey>-canary.json`
 
 版本化对象不可覆盖。runtime manifest 同时记录 gzip 与裸二进制 SHA-256；同一路径存在
-相同内容时幂等复用，内容不同则中止。macOS 受控 CI 会在依赖安装前直接下载 ripgrep
-官方静态归档并校验官方 `.sha256`，避开 GitHub Releases API 限流；发布完成后，客户端
-仍可从上述 RustFS 路径 fallback。官方静态资产网络不可用时，macOS CI 也会尝试同一
+相同内容时幂等复用，内容不同则中止。目录分发对象同样不可覆盖（同版本内容不同即中止），
+其 manifest 段只有 `version`/`file`/`sha256`/`size`（没有裸二进制哈希：它是整包）。
+macOS 受控 CI 会在依赖安装前直接下载 ripgrep 官方静态归档并校验官方 `.sha256`，
+避开 GitHub Releases API 限流；发布完成后，客户端仍可从上述 RustFS 路径 fallback。
+官方静态资产网络不可用时，macOS CI 也会尝试同一
 fallback，但仅接受 manifest 中 pin、规范路径、gzip SHA-256 与裸二进制 SHA-256 都完整
 匹配的对象。不得在管理界面手工覆盖同版本 runtime 对象。
 manifest 写入后脚本会从 CDN 带 cache-bust 重新读取并核对全文哈希。
@@ -267,14 +286,14 @@ pnpm release:reset-canary:mac
 pnpm release:reset-canary:mac -- --yes
 ```
 
-脚本先校验 stable manifest 引用的 installer、hotfix、Claude、Codex，以及新 manifest
-中的 ripgrep 资产仍存在；历史 stable 没有 ripgrep 字段时仍允许 reset，以便兼容该字段
-引入前的发布。
+脚本先校验 stable manifest 引用的 installer、hotfix、Claude、Codex、`codexPackage`
+（目录分发），以及新 manifest 中的 ripgrep 资产仍存在；历史 stable 没有 ripgrep 或
+`codexPackage` 字段时仍允许 reset（字段存在则必须校验），以便兼容 0.0.20 及更早的发布。
 当前 canary 存在时按“版本 + manifest 全文 SHA256”写入
 `back-up/canary/<version>/<sha256>/manifest-<platformKey>.json`，随后把 stable manifest
 全文写到 canary 指针并反向校验，最后删除被撤回 canary 版本的 installer 与 hotfix，
 并逐项 HEAD 确认已不存在。删除前会确认目标路径不再被 stable 或 reset 后的 canary
-引用；同版本仍被引用时拒绝删除。Claude/Codex/ripgrep runtime 始终不参与清理。
+引用；同版本仍被引用时拒绝删除。Claude/Codex/ripgrep/codex-package runtime 始终不参与清理。
 
 脚本会扫描当前架构的 app/hotfix 目录，并把版本号高于 stable 的标准 Cindy Meka
 installer/hotfix 视为待撤回 canary 产物。因此即使 canary 指针已经先行对齐 stable，
@@ -301,6 +320,10 @@ pnpm --filter desktop release:rollback -- `
 
 ## 7. 发布前验收
 
+- **manifest 段齐备（本次修复后，每次发布都要做）**：从公开 CDN 回读 canary manifest，
+  确认 `claudeCode` / `codex` / `codexPackage` / `ripgrep` 四段齐全，且每段 `file` 都能匿名
+  `GET`/`HEAD` 到。只确认「热更成功、进程起来」不足以判定发布可用——0.0.21 就是在这条
+  判据上漏过去的（热更与新进程都正常，缺 `codexPackage` 导致启动即「环境初始化失败」）。
 - Windows：安装包签名、包内 exe 签名、旧版 → canary 热更、启动与卸载。
 - Windows 图标变更：热更替换并验证新进程启动后，确认开始菜单、运行中任务栏按钮与
   悬浮缩略图均显示新图标；更新器会发送 `SHCNE_ASSOCCHANGED` 使 Shell 图标／关联缓存

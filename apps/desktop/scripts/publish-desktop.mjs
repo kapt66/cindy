@@ -19,8 +19,12 @@ import {
 import { createMekaReleaseStorage } from './ci/release-storage.mjs';
 import { resolveMekaS3Config } from './ci/release-regions.mjs';
 import {
+  DIR_DIST_RUNTIME_DEFINITIONS,
+  RELEASE_RUNTIME_DEFINITIONS,
   assertRuntimeManifestAssets,
   collectLocalRuntimeAssets,
+  collectPinnedDirDistAssets,
+  publishDirDistAssets,
   publishRuntimeAssets,
 } from './ci/runtime-release.mjs';
 import { ensurePublishedRuntimes } from '../../../scripts/ensure-agent-binaries.mjs';
@@ -66,6 +70,9 @@ async function main() {
   // 会在读 apps/<dir>/<platform>/.version 时 ENOENT（2026-09-16 canary 的失败点）。
   await ensurePublishedRuntimes(release.platformKey);
   const localRuntimeAssets = collectLocalRuntimeAssets(release.platformKey);
+  // 桌面端启动真正消费的 codex 是**目录分发**（manifest.codexPackage）；它直接复用
+  // pin 记录的上游官方整包，不依赖发版机本地 apps/codex-package-bin 的落位状态。
+  const dirDistAssets = collectPinnedDirDistAssets(release.platformKey);
   const endpointManifestText = buildPublishedEndpointManifest(
     fs.readFileSync(endpointManifestPath(release.region), 'utf8'),
   );
@@ -86,6 +93,10 @@ async function main() {
       `Codex ${localRuntimeAssets.codex.version}, ` +
       `ripgrep ${localRuntimeAssets.ripgrep.version}`,
   );
+  console.log(
+    `  codex 目录分发 -> codexPackage ${dirDistAssets.codexPackage.version} ` +
+      `(${dirDistAssets.codexPackage.file})`,
+  );
 
   if (!args.execute) {
     console.log('\n本地校验通过；未写入 RustFS。确认后追加 --execute。');
@@ -100,18 +111,27 @@ async function main() {
   assertPublishVersionOrder(release.version, canary?.json, stable?.json);
 
   const baseManifest = canary?.json ?? stable?.json;
+  const runtimeOutputDir = path.join(path.dirname(release.buildInfoPath), 'runtime');
   const runtime = await publishRuntimeAssets(
     storage,
     localRuntimeAssets,
     baseManifest,
-    path.join(path.dirname(release.buildInfoPath), 'runtime'),
+    runtimeOutputDir,
+  );
+  const dirDist = await publishDirDistAssets(
+    storage,
+    dirDistAssets,
+    baseManifest,
+    runtimeOutputDir,
   );
   const manifest = buildCanaryManifest(baseManifest, release, {
     releaseNotes,
     requireRelogin: args.requireRelogin,
-    runtimeAssets: runtime.manifestAssets,
+    runtimeAssets: { ...runtime.manifestAssets, ...dirDist.manifestAssets },
   });
-  assertRuntimeManifestAssets(manifest, release.platformKey);
+  assertRuntimeManifestAssets(manifest, release.platformKey, {
+    definitions: RELEASE_RUNTIME_DEFINITIONS,
+  });
   const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
   const localManifestPath = path.join(path.dirname(release.buildInfoPath), canaryKey);
   fs.writeFileSync(localManifestPath, manifestText);
@@ -132,6 +152,7 @@ async function main() {
   console.log(`  claude:    ${runtime.results.claudeCode}`);
   console.log(`  codex:     ${runtime.results.codex}`);
   console.log(`  ripgrep:   ${runtime.results.ripgrep}`);
+  console.log(`  codexPackage: ${dirDist.results.codexPackage}`);
   console.log(`  installer: ${storage.cdnUrl(installerKey)}`);
   console.log(`  hotfix:    ${storage.cdnUrl(hotfixKey)}`);
   console.log(`  endpoints: ${storage.cdnUrl('endpoint.json')}`);
