@@ -20,6 +20,16 @@
 - 运行时需要持久化秘密时，复用现有 Main／宿主管理的 credential store 或 Electron
   `safeStorage` 边界。不要新增自定义明文凭证文件，也不要把秘密下放给 Renderer、插件
   或不受信任页面。
+- 可信 Node Worker 的显式例外：`node.secretBindings[].oauthSecret` 只能引用本插件
+  已声明的 OAuth key。Host 根据本次 `authAccount`（省略时为默认账号）刷新并注入
+  短期 access token；不得注入 refresh token、返回 Renderer/Agent、写日志或落盘。
+  Worker 启动第三方 CLI 时仅用该次子进程环境传递，不修改全局环境或复用他账号配置。
+  这是高权限 Node 的受审查信任边界，不是系统沙箱或对恶意 Worker 的隔离保证。
+  实现与回归见 [nodeRuntimeBroker.ts](../../apps/desktop/src/main/cindy-brain/nodeRuntimeBroker.ts)
+  和 [nodeRuntimeBroker.test.ts](../../apps/desktop/src/main/cindy-brain/__tests__/nodeRuntimeBroker.test.ts)。
+- 插件自定义的账号昵称、展示偏好和业务配置属于插件数据，使用现有隔离 `/kv`，
+  不扩充 Host OAuth 账号模型、凭证库或专用接口。插件按账号 ID 合并这些数据用于展示
+  和选择账号；传给 Host 的授权身份仍是账号 ID，不能用昵称替代。
 - access token 等只需短期使用的秘密优先保留在内存中。日志、错误、遥测和调试输出不得
   包含凭证明文、完整鉴权头或可直接复用的授权材料。
 - MCP/远程工具返回值在进入 Agent、任务记录或 rollout 前也属于日志边界。MCPRouter 代理必须
@@ -30,6 +40,20 @@
   只用于恢复 CN / Global 产品能力选择；登出或强制重登清除认证会话时必须同步清除。
 - 测试只使用明显无效的假凭证，不读取或复制开发者真实的 `HOME`、Agent home、
   Electron userData 或系统凭证目录。
+
+## Linux Hyprland / Omarchy 凭证后端
+
+- Desktop 在 Electron `ready` 之前为 Hyprland 默认选择 `gnome-libsecret`，避免桌面
+  自动识别失败导致登录回调收到令牌后无法加密保存。桌面身份依次取非空的
+  `XDG_CURRENT_DESKTOP`、`XDG_SESSION_DESKTOP`、`DESKTOP_SESSION`；其他桌面保持
+  Electron 原有选择。实现见
+  [linuxPasswordStore.ts](../../apps/desktop/src/main/linuxPasswordStore.ts)，回归见
+  [linuxPasswordStore.test.ts](../../apps/desktop/src/main/__tests__/linuxPasswordStore.test.ts)。
+- 显式 `--password-store` 优先于此默认值。系统仍需提供可用且已解锁的 Secret Service
+  （例如 GNOME Keyring）；此修复不安装或解锁钥匙串，也不新增明文降级。现有仅限开发版的
+  `XDT_DEV_SAFE_STORAGE_BASIC=1` 调试行为保持不变。
+- 旧版临时处理：完全退出 Cindy 后运行 `cindy --password-store=gnome-libsecret`。
+  实机验收需覆盖登录、退出应用后正常启动仍保持登录，以及 `cindy://` 回调启动路径。
 
 ## macOS safeStorage 钥匙串条目
 

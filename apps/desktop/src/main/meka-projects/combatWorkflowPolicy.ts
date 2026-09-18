@@ -26,6 +26,7 @@ import {
 } from './combatServerCapabilityState.js';
 import { parseMcprRemoteHostId, type MekaRouterInstance } from '../../shared/meka-router.js';
 import { getMekaP4SettingsService, getMekaRouterService } from '../meka-settings/ipc.js';
+import { classifyRemoteSessionTransport } from '../maker-host/remote-session-routing.js';
 import { probeRemoteCodexCapability } from '../maker-host/mcpr-codex-capability.js';
 import { probeRemoteClaudeCapability } from '../maker-host/mcpr-claude-capability.js';
 
@@ -1381,9 +1382,14 @@ function combatServerDispatchRequest(context: HostToolExecutionContext): {
     requestedWorkerAgent === 'claude-code' || requestedWorkerAgent === 'codex'
       ? requestedWorkerAgent
       : undefined;
+  // 授权门:只有 MCPRouter(`mcpr:`)远端目标才可能是本通路的服务器只读 Worker。
+  // `remoteHostId` 来自 `text()`(恒为 string, 空值是 `''`), 分类器对空值返回
+  // 'local', 因此 `!== 'mcpr'` 与旧的前缀判定逐分支等价, 判定不变;
+  // 畸形的 `mcpr:` 仍留在 MCPRouter 错误路径, 不会降级成 SSH host。
   if (
     !isModuleFirstCombatServerExplorationTask(task) ||
-    (target.tool === 'create_worker' && !remoteHostId.startsWith('mcpr:'))
+    (target.tool === 'create_worker'
+      && classifyRemoteSessionTransport(remoteHostId) !== 'mcpr')
   ) {
     return null;
   }

@@ -95,6 +95,7 @@ export async function list(
 
 export async function create(body?: {
   id?: string;
+  title?: string;
   workingDir?: string;
   workspaceKind?: WorkspaceKind;
   model?: string;
@@ -117,10 +118,17 @@ export async function create(body?: {
    * 让新会话与「会话内切来源」行为一致(首个请求即走对供应商)。
    */
   providerId?: string | null;
+  /** Meka 项目/角色绑定与正式事项:落 sessions 的 meka_project_id / meka_role_id / is_formal /
+   *  formal_*(WL-11.3)。按 (mekaProjectId, mekaRoleId) 归属,不按 workingDir。 */
   mekaProjectId?: string | null;
   mekaRoleId?: string | null;
   isFormal?: boolean;
   formal?: FormalSessionData | null;
+  /**
+   * Cindy Make code task marker. Main only accepts it for the managed source
+   * checkout; the persisted source later drives the `cindy_make` tool injection.
+   */
+  source?: 'cindy-make';
 }): Promise<Session> {
   return wrap(window.electronAPI.localDb.sessions.create(body));
 }

@@ -1,6 +1,8 @@
+import { botRosterLabel } from '../../../shared/botCreation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  ArrowLeft,
   Bot,
   Copy,
   Eye,
@@ -9,7 +11,7 @@ import {
   Search,
   Trash2,
 } from 'lucide-react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { projectDraftSessionTitle } from '@cindy/maker-shared/session-title';
 
@@ -25,9 +27,12 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { useAgentIslandActivityMap } from '@/state/agentIslandActivity';
 import { useSessionRunningStatus } from '@/hooks/useSessionRunningStatus';
+import { useActiveMainView } from '@/hooks/useActiveMainView';
 import { sendSessionEventNotification } from '@/lib/sessionEventNotification';
 import { useSidebarCollapsedState, useRegisterSidebarUpper } from '../feature-context';
+import { SidebarIconButton } from '@/components/sidebar/SidebarIconButton';
 import { useRemoteBots } from './useRemoteBots';
+import { useDeviceLinkDeviceList } from '@/features/device-link/useDeviceLinkDeviceList';
 import { remoteBotKey, isRemoteBotUnread } from './remoteBotRoster';
 import { BotConnectionStatus } from './BotConnectionStatus';
 import { BotAvatar } from './BotAvatar';
@@ -40,7 +45,7 @@ import {
   formatBotUnreadBadge,
 } from './botListDisplay';
 import { subscribeBotReadState } from './botReadState';
-import { partitionBotRoster } from './botRosterDisplay';
+import { botDeviceLabel, partitionBotRoster } from './botRosterDisplay';
 import {
   canonicalBotSessionId,
   duplicateBotProfile,
@@ -65,10 +70,18 @@ const UNREAD_BADGE_CLASS =
   'flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-[var(--bot-unread-bg)] px-1 text-10 font-medium tabular-nums leading-none text-[var(--bot-unread-fg)]';
 
 function BotsSidebarContent() {
+  const { navigateToView } = useActiveMainView();
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const { pathname } = useLocation();
   const { botId, sessionId, deviceId } = useParams();
   const remoteBots = useRemoteBots();
+  const devices = useDeviceLinkDeviceList();
+  const self = devices?.find((device) => device.isSelf);
+  const rosterDevices = [
+    ...(self ? [self] : []),
+    ...remoteBots.map((bot) => ({ deviceId: bot.deviceId, name: bot.deviceName })),
+  ];
   const bots = useBotProfiles();
   const unreadByBotId = useBotUnreadCounts();
   const rosterBots = bots.filter((bot) => bot.status !== 'archived');
@@ -112,14 +125,14 @@ function BotsSidebarContent() {
     完成、失败、待回复都没有系统通知。
   */
   const islandActivity = useAgentIslandActivityMap();
-  const isBotWorking = (bot: BotProfile): boolean => {
+  const botRunningActivity = (bot: BotProfile) => {
     // 委派干活发生在子任务,不在主任务。只看 canonical 的话,目标伙伴侧栏会一直是
     // 静默的,发起方却在等 —— 这正是「目标侧执行过程黑洞」在列表上的样子。
     const canonicalSessionId = canonicalBotSessionId(bot);
-    if (canonicalSessionId && islandActivity.get(canonicalSessionId)?.phase === 'running') {
-      return true;
-    }
-    return bot.sessions.some((session) => islandActivity.get(session.id)?.phase === 'running');
+    const canonicalActivity = canonicalSessionId ? islandActivity.get(canonicalSessionId) : undefined;
+    if (canonicalActivity?.phase === 'running') return canonicalActivity;
+    return bot.sessions.map((session) => islandActivity.get(session.id))
+      .find((activity) => activity?.phase === 'running');
   };
   const roster = partitionBotRoster(rosterBots, { query, showHidden });
   const showSearch = rosterBots.length + remoteBots.length >= 8 || query.trim().length > 0;
@@ -247,14 +260,14 @@ function BotsSidebarContent() {
   if (collapsed) {
     return (
       <div className="flex flex-col items-center gap-2 px-2 pt-3">
-        <button
-          type="button"
-          onClick={() => navigate('/bots')}
-          className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--sidebar-nav-text)] hover:bg-sidebar-item-hover"
-          aria-label={t('bots.title')}
-        >
-          <Bot size={16} />
-        </button>
+        {(pathname === '/bots' || pathname.startsWith('/bots/')) && (
+          <SidebarIconButton
+            icon={ArrowLeft}
+            label={t('sidebar.backToSessions')}
+            variant="rail"
+            onClick={() => navigateToView('cc-agent')}
+          />
+        )}
         <BotCreateMenu compact />
       </div>
     );
@@ -314,13 +327,15 @@ function BotsSidebarContent() {
               }).map((bot) => {
               if ('deviceId' in bot) {
                 const selected = bot.id === botId && bot.deviceId === deviceId;
+                const deviceName = botDeviceLabel({ deviceId: bot.deviceId, name: bot.deviceName }, rosterDevices);
                 return (
                   <button key={remoteBotKey(bot)} type="button" aria-current={selected ? 'page' : undefined}
                     onClick={() => navigate(`/bots/remote/${encodeURIComponent(bot.deviceId)}/${encodeURIComponent(bot.id)}`)}
                     className={cn('flex w-full min-w-0 items-center gap-2.5 rounded-xl px-2.5 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring', selected ? 'bg-sidebar-item-active text-sidebar-item-active-foreground' : 'text-[var(--sidebar-nav-text)] hover:bg-sidebar-item-hover')}>
-                    <span className="relative shrink-0"><BotAvatar bot={bot} size="md" /><BotConnectionStatus online={bot.online} deviceName={bot.deviceName} /></span>
+                    <span className="relative shrink-0"><BotAvatar bot={bot} size="md" /><BotConnectionStatus online={bot.online} deviceName={deviceName} /></span>
                     <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                       <span className="truncate text-14 leading-5">{bot.name}</span>
+                      <BotConnectionStatus inline online={bot.online} deviceName={deviceName} className={selected ? 'opacity-70' : 'text-[var(--text-secondary)]'} />
                       <span className="truncate text-12 leading-4 text-[var(--sidebar-list-muted)]">{bot.preview || bot.description || t('bots.list.startChat')}</span>
                     </span>
                     {!selected && isRemoteBotUnread(bot) ? <span aria-label={t('bots.list.unread', { count: 1 })} className="size-[7px] shrink-0 rounded-full bg-[var(--bot-unread-bg)]" /> : null}
@@ -334,9 +349,10 @@ function BotsSidebarContent() {
               // TA 正在回话时，第二行临时让位给「正在输入…」——聊天列表里这一行
               // 回答的是「TA 现在怎么样」，进行中比上一句说过什么更要紧。回合一
               // 结束就落回最新消息预览，不留痕。
-              const typing = isBotWorking(bot);
+              const activity = botRunningActivity(bot);
+              const typing = Boolean(activity);
               const subtitleText = typing
-                ? t('bots.list.typing')
+                ? activity?.compactDetail?.trim() || t('bots.list.typing')
                 : subtitle.kind === 'placeholder'
                   ? t('bots.list.startChat')
                   : subtitle.text;
@@ -386,9 +402,8 @@ function BotsSidebarContent() {
                     }}
                     className="flex min-w-0 flex-1 items-center gap-2.5 rounded-xl px-2.5 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                   >
-                    {/* 40px。28px 会让两行式行高塌成一行的观感——头像撑不住两行文字,
-                        整行读起来像一条被拉高的单行列表。 */}
-                    <span className="relative shrink-0"><BotAvatar bot={bot} size="md" /><BotConnectionStatus /></span>
+                    {/* Keep the existing avatar size alongside identity and message preview. */}
+                    <span className="relative shrink-0"><BotAvatar bot={bot} size="md" /><BotConnectionStatus activityLabel={typing ? subtitleText : undefined} /></span>
                     <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                       <span className="flex items-baseline gap-2">
                         {bot.pinnedAt ? (
@@ -403,9 +418,9 @@ function BotsSidebarContent() {
                             'min-w-0 flex-1 truncate text-14 leading-5',
                             unread > 0 ? 'font-medium' : 'font-normal',
                           )}
-                          title={bot.name}
+                          title={botRosterLabel(bot, bots)}
                         >
-                          {bot.name}
+                          {botRosterLabel(bot, bots)}
                         </span>
                         {/* 权限模式仍不在聊天列表挂警告；这里仅显示 Hermes 风格、
                             已持久化且需要用户处理的运行失败。 */}
@@ -417,6 +432,7 @@ function BotsSidebarContent() {
                           />
                         ) : null}
                       </span>
+                      {!typing && <BotConnectionStatus inline className={selected ? 'opacity-70' : 'text-[var(--text-secondary)]'} />}
                       <span className="flex min-w-0 items-center gap-2">
                         {/* 未读只强调名字与数字，预览保持次级，避免整行同时争抢注意力。 */}
                         <span
@@ -508,17 +524,21 @@ function BotsSidebarContent() {
                         <EyeOff size={14} className="mr-2" />
                         {t('bots.list.hide')}
                       </DropdownMenuItem>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem
-                        onSelect={() => {
-                          void duplicateBotProfile(bot.id).then((copy) =>
-                            navigate(`/bots/${copy.id}`),
-                          );
-                        }}
-                      >
-                        <Copy size={14} className="mr-2" />
-                        {t('bots.list.duplicate')}
-                      </DropdownMenuItem>
+                      {bot.templateId !== 'cindy' && (
+                        <>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            onSelect={() => {
+                              void duplicateBotProfile(bot.id).then((copy) =>
+                                navigate(`/bots/${copy.id}`),
+                              );
+                            }}
+                          >
+                            <Copy size={14} className="mr-2" />
+                            {t('bots.list.duplicate')}
+                          </DropdownMenuItem>
+                        </>
+                      )}
                       <DropdownMenuSeparator />
                       <DropdownMenuItem
                         className="text-[var(--text-danger)] focus:text-[var(--text-danger)]"
@@ -556,7 +576,7 @@ function BotsSidebarContent() {
                         >
                           <BotAvatar bot={bot} size="sm" />
                           <span className="min-w-0 flex-1 truncate text-13 font-medium">
-                            {bot.name}
+                            {botRosterLabel(bot, bots)}
                           </span>
                         </button>
                         <button
@@ -606,9 +626,9 @@ function BotsSidebarContent() {
                         <BotAvatar bot={bot} size="sm" className="opacity-70" />
                         <span
                           className="min-w-0 flex-1 truncate text-13 font-medium"
-                          title={bot.name}
+                          title={botRosterLabel(bot, bots)}
                         >
-                          {bot.name}
+                          {botRosterLabel(bot, bots)}
                         </span>
                       </button>
                       <button

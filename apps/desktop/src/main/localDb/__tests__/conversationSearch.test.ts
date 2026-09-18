@@ -98,6 +98,10 @@ function createSearchDb(): Database.Database {
       total_cost_is_approximate INTEGER NOT NULL DEFAULT 0,
       context_tokens INTEGER NOT NULL DEFAULT 0,
       context_window INTEGER NOT NULL DEFAULT 0,
+      -- 上游本轮新增列(drizzle 0108_context_window_runtime,nullable 无默认值)。
+      -- 手写夹具必须对齐真实 schema:本 tier 的 CI 不跑,上游自己也会漏,
+      -- 见 docs/migrations/2026-09-18-origin-main-to-meka-main.md §7.5。
+      context_window_runtime INTEGER,
       fast_mode INTEGER NOT NULL DEFAULT 0,
       plan_mode_enabled INTEGER NOT NULL DEFAULT 0,
       cleared_at INTEGER,

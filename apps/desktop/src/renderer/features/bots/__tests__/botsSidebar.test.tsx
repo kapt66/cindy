@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { ReactNode } from 'react';
+import { cloneElement, type ReactElement, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/hooks/useProviderOnboarding', () => ({
@@ -20,20 +20,26 @@ vi.mock('react-i18next', () => ({
 const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
   profiles: [] as unknown[],
+  remoteBots: [] as import('../remoteBotRoster').RemoteBot[],
+  devices: [] as Array<{ deviceId: string; name: string; isSelf: boolean }>,
   health: new Map<string, string>(),
   unread: {} as Record<string, number>,
   groupMessages: new Map<string, unknown[]>(),
   pathname: '/bots',
+  collapsed: false,
   refreshBotProfiles: vi.fn(),
   setBotHidden: vi.fn(async () => undefined),
   setBotPinned: vi.fn(async () => undefined),
   duplicateBotProfile: vi.fn(async () => ({ id: 'copy' })),
   registered: { node: null as ReactNode },
   /** 灵动岛活动镜像:sessionId -> phase。侧栏据此显示「正在输入…」。 */
-  islandActivity: new Map<string, { sessionId: string; phase: string }>(),
+  islandActivity: new Map<string, { sessionId: string; phase: string; compactDetail?: string }>(),
 }));
 
-vi.mock('../useRemoteBots', () => ({ useRemoteBots: () => [] }));
+vi.mock('../useRemoteBots', () => ({ useRemoteBots: () => mocks.remoteBots }));
+vi.mock('@/features/device-link/useDeviceLinkDeviceList', () => ({
+  useDeviceLinkDeviceList: () => mocks.devices,
+}));
 
 vi.mock('@/state/agentIslandActivity', () => ({
   useAgentIslandActivityMap: () => mocks.islandActivity,
@@ -48,11 +54,11 @@ vi.mock('@/hooks/useSessionRunningStatus', () => ({
 
 vi.mock('react-router-dom', () => ({
   useNavigate: () => mocks.navigate,
-  useLocation: () => ({ pathname: mocks.pathname }),
+  useLocation: () => ({ pathname: mocks.pathname, search: '', hash: '' }),
   useParams: () => ({}),
 }));
 vi.mock('../../feature-context', () => ({
-  useSidebarCollapsedState: () => false,
+  useSidebarCollapsedState: () => mocks.collapsed,
   useRegisterSidebarUpper: (node: ReactNode) => {
     mocks.registered.node = node;
   },
@@ -75,6 +81,8 @@ vi.mock('../BotDeleteDialog', () => ({
 }));
 
 import { BotsSidebar } from '../BotsSidebar';
+import { BotConnectionStatus } from '../BotConnectionStatus';
+import { MainViewHistoryContext, type MainViewHistory } from '@/contexts/MainViewHistoryContext';
 import { markBotRead, resetBotReadStateForTests } from '../botReadState';
 
 interface BotFixture {
@@ -128,7 +136,10 @@ beforeEach(() => {
   mocks.unread = {};
   mocks.groupMessages = new Map();
   mocks.pathname = '/bots';
+  mocks.collapsed = false;
   mocks.profiles = [];
+  mocks.remoteBots = [];
+  mocks.devices = [];
   mocks.registered.node = null;
   mocks.islandActivity = new Map();
   Object.defineProperty(window, 'electronAPI', {
@@ -153,6 +164,131 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+});
+
+describe('teammate host labels', () => {
+  it('shows only the remote device for same-name teammates and preserves remote routing', async () => {
+    mocks.profiles = [bot({ id: 'local-bot', name: 'Cindy', lastMessagePreview: 'Local preview' })];
+    mocks.devices = [{ deviceId: 'local-device', name: 'MBP-M5', isSelf: true }];
+    mocks.remoteBots = [{ id: 'remote-bot', deviceId: 'remote-device', deviceName: 'Mac-Studio',
+      name: 'Cindy', avatar: '🤖', avatarColor: 'violet', description: '', preview: 'Remote preview',
+      activityAt: 1, sessionId: 'remote-session', online: true }];
+    const view = await renderSidebar();
+    expect(screen.getByText('bots.remote.online')).toBeTruthy();
+    expect(view.container.innerHTML).not.toContain('MBP-M5');
+    expect(screen.queryByRole('img', { name: /bots.remote.online/ })).toBeNull();
+    expect(screen.getByText('bots.remote.online · Mac-Studio')).toBeTruthy();
+    expect(screen.getByText('Local preview')).toBeTruthy();
+    const remoteRow = screen.getByText('Remote preview').closest('button')!;
+    fireEvent.click(remoteRow);
+    expect(mocks.navigate).toHaveBeenCalledWith('/bots/remote/remote-device/remote-bot');
+
+    mocks.remoteBots = mocks.remoteBots.map((bot) => ({ ...bot, online: false, deviceName: ' ' }));
+    view.rerender(cloneElement(mocks.registered.node as ReactElement));
+    expect(screen.getByText('bots.remote.offline · remote-device')).toBeTruthy();
+    expect(screen.queryByText('bots.remote.offline · bots.remote.thisDevice')).toBeNull();
+  });
+
+  it('keeps local status free of device labels before and after directory updates', async () => {
+    mocks.profiles = [bot({ id: 'local-bot', name: 'Cindy' })];
+    const view = await renderSidebar();
+    expect(screen.getByText('bots.remote.online')).toBeTruthy();
+    expect(view.container.innerHTML).not.toContain('bots.remote.thisDevice');
+    expect(view.container.textContent).not.toContain(' · ');
+    mocks.devices = [{ deviceId: 'local-device', name: 'Renamed Mac', isSelf: true }];
+    view.rerender(cloneElement(mocks.registered.node as ReactElement));
+    expect(screen.getByText('bots.remote.online')).toBeTruthy();
+    expect(view.container.innerHTML).not.toContain('Renamed Mac');
+    expect(view.container.textContent).not.toContain(' · ');
+  });
+
+  it('disambiguates remote devices and updates their names without exposing the local host', async () => {
+    mocks.profiles = [bot({ id: 'local-bot', name: 'Cindy' })];
+    mocks.devices = [{ deviceId: 'local-device', name: 'Shared Mac', isSelf: true }];
+    mocks.remoteBots = ['host-a', 'host-b'].map((deviceId) => ({
+      id: 'remote-bot', deviceId, deviceName: 'Shared Mac', name: 'Cindy',
+      avatar: '🤖', avatarColor: 'violet', description: '', preview: '',
+      activityAt: 1, sessionId: 'remote-session', online: true,
+    }));
+    const view = await renderSidebar();
+    expect(screen.getByText('bots.remote.online · Shared Mac (host-a)')).toBeTruthy();
+    expect(screen.getByText('bots.remote.online · Shared Mac (host-b)')).toBeTruthy();
+    expect(view.container.innerHTML).not.toContain('local-device');
+    mocks.remoteBots = mocks.remoteBots.map((entry) => ({ ...entry, deviceName: entry.deviceId === 'host-a' ? 'Studio' : 'Mini' }));
+    view.rerender(cloneElement(mocks.registered.node as ReactElement));
+    expect(screen.getByText('bots.remote.online · Studio')).toBeTruthy();
+    expect(screen.getByText('bots.remote.online · Mini')).toBeTruthy();
+  });
+
+  it.each(['Thinking', 'Generating'])('preserves %s while hiding the local host and idle status', async (compactDetail) => {
+    mocks.profiles = [bot({ id: 'local-bot', name: 'Cindy', lastMessagePreview: 'Previous reply' })];
+    mocks.devices = [{ deviceId: 'local-device', name: 'MBP-M5', isSelf: true }];
+    mocks.islandActivity.set('local-bot-chat', { sessionId: 'local-bot-chat', phase: 'running', compactDetail });
+    const view = await renderSidebar();
+    expect(screen.getByText(compactDetail)).toBeTruthy();
+    expect(screen.queryByText('bots.remote.online')).toBeNull();
+    expect(view.container.innerHTML).not.toContain('MBP-M5');
+    expect(view.container.innerHTML).not.toContain('bots.remote.thisDevice');
+    expect(view.container.textContent).not.toContain(' · ');
+    expect(screen.queryByText('Previous reply')).toBeNull();
+    mocks.islandActivity.clear();
+    view.rerender(cloneElement(mocks.registered.node as ReactElement));
+    expect(screen.queryByText(compactDetail)).toBeNull();
+    expect(screen.getByText('bots.remote.online')).toBeTruthy();
+    expect(screen.getByText('Previous reply')).toBeTruthy();
+  });
+
+  it('retains delegated work and the existing typing fallback when detail is absent', async () => {
+    mocks.profiles = [{ ...bot({ id: 'local-bot', name: 'Cindy' }), sessions: [
+      { id: 'local-bot-chat', kind: 'chat' }, { id: 'delegated', kind: 'task' },
+    ] }];
+    mocks.islandActivity.set('delegated', { sessionId: 'delegated', phase: 'running', compactDetail: ' ' });
+    await renderSidebar();
+    expect(screen.getByText('bots.list.typing')).toBeTruthy();
+    expect(screen.queryByText('bots.remote.online')).toBeNull();
+  });
+
+  it('keeps offline status without a device name or a dangling separator', () => {
+    render(<BotConnectionStatus inline online={false} deviceName=" " activityLabel="Thinking" />);
+    expect(screen.getByText('bots.remote.offline').getAttribute('title')).toBe('bots.remote.offline');
+  });
+
+});
+
+describe('BotsSidebar rail return', () => {
+  it.each(['/plugins', '/settings', '/bots-other'])('hides the retained return entry on %s', async (path) => {
+    mocks.collapsed = true;
+    const view = await renderSidebar();
+    expect(screen.getByRole('button', { name: 'sidebar.backToSessions' })).toBeTruthy();
+
+    // The slot retains the same element after the bots feature unregisters.
+    mocks.pathname = path;
+    view.rerender(<div>{mocks.registered.node}</div>);
+    expect(screen.queryByRole('button', { name: 'sidebar.backToSessions' })).toBeNull();
+  });
+
+  it.each([
+    '/cc-agent/session-1?remoteHostId=host-1#message-2',
+    undefined,
+  ])('restores the remembered task route %s, falling back to the index', (taskPath) => {
+    mocks.collapsed = true;
+    mocks.pathname = '/bots/teammate-2';
+    const history: { current: MainViewHistory } = {
+      current: {
+        lastMatchedKey: 'bots',
+        paths: taskPath ? { 'cc-agent': taskPath } : {},
+      },
+    };
+    render(<BotsSidebar />);
+    render(
+      <MainViewHistoryContext.Provider value={history}>
+        {mocks.registered.node}
+      </MainViewHistoryContext.Provider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'sidebar.backToSessions' }));
+    expect(mocks.navigate).toHaveBeenCalledExactlyOnceWith(taskPath ?? '/cc-agent');
+  });
 });
 
 describe('BotsSidebar 「正在输入…」', () => {

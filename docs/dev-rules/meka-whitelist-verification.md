@@ -274,8 +274,19 @@ P4 项目根、插件面板呈现方式等 Meka 专属配置；这些配置落�
 ##### WL-4.1.2 四条路径都先分类（创建 / lazy resume / send 前置 / worker bootstrap）
 
 - **代码锚点**：`apps/desktop/src/main/maker-ipc/register.ts:7292-7294`（**MCPRouter guard 必须在 `ensureRemoteHostReady` 之前**）、`:7231-7257`、`:7467-7476`（turn-settled holder）、`:7401`；`apps/desktop/src/main/maker-host/index.ts:1225-1227`（SSH pool 查询与 `remote ssh host not ready` 原文）、`:1186-1228`
-- **自动化门禁**：`pnpm --filter desktop exec vitest run src/main/maker-ipc/__tests__/remoteSessionMakerMemory.test.ts src/main/maker-host/__tests__/remoteCcQueryFactory.test.ts`
-- **覆盖缺口**：现有断言是**源码文本序**（`indexOf`），无行为级测试真正驱动 `mcpr:` 穿过并断言 pool 未被触碰
+- **自动化门禁**：`pnpm --filter desktop exec vitest run src/main/maker-ipc/__tests__/remoteSessionMakerMemory.test.ts src/main/maker-host/__tests__/remoteCcQueryFactory.test.ts src/main/maker-host/__tests__/mcprRemoteFileOps.test.ts`
+- **覆盖缺口**：`register.ts` 侧仍以**源码文本序**（`indexOf`）断言为主。**但 2026-09-18 同步已补上行为级断言**：
+  `mcprRemoteFileOps.test.ts` 逐字提取真实的 `getRemoteAgentFileOps` 钩子体、注入 spy 依赖后 `new Function` **实际执行**，
+  断言 `mcpr:` 时被 mock 的 SSH pool `get` **零调用**且不抛 `remote SSH host …`，并含反向保护（SSH host 仍走 pool、
+  不在 pool 仍 fail loud）。该文件的 `stripTypeScriptSyntax` helper 用 **`ts.transpileModule`** 实现（不要回退成逐条正则，
+  否则实现侧写法一改就会假红）。
+  **已知未修复**：MCPRouter（`mcpr:`）**Claude** 会话的远端 Skill 发现仍不可用 —— 本轮的修复只是把误导性的
+  `remote SSH host "mcpr:…" not found in pool` 改成 `[MCPR_FILE_OPS_UNAVAILABLE]`（**归因修正，失败语义不变**），
+  真正的修复需要在 MCPRouter 侧为 cc-manager 协议新增 file-ops 能力（跨仓协议变更）。Codex 侧则已按 transport 分类
+  返回空 reader（下游 `hasCurrentTeammateInstructions` 的契约为「不可读 ⇒ 重新投递」，安全）。
+  **存量残留（本轮未修，需先定契约）**：`maker-host/index.ts` 的 `fingerprintSkillSource` / `readSkillSource`
+  仍是 SSH-only，Meka bot 跑在 MCPRouter **Codex** 会话且配了 Skill 时静态可达；修法取决于「降级为
+  `unavailableSkills`」还是「fail closed」的产品口径。
 - **实机验证**：MCPRouter Claude 任务**首次发送**（lazy create）＋ 重启 Desktop 后续聊（恢复路径），**两条都要走**
 - **历史回归**：2026-08-25 `LAZY_CREATE_FAILED: remote ssh host not ready: mcpr:<id>`
 
@@ -601,14 +612,19 @@ Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台。
 ### WL-10 模型可见性与模型目录
 
 **保护的不变量**：Meka 存量用户升级后**仍能看到合并前的可见模型集合**；显式 override
-永远最高优先；「恢复默认」路线继续跟随目录；补种后新增模型不自动开启；桌面 / IM / 远端
-模型列表使用**同一套有效开关**（初始化清单变化必须重新镜像给 main）。
+永远最高优先；「恢复默认」路线继续跟随目录；桌面 / IM / 远端模型列表使用**同一套有效开关**
+（override 表或初始化清单变化必须重新镜像给 main，两端不得出现不同口径）。
 
 **代码锚点**
-- `apps/desktop/src/renderer/state/modelVisibilityPrefs.ts`（`MEKA_UPGRADE_SEED_KEY_PREFIX`
-  一次性补种 + `mirrorToMain`）
+- `apps/desktop/src/renderer/state/modelVisibilityPrefs.ts`（`isModelEnabled` =
+  `显式 override ?? 当前目录 defaultEnabled`；`MEKA_UPGRADE_SEED_KEY_PREFIX` 一次性补种
+  留痕 + `mirrorToMain`）
+- `packages/model-providers/src/sections.ts`（`isModelVisible(override, defaultEnabled)` ——
+  两侧共用的**唯一**可见性决策纯函数）
 - `apps/desktop/src/main/localDb/modelDefaultsProfile.ts`（`profileOrigin` 定性）
-- `apps/desktop/src/main/maker-host/model-visibility-mirror.ts`（strict 模式）
+- `apps/desktop/src/main/maker-host/model-visibility-mirror.ts`（非 strict 策略：未知路线
+  `getModelVisibilityOverride` 返回 `undefined` ⇒ main 侧跟随目录；仅本地 override 表无法
+  解析时渲染进程才请求 `fallback: false` 失败关闭）
 - `apps/desktop/src/renderer/components/settings/UnifiedModelList.tsx`（行渲染只看准入轴）
 - `apps/desktop/src/renderer/components/new-chat/ModelSelector.tsx`
 - `packages/model-providers/src/unifiedSelection.ts`、`packages/model-providers/src/modelList.ts`
@@ -618,7 +634,37 @@ Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台。
 - `pnpm --filter desktop exec vitest run src/renderer/__tests__/unifiedModelList.test.ts src/renderer/__tests__/unifiedModelPanelRendering.test.ts`
 
 **实机验证**：用**合并前的既有 profile** 启动 → 新建任务草稿的模型选择器**非空**且与
-设置页开关一致 → IM `/model` 卡片列出的模型与应用内一致 → 手动关掉一个模型后重启仍保持关闭。
+设置页开关一致 → IM `/model` 卡片列出的模型与应用内一致（含目录后来新增的默认开模型）→
+手动关掉一个模型后重启仍保持关闭。
+
+**最终有效语义（2026-09-18 同步，用户裁决 A = 接纳上游）**
+- 可见性恒为 `显式 override ?? 当前目录 defaultEnabled`；初始化清单 `defaults`
+  **不再参与可见性判定**，目录后来新增的默认开模型会直接显示。**登记：这是接纳上游本轮语义
+  的结果**，也**取代了本条此前的「补种后新增模型不自动开启」表述** —— 该表述已过时。
+- 为什么这不违反上面的不变量：Meka 在上一轮同步**之前**的原生口径就是
+  `override ?? isModelVisible(undefined, model.defaultEnabled)`，与上游本轮语义**逐字相同**
+  （可复核的历史证据：`git show 053b000be7^:apps/desktop/src/renderer/state/modelVisibilityPrefs.ts`
+  与 `git show bb3f71d084:apps/desktop/src/renderer/state/modelVisibilityPrefs.ts` 的
+  `isModelEnabled` 都只有一句 `return isModelVisible(load()[keyOf(...)], model.defaultEnabled);`
+  —— 即「override ?? 目录 `defaultEnabled`」，本轮 `0f65d98231` 只是把同一函数拆成提前
+  return 的等价写法）。
+  所以「存量 Meka 用户升级后仍能看到合并前的可见集合」由**上游原生满足**；上一轮的补种
+  本来就是为这套语义当时缺失而打的补丁，而不是 Meka 需要长期固化的产品分歧。
+- Meka 一次性补种**仍然保留**（`MEKA_UPGRADE_SEED_KEY_PREFIX` +
+  `profilePrecedesVisibilityInitialization` + `needsMekaSeed`）：对「没有任何有效初始化
+  清单」的既有配置写一次性标记，并把升级那一刻的目录基线冻结进 `initialization.defaults`，
+  随后重新镜像整表。它的定位是**基线留痕 + 已初始化判定输入**（记录该配置升级时看到过什么、
+  供诊断与采纳合并），**不决定可见性**，也不覆盖显式 override。
+- 镜像与「恢复默认」都**不读** `defaults`：`mirrorToMain` 推的是
+  `effectiveMap(map) => ({ ...map })`（**override 表**）加上**不含 `fallback: false`** 的策略，
+  main 侧对未知 key 返回 `undefined` ⇒ 由共享 `isModelVisible` 回落目录 —— 这才是
+  IM `/model` 不为空的机制。若把 `defaults` 塞进快照或请求 `fallback: false`，就会退回
+  「无记录 ⇒ 整张清空」的上游旧语义（上一轮 P0 形态），故二者都不得做。「恢复默认」写的是
+  `followCatalogKeys`（点名路线跟随目录），与 `defaults` 无关。
+- 自动化证据：`modelVisibilityPrefs.test.ts` 的
+  `mirrors the seeded owner snapshot to main so IM /model is not left empty` 把渲染进程真正
+  推给 main 的 `(snapshot, policy)` 喂进**真实** `model-visibility-mirror`，端到端断言 main 侧
+  判定与应用内 `isModelEnabled` 逐条一致且未知路线 `undefined`（⇒ 非空）。
 
 **历史回归**：本轮同步 P0，存量用户选择器整张清空（§4.6 同上）。规则见
 [`configuration-and-overrides.md`](configuration-and-overrides.md) §2「Meka 谱系条款」。
@@ -763,6 +809,38 @@ Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台。
 
 **实机验证**：`pnpm audit:merge` 对历史事故提交 `01391448e9` 仍报出 `DROPPED`（含
 hook-control 相关丢失）—— 证明门禁不是空转。
+
+### WL-15 Meka 角色 Skill 注入必须走非 argv 载体
+
+**保护的不变量**：host 注入 Pi root 任务的文本会经 `--append-system-prompt` 作为**命令行参数**
+传给子进程，而命令行有平台硬上限（Windows `CreateProcess` 32767；上游保守预算 30,000，超限由
+`assertPiSpawnArgvFitsPlatform` 拦截并抛「项目里 Pi skills 太多」——**文案与真实原因无关**）。
+因此 **Meka 注入的任何大段静态文本（尤其是战斗总控 Skill 正文）都不得整篇内联进
+`userPrompt` / `runtimeConfig.systemPrompt`**，必须只注入「冻结正文的**唯一绝对路径** + 必须先完整
+读完该文件的指令」；路径必须落在运行期**已授权**的目录内（`snapshot.pluginPath` 已作为
+`nativeSkillPluginPath` 交给运行期）。语义不变：正文仍是该任务 revision 级冻结的唯一权威正文，
+仍然禁止探索/枚举其它 `SKILL.md`。
+
+- **代码锚点**：`apps/desktop/src/main/maker-ipc/mekaRuntimeInjection.ts:363-393`
+  （`combatControllerSkillPrompt`：`COMBAT_CONTROLLER_SKILL_ENTRY = 'skills/combat-skill-configuration/SKILL.md'`，
+  由 `path.join(snapshot.pluginPath, …)` 得到绝对路径；**不再拼接 `entry.contentBase64`**）；
+  `meka-projects/skillSnapshot.ts:265-320`（正文冻结落盘到
+  `<userData>/meka-skill-snapshots/revisions/<revision>/claude-plugin/…`，已按 digest 校验）；
+  `mekaRuntimeInjection.ts:481,590`（`opts.nativeSkillPluginPath = skillSnapshot.pluginPath` —— Agent 本就有权读该目录）；
+  上游守卫：`packages/maker-core/src/agents/pi/project-resource-cli.ts:163,177-186` 与
+  `packages/maker-core/src/agents/pi/index.ts:3739`（`--append-system-prompt`）/`:3749`（守卫调用）。
+- **自动化门禁**：`pnpm --filter desktop exec vitest run src/main/maker-ipc/__tests__/mekaRuntimeInjection.test.ts`
+  —— 用例 `injects the frozen combat controller Skill body into new and resumed combat tasks` 断言
+  ①prompt 含标记 `[SAGA2_COMBAT_CONTROLLER_SKILL]`、②含**冻结正文的绝对路径**、③含「必须先完整读完」指令、
+  ④**反向防线：正文不得出现**（`not.toContain('STATUS_THEN_TARGET_EXPORT')`，一旦有人改回内联即红）。
+- **实机验证**：`pnpm desktop:session-smoke` 的 **WL-11.4**（战斗角色真实跑完一轮并产出回复）
+  与 **WL-11.5**（角色上下文回显）—— 2026-09-18 修复后实测 **9/9 PASS**
+  （WL-11.4 `回复="收到"`；WL-11.5 `projectId=saga2 roleId=combat-development displayName="战斗开发"`）。
+  负向（**未验证**）：模型「没读该文件就执行」时行为会退化，尚无负向实机断言。
+- **历史回归**：2026-09-18 同步接纳上游新增的 argv 预算守卫后，战斗角色会话在 Windows 上
+  被拒（报文误指「项目 Pi skills 过多」，而实测项目 Pi 资源为 0）；实测 argv 30,497 vs 预算 30,000，
+  其中战斗正文 24,027 字符占 argv 78.8%。改走文件载体后 argv 降到约 6.5KB。
+  规则正文见 [`pi-harness.md`](pi-harness.md) 第 4 节不变量 12。
 
 ## 4. 最小自动化集合
 
@@ -1039,7 +1117,7 @@ lineage 撞号的处理、migration 文件本体不写注释）留在
 | WL-2.4 旧深链 `/meka-plugins` 重定向 | 无用例 |
 | WL-2.5 侧栏位次断言的覆盖面 | 只断言到 `ProjectsSection`，不含 `DialogueSection` 与 `SidebarTopNav` |
 | WL-3.1 `visibleMekaSessions` / `nonMeka*` 互斥 | 无直接覆盖 |
-| WL-4.1.2 `mcpr:` 早返回 | 仅源码文本序断言（`indexOf`），无行为级「pool 未被触碰」断言 |
+| WL-4.1.2 `mcpr:` 早返回 | **已部分补齐（2026-09-18）**：`src/main/maker-host/__tests__/mcprRemoteFileOps.test.ts` 已是行为级（真实执行钩子体 + 断言 SSH pool `get` 零调用 + 反向保护）；`register.ts` 侧仍为源码文本序 |
 | WL-4.1.3 SSH-only recovery 的 mcpr 过滤 | 无覆盖 |
 | WL-4.1.6 `mcprCodexCapability.test.ts` 的 bundle pin | mock 固定 `'0.0.7'`，**不随真实 bundle 漂移变红** |
 | WL-4.1.7 Codex `0.145.0` 最低版本 | 无显式版本比较断言（靠 capability endpoint 缺失副作用 fail closed） |

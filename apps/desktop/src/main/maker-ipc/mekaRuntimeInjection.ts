@@ -360,15 +360,35 @@ const COMBAT_EXECUTION_AUTHORIZATION_PROMPT = [
 const COMBAT_CONTROLLER_SKILL_ENTRY = 'skills/combat-skill-configuration/SKILL.md';
 const COMBAT_CONTROLLER_SKILL_MARKER = '[SAGA2_COMBAT_CONTROLLER_SKILL]';
 
+/**
+ * 战斗总控 Skill 的注入段。
+ *
+ * **只注入「冻结正文的绝对路径 + 必须先完整读完它」的指令，不注入正文本身。**
+ *
+ * 原因：host 注入的这段文本最终会经 pi 的 `--append-system-prompt` 作为**命令行参数**
+ * 传给子进程，而命令行有平台硬上限（Windows CreateProcess 32767 字符，上游守卫取
+ * 30000 的保守预算）。实测战斗总控 Skill 正文 24,027 字符，占该 prompt 的 80.5%、
+ * 占整个 argv 的 78.8% ⇒ 整篇内联会让 argv 从 ~6.5KB 涨到 30,497（预算 30,000），
+ * 于是战斗角色会话在 Windows 上被上游 `assertPiSpawnArgvFitsPlatform` 直接拒绝
+ * （报「项目里 Pi skills 太多」，与真实原因无关）。
+ * 证据：docs/migrations/2026-09-18-origin-main-to-meka-main.md §7.8.3 / §7.8.6。
+ *
+ * **语义不变**：正文仍是该任务 revision 级冻结的**唯一权威正文**，落在
+ * `snapshot.pluginPath`（该目录已作为 `nativeSkillPluginPath` 交给运行期，因此 Agent
+ * 本来就有权读它），只是把「Host 把正文塞进 prompt」换成「Host 给出唯一路径并要求先读
+ * 完」——仍然**禁止探索/枚举其它 SKILL.md**，也不允许用记忆或缓存里的旧版正文替代。
+ */
 function combatControllerSkillPrompt(snapshot: MekaSkillSnapshot | null): string | null {
   const entry = snapshot?.files.find((file) => file.relativePath === COMBAT_CONTROLLER_SKILL_ENTRY);
   if (!entry) return null;
-  const content = Buffer.from(entry.contentBase64, 'base64').toString('utf8').trim();
-  if (!content) return null;
+  const pluginPath = snapshot?.pluginPath;
+  if (!pluginPath) return null;
+  const frozenSkillPath = path.join(pluginPath, ...COMBAT_CONTROLLER_SKILL_ENTRY.split('/'));
   return [
     COMBAT_CONTROLLER_SKILL_MARKER,
-    '以下是当前任务冻结的唯一战斗总控 Skill 正文，由 Host 直接注入。按正文执行，不要再读取、枚举或发现任何 SKILL.md。',
-    content,
+    '当前任务冻结的唯一战斗总控 Skill 正文在下面这个文件里（Host 已按任务 revision 冻结，不要修改它）：',
+    frozenSkillPath,
+    '执行前必须先把该文件完整读完，再严格按正文执行。不要读取、枚举或发现任何其它 SKILL.md，也不要用记忆、缓存或旧版快照里的正文替代它。',
     '[/SAGA2_COMBAT_CONTROLLER_SKILL]',
   ].join('\n');
 }

@@ -94,6 +94,7 @@ import { isShareableMessage } from '@/session/shareSelectionStore';
 import {
   ShareMessageCheckbox,
   useCancelShareSelectionRowTap,
+  MessageBodyText,
 } from '@/session/ShareMessageCheckbox';
 import { SentInlineAtomBody } from '@/session/SentInlineAtomBody';
 import { selectableTextVerticalOffset } from '@/session/selectableTextAlignment';
@@ -686,6 +687,7 @@ export function MessageRenderer({
   canLoadEarlier,
   emptyTestID,
   bottomOverlayHeight,
+  contentBottomInset,
   isSessionStreaming,
   makerTurnRunning,
   continuationTurnClientId,
@@ -701,6 +703,8 @@ export function MessageRenderer({
   devRecycleItems = false,
 }: {
   bottomOverlayHeight?: number;
+  /** Floating composers reserve a stable tail gap while their expanded surface overlays history. */
+  contentBottomInset?: number;
   /** 顶部 chrome(绝对定位半透明工具栏)实测高度:内容顶部按此让位,详见 mobileMessageListTopPadding。 */
   topOverlayHeight?: number;
   focusedItemKey?: string | null;
@@ -1517,7 +1521,7 @@ export function MessageRenderer({
     lightboxImagesRef.current = next;
     return next;
   }, [galleryImages, imageLightboxOpen, payload]);
-  const bottomPadding = mobileMessageListBottomPadding(bottomOverlayHeight);
+  const bottomPadding = mobileMessageListBottomPadding(contentBottomInset ?? bottomOverlayHeight);
   const topPadding = mobileMessageListTopPadding(topOverlayHeight);
   listBottomPaddingRef.current = bottomPadding;
   listTopPaddingRef.current = topPadding;
@@ -5015,6 +5019,11 @@ function MarkdownBody({
     markdownImageCacheKey,
     onOpenPayload,
   ]);
+  const openMarkdownMedia = useMemo(() => onOpenPayload
+    ? (url: string, title: string, kind: 'video') => {
+      onOpenPayload(buildMediaPayload({ kind, url, title, previewable: false }, title));
+    }
+    : undefined, [onOpenPayload]);
   // Preserve the inline renderer while streaming or unrelated task metadata
   // changes; referenced task title changes still refresh every affected chip.
   const remoteSessions = useRemoteSessions();
@@ -5039,6 +5048,7 @@ function MarkdownBody({
         baseStyle,
         keyPrefix,
         onOpenImage: openMarkdownImage,
+        onOpenMedia: openMarkdownMedia,
         onOpenSessionLink,
         sessionReferenceDetails,
         sessionLinkTitles,
@@ -5048,7 +5058,7 @@ function MarkdownBody({
     ),
     // renderInline also reads translated fallback labels. Invalidate completed
     // memoized text blocks when useTranslation refreshes its bound translator.
-    [onOpenSessionLink, openMarkdownImage, sessionLinkTitles, sessionReferenceDetails, streaming, styles, t],
+    [onOpenSessionLink, openMarkdownImage, openMarkdownMedia, sessionLinkTitles, sessionReferenceDetails, streaming, styles, t],
   );
   const textRunGroupingOptions = Platform.OS === 'android'
     ? ANDROID_SELECTABLE_TEXT_RUN_GROUPING_OPTIONS
@@ -5566,6 +5576,7 @@ function renderInline(
     /** text_run 合并树里多个块共父,key 需要块级前缀防冲突。 */
     keyPrefix?: string;
     onOpenImage?: (url: string, alt?: string) => void;
+    onOpenMedia?: (url: string, title: string, kind: 'video') => void;
     onOpenPayload?: (payload: MessagePayload) => void;
     onOpenSessionLink?: (url: string) => void;
     sessionReferenceDetails?: Readonly<Record<string, string>>;
@@ -5576,7 +5587,7 @@ function renderInline(
     streaming?: boolean;
   } = {},
 ): ReactNode {
-  const SpanText = ctx.SpanText ?? Text;
+  const SpanText = ctx.SpanText ?? MessageBodyText;
   const openImage = ctx.onOpenImage ?? (ctx.onOpenPayload
     ? (url: string, alt?: string) => {
         const title = mobileMarkdownImageTitle(url, alt);
@@ -5591,6 +5602,21 @@ function renderInline(
     case 'text':
       return <SpanText key={spanKey(`text:${index}`)} style={ctx.baseStyle}>{inline.text}</SpanText>;
     case 'link': {
+      if (inline.managedMediaKind) {
+        const mediaKind = inline.managedMediaKind;
+        const openManagedMedia = ctx.onOpenMedia
+          ? () => ctx.onOpenMedia?.(inline.url, inline.text, mediaKind)
+          : undefined;
+        return (
+          <SpanText
+            key={spanKey(`media-link:${index}:${inline.url}`)}
+            onPress={openManagedMedia}
+            style={clickableInlineStyle(styles, openManagedMedia, ctx.baseStyle)}
+          >
+            {inline.text}
+          </SpanText>
+        );
+      }
       const session = parseSessionDeepLinkUrl(inline.url);
       if (session) {
         return (

@@ -180,6 +180,8 @@ describe('market Ghost session boundary', () => {
     // 只有确认旧进程退出，才切断旧市场的自动更新路由；等待失败时保留原路由，
     // 也不会尝试恢复第二份 resident 进程。
     expect(detachIndex).toBeGreaterThan(stopAndWaitIndex);
+    expect(helperBody.indexOf('if (isCurrent?.() === false)')).toBeGreaterThan(-1);
+    expect(helperBody.indexOf('if (isCurrent?.() === false)')).toBeLessThan(stopAndWaitIndex);
     expect(oauthLockIndex).toBeGreaterThan(detachIndex);
     expect(managerUpdateIndex).toBeGreaterThan(oauthLockIndex);
     expect(helperBody).toContain('marketLedger.restoreInstallation(');
@@ -193,20 +195,22 @@ describe('market Ghost session boundary', () => {
     expect(helperBody).not.toContain('GHOST_SOURCE_CONFLICT');
   });
 
-  it('runs the final market callback before both initial install and update placement', () => {
-    const installStart = source.indexOf('async function installOrUpdateMarketGhostPackageLocked(');
-    const installEnd = source.indexOf('\n}\n\ntype GhostUninstallLedgerCompletion', installStart);
+  it('forwards the first-install check into package placement and guards update entry', () => {
+    const installStart = source.indexOf(
+      'async function installOrUpdateMarketGhostPackageLocked(',
+    );
+    const installEnd = source.indexOf(
+      '\n}\n\ntype GhostUninstallLedgerCompletion',
+      installStart,
+    );
     const body = source.slice(installStart, installEnd);
     const initialBranch = body.slice(
       body.indexOf('if (!installed) {'),
       body.indexOf('const runtime = getGhostRuntime();'),
     );
 
-    expect(initialBranch.indexOf('expected.beforeCommitInLock?.();')).toBeGreaterThan(-1);
-    expect(initialBranch.indexOf('expected.beforeCommitInLock?.();')).toBeLessThan(
-      initialBranch.indexOf('await installAndDock('),
-    );
-    expect(body.match(/expected\.beforeCommitInLock\?\.\(\);/g)).toHaveLength(2);
+    expect(initialBranch).toContain('beforePackagePlacement: expected.beforeCommitInLock,');
+    expect(body.match(/expected\.beforeCommitInLock\?\.\(\);/g)).toHaveLength(1);
 
     const waitIndex = body.indexOf(
       'await getGhostNodeRuntimeBroker().stopAndWait(expected.ghostId);',

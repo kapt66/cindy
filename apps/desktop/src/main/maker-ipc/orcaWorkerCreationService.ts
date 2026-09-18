@@ -1,7 +1,9 @@
 import type { AgentKind } from '@cindy/maker-core';
 import type { AuthStrategy } from '@cindy/model-providers';
+import path from 'node:path';
 
 import { isCredentialModeSwitchBusyError } from '../maker-host/codex-credential-switch.js';
+import { classifyRemoteSessionTransport } from '../maker-host/remote-session-routing.js';
 import { isSubscriptionDirectModel } from '../../shared/subscriptionModels.js';
 import type { DispatchWorkerTaskResult, OrcaWorkerEffort, OrcaWorkerStatus } from './orcaTeamService.js';
 import type { MakerSessionCreateOpts } from './sessionRequest.js';
@@ -184,8 +186,13 @@ export interface OrcaWorkerCreateParams {
   model?: string;
   effort?: OrcaWorkerEffort;
   fast?: boolean;
-  /** Meka-only target fields. Main resolves them against P4 settings/project bindings. */
+  /**
+   * Worker 主机上的既有绝对目录。**Meka 目标字段与上游「显式目录」语义共用这一个字段**：
+   * 给出时按 Lead 类型分流（Meka / 显式 remote ⇒ 用 Host 解析出的注册表目标；否则走上游
+   * 本地目录继承），缺省则继承 Lead。Main 对 Meka 目标会按 P4 设置与项目绑定复核。
+   */
   workingDir?: string;
+  /** Meka-only target field. Main resolves it against P4 settings/project bindings. */
   remoteHostId?: string;
   /**
    * 显式选定的模型来源(标准模型选择面板的 per-worker 选择)。string = 显式来源,
@@ -223,6 +230,8 @@ export interface OrcaWorkerCreationDeps {
   >;
   getWorkerDefaults(agent: AgentKind): OrcaWorkerDefaultsSnapshot;
   getWorkerPermissionMode(): OrcaWorkerPermissionMode;
+  /** Validate existence and target project policy before reserving or bootstrapping. */
+  resolveWorkerWorkingDir(dir: string, lead: OrcaLeadSessionSnapshot): Promise<string>;
   getAvailableModels(agent: AgentKind): OrcaWorkerModelCapabilities[];
   /**
    * 从同一次 provider registry 读取构造 Worker 路由上下文。
@@ -715,6 +724,20 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
       };
     }
 
+    let workingDir = lead.workingDir ?? '';
+    if (params.workingDir !== undefined) {
+      const requested = typeof params.workingDir === 'string' ? params.workingDir : '';
+      const paths = lead.remoteHostId ? path.posix : path;
+      if (!requested || requested.length > 4096 || requested.includes('\0') || !paths.isAbsolute(requested)) {
+        return { ok: false, errorCode: 'INVALID_PARAMS', message: 'working_dir must be an existing absolute directory on the Worker host' };
+      }
+      try {
+        workingDir = await deps.resolveWorkerWorkingDir(requested, lead);
+      } catch {
+        return { ok: false, errorCode: 'INVALID_PARAMS', message: 'working_dir is unavailable or collaboration is disabled for that directory; no Worker was started' };
+      }
+    }
+
     // 轮 42:解除「SSH remote lead 禁 Pi worker」闸 —— 该闸写于 Pi SSH remote 能力
     // 落地之前(前提「PiAgent.startSession 对 remoteHostId 一律 NotSupportedError」
     // 已不成立, 现 remote pi 会话全链路可用)。worker 创建走通用 remote 路径:
@@ -845,8 +868,11 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
         ?? inheritedProvider?.id
         ?? (inheritedLeadProviderUnusable ? leadProviderId : defaultProviderId),
     };
+    // transport 分类只走唯一纯函数入口(remote-session-routing.ts);`mcpr:` 与 SSH
+    // host 是不同 transport, 判定必须与路由/凭证模式同一口径。
     const isRemoteMcprCodex =
-      params.agent === 'codex' && target.remoteHostId?.startsWith('mcpr:') === true;
+      params.agent === 'codex'
+      && classifyRemoteSessionTransport(target.remoteHostId) === 'mcpr';
     if (isRemoteMcprCodex) {
       if (!deps.readClaudeApiKey()) {
         return {
@@ -1076,12 +1102,31 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
         orcaWorkerSessionId: workerSessionId,
       };
 
+      // Meka: the Host resolver (`resolveWorkerTarget`) owns Worker target selection for
+      // Meka Lead sessions and for explicitly requested remote (MCPRouter) targets. Its
+      // registry values — not the model-supplied working_dir / remote_host_id — are what
+      // the Worker binds, and the Meka workspace kind stays so project/role persists.
+      // 上游的本地目录继承路径（显式目录 → project）仍适用于普通 project / dialogue Lead。
+      const usesHostResolvedTarget =
+        lead.workspaceKind === 'meka' || params.remoteHostId !== undefined;
+      const workerRemoteHostId = usesHostResolvedTarget
+        ? target.remoteHostId
+        : lead.remoteHostId ?? undefined;
+
       const workerOpts = deps.buildCreateOptsWithStderr({
         id: workerSessionId,
         agentKind: params.agent,
-        workingDir: target.workingDir,
-        workspaceKind: lead.workspaceKind,
-        ...(target.remoteHostId ? { remoteHostId: target.remoteHostId } : {}),
+        // 未指定目录时保留 Lead 的 workspace 语义（包括 dialogue 托管目录）。
+        // 显式选择目录才使用 project，并在 bootstrap 前完成校验。
+        workspaceKind: usesHostResolvedTarget
+          ? lead.workspaceKind
+          : params.workingDir === undefined
+            ? lead.workspaceKind
+            : 'project',
+        workingDir: usesHostResolvedTarget ? target.workingDir : workingDir,
+        // remote lead 的 worker 继承 remoteHostId:在同一台远端主机上 spawn,
+        // workingDir 在该远端校验；本地 lead 不带此字段（本地 worker）。
+        ...(workerRemoteHostId ? { remoteHostId: workerRemoteHostId } : {}),
         ...(lead.workspaceKind === 'meka' && lead.mekaProjectId && lead.mekaRoleId
           ? {
               mekaProjectId: lead.mekaProjectId,

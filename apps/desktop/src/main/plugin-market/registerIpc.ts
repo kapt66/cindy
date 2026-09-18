@@ -36,26 +36,22 @@ import { PluginMarketLedger } from './ledger.js';
 import { LocalIconRequestGate } from './localIconRequestGate.js';
 import { resolveMekaPluginMaxDownloadBytes } from './mekaDownloadPolicy.js';
 import {
+  getPluginMarketService as service,
   PluginMarketService,
   type PluginMarketSnapshotOptions,
 } from './service.js';
 
 const log = createLogger('plugin-market-ipc');
 let registered = false;
-let serviceSingleton: PluginMarketService | null = null;
-let mekaServiceSingleton: PluginMarketService | null = null;
 const REMOVAL_NOTICE_AVAILABLE_CHANNEL = 'plugin-market:removal-notice-available';
 const localIconRequestGate = new LocalIconRequestGate();
-
-function service(): PluginMarketService {
-  serviceSingleton ??= new PluginMarketService();
-  return serviceSingleton;
-}
+let mekaServiceSingleton: PluginMarketService | null = null;
 
 /**
  * Meka keeps its own market identity: a separate server API surface, a separate
  * installation ledger and its own download ceiling, and it never adopts legacy
  * installations or applies the upstream default-install set.
+ * Cindy 的目录页 / 后台对账 / Agent 调用继续共用上游 `getPluginMarketService()`。
  */
 function mekaService(): PluginMarketService {
   mekaServiceSingleton ??= new PluginMarketService(
@@ -92,7 +88,6 @@ function captureChannelLedger(expectedOwnerId?: string): PluginChannelLedger {
     ownerScopedUserDataPath('plugin-market', 'channels.v1.json'),
   );
 }
-
 function signalRemovalNoticeAvailable(): void {
   if (!service().hasPendingRemovalNotice()) return;
   sendToTrustedAppWindows(REMOVAL_NOTICE_AVAILABLE_CHANNEL, undefined);

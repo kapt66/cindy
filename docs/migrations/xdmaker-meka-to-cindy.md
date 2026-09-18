@@ -3185,6 +3185,15 @@ SAGA2 战斗配置的 `legacy_module_export_json` 成功回执现在由 Meka Uni
   `/model` 继续按空快照判成不显示，故在清单写入成功后重推一次。详见
   [`2026-09-origin-main-to-meka-main.md`](./2026-09-origin-main-to-meka-main.md) §4.6，
   以及 `docs/dev-rules/configuration-and-overrides.md` §2 的 Meka 谱系条款。
+  > **后续修订（2026-09-18 同步，用户裁决 A —— 本条部分表述已被取代）**：本轮同步接纳了
+  > 上游的可见性语义 `override ?? 目录 defaultEnabled`（初始化清单 `defaults` **不再参与
+  > 可见性判定**）。该语义**逐字等于 Meka 在本段所述那次同步之前**的原生口径，因此本节
+  > 的**首要不变量**（存量用户升级后仍看到合并前的可见集合）由上游原生满足，上面那起 P0
+  > 不会复现。补种机制**保留但已降级为「基线留痕」**：它写补种标记与 `initialization.defaults`
+  > 基线快照，**不参与可见性判定**；`effectiveMap` 现为恒等（`map => ({...map})`），故
+  > 「main 侧快照由 `defaults` 派生」与「新增模型不自动开启」两句**已过时**。现行事实以
+  > [`2026-09-18-origin-main-to-meka-main.md`](./2026-09-18-origin-main-to-meka-main.md)
+  > §6.1 D1 与 `docs/dev-rules/meka-whitelist-verification.md` 的 WL-10 为准。
 - **开发插件「从目录加载」整条链路失效（用户报告的产品回归，同属上游覆盖 Meka 分歧）**：
   上游本轮把 v2 的 `slots` 从 `validateGhostManifest` 的**归一化**产物里移除（只保留
   `tools` / `panel` / `notify` / `reveal` 等直接字段），而 Meka 的
@@ -3267,3 +3276,30 @@ Meka 开发插件链路、插件市场独立 endpoint/凭证、`edition` 运行�
 - 手测完成：在第 7、8 节标记结果和剩余问题。
 - S1 某一子模块获批迁移：明确列出子模块，不能把 S1 整体直接改成“已迁移”。
 - 最终提交：记录 commit/PR、完整门禁结果和真实升级验证版本。
+
+### 6.43 2026-09-18 上游同步：Pi argv 预算守卫拒绝战斗角色会话（已修，改注入载体）
+
+- **来源**：把 `origin/main`（`0f65d98231`）同步进 `meka/main` 时接纳了上游**新增**的
+  Pi spawn argv 守卫（`packages/maker-core/src/agents/pi/project-resource-cli.ts` 的
+  `assertPiSpawnArgvFitsPlatform`，Windows 保守预算 30,000 字符）——该文件与守卫在
+  `meka/main` 上**原本不存在**。
+- **现象**：战斗角色（`combat-development`）会话发送消息被拒，
+  `[maker-input-coordinator] code:'LAZY_CREATE_FAILED'`，报文为
+  「This project has too many Pi skills, prompts, or extensions to start a task」。
+- **真实原因（实测）**：该报文与项目 Skill 数量**无关**（实测项目 Pi 资源收集结果为 0）。
+  真实原因是 host 注入的 system prompt 经 `--append-system-prompt` 作为**命令行参数**传递，
+  而 Meka 把**战斗总控 Skill 正文（24,027 字符）整篇内联**进该 prompt ⇒ argv 30,497 超预算 30,000。
+- **修法**：`mekaRuntimeInjection.ts` 的 `combatControllerSkillPrompt()` 改为只注入
+  「冻结正文的**唯一绝对路径**（`snapshot.pluginPath` 下，已作为 `nativeSkillPluginPath` 授权给运行期）
+  + 必须先完整读完该文件的指令」，不再注入正文本身。**语义不变**：正文仍是该任务 revision 级
+  冻结的唯一权威正文，仍禁止探索/枚举其它 `SKILL.md`。argv 由 30,497 降至约 6.5KB。
+- **影响面**：仅战斗角色会话的 prompt 组成；`nativeSkillPluginPath`、技能快照 revision 契约、
+  角色级 MCP 与 workflow 均未改动。
+- **验证**：`mekaRuntimeInjection.test.ts` 30/30（含反向防线：正文不得出现在 prompt）；
+  `meka-projects` 连带 196 passed；**`pnpm desktop:session-smoke` 9/9 PASS**
+  （WL-11.4 `回复="收到"`、WL-11.5 角色上下文回显）；`pnpm desktop:ui-smoke` 15/15。
+- **未验证的残余风险**：模型「未读该文件即执行」时会退化，尚无负向实机断言。
+- **规则落点**：`docs/dev-rules/pi-harness.md` 第 4 节不变量 12（新增）；
+  白名单清单 **WL-15**（新增）；同步报告
+  [`2026-09-18-origin-main-to-meka-main.md`](./2026-09-18-origin-main-to-meka-main.md)
+  §7.8.3（发现）/§7.8.3.1（修复）/§7.8.6（精确测量）。

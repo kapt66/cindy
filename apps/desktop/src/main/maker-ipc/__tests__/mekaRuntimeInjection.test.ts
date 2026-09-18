@@ -525,8 +525,19 @@ describe('applyMekaRuntimeConfig', () => {
     });
 
     expect(opts.userPrompt).toContain('[SAGA2_COMBAT_CONTROLLER_SKILL]');
-    expect(opts.userPrompt).toContain('STATUS_THEN_TARGET_EXPORT');
-    expect(opts.userPrompt).toContain('不要再读取、枚举或发现任何 SKILL.md');
+    // 注入的是**冻结正文的绝对路径**，不是正文本身：正文经 `--append-system-prompt`
+    // 作为命令行参数传给 pi，整篇内联会在 Windows 上顶破上游的 argv 预算守卫
+    // （实测 24,027 字符 ⇒ argv 30,497 > 预算 30,000）。见
+    // docs/migrations/2026-09-18-origin-main-to-meka-main.md §7.8.3/§7.8.6。
+    // 实现用 path.join，Windows 下是反斜杠；断言前把实际值归一成正斜杠再比。
+    const normalizedPrompt = (opts.userPrompt ?? '').replace(/\\/g, '/');
+    expect(normalizedPrompt).toContain(
+      `${snapshot.pluginPath}/skills/combat-skill-configuration/SKILL.md`,
+    );
+    expect(opts.userPrompt).toContain('执行前必须先把该文件完整读完');
+    expect(opts.userPrompt).toContain('不要读取、枚举或发现任何其它 SKILL.md');
+    // 回归防线：正文**不得**再出现在 prompt 里（否则 argv 立刻回到超限状态）。
+    expect(opts.userPrompt).not.toContain('STATUS_THEN_TARGET_EXPORT');
 
     const resumed = baseOpts({
       userPrompt: '继续。',
@@ -540,7 +551,10 @@ describe('applyMekaRuntimeConfig', () => {
     await applyMekaRuntimeConfig(resumed, { materializeSkillSnapshot });
 
     expect(resumed.userPrompt).toContain('[SAGA2_COMBAT_CONTROLLER_SKILL]');
-    expect(resumed.userPrompt).toContain('STATUS_THEN_TARGET_EXPORT');
+    expect((resumed.userPrompt ?? '').replace(/\\/g, '/')).toContain(
+      `${snapshot.pluginPath}/skills/combat-skill-configuration/SKILL.md`,
+    );
+    expect(resumed.userPrompt).not.toContain('STATUS_THEN_TARGET_EXPORT');
     expect((resumed.userPrompt ?? '').match(/\[SAGA2_COMBAT_CONTROLLER_SKILL\]/g)?.length).toBe(1);
   });
 

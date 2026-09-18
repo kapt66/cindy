@@ -99,8 +99,10 @@ export const createWorkerSpecSchema = z.object({
   working_dir: z
     .string()
     .min(1)
+    .max(4096)
+    .refine((value) => value.trim().length > 0)
     .optional()
-    .describe('Meka Lead 创建本地 Worker 时可选：P4 根目录或设置中识别出的子目录绝对路径'),
+    .describe('Meka Lead 创建本地 Worker 时可选：P4 根目录或设置中识别出的子目录绝对路径。普通 Lead 也可传 Worker 所在主机上已存在的绝对工作目录；省略则继承 Lead。创建前校验并绑定，失败不回退；不创建目录或 Git worktree。'),
   remote_host_id: z
     .string()
     .min(1)
@@ -149,6 +151,7 @@ const DESCRIPTION = [
   '- remote_host_id: Meka Lead 创建远程 Worker 时传 `mcpr:<instanceId>`；传入后 working_dir 被忽略，远端工作区由 Main 按项目绑定解析。',
   '- execution_target: 返回 Worker 实际执行位置。远程请求必须核对 type=remote，禁止把本地回落误报成远程执行。',
   '- label: worker 短标识, 1-32 chars, 只能含字母、数字、-、_, 同 workflow 内唯一, 用于 switch_focus 定位',
+  '- working_dir: 可选，Worker 所在主机上已存在的绝对目录；创建前校验并绑定，省略继承 Lead，失败不回退。不创建目录或 Git worktree。',
   "- initial_task: 可选, 创建后立即派给 worker 的第一条消息；dispatch_outcome.wakeKind=queued 表示首条任务已成功入队(此时回传 queued_message_id, 被消费前可用 get_worker_queue_status / update_queued_message / cancel_queued_message / merge_queued_messages 管理)；dispatch_outcome.kind='session-dispatch' 且 dispatched=false，或 kind='host-send' 且 accepted=false，表示 worker 已创建但首条任务未送达 / 派发失败",
   '',
   '【硬边界】',
@@ -202,9 +205,9 @@ export function registerCreateWorkerTool(
         providerId: provider_id,
         effort,
         fast,
-        workingDir: working_dir,
         remoteHostId: remote_host_id,
         label,
+        ...(working_dir !== undefined ? { workingDir: working_dir } : {}),
         initialTask: initial_task,
       });
       if (!result.ok) {

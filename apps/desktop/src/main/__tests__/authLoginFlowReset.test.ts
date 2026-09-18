@@ -55,6 +55,34 @@ describe('auth login-flow reset', () => {
     expect(resetBody).toContain('activeAuthRealm = AUTH_REGION;');
   });
 
+  it('keeps successful personal credentials private until the region choice and excludes saved-account activation', () => {
+    const start = source.indexOf('async function finishFreshLogin(');
+    const finish = source.slice(start, source.indexOf('async function runLoginAction(', start));
+    expect(finish).toContain('discoverPersonalLoginOrganization(outcome.membership');
+    expect(finish.indexOf('assertLoginFlowCurrent(expectedLoginFlowEpoch)')).toBeGreaterThan(finish.indexOf('await discoverPersonalLoginOrganization'));
+    expect(finish).toContain('pendingPersonalLogin = { outcome, realm: personalRealm }');
+    expect(finish).toContain('personalLoginAvailable: true');
+    expect(finish).not.toContain('pendingAuthRealm = discovery.region');
+    expect(finish).toContain('return completeLogin(outcome, expectedLoginFlowEpoch)');
+    const lookupStart = source.indexOf('async function lookupOrganizationRealm(');
+    const lookup = source.slice(lookupStart, source.indexOf('async function completeLogin(', lookupStart));
+    expect(lookup).not.toContain('pendingAuthRealm =');
+    const continueStart = source.indexOf("if (action.type === 'cancel-sso-realm')");
+    const continueBody = source.slice(continueStart, source.indexOf('if (!providerConfig)', continueStart));
+    expect(continueBody).toContain('pendingAuthRealm = personal.realm');
+    expect(continueBody).toContain('await completeLogin(personal.outcome, actionLoginFlowEpoch)');
+    expect(continueBody).not.toContain('finishFreshLogin(');
+    const confirmStart = source.indexOf("if (action.type === 'confirm-sso-realm')");
+    const confirmBody = source.slice(confirmStart, continueStart);
+    expect(confirmBody.indexOf('pendingPersonalLogin = null')).toBeLessThan(confirmBody.indexOf('pendingAuthRealm = confirmation.targetRegion'));
+    expect(confirmBody).toContain('pendingAccountRefreshToken = null');
+    expect(source.slice(0, source.indexOf('async function acceptLoginOutcome('))).not.toContain('await finishFreshLogin(');
+    expect(source).toContain("await finishFreshLogin({ status: 'ok', ...pair }, actionLoginFlowEpoch)");
+    const reset = source.slice(source.indexOf('function resetLoginFlowState()'), source.indexOf('function clearAuth('));
+    expect(reset).toContain('pendingPersonalLogin = null');
+    expect(reset).toContain('handledLoginEmail = null');
+  });
+
   it('keeps the login-epoch guard and does not resurrect the legacy feishu token chain', () => {
     const completeStart = source.indexOf('async function completeLogin(');
     const completeEnd = source.indexOf('\n}\n\nasync function acceptLoginOutcome', completeStart);
@@ -115,7 +143,7 @@ describe('auth login-flow reset', () => {
     expect(actionPreamble).toContain("action.type === 'request-code'");
     expect(actionPreamble).toContain("action.type === 'verify-code'");
     expect(actionPreamble).toContain("action.type === 'start-browser' && action.kind === 'social'");
-    expect(actionPreamble).toContain('? AUTH_REGION');
+    expect(actionPreamble).toContain('? authRealmForEdition(activeProductEdition)');
     expect(actionPreamble).toContain('const client = createAuthClient(loginRealm);');
 
     const personalActionSetup = source.slice(
@@ -123,7 +151,7 @@ describe('auth login-flow reset', () => {
       source.indexOf("if (action.type === 'discover')", actionStart),
     );
     expect(personalActionSetup).toContain(
-      'if (startsBuildRealmFlow) pendingAuthRealm = loginRealm;',
+      "if (startsBuildRealmFlow && action.type !== 'request-code') pendingAuthRealm = loginRealm;",
     );
   });
 
@@ -137,9 +165,20 @@ describe('auth login-flow reset', () => {
 
     expect(source).toContain("if (action.type === 'select-realm') {");
     expect(source).toContain('state: await selectLoginRealm(action.realm)');
-    expect(source).toContain('const client = createAuthClient(pendingAuthRealm ?? selectedRealm);');
+    // 回归护栏：runLoginAction 只能有一个 client 绑定——上一轮同步在这里留下了第二个
+    // `const client`，源码形态断言曾把这个语法错误一起固化。
+    const actionSection = source.slice(source.indexOf('async function runLoginAction('));
+    const actionBody = actionSection.slice(0, actionSection.indexOf('\n}\n'));
+    expect(actionBody.match(/const client = createAuthClient\(/g) ?? []).toHaveLength(1);
+    expect(actionBody).toContain('const client = createAuthClient(loginRealm);');
     expect(source).toContain('activeProductEdition = realm;');
     expect(source).toContain('if (discovery.region !== selectedRealm)');
+    // 上游在本次同步里新引入的 4 处「回退打包区域」写法必须保持为运行期 edition，
+    // 否则登录页切区对个人登录/验证码链路静默失效（WL-5.6）。
+    expect(source).toContain('buildRegion: loginRealm,');
+    expect(source).toContain('if (region !== loginRealm) {');
+    expect(source).toContain('pendingAuthRealm = loginRealm;');
+    expect(source).toContain('const personalRealm = pendingAuthRealm ?? authRealmForEdition(activeProductEdition);');
   });
 
   it('defaults the auth realm to Global and keeps dev/CN auth semantics explicit', () => {
@@ -149,6 +188,24 @@ describe('auth login-flow reset', () => {
     expect(clientEndpointsSource).toContain(
       "BUILD_VARIANT === 'cn' || BUILD_VARIANT === 'dev' ? 'cn' : 'global'",
     );
+
+  });
+
+  it('keeps cross-region email choices gated and preserves SSO after failed personal code sending', () => {
+    const discover = source.slice(
+      source.indexOf("if (action.type === 'discover') {"),
+      source.indexOf("if (action.type === 'discover-sso-org') {"),
+    );
+    expect(discover).toContain('discoverEmailLogin(action.email');
+    expect(discover.indexOf('discoveredMethods = [];')).toBeLessThan(discover.indexOf('await discoverEmailLogin'));
+    expect(discover).toContain('discoverOrganizationRealm(domain, actionLoginFlowEpoch)');
+    expect(discover).toContain('pendingAuthRealm = region;');
+    expect(discover.indexOf("type: 'realm-switch-required'")).toBeLessThan(discover.indexOf('discoveredMethods = methods;'));
+    expect(source).toContain("email: confirmation.email ?? ''");
+    const requestStart = source.indexOf("if (action.type === 'request-code') {");
+    const request = source.slice(requestStart, source.indexOf("if (action.type === 'verify-code') {", requestStart));
+    expect(request.indexOf('pendingAuthRealm = loginRealm;')).toBeGreaterThan(request.indexOf('await client.requestCode('));
+    expect(request).toContain('discoveredMethods = [];');
   });
 
   it('does not leave expired private tickets on a screen that can only reuse them', () => {

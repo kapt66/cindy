@@ -1,3 +1,5 @@
+import { classifyRemoteSessionTransport } from '../maker-host/remote-session-routing.js';
+
 const COMBAT_WORKFLOW = 'saga2-combat-development-v1';
 export const COMBAT_SERVER_EXPLORATION_MARKER = '[SAGA2_SERVER_EXPLORATION_READ_ONLY]';
 /**
@@ -88,11 +90,14 @@ export function beginCombatServerCapabilityDispatch(input: {
   const leadSessionId = input.leadSessionId?.trim();
   const options = input.vendorOptions as CombatVendorOptions;
   const remoteHostId = input.remoteHostId?.trim() ?? '';
+  // 唯一分类入口(remote-session-routing.ts)。`remoteHostId` 这里恒为 string
+  // (`?? ''`), 分类器对空值返回 'local', 故 `!== 'mcpr'` 与旧的前缀判定逐分支
+  // 等价; 畸形 `mcpr:` 仍走 MCPRouter 错误路径。
   if (
     !leadSessionId ||
     !isCombatLead(options) ||
     !isModuleFirstCombatServerExplorationTask(input.task) ||
-    !remoteHostId.startsWith('mcpr:')
+    classifyRemoteSessionTransport(remoteHostId) !== 'mcpr'
   ) {
     return false;
   }

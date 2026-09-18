@@ -1230,6 +1230,7 @@ export const Method = {
   SkillsExtraRootsSet: 'skills/extraRoots/set',
   ThreadStart: 'thread/start',
   ThreadResume: 'thread/resume',
+  ThreadInjectItems: 'thread/inject_items',
   ThreadFork: 'thread/fork',
   ThreadRollback: 'thread/rollback',
   ThreadTurnsList: 'thread/turns/list',

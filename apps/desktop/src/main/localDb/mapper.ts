@@ -360,6 +360,7 @@ export function sessionCreateToRow(
   id: string,
   body: {
     id?: string;
+    title?: string;
     workingDir?: string;
     workspaceKind?: WorkspaceKind;
     model?: string;
@@ -381,7 +382,8 @@ export function sessionCreateToRow(
      * create 由 renderer 透传用户在草稿里选定的来源,使新会话首个请求就走对供应商。
      */
     providerId?: string | null;
-    source?: 'bot';
+    /** Main-owned purposes only; the renderer create IPC validates which values it accepts. */
+    source?: 'bot' | 'cindy-make';
     /** Creation-only Meka project/role binding. */
     mekaProjectId?: string | null;
     mekaRoleId?: string | null;
@@ -400,7 +402,10 @@ export function sessionCreateToRow(
     : null;
   return {
     id,
-    title: DEFAULT_DRAFT_SESSION_TITLE,
+    title:
+      typeof body?.title === 'string' && body.title.trim().length > 0
+        ? body.title.trim()
+        : DEFAULT_DRAFT_SESSION_TITLE,
     workingDir: normalizeWorkingDirForStorage(body?.workingDir),
     workspaceKind,
     mekaProjectId,

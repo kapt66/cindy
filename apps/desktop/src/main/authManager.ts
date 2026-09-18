@@ -23,6 +23,8 @@ import { machineIdSync } from 'node-machine-id';
 import {
   AuthApiError,
   CindyAuthClient,
+  discoverEmailLogin,
+  discoverPersonalLoginOrganization,
   discoverSsoOrgRealm,
   parseAccountDeletionReceiptRecord,
   parseAuthSessionRecord,
@@ -421,6 +423,12 @@ const deviceId = process.env.XDT_DEVICE_ID_OVERRIDE?.trim() || machineIdSync();
 let loginFlowState: AuthFlowState | null = null;
 let providerConfig: ProviderConfig | null = null;
 let discoveredMethods: LoginMethod[] = [];
+// These live only within the current fresh-login flow; no credentials reach Renderer.
+let handledLoginEmail: string | null = null;
+let pendingPersonalLogin: {
+  outcome: Extract<LoginOutcome, { status: 'ok' }>;
+  realm: AuthRegion;
+} | null = null;
 // Account token 仅在一次登录的 Membership 选择阶段存活；兑换 resource token
 // 后立即清空，不持久化、不续期，也不参与业务请求或正常登出。
 let pendingAccountToken: string | null = null;
@@ -3515,6 +3523,8 @@ function clearPerAccountIntegrationsInBackground(): void {
 
 /** Clear renderer-safe login progress and all main-only login tickets. */
 function resetLoginFlowState(): void {
+  handledLoginEmail = null;
+  pendingPersonalLogin = null;
   loginFlowState = null;
   providerConfig = null;
   discoveredMethods = [];
@@ -4910,6 +4920,8 @@ async function loadLoginProviders(
   expectedLoginFlowEpoch = loginFlowEpoch,
   realm: AuthRegion = authRealmForEdition(activeProductEdition),
 ): Promise<AuthFlowState> {
+  handledLoginEmail = null;
+  pendingPersonalLogin = null;
   discoveredMethods = [];
   pendingAccountToken = null;
   pendingAccountRefreshToken = null;
@@ -4948,11 +4960,23 @@ async function discoverOrganizationRealm(
 ) {
   // 新的一次组织发现不得复用上一轮成功结果；只有本轮双区判定成功后才重新冻结。
   pendingAuthRealm = null;
+  const discovery = await lookupOrganizationRealm(org, expectedLoginFlowEpoch, selectedRealm);
+  assertLoginFlowCurrent(expectedLoginFlowEpoch);
+  pendingAuthRealm = discovery.region;
+  return discovery;
+}
+
+/** Read-only realm lookup also serves optional hints after successful personal authentication. */
+async function lookupOrganizationRealm(
+  org: string,
+  expectedLoginFlowEpoch: number,
+  // Meka 运行期切区(WL-5.6)：单区回退路径必须用它当时的服务区，而不是打包区域常量。
+  selectedRealm: AuthRegion = authRealmForEdition(activeProductEdition),
+) {
   const realmConfig = getClientEndpointRealmConfig();
   if (!realmConfig.crossRealmOrgLoginEnabled || !realmConfig.realmManifestBaseUrls) {
     const discovery = await createAuthClient(selectedRealm).discoverSsoOrg(org);
     assertLoginFlowCurrent(expectedLoginFlowEpoch);
-    pendingAuthRealm = selectedRealm;
     return discovery;
   }
 
@@ -4974,7 +4998,6 @@ async function discoverOrganizationRealm(
     global: createAuthClient('global'),
   });
   assertLoginFlowCurrent(expectedLoginFlowEpoch);
-  pendingAuthRealm = selected.region;
   return selected.discovery;
 }
 
@@ -5142,6 +5165,8 @@ async function completeLogin(
     pendingLoginTicket = null;
     pendingBindTicket = null;
     pendingSsoVerificationTicket = null;
+    pendingPersonalLogin = null;
+    handledLoginEmail = null;
     loginFlowState = reduceAuthFlow(loginFlowState, { type: 'outcome', outcome });
     notifyRenderer();
     notifyAuthListeners();
@@ -5174,7 +5199,7 @@ async function acceptLoginOutcome(
         ? [outcome.membership]
         : [];
 
-  if (outcome.status === 'ok') return completeLogin(outcome, expectedLoginFlowEpoch);
+  if (outcome.status === 'ok') return finishFreshLogin(outcome, expectedLoginFlowEpoch);
   if (outcome.status === 'select_account') {
     pendingLoginTicket = outcome.loginTicket;
     pendingBindTicket = null;
@@ -5192,6 +5217,32 @@ async function acceptLoginOutcome(
   return loginFlowState;
 }
 
+/** Offer enterprise login before committing a fresh personal identity, never during refresh/switch. */
+async function finishFreshLogin(
+  outcome: Extract<LoginOutcome, { status: 'ok' }>,
+  expectedLoginFlowEpoch: number,
+): Promise<AuthFlowState> {
+  const personalRealm = pendingAuthRealm ?? authRealmForEdition(activeProductEdition);
+  const discovery = await discoverPersonalLoginOrganization(outcome.membership, {
+    handledEmail: handledLoginEmail,
+    discoverOrganization: (domain) => lookupOrganizationRealm(domain, expectedLoginFlowEpoch),
+  });
+  assertLoginFlowCurrent(expectedLoginFlowEpoch);
+  if (discovery && providerConfig) {
+    pendingPersonalLogin = { outcome, realm: personalRealm };
+    discoveredMethods = [];
+    loginFlowState = reduceAuthFlow(loginFlowState, {
+      type: 'realm-switch-required',
+      targetRegion: discovery.region,
+      personalLoginAvailable: true,
+      providers: providerConfig,
+      methods: ssoOrgDiscoveryToMethods(discovery),
+    });
+    return loginFlowState;
+  }
+  return completeLogin(outcome, expectedLoginFlowEpoch);
+}
+
 async function runLoginAction(action: DesktopLoginAction): Promise<DesktopLoginActionResult> {
   const actionLoginFlowEpoch = loginFlowEpoch;
   const startsBuildRealmFlow =
@@ -5199,7 +5250,10 @@ async function runLoginAction(action: DesktopLoginAction): Promise<DesktopLoginA
     action.type === 'request-code' ||
     action.type === 'verify-code' ||
     (action.type === 'start-browser' && action.kind === 'social');
-  const loginRealm = startsBuildRealmFlow ? AUTH_REGION : (pendingAuthRealm ?? activeAuthRealm);
+  // WL-5.6：构建流区域跟随运行期 edition（selected realm），不得回退打包区域 AUTH_REGION。
+  const loginRealm = startsBuildRealmFlow
+    ? authRealmForEdition(activeProductEdition)
+    : (pendingAuthRealm ?? activeAuthRealm);
   const client = createAuthClient(loginRealm);
   const stateBeforeAction = loginFlowState?.step === 'error' ? null : loginFlowState;
   try {
@@ -5214,13 +5268,15 @@ async function runLoginAction(action: DesktopLoginAction): Promise<DesktopLoginA
     if (action.type === 'select-realm') {
       return { success: true, state: await selectLoginRealm(action.realm) };
     }
+
     const selectedRealm = providerConfig?.region ?? authRealmForEdition(activeProductEdition);
-    const client = createAuthClient(pendingAuthRealm ?? selectedRealm);
     if (action.type === 'confirm-sso-realm') {
       const confirmation = loginFlowState;
       if (
         confirmation?.step !== 'realm-confirmation' ||
-        pendingAuthRealm !== confirmation.targetRegion
+        (confirmation.personalLoginAvailable
+          ? !pendingPersonalLogin
+          : pendingAuthRealm !== confirmation.targetRegion)
       ) {
         throw new AuthApiError(
           'INVALID_AUTH_ACTION',
@@ -5228,10 +5284,22 @@ async function runLoginAction(action: DesktopLoginAction): Promise<DesktopLoginA
           'No enterprise region switch is waiting for confirmation',
         );
       }
+      if (confirmation.personalLoginAvailable) {
+        // The user chose a fresh enterprise authentication, not reuse of the personal token.
+        pendingPersonalLogin = null;
+        pendingAccountToken = null;
+        pendingAccountRefreshToken = null;
+        pendingAccountMemberships = [];
+        pendingLoginTicket = null;
+        pendingBindTicket = null;
+        pendingSsoVerificationTicket = null;
+        pendingAccountDeletionRestored = false;
+        pendingAuthRealm = confirmation.targetRegion;
+      }
       discoveredMethods = confirmation.methods;
       loginFlowState = reduceAuthFlow(loginFlowState, {
         type: 'discovery-loaded',
-        email: '',
+        email: confirmation.email ?? '',
         methods: confirmation.methods,
       });
       return { success: true, state: loginFlowState };
@@ -5245,6 +5313,14 @@ async function runLoginAction(action: DesktopLoginAction): Promise<DesktopLoginA
           'No enterprise region switch is waiting for cancellation',
         );
       }
+      if (confirmation.personalLoginAvailable) {
+        const personal = pendingPersonalLogin;
+        if (!personal) throw new AuthApiError('INVALID_AUTH_ACTION', 400, 'Personal login unavailable');
+        pendingAuthRealm = personal.realm;
+        const state = await completeLogin(personal.outcome, actionLoginFlowEpoch);
+        pendingPersonalLogin = null;
+        return { success: true, state };
+      }
       pendingAuthRealm = confirmation.providers.region;
       discoveredMethods = [];
       loginFlowState = reduceAuthFlow(loginFlowState, {
@@ -5257,12 +5333,33 @@ async function runLoginAction(action: DesktopLoginAction): Promise<DesktopLoginA
     // loadLoginProviders clears transient login state. Pin a new personal login
     // afterwards so account selection and binding cannot inherit the active
     // organization's realm. The active account remains untouched until commit.
-    if (startsBuildRealmFlow) pendingAuthRealm = loginRealm;
+    // Keep the confirmed SSO realm if a personal code request fails and returns to method choice.
+    if (startsBuildRealmFlow && action.type !== 'request-code') pendingAuthRealm = loginRealm;
+    if (action.type === 'start-browser' && action.kind === 'social') handledLoginEmail = null;
 
     if (action.type === 'discover') {
-      const email = action.email.trim().toLowerCase();
-      const methods = await client.discover(email);
+      discoveredMethods = [];
+      const { email, methods, region } = await discoverEmailLogin(action.email, {
+        buildRegion: loginRealm,
+        discoverOrganization: (domain) => discoverOrganizationRealm(domain, actionLoginFlowEpoch),
+        discoverPersonal: (email) => client.discover(email),
+      });
       assertLoginFlowCurrent(actionLoginFlowEpoch);
+      handledLoginEmail = email;
+      pendingAuthRealm = region;
+      if (region !== loginRealm) {
+        if (!providerConfig) {
+          throw new AuthApiError('AUTH_SERVICE_UNAVAILABLE', 503, 'Login providers unavailable');
+        }
+        loginFlowState = reduceAuthFlow(loginFlowState, {
+          type: 'realm-switch-required',
+          targetRegion: region,
+          email,
+          providers: providerConfig,
+          methods,
+        });
+        return { success: true, state: loginFlowState };
+      }
       discoveredMethods = methods;
       loginFlowState = reduceAuthFlow(loginFlowState, {
         type: 'discovery-loaded',
@@ -5316,6 +5413,8 @@ async function runLoginAction(action: DesktopLoginAction): Promise<DesktopLoginA
         captchaToken: action.captchaToken,
       });
       assertLoginFlowCurrent(actionLoginFlowEpoch);
+      pendingAuthRealm = loginRealm;
+      discoveredMethods = [];
       loginFlowState = reduceAuthFlow(loginFlowState, {
         type: 'code-requested',
         kind: action.kind,
@@ -5404,7 +5503,7 @@ async function runLoginAction(action: DesktopLoginAction): Promise<DesktopLoginA
         pendingAccountToken = null;
         return {
           success: true,
-          state: await completeLogin({ status: 'ok', ...pair }, actionLoginFlowEpoch),
+          state: await finishFreshLogin({ status: 'ok', ...pair }, actionLoginFlowEpoch),
         };
       }
       // 纯社交/SSO 等没有 account 会话的历史路径仍用一次性 loginTicket。
@@ -5501,6 +5600,8 @@ async function runLoginAction(action: DesktopLoginAction): Promise<DesktopLoginA
       'USER_CANCELLED',
     ].includes(code);
     if (flowCannotRetry) {
+      pendingPersonalLogin = null;
+      handledLoginEmail = null;
       pendingAccountToken = null;
       pendingLoginTicket = null;
       pendingBindTicket = null;

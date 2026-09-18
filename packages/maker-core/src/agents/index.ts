@@ -96,6 +96,8 @@ export {
   DEFAULT_AUTO_REVIEW_TIMEOUT_POLICY,
   extractAutoReviewUserIntent,
   appendAutoReviewUserIntent,
+  normalizeAutoReviewUserIntent,
+  type AutoReviewUserIntent,
   getAutoReviewActionTextLength,
   getAutoReviewDelegateHardCeilingMs,
   isAutoReviewConfirmUndeliveredNotice,
@@ -111,6 +113,7 @@ export {
 export { toolAutoReviewAction } from './shared/auto-review-decision.js';
 // Meka 战斗开发工作流等 host 侧策略门需要复用 Cindy 的 shell 分类器。
 export { classifyShellCommand } from './shared/auto-review.js';
+export { AUTO_REVIEW_CONTINUATION_POLICY } from './shared/continuation-policy.js';
 export type { ReviewableAction } from './shared/auto-review.js';
 
 /** Meka host 侧产品工作流门共用的策略输入/输出。 */
