@@ -62,6 +62,38 @@ Windows 热更包会直接覆盖安装目录，不会重新执行 NSIS。新进�
 验证命令按 [`desktop-development.md`](desktop-development.md) 选择；更新链路的真实行为
 无法靠单测完全覆盖，评估与实测结论必须如实记录。
 
+## Windows 安装目录身份必须用 stable 工具链可编译的 API
+
+更新器在替换前会「钉住」安装目录并校验它没被换成重解析点（junction / symlink），
+判据是 `InstallDirIdentity { is_reparse, device, inode }`（`installer.rs` 的
+`capture_install_dir_identity` / `install_dir_identity_unchanged`）。取 `device` / `inode` 时：
+
+- **不得使用 `std::os::windows::fs::MetadataExt::volume_serial_number()` /
+  `file_index()`**：这两个方法至今仍在 `windows_by_handle` 不稳定特性后面
+  （rust-lang/rust#63010）。发布链路用的是 **stable** Rust，走 std 会直接
+  `error[E0658]` 让 `cargo build --release` 失败，进而让整个 Windows 打包中止
+  （2026-09-18 canary 实测）。改用 `GetFileInformationByHandle` 读同一份
+  `BY_HANDLE_FILE_INFORMATION`（`dwVolumeSerialNumber` + `nFileIndexHigh/Low`），
+  语义与 std 内部实现一致；目录句柄需要 `FILE_FLAG_BACKUP_SEMANTICS`。
+- **`OWNER_SECURITY_INFORMATION` 从 `windows_sys::Win32::Security` 导入**，不在
+  `Security::Authorization`（后者只提供 `GetNamedSecurityInfoW` 与 `SE_FILE_OBJECT`）。
+  从 `Authorization` 导入必然 `error[E0432]`。
+- **取不到身份一律 fail closed**：`capture_install_dir_identity` 返回 `Err`，
+  安装以「无法钉住安装目录 …」中止且不可重试；`install_dir_identity_unchanged`
+  对 `Err` 判「已变」从而拒绝复制。**不得**退化成 `unwrap_or(0)` 这类「全 0 身份」——
+  那会让两侧比较都命中 0 而把「目录已被换掉」误判成「没变」。
+
+该约束的原因与影响：更新器编译失败**不是**「少个功能」，而是**所有 Windows 打包（含
+canary 与正式发布）全部中止**，且报错位置在 `cargo` 而不是本仓 TS 门禁里 —— 只有真正
+跑一次打包才会暴露。因此改动 `installer.rs` 后**必须**至少跑通
+`cargo build --release --manifest-path apps/desktop/cindy-updater/src-tauri/Cargo.toml`
+（等价于 forge 的 prePackage），以及
+`node apps/desktop/scripts/check-windows-installer.mjs`。
+
+**已知未修**：该文件里 3 处 `#[test]` 直接调用 `std::os::unix::fs::symlink` 而未加
+`#[cfg(unix)]`，导致 Windows 上 `cargo test -p cindy-updater` 无法编译（`cargo build`
+不受影响，仓库任何门禁也不跑它）。属上游同批引入的缺陷，未擅自扩大范围。
+
 ## 更新与运行时资产根地址
 
 `manifestService.getBaseUrl()` 同时服务应用热更新与 Claude Code、Codex、ripgrep 等运行时

@@ -2320,10 +2320,11 @@ pub(crate) fn capture_install_dir_identity(path: &Path) -> io::Result<InstallDir
             format!("install path is not a directory: {}", path.display()),
         ));
     }
+    let (device, inode) = install_dir_file_identity(path, &meta)?;
     Ok(InstallDirIdentity {
         is_reparse: is_reparse_point(path),
-        device: file_device(&meta),
-        inode: file_inode(&meta),
+        device,
+        inode,
     })
 }
 
@@ -2653,28 +2654,68 @@ fn path_grants_access(path: &Path, desired_access: u32, flags: u32) -> Option<bo
     Some(true)
 }
 
+/// 目录的 (卷序列号, 文件索引) —— 用于确认「还是同一个安装目录」。
+///
+/// **Windows 侧刻意不用 `std::os::windows::fs::MetadataExt`**：它的
+/// `volume_serial_number()` / `file_index()` 至今仍在 `windows_by_handle`
+/// 不稳定特性后面（rust-lang/rust#63010），发布链路用的是 stable 工具链，
+/// 走 std 会直接编译失败。改走 `GetFileInformationByHandle`，它读的就是
+/// `std::fs::Metadata` 内部那份 `BY_HANDLE_FILE_INFORMATION` 数据，语义一致。
+///
+/// 取不到身份时返回 `Err`（fail closed）：调用方
+/// `install_dir_identity_unchanged` 对 `Err` 一律判「已变」，宁可拒绝也不放行。
 #[cfg(unix)]
-fn file_device(meta: &fs::Metadata) -> u64 {
+fn install_dir_file_identity(_path: &Path, meta: &fs::Metadata) -> io::Result<(u64, u64)> {
     use std::os::unix::fs::MetadataExt;
-    meta.dev()
-}
-
-#[cfg(unix)]
-fn file_inode(meta: &fs::Metadata) -> u64 {
-    use std::os::unix::fs::MetadataExt;
-    meta.ino()
+    Ok((meta.dev(), meta.ino()))
 }
 
 #[cfg(windows)]
-fn file_device(meta: &fs::Metadata) -> u64 {
-    use std::os::windows::fs::MetadataExt;
-    meta.volume_serial_number().unwrap_or(0) as u64
-}
+fn install_dir_file_identity(path: &Path, _meta: &fs::Metadata) -> io::Result<(u64, u64)> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        OPEN_EXISTING,
+    };
 
-#[cfg(windows)]
-fn file_inode(meta: &fs::Metadata) -> u64 {
-    use std::os::windows::fs::MetadataExt;
-    meta.file_index().unwrap_or(0)
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // dwDesiredAccess = 0：只需要读元数据，不要任何读/写权限，最小权限。
+    // FILE_FLAG_BACKUP_SEMANTICS 是打开**目录**句柄的必要条件。
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE || handle.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    let ok = unsafe { GetFileInformationByHandle(handle, &mut info) };
+    let result = if ok == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok((
+            u64::from(info.dwVolumeSerialNumber),
+            (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+        ))
+    };
+    unsafe {
+        let _ = CloseHandle(handle);
+    }
+    result
 }
 
 #[cfg(windows)]
@@ -2682,11 +2723,13 @@ fn directory_owned_by_current_user_windows(app_dir: &Path) -> Option<bool> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, LocalFree, ERROR_SUCCESS};
     use windows_sys::Win32::Security::{
-        EqualSid, GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser,
+        EqualSid, GetTokenInformation, OWNER_SECURITY_INFORMATION, TOKEN_QUERY, TOKEN_USER,
+        TokenUser,
     };
-    use windows_sys::Win32::Security::Authorization::{
-        GetNamedSecurityInfoW, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION,
-    };
+    // `OWNER_SECURITY_INFORMATION` 定义在 `Win32::Security` 本身（windows-sys 0.59
+    // 的 Security/mod.rs），`Authorization` 只提供 `GetNamedSecurityInfoW` 与
+    // `SE_FILE_OBJECT`；从 `Authorization` 导入它必然 E0432。
+    use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     let wide: Vec<u16> = app_dir

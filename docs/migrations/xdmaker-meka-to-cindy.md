@@ -3303,3 +3303,35 @@ Meka 开发插件链路、插件市场独立 endpoint/凭证、`edition` 运行�
   白名单清单 **WL-15**（新增）；同步报告
   [`2026-09-18-origin-main-to-meka-main.md`](./2026-09-18-origin-main-to-meka-main.md)
   §7.8.3（发现）/§7.8.3.1（修复）/§7.8.6（精确测量）。
+
+### 6.44 2026-09-18 canary 打包阻断：上游新更新器代码在 Windows 上无法编译（已修）
+
+- **来源**：`origin/main@0f65d98231`（`feat(updater): add safe manual retry after failure (#4502)`）
+  在 `apps/desktop/cindy-updater/src-tauri/src/installer.rs` 新增的「安装目录身份钉住」代码
+  用了 stable 工具链编译不过的 API。该提交正是 2026-09-18 同步的来源 commit。
+- **现象**：`release:windows:canary` 在 `cargo build --release` 失败（`prePackage` hook），
+  **整个 Windows 打包中止**（canary 与正式发布同链路）。3 个错误：
+  `E0432 OWNER_SECURITY_INFORMATION` 从 `Security::Authorization` 导入、
+  2× `E0658 windows_by_handle`（`MetadataExt::volume_serial_number()` / `file_index()`）。
+- **修法**（`installer.rs`）：
+  1. `OWNER_SECURITY_INFORMATION` 改从 `windows_sys::Win32::Security` 导入；
+  2. `device` / `inode` 合并为一个 `install_dir_file_identity(path, meta) -> io::Result<(u64,u64)>`：
+     Windows 走 `CreateFileW(FILE_FLAG_BACKUP_SEMANTICS)` + `GetFileInformationByHandle`
+     （读 `BY_HANDLE_FILE_INFORMATION`，与 std 内部同源），Unix 保持 `dev()` / `ino()`；
+  3. 取身份失败返回 `Err`（原意图 `unwrap_or(0)`）—— 全 0 身份会把「目录已被换成 junction」
+     的比较命中 `0 == 0` 误判成「没变」，属安全退化；现为 fail closed。
+- **影响面**：仅 Windows 更新器的编译方式与身份获取路径；`InstallDirIdentity` 对外形状、
+  重解析点拒绝逻辑、回滚与 Shell 刷新均未改。**唯一行为差异是失败时更严格**。
+- **验证**：`cargo check --release` 3 errors → **0 errors**；`cargo build --release` **exit 0**
+  并产出 `cindy-updater.exe`；stash 对照实验重现原 3 错；
+  `node apps/desktop/scripts/check-windows-installer.mjs` **PASS**（生产安装器/卸载器编译 +
+  6 个 native preflight 场景全 exit 0）；`meka-release-identity`/`meka-release-flow`/
+  `brand-identity-sync`/`third-party-notices`/`migration-freeze` 全绿。
+- **未修**：同批引入的 3 处 `#[test]` 用了未加 `#[cfg(unix)]` 的
+  `std::os::unix::fs::symlink`（Windows 上 `cargo test` 编译不过；`cargo build` 与打包不受影响，
+  无门禁跑它）。
+- **审批门**：属 `cindy-updater` 更新链路改动，按 `docs/dev-rules/cindy-updater.md`
+  **push / PR / 发布前需维护者确认**。
+- **规则落点**：`docs/dev-rules/cindy-updater.md` 新增「Windows 安装目录身份必须用 stable
+  工具链可编译的 API」一节；同步报告
+  [`2026-09-18-origin-main-to-meka-main.md`](./2026-09-18-origin-main-to-meka-main.md) §7.9。

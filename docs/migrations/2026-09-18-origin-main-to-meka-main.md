@@ -1029,6 +1029,84 @@ const target = targets.find(
 > 含两起 P0 的修复与实机复验）。**已提交为 merge commit**（`git commit -s`，父为
 > `03f0d17864` 与 `0f65d98231`）；**未 push、未创建 PR** —— push 与 PR 各自需要独立授权。
 
+### 7.9 **提交后发现的发布阻断：本轮同步带入的上游代码无法在 Windows 上编译（已修）**
+
+**背景**：commit `67490d67b1` 之后跑 `release:windows:canary`（GitLab job）在 `cargo build
+--release` 阶段失败，**整个 Windows 打包中止**（canary 与正式发布都会受影响）。
+
+**报错（原样）**：
+
+```
+error[E0432]: unresolved import `windows_sys::Win32::Security::Authorization::OWNER_SECURITY_INFORMATION`
+    --> src\installer.rs:2688:48
+error[E0658]: use of unstable library feature `windows_by_handle`
+    --> src\installer.rs:2671:10   meta.volume_serial_number().unwrap_or(0) as u64
+error[E0658]: use of unstable library feature `windows_by_handle`
+    --> src\installer.rs:2677:10   meta.file_index().unwrap_or(0)
+error: could not compile `cindy-updater` (lib) due to 3 previous errors
+```
+
+**归因（三方逐 token 实测，结论：上游本轮新代码自带缺陷，不是解冲突产物）**：
+
+| token | base `4f03ea9a7b` | ours `03f0d17864` | theirs `origin/main` | 合并结果 |
+| --- | --- | --- | --- | --- |
+| `volume_serial_number` | 0 | 0 | **1** | 1 |
+| `file_index()` | 0 | 0 | **1** | 1 |
+| `OWNER_SECURITY_INFORMATION` | 0 | 0 | **2** | 2 |
+| `directory_owned_by_current_user_windows` | 0 | 0 | **2** | 2 |
+
+- 这些代码**在上游之前的提交里完全不存在**；`git log -S` 定位到引入者正是
+  **`0f65d98231`（`feat(updater): add safe manual retry after failure (#4502)`，2026-09-18 09:10）
+  —— 也就是本轮同步的来源 commit 本身**。
+- 合并结果在这两个函数体上**与 `origin/main` 逐行相同**（已用脚本比对 region 相等）。
+- `Cargo.toml`、`Cargo.lock` 的 blob 在 `HEAD` 与 `origin/main` **完全一致**（`cf728d2796` /
+  `2c3cb2d255`）⇒ 不是依赖或配置被合并吃掉。
+- 本机复现（stable `rustc 1.92.0`）：`cargo check --release` 得到**逐字符相同的 3 个错误**。
+
+**为什么上游自己没发现**：这些错误只在**编译 Rust 更新器**时出现，而
+`cargo build --release` 只由 forge 的 `prePackage`（即真实打包）触发；本仓 TS 门禁
+（typecheck / test:unit / audit:merge）都看不见它。上游同批还引入了 3 处
+`#[test]` 里的未加 `#[cfg(unix)]` 的 `std::os::unix::fs::symlink`（`cargo check --tests`
+另报 3 个 E0433，`origin/main` 同样存在）—— 说明这批代码在 Windows 上**既没构建过也没测过**。
+
+**修复（`installer.rs`，改动最小、语义等价且更安全）**：
+
+1. **`OWNER_SECURITY_INFORMATION` 改从 `windows_sys::Win32::Security` 导入**
+   （实测该常量定义在 windows-sys 0.59 的 `Security/mod.rs:226`），
+   `Authorization` 只保留 `GetNamedSecurityInfoW` / `SE_FILE_OBJECT`。
+2. **`device` / `inode` 改走 `GetFileInformationByHandle`**：把原来两个 `file_device` /
+   `file_inode`（Windows 分支用受不稳定特性门控的 std 方法）合并为一个
+   `install_dir_file_identity(path, meta) -> io::Result<(u64,u64)>`，
+   Windows 下用 `CreateFileW(FILE_FLAG_BACKUP_SEMANTICS, dwDesiredAccess=0)` +
+   `GetFileInformationByHandle` 读 `dwVolumeSerialNumber` 与
+   `(nFileIndexHigh << 32) | nFileIndexLow` —— 与 std 内部读的是**同一份结构体**；
+   Unix 分支保持 `meta.dev()` / `meta.ino()`。
+3. **fail-closed**：取身份失败时返回 `Err`（原意图是 `unwrap_or(0)`）。全 0 身份会让
+   「目录已被换成 junction」的比较命中 `0 == 0` 而被误判成「没变」，属安全退化；
+   现在安装以「无法钉住安装目录 …」中止且 `retry=false`，`install_dir_identity_unchanged`
+   对 `Err` 判「已变」而拒绝复制。**这是唯一的行为差异，方向是更严。**
+
+**验证（全部实跑）**：
+
+| 项 | 结果 |
+| --- | --- |
+| `cargo check --release`（修复前） | **3 errors**（与 CLI 完全一致） |
+| `cargo check --release`（修复后） | **0 errors**（5 条 dead-code 警告为既有） |
+| `cargo build --release`（= forge prePackage 的命令） | **exit 0**，产出 `cindy-updater.exe`（4,695,552 B） |
+| 对照实验：把改动 stash 掉再编 | 重新出现同样 3 个错误 ⇒ 因果确凿 |
+| **Windows 打包会碰的全部 7 个 Rust crate**，逐个按 `forge.config.ts` 里的**原样参数**（含 `--locked` 与 `--target x86_64-pc-windows-msvc`）实编 | **7/7 exit 0**：`cindy-updater`、`native/remote-desktop/{windows-input,windows-host}`、`native/windows-taskbar`、`native/xbox-gamepad/windows-gamepad-helper`、`native/worklouder/windows-micro-helper`、`native/voice-input/windows-function-key-listener` |
+| `node apps/desktop/scripts/check-windows-installer.mjs` | **PASS**：生产安装器/卸载器编译（warnings are errors）+ 6 个 native preflight 场景全 `exit 0` |
+| `meka-release-identity` / `meka-release-flow` / `brand-identity-sync` / `third-party-notices` / `migration-freeze` | 7 / 24 / 5 / 10 / 12，**fail 全 0** |
+
+**审批门（必须遵守）**：`docs/dev-rules/cindy-updater.md` 规定「任何对 `cindy-updater`
+及其相关更新链路的修改，都必须先与仓库维护者确认」。本次改动属**编译修复**（恢复被上游
+打断的构建，语义等价且更严格），已在报告与交付说明中显式标注；**push / PR / 发布仍需
+维护者确认与授权**。
+
+**未修（同一批上游缺陷，本次不扩大范围）**：`installer.rs` 里 3 处 `#[test]` 直接调用
+`std::os::unix::fs::symlink` 未加 `#[cfg(unix)]`，Windows 上 `cargo test` 无法编译
+（已逐条核对 `forge.config.ts` 里**全部** cargo 调用都是 `build`，没有 `cargo test`，
+因此不影响打包；仓库任何门禁也不跑它）；`origin/main` 同样存在。已登记为 §8.2 第 17 项。
 
 ## 8. 交接状态
 
@@ -1049,6 +1127,10 @@ const target = targets.find(
   真实旧 `xdmaker-meka` 升级链路（WL-6.6，规则禁止共用 userData）、MCPRouter 端到端
   （WL-4 全节，缺账号/实例/Gateway key）、Light/Dark 视觉目检与五语逐一目检（需人眼）、
   WL-15 的负向验证（模型不读冻结文件即执行的退化场景）。
+  > **补充（§7.9）**：提交后 `release:windows:canary` 暴露出**本轮同步带入的上游代码在
+  > Windows 上无法编译**（`cargo build --release` 3 个错误），已修复并实测通过
+  > （`cargo build --release` exit 0 + `check-windows-installer` PASS）。**WL-6.3/6.4 的
+  > 「打包链路可编译」这一环现已验证通过**；但「真实签名 / 真实产物」仍需授权后才能做。
 
 ### 8.2 待用户/维护者决定
 
@@ -1070,6 +1152,8 @@ const target = targets.find(
 | 14 | **9 个 Meka 早期迁移提交缺 DCO `Signed-off-by`**（§8.1） | **存量**（合并前即为 9 个，已实测）；补签需 `git rebase --signoff` 重写 372 个提交 = 改写历史，**必须由维护者决定**，本轮未动 |
 | 15 | `@cindy/mcps` 的 `build`（`tsc --noEmit`）在 2 个**上游测试文件**报类型错（§7.6.6） | 上游自带、逐字等于 `origin/main`、且不在任何门禁内（根 `build` 只建 desktop，无 CI 调用，该包无 `typecheck` script）；未改 |
 | 16 | `pnpm licenses:generate` 需先解决（§7.5） | 见第 7 项 |
+| 17 | **`installer.rs` 里 3 处 `#[test]` 用 `std::os::unix::fs::symlink` 未加 `#[cfg(unix)]`**（§7.9） | 上游同批（`0f65d98231`）自带，`origin/main` 同样存在；只影响 Windows 上 `cargo test`，**不影响 `cargo build` 与打包**，无仓库门禁跑它。**未修**（需按平台分派 `symlink_dir`/junction 并复核测试语义） |
+| 18 | **`cindy-updater` 改动的 owner 确认门**（§7.9） | `docs/dev-rules/cindy-updater.md` 要求更新链路改动先与维护者确认。本次为**编译修复**（语义等价且更严格），已如实标注；**push / PR / 发布前需维护者明确确认** |
 
 ### 8.3 已知环境问题（非本仓代码缺陷，供 CI/他人参考）
 
@@ -1094,4 +1178,3 @@ const target = targets.find(
    与 ②上游新增守卫不认识 Meka 的用量形态。下轮同步应：
    - 对「本次改动过、但落在 tsconfig 盲区」的构建脚本做一次定向 typecheck（脚本见 §7.7）；
    - 对上游新增的**任何预算/上限/守卫**逐一核对 Meka 侧的用量是否触顶（WL-15 即由此而来）。
-
