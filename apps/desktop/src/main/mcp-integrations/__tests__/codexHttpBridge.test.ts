@@ -15,6 +15,30 @@ import { CODEX_ALLOWED_BUILTIN_PLUGIN_IDS_KEY, CODEX_DISABLED_BUILTIN_PLUGIN_IDS
 import { isBotToolsetAvailableOnTarget } from '../../../shared/botRemoteCapabilities.js';
 import { resolveBotAllowedBuiltinPluginIds } from '../../maker-host/plugins/types.js';
 
+/**
+ * 可控的 Fetch bad port 判据:只在需要复现"内核对到被拉黑端口"时返回 true 一次,
+ * 其余情况透传真实实现。这样重绑路径可以被确定性地覆盖,不必去赌 1/777 的真实命中。
+ */
+const portGuard = vi.hoisted(() => ({
+  blockNextAssignedPort: false,
+  blockedPortsSeen: [] as number[],
+}));
+
+vi.mock('@cindy/anthropic-compat-proxy', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@cindy/anthropic-compat-proxy')>();
+  return {
+    ...actual,
+    isFetchBlockedPort: (port: number): boolean => {
+      if (portGuard.blockNextAssignedPort) {
+        portGuard.blockNextAssignedPort = false;
+        portGuard.blockedPortsSeen.push(port);
+        return true;
+      }
+      return actual.isFetchBlockedPort(port);
+    },
+  };
+});
+
 function noopLogger(): Logger {
   const logger: Logger = {
     trace() {},
@@ -156,6 +180,59 @@ describe('codexHttpBridge', () => {
   afterEach(async () => {
     await bridge?.shutdown();
     bridge = null;
+    portGuard.blockNextAssignedPort = false;
+    portGuard.blockedPortsSeen = [];
+  });
+
+  it('rebinds when the kernel assigns a Fetch-blocked loopback port', async () => {
+    // `listen(0)` 让内核挑端口,而全局 fetch 会按 Fetch 标准拒绝一批 bad port。命中时
+    // bridge 必须重新绑定,不能把 fetch 打不通的 URL 交给 codex 子进程。
+    const warnings: string[] = [];
+    const logger: Logger = {
+      ...noopLogger(),
+      warn: (message: string) => {
+        warnings.push(message);
+      },
+      child: () => logger,
+    };
+    portGuard.blockNextAssignedPort = true;
+
+    bridge = await startCodexHttpBridge({
+      serverFactories: { cindy_test: () => createTestServer() },
+      pluginIdByServerName: { cindy_test: 'cindy_test' },
+      logger,
+    });
+    const current = bridge;
+
+    expect(portGuard.blockedPortsSeen).toHaveLength(1);
+    const reassignedPort = Number(new URL(current.url('cindy_test')).port);
+    // 换了端口 = 真的重新绑定过,而不是原样交出一个被拉黑的端口。
+    expect(reassignedPort).not.toBe(portGuard.blockedPortsSeen[0]);
+    expect(warnings).toContain(
+      'http bridge rebinding: kernel-assigned loopback port is Fetch-blocked',
+    );
+
+    // 重绑后的 URL 必须真的能被全局 fetch 请求(这就是本修复要保的能力)。
+    const response = await fetch(current.url('cindy_test'), {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${current.token}`,
+        accept: 'application/json, text/event-stream',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2024-11-05',
+          capabilities: {},
+          clientInfo: { name: 'rebind-test', version: '1' },
+        },
+      }),
+    });
+    expect(response.status).toBe(200);
+    await response.text();
   });
 
   it('scopes startup tools/list before thread registration without authorizing execution', async () => {

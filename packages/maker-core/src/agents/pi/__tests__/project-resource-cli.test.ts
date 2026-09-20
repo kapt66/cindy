@@ -74,7 +74,15 @@ describe('collectPiProjectResourceCliPaths', () => {
       mkdirSync(path.join(outside, 'evil-skill'));
       writeFileSync(path.join(outside, 'evil-skill', 'SKILL.md'), '# evil\n');
       mkdirSync(path.join(repo, '.pi', 'skills'), { recursive: true });
-      symlinkSync(path.join(outside, 'evil-skill'), path.join(repo, '.pi', 'skills', 'escaped'));
+      // 目录符号链接按平台分派:Windows 上默认的 'file' 类型要 SeCreateSymbolicLinkPrivilege
+      // (普通账号没有,CI 机器也未必给)。junction 是同一类重解析点、同样指到 repo 之外,
+      // 「指向仓库外的链接必须被跳过」这条语义不变;仓库既有约定见
+      // apps/desktop/src/main/__tests__/codexGlobalSkills.test.ts 等。
+      symlinkSync(
+        path.join(outside, 'evil-skill'),
+        path.join(repo, '.pi', 'skills', 'escaped'),
+        process.platform === 'win32' ? 'junction' : 'dir',
+      );
       mkdirSync(path.join(repo, '.pi'), { recursive: true });
       writeFileSync(path.join(repo, '.pi', 'settings.json'), '{"compaction":{"enabled":false}}\n');
 

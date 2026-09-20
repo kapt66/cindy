@@ -344,6 +344,8 @@ describe('snapshotRealProfile', () => {
     expect(leftoverStagingNames(destDir)).toEqual([]);
   });
 
+  // 显式超时,不吃全局 20s(win32)/5s(其他):用例每次真实建 3 个 profile、各开一个
+  // SQLite 排他锁,空载本机约 1.4s,CI 负载机器实测慢 14x ⇒ 20s 会翻。
   it.each(['darwin', 'win32', 'linux'] as const)(
     'copies cookies while optional stores have exclusive SQLite locks (%s)',
     async (platform) => {
@@ -380,6 +382,7 @@ describe('snapshotRealProfile', () => {
         'saved-password',
       );
     },
+    60_000,
   );
 
   it('skips a corrupt password database with a controlled warning', async () => {
@@ -431,7 +434,8 @@ describe('snapshotRealProfile', () => {
     } finally {
       db.close();
     }
-  }, 10_000);
+    // 10s 只剩 25% 余量(本机实测 7.5s,其中 5s 是 SQLite busy timeout),CI 上必翻。
+  }, 30_000);
 
   it('uses sqlite backup so dest has no WAL sidecar from the source', async () => {
     const root = makeTempDir();

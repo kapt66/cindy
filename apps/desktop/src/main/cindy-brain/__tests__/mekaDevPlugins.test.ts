@@ -289,21 +289,24 @@ describe('MekaDevPluginManager', () => {
     const manager = new MekaDevPluginManager(deps);
     await manager.list();
 
-    await vi.waitFor(() => {
-      expect(installedIds.has(mekaDevRuntimeId('demo-plugin'))).toBe(true);
-      expect(installedIds.has('demo-plugin')).toBe(false);
-    });
-    await vi.waitFor(async () => {
-      expect(JSON.parse(await fs.promises.readFile(registryPath, 'utf8'))).toEqual({
-        version: 2,
-        plugins: [
-          {
-            runtimeId: mekaDevRuntimeId('demo-plugin'),
-            pluginId: 'demo-plugin',
-            sourceDir: await fs.promises.realpath(sourceDir),
-          },
-        ],
-      });
+    // `list()` 只完成命名空间装载;真正的迁移(装新 runtimeId → 卸 legacy → 落盘 v2)在
+    // 同步链里跑,由 `scheduleSync(…, 0)` 的 debounce 触发。**不能用 `vi.waitFor` 等它**:
+    // waitFor 默认只等 1000ms,而这条链要做 zip 打包 + 真实文件 IO,CI 负载机器上会超
+    // (2026-09-20 实测 flake)。`syncRegistered()` 会先取消 pending 的 debounce 再 await
+    // 同一条同步链,是确定性的完成信号,不依赖时序。
+    await manager.syncRegistered();
+
+    expect(installedIds.has(mekaDevRuntimeId('demo-plugin'))).toBe(true);
+    expect(installedIds.has('demo-plugin')).toBe(false);
+    expect(JSON.parse(await fs.promises.readFile(registryPath, 'utf8'))).toEqual({
+      version: 2,
+      plugins: [
+        {
+          runtimeId: mekaDevRuntimeId('demo-plugin'),
+          pluginId: 'demo-plugin',
+          sourceDir: await fs.promises.realpath(sourceDir),
+        },
+      ],
     });
   });
 

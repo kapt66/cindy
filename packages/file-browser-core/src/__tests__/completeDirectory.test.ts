@@ -31,7 +31,11 @@ it('retains realpath boundaries when listing without presentation filters', asyn
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'complete-dir-'));
   const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'complete-outside-'));
   roots.push(root, outside);
-  await fs.symlink(outside, path.join(root, 'link'));
+  // 目录符号链接按平台分派:Windows 上默认的 'file' 类型需要
+  // SeCreateSymbolicLinkPrivilege(普通账号没有,CI 机器也未必给),而 junction 是同一类
+  // 重解析点、同样指到 root 之外,逃生语义完全一致。仓库既有约定见
+  // apps/desktop/src/main/__tests__/codexGlobalSkills.test.ts 等。
+  await fs.symlink(outside, path.join(root, 'link'), process.platform === 'win32' ? 'junction' : 'dir');
   expect(await listDir(root, '')).toEqual([]);
   await expect(listDir(root, 'link')).rejects.toThrow('escapes');
 });

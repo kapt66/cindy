@@ -13,7 +13,10 @@
  *   - transform 链可注入自定义改写;什么都不传走默认 [stripNonAnthropicFields]
  */
 
-export { createAnthropicCompatProxy } from './server.js';
+// `isFetchBlockedPort` 是 Fetch 标准 bad port 名单的本仓 SSoT。除本包的 loopback 绑定外,
+// 任何"把 loopback URL 交给全局 fetch 的客户端"的地方都必须用同一份名单,不得另立第二份
+// (desktop 的 codexHttpBridge 直接 import 它,见该文件 listen 段注释)。
+export { createAnthropicCompatProxy, isFetchBlockedPort } from './server.js';
 export {
   createEnvOutboundProxyResolver,
   hasProxyEnvConfig,

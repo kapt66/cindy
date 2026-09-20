@@ -22,6 +22,9 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { runWithLiziMcpSessionContext, type LiziMcpSessionContext } from '@cindy/mcps';
+// Fetch 标准 bad port 名单的 SSoT 在 anthropic-compat-proxy(它自己绑 loopback 时也用它)。
+// 这里复用同一份判据,避免出现第二份会漂移的端口黑名单。
+import { isFetchBlockedPort } from '@cindy/anthropic-compat-proxy';
 
 import type { Logger } from '@cindy/maker-core';
 import {
@@ -33,6 +36,12 @@ import { isFrozenBuiltinPluginAllowed } from './codexBuiltinToolPolicy.js';
 const SERVER_HEADER = 'Lizi_MCPS/1.0';
 const MCP_PATH_PREFIX = '/mcp/';
 const SHUTDOWN_TIMEOUT_MS = 5_000;
+/**
+ * 绑定 loopback 端口时最多重试几次「内核分到的端口被 Fetch 标准拉黑」。
+ * 正常情况下第一次就成功(命中概率约 1/777);连撞多次说明本机动态端口段异常,
+ * 此时宁可让 bridge 启动失败,也不要交出一个全局 fetch 打不通的 URL。
+ */
+const FETCH_SAFE_PORT_MAX_ATTEMPTS = 8;
 /**
  * 协同 MCP 的远端 server 名单 — codex/cc 两条远端注入路径共享的唯一真源
  * (remote-ssh/codex-remote-mcp.ts 与 maker-host/cc-remote-mcp.ts 都引用它,
@@ -399,45 +408,77 @@ export async function startCodexHttpBridge(
   // request body 不限大小 (codex MCP request 偶尔很大，例如附图 base64)。
   httpServer.requestTimeout = 0;
 
-  // listen 异步：必须真在 listen 状态后才 return，否则 codex spawn 时拿到 url 但连不上
-  // 轮 40-w4-t3 HIGH:listen 永不回调(罕见 OS 异常)会让 doStart 永久挂起 ——
-  // ensureBridge 30s 超时只清 startPromise, 旧 doStart 闭包仍悬挂且不可取消,
-  // 多次会话叠加多个悬挂启动。这里加 watchdog:超时后移除 listener + close
-  // server + reject, 让 doStart 走正常失败路径(下次会话重试), 不泄漏 listen。
-  await new Promise<void>((resolve, reject) => {
-    let watchdog: NodeJS.Timeout | undefined;
-    const onError = (err: Error): void => {
-      if (watchdog) clearTimeout(watchdog);
-      httpServer.removeListener('listening', onListening);
-      reject(err);
-    };
-    const onListening = (): void => {
-      if (watchdog) clearTimeout(watchdog);
-      httpServer.removeListener('error', onError);
-      resolve();
-    };
-    watchdog = setTimeout(() => {
-      httpServer.removeListener('error', onError);
-      httpServer.removeListener('listening', onListening);
-      try { httpServer.close(); } catch { /* already closed */ }
-      reject(new Error('http bridge listen timed out after 30s'));
-    }, 30_000);
-    watchdog.unref?.();
-    httpServer.once('error', onError);
-    httpServer.once('listening', onListening);
-    // 0 = OS 内核原子分配空闲端口 (临时端口范围 49152-65535)
-    httpServer.listen(0, '127.0.0.1');
-  });
-
-  // listener 级 error: 极罕见 (端口被外力释放等)，发生即 fatal，不自动恢复
+  // listener 级 error: 极罕见 (端口被外力释放等)，发生即 fatal，不自动恢复。
+  // **必须**在下面的绑定循环之前注册:循环会 close + 重新 listen,期间任何一次异步 error
+  // 若当时没有 'error' listener,Node 会把它升级成进程级 uncaughtException。
   httpServer.on('error', (err) => {
     log.error('http server listener error (bridge unrecoverable)', {
       message: err.message,
     });
   });
 
-  const addr = httpServer.address() as AddressInfo;
-  const port = addr.port;
+  // listen 异步：必须真在 listen 状态后才 return，否则 codex spawn 时拿到 url 但连不上
+  // 轮 40-w4-t3 HIGH:listen 永不回调(罕见 OS 异常)会让 doStart 永久挂起 ——
+  // ensureBridge 30s 超时只清 startPromise, 旧 doStart 闭包仍悬挂且不可取消,
+  // 多次会话叠加多个悬挂启动。这里加 watchdog:超时后移除 listener + close
+  // server + reject, 让 doStart 走正常失败路径(下次会话重试), 不泄漏 listen。
+  const listenOnce = async (): Promise<void> => {
+    await new Promise<void>((resolve, reject) => {
+      const onError = (err: Error): void => {
+        clearTimeout(watchdog);
+        httpServer.removeListener('listening', onListening);
+        reject(err);
+      };
+      const onListening = (): void => {
+        clearTimeout(watchdog);
+        httpServer.removeListener('error', onError);
+        resolve();
+      };
+      // 只赋值一次的 const:两个 listener 引用它但都在这行之后才可能被调用,
+      // 不存在 TDZ 读取(prefer-const 存量报错也一并清掉)。
+      const watchdog = setTimeout(() => {
+        httpServer.removeListener('error', onError);
+        httpServer.removeListener('listening', onListening);
+        try { httpServer.close(); } catch { /* already closed */ }
+        reject(new Error('http bridge listen timed out after 30s'));
+      }, 30_000);
+      watchdog.unref?.();
+      httpServer.once('error', onError);
+      httpServer.once('listening', onListening);
+      // 0 = OS 内核原子分配空闲端口 (临时端口范围 49152-65535)
+      httpServer.listen(0, '127.0.0.1');
+    });
+  };
+
+  /**
+   * `listen(0)` 把端口选择完全交给内核,而内核只判"空闲"、不判"客户端能不能用这个端口":
+   * undici 的全局 `fetch` 会按 Fetch 标准拒绝对一批 **bad port** 发请求(报
+   * `TypeError: fetch failed` + `cause: bad port`)。本机动态端口段并不保证避开它们 ——
+   * Windows 的动态范围可被改成 1024-15000,而该段内实测有 18 个 bad port(命中率约 1/777);
+   * 一旦命中,bridge 交给 codex 子进程的 URL 上**每一个请求**都直接失败,表现为整条远端
+   * MCP 链路不可用,而不是偶发超时。
+   *
+   * 名单 SSoT 复用 `@cindy/anthropic-compat-proxy` 的 loopback port guard,不另立第二份
+   * (该包自己绑端口时也走同一判据)。命中即 close 后重新 `listen(0)` 让内核重选。
+   */
+  let port = 0;
+  for (let attempt = 1; attempt <= FETCH_SAFE_PORT_MAX_ATTEMPTS; attempt += 1) {
+    await listenOnce();
+    port = (httpServer.address() as AddressInfo).port;
+    if (!isFetchBlockedPort(port)) break;
+    log.warn('http bridge rebinding: kernel-assigned loopback port is Fetch-blocked', {
+      port,
+      attempt,
+    });
+    await new Promise<void>((resolve) => {
+      httpServer.close(() => resolve());
+    });
+    if (attempt === FETCH_SAFE_PORT_MAX_ATTEMPTS) {
+      throw new Error(
+        `http bridge could not obtain a Fetch-safe loopback port after ${attempt} attempts`,
+      );
+    }
+  }
 
   log.info('http bridge listening', {
     port,

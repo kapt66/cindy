@@ -3335,3 +3335,66 @@ Meka 开发插件链路、插件市场独立 endpoint/凭证、`edition` 运行�
 - **规则落点**：`docs/dev-rules/cindy-updater.md` 新增「Windows 安装目录身份必须用 stable
   工具链可编译的 API」一节；同步报告
   [`2026-09-18-origin-main-to-meka-main.md`](./2026-09-18-origin-main-to-meka-main.md) §7.9。
+
+### 6.45 2026-09-20 CI `verify:windows` 整段超时：3 处 flake + CI 预算/重试判据（已修）
+
+- **背景**：6.44 修完编译后重跑发布流水线，`verify:windows`（**不是** `resolve:release-version`，
+  两者是不同 job）以 `ERROR: Job failed: execution took longer than 1h0m0s` 结束。
+  实测公网三个 canary 已复位到 stable 0.0.21（`reset-canary` 生效），所以阻塞点是 verify，
+  不是版本解析。`release:windows:canary` 需要 `verify:windows`，因此它同样被挡住。
+- **失败清册（`apps/desktop unit`：6 failed / 39424 passed，3 个文件）**，逐个定性：
+
+  | 文件 | 合并是否改过 | 本机实跑 | 根因 |
+  | --- | --- | --- | --- |
+  | `mcp-integrations/__tests__/codexHttpBridge.test.ts` | 否 | 26/26 通过 | 生产代码 `listen(0)` 命中 Fetch bad port（见下） |
+  | `mcp-integrations/browser-real-profile/__tests__/snapshot.test.ts` | **是**（上游本轮 +116/−7） | 37/37 通过 | 两个用例超时余量过窄（本机 1.4s vs 20s 上限、7.5s vs 自设 10s）；超时后后台仍持句柄，`afterEach` 删临时目录连锁 `EBUSY` ⇒ 1 个超时放大成 4 个 FAIL |
+  | `cindy-brain/__tests__/mekaDevPlugins.test.ts`（Meka 自有） | 否 | 13/13 通过 | `vi.waitFor` **默认只等 1000ms**，而它等的是 zip 打包 + 真实文件 IO 的迁移链 |
+
+- **根因（生产代码，非测试问题）**：`codexHttpBridge.ts` 用 `listen(0)` 让内核选端口，
+  而 undici 的全局 `fetch` 会按 Fetch 标准拒绝对一批 **bad port** 发请求
+  （`TypeError: fetch failed` + `cause: bad port`）。本机动态端口段是 **1024-15000**
+  （非默认 49152+），段内实测 18 个 bad port，命中率约 1/777；命中后交 codex 子进程的 URL
+  **每个请求都失败**。这不是新问题：2026-08-03 的全量运行就出现过
+  「`codexHttpBridge.test.ts` 随机分配到 Fetch 禁止端口产生 2 项 `bad port`」，当时的处置是
+  **单独复跑**（见上文 2026-08-03 段），本次改为修根。
+- **修法**：
+  1. `packages/anthropic-compat-proxy/src/index.ts` 导出既有的 `isFetchBlockedPort`
+     （原本只在包内使用），把它确立为判据 **SSoT**；
+  2. `codexHttpBridge.ts` import 同一判据，`listen(0)` 后校验内核分配的端口：命中就
+     `close()` 重新 `listen(0)`，最多 `FETCH_SAFE_PORT_MAX_ATTEMPTS = 8` 次，仍命中则抛错
+     —— **宁可 bridge 启动失败，也不交出一个全局 fetch 打不通的 URL**。原 30s listen
+     watchdog 逻辑整体提为 `listenOnce()` 保持不变；permanent `'error'` handler 提到绑定
+     循环**之前**注册（循环里会 close + re-listen，期间没有 listener 的异步 error 会升级成
+     进程级 uncaughtException）。
+  3. `snapshot.test.ts`：`it.each` 显式 `60_000`（不再吃全局 win32 20s）、
+     `fails closed…` 由 `10_000` 放宽到 `30_000`。
+  4. `mekaDevPlugins.test.ts`：用**确定性完成信号**替换 `vi.waitFor` —— `manager.syncRegistered()`
+     会先取消 pending debounce 再 await 同一条同步链；迁移（装新 runtimeId → 卸 legacy →
+     落盘 v2）全部发生在该链内。断言未削弱（仍逐字段校验注册表写成 v2）。
+  5. `cindy-meka-cicd/.gitlab-ci.yml`：`verify:windows: timeout` `60m → 120m`，
+     并把重试判据由「整段输出 `-notmatch 'Test timed out'`」改为
+     **仅纯超时才重试**（含 `AssertionError|TypeError|ReferenceError|Error: E[A-Z]+:`
+     一律立即 fatal）。
+- **验证**：三个测试文件本机合跑 **75/75 通过**；新增回归用例
+  `rebinds when the kernel assigns a Fetch-blocked loopback port`（mock `isFetchBlockedPort`
+  令内核首次分配即命中，断言端口确实换了、warn 已发、重绑后的 URL 能被全局 `fetch`
+  成功 initialize）后该文件 **26/26 通过**；
+  `pnpm test:unit:related` 实跑 **`apps/desktop unit` PASS（481.0s）**（此前为
+  `FAIL TEST_ASSERTION_FAILED`，642.9s）；
+  `@cindy/anthropic-compat-proxy`、`desktop`、`@cindy/file-browser-core`、
+  `@cindy/maker-core` 的 `typecheck` 与变更文件 ESLint 均通过。
+- **顺带修掉的第二类环境性红旗（本轮一并处理）**：非 desktop tier 有 2 个**上游本轮新增**的
+  用例在 Windows 上以 `EPERM` 失败 ——
+  `packages/file-browser-core/src/__tests__/completeDirectory.test.ts`（`retains realpath
+  boundaries…`）与 `packages/maker-core/src/agents/pi/__tests__/project-resource-cli.test.ts`
+  （`skips escaped symlinks…`）。二者都用裸 `fs.symlink(dirTarget, link)` 造**目录**链接，
+  而 Windows 默认的 `type: 'file'` 需要 `SeCreateSymbolicLinkPrivilege`（交互账号没有；
+  以 LocalSystem 运行的 runner 是否具备**未验证**）。改为按仓库既有约定分派
+  `process.platform === 'win32' ? 'junction' : 'dir'`：junction 是同一类重解析点、同样指到
+  目标树之外，「指向仓库外的链接必须被跳过」的语义不变。两个文件各自复跑
+  **2/2**、**8/8** 通过。
+- **未验证**：CI 侧 120m 预算与新版判据尚未在 GitLab 上实跑（本机无 GitLab 访问权限，
+  也无法本地复现 22 分钟的 CI 时序）。
+- **规则落点**：`docs/dev-rules/engineering-conventions.md` §4 新增「loopback 端口必须避开
+  Fetch 标准 bad port」（含 SSoT、禁用 `netsh dynamicport` 当修复）；CI 侧时序与重试语义
+  记入 `cindy-meka-cicd/docs/setup.md`。
