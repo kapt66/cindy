@@ -69,9 +69,16 @@ Desktop 测试按成本拆成默认层与显式层：
   `pnpm test:git-integration` 显式运行，并通过 global setup 获取以 Git common-dir
   派生的本机回环端口锁。
 
-远端 `client-ci` 以独立并行 job 在每个 PR、`main` push 和手动触发时运行完整
+远端 `client-ci` 以独立并行 job 在每个 PR、`main` 与 `meka/main` push 和手动触发时运行完整
 `git-integration` 层；本地提交前门禁默认是 `test:unit:related`，修改真实 Git 行为时可按需
 显式补跑完整层。CI 仍跑完整 `test:unit`。
+
+`meka/main` 是 Meka 的集成分支，直推、不开 PR，因此它的 push 触发是**该分支唯一的自动化
+门禁**：Meka 的 GitLab 发布流水线里不再自带验证（原 `verify:windows` 是本 workflow 内容
+的子集，却要占用与开发机共用的 Windows runner 跑 45-60 分钟并压在发布关键路径上）。
+这条 push 触发同时让 `db:validate` 拿到真实的 migration 冻结检查：它以
+`github.event.before`（该分支上一次的 tip）为基线，而 GitLab 侧原先把基线钉成被验证 commit
+自身、该子检查实际恒为空转。
 
 因此同一仓库的多个 worktree 可以并行完成默认单测；只有显式运行完整 Git 集成层时才排队：
 

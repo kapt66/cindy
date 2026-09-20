@@ -235,6 +235,10 @@
 - 非 fork 的非 draft PR 会触发自动 code review（`.github/workflows/pr-code-review.yml`），
   审阅口径见根目录 `REVIEW.md`。它是**建议性**检查，不替代人工 review，也不替代
   `client-ci` 的机器门禁；改动上述两份文件前先读 `REVIEW.md` 开头的说明。
+- **`meka/main` 是直推集成分支，它唯一的自动化门禁是 `client-ci` 的 push 触发**
+  （`.github/workflows/ci.yml` 的 `push.branches` 含 `meka/main`）：该分支不开 PR，Meka 的
+  发布流水线（独立控制仓）也不自带验证，所以**推送即门禁**。往 `meka/main` 推送前必须先在
+  本地跑完本节的提交前门禁；推送后要确认 `client-ci` 通过，不要靠"发布流水线会拦"来兜底。
 - **DCO 签名（硬性要求）**：本仓每个 commit 都必须带 `Signed-off-by` trailer，且其中的
   名字与邮箱都要与 commit 的 author（或 committer）一致，用 `git commit -s` 生成；
   agent 的自动提交同样适用。PR 上的 DCO check（DCO GitHub App，配置见

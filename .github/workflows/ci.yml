@@ -5,6 +5,12 @@ on:
   push:
     branches:
       - main
+      # Meka 的集成分支是直推、不开 PR 的,此前它没有任何自动化门禁可用:2026-09-20 实测
+      # 本 workflow 的 18 次运行全部落在 `main`,`meka/main` 上一次都没有。同时 Meka 的
+      # GitLab 发布流水线里那道 `verify:windows`(内容是本 workflow 的子集、却要占一台
+      # 与开发机共用的 Windows runner 跑 45-60 分钟并压在发布关键路径上)已删除。
+      # 把集成分支挂上这个触发条件,门禁就变成**每次 push 都跑**,而且跑在云端并行分片上。
+      - meka/main
   workflow_dispatch:
 
 permissions:
