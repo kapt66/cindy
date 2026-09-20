@@ -5,6 +5,11 @@
 !include FileFunc.nsh
 !include UAC.nsh
 !include StrContains.nsh
+; 消息目录放宏外 include:宏体里的 ${__FILEDIR__} 在展开时指向「插入方」
+; (插 customHeader 的 templates/common.nsh 所在目录)而不是定义方,而裸相对名
+; 又要靠调用方的 !addincludedir——两者在生产打包时都不成立。放顶层后
+; ${__FILEDIR__} 稳定指向本目录,与 installer.nsh 同级 include 同一套判据。
+!include "${__FILEDIR__}\installer-directory-messages.nsh"
 
 Var cindyDirectoryElevation
 Var cindyRequestedDirectory
@@ -62,8 +67,6 @@ Var cindyDirectoryMessage
 
 !macro customHeader
   !ifndef BUILD_UNINSTALLER
-    !include "installer-directory-messages.nsh"
-
     Function CindyGetUserSid
       StrCpy $cindyUserSid ""
       System::Call 'kernel32::GetCurrentProcess() p.r0'

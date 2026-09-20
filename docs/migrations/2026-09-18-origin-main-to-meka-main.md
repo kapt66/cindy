@@ -1131,6 +1131,13 @@ error: could not compile `cindy-updater` (lib) due to 3 previous errors
   > Windows 上无法编译**（`cargo build --release` 3 个错误），已修复并实测通过
   > （`cargo build --release` exit 0 + `check-windows-installer` PASS）。**WL-6.3/6.4 的
   > 「打包链路可编译」这一环现已验证通过**；但「真实签名 / 真实产物」仍需授权后才能做。
+  > **更正（见 `xdmaker-meka-to-cindy.md` §6.46）**：上句的「打包链路可编译」结论**不成立**。
+  > 当时 `check-windows-installer` 与 `test-winget-shortcuts` 都把
+  > `directories.buildResources` 指到 `resources/`，替生产补了一个生产并不存在的
+  > `!addincludedir`；按生产配置形状复跑即复现 CI 报错
+  > （`!include: could not find: "winget-shortcuts.nsh"`）。该 PASS **只覆盖了 harness
+  > 路径，不代表生产安装器可编译**。两个脚本已改为按生产形状编译，并新增
+  > `scripts/installer-include-resolution.test.mjs` 兜住同类回归。
 
 ### 8.2 待用户/维护者决定
 

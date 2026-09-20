@@ -6,8 +6,14 @@
 ; Cindy Meka 正式版 cn/global 文件名同值（CindyMeka），dev 独立（CindyMekaDev）；
 ; 安装器只处理本区域身份，dev 安装器绝不误伤同机并存的正式安装。注册表键名
 ; Windows 大小写不敏感，同名不同大小写视为同一个键，行为零变化。
-!include "winget-shortcuts.nsh"
-!include "installer-directory.nsh"
+; 同级 include 必须走 ${__FILEDIR__}:NSIS 解析相对 !include 只看 makensis 的
+; 工作目录、!addincludedir 列表和 NSISDIR\Include,不看「包含它的文件所在目录」;
+; 而生产打包时 app-builder-lib 只把 buildResourcesDir 加进 !addincludedir
+; (NsisTarget.js addIncludeDir(packager.info.buildResourcesDir)),本仓没有
+; apps/desktop/build,于是裸文件名在生产会 could not find——0.0.22 的
+; Windows 发布就是这样挂在第 9 行的。加目录前缀会重新依赖调用方,别退回裸名。
+!include "${__FILEDIR__}\winget-shortcuts.nsh"
+!include "${__FILEDIR__}\installer-directory.nsh"
 
 !ifndef BUILD_UNINSTALLER
 !macro customInit

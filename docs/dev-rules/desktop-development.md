@@ -247,15 +247,44 @@ NSIS 安装器保留当前用户／所有用户两种范围。普通用户可写
 `forge.config.ts` 因此关闭上游自带目录页，由 `customPageAfterChangeDir` 插入同款原生页。
 不要单独打开上游 `allowToChangeInstallationDirectory`，否则会重复插入页面。
 
-在 Windows 显式运行原生验证（临时目录内编译，不安装 Cindy）：
+### NSIS 脚本自带的 `!include` 必须用 `${__FILEDIR__}`
+
+`resources/*.nsh` 之间互相引用（`installer.nsh` → `winget-shortcuts.nsh` /
+`installer-directory.nsh` → `installer-directory-messages.nsh`）时，**必须**写成
+`!include "${__FILEDIR__}\x.nsh"`，不得写裸文件名，也不要用相对目录前缀。
+
+原因是 NSIS 解析相对 `!include` 只看三处：makensis 的工作目录、`!addincludedir`
+列表、`NSISDIR\Include`——**不看「包含它的那个文件所在目录」**。而生产打包路径上
+app-builder-lib 只把 `buildResourcesDir` 加进 `!addincludedir`
+（`NsisTarget.js` 的 `addIncludeDir(packager.info.buildResourcesDir)`），本仓从未有
+`apps/desktop/build/`，`forge.config.ts` 也没有设 `directories.buildResources`，
+所以裸名字在生产必然 `!include: could not find`。0.0.22 的 Windows 发布就是这样
+挂在 `installer.nsh` 第一处同级 include 上（`ERR_ELECTRON_BUILDER_CANNOT_EXECUTE`）。
+
+宏体内的 include 还有一层：`${__FILEDIR__}` 在**宏展开时**解析，指向「插入宏的文件」
+而不是「定义宏的文件」。所以 `installer-directory-messages.nsh` 必须放在顶层
+（`!ifndef BUILD_UNINSTALLER` 块内、任何宏之外），不能留在 `customHeader` 宏体内。
+这类 include 要生效必须同时满足「顶层」和「`${__FILEDIR__}`」两个条件。
+
+验证分工（两层都要，缺一层就会重演）。在 Windows 显式运行原生验证
+（临时目录内编译，不安装 Cindy；`installer-include-resolution.test.mjs` 不吃 NSIS
+工具链，任何平台都能跑）：
 
 ```bash
 node apps/desktop/scripts/check-windows-installer.mjs
+node apps/desktop/scripts/test-winget-shortcuts.mjs
+pnpm --filter desktop exec vitest run scripts/installer-include-resolution.test.mjs
 pnpm --filter desktop exec vitest run scripts/installer-directory-messages.test.mjs
 ```
 
-前者编译真实安装器／卸载器，并实跑 Win32 文件访问与账号 SID 探测；UAC 返回值由测试
-替身提供，覆盖取消、子进程退出和账号／范围恢复。它不能代替真实 UAC 交互验收。发布前
-还需在普通权限 Windows 环境走查：默认目录、自定义受保护目录、允许／取消授权、使用
-另一管理员账号、旧版覆盖安装，以及静默安装失败时旧版仍在。原生对话框的 Light／Dark
-外观由 Windows 提供，自动测试不代表两种模式已完成目检。
+两个 native 脚本都必须**按生产配置形状**编译（不设 `directories.buildResources`）。
+此前它们把 `buildResources` 指到 `resources/`，等于替生产补了一个不存在的
+`!addincludedir`——这正是 0.0.22 发布失败而两道检查全绿的原因，不要再改回去。
+`installer-include-resolution.test.mjs` 是纯路径规则检查，因此在任何平台
+（含 Linux CI）都会拦住同类回归。
+
+`check-windows-installer.mjs` 编译真实安装器／卸载器，并实跑 Win32 文件访问与账号
+SID 探测；UAC 返回值由测试替身提供，覆盖取消、子进程退出和账号／范围恢复。它不能
+代替真实 UAC 交互验收。发布前还需在普通权限 Windows 环境走查：默认目录、自定义受保护
+目录、允许／取消授权、使用另一管理员账号、旧版覆盖安装，以及静默安装失败时旧版仍在。
+原生对话框的 Light／Dark 外观由 Windows 提供，自动测试不代表两种模式已完成目检。

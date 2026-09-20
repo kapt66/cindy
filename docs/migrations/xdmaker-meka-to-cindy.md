@@ -3425,3 +3425,109 @@ Meka 开发插件链路、插件市场独立 endpoint/凭证、`edition` 运行�
 - **验证（续修）**：9 个改动文件合跑 **514/514 通过**；代理包
   `fetch-blocked-ports.test.ts` + `server.test.ts` **162/162 通过**；
   `@cindy/anthropic-compat-proxy` 与 `desktop` 的 typecheck、变更文件 ESLint 全绿。
+- **第三轮：把 `verify:windows` 的每一步在本地实跑到全绿（不再逐个等 CI 报错）**。
+  `verify:windows` 共有 14 个步骤，此前只实测过其中 3 个（typecheck / desktop unit /
+  runner），其余从未跑过 —— 这正是"改一次、CI 再报一次"的根因。逐条补齐后的结果：
+
+  | 步骤 | 结果 |
+  | --- | --- |
+  | `pnpm install --frozen-lockfile`（CI 原样） | exit 0（**移除了 100 个包**，说明此前本机 `node_modules` 与冻结锁不一致 —— 修正后所有结论都在冻结树上重新取） |
+  | `test:runner`（根 `node --test --test-concurrency=1`） | exit 0，`# tests 652 / # pass 645 / # fail 0` |
+  | `desktop typecheck` / `mobile typecheck` | exit 0 |
+  | `check:endpoints` / `check:i18n` / `check:brand-terminology` / `check:i18n-glossary` | 全 exit 0 |
+  | `desktop db:validate` | exit 0 |
+  | `unit: desktop`（`test-workspaces`） | **PASS 581.6s** |
+  | `unit: non-desktop`（27 个 workspace） | **PASS 488s**，全部 workspace PASS |
+  | `ci:scheduler-guard` / `mobile test:scope` | exit 0 |
+- **复现这事本身有两个坑，已固化进 `.tmp` 之外的判断**：
+  1. **必须清掉 `npm_execpath`**。本机 shell 宿主本身跑在 npm 下，而
+     `scripts/shared/pnpm-invocation.mjs` 优先使用 `$npm_execpath`；继承到 npm 路径后
+     workspace runner 会用 `npm --dir <ws> exec vitest` 驱动，每个 vitest 步骤都以
+     `Unknown command: "<ws>"` 秒挂（**这是复现环境的假红，不是仓库问题**）。CI 没有
+     这个变量，会回落到 `<node>/pnpm.cmd`。
+  2. Git for Windows 的 `bin` 必须在 PATH 前部（CI 的 `.windows-base` 显式这么做），否则
+     仓库契约里 `bash -e -c` 会命中 WSL 启动器并丢环境变量。
+- **第三轮顺带修掉的生产代码缺陷（本次同步引入，故在本交付内修）**：
+  `apps/desktop/src/main/file-browser/html-preview.ts` 由上游 `0a104b5ae9`
+  （`feat(files): 统一远程文件读取并按需预览 HTML (#4346)`）引入 —— 该文件在合并前的
+  `meka/main` **不存在**。它 `listen(0)` 起本地预览服务，产生的 URL 交给两条消费路径：
+  in-app 侧栏与 `openExternal`（**系统浏览器**）。两边都是 Chromium，端口落在非安全端口上
+  时用户只会看到 `ERR_UNSAFE_PORT`，而预览内容本身是好的 —— 一个"看起来像渲染 bug"的
+  假红。改用 `listenOnFetchSafePort`；同文件的 `html-preview.test.ts`（直接
+  `fetch(preview.url)`，端口由生产代码绑）已在用例里补上
+  `expect(isFetchBlockedPort(port)).toBe(false)` 的显式断言。
+- **第三轮发现但**未**在本交付内修（存量，非本次引入，按 `AGENTS.md`「审查与问题范围」
+  报告待裁决）**：另外 4 处生产 `listen(0)` 同样是这条链路的候选，均已在合并前的
+  `meka/main` 存在：`authManager.ts`（loopback 回调，URL 交系统浏览器）、
+  `maker-host/claude-oauth-login.ts`（OAuth `redirect_uri`，同上）、
+  `cindy-brain/localServerSupervisor.ts`（probe-then-pin 取端口）、
+  `packages/ios-simulator-runtime/src/wda/process-manager.ts`（probe-then-pin）。
+  后两者属"钉死端口"型（命中后无重选机会）；`ios-simulator-runtime` 还是**独立 package**，
+  要修得先决策依赖方向（`architecture-invariants.md` §1），不适合夹带。
+  另：`browser-real-profile/launch.ts` 的 `pickManagedCdpPort` 用的是固定段
+  `18800-18819`，**不含**任何 bad port，无需处理。
+
+### 6.46 2026-09-20 Windows 打包阻断：NSIS 同级 `!include` 在生产配置下无法解析（已修）
+
+- **现象**：`release:windows:canary` 在 `npx electron-forge make` 失败：
+  `makensis.exe process failed ERR_ELECTRON_BUILDER_CANNOT_EXECUTE`，错误输出
+  `!include: could not find: "winget-shortcuts.nsh"` /
+  `installer.nsh on line 9`。**整个 Windows 打包中止**。
+- **根因（不是缺文件，是 include 解析基准错了）**：`resources/installer.nsh` 用裸
+  文件名 include 同目录的 `winget-shortcuts.nsh` / `installer-directory.nsh`，而
+  NSIS 解析相对 `!include` 只看 makensis 工作目录、`!addincludedir`、`NSISDIR\Include`，
+  **不看包含方所在目录**（本机实测：同目录文件就在旁边仍报 `could not find`）。
+  app-builder-lib 只加 `buildResourcesDir` 一个 include 目录
+  （`NsisTarget.js` `addIncludeDir(packager.info.buildResourcesDir)`），而生产
+  `directories.buildResources` 未设 ⇒ 取默认 `apps/desktop/build` ⇒ CI 日志里的
+  `BUILD_RESOURCES_DIR=...\apps\desktop\build`，该目录从未存在。
+- **为什么“之前好的”**：`cindy-meka-v0.0.21` 的 `resources/` 只有 `installer.nsh`，
+  **一处同级 include 都没有**，所以 0.0.21 及以前根本不走这条路径。上游
+  `553816b98d`（09-17 12:03，安装目录预检查）首次加入
+  `!include "installer-directory.nsh"`，同日 `2379c2d242`（09-17 22:24，winget 入口）
+  又在其上方插入 `!include "winget-shortcuts.nsh"`；两个 commit **都不在任何 tag 内**，
+  0.0.22 是第一个真正编译它们的 Windows 发布。**上游 `origin/main` 同样未设
+  `buildResources`、同样没有 `apps/desktop/build`，即这是上游同源缺陷，不是 Meka 合并引入。**
+- **两道检查为何全绿（掩盖层）**：`check-windows-installer.mjs` 与
+  `test-winget-shortcuts.mjs` 都把 `directories.buildResources` 指到 `resources/`，
+  等于替生产补了一个生产并不存在的 `!addincludedir`。已实测：把生产配置形状
+  （不覆盖 `buildResources`）喂给 electron-builder，复现 CI 逐字相同报错。
+- **修法**：
+  1. `installer.nsh` / `installer-directory.nsh` 的同级 include 改
+     `!include "${__FILEDIR__}\x.nsh"`（自定位，不依赖调用方搜索路径）；
+  2. `installer-directory-messages.nsh` 从 `customHeader` **宏体内移到顶层**：实测宏体
+     里的 `${__FILEDIR__}` 在展开时指向**插入方**（`templates/nsis/include/common.nsh`
+     所在目录）而非定义方，留宏内必错；该文件只定义宏与常量，顶层 include 等价，
+     且仍在 `!ifndef BUILD_UNINSTALLER` 保护内（卸载器不定义未用常量）；
+  3. 两个 native 检查脚本去掉 `buildResources` 覆盖，按生产形状编译。
+- **影响面**：仅 include 解析方式与 `installer-directory-messages.nsh` 的 include 位置。
+  三个 `.nsh` 的宏名、常量名、语言目录与全部注册表/快捷方式/UAC 行为未变。
+- **验证**：生产形状 `electron-builder` 编译 **FAILED → compiled**；把 `installer.nsh`
+  的缺陷临时改回，生产形状检查复现 CI 原报错（`could not find: "winget-shortcuts.nsh"`），
+  证明该检查是**真门禁**而非空跑；`check-windows-installer.mjs` PASS（含 6 个 native
+  preflight 场景）；`test-winget-shortcuts.mjs` PASS；`test-login-item-uninstall.mjs`
+  PASS 8 场景；新增 `scripts/installer-include-resolution.test.mjs`（纯路径规则，无需
+  NSIS 工具链，Linux CI 亦可跑）在修复前 **列出全部 3 处**违规、修复后转绿。
+- **存量用户更新安全（本次最关键）**：修复本身**不改变安装器/卸载器的任何行为**，
+  已用「编译期等价」实证，而非仅凭 diff 判断：
+  1. 用 electron-builder 以 `DEBUG=electron-builder` 分别产出「HEAD 旧脚本 + `buildResources=resources`」
+     与「修复后脚本 + 生产形状（不设 buildResources）」两份**生成脚本**，逐行 diff：除刻意变化的
+     `!addincludedir` 一行与随机临时目录路径外**完全一致**，`!include "<RES>\installer.nsh"` 两处同值；
+  2. 对两个变体跑 `makensis -V4`，**installer 与 uninstaller(`-DBUILD_UNINSTALLER`) 两个 pass**
+     的 include 解析图逐条相同（`winget-shortcuts.nsh` / `installer-directory.nsh` 解析到同一文件），
+     uninstaller pass 中消息目录仍**未被**包含（`!ifndef BUILD_UNINSTALLER` 守卫两侧等价）；
+  3. 修复后新增的顶层 include 落在与旧版宏内 include **同一守卫内**，且
+     `installer-directory-messages.nsh` 全文只有 `!define` 常量与一个 `!macro`，无语句执行，
+     提前定义不产生副作用；生产以 `-WX`（warnings as errors）编译成功，说明**无宏/常量重定义**
+     与顺序问题（若有会直接编译失败）。
+  结论：makensis 收到的指令流等价 ⇒ 不会因为本修复改变任何已发布用户升级时的安装器行为。
+- **顺带确认的升级面事实**：0.0.22 相对 0.0.21 新增了安装目录 UAC 预检查
+  （`installer-directory.nsh`）、winget 快捷方式备份/恢复（`winget-shortcuts.nsh`）、
+  登录项保留与 `--keep-shortcuts` 卸载守卫（`installer.nsh`）。这些是**上游同源**行为
+  （`553816b98d` / `2379c2d242`），**不是本修复引入**；且 `winget-shortcuts.nsh` 的
+  备份失败为 fail-closed（`SetErrorLevel 1` + `Quit`，在旧卸载器动手前中止，用户留在旧版可用），
+  有 `test-winget-shortcuts.mjs` / `test-login-item-uninstall.mjs` 的 3+8 个场景覆盖并通过。
+  **本修复的作用是让 0.0.22 第一次真正可编译**，因此这批行为将随 0.0.22 首次面向存量用户生效——
+  这属于既定版本内容，非本次修改范围。
+- **规则落点**：`docs/dev-rules/desktop-development.md` 新增「NSIS 脚本自带的
+  `!include` 必须用 `${__FILEDIR__}`」一节，含宏体展开语义与两层验证分工。

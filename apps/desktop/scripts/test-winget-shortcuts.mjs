@@ -130,7 +130,10 @@ try {
     publish: 'never',
     config: {
       appId: 'com.xd.cindy', productName: 'Cindy', electronVersion: '40.0.0',
-      directories: { output: path.join(root, 'out'), buildResources: path.join(desktop, 'resources') },
+      // buildResources is deliberately left at the production value: production
+      // sets nothing, and supplying resources/ here would add an !addincludedir
+      // production does not have (that is how 0.0.22 shipped a broken installer.nsh).
+      directories: { output: path.join(root, 'out') },
       win: { signAndEditExecutable: false },
       nsis: {
         // Match production: installer-directory.nsh supplies the directory page.
