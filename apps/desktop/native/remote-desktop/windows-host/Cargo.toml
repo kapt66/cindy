@@ -4,7 +4,16 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 
+# 该包同时产出 bin（cindy-windows-desktop-host.exe，被 NSIS 卸载与
+# security.rs 的服务名哈希依赖）与 cdylib（复制为 cindy-windows-desktop-host.node）。
+# cargo 在 deps/ 下把 bin 目标名里的 `-` 归一化为 `_`，若 lib 用默认的
+# cindy_windows_desktop_host，两个目标会写同一个 cindy_windows_desktop_host.pdb；
+# 两者并发链接时 link.exe 报 LNK1201（写入程序数据库失败），表现为 CI 偶发失败。
+# 因此 lib 目标名必须与 bin 目标名归一化后的结果不同；产物对外名由 forge 复制决定，不受影响。
+# 名字带 meka 是本仓在 meka/main 上新增命名的硬性要求（见
+# docs/dev-rules/engineering-conventions.md §8）。
 [lib]
+name = "cindy_meka_windows_desktop_host_napi"
 crate-type = ["cdylib"]
 
 [build-dependencies]

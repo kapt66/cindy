@@ -1155,7 +1155,9 @@ function buildRemoteDesktopInput(platform: ForgePlatform, arch: ForgeArch): void
       const output = path.join(root, 'target', target, 'release');
       const name = `cindy-windows-desktop-${helper === 'windows-input' ? 'input' : 'host'}`;
       fs.copyFileSync(path.join(output, `${name}.exe`), path.join(destDir, `${name}.exe`));
-      if (helper === 'windows-host') fs.copyFileSync(path.join(output, 'cindy_windows_desktop_host.dll'), path.join(destDir, `${name}.node`));
+      // cdylib 目标名刻意不同于 bin 目标名（见 Cargo.toml 注释）：同名会让两个目标
+      // 并发写同一个 .pdb，link.exe 报 LNK1201 导致打包偶发失败。
+      if (helper === 'windows-host') fs.copyFileSync(path.join(output, 'cindy_meka_windows_desktop_host_napi.dll'), path.join(destDir, `${name}.node`));
     }
   }
 }

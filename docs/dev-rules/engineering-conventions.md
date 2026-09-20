@@ -312,6 +312,18 @@ PR 门禁必须在 Windows 上用两个并行分片完整覆盖 `pnpm test:unit`
   时用 DevTools Performance 实测，以数据为准。弹窗按钮 loading 等秒级瞬态存量不强制
   改，新代码一律照此。
 
+## 8. meka/main 上的命名
+
+- 在 `meka/main` 上**新引入**的命名一律带 `meka`（目标名、符号名、文件名、资源名等）。
+  上游已有的名字不因此改名；对外产物名以既有事实文档为准，命名不影响已发布标识。
+- 例：Windows 远程桌面 host 的 Rust cdylib 目标名是
+  `cindy_meka_windows_desktop_host_napi`。它必须与同包的 bin 目标名区分（MSVC 的
+  `.pdb` 同名会让两个目标并发链接报 `LNK1201`），原因与验证见
+  [`remote-desktop.md`](../remote-desktop.md) 的 Windows system service 一节。
+- 该规则只管代码/构建命名，不改变 `CindyMeka` / `cindy-meka` 安装身份、用户数据目录、
+  协议与更新渠道；那些以 [`migrations/xdmaker-meka-to-cindy.md`](../migrations/xdmaker-meka-to-cindy.md)
+  为准。
+
 ## Review 清单
 
 1. 有没有裸 `console.log`？临时排查日志是否清理干净？

@@ -495,6 +495,22 @@ The settings page installs/removes the service through Windows administrator
 consent. Only a protected all-users Program Files installation is eligible;
 per-user/development installations retain the ordinary desktop path.
 
+Build constraint (2026-09-20): this Rust package emits two targets — the service
+executable and a Node-API cdylib that Forge copies to
+`cindy-windows-desktop-host.node`. Cargo normalizes the bin target's `-` to `_`
+under `deps/`, so the cdylib target is explicitly named
+`cindy_meka_windows_desktop_host_napi` (the `meka` infix is required for names
+introduced on `meka/main`, see
+[`dev-rules/engineering-conventions.md`](dev-rules/engineering-conventions.md) §8);
+with the inferred default (`cindy_windows_desktop_host`) both targets link to the
+same `cindy_windows_desktop_host.pdb`, and concurrent linking fails with
+`LNK1201 (failed to write program database)`. That race is what failed
+`release:windows:canary` for 0.0.22 with `cargo build --release` reporting
+`output filename collision` immediately before the error, and it reproduces
+locally once either target is relinked. The shipped artifact names are
+unaffected because Forge copies the build outputs to
+`cindy-windows-desktop-host.exe` / `cindy-windows-desktop-host.node`.
+
 Authorization records a live process handle for the Cindy process explicitly
 approved through the elevated setup helper. Executable path alone is insufficient:
 plugin utility processes share Cindy.exe. The service starts on demand and exits when its approved Cindy process exits.

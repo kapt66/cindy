@@ -148,7 +148,8 @@
   交付前，必须先读 `docs/dev-rules/agent-runtime-release.md`。
 - 新增或修改 Desktop 日志、IPC 错误处理、main 侧业务逻辑与测试、跨平台（macOS／
   Windows）行为，或任何 UI 文案的 i18n 落地前，必须先读
-  `docs/dev-rules/engineering-conventions.md`。
+  `docs/dev-rules/engineering-conventions.md`；在 `meka/main` 上新增命名（目标名、
+  符号名、文件名、资源名）前，必须先读该文件 §8。
 - 修改客户端日志采集／脱敏／上报链路（`apps/desktop/src/main/log-upload/**`）、`logger.ts`
   的 main 日志行格式、崩溃判定或待补传标记前，必须先读
   `docs/dev-rules/log-upload-and-redaction.md`。其中记录边界、deny-by-default 白名单、标记
