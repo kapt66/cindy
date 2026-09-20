@@ -6,6 +6,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { createFileReadQueue } from '@cindy/device-link';
+import { listenOnFetchSafePort } from '@cindy/anthropic-compat-proxy';
 import { HTML_SNAPSHOT_CSP, withSnapshotHtmlCsp } from '@cindy/maker-shared/file-preview';
 import type { DirEntry } from '@cindy/file-browser-core';
 import { toWorkdirRel } from '../../shared/workdirPath.js';
@@ -276,15 +277,12 @@ export async function createHtmlPreview(args: HtmlPreviewArgs, source: PreviewSo
         deny(status);
       }).finally(() => pending.delete(work));
     });
-    await new Promise<void>((resolve, reject) => {
-      server!.once('error', reject);
-      server!.listen(0, '127.0.0.1', () => {
-        server!.off('error', reject);
-        resolve();
-      });
-    });
+    // 这个 URL 会同时被 in-app 侧栏与 `openExternal`（系统浏览器）打开，两边都是 Chromium：
+    // 落在 Fetch/Chromium 的非安全端口上，用户只会看到 ERR_UNSAFE_PORT，而预览本身是好的。
+    // 用共享的 Fetch-safe 绑定，命中内核分到的坏端口时自动重选。
+    const port = await listenOnFetchSafePort(server!);
     server.unref();
-    origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    origin = `http://127.0.0.1:${port}`;
     if (source.isCurrent && !source.isCurrent()) throw new Error('PREVIEW_CANCELLED');
     return { url: `${origin}/${token}/`, close };
   } catch (error) {

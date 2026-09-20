@@ -298,12 +298,20 @@ afterEach(() => {
 
 describe.sequential('updateService', () => {
 describe('installation version repair scope', () => {
+  // 这几条是**首次**为 updateService 模块图付 `vi.resetModules()` + 重新 import 的代价，
+  // 而且导入发生在 beforeEach 已经 `vi.useFakeTimers()` 之后（fake timers 下的动态 import
+  // 会走定时器驱动的调度，明显更慢）。空载实测首条 >5s，第八个 worker 的满载机器上会撞上
+  // 全局 20s 默认上限，表现为一条 `FAIL … does not add metadata work to darwin startup` 的
+  // 超时（不是断言失败）。这里给显式预算，避免用 22 分钟的整仓重试去兜一条首导入成本很高的
+  // 用例。同文件后续用例因模块图已热，只需默认值。
+  const MODULE_GRAPH_IMPORT_TIMEOUT_MS = 120_000;
+
   it.each(['darwin', 'linux'] as const)('does not add metadata work to %s startup', async (platform) => {
     const service = await freshUpdateService(platform);
     service.initUpdateService();
     expect(syncWindowsVersionAfterUpdate).not.toHaveBeenCalled();
     service.stopUpdateService();
-  });
+  }, MODULE_GRAPH_IMPORT_TIMEOUT_MS);
 
   it('does not touch Windows development installations', async () => {
     const service = await freshUpdateService('win32');
@@ -311,7 +319,7 @@ describe('installation version repair scope', () => {
     service.initUpdateService();
     expect(syncWindowsVersionAfterUpdate).not.toHaveBeenCalled();
     service.stopUpdateService();
-  });
+  }, MODULE_GRAPH_IMPORT_TIMEOUT_MS);
 
   it('checks only the current Windows install and its existing update receipt', async () => {
     const service = await freshUpdateService('win32');

@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { get } from 'node:http';
 import { statEntry } from '@cindy/file-browser-core';
+import { isFetchBlockedPort } from '@cindy/anthropic-compat-proxy';
 import { HTML_SNAPSHOT_CSP, withSnapshotHtmlCsp } from '@cindy/maker-shared/file-preview';
 import {
   createHtmlPreview,
@@ -84,6 +85,9 @@ describe('directory HTML preview', () => {
     await fs.writeFile(path.join(dir, 'legacy.html'), legacy);
     const preview = await createHtmlPreview(args, source);
     cleanups.push(preview.close);
+    // 预览 URL 会被 in-app 侧栏与 `openExternal`(系统浏览器)打开,两边都是 Chromium:
+    // 落在非安全端口上用户只会看到 ERR_UNSAFE_PORT。生产代码必须避开这批端口。
+    expect(isFetchBlockedPort(Number(new URL(preview.url).port))).toBe(false);
     const entry = await fetch(preview.url, { redirect: 'manual' });
     expect(entry.status).toBe(302);
     const cookie = entry.headers.get('set-cookie')!.split(';')[0];

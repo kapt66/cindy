@@ -6,6 +6,7 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { listenOnFetchSafePort } from '@cindy/anthropic-compat-proxy';
 import { once } from 'node:events';
 import type { Duplex } from 'node:stream';
 
@@ -382,8 +383,7 @@ async function startUpgradeServer(
     res.writeHead(404).end();
   });
   server.on('upgrade', onUpgrade);
-  server.listen(0, '127.0.0.1');
-  await once(server, 'listening');
+  await listenOnFetchSafePort(server);
   const addr = server.address();
   if (addr === null || typeof addr === 'string') throw new Error('no port');
   cleanups.push(() => server.close());

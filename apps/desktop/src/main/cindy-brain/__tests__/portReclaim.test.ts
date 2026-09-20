@@ -4,6 +4,7 @@
  * ——真杀进程的分支靠护栏外不可达的 PID 无法安全自动化,由人工验证覆盖。
  */
 import * as http from 'node:http';
+import { listenOnFetchSafePort } from '@cindy/anthropic-compat-proxy';
 import { describe, expect, it } from 'vitest';
 
 import { findPortOwnerPids, killPortOwner, reclaimLoopbackPort } from '../portReclaim.js';
@@ -21,12 +22,7 @@ const strictPlatform = process.platform === 'win32' || process.platform === 'dar
 const PORT_ATTEMPTS = 5;
 
 async function listenLoopback(srv: http.Server): Promise<number> {
-  return new Promise<number>((resolve) => {
-    srv.listen(0, '127.0.0.1', () => {
-      const addr = srv.address();
-      resolve(typeof addr === 'object' && addr ? addr.port : 0);
-    });
-  });
+  return listenOnFetchSafePort(srv);
 }
 
 describe('portReclaim', () => {
@@ -66,13 +62,7 @@ describe('portReclaim', () => {
     if (!lanAddr) return;
     for (let attempt = 1; attempt <= PORT_ATTEMPTS; attempt += 1) {
       const srv = http.createServer();
-      const port = await new Promise<number>((resolve, reject) => {
-        srv.on('error', reject);
-        srv.listen(0, lanAddr, () => {
-          const addr = srv.address();
-          resolve(typeof addr === 'object' && addr ? addr.port : 0);
-        });
-      }).catch(() => 0);
+      const port = await listenOnFetchSafePort(srv, lanAddr).catch(() => 0);
       if (port === 0) return; // 绑 LAN IP 失败(权限/网络形态),跳过
       try {
         // 该端口上只有一条绑 LAN IP 的监听:不会挡 127.0.0.1 bind,必须查不出候选。

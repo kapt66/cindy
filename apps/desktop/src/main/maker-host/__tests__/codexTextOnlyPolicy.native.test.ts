@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createServer } from 'node:http';
 import { expect, it } from 'vitest';
-import { createAnthropicCompatProxy, type ProxyHandle } from '@cindy/anthropic-compat-proxy';
+import { listenOnFetchSafePort, createAnthropicCompatProxy, type ProxyHandle } from '@cindy/anthropic-compat-proxy';
 import { selectedHeaderValue, STABLE_THREAD_ID_HEADERS } from '@cindy/model-compat';
 import { AppServerHost } from '../../../../../../packages/maker-core/src/agents/codex/app-server/host';
 import { createStdioTransport } from '../../../../../../packages/maker-core/src/agents/codex/app-server/stdioTransport';
@@ -46,7 +46,7 @@ it.skipIf(!binary).each([false, true])('native full-access welcome refuses rogue
   });
   let proxy: ProxyHandle | undefined; let host: AppServerHost | undefined; let unregister: (() => void) | undefined;
   try {
-    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    await listenOnFetchSafePort(server);
     const upstream = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
     proxy = await createAnthropicCompatProxy({ upstream, transformRequest: [],
       requestGuard: ctx => codexTextOnlyRequestGuard(isCodexTextOnly(selectedHeaderValue(ctx.headers, STABLE_THREAD_ID_HEADERS) ?? ''), ctx),

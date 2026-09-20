@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as openaiCompletions from '@earendil-works/pi-ai/api/openai-completions';
 import { PROVIDER_MODEL_CATALOG, BUNDLED_CATALOG, buildUserProvider } from '@cindy/model-providers';
+import { listenOnFetchSafePort } from '@cindy/anthropic-compat-proxy';
 import { createPiProviderFetch, hostCredentialEndpointAllowed, invocationModelRecord, nativeBridgeApiKey, NATIVE_ADAPTER_ERROR_BODY_LIMIT, readBoundedResponseText } from '../pi-provider-transport.js';
 
 vi.mock('@earendil-works/pi-ai/api/openai-completions', async (importOriginal) => ({
@@ -41,7 +42,6 @@ describe('Pi-owned transport for Cindy harnesses', () => {
 
 it('keeps native Gemini tool signatures across two turns through Responses history', async () => {
   const { createServer } = await import('node:http');
-  const { once } = await import('node:events');
   const sent: Record<string, unknown>[] = [];
   const server = createServer((req, res) => {
     const chunks: Buffer[] = [];
@@ -55,7 +55,7 @@ it('keeps native Gemini tool signatures across two turns through Responses histo
       res.end(`data: ${JSON.stringify({ candidates: [{ content: { role: 'model', parts }, finishReason: 'STOP' }], usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5, totalTokenCount: 15 } })}\n\n`);
     });
   });
-  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  await listenOnFetchSafePort(server);
   try {
     const address = server.address() as import('node:net').AddressInfo;
     const row = { ...PROVIDER_MODEL_CATALOG.providers.google.find(row => row.id.startsWith('gemini-3'))!,

@@ -73,7 +73,17 @@ export default defineConfig({
     // Linux/macOS/CI so genuine hangs still surface promptly. Tests that need
     // even more (multi-step real-git orchestration) still set their own higher
     // per-file timeout, which overrides this.
-    testTimeout: process.platform === 'win32' ? 20_000 : 5_000,
+    //
+    // 2026-09-20 实测把 20s 调到 60s：**代价由「首次 import 一个很大的模块图」主导**
+    // 的用例，空载 6.7s（`updateService` 的 `vi.resetModules()` + 重新 import）、
+    // 被迫压到 5s 预算时实测 10.4s；8 worker 满载时同一批用例越过 20s，
+    // 连续两轮把 Windows 发布链路的 `verify:windows` 卡在
+    // `FAIL … does not add metadata work to darwin startup` 与
+    // `FAIL … codexAuthIsolatedSandbox … Test timed out in 20000ms` 上。
+    // 这不是断言失败、也不是真挂起（vitest 的 timeout 仍会拦真挂起，只是晚 40s），
+    // 所以按"给 Windows 更宽默认值"的既有口径继续放宽；上面那两条用例另外还各自
+    // 留了更宽的显式预算。
+    testTimeout: process.platform === 'win32' ? 60_000 : 5_000,
     // Node 25 默认开启 webstorage,globalThis.localStorage 变成一个未配
     // --localstorage-file 时方法全缺的残缺对象:node 环境下骗过
     // `typeof localStorage !== 'undefined'` 探测,jsdom 环境下又因 key 已存在

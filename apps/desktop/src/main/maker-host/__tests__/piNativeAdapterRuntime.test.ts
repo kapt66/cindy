@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { listenOnFetchSafePort } from '@cindy/anthropic-compat-proxy';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -31,7 +32,7 @@ it.skipIf(!existsSync(binary)).each(['github-copilot', 'cloudflare-ai-gateway'])
       res.end();
     });
   });
-  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  await listenOnFetchSafePort(server);
   let child: ReturnType<typeof spawn> | undefined;
   try {
     const baseUrl = `http://127.0.0.1:${(server.address() as import('node:net').AddressInfo).port}`;

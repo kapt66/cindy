@@ -1,5 +1,6 @@
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { listenOnFetchSafePort } from '@cindy/anthropic-compat-proxy';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocketServer, type WebSocket } from 'ws';
@@ -28,12 +29,9 @@ afterEach(async () => {
 });
 
 async function listen(server: Server): Promise<number> {
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => resolve());
-  });
+  const port = await listenOnFetchSafePort(server);
   servers.push(server);
-  return (server.address() as AddressInfo).port;
+  return port;
 }
 
 async function createFakeCdp(options: {

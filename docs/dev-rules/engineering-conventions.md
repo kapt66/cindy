@@ -85,6 +85,17 @@ UI 文案的语气与措辞另见 [`DESIGN.md`](../design-rules/DESIGN.md) 的 V
   专用 tier，并按实际共享资源增加跨 worktree 协调；不要在测试文件里自行发明全局锁。
 - “合并测试”只合并重复 fixture 和等价输入矩阵，不合并语义不同的失败路径，也不以删除断言
   换速度。若单文件仍有大量真实 I/O，迁移 tier，而不是继续扩大 timeout。
+- **共享 Windows 发布 runner 上，Windows 默认单测预算按"能容纳重模块图首导入"设**：
+  一批用例的成本**几乎全部**来自第一次 `await import(...)`／`vi.resetModules()` 重新导入
+  一个大模块图（不是断言、也不是真实 I/O），空载 6–10s、8 worker 满载时越过 20s。
+  2026-09-20 这类超时连续两轮把 `verify:windows` 卡红
+  （`updateService > does not add metadata work to darwin startup`、
+  `codexAuthIsolatedSandbox > 开关开:不建共享硬链…`），而它们在单文件复跑时全绿 ——
+  典型的"看起来像断言失败、其实是预算不够"。`apps/desktop/vitest.config.ts` 的 win32
+  默认值因此定为 **60s**（Linux/macOS 仍 5s）：vitest 的 timeout 仍然拦真挂起，只是晚 40s。
+  新增此类"首导入很贵"的用例时给它自己的显式预算，不要指望默认值；反之，**不要把这条
+  当成放宽断言或掩盖真挂起的许可** —— 把用例压到 5s 预算能稳定重现超时、且单跑明显变快，
+  才是"只是预算问题"的证据。
 
 `scripts/__tests__/test-workspaces.test.mjs` 是 tier 边界的可执行契约；调整测试命名、include
 或 exclude 时必须同步更新并运行 `pnpm test:runner`。
@@ -139,21 +150,29 @@ PR 门禁必须在 Windows 上用两个并行分片完整覆盖 `pnpm test:unit`
   只有目标确实**不是目录**时才用 `'file'`，那种情况在无特权 Windows 账号上无法表达，
   必须在测试里显式说明并跳过，不得直接写裸 `symlink`。
 - **loopback 端口必须避开 Fetch 标准 bad port**：任何"把 `http://127.0.0.1:<port>` 交给
-  `fetch`（全局或某个 undici 实例）的调用方"都不能把端口选择完全交给 `listen(0)` ——
-  内核只判端口空闲，不判 undici 的 `fetch` 肯不肯用；命中 bad port 时报
+  `fetch`（全局或某个 undici 实例，含被代理间接使用的）的调用方"都不能把端口选择完全交给
+  `listen(0)` —— 内核只判端口空闲，不判客户端肯不肯用；命中 bad port 时报
   `TypeError: fetch failed` + `cause: bad port`，表现为**整条链路每个请求都失败**而非偶发
-  超时。它同时适用于两类位置：
-  - **生产代码**：本机起服务再把 URL 交给 SDK／子进程的地方。
-    `apps/desktop` 的 `codexHttpBridge` 用 `listenOnFetchSafePort` 绑定。
+  超时。**Chromium 侧是同一份名单**：预览 URL 交给 `openExternal`（系统浏览器）或
+  in-app 侧栏／iframe 时，用户看到的是 `ERR_UNSAFE_PORT`，页面本身却是好的 —— 排查时别
+  只怀疑渲染。它同时适用于三类位置：
+  - **生产代码**：本机起服务再把 URL 交给 SDK／子进程／浏览器的，用
+    `listenOnFetchSafePort(server)` 绑定（`codexHttpBridge`、`file-browser/html-preview`）。
   - **测试代码**：`server.listen(0, …)` 起的 fixture／upstream 服务，随后被测试或被测代理
-    `fetch`。**不得写裸 `listen(0)`**，改用 `listenOnFetchSafePort(server)`；也**不要**在
-    测试里**自造端口探测**（探一个"空闲"端口再钉死）——探测同样要过这道判据，否则 OAuth
-    回调那类"钉死端口 + fetch"的用例会整段红。
+    `fetch`。**不得写裸 `listen(0)`**。注意：**测试本身不 binder、端口由被测生产代码绑**
+    的情况（如 `html-preview.test.ts` 直接 `fetch(preview.url)`）由修生产代码一并覆盖，
+    不要只在测试里绕。
+  - **端口探测（probe-then-pin）**：探一个"空闲"端口再钉死给别的进程或客户端时，探测阶段
+    就必须过这道判据 —— 钉死之后没有重选机会。**不得在测试里自造裸探测**，否则 OAuth
+    回调那类用例会整段红。
   名单与绑定工具的**唯一 SSoT** 是 `packages/anthropic-compat-proxy` 的
   `isFetchBlockedPort` / `listenOnFetchSafePort`（`fetch-blocked-ports.ts`；该包自己绑
   loopback 时用同一份）。**不得另立第二份会漂移的端口黑名单**，也不要用
   `netsh int ipv4 set dynamicport` 当修复（只降低密度，不根治 —— 2026-09-20 实测本机段
-  `1024-15000` 内含 18 个 bad port，`listen(0)` 命中率约 1/777）。
+  `1024-15000` 内含 19 个 bad port，`listen(0)` 命中率约 1/735；**名单里最大的端口是
+  10080，所以 Windows 默认段 `49152-65535` 反而是安全的**，只有在动态段被改小到含低位
+  端口时才暴露 —— 排查这类"只在某些机器上复现"的失败时先查 `netsh int ipv4 show
+  dynamicport tcp`）。
 - **性能基线以较弱一端为准**，不能“Mac 上流畅就过”。I/O 密集与渲染密集的关键路径要给
   出 Windows 上的可接受指标，优先选跨平台原生最优方案而非纯 JS polyfill。
 - **快捷键 / 菜单 / 系统集成**（托盘、通知、窗口控制、全屏、`cmd` vs `ctrl`）按平台规范

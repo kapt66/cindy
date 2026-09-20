@@ -13,8 +13,7 @@
  * `listen(0)` 命中率约 1/777（2026-09-20 在本仓 CI 机器实测）。
  */
 
-import type { Server } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import type { AddressInfo, Server as NetServer } from 'node:net';
 
 export const FETCH_BLOCKED_PORTS = new Set<number>([
   0, 1, 7, 9, 11, 13, 15, 17, 19,
@@ -46,7 +45,7 @@ const FETCH_SAFE_BIND_MAX_ATTEMPTS = 32;
  * 抛出时调用方拿不到可用端口 —— 宁可绑定失败，也不要交出一个 fetch 打不通的 URL。
  */
 export async function listenOnFetchSafePort(
-  server: Server,
+  server: NetServer,
   host = '127.0.0.1',
 ): Promise<number> {
   for (let attempt = 1; attempt <= FETCH_SAFE_BIND_MAX_ATTEMPTS; attempt += 1) {
