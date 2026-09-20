@@ -8,6 +8,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TEST_XD_GATEWAY_BASE_URL as XD_GATEWAY_BASE_URL } from '../../../test/vitest/clientEndpointsFixture';
+// 本文件的 `vi.mock('@cindy/anthropic-compat-proxy')` 工厂用 `...actual` 展开真实模块，
+// 所以这个静态导入拿到的仍是真实现（含 Fetch-safe 绑定），不受 mock 影响。
+import { listenOnFetchSafePort } from '@cindy/anthropic-compat-proxy';
 
 type Registry = {
   set(threadId: string, text: string): void;
@@ -2886,7 +2889,7 @@ describe('codex proxy host', () => {
         ws.send(JSON.stringify(body.input ? { error: { message: errorMessage } } : { pong: true }));
       });
     }));
-    await new Promise<void>(resolve => upstream.listen(0, '127.0.0.1', resolve));
+    await listenOnFetchSafePort(upstream);
     const upstreamUrl = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`;
     const actual = await vi.importActual<typeof import('@cindy/anthropic-compat-proxy')>('@cindy/anthropic-compat-proxy');
     mockState.createAnthropicCompatProxy.mockImplementation((opts: Parameters<typeof actual.createAnthropicCompatProxy>[0]) =>
@@ -2997,7 +3000,7 @@ describe('codex proxy host', () => {
       for (const event of upstreamEvents) res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
       res.end();
     });
-    await new Promise<void>(resolve => upstream.listen(0, '127.0.0.1', resolve));
+    await listenOnFetchSafePort(upstream);
     const upstreamUrl = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`;
     const actual = await vi.importActual<typeof import('@cindy/anthropic-compat-proxy')>('@cindy/anthropic-compat-proxy');
     mockState.createAnthropicCompatProxy.mockImplementation((opts: Parameters<typeof actual.createAnthropicCompatProxy>[0]) =>
@@ -7295,7 +7298,7 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
         res.writeHead(200, { 'content-type': 'application/json' }).end(sensitiveResponseBody);
       });
     });
-    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    await listenOnFetchSafePort(upstream);
     let upstreamClosed = false;
     const upstreamOrigin = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`;
     const upstreamUrl = `http://private-user:private-password@127.0.0.1:${(upstream.address() as AddressInfo).port}/v1?private-query=value#private-fragment`;
@@ -7700,7 +7703,7 @@ describe('createModelRoutingTransform —— custom Provider native imagegen pre
         res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
       });
     });
-    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    await listenOnFetchSafePort(upstream);
     const host = await freshCodexProxyHost();
     const actualProxy = await vi.importActual<typeof import('@cindy/anthropic-compat-proxy')>(
       '@cindy/anthropic-compat-proxy',

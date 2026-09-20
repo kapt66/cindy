@@ -5,6 +5,7 @@
  */
 import { createHash } from 'node:crypto';
 import * as http from 'node:http';
+import { listenOnFetchSafePort } from '@cindy/anthropic-compat-proxy';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -58,12 +59,9 @@ function browserRedirect(
 /** 探一个当前空闲的 loopback 端口。它只保证"探测那一刻"空闲,见 pinnedPortCase。 */
 async function probeFreePort(): Promise<number> {
   const probe = http.createServer();
-  const port = await new Promise<number>((resolve) => {
-    probe.listen(0, '127.0.0.1', () => {
-      const addr = probe.address();
-      resolve(typeof addr === 'object' && addr ? addr.port : 0);
-    });
-  });
+  // 探测端口同样要避开 Fetch 标准 bad port:这个端口会被钉死给引擎,随后用 fetch 走
+  // OAuth 回调;命中则整段用例以 `bad port` 失败(与裸 listen(0) 是同一个坑)。
+  const port = await listenOnFetchSafePort(probe);
   await new Promise((r) => probe.close(r));
   return port;
 }
@@ -392,12 +390,7 @@ describe('startGhostOauthFlow', () => {
 
   it('redirectPort 被占用 → LISTEN_FAILED,detail 带端口号人话提示', async () => {
     const blocker = http.createServer();
-    const heldPort = await new Promise<number>((resolve) => {
-      blocker.listen(0, '127.0.0.1', () => {
-        const addr = blocker.address();
-        resolve(typeof addr === 'object' && addr ? addr.port : 0);
-      });
-    });
+    const heldPort = await listenOnFetchSafePort(blocker);
     try {
       const openExternal = vi.fn();
       const result = await startGhostOauthFlow({
@@ -486,12 +479,7 @@ describe('startGhostOauthFlow', () => {
 
   it('redirectPort 被外部占用:reclaimPort 回收成功后自动重试并完成授权', async () => {
     const blocker = http.createServer();
-    const heldPort = await new Promise<number>((resolve) => {
-      blocker.listen(0, '127.0.0.1', () => {
-        const addr = blocker.address();
-        resolve(typeof addr === 'object' && addr ? addr.port : 0);
-      });
-    });
+    const heldPort = await listenOnFetchSafePort(blocker);
     const reclaimPort = vi.fn(async (p: number) => {
       expect(p).toBe(heldPort);
       // 模拟"强杀占用进程":关掉占用监听后放行重试。
@@ -515,12 +503,7 @@ describe('startGhostOauthFlow', () => {
 
   it('redirectPort 被外部占用且 reclaimPort 回收失败 → LISTEN_FAILED,不拉浏览器', async () => {
     const blocker = http.createServer();
-    const heldPort = await new Promise<number>((resolve) => {
-      blocker.listen(0, '127.0.0.1', () => {
-        const addr = blocker.address();
-        resolve(typeof addr === 'object' && addr ? addr.port : 0);
-      });
-    });
+    const heldPort = await listenOnFetchSafePort(blocker);
     try {
       const openExternal = vi.fn();
       const reclaimPort = vi.fn(async () => false);

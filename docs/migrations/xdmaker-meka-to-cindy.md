@@ -3398,3 +3398,30 @@ Meka 开发插件链路、插件市场独立 endpoint/凭证、`edition` 运行�
 - **规则落点**：`docs/dev-rules/engineering-conventions.md` §4 新增「loopback 端口必须避开
   Fetch 标准 bad port」（含 SSoT、禁用 `netsh dynamicport` 当修复）；CI 侧时序与重试语义
   记入 `cindy-meka-cicd/docs/setup.md`。
+- **续修（同轮，已提交 `7a465342e9` 之后的第二次提交）**：上面只修了 `codexHttpBridge`
+  一处，重跑 CI 立刻在**另一个** `listen(0)` 站点复现同一 `bad port`
+  （`src/main/maker-host/__tests__/outboundFetch.test.ts`，用
+  `packages/browser-control-runtime/node_modules/undici` 的 fetch —— 与全局 fetch 同判据）。
+  这证明它不是单点缺陷而是**一类**：任何"起本地服务再把 URL 交给 fetch"的地方都会以
+  1/777 概率红。因此改为系统性收敛：
+  1. 名单与绑定工具抽成独立模块 `packages/anthropic-compat-proxy/src/fetch-blocked-ports.ts`
+     （`isFetchBlockedPort` + `listenOnFetchSafePort(server, host?)`），`server.ts` 改为
+     import + re-export 以保持既有导入路径；`index.ts` 对外导出两者。独立成模块也让消费方
+     不必为一份端口名单加载整个代理实现。
+  2. 扫出**全部**同时含 `listen(0)` 与 `fetch`、且用该端口的测试文件共 **9 个**（另 1 个
+     `anthropic-responses-bridge/src/__tests__/live-bridge.test.ts` 由
+     `describe.skipIf(!LIVE)` 门控、CI 不跑），全部改用 `listenOnFetchSafePort`：
+     `outboundFetch`、`codexProxyHost`（4 处）、`claudeProxyScopeGate`（2 处）、
+     `claudeProviderBridge`、`claudeProxyImplicitRoute`、`piResponsesVerbosity`、
+     `codexTextOnlyPolicy`（本地 `listen()` helper）、`ghostOauthFlow`（含
+     `probeFreePort` —— **自造端口探测**同样要过判据，否则"钉死端口 + fetch"的 OAuth 用例
+     整段红）、`ghostOauthAccounts`（2 处）。
+  3. 新增 `packages/anthropic-compat-proxy/src/fetch-blocked-ports.test.ts`：钉住名单覆盖
+     低段位 bad port 且不误判相邻可用端口，并端到端断言**绑定出来的端口上的一次真实 fetch
+     必须成功**。
+  4. CI 判据验证：新版「仅纯超时才重试」在本轮正确生效 —— 输出里是
+     `TypeError: fetch failed` 而非超时，job 于是**立即 fatal（521s 结束）而不是再花 22 分钟
+     重跑**，不再把确定性缺陷藏进第二次运行。
+- **验证（续修）**：9 个改动文件合跑 **514/514 通过**；代理包
+  `fetch-blocked-ports.test.ts` + `server.test.ts` **162/162 通过**；
+  `@cindy/anthropic-compat-proxy` 与 `desktop` 的 typecheck、变更文件 ESLint 全绿。

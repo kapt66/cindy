@@ -13,10 +13,12 @@
  *   - transform 链可注入自定义改写;什么都不传走默认 [stripNonAnthropicFields]
  */
 
-// `isFetchBlockedPort` 是 Fetch 标准 bad port 名单的本仓 SSoT。除本包的 loopback 绑定外,
-// 任何"把 loopback URL 交给全局 fetch 的客户端"的地方都必须用同一份名单,不得另立第二份
-// (desktop 的 codexHttpBridge 直接 import 它,见该文件 listen 段注释)。
-export { createAnthropicCompatProxy, isFetchBlockedPort } from './server.js';
+// `isFetchBlockedPort` / `listenOnFetchSafePort` 是 Fetch 标准 bad port 名单与 Fetch-safe
+// 端口绑定的本仓 SSoT。除本包的 loopback 绑定外，任何"把 loopback URL 交给全局 fetch 的
+// 客户端"或"用 listen(0) 起本地服务再 fetch 它"的地方都必须用同一份，不得另立第二份
+// （desktop 的 codexHttpBridge 与各单测直接 import 它）。
+export { createAnthropicCompatProxy } from './server.js';
+export { isFetchBlockedPort, listenOnFetchSafePort } from './fetch-blocked-ports.js';
 export {
   createEnvOutboundProxyResolver,
   hasProxyEnvConfig,

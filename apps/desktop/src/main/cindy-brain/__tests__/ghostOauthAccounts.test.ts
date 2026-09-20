@@ -3,6 +3,7 @@
  * invalid_grant 过期标记 / 断开与默认账号(规则 14,内存假体零 Electron)。
  */
 import * as http from 'node:http';
+import { listenOnFetchSafePort } from '@cindy/anthropic-compat-proxy';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { GhostManifest } from '../../../shared/ghost.js';
@@ -776,12 +777,7 @@ describe('connectAccount', () => {
 
   it('端口回收器只对第一方官方意识放行(第三方 redirectPort 不许借刀杀进程)', async () => {
     const blocker = http.createServer();
-    const heldPort = await new Promise<number>((resolve) => {
-      blocker.listen(0, '127.0.0.1', () => {
-        const addr = blocker.address();
-        resolve(typeof addr === 'object' && addr ? addr.port : 0);
-      });
-    });
+    const heldPort = await listenOnFetchSafePort(blocker);
     try {
       const decl: GhostOauthDecl = {
         authorizeUrl: DECL.authorizeUrl,
@@ -1972,12 +1968,7 @@ describe('brokerBounce(双地址弹跳回调)', () => {
 
   it('解析成功:redirect_uri 用解析出的公网地址,本地监听在 brokerBounce.callbackPath', async () => {
     const probe = http.createServer();
-    const freePort = await new Promise<number>((resolve) => {
-      probe.listen(0, '127.0.0.1', () => {
-        const addr = probe.address();
-        resolve(typeof addr === 'object' && addr ? addr.port : 0);
-      });
-    });
+    const freePort = await listenOnFetchSafePort(probe);
     await new Promise((r) => probe.close(r));
 
     const PUBLIC_URI = 'https://broker.example.com/jira/bounce';

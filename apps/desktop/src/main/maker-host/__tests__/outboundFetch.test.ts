@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { Agent as UndiciAgent, Dispatcher, ProxyAgent } from 'undici';
 
-import { Socks5HttpsAgent, TunnelingHttpsAgent } from '@cindy/anthropic-compat-proxy';
+import { listenOnFetchSafePort, Socks5HttpsAgent, TunnelingHttpsAgent } from '@cindy/anthropic-compat-proxy';
 
 const resolverState = vi.hoisted(() => ({
   resolve: vi.fn<(url: string) => Promise<string | null>>(async () => null),
@@ -524,7 +524,10 @@ describe('outboundFetch', () => {
       response.writeHead(302, { location: '/unapproved' });
       response.end();
     });
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    // `listen(0)` 只让内核挑"空闲"端口,不保证 undici 肯用:命中 Fetch 标准 bad port 时
+    // 对该 URL 的每个请求都直接 `TypeError: fetch failed` + `cause: bad port`。
+    // 走共享的 Fetch-safe 绑定(判据 SSoT 同 anthropic-compat-proxy)。
+    await listenOnFetchSafePort(server);
     const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/video`;
     try {
       const result = await guardedOutboundFetch(url, { method: 'GET' }, vi.fn(), {

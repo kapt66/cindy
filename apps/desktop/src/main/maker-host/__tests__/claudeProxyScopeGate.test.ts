@@ -19,7 +19,7 @@ import { setCustomProviders } from '../active-catalog';
  */
 
 import { createServer, type IncomingHttpHeaders } from 'node:http';
-import { createAnthropicCompatProxy, type ProxyHandle } from '@cindy/anthropic-compat-proxy';
+import { createAnthropicCompatProxy, listenOnFetchSafePort, type ProxyHandle } from '@cindy/anthropic-compat-proxy';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../appCapabilities.js', () => ({
@@ -524,7 +524,7 @@ describe('pi routingTransform — xdt session header selects the Pi provider rou
     });
     let proxy: ProxyHandle | undefined;
     try {
-      await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+      await listenOnFetchSafePort(upstream);
       const address = upstream.address();
       if (!address || typeof address === 'string') throw new Error('Missing test upstream address');
       const upstreamUrl = `http://127.0.0.1:${address.port}`;
@@ -1049,7 +1049,7 @@ it.each([
     registerPiProxySession('sess-pi', 'session-secret', () => id);
     let token = 'fixture-token-one';
     setOAuthTokenReader(provider => provider === id ? token : null);
-    await new Promise<void>(resolve => upstream.listen(0, '127.0.0.1', resolve));
+    await listenOnFetchSafePort(upstream);
     const address = upstream.address();
     if (!address || typeof address === 'string') throw new Error('missing fixture address');
     const destination = `http://127.0.0.1:${address.port}`;

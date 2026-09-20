@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
-import { createAnthropicCompatProxy } from '@cindy/anthropic-compat-proxy';
+import { createAnthropicCompatProxy, listenOnFetchSafePort } from '@cindy/anthropic-compat-proxy';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -104,7 +104,7 @@ describe('Pi Responses verbosity transform', () => {
         res.end('data: {"type":"response.completed","response":{"id":"r","output":[]}}\n\n');
       });
     });
-    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    await listenOnFetchSafePort(upstream);
     const port = (upstream.address() as AddressInfo).port;
     const proxy = await createAnthropicCompatProxy({
       upstream: `http://127.0.0.1:${port}`,

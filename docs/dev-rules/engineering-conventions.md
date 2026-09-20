@@ -139,14 +139,21 @@ PR 门禁必须在 Windows 上用两个并行分片完整覆盖 `pnpm test:unit`
   只有目标确实**不是目录**时才用 `'file'`，那种情况在无特权 Windows 账号上无法表达，
   必须在测试里显式说明并跳过，不得直接写裸 `symlink`。
 - **loopback 端口必须避开 Fetch 标准 bad port**：任何"把 `http://127.0.0.1:<port>` 交给
-  全局 `fetch` 的调用方"（SDK、子进程、测试）都不能把端口选择完全交给 `listen(0)` ——
+  `fetch`（全局或某个 undici 实例）的调用方"都不能把端口选择完全交给 `listen(0)` ——
   内核只判端口空闲，不判 undici 的 `fetch` 肯不肯用；命中 bad port 时报
   `TypeError: fetch failed` + `cause: bad port`，表现为**整条链路每个请求都失败**而非偶发
-  超时。本机动态端口段并不保证避开：Windows 的动态范围可被改成 `1024-15000`，该段内实测
-  有 18 个 bad port（命中率约 1/777）。判据的**唯一 SSoT** 是
-  `packages/anthropic-compat-proxy` 的 `isFetchBlockedPort`（该包绑 loopback 时用它，
-  `apps/desktop` 的 `codexHttpBridge` 也 import 它）——**不得另立第二份会漂移的端口黑名单**，
-  也不要用 `netsh int ipv4 set dynamicport` 当修复（只降低密度，不根治）。
+  超时。它同时适用于两类位置：
+  - **生产代码**：本机起服务再把 URL 交给 SDK／子进程的地方。
+    `apps/desktop` 的 `codexHttpBridge` 用 `listenOnFetchSafePort` 绑定。
+  - **测试代码**：`server.listen(0, …)` 起的 fixture／upstream 服务，随后被测试或被测代理
+    `fetch`。**不得写裸 `listen(0)`**，改用 `listenOnFetchSafePort(server)`；也**不要**在
+    测试里**自造端口探测**（探一个"空闲"端口再钉死）——探测同样要过这道判据，否则 OAuth
+    回调那类"钉死端口 + fetch"的用例会整段红。
+  名单与绑定工具的**唯一 SSoT** 是 `packages/anthropic-compat-proxy` 的
+  `isFetchBlockedPort` / `listenOnFetchSafePort`（`fetch-blocked-ports.ts`；该包自己绑
+  loopback 时用同一份）。**不得另立第二份会漂移的端口黑名单**，也不要用
+  `netsh int ipv4 set dynamicport` 当修复（只降低密度，不根治 —— 2026-09-20 实测本机段
+  `1024-15000` 内含 18 个 bad port，`listen(0)` 命中率约 1/777）。
 - **性能基线以较弱一端为准**，不能“Mac 上流畅就过”。I/O 密集与渲染密集的关键路径要给
   出 Windows 上的可接受指标，优先选跨平台原生最优方案而非纯 JS polyfill。
 - **快捷键 / 菜单 / 系统集成**（托盘、通知、窗口控制、全屏、`cmd` vs `ctrl`）按平台规范

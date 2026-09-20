@@ -2,13 +2,13 @@ import WebSocket, { WebSocketServer } from 'ws';
 import { createServer, type Server } from 'node:http';
 import { once } from 'node:events';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createAnthropicCompatProxy, type ProxyHandle } from '@cindy/anthropic-compat-proxy';
+import { createAnthropicCompatProxy, listenOnFetchSafePort, type ProxyHandle } from '@cindy/anthropic-compat-proxy';
 import { clearCodexTextOnlyPolicies, codexTextOnlyRequestGuard, codexTextOnlyWebSocketTransforms, createCodexTextOnlyResponseGuard, isCodexTextOnly, registerCodexTextOnlyPolicy, validateCodexTextOnlyResponse } from '../codex-text-only-policy';
 
 const closers: Array<() => Promise<unknown> | void> = [];
 afterEach(async () => { for (const close of closers.splice(0).reverse()) await close(); clearCodexTextOnlyPolicies(); });
 async function listen(server: Server): Promise<string> {
-  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  await listenOnFetchSafePort(server);
   closers.push(() => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); }));
   return `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 }

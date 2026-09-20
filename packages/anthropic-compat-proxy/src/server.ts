@@ -103,22 +103,12 @@ const LOOPBACK_CANDIDATE_PORT_MIN = 49152;
 const LOOPBACK_CANDIDATE_PORT_MAX = 65535;
 const LOOPBACK_CANDIDATE_PORT_COUNT = LOOPBACK_CANDIDATE_PORT_MAX - LOOPBACK_CANDIDATE_PORT_MIN + 1;
 
-const FETCH_BLOCKED_PORTS = new Set<number>([
-  0, 1, 7, 9, 11, 13, 15, 17, 19,
-  20, 21, 22, 23, 25, 37, 42, 43,
-  53, 69, 77, 79, 87, 95, 101, 102,
-  103, 104, 109, 110, 111, 113, 115, 117,
-  119, 123, 135, 137, 139, 143, 161, 179,
-  389, 427, 465, 512, 513, 514, 515, 526,
-  530, 531, 532, 540, 548, 554, 556, 563,
-  587, 601, 636, 989, 990, 993, 995, 1719,
-  1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061,
-  6000, 6566, 6665, 6666, 6667, 6668, 6669, 6679, 6697, 10080,
-]);
+// Fetch 标准 bad port 名单的 SSoT 已抽到 `./fetch-blocked-ports.js`（独立模块，让只关心
+// 端口判据的消费方 —— 生产代码里的远端 MCP bridge 与各单测 —— 不必加载整个代理实现）。
+// 本文件自己绑候选端口时也要用它，所以既 import 又 re-export，保持既有导入路径可用。
+import { isFetchBlockedPort } from './fetch-blocked-ports.js';
 
-export function isFetchBlockedPort(port: number): boolean {
-  return FETCH_BLOCKED_PORTS.has(port);
-}
+export { isFetchBlockedPort };
 
 // 请求 dump 的字节上限。入站请求带上下文也很少超 64KB,典型只有几 KB。
 // 超出截断后追加 "... (truncated, total N bytes)"。

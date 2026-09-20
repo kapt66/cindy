@@ -20,8 +20,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createServer } from 'node:http';
-import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
+import { listenOnFetchSafePort } from '@cindy/anthropic-compat-proxy';
 
 const outbound = vi.hoisted(() => vi.fn<typeof fetch>());
 vi.mock('../outbound-fetch.js', () => ({ outboundFetch: outbound }));
@@ -179,7 +179,7 @@ describe('cc routingTransform — ①.5 隐式来源路由 (智谱 glm-5.3 裸 i
       void Promise.resolve(route!.localHandler!({ parsedBody: body, rawBody: Buffer.from(JSON.stringify(body)), ctx, res }))
         .catch(() => { res.statusCode = 500; res.end(); });
     });
-    server.listen(0, '127.0.0.1'); await once(server, 'listening');
+    await listenOnFetchSafePort(server);
     try {
       const response = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/v1/messages`);
       expect(await response.text()).toContain('Hello');

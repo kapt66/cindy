@@ -1,8 +1,8 @@
 import { createServer } from 'node:http';
-import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
 import { describe, expect, it } from 'vitest';
 import { PROVIDER_MODEL_CATALOG } from '@cindy/model-providers';
+import { listenOnFetchSafePort } from '@cindy/anthropic-compat-proxy';
 import { claudeProviderReasoningNamespace, createClaudeProviderBridge } from '../claude-provider-bridge.js';
 
 async function runBridge(
@@ -32,7 +32,7 @@ async function runBridge(
       }).catch(() => { res.statusCode = 500; res.end(); });
     });
   });
-  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  await listenOnFetchSafePort(server);
   try {
     const response = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/v1/messages`, {
       method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer fixture-claude-subscription' },
