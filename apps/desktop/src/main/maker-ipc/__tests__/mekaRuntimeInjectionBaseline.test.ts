@@ -4,7 +4,7 @@ import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { MekaRuntimeConfig } from '../../meka-projects/runtimeConfig.js';
-import { applyMekaRuntimeConfig as applyMekaRuntimeConfigImpl } from '../mekaRuntimeInjection.js';
+import { applyMekaRuntimeConfig as applyMekaRuntimeConfigImpl } from '../../meka-injection/index.js';
 import type { MakerSessionCreateOpts } from '../sessionRequest.js';
 
 /**
@@ -22,6 +22,12 @@ import type { MakerSessionCreateOpts } from '../sessionRequest.js';
  *   （它单独断言各段标记在全文中的下标严格递增且顺序与基线一致）。两者互不替代。
  * - prompt 里的路径行必须与实现同样按当前平台解析（`path.resolve` / `path.join`），
  *   否则 Windows 与 Linux 会得出不同的分隔符；标签与顺序仍是字面量。
+ *
+ * **重构后追加的用例**：本文件原有的 10 条用例是重构前的特性化快照，一个字符都不得改；
+ * 文件末尾标有「重构后追加」的用例钉的不是旧快照，而是注入层重构**声明过**的新行为
+ * （非字符串 `userPrompt` 的显式报错、新实现的 opts 键插入顺序、frozen 路径的
+ * `vendorOptions` 键序缺口）。改动它们前先读
+ * `docs/dev-rules/meka-injection-layer.md` 的 §7「与重构前的有意差异」。
  */
 
 const environmentServices = vi.hoisted(() => ({
@@ -793,5 +799,200 @@ describe('meka runtime injection baseline', () => {
       expect(prompt.split(marker).length - 1).toBe(1);
     }
     expect(prompt.endsWith(COMBAT_USER_PROMPT_WITH_ID)).toBe(true);
+  });
+
+  // ————————————————————————————————————————————————————————————————
+  // 以下 4 组用例由「Meka 注入层重构」追加：它们钉的是**重构后声明过的行为**，
+  // 不是重构前的现状快照（见 `docs/dev-rules/meka-injection-layer.md` §7）。
+  // ————————————————————————————————————————————————————————————————
+
+  it.each([
+    {
+      name: 'new session',
+      buildOpts: (): MakerSessionCreateOpts =>
+        baseOpts({
+          mekaRoleId: 'combat-development',
+          // 非字符串：IPC 是无类型边界，`readCreateSessionOpts` 不校验 `userPrompt`。
+          userPrompt: 123 as unknown as string,
+        }),
+    },
+    {
+      name: 'resume short-circuit',
+      buildOpts: (): MakerSessionCreateOpts =>
+        baseOpts({
+          userPrompt: 123 as unknown as string,
+          vendorOptions: {
+            source: 'meka',
+            mekaRuntimeResolved: true,
+            mekaWorkflow: 'saga2-combat-development-v1',
+          },
+        }),
+    },
+  ])('rejects a non-string userPrompt on a Meka combat session ($name)', async ({ buildOpts }) => {
+    const opts = buildOpts();
+    const vendorOptionsBefore = opts.vendorOptions;
+    const resolveRuntimeConfig = vi.fn(async () => combatRuntime());
+    const materializeSkillSnapshot = vi.fn(async () => combatSnapshot());
+
+    const error = (await applyMekaRuntimeConfig(opts, {
+      resolveRuntimeConfig,
+      materializeSkillSnapshot,
+    }).catch((thrown: unknown) => thrown)) as Error & { code?: unknown };
+
+    // 重构前：`(opts.userPrompt ?? '').includes(marker)` 只在战斗角色会话里抛出**没有
+    // 错误码**的 `TypeError`；新实现统一成显式 `INVALID_PARAMS`（§7 D2.1）。
+    expect(error).toBeInstanceOf(Error);
+    expect(error.code).toBe('INVALID_PARAMS');
+    expect(error.message).toBe(
+      '[INVALID_PARAMS] Meka session userPrompt must be a string when provided',
+    );
+    // 校验发生在任何 I/O、任何 opts 写入之前。
+    expect(resolveRuntimeConfig).not.toHaveBeenCalled();
+    expect(materializeSkillSnapshot).not.toHaveBeenCalled();
+    expect(opts.userPrompt).toBe(123);
+    expect(opts.vendorOptions).toBe(vendorOptionsBefore);
+    expect(opts.nativeSkillPluginPath).toBeUndefined();
+    expect(opts.nativeSkillRevision).toBeUndefined();
+  });
+
+  it('does not reject a non-string userPrompt on a non-Meka session', async () => {
+    const opts = baseOpts({
+      workspaceKind: 'project',
+      mekaProjectId: null,
+      mekaRoleId: null,
+      userPrompt: 123 as unknown as string,
+    });
+    const before = { ...opts };
+    const resolveRuntimeConfig = vi.fn();
+    const materializeSkillSnapshot = vi.fn();
+    const resolveCombatServerTarget = vi.fn();
+
+    const result = await applyMekaRuntimeConfig(opts, {
+      resolveRuntimeConfig,
+      materializeSkillSnapshot,
+      resolveCombatServerTarget,
+    });
+
+    expect(result).toStrictEqual(emptyResult());
+    // I6：参数校验只在确定是 Meka 之后发生，非 Meka 会话零写入、零抛错。
+    expect({ ...opts }).toStrictEqual(before);
+    expect(opts.userPrompt).toBe(123);
+    expect(opts.vendorOptions).toBeUndefined();
+    expect(resolveRuntimeConfig).not.toHaveBeenCalled();
+    expect(materializeSkillSnapshot).not.toHaveBeenCalled();
+    expect(resolveCombatServerTarget).not.toHaveBeenCalled();
+  });
+
+  it('pins the resume short-circuit opts key order when only the controller segment writes the prompt', async () => {
+    const opts = baseOpts({
+      // 让早段的所有 prompt 写入都不成立：无 workingDir（不注入 PROJECT_PATHS）、
+      // exec mode 已是 autonomous（不注入 AUTHORIZATION）、无合法技能 ID（不注入 TARGET）。
+      workingDir: undefined,
+      vendorOptions: {
+        source: 'meka',
+        mekaRuntimeResolved: true,
+        mekaWorkflow: 'saga2-combat-development-v1',
+        mekaCombatExecutionMode: 'autonomous-user-request',
+        mekaCombatServerCapabilityStatus: 'unchecked',
+      },
+    });
+    const keysBefore = Object.keys(opts);
+    const vendorOptionsBefore = opts.vendorOptions;
+    const vendorOptionsKeysBefore = Object.keys(opts.vendorOptions ?? {});
+    const resolveCombatServerTarget = vi.fn(async () => SERVER_TARGET);
+    const resolveRuntimeConfig = vi.fn();
+
+    await applyMekaRuntimeConfig(opts, {
+      resolveRuntimeConfig,
+      materializeSkillSnapshot: vi.fn(async () => combatSnapshot()),
+      resolveCombatServerTarget,
+    });
+
+    // 只剩 controller 段会写 prompt：整篇就是该段本身。
+    expect(opts.userPrompt).toBe(combatControllerSkillSection(PLUGIN_PATH_COMBAT));
+    expect(resolveRuntimeConfig).not.toHaveBeenCalled();
+    expect(resolveCombatServerTarget).not.toHaveBeenCalled();
+    expect(opts.vendorOptions).toStrictEqual(vendorOptionsBefore);
+    // rewriteVendorOptions=true 会重写该字段，但补丁为空 ⇒ 键序不变。
+    expect(Object.keys(opts.vendorOptions ?? {})).toEqual(vendorOptionsKeysBefore);
+    expect(Object.keys(opts.vendorOptions ?? {})).toEqual([
+      'source',
+      'mekaRuntimeResolved',
+      'mekaWorkflow',
+      'mekaCombatExecutionMode',
+      'mekaCombatServerCapabilityStatus',
+    ]);
+
+    // **新实现**的键插入顺序：`userPrompt → nativeSkillPluginPath → nativeSkillRevision`。
+    // 重构前是 `nativeSkillPluginPath → nativeSkillRevision → userPrompt`：快照写在早段
+    // prompt 写入与尾段 controller prompt 写入**之间**（原 `mekaRuntimeInjection.ts:501-502`
+    // 的 `nativeSkillPluginPath/Revision` 在 `:505` 的 `injectCombatControllerSkill` 之前）。
+    // **该差异不可观测**：全仓没有任何代码枚举 `opts` 的键（只有 `{...opts}` 扩散与
+    // 命名字段访问）。这条断言不是为了“证明等价”，而是把新实现的当前行为锁下来，
+    // 防止后续重构再次静默改动（§7 D2.2）。
+    expect(Object.keys(opts).filter((key) => !keysBefore.includes(key))).toEqual([
+      'userPrompt',
+      'nativeSkillPluginPath',
+      'nativeSkillRevision',
+    ]);
+  });
+
+  it('pins the frozen combat vendorOptions key order with a target patch and pre-existing keys', async () => {
+    const opts = baseOpts({
+      mekaRoleId: 'combat-development',
+      userPrompt: COMBAT_USER_PROMPT_WITH_ID,
+      vendorOptions: {
+        source: 'meka',
+        mekaRuntimeResolved: true,
+        mekaWorkflow: 'saga2-combat-development-v1',
+        mekaCombatExecutionMode: 'autonomous-user-request',
+        mekaCombatServerCapabilityStatus: 'unchecked',
+        onStderrLine: 'keep-me',
+      },
+    });
+    const resolveCombatServerTarget = vi.fn(async () => SERVER_TARGET);
+
+    await applyMekaRuntimeConfig(opts, {
+      materializeSkillSnapshot: vi.fn(async () => combatSnapshot()),
+      resolveCombatServerTarget,
+    });
+
+    expect(resolveCombatServerTarget).toHaveBeenCalledWith('saga2');
+    expect(opts.vendorOptions).toStrictEqual({
+      source: 'meka',
+      mekaRuntimeResolved: true,
+      mekaWorkflow: 'saga2-combat-development-v1',
+      mekaCombatExecutionMode: 'autonomous-user-request',
+      mekaCombatServerCapabilityStatus: 'unchecked',
+      onStderrLine: 'keep-me',
+      mekaCombatTargetSkillId: '1019',
+      mekaCombatTargetSkillIdState: 'confirmed',
+      mekaCombatTargetSkillIds: undefined,
+      mekaCombatPlanApproved: false,
+      mekaCombatReferenceSkillId: undefined,
+      mekaCombatTargetExportAttempted: undefined,
+      mekaCombatTargetExportCompleted: undefined,
+      mekaCombatServerRemoteHostId: 'mcpr:server-1',
+      mekaCombatServerWorkerAgent: 'claude-code',
+    });
+    // I2：已存在的键保持原位，新键按补丁的 spread 次序追加（§6 原本只覆盖了
+    // 「新建 + 已确认技能 ID」与「server worker」两个场景）。
+    expect(Object.keys(opts.vendorOptions ?? {})).toEqual([
+      'source',
+      'mekaRuntimeResolved',
+      'mekaWorkflow',
+      'mekaCombatExecutionMode',
+      'mekaCombatServerCapabilityStatus',
+      'onStderrLine',
+      'mekaCombatTargetSkillId',
+      'mekaCombatTargetSkillIdState',
+      'mekaCombatTargetSkillIds',
+      'mekaCombatPlanApproved',
+      'mekaCombatReferenceSkillId',
+      'mekaCombatTargetExportAttempted',
+      'mekaCombatTargetExportCompleted',
+      'mekaCombatServerRemoteHostId',
+      'mekaCombatServerWorkerAgent',
+    ]);
   });
 });

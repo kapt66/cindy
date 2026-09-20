@@ -115,6 +115,11 @@
 - 修改 `packages/maker-core` 的 Agent 编排、prompt 组装、tool／MCP 暴露、translator、
   model 映射、usage 计量，或任何进入模型 system 段的提示词前，必须先读
   `docs/dev-rules/maker-core-and-agent-behavior.md`。
+- 修改 Meka 会话注入（`apps/desktop/src/main/meka-injection/**`：prompt 段注入、
+  `MEKA_PROMPT_SEGMENT_ORDER`、`MEKA_AGENT_CAPABILITIES` 能力矩阵、角色级 MCP／技能落地、
+  技能快照挂载、`vendorOptions` 的 Meka 键，或进程级 Meka 运行时 MCP 注册
+  `registerMekaCapabilities` / `declareMekaRuntimeMcpAgents`）前，必须先读
+  `docs/dev-rules/meka-injection-layer.md`。
 - 修改 PI harness 集成（`packages/maker-core/src/agents/pi/**`、`pi-host.ts`、
   `piEnvironment.ts`）、PI 会话权限／配置／system prompt／桥接，或 PI 相关的上线判断前，
   必须先读 `docs/dev-rules/pi-harness.md`（含设计原则、维护不变量与上线清单）。其中

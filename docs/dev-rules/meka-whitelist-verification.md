@@ -354,7 +354,11 @@ P4 项目根、插件面板呈现方式等 Meka 专属配置；这些配置落�
 ##### WL-4.2.3 SAGA2 战斗 Lead 的服务器只读 Worker（第三条独立通路）
 
 - **不变量**：目标由 Host 筛选（绑定 + supported + available + server 类 + 有 workerAgent），**零个或多个 capability-ready 候选都不猜选**（`ready.length === 1`）；派发前**再授权**（`remoteHostId` / `workerAgent` / 实例实际 `agentType` 三者全等）；远端只读 worker 隔离本地平台状态与本地 skill 路径；`initial_task` 只带逻辑证据，不带 Lead 主机绝对路径
-- **代码锚点**：`mekaWorkerTarget.ts:23-25,40-79`（`:78` 唯一命中判定）；`maker-ipc/mekaRuntimeInjection.ts:225-241`（unavailable 时明确禁止自行拼 `mcpr:`）、`:243-296`、`:298-323`、`:332-345`、`:540-610`、`:621-634`；`maker-ipc/register.ts:6569-6576,12204-12210`；**派发前再授权** `apps/desktop/src/main/meka-projects/combatWorkflowPolicy.ts:1405-1441`（`:1425-1435` 三者全等）、`:1384-1389`
+- **代码锚点**：`mekaWorkerTarget.ts:23-25,40-79`（`:78` 唯一命中判定）；
+  `apps/desktop/src/main/meka-injection/combatPrompts.ts:134-150`（`combatServerTargetPrompt`：unavailable 时明确禁止自行拼 `mcpr:`）、`:26-39`（`COMBAT_SERVER_WORKER_PROMPT`，worker 独占段）；
+  `meka-injection/resolvePlan.ts:616-669`（形态 C 每轮续聊的 `prepareCombatFollowupRuntimeContext`）、`:195-227`（服务器目标解析，unavailable 也注入）、`:541-552`（常规创建注入点）；
+  `meka-injection/resolvePlan.ts:421-479`（强制项目+角色 → 平台技能/MCP 合并 → 快照物化）、`:481-527`（worker/角色段 + `vendorOptions` patch）；
+  `maker-ipc/register.ts:6569-6576,12204-12210`；**派发前再授权** `apps/desktop/src/main/meka-projects/combatWorkflowPolicy.ts:1405-1441`（`:1425-1435` 三者全等）、`:1384-1389`
 - **自动化门禁**：`pnpm --filter desktop exec vitest run src/main/maker-ipc/__tests__/mekaWorkerTarget.test.ts src/main/maker-ipc/__tests__/mekaRuntimeInjection.test.ts`（含「多于一个合格候选 ⇒ unavailable」）
 - **实机验证**：SAGA2 项目绑定 server 类实例 → 战斗角色任务给技能 ID → 远端只读 worker 落在绑定实例并返回能力报告。负向：绑定两个合格实例时必须走 unavailable 分支
 
@@ -686,7 +690,7 @@ Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台。
 - `apps/desktop/src/main/meka-projects/`（`projectConfig.ts:451`、`resourcePaths.ts:21`）
 - `apps/desktop/src/main/localDb/ipc/sessions.ts:1287,1317,1725`
 - 项目/角色**绑定链**（WL-11.1–11.3）：`apps/desktop/src/renderer/features/cc-agent/CCAgentSidebarUpper.tsx:2404-2416`（项目入口 → `makeNewMakerRouteState('meka')` + `mekaProjectId`）、`apps/desktop/src/renderer/features/cc-agent/NewMakerDraftRoute.tsx:865-912`（草稿项目/角色态；默认角色 = `roles.find(routeMekaDraft.mekaRoleId) ?? roles[0]`）、`:579-699`（角色选择器 `MekaRolePicker`）、`:4532-4533`（发送时写入 project/role）
-- 角色**运行期注入链**（WL-11.5–11.6）：`apps/desktop/src/main/maker-ipc/mekaRuntimeInjection.ts:490-522`（解析并强制「项目+角色都必须有」）、`:558-561`（角色级 MCP/技能与平台能力合并）、`:589-592`（技能快照落到会话）、`:594-606`（角色 prompt + 角色上下文注入）、`:401-410`（`[MEKA_ROLE_CONTEXT]` 区块）、`:612-623`（`mekaMcpProviderIds` / `mekaWorkflow` 进 `vendorOptions`）
+- 角色**运行期注入链**（WL-11.5–11.6）：`apps/desktop/src/main/meka-injection/resolvePlan.ts:378-423`（hydrate 持久绑定 → 非 meka 零写入 → 遗留角色回填 → 强制「项目+角色都必须有」；resume 短路分支在 `:265-357`）、`:441-462`（worker 判定 + 平台技能解析 + `mergePlatformMcp`/`mergePlatformSkills`，合并实现 `:173-193`）、`:476-479`（技能快照物化）+ `:164-171`（`nativeSkillMount`）+ `meka-injection/applyPlan.ts:81-85`（写 `nativeSkillPluginPath`/`nativeSkillRevision`）、`resolvePlan.ts:481-493`（角色 prompt + 角色上下文注入）+ `meka-injection/combatPrompts.ts:152-161`（`[MEKA_ROLE_CONTEXT]` 区块）+ `meka-injection/applyPlan.ts:53-64`（按 order 渲染上提）、`resolvePlan.ts:498-527`（`mekaMcpProviderIds` / `mekaWorkflow` 进 `vendorOptions` patch）+ `applyPlan.ts:73-76`（写入）
 - 角色清单事实源：`apps/desktop/resources/meka/roles/*.json`（`prompt` / `skills[]` / `mcp[]` / `workflow` / `policyProviderRefs`）
 
 **自动化门禁**
@@ -821,12 +825,15 @@ hook-control 相关丢失）—— 证明门禁不是空转。
 `nativeSkillPluginPath` 交给运行期）。语义不变：正文仍是该任务 revision 级冻结的唯一权威正文，
 仍然禁止探索/枚举其它 `SKILL.md`。
 
-- **代码锚点**：`apps/desktop/src/main/maker-ipc/mekaRuntimeInjection.ts:363-393`
-  （`combatControllerSkillPrompt`：`COMBAT_CONTROLLER_SKILL_ENTRY = 'skills/combat-skill-configuration/SKILL.md'`，
+- **代码锚点**：`apps/desktop/src/main/meka-injection/combatPrompts.ts:48-82`
+  （`combatControllerSkillPrompt:69`：`COMBAT_CONTROLLER_SKILL_ENTRY = 'skills/combat-skill-configuration/SKILL.md'`（`:48`），
   由 `path.join(snapshot.pluginPath, …)` 得到绝对路径；**不再拼接 `entry.contentBase64`**）；
   `meka-projects/skillSnapshot.ts:265-320`（正文冻结落盘到
   `<userData>/meka-skill-snapshots/revisions/<revision>/claude-plugin/…`，已按 digest 校验）；
-  `mekaRuntimeInjection.ts:481,590`（`opts.nativeSkillPluginPath = skillSnapshot.pluginPath` —— Agent 本就有权读该目录）；
+  `meka-injection/resolvePlan.ts:164-171`（`nativeSkillMount`）+ `:479`（物化）与
+  `meka-injection/applyPlan.ts:81-85`（`opts.nativeSkillPluginPath = skillSnapshot.pluginPath` —— Agent 本就有权读该目录）；
+  冻结路径形状门：`meka-projects/combatWorkflowPolicy.ts:779`（只认
+  `…/meka-skill-snapshots/revisions/<sha256>/claude-plugin/skills/combat-skill-configuration/SKILL.md`）；
   上游守卫：`packages/maker-core/src/agents/pi/project-resource-cli.ts:163,177-186` 与
   `packages/maker-core/src/agents/pi/index.ts:3739`（`--append-system-prompt`）/`:3749`（守卫调用）。
 - **自动化门禁**：`pnpm --filter desktop exec vitest run src/main/maker-ipc/__tests__/mekaRuntimeInjection.test.ts`
@@ -841,6 +848,50 @@ hook-control 相关丢失）—— 证明门禁不是空转。
   被拒（报文误指「项目 Pi skills 过多」，而实测项目 Pi 资源为 0）；实测 argv 30,497 vs 预算 30,000，
   其中战斗正文 24,027 字符占 argv 78.8%。改走文件载体后 argv 降到约 6.5KB。
   规则正文见 [`pi-harness.md`](pi-harness.md) 第 4 节不变量 12。
+
+### WL-16 Meka 注入层契约与 Agent 能力矩阵
+
+**保护的不变量**：Meka 会话注入收束为显式三层（解析 → 计划 → 落地）后，各入口形态
+**各自只有一个入口**（形态 A `applyMekaRuntimeConfig` / 形态 B `registerMekaCapabilities` /
+形态 C `prepareCombatFollowupRuntimeContext`，无第二入口、无 re-export 双入口；
+计划文本写作「四种入口」而实现是 3 个形态 + 1 组共享解析入口，差异见
+[`meka-injection-layer.md`](meka-injection-layer.md) §2 注）；
+`MEKA_PROMPT_SEGMENT_ORDER` 是**契约不是实现细节**——新增段落只能插空档（如 15/25），
+**不得重排既有段落**；`MEKA_AGENT_CAPABILITIES` 必须**覆盖全量 `AgentKind`**且 Pi 显式为
+`false`（D1：Pi 有意不支持技能快照与 Meka 运行时 MCP，本轮不补齐，行为与改动前逐字节一致）；
+**漏传 provider 数组必须硬失败**（矩阵说支持却取不到数组 ⇒ 启动期抛错），不得退回静默缺能力
+（这正是 Pi 丢掉 `mcp-router` / `meka-design` 的形态）。逐字节不变量 I1–I8 的正文与锚点见
+[`meka-injection-layer.md`](meka-injection-layer.md) §5。
+**契约的范围**：`opts.vendorOptions` **自己的**键序仍是契约（下游按这些键裁决），但 `opts` 整体的
+键插入顺序**不是**（无消费者）；resume 短路下新实现把快照键移到 prompt 之后（D2.2）。
+非字符串 `opts.userPrompt` 在 Meka 路径上必须显式 `INVALID_PARAMS`、非 Meka 路径零影响（D2.1），
+两条有意差异登记在 [`meka-injection-layer.md`](meka-injection-layer.md) §7。
+
+**代码锚点**
+- 分层与入口：`apps/desktop/src/main/meka-injection/index.ts:53`（形态 A）、`resolvePlan.ts:616`（形态 C 实现）、`mcpRegistration.ts:42`（形态 B，生产唯一调用点 `maker-host/index.ts:2308`，位于 `_mcpProviders.pi` 赋值 `:2303` 之后）
+- order 表与段落工厂：`meka-injection/types.ts:91`（`MEKA_PROMPT_SEGMENT_ORDER`）、`:110`（`createMekaPromptSegment`，调用方不得手写 order）；渲染 `applyPlan.ts:53-64`
+- 能力矩阵：`meka-injection/agentMatrix.ts:36`（`claude-code`/`codex` = `true`，`pi` = **`false`**）、`:45`（`MEKA_AGENT_KINDS` 冻结）、`:50`（`mekaRuntimeMcpAgentKinds`）
+- 漏传硬失败：`mcp-integrations/meka-runtime-mcp.ts:1433`（`declareMekaRuntimeMcpAgents`：必须覆盖全量 `AgentKind`，否则抛，`:1445-1452`）、`:1453-1462`（声明与矩阵矛盾也抛）；`meka-injection/mcpRegistration.ts:54-61`（`runtimeMcp:true` 取不到数组直接抛）
+- 旧路径已删除：`maker-ipc/mekaRuntimeInjection.ts` **不存在**（原 688 行已拆分到 `meka-injection/`），`maker-ipc/register.ts:583-584` 仅改 import 路径
+
+**自动化门禁**
+- `pnpm --filter desktop exec vitest run src/main/meka-injection src/main/maker-ipc/__tests__/mekaRuntimeInjectionBaseline.test.ts src/main/maker-ipc/__tests__/mekaRuntimeInjection.test.ts`
+  —— 矩阵穷尽性与 Pi `false`（`agentMatrix.test.ts` 4 用例）、注册漏传/矛盾硬失败（`mcpRegistration.test.ts` 12 用例）、注入文本逐字节基线（`mekaRuntimeInjectionBaseline.test.ts`：原有 10 条快照用例，钉住 `opts.userPrompt` 全文、`vendorOptions` 全量键值及键顺序、`nativeSkillPluginPath`/`nativeSkillRevision`；另加 4 组重构后追加用例 —— 第 11 / 12 组钉住非字符串 `userPrompt` 在 Meka 路径显式报错、非 Meka 路径零影响（D2.1），第 13 组钉住 resume 短路下 `Object.keys(opts)` 新增键顺序（D2.2，不可观测、仅锁现状），第 14 组补 frozen + target 补丁的 `vendorOptions` 键序）
+- `pnpm test:runner`（含 `scripts/__tests__/meka-whitelist-contract.test.mjs` 的本文档结构契约：字段完整、命令可解析、编号唯一升序、被索引）
+- `pnpm --filter desktop typecheck`（矩阵是 `Readonly<Record<AgentKind, …>>`，maker-core 新增 `AgentKind` 而矩阵未填 ⇒ 编译失败）
+
+**实机验证**：`pnpm desktop:session-smoke` 的 **WL-11.1–WL-11.8**（真实建会话并调用模型，
+交叉核对库行 / main 日志里的运行期配置 / 技能快照）—— 注入层是这 8 项的共同运行期前置，
+矩阵或 order 表被改坏会在 WL-11.4（真实跑完一轮）/ WL-11.5（`[MEKA_ROLE_CONTEXT]` 回显）/
+WL-11.6（workflow / 角色级 MCP / 快照技能）先红。**本轮（2026-09-20 注入层重构）未实机跑**：
+worktree 内无宿主运行实例，登记为「未验证 + 原因」，由合入后在 base repo 实跑；
+本轮已跑的自动化证据见上行。
+
+> 编号说明：WL-16 为新增项；WL-7 与 WL-15 的编号不复用（§6）。本轮把
+> `mekaRuntimeInjection.ts` 的三个形态（及两个跨形态共享的解析入口）收编到同一层，并顺手
+> 修掉了「全局 MCP 注册漏传 Pi 不报错」这一失效形态（D2）；这不是新能力，而是把既存能力的
+> 不变量钉成可执行断言。对抗性审查后的修复（P1-B / P1-C）又补了两条有意差异 D2.1 / D2.2、
+> 段落 id 唯一性断言与 4 组追加用例（见 [`meka-injection-layer.md`](meka-injection-layer.md) §7）。
 
 ## 4. 最小自动化集合
 
@@ -1037,7 +1088,7 @@ WL-5（先确认区域与链路）→ WL-6（身份/更新）→ WL-1（设置�
    设置文件被删除）；**但它没有被登记** —— 同步报告、迁移总账与 D1–D4 决策里都没有。
    用户可见影响：① 配过这些项的 Meka 用户设置被静默丢弃；② **默认行为翻转**（Cindy 策略
    开 → Codex 原生）；③ `agents.enabled=false` 硬闸、`agents.max_depth`、并发上限不再可注入。
-   **未受影响**：SAGA2 远端只读 worker 的硬禁用仍在链路里（`mekaRuntimeInjection.ts:622` 设
+   **未受影响**：SAGA2 远端只读 worker 的硬禁用仍在链路里（`meka-injection/resolvePlan.ts:507-509` 设
    `codexNativeSubagentsDisabled` → `maker-host/index.ts:1618` 读取 → `:1831`
    `buildCodexSubagentSpawnArgs`），WL-4.2.3 不因此失效。
    **需裁决**：接受上游重设计并补登为一条决策（承认默认翻转与设置退场），**或**把 Meka 的
@@ -1128,6 +1179,8 @@ lineage 撞号的处理、migration 文件本体不写注释）留在
 | WL-12 scheduler 5 处 `meka` 跳过 | 无直接断言 |
 | WL-12 `recentSessions.ts:37` 的 `meka` 跳过 | 现有 5 条用例均未放入 meka 行 |
 | WL-12 `im/shared/controlProjects.ts` 的 IM 取数 | 未排除 meka（见 §8.2 第 1 条） |
+| WL-16 `maker-host/index.ts:2308` 的注册接线 | **源码文本序断言**（`meka-injection/__tests__/mcpRegistration.test.ts:245-258`），非行为级；「漏传即抛」的装配期路径由 `registerMekaCapabilities` 单测覆盖 |
+| WL-16 三种 agent 在真实会话里各自拿到的 MCP provider | 矩阵/注册/逐字节基线均有单测；**实机面本轮未跑**（worktree 无运行实例，见 WL-16 实机验证的「未验证 + 原因」） |
 
 补测试时应优先覆盖**本轮同步真实坏过**的位置（WL-2.1、WL-9 派生包、WL-10 补种、WL-12），
 而不是平均用力。

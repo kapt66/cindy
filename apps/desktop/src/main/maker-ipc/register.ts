@@ -582,7 +582,7 @@ import {
 import {
   applyMekaRuntimeConfig,
   prepareCombatFollowupRuntimeContext,
-} from './mekaRuntimeInjection.js';
+} from '../meka-injection/index.js';
 import {
   recordSessionContextSnapshot,
   recordSessionTurnSpend,

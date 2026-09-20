@@ -3264,7 +3264,7 @@ Meka 开发插件链路、插件市场独立 endpoint/凭证、`edition` 运行�
   「removes retired Codex fixed-route and guardrail keys when settings are opened」断言旧键被丢弃、
   仅含旧键时设置文件被删除），**但此前没有任何文档登记**。用户可见影响：已配置项被静默丢弃、
   默认行为翻转、`agents.enabled=false` 硬闸与并发上限不再可注入。**未受影响**：SAGA2 远端只读
-  worker 的硬禁用仍在链路里（`mekaRuntimeInjection.ts:622` → `maker-host/index.ts:1618` →
+  worker 的硬禁用仍在链路里（`meka-injection/resolvePlan.ts:507-509` → `maker-host/index.ts:1618` →
   `buildCodexSubagentSpawnArgs`）。需裁决「接受并补登」或「移植回上游新机制」，
   详见 [`2026-09-origin-main-to-meka-main.md`](./2026-09-origin-main-to-meka-main.md) §7.1 与
   白名单清单 §8.2 第 5 条。
@@ -3289,7 +3289,8 @@ Meka 开发插件链路、插件市场独立 endpoint/凭证、`edition` 运行�
 - **真实原因（实测）**：该报文与项目 Skill 数量**无关**（实测项目 Pi 资源收集结果为 0）。
   真实原因是 host 注入的 system prompt 经 `--append-system-prompt` 作为**命令行参数**传递，
   而 Meka 把**战斗总控 Skill 正文（24,027 字符）整篇内联**进该 prompt ⇒ argv 30,497 超预算 30,000。
-- **修法**：`mekaRuntimeInjection.ts` 的 `combatControllerSkillPrompt()` 改为只注入
+- **修法**：`mekaRuntimeInjection.ts` 的 `combatControllerSkillPrompt()`（该文件已于
+  2026-09-20 拆分，现位于 `meka-injection/combatPrompts.ts:69-82`，见 §6.47）改为只注入
   「冻结正文的**唯一绝对路径**（`snapshot.pluginPath` 下，已作为 `nativeSkillPluginPath` 授权给运行期）
   + 必须先完整读完该文件的指令」，不再注入正文本身。**语义不变**：正文仍是该任务 revision 级
   冻结的唯一权威正文，仍禁止探索/枚举其它 `SKILL.md`。argv 由 30,497 降至约 6.5KB。
@@ -3531,3 +3532,86 @@ Meka 开发插件链路、插件市场独立 endpoint/凭证、`edition` 运行�
   这属于既定版本内容，非本次修改范围。
 - **规则落点**：`docs/dev-rules/desktop-development.md` 新增「NSIS 脚本自带的
   `!include` 必须用 `${__FILEDIR__}`」一节，含宏体展开语义与两层验证分工。
+
+### 6.47 2026-09-20 Meka 会话注入层显式分层（重构落地，行为零变化）
+
+- **背景**：`apps/desktop/src/main/maker-ipc/mekaRuntimeInjection.ts`（688 行单文件）同时承担
+  解析（含全部 I/O）、落地（写 opts）、注入文本常量、战斗技能 ID 解析与进程级 MCP 注册；
+  三类入口形态（会话创建/恢复、每轮续聊、进程级注册）没有共同结构，而「注入段顺序」是
+  7 次 `prependPromptSection` 调用次序**涌现**出来的 —— 只有调用顺序表达语义，改动极易静默重排。
+- **改动**：搬迁并拆成显式三层，原文件**删除且不留 re-export**（避免双入口），目录变为
+  `apps/desktop/src/main/meka-injection/`：
+  - `index.ts` 对外唯一入口；`types.ts` 计划类型 + `MEKA_PROMPT_SEGMENT_ORDER`（`:91`，10/20/…/80）；
+  - `combatPrompts.ts` 注入文本与战斗 ID 解析的**唯一来源**（**零文本改动**）；
+  - `resolvePlan.ts` 第 2 层解析（**全部 I/O**）→ `MekaInjectionPlan`；`applyPlan.ts` 第 3 层
+    落地（只写 opts、无 I/O），按 order 升序渲染后一次性 prepend；
+  - `agentMatrix.ts` 能力矩阵；`mcpRegistration.ts` 形态 B 注册。
+  - `maker-ipc/register.ts` 仅改 import 路径（`:583-584`）；对外导出名与签名不变。
+- **段落 order 表**：10 战斗总控 Skill → 20 服务器目标 → 30 项目路径 → 40 战斗目标 →
+  50 执行授权 → 60 角色上下文 → 70 角色 prompt → 80 worker 独占段。新增段落**只能插空档**
+  （如 15/25），不得重排既有段落。
+- **D1（用户裁决）**：Pi **有意不支持**技能快照与 Meka 运行时 MCP，
+  `MEKA_AGENT_CAPABILITIES.pi = { skillSnapshot: false, runtimeMcp: false }`（`agentMatrix.ts:36`）；
+  依据是 `packages/maker-core/src/agents/pi/**` 对 `nativeSkillPluginPath` 与 Meka 运行时 MCP
+  零引用（`claude-code/index.ts:3327,3900`、`codex/index.ts:4852` 才是消费方）。本轮**不补齐**
+  Pi 能力，只把「意外缺失」改写成「声明式缺失」；Pi 实际行为与改动前逐字节一致。
+- **D2（顺手修缺口）**：进程级注册由 `registerMekaRuntimeMcpArrays(claudeMcpProviders,
+  codexMcpProviders)`（手工枚举数组、漏传 Pi 不报错）改为 `registerMekaCapabilities({ get })`
+  （`maker-host/index.ts:2308`，位于 `_mcpProviders.pi` 赋值 `:2303` 之后）；矩阵声明
+  `runtimeMcp: true` 却取不到数组 ⇒ **装配期硬失败**；`declareMekaRuntimeMcpAgents`
+  （`mcp-integrations/meka-runtime-mcp.ts:1433`）要求声明覆盖全量 `AgentKind` 且与矩阵一致，否则抛错。
+- **D3**：形态 B 一并收编（同上）。
+- **影响面**：Meka 会话注入的实现形态与入口结构。注入文本、注入顺序、`vendorOptions` 键值
+  （含键插入顺序）、技能快照 revision 契约、角色级 MCP 与 workflow **均未改动**；非 Meka
+  会话零写入不变。
+- **行为零变化证据**：`maker-ipc/__tests__/mekaRuntimeInjectionBaseline.test.ts` 中的 **10 条快照用例**
+  是在**未改动** `mekaRuntimeInjection.ts` 时捕获的现状快照，逐字段钉住 `opts.userPrompt`
+  全文、`opts.vendorOptions` 全量键值（含键顺序）与 `nativeSkillPluginPath`/
+  `nativeSkillRevision`；重构后这 10 条**断言一个字符未改**（该文件仅有 import 路径那一行更新）
+  继续通过。既有
+  `mekaRuntimeInjection.test.ts`（30 用例，含 WL-15 正向 + 反向断言）断言未动，仅 import 路径更新。
+- **验证（本轮实跑）**：`pnpm --filter desktop exec vitest run src/main/meka-injection
+  src/main/maker-ipc/__tests__/mekaRuntimeInjectionBaseline.test.ts
+  src/main/maker-ipc/__tests__/mekaRuntimeInjection.test.ts` ⇒ **4 文件 / 56 用例全绿**
+  （agentMatrix 4、mcpRegistration 12、baseline 10、mekaRuntimeInjection 30）；
+  `pnpm test:runner` ⇒ 652 用例 / 644 pass / 8 skipped / 0 fail；
+  `pnpm check:dev-docs` ⇒ 9/9 pass；`pnpm check:i18n-glossary` ⇒ 无新增违规（20 处
+  status=proposed 告警不阻断）。
+  环境备注：本仓 worktree 的 msys `bash` 会把 `tar` 解析到 GNU tar，遮蔽 Windows 自带的
+  bsdtar，导致 `scripts/__tests__/pi-update-layout.test.mjs` 的 ZIP 用例（
+  `tar: Cannot connect to C: resolve failed`）假红；让 `C:\Windows\System32\tar.exe`
+  先生效即为全绿。
+- **未验证**：`pnpm desktop:session-smoke`（WL-11.1–WL-11.8）**本轮未实机跑** —— worktree 内
+  无宿主运行实例，登记为「未验证 + 原因」，需合入后在 base repo 实跑。
+- **规则落点**：`docs/dev-rules/meka-injection-layer.md`（新增，含分层、三个入口形态与
+  I1–I8，并记录计划文本「四种入口」与实现的差异）；
+  白名单清单 **WL-16**（新增）+ WL-11 / WL-15 / WL-4.2.3 的代码锚点（旧路径失效，已重定位）；
+  根 `AGENTS.md`「当前规则索引」新增触发条件。
+- **对抗性审查修复（同日追加）**：
+  - **P1-A（声明修正，不改行为）**：原先写在 `applyPlan.ts` 与规则文档里的「`opts` 键插入顺序
+    可观测」是**错的**。事实：重构前 resume 短路路径把快照键夹在早段 prompt 写入与尾段
+    controller prompt 写入**之间**（原 `mekaRuntimeInjection.ts:501-502` 早于 `:505`），
+    新实现统一放到最后 ⇒ 在「只有 controller 段会写 prompt」的输入下 `Object.keys(opts)`
+    与重构前不同（新 `userPrompt → nativeSkillPluginPath → nativeSkillRevision`；
+    旧 `nativeSkillPluginPath → nativeSkillRevision → userPrompt`）。该差异**不可观测**
+    （全仓无代码枚举 `opts` 的键），注释与文档已改写为诚实描述；
+    **`opts.vendorOptions` 自身的键序仍是契约**，那条未改。
+  - **P1-B（有意行为差异，登记为 D2.1）**：非字符串 `opts.userPrompt`（如 `123`）在重构前
+    有三种不一致结果：战斗工作流在 `(opts.userPrompt ?? '').includes(marker)` guard 处抛
+    无错误码的 `TypeError`；新建非战斗会话不跑 guard，`123` 被当空串**丢弃**；resume 非战斗
+    会话不写 prompt，`123` 原样**透传**。现改为 Meka 路径（新建与
+    resume、战斗与非战斗）统一 `throwIpcError('INVALID_PARAMS', …)`，文案为
+    `Meka session userPrompt must be a string when provided`；非 Meka 会话零行为变化（校验位于
+    `workspaceKind === 'meka'` 判定之后 / `resolveFrozenInjection` 开头）。理由：IPC 是无
+    类型边界，`readCreateSessionOpts` 不校验 `userPrompt`。
+  - **P1-C（防线 + 基线补口）**：`renderMekaPromptSegments` 新增「同一批段落 `id` 必须唯一」
+    只读断言（`order` 并列时 `sort` 稳定与旧 prepend 语义方向相反，重复 id 会静默反转整组
+    次序）；`mekaRuntimeInjectionBaseline.test.ts` 新增 4 组用例（第 11/12 组钉 D2.1 与 I6、
+    第 13 组钉 resume 短路下 `Object.keys(opts)` 新增键顺序 = D2.2、第 14 组补 frozen + target
+    补丁的 `vendorOptions` 键序），**原有 10 条快照用例一个字符未改**。
+  - **验证（审查修复轮实跑）**：baseline **15 用例全绿**；
+    `src/main/meka-injection` 16 用例、`mekaRuntimeInjection.test.ts` 30 用例、
+    `src/main/meka-projects` 105 pass / 1 skipped 全绿；`pnpm --filter desktop run typecheck`
+    通过；`pnpm test:runner` ⇒ 652 用例 / 644 pass / 8 skipped / 0 fail（同样需要上方
+    bsdtar 环境备注）。审查修复的事实登记在
+    `docs/dev-rules/meka-injection-layer.md` §7「与重构前的有意差异（D2）」。

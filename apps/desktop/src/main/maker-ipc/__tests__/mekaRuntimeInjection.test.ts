@@ -10,7 +10,7 @@ import {
   combatSkillIdVendorPatchFromUserPrompt,
   parseCombatSkillIdFromUserPrompt,
   prepareCombatFollowupRuntimeContext,
-} from '../mekaRuntimeInjection.js';
+} from '../../meka-injection/index.js';
 import type { MakerSessionCreateOpts } from '../sessionRequest.js';
 
 const environmentServices = vi.hoisted(() => ({
