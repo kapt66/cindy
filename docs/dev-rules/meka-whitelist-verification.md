@@ -525,13 +525,16 @@ edition 与端点自举）；② 登录页实际认证的 **realm**;③ 运行�
   发布根是 Meka 的 RustFS 前缀与专用 bucket；所有发布根**必须 HTTPS**；
   CN 与 Global 靠**不同 bucket** 区分而**不是**路径前缀；canary manifest 必须记录每个
   已发布的 runtime 资产（`claudeCode` / `codex` 单文件 / `codexPackage` 目录分发 / `ripgrep`
-  四段齐全——`codexPackage` 是 ≥0.0.21 桌面端启动消费的段，漏发即「环境初始化失败」）；
+  / `pi` 目录分发 五段齐全——`codexPackage` 是 ≥0.0.21 桌面端启动消费的段，漏发即「环境初始化
+  失败」；`pi` 是 Pi agent 的**唯一** runtime 来源（安装包不内置、客户端无本地回退），漏发即
+  packaged 包里 Pi agent 不存在、只在 pi 路由上默认开启的模型集体消失）；
   发布顺序 SemVer 感知且**拒绝稳定版降级**
-- **代码锚点**：`packages/maker-shared/src/brandIdentity.ts:113-121`（`cdnPrefix` / `updaterName` 与「两区共用前缀、靠 bucket 区分」的注释）；`apps/desktop/forge.config.ts`（`resources/${UPDATER_EXE}`）；`apps/desktop/scripts/publish-desktop.mjs`（`collectPinnedDirDistAssets` / `publishDirDistAssets` / `buildCanaryManifest` 接线）；`apps/desktop/scripts/ci/runtime-release.mjs`（`DIR_DIST_RUNTIME_DEFINITIONS` / `RELEASE_RUNTIME_DEFINITIONS`）
+- **代码锚点**：`packages/maker-shared/src/brandIdentity.ts:113-121`（`cdnPrefix` / `updaterName` 与「两区共用前缀、靠 bucket 区分」的注释）；`apps/desktop/forge.config.ts`（`resources/${UPDATER_EXE}`）；`apps/desktop/scripts/publish-desktop.mjs`（`collectPinnedDirDistAssets` / `publishDirDistAssets` / `buildCanaryManifest` 接线）；`apps/desktop/scripts/ci/runtime-release.mjs`（`DIR_DIST_RUNTIME_DEFINITIONS` / `RELEASE_RUNTIME_DEFINITIONS` / `PI_DIR_DIST_DEFINITION`——pi 由 pin 下载后**重打包**，不是原样转发）；`tools/shared/dir-dist-archive.mjs`（重打包的确定性来源）；`apps/desktop/scripts/reset-canary-desktop.mjs`（`allowMissing: ['ripgrep','codexPackage','pi']`）
 - **持久化 / 配置 key**：`userData/update-channel-settings.json`（设备级）、`userData/canary-flag.json`（账号级）
-- **自动化门禁**：`pnpm test:runner` 内 `scripts/__tests__/meka-release-flow.test.mjs`（`Cindy Meka release roots are HTTPS-only`、`RustFS object keys stay inside the Cindy Meka prefix`、`dedicated cindy-meka bucket may publish at bucket root without a duplicate prefix`、`release ordering is SemVer-aware and refuses stable downgrade`、`published endpoint manifest keeps CN services but does not inherit Cindy updates`、`canary manifest records every published runtime asset`——该用例同时断言缺 `codexPackage` 必须报错）与 `scripts/__tests__/codex-package-cdn-release.test.mjs`（目录分发段的 pin 锚定、上传校验与不可覆盖）
+- **自动化门禁**：`pnpm test:runner` 内 `scripts/__tests__/meka-release-flow.test.mjs`（`Cindy Meka release roots are HTTPS-only`、`RustFS object keys stay inside the Cindy Meka prefix`、`dedicated cindy-meka bucket may publish at bucket root without a duplicate prefix`、`release ordering is SemVer-aware and refuses stable downgrade`、`published endpoint manifest keeps CN services but does not inherit Cindy updates`、`canary manifest records every published runtime asset`——该用例同时断言缺 `codexPackage` 与缺 `pi` 必须报错）、`scripts/__tests__/codex-package-cdn-release.test.mjs`（目录分发段的 pin 锚定、上传校验与不可覆盖）与 `scripts/__tests__/pi-cdn-release.test.mjs`（pi 段的 pin 锚定、重打包布局/主题补齐/字节确定性、`pinned-sha256` 元数据、幂等复用与拒绝覆盖）
 - **实机验证**：打包后确认更新器落点名为 `cindy-meka-updater`；更新检查请求打到 Meka 渠道根
-  而非上游 `cindy` 根
+  而非上游 `cindy` 根；装包启动后日志出现 `pi agent enabled { binaryPath: ... }`（不是
+  `pi runtime not ready: asset_missing`），且 `maker:get-capabilities` 回报三个 agent（含 `pi`）
 - **历史回归**：`canaryFlagStore.clear()` 必须留在 passive 实例守卫之后（`authPassiveSharedInstance` 用例）
 
 #### WL-6.6 旧身份只读迁移与 legacy 前缀扫描

@@ -567,6 +567,14 @@ test("canary manifest records every published runtime asset", () => {
       sha256: "c".repeat(64),
       size: 456,
     },
+    // 桌面端 Pi agent 的 runtime 只能从这一段拿（安装包不内置 resources/pi）；缺了就是
+    // `asset_missing` → pi agent 不注册 → 只在 pi 路由上默认开启的模型集体消失。
+    pi: {
+      version: "0.85.1",
+      file: "pi/0.85.1/win32-x64/pi.dist.tar.gz",
+      sha256: "e".repeat(64),
+      size: 789,
+    },
   };
   const manifest = buildCanaryManifest(
     {
@@ -589,6 +597,7 @@ test("canary manifest records every published runtime asset", () => {
   assert.deepEqual(manifest.codex, runtimeAssets.codex);
   assert.deepEqual(manifest.ripgrep, runtimeAssets.ripgrep);
   assert.deepEqual(manifest.codexPackage, runtimeAssets.codexPackage);
+  assert.deepEqual(manifest.pi, runtimeAssets.pi);
 
   // 发布侧守卫：canary manifest 少任何一个桌面端启动必需的 runtime 段都必须失败，
   // 而不是发出去让用户卡在 splash。
@@ -603,6 +612,15 @@ test("canary manifest records every published runtime asset", () => {
         definitions: RELEASE_RUNTIME_DEFINITIONS,
       }),
     /codexPackage/,
+  );
+  const withoutPi = { ...manifest };
+  delete withoutPi.pi;
+  assert.throws(
+    () =>
+      assertRuntimeManifestAssets(withoutPi, "win32-x64", {
+        definitions: RELEASE_RUNTIME_DEFINITIONS,
+      }),
+    /pi/,
   );
 });
 

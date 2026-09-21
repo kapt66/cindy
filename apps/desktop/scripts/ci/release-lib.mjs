@@ -206,6 +206,17 @@ export function buildCanaryManifest(baseManifest, release, options = {}) {
     } else {
       delete manifest.codexPackage;
     }
+    // pi 同属目录分发（`agent-binaries` 的 `CONFIG.pi`：manifestField 'pi' + tar-gz-dir +
+    // optionalAsset）。它虽然可选、不阻塞启动，但**缺段就等于 Pi agent 整个不可用**：
+    // 客户端只从这一段拿 runtime（安装包不内置 resources/pi），缺了就 `asset_missing` →
+    // `pi agent disabled` → 只在 pi 路由上默认开启的模型（例如 XD 网关的
+    // deepseek-v4.1-flash）在 packaged 包里全部消失。同样无条件覆盖：只在“本轮有值”
+    // 时写入会让上一版的陈旧段顶包，而齐备断言仍然通过。
+    if (options.runtimeAssets.pi) {
+      manifest.pi = structuredClone(options.runtimeAssets.pi);
+    } else {
+      delete manifest.pi;
+    }
   }
   return manifest;
 }

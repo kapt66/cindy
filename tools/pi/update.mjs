@@ -58,15 +58,19 @@ const REQUIRED_THEME_FILES = Object.freeze([
 // 缓存)按“需重新核验”处理,重下一次即自愈。随 .sha256.bin 一起进目录清单。
 const ASSET_DIGEST_FILE = '.asset-digest.bin';
 
-// 平台 → GitHub Release 资产文件名 + 归档内主执行文件名
-const PLATFORMS = [
-  { key: 'darwin-arm64', asset: 'pi-darwin-arm64.tar.gz', binFile: 'pi' },
-  { key: 'darwin-x64', asset: 'pi-darwin-x64.tar.gz', binFile: 'pi' },
-  { key: 'linux-x64', asset: 'pi-linux-x64.tar.gz', binFile: 'pi' },
-  { key: 'linux-arm64', asset: 'pi-linux-arm64.tar.gz', binFile: 'pi' },
-  { key: 'win32-x64', asset: 'pi-windows-x64.zip', binFile: 'pi.exe' },
-  { key: 'win32-arm64', asset: 'pi-windows-arm64.zip', binFile: 'pi.exe' },
-];
+// 平台 → GitHub Release 资产文件名 + 归档内主执行文件名。
+// 安装侧（本文件）与发布侧（apps/desktop/scripts/ci/runtime-release.mjs 的 pi 目录分发段）
+// **共用这一张表**：发布侧只读消费，不另造平台映射，否则两份表迟早漂移。
+export const PI_RUNTIME_PLATFORMS = Object.freeze([
+  Object.freeze({ key: 'darwin-arm64', asset: 'pi-darwin-arm64.tar.gz', binFile: 'pi' }),
+  Object.freeze({ key: 'darwin-x64', asset: 'pi-darwin-x64.tar.gz', binFile: 'pi' }),
+  Object.freeze({ key: 'linux-x64', asset: 'pi-linux-x64.tar.gz', binFile: 'pi' }),
+  Object.freeze({ key: 'linux-arm64', asset: 'pi-linux-arm64.tar.gz', binFile: 'pi' }),
+  Object.freeze({ key: 'win32-x64', asset: 'pi-windows-x64.zip', binFile: 'pi.exe' }),
+  Object.freeze({ key: 'win32-arm64', asset: 'pi-windows-arm64.zip', binFile: 'pi.exe' }),
+]);
+
+const PLATFORMS = PI_RUNTIME_PLATFORMS;
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 

@@ -42,9 +42,10 @@ function parseArgs(argv) {
 
 function referencedAssetKeys(manifest, platformKey) {
   // ripgrep 字段引入前的历史 stable 没有它；codexPackage（目录分发）同理——0.0.20 及更早的
-  // stable manifest 只有单文件 codex。两者缺失都不该阻断 reset，但**存在就必须校验**。
+  // stable manifest 只有单文件 codex；pi 则是在 0.0.23 之前**从未**被任何发布链路发过。
+  // 三者缺失都不该阻断 reset，但**存在就必须校验**。
   assertRuntimeManifestAssets(manifest, platformKey, {
-    allowMissing: ['ripgrep', 'codexPackage'],
+    allowMissing: ['ripgrep', 'codexPackage', 'pi'],
     definitions: RELEASE_RUNTIME_DEFINITIONS,
   });
   return [
@@ -54,6 +55,7 @@ function referencedAssetKeys(manifest, platformKey) {
     manifest.codex.file,
     ...(manifest.ripgrep?.file ? [manifest.ripgrep.file] : []),
     ...(manifest.codexPackage?.file ? [manifest.codexPackage.file] : []),
+    ...(manifest.pi?.file ? [manifest.pi.file] : []),
   ];
 }
 

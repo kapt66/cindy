@@ -346,10 +346,19 @@ Pi CLI 管理入口、内核自更新与旧工具兼容的执行边界见
       Claude Code 一致(同样只读 `getReadyBinaryPath`),但与 **Codex 不同**——codex 读
       `getCachedBinaryStatus`,会接受早前已 `.verified` 的旧版本,离线仍可用。想让 pi
       也离线可用属于行为变更,需先确认再改,不要以"和 codex 对齐"为由顺手改回。
-      发布入口**不在本仓**:
-      二进制发布统一走 cindy 同级目录的独立工程 `cindy-binary-release`
-      (`pnpm release:pi -- --region cn|global`,默认 canary 通道;配置与安全机制见
-      该工程 README)。本仓只保留版本 pin 与暂存(`pnpm update:pi` / `install:pi`)。
+      发布入口：**Cindy Meka 桌面渠道**的 pi 段由本仓发布链路发布（`pi-host` / `agent-binaries`
+      的消费端不变）：`apps/desktop/scripts/ci/runtime-release.mjs` 的 `PI_DIR_DIST_DEFINITION`
+      从 `tools/pi/latest.json` 直链下载上游归档 → 按 pin sha256 校验 → 归一布局 → 补主题 →
+      确定性 tar.gz → `pi/<ver>/<platform>/pi.dist.tar.gz` + manifest `pi` 段。上游 Cindy 渠道的
+      二进制发布仍走 cindy 同级目录的独立工程 `cindy-binary-release`
+      (`pnpm release:pi -- --region cn|global`)。本仓另外保留版本 pin 与暂存
+      (`pnpm update:pi` / `install:pi`)。
+      **回归红线**：`pi` 段是 packaged 用户拿到 Pi 的**唯一**途径（安装包不内置、客户端无本地回退），
+      漏发就等于 Pi agent 在正式包里不存在。验证方式：装包后日志出现
+      `pi agent enabled { binaryPath: ... }`（而不是 `pi runtime not ready: asset_missing`），
+      且 `maker:get-capabilities` 回报三个 agent（含 `pi`）；清单与语义检查见
+      `meka-whitelist-verification.md`。历史事实：0.0.21 / 0.0.22 两个正式包都因漏发该段而
+      Pi agent 不可用（表现为只在 pi 路由上默认开启的模型集体消失）。
 - [x] **协议/模型兼容自动矩阵**:Anthropic Messages、OpenAI Responses、OpenAI Chat 三种
       Pi 原生 BYOM 映射均有契约测试；真实 Pi + fake gateway 覆盖 thinking/tool streaming、
       MCP bridge、redacted/usage 翻译，ChatGPT 订阅已做真实请求与 cacheRead 验收。发布账号的

@@ -97,6 +97,9 @@ async function main() {
     `  codex 目录分发 -> codexPackage ${dirDistAssets.codexPackage.version} ` +
       `(${dirDistAssets.codexPackage.file})`,
   );
+  console.log(
+    `  pi 目录分发    -> pi ${dirDistAssets.pi.version} (${dirDistAssets.pi.file})`,
+  );
 
   if (!args.execute) {
     console.log('\n本地校验通过；未写入 RustFS。确认后追加 --execute。');
@@ -153,6 +156,7 @@ async function main() {
   console.log(`  codex:     ${runtime.results.codex}`);
   console.log(`  ripgrep:   ${runtime.results.ripgrep}`);
   console.log(`  codexPackage: ${dirDist.results.codexPackage}`);
+  console.log(`  pi:           ${dirDist.results.pi}`);
   console.log(`  installer: ${storage.cdnUrl(installerKey)}`);
   console.log(`  hotfix:    ${storage.cdnUrl(hotfixKey)}`);
   console.log(`  endpoints: ${storage.cdnUrl('endpoint.json')}`);

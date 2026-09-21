@@ -38,15 +38,17 @@
 | 桌面端运行／打包（应用内 agent runtime） | codex **目录分发** | `apps/codex-package-bin/<platform>/` | `tools/codex-package/latest.json` |
 | 发布到 CDN 的 runtime 对象 | codex **单文件** | `apps/codex-bin/<platform>/codex[.exe]` | `tools/codex/latest.json` |
 | 两侧共用 | claude / ripgrep 单文件 | `apps/claude-code-bin/`、`apps/ripgrep-bin/` | `tools/claude/latest.json`、`tools/ripgrep/latest.json` |
+| 桌面端运行（Pi agent） | pi **目录分发**（发布侧重打成 tar.gz） | CDN `pi/<ver>/<platform>/pi.dist.tar.gz`（安装包**不**内置） | `tools/pi/latest.json` |
 
-### 应用 manifest 必须同时记录 `codex` 与 `codexPackage`
+### 应用 manifest 必须同时记录 `codex`、`codexPackage` 与 `pi`
 
-**硬契约：两侧字段都要发**（`publish-desktop.mjs` → `buildCanaryManifest`）：
+**硬契约：三段都要发**（`publish-desktop.mjs` → `buildCanaryManifest`）：
 
 | manifest 字段 | 形态 | 谁在读 |
 | --- | --- | --- |
 | `codex` | 单文件 gz（`codex/<ver>/<platform>/codex[.exe].gz` + `binarySha256`） | ≤0.0.20 的桌面客户端；MCPRouter 侧的 `runtime-manifest-linux-*.json` 是同形资产的独立入口，不在应用 manifest 内 |
 | `codexPackage` | 整目录 tar.gz（`codex-package/<ver>/<platform>/codex-package.tar.gz`） | **≥0.0.21 桌面端启动**：`agent-binaries` 的 `CONFIG.codex` = `manifestField: 'codexPackage'` + `artifactKind: 'tar-gz-dir'` + `installSubdir: 'codex-package'` |
+| `pi` | 整目录 tar.gz（`pi/<ver>/<platform>/pi.dist.tar.gz`） | **≥0.0.21 桌面端的 Pi agent**：`CONFIG.pi` = `manifestField: 'pi'` + `artifactKind: 'tar-gz-dir'` + `optionalAsset`。安装包不内置 `resources/pi`，`resolvePiBinaryPath` 只认受管安装版，因此**这一段是 packaged 用户拿到 Pi 的唯一途径** |
 
 - 目录分发资产**直接复用 pin 记录的上游官方整包**（`tools/codex-package/latest.json` 的
   `runtimeAssets.<platformKey>`：直链 + sha256 + 字节数），**不在发版机重新打包本地
@@ -54,10 +56,12 @@
   字节不同」在同一个不可覆盖对象上撞车。下载走 `downloadToFileWithTimeout` 并显式
   `minThroughputBytesPerSec: 0`（发布链路没有退路，掐断只会把"慢但能成"变成失败）；落盘后按
   pin 的 sha256 校验，上传后回读 `size` + `metadata.sha256` 复核，失败即中止。
-- 定义在 `apps/desktop/scripts/ci/runtime-release.mjs`：`DIR_DIST_RUNTIME_DEFINITIONS`（发布什么）、
+- 定义在 `apps/desktop/scripts/ci/runtime-release.mjs`：`RUNTIME_DEFINITIONS`（单文件三段）、
+  `DIR_DIST_RUNTIME_DEFINITIONS` = `codexPackage` + `pi`（目录分发两段）、
   `RELEASE_RUNTIME_DEFINITIONS = RUNTIME_DEFINITIONS + DIR_DIST_*`（应用 manifest 必须齐全的判据）。
   `publish-desktop.mjs` 与 `reset-canary-desktop.mjs` 都用它断言；reset 侧
-  `allowMissing: ['ripgrep','codexPackage']` 以兼容 0.0.20 及更早的 stable manifest（字段**存在就必须校验**）。
+  `allowMissing: ['ripgrep','codexPackage','pi']` 以兼容字段引入前的 stable manifest
+  （字段**存在就必须校验**）。
 - 对象路径含平台段（`/<platformKey>/`），这是发布侧 `assertRuntimeManifestAssets` /
   `validRuntimeManifestAsset`（`apps/desktop/scripts/ci/runtime-release.mjs`）的既有路径约束。
 - pin 的 `target` / `entrypoint` 元数据在发布侧也做**交叉校验**，且**要求字段存在**：缺任一
@@ -66,9 +70,48 @@
   `bin/codex` / `bin/codex.exe` 各覆盖两个平台，跨架构整段粘贴（如把 win32-arm64 条目放进
   win32-x64 槽位）能骗过它，结果是把 arm64 字节发到 x64 路径——必须连 `target` 一起比。
   这与安装侧 `validateCodexPackageDirectory` 的 `pin.target !== platform.target` 同口径。
-- `buildCanaryManifest` 对四段 runtime **一律无条件覆盖**（本轮无值时 `delete`）：该函数从
+- `buildCanaryManifest` 对五段 runtime **一律无条件覆盖**（本轮无值时 `delete`）：该函数从
   baseManifest（上一版 canary）clone 而来，只在「本轮有值」时写入会让上一版的陈旧段顶包，
   而齐备断言仍然通过——守卫就证明不了本轮的段真的发布过。
+
+### `pi` 段的特殊契约：发布侧重打包（不是原样转发）
+
+**为什么不能像 `codexPackage` 那样直接转发 pin 字节**（三个事实叠加，缺一个结论就不成立）：
+
+1. 上游 pi 归档的平台形态不一致：win32 是 `.zip`，unix 是**包在 `pi/` 壳目录里**的 `.tar.gz`；
+   而客户端 `CONFIG.pi` 只认 `tar-gz-dir`（用 npm `tar` 解包，不认 zip）。
+2. 上游归档**不含 `theme/`**，缺它 Pi 的 RPC 模式启动即崩；补齐主题是本仓的既有职责
+   （`tools/pi/update.mjs` 的 `ensurePiThemeAssets`，仓库自带 `tools/pi/theme/*`）。
+3. 客户端 `extractTarGzDir` 要求解包后主执行文件在目录根（或唯一的 `pi/` 壳目录里）。
+
+因此 `PI_DIR_DIST_DEFINITION` 走 `repack: 'pinned-archive'`：从 pin 直链下载 → 按 pin 的
+sha256 逐字节校验 → 解包 → `flattenExtractedDir` 归一布局 → 补主题 → **确定性 tar.gz**
+（顺序/元数据/权限位全部归一，见 `tools/shared/dir-dist-archive.mjs`）。确定性不是风格问题：
+版本化对象不可覆盖，同一版本重跑发布只能得到同一份字节，否则重跑会撞上「同路径内容不同」而
+需要人工介入。
+
+**来源可验证性**：manifest 记的是**重打包产物**的 sha256，因此额外把 pin 归档的摘要在上传时写入
+对象元数据的 `pinned-sha256`；重跑（含 canary 被 reset 回上一版 stable 的场景）据此判定
+「在线对象确实由当前 pin 的字节重打包而来」，pin 字节在同一版本下被上游替换时会 fail closed
+拒绝覆盖，而不是静默复用一份陈旧的重打包结果。
+
+**兼容**：`pi` 是可选的 manifest 段，旧客户端会忽略它；`reset-canary-desktop.mjs` 对 0.0.23
+之前的 stable manifest 允许该段缺失（`allowMissing`）——那些 stable 本来就没发过它。
+
+- **历史事故（0.0.21 / 0.0.22 packaged 包「模型只有零星几个可用」）**：客户端早在
+  `4c94194709`（2026-08-02）就把 pi 接进了 CDN 运行时分发链（manifest 可选 `pi` 字段 +
+  `optionalAsset` 降级），并同步改成「正式安装包不内置 Pi」，但本仓发布链路
+  （`runtime-release.mjs` / `release-lib.mjs` / `buildCanaryManifest`）从来没有发过这一段
+  （`PI_DIR_DIST_DEFINITION` 在 0.0.23 才落地）。后果链条：每次启动都是
+  `prepare('pi')` → `asset_missing (manifest field "pi")` → `pi-host` 记
+  `pi agent disabled for this launch` → `maker:get-capabilities` 只报
+  `claude-code, codex`。因为 XD 网关这类供应商的多数模型只在 `pi` 路由上默认开启
+  （其它 agent 与模型原生协议不兼容，`active-catalog.ts` 会给出 `defaultEnabled=false`），
+  packaged 用户看到的模型列表被砍到零星几个——`deepseek/deepseek-v4.1-flash` 就是典型
+  （profile 里 `pi:xd:...=true` 而 `claude-code/codex:xd:...=false`）。开发机不受影响，
+  因为 dev 短路读 `apps/pi-bin/<platform>/pi.exe`（`ensure-dev-runtime-assets.mjs`）。
+  与 codexPackage 事故的差别是**它不阻塞启动**（`optionalAsset`），所以只表现为能力缺失，
+  不会在 splash 上炸出来——也正因如此它跨了两个版本都没被发现。
 - **历史事故（2026-09-16，Windows canary 0.0.21「环境初始化失败」）**：上游 `b43ee771ad`
   （2026-09-03，use Codex package in production）把生产侧 codex 换成目录分发，`bdc8397a7e`
   （2026-09-11）合并进 `meka/main`，**0.0.21 是合并后第一个包**；本仓发布链路却仍只发单文件
@@ -84,15 +127,19 @@
   `check-environment` 在每个失败分支 `console.error` 带 stage。
 - 通用教训：改桌面端 runtime 消费契约（vendor kind 的 manifest 字段／产物形态）时，**必须同时**
   改发布链路，并把「该字段必须存在」写进发布侧断言。只改客户端会在下一个 canary 上炸，而且是在
-  「打包、签名、冒烟全部成功之后」才炸给用户。
+  「打包、签名、冒烟全部成功之后」才炸给用户。反面案例同样成立：**可选** runtime 漏发不会炸，
+  只会静默少能力（`pi` 段跨 0.0.21 / 0.0.22 两个版本没人发现），因此可选段的齐备断言不能省。
 
 - CDN 的**单文件** runtime 对象是单二进制 gz（`codex/<version>/<platform>/codex[.exe].gz` +
   `binarySha256`），形态由 `apps/desktop/scripts/ci/runtime-release.mjs` 的 `RUNTIME_DEFINITIONS`
   定义。`publish-desktop.mjs` 在 `collectLocalRuntimeAssets` **之前**必须就位这些 runtime。
-  目录分发的 `codexPackage` 不走这条本地收集链（见上一节）。
+  目录分发的 `codexPackage` 与 `pi` 都不走这条本地收集链（前者直接转发 pin 字节，后者由 pin 下载后
+  重打包，见前述 `pi` 段契约）。
 - 契约：`scripts/ensure-agent-binaries.mjs` 的 `PUBLISHED_RUNTIME_KINDS`
   （claude / `codex-single` / ripgrep）与 `ensurePublishedRuntimes()` 和 `RUNTIME_DEFINITIONS`
-  **一一对应**——改一边必须同时改另一边，否则发布会在收集本地资产时失败。
+  **一一对应**——改一边必须同时改另一边，否则发布会在收集本地资产时失败。`pi` **有意不在**这份
+  名单里：目录分发段从 pin 直接发布，不依赖发版机 `apps/pi-bin/` 的落位状态（也就不会把
+  GitHub API 配额花在安装侧路径上）。
 - `codex-single` 带 `publicationOnly`：它**不进** `SUPPORTED_BINARY_KINDS`（dev/postinstall 自举集合），
   否则每次 dev 安装/启动都会多下 ~120MB，而 dev 根本不用单文件 codex。
 - `codex-single` 的 `ensurePlatform` 同样支持 pin 降级（见上一节）：发布链路上配额耗尽时仍能从

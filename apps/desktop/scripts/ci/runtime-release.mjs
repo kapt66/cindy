@@ -5,6 +5,13 @@ import { fileURLToPath } from 'node:url';
 import { gzipFile } from '../../../../scripts/shared/oss.mjs';
 import { CODEX_PACKAGE_PLATFORMS } from '../../../../tools/codex-package/update.mjs';
 import {
+  PI_RUNTIME_PLATFORMS,
+  ensurePiThemeAssets,
+  extractArchive,
+  flattenExtractedDir,
+} from '../../../../tools/pi/update.mjs';
+import { createDeterministicTarGz } from '../../../../tools/shared/dir-dist-archive.mjs';
+import {
   createDownloadProgressLogger,
   downloadToFileWithTimeout,
 } from '../../../../tools/shared/fetch-with-timeout.mjs';
@@ -68,19 +75,64 @@ export const AGENT_RUNTIME_DEFINITIONS = Object.freeze(
  * 同源，不依赖发版机本地 `apps/codex-package-bin` 的落位状态，也不会因为「本机重新
  * 打包一次 → 字节不同」在同一个不可覆盖对象上撞车。
  */
+export const CODEX_PACKAGE_DIR_DIST_DEFINITION = Object.freeze({
+  field: 'codexPackage',
+  objectRoot: 'codex-package',
+  archiveName: 'codex-package.tar.gz',
+  // 规范平台表（安装侧维护，发布侧只读复用）：target/entrypoint 的交叉校验真值。
+  canonicalPlatforms: CODEX_PACKAGE_PLATFORMS,
+  pinFile: ['tools', 'codex-package', 'latest.json'],
+  pinLabel: 'codex-package',
+});
+
+/**
+ * pi 的目录分发 runtime（`agent-binaries` 的 `CONFIG.pi`：`manifestField: 'pi'` +
+ * `tar-gz-dir` + `optionalAsset`）。
+ *
+ * 背景（0.0.21 / 0.0.22 packaged 包「模型只有零星几个可用」）：Pi agent 的 runtime
+ * 只能从 CDN manifest 的 `pi` 段获取——安装包不内置 `resources/pi`，客户端也没有
+ * 其它回退（`resolvePiBinaryPath` 只认受管安装版），而本仓发布链路从来没发过这个段。
+ * 于是每次 `prepare('pi')` 都是 `asset_missing` → `pi agent disabled for this launch`
+ * → `get-capabilities` 只报 claude-code / codex。XD 网关这类供应商的多数模型只在 `pi`
+ * 路由上默认开启（其它 agent 上与模型原生协议不兼容，`defaultEnabled=false`），因此
+ * packaged 用户看到的模型列表被砍到零星几个，而开发机因为有 `apps/pi-bin/<platform>/`
+ * 本地短路（`ensure-dev-runtime-assets.mjs`）一切正常。
+ *
+ * 与 codexPackage 的两点差异：
+ *   - pin（`tools/pi/latest.json`）只有 url / sha256 / size，没有 target / entrypoint，
+ *     因此不做那套 pin 元数据交叉校验，平台映射复用安装侧规范表
+ *     `PI_RUNTIME_PLATFORMS`（`tools/pi/update.mjs`）。
+ *   - 发布物**不能原样转发上游归档**：上游 win32 是 `.zip`、unix 是带 `pi/` 壳目录的
+ *     `.tar.gz`，而且上游归档不含 `theme/`（缺它 Pi 的 RPC 模式启动即崩）。所以本定义
+ *     走 `repack`：解包 → 归一布局 → 补本仓主题 → **确定性** tar.gz
+ *     （`dir-dist-archive.mjs`：重跑必须得到同一份字节，否则版本化对象会撞上
+ *     「同路径内容不同，拒绝覆盖」）。
+ *
+ * pin 的 sha256 仍然是硬门禁：下载的**上游归档**先按 pin 逐字节校验，再转换；发布后把
+ * pin 的摘要作为 `pinned-sha256` 元数据留在对象上，重跑据此证明「在线对象确实由当前 pin
+ * 的字节重打包而来」，而不是只看版本号。
+ */
+export const PI_DIR_DIST_DEFINITION = Object.freeze({
+  field: 'pi',
+  objectRoot: 'pi',
+  archiveName: 'pi.dist.tar.gz',
+  pinFile: ['tools', 'pi', 'latest.json'],
+  pinLabel: 'pi',
+  // 安装侧规范平台表（key / 上游资产名 / 主执行文件名）：发布侧只读复用，不另造映射。
+  platforms: PI_RUNTIME_PLATFORMS,
+  repack: 'pinned-archive',
+  /** 解包后补齐上游归档缺的 `theme/`（与安装侧同一条实现，否则 Pi RPC 模式启动即崩）。 */
+  afterExtract(extractDir) {
+    ensurePiThemeAssets(extractDir);
+  },
+});
+
 export const DIR_DIST_RUNTIME_DEFINITIONS = Object.freeze([
-  Object.freeze({
-    field: 'codexPackage',
-    objectRoot: 'codex-package',
-    archiveName: 'codex-package.tar.gz',
-    // 规范平台表（安装侧维护，发布侧只读复用）：target/entrypoint 的交叉校验真值。
-    canonicalPlatforms: CODEX_PACKAGE_PLATFORMS,
-    pinFile: ['tools', 'codex-package', 'latest.json'],
-    pinLabel: 'codex-package',
-  }),
+  CODEX_PACKAGE_DIR_DIST_DEFINITION,
+  PI_DIR_DIST_DEFINITION,
 ]);
 
-/** 应用 canary/stable manifest 必须齐全的 runtime 段（单文件三个 + 目录分发 codexPackage）。 */
+/** 应用 canary/stable manifest 必须齐全的 runtime 段（单文件三个 + 目录分发两段）。 */
 export const RELEASE_RUNTIME_DEFINITIONS = Object.freeze([
   ...RUNTIME_DEFINITIONS,
   ...DIR_DIST_RUNTIME_DEFINITIONS,
@@ -332,14 +384,15 @@ export async function publishRuntimeAssets(
   return { manifestAssets: Object.freeze(manifestAssets), results: Object.freeze(results) };
 }
 
-// ── 目录分发 runtime（codexPackage）──────────────────────────────────────────
+// ── 目录分发 runtime（codexPackage / pi）────────────────────────────────
 
 /**
  * 目录分发资产在「规范平台表」里的条目（发布侧的唯一真值来源）。
  *
  * 表由安装侧维护（`tools/codex-package/update.mjs` 的 `CODEX_PACKAGE_PLATFORMS`，
  * 就是 `ensurePlatform` 用来校验官方包布局的那份），发布侧只读复用——不在这里另造一份
- * 平台映射，否则两份表迟早漂移。
+ * 平台映射，否则两份表迟早漂移。pi 同理复用 `tools/pi/update.mjs` 的
+ * `PI_RUNTIME_PLATFORMS`（key / 上游资产名 / 主执行文件名）。
  */
 function canonicalPlatformFor(definition, platformKey) {
   const table = definition.canonicalPlatforms;
@@ -351,6 +404,20 @@ function canonicalPlatformFor(definition, platformKey) {
     throw new Error(`${definition.field} 规范表没有 ${platformKey} 条目`);
   }
   return entry;
+}
+
+/** 解析某平台下这个定义的上游资产名与主执行文件名（两种规范表形状的适配层）。 */
+function dirDistPlatformEntry(definition, platformKey) {
+  if (Array.isArray(definition.platforms)) {
+    const entry = definition.platforms.find((candidate) => candidate.key === platformKey);
+    if (!entry) throw new Error(`${definition.field} 规范表没有 ${platformKey} 条目`);
+    return { assetName: entry.asset, mainBinaryName: entry.binFile, canonical: undefined };
+  }
+  return {
+    assetName: definition.archiveName,
+    mainBinaryName: undefined,
+    canonical: canonicalPlatformFor(definition, platformKey),
+  };
 }
 
 /**
@@ -382,30 +449,31 @@ export function collectPinnedDirDistAssets(
       if (!VERSION_RE.test(version)) {
         throw new Error(`${definition.field} pin 版本非法: ${version || '<empty>'}`);
       }
-      // pin 的每个平台条目都带 target/entrypoint，安装侧
-      // （tools/codex-package/update.mjs 的 validateCodexPackageDirectory）也校验它们。
-      // 发布侧**复用同一个规范表**（不重造平台映射）逐项比对，并**要求字段存在**：
-      // 缺字段即 fail closed，绝不让校验静默退化成“不校验”。
-      // 只比 entrypoint 是不够的——`bin/codex` / `bin/codex.exe` 各覆盖两个平台，
-      // 跨架构整段粘贴（例如把 win32-arm64 条目放进 win32-x64 槽位）能骗过它，
-      // 结果是把 arm64 字节发到 x64 路径；必须连 target 一起比。
+      const platformEntry = dirDistPlatformEntry(definition, platformKey);
       const pinAsset = pin?.runtimeAssets?.[platformKey];
-      if (typeof pinAsset?.target !== 'string' || typeof pinAsset?.entrypoint !== 'string') {
-        throw new Error(
-          `${definition.field} pin 缺少 ${platformKey} 的 target/entrypoint 元数据`,
-        );
-      }
-      const canonical = canonicalPlatformFor(definition, platformKey);
-      for (const field of ['target', 'entrypoint']) {
-        if (pinAsset[field] !== canonical[field]) {
+      if (platformEntry.canonical) {
+        // codexPackage 的 pin 每个平台条目都带 target/entrypoint，安装侧
+        // （tools/codex-package/update.mjs 的 validateCodexPackageDirectory）也校验它们。
+        // 发布侧**复用同一个规范表**逐项比对，并**要求字段存在**：缺字段即 fail closed，
+        // 绝不让校验静默退化成“不校验”。只比 entrypoint 是不够的——`bin/codex` /
+        // `bin/codex.exe` 各覆盖两个平台，跨架构整段粘贴（例如把 win32-arm64 条目放进
+        // win32-x64 槽位）能骗过它，结果是把 arm64 字节发到 x64 路径；必须连 target 一起比。
+        if (typeof pinAsset?.target !== 'string' || typeof pinAsset?.entrypoint !== 'string') {
           throw new Error(
-            `${definition.field} pin 的 ${platformKey} ${field} 与规范值不符: ` +
-              `${pinAsset[field]} !== ${canonical[field]}`,
+            `${definition.field} pin 缺少 ${platformKey} 的 target/entrypoint 元数据`,
           );
+        }
+        for (const field of ['target', 'entrypoint']) {
+          if (pinAsset[field] !== platformEntry.canonical[field]) {
+            throw new Error(
+              `${definition.field} pin 的 ${platformKey} ${field} 与规范值不符: ` +
+                `${pinAsset[field]} !== ${platformEntry.canonical[field]}`,
+            );
+          }
         }
       }
       const descriptor = pinnedAssetDescriptor(pin, platformKey, {
-        assetName: definition.archiveName,
+        assetName: platformEntry.assetName,
         label: definition.pinLabel,
       });
       const sha256 = normalizeExpectedSha256(descriptor.digest);
@@ -419,6 +487,11 @@ export function collectPinnedDirDistAssets(
           size: descriptor.size,
           url: descriptor.browser_download_url,
           file: `${definition.objectRoot}/${version}/${platformKey}/${definition.archiveName}`,
+          // pi：重打包前需要知道上游归档名（决定 zip / tar.gz 解包路径）与主执行文件名
+          // （`flattenExtractedDir` 归一布局的判据）。
+          ...(platformEntry.mainBinaryName
+            ? { upstreamAssetName: platformEntry.assetName, binaryName: platformEntry.mainBinaryName }
+            : {}),
         }),
       ];
     }),
@@ -434,10 +507,232 @@ function dirDistManifestAsset(local) {
   };
 }
 
+/** 重打包定义留在对象元数据里的 pin 归档摘要键（重跑据此证明对象确实来自当前 pin 字节）。 */
+const PINNED_ARCHIVE_SHA256_METADATA_KEY = 'pinned-sha256';
+
+function remoteMatchesPinnedArchive(remote, local) {
+  return (
+    normalizeExpectedSha256(remote?.metadata?.[PINNED_ARCHIVE_SHA256_METADATA_KEY]) === local.sha256
+  );
+}
+
+/**
+ * 下载并校验 pin 归档 → 解包 → 归一布局 → 定义声明的目录补全 → 确定性 tar.gz。
+ *
+ * 导出供单测直接覆盖重打包（含确定性：同一份内容必须得到同一份字节）。调用方负责
+ * 清理 `workDir`（本函数只清自己产出的中间文件）。
+ */
+export async function prepareRepackedDirDistArchive(
+  definition,
+  local,
+  workDir,
+  { download = downloadToFileWithTimeout, log = console.log } = {},
+) {
+  if (typeof local.binaryName !== 'string' || !local.binaryName) {
+    throw new Error(`${definition.field} 缺少主执行文件名，无法归一布局`);
+  }
+  const upstreamName = typeof local.upstreamAssetName === 'string' && local.upstreamAssetName
+    ? local.upstreamAssetName
+    : local.url.split('?')[0].split('/').pop();
+  const extension = /[.]zip$/i.test(upstreamName) ? 'zip' : 'tar.gz';
+  fs.mkdirSync(workDir, { recursive: true });
+  const archivePath = path.join(workDir, `upstream-${definition.field}-${local.version}-${local.platformKey}.${extension}`);
+  const extractDir = path.join(workDir, 'extracted');
+  const outputPath = path.join(workDir, `${definition.field}-${local.version}-${local.platformKey}.tar.gz`);
+  try {
+    const progress = createDownloadProgressLogger(`${definition.field} ${local.platformKey}`);
+    try {
+      await download(local.url, archivePath, {}, {
+        onProgress: progress.onProgress,
+        minThroughputBytesPerSec: 0,
+      });
+    } finally {
+      progress.finish();
+    }
+    const size = fs.statSync(archivePath).size;
+    if (size !== local.size) {
+      // 大小先于 sha256 判定：给"上游包变了"与"下载被截断"两类问题更直白的归因。
+      throw new Error(
+        `${definition.field} ${local.platformKey} 下载字节数不符: 期望 ${local.size}, 实际 ${size} (pin ${local.version})`,
+      );
+    }
+    verifyFileSha256OrRemove(
+      archivePath,
+      local.sha256,
+      `${definition.field} ${local.platformKey}@${local.version}`,
+    );
+    fs.mkdirSync(extractDir, { recursive: true });
+    await extractArchive(archivePath, extractDir);
+    flattenExtractedDir(extractDir, local.binaryName);
+    // 上游归档缺 `theme/`（缺它 Pi 的 RPC 模式启动即崩）：与安装侧走同一条补齐实现。
+    definition.afterExtract?.(extractDir);
+    await createDeterministicTarGz(extractDir, outputPath);
+    const prepared = {
+      filePath: outputPath,
+      sha256: sha256File(outputPath),
+      size: fs.statSync(outputPath).size,
+    };
+    log(
+      `  ${definition.field}: ${local.version} ${local.platformKey} 重打包 ` +
+        `(${local.size} -> ${prepared.size} bytes)`,
+    );
+    return prepared;
+  } finally {
+    fs.rmSync(archivePath, { force: true });
+    fs.rmSync(extractDir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * 原样转发 pin 字节的目录分发段（codexPackage）：上传/复用版本化对象。
+ * 幂等复用判据与单文件链路一致：manifest 已记录同版本同 sha256 且对象仍在 → 复用。
+ */
+async function publishForwardedDirDistAsset(
+  storage,
+  definition,
+  local,
+  existing,
+  outputDir,
+  { download, log },
+) {
+  if (
+    validRuntimeManifestAsset(existing, local.platformKey) &&
+    existing.version === local.version &&
+    normalizeExpectedSha256(existing.sha256) === local.sha256 &&
+    (await storage.head(existing.file))
+  ) {
+    return { manifestAsset: existing, result: 'reused' };
+  }
+
+  const remote = await storage.head(local.file);
+  if (remote) {
+    const remoteSha256 = normalizeExpectedSha256(remote.metadata?.sha256);
+    if (remoteSha256 === local.sha256 && remote.size === local.size) {
+      return { manifestAsset: dirDistManifestAsset(local), result: 'reused' };
+    }
+    throw new Error(`运行时版本化对象已存在但内容不同，拒绝覆盖: ${local.file}`);
+  }
+
+  fs.mkdirSync(outputDir, { recursive: true });
+  const archivePath = path.join(
+    outputDir,
+    `${definition.field}-${local.version}-${local.platformKey}.tar.gz`,
+  );
+  try {
+    const progress = createDownloadProgressLogger(`${definition.field} ${local.platformKey}`);
+    try {
+      await download(local.url, archivePath, {}, { onProgress: progress.onProgress, minThroughputBytesPerSec: 0 });
+    } finally {
+      progress.finish();
+    }
+    const size = fs.statSync(archivePath).size;
+    if (size !== local.size) {
+      // 大小先于 sha256 判定：给"上游包变了"与"下载被截断"两类问题更直白的归因。
+      throw new Error(
+        `${definition.field} ${local.platformKey} 下载字节数不符: 期望 ${local.size}, 实际 ${size} (pin ${local.version})`,
+      );
+    }
+    verifyFileSha256OrRemove(archivePath, local.sha256, `${definition.field} ${local.platformKey}@${local.version}`);
+    await storage.putFile(local.file, archivePath, {
+      metadata: { sha256: local.sha256, 'pinned-version': local.version },
+    });
+    const verified = await storage.head(local.file);
+    if (
+      !verified ||
+      verified.size !== local.size ||
+      normalizeExpectedSha256(verified.metadata?.sha256) !== local.sha256
+    ) {
+      throw new Error(`RustFS ${definition.field} 上传后校验失败: ${local.file}`);
+    }
+    log(`  ${definition.field}: ${local.version} ${local.platformKey} (${local.size} bytes) -> ${local.file}`);
+    return { manifestAsset: dirDistManifestAsset(local), result: 'uploaded' };
+  } finally {
+    try { fs.rmSync(archivePath, { force: true }); } catch { /* ignore */ }
+  }
+}
+
+/**
+ * 重打包目录分发段（pi）：manifest 记的是**重打包产物**的 sha256，pin 的摘要留在对象
+ * 元数据里。因此复用判定分两层：对象仍在且 `pinned-sha256` 等于当前 pin → 说明在线对象
+ * 就是当前上游字节的确定性重打包结果；manifest 段则能沿用就沿用，不能（例如 canary 被
+ * reset 回上一版 stable）就用对象自身的 sha256/size 重建。
+ */
+async function publishRepackedDirDistAsset(
+  storage,
+  definition,
+  local,
+  existing,
+  outputDir,
+  { download, log },
+) {
+  const remote = await storage.head(local.file);
+  if (remote) {
+    const remoteSha256 = normalizeExpectedSha256(remote.metadata?.sha256);
+    if (!remoteMatchesPinnedArchive(remote, local) || !remoteSha256 || !(remote.size > 0)) {
+      throw new Error(
+        `运行时版本化对象已存在但内容不同，拒绝覆盖: ${local.file} ` +
+          `(对象不是由当前 pin ${local.version}/${local.sha256.slice(0, 12)} 重打包而来)`,
+      );
+    }
+    if (
+      validRuntimeManifestAsset(existing, local.platformKey) &&
+      existing.version === local.version &&
+      normalizeExpectedSha256(existing.sha256) === remoteSha256 &&
+      existing.size === remote.size
+    ) {
+      return { manifestAsset: existing, result: 'reused' };
+    }
+    return {
+      manifestAsset: {
+        version: local.version,
+        file: local.file,
+        sha256: remoteSha256,
+        size: remote.size,
+      },
+      result: 'reused',
+    };
+  }
+
+  const workDir = path.join(outputDir, `${definition.field}-${local.version}-${local.platformKey}`);
+  fs.mkdirSync(outputDir, { recursive: true });
+  let prepared;
+  try {
+    prepared = await prepareRepackedDirDistArchive(definition, local, workDir, { download, log });
+    await storage.putFile(local.file, prepared.filePath, {
+      metadata: {
+        sha256: prepared.sha256,
+        [PINNED_ARCHIVE_SHA256_METADATA_KEY]: local.sha256,
+        'pinned-version': local.version,
+      },
+    });
+  } finally {
+    fs.rmSync(workDir, { recursive: true, force: true });
+  }
+  const verified = await storage.head(local.file);
+  if (
+    !verified ||
+    verified.size !== prepared.size ||
+    normalizeExpectedSha256(verified.metadata?.sha256) !== prepared.sha256 ||
+    !remoteMatchesPinnedArchive(verified, local)
+  ) {
+    throw new Error(`RustFS ${definition.field} 上传后校验失败: ${local.file}`);
+  }
+  log(`  ${definition.field}: ${local.version} ${local.platformKey} -> ${local.file}`);
+  return {
+    manifestAsset: {
+      version: local.version,
+      file: local.file,
+      sha256: prepared.sha256,
+      size: prepared.size,
+    },
+    result: 'uploaded',
+  };
+}
+
 /**
  * 上传/复用目录分发 runtime 对象（版本化、不可覆盖、上传后回读校验），返回可写入
- * manifest 的资产段。幂等复用判据与单文件链路一致：manifest 已记录同版本同 sha256
- * 且对象仍在 → 直接复用，不再下载。
+ * manifest 的资产段。按定义分派：`repack` 定义走“下载 pin 归档 → 重打包”（pi），
+ * 其余原样转发 pin 字节（codexPackage）。
  *
  * `download` 只作为单测注入缝（生产走 `downloadToFileWithTimeout`）。
  */
@@ -450,72 +745,17 @@ export async function publishDirDistAssets(
 ) {
   const manifestAssets = {};
   const results = {};
-
   for (const definition of definitions) {
     const local = localAssets[definition.field];
     if (!local) throw new Error(`缺少 ${definition.field} 待发布资产`);
-
     const existing = baseManifest?.[definition.field];
-    if (
-      validRuntimeManifestAsset(existing, local.platformKey) &&
-      existing.version === local.version &&
-      normalizeExpectedSha256(existing.sha256) === local.sha256 &&
-      (await storage.head(existing.file))
-    ) {
-      manifestAssets[definition.field] = existing;
-      results[definition.field] = 'reused';
-      continue;
-    }
-
-    const remote = await storage.head(local.file);
-    if (remote) {
-      const remoteSha256 = normalizeExpectedSha256(remote.metadata?.sha256);
-      if (remoteSha256 === local.sha256 && remote.size === local.size) {
-        manifestAssets[definition.field] = dirDistManifestAsset(local);
-        results[definition.field] = 'reused';
-        continue;
-      }
-      throw new Error(`运行时版本化对象已存在但内容不同，拒绝覆盖: ${local.file}`);
-    }
-
-    fs.mkdirSync(outputDir, { recursive: true });
-    const archivePath = path.join(
-      outputDir,
-      `${definition.field}-${local.version}-${local.platformKey}.tar.gz`,
-    );
-    try {
-      const progress = createDownloadProgressLogger(`${definition.field} ${local.platformKey}`);
-      try {
-        await download(local.url, archivePath, {}, { onProgress: progress.onProgress, minThroughputBytesPerSec: 0 });
-      } finally {
-        progress.finish();
-      }
-      const size = fs.statSync(archivePath).size;
-      if (size !== local.size) {
-        // 大小先于 sha256 判定：给"上游包变了"与"下载被截断"两类问题更直白的归因。
-        throw new Error(
-          `${definition.field} ${local.platformKey} 下载字节数不符: 期望 ${local.size}, 实际 ${size} (pin ${local.version})`,
-        );
-      }
-      verifyFileSha256OrRemove(archivePath, local.sha256, `${definition.field} ${local.platformKey}@${local.version}`);
-      await storage.putFile(local.file, archivePath, {
-        metadata: { sha256: local.sha256, 'pinned-version': local.version },
-      });
-      const verified = await storage.head(local.file);
-      if (
-        !verified ||
-        verified.size !== local.size ||
-        normalizeExpectedSha256(verified.metadata?.sha256) !== local.sha256
-      ) {
-        throw new Error(`RustFS ${definition.field} 上传后校验失败: ${local.file}`);
-      }
-      manifestAssets[definition.field] = dirDistManifestAsset(local);
-      results[definition.field] = 'uploaded';
-      log(`  ${definition.field}: ${local.version} ${local.platformKey} (${local.size} bytes) -> ${local.file}`);
-    } finally {
-      try { fs.rmSync(archivePath, { force: true }); } catch { /* ignore */ }
-    }
+    const published = definition.repack
+      ? await publishRepackedDirDistAsset(storage, definition, local, existing, outputDir, { download, log })
+      : await publishForwardedDirDistAsset(storage, definition, local, existing, outputDir, { download, log });
+    manifestAssets[definition.field] = published.manifestAsset;
+    results[definition.field] = published.result;
   }
 
   return { manifestAssets: Object.freeze(manifestAssets), results: Object.freeze(results) };
 }
+

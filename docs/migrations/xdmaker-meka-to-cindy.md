@@ -162,6 +162,8 @@
 - 同机同时运行普通 Cindy 与 Cindy Meka，分别登录同一账号并跨越至少一个 token
   刷新周期，确认两边登录态都保持有效。
 - 本轮新会话入口、二级分组和项目/角色详情页的视觉、交互手测。
+- 修复后的 pi 运行时段（`manifest.pi`）在真实 canary/stable 渠道的下发与 packaged 客户端
+  Pi agent 注册：本轮只完成本地链路验证 + 单测/静态检查，**未跑真实发布流水线**。
 
 ## 4. 各模块迁移明细
 
@@ -3534,3 +3536,57 @@ Meka 开发插件链路、插件市场独立 endpoint/凭证、`edition` 运行�
   这属于既定版本内容，非本次修改范围。
 - **规则落点**：`docs/dev-rules/desktop-development.md` 新增「NSIS 脚本自带的
   `!include` 必须用 `${__FILEDIR__}`」一节，含宏体展开语义与两层验证分工。
+
+### 6.47 2026-09-21 发布链路漏发 pi 运行时段：packaged 包 Pi agent 缺失、模型列表被砍到零星几个（已修）
+
+- **现象**：用户报告"本地 `pnpm restart:desktop:remote` 跑起来模型供应商有很多模型，
+  但发布版本（0.0.21 与 0.0.22 都一样）只有少量的几个模型可用"，参照模型
+  `deepseek-v4.1-flash`。用户明确要求本轮**只定位根因、不动代码**，随后确认按推荐方案修复。
+- **根因（发布侧漏段，不是客户端 bug）**：客户端早在 `4c94194709`（2026-08-02）就把 Pi
+  接进 CDN 运行时分发链——`agent-binaries` 的 `CONFIG.pi` = `manifestField: 'pi'` +
+  `tar-gz-dir` + `optionalAsset`，并同步改成**正式安装包不内置 `resources/pi`**。但本仓
+  发布链路（`runtime-release.mjs` 的 `RUNTIME_DEFINITIONS` / `buildCanaryManifest` /
+  `PUBLISHED_RUNTIME_KINDS`）从来没有发过这一段，Meka 渠道的线上 manifest
+  （`s3.meka.pawdy.fun/cindy-meka/manifest-win32-x64[-canary].json`）只有
+  `app/claudeCode/codex/ripgrep/codexPackage`——对照上游 `hotfix.cindy.app/cindy/` 的 manifest
+  是**有** `pi` 段的。
+- **后果链条**（每步都有本机日志实证）：packaged 启动 `prepare('pi')` →
+  `asset_missing (manifest field "pi")` → `pi-host` 记
+  `pi binary unavailable after managed prepare; pi agent disabled for this launch` →
+  `maker:get-capabilities` 只报 `available: claude-code, codex`。而 XD 网关（32 个网关门
+  模型）里多数模型**只在 `pi` 路由上默认开启**（其它 agent 与模型原生协议不兼容，
+  `active-catalog.ts` 判 `defaultEnabled=false`；profile 的可见性表里
+  `pi:xd:deepseek/deepseek-v4.1-flash=true` 而 `claude-code/codex:xd:...=false`），
+  于是 packaged 用户看到的模型列表被砍到零星几个。dev 不受影响：dev 短路读
+  `apps/pi-bin/<platform>/pi.exe`（`ensure-dev-runtime-assets.mjs` 从 `tools/pi/latest.json` 暂存），
+  日志是 `pi agent enabled { binaryPath: ... }`。
+- **为什么不可自愈**：`updateReadyPiBinary()` 在无 ready 路径时直接抛
+  `Pi is not installed in Cindy`，packaged 用户无法用 `update:pi` 补回；`resolvePiBinaryPath`
+  只认受管安装版（不回退 `resources/pi`，安装包也确实没有该目录）。
+- **修法（发布侧补齐，客户端零改动）**：
+  1. `apps/desktop/scripts/ci/runtime-release.mjs` 新增 `PI_DIR_DIST_DEFINITION`
+     （`field: 'pi'`、对象 `pi/<ver>/<platformKey>/pi.dist.tar.gz`，pin = `tools/pi/latest.json`，
+     平台映射只读复用安装侧 `PI_RUNTIME_PLATFORMS`）并进入
+     `DIR_DIST_RUNTIME_DEFINITIONS` / `RELEASE_RUNTIME_DEFINITIONS`；`buildCanaryManifest`
+     无条件覆盖/删除 `pi` 段；`reset-canary-desktop.mjs` 的 `allowMissing` 增列 `pi`
+     （0.0.23 之前的 stable 本来就没发过它）。
+  2. pi 的发布物**不能原样转发上游归档**（与 `codexPackage` 的三点差异）：上游 win32 是
+     `.zip`、unix 是带 `pi/` 壳目录的 `.tar.gz`，而客户端只认 `tar-gz-dir`；上游归档不含
+     `theme/`（缺它 Pi 的 RPC 模式启动即崩），必须补本仓 `tools/pi/theme/*`；客户端要求解包后
+     主执行文件在目录根。因此走 `repack: 'pinned-archive'`：pin 直链下载 → pin sha256 校验 →
+     解包 → `flattenExtractedDir` 归一布局 → `ensurePiThemeAssets` → **确定性 tar.gz**
+     （新增 `tools/shared/dir-dist-archive.mjs`：条目按字节序排序、mtime/owner 抹平、
+     权限位归一；版本化对象不可覆盖，重跑必须逐字节相同）。
+  3. 来源可验证性：manifest 记的是重打包产物的 sha256，故上传时把 pin 归档摘要写进对象元数据
+     `pinned-sha256`；重跑（含 canary 被 reset 回上一版 stable 的场景）据此判定"在线对象确实
+     由当前 pin 字节重打包而来"，同版本上游字节被替换时 fail closed 拒绝覆盖。
+- **验证**：`node --test scripts/__tests__/pi-cdn-release.test.mjs` 10/10（pin 锚定与 fail
+  closed、重打包布局/主题/确定性、`pinned-sha256` 元数据、幂等复用、拒绝覆盖、win32 平铺 zip、
+  齐备断言）；同步更新 `codex-package-cdn-release.test.mjs` / `meka-release-flow.test.mjs`
+  的 manifest 夹具（`pi` 段缺失必须报错）；`pnpm test:runner` 全绿。
+- **未验证**：真实 canary/stable 发布流水线（补 `pi` 段后需要一次真实发布才能确认客户端拿到
+  该段），见 §3.3 新增条目；`cindy-meka-cicd` 的 canary 作业注释仍写着"pi is not a desktop
+  release artifact"，属另一仓的事实性陈述，需在该仓单独更新。
+- **规则落点**：`docs/dev-rules/agent-runtime-release.md`（新增「`pi` 段的特殊契约：发布侧
+  重打包」与 manifest 字段表行）、`docs/dev-rules/pi-harness.md`（发布入口与回归红线）、
+  `docs/dev-rules/meka-whitelist-verification.md`（WL-6.5 五段齐备与实机验证）。
