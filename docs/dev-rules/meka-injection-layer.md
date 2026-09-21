@@ -147,6 +147,15 @@ Pi 能力，只把「意外缺失」改写成「声明式缺失」——Pi 的�
 - 解析层用 `createPlanBuilder`（`resolvePlan.ts:86-103`）在解析期模拟「已 prepend 的 prompt」，
   以便 `hasMarker` 去重 guard 与重构前判定一致（含角色正文恰好含某 marker 的极端情况）。
 
+- **测试数据的平台可移植性（不得回退）**：`mekaRuntimeInjectionBaseline.test.ts` 与
+  `mekaRuntimeInjection.test.ts` 里的 SAGA2 项目路径**必须从模块级基准根推导**
+  （`path.resolve` / `path.join`），不得写死 `C:\Workspace\…` 字面量 —— 实现用的是
+  `path.resolve`，Linux 上写死的 Windows 路径不可能匹配，而这些文件在 `ubuntu-latest`
+  的 Linux unit shards 上会跑。辅助函数 `saga2ProjectPaths()` / `combatProjectPathsSection()`
+  必须与 `meka-injection/combatPrompts.ts` 的 `combatProjectPathsPrompt` 同形。
+  同一类修复已覆盖 `meka-projects/__tests__/combatWorkflowPolicy.test.ts`；登记与验证证据见
+  [`../migrations/xdmaker-meka-to-cindy.md`](../migrations/xdmaker-meka-to-cindy.md) §6.47。
+
 ## 6. 验证方式
 
 **逐字节基线（提交 1，在本层落地前抓取）**：

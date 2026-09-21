@@ -3615,3 +3615,44 @@ Meka 开发插件链路、插件市场独立 endpoint/凭证、`edition` 运行�
     通过；`pnpm test:runner` ⇒ 652 用例 / 644 pass / 8 skipped / 0 fail（同样需要上方
     bsdtar 环境备注）。审查修复的事实登记在
     `docs/dev-rules/meka-injection-layer.md` §7「与重构前的有意差异（D2）」。
+- **同日追加：修复两处存量平台可移植性缺陷（测试数据写死 Windows 路径）**
+
+  背景：`mekaRuntimeInjection.test.ts` 与 `meka-projects/__tests__/combatWorkflowPolicy.test.ts`
+  里大量把项目路径写死成 `C:\Workspace\saga2\…`，而实现用 `path.resolve` / `path.join`
+  推导权威路径再比较。Linux 上 `path.resolve('C:\\Workspace\\…')` 得到 posix 路径（且后续
+  `path.join` 产生混合分隔符），因此这些断言在 Linux 上必然失败；两个文件都**无平台守卫**、
+  也**不被 CI 排除**，而 `.github/workflows/ci.yml` 的 Linux unit shards（`ubuntu-latest`，
+  `pnpm run test:workspaces --tier unit`）会跑 `apps/desktop` 单测。
+  这是本次重构之前就存在的存量问题（两者都不在重构触及的文件清单里），经维护者确认后
+  纳入本次交付。
+
+  修法：测试内改为从模块级的 `path.resolve('C:/Workspace/saga2/saga2_project')` 基准根用
+  同一套 `path.resolve` / `path.join` 链推导所有项目路径（`mekaRuntimeInjection.test.ts`
+  新增 `saga2ProjectPaths()`；`combatWorkflowPolicy.test.ts` 新增 `SAGA2_*` 派生常量），
+  **不降低断言强度、不跳过用例、不引入分隔符归一化**。
+
+  验证：两文件在 Windows 上仍全绿（30 / 47）；用「`node:path` → `path.posix` +
+  `process.platform = 'linux'` + `os.tmpdir() → '/tmp'」的语义模拟，
+  `mekaRuntimeInjection.test.ts` 由 **3 失败 → 0**，
+  `combatWorkflowPolicy.test.ts` 由 **11 失败 → 0**（均 47/47 / 30/30）。
+  另有两处保留字面量并已核对原因：`C:\Program Files\PowerShell\7\pwsh.exe`（仅被正则识别
+  程序名，从不 `path.resolve`）、Meka 技能快照根与 `.codex` 插件路径（纯字符串判据）。
+
+  本次一并记录两个**未处理**的存量事实：
+  1. `combatWorkflowPolicy.test.ts` 里以反斜杠形态给出的相对路径
+     （`saga2_unity\Assets\…`）在 posix 语义下是**单个路径段**，
+     `isTargetedCombatClientReadPath` 会相对 unity 根多出一层而误判 deny。实测中已用
+     `path.relative` 派生绕开，但**实现未改**：真实 Linux 输入不会是反斜杠形态，实际影响
+     待确认（属产品语义判断，不在本次范围）。
+  2. `packages/maker-pi-manager` 的
+     `session-registry.test.ts > env-file > spawn failure with survivor` 在完整门禁中稳定失败
+     （期待 5s `KILL_CONFIRM_MS` 后 SIGKILL）。该包对 desktop 零依赖、与本次改动零引用，
+     且在**未改动的 base repo（`meka/main`）**上同一用例 3/3 同样失败 ⇒ 存量问题，按
+     「非本次修改引入的存量问题不得擅自修复」保持现状。
+  3. 同期用 GitHub API 核实：**`meka/main` 的 `client-ci` 最近 4 次 push 均为 failure**，
+     Linux unit shards（1/2、2/2）与 Windows unit shards（1/2、2/2）都失败在
+     `Run client and package unit tests` 步骶。上面两处修复只消除本机可复现的 Linux 路径
+     失败，**不保证 CI 转绿**（Windows 分片同样红，另有其它原因）。
+- **规则落点（追加）**：上述两处平台可移植性修复属纯测试改动，按「文档同步」规则在本文登记
+  验证现状；`mekaRuntimeInjection.test.ts` 所属注入层的契约见
+  `docs/dev-rules/meka-injection-layer.md` 与白名单 **WL-16**。
