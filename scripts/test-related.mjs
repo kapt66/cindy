@@ -45,7 +45,21 @@ const SKIP_BASENAMES = new Set([
 	".prettierignore",
 	".eslintignore",
 ]);
-const GIT_BASE_REFS = ["origin/main", "main", "origin/master", "master"];
+// Related tests compare against the product integration branch, not whatever
+// GitHub named "main". In this private Meka fork, origin/main is the upstream
+// Cindy sync target; using it as the related-test base treats the entire Meka
+// product delta (lockfile, package.json, vitest config, CI) as "this change"
+// and silently falls back to a full unit gate. Prefer the remote product
+// branch first so unpushed local commits on meka/main are still included;
+// fall back to origin/main for upstream Cindy checkouts that have no meka refs.
+export const GIT_BASE_REFS = [
+	"origin/meka/main",
+	"meka/main",
+	"origin/main",
+	"main",
+	"origin/master",
+	"master",
+];
 
 export function normalizeRelPath(value) {
 	return String(value).replace(/\\/g, "/");
@@ -186,7 +200,7 @@ export function collectChangedFiles(runGit) {
 				files: [],
 				base: null,
 				baseRef: null,
-				error: "cannot resolve git base against main",
+				error: "cannot resolve git base against meka/main or main",
 			};
 		}
 		const mergeBase = String(runGit(["merge-base", "HEAD", baseRef])).trim();
@@ -239,12 +253,14 @@ export function planRelatedUnitTests({
 	workspaces,
 	packageJsonByCwd,
 	fileExists = () => true,
+	baseRef,
 }) {
 	const files = (changedFiles ?? []).map(normalizeRelPath);
+	const vsLabel = baseRef ?? "integration branch";
 	if (files.length === 0) {
 		return {
 			mode: "skip",
-			reason: "no changes vs main",
+			reason: `no changes vs ${vsLabel}`,
 			runTestRunner: false,
 			runs: [],
 		};
@@ -367,18 +383,28 @@ export function createRelatedUnitPlan({
 			reason: collected.error,
 			runTestRunner: true,
 			runs: [],
+			baseRef: collected.baseRef ?? null,
+			base: collected.base ?? null,
 		};
 	}
-	return planRelatedUnitTests({
-		changedFiles: collected.files,
-		workspaces: manifest.workspaces,
-		packageJsonByCwd: readWorkspacePackages(
-			root,
-			manifest.workspaces,
-			readJson,
-		),
-		fileExists:
-			fileExists ??
-			((file) => fs.existsSync(path.join(root, ...normalizeRelPath(file).split("/")))),
-	});
+	return {
+		...planRelatedUnitTests({
+			changedFiles: collected.files,
+			workspaces: manifest.workspaces,
+			packageJsonByCwd: readWorkspacePackages(
+				root,
+				manifest.workspaces,
+				readJson,
+			),
+			fileExists:
+				fileExists ??
+				((file) =>
+					fs.existsSync(
+						path.join(root, ...normalizeRelPath(file).split("/")),
+					)),
+			baseRef: collected.baseRef,
+		}),
+		baseRef: collected.baseRef,
+		base: collected.base,
+	};
 }

@@ -251,7 +251,8 @@
   `check:dco` 的失败结果不构成缺签证据，不要据此报告 DCO 问题。判定 DCO 是否通过，
   一律以 PR 上的 DCO App check 与真实提交范围（`origin/main..PR head`）的结果为准。
 - **提交前测试门禁（硬性要求）**：无论是提 PR 还是直接 commit，提交前都必须在本地
-  跑完仓库根 `pnpm test:unit:related`（只跑这次改动能影响到的单测；改到测试调度、
+  跑完仓库根 `pnpm test:unit:related`（只跑这次改动能影响到的单测；基准是产品集成分支
+  `origin/meka/main` / `meka/main`，不是上游 `origin/main`；改到测试调度、
   依赖清单、workspace 配置、Vitest 配置或单测 CI 时会自动退回全量 `pnpm test:unit`），
   并对本次改动涉及的每个 package 跑
   `pnpm --filter <包名> run --if-present typecheck`（`<包名>` 用该 package 在

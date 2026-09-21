@@ -1039,7 +1039,8 @@ async function main() {
 			manifest,
 			runGit: createRepoGitRunner(ROOT),
 		});
-		console.log(`RELATED ${relatedPlan.mode}: ${relatedPlan.reason}`);
+		const baseLabel = relatedPlan.baseRef ? ` vs ${relatedPlan.baseRef}` : "";
+		console.log(`RELATED ${relatedPlan.mode}${baseLabel}: ${relatedPlan.reason}`);
 		if (relatedPlan.mode === "skip") return;
 		if (relatedPlan.mode === "related") {
 			const selectedRuns = intersectRelatedRuns(

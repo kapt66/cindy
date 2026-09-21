@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+	GIT_BASE_REFS,
 	buildDependentMap,
 	collectChangedFiles,
 	collectTransitiveDependents,
@@ -107,13 +108,22 @@ test("workspaceForFile picks the longest matching workspace prefix", () => {
 	);
 });
 
-test("collectChangedFiles unions committed, staged, unstaged, and untracked files", () => {
+test("GIT_BASE_REFS prefers the Meka product branch over upstream main", () => {
+	assert.deepEqual(GIT_BASE_REFS.slice(0, 4), [
+		"origin/meka/main",
+		"meka/main",
+		"origin/main",
+		"main",
+	]);
+});
+
+function collectChangedFilesFixture(baseRef) {
 	const calls = [];
 	const runGit = (args) => {
 		calls.push(args);
 		const key = args.join(" ");
-		if (key === "rev-parse --verify origin/main") return "abc\n";
-		if (key === "merge-base HEAD origin/main") return "base123\n";
+		if (key === `rev-parse --verify ${baseRef}`) return "abc\n";
+		if (key === `merge-base HEAD ${baseRef}`) return "base123\n";
 		if (key === "diff --name-only base123 HEAD")
 			return "apps/desktop/src/a.ts\n";
 		if (key === "diff --name-only --cached")
@@ -121,8 +131,13 @@ test("collectChangedFiles unions committed, staged, unstaged, and untracked file
 		if (key === "diff --name-only") return "apps/desktop/src/c.ts\n";
 		if (key === "ls-files --others --exclude-standard")
 			return "apps/desktop/src/d.ts\n";
-		throw new Error(`unexpected git ${key}`);
+		throw new Error(`missing ${key}`);
 	};
+	return { calls, runGit };
+}
+
+test("collectChangedFiles unions committed, staged, unstaged, and untracked files", () => {
+	const { calls, runGit } = collectChangedFilesFixture("origin/main");
 	assert.deepEqual(collectChangedFiles(runGit), {
 		files: [
 			"apps/desktop/src/a.ts",
@@ -133,7 +148,22 @@ test("collectChangedFiles unions committed, staged, unstaged, and untracked file
 		base: "base123",
 		baseRef: "origin/main",
 	});
-	assert.deepEqual(calls[0], ["rev-parse", "--verify", "origin/main"]);
+	assert.deepEqual(calls[0], ["rev-parse", "--verify", "origin/meka/main"]);
+	assert.ok(
+		calls.some((args) => args.join(" ") === "rev-parse --verify origin/main"),
+	);
+});
+
+test("collectChangedFiles prefers origin/meka/main over origin/main", () => {
+	const { calls, runGit } = collectChangedFilesFixture("origin/meka/main");
+	const collected = collectChangedFiles(runGit);
+	assert.equal(collected.baseRef, "origin/meka/main");
+	assert.equal(collected.base, "base123");
+	assert.deepEqual(calls[0], ["rev-parse", "--verify", "origin/meka/main"]);
+	assert.equal(
+		calls.some((args) => args.join(" ") === "rev-parse --verify origin/main"),
+		false,
+	);
 });
 
 test("collectChangedFiles falls back when git base cannot be resolved", () => {
@@ -144,7 +174,7 @@ test("collectChangedFiles falls back when git base cannot be resolved", () => {
 		files: [],
 		base: null,
 		baseRef: null,
-		error: "cannot resolve git base against main",
+		error: "cannot resolve git base against meka/main or main",
 	});
 });
 
@@ -228,10 +258,19 @@ test("planRelatedUnitTests skips when there are no changes", () => {
 	});
 	assert.deepEqual(plan, {
 		mode: "skip",
-		reason: "no changes vs main",
+		reason: "no changes vs integration branch",
 		runTestRunner: false,
 		runs: [],
 	});
+	assert.equal(
+		planRelatedUnitTests({
+			changedFiles: [],
+			workspaces,
+			packageJsonByCwd,
+			baseRef: "origin/meka/main",
+		}).reason,
+		"no changes vs origin/meka/main",
+	);
 });
 
 test("planRelatedUnitTests drops deleted files from related args", () => {

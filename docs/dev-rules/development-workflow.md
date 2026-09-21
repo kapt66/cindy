@@ -92,14 +92,18 @@ worktree 建成空目录或自动切到项目根继续修改代码。
   宿主删除／归档会话时自动存的内容快照（见第 1 节），以及会话必须收尾、测试却来不及
   修好时的收尾 commit——后者 commit message 必须标注 `WIP`，且在门禁通过前不得
   push、不得提 PR。
-  - **相关单测怎么选**：`test:unit:related` 看相对 `main` 的已提交、已暂存、未暂存和未跟踪
-    文件。同一包里用 Vitest `related` 只跑会引用这些文件的测试；改了会被别的包依赖的公共
-    包源码时，依赖方跑该包自己的整包单测。只改文档等非代码文件则跳过 workspace 单测。
-    改到测试调度（`scripts/test-workspaces*`、`scripts/test-related.mjs`、
-    `scripts/test-gate-lock.mjs`）、`package.json`、`pnpm-lock.yaml`、
-    `pnpm-workspace.yaml`、各包 `vitest.config.*`、单测 CI 工作流，或算不出 git 基准时，
-    打印原因并退回全量 `pnpm test:unit`。批量改产品术语仍须全量，因为有测试直接锁中文文案。
-    GitHub CI 不受此影响，仍跑完整 `pnpm test:unit`。
+  - **相关单测怎么选**：`test:unit:related` 看相对**产品集成分支**的已提交、已暂存、未暂存
+    和未跟踪文件。本仓优先 `origin/meka/main`，其次 `meka/main`；没有 Meka 产品分支的上游
+    Cindy checkout 才落到 `origin/main` / `main`。不要拿上游 `origin/main` 当 Meka 日常开发
+    的 related 基准——那会把整条产品线 delta（含 lockfile / `package.json` / Vitest 配置）
+    都当成“这次改动”，门禁会静默退回全量。同一包里用 Vitest `related` 只跑会引用这些文件
+    的测试；改了会被别的包依赖的公共包源码时，依赖方跑该包自己的整包单测。只改文档等非代码
+    文件则跳过 workspace 单测。改到测试调度（`scripts/test-workspaces*`、
+    `scripts/test-related.mjs`、`scripts/test-gate-lock.mjs`）、`package.json`、
+    `pnpm-lock.yaml`、`pnpm-workspace.yaml`、各包 `vitest.config.*`、单测 CI 工作流，或
+    算不出 git 基准时，打印原因并退回全量 `pnpm test:unit`。上游同步进 `meka/main` 必然会改
+    lockfile / `package.json`，因此同步交付仍然按全量安排时间。批量改产品术语仍须全量，
+    因为有测试直接锁中文文案。GitHub CI 不受此影响，仍跑完整 `pnpm test:unit`。
   - **完整单测的外层超时**：默认相关门禁通常比全仓短，但一旦退回全量，`pnpm test:unit`
     正常执行仍可能超过数分钟。调用全量门禁的 agent／自动化工具不得使用 120 秒或更短的
     绝对超时；未知当前耗时时，外层兜底超时至少设为 15 分钟。工具支持后台运行或 yielded

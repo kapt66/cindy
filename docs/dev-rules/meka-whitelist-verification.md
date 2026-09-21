@@ -971,17 +971,15 @@ WL-5（先确认区域与链路）→ WL-6（身份/更新）→ WL-1（设置�
    `pnpm test:unit:related`（相关单测），改到测试调度/依赖清单/workspace 配置/Vitest 配置/
    单测 CI 时自动退回全量 `pnpm test:unit`。`AGENTS.md` 已逐字对齐上游；
    `development-workflow.md` §2 本来就是上游文本；`cindy-meka-upstream-sync` skill 已同步改写。
-   **注意这条对齐不改变本清单阶段 B 的结论**：上游同步必然改动 `package.json` /
-   `pnpm-lock.yaml`，而这两个正是 related 门禁的退回条件，所以同步交付实际总会跑**全量**。
-   §4 按全量安排时间，不是特例。
-   **实测证据**（2026-09-11，本仓 `meka/main`）：`pnpm test:unit:related` 首行打印
-   `RELATED full: wide files changed: apps/desktop/package.json, package.json,
-   packages/maker-cc-manager/package.json, packages/plugin-protocol/package.json, pnpm-lock.yaml`
-   —— 即它自己判定退回全量。原因是 `scripts/test-related.mjs:48` 以
-   `origin/main` 为基准取 merge-base，而在本仓 `origin/main` 是**上游**主线：
-   merge-base 就是上次同步点，区间覆盖整条 Meka 产品线（实测 691 个文件，含上述宽文件）。
-   **操作含义**：在 `meka/main` 上不要期待 related 门禁带来时间上的节省，
-   它事实上等价于全量；外层超时按全量给足（见 `development-workflow.md` §2 的 15 分钟下限）。
+   **上游同步交付仍按全量安排时间**：同步必然改动 `package.json` / `pnpm-lock.yaml`
+   （相对 `meka/main`），这两个仍是 related 门禁的退回条件，§4 不是特例。
+   **日常开发不再等价全量**（2026-09-21 更正）：2026-09-11 在 `meka/main` 上实测
+   `RELATED full: wide files changed: … pnpm-lock.yaml`，当时 `scripts/test-related.mjs`
+   以**上游** `origin/main` 为基准，merge-base 是上次同步点，区间覆盖整条 Meka 产品线
+   （当时 691 个文件，2026-09-21 复测 762 个，含上述宽文件）。该基准已改为优先
+   `origin/meka/main` / `meka/main`；在产品分支上改一个 Desktop 源文件应走 Vitest
+   `related`，不应再静默退回全量。外层超时：相关门禁按短耗时，只有打印了 `RELATED full`
+   才按全量给足（见 `development-workflow.md` §2 的 15 分钟下限）。
 2. **运行期切换服务区（edition）是 Meka 的刻意分歧**，必须保留：上游把区域当**构建期**维度、
    运行期不可切换；Meka 允许在登录页切换，因为**不同区暴露的模型能力不同**，用户需要按
    可用模型选服务区。→ 已登记为 WL-5.6 的不变量。

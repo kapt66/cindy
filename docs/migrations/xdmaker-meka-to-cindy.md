@@ -3244,7 +3244,10 @@ Meka 开发插件链路、插件市场独立 endpoint/凭证、`edition` 运行�
      `AGENTS.md` 没跟着上游更新。以上游为准 —— 无参数跑 `pnpm test:unit:related`，改到测试
      调度/依赖清单/workspace 或 Vitest 配置/单测 CI 时自动退回全量 `pnpm test:unit`。
      `AGENTS.md` 已逐字对齐，同步 skill 已同步改写。**上游同步必然改 `package.json` 与
-     lockfile，即必然触发退回全量**，所以同步交付仍按全量安排时间。
+     lockfile，即必然触发退回全量**，所以同步交付仍按全量安排时间。日常 `meka/main` 开发
+     的 related 基准已于 2026-09-21 改为 `origin/meka/main` / `meka/main`，不再拿上游
+     `origin/main` 把整条产品线 delta 当成这次改动；详见
+     [`meka-whitelist-verification.md`](../dev-rules/meka-whitelist-verification.md) §8.1。
   2. **运行期切区是 Meka 的刻意分歧，必须保留**：上游区域是构建期维度、运行期不可切换；
      Meka 必须允许登录页切换，因为**不同区暴露的模型能力不同**。已在
      `region-and-editions.md` §1.2 补上理由、分歧保护条款与配套不变量（`authRealmPolicy`
