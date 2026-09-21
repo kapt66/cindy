@@ -18,9 +18,11 @@
  * 供应链加固：与 codex 同策略——解压前用 GitHub Release asset 元数据的 digest
  * (sha256:<hex>) 校验归档，不符 / 拿不到一律删归档 exit 1（fail-closed）。
  *
- * win32 说明：pi 的 windows 产物是 .zip；本脚本用 `tar -xf` 解压（macOS / Win10+
- * 自带 bsdtar 支持 zip；GNU tar 不支持——在 Linux 上解 win32 产物会失败，目前
- * 没有这条路径的需求）。
+ * win32 说明：pi 的 windows 产物是 .zip；本脚本用 `tar -xf` 解压。必须用 Win10+
+ * `System32\tar.exe`（bsdtar）：它支持 zip，也接受 `C:\` 绝对路径。Git / MSYS 的
+ * GNU tar 常排在 PATH 前面，既不解 zip，又会把 `C:` 当成远程主机
+ * （`tar: Cannot connect to C: resolve failed`）。Linux 上 GNU tar 不解 win32 zip，
+ * 目前没有这条路径的需求。
  */
 
 import { spawn } from 'node:child_process';
@@ -241,6 +243,18 @@ function targetsExist(version, targets) {
   });
 }
 
+/** Windows 上优先系统 bsdtar，避免 PATH 上的 Git GNU tar 把盘符当成主机。 */
+export function resolveTarExecutable(
+  platform = process.platform,
+  env = process.env,
+  existsSync = fs.existsSync,
+) {
+  if (platform !== 'win32') return 'tar';
+  const systemRoot = env.SystemRoot || env.WINDIR || 'C:\\Windows';
+  const systemTar = path.join(systemRoot, 'System32', 'tar.exe');
+  return existsSync(systemTar) ? systemTar : 'tar';
+}
+
 /** 用 tar 解压归档到 destDir；GNU tar 从 stdin 读取 gzip 时必须显式传 -z。 */
 export async function extractArchive(archivePath, destDir) {
   // Windows bsdtar drops the first ZIP entry when the archive is streamed on
@@ -249,7 +263,7 @@ export async function extractArchive(archivePath, destDir) {
   // cross-platform path and avoid shell redirection.
   const isZip = archivePath.endsWith('.zip');
   const args = isZip ? ['-xf', archivePath] : ['-xzf', '-'];
-  const child = spawn('tar', args, {
+  const child = spawn(resolveTarExecutable(), args, {
     cwd: destDir,
     stdio: isZip ? ['ignore', 'inherit', 'inherit'] : ['pipe', 'inherit', 'inherit'],
   });

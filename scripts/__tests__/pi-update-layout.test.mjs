@@ -13,6 +13,7 @@ import {
   flattenExtractedDir,
   hasPiThemeAssets,
   readCachedAssetDigest,
+  resolveTarExecutable,
 } from '../../tools/pi/update.mjs';
 
 function tempDir() {
@@ -84,7 +85,7 @@ test('Pi updater extracts Windows ZIP archives without dropping the first entry'
   fs.mkdirSync(outputDir);
   fs.writeFileSync(path.join(inputDir, 'pi.exe'), 'pi-fixture');
 
-  const created = spawnSync('tar', ['-a', '-cf', 'fixture.zip', '-C', 'input', 'pi.exe'], {
+  const created = spawnSync(resolveTarExecutable(), ['-a', '-cf', 'fixture.zip', '-C', 'input', 'pi.exe'], {
     cwd: root,
     encoding: 'utf8',
   });
@@ -93,6 +94,21 @@ test('Pi updater extracts Windows ZIP archives without dropping the first entry'
   await extractArchive(path.join(root, 'fixture.zip'), outputDir);
 
   assert.equal(fs.readFileSync(path.join(outputDir, 'pi.exe'), 'utf8'), 'pi-fixture');
+});
+
+test('Pi updater prefers Windows system tar over GNU tar on PATH', () => {
+  assert.equal(resolveTarExecutable('linux', {}, () => true), 'tar');
+  assert.equal(
+    resolveTarExecutable('win32', { SystemRoot: 'D:\\Windows' }, () => true),
+    path.join('D:\\Windows', 'System32', 'tar.exe'),
+  );
+  assert.equal(
+    resolveTarExecutable('win32', { SystemRoot: 'D:\\Windows' }, () => false),
+    'tar',
+  );
+  if (process.platform === 'win32') {
+    assert.match(resolveTarExecutable().replaceAll('\\', '/'), /System32\/tar\.exe$/i);
+  }
 });
 
 test('Pi updater rejects unreadable archives through the returned promise', async (t) => {
