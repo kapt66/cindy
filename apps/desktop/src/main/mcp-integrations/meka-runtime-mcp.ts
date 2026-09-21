@@ -1,4 +1,4 @@
-import type { McpProvider, McpProviderContext } from '@cindy/maker-core';
+import type { AgentKind, McpProvider, McpProviderContext } from '@cindy/maker-core';
 import { redactSensitiveText } from '@cindy/maker-shared/error-redaction';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -27,10 +27,12 @@ import {
   consumeTrustedCombatServerCapabilityReport,
   resetCombatServerCapabilityFlow,
 } from '../meka-projects/combatServerCapabilityState.js';
+import { MEKA_AGENT_CAPABILITIES, MEKA_AGENT_KINDS } from '../meka-injection/mekaAgentMatrix.js';
 
 const ROUTER_PROVIDER_IDS = new Set(['mcp-router', 'project-agent']);
 const MEKA_DESIGN_PROVIDER_ID = 'meka-design';
 const COMBAT_WORKFLOW = 'saga2-combat-development-v1';
+/** 进程级已注册的 provider 数组；inline Meka MCP 靠它扇出（见 prepareMekaRuntimeMcp）。 */
 const registeredArrays: McpProvider[][] = [];
 const registeredInlineIds = new Set<string>();
 let authorizeHighRiskCall:
@@ -1392,11 +1394,73 @@ class InlineMekaMcpProvider implements McpProvider {
   }
 }
 
+/**
+ * 形态 B 的**显式声明**：每个 `AgentKind` 都必须出现（不支持者用 `providers` 省略表示），
+ * 因为数组本身不携带归属信息 —— 「谁是谁的数组」只能由调用方说出来。
+ */
+export interface MekaRuntimeMcpAgentDeclaration {
+  agentKind: AgentKind;
+  /** 该 agent 实际持有的 provider 数组；矩阵声明 `runtimeMcp: false` 时必须省略。 */
+  providers?: McpProvider[];
+}
+
+/**
+ * 低层原语：把 Meka 运行时 provider 注入传入的数组（原地 push，数组顺序不变）。
+ * **不要在生产路径直接调**（生产走 `meka-injection/mekaMcpRegistration.ts` 的
+ * `registerMekaCapabilities`）——本函数只认数组、不认归属，调用方少传一个数组时
+ * 它是发现不了任何问题的，这正是 Pi 静默缺失的由来。
+ */
 export function registerMekaRuntimeMcpArrays(...arrays: McpProvider[][]): void {
   for (const array of arrays) {
     if (!registeredArrays.includes(array)) registeredArrays.push(array);
     if (!array.includes(routerProvider)) array.push(routerProvider);
     if (!array.includes(mekaDesignProvider)) array.push(mekaDesignProvider);
+  }
+}
+
+/**
+ * 形态 B 的收口入口：按**能力矩阵**注册每个 `AgentKind` 的 Meka 运行时 MCP。
+ *
+ * 与旧签名的区别就是把「漏传」变成不可静默的失效形态：
+ * 1. 声明必须覆盖矩阵全量 `AgentKind`（漏一个直接抛，而不是少注册一个 agent）；
+ * 2. 声明与矩阵必须一致（矩阵说支持却不给数组 / 矩阵说不支持却塞了数组，都抛）；
+ * 3. 通过 `registerMekaRuntimeMcpArrays` 注入，保持**每个数组内的 push 顺序与集合**不变。
+ *
+ * 保留旧原语的签名（而非改签名为「带 agentKind 的参数」）：现有 22 处测试调用都只是
+ * 「往这个数组注入 Meka provider」，没有归属语义；改签名只会把噪音铺到测试里，而真实
+ * 漏传发生在**调用方枚举数组**的那一行 —— 拦住它的只能是这里的全量断言。
+ */
+export function declareMekaRuntimeMcpAgents(
+  declarations: readonly MekaRuntimeMcpAgentDeclaration[],
+): void {
+  const declared = new Map<AgentKind, McpProvider[] | undefined>();
+  for (const declaration of declarations) {
+    if (declared.has(declaration.agentKind)) {
+      throw new Error(
+        `duplicate Meka runtime MCP declaration for agent "${declaration.agentKind}"`,
+      );
+    }
+    declared.set(declaration.agentKind, declaration.providers);
+  }
+  const missing = MEKA_AGENT_KINDS.filter((agentKind) => !declared.has(agentKind));
+  if (missing.length > 0) {
+    throw new Error(
+      `Meka runtime MCP declarations are incomplete; missing AgentKind(s): ${missing.join(', ')}. ` +
+        '每个 AgentKind 都必须显式声明（不支持也要声明为没有 provider 数组），' +
+        '否则该 agent 会静默拿不到 Meka 运行时 MCP',
+    );
+  }
+  for (const agentKind of MEKA_AGENT_KINDS) {
+    const providers = declared.get(agentKind);
+    const supported = MEKA_AGENT_CAPABILITIES[agentKind].runtimeMcp;
+    if (supported !== Boolean(providers)) {
+      throw new Error(
+        `Meka runtime MCP declaration for agent "${agentKind}" contradicts ` +
+          `MEKA_AGENT_CAPABILITIES (matrix runtimeMcp=${supported}, ` +
+          `declaration ${providers ? 'provided' : 'omitted'} a provider array)`,
+      );
+    }
+    if (providers) registerMekaRuntimeMcpArrays(providers);
   }
 }
 
@@ -1447,3 +1511,5 @@ export function resetMekaRuntimeMcpRegistryForTests(): void {
   authorizeHighRiskCall = null;
   promptRouterLogin = null;
 }
+
+

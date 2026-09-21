@@ -1,5 +1,6 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -10,7 +11,7 @@ import {
   combatSkillIdVendorPatchFromUserPrompt,
   parseCombatSkillIdFromUserPrompt,
   prepareCombatFollowupRuntimeContext,
-} from '../mekaRuntimeInjection.js';
+} from '../../meka-injection/index.js';
 import type { MakerSessionCreateOpts } from '../sessionRequest.js';
 
 const environmentServices = vi.hoisted(() => ({
@@ -65,6 +66,36 @@ function baseOpts(overrides: Partial<MakerSessionCreateOpts> = {}): MakerSession
     mekaRoleId: 'general-development',
     ...overrides,
   };
+}
+
+/**
+ * 从 `workingDir` 推导 SAGA2 项目路径，规则与实现
+ * （`meka-injection/mekaCombatPrompts.ts` 的 `combatProjectPathsPrompt`）完全一致：
+ *
+ * - `projectRoot` / `unityClientRoot` 用 `path.resolve` / `path.join` 推导，前缀是当前
+ *   平台的路径分隔符（Windows `\`、Linux `/`），因此断言里不能写死任一种字面量。
+ * - 以 `saga2_unity` 结尾时，`unityClientRoot` 就是 `workingDir` 本身，`projectRoot` 上移一层。
+ */
+function saga2ProjectPaths(workingDir: string) {
+  const resolved = path.resolve(workingDir);
+  const isUnityClientRoot = path.basename(resolved).toLowerCase() === 'saga2_unity';
+  const projectRoot = isUnityClientRoot ? path.dirname(resolved) : resolved;
+  const unityClientRoot = isUnityClientRoot ? resolved : path.join(resolved, 'saga2_unity');
+  const unityAgentsPath = path.join(unityClientRoot, 'AGENTS.md');
+  const legacyModuleProtocolCodecPath = path.join(
+    unityClientRoot,
+    'Assets',
+    'Editor',
+    'SkillEditor',
+    'Common',
+    'Editor',
+    'Exporter',
+    'Execute',
+    'Impl',
+    'Type',
+    'SkillModuleProtocolCodec.cs',
+  );
+  return { projectRoot, unityClientRoot, unityAgentsPath, legacyModuleProtocolCodecPath };
 }
 
 function runtime(overrides: Partial<MekaRuntimeConfig> = {}): MekaRuntimeConfig {
@@ -195,6 +226,8 @@ describe('applyMekaRuntimeConfig', () => {
       resolveCombatServerTarget,
     });
 
+    const saga2Paths = saga2ProjectPaths('C:/Workspace/saga2/saga2_project');
+
     expect(resolveCombatServerTarget).toHaveBeenCalledWith('saga2');
     expect(result?.vendorOptionsPatch).toMatchObject({
       mekaCombatTargetSkillId: '1021',
@@ -209,11 +242,9 @@ describe('applyMekaRuntimeConfig', () => {
     expect(result?.promptSection).toContain('[SAGA2_COMBAT_TARGET]');
     expect(result?.promptSection).toContain('targetSkillId: 1021');
     expect(result?.promptSection).toContain('[SAGA2_PROJECT_PATHS]');
+    expect(result?.promptSection).toContain(`unityClientRoot: ${saga2Paths.unityClientRoot}`);
     expect(result?.promptSection).toContain(
-      'unityClientRoot: C:\\Workspace\\saga2\\saga2_project\\saga2_unity',
-    );
-    expect(result?.promptSection).toContain(
-      "unityAgentsReadCommand: Get-Content -LiteralPath 'C:\\Workspace\\saga2\\saga2_project\\saga2_unity\\AGENTS.md'",
+      `unityAgentsReadCommand: Get-Content -LiteralPath '${saga2Paths.unityAgentsPath}'`,
     );
     expect(result?.promptSection).toContain('[SAGA2_COMBAT_SERVER_TARGET]');
     expect(result?.promptSection).toContain('serverRemoteHostId: mcpr:server-1');
@@ -645,6 +676,7 @@ describe('applyMekaRuntimeConfig', () => {
       materializeSkillSnapshot: vi.fn(async () => null),
       resolveCombatServerTarget,
     });
+    const saga2Paths = saga2ProjectPaths('C:/Workspace/saga2/saga2_project');
     expect(opts.vendorOptions).toMatchObject({
       mekaCombatExecutionMode: 'autonomous-user-request',
       mekaCombatTargetSkillId: '1019',
@@ -658,16 +690,12 @@ describe('applyMekaRuntimeConfig', () => {
     expect(opts.userPrompt).toContain('[SAGA2_COMBAT_TARGET]');
     expect(opts.userPrompt).toContain('targetSkillId: 1019');
     expect(opts.userPrompt).toContain('[SAGA2_PROJECT_PATHS]');
-    expect(opts.userPrompt).toContain('projectRoot: C:\\Workspace\\saga2\\saga2_project');
-    expect(opts.userPrompt).toContain(
-      'unityClientRoot: C:\\Workspace\\saga2\\saga2_project\\saga2_unity',
-    );
+    expect(opts.userPrompt).toContain(`projectRoot: ${saga2Paths.projectRoot}`);
+    expect(opts.userPrompt).toContain(`unityClientRoot: ${saga2Paths.unityClientRoot}`);
     expect(opts.userPrompt).toContain(`legacyModuleJsonTempRoot: ${os.tmpdir()}`);
+    expect(opts.userPrompt).toContain(`unityAgentsPath: ${saga2Paths.unityAgentsPath}`);
     expect(opts.userPrompt).toContain(
-      'unityAgentsPath: C:\\Workspace\\saga2\\saga2_project\\saga2_unity\\AGENTS.md',
-    );
-    expect(opts.userPrompt).toContain(
-      'legacyModuleProtocolCodecPath: C:\\Workspace\\saga2\\saga2_project\\saga2_unity\\Assets\\Editor\\SkillEditor\\Common\\Editor\\Exporter\\Execute\\Impl\\Type\\SkillModuleProtocolCodec.cs',
+      `legacyModuleProtocolCodecPath: ${saga2Paths.legacyModuleProtocolCodecPath}`,
     );
     expect(opts.userPrompt).toContain('[SAGA2_COMBAT_SERVER_TARGET]');
     expect(opts.userPrompt).toContain('serverRemoteHostId: mcpr:server-1');
@@ -690,15 +718,14 @@ describe('applyMekaRuntimeConfig', () => {
       materializeSkillSnapshot: vi.fn(async () => null),
     });
 
+    const saga2Paths = saga2ProjectPaths('C:/Workspace/saga2/saga2_project');
     expect(opts.vendorOptions).toMatchObject({
       mekaCombatTargetSkillId: '1020',
       mekaCombatTargetSkillIdState: 'confirmed',
       mekaCombatServerCapabilityStatus: 'unchecked',
     });
     expect(opts.userPrompt).toContain('targetSkillId: 1020');
-    expect(opts.userPrompt).toContain(
-      'unityClientRoot: C:\\Workspace\\saga2\\saga2_project\\saga2_unity',
-    );
+    expect(opts.userPrompt).toContain(`unityClientRoot: ${saga2Paths.unityClientRoot}`);
   });
 
   it('invalidates server evidence when a resumed combat task changes skill ID', async () => {
@@ -925,3 +952,4 @@ describe('applyMekaRuntimeConfig', () => {
     expect(opts.vendorOptions).toBeUndefined();
   });
 });
+

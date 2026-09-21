@@ -260,10 +260,10 @@ import {
   resetCustomMcpRegistry,
 } from '../mcp-integrations/custom-mcp-registry.js';
 import {
-  registerMekaRuntimeMcpArrays,
   setMekaRuntimeHighRiskAuthorizer,
   setMekaRuntimeRouterLoginPrompter,
 } from '../mcp-integrations/meka-runtime-mcp.js';
+import { registerMekaCapabilities } from '../meka-injection/mekaMcpRegistration.js';
 import { requestMekaRouterLogin } from '../meka-settings/routerLoginWindow.js';
 import {
   ESSENTIAL_PLUGIN_IDS,
@@ -2149,7 +2149,10 @@ export function getMaker(): Maker {
       if (getActiveAppSession().generation === owner) refreshSelectableModelsAndBroadcast({ providerId });
     });
 
-    registerMekaRuntimeMcpArrays(claudeMcpProviders, codexMcpProviders);
+    // 形态 B 的注册调用点**不在这里**：已挪到下方 `_mcpProviders.pi = piMcpProviders` 之后
+    // （见那里的注释）——Meka 运行时 MCP 现由注入层 `registerMekaCapabilities` 按
+    // MEKA_AGENT_CAPABILITIES 矩阵注册，缺数组会在装配期直接抛错，不再静默缺能力。
+    // 下面两条只是授权/登录回调的注入，与 provider 数组无关，保持原位。
     setMekaRuntimeHighRiskAuthorizer(authorizeMekaHighRiskCallViaDesktop);
     setMekaRuntimeRouterLoginPrompter(requestMekaRouterLogin);
     // 装配第二步: 把 agents 引用挂回 manager (manager.enable() 时遍历 setMemory(false))。
@@ -2298,6 +2301,11 @@ export function getMaker(): Maker {
       cindyMakeProvider,
     ];
     _mcpProviders.pi = piMcpProviders;
+    // 三个 agent 的 provider 数组都已就位，才做 Meka 运行时 MCP 注册：把整个 registry
+    // 交给注入层按能力矩阵裁决（claude-code / codex 注入 mcp_router + meka_design，
+    // pi 因 D1 显式声明不支持并留档）。放在这里而不是 claude/codex 数组创建处，是为了
+    // 让矩阵里任何一个 runtimeMcp=true 的 agent 只要缺数组就在装配期硬失败。
+    registerMekaCapabilities({ get: (agentKind) => _mcpProviders[agentKind] });
     // 用户自定义 MCP:三个 agent 都必须注册其实际持有的数组引用，再统一做初始 refresh。
     // localDb onReady 可能在 Maker 构造前就已触发（此时 registry 无数组，refresh 空跑）；
     // 在此补一次 refresh，若 DB 尚未就绪则 refreshCustomMcpProviders 内部 catch 后静默跳过。
@@ -3306,3 +3314,5 @@ export async function shutdownLspServerPool(): Promise<void> {
 
 // re-exports for IPC layer
 export { desktopClaudeAuthAdapter, desktopCodexAuthAdapter };
+
+

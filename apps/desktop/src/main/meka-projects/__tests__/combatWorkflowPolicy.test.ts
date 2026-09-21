@@ -52,6 +52,79 @@ import {
   settleCombatServerCapabilityDispatch,
 } from '../combatServerCapabilityState.js';
 
+// SAGA2 fixture paths. Every project path below is derived from these resolved
+// roots with the same `path.resolve` / `path.join` chain the production policy
+// uses, so the expectations hold on Windows and on POSIX hosts (a raw
+// `C:\Workspace\...` literal would no longer resolve to the working directory
+// there).
+const SAGA2_PROJECT_ROOT = path.resolve('C:/Workspace/saga2/saga2_project');
+const SAGA2_WORKSPACE_ROOT = path.dirname(SAGA2_PROJECT_ROOT);
+const SAGA2_UNITY_ROOT = path.join(SAGA2_PROJECT_ROOT, 'saga2_unity');
+const SAGA2_UNITY_ASSETS_ROOT = path.join(SAGA2_UNITY_ROOT, 'Assets');
+const SAGA2_UNITY_MODULE_V2_ROOT = path.join(
+  SAGA2_UNITY_ASSETS_ROOT,
+  'Editor',
+  'SkillEditor',
+  'Module',
+);
+const SAGA2_JSON_ROOT = path.join(SAGA2_PROJECT_ROOT, 'saga2_json');
+const SAGA2_DESIGN_ROOT = path.join(SAGA2_WORKSPACE_ROOT, 'saga2_design');
+// The real SAGA2 checkout also keeps a Unity project next to `saga2_project`.
+// It is deliberately NOT the Host-injected root, so it is only used for paths
+// that must stay outside the authorized project.
+const SAGA2_STRAY_UNITY_ROOT = path.join(SAGA2_WORKSPACE_ROOT, 'saga2_unity');
+const SAGA2_WORKSPACE_AGENTS_PATH = path.join(SAGA2_PROJECT_ROOT, 'AGENTS.md');
+const SAGA2_UNITY_AGENTS_PATH = path.join(SAGA2_UNITY_ROOT, 'AGENTS.md');
+const SAGA2_LEGACY_MODULE_PROTOCOL_CODEC_PATH = path.join(
+  SAGA2_UNITY_ASSETS_ROOT,
+  'Editor',
+  'SkillEditor',
+  'Common',
+  'Editor',
+  'Exporter',
+  'Execute',
+  'Impl',
+  'Type',
+  'SkillModuleProtocolCodec.cs',
+);
+const SAGA2_STRAY_UNITY_AGENTS_PATH = path.join(SAGA2_STRAY_UNITY_ROOT, 'AGENTS.md');
+const SAGA2_STRAY_LEGACY_MODULE_PROTOCOL_CODEC_PATH = path.join(
+  SAGA2_STRAY_UNITY_ROOT,
+  'Assets',
+  'Editor',
+  'SkillEditor',
+  'Common',
+  'Editor',
+  'Exporter',
+  'Execute',
+  'Impl',
+  'Type',
+  'SkillModuleProtocolCodec.cs',
+);
+
+const SAGA2_UNITY_ROLE_SKILL_RELATIVE_PATH = path.relative(
+  SAGA2_PROJECT_ROOT,
+  path.join(
+    SAGA2_UNITY_ROOT,
+    'Assets',
+    'Scripts',
+    'Hot',
+    'Game',
+    'Room',
+    'Role',
+    'RoomRoleSkill.cs',
+  ),
+);
+
+/**
+ * Render a path the way model-generated PowerShell commands sometimes do, with
+ * every separator doubled. On POSIX `path.sep` is '/', so the doubled form still
+ * resolves to the same file and the `allow` case keeps its meaning.
+ */
+function doubledSeparators(value: string): string {
+  return value.split(path.sep).join(path.sep + path.sep);
+}
+
 function vendor(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     source: 'meka',
@@ -80,7 +153,7 @@ function context(vendorOptions: Record<string, unknown>, overrides: Record<strin
   return {
     agentKind: 'codex' as const,
     sessionId: 'session-1',
-    workingDir: 'C:\\Workspace\\saga2\\saga2_project',
+    workingDir: SAGA2_PROJECT_ROOT,
     vendorOptions,
     toolName: 'Read',
     input: {},
@@ -93,7 +166,7 @@ beforeEach(() => {
   resetCombatTargetExportStateForTests();
   vi.resetAllMocks();
   resetCombatServerCapabilityStateForTests();
-  services.p4.get.mockResolvedValue({ p4RootPath: 'C:\\Workspace\\saga2\\saga2_project' });
+  services.p4.get.mockResolvedValue({ p4RootPath: SAGA2_PROJECT_ROOT });
   services.router.listProjectTools.mockResolvedValue([]);
   services.router.listProjectBindings.mockResolvedValue(['server-1']);
   services.router.listInstances.mockResolvedValue([
@@ -124,10 +197,10 @@ describe('combat workflow host policy', () => {
 
     const ready = vendor({ mekaCombatTargetSkillId: '1020' });
     for (const command of [
-      "Get-Content -Raw 'C:\\Workspace\\saga2\\saga2_project\\AGENTS.md'",
-      "rg --files -g 'AGENTS.md' 'C:\\Workspace\\saga2\\saga2_project\\saga2_unity'",
-      "rg -n -g '*.cs' 'BattleRoleSkill' 'C:\\Workspace\\saga2\\saga2_project\\saga2_unity\\Assets'",
-      "rg -n 'ModuleV2SemanticKind' 'C:\\Workspace\\saga2\\saga2_project\\saga2_unity\\Assets\\Editor\\SkillEditor\\Module'",
+      `Get-Content -Raw '${SAGA2_WORKSPACE_AGENTS_PATH}'`,
+      `rg --files -g 'AGENTS.md' '${SAGA2_UNITY_ROOT}'`,
+      `rg -n -g '*.cs' 'BattleRoleSkill' '${SAGA2_UNITY_ASSETS_ROOT}'`,
+      `rg -n 'ModuleV2SemanticKind' '${SAGA2_UNITY_MODULE_V2_ROOT}'`,
     ]) {
       expect(
         evaluateCombatShellCommandExecution(
@@ -141,8 +214,7 @@ describe('combat workflow host policy', () => {
           toolName: 'exec',
           action: {
             kind: 'exec',
-            command:
-              "Get-Content -Raw 'C:\\Workspace\\saga2\\saga2_project\\saga2_unity\\AGENTS.md'",
+            command: `Get-Content -Raw '${SAGA2_UNITY_AGENTS_PATH}'`,
           },
         }),
       ),
@@ -154,7 +226,29 @@ describe('combat workflow host policy', () => {
           action: {
             kind: 'exec',
             command:
-              '"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "Get-Content -LiteralPath \'C:\\Workspace\\saga2\\saga2_project\\saga2_unity\\AGENTS.md\'"',
+              `"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "Get-Content -LiteralPath '${SAGA2_UNITY_AGENTS_PATH}'"`,
+          },
+        }),
+      ),
+    ).toEqual({ behavior: 'allow' });
+    expect(
+      evaluateCombatShellCommandExecution(
+        context(ready, {
+          toolName: 'exec',
+          action: {
+            kind: 'exec',
+            command: `Get-Content -LiteralPath '${doubledSeparators(SAGA2_UNITY_AGENTS_PATH)}'`,
+          },
+        }),
+      ),
+    ).toEqual({ behavior: 'allow' });
+    expect(
+      evaluateCombatShellCommandExecution(
+        context(ready, {
+          toolName: 'exec',
+          action: {
+            kind: 'exec',
+            command: `Get-Content -LiteralPath '${SAGA2_LEGACY_MODULE_PROTOCOL_CODEC_PATH}'`,
           },
         }),
       ),
@@ -166,7 +260,7 @@ describe('combat workflow host policy', () => {
           action: {
             kind: 'exec',
             command:
-              "Get-Content -LiteralPath 'C:\\\\Workspace\\\\saga2\\\\saga2_project\\\\saga2_unity\\\\AGENTS.md'",
+              `"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "Get-Content -LiteralPath '${SAGA2_LEGACY_MODULE_PROTOCOL_CODEC_PATH}' -Raw"`,
           },
         }),
       ),
@@ -178,38 +272,14 @@ describe('combat workflow host policy', () => {
           action: {
             kind: 'exec',
             command:
-              "Get-Content -LiteralPath 'C:\\Workspace\\saga2\\saga2_project\\saga2_unity\\Assets\\Editor\\SkillEditor\\Common\\Editor\\Exporter\\Execute\\Impl\\Type\\SkillModuleProtocolCodec.cs'",
-          },
-        }),
-      ),
-    ).toEqual({ behavior: 'allow' });
-    expect(
-      evaluateCombatShellCommandExecution(
-        context(ready, {
-          toolName: 'exec',
-          action: {
-            kind: 'exec',
-            command:
-              '"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "Get-Content -LiteralPath \'C:\\Workspace\\saga2\\saga2_project\\saga2_unity\\Assets\\Editor\\SkillEditor\\Common\\Editor\\Exporter\\Execute\\Impl\\Type\\SkillModuleProtocolCodec.cs\' -Raw"',
-          },
-        }),
-      ),
-    ).toEqual({ behavior: 'allow' });
-    expect(
-      evaluateCombatShellCommandExecution(
-        context(ready, {
-          toolName: 'exec',
-          action: {
-            kind: 'exec',
-            command:
-              '"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "Get-Content -LiteralPath \'C:\\\\Workspace\\\\saga2\\\\saga2_project\\\\saga2_unity\\\\Assets\\\\Editor\\\\SkillEditor\\\\Common\\\\Editor\\\\Exporter\\\\Execute\\\\Impl\\\\Type\\\\SkillModuleProtocolCodec.cs\'"',
+              `"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "Get-Content -LiteralPath '${doubledSeparators(SAGA2_LEGACY_MODULE_PROTOCOL_CODEC_PATH)}'"`,
           },
         }),
       ),
     ).toEqual({ behavior: 'allow' });
     for (const wrongPathCommand of [
-      "Get-Content -LiteralPath 'C:\\Workspace\\saga2\\saga2_unity\\AGENTS.md'",
-      "Get-Content -LiteralPath 'C:\\Workspace\\saga2\\saga2_unity\\Assets\\Editor\\SkillEditor\\Common\\Editor\\Exporter\\Execute\\Impl\\Type\\SkillModuleProtocolCodec.cs'",
+      `Get-Content -LiteralPath '${SAGA2_STRAY_UNITY_AGENTS_PATH}'`,
+      `Get-Content -LiteralPath '${SAGA2_STRAY_LEGACY_MODULE_PROTOCOL_CODEC_PATH}'`,
     ]) {
       expect(
         evaluateCombatShellCommandExecution(
@@ -220,7 +290,7 @@ describe('combat workflow host policy', () => {
         ),
       ).toMatchObject({
         behavior: 'deny',
-        reason: expect.stringContaining('C:\\Workspace\\saga2\\saga2_project\\saga2_unity'),
+        reason: expect.stringContaining(SAGA2_UNITY_ROOT),
       });
     }
   });
@@ -372,7 +442,7 @@ describe('combat workflow host policy', () => {
           sessionId: 'target-first-evidence',
           action: {
             kind: 'read',
-            path: 'C:\\Workspace\\saga2\\saga2_project\\saga2_unity\\AGENTS.md',
+            path: SAGA2_UNITY_AGENTS_PATH,
           },
         }),
       ),
@@ -386,7 +456,7 @@ describe('combat workflow host policy', () => {
         tool: 'unity_inspect',
         args: {
           action: 'status',
-          projectPath: 'C:\\Workspace\\saga2\\saga2_project\\saga2_unity',
+          projectPath: SAGA2_UNITY_ROOT,
         },
       }),
     ).resolves.toEqual({ behavior: 'allow' });
@@ -414,7 +484,7 @@ describe('combat workflow host policy', () => {
         tool: 'unity_execute',
         args: {
           action: 'command',
-          projectPath: 'C:\\Workspace\\saga2\\saga2_project\\saga2_unity',
+          projectPath: SAGA2_UNITY_ROOT,
           arguments: [
             'legacy_module_export_json',
             '1020',
@@ -433,7 +503,7 @@ describe('combat workflow host policy', () => {
           tool: 'unity_execute',
           args: {
             action: 'command',
-            projectPath: 'C:\\Workspace\\saga2\\saga2_project\\saga2_unity',
+            projectPath: SAGA2_UNITY_ROOT,
             arguments: [
               'legacy_module_export_json',
               '1020',
@@ -456,8 +526,8 @@ describe('combat workflow host policy', () => {
           sessionId: 'target-first-evidence',
           action: {
             kind: 'exec',
-            command: "Get-Content 'C:\\Workspace\\saga2\\saga2_project\\saga2_unity\\AGENTS.md'",
-            cwd: 'C:\\Workspace\\saga2\\saga2_project',
+            command: `Get-Content '${SAGA2_UNITY_AGENTS_PATH}'`,
+            cwd: SAGA2_PROJECT_ROOT,
           },
         }),
       ),
@@ -473,8 +543,8 @@ describe('combat workflow host policy', () => {
             sessionId: 'target-first-evidence',
             action: {
               kind: 'exec',
-              command: "Get-Content 'C:\\Workspace\\saga2\\saga2_project\\saga2_unity\\AGENTS.md'",
-              cwd: 'C:\\Workspace\\saga2\\saga2_project',
+              command: `Get-Content '${SAGA2_UNITY_AGENTS_PATH}'`,
+              cwd: SAGA2_PROJECT_ROOT,
             },
           },
         ),
@@ -491,7 +561,7 @@ describe('combat workflow host policy', () => {
           action: {
             kind: 'exec',
             command: 'rg --files -g AGENTS.md .',
-            cwd: 'C:\\Workspace\\saga2\\saga2_project',
+            cwd: SAGA2_PROJECT_ROOT,
           },
         }),
       ),
@@ -500,8 +570,8 @@ describe('combat workflow host policy', () => {
       reason: expect.stringContaining('禁止枚举或读取工作区根 AGENTS.md'),
     });
     for (const blockedPath of [
-      'C:\\Workspace\\saga2\\saga2_project\\saga2_unity\\Assets\\Editor\\SkillEditor\\ModuleV2\\COMPONENT_CATALOG.md',
-      'C:\\Workspace\\saga2\\saga2_project\\saga2_unity\\Assets\\Editor\\SkillEditor\\Skill\\Exportd Data\\Server\\skill_entry_model_editor.json',
+      path.join(SAGA2_UNITY_ROOT, 'Assets', 'Editor', 'SkillEditor', 'ModuleV2', 'COMPONENT_CATALOG.md'),
+      path.join(SAGA2_UNITY_ROOT, 'Assets', 'Editor', 'SkillEditor', 'Skill', 'Exportd Data', 'Server', 'skill_entry_model_editor.json'),
     ]) {
       await expect(
         evaluateCombatToolExecution(
@@ -532,7 +602,7 @@ describe('combat workflow host policy', () => {
         tool: 'unity_execute',
         args: {
           action: 'command',
-          projectPath: 'C:\\Workspace\\saga2\\saga2_project\\saga2_unity',
+          projectPath: SAGA2_UNITY_ROOT,
           arguments: ['legacy_module_export_json', '1021', path.join(os.tmpdir(), '1021.json')],
         },
       },
@@ -547,8 +617,8 @@ describe('combat workflow host policy', () => {
           action: {
             kind: 'exec',
             command:
-              "Get-Content -LiteralPath 'C:\\Workspace\\saga2\\saga2_project\\saga2_unity\\AGENTS.md'",
-            cwd: 'C:\\Workspace\\saga2\\saga2_project',
+              `Get-Content -LiteralPath '${SAGA2_UNITY_AGENTS_PATH}'`,
+            cwd: SAGA2_PROJECT_ROOT,
           },
         }),
       ),
@@ -560,7 +630,7 @@ describe('combat workflow host policy', () => {
           action: {
             kind: 'exec',
             command:
-              "rg -n -g '*.cs' 'BattleRoleSkill' 'C:\\Workspace\\saga2\\saga2_project\\saga2_unity\\Assets'",
+              `rg -n -g '*.cs' 'BattleRoleSkill' '${SAGA2_UNITY_ASSETS_ROOT}'`,
           },
         }),
       ),
@@ -577,7 +647,7 @@ describe('combat workflow host policy', () => {
         toolName: 'mcp__meka-unity__unity_execute',
         input: {
           action: 'command',
-          projectPath: 'C:\\Workspace\\saga2\\saga2_project\\saga2_unity',
+          projectPath: SAGA2_UNITY_ROOT,
           arguments: ['legacy_module_export_json', '1019', path.join(os.tmpdir(), '1019.json')],
         },
       }),
@@ -594,7 +664,7 @@ describe('combat workflow host policy', () => {
           sessionId,
           action: {
             kind: 'exec',
-            command: "Get-Content 'C:\\Workspace\\saga2\\saga2_project\\saga2_unity\\AGENTS.md'",
+            command: `Get-Content '${SAGA2_UNITY_AGENTS_PATH}'`,
           },
         }),
       ),
@@ -614,7 +684,7 @@ describe('combat workflow host policy', () => {
           tool: 'unity_execute',
           args: {
             action: 'command',
-            projectPath: 'C:\\Workspace\\saga2\\saga2_project\\saga2_unity',
+            projectPath: SAGA2_UNITY_ROOT,
             arguments: arguments_,
           },
         },
@@ -673,7 +743,7 @@ describe('combat workflow host policy', () => {
         ghostCall([
           'legacy_module_import_json',
           '1019',
-          'C:\\Workspace\\saga2\\saga2_project\\saga2_json\\1019.import.json',
+          path.join(SAGA2_JSON_ROOT, '1019.import.json'),
           'true',
         ]),
       ),
@@ -740,8 +810,8 @@ describe('combat workflow host policy', () => {
       mekaCombatPhase: 'execution',
     });
     for (const blockedPath of [
-      'C:\\Workspace\\saga2\\saga2_project\\saga2_json\\1019.import.json',
-      'C:\\Workspace\\saga2\\saga2_design\\planning\\1019.export.json',
+      path.join(SAGA2_JSON_ROOT, '1019.import.json'),
+      path.join(SAGA2_DESIGN_ROOT, 'planning', '1019.export.json'),
       '1019.import.json',
     ]) {
       await expect(
@@ -750,7 +820,7 @@ describe('combat workflow host policy', () => {
             toolName: 'mcp__meka-unity__unity_execute',
             input: {
               action: 'command',
-              projectPath: 'C:\\Workspace\\saga2\\saga2_project\\saga2_unity',
+              projectPath: SAGA2_UNITY_ROOT,
               arguments: ['legacy_module_import_json', '1019', blockedPath, 'true'],
             },
             action: { kind: 'mcp' },
@@ -771,7 +841,7 @@ describe('combat workflow host policy', () => {
     });
     for (const allowedPath of [
       path.join(os.tmpdir(), '1019.import.json'),
-      'C:\\Workspace\\saga2\\saga2_project\\saga2_unity\\Temp\\1019.export.json',
+      path.join(SAGA2_UNITY_ROOT, 'Temp', '1019.export.json'),
     ]) {
       await expect(
         evaluateCombatToolExecution(
@@ -779,7 +849,7 @@ describe('combat workflow host policy', () => {
             toolName: 'mcp__meka-unity__unity_execute',
             input: {
               action: 'command',
-              projectPath: 'C:\\Workspace\\saga2\\saga2_project\\saga2_unity',
+              projectPath: SAGA2_UNITY_ROOT,
               arguments: ['legacy_module_import_json', '1019', allowedPath, 'true'],
             },
             action: { kind: 'mcp' },
@@ -804,7 +874,7 @@ describe('combat workflow host policy', () => {
           tool: 'unity_execute',
           args: {
             action: 'command',
-            projectPath: 'C:\\Workspace\\saga2\\saga2_project\\saga2_unity',
+            projectPath: SAGA2_UNITY_ROOT,
             arguments: [command, '1019', path.join(os.tmpdir(), 'skill-1019.json')],
           },
         },
@@ -828,7 +898,7 @@ describe('combat workflow host policy', () => {
           input: {
             ghost_id: 'meka-p4',
             tool: 'p4_checkout',
-            args: { files: ['C:\\Workspace\\saga2\\saga2_project\\saga2_unity\\1019.asset'] },
+            args: { files: [path.join(SAGA2_UNITY_ROOT, '1019.asset')] },
           },
           action: { kind: 'mcp' },
         }),
@@ -972,7 +1042,7 @@ describe('combat workflow host policy', () => {
           toolName: 'mcp__meka-unity__unity_inspect',
           input: {
             action: 'status',
-            projectPath: 'C:\\Workspace\\saga2\\saga2_project\\saga2_unity',
+            projectPath: SAGA2_UNITY_ROOT,
           },
           action: { kind: 'mcp' },
         }),
@@ -987,7 +1057,7 @@ describe('combat workflow host policy', () => {
           toolName: 'mcp__meka-unity__unity_inspect',
           input: {
             action: 'status',
-            projectPath: 'C:\\Workspace\\saga2\\saga2_project\\saga2_unity',
+            projectPath: SAGA2_UNITY_ROOT,
           },
           action: { kind: 'mcp' },
         }),
@@ -1097,7 +1167,7 @@ describe('combat workflow host policy', () => {
           toolName: 'mcp__meka-unity__unity_inspect',
           input: {
             action: 'status',
-            projectPath: 'C:\\Workspace\\saga2\\saga2_project\\saga2_unity',
+            projectPath: SAGA2_UNITY_ROOT,
           },
           action: { kind: 'mcp' },
         }),
@@ -1196,7 +1266,7 @@ describe('combat workflow host policy', () => {
           toolName: 'Read',
           action: {
             kind: 'read',
-            path: 'C:\\Workspace\\saga2\\saga2_design\\planning\\01-治理规范-governance\\ai-onboarding-rules.md',
+            path: path.join(SAGA2_DESIGN_ROOT, 'planning', '01-治理规范-governance', 'ai-onboarding-rules.md'),
           },
         }),
       ),
@@ -1242,7 +1312,7 @@ describe('combat workflow host policy', () => {
           toolName: 'Read',
           action: {
             kind: 'read',
-            path: 'C:\\Workspace\\saga2\\saga2_unity\\.agents\\skills\\editor-skill-editor-module\\SKILL.md',
+            path: path.join(SAGA2_STRAY_UNITY_ROOT, '.agents', 'skills', 'editor-skill-editor-module', 'SKILL.md'),
           },
         }),
       ),
@@ -1259,7 +1329,7 @@ describe('combat workflow host policy', () => {
             kind: 'exec',
             command:
               "Get-Content -Raw -LiteralPath 'saga2_unity/.agents/skills/editor-skill-editor-module/SKILL.md'",
-            cwd: 'C:\\Workspace\\saga2\\saga2_project',
+            cwd: SAGA2_PROJECT_ROOT,
           },
         }),
       ),
@@ -1298,7 +1368,7 @@ describe('combat workflow host policy', () => {
           toolName: 'Write',
           action: {
             kind: 'file-write',
-            path: 'C:\\Workspace\\saga2\\saga2_project\\saga2_unity\\Temp\\123.import.json',
+            path: path.join(SAGA2_UNITY_ROOT, 'Temp', '123.import.json'),
           },
         }),
       ),
@@ -1317,7 +1387,7 @@ describe('combat workflow host policy', () => {
         context(options, {
           action: {
             kind: 'file-write',
-            path: 'C:\\Workspace\\saga2\\saga2_design\\planning\\draft.md',
+            path: path.join(SAGA2_DESIGN_ROOT, 'planning', 'draft.md'),
           },
         }),
       ),
@@ -1337,7 +1407,7 @@ describe('combat workflow host policy', () => {
         context(options, {
           action: {
             kind: 'file-write',
-            path: 'C:\\Workspace\\saga2\\saga2_unity\\Assets\\Editor\\SkillEditor\\Skill\\Saved Data\\123.asset',
+            path: path.join(SAGA2_STRAY_UNITY_ROOT, 'Assets', 'Editor', 'SkillEditor', 'Skill', 'Saved Data', '123.asset'),
           },
         }),
       ),
@@ -1395,11 +1465,11 @@ describe('combat workflow host policy', () => {
   it('allows a plain Select-String inspection but rejects PowerShell side effects', async () => {
     const options = vendor();
     const wrappedReadOnlyCommand =
-      '"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "Select-String -Path \'saga2_unity\\Assets\\Scripts\\Hot\\Game\\Room\\Role\\RoomRoleSkill.cs\' -Pattern \'预警|伤害\' -Context 20,20"';
+      `"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "Select-String -Path '${SAGA2_UNITY_ROLE_SKILL_RELATIVE_PATH}' -Pattern '预警|伤害' -Context 20,20"`;
     const directReadOnlyCommand =
-      "Select-String -LiteralPath 'saga2_unity\\Assets\\Scripts\\Hot\\Game\\Room\\Role\\RoomRoleSkill.cs' -Pattern '预警|伤害' -Context 20,20";
+      `Select-String -LiteralPath '${SAGA2_UNITY_ROLE_SKILL_RELATIVE_PATH}' -Pattern '预警|伤害' -Context 20,20`;
     const directFileRead =
-      "Get-Content -LiteralPath 'saga2_unity\\Assets\\Scripts\\Hot\\Game\\Room\\Role\\RoomRoleSkill.cs' -Raw";
+      `Get-Content -LiteralPath '${SAGA2_UNITY_ROLE_SKILL_RELATIVE_PATH}' -Raw`;
     for (const command of [wrappedReadOnlyCommand, directReadOnlyCommand, directFileRead]) {
       await expect(
         evaluateCombatToolExecution(
@@ -1408,7 +1478,7 @@ describe('combat workflow host policy', () => {
             action: {
               kind: 'exec',
               command,
-              cwd: 'C:\\Workspace\\saga2\\saga2_project',
+              cwd: SAGA2_PROJECT_ROOT,
             },
           }),
         ),
@@ -1420,10 +1490,10 @@ describe('combat workflow host policy', () => {
       directReadOnlyCommand.replace('-Context 20,20', '-Context 20,20 > result.txt'),
       directReadOnlyCommand.replace("'预警|伤害'", '$env:API_KEY'),
       directReadOnlyCommand.replace('RoomRoleSkill.cs', '*.cs'),
-      directReadOnlyCommand.replace('saga2_unity', '..\\saga2_design'),
+      directReadOnlyCommand.replace('saga2_unity', path.join('..', 'saga2_design')),
       directReadOnlyCommand.replace(
-        'Assets\\Scripts\\Hot\\Game\\Room\\Role\\RoomRoleSkill.cs',
-        '.agents\\skills\\editor-skill-editor-module\\SKILL.md',
+        path.join('Assets', 'Scripts', 'Hot', 'Game', 'Room', 'Role', 'RoomRoleSkill.cs'),
+        path.join('.agents', 'skills', 'editor-skill-editor-module', 'SKILL.md'),
       ),
       `${directFileRead}; Set-Content hacked.txt x`,
       directFileRead.replace('RoomRoleSkill.cs', '*.cs'),
@@ -1432,7 +1502,7 @@ describe('combat workflow host policy', () => {
         evaluateCombatToolExecution(
           context(options, {
             toolName: 'exec',
-            action: { kind: 'exec', command, cwd: 'C:\\Workspace\\saga2\\saga2_project' },
+            action: { kind: 'exec', command, cwd: SAGA2_PROJECT_ROOT },
           }),
         ),
       ).resolves.toMatchObject({ behavior: 'deny' });
@@ -1456,7 +1526,7 @@ describe('combat workflow host policy', () => {
           action: {
             kind: 'exec',
             command: readSkillCommand,
-            cwd: 'C:\\Workspace\\saga2\\saga2_project',
+            cwd: SAGA2_PROJECT_ROOT,
           },
         }),
       ),
@@ -1474,7 +1544,7 @@ describe('combat workflow host policy', () => {
             action: {
               kind: 'exec',
               command,
-              cwd: 'C:\\Workspace\\saga2\\saga2_project',
+              cwd: SAGA2_PROJECT_ROOT,
             },
           }),
         ),
@@ -1509,7 +1579,7 @@ describe('combat workflow host policy', () => {
             action: {
               kind: 'exec',
               command,
-              cwd: 'C:\\Workspace\\saga2\\saga2_project',
+              cwd: SAGA2_PROJECT_ROOT,
             },
           }),
         ),
@@ -1526,8 +1596,8 @@ describe('combat workflow host policy', () => {
       `${rawReadSkillCommand} | Select-Object -First 10`,
       `${rawReadSkillCommand}; Get-ChildItem`,
       `${wrappedRawReadSkillCommand}; Get-ChildItem`,
-      `Get-Content -Raw 'C:\\Workspace\\saga2\\saga2_project\\AGENTS.md'`,
-      `Get-Content -Raw 'C:\\Workspace\\saga2\\saga2_project\\saga2_unity\\Assets\\Editor\\SkillEditor\\skill_entry_model_editor.json'`,
+      `Get-Content -Raw '${SAGA2_WORKSPACE_AGENTS_PATH}'`,
+      `Get-Content -Raw '${path.join(SAGA2_UNITY_ROOT, 'Assets', 'Editor', 'SkillEditor', 'skill_entry_model_editor.json')}'`,
     ]) {
       expect(
         evaluateCombatShellCommandExecution(
@@ -1559,7 +1629,7 @@ describe('combat workflow host policy', () => {
           action: {
             kind: 'exec',
             command: lineCountCommand,
-            cwd: 'C:\\Workspace\\saga2\\saga2_project',
+            cwd: SAGA2_PROJECT_ROOT,
           },
         }),
       ),
@@ -1577,7 +1647,7 @@ describe('combat workflow host policy', () => {
             action: {
               kind: 'exec',
               command,
-              cwd: 'C:\\Workspace\\saga2\\saga2_project',
+              cwd: SAGA2_PROJECT_ROOT,
             },
           }),
         ),
@@ -1602,7 +1672,7 @@ describe('combat workflow host policy', () => {
           action: {
             kind: 'exec',
             command: countCommand,
-            cwd: 'C:\\Workspace\\saga2\\saga2_project',
+            cwd: SAGA2_PROJECT_ROOT,
           },
         }),
       ),
@@ -1620,7 +1690,7 @@ describe('combat workflow host policy', () => {
             action: {
               kind: 'exec',
               command,
-              cwd: 'C:\\Workspace\\saga2\\saga2_project',
+              cwd: SAGA2_PROJECT_ROOT,
             },
           }),
         ),
@@ -1636,7 +1706,7 @@ describe('combat workflow host policy', () => {
           toolName: 'mcp__meka-unity__unity_inspect',
           input: {
             action: 'status',
-            projectPath: 'C:\\Workspace\\saga2\\saga2_project\\saga2_unity',
+            projectPath: SAGA2_UNITY_ROOT,
           },
           action: { kind: 'mcp' },
         }),
@@ -1669,7 +1739,7 @@ describe('combat workflow host policy', () => {
           toolName: 'mcp__meka-unity__unity_inspect',
           input: {
             action: 'status',
-            projectPath: 'C:\\Workspace\\saga2\\saga2_project\\saga2_unity',
+            projectPath: SAGA2_UNITY_ROOT,
           },
           action: { kind: 'mcp' },
         }),
@@ -1681,7 +1751,7 @@ describe('combat workflow host policy', () => {
           toolName: 'mcp__meka-unity__unity_execute',
           input: {
             action: 'open',
-            projectPath: 'C:\\Workspace\\saga2\\saga2_project\\saga2_unity',
+            projectPath: SAGA2_UNITY_ROOT,
           },
           action: { kind: 'mcp' },
         }),
@@ -1704,7 +1774,7 @@ describe('combat workflow host policy', () => {
           toolName: 'mcp__meka-unity__unity_execute',
           input: {
             action: 'open',
-            projectPath: 'C:\\Workspace\\saga2\\saga2_project\\saga2_unity',
+            projectPath: SAGA2_UNITY_ROOT,
           },
           action: { kind: 'mcp' },
         }),
