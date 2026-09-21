@@ -303,11 +303,15 @@ describe('Meka copied project import', () => {
 
     const projects = (await h.handlers.get(MEKA_PROJECT_LIST)!({})) as Array<{
       id: string;
+      configUnavailable: boolean;
       roles: Array<{ id: string }>;
     }>;
 
     expect(projects.map((project) => project.id)).toEqual(['saga2', 'broken-project']);
     expect(projects[1].roles.map((role) => role.id)).toEqual(['broken-role']);
+    // The builtin project still resolves its bundled configuration; the unreadable one must be
+    // reported so the Renderer can offer removing it instead of showing a stuck project.
+    expect(projects.map((project) => project.configUnavailable)).toEqual([false, true]);
   });
 
   it('hydrates bundled roles when a copied SAGA2 project file has no role snapshots', async () => {
@@ -376,5 +380,50 @@ describe('Meka copied project import', () => {
 
     expect(created.id).not.toBe('source-project');
     expect(h.savedFile?.projectId).toBe(created.id);
+  });
+
+  it('flags a registered project whose project file disappeared as config-unavailable', async () => {
+    const root = path.join(path.parse(process.cwd()).root, 'Workspace', 'vanished-project');
+    h.projectRows = [
+      {
+        id: 'vanished-project',
+        name: 'Vanished project',
+        path: root,
+        tags: '[]',
+        is_builtin: 0,
+        sort_order: 1,
+        created_at: null,
+        updated_at: null,
+      },
+    ];
+    // `h.savedFile` stays null: the registration exists but no project-owned file can be read.
+    const projects = (await h.handlers.get(MEKA_PROJECT_LIST)!({})) as Array<{
+      id: string;
+      displayName: string;
+      configUnavailable: boolean;
+    }>;
+
+    expect(projects).toHaveLength(1);
+    expect(projects[0]).toMatchObject({
+      id: 'vanished-project',
+      displayName: 'Vanished project',
+      configUnavailable: true,
+    });
+  });
+
+  it('registers a freshly created project under the name the user sees', async () => {
+    const root = path.join(path.parse(process.cwd()).root, 'Workspace', 'brand-new-project');
+    h.ensureDefaultRole.mockResolvedValue({ id: 'default-role' });
+
+    const created = (await h.handlers.get(MEKA_PROJECT_CREATE)!(
+      {},
+      { path: root, displayName: 'Brand New Project' },
+    )) as { id: string; displayName: string };
+
+    // The generated id stays out of `meka_projects.name`: that column is the display fallback
+    // used once the project file is gone, so a deleted directory must not surface as an id.
+    expect(h.createdProject?.name).toBe('Brand New Project');
+    expect(created.id).not.toBe('Brand New Project');
+    expect(created.displayName).toBe('Brand New Project');
   });
 });

@@ -683,6 +683,11 @@ Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台。
   `formal_*` 列及索引）、`apps/desktop/drizzle/scripts/0088_bridge_meka_0_0_11_lineage.ts:286-366`（0.0.11 谱系桥接）
 - `apps/desktop/src/main/localDb/schema.ts:86`（`workspace_kind` 枚举含 `'meka'`）、`localDb/mapper.ts:396-409`（meka 身份只对 `'meka'` 绑定）
 - `apps/desktop/src/main/localDb/ipc/mekaProjects.ts`、`mekaRoles.ts`、`mekaProjectMetadata.ts`
+- 配置不可用项目的**状态投影与恢复入口**（WL-11.9）：`apps/desktop/src/shared/meka-projects.ts`
+  （`MekaProject.configUnavailable`、`mekaProjectRegistrationName`）、
+  `apps/desktop/src/main/localDb/ipc/mekaProjects.ts:220-260`（`toProject` 的 `file === null` 与
+  `fallbackForRow` 两条置位路径）、`apps/desktop/src/renderer/features/cc-agent/MekaProjectRoleEditorRoute.tsx`
+  （`projectCardSubtitle`、项目卡片「配置不可用」标识、失败分支的「移除项目注册」）
 - `apps/desktop/src/main/localDb/ipc/mekaFormal.ts:9-12`（`meka-formal:*` 四个 channel）
 - `apps/desktop/src/main/localDb/ipc/mekaSkillCatalog.ts:5`
 - `apps/desktop/src/shared/meka-formal.ts`、`apps/desktop/src/shared/meka-projects.ts`
@@ -700,6 +705,10 @@ Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台。
 - `pnpm --filter desktop exec vitest run src/main/localDb/__tests__/mapperMekaFormal.test.ts src/main/localDb/__tests__/builtinMekaSeed.test.ts`
 - `pnpm --filter desktop exec vitest run src/main/__tests__/forgeMekaResources.test.ts`
 - `pnpm --filter desktop exec vitest run src/main/localDb/__tests__/meka0011MigrationLineageBridge.test.ts`
+- 配置不可用项目的投影与移除入口（WL-11.9）：
+  `pnpm --filter desktop exec vitest run src/main/meka-projects/__tests__/mekaProjectsImport.test.ts src/renderer/features/cc-agent/__tests__/MekaProjectRoleEditorRoute.test.tsx`
+  （断言 `configUnavailable` 的两种置位路径与列表标记、失败页「移除项目注册」可达、内置项目
+  不提供移除、新建项目的注册名不落生成 id）
 - **实机项已自动化**：`pnpm desktop:session-smoke`（CDP 真实鼠标事件 + 真实模型轮次，覆盖
   WL-11.1–WL-11.8，见下）
 
@@ -733,9 +742,22 @@ Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台。
 > 角色取值也不是硬编码：`general-development` 的 `mcpProviderIds` 里出现 `meka-design`
 > 只能来自该角色清单的 `mcp[0].providerId`。
 
+**WL-11.9 「配置不可用」项目必须可识别、可移除**（不变量，2026-09-21 登记）：
+
+- 非内置项目读不到有效配置（`.meka/project.json` 缺失／不可读／非法）时，项目投影必须
+  `configUnavailable === true`。**不得**把它降级成一个字段齐全、看起来正常的项目——那会让
+  `listProjects` 的兜底分支永不执行，并把问题推迟成一个用户在界面上无法自救的死胡同
+  （见迁移总账 §6.48）。
+- 列表侧：项目卡片显示「配置不可用」标识，副标题改用注册路径（此时描述已不可信）。
+- 详情侧：失败分支必须给出原因、下一步和「移除项目注册」出口；内置项目（`isBuiltin`）
+  不提供该出口。删除仍只删注册行，`sessions.meka_project_id` 保留（WL-3.2 的历史软引用
+  语义不变），因此**不得**把“顺手清理会话引用”当成修复的一部分。
+- 注册行 `name` 只作显示兜底，必须写用户可见名称；不得写入生成的 cuid。
+
 **未自动化 / 未覆盖的实机项**：新建**自定义**项目与角色（本机 profile 只有内置 SAGA2）、
 删除项目后落入「不可用的 Meka 项目」组、正式事项（`meka-formal`）的 provider/auth/issue
-全链路（需 Jira/GitLab 凭据）。这些仍按上文「实机验证」人工执行。
+全链路（需 Jira/GitLab 凭据），以及 WL-11.9 的界面实机路径（把项目目录移走后走一遍
+「配置不可用 → 移除项目注册」）。这些仍按上文「实机验证」人工执行。
 
 > migration 编号与冻结**不单列为白名单项**：那部分是上游自己的机制（`db:validate` +
 > `migration-baseline.json` + Git 基线冻结）加上本仓工程规则，见 §7。

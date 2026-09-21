@@ -110,6 +110,16 @@ function DetailSectionHeader({
   );
 }
 
+/**
+ * Subtitle for a project card. An unreadable project has no trustworthy description, and its
+ * registered name may be an unusable identifier — the registered path is then the only thing
+ * that tells the user which directory went missing.
+ */
+function projectCardSubtitle(project: MekaProject): string | null {
+  if (project.configUnavailable) return project.path ?? project.name;
+  return project.description || project.path || null;
+}
+
 function projectDraft(project: MekaProject, file?: MekaProjectFile | null): DraftProject {
   const basic = file?.basic;
   return {
@@ -1498,6 +1508,29 @@ export function MekaProjectRoleEditorRoute() {
     });
   };
 
+  /**
+   * Exit for a registration whose configuration can no longer be read. The detail page cannot
+   * offer Save or Delete there (there is no project file to edit), so without this the project
+   * becomes permanently stuck in the list. Only the app's registration is removed — the
+   * project-owned files and the sessions created in it are untouched.
+   */
+  const removeUnavailableProject = async () => {
+    if (!selectedProject || selectedProject.isBuiltin) return;
+    const target = selectedProject;
+    const confirmed = await confirm({
+      title: t('meka.removeProjectRegistrationTitle', { name: target.displayName }),
+      description: t('meka.removeProjectRegistrationDescription'),
+      confirmText: t('meka.removeProjectRegistrationAction'),
+      cancelText: t('logic.confirm.cancel'),
+    });
+    if (!confirmed) return;
+    await run(async () => {
+      await window.electronAPI.localDb.mekaProjects.delete(target.id);
+      await reload(null);
+      toast.success(t('meka.projectRegistrationRemoved'));
+    });
+  };
+
   const resetBuiltinProject = async () => {
     if (!selectedProject?.isBuiltin || selectedProject.configSource !== 'project') return;
     const confirmed = await confirm({
@@ -1671,10 +1704,18 @@ export function MekaProjectRoleEditorRoute() {
                                 {t('meka.builtin')}
                               </span>
                             ) : null}
+                            {item.configUnavailable ? (
+                              // `--text-secondary` on this amber alpha surface falls just under
+                              // 4.5:1 in Light. Primary stays readable in both modes while the
+                              // amber fill still carries the warning signal.
+                              <span className="shrink-0 rounded-full bg-[var(--warning-bg-soft)] px-2 py-0.5 text-10 text-[var(--text-primary)]">
+                                {t('meka.configUnavailable')}
+                              </span>
+                            ) : null}
                           </span>
-                          {item.description || item.path ? (
+                          {projectCardSubtitle(item) ? (
                             <span className="line-clamp-1 text-12 leading-4 text-[var(--text-secondary)]">
-                              {item.description || item.path}
+                              {projectCardSubtitle(item)}
                             </span>
                           ) : null}
                         </span>
@@ -1738,9 +1779,35 @@ export function MekaProjectRoleEditorRoute() {
             {selectedProject.displayName}
           </h1>
         </header>
-        <div className="flex min-h-0 flex-1 items-center justify-center text-13 text-[var(--text-secondary)]">
-          {t(projectLoadFailed ? 'meka.failed' : 'meka.loading')}
-        </div>
+        {projectLoadFailed ? (
+          <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 px-6 text-center">
+            <div className="max-w-md">
+              <h2 className="text-15 font-medium text-[var(--text-primary)]">
+                {t('meka.configUnavailableTitle')}
+              </h2>
+              <p className="mt-2 text-13 leading-5 text-[var(--text-secondary)]">
+                {t('meka.configUnavailableDescription', {
+                  path: selectedProject.path ?? selectedProject.name,
+                })}
+              </p>
+            </div>
+            {!selectedProject.isBuiltin ? (
+              <button
+                type="button"
+                className={buttonClass}
+                disabled={busy}
+                onClick={() => void removeUnavailableProject()}
+              >
+                <Trash2 size={14} aria-hidden="true" />
+                {t('meka.removeProjectRegistrationAction')}
+              </button>
+            ) : null}
+          </div>
+        ) : (
+          <div className="flex min-h-0 flex-1 items-center justify-center text-13 text-[var(--text-secondary)]">
+            {t('meka.loading')}
+          </div>
+        )}
       </main>
     );
   }

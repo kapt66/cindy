@@ -30,6 +30,7 @@ const project: MekaProject = {
   tags: [],
   isBuiltin: false,
   configSource: 'project',
+  configUnavailable: false,
   sortOrder: 0,
   createdAt: 1,
   updatedAt: 1,

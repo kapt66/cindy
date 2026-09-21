@@ -784,6 +784,15 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
   尺寸、图标容器、阴影、hover、标题行、描述行与右侧进入箭头，不单独设计 Meka 卡片变体。
 - 项目卡片展示项目名称与描述/路径；内置项目在 Skill 卡片“本地”来源标识的同一位置
   显示“内置”，当前内置 SAGA2 通过项目数据的 `isBuiltin` 字段识别，不按名称硬编码。
+- 项目卡片在“内置”标识之后追加配置状态标识：项目目录或 `.meka/project.json` 已不可读时
+  显示「配置不可用」胶囊，卡片副标题改用注册路径而不是项目描述——此时描述已不可信，
+  路径才是用户识别“哪个目录不见了”的唯一线索。状态来自项目投影的 `configUnavailable`，
+  Renderer 不自行探测文件系统。
+- 配置不可用的项目进入详情页后不再落入死页面：该页给出原因与下一步（说明目录被移动或
+  删除会导致此状态、移除注册后可以重新选择目录创建），并提供「移除项目注册」按钮；
+  内置项目不提供该按钮。该按钮只移除应用内的注册行，不删除项目文件与历史会话。
+- 项目详情页在配置不可用时的兜底动作只有“移除注册”，不提供原地改路径：项目主路径的
+  原地移动仍由数据层按既有约定拒绝。
 - 项目详情复用 Skill 详情页的 72px 顶栏与“左侧导航 + 右侧内容”骨架。
 - 顶栏固定展示返回入口、项目名称、路径与当前内容对应的保存/删除操作。
 - 左栏上方固定为“项目信息”，下方为角色列表和新建角色入口。
@@ -805,7 +814,7 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
 - 单行输入和按钮使用 pill；textarea 使用 8px 内层圆角；容器使用 12px 圆角。
 - 所有颜色来自 Cindy token，未增加硬编码颜色。
 - Light/Dark 共用语义 token。
-- 四语言文案同步。
+- 五语言文案同步。
 - 移除页面结构层级的阴影，遵循 Cindy flat Surface 规则。
 
 Meka 会话侧栏不建立独立视觉规范，项目行、会话行、二级分组、缩进、hover 和悬浮
@@ -1399,6 +1408,17 @@ Cindy 和 XDMaker 在共同历史之后分别继续增加 migration。XDMaker Me
 依赖 `sessions` 的子表的 migration replay，以及历史引用保留语义。该 migration 尚未进入
 canonical 发布基线，可在本分支修正；已失败的运行会由 migration 备份自动回滚后重试。
 
+项目投影新增 `configUnavailable`：非内置项目读不到有效配置（文件缺失、不可读或非法）时为
+`true`。它就是 `MEKA_PROJECT_LOAD` 抛 `NOT_FOUND` 的同一条件；显式暴露后 Renderer 才能在
+列表标记状态、并在详情页给出可退出的恢复动作，而不是把陈旧的 `name` / `description`
+当作已加载的项目继续展示（`toProject` 的 `file === null` 与 `fallbackForRow` 两条路径都
+置位，前者对应文件缺失，后者对应读取抛错）。
+
+`meka_projects.name` 只是“项目文件读不出来时的显示兜底”，不是项目身份，也不参与任何
+匹配：项目去重按路径、角色排序按显示名。因此注册行一律写用户可见名称
+（`shared/meka-projects.ts` 的 `mekaProjectRegistrationName`），创建与保存两条写入路径共用
+同一函数，避免字段在保存后被改写回生成的 id。
+
 ### 5.3 当前方案
 
 Cindy Meka 尚未正式发布，因此本次上游同步允许重排本产品线尚未发布的临时编号，以
@@ -1784,6 +1804,9 @@ thread-context gated 的本地动态代理投影这条唯一入口，Claude 继�
 - 正式流程/普通会话分组是否覆盖用户现有会话。
 - 会话顶部角色名是否正确，点击后是否直接打开该项目下的对应角色配置。
 - 空项目、删除项目、旧版无绑定会话的侧栏表现。
+- 配置不可用的项目（目录或 `.meka/project.json` 已不可读）在列表里的「配置不可用」标识、
+  详情页的说明文案与「移除项目注册」入口，含 Light/Dark 两种模式与移除后的侧栏表现
+  （WL-11.9，见 §6.48）。
 - 项目/角色详情页的 Light/Dark、窄窗口和大量项目/角色场景。
 - 左侧 Meka 入口是否默认打开“插件”，顶部是否只显示“插件 / 技能 / 项目”；切到“技能”
   后是否使用与 Cindy 上游技能一致的推荐卡、本地分组、右侧预览和安装目标选择，仅目录、
@@ -3590,3 +3613,41 @@ Meka 开发插件链路、插件市场独立 endpoint/凭证、`edition` 运行�
 - **规则落点**：`docs/dev-rules/agent-runtime-release.md`（新增「`pi` 段的特殊契约：发布侧
   重打包」与 manifest 字段表行）、`docs/dev-rules/pi-harness.md`（发布入口与回归红线）、
   `docs/dev-rules/meka-whitelist-verification.md`（WL-6.5 五段齐备与实机验证）。
+
+### 6.48 2026-09-21 项目目录被移走后项目页卡死且无法删除（已修）
+
+- **现象**：用户报告自己添加过的一个 Meka 项目在其目录被删除后，从「Meka / 项目」点进去
+  只有“操作失败”，该项目既不能删除也不能修改，且项目卡片标题显示成一串无法辨认的乱码。
+  用户明确要求本轮只定位根因，确认根因后再修复。
+- **根因（三层叠加，任一层单独都不致命）**：
+  1. `readProjectConfigState` 对非内置项目在 `.meka/project.json` 缺失时返回
+     `{ file: null, source: 'project' }` 而**不抛错**，`toProject` 于是正常返回，并把
+     `displayName` 回退到注册行的 `name`；而新建项目写入该列的是生成的 cuid。列表里因此
+     出现一个看起来正常、名字却是乱码的项目，`listProjects` 的兜底分支与告警**根本不触发**。
+  2. 详情页的 `mekaProjectMetadata.loadProject` 对空文件抛 `NOT_FOUND`，Renderer 置
+     `projectLoadFailed` 并渲染失败分支——该分支当时只有返回箭头和一行“操作失败”。
+  3. 保存/删除按钮都长在加载成功的分支里，`saveProject` 自身还有 `!project` 前置返回，全仓
+     `mekaProjects.delete` 又只有这一个调用点。失败分支因而成为没有出口的死页面。
+- **本机实证**：`CindyMeka` userData 的 `meka_projects` 存在该脏行
+  （id `jbbacl6h1wqxkhtmdvu0w2gp`、`name` 与 id 相同、`path` 指向已不存在的
+  `C:\Workspace\ttdbl3\c3-editor`），`sessions.meka_project_id` 有 3 条指向它；
+  `docs` 侧的 `meka_roles` 另有 1 条角色行。删除路径本身完好（`mekaProjects.delete` 只删
+  注册行，`sessions.meka_project_id` 无外键），因此这是纯 UI 可达性问题，不是数据或权限问题。
+- **修法**：主进程显式投影 `configUnavailable`（`toProject` 的 `file === null` 与
+  `fallbackForRow` 两条路径），渲染层据此在卡片标记「配置不可用」并以注册路径作副标题；
+  失败分支补上原因说明与「移除项目注册」按钮（内置项目按 `isBuiltin` 排除）。删除语义不变
+  ——仍只删注册行，`sessions.meka_project_id` 按 §5.2 保留，既有会话继续投影到“不可用的
+  Meka 项目”分组，因此**没有**顺手清理会话引用。注册行的 `name` 改由
+  `mekaProjectRegistrationName` 写用户可见名称，创建与保存两条写入路径共用，避免保存后
+  回退成 id（否则修了创建侧也会被保存侧改回来）。
+- **教训**：**“读取不到配置”必须是显式状态，不能降级成一个看起来正常的对象**。静默兜底
+  让调用方的错误分支永远不执行，问题推迟到用户界面上才暴露，而且暴露成一个无法自救的死胡同。
+- **验证**：`mekaProjectsImport.test.ts`（缺失配置的投影、不可读配置的列表兜底、新建项目的
+  注册名）、`MekaProjectRoleEditorRoute.test.tsx`（列表标记、失败分支移除注册、内置项目不
+  提供移除）全部通过；`pnpm --filter desktop run typecheck` 通过。删除后的会话投影由既有
+  `mekaSessionPresentation.test.ts` 的“项目删除后进不可用组”用例继续锁定。
+- **未验证**：界面实机路径（把项目目录移走后走一遍「配置不可用 → 移除项目注册」）与
+  Light/Dark 目检均未执行；双模式实现按语义 token 落地（`--warning-bg-soft` /
+  `--text-secondary` / 既有 `buttonClass`），无新增硬编码颜色（`pnpm check:design-colors` 通过）。
+- **规则落点**：`docs/dev-rules/meka-whitelist-verification.md`（新增 WL-11.9 不变量、
+  代码锚点与自动化门禁，并把界面实机路径登记进未自动化清单）。

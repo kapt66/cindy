@@ -10,6 +10,7 @@ import type {
   MekaProjectMetadataConfigItem,
   ProjectConfigLocator,
 } from '../../../shared/meka-projects.js';
+import { mekaProjectRegistrationName } from '../../../shared/meka-projects.js';
 import { isIpcError } from '../../../shared/ipc-errors.js';
 import { getRipgrepBinaryPath } from '../../maker-host/runtime-configs.js';
 import {
@@ -127,7 +128,10 @@ async function saveProject(input: unknown): Promise<MekaProjectFile> {
     }
     const saved = await saveProjectConfig(locator, body.project as MekaProjectFile);
     await getDbClient().exec('UPDATE meka_projects SET name = ?, updated_at = ? WHERE id = ?', [
-      saved.basic.name ?? row.name,
+      // Keep the registration name aligned with the create path: this column is the display
+      // fallback used when the project file later becomes unreadable, so it must stay the
+      // user-visible name instead of drifting back to the generated project id.
+      mekaProjectRegistrationName(saved, row.name),
       Date.now(),
       saved.projectId,
     ]);

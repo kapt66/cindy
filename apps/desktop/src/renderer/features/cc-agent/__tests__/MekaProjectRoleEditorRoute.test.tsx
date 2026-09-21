@@ -67,6 +67,7 @@ function projectSummary(roles: MekaProject['roles'] = []): MekaProject {
     tags: [],
     isBuiltin: false,
     configSource: 'project',
+    configUnavailable: false,
     sortOrder: 0,
     createdAt: null,
     updatedAt: null,
@@ -98,8 +99,14 @@ function installApi(
     metadata?: MekaProjectMetadata[];
     catalog?: MekaSkillCatalogEntry[];
     inspectFile?: MekaProjectFile | null;
+    /** Mirrors Main, where both reads resolve through the same project file lookup. */
+    projectFileMissing?: boolean;
   } = {},
 ) {
+  const projectFileRead = () => {
+    if (!options.projectFileMissing) return undefined;
+    throw new Error('[NOT_FOUND] project.json not found');
+  };
   let projects = initialProjects;
   const showOpenDirectoryDialog = vi.fn(
     async (): Promise<{ canceled: boolean; path?: string }> => ({
@@ -171,8 +178,8 @@ function installApi(
         ),
       },
       mekaProjectMetadata: {
-        loadProject: vi.fn(async (id: string) => projectFile(id)),
-        list: vi.fn(async () => options.metadata ?? []),
+        loadProject: vi.fn(async (id: string) => projectFileRead() ?? projectFile(id)),
+        list: vi.fn(async () => projectFileRead() ?? options.metadata ?? []),
         saveProject,
         discover: vi.fn(async () => []),
         gitRemote: vi.fn(async () => null),
@@ -191,6 +198,7 @@ function installApi(
     saveProject,
     updateRole: api.localDb.mekaRoles.update,
     resetBuiltin,
+    deleteProject: api.localDb.mekaProjects.delete,
     showOpenDirectoryDialog,
     showOpenDirectory,
   };
@@ -591,5 +599,55 @@ describe('Meka project and role create states', () => {
         }),
       }),
     );
+  });
+});
+
+describe('Meka project whose configuration is unavailable', () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it('marks the project in the list and identifies it by its registered path', async () => {
+    installApi([
+      { ...projectSummary(), configUnavailable: true, path: 'C:/workspace/moved-away' },
+    ]);
+    renderRoute();
+
+    await screen.findByText('meka.configUnavailable');
+    expect(screen.getByText('C:/workspace/moved-away')).toBeTruthy();
+  });
+
+  it('explains the failure and removes the registration from the stuck detail page', async () => {
+    const api = installApi([{ ...projectSummary(), configUnavailable: true }], {
+      projectFileMissing: true,
+    });
+    renderRoute('/?projectId=project-a');
+
+    await screen.findByText('meka.configUnavailableTitle');
+    expect(screen.getByText('meka.configUnavailableDescription')).toBeTruthy();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'meka.removeProjectRegistrationAction' }),
+    );
+
+    await waitFor(() => expect(api.deleteProject).toHaveBeenCalledWith('project-a'));
+  });
+
+  it('keeps a built-in project read-only instead of offering removal', async () => {
+    installApi([
+      {
+        ...projectSummary(),
+        isBuiltin: true,
+        configSource: 'builtin',
+        configUnavailable: true,
+      },
+    ], { projectFileMissing: true });
+    renderRoute('/?projectId=project-a');
+
+    await screen.findByText('meka.configUnavailableTitle');
+    expect(
+      screen.queryByRole('button', { name: 'meka.removeProjectRegistrationAction' }),
+    ).toBeNull();
   });
 });

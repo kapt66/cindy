@@ -10,6 +10,7 @@ import type {
   MekaRole,
   ProjectConfigLocator,
 } from '../../../shared/meka-projects.js';
+import { mekaProjectRegistrationName } from '../../../shared/meka-projects.js';
 import { isIpcError } from '../../../shared/ipc-errors.js';
 import {
   cloneMekaRoleManifestForProject,
@@ -240,6 +241,10 @@ async function toProject(row: ProjectRow): Promise<MekaProject> {
     tags: parseTags(row.tags),
     isBuiltin: row.is_builtin === 1,
     configSource: state.source,
+    // `readProjectConfigState` degrades to a null file when the project-owned config is gone;
+    // that is the same condition under which MEKA_PROJECT_LOAD fails, so surface it explicitly
+    // instead of letting the row's stale name/description pose as a loaded project.
+    configUnavailable: file === null,
     sortOrder: row.sort_order,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -266,6 +271,9 @@ function fallbackProject(
     tags: parseTags(row.tags),
     isBuiltin: row.is_builtin === 1,
     configSource: row.is_builtin === 1 ? 'builtin' : 'project',
+    // Reached only when reading the project configuration threw; the registration is kept so
+    // database-owned roles and existing sessions stay addressable, but it is not editable.
+    configUnavailable: true,
     sortOrder: row.sort_order,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -430,7 +438,7 @@ async function createProject(input: unknown): Promise<MekaProject> {
     }
     const row: ProjectRow = {
       id,
-      name: file.basic.name ?? id,
+      name: mekaProjectRegistrationName(file, id),
       path: root,
       tags: JSON.stringify(projectTags),
       is_builtin: 0,

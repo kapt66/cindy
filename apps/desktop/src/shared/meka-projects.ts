@@ -222,6 +222,13 @@ export interface MekaProject {
   tags: string[];
   isBuiltin: boolean;
   configSource: MekaProjectConfigSource;
+  /**
+   * No usable configuration could be loaded for this project: the directory or its
+   * `.meka/project.json` is gone, unreadable or invalid. The registration stays listed so the
+   * sessions created in it remain reachable, but its name/path are no longer trustworthy —
+   * callers must offer removing the registration rather than presenting an editable project.
+   */
+  configUnavailable: boolean;
   sortOrder: number;
   createdAt: number | null;
   updatedAt: number | null;
@@ -282,6 +289,7 @@ export const BUILTIN_MEKA_PROJECTS: readonly MekaProject[] = [
     tags: ['builtin', 'saga2'],
     isBuiltin: true,
     configSource: 'builtin',
+    configUnavailable: false,
     sortOrder: 0,
     createdAt: null,
     updatedAt: null,
@@ -377,6 +385,16 @@ export function seedBuiltinMekaProjects(db: Database.Database, now = Date.now())
       deleteRetiredBuiltinRole.run(retiredRoleId);
     }
   })();
+}
+
+/**
+ * The name stored in `meka_projects.name`. It is read back only as the display fallback used
+ * when the portable `.meka/project.json` can no longer be loaded, so it must carry a
+ * user-recognizable name — never the generated id a freshly created project keeps in
+ * `basic.name`, which would surface as an unidentifiable card once its directory disappears.
+ */
+export function mekaProjectRegistrationName(file: MekaProjectFile, fallback: string): string {
+  return file.basic.displayName.trim() || fallback;
 }
 
 export function parseMekaEditableMetadata(input: unknown): MekaProjectMetadataEditable | null {
