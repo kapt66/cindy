@@ -4,7 +4,7 @@ import {
   declareMekaRuntimeMcpAgents,
   type MekaRuntimeMcpAgentDeclaration,
 } from '../mcp-integrations/meka-runtime-mcp.js';
-import { MEKA_AGENT_CAPABILITIES, MEKA_AGENT_KINDS } from './agentMatrix.js';
+import { MEKA_AGENT_CAPABILITIES, MEKA_AGENT_KINDS } from './mekaAgentMatrix.js';
 
 /**
  * 三个 `AgentKind` 各自实际持有的 provider 数组（maker-host `_mcpProviders` 的投影）。
@@ -68,3 +68,4 @@ export function registerMekaCapabilities(
   declareMekaRuntimeMcpAgents(declarations);
   return outcomes;
 }
+

@@ -30,7 +30,7 @@ import {
   prepareMekaRuntimeMcp,
   resetMekaRuntimeMcpRegistryForTests,
 } from '../../mcp-integrations/meka-runtime-mcp.js';
-import { registerMekaCapabilities } from '../mcpRegistration.js';
+import { registerMekaCapabilities } from '../mekaMcpRegistration.js';
 
 /**
  * 形态 B（进程级 Meka 能力注册）的契约测试。
@@ -241,22 +241,45 @@ describe('declareMekaRuntimeMcpAgents 完整性断言', () => {
  * maker-host 侧的接线契约：注册必须由**完整 registry**驱动。源码级断言是为了拦住
  * 「又改回手工枚举数组」——那是 Pi 静默缺失的成因，光靠行为测试抓不到回归（漏传
  * claude/codex 之外的数组时行为测试仍然全绿）。
+ *
+ * 断言的写法刻意避开精确字面量（原版 `toContain('registerMekaCapabilities({ get: (agentKind) => _mcpProviders[agentKind] })')`
+ * 只要调用点换行、加一个逗号或改个局部名就误红，而**真正的回归**——枚举数组——它并不比
+ * 正则更早发现）：注释先剥掉，再把空白归一化，然后匹配调用形状；`_mcpProviders` 的三个
+ * 赋值全部要求出现在注册点之前，而不是只查 `pi` 那一行。
+ *
+ * 它仍然是**源码级、非行为级**判据（WL-16 已登记）；行为面由上面的
+ * `registerMekaCapabilities` 单测覆盖。
  */
 describe('maker-host 接线契约（源码级）', () => {
   const hostSource = readFileSync(resolve(process.cwd(), 'src/main/maker-host/index.ts'), 'utf8');
+  /** 去掉块注释与整行 `//` 注释：注释里出现 `registerMekaRuntimeMcpArrays(` 不算调用。 */
+  const hostCode = hostSource
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^[ \t]*\/\/.*$/gm, '')
+    .replace(/\s+/g, ' ');
 
   it('走 registerMekaCapabilities + 完整 registry，而不是手工枚举数组', () => {
-    expect(hostSource).toContain(
-      'registerMekaCapabilities({ get: (agentKind) => _mcpProviders[agentKind] })',
+    expect(hostCode).toMatch(
+      /registerMekaCapabilities\(\{ ?get: ?\(agentKind\) => ?_mcpProviders\[agentKind\],? ?\}\)/,
     );
-    expect(hostSource).not.toContain('registerMekaRuntimeMcpArrays');
+    // 低层原语只认数组、不认归属（少传一个发现不了）——生产路径不得出现它的调用。
+    expect(hostCode).not.toMatch(/\bregisterMekaRuntimeMcpArrays ?\(/);
   });
 
   it('注册发生在三个 _mcpProviders[*] 赋值之后', () => {
-    const piAssignment = hostSource.indexOf('_mcpProviders.pi = piMcpProviders;');
+    // 必须定位**调用**而不是标识符：文件顶部有 `import { registerMekaCapabilities }`，
+    // 用裸标识符定位会命中 import 段，让「顺序」断言退化成恒真（本用例加严时实测踩到）。
     const registration = hostSource.indexOf('registerMekaCapabilities({');
-
-    expect(piAssignment).toBeGreaterThan(-1);
-    expect(registration).toBeGreaterThan(piAssignment);
+    expect(registration).toBeGreaterThan(-1);
+    for (const assignment of [
+      "_mcpProviders['claude-code'] =",
+      '_mcpProviders.codex =',
+      '_mcpProviders.pi =',
+    ]) {
+      const index = hostSource.indexOf(assignment);
+      expect(index, `missing assignment: ${assignment}`).toBeGreaterThan(-1);
+      expect(registration, `registration must follow: ${assignment}`).toBeGreaterThan(index);
+    }
   });
 });
+

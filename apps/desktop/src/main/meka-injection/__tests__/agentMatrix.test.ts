@@ -5,7 +5,7 @@ import {
   MEKA_AGENT_CAPABILITIES,
   MEKA_AGENT_KINDS,
   mekaRuntimeMcpAgentKinds,
-} from '../agentMatrix.js';
+} from '../mekaAgentMatrix.js';
 
 /**
  * 穷尽性第二道锁：`Record<AgentKind, true>` 让 maker-core 新增 `AgentKind` 时**这里
@@ -26,6 +26,12 @@ describe('Meka agent 能力矩阵', () => {
 
   it('键集合不可变（矩阵是真相源，不允许运行期就地改写）', () => {
     expect(Object.isFrozen(MEKA_AGENT_KINDS)).toBe(true);
+    // 只冻结数组容器是不够的：矩阵对象与每个能力条目都必须一并冻结，否则
+    // `as`／`any` 就能在运行期改写矩阵，让注册期断言与矩阵脱钩。
+    expect(Object.isFrozen(MEKA_AGENT_CAPABILITIES)).toBe(true);
+    for (const agentKind of MEKA_AGENT_KINDS) {
+      expect(Object.isFrozen(MEKA_AGENT_CAPABILITIES[agentKind])).toBe(true);
+    }
   });
 
   it('能力值与裁决逐项一致（Pi 两列都是 D1 的有意 false）', () => {
@@ -43,3 +49,4 @@ describe('Meka agent 能力矩阵', () => {
     expect(mekaRuntimeMcpAgentKinds()).not.toContain('pi');
   });
 });
+

@@ -14,7 +14,7 @@ import path from 'node:path';
 
 import type { MekaRuntimeConfig } from '../meka-projects/runtimeConfig.js';
 import type { MekaSkillSnapshot } from '../meka-projects/skillSnapshot.js';
-import type { CombatSkillIdParseResult, MekaCombatServerWorkerTarget } from './types.js';
+import type { CombatSkillIdParseResult, MekaCombatServerWorkerTarget } from './mekaInjectionTypes.js';
 
 export function removeCombatStartupGate(prompt: string): string {
   return prompt.replace(
@@ -214,3 +214,4 @@ export function combatSkillIdVendorPatchFromUserPrompt(
     mekaCombatTargetSkillIds: undefined,
   };
 }
+

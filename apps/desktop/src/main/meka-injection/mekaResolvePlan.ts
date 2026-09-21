@@ -28,7 +28,7 @@ import {
 } from '../meka-projects/skillSnapshot.js';
 import { prepareMekaRuntimeMcp } from '../mcp-integrations/meka-runtime-mcp.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
-import { emptyMekaRuntimeResult } from './applyPlan.js';
+import { emptyMekaRuntimeResult } from './mekaApplyPlan.js';
 import {
   COMBAT_CONTROLLER_SKILL_MARKER,
   COMBAT_EXECUTION_AUTHORIZATION_PROMPT,
@@ -40,13 +40,13 @@ import {
   combatTargetPrompt,
   removeCombatStartupGate,
   roleContextPrompt,
-} from './combatPrompts.js';
+} from './mekaCombatPrompts.js';
 import {
   createMekaPromptSegment,
   type AppliedMekaRuntimeConfig,
+  type ApplyMekaRuntimeConfigDeps,
   type CombatFollowupRuntimeContext,
   type MekaCombatServerWorkerTarget,
-  type MekaInjectionDeps,
   type MekaInjectionInput,
   type MekaInjectionPlan,
   type MekaInlineMcpConfig,
@@ -54,13 +54,16 @@ import {
   type MekaPromptSegment,
   type MekaPromptSegmentId,
   type MekaSessionBindingPatch,
-} from './types.js';
+} from './mekaInjectionTypes.js';
 
-/** deps 里技能快照物化函数的切面（与 `ApplyMekaRuntimeConfigDeps` 同一契约）。 */
-type MaterializeSkillSnapshot = (
-  sessionId: string,
-  skills: readonly MekaRuntimeConfig['skills'][number][],
-) => Promise<MekaSkillSnapshot | null>;
+/**
+ * 第 2 层解析阶段**必填**的快照物化函数：从 deps 契约上派生，不再手抄一份同形签名
+ * （同形签名会在 deps 改动时静默脱钩）。`deps.materializeSkillSnapshot` 是可选注入点，
+ * 缺省时由 `resolveMekaInjection` 填入生产实现。
+ */
+type MaterializeSkillSnapshot = NonNullable<
+  ApplyMekaRuntimeConfigDeps['materializeSkillSnapshot']
+>;
 
 /** 顺序敏感的一组 vendorOptions patch：落地按同顺序 spread，键插入顺序因此不变。 */
 type VendorOptionPatches = Array<Record<string, unknown>>;
@@ -217,7 +220,7 @@ function mergePlatformMcp(current: readonly MekaRoleMcpEntry[]): MekaRoleMcpEntr
  * - 返回 null = 现状的提前 return：既不解析、也不写路由键、也不注入该段。
  */
 async function resolveCombatServerTargetInjection(input: {
-  deps: MekaInjectionDeps;
+  deps: ApplyMekaRuntimeConfigDeps;
   projectId: string;
   vendorOptions: Record<string, unknown>;
 }): Promise<{ target: MekaCombatServerWorkerTarget | null; patch: Record<string, unknown> } | null> {
@@ -282,7 +285,7 @@ function pushCombatTargetPatches(input: {
  */
 async function resolveFrozenInjection(input: {
   opts: MakerSessionCreateOpts;
-  deps: MekaInjectionDeps;
+  deps: ApplyMekaRuntimeConfigDeps;
   sessionId: string;
   currentUserPrompt: unknown;
   existingVendorOptions: Record<string, unknown>;
@@ -384,7 +387,7 @@ async function resolveFrozenInjection(input: {
  */
 async function resolveBootstrapInjection(input: {
   opts: MakerSessionCreateOpts;
-  deps: MekaInjectionDeps;
+  deps: ApplyMekaRuntimeConfigDeps;
   sessionId: string;
   currentUserPrompt: unknown;
   materialize: MaterializeSkillSnapshot;
@@ -691,3 +694,5 @@ export async function prepareCombatFollowupRuntimeContext(input: {
     promptSection: sections.join('\n\n'),
   };
 }
+
+

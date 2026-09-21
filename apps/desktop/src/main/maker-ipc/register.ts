@@ -18856,3 +18856,4 @@ function broadcastNewMakerDraftChanged(): void {
     tapWindowBroadcast(MAKER_PUSH.NEW_MAKER_DRAFT_CHANGED, getRemoteNewMakerDefaultsByVendor());
   }, 0);
 }
+

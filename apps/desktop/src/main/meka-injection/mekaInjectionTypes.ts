@@ -50,14 +50,13 @@ export interface AppliedMekaRuntimeConfig {
   combatEnvironmentReady: boolean | null;
 }
 
-/** 注入层依赖集合（与 `ApplyMekaRuntimeConfigDeps` 同一契约，保留历史名字给调用方）。 */
-export type MekaInjectionDeps = ApplyMekaRuntimeConfigDeps;
-
-/** 落地结果（与历史 `AppliedMekaRuntimeConfig` 同一切面）。 */
-export type MekaInjectionResult = AppliedMekaRuntimeConfig;
-
-/** 形态 C（每轮续聊）的解析结果（与历史 `CombatFollowupRuntimeContext` 同一切面）。 */
-export type MekaTurnInjection = CombatFollowupRuntimeContext;
+/*
+ * 依赖集合与落地结果**只有一个名字**：`ApplyMekaRuntimeConfigDeps` /
+ * `AppliedMekaRuntimeConfig`。重构期曾并列 `MekaInjectionDeps` / `MekaInjectionResult` /
+ * `MekaTurnInjection` 三个同义别名，结果是真名被架空、别名只在本层内部流通 —— 与本层
+ * 「同一个东西不给第二个名字」（见 `docs/dev-rules/meka-injection-layer.md` §2）冲突，
+ * 已删除；形态 C 的返回类型继续用 `CombatFollowupRuntimeContext`。
+ */
 
 /** 需要回填到 create opts 的会话绑定（持久化 hydration / 遗留角色回填）。 */
 export interface MekaSessionBindingPatch {
@@ -162,7 +161,7 @@ export interface MekaInjectionInput {
   /** 会话 id。生产上的唯一来源是 `opts.id`（见 `applyMekaRuntimeConfig`）；空串 = 无 id。 */
   sessionId: string;
   opts: MakerSessionCreateOpts;
-  deps?: MekaInjectionDeps;
+  deps?: ApplyMekaRuntimeConfigDeps;
 }
 
 export type CombatSkillIdParseResult =
@@ -174,3 +173,4 @@ export interface CombatFollowupRuntimeContext {
   vendorOptionsPatch: Record<string, unknown>;
   promptSection: string | null;
 }
+

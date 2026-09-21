@@ -17,10 +17,9 @@ import type { MakerSessionCreateOpts } from '../maker-ipc/sessionRequest.js';
 import type {
   AppliedMekaRuntimeConfig,
   MekaInjectionPlan,
-  MekaInjectionResult,
   MekaPromptSegment,
   MekaPromptSegmentId,
-} from './types.js';
+} from './mekaInjectionTypes.js';
 
 /** 非 Meka / 不适用的空结果（与重构前 `emptyResult()` 逐字段一致）。 */
 export function emptyMekaRuntimeResult(): AppliedMekaRuntimeConfig {
@@ -62,7 +61,7 @@ export function renderMekaPromptSegments(
   // 为什么必须钉住：`order` 并列时 `sort` 是稳定的（保持 push 次序 = 后者更靠后），
   // 而重构前的 prepend 语义是「后 prepend 者更靠前」—— 两者方向相反。于是同一批里
   // 出现重复 id 时，整组段的最终次序会被静默反转，且没有任何断言能看出来。
-  // 现状下每个 id 每条路径最多 push 一次（见 `resolvePlan.ts`），所以这里是纯防线。
+  // 现状下每个 id 每条路径最多 push 一次（见 `mekaResolvePlan.ts`），所以这里是纯防线。
   const seenSegmentIds = new Set<MekaPromptSegmentId>();
   for (const segment of segments) {
     if (seenSegmentIds.has(segment.id)) {
@@ -83,7 +82,7 @@ export function renderMekaPromptSegments(
 export function applyMekaInjection(
   opts: MakerSessionCreateOpts,
   plan: MekaInjectionPlan,
-): MekaInjectionResult {
+): AppliedMekaRuntimeConfig {
   if (plan.sessionBindingPatch) Object.assign(opts, plan.sessionBindingPatch);
 
   const writeVendorOptions = (): void => {
@@ -124,3 +123,4 @@ export function applyMekaInjection(
   }
   return plan.result;
 }
+

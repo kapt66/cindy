@@ -263,7 +263,7 @@ import {
   setMekaRuntimeHighRiskAuthorizer,
   setMekaRuntimeRouterLoginPrompter,
 } from '../mcp-integrations/meka-runtime-mcp.js';
-import { registerMekaCapabilities } from '../meka-injection/mcpRegistration.js';
+import { registerMekaCapabilities } from '../meka-injection/mekaMcpRegistration.js';
 import { requestMekaRouterLogin } from '../meka-settings/routerLoginWindow.js';
 import {
   ESSENTIAL_PLUGIN_IDS,
@@ -3314,3 +3314,5 @@ export async function shutdownLspServerPool(): Promise<void> {
 
 // re-exports for IPC layer
 export { desktopClaudeAuthAdapter, desktopCodexAuthAdapter };
+
+

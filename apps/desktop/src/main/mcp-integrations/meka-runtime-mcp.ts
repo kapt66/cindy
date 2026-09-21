@@ -27,7 +27,7 @@ import {
   consumeTrustedCombatServerCapabilityReport,
   resetCombatServerCapabilityFlow,
 } from '../meka-projects/combatServerCapabilityState.js';
-import { MEKA_AGENT_CAPABILITIES, MEKA_AGENT_KINDS } from '../meka-injection/agentMatrix.js';
+import { MEKA_AGENT_CAPABILITIES, MEKA_AGENT_KINDS } from '../meka-injection/mekaAgentMatrix.js';
 
 const ROUTER_PROVIDER_IDS = new Set(['mcp-router', 'project-agent']);
 const MEKA_DESIGN_PROVIDER_ID = 'meka-design';
@@ -1406,7 +1406,7 @@ export interface MekaRuntimeMcpAgentDeclaration {
 
 /**
  * 低层原语：把 Meka 运行时 provider 注入传入的数组（原地 push，数组顺序不变）。
- * **不要在生产路径直接调**（生产走 `meka-injection/mcpRegistration.ts` 的
+ * **不要在生产路径直接调**（生产走 `meka-injection/mekaMcpRegistration.ts` 的
  * `registerMekaCapabilities`）——本函数只认数组、不认归属，调用方少传一个数组时
  * 它是发现不了任何问题的，这正是 Pi 静默缺失的由来。
  */
@@ -1511,3 +1511,5 @@ export function resetMekaRuntimeMcpRegistryForTests(): void {
   authorizeHighRiskCall = null;
   promptRouterLogin = null;
 }
+
+

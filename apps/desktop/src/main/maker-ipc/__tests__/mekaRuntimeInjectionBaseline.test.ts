@@ -995,4 +995,115 @@ describe('meka runtime injection baseline', () => {
       'mekaCombatServerWorkerAgent',
     ]);
   });
+
+  // ————————————————————————————————————————————————————————————————
+  // 第 15 组（D2.3）：解析／物化抛错时的写入语义 —— **原子**，不是重构前的增量写。
+  //
+  // 重构前是逐阶段就地写 opts：持久绑定一读到就写、resume 短路的 vendorOptions 补丁
+  // 与早段 prompt 也在快照物化**之前**写，因此中途抛错时 opts 会留下"半个注入结果"。
+  // 显式分层后所有 opts 写入都收敛到 `applyMekaInjection`，只有解析与物化全部成功才
+  // 落地 ⇒ 抛错时 opts 与调用前逐字节一致。这是本层**有意**的语义变化（§7 D2.3），
+  // 不是遗漏：恢复增量写等于把 I/O 与写入重新交织回去，会推翻解析／落地分层本身。
+  //
+  // 错误码与文案、以及返回值切面仍与重构前一致（抛错路径不返回任何 result）。
+  // ————————————————————————————————————————————————————————————————
+  it.each([
+    {
+      name: 'bootstrap runtime-config resolution throws (pre-refactor wrote the persisted binding first)',
+      message: '[INVALID_PARAMS] Meka project/role configuration failed: runtime boom',
+      buildOpts: () =>
+        ({
+          id: SESSION_ID,
+          agentKind: 'codex',
+          model: 'gpt-test',
+          workingDir: WORKING_DIR,
+          userPrompt: USER_PROMPT,
+        }) as MakerSessionCreateOpts,
+      buildDeps: (): ApplyDeps => ({
+        readPersistedSession: async () => ({
+          workspaceKind: 'meka',
+          mekaProjectId: 'saga2',
+          mekaRoleId: 'general-development',
+          // `mekaRole` 是**遗留的四角色列**（planner/artist/programmer/tester），
+          // 与 `mekaRoleId`（今天的角色 id）不是同一个东西。
+          mekaRole: 'programmer',
+        }),
+        resolveRuntimeConfig: async () => {
+          throw new Error('runtime boom');
+        },
+      }),
+      // 重构前这三个键会被写进 opts（原实现读到持久行即 `opts.mekaProjectId = …`）。
+      absentKeys: ['workspaceKind', 'mekaProjectId', 'mekaRoleId', 'mekaRole'],
+    },
+    {
+      name: 'bootstrap snapshot materialization throws',
+      message: '[INVALID_PARAMS] Meka native Skill snapshot failed: snapshot boom',
+      buildOpts: () =>
+        baseOpts({ mekaRoleId: 'combat-development', userPrompt: COMBAT_USER_PROMPT_WITH_ID }),
+      buildDeps: (): ApplyDeps => ({
+        resolveRuntimeConfig: async () => combatRuntime(),
+        materializeSkillSnapshot: async () => {
+          throw new Error('snapshot boom');
+        },
+      }),
+      absentKeys: [],
+    },
+    {
+      name: 'frozen short-circuit snapshot materialization throws (pre-refactor wrote patches and prompts first)',
+      message: '[INVALID_PARAMS] Meka native Skill snapshot failed: snapshot boom',
+      buildOpts: () =>
+        baseOpts({
+          mekaRoleId: 'combat-development',
+          userPrompt: COMBAT_USER_PROMPT_WITH_ID,
+          vendorOptions: {
+            source: 'meka',
+            mekaRuntimeResolved: true,
+            mekaWorkflow: 'saga2-combat-development-v1',
+            mekaCombatExecutionMode: 'autonomous-user-request',
+            mekaCombatServerCapabilityStatus: 'unchecked',
+          },
+        }),
+      buildDeps: (): ApplyDeps => ({
+        materializeSkillSnapshot: async () => {
+          throw new Error('snapshot boom');
+        },
+        resolveCombatServerTarget: async () => SERVER_TARGET,
+      }),
+      // 重构前这条路径在物化**之前**已写：vendorOptions 的技能 ID 补丁、exec-mode 补丁，
+      // 以及 TARGET / PROJECT_PATHS / SERVER_TARGET 三段 prompt。
+      absentKeys: [],
+      assertExtra: (opts: MakerSessionCreateOpts) => {
+        expect(opts.userPrompt).toBe(COMBAT_USER_PROMPT_WITH_ID);
+        expect(opts.vendorOptions).not.toHaveProperty('mekaCombatTargetSkillId');
+      },
+    },
+  ])(
+    'leaves create opts untouched when Meka injection throws ($name)',
+    async ({ buildOpts, buildDeps, message, absentKeys, assertExtra }) => {
+      const opts = buildOpts();
+      const keysBefore = Object.keys(opts);
+      const vendorOptionsBefore = opts.vendorOptions;
+      const vendorOptionsKeysBefore = Object.keys(opts.vendorOptions ?? {});
+      const optsJsonBefore = JSON.stringify(opts);
+      const deps = buildDeps();
+
+      const error = (await applyMekaRuntimeConfig(opts, deps).catch(
+        (thrown: unknown) => thrown,
+      )) as Error & { code?: unknown };
+
+      expect(error).toBeInstanceOf(Error);
+      expect(error.code).toBe('INVALID_PARAMS');
+      expect(error.message).toBe(message);
+      // D2.3：抛错时零写入 —— 新增键为空、键序不变、vendorOptions 保持对象引用、
+      // 调用方原始 prompt 未被追加任何注入段。
+      expect(Object.keys(opts)).toEqual(keysBefore);
+      expect(JSON.stringify(opts)).toBe(optsJsonBefore);
+      expect(opts.vendorOptions).toBe(vendorOptionsBefore);
+      expect(Object.keys(opts.vendorOptions ?? {})).toEqual(vendorOptionsKeysBefore);
+      for (const key of absentKeys) {
+        expect(Object.prototype.hasOwnProperty.call(opts, key)).toBe(false);
+      }
+      assertExtra?.(opts);
+    },
+  );
 });

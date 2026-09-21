@@ -70,7 +70,7 @@ function baseOpts(overrides: Partial<MakerSessionCreateOpts> = {}): MakerSession
 
 /**
  * 从 `workingDir` 推导 SAGA2 项目路径，规则与实现
- * （`meka-injection/combatPrompts.ts` 的 `combatProjectPathsPrompt`）完全一致：
+ * （`meka-injection/mekaCombatPrompts.ts` 的 `combatProjectPathsPrompt`）完全一致：
  *
  * - `projectRoot` / `unityClientRoot` 用 `path.resolve` / `path.join` 推导，前缀是当前
  *   平台的路径分隔符（Windows `\`、Linux `/`），因此断言里不能写死任一种字面量。
@@ -952,3 +952,4 @@ describe('applyMekaRuntimeConfig', () => {
     expect(opts.vendorOptions).toBeUndefined();
   });
 });
+
