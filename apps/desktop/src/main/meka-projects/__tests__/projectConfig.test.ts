@@ -89,7 +89,10 @@ describe('Meka project.json boundary', () => {
 
     expect(loaded).toMatchObject({
       projectId: 'saga2',
-      basic: { displayName: 'SAGA2', workflowType: 'jira' },
+      // The bundled baseline ships without a formal workflow: `workflowType` is the source of
+      // truth and `formalWorkflowEnabled` is derived from it by normalizeMekaProjectFile, so
+      // `none` here also means the project has no formal-workflow entry.
+      basic: { displayName: 'SAGA2', workflowType: 'none', formalWorkflowEnabled: false },
     });
     expect(loaded?.metadata.length).toBeGreaterThan(30);
     await saveProjectConfig(locator, {

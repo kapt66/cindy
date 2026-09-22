@@ -6,11 +6,11 @@
     "displayName": "SAGA2",
     "description": "SAGA2 项目",
     "path": "saga2",
-    "formalWorkflowEnabled": true,
+    "formalWorkflowEnabled": false,
     "jiraProjectKey": "SAGA",
     "disciplines": ["通用", "程序", "策划", "美术", "QA"],
     "domains": ["治理", "战斗", "关卡", "系统", "数值", "数据", "IP", "工程基建"],
-    "workflowType": "jira"
+    "workflowType": "none"
   },
   "metadata": [
     {

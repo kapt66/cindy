@@ -211,6 +211,11 @@ P4 项目根、插件面板呈现方式等 Meka 专属配置；这些配置落�
 - **自动化门禁**：`pnpm --filter desktop exec vitest run src/renderer/features/cc-agent/__tests__/mekaSessionPresentation.test.ts`（6 条：正式/普通分组、无会话项目可见、无正式流程时扁平、项目删除后进「不可用」组、旧版会话可见且置顶在前、会话头只显示角色名）；**实机项已自动化**：`pnpm desktop:session-smoke` 的 `WL-3.2` 用真实鼠标事件展开 Meka 段与项目行，断言项目行可见、hover 出的项目作用域入口存在且标签带项目名（`在 <项目> 中新建正式流程对话` / `在 <项目> 中新建普通对话`）
 - **实机验证**：新建项目（无会话也应显示）→ 配 Jira Key/GitLab URL 并启用正式流程 → 出现「正式 / 普通」子分组；删除项目后其会话仍在「不可用的 Meka 项目」下
 - **执行记录**（2026-09-14）：`pnpm desktop:session-smoke` 9/9 PASS，`WL-3.2` 证据 = `项目=SAGA2；新建入口=["在 SAGA2 中新建正式流程对话","在 SAGA2 中新建普通对话"]`
+- **基线变更（2026-09-22）**：内置 SAGA2 的 `workflowType` 由 `jira` 改为 `none`（`formalWorkflowEnabled` 随之由派生逻辑变为 `false`），因此**内置基线下 SAGA2 不再有正式流程**：侧栏项目行不再出现「正式流程 / 普通对话」子分组，新建入口只剩「在 SAGA2 中新建普通对话」。
+  - 上一条 2026-09-14 的实机证据是**改动前**的事实，已在括号内保留；`WL-3.2` 的**不变量本身未变**（分组/入口仍由 `formalWorkflowEnabled` + `workflowType` 决定），变的是内置项目取到的值。
+  - 自动化门禁 `mekaSessionPresentation.test.ts` 使用自带 fixture（`jiraProjectKey: 'APP'`），**不读**内置 SAGA2 配置，因此仍覆盖「启用正式流程 → 分两组」与「未启用 → 扁平」两侧，无需改动。
+  - `pnpm desktop:session-smoke` 的 `WL-3.2` 只断言「至少存在一个项目作用域入口」，故不会因该变更变红；但它记录的入口清单会收敛为只剩普通对话，重跑时需按新证据更新。
+  - **仅影响内置基线**：若用户已在 `<P4 根>/.meka/project.json` 保存过 SAGA2 项目配置，该文件仍优先（`readProjectConfigState` 的 project 源），其 `workflowType` 不会被本次改动覆盖，需用户显式保存或「重置项目」才会跟随基线。
 
 #### WL-3.3 段头、折叠与管理按钮
 

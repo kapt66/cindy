@@ -495,7 +495,12 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
 - 项目配置文本框统一使用 Cindy Settings 输入 token；静止状态只显示普通边框，只有
   获得焦点时使用 focus border，Light/Dark 共用设计变量。
 - 原始 MCP 凭证拒绝写入；只允许 `{{secret:name}}` 引用。
-- 内置 SAGA2 项目。
+- 内置 SAGA2 项目。其内置基线的 `workflowType` 为 `none`（即**默认不启用正式流程**）：
+  内置基线下侧栏不出现「正式流程 / 普通对话」子分组，新建入口只有普通对话。用户仍可在项目
+  详情页把工作流类型改为 `jira` / `gitlab` 启用正式流程；`jiraProjectKey: "SAGA"` 作为
+  可复用配置保留在基线里，`none` 状态下不下发、界面也不显示，改回 `jira` 时立即可用。
+  `formalWorkflowEnabled` 由 `workflowType` 派生（见 `projectConfig.ts` 的
+  `normalizeMekaProjectFile`），因此两者不需要分别维护。
 - 每个项目（含内置 SAGA2 和用户新建项目）都有 1 个共享“默认角色”，另有 SAGA2 的 2 个
   业务内置角色：
   - 默认角色（稳定 ID `<projectId>-default-role`，内置、只读、不可删除）：不注入任何提示词、
@@ -4064,3 +4069,53 @@ Meka 开发插件链路、插件市场独立 endpoint/凭证、`edition` 运行�
   （WL-11.1/WL-11.2/WL-11.6/WL-11.8）未实跑。`meka-whitelist-verification.md` 的 WL-11 系列
   已按新契约更新期望值并新增 WL-11.10 不变量，但**尚未重新实跑取得新证据**。
 - 升级用户的既有库：默认角色行由启动播种补齐，未做“升级后首次启动”的实机验证。
+
+### 6.51 2026-09-22 内置 SAGA2 默认关闭正式流程（`workflowType: jira` → `none`）
+
+**变更**：`apps/desktop/resources/meka/projects/saga2/project.json` 的内置基线由
+`workflowType: "jira"` / `formalWorkflowEnabled: true` 改为 `workflowType: "none"` /
+`formalWorkflowEnabled: false`。即**默认的 Meka 助理只在 SAGA2 下提供普通对话**。
+
+**为什么两处都要改**：`formalWorkflowEnabled` 并不独立生效——`projectConfig.ts` 的
+`normalizeMekaProjectFile` 用 `formalWorkflowEnabled = workflowType !== undefined &&
+workflowType !== 'none'` **派生**它（读取时覆盖文件里的值）。所以功能上只需改 `workflowType`；
+文件里同时把 `formalWorkflowEnabled` 改为 `false` 是为了让基线自身不出现
+「启用=true ／ 类型=none」这种自相矛盾的状态，避免读原始 JSON 的人（含测试与后来维护者）
+被误导。二者不会漂移：前者是唯一真值源，后者是派生结果。
+
+**用户可见后果**（`MekaAssistantSection` 的 `formalWorkflowActive` 判据要求
+`formalWorkflowEnabled === true` 且类型带对应标识）：
+
+- SAGA2 项目行不再出现「正式流程 / 普通对话」子分组，其会话回到扁平列表；
+- 项目作用域新建入口只剩「在 SAGA2 中新建普通对话」，「在 SAGA2 中新建正式流程对话」消失；
+- 正式会话创建被 Main 拒绝（`sessions.ts` 校验 `project.workflowType === provider.type`，
+  `mekaFormal.ts` 显式拒绝 `workflowType === 'none'`）——这是**一致的**拒绝，不是半开状态；
+- 已存在的正式会话数据不受影响（`is_formal` 与冻结事项仍在库中），只是在侧栏不再单独分组。
+
+**兼容边界**：
+
+- **只改内置基线**。用户若已在 `<P4 根>/.meka/project.json` 保存过 SAGA2 配置，该文件优先
+  （`readProjectConfigState` 返回 `source: 'project'`），其 `workflowType` **不会**被本次改动
+  覆盖；要跟随基线需用户显式保存或执行「重置项目」。因此本改动不等同于「所有现有用户立刻
+  失去正式流程」，需在验收时区分 fresh 与已有覆盖两种 profile。
+- `jiraProjectKey: "SAGA"` **保留**在基线里：`none` 状态下不下发、界面不显示（Jira Key 输入框
+  只在 `workflowType === 'jira'` 时渲染），用户改回 `jira` 时立即可用，无需重新填写。
+- 未改 schema、未改 migration、未改 provider 合同，因此不需要 DB migration，也不影响
+  「正式流程选择器 / 事项冻结 / 快照」链路本身的能力。
+
+**同步的文档与测试**：
+
+- `apps/desktop/src/main/meka-projects/__tests__/projectConfig.test.ts` 的
+  「loads bundled SAGA2 …」用例原先钉住 `workflowType: 'jira'`，已改为断言
+  `workflowType: 'none'` **并同时断言 `formalWorkflowEnabled: false`**——后者锁住「派生」这条
+  约定，避免将来有人只改 `workflowType` 而误以为派生会失效。
+- `docs/dev-rules/meka-whitelist-verification.md` WL-3.2 补「基线变更」说明，保留 2026-09-14
+  改动前的实机证据并标注其时效。
+- `docs/product-rules/meka-skills.md` 不含该项目的正式流程开关描述，无需改动。
+
+**验证（本次实跑）**：`pnpm --filter desktop run typecheck` 通过；
+`vitest run --project src/main/meka-projects/__tests__/projectConfig.test.ts` **19/19 通过**。
+
+**未验证（如实登记）**：未在真实 Electron 中目检 SAGA2 侧栏子分组消失与新建入口收敛；
+`pnpm desktop:session-smoke` 未实跑（其 `WL-3.2` 只断言「至少有一个入口」，预计不会变红，
+但记录的入口清单会收敛为只剩普通对话，重跑时需按新证据更新）。
