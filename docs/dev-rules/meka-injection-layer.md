@@ -404,6 +404,68 @@ MCPR）、P4 写边界、legacy-JSON 路径白名单、`create_workers` 拒绝�
 全角数字、`把所有怪物技能的伤害行为10000的data都改成…`）与表范围反向守卫均为实测；红→绿用源码反向还原
 并以 SHA256 校验还原一致。**未实机验证**：真实 SAGA2 工作区的「表范围确认 → 逐目标导出 → 写入」全链路。
 
+### 5.2 写入门禁的三层：范围绑定、命令面白名单、写后对账（D1／D3／D2，2026-09-22）
+
+三层都在 `meka-projects/combatWorkflowPolicy.ts`，且**只有第一、二层原本存在**；第三层是本轮补的。
+
+**① 范围绑定（D1）**：`explicitCombatSkillIds` 会从 `<tmp>/1019.import.json` 这类 **JSON 文件名**里也收到
+ID，所以「请求里另有范围内 ID」不构成任何豁免。`mismatched.length > 0` 一律拒绝（`:464`），并且老版模块
+命令必须**恰好携带一个** ID 且该 ID 在已确认范围内（`:477-479`：非 `withoutList` 时要求
+`explicitIds.length === 1 && approvedExplicitIds.length === 1`）。`withoutList`（已批准但清单被截断／未登记）
+那一支**保持原样**：只要求恰好一个显式 ID、不做成员资格比对——这是登记过的折中，不得收紧。
+
+**② 命令面白名单（D3）**：`legacyModuleWriteCommandReason`（`:654`）只放行 `legacy_module_import_json`
+（唯一登记写入）、`legacy_module_export_json`（目标取证读）与 Host 注入的 `mekaCombatReadOnlyUnityCommands`；
+其余 `legacy_module_*` 一律拒绝。典型被拒者是 `legacy_module_migrate_layers`——它遍历**全部**模块资产、
+不携带 `skill_id`，范围门禁无从检查。命令解析必须**通道无关**（`:589`／`:630`：同时认 `ghost_call`、
+既有直传形态、以及 `meka-runtime-mcp` 的 `{name, args}` 形态；后者下既有 `mcpToolArguments` 解不出命令，
+依赖它的门禁会**静默失效**）。门禁调用点 `:2463` 放在首证据门禁**之后**，以免改变既有拒绝理由的优先级。
+
+**③ 写后对账（D2，Host 强制）**：`legacy_module_import_json` 是 `clear_existing=true` 的**全量替换**，而
+回执里的 `importedNodeCount` 只是 payload 自己的节点数，**永远等于 payload 的节点数**；Host 唯一能拿来对账
+的材料是**写入前**那次结构化导出的 `exportedNodeCount`。此前没有任何门禁读回执，所以丢节点的导入会返回
+`success:true` 并通过全部检查。现行契约：
+
+- 状态 `:53-63`：每会话 `{ skillId, baselineNodeCount, importedNodeCount, readBackNodeCount?, status }`，
+  外加每 `(session, skill)` 的导出节点数基线表。
+- 回执解析 `:694-788`：**宽容递归扫描**工具结果（含 MCP `content[].text` 里的 JSON 文本、ghost 的
+  `{ok, result}`、`data` 嵌套与内联 `legacyModuleExport/Import.payload`），认 `exportedNodeCount` /
+  `importedNodeCount` 及 snake_case 变体。取不到数值就是 `null`——**绝不编造**。
+- `observeCombatLegacyModuleResult`（`:820`）：成功导出回执 ⇒ 记基线（并顺带结算回读）；成功导入回执 ⇒
+  与基线比对，一致则不产生义务，**不一致／缺基线／数值不可解析** ⇒ 进入「必须结构化回读」。
+  `settleCombatModuleReadBack`（`:790`）在回读值等于导入值时才结清。
+- `combatModuleWriteReconciliationReason`（`:876`）：义务未结清时，**除同一技能的一次
+  `legacy_module_export_json` 回读（或同一技能的重新导入）外的一切调用**都被拒；理由带技能 ID、写入前
+  基线、导入回执值，并明说「回读完成前不得推进其它读取、P4 写入、下一个目标或收尾，也不得把这次导入当作
+  无损成功上报」。
+- 接入点：**MCP `:2383` 与 Shell `:1976` 两侧都要有**（少了 Shell 侧，模型可用 Shell 绕过「先回读」）；
+  基线只在**传输成功**路径建立（`ghost.ts:2366`、`meka-runtime-mcp.ts:1350`），
+  `markCombatTargetExportAttempted/Completed` **不产生**基线。
+
+**Host 强制 vs 仍由模型承担的切分（不得含混）**：Host 强制 ①导入与写入前导出节点数必须一致，否则整轮除回读
+外全被拦；②缺基线或回执不可解析时**不伪造通过**，同样要求回读；③回读与导入不一致时持续拦截并给出两边数值。
+**仍由模型承担**：最终文字 `[SAGA2_COMBAT_CONFIG_RESULT]` 没有 Host 门禁（模型可以选择只回一句话收尾，
+Host 只能掐掉它继续做其它事的一切工具通道）；任一侧回执取不到数值时，Host 只能证明「按要求做了结构化回读」，
+节点数的**语义**比对仍靠模型与 SKILL 正文。**有界 trade-off**：对账义务绑定当前目标代次，显式切换目标
+（`refreshCombatTargetBinding` / `invalidateCombatTargetBinding`）会一并作废旧义务——否则会与目标门禁互相死锁。
+
+**D6／D7 的镜像还原**：镜像与实时 `vendorOptions` 分裂时，续聊口子会用镜像注入「范围已批准」而策略读实时状态
+走单技能分支并拒绝一切工具（同一轮两条互相矛盾的指令）。修法是**只还原纯注入语义键**
+（`COMBAT_SCOPE_STATE_RESTORE_KEYS`，`:129-160`：requestScope／requestScopeState／scopeSelection／
+scopeSourceTables／scopeApproved），在续聊口子**之前**写回实时 Session（`register.ts:12628`）。**刻意不做整份
+镜像写回**：策略层会**就地**扩展 `mekaCombatScopeSkillIds` / `…Environment*` / `…TargetExport*`，回写会让成员
+清单缩水、削弱 A4 门禁。D7 把 `forgetCombatVendorOptions` 接进会话关闭生命周期（`register.ts:4557`），判据是
+`closeReason === 'requested'` **且**不在 rehydrate 抑制窗口内（`agent-switch`／`runtime-refresh` 是重建、
+`unexpected` 之后 Host 会补发「继续」，这三种都必须留镜像，否则 D6 的还原没有来源）。镜像仍不过进程重启。
+
+**验证现状（2026-09-22）**：`pnpm --filter desktop run typecheck` exit 0；`mekaRuntimeInjection` 49 +
+`mekaRuntimeInjectionBaseline` 18 + `combatWorkflowPolicy` 60 + `combatServerCapabilityState` 7 = 134 passed；
+`sessionEventPipeline` + `runtimeConfig.integration` = 100 passed；`ghostWorkdirGate` + `meka-runtime-mcp` +
+`mcpRegistration` = 210 passed。各层均有红→绿证据（D1／D2／D3 各自的用例把对应门禁临时失效即转红）。
+**未实机验证**：D2 依赖回执字段名，依据是 `combat-skill-configuration/SKILL.md` 的协议契约与迁移总账；
+真实 meka-unity 结果封套的确切嵌套无法在本仓核验，故解析器刻意宽容、取不到即诚实回落「无基线 ⇒ 要求回读」。
+**建议真机跑一次「导出 → 导入 → 导出」确认基线被记录。**
+
 ## 6. 验证方式
 
 **逐字节基线（提交 1，在本层落地前抓取）**：

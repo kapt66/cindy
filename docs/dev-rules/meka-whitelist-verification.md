@@ -1100,12 +1100,49 @@ Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台。
   **未实机验证**：真实网络断流下「用户一个字都没拿到」的场景复现，以及 GUI 挂起在真实会话里的
   观感（本批交付**没有**重跑这些用例，登记人只做了代码核对）。
 
+**WL-11.16 战斗写入门禁的三层：范围绑定、命令面白名单、写后对账**（不变量，2026-09-22 登记）：
+
+- **保护的不变量**：一次 `legacy_module_import_json` 是 `clear_existing=true` 的**全量替换**，因此
+  ① 它只能写入**用户已确认范围内**的技能——请求里同时出现一个范围内 ID（哪怕只是藏在
+  `<tmp>/1019.import.json` 这种 **JSON 文件名**里）**不构成**任何豁免；② 老版模块命令必须**恰好携带一个**
+  ID 且该 ID 在已确认范围内（`withoutList`＝已批准但清单被截断／未登记那一支**保持原样**：只要求一个显式
+  ID、不做成员比对，这是登记过的折中，不得顺手收紧）；③ 模块写入命令是**命令面白名单**，只有
+  `legacy_module_import_json`（唯一登记写入）与 `legacy_module_export_json`（目标取证读）及 Host 注入的
+  只读白名单命令可执行，`legacy_module_migrate_layers` 这种**遍历全部模块资产、不携带 `skill_id`** 的
+  批量写命令一律拒绝；④ 导入回执的 `importedNodeCount` 必须与**写入前**结构化导出的 `exportedNodeCount`
+  一致，否则整轮**除同一技能的一次回读外**一切调用被拒——回执缺失或数值不可解析时**不得伪造通过**，
+  同样要求结构化回读。要点是：`importedNodeCount` 只是 payload 自己的节点数，**永远等于 payload 的
+  节点数**，它单独不构成任何证据。
+- **代码锚点**：`combatWorkflowPolicy.ts:464`（D1 混合 ID 一律拒）、`:477-479`（恰好一个范围内 ID）、
+  `:654 legacyModuleWriteCommandReason`（命令面白名单；通道无关解析 `:589`／`:630`）、
+  `:53-63` 对账状态、`:694-788` 宽容回执解析、`:820 observeCombatLegacyModuleResult`、
+  `:790 settleCombatModuleReadBack`、`:876 combatModuleWriteReconciliationReason`；
+  门禁接入 **MCP `:2383` 与 Shell `:1976` 两侧**（缺 Shell 侧可用 Shell 绕过「先回读」）；
+  基线只在传输成功路径建立（`ghost.ts:2366`、`meka-runtime-mcp.ts:1350`），
+  `markCombatTargetExportAttempted/Completed` **不产生**基线。契约正文见
+  `meka-injection-layer.md` §5.1／§5.2。
+- **语义验收步骤**：① 构造生产 `ghost_call` 形态：范围 `{1019,1020}` 已批准，positional `skill_id=1021`
+  而 JSON 文件名是 `1019.import.json`，断言 **deny** 且理由含 `1021`；② 对照：positional 与文件名同为
+  `1019`，断言 **allow**；③ 断言 `legacy_module_migrate_layers` 在单技能 `supported` 与已批准表范围
+  两种会话下都 **deny**；④ 有损导入（写入前 `exportedNodeCount=696`、导入回执 `importedNodeCount=669`）
+  ⇒ 断言**下一次**调用（MCP 与 **Shell 两条路径都要试**）被拒、理由含两个数值，且换技能／换目标也被拒；
+ ⑤ 随后对同一技能做一次 `legacy_module_export_json` 回读到 `669` ⇒ 断言结清后恢复放行；
+  ⑥ 无损导入（700→700）断言**不产生**对账义务；⑦ 断言一次**尝试**导出不建立基线。
+- **自动化门禁**：`apps/desktop/src/main/meka-projects/__tests__/combatWorkflowPolicy.test.ts`
+  （D1／D2／D3 各自用例，把对应门禁临时失效即转红）。**未实机验证**：D2 依赖回执字段名
+  `exportedNodeCount` / `importedNodeCount`，依据是冻结 SKILL 的协议契约与迁移总账（有真实回放
+  `importedNodeCount=7`），但真实 meka-unity 结果封套的确切嵌套**本仓无法核验**——解析器因此刻意宽容、
+  取不到即诚实回落「无基线 ⇒ 要求回读」。**建议真机跑一次「导出 → 导入 → 导出」确认基线被记录。**
+  另需注意两条**未闭合**面：最终文字 `[SAGA2_COMBAT_CONFIG_RESULT]` 没有 Host 门禁（模型仍可只回一句话
+  收尾，Host 只能掐掉它继续做其它事的一切工具通道）；任一侧回执取不到数值时，节点数的**语义**比对仍靠
+  模型与 SKILL 正文。
+
 **未自动化 / 未覆盖的实机项**：新建**自定义**项目与角色（本机 profile 只有内置 SAGA2）、
 删除项目后落入「不可用的 Meka 项目」组、正式事项（`meka-formal`）的 provider/auth/issue
 全链路（需 Jira/GitLab 凭据），以及 WL-11.9 的界面实机路径（把项目目录移走后走一遍
-「配置不可用 → 移除项目注册」）。WL-11.11–WL-11.15 的**端到端**部分（真实 SAGA2 工作区里走完
+「配置不可用 → 移除项目注册」）。WL-11.11–WL-11.16 的**端到端**部分（真实 SAGA2 工作区里走完
 表范围全链路、真实断流下的空回合、插件侧白名单与 Cindy 清单一致性、P4 写边界与
-「本批 Unity C# 改动未入库」）同样**尚未实跑**；A3 镜像的**重启后为空**与 A4 成员清单的
+「本批 Unity C# 改动未入库」、以及写入对账的**真机封套字段核验**）同样**尚未实跑**；A3 镜像的**重启后为空**与 A4 成员清单的
 **真实会话登记**也只有代码与单测证据，没有实机观测。这些仍按上文「实机验证」人工执行。
 
 > migration 编号与冻结**不单列为白名单项**：那部分是上游自己的机制（`db:validate` +
@@ -1713,6 +1750,7 @@ lineage 撞号的处理、migration 文件本体不写注释）留在
 | WL-11.13 表范围只读通道与 P4 写边界（Unity 查询 + P4） | Cindy 侧白名单放行/拒绝有单测（`combatWorkflowPolicy.test.ts` 两条），但**登记人未运行**；**跨仓清单一致性零自动化断言**（靠 `meka-unity/node/worker.cjs:49-59` 与 Cindy 侧清单同时人工核对）；**P4 写边界零自动化覆盖**：`p4_edit`/`p4_add` 前置、从不 `p4_submit`、本批 Unity C# 改动未入库都只由角色/Skill 正文表达（`p4_submit` 在 Host 侧是放行路径），需用 `p4_opened` 人工核对 |
 | WL-11.14 Host 侧证据预算／配额／时限已删除（收敛纪律保留） | ① 的静态核对已由编排者实跑通过（代码/测试/提示词/资源范围内 `git grep` 零命中、退出码 1，命令见本条，必须带 `-- apps packages scripts`）；**没有自动化断言禁止复活 Host 侧次数上限**（新加常量的 PR 不会被门禁拦下）；片段文件名/id 仍叫 `combat-evidence-budget` 是有意保留 |
 | WL-11.15 Pi 空回合不得静默收尾 | 单测已落地（`pi-translator.test.ts` 三条 + host 守卫用例链 + `agent-island/state.test.ts` 的挂起与到期兜底），但**登记人未运行**；真实网络断流的复现**零覆盖** |
+| WL-11.16 战斗写入门禁三层（范围绑定／命令面白名单／写后对账） | 单测已落地（`combatWorkflowPolicy.test.ts` 的 D1／D2／D3 用例，把对应门禁临时失效即转红；D2 覆盖有损、无损、缺基线、回读不一致、MCP 与 Shell 两条路径），但**登记人未运行**；写入对账所依赖的**真实 meka-unity 回执封套嵌套未核验**（本仓不可核验），且 `[SAGA2_COMBAT_CONFIG_RESULT]` 的最终文字收尾**没有 Host 门禁** |
 
 补测试时应优先覆盖**本轮同步真实坏过**的位置（WL-2.1、WL-9 派生包、WL-10 补种、WL-12），
 而不是平均用力。
