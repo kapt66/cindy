@@ -115,6 +115,72 @@ export interface MekaRoleManifestFile extends MekaRoleFile {
 
 export const MEKA_GENERAL_DISCIPLINE = '通用';
 
+/**
+ * Display name of the shared built-in default role. Bundled role names are Chinese-only
+ * data (see `resources/meka/roles/*.json`), so this follows the same convention instead of
+ * introducing a per-locale name that the stored manifest cannot carry.
+ */
+export const MEKA_DEFAULT_ROLE_DISPLAY_NAME = '默认角色';
+
+const MEKA_DEFAULT_ROLE_ID_SUFFIX = '-default-role';
+
+/**
+ * Sort order of the shared default role. Every project-owned role is created with a
+ * non-negative order, so this keeps the default role first in every project role list.
+ */
+export const MEKA_DEFAULT_ROLE_SORT_ORDER = -1;
+
+/**
+ * Row id of a project's default role. `meka_roles.id` is a primary key, so the single
+ * conceptual "default role of every project" is stored as one row per project with a
+ * deterministic id derived from the project id.
+ */
+export function mekaDefaultRoleId(projectId: string): string {
+  return `${projectId}${MEKA_DEFAULT_ROLE_ID_SUFFIX}`;
+}
+
+/**
+ * The shared built-in default role: no prompt, rule, skill, MCP or project-metadata
+ * selection. A task started with it stays bound to the project workspace but receives no
+ * role-level injection, which is the closest Meka equivalent of a plain session.
+ */
+export function mekaDefaultRoleManifest(projectId: string): MekaRoleManifestFile {
+  const id = mekaDefaultRoleId(projectId);
+  return {
+    schemaVersion: 1,
+    id,
+    projectId,
+    name: id,
+    displayName: MEKA_DEFAULT_ROLE_DISPLAY_NAME,
+    policyProviderRefs: [],
+    rules: [],
+    skills: [],
+    promptFragments: [],
+    mcp: [],
+    projectMetadataSelection: [],
+  };
+}
+
+/** True only for the shared built-in default role of `role.projectId`. */
+export function isMekaDefaultRole(role: {
+  id: string;
+  projectId: string;
+  isBuiltin: boolean;
+}): boolean {
+  return role.isBuiltin && role.id === mekaDefaultRoleId(role.projectId);
+}
+
+/**
+ * The role a new Meka draft starts on: the project's shared default role when it has one,
+ * otherwise its first role. Selection is explicit rather than positional so it does not
+ * depend on the default role's sort order surviving every write path.
+ */
+export function pickDefaultMekaRole<
+  T extends { id: string; projectId: string; isBuiltin: boolean },
+>(roles: readonly T[]): T | undefined {
+  return roles.find((role) => isMekaDefaultRole(role)) ?? roles[0];
+}
+
 export interface MekaProjectMetadataEditable {
   displayName?: string;
   description?: string;
@@ -262,8 +328,23 @@ export const RETIRED_BUILTIN_MEKA_ROLE_MAPPINGS = [
   ['system-debug', 'general-development'],
 ] as const;
 
-const BUILTIN_MEKA_ROLES: readonly MekaRole[] = BUILTIN_ROLE_FILES.map(
-  ({ id, manifest }, sortOrder) => ({
+const BUILTIN_MEKA_ROLES: readonly MekaRole[] = [
+  // The shared default role always sorts first so a new draft in any project starts on it.
+  {
+    id: mekaDefaultRoleId('saga2'),
+    projectId: 'saga2',
+    name: mekaDefaultRoleId('saga2'),
+    displayName: MEKA_DEFAULT_ROLE_DISPLAY_NAME,
+    description: null,
+    tags: ['builtin', 'default'],
+    filePath: `meka/roles/${mekaDefaultRoleId('saga2')}.json`,
+    isBuiltin: true,
+    contentDigest: null,
+    sortOrder: MEKA_DEFAULT_ROLE_SORT_ORDER,
+    createdAt: null,
+    updatedAt: null,
+  },
+  ...BUILTIN_ROLE_FILES.map(({ id, manifest }, index) => ({
     id,
     projectId: manifest.projectId,
     name: manifest.name,
@@ -273,11 +354,11 @@ const BUILTIN_MEKA_ROLES: readonly MekaRole[] = BUILTIN_ROLE_FILES.map(
     filePath: `meka/roles/${id}.json`,
     isBuiltin: true,
     contentDigest: null,
-    sortOrder,
+    sortOrder: index,
     createdAt: null,
     updatedAt: null,
-  }),
-);
+  })),
+];
 
 export const BUILTIN_MEKA_PROJECTS: readonly MekaProject[] = [
   {
@@ -301,6 +382,10 @@ export const BUILTIN_MEKA_PROJECTS: readonly MekaProject[] = [
  * Converge the bundled project registry without overwriting user-owned rows.
  * This runs after migrations on writable startup so clean Cindy databases and
  * databases upgraded from an older Meka build see the same bundled catalog.
+ *
+ * It also converges the shared built-in default role for *every* registered project,
+ * including user-created ones, so the "no injection" baseline exists in projects that
+ * predate the feature.
  */
 export function seedBuiltinMekaProjects(db: Database.Database, now = Date.now()): void {
   const upsertProject = db.prepare(`
@@ -349,6 +434,8 @@ export function seedBuiltinMekaProjects(db: Database.Database, now = Date.now())
     DELETE FROM meka_roles
     WHERE id = ? AND project_id = 'saga2' AND is_builtin = 1
   `);
+  const allProjectIds = db.prepare('SELECT id FROM meka_projects');
+  const ensureDefaultRole = db.prepare(MEKA_DEFAULT_ROLE_UPSERT_SQL);
 
   db.transaction(() => {
     for (const project of BUILTIN_MEKA_PROJECTS) {
@@ -379,12 +466,55 @@ export function seedBuiltinMekaProjects(db: Database.Database, now = Date.now())
         );
       }
     }
+    // Custom projects own their rows, so the shared default role is inserted once here
+    // instead of through the bundled-project upsert above.
+    for (const { id: projectId } of allProjectIds.all() as Array<{ id: string }>) {
+      ensureDefaultRole.run(...mekaDefaultRoleUpsertParams(projectId, now));
+    }
     backfillSessions.run();
     for (const [retiredRoleId, replacementRoleId] of RETIRED_BUILTIN_MEKA_ROLE_MAPPINGS) {
       migrateRetiredSessionRole.run(replacementRoleId, retiredRoleId);
       deleteRetiredBuiltinRole.run(retiredRoleId);
     }
   })();
+}
+
+/** Tags recorded on the shared default role row. */
+export const MEKA_DEFAULT_ROLE_TAGS = ['builtin', 'default'] as const;
+
+/**
+ * Upsert for the shared default role row. Shared with the Main-side provisioning that runs
+ * when a project is created, so a project created mid-session and a project converged at
+ * startup can never disagree on the row's shape.
+ *
+ * The conflict clause is guarded on `is_builtin` so a user-owned row can never be adopted
+ * or overwritten by the built-in default role.
+ */
+export const MEKA_DEFAULT_ROLE_UPSERT_SQL = `
+  INSERT INTO meka_roles
+    (id, project_id, name, display_name, description, tags, file_path,
+     is_builtin, content_digest, sort_order, created_at, updated_at)
+  VALUES (?, ?, ?, ?, NULL, ?, ?, 1, NULL, ?, ?, ?)
+  ON CONFLICT(id) DO UPDATE SET
+    project_id = excluded.project_id,
+    display_name = excluded.display_name,
+    updated_at = excluded.updated_at
+  WHERE meka_roles.project_id = excluded.project_id AND meka_roles.is_builtin = 1
+`;
+
+export function mekaDefaultRoleUpsertParams(projectId: string, now = Date.now()): unknown[] {
+  const manifest = mekaDefaultRoleManifest(projectId);
+  return [
+    manifest.id,
+    projectId,
+    manifest.name,
+    manifest.displayName,
+    JSON.stringify(MEKA_DEFAULT_ROLE_TAGS),
+    `meka/roles/${manifest.id}.json`,
+    MEKA_DEFAULT_ROLE_SORT_ORDER,
+    now,
+    now,
+  ];
 }
 
 /**

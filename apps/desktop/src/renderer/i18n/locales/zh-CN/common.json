@@ -13220,6 +13220,7 @@
     "builtinProjectReadOnly": "内置项目主路径固定，其他设置可以编辑。",
     "roleBasicInfo": "基础信息",
     "builtinRoleReadOnly": "内置角色可以编辑，修改会保存到项目文件。",
+    "defaultRoleDescription": "所有项目共用此角色。它本身不附带任何提示词、规则、技能或 MCP，适合像新建普通对话一样使用。",
     "copyRole": "复制角色",
     "roleCopyName": "{{name}} 副本",
     "projectKnowledge": "项目元数据",

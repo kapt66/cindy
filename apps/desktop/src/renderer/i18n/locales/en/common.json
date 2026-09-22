@@ -13237,6 +13237,7 @@
     "builtinProjectReadOnly": "The built-in project main path is fixed; other settings are editable.",
     "roleBasicInfo": "Basic information",
     "builtinRoleReadOnly": "Built-in roles are editable and are saved to the project file.",
+    "defaultRoleDescription": "Every project shares this role. It carries no prompt, rules, skills, or MCP servers of its own, so it is meant to be used like a plain new chat.",
     "copyRole": "Copy role",
     "roleCopyName": "{{name}} copy",
     "projectKnowledge": "Project metadata",

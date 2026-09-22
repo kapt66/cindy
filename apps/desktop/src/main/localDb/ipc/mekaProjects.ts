@@ -30,7 +30,7 @@ import { createLogger } from '../../logger.js';
 import { assertTrustedAppRendererEvent } from '../../security/trustedAppRenderer.js';
 import { requireObject, requireString, throwIpcError } from '../../utils/ipcValidate.js';
 import { getDbClient } from '../client/current.js';
-import { createMekaRole, ensureDefaultMekaRole } from './mekaRoles.js';
+import { createMekaRole, ensureMekaDefaultRoleRow } from './mekaRoles.js';
 
 export const MEKA_PROJECT_LIST = 'meka-project:list';
 export const MEKA_PROJECT_GET = 'meka-project:get';
@@ -472,10 +472,13 @@ async function createProject(input: unknown): Promise<MekaProject> {
           clonedRoles.push(cloneMekaRoleManifestForProject(sourceRole, id, createdRole.id));
         }
         file = { ...file, builtinRoles: clonedRoles };
-      } else {
-        const createdRole = await ensureDefaultMekaRole(id);
-        createdRoleIds.push(createdRole.id);
       }
+      // The shared default role is a built-in row without a user-owned manifest file, so it
+      // is inserted directly and needs no cleanup on rollback beyond the project-row delete.
+      // It is also what guarantees a project is never left without a role: a project created
+      // from a directory without role snapshots used to get a second, empty editable "通用"
+      // role here, which now duplicates this one and is deliberately not created.
+      await ensureMekaDefaultRoleRow(id);
       if (existingFile) {
         // Persist the current checkout location so the shared file is portable
         // for the next machine or checkout that imports it.

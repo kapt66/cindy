@@ -35,7 +35,7 @@
 | 远程 Codex Worker  | 已恢复                   | MCPRouter protocol 3 / bundle 0.0.7 控制通道与 app-server 隧道        |
 | Orca Worker 微调   | 迁移                     | 仅迁入 Meka 目标选择和远程约束所需改动                                |
 | 打包发布           | 已迁移                   | 打包/发布分层；RustFS 上传、canary、stable promote 与 rollback 已接入 |
-| 项目与角色         | 迁移                     | 项目、角色、元数据、内置 SAGA2 与通用开发/战斗开发 2 个角色           |
+| 项目与角色         | 迁移                     | 项目、角色、元数据、内置 SAGA2；每个项目 1 个共享默认角色 + SAGA2 的通用开发/战斗开发 2 个业务角色 |
 | 原 Meka 用户数据   | 必须兼容                 | 新建 `CindyMeka`，从 `xdmaker-meka` 只读复制并运行 lineage bridge     |
 | Windows/macOS 签名 | 沿用原证书/服务          | Windows 原签名服务；macOS 原证书私钥和 self-signed 模式               |
 | 热更新             | 新建 Cindy Meka 渠道     | 不承诺旧 Meka 原地热更新；新应用安装后迁移旧数据                      |
@@ -445,12 +445,18 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
   引用路径。已有主路径下的 `.meka/project.json` 作为可移植配置导入，用户不需要接触内部
   项目 ID；每次在新目录登记都会生成新的项目身份，并统一改写顶层 `projectId`、内嵌角色的
   `projectId` 归属和当前绝对主路径，不沿用来源项目身份。路径检查只做内存预览，即使来源
-  文件含空路径、旧签出路径或不一致的角色归属也不会提前改盘；只有项目及默认角色注册成功后
+  文件含空路径、旧签出路径或不一致的角色归属也不会提前改盘；只有项目及其角色注册成功后
   才原子回写归一化文件。导入的完整角色快照会逐个克隆为新项目的可编辑自定义角色并生成新
-  角色 ID；复制 bundled 内置项目且文件不含角色快照时先恢复 bundled 角色，只有普通自定义项目
-  文件不含角色快照时才创建“通用”默认角色。导入显示名与已登记项目冲突时改用
+  角色 ID；复制 bundled 内置项目且文件不含角色快照时先恢复 bundled 角色。
+  **每个项目（含导入与新建）都会有共享默认角色 `<projectId>-default-role`**，见 §6.50。
+  导入的完整角色快照（若存在）会克隆成该项目的可编辑角色，与共享默认角色并存；而文件不含
+  角色快照的项目**只**得到共享默认角色——它取代了旧的“通用”空角色，不再额外补建那个角色
+  （旧实现会同时创建两者，见 §6.50 的 P1 修复记录）。导入显示名与已登记项目冲突时改用
   主目录名称（仍冲突则追加序号）。角色克隆顺序以已登记来源项目为准，优先按原角色 ID、再按
-  显示名匹配，避免项目文件的快照排列改变默认角色；同一配置复制到不同目录后仍保持列表可辨识。
+  显示名匹配，避免项目文件的快照排列改变角色顺序；同一配置复制到不同目录后仍保持列表可辨识。
+  > 术语：本节历史文字中的“默认角色”若出现在本次改动之前的描述里，指已废弃的旧“通用”空角色；
+  > 本次改动之后一律指**共享内置默认角色**（`<projectId>-default-role`，只读、不注入角色级
+  > 内容）。已废弃的旧行不再自动创建，但存量数据库里已有的该行不会被删除。
 - 项目 ID 是本地数据库内部唯一键，不是用户可见身份。已登记项目以数据库行 ID 为唯一
   权威；读取时若项目文件来自复制目录、顶层或内嵌角色仍带来源 ID，运行时只在内存中
   归一化为登记项目 ID 与当前绝对主路径，用户实际保存前不得改写项目文件。项目、角色和
@@ -462,11 +468,13 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
 - `is_builtin` 只表示应用是否提供了 bundled fallback；项目目录一旦存在 `.meka/project.json`，
   内置 SAGA2 与自定义项目统一按项目文件读取、保存和角色覆盖处理。唯一的路径差异是 SAGA2
   的项目根来自 Meka 助理设置中的 P4 根目录。
-- 编辑采用“有效值 + 草稿”双状态：项目与角色详情的保存/取消只要呈现就始终可操作，不以
-  草稿是否变化、配置加载时序或保存状态显示为禁用；取消恢复有效值，保存完整
-  `project.json` 或角色 manifest 后重新读取并刷新有效值。内置回退配置即使没有改动，也可
-  由用户显式保存为项目根配置。新建角色的必填项由保存动作明确校验，不能用禁用按钮隐藏
-  错误。项目与角色保存均避免 Renderer 分两步写出项目表和配置文件的不一致中间态。项目
+- 编辑采用“有效值 + 草稿”双状态：项目与角色详情的“保存”“取消”只在草稿相对上次读取／
+  保存的有效值**确有变更**时出现，未编辑时两个按钮都不呈现（全新角色的空草稿自创建起即算
+  有变更）。取消丢弃草稿并恢复有效值，保存完整 `project.json` 或角色 manifest 后重新读取
+  并刷新有效值，并把保存结果安装为新的有效值，使按钮回到未编辑状态。草稿比较对属性顺序
+  不敏感，避免同值不同键序被误判成“有变更”。内置回退配置即使没有改动，也可由用户显式
+  修改后保存为项目根配置。新建角色的必填项由保存动作明确校验，不能用禁用按钮隐藏错误。
+  项目与角色保存均避免 Renderer 分两步写出项目表和配置文件的不一致中间态。项目
   详情标题区显示当前有效配置来源；回退或尚未生成项目文件时显示内置配置，项目根配置成功
   读取或保存后显示项目配置。
 - SAGA2 主路径永远解析为设置中的 P4 根目录，不能在项目编辑页修改；名称、描述、正式流程、
@@ -488,7 +496,12 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
   获得焦点时使用 focus border，Light/Dark 共用设计变量。
 - 原始 MCP 凭证拒绝写入；只允许 `{{secret:name}}` 引用。
 - 内置 SAGA2 项目。
-- 2 个内置角色：
+- 每个项目（含内置 SAGA2 和用户新建项目）都有 1 个共享“默认角色”，另有 SAGA2 的 2 个
+  业务内置角色：
+  - 默认角色（稳定 ID `<projectId>-default-role`，内置、只读、不可删除）：不注入任何提示词、
+    规则、技能、MCP 或项目元数据，`useProjectDefaults` / `includeAllProjectMetadata` 保持
+    未设置，因此项目级默认项也不会并入；任务仍绑定项目与工作目录。它是新建 Meka 会话的
+    默认选中项，语义上最接近“新建一个普通会话”。
   - 通用开发：启用项目当前全部有效元数据，项目后续新增或重命名知识入口时无需同步维护
     角色枚举；同时挂载 MekaDesign、Meka Unity 官方 CLI、MCPRouter 和项目管理能力。
   - 战斗开发：只选择战斗设计、SkillEditor、战斗客户端与数据相关知识，挂载 Meka Unity 官方 CLI、
@@ -501,13 +514,19 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
   `general-development`。项目文件中的这些旧内置快照从有效配置中过滤，但其他自定义角色
   保留不变。
 - 内置项目/角色幂等播种。
+- 启动播种同时为**所有已登记项目**补齐共享默认角色行（用户新建项目不在内置项目播种范围内），
+  新建项目时通过 `ensureMekaDefaultRoleRow()` 立即建行，无需等到下次重启。冲突子句只在
+  `is_builtin = 1` 时生效，绝不接管或覆盖同名用户自有角色行。
 - 旧 Meka 会话缺少项目绑定时回填到 SAGA2。
 
 项目与角色配置的运行时契约：
 
 - SAGA2 包内 `project.json` 保留当前项目基线；角色已从原 6 个角色收敛为
   `general-development` 与 `combat-development`，不再与 `xdmaker/meka/main` 的历史角色
-  清单逐字节一致。
+  清单逐字节一致。共享默认角色没有包内 manifest 文件，由
+  `mekaDefaultRoleManifest()` 在内存与建行时生成，避免任何项目文件携带它、也避免它被
+  用户编辑后写回。<`projectId>-default-role` 行是 DB 上的内置行，`meka-role:update`
+  对它返回 `MEKA_BUILTIN_READ_ONLY`。
 - 原 Meka 的 6 个内置 Skill 继续保留；稳定英文 `name` / `skillId` 继续作为运行时契约，
   中文名称和中文描述写入标准 Skill frontmatter，其中展示名位于
   `metadata.display-name`。角色编辑器优先显示中文名，不再直接把 `remote-operations` 等
@@ -3850,3 +3869,198 @@ Meka 开发插件链路、插件市场独立 endpoint/凭证、`edition` 运行�
     上游 `origin/meka/main` §8 的完整准入核对（连同落后的 4 个提交 `7bc770ea2a` /
     `5b13bc9b4d` / `12ef942900` / `0601f7b8eb`）需要在把上游同步进 `meka/main` 时按
     `development-workflow.md` 第 4 节走一遍。
+
+### 6.50 2026-09-22 项目/角色编辑改为「有变更才出现保存/取消」，并新增共享默认角色
+
+**背景（两项用户可见调整）**
+
+1. 项目详情和角色详情原先**常驻**呈现“保存”“取消”，即使没有任何编辑。用户看到两个永远
+   可点的按钮，无法从界面判断“当前有没有未保存的改动”，也容易把一次无意义的保存当成必须
+   动作。
+2. 缺少一个“不做任何注入”的角色：用户想在项目里开一个和普通会话一样干净的对话时，只能选
+   通用开发（自动挂载项目全部元数据、MekaDesign、Unity CLI、MCPRouter）或战斗开发（强制
+   战斗 workflow），两者的提示词、技能和 MCP 都不是用户想要的。
+
+**处理：编辑态由草稿与有效值的真实差异决定**
+
+- 项目草稿新增独立基线 `projectBaseline`（上次读取或保存的有效值），与角色侧已有的
+  `roleEffective` 对称。`stableKey()` 做**键序无关**的稳定序列化后再比较，因为草稿由项目文件、
+  项目行和元数据列表多源拼装，键序不保证一致；用 `JSON.stringify` 直接比会把同值不同键序
+  误判成“有变更”。
+- `canSaveDraft = 角色侧 ? 角色有变更 : 项目有变更`；`canCancelDraft` 同口径。二者都只在
+  **确有变更**时渲染。全新角色的空草稿自 `createRole()` 起即算有变更，新建流程不受影响。
+- 所有结束编辑的路径都改走 `applyLoadedProject()`：加载、保存、元数据重新发现、取消。保存
+  成功后用服务端返回的 `savedFile` 安装为新基线，按钮随即回到未编辑状态；取消用基线整体
+  覆盖草稿并恢复元数据有效值。项目保存仍是一次 `saveProject` 写完整 `project.json`，不引入
+  两阶段中间态。
+- 元数据（`metadata` vs `metadataEffective`）只要有差异同样算项目有变更，因为元数据是项目
+  保存载荷的一部分。
+
+**处理：共享默认角色**
+
+- 稳定 ID 为 `<projectId>-default-role`（`mekaDefaultRoleId()`），`meka_roles.id` 是主键，
+  因此“所有项目共用的默认角色”落成每个项目一行确定性 id 的内置行；SAGA2 的内置行 id 是
+  `saga2-default-role`。
+- manifest 由 `mekaDefaultRoleManifest()` 生成：无 `prompt` / `rules` / `skills` / `mcp` /
+  `promptFragments` / `projectMetadataSelection`，且**不设置** `useProjectDefaults` 与
+  `includeAllProjectMetadata`。后者是关键：项目 `roleDefaults` 仍然存在，只有显式 opt-in 的
+  角色才会继承；默认角色因此连项目级默认项都不会并入。`runtimeConfig.resolveRoleFile()`
+  对它短路，`migrateSAGA2CombatRoleSkills()` 等承载业务语义的迁移不作用于它。
+- 它**没有包内 manifest 文件**：不给任何项目的 `.meka/project.json` 携带它，也就没有“用户
+  编辑后写回项目文件”的路径。`meka-role:read-manifest` 直接返回内存 manifest；
+  `meka-role:update` 对它返回 `MEKA_BUILTIN_READ_ONLY`（错误信息说明应复制成项目角色）。
+  渲染侧 `roleReadOnly` 把角色面板全部字段置为 `disabled`，并**不渲染**保存按钮；内置角色
+  本就不渲染删除按钮。基础信息区改用 `meka.defaultRoleDescription` 说明其语义。
+- 可见性与默认选中：`meka_roles.sort_order` 用 `-1`（项目自有角色一律 `>= 0`），所以
+  `ORDER BY sort_order, display_name` 让它排第一；同时 `pickDefaultMekaRole()` 在
+  `NewMakerDraftRoute` 里**显式**优先选择它，不依赖排序在每条写入路径上都被保留。
+  角色切换器仍列出该项目全部角色。
+- 播种与迁移：`seedBuiltinMekaProjects()` 在播种内置项目后，为**所有**已登记项目补齐该行
+  （用户新建项目不经过内置项目 upsert），语句与参数由 `MEKA_DEFAULT_ROLE_UPSERT_SQL` /
+  `mekaDefaultRoleUpsertParams()` 单一来源提供，新建项目走
+  `ensureMekaDefaultRoleRow()` 立即建行。冲突子句带 `meka_roles.is_builtin = 1` 守卫，用户
+  自有的同名行不会被接管或覆盖；重复播种幂等。
+- 会话语义：仍是 Meka 任务——`workspace_kind=meka`、绑定项目与工作目录，`[MEKA_ROLE_CONTEXT]`
+  照常注入角色 id 与展示名；只有角色级注入为空。这是“最接近普通会话”的做法，同时不破坏
+  项目分组和既有 Meka 会话的持久绑定链路。**平台基线仍然存在**：`platform-capabilities`
+  平台技能与 `mcp-router` 平台 MCP 由 Host 对每个普通 Meka 任务注入，因此运行期的技能快照
+  与 MCP 集合不是空的；「默认角色生效」的判据是**总集合等于平台基线**，不是集合为空。
+  对应用户可见文案也据此措辞（写“角色本身不附带任何提示词/技能/MCP”，不写“运行期没有
+  技能/MCP”），否则会与实测行为矛盾。
+
+**修复记录（P1，本轮审查发现后已修）**
+
+- 问题：初版把共享默认角色**加在**新建项目的旧起始角色旁边。`createProject` 在项目目录没有
+  `.meka/project.json` 角色快照时调用 `ensureDefaultMekaRole(id)`，创建了一个**可编辑、空**、
+  展示名为“通用”的自定义角色；随后又插入共享默认角色。结果是每个新建项目出现两个几乎相同
+  的空角色，其中“通用”是本次改动后的遗留物（改动前它才是该项目的默认角色），且新建时会
+  `pickDefaultMekaRole()` 选中“默认角色”，用户不会去用“通用”。
+- 修复：删除 `createProject` 里的 `else { ensureDefaultMekaRole(id) }` 分支，并删除随之失去
+  引用的 `ensureDefaultMekaRole()`、`createDefaultMekaRoleManifest()` 与
+  `DEFAULT_MEKA_PROJECT_ROLE_DISPLAY_NAME`（全仓再无引用，已 grep 确认）。共享默认角色是
+  每个项目唯一的起始角色保证，因此“项目一定有至少一个角色”的不变量不受影响。
+- 兼容边界：**不改动也不删除存量数据库里已有的“通用”角色行**——它可能已被用户编辑过，
+  静默删除等于丢用户数据。只有“今后不再自动创建”这一条变化。
+- 回归防护：`mekaProjectsImport.test.ts` 断言新建项目时 `ensureMekaDefaultRoleRow` 被调用、
+  而 `ensureDefaultMekaRole` 未被调用（该导出已从模块删除，但 mock 刻意保留同名导出，使
+  「旧分支被加回来」这种回归由断言直接失败，而不是靠 undefined 调用的 TypeError 兜住）。
+  `createMekaRole` 未被删除，导入带快照的项目仍会调用它。
+
+**验证（本次实跑）**
+
+- `pnpm --filter desktop run typecheck` 通过。
+- 定向实跑（第二轮审查修复后）：`vitest run --project standard` 覆盖
+  `builtinMekaSeed` / `mekaDefaultRole`（新增）/ `mekaProjectsImport` /
+  `runtimeConfig.integration` / `MekaProjectRoleEditorRoute` ⇒ **39 用例全绿**
+  （6+3+6+6+18；无 skip）。
+- 新增回归测试（补第一轮审查指出的「不变量无守护」）：
+  - `builtinMekaSeed.test.ts` 新增守卫分支用例：在派生 id 上放一个 `is_builtin = 0`
+    的用户自有行，播种**不得**接管或改写它（旧用例只覆盖 INSERT 与「已是内置行」的
+    DO UPDATE 两条分支，保护分支从未被执行）；
+  - 新增 `src/main/meka-projects/__tests__/mekaDefaultRole.test.ts`：通过**真实注册的 IPC
+    handler** 验证默认角色的只读契约——`read-manifest` 返回内存 manifest 且不触碰缺失的
+    包内文件、`update` 抛 `MEKA_BUILTIN_READ_ONLY` 且不落盘、`delete` 按内置角色拒绝。此前
+    这两处拦截器完全没有测试，而它们都是承重的（包内 `<id>.json` 不存在，
+    `readBuiltinRoleManifest` 会抛错）。**位置是刻意的**：`src/main/localDb/**` 被 desktop
+    `unit` tier 排除、`db` tier 又是 `status: 'manual'`，放在模块旁边会让该不变量在 CI 与
+    提交前门禁里无人守护，因此放在 unit tier 的 `meka-projects/__tests__/`（与
+    `mekaProjectsImport.test.ts` 同款 mock 手法）。
+- 逐项测试证据：
+  - `builtinMekaSeed.test.ts` 断言 SAGA2 三行（默认角色排第一）、用户自有项目拿到默认角色行、
+    自有角色行不被改写、重复播种幂等、保留项目 id 仍不被内置角色污染；
+  - `runtimeConfig.integration.test.ts` 新增「共享默认角色不产生任何角色级注入」：同一份带
+    `roleDefaults.rules` 与项目元数据的 `project.json` 下，默认角色解析出
+    `promptText: ''`、`skills: []`、`mcp: []`、`policyProviderRefs: []`，而
+    `general-development` 仍能读到 `# Project default rule` —— 反向对照证明该空结果不是空跑；
+  - `MekaProjectRoleEditorRoute.test.tsx` 覆盖：未编辑时没有保存/取消按钮、编辑后出现、
+    取消恢复并回到无按钮状态、角色取消不写库、默认角色全部字段 `disabled` 且无保存/取消
+    按钮、以及从新建角色草稿切到只读默认角色后不留任何按钮。**已登记限制**：最后一条断言
+    的是**稳定态**（放弃的新角色草稿不得留下按钮）；点击与 role effect 之间那一帧虽然由
+    `canCancelDraft` 的 `!roleReadOnly` 覆盖，但 testing-library 会先 flush effect，
+    该帧无法从 DOM 断言，故未作为可判别用例——不要把它当成「该帧已被测试」。
+  - `mekaProjectsImport.test.ts` 断言新建项目即调用 `ensureMekaDefaultRoleRow(created.id)`，
+    且旧的 `ensureDefaultMekaRole` 未被调用（它已从模块删除，mock 仍保留该导出，因此一旦
+    有人重新加回旧分支，断言会直接失败而不是抛 undefined）。注意 `createMekaRole` **没有**
+    被删除：导入带角色快照的项目时仍走它；只有「无快照的新建项目」这一条路径不再创建那个
+    额外的空角色。
+- 文档与文案门禁：`node --test scripts/__tests__/meka-whitelist-contract.test.mjs
+  scripts/__tests__/dev-docs-contract.test.mjs` 14/14 通过；`pnpm check:i18n` 五语 10308 key 一致；
+  `pnpm check:i18n-glossary` 无新增违规；`pnpm check:design-colors` `unexpected: 0`（1 例
+  `report/visible-layer-radius` 是既有「配置不可用」徽章的**非阻断报告项**
+  ——`disposition: 'report'`，`unexpected: 0`；该徽章在本次改动前就位于同一行
+  （`git show HEAD:…MekaProjectRoleEditorRoute.tsx`），非本次引入。**注意**：它没有单独的
+  登记台账文件，此前写成“已登记报告项”不准确，故按报告项口径如实描述）。
+- `scripts/meka-session-smoke.mjs` 增加默认角色识别：`WL-11.6` 过去把“找不到包内角色清单”
+  当失败；默认角色刻意没有清单，现改为按其契约断言。**断言口径**：默认角色没有的是*角色级*
+  注入，Host 平台基线照旧存在（`mergePlatformMcp` 注入 `mcp-router`、
+  `resolveMekaPlatformRuntimeSkills` 提供平台技能，因此仍会冻结一份技能快照），所以断言是
+  「`workflow=null`、`skillsCount === platformSkillsCount`、MCP 集合除平台基线外为空、
+  快照技能数等于 `platformSkillsCount`」，**不是**「mcp/skills 为空、无快照」——后者会误报。
+  `WL-11.1` 同步改为断言默认角色的**身份**（库里存在 `<projectId>-default-role` 且 chip 等于
+  其展示名），不再断言「列表第一项」，其余按位置取角色的回退改用 `defaultRoleOf()`。
+  **触发默认角色反向断言需要显式指定角色**：`WL-11.6` 取
+  `ctx.role ?? defaultRoleOf(catalog)`，而 `ctx.role` 由 `WL-11.2` 从
+  `--role` 或 `roles[1]` 决定；默认执行路径落到「通用开发」，因此要实跑默认角色契约必须用
+  `--role 默认角色`（见 `meka-whitelist-verification.md` WL-11 的重跑命令）。
+  该脚本本次**未实跑**（需要真实已登录 Electron + 真实模型轮次）。
+
+**第二轮审查（修复后再审）**
+
+对第一轮修复做独立复验：**无 P0/P1**，6 项修复均被确认正确（P1 去重角色、五语文案口径、
+渲染侧注释/只读/import 合并、smoke 脚本、新增测试、文档）。第二轮另指出 10 项 P2，已按
+「能验证的就修，不能验证的就如实登记」处理：
+
+- **已修**：
+  - _tier 覆盖（最重要）_：新增的只读契约测试原放在 `src/main/localDb/ipc/__tests__/`，
+    而 `src/main/localDb/**` 被 desktop `unit` tier 排除、`db` tier 是 `status: 'manual'`
+    ⇒ 该不变量在 CI 与 `test:unit:related` 里都无人守护。已移到 unit tier 的
+    `src/main/meka-projects/__tests__/mekaDefaultRole.test.ts`。
+  - `mekaProjectsImport.test.ts` 的 mock 不再导出 `ensureDefaultMekaRole`，导致
+    `not.toHaveBeenCalled()` 永不失败；已恢复该 mock 导出，使断言重新承重。
+  - WL-11.10 的「必须对所有已登记项目存在」与守卫用例（派生 id 被用户自有行占用时
+    静默跳过）冲突；已补例外说明，并把新测试补进锚点列表。
+  - 台账汇总表仍写「通用开发/战斗开发 2 个角色」；已改为「每项目 1 个共享默认角色 +
+    SAGA2 的 2 个业务角色」。
+  - `NewMakerDraftRoute.tsx` 的引用行号偏移（`865-918` → 实际 `868-887` / `893-918`）；
+    已更正。
+  - 用例总数 `38` → `39`（6+3+6+6+18）。
+  - `ensureDefaultMekaRole` / `createMekaRole` 被并列为「均未被调用」，而后者未删除且仍被
+    导入路径调用；已拆开表述。
+  - smoke 脚本 `pick()` 改为按键边界锚定正则（原写法在字段名大小写变化或出现以
+    `skillsCount` 结尾的新字段时会误配）；删除只赋值不读取的 `ctx.defaultRole`。
+    > 注：复核后确认原正则**当前并不误配**（日志字段是 `platformSkillsCount`，大写 S），
+    > 故这是防御性加固而非现存缺陷——已在代码注释里按此口径写明，不夸大。
+- **如实登记、未改**：
+  - 渲染侧「切到只读默认角色时不留 Cancel」这条用例断言的是稳定态，无法判别
+    `!roleReadOnly`（testing-library 先 flush effect）；已改测试名与注释说明限制，
+    并把该限制登记进「逐项测试证据」。
+  - `apps/desktop/src/main/maker-ipc/register.ts:11069` 仍把 SAGA2 Orca-lead 会话的
+    null 角色兜底为 `general-development`，**不使用共享默认角色**。这是**存量行为**、
+    与草稿路径不同，按「非本次引入不得擅自扩大范围」保持现状并在此登记，供后续裁决。
+
+**存量失败（登记，非本次引入，未修复）**
+
+按「非本次修改引入的存量问题不得擅自修复」保持现状，仅报告证据与影响：
+
+| 失败文件 | 现象 | 归因 |
+| --- | --- | --- |
+| `localDb/__tests__/drizzle-proxy-perf.test.ts` | `SqliteError: no such column: "context_window_runtime"` | 该 benchmark 用手写 `CREATE TABLE sessions` 夹具且不跑 migration；`context_window_runtime` 是上游新增列，其夹具未跟上。已在 `2026-09-18-origin-main-to-meka-main.md` 以同一根因登记过（那次修的是另一个夹具）。与 Meka 无关（该文件 Meka 引用数 0）。 |
+| `cindy-make/__tests__/runtimeVersion.git-integration.test.ts` | `git` 子进程退出码 128 | `git-integration` project，需要专用资源锁与真实 Git 状态；不走 `test:unit` 门禁。与 Meka 无关（Meka 引用数 0）。 |
+| `cindy-make/__tests__/sourceRevisions.git-integration.test.ts` | `Git source operation failed` | 同上。 |
+| `reviewer/__tests__/reviewSubmoduleIdentity.git-integration.test.ts`（3 例） | submodule 指纹与预算断言失败 | 同上；依赖真实 submodule 工作区状态。 |
+
+**环境性失败（登记，非本次引入）**
+
+- `pnpm test:unit:related` 仍在 `scripts/__tests__/hardcoded-color-audit.test.mjs` 的第 11、14 例
+  失败，原因与 §6.49 已登记的一致：本机 `bash` 是 WSL bash，不继承 Windows 环境变量，而这两例
+  把 `ci.yml` 的 verify 汇总脚本交给 `spawnSync('bash', …)` 并断言退出码。两项检查只读
+  `.github/workflows/ci.yml`、`package.json` 与设计令牌，本次改动均未触及。因 `test:runner`
+  先失败，`test:unit:related` 没有继续跑 desktop 单测层，故本次以直跑 desktop vitest（上条全量
+  套件）作为桌面层证据。
+
+**未验证（如实登记）**
+
+- 未在真实 Electron 里目检 Light/Dark 下按钮的出现/消失与默认角色面板；`desktop:session-smoke`
+  （WL-11.1/WL-11.2/WL-11.6/WL-11.8）未实跑。`meka-whitelist-verification.md` 的 WL-11 系列
+  已按新契约更新期望值并新增 WL-11.10 不变量，但**尚未重新实跑取得新证据**。
+- 升级用户的既有库：默认角色行由启动播种补齐，未做“升级后首次启动”的实机验证。

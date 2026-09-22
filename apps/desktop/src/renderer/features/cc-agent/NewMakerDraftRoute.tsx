@@ -183,6 +183,7 @@ import {
 } from '../../../shared/meka-router';
 import {
   BUILTIN_MEKA_PROJECTS,
+  pickDefaultMekaRole,
   type MekaProject,
   type MekaRole,
 } from '../../../shared/meka-projects';
@@ -874,7 +875,9 @@ export function NewMakerDraftRoute() {
       BUILTIN_MEKA_PROJECTS.find((candidate) => candidate.id === routeMekaDraft.mekaProjectId) ??
       BUILTIN_MEKA_PROJECTS[0];
     const roles = project?.roles ?? [];
-    const role = roles.find((candidate) => candidate.id === routeMekaDraft.mekaRoleId) ?? roles[0];
+    const role =
+      roles.find((candidate) => candidate.id === routeMekaDraft.mekaRoleId) ??
+      pickDefaultMekaRole(roles);
     return {
       projects: BUILTIN_MEKA_PROJECTS,
       projectId: project?.id ?? routeMekaDraft.mekaProjectId ?? '',
@@ -897,7 +900,8 @@ export function NewMakerDraftRoute() {
           projects[0];
         const roles = project?.roles ?? [];
         const role =
-          roles.find((candidate) => candidate.id === routeMekaDraft.mekaRoleId) ?? roles[0];
+          roles.find((candidate) => candidate.id === routeMekaDraft.mekaRoleId) ??
+          pickDefaultMekaRole(roles);
         setMekaSelection({
           projects,
           projectId: project?.id ?? routeMekaDraft.mekaProjectId ?? '',
@@ -3370,11 +3374,12 @@ export function NewMakerDraftRoute() {
       if (source === 'meka-project') {
         const project = mekaSelection.projects.find((candidate) => candidate.id === path);
         const roles = project?.roles ?? [];
+        const defaultRole = pickDefaultMekaRole(roles);
         setMekaSelection((current) => ({
           ...current,
           projectId: path,
           roles,
-          roleId: roles[0]?.id ?? '',
+          roleId: defaultRole?.id ?? '',
         }));
         handleWorkingDirChange(null);
         navigate('/cc-agent/new', {
@@ -3382,7 +3387,7 @@ export function NewMakerDraftRoute() {
           state: {
             workspacePrompt: 'meka',
             mekaProjectId: path,
-            mekaRoleId: roles[0]?.id,
+            mekaRoleId: defaultRole?.id,
           },
         });
         return;

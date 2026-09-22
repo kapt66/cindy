@@ -431,17 +431,57 @@ describe('Meka project and role create states', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'General development' }));
     const roleName = (await screen.findByLabelText('meka.roleName')) as HTMLInputElement;
-    expect(
-      (screen.getByRole('button', { name: 'logic.confirm.cancel' }) as HTMLButtonElement).disabled,
-    ).toBe(false);
-    expect(
-      (screen.getByRole('button', { name: 'meka.saveRole' }) as HTMLButtonElement).disabled,
-    ).toBe(false);
     expect(roleName.disabled).toBe(false);
+    // No edit yet: the header offers neither Save nor Cancel.
+    expect(screen.queryByRole('button', { name: 'logic.confirm.cancel' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'meka.saveRole' })).toBeNull();
     fireEvent.change(roleName, { target: { value: 'Edited development' } });
     fireEvent.click(screen.getByRole('button', { name: 'meka.saveRole' }));
 
     await waitFor(() => expect(api.updateRole).toHaveBeenCalledTimes(1));
+  });
+
+  it('discards role edits on Cancel and keeps the saved manifest otherwise', async () => {
+    const builtinRole = {
+      id: 'general-development',
+      projectId: 'saga2',
+      name: 'general-development',
+      displayName: 'General development',
+      description: null,
+      tags: [],
+      filePath: 'meka/roles/general-development.json',
+      isBuiltin: true,
+      contentDigest: null,
+      sortOrder: 0,
+      createdAt: null,
+      updatedAt: null,
+    };
+    const api = installApi([
+      {
+        ...projectSummary([builtinRole]),
+        id: 'saga2',
+        name: 'saga2',
+        displayName: 'SAGA2',
+        isBuiltin: true,
+        configSource: 'builtin',
+      },
+    ]);
+    renderRoute('/?projectId=saga2');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'General development' }));
+    const roleName = (await screen.findByLabelText('meka.roleName')) as HTMLInputElement;
+    const loadedName = roleName.value;
+    fireEvent.change(roleName, { target: { value: 'Edited development' } });
+    expect(screen.getByRole('button', { name: 'meka.saveRole' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'logic.confirm.cancel' }));
+
+    // Cancel drops the draft and the header returns to its no-edit state.
+    await waitFor(() =>
+      expect((screen.getByLabelText('meka.roleName') as HTMLInputElement).value).toBe(loadedName),
+    );
+    expect(screen.queryByRole('button', { name: 'meka.saveRole' })).toBeNull();
+    expect(api.updateRole).not.toHaveBeenCalled();
   });
 
   it('keeps project actions enabled and materializes bundled fallback on explicit Save', async () => {
@@ -458,23 +498,27 @@ describe('Meka project and role create states', () => {
 
     expect(await screen.findByText('meka.configurationSourceBuiltin')).toBeTruthy();
     const name = (await screen.findByLabelText('meka.projectName')) as HTMLInputElement;
-    const cancel = screen.getByRole('button', { name: 'logic.confirm.cancel' });
-    const save = screen.getByRole('button', { name: 'meka.save' });
     expect(name.disabled).toBe(false);
-    await waitFor(() => {
-      expect((cancel as HTMLButtonElement).disabled).toBe(false);
-      expect((save as HTMLButtonElement).disabled).toBe(false);
-    });
+    // Nothing changed since load, so there is no edit to save or cancel.
+    expect(screen.queryByRole('button', { name: 'logic.confirm.cancel' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'meka.save' })).toBeNull();
+
     fireEvent.change(name, { target: { value: 'Recovered SAGA2' } });
+    const cancel = await screen.findByRole('button', { name: 'logic.confirm.cancel' });
+    const save = screen.getByRole('button', { name: 'meka.save' });
     fireEvent.click(cancel);
     expect(name.value).toBe('Project A');
-    fireEvent.click(save);
+    // Cancelling returns to the no-edit state as well.
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'meka.save' })).toBeNull());
+
+    fireEvent.change(name, { target: { value: 'Recovered SAGA2' } });
+    fireEvent.click(screen.getByRole('button', { name: 'meka.save' }));
 
     await waitFor(() => expect(api.saveProject).toHaveBeenCalledTimes(1));
     expect(api.saveProject).toHaveBeenCalledWith(
       expect.objectContaining({
         project: expect.objectContaining({
-          basic: expect.objectContaining({ displayName: 'Project A' }),
+          basic: expect.objectContaining({ displayName: 'Recovered SAGA2' }),
         }),
       }),
     );
@@ -517,6 +561,89 @@ describe('Meka project and role create states', () => {
 
     expect(await screen.findByRole('heading', { name: 'meka.projectBasicInfo' })).toBeTruthy();
     expect(api.createRole).not.toHaveBeenCalled();
+  });
+
+  it('shows the shared default role as read-only with no way to save it', async () => {
+    const defaultRole = {
+      id: 'saga2-default-role',
+      projectId: 'saga2',
+      name: 'saga2-default-role',
+      displayName: '默认角色',
+      description: null,
+      tags: ['builtin', 'default'],
+      filePath: 'meka/roles/saga2-default-role.json',
+      isBuiltin: true,
+      contentDigest: null,
+      sortOrder: -1,
+      createdAt: null,
+      updatedAt: null,
+    };
+    const api = installApi([
+      {
+        ...projectSummary([defaultRole]),
+        id: 'saga2',
+        name: 'saga2',
+        displayName: 'SAGA2',
+        isBuiltin: true,
+        configSource: 'builtin',
+      },
+    ]);
+    renderRoute('/?projectId=saga2');
+
+    fireEvent.click(await screen.findByRole('button', { name: '默认角色' }));
+
+    // Every field of the default role is inert: it injects nothing by contract.
+    expect(((await screen.findByLabelText('meka.roleName')) as HTMLInputElement).disabled).toBe(
+      true,
+    );
+    expect((screen.getByLabelText('meka.description') as HTMLTextAreaElement).disabled).toBe(true);
+    expect(screen.getByText('meka.defaultRoleDescription')).toBeTruthy();
+    // No Save even after a programmatic change attempt, and no delete for a built-in role.
+    expect(screen.queryByRole('button', { name: 'meka.saveRole' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'meka.deleteRole' })).toBeNull();
+    // A read-only panel has no draft to discard, so it must not offer Cancel either.
+    expect(screen.queryByRole('button', { name: 'logic.confirm.cancel' })).toBeNull();
+    expect(api.updateRole).not.toHaveBeenCalled();
+  });
+
+  it('shows no buttons after switching from a new-role draft to the read-only default role', async () => {
+    const defaultRole = {
+      id: 'saga2-default-role',
+      projectId: 'saga2',
+      name: 'saga2-default-role',
+      displayName: '默认角色',
+      description: null,
+      tags: ['builtin', 'default'],
+      filePath: 'meka/roles/saga2-default-role.json',
+      isBuiltin: true,
+      contentDigest: null,
+      sortOrder: -1,
+      createdAt: null,
+      updatedAt: null,
+    };
+    installApi([
+      {
+        ...projectSummary([defaultRole]),
+        id: 'saga2',
+        name: 'saga2',
+        displayName: 'SAGA2',
+        isBuiltin: true,
+        configSource: 'builtin',
+      },
+    ]);
+    renderRoute('/?projectId=saga2');
+
+    // Start a new role (a genuinely pending draft), then select the read-only default role.
+    fireEvent.click(await screen.findByRole('button', { name: 'meka.newRole' }));
+    fireEvent.click(await screen.findByRole('button', { name: '默认角色' }));
+
+    await screen.findByLabelText('meka.roleName');
+    expect(screen.queryByRole('button', { name: 'meka.saveRole' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'logic.confirm.cancel' })).toBeNull();
+    // LIMIT: this asserts the settled state — the abandoned new-role draft must not leave a
+    // Cancel/Save behind. The single render frame between the click and the role effect is
+    // also covered by `canCancelDraft`'s `!roleReadOnly`, but is not observable here because
+    // testing-library flushes effects before it returns.
   });
 
   it('restores discipline and domain bulk selection for role resources', async () => {

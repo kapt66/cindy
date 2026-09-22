@@ -16,6 +16,7 @@ import type {
   MekaRoleSkillSelection,
   MekaRoleWorkflow,
 } from '../../shared/meka-projects.js';
+import { mekaDefaultRoleId, mekaDefaultRoleManifest } from '../../shared/meka-projects.js';
 import { getDbClient } from '../localDb/client/current.js';
 import { createLogger } from '../logger.js';
 import { getMekaP4SettingsService } from '../meka-settings/ipc.js';
@@ -535,6 +536,12 @@ async function resolveRoleFile(
   row: RoleRow,
   projectFile: MekaProjectFile,
 ): Promise<{ role: MekaRoleFile; workflowRecoveredFromRole: boolean }> {
+  if (row.is_builtin === 1 && row.id === mekaDefaultRoleId(row.project_id)) {
+    // The shared default role has no bundled manifest file and must never absorb project
+    // defaults: `useProjectDefaults` / `includeAllProjectMetadata` stay unset so the
+    // project's rules, skills, MCP and metadata are not merged into it.
+    return { role: mekaDefaultRoleManifest(row.project_id), workflowRecoveredFromRole: false };
+  }
   if (row.is_builtin === 1) {
     const bundled = await readBuiltinRoleManifest(row.id, row.project_id);
     const manifest = projectFile.builtinRoles?.find((role) => role.id === row.id) ?? bundled;

@@ -311,6 +311,29 @@ function openDb(dbPath) {
   return new Database(dbPath, { readonly: true, fileMustExist: true });
 }
 
+/** 与 shared/meka-projects.ts 的 mekaDefaultRoleId() 同构：<projectId>-default-role。 */
+function isSharedDefaultRole(role, projectId) {
+  return role.isBuiltin === true && role.id === `${projectId}-default-role`;
+}
+
+/**
+ * 应用会为该项目默认选中的角色（与 `pickDefaultMekaRole()` 同义）：优先共享默认角色，
+ * 退化到第一项。用于「当前会话用的是哪个角色」这类回退，避免把位置当成身份。
+ */
+function defaultRoleOf(catalog) {
+  return (
+    catalog.roles.find((role) => isSharedDefaultRole(role, catalog.project.id)) ??
+    catalog.roles[0]
+  );
+}
+
+/**
+ * Host 对每个普通 Meka 任务都会注入的平台 MCP（`mekaResolvePlan.ts` 的
+ * `mergePlatformMcp`）。它是「角色级注入」之外的部分，因此默认角色的反向断言要把它排除，
+ * 而不是断言运行期 MCP 为空。平台基线变化时这里必须同步——这正是本清单要拦住的那类漂移。
+ */
+const PLATFORM_MCP_PROVIDER_IDS = ['mcp-router'];
+
 function readMekaCatalog(dbPath, options) {
   const db = openDb(dbPath);
   try {
@@ -323,6 +346,7 @@ function readMekaCatalog(dbPath, options) {
         id: row.id,
         displayName: row.display_name ?? row.name,
         description: row.description ?? '',
+        isBuiltin: row.is_builtin === 1,
       });
     }
     const project = options.projectId
@@ -382,8 +406,12 @@ function runtimeConfigFromLog(logDir, sessionId) {
   }
   if (start === -1) return null;
   const block = lines.slice(start, start + 16).join('\n');
+  // Anchored on a key boundary so a key can never be matched as a suffix of a longer key.
+  // Today `platformSkillsCount` is logged with a capital S, so the unanchored form happened
+  // not to collide with `skillsCount`; anchoring makes that independent of casing and of any
+  // future field name ending in `skillsCount`, which the default-role comparison relies on.
   const pick = (key) => {
-    const m = block.match(new RegExp(`${key}:\\s*([^,\\n]+)`));
+    const m = block.match(new RegExp(`(?:^|[\\s,{])${key}:\\s*([^,\\n]+)`));
     return m ? m[1].trim().replace(/^'|'$/g, '') : null;
   };
   const mcpMatch = block.match(/mcpProviderIds:\s*\[([^\]]*)\]/);
@@ -392,6 +420,7 @@ function runtimeConfigFromLog(logDir, sessionId) {
     roleId: pick('roleId'),
     workflow: pick('workflow') === 'null' ? null : pick('workflow'),
     skillsCount: Number(pick('skillsCount')),
+    platformSkillsCount: Number(pick('platformSkillsCount')),
     skillRevision: pick('skillRevision'),
     mcpProviderIds: mcpMatch
       ? mcpMatch[1]
@@ -522,8 +551,15 @@ function buildChecks(ctx) {
         if (!draft.ok) return ctx.fail(draft.reason);
         const chip = await ctx.session.evaluate(`${BY_LABEL(ROLE_PICKER)}?.textContent?.trim() ?? null`);
         if (!chip) return ctx.fail('草稿里没有角色选择器（未绑定 Meka 项目/角色）');
-        if (chip !== roles[0].displayName) {
-          return ctx.fail(`草稿默认角色应为 roles[0]=${roles[0].displayName}，实际=${chip}`);
+        // 断言的是「共享默认角色」这个身份，而不是「列表第一项」：应用侧由
+        // `pickDefaultMekaRole()` 显式选中 `<projectId>-default-role`，排序只是附带结果。
+        // 按位置断言会在排序被任何写入路径归一化时误红，且失败信息指错方向。
+        const defaultRole = roles.find((role) => isSharedDefaultRole(role, project.id));
+        if (!defaultRole) {
+          return ctx.fail(`项目 ${project.id} 库里没有共享默认角色 ${project.id}-default-role`);
+        }
+        if (chip !== defaultRole.displayName) {
+          return ctx.fail(`草稿默认角色应为共享默认角色=${defaultRole.displayName}，实际=${chip}`);
         }
         const scope = await ctx.session.evaluate(
           `(() => { const m = document.querySelector('main') || document.body; return (m.innerText || '').replace(/\\n+/g, ' | ').slice(0, 200); })()`,
@@ -580,7 +616,7 @@ function buildChecks(ctx) {
         const problems = [];
         if (row.workspace_kind !== 'meka') problems.push(`workspace_kind=${row.workspace_kind}`);
         if (row.meka_project_id !== project.id) problems.push(`meka_project_id=${row.meka_project_id}`);
-        const expectedRole = (ctx.role ?? ctx.catalog.roles[0]).id;
+        const expectedRole = (ctx.role ?? defaultRoleOf(ctx.catalog)).id;
         if (row.meka_role_id !== expectedRole) problems.push(`meka_role_id=${row.meka_role_id}≠${expectedRole}`);
         if (row.is_formal !== 0) problems.push(`is_formal=${row.is_formal}`);
         // 工作目录必须解析成真实存在的绝对路径（只断言非空会漏掉「路径没解析出来」）。
@@ -619,7 +655,7 @@ function buildChecks(ctx) {
         if (options.dryRun) return ctx.unverified('--dry-run：跳过真实运行');
         if (!ctx.row) return ctx.fail('前置失败：没有新会话');
         const { project, roles } = ctx.catalog;
-        const role = ctx.role ?? roles[0];
+        const role = ctx.role ?? defaultRoleOf(ctx.catalog);
         const before = ctx.assistantCount(ctx.row.id);
         await ctx.session.evaluate(`location.hash = '#/cc-agent/${ctx.row.id}'`);
         await sleep(2500);
@@ -660,8 +696,11 @@ function buildChecks(ctx) {
       async run() {
         if (options.dryRun) return ctx.unverified('--dry-run：跳过真实运行');
         if (!ctx.row) return ctx.fail('前置失败：没有新会话');
-        const role = ctx.role ?? ctx.catalog.roles[0];
+        const role = ctx.role ?? defaultRoleOf(ctx.catalog);
         const declared = declaredRoleSkills(role.id);
+        // 共享「默认角色」刻意没有包内清单：它的契约就是不注入任何提示词／技能／MCP，
+        // 所以缺清单是预期结果，而不是验证缺口——改为断言运行期同样为空。
+        const sharedDefault = isSharedDefaultRole(role, ctx.catalog.project.id);
         const config = runtimeConfigFromLog(ctx.logDir, ctx.row.id);
         if (!config) return ctx.fail(`日志里找不到该会话的 Meka 运行期配置（${ctx.logDir}）`);
         if (config.projectId !== ctx.catalog.project.id) {
@@ -669,27 +708,69 @@ function buildChecks(ctx) {
         }
         if (config.roleId !== role.id) return ctx.fail(`运行期 roleId=${config.roleId}，期望 ${role.id}`);
         const problems = [];
-        if (!declared) {
+        if (!declared && !sharedDefault) {
           problems.push(`未找到角色清单 apps/desktop/resources/meka/roles/${role.id}.json`);
         } else {
-          if ((declared.workflow ?? null) !== (config.workflow ?? null)) {
-            problems.push(`workflow=${config.workflow}，清单声明=${declared.workflow}`);
+          const declaredWorkflow = declared ? declared.workflow ?? null : null;
+          const declaredMcp = declared ? declared.mcp : [];
+          const declaredSkills = declared ? declared.skills : [];
+          if (declaredWorkflow !== (config.workflow ?? null)) {
+            problems.push(`workflow=${config.workflow}，清单声明=${declaredWorkflow}`);
           }
-          for (const providerId of declared.mcp) {
+          for (const providerId of declaredMcp) {
             if (!config.mcpProviderIds.includes(providerId)) {
               problems.push(`角色级 MCP ${providerId} 未进入运行期（实际 ${config.mcpProviderIds.join(',')}）`);
             }
           }
+          if (sharedDefault) {
+            // 默认角色的契约是「没有**角色级**注入」，不是「运行期什么都没有」：Host 对每个
+            // 普通 Meka 任务都会加平台基线（`mergePlatformMcp` 注入 mcp-router、
+            // `resolveMekaPlatformRuntimeSkills` 提供平台技能并因此仍会冻结一份技能快照）。
+            // 所以这里断言的是「总集合等于平台基线」，断言 mcp/skills 为空会误报。
+            const extraMcp = config.mcpProviderIds.filter(
+              (id) => !PLATFORM_MCP_PROVIDER_IDS.includes(id),
+            );
+            if (extraMcp.length) {
+              problems.push(
+                `默认角色不应有角色级 MCP：实际 ${config.mcpProviderIds.join(',')}，平台基线外=${extraMcp.join(',')}`,
+              );
+            }
+            for (const platformId of PLATFORM_MCP_PROVIDER_IDS) {
+              if (!config.mcpProviderIds.includes(platformId)) {
+                problems.push(`平台 MCP ${platformId} 未进入运行期（实际 ${config.mcpProviderIds.join(',')}）`);
+              }
+            }
+            if (config.skillsCount !== config.platformSkillsCount) {
+              problems.push(
+                `默认角色不应贡献角色技能：skillsCount=${config.skillsCount} ≠ platformSkillsCount=${config.platformSkillsCount}`,
+              );
+            }
+          }
           const snapshot = skillDirsForSession(options.userDataDir, ctx.row.id);
           if (!snapshot) {
-            problems.push('未找到该会话的技能快照');
+            // 只有平台技能也为空时才允许没有快照；平台技能存在却缺快照是真实缺陷
+            // （平台技能必须被冻结进该任务的不可变快照）。
+            if (config.platformSkillsCount > 0) {
+              problems.push(
+                `平台技能 ${config.platformSkillsCount} 个存在，但该会话没有技能快照`,
+              );
+            }
           } else {
             if (snapshot.revision !== config.skillRevision) {
               problems.push(`快照 revision=${snapshot.revision}≠运行期 ${config.skillRevision}`);
             }
-            for (const skillId of declared.skills) {
-              if (!snapshot.skills.includes(skillId)) {
-                problems.push(`角色声明的技能 ${skillId} 不在快照（${snapshot.skills.join(',')}）`);
+            if (sharedDefault) {
+              // 默认角色的快照应恰好只含平台技能——数量相等即证明角色未追加任何技能。
+              if (snapshot.skills.length !== config.platformSkillsCount) {
+                problems.push(
+                  `默认角色快照应只含平台技能 ${config.platformSkillsCount} 个，实际 ${snapshot.skills.length}：${snapshot.skills.join(',')}`,
+                );
+              }
+            } else {
+              for (const skillId of declaredSkills) {
+                if (!snapshot.skills.includes(skillId)) {
+                  problems.push(`角色声明的技能 ${skillId} 不在快照（${snapshot.skills.join(',')}）`);
+                }
               }
             }
             ctx.snapshotSkills = snapshot.skills;
@@ -697,7 +778,7 @@ function buildChecks(ctx) {
         }
         if (problems.length) return ctx.fail(problems.join('；'));
         return ctx.pass(
-          `roleId=${config.roleId} workflow=${config.workflow} mcp=${config.mcpProviderIds.join(',')} skillsCount=${config.skillsCount} 快照技能=${(ctx.snapshotSkills ?? []).join(',')}`,
+          `roleId=${config.roleId} workflow=${config.workflow} mcp=${config.mcpProviderIds.join(',')} skillsCount=${config.skillsCount} platformSkillsCount=${config.platformSkillsCount} 快照技能=${(ctx.snapshotSkills ?? []).join(',')}`,
         );
       },
     },
@@ -773,7 +854,7 @@ function buildChecks(ctx) {
           return ctx.fail(`同一项目重进后应保留草稿已选角色「${target}」，实际=${afterReenter}`);
         }
         return ctx.pass(
-          `fresh 默认=「${roles[0].displayName}」；切到「${target}」后同项目重进仍为「${afterReenter}」（跨项目重进无第二个项目可验）`,
+          `fresh 默认=「${defaultRoleOf(ctx.catalog).displayName}」；切到「${target}」后同项目重进仍为「${afterReenter}」（跨项目重进无第二个项目可验）`,
         );
       },
     },

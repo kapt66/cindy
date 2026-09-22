@@ -230,6 +230,74 @@ describe('Meka runtime project/role resolution', () => {
     }
   });
 
+  it('resolves the shared default role without any role-level injection', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'cindy-meka-default-role-'));
+    environment.p4RootPath = root;
+    try {
+      await mkdir(path.join(root, '.meka'), { recursive: true });
+      await mkdir(path.join(root, 'saga2_design'), { recursive: true });
+      await writeFile(
+        path.join(root, 'saga2_design', 'AGENTS.md'),
+        '# AI 初次接入治理规则\n',
+        'utf8',
+      );
+      await writeFile(
+        path.join(root, '.meka', 'project.json'),
+        `${JSON.stringify(
+          {
+            schemaVersion: 1,
+            projectId: 'saga2',
+            basic: {
+              name: 'saga2',
+              displayName: 'SAGA2',
+              path: root,
+              disciplines: ['通用'],
+              domains: [],
+            },
+            metadata: [
+              {
+                sourcePath: 'saga2_design/AGENTS.md',
+                itemType: 'agents-md',
+                name: 'agents-md',
+                contentFingerprint: 'sha256:test',
+                enabled: true,
+              },
+            ],
+            // Project defaults that a role with useProjectDefaults would inherit.
+            roleDefaults: {
+              rules: [{ id: 'project-rule', text: '# Project default rule', enabled: true }],
+              skills: ['saga2-overview'],
+              mcp: [],
+            },
+          },
+          null,
+          2,
+        )}\n`,
+        'utf8',
+      );
+
+      const resolved = await resolveMekaRuntimeConfig('saga2', 'saga2-default-role');
+
+      expect(resolved).toMatchObject({
+        projectId: 'saga2',
+        roleId: 'saga2-default-role',
+        roleDisplayName: '默认角色',
+        workflowRecoveredFromRole: false,
+        promptText: '',
+        skills: [],
+        mcp: [],
+        policyProviderRefs: [],
+      });
+      // Guard against a vacuous pass: the same project config does inject into a role that
+      // opts into project defaults, so the empty result above is the default role's contract.
+      const gameplay = await resolveMekaRuntimeConfig('saga2', 'general-development');
+      expect(gameplay.promptText).toContain('# Project default rule');
+    } finally {
+      environment.p4RootPath = null;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('migrates the renamed SAGA2 combat skill id in memory without rewriting the project snapshot', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'cindy-meka-combat-skill-rename-'));
     environment.p4RootPath = root;

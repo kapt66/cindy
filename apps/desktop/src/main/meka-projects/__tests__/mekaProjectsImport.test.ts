@@ -14,6 +14,7 @@ const h = vi.hoisted(() => ({
   roleRows: [] as Array<Record<string, unknown>>,
   createRole: vi.fn(),
   ensureDefaultRole: vi.fn(),
+  ensureDefaultRoleRow: vi.fn(),
 }));
 
 vi.mock('electron', () => ({
@@ -76,7 +77,12 @@ vi.mock('../projectConfig.js', async (importOriginal) => {
 
 vi.mock('../../localDb/ipc/mekaRoles.js', () => ({
   createMekaRole: h.createRole,
+  // `ensureDefaultMekaRole` no longer exists in the module, but it stays mocked on purpose:
+  // if it is ever re-added and called for a fresh project, the call lands here and the
+  // `not.toHaveBeenCalled()` assertions below fail loudly instead of throwing an opaque
+  // TypeError from an undefined import.
   ensureDefaultMekaRole: h.ensureDefaultRole,
+  ensureMekaDefaultRoleRow: h.ensureDefaultRoleRow,
 }));
 
 vi.mock('../../localDb/client/current.js', () => ({
@@ -188,6 +194,7 @@ describe('Meka copied project import', () => {
     h.importedFile = null;
     h.createRole.mockReset();
     h.ensureDefaultRole.mockReset();
+    h.ensureDefaultRoleRow.mockReset();
     h.createRole.mockImplementation(async (input: Record<string, unknown>) => {
       const roleFile = input.roleFile as MekaRoleManifestFile;
       const id = `cloned-role-${h.roleRows.length + 1}`;
@@ -425,5 +432,11 @@ describe('Meka copied project import', () => {
     expect(h.createdProject?.name).toBe('Brand New Project');
     expect(created.id).not.toBe('Brand New Project');
     expect(created.displayName).toBe('Brand New Project');
+    // The shared default role must exist right away, not only after the next restart's seed,
+    // and it is the project's ONLY role: the legacy empty editable "通用" role is gone, so a
+    // brand-new project cannot show two near-identical empty roles.
+    expect(h.ensureDefaultRoleRow).toHaveBeenCalledWith(created.id);
+    expect(h.ensureDefaultRole).not.toHaveBeenCalled();
+    expect(h.createRole).not.toHaveBeenCalled();
   });
 });

@@ -13220,6 +13220,7 @@
     "builtinProjectReadOnly": "内蔵プロジェクトの主パスは固定され、その他の設定は編集できます。",
     "roleBasicInfo": "基本情報",
     "builtinRoleReadOnly": "内蔵ロールは編集でき、変更はプロジェクトファイルに保存されます。",
+    "defaultRoleDescription": "このロールは全プロジェクト共通です。ロール自体はプロンプト、ルール、スキル、MCP を一切持ちません。通常のチャットを新規作成するのと同じ感覚で使えます。",
     "copyRole": "ロールをコピー",
     "roleCopyName": "{{name}} のコピー",
     "projectKnowledge": "プロジェクトメタデータ",

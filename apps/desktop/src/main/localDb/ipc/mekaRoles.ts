@@ -6,6 +6,12 @@ import { createId } from '@paralleldrive/cuid2';
 import { app, ipcMain } from 'electron';
 
 import type { MekaRole, MekaRoleManifestFile } from '../../../shared/meka-projects.js';
+import {
+  MEKA_DEFAULT_ROLE_UPSERT_SQL,
+  mekaDefaultRoleId,
+  mekaDefaultRoleManifest,
+  mekaDefaultRoleUpsertParams,
+} from '../../../shared/meka-projects.js';
 import { isIpcError } from '../../../shared/ipc-errors.js';
 import {
   createCustomRoleManifestExclusive,
@@ -29,7 +35,6 @@ export const MEKA_ROLE_DELETE = 'meka-role:delete';
 export const MEKA_ROLE_READ_MANIFEST = 'meka-role:read-manifest';
 
 const SAFE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
-export const DEFAULT_MEKA_PROJECT_ROLE_DISPLAY_NAME = '通用';
 
 interface RoleRow {
   id: string;
@@ -195,23 +200,13 @@ function rethrow(error: unknown, action: string): never {
   throwIpcError('INTERNAL', `failed to ${action} Meka role: ${String(error)}`);
 }
 
-export function createDefaultMekaRoleManifest(
-  projectId: string,
-  roleId: string,
-): MekaRoleManifestFile {
-  return {
-    schemaVersion: 1,
-    id: roleId,
-    projectId,
-    name: roleId,
-    displayName: DEFAULT_MEKA_PROJECT_ROLE_DISPLAY_NAME,
-    policyProviderRefs: [],
-    rules: [],
-    skills: [],
-    promptFragments: [],
-    mcp: [],
-    projectMetadataSelection: [],
-  };
+/**
+ * Ensure the shared built-in default role row exists for a project. Custom projects are not
+ * covered by the bundled startup seed, and a project created during this session must offer
+ * the default role immediately instead of only after the next restart.
+ */
+export async function ensureMekaDefaultRoleRow(projectId: string): Promise<void> {
+  await getDbClient().exec(MEKA_DEFAULT_ROLE_UPSERT_SQL, mekaDefaultRoleUpsertParams(projectId));
 }
 
 export async function createMekaRole(input: unknown): Promise<MekaRole> {
@@ -247,25 +242,6 @@ export async function createMekaRole(input: unknown): Promise<MekaRole> {
   }
 }
 
-export async function ensureDefaultMekaRole(projectIdInput: string): Promise<MekaRole> {
-  const projectId = safeId(projectIdInput, 'projectId');
-  const existing = await getDbClient().queryOne<RoleRow>(
-    'SELECT * FROM meka_roles WHERE project_id = ? ORDER BY sort_order, created_at LIMIT 1',
-    [projectId],
-  );
-  if (existing) return toRole(existing);
-  const id = safeId(createId(), 'generated role id');
-  const manifest = createDefaultMekaRoleManifest(projectId, id);
-  const userData = app.getPath('userData');
-  await createCustomRoleManifestExclusive(id, manifest, userData);
-  try {
-    return await upsertRole(manifest, 0, Date.now());
-  } catch (error) {
-    await unlink(resolveCustomRoleManifestPath(id, userData)).catch(() => undefined);
-    throw error;
-  }
-}
-
 async function updateMekaRole(input: unknown): Promise<MekaRole> {
   try {
     const body = requireObject(input);
@@ -278,6 +254,12 @@ async function updateMekaRole(input: unknown): Promise<MekaRole> {
       throwIpcError('INVALID_PARAMS', 'role projectId mismatch');
     const manifest = normalizeMekaRoleManifest(roleFile, id, projectId);
     if (current.is_builtin === 1) {
+      if (current.id === mekaDefaultRoleId(current.project_id)) {
+        throwIpcError(
+          'MEKA_BUILTIN_READ_ONLY',
+          'the shared default role cannot be edited; copy it to a project role instead',
+        );
+      }
       const state = await builtinProjectState(projectId);
       if (!state?.file)
         throwIpcError('MEKA_PROJECT_NOT_FOUND', 'builtin project configuration unavailable');
@@ -371,6 +353,8 @@ async function readRoleManifest(roleIdInput: unknown): Promise<MekaRoleManifestF
   const row = await roleRow(roleId);
   if (!row) return null;
   if (row.is_builtin === 1) {
+    if (row.id === mekaDefaultRoleId(row.project_id))
+      return mekaDefaultRoleManifest(row.project_id);
     const state = await builtinProjectState(row.project_id);
     return (
       state?.file?.builtinRoles?.find((role) => role.id === roleId) ??

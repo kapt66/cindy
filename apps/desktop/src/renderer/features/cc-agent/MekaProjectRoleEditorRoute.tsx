@@ -44,7 +44,7 @@ import type {
   MekaSkillCatalogEntry,
   MekaWorkflowType,
 } from '../../../shared/meka-projects';
-import { MEKA_GENERAL_DISCIPLINE } from '../../../shared/meka-projects';
+import { MEKA_GENERAL_DISCIPLINE, isMekaDefaultRole } from '../../../shared/meka-projects';
 import { parseJiraIssueFromLink } from '../../../shared/jira';
 import { MekaProjectRemoteInstances } from './MekaProjectRemoteInstances';
 import { MekaProjectCreateDialog, type MekaProjectCreateInput } from './MekaProjectCreateDialog';
@@ -169,6 +169,24 @@ function roleFileForCreate(
 
 function cloneValue<T>(value: T): T {
   return structuredClone(value);
+}
+
+/**
+ * Key-order-insensitive comparison key for drafts. Drafts are rebuilt from several sources
+ * (project file, project row, metadata list) whose key order is not guaranteed, so a plain
+ * `JSON.stringify` could report a change that the user never made and would wrongly show
+ * Save/Cancel.
+ */
+function stableKey(value: unknown): string {
+  return JSON.stringify(value, (_key, item: unknown) => {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) return item;
+    const record = item as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.keys(record)
+        .sort()
+        .map((key) => [key, record[key]]),
+    );
+  });
 }
 
 function metadataConfig(item: MekaProjectMetadata): MekaProjectMetadataConfigItem {
@@ -1245,6 +1263,9 @@ export function MekaProjectRoleEditorRoute() {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [selectedRoleId, setSelectedRoleId] = useState<string | null>(null);
   const [project, setProject] = useState<DraftProject | null>(null);
+  // Last loaded/saved project draft. Save and Cancel only exist while the draft differs
+  // from it, so "no edit in progress" is a real state and not just an equal-looking draft.
+  const [projectBaseline, setProjectBaseline] = useState<DraftProject | null>(null);
   const [projectFile, setProjectFile] = useState<MekaProjectFile | null>(null);
   const [role, setRole] = useState<MekaRoleManifestFile | null>(null);
   const [roleEffective, setRoleEffective] = useState<MekaRoleManifestFile | null>(null);
@@ -1263,6 +1284,19 @@ export function MekaProjectRoleEditorRoute() {
     () => projects.find((item) => item.id === selectedProjectId) ?? null,
     [projects, selectedProjectId],
   );
+
+  /**
+   * Install a freshly loaded/saved project configuration as both the draft and its
+   * baseline. Every path that *produces* a new effective value goes through here — load,
+   * save, and metadata rediscovery — so "unchanged" always means unchanged since the last
+   * real write. Cancel is the exception by design: it restores the existing baseline
+   * instead of producing a new one.
+   */
+  const applyLoadedProject = useCallback((target: MekaProject, file: MekaProjectFile | null) => {
+    const draft = file ? cloneValue(projectDraft(target, file)) : null;
+    setProject(draft);
+    setProjectBaseline(draft ? cloneValue(draft) : null);
+  }, []);
 
   const reload = useCallback(async (preferredId?: string | null) => {
     const next = await window.electronAPI.localDb.mekaProjects.list();
@@ -1300,6 +1334,7 @@ export function MekaProjectRoleEditorRoute() {
   useEffect(() => {
     if (!selectedProject) {
       setProject(null);
+      setProjectBaseline(null);
       setProjectFile(null);
       setProjectLoadFailed(false);
       setRole(null);
@@ -1311,6 +1346,7 @@ export function MekaProjectRoleEditorRoute() {
     }
     let cancelled = false;
     setProject(null);
+    setProjectBaseline(null);
     setProjectFile(null);
     setProjectLoadFailed(false);
     setMetadata([]);
@@ -1325,7 +1361,7 @@ export function MekaProjectRoleEditorRoute() {
       .then(([nextFile, nextMetadata]) => {
         if (!cancelled) {
           setProjectFile(nextFile);
-          setProject(projectDraft(selectedProject, nextFile));
+          applyLoadedProject(selectedProject, nextFile);
           setProjectLoadFailed(false);
           setMetadata(cloneValue(nextMetadata));
           setMetadataEffective(cloneValue(nextMetadata));
@@ -1334,6 +1370,7 @@ export function MekaProjectRoleEditorRoute() {
       .catch(() => {
         if (!cancelled) {
           setProject(null);
+          setProjectBaseline(null);
           setProjectFile(null);
           setProjectLoadFailed(true);
           setMetadata([]);
@@ -1343,7 +1380,7 @@ export function MekaProjectRoleEditorRoute() {
     return () => {
       cancelled = true;
     };
-  }, [selectedProject]);
+  }, [applyLoadedProject, selectedProject]);
 
   useEffect(() => {
     if (creatingRole) return;
@@ -1405,8 +1442,8 @@ export function MekaProjectRoleEditorRoute() {
   };
 
   const cancelProjectDraft = () => {
-    if (!selectedProject || !projectFile) return;
-    setProject(projectDraft(selectedProject, projectFile));
+    if (!projectBaseline) return;
+    setProject(cloneValue(projectBaseline));
     setMetadata(cloneValue(metadataEffective));
   };
 
@@ -1486,10 +1523,16 @@ export function MekaProjectRoleEditorRoute() {
         selectedProject.id,
       );
       setProjectFile(cloneValue(savedFile));
-      setProject(projectDraft(selectedProject, savedFile));
       setMetadata(cloneValue(savedMetadata));
       setMetadataEffective(cloneValue(savedMetadata));
-      await reload(selectedProject.id);
+      const nextProjects = await reload(selectedProject.id);
+      // Install the saved file as the new baseline, using the freshly reloaded row: the
+      // closure's `selectedProject` still carries the pre-save values, and `projectDraft`
+      // falls back to those for any field the file omits (e.g. `formalWorkflowEnabled`),
+      // which would briefly display the old value with no way to notice it.
+      const freshProject =
+        nextProjects.find((item) => item.id === selectedProject.id) ?? selectedProject;
+      applyLoadedProject(freshProject, savedFile);
       toast.success(t('meka.saved'));
     });
   };
@@ -1629,7 +1672,7 @@ export function MekaProjectRoleEditorRoute() {
       setMetadata(cloneValue(nextMetadata));
       setMetadataEffective(cloneValue(nextMetadata));
       setProjectFile(cloneValue(nextFile));
-      setProject(projectDraft(selectedProject, nextFile));
+      applyLoadedProject(selectedProject, nextFile);
     });
   };
 
@@ -1818,6 +1861,22 @@ export function MekaProjectRoleEditorRoute() {
   // Bundled SAGA2 roles are editable in place; the first save materializes
   // their snapshot in the project-root .meka/project.json.
   const selectionReadOnly = false;
+  // The shared default role injects nothing by contract, so it has no editable surface.
+  const roleReadOnly =
+    selectionReadOnly || (selectedRoleSummary ? isMekaDefaultRole(selectedRoleSummary) : false);
+  // A new role is a pending change from the moment it exists; an existing one only counts as
+  // edited once its draft actually differs from the last loaded/saved manifest.
+  const roleDirty = creatingRole || (role !== null && stableKey(role) !== stableKey(roleEffective));
+  const projectDirty =
+    (project !== null &&
+      projectBaseline !== null &&
+      stableKey(project) !== stableKey(projectBaseline)) ||
+    stableKey(metadata) !== stableKey(metadataEffective);
+  // A read-only panel never has a draft to discard, so it offers Cancel for neither state.
+  // This also covers the commit where switching away from a new-role draft still carries
+  // that draft while the shared default role is already the selection.
+  const canCancelDraft = showingRole ? roleDirty && !roleReadOnly : projectDirty;
+  const canSaveDraft = showingRole ? roleDirty && !roleReadOnly : projectDirty;
 
   return (
     <>
@@ -1869,19 +1928,20 @@ export function MekaProjectRoleEditorRoute() {
             ) : null}
             {!selectionReadOnly ? (
               <>
-                <button
-                  className={buttonClass}
-                  onClick={showingRole ? cancelRoleDraft : cancelProjectDraft}
-                >
-                  {t('logic.confirm.cancel')}
-                </button>
-                <button
-                  className={buttonClass}
-                  onClick={showingRole ? saveRole : saveProject}
-                >
-                  <Save size={14} aria-hidden="true" />
-                  {showingRole ? t('meka.saveRole') : t('meka.save')}
-                </button>
+                {canCancelDraft ? (
+                  <button
+                    className={buttonClass}
+                    onClick={showingRole ? cancelRoleDraft : cancelProjectDraft}
+                  >
+                    {t('logic.confirm.cancel')}
+                  </button>
+                ) : null}
+                {canSaveDraft ? (
+                  <button className={buttonClass} onClick={showingRole ? saveRole : saveProject}>
+                    <Save size={14} aria-hidden="true" />
+                    {showingRole ? t('meka.saveRole') : t('meka.save')}
+                  </button>
+                ) : null}
                 {!creatingRole &&
                 (showingRole
                   ? selectedRoleSummary?.isBuiltin === false
@@ -1987,9 +2047,11 @@ export function MekaProjectRoleEditorRoute() {
                       icon={<Users size={18} aria-hidden="true" />}
                       title={t('meka.roleBasicInfo')}
                       description={
-                        selectionReadOnly
-                          ? t('meka.builtinRoleReadOnly')
-                          : t('meka.rolesDescription')
+                        selectedRoleSummary && isMekaDefaultRole(selectedRoleSummary)
+                          ? t('meka.defaultRoleDescription')
+                          : roleReadOnly
+                            ? t('meka.builtinRoleReadOnly')
+                            : t('meka.rolesDescription')
                       }
                     />
                     <div className={cn(detailSurfaceClass, 'mt-5')}>
@@ -1998,7 +2060,7 @@ export function MekaProjectRoleEditorRoute() {
                         <input
                           className={inputClass}
                           value={role.displayName}
-                          disabled={selectionReadOnly}
+                          disabled={roleReadOnly}
                           onChange={(event) =>
                             setRole({ ...role, displayName: event.target.value })
                           }
@@ -2009,7 +2071,7 @@ export function MekaProjectRoleEditorRoute() {
                         <textarea
                           className={textAreaClass}
                           value={role.description ?? ''}
-                          disabled={selectionReadOnly}
+                          disabled={roleReadOnly}
                           onChange={(event) =>
                             setRole({ ...role, description: event.target.value })
                           }
@@ -2028,7 +2090,7 @@ export function MekaProjectRoleEditorRoute() {
                       <textarea
                         className={cn(textAreaClass, 'min-h-72 font-mono text-12')}
                         value={role.prompt ?? ''}
-                        disabled={selectionReadOnly}
+                        disabled={roleReadOnly}
                         onChange={(event) => setRole({ ...role, prompt: event.target.value })}
                       />
                     </div>
@@ -2040,7 +2102,7 @@ export function MekaProjectRoleEditorRoute() {
                       title={t('meka.rules')}
                       description={t('meka.rulesDescription')}
                       action={
-                        !selectionReadOnly ? (
+                        !roleReadOnly ? (
                           <button
                             type="button"
                             className={compactButtonClass}
@@ -2072,7 +2134,7 @@ export function MekaProjectRoleEditorRoute() {
                               className="mt-3"
                               type="checkbox"
                               checked={ruleItem.enabled}
-                              disabled={selectionReadOnly}
+                              disabled={roleReadOnly}
                               onChange={(event) =>
                                 setRole({
                                   ...role,
@@ -2087,7 +2149,7 @@ export function MekaProjectRoleEditorRoute() {
                             <textarea
                               className={cn(textAreaClass, 'min-h-16 flex-1')}
                               value={ruleItem.text}
-                              disabled={selectionReadOnly}
+                              disabled={roleReadOnly}
                               onChange={(event) =>
                                 setRole({
                                   ...role,
@@ -2099,7 +2161,7 @@ export function MekaProjectRoleEditorRoute() {
                                 })
                               }
                             />
-                            {!selectionReadOnly ? (
+                            {!roleReadOnly ? (
                               <button
                                 type="button"
                                 className="mt-3 text-[var(--text-tertiary)] hover:text-[var(--error-fg-strong)]"
@@ -2128,7 +2190,7 @@ export function MekaProjectRoleEditorRoute() {
                         metadata={metadata}
                         itemTypes={['rule', 'agents-md']}
                         selections={role.projectMetadataSelection ?? []}
-                        disabled={selectionReadOnly}
+                        disabled={roleReadOnly}
                         onChange={(projectMetadataSelection) =>
                           setRole({ ...role, projectMetadataSelection })
                         }
@@ -2153,7 +2215,7 @@ export function MekaProjectRoleEditorRoute() {
                             current ? { ...current, projectMetadataSelection } : current,
                           )
                         }
-                        disabled={selectionReadOnly}
+                        disabled={roleReadOnly}
                         onChange={(skills) =>
                           setRole((current) => (current ? { ...current, skills } : current))
                         }
@@ -2170,14 +2232,14 @@ export function MekaProjectRoleEditorRoute() {
                     <div className={cn(detailSurfaceClass, 'mt-5')}>
                       <RoleMcpEditor
                         entries={role.mcp}
-                        disabled={selectionReadOnly}
+                        disabled={roleReadOnly}
                         onChange={(mcp) => setRole({ ...role, mcp })}
                       />
                       <MetadataSelectionList
                         metadata={metadata}
                         itemTypes={['mcp']}
                         selections={role.projectMetadataSelection ?? []}
-                        disabled={selectionReadOnly}
+                        disabled={roleReadOnly}
                         onChange={(projectMetadataSelection) =>
                           setRole({ ...role, projectMetadataSelection })
                         }

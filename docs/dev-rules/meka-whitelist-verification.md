@@ -697,7 +697,7 @@ Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台。
 - `apps/desktop/src/shared/meka-formal.ts`、`apps/desktop/src/shared/meka-projects.ts`
 - `apps/desktop/src/main/meka-projects/`（`projectConfig.ts:451`、`resourcePaths.ts:21`）
 - `apps/desktop/src/main/localDb/ipc/sessions.ts:1287,1317,1725`
-- 项目/角色**绑定链**（WL-11.1–11.3）：`apps/desktop/src/renderer/features/cc-agent/CCAgentSidebarUpper.tsx:2404-2416`（项目入口 → `makeNewMakerRouteState('meka')` + `mekaProjectId`）、`apps/desktop/src/renderer/features/cc-agent/NewMakerDraftRoute.tsx:865-912`（草稿项目/角色态；默认角色 = `roles.find(routeMekaDraft.mekaRoleId) ?? roles[0]`）、`:579-699`（角色选择器 `MekaRolePicker`）、`:4532-4533`（发送时写入 project/role）
+- 项目/角色**绑定链**（WL-11.1–11.3）：`apps/desktop/src/renderer/features/cc-agent/CCAgentSidebarUpper.tsx:2404-2416`（项目入口 → `makeNewMakerRouteState('meka')` + `mekaProjectId`）、`apps/desktop/src/renderer/features/cc-agent/NewMakerDraftRoute.tsx:868-887`（`mekaSelection` 的 `useState` 初值）与 `:893-918`（依赖 `[routeMekaDraft.mekaProjectId, routeMekaDraft.mekaRoleId]` 的同步 effect）；两处默认角色都 = `roles.find(routeMekaDraft.mekaRoleId) ?? pickDefaultMekaRole(roles)`，即显式优先共享默认角色 `<projectId>-default-role`（见 `shared/meka-projects.ts` 的 `pickDefaultMekaRole`）、`:579-699`（角色选择器 `MekaRolePicker`）、`:4532-4533`（发送时写入 project/role）
 - 角色**运行期注入链**（WL-11.5–11.6）：`apps/desktop/src/main/meka-injection/mekaResolvePlan.ts:388-449`（hydrate 持久绑定 → 非 meka 零写入 → 遗留角色回填 → 强制「项目+角色都必须有」；resume 短路分支在 `:286-386`）、`:468-501`（worker 判定 + 平台技能解析 + `mergePlatformMcp`/`mergePlatformSkills`，合并实现 `:200-212`）、`:506`（技能快照物化）+ `:186-193`（`nativeSkillMount`）+ `meka-injection/mekaApplyPlan.ts:96-100`（写 `nativeSkillPluginPath`/`nativeSkillRevision`）、`mekaResolvePlan.ts:508-520`（角色 prompt + 角色上下文注入）+ `meka-injection/mekaCombatPrompts.ts:152-161`（`[MEKA_ROLE_CONTEXT]` 区块）+ `meka-injection/mekaApplyPlan.ts:55-80`（按 order 渲染上提）、`mekaResolvePlan.ts:526-554`（`mekaMcpProviderIds` / `mekaWorkflow` 进 `vendorOptions` patch）+ `mekaApplyPlan.ts:88-91`（写入）
 - 角色清单事实源：`apps/desktop/resources/meka/roles/*.json`（`prompt` / `skills[]` / `mcp[]` / `workflow` / `policyProviderRefs`）
 
@@ -718,19 +718,30 @@ Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台。
 
 **实机验证**（已自动化，2026-09-14 实跑 9/9 PASS）
 
+> **待重跑（2026-09-22）**：项目/角色编辑改为“有变更才出现保存/取消”，并新增共享默认角色，
+> 因此下表 **WL-11.1 / WL-11.2 / WL-11.6 / WL-11.8** 的期望值与断言口径已按新契约更新，
+> 但**尚未重新实跑**取得新证据；下表的 2026-09-14 证据行保留为改动前的事实。
+> 重跑需要**两条命令**：
+> - `pnpm desktop:session-smoke` —— WL-11.1/11.2/11.8 的新期望值；
+> - `pnpm desktop:session-smoke -- --role 默认角色` —— 只有指定该角色才会命中 WL-11.6 的
+>   默认角色反向断言（默认路径落到「通用开发」，该分支不执行；见脚本 `defaultRoleOf` 说明）。
+>
+> 另需目检：默认角色面板只读且无保存/取消按钮、未编辑的项目/角色页无保存/取消按钮。
+> 详见迁移总账 §6.50。
+
 `pnpm desktop:session-smoke` 用真实鼠标事件从侧栏项目入口建草稿、切角色、发消息，并交叉核对
 运行期件（库行 / main 日志 / 技能快照），逐项结论：
 
 | 检查 | 断言的不变量 | 实跑证据 |
 | --- | --- | --- |
-| WL-11.1 | 真实重挂载后，草稿绑定该项目并默认为该项目 `roles[0]` | `项目=SAGA2 默认角色=通用开发` |
-| WL-11.2 | 角色选择器列出该项目全部角色，切换后草稿角色随之变化 | 选项 2 个（含各自 description）；切换为「战斗开发」 |
+| WL-11.1 | 真实重挂载后，草稿绑定该项目并默认选中该项目的共享默认角色（`<projectId>-default-role`，由 `pickDefaultMekaRole()` 显式指定，不再只靠 `roles[0]` 排序） | 改动前：`项目=SAGA2 默认角色=通用开发`；**新期望：`项目=SAGA2 默认角色=默认角色`（待实跑）** |
+| WL-11.2 | 角色选择器列出该项目全部角色，切换后草稿角色随之变化 | 改动前：选项 2 个；**新期望：SAGA2 选项 3 个（默认角色/通用开发/战斗开发）（待实跑）** |
 | WL-11.3 | 会话行绑定 project/role、工作目录解析为存在的绝对路径、`is_formal=0` | `workspace_kind=meka project=saga2 role=combat-development is_formal=0 workdir=C:/Workspace/saga2/saga2_project` |
 | WL-11.4 | Agent 真实跑完一轮并产出回复 | `回复="收到"` |
 | WL-11.5 | 角色上下文注入运行期（由运行中会话回显字段行证明；身份判定锚在 `projectId`/`roleId`，`displayName` 可能被模型按输出语言改写，见 §6） | `projectId=saga2 roleId=combat-development displayName="战斗开发"`（该次逐字复述；另一次实测被改写为 `Combat Development`，仍判通过） |
-| WL-11.6 | 运行期按角色解析 workflow / 角色级 MCP / 技能快照含角色声明的技能 | `workflow=saga2-combat-development-v1 mcp=mcp-router,project-agent skillsCount=2 快照技能=combat-skill-configuration,platform-capabilities` |
+| WL-11.6 | 运行期按角色解析 workflow / 角色级 MCP / 技能快照含角色声明的技能；**默认角色反向断言**（仅 `--role 默认角色` 时命中）：`workflow=null`、`skillsCount === platformSkillsCount`、MCP 集合除平台基线（`mcp-router`）外为空、快照技能数 === `platformSkillsCount`。**不得**断言 mcp/skills 为空或无快照——Host 平台基线对每个普通 Meka 任务都存在 | `workflow=saga2-combat-development-v1 mcp=mcp-router,project-agent skillsCount=2 快照技能=combat-skill-configuration,platform-capabilities` |
 | WL-11.7 | 新会话在 Meka 分区该项目容器内，且不在普通「对话」分组内 | `会话在项目「SAGA2」容器内；普通对话分组排除=已核对` |
-| WL-11.8 | 同一项目内再次点击新建入口时保留当前草稿已选角色（现行行为，裁决见 §8.2 第 6 条） | `fresh 默认=「通用开发」；切到「战斗开发」后同项目重进仍为「战斗开发」` |
+| WL-11.8 | 同一项目内再次点击新建入口时保留当前草稿已选角色（现行行为，裁决见 §8.2 第 6 条） | 改动前：`fresh 默认=「通用开发」；切到「战斗开发」后同项目重进仍为「战斗开发」`；**新期望：`fresh 默认=「默认角色」…`（待实跑）** |
 
 **同一配置下角色差异必须真实生效**（WL-11.6 的对照证据，2026-09-14 实测）：
 
@@ -757,6 +768,35 @@ Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台。
   不提供该出口。删除仍只删注册行，`sessions.meka_project_id` 保留（WL-3.2 的历史软引用
   语义不变），因此**不得**把“顺手清理会话引用”当成修复的一部分。
 - 注册行 `name` 只作显示兜底，必须写用户可见名称；不得写入生成的 cuid。
+
+**WL-11.10 项目/角色编辑的「有变更才出现保存/取消」与共享默认角色**（不变量，2026-09-22 登记）：
+
+- 项目详情与角色详情在草稿相对上次读取／保存的有效值**没有变更**时，**不得**渲染“保存”或
+  “取消”；有变更时两者同时出现。判断必须对属性键序不敏感（草稿由项目文件、项目行、元数据
+  列表多源拼装），否则同值不同键序会误判成“有变更”而让按钮常驻。
+- 保存成功后必须把服务端返回的文件安装为新的有效值，使按钮立刻回到未编辑状态；取消必须
+  恢复有效值且不写库。
+- 每个项目的共享默认角色（`<projectId>-default-role`）必须**内置、只读、不可删除**：
+  `meka-role:update` 返回 `MEKA_BUILTIN_READ_ONLY`，渲染侧全部字段 `disabled` 且不出现保存
+  按钮。它不得注入提示词／规则／技能／MCP／项目元数据，也不得 opt-in 项目 `roleDefaults`；
+  在同一份带 `roleDefaults` 的项目配置下，默认角色解析出的 `promptText` 为空、技能与 MCP
+  为空，而 `general-development` 仍读到项目默认规则（反向对照，防空跑）。
+- 该行必须对**所有**已登记项目存在（内置项目由启动播种收敛，用户新建项目在创建时立即建行），
+  且播种的冲突子句只在 `is_builtin = 1` 时生效，不得接管用户自有的同名角色行。**唯一的例外
+  是派生 id 已被用户自有行占用**：此时 upsert 静默跳过，该项目没有默认角色——这是刻意的
+  「宁可不建，也不夺用户的行」，不是缺陷（见下条锚点）。
+- **自动化锚点**：`src/main/localDb/__tests__/builtinMekaSeed.test.ts`（含「派生 id 被用户
+  自有行占用时不得接管」的守卫分支用例）、
+  `src/main/meka-projects/__tests__/mekaDefaultRole.test.ts`（默认角色只读契约：读清单走内存、
+  update 抛 `MEKA_BUILTIN_READ_ONLY`、delete 按内置角色拒绝）、
+  `src/main/meka-projects/__tests__/runtimeConfig.integration.test.ts`、
+  `src/main/meka-projects/__tests__/mekaProjectsImport.test.ts`、
+  `src/renderer/features/cc-agent/__tests__/MekaProjectRoleEditorRoute.test.tsx`。
+  **未自动化**：默认角色的 Light/Dark 实机目检与升级库首次启动。
+  > **tier 提醒**：`builtinMekaSeed.test.ts` 与 `runtimeConfig.integration.test.ts` 分别位于
+  > `src/main/localDb/**`（被 `unit` tier 排除）与 `*.integration.test.ts`（被排除），二者只在
+  > 显式 `pnpm test:db` / 全量下运行。因此**只读契约的守护测试刻意放在
+  > `src/main/meka-projects/__tests__/`**（unit tier），以免该不变量在 CI 与提交前门禁里无人守护。
 
 **未自动化 / 未覆盖的实机项**：新建**自定义**项目与角色（本机 profile 只有内置 SAGA2）、
 删除项目后落入「不可用的 Meka 项目」组、正式事项（`meka-formal`）的 provider/auth/issue
@@ -1127,15 +1167,18 @@ WL-5（先确认区域与链路）→ WL-6（身份/更新）→ WL-1（设置�
    的能力；若裁决为「恢复」，则应补一条 WL-15 并在其中钉住这些不变量。详细实跑证据见
    [`../migrations/2026-09-origin-main-to-meka-main.md`](../migrations/2026-09-origin-main-to-meka-main.md) §7.1。
 6. **同一项目内重进「新建」入口时是否应重置草稿角色（2026-09-14 白名单实跑带出）**：
-   `NewMakerDraftRoute` 的项目/角色是 `useState` 初值（`:865-882`）+ 一个依赖
-   `[routeMekaDraft.mekaProjectId, routeMekaDraft.mekaRoleId]` 的同步 effect（`:884-912`）。
+   `NewMakerDraftRoute` 的项目/角色是 `useState` 初值（`:868-887`）+ 一个依赖
+   `[routeMekaDraft.mekaProjectId, routeMekaDraft.mekaRoleId]` 的同步 effect（`:893-918`）。
    侧栏入口走 `navigate('/cc-agent/new', { state: { mekaProjectId } })`
    （`CCAgentSidebarUpper.tsx:2404-2416`）：当用户**已经**停在 `#/cc-agent/new` 时，路由不变、
    组件不重挂载、effect 的两个依赖也不变，于是**草稿里已选的角色被保留**，而不是回到该项目
-   的 `roles[0]`。实测：真正重挂载时默认 `roles[0]=通用开发`；同路径重进时保留已选的
-   `战斗开发`（`pnpm desktop:session-smoke` 的 WL-11.1 / WL-11.8 对照）。
+   的默认角色。实测（2026-09-14，改动前）：真正重挂载时默认 `roles[0]=通用开发`；同路径重进
+   时保留已选的 `战斗开发`（`pnpm desktop:session-smoke` 的 WL-11.1 / WL-11.8 对照）。
+   **2026-09-22 更新**：默认选中项已改为共享默认角色 `pickDefaultMekaRole(roles)`
+   （`<projectId>-default-role`，见 WL-11.1），因此「重挂载回到哪个角色」现在指默认角色而非
+   `roles[0]`；本节裁决（保留已选、不重置）不变。
    **我的判断是保留现状**：它等价于「同一草稿里点新建不清空当前选择」，与草稿正文本来也不会
-   被清空一致；切换项目时 effect 依赖变化仍会重置为新项目的 `roles[0]`，不会跨项目串角色。
+   被清空一致；切换项目时 effect 依赖变化仍会重置为新项目的默认角色，不会跨项目串角色。
    **需要维护者确认**，因为这是用户可见的默认值语义，且实现上更像「effect 依赖缺一个草稿
    实例标识」的副作用而非显式设计。无论怎么定，WL-11.8 已把它钉成可执行断言：**改行为必须
    同步改 WL-11.8**，不允许静默漂移。
