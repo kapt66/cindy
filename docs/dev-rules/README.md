@@ -54,5 +54,6 @@
   与用户 override 分离、默认值迁移与恢复默认语义。
 - [`remote-and-mobile-adaptation.md`](remote-and-mobile-adaptation.md)：SSH 远程工作区、
   device-link allowlist、手机版入口与功能类 PR 的远程／手机三选一门禁。
-- [`development-workflow.md`](development-workflow.md)：worktree dogfooding 会话契约、提 PR
-  与直推 `main` 门禁，以及 Review P0／P1／P2 严重度口径。
+- [`development-workflow.md`](development-workflow.md)：worktree dogfooding 会话契约、**门禁
+  时机（迭代期不跑门禁，交付时一次跑完）**、提 PR 与直推 `main` 门禁，以及 Review
+  P0／P1／P2 严重度口径。
