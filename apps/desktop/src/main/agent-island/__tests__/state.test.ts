@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { AgentEvent, InteractionRequest } from '@cindy/maker-core';
 import { DEFAULT_TOOL_ROW_WORDING } from '@cindy/maker-shared/message-presentation';
 import { DEFAULT_AGENT_ISLAND_STRINGS } from '../../../shared/agentIsland.js';
@@ -12,14 +12,18 @@ import {
   applyAgentIslandUserPrompt,
   AGENT_ISLAND_COMPLETION_DWELL_MS,
   AGENT_ISLAND_COMPLETION_REVEAL_DWELL_MS,
+  AGENT_ISLAND_ERROR_DWELL_MS,
   AGENT_ISLAND_MESSAGE_PREVIEW_MIN_DWELL_MS,
+  AGENT_ISLAND_SILENT_STOP_HOLD_MS,
   AGENT_ISLAND_UNREAD_TRANSIENT_TTL_MS,
   buildAgentIslandDisplayState,
   buildAllSessionActivitySnapshots,
   closeAgentIslandSessionPreservingUnread,
+  completeAgentIslandSessionWithoutAttention,
   createAgentIslandState,
   dismissAgentIslandActiveReveal,
   getNextAgentIslandTimerAt,
+  hasAgentIslandSessionAttention,
   isAgentIslandPendingFocusAck,
   markAgentIslandSessionAttention,
   requestAgentIslandManualCollapse,
@@ -128,6 +132,453 @@ describe('Agent Island display state', () => {
 
     applyAgentIslandEvent(state, meta, doneEvent(), 1_200);
     expect(buildAgentIslandDisplayState(state, 1_201).sessions[0]?.phase).toBe('completed');
+  });
+
+  it('holds a silent-stop done open instead of painting a completion', () => {
+    const state = createAgentIslandState();
+    const meta = { sessionId: 'silent-stop', title: 'Silent stop', agentKind: 'pi' as const };
+
+    applyAgentIslandEvent(state, meta, {
+      type: 'status', source: 'pi', data: { isRunning: true, status: 'Working…' },
+    }, 1_000);
+    // Pi silent-stop:done 先到(done.data.silentStop=true),随后才是配对的 status Done。
+    // 两者都属"完成尾巴",但宿主守卫可能补发「继续」把同一段对话接着跑 —— 决策窗内
+    // 画成"完成 + 完成提醒"就是假完成(约 1.5s 后再跳回 running)。
+    applyAgentIslandEvent(state, meta, {
+      type: 'done', source: 'pi', data: { result: '', status: 'cancelled', silentStop: true },
+    }, 1_100);
+    applyAgentIslandEvent(state, meta, {
+      type: 'status', source: 'pi', data: { isRunning: false, status: 'Done' },
+    }, 1_101);
+
+    const held = state.sessions.get('silent-stop');
+    expect(held?.phase).toBe('running');
+    expect(held?.running).toBe(true);
+    expect(held?.completedUntil).toBeNull();
+    expect(held?.unread).toBe(false);
+    expect(state.remoteUnreadTerminals.has('silent-stop')).toBe(false);
+
+    // 续跑 turn 开始 → 保持 running,状态不回退。
+    applyAgentIslandEvent(state, meta, {
+      type: 'status', source: 'pi', data: { isRunning: true, status: 'Working…' },
+    }, 2_600);
+    expect(state.sessions.get('silent-stop')?.phase).toBe('running');
+
+    // 续跑真正收尾(无 silentStop)才允许完成。
+    applyAgentIslandEvent(state, meta, {
+      type: 'done', source: 'pi', data: { result: 'ok', status: 'completed' },
+    }, 3_000);
+    expect(state.sessions.get('silent-stop')?.phase).toBe('completed');
+    expect(buildAgentIslandDisplayState(state, 3_100).sessions[0]?.phase).toBe('completed');
+  });
+
+  it('completes an ordinary cancelled empty done and holds the same event once it carries the marker', () => {
+    const run = (sessionId: string, hasMarker: boolean) => {
+      const state = createAgentIslandState();
+      const meta = { sessionId, title: sessionId, agentKind: 'pi' as const };
+      applyAgentIslandEvent(state, meta, {
+        type: 'status', source: 'pi', data: { isRunning: true, status: 'Working…' },
+      }, 1_000);
+      applyAgentIslandEvent(state, meta, {
+        type: 'done',
+        source: 'pi',
+        data: { result: '', status: 'cancelled', ...(hasMarker ? { silentStop: true } : {}) },
+      }, 1_100);
+      return state;
+    };
+
+    // 差分对照:两条事件形状完全相同,只有 `done.data.silentStop` 有无之分。挂起开关必须只认
+    // 这个标记 —— 只跑「没标记的那条照常完成」对挂起本身零判别力(挂起代码全删也照样绿)。
+    const plain = run('plain-cancel', false);
+    // 无标记 = 用户/宿主自己停的,照常立即收口(本批不得把它一起挂住)。
+    expect(plain.sessions.get('plain-cancel')?.phase).toBe('completed');
+    expect(hasAgentIslandSessionAttention(plain, 'plain-cancel')).toBe(true);
+    expect(getNextAgentIslandTimerAt(plain, 1_150)).toBe(1_100 + AGENT_ISLAND_COMPLETION_DWELL_MS);
+
+    const marked = run('marked-cancel', true);
+    // 有标记 = silent stop,进挂起:不收口、不响完成提醒,只有有界兜底时限。
+    expect(marked.sessions.get('marked-cancel')?.phase).toBe('running');
+    expect(marked.sessions.get('marked-cancel')?.running).toBe(true);
+    expect(hasAgentIslandSessionAttention(marked, 'marked-cancel')).toBe(false);
+    const markedDeadline = getNextAgentIslandTimerAt(marked, 1_150);
+    expect(markedDeadline).not.toBeNull();
+    expect(markedDeadline!).toBeGreaterThan(1_100 + 2_500);
+    expect(markedDeadline!).toBeLessThanOrEqual(1_100 + 60_000);
+  });
+
+  it('replays the suppressed completion when no silent-stop resume arrives before the hold expires', () => {
+    const state = createAgentIslandState();
+    const meta = { sessionId: 'silent-stop-no-resume', title: 'No resume', agentKind: 'pi' as const };
+
+    // 逃生开关关闭(守卫直接 skip)等路径:守卫既不续跑也不发终态 error,没有任何后续事件。
+    // 挂起必须有上限,否则岛面永远停在 running(prune 不回收 running 条目)。
+    applyAgentIslandEvent(state, meta, {
+      type: 'status', source: 'pi', data: { isRunning: true, status: 'Working…' },
+    }, 1_000);
+    applyAgentIslandEvent(state, meta, {
+      type: 'done', source: 'pi', data: { result: '', status: 'cancelled', silentStop: true },
+    }, 1_100);
+    applyAgentIslandEvent(state, meta, {
+      type: 'status', source: 'pi', data: { isRunning: false, status: 'Done' },
+    }, 1_101);
+
+    const held = state.sessions.get('silent-stop-no-resume');
+    expect(held?.phase).toBe('running');
+    // 不钉实现细节(`1100 + 常量`)而钉语义:兜底时限必须存在、有界,且长于守卫决策窗
+    // (1.5s)+ 派发 + 新 turn 起手的余量 —— 太短会在续跑判决前就补出假完成。
+    const holdDeadline = getNextAgentIslandTimerAt(state, 2_000);
+    expect(holdDeadline).not.toBeNull();
+    expect(holdDeadline!).toBeGreaterThan(1_100 + 2_500);
+    expect(holdDeadline!).toBeLessThanOrEqual(1_100 + 60_000);
+    // 挂起窗内(timer 到点前的任一发布)仍然保持 running。
+    buildAgentIslandDisplayState(state, holdDeadline! - 1);
+    expect(state.sessions.get('silent-stop-no-resume')?.phase).toBe('running');
+
+    // 到期后的发布(timer 由 getNextAgentIslandTimerAt 排期)补上完成 + 完成提醒。
+    buildAgentIslandDisplayState(state, holdDeadline!);
+    expect(state.sessions.get('silent-stop-no-resume')?.phase).toBe('completed');
+    expect(hasAgentIslandSessionAttention(state, 'silent-stop-no-resume')).toBe(true);
+  });
+
+  it('keeps a silenced completion silenced when a silent-stop hold expires', () => {
+    const state = createAgentIslandState();
+    const meta = { sessionId: 'silent-stop-silenced', title: 'Silenced', agentKind: 'pi' as const };
+
+    applyAgentIslandEvent(state, meta, {
+      type: 'status', source: 'pi', data: { isRunning: true, status: 'Working…' },
+    }, 1_000);
+    applyAgentIslandEvent(state, meta, {
+      type: 'done', source: 'pi', data: { result: '', status: 'completed', silentStop: true },
+    }, 1_100, { suppressCompletionAttention: true });
+    applyAgentIslandEvent(state, meta, {
+      type: 'status', source: 'pi', data: { isRunning: false, status: 'Done' },
+    }, 1_101, { suppressCompletionAttention: true });
+
+    // 被压下的完成带上原来的 suppress 语义:补完成时不得替 silenced run 响提醒。
+    buildAgentIslandDisplayState(state, 1_100 + AGENT_ISLAND_SILENT_STOP_HOLD_MS);
+    expect(state.sessions.get('silent-stop-silenced')?.phase).toBe('completed');
+    expect(hasAgentIslandSessionAttention(state, 'silent-stop-silenced')).toBe(false);
+  });
+
+  // silent-stop 挂起必须与 provider 的事件序无关:claude-code / codex translator 先推
+  // turn-end status{isRunning:false,status:'Done'} 再推 done,Pi 反序。上游在**两条**事件上
+  // 都带 `silentStop` 标记(claude-code translator 与 done 同源同值),所以这里按标记判定,
+  // 哪条先到都进挂起。状态机不读 `event.source`,故两个 agentKind × 两种顺序都钉住。
+  describe('silent-stop hold is independent of the tail event order', () => {
+    function silentStopTail(
+      source: 'pi' | 'claude-code',
+      order: 'done-first' | 'status-first',
+    ): AgentEvent[] {
+      const status: AgentEvent = {
+        type: 'status',
+        source,
+        data: { isRunning: false, status: 'Done', silentStop: true },
+      };
+      const done: AgentEvent = {
+        type: 'done',
+        source,
+        data: { result: '', status: 'cancelled', silentStop: true },
+      };
+      return order === 'done-first' ? [done, status] : [status, done];
+    }
+
+    it.each([
+      { agentKind: 'pi', order: 'done-first' },
+      { agentKind: 'claude-code', order: 'status-first' },
+      { agentKind: 'pi', order: 'status-first' },
+      { agentKind: 'claude-code', order: 'done-first' },
+    ] as const)(
+      'holds a $agentKind silent stop in $order order and never paints a fake completion',
+      ({ agentKind, order }) => {
+        const state = createAgentIslandState();
+        const meta = { sessionId: 'silent-order', title: 'Silent order', agentKind };
+        const phases: string[] = [];
+        const apply = (event: AgentEvent, at: number) => {
+          applyAgentIslandEvent(state, meta, event, at);
+          phases.push(state.sessions.get('silent-order')?.phase ?? 'gone');
+        };
+
+        apply({ type: 'status', source: agentKind, data: { isRunning: true, status: 'Working…' } }, 1_000);
+
+        // 逐事件断言(不是只看最后状态):假完成一旦落地,unread / attention / 远程未读账本
+        // 就已经写出去,岛面无法事后撤回,而完成提醒也已经响过。
+        for (const [index, tailEvent] of silentStopTail(agentKind, order).entries()) {
+          apply(tailEvent, 1_100 + index);
+          const session = state.sessions.get('silent-order');
+          expect(session?.running, `running after ${tailEvent.type}`).toBe(true);
+          expect(session?.completedUntil, `completedUntil after ${tailEvent.type}`).toBeNull();
+          expect(
+            hasAgentIslandSessionAttention(state, 'silent-order'),
+            `attention after ${tailEvent.type}`,
+          ).toBe(false);
+          expect(
+            state.remoteUnreadTerminals.has('silent-order'),
+            `remote ledger after ${tailEvent.type}`,
+          ).toBe(false);
+        }
+
+        // 续跑 turn 起来 → 保持 running;发布越过挂起上限也不得补出完成。
+        apply({ type: 'status', source: agentKind, data: { isRunning: true, status: 'Working…' } }, 2_600);
+        apply(toolUseEvent('tool-resume'), 3_000);
+        buildAgentIslandDisplayState(state, 1_100 + AGENT_ISLAND_SILENT_STOP_HOLD_MS);
+        const resumed = state.sessions.get('silent-order');
+        expect(resumed?.running).toBe(true);
+        expect(hasAgentIslandSessionAttention(state, 'silent-order')).toBe(false);
+
+        // 续跑真正收尾(无标记)才是唯一一次完成。
+        apply(
+          { type: 'done', source: agentKind, data: { result: 'ok', status: 'completed' } },
+          1_100 + AGENT_ISLAND_SILENT_STOP_HOLD_MS + 100,
+        );
+        expect(phases.filter((phase) => phase === 'completed')).toHaveLength(1);
+        expect(phases.at(-1)).toBe('completed');
+        // 其余每一步都必须是 running:既没有假完成,也没有「completed 又回到 running」的矛盾态。
+        expect(phases.slice(0, -1)).toEqual(Array(phases.length - 1).fill('running'));
+      },
+    );
+
+    it('replays the swallowed completion when a marked turn-end status has no paired done', () => {
+      const state = createAgentIslandState();
+      const meta = { sessionId: 'status-only-stop', title: 'Status only', agentKind: 'claude-code' as const };
+
+      applyAgentIslandEvent(state, meta, {
+        type: 'status', source: 'claude-code', data: { isRunning: true, status: 'Working…' },
+      }, 1_000);
+      applyAgentIslandEvent(state, meta, {
+        type: 'status', source: 'claude-code', data: { isRunning: false, status: 'Done', silentStop: true },
+      }, 1_100);
+
+      expect(state.sessions.get('status-only-stop')?.phase).toBe('running');
+      expect(hasAgentIslandSessionAttention(state, 'status-only-stop')).toBe(false);
+
+      // 挂起必须有界(否则岛面永远停在 running:prune 不回收 running 条目)。
+      const deadline = getNextAgentIslandTimerAt(state, 1_200);
+      expect(deadline).not.toBeNull();
+      expect(deadline!).toBeGreaterThan(1_100 + 2_500);
+      expect(deadline!).toBeLessThanOrEqual(1_100 + 60_000);
+
+      buildAgentIslandDisplayState(state, deadline! - 1);
+      expect(state.sessions.get('status-only-stop')?.phase).toBe('running');
+
+      buildAgentIslandDisplayState(state, deadline!);
+      expect(state.sessions.get('status-only-stop')?.phase).toBe('completed');
+      expect(hasAgentIslandSessionAttention(state, 'status-only-stop')).toBe(true);
+      expect(state.remoteUnreadTerminals.has('status-only-stop')).toBe(true);
+    });
+  });
+
+  // 挂起的四条解开路径都必须被钉住:删掉任意一条,岛面就会在续跑/终态之后按下挂起上限
+  // 再收口一次(生产主路径是 markSessionRunning —— 续跑 turn 正在跑工具时岛面会弹"已完成")。
+  describe('silent-stop hold release paths', () => {
+    function heldSession(sessionId: string, at: number) {
+      const state = createAgentIslandState();
+      const meta = { sessionId, title: sessionId, agentKind: 'pi' as const };
+      applyAgentIslandEvent(state, meta, {
+        type: 'status', source: 'pi', data: { isRunning: true, status: 'Working…' },
+      }, 1_000);
+      applyAgentIslandEvent(state, meta, {
+        type: 'done', source: 'pi', data: { result: '', status: 'cancelled', silentStop: true },
+      }, at);
+      return { state, meta };
+    }
+
+    it('releases the hold on the resumed turn activity (markSessionRunning)', () => {
+      const { state, meta } = heldSession('resume-release', 1_100);
+
+      // 宿主守卫补发的「继续」就是这个形状:status(isRunning:true) → tool_use。
+      applyAgentIslandEvent(state, meta, {
+        type: 'status', source: 'pi', data: { isRunning: true, status: 'Working…' },
+      }, 2_600);
+      applyAgentIslandEvent(state, meta, toolUseEvent('tool-resume'), 3_000);
+
+      const released = state.sessions.get('resume-release');
+      expect(released?.phase).toBe('running');
+      expect(released?.running).toBe(true);
+      expect(released?.silentStopHold).toBe(false);
+      expect(released?.silentStopHoldUntil).toBeNull();
+      expect(released?.pendingSilentStopCompletion).toBeNull();
+      // 不得残留任何 silent-stop 兜底计时器(残留就会在原时限再收口一次)。
+      expect(getNextAgentIslandTimerAt(state, 3_100)).toBeNull();
+
+      // 原挂起时限到点的发布不得把正在跑工具的续跑 turn 补成完成。
+      buildAgentIslandDisplayState(state, 1_100 + AGENT_ISLAND_SILENT_STOP_HOLD_MS);
+      const afterDeadline = state.sessions.get('resume-release');
+      expect(afterDeadline?.phase).toBe('running');
+      expect(afterDeadline?.running).toBe(true);
+      expect(hasAgentIslandSessionAttention(state, 'resume-release')).toBe(false);
+    });
+
+    it('releases the hold on a terminal error instead of replaying a completion', () => {
+      const { state, meta } = heldSession('error-release', 1_100);
+      applyAgentIslandEvent(state, meta, {
+        type: 'status', source: 'pi', data: { isRunning: false, status: 'Done' },
+      }, 1_101);
+      applyAgentIslandEvent(state, meta, terminalErrorEvent('silent-stop-exhausted'), 1_200);
+
+      const errored = state.sessions.get('error-release');
+      expect(errored?.phase).toBe('error');
+      expect(errored?.silentStopHold).toBe(false);
+      expect(errored?.silentStopHoldUntil).toBeNull();
+      expect(errored?.pendingSilentStopCompletion).toBeNull();
+      // 排期里只剩 error 自己的 dwell:挂起时限不得留着(到点会被兜底路径再收口一次)。
+      expect(getNextAgentIslandTimerAt(state, 1_300)).toBe(1_200 + AGENT_ISLAND_ERROR_DWELL_MS);
+
+      // 原挂起时限到点:error 不得被补成完成,也不得再响一次提醒。
+      buildAgentIslandDisplayState(state, 1_100 + AGENT_ISLAND_SILENT_STOP_HOLD_MS);
+      expect(state.sessions.get('error-release')?.phase).toBe('error');
+      expect(state.sessions.get('error-release')?.completedUntil).toBeNull();
+    });
+
+    it('releases the hold when the scheduler settles the run without attention', () => {
+      const state = createAgentIslandState();
+      const meta = { sessionId: 'silenced-release', title: 'Silenced release', agentKind: 'pi' as const };
+      applyAgentIslandEvent(state, meta, {
+        type: 'status', source: 'pi', data: { isRunning: true, status: 'Working…' },
+      }, 1_000);
+      // 先有一次未读完成 → preserveAttention 时条目留在岛 state 里(否则会被删掉,无从断言)。
+      applyAgentIslandEvent(state, meta, { type: 'done', source: 'pi', data: { result: 'first' } }, 2_000);
+      expect(hasAgentIslandSessionAttention(state, 'silenced-release')).toBe(true);
+      // 新一轮开始(生产上用户接着发消息/守卫续跑)→ 挂起窗口内再来一次 silent stop。
+      applyAgentIslandEvent(state, meta, {
+        type: 'status', source: 'pi', data: { isRunning: true, status: 'Working…' },
+      }, 3_000);
+      applyAgentIslandEvent(state, meta, {
+        type: 'done', source: 'pi', data: { result: '', status: 'cancelled', silentStop: true },
+      }, 4_000);
+
+      // 调度 run 的权威终态(不响提醒):挂起随之作废,否则原时限会再收口一次。
+      expect(completeAgentIslandSessionWithoutAttention(state, 'silenced-release', 5_000, {
+        preserveAttention: true,
+      })).toBe(true);
+
+      const settled = state.sessions.get('silenced-release');
+      expect(settled?.phase).toBe('completed');
+      expect(settled?.silentStopHold).toBe(false);
+      expect(settled?.silentStopHoldUntil).toBeNull();
+      expect(settled?.pendingSilentStopCompletion).toBeNull();
+      // 排期里只剩未读账本的岛面 TTL,没有 silent-stop 兜底时限。
+      expect(getNextAgentIslandTimerAt(state, 5_100))
+        .toBe(4_000 + AGENT_ISLAND_UNREAD_TRANSIENT_TTL_MS);
+
+      buildAgentIslandDisplayState(state, 4_000 + AGENT_ISLAND_SILENT_STOP_HOLD_MS);
+      expect(state.sessions.get('silenced-release')?.phase).toBe('completed');
+      expect(hasAgentIslandSessionAttention(state, 'silenced-release')).toBe(true);
+    });
+
+    it('releases the hold on a plain (marker-less) done instead of replaying at the deadline', () => {
+      const { state, meta } = heldSession('plain-done-release', 1_100);
+      // 挂起期间来了一条不带标记的普通 done(宿主直接收的产品终态):必须当场解挂并收口,
+      // 不能等挂起上限到点再补一次完成(那会多一次 dwell / 多响一次完成提醒)。
+      applyAgentIslandEvent(state, meta, {
+        type: 'done', source: 'pi', data: { result: 'ok', status: 'completed' },
+      }, 1_200);
+
+      const settled = state.sessions.get('plain-done-release');
+      expect(settled?.phase).toBe('completed');
+      expect(settled?.silentStopHold).toBe(false);
+      expect(settled?.silentStopHoldUntil).toBeNull();
+      expect(settled?.silentStopHoldMonoUntil).toBeNull();
+      expect(settled?.pendingSilentStopCompletion).toBeNull();
+
+      buildAgentIslandDisplayState(state, 1_100 + AGENT_ISLAND_SILENT_STOP_HOLD_MS);
+      const afterHoldDeadline = state.sessions.get('plain-done-release');
+      expect(afterHoldDeadline?.phase).toBe('completed');
+      // 补完成会把 dwell 推到「原挂起时限 + 5s」;仍是这次普通完成的 dwell 就说明没补。
+      expect(afterHoldDeadline?.completedUntil).toBe(1_200 + AGENT_ISLAND_COMPLETION_DWELL_MS);
+    });
+
+    it('releases the hold when the session process closes', () => {
+      const state = createAgentIslandState();
+      const meta = { sessionId: 'closed-release', title: 'Closed release', agentKind: 'pi' as const };
+      applyAgentIslandEvent(state, meta, {
+        type: 'status', source: 'pi', data: { isRunning: true, status: 'Working…' },
+      }, 1_000);
+      // 终态 error 让条目在进程关闭后仍需展示(errorUntil 未到),本用例才能对它断言。
+      applyAgentIslandEvent(state, meta, terminalErrorEvent('boom'), 1_100);
+      applyAgentIslandEvent(state, meta, {
+        type: 'done', source: 'pi', data: { result: '', status: 'cancelled', silentStop: true },
+      }, 1_200);
+      expect(state.sessions.get('closed-release')?.silentStopHold).toBe(true);
+
+      closeAgentIslandSessionPreservingUnread(state, 'closed-release', 1_300);
+
+      const closed = state.sessions.get('closed-release');
+      expect(closed?.running).toBe(false);
+      expect(closed?.silentStopHold).toBe(false);
+      expect(closed?.silentStopHoldUntil).toBeNull();
+      expect(closed?.pendingSilentStopCompletion).toBeNull();
+      // 排期里只剩 error 自己的 dwell:进程都没了,不该再留 silent-stop 兜底时限。
+      expect(getNextAgentIslandTimerAt(state, 1_400)).toBe(1_100 + AGENT_ISLAND_ERROR_DWELL_MS);
+
+      buildAgentIslandDisplayState(state, 1_200 + AGENT_ISLAND_SILENT_STOP_HOLD_MS);
+      const afterDeadline = state.sessions.get('closed-release');
+      expect(afterDeadline?.completedUntil ?? null).toBeNull();
+      expect(
+        afterDeadline === undefined || afterDeadline.phase === 'error',
+        'closed session must not be re-completed by the silent-stop fallback',
+      ).toBe(true);
+    });
+  });
+
+  // 挂起的两个健壮性约束:兜底时限不能被系统时钟回跳拖住;挂起期间任何终态尾巴都不得把
+  // 条目落成不可见态(否则会被 prune 整条删掉,挂起与兜底一起静默丢失)。
+  describe('silent-stop hold robustness', () => {
+    function heldSession(sessionId: string, at: number) {
+      const state = createAgentIslandState();
+      const meta = { sessionId, title: sessionId, agentKind: 'pi' as const };
+      applyAgentIslandEvent(state, meta, {
+        type: 'status', source: 'pi', data: { isRunning: true, status: 'Working…' },
+      }, at - 100);
+      applyAgentIslandEvent(state, meta, {
+        type: 'done', source: 'pi', data: { result: '', status: 'cancelled', silentStop: true },
+      }, at);
+      return { state, meta };
+    }
+
+    it('keeps the hold bounded when the wall clock steps backwards', () => {
+      const mono = vi.spyOn(performance, 'now').mockReturnValue(0);
+      try {
+        const { state } = heldSession('clock-step', 1_000_000);
+        expect(state.sessions.get('clock-step')?.phase).toBe('running');
+
+        // 单调时钟已走过 5s,墙上时钟被向后调约 1 小时:唤醒时刻必须按**单调剩余量**重算,
+        // 不能被 1 小时的墙上偏差拖住(否则兜底要等到时钟追回来才兑现)。
+        mono.mockReturnValue(5_000);
+        const steppedBack = 300_000;
+        expect(getNextAgentIslandTimerAt(state, steppedBack))
+          .toBe(steppedBack + (AGENT_ISLAND_SILENT_STOP_HOLD_MS - 5_000));
+        // 真实经过时间还没到上限 → 仍保持 running(挂起不得被提前兑现成假完成)。
+        buildAgentIslandDisplayState(state, steppedBack);
+        expect(state.sessions.get('clock-step')?.phase).toBe('running');
+
+        // 真实经过时间越过上限(墙上时钟仍在 1 小时前)→ 照常补上被压下的完成。
+        mono.mockReturnValue(AGENT_ISLAND_SILENT_STOP_HOLD_MS + 1);
+        buildAgentIslandDisplayState(state, steppedBack);
+        expect(state.sessions.get('clock-step')?.phase).toBe('completed');
+        expect(hasAgentIslandSessionAttention(state, 'clock-step')).toBe(true);
+      } finally {
+        mono.mockRestore();
+      }
+    });
+
+    it('keeps a held entry visible through a non-Done terminal status tail', () => {
+      const { state, meta } = heldSession('odd-tail', 1_100);
+      // 现网三个 producer 都发 status:'Done';这里构造非 'Done' 的 isRunning=false 尾巴。
+      // 挂起期间它同样不得把 running 落下去 —— 落下就变成「running=false + 非终态 phase」的
+      // 不可见条目,紧随的 prune 会整条删掉,挂起连同兜底一起静默丢失。
+      applyAgentIslandEvent(state, meta, {
+        type: 'status', source: 'pi', data: { isRunning: false, status: 'Stopped' },
+      }, 1_200);
+      expect(state.sessions.get('odd-tail')?.running).toBe(true);
+
+      buildAgentIslandDisplayState(state, 1_300);
+      expect(state.sessions.has('odd-tail')).toBe(true);
+      expect(state.sessions.get('odd-tail')?.phase).toBe('running');
+
+      // 挂起上限到点仍照常补上被压下的完成。
+      buildAgentIslandDisplayState(state, 1_100 + AGENT_ISLAND_SILENT_STOP_HOLD_MS);
+      expect(state.sessions.get('odd-tail')?.phase).toBe('completed');
+    });
   });
 
   it('does not start or complete a product turn from background compact status', () => {

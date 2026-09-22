@@ -9,6 +9,13 @@ import { SessionTurnActivityTracker } from '../sessionTurnActivityTracker.js';
 import { ProductTurnWallClockTracker, ProductTurnUsageTargetTracker } from '../turnWallClock.js';
 import { ClaudeOutputLagTimingGuard } from '../../usage/modelUsageDelta.js';
 import { createWorkerTurnStartSequencer } from '../workerTurnStartSequencer.js';
+import { createAsyncQueue } from '../../../../../../packages/maker-core/src/agents/shared/async-queue.js';
+import { UsageTracker } from '../../../../../../packages/maker-core/src/agents/shared/usage-tracker.js';
+import {
+  newRuntimeState,
+  translateSdkMessage,
+  type TurnState,
+} from '../../../../../../packages/maker-core/src/agents/claude-code/translator.js';
 
 const effects = vi.hoisted(() => {
   const calls: string[] = [];
@@ -202,6 +209,39 @@ function event(
   extra: Partial<AgentEvent> = {},
 ): AgentEvent {
   return { type, source: 'codex', data, ...extra } as AgentEvent;
+}
+
+/**
+ * 真实 claude-code translator 的最小 ctx(与 maker-core 的
+ * `agents/claude-code/__tests__/translator-silent-stop.test.ts` 同形)。
+ */
+function claudeTranslatorCtx() {
+  const turn: TurnState = {
+    text: '',
+    toolUses: 0,
+    apiCalls: 0,
+    sawCompactBoundary: false,
+    hasEmittedText: false,
+    uiEmittedText: '',
+    pendingApiError: null,
+    interruptRequested: false,
+    generation: 0,
+    interruptGeneration: 0,
+    lastAssistantMsgHadSubstance: true,
+  };
+  return {
+    rt: newRuntimeState(),
+    turn,
+    log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn() },
+    getModel: () => 'claude-fable-5',
+    getEffort: () => 'high' as const,
+    getPermissionMode: () => 'auto' as const,
+    onSessionId: vi.fn(),
+    getSdkSessionId: () => undefined,
+    getLogTitle: () => undefined,
+    tracker: new UsageTracker(),
+    getModelContextWindow: () => 1_000_000,
+  };
 }
 
 function harness() {
@@ -489,6 +529,111 @@ describe('production Session event pipeline', () => {
     effects.fn('broadcast').mockClear();
     h.emit(event('done', { silentStop: true }));
     expect(effects.fn('broadcast')).not.toHaveBeenCalled();
+    await h.dispose();
+  });
+
+  it('engages the silent-stop resume path for the Pi shape {status:cancelled, silentStop:true}', async () => {
+    const h = harness();
+    // maker-core pi translator 的空回合终态:done.data 带 status:'cancelled' + silentStop。
+    h.emit(event('done', { type: 'pi/agent_settled', result: '', status: 'cancelled', silentStop: true }, { source: 'pi' }));
+
+    // 决策窗内不得当成普通收口:goal idle 不通,in-turn 保持。
+    expect(h.deps.notifyGoalIdleAfterTurnSettled).not.toHaveBeenCalled();
+    expect(h.activity.isSessionInTurn('task')).toBe(true);
+    expect(h.deps.handleSilentStopTurnEnd).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1500);
+    // resume 执行体拿到本 turn 的 lease 与 origin,守卫据此决定补发「继续」。
+    expect(h.deps.handleSilentStopTurnEnd).toHaveBeenCalledOnce();
+    expect(h.deps.handleSilentStopTurnEnd).toHaveBeenCalledWith(
+      h.session,
+      expect.any(Number),
+      'instance:1',
+      undefined,
+    );
+    await h.dispose();
+  });
+
+  it('pins the claude-code producer contract: the silent-stop marker rides the paired turn-end status too', async () => {
+    // 岛面(agent-island/state.ts)按 `data.silentStop` 判定 silent-stop 挂起,而 claude-code
+    // 的事件序是 turn-end status → done。若标记只挂在 done 上,status Done 会先被当成正常收口
+    // —— 假完成先写 unread / attention / 远程未读账本,随后到达的 done 只能得到一个
+    // 「已 completed 又 running」的矛盾态(F1)。所以这里直接驱动真实 translator 钉住生产者契约:
+    // 只钉岛面的话,标记从 status 上被摘掉不会有任何测试变红。
+    vi.useRealTimers();
+    const ctx = claudeTranslatorCtx();
+    const queue = createAsyncQueue<AgentEvent>();
+
+    // 干活形态 + 空 thinking 收尾(#50597 指纹)= translator 判定的 silent stop。
+    translateSdkMessage({
+      type: 'stream_event',
+      event: { type: 'message_start', message: { model: 'claude-fable-5', usage: { input_tokens: 1000 } } },
+    }, queue, ctx);
+    translateSdkMessage({
+      type: 'assistant',
+      message: { content: [{ type: 'tool_use', id: 'tool-1', name: 'Read', input: { file_path: '/tmp/a' } }] },
+    }, queue, ctx);
+    translateSdkMessage({
+      type: 'assistant',
+      message: { content: [{ type: 'thinking', thinking: '', signature: 'sig' }] },
+    }, queue, ctx);
+    translateSdkMessage({
+      type: 'result',
+      stop_reason: 'end_turn',
+      total_cost_usd: 0.1,
+      usage: { input_tokens: 1000, output_tokens: 2 },
+    }, queue, ctx);
+
+    queue.end();
+    const events: AgentEvent[] = [];
+    for await (const ev of queue) events.push(ev);
+
+    const statusDone = events.find(
+      (ev) => ev.type === 'status' && (ev.data as { status?: string }).status === 'Done',
+    );
+    const done = events.find((ev) => ev.type === 'done');
+    expect(done && (done.data as { silentStop?: boolean }).silentStop).toBe(true);
+    expect(statusDone && (statusDone.data as { silentStop?: boolean }).silentStop).toBe(true);
+    // 顺序断言本身也是契约的一部分(岛面两种顺序都要能挂起,但生产者这一侧就是 status → done)。
+    expect(events.indexOf(statusDone!)).toBeLessThan(events.indexOf(done!));
+  });
+
+  it('does not engage silent-stop auto-resume for a marker-less cancelled terminal', async () => {
+    const h = harness();
+    // **本用例覆盖的是管线侧的判据**:`done.data.silentStop` 是唯一开关 —— 形状相同
+    // (status:'cancelled' + 空文本)但没有标记的终态必须走普通收口,不得进 1.5s 决策窗。
+    // 它**不**覆盖「translator 会不会给 Host Stop 也打标记」:那由 Pi translator 的
+    // hostStopSeenGeneration 锁存决定(packages/maker-core/src/agents/pi/translator.ts,
+    // 断言见 pi/__tests__/pi-translator.test.ts 的 Host Stop 用例)。Host Stop(用户点 Stop /
+    // watchdog abort)在真实链路上就是「cancelled + 空文本 + 无标记」这条形状(见上一用例的
+    // 反向对照:同形状加标记就必须进决策窗)。
+    h.emit(event('done', { type: 'pi/agent_settled', result: '', status: 'cancelled' }, { source: 'pi' }));
+
+    expect(h.deps.handleSilentStopTurnEnd).not.toHaveBeenCalled();
+    expect(h.activity.isSessionInTurn('task')).toBe(false);
+    expect(h.deps.notifyGoalIdleAfterTurnSettled).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(h.deps.handleSilentStopTurnEnd).not.toHaveBeenCalled();
+    await h.dispose();
+  });
+
+  it('treats a marked turn-end status as bookkeeping and keeps the resume decision on done', async () => {
+    const h = harness();
+    Object.defineProperty(h.session, 'agentKind', { value: 'claude-code' });
+    // claude-code translator 的 turn-end status 现在也带 silentStop(岛面据此在
+    // `status Done` 先到时直接进挂起,见 agent-island/state.test.ts 的两种事件序用例)。
+    // 管线侧必须保持不变:续跑决策只认 done,带标记的 status 仍按普通终态记账落 idle。
+    h.emit(event('status', { isRunning: false, status: 'Done', silentStop: true }, { source: 'claude-code' }));
+    expect(h.deps.handleSilentStopTurnEnd).not.toHaveBeenCalled();
+    expect(h.activity.isSessionInTurn('task')).toBe(false);
+
+    // 紧随其后的 done(带标记)才是决策入口:回拨 in-turn,决策窗内不当普通完成。
+    h.emit(event('done', { result: '', silentStop: true }, { source: 'claude-code' }));
+    expect(h.activity.isSessionInTurn('task')).toBe(true);
+    expect(h.deps.handleSilentStopTurnEnd).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(h.deps.handleSilentStopTurnEnd).toHaveBeenCalledOnce();
     await h.dispose();
   });
 

@@ -2375,6 +2375,12 @@ function handleResult(
     });
   }
   // turn end status: isRunning=false + status='Done'; 数值全部走 endSnapshot
+  // silentStop 标记**同时**挂在这条配对的 status 上(与下方 done 同源同值):本文件的
+  // 事件序是 status Done → done,宿主侧的岛面/观察者若只认 done 上的标记,这条 status Done
+  // 就会被当成正常收口、先画一次假完成(连带 unread / attention / 远程未读账本),随后到达的
+  // silentStop done 只能得到一个「已 completed 又 running」的自相矛盾中间态。岛面按标记
+  // 收口后与 provider 顺序无关(Pi 是 done → status,走同一个标记)。data 为 unknown 形状、
+  // 既有消费方均先判 `event.type === 'done'` 再读本字段,加字段零影响;不命中时与现状逐字节一致。
   queue.push({
     type: 'status',
     data: {
@@ -2386,6 +2392,7 @@ function handleResult(
         reliable: liveGeneration.reliable,
       }),
       isRunning: false,
+      ...(isSilentStopTurn ? { silentStop: true } : {}),
     },
     source: 'claude-code',
   });

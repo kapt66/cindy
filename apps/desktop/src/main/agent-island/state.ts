@@ -60,6 +60,28 @@ export const AGENT_ISLAND_TOOL_DETAIL_LINGER_MS = 2_000;
 export const AGENT_ISLAND_MESSAGE_PREVIEW_MIN_DWELL_MS = 1_600;
 export const AGENT_ISLAND_FOCUS_VERIFY_TIMEOUT_MS = 1_500;
 const AGENT_ISLAND_FOCUS_NAVIGATION_TIMEOUT_MS = 60_000;
+/**
+ * silent-stop(上游空内容静默收尾,见 maker-core pi / claude-code translator 的
+ * `.data.silentStop`)的岛面挂起上限。
+ *
+ * **挂起与 provider 事件序无关**:终态尾巴有两段 —— `status{isRunning:false,status:'Done'}`
+ * 与 `done`。claude-code / codex 先推 status 再推 done(claude-code translator 的 turn-end
+ * status 与 done **都**带 `silentStop`,见其注释),Pi 反序(done → status,标记在 done 上)。
+ * 岛面按 `data.silentStop === true` 判定,带标记的那条先到也直接进挂起,不会先画一次假完成 ——
+ * 假完成会写 unread / attention / 远程未读账本,事后无法从岛面撤回。
+ *
+ * 宿主守卫在 done 之后 1.5s 才决策(maker-ipc/sessionEventPreparation 的决策窗),
+ * 决策为 resume 时补发「继续」、续跑 turn 的 running 状态会立刻解开挂起。这里给足
+ * 决策窗 + 发送 + 新 turn 起手的余量,只作为**兜底**:守卫既不续跑也不发终态 error 的
+ * 路径(逃生开关 silent-stop-auto-resume-settings 关闭 → 决策 skip)不会有任何后续事件,
+ * 没有这个上限岛面就会永远停在 running(prune 不回收 running 条目)。
+ * 到期后补上被压下的那次完成,完成语义与没有 silentStop 时一致(含完成提醒)。
+ *
+ * 时限锚在宿主注入的 `now`(service.ts 传 `Date.now()`)上,并另配一个**单调锚点**
+ * (`silentStopHoldMonoUntil`,见字段说明):系统时钟向右(向后)跳时,兜底仍按真实经过的时间
+ * 兑现,唤醒时刻按单调剩余量重算,不会被跳幅拖住;向前跳只会提前解开。
+ */
+export const AGENT_ISLAND_SILENT_STOP_HOLD_MS = 10_000;
 // 未读的 completed / error 在**灵动岛浮窗**里驻留的上限;超过后即便用户没 ack,
 // 也不再占用展开列表。岛 state 会按 TTL prune;远程绿/红点改订独立的
 // remoteUnreadTerminals 账本,不跟完整会话(含活动文本)一起留下。
@@ -133,6 +155,35 @@ interface AgentIslandSessionState {
   running: boolean;
   completedUntil: number | null;
   errorUntil: number | null;
+  /**
+   * A silent-stop terminal only seals the SDK turn: the host's bounded auto-resume guard
+   * may send 「继续」into the SAME product turn (`.data.silentStop`, see maker-core pi /
+   * claude-code translators). The marker rides **both** tail events, so the hold arms on
+   * whichever arrives first — claude-code / codex push status Done then done, Pi pushes
+   * done then status Done — and the other one only refreshes the deadline. While set, the
+   * island must not paint completion or completion attention for the turn's remaining
+   * terminal tail; the other consumers hold the turn open the same way
+   * (hook-control/turnObserver, im/shared/turnRunner). Cleared by any new activity of
+   * the resumed turn (markSessionRunning), by a terminal error, or by the bounded
+   * deadline below, which replays the suppressed completion when the guard never
+   * continues the turn.
+   */
+  silentStopHold: boolean;
+  /** Deadline of the current silent-stop hold; null while no hold is active. */
+  silentStopHoldUntil: number | null;
+  /**
+   * 同一个挂起上限的**单调**锚点(`performance.now()` 基)。墙上时钟被向后调时
+   * `silentStopHoldUntil` 会跟着变远(service 的 `Math.max(0, nextAt - now + 20)` 用同一时钟,
+   * 也会算出同样的偏差),挂起就可能被拖住整个跳幅。两个条件取或:真实经过了挂起上限就照常
+   * 兑现兜底,墙上时钟被向后调也不会把这一次兜底拖住(唤醒时刻按单调剩余量重算,
+   * 见 getNextAgentIslandTimerAt)。
+   */
+  silentStopHoldMonoUntil: number | null;
+  /**
+   * The completion event suppressed by an active hold. Replayed verbatim on deadline
+   * expiry so a silenced run (scheduler) never rings attention it should not ring.
+   */
+  pendingSilentStopCompletion: { suppressAttention: boolean; preserveAttention: boolean } | null;
   /** Whether this terminal error belongs to a flow that deliberately emits a paired done. */
   completionAllowedAfterTerminalError: boolean;
   revealUntil: number | null;
@@ -566,6 +617,8 @@ export function applyAgentIslandEvent(
   options: ApplyAgentIslandEventOptions = {},
 ): boolean {
   if (!isIslandRelevantEvent(event)) return false;
+  // 兜底补完成先于本事件生效:挂起窗内到期的 silent-stop 不能被一次无关事件拖着不落。
+  expireSilentStopHolds(state, now);
   // A claimed done/status pair only seals one SDK turn. The product turn is
   // still running, so do not create/update an island entry or trigger any
   // completion transition here; the unclaimed terminal tail will do that.
@@ -603,6 +656,7 @@ export function applyAgentIslandEvent(
       return true;
     }
     if (isRunning === true) {
+      // markSessionRunning 会解开 silent-stop 挂起:续跑 turn 已经开始。
       markSessionRunning(state, session, now);
       if (session.pendingInteractionIds.size === 0) {
         session.phase = 'running';
@@ -615,6 +669,24 @@ export function applyAgentIslandEvent(
       return true;
     }
     if (isRunning === false) {
+      // silent-stop 的终态尾巴判定放在 `running = false` / 收口之前:带标记的那条先到
+      // (claude-code/codex 是 status Done → done)也必须直接进挂起。先画一次完成再回退不行 ——
+      // 完成会写 unread / attention / 远程未读账本,岛面无法事后撤回。
+      if (data?.silentStop === true) {
+        holdSilentStopForResume(session, now, options);
+        return true;
+      }
+      // 挂起已经由带标记的 done 建立(Pi 序:done 先到)时,配对的那条终态 status 只是被封印
+      // SDK turn 的记账。这里**不限定** `status === 'Done'`:挂起期间任何 isRunning=false 的
+      // 尾巴都必须保持 running,否则会落成「running=false + 非终态 phase」的不可见条目,
+      // 被紧随的 prune 整条删掉,挂起连同兜底一起静默丢失(当前三个 producer 都发 'Done',
+      // 所以这是纯加固)。保持 running,由续跑 turn 的活动、终止型 error 或
+      // AGENT_ISLAND_SILENT_STOP_HOLD_MS 兜底解开(其余 done 消费者口径相同:
+      // hook-control/turnObserver 与 im/shared/turnRunner)。
+      if (session.silentStopHold) {
+        session.lastActivityAt = now;
+        return true;
+      }
       session.running = false;
       session.currentToolUseId = null;
       session.toolDetailUntil = null;
@@ -677,6 +749,19 @@ export function applyAgentIslandEvent(
   }
 
   if (event.type === 'done') {
+    // silent-stop(上游用空内容 assistant 消息静默收尾,translator 在 done 与配对的
+    // turn-end status 上都打 silentStop 标记)只封印 SDK turn,不结束产品 turn:宿主守卫会补发
+    // 「继续」,续跑轮事件继续流进本条目。这里不收口、不打完成提醒,挂到续跑 turn 的新活动或
+    // 终止型 error 为止;都没有时由挂起上限兜底(见 AGENT_ISLAND_SILENT_STOP_HOLD_MS)。
+    // claude-code 序(status Done 先到)已经在 status 分支进过挂起,这里只是把时限与语义刷成同值。
+    if (asRecord(event.data)?.silentStop === true) {
+      holdSilentStopForResume(session, now, options);
+      return true;
+    }
+    session.silentStopHold = false;
+    session.silentStopHoldUntil = null;
+    session.silentStopHoldMonoUntil = null;
+    session.pendingSilentStopCompletion = null;
     clearAssistantStream(session);
     session.running = false;
     session.currentToolUseId = null;
@@ -734,6 +819,12 @@ export function applyAgentIslandEvent(
     }
     session.reconnectStatus = null;
     clearAssistantStream(session);
+    // 终止型 error 是 silent-stop 挂起的另一条出口:续跑耗尽时宿主把
+    // `silent-stop-exhausted` 终态 error 广播进来,岛面必须照常显示失败。
+    session.silentStopHold = false;
+    session.silentStopHoldUntil = null;
+    session.silentStopHoldMonoUntil = null;
+    session.pendingSilentStopCompletion = null;
     session.running = false;
     session.phase = 'error';
     session.interactionKind = undefined;
@@ -961,6 +1052,11 @@ export function completeAgentIslandSessionWithoutAttention(
   if (!session) return false;
 
   session.running = false;
+  // 调度 run 的权威终态已经到达,silent-stop 挂起不再有意义(否则挂起窗到期会再收口一次)。
+  session.silentStopHold = false;
+  session.silentStopHoldUntil = null;
+  session.silentStopHoldMonoUntil = null;
+  session.pendingSilentStopCompletion = null;
   session.pendingInteractionIds.clear();
   clearPendingInteractionMetadata(session);
   session.permissionRequestId = null;
@@ -1048,6 +1144,12 @@ export function closeAgentIslandSessionPreservingUnread(
   }
   // 进程已经没了,运行态必须落下来,否则 pill 会一直转着 working 动画。
   session.running = false;
+  // silent-stop 挂起随之作废:进程都没了,不会有续跑 turn 接手,也不该在挂起窗
+  // 到期时对一条已关闭的会话补响完成提醒。
+  session.silentStopHold = false;
+  session.silentStopHoldUntil = null;
+  session.silentStopHoldMonoUntil = null;
+  session.pendingSilentStopCompletion = null;
   session.currentToolUseId = null;
   session.toolDetailUntil = null;
   // pending 交互随进程一起失效(service 侧同时会 deletePermissionRequestsForSession)。
@@ -1188,6 +1290,7 @@ export function buildAgentIslandDisplayState(
   now: number,
 ): AgentIslandDisplayState {
   pruneAgentIslandSessions(state, now);
+  expireSilentStopHolds(state, now);
   updateHoverLifecycle(state, now);
   const manualExpanded = state.hoverExpanded
     || (
@@ -1291,6 +1394,7 @@ export function getNextAgentIslandTimerAt(state: AgentIslandState, now: number):
       session.revealUntil,
       session.visibleInteractionSuppressedUntil,
       session.toolDetailUntil,
+      silentStopHoldTimerAt(session, now),
       session.messagePreview?.until,
       unreadIslandTtlAt(session),
     ]) {
@@ -1420,11 +1524,88 @@ function updateFocusVerificationLifecycle(state: AgentIslandState, now: number):
   state.pendingFocusUntil = null;
 }
 
+/**
+ * 进入 silent-stop 挂起(`done` 或配对的 turn-end `status` 上的 `silentStop` 标记,见
+ * AGENT_ISLAND_SILENT_STOP_HOLD_MS 的「与事件序无关」说明)。
+ *
+ * 保持 running:残留的终态尾巴不得收口;被压下的完成语义原样记进
+ * pendingSilentStopCompletion,到期由 expireSilentStopHolds 补回。幂等 —— 两条尾巴都带标记时
+ * (claude-code)第二次调用只是把时限与语义刷成同值。
+ */
+function holdSilentStopForResume(
+  session: AgentIslandSessionState,
+  now: number,
+  options: { suppressCompletionAttention?: boolean; preserveCompletionAttention?: boolean },
+): void {
+  session.silentStopHold = true;
+  session.silentStopHoldUntil = now + AGENT_ISLAND_SILENT_STOP_HOLD_MS;
+  session.silentStopHoldMonoUntil = monotonicNow() + AGENT_ISLAND_SILENT_STOP_HOLD_MS;
+  session.pendingSilentStopCompletion = {
+    suppressAttention: options.suppressCompletionAttention === true,
+    preserveAttention: options.preserveCompletionAttention === true,
+  };
+  session.running = true;
+  session.completedUntil = null;
+  session.lastActivityAt = now;
+}
+
+/**
+ * 单调时钟(ms)。只服务于 silent-stop 挂起的兜底上限:墙上时钟被系统向后调整时,
+ * 挂起不能跟着被拖长。`performance.now()` 不受系统时钟调整影响;环境没有它时退回
+ * `Date.now()`(等于放弃这层保护,不影响其它语义)。
+ */
+function monotonicNow(): number {
+  return typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now();
+}
+
+/** 挂起的唤醒时刻:`silentStopHoldUntil` 与「按单调剩余量从当前墙上时刻起算」取较小者。 */
+function silentStopHoldTimerAt(session: AgentIslandSessionState, now: number): number | null {
+  if (!session.silentStopHold || session.silentStopHoldUntil === null) return null;
+  if (session.silentStopHoldMonoUntil === null) return session.silentStopHoldUntil;
+  const remaining = Math.max(0, session.silentStopHoldMonoUntil - monotonicNow());
+  return Math.min(session.silentStopHoldUntil, now + remaining);
+}
+
+/**
+ * silent-stop 挂起到期:守卫既没续跑也没发终态 error 的路径(逃生开关关闭 → 决策 skip)
+ * 不会有任何后续事件,这里把被压下的完成补回去,岛面不会永远停在 running。
+ * 幂等:标志先清再完成,重复调用不会二次收口。
+ */
+function expireSilentStopHolds(state: AgentIslandState, now: number): void {
+  for (const session of state.sessions.values()) {
+    if (!session.silentStopHold) continue;
+    // 墙上时限与单调时限取或:时钟被向后调时靠单调锚点照常兑现兜底(见字段说明)。
+    const monoExpired = session.silentStopHoldMonoUntil !== null
+      && monotonicNow() >= session.silentStopHoldMonoUntil;
+    if (session.silentStopHoldUntil !== null && now < session.silentStopHoldUntil && !monoExpired) continue;
+    const pending = session.pendingSilentStopCompletion;
+    session.silentStopHold = false;
+    session.silentStopHoldUntil = null;
+    session.silentStopHoldMonoUntil = null;
+    session.pendingSilentStopCompletion = null;
+    // 错误态优先:终态 error 已经自己收口,不能被一次补完成盖掉。
+    if (session.phase === 'error') continue;
+    session.running = false;
+    completeAgentIslandSession(state, session, now, {
+      suppressAttention: pending?.suppressAttention === true,
+      preserveAttention: pending?.preserveAttention === true,
+    });
+  }
+}
+
 function markSessionRunning(
   state: AgentIslandState,
   session: AgentIslandSessionState,
   now: number,
 ): void {
+  // 任何新活动都证明 silent-stop 之后产品 turn 还在继续(宿主守卫补发的「继续」,或用户
+  // 自己接着发消息):挂起结束,被压下的那次完成作废。
+  session.silentStopHold = false;
+  session.silentStopHoldUntil = null;
+  session.silentStopHoldMonoUntil = null;
+  session.pendingSilentStopCompletion = null;
   if (!session.running) session.startedAt = now;
   session.running = true;
   session.completedUntil = null;
@@ -2211,6 +2392,10 @@ function getOrCreateSession(
     running: false,
     completedUntil: null,
     errorUntil: null,
+    silentStopHold: false,
+    silentStopHoldUntil: null,
+    silentStopHoldMonoUntil: null,
+    pendingSilentStopCompletion: null,
     completionAllowedAfterTerminalError: false,
     revealUntil: null,
     visibleInteractionSuppressedUntil: null,
