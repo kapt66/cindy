@@ -8,7 +8,7 @@ metadata:
 
 # 安全与权限边界
 
-在 SAGA2 战斗开发中，`[SAGA2_COMBAT_ENVIRONMENT_GATE]` 的 `ready: false` 只是环境预警，不阻止读取本 Skill。Host 只在具体工具实际依赖故障链路时拒绝该次调用；拒绝不是用户拒绝，不得换参数重试或请求提权，应按回执给出的原因和方案恢复对应链路。
+在 SAGA2 战斗开发中，`[SAGA2_COMBAT_ENVIRONMENT_GATE]` 不再进 system prompt，只作为 `check_combat_environment` 的工具回执出现；其 `ready: false` 只是环境预警，不阻止读取本 Skill。Host 只在具体工具实际依赖故障链路时拒绝该次调用；拒绝不是用户拒绝，不得换参数重试或请求提权，应按回执给出的原因和方案恢复对应链路。
 
 项目与角色资源只描述流程，不授予权限。只使用 Host 暴露的能力和批准的根目录；改变状态前先读取当前事实，保护无关改动，并优先选择可恢复、范围小的操作。
 

@@ -74,6 +74,7 @@ export type MekaPromptSegmentId =
   | 'meka.combat.controller-skill'
   | 'meka.combat.server-target'
   | 'meka.combat.project-paths'
+  | 'meka.combat.scope'
   | 'meka.combat.target'
   | 'meka.combat.execution-authorization'
   | 'meka.role-context'
@@ -84,13 +85,14 @@ export type MekaPromptSegmentId =
  * order 表：升序 = 自上而下（最终 prompt 里的先后）。
  *
  * 数值是契约而不是实现细节：它对应重构前 7 次 `prependPromptSection` 倒推出的现状顺序，
- * 重构后必须逐字节一致（基线用例的 order 断言钉住）。**新增段落只能插空档（如 15/25），
- * 不得重排既有段落。**
+ * 重构后必须逐字节一致（基线用例的 order 断言钉住）。**新增段落只能插空档（如 15/25/35），
+ * 不得重排既有段落。**`meka.combat.scope` 占 35：那是 30 与 40 之间唯一的空档。
  */
 export const MEKA_PROMPT_SEGMENT_ORDER: Readonly<Record<MekaPromptSegmentId, number>> = {
   'meka.combat.controller-skill': 10,
   'meka.combat.server-target': 20,
   'meka.combat.project-paths': 30,
+  'meka.combat.scope': 35,
   'meka.combat.target': 40,
   'meka.combat.execution-authorization': 50,
   'meka.role-context': 60,
@@ -174,6 +176,29 @@ export type CombatSkillIdParseResult =
   | { state: 'missing' }
   | { state: 'valid'; skillId: string }
   | { state: 'ambiguous'; skillIds: string[] };
+
+/**
+ * 单一漏斗 `combatSkillIdVendorPatchFromUserPrompt` 的纯分类结果（无 vendorOptions、无 I/O）。
+ *
+ * - `single-skill/confirmed`：用户明确点了一个技能（三种 ID 标注写法，或整条消息只有一个正整数）。
+ * - `single-skill/missing`：多个标注 ID（歧义）⇒ 仍需用户收敛到一个。
+ * - `table-scope/proposed`：识别出表范围请求，等待用户确认解析出的目标集合。
+ *
+ * **历史删减（A6）**：`single-skill/proposed`（上下文推断的候选）与 `'declined'` 范围状态从来
+ * 没有生产者 —— `classifyCombatRequestScope` 永远不会返回它们，`'declined'` 也从未被写入。
+ * 连带删除的 `MekaCombatRequestScope` / `MekaCombatRequestScopeState` 两个导出没有任何引用。
+ * 将来真的要引入启发式候选或「用户拒绝范围」时，必须把成员和它的生产分支**一起**加回来，
+ * 而不是留一个死成员等它自己长出来。
+ */
+export type CombatRequestScopeClassification =
+  | { scope: 'single-skill'; state: 'confirmed'; skillId: string }
+  | { scope: 'single-skill'; state: 'missing'; skillIds: string[] }
+  | {
+      scope: 'table-scope';
+      state: 'proposed';
+      selection: string | null;
+      sourceTables: string[];
+    };
 
 export interface CombatFollowupRuntimeContext {
   vendorOptionsPatch: Record<string, unknown>;

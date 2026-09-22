@@ -134,7 +134,10 @@ describe('Meka runtime project/role resolution', () => {
         expect(resolved.promptText).toContain('combat-skill-configuration');
         expect(resolved.promptText).toContain('技能 ID 硬入口');
         expect(resolved.promptText).toContain('不得从 Unity 当前选中项、历史任务、搜索结果');
-        expect(resolved.promptText).toContain('技能 ID 是硬入口，只能由用户在当前任务中明确提供');
+        expect(resolved.promptText).toContain('技能 ID 是硬入口，只能由用户给出');
+        expect(resolved.promptText).toContain('table-scope：范围由配置表或规则决定');
+        expect(resolved.promptText).toContain('启发式或推断得到的候选永远不能成为已确认绑定');
+        expect(resolved.promptText).toContain('只动编辑器模块资产');
         expect(resolved.promptText).toContain('当前模块配置入口要求技能 ID 为正整数');
         expect(resolved.promptText).toContain('skill_001` 这类前缀/别名而没有明确数字映射');
         expect(resolved.promptText).toContain('请提供要生成、修改或检查的正整数技能 ID。');

@@ -38,12 +38,6 @@ type CombatServerDispatch = {
 
 const activeDispatches = new Map<string, CombatServerDispatch>();
 const trustedWorkerRemoteHosts = new Map<string, Map<string, string>>();
-const workerReadCounts = new Map<string, number>();
-const leadEvidenceCounts = new Map<string, number>();
-/** A server worker gets a small, deterministic evidence budget per dispatch. */
-export const COMBAT_SERVER_WORKER_READ_LIMIT = 6;
-/** Local Lead exploration is bounded so repetitive reads cannot consume a turn. */
-export const COMBAT_LEAD_EVIDENCE_READ_LIMIT = 8;
 let nextGeneration = 1;
 
 function normalizeDispatchTask(task: string): string {
@@ -158,7 +152,6 @@ export function settleCombatServerCapabilityDispatch(input: {
 
   current.workerId = input.workerId?.trim() || null;
   current.workerSessionId = input.workerSessionId?.trim() || current.requestedWorkerRef;
-  if (current.workerSessionId) workerReadCounts.set(current.workerSessionId, 0);
   current.state = 'pending';
   current.vendorOptions.mekaCombatServerCapabilityStatus = 'pending';
   current.vendorOptions.mekaCombatPhase = 'server-capability-check';
@@ -339,55 +332,9 @@ export function hasTrustedCombatServerCapabilityReport(leadSessionId: string | u
   return Boolean(id && activeDispatches.get(id)?.state === 'report-ready');
 }
 
-export function consumeCombatServerWorkerReadBudget(workerSessionId: string | undefined): {
-  allowed: boolean;
-  used: number;
-  remaining: number;
-} {
-  const id = workerSessionId?.trim();
-  if (!id) {
-    return { allowed: false, used: COMBAT_SERVER_WORKER_READ_LIMIT, remaining: 0 };
-  }
-  const used = workerReadCounts.get(id) ?? 0;
-  if (used >= COMBAT_SERVER_WORKER_READ_LIMIT) {
-    return { allowed: false, used, remaining: 0 };
-  }
-  const next = used + 1;
-  workerReadCounts.set(id, next);
-  return {
-    allowed: true,
-    used: next,
-    remaining: COMBAT_SERVER_WORKER_READ_LIMIT - next,
-  };
-}
-
-export function consumeCombatLeadEvidenceBudget(sessionId: string | undefined): {
-  allowed: boolean;
-  used: number;
-  remaining: number;
-} {
-  const id = sessionId?.trim();
-  if (!id) {
-    return { allowed: false, used: COMBAT_LEAD_EVIDENCE_READ_LIMIT, remaining: 0 };
-  }
-  const used = leadEvidenceCounts.get(id) ?? 0;
-  if (used >= COMBAT_LEAD_EVIDENCE_READ_LIMIT) {
-    return { allowed: false, used, remaining: 0 };
-  }
-  const next = used + 1;
-  leadEvidenceCounts.set(id, next);
-  return {
-    allowed: true,
-    used: next,
-    remaining: COMBAT_LEAD_EVIDENCE_READ_LIMIT - next,
-  };
-}
-
 export function resetCombatServerCapabilityState(): void {
   activeDispatches.clear();
   trustedWorkerRemoteHosts.clear();
-  workerReadCounts.clear();
-  leadEvidenceCounts.clear();
   nextGeneration = 1;
 }
 
@@ -396,8 +343,6 @@ export const resetCombatServerCapabilityStateForTests = resetCombatServerCapabil
 export function clearCombatServerCapabilitySession(sessionId: string): void {
   activeDispatches.delete(sessionId);
   trustedWorkerRemoteHosts.delete(sessionId);
-  workerReadCounts.delete(sessionId);
-  leadEvidenceCounts.delete(sessionId);
 }
 
 export function getTrustedCombatServerWorkerRemoteHost(

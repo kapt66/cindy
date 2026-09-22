@@ -217,6 +217,7 @@ function combatProjectPathsSection(workingDir: string): string {
     'Type',
     'SkillModuleProtocolCodec.cs',
   );
+  const { moduleEditorSkillPath, damageEncodingRulePath } = combatProjectRefPaths(workingDir);
   return [
     '[SAGA2_PROJECT_PATHS]',
     `projectRoot: ${projectRoot}`,
@@ -224,11 +225,74 @@ function combatProjectPathsSection(workingDir: string): string {
     `legacyModuleJsonTempRoot: ${os.tmpdir()}`,
     `unityAgentsPath: ${unityAgentsPath}`,
     `legacyModuleProtocolCodecPath: ${legacyModuleProtocolCodecPath}`,
-    `unityAgentsReadCommand: Get-Content -LiteralPath '${unityAgentsPath}'`,
-    `legacyModuleProtocolCodecReadCommand: Get-Content -LiteralPath '${legacyModuleProtocolCodecPath}'`,
-    '以上路径和读取命令由 Host 从当前任务 workingDir 解析。读取两个权威文件时必须逐字使用对应 ReadCommand，不得根据 projectRoot 二次拼接、缩短或猜测另一套 SAGA2 路径；Unity CLI status 返回的 projectPath 必须与 unityClientRoot 一致。start_team 和 create_worker 不需要工作区发现，禁止调用 get_workspace_info。',
+    `moduleEditorSkillPath: ${moduleEditorSkillPath}`,
+    `damageEncodingRulePath: ${damageEncodingRulePath}`,
+    `unityAgentsReadCommand: Get-Content -LiteralPath '${unityAgentsPath}' -Encoding UTF8`,
+    `legacyModuleProtocolCodecReadCommand: Get-Content -LiteralPath '${legacyModuleProtocolCodecPath}' -Encoding UTF8`,
+    `moduleEditorSkillReadCommand: Get-Content -LiteralPath '${moduleEditorSkillPath}' -Encoding UTF8`,
+    `damageEncodingRuleReadCommand: Get-Content -LiteralPath '${damageEncodingRulePath}' -Encoding UTF8`,
+    '以上路径和读取命令由 Host 从当前任务 workingDir 解析。四条注入的参考文件必须优先用原生文件读取工具（read）读取：它按 UTF-8 解码，不会把 CJK 正文读成乱码；仅当原生工具不可用时才改用 Shell，并逐字复制对应 ReadCommand（已带 -Encoding UTF8，不得删改或省略编码参数）。读取两个权威文件时不得根据 projectRoot 二次拼接、缩短或猜测另一套 SAGA2 路径；Unity CLI status 返回的 projectPath 必须与 unityClientRoot 一致。start_team 和 create_worker 不需要工作区发现，禁止调用 get_workspace_info。',
     '[/SAGA2_PROJECT_PATHS]',
   ].join('\n');
+}
+
+/** 与实现同一套规则：`projectRoot` 上移判定 + 两条项目参考路径（含 CJK 目录逐字）。 */
+function combatProjectRefPaths(workingDir: string): {
+  moduleEditorSkillPath: string;
+  damageEncodingRulePath: string;
+} {
+  const resolved = path.resolve(workingDir);
+  const projectRoot =
+    path.basename(resolved).toLowerCase() === 'saga2_unity' ? path.dirname(resolved) : resolved;
+  const unityClientRoot =
+    path.basename(resolved).toLowerCase() === 'saga2_unity'
+      ? resolved
+      : path.join(resolved, 'saga2_unity');
+  return {
+    moduleEditorSkillPath: path.join(
+      unityClientRoot,
+      '.agents',
+      'skills',
+      'editor-skill-editor-module',
+      'SKILL.md',
+    ),
+    damageEncodingRulePath: path.join(
+      projectRoot,
+      'saga2_design',
+      'planning',
+      '04-职能组-functional-groups',
+      '战斗策划组-combat-planning',
+      '专业规则-rules',
+      'ModuleDesignKnowledge.md',
+    ),
+  };
+}
+
+/** 只读 Unity 查询命令白名单（Host 注入，`mekaCombatReadOnlyUnityCommands`）。 */
+const COMBAT_READ_ONLY_UNITY_COMMANDS = [
+  'legacy_module_query_nodes',
+  'legacy_module_audit_coverage',
+];
+
+/** 漏斗会在每个 patch 里同时写入请求范围键（顺序与实现一致，键序断言依赖它）。 */
+function combatScopeVendorOptions(
+  scope: 'single-skill' | 'table-scope',
+  state: string,
+  extras: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    mekaCombatRequestScope: scope,
+    mekaCombatRequestScopeState: state,
+    mekaCombatScopeSelection: undefined,
+    mekaCombatScopeSourceTables: undefined,
+    mekaCombatScopeSkillIds: undefined,
+    mekaCombatScopeApproved: false,
+    // 口径统一：表范围、以及「目标已由用户确认」的单技能，证据依据都是项目参考
+    // （前提是参考已注入 —— 本文件用到的 workingDir 都可解析，故恒成立）。
+    mekaCombatEvidenceBasis:
+      scope === 'table-scope' || state === 'confirmed' ? 'project-reference' : undefined,
+    ...extras,
+  };
 }
 
 function combatTargetSection(skillId: string): string {
@@ -267,7 +331,7 @@ function combatServerWorkerSection(): string {
     '先读取远端仓库 AGENTS.md，只读核查当前 HEAD 的现有服务器能力；不要加载战斗策划服务器 Skill。',
     '整个任务永久只读：只允许文件读取和 Host 可证明只读的命令；禁止修改文件、创建或切换分支、改 Excel、生成文件或调用业务/项目 MCP。',
     '命令只使用单一 git show、git grep、git status 或 git diff 只读查询；不要使用 Read、rg、变量、管道、重定向、命令串联或脚本包装，也不要读取 Claude 自动保存的超长工具输出。需要多项证据时逐条调用并直接消费当前 Git 命令回执。',
-    '6 次预算的默认顺序固定为：第 1 次 `git show HEAD:AGENTS.md`；第 2 次 `git show -s --format=%H HEAD`；第 3 次用 `git grep -l -E <精确符号表达式> HEAD -- internal/battle` 只取得当前 HEAD 中的真实路径。第 4-6 次对这些真实路径分别使用 `git grep -n -C 24 -E <精确符号表达式> HEAD -- <path>` 读取直接消费者附近的小段上下文；不要用 `git show` 打开大型实现文件。所有 `git grep` 都必须显式写 `HEAD`。查询只包含 Lead 任务列出的精确 typ 数字、枚举名和数据函数名，禁止加入 `time`、`target`、`skill`、`damage`、`next`、`trigger` 或中文描述等通用词；没有真实路径时不得猜文件名。禁止先用空查询读取 AGENTS，禁止在命中具体消费者前读取架构总览或通用生命周期文件。',
+    '只读查询不设次数上限；证据不足时可继续逐条查询，但不要重复同一项查询。默认取证顺序固定为：先 `git show HEAD:AGENTS.md` 读取规则，再用 `git show -s --format=%H HEAD` 固定 HEAD，然后用 `git grep -l -E <精确符号表达式> HEAD -- internal/battle` 只取得当前 HEAD 中的真实路径；随后对这些真实路径分别使用 `git grep -n -C 24 -E <精确符号表达式> HEAD -- <path>` 读取直接消费者附近的小段上下文，不要用 `git show` 打开大型实现文件。所有 `git grep` 都必须显式写 `HEAD`。查询只包含 Lead 任务列出的精确 typ 数字、枚举名和数据函数名，禁止加入 `time`、`target`、`skill`、`damage`、`next`、`trigger` 或中文描述等通用词；没有真实路径时不得猜文件名。禁止先用空查询读取 AGENTS，禁止在命中具体消费者前读取架构总览或通用生命周期文件。',
     'Lead 已在任务正文提供 [SAGA2_MODULE_FIRST] 的目标技能老版导出、模块证据和原子能力矩阵；只核查其中依赖当前服务器解释的窄语义。没有完整专用函数不等于模块组合不支持：模块图已覆盖的能力必须按 supported 处理，只有具体原子语义缺少运行时消费者时才返回 unsupported，证据冲突或读取失败才返回 uncertain。',
     '结束时必须把 serverCapabilityReport 作为唯一一次完整终态回复输出：targetSkillId（与 Lead 绑定值一致的正整数）、supportStatus、readOnlyConfirmed、repository、head、codeEvidence、capabilityGap、programmerAction、affectedSurfaces、validationSuggestion。不要搜索或重试 orca_worker_bridge；Orca 会把终态回复自动桥接给 Lead。',
     '报告字段类型必须严格固定：codeEvidence、affectedSurfaces 为数组；capabilityGap、programmerAction、validationSuggestion 为非空字符串。即使没有能力缺口，capabilityGap 也必须写字符串（例如“无服务器能力缺口；仍需按建议完成验证”），不得写 []、null 或省略。',
@@ -384,6 +448,11 @@ describe('meka runtime injection baseline', () => {
       mekaWorkflow: 'saga2-combat-development-v1',
       mekaCombatExecutionMode: 'autonomous-user-request',
       mekaCombatServerCapabilityStatus: 'unchecked',
+      mekaCombatProjectRefPaths: [
+        combatProjectRefPaths(WORKING_DIR).moduleEditorSkillPath,
+        combatProjectRefPaths(WORKING_DIR).damageEncodingRulePath,
+      ],
+      mekaCombatReadOnlyUnityCommands: COMBAT_READ_ONLY_UNITY_COMMANDS,
     });
     expect(opts.nativeSkillPluginPath).toBe(PLUGIN_PATH_COMBAT);
     expect(opts.nativeSkillRevision).toBe(REVISION_COMBAT);
@@ -435,9 +504,15 @@ describe('meka runtime injection baseline', () => {
       mekaWorkflow: 'saga2-combat-development-v1',
       mekaCombatExecutionMode: 'autonomous-user-request',
       mekaCombatServerCapabilityStatus: 'unchecked',
+      mekaCombatProjectRefPaths: [
+        combatProjectRefPaths(WORKING_DIR).moduleEditorSkillPath,
+        combatProjectRefPaths(WORKING_DIR).damageEncodingRulePath,
+      ],
+      mekaCombatReadOnlyUnityCommands: COMBAT_READ_ONLY_UNITY_COMMANDS,
       mekaCombatTargetSkillId: '1019',
       mekaCombatTargetSkillIdState: 'confirmed',
       mekaCombatTargetSkillIds: undefined,
+      ...combatScopeVendorOptions('single-skill', 'confirmed'),
       mekaCombatPlanApproved: false,
       mekaCombatReferenceSkillId: undefined,
       mekaCombatTargetExportAttempted: undefined,
@@ -458,9 +533,18 @@ describe('meka runtime injection baseline', () => {
       'mekaWorkflow',
       'mekaCombatExecutionMode',
       'mekaCombatServerCapabilityStatus',
+      'mekaCombatProjectRefPaths',
+      'mekaCombatReadOnlyUnityCommands',
       'mekaCombatTargetSkillId',
       'mekaCombatTargetSkillIdState',
       'mekaCombatTargetSkillIds',
+      'mekaCombatRequestScope',
+      'mekaCombatRequestScopeState',
+      'mekaCombatScopeSelection',
+      'mekaCombatScopeSourceTables',
+      'mekaCombatScopeSkillIds',
+      'mekaCombatScopeApproved',
+      'mekaCombatEvidenceBasis',
       'mekaCombatPlanApproved',
       'mekaCombatReferenceSkillId',
       'mekaCombatTargetExportAttempted',
@@ -517,9 +601,15 @@ describe('meka runtime injection baseline', () => {
       mekaWorkflow: 'saga2-combat-development-v1',
       mekaCombatExecutionMode: 'autonomous-user-request',
       mekaCombatServerCapabilityStatus: 'unchecked',
+      mekaCombatProjectRefPaths: [
+        combatProjectRefPaths(WORKING_DIR).moduleEditorSkillPath,
+        combatProjectRefPaths(WORKING_DIR).damageEncodingRulePath,
+      ],
+      mekaCombatReadOnlyUnityCommands: COMBAT_READ_ONLY_UNITY_COMMANDS,
       mekaCombatTargetSkillId: undefined,
       mekaCombatTargetSkillIdState: 'ambiguous',
       mekaCombatTargetSkillIds: ['1019', '1010'],
+      ...combatScopeVendorOptions('single-skill', 'missing'),
     });
     expect(opts.nativeSkillPluginPath).toBe(PLUGIN_PATH_COMBAT);
     expect(opts.nativeSkillRevision).toBe(REVISION_COMBAT);
@@ -560,9 +650,15 @@ describe('meka runtime injection baseline', () => {
       mekaWorkflow: 'saga2-combat-development-v1',
       mekaCombatExecutionMode: 'autonomous-user-request',
       mekaCombatServerCapabilityStatus: 'unchecked',
+      mekaCombatProjectRefPaths: [
+        combatProjectRefPaths(WORKING_DIR).moduleEditorSkillPath,
+        combatProjectRefPaths(WORKING_DIR).damageEncodingRulePath,
+      ],
+      mekaCombatReadOnlyUnityCommands: COMBAT_READ_ONLY_UNITY_COMMANDS,
       mekaCombatTargetSkillId: '1019',
       mekaCombatTargetSkillIdState: 'confirmed',
       mekaCombatTargetSkillIds: undefined,
+      ...combatScopeVendorOptions('single-skill', 'confirmed'),
       mekaCombatPlanApproved: false,
       mekaCombatReferenceSkillId: undefined,
       mekaCombatTargetExportAttempted: undefined,
@@ -613,6 +709,13 @@ describe('meka runtime injection baseline', () => {
       mekaCombatTargetSkillIdState: 'confirmed',
       mekaCombatServerCapabilityStatus: 'unchecked',
       mekaCombatExecutionMode: 'autonomous-user-request',
+      // 本次消息没有改目标，但会话里已确认的单技能目标同样定稿为项目参考依据。
+      mekaCombatEvidenceBasis: 'project-reference',
+      mekaCombatProjectRefPaths: [
+        combatProjectRefPaths(WORKING_DIR).moduleEditorSkillPath,
+        combatProjectRefPaths(WORKING_DIR).damageEncodingRulePath,
+      ],
+      mekaCombatReadOnlyUnityCommands: COMBAT_READ_ONLY_UNITY_COMMANDS,
       mekaCombatServerRemoteHostId: 'mcpr:server-1',
       mekaCombatServerWorkerAgent: 'claude-code',
     });
@@ -968,10 +1071,16 @@ describe('meka runtime injection baseline', () => {
       mekaCombatTargetSkillId: '1019',
       mekaCombatTargetSkillIdState: 'confirmed',
       mekaCombatTargetSkillIds: undefined,
+      ...combatScopeVendorOptions('single-skill', 'confirmed'),
       mekaCombatPlanApproved: false,
       mekaCombatReferenceSkillId: undefined,
       mekaCombatTargetExportAttempted: undefined,
       mekaCombatTargetExportCompleted: undefined,
+      mekaCombatProjectRefPaths: [
+        combatProjectRefPaths(WORKING_DIR).moduleEditorSkillPath,
+        combatProjectRefPaths(WORKING_DIR).damageEncodingRulePath,
+      ],
+      mekaCombatReadOnlyUnityCommands: COMBAT_READ_ONLY_UNITY_COMMANDS,
       mekaCombatServerRemoteHostId: 'mcpr:server-1',
       mekaCombatServerWorkerAgent: 'claude-code',
     });
@@ -987,10 +1096,19 @@ describe('meka runtime injection baseline', () => {
       'mekaCombatTargetSkillId',
       'mekaCombatTargetSkillIdState',
       'mekaCombatTargetSkillIds',
+      'mekaCombatRequestScope',
+      'mekaCombatRequestScopeState',
+      'mekaCombatScopeSelection',
+      'mekaCombatScopeSourceTables',
+      'mekaCombatScopeSkillIds',
+      'mekaCombatScopeApproved',
+      'mekaCombatEvidenceBasis',
       'mekaCombatPlanApproved',
       'mekaCombatReferenceSkillId',
       'mekaCombatTargetExportAttempted',
       'mekaCombatTargetExportCompleted',
+      'mekaCombatProjectRefPaths',
+      'mekaCombatReadOnlyUnityCommands',
       'mekaCombatServerRemoteHostId',
       'mekaCombatServerWorkerAgent',
     ]);

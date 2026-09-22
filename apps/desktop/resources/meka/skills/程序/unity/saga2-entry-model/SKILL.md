@@ -8,7 +8,7 @@ metadata:
 
 # SAGA2 EntryModel 模块语义
 
-## 证据预算（强制）
+## 证据纪律（强制）
 
 只读取当前技能导出、一个同类配置和解决当前缺口所需的客户端/服务器代码。禁止递归扫描整个设计库、重复读取同一资料或把完整 Skill 文档批量灌入上下文；每个未决业务原子最多两轮定向核查。证据不足时立即停止并输出可实现项、无法保证项和待确认业务选择，不得编造字段或继续无界搜索。
 
@@ -22,8 +22,9 @@ metadata:
 
 ## 证据顺序
 
-1. 先读取当前技能的老版模块编辑器导出 JSON 和节点 Transition；如需确认同类组合，可额外只读
-   导出一个文件名带 `reference` 与参考技能 ID 的技能，但它不能替代当前目标证据。使用 Meka Unity 官方 Unity
+1. 先读取当前技能的老版模块编辑器导出 JSON 和节点 Transition。**不得导出、读取或引用任何参考技能**：
+   文件名带 `reference` 或带参考技能 ID 的技能一律禁止（Host 会拒绝 `[SAGA2_REFERENCE_SKILL_ID:…]`），
+   当前目标证据只能来自用户绑定的目标技能。使用 Meka Unity 官方 Unity
    CLI 的 `unity_inspect(action=status)` 与 `legacy_module_export_json` 回读。Unity Editor
    已常驻时复用现有实例，常规配置不要调用 `open`，也不要调用会返回完整资产清单的 `list`。
    技能资产不存在时导出必须失败，不能把自动创建的空资产当作当前配置。
@@ -49,14 +50,16 @@ metadata:
 最小范围生成 JSON。导入只使用老版模块编辑器的 JSON 入口；不得手改 `.asset`，不得把
 其它模块编辑器入口纳入 Agent 配置流程。
 
-导入源和回读文件只放在操作系统临时目录或 `saga2_unity`。已有模块资产必须先通过 Meka P4
-插件实际执行 `p4_edit`；新资产先调用 `legacy_module_prepare_asset`，再对返回的 `.asset` 与
-`.meta` 执行 `p4_add`。仅查询状态不算完成版本控制前置。
+导入源和回读文件只放在操作系统临时目录或 `saga2_unity`。导入前必须通过 Meka P4 插件实际执行
+`p4_edit`；老版模块命令只在资产已存在时可导入，没有创建空白资产的命令，也不得手改 `.asset`
+代替。仅查询状态不算完成版本控制前置。
 
-导入成功必须以 `persistenceVerified=true` 和一致的 `persistedNodeCount` 为准；随后通过同一
-官方 CLI 导出并结构化比较：节点数、ID、kind、typ、time、target、
-dataCondition、data、概率、Transition、层数、刷新、清理和绑定字段逐项回读。服务器证据
-不足时标记 `uncertain` 并停止实施，不得声称端到端完成。
+导入成功的判据是回执 `success=true` 且 `importedNodeCount` 与本次导入节点数一致；导入回执字段为
+`success / skillId / importedNodeCount / clearExisting / sourcePath / message`，导出回执字段为
+`success / skillId / exportedNodeCount / targetPath / message`，本协议**不存在**
+`persistenceVerified` 或 `persistedNodeCount`。持久化验证由随后通过同一官方 CLI 导出的结构化回读
+完成：节点数、ID、kind、typ、time、target、dataCondition、data、概率、Transition、层数、刷新、
+清理和绑定字段逐项比较。服务器证据不足时标记 `uncertain` 并停止实施，不得声称端到端完成。
 
 最终报告必须区分：已由模块组合表达的能力、需要客户端/服务器代码的能力、尚未验证的能力，
 并给出真实证据路径和运行时验证范围。

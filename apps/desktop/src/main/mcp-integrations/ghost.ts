@@ -127,6 +127,7 @@ import {
   isCombatWorkflowPolicyActive,
   markCombatTargetExportCompleted,
   markCombatTargetExportAttempted,
+  observeCombatLegacyModuleResult,
 } from '../meka-projects/combatWorkflowPolicy.js';
 import { t } from '../i18n.js';
 import { createLogger } from '../logger.js';
@@ -2359,6 +2360,21 @@ export function getCindyGhostsMcpDeps(
       }
       if (!finalized.ok) return finalized;
       if (sessionIdForConfirm && sessionWorkdir) {
+        // D2：只有**传输成功**的结果才携带可信的老版模块编辑器回执。在结果交回模型之前先交给
+        // Host 对账：导出回执建立/刷新「写入前节点数基线」，导入回执与基线比对；不一致或缺基线
+        // 时，策略层会拦住除结构化回读之外的一切调用（见 combatWorkflowPolicy）。
+        observeCombatLegacyModuleResult(
+          {
+            sessionId: sessionIdForConfirm,
+            workingDir: sessionWorkdir,
+            remoteHostId: sessionContext?.remoteHostId ?? null,
+            vendorOptions,
+            toolName: 'mcp__cindy__ghost_call',
+            input: { ghost_id: ghostId, tool, args },
+            action: { kind: 'mcp' },
+          },
+          finalized,
+        );
         markCombatTargetExportCompleted({
           sessionId: sessionIdForConfirm,
           workingDir: sessionWorkdir,

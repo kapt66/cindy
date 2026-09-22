@@ -242,24 +242,83 @@ Pipeline、打开或重启 Unity。对明确依赖 Editor 的原子操作，Meka
 追加一条“是否启动 Unity”的业务询问。若用户未同意或导出传输仍失败，Unity 部分标记为 `uncertain`，
 不允许进入写入阶段，随后继续不依赖 Unity 的服务器只读核查。
 
-老版模块资产的导入成功必须经过磁盘持久化验证，不能以同一 Editor 内存中的即时导出代替。
-`legacy_module_import_json` 保存后强制重新导入目标资产，并逐字段比较协议 JSON；只有返回
-`persistenceVerified=true` 且 `persistedNodeCount` 与导入数一致才算成功。导入前，已有资产
-必须通过 Meka P4 插件实际执行 `p4_edit`；新资产先用 `legacy_module_prepare_asset` 创建空白
-`.asset`/`.meta`，再对两者执行 `p4_add`。仅查看 P4 状态不能替代这些动作。战斗任务的导入源
-和回读 JSON 只允许使用操作系统临时目录或 `saga2_unity`，不得写入 `saga2_json`、
-`saga2_design` 或其它目录。上述目标技能 ID、老版模块命令参数和 JSON 路径裁决必须同时覆盖
-直连 Meka MCP 与公共 `cindy.ghost_call` 路由；公共入口在插件 setup、附件授权、目录票据和真实
-派发前执行同一战斗策略。普通角色、非战斗插件和未启用该 workflow 的任务不受此专用裁决影响。
+老版模块资产的导入成功必须经过结构化回读验证，不能以同一 Editor 内存中的即时导出代替。
+`legacy_module_import_json` 的回执字段就是 `success / skillId / importedNodeCount /
+clearExisting / sourcePath / message`；成功判据是 `success: true` 且 `importedNodeCount` 与本次
+导入节点数一致，持久化验证由随后 `legacy_module_export_json` 的结构化回读（字段 `success /
+skillId / exportedNodeCount / targetPath / message`）完成。**协议里不存在 `persistenceVerified`
+与 `persistedNodeCount`**——这两个名字曾是 Cindy 冻结技能自造的字段，项目侧 CLI 与 Cindy 产品代码
+都不存在，照它判定会把每一次成功导入都误判为失败（2026-09-22 修正，见
+[`../migrations/xdmaker-meka-to-cindy.md`](../migrations/xdmaker-meka-to-cindy.md) §6.56）。老版模块
+命令的参数名是 `skill_id` / `path` / `clear_existing`，调用形态以注入的 `moduleEditorSkillPath`
+为准。导入前，已有资产必须通过 Meka P4 插件实际执行 `p4_edit`，仅查看 P4 状态不能替代该动作；
+`p4_add` **不是**已有资产的前置动作——它的对象是尚未纳入 P4 的文件，对已受管资产调用既非必需、
+也不改变状态（2026-09-22 修正，原文写「`p4_edit` 并 `p4_add`」）。本批对 Unity 工程 C# 的改动保持
+**本地未 open**，由 owner 按自己的 P4 流程收口；确实新建的文件由 P4V 工作区自动 add 覆盖，不需要
+Agent 调 `p4_add`。**没有任何“创建空白资产”的命令**：`legacy_module_prepare_asset` 在插件仓与
+Unity 工程里都不存在，不得调用、试探或手改 `.asset` 代替；资产不存在时导入直接返回失败
+（“技能模块资产不存在”），该目标归入**额外内容**并交由用户拍板。战斗任务的导入源和回读 JSON
+只允许使用操作系统临时目录或 `saga2_unity`，不得写入 `saga2_json`、`saga2_design` 或其它目录。
+上述目标技能 ID、老版模块命令参数和 JSON 路径裁决必须同时覆盖直连 Meka MCP 与公共
+`cindy.ghost_call` 路由；公共入口在插件 setup、附件授权、目录票据和真实派发前执行同一战斗策略。
+普通角色、非战斗插件和未启用该 workflow 的任务不受此专用裁决影响。
 
 技能 ID 允许在同一任务内按“首轮纯业务需求 → Agent 追问 → 用户补充 ID”的方式提供。Host
 不得只在任务创建或恢复时解析 ID；每条真实用户消息在进入模型前都要重新检查明确标注的技能 ID，
 并在数据库确认当前任务属于 `saga2/combat-development` 后刷新在线会话的目标绑定。没有标注 ID
-的普通续聊保留既有绑定，多个 ID 切换到歧义态并停止工具调用。用户补充了唯一 ID 后，无需重开
+的普通续聊保留既有绑定，多个标注 ID 切换到歧义态并停止工具调用。用户补充了唯一 ID 后，无需重开
 任务、重启 Agent 或重复完整业务描述，当前回合的公共 Ghost 与直连工具门禁必须立即看到新值。
-一个战斗任务只允许用户提供的这一个目标技能 ID。参考技能、历史样例、第二个 ID 及
-`[SAGA2_REFERENCE_SKILL_ID: ...]` marker 均不得进入读取、导出、Worker 任务或结论；需要判断
-模块组合时，以当前目标导出、最窄客户端消费者和当前服务器 HEAD 为证据。
+
+战斗请求在**任何工具调用之前**先分两类（`mekaCombatRequestScope`）：
+
+- `single-skill`：用户在当前任务中明确给出正整数技能 ID。此时唯一目标是该 ID；参考技能、
+  历史样例、第二个 ID 及 `[SAGA2_REFERENCE_SKILL_ID: ...]` marker 均不得进入读取、导出、
+  Worker 任务或结论，模块组合判断只以当前目标导出、最窄客户端消费者和当前服务器 HEAD 为证据。
+- `table-scope`：范围由配置表或项目规则决定、用户没有给出技能 ID（“所有／全部／每个／各…
+  技能／模块”，或“范围由…表／配置／清单／规则”）。它**不适用**上一条的单目标禁令：不得追问
+  技能 ID，也不得把范围降维成一个技能。Host 记 `mekaCombatRequestScopeState = proposed`，
+  由角色用有界只读证据解析出目标集合与逐目标改动集，一次性交用户确认；用户回一句肯定
+  （`确认`／`可以`／`同意`／`执行`／`继续`／`没问题`…）后翻成 `confirmed` 且
+  `mekaCombatScopeApproved = true`。**审批只决定写入**：
+  有界的只读范围解析阶段不受审批位约束（表范围没有单值目标，用审批锁只读会死锁），写入仍受
+  P4 边界、路径白名单、首证据与服务器回执门禁约束。批准后 Host 登记的**范围成员清单**
+  （`mekaCombatScopeSkillIds`）**不是授权边界**，而是「Agent 自己的只读范围查询 + 用户确认」推导出的
+  一致性 guard：范围段要求 Agent 先用只读白名单命令 `legacy_module_query_nodes` 显式传 `skill_ids`
+  取回在用集合，Host 在**用户批准前**把这些 ID 去重、按数值升序登记（上限
+  `COMBAT_SCOPE_SKILL_IDS_LIMIT = 200`；超过只保留前 200 个并置
+  `mekaCombatScopeSkillIdsTruncated = true`），批准后**冻结**、不再接受后续查询扩大成员集。它只保证
+  实施阶段出现的 ID「曾被 Agent 明确查询过、且整个范围经用户确认」，**不证明这些 ID 属于业务范围**；
+  真正的边界仍是 P4、路径白名单、审批位与证据依据门禁。清单被截断时 Host 按「无清单」处理
+  （部分清单会把范围内的 ID 误判成范围外，比没有清单更危险），此时回落到「每次一个已确认 ID」的
+  逐次约束。
+
+**硬规则（不可放宽）**：启发式或上下文推断**永远不能**产出 `confirmed` 绑定——正则分类最多到
+`proposed`，只有用户明确标注的单个技能 ID、或用户对已解析范围的显式确认才产生 `confirmed`。
+整条消息只有一个裸正整数仍视为用户明确提供（追问后的标准回复），因此仍是 `confirmed` 单技能
+绑定，不要求重复“技能 ID”标签。一次出现多个技能 ID 且没有范围口径时仍返回同一句单目标追问，
+不擅自批量处理。
+
+**范围状态的会话级事实（2026-09-22，A3/A4/A10）**：
+
+- **A3 会话级 vendorOptions 镜像**：范围审批必须知道会话当前是不是表范围，而 maker-core 的
+  `Session` 只有写入口（`setVendorOptions`）、没有任何读取口子，Host 因此自建一份**进程内**镜像
+  （`combatWorkflowPolicy.ts` 的 `combatVendorOptionsBySession` / `rememberCombatVendorOptions`，
+  只合并 `mekaCombat*` 键；续聊发送被接受后回写，`maker-ipc/register.ts:12615` 把它作为
+  `previousVendorOptions` 传给审批判定）。**它不进数据库、不跨进程**：Cindy 重启后（或老会话在
+  本进程的首轮续聊）镜像为 `null`，审批转换退化为「只写 `mekaCombatRequestScopeState` /
+  `mekaCombatScopeApproved` / `mekaCombatEvidenceBasis` 三个键、不写 `mekaCombatRequestScope`」。
+  所有范围门禁都以 `mekaCombatRequestScope === 'table-scope'` 为前提，因此退化状态下**不会**因为
+  一句「可以／继续／OK」就解锁表范围写入；可观察的真实影响是：非表范围会话也可能被写下
+  `mekaCombatScopeApproved = true` 与 `mekaCombatEvidenceBasis = 'project-reference'`（单技能的
+  依据判定仍要求 `mekaCombatTargetSkillIdState === 'confirmed'`，且策略层**同时**要求两条参考路径
+  **确实已注入**，所以参考缺失时即使键被写下也不会豁免服务器回执——fail-closed 的最后一道仍在）。
+  重新发一条业务消息即恢复镜像。该限制**未做实机验证**。
+- **A4 批准后的范围成员清单**：语义见上一条 `table-scope` 的限定（一致性 guard、200 上限、
+  截断标记、批准后冻结）。
+- **A10 已批准范围段的持续注入**：`[SAGA2_COMBAT_SCOPE]` 在批准回合与**之后每个回合**都会重新渲染
+  注入（批准轮见 `mekaResolvePlan.ts:860-867`；后续轮在「本轮没有目标/范围补丁」时也按会话现状
+  渲染，见 `:836-856`），所以「按逐目标流程实施、每次只处理一个范围内的 ID」不会在批准后消失；
+  未批准时重复注入的是同一句「先只读解析、确认前禁止写入」，不改变权限语义。
 
 三项聚合 `ready=false` 只作为 Host 内部预警，不是任务级开关，也不要求角色先向用户播报环境
 状态。角色继续加载相关 Skill、澄清需求、读取本地代码/表格并使用仍然可用链路上的工具。Host 只在具体
@@ -309,7 +368,25 @@ PowerShell 形态：读取单个内容寻址快照中的 `SKILL.md` 并输出长
 符合该契约的读取不得显示为用户拒绝；任何不匹配形态仍由普通 Host 策略拒绝。
 
 允许的 MCP 只读白名单包含 Host 启动诊断（`cindy.ghost_list`、Meka Unity 官方 CLI
-`unity_inspect(action=status)`）和 MCPRouter 控制面发现。
+`unity_inspect(action=status)`）和 MCPRouter 控制面发现。**战斗 workflow 是例外**：
+`combatWorkflowPolicy.ts:1616-1617`（`combatDiscoveryMcpReason`，判定在只读放行**之前**）对
+`saga2/combat-development` 任务恒定拒绝 `ghost_info` / `ghost_list`，理由是 Meka Unity 与 Meka P4
+已由角色 manifest 直接暴露；同一处还拒绝 `list_tools` 与 `ghost_call {tool:"list_tools"}`
+（`:1621-1627`）。因此**战斗流程里插件 id 不从 `ghost_list` 发现**，直接用已登记的
+`meka-unity` / `meka-p4`（2026-09-22 修正：原文写「插件 id 用 `ghost_list` 发现」，与策略层
+以及冻结 Skill 的「不得用 `ghost_info`、`ghost_list` 发现辅助 Skill 或其它插件」直接冲突）。
+**插件不是 MCP 服务器**：`meka-unity`、`meka-p4` 是插件（ghost）id，只能作为 `ghost_call` 的
+`ghost_id`，永远不会出现在网关的 `availableServers` 里。角色走固定调用模式：先用
+`cindy_mcp_list_tools {server:"cindy", tool:"ghost_call"}` 披露一次 schema，再以
+`{server:"cindy", tool:"ghost_call", args:{ghost_id, tool, args}}` 执行。2026-09-22 起，未披露就
+执行的错误**自带该工具的 input schema**（复用 `schemaHint`，超 16,000 字符按既有策略截断），模型
+不必再单独调一次 `cindy_mcp_list_tools` 去取 schema —— **Host 不会重试任何失败的调用**，纠正始终是
+模型自己发起的下一次工具调用（2026-09-22 修正：原文写「模型一轮即可带正确参数重试」，容易被读成
+Host 在同一轮内自动重试，代码里没有这条路径）；把插件 id 当 server 查询
+（`list_tools {server:"meka-p4"}`）会稳定返回 `UNKNOWN_SERVER`，其 `reason` 明说插件不是 MCP
+服务器并指向上述 `ghost_call` 形态——该死路已修（见
+[`../dev-rules/pi-harness.md`](../dev-rules/pi-harness.md) 与
+[`../migrations/xdmaker-meka-to-cindy.md`](../migrations/xdmaker-meka-to-cindy.md) §6.56）。
 聚合状态 blocked 时仍按具体工具依赖裁决；任何阶段都不放行 key、route、grant 或其它
 未经授权的变更调用。MCPRouter
 `list_tools`、实例查询或业务只读调用发生连接/传输错误，
@@ -319,6 +396,26 @@ Host 必须立即将 MCPR 这一条依赖标记为失效；后续 MCPR 调用给
 以及单项证据不足均不属于环境断线，不得触发统一环境复检；Lead 只可修正或收窄一次查询，仍
 失败则把对应证据标为不确定。只有 P4、Unity CLI 或 MCPR 的连接、认证、传输错误，或 Host 明确
 将门禁状态置为失效时，才重新执行三项环境恢复流程。
+
+**证据纪律取代证据预算（2026-09-22）**：Lead 的“最多 8 次成功证据工具调用 / 总探索超过约 3 分钟
+立即停止”与服务器 Worker 的“最多 6 次只读证据调用”两条硬上限已从代码、测试与提示词中**全部删除**
+（`combatServerCapabilityState.ts` 不再有 `workerReadCounts` / `leadEvidenceCounts` /
+`consume*Budget`，`combatWorkflowPolicy.ts` 不再有 `shouldBoundLeadEvidence` /
+`leadEvidenceBudgetDecision`；角色片段标题改为「证据纪律与收敛」，见迁移总账 §6.56）。删除理由是
+它**既不覆盖真实工具面、又诱导提前放弃**：次数上限会让人为缩成“一次搜索 + 一次读取”而输出不必要
+的 `uncertain`，也挡不住真正的失控探索。现行纪律是定性的：每个未决业务原子最多两轮定向核查、
+不重复读取同一文件、不递归扫描仓库、足够即收口；仍无结论时立即停止探索并交付业务级结论，把缺口
+明确标为「可实现 / 无法保证 / 待确认业务选择」或程序交接项。任何阻塞都必须产出用户可见结论，
+不得以持续调用工具代替阶段性结论，也不得静默结束回合。
+
+**零输出回合在岛面不静默（2026-09-22）**：上游 Pi 可能以「无用户可见正文」的 `done` 结束一次
+SDK turn，而宿主守卫会补发「继续」把同一段产品对话接着跑。因此桌面灵动岛不再把这次 `done` 当完成：
+`agent-island/state.ts` 新增 `silentStopHold` / `silentStopHoldUntil` / `pendingSilentStopCompletion`，
+并按 `AGENT_ISLAND_SILENT_STOP_HOLD_MS = 10_000` 兜底 —— 续跑 turn 的新活动或终止型 error 会提前
+解开挂起；两者都没有时（守卫既不续跑也不发终态 error，例如逃生开关关闭）在 10 秒后把被压下的那次
+完成原样补回，岛面不会永远停在 running（`prune` 不回收 running 条目）。这只是让「零输出 turn」
+在界面上可被看见、并避免闪出假完成与完成提醒：它不改变 turn 的终态语义，也不改变其它消费者的
+挂起口径（`hook-control/turnObserver`、`im/shared/turnRunner` 各自口径不变）。**未做实机验证**。
 
 任务启动时还会从本次已解析角色配置注入 `[MEKA_ROLE_CONTEXT]`，明确提供 `projectId`、稳定
 `roleId` 与展示名；模型不得用其它项目的自定义角色、用户数据缓存或当前窗口覆盖这组绑定。
@@ -335,28 +432,54 @@ workflow 元数据的旧版项目内置战斗角色快照会在任务启动时�
 迁移，保留旧快照以便用户编辑和回退。Main 启动日志只记录这组非敏感状态，
 不记录 endpoint、实例标识、路径或凭证。
 
-生成、修改或检查技能时，用户明确提供正整数技能 ID 之前不得开始任何探索：不读取通用文档、
+生成、修改或检查技能时，分类为 `single-skill` 且用户明确提供正整数技能 ID 之前不得开始任何探索：不读取通用文档、
 表结构、代码、模块或编辑器上下文，也不调用 Unity CLI、P4、MCPRouter 或其它项目工具；只原样
 回复“请提供要生成、修改或检查的正整数技能 ID。”，不追加技术解释或其它问题。不得把 Unity 当前窗口、当前选中项、缓存或历史技能当作目标，
-也不得向目标专属工具传入由这些状态推断的 ID。
-ID 一旦由 Host 绑定到当前任务，后续业务澄清回复不要求重复携带；一个任务始终只有一个目标
+也不得向目标专属工具传入由这些状态推断的 ID。该锁定**只对 `single-skill` 生效**：分类为
+`table-scope` 的请求不得被这句追问挡下，它必须进入只读范围解析（见下条）。
+ID 一旦由 Host 绑定到当前任务，后续业务澄清回复不要求重复携带；`single-skill` 任务始终只有一个目标
 技能 ID。用户一次给出多个 ID 时仍只返回同一句单目标追问，不选择其中一个，也不批量处理。
 探索后必须集中确认目标 ID 对应的新建/整段重建/增量修改方式、允许修改的层面及尚未被证据解决的
 空间、时序、目标、伤害、资源、叠加和生命周期语义；关键信息缺失时不得修改资产、表格、
 JSON、P4、分支或客户端/服务器代码。用户已经明确要求生成、修改、导入、导出或验证时，
 该请求本身提供实施授权；角色在内部完成模块、Timeline、客户端代码、服务器代码、表格/导出的
 组合结论和验证计划后直接实施。Host 仍强制目标技能导出、服务器 supported 回执、P4 和写入范围
-门禁，不因该授权跳过证据或把服务器只读能力变成写权限。
+门禁，不因该授权跳过证据或把服务器只读能力变成写权限。`table-scope` 的“范围确认”是范围口径确认，
+不是方案审批卡，也不改变“内部直接执行”的规则。
 
 SAGA2 战斗的默认实现面是技能的 `skill-entry-model` 模块图；项目文档和 Agent Skill 只负责
-导航，不能单独证明运行时能力。技能 ID 确认后，Lead 先校验 Meka Unity 官方 CLI 的常驻实例，
-第一条内容证据必须是目标技能的老版编辑器 JSON 导出；只有该结构化回执能判定目标资产是否
-存在。随后只读取最窄客户端消费者，
+导航，不能单独证明运行时能力。首证据按请求类别分岔（同样由 Host 门禁强制，不只写在提示词里）：
+
+- `single-skill`：技能 ID 确认后，Lead 先校验 Meka Unity 官方 CLI 的常驻实例，第一条内容证据
+  必须是**目标技能**的老版编辑器 JSON 导出；只有该结构化回执能判定目标资产是否存在。导出前的
+  唯一合法动作是读取已注入的总控 Skill 路径与 `unity_inspect(action=status)`。
+- `table-scope`：第一条内容证据是**范围来源的有界只读解析**（声明的源表、`saga2_json` 下的表
+  文件、老版模块资产目录里的单个 `.asset`、以及已注入的项目参考路径），此时**不得**先导出单个
+  技能。范围解析走 `unity_inspect(action="command")` + Host 注入的只读命令白名单
+  （`mekaCombatReadOnlyUnityCommands`，见下条），不得用 `unity_execute` 或任何写命令做范围发现。
+  这也修正了旧契约的自相矛盾：表范围没有单值目标，用“先导出目标技能”的首证据门禁会把范围发现
+  永久堵死。
+
+随后只读取最窄客户端消费者，
 把被动入口、周期、位置、随机落点、NavMesh、目标继承、延迟、范围、伤害、特效和清理拆成原子
 能力，并标记“已有模块直接支持 / 可由模块组合支持 / 仍需服务器核查 / 未知”。能力描述不明确时，
 继续核对权威表/Schema 与导出格式、客户端运行时消费代码以及当前服务器实现；Unity 编辑、预览、
-资产保存或 JSON 导出成功都不能证明服务端已实现。生成、修改和检查任务都必须为当前技能 ID
-取得本任务、当前远端 HEAD 的服务器证据，即使现有资产已经完全符合需求也不能省略。历史任务、
+资产保存或 JSON 导出成功都不能证明服务端已实现。**服务器证据改为条件触发**：Host 注入的两条
+项目域事实参考（`moduleEditorSkillPath`、`damageEncodingRulePath`）已覆盖本轮运行时语义时直接
+引用其路径与结论，不派发 Worker，也不得把项目权威规则降级为 `uncertain`；只有参考未覆盖、参考
+之间冲突或与客户端证据冲突时，才为当前目标派发一次窄范围只读服务器核查。
+**这一豁免对两类请求同一口径**（2026-09-22 修订；旧文曾把它限定为「只对已批准的 `table-scope`
+生效、单技能始终要回执」，该形态已作废，历史见迁移总账 §6.56）：依据键
+`mekaCombatEvidenceBasis` 由 **Host 依据注入情况写入**（不是 Agent 判断），豁免成立需要三个条件
+同时满足 —— 该键为 `project-reference`、两条参考路径**确实已注入**、且（`table-scope` ⇒
+范围已获用户批准；`single-skill` ⇒ 目标技能 ID 由用户确认）。参考未注入即 fail-closed，回到服务器
+`supported` 回执；`unsupported` / `uncertain` 仍阻断实施写入。
+**已知边界（不是 bug）**：`table-scope` 目前**没有**可达的服务器派发通道（Host 只在存在唯一绑定
+技能 ID 时注入服务器路由键）⇒ 参考未覆盖或与之冲突时，表范围的出口是**改绑一个技能 ID 回到
+`single-skill` 流程**再核查；逐目标派发需 owner 决定新增按目标的派发/回报通道。详见
+[`../dev-rules/meka-injection-layer.md`](../dev-rules/meka-injection-layer.md) §3.2 与
+[`../dev-rules/meka-whitelist-verification.md`](../dev-rules/meka-whitelist-verification.md) WL-11.12。
+历史任务、
 本地客户端代码或旧 revision 只能作为候选线索，不能作为本轮 `supported` 结论。证据不足时应报告能力
 缺口并提出补能力方案，不得因为某个 Timeline 可编辑或缺少完整专用函数就否定已有模块组合。Router 实例与远端
 Host 标识按不透明值处理，不得在回复或项目内容中暴露 endpoint、API key 或凭证。
@@ -462,11 +585,13 @@ auto-bridge 报告经 `validate_server_capability_report` 一次性消费并得�
 
 服务器核查 Worker 使用 Host 从唯一合格实例解析并注入的 Agent：Claude 实例使用
 `claude-code`，Codex 实例使用 `codex`；模型省略并走 Host 对应 Agent 的默认路由。Lead 不得自行
-选择 Agent，Host 会拒绝 Agent 与实例或注入值不一致的请求。核查采用最多 6 次只读调用内的最小充分证据，并覆盖当前原子能力矩阵
-要求的直接消费者；不得自行缩成“一次搜索 + 一次读取”而制造不必要的 `uncertain`。任一剩余
+选择 Agent，Host 会拒绝 Agent 与实例或注入值不一致的请求。核查采用**最小充分证据**并覆盖当前原子能力矩阵
+要求的全部直接消费者；不得自行缩成“一次搜索 + 一次读取”而制造不必要的 `uncertain`。任一剩余
 原子语义有具体代码证据证明不支持时才返回 `unsupported`；如果模块图已经通过组合表达需求，
 即使没有同名完整服务器函数也应返回 `supported`。不为补齐其它能力做穷尽扫描；仅在证据冲突、
-读取失败或 6 次调用后仍无法判定时使用 `uncertain`。
+读取失败或证据仍不足以判定时使用 `uncertain`。**只读调用不设次数上限**（2026-09-22 前的
+“最多 6 次”硬上限已删除，见迁移总账 §6.56）：次数不是判据，纪律是不要重复请求、不要换用同类
+命令、不要靠新建 Worker 延长探索，取得充分证据后立即输出唯一一份 `serverCapabilityReport`。
 
 业务平衡参数尚未由策划决定，不是服务器能力缺失。如果服务器消费者和数据函数已经证明某种
 伤害、倍率、时序或条件编码可执行，Worker 应返回 `supported`，并把待定比例或数值留给 Lead 用
@@ -478,10 +603,11 @@ auto-bridge 报告经 `validate_server_capability_report` 一次性消费并得�
 `programmerAction`、`validationSuggestion` 必须是非空字符串；即使没有能力缺口也写明确字符串，
 不能用 `[]` 或 `null`，否则 Host 校验会拒绝该报告并保持实施阻断。
 
-这 6 次调用的默认顺序是 `git show HEAD:AGENTS.md`、读取 HEAD SHA、一次只包含任务精确
-typ 数字/枚举名/数据函数名的 `internal/battle` 定向搜索，以及最多三次命中消费者读取。搜索中
+Worker 的默认取证顺序固定为：`git show HEAD:AGENTS.md` 读取规则、`git show -s --format=%H HEAD`
+固定 HEAD、一次只包含任务精确 typ 数字/枚举名/数据函数名的 `internal/battle` 定向搜索，随后对
+搜索回执里真实出现的路径做小段上下文读取（不要用 `git show` 打开大型实现文件）。搜索中
 禁止加入 `time`、`target`、`skill`、`damage`、`next`、`trigger` 或中文描述等通用词；后续
-路径必须真实出现在搜索回执中，不能按目录印象猜测。空查询、重复读取 AGENTS、先读架构总览或通用生命周期文件都不属于有效预算使用；只有具体符号完全无命中时才能
+路径必须真实出现在搜索回执中，不能按目录印象猜测。空查询、重复读取 AGENTS、先读架构总览或通用生命周期文件都属于无效探索；只有具体符号完全无命中时才能
 转查行为注册表或相邻枚举。战斗任务同时由 Host 注入从真实 `workingDir` 解析出的
 `projectRoot` 与 `unityClientRoot`，Agent 不自行拼接或猜测 `C:\Workspace\saga2` 下的其它路径。
 
@@ -491,9 +617,12 @@ typ 数字/枚举名/数据函数名的 `internal/battle` 定向搜索，以及�
 （旧的结构化方案审批机制长期零生产调用方，已于 2026-09-22 作为死代码清理，见
 [`../migrations/xdmaker-meka-to-cindy.md`](../migrations/xdmaker-meka-to-cindy.md) §6.53）：
 
-① **第一条证据顺序**：本轮目标技能取得老版模块编辑器的 `legacy_module_export_json`
-结构化回执之前，只允许读取已注入的总控 Skill 与调用 `unity_inspect(action=status)`；
-不得读 AGENTS、客户端源码、资产目录、参考技能或服务器。模块优先取证（老版导出回执、
+① **第一条证据顺序（按请求类别分岔）**：`single-skill` 在本轮目标技能取得老版模块编辑器的
+`legacy_module_export_json` 结构化回执之前，只允许读取已注入的总控 Skill 与调用
+`unity_inspect(action=status)`；不得读 AGENTS、客户端源码、资产目录、参考技能或服务器。
+`table-scope` 没有单值目标，第一条证据是**有界只读范围解析**（声明的源表 / `saga2_json` 表文件 /
+单个模块 `.asset` / 已注入的项目参考路径），走 `unity_inspect(action="command")` + 注入的只读
+命令白名单；写入门禁一概不变。模块优先取证（老版导出回执、
 协议字段与原子能力矩阵）仍是服务器 Worker 派发的前置条件，但它由派发门禁校验，
 不再由“方案包络字段”承载。
 ② **环境依赖门**：按当次调用真实依赖裁决——受管本地写入与 P4 工具查 P4，Unity 工具查
@@ -504,7 +633,13 @@ Meka Unity 官方 CLI，服务器查询与远程 Worker 查 MCPRouter；某条�
 历史结论或本地代码不能替代当前远端 HEAD。
 ④ **范围与只读边界**：`saga2_design/planning` 只读、远端 host 上的战斗 Lead 拒绝、
 ModuleV2 与共享 `skill_entry_model_editor.json` 证据禁止、目标技能 ID 与模块 JSON 落盘路径
-白名单。
+白名单。项目侧文件的读取走**精确路径白名单**（Host 注入的 `mekaCombatProjectRefPaths`：
+`moduleEditorSkillPath` + `damageEncodingRulePath`，配合 `[SAGA2_PROJECT_PATHS]` 里的
+`unityAgentsPath` / `legacyModuleProtocolCodecPath`）：只允许这些路径的**单文件**读取，枚举、
+通配、`-Recurse`、`01-治理规范-governance/` 与其它 `SKILL.md` 仍然拒绝。表范围解析还多一条
+只读通道：`unity_inspect(action="command")` 只放行 Host 注入的 `mekaCombatReadOnlyUnityCommands`
+（当前为 `legacy_module_query_nodes`、`legacy_module_audit_coverage`），且 `projectPath` 必须与
+注入的 `unityClientRoot` 一致；`unity_execute` 与任何写命令都不做范围发现。
 
 非只读 MCPRouter 调用、未识别的 Orca 变更、批量/本地 Worker 和服务器服务管理**永久拒绝**，
 不因环境复检通过而放行，也不能落入普通“环境复检后放行”分支。Host 在每次写文件、执行非只读
@@ -640,12 +775,17 @@ MCPRouter 新增独立 Meka Skill Registry，拥有独立资源、release、共�
 
 ## 8. SAGA2 战斗任务的目标首证据顺序
 
-SAGA2 战斗角色继续暴露 Cindy 的通用工具集合。生成、修改和检查都必须先由用户提供一个正整数
+SAGA2 战斗角色继续暴露 Cindy 的通用工具集合。请求先分 `single-skill` / `table-scope` 两类
+（判定在任何工具调用之前，见第 5 节的请求分类）。`single-skill` 必须先由用户提供一个正整数
 技能 ID；缺少 ID 时不得调用任何工具，
 只回复“请提供要生成、修改或检查的正整数技能 ID。”。ID 绑定后只允许先读取
 `combat-skill-configuration` 总控 Skill、调用 `unity_inspect(action=status)`，再通过老版模块
 编辑器对目标 ID 执行 `legacy_module_export_json`。目标导出尝试之前，不得读取项目规则、客户端
-源码、其它技能或服务器证据。MCP、公共 Ghost、Orca 直接工具和普通 Shell 均由 Host 的同一战斗
+源码、其它技能或服务器证据。`table-scope` 不被这句追问挡下：它先做有界只读范围解析
+（声明的源表 / `saga2_json` 表文件 / 单个模块 `.asset` / 已注入的项目参考路径，
+`unity_inspect(action="command")` + 注入的只读命令白名单），解析出的范围、精确改动集与
+超出编辑器模块资产表面的清单一次性交用户确认，**确认前禁止任何写入**；此时不适用
+“先导出单个目标技能”的门禁。MCP、公共 Ghost、Orca 直接工具和普通 Shell 均由 Host 的同一战斗
 策略按任务上下文确定性裁决；缺少 ID、目标首证据前越序、根规则枚举、Assets 根搜索、其它
 Skill、共享 JSON 和开发中编辑器关键词都会在执行前拒绝。普通角色仍保留完整通用工具行为。
 
@@ -659,16 +799,28 @@ Skill、共享 JSON 和开发中编辑器关键词都会在执行前拒绝。普
 目标导出后，Lead 只按 Host 注入的绝对路径分别完整读取 `saga2_unity/AGENTS.md` 和
 `SkillModuleProtocolCodec.cs`。协议文件读取结束后的下一项项目动作固定为
 `start_team(worker_permission_mode=auto)`；不得先搜索 `Assets/Editor/SkillEditor`、模块目录或
-其它客户端目录来发现伤害、目标、数据函数或模块枚举，这些运行时语义交给当前服务器 HEAD 的
-只读 Worker 核实。协议源码中的类型名、命名空间和 `using` 不构成继续搜索客户端的授权；仅当
-服务器报告明确留下具体客户端消费者缺口时，才按完整路径读取一个直接消费者。
+其它客户端目录来发现伤害、目标、数据函数或模块枚举。**服务器核查改为条件触发，且两类请求同口径**：
+Host 注入的两条项目域事实参考（`moduleEditorSkillPath`、`damageEncodingRulePath`）已覆盖本轮运行时
+语义时直接引用其路径与结论，不派发 Worker；只有参考未覆盖、参考之间冲突或与客户端证据冲突时才派发。
+豁免对 `table-scope`（范围已获用户批准）与 `single-skill`（目标 ID 已由用户确认）**同样成立**，
+前提是两条参考确实已注入且 Host 写入了 `mekaCombatEvidenceBasis='project-reference'`（该键由 Host
+依据注入情况写入，不是 Agent 判断；旧文「`single-skill` 仍须取得 `supported` 回执」已作废，历史见
+迁移总账 §6.56）。**已知边界**：`table-scope` 当前无法派发服务器 Worker（没有唯一绑定 ID 就没有注入
+路由键）⇒ 参考未覆盖时只能改绑一个技能 ID 回到单技能流程核查，详见
+`meka-injection-layer.md` §3.2。
+协议源码中的类型名、命名空间和 `using` 不构成继续搜索客户端的授权；
+仅当服务器报告明确留下具体客户端消费者缺口时，才按完整路径读取一个直接消费者。
 
 内容寻址的 Meka Skill 快照白名单同样只接受
 `combat-skill-configuration/SKILL.md`。其它 Skill 的批量行数探针、完整读取和项目 Skill
 扫描均失败关闭，避免提示词约束被工具调用绕开。
 
-战斗任务在新建和恢复时，Host 还会从该任务已经冻结的内容寻址快照中取出唯一总控 Skill 正文，
-以 `[SAGA2_COMBAT_CONTROLLER_SKILL]` 可信段直接注入当前消息。原生 Skill 目录和 Cindy 通用工具
+战斗任务在新建和恢复时，Host 注入 `[SAGA2_COMBAT_CONTROLLER_SKILL]` 段，其中是该任务已经冻结的
+内容寻址快照里唯一总控 Skill 的**绝对路径 + “执行前必须先完整读完”**——**正文不内联**
+（`combatControllerSkillPrompt` 只 `path.join(pluginPath, …)`；`meka-injection-layer.md` §5 I5
+与白名单 WL-15 以正向 + 反向断言钉住“正文不得出现”）。同一次注入还给出 `moduleEditorSkillPath`、
+`damageEncodingRulePath`、`unityAgentsPath`、`legacyModuleProtocolCodecPath` 四条本项目文件的
+绝对路径与 ReadCommand。原生 Skill 目录和 Cindy 通用工具
 仍完整保留，但 Agent 不再依赖主动读取或发现 Skill 才能获得首证据顺序。若 Codex 仍生成原生
 Skill 的完整单文件读取，Host 只接受 `Get-Content '<path>'` 或
 `Get-Content -Raw '<path>'`（可由固定 PowerShell `-Command` 包装）；`-First`、管道、串联、
@@ -685,12 +837,20 @@ PowerShell 只读形态不得因为通用审批器返回 `prompt` 而被业务�
 技能 ID 只由用户提供。中文自然表达中的“技能 1009”“技能ID：1009”“技能编号 1009”以及
 “1009技能”都视为明确标注；其它未与“技能”明确绑定的数字仍不得猜作 ID。首轮缺少 ID 时固定零工具追问；用户在追问后只回复一个正整数，也视为
 明确绑定，不要求重复“技能 ID”标签。伤害、时长、次数等混在业务描述中的未标注数字仍不得被
-猜作 ID。若同一任务后续明确切换到另一个唯一技能 ID，Host 必须清空旧目标的状态——导出尝试
+猜作 ID；负数、带 `+` 或小数点前缀的数字（`-101`、`+100技能`、`1.5技能`）以及
+“技能表／技能参数／技能模块”等表／模块上下文都不构成技能目标。这条负向边界是 2026-09-22 修
+的假阳性：旧模式 `/(?:^|[^\d])([1-9]\d*)\s*技能/g` 会把 `-101 技能表参数1` 绑成
+`targetSkillId=101`、把 `伤害行为10000 技能表参数1` 绑成 `10000`；现模式为
+`/(?<![-+.\d])([1-9]\d*)\s*技能(?!表|参数|模块)/g`，负号/加号/小数/数字紧邻的前缀与
+`技能表`/`技能参数`/`技能模块` 后缀都不再绑定（真事故见迁移总账 §6.56）。
+若同一任务后续明确切换到另一个唯一技能 ID，Host 必须清空旧目标的状态——导出尝试
 （`mekaCombatTargetExportAttempted`）、导出完成（`mekaCombatTargetExportCompleted`）、
 服务器能力状态（`mekaCombatServerCapabilityStatus`）、参考技能 ID
-（`mekaCombatReferenceSkillId`）与 `mekaCombatPlanApproved` 标记（该键仍然存在，用作 Lead
-取证预算的放行条件，**不再是写操作审批**）——要求新目标重新完成老版导出与服务器核查；
-旧目标的状态不能作为新目标证据。
+（`mekaCombatReferenceSkillId`）与 `mekaCombatPlanApproved` 标记（该键仍由注入层写入且注入层
+补丁形状不变，但 **2026-09-22 起策略层已无读取方**：它既不是写操作审批，也不再是任何“取证
+预算”的放行条件——那套预算门禁已整体删除）——要求新目标重新完成老版导出与服务器核查；
+旧目标的状态不能作为新目标证据。进入 `table-scope` 与切换目标同样作废上一个证据代次，
+并在分类时显式置空 `mekaCombatTargetSkillId` 与 `mekaCombatTargetSkillIds`（歧义载体不是范围载体）。
 
 用户绑定技能 ID 后，Host 同时解析当前 SAGA2 项目唯一的 capability-ready 服务器实例，并以
 `[SAGA2_COMBAT_SERVER_TARGET]` 注入真实 `serverRemoteHostId` 与 `serverWorkerAgent`。战斗 Lead

@@ -2,16 +2,22 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { MekaRoleMcpEntry } from '../../../shared/meka-projects.js';
 import type { MekaRuntimeConfig } from '../../meka-projects/runtimeConfig.js';
+import {
+  readCombatVendorOptions,
+  rememberCombatVendorOptions,
+  resetCombatVendorOptionsMirrorForTests,
+} from '../../meka-projects/combatWorkflowPolicy.js';
 import {
   applyMekaRuntimeConfig as applyMekaRuntimeConfigImpl,
   combatSkillIdVendorPatchFromUserPrompt,
   parseCombatSkillIdFromUserPrompt,
   prepareCombatFollowupRuntimeContext,
 } from '../../meka-injection/index.js';
+import { combatScopePrompt } from '../../meka-injection/mekaCombatPrompts.js';
 import type { MakerSessionCreateOpts } from '../sessionRequest.js';
 
 const environmentServices = vi.hoisted(() => ({
@@ -95,7 +101,31 @@ function saga2ProjectPaths(workingDir: string) {
     'Type',
     'SkillModuleProtocolCodec.cs',
   );
-  return { projectRoot, unityClientRoot, unityAgentsPath, legacyModuleProtocolCodecPath };
+  // 项目侧域事实的两条固定参考路径（含 CJK 目录名，注入文本与策略白名单共用）。
+  const moduleEditorSkillPath = path.join(
+    unityClientRoot,
+    '.agents',
+    'skills',
+    'editor-skill-editor-module',
+    'SKILL.md',
+  );
+  const damageEncodingRulePath = path.join(
+    projectRoot,
+    'saga2_design',
+    'planning',
+    '04-职能组-functional-groups',
+    '战斗策划组-combat-planning',
+    '专业规则-rules',
+    'ModuleDesignKnowledge.md',
+  );
+  return {
+    projectRoot,
+    unityClientRoot,
+    unityAgentsPath,
+    legacyModuleProtocolCodecPath,
+    moduleEditorSkillPath,
+    damageEncodingRulePath,
+  };
 }
 
 function runtime(overrides: Partial<MekaRuntimeConfig> = {}): MekaRuntimeConfig {
@@ -127,6 +157,11 @@ function runtime(overrides: Partial<MekaRuntimeConfig> = {}): MekaRuntimeConfig 
 }
 
 describe('applyMekaRuntimeConfig', () => {
+  beforeEach(() => {
+    // 会话级战斗 vendorOptions 镜像（A3/A10）是模块级状态：逐用例清掉，避免跨用例泄漏。
+    resetCombatVendorOptionsMirrorForTests();
+  });
+
   it('extracts only an explicitly labelled positive combat skill ID', () => {
     expect(parseCombatSkillIdFromUserPrompt('技能 ID：1019，伤害 100，重复 3 次')).toEqual({
       state: 'valid',
@@ -152,8 +187,6 @@ describe('applyMekaRuntimeConfig', () => {
       state: 'valid',
       skillId: '1021',
     });
-    expect(parseCombatSkillIdFromUserPrompt('伤害 100，重复 3 次')).toEqual({ state: 'missing' });
-    expect(parseCombatSkillIdFromUserPrompt('技能ID是skill_001')).toEqual({ state: 'missing' });
     expect(parseCombatSkillIdFromUserPrompt('对比技能 1019 和技能 1010')).toEqual({
       state: 'ambiguous',
       skillIds: ['1019', '1010'],
@@ -161,6 +194,61 @@ describe('applyMekaRuntimeConfig', () => {
     expect(parseCombatSkillIdFromUserPrompt('技能 ID: 900719925474099312345678901')).toEqual({
       state: 'valid',
       skillId: '900719925474099312345678901',
+    });
+    // A6：上面的正例只保留一条冒烟；**负例全部走生产漏斗**（`combatSkillIdVendorPatchFromUserPrompt`），
+    // 否则「普通数值不得成为目标」这条硬规则只在没有生产调用方的旧口子上被证明。
+    for (const prompt of [
+      '伤害 100，重复 3 次',
+      '技能ID是skill_001',
+      '-101 技能表参数1',
+      '伤害行为10000 技能表参数1',
+      '4 取攻击力百分比',
+      '1 自身（一般攻击力的都是怪物自身）',
+      '+100技能',
+      '1.5技能',
+      '技能2段伤害怎么配',
+      '技能3级时触发',
+    ]) {
+      expect(combatSkillIdVendorPatchFromUserPrompt(prompt), prompt).toBeNull();
+    }
+    // 长示例（H2 的真实历史消息）确实是表范围请求：漏斗必须**不绑定**其中任何数字，
+    // 而不是返回 null（它含「所有…技能」「都改成」，命中表范围特征）。
+    expect(
+      combatSkillIdVendorPatchFromUserPrompt(
+        [
+          '编辑模块:把目前所有怪物技能(怪物配置表里配置的正在使用',
+          '的)使用的伤害行为10000的data都改成取100%的怪物功击力。补充说明：4 取攻击力百分比',
+          '-101 技能表参数1  （-102就是参数2） 以后改值可以直接技能表里改',
+          '1 自身（一般攻击力的都是怪物自身）',
+        ].join('\n'),
+      ),
+    ).toEqual({
+      mekaCombatTargetSkillId: undefined,
+      mekaCombatTargetSkillIdState: 'missing',
+      mekaCombatTargetSkillIds: undefined,
+      mekaCombatRequestScope: 'table-scope',
+      mekaCombatRequestScopeState: 'proposed',
+      mekaCombatScopeSelection: '所有怪物技能',
+      mekaCombatScopeSourceTables: [],
+      mekaCombatScopeSkillIds: [],
+      mekaCombatScopeApproved: false,
+      mekaCombatEvidenceBasis: 'project-reference',
+    });
+  });
+
+  it('binds only user-given skill IDs and rejects unit-suffixed numbers (A9)', () => {
+    // 「技能2段伤害怎么配」「技能3级时触发」里的数字是段数/等级，不是技能 ID。
+    expect(combatSkillIdVendorPatchFromUserPrompt('技能2段伤害怎么配')).toBeNull();
+    expect(combatSkillIdVendorPatchFromUserPrompt('技能3级时触发')).toBeNull();
+    expect(combatSkillIdVendorPatchFromUserPrompt('技能2次伤害')).toBeNull();
+    // 真正的标注写法仍然 confirmed。
+    expect(combatSkillIdVendorPatchFromUserPrompt('技能1019的伤害目标')).toMatchObject({
+      mekaCombatTargetSkillId: '1019',
+      mekaCombatTargetSkillIdState: 'confirmed',
+    });
+    expect(combatSkillIdVendorPatchFromUserPrompt('检查下1009技能')).toMatchObject({
+      mekaCombatTargetSkillId: '1009',
+      mekaCombatTargetSkillIdState: 'confirmed',
     });
   });
 
@@ -172,12 +260,592 @@ describe('applyMekaRuntimeConfig', () => {
       mekaCombatTargetSkillId: '1019',
       mekaCombatTargetSkillIdState: 'confirmed',
       mekaCombatTargetSkillIds: undefined,
+      mekaCombatRequestScope: 'single-skill',
+      mekaCombatRequestScopeState: 'confirmed',
+      mekaCombatScopeSelection: undefined,
+      mekaCombatScopeSourceTables: undefined,
+      mekaCombatScopeSkillIds: undefined,
+      mekaCombatScopeApproved: false,
     });
     expect(combatSkillIdVendorPatchFromUserPrompt('对比技能 1019 和技能 1010')).toEqual({
       mekaCombatTargetSkillId: undefined,
       mekaCombatTargetSkillIdState: 'ambiguous',
       mekaCombatTargetSkillIds: ['1019', '1010'],
+      mekaCombatRequestScope: 'single-skill',
+      mekaCombatRequestScopeState: 'missing',
+      mekaCombatScopeSelection: undefined,
+      mekaCombatScopeSourceTables: undefined,
+      mekaCombatScopeSkillIds: undefined,
+      mekaCombatScopeApproved: false,
     });
+  });
+
+  it('treats every user-given form as confirmed and reserves proposed for table scope', () => {
+    // 整条消息只回一个正整数 = 用户明确绑定（首轮追问后的标准形态），必须 confirmed。
+    expect(combatSkillIdVendorPatchFromUserPrompt('1021')).toMatchObject({
+      mekaCombatTargetSkillId: '1021',
+      mekaCombatTargetSkillIdState: 'confirmed',
+      mekaCombatRequestScope: 'single-skill',
+      mekaCombatRequestScopeState: 'confirmed',
+    });
+    // 表范围启发式：不绑定单值目标，状态只到 proposed，且 approved 恒为 false。
+    const tableScope = combatSkillIdVendorPatchFromUserPrompt(
+      '把目前所有怪物技能的伤害行为10000的data都改成取100%攻击力',
+    );
+    expect(tableScope).toMatchObject({
+      mekaCombatTargetSkillId: undefined,
+      mekaCombatTargetSkillIdState: 'missing',
+      mekaCombatTargetSkillIds: undefined,
+      mekaCombatRequestScope: 'table-scope',
+      mekaCombatRequestScopeState: 'proposed',
+      mekaCombatScopeApproved: false,
+      mekaCombatEvidenceBasis: 'project-reference',
+    });
+    // 用户标注的 ID 优先于范围词：explicit ID 永远收敛回单技能 confirmed。
+    expect(
+      combatSkillIdVendorPatchFromUserPrompt('所有技能里先把技能 ID 1019 的伤害改掉'),
+    ).toMatchObject({
+      mekaCombatTargetSkillId: '1019',
+      mekaCombatTargetSkillIdState: 'confirmed',
+      mekaCombatRequestScope: 'single-skill',
+      mekaCombatRequestScopeState: 'confirmed',
+    });
+    // 显式声明范围来源表时逐字保留用户给出的 saga2_json 路径。
+    expect(
+      combatSkillIdVendorPatchFromUserPrompt(
+        '范围由 saga2_json/MonsterSkill.json 决定，把所有怪物技能的伤害统一改成取100%攻击力',
+      ),
+    ).toMatchObject({
+      mekaCombatRequestScope: 'table-scope',
+      mekaCombatRequestScopeState: 'proposed',
+      mekaCombatScopeSourceTables: ['saga2_json/MonsterSkill.json'],
+    });
+  });
+
+  it('recognises the canonical table-scope phrasings the injected role text promises (A1)', () => {
+    // 角色/技能正文承诺可识别的三个规范例：全部必须落到 table-scope，且**绝不**产生
+    // confirmed 绑定（启发式不得升级成用户确认）。
+    for (const prompt of [
+      '把怪物配置表里配置的正在使用的技能的伤害改成取100%攻击力',
+      '把某类技能的某个字段统一改成100',
+      '把目前所有怪物技能的伤害行为10000的data都改成取100%攻击力',
+      '把表里正在使用的技能都改成取100%攻击力',
+    ]) {
+      expect(combatSkillIdVendorPatchFromUserPrompt(prompt), prompt).toMatchObject({
+        mekaCombatTargetSkillId: undefined,
+        mekaCombatTargetSkillIdState: 'missing',
+        mekaCombatRequestScope: 'table-scope',
+        mekaCombatRequestScopeState: 'proposed',
+        mekaCombatScopeApproved: false,
+      });
+    }
+    // 低误报：单技能内的数值/结构表述不得被吃进表范围。
+    for (const prompt of ['把伤害行为10000的data改成取100%攻击力', '技能1019的伤害改成100']) {
+      const patch = combatSkillIdVendorPatchFromUserPrompt(prompt);
+      if (patch) expect(patch.mekaCombatRequestScope).not.toBe('table-scope');
+    }
+  });
+
+  it('never binds a moduleType/node context number as a confirmed single-skill target (D4)', () => {
+    // 审查复现：`10000` 在本域是伤害行为的 `moduleType`（`技能10000的data` 是「模块字段语境」），
+    // 正文明确「`moduleType` 数值、节点 ID、技能表参数引用都不是技能 ID」。旧实现把它绑成
+    // confirmed 单技能目标 —— 这是「启发式不得产生 confirmed」唯一的现存违例。
+    for (const prompt of [
+      '技能10000的data',
+      '技能10000的节点',
+      '技能10000 参数',
+      '技能10000模块',
+      // 数字在 `技能` 之前的对称面：模块/表语境在左侧。
+      '伤害行为10000技能',
+      '参数1技能',
+      '节点1019技能',
+    ]) {
+      expect(combatSkillIdVendorPatchFromUserPrompt(prompt), prompt).toBeNull();
+    }
+    // 表范围表述不得再被 `moduleType` 数字抢先吞成单技能 confirmed（D4 的后两行复现）。
+    for (const prompt of [
+      '把所有技能10000的data都改成取100%攻击力',
+      '把怪物配置表里配置的正在使用的技能10000的data都改成取100%攻击力',
+    ]) {
+      expect(combatSkillIdVendorPatchFromUserPrompt(prompt), prompt).toMatchObject({
+        mekaCombatTargetSkillId: undefined,
+        mekaCombatTargetSkillIdState: 'missing',
+        mekaCombatTargetSkillIds: undefined,
+        mekaCombatRequestScope: 'table-scope',
+        mekaCombatRequestScopeState: 'proposed',
+        mekaCombatScopeApproved: false,
+      });
+    }
+    // 合法标注形态必须照旧 confirmed（修 D4 不得误伤用户明确给出的 ID）。
+    for (const [prompt, skillId] of [
+      ['技能 ID 1019', '1019'],
+      ['技能编号就是 1019，继续完成刚才的修改', '1019'],
+      ['技能1019', '1019'],
+      ['技能#1019', '1019'],
+      ['技能 1019 的伤害目标', '1019'],
+      ['技能1019的伤害改成100', '1019'],
+      ['检查下1009技能', '1009'],
+      ['1019', '1019'],
+    ] as const) {
+      expect(combatSkillIdVendorPatchFromUserPrompt(prompt), prompt).toMatchObject({
+        mekaCombatTargetSkillId: skillId,
+        mekaCombatTargetSkillIdState: 'confirmed',
+        mekaCombatRequestScope: 'single-skill',
+        mekaCombatRequestScopeState: 'confirmed',
+      });
+    }
+    // 代价面的**显式登记**（fail-closed）：模块字段句式连 N 一起不绑定，用户会被再问一次 ID。
+    for (const prompt of ['技能1019的data', '技能1019的节点']) {
+      expect(combatSkillIdVendorPatchFromUserPrompt(prompt), prompt).toBeNull();
+    }
+    // 刻意保留的一侧：`技能N的伤害行为<moduleType>` 无法与「技能 N 的伤害行为」区分（后者是
+    // 合法单技能表述），因此仍绑定 1019；而 `伤害行为` 之后的 `10000` 本来就不是任何分支的目标。
+    expect(
+      combatSkillIdVendorPatchFromUserPrompt('技能1019的伤害行为10000的data改成取100%攻击力'),
+    ).toMatchObject({
+      mekaCombatTargetSkillId: '1019',
+      mekaCombatTargetSkillIdState: 'confirmed',
+      mekaCombatRequestScope: 'single-skill',
+    });
+  });
+
+  it('keeps an in-skill bulk numeric edit single-skill and surfaces two named IDs (D5)', () => {
+    // 行 1（审查复现）：单技能内的批量数值改动与表范围形状完全相同，但**不是**表范围。
+    // 旧实现把它判成 table-scope/proposed，于是这轮请求进入「先确认范围」流程，而表范围正文
+    // 又禁止向用户追问技能 ID ⇒ 用户被要求确认一个不存在的范围。正确路由 = 单技能流程缺 ID 追问。
+    expect(combatSkillIdVendorPatchFromUserPrompt('把伤害数值都改成0.5')).toBeNull();
+    // 行 2 / 行 3（审查复现）：用户在同一句里点名两个 ID ⇒ 两个都进 `single-skill` 歧义分支
+    // （`missing` + `skillIds`），既不静默丢掉一个，也不把其中一个升成 confirmed。
+    for (const prompt of ['把 1019 和 1020 都改成取100%攻击力', '把技能1019和1020都改成100']) {
+      expect(combatSkillIdVendorPatchFromUserPrompt(prompt), prompt).toMatchObject({
+        mekaCombatTargetSkillId: undefined,
+        mekaCombatTargetSkillIdState: 'ambiguous',
+        mekaCombatTargetSkillIds: ['1019', '1020'],
+        mekaCombatRequestScope: 'single-skill',
+        mekaCombatRequestScopeState: 'missing',
+        mekaCombatScopeApproved: false,
+      });
+    }
+    // 反向守卫：「把…都改成」在与**范围来源标记**共现时仍然是表范围证据（不得因为降级误杀）。
+    for (const prompt of [
+      '把全部技能表里所有模块的伤害都改成取100%攻击力',
+      '把怪物配置表里配置的正在使用的技能都改成取100%攻击力',
+      '把某类技能的某个字段统一改成100',
+      '把每类技能的伤害都改成取100%攻击力',
+      '把表里的伤害数值都改成0.5',
+    ]) {
+      expect(combatSkillIdVendorPatchFromUserPrompt(prompt), prompt).toMatchObject({
+        mekaCombatTargetSkillId: undefined,
+        mekaCombatTargetSkillIdState: 'missing',
+        mekaCombatRequestScope: 'table-scope',
+        mekaCombatRequestScopeState: 'proposed',
+      });
+    }
+  });
+
+  it('routes a single-skill bulk edit into the ID prompt instead of the table-scope flow (D5)', async () => {
+    // 路由后果（这是 D5 的真实危害面，不只是分类标签）：零绑定会话里的单技能批量数值改动
+    // 必须回到单技能硬入口的缺 ID 追问，而不是带着 proposed 范围段进入「先确认范围」流程。
+    expect(
+      await prepareCombatFollowupRuntimeContext({
+        prompt: '把伤害数值都改成0.5',
+        projectId: 'saga2',
+        workingDir: 'C:/Workspace/saga2/saga2_project',
+        sessionId: 'd5-in-skill-edit',
+      }),
+    ).toBeNull();
+    // 对照：真正点名的表范围仍然产出范围段（同一个入口、相反路由）。
+    const tableScope = await prepareCombatFollowupRuntimeContext({
+      prompt: '把怪物配置表里配置的正在使用的技能都改成取100%攻击力',
+      projectId: 'saga2',
+      workingDir: 'C:/Workspace/saga2/saga2_project',
+      sessionId: 'd5-table-scope',
+    });
+    expect(tableScope?.vendorOptionsPatch).toMatchObject({
+      mekaCombatRequestScope: 'table-scope',
+      mekaCombatRequestScopeState: 'proposed',
+    });
+    expect(tableScope?.promptSection).toContain('[SAGA2_COMBAT_SCOPE]');
+    // 两个用户点名的 ID：走歧义分支，不注入任何段（要求用户先收敛到一个 ID）。
+    const twoIds = await prepareCombatFollowupRuntimeContext({
+      prompt: '把 1019 和 1020 都改成取100%攻击力',
+      projectId: 'saga2',
+      workingDir: 'C:/Workspace/saga2/saga2_project',
+      sessionId: 'd5-two-ids',
+    });
+    expect(twoIds?.vendorOptionsPatch).toMatchObject({
+      mekaCombatTargetSkillIdState: 'ambiguous',
+      mekaCombatTargetSkillIds: ['1019', '1020'],
+      mekaCombatRequestScope: 'single-skill',
+    });
+    expect(twoIds?.promptSection).toBeNull();
+  });
+
+  it('keeps the confirmed invariant across the adversarial battery', () => {
+    // 负例全集（用户**没有**提供技能 ID）：结论只能是「无绑定」或「表范围 proposed」。
+    const mustNotBind: ReadonlyArray<readonly [string, 'none' | 'table-scope']> = [
+      ['-101 技能表参数1', 'none'],
+      ['+100技能', 'none'],
+      ['1.5技能', 'none'],
+      ['技能 3 段', 'none'],
+      ['技能 2 级', 'none'],
+      ['0', 'none'],
+      ['伤害 100，重复 3 次', 'none'],
+      ['把伤害改成 100', 'none'],
+      // 全角数字不做归一化：不绑定（fail-closed，回到缺 ID 追问），绝不猜。
+      ['技能１０１９', 'none'],
+      ['技能１００的data', 'none'],
+      ['１００技能', 'none'],
+      // 含一个整数的表范围表述：只到 proposed。
+      ['把所有怪物技能的伤害行为10000的data都改成取100%攻击力', 'table-scope'],
+      ['把怪物配置表里配置的正在使用的技能10000的data都改成取100%攻击力', 'table-scope'],
+    ];
+    for (const [prompt, expected] of mustNotBind) {
+      const patch = combatSkillIdVendorPatchFromUserPrompt(prompt);
+      if (expected === 'none') {
+        expect(patch, prompt).toBeNull();
+        continue;
+      }
+      expect(patch, prompt).toMatchObject({
+        mekaCombatTargetSkillId: undefined,
+        mekaCombatTargetSkillIdState: 'missing',
+        mekaCombatRequestScope: 'table-scope',
+        mekaCombatRequestScopeState: 'proposed',
+      });
+      // 红线复查：这一档里**任何**结果都不得是 confirmed。
+      expect(patch?.mekaCombatTargetSkillIdState, prompt).not.toBe('confirmed');
+    }
+    // 报告点名的 `技能#7`：它与 `技能#1019` 是同一种**用户显式标注**形态（`技能#<正整数>`），
+    // 数字由用户自己写出来，因此仍然是 confirmed 7 —— 不是启发式推断，不在红线范围内。
+    // 这一点在报告里如实登记：它属于「合法标注形态」，不是负例。
+    expect(combatSkillIdVendorPatchFromUserPrompt('技能#7')).toMatchObject({
+      mekaCombatTargetSkillId: '7',
+      mekaCombatTargetSkillIdState: 'confirmed',
+      mekaCombatRequestScope: 'single-skill',
+    });
+    // 机械复查：所有 confirmed 绑定的值都必须是消息里**逐字出现**的整数（用户自己写的）。
+    for (const prompt of ['技能#7', '技能 ID 1019', '技能1019', '技能#1019', '1019']) {
+      const patch = combatSkillIdVendorPatchFromUserPrompt(prompt);
+      expect(patch?.mekaCombatTargetSkillIdState, prompt).toBe('confirmed');
+      expect(prompt, prompt).toContain(String(patch?.mekaCombatTargetSkillId));
+    }
+  });
+
+  it('keeps a user-confirmed single-skill binding away from module-level quantifiers (A2)', async () => {
+    // 检测器层：指代当前目标的限定词 + 技能 = 单技能上下文，不做任何分类。
+    expect(combatSkillIdVendorPatchFromUserPrompt('这个技能的所有模块都要检查')).toBeNull();
+    expect(combatSkillIdVendorPatchFromUserPrompt('各模块的 typ 都要检查')).toBeNull();
+    expect(combatSkillIdVendorPatchFromUserPrompt('该技能的模块都检查一遍')).toBeNull();
+    // 计划层 guard：量词锚在单技能内部、不是无歧义表范围时，已确认绑定不得被覆盖。
+    const opts = baseOpts({
+      mekaRoleId: 'combat-development',
+      userPrompt: '把每个技能的模块都改成取100%攻击力',
+      vendorOptions: {
+        source: 'meka',
+        mekaRuntimeResolved: true,
+        mekaWorkflow: 'saga2-combat-development-v1',
+        mekaCombatTargetSkillId: '1019',
+        mekaCombatTargetSkillIdState: 'confirmed',
+        mekaCombatRequestScope: 'single-skill',
+        mekaCombatRequestScopeState: 'confirmed',
+        mekaCombatTargetExportCompleted: true,
+      },
+    });
+    await applyMekaRuntimeConfig(opts, { materializeSkillSnapshot: vi.fn(async () => null) });
+    expect(opts.vendorOptions).toMatchObject({
+      mekaCombatTargetSkillId: '1019',
+      mekaCombatTargetSkillIdState: 'confirmed',
+      mekaCombatRequestScope: 'single-skill',
+      // 已确认的导出证据不得被顺手作废。
+      mekaCombatTargetExportCompleted: true,
+    });
+    expect(opts.vendorOptions?.mekaCombatScopeApproved).not.toBe(true);
+    // 反面：显式点名表的无歧义表述仍然允许进入表范围（覆盖绑定）。
+    const explicitTable = baseOpts({
+      mekaRoleId: 'combat-development',
+      userPrompt: '现在把全部技能表里所有模块的伤害都改成取100%攻击力',
+      vendorOptions: {
+        source: 'meka',
+        mekaRuntimeResolved: true,
+        mekaWorkflow: 'saga2-combat-development-v1',
+        mekaCombatTargetSkillId: '1019',
+        mekaCombatTargetSkillIdState: 'confirmed',
+        mekaCombatRequestScope: 'single-skill',
+      },
+    });
+    await applyMekaRuntimeConfig(explicitTable, {
+      materializeSkillSnapshot: vi.fn(async () => null),
+    });
+    expect(explicitTable.vendorOptions).toMatchObject({
+      mekaCombatTargetSkillId: undefined,
+      mekaCombatRequestScope: 'table-scope',
+      mekaCombatRequestScopeState: 'proposed',
+      mekaCombatScopeApproved: false,
+    });
+  });
+
+  it('confirms a proposed table scope only on an explicit user affirmation', async () => {
+    const proposedTableScope = {
+      source: 'meka',
+      mekaRuntimeResolved: true,
+      mekaWorkflow: 'saga2-combat-development-v1',
+      mekaCombatExecutionMode: 'autonomous-user-request',
+      mekaCombatServerCapabilityStatus: 'unchecked',
+      mekaCombatRequestScope: 'table-scope',
+      mekaCombatRequestScopeState: 'proposed',
+      mekaCombatScopeApproved: false,
+      mekaCombatScopeSkillIds: [],
+      mekaCombatEvidenceBasis: 'project-reference',
+    };
+    const resumeWith = async (prompt: string) => {
+      const opts = baseOpts({ userPrompt: prompt, vendorOptions: { ...proposedTableScope } });
+      await applyMekaRuntimeConfig(opts, { materializeSkillSnapshot: vi.fn(async () => null) });
+      return opts.vendorOptions ?? {};
+    };
+
+    // 肯定词（含尾随标点/连接词）⇒ 范围 confirmed + approved。
+    for (const affirmation of ['确认', '确认，就按这个范围执行。', '没问题，继续', 'OK!']) {
+      expect(await resumeWith(affirmation)).toMatchObject({
+        mekaCombatRequestScope: 'table-scope',
+        mekaCombatRequestScopeState: 'confirmed',
+        mekaCombatScopeApproved: true,
+        mekaCombatEvidenceBasis: 'project-reference',
+      });
+    }
+    // 新的范围型指令 ⇒ 重新按新指令分类，覆盖 proposed（approved 归零）。
+    expect(
+      await resumeWith('现在把全部技能表里所有模块的伤害都改成取100%攻击力'),
+    ).toMatchObject({
+      mekaCombatRequestScope: 'table-scope',
+      mekaCombatRequestScopeState: 'proposed',
+      mekaCombatScopeApproved: false,
+    });
+    // 带标注技能 ID 的指令 ⇒ 切回单技能并清掉表级状态。
+    expect(await resumeWith('改成只处理技能 ID 1019')).toMatchObject({
+      mekaCombatTargetSkillId: '1019',
+      mekaCombatTargetSkillIdState: 'confirmed',
+      mekaCombatRequestScope: 'single-skill',
+      mekaCombatRequestScopeState: 'confirmed',
+      mekaCombatScopeApproved: false,
+      mekaCombatScopeSkillIds: undefined,
+    });
+    // 无关消息不改变范围状态（既不确认也不降级）。
+    expect(await resumeWith('先看看当前有哪些模块')).toMatchObject({
+      mekaCombatRequestScope: 'table-scope',
+      mekaCombatRequestScopeState: 'proposed',
+      mekaCombatScopeApproved: false,
+    });
+  });
+
+  it('confirms a proposed table scope from the in-turn follow-up patch without prior state', async () => {
+    // 状态**未知**（调用方既没传 previousVendorOptions，也没有会话级镜像）：只写范围键。
+    // 这是「未知就是未知」的兜底，不是生产路径 —— 生产调用方总会带上会话现状（见下一个用例）。
+    const confirmed = await prepareCombatFollowupRuntimeContext({
+      prompt: '确认',
+      projectId: 'saga2',
+      workingDir: 'C:/Workspace/saga2/saga2_project',
+    });
+    expect(confirmed?.vendorOptionsPatch).toMatchObject({
+      mekaCombatRequestScopeState: 'confirmed',
+      mekaCombatScopeApproved: true,
+      mekaCombatEvidenceBasis: 'project-reference',
+    });
+    // 纯审批消息不得顺手清空目标/导出证据/服务器状态。
+    expect(confirmed?.vendorOptionsPatch).not.toHaveProperty('mekaCombatTargetExportCompleted');
+    expect(confirmed?.vendorOptionsPatch).not.toHaveProperty('mekaCombatServerCapabilityStatus');
+    // 状态未知时连范围键都不是合法表范围上下文，所以没有可注入的范围段。
+    expect(confirmed?.promptSection).toBeNull();
+    // 无关消息不产生任何补丁（不改范围状态，也不会被误当成审批）。
+    expect(
+      await prepareCombatFollowupRuntimeContext({
+        prompt: '先看看当前有哪些模块',
+        projectId: 'saga2',
+        workingDir: 'C:/Workspace/saga2/saga2_project',
+      }),
+    ).toBeNull();
+    // 新的范围型指令按新指令重新分类（覆盖 proposed，approved 归零），不是审批。
+    const newScope = await prepareCombatFollowupRuntimeContext({
+      prompt: '把所有怪物技能的伤害改成取100%攻击力',
+      projectId: 'saga2',
+      workingDir: 'C:/Workspace/saga2/saga2_project',
+    });
+    expect(newScope?.vendorOptionsPatch).toMatchObject({
+      mekaCombatRequestScope: 'table-scope',
+      mekaCombatRequestScopeState: 'proposed',
+      mekaCombatScopeApproved: false,
+    });
+  });
+
+  it('runs the range-approval guard on the live path so unrelated affirmations cannot approve (A3)', async () => {
+    const workDir = 'C:/Workspace/saga2/saga2_project';
+    const singleSkillSession = {
+      source: 'meka',
+      mekaWorkflow: 'saga2-combat-development-v1',
+      mekaCombatTargetSkillId: '1019',
+      mekaCombatTargetSkillIdState: 'confirmed',
+      mekaCombatRequestScope: 'single-skill',
+      mekaCombatRequestScopeState: 'confirmed',
+      mekaCombatScopeApproved: false,
+    };
+    // 调用方显式传入会话现状：单技能会话里任何一句「可以 / 继续 / OK」都不得变成范围审批。
+    for (const affirmation of ['可以', '继续', 'OK', '执行', '没问题']) {
+      expect(
+        await prepareCombatFollowupRuntimeContext({
+          prompt: affirmation,
+          projectId: 'saga2',
+          workingDir: workDir,
+          sessionId: 'live-guarded-1',
+          previousVendorOptions: { ...singleSkillSession },
+        }),
+        affirmation,
+      ).toBeNull();
+    }
+    // 同一会话经**会话级镜像**（无显式 previousVendorOptions）也走同一条 guard：
+    // 这正是 register.ts 的生产形态（Session 没有 vendorOptions 读取口子）。
+    rememberCombatVendorOptions('live-guarded-2', singleSkillSession);
+    expect(readCombatVendorOptions('live-guarded-2')).toMatchObject({
+      mekaCombatRequestScope: 'single-skill',
+    });
+    expect(
+      await prepareCombatFollowupRuntimeContext({
+        prompt: '可以',
+        projectId: 'saga2',
+        workingDir: workDir,
+        sessionId: 'live-guarded-2',
+      }),
+    ).toBeNull();
+    // 表范围提案会话（镜像里就是表范围）里同一句话仍然是审批。
+    rememberCombatVendorOptions('live-guarded-3', {
+      ...singleSkillSession,
+      mekaCombatTargetSkillId: undefined,
+      mekaCombatTargetSkillIdState: 'missing',
+      mekaCombatRequestScope: 'table-scope',
+      mekaCombatRequestScopeState: 'proposed',
+      mekaCombatScopeApproved: false,
+    });
+    const approved = await prepareCombatFollowupRuntimeContext({
+      prompt: '可以',
+      projectId: 'saga2',
+      workingDir: workDir,
+      sessionId: 'live-guarded-3',
+    });
+    expect(approved?.vendorOptionsPatch).toMatchObject({
+      mekaCombatRequestScope: 'table-scope',
+      mekaCombatRequestScopeState: 'confirmed',
+      mekaCombatScopeApproved: true,
+    });
+  });
+
+  it('keeps injecting the approved scope block on the turns after approval (A10)', async () => {
+    const workDir = 'C:/Workspace/saga2/saga2_project';
+    const approvedTableScope = {
+      source: 'meka',
+      mekaWorkflow: 'saga2-combat-development-v1',
+      mekaCombatRequestScope: 'table-scope',
+      mekaCombatRequestScopeState: 'confirmed',
+      mekaCombatScopeApproved: true,
+      mekaCombatScopeSkillIds: ['1019', '1020'],
+      mekaCombatEvidenceBasis: 'project-reference',
+    };
+    rememberCombatVendorOptions('live-approved-1', approvedTableScope);
+
+    // 批准之后的普通实施轮（消息本身不是肯定词、也不带目标）也必须拿到范围段。
+    const followup = await prepareCombatFollowupRuntimeContext({
+      prompt: '继续逐目标实施，先处理第一个',
+      projectId: 'saga2',
+      workingDir: workDir,
+      sessionId: 'live-approved-1',
+    });
+    expect(followup?.promptSection).toContain('[SAGA2_COMBAT_SCOPE]');
+    expect(followup?.promptSection).toContain('scopeApproved: true（用户已确认范围）');
+    expect(followup?.promptSection).toContain('按逐目标流程实施');
+
+    // 批准轮本身也要注入「已批准」变体（原来 promptSection 恒为 null）。
+    const approvalTurn = await prepareCombatFollowupRuntimeContext({
+      prompt: '确认',
+      projectId: 'saga2',
+      workingDir: workDir,
+      sessionId: 'live-approved-1',
+      previousVendorOptions: { ...approvedTableScope, mekaCombatRequestScopeState: 'proposed', mekaCombatScopeApproved: false },
+    });
+    expect(approvalTurn?.vendorOptionsPatch).toMatchObject({
+      mekaCombatRequestScopeState: 'confirmed',
+      mekaCombatScopeApproved: true,
+    });
+    expect(approvalTurn?.promptSection).toContain('scopeApproved: true（用户已确认范围）');
+    expect(approvalTurn?.promptSection).toContain('evidenceBasis: project-reference');
+  });
+
+  it('clears a stale evidence basis when the project references cannot be resolved (A7)', async () => {
+    const staleBasis = {
+      source: 'meka',
+      mekaWorkflow: 'saga2-combat-development-v1',
+      mekaCombatTargetSkillId: '1019',
+      mekaCombatTargetSkillIdState: 'confirmed',
+      mekaCombatRequestScope: 'single-skill',
+      mekaCombatRequestScopeState: 'confirmed',
+      mekaCombatEvidenceBasis: 'project-reference',
+    };
+    // 本轮拿不到 workingDir（工作目录恢复失败）且消息本身不产生目标补丁：
+    // 旧的 project-reference 依据必须被清掉，不能让它继续跳过服务器回执。
+    const cleared = await prepareCombatFollowupRuntimeContext({
+      prompt: '继续',
+      projectId: 'saga2',
+      workingDir: undefined,
+      sessionId: 'live-basis-1',
+      previousVendorOptions: { ...staleBasis },
+    });
+    expect(cleared?.vendorOptionsPatch).toEqual({ mekaCombatEvidenceBasis: undefined });
+    expect(cleared?.promptSection).toBeNull();
+
+    // resume/bootstrap 路径同样清掉旧值。
+    const opts = baseOpts({
+      mekaRoleId: 'combat-development',
+      userPrompt: '继续',
+      workingDir: undefined,
+      vendorOptions: { ...staleBasis, mekaRuntimeResolved: true },
+    });
+    await applyMekaRuntimeConfig(opts, { materializeSkillSnapshot: vi.fn(async () => null) });
+    expect(opts.vendorOptions?.mekaCombatEvidenceBasis).toBeUndefined();
+    expect(opts.vendorOptions?.mekaCombatTargetSkillId).toBe('1019');
+  });
+
+  it('wires the live session state and the mirror commit into register.ts (A3)', async () => {
+    const source = await fs.readFile(new URL('../register.ts', import.meta.url), 'utf8');
+    const call = source.indexOf('await prepareCombatFollowupRuntimeContext');
+    const accepted = source.indexOf('onAccepted: async', call);
+    expect(call).toBeGreaterThanOrEqual(0);
+    // 生产调用方必须把 Host 维护的会话级镜像交给审批门禁。
+    expect(source.slice(call, accepted)).toContain('previousVendorOptions: readCombatVendorOptions(sessionId)');
+    // 只有真正落地的补丁才进镜像（onAccepted 内、setVendorOptions 之后）。
+    const setOptions = source.indexOf('await liveSession.setVendorOptions', accepted);
+    const mirror = source.indexOf('rememberCombatVendorOptions(sessionId', setOptions);
+    expect(setOptions).toBeGreaterThan(accepted);
+    expect(mirror).toBeGreaterThan(setOptions);
+  });
+
+  it('restores the scope mirror into the live session and forgets it only on a terminal close (D6/D7)', async () => {
+    const source = await fs.readFile(new URL('../register.ts', import.meta.url), 'utf8');
+    // 还原必须发生在续聊口子**之前**：策略层在 turn 派发时读的是实时 vendorOptions，晚于计划层
+    // 就没有意义了（那一轮的门禁已经按空状态判过）。
+    const restore = source.indexOf('combatScopeStateRestorePatch(sessionId)');
+    const call = source.indexOf('await prepareCombatFollowupRuntimeContext');
+    expect(restore).toBeGreaterThanOrEqual(0);
+    expect(call).toBeGreaterThanOrEqual(0);
+    expect(restore).toBeLessThan(call);
+    expect(source.slice(restore, call)).toContain(
+      'await liveCombatSession.setVendorOptions(combatScopeRestore)',
+    );
+    // 镜像的丢弃只在**终态关闭**：理由必须是 `requested`，且不在 rehydrate 抑制窗口内
+    // （`withRehydrateCloseSuppressed(... closeSession(id))` 这类重建用的正是默认理由）。
+    // 这段 wiring 位于会话关闭生命周期里，文本位置在 `registerMakerIpc` 主体之前，所以只钉住
+    // 「它存在、且守卫条件完整」，不比较它与续聊口子的先后。
+    const forget = source.indexOf('forgetCombatVendorOptions(session.id)');
+    expect(forget).toBeGreaterThanOrEqual(0);
+    expect(source.slice(forget - 400, forget)).toContain("context.closeReason === 'requested'");
+    expect(source.slice(forget - 400, forget)).toContain(
+      'rehydrateCloseSuppression.isSuppressed(session.id)',
+    );
   });
 
   it('clears prior target export state when a follow-up switches skills', async () => {
@@ -231,24 +899,92 @@ describe('applyMekaRuntimeConfig', () => {
     expect(resolveCombatServerTarget).toHaveBeenCalledWith('saga2');
     expect(result?.vendorOptionsPatch).toMatchObject({
       mekaCombatTargetSkillId: '1021',
+      // 整条消息只回一个正整数 = 用户明确绑定（首轮追问后的标准形态），仍是 confirmed。
       mekaCombatTargetSkillIdState: 'confirmed',
+      mekaCombatRequestScope: 'single-skill',
+      mekaCombatRequestScopeState: 'confirmed',
+      // 口径统一：单技能目标已由用户确认 + 参考已注入 ⇒ 依据是项目参考（不再要求 supported）。
+      mekaCombatEvidenceBasis: 'project-reference',
       mekaCombatTargetExportAttempted: undefined,
       mekaCombatTargetExportCompleted: undefined,
       mekaCombatServerRemoteHostId: 'mcpr:server-1',
       mekaCombatServerWorkerAgent: 'claude-code',
       mekaCombatServerCapabilityStatus: 'unchecked',
       mekaCombatPlanApproved: false,
+      mekaCombatProjectRefPaths: [
+        saga2Paths.moduleEditorSkillPath,
+        saga2Paths.damageEncodingRulePath,
+      ],
+      mekaCombatReadOnlyUnityCommands: [
+        'legacy_module_query_nodes',
+        'legacy_module_audit_coverage',
+      ],
     });
     expect(result?.promptSection).toContain('[SAGA2_COMBAT_TARGET]');
     expect(result?.promptSection).toContain('targetSkillId: 1021');
+    expect(result?.promptSection).toContain('由用户确认并由 Host 绑定的唯一技能 ID');
     expect(result?.promptSection).toContain('[SAGA2_PROJECT_PATHS]');
     expect(result?.promptSection).toContain(`unityClientRoot: ${saga2Paths.unityClientRoot}`);
     expect(result?.promptSection).toContain(
-      `unityAgentsReadCommand: Get-Content -LiteralPath '${saga2Paths.unityAgentsPath}'`,
+      `unityAgentsReadCommand: Get-Content -LiteralPath '${saga2Paths.unityAgentsPath}' -Encoding UTF8`,
+    );
+    expect(result?.promptSection).toContain(
+      `moduleEditorSkillPath: ${saga2Paths.moduleEditorSkillPath}`,
+    );
+    expect(result?.promptSection).toContain(
+      `damageEncodingRulePath: ${saga2Paths.damageEncodingRulePath}`,
+    );
+    expect(result?.promptSection).toContain(
+      `moduleEditorSkillReadCommand: Get-Content -LiteralPath '${saga2Paths.moduleEditorSkillPath}' -Encoding UTF8`,
+    );
+    expect(result?.promptSection).toContain(
+      `damageEncodingRuleReadCommand: Get-Content -LiteralPath '${saga2Paths.damageEncodingRulePath}' -Encoding UTF8`,
     );
     expect(result?.promptSection).toContain('[SAGA2_COMBAT_SERVER_TARGET]');
     expect(result?.promptSection).toContain('serverRemoteHostId: mcpr:server-1');
     expect(result?.promptSection).toContain('serverWorkerAgent: claude-code');
+  });
+
+  it('confirms a bare positive integer in a live follow-up as the bound target', async () => {
+    const result = await prepareCombatFollowupRuntimeContext({
+      prompt: '1021',
+      projectId: 'saga2',
+      workingDir: 'C:/Workspace/saga2/saga2_project',
+      resolveCombatServerTarget: vi.fn(async () => null),
+    });
+
+    // 首轮追问后用户只回一个正整数：视为用户明确绑定，目标段保持强表述。
+    expect(result?.vendorOptionsPatch).toMatchObject({
+      mekaCombatTargetSkillId: '1021',
+      mekaCombatTargetSkillIdState: 'confirmed',
+      mekaCombatRequestScope: 'single-skill',
+      mekaCombatRequestScopeState: 'confirmed',
+    });
+    expect(result?.promptSection).toContain('[SAGA2_COMBAT_TARGET]');
+    expect(result?.promptSection).toContain('由用户确认并由 Host 绑定的唯一技能 ID');
+    expect(result?.promptSection).not.toContain('尚未经用户确认');
+  });
+
+  it('keeps the target block truthful for a context-inferred (proposed) candidate', async () => {
+    const opts = baseOpts({
+      userPrompt: '继续。',
+      vendorOptions: {
+        source: 'meka',
+        mekaRuntimeResolved: true,
+        mekaWorkflow: 'saga2-combat-development-v1',
+        // 预留形态：值由上下文启发式推断，不是用户明确给出 ⇒ 不得声称「由用户确认」。
+        mekaCombatTargetSkillId: '1019',
+        mekaCombatTargetSkillIdState: 'proposed',
+      },
+    });
+
+    await applyMekaRuntimeConfig(opts, { materializeSkillSnapshot: vi.fn(async () => null) });
+
+    expect(opts.userPrompt).toContain('targetSkillId: 1019');
+    expect(opts.userPrompt).toContain('尚未经用户确认');
+    expect(opts.userPrompt).not.toContain('由用户确认并由 Host 绑定的唯一技能 ID');
+    // 非表范围会话不会被「继续」误当成范围审批。
+    expect(opts.vendorOptions).not.toHaveProperty('mekaCombatScopeApproved');
   });
 
   it('clears stale export evidence in the live follow-up patch', async () => {
@@ -305,11 +1041,26 @@ describe('applyMekaRuntimeConfig', () => {
     });
 
     expect(resolveCombatServerTarget).not.toHaveBeenCalled();
+    const saga2Paths = saga2ProjectPaths('C:/Workspace/saga2/saga2_project');
     expect(result).toEqual({
       vendorOptionsPatch: {
         mekaCombatTargetSkillId: undefined,
         mekaCombatTargetSkillIdState: 'ambiguous',
         mekaCombatTargetSkillIds: ['1019', '1010'],
+        mekaCombatRequestScope: 'single-skill',
+        mekaCombatRequestScopeState: 'missing',
+        mekaCombatScopeSelection: undefined,
+        mekaCombatScopeSourceTables: undefined,
+        mekaCombatScopeSkillIds: undefined,
+        mekaCombatScopeApproved: false,
+        mekaCombatProjectRefPaths: [
+          saga2Paths.moduleEditorSkillPath,
+          saga2Paths.damageEncodingRulePath,
+        ],
+        mekaCombatReadOnlyUnityCommands: [
+          'legacy_module_query_nodes',
+          'legacy_module_audit_coverage',
+        ],
         mekaCombatServerRemoteHostId: undefined,
         mekaCombatServerWorkerAgent: undefined,
         mekaCombatServerCapabilityStatus: 'unchecked',
@@ -319,6 +1070,75 @@ describe('applyMekaRuntimeConfig', () => {
       },
       promptSection: null,
     });
+  });
+
+  it('classifies a table-scope request without binding a single skill ID', async () => {
+    const prompt = [
+      '编辑模块:把目前所有怪物技能(怪物配置表里配置的正在使用',
+      '的)使用的伤害行为10000的data都改成取100%的怪物功击力。补充说明：4 取攻击力百分比',
+      '-101 技能表参数1  （-102就是参数2） 以后改值可以直接技能表里改',
+      '1 自身（一般攻击力的都是怪物自身）',
+    ].join('\n');
+    const resolveCombatServerTarget = vi.fn(async () => null);
+
+    const result = await prepareCombatFollowupRuntimeContext({
+      prompt,
+      projectId: 'saga2',
+      workingDir: 'C:/Workspace/saga2/saga2_project',
+      resolveCombatServerTarget,
+    });
+
+    // 表范围没有单值目标：不得再把正则猜出的数字当绑定，也不得使用歧义载体键。
+    expect(result?.vendorOptionsPatch).toMatchObject({
+      mekaCombatTargetSkillId: undefined,
+      mekaCombatTargetSkillIdState: 'missing',
+      mekaCombatTargetSkillIds: undefined,
+      mekaCombatRequestScope: 'table-scope',
+      mekaCombatRequestScopeState: 'proposed',
+      mekaCombatScopeSelection: '所有怪物技能',
+      mekaCombatScopeSourceTables: [],
+      mekaCombatScopeSkillIds: [],
+      mekaCombatScopeApproved: false,
+    });
+    expect(resolveCombatServerTarget).not.toHaveBeenCalled();
+    // 单技能目标段不注入，由表范围段替代。
+    expect(result?.promptSection).not.toContain('[SAGA2_COMBAT_TARGET]');
+    expect(result?.promptSection).toContain('[SAGA2_COMBAT_SCOPE]');
+    expect(result?.promptSection).toContain('requestScope: table-scope');
+    expect(result?.promptSection).toContain('targetSkillId: none');
+    expect(result?.promptSection).toContain('用户确认前禁止任何写入');
+    // 范围发现的只读 Unity 通道由 Host 白名单注入，且写明 projectPath 约束。
+    expect(result?.vendorOptionsPatch).toMatchObject({
+      mekaCombatReadOnlyUnityCommands: [
+        'legacy_module_query_nodes',
+        'legacy_module_audit_coverage',
+      ],
+    });
+    expect(result?.promptSection).toContain('legacy_module_query_nodes');
+    expect(result?.promptSection).toContain('禁止用 unity_execute');
+    expect(result?.promptSection).toContain('[SAGA2_PROJECT_PATHS]');
+  });
+
+  it('never orders an unreachable server Worker recovery from the table-scope block (A5)', async () => {
+    const tableScopeOptions = {
+      mekaCombatRequestScope: 'table-scope',
+      mekaCombatRequestScopeState: 'proposed',
+      mekaCombatScopeApproved: false,
+      mekaCombatEvidenceBasis: 'project-reference',
+    };
+    // 项目参考口径：参考未覆盖/冲突时的出口必须是「回落单技能流程 + 绑定一个技能 ID」，
+    // 不得命令模型派发只读服务器 Worker（表范围没有路由键，那条路走不通）。
+    const projectReference = combatScopePrompt(tableScopeOptions) ?? '';
+    expect(projectReference).toContain('回落到单技能流程');
+    expect(projectReference).not.toContain('必须改走只读服务器 Worker');
+    expect(projectReference).not.toContain('必须用只读服务器 Worker 取得 supported 回执');
+    // server-report 口径（缺省 fail-closed）同样是回落，而不是派发。
+    const serverReport = combatScopePrompt({ ...tableScopeOptions, mekaCombatEvidenceBasis: undefined }) ?? '';
+    expect(serverReport).toContain('回落到单技能流程');
+    expect(serverReport).not.toContain('必须用只读服务器 Worker 取得 supported 回执后再实施');
+    expect(serverReport).toContain('不要尝试派发 Worker');
+    // 但服务器回执本身没有被取消：绑定唯一 ID 之后仍要按单技能流程取得它。
+    expect(serverReport).toContain('supported 回执');
   });
 
   it('commits live combat context only from the accepted-message hook', async () => {

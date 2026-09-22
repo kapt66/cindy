@@ -22,6 +22,7 @@ import {
   isCombatWorkflowPolicyActive,
   markCombatTargetExportCompleted,
   markCombatTargetExportAttempted,
+  observeCombatLegacyModuleResult,
 } from '../meka-projects/combatWorkflowPolicy.js';
 import {
   consumeTrustedCombatServerCapabilityReport,
@@ -1344,6 +1345,19 @@ class InlineMekaMcpProvider implements McpProvider {
         }
         if (result.isError !== true) {
           if (sessionId) {
+            // D2：直连 meka-unity 运行时 MCP 也一样——成功回执先交给 Host 对账（写入前导出的
+            // 节点数基线 vs 导入回执的 importedNodeCount），再交给既有证据记录器。
+            observeCombatLegacyModuleResult(
+              {
+                sessionId,
+                workingDir: context.getSessionContext?.()?.workingDir ?? context.workingDir,
+                vendorOptions: options(context),
+                toolName: `mcp__${this.name}__${request.params.name}`,
+                input: { name: request.params.name, args: request.params.arguments ?? {} },
+                action: { kind: 'mcp' },
+              },
+              result,
+            );
             markCombatTargetExportCompleted({
               sessionId,
               workingDir: context.getSessionContext?.()?.workingDir ?? context.workingDir,

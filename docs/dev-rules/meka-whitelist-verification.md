@@ -704,7 +704,38 @@ Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台。
 - `apps/desktop/src/main/localDb/ipc/sessions.ts:1287,1317,1725`
 - 项目/角色**绑定链**（WL-11.1–11.3）：`apps/desktop/src/renderer/features/cc-agent/CCAgentSidebarUpper.tsx:2404-2416`（项目入口 → `makeNewMakerRouteState('meka')` + `mekaProjectId`）、`apps/desktop/src/renderer/features/cc-agent/NewMakerDraftRoute.tsx:868-887`（`mekaSelection` 的 `useState` 初值）与 `:893-918`（依赖 `[routeMekaDraft.mekaProjectId, routeMekaDraft.mekaRoleId]` 的同步 effect）；两处默认角色都 = `roles.find(routeMekaDraft.mekaRoleId) ?? pickDefaultMekaRole(roles)`，即显式优先共享默认角色 `<projectId>-default-role`（见 `shared/meka-projects.ts` 的 `pickDefaultMekaRole`）、`:579-699`（角色选择器 `MekaRolePicker`）、`:4532-4533`（发送时写入 project/role）
 - 角色**运行期注入链**（WL-11.5–11.6）：`apps/desktop/src/main/meka-injection/mekaResolvePlan.ts:388-449`（hydrate 持久绑定 → 非 meka 零写入 → 遗留角色回填 → 强制「项目+角色都必须有」；resume 短路分支在 `:286-386`）、`:468-501`（worker 判定 + 平台技能解析 + `mergePlatformMcp`/`mergePlatformSkills`，合并实现 `:200-212`）、`:506`（技能快照物化）+ `:186-193`（`nativeSkillMount`）+ `meka-injection/mekaApplyPlan.ts:96-100`（写 `nativeSkillPluginPath`/`nativeSkillRevision`）、`mekaResolvePlan.ts:508-520`（角色 prompt + 角色上下文注入）+ `meka-injection/mekaCombatPrompts.ts:152-161`（`[MEKA_ROLE_CONTEXT]` 区块）+ `meka-injection/mekaApplyPlan.ts:55-80`（按 order 渲染上提）、`mekaResolvePlan.ts:526-554`（`mekaMcpProviderIds` / `mekaWorkflow` 进 `vendorOptions` patch）+ `mekaApplyPlan.ts:88-91`（写入）
-- 角色清单事实源：`apps/desktop/resources/meka/roles/*.json`（`prompt` / `skills[]` / `mcp[]` / `workflow` / `policyProviderRefs`）
+- 角色清单事实源：`apps/desktop/resources/meka/roles/*.json`（`prompt` / `skills[]` / `mcp[]` / `workflow` / `policyProviderRefs`）、`roles/prompts/combat-*.md`（含改名后的 `combat-evidence-budget.md`「证据纪律与收敛」）
+- 请求范围与项目参考注入链（WL-11.11–WL-11.15）：
+  `apps/desktop/src/main/meka-injection/mekaCombatPrompts.ts`（`classifyCombatRequestScope:461-481`、
+  `isCombatScopeAffirmation:495-503`、`combatRequestScopeApprovalPatch:521-544`、
+  `combatSkillIdVendorPatchFromUserPrompt:570-611`、`combatScopePrompt:125-175`、
+  `combatTargetPrompt:104-117`、`resolveCombatProjectRefPaths:221-246`、
+  `combatProjectPathsPrompt:248-284`、`COMBAT_READ_ONLY_UNITY_PIPELINE_COMMANDS:211-214`、
+  标注模式与 `技能 N 段/级` 负向先行 `:325-350`）、
+  `meka-injection/mekaInjectionTypes.ts:91-101`（`MEKA_PROMPT_SEGMENT_ORDER` 含 `meka.combat.scope: 35`）、
+  `meka-injection/mekaResolvePlan.ts:262-269`（`combatProjectReferencePatch`）、`:281-400`（A2 guard、
+  目标/范围补丁与证据依据定稿）、`:805-925`（`prepareCombatFollowupRuntimeContext`）、
+  `meka-projects/combatWorkflowPolicy.ts:36-88`（会话级 vendorOptions 镜像，A3）、
+  `:131-174`（`CombatVendorOptions` 新键）、`:356-413`（表范围目标门禁）、
+  `:1030-1049`（精确路径放行）、`:1062-1064`（表范围判定）、
+  `:1074-1088`（已批准成员集与截断口径）、`:1165-1188`（`recordCombatScopeSkillIds`，A4）、
+  `:1203-1209`（证据依据）、`:1217-1249`（`isCombatScopeResolutionRead`）、
+  `:1295-1311`（`isCombatScopeResolutionUnityQuery`）
+- 冻结技能与角色契约：`apps/desktop/resources/meka/skills/程序/unity/combat-skill-configuration/SKILL.md`
+  （导入/导出回执字段 `:163-167`、只读通道与插件侧 9 项白名单 `:78-84`、`table-scope` 不逐目标派发 `:110-112`）、
+  `apps/desktop/resources/meka/skills/程序/unity/saga2-entry-model/SKILL.md:56-59`
+- Pi 空回合兜底（WL-11.15）：`packages/maker-core/src/agents/pi/translator.ts:1034-1081`
+  （`silentStop` 判定 `:1054-1059`、`done.data` 附加 `:1081`；Host Stop 锁存 `hostStopSeenGeneration`
+  与 `isCurrentTurnHostStopSeen` 在 `:275-327`）；
+  `apps/desktop/src/main/agent-island/state.ts:74,657-660,728-740`（`AGENT_ISLAND_SILENT_STOP_HOLD_MS = 10_000`
+  的挂起兜底）；
+  `apps/desktop/src/main/maker-ipc/silentStopAutoResume.ts`、`register.ts:4298-4460`、
+  `renderer/components/chat/errorReasonI18n.ts:20`
+- 插件侧（跨仓，不在本仓）：`C:\Workspace\cindy-meka-plugins\meka-unity\node\worker.cjs:49-59`
+  （9 项只读命令白名单，拒绝码 `INSPECT_COMMAND_NOT_READ_ONLY` 在 `:154`）、`meka-unity/ghost.json`
+  （`unity_inspect.action` 含 `command`，版本 **1.0.20**）、`meka-p4/ghost.json:34-57`
+  （只读 `p4_opened` / `p4_fileinfo`；写入面含 `p4_checkout:120`、`p4_add:132`、`p4_submit:84`，
+  版本 **1.0.63**）
 
 **自动化门禁**
 - `pnpm --filter desktop run db:validate`（meka 表与列存在、`0000..0107` 完整、journal/snapshot
@@ -718,6 +749,21 @@ Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台。
   `pnpm --filter desktop exec vitest run src/main/meka-projects/__tests__/mekaProjectsImport.test.ts src/renderer/features/cc-agent/__tests__/MekaProjectRoleEditorRoute.test.tsx`
   （断言 `configUnavailable` 的两种置位路径与列表标记、失败页「移除项目注册」可达、内置项目
   不提供移除、新建项目的注册名不落生成 id）
+- 两请求类 / 表范围门禁 / 项目参考路径白名单（WL-11.11–WL-11.14）：
+  `pnpm --filter desktop exec vitest run src/main/meka-projects/__tests__/combatWorkflowPolicy.test.ts src/main/meka-projects/__tests__/combatServerCapabilityState.test.ts`
+  与
+  `pnpm --filter desktop exec vitest run src/main/maker-ipc/__tests__/mekaRuntimeInjection.test.ts src/main/maker-ipc/__tests__/mekaRuntimeInjectionBaseline.test.ts`
+  （断言请求分类与补丁形状、未批准表范围只放行有界只读解析与白名单 Unity 命令、
+  成员清单由 Agent 自己的只读查询登记且批准后冻结、逐目标只接受已批准范围内的 ID、
+  `[SAGA2_PROJECT_PATHS]` 全文与 `vendorOptions` 键序）
+  > **规模（2026-09-22 以 `it(` 计数）**：`combatWorkflowPolicy.test.ts` **55** 条
+  > （本批交付前 HEAD 为 46 条）、`mekaRuntimeInjection.test.ts` **38** 条（另有 2 组 `it.each`）、
+  > `mekaRuntimeInjectionBaseline.test.ts` **18** 条（10 + 8）。这些是**声明数**，不是通过数；
+  > 本批交付**没有**重跑这三条命令（见 §8.5 与本条「未实机验证」）。
+- Pi 空回合与网关发现（WL-11.15）：
+  `pnpm --filter @cindy/maker-core exec vitest run src/agents/pi/__tests__/pi-translator.test.ts src/agents/pi/__tests__/pi-mcp-client.test.ts src/agents/pi/__tests__/cindyBridgeSource.test.ts`
+  （断言 cancelled + 空正文 + 非 Host abort 才附 `silentStop`、未披露错误自带 schema、
+  未知 server 优先于 per-tool 且点明插件不是 MCP 服务器）
 - **实机项已自动化**：`pnpm desktop:session-smoke`（CDP 真实鼠标事件 + 真实模型轮次，覆盖
   WL-11.1–WL-11.8，见下）
 
@@ -803,10 +849,264 @@ Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台。
   > 显式 `pnpm test:db` / 全量下运行。因此**只读契约的守护测试刻意放在
   > `src/main/meka-projects/__tests__/`**（unit tier），以免该不变量在 CI 与提交前门禁里无人守护。
 
+**WL-11.11 战斗请求的两请求类与「启发式不得产生 confirmed」不变量**（不变量，2026-09-22 登记）：
+
+- 一条用户消息必须**在任何工具调用之前**被分成 `single-skill` 或 `table-scope`
+  （`mekaCombatRequestScope`）：用户明确给出正整数技能 ID ⇒ `single-skill/confirmed`；
+  一次给出多个标注 ID ⇒ `single-skill/missing`（歧义，只回同一句单目标追问）；
+  表范围形状而无标注 ID ⇒ `table-scope/proposed`。整条消息只有一个裸正整数仍算用户明确提供
+  （追问后的标准回复），是 `confirmed`，**不要求**重复「技能 ID」标签。
+- **硬不变量**：正则启发式或上下文推断**永远不能**产出 `confirmed`；能产生 `confirmed` 的只有
+  「用户明确标注的单个技能 ID」与「用户对已解析范围的显式确认」两条路径。
+- 表范围提案后，整条消息只由肯定词与标点组成（`确认/确定/可以/同意/执行/继续/没问题/好的/好/行/
+  开始/ok/yes` 的重复组合）⇒ `confirmed` + `mekaCombatScopeApproved=true` +
+  `mekaCombatEvidenceBasis='project-reference'`；带业务内容的回复按新指令重新分类，
+  不得被当成范围审批（`previousVendorOptions` 已知且非表范围时**不动**任何状态）。
+- 进入表范围与切换目标同样作废上一个证据代次，并**显式置空** `mekaCombatTargetSkillId` /
+  `mekaCombatTargetSkillIds`（歧义载体不是范围载体）。
+- **语义验收步骤**：① 用真事故文本
+  「编辑模块:把目前所有怪物技能(怪物配置表里配置的正在使用的)使用的伤害行为10000的data都改成取
+  100%的怪物攻击力。补充说明：4 取攻击力百分比 -101 技能表参数1」构造会话，断言**没有**
+  `targetSkillId=101`、也**没有** `10000`，而是 `table-scope/proposed` 且
+  `targetSkillId` 为 undefined；② 下一轮只回 `确认`，断言状态翻成 `confirmed` +
+  `approved=true`；③ 单技能回归：只有 `技能 ID：1009` 时是 `confirmed`、`1009`；
+  只回 `1009` 一条裸数字时同样是 `confirmed`、`1009`；`技能ID：1009 技能ID：1010` 是
+  `missing` 且不改绑定。
+- 范围分类的三道启发式边界（2026-09-22 本批）：① 指代当前目标的限定词「这个/该/当前/本/此 +
+  技能」（`COMBAT_CURRENT_TARGET_DEMONSTRATIVE_PATTERN`，排除「这个技能表」）一律按**单技能
+  上下文**处理，不判表范围；② 会话**已有用户确认的单技能绑定**时，只有**无歧义表范围**表述
+  （显式点名表/清单，或「某类技能」这类按类划分）才允许覆盖该绑定，其余范围量词按「本轮没有目标
+  变化」处理（计划层 `suppressTableScopePatchForConfirmedBinding`，`mekaResolvePlan.ts:313-345`）；
+  ③ `技能 N 段` / `技能 N 级` 这类数字后紧跟单位/量词的写法**不得**绑成技能 ID（负向先行，
+  `mekaCombatPrompts.ts:337`）。
+- **自动化锚点**：`src/main/maker-ipc/__tests__/mekaRuntimeInjection.test.ts`（分类与补丁形状）、
+  `src/main/meka-projects/__tests__/combatWorkflowPolicy.test.ts`（门禁放行/拒绝）。
+- **成员清单：一致性 guard，不是授权边界（A4）**：范围段要求 Agent 在用户批准前先用白名单只读查询
+  `legacy_module_query_nodes` 取回「在用集合」，Host 在**未批准**时把该查询里**显式传入**的
+  `skill_ids` 记进 `vendorOptions.mekaCombatScopeSkillIds`（`recordCombatScopeSkillIds`，
+  `combatWorkflowPolicy.ts:1165-1188`；只在放行路径上调用，见 `:2176-2179`）：去重、按数值升序、
+  只留 `/^[1-9]\d*$/`，超过 `COMBAT_SCOPE_SKILL_IDS_LIMIT = 200` 只保留前 200 个并写
+  `mekaCombatScopeSkillIdsTruncated=true` 的**诚实标记**（截断的清单不是完整成员集，比对回落到
+  「无清单」口径）。**用户确认后不再登记**（清单冻结，防止已批准会话靠再次查询自行扩大成员集）。
+  因此「逐目标只接受已批准范围内的 ID」在正常路径上**真的会做成员比对**；`isApprovedCombatTableScopeWithoutList`
+  分支（`combatWorkflowPolicy.ts:1097-1103`）只在「用户直接批准、Agent 没查询」或清单被截断时出现，
+  那时退化为「每次调用只允许一个已确认范围内的 ID」+ 其余写入门禁约束。
+  **强度提醒**：它只证明这些 ID 被 Agent 明确查询过、且整个范围经用户确认，**不证明**它们属于业务
+  范围；真正的授权边界仍是 P4 边界、路径白名单、审批位、证据依据与依赖门禁。审批补丁本身
+  （`combatRequestScopeApprovalPatch`）仍然只写 `mekaCombatRequestScopeState` / `mekaCombatScopeApproved` /
+  `mekaCombatEvidenceBasis`，不写成员清单——成员清单的唯一写入方就是上面那条只读查询路径。
+- **会话级状态在应用重启后为空（A3）**：审批门禁要知道「当前是不是表范围」，而 maker-core 的
+  `Session` 只有写入口，因此 Host 维护一份只镜像 `mekaCombat*` 键的会话级 vendorOptions 镜像
+  （`combatWorkflowPolicy.ts:36-88`；计划层 bootstrap/resume 记录、`register.ts:12653` 的 `onAccepted`
+  记录真正落地的补丁，消费点是 `prepareCombatFollowupRuntimeContext` 的 `previousVendorOptions` 回落值）。
+  **它只活在 Desktop 进程内、不进 DB，重启即空**：此时语义是「状态未知」，只写合法的范围键，
+  不得把未知当成「非表范围」或「可以审批」。`forgetCombatVendorOptions` 目前没有生产调用方，
+  会话结束不清镜像。
+- **未实机验证**：真实会话里该文本走完一次「解析 → 只读查询登记成员 → 确认 → 逐目标实施」的全链路；
+  成员清单（A4）与镜像（A3）都只有单测，**没有端到端实跑**，也没有跨进程/重启后的实测证据。
+  见迁移总账 §6.56「已知不一致与强度提醒」（证据依据那一条已于 2026-09-22 同日后修订解决，见 WL-11.12）。
+
+**WL-11.12 项目参考路径注入与精确路径白名单**（不变量，2026-09-22 登记）：
+
+- `[SAGA2_PROJECT_PATHS]` 必须注入 `moduleEditorSkillPath`、`damageEncodingRulePath` 的**绝对
+  路径 + ReadCommand**（`moduleEditorSkillReadCommand` / `damageEncodingRuleReadCommand`），
+  取值唯一来源 `resolveCombatProjectRefPaths`；两条路径必须由 Host 从 `workingDir` 解析，
+  **不得**由模型二次拼接或在代码里硬编码任何机器路径。
+- 策略层的精确路径白名单唯一来源是 `vendorOptions.mekaCombatProjectRefPaths`；**未注入 = 空 =
+  一律不放行**（fail-closed）。放行粒度是**单文件全等路径**：通配、`?`/`*`/`[`、目录、
+  路径穿越、`-Recurse`、`Get-ChildItem`、`Select-String -Path $files` 与
+  `01-治理规范-governance/` 仍然拒绝；`ModuleV2` 与共享 `skill_entry_model_editor.json`
+  仍被禁止。
+- 领域事实分层不得回退：冻结 Skill 只写**流程与权限**，模块字段/编码/类型字典/伤害规则一律从
+  注入的项目资料读取。把领域表重新写回 Cindy 冻结 Skill = 重新引入必然漂移（§6.56 根因 7）。
+- **语义验收步骤**：① 在注入路径上做一次单文件读取，断言放行；② 对同一目录做
+  `Get-ChildItem -Recurse`、对同目录**另一个** `SKILL.md` 做读取、对
+  `01-治理规范-governance/` 做读取，断言三者都被拒；③ 把 `mekaCombatProjectRefPaths` 从
+  vendorOptions 移除后重跑 ①，断言变成拒绝。
+- **已知边界（登记，不是 bug）：`table-scope` 无法派发服务器 Worker**。服务器路由键只在存在唯一合法
+  `mekaCombatTargetSkillId` 时注入（`mekaResolvePlan.ts:229-260`；表范围分支显式置 `undefined`，
+  `:874-875`），`authorizeCombatServerDispatch` 又要求请求的 `remote_host_id` 与注入值全等
+  （`combatWorkflowPolicy.ts:1785-1821`）⇒ 表范围的 `create_worker` 恒被拒，
+  `validate_server_capability_report` 的期望目标也是空串（`meka-runtime-mcp.ts:873`）。因此参考
+  未覆盖/冲突时，表范围的出口是**改绑单技能 ID 后核查**（该路径完整可用），或由 owner 决定新增按目标
+  派发/回报通道。角色片段与冻结 SKILL.md 已按这条边界改成「`table-scope` **不逐目标派发**、改绑一个
+  已确认 ID 退回单技能流程」（`combat-skill-configuration/SKILL.md:110-112`），不得再写回「逐目标
+  派发」。见迁移总账 §6.56 与 `meka-injection-layer.md` §3.2。
+- **统一口径（2026-09-22 同日后修订）**：`combatEvidenceBasisIsProjectReference`
+  （`combatWorkflowPolicy.ts:1203-1209`）现在是「`project-reference` **且** 两条参考路径已注入
+  **且**（`table-scope` ⇒ `approved === true`，否则 ⇒ `TargetSkillIdState === 'confirmed'`）」⇒
+  **两类请求共用同一豁免语义**，单技能不再被无条件要求 `supported` 回执。该键由 Host 经
+  `combatEvidenceBasisPatch` 依据注入情况写入，**不是** Agent 判断（旧文「单技能仍须 `supported`、
+  与提示词冲突」的观察已作废，历史保留在迁移总账 §6.56）。
+- **语义验收步骤（两类都要走，不得只测一类）**：① `single-skill` 且 `TargetSkillIdState='confirmed'`
+  + `mekaCombatEvidenceBasis='project-reference'` + 两条参考已注入 ⇒ 老版模块导入
+  `unity_execute(legacy_module_import_json, <该 ID>, <绝对 JSON 路径>, true)` 断言**放行**（其余门禁
+  照旧，环境/P4 边界不因该键豁免）；
+  ② 保持同一形态，分别把 `TargetSkillIdState` 改为 `ambiguous`、把 `mekaCombatProjectRefPaths` 置空、
+  把 `mekaCombatEvidenceBasis` 置 `undefined` ⇒ 三者都必须断言**被 `supported` 回执门禁拒绝**；
+  ③ `unsupported` / `uncertain` 任一 ⇒ 仍拒绝实施调用；④ 已批准 `table-scope`（`approved=true` +
+  `project-reference` + 参考已注入）⇒ 用**一个显式 ID** 做同一次导入调用断言放行，`approved` 归零
+  （或范围状态回到 `proposed`）后断言回到拒绝。
+- **自动化锚点**：`combatWorkflowPolicy.test.ts` 的
+  `requires the server supported report only when the evidence basis is not the injected project reference`
+  与 `applies the same project-reference evidence basis to a confirmed single skill`；
+  `mekaRuntimeInjection.test.ts`（依据补丁形状与 `prepareCombatFollowupRuntimeContext`）、
+  `mekaRuntimeInjectionBaseline.test.ts`（`[SAGA2_PROJECT_PATHS]` 全文、`vendorOptions` 键序，
+  含「未改目标的 resume 也定稿依据」用例）。
+  **未实机验证**：真实项目目录下的完整读取路径（含三段 CJK 目录名的伤害规则文件），以及表范围
+  「确认 → 逐目标导出 → P4 编辑 → 导入 → 回读」的端到端往返（**代码可证，未实跑**）。
+
+**WL-11.13 表范围解析的只读通道与 P4 写边界（Unity 查询 + P4）**（不变量，2026-09-22 登记）：
+
+- `table-scope` 解析期的第一条证据是**有界只读范围解析**，不是「先导出单个目标技能」；能被
+  放行的形态只有：声明的源表、`saga2_json` 下的表文件、老版模块资产目录
+  `Module/Saved Data/Modules` 里的**单个** `.asset`、已注入的项目参考路径，以及
+  `unity_inspect(action="command")` + `vendorOptions.mekaCombatReadOnlyUnityCommands` 白名单命令
+  （当前两条：`legacy_module_query_nodes`、`legacy_module_audit_coverage`）。
+- `projectPath` 必须与注入的 `unityClientRoot` **逐字一致**；`unity_execute`（含
+  `legacy_module_import_json` / `legacy_module_export_json`）**不在此列**。命令白名单未注入 = 空 =
+  不放行；参数里出现 `;&|<>` 或换行不算单条只读查询。Cindy 侧白名单与 meka-unity 插件侧的
+  9 项硬编码只读白名单是**两层**，增删任一命令必须两侧同时核对。
+- **审批位只决定写入**：`mekaCombatScopeApproved !== true` 时，只读范围解析**仍然放行**，
+  写入门禁一概不动（否则用户一确认范围，范围级只读发现反而被锁死——表范围没有单值目标，
+  永远产生不了「目标导出完成」）。
+- **P4 写边界（与只读通道成对，必须一起验）**：唯一可写表面是「老版模块编辑器能寻址的
+  `Modules/<skillId>.asset`」，且**已有资产必须先经 Meka P4 插件真正完成版本控制**——
+  `p4_edit`，磁盘上存在但尚未入库的资产另行 `p4_add`；只查 `p4_status` **不算前置**。
+  这是**角色/冻结 Skill 契约 + 用户授权要求**，不是 Cindy 侧 Host 门禁：`combatWorkflowPolicy.ts`
+  只把 `p4_status` 当只读豁免（`:662`），任何 P4 变更都要重跑环境门禁（用例
+  `combatWorkflowPolicy.test.ts:3360-3404`，`p4_submit` 在其中是**放行**的），Host 侧唯一额外的
+  P4 约束是 `saga2_design/planning` 一律拒绝（`isPlanningMutation`，`:616-626` → 拒绝文案 `:1943-1947`）。
+- **破坏性守卫实际在插件侧，且是 fail-closed 的**（Host 缺 P4 写白名单 ≠ 无防护，这一层必须一起读）：
+  meka-p4 的四个不可逆工具都走「预览 → `cindy.confirm` → 带 `expectedPreviewToken` 执行」三步——
+  `p4_submit`（`cindy-meka-plugins/meka-p4/main.js:657-676`：先 `submitPreview` 取得 `previewToken`，
+  再确认，再 `submitConfirmed`）、`p4_revert`（`:685-707`）、`p4_clean`（`:709-722`）、
+  `p4_force_sync`（`:724-737`）。`requestConfirmation`（`:112-140`）在 `cindy.confirm` 不可用时直接返回
+  `CONFIRMATION_UNAVAILABLE` 并**拒绝执行**（fail-closed），未确认时各工具 `toolFail` 提前返回；
+  `expectedPreviewToken` 绑定「用户看到并确认的那份预览」与「实际执行的那批文件」，不可被 TOCTOU 替换。
+  因此 Agent 自发 `p4_submit` **不是静默提交**，必须经用户点确认；Host 侧无 P4 写白名单是
+  **纵深不足**，不是缺失最后一道闸门。不进 `confirm` 的工具（如 `p4_delete`，`:744` 的通用表）
+  其后果也由 `p4_submit` 的确认闸门统一兜住——未提交前可恢复。
+- **`p4_submit` / revert / sync 永不自动执行**：`p4_submit` 不可逆，属「额外内容」，必须由用户
+  **明确要求**才可执行，Agent 不得推断（冻结 SKILL.md `:126-133`）。因此「从不提交」只能靠
+  **契约 + 实机核对**证明，不能靠 Host 门禁证明——登记为已知强度边界。
+- **本批交付在 SAGA2 Unity 侧的 C# 改动保持本地未入库**：新增的两条只读 CLI 命令与
+  `SkillModuleData.Exists()` 守卫是工作区本地编辑，**不进 changelist、不 `p4_add`、不提交**。核对面
+  是只读的 `p4_opened` / `p4_fileinfo`（meka-p4 1.0.63）：这些文件**不得**出现在任何 opened
+  changelist 里，交付也不得留下新 changelist；任何 `p4_submit` 都必须能对应到用户当前消息里的显式要求。
+- **语义验收步骤**：① 未批准的 `table-scope` 下发起白名单内的 Unity 命令，断言放行；
+  发起 `unity_execute(legacy_module_import_json …)`、`p4_edit`、`.asset` 写入，断言全部拒绝；
+  ② 把 `projectPath` 改成另一个 Unity 根，断言拒绝；③ 用不在白名单的命令名调
+  `unity_inspect(action="command")`，断言拒绝（插件侧 `INSPECT_COMMAND_NOT_READ_ONLY`）；
+  ④ `single-skill` 会话下重跑 ①，断言只读 Unity 查询**不**因此放行（该通道仅表范围解析期开）；
+  ⑤ **P4 写边界**：对一个磁盘已存在、尚未入库的模块资产走一次导入 → 断言导入前实际执行了
+  `p4_edit`（必要时 `p4_add`）且仅查 `p4_status` 时导入被判定前置不足；⑥ 断言全程没有 `p4_submit`
+  （除用户显式要求外），并用 `p4_opened` 核对本批 Unity C# 改动**不在** opened changelist 中。
+- **自动化锚点**：`combatWorkflowPolicy.test.ts` 的
+  `keeps writes closed and allows only bounded read-only scope resolution for an unapproved table scope`
+  与 `allows only the whitelisted read-only Unity query channel while a table scope is unconfirmed`。
+  **P4 写边界本身零自动化覆盖**：`p4_edit` / `p4_add` / `p4_submit` 的顺序与「只查 status 不算前置」
+  只由角色片段与冻结 SKILL.md 的正文表达，没有单测；`p4_submit` 在 Host 侧是放行路径，
+  其不可逆性由**插件侧 fail-closed 确认闸门**兜住（见上一条，`main.js:657-676` 等），该闸门同样**未实机验证**。
+  **跨仓未验证**：meka-unity 插件侧白名单与 Cindy 侧清单的一致性**没有自动化断言**，
+  只有两侧源码的当前文本（`cindy-meka-plugins/meka-unity/node/worker.cjs:49-59`）；
+  `p4_opened` / `p4_fileinfo` 与「C# 改动未入库」**登记人未核对**（需 SAGA2 工作区与 P4 连接）。
+
+**WL-11.14 Host 侧证据预算／配额／时限已删除（不得复活；提示词层的收敛纪律刻意保留）**（不变量，2026-09-22 登记）：
+
+- **不得**重新引入任何「Lead 最多 N 次成功证据调用」「总探索时间超过约 M 分钟立即停止」
+  「服务器 Worker 最多 N 次只读调用」形式的硬上限。删除前的两条常量与两个 helper
+  （`COMBAT_LEAD_EVIDENCE_READ_LIMIT` / `COMBAT_SERVER_WORKER_READ_LIMIT`、
+  `consume*Budget`、`shouldBoundLeadEvidence` / `leadEvidenceBudgetDecision`）**不得复活**。
+- **取代它的是提示词层的收敛纪律，不是新的预算**：每个未决业务原子最多两轮定向核查、同一工具失败后
+  只允许安全诊断或一次修正重试、不重复读取同一文件、不递归扫描仓库、足够即收口；仍无结论时立即
+  停止探索并交付**业务级结论**，把缺口标为「可实现 / 无法保证 / 待确认业务选择」或程序交接项。
+  任何阻塞都必须产出可见结论——这才是该不变量真正要守的东西（防「探索无终点」和「以工具调用
+  代替结论」两个方向）。
+- **必须分清的两类数字**（本条的判据就在这里，含糊会把「删预算」误读成「一个数字都不能有」）：
+  - **Host 侧预算／配额／时限：必须完全不存在** —— 计数器、调用次数上限、墙钟 deadline、
+    `consumeCombatServerWorkerReadBudget` 家族。这就是步骤 ① 要核的东西；复活任一形态 = 违规。
+  - **提示词层的收敛纪律条数：刻意保留** —— 角色片段 `roles/prompts/combat-evidence-budget.md:3`
+    的「每个未决业务原子**最多进行两轮**定向核查」与 `:7` 的「同一工具只允许安全诊断或**一次**
+    修正重试」。它们是**每条未决原子**的定性停止规则（告诉 Agent 何时收口并交付部分结论），
+    没有 Host 计数器、没有全局配额、没有时间上限，也不阻止用户显式要求继续。**不得**把它们
+    当成预算复活，也**不得**为了「正文里不许出现数字」把它们删掉——那会直接毁掉步骤 ③ 依赖的收敛契约。
+- **片段文件名与 manifest id 仍叫 `combat-evidence-budget`（有意保留）**：
+  `combat-development.json:16` 声明 `{ "id": "combat-evidence-budget", "path": "prompts/combat-evidence-budget.md" }`，
+  片段标题是 `## 证据纪律与收敛`（`combat-evidence-budget.md:1`）。**名字保留是为了片段 id / manifest
+  路径的稳定性**，正文已不含预算；grep 到 `budget` 这个名字**不代表删除没做完**，判据只看上面两类数字。
+  改名会动一个稳定身份，属另案，**不得**为了让文档好看而重命名文件或改 id。
+- **语义验收步骤**：① 在**代码/测试/提示词/资源**范围内核对删除后的零命中（docs 会合法地提到这些
+  名字，**不要**把仓库根当作搜索面，否则会把本条自身与迁移总账算成命中）：
+  ```bash
+  git grep -nE "COMBAT_(LEAD_EVIDENCE|SERVER_WORKER)_READ_LIMIT|consumeCombat(ServerWorker|Lead)[A-Za-z]*Budget|shouldBoundLeadEvidence|leadEvidenceBudgetDecision" -- apps packages scripts
+  ```
+  期望**零命中且退出码 1**（2026-09-22 实测如此；`-- apps packages scripts` 是命令的一部分，
+  不能省略）；② 读同一片段，断言标题是 `## 证据纪律与收敛`，且**保留的是收敛纪律、没有 Host 侧
+  预算形态**：`:3` 与 `:7` 允许出现「两轮」「一次修正重试」这类**每原子**定性条数，但正文
+  **不得**出现全局调用次数上限、累计计数、分钟/小时级停止时限，也不得引用任何 `*_READ_LIMIT` /
+  `consume*Budget` 名字；③ 构造一个「两轮定向核查仍无结论」的用例，断言 Agent 侧契约要求交付结论
+  而不是继续调用工具 —— 它验的正是 ② 里保留的那条「两轮」纪律，两步互为前提，不得把它们读成矛盾。
+- **与其它「额度」机制的区别**：本条删掉的是**战斗证据调用次数／探索时长**这类硬上限，不得复活。
+  既有的 silent-stop 续跑自愈额度（`silentStopAutoResume.ts`，属 WL-11.15 的兜底机制）与
+  turn 零事件 stall watchdog（`DEFAULT_TURN_STALL_MS = 45 * 60_000`）**不在本条范围内**，
+  它们不是战斗流程的收口上限；`COMBAT_SCOPE_SKILL_IDS_LIMIT = 200` 同理只是清单截断的诚实标记
+  （见 WL-11.11），不得当成预算复活。
+- **自动化锚点**：`combatServerCapabilityState.test.ts`（删除后不再有预算用例）、
+  `combatWorkflowPolicy.test.ts`（不再有预算拒绝路径）。本文自身的结构契约由
+  `scripts/__tests__/meka-whitelist-contract.test.mjs`（5 条，随 `pnpm test:runner` 跑）守护；
+  编排者在本次交付中实测 `node --test scripts/__tests__/meka-whitelist-contract.test.mjs`
+  为 **5/5 通过**（**登记人本人未运行**，转述自编排者）。**未实机验证**：真实失控探索场景下
+  新纪律是否足以收敛（定性条款，无运行时断言）。
+
+**WL-11.15 Pi 空回合不得静默收尾**（不变量，2026-09-22 登记）：
+
+- 一个 turn 结束时**没有任何用户可见 assistant 正文**，就**不得**以「什么都没发生」收尾。
+  `outcome` 分两支：`outcome === 'completed'`（上游用空正文 assistant 消息正常收尾）**无条件**进入
+  该判定；`outcome === 'cancelled'`（需 `stopReason='aborted'`、不是 Host abort 请求、无终态 error、
+  正文为空）额外要求本 turn **没有出现过** Host 停止登记。
+- **seen 锁存只收紧 `cancelled`，不得套到 `completed`**：`cancelled` 支查的是**锁存的
+  `hostStopSeenGeneration`**（`isCurrentTurnHostStopSeen`，translator 模块私有，
+  `translator.ts:275-327`）而不是 abort 标记——abort RPC 失败会回滚 abort 标记，只看它会把
+  「用户按了 Stop → RPC 报错回滚 → Pi 仍发来无 errorMessage 的 aborted 空消息」误判成静默断流，
+  从而把一个用户明确停掉的 turn 自动续跑。反方向同样承重：锁存**不随** `agent_settled` 清除，若把它
+  一并套到 `completed`，则「用户按 Stop → abort RPC 报错回滚 → Pi 仍以 `stopReason='stop'` +
+  空内容正常收尾」这一**既有自愈形态**会退回零输出（`outcome='completed'`、无正文、无终态 error、
+  也不补发「继续」）。本批第一版实现犯过这个错，回归用例
+  `completed + 锁存命中 + 空正文` 现已存在。
+- 真正的 Host Stop（用户点 Stop / 45 分钟 stall watchdog 的 abort，abort 标记未被回滚 ⇒ `outcome`
+  仍为 `cancelled`）与已有正文的取消**不得**附 `silentStop` 标记：那是用户或宿主自己的动作，
+  watchdog 另有 `turn_no_event_timeout` 终态与自己的续跑通道，再接管会双发。
+- 命中后必须交**既有** silent-stop 自愈（补发「继续」，绝不重放原始 prompt 及其副作用）；
+  额度/熔断耗尽时弹终态 error `silent-stop-exhausted`（已在 renderer reason 白名单内，带
+  「继续」按钮），不得补一条裸 `empty-response` error（那类 reason 的自动重试会克隆原文，
+  只对零副作用 turn 安全）。这里的「额度/熔断」是**既有** silent-stop 自愈机制自己的
+  （`silentStopAutoResume.ts` 的 `SILENT_STOP_RESUME_BUDGET` / `SILENT_STOP_SESSION_BREAKER_LIMIT`），
+  不是 WL-11.14 删掉的战斗证据预算，也不是本轮新增的收口上限。
+- **GUI 侧挂起**：宿主拿到 `silentStop` 后，会话在 agent-island 上进入
+  `silentStopHold`（`agent-island/state.ts:74,657-660,728-740`，`AGENT_ISLAND_SILENT_STOP_HOLD_MS = 10_000`
+  的到期兜底）：这段时间不得把面板落成「已完成」终态，续跑或超时才收口。
+- **语义验收步骤**：① 构造 `cancelled` + 空正文 + 非 Host abort 的 turn，断言
+  `done.data.silentStop === true` 且守卫被触发；② 构造 Host abort 的同样 turn（abort 标记未被
+  回滚 ⇒ `outcome` 仍为 `cancelled`），断言**没有** `silentStop`；②′ **反向对照**：构造 abort RPC
+  失败回滚、但 Pi 仍以 `completed` + 空正文收尾的 turn，断言**有** `silentStop` —— 这一格必须与 ②
+  相反，否则就是本批第一版回归；③ 构造有正文的取消，断言**没有** `silentStop`；
+  ④ 让续跑额度耗尽，断言用户看到 `silent-stop-exhausted` 横幅而不是静默结束；
+  ⑤ 断言命中后 10 秒内会话在 agent-island 上不是终态「已完成」，续跑到达或超时才收口。
+- **自动化锚点**：`packages/maker-core/src/agents/pi/__tests__/pi-translator.test.ts`
+  （三条新用例）、`apps/desktop/src/main/agent-island/__tests__/state.test.ts`（挂起与到期兜底）、
+  `maker-ipc/__tests__/silentStopAutoResume.test.ts`、
+  `sessionEventPipeline.test.ts`、`renderer/__tests__/overloadError.test.ts`（reason 白名单）。
+  **未实机验证**：真实网络断流下「用户一个字都没拿到」的场景复现，以及 GUI 挂起在真实会话里的
+  观感（本批交付**没有**重跑这些用例，登记人只做了代码核对）。
+
 **未自动化 / 未覆盖的实机项**：新建**自定义**项目与角色（本机 profile 只有内置 SAGA2）、
 删除项目后落入「不可用的 Meka 项目」组、正式事项（`meka-formal`）的 provider/auth/issue
 全链路（需 Jira/GitLab 凭据），以及 WL-11.9 的界面实机路径（把项目目录移走后走一遍
-「配置不可用 → 移除项目注册」）。这些仍按上文「实机验证」人工执行。
+「配置不可用 → 移除项目注册」）。WL-11.11–WL-11.15 的**端到端**部分（真实 SAGA2 工作区里走完
+表范围全链路、真实断流下的空回合、插件侧白名单与 Cindy 清单一致性、P4 写边界与
+「本批 Unity C# 改动未入库」）同样**尚未实跑**；A3 镜像的**重启后为空**与 A4 成员清单的
+**真实会话登记**也只有代码与单测证据，没有实机观测。这些仍按上文「实机验证」人工执行。
 
 > migration 编号与冻结**不单列为白名单项**：那部分是上游自己的机制（`db:validate` +
 > `migration-baseline.json` + Git 基线冻结）加上本仓工程规则，见 §7。
@@ -1116,6 +1416,11 @@ open for edit 的文件（`saga2_unity/AGENTS.md`、`.agents/skills/editor-unity
 
 > 阶段 B 的命令行门禁**不能替代**阶段 C 的实机验收：项目/角色的绑定、注入与侧栏归属
 > 都是运行期语义，只有真实起实例才成立（见 §5）。
+>
+> **`pnpm test:unit:related` 不是 `pnpm test:unit` 的等价缩写**：它由 `scripts/test-workspaces.mjs`
+> 驱动，改动集合含 `apps/`、`packages/` 之外的路径时会**先跑一遍 `test:runner`**（机制与
+> `test:runner` 当前 3 个存量红灯见 §8.1 第 1 条）。因此它不能替代本节表格里的 `pnpm test:runner`
+> 一项，也不得把 `test:runner` 的存量红灯记成「本次交付引入」。
 
 风险追加：跨模块/基础设施改动按 `docs/dev-rules/development-workflow.md` 追加
 `pnpm test:all`；插件基座改动另需白名单批准（见 `plugin-security-and-authoring.md`）。
@@ -1233,6 +1538,21 @@ WL-5（先确认区域与链路）→ WL-6（身份/更新）→ WL-1（设置�
    `origin/meka/main` / `meka/main`；在产品分支上改一个 Desktop 源文件应走 Vitest
    `related`，不应再静默退回全量。外层超时：相关门禁按短耗时，只有打印了 `RELATED full`
    才按全量给足（见 `development-workflow.md` §2 的 15 分钟下限）。
+   **机制更正（2026-09-22）：`test:unit:related` 会不会连带跑 `test:runner` 不是无条件的，
+   但本仓大多数交付会命中它。** 实际链路是：`pnpm test:unit:related` =
+   `node scripts/test-workspaces.mjs --tier unit --related`；驱动器在 `scripts/test-workspaces.mjs:1062-1084`
+   先执行 `runRootTestRunner()`（实现 `:983-1006`，即 `pnpm run test:runner`），而是否执行由
+   `scripts/test-related.mjs:96-103` 的 `shouldRunTestRunner()` 决定 —— **改动集合里出现任何
+   `apps/` 与 `packages/` 之外的路径**（根文件、`scripts/`、`docs/`、CI workflow…）就为 true。
+   因此：只改 `apps/**` + `packages/**` 的交付**跳过** runner；而**任何带文档/脚本改动的交付
+   （包括本次文档同步）一定跑它**。规划时间时按「可能跑 runner」算，别只看 `RELATED related` 那一行。
+   **`test:runner` 目前有 3 个存量红灯**：`scripts/__tests__/design-inventory.test.mjs:1158`
+   （`CLI --check 在当前台账上通过`）与 `scripts/__tests__/hardcoded-color-audit.test.mjs:216`、
+   `:372`（`worktree includes staged, unstaged and untracked source; commit mode excludes them`、
+   `CI design commands feed the existing verify job and preserve Windows aggregation`）。
+   这三个用例是**存量红灯**：用 `git stash` 在未改动工作树上做基线复跑得到同一结果，**不是本批
+   交付引入的**（本次文档同步**没有**重跑它们，也没有改动相关实现）。因此读到 `test:runner` 红时，
+   先按这三条归类，任何**新增**的失败才是本次改动的问题。
 2. **运行期切换服务区（edition）是 Meka 的刻意分歧**，必须保留：上游把区域当**构建期**维度、
    运行期不可切换；Meka 允许在登录页切换，因为**不同区暴露的模型能力不同**，用户需要按
    可用模型选服务区。→ 已登记为 WL-5.6 的不变量。
@@ -1388,6 +1708,11 @@ lineage 撞号的处理、migration 文件本体不写注释）留在
 | WL-17 `.cshare` 的 Meka 绑定往返 | 单测已落地（导入 10 条 / 导出 3 条 / 格式 2 条），但**登记人未运行**；跨版本（旧客户端读同一包）与真实 Electron 往返**零覆盖** |
 | WL-18 Pi 技能快照与 Meka 运行时 MCP | 单测已落地（`host-skill-mount` 7 条 / startsession 1 条 / **真 Pi 二进制**集成 1 条 / bridge 3 条 / 矩阵与注册断言），但**登记人未运行**；远端 Pi 不挂快照与普通会话 fail-closed 的**文案**无实机覆盖 |
 | WL-19 Unity CLI-only 边界 | **零自动化覆盖**：三道守卫的拒绝路径与文案、九条 Pipeline command 与两个动作的清单、旧 MCP「无 CLI 等价物」均无断言（清单本身也无仓库内代码锚点） |
+| WL-11.11 两请求类与「启发式不得 confirmed」 | 单测已落地（`mekaRuntimeInjection.test.ts` 分类/补丁、`combatWorkflowPolicy.test.ts` 门禁），但**登记人未运行**；成员清单（A4）由 Agent 自己的只读查询登记、批准后冻结，**有生产写入方**，但真实会话「解析 → 只读查询登记成员 → 确认 → 逐目标实施」全链路**零覆盖**；会话级镜像（A3）**重启后为空**这一事实也只有代码证据 |
+| WL-11.12 项目参考路径注入与精确路径白名单 | 单测已落地（`mekaRuntimeInjectionBaseline.test.ts` 的 `[SAGA2_PROJECT_PATHS]` 全文与 vendorOptions 键序），但**登记人未运行**；真实含 CJK 目录名路径的读取**未实机验证** |
+| WL-11.13 表范围只读通道与 P4 写边界（Unity 查询 + P4） | Cindy 侧白名单放行/拒绝有单测（`combatWorkflowPolicy.test.ts` 两条），但**登记人未运行**；**跨仓清单一致性零自动化断言**（靠 `meka-unity/node/worker.cjs:49-59` 与 Cindy 侧清单同时人工核对）；**P4 写边界零自动化覆盖**：`p4_edit`/`p4_add` 前置、从不 `p4_submit`、本批 Unity C# 改动未入库都只由角色/Skill 正文表达（`p4_submit` 在 Host 侧是放行路径），需用 `p4_opened` 人工核对 |
+| WL-11.14 Host 侧证据预算／配额／时限已删除（收敛纪律保留） | ① 的静态核对已由编排者实跑通过（代码/测试/提示词/资源范围内 `git grep` 零命中、退出码 1，命令见本条，必须带 `-- apps packages scripts`）；**没有自动化断言禁止复活 Host 侧次数上限**（新加常量的 PR 不会被门禁拦下）；片段文件名/id 仍叫 `combat-evidence-budget` 是有意保留 |
+| WL-11.15 Pi 空回合不得静默收尾 | 单测已落地（`pi-translator.test.ts` 三条 + host 守卫用例链 + `agent-island/state.test.ts` 的挂起与到期兜底），但**登记人未运行**；真实网络断流的复现**零覆盖** |
 
 补测试时应优先覆盖**本轮同步真实坏过**的位置（WL-2.1、WL-9 派生包、WL-10 补种、WL-12），
 而不是平均用力。

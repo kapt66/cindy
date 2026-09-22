@@ -576,8 +576,12 @@ import {
 import { probeRemoteCodexCapability } from '../maker-host/mcpr-codex-capability.js';
 import { probeRemoteClaudeCapability } from '../maker-host/mcpr-claude-capability.js';
 import {
+  combatScopeStateRestorePatch,
+  forgetCombatVendorOptions,
   invalidateCombatTargetBinding,
+  readCombatVendorOptions,
   refreshCombatTargetBinding,
+  rememberCombatVendorOptions,
 } from '../meka-projects/combatWorkflowPolicy.js';
 import {
   applyMekaRuntimeConfig,
@@ -4550,7 +4554,22 @@ const sessionBindings = createSessionBindingLifecycle<WiredSession, WiredSession
       closeInputCoordinator: (options) => {
         agentInputCoordinatorHolder?.onSessionClosed(session.id, options);
       },
-      cleanupRuntimeState: () => cleanupClosedSessionRuntime(session),
+      cleanupRuntimeState: () => {
+        cleanupClosedSessionRuntime(session);
+        // D7：只在**真正的终态关闭**丢弃会话级战斗 vendorOptions 镜像，避免它无界增长、也避免
+        // 同一个 sessionId 之后读到过期值。判据必须同时满足两条，缺一都会打掉 D6 的还原来源：
+        //  - `requested` = Host/用户显式 close（含删除任务与进程退出）；
+        //    `agent-switch` / `runtime-refresh` 是重建，`unexpected` 是 vendor 自行关闭
+        //    （stall / idle / reconnect 后 Host 会补发「继续」）——后三种都必须留着镜像；
+        //  - 不处于 rehydrate 抑制窗口：`withRehydrateCloseSuppressed(... closeSession(id))`
+        //    这类重建用的正是默认的 `requested` 理由，只看理由会误删。
+        if (
+          context.closeReason === 'requested' &&
+          !rehydrateCloseSuppression.isSuppressed(session.id)
+        ) {
+          forgetCombatVendorOptions(session.id);
+        }
+      },
     });
   },
   beforeCloseTeardown: (session: WiredSession) => {
@@ -12602,11 +12621,25 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           .where(eq(sessions.id, sessionId))
           .limit(1);
         if (binding?.projectId === 'saga2' && binding.roleId === 'combat-development') {
+          // D6：提示词依据的「会话现状」来自 Host 的会话级镜像，而策略层读的是**实时**
+          // vendorOptions。Session 被重建（lazy-create / 从渲染进程排队快照 rehydrate）时实时状态
+          // 里没有这些范围键，镜像却还在 ⇒ 同一轮提示词说「范围已批准，逐目标实施」，策略层却退回
+          // 单技能分支并拒掉每一次调用。调度前先把镜像里**不可就地变更**的范围状态还原进实时
+          // Session（成员清单等会被策略层就地扩展的键不在还原范围内，见 combatScopeStateRestorePatch）。
+          const liveCombatSession = maker.getSession(sessionId);
+          const combatScopeRestore = combatScopeStateRestorePatch(sessionId);
+          if (liveCombatSession && Object.keys(combatScopeRestore).length > 0) {
+            await liveCombatSession.setVendorOptions(combatScopeRestore);
+          }
           const combatContext = await prepareCombatFollowupRuntimeContext({
             prompt: combatPrompt,
             projectId: binding.projectId,
             workingDir: binding.workingDir,
             sessionId,
+            // A3：范围审批门禁必须知道会话当前是不是表范围，否则一句无关的「可以 / 继续 / OK」
+            // 会被当成范围审批。maker-core 的 Session 只提供写入口子、没有任何读取口子，
+            // 所以这里传 Host 自己维护的会话级战斗 vendorOptions 镜像。
+            previousVendorOptions: readCombatVendorOptions(sessionId),
             resolveCombatServerTarget: (projectId) =>
               resolveUniqueBoundMekaServerTarget({
                 router: getMekaRouterService(),
@@ -12642,6 +12675,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
                 invalidateCombatTargetBinding(sessionId);
               }
               await liveSession.setVendorOptions(combatContext.vendorOptionsPatch);
+              // A3/A10：只有真正落地的补丁才进会话级镜像（发送未派发时 rollbackPatch 会把
+              // 这些键回滚，镜像保持「最后一次已接受的注入」，不会被失败发送污染）。
+              rememberCombatVendorOptions(sessionId, combatContext.vendorOptionsPatch);
               log.info('combat skill target refreshed from accepted user message', {
                 sessionId,
                 state: combatContext.vendorOptionsPatch.mekaCombatTargetSkillIdState,

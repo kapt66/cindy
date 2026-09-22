@@ -2,8 +2,6 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   beginCombatServerCapabilityDispatch,
-  COMBAT_SERVER_WORKER_READ_LIMIT,
-  consumeCombatServerWorkerReadBudget,
   consumeTrustedCombatServerCapabilityReport,
   getTrustedCombatServerWorkerRemoteHost,
   hasTrustedCombatServerCapabilityReport,
@@ -310,26 +308,5 @@ describe('combat server capability trusted state', () => {
       mekaCombatPhase: 'server-capability-retry',
     });
     expect(hasTrustedCombatServerCapabilityReport('lead-1')).toBe(false);
-  });
-
-  it('keeps a worker read budget deterministic and resettable', () => {
-    const results = Array.from({ length: COMBAT_SERVER_WORKER_READ_LIMIT + 1 }, () =>
-      consumeCombatServerWorkerReadBudget('worker-session-1'),
-    );
-    expect(results.at(-2)).toMatchObject({
-      allowed: true,
-      used: COMBAT_SERVER_WORKER_READ_LIMIT,
-      remaining: 0,
-    });
-    expect(results.at(-1)).toMatchObject({
-      allowed: false,
-      used: COMBAT_SERVER_WORKER_READ_LIMIT,
-      remaining: 0,
-    });
-    resetCombatServerCapabilityStateForTests();
-    expect(consumeCombatServerWorkerReadBudget('worker-session-1')).toMatchObject({
-      allowed: true,
-      used: 1,
-    });
   });
 });

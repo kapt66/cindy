@@ -582,8 +582,12 @@ Worker 派发后，Lead 在环境仍为 ready 时不得通过 `check_combat_envi
 Host 同时拒绝该 workflow 的 `orca_worker_bridge` 调用，终态由现有 auto-bridge 生命周期服务
 投递；普通 Orca Worker 的手动 `send_to_lead` 行为保持不变。
 
-该专用 Worker 的 6 次证据预算按当前远端 `HEAD` 固定：AGENTS、SHA、一次精确符号路径检索、
-最多三次消费者上下文检索。所有 `git grep` 都必须带 `HEAD`；Host 允许 `-l` 和最多 40 行的
+该专用 Worker 的取证顺序按当前远端 `HEAD` 固定：AGENTS、SHA、一次精确符号路径检索，
+随后对搜索回执里真实出现的路径做小段上下文检索。**只读调用次数不设上限**（2026-09-22 前那条
+「最多 6 次证据预算」已随 Lead 预算一并删除；删除理由与取代它的定性纪律见
+[`../migrations/xdmaker-meka-to-cindy.md`](../migrations/xdmaker-meka-to-cindy.md) §6.56 与
+[`../product-rules/meka-skills.md`](../product-rules/meka-skills.md) §5 的「证据纪律取代证据预算」）。
+纪律本身不变：不重复请求、不换用同类命令、不靠新建 Worker 延长探索。所有 `git grep` 都必须带 `HEAD`；Host 允许 `-l` 和最多 40 行的
 `-C/--context`，继续拒绝管道、脚本、工作树 grep 和其它 Shell。Worker 应先取得真实路径，再以
 精确枚举名、typ 或数据函数名读取小段上下文，避免 `git show` 大文件触发工具层截断；这项特例
 不改变普通 Worker 或通用角色的 Shell 能力。

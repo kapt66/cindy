@@ -84,7 +84,10 @@
 - Cindy 定向回归：6 个测试文件、207 项通过、2 项平台跳过；Desktop typecheck 通过。
 - Meka P4 插件已在当前 Cindy 会话安装并可用：ledger 记录 `meka-p4`、版本 `1.0.60`、
   `installed=true`；同一会话真实调用 `ghost_list`、`ghost_info("meka-p4")` 和
-  `meka-p4.p4_status` 均成功。`p4_status` 返回 `ok=true`、根目录
+  `meka-p4.p4_status` 均成功（**时效注记 2026-09-22**：这套插件发现形态在战斗任务里
+  **已不可执行** —— Host 策略在只读放行之前就恒定拒绝 `ghost_info` / `ghost_list`，
+  插件 id 由角色 manifest 直接给出，见 `meka-skills.md` §5 与迁移总账 §6.57；本行保留为
+  2026-09-01 当日实测记录）。`p4_status` 返回 `ok=true`、根目录
   `C:\\Workspace\\saga2\\saga2_project`、`source=meka`，并明确返回 `unstaged` 与
   `staged` 文件列表（当前 `staged` 为空）。本轮未执行同步、checkout、提交或其它 P4
   写操作。
@@ -164,7 +167,9 @@
   全量枚举，造成上下文膨胀。当前战斗提示词、策略分类器和普通 Shell 生产执行点均已排除外部
   Skill、项目 Skill 递归枚举和客户端/配置仓库全量文件枚举；精确消费者/配置读取保留。
 - 证据预算进一步增加硬上限：环境检查后最多 8 次成功证据调用，探索超过约 3 分钟立即
-  交付阶段性业务结论；服务器远端最多一次定向搜索加一次窄文件读取。
+  交付阶段性业务结论；服务器远端最多一次定向搜索加一次窄文件读取。**（2026-09-22 时效注记：
+  这套硬上限已整体删除，见迁移总账 §6.56 与 §6.57；其中「约 3 分钟」从来没有代码执行点，
+  只写在文案里。）**
 - 旧角色快照兼容迁移同时恢复当前 bundled 战斗角色的 `projectMetadataSelection`，避免旧
   快照继续注入 `saga2_design` 治理规则；P4 快照仍只读保留，用户自定义文件不被自动回写。
 - 战斗角色关闭 `useProjectDefaults`，不再注入项目根通用治理框架；战斗自身 prompt、Skill
@@ -218,6 +223,11 @@ supported`。回读确认目标链为当前目标 `[4]` → 上一步目标 `[5]
 
 ## 2026-09-02 服务器 Worker 证据预算
 
+> **时效注记（2026-09-22）**：本节描述的「每个 Worker 最多 6 次只读调用」硬上限**已整体删除**
+> （`combatServerCapabilityState.ts` 的 `workerReadCounts` / `consumeCombatServerWorkerReadBudget` /
+> `COMBAT_SERVER_WORKER_READ_LIMIT`，见迁移总账 §6.56 与 §6.57）。现行事实是固定取证顺序 +
+> **只读调用不设次数上限**。本节保留为 2026-09-02 当日事实，不得读成现行门禁。
+
 - 真实对话回放发现服务器只读 Worker 在 167 秒内产生 23 次模型请求，主任务迟迟没有终态；
   原因是只读门禁没有把提示词中的“最多两轮核查”落实为可执行限制。
 - Cindy Host 的战斗策略状态现在为每个服务器 Worker 维护独立的只读证据计数，最多允许 6 次
@@ -238,7 +248,9 @@ supported`。回读确认目标链为当前目标 `[4]` → 上一步目标 `[5]
 - 定向验证：Desktop typecheck、`combatServerCapabilityState` 5 项、
   `combatWorkflowPolicy` **31 项**（2026-09-02 当日计数；2026-09-22 复核该文件实为 **46 项**
   `it(`——删除长期零调用的方案审批机制后由 47 项降至 46 项，见
-  [`../migrations/xdmaker-meka-to-cindy.md`](../migrations/xdmaker-meka-to-cindy.md) §6.53）、
+  [`../migrations/xdmaker-meka-to-cindy.md`](../migrations/xdmaker-meka-to-cindy.md) §6.53；
+  **2026-09-22 交付批次复核为 55 项** `it(`——两请求类 / A1–A10 / 空回合兜底新增用例后，
+  `Select-String -Pattern '^\s*it\('` 计数为 55，见 §6.56、§6.57）、
   `orcaTeamService` 70 项及 Orca bridge 23 项全部通过。
 - 修复后的真实 Cindy 任务 `蓄力冲锋技能静态配置评估` 使用战斗开发角色和技能 ID `1010`：
   无 ID 首轮只询问 ID；补充 ID 后完成 P4/Unity CLI/服务器只读核查并输出结构化
@@ -300,6 +312,13 @@ supported`。回读确认目标链为当前目标 `[4]` → 上一步目标 `[5]
   不修改 `saga2_design`、服务器或技能配置数据。
 
 ## 2026-09-02 Lead 证据预算硬门禁
+
+> **时效注记（2026-09-22）**：本节描述的「Lead 最多 8 次证据调用、第 9 次拒绝」硬门禁**已整体
+> 删除**（`combatServerCapabilityState.ts` 的 `leadEvidenceCounts` / `consumeCombatLeadEvidenceBudget` /
+> `COMBAT_LEAD_EVIDENCE_READ_LIMIT`，`combatWorkflowPolicy.ts` 的 `shouldBoundLeadEvidence` /
+> `leadEvidenceBudgetDecision`，见迁移总账 §6.56 与 §6.57）。该预算在生产上**从未触发**：计数只挂在
+> Host 工具执行点的 read / exec / 只读 MCP 三条返回路径上，Pi 原生文件读取不经过该执行点、完全不
+> 受限，真实会话只累计到 **3 次**（不是单测假设的「第 9 次被拒」）。本节保留为 2026-09-02 当日事实。
 
 - 真实“检查技能 1019”回放曾产生重复读取和无效枚举。战斗策略现为每个本地 Lead 任务维护
   独立的只读证据计数，探索阶段最多允许 8 次经策略执行点的文件、Shell 或只读 MCP 证据调用；
@@ -423,3 +442,145 @@ supported`。回读确认目标链为当前目标 `[4]` → 上一步目标 `[5]
   当前消息自己的 token，较早消息的迟到结果不能清除较新的已接受绑定。
 - 回归覆盖持久化成功后的提交、落库失败不提交、派发拒绝回滚，以及显式失效后旧技能导出
   证据不可复用。本节不修改 `saga2_design`，设计侧活动文件和提案数量保持不变。
+
+## 2026-09-22 零输出事故复盘：两请求类、删除证据预算、修正三处 P0 契约错误与导出数据丢失
+
+**事件会话**：`db6e3993-e47d-4323-ad12-ccbab3ce9493`（项目 `saga2`、角色
+`combat-development`、模型 `deepseek/deepseek-v4.1-flash`、workdir
+`C:/Workspace/saga2/saga2_project`）。用户输入是一句**表级规范化**需求：「把目前所有怪物技能
+(怪物配置表里配置的正在使用的)使用的伤害行为10000的data都改成取100%的怪物功击力」，补充说明
+里的 `4` = 数据函数「取攻击力百分比」、`-101` = **技能表参数 1**（`-102` 是参数 2）、
+`10000` = **moduleType**「造成伤害」。结果是 **约 180 秒、0 次写入、0 条用户可见回复**——
+用户什么都没看到，也没有任何改动。同批对照会话 `df5fec33`（默认角色）成功，但暴露工具发现摩擦
+（网关 schema 披露舞蹈、`list_tools {server:"meka-p4"}` 死路、全量 roster dump 约 30 KB、
+meka-p4 缺「谁锁了这个文件」能力而逼 Agent 绕行 raw `p4` CLI）。
+
+**根因**：
+
+1. 假阳性绑定：旧标注模式 `/(?:^|[^\d])([1-9]\d*)\s*技能/g` 从 `-101 技能表参数1` 抽出
+   `targetSkillId=101`，并作为**已确认绑定**注入；`伤害行为10000 技能表参数1` 同理抽出 `10000`。
+2. 没有表范围请求类：全链路假设「一个任务一个技能 ID」，批量请求无存在形式。
+3. 首证据门禁堵死范围发现：第一条内容证据被钉死为「目标技能老版导出」，而表范围没有单值目标，
+   永远产生不了该回执。
+4. 证据预算既无效又有害：Lead「最多 8 次成功证据调用 / 约 3 分钟」与 Worker「最多 6 次只读
+   调用」不覆盖真实工具面，却诱导人为缩成「一次搜索 + 一次读取」而输出不必要的 `uncertain`。
+5. `status: unavailable` 死路：项目侧权威参考本已覆盖该语义（`ModuleDesignKnowledge.md:153`
+   就逐字写明 `[4,-101,1]` 与编码字节串），却仍被要求远端服务器回执，且没有恢复出口。
+6. Pi 缺空回合兜底：turn 以「零用户可见正文」结束时不报错、不触发自愈 ⇒「发了消息什么也没发生」。
+
+**三处 P0 契约错误（冻结 Skill `combat-skill-configuration/SKILL.md`）**：「战斗总控 Skill」指的是
+仓库内 `apps/desktop/resources/meka/skills/程序/unity/combat-skill-configuration/SKILL.md`
+（`skillCatalog.ts` 取叶子目录名作为 `skillId`，快照物化后的路径是
+`skills/combat-skill-configuration/SKILL.md`）。**2026-09-22 19:34 实测**：交付前 `HEAD` 版本
+**21,622 B / 10,990 字符**，交付后 **16,396 B / 9,006 字符**（该文件由资源重写工作流在同一批内
+继续改动，这两个数是**时点测量值**）；原文「21.9 KB → 13.3 KB」是写作期估算，
+与这两次实测都不符，不再引用。（历史口径：§6.43 记的 24,027 是 2026-09-18 插桩测出的
+**注入段字符长度**，不是文件大小，见
+[`2026-09-18-origin-main-to-meka-main.md`](../migrations/2026-09-18-origin-main-to-meka-main.md) §7.8.6。）
+
+1. 导入回执**不含** `persistenceVerified` / `persistedNodeCount`。真实字段是
+   `success / skillId / importedNodeCount / clearExisting / sourcePath / message`（导出：
+   `success / skillId / exportedNodeCount / targetPath / message`）。旧文本却规定缺该字段
+   「视为导入失败」⇒ **按原文本严格执行会让每一次成功导入都被判失败**。
+2. `legacy_module_prepare_asset` **在任何地方都不存在**（插件仓与 Unity 工程都查无此命令），
+   旧文本却把它当已登记命令，规定「新资产先用它创建空白 `.asset`/`.meta`」。
+3. 声明的参数名改为 `skill_id` / `path` / `clear_existing`（以注入的
+   `moduleEditorSkillPath` 为准，不得自造旗标名）。
+
+**设计库导出数据丢失事故（项目侧，非 Cindy 可修）**：P4 change **`6056279`**
+（`saga2_design_01@litai`，2026-09-22 15:20:46，SAGA-130「女武神-瓦尔基里关卡策划提交单」）
+只修改了 `Modules/3001206.asset`，却把导出表
+`skill_entry_model_editor.json#237` 中属于**没有 `.asset` 的技能**（`3001013`、`3001064`）的
+**27 个模块节点**一并删除（696 → 669）。原因：导出管线按「存在的资产」全量重写共享 JSON，
+无资产技能的节点被静默丢弃。这正是新 SKILL.md 把**「导出」动作**列为最高风险额外内容、必须
+用户单独拍板的原因，也是新增 `legacy_module_audit_coverage`（`jsonOnlySkillIds` +
+`exportChecked`）的直接动机——它让「在用但无资产」的技能永久可见，防止同类事故静默重演。
+**该事故未在本轮修复或回滚**；已丢失的 27 个节点仍是既定事实，需项目侧决定是否找回。
+
+**本次改动（Cindy 侧）**：
+
+- **删除证据预算**（Lead 8 次/3 分钟与 Worker 6 次全部删除，含常量与两个 helper），改为定性
+  证据纪律；角色片段标题改为「证据纪律与收敛」。
+- **修假阳性提取**：第三个标注模式改为
+  `/(?<![-+.\d])([1-9]\d*)\s*技能(?!表|参数|模块)/g`；负号/加号/小数/数字紧邻与前缀、
+  `技能表`/`技能参数`/`技能模块` 后缀都不再绑定。
+- **新增两请求类**（`single-skill` / `table-scope`）：表范围请求不再被缺 ID 追问挡下，而是
+  有界只读解析 → 一次性用户确认 → 逐目标执行；**审批只决定写入**，只读解析不依赖审批位。
+  硬不变量：**启发式永远不能产出 `confirmed`**；整条消息只有一个裸正整数仍是用户明确绑定。
+- **架构反转**：Cindy 拥有流程与权限，项目仓拥有域事实。`[SAGA2_PROJECT_PATHS]` 注入两条项目
+  权威参考路径（`moduleEditorSkillPath`、`damageEncodingRulePath`）与其 ReadCommand，策略层只
+  放行这份精确路径白名单；服务器核查改为**条件触发**（参考未覆盖或冲突时才派发）。
+- **新增只读查询通道**：`unity_inspect(action="command")` + 9 项插件侧只读命令白名单，Cindy 侧
+  只放行 `legacy_module_query_nodes` / `legacy_module_audit_coverage`；meka-p4 新增只读
+  `p4_opened` / `p4_fileinfo` 并修复被丢弃的 `type` 字段——该批落在 **1.0.63**（原写 1.0.62；
+  2026-09-22 复核插件仓 `meka-p4/ghost.json` 为 `1.0.63`。同批 meka-unity 为 `1.0.20`，
+  含只读命令白名单与 `unity_inspect(action="command")` 的首参校验）。
+- **Pi 空回合兜底**：`cancelled` + 零正文 + 非 Host abort 也附 `silentStop`，交既有「继续」
+  自愈；耗尽时弹 `silent-stop-exhausted`。
+- **网关工具发现**：未披露错误自带 schema；未知 server 明说插件不是 MCP 服务器并指向
+  `ghost_call`。
+- **多 ID / 批量口径**：旧文档「多个 ID 必须先确认范围，禁止擅自批量处理 / 不批量处理」的绝对
+  禁令**被两请求类契约取代**。
+- **A3 会话级范围镜像**：Host 自建**进程内** `mekaCombat*` vendorOptions 镜像（maker-core 的
+  `Session` 只有写入口、没有读取口子），让范围审批知道会话当前是不是表范围；它**不进数据库、
+  不跨进程**，Cindy 重启后镜像为 `null`，审批转换退化为只写三个键（`mekaCombatRequestScopeState` /
+  `mekaCombatScopeApproved` / `mekaCombatEvidenceBasis`），不会因此解锁表范围写入（详见
+  `docs/product-rules/meka-skills.md` §5「范围状态的会话级事实」）。
+- **A4 范围成员清单**：`recordCombatScopeSkillIds` 把 Agent 自己带显式 `skill_ids` 的只读范围查询
+  （`legacy_module_query_nodes`）结果登记进 `mekaCombatScopeSkillIds`（去重、按数值升序、上限
+  `COMBAT_SCOPE_SKILL_IDS_LIMIT = 200`，超出只留前 200 个并置
+  `mekaCombatScopeSkillIdsTruncated = true`），批准后冻结。它是**一致性 guard，不是授权边界**：
+  只保证实施阶段出现的 ID 曾被 Agent 明确查询过、且整个范围经用户确认，不证明这些 ID 属于业务范围；
+  截断时按「无清单」处理（部分清单比没有清单更危险）。
+- **A10 范围段持续注入**：`[SAGA2_COMBAT_SCOPE]` 在批准回合与之后每个回合都重新渲染注入，
+  批准后的「逐目标实施、每次只处理一个已确认 ID」不会消失。
+- **A6 / A7 死成员与旧依据清理**：删除没有生产者的 `single-skill/proposed` 与从未被写入的
+  `'declined'` 范围状态（连带零引用的 `MekaCombatRequestScope` / `MekaCombatRequestScopeState`）；
+  两条项目参考未注入时**无论本轮有没有补丁**都清掉旧的 `mekaCombatEvidenceBasis`（A7），
+  不让上一轮的依据在参考消失后活下来。
+- **灵动岛空回合挂起**：`agent-island/state.ts` 的 `AGENT_ISLAND_SILENT_STOP_HOLD_MS = 10_000`
+  兜底把 silent-stop `done` 压下的完成补回，使零输出 turn 在界面上可见、也不会永远停在 running
+  （见 `docs/product-rules/meka-skills.md` §5「零输出回合在岛面不静默」）。
+
+**设计库修改建议**：**本轮没有新增**。用户需求本身是让实现符合项目既有专业规则
+（`ModuleDesignKnowledge.md:153` 的 `[4,-101,1]`），不是设计变更；`saga2_design` 的活动文件与
+提案数量保持 6 / 6 不变。唯一**需要项目侧自行决定**的事项是 6056279 已删除的 27 个节点如何处置。
+
+**验证现状（如实）**：
+
+- 事故根因、时间线与工具调用序列来自会话归档的双份记录（DB `messages` 与 Pi 会话 JSONL），
+  逐条消息与工具参数均已比对；根因 1 有可复现的正则对照，且其回归用例已进
+  `apps/desktop/src/main/maker-ipc/__tests__/mekaRuntimeInjection.test.ts`。
+- 三处 P0 契约错误：字段清单来自对 `saga2_unity/Assets/Editor/SkillEditor/Module/Editor/
+  Diagnostics/Cli/LegacyModuleCliCommands.cs` 的检索，以及项目/插件/Cindy 三处代码库的交叉核对；
+  **本轮文档登记人没有直接打开 Unity 工程源码复核**（受「不触碰 `C:\Workspace\saga2`」约束）。
+- 6056279 的证据是 P4 `describe -du` 出证与节点清单 diff（696 → 669，`300101311-313`、
+  `300106411-434`）；**未连接 Perforce 独立复核**，**未回滚**。
+- 实现者跑过定向单测（战斗策略、注入、Pi translator/bridge）；本轮文档同步**没有独立复跑**。
+  交付前已一次性执行门禁：`pnpm --filter desktop run typecheck` 通过；`packages/maker-core`
+  （仓内无 `typecheck` script）以 `tsc --noEmit` 复核通过；受影响 vitest 套件全绿
+  （desktop 10 文件 / 364 用例；maker-core 6 文件 / 257 通过 + 4 跳过；含真实 pi 子进程的
+  bridge 集成 15 用例）。**`pnpm test:unit:related` 无法跑完**：其驱动器
+  `scripts/test-workspaces.mjs` 在 `--related` 模式下先跑 `pnpm run test:runner`
+  （`runRootTestRunner` 在 `:983-1006`，调用点 `:1079-1085`），**runner 失败即
+  `process.exitCode = 1` 并直接 return，后面的 workspace 单测根本不执行**；是否跑 runner 由
+  `scripts/test-related.mjs` 的 `shouldRunTestRunner` 决定 —— 只要本次 diff 含 `apps/`、
+  `packages/` 之外的任何文件（本批含 `docs/**`）就为 true。该套件在本机有 **3 条存量红灯**
+  （`scripts/__tests__/design-inventory.test.mjs:1158` 的 CLI `--check`、
+  `scripts/__tests__/hardcoded-color-audit.test.mjs:216`、`:372`），已用 `git stash` 在基线上复现
+  同样 3 条失败 ⇒ **存量红灯，不是本批引入**。**仍没有做过一次端到端真实会话复测**，因此「表范围请求现在能跑通」这一结论
+  **尚未被实机证明**，只有单测与源码级证据。
+
+**2026-09-22 后续修订（同日，证据依据口径统一）**：
+
+- 上文「服务器核查改为条件触发（参考未覆盖或冲突时才派发）」当时只对**已批准的表范围**在 Host
+  门禁里生效，单技能仍被要求 `supported` 回执，与提示词冲突；该矛盾**已由 owner 裁决消除**：
+  `mekaCombatEvidenceBasis` 改由 Host 经 `combatEvidenceBasisPatch` 依据注入情况写入，两类请求
+  共用同一豁免语义（历史观察保留在迁移总账 §6.56，本节不改写上文）。
+- 同时登记一条**已知边界（不是 bug）**：`table-scope` 目前**没有**可达的服务器派发通道（无唯一绑定
+  ID 就不会注入服务器路由键）⇒ 参考未覆盖或冲突时，表范围只能改绑一个技能 ID 回到单技能流程核查。
+  因此上文与该边界的措辞需按 `docs/dev-rules/meka-injection-layer.md` §3.2、以及
+  `docs/dev-rules/meka-whitelist-verification.md` 的 **WL-11.12** 理解（**WL-11.12 不在
+  injection-layer 文档里**；原句把两份文档并列成一句，按字面找会落空）。
+- 依据与验证级别：代码阅读 + 实现者运行的**3 个文件 / 106 个用例**（`mekaRuntimeInjection` +
+  `mekaRuntimeInjectionBaseline` + `combatWorkflowPolicy`）；**未做任何端到端实机复跑**。

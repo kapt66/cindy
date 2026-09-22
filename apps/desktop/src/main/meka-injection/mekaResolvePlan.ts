@@ -13,7 +13,9 @@ import type { MekaRoleMcpEntry } from '../../shared/meka-projects.js';
 import type { MakerSessionCreateOpts } from '../maker-ipc/sessionRequest.js';
 import {
   invalidateCombatTargetBinding,
+  readCombatVendorOptions,
   refreshCombatTargetBinding,
+  rememberCombatVendorOptions,
 } from '../meka-projects/combatWorkflowPolicy.js';
 import {
   resolveMekaPlatformRuntimeSkills,
@@ -32,13 +34,18 @@ import { emptyMekaRuntimeResult } from './mekaApplyPlan.js';
 import {
   COMBAT_CONTROLLER_SKILL_MARKER,
   COMBAT_EXECUTION_AUTHORIZATION_PROMPT,
+  COMBAT_READ_ONLY_UNITY_PIPELINE_COMMANDS,
   COMBAT_SERVER_WORKER_PROMPT,
   combatControllerSkillPrompt,
   combatProjectPathsPrompt,
+  combatRequestScopeApprovalPatch,
+  combatScopePrompt,
   combatServerTargetPrompt,
   combatSkillIdVendorPatchFromUserPrompt,
   combatTargetPrompt,
+  isUnambiguousCombatTableScopePrompt,
   removeCombatStartupGate,
+  resolveCombatProjectRefPaths,
   roleContextPrompt,
 } from './mekaCombatPrompts.js';
 import {
@@ -248,26 +255,139 @@ async function resolveCombatServerTargetInjection(input: {
 }
 
 /**
- * 用户消息里的技能 ID → vendorOptions patch（含现状的会话级绑定刷新副作用）。
+ * 项目侧白名单 patch（三条路径共用同一份取值，避免出现第二套白名单）：
+ * - `mekaCombatProjectRefPaths`：允许读取的两条项目域事实文件（精确绝对路径）；
+ * - `mekaCombatReadOnlyUnityCommands`：表范围解析允许的只读 Unity Pipeline 命令。
+ */
+function combatProjectReferencePatch(workingDir: unknown): Record<string, unknown> {
+  const refPaths = resolveCombatProjectRefPaths(workingDir);
+  if (!refPaths) return {};
+  return {
+    mekaCombatProjectRefPaths: [refPaths.moduleEditorSkillPath, refPaths.damageEncodingRulePath],
+    mekaCombatReadOnlyUnityCommands: [...COMBAT_READ_ONLY_UNITY_PIPELINE_COMMANDS],
+  };
+}
+
+/**
+ * 证据依据的最终值（Host 依据注入情况写入，**不是** Agent 判断）：
+ * - 两条项目参考未注入（无覆盖）⇒ `undefined`，fail-closed 回落到服务器 supported 回执；
+ * - 单技能且目标已由用户确认（`…TargetSkillIdState === 'confirmed'`）⇒ `project-reference`
+ *   （与表范围口径统一：项目权威规则本身就是「伤害 data 编码」这类域事实的权威）；
+ * - 表范围由漏斗 / 审批补丁自带 `project-reference`，这里不重复写。
  *
- * patch 顺序敏感：先 patch 本身，再（目标发生变化时）清空导出证据 —— 与现状
+ * `baseVendorOptions` 是会话现状：本次消息没有改目标时（例如续聊里只说「继续」）用它判断
+ * 老会话的单技能目标是否已确认，避免 pre-change 会话永远拿不到依据。
+ */
+function combatEvidenceBasisPatch(
+  patch: Record<string, unknown>,
+  workingDir: unknown,
+  baseVendorOptions: Record<string, unknown> = {},
+): Record<string, unknown> {
+  if (resolveCombatProjectRefPaths(workingDir) === null) {
+    // 没有注入参考就绝不放行：**无条件**清掉会话里已知存在的旧值（A7）。只在「本轮产生了补丁」
+    // 时才清是不够的 —— 本轮拿不到 workingDir（例如工作目录恢复失败）又没有产生补丁时，上一轮
+    // 写下的 `project-reference` 会活下来，让写入继续跳过服务器 supported 回执。
+    // 会话本来就没有依据时不写这个键：避免给「无参考且无依据」的会话凭空加一个 undefined 键
+    // （写入结果与键序都保持原样）。
+    return baseVendorOptions.mekaCombatEvidenceBasis === undefined
+      ? {}
+      : { mekaCombatEvidenceBasis: undefined };
+  }
+  const scope = patch.mekaCombatRequestScope ?? baseVendorOptions.mekaCombatRequestScope;
+  if (scope === 'table-scope') return {};
+  const targetState =
+    patch.mekaCombatTargetSkillIdState ?? baseVendorOptions.mekaCombatTargetSkillIdState;
+  return targetState === 'confirmed' ? { mekaCombatEvidenceBasis: 'project-reference' } : {};
+}
+
+/**
+ * A2：会话**已经有用户确认的单技能绑定**时，表范围启发式不得覆盖它。
+ *
+ * 漏斗（`combatSkillIdVendorPatchFromUserPrompt`）是纯函数、看不到 vendorOptions，所以把
+ * 「这个技能的所有模块都要检查」这类带范围量词但其实是单技能内部的表述判成表范围时，它写的
+ * `mekaCombatTargetSkillId: undefined` 会把用户已确认的绑定连同导出/服务器/计划状态一起清掉。
+ * 检测器已经把明显指代当前目标的表述（`这个|该|当前|本|此` + 技能）排除；剩下确实命中表范围
+ * 特征的表述在这里再判一次：只有**无歧义表范围**（显式点名表/清单，或「某类技能」）才允许
+ * 覆盖已确认绑定，否则按「本轮没有目标变化」处理（保留绑定，不动任何证据）。
+ */
+function suppressTableScopePatchForConfirmedBinding(input: {
+  patch: Record<string, unknown> | null;
+  prompt: unknown;
+  baseVendorOptions: Record<string, unknown>;
+}): Record<string, unknown> | null {
+  const patch = input.patch;
+  if (!patch || patch.mekaCombatRequestScope !== 'table-scope') return patch;
+  const boundTarget = input.baseVendorOptions.mekaCombatTargetSkillId;
+  const hasConfirmedBinding =
+    input.baseVendorOptions.mekaCombatTargetSkillIdState === 'confirmed' &&
+    typeof boundTarget === 'string' &&
+    /^[1-9]\d*$/.test(boundTarget);
+  if (!hasConfirmedBinding) return patch;
+  return isUnambiguousCombatTableScopePrompt(input.prompt) ? patch : null;
+}
+
+/**
+ * 用户消息里的技能 ID / 请求范围 → vendorOptions patch（含现状的会话级绑定刷新副作用）。
+ *
+ * patch 顺序敏感：先 patch 本身，再（目标或范围发生变化时）清空导出证据 —— 与现状
  * `applyCombatSkillIdToVendorOptions` 的两次 spread 顺序一致。解析阶段就完成，落地只是 spread。
+ *
+ * 漏斗返回 null（消息既没有明确 ID、也不是表范围指令）时才看**表范围审批转换**：表范围提案后
+ * 用户回一句肯定（`确认`/`执行`/`没问题`…）即置 `mekaCombatScopeApproved=true`。新的范围指令
+ * 与带 ID 的指令由漏斗自己覆盖并改写范围状态，不需要额外处理。
+ *
+ * 漏斗的表范围结果先过 A2 guard（`suppressTableScopePatchForConfirmedBinding`）：会话已有用户
+ * 确认的单技能绑定时，只有无歧义表范围表述才允许覆盖它。
+ *
+ * **证据依据（`mekaCombatEvidenceBasis`）也在这里定稿**：纯函数漏斗拿不到 workingDir，所以由这里
+ * 依据「两条项目参考是否确实注入」写最终值 —— 单技能（目标已由用户确认）与表范围口径一致；
+ * 参考未注入时一律 `undefined`（fail-closed = 走服务器 supported 回执）。
  */
 function pushCombatTargetPatches(input: {
   builder: MekaPlanBuilder;
   baseVendorOptions: Record<string, unknown>;
   userPrompt: unknown;
   sessionId: string;
+  workingDir?: unknown;
 }): void {
-  const patch = combatSkillIdVendorPatchFromUserPrompt(input.userPrompt);
-  if (!patch) return;
+  const patch =
+    suppressTableScopePatchForConfirmedBinding({
+      patch: combatSkillIdVendorPatchFromUserPrompt(input.userPrompt),
+      prompt: input.userPrompt,
+      baseVendorOptions: input.baseVendorOptions,
+    }) ??
+    combatRequestScopeApprovalPatch({
+      prompt: input.userPrompt,
+      previousVendorOptions: input.baseVendorOptions,
+    });
+  const evidenceBasisPatch = combatEvidenceBasisPatch(
+    patch ?? {},
+    input.workingDir,
+    input.baseVendorOptions,
+  );
+  const evidenceBasis = Object.keys(evidenceBasisPatch).length > 0 ? [evidenceBasisPatch] : [];
+  if (!patch) {
+    // 本次消息没有改目标/范围：仍然把证据依据定稿（老会话的单技能已确认目标也要拿到依据）。
+    input.builder.patches.push(...evidenceBasis);
+    return;
+  }
+  if (!('mekaCombatTargetSkillId' in patch)) {
+    // 纯审批补丁（不含目标键）：只写范围状态与依据，不作废任何既有目标证据。
+    input.builder.patches.push(patch, ...evidenceBasis);
+    return;
+  }
   const nextTarget = patch.mekaCombatTargetSkillId;
+  // 进入表范围与切换目标一样，都要作废上个证据代次：单值导出证据不能证明范围级结论。
+  const enteredTableScope =
+    patch.mekaCombatRequestScope === 'table-scope' &&
+    input.baseVendorOptions.mekaCombatRequestScope !== 'table-scope';
   const targetChanged =
-    typeof nextTarget === 'string' &&
-    nextTarget !== input.baseVendorOptions.mekaCombatTargetSkillId;
+    (typeof nextTarget === 'string' &&
+      nextTarget !== input.baseVendorOptions.mekaCombatTargetSkillId) ||
+    enteredTableScope;
   if (typeof nextTarget === 'string') refreshCombatTargetBinding(input.sessionId, nextTarget);
   else invalidateCombatTargetBinding(input.sessionId);
-  input.builder.patches.push(patch);
+  input.builder.patches.push(patch, ...evidenceBasis);
   if (targetChanged) {
     input.builder.patches.push({
       mekaCombatServerCapabilityStatus: 'unchecked',
@@ -324,11 +444,23 @@ async function resolveFrozenInjection(input: {
       baseVendorOptions: projectVendorOptions(existingVendorOptions, builder.patches),
       userPrompt: currentUserPrompt,
       sessionId,
+      workingDir: opts.workingDir,
     });
+    // 项目参考路径 / 只读范围发现命令白名单每轮重新从 workingDir 解析：老会话（本改动之前
+    // 创建）也要拿到它，否则策略层会继续把这两条注入路径当「其它 Agent Skill /
+    // saga2_design 长文档」拒掉。
+    const projectRefPatch = combatProjectReferencePatch(opts.workingDir);
+    if (Object.keys(projectRefPatch).length > 0) {
+      builder.patches.push(projectRefPatch);
+    }
     const projection = projectVendorOptions(existingVendorOptions, builder.patches);
     const targetPrompt = combatTargetPrompt(projection);
     if (targetPrompt && !builder.hasMarker('[SAGA2_COMBAT_TARGET]')) {
       builder.pushSegment('meka.combat.target', targetPrompt);
+    }
+    const scopePrompt = combatScopePrompt(projection);
+    if (scopePrompt && !builder.hasMarker('[SAGA2_COMBAT_SCOPE]')) {
+      builder.pushSegment('meka.combat.scope', scopePrompt);
     }
     const projectPathsPrompt = combatProjectPathsPrompt(opts.workingDir);
     if (projectPathsPrompt && !builder.hasMarker('[SAGA2_PROJECT_PATHS]')) {
@@ -346,6 +478,10 @@ async function resolveFrozenInjection(input: {
         combatServerTargetPrompt(serverTarget.target),
       );
     }
+    // 会话级镜像（A3/A10）：记录 resume 后该会话的战斗 vendorOptions 投影，供后续每轮续聊
+    // 判定「当前是不是已批准的表范围」。写在这里而不是落地阶段，是因为镜像的语义就是
+    // 「Host 刚刚为这个会话解析出的战斗状态」。
+    rememberCombatVendorOptions(sessionId, projectVendorOptions(existingVendorOptions, builder.patches));
   }
 
   if (!sessionId.trim()) {
@@ -523,6 +659,10 @@ async function resolveBootstrapInjection(input: {
   }
 
   const existingVendorOptions = opts.vendorOptions as Record<string, unknown> | undefined;
+  // 远端服务器 Worker 不落本机项目白名单（与 PROJECT_PATHS/角色段一致）。
+  const combatProjectRefPatch = isCombatServerWorker
+    ? {}
+    : combatProjectReferencePatch(opts.workingDir);
   builder.patches.push({
     source: 'meka',
     mekaRuntimeResolved: true,
@@ -549,6 +689,7 @@ async function resolveBootstrapInjection(input: {
       ? {
           mekaCombatExecutionMode: 'autonomous-user-request',
           mekaCombatServerCapabilityStatus: 'unchecked',
+          ...combatProjectRefPatch,
         }
       : {}),
   });
@@ -559,10 +700,13 @@ async function resolveBootstrapInjection(input: {
       baseVendorOptions: projectVendorOptions(existingVendorOptions, builder.patches),
       userPrompt: currentUserPrompt,
       sessionId,
+      workingDir: opts.workingDir,
     });
     const projection = projectVendorOptions(existingVendorOptions, builder.patches);
     const targetPrompt = combatTargetPrompt(projection);
     if (targetPrompt) builder.pushSegment('meka.combat.target', targetPrompt);
+    const scopePrompt = combatScopePrompt(projection);
+    if (scopePrompt) builder.pushSegment('meka.combat.scope', scopePrompt);
     const projectPathsPrompt = combatProjectPathsPrompt(opts.workingDir);
     if (projectPathsPrompt) builder.pushSegment('meka.combat.project-paths', projectPathsPrompt);
     const serverTarget = await resolveCombatServerTargetInjection({
@@ -583,6 +727,11 @@ async function resolveBootstrapInjection(input: {
         combatControllerSkillPrompt(skillSnapshot),
       );
     }
+    // 会话级镜像（A3/A10）：见 `resolveFrozenInjection` 同名调用。
+    rememberCombatVendorOptions(
+      sessionId,
+      projectVendorOptions(existingVendorOptions, builder.patches),
+    );
   }
 
   return buildPlan({
@@ -640,30 +789,105 @@ export async function resolveMekaInjection(
   });
 }
 
+/**
+ * 形态 C：每轮续聊的战斗运行时上下文（解析阶段，不写 opts）。
+ *
+ * **会话现状（`previousVendorOptions`）是审批门禁的前提**：调用方拿得到就传；拿不到时回落到
+ * `combatWorkflowPolicy` 的会话级镜像（`readCombatVendorOptions`，由 bootstrap/resume 的计划层
+ * 与 `register.ts` 的 `onAccepted` 维护）。镜像也没有 = 状态未知，此时只写合法的范围键
+ * （与 A3 之前的行为一致）。**不能**把「未知」当成「非表范围」写死，也不能把「未知」当成
+ * 「可以审批」——未知就是未知，见 `combatRequestScopeApprovalPatch`。
+ *
+ * A10：已批准的表范围会话在批准后的每一轮（包括批准轮本身）都要继续注入范围段，否则「按用户
+ * 批准的范围逐目标实施」这条指令在批准之后再也到不了模型（批准轮的 promptSection 原来恒为
+ * null，后续轮因为消息不再是肯定词而不产生补丁）。
+ */
 export async function prepareCombatFollowupRuntimeContext(input: {
   prompt: unknown;
   projectId: string;
   workingDir: unknown;
   sessionId?: string;
+  /** 会话当前的 vendorOptions（调用方拿得到就传；缺省回落到会话级镜像）。 */
+  previousVendorOptions?: Record<string, unknown> | null;
   resolveCombatServerTarget?: (projectId: string) => Promise<MekaCombatServerWorkerTarget | null>;
 }): Promise<CombatFollowupRuntimeContext | null> {
-  const targetPatch = combatSkillIdVendorPatchFromUserPrompt(input.prompt);
-  if (!targetPatch) return null;
+  const mirroredVendorOptions = readCombatVendorOptions(input.sessionId);
+  const previousVendorOptions = input.previousVendorOptions ?? mirroredVendorOptions;
+  const funnelPatch = suppressTableScopePatchForConfirmedBinding({
+    patch: combatSkillIdVendorPatchFromUserPrompt(input.prompt),
+    prompt: input.prompt,
+    baseVendorOptions: previousVendorOptions ?? {},
+  });
+  const approvalPatch = funnelPatch
+    ? null
+    : combatRequestScopeApprovalPatch({
+        prompt: input.prompt,
+        previousVendorOptions,
+      });
+  const targetPatch = funnelPatch ?? approvalPatch;
+  const projectRefPatch = combatProjectReferencePatch(input.workingDir);
+  // 证据依据定稿（见 combatEvidenceBasisPatch）：单技能已确认目标与表范围同一口径；
+  // 两条项目参考解析不出来时**无论本轮有没有补丁**都要清掉旧依据（A7）。
+  const evidenceBasisPatch = combatEvidenceBasisPatch(
+    targetPatch ?? {},
+    input.workingDir,
+    previousVendorOptions ?? {},
+  );
+  if (!targetPatch) {
+    // 本轮没有目标/范围补丁（例如「继续」「先看看有哪些模块」）：
+    // - 证据依据仍然要定稿，并在参考不可用时清掉旧值（A7）；
+    // - 已批准的表范围会话要继续拿到范围段（A10）。
+    const basisClears =
+      Object.prototype.hasOwnProperty.call(evidenceBasisPatch, 'mekaCombatEvidenceBasis') &&
+      evidenceBasisPatch.mekaCombatEvidenceBasis === undefined;
+    // 表范围会话（含已批准）继续注入范围段：A10 要求批准后的「逐目标实施」指令真的到得了模型；
+    // 未批准时重复注入的也是同一句「先只读解析、确认前禁止写入」，不改变权限语义。
+    const scopeSection = combatScopePrompt({
+      ...(previousVendorOptions ?? {}),
+      ...evidenceBasisPatch,
+      ...projectRefPatch,
+    });
+    // 既没有要改的状态、也没有要注入的段 ⇒ 保持「本轮零写入」的现状（调用方不调
+    // setVendorOptions，也就不会顺手作废目标导出证据）。
+    if (!basisClears && !scopeSection) return null;
+    return {
+      vendorOptionsPatch: { ...evidenceBasisPatch, ...projectRefPatch },
+      promptSection: scopeSection,
+    };
+  }
 
   const targetSkillId = targetPatch.mekaCombatTargetSkillId;
-  if (typeof targetSkillId !== 'string' || !/^[1-9]\d*$/.test(targetSkillId)) {
+  if (approvalPatch) {
+    // 纯审批消息：只改范围状态。**不得**顺手清空单技能导出证据、服务器状态或参考技能
+    // （批准范围与切换目标是两件事）。范围段在批准轮就注入（A10）。
+    const vendorOptionsPatch = { ...approvalPatch, ...evidenceBasisPatch, ...projectRefPatch };
     return {
-      vendorOptionsPatch: {
-        ...targetPatch,
-        mekaCombatServerRemoteHostId: undefined,
-        mekaCombatServerWorkerAgent: undefined,
-        mekaCombatServerCapabilityStatus: 'unchecked',
-        mekaCombatPlanApproved: false,
-        mekaCombatReferenceSkillId: undefined,
-        mekaCombatTargetExportAttempted: undefined,
-        mekaCombatTargetExportCompleted: undefined,
-      },
-      promptSection: null,
+      vendorOptionsPatch,
+      promptSection: combatScopePrompt({ ...(previousVendorOptions ?? {}), ...vendorOptionsPatch }),
+    };
+  }
+  if (typeof targetSkillId !== 'string' || !/^[1-9]\d*$/.test(targetSkillId)) {
+    const vendorOptionsPatch = {
+      ...targetPatch,
+      ...evidenceBasisPatch,
+      ...projectRefPatch,
+      mekaCombatServerRemoteHostId: undefined,
+      mekaCombatServerWorkerAgent: undefined,
+      mekaCombatServerCapabilityStatus: 'unchecked',
+      mekaCombatPlanApproved: false,
+      mekaCombatReferenceSkillId: undefined,
+      mekaCombatTargetExportAttempted: undefined,
+      mekaCombatTargetExportCompleted: undefined,
+    };
+    // 表范围请求没有单值目标，但仍要注入范围段 + 项目参考路径（歧义态照旧不注入任何段）。
+    const scopeSection = combatScopePrompt(vendorOptionsPatch);
+    const scopeSections = scopeSection
+      ? [scopeSection, combatProjectPathsPrompt(input.workingDir)]
+      : [];
+    return {
+      vendorOptionsPatch,
+      promptSection:
+        scopeSections.filter((section): section is string => Boolean(section)).join('\n\n') || null,
     };
   }
   let serverTarget: MekaCombatServerWorkerTarget | null = null;
@@ -676,6 +900,8 @@ export async function prepareCombatFollowupRuntimeContext(input: {
   }
   const vendorOptionsPatch = {
     ...targetPatch,
+    ...evidenceBasisPatch,
+    ...projectRefPatch,
     mekaCombatServerRemoteHostId: serverTarget?.remoteHostId,
     mekaCombatServerWorkerAgent: serverTarget?.workerAgent,
     mekaCombatServerCapabilityStatus: 'unchecked',
@@ -686,6 +912,7 @@ export async function prepareCombatFollowupRuntimeContext(input: {
   };
   const sections = [
     combatTargetPrompt(vendorOptionsPatch),
+    combatScopePrompt(vendorOptionsPatch),
     combatProjectPathsPrompt(input.workingDir),
     combatServerTargetPrompt(serverTarget),
   ].filter((section): section is string => Boolean(section));
