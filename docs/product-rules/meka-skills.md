@@ -279,7 +279,13 @@ Unity 工程里都不存在，不得调用、试探或手改 `.asset` 代替；�
   技能 ID，也不得把范围降维成一个技能。Host 记 `mekaCombatRequestScopeState = proposed`，
   由角色用有界只读证据解析出目标集合与逐目标改动集，一次性交用户确认；用户回一句肯定
   （`确认`／`可以`／`同意`／`执行`／`继续`／`没问题`…）后翻成 `confirmed` 且
-  `mekaCombatScopeApproved = true`。**审批只决定写入**：
+  `mekaCombatScopeApproved = true`。**确认有两个来源**：①用户手打一句肯定（判据是**整条消息**只由
+  肯定词与标点组成）；②用户在 `ask_user_question` 卡片上**选中以肯定词开头的选项**（判据是**首词**，
+  拒绝词优先——同一张卡片的拒绝项以拒绝词开头，而确认项标签本身可能含「先不动」这类子串，只有
+  锚定首词才不会把确认判成拒绝）。卡片路径**必须**已知会话当前处于表范围提案态
+  （`mekaCombatRequestScope === 'table-scope'`）才生效：会话级镜像缺失、或本就不是表范围时**不写任何
+  状态**；卡片被 dismiss（系统空答）或答案以拒绝词开头同样不算确认。两条路径产出**逐键相同**的补丁。
+  **审批只决定写入**：
   有界的只读范围解析阶段不受审批位约束（表范围没有单值目标，用审批锁只读会死锁），写入仍受
   P4 边界、路径白名单、首证据与服务器回执门禁约束。批准后 Host 登记的**范围成员清单**
   （`mekaCombatScopeSkillIds`）**不是授权边界**，而是「Agent 自己的只读范围查询 + 用户确认」推导出的
@@ -303,7 +309,7 @@ Unity 工程里都不存在，不得调用、试探或手改 `.asset` 代替；�
 - **A3 会话级 vendorOptions 镜像**：范围审批必须知道会话当前是不是表范围，而 maker-core 的
   `Session` 只有写入口（`setVendorOptions`）、没有任何读取口子，Host 因此自建一份**进程内**镜像
   （`combatWorkflowPolicy.ts` 的 `combatVendorOptionsBySession` / `rememberCombatVendorOptions`，
-  只合并 `mekaCombat*` 键；续聊发送被接受后回写，`maker-ipc/register.ts:12615` 把它作为
+  只合并 `mekaCombat*` 键；续聊发送被接受后回写，`maker-ipc/register.ts:12685` 把它作为
   `previousVendorOptions` 传给审批判定）。**它不进数据库、不跨进程**：Cindy 重启后（或老会话在
   本进程的首轮续聊）镜像为 `null`，审批转换退化为「只写 `mekaCombatRequestScopeState` /
   `mekaCombatScopeApproved` / `mekaCombatEvidenceBasis` 三个键、不写 `mekaCombatRequestScope`」。
@@ -313,6 +319,11 @@ Unity 工程里都不存在，不得调用、试探或手改 `.asset` 代替；�
   依据判定仍要求 `mekaCombatTargetSkillIdState === 'confirmed'`，且策略层**同时**要求两条参考路径
   **确实已注入**，所以参考缺失时即使键被写下也不会豁免服务器回执——fail-closed 的最后一道仍在）。
   重新发一条业务消息即恢复镜像。该限制**未做实机验证**。
+  **卡片答案这条来源比聊天路径更严（2026-09-22）**：它的 `previousVendorOptions` 取自**同一份镜像**
+  （`register.ts:2858` 的 `readCombatVendorOptions`），镜像为 `null` 或镜像里不是表范围时**一律返回
+  null、不写任何键**（`combatRequestScopeAnswerApprovalPatch` 的强制前提）；聊天路径在现状未知时
+  仍会写那三个状态键。镜像与实时 `vendorOptions` 分裂时，卡片路径的写入**同时**落到镜像与实时
+  Session 上（`rememberCombatVendorOptions` + `setVendorOptions`，同一份补丁）。
 - **A4 批准后的范围成员清单**：语义见上一条 `table-scope` 的限定（一致性 guard、200 上限、
   截断标记、批准后冻结）。
 - **A10 已批准范围段的持续注入**：`[SAGA2_COMBAT_SCOPE]` 在批准回合与**之后每个回合**都会重新渲染

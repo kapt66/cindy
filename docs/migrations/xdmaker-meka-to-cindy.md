@@ -4892,3 +4892,105 @@ WL-11.11 的引用、`docs/dev-rules/meka-injection-layer.md` §3.1 键表 + 新
 **验证现状（如实）**：本节全部结论是**源码级**（工作树阅读 + `git grep` 计数 + `git diff`）；
 **没有**实机运行，**没有**跑 `test:unit*`、`typecheck` 或任何门禁。生产上「预算从未触发、真实会话
 累计 3 次」来自本批事故会话的复盘材料，**本节登记人没有独立复算**该会话的工具调用计数。
+
+### 6.58 2026-09-22 卡片答案不被识别为表范围审批：用户给了确认，门禁看不见（D8）与方案块仪式清除
+
+**背景/问题（owner 报告）**：owner 在真实使用后报告「流程门禁拦截了。体验很不顺滑」。复盘到两个真实
+CindyMeka 战斗会话：
+
+- `6811f297-9e32-4d8d-b5d0-0e2be39184b4`（「怪物技能伤害改取攻击力」）：Agent 已**只读**解析出表范围，
+  按契约用 `ask_user_question` 卡片请用户确认，用户**确实点了**确认项
+  （`确认：只改这 15 个伤害节点，技能表参数先不动`）。此后每一次工具调用仍被拒，理由固定为
+  「本轮是表范围请求…（**尚未确认任何技能**）」——**包括门禁自己要求的那两次
+  `legacy_module_export_json`**。该会话里用户**全程只发过最初那一条聊天消息**，Agent 没有任何办法
+  让那次卡片确认生效，最后只能结束回合请用户把同一句话再打一遍。
+- `a262a888-9db2-45cf-9741-e1463806481b`（另一个真实战斗会话）：同一形态，2 / 2 命中。
+
+**根因**：Host 的表范围审批门禁**只**从用户的**手打聊天消息**取信号
+（`input.prompt` → `combatRequestScopeApprovalPatch`，判据是「整条消息只由肯定词与标点组成」）。
+`ask_user_question` 的卡片答案是**另一条通道**：renderer → `RESOLVE_INTERACTION` →
+`register.ts` 的 `resolvePendingInteraction`，它从不流经计划层 / 续聊口子的 `input.prompt`。
+于是「用户已经明确确认过范围」这一事实**在 Host 侧不存在**，范围成员为空、审批位为 false，
+门禁按既有语义（正确地）拒绝每一次写入与取证调用，而提示词又禁止向表范围请求索要单个技能 ID ⇒
+用户与 Agent 被夹在两条都忠于契约的规则之间，唯一出路是让用户重打一遍同一句话。
+
+**处理（客户端，本仓）**：
+
+- **新增卡片路径的判定与转换**（`meka-injection/mekaCombatPrompts.ts`）：
+  `isCombatScopeAnswerApproval`（`:592-598`）用**首词锚定**判定——拒绝词（
+  `先不|暂不|不要|不|否|取消|停止|算了|稍后|再想|no`，`:580-581`）**优先且锚定在开头**，否则看首词
+  是否肯定（`:582-583`）；`combatRequestScopeAnswerApprovalPatch`（`:668-683`）把「用户点了确认项」
+  转成**与聊天路径逐键相同**的范围确认补丁。聊天路径的尾部被抽成共用 helper
+  `combatScopeApprovedVendorPatch`（`:606-615`），两条路径产出的补丁逐键相同。
+- **为什么必须首词锚定、不能用聊天判据**：卡片选项标签**必然**带业务内容，真实确认项
+  `确认：只改这 15 个伤害节点，技能表参数先不动` 在「整条消息只由肯定词组成」的判据下会被判成新指令；
+  而同一张卡片的拒绝项是 `先不执行，我要调整范围或数值`，确认项自身又含「参数先不动」——用**子串**
+  搜索「先不」会把确认项本身判成拒绝。锚定首词后两者互不干扰。
+- **卡片路径额外强制表范围前提**：`combatRequestScopeAnswerApprovalPatch` 要求
+  `previousVendorOptions.mekaCombatRequestScope === 'table-scope'`（`:675`）才产出补丁，镜像缺失或
+  非表范围一律返回 null。聊天路径由「整条消息只由肯定词组成」挡住误判，卡片标签不可能满足那条判据，
+  所以少了这道前提，任何一张选项恰好以「确认 / 好 / OK」开头的卡片都会写出范围审批——那是**放宽**门禁。
+- **接线**（`maker-ipc/register.ts:2846-2887`）：在 `resolvePendingInteraction` 里、**紧跟**既有的
+  `goalAskAnswerObserver` 块（同一处 resolve 收口、同一套 catch 口径）追加卡片答案观察者：先排除
+  `decision.dismissed === true`（系统空答不算用户确认），再从 `readCombatVendorOptions(sessionId)` 取
+  会话现状、逐个答案求补丁、命中即 `rememberCombatVendorOptions(...)` **并**把同一份补丁写进实时
+  Session。用模块级 `getMakerIfReady()?.getSession(...)` 而不是 `maker`：`resolvePendingInteraction`
+  是模块级函数，`maker` 不在它的作用域里。判定与前提全在注入层，接线处不推断、也不代表 Agent 批准。
+- **同一轮可见性（核实过，不是假设）**：策略层读的是 `context.vendorOptions`，即 codex MCP 上下文按
+  **引用**持有的那个 `vo` 对象（`packages/maker-core/src/agents/codex/index.ts:5422`），引用同一由
+  `packages/maker-core/src/agents/codex/index.test.ts:20343-20373` 的
+  `expect(secondCtx?.vendorOptions).toBe(firstCtx?.vendorOptions)`（`:20366`）钉住；
+  `Session.setVendorOptions` 虽声明为 async，但三个 runtime 都在**第一个 `await` 之前**就地
+  `Object.assign(vo, patch)`（codex `index.ts:13930-13941`、claude-code `index.ts:7015-7025`、
+  pi `index.ts:7225-7230`），且 `resolver.resolve(decision)` 先于该块执行 ⇒ 同一轮没有竞态，
+  fire-and-forget 调用也已同步生效。
+- **提示词正文同步**（`mekaCombatPrompts.ts:171`，`[SAGA2_COMBAT_SCOPE]` 未批准分支）：明写以肯定词
+  开头的卡片答案**就是**确认、Host 会**即时**登记、**不得**要求用户把同一句确认再手打一遍，也**不得**
+  因为该段是在提问**之前**渲染的（`scopeApproved` 仍读 false）就重复追问同一件事。这处改动**改变了
+  注入字节**，但**没有任何逐字节断言覆盖表范围段**：`mekaRuntimeInjectionBaseline.test.ts` 只钉
+  controller / server-target / project-paths / target / execution-authorization / server-worker 六段
+  与 `vendorOptions` 键序（该文件里**没有** `combatScopeSection` 期望函数，也没有任何 `table-scope`
+  的整段 prompt 快照），`mekaRuntimeInjection.test.ts` 对表范围段只断言
+  `toContain('[SAGA2_COMBAT_SCOPE]')` 与 `scopeApproved:` 行文本 ⇒ 新措辞**没有**基线期望值需要同步，
+  也**没有**测试钉住它。
+- **方案块仪式清除**（Fix 2）：`[SAGA2_COMBAT_CONFIG_PLAN]` **不是** Host 门禁——`apps/desktop/src`
+  下没有任何代码读它（`grep` 无命中），它只是 controller skill 声明的**内部**检查点。交付后
+  `resources/meka/skills/程序/unity/combat-skill-configuration/SKILL.md:156-158` 明写该区块是内部
+  检查点、除非用户明确要求看它**不得**抄进对话、且**从来不是**用户需要批准的关口；
+  `saga2-entry-model/SKILL.md:49-52` 同步对齐（「`table-scope` 的写入前确认是范围确认，不是方案审批」）。
+- **工作树里同批（未提交）改掉的两条拒绝文案**（`meka-projects/combatWorkflowPolicy.ts:2001`、`:2458`
+  的 deny 文案，**只有文案**、无门禁语义变化）：把「第一条项目内容证据必须是…」改写为「——先做这一步」，
+  并把当时允许的只读动作三类（读注入的总控 Skill / 项目参考、`unity_inspect(action=status)`、
+  表范围解析用的白名单只读 Unity 查询）与「P4 写入等要等导出回执到手之后」写清。动因同 owner 的
+  「不顺滑」反馈：原文读起来像「什么都不能做」，与门禁实际放行的集合不一致。本项**没有**新增用例。
+
+**验证现状（数字由实现者运行；本节登记人复核了源码与行号，未复跑）**：
+`pnpm --filter desktop run typecheck` exit 0；`mekaRuntimeInjection` + `mekaRuntimeInjectionBaseline` +
+`combatWorkflowPolicy` + `runtimeConfig.integration` = **137 passed**（更早一次只跑前三个再加
+`permissionInteractionPause` = **146 passed**）；读 `register.ts` 源码的 19 个测试文件 =
+**487 passed \| 12 skipped**；`permissionInteractionPause.test.ts` 在 harness 依赖注入补齐后
+**15 passed**（见下）。**红→绿证据**：把卡片判据换回聊天判据，新用例即以 `expected null to match
+object` 转红。**连带修好的存量回归**：`permissionInteractionPause.test.ts` 的 harness 用
+`new Function(...)` 编译 `register.ts`，被抽取的卡片审批块新引用的五个模块级名字
+（`log` / `readCombatVendorOptions` / `rememberCombatVendorOptions` /
+`combatRequestScopeAnswerApprovalPatch` / `getMakerIfReady`）必须一并注入——不注入时命中该分支抛
+`is not defined`，而 catch 里记日志又会再抛一次；该测试的注入被扩展（审批判定恒返回 null ⇒ 分支
+no-op，暂停 / 迁移 / 超时语义不受影响）。**逐字节基线**：`mekaRuntimeInjectionBaseline.test.ts`
+**一行未改**——方案块那两个 `SKILL.md` 经文件载体读取、注入字节不变，而 `[SAGA2_COMBAT_SCOPE]`
+正文那处改动本来就不在该文件的断言范围内（见上），因此基线未改**不能**当作这处正文改动的验证。
+
+**未验证项（如实）**：
+
+- **没有 live / Electron 端到端实跑**，也没有读 owner 的实时会话 DB；缺陷的两个会话是 owner 侧的
+  复盘材料，本节登记人**没有独立复算**其中的工具调用序列。
+- `renderer → RESOLVE_INTERACTION → resolvePendingInteraction → agent 继续` 这条真实链路**没有**现成
+  harness；卡片路径的验证是**单测**（注入层判据 + 前提、`combatWorkflowPolicy` 的 D8 端到端策略用例）
+  加一条 `register.ts` 的**源码形状断言**，不是行为级集成验证。
+- 多问题卡片只要**任一**答案文本以肯定词开头即可批准（**问题文本不过滤**，与聊天路径同样的松度）；
+  本轮把这条松度**首次登记**在案（不是本轮引入的行为，也没有收紧计划）。
+- resolve 时 `getMakerIfReady()` 取不到实时 Session ⇒ **只写镜像**，同一轮可见性顺延到下一次派发。
+- 每个 runtime「`Object.assign` 早于首个 `await`」是**源码阅读**结论，没有集成用例把它钉死。
+- 首词启发式对畸形输入 **fail-closed**（`No problem` 会被当成拒绝），词表与聊天路径同一份
+  中文 / 英文清单，未扩表。
+- 那两条 deny 文案改动**没有**任何新增自动化断言（只由人工阅读 diff 核对为纯文案）。
+

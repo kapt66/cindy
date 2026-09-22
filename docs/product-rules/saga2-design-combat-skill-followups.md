@@ -534,6 +534,31 @@ meka-p4 缺「谁锁了这个文件」能力而逼 Agent 绕行 raw `p4` CLI）�
   截断时按「无清单」处理（部分清单比没有清单更危险）。
 - **A10 范围段持续注入**：`[SAGA2_COMBAT_SCOPE]` 在批准回合与之后每个回合都重新渲染注入，
   批准后的「逐目标实施、每次只处理一个已确认 ID」不会消失。
+- **D8 卡片答案构成第二个范围审批来源（2026-09-22 补登，真实会话缺陷）**：范围审批此前**只**认
+  用户手打的聊天消息（`input.prompt` → `combatRequestScopeApprovalPatch`）。用户经
+  `ask_user_question` 卡片给出的确认走的是另一条通道（renderer → `RESOLVE_INTERACTION` →
+  `register.ts` 的 `resolvePendingInteraction`），门禁**永远看不到** ⇒ 策略层继续按「本轮是表范围
+  请求…（尚未确认任何技能）」拒掉每一次调用，**连门禁自己要求的那两次 `legacy_module_export_json`
+  也被拒**；会话 `6811f297-9e32-4d8d-b5d0-0e2be39184b4`（「怪物技能伤害改取攻击力」）里用户**全程只
+  发过最初那一条聊天消息**，Agent 无法让那次确认生效，只能请用户把同一句话再打一遍。同批另一个真实
+  战斗会话 `a262a888-9db2-45cf-9741-e1463806481b` 同样命中（2 / 2）。修法：在交互 resolve 口
+  （`register.ts:2846-2887`，紧跟既有的 goal 观察者块）新增卡片答案观察者——卡片选项**以肯定词开头
+  即视为确认**（首词判定、拒绝优先：确认项标签含「先不动」这类子串，子串搜索会误判；且**必须**已知
+  会话处于表范围提案态才写，镜像缺失一律不写），产出与聊天路径**逐键相同**的补丁，并同时写进镜像与实时
+  Session。**同一轮可见性已核实（不是假设）**：策略层读的 `context.vendorOptions` 就是各 runtime
+  在首个 `await` 之前就地 `Object.assign` 的那份对象引用（codex `index.ts:5422`；
+  `index.test.ts:20366` 用 `toBe` 钉住引用同一；claude-code `:7015-7025`、pi `:7225-7230`）；
+  `[SAGA2_COMBAT_SCOPE]` 未批准分支的正文（`mekaCombatPrompts.ts:171`）同步写明该确认**即时**登记、
+  不得要求用户重打、也不得因为该段在提问**之前**渲染（`scopeApproved` 仍为 false）就重复追问。
+  **边界（登记，不是 bug）**：多问题卡片只要任一答案文本以肯定词开头即可批准；实时会话在 resolve
+  时不存在则只写镜像、同一轮可见性顺延到下次派发；首词启发式对畸形输入 fail-closed。
+- **D8 同批：方案块不再是仪式**：`[SAGA2_COMBAT_CONFIG_PLAN]` **不是** Host 门禁——`apps/desktop/src`
+  下没有任何代码读它，它只是 Skill 声明的**内部**检查点。冻结 Skill 现已明写不得抄进对话（除非用户
+  明确要求看它）、**从来不是**用户需要批准的关口
+  （`skills/程序/unity/combat-skill-configuration/SKILL.md:156-158`，
+  `skills/程序/unity/saga2-entry-model/SKILL.md:49-52` 同步对齐；`table-scope` 的写入前确认是**范围**
+  确认，不是方案审批）。这两个文件都经**文件载体**读取，注入字节未变 ⇒ 逐字节基线用例
+  （`mekaRuntimeInjectionBaseline.test.ts`）一行未改（实现者报告全绿；本节登记人**未复跑**）。
 - **A6 / A7 死成员与旧依据清理**：删除没有生产者的 `single-skill/proposed` 与从未被写入的
   `'declined'` 范围状态（连带零引用的 `MekaCombatRequestScope` / `MekaCombatRequestScopeState`）；
   两条项目参考未注入时**无论本轮有没有补丁**都清掉旧的 `mekaCombatEvidenceBasis`（A7），

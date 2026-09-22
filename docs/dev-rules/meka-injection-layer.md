@@ -44,7 +44,7 @@ MCP／技能落地、技能快照挂载、`vendorOptions` 的 Meka 键，或进�
 
 | 层 | 文件 | 职责 | 禁止 |
 | --- | --- | --- | --- |
-| 0 文本常量 + 战斗 ID 解析 | `meka-injection/mekaCombatPrompts.ts` | 所有注入段的**文本唯一来源**（`combatControllerSkillPrompt:73`、`combatTargetPrompt:104`、`combatScopePrompt:125`、`combatProjectPathsPrompt:248`、`combatServerTargetPrompt:286`、`roleContextPrompt:304`、`COMBAT_SERVER_WORKER_PROMPT:30`、`COMBAT_EXECUTION_AUTHORIZATION_PROMPT:45`）与用户消息里的技能 ID／请求范围解析（`parseCombatSkillIdFromUserPrompt:554`、`combatSkillIdVendorPatchFromUserPrompt:570`） | 不做 I/O、不碰 opts、不读 deps |
+| 0 文本常量 + 战斗 ID 解析 + 范围审批判定 | `meka-injection/mekaCombatPrompts.ts` | 所有注入段的**文本唯一来源**（`combatControllerSkillPrompt:75`、`combatTargetPrompt:106`、`combatScopePrompt:127`、`combatProjectPathsPrompt:250`、`combatServerTargetPrompt:288`、`roleContextPrompt:306`、`COMBAT_SERVER_WORKER_PROMPT:30`、`COMBAT_EXECUTION_AUTHORIZATION_PROMPT:45`）、用户消息里的技能 ID／请求范围解析（`parseCombatSkillIdFromUserPrompt:693`、`combatSkillIdVendorPatchFromUserPrompt:709`），以及**两条**范围审批转换：聊天路径 `isCombatScopeAffirmation:558` / `combatRequestScopeApprovalPatch:633`，卡片路径 `isCombatScopeAnswerApproval:592` / `combatRequestScopeAnswerApprovalPatch:668`（两者共用补丁尾部 `combatScopeApprovedVendorPatch:606`） | 不做 I/O、不碰 opts、不读 deps |
 | 1 计划类型 + order 表 | `meka-injection/mekaInjectionTypes.ts` | `MekaInjectionPlan:134`、`MekaPromptSegment:104`、`MEKA_PROMPT_SEGMENT_ORDER:91`、段落工厂 `createMekaPromptSegment:111` | 不含业务分支 |
 | 2 解析 | `meka-injection/mekaResolvePlan.ts` | 把 create opts / 用户消息 + 外部依赖（持久化绑定、运行期配置、平台技能、技能快照、MCP、战斗服务器目标）解析成结构化 plan／turn context。**全部 I/O 都在这一层**（入口 `resolveMekaInjection:766`、`prepareCombatFollowupRuntimeContext:805`） | 不写 `opts`、不改注入文本 |
 | 3 落地 | `meka-injection/mekaApplyPlan.ts` | 把 plan 写进 create opts：按 `order` 升序渲染段落（`renderMekaPromptSegments:55`）、写 `vendorOptions`（`:88-91`）、挂原生技能（`:96-100`） | 不解析、不做 I/O、不重算 `plan.result` |
@@ -64,7 +64,8 @@ MCP／技能落地、技能快照挂载、`vendorOptions` 的 Meka 键，或进�
 也不得把形态 B 从 `index.ts` 转发出去（那样会同时存在 `index.registerX` 与
 `mekaMcpRegistration.registerX` 两个名字）。
 
-**导出面只留公共签名**：`index.ts` 只转出两个形态入口、两个 ID 解析口子，以及这些签名上
+**导出面只留公共签名**：`index.ts` 只转出两个形态入口、两个 ID 解析口子、一个**卡片答案审批口子**
+（`combatRequestScopeAnswerApprovalPatch`，`index.ts:31`），以及这些签名上
 真正用到的类型（`AppliedMekaRuntimeConfig` / `ApplyMekaRuntimeConfigDeps` /
 `PersistedMekaSessionBinding` / `CombatFollowupRuntimeContext` / `CombatSkillIdParseResult`）。
 形态 A 的两个子步骤（`resolveMekaInjection` / `applyMekaInjection`）与层内计划类型
@@ -74,10 +75,19 @@ MCP／技能落地、技能快照挂载、`vendorOptions` 的 Meka 键，或进�
 新增生产调用方必须用 `applyMekaRuntimeConfig`，不得只跑其中一步。
 
 > **与计划文本的差异（记录在案）**：实施计划写作「4 种入口形态」，实现里落成的是 **3 个形态
-> （A / B / C）+ 1 组跨形态共享的解析入口**：`parseCombatSkillIdFromUserPrompt`（`mekaCombatPrompts.ts:554`）
-> 与 `combatSkillIdVendorPatchFromUserPrompt`（`:570`）。后者同时服务形态 A 与形态 C
+> （A / B / C）+ 1 组跨形态共享的解析入口**：`parseCombatSkillIdFromUserPrompt`（`mekaCombatPrompts.ts:693`）
+> 与 `combatSkillIdVendorPatchFromUserPrompt`（`:709`）。后者同时服务形态 A 与形态 C
 > （由两者各自调用），所以它**不是**独立形态，而是两个形态共用的“口子”。若以后要把它抬成
 > 独立形态，必须在这里新增一行并说明它的唯一入口。
+>
+> **2026-09-22 追加：第三个消费者侧口子。** 除上面这组「两个形态共用的解析口子」之外，注入层现在
+> 还有一个**跨形态共享、且被形态之外的调用方消费**的口子：`combatRequestScopeAnswerApprovalPatch`
+> （`mekaCombatPrompts.ts:668-683`）。它**不服务形态 A / B / C 中的任何一条**——唯一消费者是交互
+> resolve 口 `maker-ipc/register.ts:2846-2887`（`ask_user_question` 卡片答案 → 范围审批补丁）；
+> 同一语义在聊天路径由 `combatRequestScopeApprovalPatch`（`:633-649`）承担，驱动源是计划层 / 续聊
+> 口子的 `input.prompt`。两条路径共用补丁尾部 `combatScopeApprovedVendorPatch`（`:606-615`），
+> 产出补丁逐键相同，差异只在判定粒度与前提（见 §3.2）。它的消费者**唯一**，因此同样满足
+> 「一个口子恰好一个入口」；若以后要把它抬成独立形态，必须在这里新增一行并说明唯一入口。
 
 ## 3. `MEKA_PROMPT_SEGMENT_ORDER`：段落 id → order → 注入段
 
@@ -215,14 +225,32 @@ PLAN/RESULT 里原样声明 basis 与所依据的注入路径，Host 一律以 `
   （A7）：会话里已有 `mekaCombatEvidenceBasis` 就写回 `undefined`，本来没有就不写这个键
   （避免凭空多一个 `undefined` 键改变键序）⇒ 回落到服务器 `supported` 回执。
 - `table-scope` ⇒ 返回 `{}`：依据由漏斗 `combatSkillIdVendorPatchFromUserPrompt`
-  （`mekaCombatPrompts.ts:575-590`）与审批补丁 `combatRequestScopeApprovalPatch`（`:521-544`）自带，
-  这里不重复写。
+  （`mekaCombatPrompts.ts:709`）与两条审批补丁——聊天路径 `combatRequestScopeApprovalPatch`
+  （`:633-649`）、卡片路径 `combatRequestScopeAnswerApprovalPatch`（`:668-683`）——自带，两条补丁共用
+  同一段尾部 `combatScopeApprovedVendorPatch`（`:606-615`），所以**写入内容逐键相同**，这里不重复写。
 - `single-skill` 且 `mekaCombatTargetSkillIdState === 'confirmed'` ⇒ `'project-reference'`。漏斗补丁
   先写 `undefined`（`:607-609`），依据补丁在其后覆盖 ⇒ **patch 顺序敏感**，不得把依据补丁插到漏斗
   补丁之前（`builder.patches.push(patch, ...evidenceBasis)` 与
   `{ ...targetPatch, ...evidenceBasisPatch, ... }` 两处形态都依赖该顺序）。
 - **本次消息没有改目标时读会话现状**（`baseVendorOptions`），因此本改动之前创建的会话在**下一次**
   续聊/恢复时也会拿到依据（`mekaResolvePlan.ts:296-300`）。
+
+**卡片答案的审批补丁与聊天路径只差两点**（其余全部共用）。`combatRequestScopeAnswerApprovalPatch`
+（`mekaCombatPrompts.ts:668-683`）与 `combatRequestScopeApprovalPatch`（`:633-649`）产出**逐键相同**的
+范围确认补丁（共用尾部 `combatScopeApprovedVendorPatch:606-615`），差异只有：
+
+- **判定粒度**：聊天路径看**整条消息**（`isCombatScopeAffirmation:558-566`，必须只由肯定词与标点组成），
+  卡片路径只看**首词**（`isCombatScopeAnswerApproval:592-598`）。卡片选项标签**必然**带业务内容——
+  真实卡片上的确认项是 `确认：只改这 15 个伤害节点，技能表参数先不动`，整条消息判据会把它判成新指令。
+  首词判定**拒绝优先且锚定在开头**（`:580-583`）：同一张卡片的拒绝项是
+  `先不执行，我要调整范围或数值`，而确认项自身含「参数先不动」，用子串搜索「先不」会把确认判成拒绝。
+  首词既不是肯定也不是拒绝（自由文本、空串、空白、非字符串）一律返回 false——卡片上的自由文本输入
+  可能是在提新要求，不能当成审批。
+- **强制前提**：卡片路径**必须**已知会话处于表范围提案态
+  （`previousVendorOptions.mekaCombatRequestScope === 'table-scope'`，`:675`），镜像缺失或非表范围
+  一律返回 null。聊天路径没有这条前提，它靠「整条消息只由肯定词组成」挡住误判；卡片路径没有那层护栏，
+  少了这条前提，任何一张选项恰好以「确认 / 好 / OK」开头的卡片都会写出范围审批 —— 那是**放宽**门禁。
+  已确认过则幂等返回 null（与聊天路径同）。
 
 **三处定稿入口**：`pushCombatTargetPatches`（`mekaResolvePlan.ts:346-400`，漏斗 → A2 guard →
 审批补丁 → 依据定稿都在这里；被 bootstrap `:698-704` 与 resume `:442-448` 两条路径共用）与
@@ -274,6 +302,19 @@ MCPR）、P4 写边界、legacy-JSON 路径白名单、`create_workers` 拒绝�
 本层**没有**对真实 SAGA2 工作区做端到端运行，表范围的「确认 → 逐目标导出 → P4 编辑
 → `legacy_module_import_json` 导入 → 回读」往返是**代码可证**而非实跑验证；成员清单（A4）与
 会话级镜像（A3）都**没有实机验证**。
+
+**验证现状（2026-09-22 卡片答案审批补丁批次；数字由实现者运行、本节登记人未复跑）**：
+`pnpm --filter desktop run typecheck` exit 0；`mekaRuntimeInjection` + `mekaRuntimeInjectionBaseline` +
+`combatWorkflowPolicy` + `runtimeConfig.integration` = **137 passed**（更早一次只跑前三个再加
+`permissionInteractionPause` = **146 passed**）；读 `register.ts` 源码的形状断言落在「19 个文件
+487 passed \| 12 skipped」那一批里。**红→绿证据**：把卡片判据换回聊天判据，新用例即以
+`expected null to match object` 转红。**连带修好的存量回归**：`permissionInteractionPause.test.ts`
+的 harness 需要把 `resolvePendingInteraction` 新引用的模块级名字
+（`log` / `readCombatVendorOptions` / `rememberCombatVendorOptions` /
+`combatRequestScopeAnswerApprovalPatch` / `getMakerIfReady`）一并注入——不注入时命中该分支会抛
+`is not defined`，catch 里记日志又会再抛一次；补齐后 **15 passed**。**本批未做的验证**：没有
+live / Electron 端到端实跑；`renderer → RESOLVE_INTERACTION → resolvePendingInteraction → agent
+继续` 这条真实链路没有现成 harness，卡片路径只有单测 + `register.ts` 的源码形状断言。
 
 ## 4. `MEKA_AGENT_CAPABILITIES` 矩阵与 D1 裁决的取代
 
@@ -451,12 +492,47 @@ Host 只能掐掉它继续做其它事的一切工具通道）；任一侧回执
 
 **D6／D7 的镜像还原**：镜像与实时 `vendorOptions` 分裂时，续聊口子会用镜像注入「范围已批准」而策略读实时状态
 走单技能分支并拒绝一切工具（同一轮两条互相矛盾的指令）。修法是**只还原纯注入语义键**
-（`COMBAT_SCOPE_STATE_RESTORE_KEYS`，`:129-160`：requestScope／requestScopeState／scopeSelection／
-scopeSourceTables／scopeApproved），在续聊口子**之前**写回实时 Session（`register.ts:12628`）。**刻意不做整份
+（`COMBAT_SCOPE_STATE_RESTORE_KEYS`，`:129-135`：requestScope／requestScopeState／scopeSelection／
+scopeSourceTables／scopeApproved），在续聊口子**之前**写回实时 Session（`register.ts:12672-12676`）。**刻意不做整份
 镜像写回**：策略层会**就地**扩展 `mekaCombatScopeSkillIds` / `…Environment*` / `…TargetExport*`，回写会让成员
-清单缩水、削弱 A4 门禁。D7 把 `forgetCombatVendorOptions` 接进会话关闭生命周期（`register.ts:4557`），判据是
+清单缩水、削弱 A4 门禁。D7 把 `forgetCombatVendorOptions` 接进会话关闭生命周期（`register.ts:4613`），判据是
 `closeReason === 'requested'` **且**不在 rehydrate 抑制窗口内（`agent-switch`／`runtime-refresh` 是重建、
 `unexpected` 之后 Host 会补发「继续」，这三种都必须留镜像，否则 D6 的还原没有来源）。镜像仍不过进程重启。
+
+**D8 卡片答案的范围审批（2026-09-22，真实会话缺陷）**：范围审批原本**只**由用户手打的聊天消息驱动
+（`input.prompt` → `combatRequestScopeApprovalPatch`），而 `ask_user_question` 的卡片答案是**另一条通道**
+（renderer → `RESOLVE_INTERACTION` → `register.ts` 的 `resolvePendingInteraction`），门禁因此**永远看不到
+那次确认**。真实会话 `6811f297-9e32-4d8d-b5d0-0e2be39184b4`（「怪物技能伤害改取攻击力」）：Agent 只读解析出
+范围、用卡片请用户确认，用户**确实点了**确认项（`确认：只改这 15 个伤害节点，技能表参数先不动`），但
+`mekaCombatScopeApproved` 从未被写入 ⇒ 策略层继续按「本轮是表范围请求…（尚未确认任何技能）」拒掉每一次调用，
+**连门禁自己要求的那两次 `legacy_module_export_json` 也被拒**；该会话里用户**全程只发过最初那一条聊天
+消息**，Agent 没有任何办法让那次确认生效，只能结束回合请用户把同一句话再打一遍。同批另一个真实战斗会话
+`a262a888-9db2-45cf-9741-e1463806481b` 也命中同一形态（2 / 2）。
+
+修法：`register.ts:2846-2887` 在 `resolvePendingInteraction` 里、紧跟既有的 `goalAskAnswerObserver` 块
+（同一处 resolve 收口、同一套 catch 口径，不改动已 resolve 的交互语义）追加卡片答案观察者——从
+`readCombatVendorOptions(resolver.sessionId)` 取会话现状，逐个答案求
+`combatRequestScopeAnswerApprovalPatch`，命中即 `rememberCombatVendorOptions` **并**把同一份补丁写进实时
+Session。用模块级 `getMakerIfReady()?.getSession(...)` 而不是 `maker`：`resolvePendingInteraction` 是模块级
+函数，`maker` 不在它的作用域里。判定与前提全在注入层，这里不推断、也不代表 Agent 批准（`dismissed` 先被
+排除）。
+
+**同一轮可见性（核实过，不是假设）**：策略层读的是 `context.vendorOptions`，即 codex MCP 上下文按**引用**
+持有的那个 `vo` 对象（`packages/maker-core/src/agents/codex/index.ts:5422`），引用同一由
+`packages/maker-core/src/agents/codex/index.test.ts:20343-20373` 的
+`expect(secondCtx?.vendorOptions).toBe(firstCtx?.vendorOptions)` 钉住（`:20366`）。`Session.setVendorOptions`
+虽声明为 async，但三个 runtime 都在**第一个 `await` 之前**就地 `Object.assign` 到该对象上
+（codex `index.ts:13930-13941`、claude-code `index.ts:7015-7025`、pi `index.ts:7225-7230`），且
+`resolver.resolve(decision)` 先于该块执行 ⇒ 同一轮没有竞态，fire-and-forget 调用也已同步生效。
+`[SAGA2_COMBAT_SCOPE]` 未批准分支的正文（`mekaCombatPrompts.ts:171`）同步写明：以肯定词开头的卡片答案
+**就是**确认、Host 会**即时**登记、不得要求用户把同一句话重打一遍，也不得因为该段是在提问**之前**渲染的
+（`scopeApproved` 仍读 false）就重复追问同一件事。
+
+**D8 的登记边界（不是 bug，但必须一起读）**：① 多问题卡片只要**任一**答案文本以肯定词开头就能批准——
+问题文本不过滤，与聊天路径同样的松度；② `getMakerIfReady()` 在 resolve 时取不到实时会话时**只写镜像**，
+同一轮可见性顺延到下一次派发（镜像本身仍然成立，符合 A3 的口径）；③ 每 runtime「同步就地合并」是**源码
+阅读**结论（`Object.assign` 早于首个 await），没有一条集成用例把它钉死；④ 首词启发式对畸形输入 fail-closed
+（`No problem` 会被当成拒绝），词表与聊天路径**同一份**中文／英文清单，不额外扩表。
 
 **验证现状（2026-09-22）**：`pnpm --filter desktop run typecheck` exit 0；`mekaRuntimeInjection` 49 +
 `mekaRuntimeInjectionBaseline` 18 + `combatWorkflowPolicy` 60 + `combatServerCapabilityState` 7 = 134 passed；

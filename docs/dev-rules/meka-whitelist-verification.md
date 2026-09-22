@@ -738,6 +738,15 @@ Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台。
   （`unity_inspect.action` 含 `command`，版本 **1.0.20**）、`meka-p4/ghost.json:34-57`
   （只读 `p4_opened` / `p4_fileinfo`；写入面含 `p4_checkout:120`、`p4_add:132`、`p4_submit:84`，
   版本 **1.0.63**）
+- **表范围审批的第二个来源：`ask_user_question` 卡片答案（WL-11.11，2026-09-22 登记）**：
+  `apps/desktop/src/main/meka-injection/mekaCombatPrompts.ts` 的
+  `isCombatScopeAnswerApproval:592-598`（首词判定；拒绝词表 `:580-581` 优先且**锚定开头**，肯定词
+  `:582-583`）与 `combatRequestScopeAnswerApprovalPatch:668-683`（**强制**已知会话处于表范围提案态，
+  `:675`），与聊天路径共用补丁尾部 `combatScopeApprovedVendorPatch:606-615` ⇒ 两条路径产出的补丁
+  **逐键相同**。消费点唯一：`apps/desktop/src/main/maker-ipc/register.ts:2846-2887`（交互 resolve 口，
+  紧跟既有 `goalAskAnswerObserver` 块），对外唯一转出点 `meka-injection/index.ts:31`。
+  **同批复核后失效的旧锚点**：`isCombatScopeAffirmation` 现为 `:558-566`（原记 `:495-503`）、
+  `combatRequestScopeApprovalPatch` 现为 `:633-649`（原记 `:521-544`）。
 
 **自动化门禁**
 - `pnpm --filter desktop run db:validate`（meka 表与列存在、`0000..0107` 完整、journal/snapshot
@@ -897,13 +906,48 @@ Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台。
   范围；真正的授权边界仍是 P4 边界、路径白名单、审批位、证据依据与依赖门禁。审批补丁本身
   （`combatRequestScopeApprovalPatch`）仍然只写 `mekaCombatRequestScopeState` / `mekaCombatScopeApproved` /
   `mekaCombatEvidenceBasis`，不写成员清单——成员清单的唯一写入方就是上面那条只读查询路径。
+- **卡片答案构成第二个审批来源（2026-09-22 登记，真实缺陷 D8）**：范围审批原本**只**由用户手打的
+  聊天消息驱动（`input.prompt` → `combatRequestScopeApprovalPatch`，判据是整条消息只由肯定词与标点
+  组成）。用户经 `ask_user_question` 卡片给出的确认走另一条通道（renderer → `RESOLVE_INTERACTION`
+  → `register.ts` 的 `resolvePendingInteraction`），**门禁永远看不到** ⇒ 策略层继续按「本轮是表范围
+  请求…（尚未确认任何技能）」拒掉每一次调用，连门禁自己要求的那两次 `legacy_module_export_json` 也被
+  拒；真实会话 `6811f297-9e32-4d8d-b5d0-0e2be39184b4` 里用户**全程只发过最初那一条聊天消息**，Agent
+  无法让卡片确认生效，只能请用户重打同一句话（同批 `a262a888-9db2-45cf-9741-e1463806481b` 同样命中，
+  2 / 2）。现行契约：卡片选项**以肯定词开头**即算审批（`isCombatScopeAnswerApproval`，**首词**判定；
+  拒绝词优先且锚定开头——确认项标签本身含「先不动」这类子串，子串搜索会把确认判成拒绝），但调用方
+  **必须**已知会话处于表范围提案态（`previousVendorOptions.mekaCombatRequestScope === 'table-scope'`）；
+  镜像缺失、非表范围、卡片 dismissal（系统空答）或以拒绝词开头一律**不写任何键**（**比聊天路径更
+  严**：聊天路径在会话现状未知时仍会写三个状态键）。两条路径产出**逐键相同**的补丁。
+  **语义验收步骤**：① 会话为 `table-scope/proposed` 时，用卡片选项原文
+  `确认：只改这 15 个伤害节点，技能表参数先不动` 断言产出 `confirmed` + `approved=true` +
+  `evidenceBasis=project-reference`；② 同一答案在 `single-skill` 会话、镜像缺失（`undefined`）与空对象
+  （`{}`）三种现状下都断言**不产出补丁**；③ 拒绝项 `先不执行，我要调整范围或数值`、空答案与自由文本
+  （`把范围改成只改 3001064`）断言不产出补丁；④ 断言卡片路径与聊天路径对同一现状产出**逐键相同**
+  的补丁（用例用 `toEqual` 深比较，不是同一对象引用）；
+  ⑤ 策略层端到端：未审批时表范围导出被拒（理由含「尚未确认任何技能」）→ 卡片确认补丁写入后**同一轮**
+  同一次导出调用放行 → 拒绝项仍然被拒。
+  **自动化锚点**：`mekaRuntimeInjection.test.ts` 的卡片判据用例与表格范围前提用例（含
+  `treats a card option label as scope approval by its first word, refusal wins (card path)`、
+  `requires a table-scope session before a card answer becomes scope approval (card path)`）以及
+  `wires the card-answer scope approval into the interaction resolve without touching chat (D8)` 的
+  `register.ts` **源码形状断言**；`combatWorkflowPolicy.test.ts` 的
+  `lets an ask_user_question card answer unlock the table scope the user actually confirmed (D8)`
+  （实现者报告的红→绿证据：把卡片判据换回聊天判据，新用例即以 `expected null to match object` 转红；
+  本节登记人**未复跑**）。
+  **未实机验证**：`renderer → RESOLVE_INTERACTION → resolvePendingInteraction → agent 继续` 这条真实
+  链路**没有**现成 harness，卡片路径只有单测（注入层判据 + 策略层端到端）加一条源码形状断言，
+  **无端到端实跑**；多问题卡片只要任一答案文本以肯定词开头即可批准（问题文本不过滤，与聊天路径
+  同样的松度）；resolve 时取不到实时 Session 则只写镜像、同一轮可见性顺延到下次派发；每 runtime
+  「`Object.assign` 早于首个 `await`」是源码阅读结论，无集成用例钉死。
 - **会话级状态在应用重启后为空（A3）**：审批门禁要知道「当前是不是表范围」，而 maker-core 的
   `Session` 只有写入口，因此 Host 维护一份只镜像 `mekaCombat*` 键的会话级 vendorOptions 镜像
-  （`combatWorkflowPolicy.ts:36-88`；计划层 bootstrap/resume 记录、`register.ts:12653` 的 `onAccepted`
+  （`combatWorkflowPolicy.ts:36-88`；计划层 bootstrap/resume 记录、`register.ts:12723` 的 `onAccepted`
   记录真正落地的补丁，消费点是 `prepareCombatFollowupRuntimeContext` 的 `previousVendorOptions` 回落值）。
   **它只活在 Desktop 进程内、不进 DB，重启即空**：此时语义是「状态未知」，只写合法的范围键，
   不得把未知当成「非表范围」或「可以审批」。`forgetCombatVendorOptions` 目前没有生产调用方，
-  会话结束不清镜像。
+  会话结束不清镜像。**卡片路径的 `previousVendorOptions` 取自同一份镜像**
+  （`register.ts:2858` 的 `readCombatVendorOptions`），因此它比聊天路径**更严**：镜像为 `null` 或镜像里
+  不是表范围时**一律不写**（见上条）。
 - **未实机验证**：真实会话里该文本走完一次「解析 → 只读查询登记成员 → 确认 → 逐目标实施」的全链路；
   成员清单（A4）与镜像（A3）都只有单测，**没有端到端实跑**，也没有跨进程/重启后的实测证据。
   见迁移总账 §6.56「已知不一致与强度提醒」（证据依据那一条已于 2026-09-22 同日后修订解决，见 WL-11.12）。
