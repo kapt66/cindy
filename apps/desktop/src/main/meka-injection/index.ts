@@ -14,7 +14,9 @@
  * 历史：本目录是 `maker-ipc/mekaRuntimeInjection.ts`（688 行）的搬迁与显式分层。对外导出名与
  * 签名保持不变，`maker-ipc/register.ts` 与两份注入测试只改 import 路径、断言未动。
  *
- * 导出面 = 两个形态入口 + 两个 ID 解析口子 + **只有公共签名上用到的**类型。层内类型
+ * 导出面 = 两个形态入口 + 两个 ID 解析口子 + 表范围卡片答案审批口子（`ask_user_question`
+ * 答案 → 与聊天路径同一份范围确认补丁，`maker-ipc/register.ts` 的交互 resolve 处消费）
+ * + **只有公共签名上用到的**类型。层内类型
  * （`MekaInjectionPlan` 等）与形态 A 的两个子步骤**不再转出**：它们在重构期曾作为
  * 「分层契约入口」保留，但生产与测试都走 `applyMekaRuntimeConfig`，转出去只会长出
  * 第二入口（见 `docs/dev-rules/meka-injection-layer.md` §2）。
@@ -26,6 +28,7 @@ import { prepareCombatFollowupRuntimeContext, resolveMekaInjection } from './mek
 import type { AppliedMekaRuntimeConfig, ApplyMekaRuntimeConfigDeps } from './mekaInjectionTypes.js';
 
 export {
+  combatRequestScopeAnswerApprovalPatch,
   combatSkillIdVendorPatchFromUserPrompt,
   parseCombatSkillIdFromUserPrompt,
 } from './mekaCombatPrompts.js';

@@ -35,6 +35,7 @@ vi.mock('../../maker-host/mcpr-claude-capability.js', () => ({
 
 import { runCombatEnvironmentGate } from '../combatEnvironmentGate.js';
 import {
+  combatRequestScopeAnswerApprovalPatch,
   combatRequestScopeApprovalPatch,
   combatSkillIdVendorPatchFromUserPrompt,
 } from '../../meka-injection/mekaCombatPrompts.js';
@@ -2756,6 +2757,117 @@ describe('combat workflow host policy', () => {
     forgetCombatVendorOptions(sessionId);
     expect(readCombatVendorOptions(sessionId)).toBeNull();
     expect(combatScopeStateRestorePatch(sessionId)).toEqual({});
+  });
+
+  it('lets an ask_user_question card answer unlock the table scope the user actually confirmed (D8)', async () => {
+    vi.mocked(runCombatEnvironmentGate).mockResolvedValue({
+      checkedAt: new Date(0).toISOString(),
+      ready: true,
+      p4: { status: 'ready', summary: 'ok' },
+      unityCli: { status: 'ready', summary: 'ok' },
+      mcpr: { status: 'ready', summary: 'ok' },
+    });
+    const sessionId = 'combat-card-approval-1';
+    resetCombatVendorOptionsMirrorForTests();
+    // 真实会话现场（6811f297）：表范围已由用户提出、等待确认；Host 手上还没有成员清单
+    // （Agent 的只读范围查询要么没做，要么清单被截断）。
+    rememberCombatVendorOptions(sessionId, {
+      mekaCombatRequestScope: 'table-scope',
+      mekaCombatRequestScopeState: 'proposed',
+      mekaCombatScopeApproved: false,
+    });
+    const live = vendor({
+      mekaCombatTargetSkillId: undefined,
+      mekaCombatTargetSkillIdState: 'missing',
+      mekaCombatTargetExportCompleted: undefined,
+      mekaCombatRequestScope: 'table-scope',
+      mekaCombatRequestScopeState: 'proposed',
+      mekaCombatScopeApproved: false,
+      mekaCombatScopeSkillIds: [],
+      mekaCombatServerCapabilityStatus: 'unchecked',
+      mekaCombatEvidenceBasis: 'project-reference',
+      mekaCombatProjectRefPaths: COMBAT_PROJECT_REF_PATHS,
+      mekaCombatReadOnlyUnityCommands: COMBAT_READ_ONLY_UNITY_COMMANDS,
+    });
+    const exportCallFor = (options: Record<string, unknown>) =>
+      context(options, {
+        sessionId,
+        toolName: 'mcp__cindy__ghost_call',
+        input: {
+          ghost_id: 'meka-unity',
+          tool: 'unity_execute',
+          args: {
+            action: 'command',
+            projectPath: SAGA2_UNITY_ROOT,
+            arguments: [
+              'legacy_module_export_json',
+              '3001064',
+              path.join(os.tmpdir(), '3001064.export.json'),
+            ],
+          },
+        },
+        action: { kind: 'mcp' as const },
+      });
+    const exportCall = () => exportCallFor(live);
+    // 缺陷现场：用户已经答过卡片，但审批门禁只认聊天消息 ⇒ 范围里空无一人，导出被拒。
+    await expect(evaluateCombatToolExecution(exportCall())).resolves.toMatchObject({
+      behavior: 'deny',
+      reason: expect.stringContaining('尚未确认任何技能'),
+    });
+
+    // register.ts 的卡片答案观察者形状：逐个答案求补丁，命中即停（答案 key 是问题文本）。
+    const cardAnswerPatch = (answers: Record<string, string>) => {
+      const previousVendorOptions = readCombatVendorOptions(sessionId);
+      for (const answer of Object.values(answers)) {
+        const patch = combatRequestScopeAnswerApprovalPatch({ answer, previousVendorOptions });
+        if (patch) return patch;
+      }
+      return null;
+    };
+
+    // 用户真实答案（卡片选项原文）：确认只改伤害节点、技能表参数不动。
+    const confirmed = cardAnswerPatch({
+      '这次改动按哪个范围执行？': '确认：只改这 15 个伤害节点，技能表参数先不动',
+    });
+    expect(confirmed).toMatchObject({
+      mekaCombatRequestScope: 'table-scope',
+      mekaCombatRequestScopeState: 'confirmed',
+      mekaCombatScopeApproved: true,
+      mekaCombatEvidenceBasis: 'project-reference',
+    });
+    if (!confirmed) throw new Error('card answer must produce a scope approval patch');
+    // 与生产 wiring 同序：先记镜像，再把同一份补丁写进实时 vendorOptions。
+    rememberCombatVendorOptions(sessionId, confirmed);
+    Object.assign(live, confirmed);
+    // 同一轮里后续的策略判定的确放行（此前是「尚未确认任何技能」）。
+    await expect(evaluateCombatToolExecution(exportCall())).resolves.toEqual({ behavior: 'allow' });
+
+    // 拒绝项：不产生补丁 ⇒ 范围仍然未确认，导出继续被拒。
+    resetCombatVendorOptionsMirrorForTests();
+    rememberCombatVendorOptions(sessionId, {
+      mekaCombatRequestScope: 'table-scope',
+      mekaCombatRequestScopeState: 'proposed',
+      mekaCombatScopeApproved: false,
+    });
+    const refusedOptions = vendor({
+      ...live,
+      mekaCombatRequestScopeState: 'proposed',
+      mekaCombatScopeApproved: false,
+    });
+    expect(
+      cardAnswerPatch({
+        '这次改动按哪个范围执行？': '先不执行，我要调整范围或数值',
+      }),
+    ).toBeNull();
+    // 系统性 dismissal（会话 abort / 关闭等自动空答）同样不产生补丁。
+    expect(cardAnswerPatch({ '这次改动按哪个范围执行？': '' })).toBeNull();
+    await expect(
+      evaluateCombatToolExecution(exportCallFor(refusedOptions)),
+    ).resolves.toMatchObject({
+      behavior: 'deny',
+      reason: expect.stringContaining('尚未确认任何技能'),
+    });
+    forgetCombatVendorOptions(sessionId);
   });
 
   it('requires the server supported report only when the evidence basis is not the injected project reference', async () => {

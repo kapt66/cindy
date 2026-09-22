@@ -13,11 +13,17 @@ import {
 } from '../../meka-projects/combatWorkflowPolicy.js';
 import {
   applyMekaRuntimeConfig as applyMekaRuntimeConfigImpl,
+  combatRequestScopeAnswerApprovalPatch,
   combatSkillIdVendorPatchFromUserPrompt,
   parseCombatSkillIdFromUserPrompt,
   prepareCombatFollowupRuntimeContext,
 } from '../../meka-injection/index.js';
-import { combatScopePrompt } from '../../meka-injection/mekaCombatPrompts.js';
+import {
+  combatRequestScopeApprovalPatch,
+  combatScopePrompt,
+  isCombatScopeAffirmation,
+  isCombatScopeAnswerApproval,
+} from '../../meka-injection/mekaCombatPrompts.js';
 import type { MakerSessionCreateOpts } from '../sessionRequest.js';
 
 const environmentServices = vi.hoisted(() => ({
@@ -734,6 +740,114 @@ describe('applyMekaRuntimeConfig', () => {
       mekaCombatRequestScopeState: 'confirmed',
       mekaCombatScopeApproved: true,
     });
+  });
+
+  // ——— 卡片答案审批（`ask_user_question` 路径）———
+  // 真实缺陷：用户通过 ask_user_question 卡片确认了表范围，但审批门禁只由 `input.prompt`
+  // 驱动 ⇒ `mekaCombatScopeApproved` 永远写不进去，策略层继续按「尚未确认任何技能」拒掉每一次
+  // 工具调用，最后只能要求用户把同一句话再打一遍。下面两条用例钉住卡片路径的判定与前提。
+  it('treats a card option label as scope approval by its first word, refusal wins (card path)', () => {
+    // 真实卡片上的两个选项：确认项带业务内容（整条消息判据会拒掉它），拒绝项必须不批准。
+    const confirmLabel = '确认：只改这 15 个伤害节点，技能表参数先不动';
+    const refusalLabel = '先不执行，我要调整范围或数值';
+    expect(isCombatScopeAnswerApproval(confirmLabel)).toBe(true);
+    expect(isCombatScopeAnswerApproval(refusalLabel)).toBe(false);
+    // 这正是卡片路径必须单独判定的原因：聊天判据要求整条消息只由肯定词组成。
+    expect(isCombatScopeAffirmation(confirmLabel)).toBe(false);
+    expect(isCombatScopeAffirmation('确认')).toBe(true);
+    // 拒绝只看**首词**：确认项自身含「参数先不动」，子串搜索会把确认判成拒绝。
+    expect(isCombatScopeAnswerApproval('确认：参数先不动')).toBe(true);
+    expect(isCombatScopeAnswerApproval('不动参数，先确认范围')).toBe(false);
+    // 卡片上的关闭 / 跳过是空答案；自由文本（可能是在提新要求）不算审批。
+    for (const blank of ['', '   ', '\n', undefined, null, 123]) {
+      expect(isCombatScopeAnswerApproval(blank)).toBe(false);
+    }
+    expect(isCombatScopeAnswerApproval('把范围改成只改 3001064')).toBe(false);
+    for (const affirmed of ['确认', '好的，按这个来', 'OK', 'okay 继续', '就按这个清单执行', 'YES']) {
+      expect(isCombatScopeAnswerApproval(affirmed), affirmed).toBe(true);
+    }
+    for (const refused of ['不', '取消', '算了', '稍后再看', 'No, 先不动', '停止执行']) {
+      expect(isCombatScopeAnswerApproval(refused), refused).toBe(false);
+    }
+  });
+
+  it('requires a table-scope session before a card answer becomes scope approval (card path)', () => {
+    const answer = '确认：只改这 15 个伤害节点，技能表参数先不动';
+    const proposed = {
+      mekaCombatRequestScope: 'table-scope',
+      mekaCombatRequestScopeState: 'proposed',
+      mekaCombatScopeApproved: false,
+    };
+    const patch = combatRequestScopeAnswerApprovalPatch({ answer, previousVendorOptions: proposed });
+    expect(patch).toEqual({
+      mekaCombatRequestScope: 'table-scope',
+      mekaCombatRequestScopeState: 'confirmed',
+      mekaCombatScopeApproved: true,
+      mekaCombatEvidenceBasis: 'project-reference',
+    });
+    // 与聊天路径产出**同一份**补丁（两条通道只差判定与前提，不差写入内容）。
+    expect(patch).toEqual(
+      combatRequestScopeApprovalPatch({ prompt: '确认', previousVendorOptions: proposed }),
+    );
+    // 卡片路径没有「整条消息只由肯定词组成」这层护栏，所以表范围前提是唯一的护栏：
+    // 单技能会话、镜像缺失时都必须不写（否则任何「确认…」开头的卡片都会批范围）。
+    expect(
+      combatRequestScopeAnswerApprovalPatch({
+        answer,
+        previousVendorOptions: { mekaCombatRequestScope: 'single-skill' },
+      }),
+    ).toBeNull();
+    expect(combatRequestScopeAnswerApprovalPatch({ answer })).toBeNull();
+    expect(
+      combatRequestScopeAnswerApprovalPatch({ answer, previousVendorOptions: {} }),
+    ).toBeNull();
+    // 已确认过 ⇒ 幂等。
+    expect(
+      combatRequestScopeAnswerApprovalPatch({
+        answer,
+        previousVendorOptions: {
+          ...proposed,
+          mekaCombatRequestScopeState: 'confirmed',
+          mekaCombatScopeApproved: true,
+        },
+      }),
+    ).toBeNull();
+    // 正确前提下，拒绝项 / 空答案 / 自由文本同样不产生补丁。
+    for (const denied of ['先不执行，我要调整范围或数值', '', '把范围改成只改 3001064']) {
+      expect(
+        combatRequestScopeAnswerApprovalPatch({ answer: denied, previousVendorOptions: proposed }),
+        denied,
+      ).toBeNull();
+    }
+  });
+
+  it('wires the card-answer scope approval into the interaction resolve without touching chat (D8)', async () => {
+    const source = await fs.readFile(new URL('../register.ts', import.meta.url), 'utf8');
+    const observer = source.indexOf("log.warn('goalAskAnswerObserver threw'");
+    const approve = source.indexOf('combatRequestScopeAnswerApprovalPatch({', observer);
+    const dismissal = source.indexOf('decision.dismissed !== true', observer);
+    const mirror = source.indexOf(
+      'rememberCombatVendorOptions(resolver.sessionId, approvalPatch)',
+      approve,
+    );
+    const live = source.indexOf('setVendorOptions(approvalPatch)', mirror);
+    expect(observer).toBeGreaterThanOrEqual(0);
+    // 卡片审批块紧跟在既有的 goal 观察者之后（同一处 resolve 收口）。
+    expect(approve).toBeGreaterThan(observer);
+    // 只在**用户本人**作答时才算：dismissed（系统空答）先被排除。
+    expect(dismissal).toBeGreaterThan(observer);
+    expect(dismissal).toBeLessThan(approve);
+    // 会话现状来自 Host 维护的镜像（Session 没有 vendorOptions 读取口子），并原样交给注入层判定。
+    const slice = source.slice(observer, live);
+    expect(slice).toContain('resolver.kind === \'ask_user_question\'');
+    expect(slice).toContain('decision.kind === \'ask_user_question\'');
+    expect(slice).toContain('const previousVendorOptions = readCombatVendorOptions(resolver.sessionId)');
+    expect(slice).toContain(
+      'combatRequestScopeAnswerApprovalPatch({ answer, previousVendorOptions })',
+    );
+    // 镜像先记，再把同一份补丁写进实时 Session（策略层读的是实时 vendorOptions）。
+    expect(mirror).toBeGreaterThan(approve);
+    expect(live).toBeGreaterThan(mirror);
   });
 
   it('keeps injecting the approved scope block on the turns after approval (A10)', async () => {

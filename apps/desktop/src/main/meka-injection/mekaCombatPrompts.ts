@@ -168,7 +168,7 @@ export function combatScopePrompt(vendorOptions: Record<string, unknown>): strin
       : '范围发现只允许单文件只读读取；禁止枚举目录，禁止用任何写命令做范围发现。',
     approved
       ? '范围已获用户确认：按逐目标流程实施，每次调用只处理一个范围内的技能 ID，并在计划与结果里逐项列出；P4 边界、路径白名单与证据要求不变。'
-      : '先只读解析出范围内的目标集合（技能 ID 逐项列出）与逐目标的改动集合，把两份清单提交用户确认；**用户确认前禁止任何写入**（P4 写入、老版模块导入、资产创建、临时 JSON 生成）。',
+      : '先只读解析出范围内的目标集合（技能 ID 逐项列出）与逐目标的改动集合，把两份清单提交用户确认；**用户确认前禁止任何写入**（P4 写入、老版模块导入、资产创建、临时 JSON 生成）。可以用 `ask_user_question` 卡片提问：用户选中以肯定词开头的选项**即等于确认**，Host 会**即时**登记，**不要**要求用户把同一句确认再手打一遍，也**不要**因为本段是在提问之前渲染的、`scopeApproved` 仍是 false 就重复追问同一件事——确认到手后直接按已确认范围执行；只有用户拒绝、dismiss 或尚未回答时才停下。',
     evidenceBasis === 'project-reference'
       ? 'evidenceBasis: project-reference —— 本轮运行时语义（模块编码规则与老版命令契约）由 Host 注入的项目权威参考覆盖：优先读 `damageEncodingRulePath`（伤害/模块编码）与 `moduleEditorSkillPath`（模块字段、连线与老版导入导出命令契约）。若这两条参考**未覆盖**你要改的语义、或与需求**冲突**，不得自行推断：表范围**没有**可达的服务器核查通道（服务器目标段与路由键只在绑定唯一技能 ID 时注入，`validate_server_capability_report` 也只会比对那个唯一 ID），所以不要派发只读 Worker。必须停止写入、如实向用户说明缺口，并**回落到单技能流程**：请用户把范围收敛到一个具体技能 ID；绑定该 ID 后 Host 会注入服务器目标段与路由键，届时按单技能流程取得只读服务器 supported 回执；依据项目参考时，PLAN/RESULT 必须原样写明依据了哪条注入路径（damageEncodingRulePath / moduleEditorSkillPath）。'
       : 'evidenceBasis: server-report —— 表范围**没有**可达的服务器核查通道（服务器目标段与路由键只在绑定唯一技能 ID 时注入），本轮无法用只读服务器 Worker 取得 supported 回执：不要尝试派发 Worker，也不要声称已取得回执。必须停止写入、如实向用户说明缺口，并**回落到单技能流程**：请用户把范围收敛到一个具体技能 ID；绑定后按单技能流程取得只读服务器 supported 回执，并在 PLAN/RESULT 原样写明 evidenceBasis: server-report 与报告 head。',
@@ -566,6 +566,55 @@ export function isCombatScopeAffirmation(prompt: unknown): boolean {
 }
 
 /**
+ * 卡片答案的范围审批词（**只看首词**，允许后面跟业务内容）。
+ *
+ * 为什么不能用 `isCombatScopeAffirmation`：聊天消息的判据是「整条消息只由肯定词与标点组成」，
+ * 而 `ask_user_question` 的选项标签**必然**带业务内容 —— 真实会话里的确认项是
+ * `确认：只改这 15 个伤害节点，技能表参数先不动`，整条消息判据会把它判成新指令而不是审批。
+ * 所以卡片路径改用**首词锚定**：以肯定词开头即视为用户在同意 Host 提出的范围。
+ *
+ * 拒绝优先，且**必须锚定在开头**：同一张卡片上的第三个选项是
+ * `先不执行，我要调整范围或数值`，而确认项里含「参数先不动」——用子串搜索「先不」会把
+ * 确认项本身判成拒绝。锚定后两者互不干扰。
+ */
+const COMBAT_SCOPE_ANSWER_REFUSAL =
+  /^(?:先不|暂不|不要|不|否|取消|停止|算了|稍后|再想|no)/i;
+const COMBAT_SCOPE_ANSWER_AFFIRMATION =
+  /^(?:确认|确定|可以|同意|执行|继续|没问题|好的|好|行|开始|就按|按这个|按此|按方案|按清单|ok|okay|yes)/i;
+
+/**
+ * 卡片答案是否构成表范围审批（**纯首词判定**，不含任何会话状态）。
+ *
+ * 与聊天判据的差异只在「整条消息 vs 首词」这一层；范围前提由调用方
+ * （`combatRequestScopeAnswerApprovalPatch`）另行强制。答案既不是肯定也不是拒绝（自由文本、
+ * 空串、空白）一律返回 false —— 卡片上的自由文本输入可能是在提新要求，不能当成审批。
+ */
+export function isCombatScopeAnswerApproval(answer: unknown): boolean {
+  if (typeof answer !== 'string') return false;
+  const normalized = answer.trim().replace(/[\s，,。.!！?？~～、；;：:]+/g, '');
+  if (!normalized) return false;
+  if (COMBAT_SCOPE_ANSWER_REFUSAL.test(normalized)) return false;
+  return COMBAT_SCOPE_ANSWER_AFFIRMATION.test(normalized);
+}
+
+/**
+ * 「已通过肯定判定」之后的审批补丁尾部（聊天路径与卡片路径共用）。
+ *
+ * 只在 `previousScope === 'table-scope'` 时才写范围键：会话现状未知（`previousVendorOptions`
+ * 缺失）时写死 `table-scope` 会把一个无关会话强推成表范围，所以那种情况只写状态键。
+ */
+function combatScopeApprovedVendorPatch(previousScope: unknown): Record<string, unknown> {
+  return {
+    ...(previousScope === 'table-scope' ? { mekaCombatRequestScope: 'table-scope' } : {}),
+    mekaCombatRequestScopeState: 'confirmed',
+    mekaCombatScopeApproved: true,
+    // 审批同时固定证据依据：表范围请求的运行时语义由注入的项目权威参考覆盖
+    // （计划/结果必须原样写明依据了哪条注入路径，见 combatScopePrompt）。
+    mekaCombatEvidenceBasis: 'project-reference',
+  };
+}
+
+/**
  * 表范围审批转换（纯函数）：把「用户在表范围提案后回了一句肯定」转成范围确认。
  *
  * - `previousVendorOptions` 已知且不是表范围 ⇒ 不动任何状态（避免把别处的「确认」当成范围审批）；
@@ -596,14 +645,41 @@ export function combatRequestScopeApprovalPatch(input: {
   ) {
     return null;
   }
-  return {
-    ...(previousScope === 'table-scope' ? { mekaCombatRequestScope: 'table-scope' } : {}),
-    mekaCombatRequestScopeState: 'confirmed',
-    mekaCombatScopeApproved: true,
-    // 审批同时固定证据依据：表范围请求的运行时语义由注入的项目权威参考覆盖
-    // （计划/结果必须原样写明依据了哪条注入路径，见 combatScopePrompt）。
-    mekaCombatEvidenceBasis: 'project-reference',
-  };
+  return combatScopeApprovedVendorPatch(previousScope);
+}
+
+/**
+ * 表范围审批转换（`ask_user_question` 卡片路径）：把「用户点了确认项」转成与聊天路径
+ * **同一份**范围确认补丁。
+ *
+ * 为什么需要它：聊天路径由计划层 / 续聊口子从 `input.prompt` 驱动，而卡片答案是**另一条通道**
+ * （renderer 的 `RESOLVE_INTERACTION`）。真实缺陷：用户通过卡片确认了范围，
+ * `mekaCombatScopeApproved` 却从未被写入，策略层继续按「尚未确认任何技能」拒掉每一次工具调用，
+ * 最后只能要求用户把同一句话再打一遍 —— 用户给了确认，系统看不见。
+ *
+ * **比聊天路径更严的前提**：必须已知会话当前就是表范围提案态
+ * （`previousVendorOptions.mekaCombatRequestScope === 'table-scope'`）。聊天路径靠「整条消息只由
+ * 肯定词组成」挡住误判；卡片路径没有这层约束（选项标签必然带业务内容），若不再要求范围前提，
+ * 任何一张选项恰好以「确认 / 好 / OK」开头的卡片都会写出范围审批 —— 那是**放宽**门禁。
+ * 前提不满足（含镜像缺失）一律返回 null，行为与「没有这次审批」一致。
+ *
+ * 幂等：已确认过则返回 null。只影响写入，不影响只读发现（同聊天路径）。
+ */
+export function combatRequestScopeAnswerApprovalPatch(input: {
+  answer: unknown;
+  previousVendorOptions?: Record<string, unknown> | null;
+}): Record<string, unknown> | null {
+  if (!isCombatScopeAnswerApproval(input.answer)) return null;
+  const previous = input.previousVendorOptions;
+  const previousScope = previous?.mekaCombatRequestScope;
+  if (previousScope !== 'table-scope') return null;
+  if (
+    previous?.mekaCombatRequestScopeState === 'confirmed' &&
+    previous?.mekaCombatScopeApproved === true
+  ) {
+    return null;
+  }
+  return combatScopeApprovedVendorPatch(previousScope);
 }
 
 /**

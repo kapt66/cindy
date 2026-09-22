@@ -1998,7 +1998,7 @@ export function evaluateCombatShellCommandExecution(
     !isCombatScopeResolutionRead(context)
   ) {
     return deny(
-      `第一条项目内容证据必须是老版模块编辑器对目标技能 ${combatTargetLabel(options)} 的 legacy_module_export_json 结构化回执。导出前 Shell 只能读取已注入的总控 Skill 和项目参考路径。`,
+      `第一条项目内容证据必须是老版模块编辑器对目标技能 ${combatTargetLabel(options)} 的 legacy_module_export_json 结构化回执——先做这一步。在此之前 Shell 只允许读取已注入的总控 Skill、项目参考路径，以及表范围解析用的白名单只读 Unity 查询；P4 写入等要等导出回执到手之后。`,
     );
   }
   if (isBroadCombatDesignExplorationCommand(context)) {
@@ -2455,7 +2455,7 @@ export async function evaluateCombatToolExecution(
     !isCombatScopeResolutionUnityQuery(context)
   ) {
     return deny(
-      `第一条项目内容证据必须是老版模块编辑器对目标技能 ${combatTargetLabel(options)} 的 legacy_module_export_json 结构化回执。导出尝试前只允许读取已注入的总控 Skill、项目参考路径和调用 unity_inspect(action=status)；不得读取 AGENTS、客户端源码、资产目录、参考技能或服务器。`,
+      `第一条项目内容证据必须是老版模块编辑器对目标技能 ${combatTargetLabel(options)} 的 legacy_module_export_json 结构化回执——**先做这一步**，之后才谈其它项目读写。在此之前允许的只读动作只有三类：读取已注入的总控 Skill 与项目参考路径、调用 unity_inspect(action=status)、以及表范围解析用的白名单只读 Unity 查询（legacy_module_query_nodes / legacy_module_audit_coverage，经 unity_inspect(action="command")）。已经做过的范围解析读取属于第三类，不必重做，也不要换成 unity_execute。不得读取 AGENTS、客户端源码、资产目录、参考技能或服务器；P4 写入等要等导出回执到手之后。`,
     );
   }
   // D3：模块编辑器命令面白名单。放在首证据门禁之后，避免改变既有拒绝理由的优先级

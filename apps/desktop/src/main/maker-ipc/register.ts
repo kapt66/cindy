@@ -585,6 +585,7 @@ import {
 } from '../meka-projects/combatWorkflowPolicy.js';
 import {
   applyMekaRuntimeConfig,
+  combatRequestScopeAnswerApprovalPatch,
   prepareCombatFollowupRuntimeContext,
 } from '../meka-injection/index.js';
 import {
@@ -2840,6 +2841,48 @@ function resolvePendingInteraction(requestId: string, decision: InteractionDecis
       goalAskAnswerObserver(resolver.sessionId, decision.answers ?? {}, questions);
     } catch (e) {
       log.warn('goalAskAnswerObserver threw', { sessionId: resolver.sessionId, error: String(e) });
+    }
+  }
+  // 表范围审批：卡片答案是**用户本人**给出的确认，与聊天消息同源（只是通道不同）。
+  // 聊天路径由计划层 / 续聊口子从 `input.prompt` 驱动（`mekaResolvePlan.ts`），卡片答案永远
+  // 到不了那里 —— 于是用户点了「确认」范围，`mekaCombatScopeApproved` 仍是 false，策略层继续
+  // 按「尚未确认任何技能」拒掉每一次工具调用，最后只能让用户把同一句话再打一遍（真实缺陷）。
+  // 只做「把用户已给出的确认变成 Host 可见的状态」：判定词表 + 表范围前提都在注入层，本处
+  // 不推断、不代表 Agent 批准（dismissed 一律不算）。
+  if (
+    resolver.kind === 'ask_user_question' &&
+    decision.kind === 'ask_user_question' &&
+    decision.dismissed !== true
+  ) {
+    try {
+      const previousVendorOptions = readCombatVendorOptions(resolver.sessionId);
+      let approvalPatch: Record<string, unknown> | null = null;
+      for (const answer of Object.values(decision.answers ?? {})) {
+        approvalPatch = combatRequestScopeAnswerApprovalPatch({ answer, previousVendorOptions });
+        if (approvalPatch) break;
+      }
+      if (approvalPatch) {
+        rememberCombatVendorOptions(resolver.sessionId, approvalPatch);
+        // 同一轮可见性：策略层读的是**实时** `vendorOptions`（D6 同理），而
+        // `Session.setVendorOptions` 在各 runtime 的实现里都是「无 await 的 in-place
+        // Object.assign」到那个被 MCP 上下文按引用持有的对象上（codex `index.ts:13930`、
+        // claude-code `:7015`、pi `:7225`），所以 fire-and-forget 也已同步生效。
+        // 仍按 `goalAskAnswerObserver` 的容错口径 catch：交互 resolve 不能被状态写入打断。
+        const liveSession = getMakerIfReady()?.getSession(resolver.sessionId);
+        if (liveSession) {
+          void liveSession.setVendorOptions(approvalPatch).catch((e: unknown) => {
+            log.warn('combat scope answer approval setVendorOptions failed', {
+              sessionId: resolver.sessionId,
+              error: String(e),
+            });
+          });
+        }
+      }
+    } catch (e) {
+      log.warn('combat scope answer approval threw', {
+        sessionId: resolver.sessionId,
+        error: String(e),
+      });
     }
   }
   return true;
