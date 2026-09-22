@@ -188,6 +188,66 @@ describe('validateManifest', () => {
     expect('orca' in validateManifest(validManifest())).toBe(false);
   });
 
+  it('accepts an additive meka section and keeps its binding identity', () => {
+    const manifest = validateManifest({
+      ...validManifest(),
+      meka: {
+        projectId: 'saga2',
+        roleId: 'general-development',
+        legacyRole: null,
+        target: { channel: 'preview' },
+        formal: {
+          type: 'jira',
+          link: 'https://jira.example/browse/ABC-1',
+          ref: 'ABC-1',
+          content: { title: 'Fix it' },
+        },
+      },
+    });
+    expect(manifest.meka).toEqual({
+      projectId: 'saga2',
+      roleId: 'general-development',
+      legacyRole: null,
+      target: { channel: 'preview' },
+      formal: {
+        type: 'jira',
+        link: 'https://jira.example/browse/ABC-1',
+        ref: 'ABC-1',
+        content: { title: 'Fix it' },
+      },
+    });
+  });
+
+  it('normalizes absent/null meka identity fields and drops the section for old packages', () => {
+    // 旧包(导出端还没有 meka 段)照旧解析,字段缺席而不是报错。
+    expect('meka' in validateManifest(validManifest())).toBe(false);
+
+    const legacy = validateManifest({
+      ...validManifest(),
+      meka: { projectId: null, roleId: '', legacyRole: 'planner' },
+    });
+    expect(legacy.meka).toEqual({
+      projectId: null,
+      roleId: null,
+      legacyRole: 'planner',
+      formal: null,
+    });
+  });
+
+  it.each([
+    ['non-object meka', 'nope'],
+    ['unknown legacy role', { projectId: 'saga2', roleId: 'r', legacyRole: 'ceo' }],
+    ['non-string project id', { projectId: 7, roleId: 'r', legacyRole: null }],
+    ['broken formal section', { projectId: 'saga2', roleId: 'r', legacyRole: null, formal: { type: 'jira' } }],
+  ])('rejects %s with SHARE_FILE_INVALID', (_label, meka) => {
+    try {
+      validateManifest({ ...validManifest(), meka });
+      expect.unreachable();
+    } catch (err) {
+      expect((err as XdtshareError).code).toBe('SHARE_FILE_INVALID');
+    }
+  });
+
   it.each([
     ['unknown orca teamStatus', { teamStatus: 'paused', workers: [] }],
     [

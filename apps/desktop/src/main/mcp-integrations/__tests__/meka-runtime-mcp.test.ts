@@ -33,6 +33,7 @@ import {
   setMekaRuntimeRouterLoginPrompter,
 } from '../meka-runtime-mcp';
 import { getCodexExtraSpawnConfig, shutdownCodexEnvironment } from '../codexEnvironment';
+import { getPiExtraSpawnConfig, shutdownPiEnvironment } from '../piEnvironment';
 import {
   beginCombatServerCapabilityDispatch,
   recordCombatServerCapabilityAutoBridge,
@@ -78,6 +79,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   await shutdownCodexEnvironment();
+  await shutdownPiEnvironment();
 });
 
 describe('Meka runtime MCP remote instance projection', () => {
@@ -1260,5 +1262,196 @@ describe('Meka runtime MCP remote instance projection', () => {
 
     await client.close();
     await config.instance.close();
+  });
+});
+
+/**
+ * Meka 运行时 MCP 的 **Pi 桥接线**。
+ *
+ * 矩阵把 `pi.runtimeMcp` 声明为 true 之后，真正决定「Pi 拿不拿得到」的是进程级 bridge 的
+ * **工厂阶段**：`piEnvironment.doStart` 用空 vendorOptions 调 `isEnabled`，只有在这里返回
+ * true 的 provider 才会进 bridge 的 server 工厂表；之后再怎么声明 `mekaMcpProviderIds`
+ * 都补不回来（这正是 Pi 之前静默缺失的机制）。所以本组用例必须走**真** bridge + 真 HTTP，
+ * 而不是只断言 provider 对象上的 `isEnabled`。
+ */
+describe('Meka runtime MCP 在进程级 Pi 桥里可用', () => {
+  const INIT_BODY = (id: number) => JSON.stringify({
+    jsonrpc: '2.0',
+    id,
+    method: 'initialize',
+    params: {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'meka-pi-bridge-test', version: '1.0.0' },
+    },
+  });
+
+  async function readRpcText(resp: Response): Promise<unknown> {
+    const text = await resp.text();
+    const payload = text
+      .split(/\r?\n/)
+      .find((line) => line.startsWith('data: '))
+      ?.slice('data: '.length);
+    return JSON.parse(payload ?? text);
+  }
+
+  it('mcp_router / meka_design 进入 Pi bridge，并按会话 vendorOptions 裁决工具可用性', async () => {
+    routerService.listProjectBindings.mockResolvedValue(['instance-1']);
+    routerService.listInstances.mockResolvedValue([
+      {
+        id: 'instance-1',
+        projectId: 'saga2',
+        projectName: 'SAGA2 Server',
+        projectDescription: 'saga2 server project',
+        available: true,
+        supported: true,
+        remoteHostId: 'mcpr:instance-1',
+      },
+    ]);
+
+    const providers: McpProvider[] = [];
+    registerMekaRuntimeMcpArrays(providers);
+    // Pi 会话的可变 vendorOptions 就是 bridge 里注册的那份引用（同 codex）：
+    // 同一个会话后续改变选择时，工具侧必须按最新值裁决。
+    const vendorOptions: Record<string, unknown> = {
+      source: 'meka',
+      mekaProjectId: 'saga2',
+      mekaMcpProviderIds: ['mcp-router'],
+    };
+
+    const config = await getPiExtraSpawnConfig(providers, noopLogger(), {
+      sessionId: 'meka-pi-session',
+      workingDir: 'C:\\p4',
+      vendorOptions,
+    });
+
+    const servers = config?.mcpBridge?.servers ?? [];
+    expect(servers.map((server) => server.name)).toContain('mcp_router');
+    // meka_design 与 codex 同语义：工厂阶段就留在 facade 里，端点缺失时工具面为空。
+    expect(servers.map((server) => server.name)).toContain('meka_design');
+
+    const router = servers.find((server) => server.name === 'mcp_router')!;
+    const headers = {
+      authorization: `Bearer ${config!.mcpBridge!.token}`,
+      accept: 'application/json, text/event-stream',
+      'content-type': 'application/json',
+    };
+    const initResp = await fetch(router.url, { method: 'POST', headers, body: INIT_BODY(1) });
+    expect(initResp.status).toBe(200);
+    const mcpSessionId = initResp.headers.get('mcp-session-id') ?? '';
+    await initResp.text();
+
+    const enabled = await fetch(router.url, {
+      method: 'POST',
+      headers: { ...headers, 'mcp-session-id': mcpSessionId },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: { name: 'list_project_remote_instances', arguments: {} },
+      }),
+    });
+    expect(enabled.status).toBe(200);
+    expect(JSON.stringify(await readRpcText(enabled))).toContain('mcpr:instance-1');
+    expect(routerService.listProjectBindings).toHaveBeenCalledWith('saga2');
+    // 会话 URL 带 `?session=`：身份经 bridge 路由注入，工具侧才能读到 vendorOptions。
+    expect(new URL(router.url).searchParams.get('session')).toBe('meka-pi-session');
+
+    // 同一会话改成不选 mcp-router（例如概览角色）：工具立刻按新值拒绝，不再触达 Router。
+    vendorOptions.mekaMcpProviderIds = [];
+    const disabled = await fetch(router.url, {
+      method: 'POST',
+      headers: { ...headers, 'mcp-session-id': mcpSessionId },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'tools/call',
+        params: { name: 'list_project_remote_instances', arguments: {} },
+      }),
+    });
+    expect(disabled.status).toBe(200);
+    expect(JSON.stringify(await readRpcText(disabled))).toContain('Meka project MCP is not enabled');
+    expect(routerService.listProjectBindings).toHaveBeenCalledTimes(1);
+
+    config!.disposeSessionCtx!();
+    // 会话注销后 `?session=` 未命中 → bridge fail-closed 401（与 codex 同机制）。
+    const after = await fetch(router.url, { method: 'POST', headers, body: INIT_BODY(4) });
+    expect(after.status).toBe(401);
+    await after.text();
+  });
+
+  it('普通（非 Meka）Pi 会话保留 facade 但工具不可用 —— 与 codex 同形态，不是每会话增删 server', async () => {
+    const providers: McpProvider[] = [];
+    registerMekaRuntimeMcpArrays(providers);
+
+    const config = await getPiExtraSpawnConfig(providers, noopLogger(), {
+      sessionId: 'ordinary-pi-session',
+      workingDir: 'C:\\ordinary',
+      vendorOptions: {},
+    });
+
+    const servers = config?.mcpBridge?.servers ?? [];
+    const router = servers.find((server) => server.name === 'mcp_router');
+    expect(router).toBeDefined();
+
+    const headers = {
+      authorization: `Bearer ${config!.mcpBridge!.token}`,
+      accept: 'application/json, text/event-stream',
+      'content-type': 'application/json',
+    };
+    const initResp = await fetch(router!.url, { method: 'POST', headers, body: INIT_BODY(1) });
+    const mcpSessionId = initResp.headers.get('mcp-session-id') ?? '';
+    await initResp.text();
+    const result = await fetch(router!.url, {
+      method: 'POST',
+      headers: { ...headers, 'mcp-session-id': mcpSessionId },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: { name: 'diagnose_mcp_router_connection', arguments: {} },
+      }),
+    });
+    expect(JSON.stringify(await readRpcText(result))).toContain('Meka project MCP is not enabled');
+    expect(routerService.getConnectionStatus).not.toHaveBeenCalled();
+
+    config!.disposeSessionCtx!();
+  });
+
+  it('Pi 的工厂阶段 ctx 与 codex 同构，会话 ctx 不享受 bootstrap 放行', () => {
+    const providers: McpProvider[] = [];
+    registerMekaRuntimeMcpArrays(providers);
+    const routerProvider = providers.find((candidate) => candidate.name === 'mcp_router')!;
+    const mekaDesign = providers.find((candidate) => candidate.name === 'meka_design')!;
+
+    const piBootstrap = {
+      agentKind: 'pi' as const,
+      workingDir: '',
+      vendorOptions: {},
+      getSessionContext: () => ({
+        agentKind: 'pi' as const,
+        workingDir: 'C:\\ordinary',
+        sessionId: 'ordinary-pi-session',
+        vendorOptions: {},
+      }),
+    };
+    expect(routerProvider.isEnabled?.(piBootstrap)).toBe(true);
+
+    // 工厂阶段 ctx 之外（带 sessionId / 无 getSessionContext）一律回到按 vendorOptions 的
+    // 普通判定：Pi 会话不会因为「harness 是 pi」就默认拿到 Meka 工具。
+    const piSession = {
+      agentKind: 'pi' as const,
+      workingDir: 'C:\\ordinary',
+      sessionId: 'ordinary-pi-session',
+      vendorOptions: {},
+    };
+    expect(routerProvider.isEnabled?.(piSession)).toBe(false);
+    expect(mekaDesign.isEnabled?.(piSession)).toBe(false);
+
+    const mekaSession = {
+      ...piSession,
+      vendorOptions: { source: 'meka', mekaProjectId: 'saga2', mekaMcpProviderIds: ['mcp-router'] },
+    };
+    expect(routerProvider.isEnabled?.(mekaSession)).toBe(true);
   });
 });

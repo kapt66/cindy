@@ -193,6 +193,29 @@ interface DeviceLinkPresenceSnapshot {
   busy: boolean;
 }
 
+/** Meka 绑定预览(main 侧 mekaShareBinding.ts 的 ShareMekaPreview 镜像)。 */
+interface SessionShareMekaPreview {
+  /** 包内带 Meka 绑定段(= 导出方是 Meka 任务)。 */
+  present: boolean;
+  /** bound = 导入后会绑定到本机项目/角色;unavailable = 只能按普通任务导入。 */
+  status: 'bound' | 'unavailable';
+  projectId: string | null;
+  roleId: string | null;
+  /** 包内的遗留四角色(0.0.11 之前的会话),仅在绑定无法恢复时用于说明来源。 */
+  legacyRole: 'planner' | 'artist' | 'programmer' | 'tester' | null;
+  /** 本机解析出的项目/角色显示名(不可用时为 null)。 */
+  projectName: string | null;
+  roleName: string | null;
+  /** 绑定无法恢复的原因;present=false 或绑定成功时为 'none'。 */
+  reason:
+    | 'none'
+    | 'project-missing'
+    | 'role-missing'
+    | 'workspace-unresolved'
+    | 'legacy-scope'
+    | 'error';
+}
+
 /** .cshare 导入向导的预览数据(main 侧 SharePreview 的镜像)。 */
 interface SessionSharePreview {
   title: string;
@@ -205,6 +228,7 @@ interface SessionSharePreview {
   messageCount: number;
   mediaCount: number;
   orcaWorkerCount: number;
+  meka: SessionShareMekaPreview;
 }
 
 interface LocalSshKeyInfo {

@@ -12450,7 +12450,16 @@
       "conflictCancel": "取消",
       "failed": "导入失败",
       "previewOrca": "协同任务 · 含 {{count}} 个 Worker",
-      "doneOrca": "已一并导入 {{count}} 个协同 Worker"
+      "doneOrca": "已一并导入 {{count}} 个协同 Worker",
+      "mekaBound": "Meka 任务 · 将绑定到本机项目 {{project}} / 角色 {{role}}；角色配置、技能与 MCP 均取自本机",
+      "mekaLost": {
+        "projectMissing": "它绑定的项目（{{projectId}}）在本机不存在，无法恢复绑定。",
+        "roleMissing": "它绑定的角色（{{roleId}}）在本机不存在，或已不属于该项目，无法恢复绑定。",
+        "workspaceUnresolved": "项目已在本机注册，但工作目录解析不出来（请检查设置里的 Meka P4 根目录），无法恢复绑定。",
+        "legacyScope": "这是旧版 Meka 任务（{{role}}），没有项目与角色绑定，无法恢复。",
+        "checkFailed": "本机无法恢复它的 Meka 绑定。"
+      },
+      "mekaLostBody": "将按普通任务导入：角色提示词、角色技能与角色 MCP 都不会生效。"
     },
     "fidelity": {
       "full": "完整包：可无缝续聊",
@@ -12464,7 +12473,13 @@
     },
     "note": {
       "codexStateSkipped": "本机尚未初始化 Codex 环境，任务状态未完全恢复；先运行一次 Codex 任务后即可正常续聊。",
-      "workdirKeyInexact": "所选目录路径过长，无法放置历史转录，已降级为仅对话记录。"
+      "workdirKeyInexact": "所选目录路径过长，无法放置历史转录，已降级为仅对话记录。",
+      "mekaBindingRestored": "已按 Meka 任务导入，绑定到本机项目与角色。首次启动时会按本机角色重新冻结技能快照。",
+      "mekaProjectMissing": "这是一个 Meka 任务，但它绑定的项目在本机不存在，已按普通任务导入：角色提示词、角色技能与角色 MCP 都不会生效。",
+      "mekaRoleMissing": "这是一个 Meka 任务，但它绑定的角色在本机不存在，已按普通任务导入：角色提示词、角色技能与角色 MCP 都不会生效。",
+      "mekaWorkspaceUnresolved": "这是一个 Meka 任务，但它的工作目录在本机解析不出来（请检查设置里的 Meka P4 根目录），已按普通任务导入：角色提示词、角色技能与角色 MCP 都不会生效。",
+      "mekaLegacyScope": "这是旧版 Meka 任务，没有项目与角色绑定，已按普通任务导入：角色提示词、角色技能与角色 MCP 都不会生效。",
+      "mekaBindingFailed": "这是一个 Meka 任务，但本机写入绑定失败，已按普通任务导入：角色提示词、角色技能与角色 MCP 都不会生效。"
     }
   },
   "billing": {

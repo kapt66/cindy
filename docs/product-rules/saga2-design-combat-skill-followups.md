@@ -236,7 +236,10 @@ supported`。回读确认目标链为当前目标 `[4]` → 上一步目标 `[5]
   `serverCapabilityReport` 或 `supportStatus` 时登记可信回执。普通进度、问题或非结构化消息
   不会改变服务器能力门禁。
 - 定向验证：Desktop typecheck、`combatServerCapabilityState` 5 项、
-  `combatWorkflowPolicy` 31 项、`orcaTeamService` 70 项及 Orca bridge 23 项全部通过。
+  `combatWorkflowPolicy` **31 项**（2026-09-02 当日计数；2026-09-22 复核该文件实为 **46 项**
+  `it(`——删除长期零调用的方案审批机制后由 47 项降至 46 项，见
+  [`../migrations/xdmaker-meka-to-cindy.md`](../migrations/xdmaker-meka-to-cindy.md) §6.53）、
+  `orcaTeamService` 70 项及 Orca bridge 23 项全部通过。
 - 修复后的真实 Cindy 任务 `蓄力冲锋技能静态配置评估` 使用战斗开发角色和技能 ID `1010`：
   无 ID 首轮只询问 ID；补充 ID 后完成 P4/Unity CLI/服务器只读核查并输出结构化
   `SAGA2_COMBAT_CONFIG_RESULT`。由于服务器没有首个碰撞目标上下文，结果为 `blocked`，

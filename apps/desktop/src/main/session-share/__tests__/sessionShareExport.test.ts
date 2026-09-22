@@ -120,6 +120,16 @@ function baseSession(): Record<string, unknown> {
     userSendAt: 1700000000000,
     createdAt: 1700000000000,
     updatedAt: 1700000001000,
+    // readSessionRow 现在也选 Meka/正式流程列:非 Meka 会话全部为 NULL。
+    mekaProjectId: null,
+    mekaRoleId: null,
+    mekaRole: null,
+    mekaTargetJson: null,
+    isFormal: 0,
+    formalType: null,
+    formalLink: null,
+    formalRef: null,
+    formalContentJson: null,
   };
 }
 
@@ -455,6 +465,83 @@ describe('exportSessionShare', () => {
     await expect(
       exportSessionShare({ sessionId: 'xdt-session-1', targetPath: path.join(tmpRoot, 'x4') }),
     ).rejects.toMatchObject({ code: 'SHARE_EXPORT_FAILED' });
+  });
+
+  it('meka session export carries the binding identity and agrees with session.json', async () => {
+    sessionRowRef.row = {
+      ...baseSession(),
+      workspaceKind: 'meka',
+      mekaProjectId: 'saga2',
+      mekaRoleId: 'general-development',
+      mekaRole: null,
+      mekaTargetJson: JSON.stringify({ channel: 'preview', build: 42 }),
+      isFormal: 1,
+      formalType: 'jira',
+      formalLink: 'https://jira.example/browse/ABC-1',
+      formalRef: 'ABC-1',
+      formalContentJson: JSON.stringify({ title: 'Fix the bug' }),
+    };
+    const target = path.join(tmpRoot, 'out-meka.xdtshare');
+    const outcome = await exportSessionShare({ sessionId: 'xdt-session-1', targetPath: target });
+    expect(outcome.status).toBe('ok');
+
+    const zip = await unzipOf(target);
+    const manifest = validateManifest(JSON.parse(await zip.file('manifest.json')!.async('string')));
+    expect(manifest.meka).toEqual({
+      projectId: 'saga2',
+      roleId: 'general-development',
+      legacyRole: null,
+      target: { channel: 'preview', build: 42 },
+      formal: {
+        type: 'jira',
+        link: 'https://jira.example/browse/ABC-1',
+        ref: 'ABC-1',
+        content: { title: 'Fix the bug' },
+      },
+    });
+    // meka 段是 additive:Meka 包不带 orca 段时仍保持 minReaderVersion=1,旧读端
+    // 照常能读成普通任务;formatVersion 标到 2 表示用到了 v2 时代的段。
+    expect(manifest.minReaderVersion).toBe(1);
+    expect(manifest.formatVersion).toBe(2);
+    // 绑定身份只走 manifest;session.json 与 manifest 的 workspaceKind 必须一致,
+    // 不能一个写 'meka' 一个写 'project'。
+    expect(manifest.workspaceKind).toBe('project');
+    const snapshot = JSON.parse(await zip.file('session.json')!.async('string')) as {
+      workspaceKind: string;
+    };
+    expect(snapshot.workspaceKind).toBe('project');
+  });
+
+  it('legacy meka session export keeps the legacy role without inventing a binding', async () => {
+    sessionRowRef.row = {
+      ...baseSession(),
+      workspaceKind: 'meka',
+      mekaProjectId: 'saga2',
+      mekaRoleId: null,
+      mekaRole: 'planner',
+      mekaTargetJson: 'not-json',
+    };
+    const target = path.join(tmpRoot, 'out-meka-legacy.xdtshare');
+    const outcome = await exportSessionShare({ sessionId: 'xdt-session-1', targetPath: target });
+    expect(outcome.status).toBe('ok');
+    const zip = await unzipOf(target);
+    const manifest = validateManifest(JSON.parse(await zip.file('manifest.json')!.async('string')));
+    expect(manifest.meka).toEqual({
+      projectId: 'saga2',
+      roleId: null,
+      legacyRole: 'planner',
+      formal: null,
+    });
+  });
+
+  it('non-meka session export omits the meka section', async () => {
+    const target = path.join(tmpRoot, 'out-plain.xdtshare');
+    const outcome = await exportSessionShare({ sessionId: 'xdt-session-1', targetPath: target });
+    expect(outcome.status).toBe('ok');
+    const zip = await unzipOf(target);
+    const manifest = validateManifest(JSON.parse(await zip.file('manifest.json')!.async('string')));
+    expect(manifest.meka).toBeUndefined();
+    expect('meka' in manifest).toBe(false);
   });
 
   it('orca lead without active team exports as a plain bundle', async () => {

@@ -12467,7 +12467,16 @@
       "conflictCancel": "Cancel",
       "failed": "Import failed",
       "previewOrca": "Collaboration task · includes {{count}} Workers",
-      "doneOrca": "Also imported {{count}} collaboration Workers"
+      "doneOrca": "Also imported {{count}} collaboration Workers",
+      "mekaBound": "Meka session · binds to the local project {{project}} / role {{role}}; role config, skills and MCP come from this machine",
+      "mekaLost": {
+        "projectMissing": "The project it was bound to ({{projectId}}) is not available on this machine, so the binding cannot be restored.",
+        "roleMissing": "The role it was bound to ({{roleId}}) is not available on this machine, or no longer belongs to that project, so the binding cannot be restored.",
+        "workspaceUnresolved": "Its project is registered here, but the working directory cannot be resolved (check the Meka P4 root in settings), so the binding cannot be restored.",
+        "legacyScope": "This is a legacy Meka session ({{role}} scope) with no project or role binding, so the binding cannot be restored.",
+        "checkFailed": "The Meka binding could not be restored on this machine."
+      },
+      "mekaLostBody": "It will be imported as a regular session: the role prompt, role skills and role MCP will not be applied."
     },
     "fidelity": {
       "full": "Full bundle: seamless continuation",
@@ -12481,7 +12490,13 @@
     },
     "note": {
       "codexStateSkipped": "Codex has not been initialized on this machine, so session state was not fully restored. Run any Codex session once, then continuing will work.",
-      "workdirKeyInexact": "The chosen directory path is too long to place transcripts; downgraded to chat history only."
+      "workdirKeyInexact": "The chosen directory path is too long to place transcripts; downgraded to chat history only.",
+      "mekaBindingRestored": "Imported as a Meka session, bound to the local project and role. The skill snapshot re-freezes from the local role on first start.",
+      "mekaProjectMissing": "This was a Meka session, but its project is not available on this machine, so it was imported as a regular session: the role prompt, role skills and role MCP are not applied.",
+      "mekaRoleMissing": "This was a Meka session, but its role is not available on this machine, so it was imported as a regular session: the role prompt, role skills and role MCP are not applied.",
+      "mekaWorkspaceUnresolved": "This was a Meka session, but its working directory cannot be resolved on this machine (check the Meka P4 root in settings), so it was imported as a regular session: the role prompt, role skills and role MCP are not applied.",
+      "mekaLegacyScope": "This was a legacy Meka session with no project or role binding, so it was imported as a regular session: the role prompt, role skills and role MCP are not applied.",
+      "mekaBindingFailed": "This was a Meka session, but the binding could not be written on this machine, so it was imported as a regular session: the role prompt, role skills and role MCP are not applied."
     }
   },
   "billing": {

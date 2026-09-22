@@ -34,19 +34,21 @@ describe('Meka agent 能力矩阵', () => {
     }
   });
 
-  it('能力值与裁决逐项一致（Pi 两列都是 D1 的有意 false）', () => {
+  it('能力值与裁决逐项一致（三个 AgentKind 都是完整 Meka 能力）', () => {
     expect(MEKA_AGENT_CAPABILITIES['claude-code']).toEqual({
       skillSnapshot: true,
       runtimeMcp: true,
     });
     expect(MEKA_AGENT_CAPABILITIES.codex).toEqual({ skillSnapshot: true, runtimeMcp: true });
-    // D1：Pi **有意**不支持技能快照与 Meka 运行时 MCP。改动这两行 = 改产品裁决。
-    expect(MEKA_AGENT_CAPABILITIES.pi).toEqual({ skillSnapshot: false, runtimeMcp: false });
+    // Pi 的两列在 2026-09-21 由「D1 有意 false」翻转为 true：runtimeMcp 走与 codex
+    // 同形态的进程级 bridge，skillSnapshot 走 pi 既有的显式 `--skill` 通道。
+    // 改动这两行 = 改产品裁决，必须同时改本断言与 docs/dev-rules/meka-injection-layer.md。
+    expect(MEKA_AGENT_CAPABILITIES.pi).toEqual({ skillSnapshot: true, runtimeMcp: true });
   });
 
-  it('runtimeMcp 支持集合正好是 claude-code + codex（Pi 必须不在其中）', () => {
-    expect([...mekaRuntimeMcpAgentKinds()].sort()).toEqual(['claude-code', 'codex']);
-    expect(mekaRuntimeMcpAgentKinds()).not.toContain('pi');
+  it('runtimeMcp 支持集合覆盖全部 AgentKind（Pi 现在在集合里）', () => {
+    expect([...mekaRuntimeMcpAgentKinds()].sort()).toEqual(['claude-code', 'codex', 'pi']);
+    expect(mekaRuntimeMcpAgentKinds()).toContain('pi');
   });
 });
 

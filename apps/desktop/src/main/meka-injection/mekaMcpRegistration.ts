@@ -33,11 +33,22 @@ export type MekaCapabilityRegistration =
  *
  * 现在改成「遍历能力矩阵」：
  * - `runtimeMcp: true` 的 agent：从 registry 取数组并注册；**取不到就抛**（漏传 = 启动期硬失败）；
- * - `runtimeMcp: false` 的 agent（当前只有 Pi，D1）：显式跳过并留下可断言记录。
+ * - `runtimeMcp: false` 的 agent：显式跳过并留下可断言记录。
+ *   当前矩阵里**没有**这样的 agent（claude-code / codex / pi 三列都是 true），这条分支
+ *   仍然保留：它是矩阵声明「不支持」时唯一的显式留档形态，未来任何 agent 退回 false 都
+ *   必须走它，而不是悄悄少注册一个。
  *
  * 注册顺序 = `MEKA_AGENT_KINDS` 顺序（矩阵对象键序），且每个数组内部仍是
  * `routerProvider` → `mekaDesignProvider` 的原有 push 顺序；数组里已有 provider 的
- * 相对顺序不受影响（I1/I2：claude / codex 拿到的 provider 集合与顺序与改动前一致）。
+ * 相对顺序不受影响（I1/I2：claude / codex 拿到的 provider 集合与顺序与改动前一致，
+ * pi 由此**新增**这两个 provider，由矩阵声明）。
+ *
+ * 注意「注册进数组」只是第一步：provider 是否真的到达 harness，还要看该 harness 的
+ * bridge 是否在工厂阶段把 Meka provider 收进 server 工厂表（见
+ * `mcp-integrations/meka-runtime-mcp.ts` 的 `isHarnessBridgeBootstrapContext`，codex 与
+ * pi 都已包含）。矩阵声明与这一步脱钩时，能力仍会静默缺失 —— 由
+ * `__tests__/mcpRegistration.test.ts` 的 pi 用例（数组）与
+ * `meka-runtime-mcp.test.ts` 的 pi bridge 用例（真 HTTP 往返）两层钉住。
  */
 export function registerMekaCapabilities(
   registry: MekaAgentMcpRegistry,

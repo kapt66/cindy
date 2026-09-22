@@ -27,6 +27,9 @@
  * - headerVersion 只管外层头结构;
  * - manifest.formatVersion / minReaderVersion 管内层语义,additive 字段不 bump,
  *   破坏性变更同时 bump 两者,导入端按 minReaderVersion 门禁拒读。
+ * - meka 段(可选,见 XdtshareMekaManifest)同为 additive:旧读端忽略未知字段即可,
+ *   故不需要 bump minReaderVersion;但它只承载**绑定身份**,配置内容与绝对路径一律
+ *   在导入机本地重新解析,所以旧读端把它读成普通任务也不会带入错的路径/凭证。
  */
 
 /**
@@ -236,6 +239,37 @@ export interface XdtshareOrcaManifest {
   workers: XdtshareOrcaWorkerManifest[];
 }
 
+/** 0.0.11 之前的遗留四角色列(meka_role);现代会话为 null。 */
+export type XdtshareMekaLegacyRole = 'planner' | 'artist' | 'programmer' | 'tester';
+
+/** 正式流程快照(导出机 sessions 的 is_formal / formal_* 列),导入端照搬冻结值。 */
+export interface XdtshareMekaFormalSection {
+  type: string;
+  link: string;
+  ref: string;
+  content: unknown;
+}
+
+/**
+ * manifest 可选 meka 段:Meka 任务的**绑定身份**。
+ *
+ * 只带身份(project/role id)与历史事实,刻意不带项目与角色的**配置内容**、P4 绝对
+ * 路径与 MCPRouter 凭证——这些必须在导入机本地重新解析,否则分享包会把导出机的
+ * 目录结构、密钥与角色提示词一并带过去。缺省 = 非 Meka 任务(普通包与旧包同形)。
+ */
+export interface XdtshareMekaManifest {
+  /** 导出机 sessions.meka_project_id;null = 没有项目绑定(遗留 Meka 会话)。 */
+  projectId: string | null;
+  /** 导出机 sessions.meka_role_id;null = 没有角色绑定(遗留 Meka 会话)。 */
+  roleId: string | null;
+  /** 遗留四角色列;有现代绑定(project+role id)的会话一律为 null。 */
+  legacyRole: XdtshareMekaLegacyRole | null;
+  /** 历史 meka_target_json 解析后的值:导入端不解释,只原样回写。 */
+  target?: unknown;
+  /** 正式流程快照;非正式流程任务缺省。 */
+  formal?: XdtshareMekaFormalSection | null;
+}
+
 export interface XdtshareManifest {
   formatVersion: number;
   minReaderVersion: number;
@@ -256,6 +290,11 @@ export interface XdtshareManifest {
   transcripts: XdtshareTranscriptRef[];
   /** 协同包:lead 会话即顶层 session.json,Worker 挂在这里。缺省 = 普通单会话包。 */
   orca?: XdtshareOrcaManifest;
+  /**
+   * Meka 任务:顶层会话(lead)的绑定身份。缺省 = 非 Meka 任务。
+   * 只描述 lead;协同 Worker 的会话行不带各自绑定。
+   */
+  meka?: XdtshareMekaManifest;
 }
 
 const FIDELITIES: ReadonlySet<string> = new Set(['full', 'partial', 'db-only']);
@@ -268,6 +307,12 @@ const ORCA_TEAM_STATUSES: ReadonlySet<string> = new Set([
   'failed',
 ]);
 const ORCA_WORKER_STATUSES: ReadonlySet<string> = new Set(['idle', 'running', 'done', 'error']);
+const MEKA_LEGACY_ROLES: ReadonlySet<string> = new Set([
+  'planner',
+  'artist',
+  'programmer',
+  'tester',
+]);
 
 /**
  * 校验解包出的 manifest。字段级损坏 → SHARE_FILE_INVALID;
@@ -302,6 +347,7 @@ export function validateManifest(value: unknown): XdtshareManifest {
   });
   const transcripts = validateTranscriptRefs(value.transcripts, 'transcripts');
   const orca = value.orca == null ? undefined : validateOrcaSection(value.orca);
+  const meka = value.meka == null ? undefined : validateMekaSection(value.meka);
 
   return {
     formatVersion,
@@ -331,6 +377,7 @@ export function validateManifest(value: unknown): XdtshareManifest {
     entries,
     transcripts,
     ...(orca ? { orca } : {}),
+    ...(meka ? { meka } : {}),
   };
 }
 
@@ -381,6 +428,44 @@ function validateOrcaSection(value: unknown): XdtshareOrcaManifest {
     };
   });
   return { teamStatus: teamStatus as XdtshareOrcaManifest['teamStatus'], workers };
+}
+
+/**
+ * 校验可选 meka 段。字段级损坏按 SHARE_FILE_INVALID 拒整包(与 orca 段同口径):
+ * 绑定身份读错会导致导入出绑定到错误项目/角色的任务,比拒读危险得多。
+ * target 是不透明的历史 JSON,原样透传(导入端只回写,不解释)。
+ */
+function validateMekaSection(value: unknown): XdtshareMekaManifest {
+  if (!isRecord(value)) throw invalid('meka must be an object');
+  const legacyRole =
+    value.legacyRole == null ? null : expectString(value.legacyRole, 'meka.legacyRole');
+  if (legacyRole !== null && !MEKA_LEGACY_ROLES.has(legacyRole)) {
+    throw invalid(`unknown meka.legacyRole: ${legacyRole}`);
+  }
+  return {
+    projectId: nullableId(value.projectId, 'meka.projectId'),
+    roleId: nullableId(value.roleId, 'meka.roleId'),
+    legacyRole: legacyRole as XdtshareMekaLegacyRole | null,
+    ...(value.target === undefined ? {} : { target: value.target }),
+    formal: value.formal == null ? null : validateMekaFormalSection(value.formal),
+  };
+}
+
+function validateMekaFormalSection(value: unknown): XdtshareMekaFormalSection {
+  if (!isRecord(value)) throw invalid('meka.formal must be an object');
+  return {
+    type: expectString(value.type, 'meka.formal.type'),
+    link: expectString(value.link, 'meka.formal.link'),
+    ref: expectString(value.ref, 'meka.formal.ref'),
+    content: value.content ?? null,
+  };
+}
+
+/** 可选 id:缺省/null/空串一律归一为 null(导出机的 NULL 与空串在语义上等同)。 */
+function nullableId(value: unknown, label: string): string | null {
+  if (value == null) return null;
+  const text = expectString(value, label).trim();
+  return text.length > 0 ? text : null;
 }
 
 function invalid(message: string): XdtshareError {

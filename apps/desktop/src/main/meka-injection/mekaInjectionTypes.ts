@@ -113,7 +113,13 @@ export function createMekaPromptSegment(id: MekaPromptSegmentId, text: string): 
 /** inline Meka MCP 配置条目（transport 形态）。 */
 export type MekaInlineMcpConfig = Extract<MekaRoleMcpEntry, { transport: unknown }>;
 
-/** 要挂到 create opts 的原生技能插件（I3：revision 是该任务冻结值）。 */
+/**
+ * 要挂到 create opts 的原生技能插件（I3：revision 是该任务冻结值）。
+ *
+ * 落地形态由 harness 自己决定（本层不感知）：claude-code 当本地 plugin 挂整目录、
+ * codex 注册 `<pluginPath>/skills` 为额外原生根、pi 把 `<pluginPath>/skills/<id>` 作为
+ * 显式 `--skill` 目录传入。远端会话在解析阶段就为 null（I3）。
+ */
 export interface MekaNativeSkillMount {
   pluginPath: string;
   revision: string;

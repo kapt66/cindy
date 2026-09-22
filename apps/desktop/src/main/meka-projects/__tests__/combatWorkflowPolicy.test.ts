@@ -37,12 +37,10 @@ import { runCombatEnvironmentGate } from '../combatEnvironmentGate.js';
 import {
   evaluateCombatShellCommandExecution,
   evaluateCombatToolExecution,
-  evaluateCombatPlanReview,
   invalidateCombatTargetBinding,
   isCombatWorkflowPolicyActive,
   markCombatTargetExportAttempted,
   markCombatTargetExportCompleted,
-  markCombatPlanApproved,
   refreshCombatTargetBinding,
   resetCombatTargetExportStateForTests,
 } from '../combatWorkflowPolicy.js';
@@ -907,12 +905,6 @@ describe('combat workflow host policy', () => {
       behavior: 'deny',
       reason: expect.stringContaining('禁止 P4 写入'),
     });
-
-    const plan = `[SAGA2_COMBAT_SOLUTION]\ntargetSkillId: 1019\nchangeMode: incremental\nsurfaces: module\nmoduleEvidence: saga2-entry-model 101901 -> 101902\ncapabilityMatrix: 原子能力逐项已映射\nevidence: 当前技能导出和客户端消费者\nvalidation: 老版导出逐字段回读\nremainingUnknowns: none\n[/SAGA2_COMBAT_SOLUTION]`;
-    expect(evaluateCombatPlanReview({ vendorOptions: options, plan })).toMatchObject({
-      behavior: 'deny',
-      reason: expect.stringContaining('当前远端 HEAD'),
-    });
   });
 
   it('bounds local lead evidence reads and releases the limit for execution validation', async () => {
@@ -1215,10 +1207,17 @@ describe('combat workflow host policy', () => {
     ).resolves.toEqual({ behavior: 'allow' });
   });
 
-  it('allows read-only exploration but blocks mutation before plan approval', async () => {
+  it('allows read-only exploration and file writes without a plan-approval step', async () => {
     const options = vendor();
     await expect(evaluateCombatToolExecution(context(options))).resolves.toEqual({
       behavior: 'allow',
+    });
+    vi.mocked(runCombatEnvironmentGate).mockResolvedValueOnce({
+      checkedAt: new Date(0).toISOString(),
+      ready: true,
+      p4: { status: 'ready', summary: 'ok' },
+      unityCli: { status: 'ready', summary: 'ok' },
+      mcpr: { status: 'ready', summary: 'ok' },
     });
     await expect(
       evaluateCombatToolExecution(
@@ -1228,7 +1227,7 @@ describe('combat workflow host policy', () => {
           action: { kind: 'file-write', path: 'x.ts' },
         }),
       ),
-    ).resolves.toMatchObject({ behavior: 'deny' });
+    ).resolves.toEqual({ behavior: 'allow' });
   });
 
   it('blocks bulk or full-file combat design scans while preserving narrow reads', async () => {
@@ -1498,14 +1497,14 @@ describe('combat workflow host policy', () => {
       `${directFileRead}; Set-Content hacked.txt x`,
       directFileRead.replace('RoomRoleSkill.cs', '*.cs'),
     ]) {
-      await expect(
-        evaluateCombatToolExecution(
+      expect(
+        evaluateCombatShellCommandExecution(
           context(options, {
             toolName: 'exec',
             action: { kind: 'exec', command, cwd: SAGA2_PROJECT_ROOT },
           }),
         ),
-      ).resolves.toMatchObject({ behavior: 'deny' });
+      ).toMatchObject({ behavior: 'deny' });
     }
   });
 
@@ -1537,8 +1536,8 @@ describe('combat workflow host policy', () => {
       readSkillCommand.replace('SKILL.md', 'reference.md'),
       readSkillCommand.replace(revision, '..'),
     ]) {
-      await expect(
-        evaluateCombatToolExecution(
+      expect(
+        evaluateCombatShellCommandExecution(
           context(options, {
             toolName: 'exec',
             action: {
@@ -1548,7 +1547,7 @@ describe('combat workflow host policy', () => {
             },
           }),
         ),
-      ).resolves.toMatchObject({ behavior: 'deny' });
+      ).toMatchObject({ behavior: 'deny' });
     }
   });
 
@@ -1622,8 +1621,8 @@ describe('combat workflow host policy', () => {
       `foreach ("'$p in $paths) { if (Test-Path $p) { $m=Get-Content $p | Measure-Object -Line; ` +
       `Write-Output "$p\`t$($m.Lines)" } }'`;
 
-    await expect(
-      evaluateCombatToolExecution(
+    expect(
+      evaluateCombatShellCommandExecution(
         context(options, {
           toolName: 'exec',
           action: {
@@ -1633,15 +1632,15 @@ describe('combat workflow host policy', () => {
           },
         }),
       ),
-    ).resolves.toMatchObject({ behavior: 'deny' });
+    ).toMatchObject({ behavior: 'deny' });
 
     for (const command of [
       lineCountCommand.replace('Write-Output', 'Set-Content result.txt'),
       lineCountCommand.replace('SKILL.md', 'reference.md'),
       lineCountCommand.replace('Measure-Object -Line', 'Measure-Object -Line; Remove-Item x'),
     ]) {
-      await expect(
-        evaluateCombatToolExecution(
+      expect(
+        evaluateCombatShellCommandExecution(
           context(options, {
             toolName: 'exec',
             action: {
@@ -1651,7 +1650,7 @@ describe('combat workflow host policy', () => {
             },
           }),
         ),
-      ).resolves.toMatchObject({ behavior: 'deny' });
+      ).toMatchObject({ behavior: 'deny' });
     }
   });
 
@@ -1683,8 +1682,8 @@ describe('combat workflow host policy', () => {
       countCommand.replace('SKILL.md', 'reference.md'),
       countCommand.replace(revision, '..'),
     ]) {
-      await expect(
-        evaluateCombatToolExecution(
+      expect(
+        evaluateCombatShellCommandExecution(
           context(options, {
             toolName: 'exec',
             action: {
@@ -1694,11 +1693,11 @@ describe('combat workflow host policy', () => {
             },
           }),
         ),
-      ).resolves.toMatchObject({ behavior: 'deny' });
+      ).toMatchObject({ behavior: 'deny' });
     }
   });
 
-  it('allows Unity CLI inspection and blocks Unity CLI mutations before approval', async () => {
+  it('allows Unity CLI inspection and Unity CLI mutations once the environment gate is fresh', async () => {
     const options = vendor();
     await expect(
       evaluateCombatToolExecution(
@@ -1712,6 +1711,13 @@ describe('combat workflow host policy', () => {
         }),
       ),
     ).resolves.toEqual({ behavior: 'allow' });
+    vi.mocked(runCombatEnvironmentGate).mockResolvedValueOnce({
+      checkedAt: new Date(0).toISOString(),
+      ready: true,
+      p4: { status: 'ready', summary: 'ok' },
+      unityCli: { status: 'ready', summary: 'ok' },
+      mcpr: { status: 'ready', summary: 'ok' },
+    });
     await expect(
       evaluateCombatToolExecution(
         context(options, {
@@ -1720,7 +1726,7 @@ describe('combat workflow host policy', () => {
           action: { kind: 'mcp' },
         }),
       ),
-    ).resolves.toMatchObject({ behavior: 'deny' });
+    ).resolves.toEqual({ behavior: 'allow' });
   });
 
   it('uses direct Unity status and lets the Meka Unity plugin own startup recovery', async () => {
@@ -1853,8 +1859,7 @@ describe('combat workflow host policy', () => {
   });
 
   it('requires a fresh environment gate for every mutation after approval', async () => {
-    const options = vendor();
-    markCombatPlanApproved({ vendorOptions: options });
+    const options = vendor({ mekaCombatPlanApproved: true });
     vi.mocked(runCombatEnvironmentGate).mockResolvedValueOnce({
       checkedAt: new Date(0).toISOString(),
       ready: true,
@@ -1900,46 +1905,6 @@ describe('combat workflow host policy', () => {
     });
   });
 
-  it('requires the structured solution envelope before native approval', () => {
-    const options = vendor();
-    expect(
-      evaluateCombatPlanReview({ vendorOptions: options, plan: 'module: 10104' }),
-    ).toMatchObject({
-      behavior: 'deny',
-    });
-    const plan = `[SAGA2_COMBAT_SOLUTION]\ntargetSkillId: 123\nchangeMode: incremental\nsurfaces: module/client\nmoduleEvidence: skill-entry-model 10104 -> 10000\ncapabilityMatrix: passive, periodic, random point, delay, damage, effect\nevidence: table + code\nvalidation: tests\nremainingUnknowns: none\n[/SAGA2_COMBAT_SOLUTION]`;
-    expect(evaluateCombatPlanReview({ vendorOptions: options, plan })).toEqual({
-      behavior: 'allow',
-    });
-    expect(
-      evaluateCombatPlanReview({
-        vendorOptions: options,
-        plan: plan.replace('targetSkillId: 123', 'targetSkillId: 待确认'),
-      }),
-    ).toMatchObject({ behavior: 'deny' });
-    expect(
-      evaluateCombatPlanReview({
-        vendorOptions: options,
-        plan: plan.replace('evidence: table + code', 'evidence: 服务端待确认'),
-      }),
-    ).toMatchObject({ behavior: 'deny' });
-    expect(
-      evaluateCombatPlanReview({
-        vendorOptions: options,
-        plan: plan.replace('changeMode: incremental', 'changeMode: modify'),
-      }),
-    ).toMatchObject({ behavior: 'deny' });
-    expect(
-      evaluateCombatPlanReview({
-        vendorOptions: options,
-        plan: plan.replace('surfaces: module/client', 'surfaces: module/server'),
-      }),
-    ).toMatchObject({
-      behavior: 'deny',
-      reason: expect.stringContaining('仅用于只读能力核查'),
-    });
-  });
-
   it('keeps remote server workers permanently read-only after the local Lead approves', async () => {
     const options = vendor({
       mekaWorkflow: 'saga2-combat-server-worker-v1',
@@ -1957,8 +1922,6 @@ describe('combat workflow host policy', () => {
       ),
     ).resolves.toMatchObject({ behavior: 'deny' });
 
-    const lead = vendor();
-    markCombatPlanApproved({ vendorOptions: lead, sessionId: 'lead-remote-1' });
     await expect(
       evaluateCombatToolExecution(
         context(options, {
@@ -2177,16 +2140,6 @@ describe('combat workflow host policy', () => {
     });
     await expect(evaluateCombatToolExecution(context(options))).resolves.toEqual({
       behavior: 'allow',
-    });
-    const plan = `[SAGA2_COMBAT_SOLUTION]\ntargetSkillId: 123\nchangeMode: incremental\nsurfaces: module\nmoduleEvidence: skill-entry-model 10104 -> 10000\ncapabilityMatrix: periodic random point damage chain\nevidence: table + code\nvalidation: tests\nremainingUnknowns: none\n[/SAGA2_COMBAT_SOLUTION]`;
-    expect(evaluateCombatPlanReview({ vendorOptions: options, plan })).toMatchObject({
-      behavior: 'deny',
-      reason: expect.stringContaining('程序交接报告'),
-    });
-    const pending = vendor({ mekaCombatServerCapabilityStatus: 'pending' });
-    expect(evaluateCombatPlanReview({ vendorOptions: pending, plan })).toMatchObject({
-      behavior: 'deny',
-      reason: expect.stringContaining('Host 完整结算'),
     });
   });
 
@@ -2489,8 +2442,7 @@ describe('combat workflow host policy', () => {
   });
 
   it('keeps Router and Orca server-side mutations blocked after plan approval', async () => {
-    const options = vendor();
-    markCombatPlanApproved({ vendorOptions: options });
+    const options = vendor({ mekaCombatPlanApproved: true });
     await expect(
       evaluateCombatToolExecution(
         context(options, {
@@ -2538,7 +2490,7 @@ describe('combat workflow host policy', () => {
     expect(runCombatEnvironmentGate).not.toHaveBeenCalled();
   });
 
-  it('recognizes the exact read-only P4 status call from Codex code-mode approval metadata', async () => {
+  it('recognizes only the exact read-only P4 status call from Codex code-mode approval metadata', async () => {
     await expect(
       evaluateCombatToolExecution(
         context(vendor(), {
@@ -2556,6 +2508,14 @@ describe('combat workflow host policy', () => {
         }),
       ),
     ).resolves.toEqual({ behavior: 'allow' });
+    expect(runCombatEnvironmentGate).not.toHaveBeenCalled();
+    vi.mocked(runCombatEnvironmentGate).mockResolvedValueOnce({
+      checkedAt: new Date(0).toISOString(),
+      ready: true,
+      p4: { status: 'ready', summary: 'ok' },
+      unityCli: { status: 'ready', summary: 'ok' },
+      mcpr: { status: 'ready', summary: 'ok' },
+    });
     await expect(
       evaluateCombatToolExecution(
         context(vendor(), {
@@ -2570,6 +2530,9 @@ describe('combat workflow host policy', () => {
           action: { kind: 'mcp' },
         }),
       ),
-    ).resolves.toMatchObject({ behavior: 'deny' });
+    ).resolves.toEqual({ behavior: 'allow' });
+    // A P4 mutation is not a read-only exemption: it must re-run the
+    // environment gate, while the read-only p4_status call above must not.
+    expect(runCombatEnvironmentGate).toHaveBeenCalledTimes(1);
   });
 });

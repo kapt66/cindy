@@ -75,8 +75,6 @@ export function isCombatEnvironmentRecoveryControlTool(name: string): boolean {
   return READ_ONLY_ROUTER_CONTROL_TOOLS.has(name);
 }
 const READ_ONLY_GLOBAL_MCP_TOOLS = new Set(['ghost_list']);
-const PLACEHOLDER_VALUE =
-  /(?:\b(?:unknown|tbd|todo|none yet|current|selected)\b|当前(?:选择|选中|窗口)?|未知|待确认|待定|稍后|未确定|占位)/i;
 
 type CombatVendorOptions = Record<string, unknown> & {
   source?: unknown;
@@ -86,8 +84,6 @@ type CombatVendorOptions = Record<string, unknown> & {
   mekaCombatEnvironmentReady?: unknown;
   mekaCombatEnvironmentChecks?: unknown;
   mekaCombatPlanApproved?: unknown;
-  /** User explicitly requested an in-scope combat implementation. */
-  mekaCombatExecutionMode?: unknown;
   mekaCombatPhase?: unknown;
   mekaCombatServerCapabilityStatus?: unknown;
   mekaCombatTargetSkillId?: unknown;
@@ -180,116 +176,6 @@ export function isCombatToolPolicyActive(context: {
   vendorOptions: Record<string, unknown>;
 }): boolean {
   return isCombatWorkflowPolicyActive(context) || isCombatServerWorkerPolicyActive(context);
-}
-
-export function markCombatPlanApproved(context: {
-  vendorOptions: Record<string, unknown>;
-  plan?: string;
-  sessionId?: string;
-}): void {
-  if (!isCombatWorkflowPolicyActive(context)) return;
-  const options = combatOptions(context.vendorOptions);
-  options.mekaCombatPlanApproved = true;
-  options.mekaCombatPhase = 'solution-approved';
-}
-
-export function evaluateCombatPlanReview(context: {
-  vendorOptions: Record<string, unknown>;
-  plan: string;
-}): { behavior: 'allow' } | { behavior: 'deny'; reason: string } {
-  if (!isCombatWorkflowPolicyActive(context)) return { behavior: 'allow' };
-  const envelope = context.plan.match(
-    /\[SAGA2_COMBAT_SOLUTION\]([\s\S]*?)\[\/SAGA2_COMBAT_SOLUTION\]/,
-  )?.[1];
-  const required = [
-    'targetSkillId',
-    'changeMode',
-    'surfaces',
-    'moduleEvidence',
-    'capabilityMatrix',
-    'evidence',
-    'validation',
-    'remainingUnknowns',
-  ];
-  const fields = new Map<string, string>();
-  if (envelope) {
-    for (const match of envelope.matchAll(/^([A-Za-z][A-Za-z0-9]*):\s*(\S.*)$/gm)) {
-      fields.set(match[1]!, match[2]!.trim());
-    }
-  }
-  const missing = required.filter((field) => !fields.get(field));
-  const target = fields.get('targetSkillId') ?? '';
-  const confirmedTarget = text(combatOptions(context.vendorOptions).mekaCombatTargetSkillId);
-  const changeMode = fields.get('changeMode') ?? '';
-  const invalidFields = required.filter((field) => {
-    const value = fields.get(field) ?? '';
-    if (!value) return false;
-    if (field === 'remainingUnknowns' && /^(?:none|无)$/i.test(value)) return false;
-    return PLACEHOLDER_VALUE.test(value) || /^<.*>$/.test(value);
-  });
-  const invalidTarget =
-    invalidFields.includes('targetSkillId') ||
-    !/^[1-9]\d*$/.test(target) ||
-    !confirmedTarget ||
-    target !== confirmedTarget;
-  const invalidChangeMode = !['create', 'rebuild', 'incremental'].includes(changeMode);
-  const surfaces = fields.get('surfaces') ?? '';
-  const includesServerImplementation = /(?:^|[\s,，/+|])(?:server|服务器)(?:$|[\s,，/+|])/i.test(
-    surfaces,
-  );
-  const invalidSurfaces =
-    !/(?:^|[\s,，/+|])(?:module|timeline|table|export|client)(?:$|[\s,，/+|])/i.test(surfaces);
-  const serverCapabilityStatus = text(
-    combatOptions(context.vendorOptions).mekaCombatServerCapabilityStatus,
-  );
-  if (includesServerImplementation) {
-    return {
-      behavior: 'deny',
-      reason:
-        '战斗开发服务器 Worker 仅用于只读能力核查，server/服务器不能作为本轮实施面。若现有能力不足，请提交简短程序交接报告并结束当前实现；服务器程序应在独立开发流程中处理。',
-    };
-  }
-  if (serverCapabilityStatus === 'unsupported' || serverCapabilityStatus === 'uncertain') {
-    return {
-      behavior: 'deny',
-      reason:
-        '服务器能力报告已标记当前实现为阻断状态。请停止提交实施方案，向用户返回程序交接报告。',
-    };
-  }
-  if (
-    serverCapabilityStatus === 'dispatching' ||
-    serverCapabilityStatus === 'pending' ||
-    serverCapabilityStatus === 'report-ready' ||
-    serverCapabilityStatus === 'retry-required'
-  ) {
-    return {
-      behavior: 'deny',
-      reason:
-        '服务器只读能力核查尚未由 Host 完整结算。请先完成真实 Worker 派发、auto-bridge 回传和 validate_server_capability_report 一次性消费；失败时重新检查环境并重试，不得代写报告或提交实施方案。',
-    };
-  }
-  if (serverCapabilityStatus !== 'supported') {
-    return {
-      behavior: 'deny',
-      reason:
-        '当前技能尚未在本轮取得 Host 验证的服务器 supported 回执。请先基于当前技能导出和客户端消费者形成 [SAGA2_MODULE_FIRST] 原子能力矩阵，派发只读 MCPR 服务器 Worker，并消费 validate_server_capability_report；历史结论或本地代码不能替代当前远端 HEAD。',
-    };
-  }
-  if (
-    !envelope ||
-    missing.length > 0 ||
-    invalidFields.length > 0 ||
-    invalidTarget ||
-    invalidChangeMode ||
-    invalidSurfaces
-  ) {
-    return {
-      behavior: 'deny',
-      reason:
-        '方案尚未满足 SAGA2 战斗开发审批契约。请补充 [SAGA2_COMBAT_SOLUTION] 回执：targetSkillId 必须是用户确认的具体 ID，changeMode 必须是 create/rebuild/incremental，surfaces 必须列出实际实现面，moduleEvidence 必须引用当前目标技能的老版导出回执、节点/字段或明确不存在结论，capabilityMatrix 必须逐项列出原子能力结论，evidence、validation 和 remainingUnknowns 不能使用占位内容。',
-    };
-  }
-  return { behavior: 'allow' };
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -1598,7 +1484,6 @@ export async function evaluateCombatToolExecution(
 
   // Startup recovery is owned by the Meka Unity plugin. Its tool contract
   // requires the Agent to obtain explicit user agreement before calling open.
-  // Keep this environment action available before the combat plan is approved.
   if (isUnityOpenRequest(context)) return { behavior: 'allow' };
 
   if (context.action.kind === 'session-state') {
@@ -1816,12 +1701,6 @@ export async function evaluateCombatToolExecution(
     );
   }
 
-  if (
-    options.mekaCombatPlanApproved !== true &&
-    options.mekaCombatExecutionMode !== 'autonomous-user-request'
-  ) {
-    return deny('战斗开发仍处于只读探索/澄清/方案阶段。请通过方案审批后再执行写操作。');
-  }
   if (
     options.mekaCombatServerCapabilityStatus === 'unsupported' ||
     options.mekaCombatServerCapabilityStatus === 'uncertain'

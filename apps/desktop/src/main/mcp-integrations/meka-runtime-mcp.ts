@@ -162,12 +162,24 @@ function activeSessionId(context: McpProviderContext): string | undefined {
   return context.getSessionContext?.()?.sessionId ?? context.sessionId;
 }
 
-function isCodexBridgeBootstrapContext(context: McpProviderContext): boolean {
-  return (
-    context.agentKind === 'codex' &&
-    !context.sessionId &&
-    typeof context.getSessionContext === 'function'
-  );
+/**
+ * 进程级 bridge 的**工厂阶段** ctx：codex app-server 与 pi MCP bridge 都在「一个 session
+ * 都还没有」时一次性冻结 provider 集合（`codexEnvironment.doStart` / `piEnvironment.doStart`
+ * 用空 vendorOptions 调 `isEnabled`），per-session 判定只能留到 tool-call 时经
+ * `getSessionContext()` 解析。
+ *
+ * 两个 ctx 的形状**完全同构**：`agentKind` 是 harness 自己、没有 `sessionId`、带
+ * `getSessionContext`。Meka 的 mcp_router / meka_design / inline provider 因此必须在这两个
+ * agent 的工厂阶段就返回 true，否则 provider 连 bridge 的 server 工厂表都进不去 —— 之后
+ * 会话无论怎么声明 `mekaMcpProviderIds` 都拿不到（这正是 Pi 之前静默缺失的机制）。
+ *
+ * 「这个会话到底能不能用」不是这里决定的：tool-call 时 `getSessionContext()` 给出真实
+ * vendorOptions，再由 `isMekaRouterSelected` / `isMekaDesignSelected` / `inlineConfig`
+ * 按会话裁决（与 codex 同一形态：facade 恒在，按会话 ctx 判定）。
+ */
+function isHarnessBridgeBootstrapContext(context: McpProviderContext): boolean {
+  if (context.sessionId || typeof context.getSessionContext !== 'function') return false;
+  return context.agentKind === 'codex' || context.agentKind === 'pi';
 }
 
 function isMekaRouterSelected(context: McpProviderContext): boolean {
@@ -1180,11 +1192,12 @@ function createRouterServer(context: McpProviderContext): McpServer {
 const routerProvider: McpProvider = {
   name: 'mcp_router',
   isEnabled(context) {
-    // Codex owns one process-global HTTP bridge. Its server factories are
-    // collected before any thread exists, so keep the Meka facade registered
-    // at that bootstrap boundary and resolve the real thread context inside
-    // each tool call. Claude still uses the ordinary per-session gate.
-    return isCodexBridgeBootstrapContext(context) || isMekaRouterSelected(context);
+    // Codex and Pi each own one process-global HTTP bridge. Their server
+    // factories are collected before any thread/session exists, so keep the
+    // Meka facade registered at that bootstrap boundary and resolve the real
+    // session context inside each tool call. Claude still uses the ordinary
+    // per-session gate.
+    return isHarnessBridgeBootstrapContext(context) || isMekaRouterSelected(context);
   },
   toClaudeSdkConfig(context) {
     return {
@@ -1240,13 +1253,13 @@ function createMekaDesignProxyServer(context: McpProviderContext): McpServer {
 const mekaDesignProvider: McpProvider = {
   name: 'meka_design',
   isEnabled(context) {
-    // Keep the session-gated proxy in Codex's frozen process-global provider set even when
-    // MekaDesign is configured later. Claude still evaluates the endpoint per session.
-    if (isCodexBridgeBootstrapContext(context)) return true;
+    // Keep the session-gated proxy in Codex's and Pi's frozen process-global provider set
+    // even when MekaDesign is configured later. Claude still evaluates the endpoint per session.
+    if (isHarnessBridgeBootstrapContext(context)) return true;
     return getMekaRouterService().getMekaDesignEndpoint() !== null && isMekaDesignSelected(context);
   },
   toClaudeSdkConfig(context) {
-    if (isCodexBridgeBootstrapContext(context)) {
+    if (isHarnessBridgeBootstrapContext(context)) {
       return {
         type: 'sdk' as const,
         name: 'meka_design',
@@ -1262,7 +1275,7 @@ class InlineMekaMcpProvider implements McpProvider {
   constructor(readonly name: string) {}
 
   isEnabled(context: McpProviderContext): boolean {
-    if (isCodexBridgeBootstrapContext(context)) return true;
+    if (isHarnessBridgeBootstrapContext(context)) return true;
     return options(context).source === 'meka' && inlineConfig(context, this.name) !== null;
   }
 
@@ -1370,7 +1383,7 @@ class InlineMekaMcpProvider implements McpProvider {
 
   toClaudeSdkConfig(context: McpProviderContext): unknown | null {
     const config = inlineConfig(context, this.name);
-    if (!config && !isCodexBridgeBootstrapContext(context)) return null;
+    if (!config && !isHarnessBridgeBootstrapContext(context)) return null;
     if (!config) {
       return {
         type: 'sdk' as const,
@@ -1480,8 +1493,10 @@ export function prepareMekaRuntimeMcp(entries: readonly MekaRoleMcpEntry[]): {
   const inlineConfigs: Array<Extract<MekaRoleMcpEntry, { transport: unknown }>> = [];
   for (const entry of entries) {
     if (entry.enabled === false) continue;
+    // Last line of defence for the CLI-only boundary: an inline (transport) entry for Unity
+    // would actually spawn a Unity MCP server, so it is refused before it is ever prepared.
     if ('transport' in entry && /unity/i.test(entry.id)) {
-      throw new Error(`Unity inline transport is not supported: ${entry.id}`);
+      throw new Error(`Unity is CLI-only; a Unity MCP transport is not supported: ${entry.id}`);
     }
     if ('providerId' in entry) {
       if (

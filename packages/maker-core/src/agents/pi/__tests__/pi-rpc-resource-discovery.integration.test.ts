@@ -514,6 +514,62 @@ describe.skipIf(!existsSync(PI_BINARY))('Pinned Pi RPC resource discovery facts'
     expect(result.commands.some((command) => command.name === 'skill:project-pi-skill')).toBe(false);
   });
 
+  /**
+   * 宿主冻结的 Skill 快照（Meka 角色技能）与 Pi 的既有显式 `--skill` 通道同形：
+   * `skills/<id>/SKILL.md` 与 manifest / catalog / plugin 描述符并列。这里用**真** Pi
+   * 二进制确认每个 `skills/<id>` 都作为独立 Skill 被加载，且快照里的非 Skill 文件不参与
+   * 发现 —— 「Pi 能不能消费这个快照」由此不靠推断。
+   */
+  it('loads every skills/<id> of a host-owned immutable snapshot passed as explicit --skill paths', async () => {
+    const fixture = await createFixture('pi-rpc-host-snapshot-');
+    const pluginPath = path.join(
+      fixture.root,
+      'meka-skill-snapshots',
+      'revisions',
+      'a'.repeat(64),
+      'claude-plugin',
+    );
+    const skillIds = ['combat-skill-configuration', 'general-development'];
+    const skillDirs = skillIds.map((id) => path.join(pluginPath, 'skills', id));
+    for (const [index, skillDir] of skillDirs.entries()) writeSkill(skillDir, skillIds[index]!);
+    writeFileSync(path.join(pluginPath, 'snapshot.json'), '{"schemaVersion":1}\n');
+    writeFileSync(path.join(pluginPath, 'catalog.json'), '[]\n');
+    mkdirSync(path.join(pluginPath, '.claude-plugin'), { recursive: true });
+    writeFileSync(
+      path.join(pluginPath, '.claude-plugin', 'plugin.json'),
+      '{"name":"cindy-meka-role-skills","version":"1.0.0"}\n',
+    );
+
+    const result = await runGetCommands({
+      binaryPath: PI_BINARY,
+      cwd: fixture.workingDir,
+      configHome: fixture.configHome,
+      sessionDir: fixture.sessionDir,
+      approve: false,
+      extraArgs: [
+        '--no-extensions',
+        ...skillDirs.flatMap((skillDir) => ['--skill', skillDir]),
+      ],
+    });
+
+    for (const [index, skillDir] of skillDirs.entries()) {
+      expect(result.commands).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          name: `skill:${skillIds[index]}`,
+          source: 'skill',
+          sourceInfo: expect.objectContaining({
+            baseDir: skillDir,
+            path: path.join(skillDir, 'SKILL.md'),
+          }),
+        }),
+      ]));
+    }
+    expect(result.commands.some((command) =>
+      typeof command.name === 'string' && /snapshot|catalog|plugin/i.test(command.name))).toBe(false);
+    // 快照技能只在显式传入时加载：同一 configHome 下没有隐式复制。
+    expect(existsSync(path.join(fixture.configHome, 'skills', skillIds[0]!))).toBe(false);
+  });
+
   it('reports the exact file provenance for an explicit single-file skill', async () => {
     const fixture = await createFixture('pi-rpc-explicit-file-skill-');
     const explicitSkill = path.join(fixture.workingDir, '.pi', 'skills', 'single-file.md');

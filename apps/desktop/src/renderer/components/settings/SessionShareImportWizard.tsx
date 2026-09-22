@@ -30,6 +30,19 @@ const log = createLogger('SessionShareImportWizard');
 
 type WizardStep = 'picking' | 'password' | 'preview' | 'conflict' | 'committing' | 'done';
 
+/**
+ * 绑定丢失原因 → i18n key 后缀。reason 是 main 给的稳定枚举(带连字符,不适合直接
+ * 拼进 dot-path 键名),这里映射成 camelCase 子键。
+ */
+const MEKA_LOST_COPY_KEY: Record<SessionShareMekaPreview['reason'], string> = {
+  none: 'checkFailed',
+  'project-missing': 'projectMissing',
+  'role-missing': 'roleMissing',
+  'workspace-unresolved': 'workspaceUnresolved',
+  'legacy-scope': 'legacyScope',
+  error: 'checkFailed',
+};
+
 export interface SessionShareImportWizardProps {
   open: boolean;
   /** 拖入窗口时的文件路径;缺省则 inspect 弹系统打开对话框。 */
@@ -182,6 +195,13 @@ export function SessionShareImportWizard({
     if (res.success && res.path) setWorkingDir(res.path);
   }, []);
 
+  // Meka 绑定可在本机恢复 = 工作目录已由项目解析出来,不再让用户重选目录
+  // (main 侧也忽略 commit 传的 workingDir)。
+  const mekaBound = preview?.meka.present === true && preview.meka.status === 'bound';
+  const mekaLost = preview?.meka.present === true && preview.meka.status === 'unavailable';
+  const needWorkdir = preview?.workspaceKind === 'project' && !mekaBound;
+  const canCommit = step === 'preview' && (!needWorkdir || workingDir.trim().length > 0);
+
   const handleCommit = useCallback(
     async (overwrite = false) => {
       if (!draftId) return;
@@ -194,9 +214,11 @@ export function SessionShareImportWizard({
           ? preview.agentKind
           : 'cc';
         const prefs = getDraft().lastByVendor[vendor];
+        // Meka 绑定可恢复时工作目录由 main 按本机项目解析(与新建 Meka 任务同一路径),
+        // 这里不传用户选的目录,也不套 worktree。
         const res = await window.electronAPI.localDb.sessionShare.commit({
           draftId,
-          ...(preview?.workspaceKind === 'project' ? { workingDir } : {}),
+          ...(needWorkdir ? { workingDir } : {}),
           draftPrefs: {
             model: prefs.model,
             effort: prefs.effort,
@@ -205,7 +227,7 @@ export function SessionShareImportWizard({
             fastMode: getFastModeForModel(prefs.model),
             providerId: prefs.providerId ?? null,
           },
-          ...(preview?.workspaceKind === 'project' && useWorktree ? { useWorktree: true } : {}),
+          ...(needWorkdir && useWorktree ? { useWorktree: true } : {}),
           ...(overwrite ? { overwrite: true } : {}),
         });
         setResult(res);
@@ -222,7 +244,7 @@ export function SessionShareImportWizard({
         setStep('preview');
       }
     },
-    [draftId, preview, workingDir, useWorktree, handleError],
+    [draftId, preview, needWorkdir, workingDir, useWorktree, handleError],
   );
 
   const handleOpenSession = useCallback(() => {
@@ -231,8 +253,6 @@ export function SessionShareImportWizard({
     if (sessionId) navigate(`/cc-agent/${sessionId}`);
   }, [result, closeAndReset, navigate]);
 
-  const needWorkdir = preview?.workspaceKind === 'project';
-  const canCommit = step === 'preview' && (!needWorkdir || workingDir.trim().length > 0);
   const busy = step === 'committing' || unlocking;
 
   // picking 阶段(main 正在弹文件对话框)不渲染弹窗本体,避免双层遮罩。
@@ -337,10 +357,45 @@ export function SessionShareImportWizard({
                     {t('sessionShare.import.previewOrca', { count: preview.orcaWorkerCount })}
                   </p>
                 )}
+                {/* Meka 绑定:先说清是 Meka 任务,再给本机的实际解析结果——
+                    bound 时用户不需要再选目录;unavailable 时提前告知绑定会丢。 */}
+                {mekaBound && (
+                  <p className="mt-1 text-xs text-[var(--text-tertiary)]">
+                    {t('sessionShare.import.mekaBound', {
+                      project: preview.meka.projectName ?? preview.meka.projectId ?? '-',
+                      role: preview.meka.roleName ?? preview.meka.roleId ?? '-',
+                    })}
+                  </p>
+                )}
+                {mekaLost && (
+                  <p className="mt-1 text-xs text-[var(--text-tertiary)]">
+                    {t(`sessionShare.import.mekaLost.${MEKA_LOST_COPY_KEY[preview.meka.reason]}`, {
+                      projectId: preview.meka.projectId ?? '',
+                      roleId: preview.meka.roleId ?? '',
+                      // 遗留四角色只有旧文案里有名字(meka.legacyRoles.*),翻译后塞进括号。
+                      role: preview.meka.legacyRole
+                        ? t(`meka.legacyRoles.${preview.meka.legacyRole}`)
+                        : '',
+                    })}
+                  </p>
+                )}
                 <p className="mt-1 text-xs text-[var(--text-tertiary)]">
                   {t(`sessionShare.fidelity.${preview.fidelity}`)}
                 </p>
               </div>
+
+              {mekaLost && (
+                <div className="flex items-start gap-2 rounded-md bg-[var(--warning-bg-soft)] px-3 py-2">
+                  <ShieldAlert
+                    size={14}
+                    className="mt-0.5 shrink-0 text-[var(--confirm-desc)]"
+                    aria-hidden
+                  />
+                  <p className="text-xs text-[var(--confirm-desc)]">
+                    {t('sessionShare.import.mekaLostBody')}
+                  </p>
+                </div>
+              )}
 
               {/* 风险提示:分享包来自他人,历史内容可能影响 AI 后续行为,续聊时
                   agent 具备本机文件读写与命令执行能力——确认导入前必须让用户知情。 */}

@@ -429,11 +429,13 @@ Host deny 是不可覆盖的业务不变量：Claude 的本地 `PreToolUse`、`c
 daemon 不因 Full access 跳过回调。Codex 门禁任务的每轮以 `untrusted` + `read-only` 发起，
 命令、文件和 MCP elicitation 都回到 Host 裁决。普通任务未启用门禁时保持既有权限映射。
 
-门禁只位于工具和方案审批边界，不进入 translator、token/event 队列或 usage 计量热路径，
+门禁只位于**工具裁决边界**（战斗工作流的结构化方案审批机制已于 2026-09-22 作为死代码删除，
+见 [`../migrations/xdmaker-meka-to-cindy.md`](../migrations/xdmaker-meka-to-cindy.md) §6.53），
+不进入 translator、token/event 队列或 usage 计量热路径，
 也不改变 system prompt 拼接、稳定前缀和事件映射。业务 Host 如在写前执行网络或进程探针，
 该延迟属于被保护写操作的显式前置成本，不能移入首 token 或逐事件路径。测试至少覆盖 Full
-access 不能绕过 deny、方案缺失结构不能批准、批准事件只在用户允许后发生，以及普通任务不受
-影响。
+access 不能绕过 deny、目标技能 ID 未确认前阻断项目内容证据、服务器能力状态未结算时拒绝实施，
+以及普通任务不受影响。
 
 ## 4. system prompt 改动门禁
 

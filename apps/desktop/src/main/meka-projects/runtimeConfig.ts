@@ -400,8 +400,13 @@ function parseDiscoveredMcp(content: string, fallbackId: string): MekaRoleMcpEnt
   return Object.entries(container).map(([id, raw]) => {
     if (!isRecord(raw)) throw new Error(`Meka MCP metadata ${id} must be an object`);
     if (!SAFE_SKILL_ID_RE.test(id)) throw new Error(`Meka MCP metadata has an invalid id: ${id}`);
+    // Unity is driven exclusively through the Meka Unity official CLI
+    // (`unity_inspect` / `unity_execute`). Rejecting a Unity entry here is what keeps a
+    // project-owned metadata file from routing Unity work back over MCP.
     if (/unity/i.test(id)) {
-      throw new Error(`Unity inline MCP metadata is not supported: ${id}`);
+      throw new Error(
+        `Unity is CLI-only; a Unity MCP metadata entry is not supported: ${id}`,
+      );
     }
     if (typeof raw.providerId === 'string') {
       if (!SAFE_SKILL_ID_RE.test(raw.providerId)) {
@@ -636,8 +641,10 @@ export async function resolveMekaRuntimeConfig(
   }
 
   for (const entry of roleFile.mcp) {
+    // Same CLI-only boundary as the metadata path above: a role must not declare a Unity MCP
+    // server. Unity access goes through the Meka Unity official CLI.
     if (/unity/i.test(entry.id)) {
-      throw new Error(`Unity inline MCP configuration is not supported: ${entry.id}`);
+      throw new Error(`Unity is CLI-only; a Unity MCP role entry is not supported: ${entry.id}`);
     }
     if (entry.enabled !== false) mcp.set(entry.id, entry);
   }

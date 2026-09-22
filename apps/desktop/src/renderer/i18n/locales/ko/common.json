@@ -12450,7 +12450,16 @@
       "conflictCancel": "취소",
       "failed": "가져오기 실패",
       "previewOrca": "협업 태스크 · Worker {{count}}개 포함",
-      "doneOrca": "협업 Worker {{count}}개도 함께 가져왔습니다"
+      "doneOrca": "협업 Worker {{count}}개도 함께 가져왔습니다",
+      "mekaBound": "Meka 세션 · 이 기기의 프로젝트 {{project}} / 역할 {{role}}에 연결됩니다. 역할 설정, 스킬, MCP는 이 기기의 것을 사용합니다",
+      "mekaLost": {
+        "projectMissing": "연결되어 있던 프로젝트({{projectId}})가 이 기기에 없어 연결을 복원할 수 없습니다.",
+        "roleMissing": "연결되어 있던 역할({{roleId}})이 이 기기에 없거나 더 이상 해당 프로젝트에 속하지 않아 연결을 복원할 수 없습니다.",
+        "workspaceUnresolved": "프로젝트는 이 기기에 등록되어 있지만 작업 디렉터리를 확인할 수 없습니다(설정의 Meka P4 루트를 확인하세요). 연결을 복원할 수 없습니다.",
+        "legacyScope": "프로젝트와 역할 연결이 없는 이전 버전 Meka 세션({{role}})이라 복원할 수 없습니다.",
+        "checkFailed": "이 기기에서 Meka 연결을 복원하지 못했습니다."
+      },
+      "mekaLostBody": "일반 세션으로 가져옵니다. 역할 프롬프트, 역할 스킬, 역할 MCP는 적용되지 않습니다."
     },
     "fidelity": {
       "full": "전체 번들: 원활하게 이어갈 수 있습니다",
@@ -12464,7 +12473,13 @@
     },
     "note": {
       "codexStateSkipped": "이 컴퓨터에서 Codex가 아직 초기화되지 않아 세션 상태가 완전히 복원되지 않았습니다. Codex 세션을 한 번 실행하면 이어갈 수 있습니다.",
-      "workdirKeyInexact": "선택한 디렉터리 경로가 너무 길어 트랜스크립트를 배치할 수 없어 채팅 기록만 가져왔습니다."
+      "workdirKeyInexact": "선택한 디렉터리 경로가 너무 길어 트랜스크립트를 배치할 수 없어 채팅 기록만 가져왔습니다.",
+      "mekaBindingRestored": "Meka 세션으로 가져와 이 기기의 프로젝트와 역할에 연결했습니다. 처음 시작할 때 이 기기의 역할로 스킬 스냅샷을 다시 고정합니다.",
+      "mekaProjectMissing": "Meka 세션이었지만 연결되어 있던 프로젝트가 이 기기에 없어 일반 세션으로 가져왔습니다. 역할 프롬프트, 역할 스킬, 역할 MCP는 적용되지 않습니다.",
+      "mekaRoleMissing": "Meka 세션이었지만 연결되어 있던 역할이 이 기기에 없어 일반 세션으로 가져왔습니다. 역할 프롬프트, 역할 스킬, 역할 MCP는 적용되지 않습니다.",
+      "mekaWorkspaceUnresolved": "Meka 세션이었지만 이 기기에서 작업 디렉터리를 확인할 수 없어(설정의 Meka P4 루트를 확인하세요) 일반 세션으로 가져왔습니다. 역할 프롬프트, 역할 스킬, 역할 MCP는 적용되지 않습니다.",
+      "mekaLegacyScope": "프로젝트와 역할 연결이 없는 이전 버전 Meka 세션이어서 일반 세션으로 가져왔습니다. 역할 프롬프트, 역할 스킬, 역할 MCP는 적용되지 않습니다.",
+      "mekaBindingFailed": "Meka 세션이었지만 이 기기에 연결을 기록하지 못해 일반 세션으로 가져왔습니다. 역할 프롬프트, 역할 스킬, 역할 MCP는 적용되지 않습니다."
     }
   },
   "billing": {

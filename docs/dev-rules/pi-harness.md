@@ -209,6 +209,15 @@ Pi CLI 管理入口、内核自更新与旧工具兼容的执行边界见
    不得依赖 `PI_OFFLINE=1` 代替该 settings 硬门。root 不传 `--no-skills`，以保留现有
    user/global skill 行为；项目 skill 的 `loaded` 由当前会话 `get_commands` 对原路径 provenance
    证明。
+   **宿主冻结的技能快照（2026-09-22 起）**：本地 root 任务还会额外收到宿主为**该会话**冻结的技能
+   快照根——`opts.nativeSkillPluginPath` 的 `<path>/skills/<id>` 逐个作为显式 `--skill` 传入
+   （`packages/maker-core/src/agents/pi/host-skill-mount.ts:69`，注入点在
+   `packages/maker-core/src/agents/pi/index.ts:3764`），排列在**项目 Skill 之前**，与
+   「自己的 → 用户的 → 项目的」优先级一致。同一条 `--skill` 通道，**没有**第二套加载机制、
+   不复制快照、不新增审批面。只挂直接含 `SKILL.md` / `skill.md` 的真实目录（隐藏项与 symlink
+   跳过）；**远端会话（`remoteHostId`）与 review 会话不挂**（不把本地路径透传给远端 harness）；
+   根不可用或一个可挂 Skill 都没有时降级为**不带** `--skill` 启动并 `logger.warn` 留痕，不抛错。
+   新增的是**路径**不是正文，不变量 12 的 argv 预算与判据不变。
 9. **Pi bash bounded timeout**:Cindy 覆盖的模型可调 `bash` 在 execute 入口强制默认
    `300s`、上限 `1800s`。缺省或非正数用默认;大于上限或非有限数字 fail-fast(参数错误,
    不是 `Command timed out`);合法秒数原样交给 Pi 原生执行器。不另起 timer / AbortController。
@@ -305,6 +314,9 @@ Pi CLI 管理入口、内核自更新与旧工具兼容的执行边界见
 - PR4 项目资源桥(2026-07,已废止):当时只装配 Cindy 明确批准的 Skill，项目 packages/extensions
   不执行。现行口径见 §8：本地根任务用 `--skill` / `--prompt-template` / `--extension` 原地加载
   仓库原路径，不走批准快照；项目 `.pi/extensions` 会进入该会话。项目 packages 仍不自动安装。
+  同一条 `--skill` 通道现也承接**宿主冻结的技能快照**（2026-09-22 起，见不变量 8）：本地 root
+  任务把快照的每个 `skills/<id>` 作为显式 `--skill` 挂入并排在项目 Skill 之前；远端会话不挂，
+  review 会话保持 hermetic。
 
 ### SSH 远端能力(2026-08 里程碑,轮 39 补记)
 

@@ -14,6 +14,14 @@
  * lead + 全部 Worker + orca_teams/orca_workers 关系图在同一 DB 事务落库;
  * 冲突预检覆盖 lead 与每个 Worker 的 resume id。Worker 的 orca_workers.status
  * 里 running 归一为 idle(导入端没有正在跑的 turn)。
+ *
+ * Meka 任务(manifest.meka):包内只有绑定身份(project/role id 等),导入端在本机的
+ * 项目注册与角色表中重新解析(`mekaShareBinding.ts`)——解析成功才是真正的 Meka 任务:
+ * 工作目录取本机项目解析结果(不再要求用户选目录),额外只读目录取本机项目的
+ * additionalPaths,绑定身份与正式流程快照在导入事务提交后由**一条 UPDATE** 落库
+ * (workspace_kind 与 meka_project_id/meka_role_id 必须同时写,否则就是运行期直接
+ * 拒绝的半绑定行)。解析失败(项目/角色本机缺失、工作目录解析不出、遗留四角色会话)
+ * 一律按普通任务降级并在 notes 里明确告知丢失了什么。
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { promises as fsp } from 'node:fs';
@@ -30,6 +38,7 @@ import type {
   SessionImportShareSessionRow,
 } from '../localDb/client/tx/types.js';
 import { ensureDialogueWorkspaceDir } from '../localDb/dialogueWorkspace.js';
+import { getDbClient } from '../localDb/client/current.js';
 import { createLogger } from '../logger.js';
 import {
   importSharedCodexThread,
@@ -72,6 +81,13 @@ import {
   type XdtshareManifest,
   type XdtshareOrcaWorkerManifest,
 } from './xdtshareFormat.pure.js';
+import {
+  resolveShareMekaBinding,
+  toShareMekaPreview,
+  type ShareMekaBindingResolution,
+  type ShareMekaPreview,
+  type ShareMekaUnavailableReason,
+} from './mekaShareBinding.js';
 import { buildLooseUrl, parseImageUrl, rewriteMediaUrls } from './mediaUrlRewrite.pure.js';
 import type { MediaMapEntry } from './sessionShareExport.js';
 
@@ -112,6 +128,11 @@ export interface SharePreview {
   mediaCount: number;
   /** 协同包携带的 Worker 会话数;普通包为 0。 */
   orcaWorkerCount: number;
+  /**
+   * Meka 绑定预览:包是 Meka 任务时 present=true,并给出本机解析结果
+   * (bound = 导入后会绑定到哪个项目/角色;unavailable = 无法恢复及原因)。
+   */
+  meka: ShareMekaPreview;
 }
 
 export type InspectResult =
@@ -122,7 +143,18 @@ function codedError(code: string, message: string): Error {
   return Object.assign(new Error(message), { code });
 }
 
-function toPreview(manifest: XdtshareManifest): SharePreview {
+/**
+ * 预览必须给出 Meka 绑定在本机的**实际解析结果**(向导据此决定是否还要用户选目录,
+ * 以及要不要提前告知绑定会丢),所以这里要读 DB/项目配置——解析失败不抛错,
+ * 返回 unavailable 让向导走降级提示。非 Meka 包不碰 DB(inspect 的历史行为不变)。
+ */
+async function toPreview(
+  manifest: XdtshareManifest,
+  getImportDbClient: () => DbClient,
+): Promise<SharePreview> {
+  const meka = await resolveShareMekaBinding(manifest.meka, {
+    getDbClient: getImportDbClient,
+  });
   return {
     title: manifest.title,
     agentKind: manifest.agentKind,
@@ -134,6 +166,7 @@ function toPreview(manifest: XdtshareManifest): SharePreview {
     messageCount: manifest.counts.messages,
     mediaCount: manifest.counts.media,
     orcaWorkerCount: manifest.orca?.workers.length ?? 0,
+    meka: toShareMekaPreview(meka),
   };
 }
 
@@ -193,7 +226,7 @@ export async function inspectShareFile(filePath: string): Promise<InspectResult>
     encrypted: false,
     createdAt: Date.now(),
   });
-  return { draftId, encrypted: false, preview: toPreview(manifest) };
+  return { draftId, encrypted: false, preview: await toPreview(manifest, getDbClient) };
 }
 
 /** 第二段:密码解锁加密 draft。 */
@@ -202,7 +235,7 @@ export async function unlockShareDraft(draftId: string, password: string): Promi
   const draft = drafts.get(draftId);
   if (!draft) throw codedError('NOT_FOUND', 'draft expired or not found');
   if (!draft.encrypted || !draft.lockedBytes) {
-    if (draft.manifest) return toPreview(draft.manifest);
+    if (draft.manifest) return await toPreview(draft.manifest, getDbClient);
     throw codedError('SHARE_FILE_INVALID', 'draft is in an invalid state');
   }
   const { zipBytes } = openPayload(draft.lockedBytes, password);
@@ -211,7 +244,7 @@ export async function unlockShareDraft(draftId: string, password: string): Promi
   draft.zip = zip;
   draft.manifest = manifest;
   draft.createdAt = Date.now();
-  return toPreview(manifest);
+  return await toPreview(manifest, getDbClient);
 }
 
 export function cancelShareDraft(draftId: string): void {
@@ -382,8 +415,20 @@ export async function commitShareImport(
   // ── 前置校验 ──
   const now = Date.now();
   const newId = randomUUID();
+  // Meka 绑定在**本机**重新解析(包内只有 project/role id,没有配置内容):
+  // bound 时工作目录由项目解析出来,不再要求用户重选;unavailable 时按普通任务
+  // 降级并把损失作为 note 回传(绝不半绑定——见下方 applySharedMekaBinding)。
+  const mekaBinding = await guarded(() =>
+    resolveShareMekaBinding(manifest.meka, { getDbClient: () => dbClient }),
+  );
+  const mekaBound: Extract<ShareMekaBindingResolution, { status: 'bound' }> | null =
+    mekaBinding.present && mekaBinding.status === 'bound' ? mekaBinding : null;
+  const mekaUnavailable: Extract<ShareMekaBindingResolution, { status: 'unavailable' }> | null =
+    mekaBinding.present && mekaBinding.status === 'unavailable' ? mekaBinding : null;
   let workingDir: string;
-  if (manifest.workspaceKind === 'project') {
+  if (mekaBound) {
+    workingDir = mekaBound.workingDir;
+  } else if (manifest.workspaceKind === 'project') {
     const dir = typeof opts.workingDir === 'string' ? opts.workingDir.trim() : '';
     if (!dir) throw codedError('INVALID_PARAMS', 'workingDir is required for project sessions');
     const stat = await guarded(() => fsp.stat(dir).catch(() => null));
@@ -577,6 +622,13 @@ export async function commitShareImport(
   let worktreePath: string | null = null;
   const journal: Array<() => Promise<void>> = [];
   const notes: string[] = [];
+  if (mekaBound) {
+    notes.push('mekaBindingRestored');
+  } else if (mekaUnavailable) {
+    // 绑定无法在本机恢复:普通任务路径继续导入,但必须明确告知丢了什么
+    // (角色提示词、[MEKA_ROLE_CONTEXT]、角色技能与 MCP 都不会生效)。
+    notes.push(SHARE_MEKA_LOSS_NOTES[mekaUnavailable.reason]);
+  }
   const rollback = async (): Promise<void> => {
     for (const undo of journal.reverse()) {
       await undo().catch((err) => {
@@ -603,7 +655,9 @@ export async function commitShareImport(
     //     目录 / codex cwd / session 行)一律指向 worktree 路径——与 New Maker
     //     草稿开 worktree 创建同语义。失败即中止导入;成功登记 journal,后续
     //     任一步失败逆序回滚时移除 worktree,不留孤儿。
-    if (opts.useWorktree && manifest.workspaceKind === 'project') {
+    //     Meka 任务排除在外:它的工作目录是项目解析出来的 P4 目录,不是用户选的
+    //     普通仓库目录,套 worktree 会让 P4 视图与任务目录不一致。
+    if (opts.useWorktree && manifest.workspaceKind === 'project' && !mekaBound) {
       const detect = await guarded(() => detectCwd(workingDir).catch(() => null));
       if (!detect?.isGitRepo || !detect.repoRoot) {
         throw codedError(
@@ -928,6 +982,26 @@ export async function commitShareImport(
           ...(orcaTxArgs ? { orca: orcaTxArgs } : {}),
         });
         finalTxState.outcome = 'committed';
+        // Meka 绑定必须与 session 行**同一条 UPDATE**落库:workspace_kind='meka' 与
+        // meka_project_id/meka_role_id 分两次写会留下运行期直接拒绝的半绑定行
+        // (mekaResolvePlan:'Meka session requires a project and role')。事务里的
+        // INSERT 因此保持粗粒度 'project',这里一次性翻成 Meka 任务;失败不反转
+        // 已提交的导入(历史已经在库里),只降级成普通任务并记 note。
+        if (mekaBound) {
+          try {
+            await applySharedMekaBinding(dbClient, newId, mekaBound, now);
+          } catch (err) {
+            log.warn('shared meka binding write failed; kept as a regular session', {
+              sessionId: newId,
+              projectId: mekaBound.projectId,
+              roleId: mekaBound.roleId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+            const restored = notes.indexOf('mekaBindingRestored');
+            if (restored >= 0) notes.splice(restored, 1);
+            notes.push('mekaBindingFailed');
+          }
+        }
         // The transaction is now durable. Consume the in-memory draft before
         // revalidating the owner so a stale completion cannot be retried into
         // another profile and duplicate the already committed import.
@@ -953,6 +1027,8 @@ export async function commitShareImport(
       agentKind: manifest.agentKind,
       fidelity,
       messages: dbMessages.length,
+      mekaBound: !!mekaBound,
+      mekaLostReason: mekaUnavailable?.reason ?? null,
       orcaWorkers: workerPlans.length,
       transcriptsWritten,
       notes,
@@ -1380,6 +1456,65 @@ function buildSessionRow(params: {
     createdAt: num(snapshot.createdAt, now),
     updatedAt: now,
   };
+}
+
+/**
+ * Meka 绑定无法恢复时回传给向导的 note key(renderer 按 `sessionShare.note.<key>` 翻译)。
+ * 五种原因分别成 key,文案才能说清到底缺什么;error 与"绑定写入失败"共用一条,
+ * 措辞覆盖"本机没能恢复绑定"这一共同事实。
+ */
+const SHARE_MEKA_LOSS_NOTES: Record<ShareMekaUnavailableReason, string> = {
+  'project-missing': 'mekaProjectMissing',
+  'role-missing': 'mekaRoleMissing',
+  'workspace-unresolved': 'mekaWorkspaceUnresolved',
+  'legacy-scope': 'mekaLegacyScope',
+  error: 'mekaBindingFailed',
+};
+
+/**
+ * 把**本机解析出**的 Meka 绑定一次性写回导入的 session 行。
+ *
+ * - workspace_kind 与两个身份列必须同一条 UPDATE:分两次写会留下运行期直接拒绝的
+ *   半绑定行(`mekaResolvePlan`:'Meka session requires a project and role');
+ * - 工作目录与额外只读目录用本机项目的解析结果(包内不带这些路径),`meka_role`
+ *   遗留列显式清空——有现代绑定的任务不该再挂遗留四角色；
+ * - `is_formal` / `formal_*` 与 `meka_target_json` 是包内冻结的历史事实,原样回写。
+ */
+async function applySharedMekaBinding(
+  dbClient: DbClient,
+  sessionId: string,
+  binding: Extract<ShareMekaBindingResolution, { status: 'bound' }>,
+  now: number,
+): Promise<void> {
+  await dbClient.exec(
+    `UPDATE sessions SET
+       workspace_kind = 'meka',
+       meka_project_id = ?,
+       meka_role_id = ?,
+       meka_role = NULL,
+       meka_target_json = ?,
+       extra_dirs = ?,
+       is_formal = ?,
+       formal_type = ?,
+       formal_link = ?,
+       formal_ref = ?,
+       formal_content_json = ?,
+       updated_at = ?
+     WHERE id = ?`,
+    [
+      binding.projectId,
+      binding.roleId,
+      binding.targetJson,
+      JSON.stringify(binding.extraDirs),
+      binding.formal ? 1 : 0,
+      binding.formal?.type ?? null,
+      binding.formal?.link ?? null,
+      binding.formal?.ref ?? null,
+      binding.formal ? JSON.stringify(binding.formal.content ?? null) : null,
+      now,
+      sessionId,
+    ],
+  );
 }
 
 /**

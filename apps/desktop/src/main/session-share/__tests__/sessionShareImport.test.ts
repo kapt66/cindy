@@ -30,6 +30,12 @@ const dbMock = vi.hoisted(() => ({
   txCalls: [] as Array<{ name: string; args: unknown }>,
   txError: null as Error | null,
   afterTxResolve: null as (() => void) | null,
+  /** Meka 绑定落库走 dbClient.exec(单条 UPDATE);记录调用与可选失败注入。 */
+  execCalls: [] as Array<{ sql: string; params: unknown[] }>,
+  execError: null as Error | null,
+  /** 导出→导入 round-trip:导出端 readSessionRow / readMessageRows 的假数据。 */
+  exportSessionRow: null as Record<string, unknown> | null,
+  exportMessageRows: [] as Array<Record<string, unknown>>,
   drizzle: { scope: 'stable-import-db' },
 }));
 const codexMock = vi.hoisted(() => ({
@@ -57,15 +63,46 @@ const cindyMediaMock = vi.hoisted(() => ({
 const legacyImageMock = vi.hoisted(() => ({
   removeSessionCalls: [] as string[],
 }));
+/**
+ * Meka 绑定解析的叶子依赖:meka-share-binding 通过 getMekaProjectById 读本机项目
+ * (含 additionalPaths)、通过 meka-settings 读 P4 根目录、角色行走 dbClient.queryOne。
+ */
+const mekaMock = vi.hoisted(() => ({
+  p4RootPath: null as string | null,
+  projects: new Map<string, Record<string, unknown>>(),
+  roles: new Map<string, { projectId: string; name: string; displayName: string }>(),
+}));
 
 vi.mock('electron', () => ({
   app: { getPath: () => tmpRoot, getVersion: () => '9.9.9' },
+}));
+vi.mock('../../localDb/ipc/mekaProjects.js', () => ({
+  getMekaProjectById: async (id: string) => mekaMock.projects.get(id) ?? null,
+}));
+vi.mock('../../meka-settings/ipc.js', () => ({
+  getMekaP4SettingsService: () => ({ get: async () => ({ p4RootPath: mekaMock.p4RootPath }) }),
+}));
+// 导出→导入 round-trip 测试要用真实 exportSessionShare:补齐它的两个外部依赖
+// (普通导入路径不碰它们,给空实现不影响其它用例)。
+vi.mock('../../localDb/orcaTeamStore.js', () => ({
+  getActiveTeamByLead: async () => null,
+}));
+vi.mock('../../maker-host/claude-transcript-relocation.js', () => ({
+  collectClaudeSdkSessionIds: async () => ({ ids: [], activeId: null }),
 }));
 vi.mock('../../localDb/client/current.js', () => ({
   getDbClient: () => ({
     drizzle: dbMock.drizzle,
     queryOne: async (sql: string, params: unknown[]) => {
       dbMock.queryCalls.push({ sql, params });
+      // Meka 绑定解析:角色必须存在且属于该项目。
+      if (typeof sql === 'string' && sql.includes('FROM meka_roles')) {
+        return mekaMock.roles.get(String(params?.[0]));
+      }
+      // round-trip:导出端 readSessionRow 的会话行。
+      if (typeof sql === 'string' && sql.includes('working_dir AS workingDir')) {
+        return dbMock.exportSessionRow ?? undefined;
+      }
       if (dbMock.conflictForResumeId != null) {
         return params?.[1] === dbMock.conflictForResumeId
           ? { id: 'existing-worker-session', status: 'active' }
@@ -75,6 +112,10 @@ vi.mock('../../localDb/client/current.js', () => ({
     },
     query: async (sql: string, params: unknown[]) => {
       dbMock.queryCalls.push({ sql, params });
+      // round-trip:导出端 readMessageRows。
+      if (typeof sql === 'string' && sql.includes('FROM messages WHERE session_id')) {
+        return dbMock.exportMessageRows;
+      }
       if (
         typeof sql === 'string' &&
         (sql.includes('FROM orca_teams t') || sql.includes('WITH related_leads AS'))
@@ -82,6 +123,12 @@ vi.mock('../../localDb/client/current.js', () => ({
         return dbMock.conflictGraphRows;
       }
       return [];
+    },
+    // Meka 绑定以单条 UPDATE 落库(workspace_kind 与身份列必须同一个语句)。
+    exec: async (sql: string, params: unknown[]) => {
+      dbMock.execCalls.push({ sql, params });
+      if (dbMock.execError) throw dbMock.execError;
+      return { changes: 1, lastInsertRowid: 0 };
     },
     tx: async (name: string, args: unknown) => {
       if (dbMock.txError) throw dbMock.txError;
@@ -222,6 +269,9 @@ const commitShareImport = (opts: Parameters<typeof rawCommitShareImport>[0]) =>
   });
 const { buildLooseUrl } = await import('../mediaUrlRewrite.pure.js');
 const { buildPlainFile, sealPayload } = await import('../xdtshareCrypto.js');
+// round-trip 用例要跑真实的导出编排,验证 manifest.meka 的写出与读回同形。
+const { exportSessionShare } = await import('../sessionShareExport.js');
+const { normalizeWorkingDirForStorage } = await import('../../../shared/workingDir.js');
 
 const OLD_SESSION_ID = 'old-session-id';
 const SID = 'aaaaaaaa-1111-2222-3333-444444444444';
@@ -438,6 +488,13 @@ describe('sessionShareImport', () => {
     dbMock.txCalls = [];
     dbMock.txError = null;
     dbMock.afterTxResolve = null;
+    dbMock.execCalls = [];
+    dbMock.execError = null;
+    dbMock.exportSessionRow = null;
+    dbMock.exportMessageRows = [];
+    mekaMock.p4RootPath = null;
+    mekaMock.projects.clear();
+    mekaMock.roles.clear();
     codexMock.importCalls = [];
     codexMock.removeCalls = [];
     codexMock.importResult = {
@@ -1627,8 +1684,328 @@ describe('sessionShareImport', () => {
     expect(txArgs.orca!.workers[0].record.status).toBe('done');
   });
 
-  it('orca bundle: unsafe worker sdkSessionId rejects the whole bundle', async () => {
+  // ── Meka 绑定:导出包只带身份,导入端在本机重新解析 ──
+
+  const MEKA_SECTION = {
+    projectId: 'saga2',
+    roleId: 'general-development',
+    legacyRole: null,
+    target: { channel: 'preview' },
+    formal: {
+      type: 'jira',
+      link: 'https://jira.example/browse/ABC-1',
+      ref: 'ABC-1',
+      content: { title: 'Fix the bug' },
+    },
+  };
+
+  function registerMekaProject(p4RootPath: string | null): void {
+    mekaMock.p4RootPath = p4RootPath;
+    mekaMock.projects.set('saga2', {
+      id: 'saga2',
+      name: 'SAGA2',
+      displayName: 'SAGA2',
+      path: 'saga2',
+      additionalPaths: ['/ref/a', '/ref/a', '/ref/b'],
+    });
+    mekaMock.roles.set('general-development', {
+      projectId: 'saga2',
+      name: 'general-development',
+      displayName: 'General Development',
+    });
+  }
+
+  async function commitBundle(manifest: Record<string, unknown>, workingDir?: string) {
+    const filePath = await writeBundleFile(await buildBundle({ manifest }));
+    const inspect = await inspectShareFile(filePath);
+    if (inspect.encrypted) throw new Error('bundle must be plain');
+    const result = await commitShareImport({
+      draftId: inspect.draftId,
+      ...(workingDir ? { workingDir } : {}),
+      projectsRootOverride: projectsRoot,
+      sharedMediaRootOverride: sharedMediaRoot,
+    });
+    return { inspect, result };
+  }
+
+  it('meka bundle with a resolvable project+role imports a real meka session', async () => {
+    const p4Root = path.join(tmpRoot, 'saga2-root');
+    registerMekaProject(p4Root);
+
+    const { inspect, result } = await commitBundle({ meka: MEKA_SECTION });
+    expect(inspect.preview.meka).toEqual({
+      present: true,
+      status: 'bound',
+      projectId: 'saga2',
+      roleId: 'general-development',
+      legacyRole: null,
+      projectName: 'SAGA2',
+      roleName: 'General Development',
+      reason: 'none',
+    });
+    expect(result.notes).toContain('mekaBindingRestored');
+
+    // 工作目录由本机项目(P4 根目录)解析,不再要求用户选目录。
+    const expectedDir = normalizeWorkingDirForStorage(p4Root);
+    const txArgs = dbMock.txCalls[0].args as {
+      session: { workingDir: string; workspaceKind: string; extraDirs: string };
+    };
+    expect(txArgs.session.workingDir).toBe(expectedDir);
+    // 事务内的 INSERT 仍是粗粒度 'project':绑定必须由提交后的**单条 UPDATE** 落地,
+    // 这样绝不会出现只有 workspace_kind='meka' 而没有 role 的半绑定行。
+    expect(txArgs.session.workspaceKind).toBe('project');
+
+    expect(dbMock.execCalls).toHaveLength(1);
+    const [bindingCall] = dbMock.execCalls;
+    expect(bindingCall.sql).toContain("workspace_kind = 'meka'");
+    expect(bindingCall.sql).toContain('meka_project_id = ?');
+    expect(bindingCall.sql).toContain('meka_role_id = ?');
+    expect(bindingCall.params).toEqual([
+      'saga2',
+      'general-development',
+      JSON.stringify({ channel: 'preview' }),
+      // extra_dirs 取本机项目的 additionalPaths(去重,顺序保持)
+      JSON.stringify(['/ref/a', '/ref/b']),
+      1,
+      'jira',
+      'https://jira.example/browse/ABC-1',
+      'ABC-1',
+      JSON.stringify({ title: 'Fix the bug' }),
+      expect.any(Number),
+      result.sessionId,
+    ]);
+  });
+
+  it('meka bundle whose project is missing locally degrades and reports the loss', async () => {
+    const { inspect, result } = await commitBundle({ meka: MEKA_SECTION }, newWorkdir);
+    expect(inspect.preview.meka).toMatchObject({
+      present: true,
+      status: 'unavailable',
+      reason: 'project-missing',
+    });
+    expect(result.notes).toContain('mekaProjectMissing');
+    expect(result.notes).not.toContain('mekaBindingRestored');
+    expect(dbMock.execCalls).toHaveLength(0);
+    const txArgs = dbMock.txCalls[0].args as { session: { workspaceKind: string } };
+    expect(txArgs.session.workspaceKind).toBe('project');
+  });
+
+  it('meka bundle whose role is missing locally degrades and reports the loss', async () => {
+    registerMekaProject(path.join(tmpRoot, 'saga2-root'));
+    mekaMock.roles.clear();
+
+    const { inspect, result } = await commitBundle({ meka: MEKA_SECTION }, newWorkdir);
+    expect(inspect.preview.meka).toMatchObject({
+      present: true,
+      status: 'unavailable',
+      reason: 'role-missing',
+      projectName: 'SAGA2',
+    });
+    expect(result.notes).toContain('mekaRoleMissing');
+    expect(dbMock.execCalls).toHaveLength(0);
+  });
+
+  it('meka role that belongs to another project is treated as missing', async () => {
+    registerMekaProject(path.join(tmpRoot, 'saga2-root'));
+    mekaMock.roles.set('general-development', {
+      projectId: 'other-project',
+      name: 'general-development',
+      displayName: 'General Development',
+    });
+
+    const { inspect, result } = await commitBundle({ meka: MEKA_SECTION }, newWorkdir);
+    expect(inspect.preview.meka.reason).toBe('role-missing');
+    expect(result.notes).toContain('mekaRoleMissing');
+  });
+
+  it('meka bundle without a resolvable P4 root degrades instead of blocking the import', async () => {
+    // 内置项目路径是 'saga2' 令牌:没有 P4 根目录就解析不出工作目录,但导入本身
+    // 不该失败(降级成普通任务 + 明确提示)。
+    registerMekaProject(null);
+    const second = await commitBundle({ meka: MEKA_SECTION }, newWorkdir);
+    expect(second.inspect.preview.meka).toMatchObject({
+      present: true,
+      status: 'unavailable',
+      reason: 'workspace-unresolved',
+      projectName: 'SAGA2',
+      roleName: 'General Development',
+    });
+    expect(second.result.notes).toContain('mekaWorkspaceUnresolved');
+    expect(dbMock.execCalls).toHaveLength(0);
+  });
+
+  it('legacy meka bundle (no project/role id) degrades with the legacy scope note', async () => {
+    registerMekaProject(path.join(tmpRoot, 'saga2-root'));
+    const { inspect, result } = await commitBundle(
+      { meka: { projectId: 'saga2', roleId: null, legacyRole: 'planner', formal: null } },
+      newWorkdir,
+    );
+    expect(inspect.preview.meka).toMatchObject({
+      present: true,
+      status: 'unavailable',
+      reason: 'role-missing',
+      legacyRole: 'planner',
+    });
+    expect(result.notes).toContain('mekaRoleMissing');
+
+    // 完全没有 project/role id(0.0.11 之前的行)才是遗留口径。
+    const legacy = await commitBundle(
+      { meka: { projectId: null, roleId: null, legacyRole: 'planner', formal: null } },
+      newWorkdir,
+    );
+    expect(legacy.inspect.preview.meka).toMatchObject({
+      present: true,
+      status: 'unavailable',
+      reason: 'legacy-scope',
+    });
+    expect(legacy.result.notes).toContain('mekaLegacyScope');
+  });
+
+  it('meka binding write failure keeps the import but reports the loss', async () => {
+    registerMekaProject(path.join(tmpRoot, 'saga2-root'));
+    dbMock.execError = new Error('db down');
+
+    const { result } = await commitBundle({ meka: MEKA_SECTION });
+    expect(result.sessionId).toBeTruthy();
+    expect(result.notes).toContain('mekaBindingFailed');
+    expect(result.notes).not.toContain('mekaBindingRestored');
+  });
+
+  it('package without a meka section imports exactly as before', async () => {
+    registerMekaProject(path.join(tmpRoot, 'saga2-root'));
+    const { inspect, result } = await commitBundle({}, newWorkdir);
+    expect(inspect.preview.meka).toEqual({
+      present: false,
+      status: 'unavailable',
+      projectId: null,
+      roleId: null,
+      legacyRole: null,
+      projectName: null,
+      roleName: null,
+      reason: 'none',
+    });
+    expect(dbMock.execCalls).toHaveLength(0);
+    expect(result.notes).toEqual([]);
+    const txArgs = dbMock.txCalls[0].args as {
+      session: { workspaceKind: string; workingDir: string };
+    };
+    expect(txArgs.session.workspaceKind).toBe('project');
+    expect(txArgs.session.workingDir).toBe(newWorkdir);
+  });
+
+  it('round-trip: exporting a meka session and importing it preserves the binding', async () => {
+    const p4Root = path.join(tmpRoot, 'saga2-roundtrip-root');
+    registerMekaProject(p4Root);
+    const exportWorkdir = path.join(tmpRoot, 'their-meka-proj');
+    await fsp.mkdir(exportWorkdir, { recursive: true });
+    // 导出端:一条 Meka 会话 + 一条消息(无媒体,聚焦绑定身份的往返)。
+    dbMock.exportSessionRow = {
+      id: 'exported-meka-session',
+      title: 'Meka 任务',
+      workingDir: exportWorkdir,
+      workspaceKind: 'meka',
+      model: 'claude-sonnet-4-6',
+      effort: 'high',
+      permissionMode: 'ask',
+      status: 'active',
+      sdkSessionId: null,
+      totalTokenUsage: 0,
+      totalCostUsd: 0,
+      contextTokens: 0,
+      contextWindow: 0,
+      fastMode: 0,
+      planModeEnabled: 0,
+      agentKind: 'cc',
+      orcaRole: null,
+      remoteHostId: null,
+      codexHistoryHasProductPrompt: null,
+      clearedAt: null,
+      userSendAt: 1700000000100,
+      createdAt: 1700000000000,
+      updatedAt: 1700000001000,
+      mekaProjectId: 'saga2',
+      mekaRoleId: 'general-development',
+      mekaRole: null,
+      mekaTargetJson: JSON.stringify({ channel: 'preview' }),
+      isFormal: 1,
+      formalType: 'jira',
+      formalLink: 'https://jira.example/browse/ABC-1',
+      formalRef: 'ABC-1',
+      formalContentJson: JSON.stringify({ title: 'Fix the bug' }),
+    };
+    dbMock.exportMessageRows = [
+      {
+        id: 'm1',
+        clientId: 'c1',
+        role: 'user',
+        content: '"开始吧"',
+        toolUseId: null,
+        agentMeta: null,
+        agentKind: 'cc',
+        createdAt: 1700000000100,
+        rewindAt: null,
+      },
+    ];
+    const target = path.join(tmpRoot, 'roundtrip-meka.xdtshare');
+    const exported = await exportSessionShare({
+      sessionId: 'exported-meka-session',
+      targetPath: target,
+    });
+    expect(exported.status).toBe('ok');
+
+    const inspect = await inspectShareFile(target);
+    if (inspect.encrypted) throw new Error('bundle must be plain');
+    expect(inspect.preview.meka).toMatchObject({
+      present: true,
+      status: 'bound',
+      projectId: 'saga2',
+      roleId: 'general-development',
+    });
+    const result = await commitShareImport({
+      draftId: inspect.draftId,
+      projectsRootOverride: projectsRoot,
+      sharedMediaRootOverride: sharedMediaRoot,
+    });
+    expect(result.notes).toContain('mekaBindingRestored');
+    const txArgs = dbMock.txCalls[0].args as { session: { workingDir: string } };
+    expect(txArgs.session.workingDir).toBe(normalizeWorkingDirForStorage(p4Root));
+    expect(dbMock.execCalls[0].params.slice(0, 3)).toEqual([
+      'saga2',
+      'general-development',
+      JSON.stringify({ channel: 'preview' }),
+    ]);
+    expect(dbMock.execCalls[0].params[4]).toBe(1);
+    expect(dbMock.execCalls[0].params[7]).toBe('ABC-1');
+  });
+
+  it('meka orca bundle: only the lead session is bound, Workers keep the plain kind', async () => {
+    registerMekaProject(path.join(tmpRoot, 'saga2-orca-root'));
     const filePath = await writeBundleFile(
+      await buildBundle({
+        orcaWorker: { agentKind: 'codex' },
+        manifest: { meka: MEKA_SECTION },
+      }),
+    );
+    const inspect = await inspectShareFile(filePath);
+    if (inspect.encrypted) throw new Error('bundle must be plain');
+    const result = await commitShareImport({
+      draftId: inspect.draftId,
+      projectsRootOverride: projectsRoot,
+      sharedMediaRootOverride: sharedMediaRoot,
+    });
+    expect(result.notes).toContain('mekaBindingRestored');
+    const txArgs = dbMock.txCalls[0].args as {
+      session: { id: string };
+      orca?: { workers: Array<{ session: { workspaceKind: string } }> };
+    };
+    // 绑定只落在 lead 那一行(meka 段只描述 lead);Worker 保持粗粒度 kind,
+    // 不会被写成缺角色的半绑定 Meka 会话。
+    expect(dbMock.execCalls).toHaveLength(1);
+    expect(dbMock.execCalls[0].params.at(-1)).toBe(txArgs.session.id);
+    expect(txArgs.orca!.workers[0].session.workspaceKind).toBe('project');
+  });
+
+  it('orca bundle: unsafe worker sdkSessionId rejects the whole bundle', async () => {    const filePath = await writeBundleFile(
       await buildBundle({
         orcaWorker: { agentKind: 'cc' },
         manifest: {

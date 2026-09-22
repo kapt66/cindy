@@ -12450,7 +12450,16 @@
       "conflictBody": "本機已存在相同標識的任務（此前匯入過，或原任務就在本機）。重新匯入將覆蓋已有任務，替換為此分享包中的內容。",
       "conflictOverwrite": "覆蓋匯入",
       "conflictCancel": "取消",
-      "failed": "匯入失敗"
+      "failed": "匯入失敗",
+      "mekaBound": "Meka 任務 · 將繫結到本機專案 {{project}} / 角色 {{role}}；角色設定、技能與 MCP 都取自本機",
+      "mekaLost": {
+        "projectMissing": "它繫結的專案（{{projectId}}）在本機不存在，無法恢復繫結。",
+        "roleMissing": "它繫結的角色（{{roleId}}）在本機不存在，或已不屬於該專案，無法恢復繫結。",
+        "workspaceUnresolved": "專案已在本機註冊，但工作目錄解析不出來（請檢查設定裡的 Meka P4 根目錄），無法恢復繫結。",
+        "legacyScope": "這是舊版 Meka 任務（{{role}}），沒有專案與角色繫結，無法恢復。",
+        "checkFailed": "本機無法恢復它的 Meka 繫結。"
+      },
+      "mekaLostBody": "將以一般任務匯入：角色提示詞、角色技能與角色 MCP 都不會生效。"
     },
     "fidelity": {
       "full": "完整包：可無縫續聊",
@@ -12464,7 +12473,13 @@
     },
     "note": {
       "codexStateSkipped": "本機尚未初始化 Codex 環境，任務狀態未完全恢復；先執行一次 Codex 任務後即可正常續聊。",
-      "workdirKeyInexact": "所選目錄路徑過長，無法放置歷史轉錄，已降級為僅對話記錄。"
+      "workdirKeyInexact": "所選目錄路徑過長，無法放置歷史轉錄，已降級為僅對話記錄。",
+      "mekaBindingRestored": "已以 Meka 任務匯入，繫結到本機專案與角色。首次啟動時會依本機角色重新凍結技能快照。",
+      "mekaProjectMissing": "這是一個 Meka 任務，但它繫結的專案在本機不存在，已以一般任務匯入：角色提示詞、角色技能與角色 MCP 都不會生效。",
+      "mekaRoleMissing": "這是一個 Meka 任務，但它繫結的角色在本機不存在，已以一般任務匯入：角色提示詞、角色技能與角色 MCP 都不會生效。",
+      "mekaWorkspaceUnresolved": "這是一個 Meka 任務，但它的工作目錄在本機解析不出來（請檢查設定裡的 Meka P4 根目錄），已以一般任務匯入：角色提示詞、角色技能與角色 MCP 都不會生效。",
+      "mekaLegacyScope": "這是舊版 Meka 任務，沒有專案與角色繫結，已以一般任務匯入：角色提示詞、角色技能與角色 MCP 都不會生效。",
+      "mekaBindingFailed": "這是一個 Meka 任務，但本機寫入繫結失敗，已以一般任務匯入：角色提示詞、角色技能與角色 MCP 都不會生效。"
     }
   },
   "billing": {

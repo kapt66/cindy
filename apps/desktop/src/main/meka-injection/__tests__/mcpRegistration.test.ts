@@ -35,20 +35,24 @@ import { registerMekaCapabilities } from '../mekaMcpRegistration.js';
 /**
  * 形态 B（进程级 Meka 能力注册）的契约测试。
  *
- * 钉住三件事：
- * 1. claude-code / codex 的 provider 数组**拿到** `mcp_router` + `meka_design`，且是在
- *    原有 provider 之后追加（集合与顺序与收编前一致：I1/I2 的行为不变要求）；
- * 2. pi 的数组**不含** `mcp_router` / `meka_design` / 任何 Meka inline provider —— 这是
- *    D1「Pi 有意不支持 Meka 运行时 MCP」的可执行形式，不是一个注释；且跳过是显式留档
- *    （`skipped` 记录），不是「调用方漏传数组」；
- * 3. 漏传不再是静默缺失：矩阵说支持却拿不到数组，或声明不覆盖全量 AgentKind，都直接抛。
+ * 钉住四件事：
+ * 1. 三个 agent 的 provider 数组**都拿到** `mcp_router` + `meka_design`，且在原有 provider
+ *    之后追加（claude-code / codex 的集合与顺序与收编前一致：I1/I2 的行为不变要求）；
+ * 2. pi 的数组与它们拿到的是**同一批 provider 实例**（矩阵 `runtimeMcp: true` 的可执行
+ *    形式）；inline Meka provider 同样扇出到 pi 数组 ——
+ *    「矩阵说拿到」必须真的落到数组上，否则就是又一次静默缺失；
+ * 3. pi 的 provider 是否**真的到达 harness**：矩阵/数组只是第一步，进程级 bridge 的
+ *    工厂阶段必须收下这些 provider（由 `mcp-integrations/__tests__/meka-runtime-mcp.test.ts`
+ *    的 pi bridge 用例做真 HTTP 往返验证）；
+ * 4. 漏传或声明不覆盖全量 AgentKind 都直接抛（漏传不再是静默缺失）。
  *
  * 名字对照：角色配置里的 provider id 是 `mcp-router` / `meka-design`，落成 provider
  * 对象后 `name` 是 `mcp_router` / `meka_design`（见 meka-runtime-mcp.ts）。
  */
 const MEKA_PROVIDER_NAMES = ['mcp_router', 'meka_design'] as const;
-/** 角色配置侧的 id 与 inline provider 名，pi 数组同样一个都不能有。 */
-const FORBIDDEN_IN_PI = ['mcp_router', 'meka_design', 'mcp-router', 'meka-design', 'project-agent'];
+/** 三个 agent 的核心 provider：Meka 的两个 provider 必须追加在它们之后。 */
+const BASE_PROVIDER_NAMES = ['lizi', 'orca-worker-bridge', 'cindy-make'] as const;
+const ALL_AGENT_KINDS = ['claude-code', 'codex', 'pi'] as const;
 
 function provider(name: string): McpProvider {
   return { name };
@@ -81,59 +85,59 @@ beforeEach(() => {
 });
 
 describe('registerMekaCapabilities', () => {
-  it('claude-code / codex 拿到 mcp_router + meka_design，追加在原数组之后', () => {
+  it('三个 agent 都拿到 mcp_router + meka_design，追加在原数组之后', () => {
     const { arrays, registry } = makeRuntimeArrays();
 
     const outcomes = registerMekaCapabilities(registry);
 
-    for (const agentKind of ['claude-code', 'codex'] as const) {
-      expect(names(arrays[agentKind])).toEqual([
-        'lizi',
-        'orca-worker-bridge',
-        'cindy-make',
-        ...MEKA_PROVIDER_NAMES,
-      ]);
+    for (const agentKind of ALL_AGENT_KINDS) {
+      expect(names(arrays[agentKind])).toEqual([...BASE_PROVIDER_NAMES, ...MEKA_PROVIDER_NAMES]);
     }
     expect(
       outcomes
         .filter((outcome) => outcome.action === 'registered')
         .map((outcome) => outcome.agentKind),
-    ).toEqual(['claude-code', 'codex']);
+    ).toEqual([...ALL_AGENT_KINDS]);
+    expect(outcomes.some((outcome) => outcome.action === 'skipped')).toBe(false);
   });
 
   it('角色配置的 provider id（mcp-router / meka-design）确实落在数组里那两个 provider 对象上', () => {
     const { arrays, registry } = makeRuntimeArrays();
     registerMekaCapabilities(registry);
 
-    const router = arrays['claude-code'].find((candidate) => candidate.name === 'mcp_router');
-    const mekaContext = (providerIds: string[]): McpProviderContext => ({
-      agentKind: 'claude-code',
-      workingDir: 'C:\\p4',
-      sessionId: 'meka-session',
-      vendorOptions: { source: 'meka', mekaProjectId: 'saga2', mekaMcpProviderIds: providerIds },
-    });
+    for (const agentKind of ALL_AGENT_KINDS) {
+      const router = arrays[agentKind].find((candidate) => candidate.name === 'mcp_router');
+      const mekaContext = (providerIds: string[]): McpProviderContext => ({
+        agentKind,
+        workingDir: 'C:\\p4',
+        sessionId: 'meka-session',
+        vendorOptions: { source: 'meka', mekaProjectId: 'saga2', mekaMcpProviderIds: providerIds },
+      });
 
-    // 角色配置用 id `mcp-router` / `project-agent`，SDK 侧 provider name 是 `mcp_router`。
-    expect(router?.isEnabled?.(mekaContext(['mcp-router']))).toBe(true);
-    expect(router?.isEnabled?.(mekaContext(['project-agent']))).toBe(true);
-    expect(router?.isEnabled?.(mekaContext([]))).toBe(false);
-    expect(router?.isEnabled?.(mekaContext(['meka-design']))).toBe(false);
-  });
-
-  it('pi 的数组一个 Meka provider 都不含（D1 反向断言）', () => {
-    const { arrays, registry } = makeRuntimeArrays();
-    const before = [...arrays.pi];
-
-    registerMekaCapabilities(registry);
-
-    expect(arrays.pi).toEqual(before);
-    expect(names(arrays.pi)).toEqual(['lizi', 'orca-worker-bridge', 'cindy-make']);
-    for (const forbidden of FORBIDDEN_IN_PI) {
-      expect(names(arrays.pi)).not.toContain(forbidden);
+      // 角色配置用 id `mcp-router` / `project-agent`，SDK 侧 provider name 是 `mcp_router`。
+      expect(router?.isEnabled?.(mekaContext(['mcp-router']))).toBe(true);
+      expect(router?.isEnabled?.(mekaContext(['project-agent']))).toBe(true);
+      expect(router?.isEnabled?.(mekaContext([]))).toBe(false);
+      expect(router?.isEnabled?.(mekaContext(['meka-design']))).toBe(false);
     }
   });
 
-  it('inline Meka MCP 只扇出到声明为 runtimeMcp=true 的数组（pi 不含 inline provider）', () => {
+  it('pi 的数组与 claude-code / codex 拿到同一批 Meka provider（矩阵 runtimeMcp: true 的可执行形式）', () => {
+    const { arrays, registry } = makeRuntimeArrays();
+
+    registerMekaCapabilities(registry);
+
+    expect(names(arrays.pi)).toEqual([...BASE_PROVIDER_NAMES, ...MEKA_PROVIDER_NAMES]);
+    // 同一批 provider 实例：三个数组共享对象，不是各建一份。
+    expect(arrays.pi.find((candidate) => candidate.name === 'mcp_router')).toBe(
+      arrays['claude-code'].find((candidate) => candidate.name === 'mcp_router'),
+    );
+    expect(arrays.pi.find((candidate) => candidate.name === 'mcp_router')).toBe(
+      arrays.codex.find((candidate) => candidate.name === 'mcp_router'),
+    );
+  });
+
+  it('inline Meka MCP 扇出到全部三个数组（含 pi）', () => {
     const { arrays, registry } = makeRuntimeArrays();
     registerMekaCapabilities(registry);
 
@@ -141,33 +145,41 @@ describe('registerMekaCapabilities', () => {
       { id: 'meka-inline-probe', transport: 'stdio', command: 'probe', args: [] },
     ]);
 
-    expect(names(arrays['claude-code'])).toContain('meka-inline-probe');
-    expect(names(arrays.codex)).toContain('meka-inline-probe');
-    expect(names(arrays.pi)).not.toContain('meka-inline-probe');
-    expect(names(arrays.pi)).toEqual(['lizi', 'orca-worker-bridge', 'cindy-make']);
+    for (const agentKind of ALL_AGENT_KINDS) {
+      expect(names(arrays[agentKind])).toContain('meka-inline-probe');
+    }
+    // 幂等：第二次 prepare 不重复 push。
+    prepareMekaRuntimeMcp([
+      { id: 'meka-inline-probe', transport: 'stdio', command: 'probe', args: [] },
+    ]);
+    for (const agentKind of ALL_AGENT_KINDS) {
+      expect(names(arrays[agentKind]).filter((name) => name === 'meka-inline-probe')).toHaveLength(1);
+    }
   });
 
-  it('pi 的跳过是显式记录（skipped + 原因），不是静默缺失', () => {
+  it('没有 agent 走到 skipped 分支（矩阵当前全为 true；分支本身仍保留并需要有覆盖）', () => {
     const { registry } = makeRuntimeArrays();
 
     const outcomes = registerMekaCapabilities(registry);
 
-    expect(outcomes).toContainEqual({
-      agentKind: 'pi',
-      action: 'skipped',
-      reason: 'runtime-mcp-unsupported',
-    });
     expect(outcomes).toHaveLength(3);
+    expect(outcomes.map((outcome) => outcome.action)).toEqual([
+      'registered',
+      'registered',
+      'registered',
+    ]);
   });
 
   it('矩阵说支持却拿不到数组 = 装配期硬失败（漏传不再静默缺失）', () => {
     const { arrays } = makeRuntimeArrays();
 
-    expect(() =>
-      registerMekaCapabilities({
-        get: (agentKind) => (agentKind === 'codex' ? undefined : arrays[agentKind]),
-      }),
-    ).toThrow(/missing for agent "codex"/);
+    for (const missing of ['claude-code', 'codex', 'pi'] as const) {
+      expect(() =>
+        registerMekaCapabilities({
+          get: (agentKind) => (agentKind === missing ? undefined : arrays[agentKind]),
+        }),
+      ).toThrow(new RegExp(`missing for agent "${missing}"`));
+    }
   });
 
   it('重复调用是幂等的（切账号后重装 maker 会再注册一次）', () => {
@@ -176,18 +188,9 @@ describe('registerMekaCapabilities', () => {
     registerMekaCapabilities(registry);
     registerMekaCapabilities(registry);
 
-    expect(names(arrays['claude-code'])).toEqual([
-      'lizi',
-      'orca-worker-bridge',
-      'cindy-make',
-      ...MEKA_PROVIDER_NAMES,
-    ]);
-    expect(names(arrays.codex)).toEqual([
-      'lizi',
-      'orca-worker-bridge',
-      'cindy-make',
-      ...MEKA_PROVIDER_NAMES,
-    ]);
+    for (const agentKind of ALL_AGENT_KINDS) {
+      expect(names(arrays[agentKind])).toEqual([...BASE_PROVIDER_NAMES, ...MEKA_PROVIDER_NAMES]);
+    }
   });
 });
 
@@ -203,24 +206,27 @@ describe('declareMekaRuntimeMcpAgents 完整性断言', () => {
     ).toThrow(/incomplete; missing AgentKind\(s\): pi/);
   });
 
-  it('声明与能力矩阵矛盾时抛错（矩阵说不支持却塞了数组）', () => {
+  it('矩阵说支持却不给数组时抛错（三个 agent 现在都必须给数组）', () => {
     const { arrays } = makeRuntimeArrays();
 
+    // 三列都是 runtimeMcp: true，所以「全部给数组」是唯一合法形态。
     expect(() =>
       declareMekaRuntimeMcpAgents([
         { agentKind: 'claude-code', providers: arrays['claude-code'] },
         { agentKind: 'codex', providers: arrays.codex },
         { agentKind: 'pi', providers: arrays.pi },
       ]),
-    ).toThrow(/contradicts/);
-    // 反向矛盾同样拦：矩阵说支持却不给数组。
-    expect(() =>
-      declareMekaRuntimeMcpAgents([
-        { agentKind: 'claude-code' },
-        { agentKind: 'codex', providers: arrays.codex },
-        { agentKind: 'pi' },
-      ]),
-    ).toThrow(/contradicts/);
+    ).not.toThrow();
+    // 任一 agent 漏给数组 = 矩阵说支持却拿不到 → 抛（pi 曾经的真实形态）。
+    for (const missing of ['claude-code', 'codex', 'pi'] as const) {
+      expect(() =>
+        declareMekaRuntimeMcpAgents([
+          { agentKind: 'claude-code', ...(missing === 'claude-code' ? {} : { providers: arrays['claude-code'] }) },
+          { agentKind: 'codex', ...(missing === 'codex' ? {} : { providers: arrays.codex }) },
+          { agentKind: 'pi', ...(missing === 'pi' ? {} : { providers: arrays.pi }) },
+        ]),
+      ).toThrow(/contradicts/);
+    }
   });
 
   it('同一 AgentKind 重复声明时抛错', () => {
@@ -231,7 +237,7 @@ describe('declareMekaRuntimeMcpAgents 完整性断言', () => {
         { agentKind: 'claude-code', providers: arrays['claude-code'] },
         { agentKind: 'claude-code', providers: arrays['claude-code'] },
         { agentKind: 'codex', providers: arrays.codex },
-        { agentKind: 'pi' },
+        { agentKind: 'pi', providers: arrays.pi },
       ]),
     ).toThrow(/duplicate/);
   });

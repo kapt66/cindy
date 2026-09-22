@@ -202,6 +202,7 @@ import {
   unavailablePiProjectResourceAssembly,
 } from './project-resource-assembly.js';
 import { applyPiBotSkillPolicy } from './bot-skill-policy.js';
+import { resolvePiHostSkillMount } from './host-skill-mount.js';
 import {
   assertPiSpawnArgvFitsPlatform,
   collectPiProjectResourceCliPaths,
@@ -3717,6 +3718,25 @@ export class PiAgent extends BaseAgent {
         }
       : collectedProjectResources;
 
+    // 宿主为该会话冻结的 Skill 根（`opts.nativeSkillPluginPath`）。Claude 直接把它当本地
+    // plugin 挂，Codex 把 `<path>/skills` 注册成额外原生根；Pi 的原生载体是显式
+    // `--skill <目录>`（伙伴自有 Skill 走的就是这条），因此这里只做「一层布局翻译」，
+    // 不新造挂载机制、不复制快照、也不产生第二份审批面。
+    // 顺序：宿主自己的 Skill 在前（与伙伴 own-Skills 的「自己的 → 用户的 → 项目的」
+    // 优先级一致），项目 Skill 仍随后由既有 `--skill` 传入。
+    const hostSkillMount = resolvePiHostSkillMount({
+      pluginPath: opts.nativeSkillPluginPath,
+      remoteHostId: opts.remoteHostId,
+      reviewMode,
+    });
+    if (hostSkillMount.status === 'unavailable') {
+      // 宿主给了快照根却一个可挂 Skill 都没有：不阻断会话（快照是附加能力，且 revision
+      // 完整性由宿主在校验后写进这个 opt），但必须留痕，避免又一次静默缺能力。
+      this.deps.logger.warn('pi host skill root is unusable; starting without it', {
+        sessionId: opts.sessionId ?? null,
+      });
+    }
+
     const args = [
       '--mode',
       'rpc',
@@ -3741,6 +3761,7 @@ export class PiAgent extends BaseAgent {
       bridgeExtensionPath,
       ...(localSubagentSupported ? ['--extension', subagentExtensionPath] : []),
       ...(!reviewMode && planModeExtAvailable ? ['--extension', planModeExtPath] : []),
+      ...hostSkillMount.skillDirs.flatMap((skillPath) => ['--skill', skillPath]),
       ...(loadProjectResourcesInPlace
         ? piProjectResourceCliArgs(projectResourceCli)
         : botSkillSelection.explicitSkillPaths.flatMap((skillPath) => ['--skill', skillPath])),

@@ -44,7 +44,7 @@ function deps() {
 }
 
 describe('SAGA2 combat environment gate', () => {
-  it('reports P4, official Unity CLI and MCPRouter status without legacy Unity transport', async () => {
+  it('reports P4, official Unity CLI and MCPRouter status', async () => {
     const gate = await runCombatEnvironmentGate(deps());
     expect(gate.ready).toBe(true);
     expect(gate.p4.status).toBe('ready');

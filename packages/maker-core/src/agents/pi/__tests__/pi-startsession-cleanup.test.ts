@@ -2242,6 +2242,78 @@ describe('PiAgent.startSession failure cleanup (mocked pi process)', () => {
     await reviewHandle.close();
   });
 
+  /**
+   * 宿主为该会话冻结的 Skill 根：Claude 整目录挂 plugin、Codex 把 `<path>/skills` 注册成
+   * 额外原生根，Pi 的原生载体是重复的 `--skill <目录>`。三者消费的是同一个
+   * `opts.nativeSkillPluginPath`，这里钉住 Pi 的这一层翻译（含顺序：宿主自己的在前）。
+   */
+  it('mounts the host-owned Skill root ahead of project Skills via explicit --skill flags', async () => {
+    const projectSkillDir = path.join(cwd, '.pi', 'skills', 'project-demo');
+    mkdirSync(projectSkillDir, { recursive: true });
+    writeFileSync(path.join(projectSkillDir, 'SKILL.md'), '# project demo\n');
+    const pluginPath = path.join(
+      agentHome,
+      'meka-skill-snapshots',
+      'revisions',
+      'a'.repeat(64),
+      'claude-plugin',
+    );
+    for (const id of ['combat-skill-configuration', 'general-development']) {
+      const skillDir = path.join(pluginPath, 'skills', id);
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(path.join(skillDir, 'SKILL.md'), `# ${id}\n`);
+    }
+
+    const handle = await new PiAgent(buildDeps()).startSession({
+      ...opts(),
+      nativeSkillPluginPath: pluginPath,
+      nativeSkillRevision: 'a'.repeat(64),
+    });
+    const args = knobs.spawnedArgs[0]!;
+
+    expect(repeatedArgValues(args, '--skill')).toEqual([
+      path.join(pluginPath, 'skills', 'combat-skill-configuration'),
+      path.join(pluginPath, 'skills', 'general-development'),
+      realpathSync(projectSkillDir),
+    ]);
+    // 宿主 Skill 走的是既有显式通道，不得因此打开项目 settings 信任门。
+    expect(args).toContain('--no-approve');
+    expect(args).not.toContain('--approve');
+    await handle.close();
+  });
+
+  it('skips an unusable host Skill root and stays hermetic in review mode', async () => {
+    const missingRoot = path.join(agentHome, 'missing-snapshot', 'claude-plugin');
+    const ordinary = await new PiAgent(buildDeps()).startSession({
+      ...opts(),
+      nativeSkillPluginPath: missingRoot,
+    });
+    // 根不可用 → 不挂任何 Skill，也不阻断会话。
+    expect(repeatedArgValues(knobs.spawnedArgs[0]!, '--skill')).toEqual([]);
+    await ordinary.close();
+
+    const pluginPath = path.join(
+      agentHome,
+      'meka-skill-snapshots',
+      'revisions',
+      'b'.repeat(64),
+      'claude-plugin',
+    );
+    const hostSkillDir = path.join(pluginPath, 'skills', 'combat-skill-configuration');
+    mkdirSync(hostSkillDir, { recursive: true });
+    writeFileSync(path.join(hostSkillDir, 'SKILL.md'), '# combat\n');
+
+    const reviewHandle = await new PiAgent(buildDeps()).startSession({
+      ...opts(),
+      sessionId: 'review-host-skill',
+      reviewMode: true,
+      nativeSkillPluginPath: pluginPath,
+    });
+    // Review 会话保持封闭：即便宿主给了快照根也不挂。
+    expect(repeatedArgValues(knobs.spawnedArgs[1]!, '--skill')).toEqual([]);
+    await reviewHandle.close();
+  });
+
   it('still loads project resources when a local root session resumes a fork jsonl', async () => {
     const skillDir = path.join(cwd, '.pi', 'skills', 'demo');
     mkdirSync(skillDir, { recursive: true });

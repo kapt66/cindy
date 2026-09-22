@@ -2302,9 +2302,9 @@ export function getMaker(): Maker {
     ];
     _mcpProviders.pi = piMcpProviders;
     // 三个 agent 的 provider 数组都已就位，才做 Meka 运行时 MCP 注册：把整个 registry
-    // 交给注入层按能力矩阵裁决（claude-code / codex 注入 mcp_router + meka_design，
-    // pi 因 D1 显式声明不支持并留档）。放在这里而不是 claude/codex 数组创建处，是为了
-    // 让矩阵里任何一个 runtimeMcp=true 的 agent 只要缺数组就在装配期硬失败。
+    // 交给注入层按能力矩阵裁决（claude-code / codex / pi 都注入 mcp_router + meka_design，
+    // 某个会话实际能否使用由该会话 vendorOptions 在每次工具调用时判定）。放在这里而不是
+    // 各数组创建处，是为了让矩阵里任何一个 runtimeMcp=true 的 agent 缺数组就在装配期硬失败。
     registerMekaCapabilities({ get: (agentKind) => _mcpProviders[agentKind] });
     // 用户自定义 MCP:三个 agent 都必须注册其实际持有的数组引用，再统一做初始 refresh。
     // localDb onReady 可能在 Maker 构造前就已触发（此时 registry 无数组，refresh 空跑）；

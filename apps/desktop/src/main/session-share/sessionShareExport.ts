@@ -18,6 +18,13 @@
  * 自身仍拒绝直接导出(入口应是 lead)。远端 Worker 的转录在远端机器,本地
  * 找不到按缺失降档(消息历史仍全量携带)。
  *
+ * Meka 任务:workspace_kind='meka' 的会话把**绑定身份**(meka_project_id /
+ * meka_role_id / 遗留 meka_role / meka_target_json / 正式流程快照)写进
+ * manifest.meka;workspace_kind 在 manifest 与 session.json 里都写粗粒度种类
+ * ('project'),避免两个文件互相矛盾。项目与角色的**配置内容**、P4 绝对路径、
+ * 技能快照与 MCPRouter 凭证都不随包携带——导入端在本机按同样的项目/角色重新
+ * 解析(见 sessionShareImport.ts 与 mekaShareBinding.ts)。
+ *
  * 快照语义:导出不关闭活跃 handle、不加锁;流式输出中的会话可能差最后一轮。
  * 写盘用「同目录 .tmp + rename」保证目标文件原子出现。
  */
@@ -51,6 +58,9 @@ import {
   type XdtshareFidelity,
   type XdtshareManifest,
   type XdtshareManifestEntry,
+  type XdtshareMekaFormalSection,
+  type XdtshareMekaLegacyRole,
+  type XdtshareMekaManifest,
   type XdtshareOrcaManifest,
   type XdtshareOrcaWorkerManifest,
   type XdtshareTranscriptRef,
@@ -133,6 +143,16 @@ interface SessionRow {
   userSendAt: number | null;
   createdAt: number;
   updatedAt: number;
+  // ── Meka 绑定身份(仅 workspace_kind='meka' 的行有值) ──
+  mekaProjectId: string | null;
+  mekaRoleId: string | null;
+  mekaRole: string | null;
+  mekaTargetJson: string | null;
+  isFormal: number;
+  formalType: string | null;
+  formalLink: string | null;
+  formalRef: string | null;
+  formalContentJson: string | null;
 }
 
 interface MessageRow {
@@ -671,17 +691,24 @@ export async function exportSessionShare(
       }
     : undefined;
 
+  const mekaSection: XdtshareMekaManifest | undefined =
+    session.workspaceKind === 'meka' ? buildMekaSection(session) : undefined;
+
   const manifest: XdtshareManifest = {
-    formatVersion: orcaSection ? XDTSHARE_FORMAT_VERSION : XDTSHARE_MIN_READER_VERSION,
-    // 协同包必须让不认识 orca 段的旧读端拒读(否则静默丢全部 Worker);
-    // 普通包保持 1,旧读端照常可读。
+    // formatVersion 描述"这份包用到了哪一代格式能力":orca 段与 meka 段都是 v2 时代
+    // 的 additive 能力,普通包仍是 1。
+    formatVersion:
+      orcaSection || mekaSection ? XDTSHARE_FORMAT_VERSION : XDTSHARE_MIN_READER_VERSION,
+    // minReaderVersion 只对"旧读端读不懂就会静默丢内容"的段抬门槛:协同包必须让不认识
+    // orca 段的旧读端拒读(否则静默丢全部 Worker)。meka 段只带绑定身份、不带配置内容,
+    // 旧读端跳过它读成普通任务不会引入错路径/凭证,故不抬门槛(保持 1)。
     minReaderVersion: orcaSection ? XDTSHARE_ORCA_MIN_READER_VERSION : XDTSHARE_MIN_READER_VERSION,
     appVersion: safeAppVersion(),
     platform: process.platform,
     exportedAt: new Date().toISOString(),
     agentKind: session.agentKind as 'cc' | 'codex' | 'pi',
     title: session.title,
-    workspaceKind: session.workspaceKind === 'dialogue' ? 'dialogue' : 'project',
+    workspaceKind: coarseWorkspaceKind(session.workspaceKind),
     originalWorkingDir: session.workingDir,
     sdkSessionIds: leadB.sdkSessionIds,
     activeSdkSessionId: leadB.activeSdkSessionId,
@@ -690,6 +717,7 @@ export async function exportSessionShare(
     entries,
     transcripts: leadB.refs,
     ...(orcaSection ? { orca: orcaSection } : {}),
+    ...(mekaSection ? { meka: mekaSection } : {}),
   };
   zip.file('manifest.json', JSON.stringify(manifest, null, 2));
 
@@ -744,6 +772,10 @@ export async function exportSessionShare(
  * session.json 白名单快照(不带 providerId/extraDirs/worktree 等本机绑定字段)。
  * sdkSessionId 取三源并集算出的活跃 id(内存态可能新于 DB 行,review bot 指出
  * 用 DB 陈旧值会让导入端 resume 到旧 fork),兜底才用 DB 行。
+ *
+ * workspaceKind 写**粗粒度种类**(与 manifest.workspaceKind 同一口径):Meka 任务的
+ * 绑定身份走 manifest.meka 段,快照里再写一遍 'meka' 会让两个文件互相矛盾,且导入端
+ * 本就不读快照的这一列(只读 manifest)。
  */
 function buildSessionSnapshot(
   session: SessionRow,
@@ -751,7 +783,7 @@ function buildSessionSnapshot(
 ): Record<string, unknown> {
   return {
     title: session.title,
-    workspaceKind: session.workspaceKind,
+    workspaceKind: coarseWorkspaceKind(session.workspaceKind),
     model: session.model,
     effort: session.effort,
     permissionMode: session.permissionMode,
@@ -775,6 +807,71 @@ function buildSessionSnapshot(
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
   };
+}
+
+/**
+ * manifest.workspaceKind 是**粗粒度归属种类**:读端用它决定要不要工作目录,不认识
+ * 'meka' 的旧读端也能照常解析(meka 段是 additive)。Meka 身份只从 meka 段读,
+ * 这里把 'meka' 归一成 'project'。
+ */
+function coarseWorkspaceKind(workspaceKind: string): 'project' | 'dialogue' {
+  return workspaceKind === 'dialogue' ? 'dialogue' : 'project';
+}
+
+/**
+ * 构造 manifest.meka 段:只导出 Meka 任务的**绑定身份**与历史事实。
+ *
+ * 刻意不带项目/角色的配置内容、P4 绝对路径、技能快照与 MCPRouter 凭证——那些必须
+ * 在导入机本地重新解析,随包携带会把导出机的目录结构与密钥带出去。
+ */
+function buildMekaSection(session: SessionRow): XdtshareMekaManifest {
+  const legacyRole =
+    session.mekaRole && MEKA_LEGACY_ROLES.has(session.mekaRole)
+      ? (session.mekaRole as XdtshareMekaLegacyRole)
+      : null;
+  const target = parseJsonOrUndefined(session.mekaTargetJson);
+  const formal: XdtshareMekaFormalSection | null =
+    session.isFormal && session.formalType && session.formalLink && session.formalRef
+      ? {
+          type: session.formalType,
+          link: session.formalLink,
+          ref: session.formalRef,
+          content: parseJsonOrNull(session.formalContentJson),
+        }
+      : null;
+  return {
+    projectId: session.mekaProjectId ?? null,
+    roleId: session.mekaRoleId ?? null,
+    legacyRole,
+    ...(target === undefined ? {} : { target }),
+    formal,
+  };
+}
+
+const MEKA_LEGACY_ROLES: ReadonlySet<string> = new Set([
+  'planner',
+  'artist',
+  'programmer',
+  'tester',
+]);
+
+/** 坏 JSON / 空值一律当"没有"(meka_target_json 是历史遗留列,没有消费者会解释它)。 */
+function parseJsonOrUndefined(raw: string | null): unknown {
+  if (!raw) return undefined;
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseJsonOrNull(raw: string | null): unknown {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return null;
+  }
 }
 
 function resolveMediaFile(
@@ -869,7 +966,16 @@ async function readSessionRow(sessionId: string): Promise<SessionRow | null> {
         cleared_at AS clearedAt,
         user_send_at AS userSendAt,
         created_at AS createdAt,
-        updated_at AS updatedAt
+        updated_at AS updatedAt,
+        meka_project_id AS mekaProjectId,
+        meka_role_id AS mekaRoleId,
+        meka_role AS mekaRole,
+        meka_target_json AS mekaTargetJson,
+        is_formal AS isFormal,
+        formal_type AS formalType,
+        formal_link AS formalLink,
+        formal_ref AS formalRef,
+        formal_content_json AS formalContentJson
       FROM sessions WHERE id = ? LIMIT 1`,
       [sessionId],
     )) ?? null

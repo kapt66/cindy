@@ -118,19 +118,32 @@ MCP／技能落地、技能快照挂载、`vendorOptions` 的 Meka 键，或进�
 `plan.frozen === true`（resume 短路，§5 I4）时，角色段 60 / 70 **不注入**（现状事实），
 只补战斗契约段。
 
-## 4. `MEKA_AGENT_CAPABILITIES` 矩阵与 D1 裁决
+## 4. `MEKA_AGENT_CAPABILITIES` 矩阵与 D1 裁决的取代
 
-`mekaAgentMatrix.ts:28`（`Readonly<Record<AgentKind, MekaAgentCapabilities>>`，三层 `Object.freeze`）：
+`mekaAgentMatrix.ts:38`（`Readonly<Record<AgentKind, MekaAgentCapabilities>>`，三层 `Object.freeze`）：
 
 | agentKind | `skillSnapshot` | `runtimeMcp` | 依据 |
 | --- | --- | --- | --- |
 | `claude-code` | `true` | `true` | `packages/maker-core/src/agents/claude-code/index.ts:3327`、`:3900`（消费 `opts.nativeSkillPluginPath`） |
 | `codex` | `true` | `true` | `packages/maker-core/src/agents/codex/index.ts:4852`（`nativeSkillPluginPath`） |
-| `pi` | **`false`** | **`false`** | `packages/maker-core/src/agents/pi/**` 对 `nativeSkillPluginPath` 与 Meka 运行时 MCP **零引用** |
+| `pi` | `true` | `true` | `packages/maker-core/src/agents/pi/host-skill-mount.ts:69`（`<path>/skills/<id>` → 显式 `--skill`，`pi/index.ts:3764`）；Meka 运行时 MCP 见 `mcp-integrations/meka-runtime-mcp.ts:180` |
 
-**D1（用户裁决，本轮生效）：Pi 有意不支持技能快照与 Meka 运行时 MCP。** 本轮**不补齐**
-Pi 能力，只把「意外缺失」改写成「声明式缺失」——Pi 的实际行为必须与改动前逐字节一致。
-翻转这两行 = 改产品裁决，必须另开一轮并重新评审，不得顺手改。
+**D1 已被取代（2026-09-22）。** 原 D1（用户裁决，2026-09-20）声明「Pi 有意不支持技能快照与 Meka
+运行时 MCP」，矩阵写死两列 `false`。**取代理由**：那两列 `false` 描述的不是产品裁决，而是**两处
+装配缺口**——Pi 侧对 `nativeSkillPluginPath` 零引用（没有落地形态），以及 bridge 的工厂阶段豁免
+只认 codex（`isHarnessBridgeBootstrapContext` 的旧形态 `isCodexBridgeBootstrapContext`）。
+本轮把两处都补齐（Pi 复用既有显式 `--skill` 通道；豁免泛化到 `pi`），矩阵随之翻转。**仍然存在的
+边界**（不是缺口，是平台事实）：
+
+- 远端会话（SSH / MCPRouter worker）**不挂任何 Pi 技能快照**（`host-skill-mount.ts:76`：harness
+  跑在另一台机器上，本地路径无意义），且 Meka 的远端技能投递目前**只有 codex 通道**；
+- 进程级 bridge 的 provider 列表在**工厂阶段**冻结，因此**没有**按会话收窄 facade 这回事——
+  普通 Pi 会话仍看得到 `mcp_router` / `meka_design` facade，但调用 **fail closed**（与 codex
+  同形态）；bridge 启动后才准备好的 inline Meka MCP 不会被追溯注入（对 codex 同样成立）。
+
+完整改动、验证现状与未验证项见
+[`../migrations/xdmaker-meka-to-cindy.md`](../migrations/xdmaker-meka-to-cindy.md) §6.54；
+白名单落点为 **WL-18**。
 
 矩阵的存在理由：以前「谁拿到了什么」是**涌现**的 —— 由 `maker-host` 手工传数组、
 手工写 `vendorOptions` 决定；少传一个数组不报错，只让那个 agent 静默缺能力（Pi 就是这样
@@ -142,12 +155,13 @@ Pi 能力，只把「意外缺失」改写成「声明式缺失」——Pi 的�
   → 编译失败。
 - 运行期：`meka-injection/__tests__/agentMatrix.test.ts` 用 `Record<AgentKind, true>` 再断言
   一次键集合（4 用例）；**矩阵对象、每个能力条目与键数组三层都冻结**（`Object.freeze`，
-  `mekaAgentMatrix.ts:28,48`）——只冻结数组容器挡不住 `as`／`any` 的就地改写，那会让注册期
+  `mekaAgentMatrix.ts:38,71`）——只冻结数组容器挡不住 `as`／`any` 的就地改写，那会让注册期
   断言与矩阵悄悄脱钩。
-- 注册期硬失败：`declareMekaRuntimeMcpAgents`（`mcp-integrations/meka-runtime-mcp.ts:1433`）
-  要求**每个 `AgentKind` 都必须被显式声明**（漏一个直接抛，`:1445-1452`），且声明必须与矩阵
-  一致（矩阵说支持却不给数组 / 说不支持却塞了数组，都抛，`:1453-1464`）。`registerMekaCapabilities`
-  在 `runtimeMcp: true` 的 agent 取不到数组时也直接抛（`mekaMcpRegistration.ts:55-61`）。
+- 注册期硬失败：`declareMekaRuntimeMcpAgents`（`mcp-integrations/meka-runtime-mcp.ts:1446`）
+  要求**每个 `AgentKind` 都必须被显式声明**（漏一个直接抛，`:1458-1465`），且声明必须与矩阵
+  一致（矩阵说支持却不给数组 / 说不支持却塞了数组，都抛，`:1466-1475`）。`registerMekaCapabilities`
+  在 `runtimeMcp: true` 的 agent 取不到数组时也直接抛（`mekaMcpRegistration.ts:65-72`；
+  `runtimeMcp: false` 的显式留档分支保留在 `:60-63`，当前矩阵里没有 agent 走到它）。
   ——**「漏传」由此从静默缺能力变成启动期硬失败**（D2 顺手修掉的缺口）。
 
 ## 5. 硬性不变量 I1–I8
@@ -160,7 +174,7 @@ Pi 能力，只把「意外缺失」改写成「声明式缺失」——Pi 的�
 | I2 | **`vendorOptions` 键名、取值、写入时机不变**：**`opts.vendorOptions` 自己的**键插入顺序也是契约（`combatWorkflowPolicy.ts`、`meka-runtime-mcp.ts` 按这些键裁决工具门禁）。注意范围：契约只到 `vendorOptions` 内部，**`opts` 整体的键插入顺序不是契约**（无消费者，见 §7 D2.2） | patch 构造 `mekaResolvePlan.ts:526-554`（resume 短路路径的补丁在 `:304-350`）；写入 `mekaApplyPlan.ts:88-91`；空 patch 不写（保持对象引用） | 基线用例断言 `Object.keys(opts.vendorOptions)` 顺序（原有 2 个场景 + 追加的 frozen 场景）；`mekaRuntimeInjection.test.ts` |
 | I3 | **技能快照冻结语义不变**：首次 materialize 固定 revision，resume 复用同一 revision；远端会话不暴露本地快照路径 | `mekaResolvePlan.ts:186-193`（`nativeSkillMount`：`opts.remoteHostId` 则 null）；物化 `:506`；`meka-projects/skillSnapshot.ts:345-423`（`readBoundRevision` 复用） | WL-11.6；`mekaRuntimeInjection.test.ts` |
 | I4 | **`mekaRuntimeResolved === true` 短路分支行为不变**：resume 只补战斗契约，不重解析项目/角色、不重算 MCP、不注入角色段 | `mekaResolvePlan.ts:286-386`（`resolveFrozenInjection`）、`:624-640`（分流） | 基线用例 2 条（resume 战斗 / 非战斗） |
-| I5 | **WL-15**：战斗总控 Skill 只注入冻结正文的**绝对路径 + 必须先完整读完**，**绝不内联正文** | `mekaCombatPrompts.ts:48-82`（入口常量 `:48`、marker `:49`、只 `path.join(pluginPath, …)`）；路径授权 `mekaResolvePlan.ts:186-193` + `mekaApplyPlan.ts:96-100`；冻结路径形状门 `meka-projects/combatWorkflowPolicy.ts:779` | `mekaRuntimeInjection.test.ts` 的正向 + **反向**断言（正文不得出现）；详见 WL-15 |
+| I5 | **WL-15**：战斗总控 Skill 只注入冻结正文的**绝对路径 + 必须先完整读完**，**绝不内联正文** | `mekaCombatPrompts.ts:48-82`（入口常量 `:48`、marker `:49`、只 `path.join(pluginPath, …)`）；路径授权 `mekaResolvePlan.ts:186-193` + `mekaApplyPlan.ts:96-100`；冻结路径形状门 `meka-projects/combatWorkflowPolicy.ts:665`（`isMekaSkillSnapshotEntrypoint` 在 `:662-668`） | `mekaRuntimeInjection.test.ts` 的正向 + **反向**断言（正文不得出现）；详见 WL-15 |
 | I6 | **非 Meka 会话零影响**：`workspaceKind !== 'meka'` 时 `didApply=false`、不注入任何 prompt 段、不写任何 Meka 键；唯一写入是**持久化绑定回填**（`:398-419` 读持久绑定，`:420-433` 只回填绑定后早返回），该副作用是现状 | `mekaResolvePlan.ts:388-433`；`index.ts:47-57`（plan 为 null ⇒ 空结果，零写入） | 基线用例 `writes nothing for a non-Meka session` |
 | I7 | **注入不进入 maker-core**：Meka 注入只落在 `apps/desktop/src/main/`；maker-core 只以 `opts.nativeSkillPluginPath` / `vendorOptions` 消费者身份出现 | `packages/maker-core/src/agents/base-agent.ts:1850-1851`（类型）、`claude-code/index.ts:3327`、`codex/index.ts:4852` | 见 `architecture-invariants.md` §1 |
 | I8 | **main 进程禁止运行时动态 `import()`**：本层依赖一律顶层静态 import | `meka-injection/**.ts` 全部为静态 import | 见 `architecture-invariants.md` §2 |
@@ -235,11 +249,13 @@ pnpm --filter desktop exec vitest run src/main/meka-injection src/main/maker-ipc
 
 - `meka-injection/__tests__/agentMatrix.test.ts`（4 用例）与
   `meka-injection/__tests__/mcpRegistration.test.ts`（12 用例）覆盖矩阵穷尽性、三层冻结、
-  D1 的 Pi `false` 断言、漏传硬失败、声明与矩阵矛盾硬失败，以及 maker-host 接线契约。
+  Pi 两列 `true` 的断言（原 D1 的 Pi `false` 断言已随 2026-09-22 能力补齐翻转）、漏传硬失败、
+  声明与矩阵矛盾硬失败，以及 maker-host 接线契约。
   接线断言按**调用形状**匹配（先剥注释再归一化空白）并逐一要求三个 `_mcpProviders[*]`
   赋值都先于注册点，不再依赖单行精确字面量；它仍是**源码级、非行为级**判据。
 - `meka-whitelist-verification.md` 的 **WL-16** 是本文的清单落点；改动本层必须同一次交付里
-  更新 WL-16。
+  更新 WL-16。**能力矩阵两列（`skillSnapshot` / `runtimeMcp`）另由 WL-18 保护**——
+  翻转任何一列都必须同一次交付里更新 WL-18（2026-09-22 Pi 补齐时新增）。
 
 ## 7. 与重构前的有意差异（D2）
 
@@ -289,18 +305,20 @@ pnpm --filter desktop exec vitest run src/main/meka-injection src/main/maker-ipc
 | 缺口 | 事实 | 处置 |
 | --- | --- | --- |
 | 技能快照目录**只增不减** | `meka-projects/skillSnapshot.ts` 在 `revisions/` 下按 revision 写快照，只有 staging 的 `fs.rm`（`:318`）与临时文件清理（`:417`），**没有任何 revision 级 GC／prune** | 已知事实，另案处理；本轮不引入清理 |
-| `mekaPolicyProviderRefs` **无消费者** | 只有写入方 `mekaResolvePlan.ts:530`（取自 `runtime.policyProviderRefs`），全仓无读取方 | 登记但不接线；删除或接线都需要单独裁决 |
+| `mekaPolicyProviderRefs` **无消费者** | 只有写入方 `mekaResolvePlan.ts:533`（取自 `runtime.policyProviderRefs`），全仓无读取方 | 登记但不接线；删除或接线都需要单独裁决 |
 | WL-15 的**负向**实机断言缺失 | 模型「没读冻结文件就执行」会退化，尚无实机断言 | 见 WL-15「实机验证」的未验证项 |
-| Pi 能力缺口（D1） | Pi 不支持技能快照与运行时 MCP，**当前行为与声明一致** | 有意为之；补齐另开一轮 |
+| Pi 能力缺口（D1）**已闭环（2026-09-22）** | 两列补齐为 `true`：Pi 用既有显式 `--skill` 挂宿主技能快照，bridge 工厂阶段豁免泛化到 `pi` | 剩余边界不是缺口而是平台事实：远端（SSH / MCPRouter worker）会话**不挂**本地快照，Meka 远端技能投递仍只有 codex 通道；登记见 WL-18 与 §6.54 |
 
 ## 9. 相关文档
 
 - [`meka-whitelist-verification.md`](meka-whitelist-verification.md)：WL-11（项目/角色运行期注入链）、
-  WL-15（Skill 非 argv 载体）、WL-16（本层契约与能力矩阵）。
+  WL-15（Skill 非 argv 载体）、WL-16（本层契约与能力矩阵）、WL-18（Pi 的技能快照与运行时 MCP）。
 - [`architecture-invariants.md`](architecture-invariants.md)：§1 package 解耦、§2 main 静态依赖。
 - [`maker-core-and-agent-behavior.md`](maker-core-and-agent-behavior.md)：system prompt 前缀稳定性
   与文本改动门禁。
 - [`engineering-conventions.md`](engineering-conventions.md) §8：`meka/main` 上的命名（本层文件名与
   跨模块导出名的依据，§0）。
-- [`pi-harness.md`](pi-harness.md) 第 4 节不变量 12：argv 预算与非 argv 载体。
-- [`../migrations/xdmaker-meka-to-cindy.md`](../migrations/xdmaker-meka-to-cindy.md) §6.49：本轮重构登记。
+- [`pi-harness.md`](pi-harness.md) 第 4 节不变量 12：argv 预算与非 argv 载体；不变量 8：项目资源
+  与宿主技能快照的显式装配。
+- [`../migrations/xdmaker-meka-to-cindy.md`](../migrations/xdmaker-meka-to-cindy.md) §6.49：注入层重构登记；
+  §6.54：Pi 能力补齐与 D1 的取代。
