@@ -55,7 +55,25 @@ Cindy 以 `pi --mode rpc` spawn pi 二进制(JSONL/stdio),`translator.ts` 把 pi
   调用保留 600s 长预算。SSE response 按 event 增量消费，不等待 server 关闭持续流。Pi 模型侧
   始终只注册 `cindy_mcp_list_tools` 与 `cindy_mcp_call_tool` 两个稳定网关 schema；完整工具目录与
   input schema 留在 bridge 内部。先发现名称／描述，再按具体 server + tool 取单个 schema，
-  未检查 schema 的调用在 bridge 内 fail closed，不会触达 MCP 或弹权限框。Host 审批、策略与变更捕获仍使用真实
+  未检查 schema 的调用在 bridge 内 fail closed，不会触达 MCP 或弹权限框。该错误本身附带目标工具的
+  input schema（复用 `schemaHint`，超 16,000 字符按既有策略截断），模型不必再单独取一次即可带正确
+  参数重试（Host **不**代为重放，纠正是模型自己发起的下一次工具调用）。**披露门只认精确
+  `(server, tool)` 对**：只传 server、缺 tool、传空 tool 名、传错 tool 名四种形状都不记披露、不执行、
+  不弹权限框；同 server 的**另一个** tool 仍须重新检视（部分披露不放行）。
+  `cindy_mcp_list_tools` 先判定 server 再现查 tool；**「是否已连接」按三集合并集判定**（连接路径登记的
+  server 名 ∪ 已注册但不可用的 server 名 ∪ 工具表），因此「连上了但当前 0 个工具」的 server **不是**
+  未知 server——把它答成 `UNKNOWN_SERVER` 并附插件课是一条事实错误。三条口径分开：① **从未连接**的
+  server（含把插件 id 当 server 的两种写法）⇒ `UNKNOWN_SERVER` + `availableServers`，`reason` 明说
+  插件（ghost）不是 MCP server、只能经 `{server:"cindy", tool:"ghost_call"}` 调用，插件 id 用
+  `ghost_list` 发现；② **已登记但当前不可用**的 server ⇒ 有界文案说明「已注册但不可用 + 原因」，
+  **不贴**与该事实无关的插件课；③ **Bot memory facade 打开**时 `cindy_memory` 的工具会从网关目录里
+  摘掉，但它是已连接 server：`list` 带 `tool` 与不带 `tool` 两种形状都给出同一条准确 `reason`
+  （工具在原生 `bot_memory` 上），且答案有界、不含 `inputSchema`、不倒工具目录。
+  **验证现状（2026-09-22）**：`packages/maker-core` 无 `typecheck` script，用
+  `npx tsc --noEmit -p packages/maker-core/tsconfig.json`（exit 0）；`cindyBridgeSource` +
+  `pi-mcp-client` 58 passed / 4 skipped，`pi-mcp-bridge.integration.test.ts`（真 pi 二进制）15 passed。
+  上述三条口径与披露门四形状均有反向还原的红→绿证据（还原后同批 4 failed / 54 passed）。
+  Host 审批、策略与变更捕获仍使用真实
   `mcp__<server>__<tool>` identity 和真实参数，不能退化成对网关包装器授权。Claude Code 与
   Codex 保持各自的直接 MCP 注册方式，不经过此 Pi 专属网关。配置新增、修改、禁用或删除对
   下一新建/重启会话生效；旧活动会话保留启动时 generation 快照至 close。
@@ -300,6 +318,37 @@ Pi CLI 管理入口、内核自更新与旧工具兼容的执行边界见
   改判成失败，provider continuation claim 也不能被当作最终结束。
 - Pi 的 `Request was aborted` 只在无当前 generation 的 Host Stop 时归入请求断流失败；
   无错误正文的 bare abort 仍保持取消。复用既有错误收口及重试预算，不重放包命令或工具。
+  但**整轮零用户可见正文、且不是 Host Stop 的收尾**不得静默收尾。共同条件是
+  `finalAssistantText.trim()` 为空、`pendingAssistantError === null`、没有已发出的终态 error，
+  且本 turn **没有** Host abort 请求（`isCurrentTurnHostAbortRequested`）；`outcome` 上再分两支：
+  `completed`（上游用空正文 assistant 消息正常收尾）**无条件**进入该判定；`cancelled`
+  （`stopReason='aborted'` 且非 Host Stop）额外要求本 turn **没有出现过** Host 停止登记
+  （`isCurrentTurnHostStopSeen` 为假）。**seen 锁存只收紧 `cancelled`**：它的用途是「不回放用户
+  明确停掉的 turn」，该关切只存在于 `cancelled`；套到 `completed` 上会让「abort RPC 报错回滚 +
+  上游正常空收尾」这个既有自愈形态退回零输出（无正文、无终态 error、也不补发「继续」）——
+  这正是本批第一版实现过的回归，改动时不得重犯。
+  两个标记的寿命**刻意不同**：`markPiHostAbortRequested` 与 abort 标记同点写入
+  `hostStopSeenGeneration`，而 `rollbackPiHostAbortRequest`（abort RPC 未被接受）**只**回滚 abort
+  标记、**不**回滚 seen 锁存——用户确实按下过的 Stop 是既成事实，不能被一次 RPC 失败抹掉，
+  否则那次空 `cancelled` 会被补发「继续」重新跑起来。锁存只按代际存活：`agent_start` 的代际前滚
+  清掉上一代的锁存、`rollbackPiHostTurnStart` 撤销从未启动代际（`turnGeneration + 1`）的锁存、
+  `disposePiTranslateContext` 做会话级清理；这几个清除点各自承重，删掉任何一个都不应让测试变绿。
+  `isCurrentTurnHostStopSeen` 是 translator **模块私有**判定（`agents/index.ts` 只导出 `PiAgent`，
+  它不属于公开 API）；回归用例一律钉行为（`done.data.silentStop`）而不探这个布尔——锁存未被清理时
+  该布尔同样可能为假（旧代际值 ≠ 当前代际），只断言布尔等于凭空给测试以虚假的承重感。
+  `stopReason` **是**判定条件，不只是日志字段：`aborted` 决定 `outcome` 落 `cancelled`，
+  `length` 落终态 output-limit error；它同时作为诊断写进那条 WARN。
+  命中后 translator 在 `done` 上附 `silentStop`，交既有 silent-stop 自愈（补发「继续」；
+  额度／熔断耗尽时弹 `silent-stop-exhausted` 终态横幅），而不是补一条裸 error——
+  `empty-response` 那类 reason 的自动重试会克隆原文，只对零副作用 turn 安全。
+  Host Stop（用户 Stop 与 stall watchdog 共用 `abort()`）及已有正文的收尾仍不附标记，
+  `outcome` 也保持各自的 `cancelled` / `completed`。
+  **验证现状（2026-09-22）**：`packages/maker-core` 无 `typecheck` script，用
+  `npx tsc --noEmit -p packages/maker-core/tsconfig.json`（exit 0）；
+  `pi-translator` / `cindyBridgeSource` / `pi-mcp-client` 三文件 145 passed / 4 skipped，
+  `pi-mcp-bridge.integration.test.ts`（真 pi 二进制）15 passed。上述锁存与两支判定均有红→绿
+  变异证据；`completed + 锁存命中 + 空正文` 这一格此前零覆盖，现已有回归用例。
+  **未实机验证**：真实网络断流下「用户一个字都没拿到」的场景未复现。
 - SDK 成功与正文入库／交付分开取证。只见 JSONL 成功但 SQLite 缺正文时，不能自动重跑
   已成功的工作；应沿 RPC → translator → Session → persistence 查丢失边界。
 

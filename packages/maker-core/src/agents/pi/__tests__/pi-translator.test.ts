@@ -11,6 +11,7 @@ import {
   disposePiTranslateContext,
   markPiHostAbortRequested,
   markPiHostTurnStartPending,
+  rollbackPiHostAbortRequest,
   rollbackPiHostTurnStart,
   translatePiEvent,
   usageSnapshotOf,
@@ -932,6 +933,330 @@ describe('pi translator', () => {
       result: '',
       status: 'cancelled',
     });
+    // 已有可见正文的取消不是"空回合":不得附 silentStop,行为保持原样。
+    expect(events.find((event) => event.type === 'done')?.data).not.toHaveProperty('silentStop');
+  });
+
+  it('marks a cancelled turn with no assistant text as a silent stop so it cannot end silently', () => {
+    const ctx = createPiTranslateContext(noopLogger);
+    const { queue, events } = makeQueue();
+
+    translatePiEvent(ev({ type: 'agent_start' }), queue, ctx);
+    // 事故形态:整轮只有 thinking(且被截在句子中间),Pi 自己 abort,没有 errorMessage。
+    // 此前它落成 outcome='cancelled' + silentStop=false:既无终态 error,也不触发宿主自愈,
+    // 用户看到的是一个"什么都没发生"的 turn。
+    translatePiEvent(
+      ev({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'thinking', thinking: 'Let me check the module asset first, then' }],
+          stopReason: 'aborted',
+          usage: { input: 1200, output: 40 },
+        },
+      }),
+      queue,
+      ctx,
+    );
+    translatePiEvent(ev({ type: 'agent_settled' }), queue, ctx);
+
+    expect(events.filter((event) => event.type === 'text')).toHaveLength(0);
+    expect(events.filter((event) => event.type === 'error')).toHaveLength(0);
+    expect(events.find((event) => event.type === 'done')?.data).toMatchObject({
+      result: '',
+      status: 'cancelled',
+      // 自愈入口:host 的 silentStopAutoResume 守卫据此补发「继续」;额度耗尽时由 host
+      // 合成 `silent-stop-exhausted` 终态 error(reason 已在 renderer 白名单内)。
+      silentStop: true,
+    });
+    disposePiTranslateContext(ctx);
+  });
+
+  it('keeps a completed turn with assistant text unchanged (no silent stop)', () => {
+    const ctx = createPiTranslateContext(noopLogger);
+    const { queue, events } = makeQueue();
+
+    translatePiEvent(ev({ type: 'agent_start' }), queue, ctx);
+    translatePiEvent(
+      ev({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: '结论:技能参数1 需要设为 [100]' }],
+          stopReason: 'stop',
+          usage: { input: 900, output: 30 },
+        },
+      }),
+      queue,
+      ctx,
+    );
+    translatePiEvent(ev({ type: 'agent_settled' }), queue, ctx);
+
+    expect(events.find((event) => event.type === 'done')?.data).toMatchObject({
+      result: '结论:技能参数1 需要设为 [100]',
+      status: 'completed',
+    });
+    expect(events.find((event) => event.type === 'done')?.data).not.toHaveProperty('silentStop');
+    expect(events.filter((event) => event.type === 'error')).toHaveLength(0);
+    disposePiTranslateContext(ctx);
+  });
+
+  it('keeps a Host-stopped empty turn out of silent-stop auto-resume', () => {
+    const ctx = createPiTranslateContext(noopLogger);
+    const { queue, events } = makeQueue();
+
+    translatePiEvent(ev({ type: 'agent_start' }), queue, ctx);
+    // 用户自己点了 Stop(或 45 分钟 stall watchdog 走了同一条 abort 通道):同样是
+    // "cancelled + 无正文",但这是用户/宿主自己的动作,不是静默失败 —— 必须保持原样,
+    // 不补发「继续」(watchdog 另有 turn_no_event_timeout 终态与其自己的续跑通道)。
+    markPiHostAbortRequested(ctx);
+    translatePiEvent(
+      ev({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          content: [],
+          stopReason: 'aborted',
+          usage: { input: 300, output: 0 },
+        },
+      }),
+      queue,
+      ctx,
+    );
+    translatePiEvent(ev({ type: 'agent_settled' }), queue, ctx);
+
+    const done = events.find((event) => event.type === 'done');
+    expect(done?.data).toMatchObject({ status: 'cancelled' });
+    expect(done?.data).not.toHaveProperty('silentStop');
+    expect(events.filter((event) => event.type === 'error')).toHaveLength(0);
+    disposePiTranslateContext(ctx);
+  });
+
+  it('keeps a Host-stopped empty turn out of silent-stop auto-resume after the abort RPC rollback', () => {
+    const ctx = createPiTranslateContext(noopLogger);
+    const { queue, events } = makeQueue();
+
+    translatePiEvent(ev({ type: 'agent_start' }), queue, ctx);
+    // 流式中点 Stop:先登记 abort 请求,再发 abort RPC。RPC 被拒/抛错时
+    // agents/pi/index.ts 会调用 rollbackPiHostAbortRequest——这是刻意的回退(旧标记不能
+    // 吞掉后续真实断流),但回退后若只看 abort 标记,这次"用户按过 Stop、Pi 仍回了一条
+    // 无 errorMessage 的 aborted 空消息"就会落成 cancelled + silentStop,被宿主补发
+    // 「继续」,把用户明确停掉的 turn 重新跑起来。seen 锁存必须活过这次回退。
+    const hostAbortToken = markPiHostAbortRequested(ctx);
+    rollbackPiHostAbortRequest(ctx, hostAbortToken);
+    translatePiEvent(
+      ev({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          content: [],
+          stopReason: 'aborted',
+          usage: { input: 300, output: 0 },
+        },
+      }),
+      queue,
+      ctx,
+    );
+    translatePiEvent(ev({ type: 'agent_settled' }), queue, ctx);
+
+    const done = events.find((event) => event.type === 'done');
+    expect(done?.data).toMatchObject({ result: '', status: 'cancelled' });
+    expect(done?.data).not.toHaveProperty('silentStop');
+    expect(events.filter((event) => event.type === 'error')).toHaveLength(0);
+    disposePiTranslateContext(ctx);
+  });
+
+  it('keeps a stop registered before agent_start across an abort RPC rollback', () => {
+    const ctx = createPiTranslateContext(noopLogger);
+    const { queue, events } = makeQueue();
+
+    // Stop 抢在 agent_start 之前:markPiHostAbortRequested 记的是 `turnGeneration + 1`,
+    // agent_start 前滚一代后正好等于新代际,所以这次停止仍然覆盖即将开始的这个 turn。
+    markPiHostTurnStartPending(ctx);
+    const hostAbortToken = markPiHostAbortRequested(ctx);
+    rollbackPiHostAbortRequest(ctx, hostAbortToken);
+    translatePiEvent(ev({ type: 'agent_start' }), queue, ctx);
+    // 不再断言 isCurrentTurnHostStopSeen(ctx):该 helper 已不是 export(F5),而它在这里也
+    // 只是"锁存仍然生效"的同义反复 —— 承重的是下面 done 上没有 silentStop(cancelled 分支
+    // 若拿不到锁存,这个空 cancelled 会被附上 silentStop 而变红)。
+    translatePiEvent(
+      ev({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'thinking', thinking: 'planning' }],
+          stopReason: 'aborted',
+        },
+      }),
+      queue,
+      ctx,
+    );
+    translatePiEvent(ev({ type: 'agent_settled' }), queue, ctx);
+
+    const done = events.find((event) => event.type === 'done');
+    expect(done?.data).toMatchObject({ status: 'cancelled' });
+    expect(done?.data).not.toHaveProperty('silentStop');
+    disposePiTranslateContext(ctx);
+  });
+
+  it('keeps a rolled-back Host Stop from silencing a completed empty turn', () => {
+    const ctx = createPiTranslateContext(noopLogger);
+    const { queue, events } = makeQueue();
+
+    // 回归形态(本批次引入):
+    //   agent_start → 流式中登记 Host Stop → abort RPC 失败/抛错 →
+    //   agents/pi/index.ts 调 rollbackPiHostAbortRequest 回滚 abort 标记 →
+    //   Pi 仍以正常的 stopReason:'stop' 空 assistant 消息收尾 → agent_settled
+    // 此刻 outcome='completed' 且 hostAbortRequested=false,但 seen 锁存仍在(它刻意不随
+    // abort 回滚清除,见 hostStopSeenGeneration)。锁存若对整个谓词生效,这个"上游正常收尾
+    // 却一个字都没有"的空回合就既没有 silentStop、也没有终态 error,用户侧零输出 ——
+    // 而这正是 pre-batch 的 outcome==='completed' 分支覆盖的形态。
+    // 锁存的唯一用途是"不要自动重跑用户明确停掉的 turn",该关切只存在于 cancelled 分支。
+    translatePiEvent(ev({ type: 'agent_start' }), queue, ctx);
+    const hostAbortToken = markPiHostAbortRequested(ctx);
+    rollbackPiHostAbortRequest(ctx, hostAbortToken);
+
+    translatePiEvent(
+      ev({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          content: [],
+          stopReason: 'stop',
+          usage: { input: 300, output: 0 },
+        },
+      }),
+      queue,
+      ctx,
+    );
+    translatePiEvent(ev({ type: 'agent_settled' }), queue, ctx);
+
+    const done = events.find((event) => event.type === 'done');
+    expect(done?.data).toMatchObject({ result: '', status: 'completed' });
+    // 用户必须拿到可见结果:宿主据此补发「继续」。只断言"某个字段是 undefined"挡不住
+    // 零输出回归,这里直接钉 silentStop。
+    expect(done?.data).toMatchObject({ silentStop: true });
+    disposePiTranslateContext(ctx);
+  });
+
+  it('clears the seen-stop latch on a rejected prompt so the next genuine disconnect self-heals', () => {
+    const ctx = createPiTranslateContext(noopLogger);
+    const { queue, events } = makeQueue();
+
+    // markPiHostTurnStartPending → markPiHostAbortRequested(锁存 = 本代际 + 1)→
+    // rollbackPiHostTurnStart(prompt 被拒:那一代从未存在)。
+    // 锁存必须跟着回退。否则下一个真实 prompt 恰好落在被拒代际(= G+1)时,锁存会匹配一个
+    // 用户从没停过的 turn,把这个 turn 的合法空 cancelled(上游断流)静默掉 —— 那正是
+    // silent-stop 自愈要覆盖的形态。
+    const rejectedPrompt = markPiHostTurnStartPending(ctx);
+    markPiHostAbortRequested(ctx);
+    rollbackPiHostTurnStart(ctx, rejectedPrompt);
+
+    translatePiEvent(ev({ type: 'agent_start' }), queue, ctx);
+    translatePiEvent(
+      ev({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'thinking', thinking: 'picking up the real prompt' }],
+          stopReason: 'aborted',
+          usage: { input: 420, output: 12 },
+        },
+      }),
+      queue,
+      ctx,
+    );
+    translatePiEvent(ev({ type: 'agent_settled' }), queue, ctx);
+
+    const done = events.find((event) => event.type === 'done');
+    expect(done?.data).toMatchObject({ result: '', status: 'cancelled' });
+    // 承重断言:删掉 rollbackPiHostTurnStart 里的锁存清理时,这条会变 undefined。
+    // 不能改断言 isCurrentTurnHostStopSeen(ctx) === false —— 该 helper 已不再是 export
+    // (F5),而且"锁存没清时旧值 1 ≠ 新代际 2"也会让布尔是 false,布尔本身证明不了清理发生过。
+    expect(done?.data).toMatchObject({ silentStop: true });
+    expect(events.filter((event) => event.type === 'error')).toHaveLength(0);
+    disposePiTranslateContext(ctx);
+  });
+
+  it('still attaches silentStop to an empty completed turn after a rejected-prompt rollback', () => {
+    const ctx = createPiTranslateContext(noopLogger);
+    const { queue, events } = makeQueue();
+
+    // F2 的另一半:被拒 prompt 回滚后的下一个空 completed turn 仍必须可见。
+    // 这条单独抓不到锁存泄漏(completed 分支按 F1 的收敛不再看锁存),它钉的是 completed
+    // 空回合的可见性;锁存清理由上面那条空 cancelled 用例承重。
+    const rejectedPrompt = markPiHostTurnStartPending(ctx);
+    markPiHostAbortRequested(ctx);
+    rollbackPiHostTurnStart(ctx, rejectedPrompt);
+
+    translatePiEvent(ev({ type: 'agent_start' }), queue, ctx);
+    translatePiEvent(
+      ev({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          content: [],
+          stopReason: 'stop',
+          usage: { input: 100, output: 0 },
+        },
+      }),
+      queue,
+      ctx,
+    );
+    translatePiEvent(ev({ type: 'agent_settled' }), queue, ctx);
+
+    const done = events.find((event) => event.type === 'done');
+    expect(done?.data).toMatchObject({ result: '', status: 'completed', silentStop: true });
+    disposePiTranslateContext(ctx);
+  });
+
+  it('does not carry the seen-stop latch into the next turn generation', () => {
+    const ctx = createPiTranslateContext(noopLogger);
+    const { queue, events } = makeQueue();
+
+    // 第 1 代:用户 Stop(abort RPC 回滚),空 cancelled → 不续跑。
+    translatePiEvent(ev({ type: 'agent_start' }), queue, ctx);
+    const hostAbortToken = markPiHostAbortRequested(ctx);
+    rollbackPiHostAbortRequest(ctx, hostAbortToken);
+    translatePiEvent(
+      ev({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          content: [],
+          stopReason: 'aborted',
+        },
+      }),
+      queue,
+      ctx,
+    );
+    translatePiEvent(ev({ type: 'agent_settled' }), queue, ctx);
+
+    // 第 2 代:用户没点任何东西,Pi 自己断流 → 锁存必须已经随代际前滚失效,
+    // silent-stop 自愈照常生效(否则一次 Stop 会永久关掉后续自愈)。
+    translatePiEvent(ev({ type: 'agent_start' }), queue, ctx);
+    // 这里故意不再探 isCurrentTurnHostStopSeen(ctx):该 helper 已不再是 export(F5),
+    // 而且布尔断言本身不承重 —— 锁存没被前滚清理时旧值 1 ≠ 新代际 2,布尔同样是 false。
+    // 承重的是下面 dones[1] 的 silentStop:true。
+    translatePiEvent(
+      ev({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'thinking', thinking: 'checking the module asset' }],
+          stopReason: 'aborted',
+        },
+      }),
+      queue,
+      ctx,
+    );
+    translatePiEvent(ev({ type: 'agent_settled' }), queue, ctx);
+
+    const dones = events.filter((event) => event.type === 'done');
+    expect(dones).toHaveLength(2);
+    expect(dones[0]?.data).not.toHaveProperty('silentStop');
+    expect(dones[1]?.data).toMatchObject({ status: 'cancelled', silentStop: true });
+    disposePiTranslateContext(ctx);
   });
 
   it('notifies Pi network auto-retries with the shared Reconnecting progress line', () => {

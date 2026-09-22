@@ -2822,14 +2822,44 @@ function schemaHint(schema: Record<string, unknown>): string {
   return rendered.length <= 16_000 ? rendered : rendered.slice(0, 15_999) + '…';
 }
 
+/**
+ * 插件(ghost)不是 MCP server:正常只经由 cindy 网关的 ghost_* 入口访问。
+ * "server 名不认识"与"要调用工具但 server 不是网关 server"两个报错共用这一课,避免在
+ * 生成的源码里复制同一段政策文案。两条硬口径:
+ *  - 插件 id 来自注入的插件花名册 / 用户消息 / 角色配置,不靠 ghost_list 现场枚举;
+ *  - ghost_list 只在会话策略允许时可用,绝不能当成默认前提去 instruct。
+ * 另外不写"插件绝不出现"这类绝对句:Meka 运行期 MCP provider 是按配置 id 注册的,
+ * 角色/项目配置把插件注册成自己的 MCP server 时,它确实会出现在 availableServers 里。
+ * 本文件整体是 String.raw 模板(内容是 pi 子进程里跑的源码),此处不得出现模板插值或反引号。
+ */
+function pluginNotGatewayServerHint(): string {
+  return 'Installed plugins (ghosts) are not MCP servers and are normally reached ' +
+    'through the cindy gateway instead of being a gateway server of their own; only a ' +
+    'role or project config that registers a plugin as its own MCP server makes it ' +
+    'appear in availableServers. Plugin ids come from the injected plugin roster, the ' +
+    'user message, or the role config. To use one, inspect it with ' +
+    'cindy_mcp_list_tools {server:"cindy", tool:"ghost_call"} and then call ' +
+    'cindy_mcp_call_tool {server:"cindy", tool:"ghost_call", args:{ghost_id, tool, args}}. ' +
+    'cindy_mcp_list_tools {server:"cindy", tool:"ghost_list"} can list ids only when the ' +
+    'session policy permits ghost_list; do not assume it is available.';
+}
+
 class CindyMcpGateway {
   private readonly tools = new Map<string, ConnectedMcpTool>();
   private readonly unavailableServers = new Map<string, string>();
+  /**
+   * 连上的 server 名(与工具数无关)。**不能**只看 tools 表:server 连上但暴露 0 个工具时
+   * tools 表里一行记录都没有,只看 tools 表就会把"连上但 0 工具"的 server 答成
+   * UNKNOWN_SERVER,并贴上一段不相干的"插件不是 MCP server"教程 —— 而连接事实本来就在
+   * 连接路径上(连接日志写着 connected X (0 tools)),答错是事实错误。
+   */
+  private readonly connectedServers = new Set<string>();
   private readonly disclosedSchemas = new Set<string>();
   private botMemoryFacadeEnabled = false;
   private botHelperFacadeEnabled = false;
 
   add(serverName: string, client: McpHttpClient, tools: any[]): void {
+    this.connectedServers.add(serverName);
     for (const rawTool of tools) {
       if (!rawTool || typeof rawTool !== 'object' || typeof rawTool.name !== 'string' || !rawTool.name) {
         continue;
@@ -2994,6 +3024,25 @@ class CindyMcpGateway {
     return [...new Set(this.list().map((tool) => tool.server))].sort();
   }
 
+  /**
+   * 网关是否**认识**这个 server(连上了,或注册过但这次没连上)。**不能**用
+   * availableServers()/list() 代替,三个原因:
+   *  - bot-memory facade 打开时 list() 会把 cindy_memory 的工具从投影里摘掉(改用原生
+   *    bot_memory 暴露),于是"已连接但被 facade 隐藏"的 server 会看起来像不存在;
+   *  - server 连上但暴露 0 个工具时 tools 表里没有它的任何记录;
+   *  - unavailableServers 里的 server 是注册过、只是没连上,同样不是"不认识"。
+   * 上面任一种答成 UNKNOWN_SERVER 都是事实错误。facade 是呈现层投影,连接事实以
+   * connectedServers / tools / unavailableServers 三个集合的并集为准。
+   */
+  private isConnectedServer(serverName: string): boolean {
+    if (this.connectedServers.has(serverName)) return true;
+    if (this.unavailableServers.has(serverName)) return true;
+    for (const tool of this.tools.values()) {
+      if (tool.serverName === serverName) return true;
+    }
+    return false;
+  }
+
   unavailable(): Array<{ server: string; reason: string }> {
     return [...this.unavailableServers.entries()]
       .sort(([a], [b]) => a.localeCompare(b))
@@ -3029,6 +3078,20 @@ class CindyMcpGateway {
         reason: unavailableReason,
         availableServers: this.availableServers(),
       };
+    } else if (serverName && tools.length === 0 && !this.isConnectedServer(serverName)) {
+      // 只有"connected / available(有工具) / unavailable 三个集合里都没有这个名字"时才是
+      // 真的不认识它。光看 tools.length===0 会把 facade 隐藏的已连接 server(cindy_memory)
+      // 和"连上但 0 工具"的 server 误答成 UNKNOWN_SERVER,并贴上一段不相干的
+      // "插件不是 MCP server"教程。
+      payload = {
+        ok: false,
+        errorCode: 'UNKNOWN_SERVER',
+        requested: serverName,
+        reason: 'Server ' + JSON.stringify(serverName) + ' is not a connected gateway server. ' +
+          pluginNotGatewayServerHint(),
+        availableServers: this.availableServers(),
+        unavailableServers,
+      };
     } else if (serverName && toolName) {
       const selected = this.botMemoryFacadeEnabled && serverName === 'cindy_memory'
         ? undefined
@@ -3039,6 +3102,12 @@ class CindyMcpGateway {
           errorCode: 'UNKNOWN_TOOL',
           requested: { server: serverName, tool: toolName },
           availableTools: tools.map((tool) => tool.name),
+          // facade 隐藏的工具不是"server 不认识":明确说清它连着、工具在原生 bot_memory 上。
+          ...(this.botMemoryFacadeEnabled && serverName === 'cindy_memory'
+            ? { reason: 'Server ' + JSON.stringify(serverName) + ' is connected, but the Bot memory '
+              + 'facade exposes its tools through the native bot_memory tool instead. Call bot_memory '
+              + 'with action list/read/search/write/delete/review/consolidate.' }
+            : {}),
         };
       } else {
         this.disclosedSchemas.add(mcpGatewayKey(serverName, toolName));
@@ -3052,18 +3121,20 @@ class CindyMcpGateway {
           }],
         };
       }
-    } else if (serverName && tools.length === 0) {
-      payload = {
-        ok: false,
-        errorCode: 'UNKNOWN_SERVER',
-        requested: serverName,
-        availableServers: this.availableServers(),
-        unavailableServers,
-      };
     } else {
+      // 空清单不能是无声的:facade 打开时 cindy_memory 的工具被投影到原生 bot_memory 上,
+      // 只回 {ok:true, tools:[]} 会被读成"这个 server 没有工具"。这里给与带 tool 的
+      // UNKNOWN_TOOL 分支同一条事实,且只给说明,不倒工具清单/不泄露 schema。
+      // (真的连上但暴露 0 个工具、又没有 facade 的 server:tools:[] 就是事实,不需要补话。)
+      const facadeNote = this.botMemoryFacadeEnabled && serverName === 'cindy_memory'
+        ? { reason: 'Server ' + JSON.stringify(serverName) + ' is connected, but the Bot memory '
+          + 'facade exposes its tools through the native bot_memory tool instead. Call bot_memory '
+          + 'with action list/read/search/write/delete/review/consolidate.' }
+        : {};
       payload = {
         ok: true,
         tools,
+        ...facadeNote,
         ...(unavailableServers.length > 0 ? { unavailableServers } : {}),
       };
     }
@@ -3077,6 +3148,41 @@ class CindyMcpGateway {
     const input = recordInput(params);
     const serverName = typeof input.server === 'string' ? input.server : '';
     const scoped = this.list(serverName || undefined);
+    if (this.botMemoryFacadeEnabled && serverName === 'cindy_memory') {
+      // 已连接、但工具被 facade 投影到原生 bot_memory 上:不能说它"不是已连接网关 server",
+      // 也不该贴"插件不是 MCP server"那一课(与 listResult 同一条事实)。
+      return 'Unknown Cindy MCP tool: server ' + JSON.stringify(serverName) +
+        ' is connected, but the Bot memory facade exposes its tools through the native ' +
+        'bot_memory tool instead. Call bot_memory with action ' +
+        'list/read/search/write/delete/review/consolidate. Available gateway servers: ' +
+        JSON.stringify(this.availableServers()).slice(0, 2_000) + '.';
+    }
+    // 注册过但这次没连上的 server,与"完全不认识"的名字,都要给有界且准确的回答。
+    // 守卫不能只看 !isConnectedServer():unavailableServers 里的名字也算"认识",那样这个
+    // 分支对"注册了但连不上"的 server 永远不成立,下面这段 bounded 文案就成了死代码
+    // (实测会退回通用的大清单回答)。所以先单独判 unavailable。
+    const unavailableReason = serverName ? this.unavailableServers.get(serverName) : undefined;
+    if (serverName && scoped.length === 0
+      && (unavailableReason !== undefined || !this.isConnectedServer(serverName))) {
+      if (unavailableReason !== undefined) {
+        // 注册过、只是这次连不上:给真实原因 + 有界的 server 名。不贴"插件不是 MCP server"
+        // 那一课 —— 那课是给"把插件 id 当成 MCP server 名"用的,与"已注册但不可用"这条事实无关。
+        return 'Unknown Cindy MCP tool: server ' + JSON.stringify(serverName) +
+          ' is registered but unavailable: ' + unavailableReason.slice(0, 2_000) + '. ' +
+          'Available gateway servers: ' +
+          JSON.stringify(this.availableServers()).slice(0, 2_000) + '.';
+      }
+      // server 名完全不认识:最常见的成因是把插件 id 当成 MCP server 名传进 cindy_mcp_call_tool。
+      // 这条路径必须和 listResult 的 UNKNOWN_SERVER 教同一课(插件不是 MCP server、要走
+      // ghost_call),但只列**有界**的 server 名,不照搬下面的 12k 工具清单 —— 那样既答非
+      // 所问,又会在 schema 提示策略并不覆盖的地方灌一大段上下文。
+      // connected / available / unavailable 三个集合里都没有这个名字才走这里。
+      return 'Unknown Cindy MCP tool: server ' + JSON.stringify(serverName) +
+        ' is not a connected gateway server. ' +
+        pluginNotGatewayServerHint() +
+        ' Available gateway servers: ' +
+        JSON.stringify(this.availableServers()).slice(0, 2_000) + '.';
+    }
     const available = (scoped.length > 0 ? scoped : this.list()).map((tool) => ({
       server: tool.server,
       name: tool.name,
@@ -3126,7 +3232,8 @@ class CindyMcpGateway {
     if (!this.isSchemaDisclosed(resolved)) {
       throw new Error(
         'Inspect this tool before execution by calling cindy_mcp_list_tools with ' +
-        JSON.stringify({ server: resolved.tool.serverName, tool: resolved.tool.name }) + '.',
+        JSON.stringify({ server: resolved.tool.serverName, tool: resolved.tool.name }) +
+        '. Expected args schema: ' + schemaHint(resolved.tool.inputSchema),
       );
     }
     return this.executeResolvedCall(resolved, signal);

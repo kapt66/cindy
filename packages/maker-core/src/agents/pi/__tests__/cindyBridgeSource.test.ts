@@ -1556,6 +1556,9 @@ describe('cindy-bridge extension source', () => {
     expect(CINDY_BRIDGE_EXTENSION_SOURCE).toContain('private readonly disclosedSchemas');
     expect(CINDY_BRIDGE_EXTENSION_SOURCE).toContain('mcpGateway.isSchemaDisclosed(resolvedGatewayCall)');
     expect(CINDY_BRIDGE_EXTENSION_SOURCE).toContain('Inspect this tool before execution');
+    // 网关发现/未知 server 的行为不在本文件读源码断言(源码文本顺序不构成分支优先级,
+    // indexOf/toContain 抓不到任何语义回归),改由下面 `cindy gateway answers` 在 vm 里
+    // 执行生成源码的真实 gateway 来钉;未披露错误自带 input schema 也在那里断言。
     expect(CINDY_BRIDGE_EXTENSION_SOURCE).toContain('permissionToolName = gatewayCall?.qualifiedName');
     expect(CINDY_BRIDGE_EXTENSION_SOURCE).toContain('permissionInput = gatewayCall?.args');
     expect(CINDY_BRIDGE_EXTENSION_SOURCE).toContain(
@@ -2270,4 +2273,217 @@ it('routes Bot shortcuts through the scoped helper entry without exposing them t
     await tool.execute('call-1', args, controller.signal);
     expect(calls.at(-1)).toEqual({ method: 'tools/call', params: { name: 'call_tool', arguments: { name, args } }, signal: controller.signal });
   }
+});
+
+/**
+ * 在 vm 里加载生成源码中的**真实** gateway(class CindyMcpGateway),用执行结果断言网关发现
+ * 与未知 server 的答案。刻意不读源码文本:文本里字面量的先后顺序不等于分支优先级,
+ * `toContain` / `indexOf` 抓不到任何语义回归。
+ */
+function loadCindyGateway(options: { botMemoryFacade?: boolean } = {}) {
+  const source = CINDY_BRIDGE_EXTENSION_SOURCE;
+  const compiled = ts.transpileModule(
+    source.slice(source.indexOf('const CINDY_MCP_LIST_TOOLS'), source.indexOf('async function connectServer'))
+      + '\n(globalThis as any).Gateway = CindyMcpGateway;',
+    { compilerOptions: { module: ts.ModuleKind.None, target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
+  const context: Record<string, any> = {
+    recordInput: (value: unknown) => value && typeof value === 'object' ? value : {},
+    mcpContentToPi: (content: unknown) => content,
+  };
+  runInNewContext(compiled, context);
+  const calls: Array<{ method: string; params: unknown }> = [];
+  const client = { request: async (method: string, params: unknown) => {
+    calls.push({ method, params });
+    return { content: [{ type: 'text', text: 'ok' }] };
+  } };
+  const gateway = new context.Gateway();
+  gateway.add('cindy', client, [{ name: 'ghost_call', inputSchema: {
+    type: 'object', properties: { ghost_id: { type: 'string' } }, required: ['ghost_id'],
+  } }]);
+  gateway.add('cindy_memory', client, [
+    { name: 'list_tools', inputSchema: { type: 'object' } },
+    { name: 'call_tool', inputSchema: { type: 'object', properties: { name: { type: 'string' } } } },
+  ]);
+  const registered: any[] = [];
+  gateway.register({ registerTool: (tool: unknown) => registered.push(tool) }, {
+    botMemoryFacade: options.botMemoryFacade === true,
+  });
+  const list = (params: unknown) => registered
+    .find((tool) => tool.name === 'cindy_mcp_list_tools').execute('list', params);
+  const call = (params: unknown) => registered
+    .find((tool) => tool.name === 'cindy_mcp_call_tool').execute('call', params);
+  return { gateway, list, call, calls };
+}
+
+describe('cindy gateway discovery answers', () => {
+  it('answers a genuinely unknown server as UNKNOWN_SERVER with the plugin lesson', async () => {
+    const { list } = loadCindyGateway();
+    for (const params of [{ server: 'meka-unity' }, { server: 'meka-unity', tool: 'unity_inspect' }]) {
+      const inspected: any = await list(params);
+      expect(inspected.details).toMatchObject({
+        ok: false, errorCode: 'UNKNOWN_SERVER', requested: 'meka-unity',
+      });
+      expect(inspected.details.availableTools).toBeUndefined();
+      expect(inspected.details.availableServers).toContain('cindy');
+      expect(inspected.details.reason).toContain('"meka-unity" is not a connected gateway server');
+      expect(inspected.details.reason).toContain('Installed plugins (ghosts) are not MCP servers');
+      expect(inspected.details.reason).toContain('{server:"cindy", tool:"ghost_call"');
+    }
+  });
+
+  it('still answers a bad tool on a connected server with the real tool list', async () => {
+    const { list } = loadCindyGateway();
+    const inspected: any = await list({ server: 'cindy', tool: 'not_a_tool' });
+    expect(inspected.details).toMatchObject({ ok: false, errorCode: 'UNKNOWN_TOOL' });
+    expect(inspected.details.availableTools).toEqual(['ghost_call']);
+  });
+
+  it('does not answer the connected cindy_memory server as unknown while the Bot memory facade hides its tools', async () => {
+    const { gateway, list, call, calls } = loadCindyGateway({ botMemoryFacade: true });
+
+    // cindy_memory 确实连着(this.tools 里有它的工具),facade 只是把它的工具从 list() 的
+    // 投影里摘掉、改用原生 bot_memory 暴露。把这种**呈现层**差异答成"server 不认识"是错的,
+    // 而且会顺带贴上一段不相干的"插件不是 MCP server"教程。
+    const inspected: any = await list({ server: 'cindy_memory', tool: 'call_tool' });
+    expect(inspected.details.ok).toBe(false);
+    expect(inspected.details.errorCode).not.toBe('UNKNOWN_SERVER');
+    expect(String(inspected.details.reason ?? '')).not.toContain('is not a connected gateway server');
+    expect(String(inspected.details.reason ?? '')).toContain('bot_memory');
+
+    // call_tool 路径是同一个事实:既不能说它"不是已连接网关 server",也不该贴插件那一课。
+    const failure = await call({ server: 'cindy_memory', tool: 'call_tool' })
+      .then(() => undefined, (error: Error) => error);
+    expect(failure).toBeDefined();
+    expect(failure?.message).not.toContain('is not a connected gateway server');
+    expect(failure?.message).not.toContain('Installed plugins (ghosts) are not MCP servers');
+    expect(failure?.message).toContain('bot_memory');
+    expect(calls).toEqual([]);
+  });
+
+  it('does not answer a connected server that exposes zero tools as unknown', async () => {
+    const { gateway, list } = loadCindyGateway();
+
+    // 连上了但一个工具都没暴露:tools 表里没有它的任何记录,连接事实只在 connectedServers 里。
+    // 只看 tools 表会把这种 server 答成 UNKNOWN_SERVER,还顺带贴一段不相干的插件教程 ——
+    // 而连接路径明明知道这件事(连接日志写着 connected X (0 tools))。
+    gateway.add('empty-srv', { request: async () => ({ content: [] }) }, []);
+    const inspected: any = await list({ server: 'empty-srv' });
+    expect(inspected.details.ok).toBe(true);
+    expect(inspected.details.errorCode).toBeUndefined();
+    expect(inspected.details.requested).toBeUndefined();
+    expect(inspected.details.tools).toEqual([]);
+    expect(JSON.stringify(inspected.details))
+      .not.toContain('Installed plugins (ghosts) are not MCP servers');
+
+    // 反例:从没连过的名字仍是 UNKNOWN_SERVER + 插件那一课。
+    const never: any = await list({ server: 'never-connected' });
+    expect(never.details).toMatchObject({ ok: false, errorCode: 'UNKNOWN_SERVER' });
+    expect(never.details.reason).toContain('"never-connected" is not a connected gateway server');
+    expect(never.details.reason).toContain('Installed plugins (ghosts) are not MCP servers');
+  });
+
+  it('answers a registered but unavailable server with its real reason instead of the generic catalogue', async () => {
+    const { gateway, list, call, calls } = loadCindyGateway();
+    gateway.markUnavailable('dead-srv', 'request timed out');
+
+    // 注册过、只是这次没连上:不是"不认识",但也不能退回通用大清单回答 —— 那样这条 bounded
+    // 文案永远不出现,等于死代码。
+    const failure = await call({ server: 'dead-srv', tool: 'dead_tool' })
+      .then(() => undefined, (error: Error) => error);
+    expect(failure?.message).toContain('"dead-srv" is registered but unavailable: request timed out');
+    expect(failure?.message).toContain('Available gateway servers:');
+    // 与"完全不认识"分开:不贴插件那一课,也不倾倒工具清单。
+    expect(failure?.message).not.toContain('Installed plugins (ghosts) are not MCP servers');
+    expect(failure?.message).not.toContain('Call cindy_mcp_list_tools first');
+    expect(failure?.message).not.toContain('"name":"ghost_call"');
+    expect(String(failure?.message).length).toBeLessThan(3_000);
+
+    // 同一次运行里同时存在 unavailable server 时,完全不认识的名字仍走插件那一课。
+    const unknown = await call({ server: 'never-connected', tool: 'dead_tool' })
+      .then(() => undefined, (error: Error) => error);
+    expect(unknown?.message).toContain('"never-connected" is not a connected gateway server');
+    expect(unknown?.message).toContain('Installed plugins (ghosts) are not MCP servers');
+    expect(calls).toEqual([]);
+
+    // list_tools 侧一直有专门分支(未被本次改动触碰),一并钉住原因不丢。
+    const inspected: any = await list({ server: 'dead-srv' });
+    expect(inspected.details).toMatchObject({
+      ok: false, errorCode: 'SERVER_UNAVAILABLE', requested: 'dead-srv', reason: 'request timed out',
+    });
+  });
+
+  it('explains the facade-hidden cindy_memory server instead of a silent empty tool list', async () => {
+    const { list } = loadCindyGateway({ botMemoryFacade: true });
+    const inspected: any = await list({ server: 'cindy_memory' });
+
+    // {ok:true,tools:[]} 会被读成"这个 server 没有工具";事实是连着、工具在原生 bot_memory 上。
+    expect(inspected.details.ok).toBe(true);
+    expect(inspected.details.tools).toEqual([]);
+    expect(inspected.details.reason).toContain('"cindy_memory" is connected');
+    expect(inspected.details.reason).toContain('bot_memory');
+    expect(inspected.details.reason).not.toContain('is not a connected gateway server');
+    // 有界:补说明不等于倒工具清单/schema。
+    expect(inspected.details.unavailableServers).toBeUndefined();
+    expect(JSON.stringify(inspected.details)).not.toContain('inputSchema');
+    expect(JSON.stringify(inspected.details).length).toBeLessThan(600);
+
+    // facade 关掉时工具照常可见,不贴 facade 说明。
+    const plain: any = await loadCindyGateway().list({ server: 'cindy_memory' });
+    expect(plain.details.tools.map((tool: any) => tool.name)).toEqual(['call_tool', 'list_tools']);
+    expect(plain.details.reason).toBeUndefined();
+  });
+
+  it('refuses every partial disclosure shape and only executes the exact disclosed pair', async () => {
+    // 披露只按精确 (server, tool) 对记账:只给 server、tool 缺失/为空/写错的调用仍被拒且不执行。
+    const partials: Array<[string, unknown]> = [
+      ['server only', { server: 'cindy' }],
+      ['absent tool', { server: 'cindy', args: { ghost_id: 'demo' } }],
+      ['empty tool', { server: 'cindy', tool: '', args: { ghost_id: 'demo' } }],
+      ['wrong tool name', { server: 'cindy', tool: 'ghost_wrong', args: { ghost_id: 'demo' } }],
+    ];
+    for (const [shape, params] of partials) {
+      const { call, calls } = loadCindyGateway();
+      const failure = await call(params).then(() => undefined, (error: Error) => error);
+      expect(failure, shape).toBeDefined();
+      expect(calls, shape).toEqual([]);
+      // 未披露/未知路径只给 server 名与工具名,不给 schema 正文。
+      expect(String(failure?.message), shape).not.toContain('inputSchema');
+    }
+
+    // 精确对披露后照旧执行;另一对仍被挡在检视这一步。
+    const { list, call, calls } = loadCindyGateway();
+    await list({ server: 'cindy', tool: 'ghost_call' });
+    await expect(call({ server: 'cindy', tool: 'ghost_call', args: { ghost_id: 'demo' } }))
+      .resolves.toBeDefined();
+    expect(calls).toHaveLength(1);
+    const other = await call({ server: 'cindy_memory', tool: 'call_tool', args: { name: 'memory_list' } })
+      .then(() => undefined, (error: Error) => error);
+    expect(other?.message).toContain('Inspect this tool before execution');
+    expect(calls).toHaveLength(1);
+  });
+
+  it('keeps the plugin lesson when call_tool treats a plugin id as an MCP server', async () => {
+    const { call, calls } = loadCindyGateway();
+    const failure = await call({ server: 'meka-unity', tool: 'unity_inspect' })
+      .then(() => undefined, (error: Error) => error);
+    expect(failure?.message).toContain('"meka-unity" is not a connected gateway server');
+    expect(failure?.message).toContain('Installed plugins (ghosts) are not MCP servers');
+    expect(failure?.message).toContain('injected plugin roster');
+    // 有界回答:只给 server 名,不倾倒工具清单。
+    expect(failure?.message).toContain('Available gateway servers:');
+    expect(failure?.message).not.toContain('"name":"ghost_call"');
+    expect(calls).toEqual([]);
+  });
+
+  it('returns the expected args schema with the not-disclosed error', async () => {
+    const { call, calls } = loadCindyGateway();
+    const failure = await call({ server: 'cindy', tool: 'ghost_call', args: { ghost_id: 'demo' } })
+      .then(() => undefined, (error: Error) => error);
+    expect(failure?.message).toContain('Inspect this tool before execution');
+    expect(failure?.message).toContain('"server":"cindy","tool":"ghost_call"');
+    expect(failure?.message).toContain('Expected args schema:');
+    expect(failure?.message).toContain('"ghost_id"');
+    expect(calls).toEqual([]);
+  });
 });

@@ -125,6 +125,12 @@ export interface PiTranslateContext {
   /** 当前 turn 内尚未被终态消费的 Host 主动停止请求。 */
   hostAbortRequestGeneration: number | null;
   hostAbortRequestTokens: Set<symbol>;
+  /**
+   * 已经**看到过** Host 主动停止登记的 turn 代际。与 hostAbortRequestGeneration 的关键区别:
+   * abort RPC 失败时后者会被 rollback 回退(那是为了不吞掉后续真实断流),而用户确实按下的
+   * 那一次 Stop 是既成事实,不能被回退抹掉。只按代际存活,由 agent_start 代际前滚清理。
+   */
+  hostStopSeenGeneration: number | null;
   /** Runtime-local namespace: persisted thinking IDs must not collide after context recreation. */
   thinkingIdPrefix: string;
   /** thinking 块序号(blockId 生成)。 */
@@ -215,6 +221,7 @@ export function createPiTranslateContext(logger: Logger): PiTranslateContext {
     pendingHostTurnStartToken: null,
     hostAbortRequestGeneration: null,
     hostAbortRequestTokens: new Set(),
+    hostStopSeenGeneration: null,
     thinkingIdPrefix: `pi-think-${randomUUID()}`,
     thinkingSeq: 0,
     thinkingBlocks: new Map(),
@@ -262,11 +269,19 @@ export function rollbackPiHostTurnStart(
   if (ctx.hostAbortRequestGeneration === ctx.turnGeneration + 1) {
     clearPiHostAbortRequests(ctx);
   }
+  // The seen-stop latch describes the same never-started generation, so it is
+  // dropped with it. (A failed abort RPC is different: there the turn may still
+  // be running, so rollbackPiHostAbortRequest deliberately keeps the latch.)
+  if (ctx.hostStopSeenGeneration === ctx.turnGeneration + 1) {
+    ctx.hostStopSeenGeneration = null;
+  }
 }
 
 /**
  * 在 abort RPC 发出前登记 Host 主动停止，避免 Pi 的 aborted 终态先于 RPC 回执到达。
  * token 让并发或迟到的失败回滚只能撤销自己的请求，不能清掉更新的一次停止。
+ * 同时锁存"本代际出现过 Host 停止"这一事实(见 hostStopSeenGeneration):它比 abort 标记
+ * 更长寿,唯一目的是让 abort RPC 回滚后的空 cancelled turn 依然不能被自动续跑。
  */
 export function markPiHostAbortRequested(ctx: PiTranslateContext): PiHostAbortRequestToken {
   const targetGeneration = !ctx.isStreaming && ctx.pendingHostTurnStartToken !== null
@@ -276,12 +291,18 @@ export function markPiHostAbortRequested(ctx: PiTranslateContext): PiHostAbortRe
     ctx.hostAbortRequestTokens.clear();
     ctx.hostAbortRequestGeneration = targetGeneration;
   }
+  ctx.hostStopSeenGeneration = targetGeneration;
   const token = Symbol('pi-host-abort-request');
   ctx.hostAbortRequestTokens.add(token);
   return token;
 }
 
-/** Abort RPC 未被接受时回滚对应请求，防止旧标记吞掉后续真实断流。 */
+/**
+ * Abort RPC 未被接受时回滚对应请求，防止旧标记吞掉后续真实断流。
+ * 只回滚 abort 标记本身:hostStopSeenGeneration 描述的是"用户按下过 Stop"这一既成事实,
+ * 不随 RPC 成败回退——否则 abort RPC 报错 + 空 cancelled turn 会被误判成上游静默收尾,
+ * 于是自动续跑一个用户明确停掉的 turn(见 translator 的 silentStop 判定)。
+ */
 export function rollbackPiHostAbortRequest(
   ctx: PiTranslateContext,
   token: PiHostAbortRequestToken,
@@ -295,6 +316,16 @@ export function isCurrentTurnHostAbortRequested(ctx: PiTranslateContext): boolea
     && ctx.hostAbortRequestTokens.size > 0;
 }
 
+/**
+ * 本 turn **出现过** Host 主动停止登记(即使 abort RPC 失败已回滚)。
+ * 只用于 silentStop 判定:见 hostStopSeenGeneration 的语义说明。
+ * 不导出:没有模块外消费者(agents/index.ts 只导出 PiAgent),测试改钉行为断言。
+ */
+function isCurrentTurnHostStopSeen(ctx: PiTranslateContext): boolean {
+  return ctx.hostStopSeenGeneration === ctx.turnGeneration;
+}
+
+/** 只清 abort 标记;hostStopSeenGeneration 由代际前滚(agent_start)单独管理。 */
 function clearPiHostAbortRequests(ctx: PiTranslateContext): void {
   ctx.hostAbortRequestTokens.clear();
   ctx.hostAbortRequestGeneration = null;
@@ -316,6 +347,7 @@ export function disposePiTranslateContext(ctx: PiTranslateContext): void {
   ctx.isStreaming = false;
   ctx.pendingHostTurnStartToken = null;
   clearPiHostAbortRequests(ctx);
+  ctx.hostStopSeenGeneration = null;
   ctx.pendingAssistantError = null;
   ctx.terminalAssistantErrorEmitted = false;
   ctx.compactTurnScope = null;
@@ -658,6 +690,12 @@ export function translatePiEvent(
       if (ctx.hostAbortRequestGeneration !== ctx.turnGeneration) {
         clearPiHostAbortRequests(ctx);
       }
+      // seen-stop 锁存只活一代:上一代看到过的 Stop 不能压制新 turn 的 silent-stop 自愈。
+      // 与 abort 标记同源但判定不同——Agent Stop 在 prompt 尚未 agent_start 时登记的是
+      // `turnGeneration + 1`,前滚后正好等于新代际,所以那一次停止仍然(正确地)生效。
+      if (ctx.hostStopSeenGeneration !== null && ctx.hostStopSeenGeneration !== ctx.turnGeneration) {
+        ctx.hostStopSeenGeneration = null;
+      }
       ctx.isStreaming = true;
       ctx.turnTokens = 0;
       ctx.turnInput = 0;
@@ -991,7 +1029,34 @@ export function translatePiEvent(
           source: 'pi',
         });
       }
-      const silentStop = outcome === 'completed'
+      // 空回合兜底:本 turn 没有任何用户可见的 assistant 正文时绝不能静默收尾。
+      //  - `completed`:上游用空内容 assistant 消息正常收尾(SDK 判 turn 正常结束)。
+      //    这条分支**不看** seen 锁存:它是"上游正常收尾却一个字都没有"的既有自愈形态,
+      //    与"用户是否按过 Stop"无关。abort RPC 失败回滚后锁存仍会匹配本代际,若把它一并
+      //    排除,这个空回合就会既无 silentStop、也无终态 error,用户侧退回零输出。
+      //  - `cancelled` 且**不是 Host Stop**:Pi 自己把 turn 打断了(`stopReason='aborted'`
+      //    且本 turn 没有登记过 Host 停止,见 isCurrentTurnHostStopSeen)。
+      //    这是上游断流的形态:用户没点任何东西,却一个字都没拿到。此前这种 turn
+      //    既无终态 error(silentStop 当时要求 outcome==='completed')、也不触发两条宿主
+      //    自愈,用户侧表现为"发了消息啥也没发生"(与 claude-code 的 silent-stop 同族)。
+      //  - Host Stop(用户点 Stop / 45 分钟 stall watchdog 的 abort)在 `cancelled` 分支被
+      //    排除:那是用户或宿主自己的动作,不是静默;watchdog 另有一条
+      //    `turn_no_event_timeout` 终态 error 及自己的续跑通道
+      //    (`isAcceptedTurnContinuationOnlyReason`),这里再接管会双发。
+      //    Host Stop 的排除与上方 `pendingAssistantError` 的抑制同源(hostAbortRequested 优先)。
+      //    注意这里查的是 **seen** 而不是 abort 标记:abort RPC 失败会回滚 abort 标记
+      //    (`agents/pi/index.ts` 的 `!resp.success` / catch),若只看它,一次
+      //    "用户按了 Stop → RPC 报错回滚 → Pi 仍发来无 errorMessage 的 aborted 空消息"
+      //    就会落成 cancelled + 空文本,进而被宿主补发「继续」,把用户明确停掉的 turn 重新跑起来。
+      //    seen 锁存登记在同一个代际上且不随回滚清除(hostStopSeenGeneration)。
+      //  - 有正文的取消/完成不进入本分支(`finalAssistantText` 非空),保持既有行为不变。
+      // 命中后事件流仍走正常 Done/done 收尾,只在 done.data 附加 silentStop 交给 host 守卫:
+      // 守卫补发「继续」自愈同一段对话(绝不重放原始 prompt 及其副作用),额度/熔断耗尽时
+      // 弹终态 error `silent-stop-exhausted`(renderer 白名单 reason,带「继续」按钮)。
+      const silentStop = (outcome === 'completed'
+          // seen 锁存只收紧 `cancelled`:它的用途是"不回放用户明确停掉的 turn",
+          // 该关切只存在于 cancelled(over-narrowing 到 completed 会重新引入零输出)。
+          || (outcome === 'cancelled' && !isCurrentTurnHostStopSeen(ctx)))
         && !hostAbortRequested
         && pendingAssistantError === null
         && !ctx.terminalAssistantErrorEmitted
@@ -999,6 +1064,8 @@ export function translatePiEvent(
       if (silentStop) {
         ctx.logger.warn('pi turn settled without a user-facing assistant reply', {
           turnGeneration: ctx.turnGeneration,
+          outcome,
+          stopReason: ctx.finalAssistantStopReason,
           inputTokens: ctx.turnInput,
           outputTokens: ctx.turnOutput,
         });
