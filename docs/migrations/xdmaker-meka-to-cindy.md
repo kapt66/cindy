@@ -4877,7 +4877,9 @@ WL-11.11 的引用、`docs/dev-rules/meka-injection-layer.md` §3.1 键表 + 新
 
 - `docs/product-rules/meka-skills.md` §5：请求分类与「审批只决定写入」保留，补 **A3 会话级镜像的
   重启边界**、**A4 成员清单的一致性 guard 语义（200 上限 / 截断标记 / 批准后冻结）**、
-  **A10 范围段持续注入**、**零输出回合的岛面挂起（`AGENT_ISLAND_SILENT_STOP_HOLD_MS = 10_000`）**；
+  **A10 范围段持续注入**、**零输出回合的岛面挂起（`AGENT_ISLAND_SILENT_STOP_HOLD_MS = 10_000`，
+  标记同时挂在 `done` 与配对的 turn-end `status` 上 ⇒ 判定与 provider 事件顺序无关；另有单调锚点
+  `silentStopHoldMonoUntil` 与非 `Done` 尾巴加固）**；
   同一节修正 `p4_add` 误述、战斗流程 `ghost_list` 发现误述，以及「模型一轮即可重试」的措辞。
 - `docs/product-rules/saga2-design-combat-skill-followups.md`：2026-09-22 复盘节的改动清单补齐
   A3 / A4 / A6 / A7 / A10 与岛面挂起；两节 2026-09-02 证据预算原文加时效注记（已删除 + 从未触发）；

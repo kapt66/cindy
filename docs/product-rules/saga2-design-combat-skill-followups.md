@@ -539,7 +539,10 @@ meka-p4 缺「谁锁了这个文件」能力而逼 Agent 绕行 raw `p4` CLI）�
   两条项目参考未注入时**无论本轮有没有补丁**都清掉旧的 `mekaCombatEvidenceBasis`（A7），
   不让上一轮的依据在参考消失后活下来。
 - **灵动岛空回合挂起**：`agent-island/state.ts` 的 `AGENT_ISLAND_SILENT_STOP_HOLD_MS = 10_000`
-  兜底把 silent-stop `done` 压下的完成补回，使零输出 turn 在界面上可见、也不会永远停在 running
+  兜底把 silent-stop 压下的完成补回，使零输出 turn 在界面上可见、也不会永远停在 running。
+  `silentStop` 标记**同时挂在 `done` 与配对的 turn-end `status` 上**（claude-code status 先、Pi done 先），
+  岛面按标记判定因而**与事件顺序无关**；另有单调锚点 `silentStopHoldMonoUntil` 防止墙上时钟回拨拉长兜底，
+  并去掉了 `status === 'Done'` 精确匹配以免非 `Done` 尾巴被 `prune` 吞掉
   （见 `docs/product-rules/meka-skills.md` §5「零输出回合在岛面不静默」）。
 
 **设计库修改建议**：**本轮没有新增**。用户需求本身是让实现符合项目既有专业规则

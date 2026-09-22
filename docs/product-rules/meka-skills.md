@@ -408,14 +408,38 @@ Host 必须立即将 MCPR 这一条依赖标记为失效；后续 MCPR 调用给
 明确标为「可实现 / 无法保证 / 待确认业务选择」或程序交接项。任何阻塞都必须产出用户可见结论，
 不得以持续调用工具代替阶段性结论，也不得静默结束回合。
 
-**零输出回合在岛面不静默（2026-09-22）**：上游 Pi 可能以「无用户可见正文」的 `done` 结束一次
-SDK turn，而宿主守卫会补发「继续」把同一段产品对话接着跑。因此桌面灵动岛不再把这次 `done` 当完成：
-`agent-island/state.ts` 新增 `silentStopHold` / `silentStopHoldUntil` / `pendingSilentStopCompletion`，
-并按 `AGENT_ISLAND_SILENT_STOP_HOLD_MS = 10_000` 兜底 —— 续跑 turn 的新活动或终止型 error 会提前
-解开挂起；两者都没有时（守卫既不续跑也不发终态 error，例如逃生开关关闭）在 10 秒后把被压下的那次
-完成原样补回，岛面不会永远停在 running（`prune` 不回收 running 条目）。这只是让「零输出 turn」
-在界面上可被看见、并避免闪出假完成与完成提醒：它不改变 turn 的终态语义，也不改变其它消费者的
-挂起口径（`hook-control/turnObserver`、`im/shared/turnRunner` 各自口径不变）。**未做实机验证**。
+**零输出回合在岛面不静默（2026-09-22）**：上游可能以「无用户可见正文」的收尾结束一次 SDK turn，
+而宿主守卫会补发「继续」把同一段产品对话接着跑。因此桌面灵动岛不再把这次收尾当完成：
+`agent-island/state.ts` 新增 `silentStopHold` / `silentStopHoldUntil` / `silentStopHoldMonoUntil` /
+`pendingSilentStopCompletion`，并按 `AGENT_ISLAND_SILENT_STOP_HOLD_MS = 10_000` 兜底 —— 续跑 turn 的
+新活动或终止型 error 会提前解开挂起；两者都没有时（守卫既不续跑也不发终态 error，例如逃生开关关闭）
+在 10 秒后把被压下的那次完成原样补回，岛面不会永远停在 running（`prune` 不回收 running 条目）。
+
+**标记挂在两条收尾上，判定与事件顺序无关（2026-09-22 修正）**：`silentStop` 现由生产者同时挂在
+turn-end `status` 与 `done` 上（claude-code 是 **status 先、done 后**；Pi 是 **done 先、status 后**，
+`pi/translator.ts` 的 `pushStatus(queue, ctx, 'Done', false)` 紧随其 `done`），岛面按
+`data.silentStop === true` 判定，**哪条先到就直接进挂起**，因此**不得**假设两个 provider 对称。
+修法必须是**预防**而不是事后回退：一旦 `status{isRunning:false}` 被当收口，
+`completeAgentIslandSession` 会写远端未读账本、置 `attention` 并触发完成提醒，**这些从岛面撤不回来**；
+本批第一版只在 `done` 侧挂起，于是对 claude-code（status 先到）会先画一次**假完成**并把账本写掉——
+所以本节原先「避免闪出假完成」的说法在修复前对 claude-code 是**假的**，现在才成立。
+挂起时限另存**单调锚点**（`silentStopHoldMonoUntil`，`performance.now()` 基）：墙上时钟回拨时兜底按
+真实剩余量重算，不会被拉长。挂起期内的 `isRunning === false` 尾巴不再要求 `status === 'Done'`
+精确匹配，否则「非 `Done` 的尾巴」会落成条目既 `running=false` 又不完成，紧接着被 `prune` 整条删掉、
+连兜底一起静默丢失。五条释放路径（新活动 `markSessionRunning`、终止型 error、silenced completion、
+进程关闭、无标记的 `done`）各有测试，逐条变异均转红。
+
+**已知未覆盖与登记**：①「status 先到且不带标记 + 随后带标记的 `done`」这一组合**不做配对缓冲**——
+真实生产者里不存在（claude-code 两条都标、Pi 是 done 先、codex 没有 `silentStop`），而缓冲会推迟
+**所有** status-Done-only 收口并再引入第二条时间基；若将来要覆盖，落点在生产者或
+`sessionEventPreparation.ts` 复制标记。②`agent-island/service.ts` 的 `publish()` 在
+`!enabledSynced` 时会 `clearPublishTimer()` 并 return，故若挂起在首次 enabled 同步**之前**武装，
+兜底要等下一次 publish 才排期（窗口极小且自愈，**存量逻辑**，未改）。③`performance.now()` 在部分
+平台休眠时暂停，与墙上时钟同时被向后调整的复合情形下兜底理论上会晚于墙钟追平，**未测**。
+
+这也只是让「零输出 turn」在界面上可被看见：它不改变 turn 的终态语义，也不改变其它消费者的挂起口径
+（`hook-control/turnObserver`、`im/shared/turnRunner` 各自口径不变）。**未做实机验证**：claude-code
+零输出回合的真实复现（真实网络断流）未跑。
 
 任务启动时还会从本次已解析角色配置注入 `[MEKA_ROLE_CONTEXT]`，明确提供 `projectId`、稳定
 `roleId` 与展示名；模型不得用其它项目的自定义角色、用户数据缓存或当前窗口覆盖这组绑定。

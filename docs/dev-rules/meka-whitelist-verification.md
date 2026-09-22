@@ -727,8 +727,10 @@ Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台。
 - Pi 空回合兜底（WL-11.15）：`packages/maker-core/src/agents/pi/translator.ts:1034-1081`
   （`silentStop` 判定 `:1054-1059`、`done.data` 附加 `:1081`；Host Stop 锁存 `hostStopSeenGeneration`
   与 `isCurrentTurnHostStopSeen` 在 `:275-327`）；
-  `apps/desktop/src/main/agent-island/state.ts:74,657-660,728-740`（`AGENT_ISLAND_SILENT_STOP_HOLD_MS = 10_000`
-  的挂起兜底）；
+  `apps/desktop/src/main/agent-island/state.ts:84,671-690,752-764`（`AGENT_ISLAND_SILENT_STOP_HOLD_MS = 10_000`
+  的挂起兜底；单调锚点 `silentStopHoldMonoUntil` 在 `:172-181`）与
+  `packages/maker-core/src/agents/claude-code/translator.ts:2394-2395`（把同一标记挂到配对的
+  turn-end `status` 上，使判定与事件顺序无关）；
   `apps/desktop/src/main/maker-ipc/silentStopAutoResume.ts`、`register.ts:4298-4460`、
   `renderer/components/chat/errorReasonI18n.ts:20`
 - 插件侧（跨仓，不在本仓）：`C:\Workspace\cindy-meka-plugins\meka-unity\node\worker.cjs:49-59`
@@ -1084,15 +1086,29 @@ Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台。
   （`silentStopAutoResume.ts` 的 `SILENT_STOP_RESUME_BUDGET` / `SILENT_STOP_SESSION_BREAKER_LIMIT`），
   不是 WL-11.14 删掉的战斗证据预算，也不是本轮新增的收口上限。
 - **GUI 侧挂起**：宿主拿到 `silentStop` 后，会话在 agent-island 上进入
-  `silentStopHold`（`agent-island/state.ts:74,657-660,728-740`，`AGENT_ISLAND_SILENT_STOP_HOLD_MS = 10_000`
-  的到期兜底）：这段时间不得把面板落成「已完成」终态，续跑或超时才收口。
+  `silentStopHold`（`agent-island/state.ts:84,671-690,752-764`，`AGENT_ISLAND_SILENT_STOP_HOLD_MS = 10_000`
+  的到期兜底，另有单调锚点 `silentStopHoldMonoUntil`）：这段时间不得把面板落成「已完成」终态，续跑或
+  超时才收口。**标记挂在两条收尾上，判定与事件顺序无关**：`done` 与配对的 turn-end `status` **都**带
+  `silentStop`（claude-code 是 status 先、done 后；Pi 是 done 先、status 后，见其 `pushStatus(…)`），
+  岛面按 `data.silentStop === true` 判定，带标记的那条先到即进挂起，**不得假设两个 provider 对称**。
+  修法必须是**预防**而非事后回退：一旦 `status{isRunning:false}` 被当收口，远端未读账本、`attention`
+  与完成提醒就已经落地，**岛面撤不回来**——本批第一版只在 `done` 侧挂起，对 claude-code 会先画一次
+  假完成，故本节原先「避免闪出假完成」的说法在修复前对 claude-code 是**假的**。挂起期内
+  `isRunning === false` 的尾巴也不再要求 `status === 'Done'` 精确匹配（否则非 `Done` 的尾巴会落成
+  `running=false` 又不完成，被紧随的 `prune` 整条吞掉、连兜底一起静默丢失）。**已知未覆盖**：
+  「status 先到且**不带**标记 + 随后带标记的 `done`」不做配对缓冲（真实生产者不存在：codex 无
+  `silentStop`、Pi 是 done 先、claude-code 两条都标；缓冲会推迟**所有** status-Done-only 收口）；
+  `service.ts` 的 `!enabledSynced` 会清 publish timer，故在首次 enabled 同步**之前**武装的挂起要等
+  下一次 publish 才排期（存量逻辑，窗口极小且自愈）。
 - **语义验收步骤**：① 构造 `cancelled` + 空正文 + 非 Host abort 的 turn，断言
   `done.data.silentStop === true` 且守卫被触发；② 构造 Host abort 的同样 turn（abort 标记未被
   回滚 ⇒ `outcome` 仍为 `cancelled`），断言**没有** `silentStop`；②′ **反向对照**：构造 abort RPC
   失败回滚、但 Pi 仍以 `completed` + 空正文收尾的 turn，断言**有** `silentStop` —— 这一格必须与 ②
   相反，否则就是本批第一版回归；③ 构造有正文的取消，断言**没有** `silentStop`；
   ④ 让续跑额度耗尽，断言用户看到 `silent-stop-exhausted` 横幅而不是静默结束；
-  ⑤ 断言命中后 10 秒内会话在 agent-island 上不是终态「已完成」，续跑到达或超时才收口。
+  ⑤ 断言命中后 10 秒内会话在 agent-island 上不是终态「已完成」，续跑到达或超时才收口；并**分别按两个
+  provider 的真实事件序各跑一遍**（claude-code：`status{silentStop}` → `done{silentStop}`；Pi：
+  `done{silentStop}` → `status`），断言两条顺序都**不出现假完成**、不写远端未读账本。
 - **自动化锚点**：`packages/maker-core/src/agents/pi/__tests__/pi-translator.test.ts`
   （三条新用例）、`apps/desktop/src/main/agent-island/__tests__/state.test.ts`（挂起与到期兜底）、
   `maker-ipc/__tests__/silentStopAutoResume.test.ts`、
@@ -1749,7 +1765,7 @@ lineage 撞号的处理、migration 文件本体不写注释）留在
 | WL-11.12 项目参考路径注入与精确路径白名单 | 单测已落地（`mekaRuntimeInjectionBaseline.test.ts` 的 `[SAGA2_PROJECT_PATHS]` 全文与 vendorOptions 键序），但**登记人未运行**；真实含 CJK 目录名路径的读取**未实机验证** |
 | WL-11.13 表范围只读通道与 P4 写边界（Unity 查询 + P4） | Cindy 侧白名单放行/拒绝有单测（`combatWorkflowPolicy.test.ts` 两条），但**登记人未运行**；**跨仓清单一致性零自动化断言**（靠 `meka-unity/node/worker.cjs:49-59` 与 Cindy 侧清单同时人工核对）；**P4 写边界零自动化覆盖**：`p4_edit`/`p4_add` 前置、从不 `p4_submit`、本批 Unity C# 改动未入库都只由角色/Skill 正文表达（`p4_submit` 在 Host 侧是放行路径），需用 `p4_opened` 人工核对 |
 | WL-11.14 Host 侧证据预算／配额／时限已删除（收敛纪律保留） | ① 的静态核对已由编排者实跑通过（代码/测试/提示词/资源范围内 `git grep` 零命中、退出码 1，命令见本条，必须带 `-- apps packages scripts`）；**没有自动化断言禁止复活 Host 侧次数上限**（新加常量的 PR 不会被门禁拦下）；片段文件名/id 仍叫 `combat-evidence-budget` 是有意保留 |
-| WL-11.15 Pi 空回合不得静默收尾 | 单测已落地（`pi-translator.test.ts` 三条 + host 守卫用例链 + `agent-island/state.test.ts` 的挂起与到期兜底），但**登记人未运行**；真实网络断流的复现**零覆盖** |
+| WL-11.15 Pi 空回合不得静默收尾 | 单测已落地（`pi-translator.test.ts` 三条 + host 守卫用例链 + `agent-island/state.test.ts` 的挂起、两条事件序、五条释放路径与单调时钟 + `claude-code/translator.ts` 的生产者契约），但**登记人未运行**；真实网络断流的复现**零覆盖** |
 | WL-11.16 战斗写入门禁三层（范围绑定／命令面白名单／写后对账） | 单测已落地（`combatWorkflowPolicy.test.ts` 的 D1／D2／D3 用例，把对应门禁临时失效即转红；D2 覆盖有损、无损、缺基线、回读不一致、MCP 与 Shell 两条路径），但**登记人未运行**；写入对账所依赖的**真实 meka-unity 回执封套嵌套未核验**（本仓不可核验），且 `[SAGA2_COMBAT_CONFIG_RESULT]` 的最终文字收尾**没有 Host 门禁** |
 
 补测试时应优先覆盖**本轮同步真实坏过**的位置（WL-2.1、WL-9 派生包、WL-10 补种、WL-12），
