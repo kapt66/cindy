@@ -933,6 +933,714 @@ describe('app update forward-only policy', () => {
     expect(body).not.toMatch(/readFile\s*\(/);
   });
 
+  it('stops auto-applying a version whose durable attempt budget is spent', async () => {
+    readAutoUpdateSettings.mockReturnValue({ autoRelaunchOnIdle: false });
+    const updatesDir = path.join(TEST_USER_DATA, 'updates');
+    fs.mkdirSync(updatesDir, { recursive: true });
+    // A previous run handed this version to the updater three times. Its staged
+    // ZIP is gone (the Windows updater moves it away on a retryable failure) and
+    // patch-info.json is rewritten by every re-download, so only the durable
+    // state can remember that this version is done.
+    fs.writeFileSync(
+      path.join(updatesDir, 'apply-state.json'),
+      JSON.stringify({ version: '0.0.65', attempts: 3, abandoned: true }),
+    );
+
+    const service = await freshUpdateService('win32');
+    service.initUpdateService();
+    try {
+      // A distinct result, not 'idle': the renderer must not answer a manual
+      // "check for updates" with "you're on the latest version".
+      await expect(service.checkForUpdate(updateManifest('0.0.65'))).resolves.toBe(
+        'apply_exhausted',
+      );
+      expect(download).not.toHaveBeenCalled();
+      expect(ipcHandlers.get('update-get-status')?.()).toMatchObject({
+        status: 'error',
+        errorCode: 'update_apply_exhausted',
+      });
+    } finally {
+      service.stopUpdateService();
+    }
+  });
+
+  it('gives a newly advertised version a fresh attempt budget', async () => {
+    readAutoUpdateSettings.mockReturnValue({ autoRelaunchOnIdle: false });
+    download.mockImplementation(async ({ targetPath }: { targetPath: string }) => {
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+      fs.writeFileSync(targetPath, 'update');
+      return { path: targetPath, size: 123 };
+    });
+    const updatesDir = path.join(TEST_USER_DATA, 'updates');
+    fs.mkdirSync(updatesDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(updatesDir, 'apply-state.json'),
+      JSON.stringify({ version: '0.0.65', attempts: 3, abandoned: true }),
+    );
+
+    const service = await freshUpdateService('win32');
+    service.initUpdateService();
+    try {
+      // 0.0.66 is a different target, so the spent budget for 0.0.65 must not
+      // block it — otherwise one bad release would freeze the client forever.
+      await expect(service.checkForUpdate(updateManifest('0.0.66'))).resolves.toBe('ready');
+      expect(download).toHaveBeenCalledTimes(1);
+    } finally {
+      service.stopUpdateService();
+    }
+  });
+
+  it('keeps the durable attempt counter across the re-download after a failure', async () => {
+    readAutoUpdateSettings.mockReturnValue({ autoRelaunchOnIdle: false });
+    download.mockImplementation(async ({ targetPath }: { targetPath: string }) => {
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+      fs.writeFileSync(targetPath, 'update');
+      return { path: targetPath, size: 123 };
+    });
+    const updatesDir = path.join(TEST_USER_DATA, 'updates');
+    fs.mkdirSync(updatesDir, { recursive: true });
+    // Two of three attempts already spent. The download that follows a failed
+    // apply deletes every other file in `updates/` — if the cleanup dropped this
+    // record, the counter would restart and the client would retry forever,
+    // which is exactly the loop this record exists to break.
+    fs.writeFileSync(
+      path.join(updatesDir, 'apply-state.json'),
+      JSON.stringify({ version: '0.0.65', attempts: 2 }),
+    );
+
+    const service = await freshUpdateService('win32');
+    service.initUpdateService();
+    try {
+      await expect(service.checkForUpdate(updateManifest('0.0.65'))).resolves.toBe('ready');
+      expect(download).toHaveBeenCalledTimes(1);
+      expect(
+        JSON.parse(fs.readFileSync(path.join(updatesDir, 'apply-state.json'), 'utf8')),
+      ).toEqual({ version: '0.0.65', attempts: 2 });
+    } finally {
+      service.stopUpdateService();
+    }
+  });
+
+  it('gives up on a staged patch that hit the durable cap instead of re-downloading it', async () => {
+    readAutoUpdateSettings.mockReturnValue({ autoRelaunchOnIdle: false });
+    const manifest = updateManifest('0.0.65', 'app/windows-x64/staged.zip');
+    const updatesDir = path.join(TEST_USER_DATA, 'updates');
+    fs.mkdirSync(updatesDir, { recursive: true });
+    fs.writeFileSync(path.join(updatesDir, 'staged.zip'), 'update');
+    fs.writeFileSync(
+      path.join(updatesDir, 'patch-info.json'),
+      JSON.stringify({ version: '0.0.65', fileName: 'staged.zip', sha256: 'f'.repeat(64) }),
+    );
+    // patch-info.json carries no counter (the re-download path never writes one),
+    // so the cap can only be observed through the durable state.
+    fs.writeFileSync(
+      path.join(updatesDir, 'apply-state.json'),
+      JSON.stringify({ version: '0.0.65', attempts: 3 }),
+    );
+
+    const service = await freshUpdateService('win32');
+    service.initUpdateService();
+    try {
+      await expect(service.checkForUpdate(manifest)).resolves.toBe('apply_exhausted');
+      expect(download).not.toHaveBeenCalled();
+      // The staged copy is dropped rather than handed to the updater a fourth time.
+      expect(fs.existsSync(path.join(updatesDir, 'staged.zip'))).toBe(false);
+      expect(fs.existsSync(path.join(updatesDir, 'patch-info.json'))).toBe(false);
+      expect(
+        JSON.parse(fs.readFileSync(path.join(updatesDir, 'apply-state.json'), 'utf8')),
+      ).toMatchObject({ version: '0.0.65', attempts: 3, abandoned: true });
+      expect(ipcHandlers.get('update-get-status')?.()).toMatchObject({
+        status: 'error',
+        errorCode: 'update_apply_exhausted',
+      });
+    } finally {
+      service.stopUpdateService();
+    }
+  });
+
+  it('mirrors each handed-off attempt into the durable apply state', async () => {
+    readAutoUpdateSettings.mockReturnValue({ autoRelaunchOnIdle: false });
+    download.mockImplementation(async ({ targetPath }: { targetPath: string }) => {
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+      fs.writeFileSync(targetPath, 'update');
+      return { path: targetPath, size: 123 };
+    });
+    const resourcesPath = path.join(TEST_ROOT, 'resources');
+    fs.mkdirSync(resourcesPath, { recursive: true });
+    fs.writeFileSync(path.join(resourcesPath, `${BRAND_IDENTITY.updaterName}.exe`), 'updater');
+    const resourcesPathDescriptor = Object.getOwnPropertyDescriptor(process, 'resourcesPath');
+    Object.defineProperty(process, 'resourcesPath', {
+      value: resourcesPath,
+      configurable: true,
+    });
+    const now = 1_700_000_000_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(now);
+    const updaterWorkDir = path.join(os.tmpdir(), `cindy-update-${now}`);
+
+    const service = await freshUpdateService('win32');
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    service.initUpdateService();
+    try {
+      await expect(service.checkForUpdate(updateManifest('0.0.65'))).resolves.toBe('ready');
+      ipcListeners.get('update-relaunch')?.({}, 'dark');
+      const statePath = path.join(TEST_USER_DATA, 'updates', 'apply-state.json');
+      await vi.waitFor(() => {
+        expect(fs.existsSync(statePath)).toBe(true);
+      });
+      expect(JSON.parse(fs.readFileSync(statePath, 'utf8'))).toEqual({
+        version: '0.0.65',
+        attempts: 1,
+      });
+    } finally {
+      exitSpy.mockRestore();
+      service.stopUpdateService();
+      nowSpy.mockRestore();
+      fs.rmSync(updaterWorkDir, { recursive: true, force: true });
+      if (resourcesPathDescriptor) {
+        Object.defineProperty(process, 'resourcesPath', resourcesPathDescriptor);
+      } else {
+        Reflect.deleteProperty(process, 'resourcesPath');
+      }
+    }
+  });
+
+  it('keeps another version staged patch intact when this version is exhausted', async () => {
+    readAutoUpdateSettings.mockReturnValue({ autoRelaunchOnIdle: false });
+    const updatesDir = path.join(TEST_USER_DATA, 'updates');
+    fs.mkdirSync(updatesDir, { recursive: true });
+    // A staged patch for a DIFFERENT version must not be collateral damage.
+    fs.writeFileSync(path.join(updatesDir, 'other.zip'), 'other');
+    fs.writeFileSync(
+      path.join(updatesDir, 'patch-info.json'),
+      JSON.stringify({ version: '0.0.66', fileName: 'other.zip', sha256: 'a'.repeat(64) }),
+    );
+    fs.writeFileSync(
+      path.join(updatesDir, 'apply-state.json'),
+      JSON.stringify({ version: '0.0.65', attempts: 3, abandoned: true }),
+    );
+
+    const service = await freshUpdateService('win32');
+    service.initUpdateService();
+    try {
+      await expect(service.checkForUpdate(updateManifest('0.0.65'))).resolves.toBe(
+        'apply_exhausted',
+      );
+      expect(download).not.toHaveBeenCalled();
+      expect(fs.existsSync(path.join(updatesDir, 'other.zip'))).toBe(true);
+      const info = JSON.parse(
+        fs.readFileSync(path.join(updatesDir, 'patch-info.json'), 'utf8'),
+      ) as { version: string };
+      expect(info.version).toBe('0.0.66');
+    } finally {
+      service.stopUpdateService();
+    }
+  });
+
+  it('gives up on a version whose only remaining counter lives in patch-info', async () => {
+    readAutoUpdateSettings.mockReturnValue({ autoRelaunchOnIdle: false });
+    const manifest = updateManifest('0.0.65', 'app/windows-x64/staged.zip');
+    const updatesDir = path.join(TEST_USER_DATA, 'updates');
+    fs.mkdirSync(updatesDir, { recursive: true });
+    fs.writeFileSync(path.join(updatesDir, 'staged.zip'), 'update');
+    // No durable record at all: the gate must still see patch-info's counter,
+    // otherwise the give-up branch fires below it and the same pass re-downloads.
+    fs.writeFileSync(
+      path.join(updatesDir, 'patch-info.json'),
+      JSON.stringify({
+        version: '0.0.65',
+        fileName: 'staged.zip',
+        sha256: 'f'.repeat(64),
+        applyAttempts: 3,
+      }),
+    );
+
+    const service = await freshUpdateService('win32');
+    service.initUpdateService();
+    try {
+      await expect(service.checkForUpdate(manifest)).resolves.toBe('apply_exhausted');
+      expect(download).not.toHaveBeenCalled();
+      expect(fs.existsSync(path.join(updatesDir, 'staged.zip'))).toBe(false);
+      expect(fs.existsSync(path.join(updatesDir, 'patch-info.json'))).toBe(false);
+      expect(
+        JSON.parse(fs.readFileSync(path.join(updatesDir, 'apply-state.json'), 'utf8')),
+      ).toMatchObject({ version: '0.0.65', attempts: 3, abandoned: true });
+    } finally {
+      service.stopUpdateService();
+    }
+  });
+
+  it('clears a spent record once that version is what is installed', async () => {
+    readAutoUpdateSettings.mockReturnValue({ autoRelaunchOnIdle: false });
+    const updatesDir = path.join(TEST_USER_DATA, 'updates');
+    fs.mkdirSync(updatesDir, { recursive: true });
+    // The dialog sends users to a manual install, which never writes patch-info —
+    // so without a cold-start reconcile the record would outlive its purpose.
+    fs.writeFileSync(
+      path.join(updatesDir, 'apply-state.json'),
+      JSON.stringify({ version: '0.0.64', attempts: 3, abandoned: true }),
+    );
+
+    const service = await freshUpdateService('win32');
+    service.initUpdateService();
+    try {
+      expect(fs.existsSync(path.join(updatesDir, 'apply-state.json'))).toBe(false);
+    } finally {
+      service.stopUpdateService();
+    }
+  });
+
+  it('holds the spent-budget terminal state across polls and an offline check', async () => {
+    readAutoUpdateSettings.mockReturnValue({ autoRelaunchOnIdle: false });
+    const statuses: string[] = [];
+    browserWindowGetAllWindows.mockReturnValue([
+      {
+        isDestroyed: () => false,
+        webContents: {
+          send: (channel: string, payload: { status?: string }) => {
+            if (channel === 'update-status' && payload.status) statuses.push(payload.status);
+          },
+        },
+      } as never,
+    ]);
+    const updatesDir = path.join(TEST_USER_DATA, 'updates');
+    fs.mkdirSync(updatesDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(updatesDir, 'apply-state.json'),
+      JSON.stringify({ version: '0.0.65', attempts: 3, abandoned: true }),
+    );
+
+    const service = await freshUpdateService('win32');
+    service.initUpdateService();
+    try {
+      const manifest = updateManifest('0.0.65');
+      await expect(service.checkForUpdate(manifest)).resolves.toBe('apply_exhausted');
+      statuses.length = 0;
+
+      // Second poll on the same version must stay on the terminal state: the
+      // renderer renders 'checking' as "nothing to follow" and unmounts the
+      // manual-install dialog, so the next 'error' remounted it with a stale open
+      // state — replaying the entrance animation and stealing focus onto the
+      // primary button on every 30-minute poll.
+      await expect(service.checkForUpdate(manifest)).resolves.toBe('apply_exhausted');
+      expect(statuses).not.toContain('checking');
+      expect(ipcHandlers.get('update-get-status')?.()).toMatchObject({
+        status: 'error',
+        errorCode: 'update_apply_exhausted',
+      });
+
+      // An offline poll must not silently drop main to 'idle' either: the renderer
+      // would keep showing the terminal state, and the next successful poll would
+      // re-broadcast 'checking' — the same tear-down and remount.
+      fetchManifest.mockResolvedValue(null);
+      await expect(service.checkForUpdate()).resolves.toBe('manifest_failed');
+      expect(ipcHandlers.get('update-get-status')?.()).toMatchObject({
+        status: 'error',
+        errorCode: 'update_apply_exhausted',
+      });
+    } finally {
+      service.stopUpdateService();
+    }
+  });
+
+  it('releases the terminal state once the manifest stops advertising that version', async () => {
+    readAutoUpdateSettings.mockReturnValue({ autoRelaunchOnIdle: false });
+    const statuses: string[] = [];
+    browserWindowGetAllWindows.mockReturnValue([
+      {
+        isDestroyed: () => false,
+        webContents: {
+          send: (channel: string, payload: { status?: string }) => {
+            if (channel === 'update-status' && payload.status) statuses.push(payload.status);
+          },
+        },
+      } as never,
+    ]);
+    const updatesDir = path.join(TEST_USER_DATA, 'updates');
+    fs.mkdirSync(updatesDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(updatesDir, 'apply-state.json'),
+      JSON.stringify({ version: '0.0.65', attempts: 3, abandoned: true }),
+    );
+
+    const service = await freshUpdateService('win32');
+    service.initUpdateService();
+    try {
+      await expect(service.checkForUpdate(updateManifest('0.0.65'))).resolves.toBe(
+        'apply_exhausted',
+      );
+
+      // The release must happen BEFORE the "manifest no longer advertises this
+      // version" exits: those return early, so releasing afterwards left
+      // status/errorCode/applyExhaustedVersion pinned for the rest of the process
+      // (restart only) while `checkForUpdate` answered 'idle' — the dialog said
+      // "install manually" and the toast said "already on the latest version".
+      statuses.length = 0;
+      await expect(service.checkForUpdate(updateManifest('0.0.64'))).resolves.toBe('idle');
+      expect(statuses).toEqual(['idle']);
+      expect(ipcHandlers.get('update-get-status')?.()).toMatchObject({ status: 'idle' });
+      expect(ipcHandlers.get('update-get-status')?.()).not.toMatchObject({
+        errorCode: 'update_apply_exhausted',
+      });
+
+      // ...and the next poll is a normal poll again, `checking` included.
+      statuses.length = 0;
+      await expect(service.checkForUpdate(updateManifest('0.0.65'))).resolves.toBe(
+        'apply_exhausted',
+      );
+      expect(statuses).toContain('checking');
+    } finally {
+      service.stopUpdateService();
+    }
+  });
+
+  it('keeps a spent record for another version and clears SemVer-equal installed forms', async () => {
+    readAutoUpdateSettings.mockReturnValue({ autoRelaunchOnIdle: false });
+    const updatesDir = path.join(TEST_USER_DATA, 'updates');
+    fs.mkdirSync(updatesDir, { recursive: true });
+    const statePath = path.join(updatesDir, 'apply-state.json');
+
+    // Not the installed version → the budget still has to refuse that version.
+    // (A guard against over-clearing rather than a regression test: reconcile never
+    // removed other versions' records in the first place.)
+    fs.writeFileSync(
+      statePath,
+      JSON.stringify({ version: '0.0.66', attempts: 3, abandoned: true }),
+    );
+    const otherVersion = await freshUpdateService('win32');
+    otherVersion.initUpdateService();
+    try {
+      expect(JSON.parse(fs.readFileSync(statePath, 'utf8'))).toMatchObject({ version: '0.0.66' });
+    } finally {
+      otherVersion.stopUpdateService();
+    }
+
+    // Same installed version written in a SemVer-equal form: `+build` metadata and
+    // a `v` prefix both parse to 0.0.64, so string equality would leave the record
+    // behind forever after a manual install.
+    fs.writeFileSync(
+      statePath,
+      JSON.stringify({ version: '0.0.64+local', attempts: 3, abandoned: true }),
+    );
+    const sameVersion = await freshUpdateService('win32');
+    sameVersion.initUpdateService();
+    try {
+      expect(fs.existsSync(statePath)).toBe(false);
+    } finally {
+      sameVersion.stopUpdateService();
+    }
+  });
+
+  it('does not declare a spent version dead while its apply is still in flight', async () => {
+    vi.useFakeTimers();
+    readAutoUpdateSettings.mockReturnValue({ autoRelaunchOnIdle: false });
+    download.mockImplementation(async ({ targetPath }: { targetPath: string }) => {
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+      fs.writeFileSync(targetPath, 'update');
+      return { path: targetPath, size: 123 };
+    });
+    const updatesDir = path.join(TEST_USER_DATA, 'updates');
+    fs.mkdirSync(updatesDir, { recursive: true });
+    // One attempt short of the cap, so the hand-off below is the third one and the
+    // budget is spent exactly while the updater is running.
+    fs.writeFileSync(
+      path.join(updatesDir, 'apply-state.json'),
+      JSON.stringify({ version: '0.0.65', attempts: 2 }),
+    );
+
+    const service = await freshUpdateService('darwin');
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    service.initUpdateService();
+    try {
+      await expect(service.checkForUpdate(updateManifest('0.0.65'))).resolves.toBe('ready');
+      ipcListeners.get('update-relaunch')?.({}, 'dark');
+      const statePath = path.join(updatesDir, 'apply-state.json');
+      await vi.waitFor(() => {
+        expect(JSON.parse(fs.readFileSync(statePath, 'utf8'))).toMatchObject({ attempts: 3 });
+      });
+
+      // The budget is charged at hand-off, so "3 of 3 spent" includes the apply
+      // running right now. Declaring the version dead here would pin a record the
+      // apply is about to invalidate and tell the user to install by hand above an
+      // update that may still succeed.
+      await expect(service.checkForUpdate(updateManifest('0.0.65'))).resolves.toBe('ready');
+      expect(service.getUpdateStatus()).toBe('ready');
+      expect(JSON.parse(fs.readFileSync(statePath, 'utf8'))).toEqual({
+        version: '0.0.65',
+        attempts: 3,
+      });
+      expect(logInfo.mock.calls.map((call) => String(call[0]))).toContain(
+        'Update to v%s has spent its budget but an apply is in flight — deferring the give-up',
+      );
+    } finally {
+      exitSpy.mockRestore();
+      service.stopUpdateService();
+    }
+  });
+
+  it('keeps counting hand-offs when the durable state file cannot be written', async () => {
+    vi.useFakeTimers();
+    readAutoUpdateSettings.mockReturnValue({ autoRelaunchOnIdle: false });
+    download.mockImplementation(async ({ targetPath }: { targetPath: string }) => {
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+      fs.writeFileSync(targetPath, 'update');
+      return { path: targetPath, size: 123 };
+    });
+    const updatesDir = path.join(TEST_USER_DATA, 'updates');
+    // Make every `atomicWriteFileSync` for the apply state fail deterministically: the
+    // main file *and* its rollback snapshot are non-empty directories, so both the
+    // rename and the backup swap are rejected. That is the shape of a file an AV/EDR
+    // keeps locked: unreadable and unwritable for the whole session.
+    fs.mkdirSync(path.join(updatesDir, 'apply-state.json', 'occupied'), { recursive: true });
+    fs.mkdirSync(path.join(updatesDir, 'apply-state.json.bak', 'occupied'), { recursive: true });
+
+    const service = await freshUpdateService('darwin');
+    service.initUpdateService();
+    try {
+      for (let round = 1; round <= 3; round += 1) {
+        await expect(service.checkForUpdate(updateManifest('0.0.65'))).resolves.toBe('ready');
+        spawnProcess.mockImplementationOnce(() => {
+          throw new Error('updater spawn failed');
+        });
+        ipcListeners.get('update-relaunch')?.({}, 'dark');
+        await vi.waitFor(() => {
+          expect(service.getUpdateStatus()).toBe('error');
+        });
+      }
+
+      // Three hand-offs is the cap. Without the in-memory mirror the counter would
+      // restart from the (unreadable) durable file on every round — each round would
+      // count 1, the cap would never be reached, and the client would re-download the
+      // full package forever, which is the defect this mechanism exists to stop.
+      await expect(service.checkForUpdate(updateManifest('0.0.65'))).resolves.toBe(
+        'apply_exhausted',
+      );
+      expect(download).toHaveBeenCalledTimes(3);
+    } finally {
+      service.stopUpdateService();
+    }
+  });
+
+  it('keeps counting hand-offs when the durable state is readable but cannot be replaced', async () => {
+    vi.useFakeTimers();
+    readAutoUpdateSettings.mockReturnValue({ autoRelaunchOnIdle: false });
+    download.mockImplementation(async ({ targetPath }: { targetPath: string }) => {
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+      fs.writeFileSync(targetPath, 'update');
+      return { path: targetPath, size: 123 };
+    });
+    const updatesDir = path.join(TEST_USER_DATA, 'updates');
+    fs.mkdirSync(updatesDir, { recursive: true });
+    // Readable, but every replacement is refused — the shape an AV/EDR read-lock or a
+    // read-only attribute produces. The value on disk therefore never advances while
+    // the process keeps handing the update off.
+    fs.writeFileSync(
+      path.join(updatesDir, 'apply-state.json'),
+      JSON.stringify({ version: '0.0.65', attempts: 1 }),
+    );
+    const realRename = fs.renameSync.bind(fs);
+    const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+      if (String(from).includes('apply-state') || String(to).includes('apply-state')) {
+        throw Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' });
+      }
+      return realRename(from, to);
+    }) as typeof fs.renameSync);
+
+    const service = await freshUpdateService('darwin');
+    service.initUpdateService();
+    try {
+      // Two hand-offs: the first takes the counter from the stale on-disk 1 to 2, the
+      // second to 3 — so the *next* check is the one that must give up.
+      for (let round = 1; round <= 2; round += 1) {
+        await expect(service.checkForUpdate(updateManifest('0.0.65'))).resolves.toBe('ready');
+        spawnProcess.mockImplementationOnce(() => {
+          throw new Error('updater spawn failed');
+        });
+        ipcListeners.get('update-relaunch')?.({}, 'dark');
+        await vi.waitFor(() => {
+          expect(service.getUpdateStatus()).toBe('error');
+        });
+      }
+
+      // The in-memory value must win over the stale-but-readable file: taking the file
+      // whenever it is readable computes "1 + 1" on every round, so the cap is never
+      // reached and the client re-downloads the whole package on each retry.
+      await expect(service.checkForUpdate(updateManifest('0.0.65'))).resolves.toBe(
+        'apply_exhausted',
+      );
+      expect(download).toHaveBeenCalledTimes(2);
+      // The premise of this case, asserted rather than assumed: the file stayed
+      // readable and never advanced, so every round really did read a stale 1. If a
+      // future refactor replaces the atomic writer's `fs.renameSync` (this spy would
+      // silently stop failing the write) the test would otherwise degrade into a copy
+      // of the sibling case and keep passing.
+      expect(
+        JSON.parse(fs.readFileSync(path.join(updatesDir, 'apply-state.json'), 'utf8')),
+      ).toMatchObject({ version: '0.0.65', attempts: 1 });
+      expect(renameSpy).toHaveBeenCalled();
+    } finally {
+      renameSpy.mockRestore();
+      service.stopUpdateService();
+    }
+  });
+
+  it('ignores a durable record for another version when accumulating the budget', async () => {
+    vi.useFakeTimers();
+    readAutoUpdateSettings.mockReturnValue({ autoRelaunchOnIdle: false });
+    download.mockImplementation(async ({ targetPath }: { targetPath: string }) => {
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+      fs.writeFileSync(targetPath, 'update');
+      return { path: targetPath, size: 123 };
+    });
+    const updatesDir = path.join(TEST_USER_DATA, 'updates');
+    fs.mkdirSync(updatesDir, { recursive: true });
+    // Readable record for a DIFFERENT version, plus refused replacements: taking that
+    // record as the increment's base (or dropping the mirror because the file "exists")
+    // would restart the count at 1 on every round and put the cap out of reach again.
+    fs.writeFileSync(
+      path.join(updatesDir, 'apply-state.json'),
+      JSON.stringify({ version: '0.0.66', attempts: 2 }),
+    );
+    const realRename = fs.renameSync.bind(fs);
+    const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+      if (String(from).includes('apply-state') || String(to).includes('apply-state')) {
+        throw Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' });
+      }
+      return realRename(from, to);
+    }) as typeof fs.renameSync);
+
+    const service = await freshUpdateService('darwin');
+    service.initUpdateService();
+    try {
+      for (let round = 1; round <= 3; round += 1) {
+        await expect(service.checkForUpdate(updateManifest('0.0.65'))).resolves.toBe('ready');
+        spawnProcess.mockImplementationOnce(() => {
+          throw new Error('updater spawn failed');
+        });
+        ipcListeners.get('update-relaunch')?.({}, 'dark');
+        await vi.waitFor(() => {
+          expect(service.getUpdateStatus()).toBe('error');
+        });
+      }
+
+      await expect(service.checkForUpdate(updateManifest('0.0.65'))).resolves.toBe(
+        'apply_exhausted',
+      );
+      expect(download).toHaveBeenCalledTimes(3);
+    } finally {
+      renameSpy.mockRestore();
+      service.stopUpdateService();
+    }
+  });
+
+  it('answers apply_exhausted when a held version has no asset or the channel changed', async () => {
+    readAutoUpdateSettings.mockReturnValue({ autoRelaunchOnIdle: false });
+    const updatesDir = path.join(TEST_USER_DATA, 'updates');
+    fs.mkdirSync(updatesDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(updatesDir, 'apply-state.json'),
+      JSON.stringify({ version: '0.0.65', attempts: 3, abandoned: true }),
+    );
+
+    const service = await freshUpdateService('win32');
+    service.initUpdateService();
+    try {
+      const withAsset = updateManifest('0.0.65');
+      await expect(service.checkForUpdate(withAsset)).resolves.toBe('apply_exhausted');
+
+      // Same held version, but this round's manifest has no hotfix asset. Answering
+      // 'idle' here would toast "already on the latest version" above a dialog that
+      // says the opposite.
+      const withoutAsset = { app: { version: '0.0.65' } } as ReturnType<typeof updateManifest>;
+      await expect(service.checkForUpdate(withoutAsset)).resolves.toBe('apply_exhausted');
+      expect(service.getUpdateStatus()).toBe('error');
+
+      // Cross-instance channel switch: `clearStagedPatch()` is silent in the error
+      // state, so the terminal state is still displayed and must still be the answer.
+      // The manifest deliberately advertises a DIFFERENT version here: if this early
+      // return were deleted the flow would fall through, release v0.0.65 and download
+      // v0.0.66 — so the assertions below cannot pass for the wrong reason.
+      readUpdateChannelSettings.mockReturnValue({ enableBeta: true, orgDefaultEnableBeta: false });
+      await expect(service.checkForUpdate(updateManifest('0.0.66'))).resolves.toBe(
+        'apply_exhausted',
+      );
+      expect(service.getUpdateStatus()).toBe('error');
+      expect(download).not.toHaveBeenCalled();
+    } finally {
+      service.stopUpdateService();
+    }
+  });
+
+  it('clears a matching relogin flag when the startup path gives up on a spent version', async () => {
+    readAutoUpdateSettings.mockReturnValue({ autoRelaunchOnIdle: false });
+    const updatesDir = path.join(TEST_USER_DATA, 'updates');
+    fs.mkdirSync(updatesDir, { recursive: true });
+    fs.writeFileSync(path.join(updatesDir, 'staged.zip'), 'update');
+    // No counter in patch-info: the cap is only visible through the durable state.
+    fs.writeFileSync(
+      path.join(updatesDir, 'patch-info.json'),
+      JSON.stringify({ version: '0.0.65', fileName: 'staged.zip', sha256: 'f'.repeat(64) }),
+    );
+    fs.writeFileSync(
+      path.join(updatesDir, 'apply-state.json'),
+      JSON.stringify({ version: '0.0.65', attempts: 3 }),
+    );
+    // A cold start reaches the give-up branch inside `checkExistingPatch` (the
+    // download gate runs later), so both give-up paths must agree on the marker:
+    // this version will never be launched, and a stale flag would force a re-login
+    // after the manual install the dialog just asked for.
+    const flagPath = path.join(TEST_USER_DATA, 'relogin-required.flag');
+    fs.writeFileSync(flagPath, JSON.stringify({ version: '0.0.65' }));
+    fetchManifest.mockResolvedValue(updateManifest('0.0.65', 'app/windows-x64/staged.zip'));
+
+    const service = await freshUpdateService('win32');
+    service.initUpdateService();
+    try {
+      await expect(ipcHandlers.get('update-check-startup')?.()).resolves.toMatchObject({
+        hasUpdate: false,
+      });
+      expect(fs.existsSync(flagPath)).toBe(false);
+      expect(fs.existsSync(path.join(updatesDir, 'staged.zip'))).toBe(false);
+      expect(fs.existsSync(path.join(updatesDir, 'patch-info.json'))).toBe(false);
+      expect(JSON.parse(fs.readFileSync(path.join(updatesDir, 'apply-state.json'), 'utf8')))
+        .toMatchObject({ version: '0.0.65', attempts: 3, abandoned: true });
+    } finally {
+      service.stopUpdateService();
+    }
+  });
+
+  it('neither downloads nor relaunches from the startup path once exhausted', async () => {
+    readAutoUpdateSettings.mockReturnValue({ autoRelaunchOnIdle: false });
+    const manifest = updateManifest('0.0.65', 'app/windows-x64/staged.zip');
+    fetchManifest.mockResolvedValue(manifest);
+    const updatesDir = path.join(TEST_USER_DATA, 'updates');
+    fs.mkdirSync(updatesDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(updatesDir, 'apply-state.json'),
+      JSON.stringify({ version: '0.0.65', attempts: 3, abandoned: true }),
+    );
+
+    const service = await freshUpdateService('win32');
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    service.initUpdateService();
+    try {
+      const startupHandler = ipcHandlers.get('update-check-startup');
+      await expect(startupHandler?.()).resolves.toMatchObject({
+        hasUpdate: false,
+        action: 'none',
+      });
+      expect(download).not.toHaveBeenCalled();
+      expect(spawnProcess).not.toHaveBeenCalled();
+      expect(exitSpy).not.toHaveBeenCalled();
+      expect(ipcHandlers.get('update-get-status')?.()).toMatchObject({
+        status: 'error',
+        errorCode: 'update_apply_exhausted',
+      });
+    } finally {
+      exitSpy.mockRestore();
+      service.stopUpdateService();
+    }
+  });
+
   it('lets a later online check re-anchor an offline-ready Windows patch', async () => {
     vi.useFakeTimers();
     readAutoUpdateSettings.mockReturnValue({ autoRelaunchOnIdle: false });

@@ -5,8 +5,13 @@
  * 展开态才在 banner 被藏起时用这颗涂黑入口。钉住 Greptile 说的「busy 时两颗火焰」。
  */
 
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const harness = vi.hoisted(() => ({
+  updateStatus: { status: 'ready', version: '1.2.3', errorCode: null as string | null },
+  restore: vi.fn(),
+}));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -28,11 +33,11 @@ vi.mock('@/contexts/AuthContext', () => ({
 }));
 
 vi.mock('@/hooks/useUpdateStatus', () => ({
-  useUpdateStatus: () => ({ status: 'ready', version: '1.2.3', errorCode: null }),
+  useUpdateStatus: () => harness.updateStatus,
 }));
 
 vi.mock('@/hooks/useUpdateBannerDismiss', () => ({
-  useUpdateBannerDismiss: () => ({ dismissed: true, restore: vi.fn(), reason: 'busy' }),
+  useUpdateBannerDismiss: () => ({ dismissed: true, restore: harness.restore, reason: 'busy' }),
 }));
 
 vi.mock('@/hooks/useBetaChannelSettings', () => ({
@@ -56,6 +61,8 @@ vi.mock('@/components/ui/tooltip', () => ({
 import { UserInfoSection } from '@/components/sidebar/UserInfoSection';
 
 beforeEach(() => {
+  harness.updateStatus = { status: 'ready', version: '1.2.3', errorCode: null };
+  harness.restore.mockClear();
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
     value: {
@@ -79,5 +86,38 @@ describe('UserInfoSection update flame vs rail', () => {
     render(<UserInfoSection isCollapsed={false} onOpenUpdateNotice={() => {}} />);
 
     expect(screen.getByRole('button', { name: 'sidebar.user.reopenUpdateBanner' })).toBeTruthy();
+  });
+
+  it('offers the reopen flame for a version whose auto-apply budget is spent', () => {
+    // The exhausted dialog is one-shot and `isErrorOnly` renders nothing else, so
+    // this flame is the only way back to the manual-install guidance after "later".
+    harness.updateStatus = { status: 'error', version: '1.2.3', errorCode: 'update_apply_exhausted' };
+    render(<UserInfoSection isCollapsed={false} onOpenUpdateNotice={() => {}} />);
+
+    const flame = screen.getByRole('button', { name: 'sidebar.user.reopenUpdateBanner' });
+    fireEvent.click(flame);
+    expect(harness.restore).toHaveBeenCalled();
+
+    // Not the release-notes entry: reaching update history instead of the
+    // manual-install dialog would strand the user on a version they cannot apply.
+    expect(screen.queryByRole('button', { name: 'sidebar.user.viewReleaseNotes' })).toBeNull();
+  });
+
+  it('does not turn other error states into a reopen flame', () => {
+    harness.updateStatus = { status: 'error', version: '1.2.3', errorCode: 'updater_spawn_failed' };
+    render(<UserInfoSection isCollapsed={false} onOpenUpdateNotice={() => {}} />);
+
+    expect(screen.queryByRole('button', { name: 'sidebar.user.reopenUpdateBanner' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'sidebar.user.viewReleaseNotes' })).toBeTruthy();
+  });
+
+  it('has no flame at all in the rail layout, so the dialog can only be reclaimed by expanding', () => {
+    // Registered boundary (docs/dev-rules/cindy-updater.md): in the collapsed rail
+    // `UserInfoSection` renders the avatar only. A remount does NOT reopen the dialog
+    // once the user dismissed it, so expanding the sidebar is the only way back.
+    harness.updateStatus = { status: 'error', version: '1.2.3', errorCode: 'update_apply_exhausted' };
+    render(<UserInfoSection isCollapsed onOpenUpdateNotice={() => {}} />);
+
+    expect(screen.queryByRole('button', { name: 'sidebar.user.reopenUpdateBanner' })).toBeNull();
   });
 });

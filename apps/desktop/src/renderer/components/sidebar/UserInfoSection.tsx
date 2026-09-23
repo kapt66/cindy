@@ -18,6 +18,7 @@ import { useOptionalConfirmDialog } from '@/components/ui/confirm-dialog-provide
 import { useUpdateStatus } from '@/hooks/useUpdateStatus';
 import { useUpdateBannerDismiss } from '@/hooks/useUpdateBannerDismiss';
 import { useBetaChannelSettings } from '@/hooks/useBetaChannelSettings';
+import { UPDATE_APPLY_EXHAUSTED_ERROR_CODE } from '../../../shared/updateErrorCodes';
 import { Tip } from '@/components/ui/tooltip';
 import { Spinner } from '@/components/ui/spinner';
 import {
@@ -99,11 +100,17 @@ export function UserInfoSection({ isCollapsed, onOpenUpdateNotice }: UserInfoSec
   // - 正常情况(无 pending update 或 banner 未 dismiss)→ 弹更新历史 Dialog。
   // - 有 pending update 且 banner 已被 dismiss → 涂黑 + 点击唤回 banner
   //   (更新历史入口暂时让位,banner 再次出现后关掉才会回到"历史入口"模式)。
-  const { status } = useUpdateStatus();
+  const { status, errorCode } = useUpdateStatus();
   const { dismissed, restore } = useUpdateBannerDismiss();
   const { state: betaChannelState } = useBetaChannelSettings();
   const hasPendingUpdate = status === 'ready' || status === 'superseding';
-  const isFlameReopen = hasPendingUpdate && dismissed;
+  // A version whose auto-apply budget is spent has no banner to re-open — its
+  // dialog is deliberately one-shot — so the flame is the only entry back to the
+  // "install manually" guidance. Without this the user who picked "later" would
+  // have no way to see it again.
+  const hasBlockedUpdate =
+    status === 'error' && errorCode === UPDATE_APPLY_EXHAUSTED_ERROR_CODE;
+  const isFlameReopen = (hasPendingUpdate || hasBlockedUpdate) && dismissed;
   const showBetaLabel = !betaChannelState.loading && betaChannelState.enableBeta;
 
   // 头像地址变化(设置页改头像 / 服务端资料更新)时重置加载失败标记,

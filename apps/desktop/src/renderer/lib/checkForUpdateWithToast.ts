@@ -23,5 +23,10 @@ export async function checkForUpdateWithToast(t: Translate): Promise<void> {
     case 'manual_download':
       toast.warning(t('titleBar.updateCheckToast.manualDownload'));
       break;
+    case 'apply_exhausted':
+      // The client stopped auto-applying this version on purpose — "you're on the
+      // latest version" would be a lie, and the only way forward is a manual install.
+      toast.warning(t('titleBar.updateCheckToast.applyExhausted'));
+      break;
   }
 }

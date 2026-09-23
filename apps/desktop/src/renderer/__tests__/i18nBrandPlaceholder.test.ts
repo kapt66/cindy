@@ -27,6 +27,23 @@ describe('locale 品牌名插值', () => {
       for (const key of [
         'localDbFatal.updateReady.description',
         'localDbFatal.preparing.description',
+        'localDbFatal.applyExhausted.description',
+      ]) {
+        const rendered = t(key);
+        expect(rendered).toContain(BRAND_NAME);
+        expect(rendered).not.toContain('{{appName}}');
+      }
+    }
+  });
+
+  it('自动更新放弃后的手动安装引导使用当前产品展示名(5 语言)', () => {
+    // 静态扫描（brand-terminology-guard）只拒上游错拼，**拦不住**写死的当前品牌名 ——
+    // 写死会让改名漏掉这条文案，所以这里按「渲染结果含 BRAND_NAME」钉住。
+    for (const locale of ['en', 'zh-CN', 'zh-TW', 'ja', 'ko']) {
+      const t = i18n.getFixedT(locale);
+      for (const key of [
+        'update.applyExhausted.description',
+        'localDbFatal.applyExhausted.description',
       ]) {
         const rendered = t(key);
         expect(rendered).toContain(BRAND_NAME);

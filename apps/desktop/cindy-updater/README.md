@@ -168,10 +168,14 @@ relaunched immediately and Close no longer starts a second copy. The exclusive `
 disk for that window so a second updater cannot start from `%TEMP%`. Close, or
 any other abandoned Retry exit, deletes that file so the next Cindy launch does
 not wait 30 seconds, then relaunches the restored Cindy — the concurrency
-reason for keeping it closed no longer applies. An elevated updater does not
-`CreateProcess` a medium-writable `Cindy.exe` with the high token: Close and
-the successful install launch use the linked medium token instead, or skip
-relaunch if that token is unavailable. Protected install roots still relaunch
+reason for keeping it closed no longer applies. The relaunch always uses this
+process's own token (`launch_detached`), including from an elevated updater: an
+earlier attempt to hand the launch to the linked medium token via
+`CreateProcessWithTokenW` failed with `ERROR_INVALID_PARAMETER` (os error 87) on
+some hosts, and that failure was escalated into a rollback of a replacement that
+had already succeeded — the client could then never install another version.
+Relaunch/integrity handling must never turn a finished install into a failure
+(see `docs/dev-rules/cindy-updater.md`). Protected install roots relaunch
 at the current integrity. Retryable failures that never acquired `.updating`
 still relaunch if this updater already stopped Cindy. A terminal pre-install
 Retry that never rewrote `app_dir` also relaunches on Close even though Retry

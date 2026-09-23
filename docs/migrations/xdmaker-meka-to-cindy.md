@@ -2,7 +2,7 @@
 
 > 状态：`origin/main@2db5c6280641` 正在同步到 `meka/main@58edde41c7c`；当前工作树已完成
 > 冲突语义收敛，尚未创建 merge commit，等待本轮迁移、类型与单测门禁
-> 最后更新：2026-08-07
+> 最后更新：2026-09-23
 > 目标仓库：`C:\Workspace\cindy`，分支 `meka/main`
 > 来源仓库：远端 `xdmaker`（`git@github.com:kapt66/XDMaker.git`），分支
 > `xdmaker/meka/main`
@@ -4993,4 +4993,359 @@ no-op，暂停 / 迁移 / 超时语义不受影响）。**逐字节基线**：`m
 - 首词启发式对畸形输入 **fail-closed**（`No problem` 会被当成拒绝），词表与聊天路径同一份
   中文 / 英文清单，未扩表。
 - 那两条 deny 文案改动**没有**任何新增自动化断言（只由人工阅读 diff 核对为纯文案）。
+
+### 6.59 2026-09-22 事故：Windows 更新永远升不上去 + 无限重下（0.0.22 → 0.0.23，2026-09-23 已修）
+
+- **来源**：线上 0.0.22 客户端同一天内约四小时里的三次失败尝试（14:59 / 15:02 / 18:52，+08:00）
+  与其 `cindy-update.log`。根因是 §6.44 同一批代码（`origin/main@0f65d98231`，#4502）。
+- **影响面**：仅 Windows 应用内热更；macOS/Linux 走各自的执行器（shell 脚本 / `.deb`），不受影响。
+  判据是**「更新器进程最终持有提权令牌」且 `install_writable` 为真**（旧判据
+  `may_relaunch_with_current_integrity = !(install_writable && (cli_elevated || process_elevated))`
+  为假时才走反提权启动），不是安装路径本身。事故机的链路（逐步对应故障机日志）：
+  1. Cindy 本身**以管理员身份运行**，于是更新器**继承**了高完整性令牌却没有 `--elevated`
+     （`args.elevated=false`、`process_elevated=true`）——`self_elevate` 只在
+     `Ok(true) if !process_elevated` 时才触发（`installer.rs:1496-1511`），故本次**没有 UAC 环节**；
+  2. `pin_install_writable()`（`installer.rs:948-957`）在提权进程里走
+     `probe_medium_integrity_needs_elevation()` 的 `with_medium_integrity()` 分支
+     （impersonate linked medium token）真正探测；模拟态下 `needs_elevation()` 返回
+     `Err(1346)`（`ERROR_BAD_IMPERSONATION_LEVEL`，即日志里的
+     `[probe] unexpected error writing to …`），而 `medium_integrity_needs_elevation()` 是
+     `matches!(probe, Ok(true))` ⇒ **fail-open 成 false**；
+  3. 于是 `install_writable_for_staging(cli_elevated=false, needs_elevation=false, _)` = true
+     （`installer.rs:558-564`）⇒ `install_writable` 被钉成 true；
+  4. 旧判据 `!(true && (false || true))` = false ⇒ 成功路径改走 `launch_de_elevated`
+     ⇒ `CreateProcessWithTokenW` 返回 os error 87 ⇒ 日志 `skip elevated CreateProcess of
+     writable exe` ⇒ 失败被升级成安装失败。
+  因此受影响的是 **0.0.22 且 Cindy 以管理员身份运行**的机器（本次事故机是 all-users 安装被提权
+  启动）；**未提权运行的 Cindy 不受影响**：per-user 安装下旧判据因 `process_elevated=false`
+  直接为真（走 `launch_detached`），需要 UAC 的保护目录则会先 `self_elevate`，其子进程带
+  `--elevated` ⇒ `install_writable_for_staging(true, …) = false` ⇒ 同样走 `launch_detached`。
+  这也是「多数用户没被卡住」的原因。
+- **现象**：325 MB 热更包每次都下载成功，更新器每次都存活到「重启应用」，但版本永远停在
+  0.0.22；三次 `pre-update stat` 的 exe `size/mtime` 完全一致；日志里
+  `applyAttempts incremented to 1` 三次都是 1。
+- **根因（两层）**：
+  1. **替换成功却被回滚**：文件替换完成后，成功路径必须用
+     `CreateProcessWithTokenW`「反提权」启动新版；该调用在这些机器上返回
+     `ERROR_INVALID_PARAMETER`（os error 87），同一进程的完整性探测写出
+     `[probe] unexpected error writing to …: 未提供所需的模拟级别… (os error 1346)`
+     （故障机 `cindy-update.log` 第 108/111/114/119/123/126/131 行）。失败被升级成
+     `install failed: 已替换文件，但无法在不继承管理员权限的情况下启动 Cindy` →
+     回滚一份**已经替换成功**的安装目录。
+  2. **放弃闸门永远打不到**：同一次失败把暂存 ZIP 移出 `updates/`（`retry.zip`），主进程
+     冷启动发现孤儿 patch-info 后静默 `removePatchInfo()`；下次下载的 `writePatchInfo()`
+     重写 patch-info 时**不带 `applyAttempts`**（`cleanOldFiles()` 本身是保留 patch-info 的，
+     见 `updateArtifacts.ts`）→ 计数恒为 1，`attempts >= 3` 永不触发 ⇒ 每次失败都整包重下。
+- **修法**（对齐上游 `5b10e9babc`「恢复原更新权限流程并保留失败重试」的语义，但不整体回退）：
+  - `installer.rs`：成功路径与两条失败重启路径一律改回 `launch_detached`；删除
+    `launch_de_elevated` / `launch_with_linked_medium_token` /
+    `may_relaunch_with_current_integrity` / `AppLaunch::Skipped` 与其致命失败分支。
+    **保留**安装目录身份钉扎、`.updating` 独占锁、`SHChangeNotify` Shell 刷新与热更包结构校验
+    （上游回退会连这些一起删掉，故不采用整体 pick）。
+  - `updateService.ts`：新增 `updates/apply-state.json` 持久计数（按目标版本归属，
+    跨重下存活），`incrementApplyAttempts()` 镜像写入；`checkExistingPatch` 与「下载前闸门」
+    两处共用 `spentApplyAttemptsFor()` 判定 `MAX_APPLY_ATTEMPTS=3` 耗尽（放弃动作两处一致：
+    删暂存包与 patch-info、清匹配的 relogin 标记），**终态由闸门统一置**
+    `error` + `errorCode: 'update_apply_exhausted'` 并广播。新版本广告时预算自然重置，
+    版本真正装上后由冷启动 reconcile 清掉该文件。
+  - 渲染端 `UpdateBanner`：`update_apply_exhausted` 弹出手动安装引导——主按钮「手动下载新版本」
+    （复用 `websiteUrl()`），次按钮「稍后」收起（`dismiss`）。该弹窗是此状态下**唯一** UI
+    （`isErrorOnly` 分支不再渲染横幅主体），所以「稍后」之后由侧栏火焰唤回；
+    主进程在耗尽后**保持终态**、不再每轮广播 `checking`，避免弹窗被反复拆装/抢焦点。
+- **安全取舍（显式登记）**：「提权更新器 + 中等完整性可写安装目录」下重新启动的 Cindy 会继承
+  更新器令牌，与 #4502 之前的长期行为一致；上游回退后即为此现状。收紧该组合必须以
+  「不把启动失败升级为安装失败」为前提，见 `docs/dev-rules/cindy-updater.md` 的新章节。
+- **已发布版本的升级路径（重要，发布侧必须处理）**：0.0.22 → 任意新版本执行的都是
+  **0.0.22 自带的更新器**，所以**在 0.0.22 上运行 Cindy 时被提权的那些机器**无法通过应用内更新
+  拿到修复（本事故机即此类：all-users 安装 + 以管理员身份启动）。它们只能靠手动运行
+  `cindy-meka-<ver>-Setup.exe` 脱困——发布说明与安装包入口需覆盖。
+  未提权运行的 0.0.22 不受影响（判据见上文「影响面」）。
+- **验证**：`cargo build --release` **exit 0**（仅既有 test-only dead-code 警告）；
+  `node apps/desktop/scripts/check-windows-installer.mjs` **PASS**（含 14 个 native 场景）；
+  `pnpm --filter desktop run typecheck` **exit 0**；
+  `updateService.test.ts` **106/106**（HEAD 基线 **88**：本次纯新增 18 个用例位，含
+  耗尽即停、新版本重置预算、达上限不重下、
+  每次交付镜像持久计数、**计数跨「重新下载」存活**——最后一条把 `cleanOldFiles` 的保留登记
+  去掉后会以 ENOENT 失败，已实测确认它真能抓住该缺陷；另有跨版本不误删、patch-info 单侧计数
+  也收口、冷启动自清、启动路径不下载不重启，以及后两轮替换/新增的用例：
+  终态跨轮询与离线轮询保持、**终态在 manifest 换版本时释放并广播**、reconcile 正负分支与
+  semver 等价形态、in-flight 不宣告放弃、启动路径放弃时清 relogin flag、
+  **原子写被打失败时预算仍累积**——这几组断言都做了变异验证）；
+  `updateBannerRelaunchEntry.test.tsx` **27/27**（HEAD 基线 **24**；含新增手动安装引导 +
+  「稍后后保持关闭」「用户唤回后必须能重开」）；`localDbFatalView.test.ts` **5/5**（终态视图映射）
+  与 `localDbFatalScreen.test.tsx` **2/2**（新增，render 级接线：手动下载 / 保留既有重试路径）、
+  `updateBannerExhaustedReopen.test.tsx` **1/1**（新增，用真 store 跑「稍后 → 火焰 restore → 重开」）、`i18nBrandPlaceholder.test.ts` **3/3**（新增一条：终态文案按 `BRAND_NAME` 渲染）、
+  `userInfoSectionUpdateFlame.test.tsx` **5/5**（HEAD 基线 2；新增终态火焰、其它 error 态不误触发、
+  rail 态无入口）；
+  更新相关定向套件 **39 文件 / 551 通过 / 5 跳过**——命令为
+  `pnpm --dir apps/desktop exec vitest run update windowsInstallationVersion useSplash
+  userInfoSectionUpdateFlame localDbFatal`（**手挑的更新相关文件清单，不是
+  `pnpm test:unit:related`**；后者在本机跑不到工作区单测，见下）；
+  `check:i18n` 5 语言一致（10329 key）；`check:i18n-glossary` 无新增违规；
+  `check:brand-terminology`、`check:endpoints`、`ci:scheduler-guard` 均 PASS；
+  `node --test scripts/__tests__/dev-docs-contract.test.mjs` 9/9。
+- **本机既有失败（非本次引入，已用 stash 基线对照确认）**：`test:runner` 3 条
+  （`not ok 136 - CLI`、`not ok 338 - worktree includes staged, unstaged and untracked source;
+  commit mode excludes them`、`not ok 341 - CI design commands feed the existing verify job and
+  preserve Windows aggregation`，665 项中 655 通过 / 3 失败 / 7 跳过）。
+  其中 338/341 是 `spawnSync('bash', ['-e','-c', <CI step>])` 断言；**136 不是** ——
+  它是 `scripts/__tests__/design-inventory.test.mjs` 里 `CLI --check` 那条
+  （`spawnSync(process.execPath, [CLI_PATH, '--check'])`），失败信息即下面的
+  GENERATED 区块漂移，与本条单列的 `check:design-inventory --check` 是**同一处**，
+  不要重复计数。干净基线上失败集合**完全一致**，
+  故未纳入本次范围。**注意**：本次改了 `docs/` ⇒ `test-related.mjs` 会置 `shouldRunTestRunner`，
+  而 `test-workspaces.mjs` 在 test:runner 非 0 时直接 return ⇒ **`pnpm test:unit:related` 在本机
+  根本不会执行工作区单测**；因此它的非 0 不能作为本次改动的判据，也不得据此声称门禁通过。
+- **未验证**：真机复现（0.0.22 + 提权运行）**未做**；`check-windows-installer.mjs` 的 PASS
+  **只覆盖 NSIS 安装器/卸载器编译与 native 目录权限场景，不覆盖任何 Rust 代码**。
+- **外部证据（本仓不可复核）**：故障机 `cindy-update.log` 的行号（108/111/114/119/123/126/131）、
+  三次失败的时刻（14:59/15:02/18:52 +08:00）、325,203,329 字节的包、`pre-update stat` 的
+  `size/mtime`，以及上游提交 `5b10e9babc` 的正文，都来自本仓以外的来源（故障机日志与
+  `origin/main`）；本仓只能核对「这些引用与代码路径自洽」，不能独立验证原始记录。
+- **审批门**：属 `cindy-updater` 更新链路改动，按 `docs/dev-rules/cindy-updater.md`
+  **push / PR / 发布前需维护者确认**；本次修复由用户（维护者）直接指示，提交说明需记录该确认。
+- **规则落点**：`docs/dev-rules/cindy-updater.md` 新增「Windows 热更的启动与重试契约」
+  （`launch_detached` 不变量 + 重试边界 + 重试预算跨重下存活 + 预算口径 + 发布纪律 + 安全取舍 +
+  UI 双模式落点 + 威胁模型）。
+
+### 6.60 2026-09-23 §6.59 修复的对抗性评审轮（5 路并行）与其闭合
+
+- **方式**：按用户要求铺开 5 路**只读**对抗性审查（Rust 更新器 / 主进程状态机 / 渲染端与
+  i18n / 端到端事故场景 / 文档与规则合规），各自独立复算并给 file:line 证据；作者汇总后修复，
+  再进入第二轮复审。**R1 与 R2 独立复现出同一个阻断缺陷**，说明该轮不是走过场。
+- **阻断（已修，第二轮又加固一次）**：新增的 Rust 守卫测试
+  `successful_launch_uses_the_current_token_and_is_never_gated_on_integrity` **必然 panic**——
+  它用 `source.find("#[cfg(test)]")` 截「生产代码」，而该串**首次出现在 `retry_cli_args` 上**
+  （`#[cfg(test)] pub(crate) fn retry_cli_args`），位置在生产启动路径**之前** ⇒
+  `production.len() < needle 位置` ⇒ `.expect()` panic；且禁用词扫描只覆盖该锚之前的部分、
+  **根本没扫到它声称守住的启动路径**。最终形态：锚改为 `"\nmod tests {"` 并断言全文
+  **只出现一次**（测试模块在文件末尾，且它自身含禁用词字面量，必须排除在扫描范围外）；
+  切片上界加 `production.len().min(start + 800)` 保护；两条守卫都先做 `include_str!` 的
+  **CRLF 归一**（`replace("\r\n", "\n")`）——本 worktree 以 `core.autocrlf=true` 检出，
+  含 `\n` 的 needle 在 Windows 上会静默失配（该陷阱正是下面 4 条既有失败里第 1 条的成因）；
+  第二条测试不再对共享窗口整体计数，而是**逐个 helper 切片**，各自断言 `launch_detached`
+  存在且禁用词不存在（整体计数既指不出是哪一条退化，也无法在新增第三条 helper 时报警）。
+- **其余已修（高/中）**：
+  1. 终态下点「检查更新」会弹绿色 **「已经是最新版本了」**（闸门返回 `'idle'`）→
+     `CheckForUpdateResult` 增独立值 `'apply_exhausted'`，同步 preload / vite-env 类型与
+     `checkForUpdateWithToast` + 5 语言文案；
+  2. 终态弹窗**不可关闭**且因每轮 `checking→error` **每 30 分钟自动重弹抢焦点** →
+     加「稍后」按钮 + 侧栏火焰唤回，并把终态改为**主进程粘滞**（第二轮 N0，见下）：
+     `applyExhaustedVersion` 记录被放弃的版本，只要 `status`/`lastErrorCode` 仍指向它，
+     该轮就**不广播 `checking`**、也不把 `currentStatus` 悄悄降回 `idle`（含 manifest 拉取
+     失败等所有「无事可做」出口）⇒ 渲染端始终停在同一个 `error`，弹窗不再被拆装；
+     manifest 改投别的版本时释放。注意 `UserInfoSection` 用的是新增的 `hasBlockedUpdate`，
+     不是把 `hasPendingUpdate` 扩义；
+  3. 新增的 `discardStagedPatchOnDiskFor` **缺 `isUpdateApplyCommitted()` 保护**，会在
+     spawn 窗口内删掉更新器正在读的 ZIP（同文件其它清理都有该保护）→ 已补；
+  4. `clearApplyStateFor` 只在 patch-info 存在时可达，而放弃路径已删 patch-info ⇒
+     **用户按引导手动安装后记录永久残留** → 增冷启动
+     `reconcileApplyStateWithInstalledVersion()`；
+  5. 闸门只看持久记录、放弃分支内联 `max(patch-info, durable)` ⇒ **两处口径不一致**
+     （内联版还缺 `Number.isFinite` 过滤，畸形/手改计数下会出现「闸门放行、放弃分支放弃」，
+     正是要闭合的组合）→ 两处都改为调用 `spentApplyAttemptsFor(version)`；
+  6. 下载失败走直接赋值 `currentStatus='error'` ⇒ 防御性地补了「清 `lastErrorCode`」。
+     **取证结论（第二轮）**：该行在当前调用链上**不可达**（走到这里之前必先
+     `setStatus('downloading')`，而它每次都重置 `lastErrorCode`），因此它是**防御性**而非
+     修一个可达缺陷；原有那条「无鉴别力」的测试已删除（见第二轮）。保留它的价值是：将来若在
+     下载路径插入新的失败出口，不会把已放弃版本的码带到下载失败上，同时释放粘滞终态；
+  7. `discardStagedPatchOnDiskFor` 未清 `relogin-required.flag`（其它 discard 路径都清）
+     → 已补，避免手动安装后白挨一次强制重新登录；
+  8. 文档不变量**强于代码**（「替换完成后任何重启问题都不得回滚」，但 `launch_detached` 失败与
+     3 秒 poll 超时仍 `bail!` 回滚，与上游同形）→ 收窄为「启动的完整性决策不得被令牌编排门控」，
+     并显式登记两条残留回滚点；
+  9. `cindy-updater/README.md:171-174` 与 `Cargo.toml` 注释仍在描述**已删除**的反提权行为
+     （AGENTS.md 文档同步硬要求）→ 已改；
+  10. `--install-writable` 的启动侧语义随函数删除而消失 → 已在规则文档写明它现在只影响
+      staging。
+- **登记为接受/跟进（未改代码，理由在案）**：
+  - **预算口径**：计数发生在「已交给更新器」（`spawn` 前，沿用 #3697 意图以封顶 relaunch
+    循环），故 UAC 取消 / spawn 失败 / 主程序 60 秒未退出也各消耗 1 次；环境性故障可能把某
+    版本推到终态，出路是**等下一个版本号**或手动安装。要区分需更新器写「替换已尝试」收据，
+    属独立交付（R2 建议 ①~③、R4 建议拆分 `handedOff`/`confirmedFailed`）。
+  - **`forceQuit()` 的 `uncaughtException`**（`process.exit(0)` 不可达 → 16–36s 才退出）：
+    与预算口径耦合（>60s 会删包并烧 1 次），但它是**独立既有缺陷**，且源码里的
+    `try/catch` 与线上堆栈（异常自 `BrowserWindow.emit` 同步逃逸）**对不上**，需单独定位后
+    再修，不在本次外科移植内。
+  - **无 in-app 复位入口**：记录只按版本号归属 ⇒ **同一版本号重新出包（repack）会被永久拒绝
+    自动更新**。已把「任何 repack 必须递增版本号」写进规则文档的发布纪律。
+    （**降级不受影响**：记录在该版本成为*已安装*版本时就被清 —— `clearApplyStateFor` 用
+    `compareAppUpdateVersions === 'same'`，冷启动 `reconcileApplyStateWithInstalledVersion()`
+    负责触发。）
+  - **提权启动的安全取舍**：上游回退后重新启动的 Cindy 继承更新器令牌（提权更新器 ⇒ 提权
+    常驻）。R4 建议「尽力反提权 + 失败退化、永不升级为失败」，但那要把已删除的 ~100 行
+    unsafe Win32 重新引入（且在被影响机器上必然先失败一次），属新设计决策，不夹在本次移植里；
+    现状与取舍已写入规则文档。
+  - **Rust 守卫测试的执行面（本轮已解锁）**：§6.44 登记的既有缺陷（`installer.rs` 内 3 处未加
+    `#[cfg(unix)]` 的 symlink 测试：`install_dir_identity_rejects_a_swapped_reparse_point`、
+    `copy_tree_into_pinned_rejects_a_swapped_destination`、`pinned_join_rejects_a_descendant_junction`，
+    属性行 `:3380` / `:3444` / `:3466`，函数体 `:3382-3406` / `:3446-3464` / `:3468-3483`）
+    会让 `cargo test -p cindy-updater` 在 Windows 上**编译不过**，而 `cargo build` 不编译
+    `#[cfg(test)]`、CI 也不跑 cargo ⇒ 两条守卫此前**任何门禁都不会编译它**。本轮给那 3 条
+    Unix-only 测试补了 `#[cfg(unix)]`，现在 `cargo test --lib` 在 Windows 可编译并执行
+    **65 项**：本次新增的两条守卫
+    （`successful_launch_uses_the_current_token_and_is_never_gated_on_integrity`、
+    `abandon_and_early_failure_relaunch_with_the_current_token`）**均 ok**。
+  - **同一次执行暴露 4 条既有失败**（与本改动无关，已用 stash 基线对照证明）：把本次改动 stash
+    掉、只补那 3 个 `#[cfg(unix)]` 属性后重跑，得到**完全相同的 4 条失败**（60 passed /
+    4 failed / 1 ignored）。逐条原因已定位，**并非同一类成因**（只有第 1 条是源码形状/CRLF），
+    且都属「套件此前不可编译、从未被执行」的既有问题，**未纳入本次范围**，需另立交付修复：
+    1. `protected_staging_is_created_with_the_security_descriptor`——**唯一**的源码形状/CRLF
+       问题：needle `#[cfg(target_os = "windows")]\nfn create_directory_with_high_integrity`
+       在 CRLF 检出下永不匹配（文件里是 `]\r\nfn`），于是 `unwrap_or(start)` 退回**第一处**
+       `fn create_directory_with_high_integrity`，其后 900 字节窗口内没有 `CreateDirectoryW` /
+       `SECURITY_ATTRIBUTES` ⇒ 断言失败；
+    2. `protected_staging_tree_creates_missing_directories`——`installer.rs:4795` **os error
+       1314**（客户端没有所需的特权）：`create_protected_staging_tree` 会走 Win32 安全描述符
+       路径（`D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)S:(ML;;NW;;;HI)`），非提权测试进程拿不到
+       `SeSecurityPrivilege`；
+    3. `program_data_sweep_keeps_unrelated_cindy_update_prefix_dirs`——`installer.rs:3146`
+       **os error 5**（拒绝访问）：`fs::File::open(&stale_staging).set_modified(..)` 打开的是
+       **目录**，Windows 上不允许；
+    4. `busy_lock_does_not_delete_the_active_updater_archive`——fixture 用 `args.pid = 0`，
+       而 Windows 的 PID 0 是真实存在的 Idle 进程，更新器的父进程等待循环因此记录
+       `[pid-wait] pid 0 still alive after 60s, giving up` → `主程序在 60 秒内没有退出，更新中止`
+       （`installer.rs:1444-1448`）→ 这次被判为终态并 discard，ZIP 因此被删掉，
+       `installer.rs:3783` 的断言失败（**不是**「锁被占用所以拒绝」那条路径）。
+  - **命名（`engineering-conventions.md` §8）取舍**：新增名 `apply-state.json`、
+    `UPDATE_APPLY_EXHAUSTED_ERROR_CODE`、`update_apply_exhausted`、`update.applyExhausted.*`、
+    `titleBar.updateCheckToast.applyExhausted` **均不带 `meka`**。理由是它们与同子系统的既有名
+    保持一致（同目录已有 `patch-info.json`、`.updating`，日志为 `cindy-update.log`），属「层内
+    实现名」而非安装身份／用户数据目录／协议／更新渠道这类需要 Meka 词面的标识；沿用 §6.49 P2-1
+    的实际口径（模块名与跨模块导出名带 meka，层内私有名保留短名）。如需改名请在评审中提出。
+  - **日志口径无新增落点**：新增的 `durable apply attempts for v%s: %d/%d`、
+    `Update to v%s already failed %d times …`、`Patch v%s failed to apply %d times …`
+    只含版本号与计数，**无路径、无用户内容、无凭证**；`log-upload-and-redaction.md` 的白名单按
+    scope 放行（`updateService` 属放行 scope），故**无需**脱敏规则变更，本判断已复核。
+- **第二轮复审（R2 主进程+渲染端 / R6 文档，均为只读）的新发现与本轮闭合**：
+  - **N0【必修】「每版本最多自动弹一次」当时并不成立**：终态下每轮轮询都会先广播 `checking`
+    （渲染端把 `checking` 渲染成「无事可跟」并卸载弹窗），下一个 `error` 再以旧的 `open=true`
+    重挂 ⇒ 每 30 分钟重放开场动画、把焦点抢回主按钮；且 manifest 拉取失败时 `currentStatus`
+    会**静默**回到 `idle`（不广播），渲染端停在 `checking`、连火焰入口一起消失。
+    → 改为**主进程粘滞终态**（`applyExhaustedVersion` + `heldApplyExhaustedVersion()`：仅在
+    `status==='error'` 且 `lastErrorCode` 仍为该专用码时生效）：该轮不广播 `checking`，
+    所有「无事可做」出口（manifest 失败 / invalid / same / older / 无资产）改走 `settleIdle()`，
+    并在**算出 `latestVersion` 之后、那三个 early-return 之前**释放终态（清
+    `applyExhaustedVersion` / `lastErrorCode` 并广播 `idle`）——放在它们之后会让终态永久留在
+    进程里（只能重启恢复）而 `checkForUpdate` 已返回 `'idle'`，弹窗说「请手动安装」、toast 说
+    「已经是最新版本」，自相矛盾。渲染端**不再有独立的一次性 ref**（它当时是惰性的，也拦不住
+    拆装重放）：自动弹只由 `dismissed` 门控 —— `dismissed === false` 时重新挂载会重新自动弹，
+    `dismissed === true`（用户点过「稍后」）时**不会**（该标记在模块级 store 里跨卸载存活），
+    此时唯一回入口是侧栏火焰，第三轮已把这条真值表写进规则文档。
+  - **N1【应修】新增结果值漏了一个消费点**：`LocalDbFatalScreen`（本地库被更高版本升级后的
+    强制更新界面）把任何 `error` 都映射成 `no-update`，主按钮「检查更新」的返回值被
+    `.catch(()=>{})` 吞掉 ⇒ 终态下它是**死按钮**，而该界面通常正是唯一出路 →
+    `resolveLocalDbFatalView(status, errorCode)` 增 `apply-exhausted` 视图，主按钮改为打开官网
+    手动下载（+ 5 语言 `localDbFatal.applyExhausted.*`，并补 render 级接线用例）。
+  - **N2【应修】预算在交付时计费，所以「3/3」可能包含正在飞的这一次**：原实现会在一次
+    **可能马上成功**的 apply 之上宣告版本死亡并把它钉成 `abandoned` → 闸门在
+    `isUpdateApplyCommitted()` 时改为**推迟到下一轮**再判定（成功则重启，失败则下轮照常放弃）。
+  - **N3【应修】两条放弃路径对 `relogin-required.flag` 口径不一致**：冷启动先到
+    `checkExistingPatch` 的放弃分支（只删 zip + patch-info），轮询路径才会走闸门（会清 flag）
+    ⇒ 手动安装后是否被要求重登取决于先跑到哪条 → 放弃分支改用同一
+    `discardExistingPatch(..., true)`，并补测试。
+  - **N4/N5/N6【建议】一并收紧**：`checkExistingPatch` 与闸门共用 `spentApplyAttemptsFor`
+    （含 `Number.isFinite` 过滤）；`reconcile`/`clearApplyStateFor` 的版本比较改用
+    `compareAppUpdateVersions`（`v0.0.64` / `0.0.64+build` 都判 same，字符串相等会漏清）；
+    `writeApplyState` 直接改用仓内共享的 `atomicWriteFileSync` / `readAtomicFileSync`
+    （Windows 上 AV/索引器会让裸 `rename` 抛 EBUSY/EACCES；写丢一次镜像就少一次投递，
+    持续写丢就复现本次要修的无限重下），并把 `apply-state.json.bak` 一并列入
+    `cleanOldFiles()` 保留名单；终态弹窗不再调用 `markAutoShown`
+    （那个 `decidedVersion` 属 ready 横幅的探针语义，在终态里写它反而可能让同一版本的
+    ready 横幅跳过 busy 探针）。
+  - **第三轮（主进程 / 渲染端+i18n / 文档事实核对）的新发现与闭合**：
+    - **终态无法释放（必修，已修）**：释放点原先排在 `invalid`/`same`/`older` 三个 early-return
+      之后，而 `settleIdle()` 捕获的是入口快照 ⇒ 运营撤包或回退到已装版本后，终态与
+      「不再广播 `checking`」会永久留在进程里（只能重启恢复），而 `checkForUpdate` 返回
+      `'idle'`。已把释放点前置并**广播** `idle`，新增用例
+      `releases the terminal state once the manifest stops advertising that version` 钉住
+      （含「释放后下一轮轮询恢复 `checking`」）。
+    - **`writeApplyState` 低于仓内原子写基线（必修，已修）**：见上 N5/N6 条。
+    - **渲染端「验证口径失真」（必修，已修）**：原先那条「重复同态广播不重开弹窗」的
+      3 次 rerender 断言**恒真**（依赖不变、组件未重挂、也没有模拟任何广播），且它声称保护的
+      `applyExhaustedShownForRef` 在当时的关闭路径下**是惰性的**。已删除该 ref 与该断言，
+      改为如实描述「主进程保证不被拆装 + 渲染端只由 `dismissed` 门控」，并把用例改名成
+      `stays closed after "later" until the user reclaims the entry`（对「删掉 `|| dismissed`」
+      具有鉴别力，已实测）。
+    - **`update-get-status` 的 version（应修，已修）**：终态下 `readyVersion` 已被清空，
+      渲染端 remount 时拿到 `errorCode` 却拿不到版本号；快照改为
+      `applyExhaustedVersion ?? readyVersion`。
+    - **放弃记录的落盘条件（应修，已修）**：`state?.abandoned !== true` 在记录属于**另一版本**
+      时也会跳过写入，使终态只存在于内存；改为「同版本且已 abandoned 才跳过」。
+    - **品牌串写死（必修，已修）**：`update.applyExhausted.description` 在 5 语言里把品牌写成
+      字面量 `Cindy`，而 `BRAND_NAME = 'Cindy Meka'`、同族 `update.translocated.description`
+      用的是 `{{appName}}` ⇒ 同组件内出现两个产品名，且改名单一事实源覆盖不到它
+      （`check:brand-terminology` **不会**拦这种「写对了但写死了」的情况，它只拦禁用拼写）。
+      5 语言统一改为 `{{appName}}`。
+    - **火焰唤回链（应修，已补测）**：新增
+      「`hasBlockedUpdate` 时渲染火焰并触发 `restore`」「其它 error 态不得变成唤回火焰」
+      两条 `UserInfoSection` 用例，以及 `LocalDbFatalScreen` 的 render 级接线用例。
+    - **提交前发现的孤儿包（既有，仅登记）**：`handleApplyFailure` 先删 patch-info，随后放弃
+      路径的 `discardStagedPatchOnDiskFor` 已无 patch-info 可读 ⇒ 那份 325 MB 暂存 ZIP 要等
+      下一次（别的版本）下载时的 `cleanOldFiles` 才被清掉。修前就存在，未纳入本次。
+    - **`apply-state.json` 写失败会让预算不累积（必修，已修，第五轮补齐）**：增量的基准原先
+      取自磁盘读值，而 `writeApplyState` 吞掉写异常 ⇒ 写路径退化时读值停旧、每轮交付都只算
+      1 次，上限打不到、终态永不建立，同一会话里连续重试就会退回「无限重下」——正是本次要消灭
+      的形态。第五轮又指出：**「文件可读但写被拒绝」**（AV/EDR 只锁写、只读属性）这个更常见的
+      形状下，`state ?? mirror` 仍会让基准停在盘上旧值（每次都算「1+1」）。最终形态：
+      写成功与否都把值留在**进程内镜像**（`applyStateMirror`），增量基准取同版本
+      `max(磁盘, 镜像) + 1`（单调，不再信任「能读就够新」），读侧 `spentApplyAttemptsFor()`
+      取 `max(磁盘, 镜像, patch-info)`。两条同形用例钉住：①主文件与 `.bak` 都是非空目录
+      （读也失败），3 次交付后给出终态；②主文件**可读**（预置 `attempts: 1`）、只让对
+      `apply-state.json` 的 rename 抛 EBUSY（读成功但写被拒），2 次交付后给出终态
+      ——去掉镜像或退回「读成功即信磁盘」都会实测失败。注意镜像随进程结束消失，跨重启仍只有
+      持久化文件能记数（该边界已写进规则文档的「不变量」小节）。
+    - **持有时仍答 `'idle'` 的两处出口（应修，已修+已补测）**：manifest 无资产、以及跨实例
+      渠道变更这两条「本轮没有可装的更新」出口，在持有终态时回车 `'idle'`，会让 toast 说
+      「已经是最新版本」而弹窗说「请手动安装」；改为回答 `'apply_exhausted'`（状态保持终态），
+      并各补一条断言（此前无任何覆盖）。
+    - **版本身份口径统一（应修，已修）**：记录归属、`patch-info` 匹配、`discardStagedPatchOnDiskFor`、
+      放弃时的 `readyVersion` 比较与释放判断原先用字符串相等，而 `clearApplyStateFor` 用 semver
+      等价 ⇒ 同一版本号的另一种拼法会被当成新版本、白送一份预算；现统一为
+      `isSameVersionRecord()`（semver 等价）。（`relogin-required.flag` 与 patch-info 的比较
+      也一并统一。）
+    - **`clearApplyStateFor` 的 fail-open 删除（应修，已修）**：读失败时 `state === null` 会直接
+      删文件，可能删掉**另一版本**的记录；现按 `unreadable` 标记区分，读失败一律不删。
+    - **文档事实漂移（第三轮，已改）**：真值表原写「重新挂载会再自动弹一次」——对
+      `dismissed === true` 这一行是**假的**（该标记在模块级 store 里跨卸载存活，effect 直接早退），
+      已改为「重新挂载不会重开；唯一回入口是侧栏火焰（rail 态需先展开）」；
+      §6.59 的 HEAD 基线数字改为实测的 **88 / 24**（原先误把本次改动后的 98 / 25 当成 HEAD），
+      并删掉一句编辑残留。
+  - **第六轮（只读，冻结树验 delta）结论：可交付，0 必修**；3 条应修已一并闭合：
+    ①「可读但不可写」用例补上**前提断言**（盘上仍为 `attempts: 1` 且 rename spy 确被调用），
+    否则将来原子写改用 `copyFile` 会让 spy 静默失效、用例退化成 sibling 的副本；
+    ②渠道变更出口改用**另一个版本**的 manifest，避免「整段 early-return 被删」时因随后撞上
+    同一版本的闸门而**为错理由通过**；③规则文档补上增量基准的精确定义
+    （同版本 `max(磁盘, 镜像) + 1`，磁盘可读不等于够新）。
+    另补一条用例：盘上记录属于**别的版本**且写被拒时，预算仍必须靠镜像累积（旧写法会把镜像
+    整个丢掉、`attempts` 恒为 1）；rail 态用例里删除的
+    `expect(restore).not.toHaveBeenCalled()` 是**恒真**断言（rail 不渲染该按钮），
+    删除不损失覆盖，此处登记。
+  - **测试鉴别力（逐条变异验证）**：原「下载失败不被旧预算顶替」一条**无鉴别力**（已删除，
+    理由见条目 6）；本轮替换/新增的断言都注入反向改动确认必然失败并实测失败——终态不广播
+    `checking`、离线轮询不降级、**终态在 manifest 换版本时释放并广播**、in-flight 不宣告放弃、
+    启动路径放弃时清 relogin flag、reconcile 的 semver 等价形态；渲染端「稍后之后保持关闭」
+    （删掉 effect 里的 `|| dismissed` 即失败）也实测过；「用户唤回后必须能重开」那条是**直接改
+    mock 的 `dismissed`**，能抓的是「删掉 effect 的重开 / 去掉 deps 里的 `dismissed`」，**不是**
+    「删掉 `restore()` 里的重置」——真 store 的 `restore → 弹窗重开` 链路由新增的
+    `updateBannerExhaustedReopen.test.tsx`（不 mock store）覆盖。
+  - **文档漂移（R6，已逐条回改）**：`cindy-updater.md` 仍写那 3 条 symlink 测试「已知未修、
+    Windows 无法编译」（与代码相反）；§6.59 仍写渲染端「只给一条出路」（实际两个按钮）；
+    §6.60 仍写第二条守卫是「计数 == 2」并引陈旧字节锚点（均已改为按 helper 切片 + 锚点唯一性
+    断言的描述，并删除会漂移的字节数字）；`hasPendingUpdate` 纳入终态的旧措辞、
+    `dev-rules` 里「重下会删 patch-info」的错误归因、「降级回该版本也会被永久拒绝」
+    （reconcile 会清）、预算判据表述均已修正。
+  - **UI 证据落点**：本次 UI 改动只有「新增一个 `ConfirmDialog` + 一个 toast 文案 + 侧栏火焰既有
+    唤回路径 + `LocalDbFatalScreen` 的一个新视图态（复用同一个 `ConfirmDialog`、主按钮改走
+    `window.open(websiteUrl())`）」，**零新增样式／颜色／圆角／尺寸硬编码**，浅深色均走既有语义
+    token（依据 `docs/design-rules/DESIGN.md` §5、`design-governance.md` §13）。文案键为
+    `update.applyExhausted.{title,description,download,later}`、
+    `titleBar.updateCheckToast.applyExhausted`、`localDbFatal.applyExhausted.{title,description,download}`
+    （均 5 语言）。**未做实机双模式目检**，如实登记为未验证。
+    `check:design-inventory --check` 在本机干净基线上即失败（GENERATED 区块漂移），无法用它判定
+    本次 renderer 改动是否引入库存偏差——已单独核对新增 `ConfirmDialog` 用法与既有
+    `translocated` / `spawnFailed` 弹窗同形。
+- **本机既有失败（同上，用 stash 基线对照确认非本次引入）**：`test:runner` 3 条
+  （`not ok 136 CLI`、`338`、`341`）与 `check:design-inventory --check`（GENERATED 区块不同步）。
+
 

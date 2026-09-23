@@ -28,8 +28,10 @@ sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies]
 # Used by installer::self_elevate (ShellExecuteExW runas),
-# process_is_elevated (OpenProcessToken / TokenElevation), High-IL
-# staging ACLs, and CreateProcessWithTokenW de-elevation. Keep the
+# process_is_elevated (OpenProcessToken / TokenElevation) and High-IL
+# staging ACLs. De-elevating the relaunch was removed together with the
+# #4502 permission flow (see docs/dev-rules/cindy-updater.md); do not
+# re-add CreateProcessWithTokenW without that review. Keep the
 # feature set to the modules whose symbols we touch.
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",

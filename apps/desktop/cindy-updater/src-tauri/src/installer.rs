@@ -287,82 +287,52 @@ pub(crate) fn restored_app_relaunch_path(args: &CliArgs) -> Option<PathBuf> {
     exe.exists().then_some(exe)
 }
 
-/// Launching Cindy.exe from this process inherits the updater token. A
-/// medium-writable per-user install can be replaced before Close; do not
-/// CreateProcess it while this process is still elevated.
-pub(crate) fn may_relaunch_with_current_integrity(
-    cli_elevated: bool,
-    process_elevated: bool,
-    install_writable: bool,
-) -> bool {
-    !(install_writable && (cli_elevated || process_elevated))
-}
-
+/// Relaunch an install that is already on disk (restored or untouched).
+///
+/// #4502 introduced a linked-medium-token handoff here (`CreateProcessWithTokenW`)
+/// for the "elevated updater + medium-writable install" combination. On Windows
+/// hosts where that call cannot work the native call fails with
+/// `ERROR_INVALID_PARAMETER` (os error 87) — the linked token is not usable for
+/// `CreateProcessWithTokenW` there, and the accompanying integrity probe fails
+/// with `ERROR_BAD_IMPERSONATION_LEVEL` (1346). The failure was escalated into a
+/// *fatal install error*, which rolled back a replacement that had already
+/// succeeded: the install directory was correct, the version never changed, and
+/// because the failed attempt also moved the staged ZIP out of `updates/` the
+/// client re-downloaded the whole package and retried forever.
+///
+/// Restored to the pre-#4502 flow, aligned with the upstream revert
+/// `5b10e9babc`: launch with the current token. An install that has already
+/// replaced `app_dir` must never be undone because of *how* we relaunch it.
 fn relaunch_restored_app(args: &CliArgs) {
     let Some(exe) = restored_app_relaunch_path(args) else {
         return;
     };
-    match launch_app_exe(args, &exe) {
-        Ok(AppLaunch::Started) => logger::info(format!(
+    match launch_detached(&exe) {
+        Ok(()) => logger::info(format!(
             "[installer] relaunched restored exe after abandoning Retry at {}",
             exe.display()
         )),
-        Ok(AppLaunch::Skipped) => {}
         Err(error) => logger::warn(format!(
             "[installer] relaunch of restored exe after abandoning Retry failed: {error}"
         )),
     }
 }
 
-/// Digest failure happens before `run_inner` pins `app_dir`. A medium-writable
-/// parent can replace the directory and Cindy.exe after the unelevated parent
-/// drops its handle; never inherit this process's high token.
+/// Digest failure happens before `run_inner` pins `app_dir`, so the app on disk
+/// is untouched and must still be brought back up.
 fn relaunch_unmodified_app_after_early_failure(args: &CliArgs) {
     let Some(exe) = restored_app_relaunch_path(args) else {
         return;
     };
-    match launch_de_elevated(&exe) {
+    match launch_detached(&exe) {
         Ok(()) => logger::info(format!(
             "[installer] relaunched unmodified exe after archive validation failed at {}",
             exe.display()
         )),
         Err(error) => logger::warn(format!(
-            "[installer] skip elevated CreateProcess after archive validation failed {}: {error}",
+            "[installer] relaunch of unmodified exe after archive validation failed {}: {error}",
             exe.display()
         )),
-    }
-}
-
-enum AppLaunch {
-    Started,
-    Skipped,
-}
-
-fn launch_app_exe(args: &CliArgs, exe: &Path) -> io::Result<AppLaunch> {
-    if may_relaunch_with_current_integrity(
-        args.elevated,
-        process_is_elevated(),
-        resolved_install_writable(
-            args,
-            install_writable_for_staging(
-                args.elevated,
-                medium_integrity_needs_elevation(&args.app_dir),
-                install_is_user_owned_for(&args.app_dir, &args.exe_name),
-            ),
-        ),
-    ) {
-        launch_detached(exe)?;
-        return Ok(AppLaunch::Started);
-    }
-    match launch_de_elevated(exe) {
-        Ok(()) => Ok(AppLaunch::Started),
-        Err(error) => {
-            logger::warn(format!(
-                "[installer] skip elevated CreateProcess of writable exe {}: {error}",
-                exe.display()
-            ));
-            Ok(AppLaunch::Skipped)
-        }
     }
 }
 
@@ -1685,21 +1655,16 @@ fn run_inner<F: FnMut(InstallerEvent)>(
             Phase::Launching,
             "启动新版本…".into(),
         ));
-        match launch_app_exe(args, &exe_path)? {
-            AppLaunch::Started => {
-                if !poll_until_process_running(&args.exe_name, LAUNCH_VERIFY_TIMEOUT) {
-                    anyhow::bail!(
-                        "新进程 {} 在启动 {} 秒后未出现，可能被杀软拦截或新可执行文件损坏",
-                        args.exe_name,
-                        LAUNCH_VERIFY_TIMEOUT.as_secs()
-                    );
-                }
-            }
-            AppLaunch::Skipped => {
-                anyhow::bail!(
-                    "已替换文件，但无法在不继承管理员权限的情况下启动 Cindy"
-                );
-            }
+        // Launch with this process's token. The replacement above already
+        // succeeded, so a relaunch problem must never be escalated into a
+        // rollback (see `relaunch_restored_app` for the full rationale).
+        launch_detached(&exe_path)?;
+        if !poll_until_process_running(&args.exe_name, LAUNCH_VERIFY_TIMEOUT) {
+            anyhow::bail!(
+                "新进程 {} 在启动 {} 秒后未出现，可能被杀软拦截或新可执行文件损坏",
+                args.exe_name,
+                LAUNCH_VERIFY_TIMEOUT.as_secs()
+            );
         }
         Ok(())
     })();
@@ -2213,22 +2178,6 @@ fn launch_detached(exe: &Path) -> io::Result<()> {
         Command::new(exe).spawn()?;
     }
     Ok(())
-}
-
-/// Launch Cindy with the linked medium token so a writable per-user install
-/// does not inherit this process's high integrity.
-fn launch_de_elevated(exe: &Path) -> io::Result<()> {
-    #[cfg(target_os = "windows")]
-    {
-        return launch_with_linked_medium_token(exe);
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        Err(io::Error::other(format!(
-            "refusing to inherit elevation when launching {}",
-            exe.display()
-        )))
-    }
 }
 
 fn ensure_staging_directory(path: &Path, args: &CliArgs) -> io::Result<()> {
@@ -2936,106 +2885,6 @@ fn create_directory_with_high_integrity(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "windows")]
-fn launch_with_linked_medium_token(exe: &Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
-    use windows_sys::Win32::Security::{
-        DuplicateTokenEx, GetTokenInformation, SecurityImpersonation, TokenLinkedToken,
-        TokenPrimary, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_LINKED_TOKEN, TOKEN_QUERY,
-        TOKEN_ADJUST_DEFAULT, TOKEN_ADJUST_SESSIONID,
-    };
-    use windows_sys::Win32::System::Threading::{
-        CreateProcessWithTokenW, GetCurrentProcess, OpenProcessToken, CREATE_NEW_PROCESS_GROUP,
-        DETACHED_PROCESS, PROCESS_INFORMATION, STARTUPINFOW,
-    };
-
-    let exe_w: Vec<u16> = exe
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    let dir_w: Vec<u16> = exe
-        .parent()
-        .map(|dir| {
-            dir.as_os_str()
-                .encode_wide()
-                .chain(std::iter::once(0))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    unsafe {
-        let mut token: HANDLE = std::ptr::null_mut();
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let mut linked = TOKEN_LINKED_TOKEN {
-            LinkedToken: std::ptr::null_mut(),
-        };
-        let mut returned = 0u32;
-        let ok = GetTokenInformation(
-            token,
-            TokenLinkedToken,
-            (&mut linked as *mut TOKEN_LINKED_TOKEN).cast(),
-            std::mem::size_of::<TOKEN_LINKED_TOKEN>() as u32,
-            &mut returned,
-        );
-        let _ = CloseHandle(token);
-        if ok == 0 || linked.LinkedToken.is_null() {
-            return Err(io::Error::other("no linked medium token"));
-        }
-        let mut primary: HANDLE = std::ptr::null_mut();
-        let duplicated = DuplicateTokenEx(
-            linked.LinkedToken,
-            TOKEN_ASSIGN_PRIMARY
-                | TOKEN_DUPLICATE
-                | TOKEN_QUERY
-                | TOKEN_ADJUST_DEFAULT
-                | TOKEN_ADJUST_SESSIONID,
-            std::ptr::null(),
-            SecurityImpersonation,
-            TokenPrimary,
-            &mut primary,
-        );
-        let launch_token = if duplicated != 0 && !primary.is_null() {
-            let _ = CloseHandle(linked.LinkedToken);
-            primary
-        } else {
-            linked.LinkedToken
-        };
-        let mut startup: STARTUPINFOW = std::mem::zeroed();
-        startup.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
-        let mut info: PROCESS_INFORMATION = std::mem::zeroed();
-        let created = CreateProcessWithTokenW(
-            launch_token,
-            0,
-            exe_w.as_ptr(),
-            std::ptr::null_mut(),
-            DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
-            std::ptr::null(),
-            if dir_w.is_empty() {
-                std::ptr::null()
-            } else {
-                dir_w.as_ptr()
-            },
-            &startup,
-            &mut info,
-        );
-        let _ = CloseHandle(launch_token);
-        if created == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if !info.hThread.is_null() {
-            let _ = CloseHandle(info.hThread);
-        }
-        if !info.hProcess.is_null() {
-            let _ = CloseHandle(info.hProcess);
-        }
-        Ok(())
-    }
-}
-
 fn is_process_running_by_name(name: &str) -> bool {
     let mut sys = System::new_all();
     sys.refresh_all();
@@ -3194,7 +3043,7 @@ mod tests {
         extract_error_can_retry, create_protected_staging_tree, elevated_private_staging_root,
         finalize_retry_state,
         install_writable_for_staging, is_owned_program_data_staging_name,
-        lock_owned_by_foreign_process, may_relaunch_with_current_integrity, may_self_elevate,
+        lock_owned_by_foreign_process, may_self_elevate,
         path_is_within, pre_elevation_failure_can_retry, prepare_retry_archive, program_data_dir,
         release_abandoned_update_lock, release_update_lock, remove_staging_dir,
         retain_update_lock_file, retry_allowed, retry_args, retry_available, retry_cli_args,
@@ -3525,6 +3374,10 @@ mod tests {
         assert!(should_relaunch_after_rollback(false));
     }
 
+    // Plants a symlink to swap the install root; reparse-point creation here is
+    // Unix-only, so the test must not be compiled on Windows (§6.44 in
+    // docs/migrations/xdmaker-meka-to-cindy.md: this blocked `cargo test`).
+    #[cfg(unix)]
     #[test]
     fn install_dir_identity_rejects_a_swapped_reparse_point() {
         let temp = TestDir::new();
@@ -3588,6 +3441,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn copy_tree_into_pinned_rejects_a_swapped_destination() {
         let temp = TestDir::new();
@@ -3609,6 +3463,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn pinned_join_rejects_a_descendant_junction() {
         let temp = TestDir::new();
@@ -5013,22 +4868,57 @@ mod tests {
         );
     }
 
+    /// The post-replacement relaunch must be the plain detached launch again.
+    ///
+    /// #4502 gated it on a linked-medium-token handoff (`CreateProcessWithTokenW`)
+    /// and escalated a handoff failure into `Failed`, which rolled back a
+    /// replacement that had already succeeded. Hosts where that native call
+    /// fails with os error 87 could therefore never install another version.
+    /// Keep the gate, the handoff and the fatal error out of this path.
     #[test]
-    fn successful_launch_does_not_createprocess_a_writable_install_elevated() {
-        let source = include_str!("installer.rs");
-        let start = source
+    fn successful_launch_uses_the_current_token_and_is_never_gated_on_integrity() {
+        // `include_str!` yields the file exactly as checked out, so normalise
+        // CRLF first: a needle containing `\n` silently misses on a Windows
+        // checkout with `core.autocrlf=true`. That trap already breaks one older
+        // source-shape assertion in this module, so do not rely on luck here.
+        let source = include_str!("installer.rs").replace("\r\n", "\n");
+        // `include_str!` includes this test module too, so every banned needle
+        // would match its own literal. Judge production code only.
+        //
+        // Anchor on the *test module*, never on the first `#[cfg(test)]`: this
+        // file already carries `#[cfg(test)]` on production helpers far above
+        // (e.g. `retry_cli_args`), and slicing there truncates the range before
+        // the launch path — the scan then passes while covering nothing.
+        // `rfind` is wrong too: the last attribute is inside this module, after
+        // the needles below, which would make them match themselves.
+        assert_eq!(
+            source.matches("\nmod tests {").count(),
+            1,
+            "the production/test boundary anchor must stay unique"
+        );
+        let production = &source[..source.find("\nmod tests {").expect("mod tests")];
+        let start = production
             .find("启动新版本")
             .expect("success launch phase");
-        let body = &source[start..start + 800];
+        // `min` keeps the window in range if the surrounding code shrinks; an
+        // out-of-range slice would panic instead of failing the assertion.
+        let body = &production[start..production.len().min(start + 800)];
         assert!(
-            body.contains("may_relaunch_with_current_integrity")
-                || body.contains("launch_app_exe"),
-            "copy_tree then CreateProcess of app_dir/Cindy.exe must not inherit a high token on a writable install:\n{body}"
+            body.contains("launch_detached(&exe_path)"),
+            "the post-replacement relaunch must use the plain detached launch:\n{body}"
         );
-        assert!(
-            body.contains("anyhow::bail!") && body.contains("AppLaunch::Skipped"),
-            "a skipped de-elevated launch after replacement is a terminal failure, not Done:\n{body}"
-        );
+        for banned in [
+            "CreateProcessWithTokenW(",
+            "launch_de_elevated",
+            "may_relaunch_with_current_integrity",
+            "AppLaunch::Skipped",
+            "无法在不继承管理员权限",
+        ] {
+            assert!(
+                !production.contains(banned),
+                "{banned} must not come back: it makes a finished install fail on token juggling"
+            );
+        }
     }
 
     #[test]
@@ -5049,31 +4939,47 @@ mod tests {
         assert!(!close_should_be_blocked(Phase::Done, false));
     }
 
+    /// Close/Destroyed and the early digest-failure path both relaunch an app
+    /// that is already on disk. Both must use the plain detached launch.
     #[test]
-    fn elevated_abandon_does_not_relaunch_a_writable_install_with_the_high_token() {
-        assert!(
-            !may_relaunch_with_current_integrity(false, true, true),
-            "an elevated updater must not CreateProcess a medium-writable Cindy.exe"
+    fn abandon_and_early_failure_relaunch_with_the_current_token() {
+        // Normalise CRLF for the same reason as the launch test above: this
+        // worktree checks the file out with `core.autocrlf=true`, so a needle
+        // containing `\n` silently misses on Windows.
+        let source = include_str!("installer.rs").replace("\r\n", "\n");
+        assert_eq!(
+            source.matches("\nmod tests {").count(),
+            1,
+            "the production/test boundary anchor must stay unique"
         );
-        assert!(!may_relaunch_with_current_integrity(true, true, true));
-        assert!(
-            may_relaunch_with_current_integrity(true, true, false),
-            "a UAC-protected install root is not plantable by a medium-integrity process"
-        );
-        assert!(may_relaunch_with_current_integrity(false, false, true));
-
-        let source = include_str!("installer.rs");
-        let start = source
-            .find("fn relaunch_restored_app(args: &CliArgs)")
-            .expect("relaunch_restored_app");
-        let end = source[start..]
-            .find("pub(crate) fn should_relaunch_restored_app_on_abandon")
-            .expect("should_relaunch follows relaunch");
-        let body = &source[start..start + end];
-        assert!(
-            body.contains("may_relaunch_with_current_integrity"),
-            "Close/Destroyed must not launch a writable Cindy.exe from a still-elevated updater:\n{body}"
-        );
+        let production = &source[..source.find("\nmod tests {").expect("mod tests")];
+        // One helper at a time: a single count over a shared window cannot say
+        // *which* helper reverted, and it keeps passing if a third one appears.
+        for helper in [
+            "fn relaunch_restored_app(args: &CliArgs)",
+            "fn relaunch_unmodified_app_after_early_failure(args: &CliArgs)",
+        ] {
+            let start = production.find(helper).expect(helper);
+            // A closing brace in column 0 ends the helper.
+            let end = production[start..]
+                .find("\n}\n")
+                .expect("the helper must be a top-level function");
+            let body = &production[start..start + end];
+            assert!(
+                body.contains("launch_detached"),
+                "{helper} must relaunch with the plain detached launch:\n{body}"
+            );
+            for banned in [
+                "CreateProcessWithTokenW(",
+                "launch_de_elevated",
+                "AppLaunch::Skipped",
+            ] {
+                assert!(
+                    !body.contains(banned),
+                    "{banned} must not come back in {helper}:\n{body}"
+                );
+            }
+        }
     }
 
     #[test]

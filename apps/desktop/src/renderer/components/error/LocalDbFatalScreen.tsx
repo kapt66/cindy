@@ -25,11 +25,11 @@ export function LocalDbFatalScreen({
   onBackToLogin?: () => void;
 }) {
   const { t } = useTranslation();
-  const { status, progress } = useUpdateStatus();
+  const { status, errorCode, progress } = useUpdateStatus();
   // 点了「重启并安装更新」后应用即将退出重启，期间锁住按钮防止重复触发。
   const [installing, setInstalling] = useState(false);
 
-  const view = resolveLocalDbFatalView(status);
+  const view = resolveLocalDbFatalView(status, errorCode);
 
   const handleConfirm = () => {
     if (view === 'install-update') {
@@ -39,6 +39,12 @@ export function LocalDbFatalScreen({
       window.electronAPI.relaunchToUpdate(theme);
       return;
     }
+    if (view === 'apply-exhausted') {
+      // 自动更新已对该版本放弃，main 侧不会再下载；再点「检查更新」只会拿到同一结论。
+      // 手动装包是唯一出路，与 UpdateBanner 的 exhausted 弹窗同一落点。
+      window.open(window.electronAPI.clientEndpoints.websiteUrl, '_blank');
+      return;
+    }
     if (view === 'no-update') {
       // 检查会把 update-status 推成 checking/downloading → 视图自动切到 preparing。
       void window.electronAPI.checkForUpdate().catch(() => {});
@@ -46,17 +52,25 @@ export function LocalDbFatalScreen({
   };
 
   const title =
-    view === 'no-update' ? t('localDbFatal.noUpdate.title') : t('localDbFatal.updateReady.title');
+    view === 'no-update'
+      ? t('localDbFatal.noUpdate.title')
+      : view === 'apply-exhausted'
+        ? t('localDbFatal.applyExhausted.title')
+        : t('localDbFatal.updateReady.title');
   const description =
     view === 'install-update'
       ? t('localDbFatal.updateReady.description')
       : view === 'preparing-update'
         ? t('localDbFatal.preparing.description')
-        : t('localDbFatal.noUpdate.description');
+        : view === 'apply-exhausted'
+          ? t('localDbFatal.applyExhausted.description')
+          : t('localDbFatal.noUpdate.description');
   const confirmText =
     view === 'install-update'
       ? t('localDbFatal.updateReady.confirm')
-      : t('localDbFatal.noUpdate.checkUpdate');
+      : view === 'apply-exhausted'
+        ? t('localDbFatal.applyExhausted.download')
+        : t('localDbFatal.noUpdate.checkUpdate');
 
   return (
     <div

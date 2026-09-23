@@ -4390,7 +4390,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   checkForUpdate: (): Promise<{
     result:
-      'ready' | 'idle' | 'downloading' | 'manifest_failed' | 'download_failed' | 'manual_download';
+      | 'ready'
+      | 'idle'
+      | 'downloading'
+      | 'manifest_failed'
+      | 'download_failed'
+      | 'manual_download'
+      | 'apply_exhausted';
   }> => ipcRenderer.invoke('update-check-now'),
 
   /**

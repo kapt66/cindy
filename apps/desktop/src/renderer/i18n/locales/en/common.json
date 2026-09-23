@@ -196,6 +196,11 @@
       "description": "Your local data doesn't match this version of the app (it was likely upgraded by a newer version). Try checking for updates again; if this keeps happening, please contact the team.",
       "checkUpdate": "Check for Updates"
     },
+    "applyExhausted": {
+      "title": "This version needs a manual install",
+      "description": "Your local data was upgraded by a newer version of {{appName}} and can't be opened by this version. Automatic updates gave up after repeated install failures, so download the installer and reinstall manually to get back in.",
+      "download": "Download the installer"
+    },
     "details": "Technical details"
   },
   "agentIsland": {
@@ -6589,7 +6594,8 @@
       "ready": "New version ready — click the sidebar to apply",
       "manifestFailed": "Update check failed, please check your network",
       "downloadFailed": "New version download failed, try again later",
-      "manualDownload": "Download in the app, then choose when to restart. Only system .deb installs require a system password."
+      "manualDownload": "Download in the app, then choose when to restart. Only system .deb installs require a system password.",
+      "applyExhausted": "Automatic update for this version stopped after repeated failures. Download the new version and install it manually."
     },
     "closeConfirm": {
       "title": "Confirm exit?",
@@ -7486,6 +7492,12 @@
       "loading": "Loading",
       "loadFailed": "Load failed",
       "retry": "Retry"
+    },
+    "applyExhausted": {
+      "title": "Automatic update could not finish",
+      "description": "Installing the new version failed several times, so {{appName}} will not retry on its own. Download the new version and install it manually.",
+      "download": "Download manually",
+      "later": "Later"
     },
     "translocated": {
       "title": "Cannot auto-update",

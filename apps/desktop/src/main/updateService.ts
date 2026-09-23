@@ -36,6 +36,7 @@ import {
 import { BRAND_IDENTITY } from '@cindy/maker-shared/brand-identity';
 
 import { supportsBetaUpdateChannel } from '../shared/updateChannelCapability';
+import { UPDATE_APPLY_EXHAUSTED_ERROR_CODE } from '../shared/updateErrorCodes';
 import { fetchManifest, getBaseUrl, isDev, probeBetaManifest, clearCachedManifest } from './manifestService';
 import type { Manifest } from './manifestService';
 import { download, DownloadError } from './downloader/index';
@@ -66,6 +67,7 @@ import {
   type AutoRelaunchBlockReason,
 } from './updateAutoRelaunchPolicy';
 import { throwIpcError } from './utils/ipcValidate';
+import { atomicWriteFileSync, readAtomicFileSync } from './utils/atomicWriteFile';
 import { noteExpectedExit } from './startup-diagnostics';
 import { buildMacOSUpdateScript } from './updateScriptMacOS';
 import { buildLinuxUpdateScript, normalizeLinuxDebSha256 } from './updateScriptLinux';
@@ -166,6 +168,9 @@ const AUTO_RELAUNCH_POLL_INTERVAL_MS = 30_000;
 // 启动态 manifest 短超时（#26）：probe 最坏 1.5s + external CDN P99 < 5s，8s 留足余量
 const STARTUP_MANIFEST_TIMEOUT_MS = 8_000;
 
+/** How many times one target version may be handed to the updater before we stop. */
+const MAX_APPLY_ATTEMPTS = 3;
+
 // ── State ──────────────────────────────────────────────────────────────────
 
 let currentStatus: UpdateStatus = 'idle';
@@ -188,6 +193,21 @@ let pollTimer: ReturnType<typeof setInterval> | null = null;
 let autoRelaunchPollTimer: ReturnType<typeof setInterval> | null = null;
 let isRelaunching = false;
 let lastErrorCode: string | undefined;
+/**
+ * Version that `currentStatus === 'error'` + {@link UPDATE_APPLY_EXHAUSTED_ERROR_CODE}
+ * refers to, while that terminal state is being held.
+ *
+ * A spent budget is terminal *for the user*: the manual-install affordance must stay
+ * up until the manifest advertises a different version. `currentStatus` alone cannot
+ * express that, because every no-op poll used to fall back to `idle` — and because
+ * `checkForUpdate()` re-broadcasts `checking` on every 30-minute poll whenever the
+ * status is not `ready`. The renderer renders `checking` as "nothing to update" and
+ * tears the confirm dialog down, so the next `error` broadcast remounted it: the
+ * entrance animation replayed and focus was stolen onto the primary button every
+ * cycle — exactly the symptom the one-shot ref in `UpdateBanner` was supposed to fix.
+ * Holding the terminal state here keeps the renderer on one continuous `error`.
+ */
+let applyExhaustedVersion: string | undefined;
 let autoRelaunchInProgress = false;
 /** 资格检查(含异步 busyProbe)进行中的次数。这段窗口暂缓清补丁。 */
 let autoRelaunchDecisionDepth = 0;
@@ -247,6 +267,19 @@ function setStatus(status: UpdateStatus, extra?: Partial<UpdateStatusPayload>): 
   if (status === 'ready' && !startupUpdateCheckInProgress && !extra?.errorCode) {
     void evaluateAutoRelaunch('status-ready');
   }
+}
+
+/**
+ * Version whose spent-budget terminal state is currently displayed, or `undefined`.
+ *
+ * Both halves are required: the status must still *be* the terminal error (any other
+ * broadcast clears `lastErrorCode` through {@link setStatus}), and the give-up path
+ * must have recorded which version it stopped on.
+ */
+function heldApplyExhaustedVersion(): string | undefined {
+  if (currentStatus !== 'error') return undefined;
+  if (lastErrorCode !== UPDATE_APPLY_EXHAUSTED_ERROR_CODE) return undefined;
+  return applyExhaustedVersion;
 }
 
 function blockWindowsUpdaterForMissingRuntime(missingFiles: readonly string[]): false {
@@ -520,6 +553,244 @@ function broadcastUpdateProgress(payload: {
 
 const PATCH_INFO_FILE = 'patch-info.json';
 const UPDATE_LOCK_FILE = '.updating';
+/**
+ * Durable apply counter, keyed by target version.
+ *
+ * `patch-info.json`'s own `applyAttempts` only lives as long as that file does.
+ * `cleanOldFiles()` deliberately *keeps* `patch-info.json` (it is in the
+ * `persistentFileNames` allow-list), but every failure path removes it —
+ * `handleApplyFailure()`, the orphan branch in `checkExistingPatch()` and
+ * `discardExistingPatch()` — and the next successful download rewrites it via
+ * `writePatchInfo()`, which does not carry `applyAttempts` at all. The counter
+ * therefore restarts at 0 on each retry, and on Windows the updater additionally
+ * moves the staged ZIP out of `updates/` on a retryable failure, which forces
+ * exactly that re-download. A permanently failing apply re-downloaded the full
+ * package forever and the `attempts >= 3` gate could never fire.
+ *
+ * This file is written only by `incrementApplyAttempts()` and the give-up path,
+ * and no cleanup path touches it, so the count survives those removals. It is
+ * written through the shared atomic writer, so a `<file>.bak` rollback snapshot
+ * can appear next to it; `clearApplyStateFor()` removes that too, and
+ * `cleanOldFiles()` keeps it.
+ */
+const APPLY_STATE_FILE = 'apply-state.json';
+
+interface ApplyState {
+  /** Target version the counter belongs to. A different version starts over. */
+  version: string;
+  attempts: number;
+  /** Set once we stop auto-applying this version. */
+  abandoned?: boolean;
+  abandonedAt?: string;
+}
+
+function getApplyStatePath(): string {
+  return path.join(getUpdatesDir(), APPLY_STATE_FILE);
+}
+
+/**
+ * In-memory mirror of {@link APPLY_STATE_FILE}.
+ *
+ * The increment is derived from the *previous* value, so it must not depend on the
+ * disk write having succeeded: a persistently unwritable file (AV/EDR holding it, or
+ * the `.bak`-unrecoverable state the shared atomic writer can reach) would keep the
+ * on-disk count pinned near zero, the cap would never be reached, and a session
+ * where the user keeps pressing Retry would re-download the full package forever —
+ * exactly the failure this whole mechanism exists to stop. The mirror dies with the
+ * process (a restart is a new session), so it only has to cover in-session
+ * accumulation; the durable file covers the rest.
+ */
+let applyStateMirror: ApplyState | undefined;
+
+type ApplyStateRead =
+  | { state: ApplyState; unreadable: false }
+  | { state: null; unreadable: boolean };
+
+/**
+ * Read the durable record, distinguishing "not there" from "could not be read".
+ *
+ * That distinction matters for deletion: `clearApplyStateFor` must NOT drop a record
+ * it merely failed to read, because that record may belong to a different version
+ * whose spent budget would then silently reset.
+ */
+function readApplyStateDetailed(): ApplyStateRead {
+  try {
+    // `readAtomicFileSync` restores a `.bak` swap that a failed rename left behind
+    // (Windows EBUSY/EACCES) and throws for anything but ENOENT.
+    const raw = readAtomicFileSync(getApplyStatePath());
+    if (raw === null) return { state: null, unreadable: false };
+    const parsed = JSON.parse(raw) as ApplyState;
+    if (typeof parsed?.version !== 'string' || !parsed.version) return { state: null, unreadable: true };
+    if (typeof parsed.attempts !== 'number' || !Number.isFinite(parsed.attempts)) {
+      return { state: null, unreadable: true };
+    }
+    return { state: parsed, unreadable: false };
+  } catch {
+    // Fail-soft for the *counting* side (a budget treated as 0 costs at most one
+    // extra re-download) but flagged so the deleting side can stay conservative.
+    return { state: null, unreadable: true };
+  }
+}
+
+function readApplyState(): ApplyState | null {
+  return readApplyStateDetailed().state;
+}
+
+function writeApplyState(state: ApplyState): void {
+  // Written through the repo's shared atomic writer, not a bare
+  // write-then-rename: on Windows AV / the indexer / cloud sync briefly lock a
+  // freshly landed file and a single `rename` then throws EBUSY/EACCES.
+  // The mirror is updated whether or not the write lands — see `applyStateMirror`.
+  applyStateMirror = state;
+  try {
+    atomicWriteFileSync(getApplyStatePath(), JSON.stringify(state));
+  } catch (err) {
+    log.error('writeApplyState failed (counter kept in memory for this session):', err);
+  }
+}
+
+/** Version identity used for the budget record: SemVer-equal spellings are one version. */
+function isSameVersionRecord(left: string, right: string): boolean {
+  return compareAppUpdateVersions(left, right) === 'same';
+}
+
+function clearApplyStateFor(version: string): void {
+  // Only clear a record that belongs to the version which actually landed; a
+  // record for a different (still failing) version must survive. Compared with
+  // `compareAppUpdateVersions` rather than `===` so SemVer-equal spellings
+  // (`v0.0.64`, `0.0.64+build`) converge too — a mismatch would leave a record
+  // that can never be cleared except by the cold-start reconcile.
+  const read = readApplyStateDetailed();
+  // Unreadable is not "does not exist": deleting here could drop another version's
+  // budget. (The write side refuses to clobber an unrecoverable `.bak` by itself,
+  // so leaving the file in place is safe.)
+  if (read.unreadable) {
+    log.warn('apply state could not be read — leaving it in place instead of clearing it');
+    return;
+  }
+  if (read.state && !isSameVersionRecord(read.state.version, version)) return;
+  try {
+    fs.unlinkSync(getApplyStatePath());
+  } catch {
+    /* ignore */
+  }
+  if (!applyStateMirror || isSameVersionRecord(applyStateMirror.version, version)) {
+    applyStateMirror = undefined;
+  }
+  // Reconcile-style cleanup: a `.bak` from an interrupted atomic swap would
+  // otherwise be restored on the next read and resurrect the cleared record.
+  try {
+    fs.rmSync(`${getApplyStatePath()}.bak`, { force: true, maxRetries: 3, retryDelay: 20 });
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Delete the on-disk staged copy for exactly `version` (zip + patch-info).
+ *
+ * Deliberately scoped: the exhausted-version guard must not touch a staged patch
+ * belonging to another version, and `discardStagedPatchFiles()` is in-memory
+ * only, so a cold start (which is exactly when this guard runs) cannot use it.
+ */
+function discardStagedPatchOnDiskFor(version: string): void {
+  // Same in-flight protection the other discard paths carry: the native updater
+  // may be reading this very ZIP right now (`isRelaunching` stays true across the
+  // 5s spawn window and the subagent-reclaim window), and a concurrent check must
+  // not unlink it underneath.
+  if (isUpdateApplyCommitted()) {
+    log.info('skipping staged patch discard — update apply already in flight');
+    return;
+  }
+  try {
+    const infoPath = path.join(getUpdatesDir(), PATCH_INFO_FILE);
+    const info = JSON.parse(fs.readFileSync(infoPath, 'utf-8')) as PatchInfo;
+    if (!isSameVersionRecord(info.version, version)) return;
+    if (
+      typeof info.fileName === 'string'
+      && info.fileName !== ''
+      && path.basename(info.fileName) === info.fileName
+      && info.fileName !== '.'
+      && info.fileName !== '..'
+    ) {
+      try {
+        fs.unlinkSync(path.join(getUpdatesDir(), info.fileName));
+      } catch {
+        /* ignore */
+      }
+    }
+    removePatchInfo();
+    // Same one-shot marker contract as `discardStagedPatchFiles`: the version
+    // this patch belonged to will never be launched by the updater, so a matching
+    // relogin marker must not force a re-login after a manual install.
+    const flag = readReloginFlag();
+    if (flag && isSameVersionRecord(flag.version, info.version)) {
+      clearReloginFlag();
+    }
+  } catch {
+    /* no staged patch on disk */
+  }
+}
+
+/**
+ * Drop a stale give-up record once its version is the one actually installed.
+ *
+ * `clearApplyStateFor` only runs while `patch-info.json` exists, but the give-up
+ * path deletes that file — so after the user follows the dialog and installs the
+ * version by hand, nothing would ever clear the record. Cold start is the one
+ * place that knows the installed version without patch-info.
+ */
+function reconcileApplyStateWithInstalledVersion(): void {
+  const state = readApplyState();
+  if (!state) return;
+  // Version equivalence must use the same comparison as the gate below, not string
+  // equality: `v0.0.65` and `0.0.65+build` are the same version to
+  // `compareAppUpdateVersions`, and a record those forms disagree on would linger
+  // forever (harmless, but the state file would never converge).
+  if (compareAppUpdateVersions(state.version, app.getVersion()) !== 'same') return;
+  log.info('clearing stale apply state for the installed version v%s', state.version);
+  clearApplyStateFor(state.version);
+  // No in-memory terminal state to release here: this runs from
+  // `initUpdateService()` only, at which point `applyExhaustedVersion` and
+  // `lastErrorCode` are still at their module-initial values.
+}
+
+/** `patch-info.json`'s counter for `version`, or 0 when it does not describe it. */
+function stagedApplyAttemptsFor(version: string): number {
+  try {
+    const infoPath = path.join(getUpdatesDir(), PATCH_INFO_FILE);
+    const info = JSON.parse(fs.readFileSync(infoPath, 'utf-8')) as PatchInfo;
+    if (!isSameVersionRecord(info.version, version)) return 0;
+    const attempts = info.applyAttempts;
+    return typeof attempts === 'number' && Number.isFinite(attempts) ? attempts : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Attempts already spent on `version`, across every record that can hold them.
+ *
+ * The download gate runs *before* `checkExistingPatch()` looks at the staged
+ * patch, so it cannot see `patch-info.json`'s counter through the durable state
+ * alone. Taking the union keeps the two checks from disagreeing: otherwise the
+ * give-up branch could fire inside the same pass and still be followed by a
+ * fresh download. A different (newer) advertised version keeps a fresh budget.
+ *
+ * The in-memory mirror is part of the union for the same reason: when the durable
+ * file cannot be written, the mirror is the only place an in-session increment
+ * survives, and dropping it would put the cap out of reach exactly when the user
+ * keeps retrying.
+ */
+function spentApplyAttemptsFor(version: string): number {
+  const state = readApplyState();
+  const durable = state && isSameVersionRecord(state.version, version) ? state.attempts : 0;
+  const mirrored =
+    applyStateMirror && isSameVersionRecord(applyStateMirror.version, version)
+      ? applyStateMirror.attempts
+      : 0;
+  return Math.max(durable, mirrored, stagedApplyAttemptsFor(version));
+}
 
 /**
  * Snapshot of the current update lifecycle state. Prefer
@@ -676,6 +947,8 @@ function checkExistingPatch(): { action: 'relaunch' | 'check' | 'none'; version?
     // Patch matches current version → already applied; clean up and re-check.
     // Keep the matching relogin flag: auth initialization owns consuming it.
     discardExistingPatch(patchInfo, patchFilePath, false);
+    // This version did land, so any give-up record for it is stale.
+    clearApplyStateFor(patchInfo.version);
     return { action: 'check' };
   }
   if (versionRelation !== 'newer') {
@@ -689,19 +962,34 @@ function checkExistingPatch(): { action: 'relaunch' | 'check' | 'none'; version?
     return { action: 'check' };
   }
 
-  const attempts = patchInfo.applyAttempts ?? 0;
-  if (attempts >= 3) {
+  // The durable counter is the source of truth: `patchInfo.applyAttempts` is
+  // wiped by every re-download (see `APPLY_STATE_FILE`), so on its own it never
+  // reaches the cap on Windows, where a retryable failure moves the ZIP away.
+  // Read it through the shared helper so this branch and the download gate cannot
+  // disagree — a hand-edited or malformed counter used to be accepted here and
+  // rejected there, which reopened exactly the give-up-then-download combination
+  // the single reading is meant to close.
+  const totalAttempts = spentApplyAttemptsFor(patchInfo.version);
+  if (totalAttempts >= MAX_APPLY_ATTEMPTS) {
     log.error(
       'Patch v%s failed to apply %d times — giving up, clearing patch',
       patchInfo.version,
-      attempts,
+      totalAttempts,
     );
-    try {
-      fs.unlinkSync(patchFilePath);
-    } catch {
-      /* ignore */
-    }
-    removePatchInfo();
+    writeApplyState({
+      version: patchInfo.version,
+      attempts: totalAttempts,
+      abandoned: true,
+      abandonedAt: new Date().toISOString(),
+    });
+    // `clearMatchingReloginFlag: true` — identical contract to the gate path. This
+    // version will never be launched by the updater, so a matching relogin marker
+    // must not survive to force a re-login after the manual install. Leaving it
+    // behind here made the outcome depend on which give-up path ran first: a cold
+    // start reaches this branch (patch-info still present) and a later poll runs
+    // the gate, whose `discardStagedPatchOnDiskFor` can no longer see the
+    // patch-info the branch just removed.
+    discardExistingPatch(patchInfo, patchFilePath, true);
     return { action: 'check' };
   }
 
@@ -951,15 +1239,37 @@ function clearStagedPatch(): void {
 
 function incrementApplyAttempts(): void {
   const infoPath = path.join(getUpdatesDir(), PATCH_INFO_FILE);
+  let version: string | undefined;
   try {
     const raw = fs.readFileSync(infoPath, 'utf-8');
     const info = JSON.parse(raw) as PatchInfo;
+    version = info.version;
     info.applyAttempts = (info.applyAttempts ?? 0) + 1;
     fs.writeFileSync(infoPath, JSON.stringify(info));
     log.info('applyAttempts incremented to %d for v%s', info.applyAttempts, info.version);
   } catch (err) {
     log.error('incrementApplyAttempts failed:', err);
   }
+  // Durable mirror: unlike `patch-info.json`, this survives the re-download that
+  // follows every failed Windows apply, so the give-up branch can be reached.
+  // The base is the *maximum* over the durable file and the in-memory mirror, not
+  // "the file if it is readable": a file that stays readable while every replacement
+  // is refused (AV/EDR holding a write lock, read-only attribute) would otherwise
+  // hand back the same stale value on every round, the counter would never reach the
+  // cap, and the session would re-download the full package forever — the very defect
+  // this mechanism exists to stop. See `applyStateMirror`.
+  if (!version) return;
+  const previous: ApplyState[] = [];
+  const durable = readApplyState();
+  if (durable && isSameVersionRecord(durable.version, version)) previous.push(durable);
+  if (applyStateMirror && isSameVersionRecord(applyStateMirror.version, version)) {
+    previous.push(applyStateMirror);
+  }
+  const attempts = previous.length === 0
+    ? 1
+    : Math.max(...previous.map((candidate) => candidate.attempts)) + 1;
+  writeApplyState({ version, attempts });
+  log.info('durable apply attempts for v%s: %d/%d', version, attempts, MAX_APPLY_ATTEMPTS);
 }
 
 /**
@@ -1022,11 +1332,24 @@ function sweepStaleUpdateTempDirs(): void {
 
 /**
  * Remove old downloaded files, keeping only the matching keepFileName plus
- * its sidecars (.part, .meta.json), patch-info.json, and the update lock.
+ * its sidecars (.part, .meta.json), patch-info.json, the durable apply state
+ * (with its `.bak` rollback snapshot), and the update lock.
+ *
+ * `APPLY_STATE_FILE` MUST stay in this list: `cleanOldUpdateFiles` deletes every
+ * other file in `updates/`, so dropping it here would wipe the attempt counter on
+ * the very re-download it exists to survive — recreating the endless retry.
  */
 function cleanOldFiles(keepFileName: string): void {
   try {
-    cleanOldUpdateFiles(getUpdatesDir(), keepFileName, [PATCH_INFO_FILE, UPDATE_LOCK_FILE]);
+    cleanOldUpdateFiles(getUpdatesDir(), keepFileName, [
+      PATCH_INFO_FILE,
+      UPDATE_LOCK_FILE,
+      APPLY_STATE_FILE,
+      // `atomicWriteFileSync`'s rollback snapshot. When the main file is missing it
+      // is the counter's only remaining copy, and `readAtomicFileSync` restores it —
+      // deleting it here would reset the budget to zero.
+      `${APPLY_STATE_FILE}.bak`,
+    ]);
   } catch {
     /* ignore */
   }
@@ -1059,8 +1382,18 @@ function resolveUpdateAsset(manifest: Manifest): { file: string; sha256: string;
 
 // ── Core check logic ───────────────────────────────────────────────────────
 
+/**
+ * `apply_exhausted` is its own result rather than a flavour of `idle`: the client
+ * deliberately stopped applying this version, so a manual "check for updates"
+ * must not answer "you're on the latest version".
+ */
 export type CheckForUpdateResult =
-  'ready' | 'manifest_failed' | 'download_failed' | 'manual_download' | 'idle';
+  | 'ready'
+  | 'manifest_failed'
+  | 'download_failed'
+  | 'manual_download'
+  | 'apply_exhausted'
+  | 'idle';
 
 // Module-level in-flight guard so the startup IPC handler and the background
 // poll don't race on the same destPath. ALL access to `inFlightCheck` MUST
@@ -1100,7 +1433,10 @@ async function doCheckForUpdate(manifestOverride?: Manifest | null): Promise<Che
   if (syncObservedUpdateChannel()) {
     log.info('shared update channel changed — discarding staged patch before check');
     clearStagedPatch();
-    return 'idle';
+    // `clearStagedPatch` 只在 ready/superseding/downloading 时广播,终态下不动状态;
+    // 因此这里也不能答 `'idle'`,否则「检查更新」的 toast 会与仍在显示的终态弹窗矛盾。
+    // 换渠道后由下一轮拿到的新 manifest 决定释放还是继续持有。
+    return heldApplyExhaustedVersion() ? 'apply_exhausted' : 'idle';
   }
   // 快照发起时的渠道代际;下载期间若用户 opt-out(clearStagedPatch 递增),
   // 成功/失败写回前都据此作废本次产物。
@@ -1124,14 +1460,23 @@ async function doCheckForUpdate(manifestOverride?: Manifest | null): Promise<Che
 
   // 只有非 ready 路径才广播 'checking' — wasReady 路径下广播 checking 会让 banner
   // 的可见条件(status === 'ready' || 'superseding')瞬间不满足,banner 抖一下。
-  if (!wasReady) {
+  // 已放弃版本的终态同理不能广播 checking(详见 heldApplyExhaustedVersion):
+  // 渲染端把 checking 当成「无事可跟」,会拆掉手动安装弹窗,下一轮 error 再重挂。
+  let heldExhausted = heldApplyExhaustedVersion();
+  if (!wasReady && !heldExhausted) {
     setStatus('checking');
   }
+
+  // 所有「无事可做」的出口都不能把终态悄悄降回 idle:那会让主进程与渲染端
+  // 不一致(渲染端仍在 error),下一轮轮询再广播 checking,又触发同一次拆装。
+  const settleIdle = (): void => {
+    if (!heldExhausted) currentStatus = 'idle';
+  };
 
   const manifest = manifestOverride ?? (await fetchManifest());
   if (!manifest) {
     log.info('Manifest fetch failed');
-    if (!wasReady) currentStatus = 'idle';
+    if (!wasReady) settleIdle();
     return 'manifest_failed';
   }
 
@@ -1144,6 +1489,24 @@ async function doCheckForUpdate(manifestOverride?: Manifest | null): Promise<Che
     previousReadyVersion ?? '<none>',
   );
 
+  // 终态只属于被放弃的那个版本,而且必须在下面三个 early-return **之前**释放:
+  // 那些出口(invalid / manifest 回退到已装版本 / 不再广告该版本)都意味着这个版本
+  // 已经不再是更新目标。放在它们之后释放,就会把 `status='error'` + 该专用 errorCode
+  // 连「不再广播 checking」一起**永久**留在进程里(只能靠重启恢复),而
+  // `checkForUpdate` 同一趟返回 `'idle'` —— 弹窗写「已停止自动更新,请手动安装」、
+  // toast 写「已经是最新版本了」,自相矛盾。释放必须**广播**,否则渲染端会一直挂着
+  // 终态弹窗(主进程已回到 idle,却没有事件通知它)。
+  if (heldExhausted && !isSameVersionRecord(heldExhausted, latestVersion)) {
+    log.info(
+      'Releasing the spent-budget terminal state for v%s — the manifest now advertises v%s',
+      heldExhausted,
+      latestVersion,
+    );
+    applyExhaustedVersion = undefined;
+    heldExhausted = undefined;
+    setStatus('idle');
+  }
+
   const versionRelation = compareAppUpdateVersions(latestVersion, currentVersion);
   if (versionRelation === 'invalid') {
     log.error(
@@ -1154,7 +1517,7 @@ async function doCheckForUpdate(manifestOverride?: Manifest | null): Promise<Che
     if (wasReady) {
       discardStagedPatchFiles();
     } else {
-      currentStatus = 'idle';
+      settleIdle();
     }
     return 'manifest_failed';
   }
@@ -1164,7 +1527,7 @@ async function doCheckForUpdate(manifestOverride?: Manifest | null): Promise<Che
       log.info('Discarding staged patch because the current manifest no longer advertises an upgrade');
       discardStagedPatchFiles();
     } else {
-      currentStatus = 'idle';
+      settleIdle();
     }
     return 'idle';
   }
@@ -1177,7 +1540,7 @@ async function doCheckForUpdate(manifestOverride?: Manifest | null): Promise<Che
     if (wasReady) {
       discardStagedPatchFiles();
     } else {
-      currentStatus = 'idle';
+      settleIdle();
     }
     return 'idle';
   }
@@ -1187,10 +1550,71 @@ async function doCheckForUpdate(manifestOverride?: Manifest | null): Promise<Che
     log.info(process.platform === 'linux' ? 'No installer in Linux manifest' : 'No hotfix in manifest');
     if (wasReady) {
       discardStagedPatchFiles();
+    } else if (heldExhausted && isSameVersionRecord(heldExhausted, latestVersion)) {
+      // Still the abandoned version — just without an asset this round. Keep the
+      // terminal state AND answer with it: returning `'idle'` here would toast
+      // "already on the latest version" on top of a dialog that says the opposite.
+      return 'apply_exhausted';
     } else {
-      currentStatus = 'idle';
+      settleIdle();
     }
     return 'idle';
+  }
+
+  // Give up on a version that already burned its attempt budget. Without this
+  // the client re-downloads the full package and re-applies forever: the updater
+  // moves the staged ZIP away on a retryable failure, `checkExistingPatch` then
+  // drops the orphaned patch-info, and the fresh download resets every counter
+  // that patch-info carried.
+  const spentAttempts = spentApplyAttemptsFor(latestVersion);
+  if (spentAttempts >= MAX_APPLY_ATTEMPTS) {
+    // The budget is charged at hand-off, so "3 of 3 spent" includes the hand-off
+    // that is running right now. Declaring the version dead in that window would
+    // tell the user to install by hand above an apply that may still succeed, and
+    // would pin a record the apply is about to invalidate. Defer to the next poll:
+    // a successful apply restarts the app, a failed one converges here again with
+    // nothing in flight.
+    if (isUpdateApplyCommitted()) {
+      log.info(
+        'Update to v%s has spent its budget but an apply is in flight — deferring the give-up',
+        latestVersion,
+      );
+      return 'ready';
+    }
+    log.error(
+      'Update to v%s already failed %d times — not downloading or applying it again; '
+        + 'a manual install is required',
+      latestVersion,
+      spentAttempts,
+    );
+    // Drop the staged copy for THIS version only — an unrelated staged patch
+    // must not be collateral damage. The on-disk file needs its own scoped
+    // helper because a cold start has no in-memory staged state.
+    discardStagedPatchOnDiskFor(latestVersion);
+    if (readyVersion && isSameVersionRecord(readyVersion, latestVersion)) {
+      discardStagedPatchFiles();
+    }
+    const state = readApplyState() ?? applyStateMirror;
+    // Skip the write only when the *same* version is already recorded as
+    // abandoned. `abandoned` on a record for another version says nothing about
+    // this one, and skipping there would leave the terminal state in memory only
+    // — a restart would re-download the whole package and spend three more
+    // hand-offs on it.
+    if (state?.version === undefined || !isSameVersionRecord(state.version, latestVersion)
+      || state.abandoned !== true) {
+      writeApplyState({
+        version: latestVersion,
+        attempts: spentAttempts,
+        abandoned: true,
+        abandonedAt: new Date().toISOString(),
+      });
+    }
+    applyExhaustedVersion = latestVersion;
+    setStatus('error', {
+      version: latestVersion,
+      errorCode: UPDATE_APPLY_EXHAUSTED_ERROR_CODE,
+    });
+    return 'apply_exhausted';
   }
 
   // wasReady 且 manifest 仍是已下好的同一个版本 → 无事发生,保持 ready。
@@ -1453,6 +1877,17 @@ async function doCheckForUpdate(manifestOverride?: Manifest | null): Promise<Che
       error: err instanceof DownloadError ? err.code : 'UNKNOWN',
     });
     currentStatus = 'error';
+    // Defense-in-depth, not a reachable-state fix: this assignment is written out
+    // rather than relying on `setStatus('downloading')` earlier in the download
+    // path to have cleared `lastErrorCode`, so a future reordering cannot leave a
+    // spent-budget code on a download failure (`update-get-status` would report it
+    // and the renderer would offer "install manually" instead of Retry). Clearing
+    // it also releases any held terminal state, which is correct here: the user is
+    // looking at a *download* failure for whatever the manifest now advertises.
+    if (lastErrorCode === UPDATE_APPLY_EXHAUSTED_ERROR_CODE) {
+      lastErrorCode = undefined;
+      applyExhaustedVersion = undefined;
+    }
     return 'download_failed';
   }
 }
@@ -2190,6 +2625,10 @@ export function initUpdateService(): void {
       warn: (message) => log.warn(message),
     });
   }
+  // A give-up record whose version is now the installed one has served its
+  // purpose — including the manual-install path the dialog points users at,
+  // which never touches patch-info.json and so never reaches clearApplyStateFor.
+  reconcileApplyStateWithInstalledVersion();
   // Best-effort cleanup of >7-day-old `cindy-update*`/`xdt-update*` leftovers in %TEMP%.
   // Counterpart to the Rust updater's own sweep — covers the case where the
   // user stays on the latest version and never triggers another updater run.
@@ -2230,7 +2669,16 @@ export function initUpdateService(): void {
   );
 
   ipcMain.handle('update-get-status', () => {
-    return { status: currentStatus, version: readyVersion, errorCode: lastErrorCode };
+    // `readyVersion` is cleared when the give-up drops the staged patch, so the
+    // terminal state has to report the version it gave up on: a renderer that
+    // mounts after the fact (sidebar remount, /settings round trip) otherwise sees
+    // `errorCode: update_apply_exhausted` with no version and labels the dialog
+    // "latest" until the next broadcast flips the key and remounts it again.
+    return {
+      status: currentStatus,
+      version: applyExhaustedVersion ?? readyVersion,
+      errorCode: lastErrorCode,
+    };
   });
 
   ipcMain.handle('update-auto-settings-get', () => {

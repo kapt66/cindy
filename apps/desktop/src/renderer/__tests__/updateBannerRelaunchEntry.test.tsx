@@ -202,6 +202,80 @@ describe('UpdateBanner relaunch entry', () => {
     expect(screen.getByRole('button', { name: 'update.banner.ariaExpanded' })).toBeTruthy();
   });
 
+  it('points at a manual install once auto-apply has spent the attempt budget', async () => {
+    updateStatus.current = {
+      status: 'error',
+      version: '1.2.3',
+      errorCode: 'update_apply_exhausted',
+    };
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+    try {
+      render(<UpdateBanner isCollapsed={false} />);
+
+      await screen.findByText('update.applyExhausted.title');
+      expect(screen.getByText('update.applyExhausted.description')).toBeTruthy();
+      // Main refuses to download or apply this version again, so the dialog must
+      // not probe for live work or offer a relaunch — only the manual route.
+      expect(anyActivityBlockingRelaunch).not.toHaveBeenCalled();
+      expect(relaunchToUpdate).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole('button', { name: 'update.applyExhausted.download' }));
+      expect(openSpy).toHaveBeenCalledWith('https://cindy.ai', '_blank');
+      await waitFor(() => {
+        expect(screen.queryByText('update.applyExhausted.title')).toBeNull();
+      });
+    } finally {
+      openSpy.mockRestore();
+    }
+  });
+
+  it('stays closed after "later" until the user reclaims the entry', async () => {
+    updateStatus.current = {
+      status: 'error',
+      version: '1.2.3',
+      errorCode: 'update_apply_exhausted',
+    };
+    const { rerender } = render(<UpdateBanner isCollapsed={false} />);
+    await screen.findByText('update.applyExhausted.title');
+
+    fireEvent.click(screen.getByRole('button', { name: 'update.applyExhausted.later' }));
+    await waitFor(() => {
+      expect(screen.queryByText('update.applyExhausted.title')).toBeNull();
+    });
+    expect(dismissState.dismissed).toBe(true);
+
+    // Re-rendering the still-terminal state must not reopen it: the `dismissed`
+    // gate is what keeps the answered modal closed (removing it reopens the dialog
+    // right here, because this component re-renders on the click itself).
+    // The *other* half of the guarantee — that the background poll no longer tears
+    // the dialog down and remounts it — lives in the main process and is pinned by
+    // `updateService.test.ts`: "holds the spent-budget terminal state across polls
+    // and an offline check" asserts no `checking` broadcast while the state is held.
+    rerender(<UpdateBanner isCollapsed={false} />);
+    expect(screen.queryByText('update.applyExhausted.title')).toBeNull();
+  });
+
+  it('lets the sidebar entry reopen the exhausted dialog after "later"', async () => {
+    updateStatus.current = {
+      status: 'error',
+      version: '1.2.3',
+      errorCode: 'update_apply_exhausted',
+    };
+    const { rerender } = render(<UpdateBanner isCollapsed={false} />);
+    await screen.findByText('update.applyExhausted.title');
+    fireEvent.click(screen.getByRole('button', { name: 'update.applyExhausted.later' }));
+    await waitFor(() => {
+      expect(screen.queryByText('update.applyExhausted.title')).toBeNull();
+    });
+
+    // UserInfoSection's flame calls restore(). `isErrorOnly` renders nothing else in
+    // this state, so this is the only way back to the manual-install instruction:
+    // the re-open must not be suppressed by the fact that it was auto-shown before.
+    dismissState.dismissed = false;
+    rerender(<UpdateBanner isCollapsed={false} />);
+    await screen.findByText('update.applyExhausted.title');
+  });
+
   it('warns about the interruption instead of relaunching when main reports live activity', async () => {
     anyActivityBlockingRelaunch.mockResolvedValue(true);
     render(<UpdateBanner isCollapsed={false} />);

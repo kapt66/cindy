@@ -56,6 +56,7 @@ import { useLocale } from '@/hooks/useLocale';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { Tip } from '@/components/ui/tooltip';
 import { fetchReleaseNotes } from '@/release-notes';
+import { UPDATE_APPLY_EXHAUSTED_ERROR_CODE } from '../../../shared/updateErrorCodes';
 
 // 运行期端点清单(dev/packaged 都在启动阻断后有真值,烘焙兜底已退役)
 const websiteUrl = () => window.electronAPI.clientEndpoints.websiteUrl;
@@ -112,6 +113,7 @@ export function UpdateBanner({ isCollapsed, onOpenVersionNotice }: UpdateBannerP
   const { t } = useTranslation();
 
   const [showSpawnFailedDialog, setShowSpawnFailedDialog] = useState(false);
+  const [showApplyExhaustedDialog, setShowApplyExhaustedDialog] = useState(false);
   // 待安装版本的公告在 CDN 上是否可用 —— 决定文字链是否渲染。
   const [hasNotes, setHasNotes] = useState(false);
 
@@ -119,6 +121,10 @@ export function UpdateBanner({ isCollapsed, onOpenVersionNotice }: UpdateBannerP
   // the app is running from a read-only App Translocation path.
   const isTranslocated = status === 'error' && errorCode === 'translocated';
   const isSpawnFailed = status === 'error' && errorCode === 'updater_spawn_failed';
+  // Auto-apply spent its durable attempt budget on the advertised version. The
+  // main process stops re-downloading it, so a manual install is the only way
+  // forward — the dialog must say so instead of offering another retry.
+  const isApplyExhausted = status === 'error' && errorCode === UPDATE_APPLY_EXHAUSTED_ERROR_CODE;
   const isWindowsRuntimeMissing =
     status === 'ready' && errorCode === 'windows_vc_runtime_missing';
   const isLinuxInstallationUnsupported =
@@ -136,6 +142,28 @@ export function UpdateBanner({ isCollapsed, onOpenVersionNotice }: UpdateBannerP
   useEffect(() => {
     if (isSpawnFailed) setShowSpawnFailedDialog(true);
   }, [isSpawnFailed]);
+
+  // The exhausted dialog is the *only* UI in this state (`isErrorOnly` below renders
+  // nothing else), so it opens whenever the state holds and the user has not
+  // answered it yet. There is deliberately no one-shot ref here: the only closers
+  // are the two buttons, both of which call `dismiss()` — which is exactly what
+  // suppresses the re-open until the user reclaims the entry (sidebar flame →
+  // `restore()`). A ref would be inert for that (see the truth table in
+  // `docs/dev-rules/cindy-updater.md`), and it cannot stop the symptom it used to
+  // claim to cover: on `status === 'checking'` this component returns `null` and the
+  // portal unmounts while `showApplyExhaustedDialog` stays true, so the next `error`
+  // remounted it with the entrance animation and `autoFocusConfirm` focus steal.
+  // That is prevented in the main process instead — it holds the terminal state and
+  // no longer re-broadcasts `checking`, so the renderer stays on one continuous
+  // `error`. With `dismissed === false` a genuine remount (component state resets,
+  // e.g. the sidebar unmounts for /settings) opens it again; with `dismissed === true`
+  // it does not, because that flag lives in a module-level store — the sidebar flame
+  // is then the only way back, which is why `hasBlockedUpdate` must stay in
+  // `isFlameReopen` (see the truth table in docs/dev-rules/cindy-updater.md).
+  useEffect(() => {
+    if (!isApplyExhausted || dismissed) return;
+    setShowApplyExhaustedDialog(true);
+  }, [isApplyExhausted, dismissed]);
 
   useEffect(() => {
     if (isTranslocated) setShowTranslocatedDialog(true);
@@ -299,6 +327,21 @@ export function UpdateBanner({ isCollapsed, onOpenVersionNotice }: UpdateBannerP
     window.open(websiteUrl(), '_blank');
   };
 
+  // Both buttons dismiss, which is what suppresses the re-open — unlike the sibling
+  // error dialogs (translocated / spawnFailed) these do not hide the modal
+  // permanently: dismissing turns the sidebar flame into the entry that brings it
+  // back, since this dialog is the only place the manual-install guidance lives.
+  const handleApplyExhaustedDownload = () => {
+    setShowApplyExhaustedDialog(false);
+    dismiss('error', version ?? null);
+    window.open(websiteUrl(), '_blank');
+  };
+
+  const handleApplyExhaustedLater = () => {
+    setShowApplyExhaustedDialog(false);
+    dismiss('error', version ?? null);
+  };
+
   const handleWindowsRuntimeDownload = () => {
     setShowWindowsRuntimeDialog(false);
     void window.electronAPI.openExternal(WINDOWS_VC_RUNTIME_DOWNLOAD_URL);
@@ -327,7 +370,7 @@ export function UpdateBanner({ isCollapsed, onOpenVersionNotice }: UpdateBannerP
   // the only useful UI in those cases is the modal dialog, and the "Updated
   // to vX" body would be misleading (version may be missing, button does
   // nothing because the patch has already been cleared).
-  const isErrorOnly = isTranslocated || isSpawnFailed;
+  const isErrorOnly = isTranslocated || isSpawnFailed || isApplyExhausted;
 
   const withPrerequisiteDialogs = (content: ReactNode) => (
     <>
@@ -373,7 +416,15 @@ export function UpdateBanner({ isCollapsed, onOpenVersionNotice }: UpdateBannerP
   // Banner is visible for ready (relaunch available), superseding (preparing
   // a newer version on top of an already-ready patch), or error fallback
   // dialogs. Everything else hides the banner.
-  if (status !== 'ready' && !isPreparing && !isTranslocated && !isSpawnFailed) return null;
+  if (
+    status !== 'ready' &&
+    !isPreparing &&
+    !isTranslocated &&
+    !isSpawnFailed &&
+    !isApplyExhausted
+  ) {
+    return null;
+  }
 
   if (isErrorOnly) {
     // onOpenChange is a no-op so the user can't accidentally dismiss the
@@ -403,6 +454,17 @@ export function UpdateBanner({ isCollapsed, onOpenVersionNotice }: UpdateBannerP
           confirmText={t('splash.spawnFailed.confirm')}
           showCancel={false}
           onConfirm={handleSpawnFailedDownload}
+        />
+        <ConfirmDialog
+          open={showApplyExhaustedDialog}
+          onOpenChange={() => {}}
+          title={t('update.applyExhausted.title')}
+          description={t('update.applyExhausted.description')}
+          confirmText={t('update.applyExhausted.download')}
+          cancelText={t('update.applyExhausted.later')}
+          autoFocusConfirm
+          onConfirm={handleApplyExhaustedDownload}
+          onCancel={handleApplyExhaustedLater}
         />
       </>
     );

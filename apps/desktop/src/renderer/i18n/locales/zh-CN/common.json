@@ -196,6 +196,11 @@
       "description": "本地数据版本与当前应用不匹配（通常是被更新版本升级过）。请重新检查更新；若持续出现，请联系开发团队。",
       "checkUpdate": "重新检查更新"
     },
+    "applyExhausted": {
+      "title": "需要手动安装新版本",
+      "description": "本地数据已由更新版本的 {{appName}} 升级，当前版本无法打开。自动更新已多次尝试安装新版本并停止重试，请手动下载安装包并重新安装，安装后即可恢复使用。",
+      "download": "手动下载安装包"
+    },
     "details": "技术细节"
   },
   "agentIsland": {
@@ -6587,7 +6592,8 @@
       "ready": "新版本已就绪，点击侧边栏完成更新",
       "manifestFailed": "检查更新失败，请检查网络",
       "downloadFailed": "新版本下载失败，稍后再试",
-      "manualDownload": "在应用内下载，再选择重启时间。只有系统 .deb 安装需要系统密码。"
+      "manualDownload": "在应用内下载，再选择重启时间。只有系统 .deb 安装需要系统密码。",
+      "applyExhausted": "该版本已多次安装失败，已停止自动更新。请手动下载新版本并重新安装。"
     },
     "closeConfirm": {
       "title": "确认要离开吗？",
@@ -7484,6 +7490,12 @@
       "loading": "加载中",
       "loadFailed": "加载失败",
       "retry": "重试"
+    },
+    "applyExhausted": {
+      "title": "无法自动完成更新",
+      "description": "新版本已多次尝试安装但未成功，{{appName}} 不会再自动重试。请手动下载新版本并重新安装。",
+      "download": "手动下载新版本",
+      "later": "稍后"
     },
     "translocated": {
       "title": "无法自动更新",
