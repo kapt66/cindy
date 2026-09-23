@@ -454,6 +454,43 @@ access 不能绕过 deny、目标技能 ID 未确认前阻断项目内容证据�
   影响（行为 + 缓存率）”整理清楚，主动找 owner 讨论并取得明确确认；(c) 确认通过后再
   实现，并在 PR 说明里写明“system prompt 改动已确认”，附上按上节 3 的实测评估。
 
+### 4.1 本轮登记：默认角色注入反转 + order 65 段（2026-09-23）
+
+- **改了什么**：Meka 的**默认角色**（`<projectId>-default-role`，每个项目一个，是**新建 Meka 会话
+  的默认选中项**，即最常见角色）由「不做任何角色级注入」反转为「出厂即全量」——manifest 置
+  `useProjectDefaults: true` + `includeAllProjectMetadata: true` + **`includeAllBundledSkills: true`**
+  （第三个通用开关：包内 `resources/meka/skills/**` 扫到的全部内置 catalog skill），并承接原「通用开发」
+  的行为契约 prompt（去掉其中面向 SAGA2 战斗流程升级的整段）；项目规范类元数据（`agents-md` / `rule`）
+  **不再内联正文**，改为 `MekaRuntimeConfig.projectReferences` + **新增注入段
+  `meka.project-references`（order 65）**投递「作用范围 + 绝对路径 + 描述」。
+  段文本唯一来源是 `apps/desktop/src/main/meka-injection/mekaCombatPrompts.ts` 的
+  `mekaProjectReferencesPrompt`。
+  **只改 harness 选择集、不改 prompt 的两项**：`includeAllBundledSkills` 只扩展技能**选择集**
+  （技能 id 清单与正文都**不写进 `promptText`**，harness 原生 catalog 已承载 name／description），
+  恢复的 `meka-design` MCP 也只进 `mcp[]` 装配、不进 prompt 文本 ⇒ **system 前缀的文本不受这两项影响**。
+- **前缀变化范围**：变化只落在 **Meka 会话**（`workspaceKind === 'meka'`）且**只在 bootstrap
+  （新建）路径**——① 新增一段 order 65（位于 60 与 70 之间；空集合时**整段不渲染**）；
+  ② 默认角色的 order 70 段由**空**变为三段契约（识别工作类型 → 先定契约再跨层落地 → 以测试与
+  验收收口；业务优先输入契约；依赖失败先诊断并只阻断该依赖）；③ 同一角色下的 `agents-md` /
+  `rule` 正文**从 prompt 里消失**（改为路径+描述）。`resolveFrozenInjection`（resume）**与 60/70
+  同进同出，不注入该段**（I4），因此**旧会话的前缀不变**。非 Meka 会话零影响（I6）。
+  Claude / Codex / Pi 三个 harness 共用同一份 `userPrompt` 组装，因此三者的 Meka 新会话前缀
+  同步变化。**战斗角色是例外**（`workflow === 'saga2-combat-development-v1'`）：它的 `agents-md` /
+  `rule` 仍按改动前内联在 order 70，order 65 对它为空集不渲染。
+- **缓存率影响（按 §3.1 口径）**：order 65 段文本与角色 prompt 都在**会话装配时求值一次**，
+  之后在整个会话内**恒定**；内容只由项目配置与 bundled 常量决定（描述来自扫描期/配置的确定性
+  产出，**禁止由模型生成**，也无时间戳、随机数或递增计数）⇒ 前缀**逐字节稳定**，不引入
+  turn 间漂移。绝对收益方向反而为正：规范类正文（实测某真实项目 6 条 `agents-md` 合计
+  95,418 B）从 system 前缀里移除，前缀**显著变短**；代价是**已存在的默认角色会话与新前缀不再命中
+  同一缓存条目**（一次性失效，属任何 system 文本改动的固有代价，不影响改动后的命中率）。
+  这项评估是**代码/数据推理，不是运行时实测**：本交付**没有**跑前后缓存率对比（`usage-tracker`
+  的 per-turn／session 命中率或 `/context` 对比都未执行），按 §3.4 如实登记为**未实测**。
+- **owner 确认（诚实来源）**：按本节流程，该改动**需要 owner 确认**。实际情况是——
+  **本仓库维护者（用户）已在其直接指示中要求提交并推送本次改动**，即**维护者直接指示
+  （授权本次交付提交/推送）**；本节**不伪造书面签名**、也没有独立的书面确认文件。
+  与确认状态无关、且必须继续如实登记的一条：**缓存率影响未实测**（见上一条）。
+  因此本节的处置是「按维护者直接指示提交/推送」，而不是「已取得书面确认」。
+
 ## Review 清单
 
 1. Agent 逻辑是否留在了 maker-core，而不是散进 Main／Renderer 重造 Agent Loop？
@@ -463,6 +500,9 @@ access 不能绕过 deny、目标技能 ID 未确认前阻断项目内容证据�
 4. 前缀稳定性是否被破坏（易变内容进前缀、拼接顺序变化、会话中途增删 tool／MCP）？
 5. translator 是否可能丢事件、错序或错配事件类型？model 路由是否残留裸别名？
 6. 是否触及 system prompt？触及就必须先取得 owner 确认，PR 说明写明已确认。
+   （**已闭合的实例**：2026-09-23 的默认角色注入反转 + order 65 段见 §4.1 ——
+   **维护者已直接指示提交并推送本次改动**（授权本次交付），该节如实登记为「维护者直接指示
+   （授权本次交付提交/推送）」、**没有书面签名**；而**缓存率影响仍未实测**，这一条不因指示而消失。）
 
 命中 system prompt 未确认、或核心指标路径改动缺实测的 PR 必须阻断。验证命令按
 [`desktop-development.md`](desktop-development.md) 选择；指标类回退无法靠静态检查发现，

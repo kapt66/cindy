@@ -106,18 +106,21 @@ vi.mock('../../localDb/client/current.js', () => ({
       }
       if (sql.includes('FROM meka_roles')) {
         if (params[0] === 'saga2') {
+          // The bundled SAGA2 catalog after the consolidation: the shared default role plus the
+          // still-packaged combat role. `general-development` is retired and is deliberately NOT
+          // part of this fixture any more.
           return [
             {
-              id: 'general-development',
+              id: 'saga2-default-role',
               project_id: 'saga2',
-              name: 'general-development',
-              display_name: '通用开发',
+              name: 'saga2-default-role',
+              display_name: '默认角色',
               description: null,
-              tags: '[]',
-              file_path: 'meka/roles/general-development.json',
+              tags: '["builtin","default"]',
+              file_path: 'meka/roles/saga2-default-role.json',
               is_builtin: 1,
               content_digest: null,
-              sort_order: 0,
+              sort_order: -1,
               created_at: null,
               updated_at: null,
             },
@@ -131,7 +134,7 @@ vi.mock('../../localDb/client/current.js', () => ({
               file_path: 'meka/roles/combat-development.json',
               is_builtin: 1,
               content_digest: null,
-              sort_order: 1,
+              sort_order: 0,
               created_at: null,
               updated_at: null,
             },
@@ -248,11 +251,13 @@ describe('Meka copied project import', () => {
     const created = (await handler({}, { path: root, displayName: 'SAGA2' })) as {
       id: string;
       displayName: string;
-      roles: Array<{ displayName: string }>;
+      roles: Array<{ id: string; displayName: string; isBuiltin: boolean }>;
     };
 
     expect(created.displayName).toBe('saga2_project_git');
-    expect(created.roles.map((item) => item.displayName)).toEqual(['通用开发', '战斗开发']);
+    // Ordering follows the bundled catalog: `combat-development` is still a packaged role, while
+    // the retired `general-development` snapshot has no catalog entry and sorts last.
+    expect(created.roles.map((item) => item.displayName)).toEqual(['战斗开发', '通用开发']);
     expect(h.ensureDefaultRole).not.toHaveBeenCalled();
     expect(h.createRole).toHaveBeenCalledTimes(2);
     expect(h.createRole.mock.calls.map((call) => call[0].sortOrder)).toEqual([0, 1]);
@@ -265,6 +270,20 @@ describe('Meka copied project import', () => {
       'cloned-role-2',
     ]);
     expect(h.savedFile?.builtinRoles?.every((item) => item.projectId === created.id)).toBe(true);
+
+    // A retired-role snapshot is user data, not a catalog entry: the import must clone it into a
+    // freshly identified custom role and keep the name the user saw. No retirement sweep runs on
+    // this path, so the snapshot can never be dropped here.
+    expect(
+      h.createRole.mock.calls.map((call) => (call[0].roleFile as MekaRoleManifestFile).id).sort(),
+    ).toEqual(['combat-development', 'general-development']);
+    const clonedGeneralRole = h.roleRows.find((row) => row.display_name === '通用开发');
+    expect(clonedGeneralRole).toBeDefined();
+    expect(clonedGeneralRole?.is_builtin).toBe(0);
+    expect(clonedGeneralRole?.id).not.toBe('general-development');
+    expect(new Set(h.savedFile?.builtinRoles?.map((item) => item.displayName))).toEqual(
+      new Set(['战斗开发', '通用开发']),
+    );
   });
 
   it('keeps SAGA2 visible when another registered project has an unreadable config', async () => {
@@ -339,8 +358,11 @@ describe('Meka copied project import', () => {
     )) as { id: string };
 
     expect(h.ensureDefaultRole).not.toHaveBeenCalled();
-    expect(h.createRole).toHaveBeenCalledTimes(2);
-    expect(h.savedFile?.builtinRoles).toHaveLength(2);
+    // Only `combat-development` is still packaged; the retired `general-development` manifest file
+    // is gone, so the bundled fallback yields exactly one role snapshot.
+    expect(h.createRole).toHaveBeenCalledTimes(1);
+    expect(h.savedFile?.builtinRoles).toHaveLength(1);
+    expect(h.savedFile?.builtinRoles?.map((item) => item.displayName)).toEqual(['战斗开发']);
     expect(h.savedFile?.builtinRoles?.every((item) => item.projectId === created.id)).toBe(true);
   });
 

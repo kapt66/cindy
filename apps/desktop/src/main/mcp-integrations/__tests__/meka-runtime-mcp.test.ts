@@ -459,7 +459,8 @@ describe('Meka runtime MCP remote instance projection', () => {
       vendorOptions: {
         source: 'meka',
         mekaProjectId: 'saga2',
-        mekaRoleId: 'general-development',
+        // 非战斗角色样本：共享默认角色（`saga2-default-role`）。「通用开发」已退役。
+        mekaRoleId: 'saga2-default-role',
         mekaMcpProviderIds: ['mcp-router'],
       },
     };
@@ -506,7 +507,8 @@ describe('Meka runtime MCP remote instance projection', () => {
         mekaProjectId: 'saga2',
         mekaRoleId: 'combat-development',
         mekaCombatTargetSkillId: '1019',
-        mekaRoleDisplayName: '通用开发',
+        // 诱饵：vendorOptions 里的显示名是**非战斗角色**的名字（默认角色），权威值必须来自角色清单。
+        mekaRoleDisplayName: '默认角色',
         mekaMcpProviderIds: ['mcp-router'],
       },
     };
@@ -529,7 +531,8 @@ describe('Meka runtime MCP remote instance projection', () => {
         workflowRecoveredFromRole: true,
       },
     });
-    expect(JSON.stringify(payload)).not.toContain('通用开发');
+    // 诱饵显示名（默认角色）不得出现在权威回执里：roleContext 一律来自角色清单。
+    expect(JSON.stringify(payload)).not.toContain('默认角色');
     expect(context.vendorOptions).toMatchObject({
       mekaWorkflow: 'saga2-combat-development-v1',
       mekaCombatEnvironmentReady: false,
@@ -911,11 +914,12 @@ describe('Meka runtime MCP remote instance projection', () => {
     const context = {
       agentKind: 'codex' as const,
       workingDir: 'C:\\p4',
-      sessionId: 'observed-general-development-session',
+      sessionId: 'observed-default-role-session',
       vendorOptions: {
         source: 'meka',
         mekaProjectId: 'saga2',
-        mekaRoleId: 'general-development',
+        // 普通（非战斗）角色样本：共享默认角色。「通用开发」已退役。
+        mekaRoleId: 'saga2-default-role',
         mekaMcpProviderIds: ['mcp-router'],
       },
     };

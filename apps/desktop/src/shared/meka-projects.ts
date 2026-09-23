@@ -3,7 +3,6 @@
 import type Database from 'better-sqlite3';
 
 import combatDevelopmentRole from '../../resources/meka/roles/combat-development.json';
-import generalDevelopmentRole from '../../resources/meka/roles/general-development.json';
 
 export type MekaProjectMetadataItemType = 'agents-md' | 'skill' | 'rule' | 'mcp';
 
@@ -47,6 +46,23 @@ export interface MekaProjectMetadataSelection {
   sourcePath: string;
   itemType: MekaProjectMetadataItemType;
   enabled: boolean;
+}
+
+/** 一条项目参考文件的投递单元。正文刻意不在其中（渐进披露：只给地址 + 描述）。 */
+export interface MekaProjectReference {
+  /**
+   * 作用范围：该文档治理的目录（posix 路径，`''` 表示该项 root 本身）。
+   *
+   * 参照系是**该条目自己的 root**，不是永远相对 `projectRoot`：主项目元数据（未写 `rootPath`）
+   * 的原点就是 `projectRoot`；来自 `additionalPaths` 附加根的条目（写有 `rootPath`）原点则是该
+   * 附加根。作用范围只描述相对位置，文件本身的位置一律以 `path` 为准。
+   */
+  scope: string;
+  /** 参考文件的绝对路径。 */
+  path: string;
+  /** 有界、确定性的描述（≤300 字符）；不得由模型生成。 */
+  description: string;
+  itemType: 'agents-md' | 'rule';
 }
 
 export interface MekaRoleMcpProviderRef {
@@ -102,6 +118,13 @@ export interface MekaRoleConfig {
   useProjectDefaults?: boolean;
   /** Include every currently enabled project metadata item before applying explicit selections. */
   includeAllProjectMetadata?: boolean;
+  /**
+   * Include every skill the bundled catalog currently scans before applying explicit selections.
+   *
+   * Generic on purpose: it names no skill id, so adding a bundled skill to
+   * `resources/meka/skills/**` reaches every role that opts in without touching a role manifest.
+   */
+  includeAllBundledSkills?: boolean;
   excludeDefaults?: MekaRoleExcludeDefaults;
 }
 
@@ -140,9 +163,36 @@ export function mekaDefaultRoleId(projectId: string): string {
 }
 
 /**
- * The shared built-in default role: no prompt, rule, skill, MCP or project-metadata
- * selection. A task started with it stays bound to the project workspace but receives no
- * role-level injection, which is the closest Meka equivalent of a plain session.
+ * Behavior contract of the shared default role: identify the kind of work, settle the contracts
+ * first, integrate across the affected layers and close with tests plus an acceptance check; take
+ * business intent as the input contract; and diagnose and contain a failing dependency call
+ * instead of aborting the whole task.
+ *
+ * It is the retired "general development" prompt minus its SAGA2 combat-workflow paragraph: this
+ * role never carries a `workflow`, so combat-only instructions (bundled combat skills, the legacy
+ * module editor import/export path, "no Play Mode") would be dangling orders with no host gate
+ * behind them.
+ */
+const MEKA_DEFAULT_ROLE_PROMPT = `Identify whether the target needs design, local project, configuration, or remote-service work. Establish the relevant contracts first, integrate changes across affected layers, and finish with focused tests plus an acceptance check appropriate to the request.
+
+For any SAGA2 gameplay request, treat the user's natural-language business intent as the input contract. The user should only need to describe desired player-facing behavior, trigger, target, timing, effect, repetition, stacking, termination, and relevant balance or presentation goals. Do not ask the user for module types, target arrays, protocol fields, JSON, editor commands, P4 operations, server paths, or Unity CLI commands. Translate the business intent into technical work internally, infer details from project evidence, and ask only one focused business question when an unresolved choice would change gameplay. If a client/server capability is missing, report the business effect that cannot be guaranteed and the smallest business-level alternatives; never invent a field or make the user design the implementation.
+
+When a concrete dependency call fails, perform the safe diagnostics and recovery actions exposed by its receipt before asking the user; block only that dependency, preserve completed work, and give an exact user action plus retry point when credentials, network, or deployment work cannot be handled by the Agent.`;
+
+/**
+ * The shared built-in default role: factory-inclusive, progressively delivered.
+ *
+ * Everything the role can offer is already on by default — the project's role defaults
+ * (`useProjectDefaults`: prompt framework, skills, MCP, metadata selections), every enabled
+ * project metadata item (`includeAllProjectMetadata`) and every skill the bundled catalog scans
+ * (`includeAllBundledSkills`) — so a new draft configured nothing and still sees the whole
+ * project plus the whole bundled catalog. Nothing large is inlined: `agents-md` / `rule` items are
+ * handed over as bounded address + description references (`MekaProjectReference`) that the agent
+ * reads on demand, and skills ride the harness-native catalog (never this prompt).
+ *
+ * It deliberately carries no `workflow`: the injection layer enters combat only through
+ * `workflow === 'saga2-combat-development-v1'`, and no combat prompt fragments are attached
+ * either (they all assume that workflow's injected keys).
  */
 export function mekaDefaultRoleManifest(projectId: string): MekaRoleManifestFile {
   const id = mekaDefaultRoleId(projectId);
@@ -152,11 +202,23 @@ export function mekaDefaultRoleManifest(projectId: string): MekaRoleManifestFile
     projectId,
     name: id,
     displayName: MEKA_DEFAULT_ROLE_DISPLAY_NAME,
-    policyProviderRefs: [],
+    // Same host policies the retired general-development role declared.
+    policyProviderRefs: ['meka-host-risk-policy', 'meka-p4-boundary-policy'],
+    // Absorb the project's roleDefaults and select every enabled project metadata item instead
+    // of listing them here; the selections stay empty so the two sources cannot drift apart.
+    useProjectDefaults: true,
+    includeAllProjectMetadata: true,
+    // Third source: the skills under `resources/meka/skills/**` are *scanned* resources, so they
+    // are "scanned skills" too and belong to this role. Naming them here would drift the moment
+    // the package ships another one, hence the generic switch instead of an id list.
+    includeAllBundledSkills: true,
+    prompt: MEKA_DEFAULT_ROLE_PROMPT,
     rules: [],
     skills: [],
     promptFragments: [],
-    mcp: [],
+    // The MCP the retired general-development role pinned. Unlike the project-sourced entries
+    // above it cannot be re-derived from the project, so it is declared explicitly.
+    mcp: [{ id: 'meka-design', providerId: 'meka-design', enabled: true }],
     projectMetadataSelection: [],
   };
 }
@@ -301,7 +363,7 @@ export interface MekaProject {
   roles: readonly MekaRole[];
 }
 
-type BuiltinRoleId = 'general-development' | 'combat-development';
+type BuiltinRoleId = 'combat-development';
 
 interface ImportedBuiltinRoleManifest {
   id: string;
@@ -315,17 +377,30 @@ interface ImportedBuiltinRoleManifest {
 const BUILTIN_ROLE_FILES: readonly {
   id: BuiltinRoleId;
   manifest: ImportedBuiltinRoleManifest;
-}[] = [
-  { id: 'general-development', manifest: generalDevelopmentRole },
-  { id: 'combat-development', manifest: combatDevelopmentRole },
-];
+}[] = [{ id: 'combat-development', manifest: combatDevelopmentRole }];
 
+/**
+ * Retired built-in role ids whose replacement is a fixed role id, so the mapping is
+ * project-independent. Ids that must be rebound to the *session's own* project default role do
+ * not belong here — see {@link RETIRED_BUILTIN_MEKA_DEFAULT_ROLE_ALIASES}.
+ */
 export const RETIRED_BUILTIN_MEKA_ROLE_MAPPINGS = [
   ['combat-config', 'combat-development'],
   ['combat-debug', 'combat-development'],
-  ['system-development', 'general-development'],
-  ['system-overview', 'general-development'],
-  ['system-debug', 'general-development'],
+] as const;
+
+/**
+ * Retired built-in role ids that used to sit next to the shared default role and are now folded
+ * into it. Their replacement id is `<projectId>-default-role`, which depends on the session's
+ * project and therefore cannot be expressed as a `[retiredId, replacementId]` pair;
+ * `seedBuiltinMekaProjects` rebinds them with a dedicated statement derived from
+ * `meka_project_id` instead.
+ */
+export const RETIRED_BUILTIN_MEKA_DEFAULT_ROLE_ALIASES = [
+  'general-development',
+  'system-development',
+  'system-overview',
+  'system-debug',
 ] as const;
 
 const BUILTIN_MEKA_ROLES: readonly MekaRole[] = [
@@ -384,8 +459,9 @@ export const BUILTIN_MEKA_PROJECTS: readonly MekaProject[] = [
  * databases upgraded from an older Meka build see the same bundled catalog.
  *
  * It also converges the shared built-in default role for *every* registered project,
- * including user-created ones, so the "no injection" baseline exists in projects that
- * predate the feature.
+ * including user-created ones, so the factory-inclusive default role exists in projects that
+ * predate the feature. Retired built-in role rows are re-pointed at that default role before
+ * they are deleted, so no session loses its role binding to `ON DELETE SET NULL`.
  */
 export function seedBuiltinMekaProjects(db: Database.Database, now = Date.now()): void {
   const upsertProject = db.prepare(`
@@ -423,12 +499,47 @@ export function seedBuiltinMekaProjects(db: Database.Database, now = Date.now())
     SET meka_project_id = 'saga2'
     WHERE workspace_kind = 'meka' AND meka_project_id IS NULL
   `);
+  // Load-bearing: `backfillSessions` runs before the retirement loop in this transaction, so a
+  // Meka session can no longer have a NULL project id and the `OR meka_project_id IS NULL` branch
+  // is currently unreachable. It stays so that a path which skips the seeding cannot widen the
+  // blast radius. Project-derived replacements do not come through here at all — see
+  // `rebindRetiredSessionToDefaultRole` below.
   const migrateRetiredSessionRole = db.prepare(`
     UPDATE sessions
     SET meka_role_id = ?
     WHERE meka_role_id = ?
       AND workspace_kind = 'meka'
       AND (meka_project_id = 'saga2' OR meka_project_id IS NULL)
+  `);
+  // Derived from `meka_project_id` rather than a parameter: the replacement id *is*
+  // `mekaDefaultRoleId(session.meka_project_id)`, so it must stay in step with
+  // MEKA_DEFAULT_ROLE_ID_SUFFIX. `meka_project_id IS NOT NULL` is required both to keep the
+  // concatenation meaningful and to leave sessions the backfill below did not touch alone.
+  //
+  // The `IN (SELECT id FROM meka_projects)` guard is load-bearing: the target
+  // `<projectId>-default-role` row only exists for **registered** projects, and
+  // `sessions.meka_project_id` has no foreign key — a session may legitimately survive the
+  // removal of its project registration (`migrationReplay.test.ts` pins that "project
+  // registration can be dropped while Meka session history is kept"). Without the guard such
+  // an orphan session would be rebound to a role row that does not exist, the UPDATE would
+  // violate `sessions.meka_role_id → meka_roles(id)`, and the failure would surface while the
+  // whole `seedBuiltinMekaProjects` transaction is being applied — i.e. `localDb/index.ts`
+  // would fail closed and **the application would not start at all**. With the guard, such a
+  // session keeps its retired role id for one statement longer: if that row is the bundled
+  // `saga2` one — the only kind `deleteRetiredBuiltinRole` below covers — it is then set to NULL
+  // by `ON DELETE SET NULL`, which is exactly the existing semantics of deleting a project or a
+  // role; a residual non-`saga2` alias row is not cleaned up at all (an accepted boundary recorded
+  // in `docs/migrations/xdmaker-meka-to-cindy.md` §11.26), so that session keeps a role whose
+  // manifest is gone and fails on its own at cold start instead of taking startup down. Sessions
+  // of registered projects (bundled `saga2` and user-created ones) always match the subquery, so
+  // their behavior is unchanged.
+  const rebindRetiredSessionToDefaultRole = db.prepare(`
+    UPDATE sessions
+    SET meka_role_id = meka_project_id || '${MEKA_DEFAULT_ROLE_ID_SUFFIX}'
+    WHERE meka_role_id = ?
+      AND workspace_kind = 'meka'
+      AND meka_project_id IS NOT NULL
+      AND meka_project_id IN (SELECT id FROM meka_projects)
   `);
   const deleteRetiredBuiltinRole = db.prepare(`
     DELETE FROM meka_roles
@@ -472,6 +583,14 @@ export function seedBuiltinMekaProjects(db: Database.Database, now = Date.now())
       ensureDefaultRole.run(...mekaDefaultRoleUpsertParams(projectId, now));
     }
     backfillSessions.run();
+    // Order is load-bearing: the default role rows above must exist (FK), and every unbound
+    // Meka session must already carry a project id before the rebind below — otherwise its role
+    // column would be cleared by `ON DELETE SET NULL` and the session would fail to cold-start
+    // with `is missing its persisted project binding`.
+    for (const retiredRoleId of RETIRED_BUILTIN_MEKA_DEFAULT_ROLE_ALIASES) {
+      rebindRetiredSessionToDefaultRole.run(retiredRoleId);
+      deleteRetiredBuiltinRole.run(retiredRoleId);
+    }
     for (const [retiredRoleId, replacementRoleId] of RETIRED_BUILTIN_MEKA_ROLE_MAPPINGS) {
       migrateRetiredSessionRole.run(replacementRoleId, retiredRoleId);
       deleteRetiredBuiltinRole.run(retiredRoleId);

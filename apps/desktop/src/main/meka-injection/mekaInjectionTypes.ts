@@ -78,6 +78,7 @@ export type MekaPromptSegmentId =
   | 'meka.combat.target'
   | 'meka.combat.execution-authorization'
   | 'meka.role-context'
+  | 'meka.project-references'
   | 'meka.role-prompt'
   | 'meka.combat.server-worker';
 
@@ -87,6 +88,8 @@ export type MekaPromptSegmentId =
  * 数值是契约而不是实现细节：它对应重构前 7 次 `prependPromptSection` 倒推出的现状顺序，
  * 重构后必须逐字节一致（基线用例的 order 断言钉住）。**新增段落只能插空档（如 15/25/35），
  * 不得重排既有段落。**`meka.combat.scope` 占 35：那是 30 与 40 之间唯一的空档。
+ * `meka.project-references` 占 65：那是 60（角色上下文）与 70（角色 prompt）之间唯一的空档，
+ * 用来放项目参考文件的「作用范围 + 绝对路径 + 描述」清单（正文按需读取，不内联）。
  */
 export const MEKA_PROMPT_SEGMENT_ORDER: Readonly<Record<MekaPromptSegmentId, number>> = {
   'meka.combat.controller-skill': 10,
@@ -96,6 +99,7 @@ export const MEKA_PROMPT_SEGMENT_ORDER: Readonly<Record<MekaPromptSegmentId, num
   'meka.combat.target': 40,
   'meka.combat.execution-authorization': 50,
   'meka.role-context': 60,
+  'meka.project-references': 65,
   'meka.role-prompt': 70,
   'meka.combat.server-worker': 80,
 };

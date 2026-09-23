@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import {
   MEKA_GENERAL_DISCIPLINE,
+  RETIRED_BUILTIN_MEKA_DEFAULT_ROLE_ALIASES,
   RETIRED_BUILTIN_MEKA_ROLE_MAPPINGS,
   parseMekaEditableMetadata,
   type MekaProjectFile,
@@ -371,6 +372,9 @@ export function normalizeMekaRoleManifest(
     ...(typeof input.includeAllProjectMetadata === 'boolean'
       ? { includeAllProjectMetadata: input.includeAllProjectMetadata }
       : {}),
+    ...(typeof input.includeAllBundledSkills === 'boolean'
+      ? { includeAllBundledSkills: input.includeAllBundledSkills }
+      : {}),
     ...(excludeDefaults ? { excludeDefaults } : {}),
   };
 }
@@ -516,15 +520,34 @@ export async function readBundledRoleManifests(projectId: string): Promise<MekaR
   return manifests;
 }
 
+/**
+ * 已退役内置角色的 id 集合：包内已不再随附这些角色的清单文件，但 saga2 的项目文件
+ * （`builtinRoles`）里可能还留着旧版本写入的快照。快照不被剔除的话，它会被当作"项目自有角色"
+ * 重新物化出一个幽灵内置角色（并与新的默认角色重复），解析时也会走到
+ * `readBuiltinRoleManifest` 上因包内无该文件而硬失败。
+ *
+ * 取值是两张表的并集：`RETIRED_BUILTIN_MEKA_ROLE_MAPPINGS` 只覆盖"replacement 是固定角色 id"
+ * 的退役角色；被折叠进 `<projectId>-default-role` 的别名（general-development / system-*）
+ * 依赖会话所属项目，无法写成 `[旧 id, 新 id]` 二元组，单独记在
+ * `RETIRED_BUILTIN_MEKA_DEFAULT_ROLE_ALIASES`。只取左值（旧 id）；右值（如
+ * `combat-development`）仍是包内在役角色，绝不能被剔除。
+ */
+const RETIRED_BUILTIN_ROLE_IDS: ReadonlySet<string> = new Set<string>([
+  ...RETIRED_BUILTIN_MEKA_ROLE_MAPPINGS.map(([roleId]) => roleId),
+  ...RETIRED_BUILTIN_MEKA_DEFAULT_ROLE_ALIASES,
+]);
+
 function mergeBundledRoleFallbacks(
   projectFile: MekaProjectFile,
   bundledRoles: readonly MekaRoleManifestFile[],
 ): MekaProjectFile {
   if (bundledRoles.length === 0) return projectFile;
+  // 过滤刻意保持 saga2 作用域，不收窄也不放宽：包内角色清单的 projectId 只有 saga2，
+  // 内置快照也只可能写进它的项目文件。若放宽为项目无关，用户手工编辑或更早版本遗留的同名
+  // 快照会被从**有效配置**里滤掉，而 `saveProjectConfig` 随后会写盘 ⇒ 静默永久删除用户角色
+  // 数据（与 `docs/migrations/xdmaker-meka-to-cindy.md` 的"不删存量可被用户编辑的角色"裁决冲突）。
   const retiredRoleIds =
-    projectFile.projectId === 'saga2'
-      ? new Set(RETIRED_BUILTIN_MEKA_ROLE_MAPPINGS.map(([roleId]) => roleId))
-      : new Set<string>();
+    projectFile.projectId === 'saga2' ? RETIRED_BUILTIN_ROLE_IDS : new Set<string>();
   const retainedProjectRoles = (projectFile.builtinRoles ?? []).filter(
     (role) => !retiredRoleIds.has(role.id),
   );

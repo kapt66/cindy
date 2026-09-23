@@ -519,6 +519,7 @@ import {
 } from '../maker-host/mcpr-codex-capability.js';
 import { buildMekaRemoteCodexBundle } from '../maker-host/meka-remote-codex-bundle.js';
 import { parseMcprRemoteHostId } from '../../shared/meka-router.js';
+import { mekaDefaultRoleId } from '../../shared/meka-projects.js';
 import { hasMekaSkillSnapshotEntries } from '../meka-projects/skillSnapshot.js';
 import {
   recordCombatServerCapabilityAutoBridge,
@@ -11127,8 +11128,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         workspaceKind: leadRow.workspaceKind,
         workingDir: leadRow.workingDir,
         mekaProjectId: leadRow.mekaProjectId ?? null,
+        // 无角色绑定的 lead 兜底到**它自己项目**的共享默认角色：写死 saga2 / 通用开发会在
+        // 「通用开发」退役后让这类 lead 派不出 worker（旧会话 + 旧配置都可能没有角色列）。
         mekaRoleId:
-          leadRow.mekaRoleId ?? (leadRow.mekaProjectId === 'saga2' ? 'general-development' : null),
+          leadRow.mekaRoleId ??
+          (leadRow.mekaProjectId ? mekaDefaultRoleId(leadRow.mekaProjectId) : null),
         model: leadRow.model,
         effort: leadRow.effort,
         permissionMode: leadRow.permissionMode,

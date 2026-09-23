@@ -1008,14 +1008,16 @@ describe('combat workflow host policy', () => {
     ).toBe(true);
     expect(
       isCombatWorkflowPolicyActive({
-        vendorOptions: vendor({ mekaRoleId: 'general-development', mekaWorkflow: undefined }),
+        // 非战斗角色（共享默认角色）+ 无 workflow ⇒ 策略不激活。
+        vendorOptions: vendor({ mekaRoleId: 'saga2-default-role', mekaWorkflow: undefined }),
       }),
     ).toBe(false);
     expect(
       isCombatWorkflowPolicyActive({
         vendorOptions: vendor({
           mekaWorkflow: undefined,
-          mekaRoleDisplayName: '通用开发',
+          // 诱饵：非战斗角色的显示名不得让策略激活（激活只看 workflow 或 combat-development 角色 id）。
+          mekaRoleDisplayName: '默认角色',
         }),
       }),
     ).toBe(true);

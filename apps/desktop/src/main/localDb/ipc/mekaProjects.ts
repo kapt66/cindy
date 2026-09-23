@@ -25,6 +25,10 @@ import {
   saveProjectConfig,
   sortImportedRoleManifests,
 } from '../../meka-projects/projectConfig.js';
+import {
+  listBundledSkills,
+  stripSelectAllDerivedEntries,
+} from '../../meka-projects/runtimeConfig.js';
 import { getMekaP4SettingsService } from '../../meka-settings/ipc.js';
 import { createLogger } from '../../logger.js';
 import { assertTrustedAppRendererEvent } from '../../security/trustedAppRenderer.js';
@@ -469,7 +473,24 @@ async function createProject(input: unknown): Promise<MekaProject> {
             sortOrder,
           });
           createdRoleIds.push(createdRole.id);
-          clonedRoles.push(cloneMekaRoleManifestForProject(sourceRole, id, createdRole.id));
+          // 写进新项目文件的那份快照必须与 `createMekaRole` 落盘的用户数据副本同口径：
+          // `createMekaRole` 走自己的 IO 包装 `stripSelectAllDerivedForSave` 已经把 switch 派生项剥掉，
+          // 若这里仍用未剥的 `sourceRole` 克隆，新项目的 `builtinRoles` 就成了第二份未剥离副本。
+          // 这里**不能**复用那个包装：它需要读盘（而此刻新项目配置尚不可读），只用同一个纯函数，
+          // 并以**当前作用域的 `file`**（循环之后会被 `{...file, builtinRoles: clonedRoles}` 覆盖、
+          // 并原样落盘成新项目配置的那份）作为 projectFile —— 它的 `roleDefaults` / `metadata`
+          // 正是新项目将继承的项目默认值。
+          const catalog =
+            sourceRole.includeAllBundledSkills === true
+              ? await listBundledSkills()
+              : new Map<string, string>();
+          clonedRoles.push(
+            cloneMekaRoleManifestForProject(
+              stripSelectAllDerivedEntries(sourceRole, file, catalog),
+              id,
+              createdRole.id,
+            ),
+          );
         }
         file = { ...file, builtinRoles: clonedRoles };
       }

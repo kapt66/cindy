@@ -1,10 +1,19 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
+import { app } from 'electron';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { MekaRoleMcpEntry } from '../../../shared/meka-projects.js';
+import {
+  BUILTIN_MEKA_PROJECTS,
+  MEKA_DEFAULT_ROLE_DISPLAY_NAME,
+  type MekaRoleMcpEntry,
+  mekaDefaultRoleId,
+} from '../../../shared/meka-projects.js';
+import type { DbClient } from '../../localDb/client/DbClient.js';
+import { clearCurrentDbClient, setCurrentDbClient } from '../../localDb/client/current.js';
 import type { MekaRuntimeConfig } from '../../meka-projects/runtimeConfig.js';
 import {
   readCombatVendorOptions,
@@ -47,6 +56,46 @@ vi.mock('../../maker-host/mcpr-claude-capability.js', () => ({
   probeRemoteClaudeCapability: vi.fn(async () => undefined),
 }));
 
+/**
+ * 真实 `resolveMekaRuntimeConfig` 用例（历史四角色兜底）用的 DB 替身。
+ *
+ * 关键点：替身的行集合**完全由包内角色注册表派生** —— `seedBuiltinMekaProjects` 写进
+ * `meka_roles` / `meka_projects` 的就是 `BUILTIN_MEKA_PROJECTS`。因此「兜底目标角色已从包里删除」
+ * 会真的走成 `Meka role not found`，不会被替身掩盖成通过（这正是 fake resolver 用例的盲区）。
+ *
+ * 用 `setCurrentDbClient` 而不是 mock 模块：只有显式注册它的那条用例里 DB 才是 ready，
+ * 其余用例仍按真实语义拿 `DbClient not ready`。
+ */
+function realRuntimeDbClient(): DbClient {
+  return {
+    queryOne: async (sql: string, params: unknown[]) => {
+      if (sql.includes('FROM meka_projects')) {
+        const project = BUILTIN_MEKA_PROJECTS.find(
+          (candidate) => candidate.id === String(params[0]),
+        );
+        return project ? { id: project.id, path: project.path, is_builtin: 1 } : undefined;
+      }
+      if (sql.includes('FROM meka_roles')) {
+        const roleId = String(params[0]);
+        const project = BUILTIN_MEKA_PROJECTS.find((candidate) =>
+          candidate.roles.some((role) => role.id === roleId),
+        );
+        if (!project) return undefined;
+        return {
+          id: roleId,
+          project_id: project.id,
+          is_builtin: 1,
+          file_path: `meka/roles/${roleId}.json`,
+        };
+      }
+      return undefined;
+    },
+  } as unknown as DbClient;
+}
+
+/** `apps/desktop` 的绝对路径：与调用方 cwd 无关（包内资源就在它下面）。 */
+const DESKTOP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
+
 type ApplyDeps = NonNullable<Parameters<typeof applyMekaRuntimeConfigImpl>[1]>;
 
 function applyMekaRuntimeConfig(opts: MakerSessionCreateOpts, deps: ApplyDeps = {}) {
@@ -75,7 +124,7 @@ function baseOpts(overrides: Partial<MakerSessionCreateOpts> = {}): MakerSession
     workingDir: 'C:/Workspace/saga2/saga2_project',
     workspaceKind: 'meka',
     mekaProjectId: 'saga2',
-    mekaRoleId: 'general-development',
+    mekaRoleId: 'saga2-default-role',
     ...overrides,
   };
 }
@@ -137,8 +186,8 @@ function saga2ProjectPaths(workingDir: string) {
 function runtime(overrides: Partial<MekaRuntimeConfig> = {}): MekaRuntimeConfig {
   return {
     projectId: 'saga2',
-    roleId: 'general-development',
-    roleDisplayName: '通用开发',
+    roleId: 'saga2-default-role',
+    roleDisplayName: '默认角色',
     workflowRecoveredFromRole: false,
     promptText: 'SAGA2 server code lives behind MCPRouter as saga2-server.',
     skills: [
@@ -158,6 +207,8 @@ function runtime(overrides: Partial<MekaRuntimeConfig> = {}): MekaRuntimeConfig 
       { id: 'local-http', transport: 'http', url: 'https://example.invalid/mcp', enabled: true },
     ],
     policyProviderRefs: [],
+    // 新必填字段：空集合 ⇒ `meka.project-references` 段整段不渲染，本文件的既有断言不变。
+    projectReferences: [],
     ...overrides,
   };
 }
@@ -1329,8 +1380,8 @@ describe('applyMekaRuntimeConfig', () => {
       combatEnvironmentReady: null,
     });
     expect(opts.userPrompt).toContain('[MEKA_ROLE_CONTEXT]');
-    expect(opts.userPrompt).toContain('roleId: general-development');
-    expect(opts.userPrompt).toContain('displayName: 通用开发');
+    expect(opts.userPrompt).toContain('roleId: saga2-default-role');
+    expect(opts.userPrompt).toContain('displayName: 默认角色');
     expect(opts.userPrompt).toContain(
       'SAGA2 server code lives behind MCPRouter as saga2-server.\n\nUSER PROMPT',
     );
@@ -1342,7 +1393,7 @@ describe('applyMekaRuntimeConfig', () => {
       orcaRole: 'lead',
       source: 'meka',
       mekaProjectId: 'saga2',
-      mekaRoleId: 'general-development',
+      mekaRoleId: 'saga2-default-role',
       mekaMcpProviderIds: ['mcp-router', 'project-agent', 'meka-design'],
       mekaMcpInlineConfigs: [
         { id: 'local-http', transport: 'http', url: 'https://example.invalid/mcp' },
@@ -1382,6 +1433,33 @@ describe('applyMekaRuntimeConfig', () => {
     expect(materialize).toHaveBeenCalledWith(opts.id, [platformSkill()]);
     expect(opts.userPrompt).not.toContain('[MEKA_PLATFORM_CAPABILITIES]');
     expect(opts.userPrompt).not.toContain('mcp_router.list_remote_directory');
+  });
+
+  it('mounts the platform skills exactly once when a role already selects the same id', async () => {
+    const opts = baseOpts({ userPrompt: 'USER PROMPT' });
+    const materialize = vi.fn(async () => null);
+    // 角色自己扫出来的同名 skill（`includeAllBundledSkills` 下 `platform-capabilities` 必然在其中）。
+    const roleOwnedPlatformSkill = {
+      ...platformSkill(),
+      name: 'role-owned platform-capabilities',
+      content: '# Role-owned copy',
+      sourceDirectory: 'C:/skills/role-owned-platform-capabilities',
+      sourceEntryPath: 'C:/skills/role-owned-platform-capabilities/SKILL.md',
+    };
+
+    const result = await applyMekaRuntimeConfig(opts, {
+      resolveRuntimeConfig: vi.fn(async () =>
+        runtime({ skills: [roleOwnedPlatformSkill], mcp: [] }),
+      ),
+      resolvePlatformSkills: vi.fn(async () => [platformSkill()]),
+      prepareRuntimeMcp: vi.fn(() => ({ providerIds: [], inlineConfigs: [] })),
+      materializeSkillSnapshot: materialize,
+    });
+
+    // `mergePlatformSkills` 按 id 去重且平台基线版本胜出：挂载一次，不是两次。
+    expect(result.skillsCount).toBe(1);
+    expect(result.platformSkillsCount).toBe(1);
+    expect(materialize).toHaveBeenCalledWith(opts.id, [platformSkill()]);
   });
 
   it('does not inject the combat startup gate prompt for a combat role', async () => {
@@ -1737,11 +1815,15 @@ describe('applyMekaRuntimeConfig', () => {
     expect(opts.nativeSkillRevision).toBeUndefined();
   });
 
+  // 兜底目标：历史四角色列（planner/artist/programmer/tester）没有对应角色行，派生目标必须是
+  // **该项目自己的共享默认角色**（`mekaDefaultRoleId('saga2')` === `saga2-default-role`）。
+  // 旧目标 `general-development` 已随「通用开发」退役（`RETIRED_BUILTIN_MEKA_DEFAULT_ROLE_ALIASES`），
+  // 包内已无该角色的清单文件，继续指向它会让旧会话冷启动抛 `Meka role not found`。
   it.each([
-    ['planner', 'general-development'],
-    ['artist', 'general-development'],
-    ['tester', 'general-development'],
-    ['programmer', 'general-development'],
+    ['planner', 'saga2-default-role'],
+    ['artist', 'saga2-default-role'],
+    ['tester', 'saga2-default-role'],
+    ['programmer', 'saga2-default-role'],
   ] as const)(
     'hydrates a persisted legacy %s binding as %s',
     async (legacyRole, expectedRoleId) => {
@@ -1778,6 +1860,60 @@ describe('applyMekaRuntimeConfig', () => {
       });
     },
   );
+
+  // 上面那组用的是 fake resolver：它只证明「派生出了哪个 id」，不证明那个 id 在生产里能解析出来
+  // （「通用开发」被删时正是这种静默回归 —— fake resolver 照样返回，生产抛 `Meka role not found`）。
+  // 这条用例用**真实 `resolveMekaRuntimeConfig`**（真实包内资源 + 真实内置角色注册表派生的 DB 行）
+  // 走完整条兜底路径：一旦兜底目标失效，它会以解析失败的方式变红。
+  it('resolves the legacy-role fallback target through the real runtime resolver', async () => {
+    const opts = baseOpts({
+      id: 'legacy-session-real',
+      workspaceKind: undefined,
+      mekaProjectId: null,
+      mekaRoleId: null,
+      mekaRole: null,
+    });
+    const prepareRuntimeMcp = vi.fn(() => ({ providerIds: [], inlineConfigs: [] }));
+    const materializeSkillSnapshot = vi.fn(async () => null);
+    const dbClient = realRuntimeDbClient();
+    const originalGetAppPath = app.getAppPath;
+    // 该用例刻意**不注入** `resolveRuntimeConfig`：走 `resolveMekaRuntimeConfig` 生产实现。
+    // 真实解析要读包内资源（`resources/meka/**`），而 `resourcePaths.ts` 用 `app.getAppPath()`
+    // 定位它（vitest 的 electron 替身返回 `process.cwd()`，依赖调用方 cwd）。这里临时钉到
+    // 由本测试文件位置推导的 `apps/desktop`，让该用例与 cwd 无关。
+    (app as { getAppPath: () => string }).getAppPath = () => DESKTOP_ROOT;
+    setCurrentDbClient(dbClient, 'test-user');
+    try {
+      const result = await applyMekaRuntimeConfig(opts, {
+        readPersistedSession: vi.fn(async () => ({
+          workspaceKind: 'meka' as const,
+          mekaProjectId: 'saga2',
+          mekaRoleId: null,
+          // `vi.fn` 不参与上下文类型推断，字面量会被拓宽成 `string`；这里钉死为联合类型成员。
+          mekaRole: 'planner' as const,
+        })),
+        prepareRuntimeMcp,
+        materializeSkillSnapshot,
+      });
+
+      expect(result.didApply).toBe(true);
+      // 兜底目标必须真实存在于该项目的角色列表里 —— 这里由真实解析成功本身证明。
+      expect(opts).toMatchObject({
+        workspaceKind: 'meka',
+        mekaProjectId: 'saga2',
+        mekaRoleId: mekaDefaultRoleId('saga2'),
+      });
+      expect(MEKA_DEFAULT_ROLE_DISPLAY_NAME).toBe('默认角色');
+      expect(opts.userPrompt).toContain(`roleId: ${mekaDefaultRoleId('saga2')}`);
+      expect(opts.userPrompt).toContain(`displayName: ${MEKA_DEFAULT_ROLE_DISPLAY_NAME}`);
+      // 默认角色出厂即全量：项目 roleDefaults 的 promptFramework 会进角色段（这也证明真的解析了
+      // 该角色的清单，而不是拿到了一个空壳）。
+      expect(opts.userPrompt).toContain('# Meka target framework');
+    } finally {
+      (app as { getAppPath: () => string }).getAppPath = originalGetAppPath;
+      clearCurrentDbClient(dbClient);
+    }
+  });
 
   it('does not duplicate prompt injection when the same create opts are bootstrapped twice', async () => {
     const opts = baseOpts({ userPrompt: 'USER PROMPT' });

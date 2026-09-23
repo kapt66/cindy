@@ -14,6 +14,7 @@ import {
   normalizeMekaProjectFile,
   normalizeMekaRoleManifest,
   readBuiltinRoleManifest,
+  readBundledRoleManifests,
   readEffectiveProjectConfig,
   readProjectConfigAtRoot,
   readProjectConfigState,
@@ -138,7 +139,9 @@ describe('Meka project.json boundary', () => {
     expect(loaded?.basic.displayName).toBe('Project-owned SAGA2');
     expect(loaded?.basic.path).toBe(path.resolve(root));
     expect(loaded?.metadata).toEqual([]);
-    expect(loaded?.builtinRoles).toHaveLength(2);
+    // The packaged catalog now holds a single role: the retired `general-development` bundle file
+    // is gone, so no project-file role list can fall back to it any more.
+    expect(loaded?.builtinRoles?.map((role) => role.id)).toEqual(['combat-development']);
     const persisted = JSON.parse(
       await readFile(path.join(configDirectory, 'project.json'), 'utf8'),
     ) as MekaProjectFile;
@@ -179,12 +182,20 @@ describe('Meka project.json boundary', () => {
       appIsPackaged: false,
     };
     const bundled = await readEffectiveProjectConfig(locator);
+    // The project file of an older build can still carry snapshots of roles that are retired now.
+    // They must be filtered out of the *effective* configuration instead of being re-materialized
+    // as ghost built-in roles: `general-development` has no bundled manifest any more, and
+    // `combat-config` is a retired id with a fixed replacement.
     const overriddenRole = {
-      ...bundled!.builtinRoles!.find((role) => role.id === 'general-development')!,
-      displayName: 'Project-owned development',
-      includeAllProjectMetadata: undefined,
+      ...bundled!.builtinRoles!.find((role) => role.id === 'combat-development')!,
+      displayName: 'Project-owned combat',
     };
-    const retiredRole = roleManifest('combat-config', 'saga2');
+    const retiredMappingRole = roleManifest('combat-config', 'saga2');
+    const retiredDefaultRoleAlias = {
+      ...roleManifest('general-development', 'saga2'),
+      displayName: 'Project-owned development',
+      prompt: '# Project-owned development',
+    };
     const customRole = roleManifest('custom-role', 'saga2');
     const configPath = path.join(root, '.meka', 'project.json');
     await mkdir(path.dirname(configPath), { recursive: true });
@@ -192,7 +203,7 @@ describe('Meka project.json boundary', () => {
       configPath,
       `${JSON.stringify({
         ...bundled,
-        builtinRoles: [overriddenRole, retiredRole, customRole],
+        builtinRoles: [overriddenRole, retiredMappingRole, retiredDefaultRoleAlias, customRole],
       })}\n`,
       'utf8',
     );
@@ -201,18 +212,77 @@ describe('Meka project.json boundary', () => {
 
     expect(loaded?.builtinRoles?.map((role) => role.id)).toEqual([
       'combat-development',
+      'custom-role',
+    ]);
+    // A project-owned snapshot of a still-bundled role wins over the packaged manifest.
+    expect(
+      loaded?.builtinRoles?.find((role) => role.id === 'combat-development')?.displayName,
+    ).toBe('Project-owned combat');
+    // The role the user actually owns outside the bundled catalog is preserved as it was written.
+    expect(loaded?.builtinRoles?.find((role) => role.id === 'custom-role')).toMatchObject(
+      customRole,
+    );
+    // Reading never rewrites the file: the retired snapshots stay on disk until an explicit save.
+    const persisted = JSON.parse(await readFile(configPath, 'utf8')) as MekaProjectFile;
+    expect(persisted.builtinRoles?.map((role) => role.id)).toEqual([
+      'combat-development',
+      'combat-config',
       'general-development',
       'custom-role',
     ]);
-    expect(
-      loaded?.builtinRoles?.find((role) => role.id === 'general-development')?.displayName,
-    ).toBe('Project-owned development');
-    expect(
-      loaded?.builtinRoles?.find((role) => role.id === 'general-development')
-        ?.includeAllProjectMetadata,
-    ).toBe(false);
+  });
+
+  it('leaves retired built-in role snapshots alone in a non-SAGA2 project, including on save', async () => {
+    const root = await tempRoot();
+    const locator = {
+      projectId: 'portable-project',
+      isBuiltin: false,
+      projectRoot: root,
+      appIsPackaged: false,
+    };
+    const retiredDefaultRoleAlias = {
+      ...roleManifest('general-development', 'portable-project'),
+      displayName: 'Imported development',
+      prompt: '# Imported development',
+    };
+    const retiredMappingRole = roleManifest('combat-config', 'portable-project');
+    const configPath = path.join(root, '.meka', 'project.json');
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(
+      configPath,
+      `${JSON.stringify({
+        ...projectFile('portable-project', root),
+        builtinRoles: [retiredDefaultRoleAlias, retiredMappingRole],
+      })}\n`,
+      'utf8',
+    );
+
+    const loaded = await readEffectiveProjectConfig(locator);
+
+    // The retirement filter is deliberately scoped to the bundled project (`saga2`). Outside it
+    // these ids may be user data (a hand-written file, an imported project), so neither reading
+    // nor saving may drop them — silent deletion is the data-loss path the scope guard prevents.
+    expect(loaded?.builtinRoles?.map((role) => role.id)).toEqual([
+      'general-development',
+      'combat-config',
+    ]);
+    expect(loaded?.builtinRoles?.[0]).toMatchObject({
+      projectId: 'portable-project',
+      displayName: 'Imported development',
+      prompt: '# Imported development',
+    });
+
+    await saveProjectConfig(locator, {
+      ...loaded!,
+      basic: { ...loaded!.basic, displayName: 'Renamed portable' },
+    });
+
     const persisted = JSON.parse(await readFile(configPath, 'utf8')) as MekaProjectFile;
-    expect(persisted.builtinRoles).toHaveLength(3);
+    expect(persisted.basic.displayName).toBe('Renamed portable');
+    expect(persisted.builtinRoles?.map((role) => role.id)).toEqual([
+      'general-development',
+      'combat-config',
+    ]);
   });
 
   it.each(['', path.resolve(path.sep, 'previous-checkout')])(
@@ -489,7 +559,7 @@ describe('Meka project.json boundary', () => {
       appIsPackaged: false,
     };
     const base = await readEffectiveProjectConfig(locator);
-    expect(base?.builtinRoles).toHaveLength(2);
+    expect(base?.builtinRoles?.map((role) => role.id)).toEqual(['combat-development']);
     const configPath = path.join(root, '.meka', 'project.json');
     await mkdir(path.dirname(configPath), { recursive: true });
     await writeFile(
@@ -506,7 +576,7 @@ describe('Meka project.json boundary', () => {
 
     expect(state.source).toBe('project');
     expect(state.file?.projectId).toBe('saga2');
-    expect(state.file?.builtinRoles).toHaveLength(2);
+    expect(state.file?.builtinRoles?.map((role) => role.id)).toEqual(['combat-development']);
     expect(state.file?.builtinRoles?.every((role) => role.projectId === 'saga2')).toBe(true);
     const persisted = JSON.parse(await readFile(configPath, 'utf8')) as MekaProjectFile;
     expect(persisted.projectId).toBe('source-project');
@@ -603,5 +673,26 @@ describe('Meka role manifest boundary', () => {
       projectId: 'saga2',
       displayName: '战斗开发',
     });
+  });
+
+  it('ships exactly one bundled role: the retired general-development file is gone', async () => {
+    // The packaged catalog is the fallback for a saga2 project file, so a lingering retired role
+    // file would silently re-materialize the role the default role replaced.
+    const bundled = await readBundledRoleManifests('saga2');
+    expect(bundled.map((role) => role.id)).toEqual(['combat-development']);
+    expect(bundled[0]).toMatchObject({
+      projectId: 'saga2',
+      workflow: 'saga2-combat-development-v1',
+    });
+
+    // The removed file must not be readable through the generic builtin manifest reader: the
+    // default-role row points at `meka/roles/saga2-default-role.json`, which never existed, and
+    // every consumer relies on this path failing loudly rather than resolving a stale manifest.
+    await expect(readBuiltinRoleManifest('general-development', 'saga2')).rejects.toThrow(
+      /builtin Meka role general-development not found/,
+    );
+    await expect(readBuiltinRoleManifest('saga2-default-role', 'saga2')).rejects.toThrow(
+      /builtin Meka role saga2-default-role not found/,
+    );
   });
 });

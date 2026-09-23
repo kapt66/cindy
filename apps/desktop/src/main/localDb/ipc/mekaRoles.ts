@@ -5,7 +5,14 @@ import path from 'node:path';
 import { createId } from '@paralleldrive/cuid2';
 import { app, ipcMain } from 'electron';
 
-import type { MekaRole, MekaRoleManifestFile } from '../../../shared/meka-projects.js';
+import type {
+  MekaProjectFile,
+  MekaProjectMetadataSelection,
+  MekaRole,
+  MekaRoleManifestFile,
+  MekaRoleSkillEntry,
+  MekaRoleSkillSelection,
+} from '../../../shared/meka-projects.js';
 import {
   MEKA_DEFAULT_ROLE_UPSERT_SQL,
   mekaDefaultRoleId,
@@ -13,6 +20,7 @@ import {
   mekaDefaultRoleUpsertParams,
 } from '../../../shared/meka-projects.js';
 import { isIpcError } from '../../../shared/ipc-errors.js';
+import { createLogger } from '../../logger.js';
 import {
   createCustomRoleManifestExclusive,
   normalizeMekaRoleManifest,
@@ -23,6 +31,13 @@ import {
   saveProjectConfig,
   writeCustomRoleManifest,
 } from '../../meka-projects/projectConfig.js';
+import {
+  listBundledSkills,
+  mergeMekaProjectRoleDefaults,
+  resolveBundledSkillSelections,
+  resolveRoleProjectMetadataSelections,
+  stripSelectAllDerivedEntries,
+} from '../../meka-projects/runtimeConfig.js';
 import { getMekaP4SettingsService } from '../../meka-settings/ipc.js';
 import { assertTrustedAppRendererEvent } from '../../security/trustedAppRenderer.js';
 import { requireObject, requireString, throwIpcError } from '../../utils/ipcValidate.js';
@@ -33,6 +48,8 @@ export const MEKA_ROLE_CREATE = 'meka-role:create';
 export const MEKA_ROLE_UPDATE = 'meka-role:update';
 export const MEKA_ROLE_DELETE = 'meka-role:delete';
 export const MEKA_ROLE_READ_MANIFEST = 'meka-role:read-manifest';
+
+const log = createLogger('meka-roles');
 
 const SAFE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 
@@ -154,6 +171,239 @@ async function builtinProjectState(projectId: string) {
   });
 }
 
+/**
+ * Project configuration for a role's project, for both built-in and project-owned
+ * registrations. Deliberately best-effort instead of validating: it only feeds a read-only panel
+ * read, so an unavailable project row, path or configuration file returns `null` — and the caller
+ * falls back to the stored manifest — rather than failing the whole panel.
+ */
+async function projectFileForRole(projectId: string): Promise<MekaProjectFile | null> {
+  const project = await projectRow(projectId);
+  if (!project) return null;
+  if (project.is_builtin === 1) return (await builtinProjectState(projectId))?.file ?? null;
+  const configuredPath = project.path?.trim();
+  if (!configuredPath || !path.isAbsolute(configuredPath)) return null;
+  return (
+    await readProjectConfigState({
+      projectId,
+      isBuiltin: false,
+      projectRoot: path.resolve(configuredPath),
+      appIsPackaged: app.isPackaged,
+    })
+  ).file;
+}
+
+/**
+ * Per-list keys of the entries {@link expandRoleManifest} derived from the role's switches instead
+ * of from the manifest's own lists.
+ *
+ * **Display-only, never persisted.** `meka-role:read-manifest` attaches it to its result so the
+ * panel can tell a row it may not remove apart from one the role owns: a derived row is laid back
+ * down by the runtime on every resolve, so deleting it from the draft cannot stick and only the
+ * row's `enabled: false` checkbox is an exclusion the runtime honours. Nothing else may consume it.
+ * `normalizeMekaRoleManifest` (`meka-projects/projectConfig.ts`) rebuilds the manifest field by
+ * field, so even a payload that carries this field cannot write it to disk.
+ */
+interface MekaRoleDerivedEntryKeys {
+  rules: string[];
+  skills: string[];
+  mcp: string[];
+  metadata: string[];
+}
+
+/**
+ * A manifest as `read-manifest` returns it: the expanded lists plus their display-only derived keys.
+ */
+type ExpandedMekaRoleManifest = MekaRoleManifestFile & {
+  derivedEntryKeys?: MekaRoleDerivedEntryKeys;
+};
+
+/**
+ * Metadata key of `stripSelectAllDerivedEntries` / `resolveRoleProjectMetadataSelections`.
+ *
+ * **Must stay byte-identical to `metadataKey` in `meka-projects/runtimeConfig.ts`** (same field
+ * order, `\0` separator): the derived key sets below are computed by differencing that strip
+ * function's output, and a key with a different shape would silently report nothing as derived.
+ * The runtime keeps the helper private, so this is a minimal local copy rather than a second rule.
+ */
+function metadataSelectionKey(
+  selection: Pick<MekaProjectMetadataSelection, 'rootPath' | 'sourcePath' | 'itemType'>,
+): string {
+  return `${selection.rootPath ?? ''}\0${selection.sourcePath}\0${selection.itemType}`;
+}
+
+/**
+ * Skill key of `mergeSkills` / `skillSelectionKey` in `meka-projects/runtimeConfig.ts`
+ * (`isLegacySkill(entry) ? entry.id : entry.skillId`). Same constraint as
+ * {@link metadataSelectionKey}: a local copy that must stay in step with the strip pass.
+ */
+function skillSelectionKey(entry: MekaRoleSkillSelection | MekaRoleSkillEntry): string {
+  return 'path' in entry ? entry.id : entry.skillId;
+}
+
+/**
+ * Keys present in `expanded` whose entries `stripSelectAllDerivedEntries` removed.
+ *
+ * That strip keeps exactly the entries the three switches cannot re-derive — the author's own
+ * additions and the author's modifications (`enabled: false`) — so a key with **no survivor** is one
+ * the switches alone produced. Those are the entries the runtime lays back down on every resolve,
+ * which is what makes their "remove" button a no-op.
+ */
+function derivedEntryKeysOf(
+  expanded: MekaRoleManifestFile,
+  projectFile: MekaProjectFile,
+  catalog: ReadonlyMap<string, string>,
+): MekaRoleDerivedEntryKeys {
+  const stripped = stripSelectAllDerivedEntries(expanded, projectFile, catalog);
+  const keptRuleIds = new Set((stripped.rules ?? []).map((rule) => rule.id));
+  const keptSkillKeys = new Set(stripped.skills.map(skillSelectionKey));
+  const keptMcpIds = new Set(stripped.mcp.map((entry) => entry.id));
+  const keptMetadataKeys = new Set(
+    (stripped.projectMetadataSelection ?? []).map(metadataSelectionKey),
+  );
+  return {
+    rules: (expanded.rules ?? [])
+      .filter((rule) => !keptRuleIds.has(rule.id))
+      .map((rule) => rule.id),
+    skills: expanded.skills
+      .filter((entry) => !keptSkillKeys.has(skillSelectionKey(entry)))
+      .map(skillSelectionKey),
+    mcp: expanded.mcp.filter((entry) => !keptMcpIds.has(entry.id)).map((entry) => entry.id),
+    metadata: (expanded.projectMetadataSelection ?? [])
+      .filter((selection) => !keptMetadataKeys.has(metadataSelectionKey(selection)))
+      .map(metadataSelectionKey),
+  };
+}
+
+/** A role with nothing switch-derived keeps the exact shape it had before this field existed. */
+function hasDerivedEntryKeys(keys: MekaRoleDerivedEntryKeys): boolean {
+  return (
+    keys.rules.length > 0 ||
+    keys.skills.length > 0 ||
+    keys.mcp.length > 0 ||
+    keys.metadata.length > 0
+  );
+}
+
+/**
+ * Expand a role manifest into its effective selections through the same pure functions the
+ * runtime uses, in the same order (`mergeMekaProjectRoleDefaults` → the metadata selection
+ * resolver → the bundled-catalog skill expansion). A role that opts into the project's defaults or
+ * into the bundled catalog ships `rules` / `skills` / `mcp` / `projectMetadataSelection` empty on
+ * purpose: those lists only become real at resolve time. The editor panel renders the manifest's
+ * explicit lists, so handing it the raw manifest made such a role look like it configures nothing
+ * — the opposite of its contract, and (for `includeAllBundledSkills`) it left the bundled skills
+ * the role really mounts unchecked in the panel.
+ *
+ * `includeAllBundledSkills` only needs the in-package catalog, so its ids come from
+ * `listBundledSkills()` — the very scan the runtime expands from, reached through the same
+ * `resolveBundledSkillSelections` helper — and skill bodies are never read here: the panel needs
+ * the id list, not the content. That scan is done **only** when the role asks for it, so a role
+ * that merely absorbs its project defaults never depends on the catalog being scannable.
+ *
+ * The gate is the three manifest flags — never a role id or name — so any role that does not opt
+ * in is returned untouched without reading project configuration at all, and anything that cannot
+ * be resolved (no project file, no catalog) degrades to the stored manifest rather than throwing.
+ * Both degradation paths return the stored manifest as it is, i.e. **without** `derivedEntryKeys`:
+ * they have no expansion to difference, and a field that claimed derived rows there would be wrong
+ * rather than merely absent.
+ *
+ * The result additionally carries the display-only `derivedEntryKeys` of the expansion, computed at
+ * the same place the expansion is (see {@link derivedEntryKeysOf}); that field exists so the panel
+ * can refuse to offer a removal that the runtime would immediately undo.
+ */
+async function expandRoleManifest(
+  manifest: MekaRoleManifestFile,
+): Promise<ExpandedMekaRoleManifest> {
+  if (
+    manifest.useProjectDefaults !== true &&
+    manifest.includeAllProjectMetadata !== true &&
+    manifest.includeAllBundledSkills !== true
+  ) {
+    return manifest;
+  }
+  try {
+    const projectFile = await projectFileForRole(manifest.projectId);
+    if (!projectFile) return manifest;
+    const merged = mergeMekaProjectRoleDefaults(manifest, projectFile.roleDefaults ?? {});
+    const expanded: MekaRoleManifestFile = {
+      ...merged,
+      projectId: manifest.projectId,
+      projectMetadataSelection: resolveRoleProjectMetadataSelections(merged, projectFile.metadata),
+    };
+    // The scan stays conditional, and it happens at most once: with `includeAllBundledSkills` off
+    // the expansion cannot contain catalog entries, and `resolveBundledSkillSelections` returns the
+    // same emptied list for any catalog — so the strip pass below is handed an empty map instead of
+    // paying for a scan that provably cannot change its outcome.
+    const catalog =
+      manifest.includeAllBundledSkills === true
+        ? await listBundledSkills()
+        : new Map<string, string>();
+    const effective: MekaRoleManifestFile =
+      manifest.includeAllBundledSkills === true
+        ? { ...expanded, skills: resolveBundledSkillSelections(merged, catalog) }
+        : expanded;
+    const derivedEntryKeys = derivedEntryKeysOf(effective, projectFile, catalog);
+    return hasDerivedEntryKeys(derivedEntryKeys) ? { ...effective, derivedEntryKeys } : effective;
+  } catch (error) {
+    log.warn('role manifest expansion unavailable; using the stored manifest', {
+      roleId: manifest.id,
+      projectId: manifest.projectId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return manifest;
+  }
+}
+
+/**
+ * Write-side counterpart of {@link expandRoleManifest}: both save paths receive the **expanded**
+ * draft the panel round-tripped from `read-manifest`, and writing it back verbatim would
+ * materialize the switch-derived entries on disk.
+ *
+ * `stripSelectAllDerivedEntries` owns the rule (only entries deep-equal to the ones the switches
+ * alone derive are dropped); this wrapper owns the IO gating, so it stays best-effort by contract:
+ *
+ * - the three flags are the only gate. A role that opts into nothing returns here before any
+ *   project or catalog read — the same zero-cost path `expandRoleManifest` takes;
+ * - the bundled catalog is scanned only when `includeAllBundledSkills` is on. With the flag off
+ *   `resolveBundledSkillSelections` returns that same emptied list regardless of the catalog, so
+ *   skipping the scan cannot change the outcome;
+ * - an unavailable project file (or any failure while reading it / the catalog) means "do not
+ *   strip" and never a failed save. The panel read degrades the same way, and a save must not
+ *   throw for a reason `normalizeMekaRoleManifest` would not have thrown for either.
+ *
+ * The parameter stays `unknown` because both callers reach this point with the raw renderer
+ * payload, which `normalizeMekaRoleManifest` validates right afterwards. `projectId` is passed
+ * explicitly instead of trusting the payload's own `projectId` (which is only checked by that
+ * later validation).
+ */
+async function stripSelectAllDerivedForSave(input: unknown, projectId: string): Promise<unknown> {
+  const manifest = input as MekaRoleManifestFile;
+  if (
+    manifest.useProjectDefaults !== true &&
+    manifest.includeAllProjectMetadata !== true &&
+    manifest.includeAllBundledSkills !== true
+  ) {
+    return input;
+  }
+  try {
+    const projectFile = await projectFileForRole(projectId);
+    if (!projectFile) return input;
+    const catalog =
+      manifest.includeAllBundledSkills === true
+        ? await listBundledSkills()
+        : new Map<string, string>();
+    return stripSelectAllDerivedEntries(manifest, projectFile, catalog);
+  } catch (error) {
+    log.warn('role manifest select-all stripping unavailable; saving the manifest as it is', {
+      roleId: manifest.id,
+      projectId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return input;
+  }
+}
+
 async function upsertRole(
   manifest: MekaRoleManifestFile,
   order: number,
@@ -219,13 +469,16 @@ export async function createMekaRole(input: unknown): Promise<MekaRole> {
     const id = safeId(createId(), 'generated role id');
     const roleFile = requireObject(body.roleFile, 'roleFile');
     const manifest = normalizeMekaRoleManifest(
-      {
-        ...roleFile,
-        schemaVersion: 1,
-        id,
+      await stripSelectAllDerivedForSave(
+        {
+          ...roleFile,
+          schemaVersion: 1,
+          id,
+          projectId,
+          name: id,
+        },
         projectId,
-        name: id,
-      },
+      ),
       id,
       projectId,
     );
@@ -252,7 +505,11 @@ async function updateMekaRole(input: unknown): Promise<MekaRole> {
     if (!current) throwIpcError('MEKA_ROLE_NOT_FOUND', `Meka role ${id} not found`);
     if (current.project_id !== projectId)
       throwIpcError('INVALID_PARAMS', 'role projectId mismatch');
-    const manifest = normalizeMekaRoleManifest(roleFile, id, projectId);
+    const manifest = normalizeMekaRoleManifest(
+      await stripSelectAllDerivedForSave(roleFile, projectId),
+      id,
+      projectId,
+    );
     if (current.is_builtin === 1) {
       if (current.id === mekaDefaultRoleId(current.project_id)) {
         throwIpcError(
@@ -348,20 +605,27 @@ async function listMekaRoles(projectIdInput: unknown): Promise<MekaRole[]> {
   );
 }
 
-async function readRoleManifest(roleIdInput: unknown): Promise<MekaRoleManifestFile | null> {
+/**
+ * Read a role's *effective* manifest: the explicitly stored selections plus everything the role
+ * absorbs from its project at resolve time, plus the display-only `derivedEntryKeys` that tell the
+ * panel which of those entries it may not remove. Returning the stored manifest alone made every
+ * role that opts into project defaults render as an empty panel.
+ */
+async function readRoleManifest(roleIdInput: unknown): Promise<ExpandedMekaRoleManifest | null> {
   const roleId = safeId(roleIdInput, 'role id');
   const row = await roleRow(roleId);
   if (!row) return null;
   if (row.is_builtin === 1) {
     if (row.id === mekaDefaultRoleId(row.project_id))
-      return mekaDefaultRoleManifest(row.project_id);
+      return expandRoleManifest(mekaDefaultRoleManifest(row.project_id));
     const state = await builtinProjectState(row.project_id);
-    return (
+    return expandRoleManifest(
       state?.file?.builtinRoles?.find((role) => role.id === roleId) ??
-      readBuiltinRoleManifest(roleId, row.project_id)
+        (await readBuiltinRoleManifest(roleId, row.project_id)),
     );
   }
-  return readCustomRoleManifest(roleId, app.getPath('userData'), row.project_id);
+  const custom = await readCustomRoleManifest(roleId, app.getPath('userData'), row.project_id);
+  return custom ? expandRoleManifest(custom) : null;
 }
 
 export function registerMekaRolesIpc(): void {

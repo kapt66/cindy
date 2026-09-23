@@ -14,6 +14,8 @@ import JSZip from 'jszip';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DB_TRANSPORT_OUTCOME_UNKNOWN } from '../../localDb/client/DbTransport.js';
+// 角色行夹具由包内注册表派生（见 `bundledDefaultRoleRow`），不手抄生产里可能已不存在的角色。
+import { BUILTIN_MEKA_PROJECTS, mekaDefaultRoleId } from '../../../shared/meka-projects.js';
 
 const tmpRoot = mkdtempSync(path.join(os.tmpdir(), 'xdtshare-import-test-'));
 const projectsRoot = path.join(tmpRoot, 'claude-home', 'projects');
@@ -1688,7 +1690,10 @@ describe('sessionShareImport', () => {
 
   const MEKA_SECTION = {
     projectId: 'saga2',
-    roleId: 'general-development',
+    // 「角色必须存在」的样本用共享默认角色：它**没有**磁盘清单文件，但每个项目都有一条播种出来的
+    // `meka_roles` 行，而绑定校验只查该行（`mekaShareBinding.ts`），所以生产上必然存在。
+    // 继续用「通用开发」会让这条用例通过、生产失败——播种会把它的行删掉。
+    roleId: 'saga2-default-role',
     legacyRole: null,
     target: { channel: 'preview' },
     formal: {
@@ -1699,6 +1704,28 @@ describe('sessionShareImport', () => {
     },
   };
 
+  /**
+   * 该项目的共享默认角色在 `meka_roles` 里的**真实行**，完全由包内注册表派生：
+   * `seedBuiltinMekaProjects` 写进 `meka_roles` 的就是
+   * `BUILTIN_MEKA_PROJECTS[].roles`。注册表里查不到 ⇒ 返回 null，夹具随之**不再提供该行**，
+   * 导入端会真的走成 `role-missing` 降级分支——这正是手写字面量夹具掩盖掉的行为
+   * （角色被删/改名后，假夹具还在供应生产里不存在的角色行）。
+   */
+  function bundledDefaultRoleRow(projectId: string): {
+    id: string;
+    projectId: string;
+    name: string;
+    displayName: string;
+  } | null {
+    const id = mekaDefaultRoleId(projectId);
+    const role = BUILTIN_MEKA_PROJECTS.find(
+      (project) => project.id === projectId,
+    )?.roles.find((candidate) => candidate.id === id);
+    return role
+      ? { id, projectId: role.projectId, name: role.name, displayName: role.displayName }
+      : null;
+  }
+
   function registerMekaProject(p4RootPath: string | null): void {
     mekaMock.p4RootPath = p4RootPath;
     mekaMock.projects.set('saga2', {
@@ -1708,11 +1735,14 @@ describe('sessionShareImport', () => {
       path: 'saga2',
       additionalPaths: ['/ref/a', '/ref/a', '/ref/b'],
     });
-    mekaMock.roles.set('general-development', {
-      projectId: 'saga2',
-      name: 'general-development',
-      displayName: 'General Development',
-    });
+    const defaultRole = bundledDefaultRoleRow('saga2');
+    if (defaultRole) {
+      mekaMock.roles.set(defaultRole.id, {
+        projectId: defaultRole.projectId,
+        name: defaultRole.name,
+        displayName: defaultRole.displayName,
+      });
+    }
   }
 
   async function commitBundle(manifest: Record<string, unknown>, workingDir?: string) {
@@ -1737,10 +1767,10 @@ describe('sessionShareImport', () => {
       present: true,
       status: 'bound',
       projectId: 'saga2',
-      roleId: 'general-development',
+      roleId: 'saga2-default-role',
       legacyRole: null,
       projectName: 'SAGA2',
-      roleName: 'General Development',
+      roleName: '默认角色',
       reason: 'none',
     });
     expect(result.notes).toContain('mekaBindingRestored');
@@ -1762,7 +1792,7 @@ describe('sessionShareImport', () => {
     expect(bindingCall.sql).toContain('meka_role_id = ?');
     expect(bindingCall.params).toEqual([
       'saga2',
-      'general-development',
+      'saga2-default-role',
       JSON.stringify({ channel: 'preview' }),
       // extra_dirs 取本机项目的 additionalPaths(去重,顺序保持)
       JSON.stringify(['/ref/a', '/ref/b']),
@@ -1791,6 +1821,7 @@ describe('sessionShareImport', () => {
   });
 
   it('meka bundle whose role is missing locally degrades and reports the loss', async () => {
+    // 这条是既有的**兼容边界**：角色在导入端不存在 ⇒ 降级为普通任务 + 明确 note，不半绑定。
     registerMekaProject(path.join(tmpRoot, 'saga2-root'));
     mekaMock.roles.clear();
 
@@ -1807,10 +1838,12 @@ describe('sessionShareImport', () => {
 
   it('meka role that belongs to another project is treated as missing', async () => {
     registerMekaProject(path.join(tmpRoot, 'saga2-root'));
-    mekaMock.roles.set('general-development', {
+    // id 仍从注册表派生（错配状态只能手写 projectId）；若角色被删/改名，这条夹具也不复存在。
+    const defaultRole = bundledDefaultRoleRow('saga2')!;
+    mekaMock.roles.set(defaultRole.id, {
       projectId: 'other-project',
-      name: 'general-development',
-      displayName: 'General Development',
+      name: defaultRole.name,
+      displayName: defaultRole.displayName,
     });
 
     const { inspect, result } = await commitBundle({ meka: MEKA_SECTION }, newWorkdir);
@@ -1828,7 +1861,7 @@ describe('sessionShareImport', () => {
       status: 'unavailable',
       reason: 'workspace-unresolved',
       projectName: 'SAGA2',
-      roleName: 'General Development',
+      roleName: '默认角色',
     });
     expect(second.result.notes).toContain('mekaWorkspaceUnresolved');
     expect(dbMock.execCalls).toHaveLength(0);
@@ -1924,7 +1957,7 @@ describe('sessionShareImport', () => {
       createdAt: 1700000000000,
       updatedAt: 1700000001000,
       mekaProjectId: 'saga2',
-      mekaRoleId: 'general-development',
+      mekaRoleId: 'saga2-default-role',
       mekaRole: null,
       mekaTargetJson: JSON.stringify({ channel: 'preview' }),
       isFormal: 1,
@@ -1959,7 +1992,7 @@ describe('sessionShareImport', () => {
       present: true,
       status: 'bound',
       projectId: 'saga2',
-      roleId: 'general-development',
+      roleId: 'saga2-default-role',
     });
     const result = await commitShareImport({
       draftId: inspect.draftId,
@@ -1971,7 +2004,7 @@ describe('sessionShareImport', () => {
     expect(txArgs.session.workingDir).toBe(normalizeWorkingDirForStorage(p4Root));
     expect(dbMock.execCalls[0].params.slice(0, 3)).toEqual([
       'saga2',
-      'general-development',
+      'saga2-default-role',
       JSON.stringify({ channel: 'preview' }),
     ]);
     expect(dbMock.execCalls[0].params[4]).toBe(1);

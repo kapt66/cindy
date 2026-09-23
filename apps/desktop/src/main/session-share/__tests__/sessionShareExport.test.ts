@@ -472,7 +472,8 @@ describe('exportSessionShare', () => {
       ...baseSession(),
       workspaceKind: 'meka',
       mekaProjectId: 'saga2',
-      mekaRoleId: 'general-development',
+      // 共享默认角色：无磁盘清单文件，但每个项目都有播种行（「通用开发」的行已退役删除）。
+      mekaRoleId: 'saga2-default-role',
       mekaRole: null,
       mekaTargetJson: JSON.stringify({ channel: 'preview', build: 42 }),
       isFormal: 1,
@@ -489,7 +490,7 @@ describe('exportSessionShare', () => {
     const manifest = validateManifest(JSON.parse(await zip.file('manifest.json')!.async('string')));
     expect(manifest.meka).toEqual({
       projectId: 'saga2',
-      roleId: 'general-development',
+      roleId: 'saga2-default-role',
       legacyRole: null,
       target: { channel: 'preview', build: 42 },
       formal: {

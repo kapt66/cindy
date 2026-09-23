@@ -193,7 +193,10 @@ describe('validateManifest', () => {
       ...validManifest(),
       meka: {
         projectId: 'saga2',
-        roleId: 'general-development',
+        // 本文件只校验 xdtshare **格式**，不碰数据库。这个 id 在真实导入流程里由本项目角色的
+        // **播种行**提供（`seedBuiltinMekaProjects` 写入 `meka_roles`）；该行是否存在、能否解析，
+        // 由导入端另行判断，与格式校验无关。
+        roleId: 'saga2-default-role',
         legacyRole: null,
         target: { channel: 'preview' },
         formal: {
@@ -206,7 +209,7 @@ describe('validateManifest', () => {
     });
     expect(manifest.meka).toEqual({
       projectId: 'saga2',
-      roleId: 'general-development',
+      roleId: 'saga2-default-role',
       legacyRole: null,
       target: { channel: 'preview' },
       formal: {

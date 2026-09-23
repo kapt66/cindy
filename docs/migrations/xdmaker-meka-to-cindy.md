@@ -35,7 +35,7 @@
 | 远程 Codex Worker  | 已恢复                   | MCPRouter protocol 3 / bundle 0.0.7 控制通道与 app-server 隧道        |
 | Orca Worker 微调   | 迁移                     | 仅迁入 Meka 目标选择和远程约束所需改动                                |
 | 打包发布           | 已迁移                   | 打包/发布分层；RustFS 上传、canary、stable promote 与 rollback 已接入 |
-| 项目与角色         | 迁移                     | 项目、角色、元数据、内置 SAGA2；每个项目 1 个共享默认角色 + SAGA2 的通用开发/战斗开发 2 个业务角色 |
+| 项目与角色         | 迁移                     | 项目、角色、元数据、内置 SAGA2；每个项目 1 个共享默认角色（出厂全量、渐进披露）+ SAGA2 的战斗开发 1 个业务角色（通用开发已于 2026-09-23 退役并入默认角色） |
 | 原 Meka 用户数据   | 必须兼容                 | 新建 `CindyMeka`，从 `xdmaker-meka` 只读复制并运行 lineage bridge     |
 | Windows/macOS 签名 | 沿用原证书/服务          | Windows 原签名服务；macOS 原证书私钥和 self-signed 模式               |
 | 热更新             | 新建 Cindy Meka 渠道     | 不承诺旧 Meka 原地热更新；新应用安装后迁移旧数据                      |
@@ -501,23 +501,33 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
   可复用配置保留在基线里，`none` 状态下不下发、界面也不显示，改回 `jira` 时立即可用。
   `formalWorkflowEnabled` 由 `workflowType` 派生（见 `projectConfig.ts` 的
   `normalizeMekaProjectFile`），因此两者不需要分别维护。
-- 每个项目（含内置 SAGA2 和用户新建项目）都有 1 个共享“默认角色”，另有 SAGA2 的 2 个
-  业务内置角色：
-  - 默认角色（稳定 ID `<projectId>-default-role`，内置、只读、不可删除）：不注入任何提示词、
-    规则、技能、MCP 或项目元数据，`useProjectDefaults` / `includeAllProjectMetadata` 保持
-    未设置，因此项目级默认项也不会并入；任务仍绑定项目与工作目录。它是新建 Meka 会话的
-    默认选中项，语义上最接近“新建一个普通会话”。
-  - 通用开发：启用项目当前全部有效元数据，项目后续新增或重命名知识入口时无需同步维护
-    角色枚举；同时挂载 MekaDesign、Meka Unity 官方 CLI、MCPRouter 和项目管理能力。
+- 每个项目（含内置 SAGA2 和用户新建项目）都有 1 个共享“默认角色”，另有 SAGA2 的 1 个
+  业务内置角色（**2026-09-23 起**；原「通用开发」已退役，见 §11.26）：
+  - 默认角色（稳定 ID `<projectId>-default-role`，内置、只读、不可删除）：**出厂即全量**
+    —— `useProjectDefaults: true` + `includeAllProjectMetadata: true` +
+    `includeAllBundledSkills: true`（第三个开关是 2026-09-23 第二批追加的，见 §11.27 F4），
+    吸收项目 `roleDefaults`、项目当前全部有效元数据与**包内 catalog 扫描到的全部 skill**；
+    `skills` / `rules` / `promptFragments` / `projectMetadataSelection` 的显式列表刻意留空，
+    **唯一的显式项是 `mcp: [{ id: 'meka-design' }]`**——它来自项目侧推导不出来，必须显式声明。
+    规范类元数据（`agents-md` / `rule`）
+    **不内联正文**（战斗 workflow 角色例外，见下一条），由 order 65 段
+    `[MEKA_PROJECT_REFERENCES]` 投递「作用范围 + 绝对路径 + 描述」，
+    正文按需读取；不带 `workflow`、不注入战斗 promptFragments。它是新建 Meka 会话的默认选中项。
   - 战斗开发：只选择战斗设计、SkillEditor、战斗客户端与数据相关知识，挂载 Meka Unity 官方 CLI、
     MCPRouter 和项目管理能力；模块配置按服务端执行契约处理，不能用 Unity 编辑能力推断
     服务端已经支持；生产流程先执行 P4、Meka Unity 官方 CLI、MCPR 三项环境门，再进入只读探索、集中
     澄清、方案确认、执行验证，目标技能 ID 和修改范围未由用户明确确认前不得从 Unity 当前
-    窗口、选中项、缓存或历史技能推断。
-- `combat-config` / `combat-debug` 历史会话迁移到 `combat-development`；
-  `system-development` / `system-overview` / `system-debug` 迁移到
-  `general-development`。项目文件中的这些旧内置快照从有效配置中过滤，但其他自定义角色
-  保留不变。
+    窗口、选中项、缓存或历史技能推断。**规范类元数据（`agents-md` / `rule`）对战斗角色保持
+    改动前的内联投递**、不产出地址型引用（战斗参考路径是封闭精确白名单，策略层会拒绝读取
+    工作区根 `AGENTS.md`；见 §11.27 F3）。
+- `combat-config` / `combat-debug` 历史会话迁移到 `combat-development`；`general-development` /
+  `system-development` / `system-overview` / `system-debug` 历史会话重绑到**会话所属项目的**
+  `<projectId>-default-role`（别名表与固定目标映射表分工见 §11.26）。该重绑 SQL 带
+  `AND meka_project_id IN (SELECT id FROM meka_projects)` 守卫：目标行只对**已登记项目**存在，
+  而 `sessions.meka_project_id` 没有外键，项目登记被删后会话可以合法存活；不加守卫会让这类
+  孤儿会话改绑到不存在的角色行，触发 FK violation 并使整个播种事务失败（详见 §11.27 F2）。
+  项目文件中的这些旧内置
+  快照**只在 `saga2` 的项目文件里**从有效配置中过滤，但其他自定义角色保留不变。
 - 内置项目/角色幂等播种。
 - 启动播种同时为**所有已登记项目**补齐共享默认角色行（用户新建项目不在内置项目播种范围内），
   新建项目时通过 `ensureMekaDefaultRoleRow()` 立即建行，无需等到下次重启。冲突子句只在
@@ -526,12 +536,20 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
 
 项目与角色配置的运行时契约：
 
-- SAGA2 包内 `project.json` 保留当前项目基线；角色已从原 6 个角色收敛为
-  `general-development` 与 `combat-development`，不再与 `xdmaker/meka/main` 的历史角色
+- SAGA2 包内 `project.json` 保留当前项目基线；**包内业务角色只剩 `combat-development`**
+  （2026-09-23 起；原 `general-development.json` 已删除），不再与 `xdmaker/meka/main` 的历史角色
   清单逐字节一致。共享默认角色没有包内 manifest 文件，由
   `mekaDefaultRoleManifest()` 在内存与建行时生成，避免任何项目文件携带它、也避免它被
-  用户编辑后写回。<`projectId>-default-role` 行是 DB 上的内置行，`meka-role:update`
-  对它返回 `MEKA_BUILTIN_READ_ONLY`。
+  用户编辑后写回。`<projectId>-default-role` 行是 DB 上的内置行，`meka-role:update`
+  对它返回 `MEKA_BUILTIN_READ_ONLY`；`meka-role:read-manifest` 自 2026-09-23 第二批起走
+  **配置 IO 路径**、返回**展开后的有效清单**（首轮「对它不展开」的结论已被反转，反转理由与
+  三层回退口径见 §11.27 W10）。展开只对清单里那三个 opt-in 开关任一为 `true` 的角色生效，
+  其余角色原样返回、连项目配置都不读；面板因此能同时显示「继承而来的条目」与角色自己声明的
+  条目。展开结果在**确有派生项时**还会附带一个**只用于展示、绝不落盘**的
+  `derivedEntryKeys: { rules, skills, mcp, metadata }`（= 展开态与 `stripSelectAllDerivedEntries`
+  剥离结果的差集）；面板据此**对派生行不渲染删除按钮**（rules / mcp / 技能 legacy 与未识别项四处）——
+  派生行在每次解析时都会被项目默认值 / 元数据 / catalog 展开**重新加回**，删除只改草稿、保存后还会
+  回来，**唯一有效的排除方式是勾选框的 `enabled: false`**（2026-09-23 W25 批次落地，见 §11.28）。
 - 原 Meka 的 6 个内置 Skill 继续保留；稳定英文 `name` / `skillId` 继续作为运行时契约，
   中文名称和中文描述写入标准 Skill frontmatter，其中展示名位于
   `metadata.display-name`。角色编辑器优先显示中文名，不再直接把 `remote-operations` 等
@@ -541,8 +559,15 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
   Remote Orca Worker 目标校验、报告和失败分支已完整保留，不能再压缩成摘要。
 - 项目 `roleDefaults` 先与角色 manifest 合并；角色同 id 配置覆盖项目默认项，
   `excludeDefaults` 可精确排除项目默认 Skill、MCP 和项目元数据。
-- 角色 `prompt`、已启用规则、选中的 `AGENTS.md`/规则元数据直接追加到该 Meka
-  会话的 per-session system prompt。
+- 角色 `prompt` 与 `promptFragments` 直接追加到该 Meka 会话的 per-session system prompt。
+  **规范类元数据（`agents-md` / `rule`）自 2026-09-23 起不再追加正文**：它们只以
+  「作用范围 + 绝对路径 + 描述」进入 order 65 段 `[MEKA_PROJECT_REFERENCES]`，正文由 Agent
+  按需读取（原因与边界见 §11.26）。**例外**：`workflow === 'saga2-combat-development-v1'`
+  的角色（战斗开发，以及任何声明同一 workflow 的自定义角色）保持改动前的**内联正文**投递、
+  不产出引用条目 ⇒ 段 65 对它们拿到空集合、整段不渲染（见 §11.27 F3）。
+  另外 `roleDefaults.rules[].text`（角色默认提示词）**始终内联**，它不是 `rule` 类元数据；
+  因此「零规范正文内联」只对**元数据通道**成立，不得读成「角色配置里没有任何内联正文」
+  （见 §11.27）。
 - 旧 path-based 角色 Skill 与 `promptFragments` 仅作为历史角色文件兼容输入，仍从角色
   manifest 相对目录安全解析；它们不会转换成 snapshot。
 - 内置 Meka Skill 与项目内选中的 `SKILL.md` 都由当前项目/角色配置解析。正常的
@@ -553,8 +578,19 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
 - 项目元数据总开关优先于角色选择；项目禁用的条目不能被角色重新启用。项目 Skill id
   使用与原版一致的确定性规范化和冲突后缀规则，中文目录名不会导致会话启动失败。
 - 角色可用 `includeAllProjectMetadata` 选择项目当前全部有效元数据，显式角色选择仍按
-  `rootPath + sourcePath + itemType` 覆盖自动选择。当前仅通用开发角色开启；战斗开发继续
-  使用精确选择，避免无关知识占用上下文。
+  `rootPath + sourcePath + itemType` 覆盖自动选择。**2026-09-23 起由共享默认角色开启**
+  （`includeAllProjectMetadata: true`；原开启者「通用开发」已退役）；战斗开发继续
+  使用精确选择，避免无关知识占用上下文。选中的 `agents-md` / `rule` 只投递地址与描述，
+  正文不内联（见 §11.26；战斗 workflow 角色例外，见上文）。
+- 角色可用 `includeAllBundledSkills`（通用开关，**不枚举任何 skill id**）选择包内 catalog
+  扫描到的全部 skill，显式选择按 `skillId` 覆盖它，`enabled: false` 可精确排除单个。
+  该开关与 `includeAllProjectMetadata` 都属于「白名单式重建」的 manifest 字段：**新增字段必须
+  同时在 `normalizeMekaRoleManifest` 里透传**，否则经「复制角色」与项目文件读写的角色会静默
+  丢字段（维护不变量，见 §11.27 F4）。
+- 全量展开项与作者显式选择的容错口径**不同**（见 §11.27 F1）：`rootPath` 不在允许根、`..`
+  逃逸项目根、未知 `itemType` **任何来源都抛错**；作者显式选择（角色清单 + 项目
+  `roleDefaults.projectMetadataSelection`）解析失败**仍 fail-closed 上抛**；只有
+  `includeAllProjectMetadata` 自动展开出来的项在解析失败时 `warn` + 跳过。
 - 普通 Meka 任务由 Host 动态挂载 `mcp-router`，不受项目默认项、角色 provider 选择或旧任务
   角色配置影响；角色与项目默认项只决定额外业务 provider。项目绑定继续限制实例类 Router
   工具，项目元数据中的 MCP 配置也参与解析。专用 MCPR 远端 Worker 保留窄能力隔离。
@@ -584,7 +620,7 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
 - SAGA2 当前项目元数据基线按实际工作区完整发现 55 项：48 个项目 Skill、7 个 Agent
   入口。每项都保存内容指纹、子项目归属、中文展示名与描述、职能、领域和启用状态；
   `CLAUDE.md` 重复入口、Codex alias 镜像与 Unity 侧旧战斗设计镜像保留发现记录但默认禁用，
-  避免通用开发的全量元数据注入产生重复或非权威上下文。后续发现按
+  避免共享默认角色的全量元数据注入产生重复或非权威上下文。后续发现按
   `rootPath + sourcePath + itemType` 刷新文件来源字段和内容指纹，同时保留项目人工维护的
   中文展示名、描述、备注、职能、领域与启用状态；新文件再进入人工归类流程。
 - 两个 SAGA2 内置角色都显式挂载 Meka Unity 官方 CLI；连接失败只表示本机 Meka Unity
@@ -712,9 +748,9 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
 - 历史 schema 中仍保留 `capability_snapshot_json` 兼容列，但应用 DTO、创建参数和
   Renderer Session 类型已移除 snapshot 字段；Main 不读取或写入该列，新会话依赖数据库
   默认 `NULL`，项目/角色运行时也不把该列作为配置来源。
-- 历史四角色会话没有 `meka_role_id` 时，不改写旧数据库行；启动时将
-  planner / tester / artist / programmer / 未选角色统一只读映射到
-  `general-development`，避免把历史程序角色误解释成新的战斗开发角色。新会话仍必须显式
+- 历史四角色会话没有 `meka_role_id` 时，不改写旧数据库行；启动时按**会话所属项目**的共享默认
+  角色（`<projectId>-default-role`）派生运行期角色，避免把历史程序角色误解释成新的战斗开发角色
+  （2026-09-23 之前派生的是 saga2 的 `general-development`，该角色已退役，见 §11.26）。新会话仍必须显式
   提交项目和角色。
 
 创建时冻结项目、角色和正式流程数据，后续普通 session patch 不能偷偷替换这些身份字段。
@@ -1931,8 +1967,9 @@ thread-context gated 的本地动态代理投影这条唯一入口，Claude 继�
 15. 清空 P4 配置后从 SAGA2 草稿发送或创建目标，确认出现跳转设置提示；取消时不发送，
     确认跳转后进入 Meka 助理设置。
 16. 在包含超过 30000 个文件的 SAGA2 根目录连续执行三次元数据重新发现；确认三次结果
-    均为 52 条项目自有元数据、不包含 Unity `Library/PackageCache` 内容，通用开发保持
-    52 条全选，且任一截断错误都不会改写现有 `.meka/project.json`。
+    均为 52 条项目自有元数据、不包含 Unity `Library/PackageCache` 内容，共享默认角色保持
+    52 条全选（`includeAllProjectMetadata: true`），且任一截断错误都不会改写现有
+    `.meka/project.json`。
 17. 悬浮「Meka 助理」段头，确认右侧出现与「全部任务」段头同款的两个按钮：点「收起所有
     分组」后项目行（含「不可用项目」/「旧版 Meka 会话」）全部收起、按钮变「展开所有
     分组」，再点全部展开；点「侧边栏显示设置」出现的是主列表段头那一份全局菜单（改
@@ -2155,6 +2192,11 @@ bootstrap 会优先用已持久化的项目/角色绑定恢复 lazy resume，并
 `runtimeConfig.test.ts` 与 `runtimeConfig.integration.test.ts`，确认 SAGA2 角色默认项合并仍能
 解析出 MCPRouter/project-agent/MekaDesign 等配置。真实 MCPRouter 工具列表和已绑定服务器仓库
 访问仍需开发者在 Electron 内手测。
+> **（2026-09-23 W25 批次追加标注，原句不改写）**：该文件**已于 2026-09-23 更名为**
+> `runtimeConfigProjectFiles.test.ts`（`git mv`），目的是让它真正进入 desktop `unit` tier——
+> 旧名 `*.integration.test.ts` 在 desktop 7 个 tier 里**没有任何 include 匹配**，`unit` 层还显式
+> exclude 该后缀，`--all` 也只纳入 manual tier ⇒ 连 `test:all` 都不执行它。上面这条 2026-08-07 的
+> 当日记录保留为历史事实。
 
 ### 6.25 2026-08-07 SAGA2 远程实例到 Orca Worker 链路回归
 
@@ -3962,6 +4004,15 @@ Meka 开发插件链路、插件市场独立 endpoint/凭证、`edition` 运行�
 
 **处理：共享默认角色**
 
+> ⚠️ **本小节以下几条 bullet 描述的旧契约已于 2026-09-23 被反转（以下为当日原状，保留不改写）**：
+> 现状是默认角色**出厂全量** —— `useProjectDefaults` / `includeAllProjectMetadata` /
+> `includeAllBundledSkills` 三个开关**全为 `true`**，且 `mcp` 显式含 `meka-design`；
+> `meka-role:read-manifest` 走配置 IO 路径并返回**展开后的有效清单**（三层回退、不抛错），
+> **不再是**「直接返回内存 manifest」。下文原句里的「不设置 `useProjectDefaults` 与
+> `includeAllProjectMetadata`」「连项目级默认项都不会并入」「`read-manifest` 直接返回内存 manifest」
+> 都只描述**当时**的契约，已被 **§11.26 / §11.27** 取代（反转的落点见 §11.27 **W10** 与 **F4**）。
+> 本节**只追加本标注**，正文一个字未改。
+
 - 稳定 ID 为 `<projectId>-default-role`（`mekaDefaultRoleId()`），`meka_roles.id` 是主键，
   因此“所有项目共用的默认角色”落成每个项目一行确定性 id 的内置行；SAGA2 的内置行 id 是
   `saga2-default-role`。
@@ -4017,6 +4068,12 @@ Meka 开发插件链路、插件市场独立 endpoint/凭证、`edition` 运行�
   `builtinMekaSeed` / `mekaDefaultRole`（新增）/ `mekaProjectsImport` /
   `runtimeConfig.integration` / `MekaProjectRoleEditorRoute` ⇒ **39 用例全绿**
   （6+3+6+6+18；无 skip）。
+  > **（2026-09-23 W25 批次追加标注，原句不改写）**：这是**当次实跑**的历史记录，不是当前规模。
+  > 其中 `runtimeConfig.integration` **已于 2026-09-23 更名为 `runtimeConfigProjectFiles.test.ts`**；
+  > 各文件当前条数（W25 逐条重数）：`builtinMekaSeed.test.ts` **11 条**、
+  > `mekaDefaultRole.test.ts` **7 条**、`runtimeConfigProjectFiles.test.ts` **7 条**、
+  > `MekaProjectRoleEditorRoute.test.tsx` **25 条**（`mekaProjectsImport.test.ts` 未在本轮重数，
+  > 当次记录为 6 条）。**W25 批次未跑任何门禁**，上面的 39 用例全绿不构成本批证据。
 - 新增回归测试（补第一轮审查指出的「不变量无守护」）：
   - `builtinMekaSeed.test.ts` 新增守卫分支用例：在派生 id 上放一个 `is_builtin = 0`
     的用户自有行，播种**不得**接管或改写它（旧用例只覆盖 INSERT 与「已是内置行」的
@@ -4036,6 +4093,11 @@ Meka 开发插件链路、插件市场独立 endpoint/凭证、`edition` 运行�
     `roleDefaults.rules` 与项目元数据的 `project.json` 下，默认角色解析出
     `promptText: ''`、`skills: []`、`mcp: []`、`policyProviderRefs: []`，而
     `general-development` 仍能读到 `# Project default rule` —— 反向对照证明该空结果不是空跑；
+    > **（2026-09-23 W25 批次追加标注，原句不改写）**：该文件**已于 2026-09-23 更名为**
+    > `runtimeConfigProjectFiles.test.ts`（同一次改动里另一部分生产侧 `projectReferences` 断言
+    > 被拆到 unit 层新文件 `runtimeConfig.projectReferences.test.ts`）。上面这条当日记录里写的
+    > 「默认角色解析出 `promptText: ''`、`skills: []`、`mcp: []`」是**改动前**的默认角色契约，
+    > **已被反转**（现为出厂全量，见 §11.26 / §11.27 D2.4），此处只作历史保留、不得当现状读。
   - `MekaProjectRoleEditorRoute.test.tsx` 覆盖：未编辑时没有保存/取消按钮、编辑后出现、
     取消恢复并回到无按钮状态、角色取消不写库、默认角色全部字段 `disabled` 且无保存/取消
     按钮、以及从新建角色草稿切到只读默认角色后不留任何按钮。**已登记限制**：最后一条断言
@@ -5347,5 +5409,701 @@ no-op，暂停 / 迁移 / 超时语义不受影响）。**逐字节基线**：`m
     `translocated` / `spawnFailed` 弹窗同形。
 - **本机既有失败（同上，用 stash 基线对照确认非本次引入）**：`test:runner` 3 条
   （`not ok 136 CLI`、`338`、`341`）与 `check:design-inventory --check`（GENERATED 区块不同步）。
+
+### 11.26 2026-09-23 默认角色承接「通用开发」职能：出厂全量 + 规范类元数据渐进披露 + 移除通用开发
+
+> 本条是**新条目**（不改写历史）。**更正（2026-09-23 第二批）**：本句原先写「上文 §6.50 与 §5
+> 里描述旧契约的行已在本次一并更新」，其中 **§5 部分成立、§6.50 部分不成立** —— `git diff` 证明
+> §6.50 的正文**一行未改**（本次只改写了 §5「项目与角色配置的运行时契约」里描述现状的契约句）。
+> §6.50 的**历史台账条目一律保留原样**，它描述的旧契约已由 §11.26 / §11.27 取代，并**已在 §6.50
+> 原处追加「已被反转」标注**（只追加、不改原句）；与之相关的两处冲突在下文「与既有裁决的冲突」里
+> 如实说明。上一句之所以必须更正：把「未改」写成「已一并更新」是**假陈述**，且会让读者以为 §6.50
+> 的现在时旧契约句已被就地修正。
+
+- **默认角色的职能变更（本次核心）**：共享默认角色（`<projectId>-default-role`）由
+  「**不做任何角色级注入**」改为「**出厂即默认包含该项目的全部技能、提示词与规范**」。
+  实现是 manifest 置 `useProjectDefaults: true` + `includeAllProjectMetadata: true`，
+  并承接原「通用开发」的行为契约 prompt（**已删除其中面向 SAGA2 战斗流程升级的整段**）；
+  `skills` / `rules` / `promptFragments` / `mcp` / `projectMetadataSelection` 的显式列表
+  **刻意留空**（避免「显式列表」与「全量展开」两套来源漂移）；**不带 `workflow`**、
+  **不注入任何战斗 promptFragments**（进入战斗的唯一判据仍是
+  `runtime.workflow === 'saga2-combat-development-v1'`）。
+  > ⚠️ **同日第二批的两处修正**（本段不删除，保留为当轮记录）：manifest 另加
+  > `includeAllBundledSkills: true`（第三个全量开关），且 `mcp` 不再留空 ——
+  > 显式恢复原「通用开发」pin 的 `meka-design`。二者原因见 §11.27 F4。
+  它仍然**只读、不可删除**：`meka-role:update` 继续抛 `MEKA_BUILTIN_READ_ONLY`，
+  删除守卫仍是「所有 `is_builtin = 1` 都不可删」；`meka-role:read-manifest` 对它**仍返回内存
+  manifest、不做运行期展开**（只读角色没有「可写一致」要求，展开会把项目文件与 bundled catalog
+  的 IO 拉进 IPC 读路径）。
+  > ⚠️ **该句已于同日第二批被反转**（不删除，保留为当轮结论）：现状是 `read-manifest` 走配置 IO
+  > 路径并返回展开后的有效清单 —— 见 §11.27 W10 与 §5「项目与角色配置的运行时契约」。
+- **规范类元数据的交付形态（渐进披露）**：`agents-md` / `rule` 不再把正文内联进 prompt，
+  改为 `MekaRuntimeConfig.projectReferences`（`MekaProjectReference{ scope, path, description,
+  itemType }`，**正文刻意不在其中**），由**新增注入段** `meka.project-references`
+  （**order 65**、marker `[MEKA_PROJECT_REFERENCES]`）投递「**作用范围 | 绝对路径 | 描述**」清单，
+  正文由 Agent 在工作涉及该目录时用原生 read 工具按需读取。
+  - 段文本常量唯一来源：`apps/desktop/src/main/meka-injection/mekaCombatPrompts.ts` 的
+    `mekaProjectReferencesPrompt`。
+  - **战斗 workflow 角色不走这条通道**（§11.27 F3）：`workflow === 'saga2-combat-development-v1'`
+    时 `agents-md` / `rule` 保持改动前的内联正文、不产出引用条目 ⇒ 段 65 拿到空集合、整段不渲染。
+  - **空集合 ⇒ 整段不渲染**；排序 = `scope` 升序 → `path` 升序（确定性 ⇒ 前缀稳定）；
+    `scope === ''` 渲染为 `(项目根)`。
+  - **只在 bootstrap 路径注入**；`resolveFrozenInjection`（resume）**不注入该段** ——
+    它与角色段 60 / 70 同进同出（I4：resume 不重解析项目/角色）。
+  - 描述来源是**扫描期确定性产出**（frontmatter `description` → `title` → 正文首个**结构元素**，
+    即先出现的 ATX 标题；若先出现的是非空段落则取该段首句、其后的标题**不顶掉**它 ——
+    `metadataScanner.ts` 的 `probeReferenceBody`；折叠空白、≤300 字符、按码点截断），
+    运行期再按 `description → displayName → name →
+    相对 sourcePath` 兜底并同样有界化；**绝不由模型生成**（会破坏 system 前缀稳定性与缓存率）。
+  - 动机是**体积与 argv**：某真实项目 6 条 `agents-md` 正文合计 95,418 B，引用化后该样本
+    `promptText` 从约 42,600 字符降到约 4,900 字符；内联会把默认角色（新建会话的默认选中项）
+    的 system 前缀推到 Pi 的 win32 argv 预算（30,000 字符）之外，而超限报文误指「Pi skills 太多」
+    （规则见 `docs/dev-rules/pi-harness.md` §4 不变量 12 与白名单 WL-15）。
+- **移除「通用开发」（D4 = A：直接重绑 + 删旧行/旧文件）**：删除包内
+  `apps/desktop/resources/meka/roles/general-development.json`；新增
+  `RETIRED_BUILTIN_MEKA_DEFAULT_ROLE_ALIASES = ['general-development', 'system-development',
+  'system-overview', 'system-debug']`。启动播种事务内的顺序是**承重的**：
+  为所有项目建/收敛默认角色行 → `backfillSessions`（`meka_project_id IS NULL` → `'saga2'`）→
+  别名会话重绑到 `meka_project_id || '-default-role'` + 删 saga2 旧内置行 → 固定目标映射
+  （`combat-config` / `combat-debug` → `combat-development`）。两张表的分工必须保持：
+  别名依赖会话所属项目、表达不成 `[旧 id, 新 id]` 二元组，因此不能扩 `RETIRED_BUILTIN_MEKA_ROLE_MAPPINGS`。
+  两处硬编码兜底改指默认角色：`meka-injection/mekaResolvePlan.ts` 的历史会话派生、
+  `maker-ipc/register.ts` 的 Orca lead 兜底。
+  > 方案稿 §3.4 曾把这里记作「**三处**硬编码兜底」，其中第三处是 `maker-ipc/register.ts` 的
+  > 冷启动前置校验（`!workingDir || !mekaProjectId || !mekaRoleId` 直接抛错）——它是 **fail-closed
+  > 守卫，本次刻意未动**（放宽它等于让缺绑定的会话带空配置启动）。因此实际改动是**两处**；
+  > 并且因为该守卫先于注入层兜底抛错，注入层那条「历史会话派生默认角色」在**冷启动路径上不可达**，
+  > 其可达范围限于**已有角色列的会话**（详见 §11.27 F5）。
+- **退役过滤口径**：`mergeBundledRoleFallbacks` 仍**只在 `projectFile.projectId === 'saga2'` 生效**，
+  但过滤集合改为 `RETIRED_BUILTIN_MEKA_ROLE_MAPPINGS` ∪ `RETIRED_BUILTIN_MEKA_DEFAULT_ROLE_ALIASES`
+  的**旧 id**。项目导入路径（`readProjectConfigAtRoot`）**不跑**该过滤 ⇒ 导入含旧角色的配置会克隆成
+  **新 cuid、`is_builtin = 0`、显示名仍是「通用开发」**的自定义角色，**属用户数据、必须保留**。
+- **五语文案**：`meka.defaultRoleDescription` 已按新语义重写（zh-CN / zh-TW / ja / ko `:13250`、
+  en `:13267`），文案**刻意不点名角色**（角色显示名是数据侧硬编码简中，既有裁决不引入 per-locale 名）；
+  新增 `meka.roleInheritsProjectDefaults` / `meka.roleIncludesAllProjectMetadata` /
+  `meka.roleInheritedSourcesNote` 三个键用于只读面板的来源标识。
+  > ⚠️ **同日第二批起为四个逻辑键**（本句不删除，保留为当轮记录）：新增
+  > `meka.roleIncludesAllBundledSkills`（第三枚来源徽标）与 `meka.roleInheritedSourcesNoteEditable`
+  > （可编辑副本用的通知文案）；通知按 `roleReadOnly` 在 `meka.roleInheritedSourcesNote` 与
+  > `…Editable` 之间**二选一取键**。见 §11.27 W17 / W18。
+- **与既有裁决的冲突（如实登记，不粉饰）**：
+  1. **用户可见文案**：§6.50 的历史条目（实际行号 `:4034-4035`，即「对应用户可见文案也据此措辞
+     （写“角色本身不附带任何提示词/技能/MCP”…）」那两句；原先写「约 `:3992-3993`」是**错的**，
+     已订正 —— 这两个数字指向的是本节开头的“背景”段，不是该裁决）当时要求文案写「角色本身不附带任何
+     提示词/技能/MCP」。该句随本次改动**已被替换**（五语文案不再这么说）。**该历史条目本身不改写**，
+     本次以新文案为准。
+  2. **存量「通用」角色行**：§6.50 的裁决（实际行号 `:4048-4049`，即「**不改动也不删除存量数据库里
+     已有的“通用”角色行**」那条“兼容边界”；原先写「约 `:4006-4007`」是**错的**，已订正）是「**不改动也不删除存量数据库里已有的
+     『通用』角色行** —— 它可能已被用户编辑过，静默删除等于丢用户数据」。本次 D4 = A **确实与之冲突**：
+     `general-development` 可被用户编辑（编辑写 `.meka/project.json` 的 `builtinRoles`），
+     重绑 + 删行 + 删资源文件正是那条裁决要避免的动作。**该冲突已由用户裁决接受**（方案 §0 的
+     D4 = A / D5 = A）—— 这里**不**声称「不违反既有裁决」。
+  3. saga2 项目文件里用户编辑过的 `general-development` 快照会在**下次保存项目时从盘上永久移除**
+     （退役过滤使其从有效配置消失，`saveProjectConfig` 随后重写文件），不可回退。这是第 2 条冲突的
+     具体丢数据面，已随 D4 = A 一并接受。
+- **接受边界与已知缺口（登记，不粉饰）**：
+  - **非 saga2 的残留内置别名行不清理**：`deleteRetiredBuiltinRole` 限定
+    `project_id = 'saga2' AND is_builtin = 1`。这类行**不存在合法来源**（只播种 saga2；
+    `createMekaRole` 恒 `is_builtin = 0` + 新 cuid；导入克隆成新 id）⇒ 放宽 DELETE 收益为零、风险非零，
+    故保持现状。
+    > ⚠️ **口径更正（2026-09-23 第二批，只追加不改原句）**：「**不存在合法来源**」说得**过强**，
+    > 与本文件新增的接受边界条目（§11.27「本批新增登记的接受边界与用户可见影响」第 1 条）正面冲突。
+    > 准确表述是：这类行**没有正常路径产生**（只播种 saga2；`createMekaRole` 恒 `is_builtin = 0` +
+    > 新 cuid；导入克隆成新 id），但**在升级库里与 `XDT_PASSIVE_SHARED_USER_DATA` 场景下确实可能存活**，
+    > 且**在 UI 里仍然可选**（选中建会话会失败）。⇒ 结论仍是「不放宽 DELETE」，但理由必须是
+    > 「没有正常产生路径、放宽收益为零而风险非零」，**不是**「这类行不存在」。
+  - **存量项目若从未重跑「发现」，`agents-md` / `rule` 可能只有文件名或相对路径、没有描述**
+    （描述只在发现流程落盘，且既有 `mergeDiscoveredMekaProjectMetadata` 会保留旧描述 ⇒ 不会自愈）。
+    **刻意不**在项目打开时自动跑发现：`metadata: discovered.map(...)` 是整体替换，会让文件已消失的条目
+    连同人工维护的 `displayName` / `notes` / `disciplines` / `domains` 一起丢失 = 静默数据丢失。
+  - **resume 的旧会话拿不到项目参考清单**（frozen 不注入 order 65），与既有「角色修改只影响新任务」
+    同源，属预期语义。
+  - `meka.builtinRoleReadOnly` 是**不可达死文案**（`selectionReadOnly` 恒 `false` ⇒
+    `roleReadOnly ≡ isMekaDefaultRole`），本次**刻意保留**。
+  - **角色显示名不进 i18n**（`MEKA_DEFAULT_ROLE_DISPLAY_NAME` 硬编码简中）⇒ 五语界面标签都是
+    「默认角色」，属既有缺口。
+  - `normalizeMekaRoleManifest` 是白名单式重建：**将来新增角色 manifest 字段必须同时在该处加透传**，
+    否则经 `createMekaRole` / 项目文件读写的角色会静默丢字段。
+  - `mergeBundledRoleFallbacks` 的 `includeAllProjectMetadata` 回填分支（`projectConfig.ts:555-558`）
+    **当前不可达**（唯一带该字段的 `general-development.json` 已删除，在役的 `combat-development.json`
+    不带该字段），**刻意保留**为「bundled 清单覆盖项目自有快照」的通用规则。
+- **验证现状（如实）**：本次交付**没有实跑任何门禁**（未跑 `pnpm test:unit` /
+  `test:unit:related`、未跑任何 package 的 `typecheck`、未跑 `pnpm test:db`、
+  未跑 `pnpm check:i18n-glossary`、未跑白名单实跑），**也没有跑** `pnpm desktop:session-smoke`。
+  用例期望**已同步**：注入层基线新增 `meka project references segment (order 65)` 一组 9 条
+  （**W25 批次终核：该组现为 10 条（8 个逐个 `it` + 1 组 `it.each`（2 条）），该文件合计 28 条**）
+  （原有 10 条逐字节期望**一个字符未改** —— 唯一改动是给 `runtime()` 夹具补上新必填字段
+  `projectReferences: []`，空集合 ⇒ 该段不渲染 ⇒ **R5「改基线前必须先在有意差异表新增条目」
+  的门槛未被触发**，本批是「新增段 + 角色样本期望值更新」而非「既有段文本变化」）；
+  `mekaRuntimeInjection.test.ts` 另补**两条**用例（**不是一条**；
+  `git diff` 实测新增两个 `it(`）——① `resolves the legacy-role fallback target through the real
+  runtime resolver`：走真实 `resolveMekaRuntimeConfig` 的历史四角色兜底用例（防 fake resolver 假绿）；
+  ② `mounts the platform skills exactly once when a role already selects the same id`：角色已显式选中的
+  平台技能**只挂一次**（防平台基线与角色选择集重复挂载）。`scripts/meka-session-smoke.mjs` 也按新契约重写（WL-11.6 新口径 +
+  WL-11.17 两行检查）。**但这些都还没跑过一次。** 另需注意：退役迁移、重绑顺序与幂等断言由
+  `src/main/localDb/__tests__/builtinMekaSeed.test.ts` 覆盖，而它被
+  `scripts/test-workspaces.config.mjs` 归入 `status: 'manual'` 的 **`db` 层**（`unit` 层 exclude）
+  ⇒ **`test:unit:related`、`test:unit` 与 CI 都不会执行它**，必须显式跑 `pnpm test:db`。
+  > ⚠️ **W25 批次更正（2026-09-23，只追加不改原句）**：末句「CI 都不会执行它」**已过期**——
+  > `.github/workflows/ci.yml` 的两处「Run companion database regressions」步骤（linux shard 1 /
+  > windows shard 1 各一处）已把 `src/main/localDb/__tests__/builtinMekaSeed.test.ts` 加进写死路径
+  > 清单 ⇒ **CI 会执行它**。准确表述是「**`pnpm test:unit` / `pnpm test:unit:related` 不执行它
+  > （它不属于 desktop `unit` tier）；CI 通过那条写死路径执行它；本地要单独跑仍应显式
+  > `pnpm test:db` 或直接 `vitest run <该文件>`**」。
+  **owner 确认未取得**：本改动改变最常见角色（默认角色）的新会话 system 前缀，属
+  `docs/dev-rules/maker-core-and-agent-behavior.md` §4 的 system prompt 改动门禁，
+  **尚未取得 owner 书面确认**。白名单落点：**WL-11.10 重写** + **WL-11.17 新增**（含上面全部未验证项）。
+  > ⚠️ **口径更正（2026-09-23 第二批，只追加不改原句）**：上面那两句写于当轮，**与同批的
+  > `maker-core-and-agent-behavior.md` §4.1 / `meka-whitelist-verification.md` WL-11.17「owner 确认」
+  > 项口径冲突**（那两处写的是「**维护者已直接指示提交并推送本次改动（授权本次交付）**、
+  > **没有书面签名**」）。**以「维护者直接指示提交与推送，无书面签名」为准**：
+  > 本改动确实触发了 §4 的 system prompt 改动门禁，处置是「按维护者直接指示提交/推送」，
+  > **既不是**「已取得正式签核」，**也不是**「完全没有授权」——原文的「尚未取得 owner 书面确认」
+  > 只应读成「没有书面签名这一件事成立」，**不得**读成「授权未取得」。
+  > 缓存率影响**仍未实测**，这一点不因维护者的指示而消失。
+
+### 11.27 2026-09-23 默认角色批次的对抗审查修复（F1–F5）、面板/文案反转与新增接受边界
+
+> 本条是**新条目**（不改写 §11.26 与更早的历史条目）。§11.26 里与现状矛盾的三处**规范陈述**
+> 已在原处加「已被反转」标注（不删除），§5「项目与角色配置的运行时契约」的现在时契约句已直接
+> 改写为现状。本批**未跑任何门禁**，详见本条末尾「验证现状」。
+>
+> **WS ↔ 发现映射（由维护者确认，本文件不自行推断）**：**W11 = 修 F1 / F3 / F5**；
+> **W12 = 修 F2 + order 65 段末行文本重写**；**W16 = 修 F4**（`includeAllBundledSkills` 展开点 +
+> 恢复 `meka-design` MCP）；**W10 = 面板显示有效清单**；**W17 = 修 R5 的 P1**（含术语/键值口径）；
+> **W18 = 第三枚来源徽标 + 五语新键**；W13 / W14 分别是测试同步与文档同步。
+>
+> **行号纪律**：本条引用的代码行号在本条写入时**重新打开文件核对过**；维护者分派 W11 时给出的
+> `runtimeConfig.ts` 锚点（`:744-753` / `:916-931`）与写入时的文件状态不一致 —— 同一批次内
+> `runtimeConfig.ts` 与 `localDb/ipc/mekaRoles.ts` 都仍在被改动，行号会继续漂移。
+> **引用请以符号名为准，并重新核对行号。**
+>
+> **行号复核之二（2026-09-23 第二批文档同步时逐条重核，本条优先）**：本批继续在
+> `runtimeConfig.ts` / `mekaRoles.ts` / `mekaCombatPrompts.ts` / `mekaResolvePlan.ts` 里新增代码，
+> 上文各 F 项里写的行号**多数已再次漂移**。本次打开文件按符号名重核后的当前值（供换算与引用；
+> **`runtimeConfig.ts` 在本次文档同步期间仍被并发编辑**，观测到其 mtime 继续前进，
+> 行号**只保证「指向哪个符号」正确**）：
+> `resolveBundledSkillSelections` `:676`（`stripSelectAllDerivedEntries` 内调用 `:761`、
+> 运行期调用 `:960`）、`resolveRoleRelativePath` `:636`、`explicitMetadataKeys` `:924`、
+> `isExplicitSelection` `:1015`（F1 `catch` 内判据 `:1122`）、
+> `inlineProjectDocumentation` `:1009`、F1 容错边界 `catch` `:1120`（`log.warn` `:1129`）、
+> `resolveProjectMetadataAbsolutePath` `:407`、`itemType` 穷尽性校验 `:1022-1031`、
+> `rootPath` 分流的调用点 `:1040-1049`、`roleDefaults.rules[].text` 内联 `:938-940`。
+> `localDb/ipc/mekaRoles.ts`：`projectFileForRole` `:177`、`expandRoleManifest` `:213-243`、
+> `stripSelectAllDerivedForSave` `:267` 起、`createMekaRole` `:349`、`updateMekaRole` `:385`、
+> `deleteMekaRole` `:446`、`readRoleManifest` `:500-515`（默认角色分支 `:506`）。
+> **免责说明**：以上锚点在 2026-09-23 之后可能继续漂移；**引用时以符号名为准**。
+
+- **F1 容错边界（严重度 P1，已修；归 W11）**：`includeAllProjectMetadata` 的**全量展开项**解析失败时
+  `log.warn` + 跳过；**作者显式选择仍 fail-closed 上抛**。落地位置：
+  `meka-projects/runtimeConfig.ts` 在合并 `roleDefaults` 之后、`resolveRoleProjectMetadataSelections`
+  之前拍下「显式选择 key 快照」`explicitMetadataKeys`（**现为 `:924`**；原先写的 `:842-844` /
+  注释 `:830-841` 已随第二批新增代码漂移），
+  元数据循环里按该快照分流（`isExplicitSelection` **现为 `:1015`**，原先写的 `:920`），
+  `try/catch`（`catch` **现为 `:1120`**、`log.warn` **现为 `:1129`**；原先写的 try `:942` /
+  catch `:1007-1022` / warn `:1016`）只在非显式项上吞错并 warn。
+  **原因（必须记住）**：默认角色是**新建会话的默认选中项**，失败半径 = 该项目**所有新建会话**；
+  自动展开项由项目扫描产生，可能包含无法解析的第三方文件（frontmatter 非法的 `SKILL.md`、
+  声明不全的 `.mcp.json`），一个坏文件就会把整个项目的建会话顶成 `INVALID_PARAMS`。
+  反过来，显式选择是作者意图，静默跳过会把「配置写错了」变成「配置生效了但什么都没有」。
+  **不放宽的三种错误**（`rootPath` 不在允许根 / `..` 逃逸项目根 / 未知 `itemType`）**任何来源都抛**：
+  它们校验的是「寻址是否合法」而不是「内容能否解析」，因此刻意留在容错边界**之外**
+  （`resolveProjectMetadataAbsolutePath` **现为 `:407`**，原先写的 `:376`；穷尽性校验 **现为
+  `:1022-1031`**，原先写的 `:925-933`）。
+- **F2 重绑守卫（严重度 P0，已修；归 W12）**：别名重绑 SQL 增加
+  `AND meka_project_id IN (SELECT id FROM meka_projects)`
+  （`shared/meka-projects.ts` 的 `rebindRetiredSessionToDefaultRole` `:536-543`）。
+  **原因与失败链**：目标 `<projectId>-default-role` 只对**已登记项目**存在，而
+  `sessions.meka_project_id` **没有外键**（项目登记被删后 Meka 会话历史可以合法存活 ——
+  该语义按 `shared/meka-projects.ts` 的注释由 `migrationReplay.test.ts` 钉住，**本轮未实跑**，
+  且该用例属 `status: 'manual'` 的 `migration` 层）⇒ 孤儿项目会话若被改绑就是 FK violation ⇒
+  整个播种事务失败 ⇒ `localDb` 启动 fail-closed ⇒ **应用无法启动**。
+  加守卫后这类会话的角色列由 `sessions.meka_role_id` 的 `ON DELETE SET NULL` 置空
+  （删项目/删角色的**既有语义**，不是新行为）。
+- **F3 战斗内联（严重度 P1，已修/有意差异；归 W11）**：`workflow === 'saga2-combat-development-v1'`
+  的角色，`agents-md` / `rule` **保持改动前的内联投递**、不产出 `projectReferences`
+  ⇒ 段 65 拿到空集合、整段不渲染（`runtimeConfig.ts` 的 `inlineProjectDocumentation`
+  **现为 `:1009`**，原先写的 `:914`；`agents-md`/`rule` 内联分支 **现为 `:1061-1063`**，
+  原先写的 `:946-954`；段构建器空集合返回 `null`）。判据用 `workflow` 而不是角色 id。
+  **理由**：战斗参考路径是一套**封闭且精确的白名单**契约——`[SAGA2_PROJECT_PATHS]` 逐条给出
+  ReadCommand，同一份解析结果写进 `vendorOptions.mekaCombatProjectRefPaths` 供策略层精确放行，
+  而策略层**拒绝**读取工作区根 `AGENTS.md`。再叠加一份「必须读取这些路径」的开放清单，等于让
+  指令与 Host 策略正面冲突（模型被要求读、读取被拒绝），且规范正文在改动前是可用的内联形态。
+  **代价（如实登记）**：战斗角色勾选大体积 `AGENTS.md` 时仍可能逼近 Pi argv 预算（win32
+  30,000 字符），即首轮想消掉的那类风险在战斗角色上**依然存在**；本批未做 argv 实测。
+- **F4 能力面回归修复（严重度 P1，已修；归 W16）**：新增通用开关 **`includeAllBundledSkills`**
+  （`shared/meka-projects.ts:127` 的契约字段、`mekaDefaultRoleManifest` `:214` 置 `true`、
+  展开点 `runtimeConfig.ts` 的 `resolveBundledSkillSelections` **现为 `:676`**（原先写的 `:633`）
+  + 调用 **现为 `:761` / `:960`**（原先写的 `:871`）），
+  **不枚举任何 skill id**；同时默认角色**恢复 `meka-design` MCP**（`:221`）。
+  **原因**：退役的 `general-development` 曾显式 pin 3 个内置 skill + `meka-design`；
+  「出厂全量」若只含项目元数据而不含包内 catalog 全量，会**静默丢掉能力面**（
+  `p4-operations` / `orca-coordination` / `safety-boundaries` / `meka-design-handbook` 等
+  未被项目元数据覆盖的内置 skill）。
+  **必须同时记住的维护不变量**：`normalizeMekaRoleManifest` 是**白名单式重建**
+  （`meka-projects/projectConfig.ts:372-377` 是本批新增的透传），
+  **将来新增任何角色 manifest 字段都必须在该处同步透传**，否则经「复制角色」与项目文件读写的
+  角色会**静默丢字段**。
+- **F5 `scope` 校验 + 参照系注释（严重度 P2，已修；归 W11）**：`MekaProjectReference.scope` 的文档注释
+  改为「**参照系是该条目自己的 root**」——主项目元数据（未写 `rootPath`）的原点是 `projectRoot`，
+  来自 `additionalPaths` 的条目原点则是该附加根；作用范围只描述相对位置，文件位置一律以 `path`
+  为准（`shared/meka-projects.ts:52-60`）。运行期新增 `projectReferenceScope`
+  （`runtimeConfig.ts`，**符号名定位**；本次核对在 `:495-516`）
+  与 `isUsableScopePath`（同文件，**符号名定位**；本次核对在 `:475` 附近）：`subProjectPath` 只在它是**根内相对路径**时才采用，
+  绝对路径（含 `C:\x`、`\\srv\share`、`/x`）或任何含 `..` 段的值一律不采用、回落文档所在目录并
+  `warn` —— 该字符串会被逐字写进注入文本并当作「从项目根可解析的目录」使用。
+  **F5 的连带事实**：方案稿 §3.4 记的「**三处**硬编码兜底」实为**两处**；第三处
+  `maker-ipc/register.ts:8470-8473` 是 **fail-closed 守卫、本次未动**，且它**先于**注入层兜底抛错，
+  因此注入层那条「历史会话派生默认角色」（`meka-injection/mekaResolvePlan.ts:583-586`，
+  已改为按 `mekaDefaultRoleId(projectId)` 派生、并回写 `sessionBindingPatch`）在**冷启动路径上
+  不可达**——其可达范围必须限定为「**已有角色列的会话**」。
+- **W10 面板显示有效清单（已修；该项反转了首轮结论）**：`meka-role:read-manifest` 现在是
+  **配置 IO 路径**：`localDb/ipc/mekaRoles.ts` 新增 `projectFileForRole`（`:177`）与
+  `expandRoleManifest`（`:213`），`readRoleManifest`（`:500`，默认角色分支 `:506`）对
+  **三个 opt-in 开关任一为 true** 的角色复用运行期两个既有纯函数
+  （`mergeMekaProjectRoleDefaults` → `resolveRoleProjectMetadataSelections`）外加
+  `resolveBundledSkillSelections` 展开技能，**三层回退不抛错**（无项目行/无路径/无项目文件/
+  catalog 扫不动 ⇒ `warn` + 返回存储的 manifest）。
+  **这是一次明确的反转**：首轮结论是「默认角色只读 ⇒ 无一致性要求 ⇒ 不展开」，把「读清单」
+  与「运行期解析」拆成了两套真相；实际后果是只读面板对出厂全量角色**看起来什么都没选**，
+  与角色契约正好相反。**反转理由**：面板是用户判断「这个角色到底挂了什么」的唯一入口，
+  显示存储值等于系统性误导；展开只发生在 opt-in 角色上，普通角色连项目配置都不读。
+- **W17 只读文案修正（已修；修 R5 的 P1，含术语/键值口径）**：通知里「本角色只读」不再与来源徽标绑定，改为按 `roleReadOnly`
+  在 `meka.roleInheritedSourcesNote` 与**新增的** `meka.roleInheritedSourcesNoteEditable`
+  之间**二选一取键**（`MekaProjectRoleEditorRoute.tsx` 的 `InheritedRoleSourcesNotice`）。
+  **原因**：`useProjectDefaults` / `includeAllProjectMetadata` / `includeAllBundledSkills`
+  这三个开关**会被「复制默认角色」的副本继续携带**，而副本是**可编辑**的；把「只读」挂在开关上会
+  告诉用户一个能保存的面板「不能保存」。措辞同时改为指代**上方徽标**的「带以上标记的条目…」，
+  因为下方列表是继承项与显式项**混排**。
+  > **W25 批次语义修正（2026-09-23，追加不改写上面的原句）**：`meka.roleInheritedSourcesNote` /
+  > `…Editable` 两句现在写「来自**项目配置或应用内置技能目录**、随**项目或应用版本**变化」。
+  > 当轮措辞只说「项目配置」，对**第三枚**「已包含全部内置技能」徽标**说错了**（内置 catalog 技能
+  > 来自包内 `resources/meka/skills/**`，不来自项目配置）；可编辑变体另给出「**取消勾选即可排除
+  > 对应条目**」的指引（与 §11.28 / WL-11.10 第 8 条的「只有 `enabled: false` 才是有效排除」一致）。
+  > 五语（zh-CN / zh-TW / en / ja / ko）均已改。
+- **W12 重绑守卫（F2）+ 段 65 段末行文本重写（已修）**：除 F2 的范围守卫（见上一条）外，本项还把
+  order 65 段的**末行**整句重写为三条并列约束：「不要读取、枚举或发现本清单未列出的
+  `AGENTS.md` / `.cursorrules` / `rules.md`」「**技能正文（`SKILL.md`）按技能目录正常按需读取**」
+  「不要根据项目根目录二次拼接或猜测其它路径」。要点是**禁止句只约束规范文件**，
+  `SKILL.md` 明确不受该句约束（`mekaCombatPrompts.ts` 的 `mekaProjectReferencesPrompt` 是文本唯一来源）。
+  首轮从 WL-15 的「只读我给你的这一份冻结正文」语境直接搬运，语义被放大成「不要读任何其它
+  `SKILL.md`」，与技能通道自相矛盾。段文本仍是 `6 + N` 行形态（末行仍是**单行**禁止句，未拆成多行）。
+- **W18 第三枚来源徽标 + 五语新键（已落地）**：`meka.roleIncludesAllBundledSkills`
+  （five locales `zh-CN/zh-TW/en/ja/ko`），与 `roleInheritsProjectDefaults` /
+  `roleIncludesAllProjectMetadata` 并列显示。
+- **既有记录不准处的修正（只改规范陈述，不改历史条目）**：
+  1. §11.26 的「新增 …**三个键**用于只读面板的来源标识」→ 现为**四个逻辑键**（三个徽标键 +
+     通知键，通知键按 `roleReadOnly` 与其 `…Editable` 变体二选一）；原句保留并加标注。
+  2. §11.26 的「`read-manifest` 对它**仍返回内存 manifest、不做运行期展开**」→ 原句保留并加
+     「已被反转」标注；§5 的现在时契约句已改写为现状（W10）。
+  3. 方案稿 §3.4 的「**三处**硬编码兜底」→ **两处**；第三处是 fail-closed 守卫、本次未动，
+     并因此把「历史会话派生默认角色」的表述限定为「仅对已有角色列的会话」（F5）。
+  4. §11.26 的「`skills` / `rules` / `promptFragments` / `mcp` / `projectMetadataSelection`
+     的显式列表**刻意留空**」→ `mcp` 不再留空（`meka-design` 一处显式项，F4）；原句保留并加标注。
+- **本批新增登记的接受边界与用户可见影响（首轮遗漏）**：
+  1. **非 saga2 存活的 `is_builtin = 1` 别名行**：不仅「不清理」（`deleteRetiredBuiltinRole`
+     限定 `project_id = 'saga2' AND is_builtin = 1`），而且**在 UI 里仍然可选**；用户一旦选中
+     它建会话，会话会以 `builtin Meka role <id> not found` 失败。绑定它的历史会话（在其项目
+     仍处于已登记状态时）已被重绑到默认角色，因此该行实际上是**死行**；项目登记已被删除的孤儿
+     会话则不受重绑守卫影响（F2），会继续持有这个已无 manifest 的角色、在冷启动时自行失败。
+     放宽 DELETE 的收益为零、风险非零，故保持现状。
+  2. **`.cshare` 旧分享包**：包内只带 identity（`legacyRole` / `projectId` / `roleId`）。
+     导出的 `roleId = 'general-development'` 在升级机上按**既有** `role-missing` 门槛
+     （`session-share/mekaShareBinding.ts:163-171`）降级为**普通任务 + note**，**不半绑定**。
+  3. **`passiveSharedUserData` 跳过播种**（dev-only，`XDT_PASSIVE_SHARED_USER_DATA=1`，
+     packaged 无条件排除）：该模式下启动不播种 ⇒ 库里可能仍留着 `general-development` 行，
+     而包内已无对应 manifest 文件 ⇒ 该角色的会话与只读面板读清单**都会抛**
+     `builtin Meka role ... not found`（`meka-projects/projectConfig.ts:719`），
+     且该角色**既不可用也不可编辑**——面板要先把清单读出来才谈编辑，而读清单本身就会走到
+     `readBuiltinRoleManifest`（`localDb/ipc/mekaRoles.ts:510` 的调用点，符号名 `readRoleManifest` 的内置分支）并在 `projectConfig.ts:719` 抛错。
+  4. **扫描派生描述有粘性**：`mergeDiscoveredMekaProjectMetadata`
+     （`meka-projects/metadataScanner.ts:21`，描述保留在 `:41`）**保留旧描述**、
+     无法区分「扫描产出」与「人工填写」⇒ 正文改动后描述**不刷新**。
+     这是为确定性（不覆盖人工 `displayName` / `notes`）付出的代价，权衡见 §11.26。
+  5. **既有（非本次引入）缺口**：`createMekaRole`（`localDb/ipc/mekaRoles.ts:349`）
+     只写 manifest、**不复制 `prompts/*.md`**，而 `promptFragments.path` 相对**角色清单目录**解析
+     （`meka-projects/runtimeConfig.ts` 的 `resolveRoleRelativePath`，**符号名定位**；本次核对
+     `:636` —— 原先写的 `:593-605` 已漂移）⇒ 项目导入时克隆出来的内置角色一旦被会话使用，
+     解析 fragment 时会抛 `ENOENT`（角色带的 fragment 文件没有跟着落到 userData）。
+     **本次只登记，不作为本批修复对象** —— 属既有缺口，需单独决策（修法涉及「克隆时复制资源」
+     与「fragment 解析回落 bundled 目录」两条不同方向）。
+  6. **`roleDefaults.rules[].text` 仍有内联通道**（`runtimeConfig.ts` 的
+     `prompts.push(rule.text.trim())`，**现为 `:938-940`**，原先写的 `:858`）把 `rule.text` push 进
+     prompt，写入时核对）：它属**角色默认提示词**、不是 `rule` 类元数据。因此文档里「零规范正文内联」的宣称
+     必须限定为**元数据通道**，不得读成「角色配置里没有任何内联正文」。
+- **W19 展开清单回流物化（P1，本批第二轮自查发现并修复）**：W10 让 `meka-role:read-manifest`
+  返回**展开态**（`expandRoleManifest`），而渲染层把这个对象当草稿、保存时经 `mekaRoles.ts` 的
+  `createMekaRole` / `updateMekaRole` **原样回传**；两条写盘入口原本只做 `normalizeMekaRoleManifest`
+  ⇒ 派生项被**物化**成磁盘上的显式清单。后果是 **F1 被重新引入**：运行期的
+  `explicitMetadataKeys` 快照（`runtimeConfig.ts`，符号名定位）取自角色清单**自己声明**的
+  `projectMetadataSelection`，只对**作者显式选择** fail-closed；物化后全部全量展开项都成了
+  「显式选择」⇒ 项目里任何一个无法解析的第三方 `SKILL.md` / `.mcp.json` 会把该角色的**新建会话**
+  顶成 `INVALID_PARAMS`。**这条路径是被官方文案引导的**：`MEKA_BUILTIN_READ_ONLY` 让用户
+  「copy it to a project role instead」，而复制的正是三个开关全 `true` 的默认角色，因此「复制默认
+  角色 → 保存」必然触发。修法：新增导出纯函数 `stripSelectAllDerivedEntries`
+  （`meka-projects/runtimeConfig.ts`）——以「**开关保持不变、四个列表清空**」的清单走与运行期
+  **同一条**展开漏斗得到 `derived`，再对四个列表删除**与 `derived` 同 key 且深度相等
+  （`isDeepStrictEqual`）**的条目；**不等价条目一律保留**（作者改成 `enabled: false` = 精确排除意图，
+  `derived` 里没有的 key = 作者新增项）；**除四个列表之外，`prompt` 上由项目
+  `roleDefaults.promptFramework` 派生的前缀**（2026-09-23 第二批修复）也要剥——只对
+  `useProjectDefaults === true` 生效：`prompt === framework` ⇒ 作者 own 为空 ⇒ 写回空串，以
+  `framework + '\n\n'` 开头 ⇒ 剥掉该前缀，其余（作者改写过的前缀、framework 为空/纯空白）原样保留；
+  剥掉后运行期 `mergeMekaProjectRoleDefaults` 会**再前置一次** ⇒ 有效 prompt 与第一次展开逐字相等
+  （幂等），故「打开面板 → 保存」不再每次再叠一份 framework（出厂 saga2 的 framework
+  **实测 3,925 字符 / UTF-8 3,995 字节 ≈ 3.9 KiB**；原先写的「约 3.5 KB」是估值、偏小，已按
+  `apps/desktop/resources/meka/projects/saga2/project.json` 的 `roleDefaults.promptFramework`
+  实测订正），
+  Pi win32 的 argv 预算只有 30,000 字符）；其余字段一律不动。写盘入口有三个：`createMekaRole` 与
+  `updateMekaRole`（后者两个分支共用同一个 manifest，只剥一次），都在
+  `normalizeMekaRoleManifest` **之前**；另有**项目导入/克隆路径**（`localDb/ipc/mekaProjects.ts` 的角色
+  克隆循环）对写进新项目文件 `builtinRoles` 的那份快照直接用同一个纯函数剥离（用当前作用域的 `file`
+  作 projectFile；**不能**复用需要读盘的 `stripSelectAllDerivedForSave`，此刻新项目配置尚不可读）。
+  降级契约：三开关全非 `true` ⇒ 零 IO 早退；项目配置或
+  catalog 取不到 / 抛错 ⇒ `log.warn` + **原样落盘，保存不失败**。有界副作用：对必然被
+  `MEKA_BUILTIN_READ_ONLY` 拒绝的更新（如默认角色），若草稿带开关会先白做一次项目配置读取 +
+  catalog 扫描再抛错，**错误码与结果不变**。渲染层**一行未改** ⇒ 面板勾选状态与行为完全不变，
+  只是磁盘上不再留派生副本。
+  > **⚠️ W25 批次更正（2026-09-23，只追加不改原句）**：上面「渲染层**一行未改**」**只对当轮成立**——
+  > W25 批次**改动了渲染层**（`MekaProjectRoleEditorRoute.tsx`）：新增 `derivedEntryKeys` 消费、
+  > **对派生行的四处删除按钮不渲染**（rules / mcp / 技能 legacy 与未识别项），并把新增说明句的
+  > `leading-5` 改为 `leading-[1.67]`。**面板勾选状态与保存行为仍不变**，变的是派生行的删除入口与一处
+  > 行高类名。详见本节 §11.28。
+  回归锁是 **unit 层**新文件
+  `apps/desktop/src/main/meka-projects/__tests__/mekaRoleSelectAllPersistence.test.ts`
+  （**本轮逐条重数（2026-09-23，打开文件数 `it(`）为 20 条 `it` / 3 个 `describe`** ——
+  `stripSelectAllDerivedEntries` 6 条 + `select-all persistence at the write boundaries` 7 条 +
+  `derived prompt framework is stripped before it can stack up` 7 条；**此前登记的「原 12 条 +
+  第二批 7 条 = 19 条」与本次重数不符**，该文件在本批中仍被继续编辑，**一律以文件实际为准**）；
+  > **W25 批次终核（2026-09-23，只追加不改原句）**：该文件**当前为 23 条 `it` / 4 个 `describe`** ——
+  > 新增第 4 组 `describe('derived entry keys are reported for the panel and never persisted')`（3 条），
+  > 锁住 `derivedEntryKeys` 的展示语义与「绝不落盘」两条写盘入口。逐组为 6 / 7 / 3 / 7。
+  它**刻意不放在被测模块旁边的 `localDb/ipc/__tests__/`**——该目录被 desktop `unit` 层 exclude
+  （`scripts/test-workspaces.config.mjs:161`）且 `db` 层是 `status: 'manual'`（同文件 `:190-193`），
+  放在那里**提交前门禁与 CI 都不会执行**；同仓先例与逐字理由见
+  `meka-projects/__tests__/mekaDefaultRole.test.ts` 的头部注释。
+  **第二批实跑（定向取证，非门禁）**：`pnpm --filter desktop exec vitest run
+  src/main/meka-projects/__tests__/mekaRoleSelectAllPersistence.test.ts` ⇒ **19 passed / 0 failed**
+  （原有 12 条仍全绿 + 新增 7 条全绿）；另跑了 `mekaProjectsImport.test.ts` ⇒ **6 passed**
+  （确认克隆路径改为剥离后导入行为不变）。**门禁仍未跑**，且该 19 passed 记录对应的是**重数出 20 条
+  之前**的文件状态 ⇒ **当前条数下没有实跑证据**。
+  > **W25 批次补充（2026-09-23，只追加不改原句）**：该文件现已增至 **23 条**，19 passed 的记录
+  > **更加不构成当前条数下的证据**；W25 批次**同样未跑任何门禁**。
+- **2026-09-23 第二批登记：新增风险与边界（B1–B8）**（对应派单里的 F1–F8；**为避免与上文首轮
+  对抗审查的 F1–F5 撞号，本条改用 B1–B8**。下列结论**全部由打开当前工作树的源码逐条核对得出**
+  （核对时间 2026-09-23，见本节「行号纪律」），**本批未跑任何门禁** ⇒ 下面凡写「已修」的都是
+  **代码级证据，不是实跑证据**。）
+  - **B1 `prompt` 派生 framework 前缀的物化（已修）**：面板拿到的是**展开态**（W10），
+    而展开态里的 `prompt` 已经被 `mergeMekaProjectRoleDefaults` 前置了项目 `roleDefaults.promptFramework`
+    （`runtimeConfig.ts` 的 `mergeMekaProjectRoleDefaults`，其 `framework` 合并式在**函数体末**：
+    `prompt: ownPrompt ? `${framework}\n\n${ownPrompt}` : framework`）。渲染层把这个对象当草稿原样回传、
+    写盘入口原样落盘 ⇒ 运行期**再前置一次** ⇒ 每次「打开面板 → 保存」就叠一份 framework。
+    出厂 saga2 的 framework 实测 **3,925 字符 / 3,995 字节 ≈ 3.9 KiB**，而 Pi win32 的 argv 预算只有
+    30,000 字符 ⇒ 叠几轮就会把新会话顶出预算。**已修**：`stripSelectAllDerivedEntries`
+    （`meka-projects/runtimeConfig.ts`）在剥四个列表之外**同时剥这个派生前缀**，口径为
+    **仅 `useProjectDefaults === true` 且 framework 非空时**：`prompt === framework` ⇒ 写回**空串**；
+    以 `framework + 两个换行` 开头 ⇒ **剥掉该前缀**；**其它一律不动**（作者改写过的前缀、framework
+    为空/纯空白、空串）。剥掉后运行期会**再前置一次** ⇒ 有效 prompt 与第一次展开**逐字相等**（幂等）。
+    这与上文 **W19** 是同一落点，本项只补「数值实测 + 口径复述」。
+    > 更正：本文件与 `docs/product-rules/meka-skills.md` 原先把该 framework 写成「约 3.5 KB」，
+    > **偏小**；按项目文件实测应为 ≈3.9 KiB。**本次只改本文档**，`meka-skills.md` 的同一处
+    > **仍未更正**（不在本次允许改动的文件清单内），登记为待办。
+  - **B2 两条不在 F1 容错边界内的失败半径（已修）**：两项都与「默认角色出厂全量 ⇒ 失败半径 = 该项目
+    **所有新建会话**」同源，**修法都是「只对派生项降级，作者显式选择仍 fail-closed」**：
+    1. **全量展开项的 `rootPath` 不在允许根**：原先直接抛
+       `Meka project metadata root is not configured` ⇒ 一个历史残影（用户先配过 `additionalPaths`
+       并跑过「发现」，之后删掉该附加路径并保存，元数据项仍 enabled 且带旧 `rootPath`）就把该项目的
+       所有新会话打死。**现在**：`resolveProjectMetadataAbsolutePath` 改为返回**可判别结果**
+       （`{ path }` / `{ failure: 'root-not-configured' | 'escapes-root'; message }`，`runtimeConfig.ts`），
+       由**调用点按来源分流** —— 元数据循环里 `root-not-configured` **且非显式选择** ⇒ `log.warn`
+       + `continue`（跳过该条），**作者显式选择仍 `throw`**；**`..` 逃逸（`escapes-root`）与未知
+       `itemType` 对任何来源都仍抛错**（`itemType` 的穷尽性校验前置在同一边界之外）——
+       **红线未放宽**。跳过在安全上**严格优于**抛错：它**根本不访问那个根**，不可能读出允许根之外的内容。
+    2. **技能快照物化**：`collectSkillFiles`（`meka-projects/skillSnapshot.ts`）原先**没有排除名单**，
+       且遇 symlink / 超限即抛（`MAX_FILES` / `MAX_TOTAL_BYTES`）。若某个 `SKILL.md` 落在**项目根**
+       （此时派生 skill 的 `sourceDirectory` 就是**整个项目树**），递归几乎必然超限或撞上 symlink
+       ⇒ 该项目所有新建会话失败。**现在**：遍历复用**与项目扫描器同一份**排除目录名单
+       （`SKILL_SNAPSHOT_EXCLUDED_DIRECTORIES` = `METADATA_SCAN_EXCLUDED_DIRECTORIES`；「不下降」
+       的判定排在 symlink / 非普通文件之前），并且**仅对派生（非作者显式选择）的 skill**
+       在收集失败时 `log.warn` + **跳过该 skill**（它在快照里**完全不存在**：既没有 `skills/<dir>/**`，
+       也没有 `catalog.json` 里的那一条），**作者显式选择仍抛错**。`derivedOnly` 只由
+       `includeAllProjectMetadata` / `includeAllBundledSkills` 全量展开产生，**不随磁盘清单落盘**
+       （B1 的剥离保证这一点）。
+       > **W25 批次补计数（2026-09-23）**：本项的回归锁是
+       > `apps/desktop/src/main/meka-projects/__tests__/skillSnapshot.test.ts` —— **15 条声明**
+       > （12 条常规用例 + 3 条 `it.runIf(process.platform !== 'win32')` 的 symlink 用例，
+       > **Windows 上不执行**；W25 逐条重数）。**本批未跑任何门禁**，该文件未实跑。
+  - **B3 接受边界：物化的「显式选择」会丢失 fail-closed 意图（反面代价）**：B1 的剥离按
+    「与 `derived` **同 key 且深度相等**」删除；因此**作者若把某条全量派生项手写成显式选择**
+    （哪怕逐字相同），其意图恰恰是「**这条解析失败要抛错**」，剥离会把它**退回「warn + 跳过」**。
+    更关键的是**面板从此再也无法表达这种 fail-closed** —— 三个全量开关一开，该条目就必然是派生项；
+    要恢复 fail-closed 只能**关掉全量开关、改成显式枚举**。**如实登记为接受边界**：这是「消除 F1、
+    且让磁盘清单保持『开关即真相』」的代价，**不能只从消除 F1 一侧论证**。
+  - **B4 降级路径下 F1 会复现（取舍已登记）**：`stripSelectAllDerivedEntries` 的降级契约是
+    「项目配置 / catalog 取不到或抛错 ⇒ `log.warn` + **原样落盘**，保存不失败」。而**原样落盘**
+    意味着**展开态被物化**（派生项变成磁盘上的显式条目）⇒ 运行期的 `explicitMetadataKeys` 快照
+    随之变成全量 ⇒ **F1 回归**：该项目里任何一个无法解析的第三方 `SKILL.md` / `.mcp.json` 都会把
+    该角色的**新建会话**顶成 `INVALID_PARAMS`。**取舍（必须连起来读）**：用「**降级发生后的极窄窗口内**
+    该项目新会话可能失败」换「**保存永不因为剥离失败而失败**」—— 保存失败会让用户丢草稿，
+    而这是更常见、更不可接受的路径。两条事实写在一起，不要只读其中一句。
+  - **B5 老会话重绑后注入内容会变化**：历史 `general-development` 会话经退役迁移**重绑**到
+    `<projectId>-default-role`；若它走 bootstrap **重新解析**（`mekaRuntimeResolved !== true`，
+    即 `resolveBootstrapInjection`，其中「hydrated 持久会话有项目无角色 ⇒ 按
+    `mekaDefaultRoleId(projectId)` 派生并回写 `sessionBindingPatch`」），**注入内容随之变化**，
+    不只是「换了个角色 id」：
+    - **角色 prompt 换成新契约**：退役角色的 prompt 含一整段「SAGA2 战斗请求即按战斗开发流程处理」
+      （`general-development.json` 已删除，可在 `HEAD` 取回），默认角色的三段契约 prompt
+      **刻意删掉了那一段**；
+    - **技能从「项目默认 + 3 个显式」变成「项目默认 + 内置 catalog 全量」**：退役角色显式 pin
+      `meka-design-handbook` / `combat-skill-configuration` / `saga2-entry-model` 三个 skill
+      （且 `useProjectDefaults: true`），默认角色改为 `includeAllBundledSkills: true`；
+    - **`projectMetadataSelection` 从空变成全量**：退役角色是 `[]` 且
+      `includeAllProjectMetadata: false`，默认角色是 `true` ⇒ order 65 段**从「不出现」变成出现**；
+    - **丢失原 `combat-evidence-budget` promptFragment**：退役角色带
+      `promptFragments: [{ id: 'combat-evidence-budget', path: 'prompts/combat-evidence-budget.md' }]`，
+      默认角色**不带任何 promptFragment**。
+    ⇒ 文档原来只写「会话重绑到默认角色」，**必须补上这层后果**：重绑**不是**等价替换，注入内容
+    （含 system 前缀）会变。**未实测**：没有在真实实例里对比重绑前后的注入文本。
+  - **B6 Orca lead 兜底对「项目登记已被删除」的 lead 会换错误码（行为变化，如实登记）**：
+    `maker-ipc/register.ts` 给 `createOrcaWorkerCreationService` 注入的 `getLeadSessionRow` 里，
+    兜底由「saga2 才派生 / 其它为 `null`」改成「**按 lead 自己项目**派生 `<projectId>-default-role`」
+    （`mekaRoleId: leadRow.mekaRoleId ?? (leadRow.mekaProjectId ? mekaDefaultRoleId(leadRow.mekaProjectId) : null)`）。
+    对**ghost 项目**（项目登记已被删除、但历史会话行合法存活）的 lead：目标角色行**不存在**
+    ⇒ 兜底给出的 id 解析时以 `Meka role not found` 失败，**错误码变成 `INTERNAL`**；
+    而改动前的干净失败是 `INVALID_PARAMS`。**两条路径都失败，变的只是错误码与错误面**
+    ⇒ 登记为**行为变化**（不是修好，也不是修坏）。
+    **同时如实写明**：为该兜底新增的测试
+    `apps/desktop/src/main/maker-ipc/__tests__/mekaOrcaLeadRoleFallback.test.ts` 是
+    **源码锚点断言**（`readFileSync` 读 `register.ts` 源码文本、正则/字面量匹配兜底表达式与排序），
+    **不是行为测试** ⇒ 它**锁不住运行时行为**，只能防止「兜底被改回硬编码角色 id / 硬编码 saga2」。
+    **（W25 批次补计数：该文件为 2 条 `it`；本批未跑，仅代码级核对。）**
+  - **B7 坏交互（已知、未修、登记为后续项）**：面板对**派生**条目（继承自项目 `roleDefaults` /
+    内置 catalog，即第 5 条来源徽标覆盖的那些）的 rules / mcp 列表也渲染「删除」按钮
+    （`MekaProjectRoleEditorRoute.tsx` 里 `aria-label={t('meka.remove')}` 的 `Trash2` 按钮，
+    rules / skills / mcp 三个列表同一形状）。**删除只从草稿里移除该行，不写成任何排除标记**
+    ⇒ 保存后磁盘清单里没有「排除」这回事 ⇒ 下次展开（运行期与面板读清单都会）
+    由 `mergeMekaProjectRoleDefaults` **重新加回** ⇒ 用户看到「**删了又回来**」。
+    **只有勾选框的 `enabled: false` 才是有效排除**（它与 `derived` 条目**不深度相等**，
+    因此会被 `stripSelectAllDerivedEntries` 保留下来）。这是**本次交付（面板改为展示展开态之后）
+    新暴露的坏交互** —— 面板展示的是「展开态」，而「删除」在展开态上语义不成立。
+    **本批不修**，登记为后续项；修法方向（任选其一，需单独裁决）：对派生项隐藏删除按钮、
+    或把删除改写成写 `enabled: false` 的排除项、或对派生项禁用删除并给出提示。
+    > **⚠️ W25 批次已修（2026-09-23，原句保留为当轮记录）**：已按上面**第一个**修法方向落地 ——
+    > `meka-role:read-manifest` 现在在**有派生项时**额外返回**只用于展示**的
+    > `derivedEntryKeys: { rules, skills, mcp, metadata }`（派生 key 的差集，算法 = 用
+    > `stripSelectAllDerivedEntries` 剥离后取差集；无派生项则该字段不出现），面板据此
+    > **对派生行不渲染删除按钮**，落地四处：rules、mcp、技能 **legacy** 项与技能**未识别/普通**项
+    > （`MekaProjectRoleEditorRoute.tsx`）。**该字段绝不落盘**（`normalizeMekaRoleManifest` 是白名单
+    > 式重建；`update` 与 `create` 两条写盘入口各有用例锁住）。⇒ 现在**唯一有效的排除方式就是
+    > 勾选框的 `enabled: false`**。完整登记见 `meka-whitelist-verification.md` WL-11.10 第 8 条与
+    > 本节 §11.28。**仍需人工目检，Light / Dark 两种模式都未目检；W25 未跑任何门禁。**
+  - **B8 旧战斗快照的「有效清单」显示不实**：面板读清单（`localDb/ipc/mekaRoles.ts` 的
+    `expandRoleManifest`）只走 `mergeMekaProjectRoleDefaults` → `resolveRoleProjectMetadataSelections`
+    → `resolveBundledSkillSelections`，**不跑** `upgradeLegacyBundledWorkflowRole` /
+    `migrateSAGA2CombatRoleSkills`；而运行期 `resolveRoleFile` 对内置角色**会跑**这两个升级
+    （先 `upgradeLegacyBundledWorkflowRole(manifest, bundled)`，再
+    `migrateSAGA2CombatRoleSkills(upgraded.role, …)`）。⇒ 对**旧版 saga2 战斗快照**
+    （项目文件 `builtinRoles` 里缺 `workflow` 的历史条目），面板展示的「有效清单」与运行期实际
+    生效的清单**不一致**（`workflow` / `promptFragments` / `skills` 等会被运行期就地升级）。
+    **仅显示层，无数据损失**：不写盘、不落库、不参与运行期解析。登记为**已知显示不一致**。
+- **验证现状（如实）**：本批**未跑任何门禁**（`test:unit:related` / `test:unit` / 任何 package 的
+  `typecheck` / `pnpm test:db` / `check:i18n-glossary` / 白名单实跑全部未跑），
+  **未跑** `pnpm desktop:session-smoke`，**未做 Light/Dark 实机目检**，
+  Pi argv 余量是**算术推演、不是实测**（F3 的代价就建立在推演之上）。
+  两条会改变「能验到什么」的调度事实仍然成立：`scripts/test-workspaces.config.mjs` 把
+  `**/*.integration.test.ts` 从 `unit` 层 exclude（`:157-159`）且 CI 不跑该后缀，
+  `src/main/localDb/**` 被 exclude 并把 `builtinMekaSeed.test.ts` 归入 `status: 'manual'`
+  的 `db` 层（`:190-201`）⇒ 退役迁移、重绑守卫与 F2 的幂等断言**必须显式跑 `pnpm test:db`**
+  才能被执行。对抗审查另登记了 3 个 P1：`.integration.` 后缀无 tier 归属、db 层需显式跑、
+  Orca lead 兜底（`register.ts` 的 `getLeadSessionRow`，兜底表达式在 `:11133-11135`）
+  **零行为测试覆盖**；以及 1 个 P1：只读文案（本批 W17 已修）。
+  > **两处更正（2026-09-23 第二批）**：① 原先写的「`register.ts:11131-11135` 零测试覆盖」
+  > **部分过期** —— 本批已新增 `apps/desktop/src/main/maker-ipc/__tests__/mekaOrcaLeadRoleFallback.test.ts`，
+  > 但它是**源码锚点断言**（读 `register.ts` 源码文本做字面量/正则匹配），**不是行为测试**
+  > ⇒ 准确表述是「**零行为测试覆盖，只有源码锚点断言**」，见上面 B6。
+  > ② 「`**/*.integration.test.ts` …后果」的**完整事实**比这里写得更强：desktop 的 7 个 tier
+  > （unit / git-integration / e2e / db / migration / db-perf / guard）**没有任何一个**的 include
+  > 匹配该后缀（`matchedTiers = (NONE — never runs)`），`--all` 也只是把 manual tier 纳入
+  > ⇒ **`test:all` 同样不执行它**；唯一执行途径是人工 `pnpm --filter desktop test`（无参全量）
+  > 或显式 `vitest run <路径>`。详见 WL-11.10「tier 提醒」的更正。
+  > ③ **末态补充（本次文档同步进行中该交付又被改动，以下为核对到的事实）**：
+  > `src/main/meka-projects/__tests__/runtimeConfig.integration.test.ts` **已不再存在**
+  > （该文件**已于 2026-09-23 更名为** `runtimeConfigProjectFiles.test.ts`；另一部分生产侧断言
+  > 被拆到 unit 层的 `runtimeConfig.projectReferences.test.ts`）；
+  > `runtimeConfig.projectReferences.test.ts` 的 `it` 数
+  > **已从 16 增至 19**。⇒ 凡本文与 WL-11.10 里写着「把断言从 `runtimeConfig.integration.test.ts`
+  > 移到 unit 层新文件」的地方，**目标文件已变成上面两个**，引用时以目录实际清单为准。
+  > ④ **CI 不再完全不跑 `builtinMekaSeed.test.ts`**：`.github/workflows/ci.yml` 的
+  > 「Run companion database regressions」步骤（linux shard 1 与 windows shard 1 各一处）已把
+  > `src/main/localDb/__tests__/builtinMekaSeed.test.ts` 加进写死路径清单 ⇒
+  > 「`test:unit` / `test:unit:related` 不跑它、**必须显式 `pnpm test:db`**」仍然成立，
+  > 但**不能再说「CI 也不跑它」**。该 CI 改动同样发生在本次文档同步过程中。
+  > ⑤ **W25 批次终核（2026-09-23）**：用 runner 自己的 `selectFilesForTier` 逐 tier 实测——
+  > `runtimeConfigProjectFiles.test.ts` = desktop **`unit`(required)** ⇒ **会被** `pnpm test:unit` /
+  > `test:unit:related` 与 CI 的 unit 分片执行（改名的目的正是这个；旧名后缀不属于任何 tier）；
+  > `builtinMekaSeed.test.ts` = `db`(**manual**)（CI 另经写死路径跑它）；
+  > `apps/desktop/src/main/maker-host/__tests__/modelMetadataLayers.integration.test.ts` 与
+  > `.../piRemoteFileOps.integration.test.ts` = **无任何 tier**（存量孤儿，见白名单 §8.7，
+  > **本次未修 runner**）。
+  > ① ② 里「唯一执行途径是人工 `pnpm --filter desktop test`」这句**对旧名的 `*.integration.` 后缀仍
+  > 成立**，但**不适用于已更名的 unit 层文件**——引用时请以文件当前名与实测 tier 为准。
+  未跑即不得记成通过。
+
+- **2026-09-23 第二批：`scripts/meka-session-smoke.mjs` 的「未覆盖」与「不安全」事实（如实登记，
+  本批不改脚本）**
+  1. **它不被任何自动化门禁执行**。根 `package.json` 只有 `desktop:session-smoke` 别名；
+     `apps/desktop/package.json`、`.github/workflows/**`、`scripts/__tests__/**`、
+     `test-workspaces*.mjs`、`test-related.mjs` 里**零引用** ⇒ 它是**人工实机验收命令**，
+     **没有任何自动化执行它**。本文档里凡把它列进「自动化门禁 / 最小自动化集合」的说法都已改为
+     「人工实机验收命令」。
+  2. **`--dry-run` 不是安全空跑**：脚本只给 6 处检查加了 `dryRun` 守卫，而 **`WL-3.2` / `WL-11.1` /
+     `WL-11.2` / `WL-11.8` 四处没有守卫**，会经 `createMekaDraft()` 派发**真实 CDP 鼠标事件并改
+     hash**。因此**不得**把 `--dry-run` 说成「只读预览 / 安全空跑」。**并如实注明：本次交付过程中
+     曾执行过一次 `--dry-run`，按上述事实它并非纯只读。**
+     > **⚠️ W25 批次已修（2026-09-23，原句保留为当轮记录）**：`WL-3.2` / `WL-11.1` / `WL-11.2` /
+     > `WL-11.8` **四处现已补上 `dryRun` 守卫**，dry-run 下这四项返回 **`unverified`**，证据串以
+     > 「`--dry-run：未执行`」开头，**不再伪造 PASS**。⇒ 把 `--dry-run` 描述成「只读预览 / 安全
+     > 空跑」的说法**现在成立**，但必须写清：dry-run 下**真正执行的只剩只读检查**
+     > （`WL-11.17/退役重绑`：只读库与清单），上述四项一律是 **UNVERIFIED**（dry-run 仍会读库、
+     > 读项目配置与包内清单）。**仍存在的三个缺口**（本批登记、**未修**）：① `main()` 末尾仍
+     > **无条件**执行 `session.pressEscape()` 与设置 `location.hash`（dry-run 下也会派发一次输入
+     > 事件并改 renderer hash；不写库、不写文件）——**这一条上面第 1–5 项都没记，W25 补记**；
+     > ② 下面第 3 条的 marker 漂移「漏报」路径；③ 下面第 4 条的陈旧实例 preflight 降级。
+  3. **marker 漂移走的是「漏报」路径**：若会话回声里没有 `[MEKA_PROJECT_REFERENCES]` marker，
+     脚本走 `ctx.unverified` ⇒ **退出码仍为 0、横幅仍打印 `PASSED`**（`failed.length` 是唯一决定
+     退出码的量，`unverified` 不计入）。段文本校验同样对空白不敏感、把条目当**无序集合**、
+     并明写「多于期望不算违规」。⇒ **该脚本的「通过」不等于「已核对」**：必须**一并读
+     `unverified=N`**，真实核对依赖 **`unverified === 0`**。
+  4. **陈旧实例 preflight 已被降级**：脚本对「找不到版本行」的情形返回 **ok**（原注释声称
+     「陈旧实例是硬 preflight（exit 2）」）⇒ **对着旧构建也可能打印 PASSED**。登记为**已知缺口**
+     （本批不改脚本）。
+  5. **PASS 证据串里硬编码了「（新期望，待实跑）」「（新增检查，本轮未实跑）」**：真实跑完也**照原样
+     打印** ⇒ 文档**不得**把这些字样当作「已跑证据」；反过来说，脚本输出里出现这些字样**不能**
+     证明已实跑。
+     > **⚠️ W25 批次已修（2026-09-23，原句保留为当轮记录）**：这 6 处 PASS 证据串里的
+     > 「（新期望，待实跑）」「（新增检查，本轮未实跑）」**已被移除**（改为脚本内注释）⇒
+     > **不得再说「脚本输出里会打印『待实跑』」**；同时，输出里**没有**这些字样**也不能**证明已实跑
+     > （它从来不打印）。W25 批次**未实跑**该脚本。
+
+### 11.28 2026-09-23 W25 批次：面板派生行删除入口、五语说明句语义、行高合规、tier/CI 对账（本文档终态登记）
+
+> 本条是**新条目**，不改写任何带日期的历史原句；历史条目里与现状冲突的规范陈述一律**在原处追加**
+> 标注（见上文本节各处的「W25 批次…」注）。**本批未跑任何门禁**，也未实跑 `desktop:session-smoke`，
+> **Light / Dark 均未目检**，Pi argv 余量仍是算术推演。
+
+**1. `derivedEntryKeys` 展示字段（W25 落地，取代 B7 的「本批不修」）**
+
+- `meka-role:read-manifest` 在**展开确有派生项时**额外返回**只用于展示**的
+  `derivedEntryKeys: { rules, skills, mcp, metadata }`；算法 = 以「开关不变、显式列表清空」的清单跑
+  与运行期**同一个** `stripSelectAllDerivedEntries`，取**展开态与剥离结果的差集**（key 口径一致：
+  rules `rule.id` / skills `isLegacySkill ? id : skillId` / mcp `entry.id` / metadata `metadataKey`）。
+  **无派生项时该字段整体不出现**；两条降级路径（flag 门不命中 / 项目配置或 catalog 取不到）同样**不带**它。
+- 源码：`apps/desktop/src/main/localDb/ipc/mekaRoles.ts`（`MekaRoleDerivedEntryKeys` /
+  `derivedEntryKeysOf` / `hasDerivedEntryKeys`、`expandRoleManifest`）与
+  `apps/desktop/src/renderer/features/cc-agent/MekaProjectRoleEditorRoute.tsx`。
+- **面板据此对派生行不渲染删除按钮**，落地**四处**：rules（`!roleReadOnly &&
+  !derivedRuleKeys.has(ruleItem.id)`）、mcp（`!disabled && !derivedEntryIds.has(entry.id)`）、
+  技能 **legacy** 项（`!disabled && !derivedSkillKeys.has(item.skillId)`）与技能**未识别/普通**项
+  （`!disabled && !derivedSkillKeys.has(item.id)`）。同文件项目 `roleDefaults` 编辑区的两个同名
+  `Trash2` 按钮**不属于**这四处。
+- **理由（必须记住）**：派生行在每次解析时都会被运行期 `mergeMekaProjectRoleDefaults`（以及元数据 /
+  catalog 展开）**重新加回** ⇒ 删除只改草稿、保存后行还会回来（删了等于没删）。
+- **唯一有效的排除方式是勾选框的 `enabled: false`**（它与派生条目**不深度相等**，会被剥离函数保留）。
+- **该字段绝不落盘**：`normalizeMekaRoleManifest`（`meka-projects/projectConfig.ts`）是**白名单式
+  重建**，即使 payload 带着它也不会写盘；**update 与 create 两条写盘入口各有用例锁住**
+  （`mekaRoleSelectAllPersistence.test.ts` 第 4 组
+  `derived entry keys are reported for the panel and never persisted`，3 条）。
+- **验证现状**：只有**代码级证据 + 用例声明**（该组 3 条用例**未跑**）；面板删按钮的实机目检**未做**
+  （Light / Dark 均未目检）。**不得**声称「已实机确认派生行没有删除入口」。
+
+**2. 五语说明句语义修正（W25）**
+
+`meka.roleInheritedSourcesNote` / `meka.roleInheritedSourcesNoteEditable` 现在写「来自**项目配置或
+应用内置技能目录**、随**项目或应用版本**变化」，可编辑变体另给出「**取消勾选即可排除对应条目**」的
+指引。原文只说「项目配置」，对**第三枚**「已包含全部内置技能」徽标**说错了**（内置 catalog 技能来自
+包内 `resources/meka/skills/**`）。五语（zh-CN / zh-TW / en / ja / ko）**均已改**。
+**验证现状**：只核对了五个 locale 文件的实际取值；**未做界面目检**，也未跑 `check:i18n`。
+
+**3. 行高合规：`leading-5` → `leading-[1.67]`（W25）**
+
+本轮新增的说明句 `<p>` 由 `text-12 leading-5` 改为 `text-12 leading-[1.67]`
+（`MekaProjectRoleEditorRoute.tsx`）。理由是 `docs/design-rules/DESIGN.md` §3 要求**新增 `text-<n>`
+不得再配固定行高**，而机器守卫 `typographyDiscipline.test.ts` 的 `fixed-leading` 规则**只匹配
+`leading-[Npx]`**（`leading-5` 是无单位档位，机器不拦）—— 属「**机器未拦 ≠ 合规**」的边界，按规则正文
+主动改。登记落点：`docs/design-rules/design-inventory.md` 的**人工区**（`desktop.meka.projects` 行）。
+**验证现状**：只核对了源码里的类名与 `DESIGN.md` §3 的口径；**未跑 `pnpm design:inventory`**、
+未跑任何门禁、未目检两种模式。
+
+**4. `runtimeConfig.integration.test.ts` → `runtimeConfigProjectFiles.test.ts` 改名（tier 对账）**
+
+- 现状陈述已全部改为新路径；旧路径的**历史条目**保留原句并加「已于 2026-09-23 更名」标注。
+- **实测 tier 归属**（用仓内 `selectFilesForTier` 逐 tier 试配）：
+  `runtimeConfigProjectFiles.test.ts` = desktop **`unit`(required)** ⇒ 会被 `pnpm test:unit` /
+  `test:unit:related` 与 CI 执行；旧名后缀不属于任何 tier（`NO TIER`，文件已不存在）。
+- 计数：`runtimeConfigProjectFiles.test.ts` **7 条 `it`**；`runtimeConfig.projectReferences.test.ts`
+  **19 条 `it`**。
+
+**5. CI 覆盖对账（`builtinMekaSeed.test.ts`）**
+
+`.github/workflows/ci.yml` 的**两处**「Run companion database regressions」步骤（linux shard 1 /
+windows shard 1，均 `if: matrix.shard == 1`）把
+`src/main/localDb/__tests__/builtinMekaSeed.test.ts` 写进了硬编码路径清单 ⇒ **CI 会执行它**。
+但它**仍不属于** desktop `unit` tier（`src/main/localDb/**` 被 unit 层 exclude，它归
+`status: 'manual'` 的 `db` 层）⇒ `pnpm test:unit` / `test:unit:related` **不执行**它；本地要单独跑
+仍应显式 `pnpm test:db` 或直接 `vitest run <该文件>`。**不得**再写「CI 完全不跑它」。
+
+**6. 存量孤儿测试文件（机制缺口，非本次引入、本次未修）**
+
+`scripts/test-workspaces.mjs` 的覆盖校验只报「既没被选中、也没被 `exclude` 命中」的文件 ⇒
+**被 `exclude` 但没有任何 tier 接管的文件被静默放过**。实测清单：
+`maker-host/__tests__/modelMetadataLayers.integration.test.ts` 与
+`maker-host/__tests__/piRemoteFileOps.integration.test.ts` = **无任何 tier**；
+`localDb/__tests__/cjkFtsMatch.integration.test.ts` = `db`(**manual**)。**本次未改 runner**（改动会
+影响全仓，需单独决策）。完整登记见 `meka-whitelist-verification.md` §8.7。
+
+**7. 会话分享夹具不再手写字面量（W25 修掉的假绿）**
+
+`session-share` 的角色行测试夹具原先**手写字面量**（硬编码可能已不存在的角色行），掩盖了「角色被删/
+改名后导入应走 `role-missing`」这条行为。现改为**从包内注册表派生**
+（`BUILTIN_MEKA_PROJECTS` + `mekaDefaultRoleId`）。登记的是**夹具现在派生自注册表**，
+**不声称这些用例已实跑**。
+
+**8. 本批（W25）验证现状（如实，不得写强）**
+
+**未跑任何门禁**：`pnpm test:unit` / `test:unit:related` / `test:all` / 任何 package 的 `typecheck` /
+`pnpm test:db` / `check:*` / 白名单实跑**全部未跑**；`pnpm desktop:session-smoke`**未跑**；
+`pnpm design:inventory`**未跑**；**Light / Dark 两种模式均未目检**；**Pi argv 余量是算术推演，不是
+实测**。上面各条的「已修 / 已落地」一律是**代码级证据 + 用例声明**，不是实跑证据。
+**owner 口径**：本改动触及 system prompt 相关门禁的部分，仍按「**维护者直接指示提交与推送，
+无书面签名**」登记。
+
+**9. 门禁实跑结果（2026-09-23 交付时一次性执行，权威；上文各处「本批未跑任何门禁」指写作时状态）**
+
+- `pnpm --filter desktop run typecheck` → **exit 0**。**首跑失败**（12 个类型错误：`runtimeConfig.ts`
+  用了未导入的 `MekaRoleManifestFile` 与需要 `Partial` 的 `Pick<…,'prompt'>`；`mekaRoles.ts` 两处
+  implicit any 是它的级联；新测试文件 shared 导入少一层、mock `source` 联合类型过窄、夹具 `MekaRoleRule`
+  缺 `enabled`、`prompt` 可能为 undefined 等 7 处）。全部修复后复跑 **exit 0**，定向测试仍 23/23 通过
+  （证明类型修复未改动运行时语义）。
+- `pnpm run test:workspaces --tier unit` → **exit 0**（全部 `required` workspace PASS，含
+  `apps/desktop unit`）。
+- `pnpm run test:workspaces --tier db` → **exit 1**：`Test Files 1 failed | 119 passed (120)`、
+  `Tests 2 failed | 1538 passed | 6 skipped`，两个失败**都在** `src/main/__tests__/codexLocalSessions.test.ts`
+  （写 1001 个 thread 的用例）。**单独跑该文件 122 passed / 0 failed** ⇒ 并行负载下的超时抖动，
+  **与本次 diff 无关**。`builtinMekaSeed.test.ts`（CI 新纳入那条硬编码路径）单独跑 **11 passed**。
+- `pnpm test:runner` → **exit 1**：`# pass 656 / # fail 2`，两个失败都在
+  `scripts/__tests__/hardcoded-color-audit.test.mjs` 的 `:287` 与 `:405`——两处都断言
+  `spawnSync('bash', …)` 的退出码。该文件本次**未改动**（`git status` 与 HEAD 一致）；最小复现
+  证明本机 `bash` 是 **WSL 启动器且不继承 Windows 环境变量**（传入 `PROBE=success` 后
+  `test "$PROBE" = "success"` 仍退出 1）⇒ **纯环境性**；CI 在 ubuntu 运行 bash，不受影响。该文件里
+  全部 `ci.yml` 结构断言（含 `:401` 对本次改过的 `Run companion database regressions` 步骤的断言）
+  **通过** ⇒ 本次 `ci.yml` 改动没有破坏它。
+- `pnpm check:design-inventory` → **exit 0**（`GENERATED 区块最新（54 个 surface）`）。
+- `node scripts/hardcoded-color-audit.mjs --base-ref HEAD --worktree` → **exit 0**，
+  `{"raw":0,"allowed":0,"unexpected":0,"report":2}`；2 条 `report/visible-layer-radius` 是治理 §13
+  第 4 条的**未决分类上报**（不阻断、不自行裁决、不用改形状代替裁决）。
+- `pnpm check:i18n` → **exit 0**（五语 10334 key 一致）；`pnpm check:i18n-glossary` → **exit 0**
+  （20 处 `proposed` 告警，不阻断）；`pnpm check:brand-terminology` → **exit 0**；
+  `pnpm check:dev-docs` → **exit 0**。
+- **仍未验证（不得写强）**：`pnpm desktop:session-smoke` **未跑**；**Light / Dark 两种模式均未目检**；
+  **Pi argv 余量仍是算术推演、不是实测**；`pnpm design:inventory` 生成器未复跑（`--check` 已通过）。
 
 

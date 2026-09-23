@@ -7,7 +7,8 @@
  * - 形态 C：每轮续聊 —— `prepareCombatFollowupRuntimeContext`
  *
  * 分层（文件名带 `meka` 前缀的依据见 `docs/dev-rules/meka-injection-layer.md` §0）：
- * - `mekaCombatPrompts.ts` 段落文本与战斗 ID 解析的唯一来源（零文本改动）
+ * - `mekaCombatPrompts.ts` 段落文本的唯一来源（含战斗段、角色上下文段与 order 65 的
+ *   `[MEKA_PROJECT_REFERENCES]` 段）与战斗 ID 解析
  * - `mekaResolvePlan.ts`   第 2 层：解析（含全部 I/O）→ `MekaInjectionPlan`
  * - `mekaApplyPlan.ts`     第 3 层：落地（纯写 opts，不做 I/O）
  *

@@ -9,7 +9,7 @@
  * 渲染决定 —— 两者与重构前逐字节一致。
  */
 
-import type { MekaRoleMcpEntry } from '../../shared/meka-projects.js';
+import { mekaDefaultRoleId, type MekaRoleMcpEntry } from '../../shared/meka-projects.js';
 import type { MakerSessionCreateOpts } from '../maker-ipc/sessionRequest.js';
 import {
   invalidateCombatTargetBinding,
@@ -44,6 +44,7 @@ import {
   combatSkillIdVendorPatchFromUserPrompt,
   combatTargetPrompt,
   isUnambiguousCombatTableScopePrompt,
+  mekaProjectReferencesPrompt,
   removeCombatStartupGate,
   resolveCombatProjectRefPaths,
   roleContextPrompt,
@@ -575,10 +576,12 @@ async function resolveBootstrapInjection(input: {
   // 持久绑定的早返回）保持零行为变化（I6）。
   assertMekaUserPromptType(opts.userPrompt);
 
-  // Historical four-role Meka sessions intentionally retain their legacy role
-  // column. Resolve it against today's bundled SAGA2 roles without rewriting DB.
-  if (hydratedPersistedSession && projectId === 'saga2' && !roleId) {
-    roleId = 'general-development';
+  // 历史 Meka 会话有意保留旧角色列（不在此处改写数据库行）。这里按**该项目自己的**共享默认角色
+  // 派生运行期角色：写死 saga2 / 通用开发会在「通用开发」退役后让旧会话冷启动硬失败（退役迁移
+  // 已把同一批历史会话重绑到 `<projectId>-default-role`，见 shared/meka-projects.ts 的
+  // RETIRED_BUILTIN_MEKA_DEFAULT_ROLE_ALIASES）。
+  if (hydratedPersistedSession && projectId && !roleId) {
+    roleId = mekaDefaultRoleId(projectId);
     builder.sessionBindingPatch = { ...(builder.sessionBindingPatch ?? {}), mekaRoleId: roleId };
   }
   if (!projectId || !roleId) {
@@ -645,6 +648,14 @@ async function resolveBootstrapInjection(input: {
     const runtimePrompt = removeCombatStartupGate(runtime.promptText.trim());
     if (runtimePrompt) {
       builder.pushSegment('meka.role-prompt', runtimePrompt);
+    }
+    // 项目参考文件清单（段 id `meka.project-references`，order 65 ⇒ 最终落在角色上下文与角色
+    // prompt 之间）。空集合返回 null，整段不入 plan（与 role-prompt 文本为空时同口径）；
+    // 远端服务器 Worker 不注入任何角色段，这里与 60/70 一起被 isCombatServerWorker 排除。
+    // resume 短路（frozen）路径同样不注入：它不重解析项目/角色（I4），因此该段与角色段同进同出。
+    const projectReferencesPrompt = mekaProjectReferencesPrompt(runtime.projectReferences);
+    if (projectReferencesPrompt) {
+      builder.pushSegment('meka.project-references', projectReferencesPrompt);
     }
     builder.pushSegment('meka.role-context', roleContextPrompt(runtime));
     if (runtime.workflow === 'saga2-combat-development-v1') {

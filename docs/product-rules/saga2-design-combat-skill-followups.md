@@ -209,6 +209,8 @@ supported`。回读确认目标链为当前目标 `[4]` → 上一步目标 `[5]
   导出 JSON。补充 ID 后才开始最小证据流程；多个 ID 必须先确认处理范围。
 - 该规则同时写入战斗角色的 `combat-skill-id-contract` prompt fragment 和
   `combat-skill-configuration` Skill，并由 `runtimeConfig.integration.test.ts` 锁定注入结果。
+  （**2026-09-23 追加标注，原句不改写**：该文件名已因「`*.integration.test.ts` 在 desktop 无任何
+  tier 归属、本仓从不执行」而更名为 `runtimeConfigProjectFiles.test.ts`，见迁移总账 §11.27。）
 - Host 在任务创建和续聊入口只提取用户明确标为“技能 ID / 技能编号 / 技能 1019”的正整数；
   伤害、持续时间、次数等未标注数字不参与推断，`skill_001` 仍视为缺少可用 ID。确认值写入
   当前任务运行时状态，多个不同 ID 会清空目标并要求用户先收窄范围。
@@ -548,7 +550,8 @@ meka-p4 缺「谁锁了这个文件」能力而逼 Agent 绕行 raw `p4` CLI）�
   Session。**同一轮可见性已核实（不是假设）**：策略层读的 `context.vendorOptions` 就是各 runtime
   在首个 `await` 之前就地 `Object.assign` 的那份对象引用（codex `index.ts:5422`；
   `index.test.ts:20366` 用 `toBe` 钉住引用同一；claude-code `:7015-7025`、pi `:7225-7230`）；
-  `[SAGA2_COMBAT_SCOPE]` 未批准分支的正文（`mekaCombatPrompts.ts:171`）同步写明该确认**即时**登记、
+  `[SAGA2_COMBAT_SCOPE]` 未批准分支的正文（`mekaCombatPrompts.ts:174`；原先写的 `:171` 已随 order 65 段
+  插入而漂移，按符号名应定位到 `combatScopePrompt` 的「未批准」分支）同步写明该确认**即时**登记、
   不得要求用户重打、也不得因为该段在提问**之前**渲染（`scopeApproved` 仍为 false）就重复追问。
   **边界（登记，不是 bug）**：多问题卡片只要任一答案文本以肯定词开头即可批准；实时会话在 resolve
   时不存在则只写镜像、同一轮可见性顺延到下次派发；首词启发式对畸形输入 fail-closed。
@@ -612,3 +615,60 @@ meka-p4 缺「谁锁了这个文件」能力而逼 Agent 绕行 raw `p4` CLI）�
   injection-layer 文档里**；原句把两份文档并列成一句，按字面找会落空）。
 - 依据与验证级别：代码阅读 + 实现者运行的**3 个文件 / 106 个用例**（`mekaRuntimeInjection` +
   `mekaRuntimeInjectionBaseline` + `combatWorkflowPolicy`）；**未做任何端到端实机复跑**。
+
+## 2026-09-23 `includeAllProjectMetadata` 的关闭历史被「默认角色承接全量」取代
+
+- **本文上面的历史条目不改写**。上面「2026-09-02 严格业务需求实际对话复测」一节记录的
+  「后续通用入口复测发现 `includeAllProjectMetadata` 会把设计库元数据全量注入，**已关闭该默认项**」
+  是**当日事实**（当时载体是通用开发角色）。本次改动**取代**了那一条的结论：该角色已退役，
+  **全量选择由共享默认角色（`<projectId>-default-role`）以 `includeAllProjectMetadata: true` 承接**。
+- **为什么可以重新打开全量**：当初关闭它的直接原因是「正文被全量内联进 prompt」，表现为
+  上下文膨胀、设计库长文档被读进来。本次**同时改变了交付形态**：规范类元数据（`agents-md` /
+  `rule`）**不再内联正文**，只以「作用范围 + 绝对路径 + 描述」进入新段 order 65
+  `[MEKA_PROJECT_REFERENCES]`，正文由 Agent 在工作涉及该目录时按需读取。
+  ⇒ 「选中全部元数据」与「上下文膨胀」在这次被解耦：元数据被选中不等于正文进 prompt。
+  量化动机：某真实项目 6 条 `agents-md` 正文合计 **95,418 B**，内联会把默认角色（新建会话的
+  默认选中项）的 system 前缀推到 Pi 的 win32 argv 预算（30,000 字符）之外；引用化后该样本
+  `promptText` 从约 42,600 字符降到约 4,900 字符。机制与不变量见
+  [`../dev-rules/meka-injection-layer.md`](../dev-rules/meka-injection-layer.md) §3／§3.1 与
+  [`../dev-rules/meka-whitelist-verification.md`](../dev-rules/meka-whitelist-verification.md)
+  **WL-11.17**；迁移台账见 [`../migrations/xdmaker-meka-to-cindy.md`](../migrations/xdmaker-meka-to-cindy.md) §11.26。
+- **风险（已登记，未解决）**：`agents-md` 承载的是**必须一开始就生效的强制规则**（例如
+  `saga2_design/AGENTS.md` 的治理与写入授权规则）。把它从「已在场的正文」降级为「可能不被读取的
+  参考」是**语义降级**：模型完全可能没读该文件就直接动手。WL-15 那条「模型没读就执行」的
+  **负向实机断言本来就不存在**（白名单里明写未验证），本次改动把这个缺口从「战斗总控 Skill」
+  扩大到了规范类元数据。设计库治理规则目前只靠 order 65 段正文里那一句「必须先用原生 read
+  工具完整读取该范围内列出的文件」来约束，**没有 Host 侧门禁**兜底。
+- **验证现状（如实）**：本次交付**没有跑任何门禁**、**没有跑** `pnpm desktop:session-smoke`，
+  也没有做端到端实机复跑；随后重开全量选择是否真的把设计库长文档重新拖进上下文，
+  **尚无实机观测**（这正是 2026-09-02 那次复测关注的现象）。
+- 本节的另一处落地：证据预算片段、`saga2_design` 只读口径等既有裁决**不受本次影响**；
+  战斗角色仍**关闭** `useProjectDefaults` 并保持精确选择，本次只改默认角色与规范类元数据的投递形态。
+
+## 2026-09-23 追加：对抗审查修复批次对战斗角色的影响（F3 内联差异保留）
+
+- **本文上面的历史条目一律不改写**。本节只登记同名批次（迁移台账 §11.27）里**与战斗角色有关**的三条
+  结论，供后续复跑战斗流程时对照。
+- **规范类元数据对战斗角色保持内联（F3，有意差异）**：判据是
+  `workflow === 'saga2-combat-development-v1'`（不是角色 id），因此任何声明同一 workflow 的自定义
+  角色同形态。战斗角色选中的 `agents-md` / `rule` **仍按改动前的形态把正文内联进 prompt**、
+  不产出地址型引用条目；注入段的 order 65 `[MEKA_PROJECT_REFERENCES]` 对战斗角色拿到空集合、
+  **整段不渲染**。
+  - **理由**：战斗的项目参考路径是一套封闭且精确的白名单契约 —— `[SAGA2_PROJECT_PATHS]` 逐条给出
+    ReadCommand，同一份解析结果写进 `vendorOptions.mekaCombatProjectRefPaths` 供策略层精确放行，
+    而策略层会**拒绝**读取工作区根 `AGENTS.md`。给战斗角色再叠加一份「必须读取这些路径」的开放清单，
+    等于让模型被要求读、而读取被 Host 拒绝；规范正文在改动前是内联可用的形态。
+  - **代价（如实登记，未缓解）**：战斗角色勾选大体积 `AGENTS.md` 时仍可能逼近 Pi 的 win32 argv
+    预算（30,000 字符）。这正是本批次想让默认角色摆脱的风险，在战斗角色上**依然存在**；
+    本次未做 argv 实测（余量为算术推演）。
+- **`roleDefaults.rules` 的内联例外**：`roleDefaults.rules[].text` 属**角色默认提示词**，仍然内联进
+  prompt（`runtimeConfig.ts` 的 `prompts.push(rule.text.trim())`，**符号名定位**；本次核对在 `:938-940`
+  —— 原先写的 `:767` 已随第二批新增代码漂移），它不是 `rule` 类元数据。因此「零规范正文内联」只对**元数据通道**
+  成立 —— 读这句话时不要连带以为角色配置里已没有任何内联正文。战斗角色的证据预算片段、
+  `saga2_design` 只读口径等既有裁决不受影响。
+- **仍未实机复跑（如实）**：本批**没有跑任何门禁**、**没有跑** `pnpm desktop:session-smoke`
+  （含 `-- --role 战斗开发`）、**没有做任何端到端实机复跑**，也没有做 Light/Dark 实机目检。
+  上面「战斗角色段 65 不渲染」「规范正文仍内联」两条都是**代码级推导**，不是实测结论。
+  另外需要显式跑 `pnpm test:db` 才能执行退役迁移与重绑守卫断言 —— `test:unit:related`、
+  `test:unit` 与 CI 都不会执行它们（`scripts/test-workspaces.config.mjs` 的 tier 归属见迁移台账
+  §11.27「验证现状」）。

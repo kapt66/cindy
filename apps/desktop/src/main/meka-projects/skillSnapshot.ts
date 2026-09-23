@@ -5,13 +5,25 @@ import path from 'node:path';
 import { app } from 'electron';
 import matter from 'gray-matter';
 
+import { createLogger } from '../logger.js';
+import { METADATA_SCAN_EXCLUDED_DIRECTORIES } from './metadataScanner.js';
 import type { MekaRuntimeSkill } from './runtimeConfig.js';
 
+const log = createLogger('meka-projects:skill-snapshot');
 const SNAPSHOT_SCHEMA_VERSION = 1;
 const MAX_FILES = 4_096;
 const MAX_TOTAL_BYTES = 64 * 1024 * 1024;
 const SHA256_RE = /^[a-f0-9]{64}$/;
 const SAFE_SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,191}$/;
+
+/**
+ * 与项目扫描器**同一份**排除目录名单（{@link METADATA_SCAN_EXCLUDED_DIRECTORIES}），只是换成
+ * 集合以便按名查询。这里刻意不另抄一份名单：两处漂移会让 `.git` / `node_modules` 这类目录重新
+ * 进入技能快照的递归，而快照是**每个新会话**都要遍历 + 哈希的路径。
+ */
+const SKILL_SNAPSHOT_EXCLUDED_DIRECTORIES: ReadonlySet<string> = new Set<string>(
+  METADATA_SCAN_EXCLUDED_DIRECTORIES,
+);
 
 export interface MekaSkillSnapshotFile {
   relativePath: string;
@@ -133,6 +145,10 @@ async function collectSkillFiles(skill: MekaRuntimeSkill): Promise<MekaSkillSnap
       if (!relative || path.isAbsolute(relative) || relative.startsWith(`..${path.sep}`)) {
         throw new Error(`Meka Skill file escapes its source directory: ${absolute}`);
       }
+      // 名单内的目录名一律**不下降**：与项目扫描器共用一份名单（`METADATA_SCAN_EXCLUDED_DIRECTORIES`），
+      // 因此 `.git` / `node_modules` 这类目录既不会被扫描器看见，也不会被快照递归 + 哈希。
+      // 只匹配**真实目录**：同名的符号链接条目仍走下面的 symlink 校验（fail-closed 不因改名而放行）。
+      if (entry.isDirectory() && SKILL_SNAPSHOT_EXCLUDED_DIRECTORIES.has(entry.name)) continue;
       if (entry.isSymbolicLink()) {
         throw new Error(`Meka Skill snapshots do not follow symbolic links: ${absolute}`);
       }
@@ -355,8 +371,32 @@ export async function materializeMekaSkillSnapshot(
   let totalBytes = 0;
   for (const skill of [...skills].sort((left, right) => left.id.localeCompare(right.id))) {
     const directory = uniqueSkillDirectoryName(skill.id, usedDirectories);
-    usedDirectories.add(directory);
     const description = skill.description.trim() || skill.name.trim() || directory;
+    // 先收集文件、成功后才登记目录名并写 catalog 条目：派生 skill 被跳过时**必须**在快照里完全
+    // 不存在（既没有 `skills/<dir>/**`，也没有 catalog.json 里的那一条），否则 catalog 会指向一个
+    // 不存在的 SKILL.md。
+    let collected: MekaSkillSnapshotFile[] | null = null;
+    try {
+      collected = await collectSkillFiles({
+        ...skill,
+        name: directory,
+        description,
+      });
+    } catch (error) {
+      // 作者显式选择的 skill：原样抛出，fail-closed 不放宽。
+      if (skill.derivedOnly !== true) throw error;
+      // 只由全量开关 / 内置 catalog 派生出来的 skill：它的源目录可能整个是项目根（`SKILL.md` 落在
+      // 项目根时 `sourceDirectory` 就是整棵树），递归几乎必然超限；也可能含 symlink。让其中一个
+      // 坏目录把该项目的**所有新建会话**顶成 `INVALID_PARAMS` 不可接受，因此按「跳过这一个 skill」
+      // 处理，只 warn 记录。其余 skill 照常进入快照。
+      log.warn('skipping a derived Meka Skill whose source directory cannot be snapshotted', {
+        skillId: skill.id,
+        sourceDirectory: skill.sourceDirectory,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    if (collected === null) continue;
+    usedDirectories.add(directory);
     catalog.push({
       packId: 'meka-runtime',
       skillId: directory,
@@ -364,13 +404,10 @@ export async function materializeMekaSkillSnapshot(
       description,
       relPath: `skills/${directory}/SKILL.md`,
     });
-    for (const file of await collectSkillFiles({
-      ...skill,
-      name: directory,
-      description,
-    })) {
+    for (const file of collected) {
       files.push({ ...file, relativePath: `skills/${directory}/${file.relativePath}` });
       totalBytes += Buffer.from(file.contentBase64, 'base64').byteLength;
+      // 全局上限语义不变：跳过某个 skill 不会放宽其余 skill 共享的总额度。
       if (files.length > MAX_FILES || totalBytes > MAX_TOTAL_BYTES) {
         throw new Error(
           `Meka Skill snapshot exceeds the ${MAX_FILES} file / ${MAX_TOTAL_BYTES} byte limit`,

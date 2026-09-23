@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -7,6 +7,7 @@ import type {
   MekaProject,
   MekaProjectFile,
   MekaProjectMetadata,
+  MekaRole,
   MekaSkillCatalogEntry,
   MekaRoleManifestFile,
 } from '../../../../shared/meka-projects';
@@ -75,7 +76,7 @@ function projectSummary(roles: MekaProject['roles'] = []): MekaProject {
   };
 }
 
-function roleManifest(): MekaRoleManifestFile {
+function roleManifest(overrides: Partial<MekaRoleManifestFile> = {}): MekaRoleManifestFile {
   return {
     schemaVersion: 1,
     projectId: 'project-a',
@@ -90,6 +91,69 @@ function roleManifest(): MekaRoleManifestFile {
     promptFragments: [],
     mcp: [],
     projectMetadataSelection: [],
+    ...overrides,
+  };
+}
+
+/**
+ * The only editable bundled role left: `general-development` was retired together with its
+ * resource file, so bundled-role editing is asserted against `combat-development`. The shared
+ * default role cannot stand in for it because it is read-only by contract.
+ */
+function combatRole(): MekaRole {
+  return {
+    id: 'combat-development',
+    projectId: 'saga2',
+    name: 'combat-development',
+    displayName: '战斗开发',
+    description: '设计、配置、调试并验证客户端与服务器共同执行的战斗技能',
+    tags: [],
+    filePath: 'meka/roles/combat-development.json',
+    isBuiltin: true,
+    contentDigest: null,
+    sortOrder: 0,
+    createdAt: null,
+    updatedAt: null,
+  };
+}
+
+/**
+ * A project-owned (therefore editable) role, used to show that the inherited-source notice comes
+ * from the manifest rather than from the shared default role.
+ */
+function editableRole(): MekaRole {
+  return {
+    id: 'role-inherited',
+    projectId: 'project-a',
+    name: 'role-inherited',
+    displayName: 'Inherited role',
+    description: null,
+    tags: [],
+    filePath: 'role-inherited.json',
+    isBuiltin: false,
+    contentDigest: null,
+    sortOrder: 1,
+    createdAt: null,
+    updatedAt: null,
+  };
+}
+
+/** The shared built-in default role of `projectId`: factory-inclusive, read-only, undeletable. */
+function defaultRole(projectId = 'saga2'): MekaRole {
+  const id = `${projectId}-default-role`;
+  return {
+    id,
+    projectId,
+    name: id,
+    displayName: '默认角色',
+    description: null,
+    tags: ['builtin', 'default'],
+    filePath: `meka/roles/${id}.json`,
+    isBuiltin: true,
+    contentDigest: null,
+    sortOrder: -1,
+    createdAt: null,
+    updatedAt: null,
   };
 }
 
@@ -99,6 +163,19 @@ function installApi(
     metadata?: MekaProjectMetadata[];
     catalog?: MekaSkillCatalogEntry[];
     inspectFile?: MekaProjectFile | null;
+    /** Manifest Main returns for any role id; tests put the fields under assertion here. */
+    roleFile?: Partial<MekaRoleManifestFile>;
+    /**
+     * The display-only keys `meka-role:read-manifest` attaches to the expanded manifest, exactly as
+     * Main computes them. Not a field of `MekaRoleManifestFile`: the panel reads it off the draft
+     * while nothing persists it, so the fixture carries it outside that type on purpose.
+     */
+    derivedEntryKeys?: {
+      rules: string[];
+      skills: string[];
+      mcp: string[];
+      metadata: string[];
+    };
     /** Mirrors Main, where both reads resolve through the same project file lookup. */
     projectFileMissing?: boolean;
   } = {},
@@ -173,9 +250,14 @@ function installApi(
         create: createRole,
         update: vi.fn(),
         delete: vi.fn(),
-        readManifest: vi.fn(async (id: string) =>
-          id ? { ...roleManifest(), id, name: id } : null,
-        ),
+        readManifest: vi.fn(async (id: string) => {
+          if (!id) return null;
+          const manifest = { ...roleManifest(options.roleFile), id, name: id };
+          // Mirrors Main, which attaches the display-only derived keys to the read result only.
+          return options.derivedEntryKeys
+            ? { ...manifest, derivedEntryKeys: options.derivedEntryKeys }
+            : manifest;
+        }),
       },
       mekaProjectMetadata: {
         loadProject: vi.fn(async (id: string) => projectFileRead() ?? projectFile(id)),
@@ -211,6 +293,34 @@ function renderRoute(initialEntry = '/') {
     </MemoryRouter>,
   );
 }
+
+/**
+ * The row wrapper `<div>` of one entry inside a resource list, so a query can be scoped to that row
+ * instead of to the whole panel (which renders several `meka.remove` buttons at once).
+ */
+function listRowOf(element: HTMLElement): HTMLElement {
+  const row = element.closest('div');
+  if (!row) throw new Error('resource row not found');
+  return row;
+}
+
+/**
+ * The read-only panel renders "inherited source" state for every resource area: the manifest may
+ * carry `useProjectDefaults`, `includeAllProjectMetadata` and/or `includeAllBundledSkills`, and all
+ * three are expanded at resolve time rather than spelled out in the role's own lists. The notice is
+ * manifest-driven, so it also shows up on a project-owned (editable) role, and it never pretends
+ * those flags are toggles.
+ */
+const INHERITED_SOURCE_NOTICE_TEST_IDS = [
+  'meka-role-inherited-sources-rules',
+  'meka-role-inherited-sources-skills',
+  'meka-role-inherited-sources-mcp',
+] as const;
+
+const INHERITED_ROLE_FILE = {
+  projectId: 'project-a',
+  displayName: 'Inherited role',
+} as const;
 
 describe('Meka project and role create states', () => {
   afterEach(() => {
@@ -367,22 +477,8 @@ describe('Meka project and role create states', () => {
   });
 
   it('edits bundled roles from a project file and can reset the builtin project', async () => {
-    const builtinRole = {
-      id: 'general-development',
-      projectId: 'saga2',
-      name: 'general-development',
-      displayName: 'General development',
-      description: null,
-      tags: [],
-      filePath: 'meka/roles/general-development.json',
-      isBuiltin: true,
-      contentDigest: null,
-      sortOrder: 0,
-      createdAt: null,
-      updatedAt: null,
-    };
     const sagaProject: MekaProject = {
-      ...projectSummary([builtinRole]),
+      ...projectSummary([combatRole()]),
       id: 'saga2',
       name: 'saga2',
       displayName: 'SAGA2',
@@ -392,7 +488,7 @@ describe('Meka project and role create states', () => {
     const api = installApi([sagaProject]);
     renderRoute('/?projectId=saga2');
 
-    fireEvent.click(await screen.findByRole('button', { name: 'General development' }));
+    fireEvent.click(await screen.findByRole('button', { name: '战斗开发' }));
     expect(((await screen.findByLabelText('meka.roleName')) as HTMLInputElement).disabled).toBe(
       false,
     );
@@ -403,23 +499,9 @@ describe('Meka project and role create states', () => {
   });
 
   it('allows editing bundled roles before a project file exists', async () => {
-    const builtinRole = {
-      id: 'general-development',
-      projectId: 'saga2',
-      name: 'general-development',
-      displayName: 'General development',
-      description: null,
-      tags: [],
-      filePath: 'meka/roles/general-development.json',
-      isBuiltin: true,
-      contentDigest: null,
-      sortOrder: 0,
-      createdAt: null,
-      updatedAt: null,
-    };
     const api = installApi([
       {
-        ...projectSummary([builtinRole]),
+        ...projectSummary([combatRole()]),
         id: 'saga2',
         name: 'saga2',
         displayName: 'SAGA2',
@@ -429,36 +511,22 @@ describe('Meka project and role create states', () => {
     ]);
     renderRoute('/?projectId=saga2');
 
-    fireEvent.click(await screen.findByRole('button', { name: 'General development' }));
+    fireEvent.click(await screen.findByRole('button', { name: '战斗开发' }));
     const roleName = (await screen.findByLabelText('meka.roleName')) as HTMLInputElement;
     expect(roleName.disabled).toBe(false);
     // No edit yet: the header offers neither Save nor Cancel.
     expect(screen.queryByRole('button', { name: 'logic.confirm.cancel' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'meka.saveRole' })).toBeNull();
-    fireEvent.change(roleName, { target: { value: 'Edited development' } });
+    fireEvent.change(roleName, { target: { value: 'Edited combat development' } });
     fireEvent.click(screen.getByRole('button', { name: 'meka.saveRole' }));
 
     await waitFor(() => expect(api.updateRole).toHaveBeenCalledTimes(1));
   });
 
   it('discards role edits on Cancel and keeps the saved manifest otherwise', async () => {
-    const builtinRole = {
-      id: 'general-development',
-      projectId: 'saga2',
-      name: 'general-development',
-      displayName: 'General development',
-      description: null,
-      tags: [],
-      filePath: 'meka/roles/general-development.json',
-      isBuiltin: true,
-      contentDigest: null,
-      sortOrder: 0,
-      createdAt: null,
-      updatedAt: null,
-    };
     const api = installApi([
       {
-        ...projectSummary([builtinRole]),
+        ...projectSummary([combatRole()]),
         id: 'saga2',
         name: 'saga2',
         displayName: 'SAGA2',
@@ -468,10 +536,10 @@ describe('Meka project and role create states', () => {
     ]);
     renderRoute('/?projectId=saga2');
 
-    fireEvent.click(await screen.findByRole('button', { name: 'General development' }));
+    fireEvent.click(await screen.findByRole('button', { name: '战斗开发' }));
     const roleName = (await screen.findByLabelText('meka.roleName')) as HTMLInputElement;
     const loadedName = roleName.value;
-    fireEvent.change(roleName, { target: { value: 'Edited development' } });
+    fireEvent.change(roleName, { target: { value: 'Edited combat development' } });
     expect(screen.getByRole('button', { name: 'meka.saveRole' })).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'logic.confirm.cancel' }));
@@ -564,40 +632,65 @@ describe('Meka project and role create states', () => {
   });
 
   it('shows the shared default role as read-only with no way to save it', async () => {
-    const defaultRole = {
-      id: 'saga2-default-role',
-      projectId: 'saga2',
-      name: 'saga2-default-role',
-      displayName: '默认角色',
-      description: null,
-      tags: ['builtin', 'default'],
-      filePath: 'meka/roles/saga2-default-role.json',
-      isBuiltin: true,
-      contentDigest: null,
-      sortOrder: -1,
-      createdAt: null,
-      updatedAt: null,
-    };
-    const api = installApi([
+    const api = installApi(
+      [
+        {
+          ...projectSummary([defaultRole()]),
+          id: 'saga2',
+          name: 'saga2',
+          displayName: 'SAGA2',
+          isBuiltin: true,
+          configSource: 'builtin',
+        },
+      ],
       {
-        ...projectSummary([defaultRole]),
-        id: 'saga2',
-        name: 'saga2',
-        displayName: 'SAGA2',
-        isBuiltin: true,
-        configSource: 'builtin',
+        // The real default-role manifest: a behavior prompt, all three inherited sources and empty
+        // explicit lists (the sources are expanded at resolve time, not spelled out here).
+        roleFile: {
+          projectId: 'saga2',
+          displayName: '默认角色',
+          prompt: 'Default role prompt',
+          useProjectDefaults: true,
+          includeAllProjectMetadata: true,
+          includeAllBundledSkills: true,
+          rules: [{ id: 'rule-1', text: 'Inherited rule', enabled: true }],
+          mcp: [{ id: 'meka-design', providerId: 'meka-design', enabled: true }],
+        },
       },
-    ]);
+    );
     renderRoute('/?projectId=saga2');
 
     fireEvent.click(await screen.findByRole('button', { name: '默认角色' }));
 
-    // Every field of the default role is inert: it injects nothing by contract.
+    // Factory-inclusive but inert: every field the panel renders is disabled.
     expect(((await screen.findByLabelText('meka.roleName')) as HTMLInputElement).disabled).toBe(
       true,
     );
     expect((screen.getByLabelText('meka.description') as HTMLTextAreaElement).disabled).toBe(true);
+    for (const field of screen.getAllByRole('textbox')) {
+      expect((field as HTMLInputElement | HTMLTextAreaElement).disabled).toBe(true);
+    }
+    for (const field of screen.getAllByRole('checkbox')) {
+      expect((field as HTMLInputElement).disabled).toBe(true);
+    }
     expect(screen.getByText('meka.defaultRoleDescription')).toBeTruthy();
+    // Factory-inclusive means all three inherited sources are reported in every resource area, even
+    // though the default role's own lists stay empty.
+    for (const testId of INHERITED_SOURCE_NOTICE_TEST_IDS) {
+      expect(screen.getByTestId(testId)).toBeTruthy();
+    }
+    // A genuinely read-only role is the only place the note may claim read-only, so this is where
+    // the wording without the editable caveat is asserted.
+    expect(screen.getAllByText('meka.roleInheritedSourcesNote')).toHaveLength(3);
+    expect(screen.queryAllByText('meka.roleInheritedSourcesNoteEditable')).toHaveLength(0);
+    // Every source is badged once per resource area (rules, skills, MCP) on the real default role.
+    for (const label of [
+      'meka.roleInheritsProjectDefaults',
+      'meka.roleIncludesAllProjectMetadata',
+      'meka.roleIncludesAllBundledSkills',
+    ]) {
+      expect(screen.getAllByText(label)).toHaveLength(3);
+    }
     // No Save even after a programmatic change attempt, and no delete for a built-in role.
     expect(screen.queryByRole('button', { name: 'meka.saveRole' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'meka.deleteRole' })).toBeNull();
@@ -607,23 +700,9 @@ describe('Meka project and role create states', () => {
   });
 
   it('shows no buttons after switching from a new-role draft to the read-only default role', async () => {
-    const defaultRole = {
-      id: 'saga2-default-role',
-      projectId: 'saga2',
-      name: 'saga2-default-role',
-      displayName: '默认角色',
-      description: null,
-      tags: ['builtin', 'default'],
-      filePath: 'meka/roles/saga2-default-role.json',
-      isBuiltin: true,
-      contentDigest: null,
-      sortOrder: -1,
-      createdAt: null,
-      updatedAt: null,
-    };
     installApi([
       {
-        ...projectSummary([defaultRole]),
+        ...projectSummary([defaultRole()]),
         id: 'saga2',
         name: 'saga2',
         displayName: 'SAGA2',
@@ -776,5 +855,300 @@ describe('Meka project whose configuration is unavailable', () => {
     expect(
       screen.queryByRole('button', { name: 'meka.removeProjectRegistrationAction' }),
     ).toBeNull();
+  });
+});
+
+describe('Meka role inherited-source visibility', () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it('reports all three inherited sources in every resource area without offering a toggle', async () => {
+    installApi([projectSummary([editableRole()])], {
+      roleFile: {
+        ...INHERITED_ROLE_FILE,
+        useProjectDefaults: true,
+        includeAllProjectMetadata: true,
+        includeAllBundledSkills: true,
+      },
+    });
+    renderRoute('/?projectId=project-a&roleId=role-inherited');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Inherited role' }));
+    await screen.findByLabelText('meka.roleName');
+
+    for (const testId of INHERITED_SOURCE_NOTICE_TEST_IDS) {
+      const notice = await screen.findByTestId(testId);
+      // All three sources are reported as read-only state, once per resource area.
+      expect(within(notice).getByText('meka.roleInheritsProjectDefaults').tagName).toBe('SPAN');
+      expect(within(notice).getByText('meka.roleIncludesAllProjectMetadata').tagName).toBe('SPAN');
+      expect(within(notice).getByText('meka.roleIncludesAllBundledSkills').tagName).toBe('SPAN');
+      // Declared order is the contract: project defaults, then project metadata, then the bundled
+      // catalog. The panel reads them top-to-bottom, so a reshuffle is a user-visible regression.
+      expect(
+        within(notice)
+          .getAllByText(/^meka\.roleIncludes|^meka\.roleInherits/)
+          .map((badge) => badge.textContent),
+      ).toEqual([
+        'meka.roleInheritsProjectDefaults',
+        'meka.roleIncludesAllProjectMetadata',
+        'meka.roleIncludesAllBundledSkills',
+      ]);
+      // The explanation has to be readable on screen, not hidden in a tooltip. This role is
+      // project-owned and therefore editable, so the note is the variant without the read-only
+      // clause; the read-only wording is asserted on the shared default role instead.
+      expect(within(notice).getByText('meka.roleInheritedSourcesNoteEditable')).toBeTruthy();
+      // Read-only state, not an implied toggle: the notice itself carries no control and no
+      // pressed state even though this role is editable and the panel uses `aria-pressed` chips
+      // for its real selections elsewhere.
+      expect(within(notice).queryAllByRole('checkbox')).toHaveLength(0);
+      expect(within(notice).queryAllByRole('button')).toHaveLength(0);
+      expect(notice.querySelectorAll('[aria-pressed]').length).toBe(0);
+    }
+  });
+
+  it('reports only the project-defaults source when the manifest sets just that one', async () => {
+    installApi([projectSummary([editableRole()])], {
+      roleFile: {
+        ...INHERITED_ROLE_FILE,
+        useProjectDefaults: true,
+        includeAllProjectMetadata: false,
+        includeAllBundledSkills: false,
+      },
+    });
+    renderRoute('/?projectId=project-a&roleId=role-inherited');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Inherited role' }));
+    await screen.findByLabelText('meka.roleName');
+    await screen.findByTestId('meka-role-inherited-sources-rules');
+    expect(screen.getAllByText('meka.roleInheritsProjectDefaults')).toHaveLength(3);
+    expect(screen.queryAllByText('meka.roleIncludesAllProjectMetadata')).toHaveLength(0);
+    expect(screen.queryAllByText('meka.roleIncludesAllBundledSkills')).toHaveLength(0);
+    for (const testId of INHERITED_SOURCE_NOTICE_TEST_IDS) {
+      expect(screen.getByTestId(testId)).toBeTruthy();
+    }
+  });
+
+  it('reports only the all-metadata source when the manifest sets just that one', async () => {
+    installApi([projectSummary([editableRole()])], {
+      roleFile: {
+        ...INHERITED_ROLE_FILE,
+        useProjectDefaults: false,
+        includeAllProjectMetadata: true,
+        includeAllBundledSkills: false,
+      },
+    });
+    renderRoute('/?projectId=project-a&roleId=role-inherited');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Inherited role' }));
+    await screen.findByLabelText('meka.roleName');
+    await screen.findByTestId('meka-role-inherited-sources-rules');
+    expect(screen.getAllByText('meka.roleIncludesAllProjectMetadata')).toHaveLength(3);
+    expect(screen.queryAllByText('meka.roleInheritsProjectDefaults')).toHaveLength(0);
+    expect(screen.queryAllByText('meka.roleIncludesAllBundledSkills')).toHaveLength(0);
+    for (const testId of INHERITED_SOURCE_NOTICE_TEST_IDS) {
+      expect(screen.getByTestId(testId)).toBeTruthy();
+    }
+  });
+
+  it('reports only the bundled-skills source when the manifest sets just that one', async () => {
+    installApi([projectSummary([editableRole()])], {
+      roleFile: {
+        ...INHERITED_ROLE_FILE,
+        useProjectDefaults: false,
+        includeAllProjectMetadata: false,
+        includeAllBundledSkills: true,
+      },
+    });
+    renderRoute('/?projectId=project-a&roleId=role-inherited');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Inherited role' }));
+    await screen.findByLabelText('meka.roleName');
+
+    // Regression lock for the third source: the bundled catalog alone has to open every notice,
+    // exactly once per resource area. When the notice's render condition only looked at the two
+    // project-wide flags this whole case rendered nothing, so each assertion below is the guard.
+    for (const testId of INHERITED_SOURCE_NOTICE_TEST_IDS) {
+      const notice = await screen.findByTestId(testId);
+      expect(within(notice).getAllByText('meka.roleIncludesAllBundledSkills')).toHaveLength(1);
+      expect(within(notice).getByText('meka.roleIncludesAllBundledSkills').tagName).toBe('SPAN');
+      expect(within(notice).queryByText('meka.roleInheritsProjectDefaults')).toBeNull();
+      expect(within(notice).queryByText('meka.roleIncludesAllProjectMetadata')).toBeNull();
+      // Read-only state, not an implied toggle: same shape as the all-three case above.
+      expect(within(notice).queryAllByRole('checkbox')).toHaveLength(0);
+      expect(within(notice).queryAllByRole('button')).toHaveLength(0);
+      expect(notice.querySelectorAll('[aria-pressed]').length).toBe(0);
+    }
+    expect(screen.getAllByText('meka.roleIncludesAllBundledSkills')).toHaveLength(3);
+    expect(screen.queryAllByText('meka.roleInheritsProjectDefaults')).toHaveLength(0);
+    expect(screen.queryAllByText('meka.roleIncludesAllProjectMetadata')).toHaveLength(0);
+  });
+
+  it('renders no inherited-source notice when the manifest declares none of the three sources', async () => {
+    installApi([projectSummary([editableRole()])], {
+      roleFile: {
+        ...INHERITED_ROLE_FILE,
+        useProjectDefaults: false,
+        includeAllProjectMetadata: false,
+        includeAllBundledSkills: false,
+      },
+    });
+    renderRoute('/?projectId=project-a&roleId=role-inherited');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Inherited role' }));
+    await screen.findByLabelText('meka.roleName');
+    // The role is loaded and its empty resource list is on screen, so a missing notice is the
+    // manifest's answer rather than a panel that never rendered.
+    expect(screen.getByText('meka.rulesEmpty')).toBeTruthy();
+    for (const testId of INHERITED_SOURCE_NOTICE_TEST_IDS) {
+      expect(screen.queryByTestId(testId)).toBeNull();
+    }
+    expect(screen.queryByText('meka.roleInheritedSourcesNote')).toBeNull();
+  });
+});
+
+/**
+ * P1: the remove button on a switch-derived row was a dead control. The panel dropped the entry from
+ * the draft, the save succeeded, and the runtime laid the entry back down from the project's
+ * `roleDefaults` / the bundled catalog — so the row returned. Main now reports which keys it derived
+ * (`derivedEntryKeys` on the `read-manifest` result) and the panel offers no removal for them, while
+ * keeping the checkbox, which is the exclusion an `enabled: false` selection really performs.
+ */
+describe('Meka role switch-derived entries cannot be removed', () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it('hides the remove button on derived rules, skills and MCP while keeping their checkbox', async () => {
+    installApi([projectSummary([editableRole()])], {
+      roleFile: {
+        ...INHERITED_ROLE_FILE,
+        useProjectDefaults: true,
+        includeAllProjectMetadata: true,
+        includeAllBundledSkills: true,
+        rules: [
+          { id: 'derived-rule', text: 'Derived rule text', enabled: true },
+          { id: 'own-rule', text: 'Own rule text', enabled: true },
+        ],
+        skills: [
+          { skillId: 'derived-skill', enabled: true },
+          { skillId: 'own-skill', enabled: true },
+        ],
+        mcp: [
+          { id: 'derived-mcp', providerId: 'derived-mcp', enabled: true },
+          { id: 'own-mcp', providerId: 'own-mcp', enabled: true },
+        ],
+      },
+      derivedEntryKeys: {
+        rules: ['derived-rule'],
+        skills: ['derived-skill'],
+        mcp: ['derived-mcp'],
+        metadata: ['\u0000AGENTS.md\u0000agents-md'],
+      },
+    });
+    renderRoute('/?projectId=project-a&roleId=role-inherited');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Inherited role' }));
+    await screen.findByLabelText('meka.roleName');
+
+    // Rules (`rule.id`): the derived row has no trash but keeps the checkbox that excludes it.
+    const derivedRuleRow = listRowOf(screen.getByDisplayValue('Derived rule text'));
+    const ownRuleRow = listRowOf(screen.getByDisplayValue('Own rule text'));
+    expect(within(derivedRuleRow).queryByRole('button', { name: 'meka.remove' })).toBeNull();
+    expect(within(derivedRuleRow).getByRole('checkbox')).toBeTruthy();
+    expect(within(ownRuleRow).getByRole('button', { name: 'meka.remove' })).toBeTruthy();
+
+    // MCP (`entry.id`): same split. The panel has no `excludeDefaults` writer, so the checkbox is
+    // the only exclusion the runtime would have honoured for the derived row.
+    const derivedMcpRow = listRowOf(screen.getByText('derived-mcp'));
+    const ownMcpRow = listRowOf(screen.getByText('own-mcp'));
+    expect(within(derivedMcpRow).queryByRole('button', { name: 'meka.remove' })).toBeNull();
+    expect(within(derivedMcpRow).getByRole('checkbox')).toBeTruthy();
+    expect(within(ownMcpRow).getByRole('button', { name: 'meka.remove' })).toBeTruthy();
+
+    // Skills (`isLegacySkill ? id : skillId`): with an empty catalog every skill id is "unknown"
+    // and renders under `meka.legacySkillReferences`, where the derived one is un-removable too.
+    const derivedSkillRow = listRowOf(screen.getByText('derived-skill'));
+    const ownSkillRow = listRowOf(screen.getByText('own-skill'));
+    expect(within(derivedSkillRow).queryByRole('button', { name: 'meka.remove' })).toBeNull();
+    expect(within(derivedSkillRow).getByRole('checkbox')).toBeTruthy();
+    expect(within(ownSkillRow).getByRole('button', { name: 'meka.remove' })).toBeTruthy();
+  });
+});
+
+/**
+ * The copy path the `MEKA_BUILTIN_READ_ONLY` message points users at ("copy it to a project role
+ * instead"). The copy keeps all three switches, so the runtime still absorbs the same sources, but
+ * it is project-owned and fully editable — which is why the notice must switch to the editable key
+ * instead of inheriting the read-only one from the original.
+ */
+describe('Meka role copy of the shared default role', () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it('lands an editable role that keeps the three inherited sources and their editable note', async () => {
+    const api = installApi([projectSummary([defaultRole('project-a')])], {
+      roleFile: {
+        projectId: 'project-a',
+        displayName: '默认角色',
+        useProjectDefaults: true,
+        includeAllProjectMetadata: true,
+        includeAllBundledSkills: true,
+        rules: [{ id: 'rule-1', text: 'Inherited rule', enabled: true }],
+        mcp: [{ id: 'meka-design', providerId: 'meka-design', enabled: true }],
+      },
+    });
+    renderRoute('/?projectId=project-a');
+
+    fireEvent.click(await screen.findByRole('button', { name: '默认角色' }));
+    // The original is the read-only shared contract: no editable field and no save entry.
+    const originalName = (await screen.findByLabelText('meka.roleName')) as HTMLInputElement;
+    expect(originalName.disabled).toBe(true);
+    expect(screen.queryByRole('button', { name: 'meka.saveRole' })).toBeNull();
+
+    // Copy is a create → reload → re-read chain, so it is settled inside `act` before asserting: the
+    // panel swaps the read-only original for the new draft only after that chain resolves.
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'meka.copyRole' }));
+    });
+    await act(async () => {});
+
+    expect(api.createRole).toHaveBeenCalledTimes(1);
+    // Dropping a switch here would silently change what the copy mounts, so the copy keeps all three.
+    expect(api.createRole.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        projectId: 'project-a',
+        roleFile: expect.objectContaining({
+          useProjectDefaults: true,
+          includeAllProjectMetadata: true,
+          includeAllBundledSkills: true,
+        }),
+      }),
+    );
+
+    // Project-owned, therefore editable: the fields are live, the exclusion checkboxes are usable,
+    // and an edit produces the Save entry a read-only role can never offer.
+    await waitFor(() =>
+      expect((screen.getByLabelText('meka.roleName') as HTMLInputElement).disabled).toBe(false),
+    );
+    expect((screen.getByLabelText('meka.description') as HTMLTextAreaElement).disabled).toBe(false);
+    const checkboxes = screen.getAllByRole('checkbox') as HTMLInputElement[];
+    expect(checkboxes.length).toBeGreaterThan(0);
+    for (const checkbox of checkboxes) expect(checkbox.disabled).toBe(false);
+    for (const testId of INHERITED_SOURCE_NOTICE_TEST_IDS) {
+      const notice = screen.getByTestId(testId);
+      expect(within(notice).getByText('meka.roleInheritedSourcesNoteEditable')).toBeTruthy();
+      expect(within(notice).queryByText('meka.roleInheritedSourcesNote')).toBeNull();
+    }
+    fireEvent.change(screen.getByLabelText('meka.roleName'), {
+      target: { value: 'Copy of the default role' },
+    });
+    expect(screen.getByRole('button', { name: 'meka.saveRole' })).toBeTruthy();
+    // The copy chain's tail (the reload that re-lists the project) settles after the assertions.
+    await act(async () => {});
   });
 });

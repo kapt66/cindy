@@ -12,6 +12,7 @@ vi.mock('electron', () => ({
 }));
 
 import type { MekaRoleFile } from '../../../shared/meka-projects.js';
+import { mekaDefaultRoleManifest } from '../../../shared/meka-projects.js';
 import {
   mergeMekaProjectRoleDefaults,
   resolveRoleProjectMetadataSelections,
@@ -104,4 +105,54 @@ describe('Meka project and role runtime configuration', () => {
     ]);
   });
 
+  it('drives the shared default role through both expansion flags instead of zero injection', () => {
+    const manifest = mekaDefaultRoleManifest('saga2');
+
+    // The factory manifest declares no prompt body items: the **three** opt-in flags are the single
+    // source for everything the project and the bundled catalog can contribute.
+    expect(manifest).toMatchObject({
+      useProjectDefaults: true,
+      includeAllProjectMetadata: true,
+      includeAllBundledSkills: true,
+      rules: [],
+      skills: [],
+      // The one MCP the retired general-development role pinned cannot be re-derived from the
+      // project, so it stays declared explicitly.
+      mcp: [{ id: 'meka-design', providerId: 'meka-design', enabled: true }],
+      promptFragments: [],
+      projectMetadataSelection: [],
+    });
+    // Red line: the default role must never carry the combat workflow marker.
+    expect('workflow' in manifest).toBe(false);
+
+    const merged = mergeMekaProjectRoleDefaults(manifest, {
+      promptFramework: 'project framework',
+      rules: [{ id: 'project-rule', text: 'project rule', enabled: true }],
+      skills: ['saga2-overview'],
+      mcp: [{ id: 'project-agent', providerId: 'project-agent', enabled: true }],
+      projectMetadataSelection: [{ sourcePath: 'AGENTS.md', itemType: 'agents-md' }],
+    });
+
+    // `useProjectDefaults` prepends the project prompt framework to the factory prompt.
+    expect(merged.prompt).toBe(`project framework\n\n${manifest.prompt}`);
+    expect(merged.rules).toEqual([{ id: 'project-rule', text: 'project rule', enabled: true }]);
+    expect(merged.skills).toEqual([{ skillId: 'saga2-overview', enabled: true }]);
+    expect(merged.mcp.map((entry) => entry.id)).toEqual(['project-agent', 'meka-design']);
+
+    // `includeAllProjectMetadata` selects every enabled project item, including the
+    // `agents-md` / `rule` ones that runtime resolution delivers as `projectReferences`
+    // (address + description only) instead of inlining their bodies.
+    const selections = resolveRoleProjectMetadataSelections(merged, [
+      { sourcePath: 'AGENTS.md', itemType: 'agents-md', enabled: true },
+      { sourcePath: 'rules.md', itemType: 'rule', enabled: true },
+      { sourcePath: 'skills/remote/SKILL.md', itemType: 'skill', enabled: true },
+      { sourcePath: 'disabled.md', itemType: 'agents-md', enabled: false },
+    ]);
+
+    expect(selections).toEqual([
+      { sourcePath: 'AGENTS.md', itemType: 'agents-md', enabled: true },
+      { sourcePath: 'rules.md', itemType: 'rule', enabled: true },
+      { sourcePath: 'skills/remote/SKILL.md', itemType: 'skill', enabled: true },
+    ]);
+  });
 });

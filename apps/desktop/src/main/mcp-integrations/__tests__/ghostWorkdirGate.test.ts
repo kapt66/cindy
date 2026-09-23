@@ -1750,7 +1750,8 @@ describe('ghost_call 兜底拒绝', () => {
       makeDeps('codex', 'general-1', 'general-1-instance', {
         source: 'meka',
         mekaProjectId: 'saga2',
-        mekaRoleId: 'general-development',
+        // 普通（非战斗）角色样本：共享默认角色。「通用开发」已退役。
+        mekaRoleId: 'saga2-default-role',
       }).callGhostTool({ ghostId: 'art', tool: 'run', args: { skill_id: 1010 } }),
     ).resolves.toMatchObject({ ok: true });
     expect(dispatchMock).toHaveBeenCalledTimes(1);

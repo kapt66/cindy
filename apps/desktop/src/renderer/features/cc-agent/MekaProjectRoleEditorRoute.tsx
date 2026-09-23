@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   BookOpen,
   BriefcaseBusiness,
+  Check,
   ChevronRight,
   Copy,
   Info,
@@ -63,6 +64,39 @@ type DraftProject = {
   rules: MekaRoleRule[];
   mcp: MekaRoleMcpEntry[];
 };
+
+/**
+ * Per-list keys of the entries Main derived from a role's `useProjectDefaults` /
+ * `includeAllProjectMetadata` / `includeAllBundledSkills` switches rather than from the manifest's
+ * own lists, attached by `meka-role:read-manifest`.
+ *
+ * A derived row is laid back down by the runtime on every resolve, so removing it from the draft
+ * cannot stick: the user deletes the row, the save succeeds, and the row returns. Only the row's
+ * checkbox (`enabled: false`) is an exclusion the runtime honours, which is why the panel offers no
+ * remove affordance for these keys and keeps the checkbox instead.
+ *
+ * **Display-only, never persisted.** Main attaches it to the read result and
+ * `normalizeMekaRoleManifest` — a whitelist rebuild — drops it before anything reaches disk, so a
+ * draft that still carries it writes the same manifest as one that does not.
+ */
+interface MekaRoleDerivedEntryKeys {
+  rules: string[];
+  skills: string[];
+  mcp: string[];
+  metadata: string[];
+}
+
+/**
+ * A role draft that also carries {@link MekaRoleDerivedEntryKeys}. The field travels on the object
+ * `read-manifest` returns (and therefore on the draft `saveRole` re-reads afterwards), so it is part
+ * of the draft's *shape*, not of the persisted manifest.
+ */
+type MekaRoleDraft = MekaRoleManifestFile & { derivedEntryKeys?: MekaRoleDerivedEntryKeys };
+
+/** The keys of one list, as a lookup. A draft without the field (new role, degraded read) has none. */
+function derivedKeySet(keys: readonly string[] | undefined): ReadonlySet<string> {
+  return new Set(keys ?? []);
+}
 
 const inputClass =
   'h-10 w-full rounded-full border border-[var(--settings-input-border)] bg-[var(--settings-input-bg)] px-4 text-13 text-[var(--settings-input-text)] outline-none transition-colors placeholder:text-[var(--settings-input-placeholder)] focus:border-[var(--settings-input-border-focus)] disabled:cursor-default disabled:opacity-55';
@@ -599,6 +633,84 @@ function metadataKey(
   return `${rootPath ?? ''}\0${itemType}\0${sourcePath}`;
 }
 
+/**
+ * Reports one resolved source of a role manifest. This is deliberately a `<span>` and not a
+ * checkbox: the fact comes from the manifest rather than from a control, and the panel offers no
+ * way to change it, so there is no hit region for §5's pointer-target rules to apply to.
+ */
+function InheritedRoleSourceBadge({ label }: { label: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border-default)] bg-[var(--surface-chip)] px-2 py-1 text-12 text-[var(--text-primary)]">
+      <Check size={12} className="shrink-0 text-[var(--text-secondary)]" aria-hidden="true" />
+      {label}
+    </span>
+  );
+}
+
+/**
+ * Reports where the expanded entries of the list below come from.
+ *
+ * A role carrying `useProjectDefaults` absorbs the project's `roleDefaults`, a role carrying
+ * `includeAllProjectMetadata` absorbs every enabled project metadata item, and a role carrying
+ * `includeAllBundledSkills` absorbs every skill the bundled catalog scans; Main expands all three
+ * before the panel reads the manifest, so the list below already shows the effective entries. Those
+ * groups are owned outside the role: the project-owned ones follow the project as it changes and the
+ * catalog-owned ones follow the package, and an expanded entry can sit next to an entry the role
+ * itself declares, which is why the note points at the badges above rather than at the whole list.
+ * The note states that ownership instead of explaining an empty list.
+ *
+ * `roleReadOnly` decides whether the note may also claim the role is read-only. These flags are
+ * kept by copied and project-owned roles as well, and those roles stay fully editable, so tying the
+ * read-only clause to the flags would tell the user that an editable panel cannot be saved.
+ */
+function InheritedRoleSourcesNotice({
+  roleReadOnly,
+  useProjectDefaults,
+  includeAllProjectMetadata,
+  includeAllBundledSkills,
+  testId,
+}: {
+  roleReadOnly: boolean;
+  useProjectDefaults?: boolean;
+  includeAllProjectMetadata?: boolean;
+  includeAllBundledSkills?: boolean;
+  testId: string;
+}) {
+  const { t } = useTranslation();
+  if (
+    useProjectDefaults !== true &&
+    includeAllProjectMetadata !== true &&
+    includeAllBundledSkills !== true
+  ) {
+    return null;
+  }
+  return (
+    <div
+      data-testid={testId}
+      className="mb-3 flex flex-col gap-2 rounded-lg border border-[var(--border-default)] bg-[var(--surface-elevated)] px-3 py-2.5"
+    >
+      <div className="flex flex-wrap items-center gap-1.5">
+        {useProjectDefaults === true ? (
+          <InheritedRoleSourceBadge label={t('meka.roleInheritsProjectDefaults')} />
+        ) : null}
+        {includeAllProjectMetadata === true ? (
+          <InheritedRoleSourceBadge label={t('meka.roleIncludesAllProjectMetadata')} />
+        ) : null}
+        {includeAllBundledSkills === true ? (
+          <InheritedRoleSourceBadge label={t('meka.roleIncludesAllBundledSkills')} />
+        ) : null}
+      </div>
+      <p className="text-12 leading-[1.67] text-[var(--text-secondary)]">
+        {t(
+          roleReadOnly
+            ? 'meka.roleInheritedSourcesNote'
+            : 'meka.roleInheritedSourcesNoteEditable',
+        )}
+      </p>
+    </div>
+  );
+}
+
 function MetadataSelectionList({
   metadata,
   itemTypes,
@@ -641,6 +753,7 @@ function RoleSkillsEditor({
   catalog,
   projectItems,
   projectSelections,
+  derivedSkillKeys,
   onProjectMetadataChange,
   disabled,
   onChange,
@@ -649,6 +762,8 @@ function RoleSkillsEditor({
   catalog: readonly MekaSkillCatalogEntry[];
   projectItems: readonly MekaProjectMetadata[];
   projectSelections: readonly MekaProjectMetadataSelection[];
+  /** Keys Main derived from this role's switches; those rows are excluded by checkbox, not removed. */
+  derivedSkillKeys: ReadonlySet<string>;
   onProjectMetadataChange: (next: MekaProjectMetadataSelection[]) => void;
   disabled?: boolean;
   onChange: (skills: Array<MekaRoleSkillSelection | MekaRoleSkillEntry>) => void;
@@ -749,7 +864,7 @@ function RoleSkillsEditor({
                 <span className="min-w-0 flex-1 truncate text-12 text-[var(--text-secondary)]">
                   {item.skillId}
                 </span>
-                {!disabled ? (
+                {!disabled && !derivedSkillKeys.has(item.skillId) ? (
                   <button
                     type="button"
                     className="text-[var(--text-tertiary)] hover:text-[var(--error-fg-strong)]"
@@ -776,7 +891,7 @@ function RoleSkillsEditor({
                 <span className="min-w-0 flex-1 truncate text-12 text-[var(--text-secondary)]">
                   {item.path}
                 </span>
-                {!disabled ? (
+                {!disabled && !derivedSkillKeys.has(item.id) ? (
                   <button
                     type="button"
                     className="text-[var(--text-tertiary)] hover:text-[var(--error-fg-strong)]"
@@ -809,10 +924,13 @@ function RoleSkillsEditor({
 
 function RoleMcpEditor({
   entries,
+  derivedEntryIds,
   disabled,
   onChange,
 }: {
   entries: MekaRoleMcpEntry[];
+  /** Keys Main derived from this role's switches; those rows are excluded by checkbox, not removed. */
+  derivedEntryIds: ReadonlySet<string>;
   disabled?: boolean;
   onChange: (entries: MekaRoleMcpEntry[]) => void;
 }) {
@@ -854,7 +972,7 @@ function RoleMcpEditor({
               <span className="text-10 text-[var(--text-tertiary)]">
                 {isInlineMcp(entry) ? entry.transport : t('meka.providerReference')}
               </span>
-              {!disabled ? (
+              {!disabled && !derivedEntryIds.has(entry.id) ? (
                 <button
                   type="button"
                   className="text-[var(--text-tertiary)] hover:text-[var(--error-fg-strong)]"
@@ -1267,8 +1385,11 @@ export function MekaProjectRoleEditorRoute() {
   // from it, so "no edit in progress" is a real state and not just an equal-looking draft.
   const [projectBaseline, setProjectBaseline] = useState<DraftProject | null>(null);
   const [projectFile, setProjectFile] = useState<MekaProjectFile | null>(null);
-  const [role, setRole] = useState<MekaRoleManifestFile | null>(null);
-  const [roleEffective, setRoleEffective] = useState<MekaRoleManifestFile | null>(null);
+  // The draft (and its last-effective twin) keep the display-only `derivedEntryKeys` Main attaches
+  // to `read-manifest`: `saveRole` re-reads the manifest after writing, so the field is still there
+  // once the draft is replaced — and both sides carry it, so it never shows up as a pending edit.
+  const [role, setRole] = useState<MekaRoleDraft | null>(null);
+  const [roleEffective, setRoleEffective] = useState<MekaRoleDraft | null>(null);
   const [metadata, setMetadata] = useState<MekaProjectMetadata[]>([]);
   const [metadataEffective, setMetadataEffective] = useState<MekaProjectMetadata[]>([]);
   const [skillCatalog, setSkillCatalog] = useState<MekaSkillCatalogEntry[]>([]);
@@ -1861,7 +1982,11 @@ export function MekaProjectRoleEditorRoute() {
   // Bundled SAGA2 roles are editable in place; the first save materializes
   // their snapshot in the project-root .meka/project.json.
   const selectionReadOnly = false;
-  // The shared default role injects nothing by contract, so it has no editable surface.
+  // The shared default role is read-only because it is a shared factory contract, not because it
+  // is empty: its content is decided by the app version, is identical for every project, and any
+  // `roleDefaults` change on the project side is absorbed by it automatically. It is factory-full
+  // rather than factory-empty — see `mekaDefaultRoleManifest` — so the panel reports its inherited
+  // sources instead of offering an edit surface that has no persistence path behind it.
   const roleReadOnly =
     selectionReadOnly || (selectedRoleSummary ? isMekaDefaultRole(selectedRoleSummary) : false);
   // A new role is a pending change from the moment it exists; an existing one only counts as
@@ -1877,6 +2002,12 @@ export function MekaProjectRoleEditorRoute() {
   // that draft while the shared default role is already the selection.
   const canCancelDraft = showingRole ? roleDirty && !roleReadOnly : projectDirty;
   const canSaveDraft = showingRole ? roleDirty && !roleReadOnly : projectDirty;
+  // Switch-derived rows have no remove affordance: the runtime lays them back down from the project
+  // `roleDefaults` / the bundled catalog on every resolve, so their checkbox is the only exclusion
+  // that survives a save. Read off the draft, which is where `read-manifest` put them.
+  const derivedRuleKeys = derivedKeySet(role?.derivedEntryKeys?.rules);
+  const derivedSkillKeys = derivedKeySet(role?.derivedEntryKeys?.skills);
+  const derivedMcpKeys = derivedKeySet(role?.derivedEntryKeys?.mcp);
 
   return (
     <>
@@ -2127,6 +2258,13 @@ export function MekaProjectRoleEditorRoute() {
                       }
                     />
                     <div className={cn(detailSurfaceClass, 'mt-5')}>
+                      <InheritedRoleSourcesNotice
+                        roleReadOnly={roleReadOnly}
+                        useProjectDefaults={role.useProjectDefaults}
+                        includeAllProjectMetadata={role.includeAllProjectMetadata}
+                        includeAllBundledSkills={role.includeAllBundledSkills}
+                        testId="meka-role-inherited-sources-rules"
+                      />
                       <div className="flex flex-col gap-3">
                         {(role.rules ?? []).map((ruleItem, index) => (
                           <div key={ruleItem.id} className="flex items-start gap-3">
@@ -2161,7 +2299,7 @@ export function MekaProjectRoleEditorRoute() {
                                 })
                               }
                             />
-                            {!roleReadOnly ? (
+                            {!roleReadOnly && !derivedRuleKeys.has(ruleItem.id) ? (
                               <button
                                 type="button"
                                 className="mt-3 text-[var(--text-tertiary)] hover:text-[var(--error-fg-strong)]"
@@ -2205,11 +2343,19 @@ export function MekaProjectRoleEditorRoute() {
                       description={t('meka.skillsDescription')}
                     />
                     <div className={cn(detailSurfaceClass, 'mt-5')}>
+                      <InheritedRoleSourcesNotice
+                        roleReadOnly={roleReadOnly}
+                        useProjectDefaults={role.useProjectDefaults}
+                        includeAllProjectMetadata={role.includeAllProjectMetadata}
+                        includeAllBundledSkills={role.includeAllBundledSkills}
+                        testId="meka-role-inherited-sources-skills"
+                      />
                       <RoleSkillsEditor
                         skills={role.skills}
                         catalog={skillCatalog}
                         projectItems={metadata}
                         projectSelections={role.projectMetadataSelection ?? []}
+                        derivedSkillKeys={derivedSkillKeys}
                         onProjectMetadataChange={(projectMetadataSelection) =>
                           setRole((current) =>
                             current ? { ...current, projectMetadataSelection } : current,
@@ -2230,8 +2376,16 @@ export function MekaProjectRoleEditorRoute() {
                       description={t('meka.roleMcpDescription')}
                     />
                     <div className={cn(detailSurfaceClass, 'mt-5')}>
+                      <InheritedRoleSourcesNotice
+                        roleReadOnly={roleReadOnly}
+                        useProjectDefaults={role.useProjectDefaults}
+                        includeAllProjectMetadata={role.includeAllProjectMetadata}
+                        includeAllBundledSkills={role.includeAllBundledSkills}
+                        testId="meka-role-inherited-sources-mcp"
+                      />
                       <RoleMcpEditor
                         entries={role.mcp}
+                        derivedEntryIds={derivedMcpKeys}
                         disabled={roleReadOnly}
                         onChange={(mcp) => setRole({ ...role, mcp })}
                       />
