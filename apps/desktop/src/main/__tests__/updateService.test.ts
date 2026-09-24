@@ -562,7 +562,7 @@ describe('checkForUpdate Linux installer flow', () => {
     });
   });
 
-  it('ignores a Linux hotfix zip and stays idle without an installer', async () => {
+  it('ignores a Linux hotfix zip and answers no_asset without an installer', async () => {
     const { checkForUpdate, getUpdateStatus } = await freshUpdateService('linux', 'x64');
 
     const result = await checkForUpdate({
@@ -576,7 +576,10 @@ describe('checkForUpdate Linux installer flow', () => {
       },
     });
 
-    expect(result).toBe('idle');
+    // 清单里确实有更高版本,只是本平台没有可安装资产:结论码不能是 'idle' ——
+    // 渲染端把它映射成「已经是最新版本了」,与「有新版本」的事实相反。
+    expect(result).toBe('no_asset');
+    // 状态机不变:没有横幅/弹窗要显示,主进程状态仍是 idle。
     expect(getUpdateStatus()).toBe('idle');
     expect(download).not.toHaveBeenCalled();
   });
@@ -660,13 +663,15 @@ describe('checkForUpdate Linux installer flow', () => {
 });
 
 describe('checkForUpdate 版本无关(占位 0.0.0)打包豁免', () => {
-  it('占位版本 0.0.0 时直接 idle,不拉 manifest 不下载(即便传入含热更的 manifest)', async () => {
+  it('占位版本 0.0.0 时直接 versionless,不拉 manifest 不下载(即便传入含热更的 manifest)', async () => {
     appGetVersion.mockReturnValue('0.0.0');
     const { checkForUpdate, getUpdateStatus } = await freshUpdateService('darwin');
 
     const result = await checkForUpdate(updateManifest('9.9.9'));
 
-    expect(result).toBe('idle');
+    // 禁用热更的语义不变(状态仍 idle、不拉清单不下载),只有手动检查的结论码变了:
+    // 答 'idle' 会让渲染端弹「已经是最新版本了」,而真值是「这个包有意不参与自动更新」。
+    expect(result).toBe('versionless');
     expect(getUpdateStatus()).toBe('idle');
     expect(fetchManifest).not.toHaveBeenCalled();
     expect(download).not.toHaveBeenCalled();
@@ -704,13 +709,44 @@ describe('checkForUpdate 版本无关(占位 0.0.0)打包豁免', () => {
   it('0.0.0-dev 形态同样豁免;真实版本不受影响', async () => {
     appGetVersion.mockReturnValue('0.0.0-dev');
     const service = await freshUpdateService('win32');
-    expect(await service.checkForUpdate(updateManifest('9.9.9'))).toBe('idle');
+    expect(await service.checkForUpdate(updateManifest('9.9.9'))).toBe('versionless');
+    expect(service.getUpdateStatus()).toBe('idle');
     expect(download).not.toHaveBeenCalled();
 
     expect(service.isVersionlessAppVersion('0.0.0')).toBe(true);
     expect(service.isVersionlessAppVersion('0.0.0-dev')).toBe(true);
     expect(service.isVersionlessAppVersion('0.0.1')).toBe(false);
     expect(service.isVersionlessAppVersion('1.0.0')).toBe(false);
+  });
+});
+
+describe('checkForUpdate 清单有更高版本但本平台没有可安装资产', () => {
+  it('answers no_asset instead of idle — 「检查更新」不能对用户说「已经是最新版本了」', async () => {
+    const service = await freshUpdateService('darwin');
+    // 清单广告 9.9.9(高于已装的 0.0.64),却没有本平台可安装的 hotfix。
+    const withoutAsset = { app: { version: '9.9.9' } } as ReturnType<typeof updateManifest>;
+
+    await expect(service.checkForUpdate(withoutAsset)).resolves.toBe('no_asset');
+
+    // 状态机语义不变:没有横幅/弹窗要显示,主进程状态仍是 idle;也没有任何下载。
+    expect(service.getUpdateStatus()).toBe('idle');
+    expect(download).not.toHaveBeenCalled();
+  });
+
+  it('renders the truthful answer on the manual-check IPC (the toast source)', async () => {
+    const service = await freshUpdateService('darwin');
+    fetchManifest.mockResolvedValue(
+      { app: { version: '9.9.9' } } as ReturnType<typeof updateManifest>,
+    );
+    service.initUpdateService();
+    try {
+      const handler = ipcHandlers.get('update-check-now');
+      if (!handler) throw new Error('update-check-now handler not registered');
+      // 渲染端 toast 只认这个 reply:若这里回落成 'idle',就会弹「已经是最新版本了」。
+      await expect(handler()).resolves.toEqual({ result: 'no_asset' });
+    } finally {
+      service.stopUpdateService();
+    }
   });
 });
 

@@ -32,6 +32,7 @@ import { requireObject, requireString, throwIpcError } from '../utils/ipcValidat
 import { parseMarketSource } from './sources/parse.js';
 import { MekaPluginMarketApi } from './api.js';
 import { PluginChannelLedger } from './channelLedger.js';
+import { pluginClientVersionReader } from './clientIdentity.js';
 import { PluginMarketLedger } from './ledger.js';
 import { LocalIconRequestGate } from './localIconRequestGate.js';
 import { resolveMekaPluginMaxDownloadBytes } from './mekaDownloadPolicy.js';
@@ -55,7 +56,10 @@ let mekaServiceSingleton: PluginMarketService | null = null;
  */
 function mekaService(): PluginMarketService {
   mekaServiceSingleton ??= new PluginMarketService(
-    new MekaPluginMarketApi(),
+    // Meka 渠道必须上报真实客户端版本：恒发 `0.0.0` 会被协议的 versionless 语义无条件放行，
+    // 服务端版本兼容门失效。身份（edition → 空间／版本／来源）只有
+    // `plugin-market/clientIdentity.ts` 一个解析入口，构造点不再自己写 `app.getVersion()`。
+    new MekaPluginMarketApi(pluginClientVersionReader('meka')),
     new PluginMarketLedger(() =>
       ownerScopedUserDataPath('plugin-market', 'meka-ledger.v1.json'),
     ),

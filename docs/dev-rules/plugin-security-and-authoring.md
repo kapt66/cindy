@@ -158,6 +158,28 @@
   同一安装策略：`minCindyVersion` 是发布／发现元数据，不是客户端安装授权或确认闸门。
   真实包身份、Release 摘要、能力上限、Manifest schema 与当前 Host 是否能解析仍按各自
   安全边界校验，不能把包内容异常降级成“仍要安装”。
+- **投影信息不足时客户端不得断言「已是最新」；`minCindyVersion` 只能作为只读事实呈现。**
+  服务端在 current 不兼容时回退兼容历史版本、没有兼容版本时不展示，而 wire 上只有单个
+  `currentRelease`（`packages/plugin-protocol/src/delivery.ts`），所以「本轮没有可更新版本」
+  既可能是真最新，也可能是投影已经扣下了更高 release——客户端拿不到区分二者的任何事实。
+  因此已装插件卡片只在市场记录 `installState === 'update-available'` 时给出更新入口，其余
+  情况**不渲染**「已是最新」；该文案连同 i18n 键 `settings.ghosts.page.upToDate` 已一并删除，
+  **不得重新引入**——它是被有意移除的假阳性来源，不是漏翻的文案，看到五语里缺这个键不要补回来。
+  代码锚点：
+  `apps/desktop/src/renderer/features/plugin/GhostPluginPage.tsx` 的 `GhostPluginCard` 版本行；
+  自动化门禁 `apps/desktop/src/renderer/features/plugin/__tests__/GhostPluginCard.test.tsx`
+  （无更新时不出现 up-to-date 文案，且版本行照旧展示）。
+  同理 `minCindyVersion` 只在已装详情页作为只读事实项呈现：满足下限时显示该下限，当前客户端
+  低于下限时如实提示需要更新客户端，让「为什么我拿到的是旧版」可见；比较复用协议包的
+  `compareCindyVersions` / `supportsCindyVersion`，版本号缺失或格式非法时退回纯事实、不冒充
+  「需要更新客户端」。它**不得**成为客户端筛选、跳过、隐藏、替换 release 的依据，也不得触发
+  任何确认流程。代码锚点：`GhostPluginDetailView.tsx` 的 `DetailsSection`（只读事实项）与
+  `minClientVersionState`（三态判定）；自动化门禁
+  `apps/desktop/src/renderer/features/plugin/__tests__/GhostPluginDetailSections.test.tsx`
+  （事实项的三种状态 + 经 `GhostPluginDetailView` 的透传），并与既有「客户端不做二次筛选」
+  门禁并列生效：`main/plugin-market/__tests__/service.test.ts`（投影是唯一筛选方）、
+  `renderer/features/plugin/__tests__/updateAllController.test.ts`（不按客户端版本复查服务端
+  选定的 release）、`renderer/cindy-brain/__tests__/installFlow.test.tsx`（本地包不被客户端拦截）。
 - 自动对账在 owner 稳定后的启动／登录切换、应用回前台、系统唤醒和 30 分钟周期触发。
   不新增持久化任务队列或“是否自动更新”设置；卸载写下的 opt-out 继续阻止默认安装复活。
 - 同一 release 自动更新失败后，在当前进程内按 owner、来源路由和 release 做指数退避

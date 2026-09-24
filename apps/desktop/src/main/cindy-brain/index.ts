@@ -1125,13 +1125,26 @@ function brainRootDir(): string {
 }
 
 /**
- * 内置意识种子根目录列表(第一方可信通道,随包分发的源码目录形态):
+ * 内置意识播种的种子根目录列表(第一方可信通道的路径口径):
  * - dev:仓库 apps/desktop/resources/builtin-ghosts(appPath = apps/desktop);
- * - packaged:process.resourcesPath/builtin-ghosts(forge extraResource 原样拷入)。
- * 2026-07-22 起种子源拆为两个 submodule 仓,分别挂载在 builtin-ghosts 下:
- * official(cindy-official-plugin)与 xd(cindy-xd-plugin),各自带一份
- * provisioning.json。submodule 未初始化 = 对应根为空,播种层按半初始化保护
- * 处理(见 builtinGhostProvisioner 头注释)。双平台无差异(纯 path.join)。
+ * - packaged:process.resourcesPath/builtin-ghosts。
+ * 历史上(2026-07-22)种子源拆为两个目录根:official(cindy-official-plugin)与
+ * xd(cindy-xd-plugin),各自带一份 provisioning.json。双平台无差异(纯 path.join)。
+ *
+ * ⚠️ 已确证事实(2026-09 复核,本仓与上游 origin/main **同形**):**随包分发种子
+ * 已被上游退休,不再随包出货** ——
+ * ① apps/desktop/resources/builtin-ghosts 在磁盘上并不存在;
+ * ② 它从未进入 forge.config.ts 的 extraResourcesForTarget() 白名单,因此 packaged
+ *    后 process.resourcesPath 下同样没有这个目录(旧注释写的"extraResource 原样
+ *    拷入"与配置直接矛盾,已按事实改正);
+ * ③ .gitignore:208-209 明写「内置插件种子已废弃(改走 plugin-store 安装)」。
+ * ⇒ 两个根在正常安装(dev 与 packaged)下都不存在,**播种是有意的 no-op**,由
+ * builtinGhostProvisioner 记一条一次性 info 说明,不按故障处理(详见 provisioner
+ * 头注释的「观测口径」)。
+ *
+ * 机制**保留**的原因(禁止删除):历史已播种安装的墓碑与 seeded 台账、改名
+ * (RENAMED_BUILTIN_GHOSTS)与退役(RETIRED_BUILTIN_GHOSTS)对账仍走这条链路,
+ * 删掉等于搁置存量用户数据,而今天零收益。本函数继续作为这些对账的路径口径。
  */
 function builtinSeedRootDirs(): string[] {
   const base = app.isPackaged

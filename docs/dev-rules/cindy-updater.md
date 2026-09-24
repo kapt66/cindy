@@ -266,6 +266,51 @@ main 与 renderer 都从这里 import（renderer 不能 import `src/main/**`）�
 从头开始，封顶只剩「单会话内」成立。已发布版本升级路径见
 `docs/migrations/xdmaker-meka-to-cindy.md` 的更新器条目。
 
+## 手动「检查更新」的结论码必须与真值一致
+
+UI 入口是标题栏菜单（`MenuButton`）与 `MainLayout` 的「检查更新」，两者都走
+`renderer/lib/checkForUpdateWithToast.ts`：它把 `update-check-now` 的 reply 映射成 toast，其中
+**只有 `'idle'` 表示「已经是最新版本了」**。因此 `CheckForUpdateResult`
+（`src/main/updateService.ts`）里任何「有新版本、只是这一轮拿不到」的出口都必须有自己的
+结论码，否则渲染端会在明明有新版本时对用户说反话（这就是 `apply_exhausted` 当初不并入
+`idle` 的同一条理由）。现行分工：
+
+| 结论码 | 真值 | `UpdateStatus` | 用户看到 |
+|---|---|---|---|
+| `idle` | 确实已是最新（清单版本与已装版本相同 / 更低） | `idle` | 「已经是最新版本了」 |
+| `no_asset` | 清单广告的版本**严格新于**已装版本，但本平台这一轮没有可安装资产（`resolveUpdateAsset()` 为空：Linux 清单无 `installer`、其它平台无 `hotfix`） | `idle`（`wasReady` 时仍先丢弃暂存补丁；无横幅/弹窗要显示） | 「有新版本，但目前没有适用于你的系统的安装包，请稍后重试」 |
+| `versionless` | 运行的是版本无关包（占位 `0.0.0` / `0.0.0-*`），**有意**不参与应用内更新 | `idle`（禁用语义不变：不拉清单、不下载、不 relaunch） | 「当前是本地构建的版本，不参与应用内自动更新」 |
+| `apply_exhausted` | 该版本已耗尽重试预算（见上节） | 保持 `error` + `update_apply_exhausted` | 「已停止自动更新，请手动安装」 |
+
+- **`apply_exhausted` 优先于 `no_asset`**：若这一轮仍持有被放弃版本的终态
+  （`heldApplyExhaustedVersion()` 命中同一版本），无资产出口继续答 `'apply_exhausted'` ——
+  终态是更强的结论，且渲染端此刻正显示手动安装弹窗（口径见上节）。
+- **不新增 `UpdateStatus`**：`CheckForUpdateResult` 是「手动检查的答复」词表，`UpdateStatus`
+  是「横幅/弹窗生命周期」词表，两者本就不是一层。`no_asset` / `versionless` 都不需要横幅或
+  弹窗，停 `idle` 即可；为它们新增状态值等于给同一个事实造第二套重复概念。
+- **启动链路不受影响**：`update-check-startup` 在 versionless（`isVersionlessAppVersion()`
+  短路）与无资产（`resolveUpdateAsset()` 判空）两处都**先于**任何 toast 返回
+  `hasUpdate: false`，splash 直接进第二阶段，没有对用户说反话的出口。因此这两个结论码只出现在
+  `update-check-now`（**用户手动检查**）与 30 分钟后台轮询（轮询忽略返回值）。
+- **改动词表时同步三处**：`src/main/updateService.ts` 的 `CheckForUpdateResult`、
+  `src/preload/preload.ts` 与 `src/renderer/vite-env.d.ts` 的 `checkForUpdate` 返回类型、以及
+  `checkForUpdateWithToast.ts` 的映射（缺最后一个 `case` 会静默什么都不弹）。
+
+**i18n 与验证现状**：新增键 `titleBar.updateCheckToast.noAsset` /
+`titleBar.updateCheckToast.versionless` 已同步 en / zh-CN / zh-TW / ja / ko 五语，纳入
+`check:i18n` 的键对齐门禁。选词依据 `i18n/GLOSSARY.md`：中文沿用既有「安装包」译法；英文源
+刻意不使用 `Dev`，避免落入 Dev 徽标术语的条件禁用集（`开发版` / `開発版` / `개발판`）。
+回归用例：`src/main/__tests__/updateService.test.ts` 的
+`ignores a Linux hotfix zip and answers no_asset without an installer`、
+`answers no_asset instead of idle — …`（含 `update-check-now` reply 断言）、
+`checkForUpdate 版本无关(占位 0.0.0)打包豁免` 两条（断言结论码为 `versionless` **且**
+`getUpdateStatus()` 仍为 `idle`，钉住禁用行为不变），以及
+`src/renderer/lib/__tests__/checkForUpdateWithToast.test.ts`（断言 `no_asset` / `versionless` /
+`apply_exhausted` 都不再落到「已经是最新版本了」）。定向取证实跑
+`updateService.test.ts` → 108/108 通过（exit 0）；新增的 toast 映射用例**本次未实跑**，
+随交付门禁首跑。**本次未做实机双模式目检**——只新增 toast 文案，未新增任何样式、颜色、圆角或
+尺寸硬编码。
+
 ## 更新与运行时资产根地址
 
 `manifestService.getBaseUrl()` 同时服务应用热更新与 Claude Code、Codex、ripgrep 等运行时

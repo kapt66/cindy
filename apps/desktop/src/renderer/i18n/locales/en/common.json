@@ -4907,7 +4907,6 @@
         "manageAction": "Manage",
         "manageAria": "Manage {{name}}",
         "agentInvoked": "Invoked by Agent",
-        "upToDate": "Up to date",
         "oauthAuthorizationExpired": "Authorization expired — reconnect required",
         "installAria": "Install {{name}}",
         "installedTitle": "Installed Plugins",
@@ -5306,6 +5305,8 @@
         "dangerTitle": "Uninstall plugin",
         "infoContents": "Contains",
         "infoVersion": "Version",
+        "infoMinClientVersion": "Minimum client version",
+        "minClientVersionTooOld": "Needs a newer client — this version requires {{appName}} {{version}} or later.",
         "updateTitle": "Update version",
         "updateDesc": "Pick a new .cindy file to replace the installed version in place; enabled state and panel position are preserved.",
         "cindyPrefs": {
@@ -6595,7 +6596,9 @@
       "manifestFailed": "Update check failed, please check your network",
       "downloadFailed": "New version download failed, try again later",
       "manualDownload": "Download in the app, then choose when to restart. Only system .deb installs require a system password.",
-      "applyExhausted": "Automatic update for this version stopped after repeated failures. Download the new version and install it manually."
+      "applyExhausted": "Automatic update for this version stopped after repeated failures. Download the new version and install it manually.",
+      "noAsset": "A new version is available, but there is no installer for your system yet. Try again later.",
+      "versionless": "This is a locally built version, so in-app updates are disabled."
     },
     "closeConfirm": {
       "title": "Confirm exit?",

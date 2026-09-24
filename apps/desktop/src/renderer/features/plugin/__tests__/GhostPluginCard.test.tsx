@@ -3,6 +3,10 @@
  * whole-card opens detail, kind-specific primary button, manage entry),
  * market card actions, the legacy recovery notice, and market success navigation
  * (first install opens detail; update stays put).
+ *
+ * Also locks the no-false-positive rule: a card without an offered update must not
+ * claim the Plugin is up to date, because the server-side release projection can
+ * have withheld a higher release without any wire fact saying so.
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  * @vitest-environment jsdom
  */
@@ -381,7 +385,20 @@ describe('GhostPluginCard', () => {
     expect(screen.queryByText(/upToDate/)).toBeNull();
   });
 
-  it('shows an expired OAuth status instead of the up-to-date status', () => {
+  it('does not claim the plugin is up to date when no update is offered', () => {
+    // 服务端按客户端上报的版本投影兼容 release(投影可能已经扣下更高 release,而 wire 上
+    // 只有单个 currentRelease),所以「本轮没有可更新版本」推不出「已是最新」——客户端拿不到
+    // 能断言最新的任何事实,卡片因此不再渲染该文案(见 docs/dev-rules/plugin-security-and-authoring.md
+    // 第 3.1 节)。
+    render(<GhostPluginCard item={commandPlugin} onPrimary={vi.fn()} onManage={vi.fn()} />);
+
+    expect(screen.queryByText(/upToDate/)).toBeNull();
+    expect(screen.queryByText(/已是最新/)).toBeNull();
+    // 版本行本身照旧如实展示,不断言最新不等于砍掉已有事实。
+    expect(screen.getByText('v1.0.0')).toBeTruthy();
+  });
+
+  it('shows an expired OAuth status without claiming the plugin is up to date', () => {
     render(
       <GhostPluginCard
         item={{ ...commandPlugin, oauthAuthorizationExpired: true }}

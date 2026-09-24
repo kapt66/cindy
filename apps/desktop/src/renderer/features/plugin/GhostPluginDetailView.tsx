@@ -46,6 +46,9 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+// 版本门比较复用协议包既有实现：renderer 已经在消费这个包（pluginHomeSuggestions），
+// 不另写一套 SemVer 比较，也不改它的语义。
+import { compareCindyVersions, supportsCindyVersion } from '@cindy/plugin-protocol';
 
 import { CindyCapabilityPrefs } from '@/cindy-brain/CindyCapabilityPrefs';
 import { GhostLibrarySection } from './GhostLibrarySection';
@@ -628,7 +631,12 @@ export function GhostPluginDetailView({
 
         <GhostLibrarySection ghostId={detail.id} enabled={ghost?.manifest.library === true} />
 
-        <DetailsSection detail={detail} displayId={displayId} panelStatus={panelStatus} />
+        <DetailsSection
+          detail={detail}
+          displayId={displayId}
+          panelStatus={panelStatus}
+          minCindyVersion={ghost?.manifest.minCindyVersion}
+        />
       </article>
     </main>
   );
@@ -882,14 +890,43 @@ function PermissionDetailRow({ item }: { item: GhostPermissionItem }) {
   );
 }
 
+/**
+ * `minCindyVersion` 在客户端只有一种合法用法：把「这个 release 要求的最低客户端」如实
+ * 说给用户听。服务端按客户端上报的版本投影兼容 release（current 不兼容时回退到兼容的
+ * 历史 release，wire 上只下发单个 `currentRelease`），所以客户端既看不到投影扣下的更高
+ * release，也**不得**拿这个下限去筛选、隐藏或替换任何 release——那是客户端拦截，直接违反
+ * docs/dev-rules/plugin-security-and-authoring.md 第 3.1 节「Desktop 信任该投影」的不变量。
+ *
+ * 判定刻意分三态而不是布尔：版本号缺失或格式非法时 `compareCindyVersions` 返回 null，
+ * 那表示「无从比较」，不能顺势渲染成「需要更新客户端」——那是另一种假阳性。
+ */
+function minClientVersionState(
+  currentVersion: string | undefined,
+  minCindyVersion: string,
+): 'satisfied' | 'too-old' | 'unknown' {
+  if (!currentVersion) return 'unknown';
+  if (supportsCindyVersion(currentVersion, minCindyVersion)) return 'satisfied';
+  return compareCindyVersions(currentVersion, minCindyVersion) === -1 ? 'too-old' : 'unknown';
+}
+
 export function DetailsSection({
   detail,
   displayId = detail.id,
   panelStatus,
+  minCindyVersion,
 }: {
   detail: GhostPluginDetail;
   displayId?: string;
   panelStatus: string | null;
+  /**
+   * 该插件已装 Release 声明的 `minCindyVersion`。**只读事实**：服务端按客户端上报
+   * 版本投影兼容 release，wire 上只有单个 `currentRelease`，所以客户端既看不到被投影
+   * 扣下的更高 release，也不能用这个下限去筛选/隐藏/替换任何 release——那是客户端
+   * 拦截，违反 docs/dev-rules/plugin-security-and-authoring.md 第 3.1 节「Desktop 信任
+   * 该投影」的不变量。这里只把「这个 release 要求的最低客户端」如实说给用户，
+   * 让「为什么我拿到的是旧版」可见。
+   */
+  minCindyVersion?: string;
 }) {
   const { t } = useTranslation();
   const trustLabelKey =
@@ -902,6 +939,15 @@ export function DetailsSection({
           : detail.trust.publisherSigned
             ? 'signedUnverified'
             : 'unsigned';
+  // 当前客户端版本来自 preload 暴露的 `app.getVersion()` 原件（见 main/plugin-market/
+  // clientIdentity.ts：那里是"面向市场上报的版本"的唯一读取处）。发布形态下两者必然同源同值，
+  // 因为上报值就是 `app.getVersion()`；只有本地诊断开关 XDT_PLUGIN_CLIENT_VERSION 打开时，
+  // 市场上报值会被覆盖、而这里仍显示原件——这是有意保留的差异（显示"我在跑什么构建"，
+  // 而不能反过来把上报身份伪装成真版本）。只用于陈述事实，不参与任何筛选。
+  const currentCindyVersion = window.electronAPI?.appVersion;
+  const minClientVersionTooOld =
+    minCindyVersion !== undefined &&
+    minClientVersionState(currentCindyVersion, minCindyVersion) === 'too-old';
   const facts: Array<{
     key: string;
     label: string;
@@ -915,6 +961,21 @@ export function DetailsSection({
       label: t('settings.ghosts.detail.infoVersion'),
       value: `v${detail.version}`,
     },
+    // 只读事实项：服务端按客户端版本投影兼容 release，投影扣下的更高 release 不在 wire 上，
+    // 用户因此只会看到「没有更新」而不知道原因。这里把该 release 要求的最低客户端版本说清楚
+    // （缺省即不限制，按本文件同类事实项的做法整项不渲染），当前客户端低于下限时如实提示
+    // 需要更新客户端，让「为什么我拿到的是旧版」可见——只展示，不拦截、不禁用、不弹确认框。
+    ...(minCindyVersion
+      ? [
+          {
+            key: 'minCindyVersion',
+            label: t('settings.ghosts.detail.infoMinClientVersion'),
+            value: minClientVersionTooOld
+              ? t('settings.ghosts.detail.minClientVersionTooOld', { version: minCindyVersion })
+              : `v${minCindyVersion}`,
+          },
+        ]
+      : []),
     ...(detail.author
       ? [
           {

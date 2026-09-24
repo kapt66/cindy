@@ -72,6 +72,7 @@ import {
   createMacDMG,
 } from './ci/lib.mjs';
 import {
+  VERSIONLESS_VERSION,
   parsePackageArgs,
   resolvePackageVersion,
   artifactRelDir,
@@ -149,6 +150,202 @@ function verifyPackagedSourceMetadata({ appName, platform, arch, expectedCommit 
     );
   }
   console.log(`    verified packaged source metadata: ${metadata.sourceCommit}`);
+}
+
+// ── 产物级版本断言:核对 asar 内的真实版本 ────────────────────────────────────
+//
+// 为什么必须有这一层(而不是只信 build-info.json / 发布侧校验):
+//   1. 版本无关哨兵 0.0.0 会同时关掉两条关键链路——updateService 对 0.0.0 短路
+//      (包永久不参与应用内热更),插件市场协议把它当「未知版本 ⇒ 无条件放行」;
+//   2. 收口点只在本脚本:APP_VERSION 注入 packagerConfig.appVersion,而 packaged
+//      下 app.getVersion() 读的是 asar 内 package.json 的 version——那份文件由
+//      writePackageVersion() 在本脚本里临时改写(forge 的 vite 插件
+//      packageAfterCopy 直接复制 apps/desktop/package.json,仓内常驻值是占位
+//      '0.0.0');
+//   3. 于是只要有人绕过本脚本直接 `electron-forge make`,或仓外发布流水线自带
+//      打包逻辑,产物就会带着占位版本出门;发布侧 validateBuildInfo 只看
+//      build-info.json(它复述的是本脚本自己写进去的版本),杀不住仓外产物。
+//   结论:断言必须落在「产物本身」上,且必须在 make 之后、归集/发布之前。
+
+const align4 = (n) => n + ((4 - (n % 4)) % 4);
+
+/** versionless 哨兵(0.0.0 与 0.0.0-*)判定。
+ *  与 src/main/updateService.ts 的 isVersionlessAppVersion 同口径——那条链路决定
+ *  产物是否参与应用内热更;这里在 .mjs 侧无法 import TS 实现,只能镜像同一规则,
+ *  两侧语义必须一致,改其中一侧要同步另一侧。 */
+export function isVersionlessSentinelVersion(version) {
+  return version === VERSIONLESS_VERSION || version.startsWith(`${VERSIONLESS_VERSION}-`);
+}
+
+/**
+ * 解析 asar 归档头部(布局对齐 @electron/asar 3.x 的 readArchiveHeaderSync):
+ *   [0..3]     uint32LE 第一个 pickle 的 payload 长度(固定 4)
+ *   [4..7]     uint32LE 头部 pickle 的整段长度 headerLength
+ *   [8..11]    uint32LE 头部 JSON 的字节长度 jsonLength
+ *   [12..12+jsonLength) 头部 JSON(目录树)
+ * 数据段起点 = 8 + headerLength,条目里的 offset 相对它。
+ * 纯函数(只吃两段 header buffer):偏移解析因此能脱离真实打包产物被单测覆盖。
+ * 取舍:不用 @electron/asar 是因为它只是 forge 的传递依赖、未声明在本仓
+ * package.json,靠 hoisted node_modules 才可见;自己解析只需 20 行、无新依赖。
+ * 局限:这是对归档二进制布局的硬编码,格式若变会在此 fail closed(单测另用官方
+ * 实现写出的真实归档做交叉校验,见 scripts/__tests__/meka-release-identity.test.mjs)。
+ */
+export function parseAsarHeader(sizeBuf, headerBuf) {
+  if (sizeBuf.length < 8) {
+    throw new Error(`asar 头部长度前缀不完整(读到 ${sizeBuf.length} 字节,需要 8)`);
+  }
+  const headerLength = sizeBuf.readUInt32LE(4);
+  if (headerLength < 8 || headerBuf.length !== headerLength) {
+    throw new Error(
+      `asar 头部长度不一致:前缀声明 ${headerLength},实际读到 ${headerBuf.length}`,
+    );
+  }
+  const payloadSize = headerBuf.readUInt32LE(0);
+  const jsonLength = headerBuf.readUInt32LE(4);
+  if (payloadSize !== headerLength - 4 || payloadSize !== 4 + align4(jsonLength)) {
+    throw new Error(
+      `asar 头部 pickle 自校验失败(payload=${payloadSize} 段长=${headerLength} JSON=${jsonLength});`
+      + '归档格式与读取器预期不符,请人工确认产物版本',
+    );
+  }
+  let header;
+  try {
+    header = JSON.parse(headerBuf.subarray(8, 8 + jsonLength).toString('utf8'));
+  } catch (err) {
+    throw new Error(`asar 头部 JSON 解析失败: ${err.message}`);
+  }
+  return { header, dataOffset: 8 + headerLength };
+}
+
+/** 在 asar 目录树里按 'a/b/c' 定位文件条目;路径不存在或指向目录时返回 null。 */
+export function resolveAsarEntry(header, entryPath) {
+  let node = header;
+  for (const part of String(entryPath).split('/').filter(Boolean)) {
+    const next = node?.files?.[part];
+    if (!next) return null;
+    node = next;
+  }
+  return node && typeof node.files === 'object' ? null : node;
+}
+
+/**
+ * 从 asar 归档读出一个条目的内容。read(offset, length) 由调用方注入:生产是按需
+ * 分段读文件,单测是内存 buffer——偏移解析、条目定位、越界拒绝全部走同一条代码
+ * 路径,只有最外面那层 IO 适配不同。
+ */
+export function readAsarEntry(read, entryPath) {
+  const sizeBuf = read(0, 8);
+  if (sizeBuf.length < 8) {
+    throw new Error(`asar 头部长度前缀不完整(读到 ${sizeBuf.length} 字节,需要 8)`);
+  }
+  const headerBuf = read(8, sizeBuf.readUInt32LE(4));
+  const { header, dataOffset } = parseAsarHeader(sizeBuf, headerBuf);
+  const entry = resolveAsarEntry(header, entryPath);
+  if (!entry) {
+    throw new Error(`asar 内没有 ${entryPath} 这个条目`);
+  }
+  if (entry.unpacked) {
+    throw new Error(`asar 条目 ${entryPath} 被 unpack 到归档外(app.asar.unpacked/),无法按归档读取`);
+  }
+  const size = Number(entry.size);
+  const offset = Number(entry.offset);
+  if (!Number.isSafeInteger(size) || size < 0 || !Number.isSafeInteger(offset) || offset < 0) {
+    throw new Error(`asar 条目 ${entryPath} 的 size/offset 非法: size=${entry.size} offset=${entry.offset}`);
+  }
+  return read(dataOffset + offset, size);
+}
+
+/** 只读「头部 + 目标条目」两段,不把整个 app.asar(数百 MB)读进内存。 */
+export function readAsarEntryFromFile(asarPath, entryPath) {
+  const fd = fs.openSync(asarPath, 'r');
+  try {
+    return readAsarEntry((offset, length) => {
+      const buf = Buffer.alloc(length);
+      const got = fs.readSync(fd, buf, 0, length, offset);
+      if (got !== length) {
+        throw new Error(`asar 读取不完整(${asarPath}):offset=${offset} 需要 ${length} 字节,实读 ${got}`);
+      }
+      return buf;
+    }, entryPath);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * 产物级版本断言(纯判定):
+ * - 版本化构建:产物内版本必须等于请求版本,且不得是 versionless 哨兵;
+ * - versionless 构建:产物内版本必须是哨兵(0.0.0),这是预期而非异常。
+ * 失败一律 throw,消息里给出「为什么严重、怎么查、怎么修」。
+ * @param {{ packagedVersion: string, requestedVersion: string, versionless: boolean }} ctx
+ */
+export function assertPackagedAppVersion({ packagedVersion, requestedVersion, versionless }) {
+  const actual = typeof packagedVersion === 'string' ? packagedVersion.trim() : '';
+  if (!actual) {
+    throw new Error(
+      `打包产物内读不到版本号(asar 内 package.json 的 version 为空或非字符串:${JSON.stringify(packagedVersion)})`,
+    );
+  }
+  const actualIsSentinel = isVersionlessSentinelVersion(actual);
+  if (versionless) {
+    if (!actualIsSentinel) {
+      throw new Error(
+        `本次是版本无关构建,产物内版本应为占位哨兵 ${VERSIONLESS_VERSION},实得 ${actual}。`
+        + '版本无关包按设计不参与应用内热更,不该带着真实版本号流出去;'
+        + '出现真实版本说明构建环境里残留了 APP_VERSION,或 package.json 被别的流程改写。'
+        + '请清掉环境里的 APP_VERSION 重打,或显式传 --version x.y.z 打发布包。',
+      );
+    }
+    return;
+  }
+  if (actualIsSentinel) {
+    throw new Error(
+      `打包产物内的版本是占位哨兵 ${actual},与请求版本 ${requestedVersion} 不符——`
+      + '这个包会被 updateService 判定为版本无关(永久不参与应用内自动更新),'
+      + '插件市场协议也会把它当未知版本无条件放行,绝不能发布。'
+      + '注意 APP_VERSION 只由 package-desktop.mjs 注入(asar 内 package.json 的 version '
+      + '来自 writePackageVersion 的临时改写);绕过本脚本直接 electron-forge make、'
+      + '或仓外发布流水线自带打包逻辑时,会丢掉这层保护。'
+      + `请改用 pnpm --filter desktop release:package -- --region <region> --version ${requestedVersion} 重新打包。`,
+    );
+  }
+  if (actual !== requestedVersion) {
+    throw new Error(
+      `打包产物内版本与请求版本不一致:期望 ${requestedVersion},实得 ${actual}。`
+      + 'CDN manifest 的 app.version 取自请求版本,而客户端启动后 app.getVersion() 看到的是'
+      + '产物内版本,两者不一致会让热更版本比较错位(客户端永远认为自己是另一个版本)。'
+      + '请确认打包机上没有残留的 APP_VERSION / 过期 package.json 改写后重新执行 package-desktop.mjs。',
+    );
+  }
+}
+
+/** 读出已打包产物内真实的 app.getVersion() 来源并断言。
+ *  版本从 asar 内 package.json 的 version 读:这正是 packaged 下 app.getVersion()
+ *  的取值来源,且三平台路径同构(win/linux resources/app.asar,mac
+ *  Contents/Resources/app.asar)。不取 Info.plist CFBundleShortVersionString /
+ *  PE FileVersion / deb control:它们会被各自格式归一(如 0.0.64.0)、分平台实现,
+ *  且都不等于客户端启动后 app.getVersion() 看到的值。 */
+function verifyPackagedAppVersion({ appName, platform, arch, version, versionless }) {
+  const packagedDir = path.join(DESKTOP_ROOT, 'out', `${appName}-${platform}-${arch}`);
+  const asarPath =
+    platform === 'darwin'
+      ? path.join(packagedDir, `${appName}.app`, 'Contents', 'Resources', 'app.asar')
+      : path.join(packagedDir, 'resources', 'app.asar');
+  if (!fs.existsSync(asarPath)) {
+    throw new Error(`打包产物内找不到 app.asar(${asarPath}),无法核对产物版本`);
+  }
+  let packagedVersion;
+  try {
+    packagedVersion = JSON.parse(readAsarEntryFromFile(asarPath, 'package.json').toString('utf8')).version;
+  } catch (err) {
+    throw new Error(`读取打包产物版本失败(${asarPath} 内 package.json):${err.message}`);
+  }
+  assertPackagedAppVersion({ packagedVersion, requestedVersion: version, versionless });
+  console.log(
+    versionless
+      ? `    verified packaged app version: ${packagedVersion}(版本无关,哨兵符合预期)`
+      : `    verified packaged app version: ${packagedVersion}`,
+  );
 }
 
 // ── CDN 基线(仅 --version major/minor/patch 时调用,只读)─────────────────────
@@ -635,6 +832,11 @@ async function main() {
       expectedCommit: meta.commitSha,
     });
 
+    // 产物级版本断言:必须在 make 之后、任何归集/发布动作之前——占位版本要在
+    // 「产物已经产出」这一刻被拦下,而不是等发布侧读 build-info.json(那份文件
+    // 只复述本脚本自己写进去的版本,拦不住绕过本脚本的打包路径)。
+    verifyPackagedAppVersion({ appName, platform, arch, version, versionless });
+
     // drizzle 资源校验(平台差异只在 packaged 内路径)。
     const drizzleOut =
       platform === 'darwin'
@@ -708,7 +910,22 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+// 本文件是「import 即执行打包」的入口脚本,但 scripts/__tests__ 的单测要 import
+// 它来覆盖上面的纯函数(parseAsarHeader / readAsarEntry / assertPackagedAppVersion)。
+// 只在「本文件被测试加载」时跳过 main():
+//   - NODE_TEST_CONTEXT:node --test 在测试子进程里注入;
+//   - VITEST:vitest 注入;
+//   - 入口 argv 指向测试文件(有人直接 node 跑测试文件时的兜底)。
+// 注意判据方向:这里判的是「是否处于测试」,不是「是否被直接执行」——反向的
+// argv 路径比较一旦失手(大小写 / 软链 / 包装器),打包会静默跳过 main,代价远大于
+// 这里偶发多跑一次 main。
+const underTestRunner =
+  Boolean(process.env.NODE_TEST_CONTEXT || process.env.VITEST)
+  || /(?:^|[\\/])__tests__[\\/]|\.test\.[cm]?js$/.test(process.argv[1] ?? '');
+
+if (!underTestRunner) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

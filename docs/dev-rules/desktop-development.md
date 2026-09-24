@@ -118,6 +118,21 @@ checkout 占用而中止，不要换命令绕过，应把 verdict 交给用户�
   `--isolated` 或环境里的 `XDT_ISOLATED=1` 组合。共享实例若只发现没有 realm 的旧版裸
   refresh token，也不得猜区域迁移或轮换，保持本进程登出，交给同区域独占实例完成凭证迁移。
 
+dev-only 环境变量（不是启动参数，只影响 dev，打包构建一律忽略）：
+
+- `XDT_PLUGIN_CLIENT_VERSION=<版本号>`（如 `0.0.25`）：覆盖**上报给插件市场的客户端版本**，
+  用于在 dev 下复现发布版的插件分发身份。dev 的 `app.getVersion()` 是占位值 `0.0.0`，
+  协议把 `0.0.0` 判成"版本无关"并**无条件放行**，于是 dev 拿到最宽的市场投影；发布版上报
+  真实 `0.0.x`（`identityKind = versioned`）会被插件的 `minCindyVersion` 挡住。做插件可见性
+  ／兼容下限排查时用它把 dev 拉到发布版的判定输入，否则「本地看得到、发布版看不到」这类
+  缺陷在本地无法复现。生效范围：仅 `!app.isPackaged`，且**只**改上报版本与其 identityKind——
+  `app.getVersion()`、更新器、日志与 UI 版本显示都不变，因此它不能当"伪装版本号"的通用手段。
+  失败行为是 fail-loud：值不是合法版本号形态（含空值）直接抛错，传 versionless 哨兵
+  （`0.0.0` / `0.0.0-*`）也抛错——传哨兵等于没开，静默回退会让人误以为复现成功。错误在
+  插件市场首次解析身份时（即第一次用到该渠道）抛出，报错信息里点名该环境变量。用完即撤，
+  不要写进任何脚本或 `.env`。设计正本与验收标准见
+  [`plugin-distribution-and-version-compat.md`](plugin-distribution-and-version-compat.md) §5.1.1 P1-7／§6.1。
+
 已手动设 `XDT_USER_DATA_DIR` 时尊重用户值，不覆盖，也不探测或迁移正式区域目录。
 唯一例外：`--isolated` / `XDT_ISOLATED=1` 把该目录指到正式 profile 时直接拒绝启动。
 

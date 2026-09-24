@@ -27,14 +27,30 @@ import { withGhostInstallLock } from './ghostInstallLock.js';
 /**
  * builtinGhostProvisioner — 内置意识的启动播种(第一方可信通道)。
  *
- * 模型(2026-07-12 Lizi 定案;2026-07-22 种子源拆分为多仓):
- * - 种子 = 随包分发的意识源码目录(dev 读仓库 resources/builtin-ghosts,
- *   packaged 读 process.resourcesPath/builtin-ghosts),不经 .cindy zip;
- * - **多种子根**:种子源按归属拆成多个 submodule 仓(official = cindy-official-plugin,
+ * 模型(2026-07-12 Lizi 定案;2026-07-22 种子源拆分为多根;2026-09 种子退休):
+ * - 种子 = 曾经随包分发的意识源码目录(dev 读仓库 resources/builtin-ghosts,
+ *   packaged 读 process.resourcesPath/builtin-ghosts),不经 .cindy zip。
+ *   **该分发已被上游退休、不再随包出货**(2026-09 复核:resources/builtin-ghosts
+ *   在磁盘上不存在,也从未进入 forge.config.ts 的 extraResourcesForTarget() 白名单,
+ *   .gitignore:208-209 写着「内置插件种子已废弃(改走 plugin-store 安装)」;上游
+ *   origin/main 同形)⇒ 正常安装(dev 与 packaged)下本模块是**有意的 no-op**。
+ *   **机制保留的原因**:历史已播种安装的墓碑/seeded 台账、改名与退役对账仍由它执行
+ *   (调用方 index.ts 的 RENAMED_BUILTIN_GHOSTS / RETIRED_BUILTIN_GHOSTS),删掉
+ *   等于搁置存量用户数据,而今天零收益。因此"种子集为空"不再只有"submodule 没
+ *   checkout"一种解释,必须区分设计状态与异常(见下条「观测口径」);
+ * - **多种子根**:种子源按归属拆成多个根(official = cindy-official-plugin,
  *   xd = cindy-xd-plugin),每个根自带一份 provisioning.json,配置损坏按根隔离
  *   fail-closed(只跳过该根的种子,不拖累其它根);同 id 撞车取先到的根(warn 留痕);
- * - **半初始化保护**:submodule 未 init 时根目录存在但为空 —— 任一根为空整轮跳过
- *   孤儿回收(空根无法区分"仓里真没有"和"没 checkout",宁可不删),只做装/覆盖;
+ * - **观测口径(2026-09 新增,"设计如此"与"真的坏了"必须可分辨)**:
+ *   ① 种子父目录(…/builtin-ghosts)整棵不在 = 当前的设计状态 ⇒ 记**每进程每父目录
+ *      至多一次** info("seed roots absent by design"),并带上解析出的全部根路径;
+ *      **绝不 warn/error** —— 这是正常安装的常态,升级成 warn 就是每次启动刷噪声;
+ *   ② 父目录在、而某个根缺失/为空/不可读 = 打包或提交事故 ⇒ **warn** 并带根路径与
+ *      errno/原因(区分"仓里真没有"与"读失败");
+ *   ③ 种子集为空 ⇒ 本轮不执行孤儿回收(空集分不清"随包真没有"与"根没 checkout",
+ *      宁可不删),这条后果必须在日志里说明;scope 为 brain/plugin-*,只进本机日志,
+ *      **不进上传包**(log-upload 的 NOTABLE_DENIED_ROOTS),所以别指望可上报;
+ * - **空根保护**:任一根为空 ⇒ 整轮跳过孤儿回收,只做装/覆盖(见 ③);
  * - 「永远以最新包为准」:对每个种子做内容指纹比对(逐字节收敛),本地没装
  *   就装、指纹不同就覆盖 —— 不看 version 字段,dev 改源码重启即生效;
  * - **受众(audience)**:种子根下可选的 provisioning.json 按 id 声明给谁装
@@ -43,8 +59,9 @@ import { withGhostInstallLock } from './ghostInstallLock.js';
  *   意识不动;
  * - 用户自主权两条豁免:`.disabled` 停用标记覆盖时保留(指纹计算也忽略它);
  *   用户卸载过的内置意识记墓碑,播种永远跳过;
- * - 全程静默(main 内完成,不走 renderer 确认弹窗)—— 三方装入通道的
- *   inspect → 确认 → install 流程不受影响。
+ * - 全程不打扰用户(main 内完成,不走 renderer 确认弹窗)—— 三方装入通道的
+ *   inspect → 确认 → install 流程不受影响;"静默"指没有 UI 交互,不指没有日志:
+ *   种子树的形态判定见上条「观测口径」,本机日志必须能分辨 no-op 的成因。
  *
  * 依赖注入、零 electron(规则 14):seedRootDir / repoRootDir / identity 由
  * index.ts 装配,单测用 os.tmpdir 下的临时目录直接驱动。
@@ -100,9 +117,10 @@ interface SeedConfigEntry {
 
 export interface ProvisionDeps {
   /**
-   * 种子根目录列表(builtin-ghosts 下的各 submodule 根,如 official / xd)。
-   * 根不存在或为空 = 该根无种子(submodule 未初始化的典型形态);全部为空则
-   * 静默返回,部分为空只跳过孤儿回收(半初始化保护,见模块头注释)。
+   * 种子根目录列表(builtin-ghosts 下的各根,如 official / xd)。
+   * 判读口径见模块头「观测口径」:整棵种子树不在 = 已退休的设计状态(每进程每父
+   * 目录至多一条 info,不 warn);父目录在而某根缺失/为空/读失败 = 异常(warn 带根
+   * 路径与 errno/原因)。种子集为空则本轮不执行孤儿回收,并在日志里说明。
    */
   seedRootDirs: string[];
   /** 意识仓库根(userData/cindy-brain)。 */
@@ -289,6 +307,144 @@ function listSeedIdsInRoot(seedRootDir: string): string[] {
     .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
     .map((e) => e.name)
     .sort();
+}
+
+/**
+ * 种子根的观测形态 —— 专为"说清为什么这轮没有种子"服务(播种主流程用)。
+ * 设置页取数路径(listBuiltinSeedIds / listRestorableBuiltinGhosts 等)仍走
+ * listSeedIdsInRoot 且保持静默:那是读操作,不该在用户点开设置时刷 warn。
+ */
+type SeedRootShape = 'seeded' | 'empty' | 'root-missing' | 'root-unreadable' | 'tree-absent';
+
+interface SeedRootObservation {
+  root: string;
+  ids: string[];
+  shape: SeedRootShape;
+  /** 异常形态的原因(errno + message),进 warn 元数据。 */
+  reason?: string;
+}
+
+/**
+ * 已就"整棵种子树随包缺失"记过 info 的种子父目录。种子分发已退休,这条日志在
+ * 正常安装下每轮对账都会命中 —— 用模块级去重做到**每进程每父目录至多一次**,
+ * 既留下"播种为何 no-op"的证据,又不至于每次登录/对账刷一行。
+ */
+const seedTreeAbsentLoggedBaseDirs = new Set<string>();
+
+/** errno + message(= 诊断要的"原因"),errno 缺失时退回 message。 */
+function describeSeedRootFailure(err: unknown): string {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  const message = err instanceof Error ? err.message : String(err);
+  return code ? `${code}: ${message}` : message;
+}
+
+/**
+ * 判定单个种子根的形态。关键是**把"整棵种子树不在"从其它异常里分出来**:
+ * - 根 lstat 报 ENOENT 且父目录也不存在 ⇒ 'tree-absent' = 随包种子已退休的设计状态;
+ * - 其余(父目录在而根缺失/链接/非目录 ⇒ 'root-missing';根在但 readdir 抛错 ⇒
+ *   'root-unreadable';根在且可读但没有种子子目录 ⇒ 'empty')都是异常,必须 warn。
+ * ids 始终复用 listSeedIdsInRoot,判定与取种子同一口径(链接穿透判定不在这里重复实现)。
+ */
+function observeSeedRoot(seedRootDir: string): SeedRootObservation {
+  const root = seedRootDir;
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(root);
+  } catch (err) {
+    const reason = describeSeedRootFailure(err);
+    const parent = path.dirname(path.resolve(root));
+    if ((err as NodeJS.ErrnoException | undefined)?.code === 'ENOENT' && !fs.existsSync(parent)) {
+      return { root, ids: [], shape: 'tree-absent' };
+    }
+    // 父目录在而根本身缺失:打包漏拷/子模块没 checkout 一类事故,不是退休形态。
+    return { root, ids: [], shape: 'root-missing', reason };
+  }
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    return {
+      root,
+      ids: [],
+      shape: 'root-missing',
+      reason: 'seed root is not a link-free directory',
+    };
+  }
+  const ids = listSeedIdsInRoot(root);
+  if (ids.length > 0) return { root, ids, shape: 'seeded' };
+  if (!isRealDirectoryPath(root)) {
+    // 路径上有链接跳转:取种子被拒(安全边界),同样按异常记。
+    return {
+      root,
+      ids: [],
+      shape: 'root-missing',
+      reason: 'seed root path traverses a link; seeds are rejected',
+    };
+  }
+  try {
+    fs.readdirSync(root, { withFileTypes: true });
+  } catch (err) {
+    // 根在但读不出:权限/IO 事故,与"根里真的没种子"必须分开。
+    return { root, ids: [], shape: 'root-unreadable', reason: describeSeedRootFailure(err) };
+  }
+  return { root, ids: [], shape: 'empty' };
+}
+
+/** 异常种子根的 warn(带根路径与 errno/原因;级别统一 warn —— 这些形态都不该出现)。 */
+function warnUnusableSeedRoot(state: SeedRootObservation, log?: BuiltinProvisionerLogger): void {
+  const meta = {
+    root: state.root,
+    seedBaseDir: path.dirname(path.resolve(state.root)),
+  };
+  if (state.shape === 'empty') {
+    log?.warn('builtin seed root present but empty', {
+      ...meta,
+      reason:
+        'seed root exists but declares no seeds; bundled seeds are retired, so a present-but-empty root is a packaging/submodule accident, not the normal state',
+    });
+    return;
+  }
+  if (state.shape === 'root-unreadable') {
+    log?.warn('builtin seed root unreadable', { ...meta, error: state.reason ?? 'unknown' });
+    return;
+  }
+  log?.warn('builtin seed root missing', {
+    ...meta,
+    shape: state.shape,
+    error: state.reason ?? `seed root contributes no seeds (shape: ${state.shape})`,
+  });
+}
+
+/**
+ * 种子集整体为空时的说明。两种成因分开,且都要把"本轮没做孤儿回收"讲清楚 ——
+ * 全空时主流程在读到种子集为空后就直接返回,走不到下面 hasEmptyRoot 的那条 info,
+ * 所以那句必须在这里说,否则"为什么一个已装内置插件都没被回收"在日志里无迹可查。
+ */
+function reportEmptySeedSet(
+  observations: ReadonlyArray<SeedRootObservation>,
+  log?: BuiltinProvisionerLogger,
+): void {
+  const absent = observations.filter((o) => o.shape === 'tree-absent');
+  const unusable = observations.filter((o) => o.shape !== 'tree-absent');
+  const absentBaseDirs = [...new Set(absent.map((o) => path.dirname(path.resolve(o.root))))];
+  for (const baseDir of absentBaseDirs) {
+    if (seedTreeAbsentLoggedBaseDirs.has(baseDir)) continue;
+    seedTreeAbsentLoggedBaseDirs.add(baseDir);
+    log?.info('builtin ghost seed roots absent by design; builtin provisioning is a no-op', {
+      seedBaseDir: baseDir,
+      seedRootDirs: absent
+        .filter((o) => path.dirname(path.resolve(o.root)) === baseDir)
+        .map((o) => o.root),
+      reason: 'bundled builtin seeds retired upstream; official plugins install from plugin-store',
+      orphanRecovery:
+        'skipped: an empty seed set cannot distinguish "no seed shipped" from "root not checked out"; installed builtins are left untouched',
+    });
+  }
+  for (const state of unusable) warnUnusableSeedRoot(state, log);
+  if (unusable.length > 0) {
+    log?.info('builtin ghost orphan recovery skipped: no seed ids available this round', {
+      emptyRoots: unusable.map((o) => o.root),
+      reason:
+        'an empty or unreadable root cannot distinguish "no seed in repo" from "root not checked out"; keep installed builtins rather than delete them',
+    });
+  }
 }
 
 /**
@@ -560,20 +716,30 @@ export async function provisionBuiltinGhosts(deps: ProvisionDeps): Promise<Provi
     skipped: [],
   };
 
-  // 每根独立列种子 + 读配置。空根不读配置(未初始化 submodule 的目录里连
-  // provisioning.json 都没有,读了必 warn,徒增噪音)。
+  // 每根独立列种子 + 读配置(形态判定见 observeSeedRoot)。空根不读配置 —— 根里
+  // 连 provisioning.json 都没有,读了必 warn,徒增噪音。
   const rootStates = seedRootDirs.map((root) => {
-    const ids = listSeedIdsInRoot(root);
+    const observation = observeSeedRoot(root);
     return {
-      root,
-      ids,
+      ...observation,
       config:
-        ids.length === 0 ? new Map<string, SeedConfigEntry>() : readProvisioningConfig(root, log),
+        observation.ids.length === 0
+          ? new Map<string, SeedConfigEntry>()
+          : readProvisioningConfig(root, log),
     };
   });
   const allSeedIds = new Set(rootStates.flatMap((s) => s.ids));
-  if (allSeedIds.size === 0) return outcome;
+  if (allSeedIds.size === 0) {
+    // 一个种子都没有:本轮确定是 no-op,成因与后果在这里一次讲清(全空时走不到
+    // 下面 hasEmptyRoot 那条 info,孤儿回收为何没执行只能在这里说明)。
+    reportEmptySeedSet(rootStates, log);
+    return outcome;
+  }
   const hasEmptyRoot = rootStates.some((s) => s.ids.length === 0);
+  // 还有种子可播时,个别根的缺失/为空/读失败仍要留痕(异常形态,级别 warn)。
+  for (const state of rootStates) {
+    if (state.shape !== 'seeded') warnUnusableSeedRoot(state, log);
+  }
 
   if (!isRealDirectoryPath(repoRootDir, true)) {
     log?.warn('builtin provisioning skipped: repo root is not a real directory', {
@@ -585,6 +751,17 @@ export async function provisionBuiltinGhosts(deps: ProvisionDeps): Promise<Provi
   }
   const stateResult = readState(repoRootDir, log);
   if (!stateResult.readable) {
+    // readState 已经 warn 过具体原因(文件路径 + errno/message),这里再补一句**整轮
+    // 后果**:本轮不装不删、台账原样保留、等下一轮重试。否则只剩一条文件级 warn,
+    // 读日志的人分不清"播种被跳过了"还是"播种跑完了什么都没做"。
+    log?.warn('builtin provisioning skipped: unreadable state ledger; no seed applied this round', {
+      repoRootDir,
+      seedRootDirs: rootStates.map((s) => s.root),
+      deferredSeedIds: [...allSeedIds].sort(),
+      reason:
+        'the tombstone/seeded ledger is unreadable; treating it as empty would resurrect uninstalled builtins',
+      retry: 'the stable-owner pass is marked retry-pending',
+    });
     outcome.skipped.push(...allSeedIds);
     outcome.retryPending = true;
     return outcome;
@@ -758,13 +935,18 @@ export async function provisionBuiltinGhosts(deps: ProvisionDeps): Promise<Provi
   // (意识改名 / 下架)时,当初"播种装上的"旧包也要收走,否则新旧两个
   // 意识并存(工具面重复、旧包永不再更新)。只收 seeded 台账内的——用户
   // 手动装的同 id 意识与本机制无关,照旧不动。
-  // 半初始化保护(多根拆分后新增):任一根为空说明该根 submodule 很可能没
-  // checkout,其种子全集不可知 —— 本轮跳过孤儿回收,宁可留旧包也不误删。
+  // 空根保护(多根拆分后新增,2026-09 复核保留):任一根为空说明"该根的种子全集
+  // 不可知"(子模块没 checkout / 打包漏拷 / 读失败),本轮跳过孤儿回收,宁可留旧包
+  // 也不误删。这里只会命中"部分根为空"——**根全空时上面已经 return**,那种情况下
+  // "未执行孤儿回收"的原因由 reportEmptySeedSet 说明,不会静默。
   if (hasEmptyRoot) {
     log?.info(
       'builtin ghost orphan recovery skipped: empty seed root (submodule not initialized?)',
       {
         emptyRoots: rootStates.filter((s) => s.ids.length === 0).map((s) => s.root),
+        emptyRootShapes: rootStates.filter((s) => s.ids.length === 0).map((s) => s.shape),
+        reason:
+          'an empty or unreadable root makes the seed id set unknowable; keep installed builtins',
       },
     );
   } else {

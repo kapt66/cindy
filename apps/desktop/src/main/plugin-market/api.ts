@@ -1,4 +1,6 @@
 import {
+  CINDY_CLIENT_VERSION_HEADER,
+  CINDY_PLUGIN_SPACE_HEADER,
   parseGetPluginResponse,
   parseListPluginsResponse,
   parsePluginDownloadResponse,
@@ -8,12 +10,15 @@ import {
   type PluginDownloadResponse,
 } from '@cindy/plugin-protocol';
 
-const CINDY_CLIENT_VERSION_HEADER = 'x-cindy-version';
-
 import { getClientEndpoint } from '../clientEndpointsService.js';
 import { getMekaRouterService } from '../meka-settings/ipc.js';
 import { createLogger } from '../logger.js';
 import { serverApiFetch, type ApiFetchOptions } from '../serverApiClient.js';
+import {
+  PLUGIN_SPACE_HEADER_ENABLED,
+  pluginSpaceHeaderValue,
+  type PluginEdition,
+} from './clientIdentity.js';
 
 const log = createLogger('plugin-market-api');
 const PLUGIN_MARKET_API_TIMEOUT_MS = 15_000;
@@ -66,6 +71,10 @@ export class PluginMarketApi {
   private readonly versionReader: () => string;
   constructor(
     private readonly fetcher: Fetcher = defaultFetcher,
+    // 默认值只为兼容既有构造签名（单测与"注入 fetcher 的假渠道"会走到它），不代表调用点
+    // 可以省略版本：落到 `0.0.0` 等于把该渠道的版本兼容门整体关掉。两条正式渠道的构造点
+    // 都必须传自己 edition 的身份读取器（`plugin-market/clientIdentity.ts`），由
+    // `__tests__/pluginDistributionContract.test.ts` 的源码级断言兜住"退回无参构造"。
     getClientVersionOrConfigured: (() => string) | (() => Promise<boolean>) = () => '0.0.0',
   ) {
     this.versionReader = () => {
@@ -82,10 +91,31 @@ export class PluginMarketApi {
     return this.configured();
   }
 
+  /**
+   * 该渠道所属的 edition（`cindy` | `meka`）：**空间头取值的唯一来源**，不由请求内容或
+   * 服务端自报渠道推断（设计文档 §3.6）。基类默认 `cindy`（上游线），Meka 渠道覆写成 `meka`。
+   *
+   * 做成覆写点而不是构造参数，是因为两条正式渠道的构造形态由 P1 门禁钉住
+   * （`__tests__/pluginDistributionContract.test.ts` 断言 `service.ts` / `registerIpc.ts` 的
+   * 构造调用逐字不变），空间头不该去动那两个已落地的构造点。
+   */
+  protected pluginEdition(): PluginEdition {
+    return 'cindy';
+  }
+
   private requestOptions(): Omit<ApiFetchOptions, 'baseUrl'> {
+    const headers: Record<string, string> = {
+      [CINDY_CLIENT_VERSION_HEADER]: this.versionReader(),
+    };
+    // 默认关闭：`PLUGIN_SPACE_HEADER_ENABLED === false` 时这一支不执行，请求与今天逐字节相同
+    // （不新增任何头）。只有服务端按该头分区投影之后才允许打开——开关与门槛写在
+    // `plugin-market/clientIdentity.ts`，与声明工件 `identity.spaceHeader` 双向绑定。
+    if (PLUGIN_SPACE_HEADER_ENABLED) {
+      headers[CINDY_PLUGIN_SPACE_HEADER] = pluginSpaceHeaderValue(this.pluginEdition());
+    }
     return {
       cache: 'no-store',
-      headers: { [CINDY_CLIENT_VERSION_HEADER]: this.versionReader() },
+      headers,
       timeoutMs: PLUGIN_MARKET_API_TIMEOUT_MS,
     };
   }
@@ -166,8 +196,27 @@ export class PluginMarketApi {
 
 /** MCPRouter-backed Meka distribution channel. */
 export class MekaPluginMarketApi extends PluginMarketApi {
-  constructor() {
-    super(mekaFetcher);
+  /**
+   * 身份读取器**必填**（没有默认值）：Meka 渠道的版本兼容下限在 Meka 自己的版本空间
+   * （`cindy-meka`）里表达，恒发 `0.0.0` 会被协议判成 versionless 并无条件放行，服务端
+   * 版本兼容门整体失效、连正式包也被当成 dev 占位。构造点必须显式提供身份，
+   * 使"漏传 → 落到默认 `0.0.0`"在结构上不可能。
+   *
+   * 取值只有一个来源：`app.getVersion()` 只允许在 `plugin-market/clientIdentity.ts` 里被读，
+   * 调用点（`plugin-market/registerIpc.ts` 的 `mekaService()`）传
+   * `pluginClientVersionReader('meka')`；该形态由 `__tests__/pluginDistributionContract.test.ts`
+   * 做源码级断言，防"退回无参构造"的静默回归。
+   */
+  constructor(identityVersionReader: () => string) {
+    super(mekaFetcher, identityVersionReader);
+  }
+
+  /**
+   * Meka 渠道属于 `meka` edition：开启空间头后，该渠道发出的是 `x-cindy-plugin-space: meka`
+   * （上游渠道是 `cindy`）。取值只由这里的 edition 决定。
+   */
+  protected override pluginEdition(): PluginEdition {
+    return 'meka';
   }
 
   isConfigured(): Promise<boolean> {

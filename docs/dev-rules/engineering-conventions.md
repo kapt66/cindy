@@ -130,6 +130,38 @@ PR 门禁必须在 Windows 上用两个并行分片完整覆盖 `pnpm test:unit`
 测试验证 pnpm 子进程参数时，必须覆盖 Windows `.cmd`／`.bat` 包装路径：此路径通过 `cmd.exe`
 和 `CINDY_PNPM_CMD_ARG_*` 环境变量逐项转发参数，不能把 `/c` 命令串误当成直接的 pnpm 参数数组。
 
+### 3.3 随包资源「声明 vs 运行期读点」一致性门禁
+
+`apps/desktop/src/main/__tests__/packagedResourceDeclarations.test.ts` 纯静态（只读源码／配置文本，不启动
+Electron、不打包、不联网）对齐 `forge.config.ts` 的 `extraResourcesForTarget()` 声明集合与
+`src/main/**`（含 `src/preload/**`）的运行期读点集合，校验：①读到的每个 `resources/<name>` 必须被声明
+（违规报出 `文件:行`＋资源名＋修法）；②声明集合不得出现 `.gitignore` 标注**废弃**的路径（如
+`resources/builtin-ghosts/`，防「顺手补声明」复活废弃通道）；③声明条目存在且非空；④抽取口径活性。
+
+**为什么落在单测层**：`forge-meka-resources.ts` 的两个 assert 只强制写死的 `resources/meka` 一棵树，
+且只在本地 `electron-forge make` 时跑；`.github/workflows/ci.yml` 的 client-ci **没有打包步骤**，
+「CI 绿」不代表资源声明完整。本门禁不依赖打包产物，才能在 CI 生效。
+
+**构建期生成物白名单**（不在源码树、由 `prePackage`／前置脚本现场 stage，豁免存在性校验，且必须
+仍被 `.gitignore` 忽略）：`resources/cindy-source.json`(:36-37)、`resources/tools`(:35)、
+`resources/cc-manager`(:38-39)、`resources/pi-manager`(:40)、`resources/anthropic-compat-proxy`(:41)、
+`resources/remote-file-service`(:42)。`drizzle`、`resources/cindy-updater-runtime`、
+`resources/cindy-meka-updater.exe` **已入仓**，走存在性校验，不入白名单。
+
+**已知局限**：只做词法级匹配，抓不到常量拼接（`path.join(process.resourcesPath, SOME_CONST)`）、数组
+展开、把资源根交给下游解析器再拼名、模板字面量名、以及不以 `resourcesPath` 结尾的资源根变量。
+白名单与例外必须写理由，不得为让门禁变绿而扩白名单或减读点抽取范围。
+
+**「已退役但仍被读取」豁免位**（2026-09-24 裁决）：唯一一条是 `builtin-ghosts` ——
+`cindy-brain/index.ts:1151-1152` 读它，但该资源既不随包也不在声明集合里
+（`.gitignore:208-209` 标注废弃）。**既不给它补声明**（补声明会被上面第②条断言拦下：那等于复活
+废弃通道），**也不删读取路径**（退役后"整棵种子树不在"的一次性可观测信号正依赖这条读取才能观测到
+缺失，见 `meka-whitelist-verification.md` §8.10）。因此门禁改用范围极窄的豁免位
+`RETIRED_BUT_STILL_READ`，登记一条必须同时满足：①通道已被明确裁决退役；②读取的目的是观测"它
+不存在"；③补声明被禁止。**豁免位带防腐栏**：用例断言每条豁免仍被读到、且不得出现在声明集合里
+——读取路径一旦删除必须在同一次改动里删掉豁免，否则它会退化成永久盲区。新增豁免需在评审中
+单独说明理由，不得为了变绿而扩表。
+
 ## 4. 跨平台双端兼容（macOS / Windows）
 
 任何功能都必须同时考虑 macOS / Windows，并在两端做到最优性能。

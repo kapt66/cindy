@@ -4906,7 +4906,6 @@
         "manageAction": "관리",
         "manageAria": "{{name}} 관리",
         "agentInvoked": "Agent가 자동 호출",
-        "upToDate": "최신 상태",
         "oauthAuthorizationExpired": "인증 만료 · 다시 연결 필요",
         "installAria": "{{name}} 설치",
         "installedTitle": "설치된 플러그인",
@@ -5305,6 +5304,8 @@
         "dangerTitle": "플러그인 제거",
         "infoContents": "포함",
         "infoVersion": "버전",
+        "infoMinClientVersion": "최소 클라이언트 버전",
+        "minClientVersionTooOld": "더 새로운 클라이언트가 필요합니다. 이 버전에는 {{appName}} {{version}} 이상이 필요합니다.",
         "updateTitle": "버전 업데이트",
         "updateDesc": "새 .cindy 파일을 선택해 설치된 버전을 그 자리에서 교체합니다. 활성 상태와 패널 위치는 유지됩니다.",
         "cindyPrefs": {
@@ -6593,7 +6594,9 @@
       "manifestFailed": "업데이트 확인 실패, 네트워크를 확인하세요",
       "downloadFailed": "새 버전 다운로드 실패, 나중에 다시 시도하세요",
       "manualDownload": "앱에서 다운로드한 뒤 재시작할 때를 선택하세요. 시스템 .deb 설치에만 시스템 비밀번호가 필요합니다.",
-      "applyExhausted": "이 버전의 자동 업데이트는 여러 번 실패하여 중단되었습니다. 새 버전을 수동으로 다운로드해 설치해 주세요."
+      "applyExhausted": "이 버전의 자동 업데이트는 여러 번 실패하여 중단되었습니다. 새 버전을 수동으로 다운로드해 설치해 주세요.",
+      "noAsset": "새 버전이 있지만 사용 중인 시스템용 설치 패키지가 아직 없습니다. 잠시 후 다시 시도해 주세요",
+      "versionless": "로컬에서 빌드한 버전이라 앱 내 자동 업데이트가 비활성화되어 있습니다"
     },
     "closeConfirm": {
       "title": "정말 나가시겠습니까?",

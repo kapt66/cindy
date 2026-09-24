@@ -116,6 +116,25 @@ describe('Plugin Market IPC error boundary', () => {
     expect(registerSource).toContain("ipcMain.handle('meka-plugin-market:installed-ghost-ids'");
   });
 
+  it('hands the Meka channel its real client version at the construction site', () => {
+    // Meka 走自己的版本空间:恒发 0.0.0 会被协议判成 versionless 无条件放行,
+    // 服务端版本兼容门整体失效。构造点必须显式给出**身份解析入口**的读取器
+    // (该渠道的构造参数已改为必填,没有默认值可退),版本来源只允许来自
+    // `plugin-market/clientIdentity.ts`——那里才是 `app.getVersion()` 的唯一读取处。
+    // 这条断言防的是「构造点退回无参/退回字面量 0.0.0」的静默回归。
+    const start = registerSource.indexOf('function mekaService(): PluginMarketService {');
+    const end = registerSource.indexOf('\n}\n', start);
+    expect(start).toBeGreaterThan(-1);
+    expect(registerSource.slice(start, end)).toContain(
+      "new MekaPluginMarketApi(pluginClientVersionReader('meka'))",
+    );
+    expect(registerSource).toContain(
+      "import { pluginClientVersionReader } from './clientIdentity.js';",
+    );
+    // "版本来源只有 clientIdentity 一处"由 pluginDistributionContract.test.ts 的
+    // 源码级断言统一钉住（那里能正确区分调用与注释里的提及），此处不重复。
+  });
+
   it('runs plugin reconciliation on cold start, foreground, resume and stable owner changes', () => {
     const syncStart = registerSource.indexOf(
       'export async function syncDefaultMarketPlugins(): Promise<DefaultMarketPluginSyncOutcome>',

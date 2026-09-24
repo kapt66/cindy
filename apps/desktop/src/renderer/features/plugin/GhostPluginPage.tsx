@@ -24,7 +24,6 @@ import {
   AlertTriangle,
   ArrowUp,
   Bot,
-  Check,
   ChevronDown,
   ChevronRight,
   ChevronUp,
@@ -2855,6 +2854,15 @@ export function GhostPluginCard({
           </span>
           {unread ? <AttentionDot breathing size={6} className="mt-px" /> : null}
         </span>
+        {/* 版本行只说事实:有可更新版本时给更新胶囊(右列),其余情况什么都不说。
+            这里**不能**断言「已是最新」:市场 release 由服务端按客户端上报版本投影
+            (current 不兼容时回退到兼容的历史 release,没有兼容版本时不展示),
+            wire 上只下发单个 `currentRelease`(packages/plugin-protocol/src/delivery.ts),
+            所以「本轮没有可更新版本」既可能是真最新,也可能是投影已经扣下了更高
+            release —— 客户端拿不到区分二者的任何事实,`updateVersion` 为空只表示
+            「我们没看到可更新版本」,不等于「已是最新」。按投影/信任不变量,客户端也
+            不得为了拿到这个答案去做二次筛选(见 docs/dev-rules/plugin-security-and-authoring.md
+            第 3.1 节)。 */}
         <span className="mt-1 block min-w-0 truncate text-11 text-[var(--text-tertiary)]">
           {sourceLabel ? `${sourceLabel} · ` : ''}v{item.version}
           {item.oauthAuthorizationExpired ? (
@@ -2862,12 +2870,6 @@ export function GhostPluginCard({
               {' · '}
               <AlertTriangle size={11} className="inline" aria-hidden="true" />
               <span>{t('settings.ghosts.page.oauthAuthorizationExpired')}</span>
-            </span>
-          ) : !updateVersion ? (
-            <span className="inline-flex items-center gap-1">
-              {' · '}
-              <Check size={11} className="inline" aria-hidden="true" />
-              {t('settings.ghosts.page.upToDate')}
             </span>
           ) : null}
           {!enabled ? ` · ${t('settings.ghosts.disabledTag')}` : ''}

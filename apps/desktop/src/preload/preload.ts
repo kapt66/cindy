@@ -4396,7 +4396,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       | 'manifest_failed'
       | 'download_failed'
       | 'manual_download'
-      | 'apply_exhausted';
+      | 'apply_exhausted'
+      | 'no_asset'
+      | 'versionless';
   }> => ipcRenderer.invoke('update-check-now'),
 
   /**

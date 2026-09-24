@@ -79,6 +79,7 @@ import {
 import { withGhostInstallLock } from '../cindy-brain/ghostInstallLock.js';
 import { ghostBrokerRedirectPortInstallError } from '../cindy-brain/ghostBrokerRedirectPort.js';
 import { PluginMarketApi } from './api.js';
+import { pluginClientVersionReader } from './clientIdentity.js';
 import { createOrganizationPrefixStore } from './organizationPrefixStore.js';
 import { downloadVerifiedPlugin } from './download.js';
 import { installCustomMarketPlugin } from './install.js';
@@ -643,7 +644,9 @@ export class PluginMarketService {
   private readonly options: PluginMarketServiceOptions;
 
   constructor(
-    private readonly api = new PluginMarketApi(undefined, () => app.getVersion()),
+    // 上游渠道也必须显式给出身份：`cindy` edition 的版本线是 `cindy`，版本来源同样是
+    // `plugin-market/clientIdentity.ts`（它才是 `app.getVersion()` 的唯一读取处）。
+    private readonly api = new PluginMarketApi(undefined, pluginClientVersionReader('cindy')),
     private readonly ledger = new PluginMarketLedger(() =>
       ownerScopedUserDataPath('plugin-market', 'ledger.v1.json'),
     ),

@@ -24,6 +24,25 @@ export const PLUGIN_API_SCHEMA_VERSION = 2 as const;
 /** 客户端请求 Plugin Server 时携带的 Cindy 版本请求头。 */
 export const CINDY_CLIENT_VERSION_HEADER = 'x-cindy-version' as const;
 
+/**
+ * 客户端请求 Plugin Server 时可携带的**插件分发版本空间**请求头。
+ *
+ * 取值是两个 edition 空间名：`cindy`（上游线）｜`meka`（Cindy Meka 线）；语义是"本次比较
+ * 发生在哪个版本空间"，即 `CINDY_CLIENT_VERSION_HEADER` 的数值只在被声明的空间内解释。
+ * **缺省（不发送该头）等价于 `cindy`**，与引入本头之前的行为逐字节一致。
+ *
+ * 客户端**默认不发送**该头：单端先行发新头等于 wire 漂移
+ * （`docs/dev-rules/protocol-and-submodules.md` 的修改准入）。只有服务端（上游
+ * plugin-server 与 MCPRouter 侧）按该头分区投影后，才由客户端侧开关打开
+ * （`apps/desktop/src/main/plugin-market/clientIdentity.ts` 的 `PLUGIN_SPACE_HEADER_ENABLED`，
+ * 与声明工件 `config/plugin-distribution.json` 的 `editions.*.identity.spaceHeader`
+ * 双向绑定）。
+ *
+ * 这只是新增导出：不改 `PLUGIN_API_SCHEMA_VERSION`，不改任何既有解析逻辑，旧端忽略它即
+ * 现行行为。
+ */
+export const CINDY_PLUGIN_SPACE_HEADER = 'x-cindy-plugin-space' as const;
+
 /** 普通客户端可见的 Plugin 来源范围。 */
 export const PLUGIN_SCOPES = ['public', 'organization', 'personal'] as const;
 

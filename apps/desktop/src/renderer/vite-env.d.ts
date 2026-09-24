@@ -3956,6 +3956,8 @@ interface ElectronAPI {
    *   - 'download_failed'  → 找到了新版本但下载失败
    *   - 'manual_download'  → 保留给仍走手动安装的旧路径；现行 Linux 已应用内下 .deb
    *   - 'apply_exhausted'  → 该版本已用完自动重试预算，需手动安装（不是「已是最新」）
+   *   - 'no_asset'         → 清单广告了更高版本，但本平台这一轮没有可安装资产（不是「已是最新」）
+   *   - 'versionless'      → 版本无关(占位 0.0.0)本地包，有意不参与自动更新（不是「已是最新」）
    */
   checkForUpdate: () => Promise<{
     result:
@@ -3965,7 +3967,9 @@ interface ElectronAPI {
       | 'manifest_failed'
       | 'download_failed'
       | 'manual_download'
-      | 'apply_exhausted';
+      | 'apply_exhausted'
+      | 'no_asset'
+      | 'versionless';
   }>;
   /**
    * 现在重启会不会打断正在跑的活(逻辑 turn / Claude 后台活动 / Ghost card-action 后台活动

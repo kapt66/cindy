@@ -47,6 +47,8 @@ vi.mock('react-i18next', () => ({
         'settings.ghosts.detail.infoTitle': 'Details',
         'settings.ghosts.detail.byAuthor': `By ${String(options?.author ?? '')}`,
         'settings.ghosts.detail.infoVersion': 'Version',
+        'settings.ghosts.detail.infoMinClientVersion': 'Minimum client version',
+        'settings.ghosts.detail.minClientVersionTooOld': `Requires a newer client: ${String(options?.version ?? '')} or later`,
         'settings.ghosts.detail.infoAuthor': 'Author',
         'settings.ghosts.detail.infoId': 'Identifier',
         'settings.ghosts.detail.infoContents': 'Contents',
@@ -1344,5 +1346,95 @@ describe('Ghost plugin detail sections', () => {
     expect(
       within(dialog).getByText((_, element) => element?.textContent === 'scope.read\nscope.write'),
     ).toBeTruthy();
+  });
+});
+
+/**
+ * `minCindyVersion` 只作为只读事实呈现:服务端按客户端上报的版本投影兼容 release,
+ * 「投影扣下了更高 release」这个事实不在 wire 上,所以客户端既不能据此筛选/隐藏任何
+ * release,也不该在无从比较时硬说「需要更新客户端」。门禁语义见
+ * docs/dev-rules/plugin-security-and-authoring.md 第 3.1 节。
+ */
+describe('Plugin minimum client version fact', () => {
+  const stubAppVersion = (version: string) => {
+    Object.defineProperty(window, 'electronAPI', {
+      configurable: true,
+      value: { appVersion: version },
+    });
+  };
+
+  it('shows the release minimum client version as a plain fact when this client satisfies it', () => {
+    stubAppVersion('2.0.0');
+    render(<DetailsSection detail={detail} panelStatus="Docked" minCindyVersion="1.5.0" />);
+
+    expect(screen.getByText('Minimum client version')).toBeTruthy();
+    expect(screen.getByText('v1.5.0')).toBeTruthy();
+    // 满足下限时不制造「需要更新客户端」的假阳性。
+    expect(screen.queryByText('Requires a newer client: 1.5.0 or later')).toBeNull();
+  });
+
+  it('tells the user a newer client is required when the release gate is above this client', () => {
+    stubAppVersion('1.0.0');
+    render(<DetailsSection detail={detail} panelStatus="Docked" minCindyVersion="2.0.0" />);
+
+    expect(screen.getByText('Minimum client version')).toBeTruthy();
+    expect(screen.getByText('Requires a newer client: 2.0.0 or later')).toBeTruthy();
+  });
+
+  it('does not turn an incomparable client version into a newer-client claim', () => {
+    stubAppVersion('dev-build');
+    render(<DetailsSection detail={detail} panelStatus="Docked" minCindyVersion="2.0.0" />);
+
+    // 版本号无法比较时退回纯事实展示,不冒充「需要更新客户端」。
+    expect(screen.getByText('v2.0.0')).toBeTruthy();
+    expect(screen.queryByText('Requires a newer client: 2.0.0 or later')).toBeNull();
+  });
+
+  it('omits the fact entirely when the release declares no minimum client version', () => {
+    stubAppVersion('1.0.0');
+    render(<DetailsSection detail={detail} panelStatus="Docked" />);
+
+    expect(screen.queryByText('Minimum client version')).toBeNull();
+  });
+
+  it('wires the installed manifest gate into the visible details facts', () => {
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    stubAppVersion('1.0.0');
+    render(
+      <GhostPluginDetailView
+        ghost={{
+          manifest: {
+            schemaVersion: 2,
+            id: detail.id,
+            name: detail.name,
+            version: detail.version,
+            kind: 'chip',
+            entry: 'main.js',
+            minCindyVersion: '9.9.9',
+          },
+          dir: detail.installDir ?? '/tmp/plugin',
+          enabled: true,
+          approval: { state: 'approved', revision: 'rev-1' },
+        }}
+        detail={detail}
+        panelStatus={null}
+        onBack={vi.fn()}
+        onToggle={vi.fn()}
+        onUse={vi.fn()}
+        onUpdate={vi.fn()}
+        onUninstall={vi.fn()}
+        toggleDisabled={false}
+      />,
+    );
+
+    expect(screen.getByText('Minimum client version')).toBeTruthy();
+    expect(screen.getByText('Requires a newer client: 9.9.9 or later')).toBeTruthy();
   });
 });

@@ -1,0 +1,67 @@
+{
+  "_comment": "插件分发来源与版本空间的声明工件（受 Git 管理、纯数据、运行期不 import）。从属文档：docs/dev-rules/plugin-distribution-and-version-compat.md（状态 proposed）§3.2——字段口径、D1 终态形态与门禁口径以该文档为准。本文件只引用端点键名，绝不写地址字面量：真实运行期地址只允许出现在 config/endpoint*.json（同口径门禁见 scripts/check-endpoint-literals.mjs）。运行期身份解析的镜像实现在 apps/desktop/src/main/plugin-market/clientIdentity.ts，两者由 apps/desktop/src/main/plugin-market/__tests__/pluginDistributionContract.test.ts 双向绑定。P2 的空间头（x-cindy-plugin-space）**已在此声明但默认关闭**：identity.spaceHeader.enabled 的运行期镜像就是 clientIdentity.ts 的 PLUGIN_SPACE_HEADER_ENABLED，两者必须一致（门禁双向绑定）。只有在服务端（上游 plugin-server 与 MCPRouter 侧）按该头分区投影之后才允许把两侧同时翻成 true——服务端未就绪就发头等于单端先行 wire 漂移。",
+  "schemaVersion": 1,
+  "versionlessPolicy": {
+    "sentinel": "0.0.0",
+    "pattern": "0.0.0 或 0.0.0-*",
+    "identityKind": "unversioned",
+    "reportedVersion": "`app.getVersion()` 原值透传，命中 pattern 的任一形态都**不做归一化**：开发构建是 0.0.0，社区源码包可能是 0.0.0-dev。两个 space 都如此（差异只体现在 identityKind 上）。",
+    "projectionEffect": "协议把该数值判为版本无关并无条件放行（packages/plugin-protocol/src/manifest.ts 的 isVersionlessCindyVersion）。两个 space 都上报 0.0.0 是 dev／社区源码打包的预期行为，不是缺陷；发布包的 0.0.x 永远是 versioned，不得与 versionless 混同。"
+  },
+  "editions": {
+    "cindy": {
+      "surface": "plugins",
+      "ipcPrefix": "plugin-market",
+      "versionSpace": "cindy",
+      "fallbackVersionSpaces": [],
+      "venue": {
+        "kind": "endpoint-manifest",
+        "endpointKey": "pluginApiBaseUrl",
+        "credential": "desktop-session"
+      },
+      "identity": {
+        "header": "x-cindy-version",
+        "source": "app.getVersion()（非打包下可被 devOverride 覆盖）",
+        "devOverride": {
+          "env": "XDT_PLUGIN_CLIENT_VERSION",
+          "appliesWhen": "!app.isPackaged",
+          "purpose": "仅开发构建生效的复现器：让 dev 上报真实版本号，从而复现发布版被兼容下限挡住的行为。打包构建一律忽略（不看值也不校验值）。"
+        },
+        "spaceHeader": {
+          "name": "x-cindy-plugin-space",
+          "enabled": false
+        }
+      },
+      "projectionOwner": "upstream-plugin-server",
+      "dataDomain": "cindy",
+      "ledgerFile": "plugin-market/ledger.v1.json"
+    },
+    "meka": {
+      "surface": "meka",
+      "ipcPrefix": "meka-plugin-market",
+      "versionSpace": "cindy-meka",
+      "fallbackVersionSpaces": [],
+      "venue": {
+        "kind": "mcpr-registry",
+        "source": "meka-settings.routerUrl",
+        "credential": "meka-settings.clientKey"
+      },
+      "identity": {
+        "header": "x-cindy-version",
+        "source": "app.getVersion()（非打包下可被 devOverride 覆盖）",
+        "devOverride": {
+          "env": "XDT_PLUGIN_CLIENT_VERSION",
+          "appliesWhen": "!app.isPackaged",
+          "purpose": "仅开发构建生效的复现器：让 dev 上报真实版本号，从而复现发布版被兼容下限挡住的行为。打包构建一律忽略（不看值也不校验值）。"
+        },
+        "spaceHeader": {
+          "name": "x-cindy-plugin-space",
+          "enabled": false
+        }
+      },
+      "projectionOwner": "mcpr-registry",
+      "dataDomain": "cindy-meka",
+      "ledgerFile": "plugin-market/meka-ledger.v1.json"
+    }
+  }
+}

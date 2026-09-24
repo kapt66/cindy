@@ -1901,6 +1901,57 @@ thread-context gated 的本地动态代理投影这条唯一入口，Claude 继�
 - 在进入最终提交前，不应把 `git status` 中所有差异机械视为同一模块。
 - 应按本文模块分批 review，特别警惕来源分支带入的通用能力包、服务端和 S3 改动。
 
+### 7.5 存量风险台账：Meka 插件分发版本语义审计（2026-09-24 只读审计）
+
+本节登记一轮围绕「Meka 插件分发版本语义」的多路只读审计确认的**存量**问题。严重度沿用
+`docs/dev-rules/development-workflow.md` §3 的 P0／P1／P2 口径；状态取「待裁决／本轮已修／
+部分缓解」三值。**本表只登记事实与影响，不构成动手授权**：按 `AGENTS.md`「审查与问题范围」，
+存量问题未获维护者确认前一律保持现状。
+
+| # | 摘要 | 触发条件 | 用户可见后果 | 严重度 | 状态 | 锚点 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 已修1 | Meka 独立插件渠道恒发 `x-cindy-version: 0.0.0`（协议判 versionless ⇒ 无条件放行），该渠道版本兼容门整体失效 | Meka 渠道的目录／详情／下载请求 | 不兼容插件对该渠道照装 | — | 本轮已修 → §6.62 | `apps/desktop/src/main/plugin-market/registerIpc.ts:56`、`packages/plugin-protocol/src/manifest.ts:1087,1131` |
+| 已修2 | 无资产／版本无关包的手动「检查更新」曾答「已经是最新版本了」 | 清单版本更新但无匹配资产，或版本无关包 | 用户被误导为无须更新 | — | 本轮已修 → §6.61 | `apps/desktop/src/main/updateService.ts`（结论码）、`renderer/lib/checkForUpdateWithToast.ts` |
+| R1 | dev 与发布版上报的客户端版本语义相反：dev 报 `0.0.0` 命中 protocol 的 versionless 无条件放行（拿最宽投影），发布版报 `0.0.x` 被上游下限挡住 | 本地 dev 运行 vs 发布版校验 `minCindyVersion` | 版本门类缺陷在本地无法复现，只在发布后暴露 | P1 | 待裁决 | `apps/desktop/package.json:4`、`apps/desktop/logs/main-2026-09-24.log:2`、`apps/desktop/src/main/plugin-market/service.ts:646`、`packages/plugin-protocol/src/manifest.ts:1087,1125-1131` |
+| R2 | `minCindyVersion` 双向错配：它是全仓唯一的客户端版本下限，而 Forge 生成插件脚手架时默认写入当前 App 版本 | Meka 侧写 `0.0.x`（对上游客户端恒满足）；上游侧写 `0.1.x`（对 Meka 恒不满足） | 两侧插件互相「永远兼容／永远不兼容」，下限被低估 | P1 | 待裁决 | `apps/desktop/src/main/mcp-integrations/ghost.ts:2439-2480`、`apps/desktop/src/main/mcp-integrations/mcp-providers.ts:106` |
+| R3 | 客户端对「更高 release 被服务端扣下」零可见：wire 只下发单个 `currentRelease`，无候选列表 | 服务端因客户端版本不兼容而回退历史 release | 用户无法知道为何停在旧版，也无自救入口 | P2 | 部分缓解（插件详情已展示 `minCindyVersion`，根治依赖服务端） | `packages/plugin-protocol/src/delivery.ts:125-127` |
+| R4 | 市场响应 `schemaVersion` 严格相等，失配即静默降级为「只剩自定义源」 | 客户端与市场 schemaVersion 不同步 | 官方目录整片消失，只看到通用「市场不可用」横幅 | P1 | 待裁决 | `packages/plugin-protocol/src/delivery.ts:448-449,469-470`、`apps/desktop/src/main/plugin-market/service.ts:800-811`、`apps/desktop/src/renderer/features/plugin/GhostPluginPage.tsx:2341-2348` |
+| R5 | 无兼容 release 时插件直接消失（无错误、无提示），且客户端**有意**不做二次筛选 | 服务端投影不出兼容版本 | 插件在市场里无声消失 | P2 | 待裁决（明文不变量，仅登记） | `docs/dev-rules/plugin-security-and-authoring.md:155-157`、`packages/plugin-protocol/src/delivery.ts:125-127` |
+| R6 | `config/endpoint*.json` 的 `review`（送审版本号）与移动端二进制版本同值；Meka 不发移动端、完全复用上游移动端，故该字段当前是**惰性残留** | 一旦 Meka 自建移动端并沿用同值 | 同版本 iOS 非 TestFlight 装机恒进审核模式，静默关闭全部更新检查与强更 | P2 | 待裁决（**不加门禁**：为不存在的产品面加校验属投机复杂度，仅登记触发条件） | `config/endpoint.json:21`、`config/endpoint.global.json:21`、`apps/mobile/app.json:6`、`packages/maker-shared/src/clientEndpoints.ts:165,229-230`、`apps/mobile/src/config/env.ts:305-346` |
+| R7 | 构建期 endpoint 自举基址守门只覆盖 cn | versioned **global** 包未显式设置 cn 口径的 `XDT_CDN_BASE_URL` | 会把**上游 Cindy** 的 endpoint 与应用更新 manifest 烘焙进一个 Meka 发布版 | P1 | 待裁决 | `apps/desktop/scripts/package-desktop.mjs:387-395`、`apps/desktop/scripts/release-regions.json.example:23-27`（`release-regions.json` 真文件被 gitignore，不入仓） |
+| R8 | 老数据库血缘桥只认一个精确上游派生点：`0088` 桥接仅在恰好命中 XDMaker Meka 0.0.11 的精确文件/hash 集合时生效，`0074` 同形 | 老数据来源版本不受限，但未精确命中该集合（含 hash 变体）时静默 no-op | 可能留下混合 history、金额／币种语义缺失 | P1 | 待裁决 | `apps/desktop/drizzle/scripts/0088_bridge_meka_0_0_11_lineage.ts:168-194,400-401`、`apps/desktop/drizzle/scripts/0074_bridge_legacy_migration_lineage.ts:68,157` |
+| R9 | 本地 DB 迁移链多处静默点，且 `schema_version` 无条件前进 | 冻结守卫整条跳过 SQL 本体；`migration_history` 写失败（`no such table` 时连回调都不调） | 迁移实际未生效但版本照进，后续无法重放 | P1 | 待裁决 | `apps/desktop/src/main/localDb/migrationRunner.ts:440-482,565-571,573-591` |
+| R10 | agent runtime 双 pin 落差：单文件 codex 与目录分发 codexPackage 相差多个 minor，且无一致性门禁 | 远程 Worker 用单文件 runtime、本地会话用目录分发 | 同一用户远程与本地跑不同 Codex | P1 | 待裁决 | `tools/codex/latest.json:2`（0.145.0）对 `tools/codex-package/latest.json:2`（0.153.4）、`apps/desktop/scripts/ci/runtime-release.mjs:61-85` |
+| R11 | runtime pin 由发布侧无条件覆盖 | 任一 Meka 发布重写 manifest 的 runtime 段 | 不发 App 更新也能换掉全体已装客户端的 agent runtime | P1 | 待裁决 | `apps/desktop/scripts/ci/release-lib.mjs:192-221` |
+| R12 | agent runtime 静默陈旧窗口：启动二进制检查标记按 app 版本一次性 | 标记已消费后上游又发布新 runtime | 新 pin 不与 manifest 比对、被静默忽略，直到下次 App 升级 | P1 | 待裁决 | `apps/desktop/src/main/agent-binaries/index.ts:55-59`、`.../startup-update.ts:33-39`、`.../factory.ts:346-354` |
+| R13 | 「漏传默认值」模式：微信 iLink 传输未传 `clientVersion`（落成 `unknown`／0）；移动端 device-link 回退到 OTA 可变版本 | 构造 iLink 传输时不传 `clientVersion`；device-link hello／openLink 用 `expoConfig.version` | 上游看到错误的客户端版本，与同仓「用原生二进制版本」的约定冲突 | P2 | 待裁决 | `packages/wechat-ilink/src/apiClient.ts:192,203-204`、`apps/desktop/src/main/im/host.ts:274-283`、`apps/mobile/src/device-link/DeviceLinkContext.tsx:818,1724`（同文件 `:858-859` 已用 `nativeAppVersion`） |
+| R14 | 移动端整包更新对「带后缀版本」静默失效 | `/latest` 的 `minVersion` 格式非法 | 整条记录被丢弃，连普通 OTA 提示与强更门槛一起消失 | P1 | 待裁决 | `apps/mobile/src/update/bundleUpdate.ts:73,90-93,119` |
+| R15 | 更新说明历史静默退化 | 按 app 版本取 CDN notice／索引缺失或非 200 | 更新说明显示为空历史，无任何提示 | P2 | 待裁决 | `apps/desktop/src/main/releaseNotesService.ts:179-191,226-230`、`apps/desktop/src/renderer/hooks/useUpdateNotice.ts` |
+| R16 | 成组的静默 no-op 点 | 市场 `not-configured` 在后台对账路径被判成功；DB 未就绪时自定义 MCP 全消失；包内 Meka Skill 目录读不到；角色 manifest 展开失败降级为「什么都没配」 | 角色编辑器选择器整片消失、自定义 MCP 全无，均无错误提示 | P2 | 待裁决 | `.../plugin-market/registerIpc.ts:118-135`、`.../mcp-integrations/custom-mcp-registry.ts:93-98`（+ `.../maker-host/custom-mcp-store.ts:179-186`）、`.../meka-projects/skillCatalog.ts:24-28`、`.../localDb/ipc/mekaRoles.ts:348-355` |
+| R17 | 文档 pin／计数漂移（已复发过） | 维护者按文档值判断现状 | 判断依据与实际不符 | P2 | 待裁决 | 见下方「R17 本轮实读值」 |
+| R18 | 命名歧义：`0088_bridge_meka_0_0_11_lineage` 指的是 **XDMaker Meka 0.0.11**，而 Cindy Meka 自身版本线也经过 0.0.11 | 后续维护者按文件名推断桥接对象 | 误读谱系、误判影响面 | P2 | 待裁决 | `apps/desktop/drizzle/scripts/0088_bridge_meka_0_0_11_lineage.ts:1-6`、`docs/dev-rules/database-and-migrations.md:45` |
+| R19 | `PI_MANAGER_BUNDLE_VERSION` 仍写在上游 0.1.x 线（同仓 cc-manager 已迁到 0.0.x） | bump 漏掉 pi manager bundle | 存量远端静默跳过新 bundle | P1 | 待裁决 | `packages/maker-pi-manager/src/protocol.ts:44`（`0.1.5`）对 `packages/maker-cc-manager/src/protocol.ts:51`（`0.0.10`） |
+| R20 | 测试／证据脚本把机器状态当不变量 | `meka-ui-smoke.mjs` 把「站点」写进侧栏序列断言集合 | 已装插件版本不同即假失败或假通过；两份 migration 文档把该位次记为不变量 | P2 | 待裁决 | `scripts/meka-ui-smoke.mjs:200-203,243-251`、`docs/migrations/2026-09-origin-main-to-meka-main.md:787`、`docs/migrations/2026-09-18-origin-main-to-meka-main.md:773` |
+
+**R17 本轮实读值（2026-09-24，静态读码核对，未跑任何门禁）**：
+
+- `docs/dev-rules/agent-runtime-release.md:19-20` 写 cc-manager 为 `0.0.9/protocol 4`；代码实为
+  `packages/maker-cc-manager/src/protocol.ts:42,51` 的 `PROTOCOL_VERSION = 5` 与
+  `CC_MGR_BUNDLE_VERSION = '0.0.10'`——**bundle 与 protocol 各落后一版**。
+- `docs/dev-rules/database-and-migrations.md:53-54` 写「上游 schema 追加为 `0096`–`0107`」与
+  「canonical 基线 108 条 SQL + 43 条脚本」；HEAD 实读 `apps/desktop/drizzle` 为最新
+  `0112_deep_wolfpack.sql`、**113 条 SQL + 44 条脚本**（同段「固定基线 `0000`–`0079`：
+  80 条 SQL + 23 条脚本」一栏与 `drizzle/migration-baseline.json` 一致，仍准确）。step 6 的
+  精确真值需跑 `db:validate`，本轮**未跑**。
+- `docs/product-rules/local-model-selection.md:62` 写客户端请求 `registrySchemaVersion=4`；
+  代码实为 `packages/model-providers/src/source.ts:26,128` 的 `5`。
+- `docs/dev-rules/meka-whitelist-verification.md` 行号锚点抽样 10 处、**4 处已漂移**：
+  `localDb/ipc/sessions.ts:1385-1386`（现为 formal workflow 报错行，当前正确锚点为 `:1419`
+  的 Meka workingDir 分支）、`localDb/mapper.ts:447`（现为注释，当前正确锚点为 `:452` 的
+  `source: body?.source ?? 'desktop'`）、`hook-control/ipc.ts:596`、`hook-control/manager.ts:2445`；
+  其余 6 处（`im/shared/controlProjects.ts:26,186,229`、`im/shared/slashCommands.ts:480`、
+  `hook-control/recentSessions.ts:37`、`legacyUserDataMigration.ts:955`）抽样仍成立。
+
 ## 8. 手测建议
 
 本轮完整代码门禁已经执行；以下真实环境与 UI 手测仍待开发者完成。
@@ -5409,6 +5460,87 @@ no-op，暂停 / 迁移 / 超时语义不受影响）。**逐字节基线**：`m
     `translocated` / `spawnFailed` 弹窗同形。
 - **本机既有失败（同上，用 stash 基线对照确认非本次引入）**：`test:runner` 3 条
   （`not ok 136 CLI`、`338`、`341`）与 `check:design-inventory --check`（GENERATED 区块不同步）。
+
+### 6.61 2026-09-24 无资产 / 版本无关包的手动「检查更新」不再说「已经是最新版本了」（§6.60 条目 1 的遗漏分支）
+
+- **问题（与 §6.60 条目 1 同一形态的遗漏分支，不是新问题类型）**：§6.60 已为「耗尽预算」补了
+  独立结论码 `'apply_exhausted'`，但 `doCheckForUpdate()` 里另外两个「确实有新版、只是这一轮
+  拿不到」的出口仍返回 `'idle'`，`checkForUpdateWithToast.ts` 照旧弹绿色「已经是最新版本了」：
+  ①清单广告的版本**严格新于**已装版本、但 `resolveUpdateAsset()` 为空（Linux 清单无
+  `installer`、其它平台无 `hotfix`）；②版本无关包（占位 `0.0.0` / `0.0.0-*`）被有意短路禁用
+  应用内更新。代码里 `:1553` 的注释早已识别过同类风险（`apply_exhausted` 特意返回非 `idle`
+  的理由就是「不能一边弹手动安装、一边说已是最新」），本次是把同一个理由补齐到这两个出口。
+- **改动**：`CheckForUpdateResult` 增两个独立值 `'no_asset'` 与 `'versionless'`
+  （与 `'apply_exhausted'` 同形，**不是** `'idle'` 的变体）；`checkForUpdateWithToast` 分别映射到
+  新文案 `titleBar.updateCheckToast.noAsset` / `.versionless`（5 语言）；
+  preload / `vite-env.d.ts` 的 `checkForUpdate` 返回类型同步。
+  **未新增 `UpdateStatus`**：两处都没有横幅/弹窗要显示，主进程状态照旧停在 `idle`，
+  只有「手动检查的答复」变了——为它们新增状态值等于给同一个事实造第二套重复概念。
+  **versionless 的禁用语义一字未动**：不拉清单、不下载、不 relaunch，
+  `isVersionlessAppVersion` 与启动 handler 的短路均保持原样，唯一变化是结论码。
+- **优先级**：若这一轮仍持有被放弃版本的终态（`heldApplyExhaustedVersion()` 命中同一版本），
+  无资产出口继续答 `'apply_exhausted'`（终态是更强的结论，且渲染端此刻正显示手动安装弹窗）。
+- **启动链路不受影响**：`update-check-startup` 在 versionless 与无资产两处都**先于**任何 toast
+  返回 `hasUpdate: false`，splash 直接进第二阶段，没有对用户说反话的出口。因此新结论码只出现在
+  `update-check-now`（**用户手动检查**）与 30 分钟后台轮询（轮询忽略返回值）。
+- **文档与测试**：`docs/dev-rules/cindy-updater.md` 新增「手动「检查更新」的结论码必须与真值
+  一致」一节（三类结论码真值表 + 优先级 + 「改动词表要同步三处」）；
+  `updateService.test.ts` 的 Linux 无 installer 用例改为断言 `'no_asset'`，版本无关豁免两条改为
+  断言 `'versionless'` **且** `getUpdateStatus()` 仍为 `idle`（钉住禁用行为不变，此前的
+  `expect(result).toBe('idle')` 已不再成立），新增两条用例：darwin 下无 hotfix 的 no-asset 分支，
+  以及 `update-check-now` reply `= { result: 'no_asset' }`（渲染端 toast 的唯一来源）；
+  新增 `renderer/lib/__tests__/checkForUpdateWithToast.test.ts`（此前不存在该映射的测试），
+  断言 `no_asset` / `versionless` / `apply_exhausted` 都不再落到「已经是最新版本了」。
+- **术语**：新文案不出现「任务／对话／消息」，`task-and-conversation-naming.md` 无适用面；
+  中文沿用 `i18n/GLOSSARY.md` 既有的「安装包」译法；英文源刻意不含 `Dev`，避免落入 Dev 徽标
+  术语的条件禁用集（`开发版` / `開発版` / `개발판`，禁用条件是 en 含 Dev）。
+- **验证现状（如实，不得写强）**：按仓库「门禁留到交付时一次跑完」的规则，本次**只做一次定向
+  取证**：`pnpm exec vitest run src/main/__tests__/updateService.test.ts` → **1 file passed /
+  108 tests passed，exit 0**（覆盖 apply_exhausted 全部既有用例、patch 应用、失败重试计数与
+  versionless 豁免，证明状态机语义未被破坏）。**未跑** `test:unit:related` / 任何 `typecheck` /
+  `check:i18n` / `check:i18n-glossary` / `check:brand-terminology`；**新增的
+  `checkForUpdateWithToast.test.ts` 本次未执行**（受「最多一个针对性单测文件」约束），
+  交付时会随门禁首跑。**未做实机双模式目检**——本次只改 toast 文案，未新增样式或颜色。
+- **并发工作区提示**：本次交付时工作区里另有未提交的 `plugin-market/**` 与
+  `meka-whitelist-verification.md` 改动（非本次产生），上面的定向取证只涉及 updateService 链路。
+
+### 6.62 2026-09-24 Meka 独立插件渠道恒发 `x-cindy-version: 0.0.0`，该渠道的服务端版本兼容门整体失效（上游渠道未受影响）
+
+- **现象**：Meka 独立插件渠道（`meka-plugin-market:*`，走 MCPRouter registry）的目录 / 详情 / 下载
+  请求**一律**带 `x-cindy-version: 0.0.0`，发布包里也一样。
+- **根因（两句）**：`MekaPluginMarketApi` 构造时只传了 `mekaFetcher`，第二个参数落到父类
+  `PluginMarketApi` 的构造默认值（`plugin-market/api.ts:67-74` 的版本读取器默认 `() => '0.0.0'`），
+  于是恒发 `0.0.0`。协议把 `0.0.0` 判成 **versionless ⇒ 无条件放行**
+  （`packages/plugin-protocol/src/manifest.ts:1087-1089,1131`），所以这个渠道的**版本兼容门整体失效**，
+  连正式 `0.0.x` 包也被当成 dev 占位；上游 Cindy 渠道（`plugin-market:*`）在 `service.ts` 早已显式传
+  真实版本，故**只有 Meka 渠道**受影响。
+- **改动**：`MekaPluginMarketApi` 的版本读取器改为**必填**构造参数（`api.ts:210-211`：
+  `constructor(identityVersionReader: () => string)` + `super(mekaFetcher, identityVersionReader)`），
+  "漏传 ⇒ 落到默认 `0.0.0`"这条路径在结构上不再存在；`isConfigured()` 覆写为 `mekaConfigured()` 的
+  语义**一字未动**。身份解析同时收口到 `plugin-market/clientIdentity.ts`——**它是 `app.getVersion()`
+  在本仓的唯一读取处**——两个渠道的构造点改为 `pluginClientVersionReader('meka')`
+  （`registerIpc.ts:62`）与 `pluginClientVersionReader('cindy')`（`service.ts:649`）。兼容下限自此在
+  **Meka 自己的版本空间**里表达，不借用上游渠道的读取器。
+- **影响面**：**仅** Meka 插件分发渠道（MCPRouter registry 三个请求的版本头）；**上游 Cindy 渠道的
+  请求头行为未变**，且这一点在同一轮用例里被一并钉住。不改任何跨端协议（`0.0.0` 的 versionless 语义
+  是上游既有契约，只读引用）。
+- **验证方式**：新增两条用例——`apps/desktop/src/main/plugin-market/__tests__/api.test.ts`
+  （Meka 渠道 listAll + download 的 `x-cindy-version` 等于读取器给的真实版本且**不是** `0.0.0`；同一轮里
+  Cindy 渠道仍由自己的读取器决定版本头；另断言 Meka `isConfigured()` 仍只认 MCPRouter 绑定）与
+  `apps/desktop/src/main/plugin-market/__tests__/ipcErrorBoundary.test.ts`（**源码级守卫**：
+  `mekaService()` 构造点必须传 `pluginClientVersionReader('meka')` 形态的身份——`mekaService` 未导出、
+  单测不可达，源码断言是防「退回无参构造或退回自写字面量 getter」的门禁）。
+  **门禁尚未统一跑**：按仓库「门禁留到交付时一次跑完」的规则，本次只做**一次定向取证**
+  （`pnpm --filter desktop exec vitest run src/main/plugin-market/__tests__/api.test.ts
+  src/main/plugin-market/__tests__/ipcErrorBoundary.test.ts` → **2 files / 26 tests passed**，
+  含上述 3 条新增断言）；`test:unit:related` / 任何 `typecheck` / 其余门禁**留待交付时一次性执行**。
+- **兼容边界（不得写强）**：源码仓与「版本无关打包」按设计就是 `0.0.0` 占位
+  （`isVersionlessAppVersion`；`apps/desktop/package.json` 跟随上游占位值，见 §6.15 的「上游默认值」），
+  此时**两个渠道都发 `0.0.0` 是预期行为**；本条保证的是**发布包**（打包时已写入真实版本）不再
+  「恒发 `0.0.0`」。**未做实机抓包或服务端日志确认**——该实证登记在
+  `meka-whitelist-verification.md` WL-9 的实机验证项，本轮**未执行**。
+- **白名单落点**：`docs/dev-rules/meka-whitelist-verification.md` WL-9 新增**不变量 5**（含代码锚点、
+  上述自动化门禁与「`0.0.0` 占位构建」边界说明）。
 
 ### 11.26 2026-09-23 默认角色承接「通用开发」职能：出厂全量 + 规范类元数据渐进披露 + 移除通用开发
 

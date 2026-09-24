@@ -201,6 +201,27 @@ codex runtime），`check-environment` 的 codex 段直接 `asset_missing` → `
 apps/desktop/release/artifacts/<region>/<version>/<platform-arch>/
 ```
 
+### 3.3 产物级版本断言
+
+`package-desktop.mjs` 在每个架构 `electron-forge make` 成功之后、产物归集之前，读**已打包
+产物内** `app.asar` 里 `package.json` 的 `version`（packaged 下 `app.getVersion()` 的取值
+来源）并与本次构建意图比对：版本化构建要求它**等于**请求版本且**不是** versionless 哨兵
+（`0.0.0` / `0.0.0-*`）；失败直接终止打包，产物目录不会留下任何可发布结果。
+
+为什么必须落在产物级：`APP_VERSION` 只由本脚本注入，asar 内版本来自 `writePackageVersion()`
+对 `apps/desktop/package.json` 的临时改写，而发布侧 `validateBuildInfo` 只读
+`build-info.json`（复述本脚本自己写进去的版本）。因此绕过本脚本直接 `electron-forge make`、
+或仓外发布流水线自带打包逻辑时，产物会带着仓内占位 `0.0.0` 出门，后果是**永久不参与应用内
+自动更新**，且插件市场协议把它当未知版本无条件放行。**该边界仍在：仓外打包路径不受本仓断言
+保护**，只能在发布侧入口再核一次产物。
+
+失败怎么办：报「占位哨兵」或「与请求版本不一致」就是本包装错版本，不要发布、不要手工改
+manifest 兜过去；按提示用 `release:package --region <r> --version x.y.z` 重打，并清掉打包机上
+残留的 `APP_VERSION`。
+
+预期例外：不带 `--version` 的**版本无关构建**，产物内版本本来就是哨兵 `0.0.0`（按设计不参与
+热更、仅供本地/社区试用），断言此处只校验「确实是哨兵」，不会误报。
+
 ## 4. 发布到 canary
 
 先做无远端写入的本地复核：

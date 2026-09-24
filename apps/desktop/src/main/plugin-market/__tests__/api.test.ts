@@ -1,3 +1,4 @@
+import { CINDY_PLUGIN_SPACE_HEADER } from '@cindy/plugin-protocol';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const sources = vi.hoisted(() => ({
@@ -6,6 +7,8 @@ const sources = vi.hoisted(() => ({
     baseUrl: 'https://mcp-router.test.invalid',
     clientKey: 'meka-client-key' as string | null,
   },
+  /** MCPRouter 未绑定（`getPluginRegistryAccess()` 抛错）时 Meka 渠道应视为未配置。 */
+  mekaRegistryFails: false as boolean,
   serverApiFetch: vi.fn(),
 }));
 
@@ -14,7 +17,10 @@ vi.mock('../../clientEndpointsService.js', () => ({
 }));
 vi.mock('../../meka-settings/ipc.js', () => ({
   getMekaRouterService: () => ({
-    getPluginRegistryAccess: vi.fn(async () => sources.mekaAccess),
+    getPluginRegistryAccess: vi.fn(async () => {
+      if (sources.mekaRegistryFails) throw new Error('MCPRouter unbound');
+      return sources.mekaAccess;
+    }),
   }),
 }));
 vi.mock('../../serverApiClient.js', () => ({
@@ -22,6 +28,7 @@ vi.mock('../../serverApiClient.js', () => ({
 }));
 
 import { MekaPluginMarketApi, PluginMarketApi } from '../api';
+import { pluginClientVersionReader } from '../clientIdentity';
 
 const logger = vi.hoisted(() => ({
   warn: vi.fn(),
@@ -91,6 +98,7 @@ describe('PluginMarketApi', () => {
     sources.cindyBaseUrl = 'https://cindy-plugin.test.invalid';
     sources.mekaAccess.baseUrl = 'https://mcp-router.test.invalid';
     sources.mekaAccess.clientKey = 'meka-client-key';
+    sources.mekaRegistryFails = false;
     sources.serverApiFetch.mockReset();
   });
 
@@ -190,7 +198,7 @@ describe('PluginMarketApi', () => {
     });
 
     await new PluginMarketApi().listAll();
-    await new MekaPluginMarketApi().listAll();
+    await new MekaPluginMarketApi(pluginClientVersionReader('meka')).listAll();
 
     const cindyOptions = sources.serverApiFetch.mock.calls[0]?.[1];
     expect(cindyOptions).toMatchObject({
@@ -205,6 +213,105 @@ describe('PluginMarketApi', () => {
       redactErrorDetails: true,
     });
     expect(sources.serverApiFetch.mock.calls[1]?.[0]).toContain('/api/plugins?');
+  });
+
+  // P2 客户端就绪件的核心验收点：空间头的协议常量与写头代码都在，但**默认不发**。
+  // 这里不只看"没有那个键"，而是把整个 headers 对象逐字节比出来——多出任何头（哪怕是空对象
+  // 或别的默认头）都算与今天漂移。两条渠道各测一次，因为版本头取值不同。
+  it('默认关闭空间头：两条渠道的请求头与现状逐字节相同（恰好只有 x-cindy-version）', async () => {
+    sources.serverApiFetch.mockResolvedValue({
+      schemaVersion: 2,
+      plugins: [],
+      nextCursor: null,
+    });
+
+    await new PluginMarketApi(undefined, () => '1.2.3').listAll();
+    await new MekaPluginMarketApi(() => '2.4.1').listAll();
+
+    const cindyHeaders = sources.serverApiFetch.mock.calls[0]?.[1]?.headers;
+    const mekaHeaders = sources.serverApiFetch.mock.calls[1]?.[1]?.headers;
+    expect(JSON.stringify(cindyHeaders)).toBe(JSON.stringify({ 'x-cindy-version': '1.2.3' }));
+    expect(JSON.stringify(mekaHeaders)).toBe(JSON.stringify({ 'x-cindy-version': '2.4.1' }));
+    for (const headers of [cindyHeaders, mekaHeaders]) {
+      expect(Object.keys(headers ?? {})).toEqual(['x-cindy-version']);
+      expect(headers).not.toHaveProperty(CINDY_PLUGIN_SPACE_HEADER);
+    }
+  });
+
+  // 开关是模块常量、默认 false，生产语义**不支持运行期翻转**；要证明"打开后会带空间头"只能在
+  // 模块图层面做替身：resetModules + doMock 出 enabled=true 的 clientIdentity，再动态 import
+  // 真实的 api 模块。它验证的是"开启后两个渠道各带自己 edition 的空间名"，不改生产常量、
+  // 也不给生产路径加任何运行期开关。
+  it('开关打开时两条渠道各带自己 edition 的空间名（cindy / meka）', async () => {
+    vi.resetModules();
+    vi.doMock('../clientIdentity.js', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../clientIdentity.js')>();
+      return { ...actual, PLUGIN_SPACE_HEADER_ENABLED: true };
+    });
+    try {
+      const enabledApi = await import('../api');
+      sources.serverApiFetch.mockResolvedValue({
+        schemaVersion: 2,
+        plugins: [],
+        nextCursor: null,
+      });
+
+      await new enabledApi.PluginMarketApi(undefined, () => '1.2.3').listAll();
+      await new enabledApi.MekaPluginMarketApi(() => '2.4.1').listAll();
+
+      expect(sources.serverApiFetch.mock.calls[0]?.[1]?.headers).toEqual({
+        'x-cindy-version': '1.2.3',
+        [CINDY_PLUGIN_SPACE_HEADER]: 'cindy',
+      });
+      expect(sources.serverApiFetch.mock.calls[1]?.[1]?.headers).toEqual({
+        'x-cindy-version': '2.4.1',
+        [CINDY_PLUGIN_SPACE_HEADER]: 'meka',
+      });
+    } finally {
+      vi.doUnmock('../clientIdentity.js');
+      vi.resetModules();
+    }
+  });
+
+  // Meka 渠道的版本兼容下限在 Meka 自己的版本空间里表达。恒发 `0.0.0` 时协议把它当
+  // versionless(无条件放行),服务端版本兼容门会整体失效,连正式包也被当成 dev 占位;
+  // 所以这里必须证明读取器真的接到了 Meka 请求头上,而不是落到构造默认值。
+  it('reports the real client version on the Meka channel instead of 0.0.0', async () => {
+    sources.serverApiFetch
+      .mockResolvedValueOnce({ schemaVersion: 2, plugins: [], nextCursor: null })
+      .mockResolvedValueOnce({
+        url: 'https://mcp-router.test.invalid/api/plugin-assets/release-1?expires=1&sig=test',
+        expiresAt: '2026-07-23T00:05:00.000Z',
+        sha256: 'a'.repeat(64),
+        sizeBytes: 42,
+      })
+      .mockResolvedValueOnce({ schemaVersion: 2, plugins: [], nextCursor: null });
+    const api = new MekaPluginMarketApi(() => '2.4.1');
+
+    await api.listAll();
+    await api.download(PLUGIN_A, 'release-1');
+    // 同一轮里跑一遍 Cindy 渠道:证明版本头由各渠道**各自的**读取器决定,
+    // Meka 的改动没有牵动上游渠道。
+    await new PluginMarketApi(undefined, () => '9.9.9').listAll();
+
+    const mekaVersions = sources.serverApiFetch.mock.calls
+      .slice(0, 2)
+      .map((call) => call[1]?.headers?.['x-cindy-version']);
+    expect(mekaVersions).toEqual(['2.4.1', '2.4.1']);
+    expect(mekaVersions).not.toContain('0.0.0');
+    expect(sources.serverApiFetch.mock.calls[2]?.[1]).toMatchObject({
+      headers: { 'x-cindy-version': '9.9.9' },
+    });
+  });
+
+  // 版本读取器是构造第二个参数,不能被误当成配置检查器:isConfigured() 仍只认
+  // MCPRouter 绑定状态(mekaConfigured() 覆写)。
+  it('keeps the Meka configured check on the Router binding, not on the version reader', async () => {
+    sources.mekaRegistryFails = true;
+    await expect(new MekaPluginMarketApi(() => '2.4.1').isConfigured()).resolves.toBe(false);
+
+    sources.mekaRegistryFails = false;
+    await expect(new MekaPluginMarketApi(() => '2.4.1').isConfigured()).resolves.toBe(true);
   });
 
   it('accepts Meka Plugin details that declare the Host confirm slot', async () => {
@@ -229,7 +336,9 @@ describe('PluginMarketApi', () => {
       },
     });
 
-    await expect(new MekaPluginMarketApi().detail(PLUGIN_A)).resolves.toMatchObject({
+    await expect(
+      new MekaPluginMarketApi(pluginClientVersionReader('meka')).detail(PLUGIN_A),
+    ).resolves.toMatchObject({
       currentRelease: { manifest: { slots: ['tool', 'confirm'] } },
     });
     expect(sources.serverApiFetch).toHaveBeenCalledWith(
@@ -252,7 +361,7 @@ describe('PluginMarketApi', () => {
         sha256: 'a'.repeat(64),
         sizeBytes: 42,
       });
-    const api = new MekaPluginMarketApi();
+    const api = new MekaPluginMarketApi(pluginClientVersionReader('meka'));
 
     await expect(api.isConfigured()).resolves.toBe(true);
     await api.listAll();
@@ -278,7 +387,7 @@ describe('PluginMarketApi', () => {
       plugins: [],
       nextCursor: null,
     });
-    const api = new MekaPluginMarketApi();
+    const api = new MekaPluginMarketApi(pluginClientVersionReader('meka'));
 
     await api.listAll();
     sources.mekaAccess.clientKey = null;
@@ -300,7 +409,7 @@ describe('PluginMarketApi', () => {
       sha256: 'a'.repeat(64),
       sizeBytes: 42,
     });
-    const api = new MekaPluginMarketApi();
+    const api = new MekaPluginMarketApi(pluginClientVersionReader('meka'));
 
     await expect(api.download(PLUGIN_A, 'release-1')).resolves.toMatchObject({
       url: 'https://mcpr.meka.pawdy.fun/api/plugin-assets/release-1?expires=1&sig=test',

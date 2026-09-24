@@ -4906,7 +4906,6 @@
         "manageAction": "管理",
         "manageAria": "管理 {{name}}",
         "agentInvoked": "Agent 自动调用",
-        "upToDate": "已是最新",
         "oauthAuthorizationExpired": "授权已失效，需重新连接",
         "installAria": "安装 {{name}}",
         "installedTitle": "已安装的插件",
@@ -5305,6 +5304,8 @@
         "dangerTitle": "卸载插件",
         "infoContents": "包含",
         "infoVersion": "版本",
+        "infoMinClientVersion": "最低客户端版本",
+        "minClientVersionTooOld": "需要更新的客户端：此版本要求 {{appName}} {{version}} 或更高版本。",
         "updateTitle": "更新版本",
         "updateDesc": "选择新的 .cindy 文件原位替换；启用状态与面板位置保持不变。",
         "cindyPrefs": {
@@ -6593,7 +6594,9 @@
       "manifestFailed": "检查更新失败，请检查网络",
       "downloadFailed": "新版本下载失败，稍后再试",
       "manualDownload": "在应用内下载，再选择重启时间。只有系统 .deb 安装需要系统密码。",
-      "applyExhausted": "该版本已多次安装失败，已停止自动更新。请手动下载新版本并重新安装。"
+      "applyExhausted": "该版本已多次安装失败，已停止自动更新。请手动下载新版本并重新安装。",
+      "noAsset": "有新版本，但目前没有适用于你的系统的安装包，请稍后重试",
+      "versionless": "当前是本地构建的版本，不参与应用内自动更新"
     },
     "closeConfirm": {
       "title": "确认要离开吗？",

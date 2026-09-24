@@ -4906,7 +4906,6 @@
         "manageAction": "管理",
         "manageAria": "{{name}} を管理",
         "agentInvoked": "Agent が自動で呼び出し",
-        "upToDate": "最新です",
         "oauthAuthorizationExpired": "認証期限切れ・再接続が必要",
         "installAria": "{{name}} をインストール",
         "installedTitle": "インストール済みプラグイン",
@@ -5305,6 +5304,8 @@
         "dangerTitle": "プラグインをアンインストール",
         "infoContents": "内容",
         "infoVersion": "バージョン",
+        "infoMinClientVersion": "最低クライアントバージョン",
+        "minClientVersionTooOld": "より新しいクライアントが必要です。このバージョンには {{appName}} {{version}} 以降が必要です。",
         "updateTitle": "バージョン更新",
         "updateDesc": "新しい .cindy ファイルを選んでその場で置き換えます。有効状態とパネル位置は保持されます。",
         "cindyPrefs": {
@@ -6593,7 +6594,9 @@
       "manifestFailed": "更新確認に失敗しました。ネットワークを確認してください",
       "downloadFailed": "新バージョンのダウンロードに失敗しました。後でもう一度お試しください",
       "manualDownload": "アプリ内でダウンロード後、再起動するタイミングを選んでください。システムの .deb インストールのみパスワードが必要です。",
-      "applyExhausted": "このバージョンの自動更新は複数回の失敗により停止しました。新しいバージョンを手動でダウンロードしてインストールしてください。"
+      "applyExhausted": "このバージョンの自動更新は複数回の失敗により停止しました。新しいバージョンを手動でダウンロードしてインストールしてください。",
+      "noAsset": "新しいバージョンがありますが、お使いのシステム用のインストーラーがまだありません。しばらくしてからお試しください",
+      "versionless": "ローカルでビルドしたバージョンのため、アプリ内自動更新は無効です"
     },
     "closeConfirm": {
       "title": "終了しますか？",

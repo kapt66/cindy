@@ -1386,6 +1386,13 @@ function resolveUpdateAsset(manifest: Manifest): { file: string; sha256: string;
  * `apply_exhausted` is its own result rather than a flavour of `idle`: the client
  * deliberately stopped applying this version, so a manual "check for updates"
  * must not answer "you're on the latest version".
+ *
+ * `no_asset` and `versionless` follow the same rule. Both describe "a newer
+ * version exists (or the manifest advertises one) but this install cannot take
+ * it", which is the opposite of `idle`'s "you're on the latest version" — the
+ * renderer maps `idle` to that exact toast. Neither adds an `UpdateStatus`: the
+ * banner/sidebar stay `idle` in both cases (there is nothing to download and no
+ * dialog to show), only the manual-check answer changes.
  */
 export type CheckForUpdateResult =
   | 'ready'
@@ -1393,6 +1400,8 @@ export type CheckForUpdateResult =
   | 'download_failed'
   | 'manual_download'
   | 'apply_exhausted'
+  | 'no_asset'
+  | 'versionless'
   | 'idle';
 
 // Module-level in-flight guard so the startup IPC handler and the background
@@ -1446,7 +1455,10 @@ async function doCheckForUpdate(manifestOverride?: Manifest | null): Promise<Che
   if (isVersionlessAppVersion(app.getVersion())) {
     log.info('Versionless build (placeholder %s) — in-app update disabled', app.getVersion());
     currentStatus = 'idle';
-    return 'idle';
+    // 状态机照旧停在 'idle'(版本无关包没有横幅/弹窗要显示),但结论码必须是
+    // 'versionless':手动「检查更新」若答 'idle',渲染端会弹「已经是最新版本了」,
+    // 而真值是「这个包被有意排除在自动更新之外」——用户据此无从知道该去仓库取新包。
+    return 'versionless';
   }
 
   // wasReady 路径:本地已经下好了 a 版本,正在等用户点重启。这次轮询要继续做版本对比,
@@ -1558,7 +1570,12 @@ async function doCheckForUpdate(manifestOverride?: Manifest | null): Promise<Che
     } else {
       settleIdle();
     }
-    return 'idle';
+    // 走到这里必然已经过上面的 same/older 出口,即 manifest 广告的版本严格新于当前版本
+    // (wasReady 分支同理),只是本平台这一轮没有可安装资产(如 Linux 清单里没有 installer)。
+    // 答 'idle' 会让「检查更新」弹「已经是最新版本了」——在明明有新版本时说反话;
+    // 用独立结论码把「有新版、但暂时没有可用安装包」如实传出去。
+    // 未持有终态时状态机仍回 'idle'(无横幅/弹窗),与 apply_exhausted 分支的取舍一致。
+    return 'no_asset';
   }
 
   // Give up on a version that already burned its attempt budget. Without this

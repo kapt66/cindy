@@ -600,11 +600,32 @@ edition 与端点自举）；② 登录页实际认证的 **realm**;③ 运行�
    只改身份字段（`id` + 派生 `command`）。
 3. 开发副本占用 `meka-dev-*` 派生 runtime ID，不占正式插件 ID，也不改变正式安装状态。
 4. `.cindy` 文件关联与安装渠道归 Meka（`channel: 'meka'`）。
+5. Meka 渠道必须上报**真实客户端版本**（`x-cindy-version`）；恒发 `0.0.0` 时协议的
+   versionless 判据会让它在 Meka 版本空间里的兼容门**整体失效**（正式 `0.0.x` 包也会被
+   当成 dev 占位）。版本兼容下限只在 Meka 自己的版本空间里表达，不借用上游渠道的读取器。
+   **边界**：源码仓 / 版本无关打包按设计就是 `0.0.0` 占位（`isVersionlessAppVersion`），
+   此时两个渠道都发 `0.0.0` 是预期行为；本条要保证的是发布包（已写入真实版本）不再
+   「恒发 `0.0.0`」。
 
 **代码锚点**
 - `apps/desktop/src/main/cindy-brain/mekaDevPlugins.ts`（派生包、注册表、watcher、打包）
 - `apps/desktop/src/main/cindy-brain/index.ts:6862-7080`（`meka-dev-plugins:*` IPC）
 - `apps/desktop/src/main/plugin-market/registerIpc.ts:314,326`（channel 校验）
+- `apps/desktop/src/main/plugin-market/clientIdentity.ts`（插件分发身份的**唯一**解析入口：
+  `resolvePluginClientIdentity` / `readPluginClientIdentity` / `pluginClientVersionReader`；
+  `app.getVersion()` 在本模块之外不再被任何渠道读取）
+- `apps/desktop/src/main/plugin-market/registerIpc.ts:56-62`（`mekaService()` 构造点传
+  `pluginClientVersionReader('meka')`）与 `apps/desktop/src/main/plugin-market/service.ts:649`
+  （上游渠道 `new PluginMarketApi(undefined, pluginClientVersionReader('cindy'))`）同构——
+  两个渠道各取自己 edition 的身份，不再各写一份 getter
+- `apps/desktop/src/main/plugin-market/api.ts:198-211`（`MekaPluginMarketApi` 的版本读取器是
+  **必填**构造参数，见 `:210-211` 的构造签名与 `super(mekaFetcher, identityVersionReader)`；
+  "漏传 ⇒ 落到默认 `0.0.0`"这条路径已在结构上不存在；`isConfigured()` 仍覆写为
+  `mekaConfigured()`，与版本读取器无关）
+- `packages/plugin-protocol/src/manifest.ts:1087-1089,1131`（`0.0.0` = versionless 的协议
+  判据，跨端协议只读引用，不在本仓修改）
+- `apps/desktop/src/main/updateService.ts:1435`、`apps/desktop/scripts/ci/package-lib.mjs:14`
+  （`0.0.0` 是本仓「版本无关构建」的占位哨兵，不是真实版本）
 - `apps/desktop/src/renderer/features/plugin/lib/pluginMarketSurface.ts:7,19`
 - `apps/desktop/src/renderer/features/plugin/lib/updateAllModel.ts:95-100`
 - `apps/desktop/src/main/plugin-market/mekaDownloadPolicy.ts`
@@ -614,11 +635,17 @@ edition 与端点自举）；② 登录页实际认证的 **realm**;③ 运行�
 - `pnpm --filter desktop exec vitest run src/main/cindy-brain/__tests__/mekaDevPlugins.test.ts`
 - `pnpm --filter desktop exec vitest run src/renderer/features/plugin`
 - `pnpm --filter desktop exec vitest run src/main/plugin-market`
+- `pnpm --filter desktop exec vitest run src/main/plugin-market/__tests__/api.test.ts`
+  （Meka 渠道的 `x-cindy-version` 为读取器给的真实版本且不是 `0.0.0`；同一轮里 Cindy 渠道
+  仍由自己的读取器决定版本头；Meka `isConfigured()` 仍只认 MCPRouter 绑定）
+- `pnpm --filter desktop exec vitest run src/main/plugin-market/__tests__/ipcErrorBoundary.test.ts`
+  （源码级守卫：`mekaService()` 构造点必须显式传版本，防「退回无参构造」的静默回归）
 - `pnpm --filter desktop exec vitest run src/shared/__tests__/ghost.test.ts src/main/cindy-brain/__tests__/forge.test.ts`
 
 **实机验证**：Meka 插件页登记一个真实源码目录 → 卡片出现且带 `DEV` 角标 → 打开界面/使用
 可用 → 自动同步（改源码）生效 → 「打包」产出作者身份的 `.cindy` → 移除后正式插件不受影响。
-Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台。
+Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台；Meka 渠道请求头 `x-cindy-version`
+是当前客户端真实版本（抓包或服务端日志确认，不是 `0.0.0`）。
 
 **历史回归**
 - 开发目录 `EXDEV`（跨卷）与 workdir 安全门（见 `xdmaker-meka-to-cindy.md` §开发目录相关）。
@@ -2534,3 +2561,62 @@ workspace，需单独决策。本条只登记「机制缺口 + 孤儿文件清�
 **仍未验证（不得写强）**：`pnpm desktop:session-smoke` **未跑**（含 `--dry-run`）；**Light / Dark 两种模式
 均未目检**；**Pi argv 余量仍是算术推演、不是实测**；`pnpm design:inventory` 生成器未复跑
 （`--check` 已通过）。WL-11.11–WL-11.17 的**端到端实机**部分仍无实跑证据。
+
+### 8.10 随包内置插件播种已被上游退休：本仓保留机制只用于历史已播种安装的对账（2026-09-24 复核）
+
+**事实（本仓与上游 `origin/main` 同形 —— 是双侧共同的、已被上游退休的遗留，不是 Meka 特有缺陷）**：
+
+- 播种入口 `apps/desktop/src/main/cindy-brain/index.ts` 的 `builtinSeedRootDirs()` 解析两个种子根
+  （`official` / `xd`：dev 为 `<appPath>/resources/builtin-ghosts`，packaged 为
+  `process.resourcesPath/builtin-ghosts`），调用点是对账（`reconcileBuiltinGhosts`）与设置页取数。
+- `apps/desktop/resources/builtin-ghosts` **在磁盘上不存在**；它也**从未**进入
+  `apps/desktop/forge.config.ts` 的 `extraResourcesForTarget()` 白名单 ⇒ packaged 之后
+  `process.resourcesPath` 下同样没有这个目录。旧注释「forge extraResource 原样拷入」与配置直接矛盾，
+  本次已按事实改正（`.gitmodules` 亦不存在）。
+- `.gitignore:208-209` 写明「内置插件种子已废弃(改走 plugin-store 安装)」。
+- ⇒ **随包不再分发种子，正常安装（dev 与 packaged）下内置插件播种是有意的 no-op**；官方内置插件
+  改走 plugin-store 安装。
+
+**为什么不能删播种机制**：改名（`RENAMED_BUILTIN_GHOSTS`）与退役（`RETIRED_BUILTIN_GHOSTS`）驱动的
+存量数据对账、墓碑 / seeded 台账都跑在 `builtinGhostProvisioner` 上。删掉等于搁置历史已播种安装的
+用户数据（旧设备可能隔很多版本才升级），而今天零收益。因此本次**只**把静默 no-op 改成可观测，
+不删播种逻辑、不改 `forge.config.ts`。
+
+**可观测口径（区分「设计如此」与「真的坏了」）**：
+
+- 种子父目录整棵缺失 = **设计状态** ⇒ 记**每进程每父目录至多一次** `info`
+  （`builtin ghost seed roots absent by design; builtin provisioning is a no-op`，带解析出的全部根路径），
+  **不得**用 `warn`/`error`：这是正常安装的常态，升级成 warn 就是每次启动刷噪声。
+- 父目录在、而某个根缺失/为空/不可读 = **打包或提交事故** ⇒ `warn`
+  （`builtin seed root missing` / `builtin seed root present but empty` / `builtin seed root unreadable`），
+  带根路径与 errno / 原因，区分「仓里真没有」与「读失败」。
+- 种子集为空 ⇒ 本轮**不执行孤儿回收**（空集分不清「随包真没有」与「根没 checkout」，宁可留旧包），
+  该后果必须在日志里说明（`builtin ghost orphan recovery skipped: …`）——空根那条 `info` 在整轮
+  no-op 时到不了，所以全空分支自己带一句。
+- 状态台账不可读 ⇒ 沿用既有 fail-closed 分支（不装不删、台账原样、标记下轮重试），并补一条整轮
+  后果 `warn`（`builtin provisioning skipped: unreadable state ledger; no seed applied this round`）。
+- 上述日志 scope 为 `brain` / `plugin-*`，**不进上传包**
+  （`apps/desktop/src/main/log-upload/sourceAllowlist.ts` 的 `NOTABLE_DENIED_ROOTS`）——只保证**本机**
+  日志可诊断，不声称可上报。
+
+**代码锚点**
+- `apps/desktop/src/main/cindy-brain/index.ts`（`builtinSeedRootDirs()` 与其「种子已退休」注释；
+  `RENAMED_BUILTIN_GHOSTS` / `RETIRED_BUILTIN_GHOSTS` 对账）
+- `apps/desktop/src/main/cindy-brain/builtinGhostProvisioner.ts`（头注释「观测口径」；
+  `observeSeedRoot` / `warnUnusableSeedRoot` / `reportEmptySeedSet`）
+- `apps/desktop/forge.config.ts:829-874`（`extraResourcesForTarget()` 白名单，**不含** `builtin-ghosts`）
+- `.gitignore:208-209`
+
+**自动化门禁**
+- `pnpm --filter desktop exec vitest run src/main/cindy-brain/__tests__/builtinGhostProvisioner.test.ts`
+  —— 新增「种子树退休后的观测口径」四条：①父目录整体缺失时**只记一次** info、状态文件逐字节不变、
+  已装内置插件不被孤儿回收（第二轮对账不重复刷日志）；②父目录在而某根为空 ⇒ warn 带根路径，
+  并说明本轮未执行孤儿回收；③根存在但 `readdir` 失败 ⇒ warn 带 errno，不误报成「根里真的空」；
+  ④仍有种子可播时空根只 warn，种子照旧装入、孤儿回收照旧跳过。既有墓碑 / 改名 / 退役 / 孤儿回收 /
+  fail-closed 用例**全部保留、未削弱**（同文件内的旧用例一条未改）。
+
+**实机验证**：无独立实机项。本改动只增加日志与注释，正常安装下播种不产生任何用户可见行为；
+插件相关的实机面按 §5 的插件条目覆盖。
+
+**编号说明**：本节不是 `WL-*` 能力项（它登记的是「已被上游退休、无需防覆盖」的事实与观测口径），
+故不占 WL 编号、不新增 WL 顶层项；若将来重新随包分发种子，应改为新 WL 项并钉住上述不变量。

@@ -688,3 +688,172 @@ describe('builtinGhostProvisioner locale validation', () => {
       .toBe('// github');
   });
 });
+
+describe('builtinGhostProvisioner 种子树退休后的观测口径', () => {
+  // 随包种子已被上游退休:正常安装下两个种子根(及其父目录)都不存在。此时播种
+  // 必须是有意的 no-op —— 留一条能说明成因的日志,但不许 warn/error 刷噪声,更不许
+  // 因为"种子集为空"就把历史已播种的内置插件当孤儿回收掉。
+  it('父目录整体缺失时只记一次 info，且一个字节的状态都不改', async () => {
+    const root = await makeTempDir();
+    const seedBase = path.join(root, 'builtin-ghosts'); // 刻意不创建:退休形态
+    const officialRoot = path.join(seedBase, 'official');
+    const xdRoot = path.join(seedBase, 'xd');
+    const repoRoot = path.join(root, 'installed');
+    // 历史已播种安装:目录 + seeded 台账 + 用户墓碑,都要原样活下来。
+    await writeMinimalSeed(repoRoot, 'historically-seeded');
+    const stateFile = path.join(repoRoot, PROVISIONING_STATE_FILE);
+    const stateBefore = JSON.stringify({
+      removed: ['user-uninstalled'],
+      seeded: ['historically-seeded'],
+    });
+    await fs.promises.writeFile(stateFile, stateBefore);
+    const info = vi.fn();
+    const warn = vi.fn();
+
+    const first = await provisionBuiltinGhosts({
+      seedRootDirs: [officialRoot, xdRoot],
+      repoRootDir: repoRoot,
+      log: { info, warn },
+    });
+
+    expect(first.installed).toEqual([]);
+    expect(first.updated).toEqual([]);
+    expect(first.removed).toEqual([]);
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(info).toHaveBeenCalledWith(
+      'builtin ghost seed roots absent by design; builtin provisioning is a no-op',
+      expect.objectContaining({ seedBaseDir: seedBase, seedRootDirs: [officialRoot, xdRoot] }),
+    );
+    // 设计状态不得升级成 warn/error(否则每次启动都刷噪声)。
+    expect(warn).not.toHaveBeenCalled();
+    // 空种子集不得触发孤儿回收:已装目录与台账逐字节不变。
+    expect(await fs.promises.readFile(stateFile, 'utf8')).toBe(stateBefore);
+    expect(fs.existsSync(path.join(repoRoot, 'historically-seeded'))).toBe(true);
+
+    // 第二轮对账(登录 / post-commit 会多次触发)不再刷第二行。
+    const second = await provisionBuiltinGhosts({
+      seedRootDirs: [officialRoot, xdRoot],
+      repoRootDir: repoRoot,
+      log: { info, warn },
+    });
+    expect(second.removed).toEqual([]);
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('父目录在、某个根为空时是 warn(带根路径与原因)，并说明未执行孤儿回收', async () => {
+    const root = await makeTempDir();
+    const seedBase = path.join(root, 'builtin-ghosts');
+    const officialRoot = path.join(seedBase, 'official');
+    const xdRoot = path.join(seedBase, 'xd'); // 父目录在,根缺失 = 打包事故
+    await fs.promises.mkdir(officialRoot, { recursive: true }); // 存在但没有任何种子
+    const repoRoot = path.join(root, 'installed');
+    await fs.promises.mkdir(repoRoot, { recursive: true });
+    const info = vi.fn();
+    const warn = vi.fn();
+
+    const outcome = await provisionBuiltinGhosts({
+      seedRootDirs: [officialRoot, xdRoot],
+      repoRootDir: repoRoot,
+      log: { info, warn },
+    });
+
+    expect(outcome.installed).toEqual([]);
+    // 「仓里真没有」与「根根本没拷进来」必须分开报。
+    expect(warn).toHaveBeenCalledWith(
+      'builtin seed root present but empty',
+      expect.objectContaining({ root: officialRoot, seedBaseDir: seedBase }),
+    );
+    expect(warn).toHaveBeenCalledWith(
+      'builtin seed root missing',
+      expect.objectContaining({
+        root: xdRoot,
+        seedBaseDir: seedBase,
+        error: expect.stringContaining('ENOENT'),
+      }),
+    );
+    // 全空时主流程提前返回,走不到 hasEmptyRoot 那条 info —— 未回收的原因必须在这里说。
+    expect(info).toHaveBeenCalledWith(
+      'builtin ghost orphan recovery skipped: no seed ids available this round',
+      expect.objectContaining({ emptyRoots: [officialRoot, xdRoot] }),
+    );
+    expect(info).not.toHaveBeenCalledWith(
+      'builtin ghost seed roots absent by design; builtin provisioning is a no-op',
+      expect.anything(),
+    );
+  });
+
+  it('根存在但读失败时是 warn 且带 errno，不与「根里真的空」混为一谈', async () => {
+    const root = await makeTempDir();
+    const seedBase = path.join(root, 'builtin-ghosts');
+    const officialRoot = path.join(seedBase, 'official');
+    await fs.promises.mkdir(officialRoot, { recursive: true });
+    const repoRoot = path.join(root, 'installed');
+    await fs.promises.mkdir(repoRoot, { recursive: true });
+    const denied = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+    vi.spyOn(fs, 'readdirSync').mockImplementation(() => {
+      throw denied;
+    });
+    const info = vi.fn();
+    const warn = vi.fn();
+
+    const outcome = await provisionBuiltinGhosts({
+      seedRootDirs: [officialRoot],
+      repoRootDir: repoRoot,
+      log: { info, warn },
+    });
+    // 注意:这里不能 vi.restoreAllMocks() —— 它会把 info/warn 两个 vi.fn() 的
+    // 调用记录一并清空(mockRestore = 还原实现 + 重置记录),断言就永远是空的。
+    // readdirSync 的 spy 由 afterEach 统一还原。
+
+    expect(outcome.installed).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(
+      'builtin seed root unreadable',
+      expect.objectContaining({
+        root: officialRoot,
+        seedBaseDir: seedBase,
+        error: expect.stringContaining('EACCES'),
+      }),
+    );
+    expect(warn).not.toHaveBeenCalledWith(
+      'builtin seed root present but empty',
+      expect.anything(),
+    );
+  });
+
+  it('仍有种子可播时：空根只 warn，种子照旧装入且孤儿回收仍被跳过', async () => {
+    const root = await makeTempDir();
+    const seedBase = path.join(root, 'builtin-ghosts');
+    const officialRoot = path.join(seedBase, 'official');
+    const xdRoot = path.join(seedBase, 'xd');
+    await writeMinimalSeed(officialRoot, 'current-builtin');
+    await fs.promises.mkdir(xdRoot, { recursive: true }); // 兄弟根为空
+    const repoRoot = path.join(root, 'installed');
+    await writeMinimalSeed(repoRoot, 'retired-builtin');
+    await fs.promises.writeFile(
+      path.join(repoRoot, PROVISIONING_STATE_FILE),
+      JSON.stringify({ removed: [], seeded: ['retired-builtin'] }),
+    );
+    const info = vi.fn();
+    const warn = vi.fn();
+
+    const outcome = await provisionBuiltinGhosts({
+      seedRootDirs: [officialRoot, xdRoot],
+      repoRootDir: repoRoot,
+      log: { info, warn },
+    });
+
+    // 新诊断不得削弱既有行为:种子照装,空根存在时孤儿回收照旧跳过(宁可留旧包)。
+    expect(outcome.installed.map((m) => m.id)).toEqual(['current-builtin']);
+    expect(outcome.removed).toEqual([]);
+    expect(fs.existsSync(path.join(repoRoot, 'retired-builtin'))).toBe(true);
+    expect(warn).toHaveBeenCalledWith(
+      'builtin seed root present but empty',
+      expect.objectContaining({ root: xdRoot }),
+    );
+    expect(info).toHaveBeenCalledWith(
+      'builtin ghost orphan recovery skipped: empty seed root (submodule not initialized?)',
+      expect.objectContaining({ emptyRoots: [xdRoot], emptyRootShapes: ['empty'] }),
+    );
+  });
+});
