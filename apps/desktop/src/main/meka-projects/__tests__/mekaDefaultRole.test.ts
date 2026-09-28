@@ -401,7 +401,12 @@ describe('Meka role manifest read expansion', () => {
       updated_at: 1,
     };
     h.readCustomRoleManifest.mockResolvedValue({ ...flagged, projectId: 'demo' });
-    h.projectRow = { id: 'demo', path: 'C:\\Workspace\\demo', is_builtin: 0 };
+    // 项目路径必须按平台构造为**绝对**路径：生产侧 `projectFileForRole` 在
+    // `!path.isAbsolute(configuredPath)` 时直接返回 null（`localDb/ipc/mekaRoles.ts:185`），
+    // 硬编码 `C:\Workspace\demo` 在 POSIX 上不是绝对路径 ⇒ 读配置的调用数恒为 0、
+    // 断言 `readProjectConfigStateCalls > 0` 必红（这就是本用例此前在 Linux 单测分片上
+    // 报 `expected 0 to be greater than 0` 的原因）。用 `path.resolve` 保证两平台都绝对。
+    h.projectRow = { id: 'demo', path: path.resolve('workspace-demo'), is_builtin: 0 };
     h.projectConfigThrows = true;
 
     const manifest = (await handler('meka-role:read-manifest')(

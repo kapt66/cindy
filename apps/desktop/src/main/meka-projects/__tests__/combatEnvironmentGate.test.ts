@@ -1,3 +1,6 @@
+import os from 'node:os';
+import path from 'node:path';
+
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -5,20 +8,40 @@ import {
   runCombatEnvironmentGate,
 } from '../combatEnvironmentGate.js';
 
-const p4Info = '... clientName saga2-client\n... clientRoot C:\\Workspace\\saga2\\saga2_project\n';
+/**
+ * The gate compares its configured root, the P4 `clientRoot`/`Root` and the
+ * `where` mapping with the *host* `node:path` implementation, so the fixture
+ * paths must be produced by that same implementation. Hard-coding
+ * `C:\Workspace\saga2\saga2_project` only works on Windows: on the Linux CI
+ * runner `\` is an ordinary filename character, `path.join` then emits a mixed
+ * `C:\...\saga2_project/saga2_unity` mapping that no longer matches the `where`
+ * output, and `checkP4` reports a client-root/mapping mismatch.
+ *
+ * The root is derived from the OS temp dir on purpose: that is an absolute path
+ * on every platform, and it is guaranteed not to exist, so this suite can never
+ * silently depend on a real SAGA2 checkout, a `p4` client or `P4CLIENT` env.
+ */
+const p4Root = path.join(os.tmpdir(), 'cindy-meka-combat-gate-fixture', 'saga2_project');
+const p4UnityRoot = path.join(p4Root, 'saga2_unity');
+/** A mapping that resolves outside the configured root; used by the negative case. */
+const foreignUnityRoot = path.join(os.tmpdir(), 'cindy-meka-combat-gate-foreign', 'saga2_unity');
+
+const p4Info = `... clientName saga2-client\n... clientRoot ${p4Root}\n`;
 const p4Where =
-  '... depotFile //saga2/saga2_project/saga2_unity/...\n... path C:\\Workspace\\saga2\\saga2_project\\saga2_unity\\...\n';
-const p4Client = '... Root C:\\Workspace\\saga2\\saga2_project\n';
+  `... depotFile //saga2/saga2_project/saga2_unity/...\n` +
+  `... path ${path.join(p4UnityRoot, '...')}\n`;
+const p4Client = `... Root ${p4Root}\n`;
+const p4Protects = '... permMax write\n';
 
 function deps() {
   return {
-    p4: { p4RootPath: 'C:\\Workspace\\saga2\\saga2_project' },
+    p4: { p4RootPath: p4Root },
     execFile: vi
       .fn()
       .mockResolvedValueOnce({ stdout: p4Info, stderr: '' })
       .mockResolvedValueOnce({ stdout: p4Where, stderr: '' })
       .mockResolvedValueOnce({ stdout: p4Client, stderr: '' })
-      .mockResolvedValueOnce({ stdout: '... permMax write\n', stderr: '' }),
+      .mockResolvedValueOnce({ stdout: p4Protects, stderr: '' }),
     listProjectBindings: vi.fn(async () => ['server-1']),
     listInstances: vi.fn(async () => [
       {
@@ -53,6 +76,26 @@ describe('SAGA2 combat environment gate', () => {
     const receipt = formatCombatEnvironmentGateReceipt(gate);
     expect(receipt).toContain('unityCli');
     expect(receipt).toContain('unity_inspect');
+  });
+
+  it('blocks P4 when the client mapping resolves outside the configured workspace', async () => {
+    const input = deps();
+    input.execFile = vi
+      .fn()
+      .mockResolvedValueOnce({ stdout: p4Info, stderr: '' })
+      .mockResolvedValueOnce({
+        stdout:
+          `... depotFile //saga2/saga2_project/saga2_unity/...\n` +
+          `... path ${path.join(foreignUnityRoot, '...')}\n`,
+        stderr: '',
+      })
+      .mockResolvedValueOnce({ stdout: p4Client, stderr: '' })
+      .mockResolvedValueOnce({ stdout: p4Protects, stderr: '' });
+
+    const gate = await runCombatEnvironmentGate(input);
+    expect(gate.ready).toBe(false);
+    expect(gate.p4.status).toBe('blocked');
+    expect(gate.p4.evidence).toContain('does not match the configured SAGA2 workspace');
   });
 
   it('keeps exploration degraded only when a concrete dependency is unavailable', async () => {

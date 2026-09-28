@@ -41,10 +41,14 @@ icon=${icon//\\/\\\\}
 printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=Cindy (User)' \
   "Exec=\"$exec_path\" %U" "Icon=$icon" 'Terminal=false' \
   'Categories=Development;' "StartupWMClass=$app_id" \
-  'MimeType=x-scheme-handler/cindy;x-scheme-handler/xdt-maker;' > "$temp"
+  'MimeType=x-scheme-handler/cindy-meka;x-scheme-handler/xdmaker-meka;x-scheme-handler/xdt-maker;' > "$temp"
 desktop-file-validate "$temp"
 mv -T -- "$temp" "$dest"
 update-desktop-database "$apps_dir"
-xdg-mime default "$id" x-scheme-handler/cindy x-scheme-handler/xdt-maker
+# 深链 scheme 注册必须与身份正本一致(primaryScheme + legacySchemes),且**不得**注册上游
+# 独占的 `cindy://` —— 见 AGENTS.md「主深链为 cindy-meka://,内部兼容解析但不向 OS 注册上游
+# cindy://」。集合来源:`@cindy/maker-shared/brand-identity` 的 allDeepLinkSchemes(),
+# 由 scripts/__tests__/brand-identity-sync.test.mjs 做镜像断言。
+xdg-mime default "$id" x-scheme-handler/cindy-meka x-scheme-handler/xdmaker-meka x-scheme-handler/xdt-maker
 printf 'Menu entry and login links registered: %s\n' "$dest"
 printf 'CLI: use %s/launch (add a cindy symlink to your PATH if desired).\n' "$prefix"

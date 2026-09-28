@@ -5183,11 +5183,20 @@ describe('CodexAgent.startSession developerInstructions', () => {
       return undefined;
     });
 
+    // 路径必须按平台构造：实现侧用 `path.join(pluginPath, 'skills')` 拼 skill root,
+    // 硬编码 `C:\...\skills` 在 Linux 上会得到 `.../skills` 而必然不等
+    // （这就是本用例此前在 Linux 单测分片上红的原因）。这里与实现同构地构造期望值。
+    const skillPluginPath = path.join(
+      process.platform === 'win32' ? 'C:\\snapshots' : '/snapshots',
+      'revision-a',
+      'claude-plugin',
+    );
+
     const handle = await agent.startSession({
       sessionId: 'session-native-skill-root',
       model: 'gpt-5.4',
-      workingDir: 'C:\\repo',
-      nativeSkillPluginPath: 'C:\\snapshots\\revision-a\\claude-plugin',
+      workingDir: process.platform === 'win32' ? 'C:\\repo' : '/repo',
+      nativeSkillPluginPath: skillPluginPath,
       nativeSkillRevision: 'revision-a',
       vendorOptions: { codexNativeSubagentsDisabled: true },
     });
@@ -5199,7 +5208,7 @@ describe('CodexAgent.startSession developerInstructions', () => {
     );
     expect(host.request).toHaveBeenCalledWith(
       Method.SkillsExtraRootsSet,
-      { extraRoots: ['C:\\snapshots\\revision-a\\claude-plugin\\skills'] },
+      { extraRoots: [path.join(skillPluginPath, 'skills')] },
       expect.objectContaining({ timeoutMs: expect.any(Number) }),
     );
     const getHostOptions = (host.getHost.mock.calls as unknown[][])[0]?.[2];

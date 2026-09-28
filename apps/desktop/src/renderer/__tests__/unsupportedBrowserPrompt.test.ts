@@ -66,14 +66,22 @@ describe('unsupported browser prompt guard', () => {
     expect(unsupportedPromptCalls(source, 'fixture.ts')).toHaveLength(4);
   });
 
-  it('keeps renderer product code free of browser prompt calls', async () => {
-    const violations: string[] = [];
-    for (const file of await rendererSourceFiles(rendererRoot)) {
-      const source = await fs.readFile(file, 'utf8');
-      for (const line of unsupportedPromptCalls(source, file)) {
-        violations.push(`${path.relative(rendererRoot, file)}:${line}`);
+  // 本用例要遍历整个 renderer 源码树（数千个文件）并逐个解析 AST：在 Linux 上默认
+  // testTimeout 只有 5s（见 docs/dev-rules/desktop-unit-test-performance.md 的
+  // 「单测超时默认值」一节的实测口径），CI runner 上会稳定超时。自带更高预算，
+  // 与仓库里其它遍历型/冷转译型用例同一做法。
+  it(
+    'keeps renderer product code free of browser prompt calls',
+    async () => {
+      const violations: string[] = [];
+      for (const file of await rendererSourceFiles(rendererRoot)) {
+        const source = await fs.readFile(file, 'utf8');
+        for (const line of unsupportedPromptCalls(source, file)) {
+          violations.push(`${path.relative(rendererRoot, file)}:${line}`);
+        }
       }
-    }
-    expect(violations).toEqual([]);
-  });
+      expect(violations).toEqual([]);
+    },
+    60_000,
+  );
 });

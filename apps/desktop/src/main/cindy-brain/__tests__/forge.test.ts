@@ -418,7 +418,12 @@ describe('packGhostDir', () => {
       });
       expect(packed).toMatchObject({ ok: true });
       if (packed.ok) {
-        expect(packed.cindyPath).toBe(path.join(sourceDir, 'meka-p4-1.0.0.cindy'));
+        // 产物按设计落到**规范**源码目录(realpath 产物,而非可能是 8.3 短名/
+        // 别名的入参 `dir`,见 buildGhostPackage 的说明);夹具根目录取自
+        // os.tmpdir(),在 Windows 上可能是短名形态,所以两边都要规范化后再比。
+        const canonicalSourceDir = await fs.promises.realpath(sourceDir);
+        expect(packed.cindyPath).toBe(path.join(canonicalSourceDir, 'meka-p4-1.0.0.cindy'));
+        await expect(fs.promises.access(packed.cindyPath)).resolves.toBeUndefined();
       }
     } finally {
       await fs.promises.rm(mekaRoot, { recursive: true, force: true });

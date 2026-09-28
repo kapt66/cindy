@@ -289,6 +289,78 @@ describe('LocalServerRuntime', () => {
     await expect(fs.readFile(path.join(runDir, 'etc/data/tables/table.json'), 'utf8')).resolves.toBe('{"id":1}');
   });
 
+  /**
+   * 造一个「受管目录内的链接把配置目标引到受管目录之外」的夹具。
+   *
+   * 这是 `Runtime config target escapes the managed directory` 守卫真正要拦的场景:
+   * 合同里的相对路径本身完全合法,逃逸发生在 `fs.realpath` 解析受管目录内的
+   * mount-config 链接之后。夹具根取自 os.tmpdir(),在 Windows CI 上是 8.3 短名
+   * 形态,所以守卫必须两边都规范化,同时不得因此放过真正的逃逸。
+   */
+  async function escapingConfigFixture(label: string, steps: Array<Record<string, unknown>>) {
+    const userDataPath = await fs.mkdtemp(path.join(os.tmpdir(), `cindy-config-escape-${label}-`));
+    const configPath = path.join(userDataPath, 'selected-config');
+    await fs.mkdir(configPath);
+    // table.toml 只存在于受管目录之外;受管目录里的链接把它接进来。
+    await fs.writeFile(path.join(configPath, 'table.toml'), '[base]\nvalue = 1\n');
+    const files = [
+      { path: 'server.exe', data: Buffer.from('server') },
+      { path: 'etc/common/common.toml', data: Buffer.from('[base]\nvalue = 0\n') },
+    ];
+    const indexedFiles = files.map(file => ({ path: file.path, size: file.data.length, sha256: createHash('sha256').update(file.data).digest('hex') }));
+    const artifact = {
+      fileName: 'artifact-manifest', size: indexedFiles.reduce((total, file) => total + file.size, 0),
+      sha256: createHash('sha256').update(indexedFiles.slice().sort((a, b) => a.path.localeCompare(b.path)).map(file => `${file.path}\0${file.sha256}\0${file.size}`).join('\n')).digest('hex'),
+      expiresAt: Date.now() + 60_000, files: indexedFiles,
+    };
+    const contract = {
+      apiVersion: 1,
+      run: { programs: [{ id: 'server', executable: 'server.exe' }] },
+      config: { steps: [
+        // 受管目录内的 etc/data/tables 被接到受管目录之外的选中配置目录。
+        { type: 'mount-config', target: 'etc/data/tables', mode: 'junction' },
+        ...steps,
+      ] },
+    };
+    const supervisor = new LocalServerSupervisor({
+      userDataPath,
+      downloadArtifact: async (_instance, _task, relativePath) => new Response(files.find(file => file.path === relativePath)?.data as unknown as BodyInit),
+      getArtifact: async () => ({ taskId: 'task-1', artifact }),
+      getBuildMetadata: async () => ({ taskId: 'task-1', builtAt: Date.now() }),
+      getRuntimeContract: async () => contract,
+      selectConfigDirectory: async () => configPath,
+    });
+    await supervisor.configure('instance-1');
+    return { supervisor, configPath, userDataPath };
+  }
+
+  it('rejects a set-toml target that escapes the managed directory through a link inside it', async () => {
+    const { supervisor, configPath, userDataPath } = await escapingConfigFixture('toml', [
+      { type: 'set-toml', path: 'etc/data/tables/table.toml', key: 'base.value', value: 2 },
+    ]);
+    try {
+      await expect(supervisor.prepare('instance-1', 'task-1', 'server'))
+        .rejects.toThrow('Runtime config target escapes the managed directory');
+      // 拒绝必须发生在写入之前:受管目录之外的那份文件保持原样。
+      expect(await fs.readFile(path.join(configPath, 'table.toml'), 'utf8')).toBe('[base]\nvalue = 1\n');
+    } finally {
+      await fs.rm(userDataPath, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a replace-text target that escapes the managed directory through a link inside it', async () => {
+    const { supervisor, configPath, userDataPath } = await escapingConfigFixture('text', [
+      { type: 'replace-text', path: 'etc/data/tables', find: 'value', value: 'changed', recursive: true },
+    ]);
+    try {
+      await expect(supervisor.prepare('instance-1', 'task-1', 'server'))
+        .rejects.toThrow('Runtime config target escapes the managed directory');
+      expect(await fs.readFile(path.join(configPath, 'table.toml'), 'utf8')).toBe('[base]\nvalue = 1\n');
+    } finally {
+      await fs.rm(userDataPath, { recursive: true, force: true });
+    }
+  });
+
   it('persists template-declared directory and text inputs and applies text replacement', async () => {
     const userDataPath = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-config-inputs-test-'));
     const configPath = path.join(userDataPath, 'saga2_json');
@@ -361,7 +433,10 @@ describe('LocalServerRuntime', () => {
       configConfigured: true,
       configInputs: [
         { id: 'databaseAddress', value: 'localhost:13000' },
-        { id: 'dataTables', value: configPath },
+        // 目录配置按设计以 realpath 产物落库(见 LocalServerSupervisor.configure):
+        // 夹具根取自 os.tmpdir(),在 Windows 上可能是 8.3 短名/别名形态,
+        // 所以要拿规范路径来比,而不是原样拼出来的 configPath。
+        { id: 'dataTables', value: await fs.realpath(configPath) },
       ],
     });
   });

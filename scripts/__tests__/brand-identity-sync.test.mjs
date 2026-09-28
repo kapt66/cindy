@@ -246,3 +246,69 @@ test("linux 用户级安装脚本要求的可执行名 (known gap: 仍写死上�
     assert.notEqual(value, EXECUTABLE_NAME);
   }
 });
+
+/**
+ * 系统注册的深链 scheme 集合 = `primaryScheme` + `legacySchemes`；
+ * `acceptedUnregisteredSchemes`（上游 `cindy://`）**只解析、不注册** —— 该不变量同时写在
+ * `AGENTS.md`「主深链为 cindy-meka://，内部兼容解析但不向 OS 注册上游 cindy://」
+ * 与 `packages/maker-shared/src/brandIdentity.ts` 的字段注释里。
+ */
+const PRIMARY_SCHEME = extractLiteral(
+  brandIdentitySource,
+  /^\s*primaryScheme:\s*'([^']+)'/m,
+  "brandIdentity.ts primaryScheme",
+);
+const LEGACY_SCHEMES = [
+  ...extractLiteral(
+    brandIdentitySource,
+    /^\s*legacySchemes:\s*Object\.freeze\(\[([^\]]*)\]\)/m,
+    "brandIdentity.ts legacySchemes",
+  ).matchAll(/'([^']+)'/g),
+].map((match) => match[1]);
+const UNREGISTERED_SCHEMES = [
+  ...extractLiteral(
+    brandIdentitySource,
+    /^\s*acceptedUnregisteredSchemes:\s*Object\.freeze\(\[([^\]]*)\]\)/m,
+    "brandIdentity.ts acceptedUnregisteredSchemes",
+  ).matchAll(/'([^']+)'/g),
+].map((match) => match[1]);
+const REGISTERED_SCHEME_HANDLERS = [PRIMARY_SCHEME, ...LEGACY_SCHEMES].map(
+  (scheme) => `x-scheme-handler/${scheme}`,
+);
+
+test("linux register-desktop.sh 注册的深链 scheme 镜像 brandIdentity 的 primaryScheme + legacySchemes", () => {
+  const source = readSource("apps/desktop/resources/linux/register-desktop.sh");
+
+  // ① desktop entry 声明的 MimeType
+  const mimeType = extractLiteral(
+    source,
+    /'MimeType=([^'\n]+)'/,
+    "register-desktop.sh desktop entry MimeType",
+  );
+  assert.deepEqual(
+    mimeType.split(";").filter(Boolean),
+    REGISTERED_SCHEME_HANDLERS,
+    "register-desktop.sh 的 MimeType 必须逐个等于 primaryScheme + legacySchemes（顺序一致）",
+  );
+
+  // ② 真正交给 xdg-mime 的注册实参
+  const xdgArgs = extractLiteral(
+    source,
+    /xdg-mime default "\$id" ([^\n]+)\n/,
+    "register-desktop.sh xdg-mime default 实参",
+  );
+  assert.deepEqual(
+    xdgArgs.trim().split(/\s+/),
+    REGISTERED_SCHEME_HANDLERS,
+    "register-desktop.sh 的 xdg-mime default 实参必须逐个等于 primaryScheme + legacySchemes",
+  );
+
+  // ③ 负向：上游独占 scheme 只能解析、不得注册（抢占同机 Cindy 的系统协议所有权）
+  for (const scheme of UNREGISTERED_SCHEMES) {
+    const handler = `x-scheme-handler/${scheme}`;
+    assert.ok(
+      !mimeType.split(";").includes(handler) && !xdgArgs.split(/\s+/).includes(handler),
+      `register-desktop.sh 不得注册 ${handler}（acceptedUnregisteredSchemes 只解析不注册）`,
+    );
+  }
+});

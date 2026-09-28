@@ -691,6 +691,19 @@ export class LocalServerSupervisor {
     return JSON.stringify({ values: [...values.entries()].sort(([left], [right]) => left.localeCompare(right)), config: configSpec ?? null });
   }
 
+  /**
+   * 受管运行目录的规范形态(realpath 产物)。
+   *
+   * 越界判定必须两边都规范化:Windows 上同一个目录可以经 8.3 短名
+   * (`C:\Users\RUNNER~1\...`)、大小写别名或 junction 到达,而 `fs.realpath`
+   * 一律回答长名规范形态。若拿「目标 realpath 产物」去比「入参原样拼出的根」,
+   * 受管目录内的合法目标会被误判成越界。规范化根目录不放松任何判定——比较
+   * 的仍是目标物理位置是否落在受管目录物理位置内。
+   */
+  private async canonicalManagedRoot(runDir: string): Promise<string> {
+    return fs.realpath(path.resolve(runDir));
+  }
+
   private async ensureConfigApplied(run: InternalRun, configSpec: Record<string, unknown> | undefined, configRoot: string, values: Map<string, string>): Promise<void> {
     const prepared = this.preparedDirs.get(`${run.instanceId}:${run.taskId}`);
     const fingerprint = this.configFingerprint(values, configSpec);
@@ -743,7 +756,7 @@ export class LocalServerSupervisor {
         if (!['string', 'number', 'boolean'].includes(typeof stepValue)) throw new Error(`Invalid runtime contract config.steps[${index}].value`);
         const targetPath = path.resolve(run.runDir, target);
         const realTarget = await fs.realpath(targetPath);
-        const resolvedRunDir = path.resolve(run.runDir);
+        const resolvedRunDir = await this.canonicalManagedRoot(run.runDir);
         if (!realTarget.startsWith(`${resolvedRunDir}${path.sep}`)) throw new Error('Runtime config target escapes the managed directory');
         const stat = await fs.stat(realTarget);
         if (!stat.isFile() || stat.size > MAX_CONFIG_FILE_BYTES) throw new Error('Runtime TOML config file is invalid');
@@ -784,7 +797,7 @@ export class LocalServerSupervisor {
   }
 
   private async replaceTextInTarget(runDir: string, target: string, find: string, replacement: string, recursive: boolean): Promise<void> {
-    const root = path.resolve(runDir);
+    const root = await this.canonicalManagedRoot(runDir);
     const targetPath = path.resolve(runDir, target);
     const realTarget = await fs.realpath(targetPath);
     if (realTarget !== root && !realTarget.startsWith(`${root}${path.sep}`)) throw new Error('Runtime config target escapes the managed directory');

@@ -119,7 +119,7 @@ it('rejects a simultaneous normalized-name conflict, removes only the loser chec
   const selections = ['Ada', 'Ａｄａ'].map((name, index) => ({ requestId: `name-race-request-${index}`, previewId: preview.id, name, entryIds: ['env'], takeover: false }));
   let settled = false;
   const pending = Promise.allSettled(selections.map(selection => startCompanionImport(selection, 'fixture'))).then(results => { settled = true; return results; });
-  await vi.waitFor(() => expect(createBotProfile).toHaveBeenCalledTimes(2));
+  await vi.waitFor(() => expect(createBotProfile).toHaveBeenCalledTimes(2), { timeout: 10_000 });
   // A durable checkpoint is not yet a created companion; do not acknowledge it.
   await new Promise(resolve => setTimeout(resolve, 60));
   expect(settled).toBe(false);
@@ -133,7 +133,7 @@ it('rejects a simultaneous normalized-name conflict, removes only the loser chec
   expect(h.secretValues.has(companionEnvironmentKey(botId))).toBe(false);
   expect(await h.store.read(h.root, botId, () => {})).toBeUndefined();
   const winner = selections[1 - rejectedIndex]!;
-  await vi.waitFor(async () => expect((await getCompanionImportResult(winner.requestId))?.status).toBe('complete'));
+  await vi.waitFor(async () => expect((await getCompanionImportResult(winner.requestId))?.status).toBe('complete'), { timeout: 10_000 });
   expect(h.secretValues.size).toBe(1);
   const receiptText = await fs.readFile(path.join(h.root, 'companion-imports', `${rejected.requestId}.json`), 'utf8');
   expect(receiptText).not.toContain('fixture-private-key');
@@ -141,7 +141,7 @@ it('rejects a simultaneous normalized-name conflict, removes only the loser chec
   await expect(getCompanionImportResult(rejected.requestId)).rejects.toThrow('IMPORT_NAME_EXISTS');
   await expect(startCompanionImport({ ...rejected, previewId: 'expired-preview' }, 'other-controller')).rejects.toThrow('IMPORT_NAME_EXISTS');
   await startCompanionImport({ ...rejected, name: 'Grace', requestId: 'name-race-renamed-request' }, 'fixture');
-  await vi.waitFor(async () => expect((await getCompanionImportResult('name-race-renamed-request'))?.status).toBe('complete'));
+  await vi.waitFor(async () => expect((await getCompanionImportResult('name-race-renamed-request'))?.status).toBe('complete'), { timeout: 10_000 });
   expect(profiles.size).toBe(2);
   expect(h.secretValues.size).toBe(2);
   expect(h.pause).not.toHaveBeenCalled();
@@ -173,7 +173,7 @@ it('retains a committed profile and credentials when a create conflict acknowled
   const preview = await previewCompanionImport(source!.id, 'fixture');
   const selection = { requestId: 'name-committed-acknowledgement', previewId: preview.id, name: 'Ada', entryIds: ['task'], takeover: false };
   await startCompanionImport(selection, 'fixture');
-  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'));
+  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'), { timeout: 10_000 });
   expect(h.created).toBe(true);
   expect(h.secretValues.size).toBe(1);
   expect(await h.store.read(h.root, h.botId, () => {})).toBeDefined();
@@ -188,7 +188,7 @@ it('bounds background handover reconciliation and does not restart it on status 
   const preview = await previewCompanionImport(source!.id, 'fixture');
   const selection = { requestId: 'bounded-request-12345', previewId: preview.id, name: 'Ada', entryIds: ['task'], takeover: true };
   await startCompanionImport(selection, 'fixture');
-  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('needs-attention'));
+  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('needs-attention'), { timeout: 10_000 });
   expect(h.pause).toHaveBeenCalledTimes(3);
   expect(verifyImportedAutomation).toHaveBeenCalledTimes(1);
   await recoverCompanionImports();
@@ -198,7 +198,7 @@ it('bounds background handover reconciliation and does not restart it on status 
   // A user retry can finish the original handover once its source is ready.
   h.pause.mockImplementation(() => {});
   await startCompanionImport(selection, 'fixture');
-  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'));
+  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'), { timeout: 10_000 });
   expect(verifyImportedAutomation).toHaveBeenCalledTimes(1);
 });
 
@@ -208,7 +208,7 @@ it.each(['handback', 'cleanup staging'])('retains paused routines and credential
   const preview = await previewCompanionImport(source!.id, 'fixture');
   const selection = { requestId: 'handback-request-12345', previewId: preview.id, name: 'Ada', entryIds: ['task'], takeover: true };
   const accepted = await startCompanionImport(selection, 'fixture');
-  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'));
+  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'), { timeout: 10_000 });
   expect(h.sourceEnabled).toBe(false);
   const routines = structuredClone(h.routines);
   expect(routines).toHaveLength(1);
@@ -246,7 +246,7 @@ it('does not resume source tasks that were imported paused or without takeover',
   const preview = await previewCompanionImport(source!.id, 'fixture');
   const selection = { requestId: 'paused-request-12345', previewId: preview.id, name: 'Ada', entryIds: ['task'], takeover: false };
   const accepted = await startCompanionImport(selection, 'fixture');
-  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'));
+  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'), { timeout: 10_000 });
   await cancelCompanionImportsForDeletion(accepted.botId);
   expect(h.pause).not.toHaveBeenCalled();
 });
@@ -265,7 +265,7 @@ it.each(['', ' ', 'invalid-image'])('rejects avatar %j before persisting credent
   expect(await fs.readdir(h.root)).toEqual([]);
   // The omitted-avatar path still uses ordinary companion creation defaults.
   await startCompanionImport(selection, 'fixture');
-  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'));
+  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'), { timeout: 10_000 });
   expect(h.created).toBe(true);
 });
 
@@ -302,7 +302,7 @@ it('masks all known credentials in discovery and preview without choosing confli
   // A later explicit selection still imports the original usable credential.
   const requestId = 'preview-choice-12345';
   const result = await startCompanionImport({ requestId, previewId: preview.id, name: 'Ada', entryIds: ['work'], takeover: false }, 'mobile-controller');
-  await vi.waitFor(async () => expect((await getCompanionImportResult(requestId))?.status).toBe('complete'));
+  await vi.waitFor(async () => expect((await getCompanionImportResult(requestId))?.status).toBe('complete'), { timeout: 10_000 });
   expect((await h.store.read(h.root, result.botId, () => {}))?.env).toEqual({ OPENAI_API_KEY: secrets[0] });
 });
 
@@ -377,7 +377,7 @@ it.each([false, true])('redacts all known credentials from profile/memory copies
   const preview = await previewCompanionImport(source!.id, 'fixture');
   const selection = { requestId: 'fixture-request-12345', previewId: preview.id, name: 'Ada', entryIds: h.snapshot.items.filter(item => item.view.selected).map(item => item.view.id), takeover: false };
   const result = await startCompanionImport(selection, 'fixture');
-  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'));
+  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'), { timeout: 10_000 });
   const profile = h.writeProfile.mock.calls[0]![2];
   const publicText = JSON.stringify([profile, h.importDocument.mock.calls]);
   for (const secret of secrets) expect(publicText).not.toContain(secret);
@@ -396,7 +396,13 @@ it.each([false, true])('redacts all known credentials from profile/memory copies
   expect(stored.env).not.toHaveProperty('EXCLUDED');
   expect(JSON.stringify(stored)).not.toContain('fake-absent-from-selected-content');
   expect(stored.documents).toEqual(Object.fromEntries(documents.map(item => [item.view.id, item.text])));
-  expect(stored.pendingImport).toBeUndefined();
+  // 回执先落成 complete,宿主随后才删检查点:两者之间有一个可观测窗口(慢机器/
+  // 高并发下能观察到)。这里等最终状态,断言本身不放宽——检查点必须被删掉。
+  await vi.waitFor(async () => {
+    const current = await h.store.read(h.root, result.botId, () => {});
+    expect(current).toBeDefined();
+    expect(current?.pendingImport).toBeUndefined();
+  }, { timeout: 10_000 });
 });
 
 it('persists redacted routine fields and retains identical publication masks across a handover retry after restart', async () => {
@@ -414,7 +420,7 @@ it('persists redacted routine fields and retains identical publication masks acr
   const preview = await previewCompanionImport(source!.id, 'fixture');
   const selection = { requestId: 'fixture-routine-12345', previewId: preview.id, name: 'Ada', entryIds: ['task', 'active'], takeover: true };
   const result = await startCompanionImport(selection, 'fixture');
-  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('needs-attention'));
+  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('needs-attention'), { timeout: 10_000 });
   expect(h.routines).toHaveLength(1);
   const saved = structuredClone(h.routines[0]!);
   for (const secret of [selectedSecret, excludedSecret]) expect(JSON.stringify(saved)).not.toContain(secret);
@@ -432,7 +438,7 @@ it('persists redacted routine fields and retains identical publication masks acr
   h.verified = true;
   // A different controller cannot access the original in-memory preview.
   await startCompanionImport(selection, 'after-restart');
-  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'));
+  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'), { timeout: 10_000 });
   expect(h.routines).toHaveLength(1);
   expect(h.routines[0]).toMatchObject({ name: saved.name, prompt: saved.prompt, triggers: saved.triggers, enabled: true });
   expect(h.pause).toHaveBeenCalledExactlyOnceWith(false);
@@ -465,7 +471,7 @@ it.each([false, true])('publishes masked skills and runs original scripts/resour
   const preview = await previewCompanionImport(source!.id, 'fixture');
   const requestId = 'fixture-skill-12345';
   const result = await startCompanionImport({ requestId, previewId: preview.id, name: 'Ada', entryIds: ['skill', 'plain', 'native', ...(nativeOnly ? [] : ['env'])], takeover: false }, 'fixture');
-  await vi.waitFor(async () => expect((await getCompanionImportResult(requestId))?.status).toBe('complete'));
+  await vi.waitFor(async () => expect((await getCompanionImportResult(requestId))?.status).toBe('complete'), { timeout: 10_000 });
   const skillRoot = path.join(h.root, 'bots', result.botId, 'skills');
   for (const file of files) {
     const published = await fs.readFile(path.join(skillRoot, 'report', file.name));
@@ -479,7 +485,12 @@ it.each([false, true])('publishes masked skills and runs original scripts/resour
   expect(await fs.readFile(path.join(skillRoot, 'plain', 'SKILL.md'))).toEqual(plain);
   await expect(fs.access(path.join(skillRoot, 'excluded'))).rejects.toThrow();
   const stored = (await h.store.read(h.root, result.botId, () => {}))!;
-  expect(stored.pendingImport).toBeUndefined();
+  // 同上:等检查点真的被删掉,而不是只等回执落成 complete。
+  await vi.waitFor(async () => {
+    const current = await h.store.read(h.root, result.botId, () => {});
+    expect(current).toBeDefined();
+    expect(current?.pendingImport).toBeUndefined();
+  }, { timeout: 10_000 });
   if (nativeOnly) expect(stored.env).toEqual({});
   expect(stored.env).not.toHaveProperty('DISCARDED');
   expect(h.writeProfile.mock.calls[0]![2].config.mcpServers).toContain('companion_connections');
@@ -516,7 +527,7 @@ it('does not reintroduce a credential-bearing skill slug in the generated resour
   const preview = await previewCompanionImport(source!.id, 'fixture');
   const requestId = 'fixture-slug-12345';
   const result = await startCompanionImport({ requestId, previewId: preview.id, name: 'Ada', entryIds: ['skill', 'env'], takeover: false }, 'fixture');
-  await vi.waitFor(async () => expect((await getCompanionImportResult(requestId))?.status).toBe('complete'));
+  await vi.waitFor(async () => expect((await getCompanionImportResult(requestId))?.status).toBe('complete'), { timeout: 10_000 });
   const directory = path.join(h.root, 'bots', result.botId, 'skills');
   const [slug] = await fs.readdir(directory);
   expect(slug).toMatch(/^import-[a-f0-9]+$/);
@@ -534,7 +545,7 @@ it.each(['absolute', 'relative'])('resolves a selected %s MCP cwd after environm
   const preview = await previewCompanionImport(source!.id, 'fixture');
   const requestId = 'fixture-cwd-123456';
   const result = await startCompanionImport({ requestId, previewId: preview.id, name: 'Ada', entryIds: ['cwd', 'mcp'], takeover: false }, 'fixture');
-  await vi.waitFor(async () => expect((await getCompanionImportResult(requestId))?.status).toBe('complete'));
+  await vi.waitFor(async () => expect((await getCompanionImportResult(requestId))?.status).toBe('complete'), { timeout: 10_000 });
   const stored = (await h.store.read(h.root, result.botId, () => {}))!;
   expect(stored.mcp[0]?.cwd).toBe(expected);
   expect(stored.env.MCP_DIR).toBe(value);
@@ -555,7 +566,7 @@ it('joins an in-flight credential write before deletion and durably blocks old-p
     await write(...args);
   });
   const accepted = await startCompanionImport(selection, 'fixture');
-  await vi.waitFor(() => expect(writing).toBe(true));
+  await vi.waitFor(() => expect(writing).toBe(true), { timeout: 10_000 });
   expect(h.created).toBe(true);
   let deleted = false;
   // The real lifecycle service holds this same lock around preparation/DB deletion/cleanup.
@@ -610,7 +621,7 @@ it.each(['scan', 'same-request'] as const)('recovers an indexed checkpoint befor
   });
   const pending = startCompanionImport(selection, 'fixture').then(value => { acknowledged = true; return value; }).catch(error => error);
   try {
-    await vi.waitFor(() => expect(checkpointWritten).toBe(true));
+    await vi.waitFor(() => expect(checkpointWritten).toBe(true), { timeout: 10_000 });
     // Several acknowledgement polling ticks must not accept the index alone.
     await new Promise(resolve => setTimeout(resolve, 100));
     expect(acknowledged).toBe(false); expect(h.created).toBe(false);
@@ -623,7 +634,7 @@ it.each(['scan', 'same-request'] as const)('recovers an indexed checkpoint befor
   // A new controller cannot use the old in-memory preview; both paths use the checkpoint.
   if (recovery === 'scan') await recoverCompanionImports();
   else await startCompanionImport(selection, 'restarted-controller');
-  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'));
+  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'), { timeout: 10_000 });
   expect(h.routines).toHaveLength(1); expect(h.routines[0]?.enabled).toBe(true);
   expect(h.pause).toHaveBeenCalledExactlyOnceWith(false);
   expect((await h.store.read(h.root, botId, () => {}))?.env).toEqual({ SOURCE_KEY: 'fake-selected-credential' });
@@ -635,7 +646,7 @@ it('persists a failed handover, blocks use, and unlocks the same routine only af
   const preview = await previewCompanionImport(source!.id, 'fixture');
   const selection = { requestId: 'fixture-request-12345', previewId: preview.id, name: 'Ada', entryIds: ['task'], takeover: true };
   await startCompanionImport(selection, 'fixture');
-  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('needs-attention'));
+  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('needs-attention'), { timeout: 10_000 });
   const routine = h.routines[0]!;
   expect(routine.enabled).toBe(false); expect(h.sourceEnabled).toBe(true); expect(h.pause).not.toHaveBeenCalled();
   await expect(assertImportedAutomationReady(h.root, routine.botId, routine.id, () => {})).rejects.toThrow('AUTOMATION_HANDOVER_REQUIRED');
@@ -644,7 +655,7 @@ it('persists a failed handover, blocks use, and unlocks the same routine only af
   await expect(ensureImportedAutomationReady(h.root, routine.botId, routine.id, () => {}, { input: { ...routine, prompt: 'Different operation', enabled: true }, expectedRevision: routine.revision })).rejects.toThrow('TARGET_AUTOMATION_CHANGED');
   expect(h.pause).not.toHaveBeenCalled();
   await ensureImportedAutomationReady(h.root, routine.botId, routine.id, () => {}, { input: { ...routine, enabled: true }, expectedRevision: routine.revision });
-  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'));
+  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'), { timeout: 10_000 });
   expect(h.routines).toHaveLength(1); expect(h.routines[0]?.enabled).toBe(true);
   expect(h.pause).toHaveBeenCalledExactlyOnceWith(false);
   await expect(assertImportedAutomationReady(h.root, routine.botId, routine.id, () => {})).resolves.toBeUndefined();
@@ -670,7 +681,7 @@ it('persists a failed handover, blocks use, and unlocks the same routine only af
   await fs.writeFile(receiptFile, JSON.stringify(receipt));
   h.routines[0]!.name = 'Edited after takeover';
   await getCompanionImportResult(selection.requestId);
-  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'));
+  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'), { timeout: 10_000 });
   expect(h.routines[0]?.name).toBe('Edited after takeover');
   expect(h.pause).toHaveBeenCalledTimes(1);
 });
@@ -683,7 +694,7 @@ it.each([false, true])('keeps a copied routine paused and only allows future ena
   const preview = await previewCompanionImport(source!.id, 'fixture');
   const selection = { requestId: 'fixture-request-12345', previewId: preview.id, name: 'Ada', entryIds: ['task'], takeover: false };
   await startCompanionImport(selection, 'fixture');
-  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'));
+  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'), { timeout: 10_000 });
   const routine = h.routines[0]!;
   expect(routine.enabled).toBe(false); expect(h.pause).not.toHaveBeenCalled();
   const guard = assertImportedAutomationReady(h.root, routine.botId, routine.id, () => {});
@@ -699,7 +710,7 @@ it('keeps the source paused and execution deferred when the ready marker write f
   const preview = await previewCompanionImport(source!.id, 'fixture');
   const selection = { requestId: 'fixture-request-12345', previewId: preview.id, name: 'Ada', entryIds: ['task'], takeover: true };
   await startCompanionImport(selection, 'fixture');
-  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.checks.some(check => check.message === 'TARGET_HANDOVER_UNCERTAIN')).toBe(true));
+  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.checks.some(check => check.message === 'TARGET_HANDOVER_UNCERTAIN')).toBe(true), { timeout: 10_000 });
   const routine = h.routines[0]!;
   expect(routine.enabled).toBe(true); expect(h.sourceEnabled).toBe(false);
   expect(await prepareImportedAutomation(h.root, routine, 'run', new AbortController().signal, () => {})).toMatchObject({ deferred: true });
@@ -735,7 +746,7 @@ it.each(['count', 'entrypoint', 'projected-entrypoint', 'captured-entrypoint'])(
   // The same preview remains editable; existing INVALID_SELECTION handling clears intent.
   const entryIds = mode === 'count' ? ['skill-0'] : [];
   await startCompanionImport({ ...selection, requestId: `${selection.requestId}-retry`, entryIds }, 'fixture');
-  await vi.waitFor(async () => expect((await getCompanionImportResult(`${selection.requestId}-retry`))?.status).toBe('complete'));
+  await vi.waitFor(async () => expect((await getCompanionImportResult(`${selection.requestId}-retry`))?.status).toBe('complete'), { timeout: 10_000 });
 });
 
 it.each(['oversized', 'symlink'])('rejects a lazily selected %s resource before a receipt, then imports after deselection', async mode => {
@@ -759,7 +770,7 @@ it.each(['oversized', 'symlink'])('rejects a lazily selected %s resource before 
   expect(await getCompanionImportResult(selection.requestId)).toBeUndefined();
   await expect(fs.access(path.join(h.root, 'companion-imports'))).rejects.toThrow();
   await startCompanionImport({ ...selection, requestId: `${selection.requestId}-retry`, entryIds: [] }, 'fixture');
-  await vi.waitFor(async () => expect((await getCompanionImportResult(`${selection.requestId}-retry`))?.status).toBe('complete'));
+  await vi.waitFor(async () => expect((await getCompanionImportResult(`${selection.requestId}-retry`))?.status).toBe('complete'), { timeout: 10_000 });
 });
 
 it('replaces previous previews for the same controller and keeps the latest usable', async () => {
@@ -770,7 +781,7 @@ it('replaces previous previews for the same controller and keeps the latest usab
   const selection = { requestId: 'fixture-preview-replace', previewId: first.id, name: 'Ada', entryIds: [], takeover: false };
   await expect(startCompanionImport(selection, 'fixture')).rejects.toThrow('PREVIEW_EXPIRED');
   await startCompanionImport({ ...selection, previewId: last.id }, 'fixture');
-  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'));
+  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'), { timeout: 10_000 });
 });
 
 it.each(['count', 'bytes'])('bounds retained previews across controllers by %s', async mode => {
@@ -787,7 +798,7 @@ it.each(['count', 'bytes'])('bounds retained previews across controllers by %s',
   const selection = { requestId: `fixture-preview-limit-${mode}`, previewId: ids[0]!, name: 'Ada', entryIds: [], takeover: false };
   await expect(startCompanionImport(selection, 'fixture-0')).rejects.toThrow('PREVIEW_EXPIRED');
   await startCompanionImport({ ...selection, previewId: ids.at(-1)! }, `fixture-${ids.length - 1}`);
-  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'));
+  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'), { timeout: 10_000 });
 });
 
 it.each(['readback', 'binding'] as const)('cleans an unbound first checkpoint after %s failure using the durable request index', async failure => {

@@ -62,7 +62,9 @@ describe('revealSlot · 资格审与输入校验', () => {
       });
       const result = slot.handleRequest('reveal-ghost', { path: root });
       expect(result).toEqual({ ok: true });
-      expect(deps.showItemInFolder).toHaveBeenCalledWith(root);
+      // 夹具根目录取自 os.tmpdir(),Windows 上可能是 8.3 短名或大小写别名;
+      // 槽位按设计先 realpath 再定位,所以比较的必须是规范形态(见下一条测试)。
+      expect(deps.showItemInFolder).toHaveBeenCalledWith(await fs.realpath(root));
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
@@ -91,7 +93,9 @@ describe('revealSlot · 本机文件定位', () => {
       await fs.writeFile(target, 'ok');
       const { slot, deps } = makeSlot();
       expect(slot.handleRequest('reveal-ghost', { path: target })).toEqual({ ok: true });
-      expect(deps.showItemInFolder).toHaveBeenCalledWith(target);
+      // 请求路径原样送入(Windows 短名/别名形态也算合法输入),
+      // 断言的是槽位交给系统 API 的规范路径。
+      expect(deps.showItemInFolder).toHaveBeenCalledWith(await fs.realpath(target));
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

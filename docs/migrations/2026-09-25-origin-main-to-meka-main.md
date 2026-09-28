@@ -509,6 +509,52 @@ Meka 通过 `vendorOptions.codexNativeSubagentsDisabled === true` 要求 Host �
 28. **开发目录装入尚未做真实 Electron 端到端**：需实机走「选目录 → 自有 review → 上游权限确认 → 首装成功 →
     `meka-dev-*` 落位 → 卡片 DEV 角标」一遍。⇒ 见 §6.3 的未验证项。
 
+### 5.3 推送后 `client-ci` 红点（**存量**）的修复
+
+**起因**：推送后按 `AGENTS.md`「推送后要确认 `client-ci` 通过」核查，确认 **`client-ci` 是红的**，
+但用**逐条注解对照**证明**推送前**的分支头 `1b4f6a7c91`（该分支自 2026-09-21 起连续 5 次推送）**就是同一批失败**
+⇒ 属**存量**、非本轮合并引入。用户裁决「全部修」（本轮授权），故一并修复并再推送。
+
+**当时 `client-ci` 的分工**：`verify-checks` ✅ 与 `Desktop Git integration` ✅ **通过**
+（typecheck desktop/mobile、`db:validate`、i18n、品牌术语、术语表、设计清单、端点、scheduler guard、
+mobile scope guard 在 CI 上全部通过）；红的只有 **4 个单元测试分片**与汇总作业 `verify`。
+
+| # | 症状（CI 注解 / 作业） | 根因（**同一批：POSIX 语义 × Windows 字面量 / 8.3 短名 / 时序假设**） | 修法与证据 |
+| --- | --- | --- | --- |
+| 1 | Linux 1/2：`expected [ 'default', …(3) ] to deeply equal [ 'default', …(4) ]`（`linuxInstallation.test.ts`） | `apps/desktop/resources/linux/register-desktop.sh` 只注册 `x-scheme-handler/cindy`（**上游 scheme**）+ `xdt-maker`，漏了 Meka 的 `cindy-meka` / `xdmaker-meka` | **产品缺陷**：改为身份正本的 `allDeepLinkSchemes()`（`cindy-meka` / `xdmaker-meka` / `xdt-maker`），并**不再注册上游 `cindy://`**（AGENTS.md 的不变量）。**真实 Linux（WSL `fedora44`）before/after 实证**：修复前 2 个 handler 且含上游 scheme，修复后 3 个 Meka scheme、零上游。新增 `brand-identity-sync.test.mjs` 镜像断言（**11/11**，含 `xdg-mime` 实参与 `MimeType` 双向 + 负向「不得注册 `acceptedUnregisteredSchemes`」）；**变异复核**：把脚本改回旧形态 ⇒ 该断言立刻红，还原后逐字节一致 |
+| 2 | Linux 1/2：`Error: Test timed out in 5000ms`（`unsupportedBrowserPrompt.test.ts:69`） | 该用例要遍历 renderer 源码树并逐个解析 AST；Linux 默认 `testTimeout` 只有 5s（见 `desktop-unit-test-performance.md`），**本机实测该用例自身耗时 4.44s** | 按仓库既有做法给该用例**显式 60s 预算**（不改断言）。Windows 实跑 2/2 |
+| 3 | Linux 2/2：`expected "spy" to be called with arguments: [ 'skills/extraRoots/set', …(2) ]` | `codex/index.test.ts` 的 Skill 根注册用例把 `C:\snapshots\revision-a\claude-plugin` 写死，而生产用 `path.join(pluginPath, 'skills')` ⇒ POSIX 上得到 `.../skills` 与期望的 `\skills` 不等 | 夹具与期望**与生产同构**地用 `path.join` 按平台构造。**Linux 侧实算**：`/snapshots/revision-a/claude-plugin/skills` 两侧一致；Windows `codex/index.test.ts` **934/934** |
+| 4 | Linux 2/2：`expected 0 to be greater than 0`（`mekaDefaultRole.test.ts:413`） | 夹具写死 `path: 'C:\Workspace\demo'`，而生产 `localDb/ipc/mekaRoles.ts:185` 是 `if (!configuredPath \|\| !path.isAbsolute(configuredPath)) return null;` ⇒ POSIX 上不读项目配置、调用数恒为 0 | 夹具改为 `path.resolve('workspace-demo')`（两平台都绝对）。**真实 Linux（整棵 `apps/desktop/src` 镜像 + Linux Node 22 + vitest 3.2.7）**：修复前 1 红（与 CI 注解逐字吻合）→ 修复后 **7/7**；**变异复核**：把守卫改成「绝对路径也返回 null」⇒ 同一条断言立刻红，还原后与仓库逐字节一致 |
+| 5 | Linux 1/2：`Error: P4 root must be an existing absolute directory`、`expected false to be true`（`meka-settings` / `combatEnvironmentGate`） | 同类：夹具硬编码 `C:\P4` / `C:\Workspace\saga2\saga2_project`；POSIX 上 `path.isAbsolute('C:\P4') === false`，且 `path.join` 会产出混合分隔符 `C:\...\saga2_project/saga2_unity` ⇒ 校验/映射判定走偏 | 改为**自建真实 tmp 夹具**：`mkdtempSync(os.tmpdir())` 建真实 P4 根与子目录、`where` 映射也走 `path.join`；并**删掉 `statDirectory` / `readdir` 两个 stub**，让生产校验与子目录发现**真的被测**。**真实 Linux 8/8**、Windows 8/8；**变异 3/3 全被抓**（去掉校验守卫 / 去掉映射校验 / `ready:true`） |
+| 6 | Windows 1/2、2/2：`Error: Runtime config target escapes the managed directory`、`expected 'C:\Users\runneradmin\…' to be 'C:\Users\RUNNER~1\…'`、`expected "spy" to be called with arguments: [ Array(1) ]` | **Windows 8.3 短名 vs `realpath` 长名**：GitHub runner 的 `os.tmpdir()` 是 `C:\Users\RUNNER~1\…`，而 `fs.realpath*` 一律回长名 ⇒ 严格 `startsWith` / `toBe` 全部假失败 | ① **生产代码**：`cindy-brain/localServerSupervisor.ts` 的越界守卫加 `canonicalManagedRoot()`（两侧都规范化；`:747` 仍要求严格子路径、`:790` 仍允许等于根）—— **未削弱守卫**，并**新增 2 条 junction 反例**（受管目录内的链接指向目录外 ⇒ 必须拒绝且外部文件字节不变），变异 `if (false && …)` ⇒ 两条都红；② 测试侧：`revealSlot.test.ts`、`forge.test.ts`、`localServerRuntime.test.ts` 的期望改为**规范化后严格相等**（`forge` 还**加强**了一条 `access()` 证明真实落盘）。取证：本机造**真实 8.3 短名**（含最接近 CI 的中段短名）注入 `TEMP`，4 种形态实跑 **146 passed / 2 skipped** 全绿 |
+| 7 | Windows 分片（本地全量复现，CI 注解未展示全）：`expected { selection: { …(5) }, …(1) } to be undefined`（`bot-import/host.test.ts`） | **不是路径问题**：持久回执在共享 `transferCompanion` 内先写成 `complete`，宿主随后才删检查点（`bot-import/host.ts:508`）；埋点实测该窗口 **30–160 ms**，而 `vi.waitFor` 默认 50 ms 轮询 ⇒ 周期性先观测到 `complete` 就断言 | 改为用 `vi.waitFor` 等**最终状态**（要求记录存在 **且** 检查点已删，超时 10s）—— 若生产不再删检查点照样红。同条件负载对照：before 3 次失败 1 次（正是 CI 那条消息）→ after 4/4 全绿 |
+
+**归因结论**：以上 7 条**全部是存量**（推送前 `1b4f6a7c91` 的注解里就有同样断言）。
+反向证据：**我本轮修的 `packagedResourceDeclarations` 让旧运行里的 `expected [ Array(1) ] to deeply equal []` 从我的运行中消失** ——
+即「修好的会消失、没修的照旧」，正是存量判定的正向对照。
+
+**本轮新发现、但按范围只登记的同类隐患**（均有实测证据）：
+
+1. `meka-projects/__tests__/combatWorkflowPolicy.test.ts:70` 的
+   `path.resolve('C:/Workspace/saga2/saga2_project')`：POSIX 上它会变成 `<cwd>/C:/Workspace/...`；
+   **当前 Linux 实跑 61/61 绿**（cwd 不在 `/tmp`），但把仓库 clone 到临时目录时其中 2 条会红
+   （`saga2_json` 恰好落进「授权临时目录」分支 ⇒ `TypeError` 而非 deny）。修的时候**不能用 `os.tmpdir()` 做根**，
+   否则反而改坏这两条用例的语义。
+2. `localDb/ipc/mekaRoles.ts:169` 的 `path.isAbsolute(projectRoot) ? path.resolve(projectRoot) : ''`
+   **两个平台都没有覆盖**：`mekaDefaultRole.test.ts` 用工厂 mock 把 `readProjectConfigState` 整个替换掉了
+   （mock 忽略 locator）。探针实测：Linux 上 `projectRoot` 传到 mock 时是**空串**（Windows 上是绝对路径）而 7 条仍全绿
+   ⇒ 值无关、非侥幸，但**一旦有人把 mock 换成真实实现，那三条会「Windows 绿 / Linux 红」**（真实实现 `projectConfig.ts:450/615`
+   对非绝对 root 直接 throw）。
+3. `bot-import` 生产侧的**有界快照泄漏**：回执已 `complete` 时预览检查点仍短暂存在，
+   若崩溃落在该窗口内会留下无人回收的检查点（恢复逻辑只处理 `running` 回执）。非正确性破坏。
+4. 复现边界（如实登记）：Windows 侧结论建立在「本机造真实 8.3 短名」的同类错配复现 + CI 注解逐字对齐上，
+   **没有**在真实 GitHub Windows runner 上验证；Linux 侧结论来自 WSL 真实 Linux 镜像跑（含整棵 `apps/desktop/src`）。
+
+
+
+> 依据 `docs/dev-rules/meka-whitelist-verification.md` §2 的四阶段口径。**逐项都是实跑**，
+> 未跑项一律标注「未跑 / 未验证 + 原因」，不代填、不预设结论。
+
 ## 6. 白名单验证（阶段 A–D）
 
 > 依据 `docs/dev-rules/meka-whitelist-verification.md` §2 的四阶段口径。**逐项都是实跑**，
@@ -686,17 +732,18 @@ verdict: PASS (有待确认项)
   `Signed-off-by: zhouwenkang <zhouwenkang@xd.com>` 已在 trailer 中核对。
 - **推送**：`git push origin meka/main` → `1b4f6a7c91..6749aacfab`（fast-forward，`0 behind / 694 ahead`）；
   推送后用 `git ls-remote origin refs/heads/meka/main` 确认远端 ref 已指向该 SHA。
-- **GitHub `client-ci` 结论**：**本环境无法自证** —— 本机没有 `gh`（常见安装位均无）、环境无
-  `GH_*` / `GITHUB_*` 令牌、`origin` 走 SSH（`git@github.com:kapt66/cindy.git`）、仓库也无查询
-  Actions 的脚本。**⇒ 该结论需由维护者在 GitHub 侧确认**（或提供 `gh`/令牌后由本会话补记）。
-  一旦报红，按 §6 的口径区分「本轮引入 / 存量 / 环境」，在本节追加处置记录。
+- **`client-ci` 结论（第一次推送）**：**红**，但**逐条注解对照证明是存量** ——
+  `verify-checks` ✅ 与 `Desktop Git integration` ✅ 通过；红的只有 4 个单元测试分片 + `verify`，
+  且与**推送前**分支头 `1b4f6a7c91`（自 2026-09-21 起连续 5 次推送）的失败**逐条同源**。
+  正向对照：本轮修的 `packagedResourceDeclarations` 让旧运行里的
+  `expected [ Array(1) ] to deeply equal []` **从我的运行中消失**。
 - **为降低 CI 红的风险，已逐条执行与 `client-ci` 等价的本地检查**（步骤名取自
   `.github/workflows/ci.yml`）：
 
 | CI 步骤 | 本地结果 |
 | --- | --- |
 | `pnpm install --frozen-lockfile` | ✅ exit 0（lockfile 与 manifest 一致） |
-| `pnpm test:runner` | ✅ 705 条：698 pass / 0 fail / 7 skipped |
+| `pnpm test:runner` | ✅ 706 条：699 pass / 0 fail / 7 skipped |
 | Device Link 集成（`tsc -p scripts/device-link/tsconfig.json` + `pnpm test:device-link`） | ✅ exit 0；集成用例 **9/9** |
 | `pnpm check:design-colors --base-ref … --head-ref …` | ✅ exit 0（仅 `report/bare-color` 提示，均在非阻断范围内） |
 | `pnpm check:design-inventory` | ✅ exit 0 |
@@ -712,6 +759,23 @@ verdict: PASS (有待确认项)
 | unit tier（`test:workspaces --tier unit`，Windows 作业的那一份） | ⚠️ 见 §6.2.1：唯一实质失败已修；其余为负载/环境所致，逐条单独重跑全绿 |
 | companion DB 回归（`botCanonicalSession` / `botRemoteResourceProvider` / `builtinMekaSeed`） | ✅ exit 0；**402/402** |
 | Pi manager integration tier（CI 的 Linux 作业项，本机也实跑） | ✅ `PASS packages/maker-pi-manager integration` |
-| **Linux 专属单元分片** | **本机为 Windows，无法执行** ⇒ 未验证（只能由 CI 侧结论覆盖） |
+| **Linux 专属单元分片** | 本机为 Windows，无法执行 ⇒ 改为**用真实 Linux（WSL 镜像）**逐条复现并修掉 §5.3 的 7 条红点 |
+
+### 7.2 存量 `client-ci` 红点的修复与第二次推送
+
+- **内容**：§5.3 的 7 条（4 个单元分片 + `verify` 的失败来源），逐条给出根因、修法与**双平台证据**
+  （Linux 侧用 WSL 真实 Linux + Linux Node 22 + vitest 3.2.7 的镜像跑；Windows 侧用本机真实 8.3 短名注入复现），
+  并对每处做**变异复核**证明修复后仍能抓住真回归。
+- **涉及文件**：`resources/linux/register-desktop.sh`（产品行为：深链 scheme 注册）+ `cindy-brain/localServerSupervisor.ts`
+  （生产守卫规范化，**未削弱**，含 2 条 junction 反例）+ 6 个测试文件 + `brand-identity-sync.test.mjs`（镜像断言 5 → 11）
+  + 本报告/docs 落账。
+- **提交与 CI 结论**：见 §7.3（第二次推送后回填）。
+- **本轮授权边界**：这 7 条属**存量**，按 `AGENTS.md`「审查与问题范围」需用户确认后才动 —— 已向用户报告证据并取得
+  「全部修」的明确授权；其余同类但**不造成 CI 红**的隐患（§5.3 末段 3 条）仍按「只登记」处理。
+
+### 7.3 第二次推送的事实补记
+
+（待回填：提交 SHA、`git ls-remote` 结果、`client-ci` 复跑结论。）
+
 
 
