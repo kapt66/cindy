@@ -775,7 +775,19 @@ verdict: PASS (有待确认项)
 
 ### 7.3 第二次推送的事实补记
 
-（待回填：提交 SHA、`git ls-remote` 结果、`client-ci` 复跑结论。）
+- **提交**：`f1159fd8712a044dd9d108c807fa67b768c28abe`（父提交 `22e28e29b8`，单亲普通提交），
+  DCO 已签；`git push origin meka/main` → `22e28e29b8..f1159fd871`，`git ls-remote` 确认远端 ref 指向该 SHA。
+- **`client-ci` 复跑结论：✅ completed successfully**（Actions run **#39**，
+  `run id 36426372957`）。逐作业核对（运行页无任何失败步骤锚点）：
+  `verify-checks` ✅、`Desktop Git integration` ✅、**`Linux unit tests (1/2)` ✅**、
+  **`Linux unit tests (2/2)` ✅**、`Windows unit tests` ✅、汇总 `verify` ✅。
+  ⇒ 与第一次推送的对照：**两个 Linux 分片由「有失败锚点」变为「clean」，`verify` 由红变绿**，
+  而 `verify-checks` / `Desktop Git integration` 保持绿。
+- **获取方式备注**：本机无 `gh`、无 GitHub 令牌（`origin` 走 SSH）且未认证 API 有 60 次/小时限流，
+  故 CI 结论通过 GitHub 公开网页解析获得 —— 运行页 `aria-label="completed successfully: Run 39 of client-ci …"`
+  与运行列表页同一标记即为绿；失败项则通过作业页的 `#step:N:LINE` 失败锚点与注解（含 `file:line`）定位。
+  **该解析方式已在本轮全程使用**（含第一次推送红点的逐条注解取证）。
+
 
 
 
