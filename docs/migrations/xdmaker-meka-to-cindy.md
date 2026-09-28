@@ -6418,4 +6418,51 @@ windows shard 1，均 `if: matrix.shard == 1`）把
   `permissionItemIcon` 与 `MekaDevInstallReview` 的图标分叉、进度分支 `aria-label` 分叉、
   `aria-busy` 空闲态恒真、上游自带的空断言等）—— 逐条登记在本期报告 §5.2、§6。
 
+### 11.31 2026-09-25 第四轮同步「推送后 client-ci 红点（存量）」的修复
+
+> 详细根因、逐条证据与双平台验证见
+> [`2026-09-25-origin-main-to-meka-main.md`](./2026-09-25-origin-main-to-meka-main.md) §5.3、§7.2、§7.3。
+
+- **起因与授权**：第四轮合并 commit（`6749aacfab`）推送后按 `AGENTS.md`「推送后确认 `client-ci` 通过」核查，
+  发现分支头是红的；逐条 CI 注解对照证明这批失败在**推送前**的 `1b4f6a7c91`（自 2026-09-21 起连续 5 次推送）
+  就已存在 ⇒ **存量**、非本轮引入。按「审查与问题范围」向用户报告证据并取得**「全部修」的明确授权**后修复。
+- **当时 CI 的分工**：`verify-checks`（typecheck desktop/mobile、`db:validate`、i18n、品牌术语、术语表、
+  设计清单、端点、scheduler guard、mobile scope）与 `Desktop Git integration` **本来就是绿的**；
+  红的只有 4 个单元测试分片与汇总作业 `verify`。
+- **产品行为变更（Linux，必须记账）**：`apps/desktop/resources/linux/register-desktop.sh` 原先向系统注册
+  **上游 `cindy://`** 且只带 `xdt-maker`，**漏了 Meka 主 scheme `cindy-meka://` 与 `xdmaker-meka://`**
+  （桌面条目 `MimeType=` 与 `xdg-mime default` 两处）。这既让 Linux 上 Meka 深链无法唤起，又违反
+  `AGENTS.md`「主深链为 `cindy-meka://`，内部兼容解析但**不向 OS 注册上游 `cindy://`**」的不变量。
+  已改为身份正本的 `allDeepLinkSchemes()`（`cindy-meka` / `xdmaker-meka` / `xdt-maker`），
+  并在 `scripts/__tests__/brand-identity-sync.test.mjs` 增加**双向镜像断言 + 负向断言**
+  （不得注册 `acceptedUnregisteredSchemes`），镜像点 5 → 11。
+- **生产代码第二处**：`apps/desktop/src/main/cindy-brain/localServerSupervisor.ts` 的运行期配置越界守卫
+  改为**两侧都规范化**（`canonicalManagedRoot`）—— Windows 上同一目录可经 8.3 短名 / 大小写别名 /
+  junction 到达，而 `fs.realpath` 一律回长名，原先「realpath 目标 vs 入参原样根」会把受管目录内的合法目标
+  误判为越界。**语义一字未改**（严格子路径 / 允许等于根两条口径保持），并新增 2 条 junction 反例
+  （受管目录内的链接指向目录外必须被拒、外部文件字节不变），变异复核证明守卫未被削弱。
+- **测试侧修复（同类根因）**：`revealSlot.test.ts`、`forge.test.ts`、`localServerRuntime.test.ts`
+  （期望改为规范化后严格相等，`forge` 另加 `access()` 证明真实落盘）；
+  `unsupportedBrowserPrompt.test.ts`（遍历 renderer 源码树的用例给显式 60s 预算）；
+  `codex/index.test.ts`（Skill 根注册用例的路径按平台用 `path.join` 构造，与生产同构）；
+  `mekaDefaultRole.test.ts`（项目路径夹具改 `path.resolve(...)`，否则 POSIX 上命中
+  `mekaRoles.ts:185` 的 `isAbsolute` 守卫、调用数恒为 0）；
+  `meka-settings/service.test.ts` 与 `meka-projects/combatEnvironmentGate.test.ts`（改用真实
+  `os.tmpdir()` 夹具并**移除** `statDirectory`/`readdir` 两个 stub，让生产校验与子目录发现真的被测，
+  另补「不存在目录/相对路径必须被拒」「映射越界必须 blocked」用例）；
+  `bot-import/host.test.ts`（28 处 `vi.waitFor` 加显式 10s 预算，只加预算、断言语义零改动）。
+- **验证**：Linux 侧用 WSL 真实 Linux（Linux Node 22 + vitest 3.2.7，整棵 `apps/desktop/src` 镜像）
+  before/after 对照 + 变异复核；Windows 侧用本机**真实 8.3 短名**（含中段短名）注入 `TEMP`，
+  4 种形态实跑。**结果**：修复后 `client-ci` run **#39「completed successfully」**，
+  两个 Linux 分片由「有失败锚点」变为 **clean**、`verify` 转绿。
+- **本轮新登记、未修的同类隐患**（均有实测证据）：`combatWorkflowPolicy.test.ts:70` 的
+  `path.resolve('C:/Workspace/saga2/saga2_project')`（cwd 落在 `os.tmpdir()` 下时 2 条会红，
+  修的时候**不能用 tmpdir 做根**）；`localDb/ipc/mekaRoles.ts:169` 的真实逻辑两平台都无覆盖
+  （测试用 mock 替换了 `readProjectConfigState`）；`bot-import` 生产侧「回执 `complete` 先于删除检查点」
+  的有界快照泄漏（崩溃落在 30–160 ms 窗口内会留下无人回收的检查点）。
+- **复现边界（如实登记）**：Windows 侧结论建立在「本机造真实 8.3 短名」的同类错配复现 + CI 注解逐字对齐，
+  未在真实 GitHub Windows runner 上直跑；CI 结论通过 GitHub 公开网页解析获得（本机无 `gh`、无令牌、
+  `origin` 走 SSH，且未认证 API 有限流）。
+
+
 
