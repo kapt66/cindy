@@ -63,10 +63,6 @@ const suggestion: PluginSuggestionRequest = {
   ownerId: 'navigation-owner',
   targetKey: 'local',
   workingDir: null,
-  model: 'test',
-  effort: 'medium',
-  permissionMode: 'default',
-  files: [],
   suggestion: {
     id: 'plugin:navigation',
     category: 'email',
@@ -104,6 +100,7 @@ beforeEach(() => {
         unavailableCustomSourceNames: [],
       }),
       detail: loadDetail,
+      onUpdateConsentHoldsChanged: () => () => {},
     },
     // Meka catalog channels: the page prefetches the Meka channel ledger and
     // dev-plugin list on every market refresh, even on the Cindy surface.

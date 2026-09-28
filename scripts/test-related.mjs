@@ -5,6 +5,10 @@ const WIDE_ROOT_FILES = new Set([
 	"package.json",
 	"pnpm-lock.yaml",
 	"pnpm-workspace.yaml",
+	"scripts/test-workspaces.mjs",
+	"scripts/test-workspaces.config.mjs",
+	"scripts/test-related.mjs",
+	"scripts/test-gate-lock.mjs",
 ]);
 const SKIP_EXTENSIONS = new Set([
 	".md",
@@ -45,20 +49,20 @@ const SKIP_BASENAMES = new Set([
 	".prettierignore",
 	".eslintignore",
 ]);
-// Related tests compare against the product integration branch, not whatever
-// GitHub named "main". In this private Meka fork, origin/main is the upstream
-// Cindy sync target; using it as the related-test base treats the entire Meka
-// product delta (lockfile, package.json, vitest config, CI) as "this change"
-// and silently falls back to a full unit gate. Prefer the remote product
-// branch first so unpushed local commits on meka/main are still included;
-// fall back to origin/main for upstream Cindy checkouts that have no meka refs.
+// Meka 侧口径（不可丢）：related 测试的基线是**产品集成分支**，不是 GitHub 上
+// 叫 "main" 的那个。在本私有 fork 里 origin/main 是上游 Cindy 的同步目标，用它当
+// 基线会把整个 Meka 产品增量（lockfile、package.json、vitest 配置、CI）当成「本次
+// 改动」并静默退回全量门禁。所以 meka/main 派生的 ref 排在最前：先远端产品分支
+// （未推送的本地提交也算进来），再本地 meka/main。
+//
+// 上游口径（保留）：fork 的 origin 可能落后于贡献目标，所以 upstream 远端默认分支
+// 和 origin 自己的 HEAD 先于 origin/main 试；本地 main/master 只作为最后兜底，供
+// 没有 meka ref 的上游 Cindy checkout 使用。
 export const GIT_BASE_REFS = [
 	"origin/meka/main",
 	"meka/main",
-	"origin/main",
-	"main",
-	"origin/master",
-	"master",
+	"refs/remotes/upstream/HEAD", "upstream/main", "upstream/master",
+	"refs/remotes/origin/HEAD", "origin/main", "origin/master", "main", "master",
 ];
 
 export function normalizeRelPath(value) {
@@ -77,26 +81,32 @@ export function isSkippableFile(file) {
 	return SKIP_EXTENSIONS.has(extension);
 }
 
+// Meka 侧口径（不可丢，刻意偏离上游）：`.github/workflows/**` 是**单测 CI 本身**。
+// meka/main 是直推集成分支，唯一自动化门禁是 ci.yml 的 push 触发，没有 PR 阶段的
+// CI 兜底，所以「改到单测 CI ⇒ 退回全量 pnpm test:unit」必须由调度器自己兜住
+// （见根 AGENTS.md「提交前测试门禁（硬性要求）」的保留 Meka 口径注记）。
+// 上游本轮把该行删掉、只留 WIDE_ROOT_FILES + 根 vitest.config.*，那是 PR-first +
+// PR CI 兜底的口径；同时上游新增的「包级 package.json / 包级 vitest.config ⇒ 该包
+// 整包全跑」由 planRelatedUnitTests 的 fullWorkspaces 承担，与本案并存互不冲突
+// （包级清单不再 wide，但仍不会漏跑）。
 export function isWideFile(file) {
 	const normalized = normalizeRelPath(file);
 	if (WIDE_ROOT_FILES.has(normalized)) return true;
-	if (normalized.endsWith("/package.json")) return true;
-	if (/(^|\/)vitest\.config\.[cm]?[jt]s$/.test(normalized)) return true;
-	if (
-		normalized === "scripts/test-workspaces.mjs" ||
-		normalized === "scripts/test-workspaces.config.mjs" ||
-		normalized === "scripts/test-related.mjs" ||
-		normalized === "scripts/test-gate-lock.mjs"
-	) {
-		return true;
-	}
-	return normalized.startsWith(".github/workflows/");
+	if (normalized.startsWith(".github/workflows/")) return true;
+	return /^vitest\.config\.[cm]?[jt]s$/.test(normalized);
 }
 
 export function shouldRunTestRunner(files) {
 	return files.some((file) => {
 		const normalized = normalizeRelPath(file);
+		// These text artifacts are executable test inputs, not explanatory docs:
+		// glossary-rules and third-party-notices validate their generated content.
+		if (
+			normalized === "i18n/GLOSSARY.md" ||
+			normalized.startsWith("docs/legal/notices/")
+		) return true;
 		return (
+			!isSkippableFile(normalized) &&
 			!normalized.startsWith("apps/") && !normalized.startsWith("packages/")
 		);
 	});
@@ -302,6 +312,7 @@ export function planRelatedUnitTests({
 	);
 	const ownerRelated = new Map();
 	const sourceChangedCwds = new Set();
+	const fullWorkspaces = new Set();
 
 	for (const file of testable) {
 		const cwd = workspaceForFile(file, workspaceCwds);
@@ -310,6 +321,11 @@ export function planRelatedUnitTests({
 		if (!workspace || !hasRequiredUnitTier(workspace)) continue;
 		if (!ownerRelated.has(cwd)) ownerRelated.set(cwd, new Set());
 		if (fileExists(file)) ownerRelated.get(cwd).add(file);
+		if (
+			file === `${cwd}/package.json` ||
+			/(^|\/)vitest\.config\.[cm]?[jt]s$/.test(file.slice(cwd.length + 1)) ||
+			!fileExists(file)
+		) fullWorkspaces.add(cwd);
 		if (isPackagePublicSource(file)) sourceChangedCwds.add(cwd);
 	}
 
@@ -324,7 +340,8 @@ export function planRelatedUnitTests({
 			const workspace = byCwd.get(cwd);
 			if (!workspace || !hasRequiredUnitTier(workspace)) return [];
 			const ownFiles = [...(ownerRelated.get(cwd) ?? [])].sort();
-			const relatedFiles = dependents.has(cwd) ? null : ownFiles;
+			const relatedFiles = dependents.has(cwd) || fullWorkspaces.has(cwd)
+				? null : ownFiles;
 			if (Array.isArray(relatedFiles) && relatedFiles.length === 0) return [];
 			return [
 				{

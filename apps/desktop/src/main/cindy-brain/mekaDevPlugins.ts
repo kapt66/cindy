@@ -22,6 +22,7 @@ import {
   type InstalledGhost,
 } from '../../shared/ghost.js';
 import { packGhostDir, type ForgePackResult } from './forge.js';
+import type { GhostInstallConsentPrompt } from './ghostInstallConsent.js';
 import { GHOST_SIGNATURE_FILE } from './ghostSignature.js';
 import type {
   WatcherHostEventsHandler,
@@ -71,16 +72,63 @@ export type MekaDevPluginSubscribe = (
   onError: WatcherHostErrorHandler,
 ) => Promise<WatcherHostSubscription>;
 
+/**
+ * 开发目录装入路径**必须**显式交出的确认口径(`docs/dev-rules/plugin-security-and-authoring.md`
+ * §3.1:每条装入路径都要在签名上表态,新增路径无法漏掉)。
+ *
+ * 交出的是**策略**,不是锁外预先算好的结论:确认要等用户回答(可能几分钟),只能在任何
+ * 安装锁与 owner 租约之外求得;而落位前的复核用的是即将落位那份**派生包**的 manifest
+ * 与包摘要。所以求确认的位置只能落在派生包已经生成之后——由装入实现在派生包 inspection
+ * 上调用 `obtainGhostInstallConsent`,确认与复核因此使用**同一份 inspection**。
+ *
+ * - `{ mode: 'prompt' }` = 用户发起的安装(`meka-dev-plugins:install`):确认框只投给发起
+ *   安装的那个窗口。开发目录安装只由用户在 Meka 插件页发起,所以 `initiator` 恒为 `user`;
+ *   来源是与该页本地 `.cindy` 导入同口径的本地源码目录,故取 `local-file`。
+ * - `{ mode: 'automatic' }` = 目录监听触发的后台同步:没有可弹窗的语境,需要确认时
+ *   fail closed(抛 `GhostInstallConsentRequiredError`,旧版本继续可用),绝不静默落位。
+ */
+export type MekaDevPluginInstallAuthorization =
+  | {
+      mode: 'prompt';
+      prompt: GhostInstallConsentPrompt;
+      initiator: 'user';
+      origin: 'local-file';
+    }
+  | { mode: 'automatic' };
+
+/**
+ * 打包**之前**捕获、落位**之前**使用的 owner 租约句柄。
+ *
+ * manager 不解释它的内容,只负责把「先捕获、后在真正改动运行时之前取租约」这一顺序
+ * 固定下来:确认可能等用户几分钟,所以租约只能在确认之后取;而账号是否在打包/确认期间
+ * 漂移,靠这份捕获值判断——`acquire()` 在 owner 已切换或正在切换账号时抛错,fail closed。
+ */
+export interface MekaDevPluginOwnerLease {
+  /** 取得 owner 租约;owner 已漂移或正在切换账号时抛错。返回释放函数。 */
+  acquire(): () => void;
+}
+
 export interface MekaDevPluginManagerDeps {
   getRegistryPath: () => string;
   getTempRoot: () => string;
+  /** 在打包等异步准备之前捕获稳定 owner;句柄原样交回装入实现,manager 不解释内容。 */
+  captureOwnerLease: () => MekaDevPluginOwnerLease;
   packDirectory: (sourceDir: string, options: { outputDir: string }) => Promise<ForgePackResult>;
   inspectPackage: (cindyPath: string) => Promise<{
     manifest: InstalledGhost['manifest'];
     trust: GhostTrustInfo;
   }>;
-  installPackage: (cindyPath: string) => Promise<InstalledGhost>;
-  updatePackage: (cindyPath: string, expectedId: string) => Promise<InstalledGhost>;
+  installPackage: (
+    cindyPath: string,
+    authorization: MekaDevPluginInstallAuthorization,
+    ownerLease: MekaDevPluginOwnerLease,
+  ) => Promise<InstalledGhost>;
+  updatePackage: (
+    cindyPath: string,
+    expectedId: string,
+    authorization: MekaDevPluginInstallAuthorization,
+    ownerLease: MekaDevPluginOwnerLease,
+  ) => Promise<InstalledGhost>;
   uninstallPackage: (id: string) => Promise<void>;
   isInstalled: (id: string) => boolean;
   subscribe: MekaDevPluginSubscribe;
@@ -180,10 +228,22 @@ export class MekaDevPluginManager {
     });
   }
 
+  /**
+   * 用户发起的开发目录安装。
+   *
+   * `authorization` 是上游强制安装确认门(`ghostInstallConsent.ts`)在本通道上的口径:
+   * 用户发起的安装传 prompt 策略(确认由发起窗口在**派生包** inspection 上求得),目录监听
+   * 触发的同步传 `{ mode: 'automatic' }`。缺省值取 `automatic` —— 与后台同步同口径,需要
+   * 确认时 fail closed:**漏传不可能变成静默落位**,只会报「需要用户确认」。
+   */
   async install(
     sourceDir: string,
     expectedPackageSha256: string,
+    authorization: MekaDevPluginInstallAuthorization = { mode: 'automatic' },
   ): Promise<{ ghost: InstalledGhost; item: MekaDevPluginItem }> {
+    // 先于任何 await 捕获 owner:打包与确认都不持租约,租约只能在落位前取,账号是否
+    // 在打包/确认期间漂移全靠这份捕获值在 `acquire()` 时判定(fail closed)。
+    const ownerLease = this.deps.captureOwnerLease();
     await this.ensureNamespace();
     const realSourceDir = await this.resolveSourceDir(sourceDir);
     return this.withPackedDirectory(realSourceDir, async (packed) => {
@@ -217,8 +277,17 @@ export class MekaDevPluginManager {
       );
       const ghost =
         existingRecord && this.deps.isInstalled(runtimeId)
-          ? await this.deps.updatePackage(developmentPackage.cindyPath, runtimeId)
-          : await this.deps.installPackage(developmentPackage.cindyPath);
+          ? await this.deps.updatePackage(
+              developmentPackage.cindyPath,
+              runtimeId,
+              authorization,
+              ownerLease,
+            )
+          : await this.deps.installPackage(
+              developmentPackage.cindyPath,
+              authorization,
+              ownerLease,
+            );
       const record: LiveDevPlugin = {
         runtimeId,
         pluginId,
@@ -599,6 +668,9 @@ export class MekaDevPluginManager {
   private async sync(runtimeId: string): Promise<void> {
     const record = this.records.get(runtimeId);
     if (!record) return;
+    // 与 install 同口径:打包前捕获 owner,落位前取租约;后台同步需要用户确认时
+    // 由自动策略抛错(这里不弹窗),整条同步标记为错误、旧快照继续可用。
+    const ownerLease = this.deps.captureOwnerLease();
     record.status = 'syncing';
     delete record.error;
     this.emitChanged();
@@ -615,9 +687,18 @@ export class MekaDevPluginManager {
         path.dirname(packed.cindyPath),
       );
       if (this.deps.isInstalled(runtimeId)) {
-        await this.deps.updatePackage(developmentPackage.cindyPath, runtimeId);
+        await this.deps.updatePackage(
+          developmentPackage.cindyPath,
+          runtimeId,
+          { mode: 'automatic' },
+          ownerLease,
+        );
       } else {
-        await this.deps.installPackage(developmentPackage.cindyPath);
+        await this.deps.installPackage(
+          developmentPackage.cindyPath,
+          { mode: 'automatic' },
+          ownerLease,
+        );
       }
       if (record.legacyRuntimeId) {
         await this.deps.uninstallPackage(record.legacyRuntimeId);

@@ -80,6 +80,8 @@
   `docs/product-rules/meka-skills.md`。
 - 修改伙伴（Bot）的身份、Session 生命周期、模型 fallback、工作目录、Skill / MCP 装配、
   委派协作或伙伴设置前，必须先读 `docs/product-rules/cindy-bots-runtime.md`。
+- 新增或修改伙伴群聊的数据、发言编排、群专线 Session、分工（负责人、安排、分工 Session、群工作目录）、
+  群聊界面或手机端群聊（`bot-groups` 远程资源、群推送深链）前，必须先读 `docs/product-rules/bot-group-chat.md`。
 - 新增或修改 `/review`、Reviewer 任务、成果快照、Finding 协议、复核入口、结果呈现或
   复核生命周期前，必须先读 `docs/product-rules/review-product-direction.md`。
 - 新增或修改按区域（`cn` / `global`）分支的逻辑、构建身份与命名、端点选择、区域相关
@@ -89,6 +91,10 @@
 - 新增或修改任何界面、组件、布局、样式、动效或 UI 文案前，必须先读权威设计规范
   `docs/design-rules/DESIGN.md`；设计文档索引见
   `docs/design-rules/cindy-design-system.md`。
+- 新增或修改 Mobile（`apps/mobile`）界面上的文字前，必须先查
+  `apps/mobile/docs/mobile-design-guide.md` §3「文字规范速查」：先定角色，再整行照抄字号、
+  行高、字重、字色；五档中性字色、浅色字不配粗字重、11 档字号、必须配行高四条由
+  `typographyTokenDiscipline.test.ts` 守护，角色是否选对靠 review。
 - 做 UI 圆角分类或点击目标尺寸审查时，必须同时读 `docs/design-rules/DESIGN.md §5` 与
   `docs/design-rules/design-governance.md §13`；普通 UI 改动同样适用，不限于设计系统迁移 PR。
 - 新增或修改设计 Token、主题系统、标准 UI 组件（primitive / pattern）、视觉类门禁脚本，
@@ -277,6 +283,14 @@
   script 的 package 该步自动跳过），全部通过后才允许提交；任何一项失败都不得提交，
   必须先修复。GitHub CI 仍跑完整 `pnpm test:unit`。细则与唯一例外（防丢数据的兜底保存）见
   `docs/dev-rules/development-workflow.md`。
+  > **保留 Meka 口径（2026-09-25 第四轮上游同步）**：上游同期把本条改写为「**提交前验证**」
+  > ——默认选测、已按影响面完成等效定向验证时不要求为 commit 重跑整仓测试，并明确「仓库不强制
+  > 多个 session 串行」。**本仓不采纳该放宽**：`meka/main` 是**直推集成分支**且**唯一自动化门禁
+  > 是 `client-ci` 的 push 触发**（见上文「Git 与交付」），没有 PR 阶段的 CI 兜底，所以推送前的
+  > 本地门禁就是唯一闸门；用户亦明确要求「仓库门禁在最终提交时统一执行」。
+  > 上游那句中真正需要保留的只有「**未执行项和原因须如实记录**」——本仓以
+  > `docs/dev-rules/development-workflow.md`「门禁时机」与当期同步报告的「未验证 + 原因」
+  > 登记承担同一职责。记录见 `docs/migrations/2026-09-25-origin-main-to-meka-main.md`。
 - 在上述门禁之上按风险追加验证：跨模块、高风险或基础设施改动追加更广泛验证（如
   `pnpm test:all`），最终以 CI 门禁为准。不得通过跳过、删除或弱化测试制造通过。
 

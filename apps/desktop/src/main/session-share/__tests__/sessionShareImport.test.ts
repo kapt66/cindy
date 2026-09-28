@@ -11,6 +11,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 import JSZip from 'jszip';
+import { sanitizeClaudeProjectKey } from '@cindy/maker-core';
+import { migrationNativeContext } from '../migrationNativeContext';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DB_TRANSPORT_OUTCOME_UNKNOWN } from '../../localDb/client/DbTransport.js';
@@ -232,10 +234,17 @@ vi.mock('../../cindy-media/ledger.js', () => ({
   },
 }));
 const worktreeMock = vi.hoisted(() => ({
-  detect: null as
+  detect: null as null | {
+    isGitRepo: boolean;
+    isInsideWorktree: boolean;
+    gitInstalled: boolean;
+    repoRoot?: string;
+    currentBranch?: string;
+  },
+  createResult: null as
     | null
-    | { isGitRepo: boolean; isInsideWorktree: boolean; gitInstalled: boolean; repoRoot?: string; currentBranch?: string },
-  createResult: null as null | { ok: true; meta: { path: string } } | { ok: false; error: { kind: string; message?: string } },
+    | { ok: true; meta: { path: string } }
+    | { ok: false; error: { kind: string; message?: string } },
   suggestedName: 'imported-wt' as string | null,
   createCalls: [] as Array<{ sessionId: string; baseRepo: string; name: string; sourceBranch: string }>,
   removeCalls: [] as string[],
@@ -261,8 +270,12 @@ const {
 } = sessionShareImportModule;
 const mockedDbClientModule = await import('../../localDb/client/current.js');
 const rawCommitShareImport = sessionShareImportModule.commitShareImport;
-const commitShareImport = (opts: Parameters<typeof rawCommitShareImport>[0]) =>
+const commitShareImport = (
+  opts: Parameters<typeof rawCommitShareImport>[0],
+  migration?: Parameters<typeof rawCommitShareImport>[1]['migration'],
+) =>
   rawCommitShareImport(opts, {
+    migration,
     dbClient: mockedDbClientModule.getDbClient(),
     assertStillValid: () => undefined,
     refCompensationScope: {
@@ -307,7 +320,11 @@ interface BundleOverrides {
   /** v1 旧包没有逐消息 agentKind。 */
   omitMessageAgentKind?: boolean;
   /** 协同包:附带一个 Worker(cc 或 codex),manifest 升到 v2 + orca 段。 */
-  orcaWorker?: { agentKind: 'cc' | 'codex'; status?: 'idle' | 'running' | 'done' | 'error' };
+  orcaWorker?: {
+    agentKind: 'cc' | 'codex';
+    status?: 'idle' | 'running' | 'done' | 'error';
+    snapshot?: Record<string, unknown>;
+  };
 }
 
 const WORKER_SID = 'bbbbbbbb-1111-2222-3333-555555555555';
@@ -411,7 +428,13 @@ async function buildBundle(overrides: BundleOverrides = {}): Promise<Buffer> {
         : `orca/workers/0/transcripts/codex/rollout-w-${WORKER_SID}.jsonl`;
     zip.file(
       'orca/workers/0/session.json',
-      JSON.stringify({ title: 'Worker 快照', createdAt: 1700000001000, userSendAt: 1700000001100, totalTokenUsage: 42 }),
+      JSON.stringify({
+        title: 'Worker 快照',
+        createdAt: 1700000001000,
+        userSendAt: 1700000001100,
+        totalTokenUsage: 42,
+        ...overrides.orcaWorker.snapshot,
+      }),
     );
     zip.file(
       'orca/workers/0/messages.jsonl',
@@ -611,6 +634,86 @@ describe('sessionShareImport', () => {
     expect(imgIngest?.refs).toEqual([{ refKind: 'import', refId: result.sessionId, originKind: 'user' }]);
     expect(fs.existsSync(path.join(tmpRoot, 'cc-agent', 'images', result.sessionId, 'img-1.png'))).toBe(false);
     expect(fs.existsSync(path.join(sharedMediaRoot, result.sessionId, '2-doc.pdf'))).toBe(true);
+  });
+
+  it('checks inflated context against the host memory budget before import', async () => {
+    const zip = await JSZip.loadAsync(await buildBundle());
+    zip.file('large-extra.txt', 'a'.repeat(100_000));
+    const compressed = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+    const filePath = await writeBundleFile(compressed);
+    const fileSize = (await fsp.stat(filePath)).size;
+    expect(fileSize).toBeLessThan(100_000);
+    await expect(inspectShareFile(filePath, { resourceBudgetBytes: fileSize + 1000 })).rejects.toThrow('MIGRATION_NO_MEMORY');
+    await expect(inspectShareFile(filePath, { resourceBudgetBytes: 200_000 })).resolves.toMatchObject({ encrypted: false });
+  });
+
+  it.each(['cc', 'codex', 'pi'] as const)('migration assigns an independent %s context without replacing the retained source', async agentKind => {
+    const filePath = await writeBundleFile(await buildBundle({ agentKind }));
+    const inspect = await inspectShareFile(filePath);
+    if (inspect.encrypted) throw new Error('unexpected encrypted fixture');
+    const migrationId = '11111111-2222-4333-a444-555555555555';
+    dbMock.conflictRow = { id: 'retained-source', status: 'active' };
+    dbMock.conflictForResumeId = agentKind === 'pi' ? path.join(piSessionsRoot, PI_SID) : SID;
+    codexMock.importResult.rolloutPath = path.join(tmpRoot, 'migrated.jsonl');
+    const result = await commitShareImport({ draftId: inspect.draftId, workingDir: newWorkdir,
+      projectsRootOverride: projectsRoot, piSessionsRootOverride: piSessionsRoot,
+      sharedMediaRootOverride: sharedMediaRoot }, { sessionId: migrationId, workingDir: newWorkdir });
+    expect(result.sessionId).toBe(migrationId);
+    expect(result.fidelity).toBe('full');
+    const args = dbMock.txCalls.find(call => call.name === 'session.importShare')!.args as {
+      session: { id: string; sdkSessionId: string }; messages: Array<{ agentMeta: string | null }>;
+    };
+    expect(args.session.sdkSessionId).not.toBe(dbMock.conflictForResumeId);
+    expect(args.messages[1].agentMeta).toContain(args.session.sdkSessionId.replace(/\\/g, '\\\\'));
+    expect(closeSharedTaskForTask).not.toHaveBeenCalled();
+    if (agentKind === 'codex') {
+      const call = codexMock.importCalls[0] as { threadId: string; stateRows: { threads: Array<{ id: string }> }; rolloutFilename: string };
+      expect(call.threadId).toBe(args.session.sdkSessionId);
+      expect(call.stateRows.threads[0].id).toBe(call.threadId);
+      expect(call.rolloutFilename).toContain(call.threadId);
+    }
+  });
+
+  it.each(['cc', 'codex'] as const)('copies %s transcripts containing damaged historical lines', async agentKind => {
+    const zip = await JSZip.loadAsync(await buildBundle({ agentKind }));
+    const transcriptPath = agentKind === 'cc' ? `transcripts/claude/${SID}.jsonl` : `transcripts/codex/rollout-x-${SID}.jsonl`;
+    const header = agentKind === 'cc' ? { sessionId: SID } : { type: 'session_meta', payload: { id: SID } };
+    const tail = '\nnull\n[1]\nlegacy text\n{partial';
+    zip.file(transcriptPath, JSON.stringify(header) + tail);
+    const inspect = await inspectShareFile(await writeBundleFile(await zip.generateAsync({ type: 'nodebuffer' })));
+    if (inspect.encrypted) throw new Error('unexpected encrypted fixture');
+    const migrationId = '11111111-2222-4333-a444-555555555555';
+    codexMock.importResult.rolloutPath = path.join(tmpRoot, 'copied.jsonl');
+    const result = await commitShareImport({ draftId: inspect.draftId, workingDir: newWorkdir,
+      projectsRootOverride: projectsRoot, sharedMediaRootOverride: sharedMediaRoot },
+      { sessionId: migrationId, workingDir: newWorkdir });
+    expect(result.fidelity).toBe('full');
+    const nativeId = migrationNativeContext(migrationId, [SID]).id(SID);
+    const restored = agentKind === 'cc'
+      ? await fsp.readFile(path.join(projectsRoot, sanitizeClaudeProjectKey(newWorkdir), `${nativeId}.jsonl`), 'utf8')
+      : (codexMock.importCalls[0] as { rolloutBuffer: Buffer }).rolloutBuffer.toString();
+    expect(restored).toBe(JSON.stringify(agentKind === 'cc' ? { sessionId: nativeId } : { type: 'session_meta', payload: { id: nativeId } }) + tail);
+  });
+  it.each(['cc', 'pi'] as const)('repairs a partial %s migration transcript on retry', async agentKind => {
+    const filePath = await writeBundleFile(await buildBundle({ agentKind }));
+    const migration = { sessionId: '11111111-2222-4333-a444-555555555555', workingDir: newWorkdir };
+    const attempt = async () => {
+      const inspected = await inspectShareFile(filePath);
+      if (inspected.encrypted) throw new Error('unexpected encrypted fixture');
+      return commitShareImport({ draftId: inspected.draftId, workingDir: newWorkdir,
+        projectsRootOverride: projectsRoot, piSessionsRootOverride: piSessionsRoot,
+        sharedMediaRootOverride: sharedMediaRoot }, migration);
+    };
+    const nativeId = migrationNativeContext(migration.sessionId, [SID]).id(SID);
+    const target = agentKind === 'pi' ? path.join(piSessionsRoot, migration.sessionId, PI_SID)
+      : path.join(projectsRoot, newWorkdir.replace(/[^a-zA-Z0-9]/g, '-'), `${nativeId}.jsonl`);
+    await fsp.mkdir(path.dirname(target), { recursive: true });
+    await fsp.writeFile(target, '{partial');
+    dbMock.txError = null;
+    expect((await attempt()).fidelity).toBe('full');
+    const restored = await fsp.readFile(target, 'utf8');
+    expect(restored).not.toContain('partial');
+    expect(() => restored.trim().split('\n').forEach(line => JSON.parse(line))).not.toThrow();
   });
 
   it('legacy bundle without message agentKind imports rows as NULL', async () => {
@@ -1539,6 +1642,80 @@ describe('sessionShareImport', () => {
     expect(worker.messages[0].content).not.toContain('xdt-image://');
   });
 
+  it.each(['cc', 'codex'] as const)(
+    'migrates %s workers with independent identities, directories and target model routes',
+    async (agentKind) => {
+      const workerDir = path.join(tmpRoot, `migrated-${agentKind}-worker`);
+      await fsp.mkdir(workerDir, { recursive: true });
+      const inspected = await inspectShareFile(
+        await writeBundleFile(
+          await buildBundle({
+            agentKind: 'pi',
+            orcaWorker: {
+              agentKind,
+              snapshot: {
+                migrationSourceId: 'source-worker',
+                status: 'archived',
+                workspaceKind: 'project',
+              },
+            },
+          }),
+        ),
+      );
+      const result = await commitShareImport(
+        {
+          draftId: inspected.draftId,
+          workingDir: newWorkdir,
+          projectsRootOverride: projectsRoot,
+          sharedMediaRootOverride: sharedMediaRoot,
+          piSessionsRootOverride: piSessionsRoot,
+        },
+        {
+          sessionId: `migration-${agentKind}`,
+          workingDir: newWorkdir,
+          workers: [
+            { sourceSessionId: 'source-worker', sessionId: 'target-worker', workingDir: workerDir },
+          ],
+          agentPrefs: {
+            [agentKind]: {
+              model: 'worker-model',
+              providerId: 'worker-provider',
+              effort: 'high',
+              permissionMode: 'ask',
+            },
+          },
+        },
+      );
+      expect(result.fidelity).toBe('full');
+      const args = dbMock.txCalls[0].args as OrcaTxArgs;
+      const worker = args.orca!.workers[0].session;
+      expect(worker).toMatchObject({
+        id: 'target-worker',
+        workingDir: workerDir,
+        status: 'archived',
+        model: 'worker-model',
+        providerId: 'worker-provider',
+        permissionMode: agentKind === 'cc' ? 'default' : 'ask',
+      });
+      expect(worker.sdkSessionId).not.toBe(WORKER_SID);
+      if (agentKind === 'cc')
+        expect(
+          fs.existsSync(
+            path.join(
+              projectsRoot,
+              workerDir.replace(/[^a-zA-Z0-9]/g, '-'),
+              `${worker.sdkSessionId}.jsonl`,
+            ),
+          ),
+        ).toBe(true);
+      else
+        expect(codexMock.importCalls[0]).toMatchObject({
+          threadId: worker.sdkSessionId,
+          newCwd: workerDir,
+        });
+    },
+  );
+
   it('orca bundle: worker resume id conflict → SHARE_CONFLICT; overwrite soft-deletes it', async () => {
     dbMock.conflictForResumeId = WORKER_SID;
     const filePath = await writeBundleFile(
@@ -2080,5 +2257,90 @@ describe('sessionShareImport', () => {
       }),
     ).rejects.toMatchObject({ code: 'SHARE_FILE_INVALID' });
     expect(dbMock.txCalls).toHaveLength(0);
+  });
+
+  // ── 交叉点:meka 绑定 × 设备交接(runtimeScope.migration) ──
+  // 这条组合是本轮同步新造出来的:meka 绑定的工作目录取**本机项目解析结果**,而交接
+  // 提供 newId 与它自己的 workingDir。两条路径必须各取所长,且非 Meka 包不受影响。
+
+  it('meka bundle under a device handoff keeps the local project dir and flips the kind to meka', async () => {
+    // 正例:交接的会话 id 必须留下,但工作目录必须是本机项目目录 —— `mekaResolvePlan`
+    // 从 workingDir 推导项目参考路径与只读范围,把 workspace_kind='meka' 的行指到交接
+    // 目录会让注入静默降级。
+    const p4Root = path.join(tmpRoot, 'saga2-handoff-root');
+    registerMekaProject(p4Root);
+    const handoffDir = path.join(tmpRoot, 'handoff-proj');
+    await fsp.mkdir(handoffDir, { recursive: true });
+    const migrationId = '11111111-2222-4333-a444-555555555555';
+
+    const filePath = await writeBundleFile(
+      await buildBundle({ manifest: { meka: MEKA_SECTION } }),
+    );
+    const inspect = await inspectShareFile(filePath);
+    if (inspect.encrypted) throw new Error('bundle must be plain');
+    const result = await commitShareImport(
+      {
+        draftId: inspect.draftId,
+        // 交接方与用户在两条线索上都指向 handoffDir:一旦 mekaBound 优先级失效,
+        // 下面看到的就会是 handoffDir 而不是项目目录。
+        workingDir: handoffDir,
+        projectsRootOverride: projectsRoot,
+        sharedMediaRootOverride: sharedMediaRoot,
+      },
+      { sessionId: migrationId, workingDir: handoffDir },
+    );
+
+    expect(result.fidelity).toBe('full');
+    expect(result.sessionId).toBe(migrationId);
+    expect(result.notes).toContain('mekaBindingRestored');
+    const args = dbMock.txCalls.find((call) => call.name === 'session.importShare')!.args as {
+      session: { id: string; workspaceKind: string; workingDir: string };
+    };
+    expect(args.session.id).toBe(migrationId);
+    expect(args.session.workingDir).toBe(normalizeWorkingDirForStorage(p4Root));
+    expect(args.session.workingDir).not.toBe(handoffDir);
+    // 事务里的 INSERT 仍是粗粒度 'project';绑定必须由提交后的单条 UPDATE 落地
+    // (workspace_kind 与身份列同一条语句,绝不留下半绑定行)。
+    expect(args.session.workspaceKind).toBe('project');
+    expect(dbMock.execCalls).toHaveLength(1);
+    expect(dbMock.execCalls[0].sql).toContain("workspace_kind = 'meka'");
+    expect(dbMock.execCalls[0].sql).toContain('meka_project_id = ?');
+    expect(dbMock.execCalls[0].sql).toContain('meka_role_id = ?');
+    expect(dbMock.execCalls[0].params.slice(0, 2)).toEqual(['saga2', 'saga2-default-role']);
+    // 绑定 UPDATE 打在**交接给的那个 session id** 上,而不是另外新生成的 id。
+    expect(dbMock.execCalls[0].params.at(-1)).toBe(migrationId);
+  });
+
+  it('a plain bundle under a device handoff still lands on the handoff working dir', async () => {
+    // 反例:没有 meka 段的包不吃上述优先级,普通迁移行为与上游一致。
+    registerMekaProject(path.join(tmpRoot, 'saga2-handoff-root'));
+    const handoffDir = path.join(tmpRoot, 'handoff-plain-proj');
+    await fsp.mkdir(handoffDir, { recursive: true });
+    const migrationId = '22222222-3333-4444-a555-666666666666';
+
+    const filePath = await writeBundleFile(await buildBundle());
+    const inspect = await inspectShareFile(filePath);
+    if (inspect.encrypted) throw new Error('bundle must be plain');
+    const result = await commitShareImport(
+      {
+        draftId: inspect.draftId,
+        workingDir: handoffDir,
+        projectsRootOverride: projectsRoot,
+        sharedMediaRootOverride: sharedMediaRoot,
+      },
+      { sessionId: migrationId, workingDir: handoffDir },
+    );
+
+    expect(result.fidelity).toBe('full');
+    expect(result.sessionId).toBe(migrationId);
+    // 非 Meka 包连 DB 都不碰:`resolveShareMekaBinding` 的延迟 getDbClient 不触发。
+    expect(result.notes.filter((note) => note.startsWith('meka'))).toEqual([]);
+    expect(dbMock.execCalls).toHaveLength(0);
+    const args = dbMock.txCalls.find((call) => call.name === 'session.importShare')!.args as {
+      session: { id: string; workspaceKind: string; workingDir: string };
+    };
+    expect(args.session.id).toBe(migrationId);
+    expect(args.session.workingDir).toBe(handoffDir);
+    expect(args.session.workspaceKind).toBe('project');
   });
 });

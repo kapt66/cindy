@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -5,16 +6,24 @@ import path from 'node:path';
 import JSZip from 'jszip';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { GhostManifest, InstalledGhost } from '../../../shared/ghost';
+import type { GhostInstallApproval, GhostManifest, InstalledGhost } from '../../../shared/ghost';
 import { GHOST_MANIFEST_FILE, validateGhostManifest } from '../../../shared/ghost';
 import type { WatcherHostEventsHandler } from '../../watcher-host/WatcherHostClient';
+import {
+  assertGhostInstallConsent,
+  GhostInstallConsentRequiredError,
+  obtainGhostInstallConsent,
+  type GhostInstallConsentPrompt,
+} from '../ghostInstallConsent';
 import { GHOST_SIGNATURE_FILE } from '../ghostSignature';
 import {
   MekaDevPluginManager,
   mekaDevRuntimeId,
   packMekaDevPluginSource,
   type MekaDevPluginError,
+  type MekaDevPluginInstallAuthorization,
   type MekaDevPluginManagerDeps,
+  type MekaDevPluginOwnerLease,
 } from '../mekaDevPlugins';
 
 const manifest = (version = '1.0.0'): GhostManifest => ({
@@ -61,6 +70,9 @@ describe('MekaDevPluginManager', () => {
     deps = {
       getRegistryPath: () => path.join(workDir, 'owner', '.meka-dev-plugins.json'),
       getTempRoot: () => path.join(workDir, 'temp'),
+      // 真实实现把 owner 捕获放在打包前、租约取在确认之后;单测只验这个顺序,
+      // 内容由 index.ts 的 ActiveAppSession 提供,manager 不解释。
+      captureOwnerLease: () => ({ acquire: () => () => undefined }),
       packDirectory: vi.fn(async (_dir, { outputDir }) => {
         await fs.promises.mkdir(outputDir, { recursive: true });
         const cindyPath = path.join(outputDir, `${currentManifest.id}.cindy`);
@@ -81,18 +93,31 @@ describe('MekaDevPluginManager', () => {
           reviewed: false,
         },
       })),
-      installPackage: vi.fn(async (cindyPath) => {
-        const zip = await JSZip.loadAsync(await fs.promises.readFile(cindyPath));
-        expect(zip.file('cindy-signatures.json')).toBeNull();
-        const packageManifest = await readPackageManifest(cindyPath);
-        installedIds.add(packageManifest.id);
-        return installedGhost(packageManifest);
-      }),
-      updatePackage: vi.fn(async (cindyPath, expectedId) => {
-        const packageManifest = await readPackageManifest(cindyPath);
-        expect(packageManifest.id).toBe(expectedId);
-        return installedGhost(packageManifest);
-      }),
+      installPackage: vi.fn(
+        async (
+          cindyPath: string,
+          _authorization: MekaDevPluginInstallAuthorization,
+          _ownerLease: MekaDevPluginOwnerLease,
+        ) => {
+          const zip = await JSZip.loadAsync(await fs.promises.readFile(cindyPath));
+          expect(zip.file('cindy-signatures.json')).toBeNull();
+          const packageManifest = await readPackageManifest(cindyPath);
+          installedIds.add(packageManifest.id);
+          return installedGhost(packageManifest);
+        },
+      ),
+      updatePackage: vi.fn(
+        async (
+          cindyPath: string,
+          expectedId: string,
+          _authorization: MekaDevPluginInstallAuthorization,
+          _ownerLease: MekaDevPluginOwnerLease,
+        ) => {
+          const packageManifest = await readPackageManifest(cindyPath);
+          expect(packageManifest.id).toBe(expectedId);
+          return installedGhost(packageManifest);
+        },
+      ),
       uninstallPackage: vi.fn(async (id) => {
         installedIds.delete(id);
       }),
@@ -393,21 +418,27 @@ describe('MekaDevPluginManager', () => {
           },
         };
       },
-      installPackage: vi.fn(async (cindyPath): Promise<InstalledGhost> => {
-        derived.push(await fs.promises.readFile(cindyPath));
-        const zip = await JSZip.loadAsync(await fs.promises.readFile(cindyPath));
-        const parsed = validateGhostManifest(
-          JSON.parse(await zip.file(GHOST_MANIFEST_FILE)!.async('text')),
-        );
-        if (!parsed.ok) throw new Error(`派生包作者清单非法:${parsed.reason}`);
-        installedIds.add(parsed.manifest.id);
-        return {
-          manifest: parsed.manifest,
-          dir: path.join(workDir, 'installed', parsed.manifest.id),
-          enabled: true,
-          approval: { state: 'legacy-unapproved' },
-        };
-      }),
+      installPackage: vi.fn(
+        async (
+          cindyPath: string,
+          _authorization: MekaDevPluginInstallAuthorization,
+          _ownerLease: MekaDevPluginOwnerLease,
+        ): Promise<InstalledGhost> => {
+          derived.push(await fs.promises.readFile(cindyPath));
+          const zip = await JSZip.loadAsync(await fs.promises.readFile(cindyPath));
+          const parsed = validateGhostManifest(
+            JSON.parse(await zip.file(GHOST_MANIFEST_FILE)!.async('text')),
+          );
+          if (!parsed.ok) throw new Error(`派生包作者清单非法:${parsed.reason}`);
+          installedIds.add(parsed.manifest.id);
+          return {
+            manifest: parsed.manifest,
+            dir: path.join(workDir, 'installed', parsed.manifest.id),
+            enabled: true,
+            approval: { state: 'legacy-unapproved' },
+          };
+        },
+      ),
     };
     const manager = new MekaDevPluginManager(realDeps);
     const runtimeId = mekaDevRuntimeId('demo-plugin');
@@ -447,5 +478,333 @@ describe('MekaDevPluginManager', () => {
 
     expect(unsubscribeWatcher).toHaveBeenCalledTimes(1);
     expect(deps.onChanged).toHaveBeenLastCalledWith([]);
+  });
+});
+
+/**
+ * 回归:第四轮上游同步的 P0 —— 确认与落位复核必须落在**同一份派生包 inspection** 上。
+ *
+ * 修复前 `meka-dev-plugins:install` 在**源码包**身份上求确认(原始 plugin ID + 源码内容
+ * 指纹),落位前 `assertGhostInstallConsent` 却拿**派生包**身份复核(`meka-dev-*` runtime ID
+ * + 整包文件 sha256),`ghostInstallConsentKey` 两个字段都对不上,于是用户确认后必然
+ * `PRECONDITION_FAILED / 插件内容在确认后发生了变化`,开发目录首装根本装不上。
+ *
+ * 这里的 deps 复刻 `index.ts::resolveDevelopmentPackageConsent` +
+ * `installDevelopmentPackage`/`updateDevelopmentPackage` 的真实两段式:
+ * 在派生包 inspection 上按**策略**求确认(不持租约)→ `assertGhostInstallConsent` 复核
+ * → `ownerLease.acquire()` → 落位。
+ */
+describe('Meka 开发目录装入确认(派生包 inspection)', () => {
+  let workDir: string;
+  let sourceDir: string;
+  let currentManifest: GhostManifest;
+  let onEvents: WatcherHostEventsHandler | null;
+
+  const APPROVAL: GhostInstallApproval = {
+    state: 'approved',
+    revision: '00000000-0000-4000-8000-000000000001',
+  };
+
+  interface Harness {
+    deps: MekaDevPluginManagerDeps;
+    /** 真正落位的 runtime ID(可观察结果:修复前这里会一直为空)。 */
+    placements: string[];
+    /** 确认框被调用的次数与事实。 */
+    prompts: Array<{
+      initiator: Parameters<GhostInstallConsentPrompt>[0]['initiator'];
+      origin: Parameters<GhostInstallConsentPrompt>[0]['origin'];
+      facts: string;
+      ghostId: string;
+    }>;
+    /** 「打包 → 确认 → 取租约 → 落位」的顺序日志。 */
+    sequence: string[];
+    /** 装入实现里抛出的错误(fail-closed 的原始异常)。 */
+    errors: unknown[];
+    /** 已装副本(确认受体)。 */
+    installed: Map<string, InstalledGhost>;
+    leaseAcquires: number;
+  }
+
+  function harness(): Harness {
+    const placements: string[] = [];
+    const prompts: Harness['prompts'] = [];
+    const sequence: string[] = [];
+    const errors: unknown[] = [];
+    const installed = new Map<string, InstalledGhost>();
+    let leaseAcquires = 0;
+
+    const readDerived = async (cindyPath: string): Promise<GhostManifest> => {
+      const zip = await JSZip.loadAsync(await fs.promises.readFile(cindyPath));
+      const parsed = validateGhostManifest(
+        JSON.parse(await zip.file(GHOST_MANIFEST_FILE)!.async('text')),
+      );
+      if (!parsed.ok) throw new Error(`派生包作者清单非法:${parsed.reason}`);
+      return parsed.manifest;
+    };
+    // index.ts 的两段式:确认(不持租约)→ 锁内复核 → 取租约 → 落位。
+    const twoPhase = async (
+      cindyPath: string,
+      authorization: MekaDevPluginInstallAuthorization,
+      ownerLease: MekaDevPluginOwnerLease,
+    ): Promise<InstalledGhost> => {
+      const bytes = await fs.promises.readFile(cindyPath);
+      const manifest = await readDerived(cindyPath);
+      const packageSha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+      const receiver = installed.get(manifest.id) ?? null;
+      const policy =
+        authorization.mode === 'prompt'
+          ? {
+              ...authorization,
+              prompt: async (request: Parameters<GhostInstallConsentPrompt>[0]) => {
+                sequence.push('consent');
+                prompts.push({
+                  initiator: request.initiator,
+                  origin: request.origin,
+                  facts: request.facts.kind,
+                  ghostId: request.facts.ghostId,
+                });
+                return authorization.prompt(request);
+              },
+            }
+          : authorization;
+      let decision: Awaited<ReturnType<typeof obtainGhostInstallConsent>>;
+      try {
+        decision = await obtainGhostInstallConsent(policy, receiver, manifest, packageSha256);
+        assertGhostInstallConsent(decision, receiver, manifest, packageSha256);
+      } catch (error) {
+        errors.push(error);
+        throw error;
+      }
+      // 确认之后才取 owner 租约(与 index.ts 一致)。
+      const release = ownerLease.acquire();
+      try {
+        sequence.push('place');
+        const ghost: InstalledGhost = {
+          manifest,
+          dir: path.join(workDir, 'installed', manifest.id),
+          enabled: true,
+          approval: APPROVAL,
+        };
+        installed.set(manifest.id, ghost);
+        placements.push(manifest.id);
+        return ghost;
+      } finally {
+        release();
+      }
+    };
+
+    const deps: MekaDevPluginManagerDeps = {
+      getRegistryPath: () => path.join(workDir, 'owner', '.meka-dev-plugins.json'),
+      getTempRoot: () => path.join(workDir, 'temp'),
+      captureOwnerLease: () => ({
+        acquire: () => {
+          sequence.push('acquire');
+          leaseAcquires += 1;
+          return () => sequence.push('release');
+        },
+      }),
+      packDirectory: vi.fn(async (_dir, { outputDir }) => {
+        sequence.push('pack');
+        await fs.promises.mkdir(outputDir, { recursive: true });
+        const cindyPath = path.join(outputDir, `${currentManifest.id}.cindy`);
+        const zip = new JSZip();
+        zip.file('ghost.json', JSON.stringify(currentManifest));
+        zip.file('main.js', '// development Plugin');
+        zip.file('cindy-signatures.json', '{}');
+        const buf = await zip.generateAsync({ type: 'nodebuffer' });
+        await fs.promises.writeFile(cindyPath, buf);
+        return { ok: true as const, cindyPath, manifest: currentManifest, buf };
+      }),
+      inspectPackage: vi.fn(async (cindyPath) => ({
+        manifest: await readDerived(cindyPath),
+        trust: {
+          level: 'unverified' as const,
+          publisherSigned: false,
+          publisherVerified: false,
+          reviewed: false,
+        },
+      })),
+      installPackage: vi.fn(twoPhase),
+      updatePackage: vi.fn(
+        async (
+          cindyPath: string,
+          expectedId: string,
+          authorization: MekaDevPluginInstallAuthorization,
+          ownerLease: MekaDevPluginOwnerLease,
+        ) => {
+          expect((await readDerived(cindyPath)).id).toBe(expectedId);
+          return twoPhase(cindyPath, authorization, ownerLease);
+        },
+      ),
+      uninstallPackage: vi.fn(async () => undefined),
+      isInstalled: (id) => installed.has(id),
+      subscribe: vi.fn(async (_dir, _ignore, events) => {
+        onEvents = events;
+        return { unsubscribe: vi.fn(async () => undefined) };
+      }),
+      onContentReloaded: vi.fn(),
+      onChanged: vi.fn(),
+    };
+    return {
+      deps,
+      placements,
+      prompts,
+      sequence,
+      errors,
+      installed,
+      get leaseAcquires() {
+        return leaseAcquires;
+      },
+    };
+  }
+
+  /** 用户发起的安装:确认框只投给发起窗口,initiator 是本人,来源是本地源码目录。 */
+  const userPolicy = (
+    answer: boolean,
+  ): Extract<MekaDevPluginInstallAuthorization, { mode: 'prompt' }> => ({
+    mode: 'prompt',
+    prompt: vi.fn(async () => answer),
+    initiator: 'user',
+    origin: 'local-file',
+  });
+
+  beforeEach(async () => {
+    workDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'cindy-meka-dev-consent-'));
+    sourceDir = path.join(workDir, 'source');
+    await fs.promises.mkdir(sourceDir, { recursive: true });
+    await fs.promises.writeFile(path.join(sourceDir, 'ghost.json'), '{}');
+    currentManifest = manifest();
+    onEvents = null;
+  });
+
+  afterEach(async () => {
+    await fs.promises.rm(workDir, { recursive: true, force: true });
+  });
+
+  it('用户确认后首装成功,且确认审阅的就是即将落位那份派生包', async () => {
+    const h = harness();
+    const manager = new MekaDevPluginManager(h.deps);
+    const runtimeId = mekaDevRuntimeId('demo-plugin');
+    const inspection = await manager.inspect(sourceDir);
+    h.sequence.length = 0;
+
+    const result = await manager.install(sourceDir, inspection.packageSha256, userPolicy(true));
+
+    // 修复前这里会抛 PRECONDITION_FAILED,`placements` 永远为空。
+    expect(h.errors).toEqual([]);
+    expect(h.placements).toEqual([runtimeId]);
+    expect(result.ghost.manifest.id).toBe(runtimeId);
+    expect(result.item).toMatchObject({ runtimeId, pluginId: 'demo-plugin' });
+    // 确认的事实来自**派生包**(runtime ID),不是源码 manifest 的原始 ID。
+    expect(h.prompts).toEqual([
+      { initiator: 'user', origin: 'local-file', facts: 'install', ghostId: runtimeId },
+    ]);
+    // 确认在取 owner 租约之前发生(等待用户时不持租约),租约覆盖落位。
+    expect(h.sequence).toEqual(['pack', 'consent', 'acquire', 'place', 'release']);
+    expect(h.leaseAcquires).toBe(1);
+  });
+
+  it('用户在确认框取消时不落位', async () => {
+    const h = harness();
+    const manager = new MekaDevPluginManager(h.deps);
+    const inspection = await manager.inspect(sourceDir);
+
+    await expect(
+      manager.install(sourceDir, inspection.packageSha256, userPolicy(false)),
+    ).rejects.toMatchObject({ code: 'MUTATION_CANCELLED' });
+
+    expect(h.placements).toEqual([]);
+    expect(h.leaseAcquires).toBe(0);
+  });
+
+  it('权限变多的更新先确认再落位', async () => {
+    const h = harness();
+    const manager = new MekaDevPluginManager(h.deps);
+    const runtimeId = mekaDevRuntimeId('demo-plugin');
+    await manager.install(
+      sourceDir,
+      (await manager.inspect(sourceDir)).packageSha256,
+      userPolicy(true),
+    );
+    h.prompts.length = 0;
+    h.sequence.length = 0;
+
+    // 新增 notify 卡槽 = 新增权限。
+    currentManifest = { ...manifest('1.1.0'), slots: ['tool', 'notify'] };
+    const nextSha = (await manager.inspect(sourceDir)).packageSha256;
+    h.sequence.length = 0;
+    await manager.install(sourceDir, nextSha, userPolicy(true));
+
+    expect(h.prompts).toEqual([
+      { initiator: 'user', origin: 'local-file', facts: 'update', ghostId: runtimeId },
+    ]);
+    expect(h.placements).toEqual([runtimeId, runtimeId]);
+    expect(h.sequence).toEqual(['pack', 'consent', 'acquire', 'place', 'release']);
+  });
+
+  it('权限没变多的更新不弹确认、直接原位更新(存量兼容)', async () => {
+    const h = harness();
+    const manager = new MekaDevPluginManager(h.deps);
+    const runtimeId = mekaDevRuntimeId('demo-plugin');
+    await manager.install(
+      sourceDir,
+      (await manager.inspect(sourceDir)).packageSha256,
+      userPolicy(true),
+    );
+    h.prompts.length = 0;
+    h.sequence.length = 0;
+
+    // 只有版本变化,权限面不变(派生的 DEV command 也按 pluginId 稳定,不构成新增)。
+    currentManifest = manifest('1.1.0');
+    const nextSha = (await manager.inspect(sourceDir)).packageSha256;
+    h.sequence.length = 0;
+    const updated = await manager.install(sourceDir, nextSha, userPolicy(true));
+
+    expect(h.prompts).toEqual([]);
+    expect(h.placements).toEqual([runtimeId, runtimeId]);
+    expect(updated.ghost.manifest.version).toBe('1.1.0');
+    // 不需要确认的更新仍然取租约落位,不因“没弹窗”而跳过安全绑定。
+    expect(h.sequence).toEqual(['pack', 'acquire', 'place', 'release']);
+  });
+
+  it('后台 sync 需要确认时 fail-closed:抛 GhostInstallConsentRequiredError,不弹窗不落位', async () => {
+    const h = harness();
+    const manager = new MekaDevPluginManager(h.deps);
+    const runtimeId = mekaDevRuntimeId('demo-plugin');
+    await manager.install(
+      sourceDir,
+      (await manager.inspect(sourceDir)).packageSha256,
+      userPolicy(true),
+    );
+    h.prompts.length = 0;
+
+    currentManifest = { ...manifest('1.1.0'), slots: ['tool', 'notify'] };
+    onEvents?.([{ type: 'update', path: path.join(sourceDir, 'main.js') }]);
+
+    await vi.waitFor(
+      async () =>
+        expect(await manager.list()).toMatchObject([
+          { runtimeId, status: 'error', error: expect.stringContaining('requires user confirmation') },
+        ]),
+      { timeout: 2_000 },
+    );
+    // 原始异常是后台口径的 fail-closed,不是静默跳过或降级落位。
+    expect(h.errors).toHaveLength(1);
+    expect(h.errors[0]).toBeInstanceOf(GhostInstallConsentRequiredError);
+    expect(h.prompts).toEqual([]);
+    expect(h.placements).toEqual([runtimeId]);
+  });
+
+  it('漏传策略(缺省)按后台口径 fail-closed,不可能静默落位', async () => {
+    const h = harness();
+    const manager = new MekaDevPluginManager(h.deps);
+    const inspection = await manager.inspect(sourceDir);
+
+    await expect(manager.install(sourceDir, inspection.packageSha256)).rejects.toBeInstanceOf(
+      GhostInstallConsentRequiredError,
+    );
+
+    expect(h.placements).toEqual([]);
+    expect(h.leaseAcquires).toBe(0);
   });
 });

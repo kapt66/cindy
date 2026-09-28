@@ -50,7 +50,24 @@ describe('market Ghost session boundary', () => {
     const afterCommitBody = installBody.slice(afterCommitStart, afterCommitEnd);
     expect(afterCommitBody).toContain('this.withCapturedLedgerMutation(ledger, () => {');
     expect(afterCommitBody).not.toContain('requireSameMarketOwner(');
-    expect(automaticBody).toContain('          true,\n          owner,\n        );');
+    expect(automaticBody).toContain("          { mode: 'automatic' },\n          owner,\n        );");
+  });
+
+  it('releases the custom-source cache lease before waiting for install consent', () => {
+    const installStart = marketServiceSource.indexOf('  private async customInstall(');
+    const installEnd = marketServiceSource.indexOf(
+      '\n  private async installDetail(',
+      installStart,
+    );
+    const installBody = marketServiceSource.slice(installStart, installEnd);
+    const lease = installBody.indexOf('manager.withDiscoveredSource(');
+    const pack = installBody.indexOf('packCustomMarketPlugin(');
+    const consent = installBody.indexOf('obtainGhostInstallConsent(');
+    expect(lease).toBeGreaterThan(-1);
+    expect(pack).toBeGreaterThan(lease);
+    expect(consent).toBeGreaterThan(pack);
+    expect(installBody.slice(lease, consent)).toContain('packCustomMarketPlugin(');
+    expect(installBody.slice(consent)).not.toContain('withDiscoveredSource(');
   });
 
   it('keeps package placement and market ledger commit in the same owner lease', () => {
@@ -343,8 +360,76 @@ describe('market Ghost session boundary', () => {
     expect(body).toContain('!isSameAppSession(expectedOwner, getActiveAppSession())');
     expect(body).toContain('expectedPackageSha256');
     expect(body).toContain('expectedSessionGeneration');
-    expect(body).toContain('const releaseMutation = beginGhostMutation(expectedOwner);');
+    // 开发目录装入的 owner 绑定(第四轮同步 P0 修复后的形状):确认可能等用户几分钟,
+    // 不能持租约,所以「打包前捕获 owner → 确认 → 取租约」被拆成两道同步检查——
+    // 入口的 assertGhostMutationOwnerStable,以及 deps 里 captureOwnerLease 的 acquire
+    // (即 beginGhostMutation(捕获到的 owner))。
+    expect(body).toContain('assertGhostMutationOwnerStable(expectedOwner);');
+    expect(source).toContain('captureOwnerLease: () => {');
+    expect(source).toContain('const owner = captureGhostMutationOwner();');
+    expect(source).toContain('return { acquire: () => beginGhostMutation(owner) };');
     expect(source).toContain("import { watcherHostClient } from '../watcher-host/index.js';");
     expect(body).not.toContain("await import('../watcher-host/index.js')");
+  });
+
+  it('resolves Meka development install consent on the derived package inspection', () => {
+    // P0 回归(index.ts 依赖 Electron 进程态,不能直接 import,沿用本文件的源码契约模式):
+    // 确认必须落在**即将落位那份派生包**的 inspection 上,否则 `ghostInstallConsentKey`
+    // 的 ghostId/包摘要与锁内复核对不上,用户确认后必然 PRECONDITION_FAILED。
+    const resolveStart = source.indexOf('const resolveDevelopmentPackageConsent = (');
+    const resolveEnd = source.indexOf('\n  const installDevelopmentPackage = async (', resolveStart);
+    expect(resolveStart).toBeGreaterThan(-1);
+    const resolveBody = source.slice(resolveStart, resolveEnd);
+    expect(resolveBody).toContain('obtainGhostInstallConsent(');
+    expect(resolveBody).toContain('inspected.manifest,');
+    expect(resolveBody).toContain('inspected.packageSha256,');
+    expect(resolveBody).not.toContain("mode: 'decision'");
+    expect(resolveBody).not.toContain('mekaDevRuntimeId');
+
+    const installStart = resolveEnd;
+    const installEnd = source.indexOf('\n  const updateDevelopmentPackage = async (', installStart);
+    const installBody = source.slice(installStart, installEnd);
+    const consentAt = installBody.indexOf(
+      'await resolveDevelopmentPackageConsent(authorization, inspected)',
+    );
+    const leaseAt = installBody.indexOf('ownerLease.acquire()');
+    const dockAt = installBody.indexOf('installAndDock(');
+    expect(consentAt).toBeGreaterThan(-1);
+    // 顺序不变量:先求确认(不持租约)→ 再取租约 → 才落位。
+    expect(leaseAt).toBeGreaterThan(consentAt);
+    expect(dockAt).toBeGreaterThan(leaseAt);
+    expect(installBody).toContain('consent: { decision, manifest: inspected.manifest }');
+    expect(installBody).not.toContain('authorizeMekaDevPluginInstall');
+
+    const updateEnd = source.indexOf('\n  const mekaDevPlugins = new MekaDevPluginManager(', installEnd);
+    const updateBody = source.slice(installEnd, updateEnd);
+    expect(updateBody.indexOf('ownerLease.acquire()')).toBeGreaterThan(
+      updateBody.indexOf('await resolveDevelopmentPackageConsent(authorization, inspected)'),
+    );
+    expect(updateBody).toContain('assertGhostInstallConsent(');
+    expect(updateBody).toContain('inspected.packageSha256,');
+
+    // 策略本身:窗口级 prompt,initiator 是本人,来源与本页本地 .cindy 口径一致。
+    const policyStart = source.indexOf('const mekaDevInstallAuthorization = (');
+    const policyBody = source.slice(
+      policyStart,
+      source.indexOf('const verifyMekaDevPluginSource = async (', policyStart),
+    );
+    expect(policyBody).toContain("mode: 'prompt'");
+    expect(policyBody).toContain('createWindowGhostInstallConsentPrompt(sender)');
+    expect(policyBody).toContain("initiator: 'user'");
+    expect(policyBody).toContain("origin: 'local-file'");
+
+    // IPC 入口:锁外只验源码快照指纹与身份门,交出策略;不做任何预先求得的结论,
+    // 也不在这里取 owner 租约(租约由 deps 在确认之后取)。
+    const handlerStart = source.indexOf("ipcMain.handle('meka-dev-plugins:install'");
+    const handlerEnd = source.indexOf("\n  ipcMain.handle('meka-dev-plugins:package'", handlerStart);
+    const handlerBody = source.slice(handlerStart, handlerEnd);
+    expect(handlerBody).toContain('const authorization = mekaDevInstallAuthorization(event.sender);');
+    expect(handlerBody).toContain('await verifyMekaDevPluginSource(');
+    expect(handlerBody).toContain('assertGhostMutationOwnerStable(expectedOwner);');
+    expect(handlerBody).toContain('await mekaDevPlugins.install(');
+    expect(handlerBody).not.toContain('beginGhostMutation(');
+    expect(handlerBody).not.toContain('obtainGhostInstallConsent(');
   });
 });

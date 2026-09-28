@@ -31,6 +31,7 @@ import {
   FolderCode,
   MessageCircle,
   Plus,
+  ShieldAlert,
   SlidersHorizontal,
   Sparkles,
   Store,
@@ -68,7 +69,6 @@ import { resetDraftWorkspaceTargets } from '@/state/newMakerDraft';
 import { ghostInstallErrorKey } from '@/cindy-brain/installErrorKey';
 import { installGhostFromFile, pickAndUpdateGhost } from '@/cindy-brain/installFlow';
 import { MekaDevInstallReview } from './MekaDevInstallReview';
-import { Spinner } from '@/components/ui/spinner';
 import { SegmentedControl } from '@/components/ui/segmented-control';
 import { cn } from '@/lib/utils';
 import { AttentionDot } from '@/components/sidebar/AttentionDot';
@@ -422,6 +422,8 @@ export function GhostPluginPage({
   const { confirm } = useConfirmDialog();
   const showPluginMarketActionError = useCallback(
     async (error: unknown) => {
+      // 用户在安装确认框里取消不是失败，不弹错误提示。
+      if (extractIpcError(error)?.code === 'MUTATION_CANCELLED') return;
       toast.error(t(pluginMarketErrorKey(error)));
     },
     [t],
@@ -690,6 +692,11 @@ export function GhostPluginPage({
   );
   const refreshMarketOnForeground = useCallback(() => refreshMarket(true), [refreshMarket]);
   usePluginMarketForegroundRefresh(refreshMarketOnForeground, lastMarketRefreshAtRef);
+  useEffect(() => {
+    return window.electronAPI.pluginMarket.onUpdateConsentHoldsChanged(() => {
+      void refreshMarket(true).catch(() => undefined);
+    });
+  }, [refreshMarket]);
   useEffect(() => {
     if (installedGhostMarketKeyRef.current === installedGhostMarketKey) return;
     installedGhostMarketKeyRef.current = installedGhostMarketKey;
@@ -1320,8 +1327,14 @@ export function GhostPluginPage({
       return;
     }
     if (picked.canceled) return;
-    // 上游 D3 之后安装不再做权限二次确认,但开发模式装载会长期信任一个可被
-    // 随时改写的源码目录,这里仍保留逐项能力确认(Meka 自有确认内容组件)。
+    // 开发目录登记是**两次确认**,且都是有意为之(2026-09-25 第四轮上游同步报告已登记):
+    // 1) 这一次是 Meka 自有的逐项能力审阅,它比通用确认多出「信任等级 + 源码目录」——
+    //    docs/dev-rules/plugin-security-and-authoring.md §4.1 要求首次登记必须展示这些事实;
+    // 2) 用户点「确认」后,Main 还会按上游强制确认门在**派生包**上弹一次权限确认
+    //    (cindy-brain/index.ts::resolveDevelopmentPackageConsent → GhostInstallConsentHost),
+    //    那一次才是落位前的授权事实,不能由 Renderer 自报。
+    // 上游 D3 起「安装不做能力确认」的旧口径已作废,这里保留自有审阅是为了上面那份事实,
+    // 不是为了替代上游确认。
     const approved = await confirm({
       title: t('settings.ghosts.meka.dev.confirmTitle', {
         name: picked.manifest.name,
@@ -2231,6 +2244,7 @@ export function GhostPluginPage({
                         item={item}
                         sourceLabel={t(`settings.ghosts.page.origin.${item.origin}`)}
                         updateVersion={item.marketUpdate?.version}
+                        updateNeedsConsent={item.marketUpdate?.updateRequiresConsent === true}
                         updateBusy={
                           (item.marketUpdate !== null && marketBusyId !== null) || batchRunning
                         }
@@ -2260,6 +2274,7 @@ export function GhostPluginPage({
                             item={item}
                             sourceLabel={t(`settings.ghosts.page.origin.${item.origin}`)}
                             updateVersion={item.marketUpdate?.version}
+                            updateNeedsConsent={item.marketUpdate?.updateRequiresConsent === true}
                             updateBusy={
                               (item.marketUpdate !== null && marketBusyId !== null) || batchRunning
                             }
@@ -2627,12 +2642,11 @@ export function MarketPluginCard({
             aria-describedby={replacementDescription ? replacementDescriptionId : undefined}
             className="relative z-[1] min-w-[72px] shrink-0"
           >
-            {!pending &&
-              t(
-                item.installState === 'conflict'
-                  ? 'settings.ghosts.market.replace'
-                  : 'settings.ghosts.market.install',
-              )}
+            {t(
+              item.installState === 'conflict'
+                ? 'settings.ghosts.market.replace'
+                : 'settings.ghosts.market.install',
+            )}
           </Button>
         ) : null}
       </div>
@@ -2750,6 +2764,7 @@ export function GhostPluginCard({
   displayId = item.id,
   sourceLabel,
   updateVersion,
+  updateNeedsConsent = false,
   updateBusy = false,
   updatePending = false,
   onUpdate,
@@ -2766,6 +2781,8 @@ export function GhostPluginCard({
   sourceLabel?: string;
   /** 市场存在新版本时的目标版本;与 onUpdate 同时提供。 */
   updateVersion?: string;
+  /** 新版本权限变多、后台更新已暂停等用户确认(Main 按真实包判定)。 */
+  updateNeedsConsent?: boolean;
   updateBusy?: boolean;
   /** 本卡正在更新:更新胶囊换成 Spinner。 */
   updatePending?: boolean;
@@ -2859,7 +2876,9 @@ export function GhostPluginCard({
             release —— 客户端拿不到区分二者的任何事实,`updateVersion` 为空只表示
             「我们没看到可更新版本」,不等于「已是最新」。按投影/信任不变量,客户端也
             不得为了拿到这个答案去做二次筛选(见 docs/dev-rules/plugin-security-and-authoring.md
-            第 3.1 节)。 */}
+            第 3.1 节)。`updateNeedsConsent` 是 Main 按**下载后的真实包**判定的事实
+            (新版本权限变多/后台更新已暂停),不依赖任何投影推断,所以它是这条
+            「只说事实」里的合法一项,与「已是最新」不是同一类断言。 */}
         <span className="mt-1 block min-w-0 truncate text-11 text-[var(--text-tertiary)]">
           {sourceLabel ? `${sourceLabel} · ` : ''}v{item.version}
           {item.oauthAuthorizationExpired ? (
@@ -2867,6 +2886,15 @@ export function GhostPluginCard({
               {' · '}
               <AlertTriangle size={11} className="inline" aria-hidden="true" />
               <span>{t('settings.ghosts.page.oauthAuthorizationExpired')}</span>
+            </span>
+          ) : updateNeedsConsent ? (
+            // 上游本轮新增：Main 按下载后的真实包判定「新版本权限变多、后台更新已暂停」，
+            // 市场条目带 updateRequiresConsent 时在这里如实标出，用户点更新再弹确认
+            // （见 docs/dev-rules/plugin-security-and-authoring.md）。
+            <span className="inline-flex items-center gap-1 text-[var(--text-secondary)]">
+              {' · '}
+              <ShieldAlert size={11} className="inline" aria-hidden="true" />
+              {t('settings.ghosts.installConsent.updateNeedsConsent')}
             </span>
           ) : null}
           {!enabled ? ` · ${t('settings.ghosts.disabledTag')}` : ''}
@@ -2891,6 +2919,11 @@ export function GhostPluginCard({
               variant="secondary"
               size="sm"
               compact
+              // 上游把「更新中」收敛到共享 Button 的 loading（自带 Spinner 与
+              // opacity-0 遮罩）；Meka 渠道在下载/安装阶段会给出 updateProgress，
+              // 那时进度文案必须继续可见，不能被遮罩与 Spinner 吃掉。
+              // 无进度数据时与上游完全同形。
+              loading={updatePending && !updateProgress}
               type="button"
               onClick={stopAnd(onUpdate)}
               disabled={updateBusy}
@@ -2903,13 +2936,7 @@ export function GhostPluginCard({
                       version: updateVersion,
                     })
               }
-              className={cn(
-                'inline-flex h-7 min-w-[72px] items-center justify-center gap-1 rounded-full border border-[var(--border-default)] bg-[var(--surface-elevated)] px-2.5 text-11 font-medium text-[var(--text-primary)]',
-                'transition-colors duration-150 hover:bg-[var(--surface-hover-soft)]',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
-                'disabled:cursor-wait disabled:active:scale-100',
-                updateBusy && !updateProgress && 'opacity-40',
-              )}
+              className="min-w-[72px]"
             >
               {updateProgress ? (
                 <PluginMarketProgressContent
@@ -2918,8 +2945,6 @@ export function GhostPluginCard({
                   fallback={t('settings.ghosts.page.updateTo', { version: updateVersion })}
                   showBar={false}
                 />
-              ) : updatePending ? (
-                <Spinner size={12} />
               ) : (
                 <>
                   <ArrowUp size={11} className="text-[var(--text-secondary)]" aria-hidden="true" />

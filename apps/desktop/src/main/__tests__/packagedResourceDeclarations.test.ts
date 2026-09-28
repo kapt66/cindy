@@ -113,6 +113,10 @@ const BUILD_TIME_GENERATED_RESOURCES = new Map<string, string>([
     'resources/remote-file-service',
     'build-remote-bundles.mjs 生成,.gitignore:42。',
   ],
+  [
+    'resources/cindy-meka-updater.exe',
+    'forge.config.ts 的 prePackage 现场用 Rust + Tauri 构建后写入 resources/(日志 `Building ${UPDATER_EXE} (Rust + Tauri)`、落点 destExe),.gitignore:48-51(与 cindy-updater.exe 同批登记;2026-09-24 裁决「随包 exe 不入仓」)。它确实被 extraResourcesForTarget() 声明,故必须在此白名单里,否则干净 checkout 上该门禁必红。',
+  ],
 ]);
 
 /**

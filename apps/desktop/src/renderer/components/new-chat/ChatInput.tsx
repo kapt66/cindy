@@ -7,6 +7,7 @@ import {
   useSyncExternalStore,
   useLayoutEffect,
   type DragEvent as ReactDragEvent,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type RefObject,
   type ReactNode,
@@ -20,6 +21,8 @@ import { useStableTranslation as useTranslation } from '@/hooks/useStableTransla
 import type { AgentInputReference } from '@cindy/maker-shared/agent-input-projection';
 import { requiresFullAccessConfirmation } from '@cindy/maker-shared/permission-mode';
 import { ImageLightbox } from '@/components/chat/ImageLightbox';
+import { AnnotationStrokesSvg } from '@/components/chat/AnnotationStrokesSvg';
+import { isAnnotationBurnInError } from '@/lib/annotationBurnIn';
 import { ImageHoverPreview } from '@/components/chat/ImageHoverPreview';
 import { formatBytes, TextLightbox } from '@/components/chat/TextLightbox';
 import { AttachmentTypeThumb } from './AttachmentTypeThumb';
@@ -47,6 +50,7 @@ import {
   promoteTrailingPlainListParagraph,
 } from './ComposerListNodes';
 import { WindowsSelectionReplacement } from './WindowsSelectionReplacement';
+import { useVoiceProcessingIndicator } from '../../voice-input/useVoiceProcessingIndicator';
 import { EmptyDocSelectionGuard } from './EmptyDocSelectionGuard';
 import { restoreComposerDocument } from './restoreComposerDocument';
 import {
@@ -392,6 +396,10 @@ import {
   type VoiceInputShortcut,
 } from '@/voice-input/shortcut';
 import { VoiceInputPointerHintLayer } from '@/voice-input/VoiceInputPointerHintLayer';
+import {
+  createComposerLongPressVoiceGesture,
+  type ComposerLongPressVoiceGesture,
+} from '@/voice-input/composerLongPressGesture';
 import { requestRendererMicrophonePermission } from '@/voice-input/startGuards';
 import { COMPOSER_MENTION_MIME, decodeComposerMentionPayload } from '@/lib/composerMentionDrag';
 import { createWorkLouderCodexVoiceGesture } from '@/lib/workLouderCodexVoiceGesture';
@@ -488,6 +496,11 @@ interface ChatInputProps {
       onRemoteOptimisticFailure?: (clientId: string, error?: unknown) => void;
       /** 发送因补选目录暂缓时，由父组件在后续真正受理后完成原 composer 的清理。 */
       onDeferredAccepted?: () => void;
+      /**
+       * 标注烧录失败时中止发送而非降级发原图。仅在已有任务的发送上传：此时
+       * 返回 false 会由本组件把点击时的正文、附件与笔迹原样恢复，用户可直接重试。
+       */
+      annotationBurnFailure?: 'abort';
     },
   ) => boolean | void | Promise<boolean | void>;
   /** Session ID for binding workingDir. When absent, folder picker is hidden. */
@@ -615,6 +628,16 @@ interface ChatInputProps {
   messages?: Array<{ role: string; content: string; quotesEncoded?: boolean }>;
   /** Custom placeholder text. Defaults to "今天我们做点什么呢~" */
   placeholder?: string;
+  /**
+   * 只读预览文案(首页任务建议悬停时的完整 prompt)。非空时盖在编辑器上显示,
+   * 暂时遮住当前正文,不写入草稿;置回 null 即恢复原样。
+   */
+  previewPrompt?: string | null;
+  /**
+   * 输入框「正文不可改」锁定状态变化时回调(禁用 / 发送中 / 语音占用)。供外部写草稿的入口
+   * (如首页建议点击填入)在锁定期间放弃写入,避免覆盖进行中的语音稿或待发正文。
+   */
+  onMutationLockChange?: (locked: boolean) => void;
   /** Controlled open state for FolderPickerPopover. When omitted, internal state is used. */
   folderPickerOpen?: boolean;
   /** Callback when FolderPickerPopover open state changes (controlled mode). */
@@ -1131,6 +1154,8 @@ export function ChatInput({
   onQueueEditLock,
   messages,
   placeholder,
+  previewPrompt,
+  onMutationLockChange,
   folderPickerOpen,
   onFolderPickerOpenChange,
   showFolderPicker = true,
@@ -1193,6 +1218,9 @@ export function ChatInput({
   const recommendationRef = useRef(recommendation);
   recommendationRef.current = recommendation;
   const showRecommendationRef = useRef(false);
+  // 首页建议预览遮住正文期间的输入闸门(键盘与硬件动作共用,见 showPromptPreview);
+  // handleKeyDown 与硬件动作订阅都是稳定闭包,经 ref 读当前值。
+  const promptPreviewInputGuardRef = useRef<() => boolean>(() => false);
   const acceptPromptRecommendationRef = useRef<() => boolean>(() => false);
   // session 切换时 ChatInput/Editor 会复用；推荐资格必须等目标草稿完成水合后再判断。
   const [composerHydrationGeneration, setComposerHydrationGeneration] = useState(0);
@@ -2459,6 +2487,16 @@ export function ChatInput({
         return true;
       },
       handleKeyDown(view, event) {
+        // 首页建议预览正遮住正文时,编辑器可能仍持有焦点:先撤掉预览并吞掉这一键,
+        // 保证编辑与发送永远作用在用户看得见的正文上。纯修饰键不算。
+        if (
+          !['Shift', 'Meta', 'Control', 'Alt', 'CapsLock'].includes(event.key) &&
+          promptPreviewInputGuardRef.current()
+        ) {
+          event.preventDefault();
+          return true;
+        }
+
         // Delegate panel navigation keys (↑ ↓ Enter Esc Tab) when a
         // palette is open. We can't read React state from here directly,
         // but we expose a ref-based escape hatch via `panelBridgeRef`.
@@ -3200,13 +3238,16 @@ export function ChatInput({
       prepareVoiceInputCues();
     }
   }, [voiceInputSettings.playInteractionSound]);
-  const handleVoiceInputStart = useCallback(async () => {
-    const proceed = await onBeforeVoiceInputStart?.();
-    if (proceed === false) return;
-    if (voiceInputSettings.playInteractionSound) {
-      playVoiceInputStartCue();
-    }
-    await voiceInput.start();
+  const handleVoiceInputStart = useCallback((): boolean => {
+    // 同步 claim 录音后立刻返回是否占用；授权确认（beforeStart）与启动提示音
+    // 由 useVoiceInput 的后台启动流程继续处理。
+    return voiceInput.start({
+      startedAt: performance.now(),
+      beforeStart: onBeforeVoiceInputStart,
+      onStartFeedback: () => {
+        if (voiceInputSettings.playInteractionSound) return playVoiceInputStartCue();
+      },
+    });
   }, [onBeforeVoiceInputStart, voiceInput.start, voiceInputSettings.playInteractionSound]);
 
   const playVoiceInputEndCueNow = useCallback(() => {
@@ -3237,6 +3278,7 @@ export function ChatInput({
 
   const voiceShortcutRef = useRef(voiceInputSettings.shortcut);
   const voiceInputStateRef = useRef(voiceInput.state);
+  const voiceInputGetStateRef = useRef(voiceInput.getState);
   const voiceInputStopRef = useRef(handleVoiceInputStopWithRefinement);
   voiceInputBusyRef.current = voiceInput.isBusy;
   voiceDraftTextRef.current = voiceInput.draftText;
@@ -3282,6 +3324,7 @@ export function ChatInput({
 
   useEffect(() => {
     voiceInputStateRef.current = voiceInput.state;
+    voiceInputGetStateRef.current = voiceInput.getState;
     voiceInputStopRef.current = handleVoiceInputStopWithRefinement;
     voiceInputCancelRef.current = voiceInput.cancel;
     handleVoiceInputStartRef.current = handleVoiceInputStart;
@@ -3295,6 +3338,7 @@ export function ChatInput({
     handleVoiceInputStart,
     handleVoiceInputStopWithRefinement,
     voiceInput.cancel,
+    voiceInput.getState,
     voiceInput.state,
   ]);
 
@@ -3491,6 +3535,125 @@ export function ChatInput({
     };
   }, []);
 
+  // 长按输入框语音输入(语音设置里打开,默认关闭):输入框不加任何提示,按住鼠标
+  // 左键不动片刻即开始录音,松开结束。按下由输入框的 onMouseDown 接入(要读
+  // detail 才能排除双击);移动/松开挂在 window 上。真正开始录音后再指针捕获,
+  // 拖出窗口松开也能停;等待期间不捕获,免得打断选字。
+  const composerLongPressVoiceInputEnabled = voiceInputSettings.composerLongPressEnabled;
+  const composerLongPressGestureRef = useRef<ComposerLongPressVoiceGesture | null>(null);
+  const armComposerLongPressCaptureRef = useRef<((pointerId: number, target: Element) => void) | null>(
+    null,
+  );
+  useEffect(() => {
+    if (!composerLongPressVoiceInputEnabled) return;
+    let capture: { pointerId: number; target: Element } | null = null;
+    let gesture: ComposerLongPressVoiceGesture;
+
+    const handleLostPointerCapture = (event: Event) => {
+      if (!(event instanceof PointerEvent)) return;
+      if (!capture || event.pointerId !== capture.pointerId) return;
+      gesture.release();
+    };
+
+    const releaseCapture = () => {
+      if (!capture) return;
+      const current = capture;
+      capture = null;
+      current.target.removeEventListener('lostpointercapture', handleLostPointerCapture);
+      if (current.target.hasPointerCapture(current.pointerId)) {
+        try {
+          current.target.releasePointerCapture(current.pointerId);
+        } catch {
+          // 指针已经抬起或捕获已被系统清掉。
+        }
+      }
+    };
+
+    gesture = createComposerLongPressVoiceGesture({
+      getState: () => voiceInputGetStateRef.current(),
+      start: () => handleVoiceInputStartRef.current(),
+      stop: () => voiceInputStopRef.current(),
+      onHoldStart: () => {
+        if (!capture) return;
+        try {
+          capture.target.setPointerCapture(capture.pointerId);
+          capture.target.addEventListener('lostpointercapture', handleLostPointerCapture);
+        } catch {
+          capture = null;
+        }
+      },
+      onHoldEnd: releaseCapture,
+    });
+    composerLongPressGestureRef.current = gesture;
+    armComposerLongPressCaptureRef.current = (pointerId, target) => {
+      capture = { pointerId, target };
+    };
+
+    const handlePointerMove = (event: PointerEvent) => {
+      // 按住录音时鼠标还是按下的,Chromium 会拿 move 继续拖选文字;取消默认
+      // 行为,说话时挪动鼠标不会拉出一片选区。
+      if (gesture.isHolding()) {
+        event.preventDefault();
+        return;
+      }
+      gesture.move({ x: event.clientX, y: event.clientY });
+    };
+    const handleLeftButtonRelease = (event: PointerEvent | MouseEvent) => {
+      if (event.button !== 0) return;
+      gesture.release();
+      // 没到时长就松开时不会走 onHoldEnd，但仍要清掉按下时记下的 pointerId。
+      releaseCapture();
+    };
+    const handleAbort = () => {
+      gesture.release();
+      releaseCapture();
+    };
+    window.addEventListener('pointermove', handlePointerMove, true);
+    window.addEventListener('pointerup', handleLeftButtonRelease, true);
+    window.addEventListener('mouseup', handleLeftButtonRelease, true);
+    window.addEventListener('pointercancel', handleAbort, true);
+    // 按在已选中的文字上会进入原生拖拽,之后不再有 move / up。
+    window.addEventListener('dragstart', handleAbort, true);
+    window.addEventListener('blur', handleAbort);
+    return () => {
+      armComposerLongPressCaptureRef.current = null;
+      if (composerLongPressGestureRef.current === gesture) {
+        composerLongPressGestureRef.current = null;
+      }
+      gesture.dispose();
+      releaseCapture();
+      window.removeEventListener('pointermove', handlePointerMove, true);
+      window.removeEventListener('pointerup', handleLeftButtonRelease, true);
+      window.removeEventListener('mouseup', handleLeftButtonRelease, true);
+      window.removeEventListener('pointercancel', handleAbort, true);
+      window.removeEventListener('dragstart', handleAbort, true);
+      window.removeEventListener('blur', handleAbort);
+    };
+  }, [composerLongPressVoiceInputEnabled]);
+
+  const handleComposerLongPressPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    armComposerLongPressCaptureRef.current?.(event.pointerId, event.currentTarget);
+  }, []);
+
+  const handleComposerLongPressMouseDown = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    const gesture = composerLongPressGestureRef.current;
+    if (!gesture) return;
+    // 只认单击左键:修饰键点击是扩选/多光标,双击后按住是按词拖选。
+    if (event.button !== 0 || event.detail > 1) return;
+    if (event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;
+    if (disabledRef.current || composerMutationLockedRef.current) return;
+    const editorInstance = editorRef.current;
+    if (!editorInstance || editorInstance.isDestroyed) return;
+    const editorElement = editorInstance.view.dom;
+    const target = event.target;
+    if (!(target instanceof Element) || !editorElement.contains(target)) return;
+    // 提及 / 粘贴文本 / 引用这类 chip 自带点击与拖拽行为,不在上面起手。
+    const atom = target.closest('[contenteditable="false"]');
+    if (atom && atom !== editorElement && editorElement.contains(atom)) return;
+    gesture.press({ x: event.clientX, y: event.clientY });
+  }, []);
+
   useEffect(() => {
     return window.electronAPI.voiceInput.onGlobalShortcutTrigger((payload) => {
       if (disabledRef.current || !editorRef.current || editorRef.current.isDestroyed) return;
@@ -3584,6 +3747,12 @@ export function ChatInput({
       const releaseInFlight = () => {
         window.setTimeout(() => {
           voiceShortcutActionInFlightRef.current = false;
+          // 启动已改为同步 claim,排队的「松开即停」可能在 claim 完成后才被
+          // 登记;锁释放时兜底消费一次,避免短按快松后麦克风一直开着。
+          if (voiceShortcutStopAfterStartRef.current) {
+            voiceShortcutStopAfterStartRef.current = false;
+            void voiceInputStopRef.current().catch(() => undefined);
+          }
         }, 120);
       };
 
@@ -3592,9 +3761,10 @@ export function ChatInput({
         return;
       }
 
-      void handleVoiceInputStartRef
-        .current()
-        .then(() => {
+      void Promise.resolve(handleVoiceInputStartRef.current())
+        .then((claimed) => {
+          // start 同步 claim 后立刻返回;这次没占到录音就不代它停别人的。
+          if (claimed === false) return;
           if (!voiceShortcutStopAfterStartRef.current) return;
           voiceShortcutStopAfterStartRef.current = false;
           return voiceInputStopRef.current();
@@ -3609,12 +3779,13 @@ export function ChatInput({
   // While dictation holds the editor read-only the native caret disappears;
   // the decoration renders a mic-shaped caret at the insertion point instead
   // (listening = animated level bars, submitting/refining = spinner).
+  const showVoiceProcessing = useVoiceProcessingIndicator(voiceInput.state);
   const voiceCaretState: VoiceInputCaretState | null = !voiceBusyOnCurrentComposer
     ? null
     : voiceInput.isListening
       ? 'listening'
       : voiceInput.isBusy
-        ? 'processing'
+        ? showVoiceProcessing ? 'processing' : 'stopping'
         : null;
 
   useEffect(() => {
@@ -5881,6 +6052,7 @@ export function ChatInput({
               ...(usedGhost ? { onAccepted: markRecentPluginUsage } : {}),
               ...(onRemoteOptimisticFailure ? { onRemoteOptimisticFailure } : {}),
               onDeferredAccepted,
+              ...(sourceSessionId ? { annotationBurnFailure: 'abort' as const } : {}),
             },
           );
         } catch (error) {
@@ -5975,7 +6147,11 @@ export function ChatInput({
       if (!saved) toast.error(t('ipcError.INTERNAL'));
     } catch (error) {
       log.warn('queue edit rejected:', error instanceof Error ? error.message : String(error));
-      toast.error(t(mapIpcErrorToI18nKey(error, { fallback: 'ipcError.INTERNAL' })));
+      toast.error(
+        isAnnotationBurnInError(error)
+          ? t('chat.media.annotateBurnFailedNotSaved')
+          : t(mapIpcErrorToI18nKey(error, { fallback: 'ipcError.INTERNAL' })),
+      );
     } finally {
       setSendDispatchInFlight(false);
     }
@@ -7556,7 +7732,9 @@ export function ChatInput({
     const gesture = createWorkLouderCodexVoiceGesture({
       longPressMs: VOICE_INPUT_LONG_PRESS_MS,
       getState: () => voiceInputStateRef.current,
-      start: () => handleVoiceInputStartRef.current(),
+      start: () => {
+        void handleVoiceInputStartRef.current();
+      },
       stop: () => voiceInputStopRef.current(),
     });
     workLouderVoiceGestureRef.current = gesture;
@@ -7578,6 +7756,9 @@ export function ChatInput({
         return false;
       }
       if (!ownsHardwareComposerActions) return false;
+      // 预览遮住正文时,硬件动作与键盘一样先撤掉预览、不作用于看不见的正文。语音会锁定
+      // 输入框并随之收起预览,照常放行。
+      if (action.type !== 'voice' && promptPreviewInputGuardRef.current()) return true;
       if (action.type === 'skill') {
         if (!editor || editor.isDestroyed || composerMutationLocked) return false;
         editor.chain().focus().insertContent(`$${action.name} `).run();
@@ -8202,6 +8383,59 @@ export function ChatInput({
   });
   // handleKeyDown 的稳定闭包只按真实可见性接受 Tab，避免隐藏推荐被误填入。
   showRecommendationRef.current = showRecommendationOverlay;
+  // 首页建议悬停预览:输入框锁定(发送中 / 语音占用 / 禁用)时不预览,免得遮住进行中的状态。
+  // 预览期间有按键或硬件动作时撤掉本次预览、露出真实正文(闸门见 handleKeyDown 与硬件动作订阅);
+  // 建议移开后复位。
+  const [dismissedPreviewPrompt, setDismissedPreviewPrompt] = useState<string | null>(null);
+  if (!previewPrompt && dismissedPreviewPrompt !== null) setDismissedPreviewPrompt(null);
+  const showPromptPreview =
+    !!previewPrompt && previewPrompt !== dismissedPreviewPrompt && !composerMutationLocked;
+  promptPreviewInputGuardRef.current = () => {
+    if (!showPromptPreview) return false;
+    setDismissedPreviewPrompt(previewPrompt ?? null);
+    return true;
+  };
+  useEffect(() => {
+    onMutationLockChange?.(composerMutationLocked);
+  }, [composerMutationLocked, onMutationLockChange]);
+  // 预览是 absolute overlay,绝不改变输入框高度:一旦撑高,下方建议行会被挤离鼠标,触发
+  // 移出→预览收起→行移回的闪烁。只用编辑区及其与下一块(工具栏)之间现有的空白,按能容纳的
+  // 行数截断并以省略号提示;点击填入后全文进入输入框,可滚动查看。
+  const promptPreviewRef = useRef<HTMLDivElement>(null);
+  const [promptPreviewLines, setPromptPreviewLines] = useState(1);
+  useLayoutEffect(() => {
+    const preview = promptPreviewRef.current;
+    const editorBlock = preview?.parentElement;
+    const card = editorBlock?.closest<HTMLElement>('[data-split-group-composer-drop-target]');
+    if (!showPromptPreview || !preview || !editorBlock || !card) return;
+    let cardChild: HTMLElement = editorBlock;
+    while (cardChild.parentElement && cardChild.parentElement !== card) {
+      cardChild = cardChild.parentElement;
+    }
+    const measure = () => {
+      let next = cardChild.nextElementSibling;
+      while (next && ['absolute', 'fixed'].includes(getComputedStyle(next).position)) {
+        next = next.nextElementSibling;
+      }
+      const cardStyle = getComputedStyle(card);
+      const limit = next
+        ? next.getBoundingClientRect().top
+        : card.getBoundingClientRect().bottom -
+          parseFloat(cardStyle.paddingBottom) -
+          parseFloat(cardStyle.borderBottomWidth);
+      const previewStyle = getComputedStyle(preview);
+      const lineHeight = parseFloat(previewStyle.lineHeight) || 22;
+      const padding = parseFloat(previewStyle.paddingTop) + parseFloat(previewStyle.paddingBottom);
+      const available = limit - editorBlock.getBoundingClientRect().top - padding;
+      setPromptPreviewLines(Math.max(1, Math.floor(available / lineHeight)));
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(card);
+    observer.observe(editorBlock);
+    return () => observer.disconnect();
+  }, [showPromptPreview]);
   // 可见推荐本身就是一次可发送输入：按钮点击时会先把它同步写入正文，再走现有发送链。
   const canSend = hasComposerPayload || showRecommendationOverlay;
   const makeNeedsNoModel = (noConnectedSource || selectedSourceDisconnected) && !!editor &&
@@ -8668,6 +8902,10 @@ export function ChatInput({
                 className="relative w-full"
                 // 推荐词生效时由 CSS 关掉原生 placeholder,避免两行字叠在一起。
                 data-recommendation-active={showRecommendationOverlay ? 'true' : undefined}
+                // 建议预览生效时由 CSS 隐去编辑器正文。
+                data-prompt-preview-active={showPromptPreview ? 'true' : undefined}
+                onPointerDown={handleComposerLongPressPointerDown}
+                onMouseDown={handleComposerLongPressMouseDown}
               >
                 <EditorContent
                   editor={editor}
@@ -8681,11 +8919,27 @@ export function ChatInput({
                     voiceBusyOnCurrentComposer && voiceInput.draftText ? 'true' : undefined
                   }
                 />
+                {/* 建议预览:排版与原生 placeholder 对齐,py-[3px] 同下方推荐词 overlay 的说明。 */}
+                {showPromptPreview && (
+                  <div
+                    ref={promptPreviewRef}
+                    data-testid="chat-input-prompt-preview"
+                    aria-hidden="true"
+                    style={{ WebkitLineClamp: promptPreviewLines }}
+                    className={cn(
+                      'pointer-events-none absolute inset-x-0 top-0 line-clamp-1 py-[3px] pr-[11px]',
+                      'whitespace-pre-wrap break-words text-15 leading-[1.467] font-normal',
+                      'text-[var(--chat-input-placeholder-subtle)]',
+                    )}
+                  >
+                    {previewPrompt}
+                  </div>
+                )}
                 {/* 字号 / 行高 / 颜色与原生 placeholder 对齐,单行截断防止长句撑高输入框。
                     py-[3px] 是镜像 .ProseMirror 的 py-[3px]:它的 -my-[3px] 会穿过这里
                     向外折叠(relative 不建立 BFC),于是 .ProseMirror 的 border box 贴在本
                     容器顶边、正文被自身 padding 推低 3px。overlay 不跟着补这 3px 就会高一行边距。 */}
-                {showRecommendationOverlay && (
+                {showRecommendationOverlay && !showPromptPreview && (
                   <div
                     className={cn(
                       'pointer-events-none absolute left-0 top-0 inline-flex max-w-full min-w-0 items-center py-[3px]',
@@ -9338,7 +9592,7 @@ function VoiceInputButton({
   state: import('@cindy/voice-input-core').VoiceInputState;
   disabled: boolean;
   shortcutLabel: string;
-  onStart: () => Promise<void>;
+  onStart: () => boolean | Promise<boolean | void>;
   onStop: () => Promise<void>;
   onStopAndSend: () => Promise<void>;
   sendTargetRef: RefObject<HTMLElement | null>;
@@ -9361,8 +9615,10 @@ function VoiceInputButton({
   const listening = state === 'listening';
   const refining = state === 'refining';
   const busy = state === 'submitting' || state === 'refining';
+  const showProcessing = useVoiceProcessingIndicator(state);
+  const stopping = busy && !showProcessing;
   const activeRecording = listening || longPressActive;
-  const disabledOrBusy = disabled || (busy && !longPressActive);
+  const disabledOrBusy = disabled || busy;
 
   // ── 录音态宽度形变 + 计时(DESIGN.md §14.4 窄变体,≤240ms)──
   // 仅录音中展开(2026-07-22 用户定稿:展开必须承载信息,hover 展出「语音」
@@ -9373,7 +9629,7 @@ function VoiceInputButton({
   const pillLabelRef = useRef<HTMLSpanElement>(null);
   const [pillWidth, setPillWidth] = useState<number | null>(null);
   const expandable = true;
-  const expanded = expandable && activeRecording;
+  const expanded = expandable && (activeRecording || stopping);
   const minuteDigits = String(Math.floor(recSeconds / 60)).length;
 
   useEffect(() => {
@@ -9407,13 +9663,15 @@ function VoiceInputButton({
     label = t('newChat.chatInput.voiceInput.releaseToStop');
   } else if (refining) {
     label = t('newChat.chatInput.voiceInput.refining');
+  } else if (state === 'submitting') {
+    label = t('voiceInputOverlay.status.submitting');
   } else if (activeRecording) {
     label = t('newChat.chatInput.voiceInput.stop');
   }
   const tooltipText =
-    shortcutLabel && !longPressActive && !refining ? `${label} · ${shortcutLabel}` : label;
-  const controlledTooltipOpen = refining
-    ? true
+    shortcutLabel && !longPressActive && !busy ? `${label} · ${shortcutLabel}` : label;
+  const controlledTooltipOpen = busy
+    ? showProcessing
     : longPressActive
       ? !releaseToSendActive
       : undefined;
@@ -9513,7 +9771,8 @@ function VoiceInputButton({
   }, [clearLongPressTimer, clearSuppressNextClick, setReleaseToSendActive]);
 
   return (
-    <Tip text={tooltipText} side="top" controlledOpen={controlledTooltipOpen}>
+    <Tip text={tooltipText} side="top" controlledOpen={controlledTooltipOpen}
+      resetHoverOnControlChange contentClassName="data-[state=closed]:hidden">
       <button
         type="button"
         className={cn(
@@ -9525,10 +9784,11 @@ function VoiceInputButton({
           'bg-[var(--composer-pill-bg,#FCFCFC)] dark:bg-[var(--composer-pill-bg,#393838)] border border-[var(--border-default)] text-[var(--composer-pill-icon,#3C3F43)] dark:text-[var(--composer-pill-icon,#D9D9D9)]' /* spec 2026-07-17, token by 一哥 */,
           'hover:bg-[var(--model-trigger-hover)]',
           // 录音态:与主题同极性的 chip 填充(light 亮灰 / dark 深灰),红点 + 计时承担状态信号
-          activeRecording &&
+          (activeRecording || stopping) &&
             'bg-[var(--surface-chip)] text-[var(--text-primary)] hover:bg-[var(--surface-chip)]',
           'focus-visible:outline-none',
-          disabledOrBusy && 'cursor-not-allowed opacity-40',
+          disabledOrBusy && 'cursor-not-allowed',
+          disabledOrBusy && !stopping && 'opacity-40',
           className,
         )}
         style={expandable ? { width: pillWidth ?? 30, transition: pillTransition } : undefined}
@@ -9575,11 +9835,13 @@ function VoiceInputButton({
           void (listening ? onStop() : onStart());
         }}
       >
-        {/* 28px 图标位: idle 麦克风 / 录音红点(呼吸动画挂 wrapper,仅 opacity) / refining spinner。
+        {/* 28px 图标位: idle 麦克风 / 录音红点(呼吸动画挂 wrapper,仅 opacity) / 停止后处理 spinner。
             会话内与新建对话框共用(不再按 create-agent 分叉)。 */}
         <span className="flex h-[28px] w-[28px] shrink-0 items-center justify-center">
-          {refining ? (
+          {showProcessing ? (
             <Spinner size={15} />
+          ) : stopping ? (
+            <span className="h-2 w-2 rounded-full bg-[var(--settings-badge-error)]" />
           ) : activeRecording ? (
             <span className="inline-flex animate-pulse motion-reduce:animate-none">
               <span className="h-2 w-2 rounded-full bg-[var(--settings-badge-error)]" />
@@ -9598,7 +9860,7 @@ function VoiceInputButton({
             'motion-reduce:transition-none',
           )}
         >
-          {activeRecording ? recTimeText : ''}
+          {activeRecording || stopping ? recTimeText : ''}
         </span>
       </button>
     </Tip>
@@ -9713,6 +9975,12 @@ function ThumbnailItem({
   // Lightbox state is local to each item so multiple thumbnails don't fight.
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
   const [textLightboxOpen, setTextLightboxOpen] = useState(false);
+  // 缩略图自然尺寸:标注叠加层的 viewBox 基准(onLoad 取得,换图时重置)。
+  const [thumbNaturalSize, setThumbNaturalSize] = useState<{
+    src: string;
+    width: number;
+    height: number;
+  } | null>(null);
   const isDownloadOnly =
     isDangerousAttachmentName(file.name) || isDangerousAttachmentName(file.path);
 
@@ -9759,6 +10027,7 @@ function ThumbnailItem({
   // (上限 220px)。判定条件必须与下面渲染分支一致——缓存写失败、既无 url 也无
   // base64 的图片同样落到文件卡分支。
   const isImageThumb = file.category === 'image' && Boolean(file.url || file.base64);
+  const thumbSrc = file.url ?? `data:${file.mimeType};base64,${file.base64}`;
   // 副行是「类型 · 大小」;无扩展名(Makefile 之类)或 size 缺失时按存在的部分给。
   // file.size 是拖入那一刻的快照:文件在托盘期间被改写后,发出去的是新内容,卡片
   // 却还报旧字节数。缩略图复核时 main 会把当前 stat 大小一并带回,这里优先用它。
@@ -9800,11 +10069,37 @@ function ThumbnailItem({
         {file.category === 'image' && (file.url || file.base64) ? (
           <span className="relative block h-full w-full">
             <img
-              src={file.url ?? `data:${file.mimeType};base64,${file.base64}`}
+              src={thumbSrc}
               alt={file.name}
               className="h-full w-full rounded-lg object-cover"
               draggable={false}
+              onLoad={(event) => {
+                setThumbNaturalSize({
+                  src: thumbSrc,
+                  width: event.currentTarget.naturalWidth,
+                  height: event.currentTarget.naturalHeight,
+                });
+              }}
             />
+            {file.annotationStrokes?.length &&
+            thumbNaturalSize?.src === thumbSrc &&
+            thumbNaturalSize.width > 0 &&
+            thumbNaturalSize.height > 0 ? (
+              // 缩略图是 object-cover:SVG 以 xMidYMid slice 做同样的居中裁切,笔迹与
+              // 图片严格对齐;外层圆角裁剪与图片圆角一致。
+              <span
+                className="pointer-events-none absolute inset-0 overflow-hidden rounded-lg"
+                aria-hidden
+              >
+                <AnnotationStrokesSvg
+                  strokes={file.annotationStrokes}
+                  naturalWidth={thumbNaturalSize.width}
+                  naturalHeight={thumbNaturalSize.height}
+                  preserveAspectRatio="xMidYMid slice"
+                  className="block h-full w-full"
+                />
+              </span>
+            ) : null}
             {file.annotationStrokes && file.annotationStrokes.length > 0 ? (
               <span
                 className="absolute right-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded-full"
@@ -9868,8 +10163,9 @@ function ThumbnailItem({
         <ImageHoverPreview
           open={isHovered}
           anchorRef={thumbRef}
-          src={file.url ?? `data:${file.mimeType};base64,${file.base64}`}
+          src={thumbSrc}
           alt={file.name}
+          annotationStrokes={file.annotationStrokes}
         />
       ) : null}
       {isHovered &&

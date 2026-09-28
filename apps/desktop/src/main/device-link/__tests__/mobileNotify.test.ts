@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { NOTIFY_TITLE_MAX_LENGTH, NOTIFY_BODY_MAX_LENGTH } from '@cindy/device-link';
-import { MobileNotifyDeduper, buildSessionNotifyPayload } from '../mobileNotify';
+import { NOTIFY_TITLE_MAX_LENGTH, NOTIFY_BODY_MAX_LENGTH, NOTIFY_DEEP_LINK_MAX_LENGTH } from '@cindy/device-link';
+import { MobileNotifyDeduper, buildBotGroupNotifyPayload, buildSessionNotifyPayload } from '../mobileNotify';
 
 describe('buildSessionNotifyPayload', () => {
   const base = {
@@ -67,6 +67,24 @@ describe('buildSessionNotifyPayload', () => {
     expect(long.title).toHaveLength(NOTIFY_TITLE_MAX_LENGTH);
   });
 
+  it('opens a teammate main chat as that teammate, with the same params the roster uses', () => {
+    const payload = buildSessionNotifyPayload({ ...base, teammateBotId: 'bot/1' });
+    expect(payload.deepLink).toBe(
+      '/sessions/session-1234?deviceId=desktop-abcd&resourceCollectionId=teammates&resourceId=bot%2F1&resourceKind=bot',
+    );
+    const query = new URLSearchParams(payload.deepLink.split('?')[1]);
+    expect(Object.fromEntries(query)).toEqual({
+      deviceId: 'desktop-abcd', resourceCollectionId: 'teammates', resourceId: 'bot/1', resourceKind: 'bot',
+    });
+    // Ordinary tasks keep the original link.
+    expect(buildSessionNotifyPayload(base).deepLink).toBe('/sessions/session-1234?deviceId=desktop-abcd');
+  });
+
+  it('keeps the ordinary task link when the teammate link would exceed the protocol limit', () => {
+    const payload = buildSessionNotifyPayload({ ...base, teammateBotId: 'b'.repeat(NOTIFY_DEEP_LINK_MAX_LENGTH) });
+    expect(payload.deepLink).toBe('/sessions/session-1234?deviceId=desktop-abcd');
+  });
+
   it('deepLink 对特殊字符做 URL 编码', () => {
     const payload = buildSessionNotifyPayload({ ...base, sessionId: 'a/b?c' });
     expect(payload.deepLink).toBe('/sessions/a%2Fb%3Fc?deviceId=desktop-abcd');
@@ -127,4 +145,25 @@ it('sends plain text to APNs, not Markdown or image paths', () => {
   const payload = { sessionId: 'bot', title: 'Cindy', kind: 'done' as const, selfDeviceId: 'home', fallbackBody: 'New reply' };
   expect(buildSessionNotifyPayload({ ...payload, detail: '**Report** [ready](https://example.com) `a_b`' }).body).toBe('Report ready a_b');
   expect(buildSessionNotifyPayload({ ...payload, detail: '![private](/private/file.png)' }).body).toBe('New reply');
+});
+
+describe('buildBotGroupNotifyPayload', () => {
+  it('opens the group on the phone and folds per (device, group)', () => {
+    const payload = buildBotGroupNotifyPayload({
+      groupId: 'g 1',
+      title: '官网介绍页',
+      body: '咪咪做完了「策划」，等你继续',
+      selfDeviceId: 'desk-1',
+    });
+    expect(payload).toMatchObject({
+      category: 'session-needs-reply',
+      title: '官网介绍页',
+      body: '咪咪做完了「策划」，等你继续',
+      deepLink: '/companions/groups/g%201?deviceId=desk-1',
+    });
+    expect(payload.collapseId).toBe(createHash('sha256').update('desk-1:bot-group:g 1').digest('hex').slice(0, 32));
+    expect(buildBotGroupNotifyPayload({ groupId: 'g', title: ' ', body: 'x', selfDeviceId: 'd' }).title).toBe('g');
+    expect(buildBotGroupNotifyPayload({ groupId: 'g', title: 'x'.repeat(500), body: 'y', selfDeviceId: 'd' }).title)
+      .toHaveLength(NOTIFY_TITLE_MAX_LENGTH);
+  });
 });

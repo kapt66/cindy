@@ -21,6 +21,7 @@ import {
   ownerScopedUserDataPath,
 } from '../appSessionState.js';
 import {
+  createWindowGhostInstallConsentPrompt,
   getGhostManager,
   sendToTrustedAppWindows,
   setGhostUninstallLedgerPreparer,
@@ -45,6 +46,7 @@ import {
 const log = createLogger('plugin-market-ipc');
 let registered = false;
 const REMOVAL_NOTICE_AVAILABLE_CHANNEL = 'plugin-market:removal-notice-available';
+const UPDATE_CONSENT_HOLDS_CHANGED_CHANNEL = 'plugin-market:update-consent-holds-changed';
 const localIconRequestGate = new LocalIconRequestGate();
 let mekaServiceSingleton: PluginMarketService | null = null;
 
@@ -95,6 +97,10 @@ function captureChannelLedger(expectedOwnerId?: string): PluginChannelLedger {
 function signalRemovalNoticeAvailable(): void {
   if (!service().hasPendingRemovalNotice()) return;
   sendToTrustedAppWindows(REMOVAL_NOTICE_AVAILABLE_CHANNEL, undefined);
+}
+
+function signalUpdateConsentHoldsChanged(): void {
+  sendToTrustedAppWindows(UPDATE_CONSENT_HOLDS_CHANGED_CHANNEL, undefined);
 }
 
 async function snapshotAndSignalRemovalNotice(options?: PluginMarketSnapshotOptions) {
@@ -204,6 +210,7 @@ export function registerPluginMarketIpc(): void {
     return invokePluginMarket(() =>
       snapshotAndSignalRemovalNotice({
         deferReconciliation: true,
+        onConsentHoldsChanged: signalUpdateConsentHoldsChanged,
       }),
     );
   });
@@ -278,12 +285,22 @@ export function registerPluginMarketIpc(): void {
           .map((g) => g.manifest.id),
       );
       return invokePluginMarket(async () => {
-        const result = await service().install(requireString(pluginId, 'pluginId'), {
-          expectedReleaseId,
-          ...(expectedInstalledApproval !== undefined ? { expectedInstalledApproval } : {}),
-          ...(expectedManifest !== undefined ? { expectedManifest } : {}),
-          allowSourceReplacement,
-        });
+        const result = await service().install(
+          requireString(pluginId, 'pluginId'),
+          {
+            expectedReleaseId,
+            ...(expectedInstalledApproval !== undefined ? { expectedInstalledApproval } : {}),
+            ...(expectedManifest !== undefined ? { expectedManifest } : {}),
+            allowSourceReplacement,
+          },
+          // 首装与扩权更新的确认框投给发起安装的这个窗口。
+          {
+            consent: {
+              prompt: createWindowGhostInstallConsentPrompt(event.sender),
+              initiator: 'user',
+            },
+          },
+        );
         if (
           getActiveAppSession().generation === owner.generation &&
           !previouslyInstalled.has(result.ghost.manifest.id)
@@ -383,23 +400,36 @@ export function registerPluginMarketIpc(): void {
       const operationId = requireInstallOperationId(obj?.operationId);
       const sender = event.sender;
       return invokePluginMarket(() =>
-        mekaService().install(normalizedPluginId, {
-          expectedReleaseId,
-          ...(expectedInstalledApproval !== undefined ? { expectedInstalledApproval } : {}),
-          ...(expectedManifest !== undefined ? { expectedManifest } : {}),
-          ...(typeof obj?.allowSourceReplacement === 'boolean'
-            ? { allowSourceReplacement: obj.allowSourceReplacement }
-            : {}),
-          onProgress: (progress) => {
-            if (sender.isDestroyed()) return;
-            const payload: PluginMarketInstallProgress = {
-              operationId,
-              pluginId: normalizedPluginId,
-              ...progress,
-            };
-            sender.send(MEKA_PLUGIN_MARKET_INSTALL_PROGRESS_CHANNEL, payload);
+        mekaService().install(
+          normalizedPluginId,
+          {
+            expectedReleaseId,
+            ...(expectedInstalledApproval !== undefined ? { expectedInstalledApproval } : {}),
+            ...(expectedManifest !== undefined ? { expectedManifest } : {}),
+            ...(typeof obj?.allowSourceReplacement === 'boolean'
+              ? { allowSourceReplacement: obj.allowSourceReplacement }
+              : {}),
+            onProgress: (progress) => {
+              if (sender.isDestroyed()) return;
+              const payload: PluginMarketInstallProgress = {
+                operationId,
+                pluginId: normalizedPluginId,
+                ...progress,
+              };
+              sender.send(MEKA_PLUGIN_MARKET_INSTALL_PROGRESS_CHANNEL, payload);
+            },
           },
-        }),
+          // 上游把「安装／扩权更新前向用户确认权限」收敛为装入出口的必填上下文；
+          // Meka 渠道与 Cindy 渠道同口径：确认框投给发起本次安装的那个窗口，
+          // initiator 是用户本人。确认在任何安装锁与 owner 租约之外求得，只在新版本
+          // 权限变多时才真正弹（判据在 `ghostInstallConsent.ts`）。
+          {
+            consent: {
+              prompt: createWindowGhostInstallConsentPrompt(sender),
+              initiator: 'user',
+            },
+          },
+        ),
       );
     },
   );

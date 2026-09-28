@@ -120,6 +120,7 @@ function createDb(initialTitle: string): void {
       codex_plan_json TEXT,
       im_bot_context_id TEXT,
       im_user_id TEXT,
+      im_default_route TEXT,
       summary TEXT,
       provider_id TEXT,
       plan_mode_enabled INTEGER NOT NULL DEFAULT 0,

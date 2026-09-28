@@ -6362,4 +6362,60 @@ windows shard 1，均 `if: matrix.shard == 1`）把
   「未验证 + 原因」（`ENOSPC`、`ui-smoke` 的 WL-1.2/1.3 前置、`session-smoke` 的 WL-11.x 前置、
   WL-4 端到端与视觉目检）—— 逐项登记在本期报告 §7、§8，**均需维护者书面接受**。
 
+### 11.30 2026-09-25 第四轮上游同步（`origin/main` → `meka/main`）
+
+> 本条是**新条目**，不改写任何带日期的历史原句。逐组解决结论、审查—修复记录、白名单四阶段实跑
+> 与「未验证 + 原因」登记全部写在
+> [`2026-09-25-origin-main-to-meka-main.md`](./2026-09-25-origin-main-to-meka-main.md)（§3、§4、§5、§6、§7）。
+
+- **基线**：来源 `origin/main` = `fd73bc91fd3d2dabe680876f5271027630c68752`（上游独有 **214** 提交 /
+  **1554** 文件 / +150405 −19883）；目标 `meka/main` 合并前 `08dd93c4e8`；merge-base `2f169d6aeb`。
+  Git 冲突 **29**（26 `UU` + 3 `AA`），按能力组并行解决，0 冲突标记残留。
+- **D4 顺移追加（数据库）**：已发布谱系 `0000..0117` **零改动**（`0113..0117` 是第三轮追加的，
+  同样冻结）；上游本轮新增 `0115..0119` 五条落为 Meka **`0118..0122`**（`0118_silky_power_man`、
+  `0119_last_the_watchers`、`0120_spicy_valkyrie`、`0121_cynical_thunderball`、`0122_hard_vindicator`）；
+  **SQL 正文逐字节取上游**（`git hash-object` 五项与 `origin/main` 原号完全一致）；snapshot =
+  上游同序号 snapshot + Meka delta（`meka_projects` / `meka_roles` 两表、`sessions` +10 列 / +2 索引 / +1 外键），
+  `prevId` 链从 Meka `0117` 重连；`_journal.json` 去掉上游原号、追加 5 条（123 entries、idx 0..122 连续无重复、
+  尾部 `when` 逐值等于上游原值且单调）。**实跑**：`db:validate` **6/6**（seq `0000..0122`、123 snapshot、
+  `drizzle-kit check` 无 drift、固定基线 80+23 / canonical **118+44**）、`drizzle-kit generate`
+  **无 schema 变更且未写盘**（跑前后 294 文件 SHA256 清单一致）。
+- **结构审计**：`pnpm audit:merge` **PASS**（blockers 0 / dropped 0 / review 0），首跑 6 项 `dropped`
+  逐条核实后带证据豁免（5 条 = D4 有意改号且字节同一；1 条 = `scripts/test-related.mjs` 的 Meka 英文
+  注释被改写为同义中文注释，行为零丢失）。另用**两道机械化行级审计**覆盖 126 个「双方都改过」的文件
+  （Meka 新增行存活 115/124、上游新增行存活 111/125，其余逐条核实为刻意重实现 / D4 改号 / 生成物）。
+- **本轮引入、已在交付内修复的缺陷**（详细证据见本期报告 §5.1）：
+  1. **Meka 开发目录插件「用户发起安装」必然失败**（P0）：确认按**源码包**身份求得、锁内却按**派生包**
+     身份复核 ⇒ 稳定 `PRECONDITION_FAILED`，首装与扩权更新全部装不上；`meka-dev-plugins:install` 还**零测试**。
+     修法：授权类型改为**策略**（`{mode:'prompt',…} | {mode:'automatic'}`），确认在**派生包 inspection** 上求得；
+     源码快照指纹仍是求确认的前置条件；后台 sync 保持 fail-closed；补 6 条回归用例（含「未扩权不弹窗」红线）。
+  2. **Meka 市场页每次安装/更新都会崩**：上游把 `install()` 第三参改为**必填** `PluginMarketInstallContext`，
+     Meka 入口仍只传 2 个实参 ⇒ `TypeError`。已补齐 consent 上下文并保留 operationId 进度与全部事务 options。
+  3. **Meka 开发目录通道缺上游新必填 `consent`**（两处 typecheck 报错）⇒ 按市场同口径补齐。
+  4. **「任务迁移 / 复制任务」对 Meka 零适配**：会把**整个 Perforce 工作区**打包（内置 Meka 项目的工作目录
+     即 P4 根）、目标机还会**静默丢项目/角色绑定** ⇒ main 侧权威准入拒绝 `workspace_kind='meka'`
+     （新错误码 `MIGRATION_MEKA_UNSUPPORTED`，五语齐备）、renderer 不再提供该入口。
+  5. 本轮新增文案写死上游品牌名（40 处 locale + 4 处代码 + 3 处模型可见群聊头）⇒ 改 `{{appName}}` / `BRAND_NAME`；
+     镜像一致性断言 5 → 10，7 个桌面 key 纳入 `i18nBrandPlaceholder.test.ts`（3 条已知缺口用 known gap 断言锁死）。
+  6. **静态门禁真实缺陷**：`resources/${UPDATER_EXE}` 被声明为随包资源，而 `cindy-meka-updater.exe` 依
+     2026-09-24 裁决有意不入仓（`.gitignore:48-51`）却**未进** `BUILD_TIME_GENERATED_RESOURCES` 白名单
+     ⇒ **干净 checkout（CI）必红**。已补白名单条目（写明 `prePackage` 现场构建的机制与 `.gitignore` 出处）。
+  7. `docs/legal/notices/**` 随新增生产依赖（`dotenv` / `json5`）重生成；`database-and-migrations.md`
+     的「编号现状」更新为第四轮口径。
+- **存量红线（用户裁决「两处都修」，见本期报告 §5.2 A）**：**codex 原生子代理硬关**在
+  custom-context 主路径（`usesCustomContextHost` 为真时 flag 不上报）与远端（早返回 + 当年那行
+  thread config 在 `7eb9757ea6` 合并中丢失）**均失效** ⇒ 把该 flag 从 hostPurpose 三元树里拆出独立传递，
+  并恢复 thread config 的 `'agents.enabled': false` 重申（形状取自 `2fa5f3e4ee`）；补 5 条用例（含
+  `thread/start` 与 `thread/resume`）+ 变异复核。**附带更正**：白名单里「远端只读 worker 的硬禁用仍在链路里」
+  那句对远端**不成立**（该读取点在 remote early-return 之后）。
+- **刻意偏离上游（已登记）**：`.github/workflows/**` 恢复为 wide 文件（`meka/main` 是直推分支、
+  `client-ci` 的 push 触发是唯一门禁 ⇒ `AGENTS.md`「改到单测 CI 会退回全量」必须成立）；
+  `AGENTS.md` 与 `development-workflow.md` 保留 Meka 的提交前门禁口径（不采纳上游的「提交前验证」放宽）。
+- **未完成 / 未验证（不得宣告收敛）**：真机 codex 硬关取证（读 `codex app-server` 完整命令行）、远端
+  thread-config 是否真被远端 codex 遵守、开发目录装入的真实 Electron 端到端、移动冷更指纹需把关人确认、
+  本机 Windows 符号链接权限缺失导致的 2 条单测（CI 在 `ubuntu-latest` 不受影响）、以及 §5.2 登记的
+  一系列**存量缺口**（Linux 用户级安装链路含渠道根与公开文档、`dev-embed-search` 的 DB 前缀、
+  `permissionItemIcon` 与 `MekaDevInstallReview` 的图标分叉、进度分支 `aria-label` 分叉、
+  `aria-busy` 空闲态恒真、上游自带的空断言等）—— 逐条登记在本期报告 §5.2、§6。
+
 

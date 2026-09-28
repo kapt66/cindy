@@ -66,6 +66,7 @@ export function parseCliOptions(args) {
 		workspaces: [],
 		excludeWorkspaces: [],
 		workspaceConcurrency: undefined,
+		lock: false,
 		noLock: false,
 		related: false,
 	};
@@ -74,6 +75,10 @@ export function parseCliOptions(args) {
 		if (arg === "--") continue;
 		if (arg === "--all") {
 			options.all = true;
+			continue;
+		}
+		if (arg === "--lock") {
+			options.lock = true;
 			continue;
 		}
 		if (arg === "--no-lock") {
@@ -118,6 +123,9 @@ export function parseCliOptions(args) {
 			continue;
 		}
 		throw new Error(`Unknown option: ${arg}`);
+	}
+	if (options.lock && options.noLock) {
+		throw new Error("--lock cannot be combined with --no-lock");
 	}
 	if (options.related && options.all) {
 		throw new Error("--related cannot be combined with --all");
@@ -1246,6 +1254,7 @@ async function main() {
 		tier,
 		excludeWorkspaces,
 		workspaceConcurrency,
+		lock: useLock,
 		noLock,
 		related,
 	} = options;
@@ -1285,7 +1294,7 @@ async function main() {
 		(relatedPlan?.mode === "full" || relatedPlan?.runTestRunner);
 	if (related && !willRunWorkspaces && !willRunTestRunner) return;
 
-	const lock = shouldUseTestGateLock({ all, tier, noLock })
+	const lock = shouldUseTestGateLock({ all, tier, lock: useLock, noLock })
 		? await acquireTestGateLock({
 				repoRoot: ROOT,
 				owner: {

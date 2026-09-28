@@ -297,8 +297,146 @@ describe('CreateWorkerPopover', () => {
     expect(screen.queryByRole('tablist', { name: 'orca.createWorker.agentLabel' })).toBeNull();
     expect(screen.getByTestId('model-selector').closest('.grid')).toBeTruthy();
 
+    const permissionMode = screen.getByTestId('worker-permission-mode');
+    expect(permissionMode.textContent).toContain('orca.createWorker.permissionLabel');
+    expect(screen.getByTestId('permission-selector').getAttribute('data-allowed')).toBe(
+      'auto,bypassPermissions',
+    );
+
     const initialTask = screen.getByPlaceholderText('orca.createWorker.initialTaskPlaceholder');
     expect(initialTask.className).toContain('h-[96px]');
+  });
+
+  it('keeps the draft when clicking the scrim and closes via the explicit button', () => {
+    const onClose = vi.fn();
+    render(<CreateWorkerPopover open onClose={onClose} onCreate={vi.fn()} />);
+
+    const initialTask = screen.getByPlaceholderText(
+      'orca.createWorker.initialTaskPlaceholder',
+    ) as HTMLTextAreaElement;
+    fireEvent.change(initialTask, { target: { value: 'Draft a plan' } });
+    const panel = screen.getByText('orca.createWorker.title').closest('.relative.z-10');
+    fireEvent.click(panel!.previousElementSibling!);
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(initialTask.value).toBe('Draft a plan');
+
+    fireEvent.click(screen.getByRole('button', { name: 'orca.createWorker.closeAria' }));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it('labels the worker role as a name and exposes an explanation', () => {
+    render(<CreateWorkerPopover open onClose={vi.fn()} onCreate={vi.fn()} />);
+
+    expect(screen.getByText('orca.createWorker.roleLabel')).toBeTruthy();
+    expect(
+      screen.getByRole('button', { name: 'orca.createWorker.roleHintAria' }),
+    ).toBeTruthy();
+  });
+
+  it('does not claim Auto-review for a device-link worker controlled by an older peer', () => {
+    render(<CreateWorkerPopover open deviceId="device-a" onClose={vi.fn()} onCreate={vi.fn()} />);
+
+    expect(screen.queryByTestId('worker-permission-mode')).toBeNull();
+    expect(
+      (screen.getByRole('button', { name: 'orca.createWorker.submit' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+  });
+
+  it('defaults new Worker creation to Full access', async () => {
+    const onCreate = vi.fn();
+    render(
+      <CreateWorkerPopover
+        open
+        onClose={vi.fn()}
+        onCreate={onCreate}
+      />,
+    );
+
+    const selector = screen.getByTestId('permission-selector');
+    expect(selector.getAttribute('data-mode')).toBe('bypassPermissions');
+    expect(selector.getAttribute('data-allowed')).toBe('auto,bypassPermissions');
+
+    fireEvent.click(screen.getByRole('button', { name: 'orca.createWorker.submit' }));
+
+    await waitFor(() =>
+      expect(onCreate).toHaveBeenCalledWith(
+        expect.objectContaining({ workerPermissionMode: 'bypassPermissions' }),
+      ),
+    );
+    expect(JSON.parse(localStorage.getItem('workerCreationPrefs') ?? '{}')).toMatchObject({
+      workerPermissionMode: 'bypassPermissions',
+    });
+  });
+
+  it('keeps a manually saved Auto-review preference after the product default changes', async () => {
+    window.localStorage.setItem(
+      'workerCreationPrefs',
+      JSON.stringify({ workerPermissionMode: 'auto' }),
+    );
+    const onCreate = vi.fn();
+    render(<CreateWorkerPopover open onClose={vi.fn()} onCreate={onCreate} />);
+
+    const selector = screen.getByTestId('permission-selector');
+    await waitFor(() => expect(selector.getAttribute('data-mode')).toBe('auto'));
+    fireEvent.click(screen.getByRole('button', { name: 'orca.createWorker.submit' }));
+
+    await waitFor(() =>
+      expect(onCreate).toHaveBeenCalledWith(
+        expect.objectContaining({ workerPermissionMode: 'auto' }),
+      ),
+    );
+    expect(JSON.parse(localStorage.getItem('workerCreationPrefs') ?? '{}')).toMatchObject({
+      workerPermissionMode: 'auto',
+    });
+  });
+
+  it('blocks Worker creation when a device-link peer cannot honor permission selection', () => {
+    render(
+      <CreateWorkerPopover
+        open
+        deviceId="old-device"
+        requireWorkerPermissionModeSupport
+        onClose={vi.fn()}
+        onCreate={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByTestId('permission-selector')).toBeNull();
+    expect(screen.getByText('newChat.collaboration.unsupportedRemoteHint')).toBeTruthy();
+    expect(
+      (screen.getByRole('button', { name: 'orca.createWorker.submit' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+  });
+
+  it('keeps Auto-review when the Full access confirmation is cancelled', async () => {
+    mocks.confirm.mockResolvedValue(false);
+    window.localStorage.setItem(
+      'workerCreationPrefs',
+      JSON.stringify({ workerPermissionMode: 'auto' }),
+    );
+    const onCreate = vi.fn();
+    render(
+      <CreateWorkerPopover
+        open
+        onClose={vi.fn()}
+        onCreate={onCreate}
+      />,
+    );
+
+    const selector = screen.getByTestId('permission-selector');
+    fireEvent.click(selector);
+    await waitFor(() => expect(mocks.confirm).toHaveBeenCalledTimes(1));
+    expect(selector.getAttribute('data-mode')).toBe('auto');
+
+    fireEvent.click(screen.getByRole('button', { name: 'orca.createWorker.submit' }));
+    await waitFor(() =>
+      expect(onCreate).toHaveBeenCalledWith(
+        expect.objectContaining({ workerPermissionMode: 'auto' }),
+      ),
+    );
   });
 
   it('disables immediately and collapses repeated click events into one request', async () => {
@@ -747,6 +885,7 @@ describe('CreateWorkerPopover', () => {
       ),
     );
   });
+
   it('drops Fast when the picked provider does not support it for the model', async () => {
     // per-provider Fast 能力:同一 model id 在选中来源的条目上不支持 Fast 时,
     // 不能沿用拍平并集的首来源能力继续提交 fast=true。

@@ -135,6 +135,12 @@ describe('MarketPluginDetailView', () => {
     // 才同时钉住「可见文案被 spinner 取代」和「可访问名称不丢」。
     expect(action.querySelector('.opacity-0')?.textContent).toBe('settings.ghosts.market.install');
     expect(action.getAttribute('aria-label')).toBe('settings.ghosts.market.install');
+    // 上游同一条用例的结构断言，一并保留（不替代上面的语义断言）：
+    // 遮罩是首个子元素、Spinner 是末个子元素且对 AT 隐藏、loading 期间按钮真 disabled。
+    expect(action.firstElementChild?.classList.contains('opacity-0')).toBe(true);
+    expect(action.firstElementChild?.textContent).toBe('settings.ghosts.market.install');
+    expect(action.lastElementChild?.getAttribute('aria-hidden')).toBe('true');
+    expect(action.hasAttribute('disabled')).toBe(true);
   });
 
   it('keeps the channel install progress visible in the action while busy', () => {
@@ -174,7 +180,9 @@ describe('MarketPluginDetailView', () => {
     // 可访问名称不变量：有 progress 时按钮的可访问名称继续非空。这里刻意让它取自
     // 可见的进度文案（组件在该分支不写 aria-label）：aria-label 会**覆盖**子节点文本，
     // 而主操作此刻唯一的进度播报通道就是这个文本，写死成 action 文案反而会把阶段
-    // 信息从无障碍树里抹掉。同一口径见 GhostPluginPage.tsx:2898 的列表更新按钮
-    // （`aria-label={updateProgress ? undefined : …}`），两处不得分叉。
+    // 信息从无障碍树里抹掉。同一口径见 GhostPluginPage.tsx 的 `GhostPluginCard`
+    // 列表更新按钮（`aria-label={updateProgress ? undefined : …}`，本轮同步后
+    // 落在 2925-2932 行，`loading={updatePending && !updateProgress}` 在 2920 行），
+    // 两处不得分叉。
   });
 });

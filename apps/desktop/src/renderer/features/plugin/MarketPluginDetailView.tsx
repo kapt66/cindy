@@ -105,6 +105,10 @@ export function MarketPluginDetailView({
                 aria-describedby={replacementDescription ? replacementDescriptionId : undefined}
                 className="plugin-detail-primary-action min-w-[104px] whitespace-nowrap"
               >
+                {/* 上游本轮去掉了 `!busy &&` 门:loading 由共享 Button 用
+                    `opacity-0` 遮罩表达,子节点必须常驻才能保住可访问名称与宽度。
+                    Meka 渠道给出 `progress` 时改渲染真实阶段(进度文案 + 进度条),
+                    此时 `loading` 为 false,进度内容不被遮罩。两者不共用分支,互不削弱。 */}
                 {busy && progress ? (
                   <PluginMarketProgressContent
                     progress={progress}

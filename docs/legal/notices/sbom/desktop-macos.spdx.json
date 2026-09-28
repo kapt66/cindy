@@ -3,9 +3,9 @@
   "dataLicense": "CC0-1.0",
   "SPDXID": "SPDXRef-DOCUMENT",
   "name": "cindy-desktop-macos",
-  "documentNamespace": "https://cindy.app/spdx/desktop-macos/7067d9251098807b40652f7a53024262a1af8638a76dd2f10f4df388cd105500",
+  "documentNamespace": "https://cindy.app/spdx/desktop-macos/c51a4197970ac025909c2a200d8d39f249d1c8deeab3d7ef70158211886cd121",
   "creationInfo": {
-    "created": "2026-09-23T09:10:43Z",
+    "created": "2026-09-28T02:36:18Z",
     "creators": [
       "Tool: scripts/generate-third-party-notices.mjs"
     ]
@@ -7131,6 +7131,23 @@
       ]
     },
     {
+      "name": "dotenv",
+      "SPDXID": "SPDXRef-Package-55a09c11de197ec1",
+      "versionInfo": "16.6.1",
+      "downloadLocation": "https://github.com/motdotla/dotenv",
+      "filesAnalyzed": false,
+      "licenseConcluded": "BSD-2-Clause",
+      "licenseDeclared": "BSD-2-Clause",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:npm/dotenv@16.6.1"
+        }
+      ]
+    },
+    {
       "name": "drizzle-orm",
       "SPDXID": "SPDXRef-Package-bc6d5248a7fbabed",
       "versionInfo": "0.45.2",
@@ -9745,6 +9762,23 @@
           "referenceCategory": "PACKAGE-MANAGER",
           "referenceType": "purl",
           "referenceLocator": "pkg:npm/json-schema-typed@8.0.2"
+        }
+      ]
+    },
+    {
+      "name": "json5",
+      "SPDXID": "SPDXRef-Package-77423d29c03ab400",
+      "versionInfo": "2.2.3",
+      "downloadLocation": "https://github.com/json5/json5",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:npm/json5@2.2.3"
         }
       ]
     },
@@ -17838,6 +17872,11 @@
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-Package-55a09c11de197ec1"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
       "relatedSpdxElement": "SPDXRef-Package-bc6d5248a7fbabed"
     },
     {
@@ -18604,6 +18643,11 @@
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
       "relatedSpdxElement": "SPDXRef-Package-60b0d7ba48b8100a"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-Package-77423d29c03ab400"
     },
     {
       "spdxElementId": "SPDXRef-DOCUMENT",

@@ -582,6 +582,17 @@ edition 与端点自举）；② 登录页实际认证的 **realm**;③ 运行�
   而非上游 `cindy` 根；装包启动后日志出现 `pi agent enabled { binaryPath: ... }`（不是
   `pi runtime not ready: asset_missing`），且 `maker:get-capabilities` 回报三个 agent（含 `pi`）
 - **历史回归**：`canaryFlagStore.clear()` 必须留在 passive 实例守卫之后（`authPassiveSharedInstance` 用例）
+- **2026-09-25 第四轮上游同步新增面：Agent 侧「检查应用更新」入口**。本轮上游引入了给 Agent 用的
+  `check_app_update` 工具（`packages/lizi-mcps/src/xdt-helper/app_update.ts` → Host
+  `apps/desktop/src/main/mcp-integrations/mcp-providers.ts:418` →
+  `apps/desktop/src/main/updateService.ts` 的 `checkAppUpdateForAgent()` /
+  `agentUpdateApplyBlockReason()`），即更新检查多了**第二条调用链**。登记要求：
+  ① 它必须复用与本项同源的结论码真值（**不得**自造「已经是最新」）；
+  ② 其中的 macOS 引导文案必须走 `BRAND_NAME`（Meka 展示名），**不得**写死上游 `Cindy`；
+  ③ Linux 的 `installation.region !== CURRENT_CINDY_REGION` 是**构建期 build-region 门**，
+     与「区域运行期可选」不冲突。
+  规则正文见 [`cindy-updater.md`](cindy-updater.md) 的「Agent 侧的『检查应用更新』入口」一节。
+  **验证现状**：随交付门禁跑 `updateService.test.ts` 与 lizi-mcps 相关套件；**未做真机更新验收**（需真实签名与发布渠道）。
 
 #### WL-6.6 旧身份只读迁移与 legacy 前缀扫描
 

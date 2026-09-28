@@ -146,9 +146,9 @@ describe('sendToSession ordering', () => {
     expect(queuedReply).toBeLessThan(liveRead);
   });
 
-  it('routes even idle private Bot deliveries through the durable input coordinator', () => {
+  it('routes even idle private Bot and group-lane deliveries through the durable input coordinator', () => {
     const block = extractSendToSessionSource();
-    const routing = block.indexOf("explicitClientId?.startsWith('bot-dm:') || explicitClientId?.startsWith('bot-authorization-resume:') || inputCoordinator.shouldQueueNewTurn(targetSessionId)");
+    const routing = block.indexOf("explicitClientId?.startsWith('bot-dm:') || explicitClientId?.startsWith(BOT_GROUP_CLIENT_ID_PREFIX) || explicitClientId?.startsWith('bot-authorization-resume:') || inputCoordinator.shouldQueueNewTurn(targetSessionId)");
     expect(routing).toBeGreaterThan(0);
     expect(block.indexOf('await enqueueSendToSessionMessage({', routing)).toBeLessThan(block.indexOf('let live = maker.getSession(targetSessionId)'));
   });
@@ -710,7 +710,9 @@ describe('sendToSession ordering', () => {
     );
     const directSendSwitchBlock = extractBetween(
       source,
-      'pendingAgentSwitchApplyHolder = async (sessionId, signal, selection) =>',
+      // 上游本轮把该 holder 的签名扩成 4 参（新增 `beforeApply`），
+      // 源码标记必须随之更新，否则该用例必然找不到起点（2026-09-25 第四轮上游同步修复）。
+      'pendingAgentSwitchApplyHolder = async (sessionId, signal, selection, beforeApply) =>',
       'ipcMain.handle(MAKER_INVOKE.MARK_ORCA_ROLE',
     );
 

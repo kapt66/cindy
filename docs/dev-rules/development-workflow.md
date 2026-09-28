@@ -19,11 +19,12 @@ worktree 会话契约、提交组织、直推 `main` 的额外门禁与 review �
   命令超时）。
 - **你的编辑对运行中的 app 无效**：Vite HMR 只 watch 启动 dev 实例的那个 checkout，
   worktree 下的改动既不热更也不随重启生效。「改了没反应」不是 bug。开发过程中的增量验证在本
-  worktree 内跑 `pnpm --filter desktop typecheck` / 定向 `vitest run`；**提交前仍须通过
-  第 2 节的提交前测试门禁**。需要运行时验证时 commit + push 后交用户（你无法重启宿主）。
+  worktree 内跑 `pnpm --filter desktop typecheck` / 定向 `vitest run`；**提交前仍须完成
+  第 2 节的提交前验证**。需要运行时验证时 commit + push 后交用户（你无法重启宿主）。
 - **宿主 app 日志不在你的 cwd 下**：dev 日志在启动 checkout（通常是 baseRepo）的
   `apps/desktop/logs/`，读日志时拼 baseRepo 的绝对路径。
-- **结束前必须 commit**：会话被删除或归档时脏 worktree 会先存内容快照再删目录。**PR
+- **会话结束与工作区保留**：是否 commit 由用户或宿主工作流决定，不能仅因会话结束
+  强制提交。会话被删除或归档时脏 worktree 会先存内容快照再删目录。**PR
   merged／closed 不等于 Cindy 会话已结束**：只要 owning session 仍 active，任何外部 Git
   cleanup 都必须跳过该 `.cindy-worktrees` / `.xdt-worktrees` 目录与本地 `cindy/*` / `xdt/*` 分支，交给
   用户显式归档／删除会话时回收；禁止手动 `git worktree remove` 造成 active session 的 cwd
@@ -143,13 +144,23 @@ worktree 建成空目录或自动切到项目根继续修改代码。
     排查并发相关问题时可用
     `pnpm test:unit -- --workspace-concurrency=1` 临时退回 workspace 串行；该参数只改变
     workspace 调度，不减少测试覆盖。
-  - **跨 worktree 重型门禁串行**：本地运行 `unit`、`all`、`db`、`git-integration`
-    tier 时，`test-workspaces.mjs` 会按 Git common-dir 获取同仓共享的 loopback TCP 锁；
-    同一 clone 的后到进程会打印持有者 PID、tier 与 worktree 路径并排队，不同 clone
-    互不影响。`guard` tier 和 CI／GitHub Actions 不参与。等待超过 15 分钟以退出码 `75`
-    结束，表示测试尚未运行，不得当作测试失败排查；排队是正常状态，不要 kill 后重跑。
-    只有明确确认资源足够且需要有意重叠时，才可追加 `--no-lock` 作为逃生口。
+  - **跨 worktree 排队默认关闭（2026-09-25 第四轮上游同步，采纳上游；代码证据
+    `scripts/test-gate-lock.mjs` 的 `shouldUseTestGateLock` 现要求显式 `lock`）**：
+    只有主动传 `--lock` 的本地重型测试命令才参与同仓共享 loopback TCP 锁；
+    `--no-lock` 保留兼容，不能与 `--lock` 同时使用。锁按 Git common-dir 区分 clone，
+    只监听 `127.0.0.1`，退出后自动释放，不同 clone 互不影响。直接运行 Desktop Vitest
+    也不再隐式加第二层锁。选择排队后，等待超过 15 分钟以退出码 `75` 结束，表示测试
+    尚未运行，不得当作测试失败排查；排队是正常状态，不要 kill 后重跑。
+    `guard` tier 和 CI／GitHub Actions 不参与。锁只协调同样选择排队的进程，不能限制
+    未选择排队的入口；有意统一预算时由使用者或宿主协调各入口。
+  - **如实记录结果（2026-09-25 第四轮上游同步，采纳上游非削弱表述）**：本次改动导致的
+    失败须修复；既有或环境故障要说明证据、影响和未完成项，不伪造通过、不删除或放宽
+    有效断言；**未执行的检查项和原因必须如实记录**（本仓由本节与当期同步报告的
+    「未验证 + 原因」登记承担）。完整测试与远端必需检查仍由 CI 和合并规则保障，本地
+    定向验证不能冒充完整 CI 通过。需要保存未完成工作时可作 `WIP` commit（口径见本条
+    正文：门禁通过前不得 push、不得提 PR）。
 - **在门禁之上按风险追加验证**：跨模块、高风险或基础设施改动追加更广泛验证（如仓库根
+- **在门禁之上按风险追加验证**
   `pnpm test:all`），**最终以 CI 门禁为准**。不得通过 skip、删除或弱化测试制造通过；
   PR「怎么验证的」一节必须**如实**填写，没跑不许写已跑。
 - **直推 `main` 的额外门禁**：push 前由独立 reviewer 对最终 diff 做一次对抗性 review，对照
