@@ -1554,9 +1554,17 @@ async function main() {
     console.error(`desktop:session-smoke: 连不上 CDP 端口 ${port}（先跑 pnpm restart:desktop:remote）：${error.message}`);
     return 2;
   }
-  const target = targets.find(
-    (t) => t.type === 'page' && !/\?(sidebarWindow|resourceUsageWindow|view=)/.test(t.url ?? ''),
+  // 只留**主窗口**：排除独立辅助窗口（侧栏 / 资源占用 / 远程桌面查看器 / 带 `?view=` 的分离窗口）。
+  // ⚠️ 2026-09-24 第三轮上游同步修正（与 `meka-ui-smoke.mjs` 同一处缺陷）：dev 启动会额外开出
+  // `?remoteDesktopViewer=1#/remote-desktop-viewer` 窗口；当它排在主窗口之前时，脚本会连到查看器页面
+  // ⇒ 侧栏里只有「远程桌面 / 连接中…」而没有 Meka 分区，于是 WL-3.2 与整串 WL-11.x 全部报
+  // 「侧栏缺少 Meka 分区」这种**误导性结论**（看起来像 Meka 能力丢了，其实连错了窗口）。
+  // 因此补充排除 `remoteDesktopViewer`，并优先选择不带查询串的页面目标。
+  const auxiliaryWindowPattern = /\?(sidebarWindow|resourceUsageWindow|remoteDesktopViewer|view=)/;
+  const pageTargets = targets.filter(
+    (t) => t.type === 'page' && !auxiliaryWindowPattern.test(t.url ?? ''),
   );
+  const target = pageTargets.find((t) => !(t.url ?? '').includes('?')) ?? pageTargets[0];
   if (!target?.webSocketDebuggerUrl) {
     console.error(`desktop:session-smoke: 端口 ${port} 上没有找到主窗口页面目标`);
     return 2;

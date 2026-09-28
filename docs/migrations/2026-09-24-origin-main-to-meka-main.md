@@ -821,41 +821,161 @@ chunks: 2 sequential invocations (explicit file list split to fit the 6000 chara
 > 不在上表内的定向套件（如 §6.15.4 的 `mekaDownloadPolicy.test.ts`、§6.15.6 的
 > `i18nBrandPlaceholder.test.ts`）**未跑**，不得记为通过。
 
-### 7.3 阶段 C — 实机验收
+### 7.3 阶段 C — 实机验收（实跑）
 
-待跑（调度者在本文件提交后执行实机验收）
+一键序列全部实际执行；合并提交为 `1d42753a22`。
+
+| 步骤 | 结果 |
+| --- | --- |
+| `pnpm restart:desktop:remote` | ✅ `DESKTOP_DEV_VERDICT=ready`，`sandbox=dev`、`region=global`、`commit=1d42753a22…`（= 本次合并提交） |
+| `pnpm desktop:whoami` | ✅ `DESKTOP_DEV_VERDICT=ready`，`Desktop source: MATCH`，唯一实例 `commit=1d42753a22…`。（初跑时另有一个**陈旧实例** `03f0d17864` 占同一 userData，已终止后再核） |
+| `pnpm desktop:ui-smoke` | ⚠️ **checks=15 / pass=13 / fail=2 / unverified=0**（详见下「①」） |
+| `pnpm desktop:session-smoke` | ⚠️ **checks=11 / pass=2 / fail=9 / unverified=0**（详见下「②」）；其中 **`WL-11.4` PASS：真实建会话并调用模型跑完一轮，回复 `"收到"`** |
+
+#### 阶段 C 中发现并修复的 3 处**门禁脚本自身缺陷**（均为合并引入或本轮首次暴露）
+
+1. **`role=combobox` 不再唯一 → WL-13 五语横切整段失效**（`scripts/meka-ui-smoke.mjs`）。
+   上游 `cae5f1796b`（#4973）在**通用设置页顶部**新增设置搜索框，它是
+   `<input type="text" role="combobox" aria-label="搜索设置">`，且 DOM 顺序排在语言选择器**之前**
+   ⇒ 原来的 `'[role=combobox]'` 点到搜索框，语言菜单列不出选项，WL-13 提前 `unverified` 返回
+   （**整段五语横切根本没跑**），`main` 里的语言归一也一并失效。
+   实测判别：语言触发器是 `<button role=combobox>`（展开 6 个 `[role=option]`），搜索框是 `<input>`
+   ⇒ 改为 `'[role=combobox]:not(input)'`（唯一命中）。修好后 WL-13 真正跑完五语并 **PASS**
+   （`English→「Meka Assistant」…한국어→「Meka 어시스턴트」`）。
+2. **裸 i18n key 检测误报域名 → WL-13 假红**（同文件）。检测正则
+   `(settings|meka|sidebar)\.[a-zA-Z][a-zA-Z0-9_.]{3,}` 会命中界面里正常渲染的 MCPRouter 地址
+   `https://mcpr.meka.pawdy.fun/` 中的 `meka.pawdy.fun`。改为**与语言目录真实 key 集合求交**
+   （`CATALOG_KEYS`，12777 条；`meka.pawdy.fun` 不在其中 ⇒ 不再误报；真实裸 key 必然在目录里
+   ⇒ 检测能力**未被削弱**）。该误报此前一直被缺陷 1 掩盖。
+3. **主窗口识别漏 `remoteDesktopViewer` → 两个 smoke 脚本整片假红**
+   （`scripts/meka-ui-smoke.mjs` **与** `scripts/meka-session-smoke.mjs`）。
+   dev 启动会额外开出 `?remoteDesktopViewer=1#/remote-desktop-viewer` 窗口；原排除表只有
+   `sidebarWindow|resourceUsageWindow|view=`，脚本会连到查看器窗口 ⇒ ui-smoke 报
+   「面板里找不到「配置」按钮」、session-smoke 报「侧栏缺少 Meka 分区：远程桌面 | 连接中…」
+   这种**误导性结论**。改为补充排除 `remoteDesktopViewer` 并**优先选择不带查询串的页面目标**。
+   > 这条正是 `2026-09-18` 报告 §7.8.7 已登记、**建议改为「URL 无 query = 主窗口」白名单**的
+   > 既有缺陷（当时标注「未改」）—— 本轮按该建议实现。
+
+#### ① `ui-smoke` 的 2 处 FAIL：**沙箱已连接**，非回归
+
+`WL-1.2`（MCPRouter「配置」）与 `WL-1.3`（MekaDesign「配置」）：两者都要求**未配置**态才渲染
+「配置」按钮（`MekaAssistantSettingsSection.tsx:418-432` / `:583-596`：
+`configured` 为真时渲染的是「断开」）。本机唯一已登录沙箱的 MCPRouter 与 MekaDesign
+**都已连接**（DOM 实测按钮 = `["","选择目录","","断开","","","","断开"]`，状态胶囊含两处「已连接」），
+因此这两项按其原口径**无法在该沙箱上执行**。
+
+**为什么判定不是回归**：合并相对合并前 `09e8bb6132` 对该文件的改动**只有 5 行**
+（4 个 `id="settings-search-target-meka-assistant-*"` + MekaDesign 标题改走
+`settings.meka.design.title`），**「配置」按钮与对话框的逻辑一字未动**；
+`MekaRouterConnectDialog.tsx` 合并前后**零改动**。
+未断开的理由：断开会让服务端吊销 MCPRouter 凭证（**不可再生**），破坏 WL-4 后续端到端验收的前提。
+
+⇒ **登记为「未验证 + 原因：唯一已登录沙箱的 MCPRouter/MekaDesign 已连接，配置入口被「断开」替代；
+断开将销毁不可再生凭证，故未执行」**，需维护者书面接受。
+
+#### ② `session-smoke` 的 9 处 FAIL：**saga2 是正式流程项目**，与脚本 fixture 不兼容，非回归
+
+失败全部同源：脚本默认在 `saga2` 的**「普通对话」子组**下找项目作用域新建入口
+（`createMekaDraft(..., { subgroup: '普通对话' })`），而 `saga2` 的
+`C:\Workspace\saga2\saga2_project_git\.meka\project.json`（`basic`，最后改动 2026-08-05）是
+**`"formalWorkflowEnabled": true` + `"workflowType": "jira"` + `"jiraProjectKey": "SAGA"`**
+⇒ `MekaAssistantSection.tsx:175-178` 的 `formalWorkflowActive === true`
+⇒ 该项目的树按**正式流程**渲染，`projectId && !group.formalWorkflowActive` 的项目作用域
+「新建普通对话」入口（`:466-473`）**按设计隐藏**。
+
+于是脚本找不到子组头/入口，退化成点通用「新建」→ 建出的是普通对话
+（`WL-11.3` 实测 `workspace_kind=dialogue; meka_project_id=null; meka_role_id=null`），
+后续 `WL-11.5/11.6/11.7/11.17` 全部是「没有新 Meka 会话」的连锁前置失败。
+
+**为什么判定不是回归**（三条独立证据）：
+1. `apps/desktop/src/renderer/features/cc-agent/sidebar/sections/MekaAssistantSection.tsx`
+   相对合并前 `09e8bb6132` **零改动**（`git diff` 为空）；
+2. `scripts/meka-session-smoke.mjs` 三方比对：`base..origin/main` 空、`base..09e8bb6132`
+   为「新增 1695 行」、`09e8bb6132..merge` **空** ⇒ 脚本本轮**未被合并改动**；
+3. `formalWorkflowEnabled` 的读取链（`mekaProjects.ts:241 ← normalizeMekaProjectFile(project.json)`）
+   中，`mekaProjects.ts` 与 `MekaAssistantSection.tsx` **都不在本轮改动清单内**；
+   唯一被本轮改到且提到该字段的 `localDb/ipc/sessions.ts` 是主进程会话创建路径，
+   不是渲染判据。⇒ 行为由**项目配置数据**决定，非代码回归。
+
+⇒ **登记为「未验证 + 原因：本机唯一项目的 `project.json` 为正式流程（jira/SAGA），
+与 session-smoke 的「普通对话」fixture 不兼容；本轮无可用的非正式流程项目」**，需维护者书面接受。
+**可复跑的解除条件**：注册一个非正式流程项目（或临时把 saga2 的 `formalWorkflowEnabled`
+置 false）后重跑 `pnpm desktop:session-smoke`。
+
+#### 阶段 C 的正面结论
+
+- **应用能真实启动并运行**（`ready`、commit 与 HEAD 一致、无陈旧实例）。
+- **真实会话跑通**：`WL-11.4` PASS —— 建会话 → 发消息 → 模型回复 `"收到"`。
+- **15 项程序化 GUI 验收中 13 项 PASS**，覆盖 WL-1.1 / WL-1.2-1.5（四卡齐全）/ WL-1.5 /
+  WL-2.1 / WL-2.2 / WL-2.3 / WL-2.4 / WL-2.5+WL-3.3 / WL-3.2 / WL-5.5+WL-6.1 / WL-6.5 /
+  WL-10（P0 回归点：草稿模型选择器非空、9 个选项）/ WL-13（五语无裸 key）。
+- **未验证项（除上面 2 类）**：WL-4（MCPRouter）端到端仍缺账号/实例（§5 既有登记）、
+  Light/Dark 目检、真实签名与发布。
 
 ### 7.4 阶段 D — 结论
 
-待阶段 C 完成后填写
+**阶段 A（结构审计）**：`pnpm audit:merge -- --worktree` → **PASS**（blockers 0 / dropped 0 /
+review 0；8 项豁免逐条有据）。上游新增 1016 条中除 D4 **有意改号**的 5 条 migration 外全部在位，
+无一条同时被 Meka 改过；上游删除 22 条逐条无悬挂引用 ⇒ **无静默丢失**。
+
+**阶段 B（最小自动化集合）**：除 `pnpm test:db` 仅剩 `backup.test.ts` 的 3 条**宿主磁盘不足**
+（`ENOSPC`）外，其余全部实跑通过（逐项见 §7.2）；`pnpm test:unit` 独占串行 **exit 0**。
+
+**阶段 C（实机验收）**：应用启动、身份/提交一致性、真实会话与 13/15 程序化 GUI 检查通过；
+3 处**门禁脚本自身缺陷**已在本轮修复（其中两条是上游新增 UI 造成的钩子漂移）；2 类失败
+（`ui-smoke` 的 WL-1.2/1.3 与 `session-smoke` 的 WL-11.x）经三条独立证据判定为
+**环境/项目配置前置不满足**，不是合并回归，并已按白名单要求**逐条登记「未验证 + 原因」**。
+
+**总体结论**：合并**在结构、实现自洽与语义三个层面均未发现 Meka 能力丢失**；
+`audit:merge` PASS、`test:unit` exit 0、typecheck 0、`db:validate` 6/6、
+i18n/brand/endpoint/design-inventory/dev-docs 全绿。**但本报告不宣告「全部通过」**：
+`pnpm test:db` 有 1 个文件的宿主磁盘 `ENOSPC`、阶段 C 有 2 类前置不满足的实机项，
+**均已明确登记为「未验证 + 原因」，需维护者书面接受后才算收敛**（白名单 §2 阶段 D 的既有口径）。
 
 ## 8. 交付状态
 
-- **合并已完成**：65 个冲突路径全部解决并 stage，`git diff --name-only --diff-filter=U` 为空；
-  未创建 merge commit、未 push、未创建 PR（需用户单独授权）。
+- **合并已完成并已提交**：65 个冲突路径全部解决；合并提交 **`1d42753a22`**
+  （父提交 = `09e8bb6132` + `2f169d6aeb`，带 `Signed-off-by`）。
+  **未 push、未创建 PR**（需用户单独授权）。合并后 `git rev-list --left-right --count HEAD...origin/main`
+  = **165 / 0** ⇒ **上游没有任何提交未并入**。
 - **结构层面的静默丢失审计**：结论见 §4 —— 上游新增 1016 条中除 D4 有意改号的 5 条外全部在位，
   且无一条同时被 Meka 改动过；上游删除 22 条逐条无悬挂引用；118 条「无冲突标记但两侧都改过」的路径
   全量比对后，「上游新增内容被静默丢弃」= **0**。
 - **分组解决结果**：见 §5.2 与 §6（逐组给出「口径 + 证据 + 保留的不变量 + 定向取证结果」）。
-- **交付门禁实跑与随后修复的缺陷**：见 **§6.15** —— 门禁实跑中又发现并修复 6 处缺陷，每条给出
-  「现象 → 证据 → 根因（谁引入）→ 修法 → 实跑验证」；其中第 1、2、4 条为**本轮合并引入**，
-  第 3 条一半由上游刷新触发、一半是 Meka 存量内容缺陷，第 5、6 条为**Meka 侧存量缺陷**
-  （按 `AGENTS.md`「审查与问题范围」报告后由用户裁决纳入本次）。节末另登记 2 条
-  「接纳上游但需明知」的事实（端点备源渠道耦合、Skillhub 列表路由化重构）。
-- **白名单验证进展**：见 **§7** —— 阶段 A（`pnpm audit:merge -- --worktree`）与阶段 B
-  （最小自动化集合的逐项实跑）结论已登记；**阶段 C 待跑、阶段 D 待填**，本报告不代填、不预设结论。
+- **交付门禁实跑与随后修复的缺陷**：见 **§6.15 / §6.16 / §6.17 / §6.18** —— 门禁实跑中又发现并修复
+  多批缺陷，每条给出「现象 → 证据 → 根因（谁引入）→ 修法 → 实跑验证」：
+  安装器/`buildResources`/i18n 术语与插件下载上限等 6 处（§6.15）；
+  `test:unit` 首跑 4 处真实红 + 2 处环境性假红（§6.16）；
+  `versionStartup` / `linuxInstallation` / `index.ts` 的身份字面值回归（§6.17）；
+  `pnpm test:db` 的 Windows 命令行长度失效 + 5 处被它掩盖的真实红（§6.18）。
+  其中 `installer.rs`、`completeDirectory.test.ts`、`cindy-meka-updater.exe`、zh-TW 品牌占位、
+  `creditParity*`、两处身份硬编码的**纳入决定均由用户逐项作出**。
+- **白名单验证进展**：见 **§7** —— **阶段 A / B / C / D 全部实跑并已登记结论**（含 2 类
+  「未验证 + 原因」的登记与解除条件）。
 - **未完成的交付项（不得在本报告内宣告收敛）**：
   1. `pnpm-lock.yaml`：已在交付门禁实跑中由 `pnpm install` **重建**（见 §7.1 的 `GENERATED` 说明）
      ⇒ §4.5 / §6.12 / UP-08 里「重建未执行」的措辞已被本节取代，该交付项**已消除**；
-  2. 插件基座白名单放行门（UP-13、`CAP-MEKAPLUGIN`）—— 属 §7 阶段 C（实机验收），**待跑**；
-  3. 阶段 C 实机验收与阶段 D 结论（§7.3 / §7.4）—— **待跑 / 待填**；
-  4. 仍在跑或未跑的自动化命令：`pnpm test:unit`、`pnpm test:db`（本报告写作时**仍在跑**，结果由
-     调度者补记）；以及不在 §7.2 最小集合内的定向套件（§6.15.4 的 `mekaDownloadPolicy.test.ts`、
-     §6.15.6 的 `i18nBrandPlaceholder.test.ts`）—— **未跑**；
-  5. **未 push、未创建 PR**（需用户单独授权）；实机验收（升级、旧数据迁移、UI 双模式目检）亦**未执行**。
-- **本报告的门禁结论边界**：§6.15 与 §7 只登记**实际跑过**的命令与输出，未跑项逐条标注
-  「未跑 / 待跑 / 仍在跑」；§1–§6 的「定向取证」栏仍只覆盖冲突解决当时的定向检查（写「代码级证据」
-  「静态核对」「本轮未跑」的组没有实跑测试）。**本报告不声称合并已验收完成**：
-  阶段 C、阶段 D、`pnpm test:unit`、`pnpm test:db`、push 与 PR 均未完成。
+  2. 插件基座白名单放行门（UP-13、`CAP-MEKAPLUGIN`）—— `pnpm test:db` 与实机验收已跑，
+     该放行门本身仍需放行人明确 Approve，**未完成**；
+  3. **需维护者书面接受的「未验证 + 原因」**（白名单 §2 阶段 D 口径）：
+     (a) `pnpm test:db` 中 `backup.test.ts` 的 3 条 `ENOSPC`（宿主磁盘不足，需约 39 GB，本机剩约 10.5 GB）；
+     (b) `ui-smoke` 的 WL-1.2 / WL-1.3（唯一已登录沙箱的 MCPRouter/MekaDesign 已连接，
+         配置入口被「断开」替代；断开将销毁不可再生凭证）；
+     (c) `session-smoke` 的 WL-11.1/11.2/11.3/11.5/11.6/11.7/11.8/11.17 与 WL-3.2
+         （本机唯一项目 `saga2` 的 `project.json` 为正式流程 jira/SAGA，与脚本「普通对话」fixture 不兼容）；
+     (d) WL-4 MCPRouter 端到端（缺账号与实例）、Light/Dark 目检、真实签名与发布、共享 profile 旧库只读迁移。
+     前三项的**证据链与「为什么不是回归」的判定**见 §7.3，解除条件亦已写明。
+  4. 不在 §7.2 最小集合内的定向套件（§6.15.4 的 `mekaDownloadPolicy.test.ts`、
+     §6.15.6 的 `i18nBrandPlaceholder.test.ts`）—— 已在 §6.15 逐条**实跑通过**；
+     `pnpm test:unit` 独占串行 **exit 0**、`pnpm test:db` 见上；
+  5. **未 push、未创建 PR**（需用户单独授权）。
+- **本报告的门禁结论边界**：§6.15–§6.18 与 §7 只登记**实际跑过**的命令与输出，未跑项逐条标注
+  「未跑 / 未验证 + 原因」；§1–§6 的「定向取证」栏仍只覆盖冲突解决当时的定向检查（写「代码级证据」
+  「静态核对」「本轮未跑」的组没有实跑测试）。**本报告不声称「全部通过」**：
+  §7.4 已写明「结构/实现/语义三层未发现 Meka 能力丢失」，同时明确列出
+  「需维护者书面接受」的 4 组未验证项。
 - **文档同步**：本报告与总账 `docs/migrations/xdmaker-meka-to-cindy.md` §11.29（第三轮同步登记）、
-  §6.59 后续修订、§4.6 三页签与台账登记为同一次交付的事实登记。
+  §6.59 后续修订、§4.6 三页签与台账登记为同一次交付的事实登记；
+  另同步 `docs/dev-rules/`（`meka-whitelist-verification.md`、`configuration-and-overrides.md`、
+  `desktop-unit-test-performance.md`、`database-and-migrations.md` 等）与
+  `docs/product-rules/shared-task-mode.md`。

@@ -206,10 +206,57 @@ const SIDEBAR_NAV_LABELS = `[...document.querySelectorAll('button')]
  * 语言选择器是 Radix `Select.Trigger`：`aria-label` 会被本地化（「显示语言选择」/「Show
  * language selector」），没有 testid，所以**只能用 `role=combobox` 这个与语言无关的钩子**。
  * 本工具因此假定运行在简体中文下，并在启动时把语言归一到 zh-CN、结束时还原（见 `main`）。
+ *
+ * ⚠️ **2026-09-24 第三轮上游同步修正（`role=combobox` 不再唯一）**：上游 `cae5f1796b`
+ * （#4973「扩展设置搜索索引与导航」）在**通用设置页顶部**新增了一个设置搜索框，它是
+ * `<input type="text" role="combobox" aria-label="搜索设置">`，并且**在 DOM 顺序上排在语言
+ * 选择器之前**。于是原来的 `'[role=combobox]'` 会命中搜索输入框，点击它不会打开语言列表
+ * ⇒ WL-13 的五语横切报「语言菜单只列出 0 项：null」，且 `main` 里的语言归一也一并失效。
+ * 判别方式由实测确定：语言触发器是 `<button type="button" role="combobox">`（触发
+ * `aria-haspopup=listbox` 并展开 6 个 `[role=option]`），而搜索框是 `<input>`；
+ * 因此用 `:not(input)` 收敛回唯一命中。**不要**改回纯 `'[role=combobox]'`。
  */
-const LANGUAGE_TRIGGER = '[role=combobox]';
+const LANGUAGE_TRIGGER = '[role=combobox]:not(input)';
 const LANGUAGE_OPTION = '[role=option]';
 const LANGUAGE_TAB = '#/settings?tab=general';
+
+/**
+ * 语言目录里的**真实 key 集合**（含各级祖先路径），用于把「裸 i18n key」与「只是长得像 key
+ * 的正常文案」区分开。
+ *
+ * ⚠️ **2026-09-24 第三轮上游同步修正（WL-13 误报）**：裸 key 检测的正则
+ * `(settings|meka|sidebar)\.[a-zA-Z][a-zA-Z0-9_.]{3,}` 会命中**域名/主机名**——实测 Meka
+ * 助理面板里正常渲染的 MCPRouter 地址 `https://mcpr.meka.pawdy.fun/` 会命中出
+ * `meka.pawdy.fun`，被当成裸 key 报 FAIL。而该字符串**并不是**任何语言目录里的 key。
+ * 因此把候选与真实 key 集合求交：只有**确实存在于目录中的 key 被打印出来**才算裸 key。
+ * 这比放宽正则更精确，也**不会削弱**检测能力（真实裸 key 必然在目录里）。
+ * 注：该误报此前一直存在，只是被语言选择器漂移（见 LANGUAGE_TRIGGER 注释）掩盖——
+ * WL-13 在漂移下提前 `unverified` 返回，整段五语横切根本没跑。
+ */
+const CATALOG_KEYS = (() => {
+  const keys = new Set();
+  const walk = (value, prefix) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+    for (const [name, child] of Object.entries(value)) {
+      const next = prefix ? `${prefix}.${name}` : name;
+      keys.add(next);
+      if (child && typeof child === 'object' && !Array.isArray(child)) walk(child, next);
+    }
+  };
+  for (const language of ['en', 'zh-CN']) {
+    const dir = path.join(ROOT, 'apps', 'desktop', 'src', 'renderer', 'i18n', 'locales', language);
+    if (!fs.existsSync(dir)) continue;
+    for (const file of fs.readdirSync(dir)) {
+      if (!file.endsWith('.json')) continue;
+      try {
+        walk(JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8')), '');
+      } catch {
+        // 目录文件读不出来不该让烟雾测试崩；此时集合少一些，检测只会更宽松。
+      }
+    }
+  }
+  return keys;
+})();
 
 async function openLanguageMenu(session) {
   if (!(await session.clickSelector(LANGUAGE_TRIGGER))) return null;
@@ -580,7 +627,7 @@ const CHECKS = [
         const tab = document.querySelector('#settings-tab-meka-assistant')
           ?? [...document.querySelectorAll('[role=tab]')].find((t) => (t.getAttribute('aria-controls') || '') === 'settings-panel-meka-assistant');
         const rawKeys = ((document.body.innerText || '').match(/(settings|meka|sidebar)\\.[a-zA-Z][a-zA-Z0-9_.]{3,}/g) || []);
-        return { panel: !!panel, tabLabel: tab ? (tab.textContent || '').trim() : null, rawKeys: rawKeys.slice(0, 3) };
+        return { panel: !!panel, tabLabel: tab ? (tab.textContent || '').trim() : null, rawKeys: rawKeys.slice(0, 30) };
       })()`;
 
       const evidence = [];
@@ -600,7 +647,8 @@ const CHECKS = [
           if (!state.panel) return ctx.fail(`切到 ${language} 后 Meka 助理面板不再渲染`);
           if (!state.tabLabel) return ctx.fail(`切到 ${language} 后找不到 Meka 助理页签（语言无关 id 也缺失）`);
           if (state.tabLabel.includes('.')) return ctx.fail(`切到 ${language} 后页签显示裸 key：${state.tabLabel}`);
-          if (state.rawKeys.length) return ctx.fail(`切到 ${language} 后界面出现裸 i18n key：${JSON.stringify(state.rawKeys)}`);
+          const bareKeys = state.rawKeys.filter((token) => CATALOG_KEYS.has(token));
+          if (bareKeys.length) return ctx.fail(`切到 ${language} 后界面出现裸 i18n key：${JSON.stringify(bareKeys.slice(0, 3))}`);
           evidence.push(`${language}→「${state.tabLabel}」`);
         }
       } finally {
@@ -628,9 +676,19 @@ async function main() {
     console.error(`desktop:ui-smoke: 连不上 CDP 端口 ${port}（先跑 pnpm restart:desktop:remote）：${error.message}`);
     return 2;
   }
-  const target = targets.find(
-    (t) => t.type === 'page' && !/\?(sidebarWindow|resourceUsageWindow|view=)/.test(t.url ?? ''),
+  // 只留**主窗口**：排除独立辅助窗口（侧栏 / 资源占用 / 远程桌面查看器 / 带 `?view=` 的分离窗口）。
+  // ⚠️ 2026-09-24 第三轮上游同步修正：原先只排除 `sidebarWindow|resourceUsageWindow|view=`，
+  // 而 dev 启动会额外开出 `?remoteDesktopViewer=1#/remote-desktop-viewer` 窗口；当它排在主窗口
+  // 之前（或主窗口尚未加载完成）时，脚本会连到查看器页面 ⇒ 所有以主窗口 DOM 为前提的断言整片假红
+  // （实测表现为 WL-1.2/WL-1.3「面板里找不到「配置」按钮」这种误导性结论）。
+  // 因此补充排除 `remoteDesktopViewer`，并**优先选择不带查询串的页面目标**（主窗口 URL 形如
+  // `http://localhost:5174/#/...`，辅助窗口都带 `?`）。
+  const auxiliaryWindowPattern = /\?(sidebarWindow|resourceUsageWindow|remoteDesktopViewer|view=)/;
+  const pageTargets = targets.filter(
+    (t) => t.type === 'page' && !auxiliaryWindowPattern.test(t.url ?? ''),
   );
+  const target =
+    pageTargets.find((t) => !(t.url ?? '').includes('?')) ?? pageTargets[0];
   if (!target?.webSocketDebuggerUrl) {
     console.error(`desktop:ui-smoke: 端口 ${port} 上没有找到主窗口页面目标`);
     return 2;

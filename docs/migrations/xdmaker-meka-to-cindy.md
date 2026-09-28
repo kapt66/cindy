@@ -6345,8 +6345,21 @@ windows shard 1，均 `if: matrix.shard == 1`）把
   与 `install-omarchy.sh` 要求 `$payload/Cindy`，而打包产物是 `CindyMeka` ⇒
   `Incomplete application.` / `Unexpected executable identity.`；`brand-identity-sync` 的镜像断言未覆盖
   `forge-linux.ts` 与这两个脚本。修复方向与证据链见本期报告 §6.17。
+- **白名单四阶段已全部实跑**（本期报告 §7）：阶段 A `pnpm audit:merge` **PASS**
+  （blockers/dropped/review 全 0）；阶段 B 最小自动化集合逐项实跑，`pnpm test:unit` 独占串行
+  **exit 0**、`pnpm test:db` 仅剩 `backup.test.ts` 的 3 条**宿主磁盘 `ENOSPC`**；
+  阶段 C 实机验收：应用以合并提交 `1d42753a22` 启动（`ready`）、**真实建会话并跑通一轮
+  （模型回复「收到」）**、15 项程序化 GUI 检查 **13 PASS**；阶段 D 结论已写明
+  「结构 / 实现 / 语义三层未发现 Meka 能力丢失」，同时逐条登记需维护者书面接受的「未验证 + 原因」。
+- **阶段 C 顺带修复 3 处门禁脚本自身缺陷**（合并引入或本轮首次暴露，见本期报告 §7.3）：
+  ① 上游新增的设置搜索框也是 `role=combobox`，遮蔽了语言选择器 ⇒ `ui-smoke` 的 WL-13 五语横切
+  整段失效（改为 `[role=combobox]:not(input)`）；② 裸 i18n key 检测正则误报域名
+  （`mcpr.meka.pawdy.fun` ⇒ `meka.pawdy.fun`），改为与语言目录真实 key 集合求交；
+  ③ 两个 smoke 脚本的主窗口识别漏 `remoteDesktopViewer` 窗口（`2026-09-18` 报告 §7.8.7 已登记、
+  当时「未改」并建议改为「URL 无 query = 主窗口」）——**本轮按该建议实现**。
 - **未完成项（不得宣告收敛）**：**`pnpm-lock.yaml` 已由 `pnpm install` 重建**（原列此处，已完成，
-  见本期报告 §7.1/§8）、插件基座白名单放行门、白名单语义验收（阶段 C）与实机验收 —— 逐项登记在
-  本期报告 §7、§8。
+  见本期报告 §7.1/§8）、插件基座白名单放行门、以及 §8 列出的 4 组
+  「未验证 + 原因」（`ENOSPC`、`ui-smoke` 的 WL-1.2/1.3 前置、`session-smoke` 的 WL-11.x 前置、
+  WL-4 端到端与视觉目检）—— 逐项登记在本期报告 §7、§8，**均需维护者书面接受**。
 
 
