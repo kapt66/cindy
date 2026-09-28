@@ -67,12 +67,13 @@ export default defineConfig({
     // Main-process tests do real IO (loopback HTTP servers, git subprocesses,
     // heavy module imports through the vite-node transform). On Windows those
     // are markedly slower and, under the full desktop suite's worker-pool
-    // contention, light tests intermittently blow past vitest's 5s default and
-    // time out non-deterministically (a different test each run). Give Windows
-    // a wider default so those pass reliably; keep the standard 5s on
-    // Linux/macOS/CI so genuine hangs still surface promptly. Tests that need
-    // even more (multi-step real-git orchestration) still set their own higher
-    // per-file timeout, which overrides this.
+    // contention, light tests and their filesystem hooks intermittently blow
+    // past vitest's defaults and time out non-deterministically (a different
+    // test each run). Give Windows a wider 60s default for both so those pass
+    // reliably; keep the standard defaults on Linux/macOS so genuine hangs
+    // still surface promptly. Tests that need even more (multi-step real-git
+    // orchestration) still set their own higher per-file timeout, which
+    // overrides this.
     //
     // 2026-09-20 实测把 20s 调到 60s：**代价由「首次 import 一个很大的模块图」主导**
     // 的用例，空载 6.7s（`updateService` 的 `vi.resetModules()` + 重新 import）、
@@ -84,6 +85,7 @@ export default defineConfig({
     // 所以按"给 Windows 更宽默认值"的既有口径继续放宽；上面那两条用例另外还各自
     // 留了更宽的显式预算。
     testTimeout: process.platform === 'win32' ? 60_000 : 5_000,
+    hookTimeout: process.platform === 'win32' ? 60_000 : 10_000,
     // Node 25 默认开启 webstorage,globalThis.localStorage 变成一个未配
     // --localstorage-file 时方法全缺的残缺对象:node 环境下骗过
     // `typeof localStorage !== 'undefined'` 探测,jsdom 环境下又因 key 已存在

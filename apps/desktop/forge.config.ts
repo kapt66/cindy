@@ -21,9 +21,13 @@ import {
   resolveCindyRegion,
 } from '@cindy/maker-shared/brand-identity';
 import { stageMacIOSSimulatorHelper } from './forge-ios-simulator-helper';
+import { preparePackagedNodePty } from './forge-node-pty';
 import { stagePackagedThirdPartyNotices } from './forge-third-party-notices';
 import { assertMekaResourceTree, assertPackagedMekaResources } from './forge-meka-resources';
-import { swiftTargetTriple, swiftTargetTriplesForForgeArch } from './src/main/remote-desktop/swiftTarget';
+import {
+  swiftTargetTriple,
+  swiftTargetTriplesForForgeArch,
+} from './src/main/remote-desktop/swiftTarget';
 import { READ_SHEET_RUNTIME_PACKAGES } from '../../packages/lizi-mcps/src/cindy-docs/readSheetRuntimeDeps';
 import { reviewPdfRuntimePackages } from './src/main/reviewer/reviewPdfRuntimeDeps';
 import {
@@ -71,7 +75,9 @@ function stageCindySourceMetadata(): void {
     `${JSON.stringify({ sourceCommit, builtAt }, null, 2)}\n`,
     'utf8',
   );
-  console.log(`[forge:prePackage] staged Cindy source metadata (${sourceCommit || 'unknown commit'})`);
+  console.log(
+    `[forge:prePackage] staged Cindy source metadata (${sourceCommit || 'unknown commit'})`,
+  );
 }
 
 function removeCindySourceMetadata(): void {
@@ -183,8 +189,8 @@ const NATIVE_RUNTIME_DEPS = [
   // 无需带运行时闭包。注意: 该 runtime 用 CDP 接管用户已装 Chrome, 不需要
   // playwright 自带的浏览器二进制, 故只带 JS 模块即可。
   'playwright-core',
-  // node-pty (RSB 终端 tab 的 PTY 后端): .node 原生模块, 跟 better-sqlite3 同款 ——
-  // 必须 electron-rebuild (Node ABI ≠ Electron ABI), 必须随 packaged app 带,
+  // node-pty (RSB 终端 tab 的 PTY 后端): macOS/Windows 使用包内 N-API 预编译件，
+  // Linux 通过 electron-rebuild 编译；各平台都必须随 packaged app 带,
   // AutoUnpackNativesPlugin 会把 .node 提取到 app.asar.unpacked/。main 进程通过
   // createRequire 在运行时 require, 不让 vite bundle (见 vite.main.config.ts external)。
   'node-pty',
@@ -398,24 +404,26 @@ function bundleNativeDeps(buildPath: string, targetPlatform: string, targetArch:
   copyRuntimeDependencyTrees(READ_SHEET_RUNTIME_PACKAGES, destModules);
 }
 
-// 针对 packaged buildPath 的 node_modules 强制重建 better-sqlite3 —— force:true 确保
-// 即使根 node_modules 里的 .node 是 Node ABI（pnpm install 默认），也会被 Electron ABI
-// 覆盖重编。编完的 .node 落在 build/Release/better_sqlite3.node,下游
-// AutoUnpackNativesPlugin 会在 asar 打包时把它提取到 app.asar.unpacked/。
+// better-sqlite3 仍按 Electron ABI 重编。node-pty 在 macOS/Windows 使用 npm 包内
+// 的 N-API 预编译件；缺件意味着依赖不完整，不能悄悄转入源码编译。Linux 继续重编。
 async function rebuildNativeDepsInPackage(
   buildPath: string,
   electronVersion: string,
+  platform: string,
   arch: string,
 ): Promise<void> {
+  const nodePty = preparePackagedNodePty(buildPath, platform, arch);
+  const modules = ['better-sqlite3'];
+  if (nodePty.rebuild) modules.push('node-pty');
   console.log(
-    `[forge:afterCopy] rebuilding native modules (better-sqlite3, node-pty) for Electron ${electronVersion} (${arch})...`,
+    `[forge:afterCopy] rebuilding native modules (${modules.join(', ')}) for Electron ${electronVersion} (${arch})...`,
   );
   await electronRebuild({
     buildPath,
     electronVersion,
     arch,
     force: true,
-    onlyModules: ['better-sqlite3', 'node-pty'],
+    onlyModules: modules,
   });
   const sqliteNative = path.join(
     buildPath,
@@ -428,18 +436,9 @@ async function rebuildNativeDepsInPackage(
   if (!fs.existsSync(sqliteNative)) {
     throw new Error(`[forge:afterCopy] rebuild reported success but ${sqliteNative} is missing`);
   }
-  // node-pty 的 .node 在 build/Release/pty.node;Windows 上同名,Linux/macOS 同名。
-  // 跟 better-sqlite3 一样,缺了直接抛出,避免发出无法启动 PTY 的包。
-  const ptyNative = path.join(
-    buildPath,
-    'node_modules',
-    'node-pty',
-    'build',
-    'Release',
-    'pty.node',
-  );
+  const ptyNative = nodePty.nativePath;
   if (!fs.existsSync(ptyNative)) {
-    throw new Error(`[forge:afterCopy] rebuild reported success but ${ptyNative} is missing`);
+    throw new Error(`[forge:afterCopy] node-pty native module missing: ${ptyNative}`);
   }
 
   // node-pty 被整目录纳入 asar.unpack（为放出 spawn-helper / winpty 等运行时二进制），
@@ -830,9 +829,12 @@ function extraResourcesForTarget(targetPlatform: string): string[] {
   const base = [
     'resources/icon.png',
     'resources/cindy-source.json',
+    'resources/cindy-version-protocol.json',
     // Input bytes for upgrading retired preset avatars to ordinary managed images.
     'resources/legacy-teammate-avatars',
     'resources/teammate-portrait-gallery.png',
+    // Cindy-owned Agent Skills are materialized under userData on startup.
+    'resources/system-skills',
     'resources/tools',
     'drizzle',
     'resources/cc-manager',
@@ -852,8 +854,7 @@ function extraResourcesForTarget(targetPlatform: string): string[] {
     'resources/THIRD-PARTY-RESTRICTED.txt',
   ];
 
-  const windowsUpdaterRuntimeResource =
-    windowsUpdaterRuntimeExtraResourceForTarget(targetPlatform);
+  const windowsUpdaterRuntimeResource = windowsUpdaterRuntimeExtraResourceForTarget(targetPlatform);
   if (windowsUpdaterRuntimeResource) {
     base.unshift(
       `resources/${UPDATER_EXE}`,
@@ -1052,13 +1053,24 @@ function compileCObjectForTarget(
   extraArgs: string[],
   label: string,
 ): void {
-  const r = spawnSync('clang', ['-c', src, '-target', target, ...extraArgs, '-o', dest], { stdio: 'inherit' });
+  const r = spawnSync('clang', ['-c', src, '-target', target, ...extraArgs, '-o', dest], {
+    stdio: 'inherit',
+  });
   if (r.error) throw new Error(`[forge] clang spawn failed for ${label}: ${r.error.message}`);
-  if (r.status !== 0) throw new Error(`[forge] clang failed for ${label} (${target}) with exit code ${r.status}`);
+  if (r.status !== 0)
+    throw new Error(`[forge] clang failed for ${label} (${target}) with exit code ${r.status}`);
 }
 
-function runSwiftcForTarget(src: string, dest: string, target: string, extraArgs: string[], label: string): void {
-  const r = spawnSync('swiftc', ['-target', target, src, ...extraArgs, '-o', dest], { stdio: 'inherit' });
+function runSwiftcForTarget(
+  src: string,
+  dest: string,
+  target: string,
+  extraArgs: string[],
+  label: string,
+): void {
+  const r = spawnSync('swiftc', ['-target', target, src, ...extraArgs, '-o', dest], {
+    stdio: 'inherit',
+  });
   if (r.error) throw new Error(`[forge] swiftc spawn failed for ${label}: ${r.error.message}`);
   if (r.status !== 0)
     throw new Error(`[forge] swiftc failed for ${label} (${target}) with exit code ${r.status}`);
@@ -1098,66 +1110,240 @@ function buildSwiftHelperForForgeArch(
 function buildRemoteDesktopInput(platform: ForgePlatform, arch: ForgeArch): void {
   const destDir = path.join(__dirname, 'resources', 'tools', 'remote-desktop');
   fs.mkdirSync(destDir, { recursive: true });
-  if (process.platform === 'darwin' && isMacForgePlatform(platform)) {
+  if (process.platform === 'linux' && platform === 'linux') {
+    if (arch !== process.arch)
+      throw new Error('Linux desktop input requires a native architecture build');
+    const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-linux-input-'));
+    try {
+      const result = spawnSync(
+        process.execPath,
+        [path.join(__dirname, 'native', 'remote-desktop', 'linux-input', 'build.mjs'), temporary],
+        { stdio: 'inherit' },
+      );
+      if (result.error || result.status !== 0) throw new Error('Linux desktop input build failed');
+      fs.copyFileSync(
+        path.join(temporary, 'cindy-linux-desktop-input'),
+        path.join(destDir, 'cindy-linux-desktop-input'),
+      );
+      const capture = spawnSync(
+        process.execPath,
+        [path.join(__dirname, 'native', 'remote-desktop', 'linux-capture', 'build.mjs'), temporary],
+        { stdio: 'inherit' },
+      );
+      if (capture.error || capture.status !== 0)
+        throw new Error('Linux desktop capture build failed');
+      fs.copyFileSync(
+        path.join(temporary, 'cindy-linux-desktop-capture'),
+        path.join(destDir, 'cindy-linux-desktop-capture'),
+      );
+      const clipboard = spawnSync(
+        process.execPath,
+        [
+          path.join(__dirname, 'native', 'remote-desktop', 'linux-clipboard', 'build.mjs'),
+          temporary,
+        ],
+        { stdio: 'inherit' },
+      );
+      if (clipboard.error || clipboard.status !== 0)
+        throw new Error('Linux desktop clipboard build failed');
+      fs.copyFileSync(
+        path.join(temporary, 'cindy-linux-desktop-clipboard'),
+        path.join(destDir, 'cindy-linux-desktop-clipboard'),
+      );
+      fs.copyFileSync(
+        path.join(__dirname, 'native', 'remote-desktop', 'linux-viewer-display.py'),
+        path.join(destDir, 'linux-viewer-display.py'),
+      );
+      // Optional, ABI-pinned compositor integration. Other Linux distributions
+      // still package normally and report privacy unavailable.
+      // A skipped optional build must not ship an earlier checkout's plugin.
+      for (const extension of ['so', 'json'])
+        fs.rmSync(path.join(destDir, `cindy-hyprland-privacy.${extension}`), { force: true });
+      const privacyHeaders = spawnSync('pkg-config', ['--modversion', 'hyprland'], {
+        encoding: 'utf8',
+      });
+      if (privacyHeaders.status === 0 && privacyHeaders.stdout.trim() === '0.56.2') {
+        const privacy = spawnSync(
+          process.execPath,
+          [
+            path.join(__dirname, 'native', 'remote-desktop', 'hyprland-privacy', 'build.mjs'),
+            temporary,
+          ],
+          { stdio: 'inherit' },
+        );
+        if (privacy.error || privacy.status !== 0)
+          throw new Error('Linux desktop privacy build failed');
+        for (const extension of ['so', 'json'])
+          fs.copyFileSync(
+            path.join(temporary, `cindy-hyprland-privacy.${extension}`),
+            path.join(destDir, `cindy-hyprland-privacy.${extension}`),
+          );
+      }
+      const credentialsDir = path.join(destDir, 'linux-credentials');
+      fs.mkdirSync(credentialsDir, { recursive: true });
+      for (const name of [
+        'main.py',
+        'channel.py',
+        'host.py',
+        'storage.py',
+        'platform_linux.py',
+        'requirements.txt',
+      ]) {
+        fs.copyFileSync(
+          path.join(__dirname, 'native', 'remote-desktop', 'linux-credentials', name),
+          path.join(credentialsDir, name),
+        );
+      }
+    } finally {
+      fs.rmSync(temporary, { recursive: true, force: true });
+    }
+  } else if (process.platform === 'darwin' && isMacForgePlatform(platform)) {
     const dest = path.join(destDir, 'cindy-macos-desktop-input');
     const inputBuild = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-input-build-'));
     try {
       const main = path.join(inputBuild, 'main.swift');
-      const caller = fs.readFileSync(path.resolve(__dirname, '../../packages/remote-credentials-native/Sources/DesktopNativeCaller/DesktopNativeCaller.swift'), 'utf8');
-      fs.writeFileSync(main, caller + '\n' + fs.readFileSync(path.join(__dirname, 'native', 'remote-desktop', 'macos-input.swift'), 'utf8'));
-      buildSwiftHelperForForgeArch(
-      main,
-      dest,
-      arch,
-      MACOS_REMOTE_DESKTOP_INPUT_DEPLOYMENT_TARGET,
-      [],
-      'remote desktop input',
+      const caller = fs.readFileSync(
+        path.resolve(
+          __dirname,
+          '../../packages/remote-credentials-native/Sources/DesktopNativeCaller/DesktopNativeCaller.swift',
+        ),
+        'utf8',
       );
-    } finally { fs.rmSync(inputBuild, { recursive: true, force: true }); }
+      fs.writeFileSync(
+        main,
+        caller +
+          '\n' +
+          fs.readFileSync(
+            path.join(__dirname, 'native', 'remote-desktop', 'macos-input.swift'),
+            'utf8',
+          ),
+      );
+      buildSwiftHelperForForgeArch(
+        main,
+        dest,
+        arch,
+        MACOS_REMOTE_DESKTOP_INPUT_DEPLOYMENT_TARGET,
+        [],
+        'remote desktop input',
+      );
+    } finally {
+      fs.rmSync(inputBuild, { recursive: true, force: true });
+    }
     fs.chmodSync(dest, 0o755);
     const credentialBuild = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-credential-build-'));
     try {
       const root = path.resolve(__dirname, '../../packages/remote-credentials-native');
       const outputs: string[] = [];
       for (const target of swiftTargetTriplesForForgeArch(arch, 'macos12.0')) {
-        const args = ['build', '--package-path', root, '-c', 'release', '--product', 'cindy-macos-remote-credentials',
-          '--triple', target, '--scratch-path', path.join(credentialBuild, target)];
+        const args = [
+          'build',
+          '--package-path',
+          root,
+          '-c',
+          'release',
+          '--product',
+          'cindy-macos-remote-credentials',
+          '--triple',
+          target,
+          '--scratch-path',
+          path.join(credentialBuild, target),
+        ];
         const compiled = spawnSync('swift', args, { stdio: 'inherit' });
-        if (compiled.error || compiled.status !== 0) throw new Error('Remote credentials native build failed');
+        if (compiled.error || compiled.status !== 0)
+          throw new Error('Remote credentials native build failed');
         const location = spawnSync('swift', [...args, '--show-bin-path'], { encoding: 'utf8' });
-        if (location.error || location.status !== 0) throw new Error('Remote credentials output unavailable');
+        if (location.error || location.status !== 0)
+          throw new Error('Remote credentials output unavailable');
         outputs.push(path.join(location.stdout.trim(), 'cindy-macos-remote-credentials'));
+        fs.cpSync(path.join(location.stdout.trim(), 'CindyRemoteCredentials_CindyRemoteCredentials.bundle'),
+          path.join(destDir, 'CindyRemoteCredentials_CindyRemoteCredentials.bundle'), { recursive: true });
       }
       const credential = path.join(destDir, 'cindy-macos-remote-credentials');
       if (outputs.length === 1) fs.copyFileSync(outputs[0], credential);
       else {
-        const result = spawnSync('lipo', ['-create', ...outputs, '-output', credential], { stdio: 'inherit' });
-        if (result.error || result.status !== 0) throw new Error('Remote credentials universal build failed');
+        const result = spawnSync('lipo', ['-create', ...outputs, '-output', credential], {
+          stdio: 'inherit',
+        });
+        if (result.error || result.status !== 0)
+          throw new Error('Remote credentials universal build failed');
       }
       fs.chmodSync(credential, 0o755);
-    } finally { fs.rmSync(credentialBuild, { recursive: true, force: true }); }
+    } finally {
+      fs.rmSync(credentialBuild, { recursive: true, force: true });
+    }
     const capture = path.join(destDir, 'cindy-macos-desktop-capture');
-    const captureArch = arch === 'universal' ? ['-arch', 'arm64', '-arch', 'x86_64'] : ['-arch', arch === 'arm64' ? 'arm64' : 'x86_64'];
-    const result = spawnSync('xcrun', ['clang', path.join(__dirname, 'native', 'remote-desktop', 'macos-capture.m'),
-      ...captureArch, '-mmacosx-version-min=10.15', '-fobjc-arc', '-fblocks', '-O2',
-      '-framework', 'Foundation', '-framework', 'AppKit', '-framework', 'CoreGraphics', '-framework', 'CoreImage',
-      '-framework', 'IOSurface', '-framework', 'ImageIO', '-framework', 'IOKit',
-      '-weak_framework', 'ScreenCaptureKit', '-framework', 'CoreMedia', '-framework', 'CoreVideo', '-o', capture], { stdio: 'inherit' });
+    const captureArch =
+      arch === 'universal'
+        ? ['-arch', 'arm64', '-arch', 'x86_64']
+        : ['-arch', arch === 'arm64' ? 'arm64' : 'x86_64'];
+    const result = spawnSync(
+      'xcrun',
+      [
+        'clang',
+        path.join(__dirname, 'native', 'remote-desktop', 'macos-capture.m'),
+        ...captureArch,
+        '-mmacosx-version-min=10.15',
+        '-fobjc-arc',
+        '-fblocks',
+        '-O2',
+        '-framework',
+        'Foundation',
+        '-framework',
+        'AppKit',
+        '-framework',
+        'CoreGraphics',
+        '-framework',
+        'CoreImage',
+        '-framework',
+        'IOSurface',
+        '-framework',
+        'ImageIO',
+        '-framework',
+        'IOKit',
+        '-weak_framework',
+        'ScreenCaptureKit',
+        '-framework',
+        'CoreMedia',
+        '-framework',
+        'CoreVideo',
+        '-o',
+        capture,
+      ],
+      { stdio: 'inherit' },
+    );
     if (result.error || result.status !== 0) throw new Error('Remote desktop capture build failed');
     fs.chmodSync(capture, 0o755);
   } else if (process.platform === 'win32' && platform === 'win32') {
-    if (arch !== 'x64' && arch !== 'arm64') throw new Error('Unsupported Windows desktop architecture');
+    if (arch !== 'x64' && arch !== 'arm64')
+      throw new Error('Unsupported Windows desktop architecture');
     const target = arch === 'arm64' ? 'aarch64-pc-windows-msvc' : 'x86_64-pc-windows-msvc';
     for (const helper of ['windows-input', 'windows-host']) {
       const root = path.join(__dirname, 'native', 'remote-desktop', helper);
-      const result = spawnSync('cargo', ['build', '--release', '--locked', '--target', target, '--manifest-path', path.join(root, 'Cargo.toml')], { stdio: 'inherit' });
-      if (result.error || result.status !== 0) throw new Error(`Remote desktop ${helper} build failed`);
+      const result = spawnSync(
+        'cargo',
+        [
+          'build',
+          '--release',
+          '--locked',
+          '--target',
+          target,
+          '--manifest-path',
+          path.join(root, 'Cargo.toml'),
+        ],
+        { stdio: 'inherit' },
+      );
+      if (result.error || result.status !== 0)
+        throw new Error(`Remote desktop ${helper} build failed`);
       const output = path.join(root, 'target', target, 'release');
       const name = `cindy-windows-desktop-${helper === 'windows-input' ? 'input' : 'host'}`;
       fs.copyFileSync(path.join(output, `${name}.exe`), path.join(destDir, `${name}.exe`));
       // cdylib 目标名刻意不同于 bin 目标名（见 Cargo.toml 注释）：同名会让两个目标
       // 并发写同一个 .pdb，link.exe 报 LNK1201 导致打包偶发失败。
-      if (helper === 'windows-host') fs.copyFileSync(path.join(output, 'cindy_meka_windows_desktop_host_napi.dll'), path.join(destDir, `${name}.node`));
+      if (helper === 'windows-host')
+        fs.copyFileSync(
+          path.join(output, 'cindy_meka_windows_desktop_host_napi.dll'),
+          path.join(destDir, `${name}.node`),
+        );
     }
   }
 }
@@ -1169,36 +1355,113 @@ function buildWindowsGamepadHelper(platform: ForgePlatform, arch: ForgeArch): vo
 
 function buildWindowsTaskbarAddon(platform: ForgePlatform, arch: ForgeArch): void {
   if (process.platform !== 'win32' || platform !== 'win32') return;
-  const target = arch === 'arm64' ? 'aarch64-pc-windows-msvc' : arch === 'x64' ? 'x86_64-pc-windows-msvc' : null;
+  const target =
+    arch === 'arm64' ? 'aarch64-pc-windows-msvc' : arch === 'x64' ? 'x86_64-pc-windows-msvc' : null;
   if (!target) throw new Error(`[forge] Unsupported Windows taskbar architecture: ${arch}`);
   const source = path.join(__dirname, 'native', 'windows-taskbar');
   const build = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-taskbar-build-'));
   try {
     const userCargo = path.join(os.homedir(), '.cargo', 'bin', 'cargo.exe');
-    const result = spawnSync(fs.existsSync(userCargo) ? userCargo : 'cargo', [
-      'build', '--release', '--locked', '--target', target,
-      '--manifest-path', path.join(source, 'Cargo.toml'), '--target-dir', build,
-    ], { stdio: 'inherit', windowsHide: true });
-    if (result.error || result.status !== 0) throw new Error(`[forge] Windows taskbar build failed: ${result.error?.message ?? result.status}`);
+    const result = spawnSync(
+      fs.existsSync(userCargo) ? userCargo : 'cargo',
+      [
+        'build',
+        '--release',
+        '--locked',
+        '--target',
+        target,
+        '--manifest-path',
+        path.join(source, 'Cargo.toml'),
+        '--target-dir',
+        build,
+      ],
+      { stdio: 'inherit', windowsHide: true },
+    );
+    if (result.error || result.status !== 0)
+      throw new Error(
+        `[forge] Windows taskbar build failed: ${result.error?.message ?? result.status}`,
+      );
     const dest = path.join(__dirname, 'resources', 'tools', 'windows-taskbar');
     fs.mkdirSync(dest, { recursive: true });
-    fs.copyFileSync(path.join(build, target, 'release', 'cindy_windows_taskbar.dll'), path.join(dest, 'cindy-windows-taskbar.node'));
+    fs.copyFileSync(
+      path.join(build, target, 'release', 'cindy_windows_taskbar.dll'),
+      path.join(dest, 'cindy-windows-taskbar.node'),
+    );
   } finally {
     fs.rmSync(build, { recursive: true, force: true });
   }
 }
 
-function buildWindowsInputHelper(kind: 'gamepad' | 'micro', platform: ForgePlatform, arch: ForgeArch): void {
+function buildWindowsAtomicRenameHelper(platform: ForgePlatform, arch: ForgeArch): void {
   if (process.platform !== 'win32' || platform !== 'win32') return;
-  const target = arch === 'arm64' ? 'aarch64-pc-windows-msvc' : arch === 'x64' ? 'x86_64-pc-windows-msvc' : null;
+  const target =
+    arch === 'arm64' ? 'aarch64-pc-windows-msvc' : arch === 'x64' ? 'x86_64-pc-windows-msvc' : null;
+  if (!target) throw new Error(`[forge] Unsupported Windows atomic rename architecture: ${arch}`);
+  const source = path.join(__dirname, 'native', 'windows-atomic-rename', 'main.rs');
+  const build = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-atomic-rename-build-'));
+  const output = path.join(build, 'cindy-windows-atomic-rename.exe');
+  try {
+    const userRustc = path.join(os.homedir(), '.cargo', 'bin', 'rustc.exe');
+    const result = spawnSync(
+      fs.existsSync(userRustc) ? userRustc : 'rustc',
+      [
+        source,
+        '--edition=2021',
+        '-C',
+        'opt-level=s',
+        '-C',
+        'panic=abort',
+        '--target',
+        target,
+        '-o',
+        output,
+      ],
+      { stdio: 'inherit', windowsHide: true },
+    );
+    if (result.error || result.status !== 0) {
+      throw new Error(
+        `[forge] Windows atomic rename build failed: ${result.error?.message ?? result.status}`,
+      );
+    }
+    const dest = path.join(__dirname, 'resources', 'tools', 'windows-atomic-rename');
+    fs.mkdirSync(dest, { recursive: true });
+    fs.copyFileSync(output, path.join(dest, 'cindy-windows-atomic-rename.exe'));
+  } finally {
+    fs.rmSync(build, { recursive: true, force: true });
+  }
+}
+
+function buildWindowsInputHelper(
+  kind: 'gamepad' | 'micro',
+  platform: ForgePlatform,
+  arch: ForgeArch,
+): void {
+  if (process.platform !== 'win32' || platform !== 'win32') return;
+  const target =
+    arch === 'arm64' ? 'aarch64-pc-windows-msvc' : arch === 'x64' ? 'x86_64-pc-windows-msvc' : null;
   if (!target) throw new Error(`[forge] Unsupported Windows gamepad helper architecture: ${arch}`);
   const group = kind === 'gamepad' ? 'xbox-gamepad' : 'worklouder';
   const source = path.join(__dirname, 'native', group, `windows-${kind}-helper`);
-  const userCargo = process.env.USERPROFILE ? path.join(process.env.USERPROFILE, '.cargo', 'bin', 'cargo.exe') : 'cargo';
-  const result = spawnSync(fs.existsSync(userCargo) ? userCargo : 'cargo', [
-    'build', '--locked', '--release', '--target', target, '--manifest-path', path.join(source, 'Cargo.toml'),
-  ], { stdio: 'inherit', windowsHide: true });
-  if (result.error || result.status !== 0) throw new Error(`[forge] Windows gamepad helper build failed: ${result.error?.message ?? result.status}`);
+  const userCargo = process.env.USERPROFILE
+    ? path.join(process.env.USERPROFILE, '.cargo', 'bin', 'cargo.exe')
+    : 'cargo';
+  const result = spawnSync(
+    fs.existsSync(userCargo) ? userCargo : 'cargo',
+    [
+      'build',
+      '--locked',
+      '--release',
+      '--target',
+      target,
+      '--manifest-path',
+      path.join(source, 'Cargo.toml'),
+    ],
+    { stdio: 'inherit', windowsHide: true },
+  );
+  if (result.error || result.status !== 0)
+    throw new Error(
+      `[forge] Windows gamepad helper build failed: ${result.error?.message ?? result.status}`,
+    );
   const name = `cindy-windows-${kind}-helper.exe`;
   const dest = path.join(__dirname, 'resources', 'tools', group);
   fs.mkdirSync(dest, { recursive: true });
@@ -1227,7 +1490,15 @@ function buildMacXboxGamepadHelper(platform: ForgePlatform, arch: ForgeArch): vo
       src,
       output,
       target,
-      [object, '-import-objc-header', switch2UsbH, '-framework', 'GameController', '-framework', 'IOKit'],
+      [
+        object,
+        '-import-objc-header',
+        switch2UsbH,
+        '-framework',
+        'GameController',
+        '-framework',
+        'IOKit',
+      ],
       'Xbox gamepad helper',
     );
   };
@@ -1236,11 +1507,15 @@ function buildMacXboxGamepadHelper(platform: ForgePlatform, arch: ForgeArch): vo
     if (targets.length === 1) {
       compileOne(dest, targets[0], tempDir);
     } else {
-      const outputs = targets.map((target) => path.join(tempDir, `${path.basename(dest)}-${target.split('-')[0]}`));
+      const outputs = targets.map((target) =>
+        path.join(tempDir, `${path.basename(dest)}-${target.split('-')[0]}`),
+      );
       targets.forEach((target, index) => compileOne(outputs[index], target, tempDir));
       const r = spawnSync('lipo', ['-create', ...outputs, '-output', dest], { stdio: 'inherit' });
-      if (r.error) throw new Error(`[forge] lipo spawn failed for Xbox gamepad helper: ${r.error.message}`);
-      if (r.status !== 0) throw new Error(`[forge] lipo failed for Xbox gamepad helper with exit code ${r.status}`);
+      if (r.error)
+        throw new Error(`[forge] lipo spawn failed for Xbox gamepad helper: ${r.error.message}`);
+      if (r.status !== 0)
+        throw new Error(`[forge] lipo failed for Xbox gamepad helper with exit code ${r.status}`);
     }
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
@@ -1482,6 +1757,9 @@ if (isWin) {
   makers.unshift(
     new MakerNSIS({
       getAppBuilderConfig: async () => ({
+        directories: {
+          buildResources: path.join(__dirname, 'resources'),
+        },
         // NSIS installer(Setup.exe)与 uninstaller(Uninstall <App>.exe)的签名。
         // 这是签卸载器的唯一入口(Issue #998):uninstaller 由 NSIS 编译期两遍生成后
         // 嵌入 installer,postPackage 阶段还不存在、也没有独立成品文件可事后补签,
@@ -1714,7 +1992,7 @@ const config: ForgeConfig = {
         (async () => {
           try {
             bundleNativeDeps(buildPath, platform, arch);
-            await rebuildNativeDepsInPackage(buildPath, electronVersion, arch);
+            await rebuildNativeDepsInPackage(buildPath, electronVersion, platform, arch);
             copySqliteVecBinary(buildPath, platform, arch);
             callback();
           } catch (err) {
@@ -1755,6 +2033,7 @@ const config: ForgeConfig = {
       buildMacVoiceInputTextInsertionHelper(platform, arch);
       buildMacXboxGamepadHelper(platform, arch);
       buildWindowsGamepadHelper(platform, arch);
+      buildWindowsAtomicRenameHelper(platform, arch);
       buildWindowsTaskbarAddon(platform, arch);
       buildMacVoiceInputModifierShortcutListener(platform, arch);
       buildMacAgentIslandHelper(platform, arch);
@@ -1768,8 +2047,13 @@ const config: ForgeConfig = {
     postPackage: async (_forgeConfig, opts) => {
       try {
         for (const buildPath of opts.outputPaths) {
-          stageLinuxBuildInfo(buildPath, opts.platform, opts.arch,
-            process.env.APP_VERSION || DESKTOP_PACKAGE_VERSION, CINDY_REGION);
+          stageLinuxBuildInfo(
+            buildPath,
+            opts.platform,
+            opts.arch,
+            process.env.APP_VERSION || DESKTOP_PACKAGE_VERSION,
+            CINDY_REGION,
+          );
           const noticeName = stagePackagedThirdPartyNotices(buildPath, opts.platform);
           console.log(`[forge:postPackage] staged ${noticeName} + restricted component disclosure`);
           assertPackagedMekaResources(
@@ -1837,6 +2121,12 @@ const config: ForgeConfig = {
           target: 'preload',
         },
         {
+          entry: 'src/main/worktree/recoveryArchiveWorker.ts',
+          config: 'vite.recovery-archive-worker.config.ts',
+          // Physical ASAR bytes belong in recovery archives; isolate noAsar from main.
+          target: 'preload',
+        },
+        {
           entry: 'src/main/process-monitor/windowsProcessScanWorker.ts',
           config: 'vite.process-scan-worker.config.ts',
           // Windows PowerShell 的进程管道偶发 ENOTCONN；一次性 worker 隔离后
@@ -1876,13 +2166,6 @@ const config: ForgeConfig = {
           config: 'vite.preload.config.ts',
           // 私有 Work Louder SDK + node-hid 只在独立 utilityProcess 内加载；
           // SDK 缺失或原生崩溃都不能影响 Electron main。
-          target: 'preload',
-        },
-        {
-          entry: 'src/main/workdir-probe-host/workdirProbeHostProcess.ts',
-          config: 'vite.preload.config.ts',
-          // UNC/SMB stat 不可取消；独立 utility process 超时后可直接终止，
-          // 避免把挂死 I/O 留在 Electron main 的 libuv 线程池。
           target: 'preload',
         },
         {
@@ -1928,7 +2211,11 @@ const config: ForgeConfig = {
           config: 'vite.preload.config.ts',
           target: 'preload',
         },
-        { entry: 'src/preload/remoteDesktopViewerPreload.ts', config: 'vite.preload.config.ts', target: 'preload' },
+        {
+          entry: 'src/preload/remoteDesktopViewerPreload.ts',
+          config: 'vite.preload.config.ts',
+          target: 'preload',
+        },
         {
           // 右侧栏独立子窗口专用 preload:最小权限 bridge,不加载主 preload 完整桥。
           entry: 'src/preload/sidebarWindowPreload.ts',

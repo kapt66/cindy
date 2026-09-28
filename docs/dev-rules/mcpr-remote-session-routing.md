@@ -60,6 +60,21 @@ transport 分类，再执行 transport 专属动作。MCPRouter 会话不得因�
    并在两种 transport 上保留当前协议的 approval、subagent model access 与 bundle hello。
 6. Codex 的 MCPRouter 分支必须成组保留 transport、remote credential mode 以及 capability
    thread register/unregister；只恢复其中一项仍会在启动鉴权或远端 Skill 路由阶段失败。
+7. **任何新增的 SSH-only 探针（远端清单、远端 host 探测、远端文件系统读取）都必须先
+   `classifyRemoteSessionTransport`，`mcpr:` 不得进入 SSH-only 分支。**
+   上游 `340888c77d` 新增的「按 SSH 执行主机读远端 Codex 清单」探针
+   `readSshCodexModelList`（`apps/desktop/src/main/remote-ssh/codex-model-list.ts:16`；其内部把
+   一切失败折叠成 `throwIpcError('SSH_EXEC_FAILED', 'Unable to read remote Codex models; reconnect and retry')`，
+   见该文件 `:30`）新增时有**三个 `mcpr:` 可达的调用点漏按 transport 分类**，会让 MCPRouter Codex 的
+   **会话创建 / 改模型 / Orca 远端 worker 创建全部硬失败**：
+   `apps/desktop/src/main/maker-ipc/register.ts` 的 `assertModelRouteUsable`（约 `:6937`，函数体
+   `:6924` 起）、注入给 maker-host 的 `getProviderRoutingContext` dep（约 `:11417-11420`）、
+   `SET_MODEL` handler 的 `sshCodexProviders` 分支（约 `:16795-16798`）。
+   本轮已在三处统一加 `classifyRemoteSessionTransport(remoteHostId) === 'ssh'`，`mcpr:` 回落通用路径
+   （`getProviderRoutingContext()` / 非 SSH 的 provider 解析），不再触发该探针。
+   **新规则**：新增任何 SSH-only 探针时，调用点必须先分类，且**不得**用
+   `startsWith('mcpr:')`、`parseMcprRemoteHostId` 之类的一次性判断代替共享分类器；分类为
+   `mcpr` / `local` 时必须走各自的通用路径，SSH-only 分支只接受 `'ssh'`。
 
 这条契约源自 2026-08-04 的回归：`4d1e01b7f` 合并 `origin/main` 时，第一父提交已有的
 MCPRouter preflight 分支被上游版本覆盖，最终把 `mcpr:<id>` 送进 SSH pool，产生
@@ -99,6 +114,8 @@ transport 身份，`agentType` 为 `claude` 或 `codex` 时才进入支持判断
   protocol 不同同样属于不可部署的 pin mismatch，MCPRouter 构建期和 tunnel 启动前都必须阻断。
   ⚠️ 每次上游同步后都要重新核对本节版本号与实际代码一致——2026-09 同步把 pin 从
   `0.0.9/protocol 4` 提升到 `0.0.10/protocol 5`，本节曾因此落后一版。
+  （2026-09-23 第三轮同步复核：`packages/maker-cc-manager/src/protocol.ts:42` 仍为
+  `PROTOCOL_VERSION = 5`、`:51` 仍为 `CC_MGR_BUNDLE_VERSION = '0.0.10'`，与本节一致，未改动。）
 - protocol `4` 起的 immutable bundle 文件可二选一携带 UTF-8 `content` 或规范
   `contentBase64`；后者用于完整投递角色 Skill 的脚本、引用和二进制资产。daemon 必须先解码、
   校验规范 base64 与文件 SHA-256，再原子物化。Desktop 使用任务快照的 revision 和原始字节，

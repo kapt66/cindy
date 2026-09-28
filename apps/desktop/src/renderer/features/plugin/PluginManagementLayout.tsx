@@ -14,6 +14,7 @@ import { useTranslation } from 'react-i18next';
 import { Search, X } from 'lucide-react';
 
 import { WINDOW_DRAG_STYLE, WINDOW_NO_DRAG_STYLE } from '@/components/layout/windowDrag';
+import { SegmentedControl } from '@/components/ui/segmented-control';
 import { cn } from '@/lib/utils';
 import './plugin-motion.css';
 
@@ -157,6 +158,9 @@ export function PluginManagementHeader({
     return () => observer.disconnect();
   }, []);
 
+  // Meka 的三个页签与上游的 Plugin / Skill 两个页签共用同一套胶囊 Tab
+  // (SegmentedControl),只有目标路由不同;Meka 分支必须整体挂在同一控件上,
+  // 不能退回旧的独立 TabButton 结构。
   const tabItems: ReadonlyArray<{
     id: PluginManagementTab;
     label: string;
@@ -185,42 +189,26 @@ export function PluginManagementHeader({
       ];
 
   const tabs = showPrimaryTabs ? (
-    <div
+    <SegmentedControl
       key="plugin-management-tabs"
-      className="plugin-motion-tabs inline-flex shrink-0 rounded-full border p-0.5 backdrop-blur-md"
+      className="plugin-motion-tabs shrink-0"
       role="tablist"
       aria-label={t('sidebar.horizontalTabbarAria')}
-      style={{
-        ...WINDOW_NO_DRAG_STYLE,
-        background: 'color-mix(in srgb, var(--surface-chip) 62%, transparent)',
-        borderColor: 'color-mix(in srgb, var(--border-default) 52%, transparent)',
-        boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--surface-elevated) 24%, transparent)',
+      style={WINDOW_NO_DRAG_STYLE}
+      height={38}
+      optionHeight={32}
+      optionClassName="plugin-management-tab min-w-[88px] px-4 text-13"
+      value={activeTab}
+      onValueChange={(tab) => {
+        if (!isMekaTab && onSelectTab) {
+          onSelectTab(tab === 'plugins' ? 'plugins' : 'skills');
+          return;
+        }
+        const target = tabItems.find((item) => item.id === tab);
+        if (target) navigate(target.to);
       }}
-    >
-      {isMekaTab ? (
-        tabItems.map((tab) => (
-          <TabButton
-            key={tab.id}
-            active={activeTab === tab.id}
-            label={tab.label}
-            onClick={() => navigate(tab.to)}
-          />
-        ))
-      ) : (
-        <>
-          <TabButton
-            active={activeTab === 'plugins'}
-            label={t('settings.ghosts.title')}
-            onClick={() => (onSelectTab ? onSelectTab('plugins') : navigate('/plugins'))}
-          />
-          <TabButton
-            active={activeTab === 'skills'}
-            label={t('skillhub.home.title')}
-            onClick={() => (onSelectTab ? onSelectTab('skills') : navigate('/skillhub/local'))}
-          />
-        </>
-      )}
-    </div>
+      options={tabItems.map((tab) => ({ value: tab.id, label: tab.label }))}
+    />
   ) : null;
 
   const tools =
@@ -318,33 +306,5 @@ export function PluginManagementPage({ children, className }: PluginManagementPa
     >
       {children}
     </div>
-  );
-}
-
-function TabButton({
-  active,
-  label,
-  onClick,
-}: {
-  active: boolean;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="tab"
-      aria-selected={active}
-      onClick={onClick}
-      className={cn(
-        'plugin-management-tab h-8 min-w-[88px] select-none rounded-full border border-transparent px-4 text-13 font-medium transition-colors',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
-        active
-          ? 'plugin-motion-selected text-[var(--text-primary)]'
-          : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]',
-      )}
-    >
-      {label}
-    </button>
   );
 }

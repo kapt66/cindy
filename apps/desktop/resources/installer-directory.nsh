@@ -5,11 +5,16 @@
 !include FileFunc.nsh
 !include UAC.nsh
 !include StrContains.nsh
-; 消息目录放宏外 include:宏体里的 ${__FILEDIR__} 在展开时指向「插入方」
-; (插 customHeader 的 templates/common.nsh 所在目录)而不是定义方,而裸相对名
-; 又要靠调用方的 !addincludedir——两者在生产打包时都不成立。放顶层后
-; ${__FILEDIR__} 稳定指向本目录,与 installer.nsh 同级 include 同一套判据。
-!include "${__FILEDIR__}\installer-directory-messages.nsh"
+; 消息目录的 include 必须放在**顶层**、并用 ${BUILD_RESOURCES_DIR} 限定：
+;  - 裸相对名要靠调用方的 !addincludedir,不可靠;
+;  - 宏体里的 ${__FILEDIR__} 展开时指向「插入方」(插 customHeader 的
+;    templates/common.nsh 所在目录)而不是定义方,同样不可靠;
+;  - 宏体内的 !include 在 `!insertmacro customHeader` 的**插入点**才展开,会让消息
+;    常量晚于本文件被处理的位置才定义;实测(check-windows-installer.mjs 的 native
+;    harness)会让 `missing` 场景在运行期以 0xC0000005 崩溃,而顶层 include 全绿。
+; ${BUILD_RESOURCES_DIR} 是 makensis 命令行 -D 常量,宏内/宏外取值一致;配套的
+; forge.config.ts buildResources 见 installer.nsh 顶部注释。
+!include "${BUILD_RESOURCES_DIR}\installer-directory-messages.nsh"
 
 Var cindyDirectoryElevation
 Var cindyRequestedDirectory

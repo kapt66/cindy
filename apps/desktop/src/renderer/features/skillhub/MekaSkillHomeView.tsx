@@ -35,7 +35,7 @@ import { InstallTargetPicker, type SkillInstallRequest } from './components/Inst
 import { MekaSkillManagementDialog } from './components/MekaSkillManagementDialog';
 import { MekaSkillPublishDialog } from './components/MekaSkillPublishDialog';
 import { LocalGroup, RecommendedSkillCard, SkillSectionHeading } from './SkillhubHomeView';
-import { SkillhubMarketPreviewPanel } from './SkillhubMarketPreviewPanel';
+import { SkillhubMarketDetailView } from './SkillhubMarketDetailView';
 import { basename } from './lib/pathDerivations';
 import { type MarketSkill } from './hooks/useMarketList';
 import { refresh as refreshSkillhub, useSkillhub } from './hooks/useSkillhub';
@@ -369,8 +369,14 @@ export function MekaSkillHomeView() {
                 />
               ) : (
                 <div className="flex flex-col gap-6">
+                  {/* LocalGroup.active 的语义是「本 Skill home 当前可见」:上游由
+                      SkillhubLocalLayout 的隐藏保活下发(不可见时不再把登录用户认作
+                      已发布作者)。Meka Skill home 是 /cc-agent/meka/skills 的路由元素
+                      (router.tsx),没有隐藏保活层——/meka/skills/market 是同级路由,
+                      离开即卸载,所以挂载期恒为可见。 */}
                   {globalSkills.length > 0 ? (
                     <LocalGroup
+                      active
                       label={t('skillhub.home.globalScope')}
                       skills={globalSkills}
                       syncResults={syncResults}
@@ -389,6 +395,7 @@ export function MekaSkillHomeView() {
                   {projectGroups.map((group) => (
                     <LocalGroup
                       key={group.root}
+                      active
                       label={group.label}
                       skills={group.skills}
                       syncResults={syncResults}
@@ -416,7 +423,7 @@ export function MekaSkillHomeView() {
           ) : null}
         </PluginManagementPage>
 
-        <SkillhubMarketPreviewPanel
+        <SkillhubMarketDetailView
           open={previewSkill !== null}
           skill={previewSkill}
           onClose={() => setPreviewSkill(null)}

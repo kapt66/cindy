@@ -119,8 +119,8 @@ vi.mock('../hooks/useSkillhub', () => ({
     syncResults: new Map(),
   }),
 }));
-vi.mock('../SkillhubMarketPreviewPanel', () => ({
-  SkillhubMarketPreviewPanel: ({
+vi.mock('../SkillhubMarketDetailView', () => ({
+  SkillhubMarketDetailView: ({
     open,
     skill,
     onClone,

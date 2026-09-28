@@ -45,14 +45,18 @@ try {
       productName: 'CindyInstallerProbe',
       electronVersion: '41.10.3',
       compression: 'store',
-      // Do NOT set directories.buildResources here. forge.config.ts leaves it at
-      // app-builder's default (<projectDir>/build, a directory this repo does not
-      // have), so overriding it pointed !addincludedir at resources/ and made this
-      // check pass while the 0.0.22 Windows release died at installer.nsh:9 with
-      // `!include: could not find: "winget-shortcuts.nsh"`. The compiled scripts
-      // resolve their own includes via ${__FILEDIR__}; keeping this config shape
-      // equal to production is what makes this check meaningful.
-      directories: { output: path.join(root, 'out') },
+      // Must mirror production: forge.config.ts sets
+      // `directories.buildResources = resources`, which is what makes
+      // app-builder-lib pass `-D BUILD_RESOURCES_DIR=<resources>` to makensis.
+      // The NSIS scripts resolve their includes through
+      // `${BUILD_RESOURCES_DIR}`; leaving this unset points it at
+      // `<projectDir>/build` (a directory this repo does not have) and the
+      // compile dies at installer.nsh:16 with
+      // `!include: could not find: "…\build\winget-shortcuts.nsh"` — the same
+      // class of divergence that broke the 0.0.22 Windows release. Never let
+      // the includes go back to `${__FILEDIR__}`; `scripts/nsis-include-paths.test.mjs`
+      // pins the shape.
+      directories: { output: path.join(root, 'out'), buildResources: resources },
       win: { signAndEditExecutable: false, sign: async () => {} },
       nsis: {
         oneClick: false,
@@ -74,6 +78,7 @@ try {
       '/WX',
       '/V2',
       `/DTEST_ROOT=${root}`,
+      `/DBUILD_RESOURCES_DIR=${resources}`,
       `/X!addincludedir "${resources}"`,
       `/X!addincludedir "${path.join(nsisTemplatesDir, 'include')}"`,
       path.join(desktop, 'scripts', 'fixtures', 'installer-directory-check.nsi'),

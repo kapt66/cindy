@@ -17,7 +17,7 @@ import { MekaSkillManagementDialog } from './components/MekaSkillManagementDialo
 import type { MarketSkill, SortBy, Visibility } from './hooks/useMarketList';
 import { refresh as refreshSkillhub } from './hooks/useSkillhub';
 import { mapMekaSkillToMarketSkill } from './lib/mekaSkillMarketViewModel';
-import { SkillhubMarketPreviewPanel } from './SkillhubMarketPreviewPanel';
+import { SkillhubMarketDetailView } from './SkillhubMarketDetailView';
 import { SKILLHUB_MARKET_SORT_OPTIONS, SkillhubMarketFilterChip } from './SkillhubMarketListView';
 
 function includesQuery(skill: MarketSkill, query: string): boolean {
@@ -281,7 +281,7 @@ export function MekaSkillMarketListView() {
           setPreviewSkill(null);
         }}
       />
-      <SkillhubMarketPreviewPanel
+      <SkillhubMarketDetailView
         open={previewSkill !== null}
         skill={previewSkill}
         onClose={() => setPreviewSkill(null)}

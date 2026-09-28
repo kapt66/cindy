@@ -378,6 +378,39 @@ describe('parseClaudeCodeMessageLine', () => {
     expect(rows[0].agentMeta).toMatchObject({ model: 'claude-opus-4-8' });
   });
 
+  it.each([
+    'claude-opus-5-5',
+    'claude-opus-5-5-20260922',
+    'claude-opus-5-5[1m]',
+    'claude-opus-5-5-20260922[1m]',
+  ])('preserves %s in imported session and message models', async (model) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-opus55-import-'));
+    const projectDir = path.join(home, '.claude', 'projects', '-tmp-project');
+    fs.mkdirSync(projectDir, { recursive: true });
+    fs.writeFileSync(path.join(projectDir, `${sdkSessionId}.jsonl`), line({
+      type: 'assistant', uuid: 'assistant-opus55', cwd: '/tmp/project',
+      message: { role: 'assistant', model, content: [{ type: 'text', text: 'ok' }] },
+    }) + '\n');
+    const db = createLocalDb();
+    const homedir = vi.spyOn(os, 'homedir').mockReturnValue(home);
+    setLocalDb(db);
+    try {
+      expect(await importExternalClaudeCodeSessions([sdkSessionId])).toMatchObject({ inserted: 1 });
+      expect(db.prepare('SELECT model FROM sessions WHERE id = ?').get(`claude-${sdkSessionId}`))
+        .toEqual({ model: 'claude-opus-5-5' });
+      await importExternalClaudeCodeMessagesForSession(`claude-${sdkSessionId}`);
+      const rows = db.prepare('SELECT agent_meta AS agentMeta FROM messages WHERE session_id = ?')
+        .all(`claude-${sdkSessionId}`) as { agentMeta: string }[];
+      expect(rows).toHaveLength(1);
+      expect(JSON.parse(rows[0].agentMeta)).toMatchObject({ model: 'claude-opus-5-5' });
+    } finally {
+      homedir.mockRestore();
+      resetLocalDb();
+      db.close();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('normalizes opus-5 [1m] wire model id to catalog id', () => {
     const rows = parseClaudeCodeMessageLine(
       line({

@@ -21,8 +21,10 @@ describe('locale 品牌名插值', () => {
     expect(rendered).not.toContain('{{appName}}');
   });
 
-  it('数据库版本恢复页在四种语言中使用当前产品展示名', () => {
-    for (const locale of ['en', 'zh-CN', 'ja', 'ko']) {
+  it('数据库版本恢复页在五种语言中使用当前产品展示名', () => {
+    // zh-TW 曾漏在列表外，导致该语两条文案把品牌名写死成 'Cindy' 而门禁假绿
+    // (2026-09-24 修复)。新增语言时必须一并加入这里。
+    for (const locale of ['en', 'zh-CN', 'zh-TW', 'ja', 'ko']) {
       const t = i18n.getFixedT(locale);
       for (const key of [
         'localDbFatal.updateReady.description',

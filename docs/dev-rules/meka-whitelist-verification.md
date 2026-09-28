@@ -77,7 +77,7 @@ P4 项目根、插件面板呈现方式等 Meka 专属配置；这些配置落�
 
 #### WL-1.1 设置侧栏入口与分区渲染
 
-- **代码锚点**：`apps/desktop/src/renderer/lib/tabLabels.ts:16,39,80`（页签名 `'meka-assistant'` 与 i18n key `settings.tabs.mekaAssistant`）、`apps/desktop/src/renderer/components/settings/SettingsSidebarNav.tsx:74`（图标）、`apps/desktop/src/renderer/components/settings/SettingsView.tsx:548-555`（渲染 `MekaAssistantSettingsSection`，**无任何门控**）
+- **代码锚点**：`apps/desktop/src/renderer/lib/tabLabels.ts:16,39,80`（页签名 `'meka-assistant'` 与 i18n key `settings.tabs.mekaAssistant`）、`apps/desktop/src/renderer/components/settings/SettingsSidebarNav.tsx:76`（图标）、`apps/desktop/src/renderer/components/settings/SettingsView.tsx:572-581`（`activeTab === 'meka-assistant'` 分支渲染 `<MekaAssistantSettingsSection />`，**无任何门控**；组件标签实体在 `:579`）
 - **不变量**：「Meka 助理」页签必须留在模型供应商与计费**之间**的固定位次；深链 `?tab=meka-assistant` 可直达
 - **自动化门禁**：`pnpm --filter desktop exec vitest run src/renderer/lib/__tests__/tabLabels.test.ts`（`keeps the Meka assistant between model providers and billing`）
 - **实机验证**：设置 → 左侧可见「Meka 助理」且位次正确；`/settings?tab=meka-assistant` 直达该分区
@@ -165,17 +165,19 @@ P4 项目根、插件面板呈现方式等 Meka 专属配置；这些配置落�
 
 #### WL-2.2 折叠（rail）态 Meka 入口图标
 
-- **代码锚点**：`apps/desktop/src/renderer/features/cc-agent/CCAgentSidebarUpper.tsx:3852`（`onMekaMatch`）、`:3915-3923`（`SidebarIconButton` + `BriefcaseBusiness` + `active={Boolean(onMekaMatch)}`）
-- **不变量**：位置在 `GhostMainViewNavEntries`（`:3912`）之后、插件入口（`:3924-3932`）之前
+- **代码锚点**（行号为 2026-09-23 第三轮同步后逐条打开文件实测；本仓有锚点漂移史，**引用时以符号名为准**）：
+  `apps/desktop/src/renderer/features/cc-agent/CCAgentSidebarUpper.tsx` 的 `onMekaMatch`（`useMatch('/cc-agent/meka/*')`，约 `:4090`）、rail Meka 按钮（`SidebarIconButton` + `BriefcaseBusiness` + `active={Boolean(onMekaMatch)}`，约 `:4137-4145`）
+- **不变量**：位置在 `GhostMainViewNavEntries`（`variant="rail"`，约 `:4134`）之后、插件 rail 入口（约 `:4146-4153`）之前
 - **自动化门禁**：**无自动化覆盖**
 - **实机验证**：把左侧栏拖到 rail 态 → 图标列含公文包（Meka）；点击进入 Meka 插件页；处于 `/cc-agent/meka/*` 时为 active 态
-- **历史回归**：源码注释记录过「折叠 rail 之前漏了这颗按钮」的对称性缺口（`CCAgentSidebarUpper.tsx:3853-3854`）
+- **历史回归**：源码注释记录过「折叠 rail 之前漏了这颗按钮」的对称性缺口（当前在 `:4135-4136` 的注释里）
 
 #### WL-2.3 三页签管理页骨架（插件 / 技能 / 项目）
 
-- **代码锚点**：`apps/desktop/src/renderer/features/plugin/PluginManagementLayout.tsx:20-21`（`PluginManagementTab` 含 `meka-*` 三项）、`:128-129`（`isMekaTab`）、`:160-185`（Meka 分支目标路由 `/cc-agent/meka/plugins`、`/cc-agent/meka/skills`、`/cc-agent/meka`；非 Meka 分支才是 `/plugins`、`/skillhub/local`）、`:200-208`（独立渲染分支）
+- **代码锚点**（行号为 2026-09-23 第三轮同步后实测；**以符号名为准**）：`apps/desktop/src/renderer/features/plugin/PluginManagementLayout.tsx:21-22`（`PluginManagementTab` 含 `meka-*` 三项）、`:129-130`（`isMekaTab`）、`:161-189`（`tabItems`：Meka 分支目标路由 `/cc-agent/meka/plugins`、`/cc-agent/meka/skills`、`/cc-agent/meka`；非 Meka 分支才是 `/plugins`、`/skillhub/local`）、`:191-212`（`showPrimaryTabs` 的渲染分支）
+- **结构（2026-09-23 第三轮同步更正）**：页签控件**已由 Meka 自建的 `div` pill + 独立 `TabButton` 换成上游共享组件 `SegmentedControl`**（`@/components/ui/segmented-control`，`:17` 导入、`:192-211` 使用；`role="tablist"`、`height={38}`、`optionHeight={32}`、`optionClassName="plugin-management-tab min-w-[88px] px-4 text-13"`）。Meka 三个页签与上游 Plugin / Skill 两个页签**共用同一控件**，只有 `value → 目标路由` 的映射不同：`:202-209` 的 `onValueChange` 里非 Meka 页签先走 `onSelectTab`（设置页内切换），Meka 页签才 `navigate(target.to)`。**不得**退回「Meka 一套 pill、上游一套 pill」的双实现。
 - **自动化门禁**：`pnpm --filter desktop exec vitest run src/renderer/features/plugin/__tests__/PluginManagementLayout.test.tsx`
-- **实机验证**：Meka 管理页顶部三个 pill 页签；逐个点击 URL 依次为三个 Meka 路由；「项目」页先进项目库列表，不默认选中某个项目
+- **实机验证**：Meka 管理页顶部三个分段控件页签（与插件/技能页同一组件、同一视觉）；逐个点击 URL 依次为三个 Meka 路由；「项目」页先进项目库列表，不默认选中某个项目
 - **历史回归**：`xdmaker-meka-to-cindy.md` §4.6（三页签同级、复用上游宽度/胶囊 Tab）
 
 #### WL-2.4 Meka 路由族与旧深链重定向
@@ -187,9 +189,9 @@ P4 项目根、插件面板呈现方式等 Meka 专属配置；这些配置落�
 
 #### WL-2.5 Meka 段在侧栏的位次
 
-- **代码锚点**：`apps/desktop/src/renderer/features/cc-agent/CCAgentSidebarUpper.tsx:3545`（`MekaAssistantSection`）、`:3577`（`PinnedSection`）、`:3641`（`ProjectsSection`）
+- **代码锚点**（行号为 2026-09-23 第三轮同步后实测；**以符号名为准**）：`apps/desktop/src/renderer/features/cc-agent/CCAgentSidebarUpper.tsx` 的 `<MekaAssistantSection>`（约 `:3779`）、`<PinnedSection>`（约 `:3817`）、`<ProjectsSection>`（约 `:3883`）
 - **自动化门禁**：`pnpm --filter desktop exec vitest run src/renderer/__tests__/mekaSidebarOrder.test.ts`（断言 Meka 段在置顶段与项目段之前）
-- **缺口**：该断言**不覆盖** `DialogueSection`（文件仍在但已不在渲染路径）与 `SidebarTopNav section="scrollable"`（`:3469`）的相对位次
+- **缺口**：该断言**不覆盖** `DialogueSection`（文件仍在但已不在渲染路径）与 `SidebarTopNav section="scrollable"`（约 `:3696`）的相对位次
 - **实机验证**：Meka 段位于「置顶」「项目」之上，一级产品区不被挤到 Cindy 任务之后
 
 ### WL-3 Meka 代理对话的单独分类
@@ -200,13 +202,14 @@ P4 项目根、插件面板呈现方式等 Meka 专属配置；这些配置落�
 
 #### WL-3.1 互斥取数（`visibleMekaSessions` / `nonMeka*`）
 
-- **代码锚点**：`apps/desktop/src/renderer/features/cc-agent/CCAgentSidebarUpper.tsx:1639-1644`（`visibleMekaSessions` 按 `workspaceKind === 'meka'` 取）、`:1371-1378`（`nonMekaSidebarSessions` / `nonMekaActivitySessions`）、`:1379-1391`（普通项目分组**全部**由 `nonMeka*` 派生）、`:1402-1408`（`unfilteredProjectSessions` 排除 meka，使 `projectUniverse` 不含 Meka 项目）
+- **代码锚点**（行号为 2026-09-23 第三轮同步后实测；**以符号名为准**）：`apps/desktop/src/renderer/features/cc-agent/CCAgentSidebarUpper.tsx` 的 `visibleMekaSessions`（按 `workspaceKind === 'meka'` 取，约 `:1798-1803`）、`nonMekaSidebarSessions` / `nonMekaActivitySessions`（约 `:1446-1449` / `:1450-1453`）、普通项目分组派生（`allGroups` / `allProjectGroups` / `groups` / `groupsWithPinnedProjects` **全部**由 `nonMeka*` 派生，约 `:1454-1494`）、`unfilteredProjectSessions`（排除 meka，使 `projectUniverse` 不含 Meka 项目，约 `:1509-1515`）
 - **自动化门禁**：**无自动化覆盖**（`mekaSessionPresentation.test.ts` 只覆盖纯分组函数，不覆盖这两个 filter 的互斥性）
-- **实机验证**：同目录下建普通项目会话 + Meka 会话 → Meka 会话**只**出现在「Meka 助理」段；切换侧栏项目筛选不影响 Meka 段、也不产生重复行；`@` 项目引用不指向 Meka 项目
+- **已知边界（存量缺口，三侧一致、非本轮同步引入）**：`apps/desktop/src/renderer/features/cc-agent/lib/sidebarProjectVisibility.ts` 的 `sidebarSessionsWithHiddenProjectsAsDialogues`（约 `:145-165`；改写点在 `:162` 的 `{ ...session, workspaceKind: 'dialogue' }`）会把落在**已隐藏项目** key 内的会话整体改写成 `workspaceKind: 'dialogue'`，而豁免条件仍只看 `'dialogue'`（`:40` / `:87` / `:101`），**不豁免 `'meka'`**。后果：Meka 项目的 workingDir 恰好等于用户已从侧栏隐藏（墓碑）的 Cindy 项目目录时，该目录下的 Meka 会话被改写 ⇒ ① 被 `visibleMekaSessions`（按 `workspaceKind === 'meka'` 过滤）**丢弃，从 Meka 段消失**；② 被 `nonMekaSidebarSessions` 收下，**出现在普通对话分组**。同一 Meka 项目里 workingDir 未被隐藏的其它会话仍在 Meka 段 ⇒ 该项目会**同时**出现在 Meka 段与普通对话列表 —— 即本条的「只出现在 Meka 段」在**该组合条件下不成立**。详见 §8.4；修法（补 `'meka'` 豁免 + 用例）待用户裁决，本轮不动。
+- **实机验证**：同目录下建普通项目会话 + Meka 会话 → Meka 会话**只**出现在「Meka 助理」段；切换侧栏项目筛选不影响 Meka 段、也不产生重复行；`@` 项目引用不指向 Meka 项目。**负向补充**：把 Meka 项目目录加入侧栏「隐藏项目」后再看两段归属（当前预期命中上一条已知边界，即出现重复或降级——这是存量行为，不是本轮回归）
 
 #### WL-3.2 项目树与「正式 / 普通」子分组
 
-- **代码锚点**：`apps/desktop/src/renderer/features/cc-agent/sidebar/sections/MekaAssistantSection.tsx:125-164`（`buildMekaProjectSessionGroups`：按 `mekaProjectId` 建桶、已配置项目在前、孤儿桶在后；`formalWorkflowActive` 判据 = 启用且 `jira+jiraProjectKey` 或 `gitlab+gitlabProjectUrl`）、`:313-457`（树渲染）、`:344-346`（不可用项目 / 旧版会话分组标题）
+- **代码锚点**（**认函数体不认行号**——本文件随段头/树渲染改动持续漂移，行号只作参考；以下为 2026-09-23 第三轮同步后实测）：`apps/desktop/src/renderer/features/cc-agent/sidebar/sections/MekaAssistantSection.tsx` 的 `buildMekaProjectSessionGroups`（**符号名优先，约 `:152`**；按 `mekaProjectId` 建桶、已配置项目在前、孤儿桶在后；`formalWorkflowActive` 判据 = 启用且 `jira+jiraProjectKey` 或 `gitlab+gitlabProjectUrl`）、`MekaAssistantSection` 的树渲染 JSX（`return (` 起，约 `:336-552`；段头标题 `meka.sessionListTitle` 约 `:350`）、不可用项目 / 旧版会话分组标题三元（约 `:431`，`meka.unavailableProject` / `meka.legacySessions`）、`resolveMekaFoldState`（约 `:139`）、`sessionActivityMs` 导入（`:28`）
 - **不变量**：`mekaProjectId` 是**历史软引用**，项目删除后不清空（否则历史会话整条消失）
 - **自动化门禁**：`pnpm --filter desktop exec vitest run src/renderer/features/cc-agent/__tests__/mekaSessionPresentation.test.ts`（6 条：正式/普通分组、无会话项目可见、无正式流程时扁平、项目删除后进「不可用」组、旧版会话可见且置顶在前、会话头只显示角色名）；**实机项已自动化**：`pnpm desktop:session-smoke` 的 `WL-3.2` 用真实鼠标事件展开 Meka 段与项目行，断言项目行可见、hover 出的项目作用域入口存在且标签带项目名（`在 <项目> 中新建正式流程对话` / `在 <项目> 中新建普通对话`）
 - **实机验证**：新建项目（无会话也应显示）→ 配 Jira Key/GitLab URL 并启用正式流程 → 出现「正式 / 普通」子分组；删除项目后其会话仍在「不可用的 Meka 项目」下
@@ -233,14 +236,14 @@ P4 项目根、插件面板呈现方式等 Meka 专属配置；这些配置落�
 
 #### WL-3.5 会话头的角色 scope 与角色编辑直达
 
-- **代码锚点**：`apps/desktop/src/renderer/features/cc-agent/SessionContentHeader.tsx:152-162`（仅 `workspaceKind === 'meka'` 时取 scope）、`:599-612`（可点 chip）、`:614-625`（旧版只读标签）；`apps/desktop/src/renderer/features/cc-agent/useMekaSessionScope.ts:7-18`
+- **代码锚点**（2026-09-23 第三轮同步后实测；**以符号名为准**）：`apps/desktop/src/renderer/features/cc-agent/SessionContentHeader.tsx` 的 meka scope 取值（仅 `workspaceKind === 'meka'` 时取，约 `:145-155`）、可点 chip（条件 `workspaceKind === 'meka' && mekaSessionScope && mekaRoleEditorRoute`，约 `:604-617`）、旧版只读 chip（`!mekaRoleEditorRoute && legacyMekaRoleLabel`，约 `:619-630`）；`apps/desktop/src/renderer/features/cc-agent/useMekaSessionScope.ts:7-18`（`resolveMekaSessionScope`、`buildMekaRoleEditorRoute`；hook 本体在 `:20`）
 - **不变量**：角色被删/项目为 null → scope 为 `null`，**不显示过期角色名**；旧会话（只有 `mekaRole`）走只读映射
 - **自动化门禁**：`mekaSessionPresentation.test.ts` 的 `shows only the role name in the session header`、`builds a direct role-editor route with encoded frozen identities`
 - **实机验证**：会话头出现角色名 chip → 点击跳到 `/cc-agent/meka?projectId=…&roleId=…` 且已直选；删角色后 chip 消失
 
 #### WL-3.6 `'meka'` 跨层身份契约
 
-- **代码锚点**：`packages/maker-core/src/types/common.ts:9`、`apps/desktop/src/renderer/lib/ccAgent.types.ts:12`、`apps/desktop/src/main/localDb/schema.ts:86`、`apps/desktop/src/main/localDb/client/tx/types.ts:757`（tx 层——本轮同步曾在这里**反向补** `'meka'`）、`apps/desktop/src/main/localDb/ipc/sessions.ts:1287,1317-1320`、`apps/desktop/src/shared/conversationSearch.ts:6`
+- **代码锚点**（行号为 2026-09-23 第三轮同步后逐条打开文件实测；**以符号名为准**）：`packages/maker-core/src/types/common.ts:9`（`WorkspaceKind`）、`apps/desktop/src/renderer/lib/ccAgent.types.ts:13`（`WorkspaceKind`）、`apps/desktop/src/main/localDb/schema.ts:103`（`workspace_kind` 枚举）、`apps/desktop/src/main/localDb/client/tx/types.ts:833`（tx 层——本轮同步曾在这里**反向补** `'meka'`）、`apps/desktop/src/main/localDb/ipc/sessions.ts` 的 `ALLOWED_WORKSPACE_KINDS`（`:1380`）与 `workspaceKind` 取值联合（`:1395-1396`），另有「meka 必须同时带 project+role」的创建期校验（`:1404-1410`）、resume 期 `expected.workspaceKind` 校验（`:1746-1758`）与 `sessions:update` 拒绝把普通会话改成 `'meka'` 的守卫（`:1905-1935`）、`apps/desktop/src/shared/conversationSearch.ts:6`
 - **不变量**：`'meka'` 是持久化合法值（DB enum + 跨进程类型联合）；`workspaceKind === 'meka'` 必须**同时**带 `mekaProjectId` + `mekaRoleId`，反之亦然
 - **自动化门禁**：`pnpm --filter desktop exec vitest run src/main/localDb/__tests__/mapperMekaFormal.test.ts src/main/maker-ipc/__tests__/sessionCreateHandler.test.ts src/main/maker-ipc/__tests__/sessionRequest.test.ts src/renderer/features/cc-agent/__tests__/collaborationEligibility.test.ts`
 - **实机验证**：建 Meka 会话 → 重启仍在 Meka 段且项目/角色不变；IM 侧 `/new` rotate 后该会话**未被截断**成普通会话
@@ -249,6 +252,7 @@ P4 项目根、插件面板呈现方式等 Meka 专属配置；这些配置落�
 #### WL-3.7 Meka 段文案五语齐备
 
 - **代码锚点**：五语 `common.json` 的 `meka.*` 命名空间（`sessionListTitle` / `formalSessions` / `regularSessions` / `noSessions` / `unavailableProject` / `legacySessions` / `legacySessionScope` / `legacyRoles.*` / `openManagement` / `expandSessions` / `collapseSessions`）
+- **品牌与通用文案属刻意差异（2026-09-23 第三轮同步登记，本轮合并必须保留 Meka 侧文本）**：`{{appName}}` 占位符的品牌插值结果必须是 Meka 品牌名（`BRAND_NAME`），**不得**被上游文案替换成 `Cindy`；「主机安全策略」类报错是**任务通用**文案（不得夹带 iOS / 模拟器这类平台专属措辞，五语皆然）。这两条各有自动化门禁钉住：`apps/desktop/src/renderer/__tests__/i18nBrandPlaceholder.test.ts`（`{{appName}}` 渲染后不得残留占位符）与 `apps/desktop/src/renderer/__tests__/errorMessageRestore.test.ts:39-45`（`logic.errors.hostShellCommandBlocked` 在五语中均非空且不含 `iOS|模拟器|シミュレータ|시뮬레이터`）。⇒ 合并时若上游改写了同一批 key，**以 Meka 侧文本为准**，并把断言保持在上述两个文件里；把它们当成「上游共有的展示命名」按 §7 处理会直接打破 WL-6/WL-13 的品牌口径。
 - **不变量**：`meka.*` **不得**与上游 `sidebar.*` / `settings.ghosts.*` 合并
 - **自动化门禁**：`pnpm check:i18n`（无专门针对 `meka.*` 存在性的单测）
 - **实机验证**：五语各切一遍，侧栏不出现裸 key
@@ -278,7 +282,7 @@ P4 项目根、插件面板呈现方式等 Meka 专属配置；这些配置落�
 
 ##### WL-4.1.2 四条路径都先分类（创建 / lazy resume / send 前置 / worker bootstrap）
 
-- **代码锚点**：`apps/desktop/src/main/maker-ipc/register.ts:7292-7294`（**MCPRouter guard 必须在 `ensureRemoteHostReady` 之前**）、`:7231-7257`、`:7467-7476`（turn-settled holder）、`:7401`；`apps/desktop/src/main/maker-host/index.ts:1225-1227`（SSH pool 查询与 `remote ssh host not ready` 原文）、`:1186-1228`
+- **代码锚点**（行号为 2026-09-23 第三轮同步后实测；**以符号名为准**）：`apps/desktop/src/main/maker-ipc/register.ts` 的 `ensureRemoteReadyForSessionStart`（session-start / lazy resume 前置，约 `:7660-7726`）内 —— **MCPRouter guard 必须在 `ensureRemoteHostReady` 之前**（guard `:7724`、`await ensureRemoteHostReady(...)` `:7726`；`:7666-7668` 是「避免 remote transport hook 同步抛 not found in pool」的原因注释）、`refreshRemoteCodexMcpOnTurnSettledHolder`（turn-settled holder，挂载点 `:7908`、mcpr 过滤 `:7916`）、Meka 远端 bundle 块（`mcprInstanceId` / `buildMekaRemoteCodexBundle` / `ensureRemoteCodexCapability` → `bindSessionRemoteCodex` → 成功 `releaseRemoteCodexCapability`、失败 `unbindSessionRemoteCodex` + 恢复，约 `:7099-7150`）；`apps/desktop/src/main/maker-host/index.ts` 的 SSH pool 查询与 `remote ssh host not ready` 原文（约 `:1321-1323`）、其所在 transport 分支（约 `:1290-1325`）
 - **自动化门禁**：`pnpm --filter desktop exec vitest run src/main/maker-ipc/__tests__/remoteSessionMakerMemory.test.ts src/main/maker-host/__tests__/remoteCcQueryFactory.test.ts src/main/maker-host/__tests__/mcprRemoteFileOps.test.ts`
 - **覆盖缺口**：`register.ts` 侧仍以**源码文本序**（`indexOf`）断言为主。**但 2026-09-18 同步已补上行为级断言**：
   `mcprRemoteFileOps.test.ts` 逐字提取真实的 `getRemoteAgentFileOps` 钩子体、注入 spy 依赖后 `new Function` **实际执行**，
@@ -303,7 +307,7 @@ P4 项目根、插件面板呈现方式等 Meka 专属配置；这些配置落�
 
 ##### WL-4.1.4 Claude 隧道先于 SSH pool，且共享 cc-manager client 双形态
 
-- **代码锚点**：`maker-host/index.ts:1200-1223`（`openMcprTunnel` → `openCcManagerSession({ stream, transportId })`；SSH 分支 `:1225-1228` 在其后）；`apps/desktop/src/main/maker-host/cc-manager-client.ts:292-294`（`host?` 与 `stream?` 并列）、`:67-92`、`:363-368`、`:391`（approval）、`:415`（`SUBAGENT_MODEL_ACCESS`）、`:447`（`MCP_TUNNEL_CALL`）
+- **代码锚点**（行号为 2026-09-23 第三轮同步后实测；**以符号名为准**）：`apps/desktop/src/main/maker-host/index.ts` 的 `remoteCcQueryFactory`：`classifyRemoteSessionTransport(remoteHostId) === 'mcpr'` 分支（约 `:1296`）里 `openMcprTunnel`（约 `:1297`）→ `openCcManagerSession({ stream, transportId: remoteHostId, … })`（约 `:1298-1315`），**整体先于** SSH 分支的 `getRemoteSshPool().get(remoteHostId)`（约 `:1321`；`host?.getStatus() !== 'ready'` 即抛 `remote ssh host not ready`，`:1322-1324`）；`apps/desktop/src/main/maker-host/cc-manager-client.ts:293-294`（`host?` 与 `stream?` 并列）、`:67-92`、`:389-397`（approval request handler；未注册时的拒绝在 `:411`）、`:415`（`SUBAGENT_MODEL_ACCESS`）、`:447`（`MCP_TUNNEL_CALL`）
 - **不变量**：两种 transport 上都要保留 approval、subagent model access（protocol 4）、bundle hello 与 MCP tunnel 投影
 - **自动化门禁**：`remoteCcQueryFactory.test.ts` 的 `routes Claude through the MCPRouter tunnel before any SSH pool lookup` 与 `keeps byte-stream MCP projection and v4 model access on the shared cc-manager client`；`mcprTunnelMeka.test.ts`
 - **实机验证**：MCPRouter 实例跑 Claude 任务并触发远端 subagent 与远端 MCP 调用；审批卡正常弹出
@@ -311,7 +315,7 @@ P4 项目根、插件面板呈现方式等 Meka 专属配置；这些配置落�
 ##### WL-4.1.5 Codex MCPRouter 分支必须**成组**保留
 
 - **不变量**：transport + remote credential mode（固定 `gateway-key`）+ capability thread register/unregister 三项**缺一即在启动鉴权或远端 Skill 路由阶段失败**；不得在 maker-core 解析 `mcpr:` 前缀
-- **代码锚点**：`maker-host/index.ts:1975-1988`（`:1980` 抛 `[MCPR_INSTANCE_NOT_READY] Invalid MCPRouter Worker target`；`:1983-1987` `createMcprCodexTransport`）、`:2023`；`maker-host/remote-session-routing.ts:25-31`；`maker-host/mcpr-codex-capability.ts:198-217,226-262`；`maker-ipc/register.ts:6680-6717`（ensure → bind → 成功 release 旧 handle / 失败 unbind + 恢复）
+- **代码锚点**（行号为 2026-09-23 第三轮同步后实测；**以符号名为准**）：`apps/desktop/src/main/maker-host/index.ts` 的 `getRemoteCodexTransport`（约 `:2122`）：mcpr 分支里 `parseMcprRemoteHostId` 失败即抛 `[MCPR_INSTANCE_NOT_READY] Invalid MCPRouter Worker target`（约 `:2124-2129`，抛点在 `:2127`）、`createMcprCodexTransport({ instanceId, buildHeader, logger })`（约 `:2130-2134`）、SSH 分支的 `getRemoteSshPool().get` + `createSshDaemonTransport`（约 `:2136-2168`）、`resolveRemoteCodexCredentialMode`（注入同一 deps 对象，约 `:2170`）；capability thread register/unregister 走 `routeCodexThreadRegister` / `routeCodexThreadUnregister`（约 `:1998` 与 `:2016-2019`）；`maker-host/remote-session-routing.ts:25`（`resolveRemoteCodexCredentialMode`，同文件的 `classifyRemoteSessionTransport` 在 `:9`）；`maker-host/mcpr-codex-capability.ts:198-217`（`bindSessionRemoteCodex` / `unbindSessionRemoteCodex`）、`:226-262`；`maker-ipc/register.ts:7102-7152`（ensure → bind → 成功 release 旧 handle / 失败 unbind + 恢复）
 - **自动化门禁**：`pnpm --filter desktop exec vitest run src/main/maker-host/__tests__/mcprCodexCapability.test.ts src/main/maker-host/__tests__/mcprCodexTransport.test.ts`
 - **实机验证**：MCPRouter Codex 实例任务需 `lizi_capabilities` 可用 + Gateway key 有效。**关键负向**：本机 Codex OAuth 处于 `token_revoked` 恢复态时，`mcpr:` Codex 任务**仍应正常启动**（证明未回落本机 OAuth）
 - **历史回归**：2026-08-25 的 `/v1/responses stream disconnected before completion` 是上游瞬时失败，**不得**归因为 transport 回归或据此回退 capability routing
@@ -336,7 +340,7 @@ P4 项目根、插件面板呈现方式等 Meka 专属配置；这些配置落�
 ##### WL-4.1.8 远端角色 Skill bundle 的 revision 契约与成对 release
 
 - **不变量**：`bundle/ensure` → 注册 revision → 远端 plugin 路径交原生加载；关闭/失败/revision 替换时**成对 release**；恢复继续用任务绑定的原 revision；Desktop 不在远端重建 `SKILL.md`；普通 SSH + Meka native Skills **明确失败**，不退化成 prompt
-- **代码锚点**：`maker-host/meka-remote-codex-bundle.ts:13`；`maker-ipc/register.ts:6667-6700`（`:6674-6679` 普通 SSH 明确抛 `Meka native Skills are not available on legacy SSH sessions`）；`maker-host/mcpr-codex-capability.ts:118-149`（失败回滚 `bundleRelease`）、`:151-165`、`:220-224`
+- **代码锚点**（行号为 2026-09-23 第三轮同步后实测；**以符号名为准**）：`maker-host/meka-remote-codex-bundle.ts:13`（`buildMekaRemoteCodexBundle`）；`maker-ipc/register.ts:7102-7132`（远端 bundle 块；普通 SSH 明确抛 `Meka native Skills are not available on legacy SSH sessions`，条件在 `:7106`、抛点在 `:7107-7110`）；`maker-host/mcpr-codex-capability.ts:118-149`（失败回滚 `bundleRelease`，`:136`）、`:151-165`、`:220-224`
 - **自动化门禁**：`pnpm --filter desktop exec vitest run src/main/maker-host/__tests__/mekaRemoteCodexBundle.test.ts src/main/maker-ipc/__tests__/mekaRuntimeInjection.test.ts`
 - **实机验证**：Meka 角色配含脚本/二进制资产的 Skill → MCPRouter 远端任务可原生加载并读取资产；关闭会话后远端 bundle 已释放
 
@@ -425,7 +429,15 @@ edition 与端点自举）；② 登录页实际认证的 **realm**;③ 运行�
   （`global` → global，其余 → cn），成功后持久化供重启恢复；**登出会清掉它并恢复构建区域**；
   企业 SSO 跨区发现**不改变** edition；**安装身份（appId/userDataDirName/executableName）永不随 edition 变化**
 - **持久化 key**：`cindy_product_edition_v1`（`PRODUCT_EDITION_KEY`）
-- **代码锚点**：`apps/desktop/src/main/authManager.ts:208`（key）、`:382-383`（`activeProductEdition` 初值 = 构建区域）、`:1875-1879`（读持久化）、`:4582`（重启恢复）、`:4905-4906`（`authRealmForEdition`）、`:4940`（按 realm 落定）、`:5097-5099`（成功后写入）、`:3560-3564` 与 `:3651`（登出清掉并恢复）；渲染侧 `apps/desktop/src/renderer/contexts/AuthContext.tsx:73,138,234`
+- **代码锚点（以符号名为准；行号为本轮合并后实测参考值，`authManager.ts` 已多次漂移）**：
+  - key 声明：`apps/desktop/src/main/authManager.ts` 的 `const PRODUCT_EDITION_KEY = 'cindy_product_edition_v1'`（约 `:211`）
+  - 初值：模块级 `let activeProductEdition: CindyRegion = CURRENT_CINDY_REGION`（约 `:388`）
+  - 读持久化：`readPersistedProductEdition()`（定义约 `:1952-1955`；调用点即重启恢复）
+  - 重启恢复：`initialize()` 里的 `activeProductEdition = readPersistedProductEdition() ?? CURRENT_CINDY_REGION`（约 `:4677`）
+  - 登录成功写：`acceptLoginOutcome` 里的 `writeSafe(PRODUCT_EDITION_KEY, activeProductEdition)`（约 `:5215`）
+  - 登出清 + 恢复构建区：`clearAuth()` 的 `removeSafe(PRODUCT_EDITION_KEY)`（约 `:3733`）与紧随其后的 `resetActiveAuthRealmToBuild()`（约 `:3739`，函数体内 `activeProductEdition = CURRENT_CINDY_REGION` 在 `:3643`；另有 `:4617` 的同一 `removeSafe`）
+  - realm ↔ edition：`authRealmForEdition`（约 `:5001`）、`selectLoginRealm`（约 `:5035`，同时落 `pendingAuthRealm` 与 `activeProductEdition`）
+  - 渲染侧：`apps/desktop/src/renderer/contexts/AuthContext.tsx:73,138,234`
 - **自动化门禁**：`pnpm --filter desktop exec vitest run src/main/__tests__/authLoginFlowReset.test.ts`（含「登出后恢复构建 edition」「成功后写入 edition」「登出清 key」三条源码序断言）
 - **实机验证**：global 包 → 登录页选 CN 区域登录 → 重启后仍是 CN edition；
   登出后回到构建区域（global）
@@ -500,6 +512,19 @@ edition 与端点自举）；② 登录页实际认证的 **realm**;③ 运行�
 - **实机验证**：`pnpm restart:desktop:remote` 起的是 `CindyMekaDev` 身份、userData 落在
   `CindyMeka-dev2-*`；打包后产物名为 `CindyMeka`（见 WL-6.3）
 - **历史回归**：本轮同步在 main 侧身份/edition 上出过 35 个 typecheck 断链（`PRODUCT_EDITION_KEY`、重复 `BRAND_IDENTITY` 等，[`2026-09-origin-main-to-meka-main.md`](../migrations/2026-09-origin-main-to-meka-main.md) §4.2）
+- **第三轮同步（2026-09-24）新增同类回归与收口**：上游本轮新增/大改的子系统在 `meka/main` 上**零适配**，
+  因而把上游身份字面量当唯一合法值（**测试也写死上游名，自洽通过 ⇒ 只有语义验收能拦**）。已修四处：
+  `cindy-make/versionStartup.ts`（身份白名单 + marker 词表 + 默认名，**不修则个人版版本启动/重启整体失效**）、
+  `cindy-make/__tests__/personalBuild.test.ts`（上游用例写死 `Cindy-*`/`Cindy.app`）、
+  `main/linuxInstallation.ts`（`basename(exe) !== 'Cindy'` ⇒ 用户级安装识别永不命中；**该行 merge-base 已存在，属存量**）、
+  `main/index.ts`（钥匙串处置文案指示写上游名）。四处统一为「**从 `brandExecutableName()` 正本派生 +
+  上游名仅 legacy 只读闭集**」，并各自补了反例断言与回归守卫实证。逐条见
+  [`2026-09-24-origin-main-to-meka-main.md`](../migrations/2026-09-24-origin-main-to-meka-main.md) §6.17。
+  **已知未修（存量，用户裁决只登记）**：Linux 用户级安装链路身份不一致——`forge-linux.ts:14` 的 build-info
+  executable 仍写死 `Cindy`/`CindyDev`，`resources/linux/install-user.sh:69/:104/:110` 与
+  `install-omarchy.sh:61/:69/:194` 要求 `$payload/Cindy`，而打包产物是 `CindyMeka`
+  ⇒ **Linux 用户级安装会以 `Incomplete application.` / `Unexpected executable identity.` 失败**。
+  `brand-identity-sync` 的镜像断言**未覆盖** `forge-linux.ts` 与这两个脚本，故门禁不报。修复方向见报告 §6.17。
 
 #### WL-6.2 深链：注册主 scheme 与历史 scheme，只解析不注册 `cindy://`
 
@@ -520,6 +545,13 @@ edition 与端点自举）；② 登录页实际认证的 **realm**;③ 运行�
 - **自动化门禁**：`scripts/__tests__/meka-release-identity.test.mjs` 的前两条用例（`artifactBaseName` / `buildBuildInfo` / 五个镜像字面量）；`scripts/__tests__/meka-release-flow.test.mjs`（发布顺序、canary manifest、RustFS 前缀与 bucket、HTTPS-only 根、版本不可降级）
 - **实机验证**：跑一次 `pnpm release:package`（或读 build-info）确认产物名与 `product` 字段；
   **注意**：真实发布与签名属外部写入操作，需用户明确授权
+- **交叉引用（2026-09-23 第三轮同步裁决，方案 A）**：Windows 热更的
+  `apps/desktop/cindy-updater/src-tauri/src/installer.rs` 已**完整接纳上游 `5b10e9babc` 对 #4502 的回退**
+  （安装目录身份钉扎、`.updating` 独占锁、High-IL staging ACL 等全部随上游删除），只投影回两项自包含
+  Meka 能力。**这不是静默回归**；裁决理由、逐项清单与实测行数见 **§8.11**，同批落点还有
+  [`cindy-updater.md`](cindy-updater.md) 与
+  [`../migrations/2026-09-24-origin-main-to-meka-main.md`](../migrations/2026-09-24-origin-main-to-meka-main.md) UP-05。
+  本条的产物名 / 更新器落点不变量**不受该回退影响**
 
 #### WL-6.4 签名：Windows 旧 Meka 签名服务、macOS 既有 Meka 证书
 
@@ -647,6 +679,27 @@ edition 与端点自举）；② 登录页实际认证的 **realm**;③ 运行�
 Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台；Meka 渠道请求头 `x-cindy-version`
 是当前客户端真实版本（抓包或服务端日志确认，不是 `0.0.0`）。
 
+**本轮同步对 WL-9 四类契约的复核（2026-09-23 第三轮同步，逐条实查）**：
+1. **批准状态 schema 未动**：`RECEIPT_SCHEMA_VERSION` 仍为 **2**（上游本轮未改）；
+2. **内容指纹格式未动**：`cindy-ghost-content-v2` 未被改写；
+3. **安装布局 / 包格式未动**：尺寸常量数值不变；
+4. **`validateGhostManifest` 只被放宽**：本轮删掉了「未知字段 / 未知能力类目即拒装」这条口径
+   （`apps/desktop/src/shared/ghost.ts:3803` 起的 `validateGhostManifest`；`panel.systemButtons`
+   的「只认白名单键，未知键即拒」分支被移除，未知键改由 `unknownDeclarationFields` 保留为声明数据）。
+   实测 `git diff 0f65d9823 origin/main -- apps/desktop/src/shared/ghost.ts`：**删除 13 处 `ok: false`
+   拒绝点、新增 0 处** ⇒ net 放宽，不存在「老包被新判据拒装」的兼容风险。
+   按 `plugin-security-and-authoring.md` 的存量兼容红线，这是**允许**方向；但**放宽即为插件基座改动**，
+   仍需白名单放行门（需 Approve）。
+5. **上游 `b8b90eb536`（`feat(plugins): add remote authorization and private setup cards (#4813)`）
+   新增了插件基座新面**：remote 私有 setup 卡 / 设备码 / 私有连接提交 —— 落点为
+   `apps/desktop/src/main/plugin-oauth/*`（`deviceCard.ts`、`deviceCodeSessions.ts`、
+   `deviceCodeClipboard.ts`、`authorizationAdapters.ts` 等）、
+   `cindy-brain/ghostSetupConnectionExecutor.ts`（`executeGhostSetupConnectionSubmission`）与
+   `cindy-brain/index.ts:5301` 的 `bindGhostSetupConnectionAction`（注入点 `maker-ipc/register.ts:2655`
+   的 `bindConnection`）、以及 `GhostNodeRuntimeBroker` 的新回调。
+   它属**插件基座新面**（不是 Meka 能力，也不与 Meka 渠道冲突），按 §7 走「上游共有能力」，
+   但**仍须走白名单放行门（需 Approve）**后才能合并——登记在案以免被当成「纯上游技术改动」豁免。
+
 **历史回归**
 - 开发目录 `EXDEV`（跨卷）与 workdir 安全门（见 `xdmaker-meka-to-cindy.md` §开发目录相关）。
 - 重启后旧快照重复启动服务器（同上，§6.30）。
@@ -695,10 +748,17 @@ Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台；Meka 渠�
   所以「存量 Meka 用户升级后仍能看到合并前的可见集合」由**上游原生满足**；上一轮的补种
   本来就是为这套语义当时缺失而打的补丁，而不是 Meka 需要长期固化的产品分歧。
 - Meka 一次性补种**仍然保留**（`MEKA_UPGRADE_SEED_KEY_PREFIX` +
-  `profilePrecedesVisibilityInitialization` + `needsMekaSeed`）：对「没有任何有效初始化
-  清单」的既有配置写一次性标记，并把升级那一刻的目录基线冻结进 `initialization.defaults`，
-  随后重新镜像整表。它的定位是**基线留痕 + 已初始化判定输入**（记录该配置升级时看到过什么、
-  供诊断与采纳合并），**不决定可见性**，也不覆盖显式 override。
+  `profilePrecedesVisibilityInitialization` + `needsMekaSeed`）：对「**这份配置从来没写过
+  初始化记录**」（判据 `stored === null`）的既有配置写一次性标记，并把升级那一刻的目录基线
+  冻结进 `initialization.defaults`，随后重新镜像整表。它的定位是**基线留痕 + 已初始化判定输入**
+  （记录该配置升级时看到过什么、供诊断与采纳合并），**不决定可见性**，也不覆盖显式 override。
+  > **命中条件已收窄（2026-09-24 第三轮同步）**：原判据还把「**已经存在但 `defaults` 为空的
+  > 记录**」算作命中，于是补种会把外部写下的 `eligibleForDefaults: false` 提升为 `true`，
+  > 被上游本轮新增的 `modelVisibilityPrefs.test.ts`「外部修好损坏 initialization 后，同一生命周期内
+  > 重新加载可恢复目录」拦截。现在**已有记录一律权威、不被补种改写**；「无记录」这一支逐字不变。
+  > 安全性依据：可见性恒为 `override ?? defaultEnabled`、**不读 `defaults`**（见下条），
+  > 故该支补种无承重作用，上一轮 P0 形态不回归。详见
+  > `docs/migrations/2026-09-24-origin-main-to-meka-main.md` §6.16 第 3 条。
 - 镜像与「恢复默认」都**不读** `defaults`：`mirrorToMain` 推的是
   `effectiveMap(map) => ({ ...map })`（**override 表**）加上**不含 `fallback: false`** 的策略，
   main 侧对未知 key 返回 `undefined` ⇒ 由共享 `isModelVisible` 回落目录 —— 这才是
@@ -722,7 +782,7 @@ Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台；Meka 渠�
 - `apps/desktop/drizzle/scripts/0082_meka_product_schema.ts:68-96`（建 `meka_projects` /
   `meka_roles` 与 `sessions` 的 `meka_project_id` / `meka_role_id` / `is_formal` /
   `formal_*` 列及索引）、`apps/desktop/drizzle/scripts/0088_bridge_meka_0_0_11_lineage.ts:286-366`（0.0.11 谱系桥接）
-- `apps/desktop/src/main/localDb/schema.ts:86`（`workspace_kind` 枚举含 `'meka'`）、`localDb/mapper.ts:396-409`（meka 身份只对 `'meka'` 绑定）
+- `apps/desktop/src/main/localDb/schema.ts:103`（`workspace_kind` 枚举含 `'meka'`）、`localDb/mapper.ts` 的 `sessionCreateToRow`（`workspaceKind === 'meka'` 时才落 meka 身份：判据 `:407-412`、`mekaRole` 遗留分支 `:420-426`；函数体约 `:367-473`）
 - `apps/desktop/src/main/localDb/ipc/mekaProjects.ts`、`mekaRoles.ts`、`mekaProjectMetadata.ts`
 - 配置不可用项目的**状态投影与恢复入口**（WL-11.9）：`apps/desktop/src/shared/meka-projects.ts`
   （`MekaProject.configUnavailable`、`mekaProjectRegistrationName`）、
@@ -770,8 +830,10 @@ Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台；Meka 渠�
 - Pi 空回合兜底（WL-11.15）：`packages/maker-core/src/agents/pi/translator.ts:1034-1081`
   （`silentStop` 判定 `:1054-1059`、`done.data` 附加 `:1081`；Host Stop 锁存 `hostStopSeenGeneration`
   与 `isCurrentTurnHostStopSeen` 在 `:275-327`）；
-  `apps/desktop/src/main/agent-island/state.ts:84,671-690,752-764`（`AGENT_ISLAND_SILENT_STOP_HOLD_MS = 10_000`
-  的挂起兜底；单调锚点 `silentStopHoldMonoUntil` 在 `:172-181`）与
+  `apps/desktop/src/main/agent-island/state.ts`（`AGENT_ISLAND_SILENT_STOP_HOLD_MS = 10_000` 在 `:86`；
+  进入挂起 `holdSilentStopForResume` 约 `:1572-1579`、到期补回 `expireSilentStopHolds` 的判定约 `:1615-1623`；
+  两个 producer 入口：`status` 分支约 `:702-705`、`done` 分支约 `:794-797`；单调锚点
+  `silentStopHoldMonoUntil` 字段与说明约 `:178-185`）与
   `packages/maker-core/src/agents/claude-code/translator.ts:2394-2395`（把同一标记挂到配对的
   turn-end `status` 上，使判定与事件顺序无关）；
   `apps/desktop/src/main/maker-ipc/silentStopAutoResume.ts`、`register.ts:4298-4460`、
@@ -1818,8 +1880,9 @@ Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台；Meka 渠�
 认领、不进 IM `/sessions` 选择器、`'meka'` 不泄漏进 scheduler 域；同时协同（Orca）资格
 与远程 worker 目标对 Meka 正确成立。
 
-**代码锚点**
-- `apps/desktop/src/main/scheduler-host/storage.ts:707,772,1307,1357,1443`
+**代码锚点**（2026-09-23 第三轮同步后实测；`scheduler-host/storage.ts` 的五处 `meka` 跳过为
+`:826` / `:896` / `:1425` / `:1475` / `:1561`，其余锚点符号核对通过）
+- `apps/desktop/src/main/scheduler-host/storage.ts:826,896,1425,1475,1561`
 - `apps/desktop/src/main/hook-control/recentSessions.ts:37`
 - `apps/desktop/src/main/im/shared/sessionRepo.ts:207-209`、`im/shared/slashCommands.ts:175`
 - `apps/desktop/src/main/maker-host/session-storage.ts:42`
@@ -1841,9 +1904,10 @@ Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台；Meka 渠�
   worker，不排除 meka；`listRecentSessionsForPicker`（`:171`）与
   `listSessionsForWorkspace`（`:211`）因此**可能**把带 workingDir 的 Meka 会话列进
   IM `/session` 与 `/ctr`。是否属缺口需产品裁决（见 §8）。
-- `renderer/features/cc-agent/lib/sidebarProjectVisibility.ts:125` 会把落在隐藏项目下的
-  会话改写成 `'dialogue'`，豁免只看 `'dialogue'`（`:40`、`:71`）——Meka 会话会被「降级」
-  出 Meka 段并出现在普通对话分组（见 §8）。
+- `renderer/features/cc-agent/lib/sidebarProjectVisibility.ts` 的
+  `sidebarSessionsWithHiddenProjectsAsDialogues`（约 `:145-165`）会把落在隐藏项目下的
+  会话改写成 `'dialogue'`（改写点 `:162`），豁免只看 `'dialogue'`（`:40`、`:87`、`:101`）
+  ——Meka 会话会被「降级」出 Meka 段并出现在普通对话分组（见 §8.4 与 WL-3.1 的「已知边界」）。
 
 **实机验证**：Meka 会话不出现在 IM `/sessions` 列表；scheduler 不把 Meka 会话当成待执行
 任务；Meka 会话可正常发起协同（Orca）且 worker 归属正确。
@@ -1881,6 +1945,18 @@ Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台；Meka 渠�
 **自动化门禁**
 - `pnpm test:runner`（含上述两个自测）
 - `pnpm audit:merge -- --merge-commit <sha>`
+
+> **`pnpm test:runner` 的末尾新增一步（2026-09-23 第三轮同步登记）**：`test:runner` 在跑完
+> `scripts/__tests__/**.test.mjs` 清单后，**末尾还会执行**
+> `node apps/desktop/scripts/check-windows-atomic-rename.mjs`（见根 `package.json` 的
+> `test:runner` 定义，`&&` 连接）。该脚本的行为是平台相关的：
+> **win32 需要 `rustc`**（它用 `rustc --edition=2021` 现场编译
+> `apps/desktop/native/windows-atomic-rename/main.rs` 并验证 junction 原子替换语义；`rustc` 缺失
+> 或编译失败即红）；**非 win32 直接 skip 并以退出码 0 结束**（脚本第一段 `process.platform !== 'win32'`
+> 即 `console.log('Windows atomic rename check skipped on this platform.')` + `process.exit(0)`）。
+> ⇒ 在 macOS / Linux 上 `test:runner` 不受它影响；在 Windows 开发机上**必须装 `rustc`**，
+> 否则 `test:runner`（连带 `test:unit` / `test:db` / `test:all` 等以 `pnpm test:runner &&` 开头的
+> 根脚本）会因这一步失败。读红时先按此归类，不要当成本轮同步引入的失败。
 
 **实机验证**：`pnpm audit:merge` 对历史事故提交 `01391448e9` 仍报出 `DROPPED`（含
 hook-control 相关丢失）—— 证明门禁不是空转。
@@ -2044,9 +2120,11 @@ worktree 内无宿主运行实例，登记为「未验证 + 原因」，由合�
 三处在本次改动范围之外。窗口内崩溃留下的是**完整普通任务**，不是脏行。
 
 **自动化门禁**：`pnpm --filter desktop exec vitest run src/main/session-share`
-—— `sessionShareImport.test.ts`（`:1731` 起 10 条：可解析包导入真 Meka 任务 / 项目缺失 /
-角色缺失 / 角色属于别的项目 / P4 根未配置 / 遗留包 / 绑定写入失败 / 无 `meka` 段的包行为不变 /
-导出→导入往返保住绑定 / 协同包只绑 lead）、`sessionShareExport.test.ts`（3 条）、
+—— `sessionShareImport.test.ts`（**Meka 绑定断言自 `:1767` 起共 10 条**（2026-09-23 第三轮同步实测；
+此前记 `:1731` 起）：`:1767` 可解析包导入真 Meka 任务 / `:1815` 项目缺失 /
+`:1829` 角色缺失 / `:1845` 角色属于别的项目 / `:1860` P4 根未配置 / `:1876` 遗留包 /
+`:1903` 绑定写入失败 / `:1913` 无 `meka` 段的包行为不变 /
+`:1935` 导出→导入往返保住绑定 / `:2020` 协同包只绑 lead）、`sessionShareExport.test.ts`（3 条）、
 `xdtshareFormat.pure.test.ts`（2 条）。
 **验证状态（2026-09-22 登记）**：用例已随改动落地，但**登记人未运行**（未跑任何仓库门禁）；
 本项全部锚点由阅读当前源码得出，属 documented-only。
@@ -2425,12 +2503,13 @@ lineage 撞号的处理、migration 文件本体不写注释）留在
 
 ### 8.4 已知缺口：Meka 会被「隐藏项目」降级成普通对话（真实缺陷，无覆盖）
 
-`apps/desktop/src/renderer/features/cc-agent/lib/sidebarProjectVisibility.ts:108-127` 的
-`sidebarSessionsWithHiddenProjectsAsDialogues` 会把落在「已隐藏项目」key 内的会话改写成
-`{ ...session, workspaceKind: 'dialogue' }`（`:125`），而豁免条件只有
-`workspaceKind === 'dialogue'`（`:40`、`:71`），**不豁免 `'meka'`**。
+`apps/desktop/src/renderer/features/cc-agent/lib/sidebarProjectVisibility.ts` 的
+`sidebarSessionsWithHiddenProjectsAsDialogues`（约 `:145-165`）会把落在「已隐藏项目」key 内的会话改写成
+`{ ...session, workspaceKind: 'dialogue' }`（改写点在 `:162`），而豁免条件只有
+`workspaceKind === 'dialogue'`（`:40`、`:87`、`:101`），**不豁免 `'meka'`**。
 
-调用点 `CCAgentSidebarUpper.tsx:1354-1362` 在 Meka 分流（`:1371` 与 `:1639`）**之前**执行，
+调用点 `CCAgentSidebarUpper.tsx` 的 `sidebarSessions` useMemo（约 `:1418-1426`，调用在 `:1420`）
+在 Meka 分流（`nonMekaSidebarSessions` 约 `:1446`、`visibleMekaSessions` 约 `:1798`）**之前**执行，
 于是被隐藏项目目录下的 Meka 会话会被：① `visibleMekaSessions`（按 `workspaceKind === 'meka'`
 过滤）丢弃 ⇒ **从「Meka 助理」段消失**；② `nonMekaSidebarSessions` 收下 ⇒ **出现在普通对话
 分组**。触发条件是 Meka 项目的 workingDir 恰好等于用户已从侧栏隐藏（墓碑）的 Cindy 项目目录。
@@ -2439,6 +2518,13 @@ lineage 撞号的处理、migration 文件本体不写注释）留在
 `'meka'` kind 后没有同步补豁免留下的缺口（上游域内不存在该 kind，故上游代码自洽）。
 按「非本次修改引入的存量问题不擅自修复」**未处理**，需用户决定是否纳入；
 修法是加 `session.workspaceKind === 'meka'` 豁免并补一条用例。
+
+**本轮复核（2026-09-23 第三轮同步）：仍未修，且上游没有修。** 取证：`sidebarProjectVisibility.ts`
+在 `git diff --stat <merge-base 0f65d9823> origin/main -- apps/desktop/src/renderer/features/cc-agent/lib/sidebarProjectVisibility.ts`
+下**输出为空（零 diff）**，即上游在 `base..origin/main` 区间对它在内的任何一侧都没有改动；
+当前文件的豁免条件实测仍是 `workspaceKind === 'dialogue'`（`:40` / `:87` / `:101`），改写点仍是
+`:162` 的 `{ ...session, workspaceKind: 'dialogue' }`。⇒ 本缺口在合并后**照旧存在**，
+是**存量缺口**（三侧一致、非本轮引入），**本轮未修**；已在 WL-3.1 的「已知边界」处同步登记。
 
 ### 8.5 无自动化覆盖的清单项汇总（人工核对清单）
 
@@ -2620,3 +2706,55 @@ workspace，需单独决策。本条只登记「机制缺口 + 孤儿文件清�
 
 **编号说明**：本节不是 `WL-*` 能力项（它登记的是「已被上游退休、无需防覆盖」的事实与观测口径），
 故不占 WL 编号、不新增 WL 顶层项；若将来重新随包分发种子，应改为新 WL 项并钉住上述不变量。
+
+### 8.11 已裁决：安装目录身份钉扎与 `.updating` 独占锁随上游回退移除（2026-09-23 第三轮同步，方案 A）
+
+**裁决**：**方案 A —— 完整接纳上游回退**（裁决人：用户）。本节登记的是「接纳上游删除」的决定与
+理由，防止下一轮同步把它误判成静默回归，或反过来把 Meka 旧版 `installer.rs` 又搬回来。
+
+**事实（本轮逐条实查，行数与 diff 均为实测命令结果）**：
+
+- 上游 `5b10e9babc`（`fix(updater): 恢复原更新权限流程并保留失败重试`）把 #4502 的整套 Windows 热更
+  加固**整体回退**。该提交的 diffstat：`apps/desktop/cindy-updater/src-tauri/src/installer.rs`
+  `5229` 行变动、`src/main/updateLockWait.ts` **-41**、`src/main/__tests__/updateLockWait.test.ts` **-107**、
+  `src-tauri/src/args.rs` **-13**（即两个参数声明）。
+- 行数实测：`installer.rs` 在 `meka/main` 侧（合并前 `HEAD` = `09e8bb6132`）**5451** 行；上游
+  `origin/main`（`2f169d6aeb`，= 回退后的形态，与 `5b10e9babc` 同）**1218** 行；合并结果 **1379 行**，
+  且 `git diff --stat origin/main -- …/installer.rs` = **161 insertions(+) / 0 deletions(-)**
+  ⇒ **1379 = 1218 + 161，零删除**。
+  > ⚠️ **口径更正（防止照抄错数）**：同批的迁移报告 UP-05 / §6「UPD」与本次任务下发的
+  > 偏移表里写的是「上游 **1217** 行 + 161 行」（另有一处写成「回退时 5061 → 1139 行」）。
+  > 本轮逐字节实测（含末行换行判定）为：上游 `origin/main` **1218** 行、合并前 Meka 侧 **5451** 行、
+  > `5b10e9babc` 的回退是 **5419 → 1218** 行（该提交 diffstat `5229` 行变动）。
+  > 三者对「**+161 / 0 删除**」的结论没有分歧；**引用行数时以本节的 1218 / 1379 / 5451 为准**。
+- 随上游**删除**的机制（本仓已确认零残留）：
+  `InstallDirIdentity` / `capture_install_dir_identity` / `install_dir_identity_unchanged` /
+  `copy_tree_into_pinned` / `pinned_join`、`.updating` 独占锁 `acquire_update_lock`
+  （退化为 `fs::write(&args.lock, b"updating")`，当前 `installer.rs:355-360`）、High-IL staging ACL、
+  `InstallerFailure`、`--zip-sha256` / `--install-writable`；Electron 侧
+  `apps/desktop/src/main/updateLockWait.ts` 与其单测同样删除（当前 `Test-Path` 为 false、全仓无引用）。
+- **只投影回两个自包含能力**（这两项与上游回退无依赖，属 Meka 侧真实产品价值）：
+  1. `notify_shell_associations_changed()`（`installer.rs:565`，SHChangeNotify Shell 关联刷新；
+     非 Windows 的 no-op 变体在 `:575`）；
+  2. `validate_extracted_main_executable()`（`installer.rs:698`，热更包结构校验）。
+- `args.rs` 与 `lib.rs` 与上游**逐字节相同**：`git diff --stat origin/main` 在本组文件里**只**列出
+  `installer.rs`。
+
+**为什么必须这样（写进文档，防止下一轮被当成静默回归）**：
+`apps/desktop/cindy-updater/src-tauri/src/args.rs` / `lib.rs` **从未被 Meka 改过**，本轮被 Git 自动合并成
+上游形态 ⇒ **已不再解析** `--zip-sha256` / `--install-writable`（合并前 Meka 侧 `args.rs` 里有这两条
+`#[arg]` 声明，当前工作区已无）。保留 Meka 旧版 `installer.rs` 会去读这两个参数与那批已删除的辅助
+类型，**必然编译不过**；「取上游 `installer.rs` 并投影回上面两项」是该文件组合下唯一可编译、
+且不丢 Meka 能力的解。若下一轮同步看到 `installer.rs` 与上游同形，**这是预期状态**，不是被覆盖。
+
+**不变量保持**：WL-6.3 的产物名 / 更新器落点（`cindy-meka-updater`）与 WL-6.5 的渠道身份 /
+HTTPS-only 发布根**不受本次回退影响**；真实发布与签名验证仍按 WL-6.4 / §8.2 第 4 条登记
+「未验证 + 需授权」。
+
+**交叉引用**：WL-6.3、[`cindy-updater.md`](cindy-updater.md)、
+[`../migrations/2026-09-24-origin-main-to-meka-main.md`](../migrations/2026-09-24-origin-main-to-meka-main.md)
+的 UP-05 与 §6「UPD」；迁移总账 `xdmaker-meka-to-cindy.md` §6.59 的「不整体回退」表述已被本轮裁决取代。
+
+**编号说明**：本条不占 `WL` 编号 —— 按 §6 的判据，白名单只登记「当前存在、需要防上游覆盖」的能力，
+而本条登记的是**接纳上游删除**的裁决与理由。**WL-7 仍为空号**，§6 与 §8.3 关于「编号不复用、
+允许留空号」的既有说明**不改动**。

@@ -1,3 +1,5 @@
+import { runTaskTagsTransaction } from './taskTagsTx.js';
+import { CLOSE_SHARED_TASKS_FOR_SESSION_SQL } from '../../sharedTaskClosureSql.js';
 import { normalizeBotName } from '../../../../shared/botCreation.js';
 import { inferBotTemplatePresetId } from '../../../../shared/botTemplatePreset.js';
 // inproc 回滚口：仅在 XDT_DB_INPROC=true 时使用。
@@ -79,10 +81,14 @@ export function tx(db: Database.Database, args: unknown): unknown {
       return sessionsRenameTitles(db, txArgs);
     case 'sessions.setStatus':
       return sessionsSetStatus(db, txArgs);
+    case 'sessions.setTerminalStatus':
+      return sessionsSetTerminalStatus(db, txArgs);
     case 'recentWorkdirs.mergeWindowsIdentity':
       return recentWorkdirsMergeWindowsIdentity(db, txArgs);
     case 'recentWorkdirs.removeWindowsIdentity':
       return recentWorkdirsRemoveWindowsIdentity(db, txArgs);
+    case 'taskTags.execute':
+      return runTaskTagsTransaction(db, txArgs);
     case 'projectAliases.replaceIdentity':
       return projectAliasesReplaceIdentity(db, txArgs);
     case 'toolResults.compactSession':
@@ -135,8 +141,11 @@ export function tx(db: Database.Database, args: unknown): unknown {
       return botsArchiveLifecycle(db, txArgs);
     case 'bots.deleteProfile':
       return botsDeleteProfile(db, txArgs);
-    case 'bots.assertNoSharedHistory':
-      return assertBotHasNoSharedHistory(db, expectString(asRecord(txArgs, 'args').botId, 'botId'));
+    case 'bots.prepareProfileDeletion':
+      expectString(asRecord(txArgs, 'args').botId, 'botId');
+      return undefined;
+    case 'bots.persistSessionPermission':
+      return botsPersistSessionPermission(db, txArgs);
     case 'im.rotateSession':
       return imRotateSession(db, txArgs);
     case 'wechatActivateBindingEpoch':
@@ -379,6 +388,13 @@ function botsUpdateProfile(db: Database.Database, args: unknown): { currentVersi
         WHERE bot_id = ? AND role = 'canonical' AND archived_at IS NULL`)
         .run(nextVersion, id);
     }
+    if (p.canonicalPermissionMode !== undefined) {
+      const mode = expectString(p.canonicalPermissionMode, 'canonicalPermissionMode');
+      if (!['ask', 'auto', 'bypassPermissions'].includes(mode)) throw new Error('Invalid canonical permission mode');
+      db.prepare(`UPDATE sessions SET permission_mode = ? WHERE id IN
+        (SELECT session_id FROM bot_session_links WHERE bot_id = ? AND role = 'canonical' AND archived_at IS NULL)`)
+        .run(mode, id);
+    }
     return { currentVersion: nextVersion };
   })();
 }
@@ -574,7 +590,8 @@ function botsReconcileCanonicalLink(
   db: Database.Database,
   args: unknown,
 ): {
-  status: 'unchanged' | 'repaired-mirror' | 'migrated' | 'missing-pointer' | 'missing-session' | 'conflict';
+  status:
+    | 'unchanged' | 'repaired-mirror' | 'migrated' | 'missing-pointer' | 'missing-session' | 'conflict';
   canonicalSessionId: string | null;
 } {
   const p = asRecord(args, 'bots.reconcileCanonicalLink args');
@@ -582,8 +599,7 @@ function botsReconcileCanonicalLink(
   const now = expectNumber(p.now, 'now');
   return db.transaction(() => {
     const bot = db.prepare(`SELECT canonical_session_id AS canonicalSessionId,
-      current_version AS currentVersion FROM bot_profiles WHERE id = ?`).get(botId) as
-      | { canonicalSessionId: string | null; currentVersion: number } | undefined;
+      current_version AS currentVersion FROM bot_profiles WHERE id = ?`).get(botId) as { canonicalSessionId: string | null; currentVersion: number } | undefined;
     if (!bot) throw Object.assign(new Error('Bot 不存在'), { code: 'NOT_FOUND' });
 
     const links = db.prepare(`SELECT id, session_id AS sessionId, profile_version AS profileVersion
@@ -601,7 +617,7 @@ function botsReconcileCanonicalLink(
     const authoritative = links[0]?.sessionId ?? null;
     if (authoritative) {
       const session = db.prepare('SELECT status FROM sessions WHERE id = ?').get(authoritative) as
-        | { status: string } | undefined;
+        { status: string } | undefined;
       if (!session || session.status === 'deleted') {
         return { status: 'missing-session' as const, canonicalSessionId: null };
       }
@@ -635,8 +651,7 @@ function botsReconcileCanonicalLink(
       return { status: 'conflict' as const, canonicalSessionId: null };
     }
     const existingLink = db.prepare(`SELECT bot_id AS botId, role FROM bot_session_links
-      WHERE session_id = ?`).get(bot.canonicalSessionId) as
-      | { botId: string; role: string } | undefined;
+      WHERE session_id = ?`).get(bot.canonicalSessionId) as { botId: string; role: string } | undefined;
     if (existingLink) {
       return { status: 'conflict' as const, canonicalSessionId: null };
     }
@@ -732,7 +747,7 @@ function insertBotSession(db: Database.Database, s: Record<string, unknown>): vo
 function botsFinishDelegation(
   db: Database.Database,
   args: unknown,
-): { id: string; parentSessionId: string | null; childSessionId: string | null; status: string } | null {
+): { id: string; parentSessionId: string | null; childSessionId: string | null; targetBotId: string | null; runSequence: number; status: string } | null {
   const p = asRecord(args, 'bots.finishDelegation args');
   return db.transaction(() => {
     const values: unknown[] = [
@@ -743,22 +758,28 @@ function botsFinishDelegation(
     if (p.tokensUsed !== undefined) values.push(expectNumber(p.tokensUsed, 'tokensUsed'));
     const completedAt = expectNumber(p.completedAt, 'completedAt');
     values.push(completedAt, completedAt, expectString(p.delegationId, 'delegationId'));
+    let receiptGuard = '';
+    if (p.expectedRunSequence !== undefined) {
+      receiptGuard += ' AND run_sequence = ?';
+      values.push(expectNumber(p.expectedRunSequence, 'expectedRunSequence'));
+    }
+    if (p.expectedExecution !== undefined) {
+      const receipt = asRecord(p.expectedExecution, 'expectedExecution');
+      receiptGuard += " AND json_extract(permission_snapshot_json, '$.taskExecution.runSequence') = run_sequence AND json_extract(permission_snapshot_json, '$.taskExecution.instanceId') = ? AND json_extract(permission_snapshot_json, '$.taskExecution.generation') = ?";
+      values.push(expectString(receipt.instanceId, 'instanceId'), expectNumber(receipt.generation, 'generation'));
+    }
     const row = db.prepare(`UPDATE bot_delegations SET status = ?, result_summary = ?, output_artifacts_json = ?, last_error = ?
       ${tokenSet}, pending_interaction_json = NULL, completed_at = ?, completion_delivered_at = NULL, updated_at = ?
-      WHERE id = ? AND status IN ('queued','running','waiting')
-      RETURNING id, parent_session_id AS parentSessionId, child_session_id AS childSessionId, status`)
+      WHERE id = ? AND status IN ('queued','running','waiting') ${receiptGuard}
+      RETURNING id, parent_session_id AS parentSessionId, child_session_id AS childSessionId, target_bot_id AS targetBotId, run_sequence AS runSequence, status`)
       .get(...values) as
-      | { id: string; parentSessionId: string | null; childSessionId: string | null; status: string }
+      | { id: string; parentSessionId: string | null; childSessionId: string | null; targetBotId: string | null; runSequence: number; status: string }
       | undefined;
     if (!row) return null;
-    if (row.childSessionId) {
-      // The delegation terminal transition owns its child task's terminal
-      // archive: `sessions.setStatus` refuses `source = 'bot'` rows on purpose
-      // (generic UI archive must not bypass Bot lifecycle bookkeeping), so the
-      // archive has to happen in this very transaction. Doing it anywhere else
-      // (a follow-up generic write that can also be swallowed) leaves the
-      // child task `active` forever and the guardian reports a supervision
-      // anomaly (PR #2829 QA).
+    if (row.childSessionId && row.targetBotId !== null) {
+      // Only legacy Bot-to-Bot execution containers have this archive lifecycle.
+      // An independent Session (target_bot_id IS NULL) outlives a turn, including
+      // failure/cancellation: visibility and explicit archive belong to its user.
       db.prepare(`UPDATE sessions SET status = 'archived', updated_at = ?
         WHERE id = ? AND status = 'active'`)
         .run(completedAt, row.childSessionId);
@@ -868,13 +889,14 @@ function botsReopenDelegation(
   return db.transaction(() => {
     const current = db.prepare(`SELECT requesting_bot_id AS requestingBotId,
       target_bot_id AS targetBotId, target_profile_version AS targetProfileVersion,
-      parent_session_id AS parentSessionId, status
+      parent_session_id AS parentSessionId, child_session_id AS childSessionId, status
       FROM bot_delegations WHERE id = ?`).get(delegationId) as
       | {
           requestingBotId: string;
           targetBotId: string | null;
           targetProfileVersion: number | null;
           parentSessionId: string | null;
+          childSessionId: string | null;
           status: string;
         }
       | undefined;
@@ -892,9 +914,20 @@ function botsReopenDelegation(
       .get(requestingBotId, delegationId) as { count: number };
     if (count.count >= maxActiveChildren) throw new Error('BOT_DELEGATION_CONCURRENCY_LIMIT');
 
-    const session = asRecord(p.session, 'session');
-    insertBotSession(db, session);
     const childSessionId = expectString(p.childSessionId, 'childSessionId');
+    if (targetBotId === null) {
+      // Recheck in the transaction, after any asynchronous worktree lookup.
+      // Never resurrect an explicitly archived/deleted task or replace history.
+      const child = db.prepare('SELECT status FROM sessions WHERE id = ?').get(childSessionId) as
+        { status: string } | undefined;
+      if (current.childSessionId !== childSessionId || child?.status !== 'active') {
+        return { reopened: false, previousParentSessionId: current.parentSessionId };
+      }
+      db.prepare('UPDATE sessions SET parent_session_id = ?, updated_at = ? WHERE id = ?')
+        .run(expectString(p.parentSessionId, 'parentSessionId'), reopenedAt, childSessionId);
+    } else {
+      insertBotSession(db, asRecord(p.session, 'session'));
+    }
     if (p.worktreePath != null) {
       db.prepare('UPDATE sessions SET worktree_path = ? WHERE id = ?')
         .run(expectString(p.worktreePath, 'worktreePath'), childSessionId);
@@ -987,20 +1020,90 @@ function botsArchiveLifecycle(db: Database.Database, args: unknown): { sessions:
   })();
 }
 
-/** Shared preflight and final transaction guard: deleting a profile must never cascade shared history. */
-function assertBotHasNoSharedHistory(db: Database.Database, botId: string): void {
-  const sharedHistory = db.prepare(`SELECT 1 WHERE
-    EXISTS (SELECT 1 FROM bot_delegations
-      WHERE target_bot_id = ? OR (requesting_bot_id = ? AND target_bot_id IS NOT NULL))
-    OR EXISTS (SELECT 1 FROM bot_direct_message_threads
-      WHERE bot_a_id = ? OR bot_b_id = ?)
-    OR EXISTS (SELECT 1 FROM bot_direct_messages
-      WHERE sender_bot_id = ? OR recipient_bot_id = ?)`)
-    .get(botId, botId, botId, botId, botId, botId);
-  if (sharedHistory) throw Object.assign(
-    new Error('Bot 有共享委派或私聊历史，不能永久删除'),
-    { code: 'BOT_SHARED_HISTORY_REFERENCED' },
-  );
+function tableColumns(db: Database.Database, table: string): Set<string> {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  return new Set(rows.map((row) => row.name));
+}
+
+/**
+ * Keep the other teammate's records when this profile row goes away.
+ * Delegation targets are foreign keys; null them before delete so cascade cannot
+ * remove the requester's task. Direct messages are address text, not profile keys.
+ */
+function botsPersistSessionPermission(
+  db: Database.Database,
+  args: unknown,
+): { updated: boolean } {
+  const p = asRecord(args, 'bots.persistSessionPermission args');
+  const sessionId = expectString(p.sessionId, 'sessionId');
+  const mode = expectString(p.mode, 'mode');
+  if (!['ask', 'default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions'].includes(mode)) {
+    throw Object.assign(new Error('invalid permission mode'), { code: 'INVALID_PARAMS' });
+  }
+  const profilePermission = mode === 'bypassPermissions' ? 'trusted' : mode === 'auto' ? 'auto' : mode === 'ask' ? 'ask' : null;
+  return db.transaction(() => {
+    const session = db.prepare('SELECT id FROM sessions WHERE id = ?').get(sessionId);
+    if (!session) return { updated: false };
+    if (!profilePermission) {
+      db.prepare('UPDATE sessions SET permission_mode = ?, updated_at = ? WHERE id = ?')
+        .run(mode, Date.now(), sessionId);
+      return { updated: true };
+    }
+    const link = db.prepare(`SELECT bot_id AS botId FROM bot_session_links
+      WHERE session_id = ? AND role = 'canonical' AND archived_at IS NULL`).get(sessionId) as { botId: string } | undefined;
+    if (link) {
+      const profile = db.prepare('SELECT current_version AS version FROM bot_profiles WHERE id = ?')
+        .get(link.botId) as { version: number } | undefined;
+      const version = profile
+        ? db.prepare('SELECT capabilities_json AS json FROM bot_profile_versions WHERE bot_id = ? AND version = ?')
+          .get(link.botId, profile.version) as { json: string } | undefined
+        : undefined;
+      if (!profile || !version) {
+        throw Object.assign(new Error('Bot profile version missing'), { code: 'PRECONDITION_FAILED' });
+      }
+      let config: Record<string, unknown>;
+      try {
+        const parsed = JSON.parse(version.json) as unknown;
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('unreadable');
+        config = parsed as Record<string, unknown>;
+      } catch {
+        throw Object.assign(new Error('Bot profile capabilities are unreadable'), { code: 'PRECONDITION_FAILED' });
+      }
+      if (config.permissions !== profilePermission) {
+        const next = JSON.stringify({ ...config, permissions: profilePermission });
+        const changed = db.prepare(`UPDATE bot_profile_versions SET capabilities_json = ?
+          WHERE bot_id = ? AND version = ? AND capabilities_json = ?`).run(next, link.botId, profile.version, version.json);
+        if (changed.changes !== 1) {
+          throw Object.assign(new Error('Bot profile changed while saving permission'), { code: 'PRECONDITION_FAILED' });
+        }
+      }
+    }
+    db.prepare('UPDATE sessions SET permission_mode = ?, updated_at = ? WHERE id = ?')
+      .run(mode, Date.now(), sessionId);
+    return { updated: true };
+  })();
+}
+
+function detachSharedHistoryForProfileDeletion(db: Database.Database, botId: string): void {
+  const delegationColumns = tableColumns(db, 'bot_delegations');
+  if (delegationColumns.has('target_bot_id')) {
+    db.prepare('UPDATE bot_delegations SET target_bot_id = NULL WHERE target_bot_id = ?').run(botId);
+  }
+  const messageColumns = tableColumns(db, 'bot_direct_messages');
+  const profileColumns = tableColumns(db, 'bot_profiles');
+  if (!messageColumns.has('sender_bot_id') || !messageColumns.has('sender_name') || !profileColumns.has('display_name')) return;
+  const profile = db.prepare('SELECT display_name AS name FROM bot_profiles WHERE id = ?').get(botId) as
+    { name?: string } | undefined;
+  const name = profile?.name?.trim();
+  if (!name) return;
+  db.prepare(`UPDATE bot_direct_messages
+    SET sender_name = ?
+    WHERE sender_bot_id = ? AND (sender_name IS NULL OR sender_name = '')`).run(name, botId);
+  if (messageColumns.has('recipient_bot_id') && messageColumns.has('recipient_name')) {
+    db.prepare(`UPDATE bot_direct_messages
+      SET recipient_name = ?
+      WHERE recipient_bot_id = ? AND (recipient_name IS NULL OR recipient_name = '')`).run(name, botId);
+  }
 }
 
 function botsDeleteProfile(
@@ -1020,7 +1123,7 @@ function botsDeleteProfile(
   const status: 'archived' | 'deleted' = keepTaskHistory ? 'archived' : 'deleted';
   return db.transaction(() => {
     const profile = db.prepare('SELECT status FROM bot_profiles WHERE id = ?').get(botId) as
-      | { status: string }
+      { status: string }
       | undefined;
     if (!profile) throw Object.assign(new Error('Bot 不存在'), { code: 'NOT_FOUND' });
     if (profile.status !== 'archived') throw Object.assign(
@@ -1028,9 +1131,9 @@ function botsDeleteProfile(
       { code: 'PRECONDITION_FAILED' },
     );
 
-    // Profile foreign keys cascade into history shared with surviving Bots.
-    // Check both delegation roles and actual message references before any mutation.
-    assertBotHasNoSharedHistory(db, botId);
+    // Profile foreign keys cascade into delegations that target this Bot.
+    // Detach those references first; direct-message rows are not profile keys.
+    detachSharedHistoryForProfileDeletion(db, botId);
 
     const allSessionIds = [...new Set(sessionIds)];
     if (sessionIds.length > 0) {
@@ -1566,7 +1669,7 @@ function messageDelete(
     );
     const targets = clientIds.map((clientId) => {
       const target = selectTarget.get(sessionId, clientId) as
-        | { id: string; clientId: string; toolUseId: string | null }
+        { id: string; clientId: string; toolUseId: string | null }
         | undefined;
       if (!target) {
         throw Object.assign(new Error(`Message 不存在或不可删除: ${clientId}`), {
@@ -1760,7 +1863,8 @@ function sessionsRenameTitles(db: Database.Database, args: unknown): Array<{
         expectedCurrentTitle,
         expectedUpdatedAtMs,
         expectedUpdatedAtMs,
-      ) as { id: string; title: string | null; workingDir: string | null; updatedAt: number } | undefined;
+      ) as
+        | { id: string; title: string | null; workingDir: string | null; updatedAt: number } | undefined;
       if (!updated) {
         throw Object.assign(new Error(`Session 标题或 updatedAt 已变化: ${sessionId}`), {
           code: 'PRECONDITION_FAILED',
@@ -1803,6 +1907,7 @@ function sessionsSetStatus(db: Database.Database, args: unknown): Array<{
     expectString(id, 'sessionId'),
   );
   const status = expectString(payload.status, 'status');
+  const closeSharedTasks = payload.closeSharedTasks === true;
   if (status !== 'active' && status !== 'archived') {
     throw invalidArgs(`invalid status: ${status}`);
   }
@@ -1844,6 +1949,9 @@ function sessionsSetStatus(db: Database.Database, args: unknown): Array<{
       if (!updated) {
         throw Object.assign(new Error(`Session 不存在: ${sessionId}`), { code: 'NOT_FOUND' });
       }
+      if (closeSharedTasks && status === 'archived') {
+        db.prepare(CLOSE_SHARED_TASKS_FOR_SESSION_SQL).run(now, sessionId);
+      }
       applied.push({
         sessionId: updated.id,
         title: updated.title,
@@ -1865,6 +1973,41 @@ function sessionsSetStatus(db: Database.Database, args: unknown): Array<{
     source: string | null;
     status: 'active' | 'archived';
   }>;
+}
+
+/** Atomically persist a terminal task status and its local-close fence. */
+function sessionsSetTerminalStatus(db: Database.Database, args: unknown): {
+  sessionId: string;
+  title: string | null;
+  workingDir: string | null;
+  workspaceKind: string | null;
+  remoteHostId: string | null;
+  source: string | null;
+  status: 'archived' | 'deleted';
+} {
+  const payload = asRecord(args, 'sessions.setTerminalStatus args');
+  const sessionId = expectString(payload.sessionId, 'sessionId');
+  const status = expectString(payload.status, 'status');
+  if (status !== 'archived' && status !== 'deleted') throw invalidArgs('invalid terminal status: ' + status);
+  const transaction = db.transaction(() => {
+    const existing = db.prepare('SELECT id, status, source FROM sessions WHERE id = ? LIMIT 1').get(sessionId) as
+      | { id: string; status: string; source: string } | undefined;
+    if (!existing) throw Object.assign(new Error('Session not found: ' + sessionId), { code: 'NOT_FOUND' });
+    if (existing.status === 'deleted') throw Object.assign(new Error('Deleted session cannot change status: ' + sessionId), { code: 'PRECONDITION_FAILED' });
+    if (existing.source === 'bot') throw Object.assign(new Error('Bot sessions must use Bot lifecycle: ' + sessionId), { code: 'PRECONDITION_FAILED' });
+    const now = Date.now();
+    if (status === 'archived' || status === 'deleted') db.prepare(CLOSE_SHARED_TASKS_FOR_SESSION_SQL).run(now, sessionId);
+    const updated = db.prepare(
+      'UPDATE sessions SET status = ?, updated_at = ? WHERE id = ? RETURNING id, title, working_dir AS workingDir, workspace_kind AS workspaceKind, remote_host_id AS remoteHostId, source',
+    ).get(status, now, sessionId) as {
+      id: string; title: string | null; workingDir: string | null; workspaceKind: string | null; remoteHostId: string | null; source: string | null;
+    } | undefined;
+    if (!updated) throw Object.assign(new Error('Session not found: ' + sessionId), { code: 'NOT_FOUND' });
+    return { ...updated, sessionId: updated.id, status };
+  });
+  return transaction() as {
+    sessionId: string; title: string | null; workingDir: string | null; workspaceKind: string | null; remoteHostId: string | null; source: string | null; status: 'archived' | 'deleted';
+  };
 }
 
 function invalidateSessionListProjection(db: Database.Database, sessionId: string): void {
@@ -1998,6 +2141,13 @@ function imRotateSession(
       now,
       now,
     );
+    // IM rotation archives the previous task inside this transaction, so hand
+    // its shared-task authority to the journal before the old route disappears.
+    // The runtime will revoke local access and retry the server close from this
+    // durable terminal record, even when the relay is offline.
+    if (previousSessionId !== null) {
+      db.prepare(CLOSE_SHARED_TASKS_FOR_SESSION_SQL).run(now, previousSessionId);
+    }
     if (previousSessionId !== null) retirePrevious.run(now, previousSessionId);
     if (detachBinding !== null) {
       deleteBinding.run(
@@ -2811,6 +2961,7 @@ function sessionImportShare(db: Database.Database, args: unknown): { messageCoun
     const replacementUpdatedAt = expectNumber(session.updatedAt, 'session.updatedAt');
     for (const replacedSession of replaceSessions) {
       deleteReplacedSession.run(replacementUpdatedAt, replacedSession.id);
+      db.prepare(CLOSE_SHARED_TASKS_FOR_SESSION_SQL).run(replacementUpdatedAt, replacedSession.id);
     }
     let messageCount = insertSessionWithMessages(session, messages);
     if (orca) {

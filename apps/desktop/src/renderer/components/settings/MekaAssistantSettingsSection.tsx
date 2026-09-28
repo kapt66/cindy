@@ -288,7 +288,7 @@ export function MekaAssistantSettingsSection() {
 
   return (
     <div className="flex flex-col gap-5">
-      <div className={CARD_CLASS}>
+      <div id="settings-search-target-meka-assistant-plugin-panel" className={CARD_CLASS}>
         <div className="flex items-center justify-between gap-4">
           <div className="min-w-0">
             <h3 className="text-16 font-medium text-[var(--settings-section-title)]">
@@ -325,7 +325,7 @@ export function MekaAssistantSettingsSection() {
         </div>
       </div>
 
-      <div className={CARD_CLASS}>
+      <div id="settings-search-target-meka-assistant-p4" className={CARD_CLASS}>
         <div>
           <h3 className="text-16 font-medium text-[var(--settings-section-title)]">
             {t('settings.meka.p4.title')}
@@ -401,7 +401,7 @@ export function MekaAssistantSettingsSection() {
         </div>
       </div>
 
-      <div className={CARD_CLASS}>
+      <div id="settings-search-target-meka-assistant-router" className={CARD_CLASS}>
         <div className="flex items-start justify-between gap-3">
           <div>
             <h3 className="text-16 font-medium text-[var(--settings-section-title)]">
@@ -568,10 +568,10 @@ export function MekaAssistantSettingsSection() {
         )}
       </div>
 
-      <div className={CARD_CLASS}>
+      <div id="settings-search-target-meka-assistant-design" className={CARD_CLASS}>
         <div className="flex items-start justify-between gap-3">
           <div>
-            <h3 className="text-16 font-medium text-[var(--settings-section-title)]">MekaDesign</h3>
+            <h3 className="text-16 font-medium text-[var(--settings-section-title)]">{t('settings.meka.design.title')}</h3>
             <p className="mt-1 text-13 leading-relaxed text-[var(--settings-section-desc)]">
               {t('settings.meka.design.description')}
             </p>

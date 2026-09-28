@@ -73,6 +73,8 @@
   提的，提交者身份不构成例外。
 - 新增或调整产品功能、判断能力应进入 Core / Skill / 插件、设计人机交互或多端体验
   前，必须先读 `docs/product-rules/core-product-principles.md`。
+- 修改共享任务、跨账号访客邀请、共享上下文或共享成员权限前，必须先读
+  `docs/product-rules/shared-task-mode.md`；复用 device-link，同账号远控行为不变。
 - 新增或修改 Meka 技能入口、标准技能包兼容、MCPRouter 技能分发、安装来源记录或
   Meka 项目角色与市场技能的关系前，必须先读
   `docs/product-rules/meka-skills.md`。

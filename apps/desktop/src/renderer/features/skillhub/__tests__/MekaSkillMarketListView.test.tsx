@@ -86,8 +86,8 @@ vi.mock('../components/MekaSkillManagementDialog', () => ({
 vi.mock('../components/MekaSkillPublishDialog', () => ({
   MekaSkillPublishDialog: () => null,
 }));
-vi.mock('../SkillhubMarketPreviewPanel', () => ({
-  SkillhubMarketPreviewPanel: ({
+vi.mock('../SkillhubMarketDetailView', () => ({
+  SkillhubMarketDetailView: ({
     open,
     skill,
     onClone,

@@ -1,9 +1,9 @@
+import { Button } from '@/components/ui/button';
 import { useId } from 'react';
 import { Download, ShieldCheck } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-import { Spinner } from '@/components/ui/spinner';
-import { cn } from '@/lib/utils';
+
 import { ghostPermissionItems } from '../../../shared/ghost';
 import type { PluginMarketDetail, PluginMarketInstallProgress } from '../../../shared/pluginMarket';
 import { GhostPluginIcon } from './GhostPluginIcon';
@@ -89,40 +89,35 @@ export function MarketPluginDetailView({
               </div>
             </div>
             {onInstall ? (
-              <button
+              <Button
+                variant="cta"
+                size="lg"
+                compact
+                // 上游用 loading 表达「安装/更新中」;Meka 渠道在下载/安装阶段会给出
+                // progress,那时进度文案与进度条必须继续可见,不能被 loading 遮罩吃掉。
+                // 没有 progress 数据时与上游完全同形(共享 Button 自带的 Spinner)。
+                loading={busy && !progress}
                 type="button"
                 onClick={onInstall}
                 disabled={actionDisabled}
                 aria-label={busy && progress ? undefined : t(actionKey)}
                 aria-busy={busy || undefined}
                 aria-describedby={replacementDescription ? replacementDescriptionId : undefined}
-                className={cn(
-                  'plugin-detail-primary-action inline-flex h-10 min-w-[104px] items-center justify-center gap-2 whitespace-nowrap rounded-full px-4 text-13 font-medium',
-                  'bg-[var(--accent-cta-bg)] text-[var(--accent-pure-cta-fg)]',
-                  'transition-[background-color,transform,opacity] duration-150 hover:bg-[var(--accent-hover)] active:scale-[0.98]',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
-                  busy
-                    ? 'cursor-wait'
-                    : 'disabled:cursor-not-allowed disabled:opacity-40 disabled:active:scale-100',
-                )}
+                className="plugin-detail-primary-action min-w-[104px] whitespace-nowrap"
               >
-                {busy ? (
-                  progress ? (
-                    <PluginMarketProgressContent
-                      progress={progress}
-                      update={detail.installState === 'update-available'}
-                      fallback={t(actionKey)}
-                    />
-                  ) : (
-                    <Spinner size={14} />
-                  )
+                {busy && progress ? (
+                  <PluginMarketProgressContent
+                    progress={progress}
+                    update={detail.installState === 'update-available'}
+                    fallback={t(actionKey)}
+                  />
                 ) : (
                   <>
                     <Download size={15} aria-hidden="true" />
                     {t(actionKey)}
                   </>
                 )}
-              </button>
+              </Button>
             ) : null}
           </div>
           <p

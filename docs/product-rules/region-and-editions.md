@@ -57,6 +57,19 @@ Cindy Meka 使用单一安装身份，并允许用户在登录页选择 CN / Glo
 静默作废、被迫重新登录；它使 `authManager.ts` 的跨区拒绝分支成为有意保留的死代码。
 跨区恢复**不做 UID 映射**，同一时刻的登录态属于单一 realm。
 
+**凭证库不可用态下运行期切区不可达——这不是 WL-5.6 的回归（2026-09-23 登记）**：上游的
+凭证库健康守卫（`CREDENTIAL_STORE_UNAVAILABLE` 早退）位于 `select-realm` **之前**：
+`apps/desktop/src/main/authManager.ts` 的 `runLoginAction` 里
+`if (!accessToken && credentialStoreHealth.unavailable) return getLoginState();`（约 `:5375`）
+先于 `if (action.type === 'select-realm')`（约 `:5376`），而 `getLoginState()` 在该态返回
+`state: { step: 'error', code: 'CREDENTIAL_STORE_UNAVAILABLE', recoverTo: 'identifier' }`（约 `:5100-5106`）。
+登录页只在 `step === 'error'` 时渲染**恢复面板**（`LoginPage.tsx` 的 `renderContent` 分支，约 `:1244`），
+而 `LoginRealmSelector` 只在 `renderIdentifier`（`step === 'identifier'`）里渲染（约 `:674`）
+⇒ 该错误态下服务区选择器**不可达**，用户看到的是「重试恢复」面板。这是**上游既有的错误态顺序**，
+只影响「凭证库已不可用」这一个异常态，**不构成运行期切区能力的缺失或回退**；回到
+`step === 'identifier'` 后切换照旧可用。判定回归仍以 WL-5.6 的判据为准（删掉选择器、
+把 `activeProductEdition` 退回只读构建常量、或把区域消费点改回 `CURRENT_CINDY_REGION`）。
+
 以下能力必须跟随运行期 edition：普通供应商可选目录、插件 `cindy.image` / `cindy.video`
 媒体目录，以及后续明确归类为“产品能力”的区域分支。安装身份、appId、userData、更新渠道、
 文件关联和插件 app-context 中作者契约定义的“宿主构建身份”仍保持构建期静态，不得因服务区

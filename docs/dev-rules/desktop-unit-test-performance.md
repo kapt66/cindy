@@ -15,6 +15,69 @@ pnpm benchmark:desktop-workers -- --workers 1,2,4,8 --runs 1 --output <report.js
 或分池前后必须使用同一 checkout、同一机器和同一测试范围比较；单次数据需同时保留稳定性
 结果，不得只挑最快的一次。
 
+## 单测超时默认值（2026-09-23 第三轮上游同步后实查）
+
+`apps/desktop/vitest.config.ts` 的 `test` 段按**平台**给两套默认值，两者都不是「一律 60s」：
+
+```ts
+testTimeout: process.platform === 'win32' ? 60_000 : 5_000,
+hookTimeout: process.platform === 'win32' ? 60_000 : 10_000,
+```
+
+- `testTimeout`：**win32 60s、非 win32 5s**。
+- `hookTimeout`：**win32 60s、非 win32 10s**。
+- 只放宽 win32 的原因（同文件内的既有注释）：主进程用例要跑回环 HTTP、真实 git 子进程与
+  重型 `vite-node` 模块图，在全量套件的 worker 池争用下会非确定性地越过 vitest 默认值
+  （不同轮次红的不是同一条）；Linux / macOS 保留较紧的默认值，真挂起才能及时暴露。
+  同一段注释记录了 2026-09-20 把 Windows 侧预算从 20s 调到 60s 的实测依据。
+- 需要更长预算的用例仍自带更高的**逐文件**超时，会覆盖这里的默认值。
+- **引用时必须写明平台**：把 60s 说成「Desktop 单测的默认超时」会让 Linux / macOS 上真实生效的
+  5s（`testTimeout`）/ 10s（`hookTimeout`）被读错；判断「是不是超时抖动」也要按平台取基准。
+
+## Windows 命令行长度预算与 tier 分块（2026-09-24 第三轮上游同步后实查）
+
+**事实**：`vitest run <每个被选文件一个显式路径>` 的命令串会撞 Windows 命令行上限。本机
+（Windows x64、zh-CN 控制台代码页）实测有效上限约 **7.2k 字符**：vitest 在
+`approxLen≈7436` 时报 `The command line is too long.`（回显走控制台代码页，日志里是 GBK
+乱码，门禁只看到 `COMMAND_FAILED`），`approxLen≈7100` 正常。`apps/desktop` 的 `db` tier
+有 **125 个显式文件**、整串约 **7.4k–7.5k 字符**（本机实测 pnpm 参数串 7418 字符，原始报错
+命令串约 7524 字符），正是触发点；症状是 vitest 根本没启动就被 cmd.exe 拒绝，而不是测试
+失败。
+
+**机制**：`scripts/test-workspaces.mjs` 的 `planPnpmArgBatches` 把 pnpm 参数拆成三段——
+共享前缀（`--dir <abs>` / `exec` / bin / pool 与 shard 标志 / `--passWithNoTests`）、可切分
+的显式文件列表、全部 `--exclude` 后缀。整串长度按 `commandLineLength`（每参数长度加分隔符）
+计算，超过 `maxInlineCommandLength(platform)`（**win32 6000 / POSIX 120000**）时按贪心装填
+切成若干批**顺序执行**并聚合结果；不超限时**恰好 1 批、零额外进程，行为与旧实现逐字节相同**。
+阈值是「**pnpm 参数口径**」：`resolvePnpmInvocation` 之后还要加上 `node` + `pnpm.cjs`（或
+cmd.exe 包装）前缀与引号开销，6000 相对 cmd.exe 的 8191 硬上限仍留出约 **1.1k 余量**。
+
+**不变量**（分块不得破坏其中任何一条）：
+
+- 分块**不得减少被跑文件**：各批文件列表的并集与顺序等于原始选择，不重、不漏。
+- **每批都带全量 `--exclude`**，否则某一批会把本该排除的文件跑起来。
+- 任一失败 ⇒ tier 失败；失败**不提前中断**，剩余批次照跑，日志因此是完整的。
+- 带 `--shard=i/n` 的 tier **不分块**：`--shard` 自己也切分文件列表，逐批重复它会跑到与
+  请求不同的子集；`packageScript` tier 本就没有逐文件列表，同样只有 1 批。
+- 单个文件在这一预算内装不下时仍单独成批并**大声失败**，不静默丢文件。
+
+**如何取证**：`node --test scripts/__tests__/test-workspaces.test.mjs` 覆盖零行为变化
+（batch=1 的 `args` 与 `buildPnpmArgs` 逐字节相同）、分块并集/顺序、每批全量 `--exclude`、
+每批长度上限、退化单文件、shard 与 `packageScript` 不分块、失败传播（第 2 批失败仍有全部
+批次的调用记录）以及单批输出逐字节一致；分块路径通过注入 `platform` / `maxCommandLength`
+在任意宿主上都会被执行。多批时 runner 逐块打印
+`CHUNK i/n <cwd> <tier> test (N files, M chars)`（失败块表头另带 `chunk i/n`），
+`printSummary` 打印 `chunks: N sequential invocations`。
+
+**未覆盖项（如实登记）**：
+
+- POSIX 阈值（120000）使这层保护在 macOS / Linux 上**惰性**：清单里没有任何 tier 会越过
+  它，因此分块路径**无法在那两个平台用真实 tier 验证**；单测是靠注入平台阈值覆盖的，不算
+  生产证据。
+- `--related` 模式下 `relatedFiles` 同样进入 `planPnpmArgBatches`（`fileArgs` 换成相关源码
+  列表），但当前**没有任何 tier 会在 related 模式下越过阈值**，该分支只有纯函数级覆盖，
+  没有真实 tier 的触发记录。
+
 ## 2026-07-26 Windows 基线
 
 环境：Windows x64、Node v24.15.0、32 available CPUs、63.8 GiB RAM。测试范围为

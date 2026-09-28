@@ -13,6 +13,10 @@ const harness = vi.hoisted(() => ({
   restore: vi.fn(),
 }));
 
+const { useCindyVersionsMock } = vi.hoisted(() => ({
+  useCindyVersionsMock: vi.fn(),
+}));
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string) => key,
@@ -46,6 +50,10 @@ vi.mock('@/hooks/useBetaChannelSettings', () => ({
   }),
 }));
 
+vi.mock('@/lib/useCindyVersions', () => ({
+  useCindyVersions: useCindyVersionsMock,
+}));
+
 vi.mock('@/hooks/useLogout', () => ({
   useLogout: () => ({ handleLogout: vi.fn() }),
 }));
@@ -63,6 +71,7 @@ import { UserInfoSection } from '@/components/sidebar/UserInfoSection';
 beforeEach(() => {
   harness.updateStatus = { status: 'ready', version: '1.2.3', errorCode: null };
   harness.restore.mockClear();
+  useCindyVersionsMock.mockReturnValue({ state: undefined });
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
     value: {
@@ -119,5 +128,18 @@ describe('UserInfoSection update flame vs rail', () => {
     render(<UserInfoSection isCollapsed onOpenUpdateNotice={() => {}} />);
 
     expect(screen.queryByRole('button', { name: 'sidebar.user.reopenUpdateBanner' })).toBeNull();
+  });
+
+  it('shows the personal version label when the running app is personal', () => {
+    useCindyVersionsMock.mockReturnValue({
+      state: {
+        currentId: 'personal',
+      },
+    });
+
+    render(<UserInfoSection isCollapsed={false} />);
+
+    expect(screen.getByText('cindyMake.versions.personal')).toBeTruthy();
+    expect(screen.queryByText('1.0.0')).toBeNull();
   });
 });

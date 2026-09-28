@@ -3,11 +3,19 @@ import fs from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 
 import { net } from 'electron';
+import { PLUGIN_MEMBER_UPLOAD_MAX_ARCHIVE_BYTES } from '@cindy/plugin-protocol';
 
-const MAX_PLUGIN_BYTES = 8 * 1024 * 1024;
-const PLUGIN_DOWNLOAD_TIMEOUT_MS = 60_000;
+import { createIpcError } from '../../shared/ipc-errors.js';
+
+const PLUGIN_DOWNLOAD_IDLE_TIMEOUT_MS = 60_000;
+const PLUGIN_DOWNLOAD_TOTAL_TIMEOUT_MS = 120_000;
 
 export interface PluginDownloadOptions {
+  /**
+   * 渠道注入的下载上限。缺省时与上游一致，按「尚未识别真实包类型」的
+   * 128 MiB 协议上限限流；下载后由共用安装器按真实包类型（普通沙箱包
+   * 8 MiB / Node 包 128 MiB）再校验。
+   */
   maxBytes?: number;
   onProgress?: (progress: { downloadedBytes: number; totalBytes: number }) => void;
 }
@@ -41,70 +49,105 @@ export async function downloadVerifiedPlugin(
   targetPath: string,
   options: PluginDownloadOptions = {},
 ): Promise<void> {
-  const maxBytes = options.maxBytes ?? MAX_PLUGIN_BYTES;
-  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
-    throw new Error(`Plugin 下载上限无效: ${maxBytes}`);
+  const channelMaxBytes = options.maxBytes ?? PLUGIN_MEMBER_UPLOAD_MAX_ARCHIVE_BYTES;
+  if (!Number.isSafeInteger(channelMaxBytes) || channelMaxBytes <= 0) {
+    throw new Error(`Plugin 下载上限无效: ${channelMaxBytes}`);
   }
-  if (expected.sizeBytes <= 0 || expected.sizeBytes > maxBytes) {
-    throw new Error(`Plugin 包大小超限: ${expected.sizeBytes}`);
+  if (!Number.isSafeInteger(expected.sizeBytes) || expected.sizeBytes <= 0) {
+    throw createIpcError('GHOST_FILE_INVALID', 'Plugin Release size is invalid');
   }
-  const response = await net.fetch(url, {
-    method: 'GET',
-    cache: 'no-store',
-    redirect: 'error',
-    signal: AbortSignal.timeout(PLUGIN_DOWNLOAD_TIMEOUT_MS),
-  });
-  if (!response.ok) throw new Error(`Plugin 下载失败 (${response.status})`);
-  if (!response.body) throw new Error('Plugin 下载响应体为空');
-  const contentLength = response.headers.get('content-length');
-  if (contentLength !== null && Number(contentLength) !== expected.sizeBytes) {
-    await response.body.cancel().catch(() => undefined);
-    throw new Error('Plugin 下载 Content-Length 与 Release 不一致');
+  if (expected.sizeBytes > PLUGIN_MEMBER_UPLOAD_MAX_ARCHIVE_BYTES) {
+    throw createIpcError('GHOST_FILE_INVALID', 'Plugin archive exceeds 128 MiB');
   }
-
-  const reader = response.body.getReader();
-  let handle: FileHandle | null = null;
-  let createdTarget = false;
-  let verified = false;
-  let size = 0;
-  let reportedPercent = -1;
-  const hash = crypto.createHash('sha256');
+  if (expected.sizeBytes > channelMaxBytes) {
+    throw createIpcError('GHOST_FILE_INVALID', `Plugin 包大小超限: ${expected.sizeBytes}`);
+  }
+  const controller = new AbortController();
+  const totalTimer = setTimeout(() => controller.abort(), PLUGIN_DOWNLOAD_TOTAL_TIMEOUT_MS);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const resetIdleTimer = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => controller.abort(), PLUGIN_DOWNLOAD_IDLE_TIMEOUT_MS);
+  };
+  const network = async <T>(operation: Promise<T>): Promise<T> => {
+    try {
+      return await operation;
+    } catch {
+      throw createIpcError(
+        controller.signal.aborted ? 'GHOST_DOWNLOAD_TIMEOUT' : 'GHOST_DOWNLOAD_FAILED',
+        controller.signal.aborted ? 'Plugin download timed out' : 'Plugin download failed',
+      );
+    }
+  };
+  resetIdleTimer();
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let file: fs.promises.FileHandle | undefined;
+  let complete = false;
   try {
-    handle = await fs.promises.open(targetPath, 'wx', 0o600);
-    createdTarget = true;
+    const response = await network(
+      net.fetch(url, {
+        method: 'GET',
+        cache: 'no-store',
+        redirect: 'error',
+        signal: controller.signal,
+      }),
+    );
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      throw createIpcError('GHOST_DOWNLOAD_FAILED', `Plugin download HTTP ${response.status}`);
+    }
+    if (!response.body)
+      throw createIpcError('GHOST_DOWNLOAD_FAILED', 'Plugin response body is empty');
+    const contentLength = response.headers.get('content-length');
+    if (contentLength !== null && Number(contentLength) !== expected.sizeBytes) {
+      await response.body.cancel().catch(() => undefined);
+      throw createIpcError('GHOST_FILE_INVALID', 'Plugin 下载 Content-Length 与 Release 不一致');
+    }
+
+    reader = response.body.getReader();
+    resetIdleTimer();
+    file = await fs.promises.open(targetPath, 'wx', 0o600);
+    const hash = crypto.createHash('sha256');
+    let size = 0;
     reportProgress(options.onProgress, 0, expected.sizeBytes);
-    reportedPercent = 0;
+    let reportedPercent = 0;
     while (true) {
-      const { done, value } = await reader.read();
+      if (controller.signal.aborted)
+        throw createIpcError('GHOST_DOWNLOAD_TIMEOUT', 'Plugin download timed out');
+      const { done, value } = await network(reader.read());
       if (done) break;
       size += value.byteLength;
-      if (size > expected.sizeBytes || size > maxBytes) {
-        await reader.cancel().catch(() => undefined);
-        throw new Error('Plugin 下载字节数超过 Release 声明');
+      if (size > expected.sizeBytes || size > channelMaxBytes) {
+        throw createIpcError('GHOST_FILE_INVALID', 'Plugin 下载字节数超过 Release 声明');
       }
-      hash.update(value);
-      await writeAll(handle, value);
-      const nextPercent = Math.floor((size / expected.sizeBytes) * 100);
-      if (nextPercent !== reportedPercent) {
-        reportProgress(options.onProgress, size, expected.sizeBytes);
-        reportedPercent = nextPercent;
+      if (value.byteLength > 0) {
+        resetIdleTimer();
+        hash.update(value);
+        await writeAll(file, value);
+        const nextPercent = Math.floor((size / expected.sizeBytes) * 100);
+        if (nextPercent !== reportedPercent) {
+          reportProgress(options.onProgress, size, expected.sizeBytes);
+          reportedPercent = nextPercent;
+        }
       }
     }
-    if (size !== expected.sizeBytes) throw new Error('Plugin 下载字节数与 Release 不一致');
-    if (hash.digest('hex') !== expected.sha256) {
-      throw new Error('Plugin 下载 SHA-256 校验失败');
-    }
-    await handle.close();
-    handle = null;
+    if (controller.signal.aborted)
+      throw createIpcError('GHOST_DOWNLOAD_TIMEOUT', 'Plugin download timed out');
+    if (size !== expected.sizeBytes)
+      throw createIpcError('GHOST_FILE_INVALID', 'Plugin 下载字节数与 Release 不一致');
+    if (hash.digest('hex') !== expected.sha256)
+      throw createIpcError('GHOST_FILE_INVALID', 'Plugin 下载 SHA-256 校验失败');
+    await file.close();
+    complete = true;
     if (reportedPercent !== 100) reportProgress(options.onProgress, size, expected.sizeBytes);
-    verified = true;
-  } catch (error) {
-    await reader.cancel().catch(() => undefined);
-    throw error;
   } finally {
-    await handle?.close().catch(() => undefined);
-    if (createdTarget && !verified) {
-      await fs.promises.rm(targetPath, { force: true }).catch(() => undefined);
+    clearTimeout(totalTimer);
+    clearTimeout(timer);
+    await reader?.cancel().catch(() => undefined);
+    reader?.releaseLock();
+    if (file && !complete) {
+      await file.close().catch(() => undefined);
+      await fs.promises.rm(targetPath, { force: true });
     }
   }
 }

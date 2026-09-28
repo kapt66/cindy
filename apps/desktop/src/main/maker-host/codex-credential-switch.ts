@@ -1,4 +1,4 @@
-import { isOpenAiSubscriptionProvider, providerCatalogId } from '@cindy/model-providers';
+import { isOpenAiSubscriptionProvider, providerCatalogId, sourceProviderForPreset } from '@cindy/model-providers';
 import {
   canReuseCodexHostForCredentialMode,
   canReuseHostForCredentialMode,
@@ -9,13 +9,18 @@ import {
 } from '@cindy/maker-core';
 
 import { claudeToolSearchMode } from './claude-behavior-flags.js';
+import { isAnthropicWireModel } from './claude-gateway-config.js';
+import { hasClaudeNativeLogin } from './claude-native-auth.js';
 import {
   CODEX_CINDY_COMPACT_PROVIDER_ID,
   CODEX_SUMMARY_COMPACT_PROVIDER_ID,
   CODEX_GATEWAY_PROVIDER_ID,
   CODEX_OPENAI_COMPACT_PROVIDER_ID,
 } from './codex-gateway-config.js';
-import { crossesCodexAppliedCustomProviderIdentity } from './codex-custom-provider-route.js';
+import {
+  crossesCodexAppliedCustomProviderIdentity,
+  isAppliedCodexCustomProviderIdentity,
+} from './codex-custom-provider-route.js';
 import type { CodexProxyAuthInjection } from './codex-proxy-host.js';
 import { withRehydrateCloseSuppressed } from './rehydrateCloseSuppression.js';
 import { getActiveCatalog } from './active-catalog.js';
@@ -204,13 +209,43 @@ export function isCodexThreadModelProviderIdentityMismatch(
         ? CODEX_GATEWAY_PROVIDER_ID
         : null;
   const actualThreadModelProviderId = normalizeProviderId(input.currentCodexThreadModelProviderId);
-  const actualThreadIdentityKnown =
-    actualThreadModelProviderId === CODEX_OPENAI_COMPACT_PROVIDER_ID ||
-    actualThreadModelProviderId === CODEX_CINDY_COMPACT_PROVIDER_ID ||
-    actualThreadModelProviderId === CODEX_GATEWAY_PROVIDER_ID;
-
+  const actualIsAppliedCustomProviderIdentity = isAppliedCodexCustomProviderIdentity(
+    actualThreadModelProviderId,
+  );
+  const targetProvider = getActiveCatalog().providers.find(
+    (provider) => provider.id === nextProviderId,
+  );
+  const targetCatalogId = targetProvider ? providerCatalogId(targetProvider) : null;
+  const targetRawProviderIds = new Set(
+    targetProvider?.models.codex?.flatMap((model) => [
+      model.catalogPresetId,
+      model.catalogPresetId ? sourceProviderForPreset(model.catalogPresetId) : undefined,
+      model.api === 'azure-openai-responses' ? 'azure' : undefined,
+    ].filter((id): id is string => typeof id === 'string')) ?? [],
+  );
+  // Older app-server versions may report the logical provider id directly
+  // (for example `openai`) instead of Cindy's materialized `cindy_openai`
+  // alias. Account-specific OpenAI ids also share the catalog identity
+  // `openai`; when the target catalog identity matches, only a route crossing
+  // needs a rebuild.
+  const actualMatchesTargetLogicalProvider =
+    actualThreadModelProviderId !== null &&
+    (actualThreadModelProviderId === nextProviderId ||
+      actualThreadModelProviderId === targetCatalogId ||
+      targetRawProviderIds.has(actualThreadModelProviderId) ||
+      (nextProviderId === null &&
+        effectiveNextMode === 'oauth-bearer' &&
+        actualThreadModelProviderId === 'openai'));
+  // The app-server may report a provider id that is not one of Cindy's
+  // materialized identities (for example `openai`, Azure, or a custom provider).
+  // It is still a sticky thread identity. Treating those ids as unknown lets a
+  // live thread cross into the Cindy gateway and keeps sending old response-item
+  // ids to the new route, which fails with `Item ... not found` when `store=false`.
+  // A missing id is the only case where there is no identity to compare.
   return (
-    actualThreadIdentityKnown &&
+    !actualIsAppliedCustomProviderIdentity &&
+    !actualMatchesTargetLogicalProvider &&
+    actualThreadModelProviderId !== null &&
     expectedThreadModelProviderId !== null &&
     actualThreadModelProviderId !== expectedThreadModelProviderId
   );
@@ -313,6 +348,15 @@ export function shouldCloseSessionForCredentialSwitch(
     if (currentProviderId !== nextProviderId && [current, next].some(
       provider => provider && providerCatalogId(provider) === 'anthropic',
     )) return true;
+    // 未指定来源的会话在没有网关 key 时,Anthropic 模型跑在本机 Claude Code 登录上(CLI 直连,
+    // 进程里没有 proxy 地址),其它模型经 proxy。是哪种取决于 spawn 那一刻,这里回看不到:
+    // 订阅已连接时,隐式一侧换来源、或在 Anthropic 与非 Anthropic 模型之间切换,一律重建。
+    if (
+      (currentProviderId === null || nextProviderId === null) &&
+      (currentProviderId !== nextProviderId ||
+        isAnthropicWireModel(input.currentModel) !== isAnthropicWireModel(input.nextModel)) &&
+      hasClaudeNativeLogin()
+    ) return true;
     // Tool Search is also spawn-time state, independent of the credential family.
     if (claudeToolSearchMode(currentProviderId, currentMode, current?.auth.native) !==
       claudeToolSearchMode(nextProviderId, nextMode, next?.auth.native)) return true;

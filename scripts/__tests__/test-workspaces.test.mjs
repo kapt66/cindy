@@ -25,6 +25,7 @@ import {
 	checkIncludeCoverage,
 	checkTestFiles,
 	classifyFailure,
+	commandLineLength,
 	createBoundedOutputBuffer,
 	createOutputForwarder,
 	createWorkspaceRunReporter,
@@ -34,11 +35,13 @@ import {
 	filterRunsByWorkspace,
 	isIgnoredFile,
 	mapWithConcurrency,
+	maxInlineCommandLength,
 	normalizeRelPath,
 	parseWorkspacePatterns,
 	parseCliOptions,
 	parseWorkspaceConcurrency,
 	parseWorkspaceSelectorValue,
+	planPnpmArgBatches,
 	planRuns,
 	printSummary,
 	readAllFiles,
@@ -2254,4 +2257,589 @@ test("printSummary includes complete command line and skipped workspaces", () =>
 		output,
 		/SKIP apps\/heartbeat-server notApplicable: No tests yet/,
 	);
+});
+
+// ---------------------------------------------------------------------------
+// Windows command-line budget: tier batching (scripts/test-workspaces.mjs).
+// 事实、机制与不变量见 docs/dev-rules/desktop-unit-test-performance.md
+// 的「Windows 命令行长度预算与 tier 分块」一节。
+// ---------------------------------------------------------------------------
+
+// cmd.exe 拒绝超过 8191 字符的命令行；runner 的 win32 预算是 6000，留出的差额
+// 要覆盖 node + pnpm.cjs 前缀与 .cmd shim 的引号开销。
+const CMD_EXE_COMMAND_LINE_LIMIT = 8_191;
+
+let repoTestFilesCache;
+function repoTestFiles() {
+	if (!repoTestFilesCache) repoTestFilesCache = discoverTestFiles(readAllFiles(ROOT));
+	return repoTestFilesCache;
+}
+
+function manifestWorkspace(cwd) {
+	const workspace = manifest.workspaces.find((candidate) => candidate.cwd === cwd);
+	assert.ok(workspace, `${cwd} must be declared in test-workspaces.config.mjs`);
+	return workspace;
+}
+
+function planRealTier(cwd, tier, options) {
+	const workspace = manifestWorkspace(cwd);
+	const tierConfig = workspace.tiers[tier];
+	assert.ok(tierConfig, `${cwd} must declare a ${tier} tier`);
+	const selected = selectFilesForTier(workspace, tierConfig, repoTestFiles());
+	return {
+		workspace,
+		tierConfig,
+		selected,
+		args: buildPnpmArgs(ROOT, workspace, tierConfig.command, tierConfig, selected),
+		batches: planPnpmArgBatches(
+			ROOT,
+			workspace,
+			tierConfig.command,
+			tierConfig,
+			selected,
+			undefined,
+			options,
+		),
+	};
+}
+
+/**
+ * 把一批 args 拆回 buildPnpmArgParts 组装的三段：共享前缀、显式文件列表
+ * （`fileCount` 项）与 `--exclude` 后缀（每个 pattern 固定两个参数）。
+ */
+function batchArgParts(batch, tierConfig = {}) {
+	const suffixStart = batch.args.length - (tierConfig.exclude?.length ?? 0) * 2;
+	return {
+		prefix: batch.args.slice(0, suffixStart - batch.fileCount),
+		fileArgs: batch.args.slice(suffixStart - batch.fileCount, suffixStart),
+		suffix: batch.args.slice(suffixStart),
+	};
+}
+
+const BATCH_ROOT = "F:/repo";
+const BATCH_CWD = "packages/batch";
+const BATCH_COMMAND = {
+	type: "packageBin",
+	bin: "vitest",
+	args: ["run", "--pool=forks", "--maxWorkers=1"],
+};
+const BATCH_TIER = {
+	status: "required",
+	command: BATCH_COMMAND,
+	include: ["src/__tests__/**/*.test.ts"],
+	exclude: ["**/*.integration.test.ts", "**/*.bench.ts"],
+};
+const BATCH_WORKSPACE = {
+	name: "batch",
+	cwd: BATCH_CWD,
+	status: "required",
+	tiers: { unit: BATCH_TIER },
+};
+
+function batchFixtureFiles(count) {
+	return Array.from(
+		{ length: count },
+		(_, index) =>
+			`${BATCH_CWD}/src/__tests__/batch-${String(index).padStart(4, "0")}.test.ts`,
+	);
+}
+
+function batchFixtureRelativeFiles(count) {
+	return batchFixtureFiles(count).map((file) => file.slice(`${BATCH_CWD}/`.length));
+}
+
+test("commandLineLength measures the joined argument vector and the budget is per platform", () => {
+	assert.equal(commandLineLength([]), 0);
+	// 每个参数各占一个分隔符：`pnpm a bb` 就是 OS 看到的长度。
+	assert.equal(commandLineLength(["a"]), 2);
+	assert.equal(commandLineLength(["aa", "bbb"]), 3 + 4);
+	assert.equal(commandLineLength(["--exclude", "**/*.bench.ts"]), 10 + 14);
+	assert.equal(maxInlineCommandLength("win32"), 6_000);
+	assert.equal(maxInlineCommandLength("darwin"), 120_000);
+	assert.equal(maxInlineCommandLength("linux"), 120_000);
+	assert.equal(
+		maxInlineCommandLength(process.platform),
+		process.platform === "win32" ? 6_000 : 120_000,
+	);
+	assert.ok(maxInlineCommandLength("win32") < CMD_EXE_COMMAND_LINE_LIMIT);
+	assert.ok(CMD_EXE_COMMAND_LINE_LIMIT - maxInlineCommandLength("win32") >= 1_000);
+});
+
+test("planPnpmArgBatches keeps single-invocation behaviour byte for byte on real tiers", () => {
+	// POSIX 预算（120k）下清单里每个 tier 今天都装得下，因此都必须恰好 1 批，
+	// 且 args 与 buildPnpmArgs 的输出逐字节相同 —— 零行为变化。
+	const realTiers = [
+		// 125 个显式文件的 tier：本修复的触发点。
+		["apps/desktop", "db"],
+		["apps/desktop", "guard"],
+		// 无显式 include 的 tier：不带任何文件列表。
+		["apps/desktop", "unit"],
+		["packages/maker-core", "unit"],
+		["apps/mobile", "unit"],
+		// packageScript tier：连文件列表口径都不存在。
+		["apps/desktop", "db-perf"],
+	];
+	for (const [cwd, tier] of realTiers) {
+		const planned = planRealTier(cwd, tier, { platform: "linux" });
+		assert.equal(
+			planned.batches.length,
+			1,
+			`${cwd} ${tier} must stay a single invocation on POSIX`,
+		);
+		assert.equal(
+			JSON.stringify(planned.batches[0].args),
+			JSON.stringify(planned.args),
+			`${cwd} ${tier} batched args must be byte-identical to buildPnpmArgs`,
+		);
+		// 只有 packageBin + 显式 include 的 tier 才把逐文件列表追加到命令上。
+		assert.equal(
+			planned.batches[0].fileCount,
+			planned.tierConfig.command.type === "packageBin" &&
+				planned.tierConfig.include?.length
+				? planned.selected.length
+				: 0,
+			`${cwd} ${tier} must forward exactly the files the tier selects`,
+		);
+		assert.equal(planned.batches[0].commandLength, commandLineLength(planned.args));
+	}
+
+	// 无显式 include 的 tier 传的是裸命令：一个文件参数都不追加。
+	const noInclude = planRealTier("packages/maker-core", "unit", {
+		platform: "linux",
+	});
+	assert.equal(noInclude.tierConfig.include, undefined);
+	assert.ok(noInclude.selected.length > 0);
+	assert.equal(noInclude.batches[0].fileCount, 0);
+	assert.deepEqual(noInclude.batches[0].args, noInclude.args);
+
+	// packageScript tier 同理：args 只有 `--dir <abs> run <script>`。
+	const scripted = planRealTier("apps/desktop", "db-perf", { platform: "linux" });
+	assert.equal(scripted.tierConfig.command.type, "packageScript");
+	assert.equal(scripted.batches[0].fileCount, 0);
+	assert.deepEqual(scripted.batches[0].args, scripted.args);
+});
+
+test("planPnpmArgBatches splits the real desktop db tier only past the win32 budget", () => {
+	const win32 = planRealTier("apps/desktop", "db", { platform: "win32" });
+	const posix = planRealTier("apps/desktop", "db", { platform: "linux" });
+
+	// 2026-09-24 第三轮上游同步实测：apps/desktop db 有 125 个显式文件、整串约
+	// 7.4k 字符。先钉住「确实越过 win32 预算」，否则文件数缩水会让本测试静默失效。
+	assert.ok(
+		win32.selected.length >= 100,
+		"desktop db is the tier with one explicit path per selected file",
+	);
+	assert.ok(
+		commandLineLength(win32.args) > maxInlineCommandLength("win32"),
+		"desktop db must exceed the win32 budget for this regression to matter",
+	);
+	assert.ok(win32.batches.length > 1, "an oversized tier must be split");
+	assert.equal(
+		posix.batches.length,
+		1,
+		"the same tier stays on one invocation under the POSIX budget",
+	);
+	assert.equal(
+		JSON.stringify(posix.batches[0].args),
+		JSON.stringify(posix.args),
+	);
+
+	const expected = win32.selected.map((file) =>
+		file.slice("apps/desktop/".length),
+	);
+	const parts = win32.batches.map((batch) =>
+		batchArgParts(batch, win32.tierConfig),
+	);
+	// (a) 各批文件列表的并集与顺序等于原始选择：不重、不漏、顺序不变。
+	assert.deepEqual(parts.flatMap((part) => part.fileArgs), expected);
+	assert.equal(new Set(expected).size, expected.length);
+	assert.equal(new Set(parts.flatMap((part) => part.fileArgs)).size, expected.length);
+	assert.equal(
+		win32.batches.reduce((total, batch) => total + batch.fileCount, 0),
+		expected.length,
+	);
+
+	// (b) 每批都带全部 --exclude；(d) 共享前缀逐字节相同。
+	assert.ok(win32.tierConfig.exclude.length >= 1);
+	const suffix = win32.tierConfig.exclude.flatMap((pattern) => [
+		"--exclude",
+		pattern,
+	]);
+	const prefix = parts[0].prefix;
+	for (const [index, batch] of win32.batches.entries()) {
+		// (c) 每批都在 win32 预算内（本 tier 每个文件都远小于预算，不存在退化批）。
+		assert.ok(
+			batch.commandLength <= maxInlineCommandLength("win32"),
+			`batch ${index + 1} must fit the win32 budget`,
+		);
+		assert.equal(batch.commandLength, commandLineLength(batch.args));
+		assert.deepEqual(parts[index].prefix, prefix);
+		assert.deepEqual(parts[index].suffix, suffix);
+	}
+	// 贪心装填的紧致性：下一批的首个文件塞不进上一批。
+	for (let index = 1; index < win32.batches.length; index += 1) {
+		const nextFile = parts[index].fileArgs[0];
+		assert.ok(
+			win32.batches[index - 1].commandLength + nextFile.length + 1 >
+				maxInlineCommandLength("win32"),
+			"a batch must be full before the next one starts",
+		);
+	}
+
+	// 6000 是「pnpm 参数口径」：resolvePnpmInvocation 追加的 node + pnpm.cjs
+	// 前缀仍要落在 cmd.exe 的 8191 字符硬上限内。
+	const invocation = resolvePnpmInvocation(win32.batches[0].args, {
+		execPath: "C:/Program Files/nodejs/node.exe",
+		npmExecPath: "C:/Users/dev/AppData/Local/pnpm/pnpm.cjs",
+		platform: "win32",
+	});
+	assert.ok(
+		commandLineLength([invocation.command, ...invocation.args]) <
+			CMD_EXE_COMMAND_LINE_LIMIT,
+	);
+});
+
+test("planPnpmArgBatches packs an oversized file list into budget-sized batches", () => {
+	const selected = batchFixtureFiles(24);
+	const limit = 500;
+	const batches = planPnpmArgBatches(
+		BATCH_ROOT,
+		{ cwd: BATCH_CWD },
+		BATCH_COMMAND,
+		BATCH_TIER,
+		selected,
+		undefined,
+		{ maxCommandLength: limit },
+	);
+	const whole = buildPnpmArgs(
+		BATCH_ROOT,
+		{ cwd: BATCH_CWD },
+		BATCH_COMMAND,
+		BATCH_TIER,
+		selected,
+	);
+	assert.ok(
+		commandLineLength(whole) > limit,
+		"the unbudgeted line must exceed the injected budget",
+	);
+	assert.ok(batches.length > 1, "an over-budget line must be split");
+	assert.ok(
+		batches.length < selected.length,
+		"batches must pack several files each, not one file per batch",
+	);
+
+	const expected = batchFixtureRelativeFiles(24);
+	const parts = batches.map((batch) => batchArgParts(batch, BATCH_TIER));
+	// (a) 并集与顺序等于原始选择：不重、不漏、顺序不变。
+	assert.deepEqual(parts.flatMap((part) => part.fileArgs), expected);
+	assert.equal(new Set(parts.flatMap((part) => part.fileArgs)).size, expected.length);
+	assert.equal(
+		batches.reduce((total, batch) => total + batch.fileCount, 0),
+		selected.length,
+	);
+	// (d) 每批的共享前缀逐字节相同。
+	for (const part of parts) assert.deepEqual(part.prefix, parts[0].prefix);
+	// (b) 每批都带全部 --exclude，且位置不变。
+	assert.deepEqual(parts[0].suffix, [
+		"--exclude",
+		"**/*.integration.test.ts",
+		"--exclude",
+		"**/*.bench.ts",
+	]);
+	for (const part of parts) assert.deepEqual(part.suffix, parts[0].suffix);
+	for (const [index, batch] of batches.entries()) {
+		// (c) 每批的 commandLength ≤ 注入阈值（本用例每批至少装得下一个文件）。
+		assert.ok(batch.commandLength <= limit, `batch ${index + 1} must fit ${limit}`);
+		assert.equal(batch.commandLength, commandLineLength(batch.args));
+		assert.ok(batch.fileCount > 0);
+		assert.equal(batch.fileCount, parts[index].fileArgs.length);
+	}
+	// 贪心装填的紧致性：下一批的首个文件塞不进上一批。
+	for (let index = 1; index < batches.length; index += 1) {
+		const nextFile = parts[index].fileArgs[0];
+		assert.ok(
+			batches[index - 1].commandLength + nextFile.length + 1 > limit,
+			"a batch must be full before the next one starts",
+		);
+	}
+});
+
+test("planPnpmArgBatches runs a file that cannot fit alone instead of dropping it", () => {
+	const selected = batchFixtureFiles(3);
+	// 空文件列表的长度就是共享前缀 + 全部 --exclude 的成本；把阈值设成它，
+	// 任何一个文件单独都超限（退化情形）。
+	const emptyLength = commandLineLength(
+		buildPnpmArgs(BATCH_ROOT, { cwd: BATCH_CWD }, BATCH_COMMAND, BATCH_TIER, []),
+	);
+	const batches = planPnpmArgBatches(
+		BATCH_ROOT,
+		{ cwd: BATCH_CWD },
+		BATCH_COMMAND,
+		BATCH_TIER,
+		selected,
+		undefined,
+		{ maxCommandLength: emptyLength },
+	);
+
+	// 显式断言退化行为：每个文件各占一批、都超预算、都仍然被跑（宁可大声失败
+	// 也不静默丢文件）。
+	assert.equal(batches.length, 3);
+	assert.deepEqual(
+		batches.map((batch) => batch.fileCount),
+		[1, 1, 1],
+	);
+	for (const batch of batches) assert.ok(batch.commandLength > emptyLength);
+	assert.deepEqual(
+		batches.flatMap((batch) => batchArgParts(batch, BATCH_TIER).fileArgs),
+		batchFixtureRelativeFiles(3),
+	);
+});
+
+test("planPnpmArgBatches never splits a sharded or scripted tier", () => {
+	const selected = batchFixtureFiles(24);
+	const partial = { cwd: BATCH_CWD };
+
+	// `--shard=i/n` 自己就切分文件列表：逐批重复会跑到与请求不同的子集，
+	// 因此带 --shard 的 tier 即使超限也必须恰好 1 批。
+	const sharded = {
+		type: "packageBin",
+		bin: "vitest",
+		args: ["run", "--shard=1/2"],
+	};
+	const batches = planPnpmArgBatches(
+		BATCH_ROOT,
+		partial,
+		sharded,
+		BATCH_TIER,
+		selected,
+		undefined,
+		{ maxCommandLength: 200 },
+	);
+	assert.equal(batches.length, 1, "a sharded tier must stay on one invocation");
+	assert.deepEqual(
+		batches[0].args,
+		buildPnpmArgs(BATCH_ROOT, partial, sharded, BATCH_TIER, selected),
+	);
+	assert.equal(batches[0].fileCount, selected.length);
+	assert.ok(batches[0].commandLength > 200);
+	assert.equal(
+		batches[0].args.filter((arg) => arg.startsWith("--shard")).length,
+		1,
+	);
+	assert.equal(batches[0].args.includes("--shard=1/2"), true);
+
+	// undersized shard 的 `--passWithNoTests` 兼容标志不改变「不分块」。
+	const undersized = planPnpmArgBatches(
+		BATCH_ROOT,
+		partial,
+		sharded,
+		BATCH_TIER,
+		selected.slice(0, 1),
+		undefined,
+		{ maxCommandLength: 1 },
+	);
+	assert.equal(undersized.length, 1);
+	assert.equal(undersized[0].args.includes("--passWithNoTests"), true);
+
+	// packageScript tier 没有逐文件列表，永远 1 批。
+	const scripted = { type: "packageScript", script: "test" };
+	const scriptedBatches = planPnpmArgBatches(
+		BATCH_ROOT,
+		partial,
+		scripted,
+		BATCH_TIER,
+		selected,
+		undefined,
+		{ maxCommandLength: 1 },
+	);
+	assert.equal(scriptedBatches.length, 1);
+	assert.deepEqual(
+		scriptedBatches[0].args,
+		buildPnpmArgs(BATCH_ROOT, partial, scripted, BATCH_TIER, selected),
+	);
+	assert.deepEqual(scriptedBatches[0].args.slice(-2), ["run", "test"]);
+});
+
+test("planPnpmArgBatches batches the related-mode source list the same way", () => {
+	const selected = batchFixtureFiles(24);
+	const relatedFiles = Array.from(
+		{ length: 30 },
+		(_, index) => `${BATCH_CWD}/src/mod-${String(index).padStart(3, "0")}.ts`,
+	);
+	const partial = { cwd: BATCH_CWD };
+	const limit = 500;
+	const whole = buildPnpmArgs(
+		BATCH_ROOT,
+		partial,
+		BATCH_COMMAND,
+		BATCH_TIER,
+		selected,
+		relatedFiles,
+	);
+	assert.ok(commandLineLength(whole) > limit);
+	const batches = planPnpmArgBatches(
+		BATCH_ROOT,
+		partial,
+		BATCH_COMMAND,
+		BATCH_TIER,
+		selected,
+		relatedFiles,
+		{ maxCommandLength: limit },
+	);
+	assert.ok(batches.length > 1);
+
+	const parts = batches.map((batch) => batchArgParts(batch, BATCH_TIER));
+	// related 模式切分的是相关源码列表，而不是逐文件 include 的测试文件列表。
+	const relatedRelative = relatedFiles.map((file) =>
+		file.slice(`${BATCH_CWD}/`.length),
+	);
+	assert.deepEqual(parts.flatMap((part) => part.fileArgs), relatedRelative);
+	assert.equal(new Set(parts.flatMap((part) => part.fileArgs)).size, relatedFiles.length);
+	for (const [index, batch] of batches.entries()) {
+		assert.ok(batch.commandLength <= limit);
+		assert.deepEqual(parts[index].prefix, parts[0].prefix);
+		assert.deepEqual(parts[index].suffix, parts[0].suffix);
+	}
+	// `related --run` 与 `--passWithNoTests` 属于共享前缀，每批各出现一次。
+	assert.equal(parts[0].prefix.filter((arg) => arg === "related").length, 1);
+	assert.equal(parts[0].prefix.includes("--run"), true);
+	assert.equal(
+		parts[0].prefix.filter((arg) => arg === "--passWithNoTests").length,
+		1,
+	);
+	assert.equal(
+		parts
+			.flatMap((part) => part.fileArgs)
+			.some((arg) => arg.startsWith("src/__tests__/")),
+		false,
+	);
+});
+
+// 足够多的显式路径，连 POSIX 预算（120k）都能越过：每个相对路径
+// `src/__tests__/batch-0000.test.ts` 加分隔符只花 33 字符。
+function oversizedBatchFixtureFiles() {
+	const count = Math.ceil((maxInlineCommandLength() * 2) / 32) + 4;
+	return batchFixtureFiles(count);
+}
+
+test("runPlannedTests keeps running batches after one fails and aggregates the tier verdict", async () => {
+	const allFiles = oversizedBatchFixtureFiles();
+	const selected = selectFilesForTier(BATCH_WORKSPACE, BATCH_TIER, allFiles);
+	const planned = planPnpmArgBatches(
+		BATCH_ROOT,
+		BATCH_WORKSPACE,
+		BATCH_COMMAND,
+		BATCH_TIER,
+		selected,
+	);
+	assert.ok(planned.length > 1, "fixture must force more than one batch");
+
+	const calls = [];
+	const writes = [];
+	const result = await runPlannedTests({
+		root: BATCH_ROOT,
+		workspaceCwds: [BATCH_CWD],
+		allFiles,
+		manifest: { workspaces: [BATCH_WORKSPACE] },
+		tier: "unit",
+		reporter: createWorkspaceRunReporter({
+			stdout: { write: (chunk) => writes.push(String(chunk)) },
+			now: () => 0,
+		}),
+		runCommandImpl: async (command, args) => {
+			const ordinal = calls.length + 1;
+			calls.push({ command, args, ordinal });
+			// 第 2 批失败、第 1 批成功：失败批不能中断后面的批次。
+			return ordinal === 2
+				? { exitCode: 2, output: "FAIL expected 2 != 1\n" }
+				: { exitCode: 0, output: `PASS batch ${ordinal}\n` };
+		},
+	});
+
+	assert.ok(calls.length > 1);
+	assert.equal(calls.length, planned.length, "every batch must be invoked");
+	assert.equal(calls.at(-1).ordinal, planned.length);
+	assert.equal(
+		new Set(calls.map((call) => call.args.join("\u0000"))).size,
+		planned.length,
+		"each batch must carry its own file list",
+	);
+	assert.equal(result.length, 1);
+	assert.equal(result[0].chunks, planned.length);
+	// 任一失败 ⇒ tier 失败，分类沿用单批时的同一套规则。
+	assert.equal(result[0].exitCode, 2);
+	assert.equal(result[0].failure, "TEST_ASSERTION_FAILED");
+
+	// 聚合输出的每块都带 chunk i/n 表头与块长度，失败块可定位。
+	for (const [index, batch] of planned.entries()) {
+		const exit = index === 1 ? 2 : 0;
+		assert.ok(
+			result[0].output.includes(
+				`[chunk ${index + 1}/${planned.length}] ${BATCH_CWD} unit ` +
+					`${batch.fileCount} files, ${batch.commandLength} chars, exit ${exit}`,
+			),
+			`aggregated output must label chunk ${index + 1}`,
+		);
+	}
+
+	// reporter 在多批时逐块打印 CHUNK i/n（块间分隔 + 块长度）。
+	const log = writes.join("");
+	for (const [index, batch] of planned.entries()) {
+		assert.ok(
+			log.includes(
+				`CHUNK ${index + 1}/${planned.length} ${BATCH_CWD} unit test ` +
+					`(${batch.fileCount} files, ${batch.commandLength} chars)`,
+			),
+			`reporter must announce chunk ${index + 1}`,
+		);
+	}
+	assert.match(log, /FAIL TEST_ASSERTION_FAILED packages\/batch unit \(/);
+
+	// printSummary 在多批时打印 chunks: N。
+	const logs = [];
+	const originalLog = console.log;
+	console.log = (message) => logs.push(message);
+	try {
+		printSummary(result, { workspaces: [BATCH_WORKSPACE] });
+	} finally {
+		console.log = originalLog;
+	}
+	assert.match(
+		logs.join("\n"),
+		new RegExp(`chunks: ${planned.length} sequential invocations`),
+	);
+});
+
+test("runPlannedTests leaves a single batch output byte for byte", async () => {
+	const allFiles = batchFixtureFiles(3);
+	const rawOutput = "PASS  3 files, spacing kept\ttab and no extra newline";
+	const writes = [];
+	const result = await runPlannedTests({
+		root: BATCH_ROOT,
+		workspaceCwds: [BATCH_CWD],
+		allFiles,
+		manifest: { workspaces: [BATCH_WORKSPACE] },
+		tier: "unit",
+		reporter: createWorkspaceRunReporter({
+			stdout: { write: (chunk) => writes.push(String(chunk)) },
+			now: () => 0,
+		}),
+		runCommandImpl: async () => ({ exitCode: 0, output: rawOutput }),
+	});
+
+	assert.equal(result.length, 1);
+	assert.equal(result[0].chunks, 1);
+	// 单批时聚合 output 与命令原始 output 逐字节相同（含空白、制表符与行尾）。
+	assert.equal(result[0].output, rawOutput);
+	assert.equal(writes.join("").includes("CHUNK "), false);
+
+	const logs = [];
+	const originalLog = console.log;
+	console.log = (message) => logs.push(message);
+	try {
+		printSummary(result, { workspaces: [BATCH_WORKSPACE] });
+	} finally {
+		console.log = originalLog;
+	}
+	assert.doesNotMatch(logs.join("\n"), /chunks:/);
 });

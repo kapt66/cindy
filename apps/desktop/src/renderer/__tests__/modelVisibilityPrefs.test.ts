@@ -166,6 +166,167 @@ describe('shared origin readiness', () => {
   });
 });
 
+describe('initialization failure diagnostics', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('reports damaged owner preferences even after legacy migration completed', async () => {
+    ownerClaim.profileOrigin = 'existing';
+    const key = 'xdt:modelVisibilityPrefs:v1.owner.owner-a';
+    memStorage.setItem('xdt:modelVisibilityPrefs:v1.migration-complete.owner.owner-a', '1');
+    memStorage.setItem(key, '{ damaged owner preferences');
+    const prefs = await loadModuleForOwner();
+    expect(await prefs.migrateModelVisibilityDefaults('owner-a', 1, [])).toBe(false);
+    expect(prefs.getModelVisibilityInitializationFailure('owner-a', 1)).toBe('preferences-corrupt');
+    expect(memStorage.getItem(key)).toBe('{ damaged owner preferences');
+    memStorage.setItem(key, JSON.stringify({ 'pi:xd:kept-off': false }));
+    expect(await prefs.migrateModelVisibilityDefaults('owner-a', 1, [])).toBe(true);
+    expect(prefs.isModelEnabled('pi', 'xd', { id: 'kept-off', defaultEnabled: true })).toBe(false);
+  });
+
+  it('删除损坏的 owner 偏好后，同一生命周期内重新加载可恢复目录', async () => {
+    ownerClaim.profileOrigin = 'existing';
+    const key = 'xdt:modelVisibilityPrefs:v1.owner.owner-a';
+    memStorage.setItem('xdt:modelVisibilityPrefs:v1.migration-complete.owner.owner-a', '1');
+    memStorage.setItem(key, '{ damaged owner preferences');
+    const prefs = await loadModuleForOwner();
+    const catalog = {
+      id: 'xd', agents: ['pi'], routing: {},
+      models: { pi: [{ id: 'recovered', defaultEnabled: true }] },
+    } as unknown as ProviderView;
+
+    expect(await prefs.migrateModelVisibilityDefaults('owner-a', 1, [catalog])).toBe(false);
+    expect(prefs.getModelVisibilityInitializationFailure('owner-a', 1)).toBe('preferences-corrupt');
+    expect(memStorage.getItem(key)).toBe('{ damaged owner preferences');
+    expect(prefs.isModelEnabled('pi', 'xd', { id: 'recovered', defaultEnabled: true })).toBe(false);
+
+    memStorage.removeItem(key);
+    expect(await prefs.migrateModelVisibilityDefaults('owner-a', 1, [catalog])).toBe(true);
+    expect(prefs.getModelVisibilityInitializationFailure('owner-a', 1)).toBeNull();
+    expect(memStorage.getItem(key)).toBeNull();
+    expect(prefs.isModelEnabled('pi', 'xd', { id: 'recovered', defaultEnabled: false })).toBe(false);
+    expect(prefs.isModelEnabled('pi', 'xd', { id: 'recovered', defaultEnabled: true })).toBe(true);
+  });
+
+  it('保留损坏的 initialization，直到显式恢复默认后才允许目录迁移', async () => {
+    ownerClaim.profileOrigin = 'existing';
+    const initializationKey = 'xdt:modelVisibilityPrefs:v1.initialization.owner.owner-a';
+    const mapKey = 'xdt:modelVisibilityPrefs:v1.owner.owner-a';
+    const initialization = '{ damaged initialization';
+    const map = JSON.stringify({ 'pi:xd:kept-off': false });
+    memStorage.setItem('xdt:modelVisibilityPrefs:v1.migration-complete.owner.owner-a', '1');
+    memStorage.setItem(initializationKey, initialization);
+    memStorage.setItem(mapKey, map);
+    const prefs = await loadModuleForOwner();
+    const catalog = {
+      id: 'xd', agents: ['pi'], routing: {},
+      models: { pi: [{ id: 'recovered', defaultEnabled: true }] },
+    } as unknown as ProviderView;
+
+    expect(prefs.getModelVisibilityInitializationFailure('owner-a', 1)).toBe('preferences-corrupt');
+    expect(await prefs.migrateModelVisibilityDefaults('owner-a', 1, [catalog])).toBe(false);
+    expect(memStorage.getItem(initializationKey)).toBe(initialization);
+    expect(memStorage.getItem(mapKey)).toBe(map);
+    expect(prefs.getModelVisibilityInitializationFailure('owner-a', 1)).toBe('preferences-corrupt');
+
+    expect(await prefs.resetModelVisibilities('xd', [{ agent: 'pi', modelId: 'recovered' }])).toBe(true);
+    expect(prefs.getModelVisibilityInitializationFailure('owner-a', 1)).toBeNull();
+    expect(JSON.parse(memStorage.getItem(initializationKey)!)).toMatchObject({
+      eligibleForDefaults: false,
+      followCatalogKeys: ['pi:xd:recovered'],
+    });
+    expect(await prefs.migrateModelVisibilityDefaults('owner-a', 1, [catalog])).toBe(true);
+    expect(prefs.isModelEnabled('pi', 'xd', { id: 'recovered', defaultEnabled: false })).toBe(false);
+    expect(prefs.isModelEnabled('pi', 'xd', { id: 'recovered', defaultEnabled: true })).toBe(true);
+    expect(prefs.isModelEnabled('pi', 'xd', { id: 'kept-off', defaultEnabled: true })).toBe(false);
+  });
+
+  it('外部修好损坏 initialization 后，同一生命周期内重新加载可恢复目录', async () => {
+    ownerClaim.profileOrigin = 'existing';
+    const initializationKey = 'xdt:modelVisibilityPrefs:v1.initialization.owner.owner-a';
+    const mapKey = 'xdt:modelVisibilityPrefs:v1.owner.owner-a';
+    const initialization = '{ damaged initialization';
+    const map = JSON.stringify({ 'pi:xd:kept-off': false });
+    const repaired = JSON.stringify({
+      eligibleForDefaults: false,
+      defaults: {},
+      scopes: [],
+      followCatalogKeys: ['pi:xd:recovered'],
+    });
+    memStorage.setItem('xdt:modelVisibilityPrefs:v1.migration-complete.owner.owner-a', '1');
+    memStorage.setItem(initializationKey, initialization);
+    memStorage.setItem(mapKey, map);
+    const prefs = await loadModuleForOwner();
+    const catalog = {
+      id: 'xd', agents: ['pi'], routing: {},
+      models: { pi: [{ id: 'recovered', defaultEnabled: true }] },
+    } as unknown as ProviderView;
+
+    expect(prefs.getModelVisibilityInitializationFailure('owner-a', 1)).toBe('preferences-corrupt');
+    expect(await prefs.migrateModelVisibilityDefaults('owner-a', 1, [catalog])).toBe(false);
+    expect(memStorage.getItem(initializationKey)).toBe(initialization);
+
+    memStorage.setItem(initializationKey, repaired);
+    expect(await prefs.migrateModelVisibilityDefaults('owner-a', 1, [catalog])).toBe(true);
+    expect(prefs.getModelVisibilityInitializationFailure('owner-a', 1)).toBeNull();
+    expect(JSON.parse(memStorage.getItem(initializationKey)!)).toMatchObject({
+      eligibleForDefaults: false,
+      followCatalogKeys: ['pi:xd:recovered'],
+    });
+    expect(memStorage.getItem(mapKey)).toBe(map);
+    expect(prefs.isModelEnabled('pi', 'xd', { id: 'recovered', defaultEnabled: false })).toBe(false);
+    expect(prefs.isModelEnabled('pi', 'xd', { id: 'recovered', defaultEnabled: true })).toBe(true);
+    expect(prefs.isModelEnabled('pi', 'xd', { id: 'kept-off', defaultEnabled: true })).toBe(false);
+  });
+
+  it('does not attribute a late lock rejection to the next account', async () => {
+    let reject!: (error: Error) => void;
+    const locks = new Locks();
+    vi.spyOn(locks, 'request').mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }));
+    vi.stubGlobal('navigator', { locks });
+    const prefs = await loadModule();
+    const oldOwner = prefs.setModelVisibilityOwner('owner-a', 1, 'cloud');
+    setOwnerClaim('owner-b', 2);
+    await prefs.setModelVisibilityOwner('owner-b', 2, 'cloud');
+    reject(new Error('old lock failed'));
+    await oldOwner;
+    expect(prefs.getModelVisibilityInitializationFailure('owner-b', 2)).toBeNull();
+  });
+
+  it('reports quota exhaustion without changing preferences or logging their contents', async () => {
+    ownerClaim.profileOrigin = 'existing';
+    const key = 'xdt:modelVisibilityPrefs:v1';
+    const original = JSON.stringify({ 'pi:xd:private-model-name': false });
+    memStorage.setItem(key, original);
+    const write = vi.spyOn(memStorage, 'setItem').mockImplementation(() => {
+      throw Object.assign(new Error('private storage contents'), { name: 'QuotaExceededError' });
+    });
+    const prefs = await loadModuleForOwner();
+    expect(await prefs.migrateModelVisibilityDefaults('owner-a', 1, [])).toBe(false);
+    expect(prefs.getModelVisibilityInitializationFailure('owner-a', 1)).toBe('storage-quota');
+    expect(prefs.getModelVisibilityInitializationFailure('owner-b', 1)).toBeNull();
+    expect(memStorage.getItem(key)).toBe(original);
+    expect(JSON.stringify(logToMain.mock.calls)).not.toContain('private');
+    write.mockRestore();
+    expect(await prefs.migrateModelVisibilityDefaults('owner-a', 1, [])).toBe(true);
+    expect(prefs.getModelVisibilityInitializationFailure('owner-a', 1)).toBeNull();
+  });
+
+  it('distinguishes damaged settings from unavailable migration ownership and retains the original bytes', async () => {
+    ownerClaim.profileOrigin = 'existing';
+    const key = 'xdt:modelVisibilityPrefs:v1';
+    memStorage.setItem(key, '{ damaged preferences');
+    const prefs = await loadModuleForOwner();
+    expect(await prefs.migrateModelVisibilityDefaults('owner-a', 1, [])).toBe(false);
+    expect(prefs.getModelVisibilityInitializationFailure('owner-a', 1)).toBe('preferences-corrupt');
+    expect(memStorage.getItem(key)).toBe('{ damaged preferences');
+    setOwnerClaim('owner-b', 2, false, false);
+    await prefs.setModelVisibilityOwner('owner-b', 2, 'cloud');
+    expect(await prefs.migrateModelVisibilityDefaults('owner-b', 2, [])).toBe(false);
+    expect(prefs.getModelVisibilityInitializationFailure('owner-b', 2)).toBe('legacy-owner-unavailable');
+    expect(prefs.getModelVisibilityInitializationFailure('owner-a', 1)).toBeNull();
+  });
+});
+
 describe('local profile visibility adoption', () => {
   const initKey = (owner: string) => `xdt:modelVisibilityPrefs:v1.initialization.owner.${owner}`;
   const mapKey = (owner: string) => `xdt:modelVisibilityPrefs:v1.owner.${owner}`;
@@ -1194,24 +1355,35 @@ describe('compact model defaults upgrade', () => {
     expect(prefs.isModelEnabled('pi', 'xd', { id: 'fable-5', defaultEnabled: false })).toBe(false);
   });
 
-  it('repairs a profile the merged build already recorded with an empty initialization', async () => {
+  it('treats an existing empty initialization record as authoritative instead of re-seeding it', async () => {
     // 合并后的版本已经跑过一遍时写下的空清单(eligibleForDefaults:false + 空 defaults +
-    // 已记录 scopes)。空清单与「没有清单」在读取侧等价,都会被解析成关闭,必须一起补种。
+    // 已记录 scopes)。**本轮起不再补种**:2026-09-18 用户裁决 A 接纳上游语义后可见性恒为
+    // `override ?? 当前目录 defaultEnabled`,空清单不会把任何路线判成关闭,所以它不需要
+    // 「修复」;而上游本轮新增用例(外部修好损坏 initialization)要求既有记录为权威 ——
+    // 补种会把外部明确写下的 eligibleForDefaults:false 提升成 true,故补种只对
+    // 「从来没有写过初始化记录」的配置生效(见 modelVisibilityPrefs.ts 的 needsMekaSeed)。
     ownerClaim.profileOrigin = 'existing';
-    memStorage.setItem(markerKey, JSON.stringify({
+    const record = JSON.stringify({
       eligibleForDefaults: false,
       defaults: {},
       scopes: [JSON.stringify(['xd', 'pi'])],
       followCatalogKeys: [],
-    }));
+    });
+    memStorage.setItem(markerKey, record);
     memStorage.setItem(scopedKey, JSON.stringify({ 'pi:xd:fable-5': true }));
     const prefs = await upgrade();
     expect(prefs.isModelEnabled('pi', 'xd', { id: 'gemini', defaultEnabled: true })).toBe(true);
-    // 显式 override 仍然最高优先:用户自己打开的冷门版本不会被补种覆盖掉。
+    // 显式 override 仍然最高优先:用户自己打开的冷门版本不会被覆盖掉。
     expect(prefs.isModelEnabled('pi', 'xd', { id: 'fable-5', defaultEnabled: false })).toBe(true);
+    // 资格位与冻结基线都不被改写:补种没有命中(followCatalogKeys 同样原样保留)。
+    // 既有 scope 不被清空;`scopes` 仍按上游口径追加本次观察到的目录,它与资格位无关。
+    const after = JSON.parse(memStorage.getItem(markerKey)!);
+    expect(after).toMatchObject({ eligibleForDefaults: false, defaults: {}, followCatalogKeys: [] });
+    expect(after.scopes).toEqual(expect.arrayContaining([JSON.stringify(['xd', 'pi'])]));
+    expect(memStorage.getItem('xdt:modelVisibilityPrefs:v1.meka-upgrade-seed.v1.owner.owner-a')).toBeNull();
   });
 
-  it('keeps restore-default routes following the catalog while seeding the rest', async () => {
+  it('keeps restore-default routes following the catalog while leaving an existing record alone', async () => {
     ownerClaim.profileOrigin = 'existing';
     memStorage.setItem(markerKey, JSON.stringify({
       eligibleForDefaults: false,
@@ -1220,12 +1392,13 @@ describe('compact model defaults upgrade', () => {
       followCatalogKeys: ['pi:xd:gemini'],
     }));
     const prefs = await upgrade();
-    // 具名「恢复推荐」路线继续动态跟随目录默认值(补种不参与判定)。
+    // 具名「恢复推荐」路线继续动态跟随目录默认值。
     expect(prefs.isModelEnabled('pi', 'xd', { id: 'gemini', defaultEnabled: true })).toBe(true);
     expect(prefs.isModelEnabled('pi', 'xd', { id: 'gemini', defaultEnabled: false })).toBe(false);
-    // 其余路线按补种快照:目录默认开的可见,目录默认关的仍关。
+    // 其余路线同样跟随目录(记录存在 ⇒ 不补种 ⇒ 没有冻结基线参与判定)。
     expect(prefs.isModelEnabled('pi', 'xd', { id: 'fable-5-1', defaultEnabled: true })).toBe(true);
     expect(prefs.isModelEnabled('pi', 'xd', { id: 'fable-5', defaultEnabled: false })).toBe(false);
+    expect(memStorage.getItem('xdt:modelVisibilityPrefs:v1.meka-upgrade-seed.v1.owner.owner-a')).toBeNull();
   });
 
   it('waits for Main profile creation before writing migration artifacts or consuming defaults', async () => {

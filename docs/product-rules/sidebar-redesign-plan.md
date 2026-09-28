@@ -134,6 +134,12 @@ Meka 自己的管理按钮**左侧**,管理按钮位置不变);**范围菜单底
 
 ### 3.2 任务排序 —— 单选
 
+Cindy Make 分组固定在主列表顶部，不参与普通条目的优先级、最近活动、创建时间或自定义
+项目顺序竞争；按设备分组时固定在所属设备段顶部。组内任务仍遵循当前任务排序。
+本机 Cindy Make 组头在悬停或键盘聚焦时显示创建按钮，直接复用设置页的创建弹窗；
+远程设备专属分组不显示本机创建入口。实现见
+`mainListModel.ts` 与 `ProjectsSection.tsx`，排序回归见 `mainListModel.test.ts`。
+
 2026-09-14 文案精简：分组选项显示「项目 / 对话 / 设备」，任务排序选项显示
 「优先级 / 最近活动 / 创建时间」，去掉重复的「按」。下表保留排序语义说明；
 分组与排序行为不变。「任务状态」入口使用 `ListChecks`，其「活跃」选项保留 `CircleDot`。
@@ -242,7 +248,7 @@ Meka 自己的管理按钮**左侧**,管理按钮位置不变);**范围菜单底
 |---|---|---|
 | 最近活动时间 | **勾** | 现状行为 |
 | PR 状态 | | 状态 icon + 等宽 `#号`(与顶栏 PrChip 同款,2026-08-12 用户裁决):状态颜色只上在 icon 上(形状 + 颜色双编码,四态见 `gitContextPrVisuals`;open 绿按表面取 `#2EA043` / `#3FB950`,2026-08-17);`#号` 文字用信息槽常规灰;open/draft 且有未解决 review thread 时 icon 右上角 5px `--status-bar-accent` 静点;文字状态放 hover;无 PR 的任务不显示不占位 |
-| worktree | | Folders 图标,不写短名;默认不勾。仅本机 Desktop。侧栏只认 Cindy 官方 store(共享快照);打开中的任务才回溯遥测,短名在聊天框底部 `仓库 (worktree)`。SSH / device-link / Mobile 不显示。外部 observed 不可从侧栏 reveal。目录没了摘标。 |
+| worktree | | Folders 图标,不写短名;默认不勾。仅本机 Desktop。侧栏与卡片共享 Cindy 官方登记和工具调用识别出的存活 Worktree;打开任务及工具消息落库后按需回溯遥测,不在列表挂载时逐行扫描 Git。识别结果在切换任务后保留于当前窗口,短名在聊天框底部 `仓库 (worktree)`。SSH / device-link / Mobile 不显示。外部 observed 不进入托管登记或回收,不可从侧栏 reveal。重新探测确认目录没了摘标。实现与回归见 `sessionWorktreeInfo.ts`、`worktreeContextRecycleRefresh.test.tsx`。 |
 | 累计 token | | `1.4M` / `320k` 缩写,无单位 |
 | 费用 | | 按 `totalCostCurrency` 显示 $/¥;无数据(如订阅模式)留空 |
 

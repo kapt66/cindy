@@ -36,6 +36,17 @@ const VALID_COVERAGE_MODES = new Set(["workspace", "allowlist"]);
 const VALID_EXECUTION_MODES = new Set(["normal", "exclusive"]);
 const MAX_DEFAULT_WORKSPACE_CONCURRENCY = 4;
 const DEFAULT_CAPTURED_OUTPUT_LIMIT = 2 * 1024 * 1024;
+// cmd.exe refuses a command line past 8191 characters with "The command line is
+// too long." — on a zh-CN host that message comes back in the console codepage,
+// so the gate log shows GBK mojibake and `COMMAND_FAILED` instead of anything
+// readable. A tier that passes one explicit path per selected test file grows
+// with the suite, and desktop db reached 7.5k characters: vitest never started.
+// pnpm resolves that tier's `vitest` through one more .cmd shim, which spends
+// part of the budget on quoting, so keep the assembled line well below it.
+const MAX_WINDOWS_COMMAND_LENGTH = 6_000;
+// POSIX hosts cap argv at ARG_MAX (hundreds of KB) instead, so the same guard
+// keeps a far wider budget there and only splits a genuinely oversized list.
+const MAX_POSIX_COMMAND_LENGTH = 120_000;
 
 export function normalizeRelPath(value) {
 	return value.replace(/\\/g, "/");
@@ -493,7 +504,19 @@ function vitestRelatedArgs(commandSpec) {
 	return ["related", "--run", ...rest];
 }
 
-export function buildPnpmArgs(
+function hasVitestShardArg(commandSpec) {
+	return (commandSpec.args ?? []).some((arg) =>
+		String(arg).startsWith("--shard"),
+	);
+}
+
+/**
+ * Splits the pnpm argument vector into the part that has to be repeated on every
+ * invocation (workspace dir, bin, pool/shard flags, `--exclude` patterns) and the
+ * explicit test-file list, which is the only part that can be spread over several
+ * invocations when it outgrows the platform's command-line budget.
+ */
+function buildPnpmArgParts(
 	root,
 	workspace,
 	commandSpec,
@@ -502,35 +525,186 @@ export function buildPnpmArgs(
 	relatedFiles,
 ) {
 	const workspaceAbs = path.join(root, workspace.cwd);
-	if (commandSpec.type === "packageScript")
-		return ["--dir", workspaceAbs, "run", commandSpec.script];
-	if (commandSpec.type === "packageBin") {
-		const useRelated =
-			commandSpec.bin === "vitest" && Array.isArray(relatedFiles);
-		const selectedArgs = useRelated
-			? relatedFiles.map((file) => toWorkspaceRelativeFile(workspace, file))
-			: tierConfig.include?.length
-				? selectedFiles.map((file) => toWorkspaceRelativeFile(workspace, file))
-				: [];
-		const binArgs = useRelated
-			? vitestRelatedArgs(commandSpec)
-			: (commandSpec.args ?? []);
-		const args = [
-			"--dir",
-			workspaceAbs,
-			"exec",
-			commandSpec.bin,
-			...binArgs,
-			...undersizedVitestShardArgs(commandSpec, selectedFiles),
-			...(useRelated ? ["--passWithNoTests"] : []),
-			...selectedArgs,
-		];
-		for (const pattern of tierConfig.exclude ?? []) {
-			args.push("--exclude", pattern);
-		}
-		return args;
+	if (commandSpec.type === "packageScript") {
+		return {
+			prefix: ["--dir", workspaceAbs, "run", commandSpec.script],
+			fileArgs: [],
+			suffix: [],
+			splittable: false,
+		};
 	}
-	throw new Error(`Unsupported command type: ${commandSpec.type}`);
+	if (commandSpec.type !== "packageBin")
+		throw new Error(`Unsupported command type: ${commandSpec.type}`);
+	const useRelated =
+		commandSpec.bin === "vitest" && Array.isArray(relatedFiles);
+	const selectedArgs = useRelated
+		? relatedFiles.map((file) => toWorkspaceRelativeFile(workspace, file))
+		: tierConfig.include?.length
+			? selectedFiles.map((file) => toWorkspaceRelativeFile(workspace, file))
+			: [];
+	const binArgs = useRelated
+		? vitestRelatedArgs(commandSpec)
+		: (commandSpec.args ?? []);
+	const prefix = [
+		"--dir",
+		workspaceAbs,
+		"exec",
+		commandSpec.bin,
+		...binArgs,
+		...undersizedVitestShardArgs(commandSpec, selectedFiles),
+		...(useRelated ? ["--passWithNoTests"] : []),
+	];
+	const suffix = [];
+	for (const pattern of tierConfig.exclude ?? []) {
+		suffix.push("--exclude", pattern);
+	}
+	return {
+		prefix,
+		fileArgs: selectedArgs,
+		suffix,
+		// `--shard=i/n` partitions the file list itself. Repeating it on every
+		// batch would shard each batch independently and run a different subset
+		// than the requested shard, so a sharded tier stays on one invocation.
+		splittable:
+			commandSpec.bin === "vitest" &&
+			selectedArgs.length > 0 &&
+			!hasVitestShardArg(commandSpec),
+	};
+}
+
+export function buildPnpmArgs(
+	root,
+	workspace,
+	commandSpec,
+	tierConfig = {},
+	selectedFiles = [],
+	relatedFiles,
+) {
+	const parts = buildPnpmArgParts(
+		root,
+		workspace,
+		commandSpec,
+		tierConfig,
+		selectedFiles,
+		relatedFiles,
+	);
+	return [...parts.prefix, ...parts.fileArgs, ...parts.suffix];
+}
+
+/**
+ * Length of the command line the OS receives once the argument vector is joined
+ * with single spaces. Quoting only ever makes a line longer, so this is a lower
+ * bound and the budget below keeps headroom for the quoting.
+ */
+export function commandLineLength(args) {
+	let total = 0;
+	for (const arg of args) total += String(arg).length + 1;
+	return total;
+}
+
+export function maxInlineCommandLength(platform = process.platform) {
+	return platform === "win32"
+		? MAX_WINDOWS_COMMAND_LENGTH
+		: MAX_POSIX_COMMAND_LENGTH;
+}
+
+/**
+ * Returns the pnpm invocation plans to run, in order: `{ args, fileCount,
+ * commandLength }`. A tier whose explicit file list fits the platform's
+ * command-line budget yields exactly one plan, so the behaviour of everything
+ * that runs today is unchanged; an oversized one is split into sequential batches
+ * that each keep the shared prefix and every `--exclude` pattern, and whose file
+ * lists concatenate back to exactly the original selection.
+ */
+export function planPnpmArgBatches(
+	root,
+	workspace,
+	commandSpec,
+	tierConfig = {},
+	selectedFiles = [],
+	relatedFiles,
+	options = {},
+) {
+	const parts = buildPnpmArgParts(
+		root,
+		workspace,
+		commandSpec,
+		tierConfig,
+		selectedFiles,
+		relatedFiles,
+	);
+	const toBatch = (fileArgs) => {
+		const args = [...parts.prefix, ...fileArgs, ...parts.suffix];
+		return {
+			args,
+			fileCount: fileArgs.length,
+			commandLength: commandLineLength(args),
+		};
+	};
+	const limit =
+		options.maxCommandLength ?? maxInlineCommandLength(options.platform);
+	const wholeLength = commandLineLength([
+		...parts.prefix,
+		...parts.fileArgs,
+		...parts.suffix,
+	]);
+	if (!parts.splittable || wholeLength <= limit) return [toBatch(parts.fileArgs)];
+	// Greedy fill: every batch carries the shared prefix and suffix, so a file is
+	// always packed together with them. A single file that cannot fit even alone
+	// still gets its own batch and fails loudly rather than being dropped.
+	const sharedLength = commandLineLength([...parts.prefix, ...parts.suffix]);
+	const batches = [];
+	let current = [];
+	let currentLength = sharedLength;
+	for (const fileArg of parts.fileArgs) {
+		const cost = fileArg.length + 1;
+		if (current.length > 0 && currentLength + cost > limit) {
+			batches.push(toBatch(current));
+			current = [];
+			currentLength = sharedLength;
+		}
+		current.push(fileArg);
+		currentLength += cost;
+	}
+	if (current.length > 0) batches.push(toBatch(current));
+	return batches;
+}
+
+/**
+ * Folds the per-batch command results into the single verdict a tier has always
+ * reported: the first failing batch decides the exit code and the failure class,
+ * so one broken file in any batch still fails the tier.
+ */
+function aggregateChunkResults(chunkResults) {
+	let exitCode = 0;
+	let failure = null;
+	for (const chunk of chunkResults) {
+		if (chunk.exitCode === 0 || exitCode !== 0) continue;
+		exitCode = chunk.exitCode;
+		failure = classifyFailure({
+			stage: "test",
+			exitCode: chunk.exitCode,
+			output: chunk.output,
+		});
+	}
+	return { exitCode, failure };
+}
+
+/**
+ * A single-batch tier keeps its output byte for byte. A batched tier gets one
+ * delimited block per batch so the failing batch is identifiable in the captured
+ * result, not just in the streamed log.
+ */
+function combineChunkOutput(workspaceCwd, tier, chunkResults) {
+	if (chunkResults.length === 1) return chunkResults[0].output;
+	return chunkResults
+		.map(
+			(chunk, index) =>
+				`\n[chunk ${index + 1}/${chunkResults.length}] ${workspaceCwd} ${tier} ` +
+				`${chunk.fileCount} files, ${chunk.commandLength} chars, exit ${chunk.exitCode}\n` +
+				chunk.output,
+		)
+		.join("");
 }
 
 export function buildPreflightArgs(root, workspace, preflight) {
@@ -728,7 +902,16 @@ export function createWorkspaceRunReporter({
 			startedAt.set(key, now());
 			stdout.write(`START ${run.workspace.cwd} ${run.tier}\n`);
 		},
-		onCommandComplete({ run, stage, commandResult }) {
+		// Emitted once per invocation only when a tier's explicit file list had to
+		// be batched. It marks the boundary between two blocks of output and
+		// reports the size of each one, which is what makes a failure in the
+		// middle of a long batched tier locatable.
+		onChunkStart({ run, stage, index, total, fileCount, commandLength }) {
+			stdout.write(
+				`CHUNK ${index}/${total} ${run.workspace.cwd} ${run.tier} ${stage} (${fileCount} files, ${commandLength} chars)\n`,
+			);
+		},
+		onCommandComplete({ run, stage, commandResult, chunk }) {
 			// Successful Vitest workspaces can contain thousands of per-file lines.
 			// The elapsed PASS line is sufficient; retain full output only when a
 			// command fails so diagnostics stay available without flooding CI logs.
@@ -736,8 +919,11 @@ export function createWorkspaceRunReporter({
 			const output = commandResult.output.endsWith("\n")
 				? commandResult.output
 				: `${commandResult.output}\n`;
+			const chunkLabel = chunk
+				? ` chunk ${chunk.index}/${chunk.total}`
+				: "";
 			stdout.write(
-				`\n[${run.workspace.cwd} ${run.tier} ${stage}]\n${output}`,
+				`\n[${run.workspace.cwd} ${run.tier} ${stage}${chunkLabel}]\n${output}`,
 			);
 		},
 		onRunComplete(run, result) {
@@ -898,7 +1084,11 @@ export async function runPlannedTests({
 			}
 			const relatedFiles =
 				relatedFilesByWorkspace?.[normalizeRelPath(run.workspace.cwd)];
-			const pnpmArgs = buildPnpmArgs(
+			// A tier carrying one explicit path per selected test file can outgrow the
+			// Windows command-line limit. Such a tier runs as several sequential
+			// batches over the same file list; every other tier yields exactly one
+			// batch and keeps its single-invocation behaviour.
+			const batches = planPnpmArgBatches(
 				root,
 				run.workspace,
 				run.tierConfig.command,
@@ -906,37 +1096,64 @@ export async function runPlannedTests({
 				fileCheck.selected,
 				Array.isArray(relatedFiles) ? relatedFiles : undefined,
 			);
-			const invocation = resolvePnpmInvocation(pnpmArgs);
-			const commandResult = await runCommandImpl(
-				invocation.command,
-				invocation.args,
-				{
-					cwd,
-					env: invocation.env ? { ...process.env, ...invocation.env } : undefined,
-					shell: invocation.shell,
-					windowsVerbatimArguments: invocation.windowsVerbatimArguments,
-					stdout: reporter ? null : undefined,
-					stderr: reporter ? null : undefined,
-				},
-			);
-			reporter?.onCommandComplete?.({
-				run,
-				stage: "test",
-				commandResult,
-			});
+			const chunkResults = [];
+			let invocation;
+			for (const [index, batch] of batches.entries()) {
+				invocation = resolvePnpmInvocation(batch.args);
+				if (batches.length > 1) {
+					reporter?.onChunkStart?.({
+						run,
+						stage: "test",
+						index: index + 1,
+						total: batches.length,
+						fileCount: batch.fileCount,
+						commandLength: batch.commandLength,
+					});
+				}
+				const commandResult = await runCommandImpl(
+					invocation.command,
+					invocation.args,
+					{
+						cwd,
+						env: invocation.env ? { ...process.env, ...invocation.env } : undefined,
+						shell: invocation.shell,
+						windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+						stdout: reporter ? null : undefined,
+						stderr: reporter ? null : undefined,
+					},
+				);
+				chunkResults.push({
+					...commandResult,
+					fileCount: batch.fileCount,
+					commandLength: batch.commandLength,
+				});
+				reporter?.onCommandComplete?.({
+					run,
+					stage: "test",
+					commandResult,
+					chunk:
+						batches.length > 1
+							? { index: index + 1, total: batches.length }
+							: undefined,
+				});
+				// A failing batch does not stop the remaining ones: the log then carries
+				// the whole picture instead of stopping at the first broken file.
+			}
+			const aggregated = aggregateChunkResults(chunkResults);
 			const result = {
 				workspace: run.workspace.cwd,
 				tier: currentTier,
 				stage: "test",
 				command: invocation.command,
 				args: invocation.args,
-				exitCode: commandResult.exitCode,
-				output: commandResult.output,
-				failure: classifyFailure({
-					stage: "test",
-					exitCode: commandResult.exitCode,
-					output: commandResult.output,
-				}),
+				chunks: batches.length,
+				exitCode: aggregated.exitCode,
+				output: combineChunkOutput(
+					run.workspace.cwd,
+					currentTier,
+					chunkResults,
+				),
+				failure: aggregated.failure,
 				durationMs: Math.max(0, now() - startedAt),
 			};
 			reporter?.onRunComplete?.(run, result);
@@ -960,6 +1177,10 @@ export function printSummary(results, manifest) {
 		console.log(`${status} ${workspaceCwd} ${result.tier}${elapsed}`);
 		if (result.command)
 			console.log(`  command: ${[result.command, ...(result.args ?? [])].join(" ")}`);
+		if (result.chunks > 1)
+			console.log(
+				`  chunks: ${result.chunks} sequential invocations (explicit file list split to fit the ${maxInlineCommandLength()} character command-line budget)`,
+			);
 	}
 	for (const workspace of manifest.workspaces) {
 		if (workspace.status !== "required")

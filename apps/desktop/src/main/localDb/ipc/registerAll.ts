@@ -1,3 +1,4 @@
+import { registerTaskTagsIpc } from './taskTags';
 import { registerRoutineRemoteResources } from '../../routines/remote.js';
 import { registerRoutinesIpc } from '../../routines/service.js';
 /**
@@ -38,6 +39,7 @@ import { registerMekaProjectMetadataIpc } from './mekaProjectMetadata';
 import { registerMekaFormalIpc } from './mekaFormal';
 import { registerMekaSkillCatalogIpc } from './mekaSkillCatalog';
 import { recoverActiveTeammateInvitations, registerBotIpc } from './bots';
+import { botRemoteManagement } from './botRemoteManagement';
 import { registerBotRemoteResourceProvider } from './botRemoteResourceProvider';
 
 import { createLogger } from '../../logger';
@@ -264,13 +266,14 @@ export function registerLocalDbIpc(opts: RegisterLocalDbIpcOpts = {}): void {
   registerRemoteHistoryIpc();
   registerBotIpc();
   registerRoutinesIpc();
-  registerRoutineRemoteResources();
-  registerBotRemoteResourceProvider();
+  registerRoutineRemoteResources(botRemoteManagement);
+  registerBotRemoteResourceProvider(botRemoteManagement);
   registerSessionImportIpc();
   registerSessionShareIpc();
   registerOrcaWorkflowIpc();
   registerRecentWorkdirsIpc();
   registerProjectAliasesIpc();
+  registerTaskTagsIpc();
   registerMekaRolesIpc();
   registerMekaProjectsIpc();
   registerMekaProjectMetadataIpc();

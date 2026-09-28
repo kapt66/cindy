@@ -13,12 +13,26 @@ beforeEach(() => vi.stubGlobal('AbortController', NativeAbortController));
 afterEach(() => vi.unstubAllGlobals());
 
 const guard = vi.hoisted(() => vi.fn(async () => true));
-beforeEach(() => guard.mockReset().mockResolvedValue(true));
+const nativeAbortController = transferableAbortController();
+beforeEach(() => {
+  guard.mockReset().mockResolvedValue(true);
+  // React Router uses Node Request; its signal must come from the same realm.
+  vi.stubGlobal('AbortController', nativeAbortController.constructor);
+  vi.stubGlobal('AbortSignal', nativeAbortController.signal.constructor);
+  const controller = new AbortController();
+  const request = new Request('https://example.invalid', { signal: controller.signal });
+  expect(request.signal.aborted).toBe(false);
+  controller.abort('realm-probe');
+  expect(request.signal.aborted).toBe(true);
+  expect(request.signal.reason).toBe('realm-probe');
+});
 
 vi.mock('../botPronounContext', () => ({
   useBotTranslation: () => ({ t: (key: string) => key }),
   BotPronounProvider: ({ children }: { children: ReactNode }) => children,
 }));
+vi.mock('../useRemoteBots', () => ({ useRemoteBots: () => [{ id: 'remote-bot', deviceId: 'other-mac', name: 'Remote' }] }));
+vi.mock('../RemoteBotSettings', () => ({ RemoteBotSettings: ({ bot }: { bot: { deviceId: string } }) => <div data-testid="remote-settings">{bot.deviceId}</div> }));
 vi.mock('../botStore', () => ({
   useBotProfiles: () => [
     { id: 'bot-1', name: 'Filo', status: 'active', sessions: [], capabilities: {}, skills: [] },
@@ -63,7 +77,13 @@ function LocationProbe() {
   return <output data-testid="location">{`${location.pathname}${location.search}`}</output>;
 }
 
-afterEach(cleanup);
+afterEach(() => {
+  try {
+    cleanup();
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
 
 describe('BotSettingsDrawer', () => {
   it.each(['query', 'sidebar', 'back'])(
@@ -176,4 +196,10 @@ describe('BotSettingsDrawer', () => {
     expect(screen.getByTestId('location').textContent).toBe('/bots/bot-1/session/chat-1');
     expect(screen.getByTestId('chat-underlay')).toBeTruthy();
   });
+});
+
+it('opens remote settings for the route device instead of searching the local bot store', () => {
+  render(<RouterProvider router={createMemoryRouter([{ path: '*', element: <BotSettingsDrawer /> }], { initialEntries: ['/bots/remote/other-mac/remote-bot?settings=1'] })} />);
+  expect(screen.getByTestId('remote-settings').textContent).toBe('other-mac');
+  expect(screen.queryByTestId('simple-bot-settings')).toBeNull();
 });

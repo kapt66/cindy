@@ -133,6 +133,19 @@ dev-only 环境变量（不是启动参数，只影响 dev，打包构建一律�
   不要写进任何脚本或 `.env`。设计正本与验收标准见
   [`plugin-distribution-and-version-compat.md`](plugin-distribution-and-version-compat.md) §5.1.1 P1-7／§6.1。
 
+- `XDT_CINDY_MAKE_TEST=1`：**Cindy Make 测试窗口标记**（严格等于 `1`）。消费方只有
+  `src/main/cindy-make/testWindowBehavior.ts`，且必须**同时**满足 `!app.isPackaged` 与
+  `XDT_ISOLATED=1` 才生效——生效时窗口就绪即复用主窗口激活路径带到前台、关闭窗口直接退出
+  测试进程（不进托盘／最小化选择）；两个条件任一不满足就退回普通开发窗口行为（数据仍隔离，
+  但关闭／前台语义不再是测试版）。**透传链路**：Cindy Make 的任务进程由
+  `src/main/cindy-make/testRunner.ts` 注入该变量 → `scripts/restart-desktop-remote.mjs` 的
+  `devEnvPrefix()` 白名单（`restart-desktop-remote.mjs:1018`）把它拼进 `pnpm dev:desktop*`
+  的环境前缀，随 dev-env / Forge 进入 dev 主进程。**漏了这条透传不会报错**，只会让测试进程
+  退化成普通开发窗口，所以它是白名单的一等成员。只影响 dev，打包构建忽略；回归见
+  `scripts/__tests__/restart-desktop-remote.test.mjs`（`devEnvPrefix` 的 win32 / darwin 两条
+  断言）与 `src/main/cindy-make/__tests__/testWindowBehavior.test.ts`；产品契约正本见
+  [`../cindy-make-upstream.md`](../cindy-make-upstream.md)。
+
 已手动设 `XDT_USER_DATA_DIR` 时尊重用户值，不覆盖，也不探测或迁移正式区域目录。
 唯一例外：`--isolated` / `XDT_ISOLATED=1` 把该目录指到正式 profile 时直接拒绝启动。
 
@@ -262,44 +275,58 @@ NSIS 安装器保留当前用户／所有用户两种范围。普通用户可写
 `forge.config.ts` 因此关闭上游自带目录页，由 `customPageAfterChangeDir` 插入同款原生页。
 不要单独打开上游 `allowToChangeInstallationDirectory`，否则会重复插入页面。
 
-### NSIS 脚本自带的 `!include` 必须用 `${__FILEDIR__}`
+### NSIS 脚本的同级 `!include` 走 `${BUILD_RESOURCES_DIR}`
 
 `resources/*.nsh` 之间互相引用（`installer.nsh` → `winget-shortcuts.nsh` /
 `installer-directory.nsh` → `installer-directory-messages.nsh`）时，**必须**写成
-`!include "${__FILEDIR__}\x.nsh"`，不得写裸文件名，也不要用相对目录前缀。
+`!include "${BUILD_RESOURCES_DIR}\x.nsh"`（`resources/installer.nsh:16-17`、
+`resources/installer-directory.nsh:70`），不得写裸文件名，也不要用相对目录前缀。消息目录的
+include 留在 `customHeader` 宏体内即可：`${BUILD_RESOURCES_DIR}` 是 makensis 命令行上的
+`-D` 常量，宏内／宏外取值一致，不像 `${__FILEDIR__}` 那样在宏展开时指向「插入方」。
 
 原因是 NSIS 解析相对 `!include` 只看三处：makensis 的工作目录、`!addincludedir`
-列表、`NSISDIR\Include`——**不看「包含它的那个文件所在目录」**。而生产打包路径上
-app-builder-lib 只把 `buildResourcesDir` 加进 `!addincludedir`
-（`NsisTarget.js` 的 `addIncludeDir(packager.info.buildResourcesDir)`），本仓从未有
-`apps/desktop/build/`，`forge.config.ts` 也没有设 `directories.buildResources`，
-所以裸名字在生产必然 `!include: could not find`。0.0.22 的 Windows 发布就是这样
-挂在 `installer.nsh` 第一处同级 include 上（`ERR_ELECTRON_BUILDER_CANNOT_EXECUTE`）。
+列表、`NSISDIR\Include`——**不看「包含它的那个文件所在目录」**。生产打包路径上
+app-builder-lib 只把 `buildResourcesDir` 加进 `!addincludedir`，并把同一个值作为
+`BUILD_RESOURCES_DIR` 常量注入（`NsisTarget.js` 的 `defines`）；本仓从未有
+`apps/desktop/build/`，所以裸名字在**旧配置形状**下必然 `!include: could not find`。
+0.0.22 的 Windows 发布就是这样挂在 `installer.nsh` 第一处同级 include 上
+（`ERR_ELECTRON_BUILDER_CANNOT_EXECUTE`）。
 
-宏体内的 include 还有一层：`${__FILEDIR__}` 在**宏展开时**解析，指向「插入宏的文件」
-而不是「定义宏的文件」。所以 `installer-directory-messages.nsh` 必须放在顶层
-（`!ifndef BUILD_UNINSTALLER` 块内、任何宏之外），不能留在 `customHeader` 宏体内。
-这类 include 要生效必须同时满足「顶层」和「`${__FILEDIR__}`」两个条件。
+上游 `7582de5f20`（2026-09-20「configure NSIS build resources」）补上了缺失的一半，
+本仓随之把同级 include 全部改成 `${BUILD_RESOURCES_DIR}` 限定：
+`forge.config.ts` 的 NSIS maker 显式设
+`directories.buildResources = path.join(__dirname, 'resources')`（`forge.config.ts:1761`），
+app-builder-lib 据此同时提供 `!addincludedir` 与 `BUILD_RESOURCES_DIR` 常量。二者成对：
+**别退回裸名，也别删 `forge.config.ts` 的 `buildResources` 配置**（`resources/installer.nsh`
+顶部注释与 `scripts/nsis-include-paths.test.mjs` 都钉住了这一点）。
 
-验证分工（两层都要，缺一层就会重演）。在 Windows 显式运行原生验证
-（临时目录内编译，不安装 Cindy；`installer-include-resolution.test.mjs` 不吃 NSIS
-工具链，任何平台都能跑）：
+门禁分工（改任一 `.nsh`、NSIS maker 配置或 `resources/` 布局后都要跑）：
 
 ```bash
-node apps/desktop/scripts/check-windows-installer.mjs
-node apps/desktop/scripts/test-winget-shortcuts.mjs
+pnpm --filter desktop exec vitest run scripts/nsis-include-paths.test.mjs
 pnpm --filter desktop exec vitest run scripts/installer-include-resolution.test.mjs
 pnpm --filter desktop exec vitest run scripts/installer-directory-messages.test.mjs
+node apps/desktop/scripts/check-windows-installer.mjs
+node apps/desktop/scripts/test-winget-shortcuts.mjs
 ```
 
-两个 native 脚本都必须**按生产配置形状**编译（不设 `directories.buildResources`）。
-此前它们把 `buildResources` 指到 `resources/`，等于替生产补了一个不存在的
-`!addincludedir`——这正是 0.0.22 发布失败而两道检查全绿的原因，不要再改回去。
-`installer-include-resolution.test.mjs` 是纯路径规则检查，因此在任何平台
-（含 Linux CI）都会拦住同类回归。
-
-`check-windows-installer.mjs` 编译真实安装器／卸载器，并实跑 Win32 文件访问与账号
-SID 探测；UAC 返回值由测试替身提供，覆盖取消、子进程退出和账号／范围恢复。它不能
-代替真实 UAC 交互验收。发布前还需在普通权限 Windows 环境走查：默认目录、自定义受保护
-目录、允许／取消授权、使用另一管理员账号、旧版覆盖安装，以及静默安装失败时旧版仍在。
-原生对话框的 Light／Dark 外观由 Windows 提供，自动测试不代表两种模式已完成目检。
+- `scripts/nsis-include-paths.test.mjs`（上游 `7582de5f20` 新增，纯文本、任何平台可跑）是这条
+  契约的正面门禁：断言 forge 里有
+  `buildResources: path.join(__dirname, 'resources')`、三个同级 include 都是
+  `${BUILD_RESOURCES_DIR}` 形态，并断言它们**没有**退回裸文件名。
+- `scripts/installer-include-resolution.test.mjs` 是并行的路径规则检查：它只把**裸文件名**
+  判为违规（带目录前缀或 `${__FILEDIR__}` 的不在判据内），因此与上面那条不冲突，两者一起
+  覆盖「裸名」与「生产常量来源」两种回归。
+- 两个 native 脚本都在 Windows 上编译真实安装器／卸载器。`check-windows-installer.mjs` 给
+  自己的 fixture 编译显式传 `/DBUILD_RESOURCES_DIR=<resources>`
+  （`check-windows-installer.mjs:81`）。**未验证项（本轮如实登记）**：本轮核对时两个脚本调
+  app-builder-lib `build()` 都没显式给 `directories.buildResources`，而
+  app-builder-lib 的缺省是 `<projectDir>/build`（本仓从未有此目录），`test-winget-shortcuts.mjs`
+  的注释里还写着「production sets nothing」——这与 `forge.config.ts:1761` 已设
+  `buildResources` 的生产形态**不一致**，两个脚本的安装器编译阶段能否在本机通过本轮未在
+  Windows 实跑核对，改动它们时必须实测（`nsis-include-paths.test.mjs` 只锁文件文本，不跑
+  makensis）。它实跑 Win32 文件访问与账号 SID 探测；UAC 返回值由测试
+  替身提供，覆盖取消、子进程退出和账号／范围恢复。它不能代替真实 UAC 交互验收。发布前还需在
+  普通权限 Windows 环境走查：默认目录、自定义受保护目录、允许／取消授权、使用另一管理员
+  账号、旧版覆盖安装，以及静默安装失败时旧版仍在。原生对话框的 Light／Dark 外观由 Windows
+  提供，自动测试不代表两种模式已完成目检。

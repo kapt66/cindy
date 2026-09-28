@@ -17,7 +17,7 @@
  * 全部经 deps,单测拿 tmpdir + 进程内 core 直测,零 Electron。
  */
 
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { crc32 } from 'node:zlib';
@@ -133,6 +133,27 @@ export function libraryAvailableRef(input: {
   return `cindy-media://blobs/${input.hash}.${ext}`;
 }
 
+export { parseLibraryAssetRef, resolveLibraryAssetPath } from '@cindy/maker-core';
+const LIBRARY_EPOCH_IDENTITY_NS = 'cindy-library-epoch-v1';
+
+/** opaque 库身份:区分 owner / 迁根 / A→B→A,回执不出现 owner 原值或绝对根。 */
+export function mintLibraryEpochIdentity(input: {
+  ghostId: string;
+  ownerScopeKey: string | null;
+  generation: number;
+  rootDir: string;
+  grantedAt: number;
+}): string {
+  return createHash('sha256').update([
+    LIBRARY_EPOCH_IDENTITY_NS,
+    input.ghostId,
+    input.ownerScopeKey ?? '',
+    String(input.generation),
+    input.rootDir,
+    String(input.grantedAt),
+  ].join('\0')).digest('hex');
+}
+
 /** 单插件的库会话(vault + sql 绑定到同一根与 owner scope)。 */
 interface GhostLibrarySession {
   ghostId: string;
@@ -145,7 +166,7 @@ interface GhostLibrarySession {
   drift: 'binding-moved' | 'disk-missing' | null;
   /** bind/unbind 代次;默认根为 0。不含绝对路径。 */
   generation: number;
-  /** 库身份短码(default / g<generation>),不含绝对路径。 */
+  /** opaque 库身份(64-hex),区分 owner/迁根/A→B→A,不暴露 owner 原值或绝对根。 */
   identity: string;
 }
 
@@ -219,6 +240,12 @@ export class GhostLibrarySlot {
   private extraDirGrant: { ghostId: string; root: string } | null = null;
   /** 最近一次显式 open 的插件;status 只给它复挂,别人 status 不得抢槽。 */
   private extraDirOpenerGhostId: string | null = null;
+  /** writeBegin 时按 streamId 捕获的写入 epoch,commit 不得事后拼当前全局身份。 */
+  private readonly writeEpochByStream = new Map<string, {
+    ghostId: string;
+    libraryGeneration: number;
+    libraryIdentity: string;
+  }>();
 
   constructor(private readonly deps: GhostLibrarySlotDeps) {}
 
@@ -283,21 +310,44 @@ export class GhostLibrarySlot {
 
   private async getOrCreateSession(ghostId: string, scopeKey: string | null): Promise<GhostLibrarySession> {
     let session = this.sessions.get(ghostId);
+    const capturedScope = session;
     if (session && session.ownerScopeKey !== scopeKey) {
-      await this.teardownSession(ghostId);
-      session = undefined;
+      await this.teardownSession(ghostId, capturedScope);
+      session = this.sessions.get(ghostId);
+      if (session === capturedScope) session = undefined;
+    }
+    const resolution = await this.confirmLiveCustomRoot(
+      await this.deps.bindingStore.resolveLibraryRoot(ghostId),
+    );
+    session = this.sessions.get(ghostId) ?? session;
+    if (session && session.ownerScopeKey !== scopeKey) {
+      const staleScope = session;
+      await this.teardownSession(ghostId, staleScope);
+      session = this.sessions.get(ghostId);
+      if (session === staleScope) session = undefined;
+    }
+    if (session && !this.sessionMatchesResolution(session, resolution)) {
+      const staleRoot = session;
+      await this.teardownSession(ghostId, staleRoot);
+      session = this.sessions.get(ghostId);
+      if (session === staleRoot) session = undefined;
     }
     if (!session) {
-      const resolution = await this.deps.bindingStore.resolveLibraryRoot(ghostId);
       session = this.createSession(ghostId, resolution, scopeKey);
       this.sessions.set(ghostId, session);
       // 会话建立即自动 open vault(幂等):消除"write 前忘 open"的脚枪。
       // extraDirs 只在显式 open 时挂,status / 首次任意请求不得抢槽。
       if (session.drift === null) {
-        await session.vault.open();
-        // 重装自愈:能走到这里 = 插件已装入且启用,清掉卸载时留的 orphaned
-        // 标记(best-effort,失败不影响使用)。
-        if (session.vault.getMeta()?.orphaned) {
+        const opened = await session.vault.open();
+        if (
+          opened.ok
+          && opened.state === 'unavailable'
+          && (opened.reason === 'disk-missing' || opened.reason === 'binding-moved')
+        ) {
+          await this.latchCustomUnavailable(session, ghostId, opened.reason);
+        } else if (session.vault.getMeta()?.orphaned) {
+          // 重装自愈:能走到这里 = 插件已装入且启用,清掉卸载时留的 orphaned
+          // 标记(best-effort,失败不影响使用)。
           await session.vault.clearOrphaned().catch(() => {});
         }
       } else if (this.extraDirGrant?.ghostId === ghostId) {
@@ -336,6 +386,62 @@ export class GhostLibrarySlot {
     }
   }
 
+  /** Stale custom resolution after the user parent vanished or was replaced must not open/mkdir. */
+  private async confirmLiveCustomRoot(
+    resolution: LibraryLocationResolution,
+  ): Promise<LibraryLocationResolution> {
+    if (resolution.kind !== 'custom' || resolution.root === null) return resolution;
+    const parent = path.dirname(resolution.root);
+    try {
+      const st = await fs.promises.lstat(parent);
+      if (st.isSymbolicLink() || !st.isDirectory()) {
+        return { kind: 'custom', root: null, drift: 'disk-missing', record: resolution.record };
+      }
+      let real: string;
+      try {
+        real = await fs.promises.realpath(parent);
+      } catch {
+        return { kind: 'custom', root: null, drift: 'disk-missing', record: resolution.record };
+      }
+      if (real !== resolution.record.realPathAtGrant) {
+        return { kind: 'custom', root: null, drift: 'binding-moved', record: resolution.record };
+      }
+      const identity = resolution.record.identity;
+      if (identity && identity.ino !== 0 && (st.dev !== identity.dev || st.ino !== identity.ino)) {
+        return { kind: 'custom', root: null, drift: 'binding-moved', record: resolution.record };
+      }
+    } catch {
+      return { kind: 'custom', root: null, drift: 'disk-missing', record: resolution.record };
+    }
+    return resolution;
+  }
+
+  private async latchCustomUnavailable(
+    session: GhostLibrarySession,
+    ghostId: string,
+    reason: 'disk-missing' | 'binding-moved',
+  ): Promise<void> {
+    session.drift = reason;
+    if (this.extraDirOpenerGhostId === ghostId) this.extraDirOpenerGhostId = null;
+    await this.syncAgentReadonlyExtraDir(ghostId, null);
+  }
+
+  /** Cached sessions must re-check the live binding; a missing custom root is unavailable, not an empty mkdir. */
+  private sessionMatchesResolution(
+    session: GhostLibrarySession,
+    resolution: LibraryLocationResolution,
+  ): boolean {
+    const drift = 'drift' in resolution && resolution.root === null ? resolution.drift : null;
+    if (session.drift !== drift || session.locationKind !== resolution.kind) return false;
+    const record = 'record' in resolution ? resolution.record : undefined;
+    if (session.generation !== (record?.generation ?? 0)) return false;
+    if (drift !== null) return true;
+    const root = resolution.kind === 'custom' && resolution.root !== null
+      ? resolution.root
+      : this.deps.getDefaultRoot(session.ghostId);
+    return session.vault.getRootDir() === root;
+  }
+
   private createSession(
     ghostId: string,
     resolution: LibraryLocationResolution,
@@ -347,9 +453,13 @@ export class GhostLibrarySlot {
       : this.deps.getDefaultRoot(ghostId);
     const vault = this.deps.createVault({
       rootDir: () => root,
+      onStreamClosed: (streamId) => { this.writeEpochByStream.delete(streamId); },
       ghostId,
       getDiskFreeBytes: this.deps.getDiskFreeBytes,
       locationKind: resolution.kind,
+      customParentGrant: resolution.kind === 'custom' && resolution.root !== null
+        ? { realPathAtGrant: resolution.record.realPathAtGrant, identity: resolution.record.identity }
+        : undefined,
       log: this.deps.log,
     });
     const sql = this.deps.createSqlService({
@@ -359,7 +469,13 @@ export class GhostLibrarySlot {
     });
     const record = 'record' in resolution ? resolution.record : undefined;
     const generation = record?.generation ?? 0;
-    const identity = record ? `g${generation}` : 'default';
+    const identity = mintLibraryEpochIdentity({
+      ghostId,
+      ownerScopeKey: scopeKey,
+      generation,
+      rootDir: root,
+      grantedAt: record?.grantedAt ?? 0,
+    });
     return {
       ghostId,
       vault,
@@ -387,6 +503,15 @@ export class GhostLibrarySlot {
         this.isExtraDirGrantedFor(session.ghostId, session.vault.getRootDir())
         && session.drift === null
         && (state === 'ready' || state === 'readonly'),
+      ...this.epochFields(session),
+    };
+  }
+
+  /** 实际写入 session 的 epoch;必须在 await vault 之前捕获。 */
+  private epochFields(
+    session: GhostLibrarySession,
+  ): { libraryGeneration: number; libraryIdentity: string } {
+    return {
       libraryGeneration: session.generation,
       libraryIdentity: session.identity,
     };
@@ -438,10 +563,14 @@ export class GhostLibrarySlot {
     }
   }
 
-  private async teardownSession(ghostId: string): Promise<void> {
+  private async teardownSession(ghostId: string, expected?: GhostLibrarySession): Promise<void> {
     const session = this.sessions.get(ghostId);
     if (!session) return;
+    if (expected && session !== expected) return;
     this.sessions.delete(ghostId);
+    for (const [streamId, epoch] of this.writeEpochByStream) {
+      if (epoch.ghostId === ghostId) this.writeEpochByStream.delete(streamId);
+    }
     await session.sql.dispose().catch(() => {});
     await session.vault.invalidate().catch(() => {});
     if (this.extraDirGrant?.ghostId === ghostId) {
@@ -546,6 +675,30 @@ export class GhostLibrarySlot {
       case 'open': {
         const r = await vault.open();
         if (!r.ok) return vaultFail(r);
+        if (r.state === 'unavailable' && (r.reason === 'disk-missing' || r.reason === 'binding-moved')) {
+          await this.latchCustomUnavailable(session, ghostId, r.reason);
+          const drifted = {
+            ok: true as const, op: 'open' as const, state: 'unavailable' as const,
+            reason: r.reason, usedBytes: 0, fileCount: 0, location: session.locationKind,
+          };
+          return { ...drifted, ...this.handshakeFields(session, 'unavailable') } as GhostPipeLibraryResult;
+        }
+        if (session.locationKind === 'custom') {
+          const live = await this.confirmLiveCustomRoot(
+            await this.deps.bindingStore.resolveLibraryRoot(ghostId),
+          );
+          if (live.kind !== 'custom' || live.root === null) {
+            const reason = live.kind === 'custom' && live.root === null && live.drift === 'binding-moved'
+              ? 'binding-moved'
+              : 'disk-missing';
+            await this.latchCustomUnavailable(session, ghostId, reason);
+            const drifted = {
+              ok: true as const, op: 'open' as const, state: 'unavailable' as const,
+              reason, usedBytes: 0, fileCount: 0, location: session.locationKind,
+            };
+            return { ...drifted, ...this.handshakeFields(session, 'unavailable') } as GhostPipeLibraryResult;
+          }
+        }
         this.extraDirOpenerGhostId = ghostId;
         await this.syncAgentReadonlyExtraDir(ghostId, vault.getRootDir());
         const body = {
@@ -574,13 +727,16 @@ export class GhostLibrarySlot {
         return { ok: true, op: 'read', path: r.path, content: r.content, encoding: r.encoding, bytes: r.bytes, sha256: r.sha256 };
       }
       case 'write': {
+        const epoch = this.epochFields(session);
         const r = await vault.write({ path: req.path, content: req.content, encoding: req.encoding, ifNotExists: req.ifNotExists });
         if (!r.ok) return vaultFail(r);
-        return { ok: true, op: 'write', path: r.path, bytes: r.bytes, sha256: r.sha256 };
+        return { ok: true, op: 'write', path: r.path, bytes: r.bytes, sha256: r.sha256, ...epoch };
       }
       case 'writeBegin': {
+        const epoch = this.epochFields(session);
         const r = await vault.writeBegin({ path: req.path, totalBytes: req.totalBytes, sha256: req.sha256 });
         if (!r.ok) return vaultFail(r);
+        this.writeEpochByStream.set(r.streamId, { ghostId, ...epoch });
         return { ok: true, op: 'writeBegin', streamId: r.streamId };
       }
       case 'writeChunk': {
@@ -589,11 +745,22 @@ export class GhostLibrarySlot {
         return { ok: true, op: 'writeChunk', accepted: r.accepted };
       }
       case 'writeCommit': {
+        const streamId = typeof req.streamId === 'string' ? req.streamId : '';
+        const captured = this.writeEpochByStream.get(streamId);
+        if (!captured || captured.ghostId !== ghostId) {
+          return fail('STREAM_INVALID', 'streamId 无效或已结束');
+        }
+        const epoch = {
+          libraryGeneration: captured.libraryGeneration,
+          libraryIdentity: captured.libraryIdentity,
+        };
         const r = await vault.writeCommit({ streamId: req.streamId });
+        this.writeEpochByStream.delete(streamId);
         if (!r.ok) return vaultFail(r);
-        return { ok: true, op: 'writeCommit', path: r.path, bytes: r.bytes, sha256: r.sha256 };
+        return { ok: true, op: 'writeCommit', path: r.path, bytes: r.bytes, sha256: r.sha256, ...epoch };
       }
       case 'writeAbort': {
+        if (typeof req.streamId === 'string') this.writeEpochByStream.delete(req.streamId);
         const r = await vault.writeAbort({ streamId: req.streamId });
         if (!r.ok) return vaultFail(r);
         return { ok: true, op: 'writeAbort', aborted: r.aborted };

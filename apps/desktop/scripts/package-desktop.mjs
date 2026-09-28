@@ -415,12 +415,17 @@ function runForgeMake({ platform, arch, region, version, versionless, noSign }) 
     if (key.toLowerCase() === 'nodefaultcurrentdirectoryinexepath') delete forgeEnv[key];
   }
   // --no-sign: remove both supported signing entry points so forge skips all
-  // packaged exe, installer and uninstaller signing.
+  // packaged exe, installer and uninstaller signing. forge.config.ts resolves
+  // its sign command from CINDY_WIN_SIGN_CMD first and then from the Meka
+  // NPKG_TOKEN service (see resolveWindowsSignCommand), so dropping only the
+  // former would still let the Meka signer run.
   if (noSign) {
     delete forgeEnv.CINDY_WIN_SIGN_CMD;
     delete forgeEnv.NPKG_TOKEN;
   }
-  execSync(`npx electron-forge make --platform ${platform} --arch ${arch}`, {
+  execFileSync(process.execPath, [
+    path.join(__dirname, 'forge-cli.mjs'), 'make', '--platform', platform, '--arch', arch,
+  ], {
     cwd: DESKTOP_ROOT,
     stdio: 'inherit',
     env: forgeEnv,

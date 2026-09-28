@@ -23,6 +23,7 @@ export type RemoteMessageRole =
   | 'agent_switch';
 
 export interface RemoteSession {
+  tags?: import('@cindy/maker-shared').TaskTag[];
   id: string;
   userId: string;
   title: string;
@@ -120,7 +121,8 @@ export interface RemoteMessage {
   /** Large settled tool input released from the transcript mirror and recoverable by message id. */
   mobileToolInputProjection?: MobileToolInputProjection;
   systemCardData?: Record<string, unknown>;
-  systemCardType?: 'help' | 'context' | 'cost' | 'pwd' | 'status' | 'compact' | 'cmd' | 'goal-complete' | 'goal-resumed' | 'context-rebuild' | 'auto-resume' | 'learn' | 'agent-switch';
+  systemCardType?:
+    | 'help' | 'context' | 'cost' | 'pwd' | 'status' | 'compact' | 'cmd' | 'goal-complete' | 'goal-resumed' | 'context-rebuild' | 'auto-resume' | 'learn' | 'agent-switch';
 }
 
 export type RemoteAttachmentCategory = 'image' | 'pdf' | 'text' | 'office';
@@ -181,6 +183,7 @@ export interface RemoteSerializedAttachment {
 }
 
 export interface QueuedRemoteMessage {
+  durableDelivery?: true;
   clientId: string;
   text: string;
   persistedContent: string;
@@ -198,6 +201,8 @@ export interface QueuedRemoteMessage {
   /** 与桌面队列契约镜像；目标桌面据此禁止缺失快照时按自己的设备坐标重解引用。 */
   sessionReferencesRequireTrustedSnapshot?: boolean;
   userName?: string;
+  /** Interface language of this phone. The desktop stamps it only for a remote turn. */
+  uiLanguage?: string;
   createOpts: {
     agentKind: 'claude-code' | 'codex' | 'pi';
     workingDir: string;

@@ -47,11 +47,19 @@
   - `.sql` 为 `SELECT 1;` **且无任何配套脚本**（`0083`–`0087` 的 `*_meka_lineage_slot_*`）——
     纯粹的编号占位，用来保持与已发布 Meka 链的序号一致。
   它们必须原样保留：序号连续是对已升级用户的 `migration_history` 承诺，删掉或换号会让存量
-  Meka 安装的迁移历史对不上。本轮同步把上游 schema 追加为 `0096`–`0107`，正是按「冻结 Meka
-  已发布编号、上游顺移追加」处理（见 `docs/migrations/2026-09-origin-main-to-meka-main.md` 的 D4）。
+  Meka 安装的迁移历史对不上。
+  **编号现状（第三轮上游同步后）**：Meka 已发布谱系为 `0000`–`0112`（其中 `0110`–`0112` 是
+  Meka 自有增量），上游本轮真正新增的是 `0110`–`0114` 五条，已按「冻结 Meka 已发布编号、
+  上游顺移追加」落为 Meka 的 **`0113`–`0117`**（`0113_abandoned_scarlet_witch`、
+  `0114_messy_newton_destine`、`0115_backfill_task_tag_order`、`0116_grey_cannonball`、
+  `0117_shared_task_events`；SQL 正文取上游逐字节内容，snapshot 由上游同序号 snapshot 叠加
+  Meka delta 变换得到，`_journal.json` 追加 5 条）；上一轮同步落的是 `0096`–`0107`。
+  处理方式同源，见 `docs/migrations/2026-09-origin-main-to-meka-main.md` 的 D4。
   这段编号不在 `migration-baseline.json` 的 SHA256 清单里（该清单只覆盖迁仓前的
-  `0000`–`0079`，实测 80 条 SQL + 23 条脚本），由上面第 3 段的 **Git 基线冻结** 保护
-  （`db:validate` 第 6 步另报 canonical 基线 108 条 SQL + 43 条脚本）。
+  `0000`–`0079`，实测 80 条 SQL + 23 条脚本），由上面第 3 段的 **Git 基线冻结** 保护。
+  `db:validate` 第 6 步报出的 canonical 基线条数是**动态值**，随每次追加而变化：上一轮同步后
+  记录的是 108 条 SQL + 43 条脚本，本轮追加 `0113`–`0117` 后应各 +5（本轮未实跑
+  `db:validate` 核对，改动 migration 时以命令实际输出为准，不要把这里的数字当断言）。
 - 生成 migration 前先基于最新 canonical 产品分支：Cindy Meka 使用 `meka/main`，上游
   checkout 使用 `origin/main`。同步上游时还要显式检查 `origin/main` 的新编号是否与
   Meka 已发布 lineage 冲突。多人分支撞号时，保留自己的 schema 意图，以最新产品分支
@@ -120,6 +128,10 @@ companion CommonJS 格式和历史 runtime identity 冻结；不能用单独 typ
 - 需要启动验证时，按照 `desktop-development.md` 的参数说明使用显式
   `--isolated[=<名字>]` 沙箱。migration replay 自身使用临时数据库，不污染用户数据。
 - 不得为了测试 migration 临时改写、降级或删除用户数据库；需要历史状态时新增最小 fixture。
+- Cindy Make 托管个人版沿用来源原版的日常 profile，但对已有数据库使用同一严格
+  `checkMigrationCompatibility` 只读准入，禁止个人版迁移／修复共享 schema。全新账号
+  的数据库可以按与原版一致的 schema 初始化。版本切换比较已保存的 SQL＋companion
+  指纹，并以窗口及认证／数据库共同就绪作为启动成功，失败不恢复旧数据库覆盖用户记录。
 
 ## 运行期数据库访问
 

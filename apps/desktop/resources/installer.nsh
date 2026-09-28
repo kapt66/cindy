@@ -6,14 +6,15 @@
 ; Cindy Meka 正式版 cn/global 文件名同值（CindyMeka），dev 独立（CindyMekaDev）；
 ; 安装器只处理本区域身份，dev 安装器绝不误伤同机并存的正式安装。注册表键名
 ; Windows 大小写不敏感，同名不同大小写视为同一个键，行为零变化。
-; 同级 include 必须走 ${__FILEDIR__}:NSIS 解析相对 !include 只看 makensis 的
-; 工作目录、!addincludedir 列表和 NSISDIR\Include,不看「包含它的文件所在目录」;
-; 而生产打包时 app-builder-lib 只把 buildResourcesDir 加进 !addincludedir
-; (NsisTarget.js addIncludeDir(packager.info.buildResourcesDir)),本仓没有
-; apps/desktop/build,于是裸文件名在生产会 could not find——0.0.22 的
-; Windows 发布就是这样挂在第 9 行的。加目录前缀会重新依赖调用方,别退回裸名。
-!include "${__FILEDIR__}\winget-shortcuts.nsh"
-!include "${__FILEDIR__}\installer-directory.nsh"
+; 同级 include 一律走 ${BUILD_RESOURCES_DIR}:NSIS 解析相对 !include 只看 makensis
+; 的工作目录、!addincludedir 列表和 NSISDIR\Include,不看「包含它的文件所在目录」;
+; 而 forge.config.ts 的 NSIS maker 显式把 directories.buildResources 指到
+; apps/desktop/resources,app-builder-lib 据此注入 BUILD_RESOURCES_DIR
+; (NsisTarget.js 的 defines),裸文件名在生产会 could not find——0.0.22 的
+; Windows 发布就是这样挂在第 9 行的。别退回裸名,也别删 forge.config.ts 的
+; buildResources 配置(二者成对,由 scripts/nsis-include-paths.test.mjs 锁定)。
+!include "${BUILD_RESOURCES_DIR}\winget-shortcuts.nsh"
+!include "${BUILD_RESOURCES_DIR}\installer-directory.nsh"
 
 !ifndef BUILD_UNINSTALLER
 !macro customInit
@@ -84,8 +85,8 @@
   ; 用 HKCU 不用 HKLM:不需要管理员权限, 多用户机器上每个用户启动 app 时自注册。
   ; %V 在 Directory\shell / Directory\Background\shell 两种上下文里都解析为
   ; "用户右键所在的目录" 路径, argv 直传不做 URL 编解码 (deep link 走 cindy-meka:// 另一套)。
-  ; 键名用 ${PRODUCT_FILENAME}(区域身份):cn 'CindyMeka',global
-  ; 'CindyMekaGlobal',dev 'CindyMekaDev'——双装时菜单项并存互不覆盖,
+  ; 键名用 ${PRODUCT_FILENAME}(区域身份):cn 与 global 同为 'CindyMeka',dev 为
+  ; 'CindyMekaDev'——两区共用安装身份,dev 独立;双装时菜单项并存互不覆盖,
   ; 也与老 XDMaker 安装的 xdt-maker 键并存。
   WriteRegStr HKCU "Software\Classes\Directory\shell\${PRODUCT_FILENAME}" "" "通过 ${PRODUCT_FILENAME} 打开"
   WriteRegStr HKCU "Software\Classes\Directory\shell\${PRODUCT_FILENAME}" "Icon" "$INSTDIR\${APP_EXECUTABLE_FILENAME},0"

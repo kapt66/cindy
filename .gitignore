@@ -43,7 +43,12 @@ apps/desktop/resources/remote-file-service/
 # Windows 打包时由 prePackage 现场 cargo build 生成并覆盖(forge.config.ts
 # buildCindyUpdater);源码在 apps/desktop/cindy-updater/,不入仓避免 4.5MB
 # 二进制持续消耗 Git LFS 流量。
+# 上游名与 Meka 品牌名(spawn 后按 BRAND_IDENTITY.updaterName 改名)都要拦:
+# 只列上游名会让 cindy-meka-updater.exe 被提交进来,而
+# scripts/generate-third-party-notices.mjs 的 assertTrackedBinariesRegistered()
+# 会因它未登记而直接抛错(2026-09-24 修复)。
 apps/desktop/resources/cindy-updater.exe
+apps/desktop/resources/cindy-meka-updater.exe
 
 # ── Agent CLI 本地二进制 ─────────────────────────────────────
 # 实体文件按 tools/<kind>/latest.json 的 pin 下载，不进 Git/LFS。
@@ -207,3 +212,6 @@ github-result-*.json
 
 # 内置插件种子已废弃(改走 plugin-store 安装);历史克隆含私有插件与凭证,永不入仓。
 apps/desktop/resources/builtin-ghosts/
+
+# 本地验收截图与设计稿等任务产物(只在本地保存,不入仓)。
+artifacts/

@@ -13,11 +13,15 @@ import {
   GhostLibrarySlot,
   LIBRARY_CLIPBOARD_WRITE_MAX_BYTES,
   libraryAvailableRef,
+  mintLibraryEpochIdentity,
+  parseLibraryAssetRef,
+  resolveLibraryAssetPath,
   type GhostLibrarySlotDeps,
 } from '../librarySlot.js';
 import { createHash } from 'node:crypto';
 import { LibraryBindingStore } from '../libraryBinding.js';
 import { LibraryVault } from '../libraryVault.js';
+import { initCustomLibraryTree, openExistingCustomLibrary } from '../libraryDirFd.js';
 import { createLibraryDbCore, type SqliteDatabaseConstructor } from '../libraryDbCore.js';
 import { LibrarySqlService } from '../librarySqlService.js';
 import {
@@ -71,6 +75,7 @@ describe('GhostLibrarySlot', () => {
     defaultRootBase = path.join(tmp, 'owners', 'a', 'libraries');
     bindingFile = path.join(tmp, 'owners', 'a', 'libraries-binding.json');
     candidate = path.join(tmp, 'picked');
+    scopeKey = 'local:owner-a:1';
     clock = 0;
     await fs.promises.mkdir(candidate, { recursive: true });
     ghost = makeGhost(true);
@@ -358,6 +363,340 @@ describe('GhostLibrarySlot', () => {
     });
     // 绝不落默认根冒充。
     expect(fs.existsSync(path.join(defaultRootBase, GHOST_ID, 'a.txt'))).toBe(false);
+  });
+
+  it('cached custom session: missing root stays unavailable without mkdir; same disk recovers; recreated path is binding-moved', async () => {
+    const bound = await bindingStore.setBinding(GHOST_ID, candidate);
+    expect(bound.ok).toBe(true);
+    const open = await slot.handleLibraryRequest(GHOST_ID, { op: 'open' });
+    if (!open.ok || open.op !== 'open') throw new Error(JSON.stringify(open));
+    expect(open.state).toBe('ready');
+    expect(open.location).toBe('custom');
+    const live = open as unknown as { libraryGeneration: number; libraryIdentity: string };
+    expect(live.libraryGeneration).toBe(1);
+    const keep = await slot.handleLibraryRequest(GHOST_ID, { op: 'write', path: 'keep.txt', content: 'keep-me' });
+    expect(keep.ok).toBe(true);
+    const customRoot = path.join(candidate, GHOST_ID);
+    expect(fs.existsSync(path.join(customRoot, 'keep.txt'))).toBe(true);
+
+    const parked = `${candidate}.parked`;
+    await fs.promises.rename(candidate, parked);
+    expect(fs.existsSync(customRoot)).toBe(false);
+
+    const missingOpen = await slot.handleLibraryRequest(GHOST_ID, { op: 'open' });
+    if (!missingOpen.ok || missingOpen.op !== 'open') throw new Error(JSON.stringify(missingOpen));
+    expect(missingOpen.state).toBe('unavailable');
+    expect(missingOpen.reason).toBe('disk-missing');
+    expect(missingOpen.location).toBe('custom');
+    const missingStatus = await slot.handleLibraryRequest(GHOST_ID, { op: 'status' });
+    if (!missingStatus.ok || missingStatus.op !== 'status') throw new Error(JSON.stringify(missingStatus));
+    expect(missingStatus.state).toBe('unavailable');
+    expect(missingStatus.reason).toBe('disk-missing');
+    const blocked = await slot.handleLibraryRequest(GHOST_ID, { op: 'write', path: 'empty.txt', content: 'nope' });
+    expect(blocked).toMatchObject({ ok: false, errorCode: 'LIBRARY_UNAVAILABLE' });
+    expect(fs.existsSync(customRoot)).toBe(false);
+    expect(fs.existsSync(candidate)).toBe(false);
+    expect(fs.existsSync(path.join(defaultRootBase, GHOST_ID, 'keep.txt'))).toBe(false);
+    expect(fs.existsSync(path.join(defaultRootBase, GHOST_ID, 'empty.txt'))).toBe(false);
+
+    await fs.promises.rename(parked, candidate);
+    const recovered = await slot.handleLibraryRequest(GHOST_ID, { op: 'open' });
+    if (!recovered.ok || recovered.op !== 'open') throw new Error(JSON.stringify(recovered));
+    expect(recovered.state).toBe('ready');
+    expect(recovered.reason).toBeUndefined();
+    expect(recovered.location).toBe('custom');
+    expect((recovered as unknown as { libraryIdentity: string }).libraryIdentity).toBe(live.libraryIdentity);
+    expect((recovered as unknown as { libraryGeneration: number }).libraryGeneration).toBe(live.libraryGeneration);
+    const recoveredStatus = await slot.handleLibraryRequest(GHOST_ID, { op: 'status' });
+    if (!recoveredStatus.ok || recoveredStatus.op !== 'status') throw new Error(JSON.stringify(recoveredStatus));
+    expect(recoveredStatus.state).toBe('ready');
+    const reread = await slot.handleLibraryRequest(GHOST_ID, { op: 'read', path: 'keep.txt' });
+    if (!reread.ok || reread.op !== 'read') throw new Error(JSON.stringify(reread));
+    expect(reread.content).toBe('keep-me');
+    const retryWrite = await slot.handleLibraryRequest(GHOST_ID, { op: 'write', path: 'retry.txt', content: 'after-restore' });
+    expect(retryWrite.ok).toBe(true);
+    expect(fs.existsSync(path.join(customRoot, 'retry.txt'))).toBe(true);
+
+    if (process.platform === 'win32') return;
+    const replaced = `${candidate}.replaced`;
+    await fs.promises.rename(candidate, replaced);
+    await fs.promises.mkdir(candidate, { recursive: true });
+    const moved = await slot.handleLibraryRequest(GHOST_ID, { op: 'open' });
+    if (!moved.ok || moved.op !== 'open') throw new Error(JSON.stringify(moved));
+    expect(moved.state).toBe('unavailable');
+    expect(moved.reason).toBe('binding-moved');
+    expect(moved.location).toBe('custom');
+    const movedWrite = await slot.handleLibraryRequest(GHOST_ID, { op: 'write', path: 'wrong-root.txt', content: 'nope' });
+    expect(movedWrite).toMatchObject({ ok: false, errorCode: 'LIBRARY_UNAVAILABLE' });
+    expect(fs.existsSync(path.join(candidate, GHOST_ID, 'wrong-root.txt'))).toBe(false);
+    expect(fs.existsSync(path.join(candidate, GHOST_ID, 'keep.txt'))).toBe(false);
+  });
+
+  it('delayed resolveLibraryRoot: stale custom after parent rename is disk-missing without recreating empty library', async () => {
+    const bound = await bindingStore.setBinding(GHOST_ID, candidate);
+    expect(bound.ok).toBe(true);
+    const open = await slot.handleLibraryRequest(GHOST_ID, { op: 'open' });
+    if (!open.ok || open.op !== 'open') throw new Error(JSON.stringify(open));
+    expect(open.state).toBe('ready');
+    const keep = await slot.handleLibraryRequest(GHOST_ID, { op: 'write', path: 'keep.txt', content: 'keep-me' });
+    expect(keep.ok).toBe(true);
+    const customRoot = path.join(candidate, GHOST_ID);
+    expect(fs.existsSync(path.join(customRoot, 'keep.txt'))).toBe(true);
+    const parked = `${candidate}.parked`;
+    resolveLibraryRoot.mockImplementation(async (ghostId: string) => {
+      const resolution = await LibraryBindingStore.prototype.resolveLibraryRoot.call(bindingStore, ghostId);
+      if (resolution.kind === 'custom' && resolution.root !== null) {
+        if (fs.existsSync(candidate)) await fs.promises.rename(candidate, parked);
+      }
+      return resolution;
+    });
+    const after = await slot.handleLibraryRequest(GHOST_ID, { op: 'open' });
+    if (!after.ok || after.op !== 'open') throw new Error(JSON.stringify(after));
+    expect(after.state).toBe('unavailable');
+    expect(after.reason).toBe('disk-missing');
+    expect(fs.existsSync(candidate)).toBe(false);
+    expect(fs.existsSync(customRoot)).toBe(false);
+    expect(fs.existsSync(path.join(parked, GHOST_ID, 'keep.txt'))).toBe(true);
+    expect(fs.existsSync(path.join(defaultRootBase, GHOST_ID, 'keep.txt'))).toBe(false);
+    const blocked = await slot.handleLibraryRequest(GHOST_ID, { op: 'write', path: 'empty.txt', content: 'nope' });
+    expect(blocked).toMatchObject({ ok: false, errorCode: 'LIBRARY_UNAVAILABLE' });
+  });
+
+  it('stale resolve 后 rename+同路径新 inode:不得建空库或授权错误根', async () => {
+    if (process.platform === 'win32') return;
+    const bound = await bindingStore.setBinding(GHOST_ID, candidate);
+    expect(bound.ok).toBe(true);
+    const open = await slot.handleLibraryRequest(GHOST_ID, { op: 'open' });
+    if (!open.ok || open.op !== 'open') throw new Error(JSON.stringify(open));
+    expect(open.state).toBe('ready');
+    const keep = await slot.handleLibraryRequest(GHOST_ID, { op: 'write', path: 'keep.txt', content: 'keep-me' });
+    expect(keep.ok).toBe(true);
+    const parked = `${candidate}.parked`;
+    resolveLibraryRoot.mockImplementation(async (ghostId: string) => {
+      const resolution = await LibraryBindingStore.prototype.resolveLibraryRoot.call(bindingStore, ghostId);
+      if (resolution.kind === 'custom' && resolution.root !== null && fs.existsSync(candidate)) {
+        await fs.promises.rename(candidate, parked);
+        await fs.promises.mkdir(candidate, { recursive: true });
+      }
+      return resolution;
+    });
+    const after = await slot.handleLibraryRequest(GHOST_ID, { op: 'open' });
+    if (!after.ok || after.op !== 'open') throw new Error(JSON.stringify(after));
+    expect(after.state).toBe('unavailable');
+    expect(after.reason).toBe('binding-moved');
+    expect(fs.existsSync(path.join(candidate, GHOST_ID, '.cindy-library', 'meta.json'))).toBe(false);
+    expect(fs.existsSync(path.join(parked, GHOST_ID, 'keep.txt'))).toBe(true);
+    expect(after.authorizedReadonly).toBe(false);
+    const extraRoots = syncAgentReadonlyExtraDir.mock.calls.filter((call) => call[0] === GHOST_ID).map((call) => call[1]);
+    expect(extraRoots.at(-1) ?? 'none').not.toBe(path.join(candidate, GHOST_ID));
+  });
+
+  it('最后一次 inspect 后骨架 mkdir 前父目录被移走: disk-missing, keep 留 parked, 不授权空根', async () => {
+    const bound = await bindingStore.setBinding(GHOST_ID, candidate);
+    expect(bound.ok).toBe(true);
+    const open = await slot.handleLibraryRequest(GHOST_ID, { op: 'open' });
+    if (!open.ok || open.op !== 'open') throw new Error(JSON.stringify(open));
+    expect(open.state).toBe('ready');
+    const keep = await slot.handleLibraryRequest(GHOST_ID, { op: 'write', path: 'keep.txt', content: 'keep-me' });
+    expect(keep.ok).toBe(true);
+    await slot.disposeAll();
+    const parked = `${candidate}.parked`;
+    let injected = false;
+    createVault.mockImplementation((d) => new LibraryVault({
+      ...d,
+      openExistingCustom: async (req) => {
+        if (!injected) {
+          injected = true;
+          if (fs.existsSync(candidate)) await fs.promises.rename(candidate, parked);
+        }
+        return openExistingCustomLibrary(req);
+      },
+    }));
+    const after = await slot.handleLibraryRequest(GHOST_ID, { op: 'open' });
+    if (!after.ok || after.op !== 'open') throw new Error(JSON.stringify(after));
+    expect(injected).toBe(true);
+    expect(after.state).toBe('unavailable');
+    expect(after.reason).toBe('disk-missing');
+    expect(after.authorizedReadonly).toBe(false);
+    expect(fs.existsSync(candidate)).toBe(false);
+    expect(fs.existsSync(path.join(candidate, GHOST_ID, '.cindy-library', 'meta.json'))).toBe(false);
+    expect(fs.existsSync(path.join(parked, GHOST_ID, 'keep.txt'))).toBe(true);
+    expect(fs.existsSync(path.join(defaultRootBase, GHOST_ID, 'keep.txt'))).toBe(false);
+    const extraRoots = syncAgentReadonlyExtraDir.mock.calls.filter((call) => call[0] === GHOST_ID).map((call) => call[1]);
+    expect(extraRoots.at(-1) ?? 'none').not.toBe(path.join(candidate, GHOST_ID));
+  });
+
+  it('最后一次成功 inspect 后换成同路径新 inode:不得 mkdir/meta/授权替换根', async () => {
+    if (process.platform === 'win32') return;
+    const bound = await bindingStore.setBinding(GHOST_ID, candidate);
+    expect(bound.ok).toBe(true);
+    const open = await slot.handleLibraryRequest(GHOST_ID, { op: 'open' });
+    if (!open.ok || open.op !== 'open') throw new Error(JSON.stringify(open));
+    expect(open.state).toBe('ready');
+    const keep = await slot.handleLibraryRequest(GHOST_ID, { op: 'write', path: 'keep.txt', content: 'keep-me' });
+    expect(keep.ok).toBe(true);
+    await slot.disposeAll();
+    const parked = `${candidate}.parked`;
+    const custom = path.join(candidate, GHOST_ID);
+    let injected = false;
+    createVault.mockImplementation((d) => new LibraryVault({
+      ...d,
+      openExistingCustom: async (req) => {
+        if (!injected) {
+          injected = true;
+          if (fs.existsSync(candidate)) await fs.promises.rename(candidate, parked);
+          await fs.promises.mkdir(candidate);
+        }
+        return openExistingCustomLibrary(req);
+      },
+    }));
+    const after = await slot.handleLibraryRequest(GHOST_ID, { op: 'open' });
+    if (!after.ok || after.op !== 'open') throw new Error(JSON.stringify(after));
+    expect(injected).toBe(true);
+    expect(after.state).toBe('unavailable');
+    expect(after.reason).toBe('binding-moved');
+    expect(after.authorizedReadonly).toBe(false);
+    expect(fs.existsSync(custom)).toBe(false);
+    expect(fs.existsSync(path.join(custom, '.cindy-library', 'meta.json'))).toBe(false);
+    expect(fs.existsSync(path.join(parked, GHOST_ID, 'keep.txt'))).toBe(true);
+    const extraRoots = syncAgentReadonlyExtraDir.mock.calls.filter((call) => call[0] === GHOST_ID).map((call) => call[1]);
+    expect(extraRoots.at(-1) ?? 'none').not.toBe(custom);
+  });
+
+  it('D: helper 后 tmp readdir 换根不得写 usage.json 且拒授权替换根', async () => {
+    if (process.platform === 'win32') return;
+    const bound = await bindingStore.setBinding(GHOST_ID, candidate);
+    expect(bound.ok).toBe(true);
+    const parked = `${candidate}.parked`;
+    const custom = path.join(candidate, GHOST_ID);
+    let afterInit = false;
+    let swapped = false;
+    const origReaddir = fs.promises.readdir.bind(fs.promises);
+    const origRename = fs.promises.rename.bind(fs.promises);
+    const origMkdir = fs.promises.mkdir.bind(fs.promises);
+    const origWriteFile = fs.promises.writeFile.bind(fs.promises);
+    const readdirSpy = vi.spyOn(fs.promises, 'readdir').mockImplementation(async (target, options) => {
+      const dest = String(target);
+      if (afterInit && !swapped && dest.includes(`${path.sep}${GHOST_ID}${path.sep}.cindy-library${path.sep}tmp`)) {
+        swapped = true;
+        if (fs.existsSync(candidate)) await origRename(candidate, parked);
+        await origMkdir(candidate);
+        await origMkdir(custom);
+        await origMkdir(path.join(custom, '.cindy-library', 'tmp'), { recursive: true });
+        await origWriteFile(path.join(custom, '.cindy-library', 'meta.json'), JSON.stringify({
+          version: 1, ghostId: GHOST_ID, createdAt: 1,
+        }));
+        await origWriteFile(path.join(custom, 'user-keep.txt'), 'user');
+      }
+      return origReaddir(target, options);
+    });
+    createVault.mockImplementation((d) => new LibraryVault({
+      ...d,
+      initCustomTree: async (req) => {
+        const r = await initCustomLibraryTree(req);
+        afterInit = true;
+        return r;
+      },
+    }));
+    const opened = await slot.handleLibraryRequest(GHOST_ID, { op: 'open' });
+    readdirSpy.mockRestore();
+    if (!opened.ok || opened.op !== 'open') throw new Error(JSON.stringify(opened));
+    expect(fs.existsSync(path.join(custom, '.cindy-library', 'usage.json'))).toBe(false);
+    if (swapped) {
+      expect(fs.existsSync(path.join(custom, 'user-keep.txt'))).toBe(true);
+      expect(opened.authorizedReadonly).toBe(false);
+    }
+  });
+
+  it('旧 session teardown 只删自己捕获的引用,不踩并发新建的 session', async () => {
+    const bound = await bindingStore.setBinding(GHOST_ID, candidate);
+    expect(bound.ok).toBe(true);
+    const first = await slot.handleLibraryRequest(GHOST_ID, { op: 'open' });
+    if (!first.ok || first.op !== 'open') throw new Error(JSON.stringify(first));
+    expect(first.state).toBe('ready');
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let n = 0;
+    const origResolve = LibraryBindingStore.prototype.resolveLibraryRoot.bind(bindingStore);
+    resolveLibraryRoot.mockImplementation(async (id: string) => {
+      const i = ++n;
+      const res = await origResolve(id);
+      if (i >= 2) await gate;
+      return res;
+    });
+    const other = path.join(tmp, 'picked-concurrent');
+    await fs.promises.mkdir(other);
+    const pendingA = slot.handleLibraryRequest(GHOST_ID, { op: 'status' });
+    await Promise.resolve();
+    await bindingStore.setBinding(GHOST_ID, other);
+    const pendingB = slot.handleLibraryRequest(GHOST_ID, { op: 'status' });
+    release();
+    const [a, b] = await Promise.all([pendingA, pendingB]);
+    expect(a.ok).toBe(true);
+    expect(b.ok).toBe(true);
+    const later = await slot.handleLibraryRequest(GHOST_ID, { op: 'status' });
+    expect(later.ok).toBe(true);
+    if (later.ok && later.op === 'status') {
+      expect(later.state === 'ready' || later.state === 'unavailable').toBe(true);
+    }
+  });
+
+  it('已挂 extraDir 时 confirm 与 vault.open 间 disk-missing 必须撤 grant', async () => {
+    const bound = await bindingStore.setBinding(GHOST_ID, candidate);
+    expect(bound.ok).toBe(true);
+    const open = await slot.handleLibraryRequest(GHOST_ID, { op: 'open' });
+    if (!open.ok || open.op !== 'open') throw new Error(JSON.stringify(open));
+    expect(open.authorizedReadonly).toBe(true);
+    const grantedRoot = syncAgentReadonlyExtraDir.mock.calls.find((call) => call[0] === GHOST_ID && call[1] !== null)?.[1];
+    expect(typeof grantedRoot).toBe('string');
+    const parked = `${candidate}.parked`;
+    const vault = createVault.mock.results.at(-1)?.value as LibraryVault;
+    const orig = vault.open.bind(vault);
+    vault.open = async () => {
+      if (fs.existsSync(candidate)) await fs.promises.rename(candidate, parked);
+      return orig();
+    };
+    const raced = await slot.handleLibraryRequest(GHOST_ID, { op: 'open' });
+    if (!raced.ok || raced.op !== 'open') throw new Error(JSON.stringify(raced));
+    expect(raced.state).toBe('unavailable');
+    expect(raced.reason).toBe('disk-missing');
+    expect(raced.authorizedReadonly).toBe(false);
+    const nullGrants = syncAgentReadonlyExtraDir.mock.calls.filter((call) => call[0] === GHOST_ID && call[1] === null);
+    expect(nullGrants.length).toBeGreaterThan(0);
+  });
+
+  it('auto-open 失败后同盘归位只 status 须恢复', async () => {
+    const bound = await bindingStore.setBinding(GHOST_ID, candidate);
+    expect(bound.ok).toBe(true);
+    const open = await slot.handleLibraryRequest(GHOST_ID, { op: 'open' });
+    if (!open.ok || open.op !== 'open') throw new Error(JSON.stringify(open));
+    await slot.handleLibraryRequest(GHOST_ID, { op: 'write', path: 'keep.txt', content: 'keep-me' });
+    const parked = `${candidate}.parked`;
+    let vanishOnOpen = true;
+    createVault.mockImplementation((deps) => {
+      const vault = new LibraryVault(deps);
+      const orig = vault.open.bind(vault);
+      vault.open = async () => {
+        if (vanishOnOpen && fs.existsSync(candidate)) await fs.promises.rename(candidate, parked);
+        return orig();
+      };
+      return vault;
+    });
+    await slot.disposeAll();
+    const statusMissing = await slot.handleLibraryRequest(GHOST_ID, { op: 'status' });
+    if (!statusMissing.ok || statusMissing.op !== 'status') throw new Error(JSON.stringify(statusMissing));
+    expect(statusMissing.state).toBe('unavailable');
+    expect(statusMissing.reason).toBe('disk-missing');
+    vanishOnOpen = false;
+    await fs.promises.rename(parked, candidate);
+    const statusRestored = await slot.handleLibraryRequest(GHOST_ID, { op: 'status' });
+    if (!statusRestored.ok || statusRestored.op !== 'status') throw new Error(JSON.stringify(statusRestored));
+    expect(statusRestored.state).toBe('ready');
+    const reread = await slot.handleLibraryRequest(GHOST_ID, { op: 'read', path: 'keep.txt' });
+    if (!reread.ok || reread.op !== 'read') throw new Error(JSON.stringify(reread));
+    expect(reread.content).toBe('keep-me');
   });
 
   it('重装自愈:meta 带 orphaned 标记时,会话建立自动清除', async () => {
@@ -813,7 +1152,14 @@ describe('GhostLibrarySlot', () => {
     };
     expect(openHs.authorizedReadonly).toBe(true);
     expect(openHs.libraryGeneration).toBe(0);
-    expect(openHs.libraryIdentity).toBe('default');
+    expect(openHs.libraryIdentity).toMatch(/^[0-9a-f]{64}$/);
+    expect(openHs.libraryIdentity).toBe(mintLibraryEpochIdentity({
+      ghostId: GHOST_ID,
+      ownerScopeKey: 'local:owner-a:1',
+      generation: 0,
+      rootDir: path.join(defaultRootBase, GHOST_ID),
+      grantedAt: 0,
+    }));
     const dumped = JSON.stringify(open);
     expect(dumped).not.toContain(defaultRootBase);
     expect(dumped).not.toMatch(/\/Users\//);
@@ -856,7 +1202,16 @@ describe('GhostLibrarySlot', () => {
     };
     expect(hs.authorizedReadonly).toBe(true);
     expect(hs.libraryGeneration).toBe(1);
-    expect(hs.libraryIdentity).toBe('g1');
+    expect(hs.libraryIdentity).toMatch(/^[0-9a-f]{64}$/);
+    const boundRecord = await bindingStore.getBinding(GHOST_ID);
+    expect(boundRecord).not.toBeNull();
+    expect(hs.libraryIdentity).toBe(mintLibraryEpochIdentity({
+      ghostId: GHOST_ID,
+      ownerScopeKey: 'local:owner-a:1',
+      generation: 1,
+      rootDir: path.join(await fs.promises.realpath(candidate), GHOST_ID),
+      grantedAt: boundRecord!.grantedAt,
+    }));
     const dumped = JSON.stringify(open);
     expect(dumped).not.toContain(candidate);
     expect(dumped).not.toContain(defaultRoot);
@@ -982,11 +1337,41 @@ describe('GhostLibrarySlot', () => {
     expect((stB as unknown as { authorizedReadonly: boolean }).authorizedReadonly).toBe(true);
   });
 
-  it('writeCommit ACK 含 64-hex sha256,形状 {ok,op,path,bytes,sha256}', async () => {
+  it.each(['expiry', 'io', 'abort', 'dispose'] as const)('releases stream epochs on %s without commit', async (reason) => {
+    createVault.mockImplementation((d) => new LibraryVault({ ...d, now: () => clock }));
+    await slot.handleLibraryRequest(GHOST_ID, { op: 'open' });
+    const begin = await slot.handleLibraryRequest(GHOST_ID, { op: 'writeBegin', path: 'stream.txt', totalBytes: 1 });
+    if (!begin.ok || begin.op !== 'writeBegin') throw new Error(JSON.stringify(begin));
+    const epochs = (slot as unknown as { writeEpochByStream: Map<string, unknown> }).writeEpochByStream;
+    expect(epochs.has(begin.streamId)).toBe(true);
+    // A retryable protocol error must keep the captured epoch.
+    const invalid = await slot.handleLibraryRequest(GHOST_ID, { op: 'writeChunk', streamId: begin.streamId, seq: 2, content: 'x' });
+    expect(invalid.ok).toBe(false);
+    expect(epochs.has(begin.streamId)).toBe(true);
+    if (reason === 'expiry') {
+      clock += 300_001;
+      const next = await slot.handleLibraryRequest(GHOST_ID, { op: 'writeBegin', path: 'next.txt', totalBytes: 1 });
+      expect(next.ok).toBe(true);
+    } else if (reason === 'io') {
+      const open = vi.spyOn(fs.promises, 'open').mockRejectedValueOnce(new Error('task IO failure'));
+      try {
+        const failed = await slot.handleLibraryRequest(GHOST_ID, { op: 'writeChunk', streamId: begin.streamId, seq: 1, content: 'x' });
+        expect(failed.ok).toBe(false);
+      } finally { open.mockRestore(); }
+    } else if (reason === 'abort') {
+      await slot.handleLibraryRequest(GHOST_ID, { op: 'writeAbort', streamId: begin.streamId });
+    } else {
+      await slot.disposeAll();
+    }
+    expect(epochs.has(begin.streamId)).toBe(false);
+  });
+
+  it('writeCommit ACK 含 64-hex sha256 与捕获的 epoch,旧插件可忽略新字段', async () => {
     const body = 'pixel-bytes';
     const sha = createHash('sha256').update(body).digest('hex');
     const rel = 'assets/ab/abc123def456abc123def456abc123de/blob.png';
-    await slot.handleLibraryRequest(GHOST_ID, { op: 'open' });
+    const open = await slot.handleLibraryRequest(GHOST_ID, { op: 'open' });
+    if (!open.ok || open.op !== 'open') throw new Error(JSON.stringify(open));
     const begin = await slot.handleLibraryRequest(GHOST_ID, {
       op: 'writeBegin', path: rel, totalBytes: Buffer.byteLength(body), sha256: sha,
     });
@@ -996,14 +1381,34 @@ describe('GhostLibrarySlot', () => {
     });
     expect(chunk.ok).toBe(true);
     const commit = await slot.handleLibraryRequest(GHOST_ID, { op: 'writeCommit', streamId: begin.streamId });
+    const expectedIdentity = mintLibraryEpochIdentity({
+      ghostId: GHOST_ID,
+      ownerScopeKey: 'local:owner-a:1',
+      generation: 0,
+      rootDir: path.join(defaultRootBase, GHOST_ID),
+      grantedAt: 0,
+    });
     expect(commit).toEqual({
       ok: true,
       op: 'writeCommit',
       path: rel,
       bytes: Buffer.byteLength(body),
       sha256: sha,
+      libraryGeneration: 0,
+      libraryIdentity: expectedIdentity,
     });
     expect(commit.ok && 'sha256' in commit && /^[0-9a-f]{64}$/.test(commit.sha256)).toBe(true);
+    const { libraryGeneration, libraryIdentity, ...legacy } = commit as {
+      ok: true; op: 'writeCommit'; path: string; bytes: number; sha256: string;
+      libraryGeneration?: number; libraryIdentity?: string;
+    };
+    expect(legacy).toEqual({
+      ok: true, op: 'writeCommit', path: rel, bytes: Buffer.byteLength(body), sha256: sha,
+    });
+    expect(libraryGeneration).toBe(0);
+    expect(libraryIdentity).toBe(expectedIdentity);
+    expect(JSON.stringify(commit)).not.toContain('local:owner');
+    expect(JSON.stringify(commit)).not.toContain(defaultRootBase);
     expect(fs.existsSync(path.join(tmp, 'libraryConfirmed.ts'))).toBe(false);
     expect(fs.existsSync(path.join(process.cwd(), 'apps/desktop/src/main/cindy-brain/libraryConfirmed.ts'))).toBe(false);
   });
@@ -1016,5 +1421,165 @@ describe('GhostLibrarySlot', () => {
       .toBe(`cindy-media://blobs/${hash}.png`);
     expect(libraryAvailableRef({ authorized: false, hash, ext: 'svg', confirmed: true })).toBeNull();
     expect(libraryAvailableRef({ authorized: true, hash, ext: 'png', confirmed: false })).toBeNull();
+  });
+
+  it('write 回执 epoch 来自写入 session,owner 切换后新写入不换绑旧回执', async () => {
+    const first = await slot.handleLibraryRequest(GHOST_ID, {
+      op: 'write', path: 'assets/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/blob.png', content: 'a',
+    });
+    if (!first.ok || first.op !== 'write') throw new Error(JSON.stringify(first));
+    const firstIdentity = first.libraryIdentity;
+    expect(first.libraryGeneration).toBe(0);
+    expect(firstIdentity).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify(first)).not.toContain('local:owner');
+
+    scopeKey = 'local:owner-b:1';
+    defaultRootBase = path.join(tmp, 'owners', 'b', 'libraries');
+    const second = await slot.handleLibraryRequest(GHOST_ID, {
+      op: 'write', path: 'assets/bb/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/blob.png', content: 'b',
+    });
+    if (!second.ok || second.op !== 'write') throw new Error(JSON.stringify(second));
+    const ownerBRoot = path.join(tmp, 'owners', 'b', 'libraries', GHOST_ID);
+    expect(second.libraryIdentity).not.toBe(firstIdentity);
+    expect(second.libraryIdentity).toBe(mintLibraryEpochIdentity({
+      ghostId: GHOST_ID,
+      ownerScopeKey: 'local:owner-b:1',
+      generation: 0,
+      rootDir: ownerBRoot,
+      grantedAt: 0,
+    }));
+    expect(first.libraryIdentity).toBe(firstIdentity);
+    expect(JSON.stringify(second)).not.toContain('local:owner');
+  });
+
+  it('writeCommit epoch 在 writeBegin 捕获,切根后不得拼当前身份', async () => {
+    const body = 'stream-pixel';
+    const sha = createHash('sha256').update(body).digest('hex');
+    const rel = `assets/${sha.slice(0, 2)}/${sha}/blob.png`;
+    await slot.handleLibraryRequest(GHOST_ID, { op: 'open' });
+    const begin = await slot.handleLibraryRequest(GHOST_ID, {
+      op: 'writeBegin', path: rel, totalBytes: Buffer.byteLength(body), sha256: sha,
+    });
+    if (!begin.ok || begin.op !== 'writeBegin') throw new Error(JSON.stringify(begin));
+    const beginIdentity = mintLibraryEpochIdentity({
+      ghostId: GHOST_ID,
+      ownerScopeKey: 'local:owner-a:1',
+      generation: 0,
+      rootDir: path.join(defaultRootBase, GHOST_ID),
+      grantedAt: 0,
+    });
+    await slot.handleLibraryRequest(GHOST_ID, {
+      op: 'writeChunk', streamId: begin.streamId, seq: 1, content: body,
+    });
+    const bound = await bindingStore.setBinding(GHOST_ID, candidate);
+    expect(bound.ok).toBe(true);
+    await slot.disposeGhost(GHOST_ID);
+    const openB = await slot.handleLibraryRequest(GHOST_ID, { op: 'open' });
+    if (!openB.ok || openB.op !== 'open') throw new Error(JSON.stringify(openB));
+    expect(openB.libraryIdentity).not.toBe(beginIdentity);
+    const stale = await slot.handleLibraryRequest(GHOST_ID, { op: 'writeCommit', streamId: begin.streamId });
+    expect(stale).toMatchObject({ ok: false, errorCode: 'STREAM_INVALID' });
+    expect(JSON.stringify(stale)).not.toContain(openB.libraryIdentity);
+  });
+
+  it('默认 D→自定义 C→默认 D:两端绑定身份可复用,中间握手不同,旧回执不得当当前激活', async () => {
+    const first = await slot.handleLibraryRequest(GHOST_ID, {
+      op: 'write', path: 'assets/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/blob.png', content: 'd1',
+    });
+    if (!first.ok || first.op !== 'write') throw new Error(JSON.stringify(first));
+    const defaultEpoch = {
+      libraryGeneration: first.libraryGeneration,
+      libraryIdentity: first.libraryIdentity,
+    };
+    expect(defaultEpoch.libraryGeneration).toBe(0);
+    expect(defaultEpoch.libraryIdentity).toMatch(/^[0-9a-f]{64}$/);
+
+    const bound = await bindingStore.setBinding(GHOST_ID, candidate);
+    expect(bound.ok).toBe(true);
+    await slot.disposeGhost(GHOST_ID);
+    const customOpen = await slot.handleLibraryRequest(GHOST_ID, { op: 'open' });
+    if (!customOpen.ok || customOpen.op !== 'open') throw new Error(JSON.stringify(customOpen));
+    expect(customOpen.libraryIdentity).not.toBe(defaultEpoch.libraryIdentity);
+    expect(customOpen.libraryGeneration).toBe(1);
+
+    await bindingStore.removeBinding(GHOST_ID);
+    await slot.disposeGhost(GHOST_ID);
+    const defaultAgain = await slot.handleLibraryRequest(GHOST_ID, { op: 'open' });
+    if (!defaultAgain.ok || defaultAgain.op !== 'open') throw new Error(JSON.stringify(defaultAgain));
+    expect(defaultAgain.libraryIdentity).toBe(defaultEpoch.libraryIdentity);
+    expect(defaultAgain.libraryGeneration).toBe(0);
+    expect(JSON.stringify({ first, customOpen, defaultAgain })).not.toContain('local:owner');
+    expect(JSON.stringify({ first, customOpen, defaultAgain })).not.toContain(defaultRootBase);
+    expect(JSON.stringify({ first, customOpen, defaultAgain })).not.toContain(candidate);
+  });
+
+  it('owner X→Y→X 回到同一默认 binding:X 两端身份相同,Y 介入后旧 X 回执不再是当前激活', async () => {
+    const writeX1 = await slot.handleLibraryRequest(GHOST_ID, {
+      op: 'write', path: 'assets/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/blob.png', content: 'x1',
+    });
+    if (!writeX1.ok || writeX1.op !== 'write') throw new Error(JSON.stringify(writeX1));
+    const xEpoch = writeX1.libraryIdentity;
+    const xRoot = path.join(tmp, 'owners', 'a', 'libraries', GHOST_ID);
+
+    scopeKey = 'local:owner-b:1';
+    defaultRootBase = path.join(tmp, 'owners', 'b', 'libraries');
+    const writeY = await slot.handleLibraryRequest(GHOST_ID, {
+      op: 'write', path: 'assets/bb/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/blob.png', content: 'y',
+    });
+    if (!writeY.ok || writeY.op !== 'write') throw new Error(JSON.stringify(writeY));
+    expect(writeY.libraryIdentity).not.toBe(xEpoch);
+
+    scopeKey = 'local:owner-a:1';
+    defaultRootBase = path.join(tmp, 'owners', 'a', 'libraries');
+    const openX2 = await slot.handleLibraryRequest(GHOST_ID, { op: 'open' });
+    if (!openX2.ok || openX2.op !== 'open') throw new Error(JSON.stringify(openX2));
+    expect(openX2.libraryIdentity).toBe(xEpoch);
+    expect(openX2.libraryIdentity).toBe(mintLibraryEpochIdentity({
+      ghostId: GHOST_ID,
+      ownerScopeKey: 'local:owner-a:1',
+      generation: 0,
+      rootDir: xRoot,
+      grantedAt: 0,
+    }));
+    expect(JSON.stringify({ writeX1, writeY, openX2 })).not.toContain('local:owner');
+  });
+
+  it('opaque identity 区分 owner / 迁根 / A→B→A,不暴露 owner 原值', () => {
+    const rootA = '/tmp/lib-a/mivo-canvas';
+    const rootB = '/tmp/lib-b/mivo-canvas';
+    const ownerA = mintLibraryEpochIdentity({
+      ghostId: GHOST_ID, ownerScopeKey: 'local:owner-a:1', generation: 0, rootDir: rootA, grantedAt: 0,
+    });
+    const ownerB = mintLibraryEpochIdentity({
+      ghostId: GHOST_ID, ownerScopeKey: 'local:owner-b:1', generation: 0, rootDir: rootA, grantedAt: 0,
+    });
+    const moved = mintLibraryEpochIdentity({
+      ghostId: GHOST_ID, ownerScopeKey: 'local:owner-a:1', generation: 1, rootDir: rootB, grantedAt: 11,
+    });
+    const aba = mintLibraryEpochIdentity({
+      ghostId: GHOST_ID, ownerScopeKey: 'local:owner-a:1', generation: 3, rootDir: rootA, grantedAt: 33,
+    });
+    expect(new Set([ownerA, ownerB, moved, aba]).size).toBe(4);
+    for (const id of [ownerA, ownerB, moved, aba]) {
+      expect(id).toMatch(/^[0-9a-f]{64}$/);
+      expect(id).not.toContain('local:owner');
+      expect(id).not.toContain(rootA);
+      expect(id).not.toContain(rootB);
+    }
+  });
+
+  it('host-owned 相对键解析用最新根,拒绝 sidecar / cindy-media / 绝对路径', () => {
+    const hash = 'd'.repeat(64);
+    const rel = `assets/${hash.slice(0, 2)}/${hash}/blob.png`;
+    const ref = `library:${rel}`;
+    const rootA = path.join(tmp, 'root-a');
+    const rootB = path.join(tmp, 'root-b');
+    expect(parseLibraryAssetRef(ref)).toBe(rel);
+    expect(resolveLibraryAssetPath(rootA, ref)).toBe(path.join(rootA, ...rel.split('/')));
+    expect(resolveLibraryAssetPath(rootB, ref)).toBe(path.join(rootB, ...rel.split('/')));
+    expect(resolveLibraryAssetPath(rootA, `library:assets/${hash.slice(0, 2)}/${hash}/preview.webp`)).toBeNull();
+    expect(resolveLibraryAssetPath(rootA, `cindy-media://blobs/${hash}.png`)).toBeNull();
+    expect(resolveLibraryAssetPath(rootA, path.join(rootA, rel))).toBeNull();
+    expect(resolveLibraryAssetPath('relative-root', ref)).toBeNull();
   });
 });

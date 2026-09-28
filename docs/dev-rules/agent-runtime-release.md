@@ -188,8 +188,38 @@ codex 与 pi 都装不上、发布被阻断。
 ## 本地落位（promote）与 Windows 目录改名
 
 `apps/<kind>-bin/<platform>/` 是 gitignore 的构建产物，干净 checkout（CI 每个 job、新的
-git worktree、首次 dev 启动）必然不存在，因此**每次都要走一次本地落位**。这条路径的正确性
+git worktree、首次 dev 启动）必然不存在，因此**每次都要走一次本地落位**（有兄弟 worktree
+时这一步由本地复用完成，见下条）。这条路径的正确性
 与"本机恰好已有安装"无关，必须按下面的契约实现。
+
+- **网络之前先复用同版本兄弟 worktree 的「整目录」**（`scripts/ensure-agent-binaries.mjs`）：
+  目录分发 kind 的复用已从「只复制主执行文件的单文件复用」改成**整目录 clone**，入口
+  `tryReuseDirDistFromSiblingWorktree()`；`ensureBinary()` 在 `!force` 时对 `cfg.dirDist`
+  调它（`claude` / `ripgrep` 等非 dirDist kind 仍走 `tryReuseFromSiblingWorktree()` 的单文件
+  路径）。契约四点：
+  - **复用来源**：`listSiblingWorktreeRoots(ROOT)`（`git worktree list --porcelain` +
+    `realpathSync.native` 归一后排除本 checkout；git 不可用或不在 git 仓库里返回空数组，
+    调用方**直接走网络、不报错**）映射到各兄弟 worktree 的 `apps/<binDir>/<platform>/`；
+    只接受 `.version` 标记与当前 pin **完全相等**、且候选目录通过下面的结构校验的项。
+  - **校验项**：候选先过 `isValidDirDist(candidateDir, candidateDir/<binaryRelativePath>,
+    requiredFiles)`——主执行文件 `isValidBinary()`（存在、非 LFS 指针、非长度占位）+
+    `verifyDirDistManifest()`（安装清单）+ `requiredDirDistFilesFor()` 列出的**必需资产**
+    （如 pi 的 `theme/`；路径解析后不得越出目录根）。clone 到 staging 后**整份再校验一遍**，
+    不过就换下一个候选。只验主执行文件会把缺旁侧资产的残缺目录当"已就位"复用。
+  - **替换与失败回滚**：在同一文件系统的临时目录（`fs.mkdtempSync('<destDir>.reuse-')`）里
+    `fs.cpSync(candidateDir, next, { recursive: true, mode: COPYFILE_FICLONE })`（不支持
+    copy-on-write 的文件系统由 `cpSync` 自行回退普通拷贝）→ 校验 → 目标目录已存在就先
+    `rename(destDir, previous)` 备份 → `rename(next, destDir)`；rename 失败则把 `previous`
+    改回 `destDir` 再抛。**回滚也失败时立即抛 `Cannot restore previous runtime at …` 并停止，
+    不得继续走网络下载**（不能拿一次下载覆盖掉现场证据）；其余失败（候选损坏、目标被占用）
+    只 `warn` 并试下一个候选，staging 在成功或已回滚后清理，不留半成品。
+  - **何时才走网络**：所有兄弟 worktree 都没有同版本合法目录（或调用方传了 `force`——它的
+    语义是"强制重新获取"，因此**不复用**）时才回落到 `mod.ensurePlatform()`（含 pin 降级）
+    与 CDN 兜底；复用本身是纯本地操作。复用之后同样受本节末尾的就位终检约束
+    （`isValidDirDist` + `.version == pin`）。
+    回归用例：`scripts/__tests__/ensure-agent-binaries.test.mjs` 的
+    `directory reuse validates all assets, skips mismatches and replaces stale files`
+    （版本不符/清单损坏的候选被跳过、clone 后目标不含旧残留、失败候选不影响目标）。
 
 - **目录分发 runtime 的落位必须用有界退避重试**：`tools/codex-package/update.mjs` 的
   `replaceDirectory` 走 `tools/shared/rename-with-retry.mjs`。两处改名的预算刻意不同：

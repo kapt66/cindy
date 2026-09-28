@@ -2,6 +2,23 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { brandExecutableName } from '@cindy/maker-shared/brand-identity';
+
+/**
+ * 用户级安装布局可接受的**可执行文件名**闭集。当前身份从身份正本
+ * (`packages/maker-shared/src/brandIdentity.ts`)派生;上游 `Cindy` / `CindyDev`
+ * 仅作 legacy 只读兼容——这里识别的是用户机器上**既有**的安装,老安装 (XDMaker /
+ * 上游 Cindy) 不能被判成陌生布局。同 `devCliFlags.ts` 的
+ * `OFFICIAL_USER_DATA_DIR_NAMES` 先例:legacy 与当前身份名并列,只增不减。
+ * WL-6.1 要求身份字面值单点:当前身份取正本,这里不得再写一份字面值。
+ * cn / global 共用同一 exe 名(dev 独立),故不收 region 维度。
+ */
+const LEGACY_EXECUTABLE_NAMES: readonly string[] = ['Cindy', 'CindyDev'];
+const INSTALLED_EXECUTABLE_NAMES: readonly string[] = [
+  brandExecutableName(),
+  brandExecutableName('dev'),
+  ...LEGACY_EXECUTABLE_NAMES,
+];
 
 /** Same identity as register-desktop.sh, stable across releases and valid for
  * portals requiring reverse-DNS application IDs. This does not rename the app
@@ -30,7 +47,9 @@ export function recognizeLinuxUserInstallation(
     const prefix = path.dirname(path.dirname(release));
     const relative = path.relative(fs.realpathSync(home), prefix);
     if (!relative || relative.startsWith(`..${path.sep}`) || relative === '..' || path.isAbsolute(relative)) return null;
-    if (path.basename(exe) !== 'Cindy' || path.basename(path.dirname(release)) !== 'releases') return null;
+    // 必须是指定身份名之一(闭集),不是「任意 basename」:身份来自身份正本,上游名仅 legacy 只读。
+    if (!INSTALLED_EXECUTABLE_NAMES.includes(path.basename(exe))
+      || path.basename(path.dirname(release)) !== 'releases') return null;
     const markerPath = path.join(prefix, '.cindy-user-install');
     const marker = fs.lstatSync(markerPath);
     if (!marker.isFile() || marker.uid !== uid || fs.statSync(prefix).uid !== uid) return null;
@@ -80,16 +99,49 @@ export function findLinuxUserInstallation(
 /** Query ownership, not just tool existence: dpkg installed on Arch must not
  * cause us to install a second Cindy while relaunching a pacman-owned binary.
  */
-export function isDebianManagedInstallation(
+export type DebianManagedInstallationCheck =
+  | { status: 'managed' }
+  | { status: 'not-managed' }
+  | { status: 'error'; error: unknown };
+
+/** Confirmed non-ownership, not a retryable probe failure.
+ * - dpkg-query -S exits 1 when no package owns the path.
+ * - spawn ENOENT means /usr/bin/dpkg-query is absent (Arch and other
+ *   non-Debian systems). That must keep the unsupported-install block.
+ * Timeouts and exit 2 (database or usage faults) stay errors.
+ */
+function isConfirmedDebianOwnershipMiss(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const details = error as { status?: unknown; signal?: unknown; code?: unknown; killed?: unknown };
+  if (details.killed === true || details.signal != null) return false;
+  // execFileSync sets status null when the binary itself cannot be spawned.
+  if (details.code === 'ENOENT' && details.status == null) return true;
+  if (typeof details.code === 'string' && details.code.length > 0) return false;
+  return details.status === 1;
+}
+
+export function checkDebianManagedInstallation(
   exePath: string,
   query: (exe: string) => string = (exe) => execFileSync('/usr/bin/dpkg-query', ['-S', exe], {
     encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'],
   }),
-): boolean {
+): DebianManagedInstallationCheck {
   try {
-    return query(exePath).split('\n').some((line) => /^cindy(?::[a-z0-9]+)?: /.test(line)
+    const managed = query(exePath).split('\n').some((line) => /^cindy(?::[a-z0-9]+)?: /.test(line)
       && line.slice(line.indexOf(': ') + 2) === exePath);
-  } catch { return false; }
+    return managed ? { status: 'managed' } : { status: 'not-managed' };
+  } catch (error) {
+    if (isConfirmedDebianOwnershipMiss(error)) return { status: 'not-managed' };
+    return { status: 'error', error };
+  }
+}
+
+/** Compatibility predicate for callers that only need a confirmed yes/no. */
+export function isDebianManagedInstallation(
+  exePath: string,
+  query?: (exe: string) => string,
+): boolean {
+  return checkDebianManagedInstallation(exePath, query).status === 'managed';
 }
 
 export function missingLinuxUserInstallTools(

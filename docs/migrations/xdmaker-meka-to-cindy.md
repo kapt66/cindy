@@ -63,6 +63,11 @@
   的新字段，nullable `cost_currency` 用 `COALESCE(..., 'USD')` 回填后再设约束。
 - 冲突逐项记录、处理方式、决策人与验证现状见
   `docs/migrations/2026-08-origin-main-to-meka-main.md`。
+  > **注明（2026-09-24）**：上面这段记的是早期一轮（对应 `2026-08-origin-main-to-meka-main.md`），
+  > 其 merge-base 与 migration 编号均已过期，**不再是当前状态**。现行一轮为**第三轮上游同步**
+  > （`origin/main@2f169d6aeb` → `meka/main@09e8bb6132`，merge-base `0f65d9823`）：
+  > D4 顺移追加（`0113..0117`）与三处实质发现登记在 §11.29，逐组解决结果与交付状态见
+  > [`2026-09-24-origin-main-to-meka-main.md`](./2026-09-24-origin-main-to-meka-main.md)。
 
 ### 3.1 已实现
 
@@ -827,6 +832,12 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
 
 - 左侧 Meka 入口默认进入 Meka 插件目录；Meka 列表页顶部固定为“插件 / 技能 / 项目”三个
   同级页签，复用上游插件管理页的宽度、胶囊 Tab、搜索／动作区与窄宽堆叠布局。
+  > **后续修订（2026-09-24 第三轮上游同步）**：上游本轮把该页的胶囊 Tab 换成共享控件
+  > `SegmentedControl`（`apps/desktop/src/renderer/features/plugin/PluginManagementLayout.tsx:17,192`）；
+  > Meka 的三个页签已整体**重挂到上游共享 `SegmentedControl`**，不自建平行控件。页签位次、
+  > 「插件 / 技能 / 项目」三个列表入口与 `/cc-agent/meka*` 路由不变；该控件只属于三个列表入口，
+  > 仍不侵入详情页。证据：`PluginManagementLayout.test.tsx` 21/21、`MekaSkillMarketListView.test.tsx` 2/2，
+  > 详见 [`2026-09-24-origin-main-to-meka-main.md`](./2026-09-24-origin-main-to-meka-main.md) §6.9。
 - “插件”只展示现有 MCPRouter Meka 插件目录及其本机归属项；“技能”使用 Cindy 上游
   技能首页、推荐卡、本地分组、预览侧板和安装目标选择器，只把远端目录／预览／安装适配到
   MCPRouter；首页保留 Skill Hub 下钻入口并进入 MCPRouter 驱动的 Meka Skill Hub，本地
@@ -892,6 +903,19 @@ Meka 会话侧栏不建立独立视觉规范，项目行、会话行、二级分
   复用相同视觉与弹层语义，不得改变原项目选择器的右侧锚点。
 - 新增页面同时使用 Light/Dark 语义 token；不得用只适配单主题的硬编码颜色。
 - XDMaker 仅作为产品流程与数据语义的事实来源；呈现层以 Cindy 当前 `DESIGN.md` 为准。
+
+**台账（design-inventory）登记（2026-09-24，第三轮上游同步）**：
+`docs/design-rules/design-inventory.md` 的 GENERATED 区在本轮同步后**重新生成**，登记 surface 数
+**55**（上游基底 **51** + Meka 4 个 `desktop.meka.*` surface：`desktop.meka.plugins` /
+`desktop.meka.projects` / `desktop.meka.skills` / `desktop.meka.skills-market`）。
+四个 surface **均存在于生产路由上**（`/cc-agent/meka/plugins`、`/cc-agent/meka`、
+`/cc-agent/meka/skills`、`/cc-agent/meka/skills/market`），「生产路由覆盖」表与「排除的 redirect」
+两处的 Meka 行同时补回；上一轮 Meka 侧为 54（本轮取上游基底后补回 4 个 Meka surface → 55）。
+四个 surface 的人工区 owner 仍是 `unassigned`（未认领），本轮只做机械重生成与人工区事实登记，
+**未做 Light / Dark 目检**；校验入口 `pnpm check:design-inventory`（生成器 `pnpm design:inventory`，
+本轮未复跑生成器）。上游同批把 `SkillhubMarketPreviewPanel` 改名为 `SkillhubMarketDetailView`，
+GENERATED 区的可达组件名随之更新；该改名的 7 处悬挂引用收尾见
+[`2026-09-24-origin-main-to-meka-main.md`](./2026-09-24-origin-main-to-meka-main.md) §5.2（`UP-06`）。
 
 关键实现：
 
@@ -5149,12 +5173,22 @@ no-op，暂停 / 迁移 / 超时语义不受影响）。**逐字节基线**：`m
      冷启动发现孤儿 patch-info 后静默 `removePatchInfo()`；下次下载的 `writePatchInfo()`
      重写 patch-info 时**不带 `applyAttempts`**（`cleanOldFiles()` 本身是保留 patch-info 的，
      见 `updateArtifacts.ts`）→ 计数恒为 1，`attempts >= 3` 永不触发 ⇒ 每次失败都整包重下。
-- **修法**（对齐上游 `5b10e9babc`「恢复原更新权限流程并保留失败重试」的语义，但不整体回退）：
+- **修法**（对齐上游 `5b10e9babc`「恢复原更新权限流程并保留失败重试」的语义）：
   - `installer.rs`：成功路径与两条失败重启路径一律改回 `launch_detached`；删除
     `launch_de_elevated` / `launch_with_linked_medium_token` /
     `may_relaunch_with_current_integrity` / `AppLaunch::Skipped` 与其致命失败分支。
     **保留**安装目录身份钉扎、`.updating` 独占锁、`SHChangeNotify` Shell 刷新与热更包结构校验
-    （上游回退会连这些一起删掉，故不采用整体 pick）。
+    （上游回退会连这些一起删掉，故当时不采用整体 pick；**该判断已于 2026-09-24 被取代，见下**）。
+    > **后续修订（2026-09-24 第三轮上游同步，用户裁决方案 A）**：本轮同步已**整体接纳**上游
+    > `5b10e9babc` 的回退，`installer.rs` 取上游版本，因此上面那句「**保留**」**只对后两项成立** ——
+    > 保留的是 `notify_shell_associations_changed()`（`SHChangeNotify` Shell 刷新）与
+    > `validate_extracted_main_executable()`（热更包结构校验）两项 Meka 投影；
+    > `InstallDirIdentity` / `capture_install_dir_identity` / `install_dir_identity_unchanged` /
+    > `copy_tree_into_pinned` / `pinned_join` 与 `.updating` 独占锁（`acquire_update_lock`）
+    > 已随上游回退一并删除。本条 `updateService.ts` 侧的重试预算与状态机结论**不受影响**。
+    > 现行契约以 `docs/dev-rules/cindy-updater.md` 与
+    > [`2026-09-24-origin-main-to-meka-main.md`](./2026-09-24-origin-main-to-meka-main.md)
+    > §5.2（`UP-05`）与 §6.4（UPD）为准。
   - `updateService.ts`：新增 `updates/apply-state.json` 持久计数（按目标版本归属，
     跨重下存活），`incrementApplyAttempts()` 镜像写入；`checkExistingPatch` 与「下载前闸门」
     两处共用 `spentApplyAttemptsFor()` 判定 `MAX_APPLY_ATTEMPTS=3` 耗尽（放弃动作两处一致：
@@ -6237,5 +6271,82 @@ windows shard 1，均 `if: matrix.shard == 1`）把
   `pnpm check:dev-docs` → **exit 0**。
 - **仍未验证（不得写强）**：`pnpm desktop:session-smoke` **未跑**；**Light / Dark 两种模式均未目检**；
   **Pi argv 余量仍是算术推演、不是实测**；`pnpm design:inventory` 生成器未复跑（`--check` 已通过）。
+
+### 11.29 2026-09-24 第三轮上游同步（`origin/main` → `meka/main`）
+
+> 本条是**新条目**，不改写任何带日期的历史原句；历史条目里与现状冲突的规范陈述一律**在原处追加**标注
+> （本轮已就 §6.59 的更新器「保留项」追加后续修订标注）。**本轮未跑全量门禁、未做实机验收**：
+> 语义验收（白名单 WL-1…WL-18）、门禁与实机结果由调度者一次性执行，登记在
+> [`2026-09-24-origin-main-to-meka-main.md`](./2026-09-24-origin-main-to-meka-main.md) §7、§8。
+
+- **基线**：来源 `origin/main` = `2f169d6aeb4428ab57020cf925e10a3a80414391`；目标 `meka/main`
+  合并前 `09e8bb613247d03478cba2b58170d2d48e9e48e8`；merge-base
+  `0f65d982317d81f979d0c4de4b66606c21c8bc60`（= 第二轮同步带上来的上游提交）。
+- **范围**：上游独有 **476** 提交 / 新增 **1016** 路径 / 删除 **22** 路径；两侧都改过 **182** 条
+  （Git 冲突 **65**，自动合并 **118**，跳过 2 个生成物）；Meka 独有 **164** 提交。冲突已全部解除；
+  结构审计结论见本期报告 §4 —— 上游新增文件除 D4 有意改号的 5 条外全部在位、且无一条同时被 Meka
+  改动过，上游删除的 22 条逐条无悬挂引用，**自动合并面上游新增内容被静默丢弃 = 0**。
+- **D4 顺移追加（数据库）**：Meka 已发布谱系 `0000..0112` **冻结不变**（其中 `0082`–`0088` 为 Meka
+  迁仓谱系槽：`.sql` 为 `SELECT 1;`、部分带 runtime script；`0089`–`0092` 为 Meka 真实 SQL；
+  `0093..0112` 为上游内容，Meka 编号 = 上游编号 + 3，自上游 `0090` 起）。上游本轮**真正新增**
+  `0110..0114` 共 5 条（`0110_abandoned_scarlet_witch` 建 `session_task_tags`、
+  `0111_messy_newton_destine` 加 `task_tags.sort_order`、`0112_backfill_task_tag_order` 纯数据回填、
+  `0113_grey_cannonball` 加 `task_tags.name_customized`、`0114_shared_task_events` 建
+  `shared_task_events`），已按 D4 **删除上游原号 5 个 `.sql`、以 Meka 号 `0113..0117` 重建**
+  （SQL 正文取上游逐字节内容；上游这 5 条本身没有 companion，故无新增 companion）；
+  `meta/0113..0117_snapshot.json` 由上游同序号 snapshot 经 **Meka delta 变换**得到
+  （delta 由 `MEKA 0112` vs `UP 0109` 结构化比对推出，**纯增量**：新增表 `meka_projects` / `meka_roles`，
+  `sessions` 新增 10 列 —— `meka_role`、`meka_target_json`、`meka_project_id`、`meka_role_id`、`is_formal`、
+  `formal_type`、`formal_link`、`formal_ref`、`formal_content_json`、`capability_snapshot_json` ——
+  + 2 索引 `idx_sessions_meka_project_id` / `idx_sessions_meka_role_id` + 1 外键
+  `sessions_meka_role_id_meka_roles_id_fk`；`_meta` 与 `views` 无差异；变换脚本对每个目标快照**断言**
+  「`sessions` 去掉 Meka 增量后与上游 `0109` 的 `sessions` 规范化后相等」）；journal 追加 5 条
+  （`idx` 113–117），snapshot 链 `id/prevId` 重连。**实跑验证**：
+  `pnpm --filter desktop db:validate` **6/6 步全过**（`0000..0117` 118 个 SQL、journal/snapshot 全对齐、
+  `drizzle-kit check` 通过、44 个 companion 均 CommonJS、固定基线 80 条 SQL + 23 脚本、
+  canonical 基线 113 条 SQL + 44 脚本）；`pnpm --filter desktop exec drizzle-kit generate`
+  → **`No schema changes, nothing to migrate`**（证明 `0117_snapshot.json` 与合并后 `schema.ts` 完全一致）。
+  注意：Meka 的 drizzle `*_snapshot.json` 因 `core.autocrlf=true` 在磁盘上是 CRLF、blob 是 LF，
+  写盘按目录既有风格写 CRLF。
+- **三处实质发现（详细口径与验证见本期报告 §5.2、§6.14）**：
+  1. **共享下载器缺省上限被上游从 8 MiB 提到 128 MiB**（`packages/plugin-protocol/src/memberUpload.ts:24`），
+     使 Meka 侧「普通插件返回 `undefined` 交给缺省」的调用点前提失效 ⇒ 普通 Meka 插件下载上限被
+     **静默放宽**。已按 `docs/dev-rules/plugin-security-and-authoring.md` §4.2 的既有口径改回**显式注入**：
+     `MEKA_PLUGIN_MAX_DOWNLOAD_BYTES` = 8 MiB（普通）/ `MEKA_NODE_PLUGIN_MAX_DOWNLOAD_BYTES` = 128 MiB（node），
+     `resolveMekaPluginMaxDownloadBytes` 总是返回数值（`main/plugin-market/mekaDownloadPolicy.ts`）；并删掉
+     `download.test.ts` 里与上游新语义互斥的 `keeps the default 8 MiB ceiling before starting a download`
+     用例（上游自己的 `accepts a package above the former 8 MiB market limit` 覆盖新缺省）。
+  2. **上游 `5b10e9babc` 把 #4502 的 Windows 热更机制整体回退**，用户裁决**方案 A：完整接纳** ——
+     见 §6.59 的**后续修订**标注：`installer.rs` 取上游，仅保留 `SHChangeNotify` Shell 刷新与热更包结构校验
+     两项 Meka 投影；安装目录身份钉扎与 `.updating` 独占锁随上游回退删除。
+  3. **`SkillhubMarketListView` 取上游路由化重构**后，Meka 曾给「Cindy 市场列表」加的页内预览与选中态
+     （`hooks/useMarketSelection.ts`、`lib/marketPreviewSelection.ts`、`lib/marketPreviewSync.ts`）
+     在该列表上**不再有生产消费方**（只剩各自单测）；Meka 自己的 Skill Hub 仍用同一详情组件做页内预览，
+     功能未丢 —— 登记为**有意接纳的上游重构**。
+- **插件基座（存量插件兼容红线）**：本轮上游**无** receipt schema（`RECEIPT_SCHEMA_VERSION = 2` 未动）、
+  **无**指纹编码（`cindy-ghost-content-v2` 未动）、**无**安装布局 / 包格式（尺寸常量数值不变）变更，
+  `validateGhostManifest` 仅放宽（新增 `ok:false` 拒绝点 = 0）⇒ **存量插件无需迁移**，
+  用户升级后什么都不做，已装 / 已批准 / 已启用的插件照旧可用。上游 `b8b90eb536` 新增的 remote 私有
+  setup 卡 / 设备码属插件基座**新面**，仍需白名单放行门。
+- **台账与页面控件登记**：`docs/design-rules/design-inventory.md` 的 GENERATED 区本轮重新生成，
+  surface **51**（上游基底）→ **55**（补回 4 个 `desktop.meka.*` surface），见 §4.6 的台账登记；
+  项目 / 角色管理页的三页签控件已换成上游共享 `SegmentedControl`，同见 §4.6。
+- **交付门禁实跑中又发现并修复 6 处缺陷**（typecheck 8 错、Windows 安装器两处、`test:runner` 两处 i18n 术语、
+  插件下载缺省上限被静默放宽、入库的 `cindy-meka-updater.exe`、zh-TW 品牌占位），逐条登记在本期报告
+  **§6.15**；其中「插件下载缺省上限被静默放宽」与「Windows 安装器 `buildResources` / 宏内 `!include`」
+  两处是**上游改语义后 Meka 侧调用点前提被静默覆盖**的典型形态（白名单清单 §1 点名的失败模式）。
+- **身份字面值硬编码（WL-6.1）**：上游本轮新增/大改的子系统在 `meka/main` 上零适配，把上游身份名当唯一
+  合法值；**配套测试也写死上游名而自洽通过 ⇒ 门禁不报**。已修四处（`cindy-make/versionStartup.ts`、
+  `cindy-make` 的 `personalBuild.test.ts`、`main/linuxInstallation.ts`、`main/index.ts` 处置文案），统一为
+  「从 `brandExecutableName()` 正本派生 + 上游名仅 legacy 只读」，各自补了反例断言与回归守卫实证，
+  见本期报告 **§6.17**。
+  **已知未修（存量、用户裁决只登记）**：**Linux 用户级安装链路在 Meka 下会直接装不上** ——
+  `forge-linux.ts:14` 的 build-info executable 写死 `Cindy`/`CindyDev`，`resources/linux/install-user.sh`
+  与 `install-omarchy.sh` 要求 `$payload/Cindy`，而打包产物是 `CindyMeka` ⇒
+  `Incomplete application.` / `Unexpected executable identity.`；`brand-identity-sync` 的镜像断言未覆盖
+  `forge-linux.ts` 与这两个脚本。修复方向与证据链见本期报告 §6.17。
+- **未完成项（不得宣告收敛）**：**`pnpm-lock.yaml` 已由 `pnpm install` 重建**（原列此处，已完成，
+  见本期报告 §7.1/§8）、插件基座白名单放行门、白名单语义验收（阶段 C）与实机验收 —— 逐项登记在
+  本期报告 §7、§8。
 
 

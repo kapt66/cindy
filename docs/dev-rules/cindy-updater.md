@@ -62,11 +62,30 @@ Windows 热更包会直接覆盖安装目录，不会重新执行 NSIS。新进�
 验证命令按 [`desktop-development.md`](desktop-development.md) 选择；更新链路的真实行为
 无法靠单测完全覆盖，评估与实测结论必须如实记录。
 
-## Windows 安装目录身份必须用 stable 工具链可编译的 API
+## Windows 热更包结构校验（Meka 保留）
 
-更新器在替换前会「钉住」安装目录并校验它没被换成重解析点（junction / symlink），
-判据是 `InstallDirIdentity { is_reparse, device, inode }`（`installer.rs` 的
-`capture_install_dir_identity` / `install_dir_identity_unchanged`）。取 `device` / `inode` 时：
+`installer.rs` 在解压完成后、备份与替换**之前**调用
+`validate_extracted_main_executable(&extract_dir, &args.exe_name)`：`--exe-name` 不得为空、
+不得含 `/` 或 `\`、不得是 `.` / `..`，且解压目录下必须存在**非空普通文件**形式的同名主程序；
+任一条不满足即 `bail`，安装以「热更包缺少主程序／热更包主程序无效」中止。拦的是畸形或
+错误产品的 ZIP：只在下发之后检查 `app_dir` 不够——旧 exe 还在原地，一个漏掉新主程序的包
+会被误判成有效并原样替换。因为位置在备份／替换之前，失败时 `app_dir` 一个字节都没被改过，
+属于安全中止、不需要回滚。它是本仓保留在「上游回退后的 `installer.rs`」上的两个自包含
+Meka 能力之一（另一个是上节「Windows 热更后的 Shell 刷新」），与 #4502 的目录身份机制无关；回归用例
+`extracted_main_executable_must_exist_and_be_non_empty`（`installer.rs` 的 `mod tests`）。
+
+## 决策记录：Windows 安装目录身份（机制已随上游回退，**当前不适用**）
+
+> **状态：已失效，不要按本节实现。** 上游 `5b10e9babc`（2026-09-21「恢复原更新权限流程并
+> 保留失败重试」）已把 #4502 的 Windows 热更机制整体回退，本仓裁决为**完整接纳该回退**，
+> 只把两个自包含的 Meka 能力投影回上游形态（Shell 刷新、上面那节的热更包结构校验）。
+> `InstallDirIdentity`、`capture_install_dir_identity`、`install_dir_identity_unchanged`、
+> `copy_tree_into_pinned`、`pinned_join` 及配套的三条测试在本仓**已不存在**，安装目录不再被
+> 「钉住」，替换路径回到上游的 `copy_tree()`。本节仅作为**决策记录**保留：它解释当时为什么
+> 这么写、上游为什么回退，以及那条 stable-Rust 编译阻断的教训。
+
+**当时为什么必须这么写**（判据原为 `InstallDirIdentity { is_reparse, device, inode }`，
+由 `capture_install_dir_identity` / `install_dir_identity_unchanged` 取用）。取 `device` / `inode` 时：
 
 - **不得使用 `std::os::windows::fs::MetadataExt::volume_serial_number()` /
   `file_index()`**：这两个方法至今仍在 `windows_by_handle` 不稳定特性后面
@@ -83,20 +102,23 @@ Windows 热更包会直接覆盖安装目录，不会重新执行 NSIS。新进�
   对 `Err` 判「已变」从而拒绝复制。**不得**退化成 `unwrap_or(0)` 这类「全 0 身份」——
   那会让两侧比较都命中 0 而把「目录已被换掉」误判成「没变」。
 
-该约束的原因与影响：更新器编译失败**不是**「少个功能」，而是**所有 Windows 打包（含
-canary 与正式发布）全部中止**，且报错位置在 `cargo` 而不是本仓 TS 门禁里 —— 只有真正
-跑一次打包才会暴露。因此改动 `installer.rs` 后**必须**至少跑通
+**仍然有效的教训与门禁**（与身份机制是否在仓无关）：更新器编译失败**不是**「少个功能」，
+而是**所有 Windows 打包（含 canary 与正式发布）全部中止**，且报错位置在 `cargo` 而不是本仓
+TS 门禁里 —— 只有真正跑一次打包才会暴露。因此改动 `installer.rs` 后**必须**至少跑通
 `cargo build --release --manifest-path apps/desktop/cindy-updater/src-tauri/Cargo.toml`
 （等价于 forge 的 prePackage），以及
 `node apps/desktop/scripts/check-windows-installer.mjs`。
 
-**已知缺陷（2026-09-23 已补）**：该文件里 3 处 `#[test]` 直接调用
-`std::os::unix::fs::symlink` 而未加 `#[cfg(unix)]`
+**上游为什么回退**：这套机制把「目录身份校验 + 令牌编排」放进了替换成功后的启动判定，
+2026-09-22 的线上事故（0.0.22 无法升到 0.0.23，见下节）里它把一次**已经完成**的替换判成
+安装失败并回滚，用户被永久钉在旧版本上。重新引入同类前置条件前，必须先满足下节的不变量。
+
+**当时的次要缺陷（已随回退消失）**：该机制晚近一轮还补过 3 处测试的 `#[cfg(unix)]` 属性
 （`install_dir_identity_rejects_a_swapped_reparse_point`、
 `copy_tree_into_pinned_rejects_a_swapped_destination`、
-`pinned_join_rejects_a_descendant_junction`），导致 Windows 上
-`cargo test -p cindy-updater` 无法编译。属性已在 §6.60 那轮补齐，现在 `cargo test --lib` 在
-Windows 可编译并执行 65 项；`cargo build` 与上面的打包门禁要求不变。
+`pinned_join_rejects_a_descendant_junction`）——它们直接调用
+`std::os::unix::fs::symlink`，导致 Windows 上 `cargo test -p cindy-updater` 无法编译。
+这三条测试与上述符号已随 `5b10e9babc` 一起删除；`cargo build` 与上面的打包门禁要求不变。
 
 ## Windows 热更的启动与重试契约
 
@@ -115,7 +137,10 @@ Windows 可编译并执行 65 项；`cargo build` 与上面的打包门禁要求
 
 上游已在 `5b10e9babc`（「恢复原更新权限流程并保留失败重试」）把这条握手整体回退，本仓与之
 对齐。**不变量（精确版）：启动的完整性决策不得被令牌编排门控——不得因为「怎么把它拉起来」
-的令牌处理而把一次已完成的替换判成安装失败。**
+的令牌处理而把一次已完成的替换判成安装失败。** 该不变量由 `installer.rs` 的源码级回归用例
+`successful_launch_is_never_gated_on_token_juggling` 钉住：它断言生产半段含
+`launch_detached(exe_path)?`，且不含 `CreateProcessWithTokenW(` / `launch_de_elevated` /
+`may_relaunch_with_current_integrity` / `AppLaunch::Skipped` 任一禁令词。
 
 **该不变量不覆盖启动本身失败**：替换之后仍有两条路径会回滚，且与上游 `5b10e9babc` 同形，
 是本仓刻意保留的上游语义，不是遗留待办：
@@ -133,10 +158,30 @@ Windows 可编译并执行 65 项；`cargo build` 与上面的打包门禁要求
 现状。若要重新收紧这条，必须在不把启动失败升级为安装失败的前提下实现，并且自带失败退化
 路径；否则会再次把用户钉死在旧版本上。
 
-相关参数语义收窄（不是死参数）：`--install-writable` 在被删的 `may_relaunch_with_current_integrity`
-里曾是启动判定的第 3 个入参，现在**只**驱动 staging 选择
-（`resolved_install_writable` → `staging_dirs` / `staging_dirs_for`），仍会被解析并在 UAC
-自我提权时转发。它不再影响「用谁的令牌启动」，改动这条链路时不要以为它还管启动。
+**上游回退后的 Windows CLI 与锁语义（改动前必须按此核对）**：`CliArgs`
+（`src-tauri/src/args.rs`）当前只有 `--zip` / `--app-dir` / `--exe-name` / `--install-key` /
+`--pid` / `--log` / `--lock` / `--workdir` / `--theme` / `--elevated` 十项。
+`--install-writable`、`--zip-sha256`、`may_relaunch_with_current_integrity`、
+`InstallDirIdentity` 系列、`copy_tree_into_pinned` / `pinned_join`、High-IL staging ACL 与
+`InstallerFailure` 都已随 `5b10e9babc` 删除，**不要再按「已收窄为 staging 选择」去理解
+`--install-writable`**：该参数已不存在，staging 目录只由 `--workdir` 决定（`staging_dirs()`
+生成 `cindy-update-extract-<ts>` / `cindy-update-rollback-<ts>`）。Electron 侧下发的是
+`--zip / --app-dir / --exe-name / --pid / --log / --lock / --theme / --workdir` 八项
+（`updateService.ts` 的 `executeUpdateWindows()`）。`--install-key` 不由 Electron 下发：
+主进程用 `CINDY_VERSION_SYNC_KEY` 环境变量传递（老更新器会忽略而不是拒绝整个更新），
+更新器自我提权时才把它转成 `--install-key` 转发给提权子进程
+（`installation_version_key()`：参数优先、其次环境变量）。
+
+`.updating` 也**不再是独占锁**：`installer.rs` 在替换前 `fs::write(&args.lock, b"updating")`
+落一个普通标记文件、替换后 `fs::remove_file(&args.lock)` 删掉，`ensure_no_other_updater()`
+仅凭「标记存在 **或** 存在另一个 updater 进程」判 `updater_busy`（拒绝 Retry／启动，
+且不删别人的标记）。权限路径回到 `needs_elevation()`（向 `app_dir` 写探针文件，仅
+`PermissionDenied` 才算需要提权）+ `self_elevate()`（`ShellExecuteExW(verb="runas")`
+原样转发同一组参数并追加 `--elevated`）；已提权仍写不进去时报「可能被杀软锁定」而非再次弹 UAC。
+Electron 侧仍消费该标记：`bootstrap-electron.ts` 启动时最多等 30 秒（Linux 为 30 分钟，
+带 PID 心跳语义），超时后尽力 `unlinkSync` 一次即按陈旧锁继续启动；等锁判据已简化为
+「纯总时长」，不再依据持有者 PID／unlink 失败／共享冲突决定是否继续等
+（`src/main/updateLockWait.ts` 及其单测已随上游删除）。
 
 ### 重试预算必须跨「重新下载」存活
 
@@ -162,7 +207,9 @@ Windows 可编译并执行 65 项；`cargo build` 与上面的打包门禁要求
   镜像随进程结束消失（重启即新会话），持久化仍由该文件负责；
 - **该文件必须留在 `cleanOldFiles()` 传给 `cleanOldUpdateFiles(..., persistentFileNames)` 的
   保留名单里**，当前名单为
-  `[patch-info.json, .updating, apply-state.json, apply-state.json.bak]`。
+  `[patch-info.json, .updating, apply-state.json, apply-state.json.bak]`
+  （`updateService.ts` 的 `cleanOldFiles()`，`updateService.ts:1373-1381`；参数名
+  `persistentFileNames` 见 `updateArtifacts.ts` 的 `cleanOldUpdateFiles()`，`updateArtifacts.ts:13`）。
   `cleanOldUpdateFiles` 会删掉 `updates/` 下所有其它文件，漏登记就等于在最需要它的那次重下里
   把计数清掉、死循环原样复现；回归用例
   `keeps the durable attempt counter across the re-download after a failure` 钉住这一点。

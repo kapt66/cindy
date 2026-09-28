@@ -93,11 +93,17 @@ type ProjectAutomationConsentInsert = typeof projectAutomationConsents.$inferIns
 type ScheduleRunRow = typeof scheduleRuns.$inferSelect;
 type ScheduleRunInsert = typeof scheduleRuns.$inferInsert;
 
-type SessionRuntimeProjector = (session: Session) => Partial<Session>;
+type SessionRuntimeFields = Pick<Session, 'id' | 'agentKind' | 'model' | 'providerId' | 'effort' | 'fastMode'>;
+type SessionRuntimeProjector = (session: SessionRuntimeFields) => Partial<Session>;
 let sessionRuntimeProjector: SessionRuntimeProjector | null = null;
 
 export function setSessionRuntimeProjector(projector: SessionRuntimeProjector | null): void {
   sessionRuntimeProjector = projector;
+}
+
+/** Full reads and committed route patches must publish the same runtime snapshot. */
+export function projectSessionRuntimeFields(session: SessionRuntimeFields): Partial<Session> {
+  return sessionRuntimeProjector?.(session) ?? {};
 }
 
 /**
@@ -114,6 +120,7 @@ export function setSessionRuntimeProjector(projector: SessionRuntimeProjector | 
  * preview 落 null，渲染端兜底隐藏。
  */
 export type SessionRowWithCount = SessionRow & {
+  tags?: import('@cindy/maker-shared').TaskTag[];
   messageCount: number;
   latestMessageContent?: string | null;
   latestMessageExtract?: string | null;
@@ -230,6 +237,7 @@ export function sessionToCamel(row: SessionRowWithCount): Session {
     row.totalCostUsd + (row.totalCostCurrency === 'USD' ? row.totalCostAmount : 0);
   const base: Session = {
     id: row.id,
+    ...(row.tags ? { tags: row.tags } : {}),
     userId: '', // 本地 db 已按 user 隔离，无需冗余存储
     title: row.title,
     workingDir: row.workingDir,
@@ -303,7 +311,7 @@ export function sessionToCamel(row: SessionRowWithCount): Session {
     hasPendingSessionInterruption(candidate)
       ? base.activeTurnStartedAt
       : null;
-  return sessionRuntimeProjector ? { ...base, ...sessionRuntimeProjector(base) } : base;
+  return { ...base, ...projectSessionRuntimeFields(base) };
 }
 
 export function messageToCamel(row: MessageRow): Message {
@@ -358,40 +366,42 @@ export function normalizeRemoteHostId(raw: string | null | undefined): string | 
 /** Session create 入口字段映射。生成 timestamps + 默认值由调用方保证必填。 */
 export function sessionCreateToRow(
   id: string,
-  body: {
-    id?: string;
-    title?: string;
-    workingDir?: string;
-    workspaceKind?: WorkspaceKind;
-    model?: string;
-    effort?: string;
-    permissionMode?: string;
-    fastMode?: boolean;
-    planModeEnabled?: boolean;
-    agentKind?: AgentKind;
-    orcaRole?: OrcaRole | null;
-    parentSessionId?: string | null;
-    forkedAtMessageId?: string | null;
-    extraDirs?: string[];
-    writableDirs?: string[];
-    /** Remote codex (P2): 远端 SSH host alias; null/undefined = 本地。 */
-    remoteHostId?: string | null;
-    /**
-     * per-session 来源(供应商)显式选择,落盘 sessions.provider_id(与 update 同列)。
-     * null/undefined = 不显式选,跟随该 agent 的原生默认路由(no-break)。草稿态首次
-     * create 由 renderer 透传用户在草稿里选定的来源,使新会话首个请求就走对供应商。
-     */
-    providerId?: string | null;
-    /** Main-owned purposes only; the renderer create IPC validates which values it accepts. */
-    source?: 'bot' | 'cindy-make';
-    /** Creation-only Meka project/role binding. */
-    mekaProjectId?: string | null;
-    mekaRoleId?: string | null;
-    /** Legacy built-in role marker; ignored when a project/role binding exists. */
-    mekaRole?: 'planner' | 'artist' | 'programmer' | 'tester' | null;
-    isFormal?: boolean;
-    formal?: FormalSessionData | null;
-  } | undefined,
+  body:
+    | {
+        id?: string;
+        title?: string;
+        workingDir?: string;
+        workspaceKind?: WorkspaceKind;
+        model?: string;
+        effort?: string;
+        permissionMode?: string;
+        fastMode?: boolean;
+        planModeEnabled?: boolean;
+        agentKind?: AgentKind;
+        orcaRole?: OrcaRole | null;
+        parentSessionId?: string | null;
+        forkedAtMessageId?: string | null;
+        extraDirs?: string[];
+        writableDirs?: string[];
+        /** Remote codex (P2): 远端 SSH host alias; null/undefined = 本地。 */
+        remoteHostId?: string | null;
+        /**
+         * per-session 来源(供应商)显式选择,落盘 sessions.provider_id(与 update 同列)。
+         * null/undefined = 不显式选,跟随该 agent 的原生默认路由(no-break)。草稿态首次
+         * create 由 renderer 透传用户在草稿里选定的来源,使新会话首个请求就走对供应商。
+         */
+        providerId?: string | null;
+        /** Main-owned purposes only; the renderer create IPC validates which values it accepts. */
+        source?: 'bot' | 'cindy-make' | 'cindy-make-merge';
+        /** Creation-only Meka project/role binding. */
+        mekaProjectId?: string | null;
+        mekaRoleId?: string | null;
+        /** Legacy built-in role marker; ignored when a project/role binding exists. */
+        mekaRole?: 'planner' | 'artist' | 'programmer' | 'tester' | null;
+        isFormal?: boolean;
+        formal?: FormalSessionData | null;
+      }
+    | undefined,
   now: number,
 ): SessionInsert {
   const workspaceKind = body?.workspaceKind ?? 'project';

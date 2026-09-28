@@ -1,6 +1,11 @@
 /**
  * Regression coverage for the market Plugin detail view's explicit same-ID
  * replacement action and its data-preservation explanation.
+ *
+ * 主操作按钮已迁到共享 `Button`（上游结构），Meka 侧在其上保留自己的进度口径：
+ * `loading={busy && !progress}` —— 只有「忙但没有 progress」时才走 loading 遮罩；
+ * 「忙且有 progress」（Meka 渠道安装/更新会下发进度）时必须继续渲染进度文案与进度条，
+ * 不能被遮罩吃掉。两种状态各有独立用例，改动任一分支都必须同时看这两条。
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  * @vitest-environment jsdom
  */
@@ -121,7 +126,55 @@ describe('MarketPluginDetailView', () => {
       name: /settings\.ghosts\.market\.install/,
     });
     expect(action.getAttribute('aria-busy')).toBe('true');
+    // 共享 Button 的 loading 契约：按钮进入 loading，Spinner 覆盖在操作区上。
     expect(action.querySelector('.animate-spinner')).toBeTruthy();
-    expect(action.textContent).toBe('');
+    // 没有 progress 时与上游同形：文案不是被删掉，而是被收进 `opacity-0` 遮罩
+    // （Button 用它保住可访问名称与按钮宽度，见 components/ui/button.tsx 与
+    // components/ui/__tests__/button.test.tsx 的同名断言）。旧实现是裸 `<button>`
+    // 直接把子节点换成 Spinner，才会得到空 textContent；断言「文案仍在遮罩里」
+    // 才同时钉住「可见文案被 spinner 取代」和「可访问名称不丢」。
+    expect(action.querySelector('.opacity-0')?.textContent).toBe('settings.ghosts.market.install');
+    expect(action.getAttribute('aria-label')).toBe('settings.ghosts.market.install');
+  });
+
+  it('keeps the channel install progress visible in the action while busy', () => {
+    render(
+      <MarketPluginDetailView
+        detail={detail}
+        busy
+        progress={{
+          operationId: '6f1d4c2e-9a3b-4c5d-8e7f-0a1b2c3d4e5f',
+          pluginId: 'release-google-calendar',
+          phase: 'downloading',
+          downloadedBytes: 25,
+          totalBytes: 100,
+        }}
+        onBack={vi.fn()}
+        onInstall={vi.fn()}
+        onIconLoadError={vi.fn()}
+      />,
+    );
+
+    // Meka 口径：Meka 渠道（`progress` 非空）在下载/安装阶段必须让进度文案与进度条
+    // 继续可见——既不套 `opacity-0` 遮罩，也不渲染遮罩用的 Spinner，否则用户只看到
+    // 一个转圈，看不到同一操作的真实阶段（这是本轮合并要保留的产品差异）。
+    const action = screen.getByRole('button', {
+      name: 'settings.ghosts.market.downloading',
+    });
+    expect(action.getAttribute('aria-busy')).toBe('true');
+    expect(action.querySelector('.animate-spinner')).toBeNull();
+    expect(action.querySelector('.opacity-0')).toBeNull();
+    // 进度文案可见，且安装文案不再出现在主操作里。
+    expect(screen.getByText('settings.ghosts.market.downloading')).toBeTruthy();
+    expect(screen.queryByText('settings.ghosts.market.install')).toBeNull();
+    // 进度条按真实下载比例落点（25/100）。
+    const bar = action.querySelector('[aria-hidden="true"].absolute');
+    expect(bar).toBeTruthy();
+    expect((bar?.querySelector('span') as HTMLElement | null)?.style.width).toBe('25%');
+    // 可访问名称不变量：有 progress 时按钮的可访问名称继续非空。这里刻意让它取自
+    // 可见的进度文案（组件在该分支不写 aria-label）：aria-label 会**覆盖**子节点文本，
+    // 而主操作此刻唯一的进度播报通道就是这个文本，写死成 action 文案反而会把阶段
+    // 信息从无障碍树里抹掉。同一口径见 GhostPluginPage.tsx:2898 的列表更新按钮
+    // （`aria-label={updateProgress ? undefined : …}`），两处不得分叉。
   });
 });

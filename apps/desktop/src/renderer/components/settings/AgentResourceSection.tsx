@@ -10,7 +10,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { SettingsSegmentedControl } from './SettingsSegmentedControl';
+import { SegmentedControl } from '@/components/ui/segmented-control';
 
 import { Switch } from '@/components/ui/switch';
 import { cn } from '@/lib/utils';
@@ -232,7 +232,7 @@ export function AgentResourceSection() {
             才能像同卡其它行一样相对「标签 + 说明」整块垂直居中。 */}
         <div className={ROW_CLASS}>
           <div className="flex min-w-0 flex-col gap-1">
-            <p className={ROW_LABEL_CLASS} style={{ letterSpacing: '0.12px' }}>
+            <p id="settings-search-settings-agentResource-preset" className={ROW_LABEL_CLASS} style={{ letterSpacing: '0.12px' }}>
               {t('settings.agentResource.preset')}
             </p>
             {/* 四段提示全部常挂载、叠在同一个 grid 格里,只有当前档位那段可见(其余
@@ -253,7 +253,7 @@ export function AgentResourceSection() {
               })}
             </div>
           </div>
-          <SettingsSegmentedControl
+          <SegmentedControl
             aria-label={t('settings.agentResource.preset')}
             value={activePreset}
             onValueChange={(id) => void applyPreset(id)}
@@ -270,7 +270,7 @@ export function AgentResourceSection() {
         {/* 并发命令上限 */}
         <label className={ROW_CLASS}>
           <span className="flex min-w-0 flex-col gap-1">
-            <span className={ROW_LABEL_CLASS} style={{ letterSpacing: '0.12px' }}>
+            <span id="settings-search-settings-agentResource-maxConcurrent" className={ROW_LABEL_CLASS} style={{ letterSpacing: '0.12px' }}>
               {t('settings.agentResource.maxConcurrent')}
             </span>
             <span className={ROW_HINT_CLASS}>{t('settings.agentResource.maxConcurrentHint')}</span>
@@ -304,12 +304,12 @@ export function AgentResourceSection() {
         {/* 进程优先级 */}
         <div className={ROW_CLASS}>
           <div className="flex min-w-0 flex-col gap-1">
-            <p className={ROW_LABEL_CLASS} style={{ letterSpacing: '0.12px' }}>
+            <p id="settings-search-settings-agentResource-priority" className={ROW_LABEL_CLASS} style={{ letterSpacing: '0.12px' }}>
               {t('settings.agentResource.priority')}
             </p>
             <p className={ROW_HINT_CLASS}>{t('settings.agentResource.priorityHint')}</p>
           </div>
-          <SettingsSegmentedControl
+          <SegmentedControl
             aria-label={t('settings.agentResource.priority')}
             value={settings.processPriority}
             onValueChange={(tier) => persist('processPriority', tier)}
@@ -326,7 +326,7 @@ export function AgentResourceSection() {
         {/* 工具链限核 */}
         <div className={ROW_CLASS}>
           <div className="flex min-w-0 flex-col gap-1">
-            <p className={ROW_LABEL_CLASS} style={{ letterSpacing: '0.12px' }}>
+            <p id="settings-search-settings-agentResource-capThreads" className={ROW_LABEL_CLASS} style={{ letterSpacing: '0.12px' }}>
               {t('settings.agentResource.capThreads')}
             </p>
             <p className={ROW_HINT_CLASS}>{t('settings.agentResource.capThreadsHint')}</p>

@@ -74,6 +74,8 @@ const mekaMock = vi.hoisted(() => ({
   projects: new Map<string, Record<string, unknown>>(),
   roles: new Map<string, { projectId: string; name: string; displayName: string }>(),
 }));
+const closeSharedTaskForTask = vi.hoisted(() => vi.fn());
+vi.mock('../../device-link/sharedTaskRuntime.js', () => ({ closeSharedTaskForTask }));
 
 vi.mock('electron', () => ({
   app: { getPath: () => tmpRoot, getVersion: () => '9.9.9' },
@@ -483,6 +485,7 @@ async function writeBundleFile(bytes: Buffer, password?: string): Promise<string
 
 describe('sessionShareImport', () => {
   beforeEach(async () => {
+    closeSharedTaskForTask.mockReset().mockResolvedValue(undefined);
     dbMock.conflictRow = null;
     dbMock.conflictForResumeId = null;
     dbMock.conflictGraphRows = [];
@@ -902,6 +905,7 @@ describe('sessionShareImport', () => {
       replaceSessions?: Array<{ id: string; status: 'active' | 'archived' }>;
     };
     expect(txArgs.replaceSessions).toEqual([{ id: 'existing-session', status: 'active' }]);
+    expect(closeSharedTaskForTask).toHaveBeenCalledExactlyOnceWith('existing-session', expect.objectContaining({ tx: expect.any(Function) }));
   });
 
   it('overwrite failure leaves replacement entirely to the failed transaction', async () => {
@@ -921,6 +925,7 @@ describe('sessionShareImport', () => {
     ).rejects.toMatchObject({ code: 'SHARE_IMPORT_FAILED' });
     // tx mock 在失败时不记录调用；编排层没有提前 patch/清理旧 session。
     expect(dbMock.txCalls).toHaveLength(0);
+    expect(closeSharedTaskForTask).not.toHaveBeenCalled();
   });
 
   it('overwrite flag is a no-op when there is no conflict', async () => {
@@ -938,6 +943,7 @@ describe('sessionShareImport', () => {
     expect(dbMock.txCalls).toHaveLength(1);
     const txArgs = dbMock.txCalls[0].args as { replaceSessions?: Array<{ id: string; status: string }> };
     expect(txArgs.replaceSessions).toBeUndefined();
+    expect(closeSharedTaskForTask).not.toHaveBeenCalled();
   });
 
   it('reuses pre-existing transcript on disk without overwriting (deleted-session re-import)', async () => {

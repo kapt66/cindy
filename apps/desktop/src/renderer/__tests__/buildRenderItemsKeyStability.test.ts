@@ -85,6 +85,47 @@ it('keeps modal-only Cindy Make cards out of the message timeline', () => {
   );
 });
 
+it('shows completion history unless the local composer owns the testing handoff', () => {
+  const completion: ChatMessage = {
+    ...mkAssistant('completion'), systemCardType: 'cindy-make-complete',
+    systemCardData: { reportedAt: 123, commit: 'a'.repeat(40) },
+  };
+  expect(buildRenderItems([completion]).items.some((item) => renderItemContainsClientId(item, 'completion'))).toBe(true);
+  expect(buildRenderItems([completion], undefined, undefined, { cindyMakeCompletionInComposer: true }).items).toEqual([]);
+  expect(completion.systemCardData?.commit).toBe('a'.repeat(40));
+});
+
+it.each(['running', 'failed', 'cancelled', 'completed'])(
+  'moves its own %s preparation out of the timeline without deleting history or hiding other cards',
+  (status) => {
+    const preparation: ChatMessage = {
+      ...mkAssistant('make-card'),
+      systemCardType: 'cindy-make',
+      systemCardData: {
+        request: 'fix scrolling',
+        report: { runId: 'run-1', status, task: { sessionId: 'make-session' } },
+      },
+    };
+    const otherCard: ChatMessage = {
+      ...preparation,
+      clientId: 'other-card',
+      systemCardData: { report: { runId: 'run-2', task: { sessionId: 'other-session' } } },
+    };
+    const messages = [preparation, otherCard, mkUser('u1', 'original request')];
+    const built = buildRenderItems(messages, undefined, undefined, {
+      cindyMakeSessionId: 'make-session',
+    }).items;
+    expect(built.some((item) => renderItemContainsClientId(item, 'make-card'))).toBe(false);
+    expect(built.some((item) => renderItemContainsClientId(item, 'other-card'))).toBe(true);
+    expect(built.some((item) => renderItemContainsClientId(item, 'u1'))).toBe(true);
+    expect(messages).toHaveLength(3);
+    expect(messages[0]).toBe(preparation);
+    // A source task or standalone history view still offers its existing card.
+    const original = buildRenderItems(messages).items;
+    expect(original.some((item) => renderItemContainsClientId(item, 'make-card'))).toBe(true);
+  },
+);
+
 describe('Bot 流式正文呈现', () => {
   it('preserves consecutive Claude final text blocks only after the turn seal', () => {
     let state = { ...EMPTY_SESSION_STATE, isStreaming: true, messages: [mkUser('u1')] };
@@ -121,7 +162,7 @@ describe('Bot 流式正文呈现', () => {
     expect(visibleProse()).toEqual(['first', 'second']);
   });
 
-  it('运行中从首字收拢未封口正文与工具，保留可展开过程', () => {
+  it('运行中从首字隐藏未封口正文与工具，不保留过程入口', () => {
     const messages = [
       mkUser('u1'),
       mkTool('t1', 'Bash'),
@@ -134,7 +175,7 @@ describe('Bot 流式正文呈现', () => {
     expect(
       visible.flatMap((item) => (item.type === 'message' ? [item.message.clientId] : [])),
     ).toEqual(['u1']);
-    expect(visible.some((item) => item.type === 'work_group')).toBe(true);
+    expect(visible.some((item) => item.type === 'work_group')).toBe(false);
   });
 
   // Contracts: claude-code/translator assistant text blocks; pi/translator
@@ -182,7 +223,7 @@ describe('Bot 流式正文呈现', () => {
         agentMeta: { turnCompleted: true },
       });
       expect(visibleProse()).toEqual(['这是最终答复']);
-      expect(project().filter((item) => item.type === 'work_group')).toHaveLength(1);
+      expect(project().filter((item) => item.type === 'work_group')).toHaveLength(0);
       expect(state.messages.filter((message) => message.role === 'assistant').map((message) => message.content))
         .toEqual(['我查一下：', '已找到线索，继续核实', '这是最终答复']);
     },
