@@ -681,5 +681,37 @@ verdict: PASS (有待确认项)
 
 ### 7.1 交付事实补记（提交 SHA 与 `client-ci` 结论）
 
-（本次 merge commit 推送后回填：提交 SHA、`client-ci` 运行结论、以及若有未通过项的处置。）
+- **merge commit**：`6749aacfab086151a56d4b41b86c7291083de3c5`
+  （父提交 `08dd93c4e8af59134319d0fbdea4db43b82a4c9a` + `fd73bc91fd3d2dabe680876f5271027630c68752`）；
+  `Signed-off-by: zhouwenkang <zhouwenkang@xd.com>` 已在 trailer 中核对。
+- **推送**：`git push origin meka/main` → `1b4f6a7c91..6749aacfab`（fast-forward，`0 behind / 694 ahead`）；
+  推送后用 `git ls-remote origin refs/heads/meka/main` 确认远端 ref 已指向该 SHA。
+- **GitHub `client-ci` 结论**：**本环境无法自证** —— 本机没有 `gh`（常见安装位均无）、环境无
+  `GH_*` / `GITHUB_*` 令牌、`origin` 走 SSH（`git@github.com:kapt66/cindy.git`）、仓库也无查询
+  Actions 的脚本。**⇒ 该结论需由维护者在 GitHub 侧确认**（或提供 `gh`/令牌后由本会话补记）。
+  一旦报红，按 §6 的口径区分「本轮引入 / 存量 / 环境」，在本节追加处置记录。
+- **为降低 CI 红的风险，已逐条执行与 `client-ci` 等价的本地检查**（步骤名取自
+  `.github/workflows/ci.yml`）：
+
+| CI 步骤 | 本地结果 |
+| --- | --- |
+| `pnpm install --frozen-lockfile` | ✅ exit 0（lockfile 与 manifest 一致） |
+| `pnpm test:runner` | ✅ 705 条：698 pass / 0 fail / 7 skipped |
+| Device Link 集成（`tsc -p scripts/device-link/tsconfig.json` + `pnpm test:device-link`） | ✅ exit 0；集成用例 **9/9** |
+| `pnpm check:design-colors --base-ref … --head-ref …` | ✅ exit 0（仅 `report/bare-color` 提示，均在非阻断范围内） |
+| `pnpm check:design-inventory` | ✅ exit 0 |
+| `pnpm check:endpoints` | ✅ exit 0 |
+| `pnpm check:i18n` | ✅ exit 0（11384–11385 key 五语一致） |
+| `pnpm check:brand-terminology` | ✅ exit 0 |
+| `pnpm check:i18n-glossary` | ✅ exit 0 |
+| `pnpm --filter desktop typecheck` | ✅ exit 0 |
+| `pnpm --filter mobile typecheck` | ✅ exit 0 |
+| `pnpm --filter desktop db:validate` | ✅ 6/6 |
+| `pnpm ci:scheduler-guard` | ✅ 6 条守门规则全过 |
+| `pnpm --filter mobile test:scope` | ✅ `mobile-scope-guard passed` |
+| unit tier（`test:workspaces --tier unit`，Windows 作业的那一份） | ⚠️ 见 §6.2.1：唯一实质失败已修；其余为负载/环境所致，逐条单独重跑全绿 |
+| companion DB 回归（`botCanonicalSession` / `botRemoteResourceProvider` / `builtinMekaSeed`） | ✅ exit 0；**402/402** |
+| Pi manager integration tier（CI 的 Linux 作业项，本机也实跑） | ✅ `PASS packages/maker-pi-manager integration` |
+| **Linux 专属单元分片** | **本机为 Windows，无法执行** ⇒ 未验证（只能由 CI 侧结论覆盖） |
+
 
