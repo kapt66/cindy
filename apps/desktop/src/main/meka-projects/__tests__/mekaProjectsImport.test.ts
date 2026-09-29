@@ -12,6 +12,11 @@ const h = vi.hoisted(() => ({
   projectRows: [] as Array<Record<string, unknown>>,
   failProjectId: null as string | null,
   roleRows: [] as Array<Record<string, unknown>>,
+  /**
+   * 「随包角色清单」的替身。真实包内已不再附带任何角色清单文件（`readBundledRoleManifests`
+   * 恒为空列表），需要覆盖「导入时用包内清单补齐快照」这条机制的用例才在这里给出夹具清单。
+   */
+  bundledRoles: [] as MekaRoleManifestFile[],
   createRole: vi.fn(),
   ensureDefaultRole: vi.fn(),
   ensureDefaultRoleRow: vi.fn(),
@@ -68,6 +73,8 @@ vi.mock('../projectConfig.js', async (importOriginal) => {
     }),
     resolveCustomRoleManifestPath: (roleId: string) => `C:\\roles\\${roleId}.json`,
     resolveProjectConfigPath: () => 'C:\\project.json',
+    // 包内角色清单：默认空列表（真实状态），只有用例显式提供夹具清单时才非空。
+    readBundledRoleManifests: vi.fn(async (_projectId: string) => h.bundledRoles),
     saveProjectConfig: vi.fn(async (_locator: unknown, file: MekaProjectFile) => {
       h.savedFile = file;
       return file;
@@ -106,9 +113,11 @@ vi.mock('../../localDb/client/current.js', () => ({
       }
       if (sql.includes('FROM meka_roles')) {
         if (params[0] === 'saga2') {
-          // The bundled SAGA2 catalog after the consolidation: the shared default role plus the
-          // still-packaged combat role. `general-development` is retired and is deliberately NOT
-          // part of this fixture any more.
+          // The bundled SAGA2 registry after the consolidation: the shared default role only. The
+          // second row is a legacy **orphan** — the package no longer ships a manifest for it, but
+          // `seedBuiltinMekaProjects` never deletes rows it does not own, so an older install keeps
+          // it. It is deliberately part of this fixture: import ordering is derived from the
+          // registered role rows, and that is the only catalog an upgraded install still has.
           return [
             {
               id: 'saga2-default-role',
@@ -195,6 +204,7 @@ describe('Meka copied project import', () => {
     h.failProjectId = null;
     h.roleRows = [];
     h.importedFile = null;
+    h.bundledRoles = [];
     h.createRole.mockReset();
     h.ensureDefaultRole.mockReset();
     h.ensureDefaultRoleRow.mockReset();
@@ -255,8 +265,9 @@ describe('Meka copied project import', () => {
     };
 
     expect(created.displayName).toBe('saga2_project_git');
-    // Ordering follows the bundled catalog: `combat-development` is still a packaged role, while
-    // the retired `general-development` snapshot has no catalog entry and sorts last.
+    // Ordering follows the registered role rows of the source project (`combat-development` is a
+    // legacy orphan row an upgraded install still has), while the retired `general-development`
+    // snapshot matches neither an id nor a display name there and sorts last.
     expect(created.roles.map((item) => item.displayName)).toEqual(['战斗开发', '通用开发']);
     expect(h.ensureDefaultRole).not.toHaveBeenCalled();
     expect(h.createRole).toHaveBeenCalledTimes(2);
@@ -340,7 +351,7 @@ describe('Meka copied project import', () => {
     expect(projects.map((project) => project.configUnavailable)).toEqual([false, true]);
   });
 
-  it('hydrates bundled roles when a copied SAGA2 project file has no role snapshots', async () => {
+  it('hydrates the packaged role catalog when a copied SAGA2 project file has no role snapshots', async () => {
     const root = path.join(path.parse(process.cwd()).root, 'Workspace', 'saga2_project_git');
     h.importedFile = {
       schemaVersion: 1,
@@ -348,6 +359,9 @@ describe('Meka copied project import', () => {
       basic: { name: 'saga2', displayName: 'SAGA2', path: root },
       metadata: [],
     };
+    // 真实包内已不再附带任何角色清单文件，因此「用包内清单补齐快照」这条机制的唯一输入就是这份
+    // 夹具清单：断言仍然钉在「补齐 → 逐条克隆 → 写进新项目文件」的完整链路上。
+    h.bundledRoles = [role('sample-bundled-role', '示例内置角色')];
 
     const created = (await h.handlers.get(MEKA_PROJECT_CREATE)!(
       {},
@@ -358,11 +372,9 @@ describe('Meka copied project import', () => {
     )) as { id: string };
 
     expect(h.ensureDefaultRole).not.toHaveBeenCalled();
-    // Only `combat-development` is still packaged; the retired `general-development` manifest file
-    // is gone, so the bundled fallback yields exactly one role snapshot.
     expect(h.createRole).toHaveBeenCalledTimes(1);
     expect(h.savedFile?.builtinRoles).toHaveLength(1);
-    expect(h.savedFile?.builtinRoles?.map((item) => item.displayName)).toEqual(['战斗开发']);
+    expect(h.savedFile?.builtinRoles?.map((item) => item.displayName)).toEqual(['示例内置角色']);
     expect(h.savedFile?.builtinRoles?.every((item) => item.projectId === created.id)).toBe(true);
   });
 

@@ -18,24 +18,6 @@ import {
 export const ORCA_WORKER_READY_MESSAGE =
   '[系统] Orca Worker 已就绪，当前没有待执行任务。不要调用任何工具来等待、观察或轮询 Lead。只回复一句简短确认并立即结束本轮；Lead 后续会主动发送任务。';
 
-const COMBAT_SERVER_WORKER_MARKER = '[SAGA2_COMBAT_REMOTE_SERVER_WORKER]';
-const LEAD_HOST_PATH_PLACEHOLDER = '[lead-host-path-omitted]';
-
-/**
- * Server-capability Workers run on MCPRouter's repository host. Lead evidence
- * may contain the local Unity/project or temp-export path; forwarding those
- * paths makes the Worker attempt to read an inaccessible machine. Keep the
- * semantic evidence while removing only absolute host paths, and leave all
- * non-combat Worker tasks byte-for-byte unchanged.
- */
-export function sanitizeCombatServerWorkerTask(task: string): string {
-  if (!task.includes(COMBAT_SERVER_WORKER_MARKER)) return task;
-  return task.replace(
-    /(?:\b[A-Za-z]:[\\/]|\/(?:Users|home|workspace|mnt|private\/var|tmp)\/)[^\s`"'<>]+/g,
-    LEAD_HOST_PATH_PLACEHOLDER,
-  );
-}
-
 /** 开启协同时的一次性入参；负责把 UI/MCP 的 worker 偏好归一到 worker 创建内核。 */
 export interface OrcaEnableTeamParams {
   leadSessionId: string;
@@ -45,7 +27,7 @@ export interface OrcaEnableTeamParams {
   model?: string;
   effort?: OrcaWorkerEffort;
   fast?: boolean;
-  /** Meka-only target hints. The creation service revalidates both in Main. */
+  /** Meka 目标提示；Host 提供 `resolveWorkerTarget` 时由它在 Main 侧重核。 */
   workingDir?: string;
   remoteHostId?: string;
   /** 显式选定的模型来源;语义见 OrcaWorkerCreateParams.providerId。 */
@@ -228,7 +210,7 @@ export function createOrcaLifecycleService(deps: OrcaLifecycleDeps): OrcaLifecyc
     try {
       return await deps.dispatchWorkerTask({
         targetSessionId: params.workerSessionId,
-        message: sanitizeCombatServerWorkerTask(params.message),
+        message: params.message,
         dispatchMeta: {
           source: dispatchSource,
           context: params.context,
@@ -265,9 +247,7 @@ export function createOrcaLifecycleService(deps: OrcaLifecycleDeps): OrcaLifecyc
     }
     const initialTask = hasNonEmptyInitialTask(params.initialTask) ? params.initialTask : undefined;
     const workerPermissionMode = workerPermissionModeForCreate(params.workerPermissionMode);
-    const workerCreateParams = initialTask
-      ? { ...params, initialTask: sanitizeCombatServerWorkerTask(initialTask) }
-      : params;
+    const workerCreateParams = initialTask ? { ...params, initialTask } : params;
     const created = await deps.createWorkerInTeam({
       ...workerCreateParams,
       teamId: team.id,

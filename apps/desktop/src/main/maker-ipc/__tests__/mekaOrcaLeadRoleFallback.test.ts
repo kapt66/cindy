@@ -65,15 +65,17 @@ describe('Orca lead missing-role fallback wiring', () => {
 
     // 内置项目的角色清单真的包含派生目标 ⇒ 「无角色 lead」兜底后一定解析得出来
     // （`readMekaRuntimeConfig` 不会抛 `Meka role not found`）。
-    expect(BUILTIN_MEKA_PROJECTS.length).toBeGreaterThan(0);
+    // 注册表收敛到 1 个项目、每个项目 1 条角色：生成出来的 `<projectId>-default-role`。
+    expect(BUILTIN_MEKA_PROJECTS).toHaveLength(1);
     for (const project of BUILTIN_MEKA_PROJECTS) {
       const roleIds = project.roles.map((role) => role.id);
       expect(roleIds).toContain(mekaDefaultRoleId(project.id));
     }
 
-    // 反向证据：退役别名与包内角色清单不再包含 —— 兜底跟它走的话必然解析失败。
+    // 反向证据：包内角色清单里**只剩**默认角色 —— 内置的 `combat-development`（以及其它业务
+    // 角色）已随内置提示词正文与 bundled skill 一起移出随包。兜底若跟着退役 id 走，必然解析失败。
     expect(
       BUILTIN_MEKA_PROJECTS.flatMap((project) => project.roles.map((role) => role.id)),
-    ).toEqual(['saga2-default-role', 'combat-development']);
+    ).toEqual(['saga2-default-role']);
   });
 });

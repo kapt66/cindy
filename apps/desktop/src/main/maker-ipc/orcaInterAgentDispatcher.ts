@@ -51,7 +51,7 @@ export interface DispatchOrcaInterAgentMessageParams {
   source: OrcaInterAgentMessageSource;
   senderLabel: string;
   workerId?: string;
-  /** Worker session identity used by combat report trust registration. */
+  /** Worker session identity used when accepting a Worker report on the Lead's behalf. */
   workerSessionId?: string;
   /** Synchronous reserve boundary hook; must return before drain is scheduled. */
   onReserved?: () => void;

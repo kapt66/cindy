@@ -54,16 +54,16 @@ function harness() {
     handleAgentIslandInteractionAfterBroadcast: vi.fn(), handleAgentIslandInteractionDismissed: vi.fn(),
     dismissRendererInteraction: dismiss, persistInteractionDecision: vi.fn(),
     goalAskAnswerObserver: null, ghostSetupInteractionBridge: { cleanupForSession: vi.fn() },
-    // `resolvePendingInteraction` 现在还负责把「用户点了表范围确认项」转成范围审批（卡片路径）。
-    // 抽取出来的函数体里这些**模块级名字**同样必须由 harness 注入（与上面的
+    // 抽取出来的函数体里引用到的**模块级名字**必须由 harness 注入（与上面的
     // `goalAskAnswerObserver` 同理）：不注入时命中该分支会抛 `is not defined`，而 catch 里
-    // 记日志又会再抛一次。这里让审批判定恒返回 null ⇒ 该分支保持 no-op，本文件的
-    // 暂停 / 迁移 / 超时语义不受影响（卡片审批本身由 combatWorkflowPolicy 与
-    // mekaRuntimeInjection 的用例覆盖）。
+    // 记日志又会再抛一次。`goalAskAnswerObserver` 默认 null、`log` 只服务那条 catch ⇒ 两者都
+    // 保持 no-op，本文件的暂停 / 迁移 / 超时语义不受影响。（`getMakerIfReady` 在当前函数体里
+    // 没有消费者，保留只是为了不改变 harness 形状。）
+    //
+    // 表范围卡片审批（曾在这里注入 `combatRequestScopeAnswerApprovalPatch` /
+    // `readCombatVendorOptions` / `rememberCombatVendorOptions`）已随 workflow 机制从 `register.ts`
+    // 的 `resolvePendingInteraction` 删除，因此不再需要注入。
     log: { warn: vi.fn() },
-    readCombatVendorOptions: () => null,
-    rememberCombatVendorOptions: vi.fn(),
-    combatRequestScopeAnswerApprovalPatch: () => null,
     getMakerIfReady: () => undefined,
   };
   const runtime = new Function(...Object.keys(deps), compiled)(...Object.values(deps)) as {

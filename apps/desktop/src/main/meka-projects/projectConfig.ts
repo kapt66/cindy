@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { Dirent } from 'node:fs';
 import { mkdir, open, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -6,6 +7,8 @@ import {
   MEKA_GENERAL_DISCIPLINE,
   RETIRED_BUILTIN_MEKA_DEFAULT_ROLE_ALIASES,
   RETIRED_BUILTIN_MEKA_ROLE_MAPPINGS,
+  mekaDefaultRoleId,
+  mekaDefaultRoleManifest,
   parseMekaEditableMetadata,
   type MekaProjectFile,
   type MekaProjectMetadataConfigItem,
@@ -336,13 +339,6 @@ export function normalizeMekaRoleManifest(
       : {}),
     tags: cleanStrings(input.tags),
     policyProviderRefs: cleanStrings(input.policyProviderRefs),
-    ...(input.workflow === 'saga2-combat-development-v1'
-      ? { workflow: input.workflow }
-      : input.workflow === undefined
-        ? {}
-        : (() => {
-            throw new Error('unknown Meka role workflow');
-          })()),
     ...(typeof input.prompt === 'string' && input.prompt.trim() ? { prompt: input.prompt } : {}),
     rules: Array.isArray(input.rules)
       ? input.rules.filter(isRecord).map((rule) => ({
@@ -508,7 +504,20 @@ function anchoredProjectFile(file: MekaProjectFile, projectRoot: string): MekaPr
 
 export async function readBundledRoleManifests(projectId: string): Promise<MekaRoleManifestFile[]> {
   const root = bundledMekaRolesRoot();
-  const entries = await readdir(root, { withFileTypes: true });
+  // T3 容错：随包不再附带任何内置角色清单目录时 `readdir` 抛 ENOENT。按「没有内置角色」处理，
+  // 与 `listBundledSkills` 的目录扫描同一口径；其余 errno 照旧上抛 —— 目录在但读不了是真实故障，
+  // 不该被当成「没有内置角色」静默吞掉。
+  let entries: Dirent[];
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    log.warn('bundled Meka role directory is missing; treating the bundled role catalog as empty', {
+      projectId,
+      root,
+    });
+    return [];
+  }
   const manifests: MekaRoleManifestFile[] = [];
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
     if (!entry.isFile() || path.extname(entry.name).toLowerCase() !== '.json') continue;
@@ -530,7 +539,8 @@ export async function readBundledRoleManifests(projectId: string): Promise<MekaR
  * 的退役角色；被折叠进 `<projectId>-default-role` 的别名（general-development / system-*）
  * 依赖会话所属项目，无法写成 `[旧 id, 新 id]` 二元组，单独记在
  * `RETIRED_BUILTIN_MEKA_DEFAULT_ROLE_ALIASES`。只取左值（旧 id）；右值（如
- * `combat-development`）仍是包内在役角色，绝不能被剔除。
+ * `combat-development`）是重绑目标而不是退役 id，不能被剔除 —— 剔除它等于把用户项目文件里
+ * 指向该角色的快照从有效配置里拿掉，而 `saveProjectConfig` 随后会写盘。
  */
 const RETIRED_BUILTIN_ROLE_IDS: ReadonlySet<string> = new Set<string>([
   ...RETIRED_BUILTIN_MEKA_ROLE_MAPPINGS.map(([roleId]) => roleId),
@@ -710,14 +720,50 @@ export function resolveProjectConfigPath(locator: ProjectConfigLocator): string 
   return writableProjectFilePath(locator);
 }
 
+async function tryReadBuiltinRoleManifest(
+  roleId: string,
+  projectId?: string,
+): Promise<MekaRoleManifestFile | null> {
+  const safeRoleId = safeId(roleId, 'role id');
+  const input = await readJson(builtinRolePath(safeRoleId));
+  return input === null ? null : normalizeMekaRoleManifest(input, safeRoleId, projectId);
+}
+
 export async function readBuiltinRoleManifest(
   roleId: string,
   projectId?: string,
 ): Promise<MekaRoleManifestFile> {
-  const safeRoleId = safeId(roleId, 'role id');
-  const input = await readJson(builtinRolePath(safeRoleId));
-  if (input === null) throw new Error(`builtin Meka role ${safeRoleId} not found`);
-  return normalizeMekaRoleManifest(input, safeRoleId, projectId);
+  const manifest = await tryReadBuiltinRoleManifest(roleId, projectId);
+  if (!manifest) throw new Error(`builtin Meka role ${safeId(roleId, 'role id')} not found`);
+  return manifest;
+}
+
+/**
+ * T2 容错：包内角色清单文件缺失时**回落到该项目的默认角色**，而不是抛
+ * `builtin Meka role <id> not found`。
+ *
+ * 为什么必须有这层：`seedBuiltinMekaProjects` 只 upsert、从不删除不在注册表里的行，所以存量库里
+ * 可能留着 `is_builtin = 1` 的孤儿角色行 —— 它们的清单文件已不随包，严格读取必然抛错。这条边界
+ * 同时出现在两处硬失败上：会话解析（`runtimeConfig.ts` 的 `resolveRoleFile`，抛错 = 会话打不开）
+ * 与面板读清单（`localDb/ipc/mekaRoles.ts` 的 `readRoleManifest`，抛错 = 僵尸行点开就报错）。
+ * 两处共用这一条回落，避免各自漂移。
+ *
+ * 回落目标就是 `<projectId>-default-role` 的出厂清单（它由内存函数提供、从不落盘），因此结果恒为
+ * 一个可用清单；这也正好覆盖「请求的 id 就是默认角色 id」的情形。**只对「清单文件不存在」回落**：
+ * 文件在但内容非法仍然抛错（那是真实配置错误，不能伪装成默认角色）。
+ */
+export async function readBuiltinRoleManifestOrProjectDefault(
+  roleId: string,
+  projectId: string,
+): Promise<MekaRoleManifestFile> {
+  const manifest = await tryReadBuiltinRoleManifest(roleId, projectId);
+  if (manifest) return manifest;
+  log.warn('builtin Meka role manifest is missing; falling back to the project default role', {
+    roleId,
+    projectId,
+    fallbackRoleId: mekaDefaultRoleId(projectId),
+  });
+  return mekaDefaultRoleManifest(projectId);
 }
 
 export async function readCustomRoleManifest(

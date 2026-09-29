@@ -131,13 +131,6 @@ import { forkForgeIconConversionHost } from './forgeIconConversionHost.js';
 import {
   readAllowedBuiltinPluginIds,
 } from './codexBuiltinToolPolicy.js';
-import {
-  evaluateCombatToolExecution,
-  isCombatWorkflowPolicyActive,
-  markCombatTargetExportCompleted,
-  markCombatTargetExportAttempted,
-  observeCombatLegacyModuleResult,
-} from '../meka-projects/combatWorkflowPolicy.js';
 import { t } from '../i18n.js';
 import { createLogger } from '../logger.js';
 import { isIpcError } from '../../shared/ipc-errors.js';
@@ -1930,48 +1923,6 @@ export function getCindyGhostsMcpDeps(
       const sessionIdForConfirm = sessionContext?.sessionId ?? null;
       const sessionInstanceIdForGrant = sessionContext?.sessionInstanceId ?? null;
       const sessionWorkdir = sessionContext?.workingDir ?? null;
-      const vendorOptions = sessionContext?.vendorOptions ?? {};
-      if (isCombatWorkflowPolicyActive({ vendorOptions })) {
-        if (!sessionIdForConfirm || !sessionWorkdir) {
-          return {
-            ok: false,
-            errorCode: 'COMBAT_WORKFLOW_CONTEXT_MISSING',
-            message:
-              '无法确认当前 SAGA2 战斗任务的会话或工作目录，已阻止插件调用。请恢复当前任务后重试。',
-          };
-        }
-        const workflowDecision = await evaluateCombatToolExecution({
-          sessionId: sessionIdForConfirm,
-          workingDir: sessionWorkdir,
-          remoteHostId: sessionContext?.remoteHostId ?? null,
-          vendorOptions,
-          toolName: 'mcp__cindy__ghost_call',
-          input: { ghost_id: ghostId, tool, args },
-          action: { kind: 'mcp' },
-        });
-        if (workflowDecision.behavior === 'deny') {
-          return {
-            ok: false,
-            errorCode: 'COMBAT_WORKFLOW_POLICY_DENIED',
-            message: workflowDecision.reason,
-          };
-        }
-      }
-      // Record a target export attempt before visibility/setup checks. A
-      // missing or disabled Meka Unity plugin can fail at classifyGhostVisibility
-      // before dispatch, but that failure is still the required first export
-      // evidence and must not send the lead into an invalid Shell fallback.
-      if (sessionIdForConfirm && sessionWorkdir) {
-        markCombatTargetExportAttempted({
-          sessionId: sessionIdForConfirm,
-          workingDir: sessionWorkdir,
-          remoteHostId: sessionContext?.remoteHostId ?? null,
-          vendorOptions,
-          toolName: 'mcp__cindy__ghost_call',
-          input: { ghost_id: ghostId, tool, args },
-          action: { kind: 'mcp' },
-        });
-      }
       let initialVisibility = classifyGhostVisibility(ghostId, sessionWorkdir, ghostVisibilityDeps);
       // Development sources are reconciled asynchronously at startup. A
       // first lookup can observe the registry before its derived Ghost has
@@ -2413,44 +2364,7 @@ export function getCindyGhostsMcpDeps(
       // 在意识未声明媒体字段时以 xdt_media_produced 注入,兜底 IM/hook 送达。
       const producedMedia = drainGhostCallMedia(ghostId, callId);
       const finalized = withCardToken(result, cardService.finalizeCall(callId), callId);
-      if (sessionIdForConfirm && sessionWorkdir) {
-        markCombatTargetExportAttempted({
-          sessionId: sessionIdForConfirm,
-          workingDir: sessionWorkdir,
-          remoteHostId: sessionContext?.remoteHostId ?? null,
-          vendorOptions,
-          toolName: 'mcp__cindy__ghost_call',
-          input: { ghost_id: ghostId, tool, args },
-          action: { kind: 'mcp' },
-        });
-      }
       if (!finalized.ok) return finalized;
-      if (sessionIdForConfirm && sessionWorkdir) {
-        // D2：只有**传输成功**的结果才携带可信的老版模块编辑器回执。在结果交回模型之前先交给
-        // Host 对账：导出回执建立/刷新「写入前节点数基线」，导入回执与基线比对；不一致或缺基线
-        // 时，策略层会拦住除结构化回读之外的一切调用（见 combatWorkflowPolicy）。
-        observeCombatLegacyModuleResult(
-          {
-            sessionId: sessionIdForConfirm,
-            workingDir: sessionWorkdir,
-            remoteHostId: sessionContext?.remoteHostId ?? null,
-            vendorOptions,
-            toolName: 'mcp__cindy__ghost_call',
-            input: { ghost_id: ghostId, tool, args },
-            action: { kind: 'mcp' },
-          },
-          finalized,
-        );
-        markCombatTargetExportCompleted({
-          sessionId: sessionIdForConfirm,
-          workingDir: sessionWorkdir,
-          remoteHostId: sessionContext?.remoteHostId ?? null,
-          vendorOptions,
-          toolName: 'mcp__cindy__ghost_call',
-          input: { ghost_id: ghostId, tool, args },
-          action: { kind: 'mcp' },
-        });
-      }
       // 附最后一道 gate(postCtx)的快照:它是派发前最新的 ready 判定。
       const advisory = postCtxAssessment.reauthSuggest ? { setup: postCtxAssessment } : {};
       const base =

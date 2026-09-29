@@ -85,28 +85,12 @@ import {
 import { isFrozenBuiltinPluginAllowed } from './codexBuiltinToolPolicy.js';
 import { GLOBAL_PLUGIN_IDS } from '../maker-host/plugins/types.js';
 import { readChatHistoryMessages, type ChatHistoryReaderDeps } from './remoteChatHistory.js';
-import { settleCombatServerCapabilityDispatch } from '../meka-projects/combatServerCapabilityState.js';
-import { evaluateCombatToolExecution } from '../meka-projects/combatWorkflowPolicy.js';
 import { botSessionLinks, sessions } from '../localDb/schema.js';
 import { isCindyLearnSkillEnabled } from '../skillhub/activationPreferences.js';
 import { getLearnController } from '../learn-host/index.js';
 import { consumeLearnInvocationGrant } from '../learn-host/invocationGrant.js';
 import { createSkillhubAgentTools } from '../skillhub/agentTools.js';
 import { startGrokDeviceLogin, grokDeviceLoginStatus, cancelGrokDeviceLogin } from '../maker-host/grok-device-login-service.js';
-
-function hasAcceptedInitialWorkerDispatch(result: unknown): boolean {
-  if (!result || typeof result !== 'object') return false;
-  const record = result as Record<string, unknown>;
-  if (record.ok !== true) return false;
-  if (record.dispatched === true || typeof record.queuedMessageId === 'string') return true;
-  const outcome = record.dispatchOutcome;
-  if (!outcome || typeof outcome !== 'object') return false;
-  const dispatch = outcome as Record<string, unknown>;
-  return (
-    (dispatch.kind === 'session-dispatch' && dispatch.dispatched === true) ||
-    (dispatch.kind === 'host-send' && dispatch.accepted === true)
-  );
-}
 
 export interface DesktopMcpProvidersDeps {
   botCapabilities: Pick<ReturnType<typeof createBotCapabilityService>, 'list' | 'select'>;
@@ -165,12 +149,10 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
   // 并在边界捕获 HOST_NOT_READY / INTERNAL。
   function wrap<Args extends unknown[], R>(
     fn: (svc: NonNullable<ReturnType<typeof tryGetOrcaCollabService>>, ...args: Args) => Promise<R>,
-    onFailure?: (...args: Args) => void,
   ): (...args: Args) => Promise<R> {
     return async (...args) => {
       const s = tryGetOrcaCollabService();
       if (!s) {
-        onFailure?.(...args);
         return {
           ok: false,
           errorCode: 'HOST_NOT_READY' as const,
@@ -180,7 +162,6 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
       try {
         return await fn(s, ...args);
       } catch (err) {
-        onFailure?.(...args);
         const message = err instanceof Error ? err.message : String(err);
         const errorCode = isDbClientNotReadyError(err) ? 'HOST_NOT_READY' : 'INTERNAL';
         return { ok: false, errorCode, message } as R;
@@ -898,74 +879,11 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
     },
     // cindy_orca: 多 worker 协同 team 工具集。创建权限由 Main handler 实时校验。
     orca: {
-      authorizeToolCall: async ({ toolName, input, sessionContext }) => {
-        if (!sessionContext?.sessionId) return { behavior: 'allow' as const };
-        return evaluateCombatToolExecution({
-          sessionId: sessionContext.sessionId,
-          workingDir: sessionContext.workingDir,
-          remoteHostId: sessionContext.remoteHostId,
-          vendorOptions: sessionContext.vendorOptions ?? {},
-          toolName: `mcp__cindy_orca__${toolName}`,
-          input,
-          action: { kind: 'mcp' },
-        });
-      },
       startTeam: wrap((s, params) => s.startTeam(params)),
-      createWorker: wrap(
-        async (s, params) => {
-          let result: Awaited<ReturnType<typeof s.createWorker>> | undefined;
-          try {
-            result = await s.createWorker(params);
-            return result;
-          } finally {
-            settleCombatServerCapabilityDispatch({
-              leadSessionId: params.leadSessionId,
-              kind: 'create_worker',
-              task: params.initialTask ?? '',
-              accepted: hasAcceptedInitialWorkerDispatch(result),
-              ...(result?.ok === true
-                ? { workerId: result.workerId, workerSessionId: result.workerSessionId }
-                : {}),
-            });
-          }
-        },
-        (params) => {
-          settleCombatServerCapabilityDispatch({
-            leadSessionId: params.leadSessionId,
-            kind: 'create_worker',
-            task: params.initialTask ?? '',
-            accepted: false,
-          });
-        },
-      ),
+      createWorker: wrap((s, params) => s.createWorker(params)),
       listWorkers: wrap((s, params) => s.listWorkers(params)),
       switchFocus: wrap((s, params) => s.switchFocus(params)),
-      sendToWorker: wrap(
-        async (s, params) => {
-          let result: Awaited<ReturnType<typeof s.sendToWorker>> | undefined;
-          try {
-            result = await s.sendToWorker(params);
-            return result;
-          } finally {
-            settleCombatServerCapabilityDispatch({
-              leadSessionId: params.callerLeadSessionId,
-              kind: 'send_to_worker',
-              task: params.message,
-              accepted: result?.ok === true,
-              workerSessionId: params.targetSessionId,
-            });
-          }
-        },
-        (params) => {
-          settleCombatServerCapabilityDispatch({
-            leadSessionId: params.callerLeadSessionId,
-            kind: 'send_to_worker',
-            task: params.message,
-            accepted: false,
-            workerSessionId: params.targetSessionId,
-          });
-        },
-      ),
+      sendToWorker: wrap((s, params) => s.sendToWorker(params)),
       interruptWorker: wrap((s, params) => s.interruptWorker(params)),
       listWorkerQueuedMessages: wrap((s, params) => s.listWorkerQueuedMessages(params)),
       updateWorkerQueuedMessage: wrap((s, params) => s.updateWorkerQueuedMessage(params)),

@@ -24,7 +24,7 @@ import { createLogger } from '../../logger.js';
 import {
   createCustomRoleManifestExclusive,
   normalizeMekaRoleManifest,
-  readBuiltinRoleManifest,
+  readBuiltinRoleManifestOrProjectDefault,
   readCustomRoleManifest,
   readProjectConfigState,
   resolveCustomRoleManifestPath,
@@ -521,7 +521,20 @@ async function updateMekaRole(input: unknown): Promise<MekaRole> {
       if (!state?.file)
         throwIpcError('MEKA_PROJECT_NOT_FOUND', 'builtin project configuration unavailable');
       const roleIndex = state.file.builtinRoles?.findIndex((role) => role.id === id) ?? -1;
-      if (roleIndex < 0) throwIpcError('MEKA_ROLE_NOT_FOUND', `Meka role ${id} not found`);
+      if (roleIndex < 0) {
+        // 包内已不再随附任何角色清单。一个内置角色行仍留在库里（不删 DB 行，存量会话才打得开），
+        // 读侧由 `readRoleManifest` 回落到项目默认角色供展示，但**没有可编辑的正文**了：
+        // 直接保存会把默认角色的正文悄悄写到这个 id 下，所以这里如实报「内置只读」，
+        // 而不是行明明可见、保存却报 `MEKA_ROLE_NOT_FOUND`。
+        const fallback = await readBuiltinRoleManifestOrProjectDefault(id, projectId);
+        if (fallback.id !== id) {
+          throwIpcError(
+            'MEKA_BUILTIN_READ_ONLY',
+            `bundled role ${id} no longer ships a manifest; copy the project default role into a project role instead`,
+          );
+        }
+        throwIpcError('MEKA_ROLE_NOT_FOUND', `Meka role ${id} not found`);
+      }
       const builtinRoles = [...state.file.builtinRoles!];
       builtinRoles[roleIndex] = manifest;
       if (!path.isAbsolute(state.file.basic.path)) {
@@ -621,7 +634,9 @@ async function readRoleManifest(roleIdInput: unknown): Promise<ExpandedMekaRoleM
     const state = await builtinProjectState(row.project_id);
     return expandRoleManifest(
       state?.file?.builtinRoles?.find((role) => role.id === roleId) ??
-        (await readBuiltinRoleManifest(roleId, row.project_id)),
+        // T2 容错：包内清单已随包删除的孤儿内置角色行回落该项目默认角色，避免面板出现
+        // 「点开就报错」的僵尸行（与运行期 `resolveRoleFile` 共用同一条回落）。
+        (await readBuiltinRoleManifestOrProjectDefault(roleId, row.project_id)),
     );
   }
   const custom = await readCustomRoleManifest(roleId, app.getPath('userData'), row.project_id);

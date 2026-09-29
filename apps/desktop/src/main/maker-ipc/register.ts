@@ -575,10 +575,6 @@ import { parseMcprRemoteHostId } from '../../shared/meka-router.js';
 import { mekaDefaultRoleId } from '../../shared/meka-projects.js';
 import { hasMekaSkillSnapshotEntries } from '../meka-projects/skillSnapshot.js';
 import {
-  recordCombatServerCapabilityAutoBridge,
-  rollbackCombatServerCapabilityAutoBridge,
-} from '../meka-projects/combatServerCapabilityState.js';
-import {
   clearSessionPersistState,
   clearSessionThinkingSnapshots,
   consumeLastAssistantPersistId,
@@ -623,25 +619,8 @@ import {
 } from '../remote-ssh/index.js';
 import { getMekaP4SettingsService, getMekaRouterService } from '../meka-settings/ipc.js';
 import { classifyRemoteSessionTransport } from '../maker-host/remote-session-routing.js';
-import {
-  createMekaWorkerTargetResolver,
-  resolveUniqueBoundMekaServerTarget,
-} from './mekaWorkerTarget.js';
-import { probeRemoteCodexCapability } from '../maker-host/mcpr-codex-capability.js';
-import { probeRemoteClaudeCapability } from '../maker-host/mcpr-claude-capability.js';
-import {
-  combatScopeStateRestorePatch,
-  forgetCombatVendorOptions,
-  invalidateCombatTargetBinding,
-  readCombatVendorOptions,
-  refreshCombatTargetBinding,
-  rememberCombatVendorOptions,
-} from '../meka-projects/combatWorkflowPolicy.js';
-import {
-  applyMekaRuntimeConfig,
-  combatRequestScopeAnswerApprovalPatch,
-  prepareCombatFollowupRuntimeContext,
-} from '../meka-injection/index.js';
+import { createMekaWorkerTargetResolver } from './mekaWorkerTarget.js';
+import { applyMekaRuntimeConfig } from '../meka-injection/index.js';
 import {
   recordSessionContextSnapshot,
   recordSessionTurnSpend,
@@ -895,7 +874,6 @@ import {
 } from './sessionAgentSwitchHandler.js';
 import { pendingHarnessRuntimeMutation, setSessionRuntimeHarness } from './sessionRuntimeHarnessSelection.js';
 import {
-  extractPlainText,
   extractAgentIslandPromptText,
   prependNoteToWireUserMessage,
   prependHandoffToUserMessage,
@@ -2298,46 +2276,7 @@ export async function dispatchInterAgentMessage(
       },
     };
   }
-  // Register a combat report inside the accepted callback. The dispatcher may
-  // wait for the Lead turn to finish before returning, which is too late for
-  // validate_server_capability_report in that same turn.
-  const isCombatReport =
-    params.source === 'worker' &&
-    params.meta.source === 'mcp-tool' &&
-    Boolean(params.workerId) &&
-    Boolean(params.workerSessionId) &&
-    /(?:serverCapabilityReport|supportStatus)/i.test(params.rawContent);
-  if (!isCombatReport) return dispatch(params);
-
-  const workerId = params.workerId!;
-  const workerSessionId = params.workerSessionId!;
-  let receiptRecorded = false;
-  return dispatch({
-    ...params,
-    onAccepted: async () => {
-      await params.onAccepted?.();
-      receiptRecorded =
-        recordCombatServerCapabilityAutoBridge({
-          leadSessionId: params.targetSessionId,
-          workerId,
-          workerSessionId,
-          message: params.rawContent,
-          accepted: true,
-          terminalStatus: 'done',
-        }) === 'report-ready';
-    },
-    onAcceptedRollback: async () => {
-      if (receiptRecorded) {
-        rollbackCombatServerCapabilityAutoBridge({
-          leadSessionId: params.targetSessionId,
-          workerId,
-          workerSessionId,
-          message: params.rawContent,
-        });
-      }
-      await params.onAcceptedRollback?.();
-    },
-  });
+  return dispatch(params);
 }
 
 /** 模块级 idle watcher；停止后不再持有可能已经失效的 maker 引用。 */
@@ -2935,48 +2874,6 @@ function resolvePendingInteraction(requestId: string, decision: InteractionDecis
       goalAskAnswerObserver(resolver.sessionId, decision.answers ?? {}, questions);
     } catch (e) {
       log.warn('goalAskAnswerObserver threw', { sessionId: resolver.sessionId, error: String(e) });
-    }
-  }
-  // 表范围审批：卡片答案是**用户本人**给出的确认，与聊天消息同源（只是通道不同）。
-  // 聊天路径由计划层 / 续聊口子从 `input.prompt` 驱动（`mekaResolvePlan.ts`），卡片答案永远
-  // 到不了那里 —— 于是用户点了「确认」范围，`mekaCombatScopeApproved` 仍是 false，策略层继续
-  // 按「尚未确认任何技能」拒掉每一次工具调用，最后只能让用户把同一句话再打一遍（真实缺陷）。
-  // 只做「把用户已给出的确认变成 Host 可见的状态」：判定词表 + 表范围前提都在注入层，本处
-  // 不推断、不代表 Agent 批准（dismissed 一律不算）。
-  if (
-    resolver.kind === 'ask_user_question' &&
-    decision.kind === 'ask_user_question' &&
-    decision.dismissed !== true
-  ) {
-    try {
-      const previousVendorOptions = readCombatVendorOptions(resolver.sessionId);
-      let approvalPatch: Record<string, unknown> | null = null;
-      for (const answer of Object.values(decision.answers ?? {})) {
-        approvalPatch = combatRequestScopeAnswerApprovalPatch({ answer, previousVendorOptions });
-        if (approvalPatch) break;
-      }
-      if (approvalPatch) {
-        rememberCombatVendorOptions(resolver.sessionId, approvalPatch);
-        // 同一轮可见性：策略层读的是**实时** `vendorOptions`（D6 同理），而
-        // `Session.setVendorOptions` 在各 runtime 的实现里都是「无 await 的 in-place
-        // Object.assign」到那个被 MCP 上下文按引用持有的对象上（codex `index.ts:13930`、
-        // claude-code `:7015`、pi `:7225`），所以 fire-and-forget 也已同步生效。
-        // 仍按 `goalAskAnswerObserver` 的容错口径 catch：交互 resolve 不能被状态写入打断。
-        const liveSession = getMakerIfReady()?.getSession(resolver.sessionId);
-        if (liveSession) {
-          void liveSession.setVendorOptions(approvalPatch).catch((e: unknown) => {
-            log.warn('combat scope answer approval setVendorOptions failed', {
-              sessionId: resolver.sessionId,
-              error: String(e),
-            });
-          });
-        }
-      }
-    } catch (e) {
-      log.warn('combat scope answer approval threw', {
-        sessionId: resolver.sessionId,
-        error: String(e),
-      });
     }
   }
   return true;
@@ -4823,19 +4720,6 @@ const sessionBindings = createSessionBindingLifecycle<WiredSession, WiredSession
       },
       cleanupRuntimeState: () => {
         cleanupClosedSessionRuntime(session);
-        // D7：只在**真正的终态关闭**丢弃会话级战斗 vendorOptions 镜像，避免它无界增长、也避免
-        // 同一个 sessionId 之后读到过期值。判据必须同时满足两条，缺一都会打掉 D6 的还原来源：
-        //  - `requested` = Host/用户显式 close（含删除任务与进程退出）；
-        //    `agent-switch` / `runtime-refresh` 是重建，`unexpected` 是 vendor 自行关闭
-        //    （stall / idle / reconnect 后 Host 会补发「继续」）——后三种都必须留着镜像；
-        //  - 不处于 rehydrate 抑制窗口：`withRehydrateCloseSuppressed(... closeSession(id))`
-        //    这类重建用的正是默认的 `requested` 理由，只看理由会误删。
-        if (
-          context.closeReason === 'requested' &&
-          !rehydrateCloseSuppression.isSuppressed(session.id)
-        ) {
-          forgetCombatVendorOptions(session.id);
-        }
       },
     });
   },
@@ -7168,13 +7052,6 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // so they compose; keep them adjacent to preserve each side's ordering contract.
     await applyPersistedCindyMakeMarker(o, readSessionSource);
     const mekaRuntime = await applyMekaRuntimeConfig(o, {
-      resolveCombatServerTarget: (projectId) =>
-        resolveUniqueBoundMekaServerTarget({
-          router: getMekaRouterService(),
-          projectId,
-          probeCodexCapability: probeRemoteCodexCapability,
-          probeClaudeCapability: probeRemoteClaudeCapability,
-        }),
       readPersistedSession: async (sessionId) => {
         const [row] = await getDbClient()
           .drizzle.select({
@@ -7199,9 +7076,6 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         skillsCount: mekaRuntime.skillsCount,
         platformSkillsCount: mekaRuntime.platformSkillsCount,
         skillRevision: mekaRuntime.skillSnapshot?.revision ?? null,
-        workflow: mekaRuntime.workflow,
-        workflowRecoveredFromRole: mekaRuntime.workflowRecoveredFromRole,
-        combatEnvironmentReady: mekaRuntime.combatEnvironmentReady,
       });
     }
     const didInjectOrcaInstructions = o.reviewMode === true ? false : applyOrcaInstructions(o);
@@ -11706,9 +11580,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       message,
       workerId,
       workerSessionId,
-      terminalStatus,
+      _terminalStatus,
     ) => {
-      let receiptRecorded = false;
       const result = await dispatchInterAgentMessage({
         targetSessionId: leadSessionId,
         rawContent: message,
@@ -11719,27 +11592,6 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         meta: {
           source: 'maker-ipc/auto-bridge',
           context: `worker_auto_bridge/${leadSessionId}/${workerId}`,
-        },
-        onAccepted: () => {
-          receiptRecorded =
-            recordCombatServerCapabilityAutoBridge({
-              leadSessionId,
-              workerId,
-              workerSessionId,
-              message,
-              accepted: true,
-              terminalStatus,
-            }) === 'report-ready';
-        },
-        onAcceptedRollback: () => {
-          if (receiptRecorded) {
-            rollbackCombatServerCapabilityAutoBridge({
-              leadSessionId,
-              workerId,
-              workerSessionId,
-              message,
-            });
-          }
         },
       });
       return { accepted: result.ok };
@@ -13357,7 +13209,6 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     }
   };
 
-  const combatFollowupSendTokenBySession = new Map<string, symbol>();
   const readAutoReviewHistory = async (sessionId: string) => {
     await drainPersistQueue();
     return listMessagesForAgentHandoff(sessionId, 100, undefined, 'authorization');
@@ -13422,103 +13273,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     markOrcaRoleIfNeeded,
     broadcastSessionCreated,
     prepareSendUserMessage: async (sessionId, message) => {
-      const prepared = await prepareUserMessageForAgent(sessionId, message, 'send');
-      const content =
-        prepared && typeof prepared === 'object' && 'content' in prepared
-          ? prepared.content
-          : prepared;
-      const combatPrompt = extractPlainText(content);
-      if (combatPrompt.trim()) {
-        const [binding] = await getDbClient()
-          .drizzle.select({
-            projectId: sessions.mekaProjectId,
-            roleId: sessions.mekaRoleId,
-            workingDir: sessions.workingDir,
-          })
-          .from(sessions)
-          .where(eq(sessions.id, sessionId))
-          .limit(1);
-        if (binding?.projectId === 'saga2' && binding.roleId === 'combat-development') {
-          // D6：提示词依据的「会话现状」来自 Host 的会话级镜像，而策略层读的是**实时**
-          // vendorOptions。Session 被重建（lazy-create / 从渲染进程排队快照 rehydrate）时实时状态
-          // 里没有这些范围键，镜像却还在 ⇒ 同一轮提示词说「范围已批准，逐目标实施」，策略层却退回
-          // 单技能分支并拒掉每一次调用。调度前先把镜像里**不可就地变更**的范围状态还原进实时
-          // Session（成员清单等会被策略层就地扩展的键不在还原范围内，见 combatScopeStateRestorePatch）。
-          const liveCombatSession = maker.getSession(sessionId);
-          const combatScopeRestore = combatScopeStateRestorePatch(sessionId);
-          if (liveCombatSession && Object.keys(combatScopeRestore).length > 0) {
-            await liveCombatSession.setVendorOptions(combatScopeRestore);
-          }
-          const combatContext = await prepareCombatFollowupRuntimeContext({
-            prompt: combatPrompt,
-            projectId: binding.projectId,
-            workingDir: binding.workingDir,
-            sessionId,
-            // A3：范围审批门禁必须知道会话当前是不是表范围，否则一句无关的「可以 / 继续 / OK」
-            // 会被当成范围审批。maker-core 的 Session 只提供写入口子、没有任何读取口子，
-            // 所以这里传 Host 自己维护的会话级战斗 vendorOptions 镜像。
-            previousVendorOptions: readCombatVendorOptions(sessionId),
-            resolveCombatServerTarget: (projectId) =>
-              resolveUniqueBoundMekaServerTarget({
-                router: getMekaRouterService(),
-                projectId,
-                probeCodexCapability: probeRemoteCodexCapability,
-                probeClaudeCapability: probeRemoteClaudeCapability,
-              }),
-          });
-          if (!combatContext) return prepared;
-          const messageWithCombatContext = combatContext.promptSection
-            ? prependNoteToWireUserMessage(
-                prepared as HandoffWireMessage,
-                combatContext.promptSection,
-              )
-            : prepared;
-          const sendToken = Symbol(sessionId);
-          const rollbackPatch: Record<string, unknown> = Object.fromEntries(
-            Object.keys(combatContext.vendorOptionsPatch).map((key) => [key, undefined]),
-          );
-          rollbackPatch.mekaCombatTargetSkillIdState = 'missing';
-          return {
-            message: messageWithCombatContext,
-            onAccepted: async () => {
-              const liveSession = maker.getSession(sessionId);
-              if (!liveSession) {
-                throw new Error(`Combat session ${sessionId} disappeared before target binding`);
-              }
-              combatFollowupSendTokenBySession.set(sessionId, sendToken);
-              const targetSkillId = combatContext.vendorOptionsPatch.mekaCombatTargetSkillId;
-              if (typeof targetSkillId === 'string' && /^[1-9]\d*$/.test(targetSkillId)) {
-                refreshCombatTargetBinding(sessionId, targetSkillId);
-              } else {
-                invalidateCombatTargetBinding(sessionId);
-              }
-              await liveSession.setVendorOptions(combatContext.vendorOptionsPatch);
-              // A3/A10：只有真正落地的补丁才进会话级镜像（发送未派发时 rollbackPatch 会把
-              // 这些键回滚，镜像保持「最后一次已接受的注入」，不会被失败发送污染）。
-              rememberCombatVendorOptions(sessionId, combatContext.vendorOptionsPatch);
-              log.info('combat skill target refreshed from accepted user message', {
-                sessionId,
-                state: combatContext.vendorOptionsPatch.mekaCombatTargetSkillIdState,
-                targetSkillId,
-                serverTargetReady:
-                  typeof combatContext.vendorOptionsPatch.mekaCombatServerRemoteHostId === 'string',
-              });
-            },
-            onUndispatched: async () => {
-              if (combatFollowupSendTokenBySession.get(sessionId) !== sendToken) return;
-              combatFollowupSendTokenBySession.delete(sessionId);
-              invalidateCombatTargetBinding(sessionId);
-              await maker.getSession(sessionId)?.setVendorOptions(rollbackPatch);
-            },
-            onDispatched: () => {
-              if (combatFollowupSendTokenBySession.get(sessionId) === sendToken) {
-                combatFollowupSendTokenBySession.delete(sessionId);
-              }
-            },
-          };
-        }
-      }
-      return prepared;
+      return await prepareUserMessageForAgent(sessionId, message, 'send');
     },
     materializeDirectSendOssAttachments,
     captureCindyLearnInvocation: async (session, persistedContent, dispatchedText) => {

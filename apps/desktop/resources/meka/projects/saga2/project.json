@@ -16,14 +16,38 @@
     {
       "sourcePath": "AGENTS.md",
       "itemType": "agents-md",
-      "disciplines": [],
+      "disciplines": ["通用"],
       "domains": ["治理"],
       "enabled": true,
       "name": "AGENTS.md",
       "contentFingerprint": "35b4812b49d6093172972730603e66b6390eee7babf910032fc337253e88a698",
       "subProjectPath": null,
-      "displayName": "项目Agent入口",
-      "description": "saga2_project 工作区 Agent 主入口，说明 saga2_design / saga2_unity / saga2_json / saga2_pm 目录结构与规则索引。"
+      "displayName": "项目工作区Agent入口",
+      "description": "SAGA2 工作区根级 Agent 入口，统辖 saga2_project 全部子目录，规定子目录 AGENTS.md 优先、不冲突时继承本文件，并把详细规则索引下放到各子目录。查阅本文档当需要：首次进入 SAGA2 工作区、判断某类资料或代码归属哪个子目录、确认根级与子目录规则的优先关系。"
+    },
+    {
+      "sourcePath": "saga2_design/.agents/skills/saga2-design-efficiency/SKILL.md",
+      "itemType": "skill",
+      "disciplines": ["策划"],
+      "domains": ["治理"],
+      "enabled": true,
+      "name": "saga2-design-efficiency",
+      "contentFingerprint": "b5a51e0b13b5d7cf84d831ffbad819b9b04bf96fcf23b0a0c5623949fd213fca",
+      "subProjectPath": "saga2_design",
+      "displayName": "策划设计效率闸门",
+      "description": "saga2_design 项目级必需效率闸门，每次对话或任务先执行：复用身份、来源、任务账本与 Meka/P4 预检，用六个效率对象压缩重复授权与阶段重跑，并在同一已确认批次内自动处理 Meka Docs 普通批复。凡创建、修改、同步或验收任务，强制转 saga2-design-rework-prevention。"
+    },
+    {
+      "sourcePath": "saga2_design/.agents/skills/saga2-design-rework-prevention/SKILL.md",
+      "itemType": "skill",
+      "disciplines": ["策划"],
+      "domains": ["治理"],
+      "enabled": true,
+      "name": "saga2-design-rework-prevention",
+      "contentFingerprint": "b17650a91d6f2da0e098fbd134c629c94422f057e8540a828bea3a7c4eb40474",
+      "subProjectPath": "saga2_design",
+      "displayName": "策划防返工复核",
+      "description": "由 saga2-design-efficiency 在写入类任务中强制路由的项目级防返工闸门。写入前建立 ReworkPreventionSnapshot，核对来源基线、输出边界、决定状态、SchemaFreeze、当前配置包证据与影响闭包；交付前回读真实成品，防止覆盖用户改稿、旧口径残留、越界修改和部分生效。"
     },
     {
       "sourcePath": "saga2_design/AGENTS.md",
@@ -35,7 +59,7 @@
       "contentFingerprint": "a2ee4c9353d941bfeeb24e2a6e89347ae1d8d282a17ee79e6187fa54ab15fa51",
       "subProjectPath": "saga2_design",
       "displayName": "策划库Agent入口",
-      "description": "策划知识库 Agent 入口，含 AI 初次接入强制协议与写入授权规则。"
+      "description": "SAGA2 策划知识库 saga2_design 的 Agent 入口与治理规则，规定首次接入须先读四份治理文档并声明只读，且任何写入前必须先出变更确认单；上下文恢复只走恢复复核，不重复完整接入。查阅本文档当需要：在策划库首次接入或恢复续作、判断一次确认能覆盖多少写入、判断配置表普通生产单次授权的边界。"
     },
     {
       "sourcePath": "saga2_design/CLAUDE.md",
@@ -46,9 +70,9 @@
       "name": "CLAUDE.md",
       "contentFingerprint": "44cdd36dae535093823d78f0dc80a33a6e20e8118847caf6419d5fe00fdcbe31",
       "subProjectPath": "saga2_design",
-      "displayName": "策划库Agent入口(CLAUDE)",
-      "description": "策划知识库 Agent 入口的 CLAUDE.md 别名，内容同 saga2_design/AGENTS.md。",
-      "notes": "与 saga2_design/AGENTS.md 内容重复，保留发现记录但不注入角色上下文。"
+      "displayName": "策划库CLAUDE别名",
+      "description": "SAGA2 策划知识库的 Claude Code 规则别名，供 Claude Code 读取；内容与 saga2_design/AGENTS.md 同源但已落后，缺少三级复核边界与配置表普通生产单次授权例外。查阅本文档当需要：核对 Claude 侧接入与写入授权规则是否与最新 AGENTS.md 一致。",
+      "notes": "已做字节比对：本文件 2397 B（mtime 2026-07-13），saga2_design/AGENTS.md 5259 B（mtime 2026-08-18），SHA256 不同。两者非字节一致、非包含关系、亦非同内容复制；基线原 notes「内容同 saga2_design/AGENTS.md」不成立，且 AGENTS.md 更新更全。建议维护者裁决该目录的权威源方向。"
     },
     {
       "sourcePath": "saga2_design/planning/01-治理规范-governance/skills/策划组统一工作流-planning-governance-manager/SKILL.md",
@@ -57,34 +81,59 @@
       "domains": ["治理"],
       "enabled": true,
       "name": "planning-governance-manager",
-      "contentFingerprint": "da48f9e6f49248694d9bdad4ae62b74556b2ac5fbce0f8165e86dfcd0c55b484",
+      "contentFingerprint": "ff9d89e9b5bae2cbf96844812786a3023ea11c9851d96dac245ec73901d9a269",
       "subProjectPath": "saga2_design",
-      "displayName": "策划治理调度",
-      "description": "策划组统一工作流入口，经治理层将文档路由到正确的职能组（系统 / IP / 战斗 / 关卡 / 数值 / 数据分析）。"
+      "displayName": "策划组统一治理入口",
+      "description": "策划组统一治理入口：先判定完整接入、恢复复核或写入前增量复核，按任务读集把文档路由到系统、IP、战斗、关卡、数值、数据分析六个职能组，并统一把住配置表生产的 Request 预检、机器回执、legacy-preserve 与事件生产迁移闸门。查阅本文档当需要：策划文档创建、改写、流转、归档或配置表生产。"
     },
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/关卡策划组-level-planning/skills/副本Boss需求拆解-dungeon-boss-requirement/SKILL.md",
       "itemType": "skill",
       "disciplines": ["策划"],
-      "domains": ["关卡"],
+      "domains": ["关卡", "战斗"],
       "enabled": true,
       "name": "dungeon-boss-requirement",
-      "contentFingerprint": "8da4de13d6d099b4f7820486b08fd4b566ce293961779dde6e353f0b23b1a5e1",
+      "contentFingerprint": "95993215e037264163bb4e518365d4cd0bc12d4815bb5522b6529579998b4be5",
       "subProjectPath": "saga2_design",
       "displayName": "副本Boss需求拆解",
-      "description": "关卡策划侧的副本 Boss 专项需求拆解，覆盖动作、特效、阶段切换、Timeline、场地和机制协作。"
+      "description": "关卡策划组副本 Boss 专项需求拆解子技能。覆盖 Boss 阶段结构与转阶段演出、技能起手/吟唱/释放/中断/失败/恢复拆解、场景机关联动、Timeline、玩家状态特效 Show-Loop-Hide 与 FX 归属代号命名。用于副本 Boss、阶段 Boss 与场景联动精英 Boss；普通小怪仍用怪物需求拆解。",
+      "notes": "文件自身文档状态标注为「草案」v0.1。"
+    },
+    {
+      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/关卡策划组-level-planning/skills/怪物技能特效设计-monster-skill-vfx/SKILL.md",
+      "itemType": "skill",
+      "disciplines": ["策划", "美术"],
+      "domains": ["关卡", "战斗"],
+      "enabled": true,
+      "name": "monster-skill-vfx",
+      "contentFingerprint": "e246f501272d6d3f0c6f800d3541e41df1daf391d6459c7b6e53c270a3c82aeb",
+      "subProjectPath": "saga2_design",
+      "displayName": "怪物技能特效概念图",
+      "description": "关卡策划组怪物/Boss 技能特效概念拆解图技能，约束 2D 动漫 MMO 地面指向特效画风、深灰炭底色与元素配色、地面符号贴地零厚度与箭头方位写法、数值徽标外框与拆解图版式，并给出图片生成 prompt 链路。用于设计技能特效概念图；特效拆分逻辑仍遵循副本 Boss 需求拆解。"
+    },
+    {
+      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/关卡策划组-level-planning/skills/怪物配置新增-monster-config-addition/SKILL.md",
+      "itemType": "skill",
+      "disciplines": ["策划"],
+      "domains": ["关卡", "数值"],
+      "enabled": true,
+      "name": "monster-config-addition",
+      "contentFingerprint": "c3dd9995d31443825448b104c0a40b8c2afe8b4dff70c691fdcabea4a101c227",
+      "subProjectPath": "saga2_design",
+      "displayName": "怪物配置新增",
+      "description": "关卡策划组怪物配置新增子技能，处理新增怪物、怪物组与关卡引用，ID 须取自已确认的 3M-DDD-SS 与 3M-DDD-GG 分配规则；配置只改配置表库源文件，saga2_json 仅镜像。用于新增关卡怪物或 Boss 配置、改 MonsterGroupId 或 BossGroupIds、审核 ID 与引用链。"
     },
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/关卡策划组-level-planning/skills/怪物需求拆解-monster-requirement/SKILL.md",
       "itemType": "skill",
       "disciplines": ["策划"],
-      "domains": ["关卡"],
+      "domains": ["关卡", "战斗"],
       "enabled": true,
       "name": "monster-requirement",
-      "contentFingerprint": "34fc08480744f7b16fb3a61d93ca7156ddfb90076e89c346a11786cf508b9487",
+      "contentFingerprint": "d1591f302b25731e263cdfb408ac06c92e4178aa98d7dc608867fcf1274a5da4",
       "subProjectPath": "saga2_design",
       "displayName": "怪物需求拆解",
-      "description": "关卡策划子技能，拆解怪物技能、动作、特效需求与 Boss 阶段机制、机制怪物等。"
+      "description": "关卡策划组怪物需求子技能，由关卡策划组工作流路由进入。把怪物零散描述整理成原画、动作、特效、战斗、数值与关卡可读的需求结构，含轻量动效表、判定形状词汇、特效成本纪律与 FX 归属代号命名。用于小怪、精英、Boss、机制怪、远程怪技能与动效需求；SAGA2 为传统 MMO，普攻锁定必中不写范围，无弱点与部位打击。"
     },
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/关卡策划组-level-planning/skills/关卡策划组工作流-level-planning-manager/SKILL.md",
@@ -93,10 +142,10 @@
       "domains": ["关卡"],
       "enabled": true,
       "name": "level-planning-manager",
-      "contentFingerprint": "11d6f4c1e21579669cc1fb431c8b313388ecfab4c3d7f5b329529c349925fb53",
+      "contentFingerprint": "30273d482cc7f7e81c0b1272393fe0cda1eaa94f3ab810a4b17d5dff10fc2bec",
       "subProjectPath": "saga2_design",
-      "displayName": "关卡策划工作流",
-      "description": "关卡策划组工作流，处理关卡结构、流程、地图节点、怪物配置、目标与节奏。"
+      "displayName": "关卡策划组工作流",
+      "description": "关卡策划组专业工作流，须经策划组统一治理入口路由进入。处理关卡结构、关卡流程、地图节点、怪物与怪物组配置、目标与节奏、玩法草案与细案归类；怪物技能动作特效需求转怪物需求拆解，怪物与怪物组新增及 ID 审核转怪物配置新增，产出回统一治理评审、写入与归档。"
     },
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/数据分析组-data-analysis/skills/数据分析组工作流-data-analysis-manager/SKILL.md",
@@ -107,44 +156,57 @@
       "name": "data-analysis-manager",
       "contentFingerprint": "79a26be99ceb928eeed0c44f7fe0b48f66bec405d2aa71e4315f49733f7b12b1",
       "subProjectPath": "saga2_design",
-      "displayName": "数据分析工作流",
-      "description": "数据分析组工作流，处理埋点方案、指标定义、漏斗、看板、实验与复盘。"
+      "displayName": "数据分析组工作流",
+      "description": "数据分析组专业工作流，须经策划组统一治理入口路由进入。处理埋点方案、指标定义、看板、实验、分析报告与复盘等数据文档类型；缺来源证据时不得臆造指标、事件名、维度或看板逻辑，也不得改写系统、战斗、关卡、IP 或数值结论。查阅本文档当需要：数据类文档起草、转化或结构待确认。"
+    },
+    {
+      "sourcePath": "saga2_design/planning/04-职能组-functional-groups/数值策划组-numerical-planning/skills/配置表库改表传表-config-table-p4-flow/SKILL.md",
+      "itemType": "skill",
+      "disciplines": ["策划"],
+      "domains": ["数值", "工程基建"],
+      "enabled": true,
+      "name": "config-table-p4-flow",
+      "contentFingerprint": "8c7f783513cef3cffb609840f865efad04aa093ecd545a202d495c4cee5141e2",
+      "subProjectPath": "saga2_design",
+      "displayName": "配置表改表传表",
+      "description": "数值策划组配置表改表、传表与 P4 提交流程，受工作区根 AGENTS.md 配置表硬闸门约束：须有 SAGA 单号与提交许可，改前锁定白名单并做字段级 JSON diff，非预期空值与记录减少即停，saga2_json 只作镜像；提交备注须无 BOM UTF-8 本地与服务器双回读。用于改配置表、入库同步或提交配置。"
     },
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/数值策划组-numerical-planning/skills/数值策划组工作流-numerical-planning-manager/SKILL.md",
       "itemType": "skill",
       "disciplines": ["策划"],
-      "domains": ["数值"],
+      "domains": ["数值", "治理"],
       "enabled": true,
       "name": "numerical-planning-manager",
-      "contentFingerprint": "8376c65634eb7d3b0ad24ad7387c8e09c5e3295cdd455e9164b52b3f17eb23f3",
+      "contentFingerprint": "dcf0eae423dd6b7661e134bb412ca1f97d36b49dca5d20e75041a43262695a23",
       "subProjectPath": "saga2_design",
-      "displayName": "数值策划工作流",
-      "description": "数值策划组工作流，处理成长曲线、资源产出消耗、掉落、成本、平衡与模型。"
+      "displayName": "数值策划组工作流",
+      "description": "数值策划组专业规则源与配置生产机器合同路由，须经统一治理入口进入。处理成长曲线、资源产出消耗、掉落、成本与平衡模型文档，并在用户触发且 AI 复核确认的配置生产请求下编译 Build Spec、执行只读 PASS/FAIL 预检，不做逐表数值审批；legacy-preserve 走独立 v0.12 分支。"
     },
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/系统策划组-system-planning/skills/交互原型制作工作流-meka-prototype-manager/SKILL.md",
       "itemType": "skill",
       "disciplines": ["策划"],
-      "domains": ["系统"],
+      "domains": ["系统", "治理"],
       "enabled": true,
       "name": "meka-prototype-manager",
       "contentFingerprint": "3f0e277036ec776e60f754602c6ad7e4605f4b231dcee23f40303e7183b15e87",
       "subProjectPath": "saga2_design",
-      "displayName": "交互原型制作",
-      "description": "系统策划组在 Meka Design 中制作可交互玩法原型的执行入口。"
+      "displayName": "Meka原型凭据与项目闸门",
+      "description": "系统策划组 Meka Design 凭据预检与项目处置闸门（原型制作由 saga2-meka-ui-authoring 承接）。检索前须跑 preflight，缺凭据则暂停并要求本机运行 setup-meka-user.ps1，禁止聊天粘贴 key。策划检查后三选一：只读复用、获确认修改或新建测试项目，AI 不判定匹配。",
+      "notes": "已修正事实失真：基线原称其为「制作执行入口」，实际正文已把制作交给 saga2-meka-ui-authoring，本技能为凭据预检 + 项目处置闸门 + 协议底座。"
     },
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/系统策划组-system-planning/skills/系统策划组工作流-system-planning-manager/SKILL.md",
       "itemType": "skill",
       "disciplines": ["策划"],
-      "domains": ["系统"],
+      "domains": ["系统", "治理"],
       "enabled": true,
       "name": "system-planning-manager",
       "contentFingerprint": "621c6f9d9a18fa48156850ed50598d77c24251af78cca4f0e5d037858dbd4590",
       "subProjectPath": "saga2_design",
-      "displayName": "系统策划工作流",
-      "description": "系统策划组工作流，处理系统功能、父系统规则、UI 流程与模块级视觉资产。"
+      "displayName": "系统策划组工作流",
+      "description": "系统策划组专业工作流，须经统一治理入口路由进入。处理大系统规则、索引与系统知识更新，判定功能案初始基线、增量基线或全量重置，并维护配置生产就绪字段；新功能案涉及 UI 或交互时主动路由 saga2-meka-ui-authoring，且不得绕过 meka-prototype-manager 的凭据预检与项目处置闸门。"
     },
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/系统策划组-system-planning/skills/系统功能案生成工作流-system-proposal-manager/SKILL.md",
@@ -156,19 +218,20 @@
       "contentFingerprint": "ec743518de028bdc4ab7b5b9bbee4ac2fc7207f23c48f882656beef766ed58d1",
       "subProjectPath": "saga2_design",
       "displayName": "系统功能案生成",
-      "description": "系统策划组功能案工作流，产出系统功能案草案、来源映射与 UI 产物建议。"
+      "description": "系统功能案执行入口，须经统一治理入口与系统组工作流两级路由。负责起草、转化与修改，落实 layout-v3 的六概述 H2 与六 H1 分层、双语文件名合同、配置与埋点字段、美术需求清单与程序 AI 资源索引；migrationMode 为 migrate 时须搬移并删除原位内容，并附搬移、体积、去重与字段守恒证据。"
     },
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/系统策划组-system-planning/skills/saga2-meka-ui-authoring/SKILL.md",
       "itemType": "skill",
-      "disciplines": ["策划"],
-      "domains": ["系统"],
+      "disciplines": ["策划", "程序"],
+      "domains": ["系统", "工程基建"],
       "enabled": true,
       "name": "saga2-meka-ui-authoring",
       "contentFingerprint": "755df277d6cb0603dec1c6bc70dd156a0528e01af7d3fbfe167dd6e47aea9dd4",
       "subProjectPath": "saga2_design",
-      "displayName": "Meka UI制作",
-      "description": "为 Saga2 项目把当前有效策划案的主界面效果预览、真实功能流程、Assets/Art/UIDesign 设计图和 saga2_unity UI 约定转换为可导入 Unity 的 Meka Design 项目。用于新建、修改、审查或验收玩法 UI 原型，决定“一个画布对应一个 Prefab”的边界，为互斥状态和可单独控制的子 UI 建立对称独立根节点，区分固定 UGUI、动态 UI 模板与运行时生成表现，强制所有文本使用 Meka 项目设置字体，并按 UGUI 规范配置布局、交互、状态、Filled 进度条与程序字段。"
+      "displayName": "Meka UI原型制作",
+      "description": "把策划案主界面效果预览、功能流程与设计图落成 Unity 可导入的 Meka 项目：一画布对应一 Prefab，互斥状态与子 UI 各建独立根，区分固定 UGUI 与运行时生成表现，文本强制用项目设置字体，进度条用 filled。执行前须继承 meka-prototype-manager 的凭据预检与处置闸门。",
+      "notes": "该文件未登记版本字段；frontmatter 原描述超 400 字，此处已压缩。文件正文引用的 Assets/Art/UIDesign 设计稿路径与 artist-UI 技能的实测结论存在分歧，建议一并复核。"
     },
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/战斗策划组-combat-planning/skills/战斗策划组工作流-combat-planning-manager/SKILL.md",
@@ -179,33 +242,33 @@
       "name": "combat-planning-manager",
       "contentFingerprint": "ec02861ae2f958b0a403c343f296acf830ce980ce638d0afa5d2065611fbe282",
       "subProjectPath": "saga2_design",
-      "displayName": "战斗策划工作流",
-      "description": "战斗策划组工作流，处理战斗机制、技能、怪物、Boss、节奏与体验设计稿。"
+      "displayName": "战斗策划组工作流",
+      "description": "战斗策划组专业工作流，须经治理入口路由进入。处理战斗机制、技能、怪物、Boss、战斗节奏与体验设计稿；涉及 Saga2 战斗运行时、SkillEditor、技能模块配置、battle/UI 导出包、Perforce 或 battle-designer 时转 saga2-project-battle-designer。"
     },
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/战斗策划组-combat-planning/skills/saga2-alias-skill/SKILL.md",
       "itemType": "skill",
       "disciplines": ["策划"],
-      "domains": ["战斗"],
+      "domains": ["战斗", "工程基建"],
       "enabled": false,
       "name": "saga2",
-      "contentFingerprint": "2fcf2a96222e210d6867f5e70bbd9d089223d9f2570e5ce7c519dfd364606bb5",
+      "contentFingerprint": "df361795f7a839bc18cf68f4b2e38d9977e229e0494bdbc80fb02e41fe02e840",
       "subProjectPath": "saga2_design",
-      "displayName": "Saga2转接镜像",
-      "description": "战斗策划知识库内 Codex `saga2` 别名技能镜像，定位工作区后转接战斗设计技能。",
-      "notes": "本地 Codex alias 的镜像，不作为 Meka 项目运行时 Skill 注入。"
+      "displayName": "saga2转接别名镜像",
+      "description": "战斗策划知识库内的 Codex saga2 转接 Skill 镜像。经 $saga2 进入时先比对本地别名与镜像版本，命中索引后进入 saga2-project-battle-designer；含项目根自发现、P4 更新自修复、workspace 个人命名与 stream client 规则，只同步内容区不整文件覆盖。"
     },
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/战斗策划组-combat-planning/skills/saga2-project-battle-designer/SKILL.md",
       "itemType": "skill",
       "disciplines": ["策划", "程序"],
-      "domains": ["战斗"],
+      "domains": ["战斗", "工程基建"],
       "enabled": true,
       "name": "saga2-project-battle-designer",
-      "contentFingerprint": "8e96bcf071be1f732598ed7eb7414eeb80a60d6db430f1b9a3ff689da6ab1fef",
+      "contentFingerprint": "7b9f8d9afd94d60f0b88b2abe562a0672c849014db1e6699d342e082c08d2bcd",
       "subProjectPath": "saga2_design",
-      "displayName": "战斗设计中枢",
-      "description": "Saga2 战斗设计与项目内 battle 工作流中枢。查阅本文档当需要：battle 设计交接、程序员向 Markdown、battle 或 UI 导出包、上传或入库技能设计、校验技能描述、编写新增后端模块配置方案、从七列 CSV 生成或更新技能 Timeline、修改特效显示层级或使特效显示在最前、定位或修改 Assets/Scripts/Hot/Game/Battle、SkillEditor 或 Module 编辑器、按技能 ID 配置效果或重建 skill_entry_model_editor.json、Perforce 编辑/新增/同步流程，或当用户说“更新”“导出”“记成skill”“复盘”“battle-designer”“配置效果”“编写效果”“特效高层级”“显示在最前”“CSV配置Timeline”、【还原项目】或明确说 `【导出模块表】` 并希望沉淀 battle 相关项目约定。"
+      "displayName": "战斗设计工作流中枢",
+      "description": "Saga2 battle 设计中枢：SkillEditor 技能 Timeline 与模块图配置、伤害数值算法、Timeline CSV 快捷配置、技能数据库同步与技能描述校验、导出与复盘沉淀。P4 必须经 Cindy Meka P4 插件，禁用 CLI/P4V；还原项目因缺 force sync/clean 停止。",
+      "notes": "与 saga2_unity/.agents/skills/saga2-project-battle-designer/SKILL.md（同名副本，enabled=false）同名近乎重复且已分叉：该副本仍写「默认只修改 skill_entry_model_editor.json」并允许「优先复用本机 P4/P4V 配置」，与本行正本的 Meka P4 插件强制路由、Asset 与 JSON 双写相反。本行为现役正本。"
     },
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/IP组-ip/世界观-worldbuilding/AGENTS.md",
@@ -214,10 +277,10 @@
       "domains": ["IP"],
       "enabled": true,
       "name": "AGENTS.md",
-      "contentFingerprint": "532b9d4a19f21604432671bdd5c7287f928d79f97536d7e481d3685ebc1d4ddf",
+      "contentFingerprint": "82d1bc4debaf79d9c12220df1bbfda03b3cf0f80d1069053720258231e4123a0",
       "subProjectPath": "saga2_design",
-      "displayName": "世界观Agent规则",
-      "description": "IP 组世界观目录的 Agent 工作规则：本地 Markdown 变更检查、编码规则等。"
+      "displayName": "世界观Agent入口",
+      "description": "IP 组世界观库（共梦庭与 S1 阿斯加德）的 Agent 入口：宣告项目级叙事与美术风格 canon，规定改稿前重扫本地 Markdown、中文逗号全角、UTF-8 显式读写，并以 CLAUDE.md 为源、AGENTS.md 为逐字镜像。查阅本文档当需要：写 S1 剧情、章节卡、设定或判断 canon 边界。"
     },
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/IP组-ip/世界观-worldbuilding/CLAUDE.md",
@@ -226,11 +289,11 @@
       "domains": ["IP"],
       "enabled": false,
       "name": "CLAUDE.md",
-      "contentFingerprint": "532b9d4a19f21604432671bdd5c7287f928d79f97536d7e481d3685ebc1d4ddf",
+      "contentFingerprint": "82d1bc4debaf79d9c12220df1bbfda03b3cf0f80d1069053720258231e4123a0",
       "subProjectPath": "saga2_design",
-      "displayName": "世界观Agent规则(CLAUDE)",
-      "description": "IP 组世界观目录 Agent 规则的 CLAUDE.md 别名，内容同目录下 AGENTS.md。",
-      "notes": "与同目录 AGENTS.md 内容重复，保留发现记录但不注入角色上下文。"
+      "displayName": "世界观CLAUDE镜像",
+      "description": "IP 组世界观库中与同目录 AGENTS.md 逐字一致的 Claude Code 规则文件；本目录以它为权威源、AGENTS.md 为镜像，因此规则改动必须两份字节级同步覆盖。查阅本文档当需要：改动世界观库规则并同步这两份文件。",
+      "notes": "已做字节比对：两份各 37755 B、SHA256 相同、mtime 均为 2026-09-04 18:08:32，字节完全一致（同内容复制，非 @ 包含），与该目录自述的「CLAUDE.md 为源、AGENTS.md 为镜像」相符。"
     },
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/IP组-ip/skills/IP组工作流-ip-planning-manager/SKILL.md",
@@ -242,79 +305,84 @@
       "contentFingerprint": "aa1fb14421a884e8e29f9d39b394bef260c102a9af9dc7c87f0a90d67f6574d6",
       "subProjectPath": "saga2_design",
       "displayName": "IP组工作流",
-      "description": "IP 组专业工作流，处理世界观、角色、阵营、叙事设定、术语与文本风格。"
+      "description": "IP 组专业工作流（v0.65），须经策划组统一治理入口路由进入。处理世界观、角色、阵营、叙事方向、术语与文本风格等 IP 文档类型，按任务事实路由 worldbuilding / canon / entity-card / narrative / lesson 等专项规则，产出草稿、待确认项与证据标签后回统一治理评审、写入与归档；不得直接写入、确认或归档正式文档。"
     },
     {
       "sourcePath": "saga2_pm/03-skills/saga2-feature-progress-estimator/SKILL.md",
       "itemType": "skill",
       "disciplines": ["通用"],
-      "domains": ["治理"],
+      "domains": ["治理", "工程基建"],
       "enabled": true,
       "name": "saga2-feature-progress-estimator",
       "contentFingerprint": "89192b763a2ab361d2b62df47cc46f4abed2dc9ef8685ed9dc978faf899170f8",
       "subProjectPath": "saga2_pm",
-      "displayName": "功能进度评估",
-      "description": "用统一标准估算 SAGA2 功能开发交付进度。适用于 PM 看板、P4/Git 双仓探测、SAGA 提交单命中、版本功能进度评估、判断功能是否具备交给策划验收的开发证据。"
+      "displayName": "功能进度估算Skill",
+      "description": "SAGA2 功能开发交付完成度的统一评分标准，用 P4 changes/describe/filelog 与 Git commit 等在线证据，按策划基线、UI 资源、前端、后端、跨端链路、风险收敛六维加权估算，判断功能是否已具备交给策划验收的程度。查阅本文档当需要：估版本功能进度、做 PM 看板、判断能否交策划验收。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/artist-Environment/SKILL.md",
       "itemType": "skill",
       "disciplines": ["美术"],
-      "domains": [],
+      "domains": ["关卡"],
       "enabled": true,
       "name": "artist-environment",
       "contentFingerprint": "ab3d317440df28fdd14f5a8766ce3de8f26555f55acc50d8b50880f647242a25",
       "subProjectPath": "saga2_unity",
-      "displayName": "环境美术",
-      "description": "Saga2 美术场景资源目录说明。用于查找、整理和修改 Assets/Art/Environment 下的场景、地形、场景模型、材质、贴图、预制体和 Unity 场景资源。"
+      "displayName": "场景关卡美术资源",
+      "description": "Saga2 场景关卡美术资源的落点说明（Assets/Art/Environment）：按 Level_* 与 SceneHome/SceneGuildHome 组织场景、地形、场景模型、材质、贴图与场景预制体。查阅本文档当需要：定位或改动场景关卡美术资源、Unity 场景、地形数据与 TerrainLayer。",
+      "notes": "文档目录表把 Levels/ModelAssets/Models/Materials/Texture/Prefab/Terrain 写成根目录直属，实机均在 Level_* 与 Scene* 子目录内；所列 SceneBattle、SceneGuildHome_test 不存在（现为 SceneGuildHome）。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/artist-FX/SKILL.md",
       "itemType": "skill",
       "disciplines": ["美术"],
-      "domains": [],
+      "domains": ["战斗"],
       "enabled": true,
       "name": "artist-fx",
       "contentFingerprint": "bc77c0f7760c1f4e745a7de658dc1c053ccf103c788d6e7377fa970f62997760",
       "subProjectPath": "saga2_unity",
-      "displayName": "特效美术",
-      "description": "Saga2 美术特效资源目录说明。用于查找、整理和修改 Assets/Art/FX 下的特效模型、贴图、材质、动画、控制器和 FX 预制体。"
+      "displayName": "特效美术资源",
+      "description": "Saga2 特效美术资源说明（Assets/Art/FX）：Animation/Model/Materials/Texture 与按怪物、场景、技能分类的 FX_ 预制体，并标明 EffectData 配置的实际位置。查阅本文档当需要：定位或修改特效预制体、特效贴图、材质与动画控制器。",
+      "notes": "实际 Prefab 下还有 Battle、Play 两个分类目录，文档未列。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/artist-Model/SKILL.md",
       "itemType": "skill",
       "disciplines": ["美术"],
-      "domains": [],
+      "domains": ["战斗", "系统"],
       "enabled": true,
       "name": "artist-model",
       "contentFingerprint": "20a2e64d0462a5625734a07242697a6d4250a988c4f7d5b7ace4c42f431ad451",
       "subProjectPath": "saga2_unity",
-      "displayName": "模型美术",
-      "description": "Saga2 美术模型资源目录说明。用于查找、整理和修改 Assets/Art/Models 下的角色、怪物、头发、头饰、武器、家园模型、公共模型及其动画、材质和贴图。"
+      "displayName": "模型美术资源",
+      "description": "Saga2 模型美术资源说明（Assets/Art/Models）：Role 各职业性别目录、Monster/NPC/Pet、Hair/Head/Weapon、Home 家园模型与 ModelPublic 公共部件及其材质、贴图、动画依赖。查阅本文档当需要：定位或修改角色、怪物、武器、家园模型。",
+      "notes": "磁盘上另有 Guild、NPC、Pet 三个目录未在文档中列出。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/artist-shader/SKILL.md",
       "itemType": "skill",
-      "disciplines": ["美术", "程序"],
-      "domains": [],
+      "disciplines": ["美术"],
+      "domains": ["系统", "战斗"],
       "enabled": true,
       "name": "artist-shader",
       "contentFingerprint": "8eae4d0e338a1a608bfdfdd956be9acdda5cf7f0ce025af5bb8851ff664765de",
       "subProjectPath": "saga2_unity",
-      "displayName": "Shader美术",
-      "description": "Saga2 美术 Shader 资源目录说明。用于查找、整理和修改 Assets/Art/Shaders 下的 Shader、HLSL 公共代码、LUT 和 Shader 辅助纹理，并定位相关 TechArt 或场景局部 Shader。"
+      "displayName": "美术着色器资源",
+      "description": "Saga2 Shader 资源说明（Assets/Art/Shaders 与 Art/TechArt）：Effects/Home/RoleShdaer/Guild 下的 shader 与公共 HLSL 依赖链、LUT 与辅助纹理。查阅本文档当需要：定位或修改 Shader、公共 HLSL、LUT 与材质纹理绑定。",
+      "notes": "实际还有 Shaders/Guild 子目录，文档未列。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/artist-UI/SKILL.md",
       "itemType": "skill",
       "disciplines": ["美术"],
-      "domains": [],
+      "domains": ["系统"],
       "enabled": true,
       "name": "artist-ui",
-      "contentFingerprint": "8b8f82dc5c4dd992750dd38f58343bd03c282c91b83cf4ed4df0b0cf5af65ed2",
+      "contentFingerprint": "9cf60b78d349269f3a2ddbfe0d68716de854bebc33c3c9346d60d6d007ae1ae3",
       "subProjectPath": "saga2_unity",
-      "displayName": "UI美术",
-      "description": "Saga2 美术 UI 资源目录说明。用于查找、整理和修改 Assets/Art/UI 下的 UI 预制体、图集、图片、字体、动画、材质以及各功能界面资源。"
+      "displayName": "界面美术资源",
+      "description": "Saga2 UI 美术资源说明（Assets/Art/UI）：Atlas 图集、Common/Components/Fonts，以及按功能目录组织的 UI 预制体、动画与材质。查阅本文档当需要：定位或修改 UI 预制体、图集 Sprite、字体与界面图片资源。",
+      "notes": "文档所列 Assets/Art/UIDesign（Battle/Home/MainUI）与 UI/Keyboard 在磁盘上均不存在（Keyboard 实为 Atlas/Keyboard）；实际功能界面目录与文档清单差异较大（另有 Components、UIDungeon、UIGuild、UILoginRole、UIMainline、UIRaid、UIRole、UISkillTooltip、UITrain）。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/doc-features-template/SKILL.md",
@@ -326,7 +394,7 @@
       "contentFingerprint": "02626908de062f53ae699a8465bd97f20b3e1cd2fd6d9766cf859522f44935ed",
       "subProjectPath": "saga2_unity",
       "displayName": "功能文档模板",
-      "description": "提供功能设计、文档模板与示例。当需要生成功能逻辑代码、写功能说明文档、或按「功能概述与业务逻辑、提示词约定、配置、协议、数据、资源、类设计、验收节点」梳理现有功能时，使用本技能模板遵循脚本调用层级 Game→(Fun/Config/Data); Fun→(Config/Data)。"
+      "description": "提供功能文档模板 feature-template.md 与「角色技能释放」示例 example-battle-skill.md，按功能概述与业务逻辑、配置、协议、数据、资源、类设计、验收节点组织，并强调调用层级 Game 到 Fun/Config/Data。用于生成功能逻辑代码、写功能说明文档、对齐模板节结构时查阅。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/doc-project/SKILL.md",
@@ -335,10 +403,11 @@
       "domains": ["工程基建"],
       "enabled": true,
       "name": "doc-project",
-      "contentFingerprint": "9930b90f565eef7d35f326d04c51422640783d18c616ba1499ed5f88588a684c",
+      "contentFingerprint": "0b2dff1c98d15828f89e359f56738bbc76d658449df162e83f47ebddfdddbaaf",
       "subProjectPath": "saga2_unity",
       "displayName": "项目架构总览",
-      "description": "描述整体目录划分与文档索引。查阅本文档当需要：了解项目结构（脚本架构、美术资源、各模块位置）"
+      "description": "描述 saga2_unity 工程根目录与 Assets 的目录划分：.agents、Tool（jenkins、helix-core-server、protoc-31.1）、_AssetsBundles，以及 Assets 下 Art/Audio/Editor/Scripts（Cold 冷更与 Hot 热更）/Scenes 的职责。查阅本文档当需要：了解项目结构、判断脚本或美术资源归属、按目录定位各模块位置。",
+      "notes": "正文所指的「子模块与对应技能」小节在当前文件中并不存在（文件在 Assets 目录树后结束）；目录树内已就地标注 script-data / doc-proto / script-fun 等关联技能。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/doc-proto/SKILL.md",
@@ -349,8 +418,20 @@
       "name": "doc-proto",
       "contentFingerprint": "0e7f34f2d55f2789b8e0395f59106b23c5eaf85e3467b6b49b9c3e6c05a13c0c",
       "subProjectPath": "saga2_unity",
-      "displayName": "Protobuf协议总览",
-      "description": "描述 Tool/protoc 下 .proto 源文件与 Assets/Scripts/Hot/Proto 生成代码、ProtoMgr 注册。查阅本文档当需要：增改协议、对齐服务端 message、查找生成 C# 类型、MID/AID 与推送定义。"
+      "displayName": "协议源与生成代码",
+      "description": "描述 Tool/protoc-31.1 下与服务器同源、由后端管理且不可手改的 .proto 源文件，Hot/Proto 的 protoc 生成 C# 与 ProtoMgr 的 MID/AID 及推送注册，以及 Hot/Fun/Proto 的业务收发封装分工。查阅本文档当需要：增改协议、对齐服务端 message、查找生成类型或推送定义、按改 proto 再生成再补 Fun 的顺序落地。"
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/editor-android-build/SKILL.md",
+      "itemType": "skill",
+      "disciplines": ["程序"],
+      "domains": ["工程基建"],
+      "enabled": true,
+      "name": "editor-android-build",
+      "contentFingerprint": "8d76eaeffecc9f9ac84e631c1e489eacec08ef91593f99c3983d5d09c1a8edaf",
+      "subProjectPath": "saga2_unity",
+      "displayName": "Android打包流程",
+      "description": "说明 Saga2 Unity 的 Android 测试包（AB 内嵌进 APK）实测流程：HybridCLR Android 口径生成判据、等编译与域重载结束、EditorBuild.BuildProcess 出包、产物离线自检、adb 装机与 logcat 验证、STREAM_AB 等模式开关与已知坑。查阅本文档当需要：出 Android 测试包、排查包启动卡住或热更 DLL 与 AB 加载失败、确认生成物平台口径。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/editor-jenkins-install/SKILL.md",
@@ -361,8 +442,9 @@
       "name": "editor-jenkins-install",
       "contentFingerprint": "791afac4a45aa013393fffd632e2b65d6e3e7e05789cca7444175d48b8b7a1bd",
       "subProjectPath": "saga2_unity",
-      "displayName": "Jenkins安装",
-      "description": "说明 Saga2 Unity 项目的 Jenkins Windows 节点安装与基础配置流程。查阅本文档当需要：安装 Jenkins、安装 JDK 21、解锁 Jenkins、安装 Jenkins 插件、配置构建保留数量、创建 LaunchUnityGame 计划任务、安装华为云 OBS Browser+ 或 obsutil。"
+      "displayName": "Jenkins节点安装",
+      "description": "说明 Saga2 Unity 项目的 Jenkins Windows 节点安装与基础配置：JDK 21、Jenkins LTS 与解锁密码、p4 与 Stage View 插件、构建保留数量 10、计划任务 LaunchUnityGame（-devMode test）、华为云 OBS Browser+ 与 obsutil 的放置位置。查阅本文档当需要：新建或重装 Jenkins 打包节点、配置构建机环境。",
+      "notes": "全文只覆盖 Windows 节点；macOS 节点安装未涉及。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/editor-jenkins-pipeline/SKILL.md",
@@ -374,7 +456,8 @@
       "contentFingerprint": "6c6744498aed5bc2092338199b211cca370859241d74a5b9dc0f8d023e140ac1",
       "subProjectPath": "saga2_unity",
       "displayName": "Jenkins流水线",
-      "description": "说明 Saga2 Unity 项目的 Jenkins CI 流水线、Tool/jenkins Jenkins 配置、脚本职责、环境变量和 Unity Editor 构建入口。查阅本文档当需要：理解或修改 asset/build/test/code 流水线、排查 Jenkins 构建、调整 P4 同步、Unity 打包、压缩、npkg 上传或启动测试脚本。"
+      "description": "说明 Saga2 Unity 的 Jenkins CI 流水线与 Tool/jenkins 脚本职责：资源检查、代码检查、打包发布、启动测试四条流水线的配置与阶段，P4/Unity/npkg 环境变量与凭证，以及 EditorCheck.CheckArtist、EditorBuildJenkins.Build/ZipBuild/UploadNpkg 等入口。查阅本文档当需要：修改流水线、排查 Jenkins 构建、调整 P4 同步或打包上传与启动测试。",
+      "notes": "文件明确 macOS 与 Windows 行为不一致：Jenkins_mac_build 未定义 UNITY_HOT_UPDATE，macOS unity-build.sh 不传 -isHotUpdate。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/editor-skill-editor-effect/SKILL.md",
@@ -383,10 +466,11 @@
       "domains": ["战斗"],
       "enabled": true,
       "name": "editor-skill-editor-effect",
-      "contentFingerprint": "15a6768c74ad08718a8dd7fc9e9a3380226d16350cc4104340a54b12a8eee97f",
+      "contentFingerprint": "21ab465701a1780e56279880356ab56e4b9a36104c88d9f93275e4ee2133fcc6",
       "subProjectPath": "saga2_unity",
       "displayName": "技能特效编辑",
-      "description": "Saga2 特效（EffectData）系统 — 配置/查询 EffectData 资产、effect_type（普通/Buff/弹道）、挂点（CP_x/WP_x）、同步模式、弹道类型、effect_key 唯一性校验、FX 预制体定位。当用户提到 \"特效\"、\"FX\"、\"EffectData\"、\"挂点\"、\"弹道\"、\"effect_key\"、\"FX_XXX\" 时使用。"
+      "description": "Saga2 特效（EffectData）字段表与配置流程：effect_type（普通/Buff/弹道）、挂点 CP_1 到 WP_2、sync_mode、quality_level、ballistic_type、Vector3 编码与 EffectData.ID 的 MD5 算法。用于新建或修改特效资产、确认挂点与弹道参数、从 .asset 还原 effects ID。Effect 侧当前未注册任何项目通道命令，只能人工操作或先补命令。",
+      "notes": "resolve_fx_prefab / check_effect_key / batch_configure_effects 等在文件中被明确声明为「业务操作名，不是可直接调用的命令名」。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/editor-skill-editor-module/SKILL.md",
@@ -395,10 +479,11 @@
       "domains": ["战斗"],
       "enabled": true,
       "name": "editor-skill-editor-module",
-      "contentFingerprint": "a0f98bbd2190b9c2277f4ce326cf3e12e4d4428ea845ac4c1dd43ed3345a5372",
+      "contentFingerprint": "cd221afeefdaddc74d4513d4826c8a97c8f595b82032c37e5318daf180800a95",
       "subProjectPath": "saga2_unity",
       "displayName": "技能模块编辑",
-      "description": "Saga2 技能模块系统 — 模块节点、连线、老版模块编辑器 JSON 导入/导出及 time/target/data/dataCondition 编码规则。当用户提到配置技能、模块节点、模块连线、导出 JSON 或模块字段时使用。Unity 操作统一经 Meka Unity 官方 CLI。"
+      "description": "Saga2 技能模块（SkillModuleData）老版 JSON 配置的权威说明：导入导出命令与参数规则、节点 ID 与端口、time/target/data/dataCondition 数组编码、技能参数 @N、配置工作流与服务端契约门、moduleType 与目标及条件类型字典。查阅本文档当需要：配置技能模块节点与连线、导入或导出并回读模块 JSON、判断既有服务端契约能否复用；Unity 操作统一经项目编辑器通道。",
+      "notes": "写入前须先走 Cindy Meka P4 插件：受管文件的 checkout/edit 只能调用 Meka P4，禁止 Shell、P4 CLI、P4V 或直接清除只读属性绕过；batch_create_module_nodes 等为历史操作名，不可调用。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/editor-skill-editor-timeline/SKILL.md",
@@ -407,23 +492,63 @@
       "domains": ["战斗"],
       "enabled": true,
       "name": "editor-skill-editor-timeline",
-      "contentFingerprint": "bfb2d43772a5b1b0c607298ff0cce4f84dd35dfde9c715436e4c9203cad2e8a0",
+      "contentFingerprint": "2fb6158d788f725b6e6553dea3bba21964f744672503d45d6f21e6ef43a72cdb",
       "subProjectPath": "saga2_unity",
       "displayName": "技能Timeline编辑",
-      "description": "Saga2 技能 Timeline 系统 — 创建/修改 Timeline 轨道、TimelineItem（动画/特效/启动模块/技能状态/位移等）、模型组（ModelGroup）下的动画子组与特效子组、AddModel 事件桥接模块系统。当用户提到 \"Timeline\"、\"轨道\"、\"动画\"、\"模型组\"、\"AddModel\"、\"启动模块\"、\"配置动画\" 时使用。"
+      "description": "Saga2 技能 Timeline 的轨道与条目规范及通用 TimelineModule 层架构：轨道类型与父子约束、track_type 短码、模型组下动画/特效/位移/隐藏模型子组、AddModel 等 TimelineItem 行为与 clip 路径，并覆盖阶段系统、吸附、多编辑器共存与统一预览场景。查阅本文档当需要：创建或修改 Timeline 轨道与条目、配置模型组与动画、改 TimelineModule 通用行为、排查阶段轴或吸附问题。",
+      "notes": "文件「双场景使用方式」只登记 unity-editor MCP 的 execute_custom_tool，并称桥接由 Assets/Editor/EditorSkillMcpTools/Bridge/SkillTimelineBridge.cs 暴露——该目录与文件在当前工程中不存在，属失效路径：文中所列 function 目前没有可用入口。"
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/editor-skill-module-contract-sync/SKILL.md",
+      "itemType": "skill",
+      "disciplines": ["程序"],
+      "domains": ["战斗", "治理"],
+      "enabled": true,
+      "name": "editor-skill-module-contract-sync",
+      "contentFingerprint": "23383e47648f35cc62246d896cf25cdf2b85e7b7e0c43da1bc4352814ea66bec",
+      "subProjectPath": "saga2_unity",
+      "displayName": "模块契约同步",
+      "description": "Saga2 技能模块协议治理与服务器契约审查流程：经 Meka MCPRouter 读取服务器当前 revision 核验注册与执行代码，维护 Protocol Catalog、接入路径、原子积木、业务组件与 ModuleV2 能力及 Inspector 目录，并给出 15 条架构不变量与逐项完成条件。仅在明确进行协议或服务器能力同步、ModuleV2 审查时查阅；普通单技能配置与 AI 战斗配置不使用本技能。",
+      "notes": "需要 MCPRouter 绑定的 SAGA2 服务器远程项目；未绑定或不可用时必须在写资产前停下，不得猜测契约。"
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/editor-unity-channel/SKILL.md",
+      "itemType": "skill",
+      "disciplines": ["程序", "通用"],
+      "domains": ["工程基建"],
+      "enabled": true,
+      "name": "editor-unity-channel",
+      "contentFingerprint": "61d72a9d486ffe45851aad36a1c5dfe0bac5b5440e6e4b2b6c9f309dab065fa9",
+      "subProjectPath": "saga2_unity",
+      "displayName": "编辑器通道说明",
+      "description": "Saga2 项目编辑器自动化通道的唯一权威说明：三步走（探测已连上的 Editor、枚举工程实际注册的命令、核实契约再调用）、工程注册命令清单（legacy_module_* 与 module_v2_*）、读写分流由通道裁决、通道不可用时显式降级。查阅本文档当需要：操作 Unity 编辑器、读控制台、调用工程命令，或不确定当前调用工具是什么。当前实际入口是 Unity 官方 CLI，不是 unity-editor MCP。",
+      "notes": "实测本机通道在此文件所述入口上可用：unity status 返回 7800 ready（saga2_unity，6000.3.18f1），unity command 可枚举工程注册的 legacy_module_* 与 module_v2_*。"
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/editor-unity-mcp/SKILL.md",
+      "itemType": "skill",
+      "disciplines": ["程序"],
+      "domains": ["工程基建"],
+      "enabled": true,
+      "name": "editor-unity-mcp",
+      "contentFingerprint": "260d83c813f897749b1b807aba889fa0d7bae5f63f5becbdaeced35cc64d8d29",
+      "subProjectPath": "saga2_unity",
+      "displayName": "编辑器MCP工具说明",
+      "description": "记录 unity-editor MCP 这一候选外部工具的工具面：服务地址 127.0.0.1:7788/mcp、read_console、场景/资源/脚本/构建等 40 多个工具与 batch_execute。它不是本项目主通道：工程未装 MCP 包、所述桥接文件不存在、7788 未监听，随包基线与本地工程也都只注册 project-agent。实际编辑器操作以 editor-unity-channel 为准。",
+      "notes": "该文件与 editor-unity-channel（唯一权威通道说明）互相冲突；实测其服务与桥接均不存在，应按不可用的遗留候选路径对待，不得作为首选。saga2_unity/AGENTS.md 正文同样残留该首选口径。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/saga2-project-battle-designer/SKILL.md",
       "itemType": "skill",
-      "disciplines": ["策划", "程序"],
-      "domains": ["战斗"],
+      "disciplines": ["程序", "策划"],
+      "domains": ["战斗", "治理"],
       "enabled": false,
       "name": "saga2-project-battle-designer",
-      "contentFingerprint": "81ca85c62a2e1a32848fb20d84a2d466a372b6ca69b4813eb1493bc9299f7b38",
+      "contentFingerprint": "75659b23b8013e09407988b4cec672e5bd1430841de52ab25670478d79402135",
       "subProjectPath": "saga2_unity",
-      "displayName": "战斗设计入口",
-      "description": "Saga2 战斗设计与项目内 battle 工作流中枢。查阅本文档当需要：battle 设计交接、程序员向 Markdown、battle 或 UI 导出包、定位或修改 Assets/Scripts/Hot/Game/Battle、SkillEditor 或 Module 编辑器、按技能 ID 配置效果或重建 skill_entry_model_editor.json、Perforce 编辑/新增/同步流程，或当用户说“更新”“导出”“记成skill”“复盘”“battle-designer”“配置效果”“编写效果”、【还原项目】或明确说 `【导出模块表】` 并希望沉淀 battle 相关项目约定。",
-      "notes": "工程侧旧镜像；战斗设计以 saga2_design 中的同名 Skill 为权威来源。"
+      "displayName": "战斗设计与模块配置",
+      "description": "Unity 工程内 battle 工作流旧副本：battle 代码结构索引、SkillEditor 模块配置与 skill_entry_model_editor.json 重建、Perforce 同步/还原及导出复盘约定。查阅本文档当需要：工程内 battle 模块配置或导出（有效落点已迁至战斗策划组技能库）。",
+      "notes": "与 saga2_design 下同名副本同名同源；本副本 enabled=false（最后改动 2026-09-22），设计库副本 enabled=true（2026-09-24，v1.02）且已新增 Cindy/Meka P4 强制路由、Timeline CSV、特效层级、技能描述校验等章节；本副本仍写死旧机绝对路径，其「战斗代码概述」所列 Game/Battle 下的 BattleRole* 已不存在。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/script-config/SKILL.md",
@@ -432,10 +557,11 @@
       "domains": ["数据"],
       "enabled": true,
       "name": "script-config",
-      "contentFingerprint": "0d68d543a0379eb9707899f8ec7b31380e6ebffce4a1d70ab5498b6316e29627",
+      "contentFingerprint": "7320597ec052b41b684e07cbba4482d06a9f401c9e4b1f976b74fb7766940edc",
       "subProjectPath": "saga2_unity",
-      "displayName": "配置代码",
-      "description": "描述 Assets/Scripts/Hot/Config 下的配置与表结构代码。查阅本文档当需要：查找战斗动画/特效/技能轴、主线关卡、家园家具、公会钓鱼/挖矿、道具、职业、怪物等配置或 Luban 生成脚本。"
+      "displayName": "配置代码与表结构",
+      "description": "Assets/Scripts/Hot/Config 配置与表结构代码：JsonConf 内的动画/特效/技能轴等 JSON 访问器、Luban 生成的 Tables 与各 Tb 表、ConfigMgr 加载与打包路径。查阅本文档当需要：查找或新增配置表访问代码、定位技能轴/关卡/家具/钓鱼/挖矿配置。",
+      "notes": "Json/ 下另有 ConfigEquipSet、ConfigFurnitureInteract 未在表中列出。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/script-data/SKILL.md",
@@ -444,22 +570,23 @@
       "domains": ["数据"],
       "enabled": true,
       "name": "script-data",
-      "contentFingerprint": "45b0a6dcff09a082379590a3624db3232bbd8e4f896d834f9ba4fccb3339b846",
+      "contentFingerprint": "aaf0f041b7157782fd35fc21ff8c1b7756beb030f32540f8a353b3ab1cc3f8ec",
       "subProjectPath": "saga2_unity",
-      "displayName": "数据层代码",
-      "description": "描述 Assets/Scripts/Hot/Data 下运行时数据层：角色、背包、战斗、家园、主线进度、公会钓鱼、聊天、登录态等内存快照。查阅本文档当需要：增改客户端持有的服务端同步数据、与 Config 区分、Data 与 Game/Fun 调用边界。"
+      "displayName": "运行时数据层",
+      "description": "Assets/Scripts/Hot/Data 运行时数据层（Hot.Data）：背包、装备、战斗房间、聊天、家园、公会、主线进度、登录态等内存快照与跨层事件总线。查阅本文档当需要：增改客户端持有的服务端同步数据，或判断 Data 与 Config/Game/Fun 的调用边界。",
+      "notes": "磁盘上已有 DataRoom.cs（2026-09-28），文档表格未列。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/script-fun/SKILL.md",
       "itemType": "skill",
       "disciplines": ["程序"],
-      "domains": [],
+      "domains": ["工程基建"],
       "enabled": true,
       "name": "script-fun",
-      "contentFingerprint": "f6aa1c98bf4aceaf3b5578906cd4df7489595753fd457baeafd474d9d63ec347",
+      "contentFingerprint": "880914b6ede70bb7b04e5375a1e5b2bf433ab608ef05af01605ef43f19ae67a3",
       "subProjectPath": "saga2_unity",
-      "displayName": "功能库代码",
-      "description": "描述 Assets/Scripts/Hot/Fun 下的通用功能库与 Proto 协议收发封装。查阅本文档当需要：定义项目通用/共用函数，或修改 ProtoFun、ProtoGameXxx、ProtoGameZone、ProtoChatBase、ProtoPushBase 等收发封装。"
+      "displayName": "通用功能与协议封装",
+      "description": "Assets/Scripts/Hot/Fun 通用功能库与协议收发封装：FunMgr、资源/图集/UI 组件、对象池、输入、红点引擎与 ProtoFun 及各 ProtoGameXxx 协议封装。查阅本文档当需要：新增通用函数、修改 Proto 收发封装或通用 UI/资源基础能力。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/script-game-battle/SKILL.md",
@@ -470,20 +597,33 @@
       "name": "script-game-battle",
       "contentFingerprint": "62714806f0024a407187f5b5e811b23172d22ddd803ee555f8f8263c8b010e02",
       "subProjectPath": "saga2_unity",
-      "displayName": "战斗业务代码",
-      "description": "描述 Assets/Scripts/Hot/Game/Battle 下的战斗专属房间编排、战报收发与技能预警表现。查阅本文档当需要：定位或修改主线/副本/爬塔/梦魇战斗进房、战斗日志解析与上报、禁行区、技能预警及其 Shader 表现。"
+      "displayName": "战斗模块代码",
+      "description": "Assets/Scripts/Hot/Game/Battle 战斗专属代码：主线/副本/爬塔/梦魇进退房与房间编排、战报收发、禁行区与技能预警表现。查阅本文档当需要：定位或修改战斗房间、战斗日志解析上报、禁行区与预警表现，共享角色实现见 script-game-room。"
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/script-game-game-gamereddot/SKILL.md",
+      "itemType": "skill",
+      "disciplines": ["程序"],
+      "domains": ["系统"],
+      "enabled": true,
+      "name": "script-game-game-gamereddot",
+      "contentFingerprint": "5f3dd2bec4b0bd5c721e94f1becf30dfcc2e7e1762fa3ed313dfd02eb5d9cd13",
+      "subProjectPath": "saga2_unity",
+      "displayName": "红点框架与接入",
+      "description": "红点框架专项说明：FunRedDot 引擎、GameRedDot 业务装配与 CommonRed/CommonRedPoint 预制体展示，含新增红点必须走通的 Data 到枚举到 Game 建树到 UI 四步。查阅本文档当需要：新增或修改 UI 红点、排查红点不亮/不灭/数字不对、补 FunRedDotId。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/script-game-game/SKILL.md",
       "itemType": "skill",
       "disciplines": ["程序"],
-      "domains": [],
+      "domains": ["系统"],
       "enabled": true,
       "name": "script-game-game",
-      "contentFingerprint": "693d977a775f9d170387c777518b2769a23a44e3f20054f387bfa943cf096450",
+      "contentFingerprint": "2591fc4b69700e421e3caf19f7e49e71b42b9a5ecd8733cc2063852df1f0d7dd",
       "subProjectPath": "saga2_unity",
-      "displayName": "游戏业务编排",
-      "description": "描述 Assets/Scripts/Hot/Game/Game 下的游戏业务层代码。查阅本文档当需要：定位游戏入口、登录、场景切换、聊天、GM、错误上报或跨模块业务编排。"
+      "displayName": "游戏业务层代码",
+      "description": "Assets/Scripts/Hot/Game/Game 游戏业务层：GameMgr 入口、登录链路、房间场景切换、聊天、背包、GM、错误上报与红点装配等跨模块编排。查阅本文档当需要：定位游戏入口、登录、场景/房间切换或跨模块业务编排，并找到各子模块对应技能。",
+      "notes": "文档表格未列 GameMainline、GameEquip、GameGenericPlay、GameHeart、GameTeamGeneric 等现有类。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/script-game-home/SKILL.md",
@@ -492,10 +632,22 @@
       "domains": ["系统"],
       "enabled": true,
       "name": "script-game-home",
-      "contentFingerprint": "147f607aba6aaecf89b705247ec571ec55d0641f7a5af92cdc12ea1bf9031587",
+      "contentFingerprint": "5ea3343e0c334119a3bb34971e739c613d52e46bc52ceaacfb03c8deb622e653",
       "subProjectPath": "saga2_unity",
-      "displayName": "家园业务代码",
-      "description": "描述 Assets/Scripts/Hot/Game/Home 下的个人家园房间、场景与协议适配。查阅本文档当需要：定位家园进退房、家园场景日志、家园数据到建造玩法的适配。"
+      "displayName": "个人家园模块",
+      "description": "Assets/Scripts/Hot/Game/Home 个人家园模块：HomeRoom 进退房与协议注册、HomeScene 场景与角色维护、家园场景日志以及家园数据到建造玩法的适配。查阅本文档当需要：定位家园进退房、家园日志或家园数据适配，建造实现见 script-game-play-build。"
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/script-game-play-aquarium/SKILL.md",
+      "itemType": "skill",
+      "disciplines": ["程序"],
+      "domains": ["系统"],
+      "enabled": true,
+      "name": "script-game-play-aquarium",
+      "contentFingerprint": "c1d4ca02350389fd95998f06253aa5006200093d818c7d3c89ab4332651d54bc",
+      "subProjectPath": "saga2_unity",
+      "displayName": "鱼缸游动玩法",
+      "description": "Assets/Scripts/Hot/Game/Play/Aquarium 鱼缸游动玩法：鱼缸家具绑定、SwimOrigin 局部水域、单鱼巡游与鱼群 Boids、固定物避障与独立查看相机，配置读 AquariumFish 与 AquariumParams。查阅本文档当需要：定位或修改鱼缸游动、展示清单或鱼缸配置查询。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/script-game-play-build/SKILL.md",
@@ -504,10 +656,11 @@
       "domains": ["系统"],
       "enabled": true,
       "name": "script-game-play-build",
-      "contentFingerprint": "94c5095eaa0012da70382fd43445878589b5b23b739c9a6ed56b390d4f61de08",
+      "contentFingerprint": "b0cdf81c95e68fbdf69dbe55d0c346c6e2a088393c10d7aad856d90ab5a81ef4",
       "subProjectPath": "saga2_unity",
-      "displayName": "建造玩法代码",
-      "description": "描述 Assets/Scripts/Hot/Game/Play/Build 下的可复用建造玩法代码。查阅本文档当需要：修改家园或公会家园的家具/地板/方块建造、建造网格与占格判定、预览与射线命中、方块连通性、建造表面或地板 GPU 渲染时使用。"
+      "displayName": "建造玩法模块",
+      "description": "Assets/Scripts/Hot/Game/Play/Build 可复用建造玩法：个人与公会家园的家具、地板、方块建造，网格占格、预览射线命中、方块连通性回收与地板 GPU 渲染。查阅本文档当需要：修改建造网格与放置逻辑、IBuildSceneContext 适配或建造渲染。",
+      "notes": "文档「目录职责」表列 Placement 子目录，实际磁盘为 Config/Controller/Model/Rendering/Role/Scene/Tool（无 Placement）。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/script-game-play-capture/SKILL.md",
@@ -518,8 +671,9 @@
       "name": "script-game-play-capture",
       "contentFingerprint": "b05f94d6ff881a1db6a033445c41b7c1e27fa4498430b9c92d6bbc61ad69bfd0",
       "subProjectPath": "saga2_unity",
-      "displayName": "捕获玩法代码",
-      "description": "描述 Assets/Scripts/Hot/Game/Play/Capture 下的可复用捕获玩法代码。查阅本文档当需要：修改捕获瞄准/投射、肩后相机、本地 MIMOO 目标、捕获背包提交或公会家园捕获接入时使用。"
+      "displayName": "捕获玩法模块",
+      "description": "捕获（MIMOO）玩法说明：瞄准与投射、肩后虚拟相机、本地模拟 MIMOO 目标、捕获背包提交与公会家园接入；实际代码在 Assets/Scripts/Hot/Game/Play/Mimoo，文档内路径仍写作 Play/Capture。查阅本文档当需要：修改捕获玩法或其接入。",
+      "notes": "目录与类名已由 Capture* 更名为 Mimoo*（MimooManager/MimooCaptureCore/MimooEntity/MimooCameraCtrl/MimooInput/MimooLogClient/MimooLogServer/MimooRole/MimooDefine/MimooConfigMgr），SKILL.md 正文未同步；script-game-ui 中的 UICapture 同理应为 UIMimoo。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/script-game-play-fishing/SKILL.md",
@@ -528,10 +682,10 @@
       "domains": ["系统"],
       "enabled": true,
       "name": "script-game-play-fishing",
-      "contentFingerprint": "6d756b91ff6cb8d265f2234f4ccc3852bc7d5838e01491a628aa948c9a7742e2",
+      "contentFingerprint": "194489cfef7950df5ba8f203f94c92af1f998ff69a9d78490dc9ee03f0122db6",
       "subProjectPath": "saga2_unity",
-      "displayName": "钓鱼玩法代码",
-      "description": "描述 Assets/Scripts/Hot/Game/Play/Fishing 下的可复用钓鱼玩法代码。查阅本文档当需要：修改钓鱼状态机、抛竿/收线表现、钓鱼输入、鱼圈与水域场景、角色钓鱼表现、钓鱼配置或场景日志收发时使用。"
+      "displayName": "钓鱼玩法模块",
+      "description": "Assets/Scripts/Hot/Game/Play/Fishing 公会钓鱼玩法：FishingManager 状态机、抛竿与收线判定、鱼圈与水域场景、浮漂表现、钓鱼输入与相机及场景日志收发。查阅本文档当需要：修改钓鱼状态机、抛竿收线表现、鱼圈或钓鱼日志。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/script-game-play-mining/SKILL.md",
@@ -542,20 +696,21 @@
       "name": "script-game-play-mining",
       "contentFingerprint": "c5277a1717b799ce224d975c32d1372ab181c152e447be4af0216c7e53baf6a8",
       "subProjectPath": "saga2_unity",
-      "displayName": "挖矿玩法代码",
-      "description": "描述 Assets/Scripts/Hot/Game/Play/Mining 下的可复用挖矿玩法代码。查阅本文档当需要：修改挖矿输入、矿石场景、角色近矿检测、判定会话、挖矿日志或公会家园挖矿接入时使用。"
+      "displayName": "挖矿玩法模块",
+      "description": "Assets/Scripts/Hot/Game/Play/Mining 公会挖矿玩法：MiningManager 敲击与 BONUS 提交、矿区刷新与矿石实体、角色近矿交互、判定会话与挖矿日志。查阅本文档当需要：修改挖矿输入、矿石场景表现、BONUS 判定或挖矿日志。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/script-game-room/SKILL.md",
       "itemType": "skill",
       "disciplines": ["程序"],
-      "domains": [],
+      "domains": ["工程基建", "战斗"],
       "enabled": true,
       "name": "script-game-room",
-      "contentFingerprint": "8222ca3845139d50dd4662ba512b98f7f22ca3ef328aa5dc7c3a47f5c9cc2a4a",
+      "contentFingerprint": "4155180e8e7b7433c6bba209adf10c0a0347946b8fe702682918ef3856814cee",
       "subProjectPath": "saga2_unity",
-      "displayName": "房间基础代码",
-      "description": "描述 Assets/Scripts/Hot/Game/Room 下可复用的房间、场景、角色、相机、特效与日志基础代码。查阅本文档当需要：修改战斗、家园或公会共用的角色控制/输入/移动/技能、房间生命周期、场景角色调度、相机、特效、房间战报或建造/钓鱼/挖矿/捕获玩法扩展基础能力。"
+      "displayName": "房间通用基础代码",
+      "description": "Assets/Scripts/Hot/Game/Room 房间通用基础：GameRoom/RoomScene 生命周期、RoomRole 角色控制与移动技能、通用相机与特效、房间日志基类及 IRoomPlay 玩法扩展框架。查阅本文档当需要：改动战斗/家园/公会共用的角色、房间、相机、特效或日志基础代码。",
+      "notes": "文档表格未列 RoomRoleCreate、RoomRoleSwim、RoomInteractInfo 等现有文件。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/script-game-ui/SKILL.md",
@@ -564,22 +719,23 @@
       "domains": ["系统"],
       "enabled": true,
       "name": "script-game-ui",
-      "contentFingerprint": "264d894f69b5462c30a85f10c2cac02f8435cbb10cbd788df9e773503eb2f296",
+      "contentFingerprint": "aead58886821b99affd39feaf5f6f631b454d4f0ff9e9f148c66ba9fb9405dfb",
       "subProjectPath": "saga2_unity",
-      "displayName": "UI业务代码",
-      "description": "描述项目中 UI 框架、通用组件与业务界面的代码结构。查阅本文档当需要：查找或修改 UI 框架（Attribute/Core/Module）、通用 UI 组件或游戏业务界面（含主线、公会钓鱼/挖矿/捕获）。"
+      "displayName": "界面框架与业务界面",
+      "description": "UI 代码结构说明：Assets/Scripts/Hot/UI 框架（Attribute/Core/Module/池化）、Hot/Fun/UI 通用组件与图集、Hot/Game/UI 业务界面（背包、战斗 HUD、聊天、家园、公会、主线、测试面板）。查阅本文档当需要：查找或修改 UI 框架、通用组件与关窗退场。",
+      "notes": "文档仍写 UICapture，实机为 UIMimoo；UIDungeon、UILoginRole、UIRaid、UITrain 等现有界面未列。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/script-test/SKILL.md",
       "itemType": "skill",
-      "disciplines": ["QA", "程序"],
+      "disciplines": ["程序", "QA"],
       "domains": ["工程基建"],
       "enabled": true,
       "name": "script-test",
       "contentFingerprint": "3b808767048c457bb5c6c5abdd282b610be1f96a5819144c04585abf8cee11c5",
       "subProjectPath": "saga2_unity",
-      "displayName": "测试配置",
-      "description": "描述 Saga2 客户端 TestConf 测试配置与 GameTest/UITest 自动化测试规则。查阅本文档当需要：阅读、编写、修改或排查 Assets/Scripts/Hot/Config/TestConf 下的 Luban 测试 JSON，处理测试面板、全量测试、测试步骤关键词、测试链路跳转、Owners 上报或测试配置编译。"
+      "displayName": "测试配置与自动化",
+      "description": "Assets/Scripts/Hot/Config/TestConf 客户端自动化测试配置与执行规则：UITest/GameTest 步骤关键词、AssertTrue/AssertFalse 链路跳转、Owners 上报与 Luban 测试配置编译。查阅本文档当需要：编写或排查测试 JSON、测试面板与测试链路。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/tool-config-script-create/SKILL.md",
@@ -591,7 +747,8 @@
       "contentFingerprint": "5067a49451838f8774557c1795f9144e96fa9bc8c5cefee61538c3487b0dffde",
       "subProjectPath": "saga2_unity",
       "displayName": "配置解析代码生成",
-      "description": "为 Saga2 新增或更新 Luban JSON 配置表的 C# 解析代码。用户提到“创建解析 JSON 配置表”“生成配置表 C# 代码”“按 bean 生成 Luban 表”“新增 saga2_json 配置表”时使用；按表名核对 ../saga2_json 与 saga2_design 的同名 bean，并直接参照现有 Luban C# 表结构创建代码"
+      "description": "为 Saga2 新增或更新 Luban JSON 配置表的 C# 解析代码：按表名核对 ../saga2_json 同名 JSON 与 saga2_design 配置表库的同名 bean，确认字段、主键与引用后在 Assets/Scripts/Hot/Config/Luban 选模板，产出 TableName.cs、TbTableName.cs 并接入 Tables.cs 的属性、构造加载与 ResolveRef。用户要求创建或按 bean 生成配置表代码时查阅。",
+      "notes": "不要修改 Assets/Scripts/Cold、JSON、设计表或 bean；P4 需提权在工作机 PowerShell 执行，不得在沙盒中调用 p4。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/tool-p4-submit/SKILL.md",
@@ -600,10 +757,24 @@
       "domains": ["工程基建"],
       "enabled": true,
       "name": "tool-p4-submit",
-      "contentFingerprint": "85cce7e2debe8be12a99a53ab343e4654e8b6e728ffa4f2bae1dee82961a7fcc",
+      "contentFingerprint": "b4a52917d641adef52c1267307be3af2b647cc42ac170ef743a9cc9757997dce",
       "subProjectPath": "saga2_unity",
-      "displayName": "P4提交",
-      "description": "Saga2 的 Perforce 提交流程。用户要求执行 p4 submit、创建或校验 changelist 描述时使用；默认以中文提交说明，并以 UTF-8 安全写入。"
+      "displayName": "P4提交流程",
+      "description": "Saga2 的 Perforce 提交流程：按平台分流（Windows PowerShell 与 macOS zsh）并强制初始化 UTF-8 与 P4CHARSET，提交说明固定为 SAGA 编号加版本、职能、改动摘要与概要且默认中文。查阅本文档当需要：执行 p4 submit、创建或更新编号 changelist 描述、校验 SAGA 编号与版本职能等必填字段、按差异写概要并排查提交报错。",
+      "notes": "缺任一项必填或含义不清时「先问用户；不要提交」。"
+    },
+    {
+      "sourcePath": "saga2_unity/.agents/skills/tool-proto-sync/SKILL.md",
+      "itemType": "skill",
+      "disciplines": ["程序"],
+      "domains": ["数据"],
+      "enabled": true,
+      "name": "tool-proto-sync",
+      "contentFingerprint": "249670dac4b3906e14c41cd56187afed5bd2c4c050042e3b4d119dcad9c9c649",
+      "subProjectPath": "saga2_unity",
+      "displayName": "协议同步",
+      "description": "把 ttdbl3_proto 的 .proto 同步到 Tool/protoc-31.1、编译生成 Hot/Proto 并补 Hot/Fun/Proto 收发封装：给 commit hash 时只同步该提交涉及的 proto 完整文件，未给则快照 origin/develop，默认 git fetch 不 pull，编译经 Unity 官方 CLI 调菜单「程序工具/编译proto协议」。用户说同步协议、合入协议或给出 commit hash 时查阅。",
+      "notes": "默认不执行 p4 submit（提交走 tool-p4-submit）；源仓库探测顺序记录在文件内，含个人机器路径。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/tool-script-router/SKILL.md",
@@ -612,10 +783,11 @@
       "domains": ["工程基建"],
       "enabled": true,
       "name": "tool-script-router",
-      "contentFingerprint": "66cef96f7736201926caa5c599173be609ac09411c1bf8f74996552ed63433e1",
+      "contentFingerprint": "fa406aa4e3e511c74e8c9904aa80e9650853a526f402bcf4df851b3efe25fe31",
       "subProjectPath": "saga2_unity",
-      "displayName": "脚本技能路由",
-      "description": "为Assets/Scripts/Hot功能代码的生成或修改路由到现有项目技能。先使用本技能定位并完整查阅所有命中的 SKILL.md，再查找现有函数与实现。"
+      "displayName": "功能代码路由",
+      "description": "为 Assets/Scripts/Hot 功能代码的生成或修改路由到现有项目技能：按系统边界、协议、配置表、数据层、战斗与家园及公会玩法、UI、红点、测试等需求查路由表，先完整读取命中的 SKILL.md，再用 rg 定位现有函数与调用方。查阅本文档当需要：判断功能代码归属哪个模块、确定应先读哪些 script-* 技能、避免只按名称猜测实现。",
+      "notes": "Editor 工具、资源、美术等非功能代码需求不适用本路由，应改用对应领域技能。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/tool-skill-refresh/SKILL.md",
@@ -624,10 +796,11 @@
       "domains": ["工程基建"],
       "enabled": true,
       "name": "tool-skill-refresh",
-      "contentFingerprint": "4ba311a5b0335e7590430afd370d0ec12675409974c40ef26ce71aececabc35f",
+      "contentFingerprint": "b892199c2d964a013150bcb694fc735e9e80ad9bceb10c6885822e690102d675",
       "subProjectPath": "saga2_unity",
       "displayName": "脚本技能刷新",
-      "description": "用于更新 .agents/skills 下的技能内容。当前支持刷新所有 script-* 技能；当 Hot 层代码、目录、程序集或模块职责变更，需要同步技能说明时查阅本文档。"
+      "description": "用于同步项目代码与 .agents/skills 下的技能说明，当前只覆盖 script-* 技能及其对应 Hot 目录（Config、Data、Fun、Game、UI、TestConf 等）。查阅本文档当需要：Hot 层代码、目录、程序集或模块职责变更后刷新技能说明、确定受影响技能清单、按 P4 规则改增技能文件并检查路径与交叉引用。artist-*、editor-*、doc-* 仅预留，尚未纳入。",
+      "notes": "整合更新后须重新检查并更新一遍 tool-script-router。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/tool-ui-prefab-create/SKILL.md",
@@ -636,47 +809,40 @@
       "domains": ["系统"],
       "enabled": true,
       "name": "tool-ui-prefab-create",
-      "contentFingerprint": "5f55ce9570c18875b8acc19c9d5d54bf6340dc53a3d0aa481ddaca8ba9c2bcac",
+      "contentFingerprint": "e0ea76c18ac3c3f0ff0aa291c9819367192c2cbe501b698055194afd6f7d4ee7",
       "subProjectPath": "saga2_unity",
       "displayName": "UI预制体制作",
-      "description": "创建、修改、整理或审查 Saga2 Unity UI Prefab预制体时使用。适用于 Assets/Art/UI 下的功能界面、平台变体、动态子预制体、UI 节点层级、Image/Button/TextMeshPro 组件、资源引用和命名规范。"
+      "description": "Saga2 Unity UI 预制体规范：功能界面目录与资源位置、根节点与区域及功能节点和 _Prefabs 层级、Img/Btn/Text/Scroll/Layout 命名与组件要求，以及 CommonBtn 六变体、CommonTabs、CommonDropdown 等公共 Prefab 的选用与禁用处理。查阅本文档当需要：创建、修改、整理或审查 Assets/Art/UI 下的界面 Prefab；能连编辑器时优先走项目编辑器通道，否则走 YAML 并显式声明降级。",
+      "notes": "改动前必须先读相邻的 artist-ui 技能；Assets/Art/UIDesign 只放设计稿，不作为运行时 UI 资源目录。"
     },
     {
       "sourcePath": "saga2_unity/AGENTS.md",
       "itemType": "agents-md",
       "disciplines": ["程序"],
-      "domains": ["治理"],
+      "domains": ["工程基建"],
       "enabled": true,
       "name": "AGENTS.md",
       "contentFingerprint": "1f0301cf98db5277f5aea417e0fd847b285c11f5468a2f72960692b5538af73b",
       "subProjectPath": "saga2_unity",
-      "displayName": "Unity工程Agent入口",
-      "description": "Unity 客户端 Agent 入口，含冷热更分层、调用层级、P4 流程等硬规则。"
+      "displayName": "游戏工程Agent入口",
+      "description": "Unity 客户端 Agent 入口与硬规则：热更主体在 Assets/Scripts/Hot，Cold 层不可改，调用层级 Game 到 Fun/Config/Data 不可反向，增改须入 P4 changelist；操作编辑器统一经项目编辑器通道（工程内并无可用的 unity-editor MCP）。查阅本文档当需要：改 Unity 代码或资源、判断热更边界。",
+      "notes": "本文件正文写的「操作 Unity 编辑器优先用 unity-editor MCP」与实测冲突：该 MCP 服务未监听、工程未装 MCP 包、所述桥接目录不存在，本基线描述已按项目编辑器通道口径修正。"
     },
     {
       "sourcePath": "saga2_unity/CLAUDE.md",
       "itemType": "agents-md",
       "disciplines": ["程序"],
-      "domains": ["治理"],
+      "domains": ["工程基建"],
       "enabled": false,
       "name": "CLAUDE.md",
       "contentFingerprint": "8ede080c682a7a00eb9af7603631093cdc35082ab1a34d25cc5c1e65d7a4b769",
       "subProjectPath": "saga2_unity",
-      "displayName": "Unity工程Agent入口(CLAUDE)",
-      "description": "Unity 客户端 Agent 入口的 CLAUDE.md 别名，内容同 saga2_unity/AGENTS.md。",
-      "notes": "与 saga2_unity/AGENTS.md 内容重复，保留发现记录但不注入角色上下文。"
+      "displayName": "工程CLAUDE别名",
+      "description": "saga2_unity 下的 Claude Code 入口，全文仅一行 @AGENTS.md 包含指令，把 Claude 侧规则指向同目录 AGENTS.md，不改写也不复制任何规则。查阅本文档当需要：确认 Unity 工程里 Claude 与 Codex 是否读同一套硬规则。",
+      "notes": "已做字节比对：本文件 15 B，唯一内容为第 1 行 @AGENTS.md；saga2_unity/AGENTS.md 1706 B。两者非字节一致，15 B 文件是指向 AGENTS.md 的包含指令，不是内容复制。基线原 notes「内容同 saga2_unity/AGENTS.md」不成立。"
     }
   ],
   "roleDefaults": {
-    "promptFramework": "# Meka target framework\n\nTreat the frozen session target as the success boundary. Confirm the expected result, collect evidence before changing state, split work into verifiable steps, and report what was verified. Activated packs describe available operating procedures; they do not grant routes, credentials, write roots, or permission. Host authorization and repository instructions remain authoritative.\n\n## Domain vocabulary\n\nIn a Meka game-project context, an unqualified Chinese term such as `技能`, `技能配置`, `技能效果`, or `技能系统` means a gameplay ability and its combat-design, data, client, or server implementation. It does not mean a Claude/Agent Skill. Only interpret it as an Agent Skill when the user explicitly says `Agent Skill`, `Claude Skill`, `SKILL.md`, capability-pack skill, or asks to create, install, list, or edit agent operating instructions. Do not search, list, or invoke Agent Skills merely because an unqualified gameplay `技能` was mentioned.\n\nIn SAGA2, `服务器` / `server` means **saga2-server**, the game backend server project and its related content. It is reached through the MCPRouter project instance bound to SAGA2. Treat that remote project as a project reference work surface alongside the local client, design, tables and PM evidence; it never means an SSH host, a local machine, or a directory in the local workspace. Use direct remote-project read capabilities first. Escalate to a remote Agent or Orca Worker only when direct read capability is insufficient or the user explicitly needs an independent execution unit. `客户端` / `client` means the `saga2_unity` subdirectory (the Unity client). `策划案` / `design documents` means the `saga2_design` subdirectory. `项目管理` / `PM` means the `saga2_pm` subdirectory, which contains PM governance, project dashboards, reusable Agent skills, and version delivery records. `MekaDesign` is the design platform that produces system-feature UI designs importable into Unity as Prefabs. `MCPRouter` is the project team's internal tool platform.\n\n## Lookup priority\n\nSAGA2 is one complete game project. Resolve questions across its work surfaces in this order: (1) local project evidence — client (`saga2_unity`), server reference project (`saga2-server`), config tables (`saga2_json`), design documents (`saga2_design`), and project-management evidence (`saga2_pm`); (2) peripheral tools — MekaDesign and MCPRouter project capabilities; (3) platform execution tools — remote Agent, Orca Worker, SSH and Ghost plugins. When the user says `服务器`, select the bound MCPRouter server project, never an SSH host.\n\n## Project topology\n\nThe complete Saga2 delivery lifecycle spans six governed surfaces; no single surface is the whole project:\n\n- MekaDesign contains design-platform content and structured design-to-implementation handoff data.\n- The enabled P4 directory `saga2_design` contains product and gameplay design documents.\n- The enabled P4 directory `saga2_json` contains table/configuration sources and their validation rules.\n- The enabled P4 directory `saga2_unity` contains the Unity client and editor tooling.\n- The enabled P4 directory `saga2_pm` contains long-lived PM governance, AI development-flow dashboards, reusable Agent skills for delivery assessment, and version delivery/finalization records.\n- The bound MCPRouter remote project contains server code and is a read-capable reference surface for the complete project; it is not a local P4 directory.\n\nRoute gameplay questions across these surfaces by evidence: establish design intent from MekaDesign and design documents, trace authoritative table data, inspect Unity and the bound remote-server project, then use `saga2_pm` for delivery progress, branch governance, dashboards, and release evidence before verifying the affected integration path. Discover only configured and authorized tools or directories; do not invent a live content index, route id, endpoint, or repository location.",
-    "skills": [
-      "orca-coordination",
-      "saga2-overview",
-      "safety-boundaries",
-      "p4-operations",
-      "remote-operations",
-      "saga2-server-reference"
-    ],
     "mcp": [
       {
         "id": "project-agent",

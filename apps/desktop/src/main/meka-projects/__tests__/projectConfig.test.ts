@@ -1,7 +1,23 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+/**
+ * 包内角色清单目录的取样点。默认仍是**真实**资源目录（随包已不再附带任何角色清单文件，
+ * `resources/meka/roles/` 整个目录都不存在 ⇒ T3 的空目录）；只有需要覆盖「项目快照与包内清单
+ * 合并、退役角色过滤」的用例才把它指向临时目录里的夹具清单 —— 那是这些机制唯一还能被驱动的
+ * 输入（真实包内已没有任何角色文件）。
+ */
+const h = vi.hoisted(() => ({ rolesRoot: null as string | null }));
+
+vi.mock('../resourcePaths.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../resourcePaths.js')>();
+  return {
+    ...actual,
+    bundledMekaRolesRoot: () => h.rolesRoot ?? actual.bundledMekaRolesRoot(),
+  };
+});
 
 import type {
   MekaProjectFile,
@@ -14,6 +30,7 @@ import {
   normalizeMekaProjectFile,
   normalizeMekaRoleManifest,
   readBuiltinRoleManifest,
+  readBuiltinRoleManifestOrProjectDefault,
   readBundledRoleManifests,
   readEffectiveProjectConfig,
   readProjectConfigAtRoot,
@@ -31,7 +48,23 @@ async function tempRoot(): Promise<string> {
   return root;
 }
 
+/**
+ * 在临时目录里造一份「随包角色清单」夹具，并把它接到 `bundledMekaRolesRoot()` 上。
+ * 只有需要非空包内 catalog 的用例才调用；`afterEach` 会把它复位回真实资源目录。
+ */
+async function useBundledRoleCatalog(
+  manifests: readonly MekaRoleManifestFile[],
+): Promise<string> {
+  const root = await tempRoot();
+  h.rolesRoot = root;
+  for (const manifest of manifests) {
+    await writeFile(path.join(root, `${manifest.id}.json`), `${JSON.stringify(manifest)}\n`, 'utf8');
+  }
+  return root;
+}
+
 afterEach(async () => {
+  h.rolesRoot = null;
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -108,7 +141,7 @@ describe('Meka project.json boundary', () => {
     ).toMatchObject({ projectId: 'saga2', basic: { displayName: 'SAGA2 Local' } });
   });
 
-  it('uses a SAGA2 project file as the authoritative project source with bundled role fallback', async () => {
+  it('uses a SAGA2 project file as the authoritative project source', async () => {
     const root = await tempRoot();
     const configDirectory = path.join(root, '.meka');
     await mkdir(configDirectory, { recursive: true });
@@ -139,9 +172,10 @@ describe('Meka project.json boundary', () => {
     expect(loaded?.basic.displayName).toBe('Project-owned SAGA2');
     expect(loaded?.basic.path).toBe(path.resolve(root));
     expect(loaded?.metadata).toEqual([]);
-    // The packaged catalog now holds a single role: the retired `general-development` bundle file
-    // is gone, so no project-file role list can fall back to it any more.
-    expect(loaded?.builtinRoles?.map((role) => role.id)).toEqual(['combat-development']);
+    // The packaged role catalog is empty now (the `roles/` directory is not shipped any more), so
+    // nothing can be merged into — or re-materialized on top of — the project-owned file: a project
+    // file that declares no roles stays declaring none.
+    expect(loaded?.builtinRoles).toBeUndefined();
     const persisted = JSON.parse(
       await readFile(path.join(configDirectory, 'project.json'), 'utf8'),
     ) as MekaProjectFile;
@@ -181,14 +215,19 @@ describe('Meka project.json boundary', () => {
       projectRoot: root,
       appIsPackaged: false,
     };
+    // 退役过滤只在「包内确实有角色清单」时才启动（`mergeBundledRoleFallbacks` 的空 catalog 早退），
+    // 而随包已不再附带任何角色文件 ⇒ 这条机制的唯一输入就是夹具清单。夹具角色同时充当
+    // 「项目快照优先于包内清单」的对照项。
+    const bundledRole = roleManifest('bundled-sample-role', 'saga2');
+    await useBundledRoleCatalog([bundledRole]);
     const bundled = await readEffectiveProjectConfig(locator);
     // The project file of an older build can still carry snapshots of roles that are retired now.
     // They must be filtered out of the *effective* configuration instead of being re-materialized
-    // as ghost built-in roles: `general-development` has no bundled manifest any more, and
+    // as ghost built-in roles: `general-development` is a retired default-role alias, and
     // `combat-config` is a retired id with a fixed replacement.
     const overriddenRole = {
-      ...bundled!.builtinRoles!.find((role) => role.id === 'combat-development')!,
-      displayName: 'Project-owned combat',
+      ...bundled!.builtinRoles!.find((role) => role.id === 'bundled-sample-role')!,
+      displayName: 'Project-owned bundle',
     };
     const retiredMappingRole = roleManifest('combat-config', 'saga2');
     const retiredDefaultRoleAlias = {
@@ -211,13 +250,13 @@ describe('Meka project.json boundary', () => {
     const loaded = await readEffectiveProjectConfig(locator);
 
     expect(loaded?.builtinRoles?.map((role) => role.id)).toEqual([
-      'combat-development',
+      'bundled-sample-role',
       'custom-role',
     ]);
     // A project-owned snapshot of a still-bundled role wins over the packaged manifest.
-    expect(
-      loaded?.builtinRoles?.find((role) => role.id === 'combat-development')?.displayName,
-    ).toBe('Project-owned combat');
+    expect(loaded?.builtinRoles?.find((role) => role.id === 'bundled-sample-role')?.displayName).toBe(
+      'Project-owned bundle',
+    );
     // The role the user actually owns outside the bundled catalog is preserved as it was written.
     expect(loaded?.builtinRoles?.find((role) => role.id === 'custom-role')).toMatchObject(
       customRole,
@@ -225,7 +264,7 @@ describe('Meka project.json boundary', () => {
     // Reading never rewrites the file: the retired snapshots stay on disk until an explicit save.
     const persisted = JSON.parse(await readFile(configPath, 'utf8')) as MekaProjectFile;
     expect(persisted.builtinRoles?.map((role) => role.id)).toEqual([
-      'combat-development',
+      'bundled-sample-role',
       'combat-config',
       'general-development',
       'custom-role',
@@ -414,26 +453,28 @@ describe('Meka project.json boundary', () => {
   });
 
   it('restores source role order by id and then display name for copied role ids', () => {
+    // 参照角色来自「已登记项目的角色行」，与包内清单无关：这里用共享默认角色 + 一个中性角色行，
+    // 覆盖的仍是同一条排序契约（先按 id 命中，再按显示名命中）。
     const references = [
-      roleSummary('general-development', '通用开发', 0),
-      roleSummary('combat-development', '战斗开发', 1),
+      roleSummary('saga2-default-role', '默认角色', 0),
+      roleSummary('legacy-bundled-role', '遗留内置角色', 1),
     ];
     const copiedRoles = [
-      roleManifest('copied-combat', 'copied-project'),
-      roleManifest('copied-general', 'copied-project'),
+      roleManifest('copied-bundled', 'copied-project'),
+      roleManifest('copied-default', 'copied-project'),
     ];
-    copiedRoles[0].displayName = '战斗开发';
-    copiedRoles[1].displayName = '通用开发';
+    copiedRoles[0].displayName = '遗留内置角色';
+    copiedRoles[1].displayName = '默认角色';
 
     expect(
       sortImportedRoleManifests(copiedRoles, references).map((role) => role.displayName),
-    ).toEqual(['通用开发', '战斗开发']);
+    ).toEqual(['默认角色', '遗留内置角色']);
     expect(
       sortImportedRoleManifests(
-        [roleManifest('combat-development', 'saga2'), roleManifest('general-development', 'saga2')],
+        [roleManifest('legacy-bundled-role', 'saga2'), roleManifest('saga2-default-role', 'saga2')],
         references,
       ).map((role) => role.id),
-    ).toEqual(['general-development', 'combat-development']);
+    ).toEqual(['saga2-default-role', 'legacy-bundled-role']);
   });
 
   it('creates exclusively, normalizes vocabularies, and round-trips atomically', async () => {
@@ -558,8 +599,9 @@ describe('Meka project.json boundary', () => {
       projectRoot: root,
       appIsPackaged: false,
     };
+    await useBundledRoleCatalog([roleManifest('bundled-sample-role', 'saga2')]);
     const base = await readEffectiveProjectConfig(locator);
-    expect(base?.builtinRoles?.map((role) => role.id)).toEqual(['combat-development']);
+    expect(base?.builtinRoles?.map((role) => role.id)).toEqual(['bundled-sample-role']);
     const configPath = path.join(root, '.meka', 'project.json');
     await mkdir(path.dirname(configPath), { recursive: true });
     await writeFile(
@@ -576,7 +618,7 @@ describe('Meka project.json boundary', () => {
 
     expect(state.source).toBe('project');
     expect(state.file?.projectId).toBe('saga2');
-    expect(state.file?.builtinRoles?.map((role) => role.id)).toEqual(['combat-development']);
+    expect(state.file?.builtinRoles?.map((role) => role.id)).toEqual(['bundled-sample-role']);
     expect(state.file?.builtinRoles?.every((role) => role.projectId === 'saga2')).toBe(true);
     const persisted = JSON.parse(await readFile(configPath, 'utf8')) as MekaProjectFile;
     expect(persisted.projectId).toBe('source-project');
@@ -667,32 +709,54 @@ describe('Meka role manifest boundary', () => {
     );
   });
 
-  it('loads an immutable builtin role manifest from application resources', async () => {
-    await expect(readBuiltinRoleManifest('combat-development', 'saga2')).resolves.toMatchObject({
-      id: 'combat-development',
+  it('loads an immutable builtin role manifest from the packaged role catalog', async () => {
+    // 严格读取的**成功**路径：包内角色清单文件存在时照旧原样读出（随包已不再附带任何角色文件，
+    // 因此用夹具目录代表「包里确实有这份清单」的唯一形态）。
+    await useBundledRoleCatalog([
+      { ...roleManifest('bundled-sample-role', 'saga2'), displayName: '夹具内置角色' },
+    ]);
+    await expect(readBuiltinRoleManifest('bundled-sample-role', 'saga2')).resolves.toMatchObject({
+      id: 'bundled-sample-role',
       projectId: 'saga2',
-      displayName: '战斗开发',
+      displayName: '夹具内置角色',
     });
   });
 
-  it('ships exactly one bundled role: the retired general-development file is gone', async () => {
-    // The packaged catalog is the fallback for a saga2 project file, so a lingering retired role
-    // file would silently re-materialize the role the default role replaced.
+  it('ships no editable bundled role: the packaged role catalog reads as empty, not as an error', async () => {
+    // T3 容错：随包已不再附带任何角色清单文件，`resources/meka/roles/` 目录整个不存在（git 不跟踪
+    // 空目录）⇒ `readdir` 的 ENOENT 必须被当成「没有内置角色」。若这里重新抛错，存量内置角色行的
+    // 会话解析与面板读清单会一起硬失败。
     const bundled = await readBundledRoleManifests('saga2');
-    expect(bundled.map((role) => role.id)).toEqual(['combat-development']);
-    expect(bundled[0]).toMatchObject({
-      projectId: 'saga2',
-      workflow: 'saga2-combat-development-v1',
-    });
+    expect(bundled).toEqual([]);
+    // 同一个空目录口径与项目 id 无关：任何项目都取不到包内角色清单。
+    await expect(readBundledRoleManifests('portable-project')).resolves.toEqual([]);
 
-    // The removed file must not be readable through the generic builtin manifest reader: the
-    // default-role row points at `meka/roles/saga2-default-role.json`, which never existed, and
-    // every consumer relies on this path failing loudly rather than resolving a stale manifest.
-    await expect(readBuiltinRoleManifest('general-development', 'saga2')).rejects.toThrow(
-      /builtin Meka role general-development not found/,
+    // 严格读取**不**放宽：文件缺失仍然硬失败。这条路径是消费者用来发现「包内清单没了」的判据，
+    // 回落只存在于 `readBuiltinRoleManifestOrProjectDefault`（T2），不能顺手把严格版也改成降级。
+    await expect(readBuiltinRoleManifest('combat-development', 'saga2')).rejects.toThrow(
+      /builtin Meka role combat-development not found/,
     );
     await expect(readBuiltinRoleManifest('saga2-default-role', 'saga2')).rejects.toThrow(
       /builtin Meka role saga2-default-role not found/,
     );
+  });
+
+  it('falls back to the project default role when a builtin role manifest is missing (T2)', async () => {
+    // T2 容错：`seedBuiltinMekaProjects` 只 upsert、从不删除不在注册表里的行，所以存量库里会留下
+    // 指向已删清单的内置角色行（`combat-development` 就是必然的那一个）。回落到该项目的默认角色，
+    // 而不是抛错 —— 这条边界同时覆盖会话解析（`runtimeConfig.resolveRoleFile`）与面板读清单
+    // （`localDb/ipc/mekaRoles.readRoleManifest`），两者共用同一个入口。
+    await expect(
+      readBuiltinRoleManifestOrProjectDefault('combat-development', 'saga2'),
+    ).resolves.toMatchObject({
+      id: 'saga2-default-role',
+      projectId: 'saga2',
+      displayName: '默认角色',
+      useProjectDefaults: true,
+    });
+    // 请求的 id 本身就是默认角色时同样可用：出厂清单由内存函数提供，从不落盘。
+    await expect(
+      readBuiltinRoleManifestOrProjectDefault('saga2-default-role', 'saga2'),
+    ).resolves.toMatchObject({ id: 'saga2-default-role' });
   });
 });

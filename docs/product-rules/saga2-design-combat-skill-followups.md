@@ -1,5 +1,23 @@
 # SAGA2 设计库战斗技能工具链待审清单
 
+> **2026-09-29 退役说明（先读这段）**
+>
+> 本文件记录的 **Cindy 侧战斗工具链**已于 2026-09-29 随 workflow 机制整体移出随包：战斗总控
+> Skill（`combat-skill-configuration`）、写入门禁与写后对账、表范围确认与卡片审批、服务器能力
+> 回执与派发、`[SAGA2_COMBAT_ENVIRONMENT_GATE]` / `[SAGA2_PROJECT_PATHS]` 等提示词段，以及随包的
+> 5 份战斗 prompt 片段，全部删除且**没有搬迁**（事实记录见
+> [`../migrations/xdmaker-meka-to-cindy.md`](../migrations/xdmaker-meka-to-cindy.md) §11.32）。
+>
+> 因此本文件中凡以「**当前 Cindy 实施链**」「Cindy Meka P4」「老版模块编辑器 JSON 导入/导出为
+> 唯一配置入口」「写入门禁」「表范围确认」为前提的条目，**其 Cindy 侧前提已不成立**。这些内容若
+> 仍需要，必须由 SAGA2 侧通过声明式机制重新表达：项目清单
+> `<saga2 root>/.meka/project.json`（`roleDefaults.promptFramework` / `roleDefaults.skills` /
+> `roleDefaults.mcp` / `metadata[]`）、角色清单（`prompt` / `rules[].text`）或插件 —— **不得回填随包**。
+>
+> **本文件中针对 `saga2_design` 仓库（`planning/04-职能组-functional-groups/战斗策划组-combat-planning`
+> 等）本身的建议项仍然有效** —— 那是 SAGA2 自己的仓库，与 Cindy 随包内容无关。保留本文件是为了
+> 不丢失这次只读扫描的证据。
+
 状态：待用户审查；本清单只记录后续建议，不授权自动修改 `saga2_design`。
 
 日期：2026-09-01

@@ -1,8 +1,6 @@
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import combatDevelopmentRole from '../../../../resources/meka/roles/combat-development.json';
-
 import {
   BUILTIN_MEKA_PROJECTS,
   mekaDefaultRoleManifest,
@@ -57,21 +55,7 @@ afterEach(() => {
 });
 
 describe('builtin Meka project registry', () => {
-  it('keeps the bundled SAGA2 combat role business-first for non-technical planners', () => {
-    expect(combatDevelopmentRole.prompt).toContain('面向策划的工作契约');
-    expect(combatDevelopmentRole.prompt).toContain('不得要求策划填写 typ');
-    expect(combatDevelopmentRole.prompt).toContain('只有以下情况可以向策划提问');
-    expect(combatDevelopmentRole.promptFragments).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: 'combat-evidence-budget',
-          path: 'prompts/combat-evidence-budget.md',
-        }),
-      ]),
-    );
-  });
-
-  it('gives the seeded default role a factory-inclusive manifest that stays out of combat', () => {
+  it('gives the seeded default role a factory-inclusive manifest with no business contract of its own', () => {
     const manifest = mekaDefaultRoleManifest('saga2');
 
     expect(manifest).toMatchObject({
@@ -92,15 +76,11 @@ describe('builtin Meka project registry', () => {
       mcp: [{ id: 'meka-design', providerId: 'meka-design', enabled: true }],
       projectMetadataSelection: [],
     });
-    // `workflow` is the single key the injection layer enters the combat contract through, so a
-    // default role carrying it would attach the combat host gate to every new draft.
-    expect(manifest.workflow).toBeUndefined();
-    // The prompt keeps the three capability contracts ...
+    // The prompt keeps the capability contracts ...
     expect(manifest.prompt).toContain('Establish the relevant contracts first');
-    expect(manifest.prompt).toContain('natural-language business intent as the input contract');
     expect(manifest.prompt).toContain('When a concrete dependency call fails');
-    // ... and drops the retired general-development SAGA2 combat-escalation paragraph, whose
-    // bundled skills and legacy module-editor workflow this role no longer carries.
+    // ... and carries no SAGA2 business escalation paragraph: its bundled skills and its legacy
+    // module-editor instructions are gone from the package, so no token of them may come back.
     expect(manifest.prompt).not.toContain('legacy_module_export_json');
     expect(manifest.prompt).not.toContain('saga2-entry-model');
   });
@@ -120,17 +100,20 @@ describe('builtin Meka project registry', () => {
     const bundledRoleIds = BUILTIN_MEKA_PROJECTS.flatMap((project) =>
       project.roles.map((role) => role.id),
     );
-    // The shared default role plus the one remaining bundled gameplay role. A bundled
-    // `general-development` row must not come back: its manifest file is gone, so any session
-    // bound to it would hard-fail in `readBuiltinRoleManifest`.
-    expect(bundledRoleIds).toEqual(['saga2-default-role', 'combat-development']);
+    // Only the shared default role is still a bundled row. A bundled `general-development` row must
+    // not come back either: its manifest file is gone, so any session bound to it would hard-fail in
+    // `readBuiltinRoleManifest`.
+    expect(bundledRoleIds).toEqual(['saga2-default-role']);
 
     const mappedIds = RETIRED_BUILTIN_MEKA_ROLE_MAPPINGS.map(([roleId]) => roleId);
     const retiredIds = new Set<string>([...mappedIds, ...RETIRED_BUILTIN_MEKA_DEFAULT_ROLE_ALIASES]);
     for (const roleId of bundledRoleIds) expect(retiredIds.has(roleId)).toBe(false);
-    // Every fixed replacement still exists in the bundled catalog, so a rebind cannot dangle.
+    // A fixed replacement is no longer a bundled row (the package ships no business role at all),
+    // so the invariant that keeps `migrateRetiredSessionRole` from dangling is the one the seed
+    // actually controls: the retirement sweep must never delete the replacement row itself. Any row
+    // still pointing at the retired id in a user database therefore survives the sweep unchanged.
     for (const [, replacementRoleId] of RETIRED_BUILTIN_MEKA_ROLE_MAPPINGS) {
-      expect(bundledRoleIds).toContain(replacementRoleId);
+      expect(retiredIds.has(replacementRoleId)).toBe(false);
     }
     // Aliases are rebound to `<projectId>-default-role` by a dedicated statement, so no alias may
     // also carry a fixed replacement — the two tables must stay disjoint.
@@ -139,7 +122,7 @@ describe('builtin Meka project registry', () => {
     }
   });
 
-  it('seeds SAGA2, its default role and its one bundled gameplay role idempotently and backfills Meka sessions', () => {
+  it('seeds SAGA2 and its default role idempotently and backfills Meka sessions', () => {
     const db = createDb();
     db.prepare("INSERT INTO sessions (id, workspace_kind) VALUES ('meka-session', 'meka')").run();
 
@@ -150,9 +133,9 @@ describe('builtin Meka project registry', () => {
     expect(db.prepare('SELECT id, path, is_builtin FROM meka_projects').all()).toEqual([
       { id: 'saga2', path: 'saga2', is_builtin: 1 },
     ]);
-    // Two rows only: the shared default role (always first, `sort_order` -1, so a new draft starts
-    // on it in every project) and the one bundled gameplay role. The retired general-development
-    // row is never seeded back.
+    // One row only: the shared default role (always first, `sort_order` -1, so a new draft starts on
+    // it in every project). The retired `general-development` row is never seeded back, and the
+    // removed gameplay role is not a bundled row any more either.
     expect(
       db
         .prepare(
@@ -168,14 +151,6 @@ describe('builtin Meka project registry', () => {
         is_builtin: 1,
         tags: '["builtin","default"]',
         sort_order: -1,
-      },
-      {
-        id: 'combat-development',
-        display_name: '战斗开发',
-        file_path: 'meka/roles/combat-development.json',
-        is_builtin: 1,
-        tags: '[]',
-        sort_order: 0,
       },
     ]);
     expect(
@@ -308,8 +283,20 @@ describe('builtin Meka project registry', () => {
       'combat-config',
       'combat-debug',
     ];
+    // 退役映射的替换值必须真的有一行，否则 `migrateRetiredSessionRole` 会把 `meka_role_id` 改成一个
+    // 不存在的 id —— 直接撞 `sessions.meka_role_id` 外键、整个 seed 事务失败。真实升级库里这一行
+    // 一定还在：旧版本把它作为随包角色插过，而 `seedBuiltinMekaProjects` 从不删除不在注册表里的行
+    // （现在随包不再附带这份清单，所以新库不会再有它；下面的断言按升级库的真实形状写）。
+    insertRole.run(
+      'combat-development',
+      'saga2',
+      'combat-development',
+      '战斗开发',
+      'meka/roles/combat-development.json',
+      0,
+    );
     saga2RetiredIds.forEach((id, index) => {
-      insertRole.run(id, 'saga2', id, id, `meka/roles/${id}.json`, index);
+      insertRole.run(id, 'saga2', id, id, `meka/roles/${id}.json`, index + 1);
     });
 
     const insertSession = db.prepare(
@@ -387,8 +374,11 @@ describe('builtin Meka project registry', () => {
         (id, project_id, name, display_name, file_path, is_builtin, sort_order)
        VALUES (?, 'saga2', ?, ?, ?, 1, ?)`,
     );
-    insertRole.run('general-development', 'general-development', '通用开发', 'meka/roles/general-development.json', 0);
-    insertRole.run('combat-config', 'combat-config', '战斗配置', 'meka/roles/combat-config.json', 1);
+    // 替换值 `combat-development` 的行必须存在（见上一条用例的说明）：升级库里它还在，重绑才不会
+    // 撞外键。随包已不再附带它的清单文件，所以它在这份夹具里正是一个"清单已消失的孤儿内置行"。
+    insertRole.run('combat-development', 'combat-development', '战斗开发', 'meka/roles/combat-development.json', 0);
+    insertRole.run('general-development', 'general-development', '通用开发', 'meka/roles/general-development.json', 1);
+    insertRole.run('combat-config', 'combat-config', '战斗配置', 'meka/roles/combat-config.json', 2);
 
     const insertSession = db.prepare(
       `INSERT INTO sessions (id, workspace_kind, meka_project_id, meka_role_id)
@@ -591,7 +581,7 @@ describe('builtin Meka project registry', () => {
       db
         .prepare("SELECT COUNT(*) AS rows FROM meka_roles WHERE project_id = 'saga2'")
         .get(),
-    ).toEqual({ rows: 2 });
+    ).toEqual({ rows: 1 });
     // The saga2 alias row is gone while the identically-retired custom row survives.
     expect(
       db.prepare("SELECT project_id FROM meka_roles WHERE id = 'system-overview'").all(),

@@ -13,10 +13,9 @@
  * 所以本文件用**真实** `resolveMekaRuntimeConfig` + 临时目录夹具，承接那批断言并追加本批修复的
  * 能力：多条目精确形状、`scope` 归一化、描述四级回落与 300 码点截断、ENOENT 跳过、disabled
  * 排除、确定性排序、`rootPath` 作用范围、容错边界（坏 `SKILL.md` / 坏 `.mcp.json` 只 warn 跳过，
- * 而作者显式选择仍然 fail-closed）、战斗 workflow 的内联旁路、`includeAllBundledSkills` 展开、
+ * 而作者显式选择仍然 fail-closed）、`includeAllBundledSkills` 展开、
  * 「root 白名单失配按来源分流」（全量展开项 warn + 跳过，作者显式选择仍抛错）、「`..` 逃逸对
- * 任何来源都抛错」，以及「规范正文与描述都不得进 promptText / 默认角色不得带战斗 promptFragments」
- * 的负向断言。
+ * 任何来源都抛错」，以及「规范正文与描述都不得进 promptText」的负向断言。
  */
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -45,6 +44,33 @@ const projectConfigOverride = vi.hoisted(() => ({ file: null as unknown }));
 
 /** 运行期 warn 的取证窗口：F1 的降级路径必须留下可观察的 warn，而不只是「没抛错」。 */
 const logging = vi.hoisted(() => ({ warnings: [] as Array<{ message: string; meta?: unknown }> }));
+
+/**
+ * 包内资源根（`bundledMekaRolesRoot()` / `bundledMekaSkillsRoot()`）的取样点，默认仍是**真实**
+ * 资源目录，形态与 `projectConfig.test.ts` 的 `useBundledRoleCatalog` 一致。
+ *
+ * 两处接缝各有一个不可替代的用途（T1 / T4 的回归用例专属）：
+ * - `seamRolesRoot`：fragment 根对内置角色就是 `bundledMekaRolesRoot()`，而真实
+ *   `resources/meka/roles/` 整个目录都已随包删除 ⇒ 只有把根指向临时目录，才能造出「一部分
+ *   fragment 已删（ENOENT）、另一部分仍在」这件 T4 唯一要区分的事实。
+ * - `seamSkillsRoot`：T1 的平台例外要求「catalog **查不到** `platform-capabilities`」，而真实
+ *   catalog 里它必然存在（C1 就是它必须随包）⇒ 只有把扫描根指向空目录才能驱动那条硬失败。
+ *
+ * 两个默认值都是 `null` ⇒ 回落到真实资源根，既有用例的行为逐字不变。
+ */
+const resource = vi.hoisted(() => ({
+  seamRolesRoot: null as string | null,
+  seamSkillsRoot: null as string | null,
+}));
+
+vi.mock('../resourcePaths.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../resourcePaths.js')>();
+  return {
+    ...actual,
+    bundledMekaRolesRoot: () => resource.seamRolesRoot ?? actual.bundledMekaRolesRoot(),
+    bundledMekaSkillsRoot: () => resource.seamSkillsRoot ?? actual.bundledMekaSkillsRoot(),
+  };
+});
 
 vi.mock('../../logger.js', () => ({
   createLogger: () => ({
@@ -101,7 +127,11 @@ import type {
   MekaProjectMetadataConfigItem,
   MekaProjectMetadataItemType,
 } from '../../../shared/meka-projects.js';
-import { listBundledSkills, resolveMekaRuntimeConfig } from '../runtimeConfig.js';
+import {
+  listBundledSkills,
+  resolveMekaPlatformRuntimeSkills,
+  resolveMekaRuntimeConfig,
+} from '../runtimeConfig.js';
 
 const temporaryRoots: string[] = [];
 
@@ -118,6 +148,8 @@ afterEach(async () => {
   environment.roles = {};
   projectConfigOverride.file = null;
   logging.warnings.length = 0;
+  resource.seamRolesRoot = null;
+  resource.seamSkillsRoot = null;
   await Promise.all(
     temporaryRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
   );
@@ -164,12 +196,6 @@ function useSaga2(): void {
       project_id: 'saga2',
       is_builtin: 1,
       file_path: 'meka/roles/saga2-default-role.json',
-    },
-    'combat-development': {
-      id: 'combat-development',
-      project_id: 'saga2',
-      is_builtin: 1,
-      file_path: 'meka/roles/combat-development.json',
     },
   };
 }
@@ -277,7 +303,7 @@ describe('Meka runtime project references (progressive disclosure)', () => {
         roleDefaults: {
           promptFramework: '# Project framework',
           rules: [{ id: 'project-rule', text: '# Project default rule', enabled: true }],
-          skills: ['saga2-overview'],
+          skills: ['platform-capabilities'],
           mcp: [{ id: 'project-agent', providerId: 'project-agent', enabled: true }],
         },
       }),
@@ -775,89 +801,31 @@ describe('Meka runtime project references (progressive disclosure)', () => {
     const sagaRoot = await makeRoot('cindy-meka-itemtype-role-');
     useSaga2();
     environment.p4RootPath = sagaRoot;
-    const bundledCombat = JSON.parse(
-      await readFile(path.join(desktopRoot, 'resources/meka/roles/combat-development.json'), 'utf8'),
-    ) as Record<string, unknown>;
-    await writeProject(
-      sagaRoot,
-      projectFile(sagaRoot, {
-        metadata: [],
-        builtinRoles: [
-          {
-            ...bundledCombat,
-            projectMetadataSelection: [
-              { sourcePath: 'docs/AGENTS.md', itemType: 'bogus', enabled: true },
-            ],
-          },
-        ],
-      }),
-    );
-    await expect(resolveMekaRuntimeConfig('saga2', 'combat-development')).rejects.toThrow(
+    await writeProject(sagaRoot, projectFile(sagaRoot, { metadata: [] }));
+    await useCustomRole(sagaRoot, {
+      id: 'bogus-type-role',
+      name: 'bogus-type-role',
+      displayName: 'Bogus type role',
+      prompt: 'bogus type role prompt',
+      rules: [],
+      skills: [],
+      promptFragments: [],
+      mcp: [],
+      projectMetadataSelection: [
+        { sourcePath: 'docs/AGENTS.md', itemType: 'bogus', enabled: true },
+      ],
+    });
+    await expect(resolveMekaRuntimeConfig('saga2', 'bogus-type-role')).rejects.toThrow(
       /unsupported Meka project metadata type: bogus/,
     );
-  });
-
-  it('inlines project documentation for the combat workflow and references it otherwise', async () => {
-    const root = await makeRoot('cindy-meka-combat-inline-');
-    useSaga2();
-    environment.p4RootPath = root;
-    const body = '# 项目规范正文\n\n战斗内联正文标记 COMBAT-INLINE-BODY-3f21。\n';
-    await writeText(root, 'docs/AGENTS.md', body);
-    const metadata = [metadataEntry({ sourcePath: 'docs/AGENTS.md', name: 'AGENTS.md' })];
-
-    const bundledCombat = JSON.parse(
-      await readFile(path.join(desktopRoot, 'resources/meka/roles/combat-development.json'), 'utf8'),
-    ) as Record<string, unknown>;
-    await writeProject(
-      root,
-      projectFile(root, {
-        metadata,
-        builtinRoles: [
-          {
-            ...bundledCombat,
-            projectMetadataSelection: [
-              { sourcePath: 'docs/AGENTS.md', itemType: 'agents-md', enabled: true },
-            ],
-          },
-        ],
-      }),
-    );
-
-    // 战斗 workflow：规范类元数据**保持改动前的内联投递**（见 runtimeConfig.ts 的有意差异注释）。
-    const combat = await resolveMekaRuntimeConfig('saga2', 'combat-development');
-    expect(combat.workflow).toBe('saga2-combat-development-v1');
-    expect(combat.projectReferences).toEqual([]);
-    expect(combat.promptText).toContain('COMBAT-INLINE-BODY-3f21');
-
-    // 同一夹具、非战斗角色（默认角色，作者侧显式选择同一份 agents-md）⇒ 走引用、正文不内联。
-    await writeProject(
-      root,
-      projectFile(root, {
-        metadata,
-        roleDefaults: {
-          projectMetadataSelection: [{ sourcePath: 'docs/AGENTS.md', itemType: 'agents-md' }],
-        },
-      }),
-    );
-    const nonCombat = await resolveMekaRuntimeConfig('saga2', 'saga2-default-role');
-    expect(nonCombat.workflow).toBeUndefined();
-    expect(nonCombat.projectReferences).toEqual([
-      {
-        scope: 'docs',
-        path: path.join(root, 'docs', 'AGENTS.md'),
-        description: 'AGENTS.md',
-        itemType: 'agents-md',
-      },
-    ]);
-    expect(nonCombat.promptText).not.toContain('COMBAT-INLINE-BODY-3f21');
-    expect(nonCombat.promptText).not.toContain('项目规范正文');
   });
 
   it('expands the whole bundled catalog for includeAllBundledSkills and excludes a single explicit id', async () => {
     const root = await makeRoot('cindy-meka-catalog-');
     useSaga2();
     const catalog = await catalogIds();
-    expect(catalog).toHaveLength(10);
+    // 包内 catalog 收敛后只剩平台 skill：这条用例的「全量展开」因此是严格的一个 id。
+    expect(catalog).toEqual(['platform-capabilities']);
 
     await useCustomRole(root, {
       id: 'catalog-role',
@@ -875,7 +843,7 @@ describe('Meka runtime project references (progressive disclosure)', () => {
     expect(expanded.skills.map((skill) => skill.id).sort()).toEqual(catalog);
 
     // 显式 `{ skillId, enabled: false }` 精确排除单个：其余一个不少。
-    const excludedId = 'meka-design-handbook';
+    const excludedId = 'platform-capabilities';
     expect(catalog).toContain(excludedId);
     await useCustomRole(root, {
       id: 'excluding-role',
@@ -908,7 +876,7 @@ describe('Meka runtime project references (progressive disclosure)', () => {
         metadata: [],
         roleDefaults: {
           promptFramework: '# Project framework',
-          skills: ['saga2-overview'],
+          skills: ['platform-capabilities'],
           mcp: [{ id: 'project-agent', providerId: 'project-agent', enabled: true }],
         },
       }),
@@ -920,7 +888,7 @@ describe('Meka runtime project references (progressive disclosure)', () => {
       prompt: 'defaults role prompt',
       rules: [],
       // 与 `roleDefaults.skills` 同 id 的显式 false：角色显式项覆盖 defaults（也覆盖 catalog 铺底）。
-      skills: [{ skillId: 'saga2-overview', enabled: false }],
+      skills: [{ skillId: 'platform-capabilities', enabled: false }],
       promptFragments: [],
       mcp: [],
       useProjectDefaults: true,
@@ -932,9 +900,9 @@ describe('Meka runtime project references (progressive disclosure)', () => {
     expect(resolved.promptText).toContain('# Project framework');
     expect(resolved.promptText).toContain('defaults role prompt');
     expect(resolved.mcp.map((entry) => entry.id)).toEqual(['project-agent']);
-    expect(resolved.skills.map((skill) => skill.id)).not.toContain('saga2-overview');
+    expect(resolved.skills.map((skill) => skill.id)).not.toContain('platform-capabilities');
     expect(resolved.skills.map((skill) => skill.id).sort()).toEqual(
-      catalog.filter((id) => id !== 'saga2-overview'),
+      catalog.filter((id) => id !== 'platform-capabilities'),
     );
   });
 
@@ -956,21 +924,28 @@ describe('Meka runtime project references (progressive disclosure)', () => {
     // A：全部由 `includeAllProjectMetadata` / `includeAllBundledSkills` 展开。
     await writeProject(
       root,
-      projectFile(root, { metadata, roleDefaults: { skills: ['saga2-overview'] } }),
+      projectFile(root, { metadata, roleDefaults: { skills: ['platform-capabilities'] } }),
     );
     const expanded = await resolveMekaRuntimeConfig('saga2', 'saga2-default-role');
     const expandedById = new Map(expanded.skills.map((skill) => [skill.id, skill]));
 
     expect(expandedById.get('vendor-skill')?.derivedOnly).toBe(true);
-    const catalogDerived = expanded.skills.filter(
-      (skill) => skill.id !== 'vendor-skill' && skill.id !== 'saga2-overview',
-    );
-    expect(catalogDerived.map((skill) => skill.id).sort()).toEqual(
-      catalog.filter((id) => id !== 'saga2-overview'),
-    );
-    expect(catalogDerived.every((skill) => skill.derivedOnly === true)).toBe(true);
+    // 作者显式声明的那一条覆盖 catalog 铺底的同 id：id 集合不因它多出一条。
+    expect(expanded.skills.map((skill) => skill.id).sort()).toEqual([...catalog, 'vendor-skill'].sort());
     // `roleDefaults.skills` 是**作者显式声明**（与 `explicitMetadataKeys` 同一落位口径）⇒ 不带标记。
-    expect(expandedById.get('saga2-overview')?.derivedOnly).toBeUndefined();
+    expect(expandedById.get('platform-capabilities')?.derivedOnly).toBeUndefined();
+
+    // 反向证据：同一项目去掉作者声明后，catalog 铺底的同 id 就是派生项。包内 catalog 收敛到只剩
+    // 一个 id，所以这条对照只能在「两次运行之间」做，不能靠「catalog 里除它以外还有别的 id」。
+    await writeProject(root, projectFile(root, { metadata }));
+    const switchedOnly = await resolveMekaRuntimeConfig('saga2', 'saga2-default-role');
+    expect(
+      switchedOnly.skills.find((skill) => skill.id === 'platform-capabilities')?.derivedOnly,
+    ).toBe(true);
+    expect(switchedOnly.skills.map((skill) => skill.id).sort()).toEqual([
+      'platform-capabilities',
+      'vendor-skill',
+    ]);
 
     // B：同一条项目 skill，改由作者显式勾选 ⇒ 不再是派生（收集失败时必须仍然抛错）。
     await writeProject(
@@ -1018,31 +993,350 @@ describe('Meka runtime project references (progressive disclosure)', () => {
     }
     expect(resolved.projectReferences).toEqual([]);
   });
+});
 
-  it('never injects the combat prompt fragments into the default role prompt text', async () => {
-    const root = await makeRoot('cindy-meka-no-combat-fragments-');
+/**
+ * T1 / T4 容错的回归：**随包角色清单与 9 个随包 skill 被删除**之后新增的两条读时容忍
+ * （`runtimeConfig.ts` 的 fragment 循环 `~:809-834` 与 skill 循环 `~:849-880`，2026-09-29）。
+ *
+ * 为什么这批用例必须走**项目文件的 `builtinRoles` 快照**：`resolveRoleFile` 里项目快照
+ * **优先于** `readBuiltinRoleManifestOrProjectDefault` 的 T2 回落，而旧版角色编辑器 /
+ * `mergeBundledRoleFallbacks` 会把随包角色（含 `skills` 选择与 `promptFragments` 路径）整份写进
+ * 用户项目文件。清单已删除、随包 catalog 也只剩 `platform-capabilities`，于是快照里的残留引用就是
+ * T1/T4 **唯一**的真实输入 —— 自定义角色或手工造的内置清单都重现不了这条优先级（后者还会被
+ * `mergeBundledRoleFallbacks` 当成包内清单参与合并）。
+ *
+ * 快照夹具形状见 `combatDevelopmentSnapshot()`：`{ schemaVersion: 1, id: 'combat-development',
+ * projectId: 'saga2', name, displayName: '战斗开发', policyProviderRefs: [], prompt, rules,
+ * skills: [{ skillId, enabled }], promptFragments: [{ id, path }], mcp: [],
+ * projectMetadataSelection: [], useProjectDefaults: false, ... }`，经项目文件的 `builtinRoles`
+ * 通道落进 `<projectRoot>/.meka/project.json`，由 `normalizeMekaProjectFile` 归一化
+ * （`displayName` 非空、`skills` / `mcp` 必须是数组是它的最小可接受集）。另一半是 `useSaga2()` 里
+ * 追加的**内置**角色行（`is_builtin = 1`）：只有内置行才会把快照与 fragment 根都按「随包角色目录」
+ * 解析。
+ */
+describe('Meka runtime tolerance for retired bundled role assets (T1/T4)', () => {
+  /** 旧版写进项目文件的内置角色快照（`MekaRoleManifestFile` 的最小可接受形状）。 */
+  function combatDevelopmentSnapshot(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      schemaVersion: 1,
+      id: 'combat-development',
+      projectId: 'saga2',
+      name: 'combat-development',
+      displayName: '战斗开发',
+      policyProviderRefs: [],
+      prompt: '# snapshot prompt',
+      rules: [{ id: 'snapshot-rule', text: '# snapshot rule', enabled: true }],
+      skills: [],
+      promptFragments: [],
+      mcp: [],
+      projectMetadataSelection: [],
+      useProjectDefaults: false,
+      includeAllProjectMetadata: false,
+      includeAllBundledSkills: false,
+      ...overrides,
+    };
+  }
+
+  /**
+   * 注册 `combat-development` 的内置角色行。存量库里必然留着它（seed 只 upsert、从不删除不在注册表
+   * 里的行），这正是快照会被读到的前提。
+   */
+  function useCombatDevelopmentRow(): void {
+    environment.roles['combat-development'] = {
+      id: 'combat-development',
+      project_id: 'saga2',
+      is_builtin: 1,
+      file_path: 'meka/roles/combat-development.json',
+    };
+  }
+
+  /**
+   * T1：快照里显式选择的 **已删、非平台** skill ⇒ 跳过 + 告警，会话照常解析。
+   *
+   * 失败模式（T1 被移除）：`readBundledRuntimeSkill` 抛 `unknown bundled Meka skill:
+   * combat-skill-configuration` ⇒ 整个 `resolveMekaRuntimeConfig` reject，本用例的 `await` 直接抛
+   * （等价于用户那边「会话建不出也打不开、INVALID_PARAMS」）。
+   */
+  it('skips a deleted non-platform skill selected by a project snapshot and keeps the rest (T1)', async () => {
+    const root = await makeRoot('cindy-meka-t1-snapshot-');
     useSaga2();
+    useCombatDevelopmentRow();
+    environment.p4RootPath = root;
 
-    const resolved = await resolveMekaRuntimeConfig('saga2', 'saga2-default-role');
-    expect(resolved.workflow).toBeUndefined();
-    expect(resolved.promptText).toContain('Establish the relevant contracts first');
+    // 夹具自检：这个 id 确实已不随包（否则本用例什么都没证），随包 catalog 只剩平台基线 skill。
+    expect([...(await listBundledSkills()).keys()]).not.toContain('combat-skill-configuration');
+    const platformSkills = await resolveMekaPlatformRuntimeSkills();
+    expect(platformSkills.map((skill) => skill.id)).toEqual(['platform-capabilities']);
 
-    // 5 个 fragment 全是战斗专用（注入键只在战斗 workflow 下存在），默认角色一个都不许带：
-    // 断言落在**解析后的 promptText** 上，而不是只看 manifest 的 `promptFragments: []`。
-    for (const id of [
-      'combat-environment-recovery',
-      'combat-evidence-budget',
-      'combat-execution-authorization',
+    await writeProject(
+      root,
+      projectFile(root, {
+        builtinRoles: [
+          combatDevelopmentSnapshot({
+            skills: [
+              { skillId: 'combat-skill-configuration', enabled: true },
+              { skillId: 'platform-capabilities', enabled: true },
+            ],
+          }),
+        ],
+      }),
+    );
+
+    const resolved = await resolveMekaRuntimeConfig('saga2', 'combat-development');
+
+    // 先证明走的是**快照**而不是 T2 回落（回落会给出「默认角色」）⇒ 下面的选择集确实来自快照。
+    expect(resolved).toMatchObject({ roleId: 'combat-development', roleDisplayName: '战斗开发' });
+    // 不抛错：未知项被跳过，其余照常解析。
+    expect(resolved.skills.map((skill) => skill.id)).toEqual(['platform-capabilities']);
+    // 存活项逐字未受影响：同一份随包正文/地址，且仍是作者显式选择（不带 derivedOnly 标记）。
+    expect(resolved.skills).toEqual(platformSkills);
+    // 静默跳过不可接受：跳过的 id 必须留下可观察的 warn。
+    expect(
+      logging.warnings.some(
+        (warning) =>
+          warning.message.includes('unknown bundled Meka skill') &&
+          (warning.meta as { skillId?: string }).skillId === 'combat-skill-configuration',
+      ),
+    ).toBe(true);
+  });
+
+  /**
+   * T1 的**平台例外**：catalog 取不到 `platform-capabilities` 时必须仍然硬失败。
+   *
+   * 真实 catalog 里这个 id 必然存在（C1），所以只有把扫描根指向空目录才能驱动这条路径；同一条用例
+   * 里先用**非平台** id 做对照，证明「同一份 catalog 下非平台 id 只是跳过」——
+   * 于是后面那句抛错只能来自平台例外本身，而不是「catalog 空了就一律抛错」。
+   *
+   * 失败模式（`!isMekaPlatformSkillId(...)` 这半个条件被删）：平台 id 会退化成跳过 + 告警，
+   * `rejects.toThrow` 与「不得出现跳过告警」两条断言同时失败。
+   */
+  it('still fails closed when the platform baseline skill cannot be resolved (T1 platform exception)', async () => {
+    const root = await makeRoot('cindy-meka-t1-platform-');
+    const emptyCatalog = await makeRoot('cindy-meka-t1-empty-catalog-');
+    useSaga2();
+    useCombatDevelopmentRow();
+    environment.p4RootPath = root;
+    resource.seamSkillsRoot = emptyCatalog;
+    // 夹具自检：catalog 真的查不到任何 id（否则下面的硬失败证明不了任何事）。
+    expect([...(await listBundledSkills()).keys()]).toEqual([]);
+
+    // 对照：非平台 id 在同一份空 catalog 下仍然按 T1 跳过。
+    await writeProject(
+      root,
+      projectFile(root, {
+        builtinRoles: [
+          combatDevelopmentSnapshot({
+            skills: [{ skillId: 'combat-skill-configuration', enabled: true }],
+          }),
+        ],
+      }),
+    );
+    const tolerant = await resolveMekaRuntimeConfig('saga2', 'combat-development');
+    expect(tolerant.skills).toEqual([]);
+    expect(
+      logging.warnings.some(
+        (warning) =>
+          warning.message.includes('unknown bundled Meka skill') &&
+          (warning.meta as { skillId?: string }).skillId === 'combat-skill-configuration',
+      ),
+    ).toBe(true);
+
+    // 平台基线取不到 = 包损坏（不是历史残留）⇒ 必须硬失败，且**不得**降级成跳过 + 告警。
+    logging.warnings.length = 0;
+    await writeProject(
+      root,
+      projectFile(root, {
+        builtinRoles: [
+          combatDevelopmentSnapshot({
+            skills: [{ skillId: 'platform-capabilities', enabled: true }],
+          }),
+        ],
+      }),
+    );
+    await expect(resolveMekaRuntimeConfig('saga2', 'combat-development')).rejects.toThrow(
+      /unknown bundled Meka skill: platform-capabilities/,
+    );
+    expect(
+      logging.warnings.some((warning) => warning.message.includes('unknown bundled Meka skill')),
+    ).toBe(false);
+  });
+
+  /**
+   * T4：快照里的 fragment 指向**已删文件**（ENOENT）⇒ 跳过该 fragment，其余 prompt / rules /
+   * fragment 逐字按声明顺序保留。
+   *
+   * 失败模式（T4 被移除）：`readRoleRelativeFile` 的 ENOENT 直接上抛 ⇒ `resolveMekaRuntimeConfig`
+   * reject（会话打不开），本用例的 `await` 抛错。
+   */
+  it('skips a prompt fragment whose role-relative file is gone and keeps the rest in order (T4)', async () => {
+    const root = await makeRoot('cindy-meka-t4-missing-');
+    const rolesRoot = path.join(root, 'bundled-roles');
+    useSaga2();
+    useCombatDevelopmentRow();
+    environment.p4RootPath = root;
+    // fragment 根对内置角色就是 `bundledMekaRolesRoot()`：指向临时目录后，只有**存活**的 fragment
+    // 真存在，已随包删除的 `combat-*.md` 读取必然 ENOENT —— 这正是 T4 要区分的事实。
+    resource.seamRolesRoot = rolesRoot;
+    await writeText(root, 'bundled-roles/prompts/combat-kept.md', '# kept fragment body\n');
+    await writeText(root, 'bundled-roles/prompts/combat-tail.md', '# tail fragment body\n');
+
+    // 夹具自检：被断言「省略」的两个 fragment 文件真的不存在 ⇒ 跳过只能来自 ENOENT。
+    await expect(
+      readFile(path.join(rolesRoot, 'prompts', 'combat-skill-id-contract.md'), 'utf8'),
+    ).rejects.toThrow(/ENOENT/);
+    await expect(
+      readFile(path.join(rolesRoot, 'prompts', 'combat-evidence-budget.md'), 'utf8'),
+    ).rejects.toThrow(/ENOENT/);
+
+    await writeProject(
+      root,
+      projectFile(root, {
+        builtinRoles: [
+          combatDevelopmentSnapshot({
+            promptFragments: [
+              { id: 'combat-skill-id-contract', path: 'prompts/combat-skill-id-contract.md' },
+              { id: 'combat-kept', path: 'prompts/combat-kept.md' },
+              { id: 'combat-evidence-budget', path: 'prompts/combat-evidence-budget.md' },
+              { id: 'combat-tail', path: 'prompts/combat-tail.md' },
+            ],
+          }),
+        ],
+      }),
+    );
+
+    const resolved = await resolveMekaRuntimeConfig('saga2', 'combat-development');
+
+    expect(resolved).toMatchObject({ roleId: 'combat-development', roleDisplayName: '战斗开发' });
+    // 逐字顺序：`prompt` → `rules` → 存活的 fragment（按声明顺序）。缺失的两个既不占位、也不留空段，
+    // 其余一项不少不变。
+    expect(resolved.promptText).toBe(
+      ['# snapshot prompt', '# snapshot rule', '# kept fragment body', '# tail fragment body'].join(
+        '\n\n',
+      ),
+    );
+    // 缺失 fragment 的 id / 路径不得以任何形式残留在结果文本里。
+    expect(resolved.promptText).not.toContain('combat-skill-id-contract');
+    expect(resolved.promptText).not.toContain('combat-evidence-budget');
+  });
+
+  /**
+   * T4 的告警取证：每一个被跳过的 fragment 都要留下 warn（含角色、fragment id 与原路径），
+   * 存活的 fragment 不得留下「跳过」告警。
+   *
+   * 失败模式（跳过分支里删掉 `log.warn`）：解析结果不变，但本用例的告警断言失败 —— 这正是不允许
+   * 「静默跳过」的地方（用户必须能看出角色引用的 fragment 已经不存在了）。
+   */
+  it('warns for every skipped missing fragment instead of skipping silently (T4)', async () => {
+    const root = await makeRoot('cindy-meka-t4-warn-');
+    const rolesRoot = path.join(root, 'bundled-roles');
+    useSaga2();
+    useCombatDevelopmentRow();
+    environment.p4RootPath = root;
+    resource.seamRolesRoot = rolesRoot;
+    await writeText(root, 'bundled-roles/prompts/combat-kept.md', '# kept fragment body\n');
+
+    await writeProject(
+      root,
+      projectFile(root, {
+        builtinRoles: [
+          combatDevelopmentSnapshot({
+            promptFragments: [
+              { id: 'combat-skill-id-contract', path: 'prompts/combat-skill-id-contract.md' },
+              { id: 'combat-kept', path: 'prompts/combat-kept.md' },
+              { id: 'combat-evidence-budget', path: 'prompts/combat-evidence-budget.md' },
+            ],
+          }),
+        ],
+      }),
+    );
+
+    const resolved = await resolveMekaRuntimeConfig('saga2', 'combat-development');
+    expect(resolved.promptText).toContain('# kept fragment body');
+
+    const skipped = logging.warnings.filter((warning) =>
+      warning.message.includes('missing Meka role prompt fragment'),
+    );
+    // 逐条、按声明顺序：两个缺失项各一条，存活项零条。
+    expect(skipped.map((warning) => (warning.meta as { fragmentId?: string }).fragmentId)).toEqual([
       'combat-skill-id-contract',
-      'combat-server-worker-routing',
-    ]) {
-      const body = (
-        await readFile(path.join(desktopRoot, 'resources/meka/roles/prompts', `${id}.md`), 'utf8')
-      ).trim();
-      expect(body.length).toBeGreaterThan(0);
-      expect(resolved.promptText).not.toContain(body);
-    }
-    expect(resolved.promptText).not.toContain('[SAGA2_COMBAT_ENVIRONMENT_GATE]');
-    expect(resolved.promptText).not.toContain('combat-skill-configuration');
+      'combat-evidence-budget',
+    ]);
+    expect(skipped[0]?.meta).toMatchObject({
+      projectId: 'saga2',
+      roleId: 'combat-development',
+      path: 'prompts/combat-skill-id-contract.md',
+    });
+    expect(
+      skipped.map((warning) => (warning.meta as { fragmentId?: string }).fragmentId),
+    ).not.toContain('combat-kept');
+  });
+
+  /**
+   * T4 的负向控制（关键）：**只有 ENOENT 被容忍**。fragment 路径逃出角色目录必须照旧抛错。
+   *
+   * 逃逸目标刻意是**真实存在**的文件：只要 T4 被放宽成「凡读取失败/任何错误都跳过」，甚至「读到了就
+   * 注入」，本用例就会 resolves，并可能把角色目录之外的正文注入 promptText。
+   *
+   * 失败模式：把 `if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;` 改成无条件
+   * `continue`（catch-all），`rejects.toThrow` 直接失败。
+   */
+  it('still rejects a fragment path that escapes the role directory, even though it exists (T4 negative control)', async () => {
+    const root = await makeRoot('cindy-meka-t4-escape-');
+    const rolesRoot = path.join(root, 'bundled-roles');
+    useSaga2();
+    useCombatDevelopmentRow();
+    environment.p4RootPath = root;
+    resource.seamRolesRoot = rolesRoot;
+    await mkdir(rolesRoot, { recursive: true });
+    await writeText(root, 'escape-target.md', '# outside the role directory\n');
+
+    await writeProject(
+      root,
+      projectFile(root, {
+        builtinRoles: [
+          combatDevelopmentSnapshot({
+            promptFragments: [{ id: 'escape', path: '../escape-target.md' }],
+          }),
+        ],
+      }),
+    );
+
+    await expect(resolveMekaRuntimeConfig('saga2', 'combat-development')).rejects.toThrow(
+      /Meka role resource escapes the role directory: \.\.\/escape-target\.md/,
+    );
+    // 逃逸是安全红线：绝不允许被降级成「跳过 + 告警」。
+    expect(
+      logging.warnings.some((warning) => warning.message.includes('missing Meka role prompt fragment')),
+    ).toBe(false);
+  });
+
+  /**
+   * T4 的负向控制：空 `path` 仍在读盘之前抛自己的错误。
+   *
+   * 注意这条断言钉的是**循环入口的契约校验**（`~:810-812`），它结构上位于 T4 的 try/catch **之外**
+   * ⇒ 它不会被「删掉 T4」打破，只会在「有人把这条校验也改成容忍」时失败（例如把空 path 当 ENOENT
+   * 跳过、或让它退化成读取角色目录本身）。
+   */
+  it('still rejects a fragment with an empty path before any tolerance applies (T4 negative control)', async () => {
+    const root = await makeRoot('cindy-meka-t4-empty-path-');
+    useSaga2();
+    useCombatDevelopmentRow();
+    environment.p4RootPath = root;
+
+    await writeProject(
+      root,
+      projectFile(root, {
+        builtinRoles: [
+          combatDevelopmentSnapshot({
+            promptFragments: [{ id: 'blank-fragment', path: '   ' }],
+          }),
+        ],
+      }),
+    );
+
+    await expect(resolveMekaRuntimeConfig('saga2', 'combat-development')).rejects.toThrow(
+      /Meka role prompt fragment blank-fragment has an empty path/,
+    );
   });
 });

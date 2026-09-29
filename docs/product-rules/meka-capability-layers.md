@@ -9,18 +9,40 @@
 
 Meka Skill 分为两层：
 
-- 平台层（`platform-capabilities`）：说明能力类型、选择顺序、配置层级、恢复策略和
-  权限边界，不绑定具体业务项目名称。
-- 业务层（例如 `saga2-server-reference`）：说明项目有哪些工作面、证据优先级、默认
-  route 和何时升级；不重新定义 MCP、远程 Agent 或 Orca transport。
+- 平台层（`platform-capabilities`，随包唯一的平台 Skill）：说明能力类型、选择顺序、配置层级、
+  恢复策略和权限边界，不绑定具体业务项目名称。
+- 业务层（例如项目自己声明的 `saga2-project-battle-designer`、`editor-skill-editor-module`，
+  或插件提供的 Skill）：说明项目有哪些工作面、证据优先级、默认 route 和何时升级；不重新定义
+  MCP、远程 Agent 或 Orca transport。**业务层不再随包**：`resources/meka/` 只带
+  `platform-capabilities`，业务 Skill 由项目 `<project-root>/.meka/project.json` 的
+  `metadata` 清单（`itemType: 'skill'`）或已安装插件声明。
 
 业务 Skill 说明“要查什么”，平台 Skill 决定“通过什么能力到达”。Skill 本身不授予
 凭证、路由、写入根、远端物理路径或绕过 Host 的权限。
 
 平台层由 Desktop Host 在每个普通 Meka 任务 bootstrap 时动态加入：始终挂载
-`platform-capabilities` Skill、`mcp-router` provider 和短的自动路由契约，不读取项目
+`platform-capabilities` Skill 与 `mcp-router` provider，不读取项目
 `roleDefaults`、角色 Skill/MCP 选择或旧任务中的角色配置来决定是否启用。项目和角色不能排除
 这组平台基线。专用 MCPR 远端 Worker 继续使用窄能力包，不继承普通 Meka 平台 Skill/provider。
+
+**「短的自动路由契约」的现状要说准（2026-09-29 订正）**：本节此前承诺平台基线里带一段
+「短的自动路由契约」。**代码里从来没有这样一个注入段**——注入层的 prompt 段只有三段
+（`meka.role-context` 60 / `meka.project-references` 65 / `meka.role-prompt` 70，见
+[`../dev-rules/meka-injection-layer.md`](../dev-rules/meka-injection-layer.md) §3），
+平台基线**不产生任何 prompt 段**。这条承诺实际由**两个非 prompt 载体**满足：
+
+1. **`platform-capabilities` Skill 正文**（36 行）—— 能力阶梯、配置层级、恢复与降级、
+   结果归属，经 **harness 原生 skill catalog** 交付（只暴露 name / description，正文按需读取）；
+2. **`mcp-router` provider 的既有基线** —— 三条只读 route 的 tool description 本身承载
+   「Host 自动解析和确保远程项目，不要先调用 Router 管理或 Worker 工具」「不需要实例 ID」这类
+   路由指令（`mcp-integrations/meka-runtime-mcp.ts` 的 `list_remote_directory` / `read_remote_file` /
+   `search_remote_files` 注册处）。
+
+> **与 [`meka-skills.md`](meka-skills.md) §5 的口径对齐**：该文件写的是「Desktop Host 在每个普通
+> Meka 任务启动时动态加入 `mcp-router` 能力引用与 `platform-capabilities` Skill，但只有明确的
+> 服务器任务才注入主动读取/登录契约」——**这是代码支持的那一份**（平台基线给 Skill + provider，
+> 路由文本落在 Skill 正文与 tool description 里，不额外注入一个路由段）。本文 §1 旧措辞里的
+> 「短的自动路由契约」按「一段注入文本」读是错的，已按上面两条载体改写；两处表述现在一致。
 
 ## 2. 能力选择
 
@@ -83,6 +105,11 @@ Host 回执中的 `reasonCode`、`recovery` 和 `retryTool`，不得改走 SSH�
 `mcp_router.list_remote_directory` 对仓库根目录做真实读取探测；不能用启动状态直接回答
 “不能”，也不能先提示 SSH、设置页或手工连接。该工具会自动确保远程引用；只有工具明确
 返回 `fallbackUserAction` 才展示最小必要动作。
+**载体（2026-09-29 订正）**：这条要求过去在 `platform-capabilities` Skill 正文里有一份逐句
+副本，收敛时**按「与工具描述重复的内容归工具描述」删掉了该副本**；现在它由 `mcp-router`
+provider 的三条只读 route 的 tool description 承载（`list_remote_directory` 写「Host 自动解析
+和确保远程项目，不要先调用 Router 管理或 Worker 工具」，`read_remote_file` /
+`search_remote_files` 同口径写明「不需要实例 ID」）。**产品要求本身未变**，变的是它的载体。
 需要用户完成 MCPRouter 登录时，Host 只向 Cindy 主壳窗口投递登录弹窗；独立右侧栏、
 资源用量窗、utility、插件面板与会话副窗都不是合法目标，也不得仅因 IPC 已发送就误报
 弹窗已打开。真实远程项目工具会保持本次调用等待：Renderer 确认弹窗已展示，连接或注册成功

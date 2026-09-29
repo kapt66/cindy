@@ -121,10 +121,7 @@ export function applyOrcaInstructions(o: MakerSessionCreateOpts): boolean {
         sessionId,
         workflowId: teamId,
         leadSessionId,
-        reportDelivery:
-          vendorOptions.mekaWorkflow === 'saga2-combat-server-worker-v1'
-            ? 'terminal-auto-bridge'
-            : 'explicit-bridge',
+        reportDelivery: 'explicit-bridge',
       });
     }
   }

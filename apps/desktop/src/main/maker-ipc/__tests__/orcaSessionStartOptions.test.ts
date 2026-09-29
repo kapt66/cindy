@@ -107,22 +107,31 @@ describe('persisted Orca session start options', () => {
     expect(deps.getSessionRole).toHaveBeenCalledTimes(1);
   });
 
-  it('injects terminal auto-bridge instructions only for a combat server worker', () => {
+  it('injects the explicit-bridge worker instructions for every Orca worker', () => {
     const opts = {
-      ...baseOpts('combat-worker-session'),
+      ...baseOpts('worker-session'),
+      // workflow 机制删除的必然后果：`reportDelivery` 由「是不是战斗服务器 Worker」的条件变成了
+      // 恒 `'explicit-bridge'`（条件真分支已不可达，等价于原「假分支」）。这里**刻意留着**这个
+      // 残留键作为反向证据：即使同名 vendorOptions 值回来，也不得再改变投递形态。
       vendorOptions: {
         orcaRole: 'worker' as const,
         orcaWorkflowId: 'team-1',
         orcaLeadSessionId: 'lead-session',
         orcaWorkerId: 'worker-1',
-        orcaWorkerSessionId: 'combat-worker-session',
+        orcaWorkerSessionId: 'worker-session',
         mekaWorkflow: 'saga2-combat-server-worker-v1',
       },
     };
 
     expect(applyOrcaInstructions(opts)).toBe(true);
-    expect(opts.userPrompt).toContain('terminal auto-bridge delivery');
-    expect(opts.userPrompt).toContain('Do NOT call send_to_lead');
-    expect(opts.userPrompt).not.toContain('ALWAYS call send_to_lead');
+    // 显式桥接形态：Worker 必须自己调 send_to_lead 回报。
+    expect(opts.userPrompt).toContain('ALWAYS call send_to_lead');
+    // 反向：终端自动桥接分支已不存在（连同它的两条独有文案）。
+    expect(opts.userPrompt).not.toContain('terminal auto-bridge delivery');
+    expect(opts.userPrompt).not.toContain('Do NOT call send_to_lead');
+    // 身份行仍由 vendorOptions 原样渲染（这一层的机制未动）。
+    expect(opts.userPrompt).toContain(
+      'worker_id=worker-1, session_id=worker-session, workflow_id=team-1, lead_session_id=lead-session',
+    );
   });
 });

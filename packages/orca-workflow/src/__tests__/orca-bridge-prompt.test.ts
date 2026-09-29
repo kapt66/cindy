@@ -230,17 +230,4 @@ describe("renderOrcaWorkerSystemPrompt", () => {
       'Show the native subagent identifier, assigned task, and actual terminal status',
     );
   });
-
-  it("uses terminal auto-bridge without bridge tools for a specialized worker", () => {
-    const prompt = renderOrcaWorkerSystemPrompt({
-      ...workerMeta,
-      reportDelivery: "terminal-auto-bridge",
-    });
-
-    expect(prompt).toContain("This worker uses terminal auto-bridge delivery.");
-    expect(prompt).toContain("Do NOT call send_to_lead");
-    expect(prompt).toContain("finish the turn with exactly one final response");
-    expect(prompt).not.toContain("ALWAYS call send_to_lead");
-    expect(prompt).not.toContain(subagentHint);
-  });
 });

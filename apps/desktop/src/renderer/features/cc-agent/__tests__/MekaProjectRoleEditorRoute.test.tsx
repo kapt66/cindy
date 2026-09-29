@@ -96,19 +96,21 @@ function roleManifest(overrides: Partial<MekaRoleManifestFile> = {}): MekaRoleMa
 }
 
 /**
- * The only editable bundled role left: `general-development` was retired together with its
- * resource file, so bundled-role editing is asserted against `combat-development`. The shared
- * default role cannot stand in for it because it is read-only by contract.
+ * A bundled (`isBuiltin: true`) role row other than the shared default role. The package ships no
+ * editable bundled role manifest any more — the only bundled row is the read-only default role, which
+ * cannot stand in here because it is read-only by contract — but the row-level contract still applies
+ * to bundled rows that exist in a user database (an orphan row kept from an older install), so the
+ * fixture is spelled out instead of being read from `resources/meka/roles/**`.
  */
-function combatRole(): MekaRole {
+function bundledRole(): MekaRole {
   return {
-    id: 'combat-development',
+    id: 'legacy-bundled-role',
     projectId: 'saga2',
-    name: 'combat-development',
-    displayName: '战斗开发',
-    description: '设计、配置、调试并验证客户端与服务器共同执行的战斗技能',
+    name: 'legacy-bundled-role',
+    displayName: 'Legacy bundled role',
+    description: 'Bundled role row kept from an older install',
     tags: [],
-    filePath: 'meka/roles/combat-development.json',
+    filePath: 'meka/roles/legacy-bundled-role.json',
     isBuiltin: true,
     contentDigest: null,
     sortOrder: 0,
@@ -478,7 +480,7 @@ describe('Meka project and role create states', () => {
 
   it('edits bundled roles from a project file and can reset the builtin project', async () => {
     const sagaProject: MekaProject = {
-      ...projectSummary([combatRole()]),
+      ...projectSummary([bundledRole()]),
       id: 'saga2',
       name: 'saga2',
       displayName: 'SAGA2',
@@ -488,7 +490,7 @@ describe('Meka project and role create states', () => {
     const api = installApi([sagaProject]);
     renderRoute('/?projectId=saga2');
 
-    fireEvent.click(await screen.findByRole('button', { name: '战斗开发' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Legacy bundled role' }));
     expect(((await screen.findByLabelText('meka.roleName')) as HTMLInputElement).disabled).toBe(
       false,
     );
@@ -501,7 +503,7 @@ describe('Meka project and role create states', () => {
   it('allows editing bundled roles before a project file exists', async () => {
     const api = installApi([
       {
-        ...projectSummary([combatRole()]),
+        ...projectSummary([bundledRole()]),
         id: 'saga2',
         name: 'saga2',
         displayName: 'SAGA2',
@@ -511,13 +513,13 @@ describe('Meka project and role create states', () => {
     ]);
     renderRoute('/?projectId=saga2');
 
-    fireEvent.click(await screen.findByRole('button', { name: '战斗开发' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Legacy bundled role' }));
     const roleName = (await screen.findByLabelText('meka.roleName')) as HTMLInputElement;
     expect(roleName.disabled).toBe(false);
     // No edit yet: the header offers neither Save nor Cancel.
     expect(screen.queryByRole('button', { name: 'logic.confirm.cancel' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'meka.saveRole' })).toBeNull();
-    fireEvent.change(roleName, { target: { value: 'Edited combat development' } });
+    fireEvent.change(roleName, { target: { value: 'Edited bundled role' } });
     fireEvent.click(screen.getByRole('button', { name: 'meka.saveRole' }));
 
     await waitFor(() => expect(api.updateRole).toHaveBeenCalledTimes(1));
@@ -526,7 +528,7 @@ describe('Meka project and role create states', () => {
   it('discards role edits on Cancel and keeps the saved manifest otherwise', async () => {
     const api = installApi([
       {
-        ...projectSummary([combatRole()]),
+        ...projectSummary([bundledRole()]),
         id: 'saga2',
         name: 'saga2',
         displayName: 'SAGA2',
@@ -536,10 +538,10 @@ describe('Meka project and role create states', () => {
     ]);
     renderRoute('/?projectId=saga2');
 
-    fireEvent.click(await screen.findByRole('button', { name: '战斗开发' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Legacy bundled role' }));
     const roleName = (await screen.findByLabelText('meka.roleName')) as HTMLInputElement;
     const loadedName = roleName.value;
-    fireEvent.change(roleName, { target: { value: 'Edited combat development' } });
+    fireEvent.change(roleName, { target: { value: 'Edited bundled role' } });
     expect(screen.getByRole('button', { name: 'meka.saveRole' })).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'logic.confirm.cancel' }));

@@ -1941,6 +1941,18 @@ describe('sessionShareImport', () => {
     return { inspect, result };
   }
 
+  // 本组所有 Meka 绑定用例的**角色行夹具**都从包内注册表派生（`bundledDefaultRoleRow`）。注册表
+  // 收敛后只剩 1 个项目、每个项目恰好 1 条生成出来的 `<projectId>-default-role`（内置的
+  // `combat-development` 等业务角色已移出随包）。这条守卫把该派生前提写死：一旦注册表被改空或
+  // 改名，失败会直接落在夹具来源上，而不是伪装成下游的 `role-missing` 降级用例变红/变绿。
+  it('derives the role fixture from a registry that still ships saga2 and its generated default role', () => {
+    expect(BUILTIN_MEKA_PROJECTS.map((project) => project.id)).toEqual(['saga2']);
+    expect(
+      BUILTIN_MEKA_PROJECTS.flatMap((project) => project.roles.map((role) => role.id)),
+    ).toEqual([mekaDefaultRoleId('saga2')]);
+    expect(bundledDefaultRoleRow('saga2')).not.toBeNull();
+  });
+
   it('meka bundle with a resolvable project+role imports a real meka session', async () => {
     const p4Root = path.join(tmpRoot, 'saga2-root');
     registerMekaProject(p4Root);

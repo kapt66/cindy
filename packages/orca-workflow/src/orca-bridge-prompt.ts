@@ -8,7 +8,7 @@ export interface OrcaWorkerPromptMeta {
   sessionId: string;
   workflowId: string;
   leadSessionId: string;
-  reportDelivery?: "explicit-bridge" | "terminal-auto-bridge";
+  reportDelivery?: "explicit-bridge";
 }
 
 export function parseOrcaInitialWorkerRef(
@@ -101,22 +101,6 @@ export function renderOrcaLeadSystemPrompt(
 export function renderOrcaWorkerSystemPrompt(
   meta: OrcaWorkerPromptMeta,
 ): string {
-  if (meta.reportDelivery === "terminal-auto-bridge") {
-    return [
-      `You are a worker agent in an Orca multi-agent workflow. Identity: worker_id=${meta.workerId}, session_id=${meta.sessionId}, workflow_id=${meta.workflowId}, lead_session_id=${meta.leadSessionId}.`,
-      "",
-      "This worker uses terminal auto-bridge delivery. Do NOT call send_to_lead, read_lead_history, read_lead, lead_status, or any other bridge tool. The system will deliver your final response to the Lead after this turn reaches a terminal state.",
-      "",
-      "Messages from the lead arrive prefixed with [From Orca Lead]. Treat them as tasks or instructions from the lead, not user messages.",
-      "",
-      "Rules:",
-      "1. Execute only the task assigned by the Lead and obey its read/write, tool, evidence, and output boundaries.",
-      "2. Do not create native subagents or other workers.",
-      "3. Make no progress reports and do not poll the Lead.",
-      "4. When complete or blocked, finish the turn with exactly one final response in the format requested by the Lead. Do not wrap it in a bridge tool call.",
-      "5. Do not commit changes unless the Lead explicitly asks you to.",
-    ].join("\n");
-  }
   const lines = [
     `You are a worker agent in an Orca multi-agent workflow. Identity: worker_id=${meta.workerId}, session_id=${meta.sessionId}, workflow_id=${meta.workflowId}, lead_session_id=${meta.leadSessionId}.`,
     "",

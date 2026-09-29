@@ -874,9 +874,11 @@ describe('local-db:sessions:update handler wiring', () => {
     expect(h.tapWindowBroadcast).not.toHaveBeenCalled();
 
     // 反方向同样不可变:已是 Meka 身份的会话不得经 update 被摘掉身份。
+    // 角色行用现存的项目默认角色 id（`meka_role_id` 在本夹具的表定义里没有外键,这里只需一个真实存在
+    // 的角色身份）。
     h.sqlite!
       .prepare(
-        "UPDATE sessions SET workspace_kind = 'meka', meka_project_id = 'saga2', meka_role_id = 'combat-development' WHERE id = ?",
+        "UPDATE sessions SET workspace_kind = 'meka', meka_project_id = 'saga2', meka_role_id = 'saga2-default-role' WHERE id = ?",
       )
       .run('cc-local');
     await expect(invokeUpdate('cc-local', { workspaceKind: 'dialogue' })).rejects.toThrow(
@@ -891,7 +893,7 @@ describe('local-db:sessions:update handler wiring', () => {
     ).toEqual({
       workspaceKind: 'meka',
       mekaProjectId: 'saga2',
-      mekaRoleId: 'combat-development',
+      mekaRoleId: 'saga2-default-role',
     });
     expect(h.upsertRecentWorkdir).not.toHaveBeenCalled();
   });

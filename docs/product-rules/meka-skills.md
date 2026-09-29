@@ -5,6 +5,30 @@
 > 本文是 Cindy Meka 技能入口、标准技能兼容边界和 MCPRouter 独立分发链的事实文档。
 > 客户端迁移状态同时登记在
 > [`../migrations/xdmaker-meka-to-cindy.md`](../migrations/xdmaker-meka-to-cindy.md)。
+>
+> **2026-09-29 随包内容收敛（先读这一段）**：按维护者裁决「除了 workflow 机制，其他的机制
+> 完全不动，只是动内容」「`saga2/project.json` 需要继续随包，其他的移除」，`resources/meka/`
+> 现在**只随包三样东西**：
+>
+> 1. `README.md`（Forge 要求资源树非空）；
+> 2. `skills/通用/platform/platform-capabilities/SKILL.md` —— **唯一的随包 Skill**
+>    （压缩到 36 行 / 约 1,349 字符，六档能力阶梯 + 配置层级 + 恢复与降级 + 结果归属）；
+> 3. `projects/saga2/project.json` —— 只保留 `basic` 身份与 54 条 `metadata` 发现清单；
+>    它的 `roleDefaults` 只剩 `mcp`（`project-agent`）与 `projectMetadataSelection`，
+>    **没有 `promptFramework`、没有 `skills`**。
+>
+> 被删除的内容：**整个战斗 workflow 机制**（`combatWorkflowPolicy.ts` /
+> `combatEnvironmentGate.ts` / `combatServerCapabilityState.ts` 及全部 `workflow` 字段与
+> 战斗判据）、**内置提示词正文**（`roles/combat-development.json`、`roles/prompts/*.md`、
+> `MEKA_DEFAULT_ROLE_PROMPT` 的 SAGA2 段、`project.json` 的 `roleDefaults.promptFramework`）
+> 与**9 个随包 Skill**（残留的只有 `platform-capabilities`）。`BUILTIN_MEKA_PROJECTS` 仍是
+> **1 个项目 / 1 个角色**（内存生成的 `saga2-default-role`）。
+>
+> **业务内容现在的归属**：由**项目自己**声明 —— `<project-root>/.meka/project.json` 的角色快照
+> （`builtinRoles`）、`roleDefaults`（framework / rules / skills / mcp / 元数据选择）与
+> `metadata` 清单 —— 或由**已安装插件**提供；随包层只承载注入机制与平台基线。
+> 存量库里指向已删清单的孤儿内置角色行**不迁移不删除**，读取时回落到该项目的
+> `<projectId>-default-role`（容错 T2，见 `../dev-rules/meka-injection-layer.md` §8）。
 
 ## 1. 产品定位
 
@@ -138,7 +162,28 @@ Meka 技能的远端事实只属于 MCPRouter：
 
 ## 5. 与 Meka 项目角色的关系
 
-Meka Skill 分为两层：平台层说明能力类型、选择顺序、配置层级、恢复和安全边界；业务层说明项目工作面、证据优先级和业务流程。平台层不包含 SAGA2 服务器等业务名称，业务层不重新定义 MCP、远程 Agent 或 Orca transport。Desktop Host 在每个普通 Meka 任务启动时动态加入 `mcp-router` 能力引用，但只有明确的服务器任务才注入主动读取/登录契约；其它任务通过 Ghost 被动发现。专用远端 Worker 仍保持窄能力隔离。需要交互式 Router 登录时，Host 等待主壳登录框的完成回执并继续原工具，取消或超时后才向 Agent 返回恢复动作。完整契约见 [`meka-capability-layers.md`](meka-capability-layers.md)。
+> **本轮（2026-09-29）收敛后的读法（先读这一段）**：随包内容只剩
+> `platform-capabilities` 一个 Skill 与 `projects/saga2/project.json`（只保留 `basic` +
+> `metadata`），**战斗开发内置角色与整个 workflow 机制已删除**。因此本节里凡涉及
+> 「战斗开发角色」「`workflow === 'saga2-combat-development-v1'`」「`combatWorkflowPolicy` /
+> `check_combat_environment` / `validate_server_capability_report`」「技能 ID／请求范围门禁」
+> 「服务器 Worker 派发与只读约束」「order 30 `[SAGA2_PROJECT_PATHS]`」的段落，描述的**都是
+> 已删除的旧形态**（`combatWorkflowPolicy.ts` / `combatEnvironmentGate.ts` /
+> `combatServerCapabilityState.ts` 三个文件整文件不在仓内）。这些段落**作为历史保留**
+> （便于按原有锚点回看），**不得据此判断现状**。当前生效形态以：本文顶部状态块、
+> 本节开头几段、第 3 节技能包契约、第 8 节的退役说明，以及
+> [`../dev-rules/meka-injection-layer.md`](../dev-rules/meka-injection-layer.md) §3／§10 为准。
+> 业务内容现在由**项目自己声明**（`<project-root>/.meka/project.json` 的 `builtinRoles`
+> 角色快照与 `roleDefaults`）或由**插件**提供，不再随包。
+
+Meka Skill 分为两层：平台层说明能力类型、选择顺序、配置层级、恢复和安全边界；业务层说明项目工作面、证据优先级和业务流程。平台层不包含 SAGA2 服务器等业务名称，业务层不重新定义 MCP、远程 Agent 或 Orca transport。Desktop Host 在每个普通 Meka 任务启动时动态加入 `mcp-router` 能力引用与 `platform-capabilities` Skill，但只有明确的服务器任务才注入主动读取/登录契约；其它任务通过 Ghost 被动发现。专用远端 Worker 仍保持窄能力隔离。需要交互式 Router 登录时，Host 等待主壳登录框的完成回执并继续原工具，取消或超时后才向 Agent 返回恢复动作。完整契约见 [`meka-capability-layers.md`](meka-capability-layers.md)。
+
+**`platform-capabilities` 是随包唯一的业务无关 Skill，也是平台层唯一的文本载体**：它随包
+（`resources/meka/skills/通用/platform/platform-capabilities/SKILL.md`），经 harness 原生
+skill catalog 暴露（不是 prompt 段），由默认角色的 `includeAllBundledSkills` 选中，同时
+`resolveMekaPlatformRuntimeSkills` 把它作为**平台基线**强制挂给每个 Meka 任务
+（`runtimeConfig.ts` 的 `MEKA_PLATFORM_SKILL_IDS:37`）。**业务层 Skill 不再随包**：
+项目侧 Skill 走项目 `metadata` 清单（`itemType: 'skill'`）或插件。
 
 MCPRouter 绑定的远程项目可以作为当前项目的外部参考工作面。真实 Router 读取发现会话或 client key 缺失时，Router Service 先使用 Host 加密保存的账号材料单飞重连。业务请求依赖远程项目时，Host 再复用并绑定唯一匹配实例，或从唯一匹配模板创建并绑定；成功后默认优先使用远程项目只读 route。只有自动恢复返回 `fallbackUserAction` 或失败，才向用户提示最小必要动作；只有只读能力不足，或用户明确需要持续执行、独立历史、远程命令、结构化报告或人工接管时，才升级为远程 Agent/Orca Worker。远程项目只读能力与远程 Agent runtime 分开检查。
 
@@ -151,32 +196,39 @@ MCPRouter 绑定的远程项目可以作为当前项目的外部参考工作面�
   **`includeAllBundledSkills: true`**，因此默认吸收该项目 `roleDefaults` 里的提示词框架、技能与 MCP，
   选中项目当前**全部有效**的元数据（项目侧 `enabled === false` 的条目优先于角色选择，仍被排除），
   并把 `resources/meka/skills/**` 扫到的**全部内置 catalog skill**纳入本角色。项目后续新增或重命名
-  知识入口、或包内新增内置 skill 时都不需要同步维护角色枚举。它同时承接原「通用开发」的行为契约
-  prompt（识别工作类型 → 先定契约再跨层落地 → 以测试与验收收口；**业务优先输入契约**；依赖调用失败时
-  先做安全诊断、只阻断该依赖并给出确切的用户动作与重试点），并已删除其中面向 SAGA2 战斗流程升级的
-  整段。**第三个开关 `includeAllBundledSkills` 的理由**：退役的 `general-development` 曾**显式 pin
-  3 个内置 skill 与 `meka-design` MCP**；「出厂全量」若只覆盖项目侧元数据就会**静默丢掉那部分能力面**
-  （`p4-operations` / `orca-coordination` / `safety-boundaries` / `meka-design-handbook` 等未被项目
-  元数据覆盖的内置 skill），所以补一个与 `includeAllProjectMetadata` **同构**的通用开关，而不是
-  在本项目里逐个点名 skill id。`skills` / `rules` / `promptFragments` / `projectMetadataSelection`
+  知识入口、或包内新增内置 skill 时都不需要同步维护角色枚举。它同时承载**厂商中立**的行为契约
+  prompt（识别工作类型 → 先定契约再跨层落地 → 以测试与验收收口；依赖调用失败时先做安全诊断、
+  只阻断该依赖并给出确切的用户动作与重试点）——该 prompt 里**不含任何项目名、workflow 名或
+  业务域**（`shared/meka-projects.ts:168-170` 的注释与正文一致，SAGA2 整段已于 2026-09-29 删除）。
+  **第三个开关 `includeAllBundledSkills` 现在的实际效果要说准**：随包 catalog 收敛后只剩
+  `platform-capabilities` 一个 skill，而它**同时是平台基线**（`MEKA_PLATFORM_SKILL_IDS:37`），
+  注入层按 id 去重（`mergePlatformSkills`）⇒ **默认角色当前不再额外贡献任何 skill**，该开关是
+  为「包内以后再加 catalog skill 时不必改角色枚举」保留的通用契约（与 `includeAllProjectMetadata`
+  同构）。历史理由（退役的 `general-development` 曾显式 pin `p4-operations` / `orca-coordination` /
+  `safety-boundaries` / `meka-design-handbook` + `meka-design` MCP）已随那批 skill 删除而失效。
+  `skills` / `rules` / `promptFragments` / `projectMetadataSelection`
   的显式列表**刻意留空**，避免「显式列表」与「全量展开」两套来源互相漂移；**`mcp` 不空**——它显式
-  声明 `{ id: 'meka-design', providerId: 'meka-design' }`，因为项目侧推不出这条 provider，退役角色
-  原先 pin 的正是它。
+  声明 `{ id: 'meka-design', providerId: 'meka-design' }`，因为项目侧推不出这条 provider，
+  这是退役角色当时 pin 的 MCP；`roleDefaults.mcp` 另由项目侧声明 `project-agent`
+  （`projects/saga2/project.json` 的 `roleDefaults.mcp`）。
 - **渐进披露（元数据通道的正文一律不内联）**：项目规范类元数据（`agents-md` / `rule`）**不再把
   正文写进 prompt**，而由 order 65 段 `[MEKA_PROJECT_REFERENCES]` 投递「**作用范围 | 绝对路径 | 描述**」
   清单（**作用范围的参照系是该条目自己的 root**，不是永远相对 `projectRoot`：来自 `additionalPaths`
   附加根的条目以该附加根为原点；`subProjectPath` 为绝对路径或含 `..` 段时**不采用**，回落到文档自身
   所在目录），正文只在 Agent 的工作涉及该目录（及其子目录）时用原生 read 工具按需读取；Skill 继续走
   harness 原生 catalog（只暴露 name / description）。机制、排序与空集合语义见
-  [`../dev-rules/meka-injection-layer.md`](../dev-rules/meka-injection-layer.md) §3、§3.1。
+  [`../dev-rules/meka-injection-layer.md`](../dev-rules/meka-injection-layer.md) §3。
   **两条必须一起写的边界**：① 该段的**禁止句只约束规范文件**（`AGENTS.md` / `.cursorrules` /
   `rules.md`），**技能正文 `SKILL.md` 不受限**——技能走 harness 原生 catalog、正文必须按需读取，
   把 `SKILL.md` 圈进禁止句会与技能通道正面矛盾；② **`roleDefaults.rules[].text` 仍有内联通道**，
   它属「角色默认提示词」而非 `rule` 元数据，仍被合并后内联进角色 prompt（order 70），是这条
   「零正文内联」契约的**显式例外**——对外措辞只能说「**元数据通道**零规范正文内联」。
-- **它永远不是战斗角色**：manifest **不带 `workflow`**、**不注入任何战斗 promptFragments** ——
-  注入层进入战斗的唯一判据是 `runtime.workflow === 'saga2-combat-development-v1'`，默认角色带上
-  它会把**最常见角色**（新建会话的默认选中项）拖进战斗门禁。
+  **2026-09-29 起这条通道是统一形态**：原「战斗角色仍内联、不产出 order 65 条目」的例外随
+  `workflow` 字段一起删除，`agents-md` / `rule` 对**所有**角色一律走 order 65。
+- **它不带 workflow，也不带任何业务内容**：`workflow` 这个字段**已从角色／项目契约里整体删除**
+  （`MekaRoleWorkflow` 类型与 `roleFile.workflow` 都不存在了），所以默认角色不可能、也不需要再声明
+  「我不是战斗角色」；manifest 上的 `policyProviderRefs` / `mcp` / 三个展开开关是它仅有的行为字段，
+  `promptFragments` / `rules` 恒空。
 - **只读、不可编辑、不可删除**：`meka-role:update` 继续抛 `MEKA_BUILTIN_READ_ONLY`，渲染侧全部
   字段 `disabled` 且没有保存按钮；删除守卫仍是「所有 `is_builtin = 1` 都不可删」。要改就先复制成
   项目角色。它的清单不落盘（由内存函数生成）。**面板显示的是「有效清单」，不是存储清单**（2026-09-23
@@ -205,8 +257,8 @@ MCPRouter 绑定的远程项目可以作为当前项目的外部参考工作面�
 - **剥离判据与保留规则**：**不等价的条目一律保留**——作者把某个派生项改成 `enabled: false`（或改任何
   字段）就不再等价，那是**精确的排除意图**；`derived` 里没有的 key 也保留（作者新增项）。**除这四个
   列表之外，`prompt` 上由项目 `roleDefaults.promptFramework` 派生的前缀也要剥**（2026-09-23 第二批
-  修复补齐，见下条），其余字段（`workflow` / `policyProviderRefs` / `displayName` / 三个开关本身…）
-  **一律不动**。它是纯函数：不读磁盘、不打日志；但**不承诺对畸形输入不抛错**——`manifest.skills` /
+  修复补齐，见下条），其余字段（`policyProviderRefs` / `displayName` / 三个开关本身…）
+  **一律不动**（原列表里的 `workflow` 字段已随 workflow 机制整体删除，2026-09-29）。它是纯函数：不读磁盘、不打日志；但**不承诺对畸形输入不抛错**——`manifest.skills` /
   `manifest.mcp` 缺失时 `withoutDerivedEntries(undefined, …)` 会抛 `TypeError`，而调用方包装层
   （`localDb/ipc/mekaRoles.ts` 的 `stripSelectAllDerivedForSave`）会捕获并降级 ⇒ 这类输入最终落到既有
   的 `role skills/mcp must be arrays` 校验失败上，**不会留下半残缺的落盘**；**不要**把它改成对畸形
@@ -268,10 +320,25 @@ MCPRouter 绑定的远程项目可以作为当前项目的外部参考工作面�
   或项目文件读写的角色静默丢字段**。教训适用于后续每一个新增开关（含 `excludeDefaults` 一类）。
 - **仍然存在**：每个项目在启动播种或项目创建时都会有这一行，用户不需要手工新建；
   **Host 平台基线不受角色影响**，普通 Meka 任务照旧获得平台技能（`platform-capabilities`）与
-  `mcp-router` 平台 MCP。判断默认角色是否生效的口径因此变了：**不再**是「总集合等于平台基线」
-  （那只在零注入时代成立），而是「角色级技能/元数据贡献真的出现，且正文没有内联」。
+  `mcp-router` 平台 MCP。判断默认角色是否生效的口径因此变了两次：**先是**（2026-09-23）不再是
+  「总集合等于平台基线」（那只在零注入时代成立），而是「角色级技能/元数据贡献真的出现，且正文没有
+  内联」；**再是**（2026-09-29 随包收敛后）默认角色的**技能**贡献回到与平台基线重合（随包 catalog
+  只剩 `platform-capabilities`，与平台基线同 id 去重），所以现口径是
+  「**项目侧贡献真的出现**（`roleDefaults` 的 framework / rules / skills / mcp 与 54 条
+  `metadata` 里 enabled 的规范类条目都进了 order 65／order 70），且规范正文没有内联」。
 
-SAGA2 在共享默认角色之外只保留“战斗开发”这一个业务内置角色（原「通用开发」已于 2026-09-23
+**2026-09-29 起：包内不再有业务内置角色。** `BUILTIN_MEKA_ROLES` 只剩内存生成的
+`<projectId>-default-role`（`shared/meka-projects.ts:385-401`），`resources/meka/roles/`
+目录整体不存在。业务角色改由**项目自己**声明：`<project-root>/.meka/project.json` 的
+`builtinRoles` 角色快照或角色编辑器新建的项目角色；战斗相关能力（模块节点模型、JSON 导入、
+逐字段验证）改由**项目侧 Skill** 与插件承载 —— 随包不再有
+`combat-skill-configuration`，项目侧事实源仍是 `editor-skill-editor-module`、Timeline、
+Effect 与服务器 Skill。**存量库里的 `combat-development` 孤儿行不删不迁移**：读取时回落到该项目
+的 `<projectId>-default-role`（容错 T2），因此「战斗开发」这个名字只可能以**项目自有角色快照**
+的形态继续存在。
+
+下面是本条目的（2026-09-23 及更早的）历史口径，只作历史保留：SAGA2 在共享默认角色之外只保留
+“战斗开发”这一个业务内置角色（原「通用开发」已于 2026-09-23
 退役，职能并入默认角色）。战斗开发继续**显式**选择战斗相关 Skill，避免无关内容占用上下文；
 它固定包含内置 `combat-skill-configuration` Skill，负责把模块节点模型、JSON 导入和逐字段
 验证串成配置闭环；客户端项目内的 `editor-skill-editor-module`、Timeline、Effect 与服务器
@@ -327,6 +394,9 @@ Skill 仍是字段和运行时事实源。该选择机制只决定项目内标�
   `mekaCombatProjectRefPaths` 精确放行），策略层会**拒绝**读工作区根 `AGENTS.md`，再叠加一份开放的
   「必须读这些路径」清单会与策略正面冲突。**代价**：战斗角色若勾选大体积 `AGENTS.md`，内联后仍可能
   逼近 Pi 的 argv 预算（本次没有为战斗角色加体积安全阀）。
+  **（2026-09-29 订正：整条例外已删除。）** `workflow` 字段不再存在，`[SAGA2_PROJECT_PATHS]`
+  （order 30）与精确路径白名单随战斗机制一起删除，因此**所有角色**的 `agents-md` / `rule` 一律走
+  order 65 引用投递，argv 侧不再有「内联规范正文的角色」这种例外；上述「代价」随之消失。
 - 角色修改只影响新任务。已有任务恢复时必须读取原绑定并重新校验 manifest、文件集合、
   大小和 SHA-256；源目录后来变化或消失不改变快照。绑定、快照缺失或被篡改时明确阻断，
   不得按当前角色重新解析后静默漂移。
@@ -336,7 +406,7 @@ Skill 仍是字段和运行时事实源。该选择机制只决定项目内标�
   retain/release；普通 SSH 尚无等价的安全投影能力，带角色 Skill 的任务必须明确失败，
   不得退回全文 prompt。
 
-SAGA2 在共享默认角色之外只保留“战斗开发”一个业务内置角色；「通用开发」已于 2026-09-23 退役，
+**（2026-09-29 作废：以下为删除前的历史原文）** SAGA2 在共享默认角色之外只保留“战斗开发”一个业务内置角色；「通用开发」已于 2026-09-23 退役，
 其职能（含 `includeAllProjectMetadata` 的项目元数据全量选择、`includeAllBundledSkills` 的内置
 catalog 全量与 `meka-design` MCP）迁入默认角色。战斗开发继续显式选择战斗
 相关 Skill，避免无关内容占用上下文；它固定包含内置 `combat-skill-configuration`
@@ -344,6 +414,11 @@ Skill，负责把模块节点模型、JSON 导入和逐字段验证串成配置�
 `editor-skill-editor-module`、Timeline、Effect 与服务器 Skill 仍是字段和运行时事实源。
 该选择机制只决定项目内标准 Skill 的运行时投影，
 不改变 Skill 内联格式，也不把市场技能自动加入角色。
+上面这段（以及本文件里其它同口径的「只保留战斗开发内置角色」描述）
+已随随包内容收敛失效：包内**只剩**内存生成的 `<projectId>-default-role`，
+`combat-development` 的清单文件、`workflow` 字段与 workflow 机制都不在仓内；
+项目侧事实源（`editor-skill-editor-module`、Timeline、Effect、服务器 Skill）仍成立，
+但它们现在由**项目**声明，不由随包角色声明。存量孤儿角色行按 T2 回落到项目默认角色。
 
 > **既有文档漂移已按本次事实校正（2026-09-23）**：本文件此前在上一段与这一段两处声称「通用开发
 > 通过 `includeAllProjectMetadata` 自动选择项目当前全部有效元数据」，而包内
@@ -608,20 +683,29 @@ turn-end `status` 与 `done` 上（claude-code 是 **status 先、done 后**；P
 （`hook-control/turnObserver`、`im/shared/turnRunner` 各自口径不变）。**未做实机验证**：claude-code
 零输出回合的真实复现（真实网络断流）未跑。
 
-任务启动时还会从本次已解析角色配置注入 `[MEKA_ROLE_CONTEXT]`，明确提供 `projectId`、稳定
+任务启动时还会从本次已解析角色配置注入 `[MEKA_ROLE_CONTEXT]`（order 60），明确提供 `projectId`、稳定
 `roleId` 与展示名；模型不得用其它项目的自定义角色、用户数据缓存或当前窗口覆盖这组绑定。
-Host 不在任务启动时执行聚合战斗环境门禁；角色/工作流只用于选择实际工具调用策略，依赖失败
-时按调用点自动引导或阻塞，并优先识别独立的服务器 Worker workflow。缺少
-workflow 元数据的旧版项目内置战斗角色快照会在任务启动时按稳定项目/角色 ID 恢复当前包内
-战斗 workflow、中文提示词及必需 Skill/MCP；项目额外添加的规则、MCP 和非旧版辅助 Skill 继续
-保留，旧版战斗角色曾内置的通用导航、P4、Orca、远程操作、服务器参考、EntryModel 辅助 Skill
-以及模块编辑器元数据选择会按当前精简契约在内存中移除，P4 下的 `.meka/project.json` 不被后台
-改写。检查回执只在实际依赖工具调用时生成，必须同时
-携带权威角色身份、workflow 是否由旧快照恢复
-及三条链路状态，禁止通过扫描角色缓存自行判断当前角色。SAGA2 战斗角色的已知 bundled Skill
-重命名（当前 `skill-entry-model` → `saga2-entry-model`）也只在运行时按项目/角色范围做内存
-迁移，保留旧快照以便用户编辑和回退。Main 启动日志只记录这组非敏感状态，
-不记录 endpoint、实例标识、路径或凭证。
+**2026-09-29 起这一段的后半部分已作废**：Host 不在任务启动时执行聚合战斗环境门禁（这条仍成立，
+而且现在**没有**可执行的门禁了）；但「缺少 workflow 元数据的旧版项目内置战斗角色快照会在任务
+启动时按稳定项目/角色 ID 恢复当前包内战斗 workflow、中文提示词及必需 Skill/MCP」所描述的
+`upgradeLegacyBundledWorkflowRole` 与两段 SAGA2 内存迁移（`migrateSAGA2CombatSkillSelection` /
+`migrateSAGA2CombatRoleSkills`）**已随 workflow 机制整体删除** —— 现在没有 workflow 可恢复，
+也没有旧快照迁移；旧的内置角色行照常读库，清单文件缺失时回落到项目默认角色（T2），
+旧的项目角色快照（`project.json` 的 `builtinRoles`）仍是用户数据、原样保留、不被后台改写。
+Main 启动日志只记录这组非敏感状态，不记录 endpoint、实例标识、路径或凭证。
+下面是删除前的原文，只作历史：
+
+> Host 不在任务启动时执行聚合战斗环境门禁；角色/工作流只用于选择实际工具调用策略，依赖失败
+> 时按调用点自动引导或阻塞，并优先识别独立的服务器 Worker workflow。缺少
+> workflow 元数据的旧版项目内置战斗角色快照会在任务启动时按稳定项目/角色 ID 恢复当前包内
+> 战斗 workflow、中文提示词及必需 Skill/MCP；项目额外添加的规则、MCP 和非旧版辅助 Skill 继续
+> 保留，旧版战斗角色曾内置的通用导航、P4、Orca、远程操作、服务器参考、EntryModel 辅助 Skill
+> 以及模块编辑器元数据选择会按当前精简契约在内存中移除，P4 下的 `.meka/project.json` 不被后台
+> 改写。检查回执只在实际依赖工具调用时生成，必须同时
+> 携带权威角色身份、workflow 是否由旧快照恢复
+> 及三条链路状态，禁止通过扫描角色缓存自行判断当前角色。SAGA2 战斗角色的已知 bundled Skill
+> 重命名（当前 `skill-entry-model` → `saga2-entry-model`）也只在运行时按项目/角色范围做内存
+> 迁移，保留旧快照以便用户编辑和回退。
 
 生成、修改或检查技能时，分类为 `single-skill` 且用户明确提供正整数技能 ID 之前不得开始任何探索：不读取通用文档、
 表结构、代码、模块或编辑器上下文，也不调用 Unity CLI、P4、MCPRouter 或其它项目工具；只原样
@@ -762,6 +846,12 @@ Lead 收到有效派发信号后必须立即结束当前回合，不输出等待
 `saga2-combat-development-v1` 再做确定性收敛：即使模型传入 `bypassPermissions`，实际交给 Orca
 生命周期服务的模式仍为 `auto`，不弹出 Full access 升级确认；其它角色和普通 Orca 任务继续使用
 用户保存的通用权限偏好。
+**（2026-09-29 订正：载体换键。）** 这条收敛的判据不再是 workflow 字符串，而是平台中立的
+vendorOption **`mekaLockWorkerPermissionMode`**（`packages/lizi-mcps/src/xdt-helper/start_team.ts`
+的 `READ_ONLY_WORKFLOW_LOCK_VENDOR_OPTION:45-53`，求值在 `:93-98`）；**语义未变**（Host 声明的
+只读工作流 ⇒ worker 永不因用户偏好拿到 Full access）。**该键目前没有任何仓内生产者**，
+所以这条裁决只有在宿主策略经 `vendorOptions` 声明它时才可达 —— 这是预期状态，权威表述见
+[`../dev-rules/orca-team-architecture.md`](../dev-rules/orca-team-architecture.md) Part 1「Worker 权限」。
 只有 Worker 的 `done` 终态可进入 `report-ready`；`error` 终态即使包含结构合法的 JSON 也转为
 `retry-required`。auto-bridge 投递暂时失败时保持 pending，允许 Orca 重试同一终态投递；不得把
 尚未送达的文本提前登记成可信报告。
@@ -869,12 +959,25 @@ auto-bridge 投递。普通 Orca Worker 仍保留原有手动回传能力。
 已经是 Host 的权威结果，ready 时不得再分别调用 P4、Unity 或 Router 工具重复证明；阶段切换或
 工具/传输失败后的复检统一调用 `mcp_router.check_combat_environment`。
 
-上述“禁止本地子任务”是运行时能力边界，不只是角色文案。战斗工作流注入
-`codexNativeSubagentsDisabled: true`，Codex 为其使用独立 app-server Host 并以
-`agents.enabled=false` 关闭原生 `spawn_agent` 工具和 Multi-Agent V2 developer 提示；thread 的
-新建、恢复和 profile 切换也重申同一配置，以覆盖 MCPR 远端 Worker。共享默认角色及普通任务继续
-沿用用户的全局子任务设置。这样完全访问任务不会因子任务自动降为只读审批环境，也不会把子任务
-命令拒绝错误显示成用户拒绝。
+上述“禁止本地子任务”是运行时能力边界，不只是角色文案。**2026-09-29 起它的注入方已不存在**：
+该能力由 `vendorOptions.codexNativeSubagentsDisabled: true` 表达，Codex 为其使用独立 app-server
+Host 并以 `agents.enabled=false` 关闭原生 `spawn_agent` 工具和 Multi-Agent V2 developer 提示；
+thread 的新建、恢复和 profile 切换也重申同一配置，以覆盖 MCPR 远端 Worker。**消费面未动**
+（`packages/maker-core/src/agents/codex/index.ts:4993` 读取，`:5062` / `:5108` / `:6359` 消费，
+`maker-host/index.ts:1710-1731` 的 `prepareCodexExtraSpawnConfig` 钩子同样读取），但**注入层已不再产出
+这个键**——原来的唯一判据是「当前是战斗 workflow」，已随 workflow 机制删除。因此**当前没有任何
+仓内生产者**：要重新启用这条边界，只能由宿主策略经 `vendorOptions` 声明该键
+（与 `start_team.ts` 的 `mekaLockWorkerPermissionMode` 同一种写法）。这是**刻意保留的边界，
+不是 bug**：把判据换成角色 id / 远端 worker 会给普通任务新增行为，与「共享默认角色及普通任务
+继续沿用用户的全局子任务设置」冲突。详见
+[`../dev-rules/meka-injection-layer.md`](../dev-rules/meka-injection-layer.md) §8。
+下面是删除前的原文口径（其「战斗工作流注入」已不成立），只作历史：
+
+> 战斗工作流注入 `codexNativeSubagentsDisabled: true`，Codex 为其使用独立 app-server Host 并以
+> `agents.enabled=false` 关闭原生 `spawn_agent` 工具和 Multi-Agent V2 developer 提示；thread 的
+> 新建、恢复和 profile 切换也重申同一配置，以覆盖 MCPR 远端 Worker。共享默认角色及普通任务继续
+> 沿用用户的全局子任务设置。这样完全访问任务不会因子任务自动降为只读审批环境，也不会把子任务
+> 命令拒绝错误显示成用户拒绝。
 
 Codex code mode 的 MCP 审批可能只带 `toolParams`。Host 对战斗流程只按精确第一方参数结构识别：
 带完整远程 Worker 创建字段及只读标记时允许方案前服务器探索；`meka-p4` 的精确
@@ -965,6 +1068,24 @@ MCPRouter 新增独立 Meka Skill Registry，拥有独立资源、release、共�
 - 将市场技能自动加入 Meka 项目角色。
 
 ## 8. SAGA2 战斗任务的目标首证据顺序
+
+> **整节已退役（2026-09-29，标题保留以便锚点存活）**：本节描述的 `single-skill` /
+> `table-scope` 首证据门禁、`[SAGA2_COMBAT_CONTROLLER_SKILL]`（order 30 的
+> `[SAGA2_PROJECT_PATHS]`）、`combat-skill-configuration` 总控 Skill 与它的内容寻址快照白名单、
+> `mekaCombatEvidenceBasis` 豁免、服务器 Worker 派发与 `validate_server_capability_report`
+> 校验，全部属**战斗 workflow 机制**，已随该机制整体删除（`combatWorkflowPolicy.ts` /
+> `combatEnvironmentGate.ts` / `combatServerCapabilityState.ts` 整文件不在仓内，随包也不再含
+> `combat-skill-configuration` 与任何战斗角色清单）。**以下原文作为历史保留，不得据此判断现状。**
+>
+> **本节里唯一仍然成立的两点**（不要跟着一起读成「已删除」）：①「普通角色仍保留完整通用工具
+> 行为」——现在**所有**角色都是普通角色，通用工具接口照旧；② 项目侧 Skill
+> （`editor-skill-editor-module`、Timeline、Effect）仍是字段与运行时事实源，只是改由**项目**声明。
+> **明确不再成立**的部分：技能 ID 绑定与 `[SAGA2_REFERENCE_SKILL_ID]` / 范围分类门禁
+> （`parseCombatSkillIdFromUserPrompt` / `scanCombatSkillIds` 等正则已随文件删除）——
+> 现在**没有任何** Host 侧的技能 ID 绑定机制，「ID 只由用户提供、不得猜测」这句话在当前
+> 代码里**没有载体**（它原本是战斗门禁的一部分）。Meka 侧的当前形态以本文件顶部状态块、
+> 第 3 节与第 5 节开头几段为准；注入面见
+> [`../dev-rules/meka-injection-layer.md`](../dev-rules/meka-injection-layer.md) §3／§10。
 
 SAGA2 战斗角色继续暴露 Cindy 的通用工具集合。请求先分 `single-skill` / `table-scope` 两类
 （判定在任何工具调用之前，见第 5 节的请求分类）。`single-skill` 必须先由用户提供一个正整数

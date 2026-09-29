@@ -11,7 +11,7 @@
 // 它为什么原来是「integration」：用临时目录与**真实文件系统**驱动项目/角色解析 —— `mkdtemp` 造
 // 项目根、把 `.meka/project.json` 真写进去、再断言运行期解析结果（含「快照不被改写」的负向事实）。
 // 它**不需要 runtime assets**：只读包内 `resources/meka/**` 与临时目录。
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -72,7 +72,8 @@ describe('Meka runtime project/role resolution', () => {
     const skills = await resolveMekaPlatformRuntimeSkills();
 
     expect(skills.map((skill) => skill.id)).toEqual(['platform-capabilities']);
-    expect(skills[0]?.content).toContain('mcp_router.list_remote_directory');
+    expect(skills[0]?.content).toContain('# 平台外部能力');
+    expect(skills[0]?.content).toContain('Host 动态注入的平台默认能力');
   });
 
   it('resolves the shared default role from the bundled SAGA2 project as the runtime source', async () => {
@@ -82,169 +83,41 @@ describe('Meka runtime project/role resolution', () => {
       projectId: 'saga2',
       roleId: 'saga2-default-role',
       roleDisplayName: '默认角色',
-      workflowRecoveredFromRole: false,
       policyProviderRefs: ['meka-host-risk-policy', 'meka-p4-boundary-policy'],
     });
-    // Factory-inclusive: the project prompt framework and the factory three-paragraph prompt both
-    // reach the system prefix even though the role manifest itself declares no prompt body items.
-    expect(resolved.promptText).toContain('# Meka target framework');
-    expect(resolved.promptText).toContain('business intent as the input contract');
+    // Factory-inclusive: the factory prompt reaches the system prefix even though the role manifest
+    // itself declares no prompt body items. The bundled project ships no prompt framework of its own
+    // any more, so this is the whole of the factory contract.
+    expect(resolved.promptText).toContain('Establish the relevant contracts first');
     expect(resolved.promptText).toContain('safe diagnostics and recovery actions');
-    // The SAGA2 combat-upgrade paragraph of the retired "general development" prompt is gone.
-    expect(resolved.promptText).not.toContain('EntryModel modules');
-    expect(resolved.promptText).not.toContain('combat-development workflow');
-    expect(resolved.promptText).not.toContain('Do not create a generic local subagent');
-    expect(resolved.workflow).toBeUndefined();
-    // `useProjectDefaults` absorbs the project's default skills and MCP server, and
-    // `includeAllBundledSkills` adds every skill the bundled catalog scans on top of them.
-    expect(resolved.skills.map((skill) => skill.id).sort()).toEqual([
-      'combat-skill-configuration',
-      'meka-design-handbook',
-      'orca-coordination',
-      'p4-operations',
-      'platform-capabilities',
-      'remote-operations',
-      'safety-boundaries',
-      'saga2-entry-model',
-      'saga2-overview',
-      'saga2-server-reference',
-    ]);
+    // `useProjectDefaults` absorbs the project's default MCP server, and `includeAllBundledSkills`
+    // adds every skill the packaged catalog scans on top of it — the catalog now scans exactly one.
+    expect(resolved.skills.map((skill) => skill.id).sort()).toEqual(['platform-capabilities']);
     // `meka-design` is the one entry the manifest declares itself: it cannot be re-derived from the
     // project, unlike the `project-agent` entry the project's `roleDefaults` contributes.
     expect(resolved.mcp.map((entry) => entry.id)).toEqual(['project-agent', 'meka-design']);
     // No P4 root is configured in this case, so every selected reference file is unreadable and
     // must be skipped: `includeAllProjectMetadata` never produces a dangling reference.
     expect(resolved.projectReferences).toEqual([]);
-
-    const saga2Overview = resolved.skills.find((skill) => skill.id === 'saga2-overview');
-    const saga2OverviewContent = saga2Overview?.content.replace(/\r\n/g, '\n');
-    expect(saga2OverviewContent).toContain('配置目录候选只传直接子目录名 `saga2_json`');
-    expect(saga2OverviewContent).toContain('由 Host 打开系统目录选择器');
-    expect(saga2OverviewContent).toContain('不要把绝对本地路径传给插件');
-    const remoteOperations = resolved.skills.find((skill) => skill.id === 'remote-operations');
-    const orcaCoordination = resolved.skills.find((skill) => skill.id === 'orca-coordination');
-    const serverReference = resolved.skills.find((skill) => skill.id === 'saga2-server-reference');
-    expect(remoteOperations).toBeDefined();
-    const remoteOperationsContent = remoteOperations!.content;
-    expect(remoteOperationsContent).toContain('`mcpr:<instanceId>`');
-    expect(remoteOperationsContent).toContain('远程项目只读能力');
-    expect(remoteOperationsContent).toContain('只有直接只读能力不足');
-    expect(remoteOperationsContent).toContain('专用 `project-agent`');
-    expect(orcaCoordination?.content).toContain('先使用远程项目只读能力');
-    expect(orcaCoordination?.content).toContain('通用 `mcp_router` 代替');
-    expect(serverReference?.content).toContain('像本地参考目录一样');
-    expect(saga2Overview?.content).toContain('通用 `mcp_router` 只做发现和配置');
   });
 
-  it('resolves the SAGA2 combat role from its bundled manifest as the complete runtime source', async () => {
+  it('falls back to the project default role when a builtin role manifest is no longer packaged (T2)', async () => {
+    // 存量库必然留下指向已删包内清单的内置角色行（seed 只 upsert、从不删除不在注册表里的行），
+    // `combat-development` 就是必然的那一个。解析它必须回落该项目默认角色，而不是抛
+    // `builtin Meka role <id> not found` —— 抛错等于这些会话**打不开**（不是降级）。
     const resolved = await resolveMekaRuntimeConfig('saga2', 'combat-development');
 
     expect(resolved).toMatchObject({
-      projectId: 'saga2',
+      // 请求的角色 id 保持不变（会话绑定的是这一行），只有清单回落。
       roleId: 'combat-development',
-      roleDisplayName: '战斗开发',
-      workflowRecoveredFromRole: false,
-      workflow: 'saga2-combat-development-v1',
+      projectId: 'saga2',
+      roleDisplayName: '默认角色',
       policyProviderRefs: ['meka-host-risk-policy', 'meka-p4-boundary-policy'],
     });
-    // The combat role owns its complete contract, so it deliberately does not absorb the project
-    // defaults (`useProjectDefaults: false`) nor expand every project metadata item.
-    expect(resolved.promptText).not.toContain('# Meka target framework');
-    expect(resolved.promptText).toContain('# SAGA2 战斗开发');
-    expect(resolved.skills.map((skill) => skill.id).sort()).toEqual(['combat-skill-configuration']);
-    expect(resolved.mcp.map((entry) => entry.id)).toEqual(['project-agent']);
+    expect(resolved.promptText).toContain('Establish the relevant contracts first');
+    expect(resolved.skills.map((skill) => skill.id).sort()).toEqual(['platform-capabilities']);
+    expect(resolved.mcp.map((entry) => entry.id)).toEqual(['project-agent', 'meka-design']);
     expect(resolved.projectReferences).toEqual([]);
-
-    const roleManifest = JSON.parse(
-      await readFile(
-        path.join(desktopRoot, 'resources/meka/roles/combat-development.json'),
-        'utf8',
-      ),
-    ) as {
-      skills: Array<{ skillId: string; enabled: boolean }>;
-      mcp: Array<{ id: string; enabled: boolean }>;
-    };
-    expect(roleManifest.skills).toEqual([{ skillId: 'combat-skill-configuration', enabled: true }]);
-    expect(roleManifest.mcp).toEqual(
-      expect.arrayContaining([expect.objectContaining({ id: 'project-agent', enabled: true })]),
-    );
-    expect(resolved.promptText).toContain('# SAGA2 战斗开发');
-    expect(resolved.promptText).toContain('Meka Unity 官方 CLI');
-    expect(resolved.promptText).toContain('不是任务级开关');
-    expect(resolved.promptText).toContain('阻止该次调用');
-    expect(resolved.promptText).toContain('使用模块组合实现战斗技能和关卡机制');
-    expect(resolved.promptText).toContain('combat-skill-configuration');
-    expect(resolved.promptText).toContain('技能 ID 硬入口');
-    expect(resolved.promptText).toContain('不得从 Unity 当前选中项、历史任务、搜索结果');
-    expect(resolved.promptText).toContain('技能 ID 是硬入口，只能由用户给出');
-    expect(resolved.promptText).toContain('table-scope：范围由配置表或规则决定');
-    expect(resolved.promptText).toContain('启发式或推断得到的候选永远不能成为已确认绑定');
-    expect(resolved.promptText).toContain('只动编辑器模块资产');
-    expect(resolved.promptText).toContain('当前模块配置入口要求技能 ID 为正整数');
-    expect(resolved.promptText).toContain('skill_001` 这类前缀/别名而没有明确数字映射');
-    expect(resolved.promptText).toContain('请提供要生成、修改或检查的正整数技能 ID。');
-    expect(resolved.promptText).toContain('Unity 只通过 Meka Unity 官方 CLI');
-    const combatSkill = resolved.skills.find(
-      (skill) => skill.id === 'combat-skill-configuration',
-    );
-    expect(combatSkill?.content).toContain('不得读取任何其它 Agent `SKILL.md`');
-    expect(combatSkill?.content).toContain('第一条内容证据必须是通过老版编辑器导出的目标');
-  });
-
-  it('upgrades a legacy project-owned combat role to the current Host workflow in memory', async () => {
-    const root = await mkdtemp(path.join(tmpdir(), 'cindy-meka-combat-role-'));
-    environment.p4RootPath = root;
-    try {
-      const project = JSON.parse(
-        await readFile(
-          path.join(desktopRoot, 'resources/meka/projects/saga2/project.json'),
-          'utf8',
-        ),
-      ) as Record<string, unknown>;
-      const bundledRole = JSON.parse(
-        await readFile(
-          path.join(desktopRoot, 'resources/meka/roles/combat-development.json'),
-          'utf8',
-        ),
-      ) as Record<string, unknown>;
-      const legacyRole = {
-        ...bundledRole,
-        workflow: undefined,
-        promptFragments: undefined,
-        displayName: 'Legacy combat role',
-        prompt: '# Legacy combat prompt',
-        skills: [
-          { skillId: 'meka-design-handbook', enabled: true },
-          ...(bundledRole.skills as unknown[]),
-        ],
-      };
-      await mkdir(path.join(root, '.meka'), { recursive: true });
-      await writeFile(
-        path.join(root, '.meka', 'project.json'),
-        `${JSON.stringify({ ...project, builtinRoles: [legacyRole] }, null, 2)}\n`,
-        'utf8',
-      );
-
-      const resolved = await resolveMekaRuntimeConfig('saga2', 'combat-development');
-
-      expect(resolved).toMatchObject({
-        roleDisplayName: '战斗开发',
-        workflow: 'saga2-combat-development-v1',
-        workflowRecoveredFromRole: true,
-      });
-      expect(resolved.promptText).toContain('# SAGA2 战斗开发');
-      expect(resolved.promptText).not.toContain('# Legacy combat prompt');
-      expect(resolved.skills.map((skill) => skill.id)).toEqual(
-        expect.arrayContaining(['meka-design-handbook', 'combat-skill-configuration']),
-      );
-      expect(resolved.skills.map((skill) => skill.id)).not.toContain('remote-operations');
-      const persisted = await readFile(path.join(root, '.meka', 'project.json'), 'utf8');
-      expect(persisted).toContain('# Legacy combat prompt');
-      expect(persisted).not.toContain('saga2-combat-development-v1');
-    } finally {
-      environment.p4RootPath = null;
-      await rm(root, { recursive: true, force: true });
-    }
   });
 
   it('resolves the shared default role with project defaults and project MCP', async () => {
@@ -270,7 +143,7 @@ describe('Meka runtime project/role resolution', () => {
             roleDefaults: {
               promptFramework: '# Project framework',
               rules: [{ id: 'project-rule', text: '# Project default rule', enabled: true }],
-              skills: ['saga2-overview'],
+              skills: ['platform-capabilities'],
               mcp: [{ id: 'project-agent', providerId: 'project-agent', enabled: true }],
             },
           },
@@ -286,29 +159,17 @@ describe('Meka runtime project/role resolution', () => {
         projectId: 'saga2',
         roleId: 'saga2-default-role',
         roleDisplayName: '默认角色',
-        workflowRecoveredFromRole: false,
         policyProviderRefs: ['meka-host-risk-policy', 'meka-p4-boundary-policy'],
       });
       // Positive direction of the new contract: the default role is no longer zero-injection.
       expect(resolved.promptText).toContain('# Project framework');
-      expect(resolved.promptText).toContain('business intent as the input contract');
+      expect(resolved.promptText).toContain('Establish the relevant contracts first');
       expect(resolved.promptText).toContain('safe diagnostics and recovery actions');
       expect(resolved.promptText).toContain('# Project default rule');
-      expect(resolved.workflow).toBeUndefined();
-      // `roleDefaults.skills` is a subset of the bundled catalog, so the catalog switch keeps the
-      // effective set at all ten ids.
-      expect(resolved.skills.map((skill) => skill.id).sort()).toEqual([
-        'combat-skill-configuration',
-        'meka-design-handbook',
-        'orca-coordination',
-        'p4-operations',
-        'platform-capabilities',
-        'remote-operations',
-        'safety-boundaries',
-        'saga2-entry-model',
-        'saga2-overview',
-        'saga2-server-reference',
-      ]);
+      expect(resolved.skills.map((skill) => skill.id).sort()).toEqual(['platform-capabilities']);
+      // `roleDefaults.skills` 是作者显式声明（与 `explicitMetadataKeys` 同一落位口径）⇒ 同 id 的
+      // catalog 铺底项被它覆盖，不带 `derivedOnly` 标记。
+      expect(resolved.skills[0]?.derivedOnly).toBeUndefined();
       expect(resolved.mcp.map((entry) => entry.id)).toEqual(['project-agent', 'meka-design']);
       // `projectReferences`（地址 + 描述、ENOENT 跳过、disabled 排除、scope→path 确定性排序）已整体
       // **迁移**到 unit 层的 `runtimeConfig.projectReferences.test.ts`：本文件被
@@ -325,12 +186,6 @@ describe('Meka runtime project/role resolution', () => {
     const root = await mkdtemp(path.join(tmpdir(), 'cindy-meka-default-role-snapshot-'));
     environment.p4RootPath = root;
     try {
-      const bundledCombatRole = JSON.parse(
-        await readFile(
-          path.join(desktopRoot, 'resources/meka/roles/combat-development.json'),
-          'utf8',
-        ),
-      ) as Record<string, unknown>;
       await mkdir(path.join(root, '.meka'), { recursive: true });
       await writeFile(
         path.join(root, '.meka', 'project.json'),
@@ -347,18 +202,24 @@ describe('Meka runtime project/role resolution', () => {
             },
             metadata: [],
             roleDefaults: { promptFramework: '# Project framework', skills: [], mcp: [] },
-            // A project-owned file that pretends the shared default role is a legacy bundled
-            // snapshot. Both in-memory upgrade paths key off "a bundled manifest exists for this
-            // roleId" and would rewrite prompt / fragments / flags from it — but the default role
-            // has no packaged file and its manifest never reaches disk, so it must be resolved
-            // from the factory manifest instead until the very end of the funnel.
+            // A project-owned file that pretends the shared default role is a bundle snapshot. The
+            // funnel keys off "this row is the derived `<projectId>-default-role`" *before* it ever
+            // looks at project snapshots, and the factory manifest never reaches disk, so a snapshot
+            // claiming that id must be ignored from start to finish — including its `enabled: false`
+            // exclusion, which is exactly what a hijack would try to smuggle in.
             builtinRoles: [
               {
-                ...bundledCombatRole,
+                schemaVersion: 1,
                 id: 'saga2-default-role',
                 projectId: 'saga2',
+                name: 'saga2-default-role',
                 displayName: 'Hijacked default role',
                 prompt: '# Hijacked default prompt',
+                rules: [],
+                skills: [{ skillId: 'platform-capabilities', enabled: false }],
+                promptFragments: [],
+                mcp: [],
+                projectMetadataSelection: [],
                 useProjectDefaults: false,
                 includeAllProjectMetadata: false,
               },
@@ -370,94 +231,18 @@ describe('Meka runtime project/role resolution', () => {
         'utf8',
       );
 
-      // If the default role were routed through `readBuiltinRoleManifest` /
-      // `migrateSAGA2CombatRoleSkills`, resolution would throw for the missing packaged file;
-      // resolving at all is part of the contract.
+      // Resolving at all is part of the contract: a snapshot for this id must not route resolution
+      // through the packaged manifest (which no longer exists for any role).
       const resolved = await resolveMekaRuntimeConfig('saga2', 'saga2-default-role');
 
       expect(resolved.roleDisplayName).toBe('默认角色');
       expect(resolved.promptText).toContain('# Project framework');
-      expect(resolved.promptText).toContain('business intent as the input contract');
+      expect(resolved.promptText).toContain('Establish the relevant contracts first');
       expect(resolved.promptText).not.toContain('# Hijacked default prompt');
-      expect(resolved.promptText).not.toContain('面向策划的工作契约');
-      expect(resolved.workflow).toBeUndefined();
       // The hijacked snapshot must not contribute anything; what remains is the factory contract —
-      // the whole bundled catalog plus the one MCP the manifest declares itself.
-      expect(resolved.skills.map((skill) => skill.id).sort()).toEqual([
-        'combat-skill-configuration',
-        'meka-design-handbook',
-        'orca-coordination',
-        'p4-operations',
-        'platform-capabilities',
-        'remote-operations',
-        'safety-boundaries',
-        'saga2-entry-model',
-        'saga2-overview',
-        'saga2-server-reference',
-      ]);
+      // the whole packaged catalog plus the one MCP the manifest declares itself.
+      expect(resolved.skills.map((skill) => skill.id).sort()).toEqual(['platform-capabilities']);
       expect(resolved.mcp.map((entry) => entry.id)).toEqual(['meka-design']);
-    } finally {
-      environment.p4RootPath = null;
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it('migrates the renamed SAGA2 combat skill id in memory without rewriting the project snapshot', async () => {
-    const root = await mkdtemp(path.join(tmpdir(), 'cindy-meka-combat-skill-rename-'));
-    environment.p4RootPath = root;
-    try {
-      const project = JSON.parse(
-        await readFile(
-          path.join(desktopRoot, 'resources/meka/projects/saga2/project.json'),
-          'utf8',
-        ),
-      ) as Record<string, unknown>;
-      const bundledRole = JSON.parse(
-        await readFile(
-          path.join(desktopRoot, 'resources/meka/roles/combat-development.json'),
-          'utf8',
-        ),
-      ) as Record<string, unknown>;
-      const snapshot = {
-        ...bundledRole,
-        useProjectDefaults: true,
-        includeAllProjectMetadata: true,
-        skills: [
-          ...(bundledRole.skills as Array<Record<string, unknown>>),
-          { skillId: 'skill-entry-model', enabled: true },
-        ],
-        projectMetadataSelection: [
-          ...(bundledRole.projectMetadataSelection as unknown[]),
-          { sourcePath: 'saga2_design/AGENTS.md', itemType: 'agents-md', enabled: true },
-        ],
-      };
-      await mkdir(path.join(root, '.meka'), { recursive: true });
-      await mkdir(path.join(root, 'saga2_design'), { recursive: true });
-      await writeFile(
-        path.join(root, 'saga2_design', 'AGENTS.md'),
-        '# AI 初次接入治理规则\n',
-        'utf8',
-      );
-      await writeFile(
-        path.join(root, '.meka', 'project.json'),
-        `${JSON.stringify({ ...project, builtinRoles: [snapshot] }, null, 2)}\n`,
-        'utf8',
-      );
-
-      const resolved = await resolveMekaRuntimeConfig('saga2', 'combat-development');
-
-      expect(resolved.skills.map((skill) => skill.id)).not.toContain('saga2-entry-model');
-      expect(resolved.skills.map((skill) => skill.id)).not.toContain('skill-entry-model');
-      expect(resolved.promptText).toContain('面向策划的工作契约');
-      expect(resolved.promptText).not.toContain('skill-entry-model');
-      expect(resolved.promptText).not.toContain('AI 初次接入');
-      expect(resolved.promptText).not.toContain('# Meka target framework');
-      expect(resolved.skills.map((skill) => skill.id)).not.toContain(
-        'saga2-project-battle-designer',
-      );
-      expect(await readFile(path.join(root, '.meka', 'project.json'), 'utf8')).toContain(
-        'skill-entry-model',
-      );
     } finally {
       environment.p4RootPath = null;
       await rm(root, { recursive: true, force: true });

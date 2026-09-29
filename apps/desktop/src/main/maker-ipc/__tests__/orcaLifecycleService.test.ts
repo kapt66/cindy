@@ -4,7 +4,6 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createOrcaLifecycleService,
   ORCA_WORKER_READY_MESSAGE,
-  sanitizeCombatServerWorkerTask,
   type OrcaLifecycleDeps,
 } from '../orcaLifecycleService';
 import type { DispatchWorkerTaskResult } from '../orcaTeamService';
@@ -117,27 +116,6 @@ function createDeps(overrides: Partial<OrcaLifecycleDeps> = {}) {
 }
 
 describe('OrcaLifecycleService', () => {
-  it('removes Lead-host absolute paths from combat server Worker tasks', () => {
-    const task = [
-      '[SAGA2_COMBAT_REMOTE_SERVER_WORKER]',
-      'Unity projectPath=C:\\Workspace\\saga2\\saga2_project\\saga2_unity',
-      'protocol=/Users/captnn/Documents/saga2_project/saga2_unity/Assets/Editor/SkillEditor/Common/Editor/Exporter/Execute/Impl/Type/SkillModuleProtocolCodec.cs',
-      'targetSkillId: 1021',
-    ].join('\n');
-
-    const sanitized = sanitizeCombatServerWorkerTask(task);
-
-    expect(sanitized).toContain('targetSkillId: 1021');
-    expect(sanitized).toContain('[lead-host-path-omitted]');
-    expect(sanitized).not.toContain('C:\\Workspace\\saga2');
-    expect(sanitized).not.toContain('/Users/captnn');
-  });
-
-  it('leaves ordinary Worker tasks unchanged', () => {
-    const task = 'review /Users/example/project and C:\\Work\\repo';
-    expect(sanitizeCombatServerWorkerTask(task)).toBe(task);
-  });
-
   it('starts a team without creating a worker and refreshes lead state', async () => {
     const { calls, service } = createDeps();
 
@@ -362,31 +340,6 @@ describe('OrcaLifecycleService', () => {
     ]);
   });
 
-  it('sanitizes combat server paths before the create_worker request itself', async () => {
-    const { deps, service } = createDeps({
-      getActiveTeamByLead: vi.fn(async () => activeTeam()),
-    });
-    const task = [
-      '[SAGA2_COMBAT_REMOTE_SERVER_WORKER]',
-      'unityClientRoot: C:\\Workspace\\saga2\\saga2_project\\saga2_unity',
-      'targetSkillId: 1021',
-    ].join('\n');
-
-    await expect(
-      service.createWorker({
-        leadSessionId: 'lead-1',
-        role: 'reviewer',
-        agent: 'codex' as AgentKind,
-        label: 'reviewer',
-        initialTask: task,
-      }),
-    ).resolves.toMatchObject({ ok: true, dispatched: true });
-
-    const createParams = vi.mocked(deps.createWorkerInTeam).mock.calls[0]?.[0];
-    expect(createParams?.initialTask).toContain('[lead-host-path-omitted]');
-    expect(createParams?.initialTask).not.toContain('C:\\Workspace\\saga2');
-  });
-
   it('uses the saved Worker creation preference for later create_worker calls', async () => {
     const { deps, service } = createDeps({
       getActiveTeamByLead: vi.fn(async () => activeTeam()),
@@ -594,38 +547,6 @@ describe('OrcaLifecycleService', () => {
         }),
       }),
     );
-  });
-
-  it('sanitizes combat server Worker initial tasks at the dispatch boundary', async () => {
-    const { deps, service } = createDeps({
-      getActiveTeamByLead: vi.fn(async () => activeTeam()),
-    });
-    const task = [
-      '[SAGA2_COMBAT_REMOTE_SERVER_WORKER]',
-      'projectPath=C:\\Workspace\\saga2\\saga2_project',
-      'remoteEvidence=/Users/captnn/Documents/saga2_project',
-      'targetSkillId: 1021',
-    ].join('\n');
-
-    await expect(
-      service.createWorker({
-        leadSessionId: 'lead-1',
-        role: 'server-capability-reviewer',
-        agent: 'codex' as AgentKind,
-        label: 'server-review',
-        initialTask: task,
-      }),
-    ).resolves.toMatchObject({ ok: true, dispatched: true });
-
-    expect(deps.dispatchWorkerTask).toHaveBeenCalledWith(
-      expect.objectContaining({
-        message: expect.stringContaining('[lead-host-path-omitted]'),
-      }),
-    );
-    const dispatched = (deps.dispatchWorkerTask as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]
-      ?.message as string;
-    expect(dispatched).not.toContain('C:\\Workspace\\saga2');
-    expect(dispatched).not.toContain('/Users/captnn');
   });
 
   it('enables a team through the same worker creation boundary and sends the ready placeholder when no delegate task exists', async () => {

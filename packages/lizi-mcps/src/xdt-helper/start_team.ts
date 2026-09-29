@@ -42,7 +42,15 @@ const DESCRIPTION =
   "注:start_team 开启的是 session 级、持久、UI 可见的多 worker 协同。若用户要的是一个 subagent(一次性、用完即弃的子任务执行体),请用你自己的原生 subagent 机制(如 Codex 的 spawn_agent、Claude Code 的 Task 工具),不要为此 start_team 开协同。" +
   "Orca 协同永远不是 subagent 的替代品;你没有原生 subagent 机制时,如实告知用户并请他决定,不要拿 Orca 顶替,也不要自己起进程冒充。";
 
-const SAGA2_COMBAT_WORKFLOW = "saga2-combat-development-v1";
+/**
+ * Host 声明「当前 workflow 只读」的 vendorOption 键。为 true 时 Worker 一律以 auto 启动，
+ * 绝不因用户的通用 Worker 创建偏好拿到 Full access。
+ *
+ * 该键由宿主策略／项目角色配置下发（键名固定为 "mekaLockWorkerPermissionMode"）；
+ * 随包内置的只读工作流退役后，本仓暂时没有任何写入方——这是**预期**状态，
+ * 机制本身不是死代码：外部宿主仍可通过该键约束 Worker 权限。
+ */
+const READ_ONLY_WORKFLOW_LOCK_VENDOR_OPTION = "mekaLockWorkerPermissionMode";
 
 export function registerStartTeamTool(
   registry: XdtHelperToolRegistry,
@@ -82,11 +90,10 @@ export function registerStartTeamTool(
         );
       }
 
-      // The combat workflow creates a read-only server evidence worker. It
-      // never needs Full access and must not surface a permission escalation
-      // merely because the user's general Worker preference is Full access.
+      // Host 声明的只读 workflow 下，只读证据 Worker 永不需要 Full access，也不应因为
+      // 用户的通用 Worker 偏好（可能正是 Full access）弹出一次权限升级确认。
       const effectiveWorkerPermissionMode =
-        ctx.vendorOptions?.mekaWorkflow === SAGA2_COMBAT_WORKFLOW
+        ctx.vendorOptions?.[READ_ONLY_WORKFLOW_LOCK_VENDOR_OPTION] === true
           ? "auto"
           : worker_permission_mode;
 

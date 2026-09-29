@@ -9,30 +9,12 @@ import { z } from 'zod';
 
 import type { MekaRoleMcpEntry } from '../../shared/meka-projects.js';
 import type { MekaRouterInstance } from '../../shared/meka-router.js';
-import {
-  combatEnvironmentAvailability,
-  formatCombatEnvironmentGateReceipt,
-  runCombatEnvironmentGate,
-} from '../meka-projects/combatEnvironmentGate.js';
-import { probeRemoteCodexCapability } from '../maker-host/mcpr-codex-capability.js';
-import { getMekaP4SettingsService, getMekaRouterService } from '../meka-settings/ipc.js';
+import { getMekaRouterService } from '../meka-settings/ipc.js';
 import type { MekaRouterLoginResult } from '../meka-settings/routerLoginWindow.js';
-import {
-  evaluateCombatToolExecution,
-  isCombatWorkflowPolicyActive,
-  markCombatTargetExportCompleted,
-  markCombatTargetExportAttempted,
-  observeCombatLegacyModuleResult,
-} from '../meka-projects/combatWorkflowPolicy.js';
-import {
-  consumeTrustedCombatServerCapabilityReport,
-  resetCombatServerCapabilityFlow,
-} from '../meka-projects/combatServerCapabilityState.js';
 import { MEKA_AGENT_CAPABILITIES, MEKA_AGENT_KINDS } from '../meka-injection/mekaAgentMatrix.js';
 
 const ROUTER_PROVIDER_IDS = new Set(['mcp-router', 'project-agent']);
 const MEKA_DESIGN_PROVIDER_ID = 'meka-design';
-const COMBAT_WORKFLOW = 'saga2-combat-development-v1';
 /** 进程级已注册的 provider 数组；inline Meka MCP 靠它扇出（见 prepareMekaRuntimeMcp）。 */
 const registeredArrays: McpProvider[][] = [];
 const registeredInlineIds = new Set<string>();
@@ -53,92 +35,6 @@ interface MekaRuntimeVendorOptions extends Record<string, unknown> {
   mekaRoleId?: unknown;
   mekaMcpProviderIds?: unknown;
   mekaMcpInlineConfigs?: unknown;
-  mekaWorkflow?: unknown;
-  mekaCombatEnvironmentReady?: unknown;
-  mekaCombatEnvironmentChecks?: unknown;
-  mekaCombatPhase?: unknown;
-  mekaCombatServerCapabilityStatus?: unknown;
-}
-
-const serverCapabilityEvidenceSchema = z.union([
-  z.string().trim().min(1),
-  z
-    .object({
-      path: z.string().trim().min(1),
-      symbols: z.array(z.string().trim().min(1)).optional(),
-      details: z.string().trim().min(1).optional(),
-    })
-    .strict()
-    .transform((value) =>
-      [
-        value.path,
-        value.symbols?.length ? `symbols=${value.symbols.join(',')}` : '',
-        value.details ?? '',
-      ]
-        .filter(Boolean)
-        .join(': '),
-    ),
-]);
-
-const serverCapabilityReportSchema = z
-  .object({
-    targetSkillId: z.union([
-      z.number().int().positive(),
-      z
-        .string()
-        .trim()
-        .regex(/^[1-9]\d*$/),
-    ]),
-    supportStatus: z.enum(['supported', 'unsupported', 'uncertain']),
-    readOnlyConfirmed: z.literal(true),
-    repository: z.string().trim().min(1),
-    head: z
-      .string()
-      .trim()
-      .regex(/^[0-9a-f]{7,64}$/i),
-    codeEvidence: z.array(serverCapabilityEvidenceSchema).min(1),
-    capabilityGap: z.string().trim().min(1),
-    programmerAction: z.string().trim().min(1),
-    affectedSurfaces: z.array(z.string().trim().min(1)).min(1),
-    validationSuggestion: z.string().trim().min(1),
-  })
-  .strict();
-
-const INCOMPLETE_REPORT_VALUE =
-  /^(?:unknown|tbd|todo|pending|not run|未知|待确认|待定|未确定|未执行|未取得(?:回执)?|未获得(?:回执)?|未返回(?:回执)?|未核实)(?:\s*|[：:].*)$/i;
-
-function isConcreteReportText(value: string): boolean {
-  return value.trim().length > 0 && !INCOMPLETE_REPORT_VALUE.test(value) && !/^<.*>$/.test(value);
-}
-
-function validateServerCapabilityReport(
-  report: z.infer<typeof serverCapabilityReportSchema>,
-): string[] {
-  const problems: string[] = [];
-  for (const [field, value] of [
-    ['repository', report.repository],
-    ['head', report.head],
-    ['validationSuggestion', report.validationSuggestion],
-  ] as const) {
-    if (!isConcreteReportText(value)) problems.push(field);
-  }
-  if (!report.codeEvidence.every(isConcreteReportText)) problems.push('codeEvidence');
-  if (!report.affectedSurfaces.every(isConcreteReportText)) problems.push('affectedSurfaces');
-  const noGap = /^(?:none|无|无需|not-applicable|n\/a)$/i;
-  if (report.supportStatus === 'supported') {
-    // A supported Worker may explain why no gap or programmer action remains.
-    // Keep the fields concrete so the report cannot hide an incomplete result.
-    if (!isConcreteReportText(report.capabilityGap)) problems.push('capabilityGap');
-    if (!isConcreteReportText(report.programmerAction)) problems.push('programmerAction');
-  } else {
-    if (!isConcreteReportText(report.capabilityGap) || noGap.test(report.capabilityGap)) {
-      problems.push('capabilityGap');
-    }
-    if (!isConcreteReportText(report.programmerAction) || noGap.test(report.programmerAction)) {
-      problems.push('programmerAction');
-    }
-  }
-  return problems;
 }
 
 function options(context: McpProviderContext): MekaRuntimeVendorOptions {
@@ -254,53 +150,6 @@ function sanitizeRouterToolValue(value: unknown): unknown {
     );
   }
   return value;
-}
-
-function markCombatEnvironmentUnavailable(
-  context: McpProviderContext,
-  dependency: 'unityCli' | 'mcpr' = 'mcpr',
-): void {
-  const runtimeOptions = options(context);
-  if (!isCombatWorkflowPolicyActive({ vendorOptions: runtimeOptions })) return;
-  runtimeOptions.mekaCombatEnvironmentReady = false;
-  const current =
-    runtimeOptions.mekaCombatEnvironmentChecks &&
-    typeof runtimeOptions.mekaCombatEnvironmentChecks === 'object'
-      ? (runtimeOptions.mekaCombatEnvironmentChecks as Record<string, unknown>)
-      : {};
-  runtimeOptions.mekaCombatEnvironmentChecks = {
-    ...current,
-    [dependency]: {
-      status: 'blocked',
-      summary:
-        dependency === 'unityCli' ? 'Unity CLI 工具连接或传输失败' : 'MCPRouter 工具连接或传输失败',
-      nextAction:
-        dependency === 'unityCli'
-          ? '不要调用 ask_user_question，也不要在聊天正文询问启动。直接调用 Meka Unity 的 unity_execute(action=open)；Host 会在需要时展示 Cindy 通用启动确认，并在用户批准后只重试一次原操作'
-          : '恢复 MCPRouter 连接、项目绑定和远端 Runtime 后重新检查',
-    },
-  };
-  if (dependency === 'mcpr') {
-    resetCombatServerCapabilityFlow({
-      leadSessionId: activeSessionId(context),
-      vendorOptions: runtimeOptions,
-      phase: 'environment-recovery',
-    });
-  } else {
-    runtimeOptions.mekaCombatPhase = 'degraded-exploration';
-  }
-}
-
-function combatDependencyFailureMessage(dependency: 'unityCli' | 'mcpr', error?: unknown): string {
-  const label = dependency === 'unityCli' ? 'Unity CLI' : 'MCPRouter';
-  const reason =
-    error instanceof Error ? error.message : error ? String(error) : `${label} 返回错误`;
-  const safeReason = redactSensitiveText(redactSensitiveRouterUrls(reason));
-  const solution =
-    dependency === 'unityCli'
-      ? '不要调用 ask_user_question，也不要在聊天正文询问启动。直接调用 Meka Unity 的 unity_execute(action=open)；Host 会在需要时展示 Cindy 通用启动确认，并在用户批准后只重试一次原工具'
-      : '恢复 MCPRouter 连接与项目绑定；若为 Runtime 版本不匹配，升级并重启远端 Runtime，然后运行 check_combat_environment 刷新状态';
-  return `本次工具调用实际依赖 ${label}，当前调用失败，但任务不会被冻结。原因：${safeReason}。解决方案：${solution}。不依赖 ${label} 的工作可以继续。`;
 }
 
 type McprRecoveryCode =
@@ -577,23 +426,6 @@ function createRouterServer(context: McpProviderContext): McpServer {
     handler: (args: { [K in keyof T]: z.infer<T[K]> }) => Promise<unknown>,
   ): void => {
     rawTool(name, description, inputShape, async (args) => {
-      if (isCombatWorkflowPolicyActive({ vendorOptions: options(context) })) {
-        const sessionId = activeSessionId(context);
-        if (!sessionId) {
-          return jsonResult({ ok: false, error: 'Meka session is not active' }, true);
-        }
-        const decision = await evaluateCombatToolExecution({
-          sessionId,
-          workingDir: context.getSessionContext?.()?.workingDir ?? context.workingDir,
-          vendorOptions: options(context),
-          toolName: `mcp__mcp_router__${name}`,
-          input: args,
-          action: { kind: 'mcp' },
-        });
-        if (decision.behavior === 'deny') {
-          return jsonResult({ ok: false, error: decision.reason }, true);
-        }
-      }
       return handler(args as { [K in keyof T]: z.infer<T[K]> });
     });
   };
@@ -603,7 +435,6 @@ function createRouterServer(context: McpProviderContext): McpServer {
     retryTool: string,
     completedLoginPrompt?: RouterLoginPromptAttempt,
   ) => {
-    markCombatEnvironmentUnavailable(context);
     const rawReason =
       error instanceof Error ? error.message : error ? String(error) : 'MCPRouter 返回错误';
     const reason = redactSensitiveText(redactSensitiveRouterUrls(rawReason));
@@ -774,160 +605,6 @@ function createRouterServer(context: McpProviderContext): McpServer {
       } catch (error) {
         return routerFailureResult(error, 'diagnose_mcp_router_connection');
       }
-    },
-  );
-
-  registerRouterTool(
-    'check_combat_environment',
-    '重新检查 SAGA2 战斗开发所需的 P4、Meka Unity 官方 CLI 和 MCPRouter 三条链路。只返回不含凭证的结构化回执。',
-    {},
-    async () => {
-      const selectedProjectId = projectId(context);
-      const runtimeOptions = options(context);
-      if (!selectedProjectId || !isCombatWorkflowPolicyActive({ vendorOptions: runtimeOptions })) {
-        return jsonResult({
-          ok: true,
-          status: 'advisory',
-          workflowActive: false,
-          dependencyChecksRun: false,
-          blockedScope: null,
-          independentWorkCanContinue: true,
-          message:
-            '当前任务未绑定 SAGA2 战斗开发工作流；这不是任务级阻断，也不表示 P4、Meka Unity CLI 或 MCPRouter 不可用。继续当前探索、澄清和其它独立工作；实际调用依赖这些能力的工具时，再按该工具自己的回执处理。',
-        });
-      }
-      try {
-        const p4 = await getMekaP4SettingsService().get();
-        const gate = await runCombatEnvironmentGate({
-          p4,
-          listInstances: () => service.listInstances(),
-          listProjectBindings: (id) => service.listProjectBindings(id),
-          probeRemoteCodexCapability,
-          projectId: selectedProjectId,
-        });
-        let mcprRecovery:
-          | {
-              reasonCode: McprRecoveryCode;
-              userAction: string;
-              retryTool: 'check_combat_environment';
-              loginPromptAttempted: boolean;
-              loginPromptOpened: boolean;
-              loginPromptOutcome: MekaRouterLoginResult['outcome'];
-            }
-          | undefined;
-        if (gate.mcpr.status === 'blocked') {
-          let configured: boolean | null = null;
-          try {
-            configured = (await service.getConnectionStatus()).configured;
-          } catch {
-            // The gate evidence remains authoritative if local settings cannot be read.
-          }
-          const reasonCode = classifyMcprFailure(
-            `${gate.mcpr.summary}\n${gate.mcpr.evidence ?? ''}`,
-            configured,
-          );
-          const loginPrompt = await promptForRouterLogin(reasonCode);
-          mcprRecovery = {
-            reasonCode,
-            userAction: promptedMcprRecoveryAction(reasonCode, loginPrompt),
-            retryTool: 'check_combat_environment',
-            loginPromptAttempted: loginPrompt.attempted,
-            loginPromptOpened: loginPrompt.opened,
-            loginPromptOutcome: loginPrompt.outcome,
-          };
-        }
-        runtimeOptions.mekaCombatEnvironmentReady = gate.ready;
-        runtimeOptions.mekaCombatEnvironmentChecks = combatEnvironmentAvailability(gate);
-        resetCombatServerCapabilityFlow({
-          leadSessionId: activeSessionId(context),
-          vendorOptions: runtimeOptions,
-          phase: gate.ready ? 'exploration' : 'environment-recovery',
-        });
-        const observedWorkflow =
-          typeof runtimeOptions.mekaWorkflow === 'string' ? runtimeOptions.mekaWorkflow : null;
-        runtimeOptions.mekaWorkflow = COMBAT_WORKFLOW;
-        const roleContext = {
-          projectId: selectedProjectId,
-          roleId: 'combat-development',
-          displayName: '战斗开发',
-          workflow: COMBAT_WORKFLOW,
-          workflowRecoveredFromRole: observedWorkflow !== COMBAT_WORKFLOW,
-        };
-        return jsonResult({
-          ok: true,
-          roleContext,
-          gate,
-          ...(mcprRecovery ? { mcprRecovery } : {}),
-          receipt: formatCombatEnvironmentGateReceipt(gate, roleContext),
-        });
-      } catch (error) {
-        markCombatEnvironmentUnavailable(context, 'mcpr');
-        return jsonResult(
-          { ok: false, error: error instanceof Error ? error.message : String(error) },
-          true,
-        );
-      }
-    },
-  );
-
-  registerRouterTool(
-    'validate_server_capability_report',
-    '校验 MCPR 服务器 Worker 的只读能力核查报告；不授权或记录任何服务器修改。',
-    { serverCapabilityReport: serverCapabilityReportSchema },
-    async ({ serverCapabilityReport }) => {
-      const runtimeOptions = options(context);
-      if (!isCombatWorkflowPolicyActive({ vendorOptions: runtimeOptions })) {
-        return jsonResult({ ok: false, error: 'SAGA2 combat workflow is not enabled' }, true);
-      }
-      const expectedTargetSkillId = String(runtimeOptions.mekaCombatTargetSkillId ?? '').trim();
-      if (
-        !expectedTargetSkillId ||
-        String(serverCapabilityReport.targetSkillId) !== expectedTargetSkillId
-      ) {
-        return jsonResult(
-          {
-            ok: false,
-            error: `Server capability report targetSkillId must match the bound skill ${expectedTargetSkillId || '<missing>'}`,
-          },
-          true,
-        );
-      }
-      const problems = validateServerCapabilityReport(serverCapabilityReport);
-      const valid = problems.length === 0;
-      if (!valid) {
-        return jsonResult(
-          {
-            ok: false,
-            error: `Server capability report is incomplete: ${problems.join(', ')}`,
-          },
-          true,
-        );
-      }
-      const trusted = consumeTrustedCombatServerCapabilityReport({
-        leadSessionId: activeSessionId(context),
-        report: serverCapabilityReport,
-      });
-      if (!trusted.ok) {
-        return jsonResult(
-          {
-            ok: false,
-            error:
-              trusted.reason === 'report-mismatch'
-                ? 'Server capability report does not match the auto-bridged Worker result'
-                : 'No trusted auto-bridged Worker report is ready for validation',
-          },
-          true,
-        );
-      }
-      runtimeOptions.mekaCombatServerCapabilityStatus = serverCapabilityReport.supportStatus;
-      const implementationBlocked = serverCapabilityReport.supportStatus !== 'supported';
-      if (implementationBlocked) runtimeOptions.mekaCombatPhase = 'server-programmer-handoff';
-      return jsonResult({
-        ok: true,
-        supportStatus: serverCapabilityReport.supportStatus,
-        reportValidated: true,
-        implementationBlocked,
-      });
     },
   );
 
@@ -1298,98 +975,32 @@ class InlineMekaMcpProvider implements McpProvider {
         await client.close().catch(() => undefined);
       }
     };
+    /**
+     * 通用依赖降级口径（平台）：工具调用失败，但**不冻结任务**；原因脱敏后透出，独立工作可继续。
+     * 这里只报告「哪个 MCP 依赖断了」，不再按具体依赖分派解决方案。
+     */
+    const dependencyFailureMessage = (error: unknown): string => {
+      const reason = redactSensitiveText(error instanceof Error ? error.message : String(error));
+      return `本次工具调用实际依赖 ${this.name}，当前调用失败，但任务不会被冻结。原因：${reason}。不依赖 ${this.name} 的工作可以继续。`;
+    };
     server.setRequestHandler(ListToolsRequestSchema, async () => {
       try {
         return await withClient((client) => client.listTools());
       } catch (error) {
-        const dependency = this.name === 'meka-unity' ? 'unityCli' : 'mcpr';
-        markCombatEnvironmentUnavailable(context, dependency);
-        throw new Error(combatDependencyFailureMessage(dependency, error));
+        throw new Error(dependencyFailureMessage(error));
       }
     });
     server.setRequestHandler(CallToolRequestSchema, async (request) => {
       try {
-        if (isCombatWorkflowPolicyActive({ vendorOptions: options(context) })) {
-          const sessionId = activeSessionId(context);
-          if (!sessionId) {
-            return jsonResult({ ok: false, error: 'Meka session is not active' }, true);
-          }
-          const decision = await evaluateCombatToolExecution({
-            sessionId,
-            workingDir: context.getSessionContext?.()?.workingDir ?? context.workingDir,
-            vendorOptions: options(context),
-            toolName: `mcp__${this.name}__${request.params.name}`,
-            input: { name: request.params.name, args: request.params.arguments ?? {} },
-            action: { kind: 'mcp' },
-          });
-          if (decision.behavior === 'deny') {
-            return jsonResult({ ok: false, error: decision.reason }, true);
-          }
-        }
         const result = await withClient((client) =>
           client.callTool({
             name: request.params.name,
             arguments: request.params.arguments ?? {},
           }),
         );
-        const sessionId = activeSessionId(context);
-        if (sessionId) {
-          markCombatTargetExportAttempted({
-            sessionId,
-            workingDir: context.getSessionContext?.()?.workingDir ?? context.workingDir,
-            vendorOptions: options(context),
-            toolName: `mcp__${this.name}__${request.params.name}`,
-            input: { name: request.params.name, args: request.params.arguments ?? {} },
-            action: { kind: 'mcp' },
-          });
-        }
-        if (result.isError !== true) {
-          if (sessionId) {
-            // D2：直连 meka-unity 运行时 MCP 也一样——成功回执先交给 Host 对账（写入前导出的
-            // 节点数基线 vs 导入回执的 importedNodeCount），再交给既有证据记录器。
-            observeCombatLegacyModuleResult(
-              {
-                sessionId,
-                workingDir: context.getSessionContext?.()?.workingDir ?? context.workingDir,
-                vendorOptions: options(context),
-                toolName: `mcp__${this.name}__${request.params.name}`,
-                input: { name: request.params.name, args: request.params.arguments ?? {} },
-                action: { kind: 'mcp' },
-              },
-              result,
-            );
-            markCombatTargetExportCompleted({
-              sessionId,
-              workingDir: context.getSessionContext?.()?.workingDir ?? context.workingDir,
-              vendorOptions: options(context),
-              toolName: `mcp__${this.name}__${request.params.name}`,
-              input: { name: request.params.name, args: request.params.arguments ?? {} },
-              action: { kind: 'mcp' },
-            });
-          }
-        }
         return result;
       } catch (error) {
-        const runtimeOptions = options(context);
-        const dependency = this.name === 'meka-unity' ? 'unityCli' : 'mcpr';
-        if (isCombatWorkflowPolicyActive({ vendorOptions: runtimeOptions })) {
-          const sessionId = activeSessionId(context);
-          if (sessionId) {
-            markCombatTargetExportAttempted({
-              sessionId,
-              workingDir: context.getSessionContext?.()?.workingDir ?? context.workingDir,
-              vendorOptions: runtimeOptions,
-              toolName: `mcp__${this.name}__${request.params.name}`,
-              input: { name: request.params.name, args: request.params.arguments ?? {} },
-              action: { kind: 'mcp' },
-            });
-          }
-          markCombatEnvironmentUnavailable(context, dependency);
-        }
-        return jsonResult(
-          { ok: false, error: combatDependencyFailureMessage(dependency, error) },
-          true,
-        );
+        return jsonResult({ ok: false, error: dependencyFailureMessage(error) }, true);
       }
     });
     return server as unknown as McpServer;

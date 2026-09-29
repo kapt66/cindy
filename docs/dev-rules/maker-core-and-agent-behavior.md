@@ -521,7 +521,8 @@ access 不能绕过 deny、目标技能 ID 未确认前阻断项目内容证据�
   **不再内联正文**，改为 `MekaRuntimeConfig.projectReferences` + **新增注入段
   `meka.project-references`（order 65）**投递「作用范围 + 绝对路径 + 描述」。
   段文本唯一来源是 `apps/desktop/src/main/meka-injection/mekaCombatPrompts.ts` 的
-  `mekaProjectReferencesPrompt`。
+  `mekaProjectReferencesPrompt`。（**2026-09-29 订正**：该文件已改名
+  `apps/desktop/src/main/meka-injection/mekaPrompts.ts`，函数与段文本**逐字节未变**，见 §4.2。）
   **只改 harness 选择集、不改 prompt 的两项**：`includeAllBundledSkills` 只扩展技能**选择集**
   （技能 id 清单与正文都**不写进 `promptText`**，harness 原生 catalog 已承载 name／description），
   恢复的 `meka-design` MCP 也只进 `mcp[]` 装配、不进 prompt 文本 ⇒ **system 前缀的文本不受这两项影响**。
@@ -534,6 +535,8 @@ access 不能绕过 deny、目标技能 ID 未确认前阻断项目内容证据�
   Claude / Codex / Pi 三个 harness 共用同一份 `userPrompt` 组装，因此三者的 Meka 新会话前缀
   同步变化。**战斗角色是例外**（`workflow === 'saga2-combat-development-v1'`）：它的 `agents-md` /
   `rule` 仍按改动前内联在 order 70，order 65 对它为空集不渲染。
+  （**2026-09-29 作废**：`workflow` 字段已从角色／项目契约里删除，这条例外不再存在 ——
+  现在**所有**角色的 `agents-md` / `rule` 都走 order 65，见 §4.2。）
 - **缓存率影响（按 §3.1 口径）**：order 65 段文本与角色 prompt 都在**会话装配时求值一次**，
   之后在整个会话内**恒定**；内容只由项目配置与 bundled 常量决定（描述来自扫描期/配置的确定性
   产出，**禁止由模型生成**，也无时间戳、随机数或递增计数）⇒ 前缀**逐字节稳定**，不引入
@@ -548,6 +551,44 @@ access 不能绕过 deny、目标技能 ID 未确认前阻断项目内容证据�
   与确认状态无关、且必须继续如实登记的一条：**缓存率影响未实测**（见上一条）。
   因此本节的处置是「按维护者直接指示提交/推送」，而不是「已取得书面确认」。
 
+### 4.2 本轮登记：随包提示词正文删除 + 注入段 10 → 3（2026-09-29）
+
+- **改了什么（有效 prompt 增量的完整清单）**：
+  1. **默认角色 prompt 真的删掉了 SAGA2 段** —— `MEKA_DEFAULT_ROLE_PROMPT`
+    （`apps/desktop/src/shared/meka-projects.ts:168-170`）现在是两段厂商中立文本（识别工作类型 →
+     先定契约再跨层落地 → 以测试与验收收口；依赖调用失败先诊断、只阻断该依赖）。
+     **必须如实记下的一条**：§4.1（2026-09-23）当时写「已删除其中面向 SAGA2 战斗流程升级的整段」，
+     但那段（`For any SAGA2 gameplay request…`）**当时仍在正文里**，代码注释与正文不符；
+     **它是在本轮才真正被删除的**。§4.1 的这句话应读作「本轮（2026-09-29）已落实」。
+  2. **注入层的 prompt 段由 10 段降到 3 段** —— 原 10 档 order 里有 7 档是战斗段
+     （`meka.combat.controller-skill` 10 / `server-target` 20 / `project-paths` 30 /
+     `scope` 35 / `target` 40 / `execution-authorization` 50 / `server-worker` 80），
+     随 workflow 机制整体删除，**剩下的 60 / 65 / 70 未重排**（见
+     [`meka-injection-layer.md`](meka-injection-layer.md) §3／§10）。
+  3. **`agents-md` / `rule` 对所有角色统一走 order 65 项目参考** —— 原「战斗角色（`workflow ===
+     'saga2-combat-development-v1'`）仍把规范正文内联进 order 70」的例外随 `workflow` 字段删除
+     （该字段已从 `MekaRoleConfig` / `MekaProjectFile` 契约里整体移除），所以
+     **每个角色**的规范类元数据都改为「作用范围 + 绝对路径 + 描述」的 order 65 清单投递，
+     正文由 Agent 按需 read。默认角色 prompt 里也**不再有** SAGA2 / P4 / Unity 专名。
+  4. 附带的非 prompt 变化（登记以免被误读成前缀变化）：随包 Skill 10 → 1
+     （只剩 `platform-capabilities`，且它同时是平台基线）、`projects/saga2/project.json` 去掉
+     `roleDefaults.promptFramework` 与 6 条已删 skill 引用；两者都不进 `promptText`。
+- **前缀变化范围**：仍只落在 **Meka 会话**且**只在 bootstrap（新建）路径**；非 Meka 会话零影响
+  （I6）。`resolveFrozenInjection`（resume 短路）**push 零个段落** ⇒ 旧会话前缀不变（I4 原口径
+  「不注入角色段 60/65/70」仍然是当前行为）。Claude / Codex / Pi 三者共用同一份 `userPrompt` 组装，
+  因此三者的 Meka 新会话前缀同步变短。
+- **缓存率影响（按 §3.1 口径）：本轮未实测，方向未定。** 可以确定的是：三段文本都在会话装配时
+  求值一次、会话内恒定，无时间戳 / 随机数 / 递增计数（前缀逐字节稳定，不引入 turn 间漂移）；
+  被删掉的 7 段与 SAGA2 段落使前缀**显著变短**。但**本交付没有跑任何前后缓存率对比**
+  （`usage-tracker` 的 per-turn／session 命中率或 `/context` 对比都未执行），也没有评估
+  「已存在的 Meka 会话与新前缀不再命中同一缓存条目」的一次性代价 —— 按 §3.4 如实登记为
+  **未实测**。
+- **owner 确认（诚实来源）**：按本节流程，**删除 system prompt 正文**同样属于必须 owner 确认的
+  改动。实际情况是——**本仓库维护者（用户）以直接指示要求删除内置提示词正文与 workflow 机制**
+  （原话：「除了 workflow 机制，其他的机制完全不动，只是动内容」）。本节据此登记为
+  **「按维护者直接指示」**，**不是**已取得书面签名或独立确认文件；**缓存率影响未实测**
+  这一条不因指示而消失。
+
 ## Review 清单
 
 1. Agent 逻辑是否留在了 maker-core，而不是散进 Main／Renderer 重造 Agent Loop？
@@ -559,7 +600,10 @@ access 不能绕过 deny、目标技能 ID 未确认前阻断项目内容证据�
 6. 是否触及 system prompt？触及就必须先取得 owner 确认，PR 说明写明已确认。
    （**已闭合的实例**：2026-09-23 的默认角色注入反转 + order 65 段见 §4.1 ——
    **维护者已直接指示提交并推送本次改动**（授权本次交付），该节如实登记为「维护者直接指示
-   （授权本次交付提交/推送）」、**没有书面签名**；而**缓存率影响仍未实测**，这一条不因指示而消失。）
+   （授权本次交付提交/推送）」、**没有书面签名**；而**缓存率影响仍未实测**，这一条不因指示而消失。
+   **2026-09-29 的随包提示词正文删除 + 注入段 10 → 3 见 §4.2** —— 同一种登记口径
+   （「按维护者直接指示」、无书面签名、**缓存率影响未实测**）；§4.1 里「已删除 SAGA2 整段」这句话
+   以 §4.2 为准：那段是 **2026-09-29** 才真正删除的。）
 
 命中 system prompt 未确认、或核心指标路径改动缺实测的 PR 必须阻断。验证命令按
 [`desktop-development.md`](desktop-development.md) 选择；指标类回退无法靠静态检查发现，

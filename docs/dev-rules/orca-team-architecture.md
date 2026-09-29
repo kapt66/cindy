@@ -144,7 +144,17 @@ Worker 权限是 **Worker 创建偏好**，与 Agent、模型、effort、Fast �
 - 真源是 renderer `workerCreationPrefs` localStorage；main 只保存内存镜像，应用启动和偏好变化时由 renderer 同步。
 - 没有保存过权限偏好时，产品默认是 `bypassPermissions`（Full access）；这只是可选择的初始值，不是固定模式。UI 每次创建 Worker 都可改选 `auto` 或 `bypassPermissions`，提交后成为下一次默认值；已经保存过的选择继续优先，不随产品默认值变化而改写。
 - MCP `start_team` 可显式指定 `worker_permission_mode`；省略时沿用当前偏好。显式从 `auto` 升级到 `bypassPermissions` 时，Main 必须在写入偏好或创建 Team 前等待宿主持有的用户确认，不能只依赖 MCP 审批、tool 描述或 prompt；取消／超时不得产生副作用。确认通过后才更新 main 镜像，并通知 renderer 回写同一份 localStorage。已由用户保存为 `bypassPermissions` 时，后续沿用不重复确认。
-- SAGA2 战斗开发 `saga2-combat-development-v1` 的服务器核查 Worker 永久只读。`start_team` 工具边界对该 workflow 强制使用 `auto`，即使模型传入 `bypassPermissions` 也不得触发 Full access 升级确认或改写通用 Worker 偏好；其它 workflow 保持上述通用规则。
+- **Host 声明的只读工作流下，服务器核查 Worker 永久只读（载体已换键，2026-09-29）**：原判据是
+  硬编码的 workflow 字符串 `saga2-combat-development-v1`；现在改为**平台中立的 vendorOption
+  `mekaLockWorkerPermissionMode`**（`packages/lizi-mcps/src/xdt-helper/start_team.ts:45-53`
+  定义常量 `READ_ONLY_WORKFLOW_LOCK_VENDOR_OPTION`，`:93-98` 求值）：该键为 `true` 时
+  `start_team` 一律以 `auto` 启动 Worker，即使模型传入 `bypassPermissions` 也不得触发
+  Full access 升级确认或改写通用 Worker 偏好；其它情况保持上述通用规则。**语义未变**：
+  Host 声明的只读工作流意味着 worker 永不因用户的通用 Worker 偏好拿到 Full access。
+  **必须知道的一条现状**：该键目前**没有任何仓内生产者**——随包内置的只读工作流已随
+  2026-09-29 的内容收敛退役（`saga2-combat-development-v1` 不再存在），因此这条裁决当前只有
+  在**宿主策略经 `vendorOptions` 声明该键**时才可达。这是**预期**状态、不是死代码，
+  代码注释（`start_team.ts:49-51`）明确写了这一点。
 - `create_worker` / `create_workers` 省略权限参数，统一读取当前偏好；不继承 Lead 的 `sessions.permission_mode`，也不修改已经创建的 Worker。
 - device-link 新控制端只有在被控端 capabilities 明确声明支持 Worker 权限选择时才允许开启协同；已有旧版远程 Team 继续兼容旧创建行为，不宣称或回写该端不支持的偏好。
 
@@ -566,10 +576,22 @@ side_chat 待落地的是：
 
 ### SAGA2 战斗 Lead 的派发前边界
 
+> **整节已退役（2026-09-29，标题保留以便锚点存活）**：本节描述的 SAGA2 战斗 Lead 派发前边界
+> （首证据顺序、`[SAGA2_COMBAT_SERVER_TARGET]`、`check_combat_environment` 复检、
+> `saga2-combat-server-worker-v1` 专用 Worker 系统提示、只读 Worker 的取证顺序与
+> `targetSkillId` 终态校验）全部属**战斗 workflow 机制**，已随该机制整体删除
+> （`combatWorkflowPolicy.ts` / `combatEnvironmentGate.ts` / `combatServerCapabilityState.ts`
+> 整文件不在仓内，`check_combat_environment` / `validate_server_capability_report` 两个工具也已
+> 删除）。**唯一仍然有效的是 Worker 权限收敛那一条**，它的载体已换成平台中立的
+> `mekaLockWorkerPermissionMode`（见 Part 1「Worker 权限」小节，`start_team.ts:45-53` / `:93-98`），
+> 且当前**没有仓内生产者**。以下原文作为历史保留，**不得据此判断现状**。
+
 SAGA2 战斗 Lead 不使用 Orca 的 `get_workspace_info` 重新发现工作区，也不使用 Ghost 或
 `list_tools` 枚举已由 Host 暴露的能力。Lead 必须先完成当前技能 ID 的老版模块导出，再形成
 原子能力矩阵并派发唯一的 MCPR 只读服务器 Worker。`start_team` 在该 workflow 中固定使用
 `auto` 权限，即使模型请求 Full access 也会由 Host 收敛；其它 workflow 的权限选择保持不变。
+（**2026-09-29 订正**：该收敛的判据已从 workflow 字符串换成 vendorOption
+`mekaLockWorkerPermissionMode === true`，且当前没有仓内生产者 —— 见 Part 1「Worker 权限」。）
 服务器 Worker 的 `remote_host_id` 只取自 Host 在当前任务注入的
 `[SAGA2_COMBAT_SERVER_TARGET]`；Host 仅在项目绑定中恰好存在一个通过 capability hello 的服务器
 实例时提供该值。Lead 不得把项目 ID 拼成 `mcpr:saga2`，也不得为发现实例调用

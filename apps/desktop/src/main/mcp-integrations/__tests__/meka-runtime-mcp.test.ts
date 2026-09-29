@@ -1,5 +1,3 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import type { Logger, McpProvider } from '@cindy/maker-core';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -28,23 +26,13 @@ vi.mock('../../meka-settings/ipc.js', () => ({
 }));
 
 import {
+  prepareMekaRuntimeMcp,
   registerMekaRuntimeMcpArrays,
   resetMekaRuntimeMcpRegistryForTests,
   setMekaRuntimeRouterLoginPrompter,
 } from '../meka-runtime-mcp';
 import { getCodexExtraSpawnConfig, shutdownCodexEnvironment } from '../codexEnvironment';
 import { getPiExtraSpawnConfig, shutdownPiEnvironment } from '../piEnvironment';
-import {
-  beginCombatServerCapabilityDispatch,
-  recordCombatServerCapabilityAutoBridge,
-  resetCombatServerCapabilityStateForTests,
-  settleCombatServerCapabilityDispatch,
-} from '../../meka-projects/combatServerCapabilityState.js';
-
-const runtimeSource = readFileSync(
-  resolve(process.cwd(), 'src/main/mcp-integrations/meka-runtime-mcp.ts'),
-  'utf8',
-);
 
 function noopLogger(): Logger {
   const logger: Logger = {
@@ -63,7 +51,6 @@ function noopLogger(): Logger {
 
 beforeEach(() => {
   resetMekaRuntimeMcpRegistryForTests();
-  resetCombatServerCapabilityStateForTests();
   for (const mock of Object.values(routerService)) mock.mockReset();
   routerService.getConnectionStatus.mockResolvedValue({ configured: true });
   routerService.reconnectStored.mockResolvedValue(false);
@@ -83,10 +70,16 @@ afterEach(async () => {
 });
 
 describe('Meka runtime MCP remote instance projection', () => {
-  it('keeps Unity start recovery in the Host flow instead of Agent chat questions', () => {
-    expect(runtimeSource).toContain('不要调用 ask_user_question，也不要在聊天正文询问启动');
-    expect(runtimeSource).toContain('直接调用 Meka Unity 的 unity_execute(action=open)');
-    expect(runtimeSource).not.toContain('先询问用户是否由 Cindy 帮忙启动 Unity');
+  it('refuses a Unity MCP transport entry and keeps Unity CLI-only', () => {
+    // 只读边界：Unity 只能经官方 CLI 消费，任何 inline transport 条目都必须在装配前被拒。
+    expect(() =>
+      prepareMekaRuntimeMcp([{ id: 'meka-unity', transport: 'stdio', command: 'unity-mcp' }]),
+    ).toThrow(/Unity is CLI-only/);
+    // 同一个 id 作为既有 Router provider 引用仍然合法：被拒的是 inline transport，不是名字。
+    expect(prepareMekaRuntimeMcp([{ id: 'meka-unity', providerId: 'mcp-router' }])).toEqual({
+      providerIds: ['mcp-router'],
+      inlineConfigs: [],
+    });
   });
 
   it('reads the bound remote project through first-party tools without exposing or accepting instance ids', async () => {
@@ -383,222 +376,7 @@ describe('Meka runtime MCP remote instance projection', () => {
     await config.instance.close();
   });
 
-  it('exposes the combat environment gate only for the combat workflow', async () => {
-    p4Service.get.mockResolvedValue({ p4RootPath: null });
-    const providers: McpProvider[] = [];
-    registerMekaRuntimeMcpArrays(providers);
-    const provider = providers.find((candidate) => candidate.name === 'mcp_router');
-    const combatContext = {
-      agentKind: 'claude-code' as const,
-      workingDir: 'C:\\p4',
-      sessionId: 'combat-session',
-      vendorOptions: {
-        source: 'meka',
-        mekaProjectId: 'saga2',
-        mekaRoleId: 'combat-development',
-        mekaCombatTargetSkillId: '1019',
-        mekaMcpProviderIds: ['mcp-router'],
-        mekaWorkflow: 'saga2-combat-development-v1',
-      },
-    };
-    const config = provider?.toClaudeSdkConfig?.(combatContext) as { instance: McpServer };
-    const client = new Client({ name: 'combat-gate-test', version: '1.0.0' });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await Promise.all([config.instance.connect(serverTransport), client.connect(clientTransport)]);
-    const blocked = await client.callTool({ name: 'check_combat_environment', arguments: {} });
-    expect(JSON.stringify(blocked)).toContain('P4 工作区未配置');
-    await client.close();
-    await config.instance.close();
-  });
-
-  it('guards direct Router tools before their handlers run in a ready combat task', async () => {
-    const providers: McpProvider[] = [];
-    registerMekaRuntimeMcpArrays(providers);
-    const provider = providers.find((candidate) => candidate.name === 'mcp_router');
-    const context = {
-      agentKind: 'codex' as const,
-      workingDir: 'C:\\Workspace\\saga2\\saga2_project',
-      sessionId: 'combat-direct-router-policy-session',
-      vendorOptions: {
-        source: 'meka',
-        mekaProjectId: 'saga2',
-        mekaRoleId: 'combat-development',
-        mekaWorkflow: 'saga2-combat-development-v1',
-        mekaMcpProviderIds: ['mcp-router'],
-        mekaCombatTargetSkillId: '1020',
-        mekaCombatTargetSkillIdState: 'confirmed',
-        mekaCombatTargetExportCompleted: true,
-        mekaCombatEnvironmentReady: true,
-        mekaCombatPhase: 'exploration',
-        mekaCombatServerCapabilityStatus: 'supported',
-      },
-    };
-    const config = provider?.toClaudeSdkConfig?.(context) as { instance: McpServer };
-    const client = new Client({ name: 'combat-direct-router-policy-test', version: '1.0.0' });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await Promise.all([config.instance.connect(serverTransport), client.connect(clientTransport)]);
-
-    const result = await client.callTool({ name: 'check_combat_environment', arguments: {} });
-    expect(result).toMatchObject({ isError: true });
-    expect(JSON.stringify(result)).toContain('禁止立即重复调用');
-    expect(p4Service.get).not.toHaveBeenCalled();
-    expect(routerService.listInstances).not.toHaveBeenCalled();
-
-    await client.close();
-    await config.instance.close();
-  });
-
-  it('treats a combat environment recheck outside the combat workflow as advisory', async () => {
-    const providers: McpProvider[] = [];
-    registerMekaRuntimeMcpArrays(providers);
-    const provider = providers.find((candidate) => candidate.name === 'mcp_router');
-    const context = {
-      agentKind: 'claude-code' as const,
-      workingDir: 'C:\\p4',
-      sessionId: 'general-role-combat-gate-advisory-session',
-      vendorOptions: {
-        source: 'meka',
-        mekaProjectId: 'saga2',
-        // 非战斗角色样本：共享默认角色（`saga2-default-role`）。「通用开发」已退役。
-        mekaRoleId: 'saga2-default-role',
-        mekaMcpProviderIds: ['mcp-router'],
-      },
-    };
-    const config = provider?.toClaudeSdkConfig?.(context) as { instance: McpServer };
-    const client = new Client({ name: 'combat-gate-advisory-test', version: '1.0.0' });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await Promise.all([config.instance.connect(serverTransport), client.connect(clientTransport)]);
-
-    const result = await client.callTool({ name: 'check_combat_environment', arguments: {} });
-    const payload = JSON.parse(
-      (result.content as Array<{ type: string; text: string }>)[0]!.text,
-    ) as Record<string, unknown>;
-    expect(result).not.toHaveProperty('isError');
-    expect(payload).toMatchObject({
-      ok: true,
-      status: 'advisory',
-      workflowActive: false,
-      dependencyChecksRun: false,
-      blockedScope: null,
-      independentWorkCanContinue: true,
-    });
-    expect(JSON.stringify(payload)).toContain('这不是任务级阻断');
-    expect(p4Service.get).not.toHaveBeenCalled();
-    expect(routerService.listInstances).not.toHaveBeenCalled();
-    expect(routerService.listProjectBindings).not.toHaveBeenCalled();
-
-    await client.close();
-    await config.instance.close();
-  });
-
-  it('checks the environment from the combat role binding when workflow metadata is missing', async () => {
-    p4Service.get.mockResolvedValue({ p4RootPath: null });
-    routerService.listInstances.mockResolvedValue([]);
-    routerService.listProjectBindings.mockResolvedValue([]);
-    const providers: McpProvider[] = [];
-    registerMekaRuntimeMcpArrays(providers);
-    const provider = providers.find((candidate) => candidate.name === 'mcp_router');
-    const context = {
-      agentKind: 'claude-code' as const,
-      workingDir: 'C:\\p4',
-      sessionId: 'combat-role-fallback-session',
-      vendorOptions: {
-        source: 'meka',
-        mekaProjectId: 'saga2',
-        mekaRoleId: 'combat-development',
-        mekaCombatTargetSkillId: '1019',
-        // 诱饵：vendorOptions 里的显示名是**非战斗角色**的名字（默认角色），权威值必须来自角色清单。
-        mekaRoleDisplayName: '默认角色',
-        mekaMcpProviderIds: ['mcp-router'],
-      },
-    };
-    const config = provider?.toClaudeSdkConfig?.(context) as { instance: McpServer };
-    const client = new Client({ name: 'combat-role-fallback-test', version: '1.0.0' });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await Promise.all([config.instance.connect(serverTransport), client.connect(clientTransport)]);
-
-    const result = await client.callTool({ name: 'check_combat_environment', arguments: {} });
-    const payload = JSON.parse(
-      (result.content as Array<{ type: string; text: string }>)[0]!.text,
-    ) as Record<string, unknown>;
-    expect(result).not.toHaveProperty('isError');
-    expect(payload).toMatchObject({
-      roleContext: {
-        projectId: 'saga2',
-        roleId: 'combat-development',
-        displayName: '战斗开发',
-        workflow: 'saga2-combat-development-v1',
-        workflowRecoveredFromRole: true,
-      },
-    });
-    // 诱饵显示名（默认角色）不得出现在权威回执里：roleContext 一律来自角色清单。
-    expect(JSON.stringify(payload)).not.toContain('默认角色');
-    expect(context.vendorOptions).toMatchObject({
-      mekaWorkflow: 'saga2-combat-development-v1',
-      mekaCombatEnvironmentReady: false,
-      mekaCombatPhase: 'environment-recovery',
-    });
-
-    await client.close();
-    await config.instance.close();
-  });
-
-  it('treats the aggregate warning as advisory until a Router tool is actually used', async () => {
-    routerService.listProjectTools.mockResolvedValue([
-      { name: 'mcp_list_instances', annotations: { readOnlyHint: true } },
-    ]);
-    routerService.callProjectTool.mockResolvedValue({
-      content: [{ type: 'text', text: JSON.stringify({ instances: [] }) }],
-    });
-    const providers: McpProvider[] = [];
-    registerMekaRuntimeMcpArrays(providers);
-    const provider = providers.find((candidate) => candidate.name === 'mcp_router');
-    const context = {
-      agentKind: 'codex' as const,
-      workingDir: 'C:\\p4',
-      sessionId: 'combat-recovery-safe-projection-session',
-      vendorOptions: {
-        source: 'meka',
-        mekaProjectId: 'saga2',
-        mekaRoleId: 'combat-development',
-        mekaCombatTargetSkillId: '1019',
-        mekaMcpProviderIds: ['mcp-router'],
-        mekaWorkflow: 'saga2-combat-development-v1',
-        mekaCombatEnvironmentReady: false,
-        mekaCombatPhase: 'environment-recovery',
-      },
-    };
-    const config = provider?.toClaudeSdkConfig?.(context) as { instance: McpServer };
-    const client = new Client({ name: 'combat-recovery-safe-projection-test', version: '1.0.0' });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await Promise.all([config.instance.connect(serverTransport), client.connect(clientTransport)]);
-
-    const listed = await client.callTool({ name: 'list_tools', arguments: {} });
-    const listedText = JSON.stringify(listed);
-    expect(listed).toMatchObject({ isError: true });
-    expect(listedText).toContain('禁止调用 list_tools');
-    expect(routerService.listProjectTools).not.toHaveBeenCalled();
-
-    const direct = await client.callTool({
-      name: 'call_tool',
-      arguments: { name: 'mcp_list_instances', args: {} },
-    });
-    expect(JSON.stringify(direct)).toContain('instances');
-    expect(routerService.callProjectTool).toHaveBeenCalledWith(
-      'saga2',
-      'mcp_list_instances',
-      {},
-      expect.any(Function),
-    );
-
-    await client.close();
-    await config.instance.close();
-  });
-
   it('returns the dependency reason and recovery solution when the actual Router call fails', async () => {
-    routerService.listProjectTools.mockResolvedValue([
-      { name: 'read_server_status', annotations: { readOnlyHint: true } },
-    ]);
     routerService.callProjectTool.mockResolvedValue({
       content: [{ type: 'text', text: 'remote runtime unavailable' }],
       isError: true,
@@ -609,23 +387,15 @@ describe('Meka runtime MCP remote instance projection', () => {
     const context = {
       agentKind: 'codex' as const,
       workingDir: 'C:\\p4',
-      sessionId: 'combat-router-failure-solution-session',
+      sessionId: 'router-tool-failure-receipt-session',
       vendorOptions: {
         source: 'meka',
         mekaProjectId: 'saga2',
-        mekaRoleId: 'combat-development',
-        mekaCombatTargetSkillId: '1019',
         mekaMcpProviderIds: ['mcp-router'],
-        mekaWorkflow: 'saga2-combat-development-v1',
-        mekaCombatEnvironmentReady: true,
-        mekaCombatTargetExportCompleted: true,
-        mekaCombatEnvironmentChecks: {
-          mcpr: { status: 'ready', summary: 'MCPRouter ready' },
-        },
       },
     };
     const config = provider?.toClaudeSdkConfig?.(context) as { instance: McpServer };
-    const client = new Client({ name: 'combat-router-failure-solution-test', version: '1.0.0' });
+    const client = new Client({ name: 'router-tool-failure-receipt-test', version: '1.0.0' });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([config.instance.connect(serverTransport), client.connect(clientTransport)]);
 
@@ -637,21 +407,14 @@ describe('Meka runtime MCP remote instance projection', () => {
     expect(serialized).toContain('本次工具调用实际依赖 MCPRouter');
     expect(serialized).toContain('解决方案');
     expect(serialized).toContain('任务不会被冻结');
-    expect(context.vendorOptions).toMatchObject({
-      mekaCombatEnvironmentReady: false,
-      mekaCombatEnvironmentChecks: {
-        mcpr: { status: 'blocked' },
-      },
-    });
+    expect(result).toMatchObject({ isError: true });
+    expect(serialized).toContain('independentWorkCanContinue');
 
     await client.close();
     await config.instance.close();
   });
 
   it('redacts sensitive Router endpoints before returning tool content to the Agent', async () => {
-    routerService.listProjectTools.mockResolvedValue([
-      { name: 'read_server_status', annotations: { readOnlyHint: true } },
-    ]);
     routerService.callProjectTool.mockResolvedValue({
       content: [
         {
@@ -669,21 +432,15 @@ describe('Meka runtime MCP remote instance projection', () => {
     const context = {
       agentKind: 'codex' as const,
       workingDir: 'C:\\p4',
-      sessionId: 'combat-router-redaction-session',
+      sessionId: 'router-tool-redaction-session',
       vendorOptions: {
         source: 'meka',
         mekaProjectId: 'saga2',
-        mekaRoleId: 'combat-development',
-        mekaCombatTargetSkillId: '1019',
         mekaMcpProviderIds: ['mcp-router'],
-        mekaWorkflow: 'saga2-combat-development-v1',
-        mekaCombatEnvironmentReady: true,
-        mekaCombatTargetExportCompleted: true,
-        mekaCombatPhase: 'exploration',
       },
     };
     const config = provider?.toClaudeSdkConfig?.(context) as { instance: McpServer };
-    const client = new Client({ name: 'combat-router-redaction-test', version: '1.0.0' });
+    const client = new Client({ name: 'router-tool-redaction-test', version: '1.0.0' });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([config.instance.connect(serverTransport), client.connect(clientTransport)]);
 
@@ -696,136 +453,19 @@ describe('Meka runtime MCP remote instance projection', () => {
     expect(serialized).not.toContain('10.20.30.40');
     expect(serialized).not.toContain('mcp_fake_secret_value');
     expect(serialized).not.toContain('fake-secret-token-value');
+    // call_tool 必须把解析到的项目、工具名、实参和高风险授权回调一并交给 Router。
+    expect(routerService.callProjectTool).toHaveBeenCalledWith(
+      'saga2',
+      'read_server_status',
+      {},
+      expect.any(Function),
+    );
 
     await client.close();
     await config.instance.close();
   });
 
-  it('validates and consumes only the actual auto-bridged combat server report', async () => {
-    const providers: McpProvider[] = [];
-    registerMekaRuntimeMcpArrays(providers);
-    const provider = providers.find((candidate) => candidate.name === 'mcp_router');
-    const context = {
-      agentKind: 'claude-code' as const,
-      workingDir: 'C:\\p4',
-      sessionId: 'combat-receipt-session',
-      vendorOptions: {
-        source: 'meka',
-        mekaProjectId: 'saga2',
-        mekaRoleId: 'combat-development',
-        mekaCombatTargetSkillId: '1019',
-        mekaMcpProviderIds: ['mcp-router'],
-        mekaWorkflow: 'saga2-combat-development-v1',
-        mekaCombatTargetExportCompleted: true,
-      },
-    };
-    const config = provider?.toClaudeSdkConfig?.(context) as { instance: McpServer };
-    const client = new Client({ name: 'combat-capability-report-test', version: '1.0.0' });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await Promise.all([config.instance.connect(serverTransport), client.connect(clientTransport)]);
-    const base = {
-      targetSkillId: 1019,
-      supportStatus: 'supported',
-      readOnlyConfirmed: true,
-      repository: 'saga2-server',
-      head: 'abcdef1',
-      codeEvidence: [
-        { path: 'server/module.ts', symbols: ['entryTypeDamageHit'], details: 'consumer' },
-      ],
-      capabilityGap: '无运行时原子能力缺口；当前模块组合可以表达需求。',
-      programmerAction: '无需服务器程序改动；Lead 可继续本地配置。',
-      affectedSurfaces: ['skill module runtime'],
-      validationSuggestion: 'verify exported module data against the current reader',
-    };
-    const trustReport = (report: Record<string, unknown>, suffix: string) => {
-      const task = `[SAGA2_SERVER_EXPLORATION_READ_ONLY] [SAGA2_MODULE_FIRST] skill-entry-model atomic capability matrix residual gap ${suffix}`;
-      expect(
-        beginCombatServerCapabilityDispatch({
-          leadSessionId: context.sessionId,
-          vendorOptions: context.vendorOptions,
-          kind: 'create_worker',
-          task,
-          remoteHostId: 'mcpr:server-1',
-        }),
-      ).toBe(true);
-      expect(
-        settleCombatServerCapabilityDispatch({
-          leadSessionId: context.sessionId,
-          kind: 'create_worker',
-          task,
-          accepted: true,
-          workerId: `worker-${suffix}`,
-          workerSessionId: `worker-session-${suffix}`,
-        }),
-      ).toBe(true);
-      expect(
-        recordCombatServerCapabilityAutoBridge({
-          leadSessionId: context.sessionId,
-          workerId: `worker-${suffix}`,
-          workerSessionId: `worker-session-${suffix}`,
-          message: `[Auto-bridged: worker 完成但未调 send_to_lead]\n\n${JSON.stringify(report)}`,
-          accepted: true,
-        }),
-      ).toBe('report-ready');
-    };
-
-    const rejectedWithoutWorker = await client.callTool({
-      name: 'validate_server_capability_report',
-      arguments: { serverCapabilityReport: base },
-    });
-    expect(rejectedWithoutWorker).toMatchObject({ isError: true });
-
-    trustReport(base, 'supported');
-    const wrongTarget = await client.callTool({
-      name: 'validate_server_capability_report',
-      arguments: { serverCapabilityReport: { ...base, targetSkillId: 1020 } },
-    });
-    expect(wrongTarget).toMatchObject({ isError: true });
-    expect(JSON.stringify(wrongTarget)).toContain('targetSkillId');
-    const accepted = await client.callTool({
-      name: 'validate_server_capability_report',
-      arguments: { serverCapabilityReport: base },
-    });
-    expect(JSON.stringify(accepted)).toContain('reportValidated');
-    expect(JSON.stringify(accepted)).toContain('\\"implementationBlocked\\":false');
-    expect(accepted).not.toHaveProperty('isError');
-    const replayed = await client.callTool({
-      name: 'validate_server_capability_report',
-      arguments: { serverCapabilityReport: base },
-    });
-    expect(replayed).toMatchObject({ isError: true });
-
-    const unsupportedReport = {
-      ...base,
-      supportStatus: 'unsupported',
-      capabilityGap: 'dynamic world-space center is not consumed by the current module',
-      programmerAction: 'Lead 立即停止当前实现并将报告交给服务器程序，补充随机点运行时消费。',
-      affectedSurfaces: ['server runtime', 'local blocked: module/table/export/client'],
-    };
-    trustReport(unsupportedReport, 'unsupported');
-    const mismatched = await client.callTool({
-      name: 'validate_server_capability_report',
-      arguments: { serverCapabilityReport: { ...unsupportedReport, head: '1234567' } },
-    });
-    expect(mismatched).toMatchObject({ isError: true });
-    const unsupported = await client.callTool({
-      name: 'validate_server_capability_report',
-      arguments: { serverCapabilityReport: unsupportedReport },
-    });
-    expect(JSON.stringify(unsupported)).toContain('\\"implementationBlocked\\":true');
-    expect(context.vendorOptions).toMatchObject({
-      mekaCombatServerCapabilityStatus: 'unsupported',
-      mekaCombatPhase: 'server-programmer-handoff',
-    });
-
-    await client.close();
-    await config.instance.close();
-  });
-
-  it('returns an MCPR error and enters environment recovery when the remote call fails', async () => {
-    routerService.listProjectTools.mockResolvedValue([
-      { name: 'read_server_file', annotations: { readOnlyHint: true } },
-    ]);
+  it('returns an MCPR error when the remote call fails', async () => {
     routerService.callProjectTool.mockRejectedValue(new Error('MCPR connection lost'));
     const providers: McpProvider[] = [];
     registerMekaRuntimeMcpArrays(providers);
@@ -833,20 +473,15 @@ describe('Meka runtime MCP remote instance projection', () => {
     const context = {
       agentKind: 'claude-code' as const,
       workingDir: 'C:\\p4',
-      sessionId: 'combat-mcpr-failure-session',
+      sessionId: 'mcpr-failure-session',
       vendorOptions: {
         source: 'meka',
         mekaProjectId: 'saga2',
-        mekaRoleId: 'combat-development',
-        mekaCombatTargetSkillId: '1019',
         mekaMcpProviderIds: ['mcp-router'],
-        mekaWorkflow: 'saga2-combat-development-v1',
-        mekaCombatEnvironmentReady: true,
-        mekaCombatTargetExportCompleted: true,
       },
     };
     const config = provider?.toClaudeSdkConfig?.(context) as { instance: McpServer };
-    const client = new Client({ name: 'combat-mcpr-failure-test', version: '1.0.0' });
+    const client = new Client({ name: 'mcpr-failure-test', version: '1.0.0' });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([config.instance.connect(serverTransport), client.connect(clientTransport)]);
 
@@ -856,47 +491,7 @@ describe('Meka runtime MCP remote instance projection', () => {
     });
     expect(result).toMatchObject({ isError: true });
     expect(JSON.stringify(result)).toContain('MCPR connection lost');
-    expect(context.vendorOptions).toMatchObject({
-      mekaCombatEnvironmentReady: false,
-      mekaCombatPhase: 'environment-recovery',
-    });
-
-    await client.close();
-    await config.instance.close();
-  });
-
-  it('does not mutate ordinary role state when an MCPR call fails', async () => {
-    routerService.callProjectTool.mockRejectedValue(new Error('MCPR connection lost'));
-    const providers: McpProvider[] = [];
-    registerMekaRuntimeMcpArrays(providers);
-    const provider = providers.find((candidate) => candidate.name === 'mcp_router');
-    const context = {
-      agentKind: 'claude-code' as const,
-      workingDir: 'C:\\p4',
-      sessionId: 'ordinary-mcpr-failure-session',
-      vendorOptions: {
-        source: 'meka',
-        mekaProjectId: 'saga2',
-        mekaRoleId: 'general',
-        mekaMcpProviderIds: ['mcp-router'],
-        mekaCombatEnvironmentReady: true,
-        mekaCombatPhase: 'unrelated',
-      },
-    };
-    const config = provider?.toClaudeSdkConfig?.(context) as { instance: McpServer };
-    const client = new Client({ name: 'ordinary-mcpr-failure-test', version: '1.0.0' });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await Promise.all([config.instance.connect(serverTransport), client.connect(clientTransport)]);
-
-    const result = await client.callTool({
-      name: 'call_tool',
-      arguments: { name: 'read_server_file', args: {} },
-    });
-    expect(result).toMatchObject({ isError: true });
-    expect(context.vendorOptions).toMatchObject({
-      mekaCombatEnvironmentReady: true,
-      mekaCombatPhase: 'unrelated',
-    });
+    expect(JSON.stringify(result)).toContain('任务不会被冻结');
 
     await client.close();
     await config.instance.close();
@@ -940,87 +535,8 @@ describe('Meka runtime MCP remote instance projection', () => {
     expect(serialized).toContain('independentWorkCanContinue');
     expect(serialized).toContain('\\"loginPromptOpened\\":true');
     expect(serialized).toContain('cancelled');
-    expect(serialized).not.toContain('check_combat_environment');
     expect(routerService.getConnectionStatus).toHaveBeenCalledOnce();
     expect(openLoginWindow).toHaveBeenCalledOnce();
-    expect(context.vendorOptions).not.toHaveProperty('mekaCombatPhase');
-
-    await client.close();
-    await config.instance.close();
-  });
-
-  it('opens login during an explicit combat environment recheck when Router is unconfigured', async () => {
-    routerService.listInstances.mockRejectedValue(new Error('MCPRouter is not configured'));
-    routerService.listProjectBindings.mockResolvedValue([]);
-    routerService.getConnectionStatus.mockResolvedValue({ configured: false });
-    p4Service.get.mockResolvedValue({ p4RootPath: null });
-    const openLoginWindow = vi.fn(async () => ({ opened: true, outcome: 'cancelled' as const }));
-    setMekaRuntimeRouterLoginPrompter(openLoginWindow);
-    const providers: McpProvider[] = [];
-    registerMekaRuntimeMcpArrays(providers);
-    const provider = providers.find((candidate) => candidate.name === 'mcp_router');
-    const context = {
-      agentKind: 'codex' as const,
-      workingDir: 'C:\\p4',
-      sessionId: 'combat-router-login-prompt-session',
-      vendorOptions: {
-        source: 'meka',
-        mekaProjectId: 'saga2',
-        mekaRoleId: 'combat-development',
-        mekaCombatTargetSkillId: '1019',
-        mekaMcpProviderIds: ['mcp-router'],
-        mekaWorkflow: 'saga2-combat-development-v1',
-      },
-    };
-    const config = provider?.toClaudeSdkConfig?.(context) as { instance: McpServer };
-    const client = new Client({ name: 'combat-router-login-prompt-test', version: '1.0.0' });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await Promise.all([config.instance.connect(serverTransport), client.connect(clientTransport)]);
-
-    const result = await client.callTool({ name: 'check_combat_environment', arguments: {} });
-    const serialized = JSON.stringify(result);
-    expect(serialized).toContain('MCPR_NOT_CONNECTED');
-    expect(serialized).toContain('\\"loginPromptOpened\\":true');
-    expect(serialized).toContain('check_combat_environment');
-    expect(openLoginWindow).toHaveBeenCalledOnce();
-
-    await client.close();
-    await config.instance.close();
-  });
-
-  it('guides project binding without opening login when Router credentials are present', async () => {
-    routerService.listInstances.mockResolvedValue([]);
-    routerService.listProjectBindings.mockResolvedValue([]);
-    routerService.getConnectionStatus.mockResolvedValue({ configured: true });
-    p4Service.get.mockResolvedValue({ p4RootPath: null });
-    const openLoginWindow = vi.fn(async () => ({ opened: true, outcome: 'cancelled' as const }));
-    setMekaRuntimeRouterLoginPrompter(openLoginWindow);
-    const providers: McpProvider[] = [];
-    registerMekaRuntimeMcpArrays(providers);
-    const provider = providers.find((candidate) => candidate.name === 'mcp_router');
-    const context = {
-      agentKind: 'codex' as const,
-      workingDir: 'C:\\p4',
-      sessionId: 'combat-router-binding-recovery-session',
-      vendorOptions: {
-        source: 'meka',
-        mekaProjectId: 'saga2',
-        mekaRoleId: 'combat-development',
-        mekaCombatTargetSkillId: '1019',
-        mekaMcpProviderIds: ['mcp-router'],
-        mekaWorkflow: 'saga2-combat-development-v1',
-      },
-    };
-    const config = provider?.toClaudeSdkConfig?.(context) as { instance: McpServer };
-    const client = new Client({ name: 'combat-router-binding-recovery-test', version: '1.0.0' });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await Promise.all([config.instance.connect(serverTransport), client.connect(clientTransport)]);
-
-    const result = await client.callTool({ name: 'check_combat_environment', arguments: {} });
-    const serialized = JSON.stringify(result);
-    expect(serialized).toContain('MCPR_PROJECT_NOT_BOUND');
-    expect(serialized).toContain('list_remote_instances');
-    expect(openLoginWindow).not.toHaveBeenCalled();
 
     await client.close();
     await config.instance.close();

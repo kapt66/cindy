@@ -2,14 +2,14 @@
  * The shared built-in default role (`<projectId>-default-role`) is factory-inclusive and
  * read-only by contract.
  *
- * Its manifest deliberately lives in memory, never on disk: `resources/meka/roles/<id>.json`
- * does not exist, and `readBuiltinRoleManifest` *throws* when the file is missing, so
+ * Its manifest deliberately lives in memory, never on disk: `resources/meka/roles/<id>.json` does not
+ * exist, and the strict `readBuiltinRoleManifest` *throws* when the file is missing (only
+ * `readBuiltinRoleManifestOrProjectDefault` falls back), so
  * `meka-role:read-manifest` resolves this one role from `mekaDefaultRoleManifest()`. That
  * manifest is the opposite of "zero injection": it opts into the project's role defaults
  * (`useProjectDefaults`), into every enabled project metadata item (`includeAllProjectMetadata`),
  * into every skill the bundled catalog scans (`includeAllBundledSkills`) and carries the factory
- * three-paragraph prompt — while still declaring no `workflow` and no combat prompt fragments,
- * because the injection layer enters combat only through the workflow marker.
+ * two-paragraph prompt, while declaring no prompt fragments of its own.
  *
  * Both interceptors in `localDb/ipc/mekaRoles.ts` are load-bearing rather than cosmetic: if the
  * read-manifest short-circuit regressed, the role panel would fail to load instead of
@@ -35,7 +35,16 @@ const h = vi.hoisted(() => {
     roleRow: null as Record<string, unknown> | null,
     projectRow: null as Record<string, unknown> | null,
     exec: vi.fn(async () => undefined),
-    readBuiltinRoleManifest: vi.fn(),
+    readBuiltinRoleManifestOrProjectDefault: vi.fn(),
+    /**
+     * 真实回落实现的引用，由下面的 module mock 在工厂里写入：`beforeEach` 用它把 mock 复位回
+     * 「走真实回落」这个已知状态（`mockReset` 会连带清掉实现，光 `mockClear` 又会把上个用例的
+     * `mockResolvedValue` 泄漏到下一个用例）。
+     */
+    realReadBuiltinRoleManifestOrProjectDefault: null as null | ((
+      roleId: string,
+      projectId: string,
+    ) => Promise<unknown>),
     readCustomRoleManifest: vi.fn(),
     saveProjectConfig: vi.fn(async () => undefined),
     writeCustomRoleManifest: vi.fn(async () => undefined),
@@ -86,10 +95,15 @@ vi.mock('../../meka-settings/ipc.js', () => ({
 
 vi.mock('../projectConfig.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../projectConfig.js')>();
+  // 回落入口默认走**真实**实现：随包已不再附带任何角色清单文件，真实实现因此就是「找不到文件
+  // ⇒ 回落该项目默认角色」（T2）。只有需要构造边界（项目配置不可用等）的用例才在用例内覆盖它；
+  // 真实实现留一份引用给 `beforeEach` 复位。
+  h.realReadBuiltinRoleManifestOrProjectDefault = (roleId, projectId) =>
+    actual.readBuiltinRoleManifestOrProjectDefault(roleId, projectId);
   return {
     ...actual,
     readProjectConfigState: h.readProjectConfigState,
-    readBuiltinRoleManifest: h.readBuiltinRoleManifest,
+    readBuiltinRoleManifestOrProjectDefault: h.readBuiltinRoleManifestOrProjectDefault,
     readCustomRoleManifest: h.readCustomRoleManifest,
     saveProjectConfig: h.saveProjectConfig,
     writeCustomRoleManifest: h.writeCustomRoleManifest,
@@ -155,8 +169,9 @@ function flaggedRoleManifest(): Record<string, unknown> {
     displayName: 'Flagged role',
     prompt: 'flagged prompt',
     rules: [],
-    // 显式 `enabled: false`：展开后必须精确排除这一个 id（其余 catalog 一个不少）。
-    skills: [{ skillId: 'meka-design-handbook', enabled: false }],
+    // 显式 `enabled: false`：展开后必须精确排除这一个 id（包内 catalog 只剩它一个，因此这条排除
+    // 也正是「显式否决压过全量开关」的唯一可用对照）。
+    skills: [{ skillId: 'platform-capabilities', enabled: false }],
     promptFragments: [],
     mcp: [{ id: 'meka-design', providerId: 'meka-design', enabled: true }],
     projectMetadataSelection: [],
@@ -178,7 +193,7 @@ function projectFileWithDefaults(): Record<string, unknown> {
     roleDefaults: {
       promptFramework: '# Project framework',
       rules: [{ id: 'default-rule', text: 'default rule', enabled: true }],
-      skills: ['saga2-overview'],
+      skills: ['platform-capabilities'],
       mcp: [{ id: 'project-agent', providerId: 'project-agent', enabled: true }],
     },
   };
@@ -194,11 +209,15 @@ beforeEach(async () => {
   h.exec.mockClear();
   h.saveProjectConfig.mockClear();
   h.writeCustomRoleManifest.mockClear();
-  // The real module throws for a missing file — exactly what the default role relies on
-  // never being reached.
-  h.readBuiltinRoleManifest.mockReset().mockImplementation(async (roleId: string) => {
-    throw new Error(`bundled Meka role manifest is missing: ${roleId}`);
-  });
+  // Only the call history is cleared here: the mock is reset back to the **real** fallback below (the
+  // package ships no role manifest file at all, so the real function reads nothing and falls back to
+  // the project default role — T2). Leaving a previous case's `mockResolvedValue` in place would
+  // silently pin every later orphan-row case to that fixture.
+  h.readBuiltinRoleManifestOrProjectDefault.mockReset();
+  h.readBuiltinRoleManifestOrProjectDefault.mockImplementation(
+    (roleId: string, projectId: string) =>
+      h.realReadBuiltinRoleManifestOrProjectDefault!(roleId, projectId),
+  );
   h.readCustomRoleManifest.mockReset().mockResolvedValue(null);
   const mod = await import('../../localDb/ipc/mekaRoles.js');
   mod.registerMekaRolesIpc();
@@ -236,20 +255,17 @@ describe('shared default role read-only contract', () => {
 
     const prompt = String(manifest?.prompt ?? '');
     expect(prompt.length).toBeGreaterThan(0);
-    expect(prompt).toContain('business intent as the input contract');
+    expect(prompt).toContain('Establish the relevant contracts first');
     expect(prompt).toContain('safe diagnostics and recovery actions');
-    // The retired "general development" prompt minus its SAGA2 combat-upgrade paragraph: no
-    // combat-workflow order may reach the most common new-session prefix without a host gate.
-    expect(prompt).not.toContain('combat-development workflow');
+    // The factory prompt carries no project or business contract: the SAGA2 escalation paragraph of
+    // the retired "general development" prompt is gone for good, so none of its tokens may come back.
     expect(prompt).not.toContain('EntryModel modules');
     expect(prompt).not.toContain('skill_entry_model_editor.json');
     expect(prompt).not.toContain('combat-skill-configuration');
     expect(prompt).not.toContain('Play Mode');
-    expect(prompt).not.toContain('Do not create a generic local subagent');
-    // No workflow key at all: the injection layer enters combat only through that marker.
-    expect(manifest !== null && 'workflow' in manifest).toBe(false);
-    // A missing bundled file must never be consulted for this role.
-    expect(h.readBuiltinRoleManifest).not.toHaveBeenCalled();
+    // A missing bundled file must never be consulted for this role: the id short-circuit answers
+    // before the fallback entry point is reached at all.
+    expect(h.readBuiltinRoleManifestOrProjectDefault).not.toHaveBeenCalled();
   });
 
   it('rejects an update with MEKA_BUILTIN_READ_ONLY and writes nothing', async () => {
@@ -305,14 +321,14 @@ describe('Meka role manifest read expansion', () => {
       displayName: 'Plain role',
       prompt: 'plain prompt',
       rules: [],
-      skills: [{ skillId: 'saga2-overview', enabled: true }],
+      skills: [{ skillId: 'platform-capabilities', enabled: true }],
       promptFragments: [],
       mcp: [],
       projectMetadataSelection: [],
     };
     installBuiltinRoleRow('plain-role');
-    h.readBuiltinRoleManifest.mockResolvedValue(plain);
-    // 项目配置**存在且会改变结果**：不带开关的角色仍必须原样返回。
+    // 项目配置**存在且会改变结果**：不带开关的角色仍必须原样返回。清单来自项目文件里的快照，
+    // 因此这里也与「包内清单已随包删除」的事实无关。
     h.projectRow = { id: 'saga2', path: 'saga2', is_builtin: 1 };
     h.builtinProjectFile = { ...projectFileWithDefaults(), builtinRoles: [plain] };
 
@@ -326,7 +342,7 @@ describe('Meka role manifest read expansion', () => {
     // ……并且项目那份**会改变结果**的配置一个字节都没生效（开关是唯一判据，不是角色 id / 名称）。
     expect(String(manifest.prompt)).toBe('plain prompt');
     expect(String(manifest.prompt)).not.toContain('# Project framework');
-    expect(manifest.skills).toEqual([{ skillId: 'saga2-overview', enabled: true }]);
+    expect(manifest.skills).toEqual([{ skillId: 'platform-capabilities', enabled: true }]);
     expect(manifest.projectMetadataSelection).toEqual([]);
   });
 
@@ -341,15 +357,15 @@ describe('Meka role manifest read expansion', () => {
       'flagged-role',
     )) as Record<string, unknown>;
 
-    // 技能：包内 catalog 全量 id 都进清单（真实扫描 `resources/meka/skills`），显式
-    // `enabled: false` 的那一条保持 false —— 面板据此把它渲染成未勾选，运行期据此不挂载。
+    // 技能：包内 catalog 全量 id 都进清单（真实扫描 `resources/meka/skills`，收敛后只剩平台 skill），
+    // 显式 `enabled: false` 的那一条保持 false —— 面板据此把它渲染成未勾选，运行期据此不挂载。
     const { listBundledSkills } = await import('../runtimeConfig.js');
     const catalog = [...(await listBundledSkills()).keys()].sort();
-    expect(catalog).toHaveLength(10);
+    expect(catalog).toEqual(['platform-capabilities']);
     const entries = manifest.skills as Array<{ skillId: string; enabled: boolean }>;
     expect(entries.map((entry) => entry.skillId).sort()).toEqual(catalog);
     for (const entry of entries) {
-      expect(entry.enabled).toBe(entry.skillId !== 'meka-design-handbook');
+      expect(entry.enabled).toBe(entry.skillId !== 'platform-capabilities');
     }
     // 规则：项目 `roleDefaults.rules` 展开进列表。
     expect(manifest.rules).toEqual([{ id: 'default-rule', text: 'default rule', enabled: true }]);
@@ -370,7 +386,7 @@ describe('Meka role manifest read expansion', () => {
   it('falls back to the stored manifest without throwing when the project configuration is unavailable', async () => {
     const flagged = flaggedRoleManifest();
     installBuiltinRoleRow('flagged-role');
-    h.readBuiltinRoleManifest.mockResolvedValue(flagged);
+    h.readBuiltinRoleManifestOrProjectDefault.mockResolvedValue(flagged);
     h.projectRow = { id: 'saga2', path: 'saga2', is_builtin: 1 };
     h.builtinProjectFile = null;
 
@@ -380,6 +396,33 @@ describe('Meka role manifest read expansion', () => {
     )) as Record<string, unknown>;
 
     expect(JSON.stringify(manifest)).toBe(JSON.stringify(flagged));
+  });
+
+  it('resolves an orphan builtin role row to the project default role instead of failing (T2)', async () => {
+    // 存量库里的内置角色行指向的包内清单已随包删除（`combat-development` 是必然的那一个），而 seed
+    // 从不会删除这种行。面板读清单必须与运行期 `resolveRoleFile` 一样回落到该项目的默认角色，否则
+    // 角色列表里就留下「点开就报错」的僵尸行 —— 这里用**真实**回落实现（未覆盖 mock）。
+    installBuiltinRoleRow('combat-development');
+    h.projectRow = { id: 'saga2', path: 'saga2', is_builtin: 1 };
+    h.builtinProjectFile = null;
+
+    const manifest = (await handler('meka-role:read-manifest')(
+      {},
+      'combat-development',
+    )) as Record<string, unknown> | null;
+
+    expect(h.readBuiltinRoleManifestOrProjectDefault).toHaveBeenCalledWith(
+      'combat-development',
+      'saga2',
+    );
+    expect(manifest).toMatchObject({
+      id: 'saga2-default-role',
+      projectId: 'saga2',
+      displayName: '默认角色',
+      useProjectDefaults: true,
+      includeAllProjectMetadata: true,
+      includeAllBundledSkills: true,
+    });
   });
 
   it('falls back to the stored manifest without throwing when expansion itself throws', async () => {

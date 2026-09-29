@@ -5,11 +5,10 @@
  * 不重算结果（`plan.result` 由解析阶段给出）。
  *
  * 关键不变量：
- * - 段落按 `order` 升序拼接后**一次性 prepend**，与重构前「7 次 `prependPromptSection`、
- *   后 prepend 者更靠前」逐字节等价（trim + 丢空段 + `\n\n` 连接）。
+ * - 段落按 `order` 升序拼接后**一次性 prepend**（trim + 丢空段 + `\n\n` 连接）。
  * - 同一批段落的 `id` 必须唯一（`renderMekaPromptSegments` 只读断言）。
- * - `vendorOptions` 只做一次 spread，`plan.vendorOptionsPatch` 的键插入顺序就是现状的键
- *   插入顺序（I2：下游 `combatWorkflowPolicy.ts` / `meka-runtime-mcp.ts` 按这些键裁决）。
+ * - `vendorOptions` 只做一次 spread，`plan.vendorOptionsPatch` 的键插入顺序就是下游消费者
+ *   看到的键插入顺序（I2）。
  * - 补丁为空时不写 `opts.vendorOptions`，保持对象引用不变（与现状一致）。
  */
 
@@ -30,9 +29,6 @@ export function emptyMekaRuntimeResult(): AppliedMekaRuntimeConfig {
     skillsCount: 0,
     platformSkillsCount: 0,
     skillSnapshot: null,
-    workflow: null,
-    workflowRecoveredFromRole: false,
-    combatEnvironmentReady: null,
   };
 }
 
@@ -99,19 +95,9 @@ export function applyMekaInjection(
     opts.nativeSkillRevision = plan.nativeSkill.revision;
   };
 
-  // 写入次序：它决定 `opts` 键的**插入顺序**（`Object.keys(opts)` 的先后）。
-  // - 常规创建路径：三个写入的**相对次序**与重构前一致（快照 → prompt → vendorOptions）。
-  // - resume 短路路径：**与重构前不同**。重构前快照（`nativeSkillPluginPath` /
-  //   `nativeSkillRevision`）夹在早段 prompt 写入与尾段 controller prompt 写入**之间**
-  //   （原 `mekaRuntimeInjection.ts:501-502` 在前、`:505` 的 `injectCombatControllerSkill`
-  //   在后），这里统一移到最后。于是在「只有 controller 段会写 prompt」（`opts.userPrompt`
-  //   键缺省、无 `workingDir`、exec mode 已是 autonomous、无合法技能 ID）这类输入下，
-  //   `Object.keys(opts)` 的新增键顺序是 `userPrompt → nativeSkillPluginPath →
-  //   nativeSkillRevision`，重构前是 `nativeSkillPluginPath → nativeSkillRevision →
-  //   userPrompt`。
-  //   **该差异不可观测**：全仓没有任何消费者枚举 `opts` 的键（只有 `{...opts}` 扩散与
-  //   命名字段访问）。因此这里只保证「同一路径内三个写入的相对次序与重构前一致」，
-  //   不保证跨写入阶段的键插入顺序。
+  // 写入次序决定 `opts` 键的**插入顺序**（`Object.keys(opts)` 的先后）：frozen 路径与常
+  // 规创建路径的次序不同（对应原先 resume 与 bootstrap 的差异）。该差异**不可观测** ——
+  // 全仓没有任何消费者枚举 `opts` 的键（只有 `{...opts}` 扩散与命名字段访问）。
   if (plan.frozen) {
     writeVendorOptions();
     writeUserPrompt();

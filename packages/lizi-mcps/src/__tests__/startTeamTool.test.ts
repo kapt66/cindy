@@ -82,16 +82,16 @@ describe("start_team tool", () => {
     });
   });
 
-  it("forces Auto-review for the SAGA2 combat evidence workflow", async () => {
+  it("forces Auto-review when the Host declares a read-only workflow", async () => {
     const startTeam = vi.fn(async () => ({
       ok: true as const,
-      teamId: "team-combat",
+      teamId: "team-read-only",
       workerPermissionMode: "auto" as const,
     }));
     const registry = new XdtHelperToolRegistry();
     registerStartTeamTool(registry, {
-      sessionId: "combat-lead",
-      vendorOptions: { mekaWorkflow: "saga2-combat-development-v1" },
+      sessionId: "read-only-lead",
+      vendorOptions: { mekaLockWorkerPermissionMode: true },
       startTeam,
     });
 
@@ -101,7 +101,7 @@ describe("start_team tool", () => {
 
     expect(res.isError).not.toBe(true);
     expect(startTeam).toHaveBeenCalledWith({
-      leadSessionId: "combat-lead",
+      leadSessionId: "read-only-lead",
       workerPermissionMode: "auto",
     });
     expect(parse(res)).toMatchObject({

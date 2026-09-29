@@ -17,7 +17,6 @@ import type {
   MekaRoleRule,
   MekaRoleSkillEntry,
   MekaRoleSkillSelection,
-  MekaRoleWorkflow,
 } from '../../shared/meka-projects.js';
 import { mekaDefaultRoleId, mekaDefaultRoleManifest } from '../../shared/meka-projects.js';
 import { getDbClient } from '../localDb/client/current.js';
@@ -25,7 +24,7 @@ import { createLogger } from '../logger.js';
 import { getMekaP4SettingsService } from '../meka-settings/ipc.js';
 import {
   SECRET_REFERENCE_RE,
-  readBuiltinRoleManifest,
+  readBuiltinRoleManifestOrProjectDefault,
   readCustomRoleManifest,
   readEffectiveProjectConfig,
 } from './projectConfig.js';
@@ -36,6 +35,10 @@ const SAFE_SKILL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SAFE_DISCOVERED_SKILL_ID_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const KNOWN_POLICY_PROVIDER_REFS = new Set(['meka-host-risk-policy', 'meka-p4-boundary-policy']);
 const MEKA_PLATFORM_SKILL_IDS = ['platform-capabilities'] as const;
+/** 平台基线 skill id 的判定：见下面的 T1 容错 —— 只有它们取不到时仍然硬失败。 */
+function isMekaPlatformSkillId(skillId: string): boolean {
+  return (MEKA_PLATFORM_SKILL_IDS as readonly string[]).includes(skillId);
+}
 /** 参考条目描述的上限：有界且确定性，system 前缀才不会随项目内容漂移。 */
 const PROJECT_REFERENCE_DESCRIPTION_MAX = 300;
 
@@ -76,12 +79,10 @@ export interface MekaRuntimeConfig {
   projectId: string;
   roleId: string;
   roleDisplayName: string;
-  workflowRecoveredFromRole: boolean;
   promptText: string;
   skills: MekaRuntimeSkill[];
   mcp: MekaRoleMcpEntry[];
   policyProviderRefs: string[];
-  workflow?: MekaRoleWorkflow;
   /** 项目参考文件（渐进披露：只给地址 + 描述，正文由 Agent 按需读取）。 */
   projectReferences: readonly MekaProjectReference[];
 }
@@ -100,89 +101,6 @@ function isLegacySkill(
   value: MekaRoleSkillSelection | MekaRoleSkillEntry,
 ): value is MekaRoleSkillEntry {
   return 'path' in value;
-}
-
-/**
- * Keep editable SAGA2 project snapshots compatible when a bundled skill is
- * renamed. The project file remains the user's source of truth; migration is
- * deliberately in-memory so an upgrade never rewrites P4-owned data.
- */
-function migrateSAGA2CombatSkillSelection(
-  value: MekaRoleSkillSelection | MekaRoleSkillEntry,
-): MekaRoleSkillSelection | MekaRoleSkillEntry {
-  if (isLegacySkill(value)) return value;
-  return value.skillId === 'skill-entry-model' ? { ...value, skillId: 'saga2-entry-model' } : value;
-}
-
-function migrateSAGA2CombatRoleSkills(
-  role: MekaRoleFile,
-  projectId: string,
-  roleId: string,
-  bundled: MekaRoleFile,
-): MekaRoleFile {
-  // Only the combat role still owns a pre-rename built-in snapshot. Its old
-  // project file may pin the retired skill id, so it must receive the in-memory
-  // snapshot migration before skill loading; otherwise an old project file fails
-  // on the retired skill id first. The shared default role replaced
-  // `general-development`, but it has no bundled manifest file and its manifest
-  // is generated in memory (never persisted), so there is no legacy snapshot to
-  // migrate and it must never be rewritten from a bundled role here.
-  if (projectId !== 'saga2' || roleId !== 'combat-development') return role;
-  const legacyAuxiliarySkillIds = new Set([
-    'saga2-overview',
-    'safety-boundaries',
-    'p4-operations',
-    'orca-coordination',
-    'remote-operations',
-    'saga2-server-reference',
-    'saga2-entry-model',
-    'skill-entry-model',
-  ]);
-  const hasRenamedSkill = role.skills.some(
-    (skill) => !isLegacySkill(skill) && skill.skillId === 'skill-entry-model',
-  );
-  const hasLegacyAuxiliarySkills = role.skills.some(
-    (skill) => !isLegacySkill(skill) && legacyAuxiliarySkillIds.has(skill.skillId),
-  );
-  const hasCurrentIdContract = role.promptFragments?.some(
-    (fragment) => fragment.id === 'combat-skill-id-contract',
-  );
-  const hasLegacyMetadata = (role.projectMetadataSelection ?? []).some((selection) =>
-    /(?:saga2_design|saga2-project-battle-designer|editor-skill-editor-module)/i.test(
-      selection.sourcePath,
-    ),
-  );
-  const hasLegacyDefaults =
-    role.useProjectDefaults === true || role.includeAllProjectMetadata === true;
-  if (
-    !hasRenamedSkill &&
-    !hasLegacyAuxiliarySkills &&
-    hasCurrentIdContract &&
-    !hasLegacyMetadata &&
-    !hasLegacyDefaults
-  ) {
-    return role;
-  }
-  return {
-    ...role,
-    // This marker identifies the pre-rename built-in snapshot. Refresh its
-    // bundled prompt contract as well as the skill id; otherwise the old
-    // prompt can direct the Agent back to the retired global skill name.
-    prompt: bundled.prompt,
-    promptFragments: bundled.promptFragments,
-    // The old snapshot enabled project defaults, which would re-add the
-    // retired skill id and broad metadata after this migration. The bundled
-    // combat role deliberately owns its complete runtime contract now.
-    useProjectDefaults: bundled.useProjectDefaults,
-    includeAllProjectMetadata: bundled.includeAllProjectMetadata,
-    projectMetadataSelection: bundled.projectMetadataSelection,
-    skills: mergeSkills(
-      role.skills
-        .map(migrateSAGA2CombatSkillSelection)
-        .filter((skill) => isLegacySkill(skill) || !legacyAuxiliarySkillIds.has(skill.skillId)),
-      bundled.skills,
-    ),
-  };
 }
 
 /** Project defaults are part of the project/role contract, not a separate capability state. */
@@ -644,12 +562,6 @@ function resolveRoleRelativePath(row: RoleRow, relativePath: string): string {
   return candidate;
 }
 
-function mergeById<T extends { id: string }>(current: readonly T[], required: readonly T[]): T[] {
-  const merged = new Map(current.map((entry) => [entry.id, entry]));
-  for (const entry of required) merged.set(entry.id, entry);
-  return [...merged.values()];
-}
-
 function mergeSkills(
   current: readonly (MekaRoleSkillSelection | MekaRoleSkillEntry)[],
   required: readonly (MekaRoleSkillSelection | MekaRoleSkillEntry)[],
@@ -725,8 +637,8 @@ function withoutDerivedEntries<T>(
  * 派生集合来自与运行期**同一条**展开漏斗：以「开关不变、四个列表清空」的清单为输入，依次走
  * `mergeMekaProjectRoleDefaults` → `resolveRoleProjectMetadataSelections` →
  * `resolveBundledSkillSelections`。**除这四个列表之外，`prompt` 上由项目 `roleDefaults.promptFramework`
- * 派生的前缀也要剥**（判据见函数体内的 `prompt` 段），其余字段（`workflow` /
- * `policyProviderRefs` / `displayName` / 三个开关本身 …）一律不动。
+ * 派生的前缀也要剥**（判据见函数体内的 `prompt` 段），其余字段（`policyProviderRefs` /
+ * `displayName` / 三个开关本身 …）一律不动。
  *
  * 纯函数：不读磁盘、不打日志。（**不承诺对畸形输入不抛错**：`manifest.skills` / `manifest.mcp`
  * 缺失时 `withoutDerivedEntries(undefined, …)` 会抛 `TypeError`。调用方的包装层
@@ -814,70 +726,22 @@ export function stripSelectAllDerivedEntries(
   };
 }
 
-function mergeMetadataSelections(
-  current: readonly MekaProjectMetadataSelection[],
-  required: readonly MekaProjectMetadataSelection[],
-): MekaProjectMetadataSelection[] {
-  const merged = new Map(current.map((entry) => [metadataKey(entry), entry]));
-  for (const entry of required) merged.set(metadataKey(entry), entry);
-  return [...merged.values()];
-}
-
-function upgradeLegacyBundledWorkflowRole(
-  manifest: MekaRoleFile,
-  bundled: MekaRoleFile,
-): { role: MekaRoleFile; recovered: boolean } {
-  if (manifest.workflow || !bundled.workflow) return { role: manifest, recovered: false };
-
-  // Project-owned role snapshots predate Host workflows. Missing workflow is
-  // the version marker: restore the current built-in contract in memory while
-  // retaining project-specific additions. Do not rewrite the P4-owned file.
-  return {
-    recovered: true,
-    role: {
-      ...manifest,
-      displayName: bundled.displayName,
-      description: bundled.description,
-      policyProviderRefs: bundled.policyProviderRefs,
-      workflow: bundled.workflow,
-      prompt: bundled.prompt,
-      promptFragments: bundled.promptFragments,
-      useProjectDefaults: bundled.useProjectDefaults,
-      skills: mergeSkills(manifest.skills, bundled.skills),
-      mcp: mergeById(manifest.mcp, bundled.mcp),
-      projectMetadataSelection: mergeMetadataSelections(
-        manifest.projectMetadataSelection ?? [],
-        bundled.projectMetadataSelection ?? [],
-      ),
-    },
-  };
-}
-
-async function resolveRoleFile(
-  row: RoleRow,
-  projectFile: MekaProjectFile,
-): Promise<{ role: MekaRoleFile; workflowRecoveredFromRole: boolean }> {
+async function resolveRoleFile(row: RoleRow, projectFile: MekaProjectFile): Promise<MekaRoleFile> {
   if (row.is_builtin === 1 && row.id === mekaDefaultRoleId(row.project_id)) {
     // 默认角色没有磁盘清单文件（`readBuiltinRoleManifest` 对它必然抛错），出厂清单由内存函数
     // 提供。这里**不是**「零注入」短路：返回后调用方依旧会对它做 `mergeMekaProjectRoleDefaults`
     // 与 `resolveRoleProjectMetadataSelections`，与其它角色走同一条展开漏斗。
-    // 它也因此不经过 `upgradeLegacyBundledWorkflowRole` / `migrateSAGA2CombatRoleSkills`——
-    // 这两个升级路径都以「该 roleId 存在 bundled 清单文件」为前提，而默认角色的清单从不落盘。
-    const manifest = mekaDefaultRoleManifest(row.project_id);
-    return { role: manifest, workflowRecoveredFromRole: false };
+    return mekaDefaultRoleManifest(row.project_id);
   }
   if (row.is_builtin === 1) {
-    const bundled = await readBuiltinRoleManifest(row.id, row.project_id);
-    const manifest = projectFile.builtinRoles?.find((role) => role.id === row.id) ?? bundled;
-    const upgraded = upgradeLegacyBundledWorkflowRole(manifest, bundled);
-    return {
-      role: migrateSAGA2CombatRoleSkills(upgraded.role, row.project_id, row.id, bundled),
-      workflowRecoveredFromRole: upgraded.recovered,
-    };
+    // 项目文件里的角色快照（用户可编辑、可导入的副本）优先；快照不在时才读随包清单，读不到
+    // 随包清单时由 `readBuiltinRoleManifestOrProjectDefault` 回落到该项目默认角色（T2 容错）。
+    const snapshot = projectFile.builtinRoles?.find((role) => role.id === row.id);
+    return snapshot ?? (await readBuiltinRoleManifestOrProjectDefault(row.id, row.project_id));
   }
   const manifest = await readCustomRoleManifest(row.id, app.getPath('userData'), row.project_id);
   if (!manifest) throw new Error(`Meka role manifest is missing: ${row.id}`);
-  return { role: manifest, workflowRecoveredFromRole: false };
+  return manifest;
 }
 
 /**
@@ -913,8 +777,10 @@ export async function resolveMekaRuntimeConfig(
   });
   if (!projectFile) throw new Error(`Meka project config is missing: ${projectId}`);
 
-  const resolvedRole = await resolveRoleFile(role, projectFile);
-  const roleFile = mergeMekaProjectRoleDefaults(resolvedRole.role, projectFile.roleDefaults ?? {});
+  const roleFile = mergeMekaProjectRoleDefaults(
+    await resolveRoleFile(role, projectFile),
+    projectFile.roleDefaults ?? {},
+  );
   // 作者侧「显式选择」的 key 快照。落位有两个约束，缺一个这份快照就没意义：
   // - 必须在 `resolveRoleProjectMetadataSelections` **之前**：那个函数会把
   //   `includeAllProjectMetadata` 全量展开出的项并进同一个 `roleFile.projectMetadataSelection`，
@@ -944,7 +810,27 @@ export async function resolveMekaRuntimeConfig(
     if (!fragment.path.trim()) {
       throw new Error(`Meka role prompt fragment ${fragment.id} has an empty path`);
     }
-    prompts.push((await readRoleRelativeFile(role, fragment.path)).trim());
+    // T4 容错（2026-09-29）：fragment 路径解析到**已不再随包**的角色相对文件时跳过 + 告警，
+    // 而不是让整个会话打不开。触发路径是真实存在的：`resolveRoleFile` 里**用户项目文件的
+    // `builtinRoles` 快照优先于 T2 回落**，而旧版角色编辑器 / `mergeBundledRoleFallbacks` 会把
+    // 随包角色（含其 `promptFragments`，如已删除的 `prompts/combat-*.md` ×5）整份写进该快照；
+    // 快照按「内置行」解析，fragment 根仍是 `resources/meka/roles/`，文件已随包删除 ⇒ ENOENT。
+    // 与 T1/T2/T3 同属「用户数据里残留对已删随包资产的引用」，不是机制改动。
+    // **只容忍 ENOENT**：路径逃逸、非法编码等真实配置错误照旧上抛。
+    let content: string;
+    try {
+      content = await readRoleRelativeFile(role, fragment.path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      log.warn('skipping a missing Meka role prompt fragment', {
+        projectId,
+        roleId,
+        fragmentId: fragment.id,
+        path: fragment.path,
+      });
+      continue;
+    }
+    prompts.push(content.trim());
   }
 
   // 「包内 catalog 全量」铺底（`includeAllBundledSkills`）：展开来源就是上面 `listBundledSkills()`
@@ -979,6 +865,19 @@ export async function resolveMekaRuntimeConfig(
       continue;
     }
     if (!selected.enabled) continue;
+    // T1 容错（2026-09-29）：角色清单里显式选择的 skill id 可能指向**已不再随包**的清单 ——
+    // 来源是用户自己项目文件里的 `builtinRoles` 快照（旧版角色编辑器会把编辑结果写进那里，
+    // 而它在 `resolveRoleFile` 里**优先于** T2 回落）或早期 `.meka/project.json`。这类残留引用
+    // 不该让整个会话打不开，所以跳过它并告警。**平台 skill 例外**：`MEKA_PLATFORM_SKILL_IDS`
+    // 取不到必须硬失败（见 spec C1）—— 平台基线消失是包损坏，不是历史残留。
+    if (!catalog.has(selected.skillId) && !isMekaPlatformSkillId(selected.skillId)) {
+      log.warn('skipping an unknown bundled Meka skill selected by the role', {
+        projectId,
+        roleId,
+        skillId: selected.skillId,
+      });
+      continue;
+    }
     // catalog 全量铺底而来的 id 不在快照里 ⇒ 标为 derivedOnly（同 id 的作者显式条目在
     // `resolveBundledSkillSelections` 里按同 key 覆盖，因此这里读到的 id 命中快照就不是派生的）。
     const runtimeSkill = await readBundledRuntimeSkill(catalog, selected.skillId);
@@ -998,16 +897,6 @@ export async function resolveMekaRuntimeConfig(
   }
 
   const projectReferences = new Map<string, MekaProjectReference>();
-  // 战斗 workflow 的规范类元数据**保持改动前的内联投递**（有意差异，需在文档登记）。
-  // 判据用 workflow 而不是 role id：进入战斗的唯一分流判据就是它（`mekaResolvePlan` 的段序、
-  // 策略层、服务器能力态都按它走），自定义角色只要声明同一个 workflow 就必须同形态。
-  // 理由：战斗会话的项目参考路径是一套**封闭且精确**的白名单契约 —— `[SAGA2_PROJECT_PATHS]`
-  // 逐条给出 ReadCommand，同一份解析结果写进 `vendorOptions.mekaCombatProjectRefPaths` 供策略层
-  // 精确放行，而策略层会**拒绝**读取工作区根 `AGENTS.md`（只放行已知的 saga2_unity/AGENTS.md）。
-  // 再叠加一段"必须读取这些路径"的开放清单，就是让指令与 Host 策略正面冲突：模型被要求读，
-  // 读取却被拒绝。规范正文在改动前是内联进 prompt 的（可正常工作），保持原形态才不会静默丢掉
-  // 已经在场的规范。
-  const inlineProjectDocumentation = roleFile.workflow === 'saga2-combat-development-v1';
 
   for (const selection of roleFile.projectMetadataSelection ?? []) {
     if (!selection.enabled) continue;
@@ -1057,13 +946,7 @@ export async function resolveMekaRuntimeConfig(
       switch (itemType) {
         case 'agents-md':
         case 'rule':
-          // 战斗 workflow：维持改动前的内联投递，不产出 `projectReferences` 条目
-          // ⇒ order 65 段拿到空集合、整段不渲染（`mekaProjectReferencesPrompt` 空集合返回 null）。
-          if (inlineProjectDocumentation) {
-            prompts.push(resolvedMetadata.content.trim());
-            break;
-          }
-          // 其余角色：规范类元数据只投递「地址 + 描述」，正文由 Agent 按需读取（渐进披露）。
+          // 规范类元数据只投递「地址 + 描述」，正文由 Agent 按需读取（渐进披露）。
           // 内联正文会把 system 前缀推到 Pi 的 argv 预算之外（win32 30,000 字符 ⇒ 新建会话直接失败），
           // 所以这里刻意不再把正文 push 进 prompts。同一 metadataKey 去重，保持既有 map 语义。
           projectReferences.set(selectionKey, {
@@ -1147,12 +1030,10 @@ export async function resolveMekaRuntimeConfig(
     projectId,
     roleId,
     roleDisplayName: roleFile.displayName,
-    workflowRecoveredFromRole: resolvedRole.workflowRecoveredFromRole,
     promptText: prompts.filter(Boolean).join('\n\n'),
     skills: [...skills.values()],
     mcp: [...mcp.values()],
     policyProviderRefs,
     projectReferences: [...projectReferences.values()].sort(compareProjectReferences),
-    ...(roleFile.workflow ? { workflow: roleFile.workflow } : {}),
   };
 }

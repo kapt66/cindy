@@ -19,6 +19,9 @@ export interface MekaAgentCapabilities {
    *   （`packages/maker-core/src/agents/pi/host-skill-mount.ts`）；
    * - **远端会话例外（三者一致）**：路径必须是 harness 真正运行的那台机器上的路径，
    *   本地快照路径不得透传给远端 harness。
+   *
+   * 本列目前**没有运行期读者**：是否挂载由 `mekaResolvePlan.ts` 的 `nativeSkillMount` 与各
+   * harness 自己决定，这里只是声明式能力记录（矩阵取值由 `__tests__/agentMatrix.test.ts` 钉住）。
    */
   skillSnapshot: boolean;
   /** 进程级 Meka 运行时 MCP（mcp-router / project-agent / meka-design / inline）是否注入该 agent 的 provider 数组。 */

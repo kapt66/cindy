@@ -518,7 +518,10 @@ function localSessionHostIdentity(input: {
    * so every revision needs its own app-server or one task's roots leak into another task.
    */
   nativeSkillRevision?: string;
-  /** Meka: per-session gate that hard-disables Codex native subagents (combat workers). */
+  /**
+   * Meka: per-session gate that hard-disables Codex native subagents for sessions whose
+   * host policy keeps them single-agent (host policy / project-role configuration).
+   */
   nativeSubagentsDisabled?: boolean;
 }): string {
   const base = input.accountSessionHost
@@ -585,7 +588,7 @@ function isLocalForkHostKey(key: string): boolean {
 
 /** Review threads use a one-session app-server so native Codex memory cannot leak in. */
 const LOCAL_REVIEW_HOST_PREFIX = 'local-review:';
-/** Combat workflows use an isolated app-server with native subagents disabled. */
+/** Sessions with native subagents disabled use an isolated app-server. */
 const LOCAL_SUBAGENTS_DISABLED_HOST_PREFIX = 'local-subagents-disabled:';
 /** Native task Skill roots are process-wide in app-server, so isolate by revision. */
 const LOCAL_NATIVE_SKILL_HOST_PREFIX = 'local-native-skill:';
@@ -2520,7 +2523,10 @@ export class CodexAgent extends BaseAgent {
       customContextWindow?: number;
       sqliteHome?: string;
       historyHome?: string;
-      /** Per-session hard gate for Codex native subagents (Cindy Meka combat workers). */
+      /**
+       * Per-session hard gate for Codex native subagents. The flag comes from host policy /
+       * project-role configuration, not from a built-in workflow.
+       */
       codexNativeSubagentsDisabled?: boolean;
     } = {},
   ): Promise<AppServerHost> {
@@ -2995,7 +3001,10 @@ assertRouteCurrent();
     historyHome?: string,
     localAuthPolicy?: 'isolated' | 'legacy-shared',
     routeIsCurrent?: () => boolean,
-    /** Per-session hard gate for Codex native subagents (Cindy Meka combat workers). */
+    /**
+     * Per-session hard gate for Codex native subagents. The flag comes from host policy /
+     * project-role configuration, not from a built-in workflow.
+     */
     codexNativeSubagentsDisabled?: boolean,
   ): Promise<AppServerHost> {
     const seq = (this.createHostSeqByKey.get(key) ?? 0) + 1;
@@ -4972,8 +4981,9 @@ assertRouteCurrent();
     let credentialMode = requestedCredentialMode
       ?? (localAuthPolicy === 'isolated' ? 'provider-oauth' : undefined);
     const nativeSkillRevision = opts.nativeSkillRevision?.trim();
-    // Meka: 战斗等工作流用 vendorOptions 要求 Host 硬关 codex 原生子代理。该开关描述的
-    // 是「关子代理」这一能力边界,与 host 用途正交 —— hostPurpose 只说明这个 app-server
+    // Meka: 宿主策略用 vendorOptions 要求 Host 硬关 codex 原生子代理（当前由宿主策略／
+    // 项目-角色配置提供，不再来自任何内置工作流）。该开关描述的是「关子代理」这一能力
+    // 边界,与 host 用途正交 —— hostPurpose 只说明这个 app-server
     // 为谁服务, 所以它不能挂在 hostPurpose 的任何单个分支上, 否则 custom-context /
     // review 等用途会静默丢门禁。三个消费点都必须拿到同一个布尔:
     //   1) 本地 Host key(resolveSessionHostKey): 禁用 host 与普通 host 不复用;
@@ -15233,7 +15243,7 @@ assertRouteCurrent();
     const keys = new Set<string>([
       hostKey(),
       codexLocalAuthHostIdentity(hostKey(), 'isolated'),
-      // Meka: the combat subagents-disabled app-server holds the same local credentials.
+      // Meka: the subagents-disabled app-server holds the same local credentials.
       localSubagentsDisabledHostKey(),
     ]);
     for (const key of this.hosts.keys()) {

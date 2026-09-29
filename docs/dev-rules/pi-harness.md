@@ -305,6 +305,8 @@ Pi CLI 管理入口、内核自更新与旧工具兼容的执行边界见
    「This project has too many Pi skills, prompts, or extensions to start a task」——
    **与真实原因(某个参数太长)无关**,按该文案去删项目 Skill 不会解决问题。
    实测:战斗总控 Skill 正文 24,027 字符 ⇒ argv 30,497 > 预算 30,000 ⇒ Meka 战斗角色会话被拒。
+   （该战斗总控 Skill 与战斗角色已随 2026-09-29 的随包内容收敛删除；这条实测仍是本不变量的
+   **来源证据**，不因载体消失而失效。）
    **规则**:host 要注入大段静态文本时,必须走**非 argv 载体**(文件路径 / 运行期已授权的目录),
    prompt 里只放**唯一绝对路径 + 读取指令**;禁止整篇内联。这条同时是 Meka 侧硬约束,
    见 `docs/dev-rules/meka-whitelist-verification.md` 的 **WL-15**。
@@ -323,12 +325,20 @@ Pi CLI 管理入口、内核自更新与旧工具兼容的执行边界见
    见下方的取证纪律);② `--skill` 改**传目录/根**而不是逐条叶子路径(同一份 `--help` 写明接受
    `a skill file or directory`)。两条都能把对应参数从 O(N) 降为 O(1);改载体前必须实测
    「路径不存在时是否被静默当作正文字符串」等判定启发式。
-   **战斗角色的 argv 代价(有意差异,2026-09-23)**:`workflow === 'saga2-combat-development-v1'`
-   的角色,其 `agents-md` / `rule` **仍按改动前内联进 `promptText`**(理由见
-   `meka-injection-layer.md` §7 D2.4 边界②与 WL-11.17 第 6 条:战斗会话的参考路径是封闭且精确的
-   白名单契约,策略层会拒绝读工作区根 `AGENTS.md`)。⇒ 上面对默认角色算出的余量**不适用于战斗角色**:
-   战斗角色若勾选大体积 `AGENTS.md`,内联后仍可能逼近 win32 的 30,000 预算,**本次没有为战斗角色
-   加体积安全阀**。
+   **argv 预算的现行机制（2026-09-29 订正，取代原「战斗角色的 argv 代价」段）**：原段落写
+   「`workflow === 'saga2-combat-development-v1'` 的角色，其 `agents-md` / `rule` 仍按改动前内联
+   进 `promptText`，因此上面对默认角色算出的余量**不适用于战斗角色**」。**该 workflow 判据已整体
+   删除**（`MekaRoleWorkflow` / `roleFile.workflow` / `MekaRuntimeConfig.workflow` 与
+   `combatWorkflowPolicy.ts` 都不在仓内），所以**不存在**「某个角色仍内联规范正文」这类例外。
+   现在起作用的 argv 预算机制就是 order 65 的**项目参考引用投递**：`agents-md` / `rule` 一律只进
+   「作用范围 + 绝对路径 + 描述」清单（段文本构建器 `mekaPrompts.ts:55-73`，清单产出在
+   `runtimeConfig.ts:909-921`），正文永不进 `promptText`。落在 `promptText` 上的只剩
+   「角色 prompt + `roleDefaults.rules[].text` + `promptFragments`」（`runtimeConfig.ts:801-810`），
+   而随包默认角色的 prompt 已压缩为两段厂商中立文本（`shared/meka-projects.ts:168-170`）。
+   ⇒ 上面那段算术推演（余量约 **2×**）现在**适用于所有 Meka 角色**，不再有例外；判据与
+   「全部是算术推演、未实测」的免责说明照旧。**仍然没有体积安全阀**：角色/项目自己写的长
+   `prompt` / `rules` / `promptFragments` 仍有内联通道（`runtimeConfig.ts:801-810`），
+   逼近上限时按下面的非 argv 载体优化处理，判据一律以 argv 实测总长为准。
 
    **取证纪律(2026-09-23 登记):「Pi 是否支持某形态」一律以 pin 的二进制 `--help` 为准。**
    本仓 pin 的 Pi **0.85.1** 发行包(`apps/pi-bin/win32-x64/`,`.version = 0.85.1`)自带

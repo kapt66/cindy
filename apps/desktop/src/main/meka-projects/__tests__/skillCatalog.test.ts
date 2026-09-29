@@ -20,32 +20,33 @@ describe('listMekaSkillCatalog', () => {
 
   it('lists three-level bundled skills and reads their frontmatter', async () => {
     const root = await createTempDir('meka-skill-catalog-');
-    const skillRoot = path.join(root, '通用', 'project', 'saga2-overview');
+    // 夹具沿用随包唯一幸存的那条 skill 的三级形态（`通用/<子类>/<id>/SKILL.md`）。
+    const skillRoot = path.join(root, '通用', 'platform', 'platform-capabilities');
     await mkdir(skillRoot, { recursive: true });
     await writeFile(
       path.join(skillRoot, 'SKILL.md'),
       [
         '---',
-        'name: saga2-overview',
-        'description: Saga2 overview',
+        'name: platform-capabilities',
+        'description: Platform capabilities',
         'metadata:',
-        '  display-name: "SAGA2 项目总览"',
+        '  display-name: "平台外部能力"',
         '  purpose: Route repository work',
         '---',
-        '# Saga2',
+        '# Platform',
       ].join('\n'),
       'utf8',
     );
 
     await expect(listMekaSkillCatalog(root)).resolves.toEqual([
       {
-        skillId: 'saga2-overview',
-        displayName: 'SAGA2 项目总览',
+        skillId: 'platform-capabilities',
+        displayName: '平台外部能力',
         category: '通用',
-        subCategory: 'project',
-        description: 'Saga2 overview',
+        subCategory: 'platform',
+        description: 'Platform capabilities',
         purpose: 'Route repository work',
-        filePath: '通用/project/saga2-overview/SKILL.md',
+        filePath: '通用/platform/platform-capabilities/SKILL.md',
       },
     ]);
   });

@@ -9,13 +9,15 @@
  * 只断言「侧栏有 SAGA2 字样」无法拦住「UI 还在、绑定已经常量退化」这类静默回归。
  *
  * 覆盖内容（逐项对应白名单条目）：
- *   - WL-3.2  侧栏 Meka 项目树：项目行 + 正式流程/普通对话子组 + 项目作用域的新建入口
- *   - WL-11.1 从项目入口创建草稿后，草稿被绑定到该项目与该项目默认角色
- *   - WL-11.2 角色选择器列出该项目全部角色（内置阵容 = 默认角色/战斗开发），切换后草稿角色随之变化
+ *   - WL-3.2  侧栏 Meka 项目树：项目行 + 项目作用域的新建入口，并按该项目**是否启用正式工作流**
+ *     断言「扁平」与「正式流程 / 普通对话两子组」两套契约中**该套**的完整结构
+ *   - WL-11.1 从该布局的项目入口（扁平 = 项目行上的项目级入口；两子组 =「普通对话」子组头上的入口）
+ *     创建草稿后，草稿被绑定到该项目与该项目默认角色
+ *   - WL-11.2 角色选择器列出该项目全部角色（随包内置阵容 = 该项目共享默认角色），切换后草稿角色随之变化
  *   - WL-11.3 发送后会话行绑定 project/role，工作目录解析到项目路径，且为普通（非正式）会话
  *   - WL-11.4 Agent 真实跑完一轮并产出回复
  *   - WL-11.5 角色上下文注入运行期：由运行中的会话回显 [MEKA_ROLE_CONTEXT] 证明
- *   - WL-11.6 运行期配置按角色解析（workflow / MCP / 技能快照）；默认角色走「出厂即全量」契约
+ *   - WL-11.6 运行期配置按角色解析（MCP / 技能快照，**无 workflow 字段**）；默认角色走「出厂即全量」契约
  *   - WL-11.7 新会话归属 Meka 分区下的该项目子树，而非普通「对话」分组
  *   - WL-11.8 同一项目内再次点击新建入口时保留当前草稿已选角色
  *   - WL-11.17 规范类元数据的渐进披露（order 65 段 `meka.project-references`）：只投递
@@ -28,19 +30,68 @@
  *   `roleDefaults`（promptFramework + 默认 skills + 默认 MCP + 默认元数据选择）与项目当前**全部
  *   enabled 元数据**（`includeAllProjectMetadata`）；`agents-md` / `rule` **不再内联正文**，改投
  *   「作用范围 + 绝对路径 + 用途」清单（order 65 段 `meka.project-references`，正文按需读取）；
- *   它**绝不带 `workflow`**（因此永不进入战斗门禁）。同时「通用开发」退役：包内角色 JSON 已删除，
- *   项目角色只剩「默认角色」与「战斗开发」。据此，WL-11.6 里整套「默认角色不注入」的反向断言
+ *   它**绝不带 `workflow`**（因此永不进入战斗门禁）。同时「通用开发」退役：包内角色 JSON 已删除。
+ *   据此，WL-11.6 里整套「默认角色不注入」的反向断言
  *   （`skillsCount === platformSkillsCount`、平台基线外 MCP 为空、快照技能数 === platformSkillsCount）
  *   **已作废并反转**，WL-11.1/11.2/11.8 的期望值与取角色的方式（位置 → 身份）同步更新，
  *   WL-11.17 为本次新增（脚本内拆成 `WL-11.17` / `WL-11.17/退役重绑` 两条检查）。
  *
- * 下表是本轮改动的**期望值对照**（体例同白名单清单的「改动前 / 新期望」）：
+ * ⚠️ 2026-09-29（Meka 最小随包交付）后**随包角色清单目录整体消失**（`resources/meka/roles/` 不再
+ *   存在），脚本据此改口。改动依据见 `docs/dev-rules/meka-whitelist-verification.md` 的 WL-11
+ *   「2026-09-29」块与 §8.12 第 4 条第 7 项；本文件是那一项的收口：
+ *   - 唯一随包保证的角色 = **共享默认角色**（`mekaDefaultRoleId(projectId)`，如 `saga2-default-role`），
+ *     其清单由 `mekaDefaultRoleManifest()` **内存合成、从不落盘**。`COMBAT_ROLE_ID` 与
+ *     `combatRoleOf()` 已删除（原「角色清单声明」分支的靶子 `combat-development.json` 已随包删除），
+ *     默认角色分支改为**不问文件**。
+ *   - 非默认角色的声明源只剩两处：**项目文件 `builtinRoles` 快照**与**用户目录
+ *     `meka-roles/<roleId>.json`**。脚本只读后者（`declaredRoleSkills()`）；两者都读不到时该分支
+ *     登记 UNVERIFIED，不再把「读不到清单」写成 FAIL。存量库里 `combat-development` 的
+ *     `is_builtin=1` 孤儿行**刻意保留**（它是退役映射表的**重绑目标**，不删存量行），读取时由 T2
+ *     回落该项目默认角色（白名单 WL-20）⇒ 落在它上面的 `--role` 同样只能登记 UNVERIFIED。
+ *   - 「默认角色绝不带 workflow」改为断言**运行期配置块里根本不存在 `workflow` 键**：该字段已随
+ *     workflow 机制整体删除，旧的 `pick('workflow') !== null` 恒为 false ⇒ **永远不可能失败**。
+ *   - 「角色清单声明的技能/MCP」改为断言**随包平台 MCP**（默认角色清单自己 pin 的 `meka-design`）
+ *     与**随包平台 Skill**（`platform-capabilities`）必须生效/在快照里，替代已删除的角色清单项。
+ *   - 内置阵容不再做「恰等于 [默认角色]」的集合相等断言：升级库里合法的孤儿内置行会让它假红，
+ *     改为「默认角色必须在场 + 其余内置行必须已无随包清单」。同理，项目只有共享默认角色时
+ *     WL-11.2/11.8 的「切换角色」断言降级为 UNVERIFIED（切到默认角色本身 = 同值比较 = 恒真）。
+ *   - **侧栏布局改为按运行期探测分支（同轮补齐；2026-09-29 实机复现）**：侧栏只有在项目**启用了
+ *     正式工作流**时才渲染「正式流程 / 普通对话」两个子组头（`MekaAssistantSection.tsx:175` 由
+ *     `formalWorkflowEnabled` + workflow 类型与 key/url 算出 `formalWorkflowActive`，:477 走两子组
+ *     分支）；没有正式工作流的项目（随包 `saga2`：`basic.formalWorkflowEnabled=false` +
+ *     `workflowType: "none"`）走 :466 / :531 的**扁平分支**——不渲染任何子组头，会话直接挂在项目行
+ *     下，新建入口是**项目级**的 `meka.newSessionForProject`「在 {{project}} 中新建对话」并挂在
+ *     **项目行**上（子组分支的入口才是 `meka.newRegularSessionForProject`「…新建普通对话」）。
+ *     脚本原来无条件按两子组形态找「普通对话」子组头 ⇒ 在扁平项目上「未找到子组头」而**建不出
+ *     草稿**：`pnpm desktop:session-smoke` 实机为 WL-3.2 / 11.1 / 11.8 报「未找到子组头「普通对话」」，
+ *     WL-11.2 因草稿根本没建出来而报「弹层未打开」，WL-11.3 / 11.5 / 11.6 / 11.7 连带假红。
+ *     现在由 `resolveMekaProjectLayout()` 在**展开后的项目组容器内探测**两条互斥信号来选路径
+ *     （①两个子组头 + 挂在子组头上的两个入口；②无子组头 + 挂在项目行上的项目级入口），信号
+ *     自相矛盾时**不猜**，直接 FAIL 并列出信号。探测**不**硬编码「saga2 是扁平的」，也**不**把
+ *     `formalWorkflowActive` 的算法抄进脚本（那会多一份会漂移的镜像；且随包项目在库里的
+ *     `meka_projects.path` 是相对值 `saga2`，真实项目根由 p4 设置解析，脚本读不全）——判据就是
+ *     **实际渲染出来的**那一组 DOM 信号。
+ *   - 相应地 WL-3.2 变为**按布局断言该布局的契约**（不再只断言「有个新建入口能点」）：扁平分支付出
+ *     「子组头缺席」「项目子树只有项目行一个树节点」「项目级入口挂在项目行上」「会话行不落在任何
+ *     子组容器里」；两子组分支保持原断言（两个子组头 + 各自作用域入口 + 项目子树 3 个树节点），
+ *     并补上与扁平对称的**会话放置**断言（会话行必须全部落在两个子组容器里）。WL-11.1 / 11.8 建
+ *     草稿与「重进项目入口保留已选角色」一律走**该布局**的入口。角色选择器在草稿路由里、与侧栏布局无关，
+ *     打开方式无需改动（`NewMakerDraftRoute.tsx:620-669` 的触发器/选项 DOM）。
+ *
+ *   **本次布局修复的期望值对照**（同样体例）：
+ *
+ *   | 检查 | 扁平项目（`formalWorkflowActive=false`，随包 saga2） | 两子组项目（正式工作流启用） |
+ *   | --- | --- | --- |
+ *   | WL-3.2 | 项目行 + **项目级**入口「在 X 中新建对话」挂在项目行上 + 显式断言子组头**不**在场 + 会话行不落在子组容器里 | 两个子组头在场 + 各自作用域入口挂在对应子组头上 + 项目级入口**不**在场 |
+ *   | WL-11.1 / 11.8 | 从**项目行**上的项目级入口建草稿 / 重进该入口 | 从「普通对话」**子组头**上的入口建草稿 / 重进该入口 |
+ *
+ * 下表是 2026-09-23 那轮改动的**期望值对照**（体例同白名单清单的「改动前 / 新期望」）：
  *
  *   | 检查 | 改动前 | 本轮新期望 |
  *   | --- | --- | --- |
  *   | WL-11.1 | 草稿默认角色 = 通用开发 | 草稿默认角色 = 共享默认角色「默认角色」 |
- *   | WL-11.2 | 选项数与库里角色数相等；切换目标取 `roles[1]` | 选项与库里角色一一对应、共享默认角色排第一；内置阵容 = 默认角色（+ saga2 的战斗开发）；切换目标按 id 取 |
- *   | WL-11.6 | 默认角色：`workflow=null`、`skillsCount===platformSkillsCount`、平台基线外 MCP 为空、快照技能数===platformSkillsCount | 默认角色：`workflow=null`、MCP ⊇ 平台基线且 ⊇ 项目 roleDefaults、`skillsCount>platformSkillsCount`、快照 ⊇ 项目默认技能且 > 平台基线 |
+ *   | WL-11.2 | 选项数与库里角色数相等；切换目标取 `roles[1]` | 选项与库里角色一一对应、共享默认角色排第一；随包内置阵容 = 该项目共享默认角色（存量库可另有「随包清单已删」的孤儿内置行）；切换目标 = 第一个非默认角色 |
+ *   | WL-11.6 | 默认角色：`workflow=null`、`skillsCount===platformSkillsCount`、平台基线外 MCP 为空、快照技能数===platformSkillsCount | 默认角色：运行期配置块**没有 `workflow` 键**、MCP ⊇ 平台基线且 ⊇ 默认角色清单 pin 的 `meka-design` 且 ⊇ 项目 roleDefaults、`skillsCount>platformSkillsCount`、快照 ⊇ 项目默认技能与平台技能 `platform-capabilities` 且 > 平台基线 |
  *   | WL-11.8 | fresh 默认 =「通用开发」 | fresh 默认 =「默认角色」 |
  *   | WL-11.17 | （无此检查） | 注入段含 marker 与格式行「每条格式：作用范围 \| 绝对路径 \| 用途」；条目逐行合规、绝对路径真实存在；无 `#` 标题行、无正文标志串 |
  *   | WL-11.17/退役重绑 | （无此检查） | `meka_roles` 无退役内置角色行；该项目可见角色无退役 id |
@@ -49,9 +100,10 @@
  * **待验证值**，不是已通过结论。按 `docs/dev-rules/meka-whitelist-verification.md` 的口径，未实跑
  * 不得记成通过——实跑与结论由交付时统一登记。这条「写脚本时未实跑」的状态**只写在代码注释里**，
  * 刻意不写进任何 PASS 证据串：真实跑完之后输出若仍打印「待实跑／本轮未实跑」，就会误导维护者。
- * 重跑需要**两条命令**：
- * `pnpm desktop:session-smoke`（默认路径已改成用共享默认角色建会话 ⇒ 命中 WL-11.6 的默认角色
- * 契约分支）与 `pnpm desktop:session-smoke -- --role 战斗开发`（命中「角色清单声明」分支）。
+ * 重跑的主命令是 `pnpm desktop:session-smoke`：默认路径就用**该项目的共享默认角色**建会话 ⇒ 命中
+ * WL-11.6 的默认角色契约分支。`--role <项目自有角色的 id 或显示名>` 仍可跑「角色声明」分支
+ * （声明源 = 用户目录 `meka-roles/<roleId>.json`）。随包已不附带任何角色清单文件，所以
+ * `--role 战斗开发` 这类落在**内置孤儿行**上的角色只会登记 UNVERIFIED（理由见上）。
  *
  * 前置：
  *   1. 应用已通过 `pnpm restart:desktop:remote` 起来（dev 模式默认开 remote debugging）；
@@ -61,13 +113,14 @@
  *   pnpm desktop:session-smoke                     # 自动解析端口，用第一个多角色 Meka 项目
  *   pnpm desktop:session-smoke -- --dry-run        # 只读：一切真实 UI 交互与建会话都跳过
  *   pnpm desktop:session-smoke -- --user-data-dir "<userData>" --json
- *   pnpm desktop:session-smoke -- --project-id saga2 --role 战斗开发
+ *   pnpm desktop:session-smoke -- --project-id saga2 --role 默认角色
  *
  * `--role`（**新语义，2026-09-23 起**）：不传时默认路径就用**该项目的共享默认角色**
  * （`<projectId>-default-role`，也就是承接「通用开发」职能的出厂全量角色）建会话，因此
- * WL-11.6 默认就命中默认角色契约；传 `--role <角色 id 或显示名>`（例如
- * `--role combat-development` / `--role 战斗开发`）才改用它跑「角色清单声明」分支。指定了库里
- * 不存在的角色会以退出码 2 直接失败，不静默回落——静默回落会把「我想验别的角色」变成假通过。
+ * WL-11.6 默认就命中默认角色契约；传 `--role <角色 id 或显示名>`（例如 `--role 默认角色`，或某个
+ * **项目自有角色**）才改用它跑「角色声明」分支——随包已不附带任何角色清单（`resources/meka/roles/`
+ * 不存在），项目自有角色的声明只从用户目录 `meka-roles/<roleId>.json` 读，读不到就登记 UNVERIFIED。
+ * 指定了库里不存在的角色会以退出码 2 直接失败，不静默回落——静默回落会把「我想验别的角色」变成假通过。
  *
  * 退出码：0 = 无 FAIL（UNVERIFIED 不阻断但会列出）；1 = 有 FAIL；2 = 前置不满足（连不上、
  * 库/清单读不到、`--role` 不存在等）。
@@ -105,8 +158,10 @@ const ROLE_CONTEXT_MESSAGE =
  * 项目参考清单段（段 id `meka.project-references`，order 65）的字面量。
  *
  * ⚠️ **同步义务**：这些字面量的唯一来源是
- * `apps/desktop/src/main/meka-injection/mekaCombatPrompts.ts` 的
- * `MEKA_PROJECT_REFERENCES_MARKER` / `mekaProjectReferencesPrompt()`。本脚本是 `.mjs`、跨进程
+ * `apps/desktop/src/main/meka-injection/mekaPrompts.ts`（2026-09-29 随包收敛由
+ * `mekaCombatPrompts.ts` 改名而来，战斗段已随之删除）的
+ * `MEKA_PROJECT_REFERENCES_MARKER` / `mekaProjectReferencesPrompt()`。注意段内的「每条格式」行
+ * 现已是该函数里的**内联字面量**，不再有独立导出标识符可供引用。本脚本是 `.mjs`、跨进程
  * 只读日志/库/DOM，**刻意不 import TS 源码**（那会要求构建产物或 TS 加载器），所以这里是**手抄
  * 副本**：该常量一旦改名、改标点或改条目形态，本脚本必须一起改，否则 WL-11.17 会变成假红；
  * 更糟的是旧 marker 仍命中旧段时，新段可能从未被验证过。
@@ -398,6 +453,42 @@ const subgroupHeader = (label) =>
   `[...document.querySelectorAll('[role=button]')].find((e) => (e.textContent || '').trim() === ${JSON.stringify(label)} && e.getAttribute('aria-expanded') !== null)`;
 const sidebarText = `(() => { const sb = document.querySelector('aside') || document.body; return (sb.innerText || '').replace(/\\n+/g, ' | '); })()`;
 
+/**
+ * 侧栏 Meka 项目组的**两套渲染契约**（唯一来源：
+ * `apps/desktop/src/renderer/features/cc-agent/sidebar/sections/MekaAssistantSection.tsx`）：
+ *
+ * - **两子组**（`formalWorkflowActive`，:175 由 `formalWorkflowEnabled` + workflow 类型与 key/url
+ *   算出）：项目**启用了正式工作流**时才渲染下面这两个子组头（:477 分支），新建入口挂在**子组头**上
+ *   （:481 正式 / :506 普通）。
+ * - **扁平**（:466 与 :531）：没有正式工作流的项目（随包 `saga2` 的
+ *   `basic.formalWorkflowEnabled=false` + `workflowType: "none"`）**不渲染任何子组头**，会话直接挂在
+ *   项目行下（`renderSessions(group.regularSessions, projectCollapsed)`），新建入口是**项目级**的
+ *   `meka.newSessionForProject`，挂在**项目行**上。
+ *
+ * 两组的入口文案与挂载点**互相排斥**（扁平入口要求 `!formalWorkflowActive`，子组头要求
+ * `formalWorkflowActive`），所以「探测实际渲染了哪一组信号」就足以判定布局——不需要把
+ * `formalWorkflowActive` 的算法抄进脚本（那会多一份会漂移的镜像；且随包项目在库里的
+ * `meka_projects.path` 是相对值 `saga2`，真实项目根由 p4 设置解析，脚本读不全）。
+ */
+const MEKA_SUBGROUP_LABELS = ['正式流程', '普通对话']; // i18n meka.formalSessions / meka.regularSessions
+/**
+ * 三种项目作用域新建入口的 aria-label 模板（i18n 的 `{{project}}` 插值形态**逐字**照抄）：
+ * `meka.newSessionForProject`（扁平：挂在**项目行**上 / 两子组：不渲染）、
+ * `meka.newRegularSessionForProject` 与 `meka.newFormalSessionForProject`（两子组：分别挂在
+ * 「普通对话」/「正式流程」子组头上）。文案在源侧改名时这里必须同步，否则 WL-3.2 / 11.1 / 11.8
+ * 会变成假红。
+ */
+const MEKA_ENTRY_LABEL_TEMPLATES = {
+  flat: '在 {{project}} 中新建对话',
+  regular: '在 {{project}} 中新建普通对话',
+  formal: '在 {{project}} 中新建正式流程对话',
+};
+const mekaEntryLabel = (kind, projectName) =>
+  MEKA_ENTRY_LABEL_TEMPLATES[kind].replace('{{project}}', projectName);
+/** 会话行钩子（`SessionItem.tsx` 的 `data-sidebar-session-row`），用于「会话是否直挂项目行下」。 */
+const SESSION_ROW_SELECTOR =
+  '[data-sidebar-session-row="true"], [data-sidebar-navigation-row="true"]';
+
 /** 读库（只读打开，绝不写回）。 */
 function openDb(dbPath) {
   const Database = require('better-sqlite3');
@@ -406,18 +497,32 @@ function openDb(dbPath) {
 
 /** 与 shared/meka-projects.ts 的 MEKA_DEFAULT_ROLE_ID_SUFFIX 同构。 */
 const MEKA_DEFAULT_ROLE_ID_SUFFIX = '-default-role';
-/** 包内唯一播种内置业务角色的项目（shared/meka-projects.ts 的 BUILTIN_MEKA_ROLES）。 */
+/** 包内唯一随包登记的项目（shared/meka-projects.ts 的 `BUILTIN_MEKA_PROJECTS`）。 */
 const SAGA2_PROJECT_ID = 'saga2';
 /**
- * 战斗角色 id。**按 id 取、不按位置取**：阵容变化后 `roles[1]` 可能不再是它，位置假设会把检查
- * 悄悄指向别的角色（甚至让「切到战斗开发」实际没切）。
+ * 随包**唯一保证存在**的角色 id = saga2 的共享默认角色（`mekaDefaultRoleId('saga2')`）。
+ *
+ * 刻意写成**手抄常量**而不是到处现推：期望值需要一个独立于被测推导的来源（推导 + 推导 =
+ * 同义反复，永远相等）。它同时是「脚本手抄的 id 结构是否已过期」的判据——`MEKA_DEFAULT_ROLE_ID_SUFFIX`
+ * 一旦在源侧改名，`isSharedDefaultRole()` 会静默认为「这个项目没有默认角色」，把整串默认角色检查
+ * 降级成「环境不满足」。WL-11.2 里对随包项目发作一条显式失败来兜住这类漂移。
  */
-const COMBAT_ROLE_ID = 'combat-development';
+const DEFAULT_ROLE_ID = `${SAGA2_PROJECT_ID}${MEKA_DEFAULT_ROLE_ID_SUFFIX}`;
+/**
+ * 随包角色清单目录。Meka 最小随包交付后这里**整体不存在**（`resources/meka/roles/` 已删除，唯一
+ * 随包角色是内存合成的共享默认角色）。本脚本只把它当作「某内置角色是否仍有随包声明」的判据，
+ * **不假设它存在**（`fs.existsSync` 对不存在的目录返回 false）。
+ */
+const BUNDLED_MEKA_ROLES_DIR = path.join(ROOT, 'apps', 'desktop', 'resources', 'meka', 'roles');
 /**
  * 已退役的内置角色 id，必须与 `shared/meka-projects.ts` 的
  * `RETIRED_BUILTIN_MEKA_DEFAULT_ROLE_ALIASES`（前四项：折叠进 `<projectId>-default-role`）与
  * `RETIRED_BUILTIN_MEKA_ROLE_MAPPINGS` 的左值（后两项：映射到 `combat-development`）同步。
  * 两张表的左值都被启动播种的删除语句清掉，因此**升级库**里不应再有这些 id 的 `is_builtin=1` 行。
+ *
+ * ⚠️ **不要把 `combat-development` 加进来**：它是映射表的**右值**（重绑目标），不是退役 id。
+ * 它的随包清单文件已删，但 `is_builtin=1` 行**刻意保留**（不删存量行；读取时由 T2 回落该项目
+ * 默认角色，见白名单 WL-20）。把它当退役行会让升级库上的本检查**假红**。
  */
 const RETIRED_BUILTIN_ROLE_IDS = [
   'general-development',
@@ -444,9 +549,15 @@ function defaultRoleOf(catalog) {
   );
 }
 
-/** 战斗角色按**稳定 id** 取（`COMBAT_ROLE_ID`），不靠排序位置。 */
-function combatRoleOf(catalog) {
-  return catalog.roles.find((role) => role.id === COMBAT_ROLE_ID) ?? null;
+/**
+ * 「切换角色」这条检查的目标角色：**共享默认角色之外的第一个角色**（按 id / 排序取，不按位置取）。
+ *
+ * 随包不再提供第二个内置角色（`combat-development.json` 已删除），所以目标通常是一个**项目自有
+ * 角色**；存量库里也可能是遗留的孤儿内置行。项目只有共享默认角色时返回 `null` —— 调用方**必须**
+ * 登记 UNVERIFIED：切到默认角色本身会让「切换后 chip 变化」变成同值比较而恒真，那是假通过。
+ */
+function switchTargetRoleOf(catalog) {
+  return catalog.roles.find((role) => !isSharedDefaultRole(role, catalog.project.id)) ?? null;
 }
 
 /**
@@ -470,6 +581,20 @@ function roleFromOption(catalog, reference) {
  * 同步——这正是本清单要拦住的那类漂移。
  */
 const PLATFORM_MCP_PROVIDER_IDS = ['mcp-router'];
+/**
+ * 随包唯一的平台 Skill（`runtimeConfig.ts` 的 `MEKA_PLATFORM_SKILL_IDS`）。它是删掉 9 个业务
+ * Skill 之后**唯一必须出现在每个普通 Meka 任务快照里**的随包技能，因此接替了原「角色清单声明的
+ * 技能」那条断言的位置。它读不到时解析侧**硬失败**（每个项目的普通会话都会 `INVALID_PARAMS`），
+ * 所以这里断言它进了快照比断言 `platformSkillsCount > 0` 更硬——计数对不上号照样能过。
+ */
+const PLATFORM_SKILL_IDS = ['platform-capabilities'];
+/**
+ * 共享默认角色**内存清单自己 pin 的 MCP**（`shared/meka-projects.ts` 的
+ * `mekaDefaultRoleManifest()` 的 `mcp`）。这是原「包内角色清单声明的 MCP 生效」那条断言的存活
+ * 形态：默认角色是唯一随包角色，清单从不落盘、脚本又不 import TS，所以这里是**手抄副本 + 同步
+ * 义务**（同 `MEKA_PROJECT_REFERENCES_*` 的写法）——源侧改了它，本脚本必须一起改。
+ */
+const DEFAULT_ROLE_MCP_PROVIDER_IDS = ['meka-design'];
 
 function readMekaCatalog(dbPath, options) {
   const db = openDb(dbPath);
@@ -489,10 +614,15 @@ function readMekaCatalog(dbPath, options) {
     }
     const project = options.projectId
       ? projects.find((p) => p.id === options.projectId)
-      : projects.find((p) => (rolesByProject.get(p.id) ?? []).length >= 2) ?? projects[0];
+      : // 优先挑「有至少两个角色」的项目：切换类检查（WL-11.2 / WL-11.8）需要第二个角色。
+        // 一个都没有时退到第一个项目——默认角色的检查（WL-11.1 / 11.3–11.7）照样跑得动。
+        projects.find((p) => (rolesByProject.get(p.id) ?? []).length >= 2) ?? projects[0];
     if (!project) throw new Error('库里没有 Meka 项目');
     const roles = rolesByProject.get(project.id) ?? [];
-    if (roles.length < 2) throw new Error(`项目 ${project.id} 的角色少于 2 个，无法验证角色切换`);
+    // 不再要求「至少两个角色」：随包删掉战斗角色的清单后，干净安装的项目只有共享默认角色一个角色，
+    // 而 WL-11.1/11.3–11.7 都能用它跑；需要第二个角色的检查在只有默认角色时降级为 UNVERIFIED。
+    // 硬前置只保留「这个项目至少有一个角色」——没有角色的项目无法建会话，属于真实环境问题。
+    if (!roles.length) throw new Error(`项目 ${project.id} 没有任何角色`);
     return { projects, project, roles };
   } finally {
     db.close();
@@ -556,10 +686,13 @@ function runtimeConfigFromLog(logDir, sessionId) {
   return {
     projectId: pick('projectId'),
     roleId: pick('roleId'),
-    workflow: pick('workflow') === 'null' ? null : pick('workflow'),
     skillsCount: Number(pick('skillsCount')),
     platformSkillsCount: Number(pick('platformSkillsCount')),
     skillRevision: pick('skillRevision'),
+    // 这一次日志块里**出现过的全部键名**（含 JSON 引号形态）。存在的意义是让调用方断言
+    // 「某个字段根本不存在」：`pick('workflow')` 那种「取到的值是不是 null」的断言在字段被删掉
+    // 之后恒为真，**永远不可能失败**（假通过）；而对键名的断言在生产侧重新投递该键时立刻变红。
+    keys: logBlockKeys(block),
     mcpProviderIds: mcpMatch
       ? mcpMatch[1]
           .split(',')
@@ -569,20 +702,56 @@ function runtimeConfigFromLog(logDir, sessionId) {
   };
 }
 
-/** 角色清单里声明的技能 id（`resources/meka/roles/<roleId>.json`）。 */
-function declaredRoleSkills(roleId) {
-  const file = path.join(ROOT, 'apps', 'desktop', 'resources', 'meka', 'roles', `${roleId}.json`);
-  if (!fs.existsSync(file)) return null;
-  try {
-    const manifest = JSON.parse(fs.readFileSync(file, 'utf8'));
-    return {
-      skills: (manifest.skills ?? []).map((s) => s.skillId).filter(Boolean),
-      mcp: (manifest.mcp ?? []).map((m) => m.providerId).filter(Boolean),
-      workflow: manifest.workflow ?? null,
-    };
-  } catch {
-    return null;
+/**
+ * 单个日志块里出现过的键名。前缀规则与上面的 `pick()` 完全一致（`^` / 空白 / `,` / `{` 之后），
+ * 额外容忍 JSON 的引号键形态；键名本身限定为标识符，因此键值里的冒号（时间戳、URL）与数组元素
+ * 都不会被当成键。
+ */
+function logBlockKeys(block) {
+  const keys = new Set();
+  for (const match of block.matchAll(/(?:^|[\s,{])"?([A-Za-z_][A-Za-z0-9_]*)"?\s*:/g)) {
+    keys.add(match[1]);
   }
+  return [...keys];
+}
+
+/**
+ * 角色清单里声明的技能 / MCP。
+ *
+ * **声明源在 2026-09-29 后只剩一处**：随包 `resources/meka/roles/` 已整体删除（唯一随包角色是内存
+ * 合成的共享默认角色）。生产侧 `runtimeConfig.ts` 的 `resolveRoleFile` 对**内置**行读的是项目文件
+ * `builtinRoles` 快照或随包清单，对**用户自有**行（`is_builtin=0`）读的才是用户目录
+ * `meka-roles/<roleId>.json`（`projectConfig.ts` 的 `customRolePath`）。本函数只承担后者：内置行
+ * 一律返回 null，由调用方登记 UNVERIFIED —— 拿用户目录的同名文件去核对内置行会核对到一个
+ * **生产根本不读**的声明源（那会变成假红/假绿）。
+ *
+ * `enabled: false` 的条目必须排除：运行期会过滤它们，不过滤就会把「清单声明了但显式关闭」误报成
+ * 「声明未生效」。返回值里**没有** `workflow`：该字段已随 workflow 机制整体删除，留着只会诱导
+ * 调用方去比 null（假通过）。
+ */
+function declaredRoleSkills(role, userDataDir) {
+  if (role.isBuiltin) return null;
+  for (const dir of candidateUserDataDirs({ userDataDir })) {
+    const file = path.join(path.resolve(dir), 'meka-roles', `${role.id}.json`);
+    if (!fs.existsSync(file)) continue;
+    try {
+      const manifest = JSON.parse(fs.readFileSync(file, 'utf8'));
+      return {
+        file,
+        skills: (manifest.skills ?? [])
+          .filter((entry) => entry?.enabled !== false)
+          .map((entry) => entry.skillId)
+          .filter(Boolean),
+        mcp: (manifest.mcp ?? [])
+          .filter((entry) => entry?.enabled !== false)
+          .map((entry) => entry.providerId)
+          .filter(Boolean),
+      };
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 /** 只读文件开头若干字节（正文可能几十 KB，取标志串不需要整读）。 */
@@ -688,7 +857,7 @@ function projectContributionsOf(ctx) {
   return ctx.projectContributions;
 }
 
-/** 建 Meka 草稿：展开 Meka 段与项目行，hover 子组头，点该子组的创建按钮。 */
+/** 展开侧栏 Meka 段与项目行（两套布局共用），返回项目行在侧栏里的真实可见标签。 */
 async function ensureMekaTreeVisible(session, projectName) {
   await session.evaluate(`location.hash = '#/cc-agent/new'`);
   await sleep(1800);
@@ -702,17 +871,121 @@ async function ensureMekaTreeVisible(session, projectName) {
   }
   // 项目行的可见标签就是 app 用于 aria-label 的 displayName（可能来自项目配置文件，
   // 与库里的 `name` 不一定同形，例如 name=saga2 / displayName=SAGA2）。因此不能自己
-  // 拼标签，必须从 DOM 读回真实标签。
+  // 拼标签，必须从 DOM 读回真实标签。内部空白先折叠成单空格：入口 aria-label 用的是
+  // `{{project}}` 插值后的**原值**，行内若混入换行/缩进会导致严格相等比对失败。
   const rowExpr = projectRow(projectName);
   if ((await session.evaluate(`${rowExpr}?.getAttribute('aria-expanded') ?? null`)) === 'false') {
     await session.clickAt(await session.boxOf(rowExpr));
     await sleep(900);
   }
-  const label = await session.evaluate(`${rowExpr}?.textContent?.trim() ?? null`);
+  const label = await session.evaluate(
+    `${rowExpr}?.textContent?.replace(/\\s+/g, ' ').trim() ?? null`,
+  );
   return label;
 }
 
-async function createMekaDraft(session, projectName, { subgroup = '普通对话', formal = false, fresh = false } = {}) {
+/**
+ * 探测**已展开**的项目组容器的真实渲染形态，据此判定布局（两套契约见 `MEKA_SUBGROUP_LABELS` 的
+ * 注释）。判据全部是 DOM 信号，不硬编码任何项目：
+ *
+ *   ① 子组头文案（`正式流程` / `普通对话`）；
+ *   ② 三种项目作用域新建入口的**挂载点**：项目级入口在**项目行**内 ⇔ 扁平；
+ *      子组入口在**对应子组头**内 ⇔ 两子组；
+ *   ③ 项目子树的树节点数（`[role=button]` 且不在会话行内）：扁平 = 只有项目行 1 个，
+ *      两子组 = 项目行 + 两个子组头 3 个；以及会话行是否落在子组容器里。③ **不参与选路径**，
+ *      只作为信号返回给 WL-3.2 去正面断言「树就长这样」。
+ *
+ * ①②互相印证后才会给出结论；信号自相矛盾（既像扁平又像两子组、或两组都不齐）时**不猜**，
+ * 返回 `ok:false` 并把观测到的信号原样报出——静默挑一条路径会把「UI 分支回归」变成假通过。
+ */
+async function resolveMekaProjectLayout(session, projectName) {
+  const projectLabel = await ensureMekaTreeVisible(session, projectName);
+  if (!projectLabel) return { ok: false, reason: `侧栏 Meka 分区里找不到项目「${projectName}」` };
+  const probe = `(() => {
+    const row = ${projectRow(projectName)};
+    if (!row) return { error: 'no-project-row' };
+    const container = row.parentElement;
+    if (!container) return { error: 'no-project-container' };
+    const projectLabel = (row.textContent || '').replace(/\\s+/g, ' ').trim();
+    const labelOf = (template) => template.replace('{{project}}', projectLabel);
+    const flatLabel = labelOf(${JSON.stringify(MEKA_ENTRY_LABEL_TEMPLATES.flat)});
+    const regularLabel = labelOf(${JSON.stringify(MEKA_ENTRY_LABEL_TEMPLATES.regular)});
+    const formalLabel = labelOf(${JSON.stringify(MEKA_ENTRY_LABEL_TEMPLATES.formal)});
+    const textOf = (el) => (el.textContent || '').replace(/\\s+/g, ' ').trim();
+    const headerLabels = [...container.querySelectorAll('[role=button]')]
+      .map(textOf)
+      .filter((text) => ${JSON.stringify(MEKA_SUBGROUP_LABELS)}.includes(text));
+    const inSessionRow = (el) => !!el.closest(${JSON.stringify(SESSION_ROW_SELECTOR)});
+    const treeNodes = [...container.querySelectorAll('[role=button]')].filter((el) => !inSessionRow(el));
+    const headerOf = (text) => [...container.querySelectorAll('[role=button]')].find((el) => textOf(el) === text) || null;
+    const entryIn = (root, label) => root
+      ? [...root.querySelectorAll('button')].some((b) => (b.getAttribute('aria-label') || '') === label)
+      : false;
+    const regularHeader = headerOf(${JSON.stringify(MEKA_SUBGROUP_LABELS[1])});
+    const formalHeader = headerOf(${JSON.stringify(MEKA_SUBGROUP_LABELS[0])});
+    const sessionRows = [...container.querySelectorAll('[data-sidebar-session-row="true"]')];
+    const inSubgroup = sessionRows.filter((sessionRow) => {
+      for (let el = sessionRow.parentElement; el && el !== container; el = el.parentElement) {
+        if (headerLabels.some((text) => [...el.querySelectorAll('[role=button]')].some((el2) => textOf(el2) === text))) return true;
+      }
+      return false;
+    }).length;
+    return {
+      projectLabel,
+      headerLabels,
+      treeNodeCount: treeNodes.length,
+      treeNodeLabels: treeNodes.map(textOf),
+      sessionRowCount: sessionRows.length,
+      sessionRowsInSubgroups: inSubgroup,
+      flatEntryOnRow: entryIn(row, flatLabel),
+      regularEntryOnHeader: entryIn(regularHeader, regularLabel),
+      formalEntryOnHeader: entryIn(formalHeader, formalLabel),
+      entryLabels: [...container.querySelectorAll('button')]
+        .map((b) => b.getAttribute('aria-label') || '')
+        .filter((a) => a.includes('新建')),
+    };
+  })()`;
+  const signals = await session.evaluate(probe);
+  if (!signals || signals.error) {
+    return { ok: false, reason: `侧栏项目组的 DOM 探测失败：${signals?.error ?? '探测返回空结果'}` };
+  }
+  const hasEveryHeader = MEKA_SUBGROUP_LABELS.every((text) => signals.headerLabels.includes(text));
+  const hasNoHeader = MEKA_SUBGROUP_LABELS.every((text) => !signals.headerLabels.includes(text));
+  const flatSignals =
+    hasNoHeader && signals.flatEntryOnRow
+    && !signals.regularEntryOnHeader && !signals.formalEntryOnHeader;
+  const subgroupSignals =
+    hasEveryHeader && signals.regularEntryOnHeader && signals.formalEntryOnHeader
+    && !signals.flatEntryOnRow;
+  if (flatSignals && !subgroupSignals) {
+    return { ok: true, layout: 'flat', projectLabel: signals.projectLabel, signals };
+  }
+  if (subgroupSignals && !flatSignals) {
+    return { ok: true, layout: 'subgroups', projectLabel: signals.projectLabel, signals };
+  }
+  return {
+    ok: false,
+    reason: '侧栏项目组的布局信号自相矛盾或两组信号都不完整（无法判定扁平/两子组）：'
+      + JSON.stringify({
+        headerLabels: signals.headerLabels,
+        treeNodeLabels: signals.treeNodeLabels,
+        flatEntryOnRow: signals.flatEntryOnRow,
+        regularEntryOnHeader: signals.regularEntryOnHeader,
+        formalEntryOnHeader: signals.formalEntryOnHeader,
+      }),
+  };
+}
+
+/**
+ * 建 Meka 草稿：展开 Meka 段与项目行，按**探测到的布局**把真实鼠标事件打到正确的入口上。
+ *
+ * 入口由布局决定（见 `MEKA_ENTRY_LABEL_TEMPLATES` 的注释）：
+ * - 扁平（`formalWorkflowActive=false`）：hover **项目行** → 点项目级入口「在 X 中新建对话」；
+ * - 两子组：hover 对应**子组头** → 点该子组作用域的入口（`formal` 时是「正式流程」）。
+ * 两条路径的入口都住在 `opacity-0 pointer-events-none` + `group-hover:pointer-events-auto` 的容器里，
+ * 所以必须先 hover 它的宿主让容器可点；否则真实鼠标事件会落到宿主（项目行 = 折叠开关）上。
+ */
+async function createMekaDraft(session, projectName, { formal = false, fresh = false } = {}) {
   // `navigate('/cc-agent/new', …)` 在**已经在**该路由时不会重挂载 NewMakerDraftRoute，
   // 其 `useState` 里已选的项目/角色会保留（见 WL-11.8）。要验证「新建草稿的默认角色」
   // 就必须先离开该路由，逼出一次真正的挂载。
@@ -720,27 +993,54 @@ async function createMekaDraft(session, projectName, { subgroup = '普通对话'
     await session.evaluate(`location.hash = '#/cc-agent/meka'`);
     await sleep(1400);
   }
-  const projectLabel = await ensureMekaTreeVisible(session, projectName);
-  if (!projectLabel) return { ok: false, reason: `侧栏 Meka 分区里找不到项目「${projectName}」` };
-
-  const header = await session.boxOf(subgroupHeader(subgroup));
-  if (!header) return { ok: false, reason: `未找到子组头「${subgroup}」`, projectLabel };
-  // 创建按钮在 hover 显现的容器里，必须先 hover 再用真实鼠标点。
+  const detected = await resolveMekaProjectLayout(session, projectName);
+  if (!detected.ok) return detected;
+  const { layout, projectLabel } = detected;
+  if (layout === 'flat' && formal) {
+    return {
+      ok: false,
+      reason: `项目 ${projectLabel} 是扁平布局（未启用正式工作流），不存在`
+        + `「${mekaEntryLabel('formal', projectLabel)}」入口`,
+      projectLabel,
+      layout,
+    };
+  }
+  const entryKind = layout === 'flat' ? 'flat' : formal ? 'formal' : 'regular';
+  const hostLabel = layout === 'flat' ? null : MEKA_SUBGROUP_LABELS[formal ? 0 : 1];
+  const hostExpr = layout === 'flat' ? projectRow(projectName) : subgroupHeader(hostLabel);
+  const host = await session.boxOf(hostExpr);
+  if (!host) {
+    return {
+      ok: false,
+      reason: layout === 'flat'
+        ? `未找到项目行「${projectLabel}」（无法 hover 出项目级新建入口）`
+        : `未找到子组头「${hostLabel}」`,
+      projectLabel,
+      layout,
+    };
+  }
+  // 创建按钮在 hover 显现的容器里，必须先 hover 宿主再用真实鼠标点。
   await session.send('Input.dispatchMouseEvent', {
     type: 'mouseMoved',
-    x: header.x,
-    y: header.y,
+    x: host.x,
+    y: host.y,
     buttons: 0,
   });
   await sleep(700);
-  const label = formal
-    ? `在 ${projectLabel} 中新建正式流程对话`
-    : `在 ${projectLabel} 中新建普通对话`;
+  const label = mekaEntryLabel(entryKind, projectLabel);
   const box = await session.boxOf(BY_LABEL(label));
-  if (!box) return { ok: false, reason: `未找到项目作用域创建入口「${label}」`, projectLabel };
+  if (!box) {
+    return {
+      ok: false,
+      reason: `未找到${layout === 'flat' ? '挂在项目行上的项目级' : '子组头作用域'}创建入口「${label}」`
+        + `（项目组容器内与「新建」有关的 aria-label=${JSON.stringify(detected.signals.entryLabels)}）`,
+      projectLabel,
+      layout,
+    };
+  }
   await session.clickAt(box);
   await sleep(2400);
-  return { ok: true, projectLabel };
+  return { ok: true, projectLabel, layout, entryLabel: label, signals: detected.signals };
 }
 
 async function sendMessage(session, text) {
@@ -761,10 +1061,10 @@ function buildChecks(ctx) {
   return [
     {
       id: 'WL-3.2',
-      name: '侧栏 Meka 分区呈现项目树：项目行、正式/普通子组与项目作用域的新建入口',
+      name: '侧栏 Meka 项目树按该项目配置断言布局契约（无正式工作流=扁平；启用=正式/普通两子组）',
       async run() {
         // dry-run 不是只读：本检查要改 hash 并派发真实鼠标事件（展开侧栏 Meka 项目树、hover
-        // 子组头、点开项目作用域的新建入口），因此 dry-run 下**不执行**，登记为 UNVERIFIED，
+        // 入口宿主、点开项目作用域的新建入口），因此 dry-run 下**不执行**，登记为 UNVERIFIED，
         // 绝不伪造 PASS。
         if (options.dryRun) {
           return ctx.unverified('--dry-run：未执行（跳过侧栏导航与项目树的真实鼠标点击/新建入口点击）');
@@ -777,16 +1077,103 @@ function buildChecks(ctx) {
         if (!text.toLowerCase().includes(project.name.toLowerCase())) {
           return ctx.fail(`侧栏缺少项目「${project.name}」：${text.slice(0, 300)}`);
         }
-        // 展开态:确保项目行与子组可见后断言入口可用。
+        // 布局是**运行期探测**出来的（`resolveMekaProjectLayout`：子组头 + 三种入口的挂载点），
+        // 然后断言**该布局**的完整契约——两条分支的断言同等硬，扁平分支**不**是「只要建得出草稿
+        // 就算过」：它必须显式证明子组头**不**在场，并且新建入口确实挂在**项目行**上。
+        const detected = await resolveMekaProjectLayout(ctx.session, project.name);
+        if (!detected.ok) return ctx.fail(detected.reason);
+        const { signals } = detected;
+        const label = signals.projectLabel;
+        const problems = [];
+        if (detected.layout === 'flat') {
+          // ── 扁平契约（`formalWorkflowEnabled: false` 的项目，例如随包 saga2）─────────────
+          if (signals.headerLabels.length) {
+            problems.push(
+              `扁平布局（项目未启用正式工作流）不应渲染子组头，实际渲染=${JSON.stringify(signals.headerLabels)}`,
+            );
+          }
+          if (signals.treeNodeCount !== 1) {
+            problems.push(
+              '扁平布局的项目子树只应有项目行 1 个树节点（[role=button] 且不在会话行内），'
+                + `实际 ${signals.treeNodeCount} 个=${JSON.stringify(signals.treeNodeLabels)}`,
+            );
+          }
+          if (!signals.flatEntryOnRow) {
+            problems.push(`项目行上没有项目级新建入口「${mekaEntryLabel('flat', label)}」`);
+          }
+          if (signals.regularEntryOnHeader || signals.formalEntryOnHeader) {
+            problems.push('扁平布局不应存在子组头作用域的创建入口');
+          }
+          if (signals.sessionRowsInSubgroups) {
+            problems.push(
+              `有 ${signals.sessionRowsInSubgroups} 行会话落在子组容器里（扁平布局应直挂项目行下）`,
+            );
+          }
+        } else {
+          // ── 两子组契约（正式工作流启用）──────────────────────────────────────────────
+          for (const subgroupLabel of MEKA_SUBGROUP_LABELS) {
+            if (!signals.headerLabels.includes(subgroupLabel)) {
+              problems.push(`两子组布局缺少子组头「${subgroupLabel}」`);
+            }
+          }
+          if (signals.treeNodeCount !== 3) {
+            problems.push(
+              '两子组布局的项目子树应有项目行 + 两个子组头共 3 个树节点（[role=button] 且不在会话行内），'
+                + `实际 ${signals.treeNodeCount} 个=${JSON.stringify(signals.treeNodeLabels)}`,
+            );
+          }
+          if (signals.flatEntryOnRow) {
+            problems.push('两子组布局不应把项目级新建入口挂在项目行上');
+          }
+          if (!signals.regularEntryOnHeader) {
+            problems.push(
+              `子组头「${MEKA_SUBGROUP_LABELS[1]}」上没有创建入口「${mekaEntryLabel('regular', label)}」`,
+            );
+          }
+          if (!signals.formalEntryOnHeader) {
+            problems.push(
+              `子组头「${MEKA_SUBGROUP_LABELS[0]}」上没有创建入口「${mekaEntryLabel('formal', label)}」`,
+            );
+          }
+          // 与扁平分支对称的**放置**断言：两子组布局下所有会话行都应落在某个子组容器里（正式流程 /
+          // 普通对话），不应有会话直挂项目行——`:477-529` 分支里 `renderSessions()` 只作为两个
+          // `MekaSessionSubgroup` 的子节点调用。
+          const rowsOutsideSubgroups = signals.sessionRowCount - signals.sessionRowsInSubgroups;
+          if (rowsOutsideSubgroups > 0) {
+            problems.push(
+              `两子组布局里有 ${rowsOutsideSubgroups} 行会话没落在任何子组容器里`
+                + `（应挂在「${MEKA_SUBGROUP_LABELS[0]}」/「${MEKA_SUBGROUP_LABELS[1]}」子组下）`,
+            );
+          }
+        }
+        if (problems.length) return ctx.fail(problems.join('；'));
+        // 结构断言通过后还要证明该入口**真的可用**：真实点击建出草稿（`fresh` 逼出重挂载）。
         const draft = await createMekaDraft(ctx.session, project.name, { fresh: true });
         if (!draft.ok) return ctx.fail(draft.reason);
+        if (draft.layout !== detected.layout) {
+          return ctx.fail(
+            `项目树布局在结构断言与点击之间发生了变化：${detected.layout} → ${draft.layout}`,
+          );
+        }
+        // 入口必须**在 DOM 里**（点得到）而不只是「曾经点过一次」：扁平布局的入口挂在项目行上，
+        // 项目行折叠时这段子树可能整个不渲染，所以先确保项目树可见，再读一次——这条断言因此
+        // 核对的是「入口在场」，而不是「此刻恰好是展开态」。
+        await ensureMekaTreeVisible(ctx.session, project.name);
         const entries = await ctx.session.evaluate(
           `[...document.querySelectorAll('button')]
              .map((b) => b.getAttribute('aria-label') || '')
              .filter((a) => a.includes('新建') && a.includes(${JSON.stringify(draft.projectLabel)}))`,
         );
         if (!entries.length) return ctx.fail('项目作用域的新建入口不可见');
-        return ctx.pass(`项目=${draft.projectLabel}；新建入口=${JSON.stringify(entries)}`);
+        const structureEvidence = detected.layout === 'flat'
+          ? '扁平（无子组头；项目级入口挂在项目行上；'
+            + `会话行 ${signals.sessionRowCount} 行直挂项目行下、落在子组容器里 ${signals.sessionRowsInSubgroups} 行）`
+          : `两子组（子组头=${JSON.stringify(signals.headerLabels)}；正式/普通入口各挂自己子组头；`
+            + `会话行 ${signals.sessionRowCount} 行全在子组容器里）`;
+        return ctx.pass(
+          `布局=${structureEvidence}；项目=${label}；树节点=${JSON.stringify(signals.treeNodeLabels)}；`
+            + `点击入口=${draft.entryLabel}；新建入口=${JSON.stringify(entries)}`,
+        );
       },
     },
     {
@@ -799,6 +1186,8 @@ function buildChecks(ctx) {
           return ctx.unverified('--dry-run：未执行（跳过新建草稿所需的真实鼠标点击）');
         }
         const { project, roles } = ctx.catalog;
+        // 入口是**该布局**规定的那一个（扁平 = 项目行上的项目级入口；两子组 =「普通对话」子组头上的
+        // 入口），由 `createMekaDraft()` 自己探测决定，不再假定存在子组头（2026-09-29 布局修复）。
         const draft = await createMekaDraft(ctx.session, project.name, { fresh: true });
         if (!draft.ok) return ctx.fail(draft.reason);
         const chip = await ctx.session.evaluate(`${BY_LABEL(ROLE_PICKER)}?.textContent?.trim() ?? null`);
@@ -824,12 +1213,14 @@ function buildChecks(ctx) {
         ctx.projectLabel = draft.projectLabel ?? project.name;
         // 「草稿默认角色 = 共享默认角色」是本轮契约反转后的**新期望**，写脚本时未实跑——这条信息
         // 只留在注释里，不进 PASS 证据串：真实跑完后输出不应再声称「待实跑」。
-        return ctx.pass(`项目=${ctx.projectLabel} 默认角色=${chip}`);
+        return ctx.pass(
+          `项目=${ctx.projectLabel} 默认角色=${chip}（布局=${draft.layout}，新建入口=${draft.entryLabel}）`,
+        );
       },
     },
     {
       id: 'WL-11.2',
-      name: '角色选择器列出该项目全部角色（内置阵容 = 默认角色/战斗开发），且切换后草稿角色随之变化',
+      name: '角色选择器列出该项目全部角色（随包内置阵容 = 该项目共享默认角色），且切换后草稿角色随之变化',
       async run() {
         // dry-run 不是只读：本检查要开角色弹层、点选项切换角色（真实鼠标事件），因此 dry-run 下
         // **不执行**，登记为 UNVERIFIED。
@@ -847,6 +1238,13 @@ function buildChecks(ctx) {
         if (duplicatedName) {
           problems.push(`项目 ${project.id} 的角色显示名不唯一（「${duplicatedName}」），无法按显示名做身份判定`);
         }
+        // 角色选择器在**草稿路由**里（`NewMakerDraftRoute.tsx` 的 `MekaRolePicker`），与侧栏布局无关，
+        // 因此 2026-09-29 的布局修复**不需要**改这里的打开方式（已按源码核对）：
+        // 触发器 = `button[aria-label=meka.projectsRoles.rolePicker]`（:620-624）；弹层列表 =
+        // `[role=listbox][aria-label=…] [role=option]`（:659-669）；选项里第一段 span 才是显示名（:679）。
+        // 项目级入口与「普通对话」子组入口走的是**同一条** `onCreateRegular` →
+        // `navigate('/cc-agent/new', { state: { …makeNewMakerRouteState('meka'), mekaProjectId } })`
+        // （`CCAgentSidebarUpper.tsx:2607`），所以两条布局下的草稿形态完全一致。
         await ctx.session.clickAt(await ctx.session.boxOf(BY_LABEL(ROLE_PICKER)));
         await sleep(900);
         // 只读选项里的**第一段 span**（显示名）；`textContent` 会把描述也拼进来。
@@ -870,20 +1268,45 @@ function buildChecks(ctx) {
             `角色列表第一位应为共享默认角色「${defaultRole.displayName}」(sort_order=-1 的可见保证)，实际第一位=「${uiNames[0]}」`,
           );
         }
-        // 内置阵容：默认角色（每个项目都有）+ 战斗开发（只有 saga2 播种）。「通用开发」退役后
-        // 包内不再有任何其它内置角色；这里直接比对**内置角色 id 集合**，与位置无关。
-        const expectedBuiltinRoleIds = [
-          `${project.id}${MEKA_DEFAULT_ROLE_ID_SUFFIX}`,
-          ...(project.id === SAGA2_PROJECT_ID ? [COMBAT_ROLE_ID] : []),
-        ].sort();
+        // 内置阵容：随包**只声明每个项目一个共享默认角色**（`BUILTIN_MEKA_ROLES` 现在只剩它）。
+        // 存量库里可能另有随包清单已被删除的遗留内置行——`combat-development` 是
+        // `RETIRED_BUILTIN_MEKA_ROLE_MAPPINGS` 的**重绑目标**（不是退役 id），播种刻意不删它，
+        // 读取时由 T2 回落该项目默认角色（白名单 WL-20）。所以这里**不能**用「内置集合恰等于
+        // [默认角色]」：那会在升级库上假红。判据取「该 id 是否还有随包清单文件」：
+        // ① 共享默认角色必须在场；② 其余内置行必须**已无**随包清单（= 清单已删的孤儿行）。
+        // 随包一旦重新提供某角色的清单文件，这条期望就会要求它被显式登记，否则报出来。
         const builtinRoleIds = roles
           .filter((role) => role.isBuiltin)
           .map((role) => role.id)
           .sort();
-        if (builtinRoleIds.join(',') !== expectedBuiltinRoleIds.join(',')) {
+        const defaultRoleId = `${project.id}${MEKA_DEFAULT_ROLE_ID_SUFFIX}`;
+        if (!builtinRoleIds.includes(defaultRoleId)) {
           problems.push(
-            `项目 ${project.id} 的内置角色阵容=${JSON.stringify(builtinRoleIds)}，期望=${JSON.stringify(expectedBuiltinRoleIds)}`
-              + '（「通用开发」已退役：包内 general-development.json 已删除）',
+            `项目 ${project.id} 没有共享默认角色行 ${defaultRoleId}（内置阵容=${JSON.stringify(builtinRoleIds)}）`,
+          );
+        }
+        const unexpectedBuiltinRoleIds = builtinRoleIds.filter(
+          (id) =>
+            id !== defaultRoleId &&
+            fs.existsSync(path.join(BUNDLED_MEKA_ROLES_DIR, `${id}.json`)),
+        );
+        if (unexpectedBuiltinRoleIds.length) {
+          problems.push(
+            `项目 ${project.id} 有「随包清单仍在、但脚本未登记」的内置角色行：`
+              + `${JSON.stringify(unexpectedBuiltinRoleIds)}`
+              + `（期望 = 共享默认角色 ${defaultRoleId} ∪ 随包清单已删除的遗留行）`,
+          );
+        }
+        // 脚本手抄的 id 结构自检：随包项目 saga2 的默认角色 id 必须逐字等于 `DEFAULT_ROLE_ID`。
+        // 漂移时 `isSharedDefaultRole()` 会静默认为「这个项目没有默认角色」，把整串默认角色检查
+        // 降级成「环境不满足」——看起来像环境问题，其实是脚本过期。
+        if (
+          project.id === SAGA2_PROJECT_ID &&
+          !roles.some((role) => role.id === DEFAULT_ROLE_ID)
+        ) {
+          problems.push(
+            `随包项目 ${SAGA2_PROJECT_ID} 的角色里没有脚本常量 ${DEFAULT_ROLE_ID}`
+              + `（实际=${JSON.stringify(roles.map((role) => role.id))}）：脚本手抄的默认角色 id 结构可能已过期`,
           );
         }
         const retiredVisible = roles.filter((role) => RETIRED_BUILTIN_ROLE_IDS.includes(role.id));
@@ -897,12 +1320,18 @@ function buildChecks(ctx) {
           await ctx.session.pressEscape().catch(() => {});
           return ctx.fail(problems.join('；'));
         }
-        // 切换目标按**身份**取：战斗开发（id），退化到第一个非默认角色。
-        const target =
-          combatRoleOf(ctx.catalog) ??
-          roles.find((role) => !isSharedDefaultRole(role, project.id)) ??
-          null;
-        if (!target) return ctx.fail('项目里没有可用于验证「切换角色」的第二个角色');
+        // 切换目标按**身份**取：共享默认角色之外的第一个角色（通常是项目自有角色；存量库里也可能
+        // 是遗留的 `combat-development` 孤儿行）。项目只有共享默认角色时**没有可切换对象** ——
+        // 这时必须登记 UNVERIFIED 并先关掉弹层：切到默认角色本身会让「切换后 chip 变化」变成同值
+        // 比较而恒真（假通过），而留着的弹层会挡住后面检查要点的编辑器。
+        const target = switchTargetRoleOf(ctx.catalog);
+        if (!target) {
+          await ctx.session.pressEscape().catch(() => {});
+          return ctx.unverified(
+            `项目 ${project.id} 只有共享默认角色 ${defaultRoleId}（随包已不再提供第二个内置角色）：`
+              + '已核对选项清单/排序/退役 id 与内置阵容，未验证「切换后草稿角色随之变化」',
+          );
+        }
         // 弹层在读选项时就已经打开，这里**直接点选项**（再点一次触发器会把它 toggle 关闭）。
         const clicked = await ctx.session.clickAt(
           await ctx.session.boxOf(roleOptionByName(target.displayName)),
@@ -1012,7 +1441,8 @@ function buildChecks(ctx) {
         const text = String(reply);
         // 硬断言只放**不可翻译的标识符**：`roleId` 是 Meka 内部 id，工作目录与任何项目文件里
         // 都没有它，只能来自注入的角色上下文。`displayName` 不能当硬断言——实测模型会按输出
-        // 语言**改写**它（`战斗开发` → `Combat Development`），那是模型行为而非注入缺陷。
+        // 语言**改写**它（2026-09-14 实测：`战斗开发` → `Combat Development`；同一行为对
+        // `默认角色` 这类显示名同样适用），那是模型行为而非注入缺陷。
         // 字面标记行同样只是附加证据（模型可能省略排版）。
         const displayNameActual = /displayName:\s*([^\n]*)/.exec(text)?.[1]?.trim() ?? null;
         const missing = [];
@@ -1033,17 +1463,19 @@ function buildChecks(ctx) {
     },
     {
       id: 'WL-11.6',
-      name: '运行期配置按角色解析：默认角色出厂全量（workflow=null、吸收项目默认 MCP/技能）或角色清单声明生效',
+      name: '运行期配置按角色解析：默认角色出厂全量（无 workflow 字段、吸收项目默认 MCP/技能）或角色声明生效',
       async run() {
         if (options.dryRun) return ctx.unverified('--dry-run：跳过真实运行');
         if (!ctx.row) return ctx.fail('前置失败：没有新会话');
         const role = ctx.sessionRole;
-        const declared = declaredRoleSkills(role.id);
-        // 共享「默认角色」没有包内清单文件（清单由 `mekaDefaultRoleManifest()` 内存生成、从不落盘），
-        // 所以「缺清单」是预期结果。但它**不再**意味着「零注入」：2026-09-23 起它的契约是
-        // **出厂即全量**——吸收项目 `roleDefaults`（promptFramework + 默认 skills + 默认 MCP +
-        // 默认元数据选择）与项目全部 enabled 元数据（`includeAllProjectMetadata`）。
         const sharedDefault = isSharedDefaultRole(role, ctx.catalog.project.id);
+        // 共享「默认角色」没有包内清单文件（清单由 `mekaDefaultRoleManifest()` 内存生成、从不落盘），
+        // 所以**默认角色分支根本不问文件**：随包 `resources/meka/roles/` 已整体删除，
+        // `declaredRoleSkills()` 现在只承担「用户自有角色在用户目录 `meka-roles/<id>.json` 的声明」
+        // 这一种来源。缺清单**不再**意味着「零注入」：2026-09-23 起默认角色的契约是**出厂即全量**
+        // ——吸收项目 `roleDefaults`（promptFramework + 默认 skills + 默认 MCP + 默认元数据选择）
+        // 与项目全部 enabled 元数据（`includeAllProjectMetadata`）。
+        const declared = sharedDefault ? null : declaredRoleSkills(role, options.userDataDir);
         const config = runtimeConfigFromLog(ctx.logDir, ctx.row.id);
         if (!config) return ctx.fail(`日志里找不到该会话的 Meka 运行期配置（${ctx.logDir}）`);
         if (config.projectId !== ctx.catalog.project.id) {
@@ -1051,28 +1483,70 @@ function buildChecks(ctx) {
         }
         if (config.roleId !== role.id) return ctx.fail(`运行期 roleId=${config.roleId}，期望 ${role.id}`);
         const problems = [];
-        // 「读不到」与「不满足」必须分开：项目配置读不到时把相关断言降级为 UNVERIFIED，
+        // 「读不到」与「不满足」必须分开：读不到时把相关断言降级为 UNVERIFIED，
         // 绝不把「没查成」写成「符合」。
         const unknowns = [];
-        if (!declared && !sharedDefault) {
-          problems.push(`未找到角色清单 apps/desktop/resources/meka/roles/${role.id}.json`);
-        } else if (sharedDefault) {
+
+        // ── 与角色无关的平台不变量（Host 对**每个**普通 Meka 任务都保证）─────────────────
+        // 平台基线（`mergePlatformMcp`）必须仍然在场。
+        for (const platformId of PLATFORM_MCP_PROVIDER_IDS) {
+          if (!config.mcpProviderIds.includes(platformId)) {
+            problems.push(`平台 MCP ${platformId} 未进入运行期（实际 ${config.mcpProviderIds.join(',')}）`);
+          }
+        }
+        // 红线：运行期配置里**根本不存在** `workflow` 键。判据刻意是「键不存在」而不是「取到的值
+        // 为 null」：workflow 机制已整体删除（`MekaRuntimeConfig` 上没有该字段，main 日志的
+        // 「Meka runtime config applied before session start」块也不再投递它），旧的
+        // `config.workflow !== null` 依赖 `pick('workflow')`（恒为 null）⇒ **永远不可能失败**，
+        // 是假通过。改成键名断言后，生产侧一旦重新投递该键（哪怕值是 null）立刻变红。
+        if (config.keys.includes('workflow')) {
+          problems.push(
+            '运行期配置块重新出现了 `workflow` 键（workflow 机制已整体删除，'
+              + '`MekaRuntimeConfig` 上不应再有任何 workflow 生产者）',
+          );
+        }
+        // 技能快照：revision 必须与运行期一致，且**随包平台 Skill** 必须在快照里。
+        const snapshot = skillDirsForSession(options.userDataDir, ctx.row.id);
+        if (!snapshot) {
+          // 只有平台技能也为空时才允许没有快照；平台技能存在却缺快照是真实缺陷
+          // （平台技能必须被冻结进该任务的不可变快照）。
+          if (config.platformSkillsCount > 0) {
+            problems.push(`平台技能 ${config.platformSkillsCount} 个存在，但该会话没有技能快照`);
+          }
+        } else {
+          if (snapshot.revision !== config.skillRevision) {
+            problems.push(`快照 revision=${snapshot.revision}≠运行期 ${config.skillRevision}`);
+          }
+          // 随包 Skill 只剩 `platform-capabilities`（9 个业务 Skill 已删除）。原「角色清单声明的
+          // 技能必须在快照里」那条断言的声明源已不存在（随包角色清单目录已删），存活形态就是这条：
+          // **平台 Skill 必须真的进了本次任务的快照**。它比 `platformSkillsCount > 0` 更硬——
+          // 数量对不上号照样能过那条计数断言。
+          const missingPlatformSkills = PLATFORM_SKILL_IDS.filter(
+            (skillId) => !snapshot.skills.includes(skillId),
+          );
+          if (missingPlatformSkills.length) {
+            problems.push(
+              `随包平台技能不在该会话快照里：${missingPlatformSkills.join('、')}（快照=${snapshot.skills.join(',')}）`,
+            );
+          }
+          ctx.snapshotSkills = snapshot.skills;
+        }
+
+        // ── 角色侧的声明核对 ─────────────────────────────────────────────────────────
+        if (sharedDefault) {
           // ── 默认角色的**新契约**（新期望，待实跑）────────────────────────────────
           // 旧口径（`skillsCount === platformSkillsCount`、平台基线外 MCP 必须为空、
           // 快照技能数 === platformSkillsCount）断言的是「刻意零注入」，随职能合并已作废：
           // 它现在承接原「通用开发」的职能，注入内容必须**明显多于**平台基线。
           //
-          // 红线：默认角色绝不可带 `workflow`——注入层进入战斗的唯一判据就是
-          // `workflow === 'saga2-combat-development-v1'`（`mekaResolvePlan.ts`）。
-          if (config.workflow !== null) {
-            problems.push(
-              `默认角色绝不可带 workflow（红线：绝不进入战斗门禁）：实际 workflow=${config.workflow}`,
-            );
-          }
-          // 平台基线（Host 对每个普通 Meka 任务都注入）必须仍然在场。
-          for (const platformId of PLATFORM_MCP_PROVIDER_IDS) {
-            if (!config.mcpProviderIds.includes(platformId)) {
-              problems.push(`平台 MCP ${platformId} 未进入运行期（实际 ${config.mcpProviderIds.join(',')}）`);
+          // 默认角色内存清单**自己 pin 的 MCP** 必须生效——这是原「包内角色清单声明的 MCP 生效」
+          // 那条断言在随包清单删除后的存活形态（原靶子是已删除的 `combat-development.json` 的
+          // `mcp` 列表）。
+          for (const providerId of DEFAULT_ROLE_MCP_PROVIDER_IDS) {
+            if (!config.mcpProviderIds.includes(providerId)) {
+              problems.push(
+                `默认角色清单 pin 的 MCP ${providerId} 未进入运行期（实际 ${config.mcpProviderIds.join(',')}）`,
+              );
             }
           }
           const contributions = projectContributionsOf(ctx);
@@ -1116,21 +1590,7 @@ function buildChecks(ctx) {
                 );
               }
             }
-          }
-          const snapshot = skillDirsForSession(options.userDataDir, ctx.row.id);
-          if (!snapshot) {
-            // 只有平台技能也为空时才允许没有快照；平台技能存在却缺快照是真实缺陷
-            // （平台技能必须被冻结进该任务的不可变快照）。
-            if (config.platformSkillsCount > 0) {
-              problems.push(
-                `平台技能 ${config.platformSkillsCount} 个存在，但该会话没有技能快照`,
-              );
-            }
-          } else {
-            if (snapshot.revision !== config.skillRevision) {
-              problems.push(`快照 revision=${snapshot.revision}≠运行期 ${config.skillRevision}`);
-            }
-            if (contributions) {
+            if (snapshot) {
               // 项目 `roleDefaults.skills` 是包内 catalog 的 skill id，必须逐个出现在该会话快照里
               // ——这比「数量大于平台基线」更硬：数量涨了但涨的是别的东西照样能过计数断言。
               const missingSkills = contributions.skillIds.filter(
@@ -1151,43 +1611,47 @@ function buildChecks(ctx) {
                 );
               }
             }
-            ctx.snapshotSkills = snapshot.skills;
           }
-        } else {
-          // 非默认角色（战斗开发等）：仍按**包内角色清单**声明核对（这条口径未变）。
-          const declaredWorkflow = declared ? declared.workflow ?? null : null;
-          const declaredMcp = declared ? declared.mcp : [];
-          const declaredSkills = declared ? declared.skills : [];
-          if (declaredWorkflow !== (config.workflow ?? null)) {
-            problems.push(`workflow=${config.workflow}，清单声明=${declaredWorkflow}`);
-          }
-          for (const providerId of declaredMcp) {
+        } else if (declared) {
+          // 非默认角色（项目自有角色）：按**可读到的声明源**核对。随包清单目录已删除，声明现在只在
+          // 用户目录的 `meka-roles/<id>.json`（`declaredRoleSkills()` 只返回这种来源）；
+          // **不再比较 workflow**——角色清单与运行期两侧都没有该字段了，比它等于拿 null 比 null。
+          for (const providerId of declared.mcp) {
             if (!config.mcpProviderIds.includes(providerId)) {
-              problems.push(`角色级 MCP ${providerId} 未进入运行期（实际 ${config.mcpProviderIds.join(',')}）`);
-            }
-          }
-          const snapshot = skillDirsForSession(options.userDataDir, ctx.row.id);
-          if (!snapshot) {
-            if (config.platformSkillsCount > 0) {
               problems.push(
-                `平台技能 ${config.platformSkillsCount} 个存在，但该会话没有技能快照`,
+                `角色声明的 MCP ${providerId} 未进入运行期（实际 ${config.mcpProviderIds.join(',')}）`,
               );
             }
-          } else {
-            if (snapshot.revision !== config.skillRevision) {
-              problems.push(`快照 revision=${snapshot.revision}≠运行期 ${config.skillRevision}`);
-            }
-            for (const skillId of declaredSkills) {
+          }
+          if (snapshot) {
+            for (const skillId of declared.skills) {
               if (!snapshot.skills.includes(skillId)) {
                 problems.push(`角色声明的技能 ${skillId} 不在快照（${snapshot.skills.join(',')}）`);
               }
             }
-            ctx.snapshotSkills = snapshot.skills;
           }
+        } else {
+          // 声明源不可读：① 内置的**孤儿行**（如存量库里的 `combat-development`，随包清单已删，
+          // 读取时由 T2 回落该项目默认角色，而项目文件 `builtinRoles` 快照这条源脚本不读）；
+          // ② 用户自有角色但用户目录下没有清单文件。两种都只核对上面那些与角色无关的平台不变量，
+          // 其余登记 UNVERIFIED —— 既不伪造 PASS，也不把「没查成」写成 FAIL。
+          unknowns.push(
+            `读不到角色 ${role.id} 的声明（${
+              role.isBuiltin
+                ? '内置行：随包清单目录已删除，声明只可能在项目文件 builtinRoles 快照里（脚本不读该源）'
+                : `用户自有行：用户目录下没有 meka-roles/${role.id}.json`
+            }）：未核对角色声明的技能/MCP（平台不变量与快照 revision 照常核对）`,
+          );
         }
+        const branch = sharedDefault
+          ? '分支=默认角色（出厂全量契约）'
+          : declared
+            ? `分支=角色声明（${declared.file}）`
+            : '分支=声明源不可读（登记 UNVERIFIED）';
         const evidence =
-          `${sharedDefault ? '分支=默认角色（出厂全量契约）' : '分支=角色清单声明'} roleId=${config.roleId} `
-          + `workflow=${config.workflow} mcp=${config.mcpProviderIds.join(',')} skillsCount=${config.skillsCount} `
+          `${branch} roleId=${config.roleId} `
+          + `workflow键=${config.keys.includes('workflow') ? '存在（违规）' : '不存在'} `
+          + `mcp=${config.mcpProviderIds.join(',')} skillsCount=${config.skillsCount} `
           + `platformSkillsCount=${config.platformSkillsCount} 快照技能数=${(ctx.snapshotSkills ?? []).length}`;
         if (problems.length) return ctx.fail(`${problems.join('；')}（${evidence}）`);
         if (unknowns.length) return ctx.unverified(`${unknowns.join('；')}（${evidence}）`);
@@ -1251,16 +1715,18 @@ function buildChecks(ctx) {
           return ctx.unverified('--dry-run：未执行（跳过角色切换与重进项目入口的真实鼠标点击）');
         }
         const { project, roles } = ctx.catalog;
-        if (roles.length < 2) return ctx.unverified('该项目角色少于 2 个，无法验证');
+        if (roles.length < 2) {
+          return ctx.unverified(
+            `项目 ${project.id} 只有共享默认角色（随包已不再提供第二个内置角色），无法验证「重进保留已选角色」`,
+          );
+        }
         const draft = await createMekaDraft(ctx.session, project.name, { fresh: true });
         if (!draft.ok) return ctx.fail(draft.reason);
-        // 切换目标按**身份**取（战斗角色 id），不用 `roles[1]`：阵容从「默认角色/通用开发/战斗开发」
-        // 收到「默认角色/战斗开发」后，位置与角色的对应关系已经变了，位置假设会把这条检查
-        // 悄悄指向别的角色（甚至指向默认角色本身，让「保留已选角色」变成同值比较而恒真）。
-        const target =
-          combatRoleOf(ctx.catalog) ??
-          roles.find((role) => !isSharedDefaultRole(role, project.id)) ??
-          null;
+        // 切换目标按**身份**取（共享默认角色之外的第一个角色），不用 `roles[1]`：阵容从
+        // 「默认角色/通用开发/战斗开发」收到「默认角色（+ 存量库里的孤儿内置行）」后，位置与角色的
+        // 对应关系已经变了，位置假设会把这条检查悄悄指向别的角色（甚至指向默认角色本身，让
+        // 「保留已选角色」变成同值比较而恒真）。
+        const target = switchTargetRoleOf(ctx.catalog);
         if (!target) return ctx.unverified('该项目没有第二个可用于切换的角色，无法验证');
         await ctx.session.clickAt(await ctx.session.boxOf(BY_LABEL(ROLE_PICKER)));
         await sleep(900);
@@ -1269,8 +1735,13 @@ function buildChecks(ctx) {
         const afterSwitch = await ctx.session.evaluate(`${BY_LABEL(ROLE_PICKER)}?.textContent?.trim() ?? null`);
         if (afterSwitch !== target.displayName) return ctx.fail(`切换角色失败：${afterSwitch}`);
         // 同路径再次点击项目新建入口：不离开路由 → NewMakerDraftRoute 不重挂载 → 已选角色保留。
+        // 「同一入口」= **该布局**的入口（扁平 = 项目行上的项目级入口；两子组 =「普通对话」子组头上的
+        // 入口），与上面那次 `createMekaDraft()` 一致，所以这条检查在两种布局下验的是同一个流程。
         const again = await createMekaDraft(ctx.session, project.name);
         if (!again.ok) return ctx.fail(again.reason);
+        if (again.entryLabel !== draft.entryLabel) {
+          return ctx.fail(`重进用的是另一个入口：${draft.entryLabel} → ${again.entryLabel}`);
+        }
         const afterReenter = await ctx.session.evaluate(`${BY_LABEL(ROLE_PICKER)}?.textContent?.trim() ?? null`);
         if (afterReenter !== target.displayName) {
           return ctx.fail(`同一项目重进后应保留草稿已选角色「${target.displayName}」(${target.id})，实际=${afterReenter}`);
@@ -1278,7 +1749,8 @@ function buildChecks(ctx) {
         // 「fresh 默认 = 共享默认角色」同样是本轮反转后的**新期望**，写脚本时未实跑——信息留在注释里。
         return ctx.pass(
           `fresh 默认=「${defaultRoleOf(ctx.catalog).displayName}」；`
-            + `切到「${target.displayName}」(${target.id}) 后同项目重进仍为「${afterReenter}」（跨项目重进无第二个项目可验）`,
+            + `切到「${target.displayName}」(${target.id}) 后用同一入口「${again.entryLabel}」`
+            + `（布局=${again.layout}）重进仍为「${afterReenter}」（跨项目重进无第二个项目可验）`,
         );
       },
     },
@@ -1464,6 +1936,12 @@ function buildChecks(ctx) {
         // 判定强度：直接读 `meka_roles` 全表（不依赖 UI），所以升级库里任何一条残留都能看见；
         // 只对 `is_builtin=1` 报错——同 id 的非内置行按 `§3.4/§8` 的接受边界属用户数据，不清理。
         // 该检查在**升级库**上才有判别力：新建库本来就没有这些 id。
+        //
+        // ⚠️ 本检查的列表**不含** `combat-development`（它是 `RETIRED_BUILTIN_MEKA_ROLE_MAPPINGS`
+        // 的重绑**目标**，不是退役 id）。随包不再提供它的清单文件，但它是刻意保留的**孤儿内置行**
+        // （不删存量行；读取时由 T2 回落该项目默认角色，见白名单 WL-20），所以它出现在
+        // `meka_roles` 与角色列表里都是**预期**行为，不是残留 —— 把它加进 `RETIRED_BUILTIN_ROLE_IDS`
+        // 会让本检查在升级库上**假红**。同理，本次交付**没有**给包内重新播种任何业务角色。
         const { project, roles } = ctx.catalog;
         const placeholders = RETIRED_BUILTIN_ROLE_IDS.map(() => '?').join(', ');
         const rows = ctx.dbAll(
@@ -1509,8 +1987,11 @@ async function main() {
       'usage: pnpm desktop:session-smoke -- [--port N] [--user-data-dir DIR] [--project-id ID] [--role ROLE_ID_OR_DISPLAY_NAME] [--dry-run] [--filter WL-11] [--json]',
     );
     console.log(
-      '  --role 不传 = 用该项目的共享默认角色（<projectId>-default-role，出厂全量契约）；'
-        + '传战斗角色请用 --role combat-development（或 --role 战斗开发）。',
+      `  --role 不传 = 用该项目的共享默认角色（<projectId>-default-role；随包项目 `
+        + `${SAGA2_PROJECT_ID} 的就是 ${DEFAULT_ROLE_ID}，出厂全量契约）。`
+        + '传别的角色请用库里真实存在的 id 或显示名（例如某个项目自有角色）；'
+        + '随包已不附带任何角色清单文件，非默认角色的声明只从用户目录 meka-roles/<id>.json 读，'
+        + '读不到（含 --role 战斗开发 这类已删清单的孤儿内置行）会登记 UNVERIFIED。',
     );
     return 0;
   }

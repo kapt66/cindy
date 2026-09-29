@@ -122,13 +122,11 @@ describe('Meka project and role runtime configuration', () => {
       promptFragments: [],
       projectMetadataSelection: [],
     });
-    // Red line: the default role must never carry the combat workflow marker.
-    expect('workflow' in manifest).toBe(false);
 
     const merged = mergeMekaProjectRoleDefaults(manifest, {
       promptFramework: 'project framework',
       rules: [{ id: 'project-rule', text: 'project rule', enabled: true }],
-      skills: ['saga2-overview'],
+      skills: ['platform-capabilities'],
       mcp: [{ id: 'project-agent', providerId: 'project-agent', enabled: true }],
       projectMetadataSelection: [{ sourcePath: 'AGENTS.md', itemType: 'agents-md' }],
     });
@@ -136,7 +134,7 @@ describe('Meka project and role runtime configuration', () => {
     // `useProjectDefaults` prepends the project prompt framework to the factory prompt.
     expect(merged.prompt).toBe(`project framework\n\n${manifest.prompt}`);
     expect(merged.rules).toEqual([{ id: 'project-rule', text: 'project rule', enabled: true }]);
-    expect(merged.skills).toEqual([{ skillId: 'saga2-overview', enabled: true }]);
+    expect(merged.skills).toEqual([{ skillId: 'platform-capabilities', enabled: true }]);
     expect(merged.mcp.map((entry) => entry.id)).toEqual(['project-agent', 'meka-design']);
 
     // `includeAllProjectMetadata` selects every enabled project item, including the

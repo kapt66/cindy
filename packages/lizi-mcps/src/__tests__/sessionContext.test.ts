@@ -1308,7 +1308,7 @@ describe('dynamic lizi MCP session context', () => {
         agentKind: "codex",
         workingDir: "/repo",
         sessionId: "combat-lead",
-        vendorOptions: { mekaWorkflow: "saga2-combat-development-v1" },
+        vendorOptions: { mekaProjectId: "saga2" },
       },
       () => tools(server).get_workspace_info.handler({}),
     );

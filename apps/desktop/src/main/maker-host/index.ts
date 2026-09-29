@@ -118,7 +118,6 @@ import {
   ownerScopedUserDataPath,
 } from '../appSessionState.js';
 import { getIOSSimulatorPluginAccessDecision } from '../cindy-brain/index.js';
-import { evaluateCombatShellCommandExecution } from '../meka-projects/combatWorkflowPolicy.js';
 import {
   desktopClaudeAuthAdapter,
   desktopCodexAuthAdapter,
@@ -1690,26 +1689,10 @@ export function getMaker(): Maker {
         return origin ? getOutboundPathSnapshotFor([origin]) : null;
       },
       reviewAutoPermissionAction,
-      getShellCommandPolicy: ({
-        sessionId,
-        command,
-        cwd,
-        workingDir,
-        remoteHostId,
-        vendorOptions,
-      }) => {
-        const decision = evaluateCombatShellCommandExecution({
-          sessionId,
-          workingDir,
-          remoteHostId,
-          vendorOptions,
-          toolName: 'exec',
-          action: { kind: 'exec', command, ...(cwd ? { cwd } : {}) },
-        });
-        return decision.behavior === 'deny'
-          ? { decision: 'deny' as const, reason: decision.reason }
-          : undefined;
-      },
+      // 通用 Shell 门禁钩子：Host 仍然声明该策略，Codex 才会把 Full access 的 exec
+      // 走受信任命令通道（`hasHostShellCommandPolicy`）。当前没有产品级拒绝规则，因此
+      // 恒返回 undefined；判据由宿主策略在需要时补齐。
+      getShellCommandPolicy: () => undefined,
       prepareCodexLocalCredentialModeSwitch: async (ctx) => {
         const maker = _maker;
         if (!maker) throw new Error('Maker is not initialized for Codex credential mode switch');

@@ -2,8 +2,6 @@
 
 import type Database from 'better-sqlite3';
 
-import combatDevelopmentRole from '../../resources/meka/roles/combat-development.json';
-
 export type MekaProjectMetadataItemType = 'agents-md' | 'skill' | 'rule' | 'mcp';
 
 export interface MekaRoleRule {
@@ -84,8 +82,6 @@ export interface MekaRoleMcpInlineConfig {
 
 export type MekaRoleMcpEntry = MekaRoleMcpProviderRef | MekaRoleMcpInlineConfig;
 
-export type MekaRoleWorkflow = 'saga2-combat-development-v1';
-
 export interface MekaProjectDefaultMetadataSelection {
   /** Absolute metadata root; omitted for the primary project path. */
   rootPath?: string;
@@ -107,8 +103,6 @@ export interface MekaRoleConfig {
   description?: string;
   tags?: string[];
   policyProviderRefs?: string[];
-  /** Host-enforced workflow attached automatically with the role. */
-  workflow?: MekaRoleWorkflow;
   prompt?: string;
   rules?: MekaRoleRule[];
   skills: Array<MekaRoleSkillSelection | MekaRoleSkillEntry>;
@@ -165,17 +159,13 @@ export function mekaDefaultRoleId(projectId: string): string {
 /**
  * Behavior contract of the shared default role: identify the kind of work, settle the contracts
  * first, integrate across the affected layers and close with tests plus an acceptance check; take
- * business intent as the input contract; and diagnose and contain a failing dependency call
- * instead of aborting the whole task.
+ * the request as the input contract; and diagnose and contain a failing dependency call instead of
+ * aborting the whole task.
  *
- * It is the retired "general development" prompt minus its SAGA2 combat-workflow paragraph: this
- * role never carries a `workflow`, so combat-only instructions (bundled combat skills, the legacy
- * module editor import/export path, "no Play Mode") would be dangling orders with no host gate
- * behind them.
+ * It carries no project-specific instructions: nothing here names a project, a workflow or a
+ * business domain, so every order holds in any Meka project without a host gate behind it.
  */
 const MEKA_DEFAULT_ROLE_PROMPT = `Identify whether the target needs design, local project, configuration, or remote-service work. Establish the relevant contracts first, integrate changes across affected layers, and finish with focused tests plus an acceptance check appropriate to the request.
-
-For any SAGA2 gameplay request, treat the user's natural-language business intent as the input contract. The user should only need to describe desired player-facing behavior, trigger, target, timing, effect, repetition, stacking, termination, and relevant balance or presentation goals. Do not ask the user for module types, target arrays, protocol fields, JSON, editor commands, P4 operations, server paths, or Unity CLI commands. Translate the business intent into technical work internally, infer details from project evidence, and ask only one focused business question when an unresolved choice would change gameplay. If a client/server capability is missing, report the business effect that cannot be guaranteed and the smallest business-level alternatives; never invent a field or make the user design the implementation.
 
 When a concrete dependency call fails, perform the safe diagnostics and recovery actions exposed by its receipt before asking the user; block only that dependency, preserve completed work, and give an exact user action plus retry point when credentials, network, or deployment work cannot be handled by the Agent.`;
 
@@ -190,9 +180,8 @@ When a concrete dependency call fails, perform the safe diagnostics and recovery
  * handed over as bounded address + description references (`MekaProjectReference`) that the agent
  * reads on demand, and skills ride the harness-native catalog (never this prompt).
  *
- * It deliberately carries no `workflow`: the injection layer enters combat only through
- * `workflow === 'saga2-combat-development-v1'`, and no combat prompt fragments are attached
- * either (they all assume that workflow's injected keys).
+ * It carries no project or business contract of its own — no workflow, no prompt fragments and
+ * no business rules — so it stays valid for every project the user registers.
  */
 export function mekaDefaultRoleManifest(projectId: string): MekaRoleManifestFile {
   const id = mekaDefaultRoleId(projectId);
@@ -363,22 +352,6 @@ export interface MekaProject {
   roles: readonly MekaRole[];
 }
 
-type BuiltinRoleId = 'combat-development';
-
-interface ImportedBuiltinRoleManifest {
-  id: string;
-  projectId: string;
-  name: string;
-  displayName: string;
-  description: string;
-  tags?: readonly string[];
-}
-
-const BUILTIN_ROLE_FILES: readonly {
-  id: BuiltinRoleId;
-  manifest: ImportedBuiltinRoleManifest;
-}[] = [{ id: 'combat-development', manifest: combatDevelopmentRole }];
-
 /**
  * Retired built-in role ids whose replacement is a fixed role id, so the mapping is
  * project-independent. Ids that must be rebound to the *session's own* project default role do
@@ -403,6 +376,12 @@ export const RETIRED_BUILTIN_MEKA_DEFAULT_ROLE_ALIASES = [
   'system-debug',
 ] as const;
 
+/**
+ * Bundled role rows. Only the shared default role of the bundled project remains: the previous
+ * bundled business role (and its JSON manifest) was removed from the package, so a project now
+ * declares its own roles through `<project-root>/.meka/project.json` (`builtinRoles`) or through
+ * the role editor, and business content rides plugins or project metadata skills instead.
+ */
 const BUILTIN_MEKA_ROLES: readonly MekaRole[] = [
   // The shared default role always sorts first so a new draft in any project starts on it.
   {
@@ -419,22 +398,20 @@ const BUILTIN_MEKA_ROLES: readonly MekaRole[] = [
     createdAt: null,
     updatedAt: null,
   },
-  ...BUILTIN_ROLE_FILES.map(({ id, manifest }, index) => ({
-    id,
-    projectId: manifest.projectId,
-    name: manifest.name,
-    displayName: manifest.displayName,
-    description: manifest.description,
-    tags: [...(manifest.tags ?? [])],
-    filePath: `meka/roles/${id}.json`,
-    isBuiltin: true,
-    contentDigest: null,
-    sortOrder: index,
-    createdAt: null,
-    updatedAt: null,
-  })),
 ];
 
+/**
+ * The bundled project registry. It carries exactly one project whose `basic`/`metadata` describe a
+ * workspace this package knows about; the project's **prompt content** is NOT bundled — `project.json`
+ * no longer carries a `roleDefaults.promptFramework` nor a `roleDefaults.skills` selection, so any
+ * project-specific contract comes from the project's own `.meka/project.json` or from installed
+ * plugins.
+ *
+ * What the manifest still contributes at runtime is its **metadata discovery list**: the default
+ * role sets `includeAllProjectMetadata`, so every enabled entry reaches the model through the
+ * order-65 project-reference list (`scope | absolute path | description`) rather than as inlined
+ * prompt text. That is project-owned data on the sanctioned reference channel, not bundled prose.
+ */
 export const BUILTIN_MEKA_PROJECTS: readonly MekaProject[] = [
   {
     id: 'saga2',
