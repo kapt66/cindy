@@ -10,6 +10,22 @@ const fileBrowser = vi.hoisted(() => ({
 
 vi.mock('@cindy/file-browser-core', () => fileBrowser);
 
+/** 别名漂移告警的取证窗口：每个漂移的 `CLAUDE.md` 都必须在这里留下**恰好一条** warn。 */
+const logging = vi.hoisted(() => ({ warnings: [] as Array<{ message: string; meta?: unknown }> }));
+
+vi.mock('../../logger.js', () => ({
+  createLogger: () => ({
+    trace: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn((message: string, meta?: unknown) => {
+      logging.warnings.push({ message, meta });
+    }),
+    error: vi.fn(),
+    fatal: vi.fn(),
+  }),
+}));
+
 import {
   discoverLocalMekaProjectMetadata,
   inferMekaSubProjectPath,
@@ -267,5 +283,173 @@ describe('Meka project reference descriptions', () => {
     );
     expect(withoutFrontmatter).toMatchObject({ itemType: 'skill', name: 'writer' });
     expect(withoutFrontmatter).not.toHaveProperty('description');
+  });
+});
+
+/**
+ * 扫描期的 `CLAUDE.md` / `AGENTS.md` 别名漂移**检测**：这是「内容副本已经落后」唯一能被看见的
+ * 地方（真实事故见 `docs/product-rules/meka-project-metadata-governance.md` §6）。检测只告警、
+ * 不改任何 manifest 字段 —— 用例同时钉住「两者都没被改写」这件事。
+ */
+describe('Meka project CLAUDE.md alias drift', () => {
+  const primaryRoot = path.resolve('meka-alias-root');
+
+  /**
+   * 复用扫描器的 `listAllFiles` / `readFile` mock：`files` 决定同目录是否存在 `AGENTS.md`。
+   * 没有提供正文的路径按真实 `readFile` 的口径抛错（扫描不该靠读不到的文件继续）。
+   */
+  async function discoverFiles(
+    files: readonly string[],
+    contents: Readonly<Record<string, string>>,
+  ): Promise<Awaited<ReturnType<typeof discoverLocalMekaProjectMetadata>>> {
+    logging.warnings.length = 0;
+    // 读盘次数按**本次**扫描计账：spy 在文件里是共享的，不清就只剩累计值。
+    fileBrowser.readFile.mockClear();
+    fileBrowser.listAllFiles.mockResolvedValue({ files: [...files] });
+    fileBrowser.readFile.mockImplementation(async (_root: string, sourcePath: string) => {
+      const content = contents[sourcePath];
+      if (content === undefined) throw new Error(`missing file: ${sourcePath}`);
+      return { content };
+    });
+    return discoverLocalMekaProjectMetadata(primaryRoot, 'rg');
+  }
+
+  it('stays silent when CLAUDE.md is byte-identical to its sibling AGENTS.md', async () => {
+    const shared = '# 项目规则\n\n正文。\n';
+
+    await discoverFiles(['AGENTS.md', 'CLAUDE.md'], { 'AGENTS.md': shared, 'CLAUDE.md': shared });
+
+    expect(logging.warnings).toHaveLength(0);
+  });
+
+  it('stays silent for a bare @AGENTS.md include with LF, blank lines and outer whitespace', async () => {
+    const aliases = ['@AGENTS.md', '@AGENTS.md\n', '\n@AGENTS.md\n\n', '  @AGENTS.md  '];
+
+    for (const claude of aliases) {
+      await discoverFiles(['AGENTS.md', 'CLAUDE.md'], {
+        'AGENTS.md': '# 项目规则\n',
+        'CLAUDE.md': claude,
+      });
+      expect(logging.warnings).toHaveLength(0);
+    }
+  });
+
+  it('stays silent for a bare @AGENTS.md include written with CRLF line endings', async () => {
+    await discoverFiles(['AGENTS.md', 'CLAUDE.md'], {
+      'AGENTS.md': '# 项目规则\r\n',
+      'CLAUDE.md': '@AGENTS.md\r\n',
+    });
+
+    expect(logging.warnings).toHaveLength(0);
+  });
+
+  it('stays silent for a bare @AGENTS.md include that carries a UTF-8 BOM', async () => {
+    await discoverFiles(['AGENTS.md', 'CLAUDE.md'], {
+      'AGENTS.md': '# 项目规则\r\n',
+      'CLAUDE.md': '\uFEFF@AGENTS.md\r\n',
+    });
+
+    expect(logging.warnings).toHaveLength(0);
+  });
+
+  it('warns once, naming both absolute paths and both byte sizes', async () => {
+    const agents = `# 项目规则\n\n${'硬规则正文。'.repeat(40)}\n`;
+    const claude = '# 项目规则\n\n旧副本。\n';
+
+    const discovered = await discoverFiles(['design/AGENTS.md', 'design/CLAUDE.md'], {
+      'design/AGENTS.md': agents,
+      'design/CLAUDE.md': claude,
+    });
+
+    expect(logging.warnings).toHaveLength(1);
+    const warning = logging.warnings[0]!;
+    expect(warning.message).toContain('@AGENTS.md');
+    expect(warning.message).toContain('notes');
+    expect(warning.meta).toEqual({
+      root: primaryRoot,
+      claudePath: path.join(primaryRoot, 'design', 'CLAUDE.md'),
+      agentsPath: path.join(primaryRoot, 'design', 'AGENTS.md'),
+      claudeBytes: Buffer.byteLength(claude, 'utf8'),
+      agentsBytes: Buffer.byteLength(agents, 'utf8'),
+    });
+    // 大小必须来自各自的实际正文，否则告警会把读者引向错误的方向感（谁落后）。
+    expect(Buffer.byteLength(agents, 'utf8')).not.toBe(Buffer.byteLength(claude, 'utf8'));
+
+    // 两个候选项各读一次：别名检测复用扫描期已读到的正文，没有为比对再读一遍盘。
+    expect(fileBrowser.readFile).toHaveBeenCalledTimes(2);
+
+    // 只检测：两侧条目照旧携带**自己**的指纹与描述。把副本改成权威副本的指纹，等于让
+    // 运行期再也看不出这一条是另一份文件。
+    const alias = discovered.find((item) => item.sourcePath === 'design/CLAUDE.md')!;
+    const authority = discovered.find((item) => item.sourcePath === 'design/AGENTS.md')!;
+    expect(alias.contentFingerprint).toBe(createHash('sha256').update(claude, 'utf8').digest('hex'));
+    expect(alias.description).toBe('项目规则');
+    expect(authority.contentFingerprint).toBe(
+      createHash('sha256').update(agents, 'utf8').digest('hex'),
+    );
+  });
+
+  it('still warns when the include line carries extra content', async () => {
+    // 「几乎是指针」= 内容副本：多写一句说明就不再等价，之后必然各自漂移。
+    await discoverFiles(['AGENTS.md', 'CLAUDE.md'], {
+      'AGENTS.md': '# 项目规则\n',
+      'CLAUDE.md': '@AGENTS.md\n\n补充说明。\n',
+    });
+
+    expect(logging.warnings).toHaveLength(1);
+  });
+
+  it('never compares against an AGENTS.md outside the same directory', async () => {
+    // 根目录有 AGENTS.md、子目录的 CLAUDE.md 与它不同：不同目录不是别名关系。
+    await discoverFiles(['AGENTS.md', 'design/CLAUDE.md'], {
+      'AGENTS.md': '# 根规则\n',
+      'design/CLAUDE.md': '# 设计规则\n\n完全不同的正文。\n',
+    });
+    expect(logging.warnings).toHaveLength(0);
+
+    // 同目录没有 AGENTS.md 时，CLAUDE.md 是合法独立条目。
+    await discoverFiles(['solo/CLAUDE.md', 'solo/SKILL.md'], {
+      'solo/CLAUDE.md': '# 独立规则\n',
+      'solo/SKILL.md': '# 技能\n',
+    });
+    expect(logging.warnings).toHaveLength(0);
+  });
+
+  it('never triggers on an agents-md item whose basename is not exactly CLAUDE.md', async () => {
+    // AGENTS.md 自己永不充当被检查的别名侧，即使同目录另有内容不同的规则文件。
+    await discoverFiles(['AGENTS.md', 'rules.md'], {
+      'AGENTS.md': '# 规则正本\n',
+      'rules.md': '# 规则副本\n',
+    });
+    expect(logging.warnings).toHaveLength(0);
+
+    // 大小写不同的 `claude.md` 根本不是被发现清单里的条目（也不该为它读盘）。
+    const discovered = await discoverFiles(['AGENTS.md', 'claude.md'], {
+      'AGENTS.md': '# 规则正本\n',
+      'claude.md': '# 另一份副本\n',
+    });
+    expect(logging.warnings).toHaveLength(0);
+    expect(discovered.map((item) => item.sourcePath)).toEqual(['AGENTS.md']);
+    expect(fileBrowser.readFile).toHaveBeenCalledTimes(1);
+    expect(fileBrowser.readFile).toHaveBeenCalledWith(primaryRoot, 'AGENTS.md');
+  });
+
+  it('emits exactly one warning per divergent CLAUDE.md', async () => {
+    await discoverFiles(
+      ['a/AGENTS.md', 'a/CLAUDE.md', 'b/AGENTS.md', 'b/CLAUDE.md', 'c/AGENTS.md', 'c/CLAUDE.md'],
+      {
+        'a/AGENTS.md': '# A\n',
+        'a/CLAUDE.md': '# A 旧副本\n',
+        'b/AGENTS.md': '# B\n',
+        'b/CLAUDE.md': '# B 旧副本\n',
+        'c/AGENTS.md': '# C\n',
+        'c/CLAUDE.md': '# C\n',
+      },
+    );
+
+    expect(logging.warnings).toHaveLength(2);
+    expect(
+      logging.warnings.map((warning) => (warning.meta as { claudePath: string }).claudePath),
+    ).toEqual([path.join(primaryRoot, 'a', 'CLAUDE.md'), path.join(primaryRoot, 'b', 'CLAUDE.md')]);
   });
 });

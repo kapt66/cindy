@@ -78,6 +78,12 @@
 - 新增或修改 Meka 技能入口、标准技能包兼容、MCPRouter 技能分发、安装来源记录或
   Meka 项目角色与市场技能的关系前，必须先读
   `docs/product-rules/meka-skills.md`。
+- 新增或修改 Meka 项目的元数据发现清单（`AGENTS.md` / `CLAUDE.md` / `SKILL.md` /
+  `rule` / `.mcp.json`，含面板里的「发现元数据」与 `enabled` 勾选），或处理别名文件、
+  重复条目、条目描述与 `notes` 前，必须先读
+  `docs/product-rules/meka-project-metadata-governance.md`：它区分「文件该不该存在」与
+  「该不该注入」，规定 `enabled:false` 的适用边界（**禁用必须在 `notes` 里留痕**）、
+  别名的唯一合规形态（`@AGENTS.md` include 或逐字节相同）与权威副本的标注方式。
 - 修改伙伴（Bot）的身份、Session 生命周期、模型 fallback、工作目录、Skill / MCP 装配、
   委派协作或伙伴设置前，必须先读 `docs/product-rules/cindy-bots-runtime.md`。
 - 新增或修改伙伴群聊的数据、发言编排、群专线 Session、分工（负责人、安排、分工 Session、群工作目录）、

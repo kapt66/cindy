@@ -2185,7 +2185,10 @@ back to the project default role`；③ **负向**：把该角色的清单文件
    反引号（否则破坏 `作用范围 | 绝对路径 | 用途` 的行格式）、（c）描述**文件当下真实内容**，
    文件正文自身失真时以事实为准而不是照抄；
 3. **`basic.path` 必须保持 token `saga2`** —— 写成绝对路径会把基线绑死到某台机器；
-4. **`enabled: false` 的条目不得被重扫翻回 true**（本次为 5 条）。
+4. **`enabled: false` 的条目不得被重扫翻回 true**（本次为 5 条），且**每条禁用都必须在 `notes` 里
+   留痕**（为什么禁用 + 权威副本在哪）—— `notes` 不进 prompt，是唯一既持久又不花 token 的登记处；
+5. **别名只有两种合规形态** —— 同目录 `CLAUDE.md` 与 `AGENTS.md` **逐字节相同**，或
+   `CLAUDE.md` 一侧内容仅为 `@AGENTS.md` 一行。内容副本即视为漂移（见 §6 的真实事故）。
 
 **为什么需要它**：项目根 override 存在时随包基线被**整体遮蔽**（metadata 数组不与 override 合并），
 但**新机器、干净 profile、override 解析失败回落**时它以正本身份生效；且 `description` 会作为
@@ -2194,22 +2197,31 @@ order-65 段的「用途」列进入模型上下文，属于**随包注入内容
 
 **代码锚点**：`apps/desktop/src/main/meka-projects/metadataScanner.ts:338`（`sha256` 指纹）、
 `:21-46`（重扫写什么、留什么：保留 `description`/`displayName`/`notes`/`enabled`/`disciplines`/`domains`，
-重写 `name`/`contentFingerprint`/`subProjectPath`/`sourcePath`）、`projectConfig.ts:633-678`
+重写 `name`/`contentFingerprint`/`subProjectPath`/`sourcePath`）、`:293`/`:309`/`:329`/`:420`
+（别名漂移检测的判定与调用）、`projectConfig.ts:633-678`
 （随包基线 → 项目根 override 的读取优先级，metadata 不合并）、`projectConfig.ts:686-698`
 （写盘只写 `<projectRoot>/.meka/project.json`，**从不写随包文件**）、`runtimeConfig.ts`
-（order-65 `projectReferences` 的构造与 300 码点折叠）。
+（order-65 `projectReferences` 的构造与 300 码点折叠、`:204-226` 重名 skill 的 `-2` 消歧）。
 
-**自动化门禁**：`pnpm --filter desktop exec vitest run src/main/meka-projects`；其中
-`runtimeConfigProjectFiles.test.ts` **直接读取本文件**（随包真实基线）解析角色与项目默认 MCP，
-`projectConfig.test.ts` 断言 `metadata.length > 30`。另用严格 `JSON.parse` 自检（**不得**用 PowerShell
-的 `ConvertFrom-Json` 代替：它容忍尾随逗号，Node/Electron 不容忍）。
+**自动化门禁**：`pnpm --filter desktop exec vitest run src/main/meka-projects`。其中：
+- `runtimeConfigProjectFiles.test.ts` **直接读取本文件**（随包真实基线）解析角色与项目默认 MCP；
+- `projectConfig.test.ts` 断言 `metadata.length > 30`；
+- **`saga2BundledBaseline.test.ts`（本项专用守卫，8 例）**：严格 `JSON.parse`、头部身份、
+  `basic.path` 非绝对、逐条字段完整性（含 `enabled` 必须是 boolean、`rootPath` 必须缺省）、
+  键唯一、描述 ≤ 300 码点且不含 `|` / 反引号 / 换行、**禁用条目必须带 `notes`**、
+  `projectMetadataSelection` 无悬空引用。已做变异咬合证明（指向坏副本 ⇒ 相应断言变红并点名条目）。
+- **禁止**用 PowerShell 的 `ConvertFrom-Json` 代替严格解析：它容忍尾随逗号，Node/Electron 不容忍
+  —— 本仓真实发生过一次（尾随逗号 ⇒ 31 个单测红）。
 
-**实机验证**：**未实机验证**（本次只做了静态 + 严格解析 + 单测）。待跑：在**没有**项目根
-`.meka/project.json` 的干净环境里启动应用，读一次项目配置，确认 order-65 参考清单为 66 条、
-描述未出现截断 `…`、`enabled=false` 的 5 条未被注入。
+**实机验证**：**未实机验证**（本次只做了静态 + 严格解析 + 单测 + 对真实工作区只读实跑别名谓词）。
+待跑：在**没有**项目根 `.meka/project.json` 的干净环境里启动应用，读一次项目配置，确认 order-65
+参考清单为 66 条、描述未出现截断 `…`、`enabled=false` 的 5 条未被注入；并在打包产物上确认别名
+漂移告警按预期出现。
 
 **边界（如实登记）**：本项目根的 override 是**用户数据**，本仓既不读写它也不为其背书；本项只保证
 **随包出厂基线**自身正确。若某台机器上项目的 skill 清单与随包基线不同，以该机器 override 为准。
+**同名不同路径是合法的**（见治理文档 §4 第 4 条）：重名时 `normalizeDiscoveredSkillId` 依次加
+`-2`/`-3` 消歧是设计行为，**不要**把它当成需要合并或警告的对象。
 
 ## 4. 最小自动化集合
 

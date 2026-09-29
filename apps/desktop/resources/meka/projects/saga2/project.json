@@ -72,7 +72,7 @@
       "subProjectPath": "saga2_design",
       "displayName": "策划库CLAUDE别名",
       "description": "SAGA2 策划知识库的 Claude Code 规则别名，供 Claude Code 读取；内容与 saga2_design/AGENTS.md 同源但已落后，缺少三级复核边界与配置表普通生产单次授权例外。查阅本文档当需要：核对 Claude 侧接入与写入授权规则是否与最新 AGENTS.md 一致。",
-      "notes": "已做字节比对：本文件 2397 B（mtime 2026-07-13），saga2_design/AGENTS.md 5259 B（mtime 2026-08-18），SHA256 不同。两者非字节一致、非包含关系、亦非同内容复制；基线原 notes「内容同 saga2_design/AGENTS.md」不成立，且 AGENTS.md 更新更全。建议维护者裁决该目录的权威源方向。"
+      "notes": "禁用原因：与同目录 AGENTS.md 是同一套接入/授权规则的别名，注入它只会让同一份规则进清单两次；权威副本是 saga2_design/AGENTS.md。注意本文件已落后于权威副本：2397 B（mtime 2026-07-13）vs 5259 B（2026-08-18），缺「三级复核边界」与「配置表普通生产单次授权例外」两条硬规则。按「项目元数据与别名治理」§4 第 1 条应收敛为一行 @AGENTS.md include。"
     },
     {
       "sourcePath": "saga2_design/planning/01-治理规范-governance/skills/策划组统一工作流-planning-governance-manager/SKILL.md",
@@ -255,7 +255,8 @@
       "contentFingerprint": "df361795f7a839bc18cf68f4b2e38d9977e229e0494bdbc80fb02e41fe02e840",
       "subProjectPath": "saga2_design",
       "displayName": "saga2转接别名镜像",
-      "description": "战斗策划知识库内的 Codex saga2 转接 Skill 镜像。经 $saga2 进入时先比对本地别名与镜像版本，命中索引后进入 saga2-project-battle-designer；含项目根自发现、P4 更新自修复、workspace 个人命名与 stream client 规则，只同步内容区不整文件覆盖。"
+      "description": "战斗策划知识库内的 Codex saga2 转接 Skill 镜像。经 $saga2 进入时先比对本地别名与镜像版本，命中索引后进入 saga2-project-battle-designer；含项目根自发现、P4 更新自修复、workspace 个人命名与 stream client 规则，只同步内容区不整文件覆盖。",
+      "notes": "禁用原因：它是  转接触发入口的镜像文件，命中的是同一份战斗设计知识（权威副本 = 战斗策划组-combat-planning/skills/saga2-project-battle-designer/SKILL.md），注入它只会重复。注意「项目元数据与别名治理」§3 把「别名触发入口」列为应当启用的类别 ⇒ 本条处置待维护者复核：若  仍是使用中的入口，应改为启用并在描述里写明「别名入口，权威见正本」。"
     },
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/战斗策划组-combat-planning/skills/saga2-project-battle-designer/SKILL.md",
@@ -293,7 +294,7 @@
       "subProjectPath": "saga2_design",
       "displayName": "世界观CLAUDE镜像",
       "description": "IP 组世界观库中与同目录 AGENTS.md 逐字一致的 Claude Code 规则文件；本目录以它为权威源、AGENTS.md 为镜像，因此规则改动必须两份字节级同步覆盖。查阅本文档当需要：改动世界观库规则并同步这两份文件。",
-      "notes": "已做字节比对：两份各 37755 B、SHA256 相同、mtime 均为 2026-09-04 18:08:32，字节完全一致（同内容复制，非 @ 包含），与该目录自述的「CLAUDE.md 为源、AGENTS.md 为镜像」相符。"
+      "notes": "禁用原因：与同目录 AGENTS.md 逐字相同（各 37755 B、SHA256 相同、mtime 均 2026-09-04 18:08:32），注入它只会让同一份规则进清单两次；该目录自述 CLAUDE.md 为权威源、AGENTS.md 为镜像。两处内容副本靠人工同步，按「项目元数据与别名治理」§4 第 1 条应收敛为单向 @AGENTS.md（或反向）include。"
     },
     {
       "sourcePath": "saga2_design/planning/04-职能组-functional-groups/IP组-ip/skills/IP组工作流-ip-planning-manager/SKILL.md",
@@ -548,7 +549,7 @@
       "subProjectPath": "saga2_unity",
       "displayName": "战斗设计与模块配置",
       "description": "Unity 工程内 battle 工作流旧副本：battle 代码结构索引、SkillEditor 模块配置与 skill_entry_model_editor.json 重建、Perforce 同步/还原及导出复盘约定。查阅本文档当需要：工程内 battle 模块配置或导出（有效落点已迁至战斗策划组技能库）。",
-      "notes": "与 saga2_design 下同名副本同名同源；本副本 enabled=false（最后改动 2026-09-22），设计库副本 enabled=true（2026-09-24，v1.02）且已新增 Cindy/Meka P4 强制路由、Timeline CSV、特效层级、技能描述校验等章节；本副本仍写死旧机绝对路径，其「战斗代码概述」所列 Game/Battle 下的 BattleRole* 已不存在。"
+      "notes": "禁用原因：与 saga2_design 下同名副本同源，而那份才是现役正本（enabled=true，2026-09-24，v1.02，含 Cindy/Meka P4 强制路由、Timeline CSV、特效层级与技能描述校验）。本副本是旧版（2026-09-22），写死旧机绝对路径，其「战斗代码概述」所列 Game/Battle 下的 BattleRole* 已不存在。按「项目元数据与别名治理」§3 属「没有独立理由的旧版副本」⇒ 应删除文件，enabled:false 只是过渡。"
     },
     {
       "sourcePath": "saga2_unity/.agents/skills/script-config/SKILL.md",
@@ -839,7 +840,7 @@
       "subProjectPath": "saga2_unity",
       "displayName": "工程CLAUDE别名",
       "description": "saga2_unity 下的 Claude Code 入口，全文仅一行 @AGENTS.md 包含指令，把 Claude 侧规则指向同目录 AGENTS.md，不改写也不复制任何规则。查阅本文档当需要：确认 Unity 工程里 Claude 与 Codex 是否读同一套硬规则。",
-      "notes": "已做字节比对：本文件 15 B，唯一内容为第 1 行 @AGENTS.md；saga2_unity/AGENTS.md 1706 B。两者非字节一致，15 B 文件是指向 AGENTS.md 的包含指令，不是内容复制。基线原 notes「内容同 saga2_unity/AGENTS.md」不成立。"
+      "notes": "禁用原因：内容只有一行 @AGENTS.md，是纯 include，注入它不带来任何增量信息；权威副本是 saga2_unity/AGENTS.md（1706 B）。这是合规的别名形态（「项目元数据与别名治理」§4 第 1 条），保留文件本身无风险；enabled:false 只是避免清单里多一行无意义的指针。"
     }
   ],
   "roleDefaults": {

@@ -5,6 +5,9 @@ import { listAllFiles, readFile } from '@cindy/file-browser-core';
 import { parseFrontmatter } from '../../../../../packages/maker-core/src/agents/shared/customization-scanner.js';
 import type { MekaProjectMetadataItemType } from '../../shared/meka-projects.js';
 import type { MekaProjectFile } from '../../shared/meka-projects.js';
+import { createLogger } from '../logger.js';
+
+const log = createLogger('meka-projects:metadata-scanner');
 
 export interface DiscoveredMekaProjectMetadata {
   itemType: MekaProjectMetadataItemType;
@@ -281,6 +284,78 @@ function describe(
   return { name: fallbackName(sourcePath, type) };
 }
 
+/**
+ * 裸 include 判定：整份内容只有 `@AGENTS.md` 一行。
+ *
+ * 宽松的只是**排版**（UTF-8 BOM、CRLF/LF、行首行尾空白、前后空行），不是语义 —— include 之外
+ * 多写一个字就不再是指针，而是「内容副本」，而内容副本**必然**漂移。
+ */
+function isBareAgentsInclude(content: string): boolean {
+  const lines = content
+    .replace(/^\uFEFF/, '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  return lines.length === 1 && lines[0] === '@AGENTS.md';
+}
+
+/**
+ * `CLAUDE.md` 与同目录 `AGENTS.md` 的别名判定：只有两种形态可接受 —— 逐字节相同，或
+ * `CLAUDE.md` 是内容仅为 `@AGENTS.md` 一行的裸 include。
+ *
+ * 不假设哪一侧是权威：`CLAUDE.md` 为源、`AGENTS.md` 为逐字镜像的项目同样满足本判定
+ * （逐字节相同），因此判定只看「关系是否合规」，不看方向。
+ */
+function isAcceptableClaudeAlias(claudeContent: string, agentsContent: string): boolean {
+  return claudeContent === agentsContent || isBareAgentsInclude(claudeContent);
+}
+
+/**
+ * 别名漂移**检测**（只告警，不修复）。
+ *
+ * 为什么需要它：`saga2_design/CLAUDE.md` 曾是同目录 `AGENTS.md` 的内容副本，长期落后两条硬规则
+ * （2397 B vs 5259 B），任何读 Claude 侧的路径都静默拿到陈旧规则集，数月无人发现 —— 因为过去
+ * 没有任何检查。这里只把漂移**摆到扫描期**：不改 `enabled`、不改 `description` / `name` /
+ * `contentFingerprint` / `subProjectPath`，也不自动禁用、编辑或合并任何条目；怎么处置属于项目
+ * 策展人（治理口径见 `docs/product-rules/meka-project-metadata-governance.md`）。
+ *
+ * 边界：
+ * - 只在**同目录**找 `AGENTS.md`。同目录没有 `AGENTS.md` 时 `CLAUDE.md` 是合法独立条目，不存在
+ *   别名关系，不告警；也不去父目录或别处找。
+ * - 判定用扫描期已经读到的正文（`contents`），**不额外读盘**：正文不在手上就静默跳过，绝不因为
+ *   任何缺失、权限或读取异常把整次扫描变成 reject。
+ * - 告警只进 host 日志，不进 manifest，更不进注入给模型的参考列表。
+ */
+function warnOnDivergentClaudeAliases(
+  root: string,
+  items: readonly Pick<DiscoveredMekaProjectMetadata, 'itemType' | 'sourcePath'>[],
+  contents: ReadonlyMap<string, string>,
+): void {
+  for (const item of items) {
+    if (item.itemType !== 'agents-md') continue;
+    if (path.posix.basename(item.sourcePath) !== 'CLAUDE.md') continue;
+    const siblingPath = path.posix.join(path.posix.dirname(item.sourcePath), 'AGENTS.md');
+    const claudeContent = contents.get(item.sourcePath);
+    const agentsContent = contents.get(siblingPath);
+    if (claudeContent === undefined || agentsContent === undefined) continue;
+    if (isAcceptableClaudeAlias(claudeContent, agentsContent)) continue;
+    try {
+      log.warn(
+        'Meka project CLAUDE.md does not alias its sibling AGENTS.md: make it a bare `@AGENTS.md` include, make it byte-identical, or accept the divergence deliberately and record the reason in that item\'s notes in the project metadata panel',
+        {
+          root,
+          claudePath: path.join(root, item.sourcePath),
+          agentsPath: path.join(root, siblingPath),
+          claudeBytes: Buffer.byteLength(claudeContent, 'utf8'),
+          agentsBytes: Buffer.byteLength(agentsContent, 'utf8'),
+        },
+      );
+    } catch {
+      // 告警是附带信息（dev 终端断开等会让写日志抛错），不得反过来把整次扫描带崩。
+    }
+  }
+}
+
 export async function discoverLocalMekaProjectMetadata(
   projectRoot: string,
   rgPath: string,
@@ -326,9 +401,12 @@ export async function discoverLocalMekaProjectMetadata(
           (item): item is { sourcePath: string; itemType: MekaProjectMetadataItemType } =>
             item.itemType !== null,
         );
-      return Promise.all(
+      // 正文在扫描期只读一次：指纹与别名漂移检测共用同一份，检测因此不额外读盘。
+      const contents = new Map<string, string>();
+      const items = await Promise.all(
         candidates.map(async ({ sourcePath, itemType }) => {
           const content = (await readFile(root, sourcePath)).content;
+          contents.set(sourcePath, content);
           return {
             itemType,
             sourcePath,
@@ -339,6 +417,8 @@ export async function discoverLocalMekaProjectMetadata(
           };
         }),
       );
+      warnOnDivergentClaudeAliases(root, items, contents);
+      return items;
     }),
   );
   return discovered.flat();

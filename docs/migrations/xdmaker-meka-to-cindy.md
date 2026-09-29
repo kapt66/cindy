@@ -6714,6 +6714,61 @@ CLI）是主路径**；`editor-unity-mcp` 所述的 `unity-editor` MCP **服务�
 - **一句话结论（本条）**：随包出厂基线与真实工作区重新对齐（54→66 条、指纹 66/66 一致、描述 0 条超限），
   **不改任何机制、不改任何运行期代码、不改用户数据**；`basic.path` 与 `roleDefaults` 逐字保留。
 
+### 11.34 项目元数据与别名治理：从人工纪律改为机械守卫（2026-09-29）
+
+**起因**：维护者追问「为什么看起来启用了全部，但个别又没启用」。查清后确认 `enabled: false` 是
+`includeAllProjectMetadata`（`runtimeConfig.ts:164-175` 的 `if (item.enabled === false) continue`）
+唯一盖不住的例外；而它被用来长期遮盖**真正的重复**，有三个已知失效模式：① 匹配键是
+`${rootPath ?? ''}\0${sourcePath}\0${itemType}`，文件改名/移动即静默失效；② 只对 Cindy 生效 ——
+Codex/Claude/Pi 原生读 `AGENTS.md`/`CLAUDE.md`/`SKILL.md`，不看我们的 manifest；
+③ 它要么在随包基线（每包一份）要么在项目根 override（每机一份），两台机器可给出不同答案。
+
+**同时查实两处机制事实**（此前无人登记）：
+- **重名 skill 不会被拦，会被静默改名**：`normalizeDiscoveredSkillId`（`runtimeConfig.ts:204-226`）
+  对同名 id 依次加 `-2`/`-3`。**维护者裁决：同名不同路径是合法的**（同一 skill 名在两个子项目
+  可以是两个不同用途的实体）⇒ 这是**设计行为，不是缺陷**，不为此加跨目录同名检查。
+- **`notes` 不注入 prompt**：全仓只有面板 IPC（`localDb/ipc/mekaProjectMetadata.ts:103`）、重扫保留
+  （`metadataScanner.ts:42`）与可编辑字段表在读它，`runtimeConfig` 无任何读取方 ⇒ 它是记录
+  「为什么禁用 + 权威副本在哪」的正确位置（面板可见、重扫保留、不花 token）。
+
+**改了什么**（能力不变，只把纪律变成守卫）：
+
+1. **新规范** `docs/product-rules/meka-project-metadata-governance.md`（并由根 `AGENTS.md` 索引）：
+   区分「文件该不该存在」与「该不该注入」；`enabled:false` 的适用边界与三个失效模式；
+   四类判据（指针 / 内容副本 / 无独立理由 / 别名触发入口）；硬规矩（别名只写 include、禁用必须
+   留痕、权威条目描述标注关系、**同名不同路径合法**、描述 ≤300 且不含 `|`/反引号、
+   `basic.path` 保持 token）。
+2. **新增别名漂移检测**（`metadataScanner.ts:293`/`:309`/`:329`/`:420` + 测试 9 例）：扫描到
+   `CLAUDE.md` 时与其**同目录** `AGENTS.md` 比对，既非逐字节相同、也非「内容仅 `@AGENTS.md` 一行」
+   即告警，并给出三种处置建议。**纯检测**：不写任何 manifest 字段、不自动禁用/合并、失败不抛错、
+   复用已读正文（零额外读）。已对**真实 SAGA2 工作区只读实跑**谓词：`saga2_design/CLAUDE.md`
+   （2397 B vs 5259 B）**告警**、`世界观-worldbuilding/CLAUDE.md`（37755 B 逐字相同）与
+   `saga2_unity/CLAUDE.md`（15 B include）**不告警** —— 恰好一个真阳性、零假阳性。
+3. **新增随包基线不变量守卫**（`__tests__/saga2BundledBaseline.test.ts`，8 例）：严格 `JSON.parse`、
+   头部身份、`basic.path` 非绝对、逐条字段完整性（含 `enabled` 必须 boolean、`rootPath` 必须缺省
+   —— 绝对 `rootPath` 会让全量展开项被**静默跳过**）、键唯一、描述 ≤300 码点且不含
+   `|`/反引号/换行、**禁用条目必须带 `notes`**、`projectMetadataSelection` 无悬空引用。
+   已做变异咬合证明（指向坏副本 ⇒ 相应断言变红并点名条目）。
+4. **随包基线自身遵守新规矩**：5 条 `enabled:false` 全部补齐 `notes`，写清「为什么禁用 + 权威副本
+   在哪」；其中 `saga2-alias-skill` 标注为**待维护者复核**（它是 `$saga2` 转接触发入口，按治理文档
+   §3 属「应当启用」的类别），`saga2_unity/.agents/skills/saga2-project-battle-designer` 标注为
+   「应删除文件的旧版副本，`enabled:false` 只是过渡」。
+
+**待 SAGA2 侧处理（本仓只报告，未改用户工作区一行）**：
+- `saga2_design/CLAUDE.md` 落后于其 `AGENTS.md`，缺「三级复核边界」与「配置表普通生产单次授权例外」
+  —— 按治理文档应收敛为 `@AGENTS.md` include；该目录未声明权威方向，而同仓 `世界观-worldbuilding/`
+  声明「CLAUDE.md 为源」，若沿用则**领的是镜像、落后的是源**，需项目侧定夺。
+- `世界观-worldbuilding/` 的 `CLAUDE.md` 与 `AGENTS.md` 各 37755 B **逐字相同**，靠人工同步 ⇒
+  应改为单向 include。
+- `saga2_unity/.agents/skills/saga2-project-battle-designer/SKILL.md` 是旧版副本（写死旧机绝对路径、
+  所列 `Game/Battle` 下 `BattleRole*` 已不存在）⇒ 应删文件而非长期 `enabled:false`。
+- 根因：`tool-skill-refresh` 只覆盖 `script-*`，`artist-*` / `editor-*` / `doc-*` 仍是「仅预留」
+  ⇒ 这几族的正文与清单**最容易腐坏**，是上述漂移的结构性来源。
+
+- **一句话结论（本条）**：**能力零变化**；把「靠人记」的四条元数据纪律（别名形态、禁用留痕、
+  描述边界、基线身份）变成三道机械守卫 + 一份规范文档，并首次对真实工作区拿到了「一个真阳性、
+  零假阳性」的别名漂移检测证据。
+
 
 
 
