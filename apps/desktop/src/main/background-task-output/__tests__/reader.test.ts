@@ -1,3 +1,4 @@
+import fsSync from 'node:fs';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,6 +8,35 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { readBackgroundTaskOutputTail, readSessionBackgroundTaskOutputTail } from '../reader';
 
 let dir: string;
+
+/**
+ * 本机（当前账号）能不能建**文件**符号链接。
+ *
+ * Windows 上 `fs.symlink(target, link)`（默认 `'file'`）需要 SeCreateSymbolicLinkPrivilege：
+ * 没开开发者模式 / 不是管理员的账号稳定报 `EPERM`。按
+ * `docs/dev-rules/engineering-conventions.md` §4 的既有规则，**目录**链接要用 `'junction'`
+ * （不需要特权），而**文件**链接在无特权账号上无法表达，必须在测试里显式说明并跳过 ——
+ * 不得直接写裸 symlink 让整条用例在那种机器上必红（会把真实通过的东西报成回归）。
+ */
+const canCreateFileSymlink = (() => {
+  const probeDir = path.join(os.tmpdir(), `bg-task-symlink-probe-${process.pid}`);
+  try {
+    fsSync.mkdirSync(probeDir, { recursive: true });
+    const target = path.join(probeDir, 'target.txt');
+    const link = path.join(probeDir, 'link.output');
+    fsSync.writeFileSync(target, 'probe');
+    fsSync.symlinkSync(target, link);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    try {
+      fsSync.rmSync(probeDir, { recursive: true, force: true });
+    } catch {
+      /* best effort */
+    }
+  }
+})();
 
 beforeEach(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), 'bg-task-output-'));
@@ -55,13 +85,18 @@ describe('readBackgroundTaskOutputTail', () => {
     expect(result).toMatchObject({ ok: true, text: 'yyyyyyyyy\n', truncated: true });
   });
 
-  it('rejects a link whose real target is not an output file', async () => {
-    const target = path.join(dir, 'secret.txt');
-    await fs.writeFile(target, 'secret');
-    const link = path.join(dir, 'b6.output');
-    await fs.symlink(target, link);
-    expect(await readBackgroundTaskOutputTail(link)).toEqual({ ok: false, reason: 'forbidden' });
-  });
+  // 无特权 Windows 账号建不了**文件**符号链接（EPERM）。这一条除了跳过没有别的表达方式：
+  // 换成硬链接时 realpath 返回的是链接自身路径，测不到「真实目标不是 .output」这条分支。
+  it.skipIf(!canCreateFileSymlink)(
+    'rejects a link whose real target is not an output file',
+    async () => {
+      const target = path.join(dir, 'secret.txt');
+      await fs.writeFile(target, 'secret');
+      const link = path.join(dir, 'b6.output');
+      await fs.symlink(target, link);
+      expect(await readBackgroundTaskOutputTail(link)).toEqual({ ok: false, reason: 'forbidden' });
+    },
+  );
 
   it('reads through a symlinked parent directory by checking the canonical path', async () => {
     // macOS 的 /tmp → /private/tmp 就是这种形态:上级目录是链接,真实目标仍是 .output 文件。
@@ -69,7 +104,9 @@ describe('readBackgroundTaskOutputTail', () => {
     await fs.mkdir(realDir);
     await fs.writeFile(path.join(realDir, 'b7.output'), 'via link\n');
     const linkedDir = path.join(dir, 'linked');
-    await fs.symlink(realDir, linkedDir, 'dir');
+    // Windows 上目录链接必须用 `'junction'`：`'dir'` 同样需要符号链接特权(EPERM)，
+    // 而 junction 不需要 —— 且 junction 也走 realpath 解析，测的是同一条「看规范路径」分支。
+    await fs.symlink(realDir, linkedDir, process.platform === 'win32' ? 'junction' : 'dir');
     expect(await readBackgroundTaskOutputTail(path.join(linkedDir, 'b7.output'))).toMatchObject({
       ok: true,
       text: 'via link\n',
