@@ -6670,7 +6670,8 @@ windows shard 1，均 `if: matrix.shard == 1`）把
 | `enabled:false` | 5 条 | **5 条不变**（重扫保留语义，未被翻回 true） |
 | `notes` | 5 条（其中 2 条与磁盘事实不符） | 36 条（含对 2 条失真 notes 的字节级更正） |
 | `basic.path` | token `saga2` | **token `saga2` 不变**（不得写成绝对路径） |
-| `roleDefaults` | `mcp=[project-agent]` + 4 条 `projectMetadataSelection` | **逐字不变** |
+| `roleDefaults.projectMetadataSelection` | 4 条 | **逐字不变** |
+| `roleDefaults.mcp` | `[project-agent]` | **清空**（2026-09-29 紧随其后的小提交；它是 `mcp-router` 的冗余别名，见 §6.28 就地更正与 `meka-capability-layers.md` §3） |
 
 **为什么必须做**：`description` 是 order-65 段注入给模型的「用途」文本，属**随包注入内容**；旧基线的
 28 条指纹失效意味着「内容已变但描述还是旧的」，11 条超 300 字意味着注入时被截断成死文本。

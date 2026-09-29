@@ -93,9 +93,12 @@ describe('Meka runtime project/role resolution', () => {
     // `useProjectDefaults` absorbs the project's default MCP server, and `includeAllBundledSkills`
     // adds every skill the packaged catalog scans on top of it — the catalog now scans exactly one.
     expect(resolved.skills.map((skill) => skill.id).sort()).toEqual(['platform-capabilities']);
-    // `meka-design` is the one entry the manifest declares itself: it cannot be re-derived from the
-    // project, unlike the `project-agent` entry the project's `roleDefaults` contributes.
-    expect(resolved.mcp.map((entry) => entry.id)).toEqual(['project-agent', 'meka-design']);
+    // `meka-design` is the one entry the default role manifest declares itself. The bundled project
+    // no longer contributes a `roleDefaults.mcp` entry: it used to declare `project-agent`, which is
+    // only a compatibility alias of `mcp-router` (same `mcp_router` server, same tools) and is
+    // therefore already covered by the platform baseline — see `meka-capability-layers.md` §3 and
+    // `meka-runtime-mcp.ts`'s `ROUTER_PROVIDER_IDS` comment.
+    expect(resolved.mcp.map((entry) => entry.id)).toEqual(['meka-design']);
     // No P4 root is configured in this case, so every selected reference file is unreadable and
     // must be skipped: `includeAllProjectMetadata` never produces a dangling reference.
     expect(resolved.projectReferences).toEqual([]);
@@ -116,7 +119,7 @@ describe('Meka runtime project/role resolution', () => {
     });
     expect(resolved.promptText).toContain('Establish the relevant contracts first');
     expect(resolved.skills.map((skill) => skill.id).sort()).toEqual(['platform-capabilities']);
-    expect(resolved.mcp.map((entry) => entry.id)).toEqual(['project-agent', 'meka-design']);
+    expect(resolved.mcp.map((entry) => entry.id)).toEqual(['meka-design']);
     expect(resolved.projectReferences).toEqual([]);
   });
 

@@ -1561,7 +1561,11 @@ function buildChecks(ctx) {
               );
             }
           } else {
-            // 项目 `roleDefaults.mcp`（saga2 = project-agent）必须被默认角色吸收。
+            // 项目 `roleDefaults.mcp` 里作者显式声明的 provider 必须被默认角色吸收。
+            // 注意：随包 saga2 基线自 2026-09-29 起 `roleDefaults.mcp` 为空，因此这段在这个项目上
+            // 是空循环（本机项目根 override 若仍声明 `project-agent` 才会进来）；它不是死代码 ——
+            // 任何声明了 `roleDefaults.mcp` 的项目/override 都靠它兜住，且 `project-agent` 只是
+            // `mcp-router` 的兼容别名，平台基线已保证该 server 挂载，所以不声明也不缺能力。
             for (const providerId of contributions.mcpProviderIds) {
               if (!config.mcpProviderIds.includes(providerId)) {
                 problems.push(

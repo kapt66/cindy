@@ -13,8 +13,9 @@
 > 1. `README.md`（Forge 要求资源树非空）；
 > 2. `skills/通用/platform/platform-capabilities/SKILL.md` —— **唯一的随包 Skill**
 >    （压缩到 36 行 / 约 1,349 字符，六档能力阶梯 + 配置层级 + 恢复与降级 + 结果归属）；
-> 3. `projects/saga2/project.json` —— 只保留 `basic` 身份与 54 条 `metadata` 发现清单；
->    它的 `roleDefaults` 只剩 `mcp`（`project-agent`）与 `projectMetadataSelection`，
+> 3. `projects/saga2/project.json` —— 只保留 `basic` 身份与 66 条 `metadata` 发现清单；
+>    它的 `roleDefaults` 只剩 `projectMetadataSelection`（`mcp` 已空 —— 原 `project-agent` 声明
+>    是 `mcp-router` 的冗余别名，见下文「业务 MCP 与平台 provider 的边界」），
 >    **没有 `promptFramework`、没有 `skills`**。
 >
 > 被删除的内容：**整个战斗 workflow 机制**（`combatWorkflowPolicy.ts` /
@@ -209,8 +210,9 @@ MCPRouter 绑定的远程项目可以作为当前项目的外部参考工作面�
   `skills` / `rules` / `promptFragments` / `projectMetadataSelection`
   的显式列表**刻意留空**，避免「显式列表」与「全量展开」两套来源互相漂移；**`mcp` 不空**——它显式
   声明 `{ id: 'meka-design', providerId: 'meka-design' }`，因为项目侧推不出这条 provider，
-  这是退役角色当时 pin 的 MCP；`roleDefaults.mcp` 另由项目侧声明 `project-agent`
-  （`projects/saga2/project.json` 的 `roleDefaults.mcp`）。
+  这是退役角色当时 pin 的 MCP；`roleDefaults.mcp` 现在**为空**（2026-09-29 起）—— 它此前声明的
+  `project-agent` 只是平台 `mcp-router` 的兼容别名，冗余且会被 `mergePlatformMcp` 的去重键漏过，
+  于是同一个 server 在解析结果里出现两次，见下文「业务 MCP 与平台 provider 的边界」。
 - **渐进披露（元数据通道的正文一律不内联）**：项目规范类元数据（`agents-md` / `rule`）**不再把
   正文写进 prompt**，而由 order 65 段 `[MEKA_PROJECT_REFERENCES]` 投递「**作用范围 | 绝对路径 | 描述**」
   清单（**作用范围的参照系是该条目自己的 root**，不是永远相对 `projectRoot`：来自 `additionalPaths`

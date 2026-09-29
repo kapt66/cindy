@@ -1014,7 +1014,7 @@ Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台；Meka 渠�
 | WL-11.3 | 会话行绑定 project/role、工作目录解析为存在的绝对路径、`is_formal=0` | `workspace_kind=meka project=saga2 role=combat-development is_formal=0 workdir=C:/Workspace/saga2/saga2_project` |
 | WL-11.4 | Agent 真实跑完一轮并产出回复 | `回复="收到"` |
 | WL-11.5 | 角色上下文注入运行期（由运行中会话回显字段行证明；身份判定锚在 `projectId`/`roleId`，`displayName` 可能被模型按输出语言改写，见 §6） | `projectId=saga2 roleId=combat-development displayName="战斗开发"`（该次逐字复述；另一次实测被改写为 `Combat Development`，仍判通过） |
-| WL-11.6 | 运行期按角色解析**角色级 MCP / 技能快照含角色声明的技能**（**workflow 已随机制删除：`MekaRuntimeConfig` 上没有该字段，运行期不再解析它**，见 §8.12）；**默认角色正向断言**（2026-09-23 重写口径，smoke 默认路径即命中）：**默认角色确实贡献角色级技能与项目元数据**——`skillsCount > platformSkillsCount`、MCP 集合 ⊇ 平台基线（`mcp-router`）**且** ⊇ 项目 `roleDefaults` 的 provider、快照技能 ⊇ 项目默认技能且总数 > 平台基线（旧口径「`skillsCount === platformSkillsCount`、平台基线外 MCP 为空、快照技能数 === platformSkillsCount」**已作废**，它断言的是「刻意零注入」）；**并断言会话 system 前缀里出现 `[MEKA_PROJECT_REFERENCES]`（order 65）且不含任何 `agents-md` / `rule` 正文**（该项目没有有效规范类元数据时该段不出现——空集合不渲染，这一支另行处理）。**不得**断言 mcp/skills 为空或无快照——Host 平台基线对每个普通 Meka 任务都存在。**⚠️ 本条的战斗角色分支与 workflow 断言已失效，脚本待改，见上文 2026-09-29 块与 §8.12 第 4 条第 7 项** | `workflow=saga2-combat-development-v1 mcp=mcp-router,project-agent skillsCount=2 快照技能=combat-skill-configuration,platform-capabilities`（**2026-09-14 历史证据**；其中 `workflow` 字段与 `combat-skill-configuration` 技能随本次交付消失） |
+| WL-11.6 | 运行期按角色解析**角色级 MCP / 技能快照含角色声明的技能**（**workflow 已随机制删除：`MekaRuntimeConfig` 上没有该字段，运行期不再解析它**，见 §8.12）；**默认角色正向断言**（2026-09-23 重写口径，smoke 默认路径即命中）：**默认角色确实贡献角色级技能与项目元数据**——`skillsCount > platformSkillsCount`、MCP 集合 ⊇ 平台基线（`mcp-router`）**且** ⊇ 项目 `roleDefaults` 的 provider、快照技能 ⊇ 项目默认技能且总数 > 平台基线（旧口径「`skillsCount === platformSkillsCount`、平台基线外 MCP 为空、快照技能数 === platformSkillsCount」**已作废**，它断言的是「刻意零注入」）；**并断言会话 system 前缀里出现 `[MEKA_PROJECT_REFERENCES]`（order 65）且不含任何 `agents-md` / `rule` 正文**（该项目没有有效规范类元数据时该段不出现——空集合不渲染，这一支另行处理）。**不得**断言 mcp/skills 为空或无快照——Host 平台基线对每个普通 Meka 任务都存在。**⚠️ 本条的战斗角色分支与 workflow 断言已失效，脚本待改，见上文 2026-09-29 块与 §8.12 第 4 条第 7 项** | `workflow=saga2-combat-development-v1 mcp=mcp-router,project-agent skillsCount=2 快照技能=combat-skill-configuration,platform-capabilities`（**2026-09-14 历史证据**；其中 `workflow` 字段与 `combat-skill-configuration` 技能随本次交付消失）。**2026-09-29 起：随包 saga2 基线的 `roleDefaults.mcp` 已清空**（它此前贡献的 `project-agent` 只是 `mcp-router` 的冗余别名，见 `meka-capability-layers.md` §3）⇒ **干净机器上默认角色的 MCP 集合应为 `mcp-router,meka-design`**；本机因项目根 override 仍声明该别名，实跑仍会显示三个 —— 两者都对，差别在 override 而不在基线。 |
 | WL-11.7 | 新会话在 Meka 分区该项目容器内，且不在普通「对话」分组内 | `会话在项目「SAGA2」容器内；普通对话分组排除=已核对` |
 | WL-11.8 | 同一项目内再次点击新建入口时保留当前草稿已选角色（现行行为，裁决见 §8.2 第 6 条） | 改动前：`fresh 默认=「通用开发」；切到「战斗开发」后同项目重进仍为「战斗开发」`；**第二次更新（2026-09-23）期望不变：`fresh 默认=「默认角色」…`（待实跑）** |
 
@@ -1031,6 +1031,12 @@ Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台；Meka 渠�
 > **按角色 + 平台合并后固化到该会话快照**。上表的差异正是这两条的实测对照。
 > 角色取值也不是硬编码：`general-development` 的 `mcpProviderIds` 里出现 `meka-design`
 > 只能来自该角色清单的 `mcp[0].providerId`。
+>
+> **就地更正（2026-09-29，不改写上表原值）**：上表是 2026-09-14 的实测快照，其中两个角色
+> （`general-development` / `combat-development`）与 `project-agent` 声明**均已不在随包**。
+> 上表对照力仍在（「角色级 MCP 按角色取并集」这条不变），但**数值不可当作现行期望**：
+> `project-agent` 只是 `mcp-router` 的兼容别名，已从随包基线移除；`workflow` 行整行作废。
+> 现行期望以 WL-11.6 行为准。
 >
 > **时效（2026-09-23）**：上表是 **2026-09-14** 的实测快照，左列的对照角色
 > `general-development`（通用开发）**已退役**（行与会话重绑到 `<projectId>-default-role`，

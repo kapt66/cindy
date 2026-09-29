@@ -843,13 +843,7 @@
     }
   ],
   "roleDefaults": {
-    "mcp": [
-      {
-        "id": "project-agent",
-        "providerId": "project-agent",
-        "enabled": true
-      }
-    ],
+    "mcp": [],
     "projectMetadataSelection": [
       {
         "sourcePath": "AGENTS.md",
