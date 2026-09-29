@@ -17,10 +17,33 @@
   不能只以 HTTP 200、文件存在或 gzip 可解压作为成功条件。
 - `maker-cc-manager` bundle 不使用上述 runtime 版本号；它由
   `packages/maker-cc-manager/src/protocol.ts` 的 `CC_MGR_BUNDLE_VERSION` 单独 pin。当前为
-  `0.0.9/protocol 4`，在 protocol 3 的任意二进制 Skill 文件规范 base64 投递之上增加了
-  Full access 前的 subagent 模型能力预检。修改该 pin 后必须运行
+  `0.0.10` / protocol `5`（pin 与 protocol 的最新值一律以该文件为准，本文不复述具体数字）。
+  修改该 pin 后必须运行
   `pnpm --filter @cindy/maker-cc-manager bundle`，并让 MCPRouter 从同一 Cindy 源码重建、探测
   和重启 daemon；只发布 Claude/Codex runtime 资产不会更新 cc-manager。
+
+### cc-mgr bundle 的 CDN 段（L2：按版本交付，2026-09-29 落地）
+
+`runtime-manifest-<platformKey>.json` 增加**可选**的 `ccMgr` 段，让远端可以**按客户端要求的
+版本**取用 bundle，而不必等镜像重建：
+
+| 项 | 规则 |
+| --- | --- |
+| 对象路径 | `cc-mgr/<managerVersion>/cc-mgr.mjs` —— **无平台段**（cc-mgr 是平台无关的 JS，各平台同一份字节） |
+| 产物形态 | **明文**（不 gzip），因此 manifest 里只有**一个** `sha256`；不得复用 claude/codex 的 `binarySha256` 语义 |
+| 段字段 | `managerVersion`、`protocolVersion`、`file`、`sha256`、`size`（`protocolVersion` 必须一起记：manager 版本相同但 protocol 不同属于不可部署的 pin mismatch） |
+| 可选性（红线） | 消费端把**缺失视为合法**并回退镜像内 bundle；`schemaVersion` 保持 `1`。老镜像 / 老区域 / 老 manifest 必须继续可用 |
+| 不可覆盖 | 同路径内容不同**必须失败**，绝不覆盖（与既有 runtime 对象同口径）：否则「同一版本号两份字节」会让两台机器表现不一致且无法回滚 |
+| 版本来源 | 从 `packages/maker-cc-manager/src/protocol.ts` 解析，**不得**在发布脚本里另写副本 |
+| 产物自证 | 发布前必须用产物自身的 `--version` 探针核对它自报的 `managerVersion`/`protocolVersion` 与 pin 一致 —— 「源码常量新、产物旧」正是版本分叉的入口 |
+| 落盘位置 | `apps/desktop/scripts/ci/runtime-release.mjs` 的 `publishCcMgrBundle`；由 `publish-agent-runtimes.mjs` 调用 —— **重建产物 + 自证探针在 `--execute` 之前就做**（dry-run 因此也会先构建并核对 pin，几秒的代价换来「打印出来的对象路径与摘要确实是这次要发的字节」），只有**上传**是 `--execute` 专属 |
+| 回归 | `node --test scripts/__tests__/cc-mgr-cdn-release.test.mjs` |
+| 自动化发布 | **不需要新的发布机制**：cc-mgr 对象由 `pnpm release:runtime:linux-x64` 这条既有链路发出，由 `cindy-meka-cicd` 的 `publish:linux-x64:runtimes` job 在 `pipeline_mode = runtime-assets\|release` 的 web 流水线里调用。该 job 有一条「公共 manifest 已跟上源码 pin 就跳过发布」的复用快路径，因此它**必须把 `ccMgr` 一并纳入 pin 比对**（否则只 bump cc-mgr 的改动会被整段跳过、对象永远发不出去）；同时对 `ccMgr` 段做形状 + 对象 HEAD 校验，并以「源码是否具备该能力」为条件，保证重跑旧 pipeline 不被打挂 |
+
+消费端（MCPRouter）与端到端验证、以及「镜像重建/部署仍必须做」的边界，见 MCPRouter 仓
+`docs/cc-mgr-cdn-delivery.md`。**这一段只解决「客户端比服务端新」的情形**：它不改变
+`protocol/hello` 的精确相等闸门。
+
 - MCPRouter 的构建探针、daemon 启动探针和 agent-tunnel smoke 必须声明同一精确 pin，且
   完整构建必须对 `CINDY_SRC` 当场生成的 bundle 执行 `--version` 探针。任一消费者或源码
   checkout 不一致都必须在镜像构建前失败，不能等到用户创建远程 Worker 才发现。
@@ -28,6 +51,13 @@
   `CC_MGR_BUNDLE_VERSION` 与 protocol 精确匹配作为环境 ready 条件。实例 online、项目已绑定或
   普通 route 可查询都不能替代该握手；不得把旧 bundle 兼容降级成成功。版本错配时应停止业务
   流程并要求从同一 Cindy 源码重建、探测和重启远端 daemon。
+- **版本错配必须可诊断**：客户端不得把 daemon 的
+  `[INVALID_BUNDLE_VERSION] client bundle <X> does not match server bundle <Y>` 作为自由文本
+  透出（它会先被 lazy-create 包装成 `LAZY_CREATE_FAILED`，用户看不到哪边旧、也没有动作入口）。
+  Main 侧统一规约成 `[REMOTE_CC_MGR_VERSION_MISMATCH] client=<X> server=<Y>`
+  （`packages/maker-shared/src/ccManagerRuntimeVersion.ts`，唯一规约点
+  `maker-host/send-outcome.ts` 的 `createHostSendFailure`），渲染层换成带两边版本与
+  「重建并重启远端运行时」指引的提示。细则见 `mcpr-remote-session-routing.md §4.1`。
 
 ## 发布物 runtime ≠ 桌面端打包 runtime
 

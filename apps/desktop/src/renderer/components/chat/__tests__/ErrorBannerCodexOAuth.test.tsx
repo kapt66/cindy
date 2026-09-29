@@ -147,6 +147,24 @@ describe('ErrorBanner OpenAI connection recovery', () => {
     expect(screen.queryByText(error)).toBeNull();
   });
 
+  it('turns the remote cc-mgr runtime mismatch into actionable copy instead of a raw envelope', () => {
+    // Main 把 daemon 的 `[INVALID_BUNDLE_VERSION] client bundle … does not match server
+    // bundle …` 规约成带 marker 的线消息；横幅必须换成「哪边旧、要做什么」这句，
+    // 而不是把 host 信封原样摆给用户（原行为是 LAZY_CREATE_FAILED + 一串无行动指引的英文）。
+    render(
+      <ErrorBanner
+        error="LAZY_CREATE_FAILED: [REMOTE_CC_MGR_VERSION_MISMATCH] client=0.0.10 server=0.0.9"
+        retryText="retry this turn"
+        onRetry={vi.fn()}
+        agentKind="codex"
+      />,
+    );
+
+    expect(screen.getByText('chat.errorBanner.ccMgrVersionMismatch')).toBeTruthy();
+    expect(screen.queryByText(/REMOTE_CC_MGR_VERSION_MISMATCH/)).toBeNull();
+    expect(screen.queryByText(/INVALID_BUNDLE_VERSION/)).toBeNull();
+  });
+
   it('uses cause-neutral Codex app-server retirement copy and does not suggest switching models', () => {
     render(
       <ErrorBanner

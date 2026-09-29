@@ -165,6 +165,7 @@ import { openCcManagerSession } from './cc-manager-client.js';
 import { openMcprTunnel } from './mcpr-tunnel.js';
 import { parseMcprRemoteHostId } from '../../shared/meka-router.js';
 import {
+  assertMcprHostSupportsAgent,
   classifyRemoteSessionTransport,
   resolveRemoteCodexCredentialMode,
 } from './remote-session-routing.js';
@@ -2465,6 +2466,11 @@ export function getMaker(): Maker {
           hostProxyForwards,
         },
       ) => {
+        // 2026-09-29 实测的失败点:`maker-core` 的 pi startSession 对任何 `remoteHostId`
+        // 都先调本钩子(`packages/maker-core/src/agents/pi/index.ts` 的
+        // `if (remoteHostId && this.deps.getRemotePiTransport)`),`mcpr:<id>` 于是直接落到
+        // SSH pool。门禁必须是本函数的第一条语句。
+        assertMcprHostSupportsAgent('pi', remoteHostId);
         const remoteHost = getRemoteSshPool().get(remoteHostId);
         if (!remoteHost) {
           throw new Error(
@@ -2565,7 +2571,13 @@ export function getMaker(): Maker {
       // resume stat 都落到远端机器(pi 进程在远端读)。经 SSH stdin 管道写文件(cat > 原子
       // 写 + chmod),stat 走 statRemotePath 同款脚本,mkdir 走 mkdir -p —— 与 cc-manager
       // bundle 上传同模式,路径绝对不拼进命令行(防 ps / 日志泄漏)。
+      // Pi 的远端形态只有 SSH(`maker-pi-manager` daemon + `SshPiDaemonTransport`),MCPRouter
+      // 隧道承载不了这个引擎。**下方每个远端钩子的第一行都必须先过这道门禁**
+      // (mcpr-remote-session-routing.md §1/§2 的「先分类再动作」):少了它,`mcpr:<id>` 会落到
+      // `getRemoteSshPool()` 变成 `remote SSH host "mcpr:<id>" not found in pool`,把
+      // 「不支持」误报成「SSH 主机没连」(2026-09-29 实测 LAZY_CREATE_FAILED 的根因)。
       getRemotePiFileOps: (remoteHostId) => {
+        assertMcprHostSupportsAgent('pi', remoteHostId);
         const remoteHost = getRemoteSshPool().get(remoteHostId);
         if (!remoteHost) {
           throw new Error(
@@ -2575,6 +2587,7 @@ export function getMaker(): Maker {
         return createRemotePiFileOps(remoteHost);
       },
       getRemoteAgentFileOps: (remoteHostId) => {
+        assertMcprHostSupportsAgent('pi', remoteHostId);
         const remoteHost = getRemoteSshPool().get(remoteHostId);
         if (!remoteHost) {
           throw new Error(`remote SSH host "${remoteHostId}" not found in pool — connect it first under Settings → Remote`);
@@ -2583,6 +2596,7 @@ export function getMaker(): Maker {
       },
       // 远端 pi 二进制路径:probe(远端 `pi --version`)+ cache。
       resolveRemotePiBinaryPath: async (remoteHostId) => {
+        assertMcprHostSupportsAgent('pi', remoteHostId);
         const remoteHost = getRemoteSshPool().get(remoteHostId);
         if (!remoteHost) {
           throw new Error(
@@ -2607,6 +2621,7 @@ export function getMaker(): Maker {
       // 的 MCP 隧道互相踩踏(R2 MCP BUG-1)。Pi 用 host.ensureRemoteForward 直接建
       // 独立 forward,远端端口从独立基数(PI_MCP_FORWARD_PORT_START)顺延。
       rewriteRemotePiMcpBridgeUrl: async (remoteHostId, localUrl) => {
+        assertMcprHostSupportsAgent('pi', remoteHostId);
         const remoteHost = getRemoteSshPool().get(remoteHostId);
         if (!remoteHost) {
           throw new Error(
@@ -2633,6 +2648,7 @@ export function getMaker(): Maker {
       // 「Agent 流量走本地 Proxy」:远端 pi 的 LLM 流量经 SSH remote-forward 走本地代理
       // (与 CC 远端同机制;pref 关闭时 getRemoteAgentProxyEnv 返回 null → 直连)。
       getRemotePiAgentProxyEnv: async (remoteHostId) => {
+        assertMcprHostSupportsAgent('pi', remoteHostId);
         const remoteHost = getRemoteSshPool().get(remoteHostId);
         if (!remoteHost) {
           throw new Error(
@@ -2729,12 +2745,16 @@ export function getMaker(): Maker {
       listTeammates: (input) => listBotTeammates(input),
       readSkillSource: async ({ path: skillPath, remoteHostId }) => {
         if (!remoteHostId) return fs.readFile(skillPath, 'utf8');
+        // 与上面 getRemotePiFileOps 同一族(Pi 远端文件原语):先分类再查 pool,
+        // 否则 `mcpr:` 会报成 `remote SSH host "mcpr:<id>" not found`。
+        assertMcprHostSupportsAgent('pi', remoteHostId);
         const remoteHost = getRemoteSshPool().get(remoteHostId);
         if (!remoteHost) throw new Error(`remote SSH host "${remoteHostId}" not found`);
         return createRemotePiFileOps(remoteHost).readFile(skillPath);
       },
       fingerprintSkillSource: async ({ path: skillPath, remoteHostId }) => {
         if (remoteHostId) {
+          assertMcprHostSupportsAgent('pi', remoteHostId);
           const remoteHost = getRemoteSshPool().get(remoteHostId);
           if (!remoteHost) throw new Error(`remote SSH host "${remoteHostId}" not found`);
           return createRemotePiFileOps(remoteHost).sha256File(skillPath);

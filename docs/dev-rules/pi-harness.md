@@ -456,6 +456,25 @@ Pi CLI 管理入口、内核自更新与旧工具兼容的执行边界见
   `/review` 对 SSH 远端会话前置拦截(device-link 同款);无自动重连(用户手动 Retry,
   与 CC/Codex 对齐);版本差 + daemon 活着时 defer 并显示 UpgradeBanner, 用户确认
   后才 kill + 重装(daemon 已死则静默升级磁盘 bundle)。
+- **MCPRouter 远端(MCPR)有意不支持 Pi**(2026-09-29 补齐门禁):Pi 的远端形态**只有
+  SSH** —— MCPRouter 侧没有 Pi 运行时、没有对应的 tunnel mode,其 project-agent-instances
+  也只把 `agentType` 为 `claude` / `codex` 的实例判为可用。因此在 MCPR 位置下选 Pi 是
+  **不可能成功**的组合,必须在校验阶段就拒绝,而不是等 `startSession` 撞 transport:
+  - 渲染层:判定收在**单一纯函数** `apps/desktop/src/renderer/lib/mcprEngineSurface.ts` 的
+    `resolveMcprEngineSurface(availableVendors, mcprTarget)`(行为单测
+    `lib/__tests__/mcprEngineSurface.test.ts`),两个消费方都只调它 ——
+    `NewMakerDraftRoute`(`effectiveAvailableVendors` → `hiddenSwitcherVendors`,并用同一份集合
+    `fallbackUnavailableVendor` coerce 已落盘的 Pi 草稿)与 `ChatInput` 的 `unifiedAgents`
+    (统一模型列表是「引擎跟着模型走」的入口,漏掉可以从模型行选回 Pi)。
+    规则只有一处,不再两处各写一遍条件。
+  - 主进程:`maker-ipc/register.ts` 的 `ensureRemoteReadyForSessionStart` 在 `mcpr:` 分支对
+    `agentKind === 'pi'` 抛 `MCPR_AGENT_UNSUPPORTED`(渲染层映射成
+    `chat.remoteError.MCPR_AGENT_UNSUPPORTED`);`maker-host/index.ts` 里 Pi 的全部远端钩子
+    第一句调 `assertMcprHostSupportsAgent('pi', remoteHostId)`
+    (见 `docs/dev-rules/mcpr-remote-session-routing.md` §3 第 8 条)。
+  - 回归:`apps/desktop/src/main/maker-host/__tests__/mcprPiTransport.test.ts`。
+  这条**不改变既有能力**:Pi + SSH 仍然完全可用(见 `newMakerProjectPicker.test.ts` 的
+  「does not hide SSH targets for Pi」)。
 
 ## 6. 上线门禁
 

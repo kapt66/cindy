@@ -16,6 +16,10 @@ import { useProviders } from '@/hooks/useProviders';
 
 import { useEffect, useState } from 'react';
 import { isCodexResumeNotReadyProjectionError } from '@cindy/maker-shared/agent-input-projection';
+import {
+  isCcMgrRuntimeVersionMismatchError,
+  readCcMgrRuntimeVersionMismatch,
+} from '@cindy/maker-shared/cc-manager-runtime-version';
 import { isCindyGatewayProxyTokenInvalidError, isResponsesLiteParallelToolCallsError, parseAgentErrorCode, redactSensitiveText } from '@cindy/maker-shared/error-redaction';
 import { chatRemoteErrorGuidanceKey } from '@/lib/autoReviewUnavailableGuidance';
 import {
@@ -176,6 +180,14 @@ export function ErrorBanner({
   // 必须等其它本地 Codex 任务全部结束。main 侧用 CREDENTIAL_SWITCH_BUSY: 前缀编码
   // (makerSendTransaction),这里换成可操作文案;Retry 保留 —— 其它任务结束后重试即成功。
   const isCredentialSwitchBusy = error.startsWith('CREDENTIAL_SWITCH_BUSY:');
+  // 远端 cc-mgr 运行时版本不匹配(MCPRouter 容器内嵌的 daemon 与本机 pin 不一致)。
+  // Main 侧已把 daemon 的 `[INVALID_BUNDLE_VERSION] client bundle X does not match
+  // server bundle Y` 规约成带 marker 的线消息(见
+  // `@cindy/maker-shared/cc-manager-runtime-version`),这里换成「哪边旧、要做什么」的
+  // 可操作提示;两边版本号原样带出来,便于用户/运维直接对上发布记录。
+  const ccMgrVersionMismatch = isCcMgrRuntimeVersionMismatchError(error)
+    ? readCcMgrRuntimeVersionMismatch(error)
+    : null;
   // Codex 单例 app-server 切换鉴权模式(或服务重启)后,旧会话的 thread 随旧进程销毁,
   // 续聊会撞 codex 'thread not found'。把这个看不懂的协议错换成可操作的友好提示:
   // 新建会话即可在新模式下生效(重开本会话走 thread/resume 也可)。'thread not found'
@@ -368,6 +380,11 @@ export function ErrorBanner({
     displayError = t('ipcError.PI_IMAGE_INPUT_UNSUPPORTED');
   } else if (isCredentialSwitchBusy) {
     displayError = t('chat.errorBanner.credentialSwitchBusy');
+  } else if (ccMgrVersionMismatch) {
+    displayError = t('chat.errorBanner.ccMgrVersionMismatch', {
+      client: ccMgrVersionMismatch.clientBundle,
+      server: ccMgrVersionMismatch.serverBundle,
+    });
   } else if (isCodexAppServerForceRetired) {
     displayError = t('chat.errorBanner.codexAppServerRetired');
   } else if (isCodexThreadStale) {

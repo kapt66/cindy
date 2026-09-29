@@ -2,6 +2,7 @@
 
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { spawnSync } from 'node:child_process';
 
 import { loadDotenv } from './ci/lib.mjs';
 import { verifyCdnText } from './ci/release-lib.mjs';
@@ -10,8 +11,12 @@ import { createMekaReleaseStorage } from './ci/release-storage.mjs';
 import {
   AGENT_RUNTIME_DEFINITIONS,
   buildAgentRuntimeManifest,
+  ccMgrBundleSourcePath,
   collectLocalRuntimeAssets,
+  probeCcMgrBundleVersion,
+  publishCcMgrBundle,
   publishRuntimeAssets,
+  readLocalCcMgrPin,
   runtimeManifestKey,
 } from './ci/runtime-release.mjs';
 import { ensurePublishedRuntimes } from '../../../scripts/ensure-agent-binaries.mjs';
@@ -52,6 +57,28 @@ export async function putAgentRuntimeManifestIfChanged(storage, manifestKey, man
   return existing ? 'updated' : 'created';
 }
 
+/**
+ * 发布 cc-mgr bundle：先**重建**产物、用产物自己的 `--version` 探针核对 pin，再上传。
+ *
+ * 为什么在发布脚本里重建而不是复用 `resources/cc-manager/cc-mgr.mjs`：那一份是桌面端打包
+ * 阶段的产物，可能在本次发布之前就已经存在（甚至来自旧源码）。bundle 的版本闸门是精确
+ * 相等，一旦发出「源码常量新、字节旧」的对象，两端分叉就从 CDN 开始了。这里现建现探，
+ * 代价是几秒钟，换来的是「发出去的字节确实自报这个版本」。
+ */
+function buildAndProbeCcMgrBundle(pin) {
+  const build = spawnSync(
+    process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm',
+    ['--filter', '@cindy/maker-cc-manager', 'bundle'],
+    { stdio: 'inherit', shell: process.platform === 'win32' },
+  );
+  if (build.status !== 0) {
+    throw new Error(`cc-mgr bundle 构建失败，pnpm 退出码: ${build.status ?? 'unknown'}`);
+  }
+  const bundlePath = ccMgrBundleSourcePath();
+  probeCcMgrBundleVersion(bundlePath, pin);
+  return bundlePath;
+}
+
 async function main() {
   loadDotenv(undefined, { refreshReleaseConfig: false });
   const args = parseAgentRuntimePublishArgs(process.argv.slice(2));
@@ -61,10 +88,14 @@ async function main() {
   const localAssets = collectLocalRuntimeAssets(args.platform, {
     definitions: AGENT_RUNTIME_DEFINITIONS,
   });
+  // cc-mgr 是平台无关的 JS，各平台 manifest 里是同一段；这里把版本与产物都定下来。
+  const ccMgrPin = readLocalCcMgrPin();
+  const ccMgrBundlePath = buildAndProbeCcMgrBundle(ccMgrPin);
 
   console.log(
     `Cindy agent runtimes (${args.region}/${args.platform}): ` +
-      `Claude ${localAssets.claudeCode.version}, Codex ${localAssets.codex.version}`,
+      `Claude ${localAssets.claudeCode.version}, Codex ${localAssets.codex.version}, ` +
+      `cc-mgr ${ccMgrPin.managerVersion}/protocol ${ccMgrPin.protocolVersion}`,
   );
   if (!args.execute) {
     console.log('本地校验通过；未写入 RustFS。确认后追加 --execute。');
@@ -79,7 +110,15 @@ async function main() {
     path.join(RELEASE_DIR, args.platform),
     { definitions: AGENT_RUNTIME_DEFINITIONS },
   );
-  const manifest = buildAgentRuntimeManifest(args.platform, published.manifestAssets);
+  const ccMgr = await publishCcMgrBundle(storage, {
+    bundlePath: ccMgrBundlePath,
+    pin: ccMgrPin,
+  });
+  const manifest = buildAgentRuntimeManifest(
+    args.platform,
+    published.manifestAssets,
+    ccMgr.manifestAsset,
+  );
   const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
   const manifestKey = runtimeManifestKey(args.platform);
 
@@ -87,7 +126,8 @@ async function main() {
   await verifyCdnText(storage, manifestKey, manifestText);
   console.log(
     `Published ${manifestKey} (${manifestResult}): `
-      + `Claude ${published.results.claudeCode}, Codex ${published.results.codex}`,
+      + `Claude ${published.results.claudeCode}, Codex ${published.results.codex}, `
+      + `cc-mgr ${ccMgr.uploaded ? 'uploaded' : 'reused'} ${ccMgr.manifestAsset.file}`,
   );
 }
 

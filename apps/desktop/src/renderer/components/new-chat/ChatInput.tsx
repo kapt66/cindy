@@ -75,6 +75,7 @@ import {
 } from './SlashCommandDecoration';
 
 import { cn } from '@/lib/utils';
+import { resolveMcprEngineSurface } from '@/lib/mcprEngineSurface';
 import { Spinner } from '@/components/ui/spinner';
 import { toast } from '@/lib/toast';
 import { mapIpcErrorToI18nKey } from '@/utils/ipcError';
@@ -100,6 +101,7 @@ import {
 } from '@/lib/fileDrop';
 import { shouldOpenTextLightbox } from '@/lib/filePreview';
 import { isDangerousAttachmentName } from '../../../shared/attachmentSafety';
+import { parseMcprRemoteHostId } from '../../../shared/meka-router';
 import {
   getDraft as getComposerDraft,
   getOrCreateRemoteOptimisticTransitionCheckpoint,
@@ -1988,13 +1990,27 @@ export function ChatInput({
   // 未加载完成 → 传 undefined(fail-open,不隐藏任何引擎);当前引擎恒在列。
   const { availableVendors: runtimeAvailableVendors, loaded: runtimeAgentsLoaded } =
     useAvailableAgents(deviceLinkDeviceId);
+  // MCPRouter 位置下 Pi 完全没有实现(MCPRouter 实例只宣告 claude / codex;Pi 的远端形态
+  // 只有 SSH)。统一模型列表是「引擎跟着模型走」的入口,漏掉这道门禁会让用户从模型行就把
+  // 草稿的引擎选成 Pi,再在发送时撞 `MCPR_AGENT_UNSUPPORTED`。判定本身收在
+  // `lib/mcprEngineSurface`(与 NewMakerDraftRoute 的 hiddenSwitcherVendors 同一条规则);
+  // `kind === agentKind` 的短路保留(当前引擎始终在列,位置的收敛由草稿侧的
+  // fallbackUnavailableVendor 负责)。
+  const mcprRemoteTarget = useMemo(
+    () => parseMcprRemoteHostId(remoteHostId) !== null,
+    [remoteHostId],
+  );
+  const effectiveRuntimeVendors = useMemo(
+    () => resolveMcprEngineSurface(runtimeAvailableVendors, mcprRemoteTarget),
+    [runtimeAvailableVendors, mcprRemoteTarget],
+  );
   const unifiedAgents = useMemo<readonly AgentKind[] | undefined>(() => {
     if (!runtimeAgentsLoaded) return undefined;
     const kinds = UNIFIED_AGENT_KINDS.filter(
-      (kind) => kind === agentKind || runtimeAvailableVendors.has(agentKindToVendor(kind)),
+      (kind) => kind === agentKind || effectiveRuntimeVendors.has(agentKindToVendor(kind)),
     );
     return kinds.length > 0 ? kinds : undefined;
-  }, [runtimeAgentsLoaded, runtimeAvailableVendors, agentKind]);
+  }, [runtimeAgentsLoaded, effectiveRuntimeVendors, agentKind]);
   // 已有 device-link 任务在断链时仍有 pinned deviceId + renderer outbox 可接住发送，
   // 不能因为被控端 provider 目录暂时拉不到就禁用 composer。远程草稿没有既有 session
   // 可以排队，仍与本地任务一样保留来源门禁。

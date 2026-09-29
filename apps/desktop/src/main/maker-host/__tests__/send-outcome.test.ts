@@ -185,6 +185,32 @@ describe('desktop send outcome helper', () => {
     });
   });
 
+  it('规约远端 cc-mgr 运行时版本不匹配，其余报文透传（L1.3）', async () => {
+    // 现场原文（2026-09-28 实机 `INVALID_BUNDLE_VERSION`）在这里变成可操作的线消息；
+    // 渲染层 ErrorBanner 只认 marker，不再解析 daemon 的自由文本。
+    expect(
+      createHostSendFailure(
+        'LAZY_CREATE_FAILED',
+        '[INVALID_BUNDLE_VERSION] client bundle 0.0.10 does not match server bundle 0.0.9',
+      ),
+    ).toEqual({
+      kind: 'host-send',
+      accepted: false,
+      code: 'LAZY_CREATE_FAILED',
+      message: '[REMOTE_CC_MGR_VERSION_MISMATCH] client=0.0.10 server=0.0.9',
+    });
+    // 认不出形状的错误一个字都不许改（这条构造器覆盖全部 host-send 失败路径）。
+    expect(createHostSendFailure('LAZY_CREATE_FAILED', 'remote SSH host "mcpr:x" not found in pool').message)
+      .toBe('remote SSH host "mcpr:x" not found in pool');
+    // 幂等：已经被规约过的消息再规约一次不变。
+    expect(
+      createHostSendFailure(
+        'LAZY_CREATE_FAILED',
+        '[REMOTE_CC_MGR_VERSION_MISMATCH] client=0.0.10 server=0.0.9',
+      ).message,
+    ).toBe('[REMOTE_CC_MGR_VERSION_MISMATCH] client=0.0.10 server=0.0.9');
+  });
+
   it('exports the host failure code list used for sanitizer allow-listing', async () => {
     expect(HOST_SEND_FAILURE_CODES).toEqual([
       'WORKDIR_MISSING',

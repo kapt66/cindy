@@ -590,7 +590,39 @@ describe('Shared create project picker', () => {
     // fail-open:注册结果没回来之前不隐藏任何引擎;当前引擎恒在列。
     expect(chatInputSource).toContain('if (!runtimeAgentsLoaded) return undefined;');
     expect(chatInputSource).toContain(
-      'kind === agentKind || runtimeAvailableVendors.has(agentKindToVendor(kind)),',
+      'kind === agentKind || effectiveRuntimeVendors.has(agentKindToVendor(kind)),',
+    );
+    expect(chatInputSource).toContain(
+      'resolveMcprEngineSurface(runtimeAvailableVendors, mcprRemoteTarget)',
+    );
+  });
+
+  // 2026-09-29 实机缺口:用户在 MCPR 位置下把引擎切到 Pi,首条消息报
+  //   LAZY_CREATE_FAILED: remote SSH host "mcpr:<id>" not found in pool
+  // ——根因是 Pi 的远端钩子没做 transport 分类(mcpr-remote-session-routing.md §1/§2),
+  // 而 `pi` + `mcpr:` 本来就是没有实现的组合(MCPRouter 实例只宣告 claude / codex;
+  // Pi 的远端形态只有 SSH)。两道门禁:引擎面收掉 Pi + 已落盘草稿 coerce,
+  // 主进程侧另有 MCPR_AGENT_UNSUPPORTED 兜底。
+  it('hides Pi from the engine surface when the draft targets an MCPRouter location', () => {
+    expect(newMakerDraftRouteSource).toContain(
+      "const mcprRemoteTarget = parseMcprRemoteHostId(effectiveRemoteHostId) !== null;",
+    );
+    // 判定收在单一纯函数里(`lib/mcprEngineSurface`,行为由它自己的单测覆盖),
+    // 两个消费方都只调它 —— 不再各自维护一份条件。
+    expect(newMakerDraftRouteSource).toContain(
+      'resolveMcprEngineSurface(availableVendors, mcprRemoteTarget)',
+    );
+    // 引擎下拉与「引擎跟着模型走」的统一列表用同一份收窄后的集合。
+    expect(newMakerDraftRouteSource).toContain('const effectiveAvailableVendors = useMemo');
+    expect(newMakerDraftRouteSource).toContain('!effectiveAvailableVendors.has(vendor)');
+    // 已落盘的 Pi 草稿(或从 MCPR 位置切过来)必须被 coerce 走,否则触发器会停在一个
+    // 「列表里没有、建也建不出去」的引擎上。
+    expect(newMakerDraftRouteSource).toContain(
+      'fallbackUnavailableVendor(effectiveAvailableVendors);',
+    );
+    // 统一模型列表侧的同口径门禁(漏掉它可以从模型行把引擎选成 Pi)。
+    expect(chatInputSource).toContain(
+      'parseMcprRemoteHostId(remoteHostId) !== null',
     );
   });
 

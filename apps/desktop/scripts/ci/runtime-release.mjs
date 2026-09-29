@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -226,17 +227,159 @@ export function runtimeManifestKey(platformKey) {
   return `runtime-manifest-${platformKey}.json`;
 }
 
-export function buildAgentRuntimeManifest(platformKey, assets) {
+export function buildAgentRuntimeManifest(platformKey, assets, ccMgrAsset) {
   const manifest = {
     schemaVersion: 1,
     platformKey,
     claudeCode: structuredClone(assets.claudeCode),
     codex: structuredClone(assets.codex),
+    // `ccMgr` 是**可选段**：只有确实发布过 cc-mgr bundle 时才写。消费端（MCPRouter 的
+    // `agentBinaryCache.validateManifest`）把「缺失」视为合法并回退镜像内那份，因此
+    // 老 manifest 与「还没发过 cc-mgr 的区域」都不会因此打挂。
+    ...(ccMgrAsset ? { ccMgr: structuredClone(ccMgrAsset) } : {}),
   };
   assertRuntimeManifestAssets(manifest, platformKey, {
     definitions: AGENT_RUNTIME_DEFINITIONS,
   });
   return manifest;
+}
+
+/* ==========================================================================
+ * cc-mgr bundle：按版本可寻址的 CDN 对象（L2「按版本交付」的生产端）
+ *
+ * 与上面 claude/codex 的三点差别，都是刻意的（消费端有对应注释）：
+ *   - **平台无关**：cc-mgr 是一份 JS，各平台同一份字节，所以对象路径里没有 platformKey；
+ *   - **明文**：不做 gzip，因此只有一个 sha256（没有 gzip 摘要 + 解压后摘要的两段校验）；
+ *   - **同时记 protocol**：manager 版本相同但 protocol 不同属于不可部署的 pin mismatch。
+ *
+ * 版本号与摘要都不在这里手写：版本从 `packages/maker-cc-manager/src/protocol.ts` 解析，
+ * 摘要从**构建产物**现算，并且发布前用产物自己的 `--version` 探针核对一遍 —— 这正是
+ * MCPRouter 侧 `build-cc-mgr-bundle.mjs` 的纪律，两端必须同样严。
+ * ========================================================================== */
+
+export const CC_MGR_CDN_OBJECT_PREFIX = 'cc-mgr';
+export const CC_MGR_BUNDLE_FILE_NAME = 'cc-mgr.mjs';
+const CC_MGR_PROTOCOL_SOURCE = ['packages', 'maker-cc-manager', 'src', 'protocol.ts'];
+const CC_MGR_BUILT_BUNDLE = ['packages', 'maker-cc-manager', 'dist', 'cc-mgr.mjs'];
+
+export function ccMgrBundleSourcePath() {
+  return path.join(PROJECT_ROOT, ...CC_MGR_BUILT_BUNDLE);
+}
+
+export function ccMgrProtocolSourcePath() {
+  return path.join(PROJECT_ROOT, ...CC_MGR_PROTOCOL_SOURCE);
+}
+
+/** CDN 对象路径：`cc-mgr/<managerVersion>/cc-mgr.mjs`（无平台段）。 */
+export function ccMgrBundleObjectPath(managerVersion) {
+  if (!VERSION_RE.test(managerVersion)) {
+    throw new Error(`非法 cc-mgr managerVersion=${managerVersion}`);
+  }
+  return `${CC_MGR_CDN_OBJECT_PREFIX}/${managerVersion}/${CC_MGR_BUNDLE_FILE_NAME}`;
+}
+
+/**
+ * 从 `maker-cc-manager` 的 protocol 源码里读出 (managerVersion, protocolVersion)。
+ *
+ * 解析源码而不是 import：`protocol.ts` 是 TS，发布脚本是 ESM 且跑在 node 下，直接 import
+ * 需要转译。两个常量是**手写字符串字面量**（bundle 不用语义化版本体系），因此正则匹配
+ * 足够稳定；匹配不到就 fail，绝不回退默认值。
+ */
+export function readCcMgrPinFromProtocolSource(sourceText) {
+  const bundle = /export const CC_MGR_BUNDLE_VERSION = '([^']+)'/.exec(sourceText);
+  const protocol = /export const PROTOCOL_VERSION = (\d+)/.exec(sourceText);
+  if (!bundle) throw new Error('maker-cc-manager protocol.ts 里找不到 CC_MGR_BUNDLE_VERSION');
+  if (!protocol) throw new Error('maker-cc-manager protocol.ts 里找不到 PROTOCOL_VERSION');
+  const managerVersion = bundle[1];
+  if (!VERSION_RE.test(managerVersion)) {
+    throw new Error(`CC_MGR_BUNDLE_VERSION 不是可发布的版本号: ${managerVersion}`);
+  }
+  return { managerVersion, protocolVersion: Number(protocol[1]) };
+}
+
+export function readLocalCcMgrPin() {
+  return readCcMgrPinFromProtocolSource(fs.readFileSync(ccMgrProtocolSourcePath(), 'utf8'));
+}
+
+/**
+ * 用产物自己的 `--version` 探针核对它自报的版本与 pin 一致。
+ *
+ * 为什么必须做：bundle 是**构建产物**，源码常量改了而产物是旧的（或构建缓存命中）时，
+ * 发布出去的字节与 pin 就对不上 —— 那正是「两端版本分叉」这类事故的入口。宁可在这里
+ * 失败，也不要等用户会话在握手时炸。
+ */
+export function probeCcMgrBundleVersion(bundlePath, expected) {
+  const probe = spawnSync(process.execPath, [bundlePath, '--version'], { encoding: 'utf8' });
+  if (probe.status !== 0) {
+    throw new Error(
+      `cc-mgr bundle 探针失败 (exit=${probe.status ?? 'unknown'}): ${(probe.stderr ?? '').trim()}`,
+    );
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse((probe.stdout ?? '').trim());
+  } catch {
+    throw new Error(`cc-mgr bundle 探针输出不是 JSON: ${(probe.stdout ?? '').trim().slice(0, 200)}`);
+  }
+  if (
+    parsed.managerVersion !== expected.managerVersion
+    || parsed.protocolVersion !== expected.protocolVersion
+  ) {
+    throw new Error(
+      `cc-mgr bundle 自报 ${parsed.managerVersion}/protocol ${parsed.protocolVersion}，`
+      + `与 pin ${expected.managerVersion}/protocol ${expected.protocolVersion} 不一致；`
+      + '先跑 pnpm --filter @cindy/maker-cc-manager bundle 重建产物',
+    );
+  }
+  return parsed;
+}
+
+/**
+ * 上传一个**版本化、不可覆盖**的 cc-mgr 对象，返回 manifest 里要写的那一段。
+ *
+ * 不可覆盖是硬规则（与 runtime 对象同口径）：同路径内容不同必须失败，绝不静默覆盖 ——
+ * 否则「同一个版本号两份不同字节」会在两台机器上表现不一致，且无法回滚。
+ */
+export async function publishCcMgrBundle(storage, options) {
+  const { managerVersion, protocolVersion } = options.pin;
+  const bundlePath = options.bundlePath;
+  if (!fs.existsSync(bundlePath)) {
+    throw new Error(
+      `cc-mgr bundle 不存在: ${bundlePath}；先跑 pnpm --filter @cindy/maker-cc-manager bundle`,
+    );
+  }
+  const objectPath = ccMgrBundleObjectPath(managerVersion);
+  const sha256 = sha256File(bundlePath);
+  const size = fs.statSync(bundlePath).size;
+
+  const remote = await storage.head(objectPath);
+  if (remote) {
+    const remoteSha = remote.metadata.sha256?.toLowerCase();
+    if (remoteSha === sha256 && remote.size === size) {
+      return { uploaded: false, manifestAsset: { managerVersion, protocolVersion, file: objectPath, sha256, size } };
+    }
+    throw new Error(
+      `cc-mgr 版本化对象已存在但内容不同，拒绝覆盖: ${objectPath} `
+      + `(remote sha256=${remoteSha ?? 'missing'} size=${remote.size}, local sha256=${sha256} size=${size})`,
+    );
+  }
+
+  await storage.putFile(objectPath, bundlePath, {
+    metadata: {
+      sha256,
+      'manager-version': managerVersion,
+      'protocol-version': String(protocolVersion),
+    },
+  });
+  const verified = await storage.head(objectPath);
+  if (
+    !verified
+    || verified.size !== size
+    || verified.metadata.sha256?.toLowerCase() !== sha256
+  ) {
+    throw new Error(`cc-mgr 上传后校验失败: ${objectPath}`);
+  }
+  return { uploaded: true, manifestAsset: { managerVersion, protocolVersion, file: objectPath, sha256, size } };
 }
 
 async function prepareCompressedAsset(local, outputDir) {

@@ -75,6 +75,39 @@ transport 分类，再执行 transport 专属动作。MCPRouter 会话不得因�
    **新规则**：新增任何 SSH-only 探针时，调用点必须先分类，且**不得**用
    `startsWith('mcpr:')`、`parseMcprRemoteHostId` 之类的一次性判断代替共享分类器；分类为
    `mcpr` / `local` 时必须走各自的通用路径，SSH-only 分支只接受 `'ssh'`。
+8. **每个远端 hook 的第一句都必须完成 transport 分类或引擎门禁**，而不是只要求
+   「SSH-only 探针」分类。2026-09-29 实机证明了这条更严的口径：Pi 引擎在 MCPR 位置下
+   建任务，首条消息报
+   `LAZY_CREATE_FAILED: remote SSH host "mcpr:f235de4c-…" not found in pool — connect it first under Settings → Remote`。
+   外围 preflight 已正确跳过 SSH（上一节第 7 条的 `ensureRemoteReadyForSessionStart`
+   在 `mcpr:` 上直接 return），**但 `maker-host/index.ts` 里 Pi 的 6 个远端钩子
+   （`getRemotePiTransport` / `getRemotePiFileOps` / Pi 侧 `getRemoteAgentFileOps` /
+   `resolveRemotePiBinaryPath` / `rewriteRemotePiMcpBridgeUrl` / `getRemotePiAgentProxyEnv`）
+   以及伙伴 Skill 的 `readSkillSource` / `fingerprintSkillSource` 一个都没分类**，
+   于是 `mcpr:<id>` 直接进了 `getRemoteSshPool()`。修复：
+   - `remote-session-routing.ts` 新增 `assertMcprHostSupportsAgent(agentKind, remoteHostId)`
+     与类型化错误 `McprUnsupportedAgentError`（`code = 'MCPR_AGENT_UNSUPPORTED'`）；
+   - 上述 8 个钩子的第一句统一调用它；
+   - `maker-ipc/register.ts` 的 `ensureRemoteReadyForSessionStart` 在 `mcpr:` 分支上对
+     `agentKind === 'pi'` 直接 `throwIpcError('MCPR_AGENT_UNSUPPORTED', …)`，
+     渲染层映射成「MCPRouter 远端任务只支持 Claude / Codex」的可操作提示；
+   - 渲染层在 MCPR 位置下把 Pi 从引擎面收掉（`NewMakerDraftRoute` 的
+     `effectiveAvailableVendors` → `hiddenSwitcherVendors` + `fallbackUnavailableVendor`；
+     `ChatInput` 的 `unifiedAgents` 同口径），避免用户选出注定失败的组合。
+   **为什么是「没有实现」而不是「暂时坏了」**：MCPRouter 的 project-agent-instances 只把
+   `agentType` 为 `claude` / `codex` 的实例判为可用（`meka-settings/routerService.ts` 的
+   `normalizeInstance`），而 Pi 的远端形态只有 SSH（`maker-pi-manager` daemon，
+   见 `docs/dev-rules/pi-harness.md`「SSH 远端能力」）。因此这个组合必须**在读取 SSH pool
+   之前**以类型化错误失败，不允许退化成 SSH host 查询。
+   回归测试：`apps/desktop/src/main/maker-host/__tests__/mcprPiTransport.test.ts`
+   （行为级：6 个钩子在 `mcpr:` 上零次触碰 pool；**源码级不变量**：`index.ts` 里每个
+   `getRemoteSshPool().get(remoteHostId)` 所在钩子体内必须出现共享分类器 —— 这条能抓住
+   **将来新增**的未分类钩子，已用「摘掉一处门禁 → 扫描报出 `getRemotePiTransport`」
+   做过负向对照）。
+   **仍未分类的存量旁路（本次有意未改，见交付说明）**：`handleCodexEnvironmentShutdownForRemote`
+   （`index.ts` 约 `:646`）、`refreshRemoteCodexMcpAfterBridgeRecreate` 的 `getReadyHost`
+   （约 `:711`）用 `hostId` 变量名查 pool，`listSshCodexProviders`（约 `:3061`）同理；
+   三处都只在未命中时当作「host 未就绪」跳过或由调用方先分类，不产生误导性归因。
 
 这条契约源自 2026-08-04 的回归：`4d1e01b7f` 合并 `origin/main` 时，第一父提交已有的
 MCPRouter preflight 分支被上游版本覆盖，最终把 `mcpr:<id>` 送进 SSH pool，产生
@@ -150,3 +183,49 @@ MCPRouter Worker 使用 `cindy/0.144.1` Codex runtime。
 `0.0.9/protocol 4`，MCPRouter 生产仍携带 `0.0.7/protocol 3`。当前 MCPRouter 在完整构建前
 静态核对构建脚本、daemon 和 smoke 三处 pin，再探测从指定 `CINDY_SRC` 生成的真实 bundle；
 因此只改 Cindy、只改某一处 MCPRouter 常量或复用旧构建产物都不能通过发布构建。
+
+### 4.1 版本错配必须**可诊断**（2026-09-29）
+
+**不变量**：`INVALID_BUNDLE_VERSION` 不得作为自由文本被拍平成 `LAZY_CREATE_FAILED`。
+daemon 的原文是
+
+```
+[INVALID_BUNDLE_VERSION] client bundle 0.0.10 does not match server bundle 0.0.9
+```
+
+它既不说明哪边旧，也不给任何动作入口；用户（与运维）无法据此判断该升级客户端还是远端运行时。
+
+落地形状：
+
+- **线协议**（`packages/maker-shared/src/ccManagerRuntimeVersion.ts`，
+  export `@cindy/maker-shared/cc-manager-runtime-version`）：
+  marker `[REMOTE_CC_MGR_VERSION_MISMATCH]` + `client=<X> server=<Y>`。提供
+  `projectCcMgrRuntimeVersionMismatch`（规约，**幂等**，认不出形状原样透传）、
+  `isCcMgrRuntimeVersionMismatchError`（渲染层判定）、
+  `readCcMgrRuntimeVersionMismatch` / `readProjectedCcMgrRuntimeVersions`（取版本）。
+  版本号只接受 `[A-Za-z0-9][A-Za-z0-9._-]{0,31}`，避免把 daemon 的自由文本当版本渲染。
+- **唯一规约点**：`maker-host/send-outcome.ts` 的 `createHostSendFailure` —— 所有 host-send
+  失败（lazy create / rehydrate / send）都经过它，一处即可覆盖全部路径。
+- **渲染层**：`components/chat/ErrorBanner.tsx` 命中 marker 时改用
+  `chat.errorBanner.ccMgrVersionMismatch`（5 语言，带 `{{client}}` / `{{server}}` 插值），
+  文案给出「哪边旧 + 用同一份 Cindy 源码重建并重启远端运行时」的行动指引。
+- **回归测试**：`packages/maker-shared/src/__tests__/ccManagerRuntimeVersion.test.ts`
+  （含现场原文、`LAZY_CREATE_FAILED:` 前缀包装、幂等、非法版本号不认、其它错误透传）、
+  `maker-host/__tests__/send-outcome.test.ts` 的规约用例、
+  `components/chat/__tests__/ErrorBannerCodexOAuth.test.tsx` 的横幅用例。
+
+> 仍**未**解决的结构问题（见 MCPRouter 仓 `docs/cc-mgr-version-compatibility.md` 的 L2/L3）：
+> `mcpr:` 路径下客户端无法把匹配的 daemon 送上去，且两侧仍以「精确相等」判定。本条只把
+> 失败从「不可诊断」变成「可诊断 + 有动作」。
+>
+> **L2 已按 A+A 落地代码（2026-09-29）**：客户端在 cc-mgr 隧道上声明 `bundleVersion`
+> （取自真实 pin，见 `maker-host/mcpr-tunnel.ts` 的 `buildMcprTunnelUrl`），MCPRouter 侧
+> 解析并**显式转发**该参数（公开路由 + `proxyAgentTunnel` + runtime 路由 + `openAgentTunnel`），
+> 由 `AgentBinaryCache.ensureCcMgr(version)` 从 CDN 按版本物化 bundle，
+> `CcMgrDaemon` 在 bundle 变化时重启子进程；取不到时**回退镜像内那份**并告警，让下面的
+> `INVALID_BUNDLE_VERSION` 成为唯一失败面。生产端见 `agent-runtime-release.md` 的
+> 「cc-mgr bundle 的 CDN 段」。
+>
+> **仍未做**：把新 manifest/对象发布到 CDN、重建并部署 MCPRouter 镜像。因此**线上行为此刻
+> 仍是「版本错配 = 会话不可用」**，只是失败可诊断 + 代码侧已具备按版本交付能力。
+> 完整方案、落地顺序与部署阶段验证见 MCPRouter 仓 `docs/cc-mgr-cdn-delivery.md`。

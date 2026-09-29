@@ -4,6 +4,7 @@ import {
   toSessionDispatchOutcome,
   type SessionDispatchOutcome,
 } from '@cindy/maker-core';
+import { projectCcMgrRuntimeVersionMismatch } from '@cindy/maker-shared/cc-manager-runtime-version';
 
 import { createLogger } from '../logger.js';
 
@@ -79,6 +80,16 @@ export interface SanitizedSendOutcomeError {
   safeMessage?: string;
 }
 
+/**
+ * host-send 失败的**唯一构造出口**。
+ *
+ * 这里顺手把「远端 cc-mgr 运行时版本不匹配」的 daemon 原文规约成带 marker 的线消息
+ * （`packages/maker-shared/src/ccManagerRuntimeVersion.ts`）：该报文的原始形态是
+ * `[INVALID_BUNDLE_VERSION] client bundle 0.0.10 does not match server bundle 0.0.9`，
+ * 被包装成 `LAZY_CREATE_FAILED` 后渲染层无法据它给出可操作提示。放在这里而不是每个
+ * catch 点，是因为所有 host-send 失败（lazy create / rehydrate / send）都经过本函数，
+ * 一处规约即可覆盖全部路径；规约是幂等的，且认不出形状时原样透传。
+ */
 export function createHostSendFailure(
   code: HostSendFailureCode,
   message: string,
@@ -88,7 +99,7 @@ export function createHostSendFailure(
     kind: 'host-send',
     accepted: false,
     code,
-    message,
+    message: projectCcMgrRuntimeVersionMismatch(message),
     ...(extra?.busySessionIds ? { busySessionIds: [...extra.busySessionIds] } : {}),
   };
 }

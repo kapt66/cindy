@@ -3,6 +3,8 @@ import { EventEmitter } from 'node:events';
 import WebSocket, { type RawData } from 'ws';
 import type { ExecStreamHandle } from '@cindy/maker-remote-ssh';
 
+import { CC_MGR_BUNDLE_VERSION } from '@cindy/maker-cc-manager';
+
 import { parseMcprRemoteHostId } from '../../shared/meka-router.js';
 import { getMekaRouterService } from '../meka-settings/ipc.js';
 
@@ -37,7 +39,23 @@ export function buildMcprTunnelUrl(
   else if (url.protocol === 'https:') url.protocol = 'wss:';
   else throw new Error('MCPRouter tunnel requires HTTP or HTTPS');
   url.pathname = `/api/project-agent-instances/${encodeURIComponent(instanceId)}/agent-tunnel`;
-  url.search = mode === 'cc-mgr' ? '' : `?mode=${encodeURIComponent(mode)}`;
+  // 开隧道时就声明本机要求的 cc-mgr manager 版本 —— cc-mgr 的版本闸门在 `protocol/hello`
+  // 里精确比对，而**服务端子进程必须在握手之前就已经是正确版本**，所以这个要求不能等到
+  // hello 才给（鸡生蛋）。服务端据此从 CDN 按版本物化 bundle 并重启子进程；做不到时回退
+  // 镜像内那份，由 hello 给出可诊断的版本错配（见 docs/dev-rules/mcpr-remote-session-routing.md §4.1）。
+  //
+  // **两种 mode 都要带**：`codex-appserver` 并不是「另一份运行时」—— 服务端那条分支是
+  // `cc-mgr codex-bridge`（`ccMgrDaemon.startBridge`），跑的仍是同一个 cc-mgr bundle，
+  // 且同样要过 `assertCcMgrBundlePin`。只在 cc-mgr 模式声明版本会让 Codex 的
+  // MCPRouter 会话继续撞 `[INVALID_BUNDLE_VERSION]`。
+  //
+  // 版本值来自 `CC_MGR_BUNDLE_VERSION` —— 与 `protocol/hello` 断言的值**同一份来源**；
+  // 绝不能在这里另写一个字面量。老服务端只读 `mode`，未知参数被忽略（已核实），因此这个
+  // 加法对老服务端天然兼容。
+  const params = new URLSearchParams();
+  if (mode !== 'cc-mgr') params.set('mode', mode);
+  params.set('bundleVersion', CC_MGR_BUNDLE_VERSION);
+  url.search = params.toString();
   url.hash = '';
   return url.toString();
 }
