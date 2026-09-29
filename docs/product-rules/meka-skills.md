@@ -761,11 +761,16 @@ Host 标识按不透明值处理，不得在回复或项目内容中暴露 endpo
 
 内置 Skill 使用稳定英文 `name` / `skillId` 作为运行时契约，并在标准 frontmatter 的
 `metadata.display-name` 中提供中文展示名；角色编辑器优先显示中文名，描述也使用中文，
-但保存与解析仍使用稳定 ID。SAGA2 战斗开发的角色 manifest 只显式选择一个总控
-`combat-skill-configuration` Skill，并显式启用业务层的 `project-agent`；P4、Orca、MCPRouter、
-Meka Unity 官方 CLI 和全部通用工具接口仍由 Host/插件照常暴露，不通过重复 Skill 正文提供。平台层的
-`platform-capabilities` / `mcp-router` 不写入角色 manifest 或项目默认项，由 Host 动态注入。
-角色编辑器只表达业务能力选择，不承担平台基线开关。
+但保存与解析仍使用稳定 ID。角色 manifest 只显式选择它真正需要的**业务**能力（例如 `meka-design`）；
+P4、Orca、MCPRouter、Meka Unity 官方 CLI 和全部通用工具接口仍由 Host/插件照常暴露，
+不通过重复 Skill 正文提供。平台层的 `platform-capabilities` / `mcp-router` 不写入角色 manifest
+或项目默认项，由 Host 动态注入。**`project-agent` 是 `mcp_router` 的兼容别名，已被平台层覆盖，
+没有独立语义，不要在角色 manifest 或项目 `roleDefaults.mcp` 里声明它**
+（存量配置里的声明会被继续接受，但不会带来任何额外能力）。角色编辑器只表达业务能力选择，
+不承担平台基线开关。
+（2026-09-29 更正：本节此前以「战斗开发角色显式选择一个总控战斗 Skill，并显式启用业务层的
+`project-agent`」作为示例 —— 该内置战斗 Skill 与战斗角色已随「随包最小内核收敛」移出随包，
+且 `project-agent` 并非独立业务能力，见上。）
 战斗任务运行时不得再读取 `saga2_unity/.agents/skills`、用户 Skill、插件 Skill 或其它位置的
 `SKILL.md`，也不得调用 `ghost_info`、Skill 列表或项目管理 `list_tools` 发现辅助 Skill。不得使用
 历史导出或共享 `skill_entry_model_editor.json` 代替目标技能导出，也不得扫描 `Library`、`Temp`、

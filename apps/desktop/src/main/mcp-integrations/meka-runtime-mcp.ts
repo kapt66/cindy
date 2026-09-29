@@ -13,6 +13,18 @@ import { getMekaRouterService } from '../meka-settings/ipc.js';
 import type { MekaRouterLoginResult } from '../meka-settings/routerLoginWindow.js';
 import { MEKA_AGENT_CAPABILITIES, MEKA_AGENT_KINDS } from '../meka-injection/mekaAgentMatrix.js';
 
+/**
+ * 命中同一个 `mcp_router` server 的 provider id 集合。
+ *
+ * `project-agent` 是**兼容别名**，不是独立能力：两者同源、同一套工具（本文件的 `routerProvider`
+ * 只有一种形态），没有独立语义。保留它的唯一原因是存量角色/项目仍在 `roleDefaults.mcp` 里声明它
+ * —— 从本集合移除会让 `prepareMekaRuntimeMcp` 抛 `unknown Meka MCP provider`，经
+ * `mekaResolvePlan` 包装成 `INVALID_PARAMS`，那些项目的新会话将全部打不开。
+ *
+ * **新增配置不要再声明它**：平台基线 `MEKA_PLATFORM_MCP`（`meka-injection/mekaResolvePlan.ts`）
+ * 已保证 `mcp_router` 始终挂载，声明别名不会带来任何额外能力。若日后要真正的路由最小权限，
+ * 落点是 `call_tool` 的 route 白名单，不是这里的 provider id。
+ */
 const ROUTER_PROVIDER_IDS = new Set(['mcp-router', 'project-agent']);
 const MEKA_DESIGN_PROVIDER_ID = 'meka-design';
 /** 进程级已注册的 provider 数组；inline Meka MCP 靠它扇出（见 prepareMekaRuntimeMcp）。 */

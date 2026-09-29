@@ -79,11 +79,22 @@ Router 做账号与实例所有权校验。不得通过 `tools/list` 探测 `git
 4. 当前任务目标和用户授权；
 5. Host 的确定性权限裁决。
 
-`mcp-router` 是普通 Meka 任务的平台 provider，不是角色开关；角色只决定
-`project-agent`、`meka-design`、Meka Unity 官方 CLI 等额外业务能力。运行时事实以 Host 返回的目标、
-能力状态、绑定关系和恢复动作为准。业务 Skill 不得在
+`mcp-router` 是普通 Meka 任务的平台 provider，不是角色开关，由 Host 强制注入
+（`MEKA_PLATFORM_MCP` 保证该 server 始终挂载）。**`project-agent` 只是 `mcp-router` 的兼容别名：
+两者同源、命中同一个 `mcp_router` server、同一套工具，没有独立语义；新配置不得再声明它**
+（存量角色与项目仍在声明，故该 id 必须继续被接受，否则它们会抛 `unknown Meka MCP provider`
+而打不开会话）。角色真正能决定的是 `meka-design`、Meka Unity 官方 CLI 等额外业务能力。
+运行时事实以 Host 返回的目标、能力状态、绑定关系和恢复动作为准。业务 Skill 不得在
 prompt 中写入 Router URL、实例内部 ID、凭证或远端物理路径；实例 ID 只由 Host 从当前
 项目绑定中解析和校验。
+
+> **口径更正（2026-09-29）**：本节此前把 `project-agent` 列为「角色决定的额外业务能力」之一，
+> 与实现不符 —— 实现见 `apps/desktop/src/main/mcp-integrations/meka-runtime-mcp.ts:16` 的
+> `ROUTER_PROVIDER_IDS = new Set(['mcp-router','project-agent'])`（该文件只构造 `mcp_router` /
+> `meka_design` / inline 三个 server）。同时，本节所说的「专用能力优先」在实现里是**提示词纪律**
+> 而非 provider 门禁：远端 route 经 `call_tool` → `service.callProjectTool(...)` 抵达，
+> 全仓没有任何 route 级白名单。**若日后要真正的路由最小权限，落点是 `call_tool` 的 route 白名单
+> 或高风险授权，不是 provider id 别名。**
 
 ## 4. 降级与恢复
 

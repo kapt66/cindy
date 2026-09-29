@@ -2339,6 +2339,24 @@ maker-core、Orca Host 或 MCPRouter 底层运行时；真实远程实例与 Ele
 真实 MCPRouter 工具清单、远程会话复用、`project-agent` 管理工具调用和 Electron 端手测仍待
 验证；本轮不执行真实远程启停或其它生产状态变更。
 
+> **就地更正（2026-09-29，不改写上文原句）**：上文把「MCPRouter `project-agent` 工具」与
+> 「通用 `mcp_router` MCP」写成两条**可分的工具族**，并据此要求「项目管理必须使用
+> `project-agent` 工具」。**实现里这个分层不成立**：
+> - `apps/desktop/src/main/mcp-integrations/meka-runtime-mcp.ts:16` 的
+>   `ROUTER_PROVIDER_IDS = new Set(['mcp-router','project-agent'])` 让两个 id 命中**同一个**
+>   `mcp_router` server（该文件只构造 `mcp_router` / `meka_design` / inline 三个 server），
+>   11 个工具完全相同 —— 声明 `project-agent` 与声明 `mcp-router` 等价。
+> - 上文所说的「`project-agent` 管理工具」实际是**远端 MCPRouter 的 route**，经
+>   `call_tool` → `service.callProjectTool(...)` 抵达；全仓（`meka-runtime-mcp.ts` 与
+>   `runtimeConfig.ts`）**没有任何 route 级白名单**，唯一闸门是 `authorizeHighRiskCall`。
+> - 因此上文那条「专用能力优先」契约今天靠的是**提示词纪律**，不是 provider 门禁；它是有效的行为
+>   约束，但不是能力边界。
+>
+> **现行口径**（见 `meka-capability-layers.md` §3 与 `meka-skills.md`）：`project-agent` 是
+> `mcp_router` 的**兼容别名**，无独立语义，新配置不得再声明；该 id 因存量角色/项目仍在声明而
+> **必须继续被接受**。若日后要真正实现「项目管理走专用路线」的最小权限，落点是 `call_tool` 的
+> route 白名单或高风险授权，**不是 provider id 别名** —— 且需先从 MCPRouter 仓确认 route 命名空间。
+
 ### 6.29 2026-08-07 SAGA2 Agent 本地服务器启动与面板状态脱节
 
 实测任务 `1206e12c-e1ab-460d-9611-7f5f332f7aa8` 的本地工作目录为
