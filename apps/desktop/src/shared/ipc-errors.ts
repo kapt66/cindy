@@ -128,14 +128,12 @@ export type IpcErrorCode =
   | 'LOCAL_OLLAMA_NOT_READY'
   // 远端切模/切来源需要不同路由(claude-code setModel 守卫):提示重建会话。
   | 'REMOTE_MODEL_SWITCH_ROUTE_CHANGE'
-  // MCPRouter 远端实例只承载 claude-code / codex 两个引擎(见
-  // `maker-host/remote-session-routing.ts` 的 `assertMcprHostSupportsAgent` 与
-  // `docs/dev-rules/mcpr-remote-session-routing.md` 的两种 transport 身份)。
-  // renderer 已在 MCPR 位置下不展示 Pi 段;本码是绕过 UI 的兜底(旧草稿恢复、
-  // 会话内引擎切换、main 发起的 worker/scheduler 路径)在 preflight 边界给出的
-  // 类型化拒绝,替代此前把 `mcpr:<id>` 送进 SSH pool 得到的误导性
-  // `remote SSH host "mcpr:<id>" not found in pool`。
-  | 'MCPR_AGENT_UNSUPPORTED'
+  // 远端切模/切来源需要不同路由(claude-code setModel 守卫):提示重建会话。
+  | 'REMOTE_MODEL_SWITCH_ROUTE_CHANGE'
+  // 注:MCPRouter 远端会话曾有一个引擎级静态拒绝 `MCPR_AGENT_UNSUPPORTED`(Pi 不得进入
+  // `mcpr:`)。2026-10-09 起 Pi 也由 `mode=pi` 隧道承载,该码连同它的可操作文案一并删除
+  // (见 `docs/dev-rules/pi-harness.md`「MCPRouter 远端(MCPR)」);Pi 远端能力的**能力级**
+  // 缺失不再占用 IPC 码,而是由 `maker-host` 抛出带 marker 的错误文本诊断。
   | 'NO_LIVE_QUERY'
   // Meka project / role registry
   | 'MEKA_PROJECT_NOT_FOUND'
@@ -368,7 +366,6 @@ const IPC_ERROR_CODES: ReadonlySet<IpcErrorCode> = new Set<IpcErrorCode>([
   'REMOTE_LOCAL_ONLY_PROVIDER',
   'LOCAL_OLLAMA_NOT_READY',
   'REMOTE_MODEL_SWITCH_ROUTE_CHANGE',
-  'MCPR_AGENT_UNSUPPORTED',
   'NO_LIVE_QUERY',
   'MEKA_PROJECT_NOT_FOUND',
   'MEKA_ROLE_NOT_FOUND',

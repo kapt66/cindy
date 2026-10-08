@@ -228,33 +228,31 @@ describe('空 reader 的下游契约（teammate 指令去重）', () => {
 });
 
 /* ==========================================================================
- * Claude 侧同一缺口（任务 3 / AUDIT-3）
+ * Claude 侧同一缺口（任务 3 / AUDIT-3，2026-10-09 已接上 exec 通道）
  *
- * Claude 的 `getRemoteAgentFileOps` 也曾经是 SSH-only:`getRemoteSshPool().get()`
+ * Claude 的 `getRemoteAgentFileOps` 曾经是 SSH-only:`getRemoteSshPool().get()`
  * 未命中就抛 `remote SSH host "<id>" not found in pool — ...`。它的唯一消费方是
  * `ClaudeCodeAgent.listAgentSkills`, 所以 MCPRouter(`mcpr:`) Claude 会话做远端
  * Skill 发现时会拿 SSH pool 的错误。
  *
- * 与 Codex 侧保持同一形态:分类器先行,`mcpr:` 不碰 SSH pool。**但 Claude 侧不能
- * 像 Codex 那样退化成空 reader** ——
- *   1. `scanRemoteClaudeSkills` 直接调 `fileOps.listDir/stat/readFile`, 传 `{}`
- *      会 TypeError, 不是安全退化;
- *   2. `listAgentSkills` 的结果进 `botProfileRuntime` 的远程 Skill catalog, 而它
- *      对 `remoteHostId` 会话要求「读不到 catalog ⇒ 抛错」
- *      (`botProfileRuntime.ts` 的 `if (opts.remoteHostId) throw error`, 有
- *      `refuses to start a remote Bot when its native Skill catalog is unavailable`
- *      守这条):空 catalog 会把用户配置的 Skill 全标成 unavailable, 而远端 harness
- *      仍能发现环境技能 ⇒ 快照与实际分叉。
- * 因此这里断言的是「不查 pool + 不报 SSH 错误 + 仍是 fail-closed 抛错」, 而不是
- * 「返回空 reader」。
+ * 2026-10-09:MCPRouter 侧新增 agent-tunnel `mode=exec`(与 `remoteHost.exec` 同形),
+ * 因此 `mcpr:` 上不再退化成 `[MCPR_FILE_OPS_UNAVAILABLE]` 硬失败, 而是走
+ * `createMcprPiFileOps(remoteHostId)` —— **与 SSH 同一份** file ops 实现。
+ * 客户端**不**加路径/命令白名单:真正的边界是实例容器与用户身份(见
+ * `pi-mcpr-remote.ts`)。
+ *
+ * 仍守住的不变量:分类先行(`mcpr:` 不碰 SSH pool)、不把 SSH 故障静默吞掉、
+ * 也不返回空 reader(空 catalog 会让 botProfileRuntime 把用户 Skill 全标成
+ * unavailable, 与远端 harness 实际发现分叉 —— 见 botProfileRuntime.ts 的
+ * 「catalog 读不到 ⇒ 抛错」)。
  * ========================================================================== */
 
 /**
  * 逐字提取 Claude deps 里那一个钩子体。
  *
- * Claude 与 Pi 两个实现连错误串都完全一样, 无法按错误串定位; 因此锚定所属的
- * agent 构造点 `new ClaudeCodeAgent({`(全文件唯一), 取它之后的第一个钩子声明,
- * 再用 `[MCPR_FILE_OPS_UNAVAILABLE]` 反证抓到的确实是 Claude 那一份。
+ * 锚定所属的 agent 构造点 `new ClaudeCodeAgent({`(全文件唯一), 取它之后的第一个
+ * 钩子声明。反向证明抓到的确实是 Claude 那一份:它含 `createMcprPiFileOps(` 而**不含**
+ * Pi 组装点独有的符号(`resolveMcprPiBinaryPath` / `shouldSkipMcprPiMcpBridge`)。
  */
 function extractClaudeHookSource(): string {
   const agentAnchor = 'new ClaudeCodeAgent({';
@@ -269,7 +267,8 @@ function extractClaudeHookSource(): string {
       depth -= 1;
       if (depth === 0) {
         const body = source.slice(start, i + 1);
-        expect(body, '抓到的必须是 Claude 那一份钩子').toContain('[MCPR_FILE_OPS_UNAVAILABLE]');
+        expect(body, '抓到的必须是 Claude 那一份钩子').toContain('createMcprPiFileOps(');
+        expect(body, 'Claude 钩子不应含 Pi transport 组装点').not.toContain('resolveMcprPiBinaryPath');
         return body;
       }
     }
@@ -277,51 +276,67 @@ function extractClaudeHookSource(): string {
   throw new Error('未能闭合 Claude 钩子体');
 }
 
-function buildClaudeHook(deps: HookDeps): (remoteHostId: string) => unknown {
+function buildClaudeHook(
+  deps: HookDeps & { createMcprPiFileOps: ReturnType<typeof vi.fn> },
+): (remoteHostId: string) => unknown {
   const hookSource = stripTypeScriptSyntax(extractClaudeHookSource());
   const factory = new Function(
     'getRemoteSshPool',
     'createRemotePiFileOps',
     'classifyRemoteSessionTransport',
+    'createMcprPiFileOps',
     `return ({ ${hookSource} }).getRemoteAgentFileOps;`,
   ) as (
     pool: () => { get: unknown },
     createFileOps: unknown,
     classify: unknown,
+    createMcprFileOps: unknown,
   ) => (remoteHostId: string) => unknown;
   return factory(
     () => ({ get: deps.poolGet }),
     deps.createFileOps,
     classifyRemoteSessionTransport,
+    deps.createMcprPiFileOps,
   );
 }
 
+const MCPR_FILE_OPS = {
+  stat: vi.fn(async () => ({ isFile: true })),
+  listDir: vi.fn(async () => []),
+  readFile: vi.fn(async () => ''),
+  sha256File: vi.fn(async () => 'hash'),
+};
+
+function claudeDeps(): HookDeps & { createMcprPiFileOps: ReturnType<typeof vi.fn> } {
+  return { ...deps(), createMcprPiFileOps: vi.fn(() => MCPR_FILE_OPS) };
+}
+
 describe('Claude getRemoteAgentFileOps 的 transport 分类（任务 3）', () => {
-  it('`mcpr:<instance.id>` 不查 SSH pool，也不再报 remote SSH host 错误', () => {
-    const d = deps();
+  it('`mcpr:<instance.id>` 走隧道 file ops,不查 SSH pool、不报 remote SSH host', () => {
+    const d = claudeDeps();
     const hook = buildClaudeHook(d);
 
-    expect(() => hook('mcpr:instance-1')).toThrow(/\[MCPR_FILE_OPS_UNAVAILABLE\]/);
+    expect(hook('mcpr:instance-1')).toBe(MCPR_FILE_OPS);
+    expect(d.createMcprPiFileOps).toHaveBeenCalledWith('mcpr:instance-1');
     // 旧形态是 `remote SSH host "mcpr:..." not found in pool` —— 那是把 MCPRouter
     // 身份当 SSH host 查出来的错误。
-    expect(() => hook('mcpr:instance-1')).not.toThrow(/remote SSH host/);
     expect(d.poolGet).not.toHaveBeenCalled();
     expect(d.createFileOps).not.toHaveBeenCalled();
   });
 
   it('不完整/畸形的 `mcpr:` 同样不降级成 SSH host', () => {
-    const d = deps();
+    const d = claudeDeps();
     const hook = buildClaudeHook(d);
 
     expect(classifyRemoteSessionTransport('mcpr:')).toBe('mcpr');
     expect(parseMcprRemoteHostId('mcpr:')).toBeNull();
 
-    expect(() => hook('mcpr:')).toThrow(/\[MCPR_FILE_OPS_UNAVAILABLE\]/);
+    expect(hook('mcpr:')).toBe(MCPR_FILE_OPS);
     expect(d.poolGet).not.toHaveBeenCalled();
   });
 
-  it('SSH host 仍然先查 pool 再建远端 file ops（新 guard 不改变既有行为）', () => {
-    const d = deps();
+  it('SSH host 仍然先查 pool 再建远端 file ops（新分支不改变既有行为）', () => {
+    const d = claudeDeps();
     const remoteHost = { id: 'ssh-host-1' };
     d.poolGet.mockReturnValue(remoteHost);
     const hook = buildClaudeHook(d);
@@ -329,10 +344,11 @@ describe('Claude getRemoteAgentFileOps 的 transport 分类（任务 3）', () =
     expect(hook('ssh-host-1')).toBe(SSH_FILE_OPS);
     expect(d.poolGet).toHaveBeenCalledWith('ssh-host-1');
     expect(d.createFileOps).toHaveBeenCalledWith(remoteHost);
+    expect(d.createMcprPiFileOps).not.toHaveBeenCalled();
   });
 
   it('SSH host 不在 pool 时仍然 fail loud（不把 SSH 故障静默吞掉）', () => {
-    const d = deps();
+    const d = claudeDeps();
     const hook = buildClaudeHook(d);
 
     expect(() => hook('ssh-host-1')).toThrow(

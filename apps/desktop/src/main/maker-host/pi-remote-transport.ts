@@ -128,13 +128,38 @@ export async function resolveRemotePiBinaryPath(host: RemoteHost): Promise<strin
 }
 
 /**
+ * file ops / 安装脚本只需要 host 的 `id` + `exec` 两个原语(SSH 的 `remoteHost.exec`
+ * = 远端 `bash -c <script>`,内容经 stdin)。
+ *
+ * 把它显式写成结构接口,是为了让**同一份** Pi file ops 实现能被两种 transport 复用:
+ * SSH 直接传 `RemoteHost`;MCPRouter 传隧道控制面提供的等价 exec(见
+ * `pi-mcpr-remote.ts`)。这里是本仓反复吃过的「同一规则复制两份必然漂移」形状,
+ * 所以刻意不接受「抄一份 MCPR 版 file ops」的做法。
+ */
+export interface PiRemoteExecHost {
+  readonly id: string;
+  exec(
+    cmd: string,
+    opts?: {
+      timeoutMs?: number;
+      label?: string;
+      input?: string;
+      env?: Record<string, string>;
+    },
+  ): Promise<{ stdout: string; stderr: string; exitCode: number | null }>;
+}
+
+/**
  * 远端 pi agentHome 文件操作原语(host 侧 SSH 实现)。
  *
  * 所有路径都是远端机器上的绝对路径。文件内容经 SSH stdin 管道写(cat > 原子写 +
  * chmod,内容绝不进命令行 —— 与 cc-manager bundle 上传同模式),stat 走 bash 脚本,
  * 删走 rm。pi 进程在远端读这些文件,host 侧必须把写/读/删落到远端机器。
+ *
+ * 参数取 `PiRemoteExecHost` 而不是 `RemoteHost`:SSH 与 MCPR 两种 transport 共用这一份
+ * 实现(见该接口的说明)。
  */
-export function createRemotePiFileOps(remoteHost: RemoteHost): PiRemoteFileOps {
+export function createRemotePiFileOps(remoteHost: PiRemoteExecHost): PiRemoteFileOps {
   async function readBounded(file: string, maxBytes: number, fromEnd: boolean): Promise<string> {
     const boundedBytes = Math.max(1, Math.min(Math.trunc(maxBytes), 4_194_304));
     const script = `P=${shellQuote(file)}; case "$P" in '$HOME'/*) H=$(printf '%s' "$HOME"); [ "\${P#\\$HOME}" != "$P" ] && P="\${H}\${P#\\$HOME}";; esac; [ -f "$P" ] || exit 44; ${fromEnd ? 'tail' : 'head'} -c ${boundedBytes} "$P"`;
@@ -289,22 +314,51 @@ fi
 }
 
 /**
+ * 「字节从哪来」的唯一抽象。
+ *
+ * 远端 Pi 的协议实现(JSONL 分帧 / 背压 / 超时 / stderr 脱敏 / 大帧处理)与 transport
+ * 无关,差异只在**取哪条字节通道**:
+ *   - SSH (`createSshPiTransport` / `createSshPiDaemonTransport`):先在远端把 pi 拉起来
+ *     (`pi/ensure` 把 cmd/env 写进 env-file),再 `remoteHost.execStream` 跑
+ *     `pi-manager bridge --socket <session sock>` 把它的 stdio 拽回本地;
+ *   - MCPRouter (`createMcprPiTransport`,`pi-mcpr-remote.ts`):runtime 已经把 agent-tunnel
+ *     接到那句话的等价 stdio,所以客户端只开隧道。
+ *
+ * 两种来源都把同一个 `ExecStreamHandle` 形状交回共享核心,因此 PiRpcProcess 对差异零感知。
+ */
+export interface PiByteChannelProvider {
+  /** 日志/错误里标识这条远端通道(SSH host id,或 `mcpr:<instanceId>`)。 */
+  readonly transportId: string;
+  /** 远端 pi 二进制路径(plan-mode 扩展路径 / 子代理 spawn env 需要它)。 */
+  readonly remoteBinaryPath: string;
+  /**
+   * 直连模式的 env block(经通道 stdin 写入,先于任何 RPC 帧);daemon / MCPR 模式
+   * 为 undefined —— 那两条的 env 走各自的 non-stdin 通道(env-file / 隧道控制面)。
+   */
+  readonly envViaStdin?: Record<string, string | undefined>;
+  /**
+   * 建立/取到承载 pi `--mode rpc` JSONL 的字节通道。返回 null 表示通道建立期间
+   * transport 已被显式关闭(调用方不再消费,且已自行兜底 kill 迟到通道)。
+   */
+  open(): Promise<ExecStreamHandle | null>;
+  /** transport 关闭时的一次性收尾(SSH daemon: 杀远端 pi;直连 / MCPR 省略)。 */
+  dispose?(): Promise<void>;
+}
+
+/**
  * createSshPiTransport — 直连模式:远端直接 spawn `pi --mode rpc`,ssh exec 桥 stdio。
  * 断链即进程终止(无 daemon 持久),重连 = 重新 spawn + switch_session resume。
  */
 export function createSshPiTransport(opts: SshPiTransportOptions): PiTransport {
-  return createSshPiChannelTransport(
-    opts,
-    (o) => {
-      // wrapper:stdin 前段 = env block(read 到空行 break + export), 之后 exec pi ——
-      // exec 替换 bash 进程后, 剩余 stdin 直接流入 pi(JSONL 命令)。
-      // 注意:不能 `export "$LINE"` —— 双引号展开后 bash 会把展开结果重新当赋值
-      // 语句解析, `K=$(cmd)` 文本会被执行命令替换(R5 安全审计 H-1)。改为参数展开
-      // 先拆 KEY/VALUE, 再 `export "$KEY"="$VALUE"` —— 已展开的字符串不再递归解析,
-      // 值里的 `$()` / 反引号只是普通文本。KEY 再做一次白名单校验(host 侧
-      // serializeEnvBlock 已验, 这里是纵深防御)。
-      const args = o.args.map(shellQuote).join(' ');
-      const script = `
+  // wrapper:stdin 前段 = env block(read 到空行 break + export), 之后 exec pi ——
+  // exec 替换 bash 进程后, 剩余 stdin 直接流入 pi(JSONL 命令)。
+  // 注意:不能 `export "$LINE"` —— 双引号展开后 bash 会把展开结果重新当赋值
+  // 语句解析, `K=$(cmd)` 文本会被执行命令替换(R5 安全审计 H-1)。改为参数展开
+  // 先拆 KEY/VALUE, 再 `export "$KEY"="$VALUE"` —— 已展开的字符串不再递归解析,
+  // 值里的 `$()` / 反引号只是普通文本。KEY 再做一次白名单校验(host 侧
+  // serializeEnvBlock 已验, 这里是纵深防御)。
+  const args = opts.args.map(shellQuote).join(' ');
+  const script = `
         while IFS= read -r LINE; do
           [ -z "$LINE" ] && break
           KEY=${'${LINE%%=*}'}
@@ -312,18 +366,18 @@ export function createSshPiTransport(opts: SshPiTransportOptions): PiTransport {
             [A-Za-z_][A-Za-z0-9_]*) VAL=${'${LINE#*=}'}; export "$KEY"="$VAL" ;;
           esac
         done
-        cd ${shellQuote(o.cwd)} || exit 1
-        exec ${shellQuote(o.binaryPath)} ${args}
+        cd ${shellQuote(opts.cwd)} || exit 1
+        exec ${shellQuote(opts.binaryPath)} ${args}
       `.trim();
-      return `bash -c ${shellQuote(script)}`;
-    },
-    (o) => ({
-      // 直连模式:env block 走 stdin(与首个命令同一批次)。
-      envViaStdin: o.env,
-      envViaFile: undefined,
-      daemonSessionId: undefined,
+  const cmd = `bash -c ${shellQuote(script)}`;
+  return createPiTransportFromProvider(opts, {
+    transportId: opts.remoteHost.id,
+    remoteBinaryPath: opts.binaryPath,
+    envViaStdin: opts.env,
+    open: () => opts.remoteHost.execStream(cmd, {
+      timeoutMs: opts.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS,
     }),
-  );
+  });
 }
 
 /**
@@ -342,63 +396,20 @@ async function buildPiManagerDaemonCmd(
   // session-registry 的 /[\r\n\0]/ 对齐 —— 否则 NUL 经 RPC 到 daemon 后
   // env-file 无法保真, 且与 direct 路径同款 fail-closed)。daemon 侧也校验,
   // 这里快速失败。
-  const envEntries = Object.entries(chanOpts.envViaFile ?? {}).filter(([, v]) => v !== undefined);
-  const env: Record<string, string> = {};
-  for (const [k, v] of envEntries) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k) || /[\r\n\0]/.test(v!)) {
-      throw new Error(`pi-manager: unsafe env entry ${JSON.stringify(k)} — key must be [A-Za-z_][A-Za-z0-9_]*, value must not contain newlines or NUL`);
-    }
-    env[k] = v!;
-  }
-  // envHash:与 daemon 写入 env-file 的内容逐字节一致(KEY=VALUE 行 join \n)。
-  const envHash = createHash('sha256')
-    .update(Object.entries(env).map(([k, v]) => `${k}=${v}`).join('\n'))
-    .digest('hex');
-  // 轮 22-Z2 CRITICAL:piCmd 由 daemon 侧 `bash -c <cmd>` 执行 —— cmd 内
-  // 单引号会冻住字面 $HOME(cwd/binaryPath 可能来自 probe 的字面 $HOME/...),
-  // 导致 cd/exec 找不到路径 → pi 秒退(LAZY_CREATE_FAILED 同源)。
-  // 双引号包住路径:bash -c 收到 cmd 后 $HOME 活动展开, macOS 用户名空格由
-  // 双引号容纳。args 仍用 shellQuote(参数无 $HOME, 且可能含特殊字符)。
-  // 注入防护:双引号内非 $HOME 的 $ 与反引号会展开 —— 拒绝($HOME 前缀是
-  // probe 白名单形态, 展开后即远端绝对路径, 允许)。路径来自用户选择/固定
-  // 模板, 正常只含 $HOME 前缀或绝对路径; 其它 $ 形态 fail-closed。
-  const unsafeDollar = (s: string): boolean => {
-    const rest = s.startsWith('$HOME/') ? s.slice('$HOME/'.length) : s;
-    return /[\$`"]/.test(rest);
-  };
-  if (unsafeDollar(opts.cwd) || unsafeDollar(opts.binaryPath)) {
-    throw new Error('pi-manager: unsafe cwd or binaryPath (contains $, backtick, or double-quote)');
-  }
-  // 轮 42 P1(codex-connector):args 里可能含 `$HOME/...` 字面值(如
-  // --session-dir 与 plan-mode --extension 路径, 远端 agentHome 以 $HOME 前缀
-  // 表达)。shellQuote 单引号会冻结 $HOME → pi 收到字面路径, 在 cwd 下建字面
-  // $HOME 目录、扩展扫描不到。与 cwd/binaryPath 同款处理: `$HOME/` 前缀值用
-  // **双引号**(bash -c 收到后活动展开), 其余仍 shellQuote。注入防护与
-  // unsafeDollar 同口径: 去掉 $HOME/ 前缀后不得含 $ / 反引号 / 双引号。
-  const quotePiArg = (arg: string): string => {
-    if (!arg.startsWith('$HOME/')) return shellQuote(arg);
-    const rest = arg.slice('$HOME/'.length);
-    if (/[\$`"]/.test(rest)) {
-      throw new Error('pi-manager: unsafe arg value (contains $, backtick, or double-quote after $HOME/)');
-    }
-    return `"${arg}"`;
-  };
-  const piCmd = [
-    `cd "${opts.cwd}" || exit 1`,
-    `exec "${opts.binaryPath}" ${opts.args.map(quotePiArg).join(' ')}`,
-  ].join('\n');
+  const env = sanitizePiEnsureEnv(chanOpts.envViaFile ?? {});
+  // 轮 22-Z2 CRITICAL:piCmd 由 daemon 侧 `bash -c <cmd>` 执行 —— 引号/注入口径见
+  // `buildPiLaunchCommand`(与 MCPRouter 分支共用同一份实现,避免两处漂移)。
+  const piCmd = buildPiLaunchCommand({
+    cwd: opts.cwd,
+    binaryPath: opts.binaryPath,
+    args: opts.args,
+  });
   // 轮 42 P1(codex-connector):envHash 必须覆盖**完整启动身份** —— 旧版只 hash
   // env-file 内容, 但现存子进程的启动身份还依赖 cmd/args(如 BYOM baseUrl /
   // wire protocol 变化会改 models.json 内容 → 经 CINDY_PI_MANAGED_RG_PATH 等
   // env 之外的路由体现; gateway endpoint 变更同理)。env 相同但 cmd/args 变时
   // 纯 attach 会让旧 pi 继续用启动时加载的旧配置。hash 加入 piCmd 与 cwd。
-  const launchHash = createHash('sha256')
-    .update(envHash)
-    .update('\n')
-    .update(piCmd)
-    .update('\n')
-    .update(opts.cwd)
-    .digest('hex');
+  const launchHash = computePiLaunchEnvHash({ env, command: piCmd, cwd: opts.cwd });
   const ensured = await piManagerEnsure(opts.remoteHost, logger, {
     sessionId,
     cmd: piCmd,
@@ -428,6 +439,90 @@ async function buildPiManagerDaemonCmd(
     `"${nodeBinaryPath}" "${piManagerBinaryPath}" bridge --socket "${ensured.sockPath}"`,
   ].join(' ');
   return `bash -c ${shellQuote(bridgeScript)}`;
+}
+
+/* ============================ 启动身份(SSH 与 MCPR 共用) ============================ */
+
+/**
+ * `pi/ensure` 的 env 校验(R6 M-7):KEY 白名单 + 值拒换行/NUL(与 daemon 侧
+ * session-registry 的 /[\r\n\0]/ 对齐 —— 否则 NUL 经 RPC 到 daemon 后 env-file
+ * 无法保真)。daemon 侧也校验,这里快速失败。
+ *
+ * SSH(env-file)与 MCPR(pi/ensure over tunnel)共用这一份,避免两条路径的
+ * fail-closed 口径漂移。
+ */
+export function sanitizePiEnsureEnv(
+  env: Record<string, string | undefined>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (v === undefined) continue;
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k) || /[\r\n\0]/.test(v)) {
+      throw new Error(`pi-manager: unsafe env entry ${JSON.stringify(k)} — key must be [A-Za-z_][A-Za-z0-9_]*, value must not contain newlines or NUL`);
+    }
+    out[k] = v;
+  }
+  return out;
+}
+
+/**
+ * 构造 pi 启动命令行(`cd <cwd> && exec <binaryPath> <args…>`)—— daemon 侧
+ * `bash -c <cmd>` 执行,SSH 与 MCPR 两个分支共用。
+ *
+ * 轮 22-Z2 CRITICAL:cmd 内单引号会冻住字面 $HOME(cwd/binaryPath 可能来自 probe 的
+ * 字面 `$HOME/...`),导致 cd/exec 找不到路径 → pi 秒退(LAZY_CREATE_FAILED 同源)。
+ * 双引号包住路径:bash -c 收到 cmd 后 $HOME 活动展开, macOS 用户名空格由双引号容纳。
+ * args 里也可能含 `$HOME/...` 字面值(轮 42 P1:--session-dir / plan-mode --extension),
+ * 同样用双引号,其余 shellQuote。
+ *
+ * 注入防护:双引号内非 `$HOME/` 前缀的 `$`、反引号、双引号会展开 —— 一律拒。
+ */
+export function buildPiLaunchCommand(opts: {
+  cwd: string;
+  binaryPath: string;
+  args: readonly string[];
+}): string {
+  const unsafeDollar = (s: string): boolean => {
+    const rest = s.startsWith('$HOME/') ? s.slice('$HOME/'.length) : s;
+    return /[\$`"]/.test(rest);
+  };
+  if (unsafeDollar(opts.cwd) || unsafeDollar(opts.binaryPath)) {
+    throw new Error('pi-manager: unsafe cwd or binaryPath (contains $, backtick, or double-quote)');
+  }
+  const quotePiArg = (arg: string): string => {
+    if (!arg.startsWith('$HOME/')) return shellQuote(arg);
+    const rest = arg.slice('$HOME/'.length);
+    if (/[\$`"]/.test(rest)) {
+      throw new Error('pi-manager: unsafe arg value (contains $, backtick, or double-quote after $HOME/)');
+    }
+    return `"${arg}"`;
+  };
+  return [
+    `cd "${opts.cwd}" || exit 1`,
+    `exec "${opts.binaryPath}" ${opts.args.map(quotePiArg).join(' ')}`,
+  ].join('\n');
+}
+
+/**
+ * `pi/ensure` 的 `envHash` —— daemon 用它做**纯 attach vs 重启**的判定,因此必须覆盖
+ * 完整启动身份:env-file 内容 + 启动命令行 + cwd(轮 42 P1:env 相同但 cmd/args 变时,
+ * 纯 attach 会让旧 pi 继续用启动时加载的旧配置)。
+ */
+export function computePiLaunchEnvHash(opts: {
+  env: Record<string, string>;
+  command: string;
+  cwd: string;
+}): string {
+  const envHash = createHash('sha256')
+    .update(Object.entries(opts.env).map(([k, v]) => `${k}=${v}`).join('\n'))
+    .digest('hex');
+  return createHash('sha256')
+    .update(envHash)
+    .update('\n')
+    .update(opts.command)
+    .update('\n')
+    .update(opts.cwd)
+    .digest('hex');
 }
 
 /** pi-manager 二进制路径(带 per-host cache, 避免每次 bridge 都重复 probe)。 */
@@ -482,18 +577,26 @@ export function createSshPiDaemonTransport(opts: SshPiTransportOptions & {
     opts.logger.warn('pi daemon: no daemonSessionId for this session — falling back to direct transport (no persistence)');
     return createSshPiTransport(opts);
   }
-  return createSshPiChannelTransport(
-    opts,
-    (o) => {
-      // 直连 wrapper 不用于 daemon 模式;daemon ensure 的 --cmd 由这里构造。
-      throw new Error('unreachable');
+  const daemonSessionId = opts.daemonSessionId;
+  return createPiTransportFromProvider(opts, {
+    transportId: opts.remoteHost.id,
+    remoteBinaryPath: opts.binaryPath,
+    envViaStdin: undefined,
+    async open() {
+      // 每次调用都要重新 ensure(纯 attach 语义由 daemon 的 envHash 全量对比决定);
+      // ensure 返回的 session socket 才是这次要桥的目标。
+      const chanOpts: SshPiChannelOptions = {
+        envViaStdin: undefined,
+        envViaFile: opts.env,
+        daemonSessionId,
+      };
+      const cmd = await buildPiManagerDaemonCmd(opts, chanOpts, opts.logger);
+      return await opts.remoteHost.execStream(cmd, {
+        timeoutMs: opts.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS,
+      });
     },
-    (o) => ({
-      envViaStdin: undefined,
-      envViaFile: o.env,
-      daemonSessionId: opts.daemonSessionId,
-    }),
-  );
+    dispose: () => killRemotePiManagerSession(opts.remoteHost, daemonSessionId, opts.logger),
+  });
 }
 
 interface SshPiChannelOptions {
@@ -506,16 +609,27 @@ interface SshPiChannelOptions {
 }
 
 /**
- * 共享的 ssh channel 桥实现。两种模式差异只在「远端怎么跑 pi」:
- *   - 直连:execStream 跑 wrapper(bash env block + exec pi)
- *   - daemon:execStream 跑 `daemon proxy --sock <path>`(桥已持有 pi 的 socket)
+ * 共享核心只需要「日志 + 握手指时」;远端身份、二进制路径、env 都从 provider 取。
+ * 收窄参数是为了让 MCPR 那条路径不必伪造 SSH 的 host 形状。
  */
-function createSshPiChannelTransport(
-  opts: SshPiTransportOptions,
-  buildDirectCmd: (o: SshPiTransportOptions) => string,
-  buildChannelOpts: (o: SshPiTransportOptions) => SshPiChannelOptions,
+export interface PiTransportCoreOptions {
+  logger: Logger;
+  /** ssh exec / 隧道建立 + 首个 stdout 字节的总等待预算。默认 15s。 */
+  handshakeTimeoutMs?: number;
+}
+
+/**
+ * 共享的 Pi 协议核心:一条已建立的字节通道 → `PiTransport`。
+ *
+ * 与 transport 无关的部分(JSONL 分帧、UTF-8 跨块解码、背压、握手指时、超大帧 resync、
+ * stderr 脱敏)全在这里;transport 的差异被 `PiByteChannelProvider` 吸收 ——
+ * SSH 的 daemon/直连与 MCPRouter 隧道三种字节来源共用这一份实现。
+ */
+export function createPiTransportFromProvider(
+  opts: PiTransportCoreOptions,
+  provider: PiByteChannelProvider,
 ): PiTransport {
-  const logger = opts.logger.child('pi-ssh-transport');
+  const logger = opts.logger.child('pi-transport');
   const handshakeTimeoutMs = opts.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
 
   let channel: ExecStreamHandle | null = null;
@@ -564,7 +678,7 @@ function createSshPiChannelTransport(
     if (handshakeTimer) { clearTimeout(handshakeTimer); handshakeTimer = null; }
     clearBackpressureTimer();
     drainListenerAttached = false;
-    const err = new Error(`pi ssh transport closed: ${info.reason}`);
+    const err = new Error(`pi transport (${provider.transportId}) closed: ${info.reason}`);
     for (const w of pendingWrites.splice(0)) w.reject(err);
     try { channel?.kill(); } catch { /* best-effort */ }
     channel = null;
@@ -661,7 +775,7 @@ function createSshPiChannelTransport(
       fireClose({
         code: null,
         signal: null,
-        reason: 'pi ssh write backpressure timeout (channel stuck?)',
+        reason: 'pi remote write backpressure timeout (channel stuck?)',
       });
     }, 30_000);
     backpressureTimer.unref?.();
@@ -679,7 +793,7 @@ function createSshPiChannelTransport(
   };
 
   const writeLine = (line: string): Promise<void> => {
-    if (closed) return Promise.reject(new Error('pi ssh transport already closed'));
+    if (closed) return Promise.reject(new Error('pi remote transport already closed'));
     // 轮 40-w4 MEDIUM-1:队列溢出 = channel 卡住(建立阶段挂死或消费不及),
     // 关闭 transport 让上层走 onClose 重连 —— 比无界增长(闭包/内存)和
     // 卡住恢复后批量 drain 已超时旧请求都好。
@@ -687,9 +801,9 @@ function createSshPiChannelTransport(
       fireClose({
         code: null,
         signal: null,
-        reason: `pi ssh write queue overflow (${MAX_PENDING_WRITES} pending — channel stuck?)`,
+        reason: `pi remote write queue overflow (${MAX_PENDING_WRITES} pending — channel stuck?)`,
       });
-      return Promise.reject(new Error('pi ssh transport write queue overflow'));
+      return Promise.reject(new Error('pi remote transport write queue overflow'));
     }
     return new Promise<void>((resolve, reject) => {
       pendingWrites.push({ line, resolve, reject });
@@ -702,20 +816,14 @@ function createSshPiChannelTransport(
 
   void (async () => {
     try {
-      const chanOpts = buildChannelOpts(opts);
-      let cmd: string;
-      if (chanOpts.daemonSessionId) {
-        // daemon 模式:pi-manager(TS 单例 daemon + NDJSON RPC)是唯一形态。
-        // 失败传播异常 → 外部 catch 触发 fireClose(无回退路径)。
-        cmd = await buildPiManagerDaemonCmd(opts, chanOpts, logger);
-      } else {
-        cmd = buildDirectCmd(opts);
-      }
-
-      // 轮 40-w4-t6 HIGH:execStream 可能晚于 handshake timeout/close() 返回 ——
+      // 「字节从哪来」完全交给 provider:SSH 直连 = execStream 跑 wrapper;
+      // SSH daemon = 先 pi/ensure 再 execStream 桥 session socket;MCPR = 开 agent-tunnel
+      // (runtime 已把它接到等价的 bridge stdio)。三种来源都在这里收敛成同一个 handle。
+      // 轮 40-w4-t6 HIGH:通道可能晚于 handshake timeout/close() 返回 ——
       // 不能在已 closed 的 transport 上继续注册 handler/写 env/发命令。晚到
       // channel 必须立即 kill(否则远端进程/channel 成孤儿累积)。
-      const lateChannel = await opts.remoteHost.execStream(cmd, { timeoutMs: handshakeTimeoutMs });
+      const lateChannel = await provider.open();
+      if (!lateChannel) return;
       if (closed) {
         try { lateChannel.kill(); } catch { /* best-effort */ }
         return;
@@ -724,12 +832,12 @@ function createSshPiChannelTransport(
       const ch = channel;
       // 直连模式:channel 建立后**先写** env block,再 drain 排队的 RPC 命令
       // (R2 传输 Bug5:命令先于 env 到达会被 wrapper 当 KEY=VALUE 消费丢失)。
-      if (!chanOpts.daemonSessionId && chanOpts.envViaStdin) {
+      if (provider.envViaStdin) {
         // 轮 8 发现 10:直连模式 env 校验与 daemon 模式对齐 —— 值含 \n 会被
         // wrapper 的 read -r 按行拆开, 后续形如 FOO=bar 的行可能被 case 命中
         // 额外 export(注入面)。wrapper 有 KEY case 白名单兜底, 这里纵深防御
         // 快速失败。
-        const envEntries = Object.entries(chanOpts.envViaStdin).filter(([, v]) => v !== undefined);
+        const envEntries = Object.entries(provider.envViaStdin).filter(([, v]) => v !== undefined);
         for (const [k, v] of envEntries) {
           // 轮 18-U1 MEDIUM:拒 \0 与 daemon 路径对齐(session-registry 同款
           // /[\r\n\0]/) —— wrapper 的 read -r 无法保真 NUL 字节, 会截断/腐化
@@ -768,8 +876,8 @@ function createSshPiChannelTransport(
           const newlineIndex = stdoutBuffer.indexOf('\n');
           if (newlineIndex === -1) {
             if (stdoutBuffer.length > SSH_JSONL_MAX_BUFFER_CHARS) {
-              logger.warn('pi ssh stdout buffer exceeded limit — discarding until next newline', {
-                hostId: opts.remoteHost.id,
+              logger.warn('pi remote stdout buffer exceeded limit — discarding until next newline', {
+                hostId: provider.transportId,
                 bytes: stdoutBuffer.length,
               });
               skippingOversizedLine = true;
@@ -780,8 +888,8 @@ function createSshPiChannelTransport(
             break;
           }
           if (newlineIndex > SSH_JSONL_MAX_BUFFER_CHARS) {
-            logger.warn('pi ssh stdout discarded oversized JSONL frame', {
-              hostId: opts.remoteHost.id,
+            logger.warn('pi remote stdout discarded oversized JSONL frame', {
+              hostId: provider.transportId,
               bytes: newlineIndex,
             });
             fireOversizedFrame();
@@ -823,8 +931,8 @@ function createSshPiChannelTransport(
       // "(err as Error).message" 产出 "undefined"(R7 审计 M-2)。
       // 轮 40-w4-t16 HIGH(日志盲区):失败分支必须留结构化日志 —— 否则现场
       // 无法区分 buildCmd/execStream/env/首字节超时, 连不上被折叠成黑盒。
-      logger.error('pi ssh transport setup failed', {
-        hostId: opts.remoteHost.id,
+      logger.error('pi remote transport setup failed', {
+        hostId: provider.transportId,
         stage: 'setup',
         channelEstablished: channel !== null,
         pendingWrites: pendingWrites.length,
@@ -859,10 +967,10 @@ function createSshPiChannelTransport(
       handshakeTimer = null;
       return;
     }
-    const reason = `ssh handshake timeout after ${handshakeTimeoutMs}ms (channel established: ${channel !== null})`;
+    const reason = `remote handshake timeout after ${handshakeTimeoutMs}ms (channel established: ${channel !== null})`;
     // 轮 40-w4-t16 HIGH(日志盲区):timeout 分支留诊断上下文(阶段/hostId)。
-    logger.error('pi ssh handshake timeout', {
-      hostId: opts.remoteHost.id,
+    logger.error('pi remote handshake timeout', {
+      hostId: provider.transportId,
       stage: 'handshake',
       timeoutMs: handshakeTimeoutMs,
       channelEstablished: channel !== null,
@@ -900,7 +1008,7 @@ function createSshPiChannelTransport(
       return () => { oversizedHandlers.delete(handler); };
     },
 
-    async close(reason = 'pi ssh transport close()'): Promise<void> {
+    async close(reason = 'pi remote transport close()'): Promise<void> {
       if (closed) return;
       fireClose({ code: null, signal: null, reason });
     },
@@ -915,19 +1023,15 @@ function createSshPiChannelTransport(
 
     // 远端实际使用的 pi 二进制路径(plan-mode 扩展 / subagent 都用它,不能是本地路径)。
     get remoteBinaryPath(): string {
-      return opts.binaryPath;
+      return provider.remoteBinaryPath;
     },
 
-    // daemon 模式:用户主动 close 会话时杀掉远端 daemon 持有的 pi(对齐 CC/Codex
-    // daemon 生命周期)。直连模式不设(断链即进程随 channel 死)。
+    // daemon / MCPR 这类「远端有独立生命周期」的通道:用户主动 close 会话时交给
+    // provider 收尾。SSH daemon = 杀远端 daemon 持有的 pi(对齐 CC/Codex daemon
+    // 生命周期);MCPR 隧道不需要客户端 kill(runtime 自己管会话,隧道关闭即断桥);
+    // SSH 直连不设(断链即进程随 channel 死)。
     async killRemoteSession(): Promise<void> {
-      const chanOpts = buildChannelOpts(opts);
-      if (!chanOpts.daemonSessionId) return;
-      await killRemotePiManagerSession(
-        opts.remoteHost,
-        chanOpts.daemonSessionId,
-        logger,
-      );
+      await provider.dispose?.();
     },
   };
 }

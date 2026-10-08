@@ -172,9 +172,16 @@ import { ensurePiManagerInstalled } from './pi-manager-client.js';
 import { createPiRemoteProviderForwardLease } from './pi-remote-provider-forward.js';
 import { openCcManagerSession } from './cc-manager-client.js';
 import { openMcprTunnel } from './mcpr-tunnel.js';
+import {
+  createMcprPiFileOps,
+  createMcprPiTransport,
+  mcprPiMcpBridgeUnavailable,
+  resolveMcprPiAgentProxyEnv,
+  resolveMcprPiBinaryPath,
+  shouldSkipMcprPiMcpBridge,
+} from './pi-mcpr-remote.js';
 import { parseMcprRemoteHostId } from '../../shared/meka-router.js';
 import {
-  assertMcprHostSupportsAgent,
   classifyRemoteSessionTransport,
   resolveRemoteCodexCredentialMode,
 } from './remote-session-routing.js';
@@ -1277,24 +1284,16 @@ export function getMaker(): Maker {
       // 不能因为「都是远程」就交给 SSH API。
       getRemoteAgentFileOps: (remoteHostId) => {
         if (classifyRemoteSessionTransport(remoteHostId) === 'mcpr') {
-          // MCPRouter 侧目前**没有** file-ops 通道:Claude 的 cc-manager 协议只提供
-          // hello/query/session 与 bundle materialize(见
-          // `packages/maker-cc-manager/src/protocol.ts`), 没有通用 fs 读, 因此扫不了
-          // 远端 ~/.claude/{commands,skills}。
+          // MCPRouter 侧现在**有** file-ops 通道了:agent-tunnel `mode=exec` 提供与 SSH
+          // `remoteHost.exec` 同形的实例内执行,所以 Claude 的远端 Skill 发现
+          // (`scanRemoteClaudeSkills` 的 listDir/stat/readFile)与 `listAgentSkills` 的
+          // 远端目录都走**同一份** `createRemotePiFileOps` 实现(2026-10-09 起;
+          // 此前这里是 `[MCPR_FILE_OPS_UNAVAILABLE]` 硬失败)。
           //
-          // 这里**保持抛错**(只是换成语义正确的 transport 错误), **不**退化成空
-          // reader/空清单。理由(消费方契约, 见下两处):
-          //   1. `scanRemoteClaudeSkills` 直接调 fileOps.listDir/stat/readFile,
-          //      传 `{}` 会 TypeError, 不是「安全退化」;
-          //   2. 更关键的是 `listAgentSkills` 的结果会进 botProfileRuntime 的远程
-          //      Skill catalog, 而 botProfileRuntime.ts 明确要求 remote 会话
-          //      「catalog 读不到 ⇒ 抛错」(resolveBotSkillReferences 拿到空 catalog
-          //      会把用户配置的 Skill 全标成 unavailable, 而 harness 仍能发现远端
-          //      环境技能 ⇒ 快照与实际分叉, 有测试守这条)。
-          // 真正的修复需要新增 MCPRouter 侧 file-ops 能力(跨仓协议), 属另立任务。
-          throw new Error(
-            `[MCPR_FILE_OPS_UNAVAILABLE] MCPRouter remote file operations are not available for "${remoteHostId}"`,
-          );
+          // 注意仍然**不**退化成空 reader:botProfileRuntime 的远程 Skill catalog 契约要求
+          // 「读不到 ⇒ 抛错」,空 catalog 会把用户配置的 Skill 全标成 unavailable,而 harness
+          // 仍能发现远端环境技能 ⇒ 快照与实际分叉(有测试守这条)。exec 失败按普通错误上浮。
+          return createMcprPiFileOps(remoteHostId);
         }
         const remoteHost = getRemoteSshPool().get(remoteHostId);
         if (!remoteHost) {
@@ -2529,11 +2528,27 @@ export function getMaker(): Maker {
           hostProxyForwards,
         },
       ) => {
-        // 2026-09-29 实测的失败点:`maker-core` 的 pi startSession 对任何 `remoteHostId`
-        // 都先调本钩子(`packages/maker-core/src/agents/pi/index.ts` 的
-        // `if (remoteHostId && this.deps.getRemotePiTransport)`),`mcpr:<id>` 于是直接落到
-        // SSH pool。门禁必须是本函数的第一条语句。
-        assertMcprHostSupportsAgent('pi', remoteHostId);
+        // MCPRouter:`mode=pi` 隧道承载与 SSH 完全相同的 Pi 协议 —— 先在隧道上跑 pi-manager
+        // 既有的 hello + pi/ensure(启动身份 = 同一套 cmd/env/envHash),之后同一条连接就是该
+        // session 的 pi JSONL。见 `pi-mcpr-remote.ts` 与 pi-harness.md「MCPRouter 远端(MCPR)」。
+        // 这里**不**查 SSH pool、也**不**做 SSH 安装前置(runtime 自带 pi 运行时资产)。
+        if (classifyRemoteSessionTransport(remoteHostId) === 'mcpr') {
+          // 远端必须用实例里的 pi 二进制:maker-core 已 resolve 并传入时直接用(接口契约
+          // 「host 已 probe」),缺失才自己 resolve(与 SSH 分支同一取舍,避免两次语义分叉)。
+          const remoteBinaryPath = providedRemoteBinaryPath
+            ?? (await resolveMcprPiBinaryPath(remoteHostId));
+          return createMcprPiTransport({
+            remoteHostId,
+            remoteBinaryPath,
+            args,
+            cwd,
+            env,
+            ...(sessionId ? { sessionId } : {}),
+            logger: desktopMakerLogger,
+          });
+          // hostProxyForwards 有意忽略:MCPR 实例没有到控制端的反向转发,provider 转发
+          // 本身不可达(见 `resolveMcprPiAgentProxyEnv` 的说明)。
+        }
         const remoteHost = getRemoteSshPool().get(remoteHostId);
         if (!remoteHost) {
           throw new Error(
@@ -2640,7 +2655,11 @@ export function getMaker(): Maker {
       // `getRemoteSshPool()` 变成 `remote SSH host "mcpr:<id>" not found in pool`,把
       // 「不支持」误报成「SSH 主机没连」(2026-09-29 实测 LAZY_CREATE_FAILED 的根因)。
       getRemotePiFileOps: (remoteHostId) => {
-        assertMcprHostSupportsAgent('pi', remoteHostId);
+        // MCPRouter:file ops 走 `mode=exec`(等价 SSH 的 `remoteHost.exec`),**同一份**
+        // `createRemotePiFileOps` bash 脚本实现 —— 差别只是 exec 从哪条通道来。
+        if (classifyRemoteSessionTransport(remoteHostId) === 'mcpr') {
+          return createMcprPiFileOps(remoteHostId);
+        }
         const remoteHost = getRemoteSshPool().get(remoteHostId);
         if (!remoteHost) {
           throw new Error(
@@ -2650,7 +2669,9 @@ export function getMaker(): Maker {
         return createRemotePiFileOps(remoteHost);
       },
       getRemoteAgentFileOps: (remoteHostId) => {
-        assertMcprHostSupportsAgent('pi', remoteHostId);
+        if (classifyRemoteSessionTransport(remoteHostId) === 'mcpr') {
+          return createMcprPiFileOps(remoteHostId);
+        }
         const remoteHost = getRemoteSshPool().get(remoteHostId);
         if (!remoteHost) {
           throw new Error(`remote SSH host "${remoteHostId}" not found in pool — connect it first under Settings → Remote`);
@@ -2659,7 +2680,11 @@ export function getMaker(): Maker {
       },
       // 远端 pi 二进制路径:probe(远端 `pi --version`)+ cache。
       resolveRemotePiBinaryPath: async (remoteHostId) => {
-        assertMcprHostSupportsAgent('pi', remoteHostId);
+        // MCPRouter:runtime 自己物化 pi,客户端只解析它的实例内路径(优先读 runtime 注入的
+        // `CINDY_PI_AGENT_BIN`,再退 PATH / 与 SSH 同约定的布局),不查 SSH pool。
+        if (classifyRemoteSessionTransport(remoteHostId) === 'mcpr') {
+          return resolveMcprPiBinaryPath(remoteHostId);
+        }
         const remoteHost = getRemoteSshPool().get(remoteHostId);
         if (!remoteHost) {
           throw new Error(
@@ -2674,7 +2699,13 @@ export function getMaker(): Maker {
       // collab 全局禁用由 piEnvironment 按 server 名精确剥除 orca 类工具
       // (CC/Codex 同闸门, R5 配置审计 H-7);此处不整体 skip —— 整体 skip 会
       // 连 cindy_memory / ghost / 外部 HTTP MCP 一起误杀。
-      remotePiSkipMcpBridge: () => false,
+      //
+      // MCPRouter 例外:agent-tunnel 只有正向字节流,没有把控制端 loopback bridge 送到
+      // 实例的反向转发(Claude 走的是 cc-mgr 自己的 capability MCP 回呼,Pi 无对应通道)。
+      // 所以这条 transport 上**不投影** in-process bridge —— 也绝不把 loopback URL 原样
+      // 交给实例(实例的 127.0.0.1 是它自己的回环)。用户显式配置的外部 HTTP MCP 仍直连。
+      remotePiSkipMcpBridge: (remoteHostId) =>
+        classifyRemoteSessionTransport(remoteHostId) === 'mcpr' && shouldSkipMcprPiMcpBridge(),
       // 把本地 bridge 的 loopback URL(http://127.0.0.1:<localPort>/mcp/<name>)
       // 改写为远端 remote-forward 地址(http://127.0.0.1:<remotePort>/mcp/<name>)。
       //
@@ -2684,7 +2715,12 @@ export function getMaker(): Maker {
       // 的 MCP 隧道互相踩踏(R2 MCP BUG-1)。Pi 用 host.ensureRemoteForward 直接建
       // 独立 forward,远端端口从独立基数(PI_MCP_FORWARD_PORT_START)顺延。
       rewriteRemotePiMcpBridgeUrl: async (remoteHostId, localUrl) => {
-        assertMcprHostSupportsAgent('pi', remoteHostId);
+        // MCPR 分支是**纵深防御**:`remotePiSkipMcpBridge` 已让 piEnvironment 不生成
+        // in-process bridge,正常情况下不会被调用;真被调用说明有人接回了 bridge,此时
+        // 宁可显式失败也不能把 loopback URL 交给实例。
+        if (classifyRemoteSessionTransport(remoteHostId) === 'mcpr') {
+          mcprPiMcpBridgeUnavailable(remoteHostId);
+        }
         const remoteHost = getRemoteSshPool().get(remoteHostId);
         if (!remoteHost) {
           throw new Error(
@@ -2710,8 +2746,12 @@ export function getMaker(): Maker {
       },
       // 「Agent 流量走本地 Proxy」:远端 pi 的 LLM 流量经 SSH remote-forward 走本地代理
       // (与 CC 远端同机制;pref 关闭时 getRemoteAgentProxyEnv 返回 null → 直连)。
+      // MCPR:没有反向转发,固定 null(不注入代理 env),实例按自身网络直连 —— 与 MCPR 的
+      // Claude 分支同口径;不改变 Pi 的 provider/凭证策略。
       getRemotePiAgentProxyEnv: async (remoteHostId) => {
-        assertMcprHostSupportsAgent('pi', remoteHostId);
+        if (classifyRemoteSessionTransport(remoteHostId) === 'mcpr') {
+          return resolveMcprPiAgentProxyEnv();
+        }
         const remoteHost = getRemoteSshPool().get(remoteHostId);
         if (!remoteHost) {
           throw new Error(
@@ -2808,16 +2848,21 @@ export function getMaker(): Maker {
       listTeammates: (input) => listBotTeammates(input),
       readSkillSource: async ({ path: skillPath, remoteHostId }) => {
         if (!remoteHostId) return fs.readFile(skillPath, 'utf8');
-        // 与上面 getRemotePiFileOps 同一族(Pi 远端文件原语):先分类再查 pool,
-        // 否则 `mcpr:` 会报成 `remote SSH host "mcpr:<id>" not found`。
-        assertMcprHostSupportsAgent('pi', remoteHostId);
+        // 与上面 getRemotePiFileOps 同一族(Pi 远端文件原语):按 transport 分派 ——
+        // SSH 查 pool,MCPR 走 `mode=exec` 隧道。少了分类会让 `mcpr:` 报成
+        // `remote SSH host "mcpr:<id>" not found`(2026-09-29 实测)。
+        if (classifyRemoteSessionTransport(remoteHostId) === 'mcpr') {
+          return createMcprPiFileOps(remoteHostId).readFile(skillPath);
+        }
         const remoteHost = getRemoteSshPool().get(remoteHostId);
         if (!remoteHost) throw new Error(`remote SSH host "${remoteHostId}" not found`);
         return createRemotePiFileOps(remoteHost).readFile(skillPath);
       },
       fingerprintSkillSource: async ({ path: skillPath, remoteHostId }) => {
         if (remoteHostId) {
-          assertMcprHostSupportsAgent('pi', remoteHostId);
+          if (classifyRemoteSessionTransport(remoteHostId) === 'mcpr') {
+            return createMcprPiFileOps(remoteHostId).sha256File(skillPath);
+          }
           const remoteHost = getRemoteSshPool().get(remoteHostId);
           if (!remoteHost) throw new Error(`remote SSH host "${remoteHostId}" not found`);
           return createRemotePiFileOps(remoteHost).sha256File(skillPath);

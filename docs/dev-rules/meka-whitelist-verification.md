@@ -290,18 +290,28 @@ P4 项目根、插件面板呈现方式等 Meka 专属配置；这些配置落�
   断言 `mcpr:` 时被 mock 的 SSH pool `get` **零调用**且不抛 `remote SSH host …`，并含反向保护（SSH host 仍走 pool、
   不在 pool 仍 fail loud）。该文件的 `stripTypeScriptSyntax` helper 用 **`ts.transpileModule`** 实现（不要回退成逐条正则，
   否则实现侧写法一改就会假红）。
-  **已知未修复**：MCPRouter（`mcpr:`）**Claude** 会话的远端 Skill 发现仍不可用 —— 本轮的修复只是把误导性的
-  `remote SSH host "mcpr:…" not found in pool` 改成 `[MCPR_FILE_OPS_UNAVAILABLE]`（**归因修正，失败语义不变**），
-  真正的修复需要在 MCPRouter 侧为 cc-manager 协议新增 file-ops 能力（跨仓协议变更）。Codex 侧则已按 transport 分类
-  返回空 reader（下游 `hasCurrentTeammateInstructions` 的契约为「不可读 ⇒ 重新投递」，安全）。
-  **存量残留（2026-09-29 已收口，口径 = fail closed）**：`maker-host/index.ts` 的
-  `readSkillSource` / `fingerprintSkillSource`（约 `:2746-2762`）过去是 SSH-only
-  （`getRemoteSshPool().get(remoteHostId)` 未命中即抛 `remote SSH host "mcpr:<id>" not found`），
-  Meka bot 跑在 MCPRouter 会话且配了 Skill 时静态可达。本轮**不改产品语义、只修归因**：
-  两句在查 pool 之前统一过 `assertMcprHostSupportsAgent('pi', remoteHostId)`，
-  `mcpr:` 上抛类型化的 `MCPR_AGENT_UNSUPPORTED`（不再是 SSH 归因）。这两条是 Pi 远端文件原语，
-  在 MCPRouter 上同样属于「没有 transport」而非「暂时读不到」，因此与其余 Pi 远端钩子同口径
-  fail closed（见 WL-4.1.9）。
+  **2026-10-09 已修复（原「已知未修复」条目作废）**：MCPRouter 侧新增 agent-tunnel
+  `mode=exec`（与 SSH 的 `remoteHost.exec` 同形：实例容器内、runtime 同一非 root 用户执行
+  `bash -c`），因此 MCPRouter（`mcpr:`）**Claude** 会话的远端 Skill 发现不再落
+  `[MCPR_FILE_OPS_UNAVAILABLE]`，而是走 `createMcprPiFileOps(remoteHostId)`
+  （`maker-host/pi-mcpr-remote.ts`）—— **与 SSH 同一份** `createRemotePiFileOps` 实现，
+  差别只是 exec 从哪条通道来。客户端不额外加路径/命令白名单：真正的边界是容器与用户身份。
+  **新增锚点**：`maker-host/pi-mcpr-remote.ts` 的 `createMcprPiExecHost` /
+  `createMcprPiFileOps`；`maker-host/mcpr-tunnel.ts` 的 `McprTunnelMode`（`pi` / `exec`）
+  与 `mcprExec`（冻结帧形状：请求首行 + 流帧 + 末帧 + error 行；末帧的**加性可选**
+  `truncated:true` 只在服务端输出触顶 16 MiB 时出现，客户端一律当失败抛
+  `[MCPR_EXEC_TRUNCATED]` —— 截断结果**不得**当完整数据返回，否则 file-ops 的
+  `readFile` 会静默污染 agentHome / 技能正文；未知末帧字段一律忽略）；
+  `maker-host/index.ts` 的 Claude `getRemoteAgentFileOps` mcpr 分支。
+  **自动化门禁**：`pnpm --filter desktop exec vitest run src/main/maker-host/__tests__/mcprRemoteFileOps.test.ts src/main/maker-host/__tests__/mcprExec.test.ts`
+  **实机验证：未验证**（需已部署 `mode=exec` 的 MCPRouter 实例；判据是 MCPR 的 Claude 任务里
+  远端 `~/.claude/{commands,skills}` 能被发现、且不再出现 `[MCPR_FILE_OPS_UNAVAILABLE]`）。
+  **存量残留（2026-09-29 收口归因、2026-10-09 转为隧道实现）**：`maker-host/index.ts` 的
+  `readSkillSource` / `fingerprintSkillSource` 过去是 SSH-only（未命中即抛
+  `remote SSH host "mcpr:<id>" not found`）。现在两句都先 `classifyRemoteSessionTransport`，
+  `mcpr:` 走进 `createMcprPiFileOps(...).readFile / sha256File`（同一批脚本），SSH 分支不变。
+  Codex 侧仍按 transport 分类返回空 reader（下游 `hasCurrentTeammateInstructions` 的契约为
+  「不可读 ⇒ 重新投递」，安全）—— Codex 的 file-ops 通道本轮**未**接 exec。
 - **实机验证**：MCPRouter Claude 任务**首次发送**（lazy create）＋ 重启 Desktop 后续聊（恢复路径），**两条都要走**
 - **历史回归**：2026-08-25 `LAZY_CREATE_FAILED: remote ssh host not ready: mcpr:<id>`
 
@@ -375,40 +385,67 @@ P4 项目根、插件面板呈现方式等 Meka 专属配置；这些配置落�
 - **自动化门禁**：`pnpm --filter desktop exec vitest run src/main/maker-host/__tests__/mekaRemoteCodexBundle.test.ts src/main/maker-ipc/__tests__/mekaRuntimeInjection.test.ts`
 - **实机验证**：Meka 角色配含脚本/二进制资产的 Skill → MCPRouter 远端任务可原生加载并读取资产；关闭会话后远端 bundle 已释放
 
-##### WL-4.1.9 Pi 引擎不得进入 MCPR transport（引擎面收掉 + 类型化拒绝）
+##### WL-4.1.9 Pi 引擎进入 MCPR transport（`mode=pi` 数据面 + `mode=exec` 执行面，2026-10-09）
 
-- **不变量**：`pi` + `mcpr:` 是**没有实现**的组合（MCPRouter 的 project-agent-instances 只把
-  `agentType` 为 `claude` / `codex` 的实例判为可用；Pi 的远端形态只有 SSH），必须在读取 SSH pool
-  **之前**以类型化错误失败，绝不允许退化成 `remote SSH host "mcpr:<id>" not found in pool`。
-  Pi + SSH 的能力**不受影响**。
-- **代码锚点**：`apps/desktop/src/main/maker-host/remote-session-routing.ts` 的
-  `assertMcprHostSupportsAgent` / `McprUnsupportedAgentError` / `MCPR_AGENT_UNSUPPORTED_CODE`
-  （与前文的 `classifyRemoteSessionTransport` 同一模块，是分类的唯一纯函数入口）；
-  `apps/desktop/src/main/maker-host/index.ts` 的 8 个 Pi 远端钩子首句 ——
-  `getRemotePiTransport`（约 `:2473`）、`getRemotePiFileOps`（约 `:2580`）、Pi 侧
-  `getRemoteAgentFileOps`（约 `:2590`）、`resolveRemotePiBinaryPath`（约 `:2599`）、
-  `rewriteRemotePiMcpBridgeUrl`（约 `:2624`）、`getRemotePiAgentProxyEnv`（约 `:2651`）、
-  `readSkillSource` / `fingerprintSkillSource`（约 `:2746-2762`）；
-  `apps/desktop/src/main/maker-ipc/register.ts` 的 `ensureRemoteReadyForSessionStart`
-  （`mcpr:` 分支内对 `agentKind === 'pi'` 抛 `MCPR_AGENT_UNSUPPORTED`，紧随 MCPRouter guard）；
-  渲染层 `NewMakerDraftRoute`（`effectiveAvailableVendors` → `hiddenSwitcherVendors` +
-  `fallbackUnavailableVendor`）与 `ChatInput`（`unifiedAgents` 的 `mcprRemoteTarget` 门禁）；
-  **判定只在单一纯函数** `apps/desktop/src/renderer/lib/mcprEngineSurface.ts` 的
-  `resolveMcprEngineSurface(availableVendors, mcprTarget)`（不需要收窄时返回入参本身，
-  不打断下游 `useMemo`），两个消费方都只调它；
-  文案 `chat.remoteError.MCPR_AGENT_UNSUPPORTED`（5 语言）
-- **自动化门禁**：`pnpm --filter desktop exec vitest run src/main/maker-host/__tests__/mcprPiTransport.test.ts src/renderer/lib/__tests__/mcprEngineSurface.test.ts src/renderer/__tests__/newMakerProjectPicker.test.ts`
-  —— 第一条含**行为级**（6 个钩子在 `mcpr:` 上零次触碰 SSH pool、抛 `MCPR_AGENT_UNSUPPORTED`、SSH 路径不变）
-  与**源码级不变量**（`index.ts` 里每个 `getRemoteSshPool().get(remoteHostId)` 所在钩子体内必须出现共享分类器，
-  可抓将来新增的未分类钩子；已做「摘掉一处 → 扫描报出该钩子」的负向对照）；
-  第二条是引擎面规则的**行为级**覆盖（MCPR 收 Pi / 非 MCPR 放行 / 身份稳定 / 不改入参 / 只收 Pi）；
-  第三条锁两个消费方确实都接在这条规则上
-- **实机验证**：MCPR 位置下引擎面**不再出现 Pi**；已落盘的 Pi 草稿被 coerce 到 Claude/Codex；
-  Pi + SSH 远端任务照常启动
+- **不变量（新口径，取代 2026-09-29 的「Pi 不得进入 MCPR」）**：`pi` + `mcpr:` **已实现**：
+  - **数据面** `mode=pi`：runtime 把隧道接到 `pi-manager bridge --socket <受管 socket>` 的
+    stdio；客户端先跑 pi-manager **既有 RPC**（`protocol/hello` + `pi/ensure(sessionId, cmd,
+    env, envHash)`，与 SSH 同一启动方式），ensure 响应之后的字节即该 session 的 pi JSONL ——
+    Pi 协议实现与 SSH **共用同一份**（`pi-remote-transport.ts` 的
+    `createPiTransportFromProvider`），`packages/maker-pi-manager` 未改任何协议。
+  - **执行面** `mode=exec`：单连接单次执行，语义等价 SSH 的 `remoteHost.exec`（实例容器内、
+    runtime 同一非 root 用户）。Pi 与 Claude 的远端 file ops **原样复用** SSH 那批 bash 脚本；
+    客户端**不**加路径/命令白名单（边界是容器与用户身份）。
+  - **不得回归**：8 个 Pi 远端钩子在 `mcpr:` 上**零次**触碰 SSH pool；也不得把
+    `mcpr:<id>` 的失败归因成 `remote SSH host "mcpr:<id>" not found in pool`。
+  - **有意不投影（是能力边界，不是新增拒绝）**：① 控制端 in-process MCP bridge
+    （ghost / cindy_memory / orca / 电脑驱动）—— agent-tunnel 无 `-R` 反向转发；
+    外部 HTTP/Streamable HTTP MCP 仍直连可用。② `Agent 流量走本地 Proxy` 的 `tunnel` 模式
+    —— `getRemotePiAgentProxyEnv` 在 `mcpr:` 返回 `null`。③ provider/凭证语义沿用 SSH，
+    不为 Pi 新增任何「远端不得用 X 供应商」的门禁，也不把本机 OAuth/keychain 搬到实例。
+  - **已验证**：SSH 路径（Pi + SSH）行为一字未改（见 `newMakerProjectPicker.test.ts` 的
+    「does not hide SSH targets for Pi」与 `mcprPiTransport.test.ts` 的 SSH 分支用例）。
+- **代码锚点（以符号名为准）**：
+  - `apps/desktop/src/main/maker-host/pi-mcpr-remote.ts`（**唯一接缝**）：
+    `createMcprPiExecHost` / `createMcprPiFileOps` / `resolveMcprPiBinaryPath` /
+    `openMcprPiSessionChannel` / `createMcprPiTransport` / `resolveMcprPiAgentProxyEnv` /
+    `shouldSkipMcprPiMcpBridge` / `mcprPiMcpBridgeUnavailable`；
+  - `apps/desktop/src/main/maker-host/pi-remote-transport.ts`：
+    `PiByteChannelProvider` / `createPiTransportFromProvider`（共享协议核心）、
+    `createSshPiTransport` / `createSshPiDaemonTransport`（SSH 两个 provider）、
+    `createRemotePiFileOps`（参数化为 `PiRemoteExecHost`）、`buildPiLaunchCommand` /
+    `computePiLaunchEnvHash` / `sanitizePiEnsureEnv`（SSH 与 MCPR 共用）；
+  - `apps/desktop/src/main/maker-host/mcpr-tunnel.ts`：`McprTunnelMode`（`pi` / `exec`）、
+    `buildMcprTunnelUrl`（pi/exec 不带 `bundleVersion`）、`mcprExec`（冻结帧形状）；
+  - `apps/desktop/src/main/maker-host/index.ts`：`getRemotePiTransport` / `getRemotePiFileOps` /
+    Pi 侧 `getRemoteAgentFileOps` / `resolveRemotePiBinaryPath` / `rewriteRemotePiMcpBridgeUrl` /
+    `getRemotePiAgentProxyEnv` / `remotePiSkipMcpBridge` / `readSkillSource` /
+    `fingerprintSkillSource`，以及 Claude deps 的 `getRemoteAgentFileOps`（原
+    `[MCPR_FILE_OPS_UNAVAILABLE]` 硬失败已撤除）；
+  - `apps/desktop/src/main/maker-ipc/register.ts` 的 `ensureRemoteReadyForSessionStart`：
+    `mcpr:` 分支对三个引擎一律早返回（已删除 `agentKind === 'pi'` 的类型化拒绝）；
+  - 渲染层：`NewMakerDraftRoute`（`hiddenSwitcherVendors` / `fallbackUnavailableVendor` 只用
+    `availableVendors`）与 `ChatInput`（`unifiedAgents` 用 `runtimeAvailableVendors`）；
+    **已删除** `renderer/lib/mcprEngineSurface.ts` 及其单测、`MCPR_AGENT_UNSUPPORTED` 这个
+    IPC 码（`shared/ipc-errors.ts`）与 5 语言文案 `chat.remoteError.MCPR_AGENT_UNSUPPORTED`、
+    `remote-session-routing.ts` 的 `assertMcprHostSupportsAgent` / `McprUnsupportedAgentError` /
+    `MCPR_AGENT_UNSUPPORTED_CODE`。
+- **自动化门禁**：`pnpm --filter desktop exec vitest run src/main/maker-host/__tests__/mcprPiTransport.test.ts src/main/maker-host/__tests__/piMcprRemote.test.ts src/main/maker-host/__tests__/mcprExec.test.ts src/main/maker-host/__tests__/mcprRemoteFileOps.test.ts src/renderer/__tests__/newMakerProjectPicker.test.ts`
+  —— 第一条含**行为级**（8 个钩子在 `mcpr:` 上零次触碰 SSH pool、各走隧道实现；SSH 分支不变）
+  与**源码级不变量**（`index.ts` 里每个 `getRemoteSshPool().get(remoteHostId)` 所在钩子体内必须
+  出现共享分类器，可抓将来新增的未分类钩子）；第二条是接缝行为（file ops 复用 SSH 脚本、
+  文件内容只走 stdinBase64、`pi/ensure` 形状与 envHash 确定性、ensure 响应之后的已缓冲字节
+  必须交接）；第三条钉住 `mode=exec` 的**冻结帧形状**（跨仓契约）；第四条是 Claude 侧同一缺口；
+  第五条锁两个渲染层消费点确实不再按位置收窄。
+- **实机验证：未验证 + 原因**：需要已部署 `mode=pi` / `mode=exec` 且装有 pi 运行时资产的
+  MCPRouter 实例（MCPRouter 仓另一 workstream + CDN `pi` 段）。判据四条见
+  `pi-harness.md`「上线门禁」的「MCPRouter 上的 Pi」条目（启动 / 权限档生效 / 远端
+  agentHome 与模型切换生效 / 外部 MCP 可用且不误连实例 loopback）。
 - **历史回归**：2026-09-29 实机 —— MCPR 位置 + Pi 引擎，首条消息报
   `LAZY_CREATE_FAILED: remote SSH host "mcpr:f235de4c-…" not found in pool — connect it first under Settings → Remote`
   （会话行 `agent_kind=pi` + `remote_host_id=mcpr:…`；外围 preflight 已跳过 SSH，失败点是 Pi 的
-  `getRemotePiTransport` 无分类）
+  `getRemotePiTransport` 无分类）。**这条回归的守门方式已从「静态引擎门禁」改为「按 transport
+  分派 + 源码级分类不变量」**：门禁撤了，归因错误仍不许回来。
 
 ##### WL-4.1.10 cc-mgr bundle 按版本交付（客户端声明 → 服务端物化 → 重启子进程）
 
@@ -469,6 +506,92 @@ P4 项目根、插件面板呈现方式等 Meka 专属配置；这些配置落�
 - **实机验证**：**未验证**（需在装有新桌面端的机器上开一个 MCPRouter Codex 会话，确认
   ①模型选择器里模型数与本机普通会话一致、②不再出现「无法读取远程设备上的模型」、
   ③能正常发送）。2026-10-08 的实机现场是本条的证据来源，修复后的复验尚未执行
+
+##### WL-4.1.12 linux runtime manifest 必须带目录分发段（`codexPackage` / `pi`）
+
+- **不变量**：MCPRouter 只从 `runtime-manifest-linux-x64.json` 取 runtime，因此该 manifest
+  必须带**可选**的 `codexPackage`（目录发行包，`bin/codex-code-mode-host` sidecar 只在其中）
+  与 `pi` 两段；`claudeCode` 与**单文件** `codex` 段的字段、对象路径、`binarySha256` 语义
+  一个字不变（≤0.0.20 客户端与**未重建的旧 MCPRouter 镜像**仍只认 `codex`）。两段缺失时
+  消费端视为合法（回退镜像内那份），`schemaVersion` 保持 `1`；但**发布侧**必须要求齐备。
+- **代码锚点**：`apps/desktop/scripts/ci/runtime-release.mjs` 的 `buildAgentRuntimeManifest`
+  （第 4 个参数 `dirDistAssets`，只写 `version`/`file`/`sha256`/`size` 四字段；
+  `required: false` 校验）与 `formatMekaDirDistManifestPreview`（dry-run 预览；
+  `pi` 的 sha256/size 为 `null` 占位，不与 pin 摘要混淆）；
+  `apps/desktop/scripts/publish-agent-runtimes.mjs` 的 `collectPinnedDirDistAssets` →
+  `publishDirDistAssets` → `assertRuntimeManifestAssets({ definitions: DIR_DIST_RUNTIME_DEFINITIONS })`
+  串接（不可变对象先上传，mutable manifest 最后写）
+- **自动化门禁**：`node --test scripts/__tests__/codex-package-cdn-release.test.mjs scripts/__tests__/pi-cdn-release.test.mjs scripts/__tests__/meka-release-flow.test.mjs`
+  （用假 storage / 假下载，不触网）。规则正文见
+  [`agent-runtime-release.md`](agent-runtime-release.md) 的「linux runtime manifest 也必须带
+  `codexPackage` 与 `pi`」
+- **实机验证**：**未验证**（需先由 CI 的 `runtime-assets` / `release` 流水线发一次带这两段的
+  manifest，再重建部署 MCPRouter 镜像，然后在 MCPRouter 会话里确认远端 Codex 的 code-mode
+  （命令执行）可用、不再报「缺少 codex-code-mode-host」）。判据还包含「消费侧优先取
+  `codexPackage`、缺段才回落单文件 `codex`」这一取用顺序 —— 它在 MCPRouter 仓，本仓不实现
+- **跨仓前置（不在本仓）**：① MCPRouter 侧按版本取用 `codexPackage` 的顺序；②
+  `cindy-meka-cicd` 的「公共 manifest 已跟上源码 pin 就跳过发布」快路径必须把这两段纳入
+  pin 比对，否则只 bump pin 的改动静默不发布
+
+##### WL-4.1.13 MCPRouter 上的三个引擎都走隧道（Claude / Codex / Pi）—— 端到端验收
+
+- **保护的不变量**：`mcpr:<instanceId>` 上，**三个引擎都只能经 MCPRouter 隧道取远端能力**，
+  且**不得**回落成 SSH 语义或静态拒绝。具体三面：
+  1. **分类**：`remoteHostId` 是两种 transport 的**联合身份**。任何远端 hook / 探针的第一句
+     必须先分类或过引擎门禁；`mcpr:` 不得进入 `getRemoteSshPool()`（历史事故见下）。
+     2026-10-09 起 `pi` **不再**被静态拒绝（`assertMcprHostSupportsAgent` /
+     `McprUnsupportedAgentError` / `MCPR_AGENT_UNSUPPORTED` 已随门禁一并删除，且**不得**被
+     上游合并重新引入）。
+  2. **字节通道只有两个**：`mode=pi`（同一条隧道两阶段：`protocol/hello` + `pi/ensure` 的
+     **响应帧为阶段边界**，之后同一连接即该会话的 `pi-manager bridge` 原始 stdio；`ensure`
+     失败**绝不切换**）与 `mode=exec`（单连接单次执行的三段式 NDJSON；末帧
+     `{exitCode, signal, durationMs, truncated?}`，`truncated:true` 是**加性可选**字段且必须
+     当**失败**处理）。Pi 与 Claude 的远端 file ops **共用同一份实现**，只按 transport 换
+     exec 取道；**不得**为某一个引擎另造文件协议。
+  3. **单一真源**：远端 Codex 的运行时取 `codexPackage`（目录分发，sidecar 只在其中），
+     缺段才回落单文件 `codex`；远端 Pi 的二进制路径由 **runtime 注入
+     `CINDY_PI_AGENT_BIN`**（不可被客户端 env 覆盖），版本由**平台 manifest 的 `pi` 段**决定
+     （**不得**把版本钉进部署变量 —— 一个事实两处正是 codex 事故的形状）。
+- **代码锚点**：客户端——`apps/desktop/src/main/maker-host/pi-mcpr-remote.ts`（唯一接缝：
+  `createMcprPiExecHost` / `createMcprPiFileOps` / `resolveMcprPiBinaryPath` /
+  `openMcprPiSessionChannel` / `createMcprPiTransport`）、`pi-remote-transport.ts`
+  （`PiRemoteExecHost` + `PiByteChannelProvider` + 共用的 `createRemotePiFileOps` 与
+  `buildPiLaunchCommand` / `computePiLaunchEnvHash`）、`mcpr-tunnel.ts`（`McprTunnelMode`
+  含 `pi`/`exec`、`mcprExec` 的帧解析）、`maker-host/index.ts`（8 个 Pi 钩子 + Claude
+  `getRemoteAgentFileOps` 走同一份 file ops）、`remote-session-routing.ts`（门禁已删的说明）、
+  `maker-ipc/register.ts`（`mcpr:` 对三引擎早返回）；
+  服务端（MCPRouter 仓，见该仓 `docs/cindy-remote-runtime.md`）——
+  `packages/cindy-remote-runtime/src/tunnel/piManagerDaemon.ts`、`tunnel/execTunnel.ts`、
+  `remoteInstances.ts`（`CINDY_PI_AGENT_BIN` 注入、cache logger、隧道计数与回收）、
+  `index.ts`（mode 白名单）、`packages/server/src/management/project-agent-instances.ts`
+  （`ProjectAgentType` 含 `pi`）与 `project-agent-routes.ts`（`parseAgentTunnelQuery`）、
+  `pi-manager.pin.json` + `scripts/check-pi-manager-pin{,-drift}.mjs`
+- **自动化门禁**：`pnpm --filter desktop exec vitest run src/main/maker-host/__tests__/piMcprRemote.test.ts src/main/maker-host/__tests__/mcprExec.test.ts src/main/maker-host/__tests__/mcprPiTransport.test.ts src/main/maker-host/__tests__/piRemoteTransport.test.ts src/main/maker-host/__tests__/mcprRemoteFileOps.test.ts src/main/maker-host/__tests__/remote-session-routing.test.ts src/renderer/__tests__/newMakerProjectPicker.test.ts`
+  （`mcprPiTransport` 是**合并防护的主力**：它逐字提取真实钩子体、注入 spy 后实际执行，断言
+  `mcpr:` 时 SSH pool 的 `get` **零调用**，并含反向保护「SSH host 仍走 pool」——
+  上游合并若把门禁摘掉、或新加未分类钩子，这条会红）＋ `node --test scripts/__tests__/codex-package-cdn-release.test.mjs scripts/__tests__/pi-cdn-release.test.mjs`
+  （发布侧两段与 pin 同源、可选段向后兼容）。跨仓命令在本清单里不写全（清单有一条「出现的
+  包管理器命令都必须在本仓真实存在」的门禁）；MCPRouter 侧在**那个仓**跑
+  `@mcp-router/cindy-remote-runtime` 与 `@mcp-router/server` 的 `test` / `typecheck` 脚本
+- **实机验证**：**未验证**（需先发带 `codexPackage`/`pi` 两段的 manifest，再重建部署
+  MCPRouter 镜像）。四条判据，逐条留证：
+  - **V1 Claude**：MCPR 会话能发消息且**能执行命令**（远端 `ls -la` 有输出）；远端 Skill
+    发现可用（不再 `[MCPR_FILE_OPS_UNAVAILABLE]`）；日志无 `SSH_EXEC_FAILED`
+  - **V2 Codex**：能执行命令且**不再出现 `codex-code-mode-host`**；模型选择器的模型数与本机
+    普通会话一致；无 `INVALID_BUNDLE_VERSION`
+  - **V3 Pi**：MCPR 位置能看到 Pi 与 Pi 模型；会话能起（无 `LAZY_CREATE_FAILED` /
+    `not found in pool` / `[MCPR_PI_BINARY_MISSING]`）；首次发送能落正文与工具调用；
+    **切到 Ask 档、危险命令必须弹卡**（这条同时证明权限档真的写进了实例内 `perm-*.json`）；
+    实例内 `models.json`/`settings.json`/权限桥扩展确实被写入；外部 HTTP MCP 可用且**不**出现
+    指向实例 loopback 的连接尝试
+  - **V4 版本面**：客户端声明 `bundleVersion` 后不再 `INVALID_BUNDLE_VERSION`；真出现错配时
+    落到可操作的升级提示而不是模糊隧道失败
+- **历史回归**（这三条都是**已发生**的，别重复）：① 2026-08-04 `4d1e01b7f` 把 `mcpr:<id>` 送进
+  SSH pool → `SSH_HOST_NOT_FOUND`；② 2026-09-28 `INVALID_BUNDLE_VERSION`（两端 bundle 版本分叉）；
+  ③ **2026-10-08** 远端 Codex 只拿到**单文件** `codex`（缺 `bin/codex-code-mode-host`）→
+  code-mode 起不来，模型只能请用户手动 `ls -la`；同日另发现 MCPR 的 Codex 会话被当成 SSH 执行
+  主机（`SSH_EXEC_FAILED: Unable to read remote Codex models`），并连带**禁止发送**、模型面
+  退化成空清单
 
 #### WL-4.2 ORCA worker 支持远程 MCPR 实例会话
 

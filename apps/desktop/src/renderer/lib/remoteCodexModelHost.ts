@@ -22,9 +22,11 @@ import { MCPR_REMOTE_HOST_PREFIX } from '../../shared/meka-router';
  * `'gateway-key'`），所以它的模型面与本机一致，正确来源是**本机目录**，不是远端探测。
  * SSH 相反：那台主机有自己的登录与 `CODEX_HOME`，必须问它自己。
  *
- * 与 `mcprEngineSurface.ts` 同样的理由收成一个纯函数：这条规则有多个消费方
- * （`ChatInput` 的 `sshCodexHostId`、`loadSshSessionModelSelection` 的调用方），
- * 各写一遍条件正是本仓反复吃过的「同一规则多处漂移」形状。
+ * 收成一个纯函数：这条规则有多个消费方（`ChatInput` 的 `sshCodexHostId`、
+ * `loadSshSessionModelSelection` 的调用方），各写一遍条件正是本仓反复吃过的
+ * 「同一规则多处漂移」形状。（注：`lib/mcprEngineSurface.ts` 曾是同款做法的另一个例子，
+ * 已随 2026-10-09 的 Pi + MCPR 支持一起删除 —— 那条「MCPR 位置收掉 Pi」的规则本身不存在了，
+ * 不是被合并进本文件。）
  *
  * 返回值沿用调用方已有的语义：`null` 表示「不走 SSH 探针」（本地 / device-link / mcpr）。
  */

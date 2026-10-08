@@ -33,52 +33,18 @@ export function resolveRemoteCodexCredentialMode(
     : undefined;
 }
 
-/** `MCPR_AGENT_UNSUPPORTED` 的 wire 码;渲染层按前缀识别并给可操作文案。 */
-export const MCPR_AGENT_UNSUPPORTED_CODE = 'MCPR_AGENT_UNSUPPORTED';
-
 /**
- * MCPRouter 隧道承载不了的引擎。
+ * MCPRouter 现在承载 `claude-code` / `codex` / `pi` 三个引擎,因此这里**没有**引擎级静态门禁。
  *
- * **为什么要有这个类型化错误,而不是让调用点各自 `throw new Error(...)`**:
- * Pi 的远端钩子在 2026-09-29 实测里把 `mcpr:<id>` 直接喂给 `getRemoteSshPool()`,
- * 于是「MCPRouter 不支持 Pi」这件事被报成
- * `remote SSH host "mcpr:<id>" not found in pool — connect it first under Settings → Remote`,
- * 再被 lazy-create 的 catch-all 套上 `LAZY_CREATE_FAILED`。错误的 transport 归因会让用户
- * 去 Settings → Remote 找一个永远不会存在的 SSH 主机。带 `code` 的类型化错误让
- * 上层(preflight IPC / 日志)都能按事实分类,而不是解析自由文本。
+ * 2026-10-09 起 MCPRouter 新增 `mode=pi` 隧道(`openMcprTunnel(..., { mode: 'pi' })`):
+ * runtime 把隧道接到 `pi-manager bridge --socket <受管 socket>` 的 stdio,客户端这一侧的 Pi
+ * 协议与 SSH 路径逐字节同源,差别只是字节从哪来(见 `docs/dev-rules/pi-harness.md`
+ * 「MCPRouter 远端(MCPR)」)。
+ *
+ * 历史:2026-09-29 这里曾有一个 `assertMcprHostSupportsAgent('pi', …)` 静态门禁(类型化
+ * `MCPR_AGENT_UNSUPPORTED`)。它解决的问题是**归因**——没有它时 `mcpr:<id>` 会被送进
+ * `getRemoteSshPool()`,被报成 `remote SSH host "mcpr:<id>" not found in pool`。现在的做法
+ * 改为在每个远端钩子内部按 transport 分派(数据面走隧道、控制面走 runtime 能力),
+ * 事实不成立时给出的是**能力级**失败,而不是把「这个组合没有实现」当成引擎与 transport
+ * 的永久不兼容再拦一次。SSH 路径的既有语义(claude/codex/pi 全部可用)一字未改。
  */
-export class McprUnsupportedAgentError extends Error {
-  readonly code = MCPR_AGENT_UNSUPPORTED_CODE;
-
-  constructor(
-    readonly agentKind: RemoteAgentKind,
-    readonly remoteHostId: string,
-  ) {
-    super(
-      `[${MCPR_AGENT_UNSUPPORTED_CODE}] MCPRouter remote sessions host the claude-code and codex engines only; `
-        + `"${agentKind}" cannot run on "${remoteHostId}"`,
-    );
-    this.name = 'McprUnsupportedAgentError';
-  }
-}
-
-/**
- * MCPRouter 侧的引擎门禁：`mcpr:<instance.id>` 只承载 `claude-code` / `codex`。
- *
- * 两条事实合起来才成立,改任何一条都要重判这个函数:
- *   1. MCPRouter 的 project-agent-instances 只把 `agentType` 为 `claude` / `codex` 的实例判为
- *      可用(`meka-settings/routerService.ts` 的 `normalizeInstance`);
- *   2. Pi 的远端形态只有 SSH(`maker-pi-manager` daemon + `SshPiDaemonTransport`,
- *      见 `docs/dev-rules/pi-harness.md`「SSH 远端能力」)。
- *
- * 因此 Pi + `mcpr:` 不是「暂时坏了」而是**没有实现**的组合:它必须在读取 SSH pool 之前
- * 就以这个错误失败,而不是退化成 SSH host 查询。非 mcpr(本地 / SSH)直接放行。
- */
-export function assertMcprHostSupportsAgent(
-  agentKind: RemoteAgentKind,
-  remoteHostId: string,
-): void {
-  if (classifyRemoteSessionTransport(remoteHostId) !== 'mcpr') return;
-  if (agentKind === 'claude-code' || agentKind === 'codex') return;
-  throw new McprUnsupportedAgentError(agentKind, remoteHostId);
-}

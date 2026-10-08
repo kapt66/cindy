@@ -1315,6 +1315,20 @@ Meka 首页与市场共 4 个文件 19 项定向测试通过。
 finalize 校验后提升为 `<package-sha256>.zip` 并删除 staging。Desktop 不持有 RustFS
 凭证；MCPRouter session 只用于申请 grant 与 finalize，安装下载使用短期预签名 GET。
 
+2026-10-09 起 **Pi 引擎也能跑在 MCPRouter 远端任务上**（此前是「引擎级静态拒绝」）。
+MCPRouter 侧新增两条 agent-tunnel mode，客户端接缝收在
+`apps/desktop/src/main/maker-host/pi-mcpr-remote.ts`：`mode=pi` 承载 pi-manager 既有 RPC
+（`protocol/hello` + `pi/ensure(sessionId, cmd, env, envHash)`，与 SSH 同一启动方式）并在
+ensure 响应之后把同一条连接当 pi JSONL（与 SSH 逐字节同源，所以 Pi 协议实现共用同一份）；
+`mode=exec` 提供与 SSH `remoteHost.exec` 同形的实例内执行，Pi 与 Claude 的远端 file ops
+原样复用 SSH 那批 bash 脚本（Claude 侧原先的 `[MCPR_FILE_OPS_UNAVAILABLE]` 缺口一并修掉）。
+因此渲染层不再按位置收窄引擎面（`renderer/lib/mcprEngineSurface.ts` 与
+`MCPR_AGENT_UNSUPPORTED` 文案/码一并删除）。**客户端侧已落地并通过定向门禁；端到端未验证**
+——需要 MCPRouter 侧部署两种 mode 并从 CDN `pi` 段物化 pi 运行时，判据见
+`docs/dev-rules/pi-harness.md`「上线门禁」的「MCPRouter 上的 Pi」。有意不投影的能力：
+控制端 in-process MCP bridge（无反向转发）与 `Agent 流量走本地 Proxy` 的 tunnel 模式；
+provider/凭证语义沿用 SSH，不为该位置新增任何供应商门禁。
+
 ### 4.8 Orca Worker 微调
 
 本模块不能只按“目标选择器”迁移。XDMaker `meka/main` 的 Meka Orca 是一条完整链路：
@@ -6896,6 +6910,62 @@ Codex/Claude/Pi 原生读 `AGENTS.md`/`CLAUDE.md`/`SKILL.md`，不看我们的 m
   存量插件兼容红线核对结论为「无需重装、无需重新确认、无需重新配置」。
 - **仍需维护者裁决**（本轮新增两项）：① WL-5.7 的区域闸门口径（Global 是否该读 `xdt-maker`）；
   ② WL-1.2/WL-1.3 的 smoke 检查是否按「双态覆盖」改造（改造前这两条只能登记为「未验证 + 前提不成立」）。
+
+### 6.63 2026-10-08 MCPRouter 的 linux runtime manifest 从来没有目录分发段：远端 Codex 命令执行起不来（已修）
+
+- **现象**：MCPRouter（远程 agent 宿主）会话里远端 Codex 的 code-mode（命令执行）起不来，
+  报「命令执行环境因缺少 `codex-code-mode-host` 无法启动」；模型只能让用户手动 `ls -la`。
+- **根因**：MCPRouter 只从 `runtime-manifest-linux-x64.json` 取 runtime，而这份 manifest 只有
+  `claudeCode` + **单文件** `codex` 两段。`bin/codex-code-mode-host`（命令执行宿主 sidecar）是
+  **目录发行包**的组成部分（安装侧 `tools/codex-package/update.mjs` 的
+  `validateCodexPackageDirectory` 要求它与 `bin/codex`、`rg` 同时在包内），单文件 gz 里没有它。
+  桌面端 ≥0.0.21 早已改用目录分发（`agent-binaries` 的 `CONFIG.codex` = `manifestField:
+  'codexPackage'` + `tar-gz-dir`），`publish-desktop.mjs` 也确实在发；但 `DIR_DIST_RUNTIME_DEFINITIONS`
+  只接在**应用 canary/stable manifest** 上，**linux 的 agent runtime manifest 从来没有带过这一段**
+  （`publish-agent-runtimes.mjs` 只调 `buildAgentRuntimeManifest(platform, assets, ccMgr)`）。
+  `pi` 段同理从未发过，而 MCPRouter 还需要能跑 Pi。
+- **修法（复用现成机制，客户端零改动）**：
+  1. `runtime-release.mjs` 的 `buildAgentRuntimeManifest` 增加**可选**第 4 参 `dirDistAssets`
+     （`publishDirDistAssets` 的 `manifestAssets`）：只写 `codexPackage` / `pi` 的
+     `version`/`file`/`sha256`/`size` 四字段（与 `dirDistManifestAsset` 同形；pin 侧的
+     `url` / `platformKey` / `upstreamAssetName` **绝不**进 manifest），并对**存在**的段做
+     `assertRuntimeManifestAssets({ required: false })` —— 缺失对消费端合法，存在即 fail closed。
+  2. 新增 `formatMekaDirDistManifestPreview`（dry-run 预览）：打印两段的对象路径与段形状；
+     `pi` 是重打包，`sha256`/`size` 打 `null` 占位并注明 `--execute` 时填写，**不把 pin（上游
+     归档）的摘要冒充成段摘要**。
+  3. `publish-agent-runtimes.mjs` 串起 `collectPinnedDirDistAssets(platform)` →
+     `publishDirDistAssets` → `buildAgentRuntimeManifest`（**不可变对象先上传，mutable manifest
+     最后写**），并在写盘前用 `DIR_DIST_RUNTIME_DEFINITIONS` 要求**发布侧齐备** —— 消费端的
+     「缺失合法」不是发布端的「可以不发」，2026-10-08 的形态正是「链路里从来没有这段」。
+- **两段的摘要来源故意不同**（沿用各自既有实现，不混）：`codexPackage` **原样转发** pin 的
+  官方整包 ⇒ manifest 段的 sha256/size 与 `tools/codex-package/latest.json` **同源**；
+  `pi` 是**确定性重打包**（解包 → 补 `theme/` → tar.gz）⇒ 段记重打包产物，pin 摘要留在对象
+  元数据 `pinned-sha256`。
+- **向后兼容（红线）**：`claudeCode` 与单文件 `codex` 的字段、对象路径、`binarySha256` 语义
+  **一字未改**（≤0.0.20 客户端与**未重建的旧 MCPRouter 镜像**仍只认 `codex`：删掉它等于让这些
+  消费方这次更新后再也取不到 codex），`schemaVersion` 仍为 `1`；两个新段缺失对消费端合法。
+- **验证（本机实跑）**：`node --test scripts/__tests__/codex-package-cdn-release.test.mjs`
+  **11/11**（含 4 条新增：linux 段原样转发与 pin 同源、两段写入形状 + 老契约键集逐字不变 +
+  深拷贝 + 发布侧齐备、存在即 fail closed、dry-run 预览）；`node --test
+  scripts/__tests__/pi-cdn-release.test.mjs` **11/11**（含 1 条新增：`pi` 段摘要与 pin 摘要
+  **不同**且 `pinned-sha256` 留证、单文件段不变）；`node --test
+  scripts/__tests__/cc-mgr-cdn-release.test.mjs scripts/__tests__/meka-release-flow.test.mjs`
+  **9/9 + 24/24**（linux 用例新增「不传段时键集逐字等于老契约」）。另用真实 pin 实跑
+  `collectPinnedDirDistAssets('linux-x64')` + `formatMekaDirDistManifestPreview`（不触网）得到
+  `codexPackage@0.159.2`（`codex-package/0.159.2/linux-x64/codex-package.tar.gz`，摘要
+  `9e2d29a7…37a6b`）与 `pi@1.0.2`（`pi/1.0.2/linux-x64/pi.dist.tar.gz`，pin 摘要
+  `0d7687a6…5d18`）。
+- **未验证**：① 真实 `runtime-assets` / `release` 流水线尚未发过带这两段的 manifest（需一次
+  真实发布 + MCPRouter 镜像重建后实机确认 code-mode 可用）；② CLI 端到端 dry-run 未跑
+  （本机 `apps/{claude-code-bin,codex-bin}/linux-x64` 落后于 pin，`ensurePublishedRuntimes` 会去
+  下载 linux runtime，按「只跑定向验证」的范围未执行；dry-run 的打印路径由上述单测与真实 pin
+  的实跑覆盖）；③ MCPRouter 侧「**优先取 `codexPackage`、缺段才回落单文件 `codex`**」的取用
+  顺序在**另一个仓**，本仓未实现也未验证 —— 只要远端仍优先取单文件 `codex`，code-mode 就仍然
+  缺 sidecar；④ `cindy-meka-cicd` 的「公共 manifest 已跟上源码 pin 就跳过发布」快路径是否已把
+  这两段纳入 pin 比对未核对（按指示本轮不改该仓）。
+- **规则落点**：`docs/dev-rules/agent-runtime-release.md`（新增「linux runtime manifest 也必须带
+  `codexPackage` 与 `pi`」，并更新「Linux 交付」与「验证」）、
+  `docs/dev-rules/meka-whitelist-verification.md`（新增 **WL-4.1.12**）。
 
 
 

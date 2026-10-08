@@ -487,25 +487,46 @@ Pi CLI 管理入口、内核自更新与旧工具兼容的执行边界见
   `/review` 对 SSH 远端会话前置拦截(device-link 同款);无自动重连(用户手动 Retry,
   与 CC/Codex 对齐);版本差 + daemon 活着时 defer 并显示 UpgradeBanner, 用户确认
   后才 kill + 重装(daemon 已死则静默升级磁盘 bundle)。
-- **MCPRouter 远端(MCPR)有意不支持 Pi**(2026-09-29 补齐门禁):Pi 的远端形态**只有
-  SSH** —— MCPRouter 侧没有 Pi 运行时、没有对应的 tunnel mode,其 project-agent-instances
-  也只把 `agentType` 为 `claude` / `codex` 的实例判为可用。因此在 MCPR 位置下选 Pi 是
-  **不可能成功**的组合,必须在校验阶段就拒绝,而不是等 `startSession` 撞 transport:
-  - 渲染层:判定收在**单一纯函数** `apps/desktop/src/renderer/lib/mcprEngineSurface.ts` 的
-    `resolveMcprEngineSurface(availableVendors, mcprTarget)`(行为单测
-    `lib/__tests__/mcprEngineSurface.test.ts`),两个消费方都只调它 ——
-    `NewMakerDraftRoute`(`effectiveAvailableVendors` → `hiddenSwitcherVendors`,并用同一份集合
-    `fallbackUnavailableVendor` coerce 已落盘的 Pi 草稿)与 `ChatInput` 的 `unifiedAgents`
-    (统一模型列表是「引擎跟着模型走」的入口,漏掉可以从模型行选回 Pi)。
-    规则只有一处,不再两处各写一遍条件。
-  - 主进程:`maker-ipc/register.ts` 的 `ensureRemoteReadyForSessionStart` 在 `mcpr:` 分支对
-    `agentKind === 'pi'` 抛 `MCPR_AGENT_UNSUPPORTED`(渲染层映射成
-    `chat.remoteError.MCPR_AGENT_UNSUPPORTED`);`maker-host/index.ts` 里 Pi 的全部远端钩子
-    第一句调 `assertMcprHostSupportsAgent('pi', remoteHostId)`
-    (见 `docs/dev-rules/mcpr-remote-session-routing.md` §3 第 8 条)。
-  - 回归:`apps/desktop/src/main/maker-host/__tests__/mcprPiTransport.test.ts`。
-  这条**不改变既有能力**:Pi + SSH 仍然完全可用(见 `newMakerProjectPicker.test.ts` 的
-  「does not hide SSH targets for Pi」)。
+- **MCPRouter 远端(MCPR)已支持 Pi(2026-10-09)**:MCPRouter 侧新增两条 agent-tunnel mode,
+  客户端接缝收在**一个文件** `apps/desktop/src/main/maker-host/pi-mcpr-remote.ts`:
+  - **数据面 `mode=pi`**:runtime 把隧道接到 `pi-manager bridge --socket <受管 socket>` 的
+    stdio。客户端先在这条隧道上跑 pi-manager **既有 RPC**(`protocol/hello` +
+    `pi/ensure(sessionId, cmd, env, envHash)`;启动身份与 SSH 完全同形),ensure 响应之后的字节
+    就是该 session 的 pi JSONL —— 所以 **Pi 协议实现与 SSH 共用同一份**
+    (`pi-remote-transport.ts` 的 `createPiTransportFromProvider` 核心 + SSH/ MCPR 两个
+    `PiByteChannelProvider`)。`packages/maker-pi-manager` **一字未改**(不新增 wire 协议)。
+  - **执行面 `mode=exec`**:单连接单次执行,语义等价 SSH 的 `remoteHost.exec`
+    (实例容器内、runtime 同一非 root 用户)。Pi 与 Claude 的远端 file ops **原样复用**
+    `createRemotePiFileOps` 的那批 bash 脚本(内容仍只经 stdin,不进命令行);客户端
+    **不**加路径/命令白名单 —— 真正的边界是容器与用户身份,客户端加白名单既拦不住也偏离
+    「只换字节通道」的口径。wire v1 末帧 `{exitCode, signal, durationMs}` 有一个**加性可选**
+    字段 `truncated:true`(只在服务端输出触顶其 16 MiB 上限时出现);客户端把它当**失败**
+    (`[MCPR_EXEC_TRUNCATED]`),绝不把截断输出当完整数据 —— 一次被截断的 `readFile` 若被当成
+    完整文件会静默污染 agentHome / 技能正文,事后极难回溯;末帧的未知字段一律忽略(加性演进基线)。
+  - **二进制路径**:runtime 自己物化 pi。客户端解析顺序 =
+    `CINDY_PI_AGENT_BIN`(runtime 注入,零协议新增)→ 实例 PATH 上的 `pi` → 与 SSH 安装布局
+    同约定的 `$HOME/.xdt-server/v1/pi/pi`;三者都不可执行才抛
+    `[MCPR_PI_BINARY_MISSING]`(不静默回落本机路径)。
+  - **有意不投影的 Cindy 能力**(都是「该 transport 没有对应通道」,不是新增拒绝):
+    ① 控制端 in-process MCP bridge(ghost / cindy_memory / orca / 电脑驱动等)——
+    agent-tunnel 只有正向字节流,没有 `-R` 反向转发(Claude 走的是 cc-mgr 自己的
+    capability MCP 回呼);用户显式配置的**外部 HTTP / Streamable HTTP MCP 仍直连可用**。
+    ② `Agent 流量走本地 Proxy` 的 `tunnel` 模式 —— `getRemotePiAgentProxyEnv` 在 `mcpr:` 上
+    返回 `null`(不注入代理 env),与 Claude 的 MCPR 分支同口径。
+  - **Provider / 凭证语义沿用 SSH**(2026-10-09 裁决):Pi 在 MCPR 上**不**新增「远端不得用 X
+    供应商」的门禁,也不把本机 OAuth/keychain 搬到实例。跑在实例容器里的 pi 若拿不到只存在于
+    控制端的凭证(本机 loopback 代理 / keychain),表现是**普通的连接/鉴权失败**,不是新的
+    类型化拒绝(与 §3.1 的红线一致)。
+  - **渲染层**:MCPR 位置**不再**收窄引擎面 —— 曾经的 `renderer/lib/mcprEngineSurface.ts`
+    纯函数与它的两个消费点(`NewMakerDraftRoute` 的 `effectiveAvailableVendors` /
+    `ChatInput` 的 `unifiedAgents`)、以及 `MCPR_AGENT_UNSUPPORTED` 这个 IPC 码与 5 语言文案
+    一并删除(不再可达的键不留死键)。
+  - 回归:`apps/desktop/src/main/maker-host/__tests__/` 的 `mcprPiTransport.test.ts`
+    (8 个钩子在 `mcpr:` 上零次触碰 pool + 走隧道实现 + 源码级分类不变量)、
+    `piMcprRemote.test.ts`(接缝:file ops 复用 / ensure 形状 / envHash 确定性 / 前缀字节交接)、
+    `mcprExec.test.ts`(`mode=exec` 冻结帧形状)、`mcprRemoteFileOps.test.ts`(Claude 侧)。
+    **未验证**:需要 MCPRouter 侧部署 `mode=pi` / `mode=exec` 并装有 pi 运行时资产的实例才能
+    做端到端验证(见「上线清单」的「MCPR 上的 Pi」条目)。
 
 ## 6. 上线门禁
 
@@ -557,6 +578,24 @@ Pi CLI 管理入口、内核自更新与旧工具兼容的执行边界见
       invalid resume 在适配层先校验文件存在并遵守 CAS，precise rewind/fork 后 resume 有真二进制测试。
 - [x] **prompt cache**:Pi 子进程默认注入 `PI_CACHE_RETENTION=long`；不支持的 provider
       忽略该选项。已用 ChatGPT 订阅实例确认 `cacheRead` 命中会端到端落库与展示。
+- [ ] **MCPRouter 上的 Pi（`mode=pi` + `mode=exec`，2026-10-09）**：客户端侧已全量落地
+      （隧道接缝、8 个远端钩子、渲染层引擎面、回归测试、文档），**端到端未验证**：
+      - **未验证 + 原因**：本机没有已部署 `mode=pi` / `mode=exec` 且装有 pi 运行时资产的
+        MCPRouter 实例，无法启动真实会话。跨仓依赖：MCPRouter 侧实现两种 mode（数据面接到
+        `pi-manager bridge --socket <受管 socket>` 的 stdio；执行面按冻结帧形状执行
+        `bash -c`）并从 CDN `pi` 段物化 pi 运行时。
+      - **落地后必须跑的上线判据**（四条，缺一条不算通过）：
+        ① 新建 MCPR 位置 + Pi 引擎任务能启动（日志无 `LAZY_CREATE_FAILED`、
+        `remote SSH host … not found in pool`、`[MCPR_PI_BINARY_MISSING]`）；
+        ② 首次发送能落正文与工具调用；`CINDY_PI_PERMISSION_FILE` 档位切换在实例内生效
+        （Ask 档危险命令必须弹卡 —— 这是**安全面**判据，不是体验判据）；
+        ③ 远端 `models.json` / `settings.json` / `cindy-bridge` 扩展确实写在实例内
+        （`mode=exec` 读回，或让模型 `bash` 读一次），模型切换与压缩预算改写生效；
+        ④ 用户显式配置的外部 HTTP MCP 仍可用，且**不**出现指向实例自身 loopback 的
+        连接尝试（in-process bridge 已跳过）。
+      - **未验证的已知边界**：① 不投影控制端 in-process MCP bridge（ghost / cindy_memory /
+        orca 等在该 transport 上不可用）；② `Agent 流量走本地 Proxy` 不生效（无反向转发）；
+        ③ 实例内 pi 拿不到只存在于控制端的凭证时表现为普通连接/鉴权失败（不是新拒绝）。
 
 ## 7. 上线后路线图(已与 Chris 对齐)
 

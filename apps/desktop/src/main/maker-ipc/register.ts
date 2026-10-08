@@ -8168,19 +8168,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
 
     // MCPRouter sessions use the account tunnel factories in maker-host. Their
     // logical `mcpr:<instanceId>` id is never an SSH pool key.
+    //
+    // 三个引擎(claude-code / codex / pi)在 `mcpr:` 上一律**早返回**:MCPRouter 侧自带
+    // 运行时物化与 pi-manager 会话管理(隧道实现见 `maker-host/pi-mcpr-remote.ts`),
+    // 二进制安装 / daemon 预上传 / SSH pool 前置都不适用于这条 transport。
+    // 2026-09-29~10-09 这里曾对 `pi` 抛 `MCPR_AGENT_UNSUPPORTED`;那是一个引擎级静态门禁,
+    // 已随 `mode=pi` 隧道落地撤除(见 `docs/dev-rules/pi-harness.md`「MCPRouter 远端(MCPR)」)。
     if (classifyRemoteSessionTransport(remoteHostIdToEnsure) === 'mcpr') {
-      // Pi 在 MCPRouter 上没有 transport(MCPRouter 实例只宣告 claude / codex;
-      // Pi 的远端形态只有 SSH —— 见 pi-harness.md「SSH 远端能力」)。renderer 在
-      // MCPR 位置下已经不展示 Pi 段,这里是绕过 UI 的兜底(旧草稿恢复 / 会话内
-      // 切引擎 / main 发起的 worker):在 preflight 边界就以类型化错误拒绝,
-      // 不让它落到 maker-host 的 Pi 远端钩子去报
-      // `remote SSH host "mcpr:<id>" not found in pool`(2026-09-29 实测)。
-      if (ensureAgentKind === 'pi') {
-        throwIpcError(
-          'MCPR_AGENT_UNSUPPORTED',
-          `MCPRouter remote sessions host the claude-code and codex engines only; "pi" cannot run on "${remoteHostIdToEnsure}"`,
-        );
-      }
       return;
     }
 

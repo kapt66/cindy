@@ -191,7 +191,6 @@ import {
   X,
 } from 'lucide-react';
 import { VendorIcon } from '@/components/sidebar/VendorIcon';
-import { resolveMcprEngineSurface } from '@/lib/mcprEngineSurface';
 import {
   parseMcprRemoteHostId,
   type MekaRouterInstance,
@@ -978,15 +977,7 @@ export function NewMakerDraftRoute() {
               // (引导去 Settings → Model Providers), 不再显示 raw 英文。
               code === 'REMOTE_GATEWAY_ENDPOINT_UNAVAILABLE'
               ? 'logic.errors.remoteError.REMOTE_GATEWAY_ENDPOINT_UNAVAILABLE'
-              : // MCPRouter 远端实例只承载 claude-code / codex。MCPR 位置下 Pi 段已从引擎面
-                // 收掉(hiddenSwitcherVendors),这里是旧草稿 / 会话内切引擎等绕过 UI 的路径
-                // 在 main preflight 被拒后的可操作提示 —— 不映射会落通用失败 toast,
-                // 用户看不到「换引擎」这条出路。
-                // 注意路径是 `chat.remoteError.*`(本文件上方相邻几条写的 `logic.errors.remoteError.*`
-                // 在 5 个 locale 里都不存在,是存量失效 key;本次不顺手改,已在交付说明里登记)。
-                code === 'MCPR_AGENT_UNSUPPORTED'
-                ? 'chat.remoteError.MCPR_AGENT_UNSUPPORTED'
-                : // 轮 42 P2(codex-connector):远端 Pi + loopback-only BYOM 被 main
+              : // 轮 42 P2(codex-connector):远端 Pi + loopback-only BYOM 被 main
                 // 映射成 REMOTE_LOCAL_ONLY_PROVIDER —— 这里不映射会落通用失败
                 // toast, 隐藏「换网关/远端可达 BYOM」的行动指引。
                 code === 'REMOTE_LOCAL_ONLY_PROVIDER'
@@ -1257,25 +1248,18 @@ export function NewMakerDraftRoute() {
     catalogDeviceId,
   );
   /**
-   * MCPRouter 位置下的引擎面 = 运行时已注册的引擎 − Pi（判定收在 `lib/mcprEngineSurface`
-   * 里，与 `ChatInput` 的统一模型列表共用同一条规则，避免两处各写一遍条件而漂移）。
+   * 引擎面的唯一来源 = 运行时已注册的引擎(`useAvailableAgents`)。
    *
-   * `pi` + `mcpr:` 不是「暂时不可用」而是**没有实现**的组合：MCPRouter 实例只宣告
-   * claude / codex，Pi 的远端形态只有 SSH（见 `docs/dev-rules/pi-harness.md`「SSH 远端能力」）。
-   * 2026-09-29 实测里用户正是在 MCPR 位置下切到 Pi 才拿到
-   * `LAZY_CREATE_FAILED: remote SSH host "mcpr:<id>" not found in pool`（主进程侧已由
-   * `assertMcprHostSupportsAgent` 兜底成 `MCPR_AGENT_UNSUPPORTED`）。这里在入口处就让
-   * 它不可选，并把已落盘的 Pi 草稿 coerce 走（`fallbackUnavailableVendor` 用同一份集合）。
+   * **MCPRouter 位置不再收窄引擎面**(2026-10-09):`pi` + `mcpr:` 已由 `mode=pi` 隧道承载
+   * (runtime 把隧道接到 `pi-manager bridge --socket <受管 socket>` 的 stdio,客户端侧的 Pi
+   * 协议与 SSH 路径逐字节同源;见 `docs/dev-rules/pi-harness.md`「MCPRouter 远端(MCPR)」),
+   * 因此曾经的 `lib/mcprEngineSurface` 第二规则已删除 —— MCPR 位置与其它位置走同一条判定,
+   * 不会再出现「UI 收掉、后端其实是支持的」这类两处漂移。
    */
-  const mcprRemoteTarget = parseMcprRemoteHostId(effectiveRemoteHostId) !== null;
-  const effectiveAvailableVendors = useMemo<ReadonlySet<MakerVendor>>(
-    () => resolveMcprEngineSurface(availableVendors, mcprRemoteTarget),
-    [availableVendors, mcprRemoteTarget],
-  );
   const hiddenSwitcherVendors = useMemo<MakerVendor[]>(() => {
     if (!availableAgentsLoaded) return [];
-    return (['cc', 'codex', 'pi'] as const).filter((vendor) => !effectiveAvailableVendors.has(vendor));
-  }, [availableAgentsLoaded, effectiveAvailableVendors]);
+    return (['cc', 'codex', 'pi'] as const).filter((vendor) => !availableVendors.has(vendor));
+  }, [availableAgentsLoaded, availableVendors]);
   /**
    * 「这份草稿要建到对端设备上」—— 只看 deviceId,**不再要求 workingDir**(#807)。
    *
@@ -2950,12 +2934,11 @@ export function NewMakerDraftRoute() {
   // 当前草稿选中的 vendor 变为不可用(如 Pi 未注册 / 被控端无 Pi)时,coerce 到首个可用来源
   // (优先 cc),避免 tablist 卡在被隐藏段、且防止创建出注定 requireAgent 报错的会话。
   // 只在已加载可用性后收敛;fallback 一定可见,收敛一次即稳定(switchVendor 同值早返,不成环)。
-  // 依赖 effectiveAvailableVendors:位置改成 MCPR(或从 MCPR 换走)时重新收敛一次,
-  // 否则已落盘的 Pi 草稿会停在一个「列表里没有、却又建不出去」的引擎上。
+  // 集合就是运行时注册结果(位置/MCPR 都不再额外收窄),所以位置切换不会改变收敛结果。
   useEffect(() => {
     if (!availableAgentsLoaded) return;
-    fallbackUnavailableVendor(effectiveAvailableVendors);
-  }, [availableAgentsLoaded, effectiveAvailableVendors]);
+    fallbackUnavailableVendor(availableVendors);
+  }, [availableAgentsLoaded, availableVendors]);
 
   // ─── 用户在 ChatInput 改 model/effort/permission 后,落进当前 vendor 的 prefs ──
   // 权限 / 计划模式不是默认模型 tuple：按界面 Harness 的槽写，但不改变 storage 中最新
