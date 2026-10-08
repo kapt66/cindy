@@ -124,6 +124,7 @@ import {
 } from './codex-remote-mcp.js';
 import { ensureDaemonRunning } from '../maker-host/cc-manager-client.js';
 import { getMakerIfReady, softCloseCcSessionsForHost, listSshCodexProviders } from '../maker-host/index.js';
+import { classifyRemoteSessionTransport } from '../maker-host/remote-session-routing.js';
 import { readSshCodexModelList } from './codex-model-list.js';
 import { prepareRemoteAgentInstall } from './codex-install-lifecycle.js';
 import { getRemoteCodexLiveTurnChecker } from '../maker-host/remote-session-start-ensure.js';
@@ -1715,6 +1716,20 @@ export function registerRemoteSshIpc(): void {
   // ── Codex auth sync (Phase B+) ───────────────────────────────────────────
   ipcMain.handle(REMOTE_SSH_INVOKE.LIST_CODEX_MODELS, async (event, args: unknown) => {
     assertTrustedAppRendererEvent(event);
+    // 这条探针是 SSH-only，所以它必须**先分类**再决定要不要读远端清单。`mcpr:<instance.id>`
+    // 是另一种 transport：不在 SSH pool 里，也没有可在本机探测的远端 Codex 配置，它的模型面
+    // 来自本机 AI Gateway 目录。不分类的话 `readSshCodexModelList` 会把「这不是 SSH 主机」
+    // 折叠成 `SSH_EXEC_FAILED: Unable to read remote Codex models; reconnect and retry`，
+    // 渲染层据此提示「重连后重试」甚至禁用发送 —— 用户被指向一个永远不存在的 SSH 主机。
+    // 渲染层已按同一条规则（`lib/remoteCodexModelHost.ts`）不再对 mcpr 发起本探针；这里是
+    // 第二道保险，保证将来漏改时失败归因仍然是事实。
+    const requestedHostId = requireString(requireObject(args).id, 'id');
+    if (classifyRemoteSessionTransport(requestedHostId) !== 'ssh') {
+      throwIpcError(
+        'INVALID_PARAMS',
+        'MCPRouter remote Codex models come from the local catalog; there is no SSH model list',
+      );
+    }
     return readSshCodexModelList(args, listSshCodexProviders);
   });
 

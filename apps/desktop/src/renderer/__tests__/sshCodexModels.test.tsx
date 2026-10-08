@@ -117,4 +117,23 @@ describe('SSH Codex model discovery', () => {
       preferred: { model: 'controller-native', effort: 'low', fastMode: false },
     })).toEqual({ ok: false, reason: 'catalog-error' });
   });
+  // 2026-10-08 实机：MCPRouter 的 Codex 会话被当成 SSH 执行主机，SSH-only 的清单探针把
+  // 「这不是 SSH 主机」折叠成 `SSH_EXEC_FAILED: Unable to read remote Codex models`，
+  // 渲染层据此提示「无法读取远程设备上的模型」并用空清单当模型面。mcpr 的模型面来自本机
+  // AI Gateway 目录（远端 bridge 只带本机 key），所以这里必须走本机目录、零次触碰探针。
+  it('never probes the SSH host for an MCPRouter identity; the local gateway catalog is authoritative', async () => {
+    list.mockResolvedValue(providers('remote-native'));
+    const selection = await loadSshSessionModelSelection('mcpr:f235de4c-bed5-4486-a83e-71baa3f22a46', {
+      providers: providers('local-model'), loading: false, loadFailed: false, agentKind: 'codex',
+    });
+    expect(list).not.toHaveBeenCalled();
+    expect(selection).toMatchObject({ ok: true, model: 'local-model', providerId: 'openai' });
+  });
+  it('attributes an MCPRouter catalog failure to the local catalog, not to SSH', async () => {
+    const selection = await loadSshSessionModelSelection('mcpr:f235de4c-bed5-4486-a83e-71baa3f22a46', {
+      providers: [], loading: false, loadFailed: true, agentKind: 'codex',
+    });
+    expect(list).not.toHaveBeenCalled();
+    expect(selection).toEqual({ ok: false, reason: 'catalog-error' });
+  });
 });

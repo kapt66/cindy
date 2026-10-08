@@ -7,6 +7,7 @@ import {
   type ProviderView,
 } from '@cindy/model-providers';
 import { deriveModelsFromProviders, filterChatBridgedCodexProviders } from '@/lib/providerModels';
+import { resolveRemoteCodexModelHostId } from '@/lib/remoteCodexModelHost';
 import type { Effort } from '@/lib/userPreferences.types';
 import { isSubscriptionDirectModel } from '../../../shared/subscriptionModels';
 import { resolveNewMakerDraftEffort } from './newMakerDraftModelPrefs';
@@ -33,6 +34,12 @@ export async function loadSshSessionModelSelection(
   },
 ): Promise<ReturnType<typeof resolveSshSessionModelSelection>> {
   if (args.agentKind !== 'codex') return resolveSshSessionModelSelection(args);
+  // 只有真正的 SSH 执行主机才有「按主机读远端 Codex 清单」这条探针。`mcpr:<instance.id>`
+  // 是隧道身份（不在 SSH pool 里），它的 Codex 走本机 AI Gateway，模型面就是本机目录 ——
+  // 喂给探针只会得到 `SSH_EXEC_FAILED`，并把「无法读取远程设备模型」当成事实。
+  if (resolveRemoteCodexModelHostId({ remoteHostId: hostId, agentKind: args.agentKind }) === null) {
+    return resolveSshSessionModelSelection(args);
+  }
   try {
     const providers = await window.electronAPI.remoteSsh.listCodexModels(hostId);
     return resolveSshSessionModelSelection({

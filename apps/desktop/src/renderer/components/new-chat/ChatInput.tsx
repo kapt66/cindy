@@ -96,6 +96,7 @@ import {
 // Meka: MCPRouter 位置判定（`mcpr:<instanceId>`）。附件安全/预览判定已随上游
 // composer 重构迁到 `hooks/useAttachments.ts` 与 `./ComposerAttachments.tsx`。
 import { parseMcprRemoteHostId } from '../../../shared/meka-router';
+import { resolveRemoteCodexModelHostId } from '@/lib/remoteCodexModelHost';
 import {
   getDraft as getComposerDraft,
   getOrCreateRemoteOptimisticTransitionCheckpoint,
@@ -1935,7 +1936,13 @@ export function ChatInput({
   }, [activeModel, agentKind, runtimeEffective, composerSelection.pending, composerSelection.display.agentKind, ccCaps.capabilities, codexCaps.capabilities, piCaps.capabilities]);
   // 供应商连接态。effectiveSourceId / sendProviderId / dispatchSend 预检用它。device-link 远程会话 /
   // 草稿用**被控端**供应商目录(隧道),否则用本机(两 hook 都无条件调用,按 deviceLinkDeviceId 取)。
-  const sshCodexHostId = currentModelAgentKind === 'codex' && !deviceLinkDeviceId ? remoteHostId : null;
+  // `mcpr:` 必须排除:那条「按 SSH 执行主机读远端 Codex 清单」的探针只接受真正的 SSH host,
+  // MCPRouter 的 Codex 走本机 AI Gateway,模型面就是本机目录(见 `lib/remoteCodexModelHost.ts`)。
+  const sshCodexHostId = resolveRemoteCodexModelHostId({
+    remoteHostId,
+    agentKind: currentModelAgentKind,
+    deviceLinkDeviceId,
+  });
   const sshCodexProviders = useSshCodexProviders(sshCodexHostId);
   const localProviders = useProviders();
   const remoteProviders = useDeviceProviders(catalogDeviceId);

@@ -12,6 +12,10 @@ import * as draftMemory from '@/state/newMakerDraft';
 const h = vi.hoisted(() => ({ t: (key: string) => key, confirm: vi.fn(), editor: null as Editor | null, listening: false, stop: vi.fn().mockResolvedValue(undefined),
   setModel: vi.fn(), selectModel: undefined as undefined | ((id: string) => Promise<void | boolean>), remoteProviders: [] as ProviderView[],
   remoteStatus: 'ready' as 'ready' | 'loading' | 'error',
+  sshCodexHostId: null as string | null,
+  // The real hook always returns a Set (empty until loaded); the old `{agents, loading}`
+  // mock predates that shape and silently fed `undefined` into the engine-surface rule.
+  availableVendors: new Set(['cc', 'codex', 'pi']) as ReadonlySet<'cc' | 'codex' | 'pi'>,
 }));
 vi.mock('react-i18next', async (original) => ({ ...await original<typeof import('react-i18next')>(), useTranslation: () => ({ t: h.t }) }));
 vi.mock('react-router-dom', () => ({ useNavigate: () => vi.fn() }));
@@ -41,7 +45,10 @@ vi.mock('../ModelSelector', async (original) => ({ ...await original<typeof impo
   h.selectModel = onModelChange;
   return <span data-testid="model-selector">{modelId}</span>;
 } }));
-vi.mock('@/hooks/useSshCodexProviders', () => ({ useSshCodexProviders: () => ({ providers: h.remoteProviders, status: h.remoteStatus, refresh: () => {} }) }));
+vi.mock('@/hooks/useSshCodexProviders', () => ({ useSshCodexProviders: (hostId?: string | null) => {
+  h.sshCodexHostId = hostId ?? null;
+  return { providers: h.remoteProviders, status: h.remoteStatus, refresh: () => {} };
+} }));
 vi.mock('../ExtraDirsButton', () => ({ ExtraDirsButton: () => null }));
 vi.mock('../PermissionSelector', () => ({ PermissionSelector: () => <span data-testid="permission-selector" /> }));
 vi.mock('../NewGoalDialog', () => ({ NewGoalDialog: () => null }));
@@ -57,7 +64,7 @@ vi.mock('@/voice-input/useVoiceInput', () => ({ useVoiceInput: (editor: Editor |
 vi.mock('@/hooks/useProviders', () => ({ useProviders: () => ({ providers: [], loading: false }) }));
 vi.mock('@/hooks/useDeviceProviders', () => ({ useDeviceProviders: () => ({ providers: [], loading: false, unsupported: false }) }));
 vi.mock('@/hooks/useConnectedSource', () => ({ useConnectedSource: () => ({ hasConnectedSource: true, loading: false }) }));
-vi.mock('@/hooks/useAvailableAgents', () => ({ useAvailableAgents: () => ({ agents: [], loading: false }) }));
+vi.mock('@/hooks/useAvailableAgents', () => ({ useAvailableAgents: () => ({ availableVendors: h.availableVendors, loaded: true }) }));
 vi.mock('@/hooks/useAgentCapabilities', async (original) => ({ ...await original<typeof import('@/hooks/useAgentCapabilities')>(), useAgentCapabilities: () => ({ capabilities: null, loading: false }) }));
 
 vi.mock('@/state/newMakerDraft', async (original) => {
@@ -143,6 +150,24 @@ function QueueEditHarness({
     />
   );
 }
+
+// 2026-10-08 实机：MCPRouter Codex 会话在 composer 里被当成 SSH 执行主机，SSH-only 的模型
+// 清单探针必然失败（`SSH_EXEC_FAILED`），于是发送被 `remoteModelListBlocked` 拦下、模型面
+// 变成空清单、还弹出「无法读取远程设备上的模型」。这里锁住那个判定点：只有真正的 SSH host
+// 才交给该探针；`mcpr:` 走本机网关目录。
+it('keeps MCPRouter Codex tasks off the SSH-only model probe', async () => {
+  h.remoteStatus = 'error';
+  const input = (remoteHostId: string) => (
+    <ChatInput {...props} sessionId="remote-model-list" deviceLinkDeviceId={null} remoteHostId={remoteHostId}
+      initialModel="gpt-5.5-codex" initialProviderId="openai" initialEffort="low" hideRuntimeControls={false} onSend={vi.fn()} />
+  );
+  const { rerender } = render(input('mcpr:f235de4c-bed5-4486-a83e-71baa3f22a46'));
+  await waitFor(() => expect(h.sshCodexHostId).toBeNull());
+  // MCPR 位置下引擎面收掉 Pi，但当前引擎(Codex)必须仍在列 —— 收敛不能把正在用的引擎摘掉。
+  expect(screen.getByTestId('model-selector')).toBeTruthy();
+  rerender(input('builder'));
+  await waitFor(() => expect(h.sshCodexHostId).toBe('builder'));
+});
 
 it('lets a new SSH task with no window report reach main on model selection and retry', async () => {
   const remember = vi.spyOn(providerMemory, 'setProviderModelChoice');

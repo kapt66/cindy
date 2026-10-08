@@ -436,9 +436,39 @@ P4 项目根、插件面板呈现方式等 Meka 专属配置；这些配置落�
   「出现的包管理器命令都必须在本仓真实存在」的门禁，而已知跨仓 workspace 选择器不在本仓。
   命令原文见 `docs/cc-mgr-cdn-delivery.md` §7
 - **实机验证**：**未验证**（需先让 CI 的 `runtime-assets` 流水线发一次 `ccMgr` 对象与新 manifest，
-> 再重建部署 MCPRouter 镜像 —— 镜像那一步仍是人工，CDN 那一步由 CI 自动完成）。
+  再重建部署 MCPRouter 镜像 —— 镜像那一步仍是人工，CDN 那一步由 CI 自动完成）。
   判据是「客户端 pin 比镜像内 bundle 新」时仍能启动会话，以及 CDN 不可用时退化为可诊断的
   版本错配提示而不是模糊的隧道失败。部署阶段清单见 MCPRouter 仓 `docs/cc-mgr-cdn-delivery.md` §7
+
+##### WL-4.1.11 渲染层同样不得把 `mcpr:` 送进 SSH-only 的模型清单探针
+
+- **不变量**：`readSshCodexModelList`（`remote-ssh/codex-model-list.ts`）只接受**真正的 SSH host**。
+  主进程三处调用点已按 transport 分类（路由文档第 7 条），但**渲染层**同样可达：`ChatInput` 曾把
+  任意 `remoteHostId` 当成「SSH Codex 主机」，于是 MCPRouter 的 Codex 会话会 ①打出
+  `SSH_EXEC_FAILED: Unable to read remote Codex models`、②经 `remoteModelListBlocked` **连发送都被拦下**、
+  ③用空清单当远端模型面（模型选择器少掉一大批模型，本机普通会话正常）。**MCPRouter 侧的正确模型面是本机
+  目录**：远端 Codex bridge 只带本机 AI Gateway key（`mcpr-codex-capability.ts` 的
+  `buildRemoteCodexBridgeHeader` + `resolveRemoteCodexCredentialMode` 的 `'gateway-key'`），与 SSH
+  主机自有登录 / `CODEX_HOME` 是两回事。
+- **代码锚点**：`apps/desktop/src/renderer/lib/remoteCodexModelHost.ts`（唯一判定点：
+  `resolveRemoteCodexModelHostId`，判据与主进程 `classifyRemoteSessionTransport` **逐字一致**，
+  含「畸形 `mcpr:` 留在 MCPRouter 一侧」）、`apps/desktop/src/renderer/components/new-chat/ChatInput.tsx`
+  的 `sshCodexHostId` 与 `remoteModelListBlocked`、`apps/desktop/src/renderer/features/cc-agent/sshSessionModelSelection.ts`
+  的 `loadSshSessionModelSelection`（非 SSH 直接回落本机目录）；**第二道保险**：
+  `apps/desktop/src/main/remote-ssh/index.ts` 的 `LIST_CODEX_MODELS` handler 先分类，
+  非 SSH 抛 `INVALID_PARAMS`（不再把「不是 SSH 主机」折叠成「重连后重试」）
+- **与「模型缺失」的边界（有意口径，不是同一个 bug）**：MCPRouter 的 Codex 是
+  **gateway-key only**（`mcpr-codex-capability.ts` 明写「Desktop OAuth state and its loopback
+  proxy are never copied to another machine」），所以 `ChatInput` 的
+  `excludeSubscriptionDirect` / `excludeChatBridgedCodex` / `filterChatBridgedCodexProviders(..., !!remoteHostId)`
+  对 MCPR 保持 true 是**正确**的：订阅直连与仅本地可桥接的来源在那条路由上本来就不可用。
+  本条修的是「探针把 payload 打成空清单导致模型几乎全缺 + 禁止发送」，别把上面三处一并改掉。
+- **自动化门禁**：`pnpm --filter desktop exec vitest run src/renderer/lib/__tests__/remoteCodexModelHost.test.ts src/renderer/__tests__/sshCodexModels.test.tsx src/renderer/components/new-chat/__tests__/chatInputModelLoading.test.tsx src/main/remote-ssh/__tests__/remoteHostMutationContract.test.ts`
+  （其中 `remoteCodexModelHost.test.ts` 用输入矩阵断言渲染层判定与主进程分类器**永远一致**，
+  防止这条规则在两处漂移 —— 这正是本轮故障的形状）
+- **实机验证**：**未验证**（需在装有新桌面端的机器上开一个 MCPRouter Codex 会话，确认
+  ①模型选择器里模型数与本机普通会话一致、②不再出现「无法读取远程设备上的模型」、
+  ③能正常发送）。2026-10-08 的实机现场是本条的证据来源，修复后的复验尚未执行
 
 #### WL-4.2 ORCA worker 支持远程 MCPR 实例会话
 

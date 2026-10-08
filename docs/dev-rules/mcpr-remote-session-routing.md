@@ -75,6 +75,24 @@ transport 分类，再执行 transport 专属动作。MCPRouter 会话不得因�
    **新规则**：新增任何 SSH-only 探针时，调用点必须先分类，且**不得**用
    `startsWith('mcpr:')`、`parseMcprRemoteHostId` 之类的一次性判断代替共享分类器；分类为
    `mcpr` / `local` 时必须走各自的通用路径，SSH-only 分支只接受 `'ssh'`。
+   **2026-10-08 补记（渲染层同样适用）**：那次修的是**主进程**三处，**渲染层漏了**，于是实机
+   又炸了一次 —— `ChatInput` 把任意 `remoteHostId` 当成「SSH Codex 主机」
+   （`sshCodexHostId`），MCPRouter 的 Codex 会话因此：报
+   `SSH_EXEC_FAILED: Unable to read remote Codex models`、经 `remoteModelListBlocked`
+   **连发送都被拦下**、并用空清单当远端模型面（模型选择器少掉一大批模型，本机普通会话正常）。
+   修复与口径：
+   - 判定收在渲染层的唯一纯函数 `apps/desktop/src/renderer/lib/remoteCodexModelHost.ts`
+     （`resolveRemoteCodexModelHostId`），消费方是 `ChatInput` 的 `sshCodexHostId` 与
+     `sshSessionModelSelection.ts` 的 `loadSshSessionModelSelection`；
+   - **MCPRouter 的 Codex 模型面是本机目录**，不是远端探测：远端 bridge 只带本机 AI Gateway
+     key（`mcpr-codex-capability.ts` 的 `buildRemoteCodexBridgeHeader`，
+     `resolveRemoteCodexCredentialMode` 判 `'gateway-key'`），而 SSH 那台主机有自己的登录与
+     `CODEX_HOME` —— 两者不可互推；
+   - 渲染层 import 不到主进程分类器，所以 `remoteCodexModelHost.test.ts` 用**输入矩阵**断言两侧
+     判定永远一致（含畸形 `mcpr:` 留在 MCPRouter 一侧）；这是这条规则不再两处漂移的机制，
+     而不是靠注释约定；
+   - 第二道保险在 `main/remote-ssh/index.ts` 的 `LIST_CODEX_MODELS` handler：先分类，非 SSH 抛
+     `INVALID_PARAMS`，将来漏改时失败归因仍是事实，不会退化成「重连后重试」。
 8. **每个远端 hook 的第一句都必须完成 transport 分类或引擎门禁**，而不是只要求
    「SSH-only 探针」分类。2026-09-29 实机证明了这条更严的口径：Pi 引擎在 MCPR 位置下
    建任务，首条消息报

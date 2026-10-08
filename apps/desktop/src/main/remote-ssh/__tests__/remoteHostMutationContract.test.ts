@@ -20,6 +20,16 @@ describe('remote SSH managed-host mutation contract', () => {
     expect(guard).toBeGreaterThan(-1);
     expect(guard).toBeLessThan(body.indexOf('readSshCodexModelList(args, listSshCodexProviders)'));
   });
+  // 这条探针是 SSH-only。`mcpr:<instance.id>` 不在 SSH pool 里，一旦落进来就会被
+  // readSshCodexModelList 折叠成 `SSH_EXEC_FAILED: Unable to read remote Codex models`，
+  // 让用户以为 SSH 主机断了（并连带禁用发送）。所以分类必须排在读清单之前 —— 渲染层已按
+  // 同一条规则不再对 mcpr 发起本探针（`lib/remoteCodexModelHost.ts`），这里是第二道保险。
+  it('classifies the transport before the SSH-only Codex model probe', () => {
+    const body = handlerBody('LIST_CODEX_MODELS', 'CHECK_CODEX_AUTH');
+    const classification = body.indexOf("classifyRemoteSessionTransport(requestedHostId) !== 'ssh'");
+    expect(classification).toBeGreaterThan(-1);
+    expect(classification).toBeLessThan(body.indexOf('readSshCodexModelList(args, listSshCodexProviders)'));
+  });
   it.each([
     ['LIST', 'RELOAD_CONFIG'],
     ['RELOAD_CONFIG', 'ADD'],
