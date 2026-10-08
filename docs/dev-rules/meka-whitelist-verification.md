@@ -3255,7 +3255,9 @@ HTTPS-only 发布根**不受本次回退影响**；真实发布与签名验证�
 `pnpm --filter desktop exec vitest run src/main/github-issue/__tests__/issueDiagnostics.test.ts src/main/log-upload/__tests__`
 （保留的采集/脱敏与 issue 诊断仍绿）；`node scripts/check-i18n.mjs`（五语键一致）。
 **反回归自检**（同步后必跑）：在 `apps/desktop/scripts`、`scripts/shared`、`apps/desktop/vite.main.config.ts`、
-`apps/mobile/metro.config.js` 里搜 `log-upload-build-env` 与 `XDT_LOG_UPLOAD_TARGET`，必须为空。
+`apps/mobile/metro.config.js` 里搜 `log-upload-build-env` 与 `XDT_LOG_UPLOAD_TARGET`，**代码引用**必须为空
+（**排除注释行**：移除点上刻意保留的 Meka divergence 注释会提到这些标识符；实测仅 `package-desktop.mjs`
+与 `vite.main.config.ts` 的注释命中，属预期）。
 
 **实机验证**：**未验证**（需一次真实版本化桌面打包；判据：在没有 `config/log-upload.json` 的机器上
 `release:windows:canary` / 本地 `pnpm release:win <ver>` 能走到打包结束，且「设置 → 关于」不再出现
