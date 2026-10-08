@@ -6967,6 +6967,29 @@ Codex/Claude/Pi 原生读 `AGENTS.md`/`CLAUDE.md`/`SKILL.md`，不看我们的 m
   `codexPackage` 与 `pi`」，并更新「Linux 交付」与「验证」）、
   `docs/dev-rules/meka-whitelist-verification.md`（新增 **WL-4.1.12**）。
 
+### 6.64 2026-10-08 第五轮同步悄悄带进一条**新的构建机依赖**：版本化桌面打包开始硬要求 `config/log-upload.json`
+
+- **现象**：`release:windows:canary`（0.0.26）跑到 `electron-forge make` 才失败：
+  `Error: 缺少日志上报配置: ...\cindy-source\config\log-upload.json`。
+- **溯源（这是本轮同步的后果，不是存量问题）**：上游 #1661（2026-08-06）早就写好
+  `package-desktop.mjs` 读 `desktopLogUploadBuildEnv({ allowMissing: versionless })`，但
+  **meka/main 侧该文件长期是 Meka 自己的版本、没有这段接线**。实测三处：`1b4f6a7c9`
+  （= `cindy-meka-v0.0.25` tag 提交）与 `bf3835f0ab^1`（同步前的 meka/main）里该文件的
+  log-upload 痕迹 **0 行**；`bf3835f0ab^2`（上游一侧）与合并结果 **3 行** ⇒ **第 5 轮同步
+  把上游那版合了进来**，从那以后**版本化**桌面打包必须能解析到该文件（版本无关/开源构建不受影响）。
+- **旁证**：0.0.25 的 cn 安装版（`CindyMeka.exe` FileVersion `0.0.25`）里 `injectedRaw()`
+  返回**空串**（日志上报整体关闭）⇒ 那次打包根本没读这份配置、也不会硬失败，与「之前构建是好的」
+  完全一致；而该文件是 gitignore 的真值，打包机此前从未被任何流水线步骤准备过。
+- **处置**：`cindy-meka-cicd` 增了统一前置解析与开跑即失败（`Resolve-DesktopReleaseConfig` /
+  `resolve_desktop_release_config`：工作区已有 → `XDT_LOG_UPLOAD_CONFIG_FILE`（File 类型变量）→
+  `CINDY_RELEASE_KIT_DIR`；三个桌面打包 job 设 `XDT_REQUIRE_DESKTOP_RELEASE_CONFIG=1`），
+  文档见该仓 `docs/setup.md` §2.5；**不放宽 `allowMissing`**（发行包必须烘焙上报目标）。
+- **仍未闭合（需外部输入）**：真值只存在于 `cindy-build-scripts` 仓根，本机没有该仓、
+  也没有 `sync-desktop-release-kit.sh`；本机全部 checkout 与安装版都不含该文件 ⇒ **必须由真值
+  持有方补一次通道**（推荐 File 类型变量）。在补上之前，任何版本化桌面打包（含本地）都会硬失败。
+- **规则落点**：`docs/dev-rules/log-upload-and-redaction.md` 新增 **§4.1**（把「何时变成硬前置、
+  本地/CI 各自怎么解析、为什么不能放宽」写死）。
+
 
 
 
