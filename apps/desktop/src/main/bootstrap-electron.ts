@@ -566,7 +566,10 @@ import { COPY_PNG_TO_CLIPBOARD_CHANNEL } from '../shared/pngClipboard.js';
 import { initHeartbeatService } from './heartbeatService';
 import { registerRemoteDesktopIpc } from './remote-desktop';
 import { initAnalyticsSettingsService, noteAuthColdStartState } from './analyticsSettingsService';
-import { initLogUploadService, scheduleStartupBackfill } from './log-upload';
+// 客户端日志上报(SLS)在 meka/main 上**已移除**:不再有 log-upload 服务、设置面与崩溃自动补传。
+// **（Meka divergence，第 5 轮同步后移除）**上游此处 import { initLogUploadService, scheduleStartupBackfill }
+// from './log-upload'; 并在 createWindow 之前调用。下次同步若此处冲突,按本注释保留「移除」。
+// 口径见 docs/dev-rules/log-upload-and-redaction.md。
 import { WindowManualDragController } from './windowManualDrag';
 import { issueWritableDirectoryPickerGrant } from './maker-ipc/writableDirectoryPickerGrant.js';
 // 设备互联(跨设备远程控制): relay 连接 host + 开关/设备列表 IPC
@@ -3986,9 +3989,8 @@ const createWindow = () => {
       // 插件面板保持按需创建：分离状态不跨重启恢复，多实例也不在启动期全量预热。
     }, 1_500);
     resourceUsagePrewarmTimer.unref?.();
-    // 日志上报的启动补传:采集 + 脱敏是同步的重活,必须让主窗口先出来(内部再延迟 15s,
-    // 避开首帧的 IO 争用)。没有待补传标记时是零成本 no-op。
-    scheduleStartupBackfill();
+    // 日志上报(SLS)已移除（Meka divergence，第 5 轮同步后移除）：上游此处调用 scheduleStartupBackfill()
+    // 做崩溃日志的启动补传。本地日志本身照常写盘，供「报告问题」按需采集。
     // `open` may successfully start the updated process while macOS refuses
     // frontmost activation at the lock/login window. Presentation is not an
     // installation-health signal; retain a one-shot focus grant for unlock.
@@ -9462,10 +9464,8 @@ app.on('ready', async () => {
   // handler 还没注册的话那次 invoke 会 reject,而它是 fail closed 的 —— 已同意
   // 的用户会一直不上报,直到手动去设置里拨一下开关。
   initAnalyticsSettingsService();
-  // 日志上报:同样必须在 createWindow 之前注册 —— 设置页一挂载就 invoke
-  // log-upload:settings-get 决定入口可用性;更重要的是崩溃即时路径要在
-  // onFatalShutdown 上就位,否则 createWindow 之后立刻崩的那一次拿不到标记。
-  initLogUploadService();
+  // 客户端日志上报(SLS)在 meka/main 上**已移除**。**（Meka divergence，第 5 轮同步后移除）**
+  // 上游此处调用 initLogUploadService()（注册 log-upload:settings-get 与崩溃即时补传标记）。
   // Local profiles bypass authManager's cloud claim path. Await the same
   // asynchronous PID provenance scan before the first BrowserWindow exists so
   // sidebar's synchronous legacy migration reads can consume an exact proof.

@@ -6990,6 +6990,23 @@ Codex/Claude/Pi 原生读 `AGENTS.md`/`CLAUDE.md`/`SKILL.md`，不看我们的 m
 - **规则落点**：`docs/dev-rules/log-upload-and-redaction.md` 新增 **§4.1**（把「何时变成硬前置、
   本地/CI 各自怎么解析、为什么不能放宽」写死）。
 
+### 6.65 2026-10-08 Meka 明确不启用客户端日志上报：移除构建期要求、运行时通道与用户入口（保留 issue 诊断的采集/脱敏）
 
+> 本条**取代 §6.64 末尾那条「仍未闭合（需外部输入）」**：不再需要任何人补那份真值。
 
-
+- **裁决**：§6.64 暴露的「版本化桌面打包硬要求 `config/log-upload.json`」不按「补真值」处理，而是**移除该能力** ——
+  Meka 不需要客户端日志上报（SLS）。
+- **移除面**：构建侧（`package-desktop.mjs` / `vite.main.config.ts` / `apps/mobile/metro.config.js` 不再读配置、
+  不再注入 `XDT_LOG_UPLOAD_TARGET`；`scripts/shared/log-upload-build-env.mjs` 与其 runner 测试删除）；
+  运行期（`main/log-upload/` 的上报模块与测试、`initLogUploadService()`、preload 五个 API、IPC 错误码
+  `LOG_UPLOAD_*` / `PRIVACY_CONSENT_REQUIRED` 全部撤掉）；界面（设置 → 关于 两行 + 五语 19 个键）；
+  mobile（「上传日志」行与其模块）。
+- **明确保留**：`main/log-upload/` 的**采集与脱敏**（`redact`/`collect`/`collectRuntime`/`mainLogReader`/
+  `agentLogReader`/`sourceAllowlist`/`limits`/`types`）与 `shared/logUpload.ts` 的 `LogUploadReason` ——
+  「报告问题」流程与 `pi-package-diagnostic` 仍在用；**后续同步不要把这块一起删**。
+- **连带撤回**：`cindy-meka-cicd` 里为它加的两侧前置解析闸门（`Resolve-DesktopReleaseConfig` /
+  `resolve_desktop_release_config` 与 `XDT_REQUIRE_DESKTOP_RELEASE_CONFIG`）已撤（该仓提交 `32e13ca`），
+  `docs/setup.md` §2.5 改为「已移除」。
+- **规则落点**：`docs/dev-rules/log-upload-and-redaction.md` §4.1；`docs/dev-rules/meka-whitelist-verification.md`
+  **WL-26**（含「保留边界」与反回归自检）。
+- **未验证**：尚无一次真实版本化桌面打包实跑（判据见 WL-26 的「实机验证」）。

@@ -47,7 +47,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ensureBinary } from '../../../scripts/ensure-agent-binaries.mjs';
 import { desktopClientBuildEnv } from '../../../scripts/shared/client-endpoint-build-env.mjs';
-import { desktopLogUploadBuildEnv } from '../../../scripts/shared/log-upload-build-env.mjs';
 import {
   DESKTOP_ROOT,
   RELEASE_DIR,
@@ -416,15 +415,12 @@ function runForgeMake({ platform, arch, region, version, versionless, noSign }) 
     NODE_ENV: 'production',
     // 烘焙面只含 region + 端点清单自举基址,按 region 二选一。
     ...clientBuildEnv,
-    // 日志上报目标(SLS project/logstore/区域)。真值不进仓,读 config/log-upload.json
-    // (打包机由 cindy-build-scripts 的 sync-desktop-release-kit.sh 拷回)。
-    // 只烘焙**本区域那一个**目标 —— cn 包里物理上不含 global 的 logstore 地址。
-    // 发行(有版本)打包:缺失 / 非法一律抛错让打包失败(除 dev 外每个区域都是必填):这是
-    // 「必须被强制要求做出选择」那条约束从 typecheck 搬过来的落点,不要改成静默跳过。
-    // 版本无关 / 开源打包(versionless):配置文件是 gitignore 的、默认 checkout 里不存在,
-    // 允许缺失 ⇒ 注入空目标、功能整体关闭,拉仓即可打包(2026-08-04 review P1)。
-    // 注意 allowMissing 只放宽「文件缺失」;文件在但内容损坏两种模式都仍然硬失败。
-    ...desktopLogUploadBuildEnv({ authRegion: region, allowMissing: versionless }),
+    // 客户端日志上报(SLS)在 meka/main 上**已移除**:不再从 config/log-upload.json 读目标、不再注入
+    // XDT_LOG_UPLOAD_TARGET。**（Meka divergence，第 5 轮同步后移除）**上游此处为
+    // `...desktopLogUploadBuildEnv({ authRegion: region, allowMissing: versionless })`,并对**版本化**
+    // 打包硬要求该文件存在(缺了即失败)。Meka 不需要该上报 ⇒ 连构建机依赖一起去掉,版本化/版本无关
+    // 打包一视同仁、都不再需要那份 gitignore 真值。下次同步若此处冲突,按本注释保留「移除」。
+    // 口径见 docs/dev-rules/log-upload-and-redaction.md。
     // forge.config.ts 的 NSIS appId / AUMID 优先读这个(与 VITE_ 同源,双保险)。
     CINDY_AUTH_REGION: region,
     // forge.config.ts 注入 packagerConfig.appVersion;版本无关时为占位 0.0.0。

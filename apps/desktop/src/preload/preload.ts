@@ -124,11 +124,8 @@ import {
   ANALYTICS_SETTINGS_CHANGE_CHANNEL,
   type AnalyticsSettingsPayload,
 } from '../shared/analyticsSettings';
-import {
-  LOG_UPLOAD_SETTINGS_CHANGE_CHANNEL,
-  type LogUploadResult,
-  type LogUploadSettingsPayload,
-} from '../shared/logUpload';
+// 上报 API 已移除（Meka divergence，第 5 轮同步后移除）：上游此处 import {
+// LOG_UPLOAD_SETTINGS_CHANGE_CHANNEL, type LogUploadResult, type LogUploadSettingsPayload } from '../shared/logUpload';
 import { SELECTION_CONTEXT_MENU_ADD_TO_CHAT_CHANNEL } from '../shared/selectionContextMenu';
 import {
   PROCESS_MONITOR_SAMPLE_CHANNEL,
@@ -4202,45 +4199,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   cancelCindyMakeTask: (runId: string): Promise<{ success: boolean }> =>
     ipcRenderer.invoke('app:cancel-cindy-make-task', runId),
 
-  // ── 客户端日志上报(Settings → About)──
-  // 真相在 main:是否配置了上报目标、是否已同意隐私政策、开关的 override 状态都由 main
-  // 判定,renderer 只消费结论。上传编号由 main 生成并回传,用户报障时口述给我们。
-  getLogUploadSettings: (): Promise<LogUploadSettingsPayload> =>
-    ipcRenderer.invoke('log-upload:settings-get'),
-  setLogUploadCrashAuto: (enabled: boolean): Promise<LogUploadSettingsPayload> =>
-    ipcRenderer.invoke('log-upload:set-crash-auto', enabled === true),
-  /** 恢复默认:删掉 override,重新跟随当前版本默认的“已有 Git 项目”模式。 */
-  resetLogUploadCrashAuto: (): Promise<LogUploadSettingsPayload> =>
-    ipcRenderer.invoke('log-upload:reset-crash-auto'),
-  /** 手动上传一次。失败以 IPC 错误码返回(LOG_UPLOAD_* / PRIVACY_CONSENT_REQUIRED)。 */
-  uploadLogsNow: (): Promise<LogUploadResult> => ipcRenderer.invoke('log-upload:upload-now'),
-  onLogUploadSettingsChange: (
-    callback: (payload: LogUploadSettingsPayload) => void,
-  ): (() => void) => {
-    const handler = (_event: unknown, payload: unknown): void => {
-      // preload 是边界:逐字段校验后才放行,形状漂移时 renderer 不会拿到隐式 falsy 值。
-      if (!payload || typeof payload !== 'object') return;
-      const raw = payload as Record<string, unknown>;
-      if (
-        typeof raw.targetConfigured !== 'boolean' ||
-        typeof raw.privacyConsentAccepted !== 'boolean' ||
-        typeof raw.crashAutoUploadEnabled !== 'boolean' ||
-        typeof raw.crashAutoUploadCustomized !== 'boolean' ||
-        typeof raw.manualUploadAvailable !== 'boolean'
-      ) {
-        return;
-      }
-      callback({
-        targetConfigured: raw.targetConfigured,
-        privacyConsentAccepted: raw.privacyConsentAccepted,
-        crashAutoUploadEnabled: raw.crashAutoUploadEnabled,
-        crashAutoUploadCustomized: raw.crashAutoUploadCustomized,
-        manualUploadAvailable: raw.manualUploadAvailable,
-      });
-    };
-    ipcRenderer.on(LOG_UPLOAD_SETTINGS_CHANGE_CHANNEL, handler);
-    return () => ipcRenderer.removeListener(LOG_UPLOAD_SETTINGS_CHANGE_CHANNEL, handler);
-  },
+  // 客户端日志上报(SLS)在 meka/main 上已移除（Meka divergence，第 5 轮同步后移除）：上游此处暴露
+  // getLogUploadSettings / setLogUploadCrashAuto / resetLogUploadCrashAuto / uploadLogsNow /
+  // onLogUploadSettingsChange 五个 API。下次同步若冲突，保留「移除」。
 
   // Reveal a file in the OS file manager (Explorer / Finder).
   // Accepts either an xdt-image:// URL or an absolute file path.

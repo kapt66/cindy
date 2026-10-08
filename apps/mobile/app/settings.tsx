@@ -1,4 +1,4 @@
-import { diagnosticUploadConfigured, uploadMobileDiagnostics } from '@/debug/mobileDiagnosticUpload';
+// 上报已移除（Meka divergence，第 5 轮同步后移除）：上游此处 import { diagnosticUploadConfigured, uploadMobileDiagnostics }。
 import { clearDiagnostics, diagnosticsEnabled, exportDiagnostics, hydrateDiagnostics, setDiagnosticsEnabled } from '@/debug/localDiagnostics';
 import Constants from 'expo-constants';
 import * as Clipboard from 'expo-clipboard';
@@ -151,7 +151,6 @@ export default function SettingsScreen() {
   const [localLogsReady, setLocalLogsReady] = useState(false);
   const [localLogsBusy, setLocalLogsBusy] = useState(false);
   const [localLogsConsent, setLocalLogsConsent] = useState(false);
-  const [localLogUploadMessage, setLocalLogUploadMessage] = useState<string | null>(null);
   const localLogsLock = useRef(false);
   useEffect(() => {
     let mounted = true;
@@ -1006,29 +1005,7 @@ export default function SettingsScreen() {
                       value={localLogsBusy ? t('settings.localLogs.busy') : ''}
                       onPress={() => void runLocalLogAction(exportDiagnostics)}
                     />,
-                    <ActionInfoRow
-                      key="local-logs-upload"
-                      accessibilityLabel={t('settings.localLogs.upload')}
-                      label={t('settings.localLogs.upload')}
-                      disabled={!localLogsReady || localLogsBusy || !diagnosticUploadConfigured() || !localLogsConsent}
-                      detail={!diagnosticUploadConfigured()
-                        ? t('settings.localLogs.uploadResult.unavailable')
-                        : !localLogsConsent ? t('settings.localLogs.uploadResult.consentRequired')
-                        : localLogUploadMessage ?? t('settings.localLogs.uploadHint')}
-                      value={
-                        localLogsBusy ? t('settings.localLogs.busy') : ''
-                      }
-                      onPress={() =>
-                        void runLocalLogAction(async () => {
-                          const result = await uploadMobileDiagnostics();
-                          if (result.kind === 'uploaded') {
-                            let copied = false;
-                            try { await Clipboard.setStringAsync(result.uploadCode); copied = true; } catch { /* upload already succeeded */ }
-                            setLocalLogUploadMessage(t(copied ? 'settings.localLogs.uploadCopied' : 'settings.localLogs.uploadSucceeded', { code: result.uploadCode }));
-                          } else setLocalLogUploadMessage(t(`settings.localLogs.uploadResult.${result.kind}`));
-                        })
-                      }
-                    />,
+                  // 上传日志行已移除（Meka divergence）：上游此处为 ActionInfoRow key="local-logs-upload"。
                   ...(DEV_SERVER_ENVIRONMENT_SWITCH_ENABLED
                     ? [
                         <ActionInfoRow

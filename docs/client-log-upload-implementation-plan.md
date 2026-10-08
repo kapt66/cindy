@@ -1,5 +1,12 @@
 # 客户端日志上报（Desktop）实现方案
 
+> **[Meka] 本能力已在 meka/main 上整体移除（2026-10-08，第五轮上游同步后裁决）**：Meka **不使用**
+> 客户端日志上报（SLS），构建期不再读取 config/log-upload.json、运行时与「设置 → 关于」也不再有上报
+> 通道。本文仅作为上游背景与历史参考保留；生效口径见
+> [docs/dev-rules/log-upload-and-redaction.md §4.1](dev-rules/log-upload-and-redaction.md) 与
+> [meka-whitelist-verification.md **WL-26**](dev-rules/meka-whitelist-verification.md)。
+
+
 > 状态：**已落地**（P0 + P1 已实现；cn / global 上报目标已配置，dev 待配）
 > 　最后更新：2026-08-04　范围：`apps/desktop`
 >

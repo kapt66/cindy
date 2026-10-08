@@ -228,29 +228,32 @@ main/log-upload/logUploadTarget.ts         ← 解析 + 区域交叉校验;不�
   真值的正确性由 `scripts/__tests__/log-upload-build-env.test.mjs` 对 `.example` 与临时 fixture
   校验，加上打包时的硬失败兜底。
 
-### 4.1 Meka 侧现状：本文件从第 5 轮同步起才成为**版本化桌面打包的硬前置**（2026-10-08）
+### 4.1 Meka 侧：**该能力已整体移除**（2026-10-08，第 5 轮同步之后）
 
-- **上游接线来得比想象晚**：上游 #1661（2026-08-06）就写好了 `package-desktop.mjs` 读
-  `desktopLogUploadBuildEnv({ allowMissing: versionless })`，但 **meka/main 侧的文件长期是
-  Meka 自己的版本、没有这段接线**。可查证：`1b4f6a7c9`（= `cindy-meka-v0.0.25` 的 tag 提交）
-  与 `bf3835f0ab^1`（第 5 轮同步前的 meka/main）里该文件的 log-upload 痕迹都是 **0 行**，
-  而 `bf3835f0ab^2`（上游一侧）与合并结果都是 3 行 ⇒ 这段接线是**第 5 轮同步带进来的**。
-- **后果**：0.0.25 及更早的 cn 发行包烘进的是**空串**（安装版 `CindyMeka.exe` 0.0.25 的
-  `injectedRaw()` 实测为空 ⇒ 日志上报整体关闭），因为它们根本没读这个文件、也不会硬失败；
-  而**从第 5 轮同步起**，任何**版本化**桌面打包（`versionless === false`，即发行/本地带版本号
-  的打包）**必须**能解析到 `config/log-upload.json`，否则在 `electron-forge make` 前抛
-  `缺少日志上报配置`。版本无关／开源（versionless）构建仍允许缺失（注入空串 ⇒ 功能关闭）。
-- **本地同样如此**：仓内只有 `.example`；实测 `loadLogUploadTargets({ allowMissing: false })`
-  在本地直接抛错，`desktopLogUploadBuildEnv({ allowMissing: true })` 注入空串。所以**本地
-  想跑版本化桌面打包，也要先有这份文件**（从 `.example` 复制并填真值）。
-- **打包机怎么拿到它（CI 已自动化前置，不再靠记忆）**：`cindy-meka-cicd` 的
-  `Checkout-ApprovedSource` / `checkout_approved_source` 收尾会解析并补齐（顺序：工作区已有 →
-  `XDT_LOG_UPLOAD_CONFIG_FILE`（GitLab **File 类型变量**）→ `CINDY_RELEASE_KIT_DIR` 下的
-  `config/log-upload.json`），三个桌面打包 job 设 `XDT_REQUIRE_DESKTOP_RELEASE_CONFIG=1`
-  ⇒ 解析不到就**开跑即失败**并打印两条通道。**不要**放宽 `allowMissing` 绕过：发行包必须烘焙
-  上报目标，放宽等于发一版没有日志上报的包。规则与运维做法见该仓 `docs/setup.md` §2.5。
-- **真值仍以 `cindy-build-scripts` 仓根为唯一事实源**：本机（Windows 打包机）实测两处都不是
-  它，`sync-desktop-release-kit.sh` 也不在本机；因此当前推荐用 **File 类型变量**那条通道补一次。
+- **为什么会有这一节（同步溯源）**：上游 #1661（2026-08-06）就写好了桌面打包读 `config/log-upload.json`
+  的接线，但 **meka/main 侧的文件长期是 Meka 自己的版本、没有这段接线** —— 可查证：`1b4f6a7c9`
+  （= `cindy-meka-v0.0.25` 的 tag 提交）与 `bf3835f0ab^1`（第 5 轮同步前的 meka/main）里该文件的
+  log-upload 痕迹都是 **0 行**，而上游一侧 `bf3835f0ab^2` 是 **3 行** ⇒ **第 5 轮同步把上游那版合了
+  进来**，于是**版本化**桌面打包开始硬要求那份 gitignore 真值（0.0.25 及更早的包烘的是空串、从未
+  需要过它，安装版 `CindyMeka.exe` 0.0.25 的 `injectedRaw()` 实测为空可作旁证）。
+- **维护者裁决（2026-10-08）**：Meka **不需要**客户端日志上报 ⇒ **直接移除**，而不是去补那份真值。
+  移除面：
+  - 构建侧：`apps/desktop/scripts/package-desktop.mjs`、`apps/desktop/vite.main.config.ts`、
+    `apps/mobile/metro.config.js` 不再读配置、不再注入 `XDT_LOG_UPLOAD_TARGET` /
+    `EXPO_PUBLIC_CINDY_LOG_UPLOAD_TARGET`；`scripts/shared/log-upload-build-env.mjs` 与其 runner 测试删除。
+  - 运行期：`main/log-upload/` 的上报模块（`logSink` / `consentGate` / `logUploadTarget` / `pendingMarkers` /
+    `uploadCode` / `uploadRunner` / `logUploadSettingsStore` / `crashTriggers` / `index`）与其测试删除；
+    `bootstrap-electron.ts` 不再 `initLogUploadService()`；preload 的五个上报 API 与 IPC 错误码
+    `LOG_UPLOAD_*` / `PRIVACY_CONSENT_REQUIRED` 一并撤掉。
+  - 界面：设置 → 关于 的「崩溃时自动上传」与「上传日志」两行 + 五语各 19 个 `settings.about.logUpload.*`
+    键删除（含搜索项）。
+  - mobile：「上传日志」行与其模块 `src/debug/mobileDiagnosticUpload.ts` 删除（本地 Debug 日志本身保留）。
+- **明确保留（后续同步不要跟着删）**：`main/log-upload/` 中的**采集与脱敏**部分 —— `redact` / `collect` /
+  `collectRuntime` / `mainLogReader` / `agentLogReader` / `sourceAllowlist` / `limits` / `types` —— 因为
+  「报告问题」流程（`main/github-issue/**`）与 `maker-host/pi-package-diagnostic` 仍在用它们的脱敏与
+  采集能力；`shared/logUpload.ts` 只保留 `LogUploadReason` 类型（采集原因标签）。
+- **结论**：`config/log-upload.json` 在 Meka 上**既不需要、也不会被读取**（本仓 §4 的上游口径仅作背景，
+  供将来若要重新启用时参考）；`cindy-meka-cicd` 里那条「桌面打包前解析该文件」的闸门已随之撤掉。
 
 ## 5. 时序
 

@@ -5,14 +5,10 @@ const config = getDefaultConfig(__dirname);
 const workspaceRoot = path.resolve(__dirname, '../..');
 // Shared endpoint discovery bundles the public manifests from the repository config directory.
 config.watchFolders = [...config.watchFolders, path.join(workspaceRoot, 'config')];
-// Keep upload routing build-time-only, with the desktop validator as the single configuration source.
-// Missing config is allowed for local/open-source builds; malformed or cross-region config is not.
-const { mobileLogUploadBuildEnv, mobileLogUploadConfigRequired } = require('../../scripts/shared/log-upload-build-env.mjs');
-Object.assign(process.env, mobileLogUploadBuildEnv({
-  repoRoot: workspaceRoot,
-  authRegion: process.env.EXPO_PUBLIC_CINDY_AUTH_REGION || 'global',
-  allowMissing: !mobileLogUploadConfigRequired(),
-}));
+// 客户端日志上报（SLS）在 meka/main 上**已移除**：不再从 config/log-upload.json 注入
+// EXPO_PUBLIC_CINDY_LOG_UPLOAD_TARGET，也不再要求 EAS 发行 profile 必须带该配置。
+// **（Meka divergence，第 5 轮同步后移除）**下次同步若此处冲突，保留「移除」而非恢复注入。
+// 口径见 docs/dev-rules/log-upload-and-redaction.md。
 const workspaceNodeModules = path.join(workspaceRoot, 'node_modules');
 const appNodeModules = path.join(__dirname, 'node_modules');
 const sharedArrayBufferPolyfill = path.join(__dirname, 'src/polyfills/sharedArrayBuffer.js');

@@ -56,12 +56,12 @@ export default defineConfig(({ mode }) => {
       'import.meta.env.VITE_ENDPOINT_MANIFEST_PEER_BASE_URL': JSON.stringify(
         readViteEnv('VITE_ENDPOINT_MANIFEST_PEER_BASE_URL'),
       ),
-      // 日志上报目标(main-only,不暴露到 renderer)。真值不进仓,由 package-desktop.mjs 经
-      // scripts/shared/log-upload-build-env.mjs 从 config/log-upload.json 读出**本区域那一个**
-      // 目标后注入。dev server / 未注入 ⇒ 空串 ⇒ 运行时判「未配置」、功能整体关闭。
-      // ⚠️ main 侧必须写成完整的 `process.env.XDT_LOG_UPLOAD_TARGET` 才能被本 define 文本替换,
-      // 见 main/log-upload/logUploadTarget.ts 的 injectedRaw()。
-      'process.env.XDT_LOG_UPLOAD_TARGET': JSON.stringify(readMainEnv('XDT_LOG_UPLOAD_TARGET')),
+      // 客户端日志上报（SLS）在 meka/main 上**已移除**：不再注入上报目标，也不再需要
+      // `config/log-upload.json`。**（Meka divergence，第 5 轮同步后移除）**上游原本在这里 define
+      // `process.env.XDT_LOG_UPLOAD_TARGET`（由 scripts/shared/log-upload-build-env.mjs 从
+      // config/log-upload.json 读本区域那一个目标）。Meka 明确不需要该上报，因此连同构建期真值
+      // 依赖一起去掉；下次同步若此处冲突，按本注释保留「移除」而非恢复 define。
+      // 口径与保留边界见 docs/dev-rules/log-upload-and-redaction.md。
       // Triage bot token (dev only — production 留空，BotTokenStore 走 safeStorage)
       'process.env.TRIAGE_BOT_TOKEN': JSON.stringify(readMainEnv('TRIAGE_BOT_TOKEN')),
       // Filo Google OAuth desktop client（main-only，仓库不保存实际值）。

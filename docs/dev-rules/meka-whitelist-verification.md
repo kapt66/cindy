@@ -3224,3 +3224,39 @@ HTTPS-only 发布根**不受本次回退影响**；真实发布与签名验证�
   「连 workflow 机制一起删」的既定后果；若仍需写入约束，须由 SAGA2 侧通过角色/插件重新表达。
 - **本条的自我约束**：本节只登记退役/新增与验证现状，不改写任何带日期的历史原句；
   历史正文全部保留在 Git 历史与迁移总账 §11.32 的交付记录里。
+
+### WL-26 Meka 不启用客户端日志上报（该能力已整体移除，2026-10-08 第五轮同步后裁决）
+
+**保护的不变量**：Meka **不调用**任何客户端日志上报（SLS）：构建期**不**读取/注入上报目标、
+运行时**没有**上报通道与设置存储、**没有**崩溃自动补传、设置 → 关于**没有**上报入口。
+因此 `config/log-upload.json`（gitignore 的上游真值）在 Meka 上**既不需要、也不会被读取**；
+打包机缺它**不是**失败条件。**但**「报告问题」流程所依赖的**采集与脱敏**必须继续可用：
+一旦有人把 `main/log-upload/` 整块删掉，issue 诊断会连带失效 —— 那是本条的边界。
+
+**与上游的关系**：**刻意分歧（整块移除）**。上游 #1661 的「桌面打包必须能解析到日志上报目标」
+接线是在**第五轮同步**（`bf3835f0ab`）才进入 meka/main 的（上游一侧 `bf3835f0ab^2` 有 3 行，
+同步前的 meka/main 与 0.0.25 的 tag 提交 `1b4f6a7c9` 都是 0 行）⇒ 版本化桌面打包随即报
+`缺少日志上报配置`。维护者裁决不需要该上报，故**移除**而非补真值。
+
+**代码锚点**（符号名为准）：移除面 —— `apps/desktop/scripts/package-desktop.mjs`（原
+`desktopLogUploadBuildEnv` 注入）、`apps/desktop/vite.main.config.ts`（原
+`process.env.XDT_LOG_UPLOAD_TARGET` define）、`apps/mobile/metro.config.js`（原
+`mobileLogUploadBuildEnv` 注入）、`scripts/shared/log-upload-build-env.mjs`（已删）、
+`main/bootstrap-electron.ts`（原 `initLogUploadService()`）、`preload/preload.ts`（原五个上报 API）、
+`shared/ipc-errors.ts`（原 `LOG_UPLOAD_*` / `PRIVACY_CONSENT_REQUIRED`）、
+`renderer/components/settings/AboutSection.{tsx,settings-search.ts}`（原两行入口）、
+五语 `settings.about.logUpload.*`、`main/log-upload/` 的上报模块与其测试（已删）、
+`apps/mobile/app/settings.tsx` 的「上传日志」行与其模块（已删）。
+保留面 —— `main/log-upload/` 的 `redact` / `collect` / `collectRuntime` / `mainLogReader` /
+`agentLogReader` / `sourceAllowlist` / `limits` / `types`（`github-issue/**` 与
+`maker-host/pi-package-diagnostic.ts` 在用）、`shared/logUpload.ts` 仅剩 `LogUploadReason`。
+
+**自动化门禁**：`pnpm --filter desktop run typecheck`（移除面与保留面的类型都必须自洽）；
+`pnpm --filter desktop exec vitest run src/main/github-issue/__tests__/issueDiagnostics.test.ts src/main/log-upload/__tests__`
+（保留的采集/脱敏与 issue 诊断仍绿）；`node scripts/check-i18n.mjs`（五语键一致）。
+**反回归自检**（同步后必跑）：在 `apps/desktop/scripts`、`scripts/shared`、`apps/desktop/vite.main.config.ts`、
+`apps/mobile/metro.config.js` 里搜 `log-upload-build-env` 与 `XDT_LOG_UPLOAD_TARGET`，必须为空。
+
+**实机验证**：**未验证**（需一次真实版本化桌面打包；判据：在没有 `config/log-upload.json` 的机器上
+`release:windows:canary` / 本地 `pnpm release:win <ver>` 能走到打包结束，且「设置 → 关于」不再出现
+「崩溃时自动上传」与「上传日志」两行；同时「报告问题」仍能采集并脱敏日志）。
