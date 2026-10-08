@@ -62,9 +62,7 @@ export function GhostPanelModal({
         <Dialog.Overlay
           forceMount
           className={cn(
-            'fixed inset-0 z-[10000] bg-[var(--overlay-modal)]',
-            'data-[state=open]:animate-confirm-overlay-in',
-            'data-[state=closed]:animate-confirm-overlay-out',
+            'modal-scrim fixed inset-0 z-[10000]',
             'data-[state=closed]:pointer-events-none data-[state=closed]:invisible',
           )}
           style={WINDOW_NO_DRAG_STYLE}
@@ -73,16 +71,14 @@ export function GhostPanelModal({
           forceMount
           data-testid="ghost-panel-modal"
           className={cn(
-            'fixed left-1/2 top-1/2 z-[10000] flex h-[90vh] w-[90vw]',
-            '-translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl',
-            'border border-[var(--border-default)] bg-[var(--confirm-bg)]',
-            'shadow-[var(--confirm-shadow)] focus:outline-none',
-            'data-[state=open]:animate-confirm-content-in',
-            'data-[state=closed]:animate-confirm-content-out',
+            'modal-panel fixed left-1/2 top-1/2 z-[10000] flex h-[90vh] w-[90vw]',
+            '-translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden',
+            'focus:outline-none',
             'data-[state=closed]:pointer-events-none data-[state=closed]:invisible',
           )}
           style={WINDOW_NO_DRAG_STYLE}
           aria-describedby={undefined}
+          onPointerDownOutside={(event) => event.preventDefault()}
           onOpenAutoFocus={(event) => {
             event.preventDefault();
             const webview = panelBodyRef.current?.querySelector<HTMLElement>('webview');

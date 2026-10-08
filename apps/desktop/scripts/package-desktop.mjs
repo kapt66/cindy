@@ -47,6 +47,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ensureBinary } from '../../../scripts/ensure-agent-binaries.mjs';
 import { desktopClientBuildEnv } from '../../../scripts/shared/client-endpoint-build-env.mjs';
+import { desktopLogUploadBuildEnv } from '../../../scripts/shared/log-upload-build-env.mjs';
 import {
   DESKTOP_ROOT,
   RELEASE_DIR,
@@ -59,12 +60,14 @@ import {
   runDbValidate,
   verifyPackagedDrizzle,
   runSmokeTest,
-  runIOSSimulatorReleaseGate,
   fetchExistingManifestIfAvailable,
   findInstallerArtifact,
   ensureLinuxRuntimeAssets,
   logLinuxPackagingRequirements,
   writeMacEntitlements,
+  macWebAuthnKeychainAccessGroup,
+  embedMacWebAuthnProvisioningProfile,
+  readMacBundleIdentifier,
   adhocSignMacApp,
   resolveAppleIdentity,
   signMacAppWithIdentity,
@@ -79,7 +82,6 @@ import {
   artifactBaseName,
   buildBuildInfo,
   debianArch,
-  hostCanExecArch,
 } from './ci/package-lib.mjs';
 import {
   applyMacSigningConfigToEnv,
@@ -377,6 +379,19 @@ function cleanOutDir() {
   }
 }
 
+/**
+ * macOS Touch ID WebAuthn 的 Apple Team ID(上游语义)：只有最终会做 Developer ID 签名、
+ * 且发布机提供了 provisioning profile 的 darwin bundle 才烘焙；ad-hoc / 版本无关 /
+ * --no-sign 与其它平台一律空串，禁止继承 shell 里的陈旧值后误启 Touch ID。
+ * profile 文件本身的校验与告警在 main() 里(先于本函数执行)。
+ */
+function resolveWebAuthnAppleTeamId({ platform, versionless, noSign }) {
+  if (platform !== 'darwin' || versionless || noSign) return '';
+  if (!process.env.APPLE_APP_PASSWORD) return '';
+  if (!process.env.CINDY_MAC_WEBAUTHN_PROVISIONING_PROFILE?.trim()) return '';
+  return resolveAppleIdentity().teamId;
+}
+
 function runForgeMake({ platform, arch, region, version, versionless, noSign }) {
   console.log('==> Building remote bundles...');
   execSync('node scripts/build-remote-bundles.mjs', { cwd: DESKTOP_ROOT, stdio: 'inherit' });
@@ -401,10 +416,22 @@ function runForgeMake({ platform, arch, region, version, versionless, noSign }) 
     NODE_ENV: 'production',
     // 烘焙面只含 region + 端点清单自举基址,按 region 二选一。
     ...clientBuildEnv,
+    // 日志上报目标(SLS project/logstore/区域)。真值不进仓,读 config/log-upload.json
+    // (打包机由 cindy-build-scripts 的 sync-desktop-release-kit.sh 拷回)。
+    // 只烘焙**本区域那一个**目标 —— cn 包里物理上不含 global 的 logstore 地址。
+    // 发行(有版本)打包:缺失 / 非法一律抛错让打包失败(除 dev 外每个区域都是必填):这是
+    // 「必须被强制要求做出选择」那条约束从 typecheck 搬过来的落点,不要改成静默跳过。
+    // 版本无关 / 开源打包(versionless):配置文件是 gitignore 的、默认 checkout 里不存在,
+    // 允许缺失 ⇒ 注入空目标、功能整体关闭,拉仓即可打包(2026-08-04 review P1)。
+    // 注意 allowMissing 只放宽「文件缺失」;文件在但内容损坏两种模式都仍然硬失败。
+    ...desktopLogUploadBuildEnv({ authRegion: region, allowMissing: versionless }),
     // forge.config.ts 的 NSIS appId / AUMID 优先读这个(与 VITE_ 同源,双保险)。
     CINDY_AUTH_REGION: region,
     // forge.config.ts 注入 packagerConfig.appVersion;版本无关时为占位 0.0.0。
     APP_VERSION: version,
+    // 只给最终会做 Developer ID 签名的 macOS bundle 烘焙 Team ID。ad-hoc、dev 与
+    // 其它平台显式置空，避免继承 shell 里的陈旧值后误启 Touch ID。
+    CINDY_WEBAUTHN_APPLE_TEAM_ID: resolveWebAuthnAppleTeamId({ platform, versionless, noSign }),
   };
   // Git Bash(agent 常用 shell)会导出 NoDefaultCurrentDirectoryInExePath=1,
   // 使 cmd.exe 不再搜索当前目录——node-pty rebuild 时 winpty.gyp 的
@@ -585,7 +612,17 @@ async function finishWindows({ artifactDir, baseName, appName, versionless, allo
   return { files, signing: { installerSigned, internalExesSigned: hasWindowsSigning } };
 }
 
-async function finishDarwin({ artifactDir, baseName, appName, arch, versionless, allowUnsigned, noSign }) {
+async function finishDarwin({
+  artifactDir,
+  baseName,
+  appName,
+  arch,
+  versionless,
+  allowUnsigned,
+  noSign,
+  macSigningIdentity,
+  webAuthnProvisioningProfile,
+}) {
   const packagedDir = path.join(DESKTOP_ROOT, 'out', `${appName}-darwin-${arch}`);
   const appPath = path.join(packagedDir, `${appName}.app`);
   if (!fs.existsSync(appPath)) {
@@ -596,11 +633,10 @@ async function finishDarwin({ artifactDir, baseName, appName, arch, versionless,
   fs.mkdirSync(RELEASE_DIR, { recursive: true });
   const helperEntitlementsPath = path.join(RELEASE_DIR, 'build-helper.entitlements');
   const mainEntitlementsPath = path.join(RELEASE_DIR, 'build-main.entitlements');
-  writeMacEntitlements(helperEntitlementsPath);
-  writeMacEntitlements(mainEntitlementsPath, { appleEvents: true });
 
   const wantsRealSigning = !versionless && !noSign;
-  const requireNativeReleaseGate = process.env.CINDY_IOS_SIMULATOR_RELEASE_NATIVE_SMOKE === '1';
+  // Meka 的签名模式选择(developer-id / self-signed / adhoc)保留：self-signed 走发布机
+  // 既有的 Meka 证书、不做公证；developer-id 才需要 APPLE_APP_PASSWORD。
   const requestedSigningMode = process.env.MAC_SIGNING_MODE?.trim() || 'developer-id';
   if (!['developer-id', 'self-signed', 'adhoc'].includes(requestedSigningMode)) {
     throw new Error('MAC_SIGNING_MODE must be developer-id, self-signed, or adhoc');
@@ -638,24 +674,38 @@ async function finishDarwin({ artifactDir, baseName, appName, arch, versionless,
   if (canSelfSign || canDeveloperSign) {
     const identity = canSelfSign
       ? { signIdentity, timestamp: false }
-      : { ...resolveAppleIdentity(), applePassword, timestamp: true };
+      : (macSigningIdentity ?? { ...resolveAppleIdentity(), applePassword, timestamp: true });
+    // Touch ID WebAuthn(上游)：只有 Developer ID 分支才注入 keychain-access-groups 并内嵌
+    // provisioning profile；self-signed / ad-hoc 分支不带该能力。
+    const bundleId = canDeveloperSign ? readMacBundleIdentifier(appPath) : undefined;
+    const keychainAccessGroup =
+      canDeveloperSign && webAuthnProvisioningProfile
+        ? macWebAuthnKeychainAccessGroup(identity.teamId, bundleId)
+        : undefined;
+    writeMacEntitlements(helperEntitlementsPath);
+    writeMacEntitlements(mainEntitlementsPath, {
+      appleEvents: true,
+      keychainAccessGroup,
+    });
+    if (keychainAccessGroup) {
+      embedMacWebAuthnProvisioningProfile(appPath, webAuthnProvisioningProfile, {
+        teamId: identity.teamId,
+        bundleId,
+        keychainAccessGroup,
+      });
+    }
     console.log(
       canSelfSign
         ? '==> Signing (existing Meka self-signed identity)...'
         : '==> Signing (Developer ID)...',
     );
-    const iosSimulatorHelperSigned = signMacAppWithIdentity(
+    signMacAppWithIdentity(
       appPath,
       helperEntitlementsPath,
       mainEntitlementsPath,
       identity,
-      { arch },
+      { keychainAccessGroup, arch },
     );
-    if (requireNativeReleaseGate && !iosSimulatorHelperSigned) {
-      throw new Error(
-        'CINDY_IOS_SIMULATOR_RELEASE_NATIVE_SMOKE=1 requires a packaged Native Helper',
-      );
-    }
     if (canDeveloperSign) {
       console.log('==> Notarizing...');
       notarizeMacApp(appPath, identity);
@@ -663,28 +713,7 @@ async function finishDarwin({ artifactDir, baseName, appName, arch, versionless,
     } else {
       signingMode = 'self-signed';
     }
-
-    if (hostCanExecArch(arch, isPhysicalArm64Mac())) {
-      runIOSSimulatorReleaseGate(
-        appPath,
-        arch,
-        canDeveloperSign
-          ? (iosSimulatorHelperSigned ? 'verified' : 'untrusted')
-          : 'untrusted',
-        requireNativeReleaseGate,
-      );
-    } else if (requireNativeReleaseGate) {
-      throw new Error(
-        `CINDY_IOS_SIMULATOR_RELEASE_NATIVE_SMOKE=1 requires a host that can natively run the ${arch} package`,
-      );
-    } else {
-      verifyMacBinaryArch(appName, arch);
-      console.log(
-        `==> Skipping iOS Simulator release gate: ${arch} app is not runnable on this ${
-          isPhysicalArm64Mac() ? 'arm64' : 'Intel'
-        } host (Mach-O arch verified)`,
-      );
-    }
+    verifyMacBinaryArch(appName, arch);
 
     const dmgPath = path.join(artifactDir, `${baseName}-${arch}.dmg`);
     console.log('==> Creating DMG...');
@@ -701,22 +730,10 @@ async function finishDarwin({ artifactDir, baseName, appName, arch, versionless,
     files.push(fileEntry('hotfix', hotfixZipPath));
   } else {
     // 版本无关(或显式放行)→ ad-hoc 签名,产出 .app 的 zip 供本机/内部试用。
+    writeMacEntitlements(helperEntitlementsPath);
+    writeMacEntitlements(mainEntitlementsPath, { appleEvents: true });
     adhocSignMacApp(appPath, helperEntitlementsPath, mainEntitlementsPath, arch);
-    if (requireNativeReleaseGate) {
-      throw new Error(
-        'CINDY_IOS_SIMULATOR_RELEASE_NATIVE_SMOKE=1 requires a Developer ID signed and notarized package',
-      );
-    }
-    if (hostCanExecArch(arch, isPhysicalArm64Mac())) {
-      runIOSSimulatorReleaseGate(appPath, arch, 'untrusted');
-    } else {
-      verifyMacBinaryArch(appName, arch);
-      console.log(
-        `==> Skipping iOS Simulator release gate: ${arch} app is not runnable on this ${
-          isPhysicalArm64Mac() ? 'arm64' : 'Intel'
-        } host (Mach-O arch verified)`,
-      );
-    }
+    verifyMacBinaryArch(appName, arch);
     const appZipPath = path.join(artifactDir, `${baseName}-${arch}.zip`);
     console.log('==> Creating app ZIP (ad-hoc signed)...');
     if (fs.existsSync(appZipPath)) fs.unlinkSync(appZipPath);
@@ -773,6 +790,32 @@ async function main() {
   const { version, versionless } = await resolvePackageVersion(versionSpec, () =>
     fetchCdnBaselineVersion(platform === 'darwin' ? 'darwin-arm64' : `${platform}-${archs[0]}`, region),
   );
+  // macOS Touch ID WebAuthn(上游)：签名身份 + provisioning profile 齐备时才启用。
+  // profile 必须存在且是文件(fail closed),缺失时如实告警而不是静默降级。
+  const macApplePassword =
+    platform === 'darwin' && !versionless && !noSign ? process.env.APPLE_APP_PASSWORD : undefined;
+  const macSigningIdentity = macApplePassword
+    ? { ...resolveAppleIdentity(), applePassword: macApplePassword }
+    : undefined;
+  const webAuthnProfileValue =
+    macSigningIdentity && process.env.CINDY_MAC_WEBAUTHN_PROVISIONING_PROFILE?.trim();
+  const webAuthnProvisioningProfile = webAuthnProfileValue
+    ? path.resolve(DESKTOP_ROOT, webAuthnProfileValue)
+    : undefined;
+  if (
+    webAuthnProvisioningProfile &&
+    (!fs.existsSync(webAuthnProvisioningProfile) ||
+      !fs.statSync(webAuthnProvisioningProfile).isFile())
+  ) {
+    throw new Error(
+      `CINDY_MAC_WEBAUTHN_PROVISIONING_PROFILE is not a file: ${webAuthnProvisioningProfile}`,
+    );
+  }
+  if (macSigningIdentity && !webAuthnProvisioningProfile) {
+    console.warn(
+      'WARN: macOS Touch ID WebAuthn is disabled: set CINDY_MAC_WEBAUTHN_PROVISIONING_PROFILE to a Developer ID provisioning profile that authorizes keychain-access-groups.',
+    );
+  }
 
   console.log('='.repeat(60));
   console.log(`==> Package Cindy desktop`);
@@ -876,6 +919,8 @@ async function main() {
         versionless,
         allowUnsigned,
         noSign,
+        macSigningIdentity,
+        webAuthnProvisioningProfile,
       }));
 
       const buildInfo = buildBuildInfo({

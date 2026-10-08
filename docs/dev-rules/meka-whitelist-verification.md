@@ -158,19 +158,19 @@ P4 项目根、插件面板呈现方式等 Meka 专属配置；这些配置落�
 
 #### WL-2.1 顶部导航 Meka 入口行（`mekaRow`）
 
-- **代码锚点**：`apps/desktop/src/renderer/components/sidebar/SidebarTopNav.tsx:66`（`useMatch('/cc-agent/meka/*')`）、`:109-126`（`mekaRow` 定义）、`:189`（scrollable 段渲染）、`:232`（all 段渲染）
-- **自动化门禁**：**无自动化覆盖**（`mekaSidebarOrder.test.ts` 只读 `CCAgentSidebarUpper.tsx`，不覆盖 `SidebarTopNav.tsx`）。上游在 `:189/:232` 各有一处渲染分支，改侧栏结构时必须两处都查
+- **代码锚点**（**2026-10-08 第五轮同步后逐条打开文件实测；以符号名为准**）：`apps/desktop/src/renderer/components/sidebar/SidebarTopNav.tsx:476`（`onMekaMatch = useMatch('/cc-agent/meka/*')`）、`:504`（`mekaRow` 定义）、`:603`（把 `mekaRow` **splice 进 `orderedNavigationRows`**，紧随 `automations`）—— 因此 scrollable 段与 all 段**两处渲染分支都含 Meka**（旧版的 `:189`/`:232` 两处独立分支已被上游 #5472 的偏好驱动注册表取代）
+- **自动化门禁**：**无自动化覆盖**（`mekaSidebarOrder.test.ts` 只读 `CCAgentSidebarUpper.tsx`，不覆盖 `SidebarTopNav.tsx`）。上游把导航行改成「用户偏好注册表」结构后，Meka 行是**注入式**的（不占偏好 id、不进「更多」/「自定义」面板）；改侧栏结构时必须同时查 scrollable 与 all 两条路径
 - **实机验证**：展开左侧栏 → 自上而下可见「新建 / 自动任务 / **Meka 管理**（公文包图标）/ 插件 / 伙伴 / 搜索」；点「Meka 管理」进入 Meka 插件页，该行呈选中态；进入 `/cc-agent/meka/skills`、`/cc-agent/meka` 时**仍保持高亮**
-- **历史回归**：本轮同步 `SidebarTopNav.tsx` 的 lucide `Bot` import 丢失 —— 根因就是 `mekaRow`（Meka）与上游新增 `botsRow` 需要**并集**（[`2026-09-origin-main-to-meka-main.md`](../migrations/2026-09-origin-main-to-meka-main.md) §4.3）
+- **历史回归**：2026-09 上一轮同步 `SidebarTopNav.tsx` 的 lucide `Bot` import 丢失 —— 根因就是 `mekaRow`（Meka）与上游新增 `botsRow` 需要**并集**（[`2026-09-origin-main-to-meka-main.md`](../migrations/2026-09-origin-main-to-meka-main.md) §4.3）。**第五轮更正**：上游 #5472 已把伙伴图标搬进共享 `sidebar/renderer/components/sidebar/sidebarNavigationPrefs.ts:20`（`SIDEBAR_NAVIGATION_ITEM_ICONS.bots = Bot`），`SidebarTopNav.tsx` 不再直接 import `Bot`（补回会变成未使用 import）；**「实体存在」这一不变量不变，承载文件变了**。文件头 `:29-31` 有对应注释。
 
 #### WL-2.2 折叠（rail）态 Meka 入口图标
 
-- **代码锚点**（行号为 2026-09-23 第三轮同步后逐条打开文件实测；本仓有锚点漂移史，**引用时以符号名为准**）：
-  `apps/desktop/src/renderer/features/cc-agent/CCAgentSidebarUpper.tsx` 的 `onMekaMatch`（`useMatch('/cc-agent/meka/*')`，约 `:4090`）、rail Meka 按钮（`SidebarIconButton` + `BriefcaseBusiness` + `active={Boolean(onMekaMatch)}`，约 `:4137-4145`）
-- **不变量**：位置在 `GhostMainViewNavEntries`（`variant="rail"`，约 `:4134`）之后、插件 rail 入口（约 `:4146-4153`）之前
+- **代码锚点**（**2026-10-08 第五轮同步后逐条打开文件实测；以符号名为准**）：`apps/desktop/src/renderer/features/cc-agent/CCAgentSidebarUpper.tsx:4209`（`onMekaMatch`）、`:4241-4250`（把 `mekaEntry` 注入 `SidebarRailNavigation`：`SidebarIconButton` + `BriefcaseBusiness` + `active={Boolean(onMekaMatch)}` + `aria-current`）；`apps/desktop/src/renderer/components/sidebar/SidebarTopNav.tsx:363-375`（`mekaEntry` prop 与不占偏好 id 的说明）、`:400`（`mekaTileIndex`）、`:431-433`（按 `mekaTileIndex` 把 `mekaEntry` 插进 tile 序列）
+- **不变量**：rail 态**必须有**常驻 Meka 图标，位置紧随「自动任务」tile 之后（与展开态 `mekaRow` 同一规则）；`mekaEntry` 不占偏好 id ⇒ 既不进「更多」也不进「自定义」面板
+- **位次变更（2026-10-08 第五轮登记，非回归）**：旧口径「在 `GhostMainViewNavEntries`（rail）之后、插件 rail 入口之前」在**上游新结构下不可表达** —— tile 顺序归用户偏好，插件 tile 已不再是固定邻居。现改为「紧随自动任务之后」，并与展开态 `mekaRow` 用同一条排序规则，两个形态因此保持对称。
 - **自动化门禁**：**无自动化覆盖**
 - **实机验证**：把左侧栏拖到 rail 态 → 图标列含公文包（Meka）；点击进入 Meka 插件页；处于 `/cc-agent/meka/*` 时为 active 态
-- **历史回归**：源码注释记录过「折叠 rail 之前漏了这颗按钮」的对称性缺口（当前在 `:4135-4136` 的注释里）
+- **历史回归**：源码注释记录过「折叠 rail 之前漏了这颗按钮」的对称性缺口（当前在 `SidebarTopNav.tsx:363-364` 与 `CCAgentSidebarUpper.tsx:4241` 的注释里）
 
 #### WL-2.3 三页签管理页骨架（插件 / 技能 / 项目）
 
@@ -576,6 +576,38 @@ edition 与端点自举）；② 登录页实际认证的 **realm**;③ 运行�
 - **历史回归**：本轮同步后 `UserInfoSection.tsx` 的源码形态断言因 Meka 保留「运行期
   edition 解构」而无法匹配单行 needle，断言被迫改为格式无关 —— 即这条分歧确实会让上游形态的
   断言失败，**不要据此把 Meka 改回构建期常量**
+
+#### WL-5.7 历史 userData 目录**不按区域闸门**（上游新守卫被本仓红线取代）
+
+- **不变量**：Meka 的 `legacyUserDataDirNames` 与 `legacyDialogueUserDataDirNames()` 是
+  **与区域无关的同一组历史值**：`['xdmaker-meka','xdt-maker']`，cn / global / dev **都**只读
+  扫描同一组来源。这是 WL-6.1 已登记的**兼容红线**（历史用户数据必须能被两个服务区的包接管），
+  不是遗漏。
+- **上游同期的新模型（本轮不得接纳）**：`a5467dc0c1` 起上游把两者按区域闸门 ——
+  `legacyUserDataDirNamesByRegion = { cn: ['xdt-maker'], global: [], dev: [] }`、
+  `legacyDialogueUserDataDirNamesByRegion` 同形，`allUserDataDirNames(region)` 取
+  `legacyUserDataDirNamesByRegion[region]`，并新增守卫用例
+  `codexLocalSessions.test.ts > does not implicitly adopt China-edition legacy state in the Global edition`
+  （断言 Global 版**不**接管 `xdt-maker` 历史 Codex HOME）。
+- **本仓处置**：**保留本仓行为**（`packages/maker-shared/src/brandIdentity.ts:161` 的平铺列表 +
+  `:304-308` 的 `allUserDataDirNames`），因此该上游守卫在 Meka 侧不成立。已把该用例改为
+  显式锁定本仓语义（用例名 `scans the same Meka legacy Codex HOME in the Global edition as in the CN edition`，
+  文件 `apps/desktop/src/main/__tests__/codexLocalSessions.test.ts`），**不静默删除上游用例**，
+  并在用例注释里写明与本仓红线的关系；差异登记见
+  [`2026-10-08-origin-main-to-meka-main.md`](../migrations/2026-10-08-origin-main-to-meka-main.md) §5.2.4-D。
+- **代码锚点**：`packages/maker-shared/src/brandIdentity.ts:161`（`legacyUserDataDirNames`）、
+  `:304-308`（`allUserDataDirNames`，平铺且 `[0]` 为当前身份）、`:315-319`
+  （`legacyDialogueUserDataDirNames`）；消费面 `apps/desktop/src/main/maker-host/codex-local-sessions.ts:1417-1423`
+  （`legacyBrandedCodexHomes` 取 `.slice(1)`）
+- **自动化门禁**：`pnpm --filter @cindy/maker-shared exec vitest run src/__tests__/brandIdentity.test.ts`
+  （两条锁死用例：「Cindy Meka 新身份与 XDMaker Meka 迁移锚保持分离」断言
+  `legacyUserDataDirNames` 逐元素等于 `['xdmaker-meka','xdt-maker']`；「dialogue cwd 迁移在两服务区只读扫描
+  Meka 历史目录」断言 `cn` 与 `global` 返回**同一个**列表）；
+  `pnpm --filter desktop exec vitest run src/main/__tests__/codexLocalSessions.test.ts`
+- **实机验证**：未实机；未验证原因见同步报告 §7（需要两个服务区的真实历史 userData 目录）
+- **维护者裁决入口**：若产品决定采纳上游的区域闸门（Global 不再接管 `xdt-maker`），
+  必须**同时**改 `brandIdentity.ts`、上面两条 `brandIdentity.test.ts` 用例、本 WL-5.7 与 WL-6.1，
+  并把 `codexLocalSessions` 用例改回上游断言；**不允许只改测试**。
 
 ### WL-6 构建、更新链路与项目标识
 
@@ -2302,6 +2334,32 @@ order-65 段的「用途」列进入模型上下文，属于**随包注入内容
 **随包出厂基线**自身正确。若某台机器上项目的 skill 清单与随包基线不同，以该机器 override 为准。
 **同名不同路径是合法的**（见治理文档 §4 第 4 条）：重名时 `normalizeDiscoveredSkillId` 依次加
 `-2`/`-3` 消歧是设计行为，**不要**把它当成需要合并或警告的对象。
+
+### WL-25 Meka 项目首次派发 Worker 时就地开团队（2026-10-08 第五轮同步登记）
+
+**保护的不变量**：Meka 的 MCPRouter 项目**可以直接使用** —— 当 lead 会话上还没有 active team 时，
+`createWorker` 必须**就地** `startTeam`（并在 worker preflight 失败时**回滚**刚开的那个团队），
+而不是像上游那样以 `NOT_FOUND` 拒绝；否则「让 MCPRouter 项目直接可用」这条 Meka 能力失效。
+
+**与上游的关系**：**刻意分歧（保留例外）**。上游 `createWorker` 在无 active team 时返回 `NOT_FOUND`；
+本仓行为来自 Meka 提交 `aa930890ab fix(meka): make MCPRouter projects directly usable`。第五轮上游同步
+把它与上游新增的授权 guard 链（`getWorkerPermissionModeOverride` / `assertCurrent` /
+`assertCreatedCurrent` / `createWorkerInTeam` / rollback）**合成单一实现**，没有留两套并行状态机。
+
+**代码锚点**（2026-10-08 逐条实测；**以符号名为准**）：`apps/desktop/src/main/maker-ipc/orcaLifecycleService.ts`
+的 `createWorker`（约 `:258`）内 `const started = await startTeam({...})`（约 `:265`）与失败回滚分支；
+`startTeam` 定义在同文件（约 `:379`）。上游 guard 链的注入点在 `maker-ipc/register.ts` 的同名 deps。
+
+**自动化门禁**：`pnpm --filter desktop exec vitest run src/main/maker-ipc/__tests__/orcaLifecycleService.test.ts`，
+其中 `automatically starts a team before creating the first worker`（约 `:358`）与
+`rolls back an automatically started team when worker preflight fails`（约 `:386`）是本项**专用守卫**；
+同文件里的上游用例（授权 guard、`permissionMode` 收口）必须**同时**通过 —— 这条组合正是「两侧语义都成立」的证据。
+
+**实机验证**：在 Meka 项目里对**尚未开团队**的 lead 直接派发 worker → 应当成功建组并派出，而不是报
+`NOT_FOUND`；preflight 失败时不得留下空团队。
+
+**边界**：只对「无 active team」这一前置生效；已有团队时语义与上游一致。**不得**把它扩成绕过授权 guard
+的通道（`assertPluginWorkerAutoAuthorized` 等把关必须仍在位）。
 
 ## 4. 最小自动化集合
 

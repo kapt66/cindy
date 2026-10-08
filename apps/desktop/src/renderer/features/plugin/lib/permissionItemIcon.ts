@@ -18,7 +18,6 @@ import {
   PanelLeft,
   PanelRight,
   Radio,
-  Smartphone,
   Sparkles,
   Terminal,
   Wrench,
@@ -48,7 +47,6 @@ const PERMISSION_ICON: Record<GhostPermissionItem['kind'], LucideIcon> = {
   preview: AppWindow,
   skill: GraduationCap,
   reveal: FolderOpen,
-  'ios-simulator': Smartphone,
   workspace: FolderPlus,
   // Meka 两条能力槽:文件揭示(reveal)与 MCPRouter route 白名单(mcpr)。
   // 上游把这个映射抽成本模块时还没有这两个 kind,但它们已在

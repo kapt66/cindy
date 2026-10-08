@@ -880,7 +880,11 @@ describe('mobileRealtimeAsrProvider', () => {
       reason: 'Received bad response code from server: 403.',
     });
 
-    await expect(started).rejects.toThrow('Cindy Meka 语音会话已失效或没有权限（WebSocket 403）。请确认登录状态后重试。');
+    // 上游本轮改了这条文案的措辞（「语音服务…（状态码 403）」），本仓品牌名保持
+    // `BRAND_NAME`（Cindy Meka）→ 取上游措辞 + Meka 品牌。文案正本见
+    // apps/mobile/src/i18n/locales/zh-CN/composer.json 的
+    // composer.voice.sessionExpiredOrForbidden（{{appName}} 由 i18n 注入 BRAND_NAME）。
+    await expect(started).rejects.toThrow('Cindy Meka 语音服务的登录已失效或没有权限，请确认登录状态后重试（状态码 403）。');
   });
 
   it('redacts the synced voice key from Volcengine websocket errors', async () => {

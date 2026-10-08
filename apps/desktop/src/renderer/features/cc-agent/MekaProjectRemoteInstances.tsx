@@ -166,8 +166,11 @@ export function MekaProjectRemoteInstances({ projectId }: { projectId: string })
       </div>
       <Dialog.Root open={createOpen} onOpenChange={(open) => !open && setCreateOpen(false)}>
         <Dialog.Portal>
-          <Dialog.Overlay className="fixed inset-0 z-[10000] bg-[var(--overlay-modal)]" />
-          <Dialog.Content className="fixed left-1/2 top-1/2 z-[10001] w-[calc(100vw-32px)] max-w-[440px] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] p-5 text-[var(--text-primary)] shadow-[var(--shadow-menu)] focus:outline-none">
+          <Dialog.Overlay className="modal-scrim fixed inset-0 z-[10000]" />
+          <Dialog.Content
+            onPointerDownOutside={(event) => event.preventDefault()}
+            className="modal-panel fixed left-1/2 top-1/2 z-[10001] w-[calc(100vw-32px)] max-w-[440px] -translate-x-1/2 -translate-y-1/2 p-5 text-[var(--text-primary)] focus:outline-none"
+          >
             <Dialog.Title className="text-16 font-medium">{t('meka.remote.create')}</Dialog.Title>
             <div className="mt-4 flex flex-col gap-4">
               <label className="flex flex-col gap-2 text-13 text-[var(--text-secondary)]">

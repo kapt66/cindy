@@ -33,8 +33,9 @@
  *        (例:各 macOS native helper 的 `HELPER_RESOURCE = path.join('tools', ...)`,
  *        首段是 `tools`,恰好已被声明);
  *    (b) 数组展开,如 `path.join(resourcesPath, ...BUNDLED_ANDROID_PLATFORM_TOOLS_RESOURCE_ROOT, ...)`;
- *    (c) 只传「资源根目录」给下游解析器后再拼名字(例:`ios-simulator.ts` 把
- *        `resourceRoot` 交给 `IOSSimulatorPackagedSidecarArtifactResolver`);
+ *    (c) 只传「资源根目录」给下游解析器后再拼名字(历史上的例子是已随内置 iOS 模拟器退役
+ *        删除的 `ios-simulator.ts` → `IOSSimulatorPackagedSidecarArtifactResolver`;
+ *        该形态本身仍是本门禁的盲区,新增同类解析器时必须人工确认声明);
  *    (d) 模板字面量名,如 ``path.join(process.resourcesPath, `${X}.exe`)``;
  *    (e) 变量名不以 `resourcesPath`/`ResourcesPath` 结尾的资源根。
  *    本门禁是「兜住一整类静默缺陷」的静态下限,不是完整证明。

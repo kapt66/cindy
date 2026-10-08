@@ -796,10 +796,14 @@ Host 在该合格实例上验证并记录 worker/session 身份时才可复用�
 `rg`、`Get-Content` 或 Git 只读查询；远端只允许 `git show`、`git grep`、`git status`、
 `git diff`，不得调用 `Read` 或 `rg`，也不得读取 Claude 为超长工具输出生成的临时结果文件。
 变量、管道、重定向、命令串联和自行拼装脚本一律拒绝；远端 Codex
-Runtime 自动生成的标准 `/bin/bash -c`、`/bin/bash -lc` 单命令包装除外。Codex
-`getShellCommandPolicy` 已传入任务上下文并由 Desktop 注入 `combatWorkflowPolicy`，因此缺 ID、
-根 `AGENTS.md`、AGENTS 枚举、客户端 Assets 根搜索、其它 Skill、开发中编辑器实现和共享 JSON
-都会在执行前被 Host 拒绝。普通角色仍保留全部通用 Shell 与工具接口。证据命令失败时不得改走
+Runtime 自动生成的标准 `/bin/bash -c`、`/bin/bash -lc` 单命令包装除外。**注（2026-10-08
+第五轮上游同步）**：本段原先描述的执行期强制机制（Codex `getShellCommandPolicy` 注入
+`combatWorkflowPolicy`，在执行前拒绝缺 ID／根 `AGENTS.md`／AGENTS 枚举／客户端 Assets 根搜索／
+其它 Skill／开发中编辑器实现／共享 JSON）**在代码里已不存在**：`combatWorkflowPolicy` 随战斗
+workflow 机制在 `11f2f34641` 删除，`getShellCommandPolicy` 通道又随上游 `757d9797d5`（内置
+iOS 模拟器退役）整体删除。上面那段只读探索纪律**仍作为角色/Skill 正文的取证规范有效**，
+但**不再有 Host 执行期门禁兜底**；是否重建执行期强制另案裁决。普通角色仍保留全部通用
+Shell 与工具接口。证据命令失败时不得改走
 Web、计算器、SSH 或其它无关工具，应按证据不确定停止并报告。
 服务器 Worker 的 `git grep` 必须显式指定 `HEAD`，不得读取远端工作树状态作为权威语义。默认
 先用 `git grep -l -E <精确符号> HEAD -- internal/battle` 取得真实路径，再在最多三条路径上用

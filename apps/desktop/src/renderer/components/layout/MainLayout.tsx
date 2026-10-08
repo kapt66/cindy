@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { buildSharedTaskInvitationLink } from '@cindy/device-link';
+import { JoinSharedTaskDialog } from '@/features/device-link/JoinSharedTaskDialog';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useRememberMainEntry } from './MainEntryRedirect';
 import { useTranslation } from 'react-i18next';
@@ -33,6 +35,7 @@ import type { MekaRouterSettingsView } from '../../../shared/meka-router';
 import { ControlledBanner } from '@/features/remote-device/ControlledBanner';
 import { CredentialStoreBanner } from '@/components/layout/CredentialStoreBanner';
 import { useDeviceLinkRemoteProjects } from '@/features/device-link/useDeviceLinkRemoteProjects';
+import { useAgentIslandRemoteSessionsSync } from '@/features/device-link/agentIslandRemoteSessions';
 import { pluginScheduleNavigationState } from '@/features/scheduler/lib/pluginScheduleCreateIntent';
 import { ScheduleSessionIndexOwner } from '@/features/scheduler/components/ScheduleSessionIndexOwner';
 import { AppBadgeAttentionSync } from '@/components/layout/AppBadgeAttentionSync';
@@ -229,6 +232,9 @@ export function MainLayout() {
   usePendingAlertAttention();
   const splitGroup = useSplitGroup();
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(getInitialCollapsed);
+  const [sharedTaskInvitation, setSharedTaskInvitation] = useState<{ link: string; id: number } | null>(null);
+  const invitationSequence = useRef(0);
+  // Meka：MCPRouter 登录窗口由 main 侧推送拉起（两个入口共用同一个 host 对话框）。
   const [routerLoginOpen, setRouterLoginOpen] = useState(false);
   const [routerLoginSettings, setRouterLoginSettings] = useState<MekaRouterSettingsView | null>(
     null,
@@ -519,6 +525,8 @@ export function MainLayout() {
   usePluginRemovalNoticeToast();
   // device-link 跨设备远程控制:同账号在线 + 开了被控的设备,其项目自动并入侧边栏
   useDeviceLinkRemoteProjects();
+  // 范围内的远程任务进本机灵动岛 / 桌面通知(main 只认主窗的这份输入)。
+  useAgentIslandRemoteSessionsSync();
 
   // 系统通知点击回调：主进程把窗口拉到前台后广播 sessionId，这里跳路由。
   // 挂在 MainLayout 而不是 App 顶层——这里在 ProtectedRoute + LocalDbGate 之内，
@@ -664,8 +672,13 @@ export function MainLayout() {
         | { type: 'new-session'; workingDir: string }
         | { type: 'share-import'; filePath: string }
         | { type: 'provider-import'; importId: string }
+        | { type: 'shared-task-join'; invitation: string; server: string }
         | { type: 'settings'; tab: 'voice-input' | 'providers'; connect?: string },
     ) => {
+      if (payload.type === 'shared-task-join') {
+        setSharedTaskInvitation({ link: buildSharedTaskInvitationLink(payload.invitation, payload.server), id: ++invitationSequence.current });
+        return;
+      }
       if (payload.type === 'session') {
         navigateToSession(payload.id, payload.messageClientId);
         return;
@@ -705,9 +718,17 @@ export function MainLayout() {
     },
     [navigate, navigateToSession, openShareImport],
   );
+  useEffect(
+    () =>
+      window.electronAPI.ghosts.onRetirementOpen((id) => {
+        navigate(`/plugins?retired=${encodeURIComponent(id)}`);
+      }),
+    [navigate],
+  );
+
   useEffect(() => {
     const unsubscribe = window.electronAPI.onDeepLinkNavigate((payload) => {
-      if (payload.type !== 'provider-import') {
+      if (payload.type !== 'provider-import' && payload.type !== 'shared-task-join') {
         handleDeepLinkPayload(payload);
         return;
       }
@@ -1687,6 +1708,8 @@ export function MainLayout() {
       )}
       {/* FeiShu Bot conflict dialog -- subscribes to main process push and surfaces a global modal */}
       <FeishuConflictDialogHost />
+      {sharedTaskInvitation && <JoinSharedTaskDialog key={sharedTaskInvitation.id} open initialInvitation={sharedTaskInvitation.link}
+        onOpenChange={(open) => { if (!open) setSharedTaskInvitation(null); }} />}
       <MekaRouterConnectDialog
         open={routerLoginOpen}
         settings={routerLoginSettings}

@@ -61,12 +61,12 @@ function SettingsModal(props: { title: string; onClose: () => void; children: Re
       }}
     >
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-[100] bg-black/45 backdrop-blur-[1px]" />
+        <Dialog.Overlay className="modal-scrim fixed inset-0 z-[100]" />
         <Dialog.Content
+          onPointerDownOutside={(event) => event.preventDefault()}
           className={cn(
-            'fixed left-1/2 top-1/2 z-[101] flex w-[min(440px,calc(100vw-32px))]',
-            '-translate-x-1/2 -translate-y-1/2 flex-col gap-4 rounded-xl border p-5 shadow-xl',
-            'border-[var(--settings-theme-card-border)] bg-[var(--settings-theme-card-bg)]',
+            'modal-panel fixed left-1/2 top-1/2 z-[101] flex w-[min(440px,calc(100vw-32px))]',
+            '-translate-x-1/2 -translate-y-1/2 flex-col gap-4 p-5',
           )}
         >
           <div className="flex items-center justify-between gap-3">

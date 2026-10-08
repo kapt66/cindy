@@ -50,7 +50,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ------------------------------------------------------------------------------
-OpenAI Codex CLI (runtime-downloaded binary) 0.145.0
+OpenAI Codex CLI (runtime-downloaded binary) 0.159.2
 License: Apache-2.0
 Source: https://github.com/openai/codex
 ------------------------------------------------------------------------------
@@ -492,7 +492,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ------------------------------------------------------------------------------
-pi coding agent (runtime-downloaded binary) 0.85.1
+pi coding agent (runtime-downloaded binary) 1.0.2
 License: MIT
 Source: https://github.com/earendil-works/pi
 ------------------------------------------------------------------------------
@@ -3912,11 +3912,11 @@ necessary.  Here is a sample; alter the names:
 That's all there is to it!
 
 ==============================================================================
-SECTION 2: npm packages (904 packages)
+SECTION 2: npm packages (903 packages)
 ==============================================================================
 
 - @antfu/install-pkg@1.1.0 — MIT — https://github.com/antfu/install-pkg
-- @anthropic-ai/sdk@0.91.1 — MIT — https://github.com/anthropics/anthropic-sdk-typescript
+- @anthropic-ai/sdk@0.93.0 — MIT — https://github.com/anthropics/anthropic-sdk-typescript
 - @aws-crypto/sha256-browser@5.2.0 — Apache-2.0 — https://github.com/aws/aws-sdk-js-crypto-helpers
 - @aws-crypto/sha256-js@5.2.0 — Apache-2.0 — https://github.com/aws/aws-sdk-js-crypto-helpers
 - @aws-crypto/supports-web-crypto@5.2.0 — Apache-2.0 — https://github.com/aws/aws-sdk-js-crypto-helpers
@@ -3999,7 +3999,6 @@ SECTION 2: npm packages (904 packages)
 - @iconify/types@2.0.0 — MIT — https://github.com/iconify/iconify
 - @iconify/utils@3.1.4 — MIT — https://github.com/iconify/iconify
 - @img/colour@1.1.0 — MIT — https://github.com/lovell/colour
-- @img/sharp-win32-x64@0.34.5 — Apache-2.0 AND LGPL-3.0-or-later — https://github.com/lovell/sharp
 - @img/sharp-win32-x64@0.35.3 — Apache-2.0 AND LGPL-3.0-or-later — https://github.com/lovell/sharp
 - @isaacs/cliui@8.0.2 — ISC — https://github.com/yargs/cliui
 - @isaacs/fs-minipass@4.0.1 — ISC — https://github.com/npm/fs-minipass
@@ -26006,7 +26005,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ------------------------------------------------------------------------------
-[124] Applies to: npm:@anthropic-ai/sdk@0.91.1
+[124] Applies to: npm:@anthropic-ai/sdk@0.93.0
 ------------------------------------------------------------------------------
 Copyright 2023 Anthropic, PBC.
 
@@ -28928,7 +28927,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------------
-[150] Applies to: npm:@img/sharp-win32-x64@0.34.5, npm:@img/sharp-win32-x64@0.35.3, npm:sharp@0.35.3
+[150] Applies to: npm:@img/sharp-win32-x64@0.35.3, npm:sharp@0.35.3
 ------------------------------------------------------------------------------
 Apache License
 Version 2.0, January 2004

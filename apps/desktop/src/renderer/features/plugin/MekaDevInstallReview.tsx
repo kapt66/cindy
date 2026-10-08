@@ -35,7 +35,6 @@ import {
   PanelLeft,
   PanelRight,
   ShieldAlert,
-  Smartphone,
   Sparkles,
   Terminal,
   Wrench,
@@ -70,7 +69,6 @@ const KIND_ICON: Record<GhostPermissionItem['kind'], LucideIcon> = {
   skill: GraduationCap,
   reveal: FolderOpen,
   workspace: FolderPlus,
-  'ios-simulator': Smartphone,
   mcpr: Network,
 };
 

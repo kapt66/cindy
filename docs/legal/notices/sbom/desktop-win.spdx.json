@@ -3,9 +3,9 @@
   "dataLicense": "CC0-1.0",
   "SPDXID": "SPDXRef-DOCUMENT",
   "name": "cindy-desktop-win",
-  "documentNamespace": "https://cindy.app/spdx/desktop-win/a760dfdd1784410979c2aea25f814ecd44c35351ba9e7cdb999f3ef7bb3af6bc",
+  "documentNamespace": "https://cindy.app/spdx/desktop-win/046abf82222d2bfe7eea4905777f8ec4441513b411323f0ae7bb889c714ff89b",
   "creationInfo": {
-    "created": "2026-09-28T02:36:18Z",
+    "created": "2026-09-28T10:59:27Z",
     "creators": [
       "Tool: scripts/generate-third-party-notices.mjs"
     ]
@@ -83,8 +83,8 @@
     },
     {
       "name": "OpenAI Codex CLI (runtime-downloaded binary)",
-      "SPDXID": "SPDXRef-Package-4f22132a77577bcb",
-      "versionInfo": "0.145.0",
+      "SPDXID": "SPDXRef-Package-618e13d446a4c6e4",
+      "versionInfo": "0.159.2",
       "downloadLocation": "https://github.com/openai/codex",
       "filesAnalyzed": false,
       "licenseConcluded": "Apache-2.0",
@@ -123,8 +123,8 @@
     },
     {
       "name": "pi coding agent (runtime-downloaded binary)",
-      "SPDXID": "SPDXRef-Package-e7ecfd34000fcb76",
-      "versionInfo": "0.85.1",
+      "SPDXID": "SPDXRef-Package-9a414e8a6f3ff55d",
+      "versionInfo": "1.0.2",
       "downloadLocation": "https://github.com/earendil-works/pi",
       "filesAnalyzed": false,
       "licenseConcluded": "MIT",
@@ -5191,8 +5191,8 @@
     },
     {
       "name": "@anthropic-ai/sdk",
-      "SPDXID": "SPDXRef-Package-6dd15d27ddf97540",
-      "versionInfo": "0.91.1",
+      "SPDXID": "SPDXRef-Package-28dc3e2c8c9ba29e",
+      "versionInfo": "0.93.0",
       "downloadLocation": "https://github.com/anthropics/anthropic-sdk-typescript",
       "filesAnalyzed": false,
       "licenseConcluded": "MIT",
@@ -5202,7 +5202,7 @@
         {
           "referenceCategory": "PACKAGE-MANAGER",
           "referenceType": "purl",
-          "referenceLocator": "pkg:npm/%40anthropic-ai/sdk@0.91.1"
+          "referenceLocator": "pkg:npm/%40anthropic-ai/sdk@0.93.0"
         }
       ]
     },
@@ -6597,23 +6597,6 @@
           "referenceCategory": "PACKAGE-MANAGER",
           "referenceType": "purl",
           "referenceLocator": "pkg:npm/%40img/colour@1.1.0"
-        }
-      ]
-    },
-    {
-      "name": "@img/sharp-win32-x64",
-      "SPDXID": "SPDXRef-Package-08588bf1252714a9",
-      "versionInfo": "0.34.5",
-      "downloadLocation": "https://github.com/lovell/sharp",
-      "filesAnalyzed": false,
-      "licenseConcluded": "Apache-2.0 AND LGPL-3.0-or-later",
-      "licenseDeclared": "Apache-2.0 AND LGPL-3.0-or-later",
-      "copyrightText": "NOASSERTION",
-      "externalRefs": [
-        {
-          "referenceCategory": "PACKAGE-MANAGER",
-          "referenceType": "purl",
-          "referenceLocator": "pkg:npm/%40img/sharp-win32-x64@0.34.5"
         }
       ]
     },
@@ -20580,7 +20563,7 @@
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
-      "relatedSpdxElement": "SPDXRef-Package-4f22132a77577bcb"
+      "relatedSpdxElement": "SPDXRef-Package-618e13d446a4c6e4"
     },
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
@@ -20600,7 +20583,7 @@
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
-      "relatedSpdxElement": "SPDXRef-Package-e7ecfd34000fcb76"
+      "relatedSpdxElement": "SPDXRef-Package-9a414e8a6f3ff55d"
     },
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
@@ -22105,7 +22088,7 @@
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
-      "relatedSpdxElement": "SPDXRef-Package-6dd15d27ddf97540"
+      "relatedSpdxElement": "SPDXRef-Package-28dc3e2c8c9ba29e"
     },
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
@@ -22516,11 +22499,6 @@
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
       "relatedSpdxElement": "SPDXRef-Package-dd0456aa6a2b2248"
-    },
-    {
-      "spdxElementId": "SPDXRef-DOCUMENT",
-      "relationshipType": "DESCRIBES",
-      "relatedSpdxElement": "SPDXRef-Package-08588bf1252714a9"
     },
     {
       "spdxElementId": "SPDXRef-DOCUMENT",

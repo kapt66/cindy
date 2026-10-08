@@ -48,23 +48,32 @@
     纯粹的编号占位，用来保持与已发布 Meka 链的序号一致。
   它们必须原样保留：序号连续是对已升级用户的 `migration_history` 承诺，删掉或换号会让存量
   Meka 安装的迁移历史对不上。
-  **编号现状（第四轮上游同步后）**：Meka 已发布谱系为 `0000`–`0112`（其中 `0110`–`0112` 是
+  **编号现状（2026-10-08 第五轮上游同步后）**：Meka 已发布谱系为 `0000`–`0112`（其中 `0110`–`0112` 是
   Meka 自有增量），第三轮同步把上游 `0110`–`0114` 顺移追加为 Meka 的 **`0113`–`0117`**
   （`0113_abandoned_scarlet_witch`、`0114_messy_newton_destine`、`0115_backfill_task_tag_order`、
-  `0116_grey_cannonball`、`0117_shared_task_events`），本轮（第四轮）又把上游新增的
+  `0116_grey_cannonball`、`0117_shared_task_events`），第四轮把上游新增的
   `0115`–`0119` 顺移追加为 Meka 的 **`0118`–`0122`**（`0118_silky_power_man`、
   `0119_last_the_watchers`、`0120_spicy_valkyrie`、`0121_cynical_thunderball`、
-  `0122_hard_vindicator`）；SQL 正文取上游逐字节内容，snapshot 由上游同序号 snapshot 叠加
-  Meka delta 变换得到，`_journal.json` 追加 5 条、`prevId` 链重连。
-  **因此「已发布（值得冻结）的 Meka 编号」在第四轮后是 `0000`–`0117`，本轮新增到 `0122`。**
+  `0122_hard_vindicator`），第五轮又把上游新增的 `0120`–`0123` 顺移追加为 Meka 的
+  **`0123`–`0126`**（`0123_neat_war_machine`、`0124_plugin_task_requests`、
+  `0125_auto_review_projections`、`0126_wonderful_oracle`）；SQL 正文取上游逐字节内容，
+  snapshot 由上游同编号 snapshot 叠加 Meka delta 变换得到，`_journal.json` 追加 4 条、`prevId` 链重连
+  （本仓 `0122` 的 snapshot `id` 恰好等于上游 `0119` 的 `id`，上游 `0120` 的 `prevId` 正是它，
+  因此链天然接上）。
+  **companion script**：`0125_auto_review_projections` 带同名配套脚本
+  `drizzle/scripts/0125_auto_review_projections.ts`（上游 `scripts/0122_auto_review_projections.ts`
+  的逐字节副本，只换文件名），它在 SQL 建表之外创建 4 个持久触发器；`migrationRunner` 按
+  basename 配对，序号不对齐就会出现「表建了、触发器永不创建」的静默功能缺失。
+  **因此「已发布（值得冻结）的 Meka 编号」在第五轮后是 `0000`–`0122`，本轮新增到 `0126`。**
   上一轮同步落的是 `0096`–`0107`；处理方式同源，见
+  `docs/migrations/2026-10-08-origin-main-to-meka-main.md`、
   `docs/migrations/2026-09-25-origin-main-to-meka-main.md` §4 与
   `docs/migrations/2026-09-origin-main-to-meka-main.md` 的 D4。
   这段编号不在 `migration-baseline.json` 的 SHA256 清单里（该清单只覆盖迁仓前的
   `0000`–`0079`，实测 80 条 SQL + 23 条脚本），由上面第 3 段的 **Git 基线冻结** 保护。
-  `db:validate` 第 6 步报出的 canonical 基线条数是**动态值**，随每次追加而变化：第四轮实测为
-  **固定 SHA256 基线 80 条 SQL + 23 条脚本、canonical 基线冻结 118 条 SQL + 44 条脚本**
-  （`118` = 第三轮结束时的 `0000`–`0117`，本轮新增的 `0118`–`0122` 不在冻结集合内）。
+  `db:validate` 第 6 步报出的 canonical 基线条数是**动态值**，随每次追加而变化：第五轮实测为
+  **固定 SHA256 基线 80 条 SQL + 23 条脚本、canonical 基线冻结 123 条 SQL + 44 条脚本**
+  （`123` = 第四轮结束时的 `0000`–`0122`，本轮新增的 `0123`–`0126` 不在冻结集合内）。
   该数字随每轮同步变化，改动 migration 时**以命令实际输出为准，不要把这里的数字当断言**。
 - 生成 migration 前先基于最新 canonical 产品分支：Cindy Meka 使用 `meka/main`，上游
   checkout 使用 `origin/main`。同步上游时还要显式检查 `origin/main` 的新编号是否与

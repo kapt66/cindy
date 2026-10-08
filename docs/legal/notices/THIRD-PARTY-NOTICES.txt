@@ -4362,7 +4362,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ------------------------------------------------------------------------------
-OpenAI Codex CLI (runtime-downloaded binary) 0.145.0
+OpenAI Codex CLI (runtime-downloaded binary) 0.159.2
 License: Apache-2.0
 Source: https://github.com/openai/codex
 ------------------------------------------------------------------------------
@@ -4832,7 +4832,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ------------------------------------------------------------------------------
-pi coding agent (runtime-downloaded binary) 0.85.1
+pi coding agent (runtime-downloaded binary) 1.0.2
 License: MIT
 Source: https://github.com/earendil-works/pi
 ------------------------------------------------------------------------------
@@ -5210,11 +5210,11 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ==============================================================================
-SECTION 2: npm packages (1448 packages)
+SECTION 2: npm packages (1440 packages)
 ==============================================================================
 
 - @antfu/install-pkg@1.1.0 — MIT — https://github.com/antfu/install-pkg
-- @anthropic-ai/sdk@0.91.1 — MIT — https://github.com/anthropics/anthropic-sdk-typescript
+- @anthropic-ai/sdk@0.93.0 — MIT — https://github.com/anthropics/anthropic-sdk-typescript
 - @aws-crypto/sha256-browser@5.2.0 — Apache-2.0 — https://github.com/aws/aws-sdk-js-crypto-helpers
 - @aws-crypto/sha256-js@5.2.0 — Apache-2.0 — https://github.com/aws/aws-sdk-js-crypto-helpers
 - @aws-crypto/supports-web-crypto@5.2.0 — Apache-2.0 — https://github.com/aws/aws-sdk-js-crypto-helpers
@@ -5397,25 +5397,15 @@ SECTION 2: npm packages (1448 packages)
 - @iconify/types@2.0.0 — MIT — https://github.com/iconify/iconify
 - @iconify/utils@3.1.4 — MIT — https://github.com/iconify/iconify
 - @img/colour@1.1.0 — MIT — https://github.com/lovell/colour
-- @img/sharp-darwin-arm64@0.34.5 — Apache-2.0 — https://github.com/lovell/sharp
 - @img/sharp-darwin-arm64@0.35.3 — Apache-2.0 — https://github.com/lovell/sharp
-- @img/sharp-darwin-x64@0.34.5 — Apache-2.0 — https://github.com/lovell/sharp
 - @img/sharp-darwin-x64@0.35.3 — Apache-2.0 — https://github.com/lovell/sharp
-- @img/sharp-libvips-darwin-arm64@1.2.4 — LGPL-3.0-or-later — https://github.com/lovell/sharp-libvips
 - @img/sharp-libvips-darwin-arm64@1.3.2 — LGPL-3.0-or-later — https://github.com/lovell/sharp-libvips
-- @img/sharp-libvips-darwin-x64@1.2.4 — LGPL-3.0-or-later — https://github.com/lovell/sharp-libvips
 - @img/sharp-libvips-darwin-x64@1.3.2 — LGPL-3.0-or-later — https://github.com/lovell/sharp-libvips
-- @img/sharp-libvips-linux-arm64@1.2.4 — LGPL-3.0-or-later — https://github.com/lovell/sharp-libvips
 - @img/sharp-libvips-linux-arm64@1.3.2 — LGPL-3.0-or-later — https://github.com/lovell/sharp-libvips
-- @img/sharp-libvips-linux-x64@1.2.4 — LGPL-3.0-or-later — https://github.com/lovell/sharp-libvips
 - @img/sharp-libvips-linux-x64@1.3.2 — LGPL-3.0-or-later — https://github.com/lovell/sharp-libvips
-- @img/sharp-linux-arm64@0.34.5 — Apache-2.0 — https://github.com/lovell/sharp
 - @img/sharp-linux-arm64@0.35.3 — Apache-2.0 — https://github.com/lovell/sharp
-- @img/sharp-linux-x64@0.34.5 — Apache-2.0 — https://github.com/lovell/sharp
 - @img/sharp-linux-x64@0.35.3 — Apache-2.0 — https://github.com/lovell/sharp
-- @img/sharp-win32-arm64@0.34.5 — Apache-2.0 AND LGPL-3.0-or-later — https://github.com/lovell/sharp
 - @img/sharp-win32-arm64@0.35.3 — Apache-2.0 AND LGPL-3.0-or-later — https://github.com/lovell/sharp
-- @img/sharp-win32-x64@0.34.5 — Apache-2.0 AND LGPL-3.0-or-later — https://github.com/lovell/sharp
 - @img/sharp-win32-x64@0.35.3 — Apache-2.0 AND LGPL-3.0-or-later — https://github.com/lovell/sharp
 - @isaacs/cliui@8.0.2 — ISC — https://github.com/yargs/cliui
 - @isaacs/fs-minipass@4.0.1 — ISC — https://github.com/npm/fs-minipass
@@ -5469,6 +5459,7 @@ SECTION 2: npm packages (1448 packages)
 - @napi-rs/woff-build-linux-x64-gnu@0.2.2 — MIT — https://github.com/Brooooooklyn/woff-build
 - @napi-rs/woff-build-win32-arm64-msvc@0.2.2 — MIT — https://github.com/Brooooooklyn/woff-build
 - @napi-rs/woff-build-win32-x64-msvc@0.2.2 — MIT — https://github.com/Brooooooklyn/woff-build
+- @noble/curves@1.9.7 — MIT — https://github.com/paulmillr/noble-curves
 - @noble/hashes@1.8.0 — MIT — https://github.com/paulmillr/noble-hashes
 - @paralleldrive/cuid2@2.3.1 — MIT — https://github.com/ericelliott/cuid2
 - @parcel/watcher@2.5.6 — MIT — https://github.com/parcel-bundler/watcher
@@ -5947,6 +5938,7 @@ SECTION 2: npm packages (1448 packages)
 - expo-symbols@57.0.2 — MIT — https://github.com/expo/expo
 - expo-updates@57.0.18 — MIT — https://github.com/expo/expo
 - expo-updates-interface@57.0.1 — MIT — https://github.com/expo/expo
+- expo-video@57.0.5 — MIT — https://github.com/expo/expo
 - expo-web-browser@57.0.2 — MIT — https://github.com/expo/expo
 - exponential-backoff@3.1.3 — Apache-2.0 — https://github.com/coveooss/exponential-backoff
 - express@5.2.1 — MIT — https://github.com/expressjs/express
@@ -27848,7 +27840,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ------------------------------------------------------------------------------
-[124] Applies to: npm:@anthropic-ai/sdk@0.91.1
+[124] Applies to: npm:@anthropic-ai/sdk@0.93.0
 ------------------------------------------------------------------------------
 Copyright 2023 Anthropic, PBC.
 
@@ -30470,7 +30462,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ------------------------------------------------------------------------------
-[146] Applies to: npm:@expo/cli@57.0.25, npm:@expo/config@57.0.9, npm:@expo/config-plugins@57.0.9, npm:@expo/devtools@57.0.1, npm:@expo/dom-webview@57.0.1, npm:@expo/expo-modules-macros-plugin@0.6.1, npm:@expo/fingerprint@0.20.13, npm:@expo/image-utils@0.11.5, npm:@expo/inline-modules@0.1.7, npm:@expo/json-file@11.0.1, npm:@expo/local-build-cache-provider@57.0.8, npm:@expo/log-box@57.0.4, npm:@expo/metro-config@57.0.12, npm:@expo/metro-file-map@57.0.3, npm:@expo/metro-runtime@57.0.14, npm:@expo/osascript@2.7.1, npm:@expo/package-manager@1.13.1, npm:@expo/plist@0.8.1, npm:@expo/prebuild-config@57.0.16, npm:@expo/router-server@57.0.10, npm:babel-preset-expo@57.0.12, npm:expo@57.0.23, npm:expo-apple-authentication@57.0.1, npm:expo-application@57.0.2, npm:expo-asset@57.0.17, npm:expo-audio@57.0.4, npm:expo-auth-session@57.0.10, npm:expo-blur@57.0.2, npm:expo-build-properties@57.0.20, npm:expo-clipboard@57.0.1, npm:expo-constants@57.0.15, npm:expo-constants@57.0.18, npm:expo-crypto@57.0.2, npm:expo-document-picker@57.0.1, npm:expo-eas-client@57.0.2, npm:expo-file-system@57.0.6, npm:expo-file-system@57.0.7, npm:expo-font@57.0.1, npm:expo-font@57.0.4, npm:expo-glass-effect@57.0.1, npm:expo-image@57.0.3, npm:expo-image-loader@57.0.1, npm:expo-image-manipulator@57.0.14, npm:expo-image-picker@57.0.14, npm:expo-json-utils@57.0.1, npm:expo-keep-awake@57.0.2, npm:expo-linking@57.0.8, npm:expo-localization@57.0.1, npm:expo-manifests@57.0.1, npm:expo-media-library@57.0.4, npm:expo-modules-autolinking@57.0.13, npm:expo-modules-core@57.0.18, npm:expo-modules-jsi@57.1.0, npm:expo-network@57.0.1, npm:expo-notifications@57.0.15, npm:expo-secure-store@57.0.2, npm:expo-server@57.0.3, npm:expo-sharing@57.0.16, npm:expo-splash-screen@57.0.8, npm:expo-status-bar@57.0.1, npm:expo-symbols@57.0.2, npm:expo-updates-interface@57.0.1, npm:expo-web-browser@57.0.2
+[146] Applies to: npm:@expo/cli@57.0.25, npm:@expo/config@57.0.9, npm:@expo/config-plugins@57.0.9, npm:@expo/devtools@57.0.1, npm:@expo/dom-webview@57.0.1, npm:@expo/expo-modules-macros-plugin@0.6.1, npm:@expo/fingerprint@0.20.13, npm:@expo/image-utils@0.11.5, npm:@expo/inline-modules@0.1.7, npm:@expo/json-file@11.0.1, npm:@expo/local-build-cache-provider@57.0.8, npm:@expo/log-box@57.0.4, npm:@expo/metro-config@57.0.12, npm:@expo/metro-file-map@57.0.3, npm:@expo/metro-runtime@57.0.14, npm:@expo/osascript@2.7.1, npm:@expo/package-manager@1.13.1, npm:@expo/plist@0.8.1, npm:@expo/prebuild-config@57.0.16, npm:@expo/router-server@57.0.10, npm:babel-preset-expo@57.0.12, npm:expo@57.0.23, npm:expo-apple-authentication@57.0.1, npm:expo-application@57.0.2, npm:expo-asset@57.0.17, npm:expo-audio@57.0.4, npm:expo-auth-session@57.0.10, npm:expo-blur@57.0.2, npm:expo-build-properties@57.0.20, npm:expo-clipboard@57.0.1, npm:expo-constants@57.0.15, npm:expo-constants@57.0.18, npm:expo-crypto@57.0.2, npm:expo-document-picker@57.0.1, npm:expo-eas-client@57.0.2, npm:expo-file-system@57.0.6, npm:expo-file-system@57.0.7, npm:expo-font@57.0.1, npm:expo-font@57.0.4, npm:expo-glass-effect@57.0.1, npm:expo-image@57.0.3, npm:expo-image-loader@57.0.1, npm:expo-image-manipulator@57.0.14, npm:expo-image-picker@57.0.14, npm:expo-json-utils@57.0.1, npm:expo-keep-awake@57.0.2, npm:expo-linking@57.0.8, npm:expo-localization@57.0.1, npm:expo-manifests@57.0.1, npm:expo-media-library@57.0.4, npm:expo-modules-autolinking@57.0.13, npm:expo-modules-core@57.0.18, npm:expo-modules-jsi@57.1.0, npm:expo-network@57.0.1, npm:expo-notifications@57.0.15, npm:expo-secure-store@57.0.2, npm:expo-server@57.0.3, npm:expo-sharing@57.0.16, npm:expo-splash-screen@57.0.8, npm:expo-status-bar@57.0.1, npm:expo-symbols@57.0.2, npm:expo-updates-interface@57.0.1, npm:expo-video@57.0.5, npm:expo-web-browser@57.0.2
 ------------------------------------------------------------------------------
 The MIT License (MIT)
 
@@ -31050,7 +31042,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------------
-[161] Applies to: npm:@img/sharp-darwin-arm64@0.34.5, npm:@img/sharp-darwin-arm64@0.35.3, npm:@img/sharp-darwin-x64@0.34.5, npm:@img/sharp-darwin-x64@0.35.3, npm:@img/sharp-linux-arm64@0.34.5, npm:@img/sharp-linux-arm64@0.35.3, npm:@img/sharp-linux-x64@0.34.5, npm:@img/sharp-linux-x64@0.35.3, npm:@img/sharp-win32-arm64@0.34.5, npm:@img/sharp-win32-arm64@0.35.3, npm:@img/sharp-win32-x64@0.34.5, npm:@img/sharp-win32-x64@0.35.3, npm:sharp@0.35.3
+[161] Applies to: npm:@img/sharp-darwin-arm64@0.35.3, npm:@img/sharp-darwin-x64@0.35.3, npm:@img/sharp-linux-arm64@0.35.3, npm:@img/sharp-linux-x64@0.35.3, npm:@img/sharp-win32-arm64@0.35.3, npm:@img/sharp-win32-x64@0.35.3, npm:sharp@0.35.3
 ------------------------------------------------------------------------------
 Apache License
 Version 2.0, January 2004
@@ -31740,7 +31732,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ------------------------------------------------------------------------------
-[183] Applies to: npm:@noble/hashes@1.8.0
+[183] Applies to: npm:@noble/curves@1.9.7, npm:@noble/hashes@1.8.0
 ------------------------------------------------------------------------------
 The MIT License (MIT)
 
@@ -49529,13 +49521,9 @@ Packages without a standalone license file (license per package.json):
 - npm:@googleapis/drive@20.2.0 (Apache-2.0)
 - npm:@googleapis/gmail@17.0.0 (Apache-2.0)
 - npm:@googleapis/sheets@13.0.2 (Apache-2.0)
-- npm:@img/sharp-libvips-darwin-arm64@1.2.4 (LGPL-3.0-or-later)
 - npm:@img/sharp-libvips-darwin-arm64@1.3.2 (LGPL-3.0-or-later)
-- npm:@img/sharp-libvips-darwin-x64@1.2.4 (LGPL-3.0-or-later)
 - npm:@img/sharp-libvips-darwin-x64@1.3.2 (LGPL-3.0-or-later)
-- npm:@img/sharp-libvips-linux-arm64@1.2.4 (LGPL-3.0-or-later)
 - npm:@img/sharp-libvips-linux-arm64@1.3.2 (LGPL-3.0-or-later)
-- npm:@img/sharp-libvips-linux-x64@1.2.4 (LGPL-3.0-or-later)
 - npm:@img/sharp-libvips-linux-x64@1.3.2 (LGPL-3.0-or-later)
 - npm:@lit-labs/ssr-dom-shim@1.6.0 (BSD-3-Clause)
 - npm:@napi-rs/canvas-darwin-arm64@0.1.100 (MIT)

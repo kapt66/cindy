@@ -221,12 +221,10 @@ describe('派生 helper', () => {
       ...BRAND_IDENTITY,
       primaryScheme: 'xdt-maker',
       legacySchemes: [],
+      // 上游把档案字段改写为「注册集合 / 可解析集合」两段后,历史身份回放用的
+      // 最小档案也必须显式声明 acceptedUnregisteredSchemes(BrandIdentity 必填字段)。
       acceptedUnregisteredSchemes: [],
-      userDataDirNameByRegion: {
-        cn: 'xdt-maker',
-        global: 'xdt-maker',
-        dev: 'xdt-maker',
-      },
+      userDataDirNameByRegion: { cn: 'xdt-maker', global: 'xdt-maker', dev: 'xdt-maker' },
       legacyUserDataDirNames: [],
       dbFilePrefix: 'xdt-maker',
       legacyDbFilePrefixes: [],

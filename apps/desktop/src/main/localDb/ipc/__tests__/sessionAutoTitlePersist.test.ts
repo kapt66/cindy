@@ -116,6 +116,7 @@ function createDb(initialTitle: string): void {
       orca_role TEXT,
       remote_host_id TEXT,
       capability_snapshot_json TEXT,
+      agent_device_id TEXT,
       codex_history_has_product_prompt INTEGER,
       codex_plan_json TEXT,
       im_bot_context_id TEXT,

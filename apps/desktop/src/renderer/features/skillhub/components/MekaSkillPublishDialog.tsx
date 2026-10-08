@@ -105,11 +105,12 @@ export function MekaSkillPublishDialog({
       }}
     >
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-[9999] bg-[var(--overlay-modal)]" />
+        <Dialog.Overlay className="modal-scrim fixed inset-0 z-[9999]" />
         <Dialog.Content
+          onPointerDownOutside={(event) => event.preventDefault()}
           className={cn(
-            'fixed left-1/2 top-1/2 z-[10000] w-[min(92vw,600px)] -translate-x-1/2 -translate-y-1/2 overflow-hidden',
-            'rounded-xl border border-[var(--border-default)] bg-[var(--confirm-bg)] shadow-[var(--confirm-shadow)] focus:outline-none',
+            'modal-panel fixed left-1/2 top-1/2 z-[10000] w-[min(92vw,600px)] -translate-x-1/2 -translate-y-1/2 overflow-hidden',
+            'focus:outline-none',
           )}
           style={WINDOW_NO_DRAG_STYLE}
         >

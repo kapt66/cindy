@@ -142,16 +142,17 @@ export function MekaFormalIssueModal({
     >
       <Dialog.Portal>
         <Dialog.Overlay
-          className="fixed inset-0 z-[10000] bg-[var(--overlay-modal)]"
+          className="modal-scrim fixed inset-0 z-[10000]"
           style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}
         />
         <Dialog.Content
+          onPointerDownOutside={(event) => event.preventDefault()}
           className={cn(
-            'fixed left-1/2 top-1/2 z-[10001] w-[calc(100vw-32px)] max-w-[480px]',
-            '-translate-x-1/2 -translate-y-1/2 rounded-xl border p-5 focus:outline-none',
-            'border-[var(--border-default)] bg-[var(--surface-elevated)] text-[var(--text-primary)]',
+            'modal-panel fixed left-1/2 top-1/2 z-[10001] w-[calc(100vw-32px)] max-w-[480px]',
+            '-translate-x-1/2 -translate-y-1/2 p-5 focus:outline-none',
+            'text-[var(--text-primary)]',
           )}
-          style={{ WebkitAppRegion: 'no-drag', boxShadow: 'var(--shadow-menu)' } as CSSProperties}
+          style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}
         >
           <Dialog.Title className="text-base font-medium">
             {t('meka.formalPicker.title', { provider: providerLabel })}

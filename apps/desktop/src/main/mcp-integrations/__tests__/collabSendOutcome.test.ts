@@ -44,11 +44,6 @@ vi.mock('@cindy/mcps', () => ({
     mockState.capturedProvidersConfig = config;
     return [
       {
-        name: 'cindy_ios_simulator',
-        isEnabled: () => true,
-        toClaudeSdkConfig: () => null,
-      },
-      {
         name: 'cindy_orca',
         isEnabled: () => true,
         toClaudeSdkConfig: () => null,
@@ -60,7 +55,9 @@ vi.mock('@cindy/mcps', () => ({
 vi.mock('../../maker-host/plugins/builtin-plugins.js', () => ({
   BUILTIN_LIZI_MCP_IDS: ['cindy_orca', 'cindy_helper'],
   pluginIdForProviderName: (name: string) =>
-    name === 'cindy_orca' ? 'collab' : name === 'cindy_ios_simulator' ? 'ios-simulator' : name,
+    name === 'cindy_orca'
+      ? 'collab'
+      : name,
 }));
 
 vi.mock('../../maker-host/index.js', () => ({
@@ -192,15 +189,12 @@ describe('collab send outcome semantics', () => {
       botCapabilities,
       getMakerMemoryManager: vi.fn(),
       lspPool: {} as never,
-      pluginRegistry: { isEnabled: () => false } as never,
-      resolveIOSSimulatorAccess: () => ({ allowed: true }),
+      pluginRegistry: { isEnabled: () => false, getPlugins: () => [] } as never,
       invokeRemote: vi.fn(),
     });
     const orcaProvider = providers.find((provider) => provider.name === 'cindy_orca');
     expect(mockState.capturedProvidersConfig?.xdtHelper).toMatchObject({ botCapabilities });
-    const iosSimulatorProvider = providers.find(
-      (provider) => provider.name === 'cindy_ios_simulator',
-    );
+
 
     expect(orcaProvider).toBeDefined();
     expect(
@@ -209,12 +203,7 @@ describe('collab send outcome semantics', () => {
         workingDir: 'C:/projects/cindy',
       } as never),
     ).toBe(true);
-    expect(
-      iosSimulatorProvider?.isEnabled?.({
-        agentKind: 'claude-code',
-        workingDir: 'C:/projects/cindy',
-      } as never),
-    ).toBe(true);
+
   });
 
   it('rejects start_skill_learning after the built-in Learn Skill is disabled', async () => {
@@ -223,8 +212,7 @@ describe('collab send outcome semantics', () => {
       botCapabilities,
       getMakerMemoryManager: vi.fn(),
       lspPool: {} as never,
-      pluginRegistry: { isEnabled: () => true } as never,
-      resolveIOSSimulatorAccess: () => ({ allowed: true }),
+      pluginRegistry: { isEnabled: () => true, getPlugins: () => [] } as never,
       invokeRemote: vi.fn(),
     });
     const xdtHelper = mockState.capturedProvidersConfig?.xdtHelper as {
@@ -252,8 +240,7 @@ describe('collab send outcome semantics', () => {
       botCapabilities,
       getMakerMemoryManager: vi.fn(),
       lspPool: {} as never,
-      pluginRegistry: { isEnabled: () => true } as never,
-      resolveIOSSimulatorAccess: () => ({ allowed: true }),
+      pluginRegistry: { isEnabled: () => true, getPlugins: () => [] } as never,
       invokeRemote: vi.fn(),
       isCurrentLocalSessionInstance,
     });
@@ -299,8 +286,7 @@ describe('collab send outcome semantics', () => {
       botCapabilities,
       getMakerMemoryManager: vi.fn(),
       lspPool: {} as never,
-      pluginRegistry: { isEnabled: () => true } as never,
-      resolveIOSSimulatorAccess: () => ({ allowed: true }),
+      pluginRegistry: { isEnabled: () => true, getPlugins: () => [] } as never,
       invokeRemote: vi.fn(),
       isCurrentLocalSessionInstance,
     });
@@ -516,8 +502,7 @@ describe('collab send outcome semantics', () => {
       botCapabilities,
       getMakerMemoryManager: vi.fn(),
       lspPool: {} as never,
-      pluginRegistry: { isEnabled: () => true } as never,
-      resolveIOSSimulatorAccess: () => ({ allowed: true }),
+      pluginRegistry: { isEnabled: () => true, getPlugins: () => [] } as never,
       invokeRemote: vi.fn(),
     });
     const orca = (mockState.capturedProvidersConfig?.orca ?? {}) as {
@@ -566,8 +551,7 @@ describe('collab send outcome semantics', () => {
       botCapabilities,
       getMakerMemoryManager: vi.fn(),
       lspPool: {} as never,
-      pluginRegistry: { isEnabled: () => true } as never,
-      resolveIOSSimulatorAccess: () => ({ allowed: true }),
+      pluginRegistry: { isEnabled: () => true, getPlugins: () => [] } as never,
       invokeRemote: vi.fn(),
     });
     const orca = (mockState.capturedProvidersConfig?.orca ?? {}) as {
@@ -627,8 +611,7 @@ describe('collab send outcome semantics', () => {
       botCapabilities,
       getMakerMemoryManager: vi.fn(),
       lspPool: {} as never,
-      pluginRegistry: { isEnabled: () => true } as never,
-      resolveIOSSimulatorAccess: () => ({ allowed: true }),
+      pluginRegistry: { isEnabled: () => true, getPlugins: () => [] } as never,
       invokeRemote: vi.fn(),
     });
     const orca = (mockState.capturedProvidersConfig?.orca ?? {}) as {
@@ -699,8 +682,7 @@ describe('collab send outcome semantics', () => {
       botCapabilities,
       getMakerMemoryManager: vi.fn(),
       lspPool: {} as never,
-      pluginRegistry: { isEnabled: () => true } as never,
-      resolveIOSSimulatorAccess: () => ({ allowed: true }),
+      pluginRegistry: { isEnabled: () => true, getPlugins: () => [] } as never,
       invokeRemote: vi.fn(),
     });
     const xdtHelper = mockState.capturedProvidersConfig?.xdtHelper as {
@@ -737,8 +719,7 @@ describe('collab send outcome semantics', () => {
       botCapabilities,
       getMakerMemoryManager: vi.fn(),
       lspPool: {} as never,
-      pluginRegistry: { isEnabled: () => true } as never,
-      resolveIOSSimulatorAccess: () => ({ allowed: true }),
+      pluginRegistry: { isEnabled: () => true, getPlugins: () => [] } as never,
       invokeRemote: vi.fn(),
     });
     const xdtHelper = mockState.capturedProvidersConfig?.xdtHelper as {

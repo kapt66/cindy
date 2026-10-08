@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { messages, sessions } from '../../schema';
 import { tx as runInprocTx } from '../../worker/opHandlers/tx';
@@ -63,11 +63,11 @@ function createDb(): Database.Database {
   sqlite.exec(`
     CREATE TABLE sessions (
       id TEXT PRIMARY KEY,
-      cleared_at INTEGER,
-      status TEXT NOT NULL DEFAULT 'active',
       list_preview TEXT,
       list_preview_role TEXT,
-      list_message_count INTEGER
+      list_message_count INTEGER,
+      cleared_at INTEGER,
+      status TEXT NOT NULL DEFAULT 'active'
     );
     CREATE TABLE messages (
       id TEXT PRIMARY KEY,
@@ -89,7 +89,6 @@ function createDb(): Database.Database {
   h.db = db;
   h.client = {
     drizzle: db,
-    exec: vi.fn(async (sql: string, params: unknown[] = []) => sqlite.prepare(sql).run(...params)),
     // 写事务走真实 in-proc 事务处理器:guarded INSERT 的 CAS 语句必须是被测代码
     // 真正下发的那一条。竞态在事务入口注入,等价于 /clear 在预检 SELECT 与
     // guarded INSERT 之间生效。
@@ -97,11 +96,16 @@ function createDb(): Database.Database {
       if (h.raceOnInsert && name === 'message.insert') {
         sqlite.prepare('UPDATE sessions SET cleared_at = ? WHERE id = ?').run(200, 's1');
       }
-      return runInprocTx(sqlite, { name, args }) as never;
+      return runInprocTx(sqlite, { name, args });
+    }),
+    exec: vi.fn(async (sql: string, params: unknown[] = []) => {
+      return sqlite.prepare(sql).run(...params);
     }),
   };
   return sqlite;
 }
+
+afterEach(() => { h.sqlite?.close(); });
 
 describe('message persistence clear boundary', () => {
   let sqlite: Database.Database;

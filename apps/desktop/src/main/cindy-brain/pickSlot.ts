@@ -39,7 +39,7 @@ export interface PickSlotDeps {
    * 弹系统级选文件夹窗口;返回所选绝对路径,取消返回 null。
    * 找不到可挂靠的 Cindy 窗口时应 reject(失败关闭,不弹无主对话框)。
    */
-  showDirectoryDialog(params: { ghostName: string; purpose: string | null }): Promise<string | null>;
+  showDirectoryDialog(params: { ghostName: string; purpose: string | null; ghostId: string; mobilePageId?: string }): Promise<string | null>;
   showFileDialog(params: { ghostName: string; purpose: string | null }): Promise<string | null>;
   /** 签发目录过户票据(dirDeposit.deposit,userGranted 语义 = 用户已亲手选中)。 */
   depositDir(
@@ -74,7 +74,7 @@ export class GhostPickSlot {
 
   constructor(private readonly deps: PickSlotDeps) {}
 
-  async handleRequest(ghostId: string, payload: unknown): Promise<GhostPipePickResult> {
+  async handleRequest(ghostId: string, payload: unknown, shouldContinue: () => boolean = () => true): Promise<GhostPipePickResult> {
     const ghost = this.deps.getGhost(ghostId);
     if (!ghost?.enabled || ghost.manifest.pick !== true) {
       return fail('PERMISSION_DENIED', '插件未申请目录选择权限(pick),或当前未启用');
@@ -83,6 +83,7 @@ export class GhostPickSlot {
       return fail('INVALID_REQUEST', 'pick-request 载荷必须是对象');
     }
     const request = payload as Record<string, unknown>;
+    if (request.mobilePageId !== undefined && (typeof request.mobilePageId !== 'string' || request.mobilePageId.length > 128)) return fail('INVALID_REQUEST', 'Invalid mobile page context');
     if (request.mode !== 'directory' && request.mode !== 'file') {
       return fail('INVALID_REQUEST', 'mode 必须是 "file" 或 "directory"');
     }
@@ -123,13 +124,22 @@ export class GhostPickSlot {
     this.dialogInFlight = true;
     let picked: string | null;
     try {
-      const showDialog = request.mode === 'file'
-        ? this.deps.showFileDialog
-        : this.deps.showDirectoryDialog;
-      picked = await showDialog({
-        ghostName: ghost.manifest.name,
-        purpose,
-      });
+      // file 模式是 Meka 扩展(上游 pick 槽只支持 directory),它的对话框契约只有
+      // host 拼装的 ghostName/purpose;directory 模式按上游口径额外交出 ghostId 与
+      // mobilePageId(手机端页面代选目录需据此归属请求)。
+      picked = request.mode === 'file'
+        ? await this.deps.showFileDialog({
+            ghostName: ghost.manifest.name,
+            purpose,
+          })
+        : await this.deps.showDirectoryDialog({
+            ghostName: ghost.manifest.name,
+            purpose,
+            ghostId,
+            ...(typeof request.mobilePageId === 'string'
+              ? { mobilePageId: request.mobilePageId }
+              : {}),
+          });
     } catch (error) {
       this.deps.log?.warn('ghost pick dialog failed', {
         ghostId,
@@ -139,6 +149,7 @@ export class GhostPickSlot {
     } finally {
       this.dialogInFlight = false;
     }
+    if (!shouldContinue()) return fail('CANCELLED', 'The originating page has closed.');
     if (picked === null) {
       return fail('CANCELLED', '用户取消了选择');
     }

@@ -9,11 +9,11 @@
  *      createMessage happy path 在 INSERT 之后没有任何 SELECT。
  */
 import Database from 'better-sqlite3';
-import { and, eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { messages, sessions } from '../../schema';
+import { tx as runInprocTx } from '../../worker/opHandlers/tx';
 
 const h = vi.hoisted(() => ({
   db: null as ReturnType<typeof drizzle> | null,
@@ -72,15 +72,15 @@ vi.mock('../../client/current', () => ({
 import { createMessage, updateMessageContent } from '../messages';
 
 function setupDb(): void {
-  const sqlite = new Database(':memory:');
+  const sqlite = new Database(':memory:', { verbose: (sql) => h.queries.push(String(sql)) });
   sqlite.exec(`
     CREATE TABLE sessions (
       id TEXT PRIMARY KEY,
-      cleared_at INTEGER,
-      status TEXT NOT NULL DEFAULT 'active',
       list_preview TEXT,
       list_preview_role TEXT,
-      list_message_count INTEGER
+      list_message_count INTEGER,
+      cleared_at INTEGER,
+      status TEXT NOT NULL DEFAULT 'active'
     );
     CREATE TABLE messages (
       id TEXT PRIMARY KEY,
@@ -99,57 +99,20 @@ function setupDb(): void {
   sqlite.prepare("INSERT INTO sessions (id, cleared_at, status) VALUES ('s1', NULL, 'active')").run();
   const db = drizzle(sqlite, {
     schema: { messages, sessions },
-    logger: {
-      logQuery: (query: string) => {
-        h.queries.push(query);
-      },
-    },
   });
   h.sqlite = sqlite;
   h.db = db;
   h.client = {
     drizzle: db,
+    tx: vi.fn(async (name: string, args: unknown) => {
+      return runInprocTx(sqlite, { name, args });
+    }),
     exec: vi.fn(async (sql: string, params: unknown[] = []) => h.sqlite!.prepare(sql).run(...params)),
     query: vi.fn(async (sql: string, params: unknown[] = []) => h.sqlite!.prepare(sql).all(...params)),
-    // 写路径经 DbClient.tx 落到 DB worker。本用例的不变量经**主进程 drizzle 的
-    // 查询日志**观察(INSERT 之后没有 messages 回读),所以这里用同一 drizzle 实例
-    // 代执行 worker 侧的写语句:断言看到的仍是当前实现真正下发的那一条 INSERT /
-    // UPDATE,而不是替身自己造的行。
-    tx: vi.fn(async (name: string, args: unknown) => {
-      const payload = args as Pick<
-        typeof messages.$inferInsert,
-        'id' | 'clientId' | 'sessionId' | 'role' | 'content' | 'toolUseId' | 'agentMeta' | 'agentKind' | 'createdAt'
-      >;
-      if (name === 'message.insert') {
-        const result = await db
-          .insert(messages)
-          .values({
-            id: payload.id,
-            clientId: payload.clientId,
-            sessionId: payload.sessionId,
-            role: payload.role,
-            content: payload.content,
-            toolUseId: payload.toolUseId ?? null,
-            agentMeta: payload.agentMeta ?? null,
-            agentKind: payload.agentKind ?? null,
-            createdAt: payload.createdAt,
-          })
-          .onConflictDoNothing();
-        return { changes: result.changes };
-      }
-      if (name === 'message.updateContent') {
-        const result = await db
-          .update(messages)
-          .set({ content: payload.content })
-          .where(
-            and(eq(messages.sessionId, payload.sessionId), eq(messages.clientId, payload.clientId)),
-          );
-        return { changes: result.changes };
-      }
-      throw new Error(`unexpected tx op in this harness: ${name}`);
-    }),
   };
 }
+
+afterEach(() => { h.sqlite?.close(); });
 
 describe('message write paths avoid large-content readback', () => {
   beforeEach(() => {
@@ -168,10 +131,10 @@ describe('message write paths avoid large-content readback', () => {
         createdAt: 1000,
       });
 
-      const insertIdx = h.queries.findIndex((q) => q.startsWith('insert into "messages"'));
+      const insertIdx = h.queries.findIndex((q) => /^insert into ["`]?messages["`]?\s/i.test(q));
       expect(insertIdx).toBeGreaterThanOrEqual(0);
       expect(
-        h.queries.slice(insertIdx + 1).filter((q) => q.includes('from "messages"')),
+        h.queries.slice(insertIdx + 1).filter((q) => /\bfrom ["`]?messages["`]?\b/i.test(q)),
       ).toEqual([]);
 
       expect(msg.clientId).toBe('c1');
@@ -229,11 +192,11 @@ describe('message write paths avoid large-content readback', () => {
       expect(updated?.role).toBe('tool_result');
 
       const postUpdateSelects = h.queries.filter(
-        (q) => q.startsWith('select') && q.includes('from "messages"'),
+        (q) => /^select\b/i.test(q) && /\bfrom ["`]?messages["`]?\b/i.test(q),
       );
       expect(postUpdateSelects.length).toBeGreaterThan(0);
       for (const q of postUpdateSelects) {
-        expect(q).not.toMatch(/select[^]*"content"[^]*from "messages"/);
+        expect(q).not.toMatch(/select[^]*\bcontent\b[^]*from ["`]?messages/i);
       }
 
       const stored = h.sqlite!

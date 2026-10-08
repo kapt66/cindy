@@ -217,18 +217,15 @@ export function MekaDevPluginPackageDialog({
       >
         <Dialog.Portal>
           <Dialog.Overlay
-            className={cn(
-              'fixed inset-0 z-[10000] bg-[var(--overlay-modal)]',
-              'data-[state=open]:animate-confirm-overlay-in data-[state=closed]:animate-confirm-overlay-out',
-            )}
+            className="modal-scrim fixed inset-0 z-[10000]"
             style={WINDOW_NO_DRAG_STYLE}
           />
           <Dialog.Content
             data-testid="meka-dev-plugin-package-dialog"
+            onPointerDownOutside={(event) => event.preventDefault()}
             className={cn(
-              'fixed left-1/2 top-1/2 z-[10000] w-[min(92vw,480px)] -translate-x-1/2 -translate-y-1/2',
-              'rounded-xl border border-[var(--border-default)] bg-[var(--confirm-bg)] p-5 shadow-[var(--confirm-shadow)] focus:outline-none',
-              'data-[state=open]:animate-confirm-content-in data-[state=closed]:animate-confirm-content-out',
+              'modal-panel fixed left-1/2 top-1/2 z-[10000] w-[min(92vw,480px)] -translate-x-1/2 -translate-y-1/2',
+              'p-5 focus:outline-none',
             )}
             style={WINDOW_NO_DRAG_STYLE}
             onOpenAutoFocus={(event) => {

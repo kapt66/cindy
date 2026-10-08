@@ -84,6 +84,17 @@
   `docs/product-rules/meka-project-metadata-governance.md`：它区分「文件该不该存在」与
   「该不该注入」，规定 `enabled:false` 的适用边界（**禁用必须在 `notes` 里留痕**）、
   别名的唯一合规形态（`@AGENTS.md` include 或逐字节相同）与权威副本的标注方式。
+- 修改 IM 工具授权、来源消息、多端确认或暂停期间的确认回执，或新增 IM 渠道前，
+  必须先读 `docs/product-rules/im-permission-confirmation.md`；Desktop、Mobile 与共享
+  packages 共用同一最终决定，渠道收到回答不代表执行已恢复。
+- 修改账号用量上限的判定、重置时刻来源，或普通任务／目标模式撞上限额后的等待与自动继续前，
+  必须先读 `docs/product-rules/usage-limit-auto-continue.md`。
+- 新增或修改自动发送／远程发送消息的路径、消息来源标签，或发给模型的来源说明前，必须先读
+  `docs/product-rules/message-source.md`：界面标签与模型说明同源，两侧一起改。
+- 新增或修改内置功能的退役、下线或「引导存量用户迁移」链路（`featureRetirements` 登记、
+  退役态呈现、退役入口的迁移引导文案）前，必须先读
+  `docs/product-rules/feature-retirements.md`：退役必须可发现、可解释、可迁移，
+  不得静默消失或让存量用户的入口变成死链。
 - 修改伙伴（Bot）的身份、Session 生命周期、模型 fallback、工作目录、Skill / MCP 装配、
   委派协作或伙伴设置前，必须先读 `docs/product-rules/cindy-bots-runtime.md`。
 - 新增或修改伙伴群聊的数据、发言编排、群专线 Session、分工（负责人、安排、分工 Session、群工作目录）、

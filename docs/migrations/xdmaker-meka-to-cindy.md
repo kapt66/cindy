@@ -3706,6 +3706,13 @@ Meka 开发插件链路、插件市场独立 endpoint/凭证、`edition` 运行�
   `packages/ios-simulator-runtime/src/wda/process-manager.ts`（probe-then-pin）。
   后两者属"钉死端口"型（命中后无重选机会）；`ios-simulator-runtime` 还是**独立 package**，
   要修得先决策依赖方向（`architecture-invariants.md` §1），不适合夹带。
+  > **已闭合（2026-10-08 第五轮上游同步）**：上游提交 `757d9797d5` 把内置 iOS 模拟器整体下线
+  > （删除 `packages/ios-simulator-runtime`、`packages/lizi-mcps/src/ios-simulator/**`、
+  > `apps/desktop/src/main/mcp-integrations/ios-simulator*.ts` 与 `maker-host/ios-simulator-codex-dynamic-tools.ts`，
+  > 共 322 文件 / +1865 −89863），本仓按用户裁决**接纳该退役**并保留上游的存量用户迁移引导
+  > （退役登记 + `Baguette` 替代插件推荐，见 `docs/product-rules/feature-retirements.md`）
+  > ⇒ 这一条 `listen(0)` 候选随包整体消失，不再是缺口；同类候选由 4 处减为 3 处
+  > （`authManager.ts`、`maker-host/claude-oauth-login.ts`、`cindy-brain/localServerSupervisor.ts`）。
   另：`browser-real-profile/launch.ts` 的 `pickManagedCdpPort` 用的是固定段
   `18800-18819`，**不含**任何 bad port，无需处理。
 
@@ -6768,6 +6775,127 @@ Codex/Claude/Pi 原生读 `AGENTS.md`/`CLAUDE.md`/`SKILL.md`，不看我们的 m
 - **一句话结论（本条）**：**能力零变化**；把「靠人记」的四条元数据纪律（别名形态、禁用留痕、
   描述边界、基线身份）变成三道机械守卫 + 一份规范文档，并首次对真实工作区拿到了「一个真阳性、
   零假阳性」的别名漂移检测证据。
+
+### 11.35 2026-10-08 第五轮上游同步（`origin/main` → `meka/main`）
+
+> 本条是**新条目**，不改写任何带日期的历史原句。逐组解决结论、白名单四阶段实跑与
+> 「未验证 + 原因」登记写在
+> [`2026-10-08-origin-main-to-meka-main.md`](./2026-10-08-origin-main-to-meka-main.md)。
+
+- **基线**：来源 `origin/main` = `c940ab1903e16f24b249a06857afb27632693237`（上游独有 **630**
+  提交 / **2833** 文件 / `+230571 −118110`）；目标 `meka/main` 合并前 `20d1f27a9f`；
+  merge-base `fd73bc91fd`（= 第四轮的上游端点）。Git 冲突 **93**（87 `UU` + 3 `AA` + 3 `UD`），
+  按 **14 个并行任务包**按能力组解决。
+- **本轮主导上游改动 = 内置 iOS 模拟器整体退役**（用户 2026-10-08 裁决「接纳」）：
+  上游 `757d9797d5 refactor(plugins): 移除内置 iOS 模拟器并引导存量用户迁移 (#5412)`
+  （**322 文件 / `+1865 −89863`**，93 个冲突里 35 个被它触及）删除
+  `packages/ios-simulator-runtime/**`（整个 package）、`packages/lizi-mcps/src/ios-simulator/**`、
+  `apps/desktop/src/main/mcp-integrations/ios-simulator*.ts`（含 `ios-simulator.ts` 7895 行）、
+  `cindy-brain/{iosSimulatorSlot,iosSimulatorPluginGate}.ts`、`shared/iosSimulatorIpc.ts`、
+  `apps/desktop/scripts/ci/lib.mjs`、`forge-ios-simulator-helper.ts`、
+  `ios-simulator-release-gate{,.test}.mjs`、`.github/workflows/ios-simulator-compatibility.yml`
+  与三份 `docs/ios-simulator-*.md`；同时**引入通用「功能退役」基础设施**
+  （`shared/featureRetirements.ts`、`cindy-brain/featureRetirementStore.ts`、
+  `features/plugin/RetiredFeatureDetail.tsx`、右栏 `retired-feature` 页签、
+  `docs/product-rules/feature-retirements.md`）并给出存量用户迁移引导（替代插件 `Baguette`；
+  退役 receipt 仍 approved，靠 `migrateLegacyApprovalsOnce` 自动补批准）。
+  **连带效果**：第三轮登记的「`ios-simulator-runtime` 里一处 `listen(0)` 候选端口缺口」随包整体
+  消失、不再是缺口（已在本文 §6.45 就地补注），同类候选由 4 处减为 3 处。
+- **D4 顺移追加（数据库）**：已发布谱系 `0000..0122` **零改动**；上游本轮新增
+  `0120..0123` 四条落为 Meka **`0123..0126`**
+  （`0123_neat_war_machine`、`0124_plugin_task_requests`、`0125_auto_review_projections`、
+  `0126_wonderful_oracle`）；**SQL 正文逐字节取上游**（`git hash-object` 四项与 `origin/main`
+  原号完全一致）；snapshot = 上游同编号 snapshot + **Meka delta（15 项：`meka_projects` 8 列 +
+  `meka_roles` 12 列含索引与外键 + `sessions` 10 列 / 2 索引 / 1 外键）**，`prevId` 链从 Meka
+  `0122`（id 恰等于上游 `0119` 的 id）自然接上。**新增 companion script**
+  `drizzle/scripts/0125_auto_review_projections.ts`（上游 `scripts/0122_auto_review_projections.ts`
+  逐字节，只换文件名，建 4 个持久触发器）；三个硬编码上游原号路径的测试
+  （`autoReviewProjection.test.ts`、`pluginReviewSnapshotFreshness.test.ts`、`tx.test.ts`）
+  已改指向 `0125`。**实跑**：`validate-migrations.mjs` 6/6
+  （seq `0000..0126`、127 snapshot、`drizzle-kit check` 无 drift、固定基线 80+23、
+  canonical **123+44**）。**更正一条旧推断**：`_meta.columns`/`_meta.tables`/`_meta.schemas`
+  在全部 127 份 snapshot 里**都是空对象**，Meka delta 从来没有也不需要有 `_meta` 条目。
+- **结构审计与语义未退化**：见本期报告 §5；`pnpm audit:merge` 与
+  `meka-whitelist-verification.md` 四阶段结论逐项登记在那里。
+- **本轮新登记的 Meka 能力**：**WL-25**（Meka 项目首次派发 Worker 时**就地开团队** ——
+  来自 `aa930890ab fix(meka): make MCPRouter projects directly usable`，上游同点是 `NOT_FOUND`；
+  本轮把它与上游新增的授权 guard 链合成单一实现，两侧测试语义同时成立）。
+  按白名单机制，清单外的差异**必须先登记才构成「需要保留的差异」**。
+- **本轮更新的白名单锚点**：WL-2.1 / WL-2.2 随上游 `24551276ff`（#5472 侧栏导航改**偏好驱动
+  注册表**）迁移 —— `mekaRow` 改为 splice 进 `orderedNavigationRows`；rail 态 Meka 图标改为
+  `mekaEntry` prop 注入、位次规则变为「紧随自动任务之后」（旧口径「在 `GhostMainViewNavEntries`
+  之后、插件 rail 入口之前」在 tile 顺序归用户偏好的新结构下不可表达）；
+  **「伙伴图标 `Bot` 的实体存在」不变量仍在**，只是承载文件从 `SidebarTopNav.tsx` 变成共享的
+  `sidebar/sidebarNavigationPrefs.ts`（`SIDEBAR_NAVIGATION_ITEM_ICONS.bots = Bot`）。
+- **刻意偏离上游（已登记）**：
+  1. `AGENTS.md` 与 `development-workflow.md` 继续保留 Meka 的提交前门禁口径
+     （不采纳上游「提交前验证」放宽）—— 第四轮口径维持不变；
+  2. `docs/dev-rules/plugin-security-and-authoring.md` 的 **Review 清单取 Meka 侧**：
+     它是上游版本的**严格超集**（多出 Renderer 字段 id 不得当 Secret key／路径、
+     保险库写失败不 emit 且成功后重新 assessment、以及 **6.5a 路径式 worker 的
+     「操作前检查 → 原子操作 → 操作后复验 → identity-guarded cleanup」与 TOCTOU 边界**），
+     不采纳上游对清单的篇幅收敛；
+  3. `settings.ghosts.contents.slotIOSSimulator` 在五语里删除，但
+     `taskMigration.defaultFolder` 作为**有意保留的孤儿 key** 留下（上游已删）——
+     因为 `i18nBrandPlaceholder.test.ts:80` 断言它五语渲染含 `BRAND_NAME`；删 key 必须同批改该测试。
+  4. 三个 `UD` 文件（`ios-simulator-release-gate{,.test}.mjs`、`ios-simulator-artifact.test.ts`）
+     **接受删除**；`apps/desktop/package.json` 保留 Meka 的 `release:*` 家族（上游该文件只有
+     `release:package`）。
+- **跨端协议变化（登记，非本仓自行修改）**：上游本轮改了 `packages/device-link-protocol`
+  （`NotifyPayload.sender?: NotifySender` 可选增补 + `NOTIFY_AVATAR_JPEG_MAX_LENGTH`，
+  注释明示旧 relay 忽略该可选字段）、`packages/plugin-protocol/src/manifest.ts`
+  （skill 槽改为投影到**账号隔离目录**而非共享 `~/.agents/skills`；新增可选 `mobile?` 与
+  `agent.tasks?`；`iosSimulator` 标记为仅用于退役识别）与 `packages/slack-hook-protocol`
+  （仅注释）。三者均为**可选增补 / 注释 / 兼容标记**，本仓按既定接纳策略原样接受，
+  未新增本仓自有的 wire 变更。
+- **未完成 / 未验证（不得宣告收敛）**：全部本地门禁与 `pnpm audit:merge` 的实跑结果、
+  以及 `meka-whitelist-verification.md` 的阶段 C 实机项（WL-1.2/1.3 需真实 MCPRouter 账号、
+  WL-4 端到端需 MCPRouter 实例 + Gateway key、Light/Dark 目检等）逐项登记在本期报告 §5/§7；
+  另登记两项**存量缺口**（`sessionsRestoreIfArchived.test.ts` 的 `ExpectedIdentity.workspaceKind`
+  联合不含 `'meka'`；`MekaDevInstallReview.tsx` 与 `permissionItemIcon()` 的图标映射分叉）与
+  一项**存量文档失真**（`plugin-security-and-authoring.md` 里已不存在的 `errandPrefsStore.ts`）。
+- **冻结态一次性门禁实跑（本轮交付证据）**：绿 = `test:runner`、`check:design-inventory`、
+  `check:design-colors`、`check:endpoints`、`check:i18n`、`check:brand-terminology`、
+  `check:i18n-glossary`、`ci:scheduler-guard`、`mobile test:scope`、`desktop db:validate`、
+  **`test:unit`（全量，desktop unit 529s PASS / mobile unit 127s PASS / 各 package 全绿）**、
+  `test:device-link`、`desktop typecheck`、`mobile typecheck`；
+  红 = `test:db`（1 条 **Windows 预算性超时**）与 `test:git-integration`（5 条，全是
+  **Windows 平台能力/超时**，相关生产代码与上游**逐字节一致**）。逐条取证见本期报告 §5.2.3/§5.2.5。
+- **本轮上游新守卫打红、已在交付内修掉的 6 个测试文件**（其中 5 个在合并前的 `meka/main` 上
+  **根本不存在**）：`orcaLifecycleService`（合并语法破坏 + 两侧实参形状）、
+  `deepLinkWindowsRegistration`（硬编码上游品牌名 `Cindy` ⇒ 改走 `BRAND_IDENTITY.displayName`）、
+  `authCredentialLoginRecovery`（源码切片 harness 缺 Meka 新增的 `authRealmForEdition` ⇒
+  按源码切片补进前言）、`remoteAgentSetModelWiring`（源码文本断言锚点随 Meka 的
+  `bootstrapSessionOnce` 改名迁移）、`dialogScrimDismissal` + `modalSurfaceContract`
+  （**10 个 Meka 弹窗**迁移到共享 `.modal-scrim` / `.modal-panel` + 补无条件
+  `onPointerDownOutside`；**0 条例外登记**，两个守卫测试文件逐字节未改）。
+  另有主代理自查修掉的 `messagesWriteReadback`（两侧各插一个 `tx:` + `CREATE TABLE` 重复列）
+  与 `orcaWorkerCreationService`（fixture 缺 Meka 必填 `mekaProjectId`）。
+- **本轮新增的白名单条目**：**WL-5.7**「历史 userData 目录**不按区域闸门**」——
+  上游 `a5467dc0c1` 起的 `legacyUserDataDirNamesByRegion`（`global: []`）与它的新守卫
+  `does not implicitly adopt China-edition legacy state in the Global edition`
+  撞上本仓 **WL-6.1 已登记的兼容红线**（`legacyUserDataDirNames = ['xdmaker-meka','xdt-maker']`
+  平铺、cn/global 取同一组）。按白名单口径**保留本仓行为**，把上游该用例改为显式锁定本仓语义
+  （用例名 `scans the same Meka legacy Codex HOME in the Global edition as in the CN edition`），
+  **不静默删除上游用例**；裁决入口写在 WL-5.7。
+- **阶段 C 实机（本轮实跑）**：`pnpm restart:desktop:remote`（区域 global、隔离沙盒 userData
+  `CindyMeka-dev2-dev`）→ `pnpm desktop:ui-smoke` **13 PASS / 2 FAIL / 0 UNVERIFIED**；
+  `pnpm desktop:session-smoke` **11 PASS / 0 FAIL**（首轮 WL-11.17「未能发送探针」属操作抖动，
+  重跑全绿，含「段命中：条目 4 条、格式行在场、无 `#` 标题行」实证）。
+  ui-smoke 的 2 条 FAIL 是 **WL-1.2 / WL-1.3 的「配置」needle**：CDP 实证该沙盒的 MCPRouter
+  **已连接**（卡片文案 `已连接 | 断开 | https://mcpr.meka.pawdy.fun | 账号：zhouwenkang`，
+  面板按钮 `["选择目录","断开","断开"]`），按产品设计此时按钮是「断开」而非「配置」⇒
+  **检查前提（未连接态）在当前沙盒不成立**，不是能力回归；未在沙盒里断开用户真实 MCPRouter
+  凭证去造前提（避免改动用户数据）。旁证比原检查更强：四卡齐全且 MCPRouter 卡片显示
+  已连接、**46 个 MekaDesign 工具 + 15 个系统工具 + 2 个远程模板实例**（`zhouwenkang/saga2-server`、
+  `zhouwenkang/muffin-server`）。建议（存量工具缺口，本轮不改）把这两条检查扩成
+  「已连接→断言『断开』／未连接→断言『配置』且能开对话框」双态覆盖。
+- **待放行批准**：本轮的插件基座改动（`main/cindy-brain/**`、`main/plugin-market/**`、
+  `shared/ghost.ts`、`features/plugin/**`）命中
+  `plugin-security-and-authoring.md` 的白名单确认门 ⇒ 需放行人明确 Approve 才能合并/推送；
+  存量插件兼容红线核对结论为「无需重装、无需重新确认、无需重新配置」。
+- **仍需维护者裁决**（本轮新增两项）：① WL-5.7 的区域闸门口径（Global 是否该读 `xdt-maker`）；
+  ② WL-1.2/WL-1.3 的 smoke 检查是否按「双态覆盖」改造（改造前这两条只能登记为「未验证 + 前提不成立」）。
 
 
 
