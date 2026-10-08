@@ -227,7 +227,52 @@ export function runtimeManifestKey(platformKey) {
   return `runtime-manifest-${platformKey}.json`;
 }
 
-export function buildAgentRuntimeManifest(platformKey, assets, ccMgrAsset) {
+/**
+ * 目录分发段在 manifest 里的形状（与 `dirDistManifestAsset` 逐字段同形）。
+ *
+ * 只取 `version` / `file` / `sha256` / `size` 四个字段：`collectPinnedDirDistAssets` 的条目
+ * 还带 `url` / `platformKey` / `upstreamAssetName` 等**发布侧**字段（pin 直链、规范表条目、
+ * 主执行文件名），它们绝不能漏进 manifest —— 消费端（客户端 `getVendorAsset` / MCPRouter 的
+ * `agentBinaryCache`）只认这四个，多写字段等于在 wire 上发明新契约。
+ */
+function dirDistManifestSection(asset) {
+  return {
+    version: asset.version,
+    file: asset.file,
+    sha256: asset.sha256,
+    size: asset.size,
+  };
+}
+
+/** 从发布产物里挑出**存在**的目录分发段；缺失的段直接不写（消费端把缺失视为合法）。 */
+function dirDistManifestSections(dirDistAssets) {
+  if (!dirDistAssets) return {};
+  return Object.fromEntries(
+    DIR_DIST_RUNTIME_DEFINITIONS.filter(
+      (definition) => dirDistAssets[definition.field],
+    ).map((definition) => [
+      definition.field,
+      dirDistManifestSection(dirDistAssets[definition.field]),
+    ]),
+  );
+}
+
+/**
+ * 组装 agent runtime manifest（`runtime-manifest-<platformKey>.json`）。
+ *
+ * `dirDistAssets` 是 `publishDirDistAssets` 的 `manifestAssets`，**可选**：不传时 manifest
+ * 形状与老契约逐字一致（`schemaVersion` / `platformKey` / `claudeCode` / `codex`，加上可选的
+ * `ccMgr`）——老客户端与老镜像仍在读 `claudeCode` 与单文件 `codex`，这一段行为一个字都不能变。
+ *
+ * `codexPackage` / `pi` 是 2026-10-08 为 MCPRouter 的 linux runtime 补的两个目录分发段：
+ * 单文件 `codex` 里**没有** `bin/codex-code-mode-host`（它只存在于目录发行包），缺
+ * `codexPackage` 时远端 Codex 的 code-mode（命令执行）起不来；`pi` 决定远端能否跑 Pi。
+ *
+ * 两个新段的**可选性**是红线：消费端把「缺失」视为合法（回退镜像内那份 / 老 manifest 继续
+ * 可用），`schemaVersion` 保持 `1`。因此这里对它们只做「存在即校验、缺失即合法」
+ * （`required: false`）——**要求齐备是发布侧的事**（`publish-agent-runtimes.mjs`），不是这里。
+ */
+export function buildAgentRuntimeManifest(platformKey, assets, ccMgrAsset, dirDistAssets) {
   const manifest = {
     schemaVersion: 1,
     platformKey,
@@ -237,11 +282,50 @@ export function buildAgentRuntimeManifest(platformKey, assets, ccMgrAsset) {
     // `agentBinaryCache.validateManifest`）把「缺失」视为合法并回退镜像内那份，因此
     // 老 manifest 与「还没发过 cc-mgr 的区域」都不会因此打挂。
     ...(ccMgrAsset ? { ccMgr: structuredClone(ccMgrAsset) } : {}),
+    // `codexPackage` / `pi`：同一套可选性契约，见上面的函数注释。
+    ...dirDistManifestSections(dirDistAssets),
   };
   assertRuntimeManifestAssets(manifest, platformKey, {
     definitions: AGENT_RUNTIME_DEFINITIONS,
   });
+  if (dirDistAssets) {
+    assertRuntimeManifestAssets(manifest, platformKey, {
+      required: false,
+      definitions: DIR_DIST_RUNTIME_DEFINITIONS,
+    });
+  }
   return manifest;
+}
+
+/**
+ * 目录分发段在 runtime manifest 里的**预览文本**（`--execute` 之前的 dry-run 打印）。
+ *
+ * 为什么需要它：`codexPackage` 与 `pi` 的 `sha256`/`size` **来源不同**，只打印版本号无法
+ * 人工核对，而两者又都是「同路径内容不同即拒绝覆盖」的版本化对象 —— 发错一次就得人工介入。
+ *   - `codexPackage`：**原样转发** pin 的上游官方整包 ⇒ manifest 段的 `sha256`/`size` 与 pin
+ *     同源，dry-run 阶段就能确定；
+ *   - `pi`：发布侧**确定性重打包**（解包 → 补齐 `theme/` → tar.gz）⇒ manifest 段记的是重打包
+ *     产物的 `sha256`/`size`，只有 `--execute` 真正下载上游归档后才能算出来。这里用 `null`
+ *     占位并注明口径，**绝不**把 pin（上游归档）的摘要当成段摘要打印出去。
+ */
+export function formatMekaDirDistManifestPreview(
+  dirDistAssets,
+  definitions = DIR_DIST_RUNTIME_DEFINITIONS,
+) {
+  return definitions.map((definition) => {
+    const asset = dirDistAssets?.[definition.field];
+    if (!asset) {
+      return `  ${definition.field}: <未收集到该段的待发布资产>`;
+    }
+    const section = definition.repack
+      ? { version: asset.version, file: asset.file, sha256: null, size: null }
+      : dirDistManifestSection(asset);
+    const note = definition.repack
+      ? `重打包：sha256/size 在 --execute 时按确定性重打包产物填写` +
+        `（上游 pin sha256=${asset.sha256}, ${asset.size} bytes）`
+      : '原样转发 pin 字节（sha256/size 与 pin 同源）';
+    return `  ${definition.field}: ${JSON.stringify(section)}  ← ${note}`;
+  });
 }
 
 /* ==========================================================================

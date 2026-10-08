@@ -104,6 +104,61 @@
   baseManifest（上一版 canary）clone 而来，只在「本轮有值」时写入会让上一版的陈旧段顶包，
   而齐备断言仍然通过——守卫就证明不了本轮的段真的发布过。
 
+### linux runtime manifest 也必须带 `codexPackage` 与 `pi`（2026-10-08 落地）
+
+**事实（2026-10-08 事故）**：MCPRouter（远程 agent 宿主）只从
+`runtime-manifest-linux-<arch>.json` 取 runtime，而这份 manifest **从来没有** `codexPackage`
+段。它拿到的 `codex` 是**单文件** gz，里面没有 `bin/codex-code-mode-host` —— 这个 sidecar
+（code-mode / 命令执行宿主）**只存在于目录发行包**里（安装侧
+`tools/codex-package/update.mjs` 的 `validateCodexPackageDirectory` 要求它与 `bin/codex`、
+`rg` 同时在包内）。后果：远端 Codex 的 code-mode 起不来，MCPRouter 会话里报「命令执行环境因
+缺少 codex-code-mode-host 无法启动」，模型只能让用户手动 `ls -la`。桌面端 ≥0.0.21 早已改用
+目录分发，**只有 linux 的 agent runtime manifest 漏了这一段**；`pi` 段同理从未发过，而
+MCPRouter 还需要能跑 Pi。
+
+因此 `publish-agent-runtimes.mjs` 发布的 `runtime-manifest-<platformKey>.json` 增加两个
+**可选**段（`buildAgentRuntimeManifest` 的第 4 个参数，取 `publishDirDistAssets` 的
+`manifestAssets`）：
+
+| 项 | `codexPackage` | `pi` |
+| --- | --- | --- |
+| 对象路径 | `codex-package/<version>/<platformKey>/codex-package.tar.gz` | `pi/<version>/<platformKey>/pi.dist.tar.gz` |
+| 段字段 | `version`、`file`、`sha256`、`size`（**四字段**，与桌面端同一套目录分发资产形状；不含 `target`/`entrypoint`——那两个只在 pin 里做交叉校验） | 同左 |
+| sha256 / size 来源 | **原样转发** pin 的上游官方整包 ⇒ 与 `tools/codex-package/latest.json` 的摘要逐字节同源 | **确定性重打包产物**（解包 → 补 `theme/` → tar.gz）⇒ 与 pin 摘要**不同**；pin 摘要留在对象元数据 `pinned-sha256` |
+| pin | `tools/codex-package/latest.json` | `tools/pi/latest.json` |
+| 定义 | `CODEX_PACKAGE_DIR_DIST_DEFINITION` | `PI_DIR_DIST_DEFINITION`（`repack: 'pinned-archive'`） |
+| 谁在读 | MCPRouter 的 linux runtime（目录分发是 code-mode 能起来的前提） | MCPRouter 上跑 Pi |
+
+- **可选性（红线）**：两段都是**可选段**。消费端把「缺失」视为合法并回退镜像内那份，老
+  manifest / 老镜像 / 老区域继续可用；`schemaVersion` 保持 `1`；`claudeCode` 与**单文件**
+  `codex` 段的字段、对象路径与 `binarySha256` 语义一个字都没变。发布侧对它们只做
+  「**存在即校验、缺失即合法**」（`assertRuntimeManifestAssets({ required: false })`）。
+- **发布侧齐备闸门**：`publish-agent-runtimes.mjs` 在写 mutable manifest 之前用
+  `assertRuntimeManifestAssets(manifest, platform, { definitions: DIR_DIST_RUNTIME_DEFINITIONS })`
+  要求两段齐备 —— 消费端的「缺失合法」不是发布端的「可以不发」。2026-10-08 的事故形态正是
+  「发布链路上从来没有这段」，所以闸门必须落在发布侧。
+- **为什么不许删掉单文件 `codex`**：它在同一份 manifest 里服务两类老消费方 —— ≤0.0.20 的桌面
+  客户端（只认 `manifest.codex` 的单文件形态），以及**还没重建的旧 MCPRouter 镜像**（在远端
+  改用目录分发之前，单文件段是它唯一认识的形态）。删掉它等于让这些消费方在这次 manifest 更新后
+  **再也取不到 codex**。两段并存是刻意的：新镜像取 `codexPackage`，老镜像继续取 `codex`；本仓
+  无从验证远端的具体取用顺序，因此**只增不删**是唯一安全的改法。
+- **消费侧必须优先 `codexPackage`（在 MCPRouter 仓，本仓只登记契约）**：本仓只保证 manifest
+  带上两段。远端「先目录分发、缺段才回落单文件 `codex`」的取用顺序在 MCPRouter 仓实现。注意
+  两侧 pin 版本可以不同（`codex` 单文件与 `codex-package` 是两个独立 pin，见本章开头的表）：
+  只要远端仍优先取单文件 `codex`，code-mode 就仍然缺 sidecar。该仓侧的端到端验证不在本仓。
+- **dry-run 必须打印两段**：
+  `node apps/desktop/scripts/publish-agent-runtimes.mjs --platform linux-x64 --region cn`（不加
+  `--execute`）必须打印两个新段的对象路径与段形状（`formatMekaDirDistManifestPreview`）；
+  `pi` 的 `sha256`/`size` 打印为 `null` 占位并注明「`--execute` 时按重打包产物填写」——
+  **绝不**把 pin（上游归档）的摘要冒充成段摘要。
+- **CI 复用快路径的连带义务（在 `cindy-meka-cicd` 仓，本仓只登记）**：该 job 有一条「公共
+  manifest 已跟上源码 pin ⇒ 跳过发布」的快路径。它必须把 `codexPackage` / `pi` 一并纳入 pin
+  比对，否则「只 bump 了 codex-package / pi pin」的改动静默不发布（与 `ccMgr` 段同一问题）。
+- **回归**：`node --test scripts/__tests__/codex-package-cdn-release.test.mjs scripts/__tests__/pi-cdn-release.test.mjs scripts/__tests__/meka-release-flow.test.mjs`
+  （覆盖：两段写入的形状与对象路径、缺段时消费端合法 / 发布侧必须齐备、存在即 fail closed、
+  `codexPackage` 原样转发 ⇒ 摘要与 pin 同源、`pi` 重打包 ⇒ 摘要与 pin **不同**且
+  `pinned-sha256` 留证、dry-run 预览文本）。
+
 ### `pi` 段的特殊契约：发布侧重打包（不是原样转发）
 
 **为什么不能像 `codexPackage` 那样直接转发 pin 字节**（三个事实叠加，缺一个结论就不成立）：
@@ -288,13 +343,16 @@ pnpm release:runtime:linux-x64
 ```
 
 （`publish-agent-runtimes.mjs` 自己在收集本地资产前也会确保 `claude` + `codex-single` 就位；
-`codex` 是目录分发、只服务桌面端打包，**不参与 CDN runtime 发布**。）
+目录分发的 `codexPackage` / `pi` **不依赖发版机 `apps/codex-package-bin` 的落位状态** ——
+前者直接转发 pin 的官方整包，后者由 pin 下载后确定性重打包，见前文两节。）
 
-该入口先上传/复用 immutable runtime 对象，最后更新
-`runtime-manifest-linux-x64.json`。manifest schemaVersion 为 `1`，包含 `platformKey`、
-`claudeCode` 与 `codex` 三部分；每个资产字段包含 `version`、`file`、`sha256`、`size` 与
-`binarySha256`。mutable manifest 必须最后处理并从公开 CDN 回读校验；远端内容逐字节相同
-时必须跳过写入，使相同 pin 的重复发布不改变对象元数据或 Last-Modified。
+该入口先上传/复用 immutable runtime 对象（含目录分发的 `codex-package/...`、
+`pi/...`），最后更新 `runtime-manifest-linux-x64.json`。manifest schemaVersion 为 `1`，
+包含 `platformKey`、`claudeCode`、`codex` 三段（每段含 `version`、`file`、`sha256`、`size`
+与 `binarySha256`），外加三个**可选**段：`ccMgr`（`managerVersion`/`protocolVersion`）、
+`codexPackage` 与 `pi`（目录分发四字段，见前文「linux runtime manifest 也必须带 …」）。
+mutable manifest 必须最后处理并从公开 CDN 回读校验；远端内容逐字节相同时必须跳过写入，
+使相同 pin 的重复发布不改变对象元数据或 Last-Modified。
 
 `cindy-meka-cicd` 的独立 `runtime-assets` pipeline 与完整 `release` pipeline 都固定
 `kapt66/cindy:meka/main` HEAD 后执行该入口。独立模式不构建桌面安装包、不修改
@@ -333,6 +391,13 @@ Canary/Stable 应用 manifest，也不创建 GitHub tag；完整 release 必须�
   `node --test scripts/__tests__/codex-package-cdn-release.test.mjs scripts/__tests__/meka-release-flow.test.mjs`
   （覆盖：pin 锚定与 fail closed、上传/幂等复用、字节数/sha256/同版本内容冲突必须失败、
   manifest 缺 `codexPackage` 必须报错）。
+- linux runtime manifest 的两个可选目录分发段（`codexPackage` / `pi`；改
+  `buildAgentRuntimeManifest` / `formatMekaDirDistManifestPreview` / `publish-agent-runtimes.mjs`
+  后必须跑）：
+  `node --test scripts/__tests__/codex-package-cdn-release.test.mjs scripts/__tests__/pi-cdn-release.test.mjs scripts/__tests__/meka-release-flow.test.mjs`
+  （覆盖：段写入的形状与对象路径、不传段时形状与老契约逐字一致、缺段对消费端合法而对发布侧
+  报错、段存在但形状非法 fail closed、`codexPackage` 摘要与 pin 同源、`pi` 摘要与 pin 不同且
+  `pinned-sha256` 留证、dry-run 预览打印两段的对象路径）。
 - 发版前 dry-run（不写 RustFS）：`pnpm release:win patch` 之前的
   `publish-desktop.mjs --build-info <path>` 预览必须打印
   `codex 目录分发 -> codexPackage <pin 版本> (codex-package/<ver>/<platform>/codex-package.tar.gz)`；
@@ -353,5 +418,9 @@ Canary/Stable 应用 manifest，也不创建 GitHub tag；完整 release 必须�
   修复前应在 `[win32-x64] skip (cached, …)` 之后报 promote 失败，修复后应落地并写出 `.version`。
 - CLI dry-run：
   `node apps/desktop/scripts/publish-agent-runtimes.mjs --platform linux-x64 --region cn`
-- CI 发布后确认公开 `runtime-manifest-linux-x64.json` 及其两个资产均返回 200，大小与 manifest
-  一致。
+  —— 输出必须包含 `codexPackage` / `pi` 两段的对象路径与段形状（`codexPackage` 的四字段与
+  最终 manifest 逐字相同；`pi` 的 `sha256`/`size` 是 `null` 占位，注明 `--execute` 时按重打包
+  产物填写）。dry-run 只读本地 pin 与规范表，**不触网**。
+- CI 发布后确认公开 `runtime-manifest-linux-x64.json` 与它引用的**全部**资产均返回 200、大小与
+  manifest 一致，并确认 `claudeCode`/`codex`/`codexPackage`/`pi`（以及发过的 `ccMgr`）**同时在册**；
+  `codexPackage` 段的 `sha256` 必须等于 `tools/codex-package/latest.json` 里该平台的值。

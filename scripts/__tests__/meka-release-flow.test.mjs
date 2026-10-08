@@ -467,6 +467,9 @@ test("linux runtime workflow publishes only Claude and Codex with a dedicated ma
     assert.equal(runtimeManifestKey("linux-x64"), "runtime-manifest-linux-x64.json");
     assert.equal(manifest.schemaVersion, 1);
     assert.equal(manifest.platformKey, "linux-x64");
+    // 向后兼容红线：不传目录分发资产时，形状与老契约**逐字**一致 ——
+    // 老客户端与老镜像仍在读 `claudeCode` / 单文件 `codex`，多一段少一段都会换契约。
+    assert.deepEqual(Object.keys(manifest), ["schemaVersion", "platformKey", "claudeCode", "codex"]);
     assert.equal(manifest.claudeCode.version, "2.1.219");
     assert.equal(manifest.codex.version, "0.145.0");
     assert.equal("ripgrep" in manifest, false);

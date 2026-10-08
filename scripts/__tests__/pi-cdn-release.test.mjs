@@ -30,6 +30,7 @@ import {
   PI_DIR_DIST_DEFINITION,
   RELEASE_RUNTIME_DEFINITIONS,
   assertRuntimeManifestAssets,
+  buildAgentRuntimeManifest,
   collectPinnedDirDistAssets,
   prepareRepackedDirDistArchive,
   publishDirDistAssets,
@@ -105,6 +106,63 @@ function withPiPin(archiveBytes, run, overrides = {}) {
 /** pi 目标定义单独收集（codexPackage 的 pin 不在本用例的临时 projectRoot 里）。 */
 function collectPiAssets(projectRoot, platformKey = 'darwin-arm64', definitions = [PI_DIR_DIST_DEFINITION]) {
   return collectPinnedDirDistAssets(platformKey, { projectRoot, definitions });
+}
+
+/**
+ * linux-x64 的 pi pin（MCPRouter 的 linux runtime manifest 用的就是这一条）：
+ * 上游资产名是 `pi-linux-x64.tar.gz`，主执行文件是 `pi`。
+ */
+const LINUX_PLATFORM_KEY = 'linux-x64';
+const LINUX_UPSTREAM_ASSET = 'pi-linux-x64.tar.gz';
+const LINUX_UPSTREAM_URL =
+  `https://github.com/earendil-works/pi/releases/download/v${PIN_VERSION}/${LINUX_UPSTREAM_ASSET}`;
+
+function withPiLinuxPin(archiveBytes, run) {
+  const root = tempDir('cindy-pi-linux-pin-');
+  try {
+    const pinDir = path.join(root, 'tools', 'pi');
+    fs.mkdirSync(pinDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pinDir, 'latest.json'),
+      `${JSON.stringify(
+        {
+          version: PIN_VERSION,
+          runtimeAssets: {
+            [LINUX_PLATFORM_KEY]: {
+              url: LINUX_UPSTREAM_URL,
+              sha256: sha256Hex(archiveBytes),
+              size: archiveBytes.length,
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    return run(root);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+/** linux-x64 的单文件两段（`claudeCode` / `codex`），用于组装 runtime manifest。 */
+function linuxAgentAssets() {
+  return {
+    claudeCode: {
+      version: '2.1.219',
+      file: `claude-code/2.1.219/${LINUX_PLATFORM_KEY}/claude.gz`,
+      sha256: 'a'.repeat(64),
+      size: 10,
+      binarySha256: 'b'.repeat(64),
+    },
+    codex: {
+      version: '0.145.0',
+      file: `codex/0.145.0/${LINUX_PLATFORM_KEY}/codex.gz`,
+      sha256: 'c'.repeat(64),
+      size: 10,
+      binarySha256: 'd'.repeat(64),
+    },
+  };
 }
 
 /** 只发布 pi 段（默认定义集还包含 codexPackage，它的 pin 不在本用例里）。 */
@@ -497,4 +555,60 @@ test('buildCanaryManifest + assertRuntimeManifestAssets: pi 段与其它 runtime
     () => assertRuntimeManifestAssets(dropped, 'win32-x64', { definitions: RELEASE_RUNTIME_DEFINITIONS }),
     /pi/,
   );
+});
+
+test('linux runtime manifest: pi 段记重打包产物的摘要（与 pin 摘要不同），单文件段不变', async () => {
+  const fixtureRoot = tempDir('cindy-pi-linux-fixture-');
+  const outputRoot = tempDir('cindy-pi-linux-out-');
+  try {
+    const upstream = makeUpstreamTarGz(fixtureRoot);
+    const assets = withPiLinuxPin(upstream, (projectRoot) =>
+      collectPiAssets(projectRoot, LINUX_PLATFORM_KEY),
+    );
+    // 平台映射取自安装侧规范表 `PI_RUNTIME_PLATFORMS`，不是这里另造的清单。
+    assert.equal(assets.pi.file, `pi/${PIN_VERSION}/${LINUX_PLATFORM_KEY}/pi.dist.tar.gz`);
+    assert.equal(assets.pi.upstreamAssetName, LINUX_UPSTREAM_ASSET);
+    assert.equal(assets.pi.binaryName, 'pi');
+    assert.equal(assets.pi.sha256, sha256Hex(upstream));
+
+    const storage = makeStorage();
+    const published = await publishPi(storage, assets, null, path.join(outputRoot, 'out'), {
+      download: fakeDownload(upstream),
+      log: () => {},
+    });
+    assert.equal(published.results.pi, 'uploaded');
+    const remote = storage.objects.get(assets.pi.file);
+    assert.ok(remote, '上传对象必须落在版本化路径上');
+    // pi 与 codexPackage 的摘要求源**不同**：manifest 记的是重打包产物，pin 摘要在元数据里。
+    assert.equal(remote.metadata['pinned-sha256'], sha256Hex(upstream));
+    assert.equal(remote.metadata['pinned-version'], PIN_VERSION);
+    assert.equal(published.manifestAssets.pi.sha256, sha256Hex(remote.bytes));
+    assert.notEqual(published.manifestAssets.pi.sha256, sha256Hex(upstream));
+
+    // 组装进 linux runtime manifest：pi 段原样落位，没给的 codexPackage 不写，
+    // 单文件两段（老契约）一字不变。
+    const manifest = buildAgentRuntimeManifest(
+      LINUX_PLATFORM_KEY,
+      linuxAgentAssets(),
+      undefined,
+      published.manifestAssets,
+    );
+    assert.equal(manifest.schemaVersion, 1);
+    assert.deepEqual(manifest.pi, published.manifestAssets.pi);
+    assert.deepEqual(Object.keys(manifest.pi), ['version', 'file', 'sha256', 'size']);
+    assert.equal('codexPackage' in manifest, false);
+    assert.equal(manifest.claudeCode.file, `claude-code/2.1.219/${LINUX_PLATFORM_KEY}/claude.gz`);
+    assert.equal(manifest.codex.file, `codex/0.145.0/${LINUX_PLATFORM_KEY}/codex.gz`);
+    assert.equal(manifest.codex.binarySha256, 'd'.repeat(64));
+    // 发布侧允许「只有 pi 段」，但两段齐全才算齐备（齐备判据在发布入口，不在组装函数）。
+    assert.doesNotThrow(() =>
+      assertRuntimeManifestAssets(manifest, LINUX_PLATFORM_KEY, {
+        required: false,
+        definitions: [PI_DIR_DIST_DEFINITION],
+      }),
+    );
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    fs.rmSync(outputRoot, { recursive: true, force: true });
+  }
 });

@@ -9,6 +9,10 @@
 // 既有的旧单文件 codex 也救不回来。
 //
 // node 内置 test runner：`node --test scripts/__tests__/codex-package-cdn-release.test.mjs`。
+//
+// 本文件另外覆盖 **linux runtime manifest**（`runtime-manifest-linux-x64.json`）的目录分发
+// 段：`buildAgentRuntimeManifest` 的 `codexPackage` / `pi` 可选段与 `--execute` 之前的
+// dry-run 预览（该组装函数与这里被测的 `DIR_DIST_RUNTIME_DEFINITIONS` 是同一套机制）。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -21,7 +25,9 @@ import {
   DIR_DIST_RUNTIME_DEFINITIONS,
   RELEASE_RUNTIME_DEFINITIONS,
   assertRuntimeManifestAssets,
+  buildAgentRuntimeManifest,
   collectPinnedDirDistAssets,
+  formatMekaDirDistManifestPreview,
   publishDirDistAssets,
 } from '../../apps/desktop/scripts/ci/runtime-release.mjs';
 import { sha256Hex } from '../../tools/shared/verify-sha256.mjs';
@@ -397,4 +403,264 @@ test('buildCanaryManifest: baseManifest 的陈旧 codexPackage 不得顶包', ()
   assertRuntimeManifestAssets(replaced, PLATFORM_KEY, {
     definitions: RELEASE_RUNTIME_DEFINITIONS,
   });
+});
+
+/* ==========================================================================
+ * linux runtime manifest 的目录分发段（codexPackage / pi）
+ *
+ * 背景（2026-10-08 事故）：MCPRouter 只从 `runtime-manifest-linux-x64.json` 取 runtime，
+ * 而该 manifest **从来没有** `codexPackage` 段。单文件 `codex` 里没有
+ * `bin/codex-code-mode-host`（它只存在于目录发行包），于是远端 Codex 的 code-mode
+ * （命令执行）起不来，会话里报「命令执行环境因缺少 codex-code-mode-host 无法启动」。
+ * 桌面端 0.0.21 起早就改用目录分发（上面的用例覆盖桌面那一侧），这里锁的是**发布侧**：
+ * linux manifest 必须带上这两个可选段，且 `claudeCode` / 单文件 `codex` 的老契约逐字不变。
+ * ========================================================================== */
+
+const LINUX_PLATFORM_KEY = 'linux-x64';
+const PI_PIN_VERSION = '1.0.2';
+const PI_SHA256 = 'e'.repeat(64);
+const PI_SIZE = 424242;
+
+/** 与真实 `tools/codex-package/latest.json` 同形的 linux-x64 条目（规范表真值）。 */
+function makeLinuxPin(overrides = {}) {
+  return {
+    version: PIN_VERSION,
+    runtimeAssets: {
+      [LINUX_PLATFORM_KEY]: {
+        url: 'https://github.com/openai/codex/releases/download/rust-v0.153.4/codex-package-x86_64-unknown-linux-musl.tar.gz',
+        sha256: ARCHIVE_SHA256,
+        size: ARCHIVE_BYTES.length,
+        target: 'x86_64-unknown-linux-musl',
+        entrypoint: 'bin/codex',
+        ...overrides,
+      },
+    },
+  };
+}
+
+/** linux-x64 的单文件两段（`claudeCode` / `codex`）：向后兼容的对照面。 */
+function linuxAgentAssets() {
+  return {
+    claudeCode: {
+      version: '2.1.219',
+      file: `claude-code/2.1.219/${LINUX_PLATFORM_KEY}/claude.gz`,
+      sha256: 'a'.repeat(64),
+      size: 10,
+      binarySha256: 'b'.repeat(64),
+    },
+    codex: {
+      version: '0.145.0',
+      file: `codex/0.145.0/${LINUX_PLATFORM_KEY}/codex.gz`,
+      sha256: 'c'.repeat(64),
+      size: 10,
+      binarySha256: 'd'.repeat(64),
+    },
+  };
+}
+
+function linuxDirDistSections() {
+  return {
+    codexPackage: {
+      version: PIN_VERSION,
+      file: `codex-package/${PIN_VERSION}/${LINUX_PLATFORM_KEY}/codex-package.tar.gz`,
+      sha256: ARCHIVE_SHA256,
+      size: ARCHIVE_BYTES.length,
+    },
+    pi: {
+      version: PI_PIN_VERSION,
+      file: `pi/${PI_PIN_VERSION}/${LINUX_PLATFORM_KEY}/pi.dist.tar.gz`,
+      sha256: PI_SHA256,
+      size: PI_SIZE,
+    },
+  };
+}
+
+test('linux runtime: codexPackage 原样转发 pin 字节，manifest 段摘要与 pin 同源', async () => {
+  const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-linux-codex-package-out-'));
+  try {
+    const assets = withPinRoot(makeLinuxPin(), (pinRoot) =>
+      collectPinnedDirDistAssets(LINUX_PLATFORM_KEY, {
+        projectRoot: pinRoot,
+        definitions: [CODEX_PACKAGE_DIR_DIST_DEFINITION],
+      }),
+    );
+    assert.equal(
+      assets.codexPackage.file,
+      `codex-package/${PIN_VERSION}/${LINUX_PLATFORM_KEY}/codex-package.tar.gz`,
+    );
+    const storage = makeStorage();
+    const published = await publishDirDistAssets(
+      storage,
+      assets,
+      null,
+      path.join(outputRoot, 'out'),
+      {
+        definitions: [CODEX_PACKAGE_DIR_DIST_DEFINITION],
+        download: fakeDownload,
+        log: () => {},
+      },
+    );
+    assert.equal(published.results.codexPackage, 'uploaded');
+    // 原样转发：manifest 段的 sha256/size 必须逐字等于 pin（不是本机重新打包的产物）。
+    assert.deepEqual(published.manifestAssets.codexPackage, {
+      version: PIN_VERSION,
+      file: `codex-package/${PIN_VERSION}/${LINUX_PLATFORM_KEY}/codex-package.tar.gz`,
+      sha256: ARCHIVE_SHA256,
+      size: ARCHIVE_BYTES.length,
+    });
+    assert.equal(storage.objects.get(assets.codexPackage.file).metadata.sha256, ARCHIVE_SHA256);
+    // 归档中间文件不残留
+    assert.deepEqual(fs.readdirSync(path.join(outputRoot, 'out')), []);
+  } finally {
+    fs.rmSync(outputRoot, { recursive: true, force: true });
+  }
+});
+
+test('linux runtime: 两个可选段写进 manifest，缺失时消费端合法而发布侧必须齐备', () => {
+  const agentAssets = linuxAgentAssets();
+  const dirDist = linuxDirDistSections();
+
+  // 1) 不传目录分发资产：形状与老契约逐字一致（老客户端 / 老镜像的红线）。
+  const legacy = buildAgentRuntimeManifest(LINUX_PLATFORM_KEY, agentAssets);
+  assert.equal(legacy.schemaVersion, 1);
+  assert.deepEqual(Object.keys(legacy), ['schemaVersion', 'platformKey', 'claudeCode', 'codex']);
+  assert.deepEqual(legacy.claudeCode, agentAssets.claudeCode);
+  assert.deepEqual(legacy.codex, agentAssets.codex);
+  // 消费端口径：两个新段缺失合法（required:false 的定义集不该因缺失报错）。
+  assert.doesNotThrow(() =>
+    assertRuntimeManifestAssets(legacy, LINUX_PLATFORM_KEY, {
+      required: false,
+      definitions: DIR_DIST_RUNTIME_DEFINITIONS,
+    }),
+  );
+
+  // 2) 传了目录分发资产：按 version/file/sha256/size 四字段写入，其它段一字不变。
+  const manifest = buildAgentRuntimeManifest(
+    LINUX_PLATFORM_KEY,
+    agentAssets,
+    undefined,
+    dirDist,
+  );
+  assert.equal(manifest.schemaVersion, 1);
+  assert.deepEqual(Object.keys(manifest), [
+    'schemaVersion',
+    'platformKey',
+    'claudeCode',
+    'codex',
+    'codexPackage',
+    'pi',
+  ]);
+  assert.deepEqual(manifest.claudeCode, agentAssets.claudeCode);
+  assert.deepEqual(manifest.codex, agentAssets.codex);
+  assert.deepEqual(manifest.codexPackage, dirDist.codexPackage);
+  assert.deepEqual(manifest.pi, dirDist.pi);
+
+  // 3) 深拷贝：调用方后续动 manifest 不得回头改到发布脚本手里的资产对象。
+  manifest.pi.size = 1;
+  assert.equal(dirDist.pi.size, PI_SIZE);
+
+  // 4) 只给一个段：另一段缺失仍然合法（两段相互独立、都是可选段）。
+  const onlyPackage = buildAgentRuntimeManifest(
+    LINUX_PLATFORM_KEY,
+    agentAssets,
+    undefined,
+    { codexPackage: dirDist.codexPackage },
+  );
+  assert.equal('pi' in onlyPackage, false);
+  assert.doesNotThrow(() =>
+    assertRuntimeManifestAssets(onlyPackage, LINUX_PLATFORM_KEY, {
+      required: false,
+      definitions: DIR_DIST_RUNTIME_DEFINITIONS,
+    }),
+  );
+  // 但发布侧要求两段齐备（2026-10-08 事故的形态正是「从来不发这一段」）。
+  assert.throws(
+    () =>
+      assertRuntimeManifestAssets(onlyPackage, LINUX_PLATFORM_KEY, {
+        definitions: DIR_DIST_RUNTIME_DEFINITIONS,
+      }),
+    /pi/,
+  );
+  assert.doesNotThrow(() =>
+    assertRuntimeManifestAssets(manifest, LINUX_PLATFORM_KEY, {
+      definitions: DIR_DIST_RUNTIME_DEFINITIONS,
+    }),
+  );
+
+  // 5) 发布侧字段（pin 直链 / 平台 key / 上游资产名）不得漏进 manifest：消费端只认四字段。
+  const pinnedLike = {
+    ...dirDist.pi,
+    url: 'https://github.com/earendil-works/pi/releases/download/v1.0.2/pi-linux-x64.tar.gz',
+    platformKey: LINUX_PLATFORM_KEY,
+    upstreamAssetName: 'pi-linux-x64.tar.gz',
+  };
+  assert.deepEqual(
+    Object.keys(
+      buildAgentRuntimeManifest(LINUX_PLATFORM_KEY, agentAssets, undefined, { pi: pinnedLike }).pi,
+    ),
+    ['version', 'file', 'sha256', 'size'],
+  );
+});
+
+test('linux runtime: 段存在但形状非法必须 fail closed（缺失才合法）', () => {
+  const agentAssets = linuxAgentAssets();
+  const good = linuxDirDistSections().codexPackage;
+  // 对象路径不带平台段 → 客户端按平台取资产会拿错
+  assert.throws(
+    () =>
+      buildAgentRuntimeManifest(LINUX_PLATFORM_KEY, agentAssets, undefined, {
+        codexPackage: { ...good, file: 'codex-package/0.153.4/codex-package.tar.gz' },
+      }),
+    /codexPackage/,
+  );
+  // 摘要非法
+  assert.throws(
+    () =>
+      buildAgentRuntimeManifest(LINUX_PLATFORM_KEY, agentAssets, undefined, {
+        codexPackage: { ...good, sha256: 'not-a-sha256' },
+      }),
+    /codexPackage/,
+  );
+  // size 必须是 > 0 的安全整数
+  assert.throws(
+    () =>
+      buildAgentRuntimeManifest(LINUX_PLATFORM_KEY, agentAssets, undefined, {
+        pi: { ...linuxDirDistSections().pi, size: 0 },
+      }),
+    /pi/,
+  );
+});
+
+test('dry-run 预览打印两个新段与对象路径，且点明 pi 与 codexPackage 的摘要来源不同', () => {
+  const sections = linuxDirDistSections();
+  const lines = formatMekaDirDistManifestPreview(sections);
+  assert.equal(lines.length, 2);
+  assert.ok(
+    lines[0].startsWith('  codexPackage: '),
+    `第一行应当是 codexPackage 段: ${lines[0]}`,
+  );
+  assert.ok(lines[1].startsWith('  pi: '), `第二行应当是 pi 段: ${lines[1]}`);
+
+  const jsonOf = (line) => JSON.parse(line.slice(line.indexOf('{'), line.lastIndexOf('}') + 1));
+  // codexPackage 是原样转发 ⇒ dry-run 就能打印出与最终 manifest 逐字相同的四字段。
+  assert.deepEqual(jsonOf(lines[0]), sections.codexPackage);
+  assert.match(lines[0], /原样转发/);
+  // pi 是确定性重打包 ⇒ 摘要只有 --execute 下载上游归档后才算得出，这里必须是 null 占位，
+  // 绝不能把 pin（上游归档）的摘要冒充成段摘要。
+  assert.deepEqual(jsonOf(lines[1]), {
+    version: PI_PIN_VERSION,
+    file: `pi/${PI_PIN_VERSION}/${LINUX_PLATFORM_KEY}/pi.dist.tar.gz`,
+    sha256: null,
+    size: null,
+  });
+  assert.match(lines[1], /重打包/);
+  assert.match(lines[1], /上游 pin sha256=/);
+  // 对象路径必须在输出里，便于人工核对不可覆盖的版本化对象。
+  assert.ok(lines[0].includes(`"file":"codex-package/${PIN_VERSION}/${LINUX_PLATFORM_KEY}/codex-package.tar.gz"`));
+  assert.ok(lines[1].includes(`"file":"pi/${PI_PIN_VERSION}/${LINUX_PLATFORM_KEY}/pi.dist.tar.gz"`));
+  // 未收集到资产时也要有明确输出（dry-run 不允许静默少打印一段）。
+  assert.match(
+    formatMekaDirDistManifestPreview({}).join('\n'),
+    /codexPackage: <未收集到该段的待发布资产>[\s\S]*pi: <未收集到该段的待发布资产>/,
+  );
 });

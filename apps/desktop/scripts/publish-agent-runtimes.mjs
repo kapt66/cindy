@@ -10,11 +10,16 @@ import { resolveMekaS3Config } from './ci/release-regions.mjs';
 import { createMekaReleaseStorage } from './ci/release-storage.mjs';
 import {
   AGENT_RUNTIME_DEFINITIONS,
+  DIR_DIST_RUNTIME_DEFINITIONS,
+  assertRuntimeManifestAssets,
   buildAgentRuntimeManifest,
   ccMgrBundleSourcePath,
   collectLocalRuntimeAssets,
+  collectPinnedDirDistAssets,
+  formatMekaDirDistManifestPreview,
   probeCcMgrBundleVersion,
   publishCcMgrBundle,
+  publishDirDistAssets,
   publishRuntimeAssets,
   readLocalCcMgrPin,
   runtimeManifestKey,
@@ -88,6 +93,11 @@ async function main() {
   const localAssets = collectLocalRuntimeAssets(args.platform, {
     definitions: AGENT_RUNTIME_DEFINITIONS,
   });
+  // 目录分发两段（`codexPackage` / `pi`）必须一起进 linux runtime manifest：MCPRouter 只从
+  // 这个 manifest 取 runtime，而**单文件** `codex` 里没有 `bin/codex-code-mode-host`（它只
+  // 存在于目录发行包），缺 `codexPackage` 时远端 Codex 的 code-mode（命令执行）起不来；
+  // `pi` 则决定远端能否跑 Pi。收集本身是纯读盘（pin + 安装侧规范表），dry-run 也**不触网**。
+  const dirDistAssets = collectPinnedDirDistAssets(args.platform);
   // cc-mgr 是平台无关的 JS，各平台 manifest 里是同一段；这里把版本与产物都定下来。
   const ccMgrPin = readLocalCcMgrPin();
   const ccMgrBundlePath = buildAndProbeCcMgrBundle(ccMgrPin);
@@ -97,6 +107,9 @@ async function main() {
       `Claude ${localAssets.claudeCode.version}, Codex ${localAssets.codex.version}, ` +
       `cc-mgr ${ccMgrPin.managerVersion}/protocol ${ccMgrPin.protocolVersion}`,
   );
+  // 两段都是**可选段**（消费端把缺失视为合法，schemaVersion 仍为 1），但发布侧必须发齐。
+  console.log('runtime manifest 的目录分发段（可选；MCPRouter 从这里取 linux runtime）：');
+  for (const line of formatMekaDirDistManifestPreview(dirDistAssets)) console.log(line);
   if (!args.execute) {
     console.log('本地校验通过；未写入 RustFS。确认后追加 --execute。');
     return;
@@ -114,11 +127,25 @@ async function main() {
     bundlePath: ccMgrBundlePath,
     pin: ccMgrPin,
   });
+  // 不可变对象先全部上传/复用，最后才写 mutable manifest（与桌面端发布同一发布顺序）。
+  const dirDist = await publishDirDistAssets(
+    storage,
+    dirDistAssets,
+    null,
+    path.join(RELEASE_DIR, args.platform),
+  );
   const manifest = buildAgentRuntimeManifest(
     args.platform,
     published.manifestAssets,
     ccMgr.manifestAsset,
+    dirDist.manifestAssets,
   );
+  // **发布侧**齐备判据：单文件两段由 `buildAgentRuntimeManifest` 断言，目录分发两段在这里
+  // 要求齐备。消费端仍然把缺失视为合法（红线），这条只是不许发布端漏发的闸门 ——
+  // 2026-10-08 的事故形态正是「manifest 里从来没有这两段」。
+  assertRuntimeManifestAssets(manifest, args.platform, {
+    definitions: DIR_DIST_RUNTIME_DEFINITIONS,
+  });
   const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
   const manifestKey = runtimeManifestKey(args.platform);
 
@@ -127,8 +154,11 @@ async function main() {
   console.log(
     `Published ${manifestKey} (${manifestResult}): `
       + `Claude ${published.results.claudeCode}, Codex ${published.results.codex}, `
-      + `cc-mgr ${ccMgr.uploaded ? 'uploaded' : 'reused'} ${ccMgr.manifestAsset.file}`,
+      + `cc-mgr ${ccMgr.uploaded ? 'uploaded' : 'reused'} ${ccMgr.manifestAsset.file}, `
+      + `codexPackage ${dirDist.results.codexPackage}, pi ${dirDist.results.pi}`,
   );
+  console.log(`  codexPackage -> ${dirDist.manifestAssets.codexPackage.file}`);
+  console.log(`  pi           -> ${dirDist.manifestAssets.pi.file}`);
 }
 
 const isMain = import.meta.url === pathToFileURL(process.argv[1] ?? '').href;
