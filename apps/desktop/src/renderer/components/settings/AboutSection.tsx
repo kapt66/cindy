@@ -12,7 +12,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ExternalLink, FolderOpen } from 'lucide-react';
+import { ExternalLink } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
@@ -23,8 +23,12 @@ import { DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdow
 import { useExperimentalFlag } from '@/hooks/useExperimentalFeatures';
 import { useAutoUpdateSettings } from '@/hooks/useAutoUpdateSettings';
 import { useAnalyticsSettings } from '@/hooks/useAnalyticsSettings';
-// 上报 UI 已移除（Meka divergence）：上游此处 import { useLogUploadSettings }。
-// 上报 UI 已移除（Meka divergence）：上游此处 import { extractIpcError }（仅用于上报失败文案）。
+// 上报 UI 已移除（Meka divergence，WL-26）：上游此处 import { useLogUploadSettings }
+// （仅崩溃自动上传开关与手动上传按钮用）与 { OpenLogsRow, UploadLogsRow } 两个共享行；
+// 更早的上游 `extractIpcError` import（第 5 轮同步时，仅用于上报失败文案）同样不复存在。
+// 「打开日志目录」是 WL-26 的**保留面**，这里改用上游抽出的共享实现（启动/登录恢复面板同一份），
+// 不再保留本地副本；上报那一行不 import、不渲染。
+import { OpenLogsRow } from '@/components/log-support/LogSupportActions';
 import { PiKernelVersionRow } from './PiKernelVersionRow';
 import { HARNESS_MENU_ITEM_CLASS, HarnessMenuFootnote, HarnessVersionMenuItem, HarnessVersionMenuRow } from './HarnessVersionMenuRow';
 import { DefaultOverrideControls } from './DefaultOverrideControls';
@@ -344,7 +348,9 @@ export function AboutSection() {
         <AgentVersionsRows />
         <DebugLogToggleRow />
         <Divider />
-        <OpenLogsRow />
+        <div id="settings-search-settings-about-logsDirLabel">
+          <OpenLogsRow />
+        </div>
         <Divider />
         {/* 客户端日志上报(SLS)在 meka/main 上已移除（Meka divergence，第 5 轮同步后移除）：
             上游此处为 <CrashAutoUploadToggleRow /> + <UploadLogsRow /> 两行。下次同步冲突时保留「移除」。 */}
@@ -699,38 +705,9 @@ function DebugLogToggleRow() {
   );
 }
 
-function OpenLogsRow() {
-  const { t } = useTranslation();
-  const handleOpen = async () => {
-    try {
-      const res = await window.electronAPI.openLogsDir();
-      if (!res.success) toast.error(res.error || t('settings.about.openLogsDirError'));
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : t('settings.about.openLogsDirError'));
-    }
-  };
-
-  return (
-    <div className="flex items-center justify-between gap-3 px-[18px] py-4">
-      <span id="settings-search-settings-about-logsDirLabel" className="text-13 text-[var(--settings-section-sublabel)]">
-        {t('settings.about.logsDirLabel')}
-      </span>
-      <Button
-        variant="secondary"
-        size="sm"
-        type="button"
-        onClick={handleOpen}
-        className="-mr-1 px-2.5"
-        title={t('settings.about.openLogsDirTooltip')}
-      >
-        <FolderOpen size={13} />
-        {t('settings.about.openLogsDir')}
-      </Button>
-    </div>
-  );
-}
-
-// 上报 UI 已移除（Meka divergence）：上游此处为 CrashAutoUploadToggleRow + UploadLogsRow 两个组件（含崩溃自动上传开关与手动上传按钮）。
+// 上报 UI 已移除（Meka divergence，WL-26）：上游此处为 CrashAutoUploadToggleRow（崩溃自动上传开关）
+// 与 UploadLogsRow（手动上传按钮）两个组件。「打开日志目录」行已随上游抽到
+// `@/components/log-support/LogSupportActions`（本文件从那里 import），不再保留本地副本。
 
 function InfoRow({
   label,

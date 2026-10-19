@@ -3,11 +3,13 @@ import {
   buildClientDeviceNote,
   buildMessageSourceNote,
   describeMessageSourceSender,
+  isCrossDeviceSourceSessionId,
   messageSourceIdEntries,
   formatSourceRef,
   promptSafeSourceName,
   messageSourceSenderFromMeta,
   readMessageSourceDevice,
+  readMessageSourceGroup,
   readMessageSourcePlugin,
   sanitizeSourceName,
   shouldShowSourceDevice,
@@ -136,6 +138,14 @@ describe('messageSourceSenderFromMeta', () => {
 });
 
 describe('messageSourceIdEntries', () => {
+  it('uses the same MCP server identity for UI hints and model source notes', () => {
+    const meta = { sourcePlugin: { pluginId: 'mcp-app:reports', name: 'Reports' } };
+    expect(messageSourceIdEntries(meta)).toEqual([{ kind: 'mcpApp', id: 'reports' }]);
+    expect(describeMessageSourceSender(messageSourceSenderFromMeta(meta)!)).toBe(
+      '由 MCP App「Reports」(mcp_server_id: reports) 发送',
+    );
+  });
+
   it('lists the ids of the visible sender label, in the same priority as the label', () => {
     expect(
       messageSourceIdEntries({
@@ -231,5 +241,24 @@ describe('buildClientDeviceNote', () => {
   it('is byte-stable for the same devices', () => {
     const device = { deviceId: 'phone-1', name: 'iPhone', platform: 'mobile' as const };
     expect(buildClientDeviceNote(device)).toBe(buildClientDeviceNote(device));
+  });
+});
+
+describe('private group reply provenance', () => {
+  it('shares sanitized group facts between UI and model handoff attribution', () => {
+    const meta = { sourceGroup: { groupId: 'group-1', name: 'Design\nRoom' },
+      origin: { kind: 'session', senderSessionId: 'lane-1', senderBotId: 'bot-1', senderBotName: 'Helper' } };
+    expect(readMessageSourceGroup(meta)).toEqual({ groupId: 'group-1', name: 'Design Room' });
+    expect(describeMessageSourceSender(messageSourceSenderFromMeta(meta)!)).toContain('从群聊「Design Room」(group_id: group-1)');
+    expect(readMessageSourceGroup({ sourceGroup: { name: 'No identity' } })).toBeUndefined();
+  });
+});
+
+describe('isCrossDeviceSourceSessionId', () => {
+  it('recognizes only a device-qualified source task id', () => {
+    expect(isCrossDeviceSourceSessionId('dev-A::task-1')).toBe(true);
+    for (const local of [undefined, '', 'task-1', '::task-1', 'dev-A::']) {
+      expect(isCrossDeviceSourceSessionId(local)).toBe(false);
+    }
   });
 });

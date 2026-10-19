@@ -1,7 +1,9 @@
+import type { PluginUsageTransaction, PluginUsageHandle } from '../../../../shared/pluginUsage.js';
 import type { TaskTagRequest, TaskTagResult } from '@cindy/maker-shared';
 
 export type DbTxName =
   | 'authorization.readProjection'
+  | 'pluginUsage.execute'
   | 'taskTags.execute'
   | 'codex.importMessages'
   | 'claude.importMessages'
@@ -261,6 +263,15 @@ export interface EmbeddingEnqueueArgs {
  * orcaTeamStore.addOrUpdateWorker 原同步事务逻辑。可选字段值为 undefined 表示
  * "保留 existing 行的当前值",与原 drizzle 写法语义一致。
  */
+export interface OrcaRemoteWorkerProxySessionSeed {
+  title: string;
+  agentKind: string;
+  model: string;
+  effort: string | null;
+  permissionMode: string;
+  fastMode: boolean;
+}
+
 export interface OrcaUpsertWorkerArgs {
   id: string;
   teamId: string;
@@ -271,6 +282,12 @@ export interface OrcaUpsertWorkerArgs {
   role?: string;
   focused?: boolean;
   idleSince?: number | null;
+  remoteExecution?: {
+    deviceId: string;
+    remoteSessionId: string;
+    /** 新建代理与 Worker 路由一起提交；已有代理的更新可省略。 */
+    proxySession?: OrcaRemoteWorkerProxySessionSeed;
+  };
   now: number;
 }
 
@@ -408,6 +425,8 @@ export interface MessageInsertArgs {
   createdAt: number;
   guarded: boolean;
   expectedClearBoundaryMs?: number | null;
+  /** Host-only publication; stages belong to a connection-local TEMP table. */
+  publication?: 'stage' | 'publish' | 'discard' | 'rollback';
 }
 
 export interface MessageUpdateContentArgs {
@@ -974,6 +993,7 @@ export interface ImRotateSessionArgs {
     agentKind: string;
     source: string;
     providerId: string | null;
+    agentDeviceId?: string | null;
     /** 跟随渠道默认的记录(JSON, 见 im/shared/channelDefaultRoute.ts)。 */
     imDefaultRoute?: string | null;
     imBotContextId: string;
@@ -1328,6 +1348,7 @@ export type DbTxArgsByName = {
   'sessions.setTerminalStatus': SessionsSetTerminalStatusArgs;
   'recentWorkdirs.mergeWindowsIdentity': RecentWorkdirsMergeWindowsIdentityArgs;
   'recentWorkdirs.removeWindowsIdentity': RecentWorkdirsRemoveWindowsIdentityArgs;
+  'pluginUsage.execute': PluginUsageTransaction;
   'taskTags.execute': TaskTagRequest & { newId?: string; callerSessionId?: string };
   'projectAliases.replaceIdentity': ProjectAliasesReplaceIdentityArgs;
   'toolResults.compactSession': CompactSessionToolResultsArgs;
@@ -1413,6 +1434,7 @@ export type DbTxResultByName = {
   'sessions.setTerminalStatus': SessionsSetStatusResultItem;
   'recentWorkdirs.mergeWindowsIdentity': undefined;
   'recentWorkdirs.removeWindowsIdentity': { changes: number };
+  'pluginUsage.execute': PluginUsageHandle | null;
   'taskTags.execute': TaskTagResult;
   'projectAliases.replaceIdentity': {
     projectKey: string;

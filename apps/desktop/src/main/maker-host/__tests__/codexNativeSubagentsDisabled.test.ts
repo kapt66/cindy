@@ -34,9 +34,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { SUBAGENT_MODEL_SETTINGS_DEFAULTS } from '../../../shared/subagentModelSettings';
 import {
   buildCodexSubagentSpawnArgs,
+  codexHostUsesSmartSubagentRouting,
   resolveCodexSubagentRoutingProfile,
   type CodexSmartSubagentConfig,
 } from '../codex-subagent-config.js';
+import { restrictCodexRoutesToGuestProvider } from '../guest-provider-route-store.js';
 
 /** argv 契约：关掉 codex 原生子代理时要出现的相邻参数对。 */
 const DISABLED_SUBAGENTS_ARGV = ['-c', 'agents.enabled=false'];
@@ -155,6 +157,8 @@ function scope(spies: HookSpies): Record<string, unknown> {
     buildCodexProxySpawnArgs: () => [],
     // 真实纯函数：反向证据要看到上游原本会追加的智能调配 argv。
     buildCodexSubagentSpawnArgs,
+    // 真实纯函数：宿主用途 / 受邀者档位门由上游纯函数判定，本测试不复刻。
+    codexHostUsesSmartSubagentRouting,
     buildRemoteCodexSessionMcpConfig: () => ({}),
     CODEX_CINDY_COMPACT_PROVIDER_ID: 'cindy-compact-fixture',
     CODEX_OPENAI_COMPACT_PROVIDER_ID: 'openai-compact-fixture',
@@ -200,6 +204,8 @@ function scope(spies: HookSpies): Record<string, unknown> {
       codexSmartSubagentRouting: true,
     }),
     registerCodexScopedCustomProviderRoutes: () => () => {},
+    // 真实纯函数：受邀者挡位过滤只在 ctx.deviceHostedGuestProviderId 时可达，本测试不复刻。
+    restrictCodexRoutesToGuestProvider,
     releaseCodexCustomContextProxy: async () => {},
     resolveCodexBrowserCompanionSpawnConfig: () => ({
       extraArgs: [] as string[],

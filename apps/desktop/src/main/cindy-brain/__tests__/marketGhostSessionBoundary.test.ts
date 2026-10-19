@@ -18,6 +18,13 @@ describe('market Ghost session boundary', () => {
     resolve(process.cwd(), 'src/main/plugin-market/service.ts'),
     'utf8',
   ).replace(/\r\n/g, '\n');
+  // Meka development-directory identities cross this module boundary: the
+  // logical source id is mapped to its derived runtime install before entering
+  // the shared instance resolver. Both halves must keep existing.
+  const ghostIntegrationSource = readFileSync(
+    resolve(process.cwd(), 'src/main/mcp-integrations/ghost.ts'),
+    'utf8',
+  ).replace(/\r\n/g, '\n');
 
   it('keeps automatic custom updates bound to the owner captured by synchronization', () => {
     const installStart = marketServiceSource.indexOf('  private async customInstall(');
@@ -136,14 +143,83 @@ describe('market Ghost session boundary', () => {
     const end = source.indexOf('\n}', start);
     const body = source.slice(start, end);
     expect(body).toContain('if (isAppSessionBoundaryPending()) return [];');
-    const lookupStart = source.indexOf('function findAvailableGhost(id: string)');
+    expect(source).toContain(
+      'const resolved = resolveInstalledGhost(availableGhosts(), id, namespace);',
+    );
+    // Meka development directory: a logical source id falls back to its derived
+    // meka-dev-* runtime install, and never guesses one. This is the added
+    // fallback on top of the upstream resolver, not a second lookup path.
+    const lookupStart = source.indexOf('function findAvailableGhost(id: string');
     const lookupEnd = source.indexOf('\n}', lookupStart);
     const lookupBody = source.slice(lookupStart, lookupEnd);
-    expect(lookupBody).toContain('const ghosts = availableGhosts();');
     expect(lookupBody).toContain('mekaDevPluginsSingleton?.runtimeIdFor(id)');
+    expect(lookupBody).toContain('resolveInstalledGhost(availableGhosts(), developmentRuntimeId, namespace)');
     expect(lookupBody).not.toContain('mekaDevRuntimeId(id)');
-    expect(source.match(/getGhost: findAvailableGhost/g)?.length ?? 0).toBeGreaterThanOrEqual(3);
-    expect(source).toContain('return findAvailableGhost(id)?.manifest.name ?? null;');
+    expect(lookupBody).not.toContain('const ghosts = availableGhosts();');
+    // The logical -> runtime mapping stays exported: maker-ipc/register.ts
+    // resolves dev-plugin identities through it before calling the shared
+    // instance resolver.
+    expect(source).toContain('export function resolveGhostRuntimeId(id: string): string {');
+    expect(source).toContain('return mekaDevPluginsSingleton?.runtimeIdFor(id) ?? id;');
+    expect(source).toContain('export function resolveGhostLogicalId(id: string): string {');
+    // The visibility deps contract itself stays upstream-shaped (no per-call
+    // alias hook); Meka maps the id at the caller boundary instead.
+    expect(ghostIntegrationSource).toContain('return resolveGhostRuntimeId(ghostId);');
+    expect(ghostIntegrationSource).not.toContain('resolveGhostId:');
+    expect(ghostIntegrationSource).toContain('classifyGhostVisibility(resolveVisibilityGhostId(target.id)');
+    expect(ghostIntegrationSource).toContain('classifyGhostVisibility(resolveVisibilityGhostId(ghostId)');
+    const resolverStart = source.indexOf('export function findGhostForInstanceId(');
+    const resolverBody = source.slice(resolverStart, source.indexOf('\n}', resolverStart));
+    expect(resolverBody.match(/availableGhosts\(\)/g)).toHaveLength(1);
+    expect(resolverBody).toContain('resolvePluginInstanceQuery(availableGhosts(), id, namespace)');
+    expect(resolverBody).not.toContain('findInstalledGhostByInstanceId');
+    // The exact-key fast path fails closed at an account boundary and keeps the
+    // active-session availability filter that availableGhosts() applies.
+    const fastPathStart = resolverBody.indexOf('if (namespace === undefined) {');
+    expect(fastPathStart).toBeGreaterThanOrEqual(0);
+    const fastPath = resolverBody.slice(fastPathStart, resolverBody.indexOf('\n  }', fastPathStart));
+    expect(fastPath).toContain('if (isAppSessionBoundaryPending()) return null;');
+    expect(fastPath.indexOf('isAppSessionBoundaryPending()')).toBeLessThan(fastPath.indexOf('findInstalledInstance(id)'));
+    expect(fastPath).toContain('isGhostAvailableForActiveSession(ghost.manifest.id) ? ghost : null');
+    expect(source.match(/getGhost: findAvailableGhost/g)?.length ?? 0).toBe(0);
+    expect(source.match(/getGhost: findGhostForInstanceId/g)?.length ?? 0).toBeGreaterThanOrEqual(12);
+    expect(resolverBody).toContain(
+      "return resolved.status === 'unique' ? resolved.ghost : null;",
+    );
+    expect(source).toContain('availableByInstanceId.get(entry.ghostId)');
+    expect(source).toContain('hasCardSlot: (ghostId) => {');
+    expect(source).toContain('const g = findGhostForPhysicalStoragePart(ghostId);');
+    expect(source).toContain(
+      'export async function getGhostLibraryOverview(ghostId: string): Promise<GhostLibraryOverview> {',
+    );
+    const overviewStart = source.indexOf(
+      'export async function getGhostLibraryOverview(ghostId: string)',
+    );
+    expect(source.slice(overviewStart, overviewStart + 280)).toContain(
+      'const ghost = findGhostForInstanceId(ghostId);',
+    );
+    const assessStart = source.indexOf(
+      'export function getGhostSetupAssessment(ghostId: string)',
+    );
+    const assessBody = source.slice(assessStart, assessStart + 1600);
+    expect(assessBody).toContain('const ghost = findGhostForInstanceId(ghostId);');
+    expect(assessBody).toContain('const storeId = installedGhostStoragePart(ghost);');
+    expect(assessBody).toContain('getGhostSetupProbes(storeId, runtimeManifest)');
+    expect(assessBody).not.toContain('oauthManager.listAccounts(ghostId, key)');
+    const probesStart = source.indexOf('function getGhostSetupProbes(');
+    const probesBody = source.slice(probesStart, source.indexOf('export function getGhostSetupAssessment', probesStart));
+    expect(probesBody).toContain('oauthManager.listAccounts(storeId, key)');
+    expect(probesBody).not.toContain('oauthManager.listAccounts(ghostId, key)');
+    expect(source).toContain('return findGhostForInstanceId(id)?.manifest.name ?? null;');
+  });
+
+  it('blocks relocation and source archival while a private filesystem request is in flight', () => {
+    const start = source.indexOf('function assertGhostRelocationIdle(part: string): void {');
+    const guard = source.slice(start, source.indexOf('\n}', start));
+    expect(guard).toContain('fsSlotSingleton?.hasInFlightRequests(part)');
+    expect(source).toContain('assertGhostRelocationIdle(fromPart);');
+    expect(source).toContain('if (sourceChanged) assertGhostRelocationIdle(instanceId);');
+    expect(source).toContain('if (expected.sourceChanged) assertGhostRelocationIdle(installedGhostStoragePart(installed));');
   });
 
   it('allows explicit local replacement and detaches market routing before landing', () => {
@@ -163,7 +239,7 @@ describe('market Ghost session boundary', () => {
     const helperBody = source.slice(helperStart, helperEnd);
 
     const ledgerReadIndex = helperBody.indexOf(
-      'marketLedger.installationForGhost(inspected.manifest.id)',
+      '= readLocalGhostUpdateSource(',
     );
     const captureIndex = updateBody.indexOf('const mutationOwner = captureGhostMutationOwner();');
     const inspectIndex = updateBody.indexOf('await manager.inspect(lizFilePath)');
@@ -173,16 +249,18 @@ describe('market Ghost session boundary', () => {
     const detachDecisionIndex = helperBody.indexOf(
       'const detachMarketRecord = Boolean(marketRecord?.installed)',
     );
-    const runtimeStopIndex = helperBody.indexOf('runtime.stop(inspected.manifest.id)');
+    const runtimeStopIndex = helperBody.indexOf(
+      'runtime.stop(instanceId)',
+    );
     const stopAndWaitIndex = helperBody.indexOf(
-      'await getGhostNodeRuntimeBroker().stopAndWait(inspected.manifest.id);',
+      'await getGhostNodeRuntimeBroker().stopAndWait(instanceId);',
     );
     const oauthLockIndex = helperBody.indexOf(
-      'result = await withActiveOwnerGhostOauthMutationLock(inspected.manifest.id',
+      'result = await withActiveOwnerGhostOauthMutationLock(',
     );
     const managerUpdateIndex = helperBody.indexOf('manager.update(cindyFilePath,');
     const detachIndex = helperBody.indexOf(
-      'marketLedger.markRemoved(inspected.manifest.id, null)',
+      'marketLedger.markRemovedRecord(marketRecord, null)',
     );
 
     expect(captureIndex).toBeGreaterThan(-1);
@@ -191,7 +269,8 @@ describe('market Ghost session boundary', () => {
     expect(helperCallIndex).toBeGreaterThan(leaseIndex);
     expect(ledgerBindIndex).toBeGreaterThan(-1);
     expect(runtimeStopIndex).toBeGreaterThan(ledgerBindIndex);
-    expect(ledgerReadIndex).toBeGreaterThan(stopAndWaitIndex);
+    expect(ledgerReadIndex).toBeGreaterThan(ledgerBindIndex);
+    expect(ledgerReadIndex).toBeLessThan(runtimeStopIndex);
     expect(detachDecisionIndex).toBeGreaterThan(ledgerReadIndex);
     expect(stopAndWaitIndex).toBeGreaterThan(runtimeStopIndex);
     // 只有确认旧进程退出，才切断旧市场的自动更新路由；等待失败时保留原路由，
@@ -202,6 +281,7 @@ describe('market Ghost session boundary', () => {
     expect(oauthLockIndex).toBeGreaterThan(detachIndex);
     expect(managerUpdateIndex).toBeGreaterThan(oauthLockIndex);
     expect(helperBody).toContain('marketLedger.restoreInstallation(');
+    expect(helperBody).toContain('...deliveryNamespaceFields(previousGhost)');
     expect(helperBody).not.toContain('marketLedger.isDefaultInstallSuppressed(');
     expect(helperBody).not.toContain('marketInstallSubject');
     expect(helperBody).toContain('用户显式卸载，不得产生 default-install opt-out');
@@ -230,16 +310,24 @@ describe('market Ghost session boundary', () => {
     expect(body.match(/expected\.beforeCommitInLock\?\.\(\);/g)).toHaveLength(1);
 
     const waitIndex = body.indexOf(
-      'await getGhostNodeRuntimeBroker().stopAndWait(expected.ghostId);',
+      'await getGhostNodeRuntimeBroker().stopAndWait(',
     );
     const oauthLockIndex = body.indexOf(
-      'await withActiveOwnerGhostOauthMutationLock(expected.ghostId',
+      'await withActiveOwnerGhostOauthMutationLock(installedGhostStoragePart(installed)',
     );
     const updateIndex = body.indexOf('manager.update(cindyFilePath,');
 
     expect(waitIndex).toBeGreaterThan(-1);
     expect(waitIndex).toBeLessThan(oauthLockIndex);
     expect(oauthLockIndex).toBeLessThan(updateIndex);
+    expect(body).toContain('runtime.stop(installedGhostStoragePart(installed));');
+    expect(body).toContain(
+      'await getGhostNodeRuntimeBroker().stopAndWait(installedGhostStoragePart(installed));',
+    );
+    expect(body).toContain('runtime.resetFuse(installedGhostStoragePart(result.ghost));');
+    expect(body).not.toContain(
+      'pluginStoragePart(createPluginLogicalIdentity(expected.namespace ?? null, expected.ghostId))',
+    );
     const restoreIndex = body.indexOf('spawnIfResident(installed);');
     expect(restoreIndex).toBeGreaterThan(updateIndex);
   });
@@ -256,14 +344,14 @@ describe('market Ghost session boundary', () => {
     const helperBody = source.slice(helperStart, helperEnd);
 
     const waitIndex = helperBody.indexOf(
-      'await getGhostNodeRuntimeBroker().stopAndWait(inspected.manifest.id);',
+      'await getGhostNodeRuntimeBroker().stopAndWait(instanceId);',
     );
     const oauthLockIndex = helperBody.indexOf(
-      'result = await withActiveOwnerGhostOauthMutationLock(inspected.manifest.id',
+      'result = await withActiveOwnerGhostOauthMutationLock(',
     );
     const updateIndex = helperBody.indexOf('manager.update(cindyFilePath');
     const restoreIndex = helperBody.indexOf(
-      'if (previousGhost) spawnIfResident(previousGhost);',
+      'spawnIfResident(previousGhost);',
     );
 
     // stopAndWait must be called before manager.update (safe directory
@@ -276,7 +364,12 @@ describe('market Ghost session boundary', () => {
     // stopAndWait (rollback if provenance check fails).
     expect(restoreIndex).toBeGreaterThan(waitIndex);
     expect(updateBody).toContain('finally {\n      releaseMutation();');
-    expect(helperBody).toContain("throwIpcError('INTERNAL', 'Unable to verify the installed Plugin source');");
+    const provenanceStart = source.indexOf('function readLocalGhostUpdateSource(');
+    const provenanceBody = source.slice(provenanceStart, helperStart);
+    expect(provenanceBody).toContain("throwIpcError('INTERNAL', 'Unable to verify the installed Plugin source');");
+    expect(provenanceBody).toContain('installationForPlugin({');
+    expect(provenanceBody).toContain('...deliveryNamespaceFields(previousGhost)');
+    expect(helperBody.indexOf('= readLocalGhostUpdateSource(')).toBeLessThan(waitIndex);
     expect(helperBody).toContain("throwIpcError('INTERNAL', 'Unable to detach the installed Plugin source');");
   });
 
@@ -318,15 +411,14 @@ describe('market Ghost session boundary', () => {
     // 捕获)。它的落仓路径(ghost-gallery 作品归属 + recordGhostCallMedia)必须同样
     // 有本地 owner 守卫 + assertStillValid + 补偿 journal,否则账号切换期间的
     // as:'media' fetch 仍可能落仓到错误 owner 的画廊。
-    const networkStart = source.indexOf(
-      'saveGhostMedia: async ({ ghostId, buffer, mimeType, label, callId }) =>',
-    );
+    const networkStart = source.indexOf('saveGhostMedia: async ({ ghostId, buffer, mimeType, label, callId, assertStillValid }) =>');
     expect(networkStart).toBeGreaterThan(-1);
     const networkBody = source.slice(networkStart, networkStart + 1800);
     expect(networkBody).toContain('const ownerScopeKey = activeOwnerScopeKey();');
-    expect(networkBody).toContain(
-      'isGhostBoundaryPending() || activeOwnerScopeKey() !== ownerScopeKey',
-    );
+    expect(networkBody).toContain('assertStillValid?.();');
+    expect(source).toContain('captureRequestGuard: captureGhostNetworkRequestGuard');
+    expect(source).toContain('networkSlotSingleton?.hasInFlightRequests(part)');
+    expect(networkBody).toContain('isGhostBoundaryPending() || activeOwnerScopeKey() !== ownerScopeKey');
     expect(networkBody).toContain('assertStillValid: assertOwnerScopeCurrent');
     expect(networkBody).toContain(
       'refCompensationScope: captureMediaRefCompensationScope(ownerScopeKey)',

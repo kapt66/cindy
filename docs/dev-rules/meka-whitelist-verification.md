@@ -153,24 +153,24 @@ P4 项目根、插件面板呈现方式等 Meka 专属配置；这些配置落�
 ### WL-2 首页左侧栏 Meka 入口
 
 **保护的不变量**：左侧栏有**常驻且高亮**的 Meka 入口，通往 Meka 插件／技能／项目三个页面；
-展开态与收窄（rail）态**都有**入口；旧深链仍能落到新路由。上游侧栏只有 `botsRow`、没有
-`mekaRow`，router 里也没有任何 `meka` 命中——这一整域必须靠并集（不是取单侧）保住。
+展开态与收窄（rail）态**都有**入口；旧深链仍能落到新路由。上游侧栏**没有** `mekaRow`、router 里也
+没有任何 `meka` 命中——这一整域必须靠并集（不是取单侧）保住。**第六轮（2026-10-16）起**上游已把
+「伙伴」并入侧栏第一层（`2ce5ab565e`：`sidebarNavigationPrefs` 删掉 `bots` 条目、rail 伙伴瓷砖改由
+`CollapsedView` 承担），因此「上游侧栏只有 `botsRow`」这句描述已过时；不变量本身不变。
 
-#### WL-2.1 顶部导航 Meka 入口行（`mekaRow`）
+- **代码锚点**（**2026-10-16 第六轮同步后逐条打开文件实测；以符号名为准**）：`apps/desktop/src/renderer/components/sidebar/SidebarTopNav.tsx:470`（`onMekaMatch = useMatch('/cc-agent/meka/*')`）、`:501`（`mekaRow` 定义）、`:116`（新增本地联合 `SidebarNavigationSlot = SidebarNavigationEntryId | 'meka'`）、`:583-596`（把偏好行 id 复制成**槽位表**并在「紧随 `automations`」处 `splice` 进 `'meka'`，`:590 renderRows(slots)`）、`:631-632`（搜索前后两段）与 `:643`（整段 `orderedNavigationRows`）**三处共用同一张槽位表** —— 因此三种渲染路径都含 Meka；Meka 槽位**不占偏好 id**，结构性保证不进「更多」/「自定义」面板
 
-- **代码锚点**（**2026-10-08 第五轮同步后逐条打开文件实测；以符号名为准**）：`apps/desktop/src/renderer/components/sidebar/SidebarTopNav.tsx:476`（`onMekaMatch = useMatch('/cc-agent/meka/*')`）、`:504`（`mekaRow` 定义）、`:603`（把 `mekaRow` **splice 进 `orderedNavigationRows`**，紧随 `automations`）—— 因此 scrollable 段与 all 段**两处渲染分支都含 Meka**（旧版的 `:189`/`:232` 两处独立分支已被上游 #5472 的偏好驱动注册表取代）
-- **自动化门禁**：**无自动化覆盖**（`mekaSidebarOrder.test.ts` 只读 `CCAgentSidebarUpper.tsx`，不覆盖 `SidebarTopNav.tsx`）。上游把导航行改成「用户偏好注册表」结构后，Meka 行是**注入式**的（不占偏好 id、不进「更多」/「自定义」面板）；改侧栏结构时必须同时查 scrollable 与 all 两条路径
+- **自动化门禁**：**无自动化覆盖**（`mekaSidebarOrder.test.ts` 只读 `CCAgentSidebarUpper.tsx`，不覆盖 `SidebarTopNav.tsx`）。上游把导航行改成「用户偏好注册表」结构后，Meka 行是**注入式**的（不占偏好 id、不进「更多」/「自定义」面板）；改侧栏结构时必须同时查**全部渲染路径**（第六轮起是「整段 + 搜索前后两段」共三处，见 WL-2.1 锚点）
 - **实机验证**：展开左侧栏 → 自上而下可见「新建 / 自动任务 / **Meka 管理**（公文包图标）/ 插件 / 伙伴 / 搜索」；点「Meka 管理」进入 Meka 插件页，该行呈选中态；进入 `/cc-agent/meka/skills`、`/cc-agent/meka` 时**仍保持高亮**
 - **历史回归**：2026-09 上一轮同步 `SidebarTopNav.tsx` 的 lucide `Bot` import 丢失 —— 根因就是 `mekaRow`（Meka）与上游新增 `botsRow` 需要**并集**（[`2026-09-origin-main-to-meka-main.md`](../migrations/2026-09-origin-main-to-meka-main.md) §4.3）。**第五轮更正**：上游 #5472 已把伙伴图标搬进共享 `sidebar/renderer/components/sidebar/sidebarNavigationPrefs.ts:20`（`SIDEBAR_NAVIGATION_ITEM_ICONS.bots = Bot`），`SidebarTopNav.tsx` 不再直接 import `Bot`（补回会变成未使用 import）；**「实体存在」这一不变量不变，承载文件变了**。文件头 `:29-31` 有对应注释。
 
-#### WL-2.2 折叠（rail）态 Meka 入口图标
+- **代码锚点**（**2026-10-16 第六轮同步后逐条打开文件实测；以符号名为准**）：`apps/desktop/src/renderer/features/cc-agent/CCAgentSidebarUpper.tsx:4236`（`onMekaMatch`）、`:4272-4288`（把 `mekaEntry` 注入 `SidebarRailNavigation`：`SidebarIconButton` + `BriefcaseBusiness` + `active={Boolean(onMekaMatch)}` + `aria-current`）；`apps/desktop/src/renderer/components/sidebar/SidebarTopNav.tsx:368`（`mekaEntry` prop 与不占偏好 id 的说明）、`:393`（`mekaTileIndex`）、`:424-426`（按 `mekaTileIndex` 把 `mekaEntry` 插进 tile 序列）
 
-- **代码锚点**（**2026-10-08 第五轮同步后逐条打开文件实测；以符号名为准**）：`apps/desktop/src/renderer/features/cc-agent/CCAgentSidebarUpper.tsx:4209`（`onMekaMatch`）、`:4241-4250`（把 `mekaEntry` 注入 `SidebarRailNavigation`：`SidebarIconButton` + `BriefcaseBusiness` + `active={Boolean(onMekaMatch)}` + `aria-current`）；`apps/desktop/src/renderer/components/sidebar/SidebarTopNav.tsx:363-375`（`mekaEntry` prop 与不占偏好 id 的说明）、`:400`（`mekaTileIndex`）、`:431-433`（按 `mekaTileIndex` 把 `mekaEntry` 插进 tile 序列）
 - **不变量**：rail 态**必须有**常驻 Meka 图标，位置紧随「自动任务」tile 之后（与展开态 `mekaRow` 同一规则）；`mekaEntry` 不占偏好 id ⇒ 既不进「更多」也不进「自定义」面板
 - **位次变更（2026-10-08 第五轮登记，非回归）**：旧口径「在 `GhostMainViewNavEntries`（rail）之后、插件 rail 入口之前」在**上游新结构下不可表达** —— tile 顺序归用户偏好，插件 tile 已不再是固定邻居。现改为「紧随自动任务之后」，并与展开态 `mekaRow` 用同一条排序规则，两个形态因此保持对称。
 - **自动化门禁**：**无自动化覆盖**
 - **实机验证**：把左侧栏拖到 rail 态 → 图标列含公文包（Meka）；点击进入 Meka 插件页；处于 `/cc-agent/meka/*` 时为 active 态
-- **历史回归**：源码注释记录过「折叠 rail 之前漏了这颗按钮」的对称性缺口（当前在 `SidebarTopNav.tsx:363-364` 与 `CCAgentSidebarUpper.tsx:4241` 的注释里）
+- **历史回归**：源码注释记录过「折叠 rail 之前漏了这颗按钮」的对称性缺口（当前在 `SidebarTopNav.tsx:368` 附近与 `CCAgentSidebarUpper.tsx:4272` 附近的注释里）
 
 #### WL-2.3 三页签管理页骨架（插件 / 技能 / 项目）
 
@@ -187,9 +187,8 @@ P4 项目根、插件面板呈现方式等 Meka 专属配置；这些配置落�
 - **自动化门禁**：部分覆盖（`PluginManagementLayout.test.tsx`、`MekaProjectRoleEditorRoute.test.tsx`、`MekaSkillHomeView.test.tsx`、`MekaSkillMarketListView.test.tsx`）；**旧路径 `/meka-plugins` 重定向无用例**
 - **实机验证**：直接导航 `/meka-plugins` → 落到 `/cc-agent/meka/plugins`；四个 Meka 页面均正常渲染
 
-#### WL-2.5 Meka 段在侧栏的位次
+- **代码锚点**（**2026-10-16 第六轮同步后实测；以符号名为准**）：`apps/desktop/src/renderer/features/cc-agent/CCAgentSidebarUpper.tsx` 的 `<MekaAssistantSection>`（`:3916`）、`<PinnedSection>`（`:3954`）、`<ProjectsSection>`（`:4020`）
 
-- **代码锚点**（行号为 2026-09-23 第三轮同步后实测；**以符号名为准**）：`apps/desktop/src/renderer/features/cc-agent/CCAgentSidebarUpper.tsx` 的 `<MekaAssistantSection>`（约 `:3779`）、`<PinnedSection>`（约 `:3817`）、`<ProjectsSection>`（约 `:3883`）
 - **自动化门禁**：`pnpm --filter desktop exec vitest run src/renderer/__tests__/mekaSidebarOrder.test.ts`（断言 Meka 段在置顶段与项目段之前）
 - **缺口**：该断言**不覆盖** `DialogueSection`（文件仍在但已不在渲染路径）与 `SidebarTopNav section="scrollable"`（约 `:3696`）的相对位次
 - **实机验证**：Meka 段位于「置顶」「项目」之上，一级产品区不被挤到 Cindy 任务之后
@@ -352,22 +351,22 @@ P4 项目根、插件面板呈现方式等 Meka 专属配置；这些配置落�
 ##### WL-4.1.6 远端运行时版本门禁（pin + protocol 协商 + fail closed）
 
 - **不变量**：`protocol/hello` 必带 `bundleVersion`（可兼容旧 daemon 不回显，但不得省略请求参数）；manager version 相同但 protocol 不同同属不可部署的 pin mismatch
-- **当前 pin**：bundle `0.0.10` / protocol `5` —— `packages/maker-cc-manager/src/protocol.ts:42,51`；v5 语义 = root-only `toolGuards` 接受原生 `AskUserQuestion`
+- **当前 pin**：bundle `0.0.11` / protocol `5` —— `packages/maker-cc-manager/src/protocol.ts:42`（`PROTOCOL_VERSION = 5`）与 `:53`（`CC_MGR_BUNDLE_VERSION = '0.0.11'`）；v5 语义 = root-only `toolGuards` 接受原生 `AskUserQuestion`。**数值一律以该文件为准，本节只是复述**（第六轮同步实测：HEAD / `origin/main` / merge-base 三处同值 `0.0.11`，即该 pin 自**第五轮**随上游 `6ed04a977b` 抬到 `0.0.11` 后一直未被本清单跟上，属**存量文档漂移**，本轮就地更正，非本轮引入）
 - **代码锚点**：`packages/maker-cc-manager/src/server.ts:215-256`（bundleVersion 必填、`INVALID_BUNDLE_VERSION` / `INVALID_PROTOCOL_VERSION`、protocol ≥ 3 才广告 capability endpoint）；`maker-host/cc-manager-client.ts:369-371,382`；`maker-host/mcpr-codex-capability.ts:33,72-77`；`apps/desktop/src/main/remote-ssh/cc-manager-install.ts:384-391,408-449`
-- **自动化门禁**：`pnpm --filter @cindy/maker-cc-manager exec vitest run __tests__/protocol.test.ts __tests__/server.test.ts`（`protocol.test.ts:23,27` 硬断言 5 与 `'0.0.10'`）；**错配可诊断**（2026-09-29 新增）：`pnpm --filter @cindy/maker-shared exec vitest run src/__tests__/ccManagerRuntimeVersion.test.ts` + `pnpm --filter desktop exec vitest run src/main/maker-host/__tests__/send-outcome.test.ts src/renderer/components/chat/__tests__/ErrorBannerCodexOAuth.test.tsx`
+- **自动化门禁**：`pnpm --filter @cindy/maker-cc-manager exec vitest run __tests__/protocol.test.ts __tests__/server.test.ts`（`protocol.test.ts:23,27` 硬断言 5 与 `'0.0.11'`，与 `protocol.ts` 同源）；**错配可诊断**（2026-09-29 新增）：`pnpm --filter @cindy/maker-shared exec vitest run src/__tests__/ccManagerRuntimeVersion.test.ts` + `pnpm --filter desktop exec vitest run src/main/maker-host/__tests__/send-outcome.test.ts src/renderer/components/chat/__tests__/ErrorBannerCodexOAuth.test.tsx`
 - **版本错配的可诊断性（2026-09-29 补齐）**：daemon 的 `client bundle X does not match server bundle Y` 过去被拍平成 `LAZY_CREATE_FAILED` 的自由文本，用户看不到「哪边旧 / 该做什么」。现在规约成 `[REMOTE_CC_MGR_VERSION_MISMATCH] client=<X> server=<Y>`
   （线协议与判定在 `packages/maker-shared/src/ccManagerRuntimeVersion.ts`，export `@cindy/maker-shared/cc-manager-runtime-version`），唯一规约点是 `maker-host/send-outcome.ts` 的 `createHostSendFailure`，
   渲染层 `components/chat/ErrorBanner.tsx` 命中 marker 后改用 `chat.errorBanner.ccMgrVersionMismatch`（5 语言、带两边版本插值）。规则正文见 `mcpr-remote-session-routing.md §4.1`。
   **注意**：这只把失败从「不可诊断」变成「可诊断 + 有动作」，`mcpr:` 路径下「客户端送不上去匹配的 daemon + 两侧精确相等」的结构问题仍在（L2/L3）。
 - **✅ 已闭合的测试缺口（2026-09-29）**：`mcprCodexCapability.test.ts` 原先把 `CC_MGR_BUNDLE_VERSION`
   mock 成 `'0.0.7'` 并在断言里写同一个字面量 —— 它只能证明「客户端装配形状」，客户端送出的 bundle
-  版本漂到 `0.0.10` 它也照样全绿（**自证**）。现在该 mock 用 `importOriginal()` 把真实模块
+  版本漂到 `0.0.11` 它也照样全绿（**自证**）。现在该 mock 用 `importOriginal()` 把真实模块
   `...actual` 透传，断言改成读**真实常量** `CC_MGR_BUNDLE_VERSION`；并补一条「透传拿到的是真实 pin」
   的形状守护，防止 `...actual` 失效后两侧一起变 `undefined` 而假绿（做过去掉 `...actual` 的负向对照：
   9 个用例全红，还原后全绿）。用例名相应改为不再复述版本号。
 
 - **实机验证**：MCPRouter 侧 bundle pin 与 Cindy 一致；**部署新 bundle 后必须重启 runtime**。跨仓：MCPRouter 完整构建会静态核对构建脚本/daemon/smoke 三处 pin 并探测从 `CINDY_SRC` 生成的真实 bundle
-- **历史回归**：2026-08-05 三次（漏传 bundleVersion、`cindy/0.144.1`、`expected 0.0.6/protocol 3, got 0.0.6/protocol 2`）；2026-08-24 跨仓发布漏项。**本轮同步把 pin 提到 `0.0.10/protocol 5` 时本清单与规则正文都曾落后一版**（已修）
+- **历史回归**：2026-08-05 三次（漏传 bundleVersion、`cindy/0.144.1`、`expected 0.0.6/protocol 3, got 0.0.6/protocol 2`）；2026-08-24 跨仓发布漏项。**第五轮同步把 pin 提到 `0.0.11/protocol 5`（上游 `6ed04a977b`）时本清单与规则正文都曾落后一版**（第六轮就地更正：见本条第 1 项；`0.0.10` 是更早的值）
 
 ##### WL-4.1.7 Codex 最低运行时 fail closed
 
@@ -868,6 +867,15 @@ edition 与端点自举）；② 登录页实际认证的 **realm**;③ 运行�
      与「区域运行期可选」不冲突。
   规则正文见 [`cindy-updater.md`](cindy-updater.md) 的「Agent 侧的『检查应用更新』入口」一节。
   **验证现状**：随交付门禁跑 `updateService.test.ts` 与 lizi-mcps 相关套件；**未做真机更新验收**（需真实签名与发布渠道）。
+
+**第六轮（2026-10-16）复核登记**：上游把 Agent 侧更新实现抽成 `apps/desktop/src/main/agent-app-update/**`
+（`agentAppUpdateService.ts` / `callerAuthority.ts` / `restartRecords.ts` / `constants.ts`），工具从单个
+`check_app_update` 扩成**三个**（`check_app_update` / `install_app_update` / `set_app_auto_update`），
+Host 接线锚点由 `mcp-providers.ts:418` 漂移到 `:47`（导入）+ `:513`（`appUpdate:` 接线）。
+本条 ② 的品牌要求**本轮已扩写到整条链路的主进程可见文案**：`agentAppUpdateService.ts:170/:414/:462` 与
+`updateService.ts:2726/:2734/:2774` 六处上游新写死的 `Cindy` 已改为 `${BRAND_NAME}`（`:2594` 的 macOS
+引导是原有正面先例）。规则正文已同步扩写，见 [`cindy-updater.md`](cindy-updater.md) 的
+「Agent 侧的『检查应用更新』入口」。**真机更新验收本轮仍未执行**（同上原因）。
 
 #### WL-6.6 旧身份只读迁移与 legacy 前缀扫描
 

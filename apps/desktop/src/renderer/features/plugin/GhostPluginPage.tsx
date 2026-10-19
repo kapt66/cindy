@@ -86,10 +86,16 @@ import {
   ghostInstallApprovalToken,
   ghostPanelKind,
   ghostPermissionItems,
-  isOfficialGhostId,
+  isUserInstallReservedGhostId,
   type GhostSetupStatus,
   type InstalledGhost,
 } from '../../../shared/ghost';
+import {
+  createPluginLogicalIdentity,
+  findInstalledGhostByIdentity,
+  findInstalledGhostByInstanceId,
+  installedGhostStoragePart,
+} from '../../../shared/pluginIdentity';
 import type {
   PluginMarketDetail,
   PluginMarketInstallProgress,
@@ -133,6 +139,7 @@ import {
 import { usePluginListScrollRestoration } from './lib/usePluginListScrollRestoration';
 import { GhostPagePanelHost } from './GhostPagePanelHost';
 import { GhostPluginDetailView } from './GhostPluginDetailView';
+import { PluginSharedUsage } from './PluginSharedUsage';
 import {
   currentMainViewVisibilityOwner,
   readMainViewSidebarVisible,
@@ -148,6 +155,8 @@ import { PluginScopePicker, usePluginRecentWorkdirs } from './PluginScopePicker'
 import {
   canOfferMarketInstall,
   ghostReapprovalRoute,
+  marketItemForInstalledGhost,
+  marketItemMatchesInstalledGhost,
   marketReviewTargetsInstalledGhost,
   orderPluginCatalogItems,
   pluginPresentationOrigin,
@@ -155,7 +164,10 @@ import {
   type PluginPresentationOrigin,
 } from './lib/pluginMarketPresentation';
 import { AddMarketplaceDialog } from './AddMarketplaceDialog';
-import { pluginMarketErrorKey } from './lib/pluginMarketErrorKey';
+import {
+  pluginMarketErrorKey,
+  pluginMarketOrganizationAccessErrorKey,
+} from './lib/pluginMarketErrorKey';
 import { usePluginIconRefresh } from './lib/usePluginIconRefresh';
 import { useGhostPanelLauncher } from './useGhostPanelLauncher';
 import { usePluginMarketIcon } from './lib/usePluginMarketIcon';
@@ -166,13 +178,32 @@ import './plugin-motion.css';
 const PLUGIN_CATALOG_TOOLBAR_CLASS =
   'plugin-catalog-toolbar mb-5 flex items-center justify-between gap-4';
 type PluginPresentationFilter = 'all' | PluginPresentationOrigin;
+
 type PresentedGhostPluginItem = GhostPluginListItem & {
   origin: PluginPresentationOrigin;
   development: boolean;
   sourcePluginId: string;
+  marketItem: PluginMarketItem | null;
+  author: string | null;
   /** 市场存在更新时的市场记录;列表卡片据此显示更新徽标与直达入口。 */
   marketUpdate: PluginMarketItem | null;
 };
+
+function findInstalledRetirementReplacement(
+  ghosts: readonly InstalledGhost[],
+  marketItems: readonly PluginMarketItem[],
+  target: { ghostId: string; marketId: string } | undefined,
+): InstalledGhost | undefined {
+  if (!target) return undefined;
+  const marketItem = marketItems.find((item) => item.pluginId === target.marketId);
+  if (marketItem) {
+    return ghosts.find((ghost) => marketItemMatchesInstalledGhost(marketItem, ghost));
+  }
+  return findInstalledGhostByIdentity(
+    ghosts,
+    createPluginLogicalIdentity(null, target.ghostId),
+  );
+}
 
 /** 推荐区来源过滤:本地装的必然在已安装区,不设「本地」档(设计定稿)。 */
 const RECOMMENDED_FILTERS: readonly PluginPresentationFilter[] = [
@@ -422,6 +453,7 @@ export function GhostPluginPage({
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { confirm } = useConfirmDialog();
+
   const showPluginMarketActionError = useCallback(
     async (error: unknown) => {
       // 用户在安装确认框里取消不是失败，不弹错误提示。
@@ -430,7 +462,7 @@ export function GhostPluginPage({
     },
     [t],
   );
-  const { user, mode, dataOwnerId } = useAuth();
+  const { user, mode, dataOwnerId, dataOwnerGeneration } = useAuth();
   const [recommendationNonce] = useState(() => searchParams.get('recommendation'));
   const pendingRecommendation = useSyncExternalStore(
     subscribePendingPluginSuggestion,
@@ -729,7 +761,9 @@ export function GhostPluginPage({
   }, []);
   useEffect(() => {
     if (!recommendation) return;
-    const target = ghosts.find((g) => g.manifest.id === recommendation.suggestion.pluginId);
+    const target = recommendation.suggestion.pluginId
+      ? findInstalledGhostByInstanceId(ghosts, recommendation.suggestion.pluginId)
+      : undefined;
     handlePickScope(target?.enabled ? recommendation.workingDir : null);
   }, [recommendation?.nonce, handlePickScope]);
   const effectiveEnabled = useCallback(
@@ -812,15 +846,9 @@ export function GhostPluginPage({
     [marketSnapshot?.customSourceNames],
   );
   const [addMarketplaceOpen, setAddMarketplaceOpen] = useState(false);
-  const marketByGhostId = useMemo(() => {
-    const map = new Map<string, PluginMarketItem>();
-    for (const item of marketItems) {
-      // 非当前路由的同 id 条目只出现在「可替换」市场卡片，
-      // 不得投影成已装卡片的普通更新。
-      if (item.installState !== 'conflict') map.set(item.ghostId, item);
-    }
-    return map;
-  }, [marketItems]);
+  // 开发注册表按 `runtimeId` 建索引，而列表条目的 `id` 是**物理实例键**
+  // (`_root__<id>` / `_ns__<ns>__<id>`)，所以一切开发副本查询都走**逻辑 id**
+  // (`ghostId` / `detail.ghostId`)，与 `ghost.manifest.id` 同值。
   const mekaDevPluginById = useMemo(
     () => new Map(mekaDevPluginItems.map((item) => [item.runtimeId, item])),
     [mekaDevPluginItems],
@@ -842,7 +870,7 @@ export function GhostPluginPage({
             !ghosts.some((candidate) => candidate.manifest.id === 'xd-mivo'),
         )
         .map((ghost) => {
-          const marketItem = marketByGhostId.get(ghost.manifest.id) ?? null;
+          const marketItem = marketItemForInstalledGhost(marketItems, ghost);
           const developmentItem = mekaDevPluginById.get(ghost.manifest.id);
           const development = developmentItem !== undefined;
           const presentation = marketPresentationForInstalledGhost(ghost, marketItem);
@@ -855,13 +883,15 @@ export function GhostPluginPage({
             // update-available,以便用户用市场包替换未验证的本地字节。
             // 两类条目不给市场更新:上游的退役功能(改由退役详情页引导替换)与
             // Meka 开发目录装入项(本地字节,更新走开发流程,不由市场包覆盖)。
+            marketItem,
+            author: presentation?.author ?? ghost.manifest.author ?? null,
             marketUpdate:
               development || ghost.retirement
                 ? null
                 : pluginUpdateForInstalledVersion(marketItem),
           };
         }),
-    [ghosts, marketByGhostId, mekaDevPluginById],
+    [ghosts, marketItems, mekaDevPluginById],
   );
   const installedItems = useMemo(
     () =>
@@ -876,12 +906,16 @@ export function GhostPluginPage({
   );
   // 两个渠道复用同一套管理能力，但条目归属由 host 侧独立账本裁决：
   // 手动安装和 Cindy 市场插件留在“插件”，MCPRouter 安装项只进 Meka。
+  //
+  // 账本给出的 `installedGhostIds()` 与开发注册表的 `runtimeId` 都是**逻辑插件 id**，
+  // 而列表条目的 `id` 是物理实例键（`_root__<id>` / `_ns__<ns>__<id>`）。渠道归属必须按
+  // 逻辑 id 比较，否则 namespace 隔离上线后新装的插件会被判到错误的渠道页。
   const surfaceInstalledItems = useMemo(
     () =>
       installedItems.filter((item) =>
         isMekaSurface
-          ? mekaInstalledGhostIdSet.has(item.id)
-          : !mekaInstalledGhostIdSet.has(item.id),
+          ? mekaInstalledGhostIdSet.has(item.ghostId)
+          : !mekaInstalledGhostIdSet.has(item.ghostId),
       ),
     [installedItems, isMekaSurface, mekaInstalledGhostIdSet],
   );
@@ -931,6 +965,9 @@ export function GhostPluginPage({
     [effectiveOriginFilter, searchedAvailableMarketItems],
   );
   // 「自定义」档内按来源市场分组(≥2 个源时展示小标题);组顺序沿用市场添加顺序。
+  const organizationAccessErrorKey = pluginMarketOrganizationAccessErrorKey(
+    marketSnapshot?.organizationAccessError,
+  );
   const customGroups = useMemo(() => {
     if (effectiveOriginFilter !== 'custom') return null;
     const groups = new Map<string, PluginMarketItem[]>();
@@ -1043,22 +1080,23 @@ export function GhostPluginPage({
     (updatableInstalledItems.length > 0 &&
       (currentRoundKey === '' || ignoredRound !== currentRoundKey));
   const selectedGhost = selectedId
-    ? (ghosts.find((ghost) => ghost.manifest.id === selectedId) ?? null)
+    ? (findInstalledGhostByInstanceId(ghosts, selectedId) ?? null)
     : null;
   const selectedPresentation = selectedGhost
     ? marketPresentationForInstalledGhost(
         selectedGhost,
-        marketByGhostId.get(selectedGhost.manifest.id),
+        marketItemForInstalledGhost(marketItems, selectedGhost),
       )
     : null;
   const selectedDetail = selectedGhost
     ? toGhostPluginDetail(selectedGhost, selectedPresentation)
     : null;
-  const selectedMarketInstall = selectedDetail
-    ? (marketByGhostId.get(selectedDetail.id) ?? null)
+  const selectedMarketInstall = selectedGhost
+    ? marketItemForInstalledGhost(marketItems, selectedGhost)
     : null;
+  // 开发注册表按 `runtimeId` 建索引；详情条目的 `id` 是物理实例键，逻辑 id 才是 runtimeId。
   const selectedDevPlugin = selectedDetail
-    ? (mekaDevPluginById.get(selectedDetail.id) ?? null)
+    ? (mekaDevPluginById.get(selectedDetail.ghostId) ?? null)
     : null;
   // Meka 开发插件没有市场版本,只有非 dev 的市场安装才谈「可更新」。
   const selectedMarketUpdate =
@@ -1072,10 +1110,10 @@ export function GhostPluginPage({
   // ── 面板收束:页面独占的插件面板宿主;停用/卸载/换形态自动失效 ──
   const openPanelGhost = useMemo(() => {
     if (!openPanelId) return null;
-    const ghost = ghosts.find((candidate) => candidate.manifest.id === openPanelId);
+    const ghost = findInstalledGhostByInstanceId(ghosts, openPanelId) ?? null;
     if (!ghost) return null;
     if (ghost.manifest.panel?.position !== 'tab') return null;
-    if (!effectiveEnabled(ghost.manifest.id, ghost.enabled)) return null;
+    if (!effectiveEnabled(installedGhostStoragePart(ghost), ghost.enabled)) return null;
     return ghost;
   }, [effectiveEnabled, ghosts, openPanelId]);
   useEffect(() => {
@@ -1165,9 +1203,11 @@ export function GhostPluginPage({
 
   // 目录详情用于发现与能力展示；点击更新后由 Main 下载并校验真实包后直接落位。
   const handleMarketUpdate = useCallback(
-    async (ghostId: string) => {
-      const marketItem = marketByGhostId.get(ghostId);
-      const installedGhost = ghosts.find((ghost) => ghost.manifest.id === ghostId) ?? null;
+    async (instanceId: string) => {
+      const installedGhost = findInstalledGhostByInstanceId(ghosts, instanceId) ?? null;
+      const marketItem = installedGhost
+        ? marketItemForInstalledGhost(marketItems, installedGhost)
+        : null;
       if (
         !marketItem ||
         !marketReviewTargetsInstalledGhost(marketItem, installedGhost?.approval.state)
@@ -1224,7 +1264,7 @@ export function GhostPluginPage({
       installFromActiveMarket,
       isMarketBusyLeaseActive,
       installMarketPackage,
-      marketByGhostId,
+      marketItems,
       refreshMarket,
       releaseMarketBusy,
       showPluginMarketActionError,
@@ -1247,15 +1287,19 @@ export function GhostPluginPage({
    * 完整安装记录，不新增能力确认。
    */
   const handleRecoverInstall = useCallback(
-    async (ghostId: string) => {
-      if (ghosts.find((ghost) => ghost.manifest.id === ghostId)?.builtin) return;
-      if (ghostReapprovalRoute(marketByGhostId.get(ghostId)) === 'market') {
-        await handleMarketUpdate(ghostId);
+    async (instanceId: string) => {
+      const installedGhost = findInstalledGhostByInstanceId(ghosts, instanceId) ?? null;
+      if (installedGhost?.builtin) return;
+      if (
+        ghostReapprovalRoute(installedGhost ? marketItemForInstalledGhost(marketItems, installedGhost) : null) ===
+        'market'
+      ) {
+        await handleMarketUpdate(instanceId);
         return;
       }
-      await pickAndUpdateGhost(ghostId, { t });
+      await pickAndUpdateGhost(instanceId, { t });
     },
-    [ghosts, handleMarketUpdate, marketByGhostId, t],
+    [ghosts, handleMarketUpdate, marketItems, t],
   );
 
   const handleUpdateFromFile = useCallback(async () => {
@@ -1318,9 +1362,9 @@ export function GhostPluginPage({
         }
       },
       // 已在插件页:tab 型插件安装后原地打开面板。
-      openPluginPanel: (ghostId) => {
+      openPluginPanel: (instanceId) => {
         setSelectedId(null);
-        setOpenPanelId(ghostId);
+        setOpenPanelId(instanceId);
       },
     });
   }, [dataOwnerId, marketApi, t]);
@@ -1427,7 +1471,7 @@ export function GhostPluginPage({
 
   const handleUseGhost = useCallback(
     async (id: string, displayName: string) => {
-      const ghost = ghosts.find((candidate) => candidate.manifest.id === id);
+      const ghost = findInstalledGhostByInstanceId(ghosts, id) ?? null;
       if (!ghost) return;
       if (!ghost.manifest.command || ghost.retirement) return;
       // 使用前置门:点击时现查配置就绪度(main 侧确定性判定),未就绪先
@@ -1457,7 +1501,7 @@ export function GhostPluginPage({
         attachments: existing?.attachments ?? [],
         quotes: existing?.quotes ?? [],
         browserComments: existing?.browserComments ?? [],
-        ...(ghost.manifest.command ? { pendingGhostId: ghost.manifest.id } : {}),
+        ...(ghost.manifest.command ? { pendingGhostId: installedGhostStoragePart(ghost) } : {}),
         focusAtEnd: existing?.focusAtEnd === true,
       });
       resetDraftWorkspaceTargets();
@@ -1655,13 +1699,13 @@ export function GhostPluginPage({
         marketDetail.installState === 'conflict';
       try {
         let installedGhost =
-          ghosts.find((ghost) => ghost.manifest.id === marketDetail.ghostId) ?? null;
+          ghosts.find((ghost) => marketItemMatchesInstalledGhost(marketDetail, ghost)) ?? null;
         if (isUpdate && !installedGhost) {
           try {
             installedGhost =
               window.electronAPI.ghosts
                 .listSync()
-                .ghosts.find((ghost) => ghost.manifest.id === marketDetail.ghostId) ?? null;
+                .ghosts.find((ghost) => marketItemMatchesInstalledGhost(marketDetail, ghost)) ?? null;
           } catch {
             // bridge 不可用或状态切换时保持 null；下面按状态变化安全终止。
           }
@@ -1690,7 +1734,7 @@ export function GhostPluginPage({
           isStillActive: () => isMarketBusyLeaseActive(marketBusyLease),
         });
         if (!ghost || !isMarketBusyLeaseActive(marketBusyLease)) return;
-        if (continueRecommendation(pendingNonce, ghost.manifest.id)) return;
+        if (continueRecommendation(pendingNonce, installedGhostStoragePart(ghost))) return;
         // 市场首装装完即开(2026-07-26 定案),toast 用"已安装";更新路径如实
         // 用"已更新"(生效状态未被改变),并留在当前页方便连续更新多个插件。
         toast.success(
@@ -1707,7 +1751,7 @@ export function GhostPluginPage({
           setMarketDetail((current) =>
             current?.pluginId === marketDetail.pluginId ? null : current,
           );
-          setSelectedId(ghost.manifest.id);
+          setSelectedId(installedGhostStoragePart(ghost));
         } else {
           await refreshVisibleMarketDetail(marketDetail.pluginId).catch(() => undefined);
         }
@@ -1785,7 +1829,7 @@ export function GhostPluginPage({
     // Market details render first; selecting a hidden notice does not make it read.
     if (marketDetail || !selectedGhost?.retirement?.unread) return;
     void window.electronAPI.ghosts
-      .acknowledgeRetirement(selectedGhost.manifest.id)
+      .acknowledgeRetirement(installedGhostStoragePart(selectedGhost))
       .catch(() => toast.error(t('settings.ghosts.retirement.saveFailed')));
   }, [marketDetail, selectedGhost?.manifest.id, selectedGhost?.retirement?.unread, t]);
 
@@ -1794,19 +1838,24 @@ export function GhostPluginPage({
       selectedGhost?.retirement && featureRetirementById(selectedGhost.retirement.id);
     const target = descriptor?.replacement;
     if (!target || !selectedGhost?.retirement?.eligible) return;
-    const replacement = window.electronAPI.ghosts
-      .listSync()
-      .ghosts.find((ghost) => ghost.manifest.id === target.ghostId);
+    const replacement = findInstalledRetirementReplacement(
+      window.electronAPI.ghosts.listSync().ghosts,
+      marketItems,
+      target,
+    );
     if (replacement) {
+      const replacementId = installedGhostStoragePart(replacement);
       if (replacement.enabled) {
-        setSelectedId(replacement.manifest.id);
+        setSelectedId(replacementId);
         handlePrimaryAction(toGhostPluginListItem(replacement));
       } else {
         const lease = acquireMarketBusy(target.marketId);
         if (!lease) return;
         try {
-          await window.electronAPI.ghosts.setEnabled(target.ghostId, true);
-          if (isMarketBusyLeaseActive(lease)) setSelectedId(target.ghostId);
+          await window.electronAPI.ghosts.setEnabled(
+            replacementId, true, ghostInstallApprovalToken(replacement.approval),
+          );
+          if (isMarketBusyLeaseActive(lease)) setSelectedId(replacementId);
         } catch (error) {
           if (isMarketBusyLeaseActive(lease)) await showPluginMarketActionError(error);
         } finally {
@@ -1824,7 +1873,7 @@ export function GhostPluginPage({
     // key 纳入 owner 代际:双保险。即便将来某条路径漏了上面的清空,换身份也会
     // 强制卸载重建宿主(webview 连同它的 DOM/内存态一起丢),不会跨账号复用。
     <GhostPagePanelHost
-      key={`${panelOwnerKey}:${openPanelGhost.manifest.id}`}
+      key={`${panelOwnerKey}:${installedGhostStoragePart(openPanelGhost)}`}
       ghost={openPanelGhost}
       onClose={() => setOpenPanelId(null)}
     />
@@ -1869,13 +1918,13 @@ export function GhostPluginPage({
     return (
       <RetiredFeatureDetail
         ghost={selectedGhost}
-        replacement={ghosts.find((ghost) => ghost.manifest.id === target?.ghostId)}
+        replacement={findInstalledRetirementReplacement(ghosts, marketItems, target)}
         busy={marketBusyId !== null}
         onBack={() => setSelectedId(null)}
         onReplace={() => void handleReplaceRetiredFeature()}
         onDismiss={() => {
           void window.electronAPI.ghosts
-            .acknowledgeRetirement(selectedGhost.manifest.id)
+            .acknowledgeRetirement(installedGhostStoragePart(selectedGhost))
             .then(() => setSelectedId(null))
             .catch(() => toast.error(t('settings.ghosts.retirement.saveFailed')));
         }}
@@ -1891,14 +1940,17 @@ export function GhostPluginPage({
           {recommendationNotice}
           <div className="min-h-0 flex-1">
             <GhostPluginDetailView
+              usageOwnerKey={`${panelOwnerKey}:${dataOwnerGeneration}`}
+              confirmClearUsage={() => confirm({ title: t('settings.ghosts.usage.clearTitle'), description: t('settings.ghosts.usage.clearDescription'), confirmText: t('settings.ghosts.usage.clear'), confirmVariant: 'destructive' })}
               ghost={selectedGhost}
               detail={selectedDetail}
               development={selectedDevPlugin !== null}
               displayId={selectedDevPlugin?.pluginId}
+              marketItem={selectedMarketInstall}
               panelStatus={panelStatus}
               enabledOverride={
                 selectedGhost
-                  ? effectiveEnabled(selectedGhost.manifest.id, selectedGhost.enabled)
+                  ? effectiveEnabled(installedGhostStoragePart(selectedGhost), selectedGhost.enabled)
                   : undefined
               }
               onBack={() => {
@@ -1926,10 +1978,8 @@ export function GhostPluginPage({
               updateVersion={selectedMarketUpdate?.version}
               updateBusy={(selectedMarketUpdate !== null && marketBusyId !== null) || batchRunning}
               onUninstall={() => void handleUninstall()}
-              // 官方保留前缀(cindy-/filo-/xd-)的插件走本地装入会被拒,
-              // 导出产物无法重装,不提供导出项。
               onExport={
-                selectedGhost && !isOfficialGhostId(selectedDetail.id)
+                selectedGhost && !isUserInstallReservedGhostId(selectedDetail.ghostId)
                   ? () => void handleExport()
                   : undefined
               }
@@ -2079,7 +2129,7 @@ export function GhostPluginPage({
                         displayId={catalogItem.item.sourcePluginId}
                         sourceLabel={
                           catalogItem.item.development
-                            ? mekaDevPluginById.get(catalogItem.item.id)?.status === 'error'
+                            ? mekaDevPluginById.get(catalogItem.item.ghostId)?.status === 'error'
                               ? t('settings.ghosts.meka.dev.syncError')
                               : t('settings.ghosts.meka.dev.badge')
                             : t(`settings.ghosts.meka.origin.${catalogItem.item.origin}`)
@@ -2100,7 +2150,8 @@ export function GhostPluginPage({
                         onDevelopmentPackage={
                           catalogItem.item.development
                             ? () => {
-                                setDevPackageDialogGhostId(catalogItem.item.id);
+                                // 打包弹窗按开发注册表的 `runtimeId` 查条目（逻辑 id）。
+                                setDevPackageDialogGhostId(catalogItem.item.ghostId);
                                 setDevPackageDialogOpen(true);
                               }
                             : undefined
@@ -2319,6 +2370,8 @@ export function GhostPluginPage({
                         key={item.id}
                         item={item}
                         sourceLabel={t(`settings.ghosts.page.origin.${item.origin}`)}
+                        marketItem={item.marketItem}
+                        author={item.author}
                         updateVersion={item.marketUpdate?.version}
                         updateNeedsConsent={item.marketUpdate?.updateRequiresConsent === true}
                         updateBusy={
@@ -2349,6 +2402,8 @@ export function GhostPluginPage({
                             key={item.id}
                             item={item}
                             sourceLabel={t(`settings.ghosts.page.origin.${item.origin}`)}
+                            marketItem={item.marketItem}
+                            author={item.author}
                             updateVersion={item.marketUpdate?.version}
                             updateNeedsConsent={item.marketUpdate?.updateRequiresConsent === true}
                             updateBusy={
@@ -2397,6 +2452,7 @@ export function GhostPluginPage({
             {availableMarketItems.length > 0 ||
             searchedAvailableMarketItems.length > 0 ||
             marketSnapshot?.unavailableReason ||
+            marketSnapshot?.organizationAccessError ||
             marketSnapshot?.unavailableCustomSourceNames.length ? (
               <section className="plugin-motion-page-section mt-10 min-w-0">
                 <div className={PLUGIN_CATALOG_TOOLBAR_CLASS}>
@@ -2453,6 +2509,12 @@ export function GhostPluginPage({
                     {t('settings.ghosts.market.customSourcesUnavailable', {
                       names: marketSnapshot.unavailableCustomSourceNames.join(', '),
                     })}
+                  </p>
+                ) : null}
+
+                {organizationAccessErrorKey ? (
+                  <p className="mb-4 rounded-xl border border-[var(--border-default)] bg-[var(--surface-chip)] px-4 py-3 text-12 text-[var(--text-secondary)]">
+                    {t(organizationAccessErrorKey)}
                   </p>
                 ) : null}
 
@@ -2514,6 +2576,7 @@ export function GhostPluginPage({
                     </div>
                   )
                 ) : marketSnapshot?.unavailableReason ||
+                  marketSnapshot?.organizationAccessError ||
                   marketSnapshot?.unavailableCustomSourceNames.length ? null : (
                   <div className="rounded-xl border-[0.5px] border-[var(--border-default)] px-5 py-10 text-center">
                     <p className="text-13 text-[var(--text-secondary)]">
@@ -2609,6 +2672,7 @@ export function MarketPluginCard({
   sourceLabel?: string;
 }) {
   const { t } = useTranslation();
+  const metadataId = useId();
   const marketIcon = usePluginMarketIcon(item, { deferUntilVisible: true });
   const unavailable = busy;
   const replacementDescriptionId = useId();
@@ -2628,7 +2692,7 @@ export function MarketPluginCard({
         onClick={onSelect}
         disabled={unavailable}
         aria-label={item.name}
-        aria-describedby={replacementDescription ? replacementDescriptionId : undefined}
+        aria-describedby={replacementDescription ? `${metadataId} ${replacementDescriptionId}` : metadataId}
         className={cn(
           'flex min-w-0 flex-1 items-start gap-4 self-stretch text-left',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
@@ -2647,26 +2711,17 @@ export function MarketPluginCard({
           <span className="truncate text-15 font-medium text-[var(--text-primary)]">
             {item.name}
           </span>
-          <span className="mt-1 flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap text-11 text-[var(--text-tertiary)]">
+          <span id={metadataId} className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-11 text-[var(--text-tertiary)]">
             <span className="shrink-0">
               {sourceLabel ?? t(`settings.ghosts.page.origin.${pluginPresentationOrigin(item)}`)}
             </span>
-            <span className="shrink-0" aria-hidden="true">
-              ·
-            </span>
-            <span className="shrink-0">v{item.version}</span>
-            <span className="shrink-0" aria-hidden="true">
-              ·
-            </span>
-            <span className="min-w-0 truncate font-mono">{item.ghostId}</span>
             {item.author ? (
               <>
-                <span className="shrink-0" aria-hidden="true">
-                  ·
-                </span>
-                <span className="min-w-0 truncate">{item.author}</span>
+                <span aria-hidden="true">·</span>
+                <span className="min-w-0 max-w-[120px] truncate">{item.author}</span>
               </>
             ) : null}
+            <PluginSharedUsage detail={item} variant="list" />
           </span>
           <span
             id={replacementDescription ? replacementDescriptionId : undefined}
@@ -2839,6 +2894,8 @@ export function GhostPluginCard({
   development = false,
   displayId = item.id,
   sourceLabel,
+  marketItem,
+  author,
   updateVersion,
   updateNeedsConsent = false,
   updateBusy = false,
@@ -2855,12 +2912,13 @@ export function GhostPluginCard({
   development?: boolean;
   displayId?: string;
   sourceLabel?: string;
+  marketItem?: PluginMarketItem | null;
+  author?: string | null;
   /** 市场存在新版本时的目标版本;与 onUpdate 同时提供。 */
   updateVersion?: string;
   /** 新版本权限变多、后台更新已暂停等用户确认(Main 按真实包判定)。 */
   updateNeedsConsent?: boolean;
   updateBusy?: boolean;
-  /** 本卡正在更新:更新胶囊换成 Spinner。 */
   updatePending?: boolean;
   onUpdate?: () => void;
   onDevelopmentPackage?: () => void;
@@ -2871,9 +2929,9 @@ export function GhostPluginCard({
   onIconLoadError?: () => void;
 }) {
   const { t } = useTranslation();
+  const metadataId = useId();
   const enabled = effectiveEnabled ?? item.enabled;
-  // 未读(badge 槽):单条卡片走**呼吸**点(AttentionDot 形态规范——聚合入口
-  // 静态、单条呼吸)。有摘要时顶替静态描述:用户扫一眼就知道新内容是什么。
+  // 单卡未读点使用呼吸动效，未读摘要替换静态描述。
   const unread = useGhostUnread(item.id);
   const unreadSummary = useGhostUnreadSummary(item.id);
   const primary = ghostPrimaryAction(item);
@@ -2922,6 +2980,7 @@ export function GhostPluginCard({
       onClick={onManage}
       onKeyDown={handleCardKeyDown}
       aria-label={item.name}
+      aria-describedby={metadataId}
       className={cn(
         'group flex min-h-[108px] w-full cursor-pointer select-none items-start gap-4 rounded-xl border-[0.5px] border-[var(--border-default)] bg-[var(--surface-elevated)] p-4 text-left',
         'transition-[background-color,border-color,transform] duration-150 ease-out',
@@ -2946,19 +3005,26 @@ export function GhostPluginCard({
           </span>
           {item.retirement?.unread ? <AttentionDot tone="awaiting" size={6} className="mt-px" /> : unread ? <AttentionDot breathing size={6} className="mt-px" /> : null}
         </span>
-        {/* 版本行只说事实:有可更新版本时给更新胶囊(右列),其余情况什么都不说。
-            这里**不能**断言「已是最新」:市场 release 由服务端按客户端上报版本投影
-            (current 不兼容时回退到兼容的历史 release,没有兼容版本时不展示),
-            wire 上只下发单个 `currentRelease`(packages/plugin-protocol/src/delivery.ts),
-            所以「本轮没有可更新版本」既可能是真最新,也可能是投影已经扣下了更高
-            release —— 客户端拿不到区分二者的任何事实,`updateVersion` 为空只表示
-            「我们没看到可更新版本」,不等于「已是最新」。按投影/信任不变量,客户端也
-            不得为了拿到这个答案去做二次筛选(见 docs/dev-rules/plugin-security-and-authoring.md
-            第 3.1 节)。`updateNeedsConsent` 是 Main 按**下载后的真实包**判定的事实
-            (新版本权限变多/后台更新已暂停),不依赖任何投影推断,所以它是这条
-            「只说事实」里的合法一项,与「已是最新」不是同一类断言。 */}
-        <span className="mt-1 block min-w-0 truncate text-11 text-[var(--text-tertiary)]">
-          {sourceLabel ? `${sourceLabel} · ` : ''}v{item.version}
+        {/* 元信息行只说事实:来源、作者、共享下载量与异常态,**不能**断言「已是最新」——
+            市场 release 由服务端按客户端上报版本投影(current 不兼容时回退到兼容的历史
+            release,没有兼容版本时不展示),wire 上只下发单个 `currentRelease`
+            (packages/plugin-protocol/src/delivery.ts),所以「本轮没有可更新版本」既可能是
+            真最新,也可能是投影已经扣下了更高 release —— 客户端拿不到区分二者的任何事实,
+            `updateVersion` 为空只表示「我们没看到可更新版本」,不等于「已是最新」。按投影/信任
+            不变量,客户端也不得为了拿到这个答案去做二次筛选(见
+            docs/dev-rules/plugin-security-and-authoring.md 第 3.1 节)。`updateNeedsConsent`
+            是 Main 按**下载后的真实包**判定的事实(新版本权限变多/后台更新已暂停),不依赖任何
+            投影推断,所以它是这条「只说事实」里的合法一项,与「已是最新」不是同一类断言。
+            上游 `73b7cfc5a1` 已把列表卡片的版本号收进详情页事实项,这里的行不再重复版本。 */}
+        <span id={metadataId} className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-11 text-[var(--text-tertiary)]">
+          {sourceLabel ? <span className="shrink-0">{sourceLabel}</span> : null}
+          {author ? (
+            <>
+              {sourceLabel ? <span aria-hidden="true">·</span> : null}
+              <span className="min-w-0 max-w-[120px] truncate">{author}</span>
+            </>
+          ) : null}
+          {marketItem ? <PluginSharedUsage detail={marketItem} variant="list" /> : null}
           {item.retirement ? (
             <span> · {t('settings.ghosts.retirement.status')}</span>
           ) : item.oauthAuthorizationExpired ? (
@@ -2979,9 +3045,6 @@ export function GhostPluginCard({
           ) : null}
           {!enabled && !item.retirement ? ` · ${t('settings.ghosts.disabledTag')}` : ''}
         </span>
-        {/* 未读摘要顶替静态描述:静态描述用户早读过了,"新内容是什么"才是这一刻
-            的信息。摘要文字提到 primary 档以区别于常态描述(不另加色,颜色语义
-            留给那颗点)。 */}
         <span
           className={cn(
             'mt-1.5 line-clamp-2 text-13 leading-5',
@@ -2991,7 +3054,7 @@ export function GhostPluginCard({
           {item.retirement ? t('settings.ghosts.retirement.cardNotice') : unreadSummary || item.description || item.id}
         </span>
       </span>
-      {/* 右列只在真实控件上拦截冒泡;空白与「由 Agent 调用」提示仍走整卡进详情。 */}
+      {/* 仅真实控件拦截冒泡，右列空白仍可进入详情。 */}
       <span className="flex shrink-0 flex-col items-end justify-between gap-2 self-stretch">
         <span className="flex items-center gap-1.5">
           {updateVersion && onUpdate ? (

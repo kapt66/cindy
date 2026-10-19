@@ -4,6 +4,7 @@ import { FolderOpen, Plug, RefreshCw, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import type { MekaP4Settings } from '../../../shared/meka-settings';
+import { installedGhostStoragePart } from '../../../shared/pluginIdentity';
 import type {
   MekaRouterInstance,
   MekaRouterRoute,
@@ -316,7 +317,9 @@ export function MekaAssistantSettingsSection() {
                   continue;
                 }
                 void window.electronAPI.ghostPanelWindow
-                  .setDetached(ghost.manifest.id, false)
+                  // 分离窗口账本按**物理实例键**建窗（见 ghostPanels.tsx 的
+                  // setDetached(instanceId, true)）；用 manifest.id 关不掉新布局安装的窗口。
+                  .setDetached(installedGhostStoragePart(ghost), false)
                   .catch(() => undefined);
               }
             }}

@@ -65,6 +65,8 @@ import {
 import { isOrcaLeadSession, resolveSessionRoute } from '@/lib/orcaSessionIdentity';
 import { revalidateWorkersProjection } from './hooks/workerProjectionStore';
 import { GitContextBadge } from './GitContextBadge';
+import { OrcaRemoteLeadBadge } from './OrcaRemoteLeadBadge';
+import { BotTaskOwnerChip } from '@/features/bots/BotTaskOwnerChip';
 import { SessionRenameInput } from './SessionRenameInput';
 import { useSessionBoundSchedules } from '@/features/scheduler/lib/scheduleSessionBinding';
 import { ScheduleBindingBadge } from './sidebar/ScheduleBindingBadge';
@@ -82,6 +84,7 @@ import { isSharedTaskPeer } from '@cindy/device-link';
 // 并集:上游本轮为「远程 Agent」信号引入了 useDeviceLinkDeviceList,与 Meka 的会话头
 // 角色 scope 互不相干,两侧都要(丢任一侧都会编译失败或丢掉 Meka 角色 chip)。
 import { useDeviceLinkDeviceList } from '@/features/device-link/useDeviceLinkDeviceList';
+import { useProviderShareAgentDevices } from '@/features/provider-share/useProviderShareAgentDevices';
 import { buildMekaRoleEditorRoute, useMekaSessionScope } from './useMekaSessionScope';
 
 const log = createLogger('SessionContentHeader');
@@ -99,8 +102,10 @@ function AgentDeviceIndicator({
 }) {
   const { t } = useTranslation();
   const devices = useDeviceLinkDeviceList();
+  // 分享来的供应商(`share:<id>`)不在同账号设备列表里，名字取自已收到的分享。
+  const { nameFor: providerShareDeviceName } = useProviderShareAgentDevices();
   const device = devices?.find((item) => item.deviceId === deviceId);
-  const name = device?.name || deviceId;
+  const name = device?.name || providerShareDeviceName(deviceId) || deviceId;
   const offline = device ? !device.online : false;
   const vendor = agentKindToVendor(agentKind);
   return (
@@ -203,8 +208,7 @@ export function SessionContentHeader({
       : null;
   const { runningSessionIds } = useSessionRunningStatus(session.id);
   const { confirm: confirmDialog } = useConfirmDialog();
-  const { runSessionAction, unarchiveSession, beginRemoteArchive, cancelRemoteArchive } =
-    useSessionLifecycleActions();
+  const { runSessionAction, unarchiveSession } = useSessionLifecycleActions();
 
   const isPinned = session.pinnedAt != null;
   const isArchived = session.status === 'archived';
@@ -229,7 +233,7 @@ export function SessionContentHeader({
     !session.deviceLinkDeviceId;
   const projectOptions = useProjectPickerOptions();
   // heartbeat schedule 绑定标识,与 SessionItem 同源数据;删除/过期后自动消失。
-  const boundSchedules = useSessionBoundSchedules(session.id);
+  const boundSchedules = useSessionBoundSchedules(session.id, session.deviceLinkDeviceId);
   const displayTitle =
     getSessionDisplayTitle(session, t('ccAgent.common.unnamedSession'), t)?.trim() ||
     t('ccAgent.sessionHeader.untitled');
@@ -498,11 +502,7 @@ export function SessionContentHeader({
     // 一起等,dirty 先返回 clean、接管查询还在飞的那段时间就是 clean 结论的失效窗口。
     // 改成接管结算之后再 resolve —— clean 一律重查(见 worktreeRemovalWarning),
     // 拿到的是此刻的结论;菜单打开时的 prefetch 仍然热了 git cache。
-    // 远程任务的预检是一次完整隧道往返:先乐观隐藏行并跳离,预检干净则沿用同一叠加层
-    // 写库,需要确认时取消再让行回来(与 sidebar 同口径,见 handleActionClick)。
-    const remoteArchiveToken = session.deviceLinkDeviceId
-      ? beginRemoteArchive(session.id, session.deviceLinkDeviceId, session.id)
-      : null;
+    // 预检与确认期间保留当前任务，确定归档后再由 runSessionAction 隐藏并跳离。
     const preflight = await resolveWorktreeRemovalPreflight(session.id, session.deviceLinkDeviceId);
     // 归档不弹确认框 —— 可逆操作(菜单里就有「恢复」),与 sidebar 同口径。
     // 免确认的判据是「**确认**干净」:worktree 脏、或预检失败拿不到结论('unknown')
@@ -520,17 +520,13 @@ export function SessionContentHeader({
         cancelText: t('ccAgent.sidebar.confirmArchive.cancel'),
       });
       if (!ok) {
-        if (remoteArchiveToken) cancelRemoteArchive(remoteArchiveToken);
         return;
       }
     }
     await runSessionAction(session.id, 'archive', {
       activeSessionId: session.id,
-      remoteArchiveToken,
     });
   }, [
-    beginRemoteArchive,
-    cancelRemoteArchive,
     confirmDialog,
     remoteWritesBlocked,
     runSessionAction,
@@ -604,7 +600,12 @@ export function SessionContentHeader({
       )}
       {boundSchedules.length > 0 && (
         <span style={WINDOW_NO_DRAG_STYLE}>
-          <ScheduleBindingBadge schedules={boundSchedules} size={13} className="mr-1 size-4" />
+          <ScheduleBindingBadge
+            schedules={boundSchedules}
+            deviceLinkDeviceId={session.deviceLinkDeviceId}
+            size={13}
+            className="mr-1 size-4"
+          />
         </span>
       )}
       {!isEditing && remoteIconKind && (
@@ -666,6 +667,8 @@ export function SessionContentHeader({
         </span>
       )}
 
+      {/* WL-3.5:Meka 会话的角色 scope chip。两侧都是本轮新增的**独立**徽标,
+          非 Meka 会话下 Meka 分支不渲染,上游两颗徽标的相对位次因此逐字节不变。 */}
       {!isEditing &&
         session.workspaceKind === 'meka' &&
         mekaSessionScope &&
@@ -693,6 +696,10 @@ export function SessionContentHeader({
             {legacyMekaRoleLabel}
           </span>
         )}
+
+      {!isEditing && <OrcaRemoteLeadBadge session={session} />}
+
+      {!isEditing && <BotTaskOwnerChip session={session} />}
 
       {!isEditing && !readOnly && (!sharedGuest || session.status === 'active') && (
         // 菜单打开就把归档/删除的 dirty 预检发出去:用户从展开菜单到点条目至少

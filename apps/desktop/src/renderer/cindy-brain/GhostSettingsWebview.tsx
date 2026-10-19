@@ -7,7 +7,12 @@ import type { WebviewTag } from 'electron';
 import { useAuth } from '@/contexts/AuthContext';
 import { cn } from '@/lib/utils';
 import { useGhostContentRevision } from '@/lib/ghostContentRevision';
-import { GHOST_SCHEME, ghostPartition, type InstalledGhost } from '../../shared/ghost';
+import { GHOST_SCHEME, ghostInstallApprovalToken, type InstalledGhost } from '../../shared/ghost';
+import {
+  installedGhostLogicalIdentity,
+  installedGhostWebviewPartitionClaim,
+  pluginStoragePart,
+} from '../../shared/pluginIdentity';
 import {
   buildGhostPluginSettingsThemeCss,
   buildGhostSettingsThemeCss,
@@ -144,8 +149,11 @@ function SettingsWebviewBody({
   const [generation, setGeneration] = useState(0);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const { manifest } = ghost;
+  // Meka 开发目录：内容 revision 事件（`meka-dev-*` runtime id）换版即重挂载。
   const contentRevision = useGhostContentRevision(manifest.id);
-  const partitionClaim = ghostPartition(manifest.id);
+  const settingsHeightKey = pluginStoragePart(installedGhostLogicalIdentity(ghost));
+  const partitionClaim = installedGhostWebviewPartitionClaim(ghost);
+  const approvalToken = ghostInstallApprovalToken(ghost.approval);
   const settingsHtml = manifest.settingsHtml;
   const fixedHeight = manifest.settingsHeight;
   const buildSettingsThemeCss =
@@ -153,7 +161,7 @@ function SettingsWebviewBody({
   // 仅复用同 owner、同插件版本的高度;账号文字和菜单由新 guest 实时渲染。
   const [autoHeight, setAutoHeight] = useState(
     () =>
-      loadGhostSettingsHeight(dataOwnerId, manifest.id, manifest.version) ??
+      loadGhostSettingsHeight(dataOwnerId, settingsHeightKey, manifest.version) ??
       AUTO_HEIGHT_PLACEHOLDER,
   );
 
@@ -198,7 +206,7 @@ function SettingsWebviewBody({
         .then((h: unknown) => {
           if (disposed || typeof h !== 'number' || !Number.isFinite(h)) return;
           const clamped = Math.max(AUTO_HEIGHT_MIN, Math.min(AUTO_HEIGHT_MAX, Math.ceil(h)));
-          saveGhostSettingsHeight(dataOwnerId, manifest.id, manifest.version, clamped);
+          saveGhostSettingsHeight(dataOwnerId, settingsHeightKey, manifest.version, clamped);
           setAutoHeight((cur) => (cur === clamped ? cur : clamped));
         })
         .catch(() => {})
@@ -289,6 +297,8 @@ function SettingsWebviewBody({
     fixedHeight,
     dataOwnerId,
     partitionClaim,
+    settingsHeightKey,
+    approvalToken,
     hostAccount,
   ]);
 
@@ -336,6 +346,7 @@ export function GhostSettingsWebview({
   const { mode, dataOwnerId } = useAuth();
   const ownerKey = `${mode}:${dataOwnerId ?? ''}`;
   const { manifest } = ghost;
+  const settingsHeightKey = pluginStoragePart(installedGhostLogicalIdentity(ghost));
   if (!manifest.settingsHtml) return null;
   return (
     <div
@@ -366,7 +377,7 @@ export function GhostSettingsWebview({
             {t('ccAgent.gitContext.pr.setup.account.otherMethods')}
           </summary>
           <SettingsWebviewBody
-            key={JSON.stringify([ownerKey, manifest.id, manifest.version, reloadKey])}
+            key={JSON.stringify([ownerKey, settingsHeightKey, manifest.version, reloadKey])}
             ghost={ghost}
             appearance={appearance}
             dataOwnerId={dataOwnerId}
@@ -375,7 +386,7 @@ export function GhostSettingsWebview({
         </details>
       ) : ghost.enabled ? (
         <SettingsWebviewBody
-          key={JSON.stringify([ownerKey, manifest.id, manifest.version, reloadKey])}
+          key={JSON.stringify([ownerKey, settingsHeightKey, manifest.version, reloadKey])}
           ghost={ghost}
           appearance={appearance}
           dataOwnerId={dataOwnerId}

@@ -1,11 +1,6 @@
-/**
- * useWorkers — 读取 renderer 进程内唯一的 Orca worker 投影。
- */
-
 import { useCallback } from 'react';
 import { createLogger } from '@/lib/logger';
 import { orcaWorkflowsFor } from '@/lib/makerTransport';
-import { type OrcaWorkerStatus } from '../../../../shared/orca-worker-status';
 
 import {
   clearWorkerProjectionStore,
@@ -14,24 +9,20 @@ import {
   revalidateWorkersProjection,
   useWorkerProjection,
   useWorkerProjectionOwner,
+  type WorkerCreationRefreshResult,
+  type WorkerInfo,
+  type WorkersRefreshResult,
+} from './workerProjectionStore';
+
+// 单一事实源在 workerProjectionStore：本模块只再导出，避免出现第二份 WorkerInfo
+// （Meka 侧额外需要的 workingDir / remoteHostId 已并入那份定义）。
+export type {
+  WorkerCreationRefreshResult,
+  WorkerInfo,
+  WorkersRefreshResult,
 } from './workerProjectionStore';
 
 const log = createLogger('useWorkers');
-
-export interface WorkerInfo {
-  workerId: string;
-  sessionId: string;
-  role: string;
-  agent: 'claude-code' | 'codex' | 'pi';
-  model: string;
-  effort: string | null;
-  label: string | null;
-  workingDir?: string | null;
-  remoteHostId?: string | null;
-  status: OrcaWorkerStatus;
-  focused: boolean;
-  idleSince: string | null;
-}
 
 const DEFAULT_SOFT_LIMIT = 5;
 const DEFAULT_HARD_LIMIT = 8;
@@ -40,19 +31,6 @@ interface WorkersSnapshot {
   workers: WorkerInfo[];
   softLimit: number;
   hardLimit: number;
-}
-
-export interface WorkersRefreshResult {
-  leadSessionId: string;
-  requestId: number;
-  status: 'applied' | 'failed';
-  workers: WorkerInfo[];
-}
-
-export interface WorkerCreationRefreshResult {
-  status: 'applied' | 'failed';
-  workers: WorkerInfo[];
-  hardLimit: number | null;
 }
 
 const DEFAULT_SNAPSHOT: WorkersSnapshot = {

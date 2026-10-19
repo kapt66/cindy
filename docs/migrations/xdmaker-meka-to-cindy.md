@@ -6911,6 +6911,87 @@ Codex/Claude/Pi 原生读 `AGENTS.md`/`CLAUDE.md`/`SKILL.md`，不看我们的 m
 - **仍需维护者裁决**（本轮新增两项）：① WL-5.7 的区域闸门口径（Global 是否该读 `xdt-maker`）；
   ② WL-1.2/WL-1.3 的 smoke 检查是否按「双态覆盖」改造（改造前这两条只能登记为「未验证 + 前提不成立」）。
 
+### 11.36 2026-10-16 第六轮上游同步（`origin/main` → `meka/main`）
+
+> 本条是**新条目**，不改写任何带日期的历史原句。逐组解决结论、白名单四阶段实跑与
+> 「未验证 + 原因」登记写在
+> [`2026-10-16-origin-main-to-meka-main.md`](./2026-10-16-origin-main-to-meka-main.md)。
+
+- **基线**：来源 `origin/main` = `53b2c99854ddea4ead1868e3477e830f66f20800`（上游独有 **184**
+  提交 / **3629** 文件 / `+417302 −31007`）；目标 `meka/main` 合并前 `4fa3b253d6`；
+  merge-base `c940ab1903`（= 第五轮的上游端点）。Git 冲突 **80**（76 `UU` + 3 `AA` + 1 `UD`），
+  按 **8 个并行任务包** + 主代理直接处理两组（身份/构建、治理文档与生成物）解决。
+- **本轮主导上游改动**：`93f1393143 feat(plugins): 按 namespace 识别并隔离插件实例 (#5753)`
+  （插件基座最大一笔，`GhostManager.ts` +1134 行，并**删除** Filo Google 自动搬账与构建期
+  OAuth client 注入）、`2ce5ab565e`（伙伴并入侧栏第一层，侧栏第二次重构）、
+  `24320dc07e`（标准 MCP Apps）、供应商分享/供应商组三笔
+  （`ae54765a32` / `4f26df40fa` / `2c1d7e54c4`）、`58761bbac0`（安装包裁剪与运行依赖去重，
+  `forge.config.ts` 新增 `prunePackagedRuntime` / `forge-runtime-deps`）、`f2f5ba54ed`（Linux 托盘）、
+  Orca 供应商切换一组（`5f89c8c711` / `d7ac0545f5` / `3c2af7b5e5` / `8b7e52204c` / `158122c02e`）、
+  `68d62d3d9f`（**Cindy Make 产品面整体关闭**，`CINDY_MAKE_ENABLED = false`）。
+- **D4 顺移追加（数据库）**：已发布谱系 `0000..0126` **零改动**（`0124`/`0125`/`0126` 三份 snapshot
+  实测 `HEAD = worktree = index`）；上游本轮新增 `0124..0128` 五条落为 Meka **`0127..0131`**
+  （`0127_funny_glorian`、`0128_magical_night_thrasher`、`0129_melodic_toxin`、
+  `0130_bot_group_task_posts`、`0131_demonic_odin`），2 条 companion 落为
+  `scripts/0127/0128`；7 个文件 `git hash-object` 与上游原号 **逐字节同一**；新 snapshot =
+  上游同内容 snapshot + **Meka delta（每份恰 15 项）**，`prevId` 链从 Meka `0126` 的
+  `d06b22f6-…` 自然接上；`meta/_journal.json` 127 → **132 条**（idx `0..131` 连续无重复）。
+  **6 处硬编码上游原号的测试 + 3 份文档引用同批 +3 顺移**（不改则 `drizzle-split.spike` 的
+  按文件名派发会**静默不建** `orca_remote_opens` 与 `orca_workers` 列）。
+  **实跑**：`db:validate` **6/6**（132 sql、seq `0000..0131`、journal↔sql↔snapshot 对齐、
+  `drizzle-kit check` 无 drift、47 companion 全 CommonJS、固定基线 80+23、
+  canonical 冻结 **127 SQL + 45 runtime script**）。
+- **结构审计与语义未退化**：`pnpm audit:merge` = **blockers 0 / dropped 0 / review 12 / generated 18，
+  verdict PASS**（4 条 DROPPED 全部逐条书面确认后用 `--allow` 记账：3 条属 WL-26 的刻意移除面、
+  1 条属插件实例身份的跨包契约把 Meka 的 `resolveGhostId` 别名从 deps 迁到调用侧）；
+  12 条 REVIEW 逐条确认（5 条 SQL + 2 条 companion 的顺移逐字节一致、3 条 Meka snapshot `== ours`
+  正确、`ghostVisibility.ts == theirs` 正确、2 条 mobile 生成物由生成器重写）。
+  白名单四阶段结论见本期报告。
+- **本轮**无新增** Meka 白名单条目；**更新的条目**：WL-2.1 / WL-2.2 / WL-2.5（锚点与注入结构随上游
+  `2ce5ab565e` 重写为「非偏好槽位表 `SidebarNavigationSlot` + `renderRows` 三处共用」）、
+  WL-4.1.6（**存量文档漂移就地更正**：cc-mgr pin 自第五轮起已是 `0.0.11`，清单/规则正文仍写 `0.0.10`）、
+  WL-6.5（Agent 侧更新入口扩到三工具 + 品牌要求扩写到整条链路的主进程文案）、
+  WL-26（本轮收口代码 + i18n 五语 + 文档三面，含反回归自检）。
+- **刻意偏离上游（已登记）**：
+  1. `AGENTS.md` 与 `development-workflow.md` 继续保留 Meka 的提交前门禁口径（第四轮裁决不变）；
+  2. **WL-26 维持**：不启用客户端日志上报 —— 上游 `ac7be9f736 (#5970)` 新增的
+     `main/logSupport.ts` + `renderer/components/log-support/**` 只保留「打开本地日志目录」面
+     （`OpenLogsRow`），删除 `UploadLogsRow` / `UploadLogsActionRow` / `useManualLogUpload.ts`
+     与启动面板上传行；`logSupport.*` 六键切分为保留三键、删除三个上传专用键；
+     19 条 `settings.about.logUpload.*` 保持删除；
+  3. 品牌：把上游本轮新写死的 **6 处主进程文案**改为 `${BRAND_NAME}`
+     （`agentAppUpdateService.ts:170/:414/:462`、`updateService.ts:2726/:2734/:2774`）；
+     另有 **34 条五语文案**（指应用自身）登记为**下一批品牌收敛**，本轮不动；
+  4. `docs/dev-rules/plugin-security-and-authoring.md` 的 Review 清单继续取 Meka 侧（严格超集，
+     第四/五轮口径不变）；
+  5. `GhostPluginCard.test.tsx` 的版本行断言按上游改成正向断言（接受 `73b7cfc5a1` 的产品决定），
+     但**两条「不得声称已是最新」的真实不变量原样保留**。
+- **跨端协议变化（登记，非本仓自行修改）**：`packages/plugin-protocol` 接纳上游自身变更 ——
+  namespace 投递（`internal/namespace.ts` 的 `parseOptionalNamespace`：**缺字段 = 旧协议**，
+  不当作 root）、`usage.ts` 的 `PluginUsageAck`、`manifest.ts` 新增可选 `agent.hiddenTasks`
+  （仅在 `tasks: true` 前提下生效）；`src/index.ts` 只多一条 `export * from './usage.js'`。
+  本仓**未新增**任何 wire 字段；跨仓（MCPRouter / plugin-server）的对应部署由发布流程处理。
+- **未完成 / 未验证（不得宣告收敛）**：WL-4 端到端 V1–V4（缺 MCPRouter 账号/实例/Gateway key）、
+  WL-1.2/1.3 的 smoke 前提（沙盒已连接真实 MCPRouter）、Light/Dark 与五语**实机目检**、
+  真机更新验收、移动端冷更实机 —— 逐项登记在本期报告 §6.1。
+- **交付前置批准门（2026-10-16 已由维护者批准）**：① 插件基座白名单**放行人 Approve** = 已获批
+  （`cindy-brain/**`、`plugin-market/**`、`mcp-integrations/ghost.ts`、`features/plugin/**`、
+  `renderer/cindy-brain/**`、`packages/plugin-protocol/**`；存量兼容结论「无需重装/重新确认/重新配置」，
+  唯一用户可见影响 = 极老 Google 集成账号需手动重新授权一次）；② **移动端冷更门** = 已确认接受
+  （`apps/mobile` 改动含指纹输入：`app.json`、`modules/**` 原生源码与 gradle/podspec、
+  `plugins/with-android-release-optimization.js`；实测指纹 `ios=4b20dcf9…` / `android=f203410a…`，
+  全部来自上游）。**提交范围**：维护者选择「提交但不推送」⇒ 交付 `git commit -s` 的 merge commit，
+  `push meka/main` 与 `client-ci` 验证另行授权。
+- **待裁决（本轮按接纳策略先行落地，均列出回退点）**：① MCPRouter 远程目标的**路径型附件缺口**
+  （上游钉了整文件断言，未做等价替代，三选一见报告 §6.3 第 1 条）；② **Cindy Make 整体关闭**
+  （回退点是一行 `CINDY_MAKE_ENABLED`）；③ 快问快答选型改为「插件详情模型 > 身份卡 > 系统链」
+  （代码已随自动合并采用）；④ 极老 Google 集成账号不再自动搬账（需手动重新授权一次，
+  插件本体与凭证不受影响）；⑤ WL-5.7 区域闸门（第五轮遗留）；⑥ 34 条品牌收敛批次。
+- **存量缺口（非本轮引入，未擅自扩大范围）**：`workerSessionId` 无读取方、
+  `sessionsRestoreIfArchived` 的 `workspaceKind` 联合不含 `'meka'`、`MekaDevInstallReview`
+  图标映射分叉、`errandPrefsStore.ts` 文档失真、`meka-session-smoke.mjs` 战斗角色硬编码、
+  `maker-host/index.ts:3303 canUseRemote` 未登记进旁路清单、三处未使用 import、
+  `agentProcessPriority.test.ts:222` 注释仍写 `CindyGlobal` —— 逐条见报告 §6.4。
 ### 6.63 2026-10-08 MCPRouter 的 linux runtime manifest 从来没有目录分发段：远端 Codex 命令执行起不来（已修）
 
 - **现象**：MCPRouter（远程 agent 宿主）会话里远端 Codex 的 code-mode（命令执行）起不来，

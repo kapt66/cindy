@@ -103,7 +103,10 @@ export function OrcaWorkersTabBody({
 
   const workerPanelProps = {
     leadSessionId: ctx.sessionId,
-    deviceId: ctx.deviceLinkDeviceId ?? undefined,
+    // device-link 归属三态：string = 被控设备，null = 已确认本机，undefined = 尚未解析。
+    // 不得用 `?? undefined` 把「已确认本机」折成「未解析」，否则本地协同设置入口 fail closed。
+    deviceId: ctx.deviceLinkDeviceId,
+    agentDeviceId: leadSession ? (leadSession.agentDeviceId ?? null) : undefined,
     sshRemote: !!ctx.remoteHostId,
     viewVisible,
     chatRealtime,

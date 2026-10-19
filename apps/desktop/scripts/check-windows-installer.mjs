@@ -43,7 +43,7 @@ try {
     config: {
       appId: 'app.cindy.installer-test',
       productName: 'CindyInstallerProbe',
-      electronVersion: '41.10.3',
+      electronVersion: '42.11.12',
       compression: 'store',
       // Must mirror production: forge.config.ts sets
       // `directories.buildResources = resources`, which is what makes

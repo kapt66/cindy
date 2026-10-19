@@ -98,24 +98,24 @@ describe('newMakerDraft store', () => {
     expect(reloaded.getDraft().defaultTupleCustomized).toBe(false);
   });
 
-  it.each([false, true])('Gateway 后到不抢订阅，Claude 后到只更新未自定义草稿（手动选择=%s）', async (customized) => {
+  it.each([false, true])('Gateway 后到不抢订阅，Codex 后到只更新未自定义草稿（手动选择=%s）', async (customized) => {
     const { resolveNewMakerDefaultTuple } = await import('@/lib/newMakerDefaultTuple');
     const { applySuggestedDefaultTuple, getDraft, markDefaultTupleCustomized } = await loadModule();
     const sources: import('@cindy/model-providers').ProviderView[] = [
       {
-        id: 'openai',
-        name: 'OpenAI',
+        id: 'anthropic',
+        name: 'Claude',
         source: 'builtin',
         connected: true,
-        agents: ['codex'],
+        agents: ['claude-code'],
         auth: { method: 'oauth' },
-        access: { kind: 'subscription', product: 'ChatGPT' },
+        access: { kind: 'subscription', product: 'Claude' },
         routing: {},
         models: {
-          codex: [
+          'claude-code': [
             {
-              id: 'gpt-6-astra',
-              name: 'Astra',
+              id: 'claude-opus-5-5',
+              name: 'Opus',
               contextWindow: 272000,
               efforts: ['high'],
               defaultEffort: 'high',
@@ -132,7 +132,7 @@ describe('newMakerDraft store', () => {
         availableAgentsLoaded: true,
       })!;
     expect(applySuggestedDefaultTuple(resolve())).toBe(true);
-    expect(getDraft().vendor).toBe('codex');
+    expect(getDraft().vendor).toBe('cc');
     if (customized) markDefaultTupleCustomized();
     sources.push({
       id: 'xd',
@@ -146,8 +146,8 @@ describe('newMakerDraft store', () => {
       models: {
         pi: [
           {
-            id: 'z-ai/glm-5.3-flash',
-            name: 'GLM',
+            id: 'auto',
+            name: 'Auto',
             contextWindow: 200000,
             efforts: ['high'],
             defaultEffort: 'high',
@@ -158,15 +158,15 @@ describe('newMakerDraft store', () => {
       },
     });
     expect(applySuggestedDefaultTuple(resolve())).toBe(false);
-    expect(getDraft().vendor).toBe('codex');
-    sources.push({ ...sources[0]!, id: 'anthropic', agents: ['claude-code'],
-      access: { kind: 'subscription', product: 'Claude' },
-      models: { 'claude-code': [{ id: 'claude-opus-5-5', name: 'Opus', contextWindow: 200000, efforts: ['high'], defaultEffort: 'high' }] },
+    expect(getDraft().vendor).toBe('cc');
+    sources.push({ ...sources[0]!, id: 'openai', agents: ['codex'],
+      access: { kind: 'subscription', product: 'ChatGPT' },
+      models: { codex: [{ id: 'gpt-6.1-sol', name: 'Sol', contextWindow: 272000, efforts: ['high'], defaultEffort: 'high' }] },
     });
     expect(applySuggestedDefaultTuple(resolve())).toBe(!customized);
     const draft = getDraft();
-    expect(draft.vendor).toBe(customized ? 'codex' : 'cc');
-    expect(draft.lastByVendor[draft.vendor].providerId).toBe(customized ? 'openai' : 'anthropic');
+    expect(draft.vendor).toBe(customized ? 'cc' : 'codex');
+    expect(draft.lastByVendor[draft.vendor].providerId).toBe(customized ? 'anthropic' : 'openai');
     expect(draft.defaultTupleCustomized).toBe(customized);
     expect(applySuggestedDefaultTuple(resolve())).toBe(false);
   });
@@ -1878,6 +1878,31 @@ describe('newMakerDraft agent computer', () => {
     patchDraft({ agentDeviceId: 'dev-b', agentDeviceName: 'Office Mac' });
     patchDraft({ workingDir: '/remote/proj', remoteHostId: 'ssh-1' });
     expect(getDraft()).toMatchObject({ agentDeviceId: null, remoteHostId: 'ssh-1' });
+  });
+
+  // 远程控制下新建任务:任务建到被控电脑 dev-a,Agent 在第三台电脑 dev-c。
+  it('keeps the agent computer for a task on a controlled computer until that computer changes', async () => {
+    const { getDraft, patchDraft } = await loadModule();
+    patchDraft({ deviceLinkDeviceId: 'dev-a', deviceLinkDeviceName: 'Studio', workingDir: null });
+    patchDraft({ agentDeviceId: 'dev-c', agentDeviceName: 'Office Mac' });
+    expect(getDraft()).toMatchObject({ deviceLinkDeviceId: 'dev-a', agentDeviceId: 'dev-c' });
+    // 同一台被控电脑上换项目(设备字段照样显式带上):Agent 仍在那台。
+    patchDraft({ deviceLinkDeviceId: 'dev-a', deviceLinkDeviceName: 'Studio', workingDir: '/a/proj' });
+    expect(getDraft()).toMatchObject({ agentDeviceId: 'dev-c', agentDeviceName: 'Office Mac' });
+    // 换到另一台被控电脑 / 回到本机:上一台的选择不再适用。
+    patchDraft({ deviceLinkDeviceId: 'dev-d', deviceLinkDeviceName: 'Lab', workingDir: null });
+    expect(getDraft()).toMatchObject({ agentDeviceId: null, agentDeviceName: null });
+    patchDraft({ deviceLinkDeviceId: 'dev-a', deviceLinkDeviceName: 'Studio', workingDir: null });
+    patchDraft({ agentDeviceId: 'dev-c', agentDeviceName: 'Office Mac' });
+    patchDraft({ deviceLinkDeviceId: null, deviceLinkDeviceName: null, workingDir: null });
+    expect(getDraft()).toMatchObject({ agentDeviceId: null, agentDeviceName: null });
+  });
+
+  it('never lets the agent computer be the computer the task is on', async () => {
+    const { getDraft, patchDraft } = await loadModule();
+    patchDraft({ deviceLinkDeviceId: 'dev-a', deviceLinkDeviceName: 'Studio', workingDir: null });
+    patchDraft({ agentDeviceId: 'dev-a', agentDeviceName: 'Studio' });
+    expect(getDraft()).toMatchObject({ deviceLinkDeviceId: 'dev-a', agentDeviceId: null, agentDeviceName: null });
   });
 
   it('does not restore the agent computer after a restart', async () => {

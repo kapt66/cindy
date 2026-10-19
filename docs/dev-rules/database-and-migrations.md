@@ -16,16 +16,23 @@
 
 ## 事实来源
 
-| 内容 | 权威来源 |
-|---|---|
-| 当前 schema | `apps/desktop/src/main/localDb/schema.ts` |
-| Drizzle 生成配置 | `apps/desktop/drizzle.config.ts` |
-| SQL、snapshot、journal 与 companion | `apps/desktop/drizzle/` |
-| 静态完整性与历史冻结 | `apps/desktop/scripts/validate-migrations.mjs` |
-| 实际执行顺序与事务语义 | `apps/desktop/src/main/localDb/migrationRunner.ts` |
-| 空库与历史库升级验证 | `apps/desktop/src/main/localDb/__tests__/migrationReplay.test.ts` |
+| 内容                                | 权威来源                                                          |
+| ----------------------------------- | ----------------------------------------------------------------- |
+| 当前 schema                         | `apps/desktop/src/main/localDb/schema.ts`                         |
+| Drizzle 生成配置                    | `apps/desktop/drizzle.config.ts`                                  |
+| SQL、snapshot、journal 与 companion | `apps/desktop/drizzle/`                                           |
+| 静态完整性与历史冻结                | `apps/desktop/scripts/validate-migrations.mjs`                    |
+| 实际执行顺序与事务语义              | `apps/desktop/src/main/localDb/migrationRunner.ts`                |
+| 空库与历史库升级验证                | `apps/desktop/src/main/localDb/__tests__/migrationReplay.test.ts` |
 
 文档与实现冲突时先停下核对，不根据旧手册猜测命令或迁移语义。
+
+发行包保留 SQL、companion、journal 与其余迁移资源；仅在 extraResource 复制完成后，
+从打包副本移除 `meta/NNNN_snapshot.json`（Drizzle 开发生成输入）。源码中的 snapshot
+保持完整，生成与静态校验照常使用。运行期 `listMigrations` 和 migration runtime manifest
+只依赖 SQL 与 companion；打包回归检查裁剪前后运行期指纹相同、其余文件字节不变。
+实现见 `apps/desktop/forge-prune-runtime.ts`，回归见
+`apps/desktop/scripts/runtime-deps-packaging.test.mjs`。
 
 ## Append-only 不变量
 
@@ -48,7 +55,7 @@
     纯粹的编号占位，用来保持与已发布 Meka 链的序号一致。
   它们必须原样保留：序号连续是对已升级用户的 `migration_history` 承诺，删掉或换号会让存量
   Meka 安装的迁移历史对不上。
-  **编号现状（2026-10-08 第五轮上游同步后）**：Meka 已发布谱系为 `0000`–`0112`（其中 `0110`–`0112` 是
+  **编号现状（2026-10-16 第六轮上游同步后）**：Meka 已发布谱系为 `0000`–`0112`（其中 `0110`–`0112` 是
   Meka 自有增量），第三轮同步把上游 `0110`–`0114` 顺移追加为 Meka 的 **`0113`–`0117`**
   （`0113_abandoned_scarlet_witch`、`0114_messy_newton_destine`、`0115_backfill_task_tag_order`、
   `0116_grey_cannonball`、`0117_shared_task_events`），第四轮把上游新增的
@@ -64,16 +71,25 @@
   `drizzle/scripts/0125_auto_review_projections.ts`（上游 `scripts/0122_auto_review_projections.ts`
   的逐字节副本，只换文件名），它在 SQL 建表之外创建 4 个持久触发器；`migrationRunner` 按
   basename 配对，序号不对齐就会出现「表建了、触发器永不创建」的静默功能缺失。
-  **因此「已发布（值得冻结）的 Meka 编号」在第五轮后是 `0000`–`0122`，本轮新增到 `0126`。**
-  上一轮同步落的是 `0096`–`0107`；处理方式同源，见
+  **第六轮（2026-10-16）**：上游新增 `0124`–`0128` 五条顺移追加为 Meka 的 **`0127`–`0131`**
+  （`0127_funny_glorian`、`0128_magical_night_thrasher`、`0129_melodic_toxin`、
+  `0130_bot_group_task_posts`、`0131_demonic_odin`）；其中两条带 companion script
+  （`scripts/0127_funny_glorian.ts` 建 `orca_remote_opens` 并给 `orca_workers` 加列、
+  `scripts/0128_magical_night_thrasher.ts` 给 `orca_workers` 补列）。六处硬编码上游原号的
+  测试（`drizzle-split.spike`、`botGroupTaskPostSnapshot`、`DbClient.inproc`、
+  `plugin-usage/service`、`migrationReplay`）与三份文档引用已同步 +3 顺移；逐条见
+  `docs/migrations/2026-10-16-origin-main-to-meka-main.md` §3。
+  **因此「已发布（值得冻结）的 Meka 编号」在第六轮后是 `0000`–`0126`，本轮新增到 `0131`。**
+  更早几轮同步落的是 `0096`–`0107`；处理方式同源，见
   `docs/migrations/2026-10-08-origin-main-to-meka-main.md`、
   `docs/migrations/2026-09-25-origin-main-to-meka-main.md` §4 与
   `docs/migrations/2026-09-origin-main-to-meka-main.md` 的 D4。
   这段编号不在 `migration-baseline.json` 的 SHA256 清单里（该清单只覆盖迁仓前的
   `0000`–`0079`，实测 80 条 SQL + 23 条脚本），由上面第 3 段的 **Git 基线冻结** 保护。
-  `db:validate` 第 6 步报出的 canonical 基线条数是**动态值**，随每次追加而变化：第五轮实测为
-  **固定 SHA256 基线 80 条 SQL + 23 条脚本、canonical 基线冻结 123 条 SQL + 44 条脚本**
-  （`123` = 第四轮结束时的 `0000`–`0122`，本轮新增的 `0123`–`0126` 不在冻结集合内）。
+  `db:validate` 第 6 步报出的 canonical 基线条数是**动态值**，随每次追加而变化：第六轮实测为
+  **固定 SHA256 基线 80 条 SQL + 23 条 runtime script、canonical 基线冻结 127 条 SQL + 45 条 runtime script**
+  （`127` = 第五轮结束时的 `0000`–`0126`，本轮新增的 `0127`–`0131` 不在冻结集合内；
+  第五轮该值是 `123` SQL + `44` script）。
   该数字随每轮同步变化，改动 migration 时**以命令实际输出为准，不要把这里的数字当断言**。
 - 生成 migration 前先基于最新 canonical 产品分支：Cindy Meka 使用 `meka/main`，上游
   checkout 使用 `origin/main`。同步上游时还要显式检查 `origin/main` 的新编号是否与

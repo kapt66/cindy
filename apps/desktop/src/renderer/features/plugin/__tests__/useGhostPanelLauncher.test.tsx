@@ -48,6 +48,18 @@ const ghost = (id: string): InstalledGhost => ({
   },
 });
 
+/**
+ * namespace 隔离后的新布局 root 安装：目录是 `_ns/_root/<id>`、实例键是 `_root__<id>`，
+ * 与逻辑插件 id 不同。入口一律传实例键，启动器必须按实例解析。
+ */
+const rootInstance = (id: string): InstalledGhost => ({
+  ...ghost(id),
+  dir: `/brain/_ns/_root/${id}`,
+  instanceKey: `_root__${id}`,
+  namespace: null,
+  namespaceState: 'confirmed',
+});
+
 let launcher: GhostPanelLauncher;
 let frames: Map<number, FrameRequestCallback>;
 let nextFrameId: number;
@@ -152,6 +164,23 @@ describe('useGhostPanelLauncher', () => {
 
     expect(cancelAnimationFrame).toHaveBeenCalledWith(1);
     expect(screen.queryByTestId('plugin-panel-modal-host')).toBeNull();
+  });
+
+  it('resolves the physical instance key of a new-layout root install', async () => {
+    render(<Harness ghosts={[rootInstance('meka-p4')]} />);
+
+    await act(async () => {
+      await launcher.openPanel('_root__meka-p4', document.createElement('button'));
+    });
+
+    // 逻辑 id 与实例键不同：按 `manifest.id === id` 解析会找不到实例、面板静默不开。
+    expect(screen.getByTestId('plugin-panel-modal-host').dataset).toMatchObject({
+      ghostId: 'meka-p4',
+      open: 'false',
+    });
+
+    act(() => frames.get(1)?.(0));
+    expect(screen.getByTestId('plugin-panel-modal-host').dataset.open).toBe('true');
   });
 
   it('uses the same launcher for the inherited docked presentation', async () => {

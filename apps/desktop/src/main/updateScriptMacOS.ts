@@ -132,9 +132,26 @@ export function buildMacOSUpdateScript(params: MacUpdateScriptParams): string {
     '    exit 1',
     'fi',
     '',
+    // macOS ships BSD find, which has no GNU -maxdepth option. A shell glob
+    // keeps the search top-level, works with spaces in bundle paths, and is
+    // available in the Bash used to run this detached script.
+    // Meka 侧保留更严的身份闸:ZIP 根必须**恰好**一个 `.app`,且名字与当前安装的
+    // bundle 同名(`appName` 由 `path.basename(appPath, '.app')` 派生),否则拒绝 ——
+    // 与紧随其后的 CFBundleIdentifier / CFBundleExecutable 比对构成同一道身份门(WL-6.3/6.5)。
     'shopt -s nullglob',
-    `TOP_LEVEL_APPS=("${extractDir}"/*.app)`,
+    'TOP_LEVEL_APPS=()',
+    // 解压目录必须**拼进脚本文本**(不是留 shell 变量):脚本带 `set -u`,未绑定的
+    // `${extractDir}` 会在运行期直接中止;上游本轮新增的结构断言也按字面量形态钉住。
+    `for candidate in "${extractDir}"/*.app; do`,
+    '    if [ -d "$candidate" ]; then',
+    '        TOP_LEVEL_APPS+=("$candidate")',
+    '    fi',
+    'done',
     'TOP_LEVEL_APP_COUNT=${#TOP_LEVEL_APPS[@]}',
+    'if [ "$TOP_LEVEL_APP_COUNT" -eq 0 ]; then',
+    `    echo "[$(date)] FATAL: no .app found in ${extractDir} — zip layout unexpected" >> "${logPath}"`,
+    '    exit 1',
+    'fi',
     `NEW_APP="${extractDir}/${appName}.app"`,
     'if [ "$TOP_LEVEL_APP_COUNT" -ne 1 ] || [ ! -d "$NEW_APP" ]; then',
     `    echo "[$(date)] FATAL: expected exactly ${appName}.app at ZIP root (found $TOP_LEVEL_APP_COUNT app bundles)" >> "${logPath}"`,

@@ -124,6 +124,7 @@ describe('desktop auth IPC validation', () => {
       realm: 'global',
     });
     expect(parseDesktopLoginAction({ type: 'select-realm', realm: 'dev' })).toBeNull();
+    expect(parseDesktopLoginAction({ type: 'back', token: 'ignored' })).toEqual({ type: 'back' });
     expect(parseDesktopLoginAction({ type: 'cancel-browser' })).toEqual({
       type: 'cancel-browser',
     });

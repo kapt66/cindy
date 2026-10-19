@@ -55,7 +55,10 @@ function renderPanel(autoFocusWebview: boolean) {
   );
 
   const view = render(
-    <GhostChipPanelBody manifest={manifest} autoFocusWebview={autoFocusWebview} />,
+    <GhostChipPanelBody
+      ghost={{ manifest, dir: '/tmp/brain/focus-plugin', namespace: null }}
+      autoFocusWebview={autoFocusWebview}
+    />,
   );
   const webview = view.container.querySelector('webview');
   if (!webview) throw new Error('Expected plugin panel webview');

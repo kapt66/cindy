@@ -13,10 +13,6 @@ const harness = vi.hoisted(() => ({
   restore: vi.fn(),
 }));
 
-const { useCindyVersionsMock } = vi.hoisted(() => ({
-  useCindyVersionsMock: vi.fn(),
-}));
-
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string) => key,
@@ -50,10 +46,6 @@ vi.mock('@/hooks/useBetaChannelSettings', () => ({
   }),
 }));
 
-vi.mock('@/lib/useCindyVersions', () => ({
-  useCindyVersions: useCindyVersionsMock,
-}));
-
 vi.mock('@/hooks/useLogout', () => ({
   useLogout: () => ({ handleLogout: vi.fn() }),
 }));
@@ -71,7 +63,6 @@ import { UserInfoSection } from '@/components/sidebar/UserInfoSection';
 beforeEach(() => {
   harness.updateStatus = { status: 'ready', version: '1.2.3', errorCode: null };
   harness.restore.mockClear();
-  useCindyVersionsMock.mockReturnValue({ state: undefined });
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
     value: {
@@ -130,16 +121,13 @@ describe('UserInfoSection update flame vs rail', () => {
     expect(screen.queryByRole('button', { name: 'sidebar.user.reopenUpdateBanner' })).toBeNull();
   });
 
-  it('shows the personal version label when the running app is personal', () => {
-    useCindyVersionsMock.mockReturnValue({
-      state: {
-        currentId: 'personal',
-      },
-    });
-
+  it('keeps the regular app version label for the personal build', () => {
     render(<UserInfoSection isCollapsed={false} />);
 
-    expect(screen.getByText('cindyMake.versions.personal')).toBeTruthy();
-    expect(screen.queryByText('1.0.0')).toBeNull();
+    // Meka divergence(WL-5.5/5.6):版本行前缀走**运行期 edition**,dev 构建显示
+    // `Global · <版本>` —— 同目录 userInfoSectionMobileDownload.test.tsx 按同一取值断言。
+    // 上游本用例断言裸 '1.0.0'(上游 global 构建不标前缀、也没有 edition 解构),在 Meka 下不成立。
+    expect(screen.getByText('login.realmSelector.global · 1.0.0')).toBeTruthy();
+    expect(screen.queryByText('cindyMake.versions.personal')).toBeNull();
   });
 });

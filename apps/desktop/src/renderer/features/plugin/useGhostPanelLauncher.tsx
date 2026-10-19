@@ -13,6 +13,7 @@ import { GhostPanelModal } from '@/cindy-brain/GhostPanelModal';
 import { restoreGhostPanel } from '@/lib/ghostPanelBubbleState';
 import { isGhostPanelModalPresentationEnabled } from '@/lib/ghostPanelPresentationPreference';
 
+import { findInstalledGhostByInstanceId } from '../../../shared/pluginIdentity';
 import {
   layoutWithGhostPanel,
   type InstalledGhost,
@@ -62,7 +63,10 @@ export function useGhostPanelLauncher({
 
   const openPanel = useCallback(
     async (id: string, trigger: HTMLButtonElement) => {
-      const ghost = ghosts.find((candidate) => candidate.manifest.id === id);
+      // `id` 是**物理实例键**（`_root__<id>` / `_ns__<ns>__<id>`，与插件页 `selectedDetail.id`
+      // 和 `?panel=` 深链同源），不是逻辑插件 id：namespace 隔离后新装 root 落在
+      // `_ns/_root/<id>`，用 `manifest.id === id` 找不到任何实例，面板会静默不开。
+      const ghost = findInstalledGhostByInstanceId(ghosts, id);
       if (!ghost?.manifest.panel || ghost.enabled === false) return;
       modalTriggerRef.current = trigger;
 
@@ -100,7 +104,7 @@ export function useGhostPanelLauncher({
   const modalGhost = useMemo(
     () =>
       modalGhostId
-        ? (ghosts.find((ghost) => ghost.manifest.id === modalGhostId) ?? null)
+        ? (findInstalledGhostByInstanceId(ghosts, modalGhostId) ?? null)
         : null,
     [ghosts, modalGhostId],
   );

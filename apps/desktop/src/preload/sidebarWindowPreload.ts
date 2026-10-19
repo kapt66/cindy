@@ -68,7 +68,7 @@ function readPreferredSystemLocale(): ApplicationMenuLocale {
   }
 }
 
-const appearanceSnapshot = createAppearanceSnapshotBridge();
+const appearanceSnapshot = createAppearanceSnapshotBridge({ wallpaperAssets: true });
 
 const fanOutFullscreenChange = (cb: (isFullscreen: boolean) => void): (() => void) =>
   onPayload('fullscreen-change', cb);
@@ -157,6 +157,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       onPayload(DEVICE_LINK_PUSH.CONTROL_TARGET_CHANGED, cb),
     onResponsivenessChanged: (cb: (payload: unknown) => void): (() => void) =>
       onPayload(DEVICE_LINK_PUSH.RESPONSIVENESS_CHANGED, cb),
+    onPeerLinkReopened: (cb: (payload: unknown) => void): (() => void) =>
+      onPayload(DEVICE_LINK_PUSH.PEER_LINK_REOPENED, cb),
     onPeerLinkReset: (cb: (payload: unknown) => void): (() => void) =>
       onPayload(DEVICE_LINK_PUSH.PEER_LINK_RESET, cb),
     mirrorCache: {
@@ -170,6 +172,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
         expectedOwnerToken?: string,
         expectedAccountCounter?: number,
         historyView?: string,
+        mergeListMessage?: boolean,
       ): Promise<unknown> =>
         ipcRenderer.invoke(DEVICE_LINK_INVOKE.MIRROR_CACHE_PUT_MESSAGES, {
           deviceId,
@@ -179,6 +182,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
           expectedOwnerToken,
           expectedAccountCounter,
           historyView,
+          mergeListMessage,
         }),
       getSessionList: (): Promise<unknown> =>
         ipcRenderer.invoke(DEVICE_LINK_INVOKE.MIRROR_CACHE_GET_SESSION_LIST),
@@ -224,6 +228,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     previewHtml: (params: unknown): Promise<unknown> => ipcRenderer.invoke('maker:html-preview:open', params),
     chatFetch: (params: unknown): Promise<unknown> => ipcRenderer.invoke('maker:chat-file:fetch', params),
     chatDownload: (params: unknown): Promise<unknown> => ipcRenderer.invoke('maker:chat-file:download', params),
+    chatCancel: (requestId: string): Promise<unknown> => ipcRenderer.invoke('maker:chat-file:cancel', requestId),
     chatStat: (params: unknown): Promise<unknown> => ipcRenderer.invoke('maker:chat-file:stat', params),
   },
   terminal: {
@@ -288,17 +293,25 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('ghosts:open-retirement', id),
     acknowledgeRetirement: (id: string): Promise<{ ok: true }> =>
       ipcRenderer.invoke('ghosts:acknowledge-retirement', id),
-    setEnabled: (id: string, enabled: boolean): Promise<{ ok: true }> =>
-      ipcRenderer.invoke('ghosts:set-enabled', id, enabled),
+    setEnabled: (id: string, enabled: boolean, expectedInstalledApproval?: string): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('ghosts:set-enabled', id, enabled, expectedInstalledApproval),
     resolvePanelMedia: (
       uri: string,
       purpose?: 'attach' | 'menu',
-    ): Promise<unknown> => ipcRenderer.invoke('ghosts:resolve-panel-media', uri, purpose),
+      instanceId?: string,
+      sourceToken?: string,
+    ): Promise<unknown> => sourceToken !== undefined
+      ? ipcRenderer.invoke('ghosts:resolve-panel-media', uri, purpose, instanceId, sourceToken)
+      : instanceId === undefined
+        ? ipcRenderer.invoke('ghosts:resolve-panel-media', uri, purpose)
+        : ipcRenderer.invoke('ghosts:resolve-panel-media', uri, purpose, instanceId),
     runtimeStates: (): Promise<{ states: Record<string, string> }> =>
       ipcRenderer.invoke('ghosts:runtime-states'),
     onChanged: (cb: (payload: unknown) => void): (() => void) => onPayload('ghosts:changed', cb),
     onRuntimeChanged: (cb: (payload: unknown) => void): (() => void) =>
       onPayload('ghosts:runtime-changed', cb),
+    onLibraryReplaced: (cb: (payload: unknown) => void): (() => void) =>
+      onPayload('ghosts:library-replaced', cb),
     onPreviewMedia: (cb: (payload: unknown) => void): (() => void) =>
       onPayload('ghosts:preview-media', cb),
     unreadSync: (): { entries: unknown[] } => {
@@ -514,6 +527,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.invoke('maker:team:end', leadSessionId),
       getCollaborationSettings: (): Promise<unknown> =>
         ipcRenderer.invoke('maker:collaboration-settings:get'),
+      listExecutionDevices: (): Promise<unknown> =>
+        ipcRenderer.invoke('maker:orca:execution-devices'),
       onOrcaWorkerChanged: (cb: (payload: unknown) => void): (() => void) => onPayload('maker:orca:worker-changed', cb),
     },
   },

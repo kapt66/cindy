@@ -7,6 +7,7 @@ import { WINDOW_NO_DRAG_STYLE, useManualWindowDrag } from '@/components/layout/w
 import { cn } from '@/lib/utils';
 
 import type { InstalledGhost } from '../../shared/ghost';
+import { installedGhostStoragePart } from '../../shared/pluginIdentity';
 import { GhostChipPanelBody, GhostPanelError } from './ghostPanelBody';
 import { useGhostRuntimeState } from './runtimeStates';
 
@@ -30,7 +31,9 @@ export function GhostPanelModal({
   const closeRef = useRef<HTMLButtonElement>(null);
   const panelBodyRef = useRef<HTMLDivElement>(null);
   const headerWindowDrag = useManualWindowDrag();
-  const runtimeState = useGhostRuntimeState(ghost.manifest.id);
+  // 运行时状态按物理实例键广播（`GhostRuntime.spawn` 用 installedGhostStoragePart）：
+  // 用 `ghost.manifest.id` 会让新布局安装（`_ns/_root/<id>`）的崩溃/熔断接管态永远显示不出来。
+  const runtimeState = useGhostRuntimeState(installedGhostStoragePart(ghost));
   const broken = runtimeState === 'crashed' || runtimeState === 'fused';
   const title = ghost.manifest.panel?.title ?? ghost.manifest.name;
   useEffect(() => {
@@ -117,9 +120,9 @@ export function GhostPanelModal({
             className="flex min-h-0 flex-1 flex-col bg-[var(--panel-bg)]"
           >
             {broken ? (
-              <GhostPanelError manifest={ghost.manifest} state={runtimeState} />
+              <GhostPanelError ghost={ghost} state={runtimeState} />
             ) : (
-              <GhostChipPanelBody manifest={ghost.manifest} autoFocusWebview={open} />
+              <GhostChipPanelBody ghost={ghost} autoFocusWebview={open} />
             )}
           </div>
         </Dialog.Content>

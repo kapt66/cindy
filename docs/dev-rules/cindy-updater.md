@@ -40,6 +40,12 @@ Tauri 实现）与 Electron 侧的更新服务（`apps/desktop/src/main/updateSe
 
 先读实际代码再决定实现；不要只凭文档或记忆猜测更新流程。
 
+## Agent 入口
+
+Agent 只能通过 `updateService.ts` 的 `applyConfirmedAppUpdateForAgent` 走同一条
+check → download → relaunch 状态机，且必须先经宿主确认卡；不得给 Agent 新开下载、替换或重启
+路径。产品规则见 [`../product-rules/agent-app-update.md`](../product-rules/agent-app-update.md)。
+
 ## Review 要点
 
 1. 改动是否触及更新器或更新服务？触及就必须先有 owner 确认，PR 说明写明。
@@ -358,28 +364,37 @@ UI 入口是标题栏菜单（`MenuButton`）与 `MainLayout` 的「检查更新
 随交付门禁首跑。**本次未做实机双模式目检**——只新增 toast 文案，未新增任何样式、颜色、圆角或
 尺寸硬编码。
 
-## Agent 侧的「检查应用更新」入口（2026-09-25 第四轮上游同步新增）
+## Agent 侧的「检查应用更新」入口（2026-09-25 第四轮上游同步新增；2026-10-16 第六轮扩写）
 
-除人工入口外，本轮随上游引入了**给 Agent 用的**更新检查工具，形成第二条调用链
-（它复用同一套 `UpdateStatus` / 结论码真值，不是新的判定逻辑）：
+除人工入口外，随上游引入了**给 Agent 用的**更新工具族，形成第二条调用链
+（它们复用同一套 `UpdateStatus` / 结论码真值，不是新的判定逻辑）：
 
 | 环节 | 位置 |
 | --- | --- |
-| MCP 工具暴露 | `packages/lizi-mcps/src/xdt-helper/app_update.ts`（工具名 `check_app_update`；`:1` 起用 `BRAND_NAME`，与 `:30` 的 description 一致） |
-| Host 侧注册 | `apps/desktop/src/main/mcp-integrations/mcp-providers.ts:418` |
-| 实现 | `apps/desktop/src/main/updateService.ts` 的 `checkAppUpdateForAgent()`（约 `:2595`）与 `agentUpdateApplyBlockReason()`（约 `:2572`） |
+| MCP 工具暴露 | `packages/lizi-mcps/src/xdt-helper/app_update.ts` —— **三个工具**：`check_app_update`（`:48`，只读检查）、`install_app_update`（`:66`，安装/重启）、`set_app_auto_update`（`:85`，空闲自动安装开关）；文案统一用 `BRAND_NAME` |
+| Host 侧注册 | `apps/desktop/src/main/mcp-integrations/mcp-providers.ts:47`（`createAgentAppUpdateCallbacks` 导入）与 `:513`（`appUpdate:` 接线；第六轮上游把实现抽成独立目录后该行号从旧的 `:418` 漂移而来） |
+| Host 实现目录 | `apps/desktop/src/main/agent-app-update/**`（第六轮起）：`agentAppUpdateService.ts`（权限卡 → 检查 → 下载 → 重启状态机）、`callerAuthority.ts`（**主人本人**在本机/手机远程/私聊发起才算数，自动化、其他任务、群成员与共享任务成员一律拒绝，返回 `OWNER_TURN_REQUIRED`）、`restartRecords.ts`（重启结果落 owner-scoped 标记并写回调用任务）、`constants.ts` |
+| 手动入口的实现 | `apps/desktop/src/main/updateService.ts` 的 `checkAppUpdateForAgent()`（约 `:2595`）与 `agentUpdateApplyBlockReason()`（约 `:2572`） |
 
 **不变量**：
 - **结论码真值同源**：Agent 入口必须复用「手动检查更新」那一节的结论码语义，**不得**自造
   「已经是最新」的结论（`idle` 之外的出口必须带回自己的结论码）。
 - **平台分支**：`agentUpdateApplyBlockReason()` 含 macOS 引导分支（Translocated 时提示先把应用
   移入「应用程序」）。该文案必须走 `BRAND_NAME`（Meka 展示名 `Cindy Meka`），**不得**写死上游名
-  —— 同语义的渲染层文案用的是 `{{appName}}` 占位符。
+  —— 同语义的渲染层文案用的是 `{{appName}}` 占位符。**第六轮扩写**：这条要求覆盖整条链路的
+  **主进程可见文案**，不只是 macOS 那一条 —— 第六轮已把 `agentAppUpdateService.ts:170/:414/:462`
+  与 `updateService.ts:2726/:2734/:2774` 六处上游新写死的 `Cindy` 改为 `${BRAND_NAME}`；
+  下一次同步若上游再引入主进程文案，按同一口径收口。
+- **权限边界**：安装/自动安装请求只能变成**主人可见的 Host 权限卡**（Desktop、同账号手机与 IM 卡片
+  共用同一决定）；Full Access 不能绕过它（它不经过 Agent 自己的审批回调）。
 - Linux 用户级安装的 `installation.region !== CURRENT_CINDY_REGION` 属于**构建期 build-region 门**，
   与区域运行期可选（`region-and-editions.md §1.2`）不冲突。
 
-**验证现状**：随交付门禁跑 `updateService.test.ts` 与 `packages/lizi-mcps` 的相关套件；
-**未做真机更新验收**（需真实签名与发布渠道），如实登记为「未验证」。
+**验证现状**：随交付门禁跑 `updateService.test.ts`、`agent-app-update/__tests__/**` 与
+`packages/lizi-mcps` 的相关套件；**未做真机更新验收**（需真实签名与发布渠道），如实登记为「未验证」。
+**第六轮登记**：本轮只做了类型自洽与上述文案收口，真机更新验收仍未执行。
+
+上游新增的产品规则正文见 `docs/product-rules/agent-app-update.md`（本仓原样接纳）。
 
 ## 更新与运行时资产根地址
 

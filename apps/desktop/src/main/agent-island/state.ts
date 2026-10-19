@@ -47,11 +47,8 @@ import {
 
 export type AgentIslandInteractionRequest =
   | InteractionRequest
-  | {
-      kind: 'plugin_setup';
-      requestId: string;
-      detail: string;
-    };
+  | { kind: 'plugin_setup'; requestId: string; detail: string }
+  | { kind: 'input_handoff'; requestId: string; detail: string };
 
 export const AGENT_ISLAND_COMPLETION_DWELL_MS = 5_000;
 export const AGENT_ISLAND_ERROR_DWELL_MS = 12_000;
@@ -144,6 +141,8 @@ interface ApplyAgentIslandEventOptions {
 }
 
 interface AgentIslandSessionState {
+  completionNotification?: 'silent';
+  pendingDeviceCompletionNotification?: boolean;
   sessionId: string;
   title: string | null;
   projectName: string | null;
@@ -224,6 +223,12 @@ interface AgentIslandSessionState {
   sortActivityAt: number;
   lastActivityAt: number;
   /**
+   * 无碰撞的卡片身份代数(全局单调不复用):只在真正换卡(新一轮 / 新失败 / 新完成)时
+   * 推进,记账 / 样式事件不推进 —— 毫秒时间戳同毫秒会撞(review P1),无差别推进又会把
+   * 收尾记账当成换卡(review P1 后续)。
+   */
+  activityGeneration: number;
+  /**
    * 非 null = 镜像另一台设备(device-link「我控制它」)上运行的任务,生命周期由
    * {@link syncAgentIslandDeviceSessions} 的输入决定;本机 Maker 事件不会触达它。
    */
@@ -282,9 +287,29 @@ export interface AgentIslandState {
 }
 
 export interface AgentIslandRemoteUnreadTerminal {
+  completionNotification?: 'silent';
   sessionId: string;
   phase: 'completed' | 'error';
   lastActivityAt: number;
+}
+
+// 卡片身份的无碰撞活动代数:全局单调递增、不复用。不要退回毫秒时间戳 —— 重试在同一
+// 毫秒内再落新终态时时间戳会撞上(review P1),旧点击会误处置新提醒。
+let agentIslandActivityGeneration = 0;
+
+function nextActivityGeneration(): number {
+  return ++agentIslandActivityGeneration;
+}
+
+/** 活动时间戳照常推进;卡片身份不动 —— 记账 / 样式事件不得驱逐被点击的卡(review P1)。 */
+function touchSessionActivity(session: AgentIslandSessionState, now: number): void {
+  session.lastActivityAt = now;
+}
+
+/** 新一轮 / 新失败 / 新完成真正换卡时推进身份代数,被点击的旧卡随之失效。 */
+function replaceAgentIslandCard(session: AgentIslandSessionState, now: number): void {
+  session.lastActivityAt = now;
+  session.activityGeneration = nextActivityGeneration();
 }
 
 export function createAgentIslandState(): AgentIslandState {
@@ -562,7 +587,7 @@ export function applyAgentIslandUserPrompt(
   const line = appendActivityLine(session, 'user', text);
   if (line) enqueueMessagePreview(session, line, now);
   session.sortActivityAt = now;
-  session.lastActivityAt = now;
+  replaceAgentIslandCard(session, now);
   return true;
 }
 
@@ -653,7 +678,7 @@ export function applyAgentIslandEvent(
   if (event.type === 'compact_boundary') {
     if (!foreground || !session.running || session.workingPhase !== 'compacting') return false;
     session.workingPhase = 'thinking';
-    session.lastActivityAt = now;
+    touchSessionActivity(session, now);
     return true;
   }
   if (event.type === 'thinking') {
@@ -661,13 +686,13 @@ export function applyAgentIslandEvent(
     // public status nor wake the roster/resource subscribers.
     if (!session.running || session.workingPhase === 'thinking' || session.workingPhase?.startsWith('reviewing-')) return false;
     session.workingPhase = 'thinking';
-    session.lastActivityAt = now;
+    touchSessionActivity(session, now);
     return true;
   }
   if (event.type !== 'error') {
     session.reconnectStatus = null;
   }
-  session.lastActivityAt = now;
+  touchSessionActivity(session, now);
 
   if (event.type === 'text') {
     if (foreground) session.workingPhase = 'replying';
@@ -835,7 +860,7 @@ export function applyAgentIslandEvent(
         : session.detail;
       session.detailSource = 'interaction';
       session.completedUntil = null;
-      session.lastActivityAt = now;
+      replaceAgentIslandCard(session, now);
       return true;
     }
     session.permissionRequestId = null;
@@ -905,6 +930,8 @@ export function applyAgentIslandEvent(
     // 真实展示给用户)清除,否则条目会在 errorUntil 过期后被 prune 静默删除。
     requestAttentionReveal(state, session, now, AGENT_ISLAND_ERROR_REVEAL_DWELL_MS, { forceUnread: true });
     syncRemoteUnreadTerminal(state, session);
+    // 新失败真正换卡:被点击的旧卡随之失效。
+    replaceAgentIslandCard(session, now);
     return true;
   }
 
@@ -939,7 +966,7 @@ export function applyAgentIslandInteractionRequest(
     session.pendingPermissionCanAllowForSession.delete(request.requestId);
   }
   if (!activateRequest) {
-    session.lastActivityAt = now;
+    touchSessionActivity(session, now);
     return;
   }
   session.phase = 'needs-interaction';
@@ -955,7 +982,7 @@ export function applyAgentIslandInteractionRequest(
   deferActiveTransientReveal(state, 'queued');
   requestAttentionReveal(state, session, now, AGENT_ISLAND_REVEAL_DWELL_MS);
   syncVisibleInteractionSuppression(state, now);
-  session.lastActivityAt = now;
+  replaceAgentIslandCard(session, now);
 }
 
 export function applyAgentIslandInteractionDismissed(
@@ -988,7 +1015,7 @@ function dismissPendingInteraction(
   if (session.permissionRequestId === requestId) {
     restorePendingPermissionAction(session);
   }
-  session.lastActivityAt = now;
+  touchSessionActivity(session, now);
   if (session.pendingInteractionIds.size > 0) {
     restorePendingInteractionKind(session);
     return;
@@ -1044,6 +1071,22 @@ function dismissPendingInteraction(
  *   - 'error-immune' 未读 error 对 passive ack 免疫,state 未动。
  */
 export type AgentIslandSessionReadAckResult = 'cleared' | 'noop' | 'not-found' | 'error-immune';
+
+/**
+ * 灵动岛上一张未读完成 / 报错卡的身份。点击时记下,导航落地后再比对:新一轮、新的失败
+ * 或新的完成(真正换卡)都会改变它,旧点击因此不会处置后来的提醒;失败 turn 的收尾记账
+ * 事件保留同一张卡、不改身份。身份用无碰撞的活动代数而非毫秒时间戳,同毫秒内的新终态
+ * 也拉得开。
+ * 只认本机会话当前展示的未读终态;运行中、等待交互或只剩远程账本时返回 null。
+ */
+export function readAgentIslandUnreadTerminalStamp(
+  state: AgentIslandState,
+  sessionId: string,
+): string | null {
+  const session = state.sessions.get(sessionId);
+  if (!session || session.sourceDeviceId !== null || !isUnreadTerminalLedger(session)) return null;
+  return `${session.phase}:${session.activityGeneration}`;
+}
 
 export function acknowledgeAgentIslandSessionRead(
   state: AgentIslandState,
@@ -1102,6 +1145,13 @@ export function completeAgentIslandSessionWithoutAttention(
   const session = state.sessions.get(sessionId);
   if (!session) return false;
 
+  // 解挂这条路径上的结算是**记账**,不是活动:上游的完成路径会经 replaceAgentIslandCard
+  // 把 lastActivityAt 推进到调用时刻,而本函数拿到的 `now` 是宿主处理调度结算的时刻,
+  // 可能晚于真实终态 ⇒ 未读驻留 TTL 会被结算延迟顺带延长。挂起中记下的 lastActivityAt
+  // 才是那次 silent stop 的真实时刻(见 holdSilentStopForResume),解挂后必须保持它
+  // (WL-11.15:挂起作废后,排期里只剩未读账本的岛面 TTL,没有 silent-stop 兜底时限)。
+  const realActivityAt = session.silentStopHold ? session.lastActivityAt : null;
+
   session.running = false;
   // 调度 run 的权威终态已经到达,silent-stop 挂起不再有意义(否则挂起窗到期会再收口一次)。
   session.silentStopHold = false;
@@ -1119,6 +1169,7 @@ export function completeAgentIslandSessionWithoutAttention(
     suppressAttention: true,
     preserveAttention: options.preserveAttention,
   });
+  if (realActivityAt !== null) session.lastActivityAt = realActivityAt;
 
   if (!isSessionVisible(session, now)) {
     if (isUnreadTerminalLedger(session)) syncRemoteUnreadTerminal(state, session);
@@ -1221,7 +1272,16 @@ export function syncAgentIslandDeviceSessions(
       result.changed = true;
     }
     if (applyDeviceSessionMeta(session, input)) result.changed = true;
+    const waitingForCompletionNotification = session.pendingDeviceCompletionNotification === true;
     const transition = applyDeviceSessionPhase(state, session, input, previous, now);
+    if (input.phase === 'completed') {
+      const observedCompletion = transition.event === 'done' || waitingForCompletionNotification;
+      session.pendingDeviceCompletionNotification = input.completionNotification === 'pending' && observedCompletion;
+      if (input.completionNotification) transition.event = null;
+      else if (waitingForCompletionNotification) transition.event = 'done';
+    } else {
+      session.pendingDeviceCompletionNotification = false;
+    }
     if (transition.changed) result.changed = true;
     if (transition.event) {
       result.events.push({
@@ -1273,7 +1333,7 @@ function applyDeviceSessionPhase(
       session.workingPhase = workingPhase;
       session.detail = input.detail;
       session.detailSource = input.detail ? 'status' : null;
-      if (changed) session.lastActivityAt = now;
+      if (changed) touchSessionActivity(session, now);
       return { changed, event: null };
     }
     case 'needs-interaction': {
@@ -1283,7 +1343,7 @@ function applyDeviceSessionPhase(
         markSessionRunning(state, session, now);
         session.pendingInteractionIds.add(DEVICE_SESSION_INTERACTION_ID);
         session.phase = 'needs-interaction';
-        session.lastActivityAt = now;
+        touchSessionActivity(session, now);
         if (previous !== null) {
           deferActiveTransientReveal(state, 'queued');
           requestAttentionReveal(state, session, now, AGENT_ISLAND_REVEAL_DWELL_MS);
@@ -1302,21 +1362,22 @@ function applyDeviceSessionPhase(
       return { changed, event: entering && previous !== null ? 'needs-reply' : null };
     }
     case 'completed': {
-      if (previous === 'completed') {
+      const silent = input.completionNotification === 'silent';
+      if (previous === 'completed' && (!silent || session.completionNotification === 'silent')) {
         return { changed: mirrorDeviceSessionSummary(session, input.detail), event: null };
       }
       clearDeviceSessionInteraction(session);
       session.running = false;
-      session.lastActivityAt = now;
+      touchSessionActivity(session, now);
       // 先换掉上一轮的摘要,且必须先于 complete:有摘要可显示时就不再补「完成」占位。
       session.activityLines = [];
       mirrorDeviceSessionSummary(session, input.detail);
       // 对方设备已经仲裁过终态,这里不再套本机「报错后的配对 done」保护。
       session.completionAllowedAfterTerminalError = true;
-      completeAgentIslandSession(state, session, now, observed
+      completeAgentIslandSession(state, session, now, observed && !silent
         ? { suppressAttention: false, preserveAttention: false }
         : { suppressAttention: true, preserveAttention: true });
-      return { changed: true, event: observed ? 'done' : null };
+      return { changed: true, event: observed && !silent ? 'done' : null };
     }
     case 'error': {
       if (previous === 'error') return { changed: false, event: null };
@@ -1326,7 +1387,7 @@ function applyDeviceSessionPhase(
       session.detail = input.detail;
       session.detailSource = input.detail ? 'status' : null;
       session.completedUntil = null;
-      session.lastActivityAt = now;
+      touchSessionActivity(session, now);
       if (observed) {
         session.errorUntil = now + AGENT_ISLAND_ERROR_DWELL_MS;
         requestAttentionReveal(state, session, now, AGENT_ISLAND_ERROR_REVEAL_DWELL_MS, { forceUnread: true });
@@ -1861,7 +1922,12 @@ function markSessionRunning(
   session.silentStopHoldUntil = null;
   session.silentStopHoldMonoUntil = null;
   session.pendingSilentStopCompletion = null;
-  if (!session.running) session.startedAt = now;
+  if (!session.running) {
+    // 新一轮真正换卡:被点击的旧卡随之失效(记账 / 样式事件不走这条路)。
+    replaceAgentIslandCard(session, now);
+    session.startedAt = now;
+  }
+  session.completionNotification = undefined;
   session.running = true;
   session.completedUntil = null;
   session.errorUntil = null;
@@ -1891,7 +1957,11 @@ function completeAgentIslandSession(
   // terminal error belongs to a verified flow that intentionally pairs a done.
   if (session.phase === 'error' && !session.completionAllowedAfterTerminalError) return;
 
+  // 旧卡被真正的完成替换才换身份;失败 turn 的收尾记账 done / 重复 done 保留同一张
+  // 卡,不得驱逐被点击的那张(review P1)。
+  if (session.phase !== 'completed') replaceAgentIslandCard(session, now);
   session.phase = 'completed';
+  session.completionNotification = options.suppressAttention ? 'silent' : undefined;
   session.interactionKind = undefined;
   session.interactionRevealDismissed = false;
   session.detail = '';
@@ -2687,6 +2757,7 @@ function getOrCreateSession(
     startedAt: now,
     sortActivityAt: now,
     lastActivityAt: now,
+    activityGeneration: nextActivityGeneration(),
     sourceDeviceId: null,
   };
   state.sessions.set(meta.sessionId, session);
@@ -2761,6 +2832,7 @@ function applyMeta(session: AgentIslandSessionState, meta: AgentIslandSessionMet
 function toSnapshot(session: AgentIslandSessionState): AgentIslandSessionSnapshot {
   const reconnectStatus = session.phase === 'running' ? session.reconnectStatus : null;
   return {
+    ...(session.phase === 'completed' && session.completionNotification ? { completionNotification: session.completionNotification } : {}),
     sessionId: session.sessionId,
     title: session.title || session.projectName || session.sessionId.slice(0, 8),
     projectName: session.projectName,
@@ -2821,6 +2893,7 @@ function syncRemoteUnreadTerminal(state: AgentIslandState, session: AgentIslandS
   if (session.sourceDeviceId !== null) return;
   if (isUnreadTerminalLedger(session)) {
     state.remoteUnreadTerminals.set(session.sessionId, {
+      ...(session.phase === 'completed' && session.completionNotification ? { completionNotification: session.completionNotification } : {}),
       sessionId: session.sessionId,
       phase: session.phase,
       lastActivityAt: session.lastActivityAt,
@@ -2847,6 +2920,7 @@ function unreadIslandTtlAt(session: AgentIslandSessionState): number | null {
 
 function toRemoteUnreadSnapshot(unread: AgentIslandRemoteUnreadTerminal): AgentIslandSessionSnapshot {
   return {
+    ...(unread.completionNotification ? { completionNotification: unread.completionNotification } : {}),
     sessionId: unread.sessionId,
     title: unread.sessionId.slice(0, 8),
     projectName: null,
@@ -2966,7 +3040,7 @@ function detailForInteraction(
   request: AgentIslandInteractionRequest,
   wording: ToolRowWording,
 ): string {
-  if (request.kind === 'plugin_setup') return request.detail;
+  if (request.kind === 'plugin_setup' || request.kind === 'input_handoff') return request.detail;
   if (request.kind === 'permission') {
     // 权限确认:requireCommandVisible 保证用户批准的真实命令始终可见。
     return formatIslandToolDetail(request.toolName, request.input, { wording, requireCommandVisible: true }, {

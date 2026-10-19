@@ -122,6 +122,20 @@ describe('MessageSourceLabels device label', () => {
 });
 
 describe('MessageSourceLabels plugin and row', () => {
+  it.each([['Reports', 'Reports'], [undefined, 'reports']])(
+    'identifies MCP Apps by server name or ID without opening plugin details (%s)',
+    (name, expectedLabel) => {
+      render(<MessageSourceLabels sourcePlugin={{ pluginId: 'mcp-app:reports', name }} />);
+      const label = screen.getByText(`mcpApps.messageSource:${expectedLabel}`);
+      expect(label.closest('[title]')?.getAttribute('title')).toBe(
+        'chat.userMessage.sourceIds.mcpApp:reports',
+      );
+      expect(screen.queryByRole('button')).toBeNull();
+      fireEvent.click(label);
+      expect(mocks.navigate).not.toHaveBeenCalled();
+    },
+  );
+
   it('labels plugin messages and opens the plugin detail', () => {
     render(<MessageSourceLabels sourcePlugin={{ pluginId: 'ghost.notes', name: 'Notes' }} />);
     const button = screen.getByRole('button');
@@ -178,3 +192,13 @@ describe('QueueSourceDeviceTag (pending queue rows)', () => {
   });
 });
 
+
+describe('private group reply source', () => {
+  it('shows the group name and id in the existing source row, excluded from share images', () => {
+    const { container } = render(<MessageSourceLabels sourceGroup={{ groupId: 'g-1', name: 'Design' }} align="start" />);
+    const label = screen.getByText('chat.userMessage.groupSentNamed:Design');
+    expect(label.closest('[data-message-origin]')?.getAttribute('title')).toBe('chat.userMessage.sourceIds.group:g-1');
+    expect(container.querySelector(`[${SHARE_SOURCE_ATTR}]`)).not.toBeNull();
+    expect(container.querySelector('button')).toBeNull();
+  });
+});

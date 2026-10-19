@@ -1,12 +1,13 @@
 /**
  * SidebarTopNav —— 侧栏顶部常驻动作/导航列表(取代原 HorizontalTabbar)。
  * ---------------------------------------------------------------------------
- * 一条同级、等权的列表行:新建固定;自动任务 / Plugins / 伙伴 / 搜索与带主视图的插件
+ * 一条同级、等权的列表行:新建固定;自动任务 / Plugins / 搜索与带主视图的插件
  * 按用户偏好排序与显示(插件的显隐沿用其「在侧边栏显示」开关);未勾选的进「更多」。
  * 最小化插件面板恢复入口仍按需出现。
  *   - 新建 / 自动任务:项目(cc-agent)视图的动作 —— 在任意视图点击都跳回项目视图并执行。
  *   - Plugins:主视图切换(navigateToView),命中当前视图时高亮。
- *   - 伙伴:原位切换为「返回任务」动作,随目标更换文案和图标,不显示选中高亮。
+ *   - 伙伴 2026-10-13 起不再是导航行:它是侧栏第一层的「伙伴」段(置顶上方),
+ *     与任务列表并存,不再整栏切换(见 features/bots/TeammatesSection)。
  *   - 搜索(SidebarInlineSearch):静息态与其余行同款「🔍 搜索」;hover / 聚焦
  *     就地展开成搜索框,结果由下方功能槽(CCAgentSidebarUpper)替换列表绘制。搜索状态经
  *     ConversationSearchProvider 的 context 共享(行在此、结果在功能槽,两者是兄弟子树)。
@@ -19,19 +20,18 @@
  * 与 Shell"不感知路由"的原则:本组件是原 HorizontalTabbar 的同位替代,封装了
  * 自身的路由 / cc-agent 数据,Shell 仍只负责把它渲染在顶行(见 Sidebar.tsx)。
  *
- * rail(收窄)态:任务视图用 SidebarRailNavigation;其它 Feature 的 rail 只由
- * section="rail" 补一个伙伴入口。
+ * rail(收窄)态:任务视图用 SidebarRailNavigation;其它 Feature 的 rail 不再补入口
+ * (伙伴的 rail 入口由 CollapsedView 提供)。
  */
 
-// 集合并集(2026-10 第五轮同步):上游把「伙伴」行的图标搬进了
-// `sidebarNavigationPrefs.ts`(该文件 `import { Bot, … } from 'lucide-react'` 且
-// `SIDEBAR_NAVIGATION_ITEM_ICONS.bots = Bot`),本文件改为消费那张表,因此这里**不再**
-// 直接引用 `Bot`——补回它会变成未使用的 import。Meka 的 mekaRow 仍需要
-// `BriefcaseBusiness`;两侧集合不同,取并集,勿整体取单侧(2026-09 上一轮同步曾因同一
-// 原因丢过 `Bot`,见 meka-whitelist-verification.md WL-2.1)。
+// 图标集合(2026-10 第六轮同步复核):上游 `2ce5ab565e` 把「伙伴」并入侧栏第一层
+// (`features/bots/TeammatesSection`),`sidebarNavigationPrefs.ts` 里的 `bots` 条目连同
+// `SIDEBAR_NAVIGATION_ITEM_ICONS.bots` 一并删除,本文件也不再消费 `ArrowLeft`(它只服务
+// 旧的「伙伴 ↔ 返回任务」双态行)。Meka 的 `mekaRow` 仍需要 `BriefcaseBusiness`;
+// 两侧集合不同,取并集,勿整体取单侧(2026-09 上一轮同步曾因同一原因丢过 `Bot`,
+// 见 meka-whitelist-verification.md WL-2.1)。
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ArrowLeft,
   BriefcaseBusiness,
   CirclePlus,
   Ellipsis,
@@ -42,7 +42,6 @@ import { useLocation, useNavigate, useMatch } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import { cn } from '@/lib/utils';
-import { useNavigationAttention } from '@/lib/navigationAttentionStore';
 import { NavigationCountBadge } from '@/components/sidebar/NavigationCountBadge';
 import { useAuth } from '@/contexts/AuthContext';
 import { AttentionDot, type DotTone } from '@/components/sidebar/AttentionDot';
@@ -65,6 +64,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { SidebarNavigationCustomize } from './SidebarNavigationCustomize';
+import { useHoverOpenMenu } from './useHoverOpenMenu';
 import {
   SIDEBAR_NAVIGATION_ITEM_ICONS,
   ghostIdOfEntry,
@@ -106,6 +106,15 @@ const NAV_MENU_CLASS =
  */
 export type SidebarTopNavSection = 'all' | 'pinned' | 'scrollable' | 'rail';
 
+/**
+ * One render slot in the expanded row sequence: a user-ordered entry, or the **permanent**
+ * Meka row (WL-2.1 / WL-2.2). Meka deliberately has no id in `SidebarNavigationEntryId`,
+ * so it can never be hidden, reordered, put into More or offered in the Customize panel —
+ * it is injected at a fixed position instead (right after Automations; the rail applies
+ * the same rule to its own tile list).
+ */
+export type SidebarNavigationSlot = SidebarNavigationEntryId | 'meka';
+
 export interface SidebarNavigationAction {
   label: string;
   icon: LucideIcon;
@@ -127,21 +136,12 @@ function useSidebarNavigationActions(
 ): Record<SidebarNavigationItemId, SidebarNavigationAction> {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const location = useLocation();
   const { activeKey, navigateToView } = useActiveMainView();
   const onScheduleMatch = useMatch('/cc-agent/scheduled');
   // 任一插件有未读 → 入口行尾一颗**静态**绿点(聚合入口按 AttentionDot 规范不呼吸,
   // 呼吸留给单条卡片;见 AttentionDot 头部的形态规范)。
   const hasRetirementUnread = useInstalledGhosts().some((ghost) => ghost.retirement?.unread);
   const hasGhostUnread = useAnyGhostUnread() || hasRetirementUnread;
-  // `activeKey` is intentionally sticky for the other navigation rows, but this
-  // action must describe the actual destination. Settings and other auxiliary
-  // routes should continue to offer entry to Teammates, not a stale return.
-  const isBotsView = isBotsPath(location.pathname);
-  // The teammate entry counts what waits at its destination: unread teammate
-  // messages, or tasks needing attention once it has become "back to tasks".
-  const navigationCounts = useNavigationAttention();
-  const botsCount = isBotsView ? navigationCounts.tasks : navigationCounts.teammates;
   return {
     automations: {
       label: t('ccAgent.layout.automations'),
@@ -158,17 +158,6 @@ function useSidebarNavigationActions(
       showDot: hasGhostUnread,
       dotTone: hasRetirementUnread ? 'awaiting' : 'done',
     },
-    bots: {
-      label: t(isBotsView ? 'sidebar.backToSessions' : 'sidebar.tabs.bots'),
-      icon: isBotsView ? ArrowLeft : SIDEBAR_NAVIGATION_ITEM_ICONS.bots,
-      onSelect: () => navigateToView(isBotsView ? 'cc-agent' : 'bots'),
-      active: false,
-      showDot: false,
-      count: {
-        value: botsCount,
-        label: t(isBotsView ? 'sidebar.taskAttentionCount' : 'sidebar.teammateUnreadCount', { count: botsCount }),
-      },
-    },
     search: {
       label: t('sidebar.navigation.items.search'),
       icon: SIDEBAR_NAVIGATION_ITEM_ICONS.search,
@@ -177,10 +166,6 @@ function useSidebarNavigationActions(
       showDot: false,
     },
   };
-}
-
-function isBotsPath(pathname: string): boolean {
-  return pathname === '/bots' || pathname.startsWith('/bots/');
 }
 
 /**
@@ -201,7 +186,7 @@ function useSidebarNavigationEntries(): {
   const prefs = useSidebarNavigationPrefs(dataOwnerId);
   const { sidebarVisible } = useGhostMainViews();
   const rosterReady = useInstalledGhosts().length > 0;
-  const sidebarGhostIds = sidebarVisible.map((item) => item.ghostId).join('\n');
+  const sidebarGhostIds = sidebarVisible.map((item) => item.instanceId).join('\n');
   // Plugins entering the sidebar for the first time start in More, flagged as new.
   // Wait for the account and its installed roster: both are per data owner.
   useEffect(() => {
@@ -214,8 +199,8 @@ function useSidebarNavigationEntries(): {
     }
   }, [dataOwnerId, sidebarGhostIds, rosterReady]);
   const unseenGhostIds = useSidebarUnseenApps(dataOwnerId);
-  const apps = new Map(sidebarVisible.map((item) => [item.ghostId, item]));
-  const order = resolveSidebarNavigationOrder(prefs.order, sidebarVisible.map((item) => item.ghostId));
+  const apps = new Map(sidebarVisible.map((item) => [item.instanceId, item]));
+  const order = resolveSidebarNavigationOrder(prefs.order, sidebarVisible.map((item) => item.instanceId));
   const isVisible = (id: SidebarNavigationEntryId) => ghostIdOfEntry(id) === null
     ? prefs.visible.includes(id as SidebarNavigationItemId)
     : prefs.appsAtTop.includes(id as SidebarNavigationAppEntryId);
@@ -249,7 +234,10 @@ function NewTag({ className }: { className?: string }) {
   );
 }
 
-/** Unchecked entries and (when there is room) the customize panel; empty menus render nothing. */
+/**
+ * Unchecked entries and (when there is room) the customize panel; empty menus render nothing.
+ * Opens on hover as well as click (useHoverOpenMenu), so it is non-modal.
+ */
 function SidebarNavigationMoreMenu({
   trigger,
   hiddenIds,
@@ -260,7 +248,8 @@ function SidebarNavigationMoreMenu({
   onCustomize,
   onCloseAutoFocus,
 }: {
-  trigger: React.ReactNode;
+  /** Receives the open state so a trigger can quiet its own tooltip. */
+  trigger: (open: boolean) => React.ReactNode;
   hiddenIds: readonly SidebarNavigationEntryId[];
   actions: Record<SidebarNavigationItemId, SidebarNavigationAction>;
   appFor: (id: SidebarNavigationEntryId) => GhostMainViewItem | undefined;
@@ -275,25 +264,29 @@ function SidebarNavigationMoreMenu({
   // A press on a plugin item's manage button reaches the item's own select next;
   // this flag routes that one selection to the plugin details instead of its page.
   const openDetailsRef = useRef(false);
+  const menu = useHoverOpenMenu({
+    // New entries keep their tag while the menu is open, then count as seen.
+    onOpenChange: (open) => { if (!open && unseen.size > 0) onSeen(); },
+    onCloseAutoFocus,
+  });
   if (hiddenIds.length === 0 && !onCustomize) return null;
   return (
-    // New entries keep their tag while the menu is open, then count as seen.
-    <DropdownMenu onOpenChange={(open) => { if (!open && unseen.size > 0) onSeen(); }}>
-      <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
+    <DropdownMenu open={menu.open} onOpenChange={menu.onOpenChange} modal={false}>
+      <DropdownMenuTrigger asChild {...menu.triggerProps}>{trigger(menu.open)}</DropdownMenuTrigger>
       <DropdownMenuContent
         side="right"
         align="start"
         sideOffset={8}
         collisionPadding={NAV_MENU_COLLISION_PADDING}
         className={NAV_MENU_CLASS}
-        onCloseAutoFocus={onCloseAutoFocus}
+        {...menu.contentProps}
       >
         {hiddenIds.map((id) => {
           const app = appFor(id);
           if (app) {
             const AppIcon = MAIN_VIEW_ICONS[app.icon];
             const manageLabel = t('settings.ghosts.page.manageAria', { name: app.manifest.name });
-            const ghostId = encodeURIComponent(app.ghostId);
+            const ghostId = encodeURIComponent(app.instanceId);
             return (
               <DropdownMenuItem
                 key={id}
@@ -439,8 +432,9 @@ export function SidebarRailNavigation({
         unseen={entries.unseen}
         onSeen={entries.markSeen}
         onCloseAutoFocus={handleMoreCloseAutoFocus}
-        trigger={
-          <Tip text={t('sidebar.navigation.more')} side="right">
+        trigger={(open) => (
+          // The open menu already names itself; keep the tooltip from covering it.
+          <Tip text={t('sidebar.navigation.more')} side="right" controlledOpen={open ? false : undefined}>
             <button
               type="button"
               className={cn(SIDEBAR_RAIL_ICON_BUTTON_CLASS, 'relative')}
@@ -455,7 +449,7 @@ export function SidebarRailNavigation({
               )}
             </button>
           </Tip>
-        }
+        )}
       />
     </>
   );
@@ -476,7 +470,6 @@ export function SidebarTopNav({
   const onMekaMatch = useMatch('/cc-agent/meka/*');
   const { search, allKnownProjects, openSignal } = useConversationSearchContext();
   const { dataOwnerId } = useAuth();
-  const navigationPrefs = useSidebarNavigationPrefs(dataOwnerId);
   const entries = useSidebarNavigationEntries();
   const [customizing, setCustomizing] = useState(false);
   const [showHiddenSearch, setShowHiddenSearch] = useState(false);
@@ -493,7 +486,11 @@ export function SidebarTopNav({
 
   // 搜索结果 overlay 只在 cc-agent 视图(CCAgentSidebarUpper)绘制;本行却在所有非 rail 视图都渲染。
   // 用户在 plugins / 设置等视图输入搜索时,先切回 cc-agent 视图,结果才有处显示(同视图为 no-op)。
-  const ensureConversationView = useCallback(() => navigateToView('cc-agent'), [navigateToView]);
+  // 伙伴页与任务共用同一侧栏(结果就地显示),搜索时不必离开正在看的伙伴聊天。
+  const onBotsRoute = location.pathname === '/bots' || location.pathname.startsWith('/bots/');
+  const ensureConversationView = useCallback(() => {
+    if (!onBotsRoute) navigateToView('cc-agent');
+  }, [navigateToView, onBotsRoute]);
 
   const showPinned = section !== 'scrollable' && section !== 'rail';
   const showScrollable = section !== 'pinned' && section !== 'rail';
@@ -519,23 +516,9 @@ export function SidebarTopNav({
       <span className="leading-none">{t('meka.manage')}</span>
     </button>
   ) : null;
-  if (section === 'rail') {
-    // Other features' rails only borrow the teammate tile; the task rail renders
-    // the full navigation itself. The bots feature owns the tile on its route.
-    const bots = actions.bots;
-    if (isBotsPath(location.pathname) || !navigationPrefs.visible.includes('bots')) return <></>;
-    return (
-      <div className="flex shrink-0 justify-center px-2 pt-2 pb-1">
-        <SidebarIconButton
-          icon={bots.icon}
-          label={bots.label}
-          aria-description={bots.count?.value ? bots.count.label : undefined}
-          badge={<EntryCountBadge count={bots.count} />}
-          onClick={bots.onSelect}
-        />
-      </div>
-    );
-  }
+  // 其它 Feature 的 rail 过去只借这里补一个伙伴入口;伙伴并入侧栏后 rail 入口由
+  // 任务侧栏的 CollapsedView 提供,这里不再渲染内容(2026-10-13 上游 2ce5ab565e)。
+  if (section === 'rail') return <></>;
   const renderActionRow = (id: Exclude<SidebarNavigationItemId, 'search'>) => {
     const action = actions[id];
     const Icon = action.icon;
@@ -594,17 +577,23 @@ export function SidebarTopNav({
   // Meka 不占 `SidebarNavigationEntryId`,所以不进「更多」/ 自定义面板;它统一跟在
   // 「自动任务」之后、「插件」之前(即旧版 automationsRow → mekaRow → pluginsRow 的
   // 位次);该入口被用户隐藏时 Meka 顶到这一组最前,避免它掉到列表末尾。
-  const searchIdIndex = orderedIds.indexOf('search');
-  const mekaNodeIndex = orderedIds.includes('automations')
-    ? orderedIds.indexOf('automations') + 1
-    : 0;
-  const orderedNavigationRows: React.ReactNode[] = orderedIds
-    .map((id) => <Fragment key={id}>{rowFor(id)}</Fragment>);
-  orderedNavigationRows.splice(mekaNodeIndex, 0, <Fragment key="meka">{mekaRow}</Fragment>);
-  // 搜索行在**节点数组**(已含 Meka)里的下标:插在它之前时其后所有节点整体后移一位。
-  const searchNodeIndex = searchIdIndex < 0
-    ? -1
-    : searchIdIndex + (mekaNodeIndex <= searchIdIndex ? 1 : 0);
+  // 位次算在**槽位表**上:搜索行按同一张表切片,所以「整段渲染」与「搜索前后两段渲染」
+  // 共用同一份顺序,不需要再各自做下标补偿(2026-10 第六轮:上游把行序收敛成
+  // `renderRows(ids)` + `searchIndex`,Meka 只多一个非偏好槽位,不再替换该结构)。
+  const orderedSlots: SidebarNavigationSlot[] = [...orderedIds];
+  orderedSlots.splice(
+    orderedIds.includes('automations') ? orderedIds.indexOf('automations') + 1 : 0,
+    0,
+    'meka',
+  );
+  const searchSlotIndex = orderedSlots.indexOf('search');
+  const renderRows = (slots: readonly SidebarNavigationSlot[]): React.ReactNode[] =>
+    slots.map((slot) =>
+      slot === 'meka'
+        ? <Fragment key="meka">{mekaRow}</Fragment>
+        : <Fragment key={slot}>{rowFor(slot)}</Fragment>,
+    );
+  const orderedNavigationRows = renderRows(orderedSlots);
   const customizeRow = showScrollable ? (
     <SidebarNavigationMoreMenu
       hiddenIds={entries.hidden}
@@ -613,10 +602,11 @@ export function SidebarTopNav({
       unseen={entries.unseen}
       onSeen={entries.markSeen}
       onCustomize={() => setCustomizing(true)}
-      trigger={
+      trigger={() => (
         <button
           type="button"
-          className={ROW_CLASS}
+          // Keep the row lit while the pointer is over its menu.
+          className={cn(ROW_CLASS, 'data-[state=open]:bg-sidebar-item-hover')}
           aria-label={entries.unseen.size > 0
             ? `${t('sidebar.navigation.more')} · ${t('sidebar.navigation.new')}`
             : t('sidebar.navigation.more')}
@@ -629,7 +619,7 @@ export function SidebarTopNav({
           <span className="leading-none">{t('sidebar.navigation.more')}</span>
           {entries.unseen.size > 0 && <NewTag className="ml-auto" />}
         </button>
-      }
+      )}
     />
   ) : null;
 
@@ -638,8 +628,8 @@ export function SidebarTopNav({
   if (section === 'scrollable') {
     // Search stays a direct child of the scrolling container so a live query
     // can stick to its top. The rows before and after it keep their saved order.
-    const rowsBeforeSearch = orderedNavigationRows.slice(0, searchNodeIndex);
-    const rowsAfterSearch = orderedNavigationRows.slice(searchNodeIndex + 1);
+    const rowsBeforeSearch = renderRows(orderedSlots.slice(0, searchSlotIndex));
+    const rowsAfterSearch = renderRows(orderedSlots.slice(searchSlotIndex + 1));
     return (
       <>
         {customizing ? (
@@ -656,13 +646,13 @@ export function SidebarTopNav({
           </div>
         ) : (
           <>
-            {searchNodeIndex > 0 && (
+            {searchSlotIndex > 0 && (
               <div className="flex flex-col gap-0.5 pr-3 pl-3">{rowsBeforeSearch}</div>
             )}
             <div
               className={cn(
                 'px-3',
-                searchNodeIndex > 0 && '-mt-1.5',
+                searchSlotIndex > 0 && '-mt-1.5',
                 pinSearch && 'sticky top-0 z-30 bg-[var(--cmd-palette-bg)] pb-2.5',
               )}
             >

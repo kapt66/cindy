@@ -10,6 +10,7 @@ import type {
 export type DesktopLoginAction =
   | { type: 'reset' }
   | { type: 'select-realm'; realm: AuthRegion }
+  | { type: 'back' }
   | { type: 'cancel-browser' }
   | { type: 'discover'; email: string }
   | { type: 'discover-sso-org'; org: string }
@@ -30,7 +31,7 @@ export type DesktopLoginAction =
   | { type: 'verify-binding'; contact: string; code: string };
 
 /** In-memory presentation metadata; never a persisted cooldown or retry budget. */
-export type DesktopLoginState = AuthFlowState & { retryAt?: number };
+export type DesktopLoginState = (AuthFlowState | { step: 'entry' }) & { retryAt?: number };
 
 export type DesktopLoginActionResult =
   | { success: true; state: DesktopLoginState }
@@ -178,9 +179,12 @@ export function parseDesktopLoginAction(value: unknown): DesktopLoginAction | nu
     case 'reset':
       return { type: 'reset' };
     case 'select-realm':
+      // Meka 的运行期服务区切换(WL-5.6):只接受两个对外区,内部 dev 不暴露。
       return value.realm === 'cn' || value.realm === 'global'
         ? { type: 'select-realm', realm: value.realm }
         : null;
+    case 'back':
+      return { type: 'back' };
     case 'cancel-browser':
       return { type: 'cancel-browser' };
     case 'discover':

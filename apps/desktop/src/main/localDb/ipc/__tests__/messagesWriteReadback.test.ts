@@ -69,7 +69,8 @@ vi.mock('../../client/current', () => ({
   getDbClient: () => h.client,
 }));
 
-import { createMessage, updateMessageContent } from '../messages';
+import { broadcastMessageRow, createMessage, updateMessageContent } from '../messages';
+import { messageToCamel } from '../../mapper';
 
 function setupDb(): void {
   const sqlite = new Database(':memory:', { verbose: (sql) => h.queries.push(String(sql)) });
@@ -119,6 +120,144 @@ describe('message write paths avoid large-content readback', () => {
     h.queries.length = 0;
     h.mediaRefCalls.length = 0;
     setupDb();
+  });
+
+  it('keeps View-only MCP App data out of create, reload and owner broadcasts', async () => {
+    const { tapWindowBroadcast } = await import('../../../device-link/broadcast-tap');
+    vi.mocked(tapWindowBroadcast).mockClear();
+    const content = { mcpApp: {
+      version: 1, serverId: 'private-server', serverRevision: 'private-revision',
+      resourceUri: 'ui://private/app',
+      tool: { name: 'form', title: 'Draft', inputSchema: { type: 'object', private: 'schema' } },
+      arguments: { private: 'input' },
+      result: { content: [{ type: 'text', text: 'Saved', _meta: { private: 'block' } }],
+        structuredContent: { private: 'structured' }, _meta: { private: 'view-only' } },
+    } };
+    const publicContent = { mcpAppHistory: { version: 1, title: 'Draft', text: 'Saved' } };
+    const created = await createMessage('s1', { clientId: 'app-card', role: 'assistant', content, agentMeta: { mcpApp: true } });
+    expect(created.content).toEqual(publicContent);
+    const row = (await h.db!.select().from(messages))[0]!;
+    expect(JSON.parse(row.content)).toEqual(content);
+    expect(messageToCamel(row).content).toEqual(publicContent);
+    expect(tapWindowBroadcast).toHaveBeenCalledWith('local-db:messages:created',
+      expect.objectContaining({ message: expect.objectContaining({ clientId: 'app-card', content: publicContent }) }));
+    vi.mocked(tapWindowBroadcast).mockClear();
+    // The shared broadcaster also accepts Main-created rows without the DB mapper.
+    broadcastMessageRow('s1', { ...created, content });
+    expect(tapWindowBroadcast).toHaveBeenLastCalledWith('local-db:messages:created',
+      expect.objectContaining({ message: expect.objectContaining({ content: publicContent }) }));
+    expect(content.mcpApp.result._meta).toEqual({ private: 'view-only' });
+  });
+
+  it.each([false, true])('publishes only after the post-write guard succeeds (revoked=%s)', async revoked => {
+    const { tapWindowBroadcast } = await import('../../../device-link/broadcast-tap');
+    const { onMessageCreated } = await import('../../../embedders/chat-history-embedder');
+    const { recordPrRefsForMessage } = await import('../../../git-context/prRefsStore');
+    vi.mocked(tapWindowBroadcast).mockClear();
+    vi.mocked(onMessageCreated).mockClear();
+    vi.mocked(recordPrRefsForMessage).mockClear();
+    const beforePublish = vi.fn(async () => {
+      const published = beforePublish.mock.calls.length === 2;
+      expect(h.sqlite!.prepare('SELECT count(*) FROM messages').pluck().get()).toBe(published ? 1 : 0);
+      expect(h.sqlite!.prepare('SELECT count(*) FROM temp.cindy_pending_message_publications').pluck().get()).toBe(published ? 0 : 1);
+      expect(tapWindowBroadcast).not.toHaveBeenCalled();
+      expect(h.mediaRefCalls).toEqual([]);
+      expect(onMessageCreated).not.toHaveBeenCalled();
+      expect(recordPrRefsForMessage).not.toHaveBeenCalled();
+      if (revoked) throw new Error('revoked at server');
+    });
+    const sending = createMessage('s1', { clientId: 'private-message', role: 'assistant', content: 'Private result' }, { beforePublish });
+    if (revoked) {
+      await expect(sending).rejects.toThrow('revoked at server');
+      expect(h.sqlite!.prepare('SELECT count(*) FROM messages').pluck().get()).toBe(0);
+      expect(tapWindowBroadcast).not.toHaveBeenCalled();
+      expect(h.mediaRefCalls).toEqual([]);
+      expect(onMessageCreated).not.toHaveBeenCalled();
+      expect(recordPrRefsForMessage).not.toHaveBeenCalled();
+    } else {
+      await expect(sending).resolves.toMatchObject({ clientId: 'private-message', content: 'Private result' });
+      expect(h.sqlite!.prepare('SELECT client_id, rewind_at FROM messages').get()).toEqual({ client_id: 'private-message', rewind_at: null });
+      expect(tapWindowBroadcast).toHaveBeenCalledWith('local-db:messages:created', expect.anything());
+      expect(h.mediaRefCalls).toHaveLength(1);
+      await createMessage('s1', { clientId: 'private-message', role: 'assistant', content: 'Private result' }, { beforePublish });
+      expect(beforePublish).toHaveBeenCalledTimes(2);
+      expect(h.sqlite!.prepare('SELECT count(*) FROM messages').pluck().get()).toBe(1);
+    }
+    expect(h.sqlite!.prepare('SELECT count(*) FROM temp.cindy_pending_message_publications').pluck().get()).toBe(0);
+  });
+
+  it.each([false, true])('rolls back a publication revoked during commit before delivery hooks (lostReceipt=%s)', async lostReceipt => {
+    const { tapWindowBroadcast } = await import('../../../device-link/broadcast-tap');
+    const { onMessageCreated } = await import('../../../embedders/chat-history-embedder');
+    const { recordPrRefsForMessage } = await import('../../../git-context/prRefsStore');
+    vi.mocked(tapWindowBroadcast).mockClear();
+    vi.mocked(onMessageCreated).mockClear();
+    vi.mocked(recordPrRefsForMessage).mockClear();
+    let revoked = false;
+    h.client.tx.mockImplementation(async (name: string, args: { publication?: string }) => {
+      const result = runInprocTx(h.sqlite!, { name, args });
+      if (args.publication === 'publish') {
+        revoked = true;
+        if (lostReceipt) throw new Error('Publication receipt lost');
+      }
+      return result;
+    });
+    const beforePublish = vi.fn(async () => {
+      if (revoked) throw new Error('revoked during commit');
+    });
+    const body = { clientId: 'revoked-publication', role: 'assistant' as const, content: 'Private result' };
+    await expect(createMessage('s1', body, { beforePublish })).rejects.toThrow('revoked during commit');
+    expect(beforePublish).toHaveBeenCalledTimes(2);
+    expect(h.sqlite!.prepare('SELECT count(*) FROM messages').pluck().get()).toBe(0);
+    expect(h.sqlite!.prepare('SELECT count(*) FROM temp.cindy_pending_message_publications').pluck().get()).toBe(0);
+    expect(tapWindowBroadcast).not.toHaveBeenCalled();
+    expect(h.mediaRefCalls).toEqual([]);
+    expect(onMessageCreated).not.toHaveBeenCalled();
+    expect(recordPrRefsForMessage).not.toHaveBeenCalled();
+    // The same client receipt can be retried once permission is available again.
+    h.client.tx.mockImplementation(async (name: string, args: unknown) => runInprocTx(h.sqlite!, { name, args }));
+    revoked = false;
+    await expect(createMessage('s1', body, { beforePublish })).resolves.toMatchObject(body);
+    expect(h.sqlite!.prepare('SELECT count(*) FROM messages').pluck().get()).toBe(1);
+    expect(onMessageCreated).toHaveBeenCalledOnce();
+  });
+
+  it.each(['committed', 'not-committed', 'mismatched'] as const)('recovers only an exact committed publication after a lost receipt: %s', async outcome => {
+    const { tapWindowBroadcast } = await import('../../../device-link/broadcast-tap');
+    const { onMessageCreated } = await import('../../../embedders/chat-history-embedder');
+    const { recordPrRefsForMessage } = await import('../../../git-context/prRefsStore');
+    vi.mocked(tapWindowBroadcast).mockClear();
+    vi.mocked(onMessageCreated).mockClear();
+    vi.mocked(recordPrRefsForMessage).mockClear();
+    h.client.tx.mockImplementation(async (name: string, args: { publication?: string }) => {
+      if (args.publication !== 'publish') return runInprocTx(h.sqlite!, { name, args });
+      if (outcome !== 'not-committed') {
+        runInprocTx(h.sqlite!, { name, args });
+        if (outcome === 'mismatched') h.sqlite!.prepare("UPDATE messages SET content='Different result'").run();
+      }
+      throw new Error('Publication receipt lost');
+    });
+    const beforePublish = vi.fn(async () => {});
+    const body = { clientId: 'lost-receipt', role: 'assistant' as const, content: 'Private result' };
+    const sending = createMessage('s1', body, { beforePublish });
+    if (outcome === 'committed') {
+      const receipt = await sending;
+      expect(receipt).toMatchObject(body);
+      expect(await createMessage('s1', body, { beforePublish })).toEqual(receipt);
+      expect(beforePublish).toHaveBeenCalledTimes(2);
+      expect(vi.mocked(tapWindowBroadcast).mock.calls.filter(([channel]) => channel === 'local-db:messages:created')).toHaveLength(1);
+      expect(h.mediaRefCalls).toHaveLength(1);
+      expect(onMessageCreated).toHaveBeenCalledOnce();
+      expect(recordPrRefsForMessage).toHaveBeenCalledOnce();
+    } else {
+      await expect(sending).rejects.toThrow('Publication receipt lost');
+      expect(tapWindowBroadcast).not.toHaveBeenCalled();
+      expect(h.mediaRefCalls).toEqual([]);
+      expect(onMessageCreated).not.toHaveBeenCalled();
+      expect(recordPrRefsForMessage).not.toHaveBeenCalled();
+    }
+    expect(h.sqlite!.prepare('SELECT count(*) FROM messages').pluck().get()).toBe(outcome === 'not-committed' ? 0 : 1);
+    expect(h.sqlite!.prepare('SELECT count(*) FROM temp.cindy_pending_message_publications').pluck().get()).toBe(0);
   });
 
   describe('createMessage happy path', () => {

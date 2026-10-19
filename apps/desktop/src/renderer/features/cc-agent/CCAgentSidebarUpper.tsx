@@ -31,6 +31,7 @@ import type { SchedulerEvent } from '@cindy/maker-scheduler';
 import { createPortal } from 'react-dom';
 import {
   Archive,
+  Bot,
   BriefcaseBusiness,
   ChevronRight,
   CircleAlert,
@@ -45,6 +46,7 @@ import {
 import { useNavigate, useMatch, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { projectDraftSessionTitle } from '@cindy/maker-shared/session-title';
+import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
 
 import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
@@ -68,6 +70,12 @@ import { SidebarRailNavigation, SidebarTopNav } from '@/components/sidebar/Sideb
 import { SidebarFilterPopover } from './sidebar/SidebarFilterPopover';
 import { MainListScopeHeader } from './sidebar/MainListScopeHeader';
 import { SharedTasksSection } from '@/features/device-link/SharedTasksSection';
+import { TeammatesSection } from '@/features/bots/TeammatesSection';
+import { TeammateSearchResults, useTeammateSearchMatches } from '@/features/bots/TeammateSearchResults';
+import { useNavigationAttention } from '@/lib/navigationAttentionStore';
+import { useActiveMainView } from '@/hooks/useActiveMainView';
+import { NavigationCountBadge } from '@/components/sidebar/NavigationCountBadge';
+import { useViewedBotSessionId } from '@/features/bots/useViewedBotSessionId';
 import { sharedTaskErrorKey } from '@/features/device-link/sharedTaskCompatibility';
 import { isSharedTaskPeer } from '@cindy/device-link';
 import { stripTrailingPathSeparators } from '../../../shared/pathText';
@@ -104,8 +112,11 @@ import {
   BOT_GROUP_LANE_SESSION,
   botOwnedSessionNotificationTitle,
   findSessionNotificationSession,
+  isReviewSessionNotificationTarget,
+  isBackgroundTaskNotificationTarget,
   sendSessionEventNotification,
 } from '@/lib/sessionEventNotification';
+import { isReviewSessionSource } from '../../../shared/sessionSource';
 import type { Session } from '@/lib/ccAgent.types';
 import {
   clearSessionAttentionMany,
@@ -210,7 +221,6 @@ import {
   getSessionDeviceId,
   remoteProjectsStore,
   useRemoteScheduleIndex,
-  type RemotePendingStatusToken,
 } from '@/features/device-link/remoteProjectsStore';
 import {
   getRemoteSessionActivity,
@@ -274,7 +284,6 @@ import {
   useRemoteArchivedLoadedDeviceIds,
   useRemoteArchivedLoadingDeviceIds,
   useRemoteDevices,
-  isRemoteDeviceMarkedDisconnected,
   useRemoteProjectSessions,
 } from '@/features/device-link/remoteProjectsStore';
 import {
@@ -297,6 +306,7 @@ import {
   useSelectedMachineConnecting,
   useSwitcherDevices,
 } from '@/features/device-link/useMachineSwitcher';
+import { buildSidebarDeviceIndex } from './lib/sidebarDeviceGrouping';
 import {
   useDeviceLinkDeviceListSettled,
   useDeviceLinkDeviceListRequestState,
@@ -435,8 +445,23 @@ export function CCAgentSidebarUpper() {
   const filter = useSidebarFilter(hiddenProjectKeys, sidebarSettingsSnapshot);
   const includeArchived = filter.status;
   const sessionsHook = useCCSessions({ includeArchived });
-  const { sessions: allSessionsForAttention } = useCCSessions({ includeArchived: 'all' });
-  const remoteProjectSessions = useRemoteProjectSessions();
+  const { sessions: allSessionsForAttentionRaw } = useCCSessions({ includeArchived: 'all' });
+  const allSessionsForAttention = useMemo(
+    () => CINDY_MAKE_ENABLED
+      ? allSessionsForAttentionRaw
+      : allSessionsForAttentionRaw.filter((session) => !isCindyMakeSource(session.source)),
+    [allSessionsForAttentionRaw],
+  );
+  const remoteProjectSessionsRaw = useSyncExternalStore(
+    remoteProjectsStore.subscribe,
+    remoteProjectsStore.getMergedRemoteSessions,
+  );
+  const remoteProjectSessions = useMemo(
+    () => CINDY_MAKE_ENABLED
+      ? remoteProjectSessionsRaw
+      : remoteProjectSessionsRaw.filter((session) => !isCindyMakeSource(session.source)),
+    [remoteProjectSessionsRaw],
+  );
   const remoteDevices = useRemoteDevices();
   const selectedMachineId = useEffectiveSelectedMachineId();
   const searchProjectSessions = useMemo(
@@ -514,6 +539,8 @@ export function CCAgentSidebarUpper() {
   const filesMatch = useMatch('/cc-agent/files/:sessionId');
   const activeSessionId = orcaMatch?.params.sessionId ?? match?.params.sessionId;
   const filesSessionId = filesMatch?.params.sessionId;
+  // /bots/* 与任务列表共用本侧栏:正在看的伙伴会话同样算「注视中」,不记未读、不发通知。
+  const viewedBotSessionId = useViewedBotSessionId();
   const scheduleSessionIndex = usePublishedAutomationScheduleSessionIndex();
   const remoteScheduleIndex = useRemoteScheduleIndex();
   // 侧栏右侧 urgent 红点的"额外"来源:定时任务未读且失败(status != 'success')。
@@ -584,6 +611,7 @@ export function CCAgentSidebarUpper() {
   }, [filter.status, remoteDevices, selectedMachineId]);
   const sessionsWithRemote = useMemo(
     () => selectVisibleSessions(sessionsHook.sessions, remoteProjectSessions, selectedMachineId)
+      .filter((session) => CINDY_MAKE_ENABLED || !isCindyMakeSource(session.source))
       .filter(session => !session.deviceLinkDeviceId || !isSharedTaskPeer(session.deviceLinkDeviceId)),
     [sessionsHook.sessions, remoteProjectSessions, selectedMachineId],
   );
@@ -758,7 +786,8 @@ export function CCAgentSidebarUpper() {
               <ExpandedView
                 sessionsHook={sessionsHook}
                 allSessionsForAttention={allSessionsForAttention}
-                remoteSessionsForNotification={remoteProjectSessions}
+                allSessionsForNotification={allSessionsForAttentionRaw}
+                remoteSessionsForNotification={remoteProjectSessionsRaw}
                 navigate={navigate}
                 activeSessionId={activeSessionId}
                 // 兜底直接用路由参数而非 filesSession?.id:filesSession 只从本地
@@ -766,6 +795,7 @@ export function CCAgentSidebarUpper() {
                 // 按远程镜像解析)会解析不到,面板豁免/高亮与重定向判定就会丢
                 // (codex review)。id 相等性语义不需要完整 Session 对象。
                 viewedSessionId={activeSessionId ?? filesSessionId}
+                attentionSessionId={activeSessionId ?? filesSessionId ?? viewedBotSessionId}
                 filter={filter}
                 hiddenProjects={hiddenProjects}
                 projectAliases={projectAliases}
@@ -790,6 +820,7 @@ export function CCAgentSidebarUpper() {
               hiddenProjectKeys={hiddenProjectKeys}
               sessions={visibleSessionsWithRemote}
               activeSessionId={activeSessionId}
+              attentionSessionId={activeSessionId ?? filesSessionId ?? viewedBotSessionId}
               notifications={railNotifications}
               manualPinnedOrder={filter.manualPinnedOrder}
               onReorderPinned={handleRailPinnedReorder}
@@ -809,6 +840,7 @@ type SessionsHook = ReturnType<typeof useCCSessions>;
 interface ExpandedProps {
   sessionsHook: SessionsHook;
   allSessionsForAttention: Session[];
+  allSessionsForNotification: Session[];
   remoteSessionsForNotification: Session[];
   navigate: ReturnType<typeof useNavigate>;
   activeSessionId: string | undefined;
@@ -818,6 +850,9 @@ interface ExpandedProps {
    *  与 activeSessionId 分开传:后者还承担选中高亮与「点击同会话早退」语义,
    *  files 模式下从面板点击该会话仍要能导航回聊天视图。 */
   viewedSessionId: string | undefined;
+  /** 通知与未读的「注视中」会话:viewedSessionId 之外再包含主区域正在看的伙伴会话。
+   *  只用于 useSessionRunningStatus,不参与归档重定向与选中高亮。 */
+  attentionSessionId: string | undefined;
   filter: UseSidebarFilterReturn;
   hiddenProjects: UseHiddenProjectsReturn;
   projectAliases: ReturnType<typeof useProjectAliases>;
@@ -850,10 +885,12 @@ const CONFIRM_INITIAL: ConfirmState = {
 function ExpandedView({
   sessionsHook,
   allSessionsForAttention,
+  allSessionsForNotification,
   remoteSessionsForNotification,
   navigate,
   activeSessionId,
   viewedSessionId,
+  attentionSessionId,
   filter,
   hiddenProjects,
   projectAliases,
@@ -863,7 +900,13 @@ function ExpandedView({
   const { t, i18n } = useTranslation();
   const location = useLocation();
   const localPlatform = window.electronAPI.platform;
-  const { sessions, refreshSessions, patchLocal, effectiveIncludeArchived } = sessionsHook;
+  const sessions = useMemo(
+    () => CINDY_MAKE_ENABLED
+      ? sessionsHook.sessions
+      : sessionsHook.sessions.filter((session) => !isCindyMakeSource(session.source)),
+    [sessionsHook.sessions],
+  );
+  const { refreshSessions, patchLocal, effectiveIncludeArchived } = sessionsHook;
   const {
     hiddenProjectKeys,
     setProjectHidden,
@@ -1128,10 +1171,6 @@ function ExpandedView({
   );
 
   const [confirm, setConfirm] = useState<ConfirmState>(CONFIRM_INITIAL);
-  // 远程任务归档确认弹窗期间行已提前隐藏(见 handleActionClick);凭据放 ref 而非 confirm
-  // state:确认按钮的 onClick 要先同步认领它,Radix 随后触发的 onOpenChange(false) →
-  // handleCancelConfirm 才不会把正在写库的那次归档回滚掉。
-  const confirmRemoteArchiveRef = useRef<RemotePendingStatusToken | null>(null);
 
   // 系统级通知触发：sessions 数组每次渲染都新引用，但 callback 读 ref，
   // 不会因此重跑 transition effect。通道、失焦与灵动岛去重由共享入口收口。
@@ -1139,8 +1178,8 @@ function ExpandedView({
   sessionsRef.current = sessions;
   // 通知不能只查当前侧栏桶：活跃筛选、归档切换和远程会话镜像都可能让目标
   // 不在 sessionsRef 里。保留同步查找和原有兜底，避免标题解析影响通知发送。
-  const allSessionsForNotificationRef = useRef(allSessionsForAttention);
-  allSessionsForNotificationRef.current = allSessionsForAttention;
+  const allSessionsForNotificationRef = useRef(allSessionsForNotification);
+  allSessionsForNotificationRef.current = allSessionsForNotification;
   const remoteSessionsForNotificationRef = useRef(remoteSessionsForNotification);
   remoteSessionsForNotificationRef.current = remoteSessionsForNotification;
   // 通知文案里的「尚未起名」兜底。走 ref 与 sessionsRef 同款:fireSessionNotification
@@ -1154,22 +1193,30 @@ function ExpandedView({
         allSessionsForNotificationRef.current,
         remoteSessionsForNotificationRef.current,
       ]);
+      if (!CINDY_MAKE_ENABLED && session && isCindyMakeSource(session.source)) return;
       // Orca worker 自身状态翻转不发独立通知 —— 等 lead 接到 worker_report 处理完
       // 再以 lead 名义统一推一条，避免同一事件双重打扰。语义上用户应回到 lead 主对话
       // 查看，而非跳到 worker 实现细节；与 effectiveRunningSessionIds 的角色聚合口径一致。
       if (session && isOrcaWorkerSession(session)) return;
+      // /review 审查任务不单独通知:结果回到来源任务,由来源任务的轮次收尾通知。
+      if (session && isReviewSessionSource(session.source)) return;
+      // 插件后台隐藏任务不单独通知;显示到任务列表后恢复。
+      if (session && isBackgroundTaskNotificationTarget(session)) return;
       if (session) {
         const title = projectDraftSessionTitle(session.title, unnamedLabelRef.current);
         sendSessionEventNotification(sessionId, title, kind, {
           remoteDevice: !!session.deviceLinkDeviceId,
+          remoteDeviceId: session.deviceLinkDeviceId,
         });
         return;
       }
-      void botOwnedSessionNotificationTitle(sessionId).then((botTitle) => {
+      void (async () => {
+        if (await isReviewSessionNotificationTarget(sessionId)) return;
+        const botTitle = await botOwnedSessionNotificationTitle(sessionId);
         // 伙伴群专线不发系统通知,确认请求在群聊里提示(docs/product-rules/bot-group-chat.md §3)。
         if (botTitle === BOT_GROUP_LANE_SESSION) return;
         sendSessionEventNotification(sessionId, botTitle ?? unnamedLabelRef.current, kind);
-      });
+      })();
     },
     [],
   );
@@ -1191,10 +1238,11 @@ function ExpandedView({
   const attachedSessionIds = useAttachedSessionIds();
 
   // F-SB-7: Session status indicators — running state + attention notifications
-  // 「active」按 viewedSessionId:files 路由下用户注视的是该会话的文件视图,
-  // 完成/待回复不能按后台会话记未读、发通知(codex review)。
+  // 「active」按注视中的会话:files 路由下用户注视的是该会话的文件视图,
+  // 完成/待回复不能按后台会话记未读、发通知(codex review);伙伴聊天页同理。
+  // 本侧栏是系统通知的唯一 owner —— /bots 也用它,伙伴段本身不再观察转换。
   const { runningSessionIds, notifications, clearNotification } = useSessionRunningStatus(
-    viewedSessionId,
+    attentionSessionId,
     {
       onSessionDone: handleSessionDone,
       onSessionError: handleSessionError,
@@ -1303,7 +1351,13 @@ function ExpandedView({
   // device-link 跨设备远程控制:被控设备的会话(内存层,已打 deviceLinkDeviceId 标记)
   // 与本地会话一视同仁并入同一份列表 → groupSessions 自动归到独立 device: 远程项目。
   // 远端会话不在本地 DB,故走独立 store,不污染 sessionsStore / 本地链路。
-  const remoteProjectSessions = useRemoteProjectSessions();
+  const remoteProjectSessionsRaw = useRemoteProjectSessions();
+  const remoteProjectSessions = useMemo(
+    () => CINDY_MAKE_ENABLED
+      ? remoteProjectSessionsRaw
+      : remoteProjectSessionsRaw.filter((session) => !isCindyMakeSource(session.source)),
+    [remoteProjectSessionsRaw],
+  );
   // 机器切换栏选中机器后整体过滤:本机 → 只本地会话;远程 → 只该机器会话。
   // 过滤在源头做,下游 grouping / pinned / projects / dialogues / date-grouped / search 自动继承。
   const selectedMachineId = useEffectiveSelectedMachineId();
@@ -1322,22 +1376,10 @@ function ExpandedView({
   const switcherDevices = useSwitcherDevices();
   // E 期「按设备分组」:远程设备顺序 + 名称/在线状态(设备切换栏同序同源)。
   // 空 map = 没有远程设备 → ProjectsSection 隐藏该分组选项、不切段。
-  const remoteDeviceIndex = useMemo(() => {
-    const index = new Map<string, { name: string; online: boolean }>();
-    for (const device of switcherDevices) {
-      if (device.status === 'rejected') continue;
-      // connecting 含两种:真在连,以及断线缓存。后者不能撑开设备分组,
-      // 否则最后一台远程掉线后仍会留下「本机」段头;重连后偏好自动恢复。
-      if (device.status === 'connecting' && isRemoteDeviceMarkedDisconnected(device.deviceId)) {
-        continue;
-      }
-      index.set(device.deviceId, {
-        name: device.name,
-        online: device.status === 'connected',
-      });
-    }
-    return index;
-  }, [switcherDevices]);
+  const remoteDeviceIndex = useMemo(
+    () => buildSidebarDeviceIndex(switcherDevices),
+    [switcherDevices],
+  );
   const deviceListSettled = useDeviceLinkDeviceListSettled();
   const selectedDialogueDeviceResolution = useMemo(
     () => resolveDialogueDeviceTarget(selectedMachineId, switcherDevices, deviceListSettled),
@@ -1597,6 +1639,8 @@ function ExpandedView({
   // 内联会话搜索:输入行在 SidebarTopNav 末行,状态经 ConversationSearchProvider 共享;
   // query 非空时同一份顶部导航 sticky 钉住,结果替换下方列表,不再用 overlay 盖输入框。
   const { search, openSignal } = useConversationSearchContext();
+  // 伙伴 / 群聊并入侧栏总搜索,命中排在会话结果之前。
+  const teammateMatches = useTeammateSearchMatches(search.trimmed);
   const gcProjectKeys = useMemo(
     () => projectUniverse.projects.map((p) => p.projectKey),
     [projectUniverse.projects],
@@ -3050,21 +3094,9 @@ function ExpandedView({
    */
   // includeArchived 跟随当前列表桶（filter.status）—— archived / all 桶里
   // 删除后要刷对应桶，否则已删行残留（见 hook 文件头注释）。
-  const { runSessionAction, unarchiveSession, beginRemoteArchive, cancelRemoteArchive } =
-    useSessionLifecycleActions({
-      includeArchived: filter.status,
-    });
-
-  // 新确认框顶替旧确认框时(两次预检交错返回),旧框提前隐藏的远程任务已无处取消,
-  // 先让它回到列表,再登记新框的凭据。
-  const replaceConfirmRemoteArchive = useCallback(
-    (token: RemotePendingStatusToken | null) => {
-      const previous = confirmRemoteArchiveRef.current;
-      confirmRemoteArchiveRef.current = token;
-      if (previous && previous !== token) cancelRemoteArchive(previous);
-    },
-    [cancelRemoteArchive],
-  );
+  const { runSessionAction, unarchiveSession, archiveBlockedByRunning } = useSessionLifecycleActions({
+    includeArchived: filter.status,
+  });
 
   const closeOwnedSharedTask = useCallback(async (sharedTaskId?: string): Promise<boolean> => {
     if (!sharedTaskId) return true;
@@ -3097,10 +3129,7 @@ function ExpandedView({
       }
       const isArchiveLike = action === 'archive' || action === 'archive-now';
       // 执行中的 session 不允许归档 —— 让用户先停下当前任务
-      if (isArchiveLike && runningSessionIds.has(sessionId)) {
-        toast.warning(t('ccAgent.sidebar.archiveBlocked.running'));
-        return;
-      }
+      if (isArchiveLike && archiveBlockedByRunning(sessionId, session?.deviceLinkDeviceId)) return;
       // 被 IM 接管中的 session 不允许归档 —— 接管方还在操控，先收回再归档。
       // sidebar 常驻订阅的 attached 集合与 binding:resolve-session 同源
       // (binding:list-attached = 全量 resolve, binding:changed 驱动 refresh),
@@ -3144,13 +3173,7 @@ function ExpandedView({
         // (WorktreeManager.removeWorktreeForSession),renderer 这层负责的是「别拿
         // 明显过期的结论免掉确认」。
         //
-        // 远程任务的预检是一次完整隧道往返(被控端跑 git status),不再让用户干等:
-        // 先乐观隐藏行并跳离,再等预检。干净 → 沿用同一叠加层直接写库;需要确认 →
-        // 行保持隐藏弹确认框,取消再让行回来(已跳离的视图不跳回)。本机任务预检
-        // 很快,维持原顺序。
-        const remoteArchiveToken = session?.deviceLinkDeviceId
-          ? beginRemoteArchive(sessionId, session.deviceLinkDeviceId, viewedSessionIdRef.current)
-          : null;
+        // 预检与确认期间保留列表行和当前任务；只有确定归档后才隐藏并跳离。
         const preflight = await resolveWorktreeRemovalPreflight(
           sessionId,
           session?.deviceLinkDeviceId,
@@ -3160,7 +3183,6 @@ function ExpandedView({
         // (greptile review)。'unknown' 时不摆 dirty 警告文案 —— 那会谎称有改动,
         // 走的是普通归档确认。
         if (preflight !== 'clean') {
-          replaceConfirmRemoteArchive(remoteArchiveToken);
           setConfirm({
             open: true,
             sessionId,
@@ -3173,13 +3195,13 @@ function ExpandedView({
         // 重定向判定用 viewedSessionId:files 路由下归档「正在浏览的会话」也要
         // 跳离失效的文件视图(codex review;正常路由下两者恒等)。经 ref 读:它随
         // 路由切换而变,留在 deps 里会让本 handler 每次切换都重建、打穿整表 memo。
+        // Preflight may have outlived the idle state; sharing must stay open when blocked.
+        if (archiveBlockedByRunning(sessionId, session?.deviceLinkDeviceId)) return;
         if (!(await closeOwnedSharedTask(sharedTaskId))) {
-          if (remoteArchiveToken) cancelRemoteArchive(remoteArchiveToken);
           return;
         }
         await runSessionAction(sessionId, 'archive', {
           activeSessionId: viewedSessionIdRef.current,
-          remoteArchiveToken,
         });
         return;
       }
@@ -3192,7 +3214,6 @@ function ExpandedView({
           'dirty';
         // Keep the existing confirm-state shape for the normal delete flow, then attach
         // the shared-task scope in a functional update so cancellation still leaves it open.
-        replaceConfirmRemoteArchive(null);
         setConfirm({ open: true, sessionId, action, dirtyWorktree });
         if (sharedTaskId) {
           setConfirm((previous) => ({ ...previous, sharedTaskId }));
@@ -3202,11 +3223,8 @@ function ExpandedView({
       await unarchiveSession(sessionId);
     },
     [
-      beginRemoteArchive,
-      cancelRemoteArchive,
       closeOwnedSharedTask,
-      replaceConfirmRemoteArchive,
-      runningSessionIds,
+      archiveBlockedByRunning,
       runSessionAction,
       unarchiveSession,
       t,
@@ -3215,18 +3233,17 @@ function ExpandedView({
 
   const handleConfirm = useCallback(async () => {
     const { sessionId, action, sharedTaskId } = confirm;
-    // 同步认领提前隐藏的远程归档,见 confirmRemoteArchiveRef。
-    const remoteArchiveToken = confirmRemoteArchiveRef.current;
-    confirmRemoteArchiveRef.current = null;
     const session = sessionsById.get(sessionId);
     if (isRemoteSessionWriteBlocked(session)) {
-      if (remoteArchiveToken) cancelRemoteArchive(remoteArchiveToken);
       toast.warning(t('ccAgent.remoteSession.actionsUnavailable'));
       setConfirm(CONFIRM_INITIAL);
       return;
     }
+    if (action === 'archive' && archiveBlockedByRunning(sessionId, session?.deviceLinkDeviceId)) {
+      setConfirm(CONFIRM_INITIAL);
+      return;
+    }
     if (!(await closeOwnedSharedTask(sharedTaskId))) {
-      if (remoteArchiveToken) cancelRemoteArchive(remoteArchiveToken);
       return;
     }
     // 重定向判定统一用 viewedSessionId(files 路由下 = 被浏览文件的会话,
@@ -3239,18 +3256,13 @@ function ExpandedView({
     await runSessionAction(sessionId, action, {
       activeSessionId: viewedSessionId,
       deleteRedirectRoute,
-      remoteArchiveToken,
     });
     setConfirm(CONFIRM_INITIAL);
-  }, [cancelRemoteArchive, closeOwnedSharedTask, viewedSessionId, confirm, resolveSessionRemovalRedirect, runSessionAction, sessionsById, t]);
+  }, [closeOwnedSharedTask, archiveBlockedByRunning, viewedSessionId, confirm, resolveSessionRemovalRedirect, runSessionAction, sessionsById, t]);
 
   const handleCancelConfirm = useCallback(() => {
-    // 取消 / 点外部关闭:提前隐藏的远程任务回到列表。
-    const remoteArchiveToken = confirmRemoteArchiveRef.current;
-    confirmRemoteArchiveRef.current = null;
-    if (remoteArchiveToken) cancelRemoteArchive(remoteArchiveToken);
     setConfirm(CONFIRM_INITIAL);
-  }, [cancelRemoteArchive]);
+  }, []);
 
   const handleBulkDelete = useCallback(async () => {
     if (bulkActionPending !== null) return;
@@ -3826,11 +3838,15 @@ function ExpandedView({
                 status={search.status}
                 results={search.results}
                 onSelect={search.handleSelect}
+                leading={<TeammateSearchResults matches={teammateMatches} />}
+                leadingCount={teammateMatches.length}
               />
             </div>
           ) : null}
           {/* 搜索时原列表只隐藏、不卸载:置顶段折叠等本地 state 才能保住。 */}
           <div hidden={searchActive} className="flex flex-col gap-2">
+            {/* 伙伴段:侧栏第一层,固定在置顶上方(2026-10-13 定稿),/bots 与 /cc-agent 共用。 */}
+            <TeammatesSection />
             <SharedTasksSection activeSessionId={activeSessionId} localSessions={sessions}
               runningSessionIds={displayRunningSessionIds} attachedSessionIds={attachedSessionIds} notifications={sidebarNotifications}
               onAction={handleActionClick} onRename={handleRename} onTogglePin={handleTogglePin}
@@ -4153,6 +4169,8 @@ interface CollapsedProps {
   /** rail 数据源——全量可见 sessions(本地 + 远程镜像合并),RailNav 内部切片。 */
   sessions: Session[];
   activeSessionId: string | undefined;
+  /** 与 ExpandedView 同口径的「注视中」会话(含正在看的伙伴会话),只用于运行状态 hook。 */
+  attentionSessionId: string | undefined;
   /** 未读集 = attention 快照 ∪ 定时任务未读运行——段瓷砖/面板行角标依据。 */
   notifications: ReadonlySet<string>;
   /** 与展开态共用的置顶顺序(置顶面板同序)。 */
@@ -4174,6 +4192,7 @@ function CollapsedView({
   hiddenProjectKeys,
   sessions,
   activeSessionId,
+  attentionSessionId,
   notifications,
   manualPinnedOrder,
   onReorderPinned,
@@ -4181,6 +4200,12 @@ function CollapsedView({
   const location = useLocation();
   const isCollapsed = useSidebarCollapsedState();
   const projectFilterRequest = useConversationSearchRequest();
+  // 收窄态的伙伴入口:展开态里伙伴是置顶上方的一段,rail 放不下整段,
+  // 用一个带未读数的图标直达伙伴(上次看的伙伴,没有则 Cindy)。
+  const teammateUnread = useNavigationAttention().teammates;
+  // 复用主视图历史:回到上次看的伙伴 / 群聊 / 远程伙伴的完整路径,没有记录才进 /bots。
+  const { navigateToView } = useActiveMainView();
+  const onBotsRoute = location.pathname === '/bots' || location.pathname.startsWith('/bots/');
   const selectedMachineId = useEffectiveSelectedMachineId();
   const switcherDevices = useSwitcherDevices();
   const searchDevices = useMemo(
@@ -4190,7 +4215,9 @@ function CollapsedView({
   const { t } = useTranslation();
   // 只读 running 快照——**不传 options**：通知副作用（onSessionDone 等）由
   // ExpandedView 的实例独家持有，两个视图常驻挂载，双回调会重复发桌面通知。
-  const { runningSessionIds } = useSessionRunningStatus(activeSessionId);
+  // 「注视中」与 ExpandedView 同口径:该 hook 即使不传回调也会写未读,伙伴页上
+  // 正在看的伙伴会话不能被这个常驻实例当成后台会话记未读。
+  const { runningSessionIds } = useSessionRunningStatus(attentionSessionId);
   // 瓷砖未读点颜色按 attention kind(done 绿 / awaiting TapTap 蓝 / error 红);组件层
   // 取一次,renderItem 里查表(renderItem 非组件,不能 per-item 用 hook)。
 
@@ -4238,7 +4265,10 @@ function CollapsedView({
       {/* 自动化 / 插件 / 伙伴 / 搜索按「自定义」的顺序与勾选排列,未勾选项收进「更多」
           (与展开态 SidebarTopNav 同一份偏好)。搜索在 project-menu 锁定请求时临时出现。
           Meka rail 入口是私有产品线的**常驻**项(WL-2.2):不进「自定义」的顺序 / 显隐,
-          由 mekaEntry 注入该组件,位次与展开态 mekaRow 同一规则(紧随「自动任务」之后)。 */}
+          由 mekaEntry 注入该组件,位次与展开态 mekaRow 同一规则(紧随「自动任务」之后)。
+          2026-10 第六轮复核:上游 2ce5ab565e 已把「伙伴」从偏好条目里摘掉(它现在是侧栏
+          第一层的 TeammatesSection),`SidebarNavigationItemId` 只剩 automations / plugins
+          / search;下面那颗 Bot 瓷砖是 CollapsedView 自己的常驻伙伴入口,与偏好无关。 */}
       <SidebarRailNavigation
         forceSearch={isCollapsed && projectFilterRequest != null}
         mekaEntry={
@@ -4265,6 +4295,17 @@ function CollapsedView({
             onOpenChange={onOpenChange}
           />
         )}
+      />
+
+      <SidebarIconButton
+        icon={Bot}
+        label={t('sidebar.tabs.bots')}
+        active={onBotsRoute}
+        aria-description={teammateUnread > 0 ? t('sidebar.teammateUnreadCount', { count: teammateUnread }) : undefined}
+        badge={teammateUnread > 0 ? (
+          <NavigationCountBadge count={teammateUnread} label={t('sidebar.teammateUnreadCount', { count: teammateUnread })} />
+        ) : undefined}
+        onClick={() => navigateToView('bots')}
       />
 
       <div className="my-[7px] h-px w-[22px] shrink-0 bg-sidebar-border" aria-hidden />

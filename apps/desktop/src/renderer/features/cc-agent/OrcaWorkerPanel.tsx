@@ -17,8 +17,10 @@ import type { Session } from '@/lib/ccAgent.types';
 import { isSidebarWindow } from '@/lib/sidebarWindow';
 import { CCAgentSessionView } from './CCAgentSessionView';
 import { CreateWorkerPopover } from './CreateWorkerPopover';
+import { RemoteWorkerSessionPane } from './RemoteWorkerSessionPane';
 import { WorkerListToolbar } from './RolePillDropdown';
 import { useOrcaWorkerSelection } from './hooks/useOrcaWorkerSelection';
+import { useWorkerAgentDevices } from './hooks/useWorkerAgentDevices';
 import { useWorkerDirectoryLabels } from './hooks/useWorkerDirectoryLabel';
 import { subscribeNewWorkerShortcut } from './lib/newWorkerShortcut';
 import type { ConversationSearchJump } from '../../../shared/conversationSearchJump';
@@ -32,6 +34,8 @@ export interface OrcaWorkerPanelProps {
    * 避免冷启动 / relay 重连竞态把远端上限误当成本机可调。
    */
   deviceId?: string | null;
+  /** Lead 的 Agent 运行设备：null = 已确认本机，undefined = 任务信息尚未解析。 */
+  agentDeviceId?: string | null;
   /** SSH 远程 Lead:worker 创建面板的模型清单按 SSH 口径过滤(见 CreateWorkerPopover.sshRemote)。 */
   sshRemote?: boolean;
   /** tab active && RSB 未折叠 && 窗口可见。挂载但不可见时不能清红点 / ack 消息。 */
@@ -58,6 +62,7 @@ function sameVisibleSessionPayload(
 export function OrcaWorkerPanel({
   leadSessionId,
   deviceId,
+  agentDeviceId,
   sshRemote,
   viewVisible,
   chatRealtime = true,
@@ -70,6 +75,12 @@ export function OrcaWorkerPanel({
 }: OrcaWorkerPanelProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  // Worker 可以放 Agent 的其他电脑与分享；Lead 的 Agent 位置未解析时不提供，Worker 跟 Lead。
+  const workerAgentDevices = useWorkerAgentDevices({
+    controlledDeviceId: agentDeviceId === undefined ? undefined : deviceId,
+    leadAgentDeviceId: agentDeviceId,
+    sshRemote,
+  });
   const {
     workers,
     focusedWorker,
@@ -98,6 +109,12 @@ export function OrcaWorkerPanel({
   const [leadSession, setLeadSession] = useState<Session | null>(null);
   const directoryLabels = useWorkerDirectoryLabels(workers, leadSession?.workspaceKind === 'meka');
   const lastAgentIslandPayloadRef = useRef<string | string[] | null>(null);
+  const shownWorker = selectedWorkerRecord ?? focusedWorker;
+  // 在另一台电脑运行的 Worker：本机代理任务不跑 Agent，展示运行设备上的真实任务。
+  const remoteDevice =
+    shownWorker && shownWorker.sessionId === workerSessionId
+      ? shownWorker.executionDevice
+      : undefined;
 
   const handleOpenCreate = useCallback(async () => {
     const result = await refreshCreationState();
@@ -210,7 +227,15 @@ export function OrcaWorkerPanel({
         />
       </div>
       <div className="chat-rail-compact min-h-0 flex-1">
-        {workerSessionId ? (
+        {workerSessionId && remoteDevice ? (
+          <RemoteWorkerSessionPane
+            key={workerSessionId}
+            leadSessionId={leadSessionId}
+            device={remoteDevice}
+            viewVisible={viewVisible}
+            chatRealtime={chatRealtime}
+          />
+        ) : workerSessionId ? (
           <CCAgentSessionView
             key={workerSessionId}
             sessionIdProp={workerSessionId}
@@ -237,6 +262,12 @@ export function OrcaWorkerPanel({
         deviceId={deviceId ?? undefined}
         leadSession={leadSession}
         sshRemote={sshRemote}
+        // 仅任务与 Agent 均已确认在本机的 Lead 可选择 Worker 运行设备，与主进程限制一致。
+        executionDevicesEnabled={deviceId === null && agentDeviceId === null && !sshRemote}
+        // Worker 的模型目录默认跟 Lead 的 Agent 所在电脑；可在面板里换到本机或其他电脑。控制端读不到
+        // 那台目录时(见 useWorkerAgentDevices)维持被控电脑的目录，Worker 跟 Lead。
+        leadAgentDeviceId={workerAgentDevices.leadAgentDeviceId}
+        remoteAgentDevices={workerAgentDevices.devices}
       />
     </div>
   );

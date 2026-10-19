@@ -17,7 +17,7 @@
   不能只以 HTTP 200、文件存在或 gzip 可解压作为成功条件。
 - `maker-cc-manager` bundle 不使用上述 runtime 版本号；它由
   `packages/maker-cc-manager/src/protocol.ts` 的 `CC_MGR_BUNDLE_VERSION` 单独 pin。当前为
-  `0.0.10` / protocol `5`（pin 与 protocol 的最新值一律以该文件为准，本文不复述具体数字）。
+  `0.0.11` / protocol `5`（pin 与 protocol 的最新值一律以该文件为准，本文不复述具体数字）。
   修改该 pin 后必须运行
   `pnpm --filter @cindy/maker-cc-manager bundle`，并让 MCPRouter 从同一 Cindy 源码重建、探测
   和重启 daemon；只发布 Claude/Codex runtime 资产不会更新 cc-manager。

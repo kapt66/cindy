@@ -15,19 +15,36 @@ const PRESENTATION_OPTIONS: readonly GhostPanelPresentationOverride[] = [
   'modal',
 ];
 
-/** Host-owned per-Plugin view preference declared by panel-bearing Plugins. */
-export function PluginPanelPresentationPreference({ ghostId }: { ghostId: string }) {
+/**
+ * Host-owned per-Plugin view preference declared by panel-bearing Plugins.
+ *
+ * 两个 key 空间必须分开，不能共用一个值：
+ * - `ghostId` 是**逻辑插件 id**：偏好 store（`ghostPanelPresentationPreference.ts`）与
+ *   启动器/设置页的读取方（`ghost.manifest.id`）都用它；store 按 `isValidGhostId` 过滤，
+ *   传物理实例键（`_root__<id>`）会被直接拒掉，开关等于失效。
+ * - `instanceId` 是**物理实例键**（`_root__<id>` / `_ns__<ns>__<id>`）：分离窗口账本
+ *   （`ghostPanelWindow.setDetached`，见 `ghostPanels.tsx` 的 `setDetached(instanceId, true)`）
+ *   与气泡状态按实例定位。缺省回落到 `ghostId`，兼容旧调用方（裸 id 目录两者同值）。
+ */
+export function PluginPanelPresentationPreference({
+  ghostId,
+  instanceId,
+}: {
+  ghostId: string;
+  instanceId?: string;
+}) {
   const { t } = useTranslation();
   const globalModal = useGhostPanelModalPresentation();
   const override = useGhostPanelPresentationOverride(ghostId);
+  const detachKey = instanceId ?? ghostId;
 
   const handleChange = (next: GhostPanelPresentationOverride): void => {
     setGhostPanelPresentationOverride(ghostId, next);
     const effectiveModal = next === 'modal' || (next === 'inherit' && globalModal);
     // Choosing a host presentation also exits stale detached/minimized states
     // so the next visible host matches the explicit user choice.
-    void window.electronAPI.ghostPanelWindow.setDetached(ghostId, false).catch(() => undefined);
-    if (!effectiveModal) restoreGhostPanel(ghostId);
+    void window.electronAPI.ghostPanelWindow.setDetached(detachKey, false).catch(() => undefined);
+    if (!effectiveModal) restoreGhostPanel(detachKey);
   };
 
   return (

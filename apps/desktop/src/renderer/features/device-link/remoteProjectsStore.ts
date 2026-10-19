@@ -1,4 +1,5 @@
 import { normalizeTaskTags, reconcileTaskTags } from '@cindy/maker-shared';
+import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
 /**
  * remoteProjectsStore —— 控制端「远程项目」内存层(device-link 跨设备远程控制)。
  * ---------------------------------------------------------------------------
@@ -42,6 +43,7 @@ import { DEFAULT_DRAFT_SESSION_TITLE } from '@cindy/maker-shared/session-title';
 import type { DeviceLinkConnectionStatus, Session } from '@/lib/ccAgent.types';
 import type { ListStatusFilter } from '@/lib/sessionService';
 import type { AutomationScheduleSessionInfo } from '../cc-agent/lib/automationSidebarGrouping';
+import { buildBindingMap, type ScheduleBinding } from '../scheduler/lib/scheduleBindingIndex';
 import { clearCachedMessages } from './mirrorCacheClient';
 
 export type RemoteSessionStatus = Exclude<ListStatusFilter, 'all'>;
@@ -56,8 +58,10 @@ interface DeviceShard {
   /** 已拿到过权威列表的状态桶；空数组同样需要被记住，避免每次渲染都重复拉取。 */
   loadedStatuses: Set<RemoteSessionStatus>;
   scheduleIndex?: ReadonlyMap<string, AutomationScheduleSessionInfo>;
+  scheduleBindings?: ReadonlyMap<string, ScheduleBinding[]>;
 }
 
+const EMPTY_SCHEDULE_BINDINGS: readonly ScheduleBinding[] = Object.freeze([]);
 const shards = new Map<string, DeviceShard>();
 let mergedScheduleIndex: ReadonlyMap<string, AutomationScheduleSessionInfo> = new Map();
 function recomputeScheduleIndex(): void {
@@ -156,6 +160,8 @@ let bootstrapRetryImpl: ((deviceId: string) => void) | null = null;
 
 /** 扁平合并快照(缓存引用,变化时才换新)。 */
 let mergedSnapshot: Session[] = [];
+/** UI 订阅使用的稳定投影；协议与传输层仍可读取 mergedSnapshot 原始镜像。 */
+let visibleMergedSnapshot: Session[] = [];
 /** sessionId → deviceId 注册表(随分片变化重建)。 */
 const sessionDeviceIndex = new Map<string, string>();
 /** sessionId → 投影后标题(含标题预览),随 recompute 重建;供消息来源标签 O(1) 查询。 */
@@ -464,6 +470,15 @@ function recompute(): void {
     }
     mergedSnapshot = flat;
   }
+  const nextVisible = CINDY_MAKE_ENABLED
+    ? mergedSnapshot
+    : mergedSnapshot.filter((session) => !isCindyMakeSource(session.source));
+  if (
+    visibleMergedSnapshot.length !== nextVisible.length ||
+    visibleMergedSnapshot.some((session, index) => session !== nextVisible[index])
+  ) {
+    visibleMergedSnapshot = nextVisible;
+  }
   // 设备列表快照:按 deviceName(再 deviceId 兜底)稳定排序,避免 Map 插入序在设备增删时
   // 抖动导致切换栏 chip 乱跳;内容不变时保持旧引用(防 useRemoteDevices 无谓重渲染)。
   if (shards.size === 0) {
@@ -549,6 +564,17 @@ function stamp(
 }
 
 const actions = {
+  setDeviceScheduleBindings(deviceId: string, bindings: readonly ScheduleBinding[]): void {
+    const shard = shards.get(deviceId);
+    if (!shard) return;
+    const next = buildBindingMap(bindings);
+    if (JSON.stringify([...(shard.scheduleBindings ?? [])]) === JSON.stringify([...next])) return;
+    shard.scheduleBindings = next;
+    subs.forEach((fn) => fn());
+  },
+  getSessionScheduleBindings(deviceId: string, sessionId: string): readonly ScheduleBinding[] {
+    return shards.get(deviceId)?.scheduleBindings?.get(sessionId) ?? EMPTY_SCHEDULE_BINDINGS;
+  },
   setDeviceScheduleIndex(
     deviceId: string,
     index: ReadonlyMap<string, AutomationScheduleSessionInfo>,
@@ -645,6 +671,7 @@ const actions = {
       connectionStatus,
       sessions: nextSessions,
       scheduleIndex: existing?.scheduleIndex,
+      scheduleBindings: existing?.scheduleBindings,
       loadedStatuses,
     });
     recompute();
@@ -987,6 +1014,11 @@ const actions = {
   /** 侧边栏合并点用:当前所有远端会话的扁平列表(引用稳定)。 */
   getMergedRemoteSessions(): Session[] {
     return mergedSnapshot;
+  },
+
+  /** 用户界面使用的远端会话投影；旧 Cindy Make 行保留在原始镜像中但不可见。 */
+  getVisibleMergedRemoteSessions(): Session[] {
+    return visibleMergedSnapshot;
   },
 
   /**
@@ -1375,7 +1407,7 @@ export function useRemoteSessionTitle(sessionId: string | undefined): string | n
 
 /** 组件内订阅:返回扁平远端会话快照(喂给 sidebar 合并点)。 */
 export function useRemoteProjectSessions(): Session[] {
-  return useSyncExternalStore(subscribe, actions.getMergedRemoteSessions);
+  return useSyncExternalStore(subscribe, actions.getVisibleMergedRemoteSessions);
 }
 
 /** 组件内订阅:返回当前已连接的被控设备摘要列表(机器切换栏 chips)。 */
@@ -1443,5 +1475,16 @@ export function useRemoteScheduleIndex(): ReadonlyMap<string, AutomationSchedule
     subscribe,
     () => mergedScheduleIndex,
     () => mergedScheduleIndex,
+  );
+}
+
+export function useRemoteSessionScheduleBindings(
+  deviceId: string | null | undefined,
+  sessionId: string,
+): readonly ScheduleBinding[] {
+  return useSyncExternalStore(
+    subscribe,
+    () => deviceId ? actions.getSessionScheduleBindings(deviceId, sessionId) : EMPTY_SCHEDULE_BINDINGS,
+    () => EMPTY_SCHEDULE_BINDINGS,
   );
 }

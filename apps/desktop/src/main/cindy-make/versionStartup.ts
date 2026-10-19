@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { resolveClientEndpointsStrict } from '@cindy/maker-shared/client-endpoints';
 import { brandExecutableName } from '@cindy/maker-shared/brand-identity';
+import { CINDY_MAKE_ENABLED } from '@cindy/maker-shared/cindy-make-feature';
 import { CURRENT_CINDY_REGION } from '../../shared/brandRegion.js';
 import { createLogger } from '../logger.js';
 import { t } from '../i18n.js';
@@ -725,6 +726,8 @@ export async function dispatchCindyVersionStartup(): Promise<boolean> {
     return true;
   }
   const profile = app.getPath('userData');
+  const restoreOriginal = !CINDY_MAKE_ENABLED || process.argv.includes(RESTORE_ORIGINAL_FLAG);
+  if (restoreOriginal && fs.existsSync(versionsRoot(profile))) deferredSelection = 'original';
   if (fs.existsSync(versionsRoot(profile))) {
     if (!request) {
       const pending = readVersionJson<{ id: string; pid: number }>(
@@ -751,7 +754,6 @@ export async function dispatchCindyVersionStartup(): Promise<boolean> {
     }
     setCindyVersionLockScope('profile');
   }
-  const restoreOriginal = process.argv.includes(RESTORE_ORIGINAL_FLAG);
   if (currentId !== 'original') {
     const original = readOriginalVersion(profile);
     if (!original) throw versionError('unavailable');

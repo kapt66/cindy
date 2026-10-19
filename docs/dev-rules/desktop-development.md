@@ -53,6 +53,12 @@ pnpm restart:desktop:remote -- --shared
 `DESKTOP_DEV_VERDICT=ready` 才算成功；看到
 `DESKTOP_DEV_VERDICT=failed` 或没有 verdict 行，不得声称开发版已启动。失败时报告
 `code` / `message`；有 `next=` 且用户未指定必须共享时，可执行该命令重试。
+
+Agent 没有 TTY 时，dev 会在新开的 Terminal（macOS）／cmd（Windows）窗口里运行。macOS 上
+该窗口的输出同时写入当前 checkout 的 `apps/desktop/logs/dev-terminal.log`（每次启动覆盖，
+只保留前 8MB，足够覆盖启动过程；之后的运行日志看按天轮转的 `main-*.log`），窗口关掉后仍可查；启动失败时命令会直接打印日志末尾，verdict 带 `log=` 指向该文件。
+排查启动失败先读这份日志，不要靠反复重启猜原因。不要给启动命令接会吞退出码的管道。
+
 Desktop 连接的是你自己的 Cindy 云端账号（remote）。这与登录页中免 Cindy 账号的
 「跳过登录」（应用内显示为「未登录」，无需账号即可使用本机 agent；代码内部标识仍为
 `local` mode）不是同一个概念。Agent 不得自行改用
@@ -183,7 +189,11 @@ checkout 的启动器顶掉）。因此并行多开的标准姿势是：**每个
 
 - **userData 冲突门**：目标 userData（按 `--isolated` 名字推导）已被其他 checkout 的
   dev 实例占用时，restart 会在杀任何进程之前中止并列出占用进程——不代杀、不共库。
-  换一个沙箱名字，或由用户自己停掉那个实例后重试。检测靠 helper 进程命令行上的
+  verdict 为 `USERDATA_IN_USE` 并给出 `next=… --isolated=@worktree`：执行它即可改用本
+  worktree 自己的沙箱并行启动（首次需登录）；或由用户自己停掉那个实例后重试。
+- **嵌套的托管 worktree 不算本 checkout**：`.cindy-worktrees/<name>` 位于主 checkout
+  目录内，进程归属按命中的最深 worktree 判定。从主 checkout restart 不会停掉托管 worktree
+  的实例，冲突门也会把它们当作其他 checkout。检测靠 helper 进程命令行上的
   `--user-data-dir`，对方实例刚启动还没起 helper 时可能漏检，属尽力而为。
 - **CDP 端口**：dev 的 remote-debugging-port 固定 9222，只有先起的实例能绑上。后起
   实例需要 CDP 调试面时，用 `XDT_CDP_PORT=<端口>` 覆写（仅数字生效，dev-only）。
@@ -266,6 +276,25 @@ Codex 错误恢复还必须携带有效的持久化 thread ID，并调用 `threa
 `thread/start`；app-server 返回的 handle ID 也必须等于预期 ID，否则关闭新 handle、保留原
 `sdk_session_id` 并报告失败。该约束只适用于错误 Session 的原地恢复；显式 `/clear`、切换
 Agent、删除消息后重建上下文及全新任务仍允许创建新的原生会话。
+
+## Linux 系统托盘
+
+Linux 主窗口创建时注册 Electron Tray，提供显示主窗口、打开日志目录、退出 Cindy。
+与 Windows 共用菜单动作和活动任务退出确认，但 Linux 使用 `setContextMenu` 发布原生
+菜单，切换语言后重新发布；不依赖仅 Windows/macOS 提供的 `right-click` 事件。
+实现见 `main/linuxTrayLifecycle.ts` 与 `bootstrap-electron.ts`，回归见
+`main/__tests__/linuxTrayLifecycle.test.ts`。
+
+图标创建成功不代表桌面面板一定显示它，因此关闭主窗口仍保留 Linux 原有的
+「最小化／退出」选择，不自动隐藏到托盘，也不迁移用户已有偏好。无托盘宿主或初始化失败
+不阻止主窗口使用。托盘实际显示、激活、菜单与退出须在 Linux 桌面验证；macOS 上的
+单测不能替代 Omarchy/Hyprland、GNOME 或 KDE 的实机验收。
+
+## Windows 窗口恢复实验
+
+Windows 偶发黑屏/灰屏的后台节流对照实验见
+[窗口恢复对照](../../apps/desktop/scripts/render-recovery/README.md)。它按需使用 GitHub
+Windows runner，独立于默认单测；短流程通过和完整 Cindy 故障已修复必须分开判断。
 
 ## Windows 安装目录与授权
 

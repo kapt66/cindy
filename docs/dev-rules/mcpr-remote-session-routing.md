@@ -168,7 +168,7 @@ transport 身份，`agentType` 为 `claude` 或 `codex` 时才进入支持判断
 - Claude 的 MCPRouter/SSH cc-mgr `protocol/hello` 必须携带
   `CC_MGR_BUNDLE_VERSION`。客户端可以兼容旧 daemon 不回显 bundle 字段，但不能省略请求
   参数；否则新版本 daemon 会返回 `[INVALID_PARAMS] bundleVersion is required (string)`。
-- 当前 pin 是 bundle `0.0.10` / protocol `5`（`packages/maker-cc-manager/src/protocol.ts`
+- 当前 pin 是 bundle `0.0.11` / protocol `5`（`packages/maker-cc-manager/src/protocol.ts`
   的 `PROTOCOL_VERSION` 与 `CC_MGR_BUNDLE_VERSION`，包内 `protocol.test.ts` 硬断言这两个值）。
   daemon 按连接协商版本隔离能力：protocol `2` 保留 Claude query/session 与 host
   `toolGuards`；protocol `3` 才开放 immutable bundle、Codex revision/thread routing 和
