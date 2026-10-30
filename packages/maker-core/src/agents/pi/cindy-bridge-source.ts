@@ -3329,10 +3329,15 @@ class CindyMcpGateway {
       // instead of costing a second round-trip through cindy_mcp_list_tools.
       // (2026-10-30: every first call to a tool in a real session cost two calls.)
       this.disclosedSchemas.add(mcpGatewayKey(resolved.tool.serverName, resolved.tool.name));
+      // The wording matters: an error that says "call cindy_mcp_list_tools first"
+      // makes the model do exactly that even though the schema is printed right
+      // here, so the receipt must state that no separate call is needed.
       throw new Error(
-        'Inspect this tool before execution by calling cindy_mcp_list_tools with ' +
+        'Inspect this tool before execution: ' +
         JSON.stringify({ server: resolved.tool.serverName, tool: resolved.tool.name }) +
-        '. Expected args schema: ' + schemaHint(resolved.tool.inputSchema),
+        ' — this call was refused before execution. The full schema is below; retry directly with it ' +
+        '(calling cindy_mcp_list_tools for it again is not needed). Expected args schema: ' +
+        schemaHint(resolved.tool.inputSchema),
       );
     }
     return this.executeResolvedCall(resolved, signal);
