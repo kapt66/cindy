@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import { app, BrowserWindow, ipcMain, net, safeStorage } from 'electron';
 
 import { createMekaP4SettingsService, type MekaP4SettingsService } from './service.js';
-import { createMekaRouterClient } from './routerClient.js';
+import { type FetchLike } from './routerClient.js';
 import { createMekaRouterService, type MekaRouterService } from './routerService.js';
 import {
   cancelMekaRouterLogin,
@@ -97,8 +97,9 @@ export function getMekaRouterService(): MekaRouterService {
     configPath: path.join(userDataPath, 'meka-assistant-settings.json'),
     vault: createEncryptedVault(userDataPath),
     // Use Chromium's network stack so MCPRouter login follows the same system
-    // proxy and public certificate trust as the rest of Desktop.
-    client: createMekaRouterClient({ fetchImpl: net.fetch }),
+    // proxy and public certificate trust as the rest of Desktop. The service
+    // builds the client itself so it can attach the 401 re-login hook.
+    fetchImpl: net.fetch as unknown as FetchLike,
   });
   return routerSingleton;
 }

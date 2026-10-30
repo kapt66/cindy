@@ -107,6 +107,31 @@ Claude.ai 登录，也不得收集、存储或中转订阅凭证。Cindy 因此�
   真实 CLI 的入口、项目设置、原生 / SDK hooks 与权限回归见
   [smoke-claude-sdk.mjs](../../scripts/smoke-claude-sdk.mjs)。
 
+## MCPRouter 会话失效的自愈
+
+- MCPRouter 的会话令牌与账号密码都保存在 `safeStorage`（`meka.router.sessionToken` /
+  `meka.router.password`）。服务端重启、更换数据库或会话过期后，旧令牌会被 401 拒绝，
+  但本地凭据仍然有效。
+- 任何**带会话 cookie** 的 Router 请求收到 401 时，主进程用已保存的密码自动重新登录一次，
+  并用新 cookie 重放原请求；重放仍失败才把 401 交给调用方。登录/注册这类不带 cookie 的
+  请求不触发自愈，密码错误不会被伪装成"会话过期"。
+- 自愈只发生在主进程：密码与令牌不进入 renderer、日志、IPC 返回值或错误文案。并发 401 在
+  客户端共用一次重登（single-flight）；重登自身发起的调用被 `AsyncLocalStorage` 标记，遇到
+  401 直接失败而不等待自己。重登失败时错误文案带上服务端原因（例如 `Invalid credentials`），
+  据此区分"密码已被修改"与"服务端异常"，而不是只剩一个裸 401。
+- 自愈失败时用户必须看得见：`MekaRemoteSessionPicker` 显示可重试的错误行
+  （"无法读取 MCPRouter 上的项目"），不再渲染空列表 —— 空列表会被误读成"远程项目为空"。
+- 实现：[routerClient.ts](../../apps/desktop/src/main/meka-settings/routerClient.ts)
+  （401 重放）与 [routerService.ts](../../apps/desktop/src/main/meka-settings/routerService.ts)
+  （`refreshStoredSession`）。Desktop 在
+  [ipc.ts](../../apps/desktop/src/main/meka-settings/ipc.ts) 以 `fetchImpl: net.fetch` 构建服务，
+  **由服务自己创建 client** 才能挂上重登钩子；测试若注入 `client`，走的不是生产路径，不能用来
+  证明自愈生效。回归：
+  [routerClient.test.ts](../../apps/desktop/src/main/meka-settings/__tests__/routerClient.test.ts)、
+  [routerService.test.ts](../../apps/desktop/src/main/meka-settings/__tests__/routerService.test.ts)
+  （含 `fetchImpl` 生产路径用例）、
+  [MekaRemoteSessionPicker.test.tsx](../../apps/desktop/src/renderer/components/new-chat/__tests__/MekaRemoteSessionPicker.test.tsx)。
+
 ## Linux Hyprland / Omarchy 凭证后端
 
 - Desktop 在 Electron `ready` 之前为 Hyprland 默认选择 `gnome-libsecret`，避免桌面

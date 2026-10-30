@@ -1054,4 +1054,78 @@ describe('MekaRouterService', () => {
       {},
     );
   });
+
+  it('attaches the 401 re-login hook to the client the production path builds', async () => {
+    // Desktop passes `fetchImpl` (Chromium net.fetch) and lets the service build
+    // the client; a test that injects `client` would never exercise the hook.
+    let persisted = `${JSON.stringify({
+      schemaVersion: 1,
+      routerUrl: 'https://router.example',
+      routerUsername: 'alice',
+      mekadesignConfigured: false,
+    })}\n`;
+    let temporary = '';
+    const secrets = new Map<string, string>([
+      ['meka.router.password', 'stored-password'],
+      ['meka.router.sessionToken', 'expired-session'],
+      ['meka.router.clientKey', 'client-key'],
+    ]);
+    const seen: string[] = [];
+    const fetchImpl = vi.fn(async (input: string, init?: RequestInit) => {
+      const url = new URL(input);
+      const cookie = (init?.headers as Record<string, string> | undefined)?.cookie ?? '';
+      seen.push(`${init?.method ?? 'GET'} ${url.pathname} ${cookie.split('=')[1] ?? 'none'}`);
+      if (url.pathname === '/api/auth/login') {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { 'set-cookie': 'session=fresh-session; Path=/' },
+        });
+      }
+      if (cookie !== 'session=fresh-session') {
+        return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401 });
+      }
+      if (url.pathname === '/api/keys') {
+        return new Response(JSON.stringify([{ name: 'xdt-maker-meka', key: 'client-key' }]), {
+          status: 200,
+        });
+      }
+      if (url.pathname === '/api/projects') {
+        return new Response(JSON.stringify([{ id: 'project-1', name: 'Project One' }]), {
+          status: 200,
+        });
+      }
+      return new Response('[]', { status: 200 });
+    }) as unknown as Parameters<typeof createMekaRouterService>[0]['fetchImpl'];
+
+    const service = createMekaRouterService({
+      configPath: 'C:\\userData\\meka-assistant-settings.json',
+      vault: {
+        read: (key: string) => secrets.get(key) ?? null,
+        store: (key: string, value: string) => {
+          secrets.set(key, value);
+        },
+        remove: (key: string) => {
+          secrets.delete(key);
+        },
+      },
+      fetchImpl,
+      readFile: async () => persisted,
+      writeFile: async (_filePath, content) => {
+        temporary = content;
+      },
+      rename: async () => {
+        persisted = temporary;
+      },
+      unlink: async () => undefined,
+      mkdir: async () => undefined,
+    });
+
+    await expect(service.listTemplates()).resolves.toEqual([
+      { id: 'project-1', name: 'Project One', description: null },
+    ]);
+    expect(seen[0]).toBe('GET /api/projects expired-session');
+    expect(seen).toContain('POST /api/auth/login none');
+    expect(seen).toContain('GET /api/projects fresh-session');
+    expect(secrets.get('meka.router.sessionToken')).toBe('fresh-session');
+  });
 });

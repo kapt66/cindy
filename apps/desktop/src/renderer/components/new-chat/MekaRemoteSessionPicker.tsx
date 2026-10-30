@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { Cloud, Plus, RefreshCw } from 'lucide-react';
+import { CircleAlert, Cloud, Plus, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import {
@@ -32,9 +32,11 @@ export function MekaRemoteSessionPicker({ open, onSelect }: Props) {
   const [createOpen, setCreateOpen] = useState(false);
   const [templateId, setTemplateId] = useState('');
   const [instanceName, setInstanceName] = useState('');
+  const [loadError, setLoadError] = useState('');
 
   const refresh = useCallback(async () => {
     setLoading(true);
+    setLoadError('');
     try {
       const state = await window.electronAPI.mekaSettings.router.get();
       setConfigured(state.configured);
@@ -49,9 +51,12 @@ export function MekaRemoteSessionPicker({ open, onSelect }: Props) {
       ]);
       setInstances(nextInstances);
       setTemplates(nextTemplates);
-    } catch {
+    } catch (error) {
+      // Keep the failure visible: an empty list with no message reads as "MCPR
+      // remote has no projects", which hides expired sessions and outages.
       setInstances([]);
       setTemplates([]);
+      setLoadError(extractIpcError(error)?.message ?? String(error));
     } finally {
       setLoading(false);
     }
@@ -87,10 +92,34 @@ export function MekaRemoteSessionPicker({ open, onSelect }: Props) {
     }
   }, [creating, instanceName, nameValid, onSelect, refresh, templateId]);
 
-  if (!configured || (availableInstances.length === 0 && templates.length === 0)) return null;
+  if (!configured) return null;
+  if (!loadError && availableInstances.length === 0 && templates.length === 0) return null;
 
   return (
     <>
+      {loadError ? (
+        <div
+          role="alert"
+          title={loadError}
+          className="mx-1 mb-1 flex items-start gap-2 rounded-[8px] border border-[var(--error-border)] bg-[var(--error-bg)] px-3 py-2"
+        >
+          <CircleAlert size={14} className="mt-0.5 shrink-0 text-[var(--error-fg)]" />
+          <div className="min-w-0 flex-1">
+            <p className="text-xs leading-[1.45] text-[var(--error-fg)]">
+              {t('newChat.folderPicker.remoteProjectsLoadFailed', { device: 'MCPRouter' })}
+            </p>
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() => void refresh()}
+              className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-[var(--error-fg)] underline-offset-2 hover:underline disabled:opacity-40"
+            >
+              <RefreshCw size={12} className={loading ? 'animate-spin' : undefined} />
+              {t('newChat.folderPicker.retryRemoteProjects')}
+            </button>
+          </div>
+        </div>
+      ) : null}
       <div data-folder-picker-scroll="true" className="pending-queue-scroll max-h-[180px] overflow-y-auto">
         {loading && availableInstances.length === 0 ? (
           <div className="flex items-center gap-2 px-3 py-[10px] text-sm text-[var(--folder-item-path)]">

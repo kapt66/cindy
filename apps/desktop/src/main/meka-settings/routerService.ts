@@ -25,7 +25,7 @@ import {
   type MekaSkillSourcePreview,
   type MekaSkillVisibility,
 } from '../../shared/mekaSkillMarket.js';
-import { createMekaRouterClient, type MekaRouterClient } from './routerClient.js';
+import { createMekaRouterClient, type FetchLike, type MekaRouterClient } from './routerClient.js';
 import { classifyMekaRouterToolRisk, type MekaToolRisk } from './mekaRiskPolicy.js';
 import { DEFAULT_MEKA_MCPROUTER_URL } from './config.js';
 import {
@@ -67,6 +67,10 @@ export interface MekaSecretVault {
 export interface MekaRouterServiceDeps {
   configPath: string;
   vault: MekaSecretVault;
+  /** Transport override (Desktop injects Chromium's `net.fetch`). */
+  fetchImpl?: FetchLike;
+  /** Fully built client, for tests. Production must use `fetchImpl` so the
+   *  service can attach its session refresher to the client it owns. */
   client?: MekaRouterClient;
   readFile?: (filePath: string) => Promise<string | null>;
   writeFile?: (filePath: string, content: string) => Promise<void>;
@@ -173,7 +177,12 @@ function normalizeInstance(raw: JsonRecord): MekaRouterInstance {
 }
 
 export function createMekaRouterService(deps: MekaRouterServiceDeps) {
-  const client = deps.client ?? createMekaRouterClient();
+  const client =
+    deps.client ??
+    createMekaRouterClient({
+      ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+      refreshSession: () => refreshStoredSession(),
+    });
   const readFile =
     deps.readFile ??
     (async (filePath: string) => {
@@ -364,6 +373,28 @@ export function createMekaRouterService(deps: MekaRouterServiceDeps) {
       return await attempt;
     } finally {
       if (reconnectInFlight === attempt) reconnectInFlight = null;
+    }
+  }
+
+  /**
+   * Re-login from the encrypted credentials after the Router rejects the stored
+   * session cookie (401). The client then replays the rejected request once with
+   * the fresh cookie, so a replaced Router database or an expired session does
+   * not surface as "cannot load remote projects" in the UI.
+   */
+  async function refreshStoredSession(): Promise<{ baseUrl: string; token: string } | null> {
+    // A 401 raised by the re-login's own follow-up calls must not wait on the
+    // refresh that is already running (that would await itself forever). The
+    // client also short-circuits that case; this stays as a second guard.
+    if (reconnectInFlight) return null;
+    // Login failures propagate so the caller can say *why* the session could not
+    // be restored (for example "Invalid credentials" after a password change).
+    const reconnected = await reconnectStoredCredentials();
+    if (!reconnected) return null;
+    try {
+      return await sessionAuth();
+    } catch {
+      return null;
     }
   }
 

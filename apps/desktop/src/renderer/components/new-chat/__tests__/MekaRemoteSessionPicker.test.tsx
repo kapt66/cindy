@@ -80,4 +80,42 @@ describe('MekaRemoteSessionPicker', () => {
     resolveCreate?.(created);
     await waitFor(() => expect(onSelect).toHaveBeenCalledWith(created));
   });
+
+  it('surfaces a failed remote load with a retry instead of an empty list', async () => {
+    const onSelect = vi.fn();
+    let failing = true;
+    const router = {
+      get: vi.fn(async () => ({ configured: true })),
+      listInstances: vi.fn(async () => {
+        if (failing) throw new Error('MCPRouter list project templates failed (401)');
+        return [
+          {
+            id: 'ready',
+            instanceId: 'ready-1',
+            agentType: 'claude',
+            projectName: 'Ready',
+            supported: true,
+            available: true,
+          },
+        ];
+      }),
+      listTemplates: vi.fn(async () => []),
+    };
+    (window as unknown as { electronAPI: unknown }).electronAPI = {
+      mekaSettings: { router },
+    };
+
+    render(<MekaRemoteSessionPicker open onSelect={onSelect} />);
+
+    const alert = await screen.findByRole('alert');
+    expect(within(alert).getByText('newChat.folderPicker.remoteProjectsLoadFailed')).toBeTruthy();
+    expect(alert.getAttribute('title')).toContain('MCPRouter list project templates failed');
+
+    failing = false;
+    fireEvent.click(
+      within(alert).getByRole('button', { name: 'newChat.folderPicker.retryRemoteProjects' }),
+    );
+    expect(await screen.findByText('Ready')).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
 });

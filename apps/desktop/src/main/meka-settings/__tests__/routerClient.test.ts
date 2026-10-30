@@ -532,4 +532,113 @@ describe('MekaRouterClient', () => {
       status: 401,
     });
   });
+
+  it('re-authenticates once and replays the request when the session was forgotten', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json({ error: 'Unauthorized' }, { status: 401 }))
+      .mockResolvedValueOnce(Response.json([{ id: 'instance-1' }]))
+      .mockResolvedValueOnce(Response.json([])) as unknown as typeof fetch;
+    const refreshSession = vi.fn(async () => ({
+      baseUrl: 'https://router.example',
+      token: 'fresh-session',
+    }));
+    const client = createMekaRouterClient({ fetchImpl, refreshSession });
+
+    await expect(
+      client.listInstances('https://router.example', 'forgotten-session'),
+    ).resolves.toEqual([{ id: 'instance-1' }]);
+    await expect(
+      client.listTemplates('https://router.example', 'forgotten-session'),
+    ).resolves.toEqual([]);
+
+    expect(refreshSession).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      2,
+      'https://router.example/api/project-agent-instances',
+      expect.objectContaining({
+        headers: expect.objectContaining({ cookie: 'session=fresh-session' }),
+      }),
+    );
+  });
+
+  it('keeps the 401 when stored credentials cannot re-authenticate', async () => {
+    const fetchImpl = vi.fn(async () =>
+      Response.json({ error: 'Unauthorized' }, { status: 401 }),
+    ) as unknown as typeof fetch;
+    const refreshSession = vi.fn(async () => null);
+    const client = createMekaRouterClient({ fetchImpl, refreshSession });
+
+    await expect(
+      client.listTemplates('https://router.example', 'expired-session'),
+    ).rejects.toMatchObject({ status: 401 });
+    await expect(
+      client.listInstances('https://router.example', 'expired-session'),
+    ).rejects.toMatchObject({ status: 401 });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('never re-authenticates a credentials request that is itself unauthorized', async () => {
+    const fetchImpl = vi.fn(async () =>
+      Response.json({ error: 'Invalid credentials' }, { status: 401 }),
+    ) as unknown as typeof fetch;
+    const refreshSession = vi.fn(async () => ({
+      baseUrl: 'https://router.example',
+      token: 'fresh-session',
+    }));
+    const client = createMekaRouterClient({ fetchImpl, refreshSession });
+
+    await expect(
+      client.login('https://router.example', 'meka-user', 'wrong-password'),
+    ).rejects.toMatchObject({ status: 401 });
+    expect(refreshSession).not.toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('shares a single re-login across concurrent unauthorized requests', async () => {
+    let releaseRefresh: ((value: { baseUrl: string; token: string }) => void) | undefined;
+    const refreshSession = vi.fn(
+      () =>
+        new Promise<{ baseUrl: string; token: string }>((resolve) => {
+          releaseRefresh = resolve;
+        }),
+    );
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      const cookie = (init?.headers as Record<string, string> | undefined)?.cookie;
+      return cookie === 'session=fresh-session'
+        ? Response.json([{ id: 'row' }])
+        : Response.json({ error: 'Unauthorized' }, { status: 401 });
+    }) as unknown as typeof fetch;
+    const client = createMekaRouterClient({ fetchImpl, refreshSession });
+
+    const first = client.listInstances('https://router.example', 'stale-session');
+    const second = client.listTemplates('https://router.example', 'stale-session');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(refreshSession).toHaveBeenCalledTimes(1);
+
+    releaseRefresh?.({ baseUrl: 'https://router.example', token: 'fresh-session' });
+    await expect(Promise.all([first, second])).resolves.toEqual([[{ id: 'row' }], [{ id: 'row' }]]);
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+  });
+
+  it('reports why the automatic re-login failed instead of a bare 401', async () => {
+    const fetchImpl = vi.fn(async () =>
+      Response.json({ error: 'Unauthorized' }, { status: 401 }),
+    ) as unknown as typeof fetch;
+    const refreshSession = vi.fn(async () => {
+      throw new Error('MCPRouter login failed (401): {"error":"Invalid credentials"}');
+    });
+    const client = createMekaRouterClient({ fetchImpl, refreshSession });
+
+    await expect(
+      client.listTemplates('https://router.example', 'expired-session'),
+    ).rejects.toMatchObject({
+      status: 401,
+      message: expect.stringContaining('automatic re-login failed'),
+    });
+    await expect(
+      client.listTemplates('https://router.example', 'expired-session'),
+    ).rejects.toThrow('Invalid credentials');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
 });

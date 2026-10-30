@@ -1,4 +1,5 @@
 import { isIP } from 'node:net';
+import { AsyncLocalStorage } from 'node:async_hooks';
 
 import type { MekaPluginVisibility } from '../../shared/mekaDevPlugin.js';
 import type { MekaSkillVisibility } from '../../shared/mekaSkillMarket.js';
@@ -9,10 +10,50 @@ const REQUEST_TIMEOUT_MS = 15_000;
 const UPLOAD_REQUEST_TIMEOUT_MS = 60_000;
 const CLIENT_KEY_NAME = 'xdt-maker-meka';
 
-type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
+export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
+
+export interface MekaRouterSessionRefreshResult {
+  baseUrl: string;
+  token: string;
+}
+
+/**
+ * Host-owned re-authentication hook. When a session-authenticated request is
+ * rejected with 401, the client asks the service to re-login from the encrypted
+ * credentials it already stores, then replays the request once with the fresh
+ * cookie. Returning null keeps the original 401 (nothing stored to re-login
+ * with); throwing keeps the reason, which the client surfaces.
+ */
+export type MekaRouterSessionRefresher = () => Promise<MekaRouterSessionRefreshResult | null>;
 
 export interface RouterClientDeps {
   fetchImpl?: FetchLike;
+  refreshSession?: MekaRouterSessionRefresher;
+}
+
+/** Marks the async flow started by a refresh, so its own 401s fail fast. */
+const refreshContext = new AsyncLocalStorage<true>();
+/** Concurrent 401s share one re-login per client instance. */
+const refreshInFlight = new WeakMap<RouterClientDeps, Promise<MekaRouterSessionRefreshResult | null>>();
+
+function refreshSession(deps: RouterClientDeps): Promise<MekaRouterSessionRefreshResult | null> {
+  const refresh = deps.refreshSession;
+  if (!refresh) return Promise.resolve(null);
+  // A 401 raised by the re-login's own follow-up calls must not await the refresh
+  // it is part of (that would deadlock); those calls simply fail.
+  if (refreshContext.getStore()) return Promise.resolve(null);
+  const pending = refreshInFlight.get(deps);
+  if (pending) return pending;
+  let tracked: Promise<MekaRouterSessionRefreshResult | null>;
+  tracked = refreshContext.run(true, () => Promise.resolve(refresh())).finally(() => {
+    if (refreshInFlight.get(deps) === tracked) refreshInFlight.delete(deps);
+  });
+  refreshInFlight.set(deps, tracked);
+  return tracked;
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 export class MekaRouterRequestError extends Error {
@@ -135,7 +176,36 @@ async function request(
   init: RequestInit = {},
   timeoutMs = REQUEST_TIMEOUT_MS,
 ): Promise<Response> {
-  return fetchWithTimeout(deps, `${normalizeBaseUrl(baseUrl)}${pathname}`, init, timeoutMs);
+  const response = await fetchWithTimeout(deps, `${normalizeBaseUrl(baseUrl)}${pathname}`, init, timeoutMs);
+  if (response.status !== 401) return response;
+  // Only session-authenticated requests retry. Login/register/validate-key carry
+  // no session cookie, so a 401 there is a credentials failure and must surface.
+  const headers = init.headers as Record<string, string> | undefined;
+  if (!headers?.cookie || !deps.refreshSession) return response;
+  // The Router can forget a session without the client knowing (database
+  // replaced, session expired, account re-created). The Host still holds the
+  // encrypted password, so one silent re-login is enough to recover instead of
+  // leaking a raw 401 into every feature that needs the session.
+  let refreshFailure: unknown = null;
+  const refreshed = await refreshSession(deps).catch((error) => {
+    refreshFailure = error;
+    return null;
+  });
+  if (!refreshed?.token) {
+    if (refreshFailure) {
+      throw new MekaRouterRequestError(
+        `MCPRouter session expired and automatic re-login failed: ${errorText(refreshFailure)}`,
+        401,
+      );
+    }
+    return response;
+  }
+  return fetchWithTimeout(
+    deps,
+    `${normalizeBaseUrl(refreshed.baseUrl)}${pathname}`,
+    { ...init, headers: { ...headers, cookie: `session=${refreshed.token}` } },
+    timeoutMs,
+  );
 }
 
 async function readError(response: Response, operation: string): Promise<MekaRouterRequestError> {
