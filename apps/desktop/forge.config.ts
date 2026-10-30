@@ -1782,6 +1782,15 @@ if (isWin) {
 
 const config: ForgeConfig = {
   packagerConfig: {
+    // electron-packager stages the whole app under `os.tmpdir()` before moving it
+    // into `out/`. On a Windows CI runner that is `C:\WINDOWS\TEMP`, where Defender /
+    // Controlled Folder Access intermittently lock freshly written files and the copy
+    // fails with `EPERM: operation not permitted, copyfile` (observed 2026-10-30 on
+    // the canary runner, killing the release job at "Copying files"). Keep the stage
+    // on the repo volume instead: same disk as the sources, no system temp ACLs.
+    // It must live OUTSIDE `apps/desktop` — the packager copies that directory, so a
+    // staging dir inside it would be copied into itself.
+    tmpdir: path.join(__dirname, '..', '..', '.forge-tmp'),
     // sharp 的底层 libvips 共享库 (libvips-cpp.dylib / libvips-42.dll /
     // libvips-cpp.so) 在不同平台上的位置不同:
     //   - macOS / Linux: 住在独立的 @img/sharp-libvips-{platform}-{arch}/ 包,

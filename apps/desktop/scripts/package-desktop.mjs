@@ -446,13 +446,27 @@ function runForgeMake({ platform, arch, region, version, versionless, noSign }) 
     delete forgeEnv.CINDY_WIN_SIGN_CMD;
     delete forgeEnv.NPKG_TOKEN;
   }
-  execFileSync(process.execPath, [
-    path.join(__dirname, 'forge-cli.mjs'), 'make', '--platform', platform, '--arch', arch,
-  ], {
-    cwd: DESKTOP_ROOT,
-    stdio: 'inherit',
-    env: forgeEnv,
-  });
+  // electron-packager's staging copy can fail with a transient EPERM/EBUSY on
+  // Windows (Defender locking a freshly written file). That is not a build defect,
+  // so retry a bounded number of times instead of failing a 20-minute release job;
+  // anything else propagates on the first attempt.
+  const transientCopyError = /EPERM|EBUSY|ENOTEMPTY|operation not permitted/i;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      execFileSync(process.execPath, [
+        path.join(__dirname, 'forge-cli.mjs'), 'make', '--platform', platform, '--arch', arch,
+      ], {
+        cwd: DESKTOP_ROOT,
+        stdio: 'inherit',
+        env: forgeEnv,
+      });
+      return;
+    } catch (error) {
+      const message = `${error?.message ?? ''} ${error?.stderr ?? ''} ${error?.stdout ?? ''}`;
+      if (attempt >= 3 || !transientCopyError.test(message)) throw error;
+      console.warn(`==> electron-forge make failed with a transient file lock (attempt ${attempt}/3); retrying...`);
+    }
+  }
 }
 
 /** PowerShell 单引号字面量转义:内嵌 ' 双写,防路径含单引号时命令截断。 */
