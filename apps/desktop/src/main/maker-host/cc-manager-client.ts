@@ -655,13 +655,24 @@ export async function openCcManagerSession(opts: {
       // 没存的 hole。drain throws 不可能 (writeChain 内每个 link 自 catch warn)。
       // 但 drain 不能无限等: 它卡住时下面的 handle.kill() 就永远不执行。
       try {
+        let drained = false;
         await Promise.race([
-          drainPersistQueue(),
+          drainPersistQueue().then(() => {
+            drained = true;
+          }),
           new Promise<void>((resolve) => {
             const timer = setTimeout(resolve, 1_500);
             timer.unref?.();
           }),
         ]);
+        if (!drained) {
+          // A silent timeout here would hide the very hole this drain exists to
+          // prevent, so say it out loud instead of pretending the drain finished.
+          log.warn('cc-mgr persist drain timed out; closing transport anyway', {
+            hostId: transportId,
+            sessionId: opts.sessionId,
+          });
+        }
       } catch (e) {
         log.warn('cc-mgr persist drain threw (best-effort)', {
           hostId: transportId,
@@ -688,25 +699,29 @@ export async function openCcManagerSession(opts: {
       rpc: () => Promise<unknown>,
       label: string,
     ): Promise<void> => {
-      const rpcSettled = (async () => {
-        try {
-          await rpc();
-        } catch (e) {
-          log.warn(`${label} threw (best-effort)`, {
-            hostId: transportId,
-            sessionId: opts.sessionId,
-            error: String((e as Error)?.message ?? e),
-          });
-        }
-      })();
-      await closeTransport();
-      await Promise.race([
-        rpcSettled,
-        new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, 1_500);
-          timer.unref?.();
-        }),
-      ]);
+      // Give the RPC a chance to leave on the still-open transport (a close frame
+      // cannot be sent after the socket is gone), but never let it hold up teardown.
+      try {
+        await Promise.race([
+          (async () => {
+            try {
+              await rpc();
+            } catch (e) {
+              log.warn(`${label} threw (best-effort)`, {
+                hostId: transportId,
+                sessionId: opts.sessionId,
+                error: String((e as Error)?.message ?? e),
+              });
+            }
+          })(),
+          new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, 1_500);
+            timer.unref?.();
+          }),
+        ]);
+      } finally {
+        await closeTransport();
+      }
     };
 
     return {

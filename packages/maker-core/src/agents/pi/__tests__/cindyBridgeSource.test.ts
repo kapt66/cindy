@@ -2595,6 +2595,14 @@ describe('cindy gateway discovery answers', () => {
     expect(failure?.message).toContain('Expected args schema:');
     expect(failure?.message).toContain('"ghost_id"');
     expect(calls).toEqual([]);
+
+    // The refusal already carried the full schema, so the retry must execute instead
+    // of bouncing off the disclosure gate a second time (and it must not ask the
+    // model to call cindy_mcp_list_tools again).
+    expect(failure?.message).toContain('not needed');
+    await expect(call({ server: 'cindy', tool: 'ghost_call', args: { ghost_id: 'demo' } }))
+      .resolves.toBeDefined();
+    expect(calls).toHaveLength(1);
   });
 });
 
