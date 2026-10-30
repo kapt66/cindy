@@ -2061,7 +2061,7 @@ function forkSession(readyDb, args) {
       throw invalidArgs('newMessageIds length mismatch: expected ' + sourceMessages.length + ', got ' + newMessageIds.length);
     }
     readyDb.prepare(
-      'INSERT INTO sessions (id, title, working_dir, model, provider_id, effort, permission_mode, status, sdk_session_id, total_token_usage, total_cost_usd, context_tokens, context_window, context_window_runtime, fast_mode, cleared_at, pinned_at, user_send_at, agent_kind, workspace_kind, codex_history_has_product_prompt, parent_session_id, forked_at_message_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      'INSERT INTO sessions (id, title, working_dir, model, provider_id, effort, permission_mode, status, sdk_session_id, total_token_usage, total_cost_usd, context_tokens, context_window, context_window_runtime, fast_mode, cleared_at, pinned_at, user_send_at, agent_kind, workspace_kind, meka_project_id, meka_role_id, meka_role, codex_history_has_product_prompt, parent_session_id, forked_at_message_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
     ).run(
       expectString(newSession.id, 'newSession.id'),
       expectString(newSession.title, 'newSession.title'),
@@ -2083,6 +2083,9 @@ function forkSession(readyDb, args) {
       nullableNumber(newSession.userSendAt),
       expectString(newSession.agentKind, 'newSession.agentKind'),
       expectString(newSession.workspaceKind, 'newSession.workspaceKind'),
+      nullableString(newSession.mekaProjectId),
+      nullableString(newSession.mekaRoleId),
+      nullableString(newSession.mekaRole),
       newSession.codexHistoryHasProductPrompt == null ? null : (newSession.codexHistoryHasProductPrompt ? 1 : 0),
       nullableString(newSession.parentSessionId),
       nullableString(newSession.forkedAtMessageId),

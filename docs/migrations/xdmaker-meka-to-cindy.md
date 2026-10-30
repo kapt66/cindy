@@ -7150,3 +7150,46 @@ Codex/Claude/Pi 原生读 `AGENTS.md`/`CLAUDE.md`/`SKILL.md`，不看我们的 m
   能力差异）、`docs/dev-rules/mcpr-remote-session-routing.md` §8 补记、`docs/dev-rules/pi-harness.md`
   「MCPRouter 远端(MCPR)」新增 Orca Worker 条、`docs/product-rules/meka-capability-layers.md` §2 表格、
   `docs/dev-rules/model-catalog-maintenance.md`（Pi 成员只读服务端 `agents` 的诊断口径）。
+
+### 6.67 2026-10-30 fork 出的 Meka 会话丢失归属身份，被侧栏归进「旧版 Meka 对话」（已修）
+
+- **现象（用户原话）**：「fork Meka 会话后，新会话会被归到"旧 Meka 会话"中」。现场（dev 实例 DB）：
+  父会话 `01df60b8…`（`workspace_kind=meka`、`meka_project_id=saga2`、
+  `meka_role_id=saga2-default-role`）在一次 fork 后产生子会话 `f89baeff…`（`[Fork] New Maker`，
+  `parent_session_id` 指父会话，99 条消息与父会话同量）：**子行出生于 `meka_project_id=NULL`**
+  （同一行在 17:29 的只读抽样仍是 NULL，17:30 才变成 `saga2`），`meka_role_id` 至今 NULL。
+- **根因**：fork 只继承了 `workspace_kind`，没有继承 `(mekaProjectId, mekaRoleId)`。
+  `maker-orchestration/fork.ts` 的两处 `newSession`（`forkSessionAtMessage` / `forkSessionStripEncrypted`）
+  与两份落库 INSERT（`worker/opHandlers/tx.ts` 的 `forkSession`、`client/WorkerThreadTransport.ts`
+  的同名实现）的列清单里都**没有**这三列 ⇒ 派生行是「半绑定」Meka 行。两个可见后果：
+  ① 侧栏 `MekaAssistantSection.buildMekaProjectSessionGroups` 只按 `mekaProjectId` 建桶，NULL 落进
+  标题为 `meka.legacySessions`（「旧版 Meka 对话」）的孤儿桶 —— 即用户看到的分组错位；
+  ② 运行期 `mekaResolvePlan.resolveBootstrapInjection` 对缺 project/role 的 Meka 行直接
+  `INVALID_PARAMS`（「Meka session requires a project and role」）。**排除的替代假设**：transcript
+  没有共用 —— 子会话的 `sdk_session_id` 指向独立的 pi jsonl（`2026-10-30T09-26-09-415Z_…jsonl`，
+  首行 `parentSession` 指父会话那份），消息行也是子会话自己的；分组也没有用 `working_dir`
+  （两侧 `working_dir` 相同，但 Meka 段的分组键是 `mekaProjectId`）；渲染层 `client_id`/`parentSessionId`
+  只用于卡片内「fork 起点」提示与分支树弹窗，不并入同一线程。
+- **改动（不改 schema、不改存量数据）**：① `maker-orchestration/fork.ts` 两处 `newSession` 增
+  `mekaProjectId` / `mekaRoleId` / `mekaRole`（三键原样继承）；② `localDb/client/tx/types.ts` 的
+  `ForkSessionArgs.newSession` 补三个可选字段并注明「必须与 workspace_kind 同批写入」；
+  ③ `worker/opHandlers/tx.ts` 与 `client/WorkerThreadTransport.ts` 两份 `forkSession` INSERT 各加三列
+  （同列序、同 `nullableString` 归一）。**刻意不继承** `is_formal`/`formal_*`（正式流程快照绑定
+  Jira/GitLab 事实，派生分支不得变成同一 MR 的第二条正式会话）与 `meka_target_json`（历史冻结列，
+  无消费者）；`parent_session_id`/`forked_at_message_id`、历史消息、provider、模型、effort、
+  permissionMode、`remote_host_id` 语义不变。
+- **验证（实跑）**：`src/main/__tests__/fork.test.ts` **69/69**（新增「inherits the whole Meka identity」
+  一条，断言编排层把源会话 project/role/旧版标记原样写进 `newSession`、子主键为新生成的 UUID）；
+  `src/main/localDb/client/__tests__/tx.test.ts` **118/118**（新增 `fork.session writes the inherited
+  Meka identity onto the child`，`it.each` 覆盖 inline 与 file worker 两条路径：子行三列落库、源行不被改写）；
+  `src/main/localDb/client/__tests__/WorkerThreadTransport.test.ts` **19/19**（内联回退的 INSERT 仍可执行）；
+  `pnpm --filter desktop run typecheck` **exit 0**。均在本机 Windows 实跑，未使用 mock 掉列语义的假 DB。
+- **未验证 / 风险**：① **未做 UI 实机复现**（客户端正在使用、按任务约束不重启），结论建立在「代码锚点 +
+  dev 实例 DB 字段对比」上；`desktop:session-smoke` 未跑。② **存量半绑定行不回填**：`seedBuiltinMekaProjects`
+  的 `backfillSessions`（`shared/meka-projects.ts:474-478`）只补 `meka_project_id='saga2'`，role 留 NULL，
+  由运行期派生 `<projectId>-default-role`；若要修旧行需单独裁决（会改用户数据，本轮不做）。
+  ③ 用户项目自定义角色（非默认角色）的存量 fork 行在修后仍显示默认角色，直到重建会话。
+- **规则落点**：`docs/dev-rules/meka-whitelist-verification.md` **WL-3.8**（新登记：fork 必须继承
+  Meka 归属身份，含反例与门禁）、`docs/dev-rules/meka-injection-layer.md` §5（写入方不变量：
+  `workspace_kind='meka'` 的行必须同时带 project+role，bootstrap 硬校验）。
+

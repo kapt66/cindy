@@ -188,6 +188,16 @@ export interface ForkSessionArgs {
     userSendAt: number | null;
     agentKind: string;
     workspaceKind: string;
+    /**
+     * Meka 归属身份（`workspaceKind === 'meka'` 时必须与 workspace_kind 同时写）。
+     * fork 必须继承源会话的 (mekaProjectId, mekaRoleId)：只继承 workspace_kind 会落出
+     * 半绑定行 —— 侧栏 Meka 段只按 mekaProjectId 建桶（NULL ⇒「旧版 Meka 对话」孤儿桶），
+     * 运行期 bootstrap 也会以「Meka session requires a project and role」拒绝它。
+     */
+    mekaProjectId?: string | null;
+    mekaRoleId?: string | null;
+    /** 无 project/role 绑定的历史行才带的内置角色标记（meka_role），原样继承。 */
+    mekaRole?: string | null;
     codexHistoryHasProductPrompt: boolean | null;
     parentSessionId: string | null;
     forkedAtMessageId: string | null;

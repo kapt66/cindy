@@ -1033,6 +1033,15 @@ export async function forkSessionAtMessage(
         userSendAt: now,
         agentKind: forkSource.agentKind,
         workspaceKind: source.workspaceKind,
+        // Meka 归属身份 = (mekaProjectId, mekaRoleId)，必须与 workspaceKind 一起继承。
+        // 只继承 workspaceKind 会写出「半绑定」行：侧栏 Meka 段只按 mekaProjectId 建桶
+        // (MekaAssistantSection.buildMekaProjectSessionGroups)，NULL 落进「旧版 Meka 对话」
+        // 孤儿桶；运行期 mekaResolvePlan.resolveBootstrapInjection 也会以
+        // 「Meka session requires a project and role」拒绝它。mekaRole 是无绑定历史行
+        // 才有的内置角色标记，原样继承以保持旧会话的身份呈现。
+        mekaProjectId: source.mekaProjectId ?? null,
+        mekaRoleId: source.mekaRoleId ?? null,
+        mekaRole: source.mekaRole ?? null,
         // 轮 26 HIGH-1:远端会话 fork 必须继承 remoteHostId —— 缺失会落成
         // NULL, 子会话被下游当成本地会话处理(本地 transport/MCP 全错)。
         remoteHostId: source.remoteHostId ?? null,
@@ -1228,6 +1237,11 @@ export async function forkSessionStripEncrypted(sourceSessionId: string): Promis
       userSendAt: now,
       agentKind: source.agentKind,
       workspaceKind: source.workspaceKind,
+      // 同 forkSessionAtMessage：Meka 绑定与 workspaceKind 必须同时继承，
+      // 否则剥离 fork 出的子会话同样落进「旧版 Meka 对话」孤儿桶。
+      mekaProjectId: source.mekaProjectId ?? null,
+      mekaRoleId: source.mekaRoleId ?? null,
+      mekaRole: source.mekaRole ?? null,
       codexHistoryHasProductPrompt: source.codexHistoryHasProductPrompt,
       parentSessionId: source.id,
       forkedAtMessageId: null,

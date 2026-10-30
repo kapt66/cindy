@@ -501,6 +501,16 @@ live / Electron 端到端实跑；`renderer → RESOLVE_INTERACTION → resolveP
   「后 prepend 者靠前」——两者方向相反，于是重复 id 会静默反转整组段落次序。
 - 段落拼接等价于原 `prependPromptSection`（`mekaApplyPlan.ts:39-43`）：`trim` + 丢空段 + `\n\n` 连接；
   全空则**不写** `opts.userPrompt`（保持调用方原值，含空白）。
+- **写入方不变量：`workspaceKind === 'meka'` 的会话行必须同时带 `(mekaProjectId, mekaRoleId)`**
+  （2026-10-30）：本层的 bootstrap 分支在 hydrate 持久绑定后对两者做硬校验
+  （`resolveBootstrapInjection`，`mekaResolvePlan.ts:253-271` 读持久行、`:302-304` 缺任一即
+  `throwIpcError('INVALID_PARAMS', 'Meka session requires a project and role')`），因此**任何**
+  创建或派生 Meka 会话行的路径都不得只写 `workspace_kind`。历史反例是 fork 派生链路
+  （`maker-orchestration/fork.ts` 的两处 `newSession` 只继承 `workspaceKind`）⇒ 子行半绑定：
+  侧栏按 `mekaProjectId` 分组时落进「旧版 Meka 对话」孤儿桶，且首次发送被本层拒绝。修复后
+  fork 与源会话同值写入 project/role（另含旧版标记 `mekaRole`），白名单落点 **WL-3.8**。
+  另注：`hydratedPersistedSession && projectId && !roleId` 的默认角色派生（`:294-301`）只兜住
+  「有 project、无 role」的存量行，**兜不住 project 也为 NULL 的行** —— 那一类必须靠写入方修。
 - 解析层用 `createPlanBuilder`（`mekaResolvePlan.ts:87-104`）在解析期模拟「已 prepend 的 prompt」，
   以便 `hasMarker` 去重 guard 与重构前判定一致（含角色正文恰好含某 marker 的极端情况）。
   收敛后仍在用它的只剩存活段，但算法未动（同一次去重 guard 语义）。

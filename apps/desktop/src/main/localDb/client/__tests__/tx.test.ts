@@ -96,6 +96,9 @@ CREATE TABLE sessions (
   active_turn_started_at INTEGER,
   last_turn_ended_at INTEGER,
   workspace_kind TEXT NOT NULL DEFAULT 'project',
+  meka_project_id TEXT,
+  meka_role_id TEXT,
+  meka_role TEXT,
   codex_history_has_product_prompt INTEGER,
   codex_plan_json TEXT,
   parent_session_id TEXT,
@@ -245,6 +248,10 @@ interface TestSessionRow {
   orcaRole: string | null;
   source: string;
   workspaceKind: string;
+  /** Meka 归属身份；`workspaceKind === 'meka'` 时由创建方与 workspace_kind 一起写。 */
+  mekaProjectId?: string | null;
+  mekaRoleId?: string | null;
+  mekaRole?: string | null;
   codexHistoryHasProductPrompt: boolean | null;
   parentSessionId: string | null;
   forkedAtMessageId: string | null;
@@ -2126,6 +2133,61 @@ describe('db worker tx handlers', () => {
     }, { useInlineWorker });
   });
 
+  it.each([false, true])('fork.session writes the inherited Meka identity onto the child (inline=%s)', async (useInlineWorker) => {
+    await withClient(async (client) => {
+      await seedSession(client, 'src', {
+        workspaceKind: 'meka',
+        mekaProjectId: 'saga2',
+        mekaRoleId: 'saga2-default-role',
+      });
+      await client.exec(
+        'INSERT INTO messages (id, client_id, session_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+        ['m1', 'c1', 'src', 'user', 'hello', 100],
+      );
+
+      await client.tx('fork.session', {
+        sourceSessionId: 'src',
+        targetCreatedAt: 200,
+        newSession: sessionRow('forked', {
+          workspaceKind: 'meka',
+          parentSessionId: 'src',
+          forkedAtMessageId: 'c1',
+          // 侧栏 Meka 段只按 mekaProjectId 建桶、bootstrap 要求 project+role 同时存在，
+          // 所以子会话行必须与 workspace_kind 在同一批写入里带上这两列。
+          mekaProjectId: 'saga2',
+          mekaRoleId: 'saga2-default-role',
+          mekaRole: null,
+        }),
+        uuidMap: [],
+        newMessageIds: [{ id: 'copy-1', clientId: 'copy-client-1' }],
+      });
+
+      await expect(
+        client.queryOne(
+          'SELECT workspace_kind, meka_project_id, meka_role_id, meka_role, parent_session_id FROM sessions WHERE id = ?',
+          ['forked'],
+        ),
+      ).resolves.toEqual({
+        workspace_kind: 'meka',
+        meka_project_id: 'saga2',
+        meka_role_id: 'saga2-default-role',
+        meka_role: null,
+        parent_session_id: 'src',
+      });
+      // 源会话身份不得被 fork 改写（子会话是独立行）。
+      await expect(
+        client.queryOne(
+          'SELECT workspace_kind, meka_project_id, meka_role_id FROM sessions WHERE id = ?',
+          ['src'],
+        ),
+      ).resolves.toEqual({
+        workspace_kind: 'meka',
+        meka_project_id: 'saga2',
+        meka_role_id: 'saga2-default-role',
+      });
+    }, { useInlineWorker });
+  });
+
   it.each([false, true])('fork.session recovery marker is atomic with the child (inline=%s)', async (useInlineWorker) => {
     await withClient(async (client) => {
       await seedSession(client, 'src');
@@ -3869,8 +3931,8 @@ async function seedSession(
       sdk_session_id, total_token_usage, total_cost_usd, context_tokens,
       context_window, fast_mode, cleared_at, pinned_at, user_send_at,
       agent_kind, orca_role, workspace_kind, parent_session_id, forked_at_message_id,
-      source, created_at, updated_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      source, created_at, updated_at, meka_project_id, meka_role_id, meka_role
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [
       s.id,
       s.title,
@@ -3896,6 +3958,9 @@ async function seedSession(
       s.source,
       s.createdAt,
       s.updatedAt,
+      s.mekaProjectId ?? null,
+      s.mekaRoleId ?? null,
+      s.mekaRole ?? null,
     ],
   );
 }
@@ -3923,6 +3988,9 @@ function sessionRow(id: string, overrides: Partial<TestSessionRow> = {}): TestSe
     orcaRole: null,
     source: 'desktop',
     workspaceKind: 'project',
+    mekaProjectId: null,
+    mekaRoleId: null,
+    mekaRole: null,
     codexHistoryHasProductPrompt: null,
     parentSessionId: null,
     forkedAtMessageId: null,

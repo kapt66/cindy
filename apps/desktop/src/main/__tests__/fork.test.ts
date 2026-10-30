@@ -366,6 +366,55 @@ describe('forkSessionAtMessage', () => {
     expect(result.parentSessionId).toBe('src-session');
   });
 
+  it('inherits the whole Meka identity (project / role / legacy marker) onto the fork', async () => {
+    const target = makeMessageRow({ id: 'target-user', role: 'user', createdAt: 3000 });
+    const priorUser = makeMessageRow({ id: 'user-1', role: 'user', content: '"hi"', createdAt: 2000 });
+
+    selectQueue.push([
+      makeSourceRow({
+        agentKind: 'pi',
+        sdkSessionId: 'pi-session-source',
+        workspaceKind: 'meka',
+        mekaProjectId: 'saga2',
+        mekaRoleId: 'saga2-default-role',
+        mekaRole: null,
+      }),
+    ]);
+    selectQueue.push([target]);
+    selectQueue.push([priorUser]);
+    selectQueue.push([
+      makeSourceRow({
+        id: 'new-meka-fork',
+        agentKind: 'pi',
+        sdkSessionId: 'pi-session-fork',
+        workspaceKind: 'meka',
+        mekaProjectId: 'saga2',
+        mekaRoleId: 'saga2-default-role',
+        parentSessionId: 'src-session',
+        forkedAtMessageId: 'target-user',
+      }),
+    ]);
+
+    const result = await forkSessionAtMessage('src-session', 'target-user');
+
+    const sv = (
+      txCalls.find((c) => c.name === 'fork.session')!.args as {
+        newSession: Record<string, unknown>;
+      }
+    ).newSession;
+    expect(sv.workspaceKind).toBe('meka');
+    // 2026-10-30 实报回归：侧栏 Meka 段只按 mekaProjectId 建桶，只继承 workspaceKind 会让
+    // 新会话落进「旧版 Meka 对话」孤儿桶；运行期 bootstrap 还要求 project+role 同时存在，
+    // 缺任一项直接 INVALID_PARAMS。角色标记（meka_role）同理原样继承。
+    expect(sv.mekaProjectId).toBe('saga2');
+    expect(sv.mekaRoleId).toBe('saga2-default-role');
+    expect(sv.mekaRole).toBeNull();
+    // 独立会话行：parent 只作溯源，主键必须是本次 fork 新生成的。
+    expect(sv.id).toMatch(UUID_V4_RE);
+    expect(sv.parentSessionId).toBe('src-session');
+    expect(result.parentSessionId).toBe('src-session');
+  });
+
   it('codex path: rolls back target and later user turns, copies only prior messages', async () => {
     const target = makeMessageRow({ id: 'target-user', role: 'user', createdAt: 3000 });
     const priorUser = makeMessageRow({

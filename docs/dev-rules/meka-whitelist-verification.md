@@ -257,6 +257,15 @@ P4 项目根、插件面板呈现方式等 Meka 专属配置；这些配置落�
 - **实机验证**：五语各切一遍，侧栏不出现裸 key
 - **历史回归**：本轮合并丢过 4 条 Meka 独有 key + 23 条 zh-TW 条目（`xdmaker-meka-to-cindy.md` §11.25）
 
+#### WL-3.8 fork（派生会话）必须继承 Meka 归属身份
+
+- **代码锚点**（**以符号名为准**，行号为 2026-10-30 实测）：`apps/desktop/src/main/maker-orchestration/fork.ts` 的 `forkSessionAtMessage`（`newSession` 构造，`mekaProjectId` / `mekaRoleId` / `mekaRole` 三键在 `:1042-1044`）与 `forkSessionStripEncrypted`（同三键在 `:1242-1244`）；tx 参数类型 `apps/desktop/src/main/localDb/client/tx/types.ts` 的 `ForkSessionArgs.newSession`（`:191-200`）；两份必须同步的落库实现 —— worker 内联副本 `apps/desktop/src/main/localDb/worker/opHandlers/tx.ts` 的 `forkSession` INSERT（`:2873-2881` 列表、`:2905-2907` 绑定值）与 file worker 副本 `apps/desktop/src/main/localDb/client/WorkerThreadTransport.ts` 的 `forkSession` INSERT（`:2064`、`:2086-2088`）；消费方两侧：分组 `MekaAssistantSection.tsx` 的 `buildMekaProjectSessionGroups`（`:152-191`，只按 `mekaProjectId` 建桶）与孤儿桶标题三元（`:431`，`meka.legacySessions` =「旧版 Meka 对话」）、运行期 `meka-injection/mekaResolvePlan.ts` 的 `resolveBootstrapInjection`（持久绑定 hydrate `:253-271`，缺 project/role 直接 `INVALID_PARAMS` `:302-304`）
+- **不变量**：fork 出的子会话是**独立会话行 + 独立 transcript**（`parent_session_id` 只作溯源），且 `workspace_kind` 与 `meka_project_id` / `meka_role_id` **必须同一次写入**并等于源会话的值；`meka_role`（无绑定的旧版标记）原样继承。**刻意不继承**：`is_formal` / `formal_*`（正式流程快照绑定具体 Jira/GitLab 事实，派生分支不得复制成同一 MR 的第二条正式会话）与 `meka_target_json`（历史冻结列，无消费者）。反例形态：只继承 `workspace_kind` ⇒ 子行 `meka_project_id IS NULL` ⇒ ① 侧栏落进「旧版 Meka 对话」孤儿桶（2026-10-30 用户实报「fork Meka 会话后，新会话会被归到『旧 Meka 会话』中」）；② 首次发送被 bootstrap 以「Meka session requires a project and role」拒绝
+- **自动化门禁**：`pnpm --filter desktop exec vitest run src/main/__tests__/fork.test.ts src/main/localDb/client/__tests__/tx.test.ts src/main/localDb/client/__tests__/WorkerThreadTransport.test.ts`（分别钉「编排层把源会话的 project/role/旧版标记写进 `newSession`」「`fork.session` tx 在 inline 与 file 两条 worker 路径上把三列落成子行、且不改写源行」「file worker 内联回退仍能执行该 INSERT」）；`desktop` typecheck 覆盖两份 INSERT 与参数类型的同步
+- **实机验证**（**本轮未跑**，只有单测证据）：在 Meka 项目会话的某条消息上 fork → 新会话作为**该项目分组下的新行**出现（不出现「旧版 Meka 对话」分组），会话头角色 chip 与原会话一致，首次发送不再报 `Meka session requires a project and role`
+- **存量边界（不改数据）**：修复只影响此后的 fork。已存在的半绑定 fork 行不回填 role —— `seedBuiltinMekaProjects` 的 `backfillSessions`（`apps/desktop/src/shared/meka-projects.ts:474-478`，`WHERE workspace_kind='meka' AND meka_project_id IS NULL`）只补 `meka_project_id='saga2'`，role 仍留 NULL，由运行期派生 `<projectId>-default-role`（`mekaResolvePlan.ts:298-301`）
+- **历史回归**：2026-10-30 实报（`xdmaker-meka-to-cindy.md` §6.67）
+
 > 横切域守卫（IM `/sessions` 投影、scheduler 域、协同资格）见 **WL-12**，不在本节重复。
 
 ### WL-4 MCPRouter 远程会话
