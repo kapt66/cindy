@@ -7095,6 +7095,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getSessionTurnActive: (sessionId: string): Promise<{ inTurn: boolean }> =>
       ipcRenderer.invoke('maker:session:turn-active', sessionId),
 
+    /** Dev-only: remote sessions that still hold an agent transport (leak diagnostics). */
+    debugRemoteTransports: (): Promise<{
+      transports: Array<{ sessionId: string; hostId: string; openedAt: number }>;
+      events: Array<{ at: number; type: string; sessionId: string; detail?: string }>;
+    }> => ipcRenderer.invoke('maker:debug-remote-transports'),
+
     abortSession: (sessionId: string): Promise<void> =>
       ipcRenderer.invoke('maker:abort-session', sessionId),
 

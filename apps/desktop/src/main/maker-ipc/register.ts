@@ -112,6 +112,7 @@ import { projectRemoteBotDelegations } from './remoteBotDelegations.js';
  */
 
 import { readCodexContextWindowInfo } from '../maker-host/codex-context-window.js';
+import { listRemoteTransportEvents, listRemoteTransports, releaseRemoteTransport } from '../maker-host/remoteTransportRegistry.js';
 import { readSshCodexModelList, assertSshCodexModel, isVerifiedSshCodexResume } from '../remote-ssh/codex-model-list.js';
 import { prepareCodexCustomContextCatalog } from '../maker-host/codex-custom-context-catalog.js';
 import { inferProviderIdForModel } from '../maker-host/provider-route.js';
@@ -13326,6 +13327,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   ipcMain.handle('maker:get-plugin-write-access-recovery', (event, taskId: unknown) => pluginWriteAccessFromHost(event, taskId, false));
   ipcMain.handle('maker:retry-plugin-write-access', (event, taskId: unknown) => pluginWriteAccessFromHost(event, taskId, true));
 
+  // Dev-only diagnostics: which remote sessions still hold an agent transport.
+  // MCPRouter rejects commits/submits while any tunnel is open, so a transport
+  // that outlives its session looks exactly like "someone else is working".
+  if (!app.isPackaged) {
+    ipcMain.handle('maker:debug-remote-transports', () => ({ transports: listRemoteTransports(), events: listRemoteTransportEvents() }));
+  }
+
   // 插件详情页「后台任务」:只服务本机可信窗口(打开/显示到任务列表都是本机 UI 动作),
   // 不登记 device-link;停用的插件同样可查,透明性不依赖插件仍可运行。
   const pluginBackgroundTasks = createPluginBackgroundTaskHandlers({
@@ -14239,10 +14247,25 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       const sess = maker.getSession(sessionId);
       await beforeClose?.();
       if (sess) {
-        await sess.abort();
+        // A finished worker's abort can reject (already cancelled / session
+        // settled). Closing must still run: skipping it is what left remote
+        // transports open and froze git_submit with `session-open`.
+        try {
+          await sess.abort();
+        } catch (error) {
+          log.warn('worker abort rejected; closing anyway', {
+            sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
       await beforeClose?.();
       await maker.closeSession(sessionId);
+      // `maker.closeSession` is a no-op once the session left the active set
+      // (worker turn settled / runtime already retired). Release the transport
+      // by session id regardless, so an MCPRouter tunnel or SSH channel cannot
+      // outlive its worker and block every later submit on the instance.
+      await releaseRemoteTransport(sessionId, 'worker-close').catch(() => undefined);
     },
     closeWorkerSessionIfIdle: async (sessionId, sendLockHeld = false) => {
       if (!sendLockHeld && sendToSessionLocks.has(sessionId)) return false;

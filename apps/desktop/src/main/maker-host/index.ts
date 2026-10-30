@@ -407,6 +407,11 @@ import {
   getDesktopMcpToolApprovalPolicy,
 } from './mcp-tool-approval-policy.js';
 import { mapCodexAppServerModelsToCatalog } from './codex-model-discovery.js';
+import {
+  registerRemoteTransport,
+  releaseRemoteTransport,
+  setRemoteTransportLogger,
+} from './remoteTransportRegistry.js';
 import { prepareSharedProjectSkillLinks } from './shared-global-skills.js';
 import {
   buildDesktopCapabilityRoutingPolicy,
@@ -451,6 +456,8 @@ export function setModelContextRuntimeRefreshListener(listener: (() => void) | n
 export function setProviderAccessRuntimeRefreshListener(listener: (() => void) | null): void {
   providerAccessRuntimeRefreshListener = listener;
 }
+
+setRemoteTransportLogger(desktopMakerLogger);
 
 const requestAutoReviewText = createAutoReviewModelRouter({
   logger: desktopMakerLogger,
@@ -1518,8 +1525,9 @@ export function getMaker(): Maker {
             >[0]['onOAuthRefresh'],
             ...(inProcessMcpServers ? { inProcessMcpServers } : {}),
           });
+          registerRemoteTransport(sessionId, remoteHostId, dispose);
           return Object.assign(remoteQuery, {
-            close: dispose,
+            close: () => releaseRemoteTransport(sessionId, 'agent-close'),
             detach,
           }) as unknown as RemoteCcQuery;
         }
@@ -1704,8 +1712,9 @@ export function getMaker(): Maker {
           }
           await dispose();
         };
+        registerRemoteTransport(sessionId, remoteHostId, disposeWithMcpCleanup);
         const remoteQueryWithDispose = Object.assign(remoteQuery, {
-          close: disposeWithMcpCleanup,
+          close: () => releaseRemoteTransport(sessionId, 'agent-close'),
           detach,
         });
         return remoteQueryWithDispose as unknown as RemoteCcQuery;
@@ -3230,6 +3239,11 @@ export function getMaker(): Maker {
         },
         onClose: async (sessionId, options) => {
           clearUsagePricing(sessionId);
+          // A session can leave Maker's active set without reaching the agent's
+          // close (finished worker that was archived, event loop that ended,
+          // failed abort). Release the remote transport here so the SSH channel /
+          // MCPRouter tunnel cannot outlive the session and block submissions.
+          await releaseRemoteTransport(sessionId, 'session-close');
           const lease = worktreeRuntimeLeases.get(options);
           if (lease) {
             await releaseWorktreeRuntimeLease(lease).catch((error) => {

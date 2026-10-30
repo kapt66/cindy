@@ -45,6 +45,25 @@ transport 分类，再执行 transport 专属动作。MCPRouter 会话不得因�
 远程路径时复用 `classifyRemoteSessionTransport`，不要复制 `startsWith('mcpr:')` 或直接
 把 `remoteHostId` 传给 SSH API。
 
+### 2.1 远程 transport 必须随会话退休一起释放（2026-10-30）
+
+每条远程会话都由 `remoteCcQueryFactory` 打开自己的 transport（SSH exec 通道或 MCPRouter
+WebSocket），并通过 `remoteTransportRegistry` 登记 `{sessionId, remoteHostId, dispose}`。
+释放走**单一入口** `releaseRemoteTransport(sessionId, reason)`：agent 的 `close`、会话
+`onClose` 生命周期钩子、Orca worker 归档三条退休路径都调它，天然幂等（entry 先摘除再
+dispose）。
+
+**为什么必须登记而不是只依赖 agent close**：worker 完成一轮后可能先离开 Maker 的
+`activeSessions`，再被 `archive_worker` 关闭；此时 `maker.closeSession` 是 no-op，agent 的
+`close()` 也不会再跑，transport 就永远留着。MCPRouter runtime 的 `activeTurnCount` 因此
+停在 1，实例上所有 commit/push/`git_submit` 都被 `blocked / session-open` 挡住，只有重启
+整个客户端才会归零。
+
+**实机复现与验证（2026-10-30）**：测试实例上 `activeTurnCount` 0 → 创建 claude-code 远程
+worker → 归档 → 读数 **1**，12 小时后仍为 1，重启客户端才归 0。修复后同一复现路径要求
+归档读数为 **0**；`remoteTransportRegistry.test.ts` 覆盖单次释放、重复释放、dispose 抛错
+与同 id 替换四种情形。
+
 ## 3. 合并防回归
 
 同步 `origin/main` 到 `meka/main` 时，冲突解决必须逐项核对上述不变量。特别检查：

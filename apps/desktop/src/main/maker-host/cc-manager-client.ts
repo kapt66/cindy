@@ -61,6 +61,7 @@ import type { RemoteHost } from '@cindy/maker-remote-ssh';
 
 import { createLogger } from '../logger.js';
 import { drainPersistQueue } from '../messagePersistBroadcaster.js';
+import { recordRemoteTransportEvent } from './remoteTransportRegistry.js';
 
 const log = createLogger('cc-manager-client');
 
@@ -619,46 +620,102 @@ export async function openCcManagerSession(opts: {
     const originalRemoteQueryClose = remoteQuery.close.bind(remoteQuery);
     const originalRemoteQueryDetach = remoteQuery.detach.bind(remoteQuery);
 
+    // Retirement can reach dispose more than once (agent close, session close
+    // hook, worker archive). The remote socket must die on the first pass even
+    // when an earlier step throws: a skipped `handle.kill()` leaves the tunnel
+    // open, the MCPRouter runtime keeps counting an active tunnel, and every
+    // submit on that instance is rejected with `blocked / session-open`.
+    let transportClosed = false;
     const closeTransport = async (): Promise<void> => {
-      client.dispose();
-      await closeTunnelProxies();
+      if (transportClosed) return;
+      transportClosed = true;
+      recordRemoteTransportEvent('dispose-step', opts.sessionId, 'transport-close-start');
+      try {
+        client.dispose();
+      } catch (e) {
+        log.warn('cc-mgr client dispose threw (best-effort)', {
+          hostId: transportId,
+          sessionId: opts.sessionId,
+          error: String((e as Error)?.message ?? e),
+        });
+      }
+      recordRemoteTransportEvent('dispose-step', opts.sessionId, 'client-disposed');
+      try {
+        await closeTunnelProxies();
+      } catch (e) {
+        log.warn('cc-mgr tunnel proxy close threw (best-effort)', {
+          hostId: transportId,
+          sessionId: opts.sessionId,
+          error: String((e as Error)?.message ?? e),
+        });
+      }
       // round-9 重构: cursor 在 writeChain 里跟 message 同 FIFO 序列化, drain
       // 一次就保证 (该 sessionId 的) cursor + 对应 message 全部落盘。closeTransport
       // 关 SSH channel 前 await drain, 反序列化窗口里不会有 cursor 已推但 message
       // 没存的 hole。drain throws 不可能 (writeChain 内每个 link 自 catch warn)。
-      await drainPersistQueue();
+      // 但 drain 不能无限等: 它卡住时下面的 handle.kill() 就永远不执行。
+      try {
+        await Promise.race([
+          drainPersistQueue(),
+          new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, 1_500);
+            timer.unref?.();
+          }),
+        ]);
+      } catch (e) {
+        log.warn('cc-mgr persist drain threw (best-effort)', {
+          hostId: transportId,
+          sessionId: opts.sessionId,
+          error: String((e as Error)?.message ?? e),
+        });
+      }
       try {
         handle.kill();
-      } catch {
-        /* channel closed */
+        recordRemoteTransportEvent('kill', opts.sessionId, 'transport-terminated');
+      } catch (e) {
+        recordRemoteTransportEvent('kill', opts.sessionId, `terminate-threw: ${String((e as Error)?.message ?? e)}`);
       }
+    };
+
+    /**
+     * Ask the daemon to close the remote session, but never let that RPC hold the
+     * socket open: when the remote session is already gone the request can hang,
+     * and the caller (agent close, session hook, worker archive) would return while
+     * the tunnel stays connected forever. Fire the RPC, tear the transport down,
+     * then give the RPC a bounded grace to settle.
+     */
+    const closeRemoteSessionAndTransport = async (
+      rpc: () => Promise<unknown>,
+      label: string,
+    ): Promise<void> => {
+      const rpcSettled = (async () => {
+        try {
+          await rpc();
+        } catch (e) {
+          log.warn(`${label} threw (best-effort)`, {
+            hostId: transportId,
+            sessionId: opts.sessionId,
+            error: String((e as Error)?.message ?? e),
+          });
+        }
+      })();
+      await closeTransport();
+      await Promise.race([
+        rpcSettled,
+        new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, 1_500);
+          timer.unref?.();
+        }),
+      ]);
     };
 
     return {
       remoteQuery,
       dispose: async (): Promise<void> => {
-        try {
-          await originalRemoteQueryClose();
-        } catch (e) {
-          log.warn('remoteQuery.close threw (best-effort)', {
-            hostId: transportId,
-            sessionId: opts.sessionId,
-            error: String((e as Error)?.message ?? e),
-          });
-        }
-        await closeTransport();
+        await closeRemoteSessionAndTransport(originalRemoteQueryClose, 'remoteQuery.close');
       },
       detach: async (): Promise<void> => {
-        try {
-          await originalRemoteQueryDetach();
-        } catch (e) {
-          log.warn('remoteQuery.detach threw (best-effort)', {
-            hostId: transportId,
-            sessionId: opts.sessionId,
-            error: String((e as Error)?.message ?? e),
-          });
-        }
-        await closeTransport();
+        await closeRemoteSessionAndTransport(originalRemoteQueryDetach, 'remoteQuery.detach');
       },
     };
   } catch (err) {
