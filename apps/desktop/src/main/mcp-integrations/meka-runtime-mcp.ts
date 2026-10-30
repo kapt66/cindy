@@ -733,7 +733,8 @@ function createRouterServer(context: McpProviderContext): McpServer {
 
   registerRouterTool(
     'read_remote_file',
-    '读取当前 Meka 项目服务器仓库 HEAD 快照中的一个 UTF-8 文本文件。Host 自动解析和确保远程项目，不需要实例 ID。',
+    '读取当前 Meka 项目服务器仓库 HEAD 快照中的一个 UTF-8 文本文件。Host 自动解析和确保远程项目，不需要实例 ID。' +
+      '注意：这是**已提交内容（HEAD）**，看不到远端工作树里尚未提交的改动；要确认 Agent/Worker 刚写的文件，用 mcpr-project-manager 的 git_status / git_diff，不要用本工具。',
     {
       path: z.string().min(1).max(1024),
       maxBytes: z
