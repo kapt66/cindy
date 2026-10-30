@@ -88,6 +88,10 @@ describe('create_worker tool', () => {
     expect(registry.get('create_worker')?.description).toContain(
       '用户一次要求创建 2 个及以上 Worker 时必须改用 create_workers；不要并行或连续多次调用 create_worker。',
     );
+    // The Lead must yield its turn after dispatching; otherwise the auto-bridge
+    // report stays queued and the Lead burns minutes on sleep/poll loops.
+    expect(registry.get('create_worker')?.description).toContain('派单后立即结束本轮');
+    expect(registry.get('create_worker')?.description).toContain('不要再 sleep');
   });
 
   it('surfaces structured hard-limit details to the lead', async () => {

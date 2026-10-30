@@ -160,6 +160,7 @@ const DESCRIPTION = [
   '注:create_worker 建的是 Orca worker(session 级、持久、UI 可见),不是 subagent。若用户要的是 subagent(一次性、用完即弃),请用你自己的原生 subagent 机制(如 Codex 的 spawn_agent、Claude Code 的 Task 工具),不要用 create_worker。' +
   'Orca worker 永远不是 subagent 的替代品;你没有原生 subagent 机制时,如实告知用户并请他决定,不要拿 worker 顶替。',
   '用户一次要求创建 2 个及以上 Worker 时必须改用 create_workers；不要并行或连续多次调用 create_worker。',
+  '【派单后立即结束本轮】worker 的结果会作为**下一条消息**自动送到你这里。派单成功后不要再 sleep、不要轮询 worker_status / read_worker、也不要反复 git_status 等它——你这一轮不结束，worker 的报告就只能排在队列里，永远送不到；等待本身反而让整个流程更慢。需要等它完成时，把已做的事说完，然后结束本轮。',
   '',
   '参数:',
   '- role: worker 角色 (developer / reviewer / tester / merger 或自定义 string)',

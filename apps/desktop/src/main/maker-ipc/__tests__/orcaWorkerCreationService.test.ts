@@ -1199,6 +1199,26 @@ describe('OrcaWorkerCreationService', () => {
     expect(deps.addOrUpdateWorker).not.toHaveBeenCalled();
   });
 
+  it('rejects the auto placeholder as a worker model so the session stays inspectable', async () => {
+    const { deps, service } = createDeps();
+
+    await expect(
+      service.createWorker({
+        leadSessionId: 'lead-1',
+        role: 'reviewer',
+        agent: 'codex',
+        label: 'reviewer',
+        model: 'auto',
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'INVALID_PARAMS',
+      message: expect.stringContaining('not a concrete model'),
+    });
+
+    expect(deps.bootstrapSession).not.toHaveBeenCalled();
+  });
+
   it('rejects unavailable explicit models before reading lead defaults', async () => {
     const { deps, service } = createDeps();
 

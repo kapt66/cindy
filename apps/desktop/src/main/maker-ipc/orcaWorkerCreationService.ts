@@ -552,6 +552,18 @@ function resolveWorkerModelId(params: {
     providers,
   } = params;
   const listedModelIds = new Set(availableModels.map((candidate) => candidate.id));
+  // "auto" is a gateway routing placeholder, not a model identity. A Worker is a
+  // long-lived session the user inspects later, so storing "auto" makes its model
+  // invisible and unreproducible (2026-10-30: a worker was created with
+  // model:"auto", the session row kept "auto", and the served model was only
+  // visible in gateway logs). Require a concrete id from list_available_models.
+  if (model.trim().toLowerCase() === 'auto') {
+    const concrete = [...listedModelIds].filter((id) => id.toLowerCase() !== 'auto');
+    return {
+      ok: false,
+      message: `model "auto" is not a concrete model for a Worker; pick one of: ${concrete.join(', ')}`,
+    };
+  }
   const scopedRouteProviders = providerId === null
     ? providers
     : providers.filter((provider) => provider.id === providerId);
