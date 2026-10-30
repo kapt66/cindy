@@ -21,7 +21,8 @@ export interface ArchiveWorkerDeps {
 }
 
 const DESCRIPTION =
-  '归档单个 worker(不影响同 team 其他 worker)。失败码: LEAD_NOT_SUPPORTED / WORKER_NOT_FOUND。';
+  '归档单个 worker(不影响同 team 其他 worker)。失败码: LEAD_NOT_SUPPORTED / WORKER_NOT_FOUND。' +
+  '【默认不要调用】worker 可以一直保留，任务完成后不需要清理；只有用户明确说「归档 / 关掉这个 worker」时才调用。';
 
 export function registerArchiveWorkerTool(
   registry: XdtHelperToolRegistry,

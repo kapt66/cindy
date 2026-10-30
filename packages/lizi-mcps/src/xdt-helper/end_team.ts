@@ -22,6 +22,7 @@ export interface EndTeamDeps {
 
 const DESCRIPTION =
   '结束当前 team, 归档所有 worker。Lead 自身保留可继续单 session 对话。' +
+  '【不要用它收尾】worker 可以一直保留，任务完成后不需要"清理"；只有用户明确要求结束协同/关掉 worker 时才调用本工具。' +
   '失败码: LEAD_NOT_SUPPORTED / WORKER_CANNOT_DISABLE / NOT_ENABLED。';
 
 export function registerEndTeamTool(
