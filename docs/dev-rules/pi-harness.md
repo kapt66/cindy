@@ -59,7 +59,7 @@ Cindy 以 `pi --mode rpc` spawn pi 二进制(JSONL/stdio),`translator.ts` 把 pi
   input schema（复用 `schemaHint`，超 16,000 字符按既有策略截断），模型不必再单独取一次即可带正确
   参数重试（Host **不**代为重放，纠正是模型自己发起的下一次工具调用）。**披露门只认精确
   `(server, tool)` 对**：只传 server、缺 tool、传空 tool 名、传错 tool 名四种形状都不记披露、不执行、
-  不弹权限框；同 server 的**另一个** tool 仍须重新检视（部分披露不放行）。
+  不弹权限框；同 server 的**另一个** tool 仍须重新检视（部分披露不放行）。返回该披露错误时即把这一对记账（schema 已随错误原文给出），模型的重试直接执行，不再多花一轮。
   `cindy_mcp_list_tools` 先判定 server 再现查 tool；**「是否已连接」按三集合并集判定**（连接路径登记的
   server 名 ∪ 已注册但不可用的 server 名 ∪ 工具表），因此「连上了但当前 0 个工具」的 server **不是**
   未知 server——把它答成 `UNKNOWN_SERVER` 并附插件课是一条事实错误。三条口径分开：① **从未连接**的

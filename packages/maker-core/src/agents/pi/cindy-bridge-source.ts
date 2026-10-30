@@ -3324,6 +3324,11 @@ class CindyMcpGateway {
       );
     }
     if (!this.isSchemaDisclosed(resolved)) {
+      // The rejection below already carries the full input schema, so the model has
+      // been shown what it needs. Record the disclosure here: the retry executes
+      // instead of costing a second round-trip through cindy_mcp_list_tools.
+      // (2026-10-30: every first call to a tool in a real session cost two calls.)
+      this.disclosedSchemas.add(mcpGatewayKey(resolved.tool.serverName, resolved.tool.name));
       throw new Error(
         'Inspect this tool before execution by calling cindy_mcp_list_tools with ' +
         JSON.stringify({ server: resolved.tool.serverName, tool: resolved.tool.name }) +
