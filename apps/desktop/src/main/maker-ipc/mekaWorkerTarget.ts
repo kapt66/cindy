@@ -24,6 +24,28 @@ function looksLikeMekaServer(projectName: string, projectDescription: string | n
   return /server|服务器|saga2[-_ ]?server/i.test(`${projectName} ${projectDescription ?? ''}`);
 }
 
+/**
+ * `mcpr:<instanceId>` 上可以创建 Worker 的 Agent。
+ *
+ * 三个引擎在 MCPRouter 上都有**已实现、共用同一接缝**的远端 transport：Claude Code 走
+ * cc-mgr byte stream，Codex 走 app-server tunnel，Pi 走 `pi-mcpr-remote.ts` 的
+ * `mode=pi`(数据面) + `mode=exec`(文件/执行面)。`maker-ipc/register.ts` 的
+ * `ensureRemoteReadyForSessionStart` 对三者在 `mcpr:` 上一律早返回，引擎级静态门禁
+ * (`MCPR_AGENT_UNSUPPORTED`)已随 `mode=pi` 落地撤除。因此这里与普通远端任务同口径：
+ * 只要 transport 存在就允许，不再按引擎单独设卡。
+ *
+ * 已知能力差异(不是本入口的限制)：`mode=pi` 有意不投影控制端 in-process MCP bridge
+ * (见 `docs/dev-rules/pi-harness.md`「MCPRouter 远端(MCPR)」)，所以 Pi 远端 Worker 没有
+ * `orca_worker_bridge` 的手动 `send_to_lead`，回报走 Host 侧 auto-bridge；用户显式配置的
+ * 外部 HTTP MCP 仍直连可用。SAGA2 战斗服务器只读核查链仍只映射 Claude/Codex
+ * (`workerAgentForInstance`)，那是产品裁决，与本入口的 Worker 目标白名单无关。
+ */
+const MCPR_WORKER_AGENTS: ReadonlySet<AgentKind> = new Set<AgentKind>([
+  'claude-code',
+  'codex',
+  'pi',
+]);
+
 export interface MekaCombatServerWorkerTarget {
   remoteHostId: string;
   workerAgent: Extract<AgentKind, 'claude-code' | 'codex'>;
@@ -114,11 +136,11 @@ export function createMekaWorkerTargetResolver(deps: {
     }
 
     if (requestedRemoteHostId) {
-      if (agent !== 'claude-code' && agent !== 'codex') {
+      if (!MCPR_WORKER_AGENTS.has(agent)) {
         return {
           ok: false,
           errorCode: 'INVALID_PARAMS',
-          message: 'MCPRouter Workers support Claude Code and Codex only',
+          message: 'MCPRouter Workers support Claude Code, Codex and Pi only',
         };
       }
       const instanceId = parseMcprRemoteHostId(requestedRemoteHostId);

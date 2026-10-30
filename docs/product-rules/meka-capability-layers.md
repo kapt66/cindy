@@ -90,7 +90,7 @@ Meka 项目任务无关（还会返回被脱敏成 `[REDACTED_ENDPOINT]` 的实�
 | --- | --- |
 | 看已提交内容 | `list_remote_directory` / `read_remote_file` / `search_remote_files`（HEAD 快照） |
 | 看未提交改动 | `mcpr-project-manager` 的 `git_status` / `git_diff`（工作树） |
-| 在服务器仓库新建或修改文件 | 本层没有写通道；用 Orca worker（`create_worker`，`remoteHostId` = `mcpr:<instanceId>`，agent 限 `claude-code` / `codex`） |
+| 在服务器仓库新建或修改文件 | 本层没有写通道；用 Orca worker（`create_worker`，`remoteHostId` = `mcpr:<instanceId>`，agent 可为 `claude-code` / `codex` / `pi`；Pi 远端 Worker 没有 in-process MCP bridge，故无手动 `send_to_lead`，回报走 auto-bridge） |
 | 提交 / 推送 / MR | `mcpr-project-manager` 的 `git_submit`（worker runtime 开着时返回 `blocked / session-open`） |
 
 ## 3. 配置与事实来源

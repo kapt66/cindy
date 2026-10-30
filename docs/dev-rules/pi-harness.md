@@ -553,6 +553,14 @@ Pi CLI 管理入口、内核自更新与旧工具兼容的执行边界见
     纯函数与它的两个消费点(`NewMakerDraftRoute` 的 `effectiveAvailableVendors` /
     `ChatInput` 的 `unifiedAgents`)、以及 `MCPR_AGENT_UNSUPPORTED` 这个 IPC 码与 5 语言文案
     一并删除(不再可达的键不留死键)。
+  - **Orca Worker(2026-10-30)**:`create_worker` 的 `mcpr:` 目标同样不再按引擎收窄 ——
+    `maker-ipc/mekaWorkerTarget.ts` 的 `MCPR_WORKER_AGENTS` 含 `pi`。此前
+    `agent: 'pi'` + `remoteHostId: 'mcpr:<id>'` 会被入口直接以
+    `INVALID_PARAMS: MCPRouter Workers support Claude Code and Codex only` 拒绝,而 Pi 的
+    MCPR 会话本身早已可用(见本节上一条):那条闸是 Claude→Codex 逐引擎放开时的历史残留,
+    不是 transport 能力差异。代价与上面「有意不投影」同源 —— Pi 远端 Worker **没有**
+    `orca_worker_bridge`,手动 `send_to_lead` 不可用,回报靠 Host 侧 auto-bridge;SAGA2 战斗
+    服务器只读核查链仍只映射 Claude/Codex(`workerAgentForInstance`),Pi 不进入自动选路。
   - 回归:`apps/desktop/src/main/maker-host/__tests__/` 的 `mcprPiTransport.test.ts`
     (8 个钩子在 `mcpr:` 上零次触碰 pool + 走隧道实现 + 源码级分类不变量)、
     `piMcprRemote.test.ts`(接缝:file ops 复用 / ensure 形状 / envHash 确定性 / 前缀字节交接)、

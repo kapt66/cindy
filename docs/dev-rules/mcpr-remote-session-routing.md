@@ -154,6 +154,18 @@ worker → 归档 → 读数 **1**，12 小时后仍为 1，重启客户端才�
    - `maker-ipc/register.ts` 的 `ensureRemoteReadyForSessionStart` 在 `mcpr:` 分支上对三个
      引擎一律早返回（安装 / daemon 预上传 / SSH pool 前置都不适用于这条 transport）。
 
+   **2026-10-30 补记：Orca `create_worker` 的 `mcpr:` 目标也按同口径放开了 Pi。**
+   `maker-ipc/mekaWorkerTarget.ts` 里原本对 `requestedRemoteHostId` +
+   `agent !== 'claude-code' && agent !== 'codex'` 直接返
+   `INVALID_PARAMS: MCPRouter Workers support Claude Code and Codex only`。那是
+   `35c8f12355` 逐引擎放开 Claude→Codex 时的历史残留（同一次提交只把 codex 加进白名单，
+   没有判据注释），与「Pi 会话能不能跑在 `mcpr:` 上」无关 —— 后者已由 `mode=pi` / `mode=exec`
+   实现并测试。现在白名单是 `MCPR_WORKER_AGENTS = { claude-code, codex, pi }`，其余判定
+   （稳定 `id`、项目绑定、`supported/available`、workdir 由实例记录决定）一字未改。
+   已知能力差异仍是第 8 条「有意不投影」的直接后果：Pi 远端 Worker 没有
+   `orca_worker_bridge`，手动 `send_to_lead` 不可用，回报走 auto-bridge。SAGA2 战斗服务器
+   只读核查链（`resolveUniqueBoundMekaServerTarget`）不放开 Pi，那是有意的产品裁决。
+
    **仍未分类的存量旁路（本次有意未改，见交付说明）**：`handleCodexEnvironmentShutdownForRemote`
    （`index.ts` 约 `:646`）、`refreshRemoteCodexMcpAfterBridgeRecreate` 的 `getReadyHost`
    （约 `:711`）用 `hostId` 变量名查 pool，`listSshCodexProviders`（约 `:3061`）同理；

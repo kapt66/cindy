@@ -7091,3 +7091,62 @@ Codex/Claude/Pi 原生读 `AGENTS.md`/`CLAUDE.md`/`SKILL.md`，不看我们的 m
 - **规则落点**：`docs/dev-rules/log-upload-and-redaction.md` §4.1；`docs/dev-rules/meka-whitelist-verification.md`
   **WL-26**（含「保留边界」与反回归自检）。
 - **未验证**：尚无一次真实版本化桌面打包实跑（判据见 WL-26 的「实机验证」）。
+
+### 6.66 2026-10-30 Orca 的 `mcpr:` 远程 Worker 无法用 Pi（已修）；`list_available_models` 的 pi 面缺 `deepseek/deepseek-v4.1-flash`（定位为目录数据面，未改客户端）
+
+- **现象（用户原话）**：「为什么 orca worker 协同无法使用 pi 的 deepseek 4.1 flash 模型？甚至看不到这个模型？
+  我记得之前已经实现了 pi 的 mcpr 链路」。现场：本地 Lead = `agent_kind=pi` +
+  `deepseek/deepseek-v4.1-flash` + `provider_id=xd` 正常跑；`cindy_orca.list_available_models`
+  的 `pi` 列表里没有该 id（`codex` 列表有）；`create_worker({agent:'pi', model:…,
+  provider_id:'xd', remote_host_id:'mcpr:<id>'})` 返回
+  `INVALID_PARAMS: MCPRouter Workers support Claude Code and Codex only`。
+- **根因 A（已修，`mekaWorkerTarget.ts`）**：修前 `apps/desktop/src/main/maker-ipc/mekaWorkerTarget.ts:117-123`
+  在 `requestedRemoteHostId` 分支上对 `agent !== 'claude-code' && agent !== 'codex'` 直接拒绝。
+  该闸是 `35c8f12355`（restore MCPRouter remote runtime routing）把 `codex` 加进白名单时形成的：
+  那次提交只做了 `claude-code` → `+codex` 的逐引擎放开，**代码里没有判据注释**，产品侧也只被
+  记录成事实（`docs/product-rules/meka-capability-layers.md` §2 的表格「agent 限
+  `claude-code` / `codex`」）。而 Pi 的 MCPR 会话**早已实现**：数据面 `mode=pi`、执行面
+  `mode=exec`，客户端接缝 `maker-host/pi-mcpr-remote.ts`；`maker-ipc/register.ts:8987-8993` 的
+  `ensureRemoteReadyForSessionStart` 对三个引擎在 `mcpr:` 上一律早返回
+  （`MCPR_AGENT_UNSUPPORTED` 引擎级门禁已在 2026-10-09 撤除）。**结论：这是历史残留的入口白名单，
+  不是 transport 能力差异，也不是本轮新引入的问题。**
+- **根因 B（定位，未改客户端；属 Cindy Server 目录数据面）**：三个引擎共用同一份
+  `deriveAvailableModels(catalog, agent)`（`maker-host/catalog-to-descriptors.ts:126`），
+  `list_available_models` 只是 `maker.getCapabilities(a).availableModels`
+  （`maker-ipc/register.ts:16261-16268`）。codex 有而 pi 没有 ⇒ 差异只能落在 `xd.models.pi` 成员，
+  而该成员**自 `7ab191d61b`（use server-directed Responses routing）起只读服务端 `/models`
+  的 `agents`**：`active-catalog.ts:452-461` 的 `xdGatewayTargetAgents` 在那次提交里删掉了旧的
+  「`claude-code` 可达面自动镜像给 pi」逻辑（改前 `agents` 非空时会把 `pi` 补进 claude-code 条目），
+  另外 `piGatewayAuthorityCatalog` 的 retired tombstone 也会把 pi 剔除。本机取证（临时
+  vitest 探针，已删除）：同一目录 fixture 下 `agents` 含 `pi` 时 `deriveAvailableModels('pi')`
+  确实产出该 id 且 `piApi=openai-completions`，`resolveXdPiGatewayApi` 也返回
+  `openai-completions`；`resolveBundledPiGatewayCatalogIdentity` 对该 id 是 `undefined`
+  （`pi-gateway-model-catalog.ts:115-160` 的 identity overrides 有 v4-flash /
+  v4-flash-vision-exp / v4-pro，没有 v4.1-flash），但 canonical Registry 规则兜住了 `piApi`，
+  **所以它不影响成员，只影响 compat/sampling 元数据**。客户端按
+  `docs/product-rules/model-metadata-precedence.md` 的权威顺序**不得**用 Registry agents 或
+  perAgent 给 Pi 加成员 ⇒ 要修就在 Server 目录修 `agents`（或解除 retired）。
+- **改动（客户端，仅一处进门禁 + 测试）**：`mekaWorkerTarget.ts` 新增
+  `MCPR_WORKER_AGENTS: ReadonlySet<AgentKind> = { 'claude-code', 'codex', 'pi' }`，错误文案改为
+  `MCPRouter Workers support Claude Code, Codex and Pi only`；其余判定一字未改（稳定 `id`、
+  项目绑定、`supported/available`、`workingDir` 由实例记录决定）。**SAGA2 战斗服务器只读核查链
+  不放开 Pi**：`workerAgentForInstance` 仍只映射 `claude`→`claude-code` / `codex`→`codex`，
+  即 `orca-team-architecture.md` 里「Pi 不进入这条远端核查链」的产品裁决不变。
+- **验证（都实跑过）**：`mekaWorkerTarget.test.ts` **7/7**（含新增 pi 用例）、
+  `orcaWorkerCreationService.test.ts` **384/384**、`orcaTeamService.test.ts` **191/191**；
+  Pi 侧 MCPR 能力证据 `mcprPiTransport.test.ts` **25/25** + `piMcprRemote.test.ts` **12/12** +
+  `mcprExec.test.ts` **11/11**；`pnpm --filter desktop run typecheck` 通过。
+- **已知能力差异（不是 bug，但必须知道）**：`mode=pi` **有意不投影**控制端 in-process MCP
+  bridge（agent-tunnel 没有 `-R` 反向转发），所以 Pi 远端 Worker 拿不到
+  `orca_worker_bridge` / `cindy_orca`：**手动 `send_to_lead` 不可用**，完成/失败回报走 Host 侧
+  auto-bridge；用户显式配置的外部 HTTP/Streamable HTTP MCP 仍直连可用。与 Pi 的 MCPR 普通会话
+  完全同源，所以这是「与现有 pi 远程会话能力一致」的代价，不是本次改动引入的新缺口。
+- **未验证**：① 真实 MCPRouter 实例上的 Pi 远端 Worker 端到端（需要部署 `mode=pi` / `mode=exec`
+  且装有 pi 运行时资产的实例；与 `pi-harness.md` 上线清单里「MCPR 上的 Pi」同一条待验收项）；
+  ② 根因 B 的**最终**数据面判据 —— 需要线上 `/models` 该 id 的 `agents` 与对应 Registry 条目
+  `status`（本仓无该 payload，无网络直连实例故未取）；诊断口径已写进
+  `docs/dev-rules/model-catalog-maintenance.md`「XD Gateway 的 Pi 成员」段。
+- **规则落点**：`docs/dev-rules/orca-team-architecture.md`（远端 Worker 引擎面 + MCPR 与 SSH 的
+  能力差异）、`docs/dev-rules/mcpr-remote-session-routing.md` §8 补记、`docs/dev-rules/pi-harness.md`
+  「MCPRouter 远端(MCPR)」新增 Orca Worker 条、`docs/product-rules/meka-capability-layers.md` §2 表格、
+  `docs/dev-rules/model-catalog-maintenance.md`（Pi 成员只读服务端 `agents` 的诊断口径）。

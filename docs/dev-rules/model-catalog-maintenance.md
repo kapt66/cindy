@@ -57,6 +57,19 @@ Catalog (version)
 Pi 走 `providers[].models.pi`（用户补丁 perAgent.pi 另属合法 schema）。媒体 route 使用 `agents: []`。
 `contextWindowMax` 是客户端容量投影，不能填进 Registry；容量与工作预算见 [运行时细则](model-catalog-runtime.md)。
 
+**XD Gateway 的 Pi 成员自 2026-10 起只读服务端 `agents`（2026-10-30 补记）**：
+`active-catalog.ts` 的 `xdGatewayTargetAgents` 在 `7ab191d61b` 删掉了旧的「claude-code 可达面
+自动镜像给 pi」逻辑，现在 `xd.models.pi` = 该网关模型 `agents` 里含 `pi` 的条目，再减去
+`piGatewayAuthorityCatalog` 的 retired tombstone。因此「同一模型 codex 面有、pi 面没有」时：
+1) 客户端目录派生链本身正常（同一 `deriveAvailableModels`，`catalog-to-descriptors.ts`），
+2) 差异只可能来自服务端 `/models` 的 `agents` 未含 `pi`，或该 id 在注册表被判 retired，
+3) **客户端不补** —— 按 [模型资料优先级](../product-rules/model-metadata-precedence.md)，Pi 成员
+不由 Registry agents / perAgent 新增。要修就改 Cindy Server 目录，不在客户端造镜像。
+诊断口径：打印 `getXdGatewayModels()` 里该 id 的 `agents` 与该 id 的 Registry 条目 `status`。
+另注：`maker-host/pi-gateway-model-catalog.ts` 的 `gatewayCatalogIdentityOverrides` 是**协议元数据**
+白名单（compat/sampling/thinkingLevelMap），不参与成员判定；缺条目时 canonical Registry 规则
+仍能给出 `piApi`，所以它**不是**「模型看不到」的原因。
+
 ### Gateway 复杂价目展示
 
 Model Access V5 通过 `X-Cindy-Model-Capabilities: display_pricing` 协商可选 `displayPricing`。

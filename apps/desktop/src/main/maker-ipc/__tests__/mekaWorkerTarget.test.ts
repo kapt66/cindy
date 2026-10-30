@@ -237,7 +237,7 @@ describe('Meka Worker target resolver', () => {
     ).resolves.toMatchObject({ ok: false, errorCode: 'INVALID_PARAMS' });
   });
 
-  it('resolves a bound, available Claude or Codex MCPRouter instance', async () => {
+  it('resolves a bound, available Claude, Codex or Pi MCPRouter instance', async () => {
     const resolve = createResolver();
 
     await expect(
@@ -257,6 +257,20 @@ describe('Meka Worker target resolver', () => {
       resolve({
         lead: mekaLead,
         agent: 'codex',
+        requestedRemoteHostId: 'mcpr:instance-1',
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      workingDir: '/workspace/project',
+      remoteHostId: 'mcpr:instance-1',
+    });
+
+    // Pi 与 Claude/Codex 在 `mcpr:` 上走同一条已实现的远端 transport
+    // (`pi-mcpr-remote.ts` 的 mode=pi/mode=exec)，入口不再单独拒绝 pi。
+    await expect(
+      resolve({
+        lead: { ...mekaLead, agentKind: 'pi', model: 'deepseek/deepseek-v4.1-flash', providerId: 'xd' },
+        agent: 'pi',
         requestedRemoteHostId: 'mcpr:instance-1',
       }),
     ).resolves.toEqual({
