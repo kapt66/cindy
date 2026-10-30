@@ -126,6 +126,27 @@ function jsonResult(payload: unknown, isError = false) {
   };
 }
 
+/**
+ * The `mcp_router` facade is mounted in every session so a project session can
+ * reach it, but the tools only work when the session carries a Meka project. The
+ * old bare "not enabled" string left Agents guessing: a plain dialogue session
+ * burned minutes poking userData and even the Cindy source looking for another
+ * way in. Say what the session is, what is unavailable, and what to do instead.
+ */
+function mekaProjectRequiredResult() {
+  return jsonResult(
+    {
+      ok: false,
+      reasonCode: 'MCPR_PROJECT_REQUIRED',
+      error: 'Meka project MCP is not enabled',
+      message: '本次任务不是 Meka 项目会话，MCPRouter 远程项目工具不可用。',
+      nextAction:
+        '需要访问远程仓库时，请让用户在 Meka 项目（例如 SAGA2）里新建任务后再操作；不要在普通对话里用 bash 遍历应用数据目录、读源码或找 SSH 主机来替代。',
+    },
+    true,
+  );
+}
+
 const SENSITIVE_ROUTER_QUERY_KEYS = new Set([
   'access_token',
   'api_key',
@@ -618,7 +639,7 @@ function createRouterServer(context: McpProviderContext): McpServer {
     {},
     async () => {
       if (!projectId(context)) {
-        return jsonResult({ ok: false, error: 'Meka project MCP is not enabled' }, true);
+        return mekaProjectRequiredResult();
       }
       try {
         const { configured } = await service.getConnectionStatus();
@@ -662,7 +683,7 @@ function createRouterServer(context: McpProviderContext): McpServer {
     async () => {
       const selectedProjectId = projectId(context);
       if (!selectedProjectId)
-        return jsonResult({ ok: false, error: 'Meka project MCP is not enabled' }, true);
+        return mekaProjectRequiredResult();
       try {
         const tools = await service.listProjectTools(selectedProjectId);
         return jsonResult({
@@ -687,7 +708,7 @@ function createRouterServer(context: McpProviderContext): McpServer {
     async ({ path }) => {
       const selectedProjectId = projectId(context);
       if (!selectedProjectId)
-        return jsonResult({ ok: false, error: 'Meka project MCP is not enabled' }, true);
+        return mekaProjectRequiredResult();
       const normalized = normalizeRemoteDirectoryPath(path);
       if (normalized.error) {
         return jsonResult(
@@ -725,7 +746,7 @@ function createRouterServer(context: McpProviderContext): McpServer {
     async ({ path, maxBytes }) => {
       const selectedProjectId = projectId(context);
       if (!selectedProjectId)
-        return jsonResult({ ok: false, error: 'Meka project MCP is not enabled' }, true);
+        return mekaProjectRequiredResult();
       return callRemoteReferenceTool(
         selectedProjectId,
         'git.read',
@@ -746,7 +767,7 @@ function createRouterServer(context: McpProviderContext): McpServer {
     async ({ query, path, maxResults }) => {
       const selectedProjectId = projectId(context);
       if (!selectedProjectId)
-        return jsonResult({ ok: false, error: 'Meka project MCP is not enabled' }, true);
+        return mekaProjectRequiredResult();
       return callRemoteReferenceTool(
         selectedProjectId,
         'git.search',
@@ -766,7 +787,7 @@ function createRouterServer(context: McpProviderContext): McpServer {
     async ({ name, args }) => {
       const selectedProjectId = projectId(context);
       if (!selectedProjectId)
-        return jsonResult({ ok: false, error: 'Meka project MCP is not enabled' }, true);
+        return mekaProjectRequiredResult();
       try {
         const result = await service.callProjectTool(
           selectedProjectId,
@@ -813,7 +834,7 @@ function createRouterServer(context: McpProviderContext): McpServer {
     async () => {
       const selectedProjectId = projectId(context);
       if (!selectedProjectId)
-        return jsonResult({ ok: false, error: 'Meka project MCP is not enabled' }, true);
+        return mekaProjectRequiredResult();
       try {
         const [boundIds, instances] = await Promise.all([
           service.listProjectBindings(selectedProjectId),
@@ -849,7 +870,7 @@ function createRouterServer(context: McpProviderContext): McpServer {
     async () => {
       const selectedProjectId = projectId(context);
       if (!selectedProjectId)
-        return jsonResult({ ok: false, error: 'Meka project MCP is not enabled' }, true);
+        return mekaProjectRequiredResult();
       try {
         const [instances, boundIds] = await Promise.all([
           service.listInstances(),
@@ -883,7 +904,7 @@ function createRouterServer(context: McpProviderContext): McpServer {
     {},
     async () => {
       if (!projectId(context))
-        return jsonResult({ ok: false, error: 'Meka project MCP is not enabled' }, true);
+        return mekaProjectRequiredResult();
       try {
         return jsonResult({ ok: true, templates: await service.listTemplates() });
       } catch (error) {
@@ -898,7 +919,7 @@ function createRouterServer(context: McpProviderContext): McpServer {
     { templateId: z.string(), name: z.string() },
     async ({ templateId, name }) => {
       if (!projectId(context))
-        return jsonResult({ ok: false, error: 'Meka project MCP is not enabled' }, true);
+        return mekaProjectRequiredResult();
       try {
         return jsonResult({ ok: true, instance: await service.createInstance(templateId, name) });
       } catch (error) {
@@ -914,7 +935,7 @@ function createRouterServer(context: McpProviderContext): McpServer {
     async ({ instanceId }) => {
       const selectedProjectId = projectId(context);
       if (!selectedProjectId)
-        return jsonResult({ ok: false, error: 'Meka project MCP is not enabled' }, true);
+        return mekaProjectRequiredResult();
       try {
         const current = await service.listProjectBindings(selectedProjectId);
         await service.setProjectBindings(selectedProjectId, [...new Set([...current, instanceId])]);

@@ -778,6 +778,10 @@ describe('Meka runtime MCP remote instance projection', () => {
     });
     expect(disabled).toMatchObject({ isError: true });
     expect(JSON.stringify(disabled)).toContain('Meka project MCP is not enabled');
+    // The receipt must tell a non-Meka session what to do instead of leaving it to
+    // explore userData / source (2026-10-30: a dialogue session burned ~3 minutes).
+    expect(JSON.stringify(disabled)).toContain('MCPR_PROJECT_REQUIRED');
+    expect(JSON.stringify(disabled)).toContain('Meka 项目（例如 SAGA2）里新建任务');
     expect(routerService.listProjectBindings).toHaveBeenCalledTimes(1);
 
     await client.close();
