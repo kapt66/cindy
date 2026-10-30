@@ -125,13 +125,19 @@ export default defineConfig(({ mode }) => {
           // Co-locating the whole package keeps the dynamic imports intra-chunk so
           // they resolve to the already-loaded module and never re-require/re-eval
           // the entry. See packages/browser-control-runtime.
-          manualChunks(id: string) {
-            const norm = id.replace(/\\/g, '/');
-            if (norm.includes('/packages/browser-control-runtime/')) {
-              return 'browser-control-runtime';
-            }
-            return undefined;
-          },
+          //
+          // 2026-10-30: this used to be `manualChunks`, which made Rollup emit the
+          // entry as a SEPARATE chunk (`bootstrap-electron-<hash>.js`). That split is
+          // not deterministic — identical inputs sometimes produced the chunk and
+          // sometimes inlined it, and when the chunk existed it was still being
+          // flushed while electron-packager started copying, so the release job died
+          // with `EPERM`/`ENOENT: copyfile .vite/build/bootstrap-electron-*.js`.
+          // Worse, the inconsistent builds left chunks that `require()` a file that
+          // was never emitted. Inlining every dynamic import into the single main
+          // chunk removes both failure modes and keeps the "evaluate bootstrap once"
+          // guarantee above: there is only one module instance to re-require.
+          // Cost: one ~31 MB `index.js` instead of 6.7 MB + 24.7 MB split.
+          inlineDynamicImports: true,
         },
         // better-sqlite3 is a native (.node) addon — must NOT be bundled, must
         // be require()'d at runtime from node_modules. Same for ws transitive

@@ -63,6 +63,56 @@ function formatLocalBuildTime(date = new Date()): string {
 }
 
 /**
+ * Block until the Vite build output stops changing.
+ *
+ * The Vite plugin's build promise can resolve before rollup has flushed its
+ * largest chunk (`bootstrap-electron-*.js`, ~25 MB), and electron-packager starts
+ * copying right after the prePackage hook. A copy racing an unfinished write fails
+ * as EPERM (share violation) or ENOENT (file renamed underneath), which is exactly
+ * how the Windows canary release broke on 2026-10-30. Poll mtime+size until the
+ * tree is stable for two consecutive samples, with a hard cap so a genuinely stuck
+ * build still fails fast instead of hanging the pipeline.
+ */
+async function waitForViteBuildQuiescence(): Promise<void> {
+  const buildDir = path.join(__dirname, '.vite', 'build');
+  const stableForMs = 1_500;
+  const timeoutMs = 60_000;
+  const startedAt = Date.now();
+  let previousSignature = '';
+  let stableSince = 0;
+  for (;;) {
+    let signature = '';
+    try {
+      const entries = fs.readdirSync(buildDir).sort();
+      signature = entries
+        .map((name) => {
+          try {
+            const stat = fs.statSync(path.join(buildDir, name));
+            return `${name}:${stat.size}:${stat.mtimeMs}`;
+          } catch {
+            return `${name}:?`;
+          }
+        })
+        .join('|');
+    } catch {
+      // Build dir missing: nothing to wait for.
+      return;
+    }
+    if (signature !== previousSignature) {
+      previousSignature = signature;
+      stableSince = Date.now();
+    } else if (Date.now() - stableSince >= stableForMs) {
+      return;
+    }
+    if (Date.now() - startedAt >= timeoutMs) {
+      console.warn('[forge:prePackage] Vite build output still changing after 60s; continuing anyway');
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+}
+
+/**
  * Stage the source identity file before electron-packager copies extraResource
  * files into the application. It is generated at build time so installed
  * Cindy can identify the exact source checkout that produced it, even when
@@ -1978,6 +2028,14 @@ const config: ForgeConfig = {
     prePackage: async (_forgeConfig, platform, arch) => {
       const targetPlatform = requestedTargetPlatform();
       const targetArch = requestedTargetArch();
+      // The Vite plugin resolves its build promise before rollup's largest chunk
+      // (`.vite/build/bootstrap-electron-*.js`, ~25 MB) is fully flushed, and
+      // electron-packager starts copying immediately after this hook. Copying a
+      // chunk that is still being written fails as `EPERM` (share violation) or
+      // `ENOENT` (renamed underneath the copy) — that is what killed the Windows
+      // canary release on 2026-10-30. Wait for the build output to stop changing
+      // before we let packaging read it.
+      await waitForViteBuildQuiescence();
       stageCindySourceMetadata();
       // Meka 资源树断言(打包不变量)：resources/meka 必须齐备。上游退役 iOS 模拟器时
       // 一并删掉了随包 WDA archive 的准备步骤(该函数定义在合并结果中已不存在)。
