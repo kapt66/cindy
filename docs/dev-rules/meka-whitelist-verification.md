@@ -2291,6 +2291,19 @@ Skill、非 Skill 文件不参与发现、不隐式复制进 `configHome/skills`
 > **2026-09-29 更正**：原文写「Pi 的 Meka **战斗**角色任务」——战斗角色（`combat-development`）与其
 > 随包清单已删除，这类任务只能用**项目自有角色 / 默认角色 + 项目或插件技能**来构造（见 §8.12）。
 
+> **2026-10-30 登记（远程读取工具的参数/失败语义）**：`list_remote_directory` 收到
+> `""` / `"."` / `"./"` / `"/"` 等根目录简写时先归一化再调 `git.tree`；绝对路径、盘符、
+> 含 `..` 的路径在本地返回 `MCPR_INVALID_INPUT`，不再打到 route 上。`classifyMcprFailure`
+> 新增 `MCPR_INVALID_INPUT` 分类（`[INVALID_INPUT]` / `input was rejected` / `route schema`），
+> 恢复文案明确「不是连接或登录问题」，不再落进 `MCPR_UNAVAILABLE` 的「检查网络 / 重新登录」。
+> `list_tools` 回执新增 `note`：`mcp_*` 是 MCPRouter 路由器管理工具、与本项目无关；读 HEAD 用
+> first-party 只读工具，服务器写文件用 Orca worker（`remoteHostId=mcpr:<instanceId>`，agent 限
+> `claude-code` / `codex`），Git 与提交用 `mcpr-project-manager` 的 `git_*`。**验证**：
+> `meka-runtime-mcp.test.ts` 23 条通过（含 3 条新增：根目录简写/绝对路径本地拒绝、
+> `INVALID_INPUT` 分类、`list_tools` 引导）；**实机验证通过**：2026-10-30 真实 Electron 会话
+> （本地 Pi Meka 会话 + `saga2` 项目）里 `path:"."` 不再误报、`list_tools` 的 `note` 生效、
+> 同一会话按提示走 Orca worker 写入并以 `git_submit` 建出 MR。锚点以符号名为准。
+
 ### WL-19 Unity 只能走 Meka Unity 官方 CLI（拒绝一切 Unity MCP 配置）
 
 **保护的不变量**：客户端**没有** Unity MCP 实现，且**不得**出现一个。项目 metadata、角色

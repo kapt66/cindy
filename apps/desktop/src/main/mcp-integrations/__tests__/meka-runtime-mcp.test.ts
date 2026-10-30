@@ -974,4 +974,107 @@ describe('Meka runtime MCP 在进程级 Pi 桥里可用', () => {
     };
     expect(routerProvider.isEnabled?.(mekaSession)).toBe(true);
   });
+
+  async function connectRouterTools(sessionId: string) {
+    const providers: McpProvider[] = [];
+    registerMekaRuntimeMcpArrays(providers);
+    const provider = providers.find((candidate) => candidate.name === 'mcp_router');
+    const context = {
+      agentKind: 'codex' as const,
+      workingDir: 'C:\\p4',
+      sessionId,
+      vendorOptions: {
+        source: 'meka',
+        mekaProjectId: 'saga2',
+        mekaMcpProviderIds: ['mcp-router'],
+      },
+    };
+    const config = provider?.toClaudeSdkConfig?.(context) as { instance: McpServer };
+    const client = new Client({ name: `${sessionId}-client`, version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([config.instance.connect(serverTransport), client.connect(clientTransport)]);
+    return { client, instance: config.instance };
+  }
+
+  function bindSingleServer() {
+    routerService.listProjectBindings.mockResolvedValue(['server-1']);
+    routerService.listInstances.mockResolvedValue([
+      {
+        id: 'server-1',
+        projectId: 'saga2',
+        projectName: 'SAGA2 Server',
+        projectDescription: 'saga2 server project',
+        available: true,
+        supported: true,
+        remoteHostId: 'mcpr:server-1',
+      },
+    ]);
+  }
+
+  it('collapses root shorthands and rejects absolute remote paths without calling the route', async () => {
+    bindSingleServer();
+    const { client, instance } = await connectRouterTools('directory-path-session');
+
+    await client.callTool({ name: 'list_remote_directory', arguments: { path: '.' } });
+    await client.callTool({ name: 'list_remote_directory', arguments: { path: './src/' } });
+    expect(routerService.callProjectCapability).toHaveBeenNthCalledWith(1, 'saga2', 'git.tree', {
+      instanceId: 'server-1',
+    });
+    expect(routerService.callProjectCapability).toHaveBeenNthCalledWith(2, 'saga2', 'git.tree', {
+      path: 'src',
+      instanceId: 'server-1',
+    });
+
+    const absolute = await client.callTool({
+      name: 'list_remote_directory',
+      arguments: { path: 'C:/server/bin' },
+    });
+    expect(absolute).toMatchObject({ isError: true });
+    expect(JSON.stringify(absolute)).toContain('MCPR_INVALID_INPUT');
+    expect(routerService.callProjectCapability).toHaveBeenCalledTimes(2);
+
+    await client.close();
+    await instance.close();
+  });
+
+  it('reports a rejected parameter as an input problem instead of a connection problem', async () => {
+    bindSingleServer();
+    routerService.callProjectCapability.mockResolvedValue({
+      ok: false,
+      contractVersion: 1,
+      code: 'INVALID_INPUT',
+      message: 'MCPRouter input was rejected by the route schema',
+    });
+    const { client, instance } = await connectRouterTools('invalid-input-session');
+
+    const result = await client.callTool({
+      name: 'list_remote_directory',
+      arguments: { path: 'src' },
+    });
+    const serialized = JSON.stringify(result);
+
+    expect(result).toMatchObject({ isError: true });
+    expect(serialized).toContain('MCPR_INVALID_INPUT');
+    expect(serialized).toContain('不是连接或登录问题');
+    expect(serialized).not.toContain('重新连接 MCPRouter');
+
+    await client.close();
+    await instance.close();
+  });
+
+  it('tells the Agent which surface to use before listing Router tools', async () => {
+    routerService.listProjectTools.mockResolvedValue([
+      { name: 'mcp_list_instances', description: 'List instances', annotations: {} },
+    ]);
+    const { client, instance } = await connectRouterTools('list-tools-guidance-session');
+
+    const result = await client.callTool({ name: 'list_tools', arguments: {} });
+    const serialized = JSON.stringify(result);
+    expect(serialized).toContain('mcp_*');
+    expect(serialized).toContain('mcpr-project-manager');
+    expect(serialized).toContain('Orca worker');
+
+    await client.close();
+    await instance.close();
+  });
 });

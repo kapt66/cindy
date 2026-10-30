@@ -170,6 +170,7 @@ type McprRecoveryCode =
   | 'MCPR_PROJECT_NOT_BOUND'
   | 'MCPR_CAPABILITY_NOT_DEPLOYED'
   | 'MCPR_RUNTIME_INCOMPATIBLE'
+  | 'MCPR_INVALID_INPUT'
   | 'MCPR_UNAVAILABLE';
 
 function classifyMcprFailure(reason: string, configured: boolean | null): McprRecoveryCode {
@@ -183,6 +184,15 @@ function classifyMcprFailure(reason: string, configured: boolean | null): McprRe
   }
   if (/project binding|项目绑定|未找到可用.*远程项目|bound=0/i.test(reason)) {
     return 'MCPR_PROJECT_NOT_BOUND';
+  }
+  // A rejected parameter is not a connection problem: telling the Agent to check
+  // the network or log in again sends it into a loop it cannot leave by retrying.
+  if (
+    /\[INVALID_INPUT\]|invalid (?:tool )?input|input was rejected|route schema|参数不合法|参数无效/i.test(
+      reason,
+    )
+  ) {
+    return 'MCPR_INVALID_INPUT';
   }
   if (
     /ROUTE_NOT_FOUND|route (?:is )?not (?:found|deployed)|tool is not available|能力路由未部署/i.test(
@@ -209,6 +219,8 @@ function mcprRecoveryAction(code: McprRecoveryCode): string {
       return '当前 MCPRouter 服务端没有部署远程项目读取能力；由部署方更新并重启 MCPRouter 服务后重试。无需修改 Cindy 设置或 SSH 配置。';
     case 'MCPR_RUNTIME_INCOMPATIBLE':
       return '由 MCPRouter 部署方升级并重启目标 Runtime；客户端无法代替部署方升级。完成后回到当前任务重试。';
+    case 'MCPR_INVALID_INPUT':
+      return '这不是连接或登录问题：MCPRouter 拒绝了本次参数。按该工具的参数 schema 修正后重试（例如 list_remote_directory 省略 path 表示仓库根目录，子目录写相对路径）；不要重新登录、改网络配置或反复原样重试。';
     case 'MCPR_UNAVAILABLE':
       return '检查当前网络，并在 Cindy 的“设置 → Meka 助理”确认 MCPRouter 连接；必要时重新连接，恢复后回到当前任务重试。';
   }
@@ -248,6 +260,29 @@ function promptedMcprRecoveryAction(
 
 function compactIdentity(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, '');
+}
+
+/**
+ * `git.tree` takes a repository-relative path, or no path at all. Models routinely
+ * spell the root as "", ".", "./" or "/" and sometimes pass an absolute path; those
+ * spellings used to reach the route validator, whose INVALID_INPUT rejection was
+ * then reported as a connection problem. Collapse the harmless shorthands here and
+ * answer the impossible ones locally with an actionable message.
+ */
+export function normalizeRemoteDirectoryPath(value: unknown): { path?: string; error?: string } {
+  if (value === undefined || value === null) return {};
+  if (typeof value !== 'string') return { error: 'path 必须是字符串' };
+  const trimmed = value.trim().replace(/\\/g, '/').replace(/\/+$/, '');
+  if (!trimmed || trimmed === '.' || trimmed === '/') return {};
+  if (trimmed.startsWith('/') || /^[A-Za-z]:/.test(trimmed)) {
+    return { error: `path 必须是仓库相对路径，当前为 ${trimmed}` };
+  }
+  const segments = trimmed.split('/');
+  if (segments.some((segment) => segment === '..')) {
+    return { error: `path 不能包含 ".."，当前为 ${trimmed}` };
+  }
+  const normalized = segments.filter((segment) => segment && segment !== '.').join('/');
+  return normalized ? { path: normalized } : {};
 }
 
 function isProjectServerReference(
@@ -632,6 +667,7 @@ function createRouterServer(context: McpProviderContext): McpServer {
         const tools = await service.listProjectTools(selectedProjectId);
         return jsonResult({
           ok: true,
+          note: '这里的 mcp_* 条目是 MCPRouter 的路由器管理工具，与当前 Meka 项目的服务器任务无关，不要调用。读服务器代码用 list_remote_directory / read_remote_file / search_remote_files（只读 HEAD 快照）；服务器上新建或修改文件用 Orca worker（remoteHostId 传 mcpr:<instanceId>）；Git 暂存、提交、推送与 Merge Request 用 mcpr-project-manager 插件的 git_* 操作。',
           tools: tools.map((tool) => ({
             name: tool.name,
             description: tool.description,
@@ -646,16 +682,29 @@ function createRouterServer(context: McpProviderContext): McpServer {
 
   registerRouterTool(
     'list_remote_directory',
-    '列出当前 Meka 项目服务器仓库 HEAD 快照中的一个目录。Host 自动解析和确保远程项目，不要先调用 Router 管理或 Worker 工具。',
+    '列出当前 Meka 项目服务器仓库 HEAD 快照中的一个目录。省略 path 表示仓库根目录。Host 自动解析和确保远程项目，不要先调用 Router 管理或 Worker 工具。',
     { path: z.string().max(1024).optional() },
     async ({ path }) => {
       const selectedProjectId = projectId(context);
       if (!selectedProjectId)
         return jsonResult({ ok: false, error: 'Meka project MCP is not enabled' }, true);
+      const normalized = normalizeRemoteDirectoryPath(path);
+      if (normalized.error) {
+        return jsonResult(
+          {
+            ok: false,
+            reasonCode: 'MCPR_INVALID_INPUT',
+            error: normalized.error,
+            nextAction:
+              '省略 path 表示仓库根目录；子目录用仓库相对路径，例如 "cmd/server"。不要传绝对路径、"." 之外的相对前缀或 Windows 盘符。',
+          },
+          true,
+        );
+      }
       return callRemoteReferenceTool(
         selectedProjectId,
         'git.tree',
-        path ? { path } : {},
+        normalized.path ? { path: normalized.path } : {},
         'list_remote_directory',
       );
     },
@@ -709,7 +758,7 @@ function createRouterServer(context: McpProviderContext): McpServer {
 
   registerRouterTool(
     'call_tool',
-    '调用 list_tools 返回的 MCPRouter 工具。',
+    '调用 list_tools 返回的 MCPRouter 工具。当前 Meka 项目任务请优先用 first-party 工具（list_remote_directory / read_remote_file / search_remote_files）与 mcpr-project-manager 插件；mcp_* 路由器管理工具与本项目无关。',
     {
       name: z.string(),
       args: z.record(z.string(), z.unknown()).default({}),

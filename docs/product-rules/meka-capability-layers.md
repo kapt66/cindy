@@ -69,6 +69,30 @@ Meka Skill 分为两层：
 Router 做账号与实例所有权校验。不得通过 `tools/list` 探测 `git.tree` / `git.read` /
 `git.search`，也不得在该清单缺失时改走 Worker。
 
+### 2.1 参数与失败的分类（2026-10-29）
+
+三条只读工具的参数错误必须在本地解决，不能伪装成连接故障：
+
+- `list_remote_directory` 的 `path` 省略即根目录；模型常写 `""`、`"."`、`"./"`、`"/"`
+  这类根目录简写，由 Host 归一化后再调 `git.tree`。绝对路径、盘符和含 `..` 的路径在本地
+  直接返回 `MCPR_INVALID_INPUT`，不发起 route 调用。
+- route 返回 `[INVALID_INPUT] ...`（参数 schema 拒绝）时归为 `MCPR_INVALID_INPUT`，恢复文案
+  明确“这不是连接或登录问题，按参数 schema 修正”；不得再落到 `MCPR_UNAVAILABLE` 而提示
+  检查网络或重新登录——那会让 Agent 在无法通过重试解决的循环里空转。
+
+### 2.2 工具面边界（2026-10-29）
+
+`mcp_router` 的 `list_tools` 里同时会出现 MCPRouter 的 `mcp_*` 路由器管理工具；它们与当前
+Meka 项目任务无关（还会返回被脱敏成 `[REDACTED_ENDPOINT]` 的实例标识），`list_tools` 的
+返回因此带一段 `note` 指明正确分工：
+
+| 要做的事 | 通道 |
+| --- | --- |
+| 看已提交内容 | `list_remote_directory` / `read_remote_file` / `search_remote_files`（HEAD 快照） |
+| 看未提交改动 | `mcpr-project-manager` 的 `git_status` / `git_diff`（工作树） |
+| 在服务器仓库新建或修改文件 | 本层没有写通道；用 Orca worker（`create_worker`，`remoteHostId` = `mcpr:<instanceId>`，agent 限 `claude-code` / `codex`） |
+| 提交 / 推送 / MR | `mcpr-project-manager` 的 `git_submit`（worker runtime 开着时返回 `blocked / session-open`） |
+
 ## 3. 配置与事实来源
 
 配置按以下顺序生效：
