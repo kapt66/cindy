@@ -166,6 +166,16 @@ function cleanupUserData() {
 const SMOKE_USER = '__smoke_test__';
 const TIMEOUT_MS = 60_000;
 
+// 禁用自动更新 / Windows Squirrel startup 钩子（smoke 跑的是已安装的 exe，
+// 但为了稳妥这里也显式清掉会影响启动的环境变量）
+const childEnv = { ...process.env, ELECTRON_DISABLE_SANDBOX: '1' };
+// `ELECTRON_RUN_AS_NODE=1` 会让打包好的 exe 以纯 Node 身份启动：`app` 为 undefined，
+// 主进程在 ready 之前挂住，smoke 只能等到 60s 超时且完全没有输出——现象与"应用启动
+// 失败"一模一样（2026-11-02 实测：宿主 shell 带着这个变量时必现）。smoke 要验的是真正的
+// Electron 启动路径，把这类会改变进程身份的环境变量从子进程里剔掉。
+delete childEnv.ELECTRON_RUN_AS_NODE;
+delete childEnv.ELECTRON_NO_ATTACH_CONSOLE;
+
 const child = spawn(
   exePath,
   [
@@ -180,12 +190,7 @@ const child = spawn(
   ],
   {
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: {
-      ...process.env,
-      // 禁用自动更新 / Windows Squirrel startup 钩子（smoke 跑的是已安装的 exe，
-      // 但为了稳妥这里也显式清掉会影响启动的环境变量）
-      ELECTRON_DISABLE_SANDBOX: '1',
-    },
+    env: childEnv,
   },
 );
 
