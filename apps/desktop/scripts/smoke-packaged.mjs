@@ -154,6 +154,10 @@ const tmpUserData = fs.mkdtempSync(path.join(os.tmpdir(), 'xdt-smoke-'));
 console.log(`[smoke] userData: ${tmpUserData}`);
 
 function cleanupUserData() {
+  if (process.env.XDT_SMOKE_KEEP_PROFILE === '1') {
+    console.log(`[smoke] keeping userData for inspection: ${tmpUserData}`);
+    return;
+  }
   try {
     fs.rmSync(tmpUserData, { recursive: true, force: true });
   } catch (err) {
@@ -161,10 +165,43 @@ function cleanupUserData() {
   }
 }
 
+/**
+ * 失败时把 packaged 应用自己的日志打出来。
+ *
+ * packaged 主进程不往 stdout 写日志（只有 smoke 的 JSON 直接走 stdout），所以
+ * “没有任何输出”既可能是根本没启动，也可能是启动后卡在某个模态错误框。应用自身
+ * 的 `userData/logs/main-*.log` 是唯一能区分两者的证据；过去 smoke 直接把临时
+ * profile 删掉，等于把现场一起销毁（2026-11-02 的 ERR_DLOPEN_FAILED 就是这样被
+ * 误判成“启动卡死”的）。
+ */
+function dumpAppLogs() {
+  const logsDir = path.join(tmpUserData, 'logs');
+  try {
+    const files = fs.readdirSync(logsDir).filter((name) => name.endsWith('.log'));
+    if (files.length === 0) {
+      console.error(`[smoke] app wrote no logs under ${logsDir} (main process likely never reached logging)`);
+      return;
+    }
+    for (const name of files) {
+      const full = path.join(logsDir, name);
+      const lines = fs.readFileSync(full, 'utf8').split(/\r?\n/).filter(Boolean);
+      console.error(`[smoke] --- ${name} (last ${Math.min(lines.length, 60)} of ${lines.length} lines) ---`);
+      for (const line of lines.slice(-60)) console.error(`[smoke] ${line}`);
+    }
+  } catch (err) {
+    console.error(`[smoke] could not read app logs (${err instanceof Error ? err.message : err})`);
+  }
+}
+
 // ── Spawn & capture ──────────────────────────────────────────────────────
 
 const SMOKE_USER = '__smoke_test__';
-const TIMEOUT_MS = 60_000;
+// 首次执行一个刚签名的新二进制时，终端安全软件可能要先扫描一遍；预算放宽到
+// 可通过环境变量调整，避免把「慢」误判成「挂了」。
+const TIMEOUT_MS = (() => {
+  const raw = Number.parseInt(process.env.XDT_SMOKE_TIMEOUT_MS ?? '', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 60_000;
+})();
 
 // 禁用自动更新 / Windows Squirrel startup 钩子（smoke 跑的是已安装的 exe，
 // 但为了稳妥这里也显式清掉会影响启动的环境变量）
@@ -229,6 +266,7 @@ child.on('exit', (code, signal) => {
   const jsonLine = extractJsonLine(stdoutBuf) || extractJsonLine(stderrBuf);
   if (!jsonLine) {
     console.error('[smoke] FAIL: no JSON result line found in stdout/stderr');
+    dumpAppLogs();
     cleanupUserData();
     process.exit(1);
   }

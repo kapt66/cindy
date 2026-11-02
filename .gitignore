@@ -214,5 +214,7 @@ apps/desktop/resources/builtin-ghosts/
 # 本地验收截图与设计稿等任务产物(只在本地保存,不入仓)。
 artifacts/
 
-# electron-packager staging dir (见 apps/desktop/forge.config.ts packagerConfig.tmpdir)
-.forge-tmp/
+# electron-packager staging dir (见 apps/desktop/forge.config.ts packagerConfig.tmpdir)。
+# 目录名不能以 `.` 开头：asar 用绝对路径匹配 unpack glob，minimatch 的 `**` 不跨过
+# 点目录段，会把所有 native 解包规则静默关掉（2026-11-02 的 canary 事故）。
+forge-tmp/

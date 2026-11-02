@@ -47,6 +47,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ensureBinary } from '../../../scripts/ensure-agent-binaries.mjs';
 import { desktopClientBuildEnv } from '../../../scripts/shared/client-endpoint-build-env.mjs';
+import { assertNativeRuntimeUnpacked } from './ci/native-unpack-verify.mjs';
 import {
   DESKTOP_ROOT,
   RELEASE_DIR,
@@ -901,6 +902,17 @@ async function main() {
         ? path.join(DESKTOP_ROOT, 'out', `${appName}-darwin-${arch}`, `${appName}.app`, 'Contents', 'Resources', 'drizzle')
         : path.join(DESKTOP_ROOT, 'out', `${appName}-${platformKey}`, 'resources', 'drizzle');
     verifyPackagedDrizzle(drizzleOut);
+
+    // 原生运行时二进制必须已被 asar.unpack 释放到 app.asar.unpacked/。留在
+    // app.asar 里的 libvips / conpty / sherpa / sqlite-vec 会让 packaged 应用在
+    // 启动时抛 ERR_DLOPEN_FAILED 并弹「A JavaScript error occurred in the main
+    // process」模态框——smoke 只会表现为 60s 超时且没有任何输出（2026-11-02 事故）。
+    // 放在 smoke 之前：解包缺失是「包已经坏了」的事实，不应由 smoke 的超时代偿。
+    const unpackedRoot =
+      platform === 'darwin'
+        ? path.join(DESKTOP_ROOT, 'out', `${appName}-darwin-${arch}`, `${appName}.app`, 'Contents', 'Resources', 'app.asar.unpacked')
+        : path.join(DESKTOP_ROOT, 'out', `${appName}-${platformKey}`, 'resources', 'app.asar.unpacked');
+    assertNativeRuntimeUnpacked({ unpackedRoot, platform, arch });
 
     if (skipSmoke) {
       console.log('==> Skipping packaged smoke test (--skip-smoke)');

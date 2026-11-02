@@ -263,6 +263,37 @@ pnpm test:unit
 OAuth loopback 单测的浏览器回调夹具在监听器建立后立即发起 loopback 请求，不额外排队
 `setImmediate`；这样在 Windows CI 的并发 Vitest worker 负载下不会把合法回调延迟到测试超时。
 
+## 打包产物完整性（native 运行时解包）
+
+打包配置里有一条**静默失效**的不变量：`packagerConfig.asar.unpack` 必须真的把 native
+运行时二进制释放到 `resources/app.asar.unpacked/`，否则应用能打出来、能签名、能安装，
+但主进程一启动就崩。
+
+- 受影响的文件：sharp 的 `libvips*.dll` / `libvips-cpp*`、`node-pty` 的 `conpty.dll` /
+  `winpty-agent.exe` / `spawn-helper`、`loudness` 的调音量 exe、`sherpa-onnx` 与
+  `native/sqlite-vec` 的动态库。它们必须作为**真实文件**存在，`dlopen` / `spawn` 读不了
+  `app.asar` 内部的条目。
+- 故障表现：主进程在第一个 `require('sharp')` 处抛 `ERR_DLOPEN_FAILED`，Electron 弹出标题
+  为 `Error` 的原生模态框；无人点击时进程既不退出也不写 stdout，release 的 packaged smoke
+  只表现为 **60 秒超时且完全没有输出**。
+- 事故根因（2026-11-02）：`packagerConfig.tmpdir` 曾被设成 `<repo>/.forge-tmp`。asar 用
+  **绝对路径**匹配 unpack glob，而 minimatch 的 `**` 默认不跨过以 `.` 开头的路径段
+  （`dot: false`），于是以 `**` 开头的每条 unpack 规则整体失配，二进制被留在 asar 里。
+  `make` 全程不报错，包也是“成功”的。
+- 现行契约：
+  - `packagerConfig.tmpdir` 指向仓内 `forge-tmp/`（**不带前导点**，且必须在 `apps/desktop`
+    之外；`electron-packager` 会把 `apps/desktop` 整个目录复制进暂存区）。
+  - `apps/desktop/scripts/ci/native-unpack-verify.mjs` 在 `make` 之后、smoke 之前逐个断言
+    目标平台/架构的 native 运行时已解包；缺失时直接失败并打印期望路径，不再由 smoke
+    超时代偿。
+  - `apps/desktop/scripts/__tests__/native-unpack-verify.test.mjs` 同时锁定“暂存目录名不以
+    `.` 开头”和“`asar.unpack` 规则覆盖三平台运行时二进制”两条不变量。
+- 排查顺序：先看 `out/<app>-<platform>/resources/app.asar.unpacked/` 里有没有上表文件
+  （macOS 在 `<app>.app/Contents/Resources/` 下）；没有就查 `tmpdir` 与 `asar.unpack`，
+  不要先去查 smoke、签名或 CI 会话。
+- smoke 失败时现在会打印 `<userData>/logs/main-*.log` 尾部；`XDT_SMOKE_KEEP_PROFILE=1`
+  可保留临时 profile，`XDT_SMOKE_TIMEOUT_MS` 可放宽首次启动扫描造成的偶发超时。
+
 ## 错误任务的原生会话恢复
 
 Desktop 在已注册 Session 进入 `error` 后收到继续消息时，必须把该路径视为恢复已有任务，

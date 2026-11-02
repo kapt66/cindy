@@ -1833,15 +1833,20 @@ if (isWin) {
 
 const config: ForgeConfig = {
   packagerConfig: {
-    // electron-packager stages the whole app under `os.tmpdir()` before moving it
-    // into `out/`. On a Windows CI runner that is `C:\WINDOWS\TEMP`, where Defender /
-    // Controlled Folder Access intermittently lock freshly written files and the copy
-    // fails with `EPERM: operation not permitted, copyfile` (observed 2026-10-30 on
-    // the canary runner, killing the release job at "Copying files"). Keep the stage
-    // on the repo volume instead: same disk as the sources, no system temp ACLs.
-    // It must live OUTSIDE `apps/desktop` — the packager copies that directory, so a
-    // staging dir inside it would be copied into itself.
-    tmpdir: path.join(__dirname, '..', '..', '.forge-tmp'),
+    // electron-packager stages the whole app under `tmpdir` before moving it into
+    // `out/`. Keep it on the repo volume instead of `C:\WINDOWS\TEMP`, where the
+    // Windows release runner intermittently loses freshly written files.
+    //
+    // The directory name must NOT start with a dot: asar matches `asar.unpack`
+    // globs against the absolute staging path, and minimatch's `**` refuses to
+    // cross a dot-segment (dot: false). A `.forge-tmp` staging dir therefore
+    // silently disabled EVERY unpack rule below — sharp/libvips, node-pty,
+    // loudness, sherpa-onnx and native/sqlite-vec all stayed inside app.asar,
+    // the packaged app threw `ERR_DLOPEN_FAILED` on the first `require('sharp')`,
+    // and the release smoke hung for 60s on the Electron error dialog with no
+    // output at all (2026-11-02 canary failure). The invariant is asserted by
+    // scripts/ci/native-unpack-verify.mjs and locked by its unit test.
+    tmpdir: path.join(__dirname, '..', '..', 'forge-tmp'),
     // sharp 的底层 libvips 共享库 (libvips-cpp.dylib / libvips-42.dll /
     // libvips-cpp.so) 在不同平台上的位置不同:
     //   - macOS / Linux: 住在独立的 @img/sharp-libvips-{platform}-{arch}/ 包,
