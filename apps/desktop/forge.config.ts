@@ -65,13 +65,14 @@ function formatLocalBuildTime(date = new Date()): string {
 /**
  * Block until the Vite build output stops changing.
  *
- * The Vite plugin's build promise can resolve before rollup has flushed its
- * largest chunk (`bootstrap-electron-*.js`, ~25 MB), and electron-packager starts
- * copying right after the prePackage hook. A copy racing an unfinished write fails
- * as EPERM (share violation) or ENOENT (file renamed underneath), which is exactly
- * how the Windows canary release broke on 2026-10-30. Poll mtime+size until the
- * tree is stable for two consecutive samples, with a hard cap so a genuinely stuck
- * build still fails fast instead of hanging the pipeline.
+ * electron-packager starts copying right after the prePackage hook, and its largest
+ * input is the ~25 MB `bootstrap-electron-*.js` chunk. On Windows a copy that races
+ * an unfinished flush or a security scanner's inspection fails as `EPERM` (share
+ * violation) or `ENOENT` (file removed underneath) — the 2026-10-30 canary release
+ * failed exactly that way. Waiting for the tree to stop changing does not make a
+ * scanner trust the file (that needs an exclusion), but it removes the "copied while
+ * the writer or scanner still held it" half of the race; the hard cap keeps a
+ * genuinely stuck build from hanging the pipeline.
  */
 async function waitForViteBuildQuiescence(): Promise<void> {
   const buildDir = path.join(__dirname, '.vite', 'build');
