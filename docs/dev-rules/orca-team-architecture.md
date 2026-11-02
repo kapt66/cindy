@@ -108,7 +108,7 @@ PR #101 之后，Orca 的 main 侧业务由独立 service 承接，`register.ts`
 
 ### MCP 与 IPC 控制面
 
-`cindy_orca` 是独立 MCP server，直接顶层注册 20 个工具：17 个 team 控制工具 + 3 个只读诊断工具（后者从已下线的 `orca_bridge` 桥入，保裸名）。它与 renderer IPC 共用同一组 main 侧 service，因此 MCP 和 UI 操作必须有一致的权限、状态和回滚语义。
+`cindy_orca` 是独立 MCP server，直接顶层注册 21 个工具：17 个 team 控制工具 + 3 个只读诊断工具（后者从已下线的 `orca_bridge` 桥入，保裸名）+ `wait_for_worker`（当前 turn 内拉取 worker 报告，见「Lead 等待 Worker」）。它与 renderer IPC 共用同一组 main 侧 service，因此 MCP 和 UI 操作必须有一致的权限、状态和回滚语义。
 
 1. `start_team`
 2. `end_team`
@@ -130,6 +130,7 @@ PR #101 之后，Orca 的 main 侧业务由独立 service 承接，`register.ts`
 18. `get_workspace_info`（只读诊断）
 19. `worker_status`（只读诊断）
 20. `read_worker`（只读诊断）
+21. `wait_for_worker`（当前 turn 内拉取 worker 报告；报告入队即取走，只交付一次）
 
 批量创建必须走一次 `create_workers` 调用，不能让 Lead 并行或连续发多个独立 `create_worker`。批量工具按输入顺序复用同一个 `OrcaLifecycleService.createWorker` 原语；首次收到 `WORKER_LIMIT_HARD_EXCEEDED` 或批次级 `HOST_NOT_READY` 后不再调用 host，剩余项稳定标为 `skipped`。返回值必须包含请求数、实际尝试数、成功数、失败数、跳过数、总未创建数、数量闸快照、代码确定生成的 `user_report`，以及逐项真实 worker/session 或失败终态，供 Lead 如实向用户收口；`success_count + failure_count + skipped_count` 必须等于 `request_count`，其中 `not_created_count = failure_count + skipped_count`。单个 `create_worker` 继续作为兼容入口，并返回相同的结构化 hard-limit 快照。
 
@@ -297,6 +298,41 @@ Git worktree，不改变供应商、模型与 Worker 创建权限偏好。
    `packages/orca-workflow/src/orca-bridge-prompt.ts` 的
    `renderOrcaLeadSystemPrompt`，以及 `packages/lizi-mcps/src/xdt-helper/create_workers.ts`
    的批量结果契约。
+
+#### Lead 等待 Worker：wait_for_worker（状态：不变量，2026-11-02 事故后确立）
+
+2026-11-02 的真实会话（`34311731-cdd8-420b-b61e-cadbe6166799`，Pi Lead +
+`deepseek-v4.1-flash` + MCPRouter 远端 Claude Code Worker）暴露了等待语义的反面：
+Lead 派单后 `bash sleep 60` → `sleep 45` 轮询，Worker 28 秒就完成并调
+`send_to_lead`（返回 `queued:true`），但报告排在 Lead 自己的输入队列里，只有 Lead
+当前 turn 结束才会被消费；Lead 越 sleep，报告送达越晚（白等 100+ 秒）。
+
+契约：
+
+1. **默认推送不变（状态：不变量）**<br>
+   Lead 不在等待时，worker 报告仍按原语义作为新消息在 turn 结束后送达（auto-bridge
+   与 `send_to_lead` 的排队语义不变，默认插话的产品决策不变）。
+2. **当前 turn 内取结果只能走 `wait_for_worker`（状态：不变量）**<br>
+   `wait_for_worker(worker_id, timeout_seconds?)` 是**拉取式**等待：报告一进入 Lead
+   自己的输入队列就取出返回，并从队列摘除（同一条报告只交付一次）；默认 300 秒、
+   上限 540 秒（低于 Codex/Pi 的 600 秒 MCP 请求超时，保证拿到的是优雅回执而不是宿主超时）。
+   收敛结果有四种：`reported`（已取走）、`already_delivered`（worker 已停且队列连续两次为空，
+   报告已经作为消息送达）、`turn_ended`（发起等待的 turn 已结束，报告按正常推送送达、不撤回）、
+   `timeout`（worker 仍在跑，回执带状态与最近输出，并标注 `result_may_be_stale`）。
+   撤回走 host 内部的机器消息撤回（`sessionControlService.cancelMachineQueuedMessage`，
+   授权只放行本队列里的 Orca 报告），dispatcher 的 accepted 回调由 coordinator 的
+   `onDiscardedQueuedMessage` 统一清理。
+3. **禁止 `bash sleep` / 轮询（状态：不变量）**<br>
+   `worker_status` / `read_worker` 仍是诊断工具；任何 sleep 循环都违反本契约。
+4. **实现与回归**<br>
+   `apps/desktop/src/main/maker-ipc/orcaWaitForWorkerReport.ts`（等待算法）、
+   `register.ts` 的 `waitForWorkerReport`（队列读取 + 取消 + 状态回落）、
+   `packages/lizi-mcps/src/orca/server.ts`（`wait_for_worker` 工具）、
+   `packages/orca-workflow/src/orca-bridge-prompt.ts` 与
+   `xdt-helper/start_team.ts`（提示词/工具描述：合法等待 + 禁止 sleep；start_team
+   覆盖"先有会话、后被 start_team 提升为 Lead"的会话）。用例：
+   `apps/desktop/src/main/maker-ipc/__tests__/orcaWaitForWorkerReport.test.ts`、
+   `packages/lizi-mcps/src/__tests__/sessionContext.test.ts`。
 
 #### 消息派发与 auto-bridge
 

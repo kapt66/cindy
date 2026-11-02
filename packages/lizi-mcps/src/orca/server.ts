@@ -3,12 +3,14 @@
  * ---------------------------------------------------------------------------
  * In-process MCP server (`cindy_orca`) 暴露多 worker 协同(Orca team)控制工具。
  *
- * 暴露 17 个 team 工具(直接 server.tool() 注册到顶层,不走 list_tools/call_tool 入口):
+ * 暴露 21 个工具(直接 server.tool() 注册到顶层,不走 list_tools/call_tool 入口):
  *   start_team / create_worker / create_workers / send_to_worker / interrupt_worker /
  *   get_worker_queue_status / update_queued_message / cancel_queued_message /
  *   merge_queued_messages / steer_queued_message / move_queued_message /
  *   list_workers / switch_focus / idle_worker / end_team / archive_worker /
- *   list_available_models
+ *   list_available_models /
+ *   只读诊断: get_workspace_info / worker_status / read_worker /
+ *   当前 turn 内拉取报告: wait_for_worker
  *
  * 为什么直接注册而非走入口:协同工具藏在 list_tools/call_tool 后面时, 模型在用户
  * 说"开协同 / 派 worker"时往往发现不了 start_team, 反而误抓直接可见的
@@ -332,6 +334,39 @@ export interface OrcaMcpDeps {
       "WORKER_NOT_FOUND" | "LEAD_NOT_SUPPORTED"
     >
   >;
+  /**
+   * 拉取式等待：worker 报告进 Lead 自己的输入队列即取出返回（同一条只交付一次），
+   * 超时返回 worker 当前状态。用于必须在当前 turn 内拿到结果的场景，替代 sleep 轮询。
+   */
+  waitForWorkerReport: (params: {
+    leadSessionId: string;
+    workerRef: string;
+    timeoutMs: number;
+  }) => Promise<
+    | {
+        ok: true;
+        outcome: "reported";
+        text: string;
+        client_id: string;
+        waited_ms: number;
+        worker_id: string;
+        session_id: string;
+      }
+    | {
+        ok: true;
+        outcome: "already_delivered" | "turn_ended" | "timeout";
+        waited_ms: number;
+        worker_id: string;
+        session_id: string;
+        status: string;
+        session_status: string;
+        idle_ms: number | null;
+        is_working: boolean;
+        queued_count: number;
+        result: string;
+      }
+    | { ok: false; errorCode: string; message: string }
+  >;
 }
 
 export interface OrcaWorkspaceInfo {
@@ -572,6 +607,70 @@ function registerOrcaDiagnosticTools(
         restored_from_storage: result.restored_from_storage,
         result: result.result,
       });
+    },
+  });
+
+  // 拉取式等待：worker 的报告一进 Lead 自己的队列就取出来交付，并把它从队列摘除
+  // （同一条报告只交付一次）。用于"必须在当前 turn 内拿到结果"的场景，替代
+  // `bash sleep` / `worker_status` 轮询——报告只会在 Lead 的 turn 结束后才被推送，
+  // sleep 只会把送达时间往后拖。
+  sink.register({
+    name: "wait_for_worker",
+    category: "control",
+    description:
+      'Wait for a worker report inside the current turn: returns as soon as the worker report lands in your own input queue (the report is taken out of the queue, so it is delivered only once), or returns the worker status after the timeout. Use this instead of bash sleep or worker_status polling when you truly need the result before you can answer (for example create a file and then commit it). Default 300s, max 540s. Returns status=reported (report consumed), already_delivered (worker finished but the report was already delivered as a message), turn_ended (your turn ended while waiting; the report arrives as a message) or timeout. On any non-reported status report progress to the user and end the turn.',
+    inputShape: {
+      worker_id: z
+        .string()
+        .min(1)
+        .describe("目标 worker 的 worker_id / session_id / label 任一"),
+      timeout_seconds: z
+        .number()
+        .int()
+        .min(5)
+        .max(540)
+        .optional()
+        .describe("等待上限（秒），默认 300"),
+    },
+    handler: async ({ worker_id, timeout_seconds }) => {
+      const ctx = resolveLeadSessionContext(getSessionContext);
+      if (!ctx)
+        return errorPayload(
+          "LEAD_NOT_SUPPORTED",
+          "当前 session 类型不支持作为 Lead。",
+        );
+      const result = await deps.waitForWorkerReport({
+        leadSessionId: ctx.sessionId,
+        workerRef: worker_id,
+        timeoutMs: (timeout_seconds ?? 300) * 1000,
+      });
+      if (!result.ok) return controlErrorPayload(result);
+      return okPayload(
+        result.outcome === "reported"
+          ? {
+              status: "reported",
+              worker_id: result.worker_id,
+              session_id: result.session_id,
+              waited_ms: result.waited_ms,
+              client_id: result.client_id,
+              result: result.text,
+            }
+          : {
+              status: result.outcome,
+              worker_id: result.worker_id,
+              session_id: result.session_id,
+              waited_ms: result.waited_ms,
+              worker_status: result.status,
+              session_status: result.session_status,
+              idle_ms: result.idle_ms,
+              is_working: result.is_working,
+              queued_count: result.queued_count,
+              result: result.result,
+              // 超时/收敛时的 result 是"最近一次 assistant 输出"，可能是上一次任务的
+              // 旧结果；显式标注，避免 Lead 把它当本次结果汇报。
+              result_may_be_stale: result.is_working || result.outcome !== "timeout",
+            },
+      );
     },
   });
 }

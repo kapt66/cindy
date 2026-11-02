@@ -180,6 +180,32 @@ export function createSessionControlService(deps: SessionControlServiceDeps) {
       });
     },
 
+    /**
+     * Host-internal：撤回队列里的机器消息（Orca worker 报告）。
+     *
+     * 授权口径与 steer/move 一致——队列主人可以处理自己队列里由协同成员投递的机器消息；
+     * 用户手打、伙伴委派、插件与定时任务条目仍不开放。仅用于 `wait_for_worker` 把报告
+     * 提前取走（同一条报告只交付一次），不走 MCP `cancel_queued_message` 的用户语义。
+     */
+    async cancelMachineQueuedMessage(params: {
+      targetSessionId: string;
+      queuedMessageId: string;
+    }): Promise<SessionQueuedMessageControlResult> {
+      const missing = await ensureTarget(params.targetSessionId);
+      if (missing) return missing;
+      return queueControl.cancel({
+        sessionId: params.targetSessionId,
+        queuedMessageId: params.queuedMessageId,
+        // 只放行本队列里由协同成员投递的 Orca 机器消息；其它来源一概不开放。
+        authorize: (item) => {
+          if (item.origin?.kind !== 'orca' || item.sourcePlugin) {
+            return { ok: false, message: 'only Orca worker reports can be pulled from this queue' };
+          }
+          return authorizeSessionQueueReorder(item, params.targetSessionId, params.targetSessionId);
+        },
+      });
+    },
+
     async steerQueuedMessage(params: {
       callerSessionId: string;
       targetSessionId: string;

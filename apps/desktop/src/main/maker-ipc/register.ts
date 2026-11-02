@@ -920,6 +920,10 @@ import {
   getOrcaWorkerDiagnosticStatusReadOnly,
   readOrcaWorkerOutputReadOnly,
 } from './orcaDiagnostics.js';
+import {
+  ORCA_WAIT_FOR_WORKER_MAX_TIMEOUT_MS,
+  waitForWorkerReportFromQueue,
+} from './orcaWaitForWorkerReport.js';
 import { startOrcaTeamWithPermissionGate } from './orcaStartTeamPermissionGate.js';
 import { createWorkerCreationPrefsSyncHandler } from './workerCreationPrefsSyncHandler.js';
 import {
@@ -2567,6 +2571,40 @@ interface OrcaCollabService {
         session_id: string;
         status: string;
         session_status: string;
+        result: string;
+      }
+    | { ok: false; errorCode: string; message: string }
+  >;
+  /**
+   * 拉取式等待：worker 报告一进 Lead 自己的输入队列就取出来返回，并把它从队列
+   * 摘掉（同一条报告只交付一次）。用于"必须在当前 turn 内拿到结果"的场景，
+   * 替代模型侧的 `bash sleep` / `worker_status` 轮询；默认推送路径不变。
+   */
+  waitForWorkerReport: (params: {
+    leadSessionId: string;
+    workerRef: string;
+    timeoutMs: number;
+  }) => Promise<
+    | {
+        ok: true;
+        outcome: 'reported';
+        text: string;
+        client_id: string;
+        waited_ms: number;
+        worker_id: string;
+        session_id: string;
+      }
+    | {
+        ok: true;
+        outcome: 'already_delivered' | 'turn_ended' | 'timeout';
+        waited_ms: number;
+        worker_id: string;
+        session_id: string;
+        status: string;
+        session_status: string;
+        idle_ms: number | null;
+        is_working: boolean;
+        queued_count: number;
         result: string;
       }
     | { ok: false; errorCode: string; message: string }
@@ -16131,6 +16169,154 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       } catch (err) {
         return {
           ok: false,
+          errorCode: 'INTERNAL',
+          message: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+    /**
+     * 拉取式等待：worker 报告进 Lead 自己的队列后就取出来返回（同一条只交付一次）。
+     *
+     * 为什么不是"阻塞到 worker 干完"：报告的权威投递路径仍是排队消息；这里只把
+     * 已经在队里的那条提前取走，避免 sleep 轮询把 turn 拖长、把报告送达时间推后。
+     * 取走走与 cancel_queued_message 相同的服务路径，队列记账/回调语义不变。
+     */
+    waitForWorkerReport: async ({ leadSessionId, workerRef, timeoutMs }) => {
+      try {
+        const workers = await listWorkersByLead(leadSessionId);
+        const worker = workers.find(
+          (candidate) =>
+            candidate.id === workerRef ||
+            candidate.sessionId === workerRef ||
+            candidate.label === workerRef,
+        );
+        if (!worker) {
+          return {
+            ok: false,
+            errorCode: 'WORKER_NOT_FOUND',
+            message: `worker ${workerRef} not found in this lead's team`,
+          };
+        }
+        // 队列恢复完成前读快照会 permanent 空转，且撤回会抛 restore 错误。
+        await inputCoordinator.ensureQueueRestored(leadSessionId).catch(() => undefined);
+        if (!inputCoordinator.isQueueRestored(leadSessionId)) {
+          return {
+            ok: false,
+            errorCode: 'HOST_NOT_READY',
+            message: 'lead 输入队列尚未恢复完成，请稍后重试',
+          };
+        }
+        const liveSession = maker.getSession(leadSessionId);
+        const turnGeneration = liveSession?.getTurnGeneration?.();
+        const isTurnActive = () => {
+          const session = maker.getSession(leadSessionId);
+          if (!session || session.isTurnRunning?.() !== true) return false;
+          return turnGeneration === undefined || session.getTurnGeneration?.() === turnGeneration;
+        };
+        const outcome = await waitForWorkerReportFromQueue(
+          {
+            listQueuedReports: (workerSessionId) => {
+              let pendingQueue: ReturnType<typeof inputCoordinator.getQueueControlSnapshot>['pendingQueue'];
+              try {
+                pendingQueue = inputCoordinator.getQueueControlSnapshot(leadSessionId).pendingQueue;
+              } catch {
+                return [];
+              }
+              return pendingQueue
+                .filter(
+                  (item) =>
+                    item.origin?.kind === 'orca' &&
+                    item.origin.senderSessionId === workerSessionId,
+                )
+                .map((item) => ({
+                  clientId: item.clientId,
+                  // 交给模型的是带 `[From Orca Worker …]` 前缀的正文；persistedContent
+                  // 是 {orcaSource, content} JSON 信封，只在缺失时兜底。
+                  text: item.text || item.persistedContent,
+                }));
+            },
+            cancelQueuedReport: async (clientId) => {
+              // 队列主人在自己队列里撤回机器消息：授权口径与 steer/move 一致
+              // （MCP 的 cancel_queued_message 只允许撤回自己发出的消息，不适用于 worker 报告）。
+              // 撤回后 dispatcher 登记过的 accepted 回调由 coordinator 的
+              // onDiscardedQueuedMessage 统一清理，这里不再重复处理。
+              const cancelled = await sessionControlService.cancelMachineQueuedMessage({
+                targetSessionId: leadSessionId,
+                queuedMessageId: clientId,
+              });
+              if (!cancelled.ok) {
+                if (cancelled.errorCode === 'MESSAGE_CONSUMING') return 'retry';
+                if (cancelled.errorCode === 'QUEUED_MESSAGE_NOT_FOUND') return 'retry';
+                log.warn('orca wait: cancel queued worker report failed', {
+                  leadSessionId,
+                  clientId,
+                  errorCode: cancelled.errorCode,
+                });
+                return 'fatal';
+              }
+              return 'cancelled';
+            },
+            readWorkerSettled: async () => {
+              const flow = await createOrcaDiagnosticsDeps().getWorkerFlowStatus(worker.sessionId);
+              return { isWorking: flow.isWorking, queuedCount: flow.queuedCount };
+            },
+            readWorkerSnapshot: async () => {
+              const diagnosticsDeps = createOrcaDiagnosticsDeps();
+              const status = await getOrcaWorkerDiagnosticStatusReadOnly(
+                diagnosticsDeps,
+                leadSessionId,
+                worker.id,
+              );
+              const flow = await diagnosticsDeps.getWorkerFlowStatus(worker.sessionId);
+              const output = await readOrcaWorkerOutputReadOnly(
+                diagnosticsDeps,
+                leadSessionId,
+                worker.id,
+              );
+              return {
+                status: status.ok ? status.status : 'unknown',
+                sessionStatus: status.ok ? status.session_status : 'unknown',
+                idleMs: status.ok ? status.idle_ms : null,
+                isWorking: flow.isWorking,
+                queuedCount: flow.queuedCount,
+                result: output.ok ? output.result : '',
+              };
+            },
+            isTurnActive,
+          },
+          {
+            workerSessionId: worker.sessionId,
+            timeoutMs: Math.min(Math.max(timeoutMs, 1_000), ORCA_WAIT_FOR_WORKER_MAX_TIMEOUT_MS),
+          },
+        );
+        if (!outcome.ok) return outcome;
+        if (outcome.outcome === 'reported') {
+          return {
+            ok: true as const,
+            outcome: 'reported' as const,
+            text: outcome.text,
+            client_id: outcome.clientId,
+            waited_ms: outcome.waitedMs,
+            worker_id: worker.id,
+            session_id: worker.sessionId,
+          };
+        }
+        return {
+          ok: true as const,
+          outcome: outcome.outcome,
+          waited_ms: outcome.waitedMs,
+          worker_id: worker.id,
+          session_id: worker.sessionId,
+          status: outcome.snapshot.status,
+          session_status: outcome.snapshot.sessionStatus,
+          idle_ms: outcome.snapshot.idleMs,
+          is_working: outcome.snapshot.isWorking,
+          queued_count: outcome.snapshot.queuedCount,
+          result: outcome.snapshot.result,
+        };
+      } catch (err) {
+        return {
+          ok: false as const,
           errorCode: 'INTERNAL',
           message: err instanceof Error ? err.message : String(err),
         };

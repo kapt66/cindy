@@ -1093,7 +1093,7 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
       githubIssue: (req) => submitGithubIssueForSession(req),
     },
     // cindy_orca: 多 worker 协同 team 工具集。创建权限由 Main handler 实时校验。
-    orca: {
+    orca: (({
       startTeam: wrap((s, params) => s.startTeam(params)),
       createWorker: wrap((s, params) => s.createWorker(params)),
       listWorkers: wrap((s, params) => s.listWorkers(params)),
@@ -1113,7 +1113,8 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
       getWorkspaceInfo: wrap((s, params) => s.getWorkspaceInfo(params)),
       getWorkerStatus: wrap((s, params) => s.getWorkerStatus(params)),
       readWorker: wrap((s, params) => s.readWorker(params)),
-    } as OrcaMcpDeps,
+      waitForWorkerReport: wrap((s, params) => s.waitForWorkerReport(params)),
+    } satisfies { [K in keyof OrcaMcpDeps]: (...args: never[]) => unknown }) as OrcaMcpDeps),
     // xd-service 已于 2026-07-13 整包退役:Pages 全部能力(含部署)迁入内置
     // 意识 xd-pages(登录邮箱派生凭证 + 目录过户上传),经 ghost_call 调用。
   });
