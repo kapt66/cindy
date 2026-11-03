@@ -185,6 +185,50 @@ export function assertPiSpawnArgvFitsPlatform(
   );
 }
 
+export interface PiSpawnArgvOverflowReport {
+  readonly platform: NodeJS.Platform;
+  readonly budgetChars: number;
+  readonly totalChars: number;
+  readonly overByChars: number;
+  /** 最长的若干参数（长度 + 前缀），用于一眼看出是哪个参数把预算撑爆。 */
+  readonly longestArgs: ReadonlyArray<{ index: number; chars: number; preview: string }>;
+}
+
+const OVERFLOW_PREVIEW_CHARS = 80;
+const OVERFLOW_LONGEST_ARGS = 5;
+
+/**
+ * 超限时才产出诊断（未超限返回 null）。
+ *
+ * 守卫对外文案固定是「Skill / prompt / extension 太多」，但真实原因经常是**某一个**
+ * 注入参数过长（例如整段 prompt 或快照路径），按文案去删项目 Skill 往往无效。把各
+ * 参数长度写进日志，才能在下一次事故里直接定位。
+ */
+export function piSpawnArgvOverflowReport(
+  args: readonly string[],
+  platform: NodeJS.Platform = process.platform,
+): PiSpawnArgvOverflowReport | null {
+  const budget = piSpawnArgvBudget(platform);
+  if (budget === null) return null;
+  const total = estimateSpawnArgvLength(args);
+  if (total <= budget) return null;
+  const longestArgs = args
+    .map((arg, index) => ({
+      index,
+      chars: arg.length + 3,
+      preview: arg.length > OVERFLOW_PREVIEW_CHARS ? `${arg.slice(0, OVERFLOW_PREVIEW_CHARS)}…` : arg,
+    }))
+    .sort((left, right) => right.chars - left.chars)
+    .slice(0, OVERFLOW_LONGEST_ARGS);
+  return Object.freeze({
+    platform,
+    budgetChars: budget,
+    totalChars: total,
+    overByChars: total - budget,
+    longestArgs: Object.freeze(longestArgs),
+  });
+}
+
 export function filterPiProjectCliSkills(
   skills: readonly string[],
   disabledSkillPaths: readonly string[],

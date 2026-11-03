@@ -12,6 +12,7 @@ import {
   PI_POSIX_SPAWN_ARGV_BUDGET,
   PI_WINDOWS_SPAWN_ARGV_BUDGET,
   piProjectResourceCliArgs,
+  piSpawnArgvOverflowReport,
 } from '../project-resource-cli.js';
 
 describe('collectPiProjectResourceCliPaths', () => {
@@ -135,6 +136,24 @@ describe('pi project resource path order and spawn argv budget', () => {
     expect(estimateSpawnArgvLength(args)).toBeLessThan(PI_POSIX_SPAWN_ARGV_BUDGET);
     expect(() => assertPiSpawnArgvFitsPlatform(args, 'win32')).toThrow(/too many Pi skills/);
     expect(() => assertPiSpawnArgvFitsPlatform(args, 'darwin')).not.toThrow();
+  });
+
+  it('reports which argument overflowed so the guard message is not the only clue', () => {
+    const args = ['--mode', 'rpc', '--append-system-prompt', 'x'.repeat(40_000)];
+    const report = piSpawnArgvOverflowReport(args, 'win32');
+    expect(report).not.toBeNull();
+    expect(report!.budgetChars).toBe(PI_WINDOWS_SPAWN_ARGV_BUDGET);
+    expect(report!.totalChars).toBe(estimateSpawnArgvLength(args));
+    expect(report!.overByChars).toBeGreaterThan(0);
+    expect(report!.longestArgs[0]).toMatchObject({ index: 3, chars: 40_003 });
+    expect(report!.longestArgs[0]!.preview).toHaveLength(81);
+    expect(() => assertPiSpawnArgvFitsPlatform(args, 'win32')).toThrow(/too many Pi skills/);
+  });
+
+  it('stays silent while the command line fits the budget', () => {
+    const args = ['--mode', 'rpc', '--skill', '/tmp/one-skill'];
+    expect(piSpawnArgvOverflowReport(args, 'win32')).toBeNull();
+    expect(piSpawnArgvOverflowReport(args, 'freebsd')).toBeNull();
   });
 
   it('rejects an oversized POSIX command line before spawn', () => {

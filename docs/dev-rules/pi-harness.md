@@ -364,6 +364,14 @@ Pi CLI 管理入口、内核自更新与旧工具兼容的执行边界见
    见下方的取证纪律);② `--skill` 改**传目录/根**而不是逐条叶子路径(同一份 `--help` 写明接受
    `a skill file or directory`)。两条都能把对应参数从 O(N) 降为 O(1);改载体前必须实测
    「路径不存在时是否被静默当作正文字符串」等判定启发式。
+   **2026-11-02 进展**:② 已落地——Meka 宿主快照 Skill 与托管 Skill 合并进同一个 session 级
+   `cindy-managed-skills` 根目录(junction 按发现顺序编号,托管在前、快照在后),整次启动只传
+   一个 `--skill`;同一快照 60 个 Skill 实测由 11,548 字符降为 172 字符,`LAZY_CREATE_FAILED`
+   不再由 Skill 数量触发(回归用例:`pi-startsession-cleanup.test.ts` 的
+   "folds dozens of host snapshot Skills into one argv-safe skill root")。守卫超限时新增
+   `piSpawnArgvOverflowReport`,把总长、超限值与最长的几个参数(带 80 字符前缀)写进 main 日志,
+   避免下一次仍只能看到「删项目 Skill」这句误导性文案。① `--append-system-prompt` 文件载体
+   仍未做,继续按「超限时的下一步」处理。
    **argv 预算的现行机制（2026-09-29 订正，取代原「战斗角色的 argv 代价」段）**：原段落写
    「`workflow === 'saga2-combat-development-v1'` 的角色，其 `agents-md` / `rule` 仍按改动前内联
    进 `promptText`，因此上面对默认角色算出的余量**不适用于战斗角色**」。**该 workflow 判据已整体

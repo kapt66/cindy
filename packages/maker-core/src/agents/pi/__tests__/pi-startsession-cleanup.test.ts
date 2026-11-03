@@ -131,6 +131,7 @@ import { PiAgent } from '../index.js';
 import { Session } from '../../../session.js';
 import * as piSubagentRuns from '../pi-subagent-runs.js';
 import type { PiSubagentRunStatus } from '../pi-subagent-runs.js';
+import { assertPiSpawnArgvFitsPlatform } from '../project-resource-cli.js';
 import { piProjectKey } from '../project-trust.js';
 import { AgentStartupCleanupPendingError, AgentStartupStoppedError, type AgentDeps } from '../../base-agent.js';
 import type { Logger } from '../../../interfaces/logger.js';
@@ -2629,14 +2630,54 @@ describe('PiAgent.startSession failure cleanup (mocked pi process)', () => {
     });
     const args = knobs.spawnedArgs[0]!;
 
-    expect(repeatedArgValues(args, '--skill')).toEqual([
+    // argv 不变量：宿主快照 Skill 不能再逐条展开（Meka 快照一次几十个，win32 30k 预算会爆）。
+    // 它们与托管 Skill 合进同一个 session 级根目录（junction 保序），只传一个 `--skill`。
+    const skillArgs = repeatedArgValues(args, '--skill');
+    expect(skillArgs).toHaveLength(2);
+    const skillRoot = skillArgs[0]!;
+    expect(path.basename(skillRoot)).toBe('cindy-managed-skills');
+    expect(skillArgs[1]).toBe(realpathSync(projectSkillDir));
+    const projected = readdirSync(skillRoot)
+      .sort()
+      .map((entry) => realpathSync(path.join(skillRoot, entry)));
+    expect(projected).toEqual([
       path.join(pluginPath, 'skills', 'combat-skill-configuration'),
       path.join(pluginPath, 'skills', 'general-development'),
-      realpathSync(projectSkillDir),
     ]);
     // 宿主 Skill 走的是既有显式通道，不得因此打开项目 settings 信任门。
     expect(args).toContain('--no-approve');
     expect(args).not.toContain('--approve');
+    await handle.close();
+  });
+
+  /**
+   * 2026-11-02 LAZY_CREATE_FAILED 回归：Meka 快照一次几十个 Skill，逐条 `--skill`
+   * 会把 win32 30k 命令行预算撑爆。宿主快照必须和托管 Skill 一样折叠成一个根。
+   */
+  it('folds dozens of host snapshot Skills into one argv-safe skill root', async () => {
+    const pluginPath = path.join(
+      agentHome,
+      'meka-skill-snapshots',
+      'revisions',
+      'c'.repeat(64),
+      'claude-plugin',
+    );
+    const ids = Array.from({ length: 60 }, (_, index) => `host-skill-${String(index).padStart(2, '0')}`);
+    for (const id of ids) {
+      const skillDir = path.join(pluginPath, 'skills', id);
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(path.join(skillDir, 'SKILL.md'), `# ${id}\n`);
+    }
+
+    const handle = await new PiAgent(buildDeps()).startSession({
+      ...opts(),
+      nativeSkillPluginPath: pluginPath,
+    });
+    const args = knobs.spawnedArgs[0]!;
+    const skillArgs = repeatedArgValues(args, '--skill');
+    expect(skillArgs).toHaveLength(1);
+    expect(() => assertPiSpawnArgvFitsPlatform(args, 'win32')).not.toThrow();
+    expect(readdirSync(skillArgs[0]!)).toHaveLength(ids.length);
     await handle.close();
   });
 

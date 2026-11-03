@@ -28,6 +28,7 @@ import { LIBRARY_READ_ROOT, libraryNativeReadContext } from '../shared/library-n
 import os from 'node:os';
 import path from 'node:path';
 import { constants as fsConstants, promises as fs } from 'node:fs';
+import { statSync } from 'node:fs';
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { piSupportedEfforts } from '@cindy/model-providers/pi-thinking-levels';
 import { readPiGlobalContext } from './global-context.js';
@@ -238,6 +239,7 @@ import {
   emptyPiProjectResourceCliPaths,
   filterPiProjectCliSkills,
   piProjectResourceCliArgs,
+  piSpawnArgvOverflowReport,
 } from './project-resource-cli.js';
 import {
   createPiTranslateContext,
@@ -3940,6 +3942,11 @@ export class PiAgent extends BaseAgent {
     // 不新造挂载机制、不复制快照、也不产生第二份审批面。
     // 顺序：宿主自己的 Skill 在前（与伙伴 own-Skills 的「自己的 → 用户的 → 项目的」
     // 优先级一致），项目 Skill 仍随后由既有 `--skill` 传入。
+    //
+    // argv 不变量（2026-11-02 LAZY_CREATE_FAILED 实锤）：`--skill` 数量**不得随 Skill
+    // 个数增长**。Meka 快照一次就有几十个 Skill，逐条展开会在 win32 的 30k 命令行预算里
+    // 直接撞墙（实测 60 条 = 11,548 字符；折叠成 1 个根 = 172 字符）。因此托管 Skill 与
+    // 宿主快照 Skill 合并进**同一个** session 级根目录，用 junction 保序，只传一个参数。
     const hostSkillMount = resolvePiHostSkillMount({
       pluginPath: opts.nativeSkillPluginPath,
       remoteHostId: opts.remoteHostId,
@@ -3957,7 +3964,7 @@ export class PiAgent extends BaseAgent {
     // discovery and path checks can fail before any projection is created.
     let managedSkillPaths: string[];
     let managedSkillRoot: string | undefined;
-    let args: string[];
+    let args: string[] = [];
     try {
       const managedSkillGrants = snapshotManagedSkillGrants(opts.botRuntimeProfile?.skillPolicy);
       // 受邀者不带本机安装的托管技能(属于本机用户与其组织)。
@@ -3978,8 +3985,31 @@ export class PiAgent extends BaseAgent {
       // One explicit directory also works with --no-skills. Keep its lifetime in
       // the existing per-session configHome and link only already-authorized
       // physical sources; argv size must not grow with installed plugin count.
-      const managedLaunchSkills = managedSkillPaths.filter((skillPath) => !projectResourceCli.skills
-        .some((existing) => canonicalSkillPath(existing) === canonicalSkillPath(skillPath)));
+      //
+      // Host snapshot Skills share this same root: Meka freezes dozens of Skills per
+      // session, and one `--skill` per Skill is exactly the argv blow-up above. Order is
+      // managed Skills first, then host snapshot Skills (same relative order as the old
+      // repeated-flag form), project Skills still come last as their own leaves.
+      //
+      // Two shapes meet here: managed entries are usually `.../SKILL.md` files, host
+      // snapshot entries are already Skill directories. Junction the *directory* in both
+      // cases (taking dirname of a directory would project its parent and collapse every
+      // host Skill into one entry).
+      const skillDirectoryOf = (skillPath: string): string => {
+        try {
+          return statSync(skillPath).isDirectory() ? skillPath : path.dirname(skillPath);
+        } catch {
+          return path.dirname(skillPath);
+        }
+      };
+      const projectSkillIdentities = new Set(
+        projectResourceCli.skills.map((existing) => canonicalSkillPath(existing)),
+      );
+      const managedLaunchSkills = [...managedSkillPaths, ...hostSkillMount.skillDirs]
+        .map(skillDirectoryOf)
+        .filter((skillDir) => !projectSkillIdentities.has(canonicalSkillPath(skillDir)))
+        .filter((skillDir, index, all) => all
+          .findIndex((candidate) => canonicalSkillPath(candidate) === canonicalSkillPath(skillDir)) === index);
       managedSkillRoot = managedLaunchSkills.length ? path.join(configHome, 'cindy-managed-skills') : undefined;
 
       args = [
@@ -4018,19 +4048,26 @@ export class PiAgent extends BaseAgent {
         bridgeExtensionPath,
         ...(localSubagentSupported ? ['--extension', subagentExtensionPath] : []),
         ...(!reviewMode && planModeExtAvailable ? ['--extension', planModeExtPath] : []),
-        // Meka: 宿主冻结的技能快照根排在项目 Skill 之前（见上面的顺序约定）。
-        ...hostSkillMount.skillDirs.flatMap((skillPath) => ['--skill', skillPath]),
         ...(loadProjectResourcesInPlace
           ? piProjectResourceCliArgs(projectResourceCli)
           : []),
       ];
       if (managedSkillRoot) {
         await fs.mkdir(managedSkillRoot);
-        for (const [index, skillPath] of managedLaunchSkills.entries()) {
+        for (const [index, skillDir] of managedLaunchSkills.entries()) {
           // Preserve discovery order for same-name skills without long filenames.
-          await fs.symlink(path.dirname(skillPath), path.join(managedSkillRoot, String(index).padStart(12, '0')),
+          await fs.symlink(skillDir, path.join(managedSkillRoot, String(index).padStart(12, '0')),
             process.platform === 'win32' ? 'junction' : 'dir');
         }
+      }
+      // 预算守卫的文案只说明「太多 Skill」，真实原因常是某个注入段太长（prompt / 快照路径）。
+      // 超限时把各参数长度写日志，才能在下一次事故里直接定位，而不是去删项目 Skill。
+      const argvOverflow = piSpawnArgvOverflowReport(args);
+      if (argvOverflow) {
+        this.deps.logger.error('pi spawn argv exceeds platform budget', {
+          sessionId: opts.sessionId ?? null,
+          ...argvOverflow,
+        });
       }
       assertPiSpawnArgvFitsPlatform(args);
     } catch (error) {
