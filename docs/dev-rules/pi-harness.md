@@ -569,6 +569,14 @@ Pi CLI 管理入口、内核自更新与旧工具兼容的执行边界见
     不是 transport 能力差异。代价与上面「有意不投影」同源 —— Pi 远端 Worker **没有**
     `orca_worker_bridge`,手动 `send_to_lead` 不可用,回报靠 Host 侧 auto-bridge;SAGA2 战斗
     服务器只读核查链仍只映射 Claude/Codex(`workerAgentForInstance`),Pi 不进入自动选路。
+    **回报契约(2026-11-02 修正)**:既然这条 transport 上永远没有桥接工具,worker 系统提示
+    就不能再要求 `send_to_lead` —— 之前它按显式桥接写,worker 会白花一轮去找不存在的工具。
+    `applyOrcaInstructions` 现在按**传输能力**选 `reportDelivery`:
+    `agentKind === 'pi' && remoteHostId.startsWith('mcpr:')` ⇒ `auto-bridge`(提示词明确
+    "NO Orca bridge tools",要求把最终结果写成答复、由宿主自动转给 Lead),其余一律保持
+    `explicit-bridge`。判定函数 `orcaWorkerReportDeliveryForSession` 与回归用例在
+    `maker-ipc/__tests__/orcaSessionStartOptions.test.ts`;`create_worker` 描述同步提示
+    "远端 Pi worker 无法中途反问,派单时把验收标准一次写清"。
   - 回归:`apps/desktop/src/main/maker-host/__tests__/` 的 `mcprPiTransport.test.ts`
     (8 个钩子在 `mcpr:` 上零次触碰 pool + 走隧道实现 + 源码级分类不变量)、
     `piMcprRemote.test.ts`(接缝:file ops 复用 / ensure 形状 / envHash 确定性 / 前缀字节交接)、

@@ -93,6 +93,21 @@ export async function synthesizeOrcaVendorOptionsFromDb(
   return false;
 }
 
+/**
+ * Worker 的回报通道由**传输能力**决定，而不是模型或 workflow 名称。
+ *
+ * MCPRouter 远端 Pi（`mcpr:` + `pi`）没有反向转发，控制端的 in-process MCP bridge 不投影
+ * 过去（`shouldSkipMcprPiMcpBridge`，见 `docs/dev-rules/pi-harness.md` §MCPR），所以它的
+ * 系统提示不能再要求 send_to_lead —— 那是个不存在的工具，只会让 worker 白找一轮。
+ */
+export function orcaWorkerReportDeliveryForSession(
+  o: Pick<MakerSessionCreateOpts, 'agentKind' | 'remoteHostId'>,
+): 'explicit-bridge' | 'auto-bridge' {
+  const remoteHostId = typeof o.remoteHostId === 'string' ? o.remoteHostId.trim() : '';
+  return o.agentKind === 'pi' && remoteHostId.startsWith('mcpr:')
+    ? 'auto-bridge'
+    : 'explicit-bridge';
+}
 /** Inject the role-specific Orca instructions into the stable session startup prompt. */
 export function applyOrcaInstructions(o: MakerSessionCreateOpts): boolean {
   const vendorOptions = o.vendorOptions;
@@ -121,7 +136,7 @@ export function applyOrcaInstructions(o: MakerSessionCreateOpts): boolean {
         sessionId,
         workflowId: teamId,
         leadSessionId,
-        reportDelivery: 'explicit-bridge',
+        reportDelivery: orcaWorkerReportDeliveryForSession(o),
       });
     }
   }

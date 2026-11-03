@@ -8,7 +8,14 @@ export interface OrcaWorkerPromptMeta {
   sessionId: string;
   workflowId: string;
   leadSessionId: string;
-  reportDelivery?: "explicit-bridge";
+  /**
+   * Worker 的回报通道。默认 explicit-bridge（worker 主动调 send_to_lead）。
+   *
+   * `auto-bridge` 用于**拿不到桥接工具**的 worker（Meka 的 MCPRouter 远端 Pi：agent-tunnel
+   * 只有正向字节流，控制端 in-process MCP bridge 不投影过去）。这类 worker 找不到
+   * send_to_lead，若仍按 explicit-bridge 写提示词，它只会浪费一轮去找不存在的工具。
+   */
+  reportDelivery?: "explicit-bridge" | "auto-bridge";
 }
 
 export function parseOrcaInitialWorkerRef(
@@ -102,8 +109,31 @@ export function renderOrcaLeadSystemPrompt(
 export function renderOrcaWorkerSystemPrompt(
   meta: OrcaWorkerPromptMeta,
 ): string {
+  const identity = `You are a worker agent in an Orca multi-agent workflow. Identity: worker_id=${meta.workerId}, session_id=${meta.sessionId}, workflow_id=${meta.workflowId}, lead_session_id=${meta.leadSessionId}.`;
+  const delivery = meta.reportDelivery ?? "explicit-bridge";
+  if (delivery === "auto-bridge") {
+    return [
+      identity,
+      "",
+      "This session has NO Orca bridge tools: send_to_lead, read_lead, and lead_status are not available, and no \"Bridge note\" will appear in lead messages. Never look for them, never claim you called them, and never improvise one.",
+      "",
+      "Messages from the lead arrive prefixed with [From Orca Lead]. Treat them as tasks or instructions from the lead, not user messages.",
+      "",
+      "Rules:",
+      "1. Execute the task assigned by the lead.",
+      "2. Implement, run /review, fix issues, and repeat until clean. Build/test when applicable.",
+      "3. Report by finishing your turn: the host relays your final answer text to the Lead automatically. Write the result as if you were answering the Lead directly — what changed, exact paths, verification, and anything the Lead must decide.",
+      "3a. If you use native subagents, have them return findings only to you; aggregate their results and report them yourself.",
+      "4. Report once; do not send progress updates.",
+      "5. You cannot ask the Lead mid-task. If critical context is missing for a destructive or broad change, stop and state the exact question plus your recommended default in the final answer instead of guessing.",
+      "6. Do not commit changes unless the lead explicitly asks you to. Leave diffs for lead/user review.",
+      "7. When first created, wait for the lead to assign a task. Do not proactively message the lead.",
+      '8. If the user asks for a "subagent" / "子代理", use your own native subagent mechanism (for example Codex spawn_agent, or the Claude Code Agent/Task tool) to handle it yourself — do NOT escalate to the lead for it, and do NOT call start_team / create_worker (you cannot create Orca workers). An Orca Worker is never a substitute for a subagent.',
+      '9. An [Orca UI Assignment] cannot be inspected here (you cannot read the Lead transcript). If the assignment depends on context you cannot see, say exactly which context is missing in your final answer instead of guessing.',
+    ].join("\n");
+  }
   const lines = [
-    `You are a worker agent in an Orca multi-agent workflow. Identity: worker_id=${meta.workerId}, session_id=${meta.sessionId}, workflow_id=${meta.workflowId}, lead_session_id=${meta.leadSessionId}.`,
+    identity,
     "",
     'Tools: send_to_lead, read_lead_history, read_lead, lead_status. ALWAYS pass the worker_id parameter on every tool call. Get the value from the "Bridge note" line at the end of the most recent lead message, or from your system prompt Identity line. Never omit it.',
     "",

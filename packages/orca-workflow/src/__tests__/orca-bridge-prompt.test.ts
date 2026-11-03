@@ -245,4 +245,31 @@ describe("renderOrcaWorkerSystemPrompt", () => {
       'Show the native subagent identifier, assigned task, and actual terminal status',
     );
   });
+
+  it('renders the auto-bridge worker variant when the worker cannot reach the bridge', () => {
+    const prompt = renderOrcaWorkerSystemPrompt({
+      workerId: 'worker-1',
+      sessionId: 'session-1',
+      workflowId: 'team-1',
+      leadSessionId: 'lead-1',
+      reportDelivery: 'auto-bridge',
+    });
+
+    expect(prompt).toContain('Identity: worker_id=worker-1');
+    expect(prompt).toContain('NO Orca bridge tools');
+    expect(prompt).toContain('the host relays your final answer text');
+    // 反向：不得再让 worker 去找不存在的工具，也不得承诺中途问答。
+    expect(prompt).not.toContain('ALWAYS call send_to_lead');
+    expect(prompt).not.toContain('please reply via send_to_worker');
+    expect(prompt).not.toContain('read_lead_history');
+
+    // 默认（不传 reportDelivery）仍是显式桥接，老路径不受影响。
+    const explicit = renderOrcaWorkerSystemPrompt({
+      workerId: 'worker-1',
+      sessionId: 'session-1',
+      workflowId: 'team-1',
+      leadSessionId: 'lead-1',
+    });
+    expect(explicit).toContain('ALWAYS call send_to_lead');
+  });
 });
