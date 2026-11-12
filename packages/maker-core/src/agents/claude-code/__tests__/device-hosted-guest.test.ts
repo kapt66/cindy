@@ -30,6 +30,18 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   query: sdkMock.query,
 }));
 
+// 会话 fixture 建在 os.tmpdir() 下；Windows 的 %TEMP% 位于用户目录内，而 Claude Code 的
+// 项目作用域会从 workingDir 一路向上找 `.claude/agents`(见 subagent-definitions.ts)，
+// 开发机自己的 `~/.claude/agents` 会因此漏进扫描，改变「Subagent 模型」设置是否落 env 的
+// 判定。本文件验证的是托管会话的选项装配，不应依赖开发机上恰好有哪些手写定义，固定为空。
+vi.mock('../subagent-definitions.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../subagent-definitions.js')>();
+  return {
+    ...actual,
+    discoverSubagentDefinitions: vi.fn(async () => []),
+  };
+});
+
 import { ClaudeCodeAgent } from '../index.js';
 
 const tempDirs: string[] = [];

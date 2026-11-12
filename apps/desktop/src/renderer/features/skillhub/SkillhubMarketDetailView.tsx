@@ -1,7 +1,7 @@
 import { SkillDetailPage, SkillDetailHeader, SkillDetailColumns, SkillDetailSidebar, SkillDetailContent, SkillDetailResizeHandle } from './components/SkillDetailLayout';
 import { useMetaColumnResize } from './hooks/useMetaColumnResize';
 import { MarketInstallStatus } from './components/MarketInstallStatus';
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Download, FileText, GraduationCap } from 'lucide-react';
 
@@ -39,7 +39,7 @@ import { MarketLocalSkills } from './components/MarketLocalSkills';
 import { ManageButton, ManageMenu, type MarketCardManageAction } from './components/MarketCard';
 import { ScanResultDialog } from './ScanResultDialog';
 import type { ScanResultPayload } from './PublishDialog';
-import { useSkillhubBrowseApi } from './SkillhubTargetContext';
+import { useSkillhubBrowseApi, type SkillhubBrowseApi } from './SkillhubTargetContext';
 
 interface SkillhubMarketDetailViewProps {
   skill: MarketSkill | null;
@@ -74,9 +74,10 @@ interface SkillhubMarketDetailViewProps {
 }
 
 async function loadSkillhubFiles(
+  api: SkillhubBrowseApi,
   skill: MarketSkill,
-): Promise<{ success: boolean; files?: HubPreviewFileMeta[]; error?: string }> {
-  return window.electronAPI.skillhub.getPublishedFiles({
+): Promise<{ success: boolean; files?: HubPreviewFileMeta[]; error?: string; errorCode?: string }> {
+  return api.getPublishedFiles({
     name: skill.name,
     version: skill.latestVersion,
     catalogScope: skill.catalogScope,
@@ -84,10 +85,11 @@ async function loadSkillhubFiles(
 }
 
 async function readSkillhubFile(
+  api: SkillhubBrowseApi,
   skill: MarketSkill,
   path: string,
-): Promise<{ success: boolean; file?: HubPreviewFile; error?: string }> {
-  return window.electronAPI.skillhub.readPublishedFile({
+): Promise<{ success: boolean; file?: HubPreviewFile; error?: string; errorCode?: string }> {
+  return api.readPublishedFile({
     name: skill.name,
     path,
     version: skill.latestVersion,
@@ -112,13 +114,30 @@ export function SkillhubMarketDetailView({
   onClone,
   onManageAction,
   onManage,
-  loadFiles = loadSkillhubFiles,
-  readFile = readSkillhubFile,
+  loadFiles: loadFilesOverride,
+  readFile: readFileOverride,
   allowLearn = true,
   learnSkillEnabled = true,
 }: SkillhubMarketDetailViewProps) {
   const { t } = useTranslation();
   const api = useSkillhubBrowseApi();
+  // Default readers go through the target Hub when one is bound; the local Skill
+  // pages keep using this computer's preload bridge via the context fallback.
+  const contextLoadFiles = useCallback(
+    (target: MarketSkill) => loadSkillhubFiles(api, target),
+    [api],
+  );
+  const contextReadFile = useCallback(
+    (target: MarketSkill, path: string) => readSkillhubFile(api, target, path),
+    [api],
+  );
+  // Explicit prop types keep the optional `errorCode` visible to the two
+  // consumers below; leaving these to inference narrowed the union and dropped
+  // the field even though the preload result carries it.
+  const loadFiles: NonNullable<SkillhubMarketDetailViewProps['loadFiles']> =
+    loadFilesOverride ?? contextLoadFiles;
+  const readFile: NonNullable<SkillhubMarketDetailViewProps['readFile']> =
+    readFileOverride ?? contextReadFile;
   const navigate = useNavigate();
   const metaResize = useMetaColumnResize();
   const { dataOwnerId } = useAuth();

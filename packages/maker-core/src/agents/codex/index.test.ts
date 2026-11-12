@@ -5986,9 +5986,11 @@ describe('CodexAgent.startSession developerInstructions', () => {
     const params = host.request.mock.calls.find(([m]) => m === expectedMethod)?.[1] as {
       config?: Record<string, unknown>;
     };
-    // model_context_window 同时在场, 证明 config 非空、断言不是空转。
+    // 上游把 custom-context host 的窗口预算放进它自己的模型目录(thread 级覆盖会让切模后的
+    // 原生压缩看到上一个大窗口, 见 currentThreadWorkspaceConfig), 所以这里改用恒在的
+    // `features.goals: false` 证明 config 非空、断言不是空转。
     expect(params.config).toMatchObject({
-      model_context_window: 700_000,
+      'features.goals': false,
       'agents.enabled': false,
     });
     await handle.close();
@@ -6010,7 +6012,7 @@ describe('CodexAgent.startSession developerInstructions', () => {
     const params = host.request.mock.calls.find(
       ([m]) => m === Method.ThreadStart,
     )?.[1] as { config?: Record<string, unknown> };
-    expect(params.config).toMatchObject({ model_context_window: 700_000 });
+    expect(params.config).toMatchObject({ 'features.goals': false });
     expect(params.config).not.toHaveProperty('agents.enabled');
     await handle.close();
   });

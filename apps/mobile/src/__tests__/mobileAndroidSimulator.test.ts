@@ -55,7 +55,13 @@ describe('Windows Android 模拟器参数', () => {
       expect(Object.entries(options.env)
         .filter(([key]) => key.startsWith('CINDY_PNPM_CMD_ARG_'))
         .sort(([left], [right]) => Number(left.split('_').at(-1)) - Number(right.split('_').at(-1)))
-        .map(([, value]) => value)).toEqual(['pnpm', ...expoArgs]);
+        .map(([, value]) => value)).toEqual([
+          resolvePnpmInvocation(
+            ['exec', 'expo', 'start', '--dev-client', '--clear', '--port', '8082'],
+            { platform: 'win32', execPath: node, comSpec: cmd },
+          ).env.CINDY_PNPM_CMD_ARG_0,
+          ...expoArgs,
+        ]);
       expect(options.windowsVerbatimArguments).toBe(true);
     }
     expect(options).toMatchObject({ cwd: 'C:\\repo\\apps\\mobile', shell: false, stdio: 'inherit',

@@ -7050,13 +7050,13 @@ Codex/Claude/Pi 原生读 `AGENTS.md`/`CLAUDE.md`/`SKILL.md`，不看我们的 m
   direct-first）与 `slack-hook-protocol` 亦为上游大改。本仓**未新增**任何 wire 字段（Meka 侧仅 4 文件加性改动，
   `mcpr-plugin-capability.ts` 保持加性）。**用户已于 2026-11-12 确认本次协议变更**；跨仓（MCPRouter / plugin-server）
   部署由发布流程协调。
-- **未完成 / 未验证（不得宣告收敛）**：`pnpm test:unit` **已跑完但不是全绿**（desktop tier `Test Files 20 failed |
-  3978 passed | 11 skipped (4009)`、`Tests 80 failed | 68567 passed | 194 skipped`；其中 8 文件为本机 Windows
-  EPERM 建 symlink、1 文件 `RemoteSkillsPage` 3 例待定、**11 文件已修复并复跑 190/190 PASS**；另有
-  `apps/mobile unit` 2 例与 `packages/maker-core unit` 4 文件 / 6 例待归类 —— 逐条见本期报告 §4.6，
-  **不得写成 PASS**）；真机更新、移动端冷更**实机**（批准门已过、本轮 mobile 全量复用上游）、
-  Light/Dark 与十二语**人工目检**、WL-4 端到端 V1–V4（缺 MCPRouter 账号/实例/Gateway key）未验证 ——
-  逐项见本期报告 §4.2 / §6.1。
+- **未完成 / 未验证（不得宣告收敛）**：`pnpm test:unit` **已跑完但不是全绿**，剩余**仅两类环境项** ——
+  ① **8 个 desktop 文件**因本机 **Windows symlink EPERM**（CI Linux 不受限）；② **`cindySubagentRunner` 1 例**
+  Windows OS inventory 超时（环境）。原始失败中的 desktop 12 文件（`RemoteSkillsPage` **18/18** + 11 文件
+  **190/190**）、mobile `mobileAndroidSimulator` **16/16**、maker-core `codex/index.test.ts` + `device-hosted-guest.test.ts`
+  **1077/1077** 均已修复复跑（明细见本期报告 §4.6，**不得写成 PASS**）；真机更新、移动端冷更**实机**
+  （批准门已过、本轮 mobile 全量复用上游）、Light/Dark 与十二语**人工目检**、WL-4 端到端 V1–V4
+  （缺 MCPRouter 账号/实例/Gateway key）未验证 —— 逐项见本期报告 §4.2 / §6.1。
   （`audit:merge` PASS、desktop `typecheck` exit 0、`test:db` / `test:device-link` / `ui-smoke` / `session-smoke`、
   `test:runner` 781/770/0、`check:test-hygiene` 372 PASS、`check:settings-search` PASS、`check:design-inventory` exit 0、
   `gen:help-kb:check` PASS 均已实跑，不在此列。）
@@ -7096,14 +7096,18 @@ Codex/Claude/Pi 原生读 `AGENTS.md`/`CLAUDE.md`/`SKILL.md`，不看我们的 m
   `build`（`tsc --noEmit`）exit 0；`@jackwener/opencli/catalog` 已由 `packages/opencli-vendor` 的
   `exports` 提供并在 `packages/lizi-mcps/node_modules` 下 link（不是缺链）。`check:settings-search` **PASS**
   （`--merge-parent` 双父判据 + 33 条 Meka 定义）。
-- **`test:unit` 收口（2026-11-12，结果不是全绿）**：desktop tier `Test Files 20 failed | 3978 passed |
-  11 skipped (4009)`、`Tests 80 failed | 68567 passed | 194 skipped`（1078.1s）—— 20 文件 = **8 文件本机 Windows
-  EPERM 建 symlink**（CI Linux 不受限）+ **1 文件 `RemoteSkillsPage` 3 例待定** + **11 文件已修复并复跑
-  190/190 PASS**（`newMakerDraftSubmission`〔Meka 草稿三字段 + 真实 `messageToSend` 首条 pending 别名〕、
-  dingtalk/wecom adapter fixture 改 Meka 谱系、`pluginMarketSurface`、`marketPluginInstallProgress`、
-  `tabAvailability`、`textTierDiscipline`、`makerEventHotPathOrdering`、`packagedResourceDeclarations`、
-  `built-in-skills`、`foreignSourceAdapters`）；另 `apps/mobile unit` 1 文件 / 2 例与 `packages/maker-core unit`
-  4 文件 / 6 例**待归类**。逐条见本期报告 **§4.6**，**不得写成 PASS**。
+- **`test:unit` 收口（2026-11-12，结果不是全绿）**：desktop tier 原始 `Test Files 20 failed | 3978 passed |
+  11 skipped (4009)`、`Tests 80 failed | 68567 passed | 194 skipped`（1078.1s）。**已修复复跑**：desktop
+  12 文件（`RemoteSkillsPage` **18/18** —— 生产修复：`SkillhubMarketDetailView` 默认 `loadSkillFiles`/`readFile`
+  改走 `SkillhubBrowseApi`（目标 Hub）、不再直连 `window.electronAPI.skillhub`；另 11 文件 **190/190**：
+  `newMakerDraftSubmission`〔Meka 草稿三字段 + 真实 `messageToSend` 首条 pending 别名〕、dingtalk/wecom fixture
+  改 Meka 谱系、`pluginMarketSurface`、`marketPluginInstallProgress`、`tabAvailability`、`textTierDiscipline`、
+  `makerEventHotPathOrdering`、`packagedResourceDeclarations`、`built-in-skills`、`foreignSourceAdapters`）；
+  mobile `mobileAndroidSimulator` **16/16**（Windows 参数断言改用解析后的 `pnpm.cmd` 路径）；
+  maker-core `codex/index.test.ts`（Codex 断言改用恒在的 `features.goals:false`）+ `device-hosted-guest.test.ts`
+  （mock 掉开发机 `~/.claude/agents` 泄漏）**1077/1077**（仅测试，无生产行为变化）。
+  **剩余仅：8 个 desktop 文件本机 Windows symlink EPERM（CI Linux 不受限）+ `cindySubagentRunner` 1 例
+  Windows OS inventory 超时（环境）**。逐条见本期报告 **§4.6**，**不得写成 PASS**。
 - **存量缺口（非本轮引入，未擅自扩大范围）**：`workerSessionId` 死字段、`sessionsRestoreIfArchived` 的
   `workspaceKind` 联合不含 `'meka'`、`MekaDevInstallReview` 图标映射分叉、`errandPrefsStore.ts` 文档失真、
   `meka-session-smoke.mjs` 战斗角色硬编码、三个上游段头的 hover 规则内联副本 ——

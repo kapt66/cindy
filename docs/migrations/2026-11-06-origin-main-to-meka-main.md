@@ -9,8 +9,10 @@
 > **状态（2026-11-12）**：冲突已 **0**、索引已 **stage**；阶段 A `audit:merge` 已跑 **PASS（有待确认项）**
 > （blockers=0 / dropped=0（18 条逐条 allow）/ review=31 / generated=34，见 §4.1）；desktop `typecheck`
 > **exit 0**、`test:db` / `test:device-link` / `ui-smoke` / `session-smoke` 均已实跑；`pnpm test:unit` **已跑完但
-> 不是全绿**（desktop tier 20 文件 / 80 例失败：8 文件本机 Windows EPERM、1 文件待定、11 文件已修复并复跑
-> 190/190；另有 mobile / maker-core tier 少量失败待归类，见 §4.6）。**仍未验证**：真机打包 / 真机更新 /
+> 不是全绿**：原始全量 desktop tier 20 文件 / 80 例失败，其中 **12 文件已修复并复跑**（`RemoteSkillsPage`
+> **18/18**，其余 11 文件 **190/190**），mobile / maker-core 各文件也已修复复跑（**16/16**、**1077/1077**）；
+> **剩余仅：8 个 desktop 文件因本机 Windows symlink EPERM（CI Linux 不受限）+ `cindySubagentRunner` 1 例
+> Windows OS inventory 超时（环境）**，见 §4.6。**仍未验证**：真机打包 / 真机更新 /
 > 移动端冷更**实机**（批准门已于 2026-11-12 全过）、Light/Dark 与十二语人工目检、WL-4 端到端。 —— 这些标注「待最终门禁」的项**不得**被读成已经通过。
 
 ## 1. 基线
@@ -430,7 +432,7 @@
 | `pnpm desktop:ui-smoke` | **PASS**：`checks=15 pass=13 fail=0 unverified=2`（**0 FAIL**）。2 项 unverified = WL-1.2 / WL-1.3 的 MCPRouter / MekaDesign **「配置」对话框**：当前 profile 已连接，入口被「断开」替代；为不打扰用户真实凭证未造未连接态。**脚本已改为按连接状态分支**（已连接断言「断开」/ 未连接断言「配置」并开对话框），不再误报 FAIL | `_analysis/wp7-ui-smoke2.log` |
 | `pnpm desktop:session-smoke` | **PASS 11/11**（`checks=11 pass=11 fail=0 unverified=0`）：WL-11.3 = `workspace_kind=meka / project=saga2 / role=saga2-default-role / is_formal=0`；WL-11.6 运行期 `mcp=mcp-router,meka-design`、`skillsCount=51`、`workflow键=不存在`；WL-11.17 参考段 4 条 | `_analysis/wp7-session-smoke3.log` |
 | Phase 2 面板 CDP（main target 实测） | **docked 时 `ghost-panel-modal` = 0** → 详情选「弹窗打开」→ `[data-testid=ghost-panel-modal]` **=1 且 header=Meka P4** → 切回 `inherit` → **=0**（WL-1.5 的单宿主/双向切换由此取得实机证据） | 本会话（11-12）；日志同 ui-smoke 批次 |
-| `pnpm test:unit`（**已跑完，不是全绿**） | **apps/desktop tier**：`Test Files 20 failed \| 3978 passed \| 11 skipped (4009)`、`Tests 80 failed \| 68567 passed \| 194 skipped (68841)`（**1078.1s**，tier 结论 `TEST_COLLECT_FAILED`）。20 个失败文件的归因与修复见 **§4.6**（8 文件为本机 Windows EPERM 无法建 symlink、1 文件 RemoteSkillsPage 3 例待定、**11 文件已修复并复跑 190/190 PASS**）。**另有两个 tier 也有失败**（不在上面 20 文件口径内）：`apps/mobile unit` 1 文件 / 2 例（`mobileAndroidSimulator` 的 Windows 参数）、`packages/maker-core unit` 4 文件 / 6 例（见 §4.3 第 3 条，**待归类**） | `_analysis/wp7-test-unit-final.log`（11:41 起，总时长数各 tier 见 §4.6） |
+| `pnpm test:unit`（**已跑完，仍不是全绿**） | **apps/desktop tier** 原始：`Test Files 20 failed \| 3978 passed \| 11 skipped (4009)`、`Tests 80 failed \| 68567 passed \| 194 skipped (68841)`（**1078.1s**，`TEST_COLLECT_FAILED`）。归因与修复见 **§4.6**：**12 文件已修复并复跑**（11 文件 190/190 + `RemoteSkillsPage` **18/18**）、**8 文件为本机 Windows EPERM 建 symlink**（CI Linux 不受限）；`apps/mobile unit` 的 `mobileAndroidSimulator` **16/16 已修复**；`packages/maker-core unit` 的 `codex/index.test.ts` + `device-hosted-guest.test.ts` **1077/1077 已修复**、`cindySubagentRunner` **1 例 Windows OS inventory 超时（环境）**。**剩余仅 8 EPERM + 1 超时** | `_analysis/wp7-test-unit-final.log`（11:41 起）+ 复跑证据见 §4.6 |
 | `pnpm check:test-hygiene` / `pnpm check:settings-search`（最终树复跑） | **PASS 372 files**（test-hygiene，exit 0）/ **PASS**（settings-search，`--merge-parent` 双父判据 + 33 条 Meka 定义） | 本会话（11-12） |
 | `pnpm --filter desktop db:validate` | **6/6，exit 0**：151 sql / seq `0000..0150`；journal↔sql↔snapshot 对齐 + `id`/`prevId` 链连续；`drizzle-kit check` 无 drift；151 snapshot；52 companion 全 CommonJS；固定基线 80 SQL + 23 script；canonical 冻结 132 SQL + 47 script | `wp7-db-report.md` §6.1 |
 | 独立复算 `verify.mjs` / `semantic-check.mjs` | **133/133 PASS** / **12/12 PASS** | `wp7-db-report.md` §6.2/§6.3 |
@@ -467,7 +469,7 @@
 
 | 项 | 现状与原因 |
 | --- | --- |
-| `pnpm test:unit`（**已跑完，未全绿**） | **不得写成 PASS**。apps/desktop tier：**20 文件 / 80 例失败**（3978 文件通过）；其中 **8 文件**是本机 Windows EPERM 建 symlink 失败（CI Linux 不受限）、**1 文件**（`RemoteSkillsPage` 3 例）待定、**11 文件已修复并复跑 190/190 PASS**（§4.6）。另 `apps/mobile unit` 1 文件 / 2 例、`packages/maker-core unit` 4 文件 / 6 例失败，**待归类**（§4.3） |
+| `pnpm test:unit`（**已跑完，仍不是全绿**） | **不得写成 PASS**。**剩余仅 2 类环境项**：① **8 个 desktop 文件**因本机 **Windows symlink EPERM**（`native-binding`、`replyArtifacts`、`pluginAppearanceResources`、`pluginUiPageResources`、`pluginFileAccess`、`browserScreenshotResolver`、`botSkillStore`、`chatServerReplyFiles`；CI Linux 不受限）；② **`cindySubagentRunner` 1 例** Windows OS inventory 超时（测试内已有 Windows CI 注释，属环境）。其余原始失败已全部修复复跑：`RemoteSkillsPage` **18/18**、11 文件 **190/190**、mobile `mobileAndroidSimulator` **16/16**、maker-core `codex/index.test.ts`+`device-hosted-guest.test.ts` **1077/1077**（明细见 §4.6） |
 | 真机打包 / 真机更新 | **未跑**（§6.1） |
 | 移动端冷更**实机** | **未跑**（§6.1；批准门已过、mobile 全量复用上游） |
 | Light / Dark 与十二语**人工目检** | **未跑**（`ui-smoke` 已做十二语程序化横切与功能断言，不等于人眼目检字形/换行） |
@@ -485,11 +487,12 @@
    the stopped request fails without offering new login` 此前为红，根因是**测试隔离**（`manualLogin` 之后
    未清 provider spy，spy 串到了后续用例），不是生产语义问题（曾用上游 `:3:authManager.ts` 复现同样
    失败）。修法 = **清 spy**，**断言未弱化、未删除**。见 §4.5 修复记录第 3 条。
-2. **`test:unit` 的剩余失败（2026-11-12）—— 见 §4.6，逐类归属**：① desktop 8 文件为本机 Windows EPERM
-   无法建 symlink（CI Linux 不受限）；② `RemoteSkillsPage` 3 例**待定**（非并行污染，根因未定）；
-   ③ `apps/mobile unit` 1 文件 / 2 例（`mobileAndroidSimulator` 的 Windows 参数）与 `packages/maker-core unit`
-   4 文件 / 6 例（`codex/index.test`、`device-hosted-guest`、`cindySubagentRunner`、`project-resource-cli`）
-   **待归类**，其中 `device-hosted-guest` 是第六轮已登记的开发机环境依赖。**这些都不写成 PASS。**
+2. **`test:unit` 的剩余失败（2026-11-12）—— 只剩两类环境项，见 §4.6**：① **8 个 desktop 文件**因本机
+   **Windows symlink EPERM**（CI Linux 不受限，非代码回归）；② **`cindySubagentRunner` 1 例** Windows
+   OS inventory 超时（测试内已有 Windows CI 注释）。**其余原始失败均已修复复跑**：desktop 12 文件
+   （`RemoteSkillsPage` **18/18** 属真实目标 Hub 行为修复；11 文件 **190/190**）、mobile
+   `mobileAndroidSimulator` **16/16**、maker-core `codex/index.test.ts` + `device-hosted-guest.test.ts`
+   **1077/1077**。**全量仍不是全绿，不得写成 PASS。**
 3. **历史红已消失**：`@jackwener/opencli/catalog` 不是缺链（`packages/opencli-vendor` 的 `exports` 已含
    `./catalog`，且 `packages/lizi-mcps/node_modules/@jackwener/opencli` 已 link，`require.resolve` 指向
    `opencli-vendor/cindy/catalog.ts`）；`@cindy/maker-shared` 的 ES2023 已修（`lib: ["ES2023"]`，
@@ -514,34 +517,46 @@
 
 原始结论（`_analysis/wp7-test-unit-final.log`）：`apps/desktop unit` = `Test Files 20 failed | 3978 passed |
 11 skipped (4009)`、`Tests 80 failed | 68567 passed | 194 skipped (68841)`（**1078.1s**，tier 结论
-`TEST_COLLECT_FAILED`）；另 `apps/mobile unit` = 1 文件 / 2 例（`mobileAndroidSimulator` 的 Windows 参数，
-250.7s）、`packages/maker-core unit` = 4 文件 / 6 例（130.9s）。
+`TEST_COLLECT_FAILED`）；另 `apps/mobile unit` = 1 文件 / 2 例（`mobileAndroidSimulator`，250.7s）、
+`packages/maker-core unit` = 4 文件 / 6 例（130.9s）。
 
-**desktop 20 个失败文件的三类归因**：
+**最终归类（修复后仍在的只剩环境项）**：
 
-1. **8 文件 = 本机 Windows EPERM 无法创建 symlink**（CI 的 Linux runner 不受此限，不是本次代码回归）：
-   `native-binding`、`replyArtifacts`（2 例）、`pluginAppearanceResources`、`pluginUiPageResources`、
-   `pluginFileAccess`、`browserScreenshotResolver`、`botSkillStore`（2 例）、`chatServerReplyFiles`。
-2. **1 文件 = 待定**：`RemoteSkillsPage` 3 例（点击 `Public skill` 后详情未挂载）。已单独复跑排除并行污染，
-   根因未定，**不算已修复**。
-3. **11 文件 = 已修复并复跑 190/190 PASS**：
-   - `newMakerDraftSubmission`：补 `effectiveCollabEnabled` / `isMekaDraft` / `isFormalDraft`，并修真实
-     `messageToSend` 的「首条 pending」别名同步；
-   - `dingtalk` / `wecom` adapter：迁移 fixture 改按 Meka 谱系（`0089` + `0092` + TS 脚本 + `0139`）；
-   - `pluginMarketSurface`：`MyPluginsPage` 走 `marketApi`；
-   - `marketPluginInstallProgress`：补 `AuthContext` + `initReactI18next` mock；
-   - `tabAvailability`：补 `ghostPanelPresentation` 的 `window` 守卫；
-   - `textTierDiscipline`：placeholder token；
-   - `makerEventHotPathOrdering`：Meka wrapper 断言；
-   - `packagedResourceDeclarations`：`..` 豁免 `.app` bundle；
-   - `built-in-skills`：Meka 4.25 / 4.26 Host 追加段；
-   - `foreignSourceAdapters`：本机 `DSH_HOME` 环境变量污染（清掉后恢复正常）。
-   复跑证据：对上述 11 个文件在同一树上单独执行 vitest → **190/190 PASS**。
+| 组 | 原始失败 | 处理 |
+| --- | --- | --- |
+| desktop 12 文件 | 20 文件失败中的 12 个 | **已修复并复跑 PASS**（11 文件 **190/190** + `RemoteSkillsPage` **18/18**） |
+| desktop 8 文件 | 本机 **Windows EPERM** 无法建 symlink | **环境项，非代码回归**；CI 的 Linux runner 不受限 |
+| mobile 1 文件 | `mobileAndroidSimulator` 2 例（Windows 参数断言） | **已修复并复跑 16/16 PASS** |
+| maker-core（3 文件） | `codex/index.test.ts` 3 例 + `device-hosted-guest.test.ts` 1 例 | **已修复并复跑 1077/1077 PASS** |
+| maker-core（1 文件） | `cindySubagentRunner` 1 例 Windows OS inventory 超时 | **环境项**（测试内已有 Windows CI 注释） |
 
-**另两个 tier 的失败未声称修复**：`mobileAndroidSimulator` 2 例（Windows 参数）与 maker-core
-4 文件 / 6 例（`codex/index.test.ts`、`device-hosted-guest.test.ts`、`cindySubagentRunner.test.ts`、
-`project-resource-cli.test.ts`）**待归类**；其中 `device-hosted-guest` 属第六轮已登记的「开发机环境依赖」
-（本机 `~/.claude/agents` 声明了 `model:`），其余待 auth / agent 领域跟进。
+**已修复的 12 个 desktop 文件**：
+- `RemoteSkillsPage`：**生产修复** —— `SkillhubMarketDetailView` 的默认 `loadSkillFiles` / `readFile` 改走
+  `SkillhubBrowseApi`（**目标 Hub**），不再直连 `window.electronAPI.skillhub`；这是真实的目标 Hub 行为修复，
+  不只是改测试。复跑 **18/18 PASS**。
+- `newMakerDraftSubmission`：补 `effectiveCollabEnabled` / `isMekaDraft` / `isFormalDraft`，并修真实
+  `messageToSend` 的「首条 pending」别名同步；
+- `dingtalk` / `wecom` adapter：迁移 fixture 改按 Meka 谱系（`0089` + `0092` + TS 脚本 + `0139`）；
+- `pluginMarketSurface`：`MyPluginsPage` 走 `marketApi`；
+- `marketPluginInstallProgress`：补 `AuthContext` + `initReactI18next` mock；
+- `tabAvailability`：补 `ghostPanelPresentation` 的 `window` 守卫；
+- `textTierDiscipline`：placeholder token；
+- `makerEventHotPathOrdering`：Meka wrapper 断言；
+- `packagedResourceDeclarations`：`..` 豁免 `.app` bundle；
+- `built-in-skills`：Meka 4.25 / 4.26 Host 追加段；
+- `foreignSourceAdapters`：本机 `DSH_HOME` 环境变量污染（清掉后恢复正常）。
+  复跑证据：11 个文件在同一树上单独执行 vitest → **190/190 PASS**。
+
+**另外两个 tier 的修复**：
+- mobile `mobileAndroidSimulator.test.ts`：Windows 参数断言改为**解析后的 `pnpm.cmd` 路径**（不再比较字面量），
+  复跑 **16/16 PASS**。
+- maker-core `codex/index.test.ts`：Codex 断言改用**恒在的 `features.goals:false`**（不再依赖缺失键）；
+  `device-hosted-guest.test.ts`：**mock 掉开发机 `~/.claude/agents` 泄漏**（第六轮已登记的开发机环境依赖）。
+  两文件合计复跑 **1077/1077 PASS**；**无生产行为变化**（仅测试）。
+  `project-resource-cli` 未再出现在剩余清单（复跑未复现）。
+
+**结论**：全量 `test:unit` **仍不是全绿**，剩余 **8 个 desktop 文件（Windows symlink EPERM）+ `cindySubagentRunner`
+1 例（Windows OS inventory 超时）** 均为本机环境项，**不得写成 PASS**。
 
 ## 5. 生成物与依赖
 
@@ -577,9 +592,11 @@
    `apps/mobile` 总改动 1551 文件），⇒ 新商店包/自建重装与存量装机热更影响**未实测**，
    合并前后指纹值也**未计算**。
 7. **`demo:legacy-migration`**（旧身份只读迁移演示）：本轮未跑。
-8. **`pnpm test:unit` 的剩余失败**：已跑完、**不是全绿** —— desktop tier 20 文件 / 80 例失败（8 文件本机
-   Windows EPERM、1 文件 `RemoteSkillsPage` 3 例待定、11 文件已修复并复跑 190/190 PASS），另有 mobile 1 文件
-   / 2 例与 maker-core 4 文件 / 6 例**待归类**。逐类归属与修复清单见 **§4.6**（**不得写成 PASS**）。
+8. **`pnpm test:unit` 的剩余失败**：已跑完、**不是全绿** —— 原始 desktop tier 20 文件 / 80 例失败中，
+   **12 文件已修复复跑**（`RemoteSkillsPage` **18/18** + 11 文件 **190/190**）、**8 文件为 Windows symlink EPERM**；
+   mobile `mobileAndroidSimulator` **16/16** 已修复；maker-core `codex/index.test.ts` + `device-hosted-guest.test.ts`
+   **1077/1077** 已修复、`cindySubagentRunner` **1 例 Windows OS inventory 超时（环境）**。
+   **剩余仅：8 EPERM + 1 超时**，逐条见 **§4.6**（**不得写成 PASS**）。
 9. **生成物的后续一次性动作**：三类生成物已重建并与 `--check`/哈希一致（§2.10/§5），但 **SBOM 的
    `created` 依赖合并提交**，合并落盘后需再跑一次 `licenses:generate`，否则会产出一行时间戳 diff。
 10. **`forge.test.ts` / `ghostWorkdirGate.test.ts` / `plugin-market/service.test.ts` / `meka-runtime-mcp` /
