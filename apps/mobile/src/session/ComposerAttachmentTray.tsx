@@ -32,6 +32,8 @@ export interface ComposerAttachmentTrayProps {
   onPreview: (attachmentId: string) => void;
   /** 乐观上传中的本机附件(图片=缩略卡,文件=chip,均带转圈;失败态带重试)。 */
   pendingUploads?: readonly PendingLocalAttachmentUpload[];
+  /** Screen owns the viewer so keyboard blur cannot unmount it with this tray. */
+  onPreviewPending: (localId: string) => void;
   /** X 一个上传中的附件(取消上传)。 */
   onRemovePending?: (localId: string) => void;
   /** 重试一个失败态的上传卡。 */
@@ -53,6 +55,7 @@ export function ComposerAttachmentTray({
   onRemove,
   onPreview,
   pendingUploads = [],
+  onPreviewPending,
   onRemovePending,
   onRetryPending,
   pastePlaceholderCount = 0,
@@ -106,10 +109,23 @@ export function ComposerAttachmentTray({
         }
         return (
           <View key={attachment.id} style={styles.chip} testID={`${testIDPrefix}.attachmentChip`}>
-            <FileTypeIcon name={attachment.name} mimeType={attachment.mimeType} />
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={attachmentDisplayLabel(attachment)}
+              onPress={() => onPreview(attachment.id)}
+              style={{
+                flex: 1,
+                flexDirection: "row",
+                alignItems: "center",
+                minHeight: 48,
+                gap: 8,
+              }}
+            >
+              <FileTypeIcon name={attachment.name} mimeType={attachment.mimeType} />
             <Text numberOfLines={1} style={styles.chipText}>
               {attachmentDisplayLabel(attachment)}
             </Text>
+            </Pressable>
             <Pressable
               accessibilityHint={removeDisabledReason}
               accessibilityLabel={t('composer.attachments.removeAttachment', { name: attachment.name })}
@@ -125,10 +141,13 @@ export function ComposerAttachmentTray({
           </View>
         );
       })}
-      {pendingUploads.map((pending) => (pending.kind === 'image' ? (
+      {pendingUploads.map((pending) =>
+        pending.kind === 'image' ? (
         <View key={pending.localId} style={styles.thumbCard} testID={`${testIDPrefix}.attachmentPendingThumb`}>
           <View style={styles.thumbPressable}>
-            <Image contentFit="cover" source={{ uri: pending.previewUri }} style={styles.thumbImage} transition={0} />
+            {pending.previewUri ? (
+              <Image contentFit="cover" source={{ uri: pending.previewUri }} style={styles.thumbImage} transition={0} />
+            ) : null}
             {pending.failed ? (
               // 失败态:遮罩变为可点的「重试」——弱网下让用户原地重试,不用重新找图。
               <Pressable
@@ -142,9 +161,16 @@ export function ComposerAttachmentTray({
                 <Text style={styles.thumbFailedText}>{t('composer.attachments.retry')}</Text>
               </Pressable>
             ) : (
-              <View style={styles.thumbBusyOverlay}>
+              <Pressable
+                accessibilityLabel={t('composer.attachments.viewImage', { name: pending.name })}
+                accessibilityRole="button"
+                disabled={!pending.previewUri}
+                onPress={() => onPreviewPending(pending.localId)}
+                style={({ pressed }) => [styles.thumbBusyOverlay, pressed && styles.pressed]}
+                testID={`${testIDPrefix}.attachmentPendingPreviewButton`}
+              >
                 <ActivityIndicator color={colors.swipeActionText} size="small" />
-              </View>
+              </Pressable>
             )}
           </View>
           <Pressable
@@ -193,7 +219,7 @@ export function ComposerAttachmentTray({
             <X color={colors.textSecondary} size={iconSize.sm} strokeWidth={iconStroke.regular} />
           </Pressable>
         </View>
-      )))}
+        ))}
       {Array.from({ length: pastePlaceholderCount }, (_, index) => (
         // 粘贴占位卡:还拿不到图片数据(原生后台读取中),灰底 + 转圈占住席位,
         // 让「粘贴」到「缩略图可见」之间没有任何空窗。无 X:此阶段没有可取消的

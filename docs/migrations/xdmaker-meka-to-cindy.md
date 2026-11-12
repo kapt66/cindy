@@ -6992,6 +6992,123 @@ Codex/Claude/Pi 原生读 `AGENTS.md`/`CLAUDE.md`/`SKILL.md`，不看我们的 m
   图标映射分叉、`errandPrefsStore.ts` 文档失真、`meka-session-smoke.mjs` 战斗角色硬编码、
   `maker-host/index.ts:3303 canUseRemote` 未登记进旁路清单、三处未使用 import、
   `agentProcessPriority.test.ts:222` 注释仍写 `CindyGlobal` —— 逐条见报告 §6.4。
+### 11.37 2026-11-06 第七轮上游同步（`origin/main` → `meka/main`）
+
+> 本条是**新条目**，不改写任何带日期的历史原句。逐组解决结论、验证实跑与「未验证 + 原因」登记写在
+> [`2026-11-06-origin-main-to-meka-main.md`](./2026-11-06-origin-main-to-meka-main.md)。
+
+- **基线**：来源 `origin/main` = `b69985e79b31b557acc1de1797b13ad64fe32a7a`（上游独有 **6417** 提交 /
+  **9726** 文件，约 3 周）；目标 `meka/main` 合并前 `a0bf8d19ab`（本轮前真实增量 21 提交 / 64 文件）；
+  merge-base `53b2c99854`（= 第六轮的上游端点）。Git 冲突 **169**（158 `UU` + 3 `AA` + 5 `DU` + 3 `UD`），
+  按 9 个并行能力组 + 主代理（身份/构建、生成物）解决；并对「两侧同改的 36 个冲突候选面之外」的
+  静默断连（0 冲突但被上游语义顶掉的文件）逐条扫描与修复。
+- **本轮主导上游改动**：`0ece30efb4 feat(plugins): 统一能力授权与 local 开发安装`（插件基座最大一笔：
+  移除名称/官方来源门禁、本地与 Forge 新装默认 `namespace:"local"`、`source:"gh-cli"` 按声明开放；
+  并删除保留 ID 前缀的开发闸与共享层 `layoutWithGhostPanel`）、`abb83fa21c`（**插件停靠面板收束为右侧栏
+  全局页签**，96 文件 `+1272 −5917`，本域唯一删除源）、上游 `0129`–`0147` 19 条 migration、
+  `0f2fd465b7`（`cindy://plugins[/<ghostId>]` 深链）、i18n 扩语（`2b771422a2` / `378820a7fe` /
+  `3019820b8f` / `986a748f22`，本仓实测 12 个 locale）、`36a333ac18`（内置智能通讯录退役，由通讯录插件承接）、
+  伙伴/Orca 一组（`44ac8fccf3` / `f1ad8475e7` / `98767bbbe3` / `65e3f2f1e1` / `72c6890c18`）。
+- **D4 顺移追加（数据库）**：已发布谱系 `0000`–`0131` **零改动**（3 个 `AA` snapshot 取 Meka 侧，实测与合并前
+  `HEAD` 逐字节相同）；上游 `0129`–`0147` 落为 Meka **`0132`–`0150`**（+3，后缀不变），19 条 SQL 与
+  **5 条 companion**（`scripts/0133/0137/0141/0143/0148`）逐字节取自上游；新 snapshot = 上游同内容 + 
+  **Meka delta（每份恰 15 项：2 张整表 + sessions 10 列 + 2 索引 + 1 外键）**，剥 delta 后与上游逐字符相等，
+  `prevId` 链从 Meka `0131` 接上；`meta/_journal.json` 132 → **151 条**（idx `0..150` 连续，既有段逐字节保留）。
+  上游 `0139_bizarre_pet_avengers` 会重建三个 `hook_group_message_stats_*` 触发器，而这三个对象在 Meka 谱系里由
+  **`0092` 的 companion 脚本**创建 ⇒ 真实回放与测试夹具必须按「`0089` + `0092` SQL + `0092` companion + `0139`」
+  准备（不改已发布 migration）。**实跑**：`db:validate` **6/6**（151 sql、seq `0000..0150`、journal↔sql↔snapshot
+  对齐、`drizzle-kit check` 无 drift、52 companion 全 CommonJS、canonical 冻结 **132 SQL + 47 script**）。
+- **插件面板最终形态（第二阶段收敛定稿，取代旧三件套）**：`docked` = **上游右侧栏全局页签** `plugin-view`
+  （`view:'panel'`，落边 = 页签组记忆 > `panel.position`；Meka 三插件声明 `left` ⇒ 聊天区左侧页签组）；
+  `modal` = **Meka `GhostPanelModal`**（同页覆盖层，不是独立窗口、不是第三种页签）；`position:'tab'` **回上游
+  `GhostPagePanelHost`**（取消旧 Modal 兜底）。「布局树停靠 pane + 面板独立窗口 + 气泡/恢复入口」整条链路
+  **随上游删除**，`xdt:ghostPanelBubble:v1` 只作旧状态**只读**迁移源（命中实例记 `dismissed` ⇒ 升级后右栏不自动
+  出现，但详情页状态行可发现）。三态优先级、`allowUserPresentationOverride`、关页签=`dismissed` / 关 Modal=仅隐藏
+  的语义不变；`panel.systemButtons` 退化为**声明数据**（校验不变、无 UI 消费方）。**唯一新增拒绝点**：
+  `position:'tab'` 声明 `allowUserPresentationOverride`（或 `minWidth`/`defaultFraction`/`systemButtons`）⇒ 拒装，
+  影响面当前 **0 个**插件；存量已装插件无需重装/重确认/重配置。
+- **本轮无新增 Meka 白名单条目**；**更新的条目**：WL-1.5（按上述最终形态重写，含新拒绝点与旧 bubble 键只读迁移）、
+  WL-5.5（上游已删除 `userInfoSectionHover.test.ts`（`UD`）⇒ 门禁改指 `userInfoSectionMobileDownload.test.tsx` /
+  `userInfoSectionUpdateFlame.test.tsx`，断言形态由源码扫描改为行为用例；并更正已随 WL-26 消失的「日志上报目标」
+  消费面）、WL-26（**第二次收口**：不启用上报；`performance-trace` 保留本地录制/保存/查看并**去上传**
+  （`upload` / `artifacts` / `restore` / `traceRedactionWorker` 与 `restore-performance-report.ts` 删除，
+  `reportId.ts` 改本地 ID）；`log-upload` 上报模块删除、本地采集/脱敏/「打开日志目录」保留
+  （`types` / `limits` 只留采集形状与上限）；**移动端漏面已清**：`apps/mobile/src/debug/diagnosticUpload.ts`
+  与其测试删除，`git grep diagnosticUpload` 只应命中历史文档；补 `check:test-hygiene` 与
+  `performance-trace` 验证锚点与反回归搜索清单）。
+- **刻意偏离上游（已登记）**：
+  1. `AGENTS.md` 与 `development-workflow.md` 继续保留 Meka 的提交前门禁口径（第四轮裁决不变）；
+  2. **WL-26 维持**：不启用客户端日志上报 —— 上游本轮新增的 `logSupport` 上传行、`useManualLogUpload`、
+     `main/log-upload` 上报三文件与 `performance-trace` 的上传接线全部移除/不接线，只保留本地面；
+  3. **面板 Modal 保留**为停靠宿主的替代呈现（上游只有全局页签）；但**不保留**独立窗口/气泡/布局树 pane；
+  4. `panel.position` 五值跟上游，**删除**「`right`→`left` 归一化」（声明 `right/top/bottom` 的旧包真的落该边）；
+  5. `taskView` 协议接受、UI 层不主动开放（新增产品面另立裁决）；
+  6. 冷启动端点清单取上游**可重试**流程（删除 Meka「失败即登出」早退），WL-5.6 运行期版别语义不变；
+  7. 十二语中 de/es/fr/pt-BR/pt-PT 与文言为**占位**（英文/现代底本），登记为翻译债。
+- **跨端协议变化（登记，非本仓自行修改）**：`packages/plugin-protocol` 接纳上游 `manifest.taskView`、
+  `mainView.open|side|icon|multiple`、`readme`（+1937 行）等；`packages/device-link*`（自建 relay、LAN 直连、
+  direct-first）与 `slack-hook-protocol` 亦为上游大改。本仓**未新增**任何 wire 字段（Meka 侧仅 4 文件加性改动，
+  `mcpr-plugin-capability.ts` 保持加性）。**用户已于 2026-11-12 确认本次协议变更**；跨仓（MCPRouter / plugin-server）
+  部署由发布流程协调。
+- **未完成 / 未验证（不得宣告收敛）**：`pnpm test:unit` **已跑完但不是全绿**（desktop tier `Test Files 20 failed |
+  3978 passed | 11 skipped (4009)`、`Tests 80 failed | 68567 passed | 194 skipped`；其中 8 文件为本机 Windows
+  EPERM 建 symlink、1 文件 `RemoteSkillsPage` 3 例待定、**11 文件已修复并复跑 190/190 PASS**；另有
+  `apps/mobile unit` 2 例与 `packages/maker-core unit` 4 文件 / 6 例待归类 —— 逐条见本期报告 §4.6，
+  **不得写成 PASS**）；真机更新、移动端冷更**实机**（批准门已过、本轮 mobile 全量复用上游）、
+  Light/Dark 与十二语**人工目检**、WL-4 端到端 V1–V4（缺 MCPRouter 账号/实例/Gateway key）未验证 ——
+  逐项见本期报告 §4.2 / §6.1。
+  （`audit:merge` PASS、desktop `typecheck` exit 0、`test:db` / `test:device-link` / `ui-smoke` / `session-smoke`、
+  `test:runner` 781/770/0、`check:test-hygiene` 372 PASS、`check:settings-search` PASS、`check:design-inventory` exit 0、
+  `gen:help-kb:check` PASS 均已实跑，不在此列。）
+- **收口修复（2026-11-12，交付前最后一轮）**：① `NewMakerDraftRoute` 的 Meka 草稿**不再预建 provisional
+  dialogue 会话**（WL-11.3 的真实根因：预建行让草稿先以非 meka 身份落库/落分组）；② `maker-ipc` 的
+  `send_to_session` create 分支**完整保留 `'meka'` 绑定**（`workspace_kind` + project + role 缺一即降级为普通会话）；
+  ③ `authColdStartRecovery.test.ts` 在 `manualLogin` 后**清 provider spy**（测试隔离；断言未弱化）；
+  ④ `check:settings-search` 加 **`--merge-parent` 双父判据 + 33 条 Meka 定义**；⑤ `desktop:ui-smoke` 的
+  MCPRouter/MekaDesign 检查改为**按连接状态分支**。逐条见本期报告 §4.5。
+- **交付前置批准门（2026-11-12：三项均已获用户确认）**：① **插件基座白名单 Approve —— ✅ 已获用户批准
+  （2026-11-12）**，批准时已特别知悉「gh-cli 权限扩大（上游删除『仅官方 cindy-github』拒绝面，改为按声明开放 +
+  更新确认补偿）」与「Meka 新增 1 个 `panel` 拒绝点」；存量兼容结论「无需重装 / 重新确认权限 / 重新配置」
+  （`RECEIPT_SCHEMA_VERSION=2`、指纹 `cindy-ghost-content-v2`、安装布局常量、已装读取路径均未变）。
+  ② **移动端冷更确认门 —— ✅ 已获用户确认（2026-11-12）**：用户原话「cindy/meka 没有主观动过任何 mobile 内容，
+  所以全部接纳上游即可（复用上游的 mobile）」⇒ 本轮 `apps/mobile` **全部复用上游、不做 Meka 分叉**
+  （含 `app.json` / `modules/**` 原生源码与 gradle/podspec/expo-module.config.json / `plugins/**` 的
+  **115 个指纹输入路径**），用户已接受「装新包才拿热更」的存量代价；**真机冷更实机与指纹前后值仍未做**。
+  ③ **协议确认门 —— ✅ 已获用户确认（2026-11-12）**：`plugin-protocol` / `device-link*` /
+  `slack-hook-protocol` 为上游变更（本仓未新增 wire 字段），确认后跨仓部署仍由发布流程协调。
+- **生成物已重建（2026-11-06，不手改）**：`docs/design-rules/design-inventory.md`（63 surface、
+  GENERATED 区块最新）、`docs/legal/notices/**` 与 `THIRD-PARTY-*`（19 个产物，复跑哈希一致）、
+  `maker-ipc/helpKnowledge.generated.ts`（`gen:help-kb` 33 篇，`--check` PASS）。
+- **收口追加（同日 / 2026-11-12 补记）**：**阶段 A `pnpm audit:merge` 已跑 PASS（有待确认项）** ——
+  `blockers=0`、首跑 20 条 DROPPED 已消除（**18 条逐条 `--allow`**）后 `dropped=0`、`review=31`（19 条 drizzle SQL 顺移 +
+  12 条 snapshot/其它，DB 组已逐字节确认）、`generated=34`（20 drizzle + 13 notices + lockfile），
+  日志见 `_analysis/wp7-audit-index.log`、`wp7-audit-allow.log`；**最终门禁实跑**：
+  `pnpm --filter desktop typecheck` **exit 0 / 0 error**（11:33 最终树）、`pnpm test:db` **exit 0**
+  （788 例 / 777 pass / 0 fail，`PASS apps/desktop db (390.6s)`，含 `migrationReplay`）、
+  `pnpm test:device-link` **10/10**、`pnpm desktop:ui-smoke` **PASS 15 checks = 13 pass / 0 fail / 2 unverified**
+  （2 项为 MCPRouter/MekaDesign 已连接态下的「配置」对话框；脚本已按状态分支，不再误报 FAIL）、
+  `pnpm desktop:session-smoke` **PASS 11/11**（WL-11.3 `workspace_kind=meka / project=saga2 /
+  role=saga2-default-role`）、Phase 2 面板 CDP 实测（docked `modal=0` → 选「弹窗打开」`modal=1` 且 header=Meka P4 →
+  切回 inherit `modal=0`）；`pnpm check:test-hygiene` **exit 0 / PASS 372 files**（本地基准改为当前分支
+  `origin/<branch>`，可用 `--base` 显式指定；21 个 Meka 存量缺口按规则分类处置：就地豁免 2 文件 4 处、
+  删除 1 处无效重置、19 文件 27 处 `sourceReads` 首轮登记，拒绝上调语义未动）；`pnpm test:runner`
+  **781 例 / 770 pass / 0 fail / 11 skip**；`@cindy/maker-shared` 的 `lib` 修正为 ES2023 后
+  `build`（`tsc --noEmit`）exit 0；`@jackwener/opencli/catalog` 已由 `packages/opencli-vendor` 的
+  `exports` 提供并在 `packages/lizi-mcps/node_modules` 下 link（不是缺链）。`check:settings-search` **PASS**
+  （`--merge-parent` 双父判据 + 33 条 Meka 定义）。
+- **`test:unit` 收口（2026-11-12，结果不是全绿）**：desktop tier `Test Files 20 failed | 3978 passed |
+  11 skipped (4009)`、`Tests 80 failed | 68567 passed | 194 skipped`（1078.1s）—— 20 文件 = **8 文件本机 Windows
+  EPERM 建 symlink**（CI Linux 不受限）+ **1 文件 `RemoteSkillsPage` 3 例待定** + **11 文件已修复并复跑
+  190/190 PASS**（`newMakerDraftSubmission`〔Meka 草稿三字段 + 真实 `messageToSend` 首条 pending 别名〕、
+  dingtalk/wecom adapter fixture 改 Meka 谱系、`pluginMarketSurface`、`marketPluginInstallProgress`、
+  `tabAvailability`、`textTierDiscipline`、`makerEventHotPathOrdering`、`packagedResourceDeclarations`、
+  `built-in-skills`、`foreignSourceAdapters`）；另 `apps/mobile unit` 1 文件 / 2 例与 `packages/maker-core unit`
+  4 文件 / 6 例**待归类**。逐条见本期报告 **§4.6**，**不得写成 PASS**。
+- **存量缺口（非本轮引入，未擅自扩大范围）**：`workerSessionId` 死字段、`sessionsRestoreIfArchived` 的
+  `workspaceKind` 联合不含 `'meka'`、`MekaDevInstallReview` 图标映射分叉、`errandPrefsStore.ts` 文档失真、
+  `meka-session-smoke.mjs` 战斗角色硬编码、三个上游段头的 hover 规则内联副本 ——
+  逐条见本期报告 §6.4。
+
 ### 6.63 2026-10-08 MCPRouter 的 linux runtime manifest 从来没有目录分发段：远端 Codex 命令执行起不来（已修）
 
 - **现象**：MCPRouter（远程 agent 宿主）会话里远端 Codex 的 code-mode（命令执行）起不来，

@@ -1,3 +1,5 @@
+import { materializeToolProcessMedia } from './cindy-media/toolProcessMedia.js';
+import { withToolProcessMedia, type ProcessMediaRef, type NativeToolMedia } from '@cindy/maker-shared/tool-process-media';
 import { readTaskResultsForReply } from './botTaskReplyResults.js';
 /**
  * messagePersistBroadcaster — 把 agent 消息的持久化从 renderer 收口到 main 单点。
@@ -28,13 +30,18 @@ import { readTaskResultsForReply } from './botTaskReplyResults.js';
  * 事件循环。调用方需保证"先 broadcastToAllWindows 再让本模块入队落库"。
  */
 
+import { parseOutputLimitDetails, type OutputLimitDetails } from '@cindy/maker-shared';
+
 import { createId } from '@paralleldrive/cuid2';
+import { assistantSamplingSettlements, type PendingSamplingSettlement } from './assistantSamplingSettlement.js';
 
 import { BrowserWindow } from 'electron';
 import { desc, eq } from 'drizzle-orm';
 
 import {
   broadcastMessageRow,
+  broadcastMessageDeleted,
+  discardPersistedAssistantMessage,
   broadcastMessageAgentMetaUpdate,
   createMessage as createDbMessage,
   findVisibleToolUseMessageByAliases,
@@ -206,6 +213,92 @@ interface AssistantBlock {
 }
 
 const assistantBlocks = new Map<string, AssistantBlock>();
+/** Exact provider item → durable row links, scoped to the current product turn. */
+const assistantItemPersistIds = new Map<string, Map<string, string>>();
+/** Native items whose response can still be invalidated by a sampling disconnect. */
+const pendingSamplingItems = new Map<string, Set<string>>();
+/** A closed native runtime no longer owns an unresolved item from its old history. */
+const samplingRuntimeIds = new Map<string, string>();
+export function getAssistantSamplingRuntimeId(sessionId: string): string | null {
+  return samplingRuntimeIds.get(sessionId) ?? null;
+}
+/** Persist the outcome before enqueueing its DB patch, so close/account switch
+ * cannot erase the only proof that an item was accepted or failed. */
+function queueSamplingMetaPatch(sessionId: string, persistId: string, patch: Record<string, unknown>): void {
+  queueSamplingSettlement(assistantSamplingSettlements.put({ sessionId, persistId, patch }));
+}
+
+function queueSamplingSettlement(entry: PendingSamplingSettlement): void {
+  enqueueWrite(`assistant_sampling_meta:${entry.sessionId}:${entry.persistId}`, async ownerScope => {
+    const patched = await patchMessageAgentMetaWithResult(entry.sessionId, entry.persistId, entry.patch);
+    // A resolved null means the row was removed. A rejection leaves the intent intact.
+    assistantSamplingSettlements.acknowledge(entry);
+    if (patched) await broadcastMessageAgentMetaUpdate(entry.sessionId, entry.persistId, ownerScope);
+  });
+}
+
+/** Replay only the active owner's durable intents, including after process restart. */
+export async function flushAssistantSamplingMetadata(sessionId: string): Promise<boolean> {
+  await drainPersistQueue();
+  for (const entry of assistantSamplingSettlements.list(sessionId)) queueSamplingSettlement(entry);
+  await drainPersistQueue();
+  return assistantSamplingSettlements.list(sessionId).length === 0;
+}
+
+/** Release only SDK-proven accepted items (or the remaining items at a terminal boundary). */
+export function onAssistantSamplingAccepted(sessionId: string, itemIds?: readonly string[]): void {
+  const pending = pendingSamplingItems.get(sessionId);
+  if (!pending) return;
+  const links = assistantItemPersistIds.get(sessionId);
+  for (const itemId of itemIds ?? [...pending]) {
+    if (!pending.delete(itemId)) continue;
+    const persistId = links?.get(itemId);
+    if (!persistId) continue;
+    const block = assistantBlocks.get(sessionId);
+    if (block?.persistId === persistId) {
+      block.agentMeta = { ...(block.agentMeta ?? lastAgentMetaBySession.get(sessionId)), samplingAttemptPending: false };
+    } else {
+      queueSamplingMetaPatch(sessionId, persistId, { samplingAttemptPending: false });
+    }
+  }
+  if (!pending.size) pendingSamplingItems.delete(sessionId);
+}
+
+/** Mark an SDK-proven failed sampling attempt without changing or deleting its prose. */
+export function onAssistantAttemptFailure(sessionId: string, data: unknown): void {
+  if (!data || typeof data !== 'object') return;
+  const failure = (data as { assistantAttemptFailure?: unknown }).assistantAttemptFailure;
+  if (!failure || typeof failure !== 'object') return;
+  const { threadId, turnId, attempt, agentMessageIds } = failure as Record<string, unknown>;
+  if (typeof threadId !== 'string' || typeof turnId !== 'string' ||
+    !Number.isSafeInteger(attempt) || typeof attempt !== 'number' || attempt < 1 ||
+    !Array.isArray(agentMessageIds)) return;
+  const links = assistantItemPersistIds.get(sessionId);
+  if (!links) return;
+  for (const itemId of agentMessageIds) {
+    if (typeof itemId !== 'string') continue;
+    const persistId = links.get(itemId);
+    if (!persistId) continue;
+    const message = (data as { message?: unknown }).message;
+    const marker = { threadId, turnId, attempt, itemId,
+      ...(typeof message === 'string' ? { error: redactSensitiveText(message) } : {}),
+    };
+    links.delete(itemId);
+    pendingSamplingItems.get(sessionId)?.delete(itemId);
+    const block = assistantBlocks.get(sessionId);
+    if (block?.persistId === persistId) {
+      block.agentMeta = { ...(block.agentMeta ?? lastAgentMetaBySession.get(sessionId)), failedSamplingAttempt: marker, samplingAttemptPending: false, turnCompleted: false };
+      flushAssistantBlock(sessionId);
+    } else {
+      queueSamplingMetaPatch(sessionId, persistId, {
+        failedSamplingAttempt: marker, samplingAttemptPending: false, turnCompleted: false,
+      });
+    }
+    if (lastTopLevelAssistantPersistIdBySession.get(sessionId) === persistId) {
+      lastTopLevelAssistantPersistIdBySession.delete(sessionId);
+    }
+  }
+}
 
 /**
  * 本轮 prompt 之前到达的非 final text（运行时就绪 / 重连期间的提示文本）会先建一个 block，
@@ -231,9 +324,17 @@ function stampBlockAfterTurnStart(
 // In-flight thinking is not in SQLite until final. Keep one recoverable snapshot
 // so expanding midway does not depend on deltas a collapsed controller never received.
 const historyThinkingBlocks = new Map<string, Map<string, Message>>();
+// blockIds whose `final` arrived while its queued write has not settled yet, mapped
+// to the exact snapshot entry that write persists. Those snapshots survive turn
+// boundaries (the write's release callback owns them); a snapshot without a final
+// belongs to a dead attempt and is dropped on turn settle. Identity compare (not a
+// bare blockId set) keeps a stale write's release from unmarking a newer snapshot
+// re-created under the same blockId after a history cleanup.
+const historyThinkingFinalBlocks = new Map<string, Map<string, Message>>();
 const historyThinkingOwners = new Map<string, OwnerScope>();
 export function clearSessionThinkingSnapshots(sessionId: string): void {
   historyThinkingBlocks.delete(sessionId);
+  historyThinkingFinalBlocks.delete(sessionId);
   historyThinkingOwners.delete(sessionId);
 }
 export function getSessionThinkingSnapshots(sessionId: string): Message[] {
@@ -337,6 +438,8 @@ export function noteSessionClearBoundary(sessionId: string, clearedAt: string | 
   if (!Number.isFinite(parsed)) return;
   const current = clearBoundaryBySession.get(sessionId);
   if (current === undefined || parsed > current) {
+    assistantItemPersistIds.delete(sessionId);
+    pendingSamplingItems.delete(sessionId);
     clearSessionThinkingSnapshots(sessionId);
     clearBoundaryBySession.set(sessionId, parsed);
     sealedAssistantLateFinalBySession.delete(sessionId);
@@ -377,6 +480,19 @@ type OwnerScope = ReturnType<typeof broadcastTap.captureDataOwnerBroadcastScope>
 const dbAgentKindBySession = new Map<string, 'cc' | 'codex' | 'pi'>();
 
 export function noteSessionAgentKind(sessionId: string, dbAgentKind: 'cc' | 'codex' | 'pi'): void {
+  // Called once per newly bound Session instance; beginBinding filters repeat wiring.
+  // A replacement can have the same business id AND agent kind, but owns no old items.
+  if (dbAgentKindBySession.get(sessionId) === 'codex' || dbAgentKind === 'codex') {
+    flushAssistantBlock(sessionId); // Preserve old buffered prose with its old pending epoch.
+    assistantItemPersistIds.delete(sessionId);
+    pendingSamplingItems.delete(sessionId);
+    lastBoundaryFlushedAssistantBySession.delete(sessionId);
+    sealedAssistantLateFinalBySession.delete(sessionId);
+    lastPersistedMsgBySession.delete(sessionId);
+    lastAssistantPersistIdBySession.delete(sessionId);
+    lastTopLevelAssistantPersistIdBySession.delete(sessionId);
+  }
+  samplingRuntimeIds.set(sessionId, createId());
   dbAgentKindBySession.set(sessionId, dbAgentKind);
 }
 
@@ -817,7 +933,11 @@ function enqueuePersistAssistant(
     clientId,
     role: 'assistant',
     content,
-    agentMeta: agentMeta ?? null,
+    // Add identity only after the caller has resolved model/usage fallbacks.
+    agentMeta: agentMessageId ? { ...agentMeta, agentMessageId,
+      ...(pendingSamplingItems.get(sessionId)?.has(agentMessageId)
+        ? { samplingAttemptPending: { runtimeId: samplingRuntimeIds.get(sessionId)! } } : {}),
+    } : agentMeta ?? null,
     createdAt,
   });
   notePersistedMessage(sessionId, 'assistant', clientId, content, agentMessageId);
@@ -1559,6 +1679,11 @@ export function onThinkingEvent(
   const releaseSnapshot = () => {
     if (blocks.get(blockId) !== finalSnapshot) return;
     blocks.delete(blockId);
+    const finals = historyThinkingFinalBlocks.get(sessionId);
+    if (finals !== undefined && finalSnapshot !== undefined && finals.get(blockId) === finalSnapshot) {
+      finals.delete(blockId);
+      if (finals.size === 0) historyThinkingFinalBlocks.delete(sessionId);
+    }
     if (blocks.size === 0 && historyThinkingBlocks.get(sessionId) === blocks) {
       historyThinkingBlocks.delete(sessionId);
       historyThinkingOwners.delete(sessionId);
@@ -1566,6 +1691,14 @@ export function onThinkingEvent(
   };
 
   if (data.stage === 'final') {
+    const finals = historyThinkingFinalBlocks.get(sessionId) ?? new Map<string, Message>();
+    // The entry was just set above for this same blockId, so it is defined at runtime;
+    // the guard only satisfies the checker.
+    const marked = blocks.get(blockId);
+    if (marked) {
+      finals.set(blockId, marked);
+      historyThinkingFinalBlocks.set(sessionId, finals);
+    }
     const finishedAt = receivedAt;
     const text = typeof data.text === 'string' ? data.text : '';
     const durationMs = typeof data.durationMs === 'number' ? data.durationMs : 0;
@@ -1574,7 +1707,9 @@ export function onThinkingEvent(
       role: 'thinking',
       content: { kind: 'thinking', text, durationMs, isRedacted: false, finishedAt },
       agentMeta: meta,
-      createdAt: finishedAt,
+      // 行在此刻才写入,但排序锚点用块的真实起点:按落库时刻排的话,一个跨过最终
+      // 回复的思考块会落到回复之后,渲染层就为它多折出一段「已工作」。
+      createdAt: finishedAt - Math.max(0, durationMs),
     }, releaseSnapshot);
     notePersistedMessage(sessionId, 'thinking', blockId);
   } else if (data.stage === 'redacted') {
@@ -1599,6 +1734,14 @@ export function onThinkingEvent(
 const toolResultIdByToolUseId = new Map<string, Map<string, string>>();
 const pendingFullTextByToolUseId = new Map<string, Map<string, { text: string; createdAt: number }>>();
 const toolResultContentByClientId = new Map<string, Map<string, string>>();
+// Tied to the exact turn's content map; pending imports keep their old map alive
+// without polluting the next turn or retaining completed sessions globally.
+const processMediaByContentMap = new WeakMap<Map<string, string>, Map<string, ProcessMediaRef[]>>();
+function contentWithProcessMedia(map: Map<string, string>, id: string, text: string): string {
+  const media = processMediaByContentMap.get(map)?.get(id);
+  return media?.length ? withToolProcessMedia(text, media) : text;
+}
+
 
 function getOrCreateSessionMap<V>(
   outer: Map<string, Map<string, V>>,
@@ -1711,7 +1854,7 @@ export function onToolResultEvent(
     // 内容没增长 → 不写库;renderer 已显示该条,返回现有内容即可(upsert 命中后无变化)。
     if (prev === undefined || content.length <= prev.length) {
       if (backgroundState) releaseBackgroundStateForToolUses(sessionId, backgroundState, ids);
-      return { persistId: existing, content: prev ?? content };
+      return { persistId: existing, content: contentWithProcessMedia(contentMap, existing, prev ?? content) };
     }
     // contentMap 存全文(增长比较与 renderer 显示都要它);DB 只落有界内容。
     // 截断后内容没变(全文都在 8KB 之外增长)就跳过 UPDATE——省掉重复写同一
@@ -1721,12 +1864,12 @@ export function onToolResultEvent(
     const capped = persistableToolResultContent(sessionId, content);
     if (capped !== cappedPrev) {
       enqueueWrite(`tool_result_update:${sessionId}:${existing}`, () =>
-        updateDbMessageContent(sessionId, existing!, capped),
+        updateDbMessageContent(sessionId, existing!, contentWithProcessMedia(contentMap, existing!, capped)),
       );
     }
     if (scope !== 'background') notePersistedMessage(sessionId, 'tool_result', existing);
     if (backgroundState) releaseBackgroundStateForToolUses(sessionId, backgroundState, ids);
-    return { persistId: existing, content };
+    return { persistId: existing, content: contentWithProcessMedia(contentMap, existing, content) };
   }
 
   const persistId = createId();
@@ -1745,6 +1888,53 @@ export function onToolResultEvent(
   return { persistId, content };
 }
 
+/** Fetch outside the global write queue; only the final row update is serialized. */
+export async function persistToolProcessMedia(
+  sessionId: string,
+  persistId: string,
+  text: string,
+  items: NativeToolMedia[],
+  origin?: import('./cindy-media/toolProcessMedia').ToolMediaOrigin,
+  scope: 'turn' | 'background' = 'turn',
+): Promise<void> {
+  if (!items.length) return;
+  const ownerScope = captureOwnerScope();
+  const assertStillValid = () => {
+    if (!isOwnerScopeCurrent(ownerScope)) throw ownerScopeSupersededError();
+  };
+  // Capture the accepted result's map before fetching: a background summary
+  // may release its state while media is still being materialized.
+  const contentMap = scope === 'background'
+    ? backgroundTurnPersistStatesBySession.get(sessionId)
+      ?.find(state => state.toolResultContentByClientId.has(persistId))?.toolResultContentByClientId
+    : toolResultContentByClientId.get(sessionId) ?? new Map([[persistId, text]]);
+  if (!contentMap) return;
+  try {
+    assertStillValid();
+    const db = getDbClient().drizzle;
+    const media = await materializeToolProcessMedia(items, db, assertStillValid, origin);
+    assertStillValid();
+    if (!media.length) return;
+    let mediaMap = processMediaByContentMap.get(contentMap);
+    if (!mediaMap) processMediaByContentMap.set(contentMap, mediaMap = new Map());
+    mediaMap.set(persistId, [...new Map([...(mediaMap.get(persistId) ?? []), ...media]
+      .map(item => [item.kind + ':' + item.url, item])).values()]);
+    enqueueWrite(`tool_media:${sessionId}:${persistId}`, async () => {
+      assertStillValid();
+      const content = contentWithProcessMedia(contentMap, persistId, contentMap.get(persistId) ?? text);
+      const updated = await updateDbMessageContent(sessionId, persistId, content);
+      if (updated) broadcastMessageRow(sessionId, updated, ownerScope);
+    });
+  } catch (error) {
+    if (!isOwnerScopeSupersededError(error)) log.warn('Native tool media persistence failed', { sessionId, persistId });
+  }
+}
+
+function markFailedToolResultText(text: string, isError: boolean): string {
+  if (!isError || text.includes('<tool_use_error>')) return text;
+  return `<tool_use_error>${text}</tool_use_error>`;
+}
+
 /**
  * 处理 tool_result_full 事件(toolUseId + 全文)。返回 { persistId, content } 让
  * renderer 把对应 tool_result 气泡内容更新成全文;返回 null 表示无需显示变更
@@ -1753,11 +1943,6 @@ export function onToolResultEvent(
  * 对齐老 renderer:有映射 → 覆盖更新;无映射但 tool_use 已到 → eager-create;
  * tool_use 也没到 → buffer。
  */
-function markFailedToolResultText(text: string, isError: boolean): string {
-  if (!isError || text.includes('<tool_use_error>')) return text;
-  return `<tool_use_error>${text}</tool_use_error>`;
-}
-
 export function onToolResultFullEvent(
   sessionId: string,
   data: { toolUseId?: unknown; fullText?: unknown; isError?: unknown },
@@ -1825,11 +2010,11 @@ export function onToolResultFullEvent(
   const capped = persistableToolResultContent(sessionId, fullText);
   if (capped !== cappedPrev) {
     enqueueWrite(`tool_result_full:${sessionId}:${target}`, () =>
-      updateDbMessageContent(sessionId, target, capped),
+      updateDbMessageContent(sessionId, target, contentWithProcessMedia(contentMap, target, capped)),
     );
   }
   if (scope !== 'background') notePersistedMessage(sessionId, 'tool_result', target);
-  return { persistId: target, content: fullText };
+  return { persistId: target, content: contentWithProcessMedia(contentMap, target, fullText) };
 }
 
 /**
@@ -2035,13 +2220,46 @@ export function flushOrphanToolResults(sessionId: string, agentMeta: AgentMeta |
 }
 
 /**
+ * 逻辑 turn 终态时丢弃从未收到 final/redacted 的在途思考快照。
+ *
+ * 这些块属于中途死掉的尝试(连接断开 / 供应商失败 / 用户中断):final 永远不会来,
+ * 永远不会落库,而快照若留着,历史视图读取会把它们当 live 行追加到时间线末尾,
+ * 运行中工作组的「正在工作…」预览就被钉死在这些早已结束的历史思考上
+ * (实测:一次 pi-gateway 断连后,5 条泄漏快照长期霸占预览)。仍在流式的块每条
+ * delta 都会重新 set 回缓存,清掉只会影响已死块。已收到 final 的块不受影响:
+ * 它们的写已入队,由写完成的 release 回调收口;写失败时的保留是既有契约
+ * (messagePersistBroadcaster.test.ts 'keeps failed final thinking until explicit cleanup')。
+ */
+function releaseUnfinalizedThinkingSnapshots(sessionId: string): void {
+  const blocks = historyThinkingBlocks.get(sessionId);
+  if (!blocks) return;
+  const finals = historyThinkingFinalBlocks.get(sessionId);
+  for (const [blockId, entry] of [...blocks]) {
+    // Only the exact generation whose final-write is still queued is protected;
+    // a stale entry under the same blockId is a dead attempt, not this marker.
+    if (finals?.get(blockId) === entry) continue;
+    blocks.delete(blockId);
+  }
+  if (blocks.size === 0 && historyThinkingBlocks.get(sessionId) === blocks) {
+    historyThinkingBlocks.delete(sessionId);
+    historyThinkingFinalBlocks.delete(sessionId);
+    historyThinkingOwners.delete(sessionId);
+  }
+}
+
+/**
  * turn 结束(done)时重置 per-turn 状态(对齐老 renderer 在 done case 把两个 Map 置空 +
  * lastAgentMeta 清空)。assistant block 已在 done 边界 flush;此处清 tool_result 相关 Map
  * + knownToolUseIds + lastAgentMeta。必须在 flushOrphanToolResults 之后调用。
  */
 export function resetTurnPersistState(sessionId: string): void {
-  // Event-stream completion is not a persistence barrier. Thinking snapshots
-  // survive until their write succeeds or an explicit history/owner cleanup.
+  assistantItemPersistIds.delete(sessionId);
+  pendingSamplingItems.delete(sessionId);
+  // Event-stream completion is not a persistence barrier. Snapshots that already
+  // saw `final` survive until their queued write settles (or an explicit
+  // history/owner cleanup); blocks that never saw one belong to a dead attempt —
+  // keeping them would let the history view read them as live rows forever.
+  releaseUnfinalizedThinkingSnapshots(sessionId);
   toolResultIdByToolUseId.delete(sessionId);
   pendingFullTextByToolUseId.delete(sessionId);
   toolResultContentByClientId.delete(sessionId);
@@ -2108,6 +2326,33 @@ export function onAssistantTextEvent(
   agentMeta: AgentMeta | null,
   turnScope?: 'turn' | 'background',
 ): string | undefined {
+  if (getSessionDbAgentKind(sessionId) === 'codex' && turnScope !== 'background' && typeof data.agentMessageId === 'string') {
+    const itemId = data.agentMessageId;
+    let pending = pendingSamplingItems.get(sessionId);
+    const accepted = assistantItemPersistIds.get(sessionId)?.has(itemId) && !pending?.has(itemId);
+    if (!accepted) {
+      if (!pending) { pending = new Set(); pendingSamplingItems.set(sessionId, pending); }
+      pending.add(itemId);
+    }
+  }
+  const persistId = assembleAssistantTextEvent(sessionId, data, agentMeta, turnScope);
+  if (persistId && typeof data.agentMessageId === 'string' && turnScope !== 'background') {
+    let links = assistantItemPersistIds.get(sessionId);
+    if (!links) {
+      links = new Map();
+      assistantItemPersistIds.set(sessionId, links);
+    }
+    links.set(data.agentMessageId, persistId);
+  }
+  return persistId;
+}
+
+function assembleAssistantTextEvent(
+  sessionId: string,
+  data: { text?: unknown; isFinal?: unknown; isFullText?: unknown; agentMessageId?: unknown; phase?: string; runtimeRecovery?: boolean },
+  agentMeta: AgentMeta | null,
+  turnScope?: 'turn' | 'background',
+): string | undefined {
   if (typeof data.phase === 'string' || data.runtimeRecovery === true) {
     agentMeta = { ...agentMeta, assistantPhase: data.runtimeRecovery === true ? 'commentary' : data.phase as string };
   }
@@ -2120,6 +2365,50 @@ export function onAssistantTextEvent(
       : undefined;
 
   const activeBlock = assistantBlocks.get(sessionId);
+  const linkedPersistId = agentMessageId && turnScope !== 'background'
+    ? assistantItemPersistIds.get(sessionId)?.get(agentMessageId)
+    : undefined;
+  // Codex can finish an item after tool events already flushed its text, or
+  // after a newer item started streaming. Calibrate that exact durable row
+  // before the item-boundary logic can flush the newer stream. Text equality
+  // cannot identify an item: separate messages may legitimately say the same thing.
+  if (isFinal && isFullText && linkedPersistId && activeBlock?.persistId !== linkedPersistId) {
+    const visible = stripInternalWebCitations(rawText);
+    const clearBoundary = clearBoundaryBySession.get(sessionId);
+    const isCurrentBoundary = () => clearBoundaryBySession.get(sessionId) === clearBoundary;
+    enqueueWrite(`assistant_item_final:${sessionId}:${linkedPersistId}`, async (ownerScope) => {
+      if (!isCurrentBoundary()) return;
+      if (!visible) {
+        const discarded = await discardPersistedAssistantMessage(sessionId, linkedPersistId,
+          () => isCurrentBoundary() && isOwnerScopeCurrent(ownerScope));
+        if (discarded && isCurrentBoundary() && isOwnerScopeCurrent(ownerScope)) {
+          broadcastMessageDeleted({ sessionId, clientId: linkedPersistId, clientIds: [linkedPersistId] }, ownerScope);
+        }
+        return;
+      }
+      const updated = await updateDbMessageContent(sessionId, linkedPersistId, visible, undefined, {
+        isCurrent: () => isCurrentBoundary() && isOwnerScopeCurrent(ownerScope),
+      });
+      if (!isCurrentBoundary() || !isOwnerScopeCurrent(ownerScope)) return;
+      if (updated) {
+        broadcastMessageRow(sessionId, updated, ownerScope);
+      }
+      if (agentMeta) {
+        const patched = await patchMessageAgentMetaWithResult(sessionId, linkedPersistId, { ...agentMeta });
+        if (patched && isCurrentBoundary()) {
+          await broadcastMessageAgentMetaUpdate(sessionId, linkedPersistId, ownerScope);
+        }
+      }
+    });
+    if (!visible && lastTopLevelAssistantPersistIdBySession.get(sessionId) === linkedPersistId) {
+      lastTopLevelAssistantPersistIdBySession.delete(sessionId);
+    }
+    if (!visible && lastAssistantPersistIdBySession.get(sessionId) === linkedPersistId) {
+      lastAssistantPersistIdBySession.delete(sessionId);
+    }
+    // Preserve the newer stream and its completion/cost target.
+    return linkedPersistId;
+  }
   if (
     activeBlock?.agentMessageId &&
     agentMessageId &&
@@ -2141,18 +2430,20 @@ export function onAssistantTextEvent(
     ) {
       const contentChanged = visible !== lateFinalCandidate.text;
       if (contentChanged) {
-        const isCandidateCurrent = () =>
-          sealedAssistantLateFinalBySession.get(sessionId) === lateFinalCandidate;
+        const clearBoundary = clearBoundaryBySession.get(sessionId);
+        const isCurrentBoundary = () => clearBoundaryBySession.get(sessionId) === clearBoundary;
         enqueueWrite(
           `assistant_late_final:${sessionId}:${lateFinalCandidate.persistId}`,
           async (ownerScope) => {
-            if (!isCandidateCurrent()) return;
+            if (!isCurrentBoundary()) return;
             const updated = await updateDbMessageContent(
               sessionId,
               lateFinalCandidate.persistId,
               visible,
+              undefined,
+              { isCurrent: () => isCurrentBoundary() && isOwnerScopeCurrent(ownerScope) },
             );
-            if (updated && isCandidateCurrent()) {
+            if (updated && isCurrentBoundary() && isOwnerScopeCurrent(ownerScope)) {
               lateFinalCandidate.text = visible;
               broadcastMessageRow(sessionId, updated, ownerScope);
             }
@@ -2214,6 +2505,10 @@ export function onAssistantTextEvent(
       // delta 未消费 / 流式纠错),此时用全文更新既有行,而不是要求逐字相等后另起
       // 一行(否则仍是"部分文本 + 提问卡 + 完整文本"两行)。
       if (isFullText && boundaryFlushed.text !== visible) {
+        // Eligibility ends at the next block, but an already accepted correction
+        // still owns its durable row. Only clear/account changes invalidate it.
+        const clearBoundary = clearBoundaryBySession.get(sessionId);
+        const isCurrentBoundary = () => clearBoundaryBySession.get(sessionId) === clearBoundary;
         enqueueWrite(
           `boundary_flushed_content:${sessionId}:${boundaryFlushed.persistId}`,
           async (ownerScope) => {
@@ -2221,8 +2516,10 @@ export function onAssistantTextEvent(
               sessionId,
               boundaryFlushed.persistId,
               visible,
+              undefined,
+              { isCurrent: () => isCurrentBoundary() && isOwnerScopeCurrent(ownerScope) },
             );
-            if (updated) {
+            if (updated && isCurrentBoundary() && isOwnerScopeCurrent(ownerScope)) {
               // 缓存已落库的全文:重复投递同一份快照时不再重复 UPDATE。
               boundaryFlushed.text = visible;
               broadcastMessageRow(sessionId, updated, ownerScope);
@@ -2332,7 +2629,15 @@ function flushAssistantBlockInternal(
   if (!block) return undefined;
   assistantBlocks.delete(sessionId);
   const visible = stripInternalWebCitations(block.text);
-  if (!visible) return undefined;
+  if (!visible) {
+    // No row was queued for this block, so a later full snapshot must create
+    // one rather than treating the discarded item as an already durable row.
+    if (block.agentMessageId) {
+      const links = assistantItemPersistIds.get(sessionId);
+      if (links?.get(block.agentMessageId) === block.persistId) links.delete(block.agentMessageId);
+    }
+    return undefined;
+  }
   // 三级兜底,对齐 renderer 老逻辑:本 block 自带 meta → 边界事件 meta(tool_use/done
   // 同属或携带这条 assistant 的 meta)→ 会话最近一次非空 meta(interaction 边界靠这级)。
   const meta = block.agentMeta ?? agentMetaFallback ?? lastAgentMetaBySession.get(sessionId) ?? null;
@@ -2573,7 +2878,7 @@ function lookupTurnErrorPersistId(
 export function reserveTurnErrorPersistId(
   sessionId: string,
   data:
-    | { message?: unknown; reason?: unknown; sdkError?: unknown; toolLoop?: unknown }
+    | { message?: unknown; reason?: unknown; sdkError?: unknown; toolLoop?: unknown; outputLimit?: unknown }
     | null
     | undefined,
   agentMeta: AgentMeta | null = null,
@@ -2612,7 +2917,7 @@ export function whenTurnErrorPersisted(sessionId: string, persistId: string): Pr
 export function onTurnErrorEvent(
   sessionId: string,
   data:
-    | { message?: unknown; reason?: unknown; sdkError?: unknown; toolLoop?: unknown }
+    | { message?: unknown; reason?: unknown; sdkError?: unknown; toolLoop?: unknown; outputLimit?: unknown }
     | null
     | undefined,
   agentMeta: AgentMeta | null = null,
@@ -2682,7 +2987,7 @@ export function onTurnErrorEvent(
 /** error 行 content：{ message, reason?, sdkError?, toolLoop?, providerId? }，在入队前同步取值。 */
 function buildTurnErrorContent(
   sessionId: string,
-  data: { reason?: unknown; sdkError?: unknown; toolLoop?: unknown } | null | undefined,
+  data: { reason?: unknown; sdkError?: unknown; toolLoop?: unknown; outputLimit?: unknown } | null | undefined,
   message: string,
 ): Record<string, unknown> {
   const content: Record<string, unknown> = { message };
@@ -2691,7 +2996,9 @@ function buildTurnErrorContent(
     content.sdkError = redactSensitiveText(data.sdkError);
   }
   const toolLoop = parseToolLoopErrorDetails(data?.toolLoop);
+  const outputLimit = parseOutputLimitDetails(data?.outputLimit);
   if (toolLoop) content.toolLoop = toolLoop satisfies ToolLoopErrorDetails;
+  if (outputLimit) content.outputLimit = outputLimit satisfies OutputLimitDetails;
   // 错误来源 provider 的**同步**快照(session-provider-store 内存态):错误分类必须
   // 绑定到错误发生时的 provider —— session.providerId 可在任务中途切换并持久化,
   // 恢复历史错误时用它会把别家 provider 的 insufficient_quota 误判成 Cindy AI 余额
@@ -2802,7 +3109,7 @@ export interface DeferredTurnErrorRow {
 export function captureDeferredTurnError(
   sessionId: string,
   data:
-    | { message?: unknown; reason?: unknown; sdkError?: unknown; toolLoop?: unknown }
+    | { message?: unknown; reason?: unknown; sdkError?: unknown; toolLoop?: unknown; outputLimit?: unknown }
     | null
     | undefined,
   agentMeta: AgentMeta | null = null,
@@ -2849,6 +3156,9 @@ export function clearCodexPlanRowsForSession(sessionId: string): void {
 }
 
 export function clearSessionPersistState(sessionId: string): void {
+  samplingRuntimeIds.delete(sessionId);
+  assistantItemPersistIds.delete(sessionId);
+  pendingSamplingItems.delete(sessionId);
   clearSessionThinkingSnapshots(sessionId);
   clearCodexPlanRowsForSession(sessionId);
   assistantBlocks.delete(sessionId);

@@ -382,11 +382,18 @@ const CHECKS = [
     name: 'MCPRouter「配置」可打开连接对话框（HTTPS 生产默认地址）',
     async run(ctx) {
       await ctx.goto('#/settings?tab=meka-assistant');
-      const index = await ctx.session.evaluate(
-        `[...document.querySelectorAll('#settings-panel-meka-assistant button')].findIndex((b) => (b.textContent || '').trim() === '配置')`,
-      );
-      if (index < 0) return ctx.fail('面板里找不到「配置」按钮');
-      if (!(await ctx.session.clickSelector('#settings-panel-meka-assistant button', index))) {
+      const state = await ctx.session.evaluate(`(() => {
+        const card = document.querySelector('#settings-search-target-meka-assistant-router');
+        const texts = [...(card?.querySelectorAll('button') ?? [])].map((b) => (b.textContent || '').trim());
+        return { index: texts.findIndex((t) => t === '配置'), connected: texts.includes('断开') };
+      })()`);
+      if (state.index < 0) {
+        if (state.connected) {
+          return ctx.unverified('MCPRouter 已连接；配置入口被「断开」替代，未在不影响用户凭证的前提下验证连接对话框');
+        }
+        return ctx.fail('面板里找不到「配置」按钮');
+      }
+      if (!(await ctx.session.clickSelector('#settings-search-target-meka-assistant-router button', state.index))) {
         return ctx.fail('「配置」按钮不可点击');
       }
       let opened = 0;
@@ -417,11 +424,19 @@ const CHECKS = [
     name: 'MekaDesign「配置」可打开独立连接对话框',
     async run(ctx) {
       await ctx.goto('#/settings?tab=meka-assistant');
-      const indexes = await ctx.session.evaluate(
-        `[...document.querySelectorAll('#settings-panel-meka-assistant button')].map((b, i) => ((b.textContent || '').trim() === '配置' ? i : -1)).filter((i) => i >= 0)`,
-      );
-      if (indexes.length < 2) return ctx.fail(`面板里只有 ${indexes.length} 个「配置」按钮，MekaDesign 卡片可能缺失`);
-      if (!(await ctx.session.clickSelector('#settings-panel-meka-assistant button', indexes[1]))) {
+      const state = await ctx.session.evaluate(`(() => {
+        const card = document.querySelector('#settings-search-target-meka-assistant-design');
+        const texts = [...(card?.querySelectorAll('button') ?? [])].map((b) => (b.textContent || '').trim());
+        return { present: card !== null, index: texts.findIndex((t) => t === '配置'), connected: texts.includes('断开') };
+      })()`);
+      if (!state.present) return ctx.fail('面板里找不到 MekaDesign 卡片');
+      if (state.index < 0) {
+        if (state.connected) {
+          return ctx.unverified('MekaDesign 已连接；配置入口被「断开」替代，未在不影响用户凭证的前提下验证连接对话框');
+        }
+        return ctx.fail('MekaDesign 卡片里找不到「配置」按钮');
+      }
+      if (!(await ctx.session.clickSelector('#settings-search-target-meka-assistant-design button', state.index))) {
         return ctx.fail('MekaDesign「配置」按钮不可点击');
       }
       let opened = 0;

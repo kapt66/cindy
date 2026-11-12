@@ -1,5 +1,7 @@
+import { parseOutputLimitDetails } from '@cindy/maker-shared';
 import { taskResultClientIdForInput } from '../../shared/botCollaboration.js';
-import { isQuietScheduledOutput } from '../scheduler-host/silent-output.js';
+import { readChannelToolScope } from '../im/shared/channelToolScope.js';
+import { isQuietScheduledOutput, revealScheduledOutput } from '../scheduler-host/silent-output.js';
 import { captureTurnUsageContext, type TurnUsageContext } from './turnUsageContext.js';
 import type { BotCompactRuntimeRefreshCoordinator } from './botCompactRuntimeRefresh.js';
 import type {
@@ -37,6 +39,7 @@ import { consumeClaudeOpusPlanMismatch } from '../maker-host/claude-gateway-erro
 import {
   isTerminalTurnErrorEvent,
   SessionTurnActivityTracker,
+  type SessionListActivityTracker,
 } from './sessionTurnActivityTracker.js';
 import { SilentStopTurnLeaseGate } from './sessionTurnLease.js';
 import { ProductTurnUsageTargetTracker, ProductTurnWallClockTracker } from './turnWallClock.js';
@@ -50,11 +53,6 @@ import {
 import type { UsageLimitAutoResume } from './usageLimitAutoResume.js';
 import { isBotGroupClientId } from '../../shared/botGroupChat.js';
 
-/** Bot DMs and group-lane turns answer an internal channel, not the user watching this Session. */
-function isBotPrivateInput(clientId: string): boolean {
-  return clientId.startsWith('bot-dm:') || isBotGroupClientId(clientId);
-}
-
 interface DismissedInteraction {
   kind: InteractionRequest['kind'];
   resolve: (decision: InteractionDecision) => void;
@@ -63,6 +61,7 @@ interface DismissedInteraction {
 }
 
 export interface PrepareSessionEventDeps {
+  readonly sessionListActivityTracker: SessionListActivityTracker;
   readonly botCompactRuntimeRefreshCoordinator: Pick<BotCompactRuntimeRefreshCoordinator, 'noteBoundary'>;
   readonly isFencedStaleSessionTerminal: (sessionId: string, event: AgentEvent) => boolean;
   readonly log: Pick<ReturnType<typeof createLogger>, 'debug' | 'warn'>;
@@ -87,7 +86,8 @@ export interface PrepareSessionEventDeps {
     decision: InteractionDecision | Record<string, unknown>,
   ) => void;
   readonly broadcastToAllWindows: (channel: string, payload: unknown) => void;
-  readonly broadcastCodexImageAsToolResult: (sessionId: string, event: AgentEvent) => Promise<void>;
+  /** Starts live delivery; resolves with the tool events it published (never rejects). */
+  readonly deliverCodexGeneratedImage: (sessionId: string, event: AgentEvent) => Promise<readonly AgentEvent[]>;
   readonly autoResumeBookkeeping: Pick<
     AutoResumeBookkeeping,
     'discardReplacementProvenByProviderEvent' | 'clearFailedTurnCompletionTail' | 'settleOutcome'
@@ -116,8 +116,8 @@ export interface PrepareSessionEventDeps {
   readonly silentStopTurnLeaseGate: Pick<SilentStopTurnLeaseGate, 'turnLeaseIdForEvent'>;
   readonly agentInputCoordinatorHolder: Pick<
     AgentInputCoordinator,
-    'onTurnEvent' | 'noteSuppressedTerminalError' | 'getActiveInputClientId' | 'getActiveInputClientIds' | 'isActiveTaskCoordination'
-  > | null;
+    'onTurnEvent' | 'noteSuppressedTerminalError' | 'getActiveInputClientId' | 'getActiveInputClientIds' | 'getAcceptedInputProvenance' | 'isActiveTaskCoordination'
+  > & Partial<Pick<AgentInputCoordinator, 'isActiveInputOwnerAuthored'>> | null;
   readonly handleSilentStopTurnEnd: (
     session: Session,
     doneAt: number,
@@ -146,11 +146,15 @@ export function prepareSessionEvent(
   session: Session,
   event: AgentEvent,
 ) {
+  // Host projections (Session.holdEventStream follow-ups) were already persisted
+  // and published to renderers by the host that requested the hold.
+  if (event.hostProjection) return;
   // Exact patches are main-owned durable data. They have a dedicated summary push and
   // on-demand detail IPC; forwarding the raw diff through maker:event would duplicate a
   // potentially multi-megabyte payload to every renderer and device-link controller.
   if (event.type === 'turn_diff') return;
-  if (event.type === 'compact_boundary') deps.botCompactRuntimeRefreshCoordinator.noteBoundary(session);
+  // Native compaction keeps its current runtime. Only explicit resource/configuration
+  // changes register a companion refresh; compaction itself is not such a change.
   if (event.type === 'compact_boundary') deps.workingMemoryRefresh?.markCompacted(session.id);
   if (event.type === 'compact_boundary') deps.wireNoteMemory?.reset(session.id);
   if (
@@ -180,10 +184,13 @@ export function prepareSessionEvent(
       },
     };
   }
+  if (event.turnScope !== 'background'
+    && deps.agentInputCoordinatorHolder?.isActiveInputOwnerAuthored?.(session.id, event.sessionTurnGeneration)) {
+    revealScheduledOutput(event.turnOrigin);
+  }
   const taskCoordination = event.turnScope !== 'background'
     && (deps.agentInputCoordinatorHolder?.isActiveTaskCoordination?.(session.id, event.sessionTurnGeneration) ?? false);
   if (event.type === 'text' && event.standaloneText === true) {
-    if (taskCoordination && !event.runtimeRecovery) return;
     if (isQuietScheduledOutput(event) && !event.runtimeRecovery) return;
     // Deliver through the existing persisted-row channel only. Sending a text
     // event as well would let older renderers adopt the notice as their active
@@ -193,7 +200,12 @@ export function prepareSessionEvent(
     const inputId = deps.agentInputCoordinatorHolder?.getActiveInputClientId(session.id, event.sessionTurnGeneration);
     // Private-message visibility is still owned by the accepted input, even
     // though the notice is independent of the model's reply/usage state.
-    const privateReply = inputId ? isBotPrivateInput(inputId) : event.agentMeta?.botPrivateReply;
+    const inputProvenance = deps.agentInputCoordinatorHolder?.getAcceptedInputProvenance(session.id);
+    const replyInputId = inputId && inputProvenance?.clientId === inputId && inputProvenance.autoResume
+      ? inputProvenance.retrySourceClientId ?? inputId : inputId;
+    const privateReply = inputId
+      ? isBotGroupClientId(inputId) || (!!replyInputId?.startsWith('bot-dm:') && !event.runtimeRecovery)
+      : event.agentMeta?.botPrivateReply;
     if (typeof text === 'string') {
       onStandaloneTextEvent(session.id, text,
         typeof privateReply === 'boolean' ? { botPrivateReply: privateReply } : null);
@@ -207,11 +219,19 @@ export function prepareSessionEvent(
     deps.interruptedTurnAutoResumeGuard.noteAttemptEvent(session.id, event.turnAttemptToken);
   }
   // Snapshot before onTurnEvent releases the active input and drains the next queue item.
+  const pluginTargetInputIds = event.turnScope !== 'background'
+    ? (deps.agentInputCoordinatorHolder?.getActiveInputClientIds?.(session.id, event.sessionTurnGeneration) ?? [])
+      .filter(id => id.startsWith('plugin-target:')) : [];
   const botTaskResultInputIds = event.type === 'done' && event.turnScope !== 'background'
     ? (deps.agentInputCoordinatorHolder?.getActiveInputClientIds?.(session.id, event.sessionTurnGeneration) ?? [])
       .filter(id => taskResultClientIdForInput(id) !== null) : [];
   const activeInputId = event.turnScope === 'background' ? null
     : deps.agentInputCoordinatorHolder?.getActiveInputClientId(session.id, event.sessionTurnGeneration);
+  const provenance = deps.agentInputCoordinatorHolder?.getAcceptedInputProvenance(session.id);
+  // Capture ownership before onTurnEvent releases the accepted receipt. Automatic
+  // retries keep the original group execution; human steering owns its own input.
+  const groupLaneInputClientId = activeInputId && provenance?.clientId === activeInputId && provenance.autoResume
+    ? provenance.retrySourceClientId ?? activeInputId : activeInputId ?? null;
   // The host's accepted input owns provenance across all three SDKs. Explicit
   // false restores normal replies when the user steers a private message turn.
   let attributedEvent = activeInputId
@@ -219,14 +239,30 @@ export function prepareSessionEvent(
         ...event,
         agentMeta: {
           ...event.agentMeta,
-          botPrivateReply: isBotPrivateInput(activeInputId) || (taskCoordination && !event.runtimeRecovery),
+          // B2B is internal even when it carries a verified owner request: visibility
+          // must not change that request's authority. Errors/recovery still reach the owner.
+          // Task coordination retains its separate, visible reply contract.
+          botPrivateReply: isBotGroupClientId(activeInputId)
+            || (!!groupLaneInputClientId?.startsWith('bot-dm:') && event.type !== 'error' && !event.runtimeRecovery),
+          // Retain provenance for the existing quiet completion notification policy.
           botTaskCoordination: taskCoordination && !event.runtimeRecovery,
+          // The user input this turn answers; companion chats can show it above the reply
+          // (cindy-bots-runtime.md「回复对应的消息」). Hidden trigger inputs are skipped on display.
+          replyToClientId: activeInputId,
           // A group-lane turn is delivered into the group chat; its hidden Session never
           // raises completion/error attention of its own (docs/product-rules/bot-group-chat.md §3).
-          ...(isBotGroupClientId(activeInputId) ? { botGroupLane: true } : {}),
+          ...(groupLaneInputClientId && isBotGroupClientId(groupLaneInputClientId) ? { botGroupLane: true } : {}),
         },
       }
     : event;
+  // Personal IM dispatches directly, outside AgentInputCoordinator. Preserve
+  // its accepted durable input on the reply before the turn lease is released.
+  if (!activeInputId && event.turnScope !== 'background') {
+    const inputClientId = readChannelToolScope({ sessionId: session.id, sessionInstanceId: session.instanceId })?.inputClientId;
+    if (inputClientId) attributedEvent = {
+      ...attributedEvent, agentMeta: { ...attributedEvent.agentMeta, replyToClientId: inputClientId },
+    };
+  }
   if (event.type === 'error' && isTerminalTurnErrorEvent(event)) {
     const reason =
       !session.remoteHostId && session.agentKind === 'claude-code'
@@ -273,7 +309,12 @@ export function prepareSessionEvent(
     return;
   }
   if (event.type === 'image' && event.source === 'codex') {
-    if (!isQuietScheduledOutput(event)) void deps.broadcastCodexImageAsToolResult(session.id, event);
+    if (!isQuietScheduledOutput(event)) {
+      // Hold the stream until the stored result is published so IM / hook
+      // listeners receive it before this turn's done. A refused hold (not the
+      // loop's current event) leaves delivery running in the background as before.
+      session.holdEventStream(deps.deliverCodexGeneratedImage(session.id, event));
+    }
     return;
   }
   // turn 结束的 status event (isRunning=false + status='Done') 携带 endSnapshot。
@@ -331,6 +372,11 @@ export function prepareSessionEvent(
         clearPending: typeof event.turnAttemptToken === 'number',
       });
       const wasInTurn = deps.sessionTurnActivityTracker.isSessionInTurn(session.id);
+      if (!wasInTurn || event.sessionTurnGeneration !== undefined) {
+        deps.sessionListActivityTracker.start(session.id, event.sessionTurnGeneration === undefined
+          ? undefined
+          : `${event.sessionInstanceId ?? session.instanceId}:${event.sessionTurnGeneration}`);
+      }
       if (!wasInTurn && event.source === 'claude-code') {
         const startedProductTurn = deps.productTurnWallClockTracker.start(session.id);
         if (startedProductTurn) deps.productTurnUsageTargetTracker.clear(session.id);
@@ -487,6 +533,7 @@ export function prepareSessionEvent(
                 sdkError?: unknown;
                 errorStatus?: unknown;
                 toolLoop?: unknown;
+                outputLimit?: unknown;
                 usageLimit?: unknown;
                 usageResetAt?: unknown;
                 codexErrorInfo?: unknown;
@@ -497,6 +544,7 @@ export function prepareSessionEvent(
     // Keep only the bounded tool-loop shape; never let a provider-controlled object become
     // live projection state or renderer interpolation.
     const toolLoop = parseAgentInputToolLoopDetails(errData?.toolLoop);
+    const outputLimit = parseOutputLimitDetails(errData?.outputLimit);
     // 计划内 cc-mgr 升级窗口的 daemon 关闭(reason='remote_daemon_closed')是
     // 预期噪音: renderer 事件路径按同语义静默 banner, 这里同样不给 coordinator
     // 记 error —— 否则 paired-done 保留会让升级后的 projection 复现
@@ -533,6 +581,7 @@ export function prepareSessionEvent(
           ...(typeof errData?.reason === 'string' ? { reason: errData.reason } : {}),
           ...(typeof errData?.errorStatus === 'number' ? { errorStatus: errData.errorStatus } : {}),
           ...(toolLoop ? { toolLoop } : {}),
+          ...(outputLimit ? { outputLimit } : {}),
           // 账号限额信号:普通任务据此等额度重置后自动继续(见 usageLimitAutoResume.ts)。
           ...(errData?.usageLimit === true ? { usageLimit: true } : {}),
           ...(typeof errData?.usageResetAt === 'number' && Number.isFinite(errData.usageResetAt)
@@ -584,7 +633,8 @@ export function prepareSessionEvent(
     event,
     attributedEvent,
     botTaskResultInputIds,
-    taskCoordination,
+    pluginTargetInputIds,
+    groupLaneInputClientId,
     broadcastEvent,
     eventAgentMeta,
     pendingContextSnapshot,

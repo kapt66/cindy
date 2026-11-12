@@ -15,14 +15,24 @@ import {
 import {
   getProviderGroupOwnerScope,
   readProviderGroupOfSession,
+  readProviderGroupRebalanceSuggestion,
   readProviderRunningTurnsByProvider,
+  recordProviderGroupRebalanceDecision,
+  setProviderGroupContinuityHandler,
 } from './runtime.js';
 import { readProviderGroup } from './store.js';
 import { isProviderManagementRequest } from '../../shared/providerManagement.js';
 import { handleProviderManagementRequest } from './management.js';
+import { bindGroupFastPolicy } from './fastPolicyRuntime.js';
+import { createGroupContinuityRuntime } from './continuityRuntime.js';
+import { isGroupContinuityRequest } from '../../shared/providerGroupContinuity.js';
 
 export function registerProviderGroupRemoteHandler(options: { onGroupChanged?: (providerId: string) => void } = {}): void {
+  const continuity = createGroupContinuityRuntime(readProviderRunningTurnsByProvider);
+  setProviderGroupContinuityHandler(continuity.handle);
   const deps: ProviderGroupRemoteHandlerDeps = {
+    prepareContinuity: continuity.prepare,
+    bindFastPolicy: bindGroupFastPolicy,
     scope: getProviderGroupOwnerScope,
     readGroup: readProviderGroup,
     isRemoteAllowed: isRemoteProviderInvocationAllowed,
@@ -30,9 +40,11 @@ export function registerProviderGroupRemoteHandler(options: { onGroupChanged?: (
     replaceReportedUsage: (controller, sinceDay, rows) =>
       currentProviderPartyUsageStore().replaceReported(controller, sinceDay, rows),
     sessionGroup: readProviderGroupOfSession,
+    rebalanceSuggestion: readProviderGroupRebalanceSuggestion,
+    rebalanceDecision: recordProviderGroupRebalanceDecision,
   };
   setProviderGroupRemoteHandler({
-    handle: (controller, raw) => isProviderManagementRequest(raw)
+    handle: (controller, raw) => isGroupContinuityRequest(raw) ? continuity.handle(controller, raw) : isProviderManagementRequest(raw)
       ? handleProviderManagementRequest(raw, options) : handleProviderGroupRemote(deps, controller, raw),
     decorateProviderList: async (result) =>
       decorateProviderListWithGroups(result, readProviderGroup, await readProviderRunningTurnsByProvider()),

@@ -55,8 +55,8 @@
     纯粹的编号占位，用来保持与已发布 Meka 链的序号一致。
   它们必须原样保留：序号连续是对已升级用户的 `migration_history` 承诺，删掉或换号会让存量
   Meka 安装的迁移历史对不上。
-  **编号现状（2026-10-16 第六轮上游同步后）**：Meka 已发布谱系为 `0000`–`0112`（其中 `0110`–`0112` 是
-  Meka 自有增量），第三轮同步把上游 `0110`–`0114` 顺移追加为 Meka 的 **`0113`–`0117`**
+  **编号现状（2026-11-06 第七轮上游同步后；本轮前已发布 `0000`–`0131`）**：历史上看，第三轮同步**之前**的
+  Meka 已发布谱系是 `0000`–`0112`（其中 `0110`–`0112` 是 Meka 自有增量），第三轮同步把上游 `0110`–`0114` 顺移追加为 Meka 的 **`0113`–`0117`**
   （`0113_abandoned_scarlet_witch`、`0114_messy_newton_destine`、`0115_backfill_task_tag_order`、
   `0116_grey_cannonball`、`0117_shared_task_events`），第四轮把上游新增的
   `0115`–`0119` 顺移追加为 Meka 的 **`0118`–`0122`**（`0118_silky_power_man`、
@@ -79,17 +79,43 @@
   测试（`drizzle-split.spike`、`botGroupTaskPostSnapshot`、`DbClient.inproc`、
   `plugin-usage/service`、`migrationReplay`）与三份文档引用已同步 +3 顺移；逐条见
   `docs/migrations/2026-10-16-origin-main-to-meka-main.md` §3。
-  **因此「已发布（值得冻结）的 Meka 编号」在第六轮后是 `0000`–`0126`，本轮新增到 `0131`。**
+  **第七轮（2026-11-06）**：上游本轮新增 `0129`–`0147` **19 条**，顺移追加为 Meka 的 **`0132`–`0150`**
+  （+3，与第三/四/五/六轮同一偏移；后缀不变）。SQL 正文与 5 条 companion **逐字节取自上游**：
+  `scripts/0133_parallel_devos.ts`、`scripts/0137_schedule_model_location.ts`、
+  `scripts/0141_talented_blacklash.ts`、`scripts/0143_schedule_pre_run_plugin.ts`、
+  `scripts/0148_bizarre_tinkerer.ts`。上游原号 19 个 SQL + 5 个 script 已从工作区消失；上游 `0129`–`0131`
+  与本仓已占用的 Meka `0129`–`0131` **撞号**（后缀完全不同），只有 3 份 `meta/0NNN_snapshot.json` 产生
+  `AA`，按 Meka 已发布内容取 `:2:`（实测与合并前 `HEAD` 逐字节相同），上游内容改写进新号 `0132`/`0133`/`0134`。
+  新 snapshot `0132`–`0150` = 上游同内容 snapshot + **Meka delta（每份恰 15 项）**：2 张整表
+  （`meka_projects` 8 列、`meka_roles` 12 列）+ `sessions` 10 列（`meka_role`、`meka_target_json`、
+  `meka_project_id`、`meka_role_id`、`is_formal`、`formal_type`、`formal_link`、`formal_ref`、
+  `formal_content_json`、`capability_snapshot_json`）+ 2 索引（`idx_sessions_meka_project_id`、
+  `idx_sessions_meka_role_id`）+ 1 外键（`sessions_meka_role_id_meka_roles_id_fk`，`onDelete: set null`）；
+  剥掉 delta 后与上游 `JSON.stringify` 逐字符相等，`id`/`prevId` 沿用上游，链从 Meka `0131` 的
+  `779b3cd5-66b5-40e9-a391-bacb00957c6f` 天然接上；`meta/_journal.json` `132` → **`151`** 条
+  （`idx 0..150` 连续无重复，既有 `0..131` 段逐字节保留，新增段 `when` 沿用上游且严格单调）。
+  **`0139_bizarre_pet_avengers` 依赖 Meka 历史对象的特殊点**：该 SQL 会 `DROP TRIGGER`
+  三个 `hook_group_message_stats_*` 再重建，而这三个触发器在 Meka 谱系里由**同名 companion**
+  `scripts/0092_sync_upstream_20260821.ts`（`tableExists('hook_group_messages')` 守卫内）创建，
+  SQL 本身没有 ⇒ 真实回放与 `migrationReplay` 的历史夹具必须按
+  「`0089` 建群表 + `0092` SQL + `0092` companion + `0139`」的顺序准备，否则会以 `no such trigger` 失败。
+  同批顺移的硬编码原号（`drizzle-split.spike` sync/async 两处、`migrationReplay`、
+  `DbClient.inproc`、`chatCacheTx`、`plugin-usage/service`）已全部改到 Meka 号；
+  `botGroupTaskPostSnapshot` / `autoReviewProjection` / `pluginReviewSnapshotFreshness` 实测**本就是** Meka 号，未改。
+  逐条证据见 `docs/migrations/2026-11-06-origin-main-to-meka-main.md` §2.1。
+  **因此「已发布（值得冻结）的 Meka 编号」在第七轮后是 `0000`–`0131`（132 条），本轮新增到 `0150`。**
   更早几轮同步落的是 `0096`–`0107`；处理方式同源，见
   `docs/migrations/2026-10-08-origin-main-to-meka-main.md`、
   `docs/migrations/2026-09-25-origin-main-to-meka-main.md` §4 与
   `docs/migrations/2026-09-origin-main-to-meka-main.md` 的 D4。
   这段编号不在 `migration-baseline.json` 的 SHA256 清单里（该清单只覆盖迁仓前的
   `0000`–`0079`，实测 80 条 SQL + 23 条脚本），由上面第 3 段的 **Git 基线冻结** 保护。
-  `db:validate` 第 6 步报出的 canonical 基线条数是**动态值**，随每次追加而变化：第六轮实测为
-  **固定 SHA256 基线 80 条 SQL + 23 条 runtime script、canonical 基线冻结 127 条 SQL + 45 条 runtime script**
-  （`127` = 第五轮结束时的 `0000`–`0126`，本轮新增的 `0127`–`0131` 不在冻结集合内；
-  第五轮该值是 `123` SQL + `44` script）。
+  `db:validate` 第 6 步报出的 canonical 基线条数是**动态值**，随每次追加而变化：第七轮实测为
+  **固定 SHA256 基线 80 条 SQL + 23 条 runtime script、canonical 基线冻结 132 条 SQL + 47 条 runtime script**
+  （`132` = 第六轮结束时的 `0000`–`0131`，本轮新增的 `0132`–`0150` 不在冻结集合内；
+  第六轮该值是 `127` SQL + `45` script，第五轮是 `123` SQL + `44` script）。
+  同一次 `db:validate` 的 6 步实测（第七轮）：`151 sql / seq 0000..0150`、`151 snapshot 与 journal 对齐且
+  `id`/`prevId` 链连续`、`drizzle-kit check` 无 drift、**52 个 companion 全 CommonJS**。
   该数字随每轮同步变化，改动 migration 时**以命令实际输出为准，不要把这里的数字当断言**。
 - 生成 migration 前先基于最新 canonical 产品分支：Cindy Meka 使用 `meka/main`，上游
   checkout 使用 `origin/main`。同步上游时还要显式检查 `origin/main` 的新编号是否与
@@ -136,6 +162,17 @@ pnpm --filter desktop test:migration-replay
 companion CommonJS 格式和历史 runtime identity 冻结；不能用单独 typecheck 代替。回放测试
 验证空库与历史 fixture 能实际升级到 HEAD；高风险历史兼容改动应补对应 fixture。
 
+CI 在 `windows-runner-checks` 中按相关路径运行完整 `migration` tier 与核心 DB 回归
+（迁移兼容、schema 租约与漂移、连接初始化），复用 Windows 的原生 SQLite、LFS
+sqlite-vec 与依赖准备。普通数据库源码变化（含 `db` tier 测试直接 import 的 localDb 外源码，如
+`git-context/prRefsStore.ts`）再按 Vitest import graph 选择既有 `db`
+tier 中的相关测试；删除源码、fixture 变化或无法确定事件基准时回退完整 DB 层。
+无关改动不执行这两层，严格性能计时仍留在 `db-perf`。路径和事件基准判定见
+`scripts/ci-database-tests.mjs`，涵盖 PR、merge queue 与 main push。执行入口拒绝
+不支持的平台，并校验 migration replay 报告确有通过用例、没有跳过。
+该步骤沿用 `Windows unit tests` 汇总门禁，静态 `db:validate`、既有伴侣 DB 回归
+与 guard 保持各自覆盖。回放只使用临时数据库，不读取用户 profile。
+
 ## Companion script
 
 - 路径和 basename 必须与 SQL 对齐：`drizzle/scripts/NNNN_name.ts` 对应
@@ -165,6 +202,37 @@ companion CommonJS 格式和历史 runtime identity 冻结；不能用单独 typ
   指纹，并以窗口及认证／数据库共同就绪作为启动成功，失败不恢复旧数据库覆盖用户记录。
 
 ## 运行期数据库访问
+
+### Schema 租约的发布与故障恢复（#7135）
+
+`localDb/schemaMigrationLease.ts` 保留既有 writer 文件与多 reader 目录契约；完整记录先在
+目录外的独占候选文件写入并刷盘，再用不覆盖目标的 hard link 发布。reader 候选、恢复记录
+和隔离备份不进入 reader 目录，旧客户端仍能识别正式租约。文件系统不支持该发布方式时
+明确阻断，不回退到直接写半成品锁。租约获取为异步，退出／切账号必须取消在途 reader。
+
+同一数据库的新版租约获取与回收通过原子发布的非空目录串行化：候选目录先包含唯一
+PID＋UUID 文件名及可信内核启动代次的摘要，再 rename 到正式 gate。不同启动代次的
+残留 gate 可回收，即使旧 PID 已被其他进程复用；同一代次、旧格式 marker 或无法取得
+当前启动代次时，继续保守检查 PID。释放／回收只删该 owner 的精确 marker，
+再非递归 rmdir；暂停的清理者不能删除后继 owner 的非空目录。中断释放留下的空目录可
+重试回收，不引入会被原地写坏的辅助 JSON 锁。未证实跨启动的存活 PID 不回收，不可读文件
+不当作损坏记录移走。
+损坏且未知 owner 的记录可能是暂停中的旧版发布者，因此不得按文件年龄或解析失败抢锁。
+首次观察时持久化文件身份／内容指纹和内核 boot generation；只有之后确认系统已跨过一次
+启动、且原锁指纹未变，才备份隔离它。应用重启、时间跳变、文件被替换都不授予恢复权限。
+Windows 用内核 boot GUID，macOS 用 `kern.bootsessionuuid`，Linux 用 `boot_id`；无法取得
+启动标识时保留锁，显示支持指引，不推算启动时间。旧版首次遇到的新损坏记录需要在新版
+记录证据后重启电脑一次；不能承诺安装更新后的第一次启动就自动恢复。
+
+保留原 reader/writer 双向检查与旧版记录格式。隔离后再次校验文件身份与内容；若发现被
+替换则拒绝新租约，并尝试不覆盖地恢复原路径。但旧版自身的「读死 owner → unlink」
+不参与新版 gate，旧进程持有过期检查结果时仍可能删掉后继锁；无法在新版单侧消除该既有
+竞态。恢复时应退出共用此数据目录的旧客户端；混合版本不能承诺任意并发恢复安全。
+
+开库前租约故障返回 `DB_SCHEMA_LOCKED`，按真实原因显示重试或重启电脑指引，不归为
+schema 版本不兼容，也不触发安装更新。恢复只操作当前账号的租约及其备份，不修改 DB、
+WAL 或聊天数据。生产入口、发布中断与竞争回归见 `schemaMigrationLease.test.ts`，界面
+重新打开当前账号的回归见 `LocalDbGate.retry.test.tsx`。
 
 - Main 运行期业务代码使用 `DbClient`／`getDbClient()` 的异步 API，并 `await` Drizzle query
   或使用 `query`、`queryOne`、`exec`、`tx`。
@@ -240,6 +308,20 @@ UDF 是连接级的、不进 schema。持久触发器体内引用 UDF 时，任�
 - 失败形态是「无报错 + 功能静默缺失」的 SQLite 交互，review 和测试都拦不住直觉盲区；
   涉及 schema 联动的新设计，先在最小 `:memory:` 单测里验证「创建 → 生效 → 持久存在」
   完整链条，再落实现。
+
+## 工具结果归档诊断
+
+`toolResults.compactSession` 仍使用 version 1 的 `tool_result_compacted` 标记；可选
+`diagnostics` 只保留 `maker-shared/tool-result-compaction` 白名单中的布尔值、固定状态和
+已知错误码。动作结果、Computer Use 的 observation、Browser Use 的 afterSnapshot
+和后置条件分别记录，不能相互替代或从自由文本推断。
+错误正文、输入、窗口信息与媒体不得进入该摘要；新增字段或错误码需显式扩展白名单。
+
+长结果在 8K 字符持久化截断前提取摘要，将有限摘要放在截断后缀前；卡片结果仍为含引用与摘要的合法 JSON。
+解析只接受完整 JSON（包括数据库再次编码的字符串）、工具错误包装、单块 MCP 文本结果或该有界后缀；超过
+1 Mi 字符的 JSON 不解析，缺失、未知或损坏的字段直接省略，不能声称全部结果都有摘要。
+归档通过运行时 SQL UDF 复用同一提取器，两条 worker 路径保持一致，不改持久 schema。
+已归档记录不回填；共享读取器继续接受旧四字段标记，新摘要字段由同一白名单清洗。
 
 ## Review 清单
 

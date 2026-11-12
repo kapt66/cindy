@@ -83,7 +83,8 @@ describe('NewMakerDraftRoute local first-message send', () => {
     expect(source.slice(fifoRestore, catchRestore)).toContain(
       // Meka 有意的分歧:正式任务(formal draft)的首条正文是 messageToSend,不是
       // 输入框里的 message;恢复草稿必须还原真正发出去的那条。
-      'text: preNavDraftDoc ?? plainTextToTiptapDoc(messageToSend)',
+      // 同时保留上游 W28 的 built-in skill 分支(命中 intent 时还原 builtInSkillDraftMessage)。
+      'text: preNavDraftDoc ?? plainTextToTiptapDoc(builtInSkillIntent ? builtInSkillDraftMessage : messageToSend)',
     );
     expect(source.slice(localSend, fifoRestore)).toContain(
       'rewriteBrowserCommentsFromRehomedFiles(',

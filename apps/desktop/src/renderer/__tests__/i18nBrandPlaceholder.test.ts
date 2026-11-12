@@ -25,6 +25,7 @@ import { describe, it, expect } from 'vitest';
 
 import { BRAND_NAME } from '@cindy/maker-shared/branding';
 import { i18n } from '../i18n';
+import { SUPPORTED_LOCALES } from '../../shared/locale';
 
 describe('locale 品牌名插值', () => {
   it('{{appName}} 由 defaultVariables 注入为 BRAND_NAME(端到端)', () => {
@@ -34,10 +35,12 @@ describe('locale 品牌名插值', () => {
     expect(rendered).not.toContain('{{appName}}');
   });
 
-  it('数据库版本恢复页在五种语言中使用当前产品展示名', () => {
+  it('数据库版本恢复页在全部已支持语言中使用当前产品展示名', () => {
     // zh-TW 曾漏在列表外，导致该语两条文案把品牌名写死成 'Cindy' 而门禁假绿
-    // (2026-09-24 修复)。新增语言时必须一并加入这里。
-    for (const locale of ['en', 'zh-CN', 'zh-TW', 'ja', 'ko']) {
+    // (2026-09-24 修复)。2026-11-06 第七轮同步起改为遍历 SUPPORTED_LOCALES:
+    // 新语种(de/es/fr/pt-BR/pt-PT/文言)补 Meka 占位时正是漏在「按 5 语硬编码的
+    // 固定列表」之外,才让写死的 Cindy 又溜进来一次。
+    for (const locale of SUPPORTED_LOCALES) {
       const t = i18n.getFixedT(locale);
       for (const key of [
         'localDbFatal.updateReady.description',
@@ -51,10 +54,10 @@ describe('locale 品牌名插值', () => {
     }
   });
 
-  it('自动更新放弃后的手动安装引导使用当前产品展示名(5 语言)', () => {
+  it('自动更新放弃后的手动安装引导使用当前产品展示名(全部已支持语言)', () => {
     // 静态扫描（brand-terminology-guard）只拒上游错拼，**拦不住**写死的当前品牌名 ——
     // 写死会让改名漏掉这条文案，所以这里按「渲染结果含 BRAND_NAME」钉住。
-    for (const locale of ['en', 'zh-CN', 'zh-TW', 'ja', 'ko']) {
+    for (const locale of SUPPORTED_LOCALES) {
       const t = i18n.getFixedT(locale);
       for (const key of [
         'update.applyExhausted.description',
@@ -67,12 +70,14 @@ describe('locale 品牌名插值', () => {
     }
   });
 
-  it('第四轮同步新增文案指应用自身时使用 {{appName}}(5 语言)', () => {
+  it('第四轮同步新增文案指应用自身时使用 {{appName}}(全部已支持语言)', () => {
     // 2026-09-25 第四轮上游同步:上游带入的这批文案把品牌名写死成 'Cindy'
     // (taskMove / taskMigration / usageHistory / bots.groupChat),同批改为 {{appName}}。
     // 收录口径见文件头:指应用/产品自身的收进来;指非应用对象(上游 Cindy 服务端、
     // Cindy 插件生态清单契约)的例外不得收录。
-    for (const locale of ['en', 'zh-CN', 'zh-TW', 'ja', 'ko']) {
+    // 2026-11-06 第七轮:7 个新语种上线时同样把这批文案写成 'Cindy',本用例因此改为
+    // 遍历 SUPPORTED_LOCALES;配套静态门见 __tests__/i18nPlaceholderParity.test.ts。
+    for (const locale of SUPPORTED_LOCALES) {
       const t = i18n.getFixedT(locale);
       for (const key of [
         'taskMove.upgradeComputer',

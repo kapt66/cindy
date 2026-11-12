@@ -7,10 +7,20 @@
 
 ## Agent 启动入口
 
+只为检查界面改动（样式、布局、文案、深浅色、多语言）时不必启动 Desktop，先用下文
+「单页 UI 快速验证」；需要真实 IPC、登录、数据库或跨设备行为时再按本节启动。
+需要完整主界面但不想登录或碰真实数据时，加 `--mock` 用免登录的模拟数据启动，见
+[UI 模拟数据](ui-mock-data.md)。
+
 Agent 启动 Desktop 只使用仓库根的安全包装命令。restart 命令默认使用固定的 `dev` 命名
 隔离沙箱（等价于自动附加 `--isolated=dev`），不再默认共享 Cindy Meka 账号登录态与业务
 数据。OpenAI 模型登录态是刻意保留的例外：普通 Dev 可只读复用同区域 Release／本机
 Codex 已有登录态，能够调用模型，但不能在 Dev 内发起 OpenAI 登录或断开共享登录态。
+同 owner 的 Release 授权通常优先；若其 access token 已过期，且本机 Codex 有同账号／
+workspace、有效期明确且尚未过期的授权，则改用本机授权，避免旧 Release 快照挡住已恢复
+的登录。有效期未知或账号无法确认时保持原优先级；与 Release 共用 userData 的 Dev 不自动
+切换来源。实现与回归见 `maker-host/codex-shared-auth.ts`、
+`codexAuthIsolatedSandbox.test.ts`。
 Claude Code 的配置目录同样不隔离：Dev 与正式版一样使用 CLI 默认的 `~/.claude`（不设
 `CLAUDE_CONFIG_DIR`），所以直接沿用本机 Claude Code 的订阅登录；在 Dev 里「使用
 Claude Code 登录」等同于在终端运行 `claude auth login`，「断开」只撤销本实例的使用许可。
@@ -23,7 +33,9 @@ Cindy Meka 常规开发不需要指定 `--region`：命令以 Global endpoint ma
 Global 作为未登录时的产品 edition 默认值；登录页显式选择 CN / Global 后，该选择随认证
 会话保存并优先于启动默认，登出后清除。只有验证特定 endpoint manifest 或 edition 默认值
 时才显式传 `--region=cn|global|dev`。该参数不改变 Cindy Meka 的安装身份、userData 或
-更新渠道。
+更新渠道。**区域运行期可选是本仓已登记的例外**（
+[区域与版本](../product-rules/region-and-editions.md) §1.2）：上游同步时不得把区域收敛回
+「只由安装包决定」，也不要按上游写法要求每次启动都显式传 `--region`。
 
 默认 `dev` 沙箱与 checkout 路径无关：无论从主仓还是哪个 worktree 启动，Global 都落在
 同一个 dev 沙箱，CN 也落在同一个 CN dev 沙箱；登录态与 dev 数据持续保留。
@@ -59,6 +71,10 @@ Agent 没有 TTY 时，dev 会在新开的 Terminal（macOS）／cmd（Windows�
 只保留前 8MB，足够覆盖启动过程；之后的运行日志看按天轮转的 `main-*.log`），窗口关掉后仍可查；启动失败时命令会直接打印日志末尾，verdict 带 `log=` 指向该文件。
 排查启动失败先读这份日志，不要靠反复重启猜原因。不要给启动命令接会吞退出码的管道。
 
+停止旧实例后的 macOS Terminal 标签页清理，只访问已经运行的 Terminal，并按旧实例的精确
+TTY 匹配标签页；Terminal 未运行时直接跳过，不能因清理 iTerm 等终端的 TTY 而将它启动。
+实现与回归见 `scripts/restart-desktop-remote.mjs` 和 `scripts/__tests__/restart-desktop-remote.test.mjs`。
+
 Desktop 连接的是你自己的 Cindy 云端账号（remote）。这与登录页中免 Cindy 账号的
 「跳过登录」（应用内显示为「未登录」，无需账号即可使用本机 agent；代码内部标识仍为
 `local` mode）不是同一个概念。Agent 不得自行改用
@@ -75,6 +91,16 @@ worktree 时可以起隔离沙箱；从另一个 checkout 的 desktop dev 里起
 checkout 占用而中止，不要换命令绕过，应把 verdict 交给用户。
 
 ## 可选启动参数
+
+只调试本机设备互联服务、仍使用真实账号登录时，保持 `restart:desktop:remote`，
+仅在本次启动环境按账号区域设置 `XDT_DEVICE_LINK_CN_LOCAL_URL=http://127.0.0.1:<端口>`
+和／或 `XDT_DEVICE_LINK_GLOBAL_LOCAL_URL=http://127.0.0.1:<另一个端口>`。
+此覆盖只供未打包的开发版使用，只接受带显式端口、无凭据/路径的 IPv4/IPv6 回环地址，
+仅作用于对应区域的当前会话及按区域读取的设备互联端点。旧 `XDT_DEVICE_LINK_LOCAL_URL`
+只作为 CN 的兼容别名，不能把 Global Access Token 发往 CN 服务。正式版忽略这些覆盖；认证、SSO 双区发现、
+模型与其他服务仍按原清单和账号区域运行。跨电脑可使用经明确授权的临时回环隧道。
+不要为只替换设备互联服务而启动完整 `local` 模式：它会把两个账号区域固定到同一套
+本机服务，不能承载真实双区企业 SSO。
 
 两个 restart 命令都支持下列参数。不加任何模式旗标时默认走固定的 `--isolated=dev`
 命名沙箱；要回到旧的共库行为必须显式加 `--shared`。这些参数只对 dev 生效，不影响
@@ -101,6 +127,9 @@ checkout 占用而中止，不要换命令绕过，应把 verdict 交给用户�
   若指向 CN / Global / Dev 任一正式目录（不限当前构建区域），启动器与主进程都 fail closed。isolated 会换独立 deviceId，
   正式目录里的 refresh token 属于正式版设备，叠在一起必然 `DEVICE_MISMATCH`，再删盘会
   把正式版踢下线（2026-08-16）。
+- `--mock`：免登录的 UI 模拟数据。未指定沙箱时使用独立的 `--isolated=ui-mock`，首次启动直接
+  进入「未登录」模式并写入两端共用的模拟任务；不能与 `--shared`、`--preserve-running` 组合。
+  细节见 [UI 模拟数据](ui-mock-data.md)。
 - `--passive`：定时任务被动模式，本实例不自动触发 schedule。多开导致定时任务重复、
   需要让位给 primary 时用。它可以和 `--isolated` 组合（隔离沙箱只看 UI、不跑定时任务
   是合法的）。**共库只读契约不是这个旗标本身**，而是解析后的正式 profile + passive
@@ -205,6 +234,45 @@ checkout 的启动器顶掉）。因此并行多开的标准姿势是：**每个
 Agent 自身仍只走 restart 命令，不直接调 human-only 的 `dev:desktop*`。共享同一 userData
 多开时，非 primary 实例用 `--passive` 让出定时任务调度（见上）。
 
+### 开发深链与系统关联
+
+未打包的 Desktop（`app.isPackaged === false`）不注册 `cindy://` 或历史
+`xdt-maker://` 的 OS 默认处理程序，也不改写 Windows 协议显示名。这与区域、
+`--isolated`、`--shared`、`--passive` 以及 `process.defaultApp` 是否存在无关。
+隔离 userData 不能隔离系统 URL 关联；临时 checkout 退出或删除后，系统关联仍会保留。
+
+macOS 的 `setAsDefaultProtocolClient` 不保存 `path` / `args`（这两个参数仅适用于
+Windows）。把默认处理程序设为 stock `Electron.app` 后，冷启动它没有项目入口，可能
+只显示 Electron 欢迎页。Windows 虽能保存入口命令，也不能让临时 checkout 接管正式链接。
+不在退出时调用 `removeAsDefaultProtocolClient` 来“恢复”：该 API 只移除当前默认处理程序，
+不承诺还原之前的应用，异常退出也不会执行清理。参见
+[Electron 协议注册 API](https://www.electronjs.org/docs/latest/api/app#appsetasdefaultprotocolclientprotocol-path-args)。
+
+开发验证分两层：
+
+- URL / argv 解析、登录前 pending 和导航分发继续使用既有入口；本次只跳过 OS 注册，
+  `open-url`、`second-instance` 和冷启动 argv 接收不变。用现有深链定向测试验证这些行为。
+- 浏览器点击、冷启动和运行中唤起须用 packaged macOS / Windows 验证。运行 dev 时直接
+  点击系统链接仍交给原有安装版，不能把它当作当前 checkout 的验收。
+
+已被旧开发版覆盖关联时，先正常关闭那份旧 dev。保存正式版中的工作后，从安装位置
+（macOS 通常为 `/Applications/Cindy.app`，按实际区域/版本选择）正常退出并重新启动
+对应的打包版，再重试链接；打包版启动会重新注册其协议。仅切换到已经运行的窗口不会
+重新执行注册。Windows 若仍未恢复，在系统“默认应用”中检查这两个协议的目标应用。
+不要批量注销所有 Electron 应用、删除用户 profile 或重置整个 LaunchServices 数据库。
+
+实现与回归见 [deepLink.ts](../../apps/desktop/src/main/deepLink.ts) 和
+[deepLink.test.ts](../../apps/desktop/src/main/__tests__/deepLink.test.ts)。该修复防止新的
+开发实例覆盖关联，不会扫描或自动修复旧 checkout 留下的系统记录。
+
+**Cindy Meka 的 scheme 口径（2026-11-06 第七轮同步后）**：生成侧唯一使用主 scheme
+`cindy-meka://`（`DEEP_LINK_URL_PREFIX`）；向 OS 注册的集合是 `DEEP_LINK_REGISTERED_SCHEMES`
+（= `allDeepLinkSchemes()`，含 Meka 历史 scheme，**不含上游 `cindy://`**）；解析侧额外接受
+`cindy://` 作为上游互操作输入，但**永不注册**（`DEEP_LINK_SCHEMES = allAcceptedDeepLinkSchemes()`）。
+未打包实例的闸门在 `registerDeepLinkProtocol()` 开头（`if (!app.isPackaged) return;`），随后只遍历
+**注册集合** —— 因此 dev 既不接管 `cindy-meka://`、也不接管上游 `cindy://`，新增或修改深链路由时
+不要恢复 `process.defaultApp` 分支，也不要为了调试在 dev 里注册系统关联。
+
 ### 使用统计（TapDB）在 dev 下不上报
 
 dev 构建**默认不初始化 TapDB**，与用户是否同意《隐私政策》、统计开关是否打开无关。闸在
@@ -232,14 +300,40 @@ utility 子进程确认 userData；Windows crashpad 命令行的裸路径会紧�
 启动实例身份的证据。验证必须看到 `DESKTOP_DEV_VERDICT=ready`，并且 root、commit、ready
 三项均匹配当前 checkout。
 
+## 内存排查
+
+main 日志里 scope 为 `memory-usage` 的行是各进程内存采样（正式版每 10 分钟一次，dev 每 30 秒
+一次；实现见 `src/main/process-monitor/memory-log.ts`）：`main{...}` 是主进程
+`process.memoryUsage()` 细分，后面按进程类型分组列出 `app.getAppMetrics()` 的常驻内存，
+组内从大到小，单位 MB。排查「越用越卡」时，先按启动分段看 `Browser`（主进程）和最大的
+`Tab`（主界面）每小时涨多少：持续上涨、重启才回落就是泄漏；再看 `heapUsed` 与 `external` /
+`arrayBuffers` 谁在涨，区分 JS 对象和 Buffer。该 scope 只写进程类型与数字，已按脱敏白名单放行（Meka **不启用**客户端日志上报，见 WL-26；
+白名单与脱敏规则仍按 [日志上报](log-upload-and-redaction.md) 维护），不要往这行里加标题、
+服务名、pid 或路径。
+
+`getAppMetrics()` 的 GPU 数字不含 IOSurface 等显存，macOS 上要看 GPU 进程真实占用用
+`footprint -p <pid>`。
+
+确认主进程在涨、要找是谁在涨时，在开发版日志目录的 `log-config.json` 写
+`"mainHeapSampling": true`（与 `level` 并列），重启后主进程常驻 V8 采样式堆分析（实现见
+`src/main/process-monitor/heap-sampling.ts`），每 30 分钟写一份到 `logs/heap-sampling/`，
+保留最近 48 份：`.heapprofile` 可在 Chrome DevTools 的 Memory 面板载入，`.summary.txt` 按
+「最近一帧应用代码」和「分配帧」两种口径列出仍存活的采样内存。对比前后几份摘要，持续
+变大的那几行就是泄漏点。不要在用户正在用的 GB 级主进程上拍完整堆快照：会冻结一两分钟
+并额外占用同等内存。正式版不读这个开关。
+
 ## 分层验证
 
 工作目录误报缺失或切到备用目录时，参见[工作目录异常日志判读](../working-directory-diagnostics.md)，
 按探测阶段、恢复结果与匿名关联标识区分原因，不要仅凭超时推断掉盘。
 
-本节指导本地验证；提交前按 `development-workflow.md` 的「提交前验证」覆盖改动影响面，
-默认使用 `pnpm test:unit:related`，也可采用等效定向测试与相关 package 的类型检查。
-本机并发预算由使用者或宿主决定，CI 保留完整单测。根据实际改动选择最小但充分的检查：
+本节指导本地验证；**提交前必须按 [`development-workflow.md`](development-workflow.md) 第 2 节
+「提交前测试门禁（硬性要求）」跑完仓库根 `pnpm test:unit:related`，并对本次改动涉及的每个
+package 跑 `pnpm --filter <包名> run --if-present typecheck`，全部通过才允许提交**。本仓
+**不采纳**上游「提交前验证」的放宽（等效定向验证不能替代该门禁，依据见该节与
+[`../migrations/2026-09-25-origin-main-to-meka-main.md`](../migrations/2026-09-25-origin-main-to-meka-main.md)
+§3.1）。CI 仍跑完整单测；本机并发预算与执行时机由使用者或宿主决定，但这些选择不改变
+上面这条硬性门禁。根据实际改动选择最小但充分的检查：
 
 ```bash
 pnpm --filter desktop typecheck
@@ -308,6 +402,78 @@ Codex 错误恢复还必须携带有效的持久化 thread ID，并调用 `threa
 `sdk_session_id` 并报告失败。该约束只适用于错误 Session 的原地恢复；显式 `/clear`、切换
 Agent、删除消息后重建上下文及全新任务仍允许创建新的原生会话。
 
+## 单页 UI 快速验证
+
+`pnpm ui:check` 只编译被改的真实 renderer 组件，在一个隔离的 Electron 窗口（与 Cindy 同一
+Chromium）里按「场景 × 主题 × 语言 × 窗口尺寸」逐个截图、做通用检查后退出，不加载 main、
+登录、数据库或 Agent。一个场景约 0.5 秒，整页全矩阵通常在 20 秒内，可以在每次改 UI 后自检，
+不必为此启动完整 Desktop。
+
+```bash
+pnpm ui:check --changed --theme all
+pnpm ui:check --page group-chat --case all --theme all --locale all
+pnpm ui:check --page group-chat --case long-device --compare
+pnpm ui:check --list
+pnpm ui:preview --page device-picker
+pnpm ui:check:publish
+pnpm ui:check:selftest
+```
+
+- `--changed` 按本分支改动选出加载了这些文件的页面；输出里 `UNCOVERED` 的文件**没有被验证**，
+  需要补场景、用 `--entry` 临时挂载，或回到完整 Desktop。
+- 报告首行 `UI_CHECK passed|failed`，`overview.png`（变体多时还有 `overview-2.png` 等）是截图
+  总览，失败原因、宿主缺失接口和被替换的模块都写在 `summary.json`。自检读 overview 判断视觉
+  效果，不靠“命令通过”下结论。
+- `ui:preview` 只在需要人工手动验收时使用：保持一个窗口、改文件自动重载，关窗或 Ctrl+C 结束。
+- 场景数据、宿主模拟、多语言和对比模式的写法见
+  [单页验证说明](../../apps/desktop/scripts/ui-page/README.md)。
+
+### 局部 UI 的默认迭代流程
+
+局部样式、排版与交互问题优先沿用上述组件窗口完成复现、修复和人工试用：
+
+- 复用已有 fixture；缺少覆盖时直接挂载真实生产组件，沿用共享样式、字体、主题和翻译，
+  不复制 JSX／CSS 做一份外观相似的页面。模拟只补与本次验证无关的宿主依赖；被替换模块
+  写入 `stubs`，未覆盖行为写入 `notCovered`。
+- 修 bug 先留下失败场景，再用相同输入验证修复。尺寸、换行或抖动问题测实际浏览器布局；
+  涉及过渡动画时采样中间帧，不能只比较 CSS 字符串或动画结束后的截图。
+- 覆盖 Light／Dark 和受影响的鼠标、键盘状态；排版改动补相关语言与长文案，修改共享组件
+  或字体时检查相邻消费者。执行适用的 `--changed` 检查并目检 overview，明确报告失败和缺口。
+- 给用户试用时打开 `ui:preview`，说明所用分支和场景；等待用户验收期间保留窗口，不因
+  助手回复结束就关闭。验收结束后只收尾本轮拥有的预览进程。
+- 组件窗口不加载完整客户端及其用户数据，不需要抢占或重启已有完整客户端验收实例。
+  涉及真实宿主、登录、发送、持久化、跨设备或原生窗口行为时，按下表升级验证；构建失败
+  或 fixture 通过都不能作为这些行为已经验证的证据。
+
+### 按改动选择验证方式
+
+| 改动 | 先做 | 何时升级 |
+| --- | --- | --- |
+| renderer 组件的样式、布局、文案、图标、深浅色 | `pnpm ui:check --changed --theme all` | 有 `UNCOVERED` 时补场景或用 `--entry`；文案改动加 `--locale all`；间距、截断类改动加 `--focus <选择器>` 看放大图和实测尺寸 |
+| 修已有界面 bug，需要改前／改后对照 | `pnpm ui:check --page <页面> --case <场景> --compare` | 修复依赖真实数据流时补定向 vitest |
+| 新组件或还没有页面覆盖的组件 | 写 `tmp/` 下的临时入口：`pnpm ui:check --entry tmp/<名>.tsx` | 会反复回归的组件在 `scripts/fixtures/` 下注册页面 |
+| renderer 逻辑、hook、store、数据转换 | 定向 vitest | 结果显示在界面上时再跑 `ui:check` |
+| 任务列表、任务页、侧栏等需要完整主界面的样式或交互 | `pnpm restart:desktop:remote -- --mock`（[UI 模拟数据](ui-mock-data.md)） | 依赖真实账号、发送或 Agent 运行时回到隔离 Desktop |
+| main、preload、IPC、数据库、登录、发送、跨设备、窗口生命周期 | 定向测试 + 隔离 Desktop（见「Agent 启动入口」） | `ui:check` 不覆盖这些行为，不能替代 |
+
+普通界面改动的 PR 截图直接用单页验证：检查通过后运行 `pnpm ui:check:publish`，它把最近一次
+运行的总览截图推到作者 fork 的 `pr-assets/<当前分支>`（不进上游仓库，也不动工作区），并输出
+一段带图片链接的「UI 变化」：命令、平台、版本、场景、通过情况、未覆盖的行为和 `--focus` 实测的
+改前／改后数值，原样写进 PR 正文。登录、发送、跨设备等单页验证覆盖不到的变化，仍按原方式附
+完整 Cindy 截图。
+
+公开截图（PR 正文、评论、发到 fork 的图）的原则：
+
+- 能证明改动就够；不公开能认出真实的人、电脑、账号的信息，以及他人的私密内容；
+  数值和界面状态照常展示。
+- 优先用 `ui:check` 或 `--mock` 的模拟数据；`--mock` 只在没登录过账号的模拟沙箱里生效。
+- 必须用真实账号时，截图前把身份信息换成示例数据（比如通过开发版的 CDP 端口修改页面文字），
+  换不掉的部分避开或裁掉，发出前人工确认一遍。
+- 发到 fork 的图按提交 SHA 仍能公开访问，删分支撤不回。
+
+`ui:check` 通过只说明列出的场景在真实组件上渲染正确；报告里 `not covered` 列出的行为仍须按
+对应流程验收，正式 PR 前的真实运行验收要求不变。
+
 ## Linux 系统托盘
 
 Linux 主窗口创建时注册 Electron Tray，提供显示主窗口、打开日志目录、退出 Cindy。
@@ -316,9 +482,13 @@ Linux 主窗口创建时注册 Electron Tray，提供显示主窗口、打开日
 实现见 `main/linuxTrayLifecycle.ts` 与 `bootstrap-electron.ts`，回归见
 `main/__tests__/linuxTrayLifecycle.test.ts`。
 
-图标创建成功不代表桌面面板一定显示它，因此关闭主窗口仍保留 Linux 原有的
-「最小化／退出」选择，不自动隐藏到托盘，也不迁移用户已有偏好。无托盘宿主或初始化失败
-不阻止主窗口使用。托盘实际显示、激活、菜单与退出须在 Linux 桌面验证；macOS 上的
+关闭主窗口仍保留 Linux 原有的「最小化／退出」选择，不迁移用户已有偏好。
+Hyprland（包括 Omarchy）没有原生最小化能力，因此主窗口的「最小化」及关闭时的
+「最小化」选择统一隐藏到 Linux 托盘；其他桌面与副窗口仍使用原生最小化。
+策略与回归见 `main/mainWindowCloseBehavior.ts`、`main/__tests__/mainWindowCloseBehavior.test.ts`。
+托盘初始化失败时提示并保留窗口。图标创建成功不代表桌面面板一定显示它；自定义 Hyprland
+配置未启用托盘宿主时，可再次打开同一安装、同一配置的 Cindy，经已有 single-instance
+入口恢复窗口。托盘实际显示、激活、菜单与退出须在 Linux 桌面验证；macOS 上的
 单测不能替代 Omarchy/Hyprland、GNOME 或 KDE 的实机验收。
 
 ## Windows 窗口恢复实验
@@ -342,12 +512,33 @@ NSIS 安装器保留当前用户／所有用户两种范围。普通用户可写
 `forge.config.ts` 因此关闭上游自带目录页，由 `customPageAfterChangeDir` 插入同款原生页。
 不要单独打开上游 `allowToChangeInstallationDirectory`，否则会重复插入页面。
 
+在 Windows 显式运行原生验证（临时目录内编译，不安装 Cindy）：命令见下文「NSIS 脚本的同级 `!include` 走 ${BUILD_RESOURCES_DIR}」的门禁分工——`apps/desktop/scripts/check-windows-installer.mjs` 与 `scripts/installer-directory-messages.test.mjs` 都要跑，两条命令只在该处维护一次。
+
+`check-windows-installer.mjs` 编译真实安装器／卸载器，并实跑 Win32 文件访问与账号 SID 探测；UAC 返回值由测试
+替身提供，覆盖取消、子进程退出和账号／范围恢复。它不能代替真实 UAC 交互验收。发布前
+还需在普通权限 Windows 环境走查：默认目录、自定义受保护目录、允许／取消授权、使用
+另一管理员账号、旧版覆盖安装，以及静默安装失败时旧版仍在。原生对话框的 Light／Dark
+外观由 Windows 提供，自动测试不代表两种模式已完成目检。
+
+远程桌面 helper 的 CRT 链接验收另运行：
+
+```bash
+node apps/desktop/scripts/check-windows-remote-desktop-runtime.mjs
+```
+
+这是显式 Windows x64 原生集成验收：编译两个 EXE 与 `.node`，检查 PE 依赖，对照
+动态／静态链接在临时目录中遇到不可用 VC++ DLL 时的结果，并以随机测试产品身份实跑
+生产 NSIS 钩子的当前用户安装、覆盖安装和卸载。它不改系统 DLL、不安装服务、不操作
+正式 Cindy 的安装。该故障注入不能代替干净 Windows 虚拟机、「所有用户」安装或已注册
+远程桌面服务的真实验收；编译与安装器子进程不进入默认单测。
+
+
 ### NSIS 脚本的同级 `!include` 走 `${BUILD_RESOURCES_DIR}`
 
 `resources/*.nsh` 之间互相引用（`installer.nsh` → `winget-shortcuts.nsh` /
 `installer-directory.nsh` → `installer-directory-messages.nsh`）时，**必须**写成
-`!include "${BUILD_RESOURCES_DIR}\x.nsh"`（`resources/installer.nsh:16-17`、
-`resources/installer-directory.nsh:70`），不得写裸文件名，也不要用相对目录前缀。消息目录的
+`!include "${BUILD_RESOURCES_DIR}\x.nsh"`（`resources/installer.nsh`、
+`resources/installer-directory.nsh` 中的对应 `!include` 行），不得写裸文件名，也不要用相对目录前缀。消息目录的
 include 留在 `customHeader` 宏体内即可：`${BUILD_RESOURCES_DIR}` 是 makensis 命令行上的
 `-D` 常量，宏内／宏外取值一致，不像 `${__FILEDIR__}` 那样在宏展开时指向「插入方」。
 
@@ -362,7 +553,7 @@ app-builder-lib 只把 `buildResourcesDir` 加进 `!addincludedir`，并把同�
 上游 `7582de5f20`（2026-09-20「configure NSIS build resources」）补上了缺失的一半，
 本仓随之把同级 include 全部改成 `${BUILD_RESOURCES_DIR}` 限定：
 `forge.config.ts` 的 NSIS maker 显式设
-`directories.buildResources = path.join(__dirname, 'resources')`（`forge.config.ts:1761`），
+`directories.buildResources = path.join(__dirname, 'resources')`（`forge.config.ts` 的 NSIS maker 配置），
 app-builder-lib 据此同时提供 `!addincludedir` 与 `BUILD_RESOURCES_DIR` 常量。二者成对：
 **别退回裸名，也别删 `forge.config.ts` 的 `buildResources` 配置**（`resources/installer.nsh`
 顶部注释与 `scripts/nsis-include-paths.test.mjs` 都钉住了这一点）。
@@ -385,15 +576,10 @@ node apps/desktop/scripts/test-winget-shortcuts.mjs
   判为违规（带目录前缀或 `${__FILEDIR__}` 的不在判据内），因此与上面那条不冲突，两者一起
   覆盖「裸名」与「生产常量来源」两种回归。
 - 两个 native 脚本都在 Windows 上编译真实安装器／卸载器。`check-windows-installer.mjs` 给
-  自己的 fixture 编译显式传 `/DBUILD_RESOURCES_DIR=<resources>`
-  （`check-windows-installer.mjs:81`）。**未验证项（本轮如实登记）**：本轮核对时两个脚本调
-  app-builder-lib `build()` 都没显式给 `directories.buildResources`，而
-  app-builder-lib 的缺省是 `<projectDir>/build`（本仓从未有此目录），`test-winget-shortcuts.mjs`
-  的注释里还写着「production sets nothing」——这与 `forge.config.ts:1761` 已设
-  `buildResources` 的生产形态**不一致**，两个脚本的安装器编译阶段能否在本机通过本轮未在
-  Windows 实跑核对，改动它们时必须实测（`nsis-include-paths.test.mjs` 只锁文件文本，不跑
-  makensis）。它实跑 Win32 文件访问与账号 SID 探测；UAC 返回值由测试
-  替身提供，覆盖取消、子进程退出和账号／范围恢复。它不能代替真实 UAC 交互验收。发布前还需在
-  普通权限 Windows 环境走查：默认目录、自定义受保护目录、允许／取消授权、使用另一管理员
-  账号、旧版覆盖安装，以及静默安装失败时旧版仍在。原生对话框的 Light／Dark 外观由 Windows
-  提供，自动测试不代表两种模式已完成目检。
+  自己的 fixture 编译显式传 `/DBUILD_RESOURCES_DIR=<resources>`（见该脚本的 fixture 编译
+  参数）。**未验证项（Meka 侧如实登记）**：核对时两个脚本调 app-builder-lib `build()` 都没
+  显式给 `directories.buildResources`，而 app-builder-lib 的缺省是 `<projectDir>/build`
+  （本仓从未有此目录），`test-winget-shortcuts.mjs` 的注释里还写着「production sets
+  nothing」——这与 `forge.config.ts` 里 NSIS maker 已设 `directories.buildResources` 的
+  生产形态**不一致**；两个脚本的安装器编译阶段能否在本机通过尚未在 Windows 实跑核对，
+  改动它们时必须实测（`nsis-include-paths.test.mjs` 只锁文件文本，不跑 makensis）。

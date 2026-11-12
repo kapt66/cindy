@@ -526,11 +526,27 @@ function safeJoin(dest: string, relPath: string): string | null {
 
 // ── 主入口：install ─────────────────────────────────────────────────────────
 
+/** 远程安装守卫：上游给"执行电脑侧远程安装"用的准入/提交前复核。 */
+interface SkillRemoteInstallGuard { current(): boolean; beforeCommit(): Promise<boolean> }
+
+/** Meka 渠道来源（`channel:'meka'`）与上游远程守卫共用第三个参数位，按形状区分。 */
+function isSkillInstallSource(value: SkillInstallSource | SkillRemoteInstallGuard): value is SkillInstallSource {
+  return 'channel' in value;
+}
+
+/**
+ * 第七轮同步：上游给 `install` 加了第三个参数 `remoteGuard`（远程安装守卫），Meka 已经在同一
+ * 位置放了 `source`（安装来源记录，`meka-skills` 渠道用）。两者互不替代：Meka 渠道没有上游
+ * 远程安装路径，上游远程安装没有 Meka 来源账本。所以第三参收成一个按形状区分的联合，
+ * 调用点保持原样，两个状态机各自只在自己的通路上生效。
+ */
 export async function install(
   p: InstallParams,
   onProgress: ProgressCb,
-  source?: SkillInstallSource,
+  target?: SkillInstallSource | SkillRemoteInstallGuard,
 ): Promise<InstallResult> {
+  const source = target !== undefined && isSkillInstallSource(target) ? target : undefined;
+  const remoteGuard = target !== undefined && !isSkillInstallSource(target) ? target : undefined;
   const userId = getCurrentUserId();
   if (!source && !userId) {
     onProgress({ phase: 'failed', name: p.name, errorCode: 'AUTH_REQUIRED', message: '未登录' });
@@ -583,6 +599,7 @@ export async function install(
   const checkAbort = (): boolean => {
     if (
       signal.aborted ||
+      (remoteGuard !== undefined && !remoteGuard.current()) ||
       (source ? !sourceAvailable : !getAppCapabilities().canUseSkillHubCloud) ||
       getCurrentDataOwnerId() !== installOwnerId
     ) {
@@ -761,6 +778,12 @@ export async function install(
       return { success: false, errorCode: 'CANCELLED', message: '已取消' };
     }
 
+    // A remote approval is tied to the scanned physical instance/content. Recheck
+    // after download/extraction while the original mutation leases are held.
+    if (remoteGuard && !(await remoteGuard.beforeCommit())) {
+      await fs.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+      return { success: false, errorCode: 'CANCELLED', message: '已取消' };
+    }
     // 6) final switch: staging → final。只有此时才移动/删除旧目录。
     // 物理 Skill 自身可能还是一层用户链接；替换后再 realpath 已看不到旧 registry key。
     const preSwitchPhysicalRealDir = !pathTextEquals(
@@ -1040,6 +1063,7 @@ export async function uninstall(
   absolutePath: string,
   target?: LocalSkillTarget,
   canMutate: () => boolean = () => true,
+  beforeCommit?: () => boolean | Promise<boolean>,
 ): Promise<UninstallResult> {
   // 防御：resolve 后验证路径是精确的 skill 根目录（只允许一层 slug，防 traversal）
   let resolved: string;
@@ -1112,6 +1136,9 @@ export async function uninstall(
       };
     }
 
+    if (beforeCommit && !(await beforeCommit())) {
+      return { success: false, errorCode: 'INTERNAL', message: 'Skill source changed; refresh and retry' };
+    }
     const cloudUserId = getCurrentUserId();
     return await uninstallLocked(
       absolutePath,

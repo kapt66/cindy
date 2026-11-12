@@ -8,9 +8,9 @@
  * product default.
  */
 
-import { useSyncExternalStore } from 'react';
+import { useMemo, useSyncExternalStore } from 'react';
 
-import { isValidGhostId } from '../../shared/ghost';
+import { isValidGhostId, type InstalledGhost } from '../../shared/ghost';
 
 const STORAGE_KEY = 'xdt:ghostPanelPresentation:v1';
 const OVERRIDES_STORAGE_KEY = 'xdt:ghostPanelPresentationOverrides:v1';
@@ -57,7 +57,7 @@ function notify(): void {
 }
 
 function ensureStorageWired(): void {
-  if (storageWired) return;
+  if (storageWired || typeof window === 'undefined') return;
   storageWired = true;
   window.addEventListener('storage', onStorage);
 }
@@ -78,6 +78,7 @@ function onStorage(event: StorageEvent): void {
 
 function loadGlobal(): boolean {
   if (modalOverride !== null) return modalOverride;
+  if (typeof window === 'undefined') return false;
   ensureStorageWired();
   modalOverride = readStoredValue(window.localStorage.getItem(STORAGE_KEY));
   return modalOverride;
@@ -85,6 +86,7 @@ function loadGlobal(): boolean {
 
 function loadPluginOverrides(): Record<string, GhostPanelPresentation> {
   if (pluginOverrides !== null) return pluginOverrides;
+  if (typeof window === 'undefined') return {};
   ensureStorageWired();
   pluginOverrides = readStoredOverrides(
     window.localStorage.getItem(OVERRIDES_STORAGE_KEY),
@@ -161,6 +163,39 @@ export function useGhostPanelModalPresentation(): boolean {
     subscribe,
     () => isGhostPanelModalPresentationEnabled(),
     () => isGhostPanelModalPresentationEnabled(),
+  );
+}
+
+/**
+ * 面板页的**有效宿主**（Meka 侧唯一真值，所有入口共用）。
+ *
+ * - 没有 `panel` 声明，或 `position:'tab'` → 恒 `docked`：tab 形态由 manifest 固定成
+ *   插件页内的独占宿主（`GhostPagePanelHost`），调用方不得据此开 Modal（否则同一实例
+ *   两个 webview 各存整份插件数据）；
+ * - 插件级 override（`docked`／`modal`）优先；
+ * - 否则跟随 Meka 全局开关（缺省 false = docked，兼容「用户从未设置」）；
+ * - 纯函数、无副作用，可在 render 期与模块级同步路径（启动/`ghosts:changed` 的
+ *   reconcile）里调用；存储损坏一律回落到 `docked`。
+ */
+export function resolveGhostPanelPresentation(
+  ghost: Pick<InstalledGhost, 'manifest'>,
+): GhostPanelPresentation {
+  const panel = ghost.manifest.panel;
+  if (!panel || panel.position === 'tab') return 'docked';
+  const override = loadPluginOverrides()[ghost.manifest.id];
+  if (override !== undefined) return override;
+  return loadGlobal() ? 'modal' : 'docked';
+}
+
+/** 携带呈现信息的 hook：偏好或插件实例变化时重渲染。 */
+export function useGhostPanelPresentation(
+  ghost: Pick<InstalledGhost, 'manifest'> | null,
+): GhostPanelPresentation {
+  // revision 只为订阅变更触发重算。
+  const revision = useGhostPanelPresentationRevision();
+  return useMemo(
+    () => (ghost ? resolveGhostPanelPresentation(ghost) : 'docked'),
+    [ghost, revision],
   );
 }
 

@@ -1,7 +1,8 @@
 import { Button } from '@/components/ui/button';
+import { ErrorNotice } from '@/components/ui/error-notice';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { CircleAlert, Copy, FolderOpen } from 'lucide-react';
+import { Copy, FolderOpen } from 'lucide-react';
 import type { ContextMenuEvent, WebviewTag } from 'electron';
 
 import {
@@ -10,11 +11,13 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { createLogger } from '@/lib/logger';
 import { toast } from '@/lib/toast';
 
 import { GHOST_SCHEME, ghostInstallApprovalToken, type InstalledGhost } from '../../shared/ghost';
 import { installedGhostStoragePart, installedGhostWebviewPartitionClaim } from '../../shared/pluginIdentity';
-import { createGhostThemeInjector, observeHostTheme } from './ghostPanelTheme';
+import { mountPluginTabView } from '@/features/right-sidebar/pluginTabViews';
+import { buildGhostMainViewThemeCss, createGhostThemeInjector, observeHostTheme } from './ghostPanelTheme';
 import {
   clearGhostUnread,
   useElementVisible,
@@ -29,6 +32,16 @@ import {
  * 安全边界不变:分区/地址由 main 侧 webview 附加闸验明正身(webview-security),
  * 本模块不因换容器多要任何特权。
  */
+
+const log = createLogger('GhostWebview');
+
+/** 面板 webview 被销毁的原因类别:卸载 / 依赖变化后原位重挂 / 崩溃或加载失败。 */
+type WebviewCloseReason = 'unmount' | 'reload' | 'crash';
+
+function toWebviewCloseReason(crashed: boolean, unmounting: boolean): WebviewCloseReason {
+  if (crashed) return 'crash';
+  return unmounting ? 'unmount' : 'reload';
+}
 
 /**
  * 面板错误接管态:芯片型意识崩溃 / 熔断时面板**不关闭**,
@@ -52,15 +65,11 @@ export function GhostPanelError({
     onReload ?? (() => void window.electronAPI.ghosts.reload(instanceId).catch(() => {}));
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-4">
-      <CircleAlert size={22} className="text-[var(--error-fg)]" />
-      <p className="text-center text-12 leading-relaxed text-[var(--text-secondary)]">
-        {t(
+      <ErrorNotice className="w-full" message={t(
           state === 'fused'
             ? 'settings.ghosts.panelError.fused'
             : 'settings.ghosts.panelError.crashed',
-        )}
-      </p>
-      <div className="flex items-center gap-2">
+        )} actions={<>
         <Button variant="secondary" size="sm" compact
           type="button"
           onClick={reload}
@@ -79,7 +88,7 @@ export function GhostPanelError({
         >
           {t('settings.ghosts.panelError.close')}
         </Button>
-      </div>
+      </>} />
     </div>
   );
 }
@@ -193,13 +202,25 @@ export function pickGhostPanelMediaUri(
 export function GhostWebviewBody({
   ghost,
   html,
+  query,
+  wallpaperCanvas = false,
   onHostNode,
   autoFocusWebview = false,
+  tabView,
 }: {
   ghost: Pick<InstalledGhost, 'manifest' | 'dir' | 'namespace'> & Partial<Pick<InstalledGhost, 'approval'>>;
   html: string | undefined;
+  /**
+   * 附在入口地址后的查询串(不含 `?`),如任务页的 `session=<id>`。协议供片与附加闸
+   * 都只按 pathname 判定,查询串只给页面自己读。
+   */
+  query?: string;
+  /** Main-view pages share the host canvas, including when docked or detached. */
+  wallpaperCanvas?: boolean;
   onHostNode?: (node: HTMLDivElement | null) => void;
+  /** Meka 面板呈现方式 = Modal 时由宿主置位：dom-ready 后把键盘焦点交给 guest。 */
   autoFocusWebview?: boolean;
+  tabView?: { tabId: string; id: string; sessionId: string | null; visible: boolean };
 }): ReactNode {
   const { manifest } = ghost;
   const instanceId = installedGhostStoragePart(ghost);
@@ -208,6 +229,9 @@ export function GhostWebviewBody({
   const partitionClaim = installedGhostWebviewPartitionClaim(ghost);
   const [generation, setGeneration] = useState(0);
   const [mediaMenu, setMediaMenu] = useState<GhostPanelMediaMenuState | null>(null);
+  const tabMount = useRef<Awaited<ReturnType<typeof mountPluginTabView>> | null>(null);
+  const tabVisible = useRef(tabView?.visible ?? false); tabVisible.current = tabView?.visible ?? false;
+  useEffect(() => { tabMount.current?.setVisible(tabView?.visible ?? false); }, [tabView?.visible]);
 
   // The host is swapping this instance's library on disk. Drop the webview
   // until the swap and the partition clear finish, then load from disk again,
@@ -222,6 +246,17 @@ export function GhostWebviewBody({
     setLibrarySwapping(false);
     setGeneration((value) => value + 1);
   }), [instanceId]);
+  // 销毁原因:crash 由 guest 事件显式标记;其余靠「是不是整个组件在卸载」区分
+  // unmount 与依赖变化引起的 reload。卸载标记的 effect 必须排在 webview effect 之前,
+  // 卸载时 React 按声明顺序跑清理,webview 清理读到的才是已置位的标记。
+  const unmountingRef = useRef(false);
+  const crashMarkedRef = useRef(false);
+  useEffect(() => {
+    unmountingRef.current = false;
+    return () => {
+      unmountingRef.current = true;
+    };
+  }, []);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const setHostNode = useCallback(
     (el: HTMLDivElement | null) => {
@@ -236,14 +271,15 @@ export function GhostWebviewBody({
     const host = hostRef.current;
     if (!host) return;
     const webview = document.createElement('webview') as WebviewTag;
+    const lifetime = new AbortController();
     webview.setAttribute('partition', partitionClaim);
-    webview.setAttribute('src', `${GHOST_SCHEME}://${manifest.id}/${html}`);
+    webview.setAttribute('src', `${GHOST_SCHEME}://${manifest.id}/${html}${query ? `?${query}` : ''}`);
     webview.setAttribute('style', 'display:flex;flex:1 1 auto;width:100%;height:100%;');
     let disposed = false;
     let themeTimer: ReturnType<typeof setTimeout> | null = null;
     // 状态机见 createGhostThemeInjector:换肤误触发去重、dom-ready(含拖动
     // 换位触发的 Electron 整页重载)无条件重灌,规则都封在里面(带单测)。
-    const injector = createGhostThemeInjector(webview);
+    const injector = createGhostThemeInjector(webview, wallpaperCanvas ? buildGhostMainViewThemeCss : undefined);
     // 突发属性变动(换肤瞬间多个属性接连翻动)合并成一次注入。
     const scheduleInjectTheme = () => {
       if (themeTimer !== null) return;
@@ -254,12 +290,15 @@ export function GhostWebviewBody({
     };
     const onDomReady = () => injector.onDomReady();
     const onGone = () => {
-      if (!disposed) setCrashed(true);
+      if (disposed) return;
+      crashMarkedRef.current = true;
+      setCrashed(true);
     };
     // 主文档缺失、协议供片失败等必须进入可恢复错误态，不能留下白屏。
     // -3 = ABORTED（导航中断）；子 frame 失败也不代表主页面已经失效。
     const onFailLoad = (event: Electron.DidFailLoadEvent) => {
       if (disposed || event.errorCode === -3 || !event.isMainFrame) return;
+      crashMarkedRef.current = true;
       setCrashed(true);
     };
     // 右键产物 cell → 宿主自绘菜单(复制文件 / 打开所在目录,与聊天媒体同款)。
@@ -292,10 +331,27 @@ export function GhostWebviewBody({
     webview.addEventListener('did-fail-load', onFailLoad);
     webview.addEventListener('context-menu', onContextMenu);
     const unobserveTheme = observeHostTheme(scheduleInjectTheme);
-    host.appendChild(webview);
+    if (tabView) {
+      void mountPluginTabView({ tabId: tabView.tabId, instanceId, id: tabView.id, sessionId: tabView.sessionId, visible: tabVisible.current }, lifetime.signal).then(mount => {
+        if (disposed) { mount.dispose(); return; }
+        tabMount.current = mount;
+        mount.setVisible(tabVisible.current);
+        webview.setAttribute('src', `${GHOST_SCHEME}://${manifest.id}/${html}?cindyView=${encodeURIComponent(mount.token)}`);
+        host.appendChild(webview);
+      }, () => { if (!disposed) onGone(); });
+    } else host.appendChild(webview);
+    // [MEKA] Modal 宿主 = 唯一主动抢焦点的面板宿主(停靠页签与插件页宿主保持被动)。
     if (autoFocusWebview) webview.focus();
+    // 每次创建 / 销毁各一条:只记插件实例 id、存活毫秒与原因类别,不带 URL 与页面内容。
+    const createdAt = Date.now();
+    log.info('webview created', { instanceId });
     return () => {
+      const reason = toWebviewCloseReason(crashMarkedRef.current, unmountingRef.current);
+      crashMarkedRef.current = false;
+      log.info('webview destroyed', { instanceId, aliveMs: Date.now() - createdAt, reason });
       disposed = true;
+      lifetime.abort();
+      tabMount.current?.dispose(); tabMount.current = null;
       injector.dispose();
       if (themeTimer !== null) clearTimeout(themeTimer);
       unobserveTheme();
@@ -310,7 +366,7 @@ export function GhostWebviewBody({
     };
     // version 入依赖:原位更新换版后 webview 重挂载,面板立刻跑新代码
     // (供片协议直读安装目录,不重挂会一直渲染旧版缓存的页面)。
-  }, [crashed, generation, librarySwapping, instanceId, approvalToken, partitionClaim, manifest.id, manifest.version, manifest.resolvedLocale, html, autoFocusWebview]);
+  }, [crashed, generation, librarySwapping, instanceId, approvalToken, partitionClaim, manifest.id, manifest.version, manifest.resolvedLocale, html, query, wallpaperCanvas, tabView?.tabId, tabView?.id, tabView?.sessionId, autoFocusWebview]);
 
   if (crashed) {
     return (
@@ -353,7 +409,7 @@ export function GhostChipPanelBody({
    * 面板体挂载 = 未读已读(badge 槽的 explicit 清零)。
    *
    * 清零收在这里而不是各宿主的"打开"动作里:面板体有三个宿主(插件页页签
-   * GhostPagePanelHost、布局停靠 ghostPanels、独立窗口 GhostPanelWindowLayout),
+   * GhostPagePanelHost、右侧栏插件视图页签 plugin-view 及其弹出窗口),
    * 挂载到本组件才是"内容确实在用户眼前"的唯一判据,三处天然对称。
    * unread 进依赖:面板**已经开着**时插件又点亮一次(后台拿到新内容),用户
    * 正看着它,不该留一颗清不掉的点。

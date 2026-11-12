@@ -8,6 +8,8 @@ import { WINDOW_NO_DRAG_STYLE } from '@/components/layout/windowDrag';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import { extractIpcError } from '@/utils/ipcError';
+import { mekaAssistantSettings } from './MekaAssistantSettingsSection.settings-search';
+import { useSettingDefinition } from './useSettingDefinition';
 
 type AuthMode = 'login' | 'register';
 
@@ -36,6 +38,7 @@ export function MekaRouterConnectDialog({
   onConnected: () => void | Promise<void>;
 }) {
   const { t } = useTranslation();
+  const routerSetting = useSettingDefinition(mekaAssistantSettings.router);
   const [routerUrl, setRouterUrl] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -140,6 +143,7 @@ export function MekaRouterConnectDialog({
             </Dialog.Title>
             <Dialog.Close asChild>
               <button
+                data-settings-search-action="Close the MCPRouter dialog without submitting"
                 type="button"
                 disabled={submitting}
                 className="rounded-md p-1 text-[var(--text-tertiary)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)] disabled:cursor-wait disabled:opacity-50"
@@ -168,6 +172,7 @@ export function MekaRouterConnectDialog({
                 {t('settings.meka.router.url')}
               </span>
               <input
+                {...routerSetting.controlProps}
                 className={INPUT_CLASS}
                 type="url"
                 value={routerUrl}
@@ -182,6 +187,7 @@ export function MekaRouterConnectDialog({
                 {t('settings.meka.router.username')}
               </span>
               <input
+                {...routerSetting.controlProps}
                 className={INPUT_CLASS}
                 value={username}
                 onChange={(event) => setUsername(event.target.value)}
@@ -194,6 +200,7 @@ export function MekaRouterConnectDialog({
               </span>
               <div className="relative">
                 <input
+                  {...routerSetting.controlProps}
                   className={cn(INPUT_CLASS, 'pr-10')}
                   type={showPassword ? 'text' : 'password'}
                   value={password}
@@ -201,6 +208,7 @@ export function MekaRouterConnectDialog({
                   autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
                 />
                 <button
+                  data-settings-search-action="Toggle whether the entered MCPRouter password is visible"
                   type="button"
                   className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--text-tertiary)]"
                   onClick={() => setShowPassword((value) => !value)}
@@ -220,6 +228,7 @@ export function MekaRouterConnectDialog({
                   {t('settings.meka.router.confirmPassword')}
                 </span>
                 <input
+                  {...routerSetting.controlProps}
                   className={INPUT_CLASS}
                   type={showPassword ? 'text' : 'password'}
                   value={confirmPassword}
@@ -230,6 +239,7 @@ export function MekaRouterConnectDialog({
             )}
             <div className="flex items-center justify-between gap-3">
               <button
+                data-settings-search-action="Switch between MCPRouter sign-in and registration"
                 type="button"
                 className="h-9 px-1 text-14 text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-50"
                 disabled={submitting}
@@ -243,6 +253,7 @@ export function MekaRouterConnectDialog({
               </button>
               <div className="flex items-center gap-2">
                 <button
+                  data-settings-search-action="Cancel MCPRouter connection editing"
                   type="button"
                   className={BUTTON_CLASS}
                   disabled={submitting}
@@ -250,7 +261,12 @@ export function MekaRouterConnectDialog({
                 >
                   {t('logic.confirm.cancel')}
                 </button>
-                <button type="submit" className={BUTTON_CLASS} disabled={!canSubmit}>
+                <button
+                  {...routerSetting.controlProps}
+                  type="submit"
+                  className={BUTTON_CLASS}
+                  disabled={!canSubmit}
+                >
                   {t(
                     mode === 'register'
                       ? 'settings.meka.router.registerSubmit'

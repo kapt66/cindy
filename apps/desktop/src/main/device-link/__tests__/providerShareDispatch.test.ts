@@ -1,3 +1,4 @@
+import { createProviderShareInsightsReader } from '../providerShareInsights';
 /**
  * 被控端对供应商分享受邀者(另一个账号)的入口：只建后台链路、只放行远程 Agent 与过滤后的供应商列表，
  * 订阅与其他通道一律拒绝；撤权后迟到的结果不再带出数据；撤权只会命中受邀者对端。
@@ -93,6 +94,9 @@ describe('provider share link admission', () => {
 describe('provider share invoke', () => {
   it('allows only the remote agent and the filtered provider list', async () => {
     state.access = ACCESS;
+    // #8010: a shared provider must not expose its owner's other model sources.
+    await expect(runInvoke(GUEST, { channel: 'maker:model-catalog:read', args: [{ op: 'locations' }] }))
+      .resolves.toMatchObject({ ok: false, error: { code: 'CHANNEL_NOT_ALLOWED' } });
     const handle = vi.fn(async () => ({ ok: true }));
     setRemoteAgentHandler({ handle, abortAll: vi.fn() });
     await expect(runInvoke(GUEST, { channel: 'local-db:sessions:list', args: [] }))
@@ -144,7 +148,8 @@ describe('provider share invoke', () => {
       await expect(runInvoke(GUEST, { channel: 'maker:get-capabilities', args: ['claude-code'] })).resolves.toEqual({
         ok: true,
         // Exact ids: `x[1m]` is a separate catalog model the shared provider does not list.
-        result: { availableModels: [{ id: 'claude-opus-5-5' }], permissionModes: [{ id: 'default' }] },
+        result: { availableModels: [{ id: 'claude-opus-5-5' }], permissionModes: [{ id: 'default' }],
+          providerContinuity: { stale: false, remainingMs: 30 * 60_000 } },
       });
       await expect(runInvoke(GUEST, { channel: 'maker:get-capabilities', args: ['codex'] }))
         .resolves.toMatchObject({ ok: true, result: { availableModels: [] } });
@@ -152,9 +157,11 @@ describe('provider share invoke', () => {
         .resolves.toEqual({ ok: true, result: ['claude-code'] });
       // Readiness only says whether an agent the share serves is installed (no sign-in, path or identity).
       await expect(runInvoke(GUEST, { channel: 'maker:agent:status', args: ['claude-code'] }))
-        .resolves.toEqual({ ok: true, result: { binaryReady: true } });
+        .resolves.toEqual({ ok: true, result: { binaryReady: true,
+          providerContinuity: { stale: false, remainingMs: 30 * 60_000 } } });
       await expect(runInvoke(GUEST, { channel: 'maker:agent:status', args: ['codex'] }))
-        .resolves.toEqual({ ok: true, result: { binaryReady: false } });
+        .resolves.toEqual({ ok: true, result: { binaryReady: false,
+          providerContinuity: { stale: false, remainingMs: 30 * 60_000 } } });
       await expect(runInvoke(GUEST, { channel: 'maker:get-capabilities', args: ['../x'] }))
         .resolves.toMatchObject({ ok: false, error: { message: expect.stringContaining('INVALID_PARAMS') } });
       // A failed read of the shared provider is reported, not answered as an empty list.
@@ -187,6 +194,28 @@ describe('provider share invoke', () => {
     expect((__testing.projectProviderListForShare({
       providers: [{ id: 'anthropic', remoteInvocationEnabled: false }],
     }, 'anthropic') as { providers: unknown[] }).providers).toEqual([]);
+  });
+
+  it('returns only each member’s allowed models through the real picker read', async () => {
+    const second = providerShareGuestPeer('share-1', 'member-2', 'laptop');
+    setProviderShareAccess({
+      guestAccess: (src) => ({ ...ACCESS, memberId: src === GUEST ? 'member-1' : 'member-2' }),
+      ensureKnown: async () => undefined, hasShares: () => true,
+      modelAllowed: (src, _provider, model) => model === (src === GUEST ? 'small' : 'large'),
+    });
+    const { __testing: registry } = await import('../invoke-registry');
+    registry.reset();
+    registry.register('maker:provider:list', async () => ({ providers: [{
+      id: 'anthropic', remoteInvocationEnabled: true,
+      models: { 'claude-code': [{ id: 'small' }, { id: 'large' }] },
+    }] }));
+    try {
+      for (const [src, model] of [[GUEST, 'small'], [second, 'large']]) {
+        await expect(runInvoke(src, { channel: 'maker:provider:list', args: [] })).resolves.toMatchObject({
+          ok: true, result: { providers: [{ models: { 'claude-code': [{ id: model }] } }] },
+        });
+      }
+    } finally { registry.reset(); }
   });
 
   it('never hands the sharer account identity to the guest', () => {
@@ -367,5 +396,45 @@ describe('provider share revoke', () => {
     expect(abortMatch('same-account-mac')).toBe(false);
     await revokeProviderShareControllers(() => true, true);
     expect(purgeControllers).toHaveBeenCalledTimes(1);
+  });
+});
+
+/* 新只读通道的实际发送边界：开关变化不会撤销成员关系，但必须阻止重放旧数据。
+ * 原有测试只覆盖关系撤销。unit；注入 reader，无外网或真实等待。 */
+describe('provider share insights delivery', () => {
+  function setup() {
+    state.access = ACCESS;
+    const visibility = { quota: true, usage: false, revision: 0 };
+    const insights = createProviderShareInsightsReader({
+      captureScope: () => () => undefined, scopeKey: () => 'owner', access: () => state.access,
+      revision: () => 0, visibility: () => ({ ...visibility }),
+      shares: () => [{ ...ACCESS, hostDeviceId: 'host', providerLabel: 'Provider', createdAt: '', requests: [], members: [] }],
+      owner: () => ({ displayName: 'Owner', avatarUrl: null }),
+      history: vi.fn(), quota: async () => ({ group: false, partial: false, accounts: [] }),
+    });
+    setProviderShareAccess({ guestAccess: () => state.access, ensureKnown: async () => undefined, hasShares: () => true, insights, insightsCurrent: insights.isCurrent });
+    const client = fakeClient(); __testing.setActiveClient(client);
+    const payload = { channel: 'provider-share:insights:v1', args: [{ version: 1, includeUsage: false }] };
+    return { visibility, client, payload };
+  }
+  it.each([false, true])('refuses outbox data after closing permissions (reopened=%s)', async (reopened) => {
+    const { visibility, client, payload } = setup();
+    vi.mocked(client.sendInvokeResult).mockImplementationOnce(() => { throw new Error('temporary backpressure'); });
+    await __testing.handleInvoke(client, GUEST, 'insights', payload);
+    expect(vi.mocked(client.sendInvokeResult).mock.calls[0]?.[2]).toMatchObject({ ok: true, result: { capabilities: { quota: true } } });
+    expect(__testing.remoteInvokeResultOutboxSize()).toBe(1);
+    visibility.quota = reopened; visibility.revision += reopened ? 2 : 1;
+    __testing.flushRemoteInvokeResultOutbox(GUEST);
+    expect(vi.mocked(client.sendInvokeResult).mock.calls.at(-1)?.[2]).toMatchObject({ ok: false });
+  });
+  it('re-reads a reused request id and never opens a remote agent', async () => {
+    const { visibility, client, payload } = setup();
+    const handle = vi.fn(); setRemoteAgentHandler({ handle, abortAll: vi.fn() });
+    await __testing.handleInvoke(client, GUEST, 'same-request', payload);
+    expect(vi.mocked(client.sendInvokeResult).mock.calls.at(-1)?.[2]).toMatchObject({ ok: true, result: { capabilities: { quota: true } } });
+    visibility.quota = false; visibility.revision++;
+    await __testing.handleInvoke(client, GUEST, 'same-request', payload);
+    expect(vi.mocked(client.sendInvokeResult).mock.calls.at(-1)?.[2]).toMatchObject({ ok: true, result: { capabilities: { quota: false }, quota: null } });
+    expect(handle).not.toHaveBeenCalled();
   });
 });

@@ -1,3 +1,4 @@
+import { deviceDisplayName } from '@/device-link/deviceName';
 import { FileTypeIcon, pickFileIcon } from '@/components/FileTypeIcon';
 import { FileTypeTile } from '@/components/FileTypeTile';
 import { SystemNavigationBack, useSystemNavigationBack } from '@/platform/chrome/SystemNavigationBack';
@@ -40,6 +41,7 @@ import {
   FlatList,
   Image,
   Modal,
+  Platform,
   Pressable,
   RefreshControl,
   StyleSheet,
@@ -59,7 +61,7 @@ import { QuietSyncIndicator } from '@/components/QuietSyncIndicator';
 import { useUnresponsiveDevices } from '@/device-link/unresponsiveDevicesStore';
 import { goBackGuarded } from '@/utils/backGuard';
 import { useAuth } from '@/auth/AuthContext';
-import { DEVICE_LINK_API_BASE_URL } from '@/config/env';
+import { deviceLinkMediaApiBaseUrl } from '@/device-link/selfHostedRelayRouting';
 import { useDeviceLink } from '@/device-link/DeviceLinkContext';
 import { onFileBrowserWatchEvent } from '@/device-link/fileBrowserWatch';
 import { formatRemoteError } from '@/device-link/remoteStatus';
@@ -116,6 +118,7 @@ import { downloadRemoteMediaShareTemp } from '@/session/remoteMediaDiskCacheExpo
 import type { FileBrowserSearchMatch, MobileMakerTransport } from '@/device-link/mobileMakerTransport';
 import { remoteSessionStore, useRemoteSessions } from '@/session/remoteSessionStore';
 import { CindyMakeSessionGate } from '@/session/CindyMakeSessionGate';
+import { lacksInlinePreview } from '@/session/pdfSystemOpen';
 import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
 import type { RemoteSession } from '@/session/types';
 import { fontWeight, lineHeight, monoFont, useTheme, useThemedStyles, type ThemeColors } from '@/theme';
@@ -147,7 +150,7 @@ function RemoteFileBrowserContent() {
   const sessionId = String(params.sessionId ?? '');
   const routeDeviceId = readRouteString(params.deviceId);
   const deviceId = routeDeviceId ?? remoteSessionStore.getSessionDeviceId(sessionId) ?? '';
-  const deviceName = readRouteString(params.deviceName) ?? deviceId;
+  const deviceName = deviceDisplayName(deviceId, readRouteString(params.deviceName));
   const relPath = readRouteString(params.relPath) ?? '';
   const router = useRouter();
   const guardedPush = useGuardedPush();
@@ -158,7 +161,7 @@ function RemoteFileBrowserContent() {
   const fileWindow = useAdaptiveWindow();
   const screenWidth = fileWindow.width - fileWindow.insets.left - fileWindow.insets.right;
   const auth = useAuth();
-  const { connectionIssue, openLink, status, subscribe, unsubscribe } = useDeviceLink();
+  const { connectionIssue, openLink, status, subscribe, unsubscribe } = useDeviceLink(deviceId);
   const maker = useMobileMakerTransport(deviceId);
   const sessions = useRemoteSessions();
   const knownSession = useMemo(
@@ -370,7 +373,7 @@ function RemoteFileBrowserContent() {
   // —— 图片统一走聊天同款 ImageLightbox(目录内全部图片为一个图集)——
   const presignGet = useCallback(async (ossKey: string) => {
     return auth.apiFetch<MobileRemoteMediaPresignResult>('/api/device-link/media/presign-get', {
-      baseUrl: DEVICE_LINK_API_BASE_URL,
+      baseUrl: deviceLinkMediaApiBaseUrl(ossKey),
       method: 'POST',
       body: { key: ossKey },
     });
@@ -556,6 +559,11 @@ function RemoteFileBrowserContent() {
               deviceId,
               openLink,
               presignGet,
+              deleteOssObject: (key) => {
+                void auth.apiFetch('/api/device-link/media', {
+                  baseUrl: deviceLinkMediaApiBaseUrl(key), method: 'DELETE', body: { key },
+                }).catch(() => undefined);
+              },
               isCancelled: () => unmountedRef.current || run.cancelled,
             },
             workdir,
@@ -564,7 +572,8 @@ function RemoteFileBrowserContent() {
           );
           mime = shareMimeForFileName(item.name);
         }
-        if (run.cancelled) return;
+        // Consume late staging results even after cancellation; the helper
+        // releases them without starting another copy or download.
         const localUri = await downloadRemoteMediaShareTemp(url, mime, item.name, run.abort.signal);
         if (run.cancelled) return;
         if (!localUri) throw new Error(t('files.browser.downloadFailed'));
@@ -580,7 +589,7 @@ function RemoteFileBrowserContent() {
         }
       }
     })();
-  }, [absolutePathOf, deviceId, maker, openLink, presignGet, resolveFileMedia, showNotice, stopExportRun, t, workdir]);
+  }, [absolutePathOf, auth, deviceId, maker, openLink, presignGet, resolveFileMedia, showNotice, stopExportRun, t, workdir]);
 
   /** lightbox 底部显式操作(与预览页底栏同构):复制路径 / 发送到会话。 */
   const lightboxActions = useMemo((): readonly ImageLightboxAction[] => [
@@ -1530,7 +1539,10 @@ function ContextMenu({
   const isFile = item.kind === 'file';
 
   const actions = [
-    ...(isFile ? [{ key: 'preview', label: t('files.browser.preview'), Icon: Eye, onPress: () => onPreview(item) }] : []),
+    // 安卓 WebView 不渲染 PDF,「快速预览」只会进占位页:直接隐藏,用下方「导出 / 分享」。
+    ...(isFile && !lacksInlinePreview(item.name, Platform.OS)
+      ? [{ key: 'preview', label: t('files.browser.preview'), Icon: Eye, onPress: () => onPreview(item) }]
+      : []),
     { key: 'send', label: t('files.browser.sendToSession'), Icon: MessageSquarePlus, onPress: () => onSend(item) },
     { key: 'copy', label: t('files.browser.copyPath'), Icon: Copy, onPress: () => onCopyPath(item) },
     ...(isFile ? [{ key: 'share', label: t('files.browser.exportShare'), Icon: ShareIcon, onPress: () => onShare(item) }] : []),

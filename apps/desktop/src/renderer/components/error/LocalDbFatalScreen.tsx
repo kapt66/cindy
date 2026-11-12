@@ -1,8 +1,10 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { useUpdateStatus } from '@/hooks/useUpdateStatus';
+import { localDbFatalDetailsText } from '../../../shared/localDbFatalDetails';
 import { resolveLocalDbFatalView } from './localDbFatalView';
 
 /**
@@ -19,19 +21,34 @@ export function LocalDbFatalScreen({
   code,
   message,
   onBackToLogin,
+  onRetry,
 }: {
   code?: string;
   message?: string;
   onBackToLogin?: () => void;
+  onRetry?: () => void;
 }) {
   const { t } = useTranslation();
   const { status, errorCode, progress } = useUpdateStatus();
   // 点了「重启并安装更新」后应用即将退出重启，期间锁住按钮防止重复触发。
   const [installing, setInstalling] = useState(false);
+  // 复制失败（无剪贴板权限、Wayland 写入落空等）时展开技术细节，用户仍可手动选中复制。
+  const [copyFailed, setCopyFailed] = useState(false);
 
-  const view = resolveLocalDbFatalView(status, errorCode);
+  // `code` = 本地库故障码（prop），`errorCode` = 更新器错误码（update-status）：
+  // 两个不同来源，分别占第二 / 第三个位置参数。
+  const view = resolveLocalDbFatalView(status, code, errorCode);
 
   const handleConfirm = () => {
+    if (view === 'retry-local-db') {
+      onRetry?.();
+      return;
+    }
+    if (view === 'init-failed' || view === 'corrupt') {
+      // 重新走一遍 ensureReady；与应用更新无关（corrupt 也可能因关闭占用库的其它实例而恢复）。
+      window.location.reload();
+      return;
+    }
     if (view === 'install-update') {
       if (installing) return;
       setInstalling(true);
@@ -52,25 +69,41 @@ export function LocalDbFatalScreen({
   };
 
   const title =
-    view === 'no-update'
-      ? t('localDbFatal.noUpdate.title')
-      : view === 'apply-exhausted'
-        ? t('localDbFatal.applyExhausted.title')
-        : t('localDbFatal.updateReady.title');
+    view === 'retry-local-db'
+      ? t('localDbFatal.schemaLease.title')
+      : view === 'corrupt'
+        ? t('localDbFatal.corrupt.title')
+        : view === 'init-failed'
+          ? t('localDbFatal.initFailed.title')
+          : view === 'no-update'
+            ? t('localDbFatal.noUpdate.title')
+            : view === 'apply-exhausted'
+              ? t('localDbFatal.applyExhausted.title')
+              : t('localDbFatal.updateReady.title');
   const description =
-    view === 'install-update'
-      ? t('localDbFatal.updateReady.description')
-      : view === 'preparing-update'
-        ? t('localDbFatal.preparing.description')
-        : view === 'apply-exhausted'
-          ? t('localDbFatal.applyExhausted.description')
-          : t('localDbFatal.noUpdate.description');
+    view === 'retry-local-db'
+      ? (message ?? t('localDbFatal.schemaLease.lock-unreadable'))
+      : view === 'corrupt'
+        ? t('localDbFatal.corrupt.description')
+        : view === 'init-failed'
+          ? t('localDbFatal.initFailed.description')
+          : view === 'install-update'
+            ? t('localDbFatal.updateReady.description')
+            : view === 'preparing-update'
+              ? t('localDbFatal.preparing.description')
+              : view === 'apply-exhausted'
+                ? t('localDbFatal.applyExhausted.description')
+                : t('localDbFatal.noUpdate.description');
   const confirmText =
-    view === 'install-update'
-      ? t('localDbFatal.updateReady.confirm')
-      : view === 'apply-exhausted'
-        ? t('localDbFatal.applyExhausted.download')
-        : t('localDbFatal.noUpdate.checkUpdate');
+    view === 'retry-local-db'
+      ? t('localDbFatal.schemaLease.retry')
+      : view === 'init-failed' || view === 'corrupt'
+        ? t('localDbFatal.initFailed.retry')
+        : view === 'install-update'
+          ? t('localDbFatal.updateReady.confirm')
+          : view === 'apply-exhausted'
+            ? t('localDbFatal.applyExhausted.download')
+            : t('localDbFatal.noUpdate.checkUpdate');
 
   return (
     <div
@@ -96,13 +129,27 @@ export function LocalDbFatalScreen({
                 {t('localDbFatal.preparing.progress', { progress: Math.round(progress) })}
               </p>
             )}
+            {(view === 'corrupt' || view === 'init-failed') && (message || code) && (
+              <Button
+                variant="secondary"
+                size="sm"
+                style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+                onClick={() => {
+                  const text = localDbFatalDetailsText({ code, message });
+                  // 经主进程写入并回读确认；失败时不静默，展开下方细节供手动复制。
+                  void window.electronAPI.copyTextToClipboard({ text }).then(() => setCopyFailed(false)).catch(() => setCopyFailed(true));
+                }}
+              >
+                {t('localDbFatal.corrupt.copy')}
+              </Button>
+            )}
             {(message || code) && (
-              <details className="mt-1 w-full">
+              <details className="mt-1 w-full" open={copyFailed || undefined}>
                 <summary className="cursor-pointer text-12 text-[var(--text-tertiary)] transition-colors hover:text-[var(--text-secondary)]">
                   {t('localDbFatal.details')}
                 </summary>
-                <pre className="mt-2 max-h-40 overflow-auto rounded-lg bg-[var(--surface-chip)] p-3 font-mono text-11 leading-relaxed whitespace-pre-wrap break-all text-[var(--text-secondary)]">
-                  {[code, message].filter(Boolean).join('\n')}
+                <pre className="mt-2 max-h-40 select-text overflow-auto rounded-lg bg-[var(--surface-chip)] p-3 font-mono text-11 leading-relaxed whitespace-pre-wrap break-all text-[var(--text-secondary)]">
+                  {localDbFatalDetailsText({ code, message })}
                 </pre>
               </details>
             )}

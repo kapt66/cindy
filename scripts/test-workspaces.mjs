@@ -3,6 +3,7 @@ import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import {
 	electronBinaryCheckSkipReason,
@@ -16,6 +17,7 @@ import {
 import { createRelatedUnitPlan } from "./test-related.mjs";
 
 const ROOT = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
+const require = createRequire(import.meta.url);
 const IGNORED_PARTS = new Set([
 	"node_modules",
 	"dist",
@@ -496,8 +498,13 @@ function undersizedVitestShardArgs(commandSpec, selectedFiles) {
 		return [];
 
 	// Vitest rejects every shard when there are fewer files than shards, before
-	// it assigns the files. Limit the compatibility flag to that known case.
-	return selectedFiles.length < count ? ["--passWithNoTests"] : [];
+	// it assigns the files. Otherwise it slices ceil(files / count) files per
+	// shard, so trailing shards can still be empty (6 files over 4 shards gives
+	// 2, 2, 2, 0). Limit the compatibility flag to those two known cases.
+	const fileCount = selectedFiles.length;
+	if (fileCount < count) return ["--passWithNoTests"];
+	const shardStart = Math.ceil(fileCount / count) * (index - 1);
+	return shardStart >= fileCount ? ["--passWithNoTests"] : [];
 }
 
 function toWorkspaceRelativeFile(workspace, file) {
@@ -724,6 +731,35 @@ export function buildPreflightArgs(root, workspace, preflight) {
 	if (preflight.type === "packageScript")
 		return ["--dir", workspaceAbs, "run", preflight.script];
 	throw new Error(`Unsupported preflight type: ${preflight.type}`);
+}
+
+export function resolveTestInvocation(pnpmArgs, options = {}) {
+	const platform = options.platform ?? process.platform;
+	if (platform !== "win32" || pnpmArgs[2] !== "exec" || pnpmArgs[3] !== "vitest") {
+		return resolvePnpmInvocation(pnpmArgs, options);
+	}
+	// pnpm exec resolves vitest.cmd on Windows, which crosses cmd.exe's 8191
+	// character limit once the required guard exclusions grow. Start the same
+	// installed JS entry directly; preserve every selection/shard/exclusion arg.
+	const execPath = options.execPath ?? process.execPath;
+	const vitestEntry = options.vitestEntry ?? require.resolve("vitest/vitest.mjs");
+	const env = { ...(options.env ?? process.env) };
+	const pathKeys = Object.keys(env).filter((key) => key.toLowerCase() === "path");
+	const pathKey = pathKeys[0] ?? "Path";
+	const existingPath = env[pathKey] ?? "";
+	for (const key of pathKeys) delete env[key];
+	env[pathKey] = [
+		path.dirname(execPath),
+		path.join(pnpmArgs[1], "node_modules", ".bin"),
+		path.join(ROOT, "node_modules", ".bin"),
+		existingPath,
+	].join(";");
+	return {
+		command: execPath,
+		args: [vitestEntry, ...pnpmArgs.slice(4)],
+		shell: false,
+		env,
+	};
 }
 
 export function createOutputForwarder(stream) {
@@ -1111,7 +1147,9 @@ export async function runPlannedTests({
 			const chunkResults = [];
 			let invocation;
 			for (const [index, batch] of batches.entries()) {
-				invocation = resolvePnpmInvocation(batch.args);
+				// 每个批次都走上游的入口解析：Windows 上直接起 vitest 的 JS 入口，
+				// 其余平台仍由 resolvePnpmInvocation 代理（Meka 分批 + 上游解析的并集）。
+				invocation = resolveTestInvocation(batch.args);
 				if (batches.length > 1) {
 					reporter?.onChunkStart?.({
 						run,
@@ -1269,6 +1307,27 @@ export function selectionNeedsElectron(
 
 // 新 worktree 没装依赖、或 Electron 没解出 dist 时，vitest 会让几十个文件各自报错，
 // 极易被当成被测代码或「环境问题」放过。开跑前只读检查一次，直接给出处置命令。
+/**
+ * Variables an Agent's shell may carry that change test results without being part of the code
+ * under test. Each caused a false failure when the suite ran inside an agent session:
+ * NODE_ENV / NODE_DEBUG (production or debug branches), CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL
+ * (maker-core harness tests) and CINDY_INPUT_HANDOFF_ROUTE (a remotely controlled Cindy task's
+ * route token; device-hosted guest tests assert it is absent). CI never sets them.
+ */
+export const AGENT_ENV_TEST_POLLUTANTS = Object.freeze([
+	"NODE_ENV",
+	"NODE_DEBUG",
+	"CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL",
+	"CINDY_INPUT_HANDOFF_ROUTE",
+]);
+
+/** Remove those variables before any test child starts; returns the names that were removed. */
+export function stripAgentEnvPollutants(env = process.env) {
+	const removed = AGENT_ENV_TEST_POLLUTANTS.filter((name) => env[name] !== undefined);
+	for (const name of removed) delete env[name];
+	return removed;
+}
+
 export function findDependencyInstallIssues(
 	root = ROOT,
 	env = process.env,
@@ -1291,6 +1350,8 @@ export function findDependencyInstallIssues(
 
 async function main() {
 	const options = parseCliOptions(process.argv.slice(2));
+	const strippedEnv = stripAgentEnvPollutants();
+	if (strippedEnv.length > 0) console.log(`ENV ignored for tests: ${strippedEnv.join(", ")}`);
 	const {
 		all,
 		tier,

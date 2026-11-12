@@ -321,9 +321,22 @@ test('glossary.json: 声明的译法必须是现状主流，否则要写明为�
       // alsoAllowed 是同一裁决下的合法变体（Running 作谓语时用「正在运行」），
       // 计算主流度时必须算进来,否则分场合译法越多、越会被误判成"声明不是主流"。
       const accepted = [declared, ...(term.alsoAllowed?.[locale] ?? []).map((v) => v.text)];
+      // 大小写不参与本项判定:本测试量的是「用了哪个词」,大小写形态由
+      // check-i18n-glossary 的 case-form 规则独立阻断;而 active 这条术语在
+      // glossary.json 里就是 `checkCase: false`(大小写不参与裁决),fr/de 也没有
+      // alsoAllowed。原实现用大小写敏感的 includes,把 Actif / aktiv / Aktiv 这些
+      // 同一词的大小写形态全记成未命中,占比系统性偏低——2026-11-06 第七轮同步实测:
+      // active/fr 23/66=34.8% → 33/66=50.0%,active/de 23/66=34.8% → 60/66=90.9%;
+      // 当时 7 个新语种补英文占位又多加 1~2 行未命中,把这两条压到 35% 线以下(误报)。
+      // 改成大小写不敏感后,除这两条外没有其它「未带 minorityByDesign 却由不过变成过」
+      // 的项(已有豁免项的占比小幅上浮,豁免保留)。
+      // 已知启发式局限:includes 仍是子串匹配,`inaktiv` / `deaktiviert` 这类含否定
+      // 词的文本也算命中。本次不影响阈值结论(剔除后 de 仍 86.4% / fr 48.5%),
+      // 若要严谨化应改成词边界匹配,不在本轮回改范围内。
+      const lower = (s) => s.toLowerCase();
       const hit = keys.filter((k) => {
         const value = corpus[locale].get(k);
-        return value && accepted.some((a) => value.includes(a));
+        return value && accepted.some((a) => lower(value).includes(lower(a)));
       }).length;
       const ratio = hit / keys.length;
       if (ratio >= MIN_RATIO) continue;
@@ -486,6 +499,11 @@ test('validateAgainstSchema: 校验 required / enum / pattern / oneOf', () => {
   };
   assert.deepEqual(validateAgainstSchema({ id: 'session', status: 'decided' }, schema), []);
   assert.match(validateAgainstSchema({ id: 'session' }, schema).join(), /缺少必填字段 "status"/);
+  // required 只认实例自有字段，不能接受 Object.prototype 上的同名属性。
+  assert.match(
+    validateAgainstSchema({}, { type: 'object', required: ['toString'] }).join(),
+    /缺少必填字段 "toString"/,
+  );
   assert.match(validateAgainstSchema({ id: 'Session', status: 'decided' }, schema).join(), /不匹配/);
   assert.match(validateAgainstSchema({ id: 'a', status: 'decied' }, schema).join(), /取值必须是/);
   // 条件禁用少写 whenEn 时,两个 oneOf 分支都不匹配

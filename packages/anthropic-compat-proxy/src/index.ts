@@ -19,7 +19,7 @@
 // （desktop 的 codexHttpBridge 与各单测直接 import 它）。
 export { createAnthropicCompatProxy } from './server.js';
 export { isFetchBlockedPort, listenOnFetchSafePort } from './fetch-blocked-ports.js';
-export { recoverInlineAttachments } from './oversized-attachments.js';
+export { recoverInlineAttachments, recoverOversizedMessage } from './oversized-attachments.js';
 export type { OversizedBody, RecoveredAttachment, AttachmentKeeper } from './oversized-attachments.js';
 export type { OversizedRequestRecovery } from './types.js';
 export {
@@ -43,11 +43,15 @@ export {
 } from './instructions-injection.js';
 export {
   createActiveStripTransform,
+  createToolReferenceRecoveryRule,
+  lowerToolReferencesFromBody,
   createDuplicateToolUseIdRecoveryRule,
   createEmptyAssistantMessageRecoveryRule,
   createEmptyTextRecoveryRule,
   createEmptyThinkingRecoveryRule,
+  createAnthropicContextManagementRecoveryRule,
   createEncryptedContentRecoveryRule,
+  createResponsesReasoningContentRecoveryRule,
   createImageGenerationIdRecoveryRule,
   createResponsesItemIdPrefixRecoveryRule,
   createResponsesItemIdLengthRecoveryRule,
@@ -64,6 +68,7 @@ export {
   stripEmptyTextFromBody,
   stripEmptyThinkingFromBody,
   stripEncryptedContentFromBody,
+  stripResponsesReasoningContentFromBody,
   stripImageGenerationItemsWithoutIdFromBody,
   stripNonAnthropicFields,
   stripNonCanonicalResponsesItemIdsFromBody,

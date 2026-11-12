@@ -43,9 +43,16 @@ function recordGroupMessage(payload: GroupMessagePayload): Promise<boolean> {
   return recordScopedGroupMessage(payload, PRINCIPAL_ID);
 }
 
-function migrationSql(): string {
+function migrationSql(prefixes: readonly string[] = ['0089_', '0092_']): string {
   const dir = path.resolve(__dirname, '../../../../drizzle');
-  return ['0089_', '0092_']
+  // Meka 谱系：群消息表在 0089_upstream_wechat_and_group_messages；`0092_sync_upstream_20260821`
+  // 的 SQL 与 TS 脚本分别补上游同期的表/列。上游按 `0083_`…`0136_` 前缀取文件，但在 meka/main
+  // 的 drizzle 里 0083/0086/0087/0088 是 `SELECT 1;` 谱系占位、0136 是 chat_history_cache，
+  // 照搬会拿不到群表。谱系由数据库子代理最终裁定，此处跟随 meka/main 现存文件（见 wp7 报告）。
+  // 注意 `0139_`（= 上游 `0136_bizarre_pet_avengers` 在 meka 谱系的同内容槽位）会先 DROP 再
+  // 重建 `hook_group_message_stats_*` 三颗触发器，而那三颗只在 0092 的 TS 脚本里建 ⇒ 它必须
+  // 排在 `runSyncUpstreamMigration()` **之后**单独 exec（见 beforeEach）。
+  return prefixes
     .map((prefix) => {
       const file = fs.readdirSync(dir).find((name) => name.startsWith(prefix));
       if (!file) throw new Error(`${prefix} migration not found`);
@@ -75,6 +82,8 @@ beforeEach(async () => {
   sqlite = new Database(':memory:');
   sqlite.exec(migrationSql());
   runSyncUpstreamMigration(sqlite);
+  // 0139 重建触发器，必须排在 0092 的 TS 脚本之后（脚本才创建那三颗）。
+  sqlite.exec(migrationSql(['0139_']));
   holder.drizzle = drizzle(sqlite);
   await resetGroupContextCursors();
 });
@@ -353,7 +362,7 @@ describe('recordGroupMessage', () => {
     const baseDrizzle = holder.drizzle as object;
     let selectCalls = 0;
     holder.drizzle = new Proxy(baseDrizzle, {
-      get(target, property, receiver) {
+      get(target, property) {
         if (property === 'select') {
           const select = Reflect.get(target, property, target) as (...args: unknown[]) => unknown;
           return (...args: unknown[]) => {

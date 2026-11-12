@@ -11,10 +11,13 @@ import type { LucideIcon } from 'lucide-react';
 
 import { MachineSwitcherMenu } from './MachineSwitcherMenu';
 import { SidebarFilterPopover } from './SidebarFilterPopover';
-import { HEADER_ACTIONS_CLASS, SidebarFoldAllButton } from './SidebarHeaderActions';
+import { HEADER_HOVER_ACTION_CLASS, SidebarFoldAllButton } from './SidebarHeaderActions';
 import type { ProjectNode as ProjectNodeData } from '../lib/projectGrouping';
 import type { UseSidebarFilterReturn } from '../hooks/useSidebarFilter';
 
+// 段头右侧动作区的 hover 显隐与折叠按钮走共用件 `./SidebarHeaderActions`(WL-3.3:
+// 本段头与「Meka 助理」段头必须逐像素一致)。上游 origin/main 在 2026-11 把该规则又内联
+// 回各 section 各写一份;Meka 侧继续保留单一实现(两份内容当时逐字相同),不回退成两套。
 export function MainListScopeHeader({
   filter,
   allKnownProjects,
@@ -40,23 +43,31 @@ export function MainListScopeHeader({
         <MachineSwitcherMenu onOpenDisplaySettings={() => setDisplaySettingsOpen(true)} />
       </div>
       <div className="flex items-center gap-0.5 -mt-px">
-        <div className={HEADER_ACTIONS_CLASS}>
+        <div className="flex items-center gap-0.5 -mt-px">
           {fold ? (
-            <SidebarFoldAllButton
-              label={fold.label}
-              Icon={fold.Icon}
-              onClick={fold.onClick}
-              disabled={fold.disabled}
-            />
+            // 折叠按钮与右侧设置入口同样只在 hover / focus / 菜单展开时出现
+            // （上游 W28 用共享 hover 规则包住它；Meka 侧改用共用件 `SidebarFoldAllButton`，
+            // 但**必须**保留同一层 hover 容器，否则该动作会常驻——`MainListScopeHeader.test` 钉住）。
+            <div className={HEADER_HOVER_ACTION_CLASS}>
+              <SidebarFoldAllButton
+                label={fold.label}
+                Icon={fold.Icon}
+                onClick={fold.onClick}
+                disabled={fold.disabled}
+              />
+            </div>
           ) : null}
-          <SidebarFilterPopover
-            filter={filter}
-            allKnownProjects={allKnownProjects}
-            dialogueCount={dialogueCount}
-            hasRemoteDevices={hasRemoteDevices}
-            open={displaySettingsOpen}
-            onOpenChange={setDisplaySettingsOpen}
-          />
+          {/* 在看已归档任务时设置按钮常驻(带点),否则跟随段头 hover 出现。 */}
+          <div className={filter.status === 'archived' ? undefined : HEADER_HOVER_ACTION_CLASS}>
+            <SidebarFilterPopover
+              filter={filter}
+              allKnownProjects={allKnownProjects}
+              dialogueCount={dialogueCount}
+              hasRemoteDevices={hasRemoteDevices}
+              open={displaySettingsOpen}
+              onOpenChange={setDisplaySettingsOpen}
+            />
+          </div>
         </div>
       </div>
     </div>

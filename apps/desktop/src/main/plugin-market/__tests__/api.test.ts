@@ -267,7 +267,7 @@ describe('PluginMarketApi', () => {
   // P2 客户端就绪件的核心验收点：空间头的协议常量与写头代码都在，但**默认不发**。
   // 这里不只看"没有那个键"，而是把整个 headers 对象逐字节比出来——多出任何头（哪怕是空对象
   // 或别的默认头）都算与今天漂移。两条渠道各测一次，因为版本头取值不同。
-  it('默认关闭空间头：两条渠道的请求头与现状逐字节相同（恰好只有 x-cindy-version）', async () => {
+  it('默认关闭空间头：两条渠道只带版本头与上游迁移模拟头，不含空间头', async () => {
     sources.serverApiFetch.mockResolvedValue({
       schemaVersion: 2,
       plugins: [],
@@ -279,10 +279,16 @@ describe('PluginMarketApi', () => {
 
     const cindyHeaders = sources.serverApiFetch.mock.calls[0]?.[1]?.headers;
     const mekaHeaders = sources.serverApiFetch.mock.calls[1]?.[1]?.headers;
-    expect(JSON.stringify(cindyHeaders)).toBe(JSON.stringify({ 'x-cindy-version': '1.2.3' }));
-    expect(JSON.stringify(mekaHeaders)).toBe(JSON.stringify({ 'x-cindy-version': '2.4.1' }));
+    // 上游第七轮起恒定发送 `x-cindy-plugin-migrations`（插件身份模拟迁移契约），与空间头无关；
+    // 本用例守的是「空间头默认不发、且不因空间头特性引入其它漂移」，因此逐字节期望包含它。
+    expect(JSON.stringify(cindyHeaders)).toBe(
+      JSON.stringify({ 'x-cindy-version': '1.2.3', 'x-cindy-plugin-migrations': 'simulator-id-v1' }),
+    );
+    expect(JSON.stringify(mekaHeaders)).toBe(
+      JSON.stringify({ 'x-cindy-version': '2.4.1', 'x-cindy-plugin-migrations': 'simulator-id-v1' }),
+    );
     for (const headers of [cindyHeaders, mekaHeaders]) {
-      expect(Object.keys(headers ?? {})).toEqual(['x-cindy-version']);
+      expect(Object.keys(headers ?? {})).toEqual(['x-cindy-version', 'x-cindy-plugin-migrations']);
       expect(headers).not.toHaveProperty(CINDY_PLUGIN_SPACE_HEADER);
     }
   });
@@ -292,6 +298,7 @@ describe('PluginMarketApi', () => {
   // 真实的 api 模块。它验证的是"开启后两个渠道各带自己 edition 的空间名"，不改生产常量、
   // 也不给生产路径加任何运行期开关。
   it('开关打开时两条渠道各带自己 edition 的空间名（cindy / meka）', async () => {
+    // reset-modules: clientIdentity 的开关是模块常量（默认 false），只能靠重新加载验证开启后的空间头
     vi.resetModules();
     vi.doMock('../clientIdentity.js', async (importOriginal) => {
       const actual = await importOriginal<typeof import('../clientIdentity.js')>();
@@ -310,14 +317,17 @@ describe('PluginMarketApi', () => {
 
       expect(sources.serverApiFetch.mock.calls[0]?.[1]?.headers).toEqual({
         'x-cindy-version': '1.2.3',
+        'x-cindy-plugin-migrations': 'simulator-id-v1',
         [CINDY_PLUGIN_SPACE_HEADER]: 'cindy',
       });
       expect(sources.serverApiFetch.mock.calls[1]?.[1]?.headers).toEqual({
         'x-cindy-version': '2.4.1',
+        'x-cindy-plugin-migrations': 'simulator-id-v1',
         [CINDY_PLUGIN_SPACE_HEADER]: 'meka',
       });
     } finally {
       vi.doUnmock('../clientIdentity.js');
+      // reset-modules: 撤掉 doMock 后重新加载，避免开启态的模块图泄漏给后续用例
       vi.resetModules();
     }
   });

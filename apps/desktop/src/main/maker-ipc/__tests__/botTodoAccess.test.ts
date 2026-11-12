@@ -7,10 +7,11 @@ const env = vi.hoisted(() => ({
   generation: 1,
   root: '',
   active: true,
+  capabilities: null as string | null,
   pending: false,
-  projects: ['/cindy'],
   notify: vi.fn(),
   cancel: vi.fn(async () => true),
+  callerFailure: { ok: false, errorCode: 'BOT_MAIN_TASK_REQUIRED', message: 'Open the companion private chat; this call did not read or change records.' },
 }));
 vi.mock('../../appSessionState.js', () => ({
   activeOwnerScopeKey: () => `${env.owner}:${env.generation}`,
@@ -22,14 +23,20 @@ vi.mock('../../localDb/client/current.js', () => ({
     drizzle: {
       select: () => ({
         from: () => ({
+          leftJoin: () => ({
+            where: () => ({
+              limit: async () => [
+                {
+                  id: 'bot-one',
+                  status: env.active ? 'active' : 'deleted',
+                  sessionId: 'canonical-one',
+                  capabilities: env.capabilities,
+                },
+              ],
+            }),
+          }),
           where: () => ({
-            limit: async () => [
-              {
-                id: 'bot-one',
-                status: env.active ? 'active' : 'deleted',
-                sessionId: 'canonical-one',
-              },
-            ],
+            limit: async () => [{ id: 'bot-one', sessionId: 'canonical-one' }],
           }),
         }),
       }),
@@ -37,7 +44,7 @@ vi.mock('../../localDb/client/current.js', () => ({
   }),
 }));
 vi.mock('../botWorkbenchService.js', () => ({
-  readBotWorkbenchState: async () => ({ directories: env.projects, tasks: {} }),
+  readLegacyWorkbenchJudgments: async () => ({}),
   broadcastBotWorkbenchChanged: env.notify,
 }));
 vi.mock('../botRemoteResourceInvalidation.js', () => ({
@@ -47,6 +54,7 @@ vi.mock('../botWorkbenchTools.js', () => ({
   resolveWorkbenchCaller: async (id: string) =>
     id === 'canonical-one'
       ? { ok: true, botId: 'bot-one' }
+      : id === 'group-one' ? env.callerFailure
       : { ok: false, errorCode: 'NOT_A_BOT_SESSION' },
 }));
 vi.mock('../../localDb/agentInputQueueSnapshots.js', () => ({
@@ -68,6 +76,7 @@ beforeEach(async () => {
   env.owner = 'owner-one';
   env.generation = 1;
   env.active = true;
+  env.capabilities = null;
   env.pending = false;
   env.notify.mockClear();
   env.cancel.mockReset().mockResolvedValue(true);
@@ -85,6 +94,16 @@ const patch = {
   },
 };
 describe('Todo public access', () => {
+  // #6965: todoForCaller discarded the real authority hint before the MCP callback could return it.
+  // Unit: denied group caller; preserve code + message and prove no Todo was registered.
+  it('preserves caller recovery hints before accessing or changing todos', async () => {
+    await expect(todoForCaller('group-one')).rejects.toMatchObject({
+      code: env.callerFailure.errorCode,
+      message: env.callerFailure.message,
+    });
+    expect(env.notify).not.toHaveBeenCalled();
+    expect((await (await todoForCaller('canonical-one')).list()).items).toEqual([]);
+  });
   it('enforces current active canonical teammate and owner fences', async () => {
     await expect(todoForCaller('ordinary-session')).rejects.toMatchObject({
       code: 'NOT_A_BOT_SESSION',
@@ -97,24 +116,24 @@ describe('Todo public access', () => {
     env.active = false;
     await expect(todoAccess('bot-one')).rejects.toMatchObject({ code: 'NOT_FOUND' });
   });
-  it('checks every scoped source and does not advance rejected events', async () => {
+  // 放弃「项目」(2026-10-17):来源不再按项目目录裁剪;任务来源可指向本机或跨电脑任务。
+  it('accepts sources from any folder or task and never preflights a folder as out of scope', async () => {
     const access = await todoAccess('bot-one');
-    await expect(
-      access.ingest({
-        source: 'mail',
-        sequence: 1,
-        patch: {
-          ...patch,
-          sources: [
-            { kind: 'github', id: '1', label: 'Cindy', project: '/cindy' },
-            { kind: 'mail', id: '2', label: 'Unrelated', project: '/private' },
-          ],
-        },
-      }),
-    ).rejects.toMatchObject({ code: 'SOURCE_OUTSIDE_SCOPE' });
+    const result = await access.ingest({
+      source: 'mail',
+      sequence: 1,
+      patch: {
+        ...patch,
+        sources: [
+          { kind: 'mail', id: '2', label: 'Unrelated', project: '/private' },
+          { kind: 'task', id: 'laptop::session-9', label: '另一台电脑的任务' },
+        ],
+      },
+    });
+    expect(result.todo?.sources.map((s) => s.id)).toEqual(['2', 'laptop::session-9']);
     expect(
-      await access.preflight([{ source: 'mail', sequence: 1, key: patch.key, project: '/cindy' }]),
-    ).toMatchObject([{ decision: 'review' }]);
+      await access.preflight([{ source: 'mail', sequence: 2, key: 'other', project: '/elsewhere' }]),
+    ).toMatchObject([{ decision: 'review', project: '/elsewhere' }]);
   });
   it('single-click dispatches only once and preserves received vs accepted', async () => {
     let resolve: (value: { ok: boolean }) => void = () => {};
@@ -141,6 +160,18 @@ describe('Todo public access', () => {
       sessionId: 'canonical-one',
       requestId: 'request-first',
     });
+  });
+  // cindy-bots-runtime.md §6「伙伴技能分层」: with the Todos system Skill off, an owner click must not hand the Todo to the
+  // teammate (its prompt and tools are gone too). Before this, act() dispatched as usual. Data stays editable.
+  it('refuses to dispatch a Todo action while the Todos system Skill is off, keeping the Todo editable', async () => {
+    const send = vi.fn(async () => ({ ok: true }));
+    configureBotTodoDispatch(send);
+    env.capabilities = JSON.stringify({ systemSkillsOff: ['todo'] });
+    const access = await todoAccess('bot-one'),
+      todo = await access.patch(patch);
+    await expect(access.act(todo.id, todo.revision, 'request-off')).rejects.toMatchObject({ code: 'SYSTEM_SKILL_OFF' });
+    expect(send).not.toHaveBeenCalled();
+    expect((await access.list()).items[0]).toMatchObject({ id: todo.id, revision: todo.revision, action: null });
   });
   it('does not blindly replay an uncertain dispatch', async () => {
     const send = vi.fn(async () => {

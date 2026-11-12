@@ -1,8 +1,9 @@
-# 客户端日志上报：采集、脱敏与崩溃补传
+# 客户端日志：本地采集、脱敏与打开目录（Meka 无上报）
 
 > **状态**：权威开发规则（authoritative）
-> **读取时机**：修改客户端日志采集／脱敏／上报链路，修改 `main/logger.ts` 的 main 日志行
-> 格式，或修改崩溃判定与待补传标记之前
+> **读取时机**：修改客户端日志采集／脱敏／「打开日志目录」、修改 `main/logger.ts` 的 main 日志行
+> 格式，或判断「这段日志/性能报告会不会外发」时。**Meka 没有上报通道**；文中标注「上游口径」的
+> 上报段落只作背景，不得据此恢复发送链路。
 
 本文管**日志怎么离开用户的机器**。日志模块本身的约定（统一 logger、不裸 `console.log`）见
 [`engineering-conventions.md`](engineering-conventions.md) §1；凭证不落盘见
@@ -12,20 +13,42 @@ override 语义见 [`configuration-and-overrides.md`](configuration-and-override
 需求与设计正文：[`../client-log-upload-requirements.md`](../client-log-upload-requirements.md)、
 [`../client-log-upload-implementation-plan.md`](../client-log-upload-implementation-plan.md)。
 
+> **Meka 现行口径（WL-26，2026-11-06 第七轮收口）：本仓没有上报通道。**
+> **仍然有效并可改**：本地采集（`collect` / `collectRuntime` / `mainLogReader` / `agentLogReader`）、
+> 来源白名单、脱敏（§1.2）、字段白名单与截断（§2）、`main/logSupport.ts` 的「打开日志目录」、
+> `/issue` 诊断采集。
+> **已整体移除（仅作上游背景，不得据此恢复）**：上报目标注入（`config/log-upload.json` 与
+> `CINDY_REQUIRE_LOG_UPLOAD_CONFIG` **都不是本仓的打包前置**）、SLS 发送器、手动/崩溃自动上传、
+> 待补传标记（`pendingMarkers`）、性能报告上传与分片还原（见
+> [`performance-tracing.md`](performance-tracing.md)）、移动端上传摘要。
+> 因此下面 §1.3 / §3 / §4 / §5 与 §6 的**上传段落描述的是上游实现**，本仓只在
+> 「采集 / 脱敏 / 本地查看」范围内维护它们。细则见
+> [`meka-whitelist-verification.md`](meka-whitelist-verification.md) **WL-26**。
+
 ## 事实来源
+
+用户主动录制的性能报告见 [Desktop 性能跟踪](performance-tracing.md)。上游口径是「通过日志链路提交完整
+性能文件」；**Meka 不适用（WL-26，2026-11-06 第七轮收口）**：该上传入口、脱敏 Worker、分片协议与还原
+工具已整体移除，性能报告只在本机 `diagnostics/performance-traces/` 保留 7 天后清理，不进入本模块的
+目标、授权或发送器，也不进入崩溃自动上传。本模块与性能跟踪的唯一交叉点是**采集侧脱敏器**
+（`log-upload/redact`，被 `performance-trace/report.ts` 用于本地摘要投影），不是上报通道。
 
 | 内容 | 权威来源 |
 |---|---|
 | 记录边界格式（写侧＋读侧共用） | `apps/desktop/src/shared/mainLogRecordFormat.ts` |
 | 本地日志保留天数 | `apps/desktop/src/shared/logRetention.ts` |
-| 跨进程契约与上传编号形态 | `apps/desktop/src/shared/logUpload.ts` |
+| 采集原因标签（`LogUploadReason`；上报契约已移除） | `apps/desktop/src/shared/logUpload.ts` |
 | 来源白名单 | `apps/desktop/src/main/log-upload/sourceAllowlist.ts` |
 | 脱敏规则 | `apps/desktop/src/main/log-upload/redact.ts` |
-| 体量上限 | `apps/desktop/src/main/log-upload/limits.ts` |
-| 上报目标（构建期注入的解析侧） | `apps/desktop/src/main/log-upload/logUploadTarget.ts` |
-| 上报目标（构建期注入的校验侧） | `scripts/shared/log-upload-build-env.mjs`、配置骨架 `config/log-upload.json.example` |
-| 待补传标记 | `apps/desktop/src/main/log-upload/pendingMarkers.ts` |
+| 体量上限（仅采集侧） | `apps/desktop/src/main/log-upload/limits.ts` |
+| 采集记录形状（`UploadRecord` 等；上报目标/上传元数据已删） | `apps/desktop/src/main/log-upload/types.ts` |
+| 本地日志目录（「打开日志目录」） | `apps/desktop/src/main/logSupport.ts`（`openLogsDirectory`） |
 | 崩溃判定 | `apps/desktop/src/main/lifecycle.ts`（`isFatalShutdownReason` / `onFatalShutdown`） |
+
+> **已删除的上报侧真值（不要再按名字找文件）**：`main/log-upload/logUploadTarget.ts`、
+> `scripts/shared/log-upload-build-env.mjs`、`main/log-upload/pendingMarkers.ts`、
+> `main/log-upload/{logSink,uploadRunner,index}.ts` 及其测试。`config/log-upload.json`
+> **不参与本仓打包**（缺它不是失败条件），也没有 `CINDY_REQUIRE_LOG_UPLOAD_CONFIG` 这类配置前置。
 
 ## 1. 三条不变量
 
@@ -93,7 +116,11 @@ override 语义见 [`configuration-and-overrides.md`](configuration-and-override
 - 渲染进程转发的日志整类不放行——`writeFromRenderer()` 强制 `r:` 前缀，而匹配是根锚定的。
   不要把匹配改成裸 `startsWith`。
 
-### 1.3 待补传标记：代次令牌 + 原子清除
+### 1.3 待补传标记：代次令牌 + 原子清除（**Meka 不适用：该机制随上报面已删除**）
+
+> 以下为**上游**实现背景。Meka 的 `main/log-upload/pendingMarkers.ts` 已删、没有崩溃补传与上报通道，
+> 因此不需要标记代次/原子清除；保留这段只为解释「若重新启用上报必须同时恢复什么」，
+> **不要据此恢复标记文件或补传路径**。
 
 开发版与正式版共享同一份 userData，两个实例可能并发读写同一批标记。因此：
 
@@ -115,11 +142,10 @@ override 语义见 [`configuration-and-overrides.md`](configuration-and-override
 | 3 正则红线 | 抹除敏感片段 | `redact.ts`（宁可多抹，不可漏） |
 | 4 字段白名单 + 截断 | 带出哪些字段 | 只有 `ts` / `level` / `src` / `scope` / `msg` 五个字段离开本机 |
 
-`agent-<date>.ndjson` **默认只在崩溃路径附带**。普通手动日志上传（设置页点「上传日志」）
-不打开这条流。唯一例外是 `/issue` 反馈：只有调用方把 `CollectRequest.includeAgentLogs`
+`agent-<date>.ndjson` 在上游默认只在崩溃补传路径附带。**Meka 没有崩溃补传、也没有「上传日志」入口**，
+唯一打开这条流的入口是 `/issue` 反馈：只有调用方把 `CollectRequest.includeAgentLogs`
 显式设为 `true` 时才打开——这条开关只由用户明确同意公开诊断信息的 `/issue` 路径传入
-（`include_related_logs=true` → `includeRelatedLogs` → `includeAgentLogs`），普通手动
-上传不得设。无论哪条路径打开这条流，读侧都**只取 `source === 'proxy'` 且 scope 落在
+（`include_related_logs=true` → `includeRelatedLogs` → `includeAgentLogs`）。无论哪条路径打开这条流，读侧都**只取 `source === 'proxy'` 且 scope 落在
 proxy 根下的记录**（双闸）。同一文件里还有 `maker` 源的日志，那些可能带 agent 提示词
 与用户内容。issue 路径复用同一条窄出口与字段重建，不得为了反馈放宽。
 
@@ -159,7 +185,12 @@ proxy 根下的记录**（双闸）。同一文件里还有 `maker` 源的日志
 在其它字段规则**之前**吃掉这种「引号包起来的键」。**别按厂商加 key 形态就以为覆盖了头部字段——
 字段名的书写形态（裸 / JSON / 转义 JSON / 带引号的对象键）同样要逐个想到。**
 
-## 3. 授权
+## 3. 授权（**Meka 不适用：无上传通道**）
+
+> 以下是**上游**上传授权的必需语义（手动/崩溃两条路径、`unknown` 不判 `denied`、闸只读该路径
+> 真正需要的状态）。Meka 已删除 `consentGate`、上报设置存储与待补传标记，也没有
+> `PRIVACY_CONSENT_REQUIRED` 错误码与「崩溃时自动上传」开关 ⇒ 本节仅作背景。
+> **不要把这条授权面加回来**；重新启用上报必须同时恢复 WL-26 与本文件这两处口径并走隐私评审。
 
 - 手动上传：要求已配置上报目标 **且** 已明示同意《隐私政策》。点击按钮本身即用户对这一次
   上传的意图，**不看「使用统计」开关**——那是行为埋点的偏好，与排障上传不是一件事。
@@ -184,7 +215,14 @@ proxy 根下的记录**（双闸）。同一文件里还有 `maker` 源的日志
   一份把无关故障传染成拒绝的机会。
 - 不做「上传前逐次弹窗确认」：手动路径本身就是用户点的；崩溃路径弹窗在崩溃时刻不可能可靠展示。
 
-## 4. 上报目标与区域
+## 4. 上报目标与区域（**Meka 不适用：注入链已整体移除**）
+
+> 以下是**上游**的构建期注入链：`config/log-upload.json`（gitignore 真值）→
+> `scripts/shared/log-upload-build-env.mjs`（校验并挑选本区域目标）→ `package-desktop.mjs`（塞 forge env）
+> → `vite.main.config.ts`（define `XDT_LOG_UPLOAD_TARGET`）→ `logUploadTarget.ts`（运行期解析 + 区域交叉校验）。
+> **Meka 的这五个环节全部不接线**：缺 `config/log-upload.json` **不是**打包失败条件，
+> `CINDY_REQUIRE_LOG_UPLOAD_CONFIG` 在 Meka 上不存在也不需要（上游仓外发布流程的约定不适用于本仓）。
+> 历史与移除面见 §4.1；本地口径见 §1 与 [`performance-tracing.md`](performance-tracing.md)。
 
 目标 = 日志服务的 project + logstore + 服务区域接入域名，**构建期注入、运行期只读**。
 
@@ -247,7 +285,12 @@ main/log-upload/logUploadTarget.ts         ← 解析 + 区域交叉校验;不�
     `LOG_UPLOAD_*` / `PRIVACY_CONSENT_REQUIRED` 一并撤掉。
   - 界面：设置 → 关于 的「崩溃时自动上传」与「上传日志」两行 + 五语各 19 个 `settings.about.logUpload.*`
     键删除（含搜索项）。
-  - mobile：「上传日志」行与其模块 `src/debug/mobileDiagnosticUpload.ts` 删除（本地 Debug 日志本身保留）。
+  - mobile：「上传日志」行与其模块 `apps/mobile/src/debug/diagnosticUpload.ts` 删除（本地 Debug 日志本身保留）。
+    **2026-11-06 第七轮更正**：本条此前写的文件名 `src/debug/mobileDiagnosticUpload.ts` 在仓内从未存在；
+    实际漏面是 `src/debug/diagnosticUpload.ts`（`parseDiagnosticUploadTarget` / `uploadDiagnosticSnapshot`，
+    SLS web-tracking 上传）与其测试 `diagnosticUpload.test.ts`，本轮已一并删除（删除前生产 0 引用）。
+    删除后 `git grep -n diagnosticUpload` **只应命中历史文档**（本文件、WL-26、迁移总账与当期报告），
+    代码路径 0 命中 —— 若再出现代码命中，说明上报面被上游同步带回，按 WL-26 回归处理。
 - **明确保留（后续同步不要跟着删）**：`main/log-upload/` 中的**采集与脱敏**部分 —— `redact` / `collect` /
   `collectRuntime` / `mainLogReader` / `agentLogReader` / `sourceAllowlist` / `limits` / `types` —— 因为
   「报告问题」流程（`main/github-issue/**`）与 `maker-host/pi-package-diagnostic` 仍在用它们的脱敏与
@@ -255,7 +298,11 @@ main/log-upload/logUploadTarget.ts         ← 解析 + 区域交叉校验;不�
 - **结论**：`config/log-upload.json` 在 Meka 上**既不需要、也不会被读取**（本仓 §4 的上游口径仅作背景，
   供将来若要重新启用时参考）；`cindy-meka-cicd` 里那条「桌面打包前解析该文件」的闸门已随之撤掉。
 
-## 5. 时序
+## 5. 时序（**Meka 不适用：崩溃补传不存在**）
+
+> 以下是**上游**启动补传 / 崩溃即时路径的时序约束。Meka 没有补传与上报，但其中两条对**本地采集**
+> 同样有效，改采集路径时必须继续满足：① 采集不得阻塞启动或退出（流式读 + 定期让出事件循环）；
+> ② 全链路失败静默——不弹错误、不影响业务。
 
 - **不阻塞启动**：启动补传排在主窗口 `ready-to-show` 之后再延迟执行；采集是流式读 + 定期
   `setImmediate` 让出事件循环。
@@ -289,33 +336,38 @@ main/log-upload/logUploadTarget.ts         ← 解析 + 区域交叉校验;不�
   补不出来，重试无益；只要崩溃邻域已有归属它的记录进上报就清标记，避免对同一份不可读文件无限重传。
 - **全链路失败静默**：任何异常收敛成一个 outcome，不弹错误、不影响业务。
 
-## 6. Mobile 手动诊断日志
+## 6. Mobile 诊断日志（本地）
 
-Mobile 的设置 → 调试 / 开发者提供 Debug 开关、导出与手动上传；清空收在日志选项菜单，不提供恢复默认记录设置。普通构建默认不记录；
+Mobile 的设置 → 调试 / 开发者提供 Debug 开关、导出与清除（**没有上传**；2026-11-06 第七轮已移除上传行与模块）；清空收在日志选项菜单，不提供恢复默认记录设置。普通构建默认不记录；
 个人排障构建可用 `EXPO_PUBLIC_CINDY_DIAGNOSTICS=1` 设置默认值，用户保存的开关优先。
 
-- 本地详细 Debug 与上传摘要分别保存。`mobileDebugLog.ts` 只接手机自身的显式记录点：连接与网络变化、
+- 本地详细 Debug 与本地诊断事件（上游的「上传摘要」）分别保存。`mobileDebugLog.ts` 只接手机自身的显式记录点：连接与网络变化、
   恢复阶段、生命周期、JS 停摆、渲染计数与解析耗时、滚动几何和键盘状态，以及远程文件预览与播放的
   取件阶段（`files` scope：传输路线、大小、耗时与失败原因，只记扩展名，不记文件路径、签名地址或文件内容）。
   保留级别、错误原因与堆栈，
   `mobileDebugRecord.ts` 在落盘前过滤敏感字段、凭证、地址参数等；禁止传入消息正文、请求体或完整鉴权信息，
   不接管全局 console，不重复保存被控端任务记录。
+  `auth` / `network` 在错误转换前记录原始异常及原因，仍走上述落盘脱敏；不记录成功认证响应，
+  JSON 语法异常只记录 `SyntaxError` 与响应状态，避免消息或堆栈夹带响应正文；
+  不扩展诊断事件白名单，也不改变 Debug 开关。
 - 详细日志在 `Paths.document/cindy-debug/`，NDJSON 文件每份最多 1 MiB、最多 8 份、保留最近 7 天。
   每 2 秒及前后台切换时批量落盘；内存待写最多 512 KiB，溢出或写失败在后续记录中标明丢失，不能无限重试堆积。
   突然杀进程可能丢失尚未落盘的最后一批，JS 停摆只能在恢复后测得。Documents 属 App 持久容器，可能随系统备份。
   导出分享详细日志的唯一缓存副本，分享成功、失败或取消后清理；关闭记录不清空历史。
   无论开关是否开启，启动及回到前台都会清理过期文件；App 未运行时无法执行清理，下次启动时补做。
-- `diagnosticEvents.ts` 继续作为上传摘要的写入与读取白名单：只重建固定事件名、有限数值和枚举，
-  不保留错误正文、堆栈、地址、凭证、消息正文或设备/账号标识。摘要仍在 AsyncStorage，最多 500 条、最近 7 天。
-  上传不得读取详细 Debug 文件；上传前再次投影。
-- 手动上传检查隐私政策同意，不依赖使用统计偏好；复用 §4 的构建目标校验器与 Desktop SLS
-  web-tracking 协议、上传编号格式。附带的元数据仅有区域、版本、平台、系统版本与本次上传编号。
-  不增加自动上传、崩溃标记、后台重试或新的服务端接口；20 秒超时，失败保留本地日志。
-- Metro 从 `config/log-upload.json` 只注入当前构建区域的 `EXPO_PUBLIC_CINDY_LOG_UPLOAD_TARGET`。
-  本地/开源缺少文件时禁用上传并解释原因；EAS 商店 profiles 自动要求该配置，缺失即失败。
-  仓外正式发布流程仍须设置 `CINDY_REQUIRE_LOG_UPLOAD_CONFIG=1`；普通本地原生构建不等同于发布。
-  损坏配置或区域交叉配置始终硬失败。
-  真实目标与密钥不得提交到仓库，运行期不从远程端点清单选择目标。
+- `diagnosticEvents.ts` 作为**本地**诊断事件的写入与读取白名单：只重建固定事件名、有限数值和枚举，
+  不保留错误正文、堆栈、地址、凭证、消息正文或设备/账号标识。事件仍在 AsyncStorage，最多 500 条、最近 7 天。
+  **Meka 没有「上传摘要」出口**（`diagnosticUpload` 已删），这些事件只在本机被本地诊断页读取；
+  不得新增网络发送，也不得让导出路径读取详细 Debug 文件以外的内容。
+- **Meka 不适用：手动上传摘要**。上游的「隐私同意 + §4 构建目标校验 + Desktop SLS web-tracking 协议 +
+  上传编号 + 20 秒超时 + 失败保留本地日志」整条链路已随 WL-26 移除；开发者页不再有上传行、
+  不发网络请求、不检查上报同意。重新启用必须先改 WL-26 并走隐私评审。
+- **Meka 不适用：移动端构建期上报配置**。`apps/mobile/metro.config.js` 不再注入
+  `EXPO_PUBLIC_CINDY_LOG_UPLOAD_TARGET`（注入代码已删）；`config/log-upload.json` 与
+  `CINDY_REQUIRE_LOG_UPLOAD_CONFIG=1` 在本仓**既不存在也不是打包前置**，EAS profiles 也不要求该配置。
+  > 仓内仍有上游遗留的示例/注释提到它们（`apps/mobile/.env.example`、`.gitignore`、
+  > `config/log-upload.json.example`），属**配置/代码文件、不是本规则的现行口径**；
+  > 是否清理由构建/配置归属方决定（清单见 `_analysis/wp7-docs-report.md`）。
 
 ## 7. Review 清单
 
@@ -329,11 +381,12 @@ Mobile 的设置 → 调试 / 开发者提供 Debug 开关、导出与手动上�
 6. 标记的清除是否仍然「只在成功且非空时」且「只清自己那一代」？授权关闭是否清空全部（含
    claim 文件）？崩溃锚点的覆盖判定是否仍**按裁剪后上报的记录**（`buildFileCoverage`），而不是
    读到的全部——否则被 cap 挤掉的那次崩溃会被误判已覆盖、标记误清？
-7. 崩溃时刻新增的动作是否仍然同步且极短、没有进 `onQuit`？
+   **（Meka 无待补传标记与补传路径，本项跳过；见 §1.3。若有人重新引入标记文件，本项立即恢复为门禁。）**
+7. 崩溃时刻新增的动作是否仍然同步且极短、没有进 `onQuit`？**（Meka 无崩溃补传；但「崩溃时刻不做重活」仍适用于本地采集/日志落盘。）**
 8. 改了上报目标的注入链路吗？除 `dev` 外每个区域仍然必填（缺失即打包失败）？跨区域共用
-   project / logstore 仍然被拒？运行期的区域交叉校验还在？
-9. 新增发行区域时，`config/log-upload.json`（cindy-build-scripts 侧的真值）是否也补了对应条目？
-   ——不补的话打包会失败，这是有意的。
+   project / logstore 仍然被拒？运行期的区域交叉校验还在？**（上游口径；Meka 不接线，见 §4/§4.1。）**
+9. 新增发行区域时，本仓**不需要**改 `config/log-upload.json`（Meka 无上报，缺该文件不是打包前置），
+   也不需要设置 `CINDY_REQUIRE_LOG_UPLOAD_CONFIG`；若有人把这类前置加回来，按 WL-26 回归处理。
 
 验证：`pnpm --filter desktop run typecheck` +
 `npx vitest run src/main/log-upload src/main/__tests__/loggerRecordFormat.test.ts`，

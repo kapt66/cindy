@@ -1,28 +1,20 @@
 /**
- * 日志上报模块的内部类型。刻意与 `shared/logUpload.ts`（跨进程契约）分开：
+ * 日志采集/脱敏模块的内部类型。刻意与 `shared/logUpload.ts`（跨进程契约）分开：
  * 这里的形状只在 main 内部流转，改动不影响 preload / renderer。
+ *
+ * WL-26：Meka 不启用客户端日志上报。上报目标与上传元数据形状（原 `LogUploadTarget` /
+ * `LogUploadMeta`）已随上报面删除；本文件只保留「报告问题」采集与脱敏仍在用的记录形状。
  */
-
-import type { CindyRegion } from '@cindy/maker-shared/brand-identity';
-
-import type { LogUploadReason } from '../../shared/logUpload';
-
-/** 上报目标：日志服务的 project + logstore + 服务区域接入域名。 */
-export interface LogUploadTarget {
-  project: string;
-  logstore: string;
-  /** 服务区域接入域名，不含协议、不含 project 前缀。 */
-  endpointHost: string;
-}
 
 /**
- * 一条上报记录的**最终形状**（第四层字段白名单的产物）。
+ * 一条采集记录的**最终形状**（第四层字段白名单的产物）。
  *
- * 只有这五个字段会离开本机。解析出的其它字段（NDJSON 的 `tz` / `seq` / `sessionId`，
+ * 只有这五个字段进入采集结果。解析出的其它字段（NDJSON 的 `tz` / `seq` / `sessionId`，
  * 未来新增的任何字段）一律丢弃——白名单是正向的，不是「排除已知危险字段」。
+ * WL-26 之后这条形状只在本地「报告问题」诊断里使用，不再有上报出口。
  */
 export interface UploadRecord {
-  /** 原始时间戳（本地 ISO + offset）。不能用上报时刻覆盖，否则崩溃时间线失真。 */
+  /** 原始时间戳（本地 ISO + offset）。不能用读取时刻覆盖，否则崩溃时间线失真。 */
   ts: string;
   level: string;
   /** 记录来自哪条本地流。`main` = main-*.log，`proxy` = agent-*.ndjson 的 proxy 源。 */
@@ -65,31 +57,9 @@ export interface CollectResult {
   records: UploadRecord[];
   stats: CollectStats;
   /**
-   * 崩溃锚点里**其读取窗口确已覆盖**的那些（epoch ms 子集）。上报成功后，只有覆盖到的崩溃
-   * 标记才该被清除；没覆盖到的（超大文件里同一天靠后的那次崩溃落在窗口外）保留待补传，
-   * 避免用一次「非空但没含这次崩溃」的上报把它永久清掉（2026-08-04 review）。
+   * 崩溃锚点里**其读取窗口确已覆盖**的那些（epoch ms 子集）。WL-26：Meka 不上报，
+   * 该字段只描述采集窗口的覆盖情况，保留形状以兼容仍以 anchors 调用采集的本地诊断入口
+   * （「报告问题」传空数组，不依赖它）。
    */
   coveredAnchors: number[];
-}
-
-/** 环境元数据。后台按这些维度检索（需求 §4.8）。 */
-export interface LogUploadMeta {
-  /** 上传编号（已格式化为 `XXXX-XXXX`）。 */
-  uploadCode: string;
-  /** 未登录为空串。 */
-  userId: string;
-  deviceId: string;
-  appVersion: string;
-  region: CindyRegion;
-  platform: string;
-  arch: string;
-  osVersion: string;
-  uiLanguage: string;
-  reason: LogUploadReason;
-  /**
-   * 崩溃路径带上标记的代次令牌：崩溃即时上传与下次启动补传是两次独立上报
-   * （各有自己的 uploadCode），靠这个令牌在后台归成同一次崩溃。
-   */
-  crashToken?: string;
-  crashAtMs?: number;
 }

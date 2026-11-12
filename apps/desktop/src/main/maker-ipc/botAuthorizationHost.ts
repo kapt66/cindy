@@ -1,7 +1,7 @@
 import { getSessionRewindGeneration, withSendToSessionLock } from './sendToSessionLock.js';
 import { shell } from 'electron';
 import { t } from '../i18n.js';
-import { and, eq, isNull, ne, or, gt, like, desc } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, or, gt, like, desc } from 'drizzle-orm';
 import { getDbClient } from '../localDb/client/current.js';
 import { botSessionLinks, botProfiles, sessions, messages } from '../localDb/schema.js';
 import {
@@ -37,7 +37,8 @@ import {
 } from '../maker-host/grok-oauth-login.js';
 import { toReauthInteractionAssessment } from '../cindy-brain/ghostSetupCoordinator.js';
 import { initBotAuthorizationService } from './botAuthorizationService.js';
-import { readBotAuthorizationCard } from '../../shared/botAuthorization.js';
+import { botAuthorizationImChannel, readBotAuthorizationCard } from '../../shared/botAuthorization.js';
+import { createBotImAuthorizationAdapter } from './botImAuthorization.js';
 import type { BotAuthorizationCard } from '../../shared/botAuthorization.js';
 import { sanitizeGhostSetupSnapshotForDesktop } from '../cindy-brain/ghostSetupInteractionBridge.js';
 import { createLogger } from '../logger.js';
@@ -45,15 +46,21 @@ const log = createLogger('bot-authorization');
 
 /** Uses the canonical DB link, never an agent-supplied bot identity. */
 export async function isBotAuthorizationSession(sessionId: string): Promise<boolean> {
+  return (await readBotAuthorizationBot(sessionId)) !== null;
+}
+
+/** The active teammate whose owner chat this session is; null for every other caller. */
+async function readBotAuthorizationBot(sessionId: string): Promise<{ id: string; name: string } | null> {
   const [row] = await getDbClient()
-    .drizzle.select({ id: botSessionLinks.botId, status: botProfiles.status })
+    .drizzle.select({ id: botSessionLinks.botId, status: botProfiles.status, name: botProfiles.displayName })
     .from(botSessionLinks)
     .innerJoin(sessions, eq(sessions.id, botSessionLinks.sessionId))
     .innerJoin(botProfiles, eq(botProfiles.id, botSessionLinks.botId))
     .where(
       and(
         eq(botSessionLinks.sessionId, sessionId),
-        eq(botSessionLinks.role, 'canonical'),
+        // The owner's Bot Chat: the permanent Chat and its private-chat topics.
+        inArray(botSessionLinks.role, ['canonical', 'thread', 'routine']),
         isNull(botSessionLinks.archivedAt),
         ne(sessions.status, 'deleted'),
         ne(sessions.status, 'archived'),
@@ -61,7 +68,7 @@ export async function isBotAuthorizationSession(sessionId: string): Promise<bool
       ),
     )
     .limit(1);
-  return row?.status === 'active';
+  return row?.status === 'active' ? { id: row.id, name: row.name ?? '' } : null;
 }
 
 /** Adapts existing Host credentials and plugin configuration into the same card lifecycle. */
@@ -90,6 +97,17 @@ export function initializeBotAuthorizationHost(
       ownerScopes.set(sessionId, scope);
       await assertSession(sessionId);
       const bus = getGhostSetupChangeBus();
+      const imChannel = target.kind === 'host' ? botAuthorizationImChannel(target.id) : null;
+      if (imChannel) {
+        const bot = await readBotAuthorizationBot(sessionId);
+        if (!bot) throw new Error('Authorization owner or teammate is unavailable');
+        return createBotImAuthorizationAdapter({
+          channel: imChannel,
+          bot,
+          assertSession: () => assertSession(sessionId),
+          currentBotId: async () => (await readBotAuthorizationBot(sessionId))?.id ?? null,
+        });
+      }
       if (target.kind === 'host') {
         if (target.id !== 'grok') throw new Error('Unsupported Host connection');
         const credentialGeneration = getGrokOAuthCredentialGeneration();

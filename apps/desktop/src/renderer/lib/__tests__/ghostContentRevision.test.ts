@@ -1,12 +1,9 @@
 // @vitest-environment jsdom
 
 import { act, renderHook } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 describe('useGhostContentRevision', () => {
-  afterEach(() => {
-    vi.resetModules();
-  });
 
   it('只递增完成开发同步的插件，使可见 WebView 重新装载', async () => {
     let notify: ((payload: { id: string }) => void) | null = null;

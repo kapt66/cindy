@@ -1,3 +1,4 @@
+import { personalizationDetailsSettings } from './PersonalizationDetails.settings-search';
 /**
  * TerminalShellSection — Settings → 个性化 下的 RSB 默认终端 shell 选择。
  *
@@ -17,7 +18,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import * as Select from '@radix-ui/react-select';
+import { SelectParts as Select } from '@/components/ui/select';
 import { Check, ChevronDown, ChevronUp } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
@@ -114,7 +115,7 @@ export function TerminalShellSection() {
       <div className="flex flex-col gap-[14px] rounded-xl border border-[var(--settings-theme-card-border)] bg-[var(--settings-theme-card-bg)] p-4">
         <div className="flex items-center justify-between gap-3">
           <p className="text-14 font-medium leading-none text-[var(--text-primary)]">
-            {t('settings.terminalShell.card.label')}
+            {t(personalizationDetailsSettings.terminalShellCardLabel.titleKey)}
           </p>
           <DefaultOverrideControls
             isCustomized={isCustomized}
@@ -124,7 +125,7 @@ export function TerminalShellSection() {
         </div>
 
         <p className="text-12 leading-[1.5] text-[var(--text-secondary)]">
-          {t('settings.terminalShell.card.description')}
+          {t(personalizationDetailsSettings.terminalShellCardLabel.descriptionKey)}
         </p>
 
         <Select.Root
@@ -132,12 +133,12 @@ export function TerminalShellSection() {
           onValueChange={(value) => onChange(value as ShellId)}
           disabled={resetting}
         >
-          <Select.Trigger
+          <Select.Trigger data-setting-id={personalizationDetailsSettings.terminalShellCardLabel.id}
             aria-label={t('settings.terminalShell.card.selectAria')}
             className={cn(
               'flex h-9 w-full min-w-0 items-center justify-between gap-2 rounded-full border px-3 text-12 outline-none',
               'bg-[var(--settings-input-bg)] text-[var(--settings-input-text)]',
-              'border-[var(--settings-input-border)] focus:ring-2 focus:ring-[var(--focus-ring-soft)]',
+              'border-[var(--settings-input-border)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring-soft)]',
               'data-[disabled]:cursor-not-allowed data-[disabled]:opacity-60',
             )}
           >
@@ -155,7 +156,7 @@ export function TerminalShellSection() {
               align="start"
               sideOffset={4}
               className={cn(
-                'z-[10010] w-[var(--radix-select-trigger-width)] overflow-hidden rounded-xl border p-1',
+                'z-[10010] w-[var(--radix-select-trigger-width)] overflow-hidden rounded-xl border p-1.5',
                 'max-h-[min(15rem,var(--radix-select-content-available-height))]',
                 'border-[var(--cmd-palette-border)] bg-[var(--cmd-palette-bg)]',
               )}
@@ -203,7 +204,7 @@ function ShellOption({
       value={value}
       className={cn(
         'flex w-full cursor-pointer select-none items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-12 outline-none',
-        'text-[var(--settings-input-text)] data-[highlighted]:bg-[var(--surface-hover)]',
+        'text-[var(--settings-input-text)]',
         unavailable && 'text-[var(--settings-section-desc)]',
       )}
     >

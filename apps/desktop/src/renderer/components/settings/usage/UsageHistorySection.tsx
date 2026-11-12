@@ -1,3 +1,5 @@
+import { usageHistorySettings } from './UsageHistorySection.settings-search';
+import { ErrorNotice } from '@/components/ui/error-notice';
 /**
  * UsageHistorySection — 设置 → 用量历史 (issue #2785)。
  *
@@ -22,7 +24,7 @@ import './usageCharts.css';
 
 import React, { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import * as Select from '@radix-ui/react-select';
+import { SelectParts as Select } from '@/components/ui/select';
 import { Check, ChevronDown, RefreshCw } from 'lucide-react';
 
 import { Spinner } from '@/components/ui/spinner';
@@ -185,7 +187,7 @@ export function UsageHistorySection(): React.JSX.Element {
   return (
     <div className="usage-history-charts pb-2">
       <h2 className="mb-1.5 text-16 font-medium text-[var(--text-primary)]">
-        {t('settings.tabs.usage')}
+        {t(usageHistorySettings.usage.titleKey)}
       </h2>
       <p className="mb-4 max-w-[640px] text-13 leading-[1.5] text-[var(--settings-section-desc)]">
         {t('usageHistory.description')}
@@ -200,9 +202,9 @@ export function UsageHistorySection(): React.JSX.Element {
           <UsageDeviceSelect value={device} devices={devices ?? []} onValueChange={setDevice} />
         ) : null}
         <Select.Root value={range} onValueChange={handleRangeChange}>
-          <Select.Trigger
+          <Select.Trigger data-setting-id={usageHistorySettings.usage.id}
             aria-label={t('usageHistory.range.ariaLabel')}
-            className="flex h-9 w-[190px] items-center justify-between gap-2 rounded-full border border-[var(--border-default)] bg-[var(--surface-elevated)] px-3 text-13 text-[var(--text-primary)] outline-none focus:ring-2 focus:ring-[var(--focus-ring-soft)]"
+            className="flex h-9 w-[190px] items-center justify-between gap-2 rounded-full border border-[var(--border-default)] bg-[var(--surface-elevated)] px-3 text-13 text-[var(--text-primary)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring-soft)]"
           >
             <Select.Value />
             <Select.Icon asChild>
@@ -215,14 +217,14 @@ export function UsageHistorySection(): React.JSX.Element {
               side="bottom"
               align="end"
               sideOffset={4}
-              className="z-[10010] w-[var(--radix-select-trigger-width)] overflow-hidden rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] p-1"
+              className="z-[10010] w-[var(--radix-select-trigger-width)] overflow-hidden rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] p-1.5"
             >
               <Select.Viewport>
                 {(['all', '30d', '7d', 'today'] as const).map((option) => (
                   <Select.Item
                     key={option}
                     value={option}
-                    className="flex w-full cursor-pointer select-none items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-13 text-[var(--text-primary)] outline-none data-[highlighted]:bg-[var(--surface-hover)] data-[state=checked]:bg-[var(--settings-menu-bg-selected)] data-[state=checked]:font-medium data-[state=checked]:text-[var(--settings-menu-text-selected)]"
+                    className="flex w-full cursor-pointer select-none items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-13 text-[var(--text-primary)] outline-none data-[state=checked]:font-medium data-[state=checked]:text-[var(--settings-menu-text-selected)]"
                   >
                     <Select.ItemText>{t(`usageHistory.range.${option}`)}</Select.ItemText>
                     <Select.ItemIndicator>
@@ -233,7 +235,7 @@ export function UsageHistorySection(): React.JSX.Element {
                 {range.startsWith('day:') && selectedDay ? (
                   <Select.Item
                     value={range}
-                    className="flex w-full cursor-pointer select-none items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-13 text-[var(--text-primary)] outline-none data-[highlighted]:bg-[var(--surface-hover)] data-[state=checked]:bg-[var(--settings-menu-bg-selected)] data-[state=checked]:font-medium data-[state=checked]:text-[var(--settings-menu-text-selected)]"
+                    className="flex w-full cursor-pointer select-none items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-13 text-[var(--text-primary)] outline-none data-[state=checked]:font-medium data-[state=checked]:text-[var(--settings-menu-text-selected)]"
                   >
                     <Select.ItemText>{rangeLabel}</Select.ItemText>
                     <Select.ItemIndicator>
@@ -247,7 +249,7 @@ export function UsageHistorySection(): React.JSX.Element {
         </Select.Root>
         <label className="flex min-w-0 items-center gap-2 text-13 text-[var(--text-secondary-mid)]">
           {t('usageHistory.range.date')}
-          <Input
+          <Input data-setting-id={usageHistorySettings.usage.id}
             type="date"
             size="md"
             className="w-[180px] max-w-full"
@@ -290,12 +292,7 @@ export function UsageHistorySection(): React.JSX.Element {
           <Spinner size={20} />
         </div>
       ) : loadFailed ? (
-        <div
-          className="flex min-h-[176px] items-center justify-center rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] px-4 text-center text-13 text-[var(--error-fg)]"
-          role="alert"
-        >
-          {t('usageHistory.loadFailed')}
-        </div>
+        <ErrorNotice role="alert" message={t('usageHistory.loadFailed')} />
       ) : empty ? (
         <div className="rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] px-4 py-8 text-center text-13 text-[var(--text-tertiary)]">
           {t('usageHistory.empty')}

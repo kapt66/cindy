@@ -1,6 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
+  appOn: vi.fn(),
   ipcOn: vi.fn(),
   ipcHandle: vi.fn(),
   allWindows: [] as Array<unknown>,
@@ -34,6 +35,7 @@ vi.mock('../wallpaper-video.js', () => ({
 }));
 
 vi.mock('electron', () => ({
+  app: { on: mocks.appOn },
   BrowserWindow: { getAllWindows: () => mocks.allWindows, fromWebContents: mocks.fromWebContents },
   ipcMain: { on: mocks.ipcOn, handle: mocks.ipcHandle },
 }));
@@ -55,7 +57,7 @@ vi.mock('../appearance-settings-store.js', () => ({
   updateAppearanceSettingsAtomic: mocks.updateAppearanceSettingsAtomic,
 }));
 
-import { registerAppearanceSettingsIpc, __testing } from '../appearance-settings-ipc.js';
+import { registerAppearanceSettingsIpc, installWindowZoomRestoration, __testing } from '../appearance-settings-ipc.js';
 import {
   normalizeAppearanceSettings,
   WALLPAPER_DOWNLOAD_PROGRESS_CHANNEL,
@@ -67,6 +69,8 @@ const persisted = {
   codeFamily: 'JetBrains Mono',
   uiSize: 15,
   codeSize: 14,
+  terminalFamily: 'Menlo',
+  terminalSize: 17,
   windowZoom: 1.1,
 };
 
@@ -211,6 +215,110 @@ describe('appearance settings IPC authorization', () => {
     mocks.assertTrustedAppRendererEvent.mockReset();
     mocks.readAppearanceSettings.mockReset().mockReturnValue(persisted);
     mocks.fromWebContents.mockReset().mockReturnValue({ isDestroyed: () => false });
+    mocks.writeAppearanceSettingsPatch.mockReset().mockResolvedValue(persisted);
+    mocks.updateAppearanceSettingsAtomic.mockReset();
+  });
+
+  // #7486: the file can retain 90% while an activated window displays 100%.
+  // Existing IPC tests only covered preference writes, not native focus recovery.
+  // Exercise the registered Electron event with a stateful window; unit tier.
+  it('restores a drifted app window on focus without rewriting preferences or stable zoom', () => {
+    const settings = { ...persisted, windowZoom: 0.9 };
+    mocks.readAppearanceSettings.mockReturnValue(settings);
+    let zoom = 1;
+    const setZoomFactor = vi.fn((value: number) => { zoom = value; });
+    const win = {
+      isDestroyed: () => false,
+      webContents: { isDestroyed: () => false, getZoomFactor: () => zoom, setZoomFactor },
+    };
+    markAppContentWindow(win as never);
+    const focus = mocks.appOn.mock.calls.find(([name]) => name === 'browser-window-focus')?.[1];
+    expect(focus).toBeTypeOf('function');
+    focus({}, win);
+    expect(zoom).toBe(0.9);
+    focus({}, win);
+    expect(setZoomFactor).toHaveBeenCalledOnce();
+    expect(mocks.writeAppearanceSettingsPatch).not.toHaveBeenCalled();
+    expect(mocks.updateAppearanceSettingsAtomic).not.toHaveBeenCalled();
+  });
+
+  it('does not apply the app zoom to unregistered or destroyed focus targets', () => {
+    const focus = mocks.appOn.mock.calls.find(([name]) => name === 'browser-window-focus')?.[1];
+    expect(focus).toBeTypeOf('function');
+    const setZoomFactor = vi.fn();
+    const win = {
+      isDestroyed: vi.fn(() => false),
+      webContents: { isDestroyed: vi.fn(() => false), getZoomFactor: () => 1, setZoomFactor },
+    };
+    focus({}, win);
+    markAppContentWindow(win as never);
+    win.webContents.isDestroyed.mockReturnValue(true);
+    focus({}, win);
+    win.isDestroyed.mockReturnValue(true);
+    focus({}, win);
+    expect(setZoomFactor).not.toHaveBeenCalled();
+  });
+
+  // In-page hash navigation (conversation switching) never fires
+  // `did-finish-load`, so Chromium restores the new URL's stale per-URL zoom
+  // level and the window appears to shrink until the next full load.
+  it('re-applies the saved zoom after an in-page navigation restores a stale level', () => {
+    const settings = { ...persisted, windowZoom: 1.5 };
+    mocks.readAppearanceSettings.mockReturnValue(settings);
+    let zoom = 1;
+    const setZoomFactor = vi.fn((value: number) => {
+      zoom = value;
+    });
+    const on = vi.fn();
+    const win = {
+      isDestroyed: () => false,
+      webContents: {
+        isDestroyed: () => false,
+        getZoomFactor: () => zoom,
+        setZoomFactor,
+        on,
+      },
+    };
+    markAppContentWindow(win as never);
+    installWindowZoomRestoration(win as never);
+
+    const navigate = on.mock.calls.find(([name]) => name === 'did-navigate-in-page')?.[1];
+    expect(navigate).toBeTypeOf('function');
+    navigate({}, 'file:///app/index.html#/cc-agent/next', true);
+    expect(zoom).toBe(1.5);
+
+    // A second navigation that already shows the saved level stays untouched.
+    navigate({}, 'file:///app/index.html#/cc-agent/next-2', true);
+    expect(setZoomFactor).toHaveBeenCalledOnce();
+  });
+
+  it('ignores in-page navigations from sub-frames and destroyed windows', () => {
+    const settings = { ...persisted, windowZoom: 1.5 };
+    mocks.readAppearanceSettings.mockReturnValue(settings);
+    const setZoomFactor = vi.fn();
+    const on = vi.fn();
+    const win = {
+      isDestroyed: vi.fn(() => false),
+      webContents: {
+        isDestroyed: vi.fn(() => false),
+        getZoomFactor: () => 1,
+        setZoomFactor,
+        on,
+      },
+    };
+    markAppContentWindow(win as never);
+    installWindowZoomRestoration(win as never);
+    const navigate = on.mock.calls.find(([name]) => name === 'did-navigate-in-page')?.[1];
+
+    navigate({}, 'file:///app/index.html#/iframe', false);
+    expect(setZoomFactor).not.toHaveBeenCalled();
+
+    navigate({}, 'file:///app/index.html#/cc-agent/next', true);
+    expect(setZoomFactor).toHaveBeenCalledOnce();
+
+    win.webContents.isDestroyed.mockReturnValue(true);
+    navigate({}, 'file:///app/index.html#/cc-agent/next-2', true);
+    expect(setZoomFactor).toHaveBeenCalledOnce();
   });
 
   it('同步启动读取只向已授权的外观 reader 返回持久快照', () => {
@@ -346,4 +454,34 @@ describe('appearance settings IPC authorization', () => {
       await expect(setHandler({}, { wallpaperId })).rejects.toThrow('wallpaperId is not supported');
     },
   );
+  const getSetHandler = () => mocks.ipcHandle.mock.calls.find(
+    ([channel]) => channel === 'appearance-settings:set-patch',
+  )?.[1] as (event: unknown, patch: unknown) => Promise<unknown>;
+
+  it('accepts only terminal font fields while preserving the existing write authorization', async () => {
+    const event = {};
+    await getSetHandler()(event, { terminalFamily: '  Menlo  ', terminalSize: 30 });
+    expect(mocks.assertTrustedAppRendererEvent).toHaveBeenCalledWith(event);
+    expect(mocks.writeAppearanceSettingsPatch).toHaveBeenCalledExactlyOnceWith({
+      terminalFamily: 'Menlo', terminalSize: 24,
+    });
+  });
+
+  it.each([
+    { terminalFamily: 1 }, { terminalFamily: 'x'.repeat(257) },
+    { terminalSize: '13' }, { terminalSize: NaN }, { terminalSize: Infinity },
+    { terminalTheme: 'dark' }, null, [],
+  ])('rejects malformed or unapproved terminal appearance patch %j before writing', async (patch) => {
+    await expect(getSetHandler()({}, patch)).rejects.toThrow('[INVALID_PARAMS]');
+    expect(mocks.writeAppearanceSettingsPatch).not.toHaveBeenCalled();
+  });
+
+  it('does not grant read-only windows or untrusted senders terminal settings write access', async () => {
+    mocks.assertTrustedAppRendererEvent.mockImplementation(() => {
+      throw new Error('untrusted app renderer');
+    });
+    await expect(getSetHandler()({}, { terminalFamily: 'Menlo', terminalSize: 16 }))
+      .rejects.toThrow('untrusted app renderer');
+    expect(mocks.writeAppearanceSettingsPatch).not.toHaveBeenCalled();
+  });
 });

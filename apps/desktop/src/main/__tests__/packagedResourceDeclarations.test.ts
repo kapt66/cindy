@@ -159,6 +159,10 @@ const NON_EXTRA_RESOURCE_ROOTS = new Map<string, string>([
     'app.asar.unpacked',
     '由 packagerConfig.asar / AutoUnpackNativesPlugin 解包产出(如 native/sqlite-vec),不是 extraResource 声明项。',
   ],
+  [
+    '..',
+    'app-icon.ts 在 macOS packaged 下用 resourcesPath/../.. 指向 .app bundle 本体交给 app.getFileIcon；它不是 resources 子项,也不应被 extraResources 声明。',
+  ],
 ]);
 
 /**

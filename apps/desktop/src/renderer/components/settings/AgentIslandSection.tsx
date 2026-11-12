@@ -1,3 +1,4 @@
+import { agentIslandSettings } from './AgentIslandSection.settings-search';
 /**
  * AgentIslandSection — macOS Agent Island settings.
  *
@@ -187,6 +188,10 @@ export function AgentIslandSection() {
   const {
     enabled,
     setEnabled,
+    subtleReminders,
+    subtleRemindersCustomized,
+    setSubtleReminders,
+    resetSubtleReminders,
     soundSettings,
     soundCustomized,
     mascotSkin,
@@ -204,6 +209,24 @@ export function AgentIslandSection() {
   const { t } = useTranslation();
   const [animationSteps, setAnimationSteps] = useState<MascotAnimationSteps>(DEFAULT_MASCOT_ANIMATION_STEPS);
   const [soundResetPending, setSoundResetPending] = useState(false);
+  const [subtleRemindersPending, setSubtleRemindersPending] = useState(false);
+  const handleSubtleRemindersChange = async (next: boolean) => {
+    setSubtleRemindersPending(true);
+    try {
+      if (!await setSubtleReminders(next)) toast.error(t('settings.agentIsland.subtleRemindersFailed'));
+    } finally {
+      setSubtleRemindersPending(false);
+    }
+  };
+  const handleResetSubtleReminders = async () => {
+    setSubtleRemindersPending(true);
+    try {
+      if (await resetSubtleReminders()) toast.success(t('settings.defaults.restored'));
+      else toast.error(t('settings.defaults.restoreFailed'));
+    } finally {
+      setSubtleRemindersPending(false);
+    }
+  };
   const displayOptionLabels = useMemo(() => {
     return new Map(displayOptions.map((option) => {
       const resolution = `${Math.round(option.bounds.width)} x ${Math.round(option.bounds.height)}`;
@@ -257,7 +280,7 @@ export function AgentIslandSection() {
           {t('settings.agentIsland.title')}
         </h2>
         <SettingsCard>
-          <p className="text-13 leading-[1.45] text-[var(--settings-section-sublabel)] opacity-75">
+          <p className="text-13 leading-[1.45] text-[var(--text-secondary)]">
             {t('settings.agentIsland.unsupported')}
           </p>
         </SettingsCard>
@@ -273,15 +296,15 @@ export function AgentIslandSection() {
 
       <SettingsCard className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 flex-col gap-1">
-          <p id="settings-search-settings-agentIsland-enableLabel" className="text-13 font-medium text-[var(--settings-section-sublabel)]">
-            {t('settings.agentIsland.enableLabel')}
+          <p id={agentIslandSettings.enableLabel.targetId} className="text-13 font-medium text-[var(--settings-section-sublabel)]">
+            {t(agentIslandSettings.enableLabel.titleKey)}
           </p>
-          <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
-            {t('settings.agentIsland.enableHint')}
+          <p className="text-12 leading-[1.4] text-[var(--text-secondary)]">
+            {t(agentIslandSettings.enableLabel.descriptionKey)}
           </p>
         </div>
 
-        <Switch
+        <Switch data-setting-id={agentIslandSettings.enableLabel.id}
           checked={enabled}
           onCheckedChange={setEnabled}
           aria-label={t('settings.agentIsland.enableAria')}
@@ -290,17 +313,41 @@ export function AgentIslandSection() {
 
       {enabled && (
         <>
+          <SettingsCard className="flex items-center justify-between gap-3">
+            <div className="flex min-w-0 flex-col gap-1">
+              <p id={agentIslandSettings.subtleRemindersLabel.targetId} className="text-13 font-medium text-[var(--settings-section-sublabel)]">
+                {t(agentIslandSettings.subtleRemindersLabel.titleKey)}
+              </p>
+              <p className="text-12 leading-[1.4] text-[var(--text-secondary)]">
+                {t(agentIslandSettings.subtleRemindersLabel.descriptionKey)}
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <DefaultOverrideControls
+                isCustomized={subtleRemindersCustomized}
+                disabled={subtleRemindersPending}
+                onReset={() => void handleResetSubtleReminders()}
+              />
+              <Switch
+                data-setting-id={agentIslandSettings.subtleRemindersLabel.id}
+                checked={subtleReminders}
+                disabled={subtleRemindersPending}
+                onCheckedChange={handleSubtleRemindersChange}
+                aria-label={t('settings.agentIsland.subtleRemindersLabel')}
+              />
+            </div>
+          </SettingsCard>
           <SettingsCard className="flex flex-col gap-3">
             <div className="flex min-w-0 flex-col gap-1">
-              <p id="settings-search-settings-agentIsland-displayLabel" className="text-13 font-medium text-[var(--settings-section-sublabel)]">
-                {t('settings.agentIsland.displayLabel')}
+              <p id={agentIslandSettings.displayLabel.targetId} className="text-13 font-medium text-[var(--settings-section-sublabel)]">
+                {t(agentIslandSettings.displayLabel.titleKey)}
               </p>
-              <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
-                {t('settings.agentIsland.displayHint')}
+              <p className="text-12 leading-[1.4] text-[var(--text-secondary)]">
+                {t(agentIslandSettings.displayLabel.descriptionKey)}
               </p>
             </div>
             <div className="relative min-w-0">
-              <select
+              <select data-setting-id={agentIslandSettings.displayLabel.id}
                 value={displayTargetToOptionValue(displayTarget)}
                 onChange={(event) => setDisplayTarget(displayTargetFromOptionValue(event.target.value))}
                 className={cn(
@@ -329,7 +376,7 @@ export function AgentIslandSection() {
               </select>
               <ChevronDown
                 size={15}
-                className="pointer-events-none absolute right-3.5 top-1/2 -translate-y-1/2 text-[var(--settings-input-text)] opacity-75"
+                className="pointer-events-none absolute right-3.5 top-1/2 -translate-y-1/2 text-[var(--text-secondary-mid)]"
                 aria-hidden="true"
               />
             </div>
@@ -337,11 +384,11 @@ export function AgentIslandSection() {
 
           <SettingsCard className="flex flex-col gap-4">
             <div className="flex min-w-0 flex-col gap-1">
-              <p id="settings-search-settings-agentIsland-skinLabel" className="text-13 font-medium text-[var(--settings-section-sublabel)]">
-                {t('settings.agentIsland.skinLabel')}
+              <p id={agentIslandSettings.skinLabel.targetId} className="text-13 font-medium text-[var(--settings-section-sublabel)]">
+                {t(agentIslandSettings.skinLabel.titleKey)}
               </p>
-              <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
-                {t('settings.agentIsland.skinHint')}
+              <p className="text-12 leading-[1.4] text-[var(--text-secondary)]">
+                {t(agentIslandSettings.skinLabel.descriptionKey)}
               </p>
             </div>
 
@@ -362,11 +409,11 @@ export function AgentIslandSection() {
           <SettingsCard className="flex flex-col gap-3">
             <div className="flex items-center justify-between gap-3">
               <div className="flex min-w-0 flex-col gap-1">
-                <p id="settings-search-settings-agentIsland-soundLabel" className="text-13 font-medium text-[var(--settings-section-sublabel)]">
-                  {t('settings.agentIsland.soundLabel')}
+                <p id={agentIslandSettings.soundLabel.targetId} className="text-13 font-medium text-[var(--settings-section-sublabel)]">
+                  {t(agentIslandSettings.soundLabel.titleKey)}
                 </p>
-                <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
-                  {t('settings.agentIsland.soundHint')}
+                <p className="text-12 leading-[1.4] text-[var(--text-secondary)]">
+                  {t(agentIslandSettings.soundLabel.descriptionKey)}
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
@@ -375,7 +422,7 @@ export function AgentIslandSection() {
                   disabled={soundResetPending}
                   onReset={() => void handleResetSoundSettings()}
                 />
-                <Switch
+                <Switch data-setting-id={agentIslandSettings.soundLabel.id}
                   checked={soundSettings.enabled}
                   disabled={soundResetPending}
                   onCheckedChange={setSoundEnabled}
@@ -454,6 +501,7 @@ function AgentIslandSkinRow({
   return (
     <div
       role="button"
+      data-setting-id={agentIslandSettings.skinLabel.id}
       tabIndex={0}
       onClick={() => onSelect(skin)}
       onKeyDown={handleRowKeyDown}
@@ -466,7 +514,7 @@ function AgentIslandSkinRow({
       )}
       aria-pressed={selected}
     >
-      <button
+      <button data-settings-search-action="Preview the next mascot animation"
         type="button"
         onClick={handlePreviewClick}
         className={cn(
@@ -482,7 +530,7 @@ function AgentIslandSkinRow({
         <p className="truncate text-13 font-medium text-[var(--settings-section-sublabel)]">
           {skinName}
         </p>
-        <p className="mt-1 line-clamp-2 text-12 leading-[1.35] text-[var(--settings-section-sublabel)] opacity-65">
+        <p className="mt-1 line-clamp-2 text-12 leading-[1.35] text-[var(--text-secondary)]">
           {t(`settings.agentIsland.skins.${skin}.description`)}
         </p>
       </div>
@@ -716,13 +764,13 @@ function AgentIslandSoundRow({
   return (
     <div className="grid grid-cols-[minmax(88px,1fr)_minmax(150px,220px)_32px] items-center gap-2">
       <label
-        className="truncate text-12 text-[var(--settings-section-sublabel)] opacity-80"
+        className="truncate text-12 text-[var(--text-secondary)]"
         htmlFor={`agent-island-sound-${event}`}
       >
         {t(`settings.agentIsland.soundEvents.${event}`)}
       </label>
       <div className="relative min-w-0">
-        <select
+        <select data-setting-id={agentIslandSettings.soundLabel.id}
           id={`agent-island-sound-${event}`}
           value={selectValue}
           onChange={async (e) => {
@@ -756,11 +804,11 @@ function AgentIslandSoundRow({
         </select>
         <ChevronDown
           size={14}
-          className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--settings-input-text)] opacity-75"
+          className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary-mid)]"
           aria-hidden="true"
         />
       </div>
-      <button
+      <button data-settings-search-action="Preview the selected notification sound"
         type="button"
         className={cn(
           'flex h-8 w-8 items-center justify-center rounded-full border transition-colors',

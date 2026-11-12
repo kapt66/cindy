@@ -16,6 +16,10 @@ vi.mock('../../shared/wallpaper-video-manifest.json', () => ({
       sha256: 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
       image: { sha256: 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad' },
     },
+    still: {
+      delivery: 'cdn',
+      image: { sha256: '88d4266fd4e6338d13b845fcf289579d209c897823b9217da3e161936f031589' },
+    },
   },
 }));
 vi.mock('../localDb/client/current.js', () => ({
@@ -34,6 +38,8 @@ import {
   importCustomWallpaper,
   removeCustomWallpaper,
   prepareWallpaperImage,
+  setCustomWallpaperBytes,
+  revokePluginWallpaper,
 } from '../custom-wallpaper';
 import {
   customWallpaperStore,
@@ -74,6 +80,22 @@ async function selectImage(color = 'blue') {
 const parent = {} as never;
 
 describe('client-owned custom wallpaper lifecycle', () => {
+  // C11: a plugin video owns both media references; replacing it manually
+  // clears plugin provenance, so disabling the plugin cannot remove user media.
+  it('keeps a plugin video fallback and protects a subsequent native selection', async () => {
+    const png = await selectImage();
+    const video = Buffer.from('000000186674797069736f6d0000000069736f6d6d703432', 'hex');
+    const resource = await setCustomWallpaperBytes(video, { fallback: png,
+      pluginSource: { instanceId: 'example', key: 'a'.repeat(64) }, assertCurrent: () => {} });
+    expect(readReferencedClientWallpaperUrls()).toEqual(expect.arrayContaining([resource.url, resource.fallbackUrl]));
+    await expect(readClientWallpaperFile(resource.fallbackUrl!)).resolves.toBeDefined();
+    await selectImage('red');
+    await importCustomWallpaper(parent);
+    const manualUrl = readCustomWallpaperUrl();
+    expect(customWallpaperStore.read().fallbackUrl).toBeUndefined();
+    expect(await revokePluginWallpaper(() => false)).toBe(false);
+    expect(readCustomWallpaperUrl()).toBe(manualUrl);
+  });
   it('rejects a 20–100 MB image after only the header, even with an MP4 filename', async () => {
     const png = await selectImage();
     const file = path.join(h.dir, 'oversized.mp4');
@@ -154,21 +176,25 @@ describe('client-owned custom wallpaper lifecycle', () => {
     await removeCustomWallpaper();
     expect((await listBlobFiles('client-wallpaper')).entries).toHaveLength(0);
   });
-  it.each(['video/mp4', 'image/webp'])(
-    'retains official CDN %s across custom import and removal',
-    async (mimeType) => {
-      const official = await writeBlob({
-        buffer: Buffer.from('abc'),
-        mimeType,
-        scope: 'client-wallpaper',
-      });
-      await selectImage();
-      await importCustomWallpaper(parent);
-      await removeCustomWallpaper();
-      expect((await readClientWallpaperFile(official.url)).buffer).toEqual(Buffer.from('abc'));
-      expect((await listBlobFiles('client-wallpaper')).entries).toHaveLength(1);
-    },
-  );
+  // User request 2026-10-17: static CDN entries have no video hash. Exercise
+  // custom import/removal with one such cached image to prevent data loss;
+  // previous fixtures only covered two-kind scenes. Unit tier.
+  it.each([
+    ['video/mp4', 'abc'],
+    ['image/webp', 'abc'],
+    ['image/webp', 'abcd'],
+  ])('retains official CDN %s across custom import and removal', async (mimeType, content) => {
+    const official = await writeBlob({
+      buffer: Buffer.from(content),
+      mimeType,
+      scope: 'client-wallpaper',
+    });
+    await selectImage();
+    await importCustomWallpaper(parent);
+    await removeCustomWallpaper();
+    expect((await readClientWallpaperFile(official.url)).buffer).toEqual(Buffer.from(content));
+    expect((await listBlobFiles('client-wallpaper')).entries).toHaveLength(1);
+  });
 
   it('rejects oversized or fake MP4 files without replacing the current image', async () => {
     await selectImage();

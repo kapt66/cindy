@@ -42,20 +42,25 @@ describe('remote file preview pager wiring', () => {
 
   it('exposes source readiness only on the visible loaded text page', () => {
     const textPage = source.slice(source.indexOf('function TextPreviewPage('), source.indexOf('function ImagePreviewPage('));
-    const sourceList = textPage.match(/<FlatList\s[\s\S]*?data=\{state.lines\}[\s\S]*?testID=\{visible \? 'filePreview.sourceReady' : undefined\}/);
+    const sourceList = textPage.match(/<TextDocumentPreview\s[\s\S]*?text=\{state.lines.join\("\\n"\)\}[\s\S]*?testID=\{visible \? 'filePreview.sourceReady' : undefined\}/);
     expect(sourceList).not.toBeNull();
-    // Loading/error pages and prefetched neighbours must not satisfy the wait.
-    expect(textPage.indexOf(sourceList![0])).toBeGreaterThan(textPage.indexOf("if (state.status === 'loading')"));
-    expect(textPage.indexOf(sourceList![0])).toBeGreaterThan(textPage.indexOf("if (state.status === 'unavailable')"));
+    // Guard protocol: Maestro file_browser.yaml / visual_files.yaml wait for sourceReady.
+    // Loading/error pages and prefetched neighbours must not satisfy that wait.
+    // Require both branches to exist: comparing a list offset with -1 silently passed.
+    const loadingBranch = textPage.indexOf("state.status === 'loading' ? (");
+    const unavailableBranch = textPage.indexOf("state.status === 'unavailable' ? (");
+    expect(loadingBranch).toBeGreaterThanOrEqual(0);
+    expect(unavailableBranch).toBeGreaterThan(loadingBranch);
+    expect(textPage.indexOf(sourceList![0])).toBeGreaterThan(unavailableBranch);
   });
 
   it('reserves horizontal gestures for the PDF WebView', () => {
-    expect(source).toContain("current.previewKind !== 'pdf'");
+    expect(source).toContain("current.previewKind === 'pdf' && PDF_PREVIEWS_INLINE");
   });
 
   it('HTML 渲染态同样让出外层横滑,让内层 WebView 能横向平移', () => {
     // 固定宽度布局 / 放大后需要横向平移,pager 抢走手势就永远看不到超出视口的内容。
-    expect(source).toContain("scrollEnabled={current.previewKind !== 'pdf' && htmlPanPageKey !== current.key && markdownPagerPageKey !== current.key}");
+    expect(source).toMatch(/scrollEnabled=\{[^}]*!\(current.previewKind === 'pdf' && PDF_PREVIEWS_INLINE\) && htmlPanPageKey !== current.key && markdownPagerPageKey !== current.key\}/);
     const markdownReader = readSource('src/session/MarkdownFileReader.tsx');
     expect(markdownReader).toContain('injectedJavaScript={onPageSwipe ? MARKDOWN_FILE_PAGER_SCRIPT : undefined}');
     expect(markdownReader).toContain('onMessage={onPageSwipe ? handleMessage : undefined}');
@@ -74,7 +79,13 @@ describe('remote file preview pager wiring', () => {
     expect(source).not.toContain('keyExtractor={(item) => `${item.key}:${pageIndex}');
     expect(source).not.toContain('<WebView key=');
     expect(source).toContain('const pdfSource = useMemo(() => (url ? { uri: url } : null), [url]);');
-    expect(source).toContain('<WebView source={pdfSource}');
+    expect(source).toContain('<PdfDocumentPreview uri={pdfSource.uri} />');
+    const reader = readSource('src/session/PdfDocumentPreview.tsx');
+    expect(reader).toContain('key={`${uri}:${retry}`}');
+    expect(reader).toContain('source={{ html }}');
+    const document = reader.slice(reader.indexOf('const html = useMemo('), reader.indexOf('const command ='));
+    expect(document).toContain('[base64, colors.surface, colors.textPrimary]');
+    expect(document).not.toMatch(/\b(?:status|zoom|page)\b/);
   });
 
   it('retries a failed PDF after device recovery without remounting a loaded WebView', () => {
@@ -232,12 +243,15 @@ describe('HTML 生成物的渲染态接线', () => {
     expect(source).toContain('testID="filePreview.htmlError"');
     expect(source).toContain("t('files.preview.htmlSnapshotTooLarge')");
     expect(source).toContain('onPress: htmlSnapshot.retry');
-    expect(source).toContain('!htmlSnapshot.preview || !htmlSnapshot.foreground');
+    // The viewport now mounts during preparation; executable content remains gated
+    // inside the reader until a current, guarded snapshot exists.
+    expect(readSource('src/session/HtmlFileReader.tsx')).toContain('{preview ? <WebView');
+    expect(readSource('src/session/useHtmlSnapshot.ts')).toContain('const current = enabled && foreground');
   });
 
   it('downloads stop on source mode, invisibility, background, and source identity changes', () => {
     const hook = readSource('src/session/useHtmlSnapshot.ts');
-    expect(hook).toContain('if (!enabled || !foreground) return');
+    expect(hook).toContain('if (!enabled || !foreground) {');
     expect(hook).toContain('controller.abort()');
     expect(hook).toContain('preview?.close()');
     expect(hook).toContain('[absPath, enabled, foreground, prepare, epoch]');

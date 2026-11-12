@@ -1,7 +1,10 @@
 # Cindy 客户端仓：Agent 工作入口
 
-> 本文件是 Codex 与 Claude Code 共用的项目指令正本。`CLAUDE.md` 只保留
-> `@AGENTS.md`，不要在两处重复维护规则。
+Cindy 是面向大众用户的开源 AI 助手，连接模型、工具与设备，帮助用户在自己的文件和
+应用中完成工作。
+
+> 本文件是 Codex 与 Claude Code 共用的项目指令正本。`CLAUDE.md` 只保留 `@AGENTS.md`，
+> 不要在两处重复维护规则。
 
 ## 首要背景：Meka 私有产品线
 
@@ -24,64 +27,80 @@
   `docs/migrations/xdmaker-meka-to-cindy.md`；该文档是迁移范围、决策、状态和风险的事实
   总账。
 
-## 仓库边界
+## 仓库边界与安全底线
 
 - 本仓库只负责 desktop、mobile 及其共享 packages。
 - 服务端位于独立仓库；除非用户明确要求，不要跨仓修改服务端。
-- 开始工作前先检查工作区状态和相关源码，不覆盖、不回退用户已有改动。
+- 开始工作前先检查工作区状态，不覆盖、不回退用户已有改动。
+- 先读实际代码和测试，再决定实现；不要只依赖文档猜测现状。
+- 用户凭证、令牌、授权文件和密钥不得写入仓库或任何可能被 Git 跟踪的路径。
+- 未经用户明确授权，不执行删除数据、覆盖改动、推送、发布、合并等外部或难以
+  恢复的操作。
+- 发现任务会触及系统提示词、更新器、协议兼容、数据库历史 migration、权限边界
+  或用户数据安全时，必须先停下来核对专项规则，并在动手前向用户说明风险或
+  请求确认。
 
-## 规则组织
+## 产品方向
 
-- 开发与工程规则统一放在 `docs/dev-rules/`。
-- 产品行为与体验规则统一放在 `docs/product-rules/`。
-- UI 视觉、交互与内容设计规则统一放在 `docs/design-rules/`，权威视觉规范正文为
-  `docs/design-rules/DESIGN.md`（根目录 `DESIGN.md` 仅为跳转入口），目录索引为
-  `docs/design-rules/cindy-design-system.md`。
-- 根 `AGENTS.md` 只保留所有任务都适用的规则、风险入口和文档索引。
-- 目录或模块专属规则优先放到对应目录的嵌套 `AGENTS.md`；需要跨目录复用的
-  专题说明放在 `docs/`，并由本文件写明触发条件。
+Cindy 面向大众用户，让人以简单高效的方式用 AI 完成工作。我们追求极致的体验：
+用户面前的每一分简单，都是产品在背后承担的复杂和匠心。产品、UI 与架构的取舍，以
+[产品原则](docs/product-rules/core-product-principles.md)、[设计规范](docs/design-rules/DESIGN.md)
+与[架构原则](docs/dev-rules/architecture-invariants.md)为准。
+
+## 按模块进入
+
+开发、启动、调试或验证对应模块前，先读下表入口，再按改动触发条件读专题；根级规则始终适用。
+跨模块行为先从[仓库地图的行为导航](docs/dev-rules/repo-map.md#按用户行为定位)查找公共入口与测试，
+不要只修改最先找到的页面或渠道。
+
+| 修改范围 | 模块规则入口 | 开发与架构正本 |
+| --- | --- | --- |
+| Desktop：main、renderer、preload、数据库、个人 IM / 官方 hook | [apps/desktop/AGENTS.md](apps/desktop/AGENTS.md) | [Desktop 开发](docs/dev-rules/desktop-development.md) |
+| Mobile：Expo 页面、远程调用、原生配置与模块；在手机上查看效果 | [apps/mobile/AGENTS.md](apps/mobile/AGENTS.md) | [Mobile 开发与冷更边界](docs/dev-rules/mobile-development.md) |
+| maker-core：Agent 编排、prompt、工具、translator、用量 | [packages/maker-core/AGENTS.md](packages/maker-core/AGENTS.md) | [Agent 行为](docs/dev-rules/maker-core-and-agent-behavior.md) |
+
+模块内的触发条件写在嵌套 `AGENTS.md`，正文写在 `docs/dev-rules/` 专题，本文件只保留
+仓库级强制规则、风险入口与索引。
 
 ## 当前规则索引
 
+修改前按下列场景读取相关正文；涉及多个主题时同时适用。产品、设计、工程的完整导航
+分别见 [产品规则](docs/product-rules/README.md)、[设计规则](docs/design-rules/README.md)、
+[开发规则](docs/dev-rules/README.md)。
+
 - 首次接触本仓、需要定位功能代码位置或判断新代码归属模块时，先读仓库地图
   `docs/dev-rules/repo-map.md`。
+- 只为检查界面而需要启动 Desktop 或 Mobile 模拟器、且不需要真实账号时，用 `--mock`
+  免登录模拟数据启动；新增或修改模拟任务、`--mock` 行为前先读 `docs/dev-rules/ui-mock-data.md`。
 - 首次安装、修复依赖或准备新 worktree 时，必须先读
   `docs/dev-rules/environment-setup.md`。
 - 首次理解模型配置架构，新增模型／供应商，更新模型窗口／价格／推理档位／默认值／本地推荐，
   或排查目录下发与显示错误前，必须先读 `docs/dev-rules/model-catalog-maintenance.md`：
   先看结构、覆盖顺序与修改位置，再按其中导航读取专题规则和实际代码；Server 正本与客户端
   离线副本需协调更新，客户端已支持、Server 已实现和生产已部署必须分别核验。
-- 启动、调试或验证 Desktop 时，必须先读 `docs/dev-rules/desktop-development.md`。
-- 修改 Desktop Renderer、preload、BrowserWindow、WebView、IPC、CSP、导航或 Electron
-  特权能力前，必须先读 `docs/dev-rules/electron-security-and-process-boundaries.md`。
-- 新增或修改 Desktop 独立窗口、辅助窗口或弹出型 `BrowserWindow` 前，必须遵守
-  `docs/dev-rules/electron-security-and-process-boundaries.md` 的「独立辅助窗口统一生命周期
-  基线」：复用既有控制器／基础设施，不得另造平行的预热、就绪握手、隐藏复用与崩溃恢复
-  状态机。
 - 修改凭证或授权信息处理、文件落盘位置、用户持久数据、临时文件或测试目录前，必须
   先读 `docs/dev-rules/credentials-and-local-storage.md`。
 - 新增或修改媒体生成、导入、缓存、附件、持久化、协议解析或回收逻辑前，必须先读
   `docs/dev-rules/media-storage-and-protocols.md`。
-- 修改 Desktop 数据库 schema、migration、companion script 或运行期数据库访问前，必须
-  先读 `docs/dev-rules/database-and-migrations.md`。
-- 开发、调试或验证 Mobile 时，必须先读 `docs/dev-rules/mobile-development.md`。
-- 修改 `apps/mobile` 的原生配置、原生依赖、config plugin 或原生模块（`app.json`、
-  `app.config.js`、`eas.json`、`apps/mobile/package.json`、`plugins/`、`modules/` 等会
-  进入 runtime fingerprint 的输入）前，必须先读 `docs/dev-rules/mobile-development.md`
-  的「冷更边界」：**除非必要，不得提交会改变指纹的改动**；会触发冷更的 PR 与技术框架
-  变动同级，必须由仓库指定的把关人针对冷更明确确认后才能合并——不看改动大小，也不看谁
-  提的，提交者身份不构成例外。
+- 新增或修改邮件卡（阅读、编辑、草稿同步、发送、头像）或邮箱插件与 Cindy 之间的分工前，
+  必须先读 `docs/product-rules/mail-card.md`。
 - 新增或调整产品功能、判断能力应进入 Core / Skill / 插件、设计人机交互或多端体验
   前，必须先读 `docs/product-rules/core-product-principles.md`。
 - 新增或修改 Agent 管理用户自己的任务、定时任务、项目、伙伴的工具（`cindy_helper` /
   `cindy_scheduler` 等），或调整工具索引、工具的作用范围说明前，必须先读
   `docs/product-rules/agent-user-parity.md`：用户本人能做的（含跨电脑）Agent 也要能做并能在
   索引第一步发现；改完把现状台账写回去。
+- 修改「迁移助理」（新电脑从其他电脑迁移）的入口、迁移范围、`maker:setup-snapshot` /
+  `maker:setup-transfer` 协议、计划与应用规则或一次性配置清单，或新增一类可迁移的设置前，必须先读
+  `docs/product-rules/new-device-setup-migration.md`：密钥只在原电脑的人允许后一次性加密复制，
+  OAuth 登录与私钥不复制，写入只走本机原有安装器与设置存储，不覆盖本机已改过的设置。
 - 修改共享任务、跨账号访客邀请、共享上下文或共享成员权限前，必须先读
   `docs/product-rules/shared-task-mode.md`；复用 device-link，同账号远控行为不变。
 - 新增或修改 Meka 技能入口、标准技能包兼容、MCPRouter 技能分发、安装来源记录或
   Meka 项目角色与市场技能的关系前，必须先读
-  `docs/product-rules/meka-skills.md`。
+  `docs/product-rules/meka-skills.md`。**Meka 私有产品线**的专属产品规则还包括
+  `docs/product-rules/meka-capability-layers.md`（能力分层）与
+  `docs/product-rules/mcpr-remote-project-sessions.md`（MCPRouter 远程项目会话）。
 - 新增或修改 Meka 项目的元数据发现清单（`AGENTS.md` / `CLAUDE.md` / `SKILL.md` /
   `rule` / `.mcp.json`，含面板里的「发现元数据」与 `enabled` 勾选），或处理别名文件、
   重复条目、条目描述与 `notes` 前，必须先读
@@ -91,7 +110,7 @@
 - 修改 IM 工具授权、来源消息、多端确认或暂停期间的确认回执，或新增 IM 渠道前，
   必须先读 `docs/product-rules/im-permission-confirmation.md`；Desktop、Mobile 与共享
   packages 共用同一最终决定，渠道收到回答不代表执行已恢复。
-- 新增或修改代输入（`request_input_handoff`、宿主步骤读取与执行、代输入卡、终端 askpass、
+- 新增或修改代输入（`ask_owner` 的 fill／scan、宿主步骤读取与执行、代输入卡、截图扫码、终端 askpass、
   单窗口实时画面、设备码识别，或任何经手主人填写值的路径）前，必须先读
   `docs/product-rules/input-handoff.md`：主人填写的值只交给宿主执行，不进模型、记录、日志、IM 与推送。
 - 修改账号用量上限的判定、重置时刻来源，或普通任务／目标模式撞上限额后的等待与自动继续前，
@@ -104,6 +123,11 @@
   不得静默消失或让存量用户的入口变成死链。
 - 修改伙伴（Bot）的身份、Session 生命周期、模型 fallback、工作目录、Skill / MCP 装配、
   委派协作或伙伴设置前，必须先读 `docs/product-rules/cindy-bots-runtime.md`。
+- 新增或修改只对伙伴生效的工具、提示词规则、回执或例行任务等专属机制前，先读
+  `docs/product-rules/teammate-capability-ledger.md`：伙伴的工作方式属于伙伴自己的规则，先判断
+  普通任务或项目能力能否做到；做不到时优先补成通用能力。这是引导，不是审批。
+- 修改伙伴调用任务写工具的身份判定（主人代办 / 受托 / 自主）、自主轮可做的范围、转达主人原话的
+  核实凭证，或伙伴提示词里对应的说法前，必须先读 `docs/product-rules/teammate-authority.md`。
 - 修改伙伴的跨电脑身份、主力电脑（登记、接管、交出、降级）、云端对话层与资料上传，或
   `apps/desktop/src/main/companion-cloud/`、Chat Server 的伙伴 actor／1:1 房间合同前，必须先读
   `docs/product-rules/cloud-companions.md`。
@@ -124,12 +148,8 @@
   `docs/product-rules/provider-groups.md`：Agent 始终在被选中的组内电脑上运行，组所在电脑
   只选电脑与转发，并负责按使用方隔离。
 - 新增或修改任何界面、组件、布局、样式、动效或 UI 文案前，必须先读权威设计规范
-  `docs/design-rules/DESIGN.md`；设计文档索引见
-  `docs/design-rules/cindy-design-system.md`。
-- 新增或修改 Mobile（`apps/mobile`）界面上的文字前，必须先查
-  `apps/mobile/docs/mobile-design-guide.md` §3「文字规范速查」：先定角色，再整行照抄字号、
-  行高、字重、字色；五档中性字色、浅色字不配粗字重、11 档字号、必须配行高四条由
-  `typographyTokenDiscipline.test.ts` 守护，角色是否选对靠 review。
+  `docs/design-rules/DESIGN.md` 开头的「阅读路由」，再按路由读相关章节与专题，不需要
+  通读全文；设计文档索引见 `docs/design-rules/cindy-design-system.md`。
 - 做 UI 圆角分类或点击目标尺寸审查时，必须同时读 `docs/design-rules/DESIGN.md §5` 与
   `docs/design-rules/design-governance.md §13`；普通 UI 改动同样适用，不限于设计系统迁移 PR。
 - 新增或修改设计 Token、主题系统、标准 UI 组件（primitive / pattern）、视觉类门禁脚本，
@@ -140,13 +160,10 @@
   的术语照用，不自造译法；表里没有或拿不准的，在 `i18n/glossary.json` 加
   `status: "proposed"` 条目再讨论。门禁为 `pnpm check:i18n-glossary`，规则见
   `docs/dev-rules/engineering-conventions.md` §5.1。
-- 修改个人 IM 渠道（`apps/desktop/src/main/im/**`）或官方 hook（`hook-control/**`）的
-  找/建任务、命令、排队与插话、输入拼装、事件观察、交互、收尾或停止逻辑前，必须先读
-  `docs/dev-rules/im-turn-flow.md`（入口账本、状态清单、不变量与迁移批次）。
 - 新增或修改**任一 Telegram bot 的用户可见行为**（命令、消息呈现、收口策略、群行为、
   权限口径、附件与表情）前，必须先读能力台账 `docs/product-rules/telegram-bot-parity.md`：
-  两个 bot 是两套架构，差异可以有但必须登记在表里；表里标「有意不同」的行不得直接
-  统一，动它要先推翻对应裁决。
+  两个 bot 是两套架构，差异可以有但必须登记在表里；表里标「有意不同」的行**不要去
+  "统一"**，动它要先推翻对应裁决。改完记得把对应行写回去。
 - 文案里出现**任务 / 对话 / 消息**这几个词时，必须先读
   `docs/product-rules/task-and-conversation-naming.md`：`session` 面向用户叫「任务」，
   「对话」只用于任务内的交流过程与内容，单条往来叫「消息」；**「任务」与 `task` 同句出现
@@ -158,8 +175,9 @@
   为准。
 - 修改 Orca 多 Agent 协同时，必须先读
   `docs/dev-rules/orca-team-architecture.md`。
-- 修改 `packages/maker-core` 的 Agent 编排、prompt 组装、tool／MCP 暴露、translator、
-  model 映射、usage 计量，或任何进入模型 system 段的提示词前，必须先读
+- 新增或修改 Agent 使用多台机器的能力（`list_machines`、机器状态、按机器执行），或要为 Agent 的资源使用加上限前，必须先读
+  `docs/product-rules/cindy-machines.md`：**宿主暴露情况，不替大脑做资源决策**，不写死「最多几个」这类决策上限；结果不完整必须明说。
+- 修改任何进入模型 system 段的提示词前（无论文件位于哪个模块），必须先读
   `docs/dev-rules/maker-core-and-agent-behavior.md`。
 - 修改 Meka 会话注入（`apps/desktop/src/main/meka-injection/**`：prompt 段注入、
   `MEKA_PROMPT_SEGMENT_ORDER`、`MEKA_AGENT_CAPABILITIES` 能力矩阵、角色级 MCP／技能落地、
@@ -184,36 +202,66 @@
   漏迁移 = P0，规则正文见该文件第 5 节。**改到插件基座**（运行时／沙箱、批准状态记录、
   能力 slot、打包与内容判据、manifest 契约、装入与权限确认 UI、已装列表投影）的 PR 一律
   走白名单确认门，需放行人明确 Approve 才能合并，不看 diff 大小、不因「是 bugfix／纯技术
-  改动」豁免。
+  改动」豁免。**Meka 独立插件渠道**的版本兼容语义（含 `x-cindy-version` 与渠道白名单）
+  另见 `docs/dev-rules/plugin-distribution-and-version-compat.md`。
 - 新增或修改插件的 `mcpr` 卡槽、MCPRouter route 白名单、Host 鉴权注入或跨仓能力调用时，
   还必须先读 `docs/dev-rules/mcpr-plugin-capability.md`，并同步核对 MCPRouter 仓库的
   `docs/mcpr-plugin-capability-gateway.md` 与 `packages/server/src/capabilities/` 契约。
 - 修改插件发现链（花名册注入、`ghost_list` / `ghost_info` / `ghost_call`）、插件运行期
   可见性门禁或 FORGE_GUIDE 作者契约前，必须先读 `docs/ghost-progressive-discovery.md`。
-- 新增或修改插件持久 Library（library 槽、binding / 目录选择、随时迁移、回收站删除、
-  SQLite 语句门或 `/library/` 面板投影）前，必须先读
+- 新增或修改 Browser Use（专用浏览器、侧边栏、「我的浏览器」）的工具层、配方目录、外链处理
+  或任一浏览器后端前，必须先读 `docs/dev-rules/browser-use.md`：优化做在共享层让三端都受益，
+  能力不设限、风险交给审批。
+- 新增或修改插件持久 Library（library 槽、binding / 目录选择、随时迁移、
+  回收站删除、SQLite 语句门或 `/library/` 面板投影）前，必须先读
   `docs/dev-rules/plugin-library-storage.md`。
 - 修改客户端自动更新链路（`cindy-updater` 或 Electron 侧更新服务）前，必须先读
-  `docs/dev-rules/cindy-updater.md`。
-- 修改 Claude/Codex runtime 版本 pin、RustFS 运行时资产发布或 MCPRouter Linux runtime
+  `docs/dev-rules/cindy-updater.md`；**Cindy Meka 使用独立的 `cindy-meka` 更新渠道**，
+  不得引用或复用上游 Cindy 的渠道、CDN 前缀与应用身份。
+- 新增或修改 Claude/Codex runtime 版本 pin、RustFS 运行时资产发布或 MCPRouter Linux runtime
   交付前，必须先读 `docs/dev-rules/agent-runtime-release.md`。
 - 新增或修改 Desktop 日志、IPC 错误处理、main 侧业务逻辑与测试、跨平台（macOS／
   Windows）行为，或任何 UI 文案的 i18n 落地前，必须先读
   `docs/dev-rules/engineering-conventions.md`；在 `meka/main` 上新增命名（目标名、
   符号名、文件名、资源名）前，必须先读该文件 §8。
+- 新增或改写任一测试前，必须先读
+  `docs/dev-rules/engineering-conventions.md` §3.2「新增测试的价值门槛」。测试必须通过
+  真实生产入口验证可观察结果，并说明 Bug／规则依据、现有覆盖缺口、最小失败输入和 tier；
+  没有新的结果、错误、权限、持久化、协议或时序差异时停止增加用例。纯跨文件安全、
+  权限、协议或设计契约才进入 guard；不得为了覆盖率、测试数量或复制常量／JSX／CSS／
+  源码字面量而新增测试。同时遵守该节「性能预算」：新文件单独运行本机 5 秒内并在 PR
+  填实测耗时；被测模块只加载一次，不在 `beforeEach`／逐用例 helper 里 `vi.resetModules()`；
+  不做 ≥100ms 真实等待；同一模块的用例并入已有文件。`pnpm check:test-hygiene` 在 CI
+  阻断违规，基线只减不增，不得手改基线放行。**保留 Meka 口径**：本仓的唯一自动化门禁是
+  `client-ci` 的 `meka/main` push 触发，`check:test-hygiene` 因此必须在推送前本地跑过
+  （见下文「提交前测试门禁」），不能指望 PR 阶段兜底。
 - 修改客户端日志采集／脱敏／上报链路（`apps/desktop/src/main/log-upload/**`）、`logger.ts`
   的 main 日志行格式、崩溃判定或待补传标记前，必须先读
-  `docs/dev-rules/log-upload-and-redaction.md`。其中记录边界、deny-by-default 白名单、标记
-  代次与原子清除是隐私不变量；脱敏规则只增不减，放宽必须重新评审。
+  `docs/dev-rules/log-upload-and-redaction.md`。其中三条是**不变量**：**记录边界**（写侧
+  续行转义与读侧切分是同一条不变量的两半，破坏任一侧即隐私逃逸）、**白名单方向**
+  （deny-by-default，不得改成黑名单——调试级别的功能日志是用户内容的主要泄漏源）、
+  **标记代次 + 原子清除**（并发实例下仅靠时间戳会误删另一实例刚写的新崩溃标记）。
+  脱敏规则**只增不减**，放宽任一条视为隐私变更、需重新评审。
+  **Meka 例外（WL-26，2026-10-08 第五轮同步后裁决）**：Meka **不启用**任何客户端日志
+  上报通道（无上报目标注入、无上报 API、无「上传日志」入口、无崩溃自动补传），
+  `config/log-upload.json` 在 Meka 上不是打包前置条件；但**采集与脱敏必须继续可用**
+  （issue 诊断依赖它）。改动不得恢复上报面，也不得把上报重新接回打包要求。
 - 修改跨端协议包（`packages/plugin-protocol`、`packages/slack-hook-protocol`、
   `packages/device-link-protocol`）、修改插件分发来源边界或 device-link
   协议／relay／隧道 payload／IPC allowlist，或任何改动跨端 wire protocol 前，必须先读
   `docs/dev-rules/protocol-and-submodules.md`。**非必要不得修改跨端协议；确需修改时，
   必须先向用户说明必要性、替代方案与跨仓影响并取得明确确认。**（2026-09-10 起本仓不再
   使用 `cindy-protocol` submodule，协议包改为上游的仓内 workspace。）
-- 修改客户端本地协议消费兼容层时还必须先读
-  `docs/dev-rules/protocol-compatibility.md`；协议包的权威来源与修改准入以
+- 修改本地协议 package、插件分发来源边界或 device-link 协议／relay／隧道
+  payload／IPC allowlist，或任何改动跨端 wire protocol 前，必须先读
+  `docs/dev-rules/protocol-compatibility.md`；协议包的权威来源与修改准入仍以
   `docs/dev-rules/protocol-and-submodules.md` 为准。
+- 修改 Device Link 客户端、协议、relay、设备／媒体接口、能力协商或连接恢复行为前，必须先读
+  `docs/dev-rules/protocol-compatibility.md` 的「自建中转同步维护」：凡影响自建中转的改动，
+  必须在同一次改动中完成必要的同步适配与互通验证，不得留到后续。
+- 新增或修改直接／间接的服务器请求、订阅、推送、同步、轮询或重试（包括界面调用方）前，
+  必须先读 `docs/dev-rules/server-channel-review.md`：结合通道用途、共享容量与累计压力
+  检查调用方式及次数频率；自审与 AI review 按实际严重程度报告问题，不排除 P2 缺陷。
 - 修改 package 依赖方向、main 进程模块加载方式，或主界面布局树结构前，必须先读
   `docs/dev-rules/architecture-invariants.md`。
 - 新增或修改 Settings UI、配置文件、本地偏好、运行时 profile，或 agent／MCP／provider
@@ -289,28 +337,20 @@
 
 ## Git 与交付
 
-- 本仓默认 PR-first。代码和文档通常从非默认分支通过 PR 进入 `main`；只有仓库
-  维护者明确选择例外时才允许直推主干。
-- commit、push 和创建 PR 的执行时机由开发者或 Codex、Claude Code、Cindy 等宿主
-  工作流决定；仓库规则本身不额外授权外部写操作。
-- 提交 PR 时遵循 `.github/PULL_REQUEST_TEMPLATE.md`，如实说明改动、验证和风险。
-- 非 fork 的非 draft PR 会触发自动 code review（`.github/workflows/pr-code-review.yml`），
-  审阅口径见根目录 `REVIEW.md`。它是**建议性**检查，不替代人工 review，也不替代
-  `client-ci` 的机器门禁；改动上述两份文件前先读 `REVIEW.md` 开头的说明。
+尊重用户与宿主提供的工作流，已有任务分支或 worktree 直接复用，不嵌套创建，
+不擅自搬动或混用工作区。本仓默认 PR-first；只有仓库维护者明确选择例外时才允许
+直推主干。仓库规则本身不额外授权 commit、push、发布或合并。
+
+每个 commit 必须带与 author 或 committer 一致的 DCO `Signed-off-by`（`git commit -s`）。
+DCO 是否通过以 PR 上的 DCO App check 和真实提交范围（`origin/main..PR head`）为准；
+自动审阅沙箱里的平台合成 HEAD 跑本地 DCO 检查失败，不构成缺签证据。
+提交 PR 遵循 [.github/PULL_REQUEST_TEMPLATE.md](.github/PULL_REQUEST_TEMPLATE.md)；
+自动审阅是建议性检查，修改 [REVIEW.md](REVIEW.md) 或自动审阅 workflow 前先读其说明。
+
 - **`meka/main` 是直推集成分支，它唯一的自动化门禁是 `client-ci` 的 push 触发**
   （`.github/workflows/ci.yml` 的 `push.branches` 含 `meka/main`）：该分支不开 PR，Meka 的
   发布流水线（独立控制仓）也不自带验证，所以**推送即门禁**。往 `meka/main` 推送前必须先在
-  本地跑完本节的提交前门禁；推送后要确认 `client-ci` 通过，不要靠"发布流水线会拦"来兜底。
-- **DCO 签名（硬性要求）**：本仓每个 commit 都必须带 `Signed-off-by` trailer，且其中的
-  名字与邮箱都要与 commit 的 author（或 committer）一致，用 `git commit -s` 生成；
-  agent 的自动提交同样适用。PR 上的 DCO check（DCO GitHub App，配置见
-  `.github/dco.yml`）会拦下漏签的 commit。`git commit` 没有自动签名的配置项，一次配好
-  可跑 `pnpm dco:install-hook` 装 `.githooks/prepare-commit-msg`；提交前自查用
-  `pnpm check:dco`。DCO 全文见根目录 `DCO`，贡献者说明见 `CONTRIBUTING.md`。
-  对自动 code review 环境的说明：review 沙箱 checkout 出的 HEAD 可能是平台合成的
-  瞬时 commit（不存在于本仓库、GitHub 上查不到该 SHA）；对这类合成 SHA 跑
-  `check:dco` 的失败结果不构成缺签证据，不要据此报告 DCO 问题。判定 DCO 是否通过，
-  一律以 PR 上的 DCO App check 与真实提交范围（`origin/main..PR head`）的结果为准。
+  本地跑完本节的提交前门禁；推送后要确认 `client-ci` 通过，不要靠“发布流水线会拦”来兜底。
 - **提交前测试门禁（硬性要求）**：无论是提 PR 还是直接 commit，提交前都必须在本地
   跑完仓库根 `pnpm test:unit:related`（只跑这次改动能影响到的单测；基准是产品集成分支
   `origin/meka/main` / `meka/main`，不是上游 `origin/main`；改到测试调度、
@@ -319,24 +359,22 @@
   `pnpm --filter <包名> run --if-present typecheck`（`<包名>` 用该 package 在
   `package.json` 里的 `name`，如 `desktop`、`@cindy/maker-core`；没有 `typecheck`
   script 的 package 该步自动跳过），全部通过后才允许提交；任何一项失败都不得提交，
-  必须先修复。GitHub CI 仍跑完整 `pnpm test:unit`。细则与唯一例外（防丢数据的兜底保存）见
+  必须先修复。纯文档改动运行 `pnpm check:dev-docs`，不要求无关业务单测。
+  GitHub CI 仍跑完整 `pnpm test:unit`。细则与唯一例外（防丢数据的兜底保存）见
   `docs/dev-rules/development-workflow.md`。
   > **保留 Meka 口径（2026-09-25 第四轮上游同步）**：上游同期把本条改写为「**提交前验证**」
   > ——默认选测、已按影响面完成等效定向验证时不要求为 commit 重跑整仓测试，并明确「仓库不强制
   > 多个 session 串行」。**本仓不采纳该放宽**：`meka/main` 是**直推集成分支**且**唯一自动化门禁
   > 是 `client-ci` 的 push 触发**（见上文「Git 与交付」），没有 PR 阶段的 CI 兜底，所以推送前的
-  > 本地门禁就是唯一闸门；用户亦明确要求「仓库门禁在最终提交时统一执行」。
+  > 本地门禁就是唯一闸门；用户亦明确要求「仓库门禁在最终提交时统一执行」。第六轮
+  > （2026-10-16）与第七轮（2026-11-06）同步维持本裁决。
   > 上游那句中真正需要保留的只有「**未执行项和原因须如实记录**」——本仓以
   > `docs/dev-rules/development-workflow.md`「门禁时机」与当期同步报告的「未验证 + 原因」
   > 登记承担同一职责。记录见 `docs/migrations/2026-09-25-origin-main-to-meka-main.md`。
 - 在上述门禁之上按风险追加验证：跨模块、高风险或基础设施改动追加更广泛验证（如
   `pnpm test:all`），最终以 CI 门禁为准。不得通过跳过、删除或弱化测试制造通过。
+  本机资源预算、并发与跨任务排队由用户或宿主决定，但这些选择不改变上面两条硬性门禁。
 
-## 绝对安全底线
-
-- 用户凭证、令牌、授权文件和密钥不得写入仓库或任何可能被 Git 跟踪的路径。
-- 未经用户明确授权，不执行删除数据、覆盖改动、推送、发布、合并等外部或难以
-  恢复的操作。
-- 发现任务会触及系统提示词、更新器、协议兼容、数据库历史 migration、权限边界
-  或用户数据安全时，必须先停下来核对专项规则，并在动手前向用户说明风险或
-  请求确认。
+可复用的项目知识写进仓库；个人路径、设备标识、账号偏好、凭据和私聊原文留在本地。
+整理文档只改组织与索引，Cindy 特有的信息不得丢失或弱化；细则见
+[开发工作流](docs/dev-rules/development-workflow.md) §5、§6。

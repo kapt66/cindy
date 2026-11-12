@@ -24,6 +24,7 @@ import {
   pluginSpaceHeaderValue,
   type PluginEdition,
 } from './clientIdentity.js';
+import { pluginObjectUrlOptions } from './objectUrlPolicy.js';
 
 const log = createLogger('plugin-market-api');
 const PLUGIN_MARKET_API_TIMEOUT_MS = 15_000;
@@ -144,6 +145,8 @@ export class PluginMarketApi {
     if (PLUGIN_SPACE_HEADER_ENABLED) {
       headers[CINDY_PLUGIN_SPACE_HEADER] = pluginSpaceHeaderValue(this.pluginEdition());
     }
+    // 上游新增的迁移声明头（simulator id 迁移），与版本头同一处下发；Meka 渠道照发。
+    headers['x-cindy-plugin-migrations'] = 'simulator-id-v1';
     return {
       cache: 'no-store',
       headers,
@@ -186,6 +189,7 @@ export class PluginMarketApi {
           `/api/plugins?${search.toString()}`,
           this.requestOptions(),
         ),
+        pluginObjectUrlOptions(),
       );
       for (const plugin of response.plugins) {
         if (seen.has(plugin.id)) continue;
@@ -249,12 +253,20 @@ export class PluginMarketApi {
     throw new Error('Plugin 市场分页超过安全上限');
   }
 
-  async detail(pluginId: string): Promise<GetPluginResponse['plugin']> {
+  /** `readmeLocale` 让服务端按该语言选详细介绍；旧服务端忽略这个参数。 */
+  async detail(
+    pluginId: string,
+    options?: { readmeLocale?: string },
+  ): Promise<GetPluginResponse['plugin']> {
+    const query = options?.readmeLocale
+      ? `?readmeLocale=${encodeURIComponent(options.readmeLocale)}`
+      : '';
     return parseGetPluginResponse(
       await this.fetcher<unknown>(
-        `/api/plugins/${encodeURIComponent(pluginId)}`,
+        `/api/plugins/${encodeURIComponent(pluginId)}${query}`,
         this.requestOptions(),
       ),
+      pluginObjectUrlOptions(),
     ).plugin;
   }
 
@@ -267,6 +279,7 @@ export class PluginMarketApi {
         `/api/plugins/${encodeURIComponent(pluginId)}/releases/${encodeURIComponent(releaseId)}/download`,
         this.requestOptions(),
       ),
+      pluginObjectUrlOptions(),
     );
   }
 

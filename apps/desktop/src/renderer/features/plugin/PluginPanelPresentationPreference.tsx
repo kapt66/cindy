@@ -1,13 +1,15 @@
 import { PanelsTopLeft } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-import { restoreGhostPanel } from '@/lib/ghostPanelBubbleState';
+import { applyGhostPanelPresentationChange } from './lib/panelTabProjection';
 import {
   setGhostPanelPresentationOverride,
   useGhostPanelModalPresentation,
   useGhostPanelPresentationOverride,
   type GhostPanelPresentationOverride,
 } from '@/lib/ghostPanelPresentationPreference';
+
+import type { InstalledGhost } from '../../../shared/ghost';
 
 const PRESENTATION_OPTIONS: readonly GhostPanelPresentationOverride[] = [
   'inherit',
@@ -22,29 +24,33 @@ const PRESENTATION_OPTIONS: readonly GhostPanelPresentationOverride[] = [
  * - `ghostId` 是**逻辑插件 id**：偏好 store（`ghostPanelPresentationPreference.ts`）与
  *   启动器/设置页的读取方（`ghost.manifest.id`）都用它；store 按 `isValidGhostId` 过滤，
  *   传物理实例键（`_root__<id>`）会被直接拒掉，开关等于失效。
- * - `instanceId` 是**物理实例键**（`_root__<id>` / `_ns__<ns>__<id>`）：分离窗口账本
- *   （`ghostPanelWindow.setDetached`，见 `ghostPanels.tsx` 的 `setDetached(instanceId, true)`）
- *   与气泡状态按实例定位。缺省回落到 `ghostId`，兼容旧调用方（裸 id 目录两者同值）。
+ * - `instanceId` 是**物理实例键**（`_root__<id>` / `_ns__<ns>__<id>`）：全局页签
+ *   （`g_<instanceId>`）与放置记忆按实例定位。缺省回落到 `ghostId`，兼容旧调用方
+ *   （裸 id 目录两者同值）。
+ *
+ * 选择后的收敛统一交给 `applyGhostPanelPresentationChange`（摘/补页签 + 清窗口放置
+ * 记忆）:Modal 与页签两个宿主不能同时存在，否则同一实例会有两个 webview 各存一份数据。
  */
 export function PluginPanelPresentationPreference({
   ghostId,
-  instanceId,
+  ghost,
 }: {
   ghostId: string;
+  /** 物理实例键（`_root__<id>` / `_ns__<ns>__<id>`），保留给只按实例定位的调用方。 */
   instanceId?: string;
+  /** 该插件的已装实例:用于页签投影与放置记忆收敛。 */
+  ghost?: InstalledGhost | null;
 }) {
   const { t } = useTranslation();
-  const globalModal = useGhostPanelModalPresentation();
+  // 订阅全局开关:全局默认变化时选择器的「跟随默认」文案语义随之变化(重渲染);
+  // 有效值本身由 `resolveGhostPanelPresentation` 在入口处统一解析。
+  useGhostPanelModalPresentation();
   const override = useGhostPanelPresentationOverride(ghostId);
-  const detachKey = instanceId ?? ghostId;
 
   const handleChange = (next: GhostPanelPresentationOverride): void => {
     setGhostPanelPresentationOverride(ghostId, next);
-    const effectiveModal = next === 'modal' || (next === 'inherit' && globalModal);
-    // Choosing a host presentation also exits stale detached/minimized states
-    // so the next visible host matches the explicit user choice.
-    void window.electronAPI.ghostPanelWindow.setDetached(detachKey, false).catch(() => undefined);
-    if (!effectiveModal) restoreGhostPanel(detachKey);
+    // 偏好先落盘,再按新的有效呈现方式收敛页签(不写 dismissed)。
+    if (ghost) applyGhostPanelPresentationChange(ghost);
   };
 
   return (

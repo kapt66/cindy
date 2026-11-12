@@ -1,7 +1,8 @@
+import { prNumberLabel } from '@cindy/maker-shared';
+import { prStatusQuery } from '@cindy/maker-shared';
 import { formatLocalizedSeconds } from './sessionDurationFormat';
 import { CompanionTaskResultCard } from './CompanionTaskResultCard';
 import { Component, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
-import { useLocalSearchParams } from 'expo-router';
 import { useGuardedPush } from '@/utils/useGuardedPush';
 import { Animated, Easing, Linking, Pressable, StyleSheet, View } from 'react-native';
 import {
@@ -52,6 +53,7 @@ const TRACE_HIT_SLOP = { top: 6, bottom: 6 } as const;
 const AUX_HIT_SLOP = { top: 6, bottom: 6 } as const;
 import { useRemoteCompanionQuery } from './useRemoteCompanionQuery';
 import { prStatusVisual } from './prStatusVisual';
+import { useCompanionTaskSession } from './useCompanionTaskSession';
 
 class CompanionRenderBoundary extends Component<
   { children: ReactNode; fallback: ReactNode; resetKey: string },
@@ -72,8 +74,9 @@ class CompanionRenderBoundary extends Component<
   }
 }
 
-export function CompanionMessageCard({ message, renderMarkdown }: {
+export function CompanionMessageCard({ message, deviceId, renderMarkdown }: {
   message: NormalizedRemoteMessage;
+  deviceId: string;
   /** The conversation's Markdown renderer for frozen task results. */
   renderMarkdown?: (text: string) => ReactNode;
 }) {
@@ -84,18 +87,17 @@ export function CompanionMessageCard({ message, renderMarkdown }: {
       fallback={<Text style={styles.note}>{t('devices.companions.actionFailed')}</Text>}
       resetKey={message.key}
     >
-      <CompanionMessageCardContent message={message} renderMarkdown={renderMarkdown} />
+      <CompanionMessageCardContent message={message} deviceId={deviceId} renderMarkdown={renderMarkdown} />
     </CompanionRenderBoundary>
   );
 }
 
-function CompanionMessageCardContent({ message, renderMarkdown }: {
+function CompanionMessageCardContent({ message, deviceId, renderMarkdown }: {
   message: NormalizedRemoteMessage;
+  deviceId: string;
   renderMarkdown?: (text: string) => ReactNode;
 }) {
   const { t } = useTranslation();
-  const params = useLocalSearchParams<{ deviceId?: string }>();
-  const deviceId = typeof params.deviceId === 'string' ? params.deviceId : '';
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
   const card = message.companion;
@@ -194,19 +196,24 @@ export function CompanionTaskCard({
     value?.ok && Array.isArray(value.delegations)
       ? (value.delegations.find((item) => item.id === meta.delegationId) ?? null)
       : null;
-  // Desktop parity: until the first read settles the task is still starting;
-  // a settled read without this row, or a host that cannot be read, is unverifiable.
+  const childSessionId = row?.childSessionId || meta.childSessionId;
+  const task = useCompanionTaskSession(deviceId, childSessionId);
+  // Like Desktop, the original task can still be running after the delegation settled.
+  // Without either live evidence or a delegation snapshot, keep the unknown/loading state.
   const resolved = value !== null || error || !online;
   const status =
-    row && (BOT_DELEGATION_STATUSES as readonly string[]).includes(row.status)
+    task.activity?.phase === 'error' ? 'failed'
+    : task.waiting || task.activity?.phase === 'needs-interaction' || row?.status === 'waiting' ? 'waiting'
+    : task.running || row?.status === 'running' ? 'running'
+    : task.activity?.phase === 'completed' ? 'completed'
+    : row && (BOT_DELEGATION_STATUSES as readonly string[]).includes(row.status)
       ? row.status
       : resolved ? 'unknown' : 'queued';
-  const title = row?.title || meta.objective.trim().split('\n')[0] || t('devices.companions.backgroundTask');
+  const title = task.session?.title || row?.title || meta.objective.trim().split('\n')[0] || t('devices.companions.backgroundTask');
   const [pending, setPending] = useState(false);
   const [actionFailed, setActionFailed] = useState(false);
   const [showPrs, setShowPrs] = useState(false);
   const [now, setNow] = useState(Date.now);
-  const childSessionId = row?.childSessionId || meta.childSessionId;
   const active = Boolean(row && ['queued', 'running', 'waiting'].includes(row.status));
   useEffect(() => {
     if (!active) return;
@@ -251,7 +258,7 @@ export function CompanionTaskCard({
     [
       {
         sessionId: childSessionId,
-        queries: prs.map(({ owner, repo, prNumber }) => ({ owner, repo, prNumber })),
+        queries: prs.map(prStatusQuery),
       },
     ],
     {
@@ -263,7 +270,11 @@ export function CompanionTaskCard({
     const result = Array.isArray(prStatuses.value)
       ? prStatuses.value.find((s) => prStatusKey(s) === prStatusKey(ref))
       : undefined;
-    const { Icon, color } = prStatusVisual(result?.ok ? result.status : null, colors);
+    const { Icon, color } = prStatusVisual(
+      result?.ok ? result.status : null,
+      colors,
+      result?.ok ? result.conflicts : null,
+    );
     return <Icon size={iconSize.sm} color={color} />;
   };
   const openPr = (url: string) => {
@@ -289,16 +300,29 @@ export function CompanionTaskCard({
       setPending(false);
     }
   };
-  const openTask = childSessionId ? () => push({
+  const openTask = childSessionId && deviceId && !task.originConflict ? () => push({
     pathname: '/sessions/[sessionId]',
     params: { deviceId, sessionId: childSessionId },
   }) : undefined;
   const stale = (!online || error || associated.error || prStatuses.error
-    || (Array.isArray(prStatuses.value) && prStatuses.value.some((result) => !result.ok))) && row;
+    || (Array.isArray(prStatuses.value) && prStatuses.value.some((result) => !result.ok))) && (row || task.session);
   const facts = [
     duration,
-    Array.isArray(row?.artifacts) && row.artifacts.length > 0 ? t('devices.companions.artifactCount', { count: row.artifacts.length }) : null,
-    prs.length === 1 ? `${prs[0].owner}/${prs[0].repo} #${prs[0].prNumber}` : prs.length > 1 ? t('devices.companions.prCount', { count: prs.length }) : null,
+    Array.isArray(row?.artifacts) && row.artifacts.length > 0
+      ? t('devices.companions.artifactCount', { count: row.artifacts.length })
+      : null,
+    prs.length === 1
+      ? `${prs[0].owner}/${prs[0].repo} ${prNumberLabel(prs[0])}`
+      : prs.length > 1
+        ? t(
+            prs.every((pr) => pr.provider === 'gitlab')
+              ? 'devices.companions.mrCount'
+              : prs.some((pr) => pr.provider === 'gitlab')
+                ? 'devices.companions.prMrCount'
+                : 'devices.companions.prCount',
+            { count: prs.length },
+          )
+        : null,
   ].filter((part): part is string => !!part);
   return (
     <View style={styles.card} testID="companion.taskCard">
@@ -337,37 +361,65 @@ export function CompanionTaskCard({
           {row.lastError.replace(/^[A-Z_]+:\s*/, '')}
         </Text>
       ) : null}
-      {prs.length > 0 || active || error ? <View style={styles.actions}>
-        {prs.length > 0 ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityState={prs.length > 1 ? { expanded: showPrs } : undefined}
-            hitSlop={AUX_HIT_SLOP}
-            style={({ pressed }) => [styles.action, pressed && mobileInteractionStyles.pressed]}
-            onPress={() => (prs.length === 1 ? openPr(sessionPrUrl(prs[0])) : setShowPrs(!showPrs))}
-          >
-            {prs.length === 1 ? prIcon(prs[0]) : <GitPullRequest size={iconSize.sm} color={colors.textPrimary} />}
-            <Text style={styles.actionLabel}>{t('devices.companions.viewPr')}</Text>
-          </Pressable>
-        ) : null}
-        {active ? (
-          <Pressable
-            accessibilityRole="button"
-            disabled={!online || pending}
-            hitSlop={AUX_HIT_SLOP}
-            style={({ pressed }) => [styles.action, (!online || pending) && styles.disabled, pressed && mobileInteractionStyles.pressed]}
-            onPress={() => void stop()}
-          >
-            <Square size={iconSize.sm} color={colors.textPrimary} />
-            <Text style={styles.actionLabel}>{t('devices.companions.stopTask')}</Text>
-          </Pressable>
-        ) : null}
-        {error ? (
-          <Pressable accessibilityRole="button" hitSlop={AUX_HIT_SLOP} style={({ pressed }) => [styles.action, pressed && mobileInteractionStyles.pressed]} onPress={refresh}>
-            <Text style={styles.actionLabel}>{t('devices.resources.retry')}</Text>
-          </Pressable>
-        ) : null}
-      </View> : null}
+      {prs.length > 0 || active || error ? (
+        <View style={styles.actions}>
+          {prs.length > 0 ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={prs.length > 1 ? { expanded: showPrs } : undefined}
+              hitSlop={AUX_HIT_SLOP}
+              style={({ pressed }) => [styles.action, pressed && mobileInteractionStyles.pressed]}
+              onPress={() =>
+                prs.length === 1 ? openPr(sessionPrUrl(prs[0])) : setShowPrs(!showPrs)
+              }
+            >
+              {prs.length === 1 ? (
+                prIcon(prs[0])
+              ) : (
+                <GitPullRequest size={iconSize.sm} color={colors.textPrimary} />
+              )}
+              <Text style={styles.actionLabel}>
+                {t(
+                  prs.some((pr) => pr.provider === 'gitlab')
+                    ? prs.every((pr) => pr.provider === 'gitlab')
+                      ? 'devices.companions.viewMr'
+                      : 'devices.companions.viewPrMr'
+                    : 'devices.companions.viewPr',
+                )}
+              </Text>
+            </Pressable>
+          ) : null}
+          {active ? (
+            <Pressable
+              accessibilityRole="button"
+              disabled={!online || pending}
+              hitSlop={AUX_HIT_SLOP}
+              style={({ pressed }) => [
+                styles.action,
+                (!online || pending) && styles.disabled,
+                pressed && mobileInteractionStyles.pressed,
+              ]}
+              onPress={() => void stop()}
+            >
+              <Square size={iconSize.sm} color={colors.textPrimary} />
+              <Text style={styles.actionLabel}>{t('devices.companions.stopTask')}</Text>
+            </Pressable>
+          ) : null}
+          {error ? (
+            <Pressable
+              accessibilityRole="button"
+              hitSlop={AUX_HIT_SLOP}
+              style={({ pressed }) => [styles.action, pressed && mobileInteractionStyles.pressed]}
+              onPress={() => {
+                refresh();
+                task.refresh();
+              }}
+            >
+              <Text style={styles.actionLabel}>{t('devices.resources.retry')}</Text>
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
       {showPrs && prs.length > 1 ? (
         <View>
           {prs.map((pr) => (
@@ -379,7 +431,7 @@ export function CompanionTaskCard({
             >
               {prIcon(pr)}
               <Text style={styles.note}>
-                {pr.owner}/{pr.repo} #{pr.prNumber}
+                {pr.owner}/{pr.repo} {prNumberLabel(pr)}
               </Text>
             </Pressable>
           ))}

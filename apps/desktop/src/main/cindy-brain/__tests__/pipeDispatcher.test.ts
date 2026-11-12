@@ -12,7 +12,7 @@ import {
   type PipeDispatcherDeps,
 } from '../pipeDispatcher';
 import type { GhostPipeToolCall, InstalledGhost } from '../../../shared/ghost';
-import type { GhostRuntimeState } from '../runtime/GhostRuntime';
+import { GhostRuntime, type GhostRuntimeState } from '../runtime/GhostRuntime';
 
 function fakeGhost(overrides: Partial<InstalledGhost> = {}): InstalledGhost {
   return {
@@ -65,7 +65,7 @@ function makeHarness(opts: {
   const deps = {
     getGhost: vi.fn(() => (opts.ghost === undefined ? fakeGhost() : opts.ghost)),
     runtimeStateOf: vi.fn(() => opts.state ?? 'running'),
-    spawn: vi.fn(async () => ({ ok: true as const })),
+    spawn: vi.fn(async () => { deps.runtimeStateOf.mockReturnValue('running'); return { ok: true as const }; }),
     sendToGhost: vi.fn((_id: string, payload: GhostPipeToolCall) => {
       sent.push(payload);
       return true;
@@ -86,6 +86,119 @@ function makeHarness(opts: {
 
 const CALL = { ghostId: 'art', tool: 'gen_image', args: { prompt: '一只猫' } };
 
+// Unit regression: Workforce cold startup lost concurrent calls before the listener was ready.
+// Existing dispatcher fakes resolved spawn immediately; these use the real runtime entry
+// with a deferred load and assert delivery/results through callGhostTool (no real waits).
+describe('tool dispatch while a real sandbox is starting', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  function coldHarness() {
+    const loads: Array<{ resolve(): void; reject(error: Error): void }> = [];
+    const gone: Array<() => void> = [];
+    const ghost = fakeGhost();
+    const runtime = new GhostRuntime({ adapter: { create: () => ({
+      load: () => new Promise<void>((resolve, reject) => loads.push({ resolve, reject })),
+      destroy() {}, crashForTest() {}, onGone: cb => { gone.push(() => cb({ reason: 'crashed' })); },
+    }) } });
+    const sent: GhostPipeToolCall[] = [];
+    const dispatcher = new GhostPipeDispatcher({ getGhost: () => ghost,
+      runtimeStateOf: id => runtime.stateOf(id), spawn: g => runtime.spawnForTool(g),
+      sendToGhost: (_id, payload) => { sent.push(payload); return true; },
+    });
+    return { runtime, dispatcher, ghost, loads, gone, sent };
+  }
+
+  it('holds two overlapping calls until running, then starts their execution timers', async () => {
+    const h = coldHarness();
+    const startup = h.runtime.spawn(h.ghost);
+    const calls = [h.dispatcher.callGhostTool(CALL), h.dispatcher.callGhostTool(CALL)];
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(h.runtime.stateOf('art')).toBe('starting');
+    expect(h.sent).toHaveLength(0);
+    h.loads[0].resolve(); await startup; await vi.advanceTimersByTimeAsync(0);
+    expect(h.sent).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(329999);
+    expect(h.dispatcher.pendingCount()).toBe(2); // Execution budget starts after readiness.
+    for (const payload of h.sent) h.dispatcher.handleToolResult('art', { callId: payload.callId, ok: true, result: 'done' });
+    expect(await Promise.all(calls)).toEqual([{ ok: true, result: 'done' }, { ok: true, result: 'done' }]);
+    await vi.advanceTimersByTimeAsync(330000);
+    expect(vi.getTimerCount()).toBe(0);
+    h.runtime.destroyAll();
+  });
+
+  it.each(['load-failure', 'stop', 'crash', 'replace', 'timeout'] as const)(
+    'returns without dispatching stale work on %s', async outcome => {
+      const h = coldHarness();
+      const call = h.dispatcher.callGhostTool(CALL);
+      await vi.advanceTimersByTimeAsync(0);
+      let replacement: Promise<unknown> | undefined;
+      if (outcome === 'load-failure') h.loads[0].reject(new Error('bad entry'));
+      if (outcome === 'stop') h.runtime.stop('art');
+      if (outcome === 'crash') h.gone[0]();
+      if (outcome === 'replace') {
+        replacement = h.runtime.spawn({ ...h.ghost, manifest: { ...h.ghost.manifest, version: '2.0.0' } });
+      }
+      if (outcome === 'timeout') await vi.advanceTimersByTimeAsync(30000);
+      expect(await call).toMatchObject({ ok: false, errorCode: 'GHOST_CRASHED' });
+      expect(h.sent).toHaveLength(0);
+      // Late load completion must not revive the rejected call or affect its replacement.
+      h.loads[0].resolve();
+      if (replacement) { h.loads[1].resolve(); await replacement; expect(h.runtime.stateOf('art')).toBe('running'); }
+      await vi.advanceTimersByTimeAsync(0);
+      expect(h.sent).toHaveLength(0);
+      expect(vi.getTimerCount()).toBe(0);
+      h.runtime.destroyAll();
+    });
+});
+
+// #6404: wrapper-only tests did not exercise ordinary ghost_call arguments.
+// Unit: dispatch real tool payloads; only Host opening + literal opt-in may mark read.
+describe('mail reader opening intent', () => {
+  it.each([
+    { opened: undefined, optIn: true, tool: 'read_mail', expected: false },
+    { opened: true, optIn: true, tool: 'read_mail', expected: true },
+    { opened: true, optIn: undefined, tool: 'read_mail', expected: false },
+    { opened: true, optIn: 'true', tool: 'read_mail', expected: false },
+    { opened: true, optIn: false, tool: 'read_mail', expected: false },
+    { opened: undefined, optIn: true, tool: 'set_read', expected: true },
+  ] as const)('dispatches $tool with opening=$opened, opt-in=$optIn', async ({ opened, optIn, tool, expected }) => {
+    const ghost = fakeGhost();
+    Object.assign(ghost.manifest, { mail: true, mailReader: { tool: 'read_mail', hosts: ['mail.example.test'], markRead: optIn } });
+    ghost.manifest.tools = ['read_mail', 'set_read'].map(name => ({ name, description: name }));
+    const h = makeHarness({ ghost });
+    const args = { url: 'https://mail.example.test/message/one', markRead: !opened, openDraft: true, mailReaderOpened: true };
+    const pending = h.dispatcher.callGhostTool({ ghostId: 'art', tool, args, ...(opened ? { mailReaderOpened: true as const } : {}) });
+    expect(h.sent[0].args).toEqual(tool === 'set_read' ? args : {
+      url: args.url, mailReaderOpened: true, ...(opened ? { openDraft: true } : {}), ...(expected ? { markRead: true } : {}),
+    });
+    expect(args.markRead).toBe(!opened); // Never mutate the caller's data.
+    h.dispatcher.handleToolResult('art', { callId: h.sent[0].callId, ok: true, result: 'mail' });
+    expect(await pending).toEqual({ ok: true, result: 'mail' });
+  });
+});
+
+describe('images shown to the model', () => {
+  const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]).toString('base64');
+
+  it('accepts top-level images next to result and drops invalid ones', async () => {
+    const h = makeHarness();
+    const pending = h.dispatcher.callGhostTool({ ghostId: 'art', tool: 'gen_image', args: {} });
+    h.dispatcher.handleToolResult('art', { callId: h.sent[0].callId, ok: true, result: { path: '/x.jpg' }, images: [{ data: PNG }, { data: 'nope!' }] });
+    expect(await pending).toEqual({ ok: true, result: { path: '/x.jpg' }, images: [{ data: PNG, mimeType: 'image/png' }] });
+  });
+
+  it('a result without images, or a failure, is unchanged', async () => {
+    const h = makeHarness();
+    const plain = h.dispatcher.callGhostTool({ ghostId: 'art', tool: 'gen_image', args: {} });
+    h.dispatcher.handleToolResult('art', { callId: h.sent[0].callId, ok: true, result: 'r' });
+    expect(await plain).toEqual({ ok: true, result: 'r' });
+    const failed = h.dispatcher.callGhostTool({ ghostId: 'art', tool: 'gen_image', args: {} });
+    h.dispatcher.handleToolResult('art', { callId: h.sent[1].callId, ok: false, errorCode: 'INVALID_ARGS', message: 'bad', images: [{ data: PNG }] });
+    expect(await failed).toEqual({ ok: false, errorCode: 'INVALID_ARGS', message: 'bad' });
+  });
+});
+
 describe('caller cancellation', () => {
   it('Host Stop affects only opted-in calls in that session, preserving legacy calls', async () => {
     const h = makeHarness();
@@ -96,7 +209,7 @@ describe('caller cancellation', () => {
     h.dispatcher.getPendingCallSignal('art', 'stopped');
     const keptSignal = h.dispatcher.getPendingCallSignal('art', 'kept')!;
     h.dispatcher.cancelSessionCalls('session-a');
-    expect(await stopped).toMatchObject({ ok: false, message: 'Plugin tool call cancelled' });
+    expect(await stopped).toMatchObject({ ok: false, errorCode: 'CANCELLED', message: 'Plugin tool call cancelled' });
     expect(keptSignal.aborted).toBe(false);
     expect(h.dispatcher.pendingCount()).toBe(2);
     h.dispatcher.handleToolResult('art', { callId: 'legacy', ok: true, result: 'legacy-kept' });
@@ -117,7 +230,7 @@ describe('caller cancellation', () => {
     expect(h.dispatcher.getPendingCallSessionId('other-plugin', 'call-1')).toBeNull();
     expect(h.dispatcher.getPendingCallSessionId('art', 'missing')).toBeNull();
     a.abort();
-    expect(await first).toMatchObject({ ok: false, message: 'Plugin tool call cancelled' });
+    expect(await first).toMatchObject({ ok: false, errorCode: 'CANCELLED', message: 'Plugin tool call cancelled' });
     expect(firstLifetime.aborted).toBe(true);
     expect(secondLifetime.aborted).toBe(false);
     expect(h.dispatcher.pendingCount()).toBe(1);
@@ -131,7 +244,7 @@ describe('caller cancellation', () => {
     const h = makeHarness({ state: 'stopped' as GhostRuntimeState });
     const abort = new AbortController(), gate = deferred();
     if (when === 'before') abort.abort();
-    h.deps.spawn.mockImplementation(async () => { await gate.promise; return { ok: true }; });
+    h.deps.spawn.mockImplementation(async () => { await gate.promise; h.deps.runtimeStateOf.mockReturnValue('running'); return { ok: true }; });
     const pending = h.dispatcher.callGhostTool({ ...CALL, callId: 'legacy', signal: abort.signal, sessionId: 'task' });
     abort.abort();
     h.dispatcher.cancelSessionCalls('task');
@@ -146,14 +259,14 @@ describe('caller cancellation', () => {
     h.deps.runtimeStateOf.mockReturnValue('off');
     let started!: () => void;
     h.deps.spawn.mockImplementation(() => new Promise(resolve => {
-      started = () => resolve({ ok: true });
+      started = () => { h.deps.runtimeStateOf.mockReturnValue('running'); resolve({ ok: true }); };
     }));
     const pending = h.dispatcher.callGhostTool({ ...CALL, callId: 'stopped-before-binding', sessionId: 'stopped' });
     h.dispatcher.cancelSessionCalls('stopped');
     started();
     await vi.waitFor(() => expect(h.sent).toHaveLength(1));
     expect(h.dispatcher.getPendingCallSignal('art', 'stopped-before-binding')).toBeNull();
-    await expect(pending).resolves.toMatchObject({ ok: false, message: 'Plugin tool call cancelled' });
+    await expect(pending).resolves.toMatchObject({ ok: false, errorCode: 'CANCELLED', message: 'Plugin tool call cancelled' });
 
     // Stop belongs to that invocation, not future turns reusing the session.
     h.deps.runtimeStateOf.mockReturnValue('running');
@@ -168,7 +281,7 @@ describe('caller cancellation', () => {
     const pending = h.dispatcher.callGhostTool({ ...CALL, callId: 'late-bind', signal: abort.signal });
     abort.abort();
     expect(h.dispatcher.getPendingCallSignal('art', 'late-bind')).toBeNull();
-    expect(await pending).toMatchObject({ ok: false, message: 'Plugin tool call cancelled' });
+    expect(await pending).toMatchObject({ ok: false, errorCode: 'CANCELLED', message: 'Plugin tool call cancelled' });
     expect(h.dispatcher.pendingCount()).toBe(0);
   });
 });
@@ -443,7 +556,9 @@ describe('配对交卷', () => {
     });
   });
 
-  it('透传合法插件业务错误码，但不允许覆盖主机错误码', async () => {
+  // PR #6434: a plugin has already executed when it submits its result, so it
+  // cannot claim the host's pre-dispatch namespace failure and trigger a retry.
+  it.each(['GHOST_CRASHED', 'GHOST_NAMESPACE_MISMATCH'])('不允许插件覆盖主机错误码 %s', async (hostErrorCode) => {
     const h = makeHarness();
     const business = h.dispatcher.callGhostTool(CALL);
     await vi.waitFor(() => expect(h.sent).toHaveLength(1));
@@ -462,7 +577,7 @@ describe('配对交卷', () => {
       type: 'tool-result',
       callId: h.sent[1].callId,
       ok: false,
-      errorCode: 'GHOST_CRASHED',
+      errorCode: hostErrorCode,
       message: '伪造主机错误',
     });
     await expect(reserved).resolves.toMatchObject({ ok: false, errorCode: 'INTERNAL' });
@@ -857,4 +972,30 @@ describe('dispatch usage observation', () => {
     h.dispatcher.handleToolResult('art',{callId:'no-block',ok:true,result:'done'});
     expect(await pending).toMatchObject({ok:true,result:'done'});
   });
+});
+
+// A1: production dispatch observation must accept numeric progress only for the
+// live owning call. Existing heartbeat cases do not cover forwarding. Unit tier.
+it('forwards validated progress only within the owning call, retaining heartbeat compatibility', async () => {
+  const h = makeHarness(), onProgress = vi.fn();
+  const pending = h.dispatcher.callGhostTool({ ...CALL, onProgress });
+  const callId = h.sent[0].callId;
+  expect(h.dispatcher.handleToolProgress('art', { callId }).accepted).toBe(true);
+  expect(onProgress).not.toHaveBeenCalled();
+  for (const invalid of [{ progress: NaN }, { progress: -1 }, { progress: 2, total: 1 }, { progress: 1, message: 4 }])
+    expect(h.dispatcher.handleToolProgress('art', { callId, ...invalid }).accepted).toBe(false);
+  expect(h.dispatcher.handleToolProgress('other', { callId, progress: 1 }).accepted).toBe(false);
+  expect(h.dispatcher.handleToolProgress('art', { callId, progress: 1, total: 3, message: 'Importing' }).accepted).toBe(true);
+  expect(onProgress).toHaveBeenCalledExactlyOnceWith({ progress: 1, total: 3, message: 'Importing' });
+  // B6: a Host read phase followed by network sending cannot repeat or decrease MCP progress.
+  const transfer = h.dispatcher.createHostProgress('art', callId);
+  transfer(3, 3, 'Reading');
+  expect(onProgress).toHaveBeenLastCalledWith({ progress: 4, total: 4, message: 'Reading (3 / 3 bytes)' });
+  transfer(undefined, undefined, 'Uploading');
+  expect(onProgress).toHaveBeenLastCalledWith({ progress: 5, message: 'Uploading' });
+  h.dispatcher.handleToolResult('art', { callId, ok: true, result: null });
+  await pending;
+  transfer(100, 100, 'Reading');
+  expect(onProgress).toHaveBeenCalledTimes(3);
+  expect(h.dispatcher.handleToolProgress('art', { callId, progress: 3 }).accepted).toBe(false);
 });

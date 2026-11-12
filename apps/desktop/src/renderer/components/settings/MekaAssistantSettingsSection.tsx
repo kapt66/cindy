@@ -4,7 +4,6 @@ import { FolderOpen, Plug, RefreshCw, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import type { MekaP4Settings } from '../../../shared/meka-settings';
-import { installedGhostStoragePart } from '../../../shared/pluginIdentity';
 import type {
   MekaRouterInstance,
   MekaRouterRoute,
@@ -19,16 +18,18 @@ import { Switch } from '@/components/ui/switch';
 import { Tip } from '@/components/ui/tooltip';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
 import {
-  isGhostPanelModalPresentationEnabled,
   setGhostPanelModalPresentationEnabled,
   useGhostPanelModalPresentation,
 } from '@/lib/ghostPanelPresentationPreference';
+import { applyGhostPanelPresentationChange } from '@/features/plugin/lib/panelTabProjection';
 import {
   buildMekaRouterClientGroups,
   getMekaRouterClientLabel,
   groupMekaRouterTemplates,
 } from './mekaRouterSettingsModel';
 import { MekaRouterConnectDialog } from './MekaRouterConnectDialog';
+import { mekaAssistantSettings } from './MekaAssistantSettingsSection.settings-search';
+import { useSettingDefinition } from './useSettingDefinition';
 
 const CARD_CLASS = cn(
   'flex flex-col gap-4 rounded-[12px] border p-4',
@@ -76,6 +77,7 @@ function SettingsModal(props: { title: string; onClose: () => void; children: Re
             </Dialog.Title>
             <Dialog.Close asChild>
               <button
+                data-settings-search-action="Close this settings dialog without saving"
                 type="button"
                 className="rounded-md p-1 text-[var(--text-tertiary)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]"
                 aria-label="Close"
@@ -93,6 +95,9 @@ function SettingsModal(props: { title: string; onClose: () => void; children: Re
 
 export function MekaAssistantSettingsSection() {
   const { t } = useTranslation();
+  const pluginPanelSetting = useSettingDefinition(mekaAssistantSettings.pluginPanel);
+  const routerSetting = useSettingDefinition(mekaAssistantSettings.router);
+  const designSetting = useSettingDefinition(mekaAssistantSettings.design);
   const { confirm } = useConfirmDialog();
   const pluginPanelModalPresentation = useGhostPanelModalPresentation();
   const [settings, setSettings] = useState<MekaP4Settings | null>(null);
@@ -300,27 +305,19 @@ export function MekaAssistantSettingsSection() {
             </p>
           </div>
           <Switch
+            {...pluginPanelSetting.controlProps}
             checked={pluginPanelModalPresentation}
             onCheckedChange={(enabled) => {
               setGhostPanelModalPresentationEnabled(enabled);
-              if (!enabled) return;
-              // Modal mode has one visible host. Merge any detached Plugin
-              // windows back first; the layout preference then keeps their
-              // docked panes hidden until modal mode is disabled.
-              const ghosts = window.electronAPI.ghosts.listSync().ghosts;
-              for (const ghost of ghosts) {
-                if (
-                  !ghost.manifest.panel ||
-                  ghost.manifest.panel.position === 'tab' ||
-                  !isGhostPanelModalPresentationEnabled(ghost.manifest.id)
-                ) {
-                  continue;
-                }
-                void window.electronAPI.ghostPanelWindow
-                  // 分离窗口账本按**物理实例键**建窗（见 ghostPanels.tsx 的
-                  // setDetached(instanceId, true)）；用 manifest.id 关不掉新布局安装的窗口。
-                  .setDetached(installedGhostStoragePart(ghost), false)
-                  .catch(() => undefined);
+              // 呈现方式切换后按新有效值收敛每个面板插件的全局页签:
+              // - 开(modal):摘掉承载 panel 页的页签,但**不写 dismissed**(关 Modal ≠ 关页签),
+              //   并把「下次从页签点开进独立窗口」的放置记忆清掉;
+              // - 关(docked):清 dismissed 并补回页签,落在用户原来的组里。
+              // 停用/无面板/`tab` 形态的插件由 resolver 与投影自行跳过。
+              for (const ghost of window.electronAPI.ghosts.listSync().ghosts) {
+                if (!ghost.manifest.panel || ghost.manifest.panel.position === 'tab') continue;
+                if (ghost.enabled === false) continue;
+                applyGhostPanelPresentationChange(ghost);
               }
             }}
             aria-label={t('settings.meka.pluginPanel.toggleAria')}
@@ -354,6 +351,7 @@ export function MekaAssistantSettingsSection() {
             </span>
           </div>
           <button
+            data-settings-search-action="Choose the P4 project root directory"
             type="button"
             className={BUTTON_CLASS}
             onClick={() => void chooseDirectory()}
@@ -363,6 +361,7 @@ export function MekaAssistantSettingsSection() {
             {t('settings.meka.p4.browse')}
           </button>
           <button
+            data-settings-search-action="Reload the saved P4 project settings"
             type="button"
             className={cn(BUTTON_CLASS, 'w-9 px-0')}
             onClick={() => void refresh()}
@@ -420,6 +419,7 @@ export function MekaAssistantSettingsSection() {
             )}
             {router?.configured ? (
               <button
+                data-settings-search-action="Disconnect MCPRouter and clear saved credentials"
                 type="button"
                 className={BUTTON_CLASS}
                 onClick={() => void disconnectRouter()}
@@ -428,7 +428,12 @@ export function MekaAssistantSettingsSection() {
                 {t('settings.meka.router.disconnect')}
               </button>
             ) : (
-              <button type="button" className={BUTTON_CLASS} onClick={() => setRouterModal(true)}>
+              <button
+                data-settings-search-action="Open the MCPRouter connection dialog"
+                type="button"
+                className={BUTTON_CLASS}
+                onClick={() => setRouterModal(true)}
+              >
                 <Plug size={16} />
                 {t('settings.meka.router.connect')}
               </button>
@@ -449,6 +454,7 @@ export function MekaAssistantSettingsSection() {
                   {t('settings.meka.router.clientsTitle')}
                 </div>
                 <button
+                  data-settings-search-action="Reload MCPRouter clients and templates"
                   type="button"
                   className={cn(BUTTON_CLASS, 'h-7 w-7 px-0')}
                   onClick={() => void refreshRouter()}
@@ -488,6 +494,7 @@ export function MekaAssistantSettingsSection() {
                       )}
                     </div>
                     <Switch
+                      {...routerSetting.controlProps}
                       checked={client.enabled}
                       onCheckedChange={(enabled) =>
                         void toggleRouterClient(client.routeIds, enabled)
@@ -510,7 +517,12 @@ export function MekaAssistantSettingsSection() {
                     </div>
                   </div>
                   <Tip text={t('settings.meka.router.systemClientReadOnly')} side="left">
-                    <Switch checked disabled aria-label={t('settings.meka.router.systemClient')} />
+                    <Switch
+                      {...routerSetting.controlProps}
+                      checked
+                      disabled
+                      aria-label={t('settings.meka.router.systemClient')}
+                    />
                   </Tip>
                 </div>
               )}
@@ -585,6 +597,7 @@ export function MekaAssistantSettingsSection() {
             )}
             {router?.mekaDesignConfigured ? (
               <button
+                data-settings-search-action="Disconnect MekaDesign and remove its saved address"
                 type="button"
                 className={BUTTON_CLASS}
                 onClick={() => void disconnectDesign()}
@@ -593,7 +606,12 @@ export function MekaAssistantSettingsSection() {
                 {t('settings.meka.design.disconnect')}
               </button>
             ) : (
-              <button type="button" className={BUTTON_CLASS} onClick={() => setDesignModal(true)}>
+              <button
+                data-settings-search-action="Open the MekaDesign connection dialog"
+                type="button"
+                className={BUTTON_CLASS}
+                onClick={() => setDesignModal(true)}
+              >
                 {t('settings.meka.design.connect')}
               </button>
             )}
@@ -621,6 +639,7 @@ export function MekaAssistantSettingsSection() {
               {t('settings.meka.design.url')}
             </span>
             <input
+              {...designSetting.controlProps}
               className={INPUT_CLASS}
               value={designUrl}
               onChange={(event) => setDesignUrl(event.target.value)}
@@ -632,10 +651,16 @@ export function MekaAssistantSettingsSection() {
             />
           </label>
           <div className="flex justify-end gap-2">
-            <button type="button" className={BUTTON_CLASS} onClick={() => setDesignModal(false)}>
+            <button
+              data-settings-search-action="Cancel the MekaDesign connection without saving"
+              type="button"
+              className={BUTTON_CLASS}
+              onClick={() => setDesignModal(false)}
+            >
               {t('logic.confirm.cancel')}
             </button>
             <button
+              {...designSetting.controlProps}
               type="button"
               className={BUTTON_CLASS}
               disabled={submitting || !designUrl.trim()}

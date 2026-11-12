@@ -4,6 +4,7 @@ import { X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { WINDOW_NO_DRAG_STYLE, useManualWindowDrag } from '@/components/layout/windowDrag';
+import { useGhostPanelPresentation } from '@/lib/ghostPanelPresentationPreference';
 import { cn } from '@/lib/utils';
 
 import type { InstalledGhost } from '../../shared/ghost';
@@ -28,6 +29,9 @@ export function GhostPanelModal({
   returnFocusRef?: RefObject<HTMLElement | null>;
 }): ReactNode {
   const { t } = useTranslation();
+  // [MEKA] 呈现方式(插件级 override → Meka 全局开关 → docked)。hooks 顺序必须稳定,
+  // 所以护栏放在本组件全部 hooks 之后、JSX 之前。
+  const presentation = useGhostPanelPresentation(ghost);
   const closeRef = useRef<HTMLButtonElement>(null);
   const panelBodyRef = useRef<HTMLDivElement>(null);
   const headerWindowDrag = useManualWindowDrag();
@@ -45,6 +49,11 @@ export function GhostPanelModal({
     }, 0);
     return () => window.clearTimeout(timer);
   }, [open]);
+
+  // [MEKA] 呈现方式不再是 modal(切回 docked / 插件被停用 / 卸载)时自卸载:即使某个
+  // 入口漏调 `applyGhostPanelPresentationChange`,Modal 也会在下一帧消失,不会与页签
+  // 并存(I1 —— 同一实例两个 webview 会各存整份插件数据并互相覆写)。
+  if (presentation !== 'modal' || ghost.enabled === false) return null;
 
   return (
     <Dialog.Root

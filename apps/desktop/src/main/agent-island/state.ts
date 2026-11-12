@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import { groupChatIslandId, type AgentIslandGroupChatInput } from './groupChat.js';
 import { isSubagentParentToolUseId } from '@cindy/maker-shared/message-render';
 import {
   isCompactingWorkingStatus,
@@ -13,6 +15,7 @@ import {
 } from '@cindy/maker-core';
 import { DEFAULT_TOOL_ROW_WORDING, type ToolRowWording } from '@cindy/maker-shared/message-presentation';
 import { isTurnContinuationBoundaryEvent } from '@cindy/maker-shared/turn-continuation';
+import { sessionProjectDirectory } from '@cindy/maker-shared/worktree-paths';
 
 import { dbToMakerAgentKind } from '../../shared/agentKindConversion';
 import { LIVE_TASK_PRIORITY, liveTaskPriorityRank } from '../../shared/liveTaskPriority';
@@ -24,6 +27,7 @@ import {
   cloneActivityTextStreamState,
   createActivityTextStreamState,
   normalizeActivityText,
+  normalizeRemoteActivityText,
   type ActivityTextStreamState,
 } from './activityTextStream.js';
 
@@ -32,6 +36,7 @@ import {
   DEFAULT_AGENT_ISLAND_STRINGS,
   type AgentIslandActivityLine,
   type AgentIslandActivityLineKind,
+  type AgentIslandCompanionSnapshot,
   type AgentIslandDisplayPolicy,
   type AgentIslandDisplaySurface,
   type AgentIslandDisplayState,
@@ -53,6 +58,7 @@ export type AgentIslandInteractionRequest =
 export const AGENT_ISLAND_COMPLETION_DWELL_MS = 5_000;
 export const AGENT_ISLAND_ERROR_DWELL_MS = 12_000;
 export const AGENT_ISLAND_REVEAL_DWELL_MS = 5_000;
+const AGENT_ISLAND_SUBTLE_REMINDER_MS = 3_000;
 // 12s → 8s:完成卡片的 dwell 现在能真正走完(临时会话调度 run 收尾时的 closeSession
 // 不再抹掉条目,见 closeAgentIslandSessionPreservingUnread),不需要再用更长的上限去弥补
 // 「随时可能被整条删掉」。
@@ -89,9 +95,18 @@ const AGENT_ISLAND_FOCUS_NAVIGATION_TIMEOUT_MS = 60_000;
  * 兑现,唤醒时刻按单调剩余量重算,不会被跳幅拖住;向前跳只会提前解开。
  */
 export const AGENT_ISLAND_SILENT_STOP_HOLD_MS = 10_000;
-// 未读的 completed / error 在**灵动岛浮窗**里驻留的上限;超过后即便用户没 ack,
-// 也不再占用展开列表。岛 state 会按 TTL prune;远程绿/红点改订独立的
-// remoteUnreadTerminals 账本,不跟完整会话(含活动文本)一起留下。
+// 已完成条目在**灵动岛浮窗**里的最长保留期。超过一天后无论是否未读、是否正悬停
+// 展开,都不再展示;会话本身在侧栏 / 远程账本里的状态不受影响。岛 state 会按 TTL
+// prune;远程绿/红点改订独立的 remoteUnreadTerminals 账本,不跟完整会话(含活动文本)
+// 一起留下。
+export const AGENT_ISLAND_COMPLETED_RETENTION_MS = 24 * 60 * 60 * 1_000;
+// 未读 **error** 条目在灵动岛列表里驻留的上限;超过后即便用户没 ack 也 prune 掉
+// (prune 前先写入独立的 remoteUnreadTerminals 账本,再删岛 state;远程绿/红点订账本,
+// 不跟完整会话含活动文本一起留下)。完成条目按上游口径走上面的一日保留期。
+//
+// Meka 保留项(WL-11.15 / 第六轮 §4.3 第 8 条):驻留 TTL 的锚点必须是**真实终态时刻**,
+// 不能被结算处理的延迟顺延 —— 见 completeAgentIslandSessionWithoutAttention 对
+// lastActivityAt / completedAt 的双锚点回写。
 export const AGENT_ISLAND_UNREAD_TRANSIENT_TTL_MS = 4 * 60 * 60 * 1_000;
 const AGENT_ISLAND_COMPACT_CURRENT_MIN_DWELL_MS = 1_200;
 const AGENT_ISLAND_MEASURED_HEIGHT_MAX = 2_000;
@@ -129,8 +144,11 @@ interface AgentIslandSessionMeta {
   sessionId: string;
   agentKind?: string;
   workingDir?: string | null;
+  projectDir?: string | null;
   title?: string | null;
   workspaceKind?: string | null;
+  /** undefined = not resolved yet; null = not a companion's Session. */
+  companion?: AgentIslandCompanionSnapshot | null;
 }
 
 interface ApplyAgentIslandEventOptions {
@@ -141,10 +159,18 @@ interface ApplyAgentIslandEventOptions {
 }
 
 interface AgentIslandSessionState {
+  groupChat?: {
+    input: AgentIslandGroupChatInput;
+    avatars: AgentIslandCompanionSnapshot[];
+    mentionLabel?: string;
+    lastAlertAt: number | null;
+    lastAlertMention: boolean;
+  };
   completionNotification?: 'silent';
   pendingDeviceCompletionNotification?: boolean;
   sessionId: string;
   title: string | null;
+  companion: AgentIslandCompanionSnapshot | null;
   projectName: string | null;
   detail: string;
   detailSource: 'tool' | 'status' | 'interaction' | null;
@@ -197,12 +223,16 @@ interface AgentIslandSessionState {
   pendingSilentStopCompletion: { suppressAttention: boolean; preserveAttention: boolean } | null;
   /** Whether this terminal error belongs to a flow that deliberately emits a paired done. */
   completionAllowedAfterTerminalError: boolean;
+  /** First time this session was seen completed; drives the one-day island retention. */
+  completedAt: number | null;
   revealUntil: number | null;
   visibleInteractionSuppressedUntil: number | null;
   interactionRevealDismissed: boolean;
   deferredReveal: boolean;
   deferredRevealReason: 'visible-session' | 'app-focus' | 'queued' | 'manual-dismiss' | null;
   queuedRevealDwellMs: number | null;
+  /** Reminder request order, including remote/group entries; preserved when requeued. */
+  revealSequence: number;
   unread: boolean;
   activityLines: AgentIslandActivityLine[];
   activitySeq: number;
@@ -233,6 +263,19 @@ interface AgentIslandSessionState {
    * {@link syncAgentIslandDeviceSessions} 的输入决定;本机 Maker 事件不会触达它。
    */
   sourceDeviceId: string | null;
+  sourceCompletionToken?: string;
+  /** Display-only chat projection; never written into the activity/relay state. */
+  companionChat?: { unread: boolean; token: string };
+}
+
+const completionTokenEpoch = randomUUID();
+
+export function agentIslandCompletionToken(session: AgentIslandSessionState): string | undefined {
+  if (session.groupChat) return undefined;
+  if (session.phase !== 'completed') return undefined;
+  if (session.companionChat) return session.companionChat.unread ? session.companionChat.token : undefined;
+  return session.sourceDeviceId ? session.sourceCompletionToken
+    : `${completionTokenEpoch}:${session.activityGeneration}`;
 }
 
 export interface AgentIslandUserPromptRollbackToken {
@@ -245,6 +288,8 @@ export interface AgentIslandUserPromptRollbackToken {
  * receives a display-ready snapshot and does no product-state arbitration.
  */
 export interface AgentIslandState {
+  /** A local display preference; does not alter unread or interaction state. */
+  subtleReminders: boolean;
   sessions: Map<string, AgentIslandSessionState>;
   isMouseInMenuBarZone: boolean;
   isMouseInExpandedPanel: boolean;
@@ -284,6 +329,13 @@ export interface AgentIslandState {
    * (进程重启后靠 localDb 兜底补发收尾包)。
    */
   remoteUnreadTerminals: Map<string, AgentIslandRemoteUnreadTerminal>;
+  /**
+   * 「消息免打扰」任务：只从**展示面**（岛面 / 菜单栏 / 提示音）排除，不删
+   * `state.sessions`、也不影响事件摄取 —— 侧栏卡片的逐步活动、等待交互态与远端
+   * 活动镜像都长在这份状态上，静音不该把任务藏起来。按 sessionId 保存而不是塞进
+   * session 条目：条目会随岛面 TTL 被裁剪后重建，塞进去会丢。
+   */
+  displaySuppressedSessionIds: Set<string>;
 }
 
 export interface AgentIslandRemoteUnreadTerminal {
@@ -296,6 +348,7 @@ export interface AgentIslandRemoteUnreadTerminal {
 // 卡片身份的无碰撞活动代数:全局单调递增、不复用。不要退回毫秒时间戳 —— 重试在同一
 // 毫秒内再落新终态时时间戳会撞上(review P1),旧点击会误处置新提醒。
 let agentIslandActivityGeneration = 0;
+let agentIslandRevealSequence = 0;
 
 function nextActivityGeneration(): number {
   return ++agentIslandActivityGeneration;
@@ -314,6 +367,7 @@ function replaceAgentIslandCard(session: AgentIslandSessionState, now: number): 
 
 export function createAgentIslandState(): AgentIslandState {
   return {
+    subtleReminders: false,
     sessions: new Map(),
     isMouseInMenuBarZone: false,
     isMouseInExpandedPanel: false,
@@ -344,6 +398,7 @@ export function createAgentIslandState(): AgentIslandState {
     strings: { ...DEFAULT_AGENT_ISLAND_STRINGS },
     toolWording: DEFAULT_TOOL_ROW_WORDING,
     remoteUnreadTerminals: new Map(),
+    displaySuppressedSessionIds: new Set(),
   };
 }
 
@@ -378,6 +433,8 @@ export function resetAgentIslandState(state: AgentIslandState): void {
   state.compactCurrentUntil = fresh.compactCurrentUntil;
   state.strings = fresh.strings;
   state.remoteUnreadTerminals = fresh.remoteUnreadTerminals;
+  // 展示面抑制(静音)跟着账号/数据源一起重置:publish() 会从同步索引重新对齐。
+  state.displaySuppressedSessionIds = fresh.displaySuppressedSessionIds;
   // toolWording 是注入的配置(非会话状态),reset 时保留,避免退回默认中文表。
 }
 
@@ -555,10 +612,12 @@ export function patchAgentIslandMetadata(
   const session = state.sessions.get(meta.sessionId);
   if (!session) return false;
   const previousTitle = session.title;
+  const previousCompanion = session.companion;
   const previousProjectName = session.projectName;
   const previousAgentKind = session.agentKind;
   applyMeta(session, meta);
   return previousTitle !== session.title
+    || previousCompanion !== session.companion
     || previousProjectName !== session.projectName
     || previousAgentKind !== session.agentKind;
 }
@@ -584,7 +643,7 @@ export function applyAgentIslandUserPrompt(
   session.currentToolUseId = null;
   session.toolDetailUntil = null;
   clearAssistantStream(session);
-  const line = appendActivityLine(session, 'user', text);
+  const line = appendNormalizedActivityLine(session, 'user', text);
   if (line) enqueueMessagePreview(session, line, now);
   session.sortActivityAt = now;
   replaceAgentIslandCard(session, now);
@@ -623,6 +682,8 @@ function restoreSessionScopedReveal(
   session: AgentIslandSessionState,
   now: number,
 ): void {
+  // 静音任务的卡不该重新活过来（展示面才有的概念，活动快照不受影响）。
+  if (state.displaySuppressedSessionIds.has(session.sessionId)) return;
   const sessionId = session.sessionId;
   const wantsActive = session.revealUntil != null
     && session.revealUntil > now
@@ -841,10 +902,12 @@ export function applyAgentIslandEvent(
     session.running = false;
     session.currentToolUseId = null;
     session.toolDetailUntil = null;
-    // Codex ask_user / plan_review can outlive a successful turn. Permission
-    // cards belong to the dead turn and must not keep the island waiting.
+    // Codex ask_user / plan_review can outlive a successful turn, and an input
+    // handoff never blocks it (the agent usually ends the turn right after
+    // asking). Permission cards belong to the dead turn and must not keep the
+    // island waiting.
     for (const [requestId, kind] of [...session.pendingInteractionKinds.entries()]) {
-      if (kind === 'ask_user_question' || kind === 'plan_review') continue;
+      if (kind === 'ask_user_question' || kind === 'plan_review' || kind === 'input_handoff') continue;
       dismissPendingInteraction(state, session, requestId, now, {
         requirePending: true,
         pruneIfIdle: false,
@@ -902,6 +965,7 @@ export function applyAgentIslandEvent(
     session.pendingSilentStopCompletion = null;
     session.running = false;
     session.phase = 'error';
+    session.completedAt = null;
     session.interactionKind = undefined;
     session.pendingInteractionIds.clear();
     clearPendingInteractionMetadata(session);
@@ -1169,7 +1233,13 @@ export function completeAgentIslandSessionWithoutAttention(
     suppressAttention: true,
     preserveAttention: options.preserveAttention,
   });
-  if (realActivityAt !== null) session.lastActivityAt = realActivityAt;
+  if (realActivityAt !== null) {
+    session.lastActivityAt = realActivityAt;
+    // 上游新增的「完成最多保留一天」锚 `completedAt` 也由同一个完成路径写成结算时刻;
+    // 这条记账路径必须把它一起回退到那次 silent stop 的真实时刻,否则 1s 级的结算延迟
+    // 会从新的保留期入口把 Meka 修好的锚点又顺延一次。
+    if (session.completedAt !== null) session.completedAt = realActivityAt;
+  }
 
   if (!isSessionVisible(session, now)) {
     if (isUnreadTerminalLedger(session)) syncRemoteUnreadTerminal(state, session);
@@ -1221,6 +1291,7 @@ export type AgentIslandDeviceSessionEventKind = 'done' | 'error' | 'needs-reply'
 
 export interface AgentIslandDeviceSessionEvent {
   sessionId: string;
+  deviceId: string;
   title: string | null;
   deviceName: string | null;
   kind: AgentIslandDeviceSessionEventKind;
@@ -1251,6 +1322,8 @@ export function syncAgentIslandDeviceSessions(
   state: AgentIslandState,
   inputs: readonly AgentIslandRemoteSessionInput[],
   now: number,
+  /** Display identity of a remote companion chat; must return a stable object per identity. */
+  resolveCompanion: (input: AgentIslandRemoteSessionInput) => AgentIslandCompanionSnapshot | null = () => null,
 ): AgentIslandDeviceSessionSyncResult {
   const result: AgentIslandDeviceSessionSyncResult = { changed: false, baselineSessionIds: [], events: [] };
   const incoming = new Map(inputs.map((input) => [input.sessionId, input]));
@@ -1271,7 +1344,7 @@ export function syncAgentIslandDeviceSessions(
       result.baselineSessionIds.push(input.sessionId);
       result.changed = true;
     }
-    if (applyDeviceSessionMeta(session, input)) result.changed = true;
+    if (applyDeviceSessionMeta(session, input, resolveCompanion(input))) result.changed = true;
     const waitingForCompletionNotification = session.pendingDeviceCompletionNotification === true;
     const transition = applyDeviceSessionPhase(state, session, input, previous, now);
     if (input.phase === 'completed') {
@@ -1286,6 +1359,7 @@ export function syncAgentIslandDeviceSessions(
     if (transition.event) {
       result.events.push({
         sessionId: input.sessionId,
+        deviceId: input.deviceId,
         title: input.title,
         deviceName: input.deviceName,
         kind: transition.event,
@@ -1298,14 +1372,22 @@ export function syncAgentIslandDeviceSessions(
 function applyDeviceSessionMeta(
   session: AgentIslandSessionState,
   input: AgentIslandRemoteSessionInput,
+  companion: AgentIslandCompanionSnapshot | null,
 ): boolean {
-  const project = projectNameFromWorkingDir(input.workingDir, input.workspaceKind);
+  // A companion's home folder on that computer is not a project; its group is the context.
+  const project = companion
+    ? companion.groupName ?? null
+    : projectNameForSession(input);
   const projectName = [project, input.deviceName].filter(Boolean).join(' · ') || null;
   const agentKind = dbToMakerAgentKind(input.agentKind);
   const changed = session.title !== input.title
+    || session.sourceCompletionToken !== input.completionToken
+    || session.companion !== companion
     || session.projectName !== projectName
     || session.agentKind !== agentKind;
   session.title = input.title;
+  session.sourceCompletionToken = input.completionToken;
+  session.companion = companion;
   session.projectName = projectName;
   session.agentKind = agentKind;
   return changed;
@@ -1329,10 +1411,11 @@ function applyDeviceSessionPhase(
         session.phase = 'running';
         session.sortActivityAt = now;
       }
-      const changed = entering || session.detail !== input.detail || session.workingPhase !== workingPhase;
+      const detail = normalizeRemoteActivityText(input.detail, input.summaryFormat);
+      const changed = entering || session.detail !== detail || session.workingPhase !== workingPhase;
       session.workingPhase = workingPhase;
-      session.detail = input.detail;
-      session.detailSource = input.detail ? 'status' : null;
+      session.detail = detail;
+      session.detailSource = detail ? 'status' : null;
       if (changed) touchSessionActivity(session, now);
       return { changed, event: null };
     }
@@ -1364,14 +1447,14 @@ function applyDeviceSessionPhase(
     case 'completed': {
       const silent = input.completionNotification === 'silent';
       if (previous === 'completed' && (!silent || session.completionNotification === 'silent')) {
-        return { changed: mirrorDeviceSessionSummary(session, input.detail), event: null };
+        return { changed: mirrorDeviceSessionSummary(session, input, state.strings.done), event: null };
       }
       clearDeviceSessionInteraction(session);
       session.running = false;
       touchSessionActivity(session, now);
       // 先换掉上一轮的摘要,且必须先于 complete:有摘要可显示时就不再补「完成」占位。
       session.activityLines = [];
-      mirrorDeviceSessionSummary(session, input.detail);
+      mirrorDeviceSessionSummary(session, input, state.strings.done);
       // 对方设备已经仲裁过终态,这里不再套本机「报错后的配对 done」保护。
       session.completionAllowedAfterTerminalError = true;
       completeAgentIslandSession(state, session, now, observed && !silent
@@ -1403,11 +1486,11 @@ function applyDeviceSessionPhase(
  * 设备任务不同步对话,只带对方岛上算好的一行摘要,不带消息角色。记成状态行(不冒充
  * 回复):完成卡片取它当文案,连续更新原地替换;没有摘要时才退回「完成」。
  */
-function mirrorDeviceSessionSummary(session: AgentIslandSessionState, detail: string): boolean {
-  const text = normalizeActivityText(detail);
+function mirrorDeviceSessionSummary(session: AgentIslandSessionState, input: AgentIslandRemoteSessionInput, fallback: string): boolean {
+  const text = normalizeRemoteActivityText(input.detail, input.summaryFormat) || fallback;
   const last = session.activityLines.at(-1);
-  if (!text || (last?.kind === 'status' && last.text === text)) return false;
-  appendActivityLine(session, 'status', text);
+  if (last?.kind === 'status' && last.text === text) return false;
+  appendNormalizedActivityLine(session, 'status', text);
   return true;
 }
 
@@ -1498,7 +1581,11 @@ export function requestAgentIslandSessionFocus(
   let completionDismissed = false;
   const isCompletion = state.sessions.get(nextSessionId)?.phase === 'completed';
   if (isCompletion) {
-    completionDismissed = dismissTransientReveals(state);
+    // The manual list exposes the whole queue; a single card only disposes itself.
+    completionDismissed = dismissTransientReveals(
+      state,
+      state.lastDisplayPolicy === 'manualExpanded' ? undefined : nextSessionId,
+    );
     completionDismissed = collapseAgentIslandToCompact(state, now) || completionDismissed;
   }
   if (state.visibleSessionIds.has(nextSessionId)) {
@@ -1601,6 +1688,7 @@ export function pruneAgentIslandSessions(state: AgentIslandState, now: number): 
 export function buildAgentIslandDisplayState(
   state: AgentIslandState,
   now: number,
+  companionChats: readonly AgentIslandCompanionChatProjection[] = [],
 ): AgentIslandDisplayState {
   pruneAgentIslandSessions(state, now);
   expireSilentStopHolds(state, now);
@@ -1611,18 +1699,11 @@ export function buildAgentIslandDisplayState(
       && (state.isMouseInExpandedPanel || isCollapsePending(state, now))
     );
   promoteNextTransientReveal(state, now, manualExpanded);
-  const sortedSessions = Array.from(state.sessions.values())
-    .filter((session) => shouldDisplaySession(
-      state,
-      session,
-      now,
-      isPointerInsideIsland(state) || state.hoverExpanded || isCollapsePending(state, now),
-    ))
-    .sort((a, b) => compareSessionsForDisplay(state, a, b, now));
+  const sortedSessions = visibleOverviewSessions(state, now, companionChats);
   const activeTransient = getActiveTransientSession(state, now);
   const orderedSessions = orderSessionsForCurrentSurface(
     state,
-    orderSessionsForAutomaticTransientStack(sortedSessions, activeTransient, manualExpanded),
+    orderSessionsForAutomaticReveal(sortedSessions, activeTransient, manualExpanded),
     manualExpanded,
     now,
   );
@@ -1632,13 +1713,22 @@ export function buildAgentIslandDisplayState(
   const notchStatus = getNotchStatus(current, mode);
   const displayPolicy = decision.displayPolicy;
   const surfaceOrderedSessions = orderSessionsForDecisionSurface(decision, orderedSessions);
-  const displaySessions = getDisplaySessionsForSurface(decision, surfaceOrderedSessions, now);
-  const displaySurface = getDisplaySurface(decision, displaySessions, now);
+  const displaySessions = getDisplaySessionsForSurface(decision, surfaceOrderedSessions);
+  const displaySurface = getDisplaySurface(decision);
   updateExpandedProtection(state, mode, displayPolicy, displaySurface, current?.sessionId ?? null, now);
   const layoutMode = getLayoutMode(notchStatus);
   const pointerInside = isPointerInsideIsland(state);
   const shadowVisible = shouldShowShadow(current, manualExpanded, pointerInside);
   const pillSnapshot = buildPillSnapshot(surfaceOrderedSessions, current);
+  // List priority must not consume a newer hint's dwell behind an older waiting
+  // task. Compare reveal starts (card durations can predate enabling subtle mode),
+  // then card generations for events arriving in the same clock tick.
+  const reminder = state.subtleReminders && mode === 'compact'
+    ? orderedSessions.filter((session) => session.revealUntil !== null && session.revealUntil > now
+      && !shouldSmartSuppressSession(state, session)
+      && !(isBlockingSession(session) && isBlockingRevealSuppressed(state, session)))
+      .sort((a, b) => revealStartedAt(b) - revealStartedAt(a) || b.revealSequence - a.revealSequence)[0]
+    : undefined;
 
   return {
     visible: true,
@@ -1648,7 +1738,9 @@ export function buildAgentIslandDisplayState(
     displaySurface,
     layoutMode,
     appFocused: state.appFocused,
-    smartSuppressed: decision.smartSuppressed,
+    // A visible reminder can belong to a different task than the compact current.
+    // Its sound must not inherit that task's dismissed/suppressed presentation.
+    smartSuppressed: decision.smartSuppressed && !reminder,
     shadowVisible,
     currentSessionId: current?.sessionId ?? null,
     expandedDisplayId: displayPolicy === 'manualExpanded' ? state.hoverDisplayId : null,
@@ -1656,9 +1748,122 @@ export function buildAgentIslandDisplayState(
     sessions: displaySessions.map((session) => toSnapshot(session)),
     totalCount: displaySessions.length,
     measuredContentHeight: state.measuredContentHeight,
+    ...(reminder?.revealUntil ? { compactReminder: { phase: reminder.phase, until: reminder.revealUntil } } : {}),
     ...createDefaultAgentIslandDisplayConfig(),
     updatedAt: now,
   };
+}
+
+function revealStartedAt(session: AgentIslandSessionState): number {
+  return (session.revealUntil ?? 0) - (session.queuedRevealDwellMs ?? AGENT_ISLAND_REVEAL_DWELL_MS);
+}
+
+export interface AgentIslandCompanionChatProjection {
+  sessionId: string;
+  deviceId: string | null;
+  companion: AgentIslandCompanionSnapshot;
+  visible: boolean;
+  unread: boolean;
+  lastMessageAt: number;
+  preview: string;
+  token: string;
+}
+
+/** The same candidates counted by the pill, before its current-card/list clipping. */
+export function buildAgentIslandTaskOverview(
+  state: AgentIslandState,
+  now: number,
+  companionChats: readonly AgentIslandCompanionChatProjection[] = [],
+): AgentIslandSessionSnapshot[] {
+  return visibleOverviewSessions(state, now, companionChats).map(toSnapshot);
+}
+
+function visibleOverviewSessions(
+  state: AgentIslandState,
+  now: number,
+  companionChats: readonly AgentIslandCompanionChatProjection[],
+): AgentIslandSessionState[] {
+  return projectCompanionChats(state, companionChats)
+    .filter((session) => shouldDisplaySession(
+      state, session, now,
+      isPointerInsideIsland(state) || state.hoverExpanded || isCollapsePending(state, now),
+    ))
+    .sort((a, b) => compareSessionsForDisplay(state, a, b, now));
+}
+
+/** Group cards use the existing transient queue, but server read state alone retires them. */
+export function syncAgentIslandGroupChat(
+  state: AgentIslandState, groupId: string, input: AgentIslandGroupChatInput | null,
+  avatars: AgentIslandCompanionSnapshot[], mentionLabel: string, now: number,
+): void {
+  const sessionId = groupChatIslandId(groupId);
+  if (!input) { removeAgentIslandSession(state, sessionId); return; }
+  const session = getOrCreateSession(state, { sessionId }, now);
+  const previous = session.groupChat;
+  session.groupChat = { input, avatars, mentionLabel: input.mentioned ? mentionLabel : undefined,
+    lastAlertAt: previous?.lastAlertAt ?? null, lastAlertMention: previous?.lastAlertMention ?? false };
+  session.title = input.name;
+  session.detail = input.preview;
+  session.phase = 'completed';
+  session.completionNotification = 'silent';
+  session.unread = true;
+  session.sortActivityAt = input.lastMessageAt;
+  session.lastActivityAt = input.lastMessageAt;
+}
+
+export function revealAgentIslandGroupChat(state: AgentIslandState, groupId: string, now: number): void {
+  const session = state.sessions.get(groupChatIslandId(groupId));
+  const chat = session?.groupChat;
+  if (!session || !chat) return;
+  // Same-group bursts replace content in place. A new mention may break the quiet window.
+  if (chat.lastAlertAt !== null && now - chat.lastAlertAt < 30_000
+    && (!chat.input.mentioned || chat.lastAlertMention)) return;
+  chat.lastAlertAt = now;
+  chat.lastAlertMention = chat.input.mentioned;
+  // An @ replaces the content of a visible group card without restarting its dwell.
+  if (state.activeTransientSessionId === session.sessionId && session.revealUntil !== null && session.revealUntil > now) return;
+  // A pointer already on the island must not receive a surprise automatic reveal later.
+  if (!isPointerInsideIsland(state) && !state.hoverExpanded) enqueueTransientReveal(state, session, now, AGENT_ISLAND_REVEAL_DWELL_MS);
+}
+
+/** Chat read positions own reply attention; the runtime still owns errors and interactions.
+ * Reconstruct only the display, so old replies never become new completions, sounds or relay events.
+ */
+function projectCompanionChats(
+  state: AgentIslandState,
+  chats: readonly AgentIslandCompanionChatProjection[],
+): AgentIslandSessionState[] {
+  const sessions = new Map(state.sessions);
+  for (const chat of chats) {
+    const live = sessions.get(chat.sessionId);
+    if (!chat.visible) {
+      // Visibility hides restored replies, not a live run, interaction or error.
+      if (live?.phase === 'completed') sessions.delete(chat.sessionId);
+      continue;
+    }
+    if (!live && !chat.unread) continue;
+    const session = live ? { ...live } : createSession({ sessionId: chat.sessionId }, chat.lastMessageAt);
+    if (!live) {
+      session.phase = 'completed';
+      session.sourceDeviceId = chat.deviceId;
+      session.detail = chat.preview;
+      session.detailSource = null;
+      session.completionNotification = 'silent';
+    }
+    session.companion = chat.companion;
+    session.title = chat.companion.name;
+    session.companionChat = { unread: chat.unread, token: chat.token };
+    if (session.phase === 'completed') {
+      session.unread = chat.unread;
+      // A read chat leaves the island immediately, including the old completion dwell.
+      if (!chat.unread) {
+        sessions.delete(chat.sessionId);
+        continue;
+      }
+    }
+    sessions.set(chat.sessionId, session);
+  }
+  return [...sessions.values()];
 }
 
 /**
@@ -1666,7 +1871,7 @@ export function buildAgentIslandDisplayState(
  * 展示面(getDisplaySessionsForSurface)过滤。
  *
  * 为什么不用 buildAgentIslandDisplayState 的 displaySessions:展示面在岛显示
- * transient 完成/错误卡时只保留可堆叠的 transient 会话,会过滤掉其它运行中/等待中的
+ * transient 完成/错误卡时只保留本次提醒的会话,会过滤掉其它未读/运行中/等待中的
  * 会话;而 renderer 的 agentIslandActivity store 把每次 payload 当**整体替换**,用过滤
  * 后的子集会把这些会话从活动 map 里丢掉、卡片回退陈旧 summary,直到岛面切换
  * (PR #246 review)。侧栏卡片按 sessionId 各取所需,故这里取 state.sessions 全集。
@@ -1680,7 +1885,7 @@ export function buildAllSessionActivitySnapshots(
 ): AgentIslandSessionSnapshot[] {
   // 其它设备的任务不进入本机活动快照:否则会被 relay 当作本机任务再推给控制端。
   const snapshots = Array.from(state.sessions.values())
-    .filter((session) => session.sourceDeviceId === null)
+    .filter((session) => session.sourceDeviceId === null && !session.groupChat)
     .map((session) => toSnapshot(session));
   const seen = new Set(snapshots.map((snapshot) => snapshot.sessionId));
   for (const unread of state.remoteUnreadTerminals.values()) {
@@ -1688,6 +1893,18 @@ export function buildAllSessionActivitySnapshots(
     snapshots.push(toRemoteUnreadSnapshot(unread));
   }
   return snapshots;
+}
+
+/**
+ * 其它设备任务在岛上的镜像，按与本机任务相同的快照口径读出。只供本进程内的消费方
+ * (如键盘状态灯)使用，绝不能并入 {@link buildAllSessionActivitySnapshots} 的 relay 载荷。
+ */
+export function buildDeviceSessionActivitySnapshots(
+  state: AgentIslandState,
+): AgentIslandSessionSnapshot[] {
+  return Array.from(state.sessions.values())
+    .filter((session) => session.sourceDeviceId !== null && !session.groupChat)
+    .map((session) => toSnapshot(session));
 }
 
 export function getNextAgentIslandTimerAt(state: AgentIslandState, now: number): number | null {
@@ -1713,6 +1930,7 @@ export function getNextAgentIslandTimerAt(state: AgentIslandState, now: number):
       silentStopHoldTimerAt(session, now),
       session.messagePreview?.until,
       unreadIslandTtlAt(session),
+      completedRetentionDeadlineAt(session),
     ]) {
       if (value && value > now && (next === null || value < next)) {
         next = value;
@@ -1748,7 +1966,8 @@ function updateHoverLifecycle(state: AgentIslandState, now: number): void {
 }
 
 function isHoverExpansionSuppressedByReminder(state: AgentIslandState, now: number): boolean {
-  if (state.hoverExpanded) return false;
+  // Subtle reminders have no expanded card whose hover would replace its content.
+  if (state.hoverExpanded || state.subtleReminders) return false;
   if (hasBlockingSession(state, now)) return true;
   const activeTransient = getActiveTransientSession(state, now);
   return Boolean(activeTransient && !shouldSmartSuppressSession(state, activeTransient));
@@ -1930,6 +2149,7 @@ function markSessionRunning(
   session.completionNotification = undefined;
   session.running = true;
   session.completedUntil = null;
+  session.completedAt = null;
   session.errorUntil = null;
   session.completionAllowedAfterTerminalError = false;
   session.revealUntil = null;
@@ -1960,6 +2180,7 @@ function completeAgentIslandSession(
   // 旧卡被真正的完成替换才换身份;失败 turn 的收尾记账 done / 重复 done 保留同一张
   // 卡,不得驱逐被点击的那张(review P1)。
   if (session.phase !== 'completed') replaceAgentIslandCard(session, now);
+  if (session.phase !== 'completed') session.completedAt = now;
   session.phase = 'completed';
   session.completionNotification = options.suppressAttention ? 'silent' : undefined;
   session.interactionKind = undefined;
@@ -1997,9 +2218,11 @@ function requestAttentionReveal(
   dwellMs: number,
   options: { forceUnread?: boolean } = {},
 ): void {
+  if (state.subtleReminders) dwellMs = AGENT_ISLAND_SUBTLE_REMINDER_MS;
   session.unread = options.forceUnread === true || !shouldSmartSuppressSession(state, session);
   session.queuedRevealDwellMs = dwellMs;
   if (session.phase === 'needs-interaction') {
+    session.revealSequence = ++agentIslandRevealSequence;
     session.revealUntil = now + dwellMs;
     session.deferredReveal = false;
     session.deferredRevealReason = null;
@@ -2018,7 +2241,19 @@ function enqueueTransientReveal(
   now: number,
   dwellMs: number,
 ): void {
+  if (state.subtleReminders) dwellMs = AGENT_ISLAND_SUBTLE_REMINDER_MS;
+  session.queuedRevealDwellMs = dwellMs;
+  // 静音任务的完成 / 错误卡不揭示：它不该在岛面上出现，也不该带提示音。
+  // 活动快照与未读账本另路，静音不影响。
+  if (state.displaySuppressedSessionIds.has(session.sessionId)) {
+    session.revealUntil = null;
+    session.deferredReveal = false;
+    session.deferredRevealReason = null;
+    removeQueuedTransientReveal(state, session.sessionId);
+    return;
+  }
   removeQueuedTransientReveal(state, session.sessionId);
+  session.revealSequence = ++agentIslandRevealSequence;
   if (state.activeTransientSessionId === session.sessionId) {
     session.revealUntil = now + dwellMs;
     session.deferredReveal = false;
@@ -2061,19 +2296,25 @@ function promoteNextTransientReveal(
     state.activeTransientSessionId = null;
   }
 
-  if (manualExpanded || hasBlockingSession(state, now) || hasDisplayableDismissedBlockingSession(state, now)) return;
+  if (manualExpanded || (!state.subtleReminders
+    && (hasBlockingSession(state, now) || hasDisplayableDismissedBlockingSession(state, now)))) return;
 
   while (state.transientRevealQueue.length > 0) {
     const nextSessionId = state.transientRevealQueue.shift();
     if (!nextSessionId) continue;
     const next = state.sessions.get(nextSessionId);
     if (!next || !isSessionVisible(next, now)) continue;
+    if (state.displaySuppressedSessionIds.has(next.sessionId)) continue;
     if (shouldSmartSuppressSession(state, next)) {
       deferSessionReveal(state, next, 'visible-session');
       continue;
     }
     state.activeTransientSessionId = next.sessionId;
-    next.revealUntil = now + (next.queuedRevealDwellMs ?? AGENT_ISLAND_REVEAL_DWELL_MS);
+    const dwellMs = state.subtleReminders
+      ? AGENT_ISLAND_SUBTLE_REMINDER_MS
+      : (next.queuedRevealDwellMs ?? AGENT_ISLAND_REVEAL_DWELL_MS);
+    next.queuedRevealDwellMs = dwellMs;
+    next.revealUntil = now + dwellMs;
     next.deferredReveal = false;
     next.deferredRevealReason = null;
     return;
@@ -2083,6 +2324,9 @@ function promoteNextTransientReveal(
 function getActiveTransientSession(state: AgentIslandState, now: number): AgentIslandSessionState | null {
   const activeSessionId = state.activeTransientSessionId;
   if (!activeSessionId) return null;
+  // 静音任务即使被排成 active transient 也不上展示面：否则它会绕开
+  // shouldDisplaySession 的过滤被 prepend 回列表（完成/错误卡 + 提示音）。
+  if (state.displaySuppressedSessionIds.has(activeSessionId)) return null;
   const active = state.sessions.get(activeSessionId);
   if (!active?.revealUntil || active.revealUntil <= now) return null;
   return active;
@@ -2092,6 +2336,9 @@ function deferActiveTransientReveal(
   state: AgentIslandState,
   reason: AgentIslandSessionState['deferredRevealReason'],
 ): void {
+  // Compact hints coexist with waiting tasks. Restarting the old hint on the
+  // next render would give it a newer start time than the incoming interaction.
+  if (state.subtleReminders) return;
   const activeSessionId = state.activeTransientSessionId;
   if (!activeSessionId) return;
   const active = state.sessions.get(activeSessionId);
@@ -2110,19 +2357,23 @@ function deferActiveTransientReveal(
 
 function dismissPublishedTransientReveal(state: AgentIslandState): boolean {
   if (state.lastDisplayMode !== 'expanded' || state.lastDisplayPolicy !== 'transient') return false;
-  return dismissTransientReveals(state);
+  if (!state.lastDisplaySessionId) return false;
+  return dismissTransientReveals(state, state.lastDisplaySessionId);
 }
 
-function dismissTransientReveals(state: AgentIslandState): boolean {
+function dismissTransientReveals(state: AgentIslandState, onlySessionId?: string): boolean {
   const transientSessionIds = [
     state.activeTransientSessionId,
     ...state.transientRevealQueue,
-  ].filter((sessionId): sessionId is string => Boolean(sessionId));
+  ].filter((sessionId): sessionId is string => Boolean(sessionId)
+    && (onlySessionId === undefined || sessionId === onlySessionId));
 
   if (transientSessionIds.length === 0) return false;
 
-  state.activeTransientSessionId = null;
-  state.transientRevealQueue = [];
+  if (state.activeTransientSessionId && transientSessionIds.includes(state.activeTransientSessionId)) {
+    state.activeTransientSessionId = null;
+  }
+  state.transientRevealQueue = state.transientRevealQueue.filter((sessionId) => !transientSessionIds.includes(sessionId));
 
   let changed = false;
   for (const sessionId of transientSessionIds) {
@@ -2174,6 +2425,10 @@ function hasActiveBlockingReveal(state: AgentIslandState, now: number): boolean 
 function getActiveBlockingReveal(state: AgentIslandState, now: number): AgentIslandSessionState | null {
   return Array.from(state.sessions.values())
     .filter((session) => isBlockingSession(session) && !isBlockingRevealSuppressed(state, session))
+    // 静音任务不上岛面，也不能占着「当前阻塞卡」的位：否则这里会选中它，随后
+    // dismissPublishedBlockingReveal 发现 id 与真实展示卡不一致而拒绝 dismiss，
+    // 用户点岛外只收起 hover，确认卡一直展开。和 hasBlockingSession 同一集合。
+    .filter((session) => !state.displaySuppressedSessionIds.has(session.sessionId))
     .sort((a, b) => compareSessionsForDisplay(state, a, b, now))[0] ?? null;
 }
 
@@ -2231,6 +2486,9 @@ function shouldSmartSuppressSession(state: AgentIslandState, session: AgentIslan
 function hasBlockingSession(state: AgentIslandState, now: number): boolean {
   for (const session of state.sessions.values()) {
     if (!isBlockingSession(session)) continue;
+    // 静音任务不占阻塞态仲裁:它本来就不上岛面,也不该挡住其它任务的卡片提升
+    // 与悬停展开。和 shouldDisplaySession 用同一个抑制集合。
+    if (state.displaySuppressedSessionIds.has(session.sessionId)) continue;
     if (isBlockingRevealInactive(state, session, now)) continue;
     return true;
   }
@@ -2290,9 +2548,13 @@ function orderSessionsForCurrentSurface(
   }
 
   const rank = new Map(state.expandedSessionOrder.map((sessionId, index) => [sessionId, index]));
+  const hasGroupRows = sortedSessions.some(session => session.groupChat);
   const ordered = sortedSessions.slice().sort((a, b) => {
-    const priorityDelta =
-      islandDisplayPriorityRank(state, a, now) - islandDisplayPriorityRank(state, b, now);
+    // With chat rows present, only an actionable task may jump ahead under the pointer.
+    // Compare one consistent rank for all pairs, including newly arrived rows.
+    const priorityDelta = hasGroupRows
+      ? Number(isWaitingSession(b, now)) - Number(isWaitingSession(a, now))
+      : islandDisplayPriorityRank(state, a, now) - islandDisplayPriorityRank(state, b, now);
     if (priorityDelta !== 0) return priorityDelta;
     const aRank = rank.get(a.sessionId);
     const bRank = rank.get(b.sessionId);
@@ -2305,11 +2567,12 @@ function orderSessionsForCurrentSurface(
   return ordered;
 }
 
-function orderSessionsForAutomaticTransientStack(
+function orderSessionsForAutomaticReveal(
   sortedSessions: AgentIslandSessionState[],
   activeTransient: AgentIslandSessionState | null,
   manualExpanded: boolean,
 ): AgentIslandSessionState[] {
+  activeTransient = sortedSessions.find(session => session.sessionId === activeTransient?.sessionId) ?? null;
   if (manualExpanded || !activeTransient || sortedSessions.some(isBlockingSession)) return sortedSessions;
   return [
     activeTransient,
@@ -2350,7 +2613,7 @@ function buildDisplayDecision(
 
   const blocking = orderedSessions.find(isBlockingSession) ?? null;
   const blockingSmartSuppressed = blocking ? isBlockingRevealSuppressed(state, blocking) : false;
-  if (blocking && !blockingSmartSuppressed) {
+  if (!state.subtleReminders && blocking && !blockingSmartSuppressed) {
     return {
       intent: { kind: 'blocking', sessionId: blocking.sessionId },
       surface: { kind: 'blocking', current: blocking },
@@ -2362,8 +2625,9 @@ function buildDisplayDecision(
     };
   }
 
-  const activeTransient = getActiveTransientSession(state, now);
-  if (activeTransient && !shouldSmartSuppressSession(state, activeTransient)) {
+  const activeId = getActiveTransientSession(state, now)?.sessionId;
+  const activeTransient = orderedSessions.find(session => session.sessionId === activeId);
+  if (!state.subtleReminders && activeTransient && !shouldSmartSuppressSession(state, activeTransient)) {
     return {
       intent: { kind: 'transient', sessionId: activeTransient.sessionId },
       surface: { kind: 'transient', current: activeTransient },
@@ -2436,8 +2700,6 @@ function orderSessionsForDecisionSurface(
 
 function getDisplaySurface(
   decision: AgentIslandDisplayDecision,
-  displaySessions: AgentIslandSessionState[],
-  now: number,
 ): AgentIslandDisplaySurface {
   if (decision.mode !== 'expanded') return 'collapsed';
   switch (decision.surface.kind) {
@@ -2446,9 +2708,6 @@ function getDisplaySurface(
     case 'blocking':
       return 'interactionCard';
     case 'transient':
-      if (countStackedTransientSessions(displaySessions, now) > 1) {
-        return 'sessionList';
-      }
       return 'completionCard';
     default:
       return 'collapsed';
@@ -2458,31 +2717,16 @@ function getDisplaySurface(
 function getDisplaySessionsForSurface(
   decision: AgentIslandDisplayDecision,
   orderedSessions: AgentIslandSessionState[],
-  now: number,
 ): AgentIslandSessionState[] {
   if (decision.surface.kind !== 'transient') return orderedSessions;
-  const transientSessions = orderedSessions.filter((session) => isStackableTransientSession(session, now));
-  return transientSessions.length > 0 ? transientSessions : orderedSessions;
+  // Automatic notifications show only the active reveal; unread history stays
+  // available in the manual list and queued notifications get their own turn.
+  return [decision.surface.current];
 }
 
-function countStackedTransientSessions(sessions: AgentIslandSessionState[], now: number): number {
-  let count = 0;
-  for (const session of sessions) {
-    if (isStackableTransientSession(session, now)) count += 1;
-  }
-  return count;
-}
-
-function isStackableTransientSession(session: AgentIslandSessionState, now: number): boolean {
-  if (session.phase !== 'completed' && session.phase !== 'error') return false;
-  return session.unread
-    || Boolean(session.revealUntil && session.revealUntil > now)
-    || Boolean(session.completedUntil && session.completedUntil > now)
-    || Boolean(session.errorUntil && session.errorUntil > now);
-}
-
-function isCompactActiveSession(session: AgentIslandSessionState): boolean {
-  return session.phase === 'running' || session.phase === 'needs-interaction' || session.pendingInteractionIds.size > 0;
+// 徽标里「运行中」与「需要关注」互斥:等用户回答的任务只算需要关注,不重复计入运行中。
+function isBadgeRunningSession(session: AgentIslandSessionState): boolean {
+  return session.phase === 'running' && !isAttentionSession(session);
 }
 
 function isBlockingSession(session: AgentIslandSessionState): boolean {
@@ -2586,14 +2830,14 @@ function buildPillSnapshot(
   sessions: AgentIslandSessionState[],
   current: AgentIslandSessionState | null,
 ): AgentIslandPillSnapshot {
-  let activeSessionCount = 0;
+  let runningSessionCount = 0;
   let pendingInteractionCount = 0;
   let unreadCompletedCount = 0;
   let deferredRevealCount = 0;
   let attentionCount = 0;
   for (const session of sessions) {
-    if (isCompactActiveSession(session)) activeSessionCount += 1;
-    if (session.pendingInteractionIds.size > 0) pendingInteractionCount += 1;
+    if (isBadgeRunningSession(session)) runningSessionCount += 1;
+    if (isBlockingSession(session)) pendingInteractionCount += 1;
     if (session.unread && (session.phase === 'completed' || session.phase === 'error')) {
       unreadCompletedCount += 1;
     }
@@ -2606,7 +2850,7 @@ function buildPillSnapshot(
     priorityMicroTitle: current ? pillTitle(current, 'micro') : '',
     priorityCompactTitle: current ? pillTitle(current, 'compact') : '',
     sessionCount: sessions.length,
-    activeSessionCount,
+    runningSessionCount,
     pendingInteractionCount,
     unreadCompletedCount,
     deferredRevealCount,
@@ -2615,7 +2859,9 @@ function buildPillSnapshot(
 }
 
 function pillTitle(session: AgentIslandSessionState, mode: 'micro' | 'compact'): string {
-  const title = meaningfulSessionTitle(session)
+  // A companion is named by its owner; never filter it like a generic agent title.
+  const title = normalizeInlineText(session.companion?.name ?? '')
+    || meaningfulSessionTitle(session)
     || session.projectName
     || latestUserActivityTitle(session)
     || session.sessionId.slice(0, 8);
@@ -2670,8 +2916,7 @@ function messagePreviewTextForSession(session: AgentIslandSessionState): string 
   if (session.phase === 'needs-interaction' || session.phase === 'error') return null;
   const line = session.messagePreview?.line;
   if (!line || (line.kind !== 'user' && line.kind !== 'assistant')) return null;
-  const text = normalizeActivityText(line.text);
-  return text || null;
+  return line.text || null;
 }
 
 function isGenericRunningStatusDetail(detail: string): boolean {
@@ -2702,7 +2947,7 @@ function latestUserActivityTitle(session: AgentIslandSessionState): string | nul
     .reverse()
     .find((line) => line.kind === 'user');
   if (!latestUserLine) return null;
-  const text = normalizeActivityText(latestUserLine.text);
+  const text = latestUserLine.text;
   if (!text) return null;
   return text.slice(0, 72);
 }
@@ -2714,10 +2959,17 @@ function getOrCreateSession(
 ): AgentIslandSessionState {
   let session = state.sessions.get(meta.sessionId);
   if (session) return session;
-  session = {
+  session = createSession(meta, now);
+  state.sessions.set(meta.sessionId, session);
+  return session;
+}
+
+function createSession(meta: AgentIslandSessionMeta, now: number): AgentIslandSessionState {
+  return {
     sessionId: meta.sessionId,
     title: meta.title?.trim() || null,
-    projectName: projectNameFromWorkingDir(meta.workingDir, meta.workspaceKind),
+    companion: null,
+    projectName: projectNameForSession(meta),
     detail: '',
     detailSource: null,
     reconnectStatus: null,
@@ -2741,12 +2993,14 @@ function getOrCreateSession(
     silentStopHoldMonoUntil: null,
     pendingSilentStopCompletion: null,
     completionAllowedAfterTerminalError: false,
+    completedAt: null,
     revealUntil: null,
     visibleInteractionSuppressedUntil: null,
     interactionRevealDismissed: false,
     deferredReveal: false,
     deferredRevealReason: null,
     queuedRevealDwellMs: null,
+    revealSequence: 0,
     unread: false,
     activityLines: [],
     activitySeq: 0,
@@ -2760,8 +3014,6 @@ function getOrCreateSession(
     activityGeneration: nextActivityGeneration(),
     sourceDeviceId: null,
   };
-  state.sessions.set(meta.sessionId, session);
-  return session;
 }
 
 function cloneSession(session: AgentIslandSessionState): AgentIslandSessionState {
@@ -2824,17 +3076,25 @@ function applyMeta(session: AgentIslandSessionState, meta: AgentIslandSessionMet
   if (meta.agentKind) session.agentKind = meta.agentKind;
   const title = meta.title?.trim();
   if (title) session.title = title;
-  if (meta.workingDir !== undefined || meta.workspaceKind !== undefined) {
-    session.projectName = projectNameFromWorkingDir(meta.workingDir, meta.workspaceKind);
+  if (meta.companion !== undefined) session.companion = meta.companion;
+  if (session.companion) {
+    // A companion's working directory is its private home, not a project the user chose.
+    session.projectName = session.companion.groupName ?? null;
+  } else if (meta.workingDir !== undefined || meta.projectDir !== undefined || meta.workspaceKind !== undefined) {
+    session.projectName = projectNameForSession(meta);
   }
 }
 
 function toSnapshot(session: AgentIslandSessionState): AgentIslandSessionSnapshot {
   const reconnectStatus = session.phase === 'running' ? session.reconnectStatus : null;
+  const completionToken = agentIslandCompletionToken(session);
   return {
     ...(session.phase === 'completed' && session.completionNotification ? { completionNotification: session.completionNotification } : {}),
+    ...(session.groupChat ? { groupChat: { avatars: session.groupChat.avatars, mentionLabel: session.groupChat.mentionLabel } } : {}),
     sessionId: session.sessionId,
-    title: session.title || session.projectName || session.sessionId.slice(0, 8),
+    title: session.companion?.name || session.title || session.projectName || session.sessionId.slice(0, 8),
+    ...(completionToken ? { completionToken } : {}),
+    ...(session.companion ? { companion: session.companion } : {}),
     projectName: session.projectName,
     detail: reconnectStatus ?? session.detail,
     compactDetail: compactDetailForSession(session),
@@ -2857,6 +3117,7 @@ function toSnapshot(session: AgentIslandSessionState): AgentIslandSessionSnapsho
 }
 
 function isAttentionSession(session: AgentIslandSessionState): boolean {
+  if (session.companionChat?.unread) return true;
   if (session.pendingInteractionIds.size > 0 || session.phase === 'needs-interaction') return true;
   return session.unread && (session.phase === 'completed' || session.phase === 'error');
 }
@@ -2878,14 +3139,33 @@ function shouldDisplaySession(
   now: number,
   preserveExpiredTransient = false,
 ): boolean {
+  // 「消息免打扰」只从展示面排除:任务仍在岛面以外的所有面(侧栏实时活动、等待
+  // 交互态、远端活动镜像)照常可见,所以这里是过滤而不是把条目从 state 里删掉。
+  if (state.displaySuppressedSessionIds.has(session.sessionId)) return false;
   return isSessionVisible(session, now, preserveExpiredTransient)
     && !isVisibleInteractionSuppressed(state, session, now);
+}
+
+/**
+ * 标记某个任务的岛面展示是否被抑制(当前只用于「消息免打扰」)。返回是否有变化。
+ * 抑制只影响 displayState 与提示音,不动 state.sessions。
+ */
+export function setAgentIslandSessionDisplaySuppressed(
+  state: AgentIslandState,
+  sessionId: string,
+  suppressed: boolean,
+): boolean {
+  const had = state.displaySuppressedSessionIds.has(sessionId);
+  if (had === suppressed) return false;
+  if (suppressed) state.displaySuppressedSessionIds.add(sessionId);
+  else state.displaySuppressedSessionIds.delete(sessionId);
+  return true;
 }
 
 function isUnreadTerminalLedger(
   session: AgentIslandSessionState,
 ): session is AgentIslandSessionState & { phase: 'completed' | 'error' } {
-  return session.unread && (session.phase === 'completed' || session.phase === 'error');
+  return !session.groupChat && session.unread && (session.phase === 'completed' || session.phase === 'error');
 }
 
 function syncRemoteUnreadTerminal(state: AgentIslandState, session: AgentIslandSessionState): void {
@@ -2915,7 +3195,33 @@ function clearRemoteUnreadTerminal(state: AgentIslandState, sessionId: string): 
 
 function unreadIslandTtlAt(session: AgentIslandSessionState): number | null {
   if (!isUnreadTerminalLedger(session)) return null;
+  return terminalRetentionAt(session);
+}
+
+/** 终态条目在岛面的保留截止时刻。完成按首次完成时间算一天,报错沿用短 TTL。 */
+function terminalRetentionAt(session: AgentIslandSessionState): number {
+  const completedDeadline = completedRetentionDeadlineAt(session);
+  if (completedDeadline !== null) return completedDeadline;
   return session.lastActivityAt + AGENT_ISLAND_UNREAD_TRANSIENT_TTL_MS;
+}
+
+/** 群聊 / 伙伴对话卡片不是任务完成态,不受「完成保留一天」规则约束。 */
+function isRetentionScopedCompletedSession(session: AgentIslandSessionState): boolean {
+  return !session.groupChat && !session.companionChat && session.phase === 'completed';
+}
+
+/**
+ * 完成条目的保留截止时刻。已读卡片也要走这个截止刷新:否则用户停在岛内时
+ * preserveExpiredTransient 会一直留着卡片,却没有事件触发第二天的 prune。
+ */
+function completedRetentionDeadlineAt(session: AgentIslandSessionState): number | null {
+  if (!isRetentionScopedCompletedSession(session)) return null;
+  return (session.completedAt ?? session.lastActivityAt) + AGENT_ISLAND_COMPLETED_RETENTION_MS;
+}
+
+function isCompletedSessionExpired(session: AgentIslandSessionState, now: number): boolean {
+  const deadline = completedRetentionDeadlineAt(session);
+  return deadline !== null && now >= deadline;
 }
 
 function toRemoteUnreadSnapshot(unread: AgentIslandRemoteUnreadTerminal): AgentIslandSessionSnapshot {
@@ -2939,11 +3245,15 @@ function toRemoteUnreadSnapshot(unread: AgentIslandRemoteUnreadTerminal): AgentI
 }
 
 function isUnreadTerminalWithinIslandTtl(session: AgentIslandSessionState, now: number): boolean {
-  return isUnreadTerminalLedger(session)
-    && now - session.lastActivityAt < AGENT_ISLAND_UNREAD_TRANSIENT_TTL_MS;
+  return isUnreadTerminalLedger(session) && now < terminalRetentionAt(session);
 }
 
 function isSessionVisible(session: AgentIslandSessionState, now: number, preserveExpiredTransient = false): boolean {
+  // 完成超过一天的条目不再展示;这一条压过悬停展开与 preserveExpiredTransient,
+  // 避免旧完成卡片被用户一悬停就重新捞回岛面。
+  if (isCompletedSessionExpired(session, now)) return false;
+  if (session.groupChat) return true;
+  if (session.companionChat?.unread) return true;
   if (session.pendingInteractionIds.size > 0) return true;
   if (session.running) return true;
   // 岛面只在 TTL 内展示未读终态;过了 TTL prune 会把岛 state 删掉,未读迁到
@@ -3001,6 +3311,7 @@ function isWaitingSession(session: AgentIslandSessionState, now: number): boolea
 }
 
 function isUnreadCompletedSession(session: AgentIslandSessionState, now: number): boolean {
+  if (session.groupChat) return true;
   return session.phase === 'completed' && (isUnreadTerminalWithinIslandTtl(session, now) || (session.completedUntil !== null && session.completedUntil > now));
 }
 
@@ -3030,6 +3341,7 @@ function islandDisplayPriorityRank(
     unread: isUnreadCompletedSession(session, now),
     running: session.running,
   });
+  if (session.groupChat?.input.mentioned) return LIVE_TASK_PRIORITY.waiting + 0.25;
   if (isTransientlyPinnedSession(state, session, now) && live > LIVE_TASK_PRIORITY.waiting) {
     return LIVE_TASK_PRIORITY.waiting + 0.5;
   }
@@ -3083,7 +3395,15 @@ function appendActivityLine(
   kind: AgentIslandActivityLineKind,
   rawText: string,
 ): AgentIslandActivityLine | null {
-  const text = normalizeActivityText(rawText);
+  return appendNormalizedActivityLine(session, kind, normalizeActivityText(rawText));
+}
+
+/** Activity lines are already display text; do not parse literal code a second time. */
+function appendNormalizedActivityLine(
+  session: AgentIslandSessionState,
+  kind: AgentIslandActivityLineKind,
+  text: string,
+): AgentIslandActivityLine | null {
   if (!text) return null;
   const previous = session.activityLines.at(-1);
   if (previous && previous.kind === kind && kind !== 'user' && kind !== 'assistant') {
@@ -3112,6 +3432,13 @@ function applyAssistantTextLine(
     ? normalizeActivityText(rawText)
     : appendActivityTextStream(session.assistantStream, rawText);
   if (!text) {
+    const lineId = session.assistantStreamLineId;
+    if (lineId) {
+      session.activityLines = session.activityLines.filter(line => line.id !== lineId);
+      if (session.messagePreview?.line.id === lineId) session.messagePreview = null;
+      session.messagePreviewQueue = session.messagePreviewQueue.filter(line => line.id !== lineId);
+      session.assistantStreamLineId = null;
+    }
     if (isFinal) {
       clearAssistantStream(session);
     }
@@ -3136,7 +3463,7 @@ function applyAssistantTextLine(
     }
   }
 
-  const line = appendActivityLine(session, 'assistant', text);
+  const line = appendNormalizedActivityLine(session, 'assistant', text);
   if (!line) return null;
   if (isFinal) {
     clearAssistantStream(session);
@@ -3204,9 +3531,9 @@ function truncateInlineText(text: string, maxLength: number): string {
   return `${chars.slice(0, Math.max(0, maxLength - 3)).join('')}...`;
 }
 
-function projectNameFromWorkingDir(workingDir: string | null | undefined, workspaceKind?: string | null): string | null {
-  if (workspaceKind === 'dialogue') return null;
-  const trimmed = workingDir?.trim();
+function projectNameForSession(meta: Pick<AgentIslandSessionMeta, 'workingDir' | 'projectDir' | 'workspaceKind'>): string | null {
+  if (meta.workspaceKind === 'dialogue') return null;
+  const trimmed = sessionProjectDirectory(meta)?.trim();
   if (!trimmed) return null;
   const normalized = stripTrailingPathSeparators(trimmed);
   const parts = normalized.split(/[\\/]/).filter(Boolean);

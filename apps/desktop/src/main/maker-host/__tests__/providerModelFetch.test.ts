@@ -26,6 +26,56 @@ function fakeResponse(status: number, body: string): Response {
 }
 
 describe('import discovery limits', () => {
+  it.each(['claude-code', 'codex', 'pi'] as const)
+  ('accepts an empty official Ollama Cloud catalog for %s without a caller opt-in', async agent => {
+    const request = spec({ agent, baseUrl: agent === 'claude-code' ? 'https://ollama.com' : 'https://ollama.com/v1',
+      modelsUrl: 'https://ollama.com/v1/models',
+      wireProtocol: agent === 'claude-code' ? 'anthropic-messages' : 'openai-chat' });
+    expect(request.allowEmpty).toBeUndefined();
+    const result = await fetchProviderModels(request, async (url, init) => {
+      expect(url).toBe('https://ollama.com/v1/models');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer sk-test');
+      return fakeResponse(200, JSON.stringify({ object: 'list', data: [] }));
+    });
+    expect(result).toEqual({ ok: true, models: [] });
+  });
+
+  it.each([{}, { data: [{}] }, { data: [null] }, { data: [{ id: '' }] }, { models: [] },
+    { error: 'invalid key' }, { error: 'invalid key', data: [] },
+    { error: { message: 'service unavailable' }, data: [] }])
+  ('does not turn an Ollama Cloud malformed or business-error response into empty success: %j', async body => {
+    for (const allowEmpty of [undefined, true]) {
+      const request = spec({ baseUrl: 'https://ollama.com/v1', modelsUrl: 'https://ollama.com/v1/models', allowEmpty });
+      expect(await fetchProviderModels(request, async () => fakeResponse(200, JSON.stringify(body))))
+        .toMatchObject({ ok: false, code: 'UNKNOWN', status: 200 });
+    }
+  });
+
+  it('keeps Ollama Cloud HTTP errors and filtered/other-host empty views distinct', async () => {
+    expect(await fetchProviderModels(spec({ baseUrl: 'https://ollama.com/v1', modelsUrl: 'https://ollama.com/v1/models' }),
+      async () => fakeResponse(401, JSON.stringify({ error: 'invalid key', data: [] }))))
+      .toMatchObject({ ok: false, status: 401 });
+    for (const modelsUrl of ['https://ollama.com/v1/models?filter=chat', 'https://relay.example/v1/models']) {
+      expect(await fetchProviderModels(spec({ baseUrl: new URL(modelsUrl).origin + '/v1', modelsUrl }),
+        async () => fakeResponse(200, JSON.stringify({ data: [] }))))
+        .toMatchObject({ ok: false, code: 'UNKNOWN', status: 200 });
+    }
+  });
+
+  it('distinguishes an empty OpenHubs account inventory from HTTP 200 business failures', async () => {
+    const request = spec({ agent: 'pi', baseUrl: 'https://openhubs.zhidemai.com/v1',
+      modelsUrl: 'https://openhubs.zhidemai.com/v1/models', wireProtocol: 'openai-chat', allowEmpty: true });
+    for (const body of [{ error_code: 0, data: [] }, { error_code: 401, data: [] }, { error: { message: 'invalid key' }, data: [] }]) {
+      const result = await fetchProviderModels(request, async (_url, init) => {
+        const headers = new Headers(init?.headers);
+        expect(headers.get('authorization')).toBe('Bearer sk-test');
+        expect(headers.has('anthropic-version')).toBe(false);
+        return fakeResponse(200, JSON.stringify(body));
+      });
+      expect(result.ok).toBe(body.error_code === 0);
+      if (result.ok) expect(result.models).toEqual([]);
+    }
+  });
   it('passes redirect rejection with all credentials to the transport', async () => {
     const fetcher = vi.fn(async (_url, init) => {
       expect(init.redirect).toBe('error');
@@ -492,4 +542,21 @@ it.each([401, 403, 429, 503])('does not disguise manifest authorization or avail
   const result = await fetchProviderModels(spec({ modelsUrl: 'https://relay.example/v1/models?client_version=0.147.0' }), fetcher);
   expect(result.ok).toBe(false);
   expect(fetcher).toHaveBeenCalledOnce();
+});
+
+describe('ElevenLabs catalog authentication', () => {
+  it('uses xi-api-key on the official endpoint even when stored in an Anthropic runtime', () => {
+    const result = buildModelsFetchRequest(spec({
+      baseUrl: 'https://api.elevenlabs.io/v1', apiKey: 'fake-eleven-key', authMethod: 'apiKey',
+      headers: { Authorization: 'stale', 'X-Api-Key': 'stale', 'Xi-Api-Key': 'stale', 'anthropic-version': 'stale' },
+    }));
+    expect(result.url).toBe('https://api.elevenlabs.io/v1/models');
+    expect(result.init.headers).toEqual({ 'xi-api-key': 'fake-eleven-key' });
+  });
+  it('does not guess ElevenLabs authentication for a custom host or leak a stale key in no-auth mode', () => {
+    const custom = buildModelsFetchRequest(spec({ agent: 'codex', baseUrl: 'https://elevenlabs.example/v1', apiKey: 'fake-key' }));
+    expect(custom.init.headers).toEqual({ authorization: 'Bearer fake-key' });
+    const noAuth = buildModelsFetchRequest(spec({ baseUrl: 'https://api.elevenlabs.io/v1', apiKey: undefined, authMethod: 'none', headers: { 'Xi-Api-Key': 'stale' } }));
+    expect(noAuth.init.headers).toEqual({});
+  });
 });

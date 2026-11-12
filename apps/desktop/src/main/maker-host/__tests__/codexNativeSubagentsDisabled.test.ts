@@ -161,6 +161,7 @@ function scope(spies: HookSpies): Record<string, unknown> {
     codexHostUsesSmartSubagentRouting,
     buildRemoteCodexSessionMcpConfig: () => ({}),
     CODEX_CINDY_COMPACT_PROVIDER_ID: 'cindy-compact-fixture',
+    CODEX_GATEWAY_PROVIDER_ID: 'xd-fixture',
     CODEX_OPENAI_COMPACT_PROVIDER_ID: 'openai-compact-fixture',
     CODEX_SUMMARY_COMPACT_PROVIDER_ID: 'summary-compact-fixture',
     // 模块级 `let codexAppliedContactsEnabled`，钩子内会赋值。

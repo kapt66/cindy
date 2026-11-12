@@ -619,14 +619,23 @@ describe('渠道构造点的身份收口（源码级断言）', () => {
     expect(spaceHeaderSources).toEqual([API_SOURCE_PATH]);
   });
 
-  it('app.getVersion() 在 plugin-market 里只有一个读取处', () => {
+  it('app.getVersion() 在 plugin-market 里只有一个身份读取处', () => {
     // 只认代码里的调用：注释用反引号提到 `app.getVersion()` 不算读取处（本仓注释习惯）。
     const appVersionCall = /(?<!`)app\.getVersion\(\)/;
     const pluginMarketSources = collectRuntimeSources(MARKET_SOURCE_ROOT);
     const versionSources = pluginMarketSources.filter((file) =>
       appVersionCall.test(readRepoFile(file)),
     );
-    expect(versionSources).toEqual([IDENTITY_SOURCE_PATH]);
+    // 第七轮上游同步新增 `localSharing.ts`：本地分享上传走服务端 API 时带
+    // `x-cindy-version` 请求头（版本事实，不是插件渠道身份）。作为**唯一**附加例外放行，
+    // 并把用途钉死——它必须只剩这一处、且只能出现在那个头里；渠道身份仍只认 clientIdentity。
+    const localSharingSource = `${MARKET_SOURCE_ROOT}/localSharing.ts`;
+    expect([...versionSources].sort()).toEqual([IDENTITY_SOURCE_PATH, localSharingSource].sort());
+    const localSharingFile = readRepoFile(localSharingSource);
+    expect(localSharingFile.match(/(?<!`)app\.getVersion\(\)/g) ?? []).toHaveLength(1);
+    expect(localSharingFile).toContain("'x-cindy-version': app.getVersion()");
+    // 只许出现字面量请求头，不许把渠道身份常量带进这个文件（否则等于第二套身份出口）。
+    expect(localSharingFile).not.toContain('CINDY_CLIENT_VERSION_HEADER');
     expect(identitySource).toContain('appVersion: app.getVersion()');
     expect(identitySource).toContain('readPluginClientIdentity(edition).reportedVersion');
   });

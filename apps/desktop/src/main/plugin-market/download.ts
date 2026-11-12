@@ -1,6 +1,7 @@
 import { PLUGIN_MEMBER_UPLOAD_MAX_ARCHIVE_BYTES } from '@cindy/plugin-protocol';
 import { download, DownloadError } from '../downloader/index.js';
 import { createIpcError } from '../../shared/ipc-errors.js';
+import { pluginObjectUrlAllowed, pluginObjectUrlOptions } from './objectUrlPolicy.js';
 
 export interface PluginDownloadOptions {
   /**
@@ -50,8 +51,10 @@ export async function downloadVerifiedPlugin(
   let reportedPercent = 0;
   reportProgress(options.onProgress, 0, expected.sizeBytes);
   try {
+    const urlOptions = pluginObjectUrlOptions();
     await download({
       url,
+      isUrlAllowed: (candidate) => pluginObjectUrlAllowed(candidate, urlOptions),
       targetPath,
       sha256: expected.sha256,
       expectedSize: expected.sizeBytes,

@@ -78,6 +78,12 @@ function realRuntimeDbClient(): DbClient {
 /** `apps/desktop` 的绝对路径：与调用方 cwd 无关（包内资源就在它下面）。 */
 const DESKTOP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 
+// 同一份源码只读一次：本文件的多条跨文件契约断言共用它，避免把
+// 「读取 register.ts」这种 guard 级静态契约扩散成多次 source read。
+const REGISTER_SOURCE_URL = new URL('../register.ts', import.meta.url);
+let registerSourcePromise: Promise<string> | null = null;
+const loadRegisterSource = () => (registerSourcePromise ??= fs.readFile(REGISTER_SOURCE_URL, 'utf8'));
+
 type ApplyDeps = NonNullable<Parameters<typeof applyMekaRuntimeConfigImpl>[1]>;
 
 function applyMekaRuntimeConfig(opts: MakerSessionCreateOpts, deps: ApplyDeps = {}) {
@@ -142,10 +148,10 @@ function runtime(overrides: Partial<MekaRuntimeConfig> = {}): MekaRuntimeConfig 
 
 describe('applyMekaRuntimeConfig', () => {
   it('is wired into register bootstrap before maker.createSession', async () => {
-    const source = await fs.readFile(new URL('../register.ts', import.meta.url), 'utf8');
+    const source = await loadRegisterSource();
     const bootstrap = source.indexOf('async function bootstrapSession');
     const applyRuntime = source.indexOf('await applyMekaRuntimeConfig(o,', bootstrap);
-    const createSession = source.indexOf('await maker.createSession(o)', bootstrap);
+    const createSession = source.indexOf('await maker.createSession(o', bootstrap);
 
     expect(bootstrap).toBeGreaterThanOrEqual(0);
     expect(applyRuntime).toBeGreaterThan(bootstrap);
@@ -557,5 +563,87 @@ describe('applyMekaRuntimeConfig', () => {
     expect(resolveRuntimeConfig).not.toHaveBeenCalled();
     expect(opts.userPrompt).toBe('USER PROMPT');
     expect(opts.vendorOptions).toBeUndefined();
+  });
+});
+
+/**
+ * WL-11.3（Meka 会话行绑定 project/role）：`send_to_session` 的 create 分支是
+ * `sendToSessionInternal` 巨型闭包，仓内没有可单独调用的生产入口，因此按本文件既有
+ * guard 口径用源码契约守住「写入方不变量」——`workspace_kind='meka'` 必须与
+ * `meka_project_id` + `meka_role_id` 同一次写入，缺一即降级普通任务。
+ *
+ * 真实回归（本轮修复）：Meka 项目入口新建草稿 → 首次发送走 create 分支，早先把
+ * dispatcher 的 `'meka'` 一律降级成 project/dialogue，会话行落成
+ * `workspace_kind='dialogue' / meka_project_id=null / meka_role_id=null`（smoke WL-11.3 红）。
+ */
+describe('send_to_session create 分支的 Meka 归属继承', () => {
+  /** create 分支里决定「继承哪个 workspaceKind / 写哪些 Meka 字段」的那一段。 */
+  async function inheritedWorkspaceSlice(): Promise<string> {
+    const source = await loadRegisterSource();
+    const start = source.indexOf('const inheritedMekaProjectId = row?.mekaProjectId ?? null;');
+    const end = source.indexOf('const hasExecutionOverrides =', start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    return source.slice(start, end);
+  }
+
+  /** createOpts 与 openSession body 两处写出 Meka 身份的行。 */
+  async function mekaIdentityWriteSites(): Promise<string> {
+    const source = await loadRegisterSource();
+    const createOpts = source.indexOf('const createOpts = buildCreateOptsWithStderr({');
+    const openSession = source.indexOf('await openSession({', createOpts);
+    const end = source.indexOf('}, async (row, assertCurrent) => {', openSession);
+    expect(createOpts).toBeGreaterThanOrEqual(0);
+    expect(openSession).toBeGreaterThan(createOpts);
+    expect(end).toBeGreaterThan(openSession);
+    return source.slice(createOpts, end);
+  }
+
+  it('keeps the Meka third state and both ids when the dispatcher is fully bound', async () => {
+    const slice = await inheritedWorkspaceSlice();
+    // 判据：来自 dispatcher 的 'meka' + 两个 id 都在 + 调用方没显式换项目。
+    expect(slice).toContain("meta.workspaceKind === 'meka'");
+    expect(slice).toContain('!!inheritedMekaProjectId');
+    expect(slice).toContain('!!inheritedMekaRoleId');
+    expect(slice).toContain('params.projectDir === undefined');
+    // 完整绑定才保留第三态。
+    expect(slice).toContain("inheritsMekaBinding");
+    expect(slice).toContain("? 'meka'");
+    // 身份只随第三态一起带出，缺一就不带字段（避免半绑定行）。
+    expect(slice).toContain("inheritedWorkspaceKind === 'meka'");
+    expect(slice).toContain('mekaProjectId: inheritedMekaProjectId, mekaRoleId: inheritedMekaRoleId');
+  });
+
+  it('degrades to a plain task when the dispatcher lacks project or role', async () => {
+    const slice = await inheritedWorkspaceSlice();
+    // 降级分支仍按目录语义：dialogue 保持 dialogue，其余 project。
+    expect(slice).toContain("? 'dialogue'");
+    expect(slice).toContain(": 'project'");
+    // 'meka' 只出现在 inheritsMekaBinding 之后，且两个 id 缺一不会走到它。
+    const mekaIndex = slice.indexOf("? 'meka'");
+    const bindingIndex = slice.indexOf('inheritsMekaBinding');
+    expect(bindingIndex).toBeGreaterThanOrEqual(0);
+    expect(mekaIndex).toBeGreaterThan(bindingIndex);
+    // 显式换项目（含 projectDir:null）时绝不继承 Meka 绑定。
+    expect(slice).toContain('params.projectDir === null');
+    expect(slice).toContain('params.projectDir !== undefined');
+  });
+
+  it('persists the identity through both createOpts and the openSession insert', async () => {
+    const writes = await mekaIdentityWriteSites();
+    // createOpts 与 openSession body 各自一次，且都要求成对（同一条件表达式）。
+    const pairs = writes.match(
+      /inherited\.workspaceKind === 'meka' && inherited\.mekaProjectId && inherited\.mekaRoleId/g,
+    );
+    expect(pairs).toHaveLength(2);
+    expect(writes).toContain('mekaProjectId: inherited.mekaProjectId, mekaRoleId: inherited.mekaRoleId');
+  });
+
+  it('keeps the MCP receipt on the shared two-value contract', async () => {
+    const source = await loadRegisterSource();
+    // 回执不随内部第三态扩到 'meka'：跨端 `send_to_session.workspace_kind` 保持两值。
+    expect(source).toContain(
+      "workspaceKind: openedRow.workspaceKind === 'dialogue' ? 'dialogue' : 'project',",
+    );
   });
 });

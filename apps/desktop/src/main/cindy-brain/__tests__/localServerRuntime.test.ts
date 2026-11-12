@@ -490,6 +490,7 @@ describe('LocalServerRuntime', () => {
       const [runtimeName] = await fs.readdir(runtimeRoot);
       const runDir = path.join(runtimeRoot, runtimeName, 'run');
       await expect(fs.stat(runDir)).resolves.toMatchObject({ isDirectory: expect.any(Function) });
+      // real-wait: 受管子进程的 run 目录由真实进程创建，只能轮询墙钟等它落盘
       await new Promise(resolve => setTimeout(resolve, 500));
       for (const id of programIds) {
         await expect(fs.readFile(path.join(runDir, `${id}.pid`), 'utf8')).resolves.toContain('pid');
@@ -498,6 +499,7 @@ describe('LocalServerRuntime', () => {
       expect(described.programs.every(program => program.logs?.some(line => line.includes('ready')))).toBe(true);
     } finally {
       await supervisor.stopAll();
+      // real-wait: stopAll 之后真实子进程需要时间退出，否则临时目录清理会与进程收尾竞争
       await new Promise(resolve => setTimeout(resolve, 250));
     }
     const stopped = await supervisor.describe('instance-1');

@@ -39,6 +39,7 @@ import { MarketLocalSkills } from './components/MarketLocalSkills';
 import { ManageButton, ManageMenu, type MarketCardManageAction } from './components/MarketCard';
 import { ScanResultDialog } from './ScanResultDialog';
 import type { ScanResultPayload } from './PublishDialog';
+import { useSkillhubBrowseApi } from './SkillhubTargetContext';
 
 interface SkillhubMarketDetailViewProps {
   skill: MarketSkill | null;
@@ -117,6 +118,7 @@ export function SkillhubMarketDetailView({
   learnSkillEnabled = true,
 }: SkillhubMarketDetailViewProps) {
   const { t } = useTranslation();
+  const api = useSkillhubBrowseApi();
   const navigate = useNavigate();
   const metaResize = useMetaColumnResize();
   const { dataOwnerId } = useAuth();
@@ -258,7 +260,7 @@ export function SkillhubMarketDetailView({
                         if (!isDataOwnerGenerationCurrent(owner)) return;
                         const requestId = ++scanRequestId.current;
                         const isCurrentRequest = () => requestId === scanRequestId.current && isDataOwnerGenerationCurrent(owner);
-                        void window.electronAPI.skillhub
+                        void api
                           .getScanStatus({
                             slug: skill.name,
                             version: reviewVersion,

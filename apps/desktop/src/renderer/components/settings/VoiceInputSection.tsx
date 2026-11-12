@@ -1,5 +1,7 @@
+import { voiceInputSettings } from './VoiceInputSection.settings-search';
+import { ErrorNotice } from '@/components/ui/error-notice';
 import { Button } from '@/components/ui/button';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { useSettingsSearchNavigation } from './SettingsSearchNavigation';
 import { DefaultOverrideControls } from './DefaultOverrideControls';
 import { VoiceSpeakerFilterCard } from './VoiceSpeakerFilterCard';
@@ -12,7 +14,6 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Switch } from '@/components/ui/switch';
 import { Tip } from '@/components/ui/tooltip';
 import { useAuth } from '@/contexts/AuthContext';
-import { SUPPORTED_LOCALES } from '@/i18n';
 import { createLogger } from '@/lib/logger';
 import { SegmentedControl } from '@/components/ui/segmented-control';
 import { cn } from '@/lib/utils';
@@ -33,7 +34,7 @@ import {
   type VoiceInputLanguage,
 } from '@/hooks/useVoiceInputSettings';
 import { getComposerSendShortcutPreference } from '@/hooks/useComposerSendShortcutPreference';
-import { useVoiceInputModelSelection } from '@/hooks/useVoiceInputModelSelection';
+import type { useVoiceInputModelSelection } from '@/hooks/useVoiceInputModelSelection';
 import { useVoiceInputUsageStats } from '@/hooks/useVoiceInputUsageStats';
 import { useVoiceInputHistory } from '@/hooks/useVoiceInputHistory';
 import { getAppShortcutCombos, getAppShortcutOverrides } from '@/lib/appShortcutStore';
@@ -78,7 +79,8 @@ import {
 import type { VoiceInputConnectionTestFailureReason } from '../../../shared/voiceInputConnectionTest';
 
 const log = createLogger('VoiceInputSection');
-const LANGUAGE_OPTIONS: ReadonlyArray<VoiceInputLanguage> = ['auto', ...SUPPORTED_LOCALES];
+// Recognition-language availability is independent of UI localization.
+// Keep the established languages plus the dictation languages added upstream.
 const AUTO_MICROPHONE_VALUE = '__auto__';
 const DICTIONARY_FILTERS = ['all', 'automatic', 'manual'] as const;
 
@@ -113,6 +115,7 @@ interface VoiceInputSelectOption<T extends string> {
 }
 
 interface VoiceInputSelectProps<T extends string> {
+  'data-setting-id': string;
   value: T;
   options: ReadonlyArray<VoiceInputSelectOption<T>>;
   onChange: (value: T) => void;
@@ -192,6 +195,7 @@ function formatHistoryTime(createdAt: number, locale: string): string {
 }
 
 function VoiceInputSelect<T extends string>({
+  'data-setting-id': settingId,
   value,
   options,
   onChange,
@@ -204,7 +208,7 @@ function VoiceInputSelect<T extends string>({
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <button
+        <button data-setting-id={settingId}
           type="button"
           aria-label={ariaLabel}
           aria-haspopup="listbox"
@@ -226,7 +230,7 @@ function VoiceInputSelect<T extends string>({
                 {selectedOption?.label}
               </span>
               {selectedOption?.description ? (
-                <span className="truncate text-12 leading-[1.25] text-[var(--settings-section-sublabel)] opacity-75">
+                <span className="truncate text-12 leading-[1.25] text-[var(--text-secondary)]">
                   {selectedOption.description}
                 </span>
               ) : null}
@@ -254,11 +258,11 @@ function VoiceInputSelect<T extends string>({
           'max-h-[360px] overflow-y-auto',
         )}
       >
-        <div className="flex flex-col gap-1" role="listbox" aria-label={ariaLabel}>
+        <div data-setting-id={settingId} className="flex flex-col gap-1" role="listbox" aria-label={ariaLabel}>
           {options.map((option) => {
             const selected = option.value === value;
             return (
-              <button
+              <button data-setting-id={settingId}
                 key={option.value}
                 type="button"
                 role="option"
@@ -354,7 +358,7 @@ function VoiceInputInlineSettingRow({
           {labelAction ? <div className="shrink-0">{labelAction}</div> : null}
         </div>
         {hint ? (
-          <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
+          <p className="text-12 leading-[1.4] text-[var(--text-secondary)]">
             {hint}
           </p>
         ) : null}
@@ -371,8 +375,13 @@ function VoiceInputInlineSettingRow({
  * credential-readiness notice; the reset action clears the user override so
  * the selection re-follows the product default (never a snapshot).
  */
-function VoiceInputServiceSourceCard() {
+interface VoiceInputSectionProps {
+  modelSelection: ReturnType<typeof useVoiceInputModelSelection>;
+}
+
+function VoiceInputServiceSourceCard({ modelSelection }: VoiceInputSectionProps) {
   const { t } = useTranslation();
+  const customAsrUrlErrorId = useId();
   const { mode: appMode } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const {
@@ -387,7 +396,7 @@ function VoiceInputServiceSourceCard() {
     saveCustomAsr,
     clearCustomAsrApiKey,
     resetToDefault,
-  } = useVoiceInputModelSelection();
+  } = modelSelection;
   const [customAsrProtocol, setCustomAsrProtocol] = useState<'openai-realtime' | 'qwen-realtime'>('openai-realtime');
   const [customAsrWebsocketUrl, setCustomAsrWebsocketUrl] = useState('');
   const [customAsrModel, setCustomAsrModel] = useState('');
@@ -454,22 +463,7 @@ function VoiceInputServiceSourceCard() {
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams]);
 
-  const modeOptions = useMemo<ReadonlyArray<VoiceInputSelectOption<VoiceInputServiceModeData>>>(() => {
-    const byokOption: VoiceInputSelectOption<VoiceInputServiceModeData> = {
-      value: 'byok',
-      label: t('settings.voiceInput.serviceSource.options.byok'),
-      description: t('settings.voiceInput.serviceSource.optionDescriptions.byok'),
-    };
-    if (localMode) return [byokOption];
-    return [
-      {
-        value: 'cindy',
-        label: t('settings.voiceInput.serviceSource.options.cindy'),
-        description: t('settings.voiceInput.serviceSource.optionDescriptions.cindy'),
-      },
-      byokOption,
-    ];
-  }, [localMode, t]);
+  const modeOptions = useMemo<ReadonlyArray<VoiceInputSelectOption<VoiceInputServiceModeData>>>(() => voiceInputSettings.serviceSource.options.filter((option) => !localMode || option.value === 'byok').map(({ value, labelKey, descriptionKey }) => ({ value, label: t(labelKey), description: t(descriptionKey) })), [localMode, t]);
 
   const credentialSourceLabel = useCallback((profile: { id: string; auth: 'api-key' | 'codex' }): string => {
     if (profile.auth === 'codex') return t('settings.voiceInput.serviceSource.credential.codexLogin');
@@ -580,7 +574,7 @@ function VoiceInputServiceSourceCard() {
       title={t('settings.voiceInput.sections.serviceSource')}
       action={
         customized ? (
-          <Button
+          <Button data-settings-search-action="Restore the voice service configuration"
             variant="secondary"
             size="sm"
             compact
@@ -595,12 +589,13 @@ function VoiceInputServiceSourceCard() {
       }
     >
       <VoiceInputInlineSettingRow
-        label={t('settings.voiceInput.serviceSource.label')}
+        id={voiceInputSettings.serviceSource.targetId}
+        label={t(voiceInputSettings.serviceSource.titleKey)}
         hint={t(localMode
           ? 'settings.voiceInput.serviceSource.localHint'
           : 'settings.voiceInput.serviceSource.hint')}
       >
-        <VoiceInputSelect
+        <VoiceInputSelect data-setting-id={voiceInputSettings.serviceSource.id}
           value={serviceMode}
           options={modeOptions}
           onChange={(value) => void setServiceMode(value)}
@@ -611,9 +606,10 @@ function VoiceInputServiceSourceCard() {
       {ready && byok ? (
         <>
           <VoiceInputInlineSettingRow
-            label={t('settings.voiceInput.serviceSource.asr.label')}
+            id={voiceInputSettings.asr.targetId}
+                label={t(voiceInputSettings.asr.titleKey)}
             labelAction={
-              <Button
+              <Button data-settings-search-action="Test the configured voice service connection"
                 variant="secondary"
                 size="sm"
                 compact
@@ -630,9 +626,9 @@ function VoiceInputServiceSourceCard() {
                 {t('settings.voiceInput.serviceSource.connectionTest.action')}
               </Button>
             }
-            hint={t('settings.voiceInput.serviceSource.asr.hint')}
+            hint={t(voiceInputSettings.asr.descriptionKey)}
           >
-            <VoiceInputSelect
+            <VoiceInputSelect data-setting-id={voiceInputSettings.asr.id}
               value={selection?.asrProvider ?? ''}
               options={asrOptions}
               onChange={(value) => void setAsrProvider(value)}
@@ -640,15 +636,19 @@ function VoiceInputServiceSourceCard() {
             />
           </VoiceInputInlineSettingRow>
 
-          {connectionTest.status !== 'idle' ? (
+          {connectionTest.status === 'error' ? (
+            <ErrorNotice
+              role="alert"
+              aria-live="polite"
+              message={t(VOICE_INPUT_CONNECTION_TEST_FAILURE_KEYS[connectionTest.reason])}
+            />
+          ) : connectionTest.status !== 'idle' ? (
             <div
-              role={connectionTest.status === 'error' ? 'alert' : 'status'}
+              role="status"
               aria-live="polite"
               className={cn(
                 'flex items-center gap-2 rounded-[10px] border px-3 py-2 text-12 leading-[1.4]',
-                connectionTest.status === 'error'
-                  ? 'border-[var(--error-border)] bg-[var(--error-bg)] text-[var(--error-fg)]'
-                  : 'border-[var(--settings-input-border)] bg-[var(--settings-input-bg)] text-[var(--settings-section-sublabel)]',
+                'border-[var(--settings-input-border)] bg-[var(--settings-input-bg)] text-[var(--settings-section-sublabel)]',
               )}
             >
               {connectionTest.status === 'success' ? <Check size={13} aria-hidden /> : null}
@@ -660,9 +660,7 @@ function VoiceInputServiceSourceCard() {
               <span>
                 {connectionTest.status === 'testing'
                   ? t('settings.voiceInput.serviceSource.connectionTest.testingStatus')
-                  : connectionTest.status === 'success'
-                    ? t('settings.voiceInput.serviceSource.connectionTest.success')
-                    : t(VOICE_INPUT_CONNECTION_TEST_FAILURE_KEYS[connectionTest.reason])}
+                  : t('settings.voiceInput.serviceSource.connectionTest.success')}
               </span>
             </div>
           ) : null}
@@ -674,21 +672,13 @@ function VoiceInputServiceSourceCard() {
               </p>
 
               <VoiceInputInlineSettingRow
-                label={t('settings.voiceInput.serviceSource.customAsr.protocol.label')}
-                hint={t('settings.voiceInput.serviceSource.customAsr.protocol.hint')}
+                id={voiceInputSettings.customAsrProtocol.targetId}
+                label={t(voiceInputSettings.customAsrProtocol.titleKey)}
+                hint={t(voiceInputSettings.customAsrProtocol.descriptionKey)}
               >
-                <VoiceInputSelect
+                <VoiceInputSelect data-setting-id={voiceInputSettings.customAsrProtocol.id}
                   value={customAsrProtocol}
-                  options={[
-                    {
-                      value: 'openai-realtime',
-                      label: t('settings.voiceInput.serviceSource.customAsr.protocol.openai'),
-                    },
-                    {
-                      value: 'qwen-realtime',
-                      label: t('settings.voiceInput.serviceSource.customAsr.protocol.qwen'),
-                    },
-                  ]}
+                  options={voiceInputSettings.customAsrProtocol.options.map(({ value, labelKey }) => ({value, label: t(labelKey)}))}
                   onChange={(value) => {
                     customAsrFormDirtyRef.current = true;
                     setCustomAsrProtocol(value);
@@ -698,12 +688,15 @@ function VoiceInputServiceSourceCard() {
               </VoiceInputInlineSettingRow>
 
               <VoiceInputInlineSettingRow
-                label={t('settings.voiceInput.serviceSource.customAsr.websocketUrl.label')}
-                hint={t('settings.voiceInput.serviceSource.customAsr.websocketUrl.hint')}
+                id={voiceInputSettings.customAsrWebsocketUrl.targetId}
+                label={t(voiceInputSettings.customAsrWebsocketUrl.titleKey)}
+                hint={t(voiceInputSettings.customAsrWebsocketUrl.descriptionKey)}
               >
-                <input
+                <input data-setting-id={voiceInputSettings.customAsrWebsocketUrl.id}
                   type="url"
                   value={customAsrWebsocketUrl}
+                  aria-invalid={customAsrUrlInvalid || undefined}
+                  aria-describedby={customAsrUrlInvalid ? customAsrUrlErrorId : undefined}
                   onChange={(event) => {
                     customAsrFormDirtyRef.current = true;
                     setCustomAsrWebsocketUrl(event.target.value);
@@ -715,25 +708,27 @@ function VoiceInputServiceSourceCard() {
                   className={cn(
                     'h-9 w-full rounded-full border px-3 text-13 outline-none transition-colors',
                     'border-[var(--settings-input-border)] bg-[var(--settings-input-bg)] text-[var(--settings-input-text)]',
-                    'placeholder:text-[var(--settings-section-sublabel)] placeholder:opacity-55',
+                    'placeholder:text-[var(--settings-input-placeholder)]',
                     'focus:border-[var(--settings-input-border-focus)]',
                   )}
                 />
               </VoiceInputInlineSettingRow>
               {customAsrUrlInvalid ? (
                 <p
+                  id={customAsrUrlErrorId}
                   role="alert"
-                  className="rounded-[10px] border border-[var(--error-border)] bg-[var(--error-bg)] px-3 py-2 text-12 leading-[1.4] text-[var(--error-fg)]"
+                  className="text-12 text-[var(--error-fg)]"
                 >
                   {t('settings.voiceInput.serviceSource.customAsr.websocketUrl.invalid')}
                 </p>
               ) : null}
 
               <VoiceInputInlineSettingRow
-                label={t('settings.voiceInput.serviceSource.customAsr.model.label')}
-                hint={t('settings.voiceInput.serviceSource.customAsr.model.hint')}
+                id={voiceInputSettings.customAsrModel.targetId}
+                label={t(voiceInputSettings.customAsrModel.titleKey)}
+                hint={t(voiceInputSettings.customAsrModel.descriptionKey)}
               >
-                <input
+                <input data-setting-id={voiceInputSettings.customAsrModel.id}
                   type="text"
                   value={customAsrModel}
                   onChange={(event) => {
@@ -747,21 +742,22 @@ function VoiceInputServiceSourceCard() {
                   className={cn(
                     'h-9 w-full rounded-full border px-3 text-13 outline-none transition-colors',
                     'border-[var(--settings-input-border)] bg-[var(--settings-input-bg)] text-[var(--settings-input-text)]',
-                    'placeholder:text-[var(--settings-section-sublabel)] placeholder:opacity-55',
+                    'placeholder:text-[var(--settings-input-placeholder)]',
                     'focus:border-[var(--settings-input-border-focus)]',
                   )}
                 />
               </VoiceInputInlineSettingRow>
 
               <VoiceInputInlineSettingRow
-                label={t('settings.voiceInput.serviceSource.customAsr.apiKey.label')}
+                id={voiceInputSettings.customAsrApiKey.targetId}
+                label={t(voiceInputSettings.customAsrApiKey.titleKey)}
                 hint={t(customAsrEndpointRequiresNewKey
                   ? 'settings.voiceInput.serviceSource.customAsr.apiKey.endpointChangedHint'
                   : customAsrApiKeyConfigured
                     ? 'settings.voiceInput.serviceSource.customAsr.apiKey.savedHint'
                     : 'settings.voiceInput.serviceSource.customAsr.apiKey.hint')}
               >
-                <input
+                <input data-setting-id={voiceInputSettings.customAsrApiKey.id}
                   type="password"
                   value={customAsrApiKey}
                   onChange={(event) => {
@@ -779,7 +775,7 @@ function VoiceInputServiceSourceCard() {
                   className={cn(
                     'h-9 w-full rounded-full border px-3 text-13 outline-none transition-colors',
                     'border-[var(--settings-input-border)] bg-[var(--settings-input-bg)] text-[var(--settings-input-text)]',
-                    'placeholder:text-[var(--settings-section-sublabel)] placeholder:opacity-55',
+                    'placeholder:text-[var(--settings-input-placeholder)]',
                     'focus:border-[var(--settings-input-border-focus)]',
                   )}
                 />
@@ -787,7 +783,7 @@ function VoiceInputServiceSourceCard() {
 
               <div className="flex flex-wrap justify-end gap-2">
                 {customAsrApiKeyConfigured ? (
-                  <Button
+                  <Button data-setting-id={voiceInputSettings.voiceInput.id}
                     variant="secondary"
                     size="md"
                     compact
@@ -798,7 +794,7 @@ function VoiceInputServiceSourceCard() {
                     {t('settings.voiceInput.serviceSource.customAsr.apiKey.clear')}
                   </Button>
                 ) : null}
-                <Button
+                <Button data-setting-id={voiceInputSettings.voiceInput.id}
                   variant="cta"
                   size="md"
                   compact
@@ -825,7 +821,7 @@ function VoiceInputServiceSourceCard() {
               <span className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)]">
                 {t('settings.voiceInput.serviceSource.refiner.followAuxiliary')}
               </span>
-              <Button
+              <Button data-settings-search-action="Open auxiliary-model settings"
                 variant="secondary"
                 size="md"
                 compact
@@ -839,28 +835,16 @@ function VoiceInputServiceSourceCard() {
           </VoiceInputInlineSettingRow>
 
           {byokCredentialErrorText ? (
-            <div
-              className={cn(
-                'flex flex-wrap items-center justify-between gap-2 rounded-[12px] px-3.5 py-2.5',
-                'border border-[var(--error-border)] bg-[var(--error-bg)]',
-              )}
-            >
-              <p className="min-w-0 text-12 leading-[1.4] text-[var(--error-fg)]">
-                {byokCredentialErrorText}
-              </p>
-              {!credentialRecoveryInVoiceSettings ? (
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  compact
-                  type="button"
-                  onClick={openProvidersTab}
-                  className="shrink-0"
-                >
-                  {t('settings.voiceInput.serviceSource.manageProviders')}
-                </Button>
-              ) : null}
-            </div>
+            <ErrorNotice
+              message={byokCredentialErrorText}
+              actions={
+                !credentialRecoveryInVoiceSettings && (
+                  <Button data-settings-search-action="Open provider connection settings" size="sm" compact onClick={openProvidersTab}>
+                    {t('settings.voiceInput.serviceSource.manageProviders')}
+                  </Button>
+                )
+              }
+            />
           ) : null}
         </>
       ) : null}
@@ -902,7 +886,7 @@ function VoiceInputPermissionBadge({
     labelText
   );
   const content = granted ? (
-    <button
+    <button data-settings-search-action="Request the displayed system permission"
       type="button"
       onClick={onGrant}
       aria-label={`${label}: ${labelText}`}
@@ -911,7 +895,7 @@ function VoiceInputPermissionBadge({
       {children}
     </button>
   ) : (
-    <Button
+    <Button data-settings-search-action="Request the displayed system permission"
       variant="secondary"
       size="xs"
       compact
@@ -982,12 +966,12 @@ function VoiceInputCollapsibleTextarea({
           >
             {label}
           </p>
-          <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
+          <p className="text-12 leading-[1.4] text-[var(--text-secondary)]">
             {hint}
           </p>
         </div>
 
-        <button
+        <button data-settings-search-action="Expand or collapse the text editor"
           type="button"
           aria-expanded={expanded}
           aria-controls={id}
@@ -1008,7 +992,7 @@ function VoiceInputCollapsibleTextarea({
       </div>
 
       {expanded ? (
-        <textarea
+        <textarea data-setting-id={voiceInputSettings.refinementInstructionsLabel.id}
           id={id}
           value={value}
           onChange={(event) => onChange(event.currentTarget.value)}
@@ -1020,7 +1004,7 @@ function VoiceInputCollapsibleTextarea({
             'mt-4 min-h-[128px] w-full resize-y rounded-[14px] px-4 py-3',
             'border border-[var(--settings-input-border)] bg-[var(--settings-input-bg)]',
             'text-13 leading-[1.45] text-[var(--settings-input-text)]',
-            'placeholder:text-[var(--settings-section-sublabel)] placeholder:opacity-45',
+            'placeholder:text-[var(--settings-input-placeholder)]',
             'outline-none transition-colors',
             'hover:border-[var(--settings-input-border-focus)] focus-visible:border-[var(--settings-input-border-focus)]',
           )}
@@ -1030,7 +1014,7 @@ function VoiceInputCollapsibleTextarea({
   );
 }
 
-export function VoiceInputSection() {
+export function VoiceInputSection({ modelSelection }: VoiceInputSectionProps) {
   const { entry: searchEntry, activation } = useSettingsSearchNavigation();
   const { t, i18n } = useTranslation();
   const supportsGlobalShortcutSetting = window.electronAPI.platform !== 'linux';
@@ -1043,8 +1027,6 @@ export function VoiceInputSection() {
     setMuteSystemAudio,
     setPlayInteractionSound,
     setFastActivationEnabled,
-    setComposerLongPressEnabled,
-    resetComposerLongPressEnabled,
     setRefinementEnabled,
     setRefinementInstructions,
     setAutoDictionaryEnabled,
@@ -1737,14 +1719,7 @@ export function VoiceInputSection() {
 
   const languageOptions = useMemo<ReadonlyArray<VoiceInputSelectOption<VoiceInputLanguage>>>(
     () =>
-      LANGUAGE_OPTIONS.map((language) => ({
-        value: language,
-        label:
-          language === 'auto'
-            ? t('settings.voiceInput.language.options.auto')
-            : t(`settings.language.options.${language}`),
-        description: t(`settings.voiceInput.language.optionDescriptions.${language}`),
-      })),
+      voiceInputSettings.languageLabel.options.map(({ value, labelKey, descriptionKey }) => ({ value, label: t(labelKey), description: t(descriptionKey) })),
     [t],
   );
 
@@ -1966,15 +1941,15 @@ export function VoiceInputSection() {
         </p>
       </div>
 
-      <VoiceInputServiceSourceCard />
+      <VoiceInputServiceSourceCard modelSelection={modelSelection} />
 
       <VoiceInputCard title={t('settings.voiceInput.sections.basics')}>
         <VoiceInputInlineSettingRow
-          id="settings-search-settings-voiceInput-language-label"
-          label={t('settings.voiceInput.language.label')}
-          hint={t('settings.voiceInput.language.hint')}
+          id={voiceInputSettings.languageLabel.targetId}
+          label={t(voiceInputSettings.languageLabel.titleKey)}
+          hint={t(voiceInputSettings.languageLabel.descriptionKey)}
         >
-          <VoiceInputSelect
+          <VoiceInputSelect data-setting-id={voiceInputSettings.languageLabel.id}
             value={settings.language}
             options={languageOptions}
             onChange={setLanguage}
@@ -1983,8 +1958,8 @@ export function VoiceInputSection() {
         </VoiceInputInlineSettingRow>
 
         <VoiceInputInlineSettingRow
-          id="settings-search-settings-voiceInput-microphone-label"
-          label={t('settings.voiceInput.microphone.label')}
+          id={voiceInputSettings.microphoneLabel.targetId}
+          label={t(voiceInputSettings.microphoneLabel.titleKey)}
           labelAction={
             <VoiceInputPermissionBadge
               label={t('settings.voiceInput.permissions.microphone.label')}
@@ -1992,9 +1967,9 @@ export function VoiceInputSection() {
               onGrant={() => void requestPermission('microphone')}
             />
           }
-          hint={t('settings.voiceInput.microphone.hint')}
+          hint={t(voiceInputSettings.microphoneLabel.descriptionKey)}
         >
-          <VoiceInputSelect
+          <VoiceInputSelect data-setting-id={voiceInputSettings.microphoneLabel.id}
             value={settings.microphoneDeviceId ?? AUTO_MICROPHONE_VALUE}
             options={microphoneOptions}
             onChange={(value) =>
@@ -2005,8 +1980,8 @@ export function VoiceInputSection() {
         </VoiceInputInlineSettingRow>
 
         <VoiceInputInlineSettingRow
-          id="settings-search-settings-voiceInput-shortcut-label"
-          label={t('settings.voiceInput.shortcut.label')}
+          id={voiceInputSettings.shortcutLabel.targetId}
+          label={t(voiceInputSettings.shortcutLabel.titleKey)}
           labelAction={
             shouldShowInputMonitoringBadge({
               supportsGlobalShortcut: supportsGlobalShortcutSetting,
@@ -2028,7 +2003,7 @@ export function VoiceInputSection() {
             supportsGlobalShortcutSetting
               ? (
                 <>
-                  {t('settings.voiceInput.shortcut.hint')}
+                  {t(voiceInputSettings.shortcutLabel.descriptionKey)}
                   {/* 录制中缺权限 → 解释 Fn 为什么按了没反应；已保存但待授权 → 解释快捷键
                       为什么不生效。前者是用户当下正在做的事，优先显示。 */}
                   {fnRecordingBlocked ? (
@@ -2047,7 +2022,7 @@ export function VoiceInputSection() {
         >
           {supportsGlobalShortcutSetting ? (
             <div className="flex w-full flex-wrap items-center gap-2 sm:justify-end">
-              <button
+              <button data-setting-id={voiceInputSettings.shortcutLabel.id}
                 ref={shortcutButtonRef}
                 type="button"
                 onClick={() => setRecordingShortcut(true)}
@@ -2071,7 +2046,7 @@ export function VoiceInputSection() {
                 </span>
               </button>
 
-              <Button
+              <Button data-setting-id={voiceInputSettings.shortcutLabel.id}
                 variant="secondary"
                 size="md"
                 compact
@@ -2084,7 +2059,7 @@ export function VoiceInputSection() {
               </Button>
             </div>
           ) : (
-            <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
+            <p className="text-12 leading-[1.4] text-[var(--text-secondary)]">
               {t('settings.voiceInput.shortcut.linuxUnsupported')}
             </p>
           )}
@@ -2095,11 +2070,11 @@ export function VoiceInputSection() {
         <div className="flex items-center justify-between gap-5">
           <div className="flex min-w-0 flex-col gap-1">
             <div className="flex min-w-0 items-center gap-2">
-              <p id="settings-search-settings-voiceInput-refinement-enabled-label"
+              <p id={voiceInputSettings.refinementEnabledLabel.targetId}
                 className="min-w-0 text-13 font-medium text-[var(--settings-section-title)]"
                 style={{ letterSpacing: '0.12px' }}
               >
-                {t('settings.voiceInput.refinement.enabled.label')}
+                {t(voiceInputSettings.refinementEnabledLabel.titleKey)}
               </p>
               {permissions.accessibility.status === 'not-required'
                 ? null
@@ -2112,12 +2087,12 @@ export function VoiceInputSection() {
                   />
                 )}
             </div>
-            <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
-              {t('settings.voiceInput.refinement.enabled.hint')}
+            <p className="text-12 leading-[1.4] text-[var(--text-secondary)]">
+              {t(voiceInputSettings.refinementEnabledLabel.descriptionKey)}
             </p>
           </div>
 
-          <Switch
+          <Switch data-setting-id={voiceInputSettings.refinementEnabledLabel.id}
             checked={settings.refinementEnabled}
             onCheckedChange={setRefinementEnabled}
             aria-label={t('settings.voiceInput.refinement.enabled.ariaLabel')}
@@ -2125,11 +2100,11 @@ export function VoiceInputSection() {
         </div>
 
         {settings.refinementEnabled ? (
-          <div id="settings-search-settings-voiceInput-refinement-instructions-label" className="flex flex-col gap-4 border-t border-[var(--settings-theme-card-border)] pt-4">
+          <div id={voiceInputSettings.refinementInstructionsLabel.targetId} className="flex flex-col gap-4 border-t border-[var(--settings-theme-card-border)] pt-4">
             <VoiceInputCollapsibleTextarea
               id="voice-input-refinement-instructions"
-              label={t('settings.voiceInput.refinement.instructions.label')}
-              hint={t('settings.voiceInput.refinement.instructions.hint')}
+              label={t(voiceInputSettings.refinementInstructionsLabel.titleKey)}
+              hint={t(voiceInputSettings.refinementInstructionsLabel.descriptionKey)}
               expanded={refinementRulesExpanded}
               onExpandedChange={setRefinementRulesExpanded}
               value={settings.refinementInstructions}
@@ -2145,18 +2120,18 @@ export function VoiceInputSection() {
             <div className="border-t border-[var(--settings-theme-card-border)] pt-4">
               <div className="flex items-center justify-between gap-4">
                 <div className="flex min-w-0 flex-col gap-1">
-                  <p id="settings-search-settings-voiceInput-refinement-dictionary-label"
+                  <p id={voiceInputSettings.refinementDictionaryLabel.targetId}
                     className="text-13 font-medium text-[var(--settings-section-title)]"
                     style={{ letterSpacing: '0.12px' }}
                   >
-                    {t('settings.voiceInput.refinement.dictionary.label')}
+                    {t(voiceInputSettings.refinementDictionaryLabel.titleKey)}
                   </p>
-                  <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
-                    {t('settings.voiceInput.refinement.dictionary.hint')}
+                  <p className="text-12 leading-[1.4] text-[var(--text-secondary)]">
+                    {t(voiceInputSettings.refinementDictionaryLabel.descriptionKey)}
                   </p>
                 </div>
 
-                <Button
+                <Button data-setting-id={voiceInputSettings.refinementDictionaryLabel.id}
                   variant="secondary"
                   size="md"
                   compact
@@ -2192,7 +2167,7 @@ export function VoiceInputSection() {
                       <p className="text-13 font-medium text-[var(--settings-section-title)]">
                         {t('settings.voiceInput.refinement.dictionary.autoLearning.label')}
                       </p>
-                      <p className="text-12 leading-[1.35] text-[var(--settings-section-sublabel)] opacity-70">
+                      <p className="text-12 leading-[1.35] text-[var(--text-secondary)]">
                         {t('settings.voiceInput.refinement.dictionary.autoLearning.hint')}
                         {!externalDictionaryLearningSupported ? (
                           <span className="mt-1 block">
@@ -2202,7 +2177,7 @@ export function VoiceInputSection() {
                       </p>
                     </div>
 
-                    <Switch
+                    <Switch data-setting-id={voiceInputSettings.refinementDictionaryLabel.id}
                       checked={settings.autoDictionaryEnabled}
                       onCheckedChange={setAutoDictionaryEnabled}
                       aria-label={t('settings.voiceInput.refinement.dictionary.autoLearning.ariaLabel')}
@@ -2214,7 +2189,7 @@ export function VoiceInputSection() {
                       <p className="text-13 font-medium text-[var(--settings-section-title)]">
                         {t('settings.voiceInput.refinement.dictionary.deviceSync.label')}
                       </p>
-                      <p className="text-12 leading-[1.35] text-[var(--settings-section-sublabel)] opacity-70">
+                      <p className="text-12 leading-[1.35] text-[var(--text-secondary)]">
                         {t('settings.voiceInput.refinement.dictionary.deviceSync.hint')}
                       </p>
                     </div>
@@ -2228,7 +2203,7 @@ export function VoiceInputSection() {
                           });
                         }}
                       />
-                      <Switch
+                      <Switch data-setting-id={voiceInputSettings.refinementDictionaryLabel.id}
                         checked={settings.dictionarySyncEnabled}
                         onCheckedChange={setDictionarySyncEnabled}
                         aria-label={t('settings.voiceInput.refinement.dictionary.deviceSync.ariaLabel')}
@@ -2237,7 +2212,7 @@ export function VoiceInputSection() {
                   </div>
 
                   <div className="flex flex-wrap items-center justify-between gap-3">
-                    <SegmentedControl
+                    <SegmentedControl data-setting-id={voiceInputSettings.refinementDictionaryLabel.id}
                       aria-label={t('settings.voiceInput.refinement.dictionary.ariaLabel')}
                       value={dictionaryFilter}
                       onValueChange={setDictionaryFilter}
@@ -2263,7 +2238,7 @@ export function VoiceInputSection() {
                         )}
                         side="top"
                       >
-                        <button
+                        <button data-setting-id={voiceInputSettings.refinementDictionaryLabel.id}
                           type="button"
                           aria-pressed={dictionarySearchExpanded}
                           aria-label={t(
@@ -2284,7 +2259,7 @@ export function VoiceInputSection() {
                         </button>
                       </Tip>
 
-                      <Button
+                      <Button data-setting-id={voiceInputSettings.refinementDictionaryLabel.id}
                         variant="cta"
                         size="md"
                         compact
@@ -2306,7 +2281,7 @@ export function VoiceInputSection() {
                         size={14}
                         className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--settings-section-sublabel)]"
                       />
-                      <input
+                      <input data-setting-id={voiceInputSettings.refinementDictionaryLabel.id}
                         ref={dictionarySearchInputRef}
                         value={dictionarySearch}
                         onChange={(event) => setDictionarySearch(event.currentTarget.value)}
@@ -2316,7 +2291,7 @@ export function VoiceInputSection() {
                           'h-10 w-full rounded-full pl-9 pr-4',
                           'border border-[var(--settings-input-border)] bg-[var(--settings-input-bg)]',
                           'text-13 text-[var(--settings-input-text)] outline-none transition-colors',
-                          'placeholder:text-[var(--settings-section-sublabel)] placeholder:opacity-45',
+                          'placeholder:text-[var(--settings-input-placeholder)]',
                           'hover:border-[var(--settings-input-border-focus)] focus-visible:border-[var(--settings-input-border-focus)]',
                         )}
                       />
@@ -2354,7 +2329,7 @@ export function VoiceInputSection() {
                         <Dialog.Description className="sr-only">
                           {t('settings.voiceInput.refinement.dictionary.addDialog.description')}
                         </Dialog.Description>
-                        <input
+                        <input data-setting-id={voiceInputSettings.refinementDictionaryLabel.id}
                           ref={newDictionaryEntryInputRef}
                           value={newDictionaryEntryText}
                           onChange={(event) => setNewDictionaryEntryText(event.currentTarget.value)}
@@ -2373,12 +2348,12 @@ export function VoiceInputSection() {
                             'mt-5 h-12 w-full rounded-[12px] px-4',
                             'border border-[var(--settings-input-border)] bg-[var(--settings-input-bg)]',
                             'text-15 text-[var(--settings-input-text)] outline-none transition-colors',
-                            'placeholder:text-[var(--settings-section-sublabel)] placeholder:opacity-60',
+                            'placeholder:text-[var(--settings-input-placeholder)]',
                             'hover:border-[var(--settings-input-border-focus)]',
                             'focus-visible:border-[var(--settings-input-border-focus)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring-soft)]',
                           )}
                         />
-                        <input
+                        <input data-setting-id={voiceInputSettings.refinementDictionaryLabel.id}
                           ref={dictionaryCsvInputRef}
                           type="file"
                           accept=".csv,text/csv"
@@ -2392,7 +2367,7 @@ export function VoiceInputSection() {
                         />
                         <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
                           <Tip text={t('settings.voiceInput.refinement.dictionary.csvImport.tooltip')} side="top">
-                            <Button
+                            <Button data-setting-id={voiceInputSettings.refinementDictionaryLabel.id}
                               variant="secondary"
                               size="lg"
                               tone="quiet"
@@ -2405,11 +2380,11 @@ export function VoiceInputSection() {
                           </Tip>
                           <div className="flex items-center gap-2">
                             <Dialog.Close asChild>
-                              <Button variant="secondary" size="lg" type="button">
+                              <Button data-setting-id={voiceInputSettings.refinementDictionaryLabel.id} variant="secondary" size="lg" type="button">
                                 {t('settings.voiceInput.refinement.dictionary.cancel')}
                               </Button>
                             </Dialog.Close>
-                            <Button
+                            <Button data-setting-id={voiceInputSettings.refinementDictionaryLabel.id}
                               variant="cta"
                               size="lg"
                               type="button"
@@ -2444,7 +2419,7 @@ export function VoiceInputSection() {
                                   <span className="text-11 font-medium text-[var(--settings-section-sublabel)]">
                                     {t('settings.voiceInput.refinement.dictionary.termLabel')}
                                   </span>
-                                  <input
+                                  <input data-setting-id={voiceInputSettings.refinementDictionaryLabel.id}
                                     ref={editingDictionaryEntryInputRef}
                                     value={editingDictionaryEntryText}
                                     onChange={(event) =>
@@ -2478,7 +2453,7 @@ export function VoiceInputSection() {
                                       'settings.voiceInput.refinement.dictionary.aliasesEditLabel',
                                     )}
                                   </span>
-                                  <textarea
+                                  <textarea data-setting-id={voiceInputSettings.refinementDictionaryLabel.id}
                                     value={editingDictionaryEntryAliases}
                                     onChange={(event) =>
                                       setEditingDictionaryEntryAliases(event.currentTarget.value)
@@ -2509,7 +2484,7 @@ export function VoiceInputSection() {
                                       'focus-visible:border-[var(--settings-input-border-focus)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring-soft)]',
                                     )}
                                   />
-                                  <span className="text-11 leading-[1.35] text-[var(--settings-section-sublabel)] opacity-70">
+                                  <span className="text-11 leading-[1.35] text-[var(--text-secondary)]">
                                     {t('settings.voiceInput.refinement.dictionary.aliasesEditHint')}
                                   </span>
                                 </label>
@@ -2519,7 +2494,7 @@ export function VoiceInputSection() {
                                     text={t('settings.voiceInput.refinement.dictionary.cancel')}
                                     side="top"
                                   >
-                                    <button
+                                    <button data-settings-search-action="Cancel editing this dictionary entry"
                                       type="button"
                                       onClick={cancelEditingDictionaryEntry}
                                       className={cn(
@@ -2539,7 +2514,7 @@ export function VoiceInputSection() {
                                     text={t('settings.voiceInput.refinement.dictionary.save')}
                                     side="top"
                                   >
-                                    <button
+                                    <button data-settings-search-action="Save this dictionary entry"
                                       type="button"
                                       onClick={saveEditingDictionaryEntry}
                                       className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--settings-section-title)] text-[var(--settings-theme-card-bg)] transition-opacity hover:opacity-85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring-soft)]"
@@ -2559,8 +2534,8 @@ export function VoiceInputSection() {
                                   className={cn(
                                     'mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full',
                                     entry.source === 'automatic'
-                                      ? 'text-[var(--settings-section-title)] opacity-70'
-                                      : 'text-[var(--settings-section-sublabel)] opacity-45',
+                                      ? 'text-[var(--text-secondary-mid)]'
+                                      : 'text-[var(--text-tertiary)]',
                                   )}
                                   aria-label={t(
                                     `settings.voiceInput.refinement.dictionary.sources.${entry.source}`,
@@ -2576,7 +2551,7 @@ export function VoiceInputSection() {
                                     {entry.text}
                                   </p>
                                   {entry.aliases.length > 0 ? (
-                                    <p className="mt-0.5 line-clamp-2 text-11 leading-[1.35] text-[var(--settings-section-sublabel)] opacity-75">
+                                    <p className="mt-0.5 line-clamp-2 text-11 leading-[1.35] text-[var(--text-secondary)]">
                                       {t('settings.voiceInput.refinement.dictionary.aliases', {
                                         aliases: entry.aliases
                                           .map((alias) => alias.text)
@@ -2599,7 +2574,7 @@ export function VoiceInputSection() {
                                     text={t('settings.voiceInput.refinement.dictionary.edit')}
                                     side="top"
                                   >
-                                    <button
+                                    <button data-settings-search-action="Edit this dictionary entry"
                                       type="button"
                                       onClick={() => startEditingDictionaryEntry(entry)}
                                       className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[var(--settings-section-sublabel)] transition-colors hover:bg-[var(--settings-btn-secondary-hover-bg)] hover:text-[var(--settings-section-title)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring-soft)]"
@@ -2614,7 +2589,7 @@ export function VoiceInputSection() {
                                     text={t('settings.voiceInput.refinement.dictionary.delete')}
                                     side="top"
                                   >
-                                    <button
+                                    <button data-settings-search-action="Delete this dictionary entry"
                                       type="button"
                                       onClick={() => deleteDictionaryEntry(entry.id)}
                                       className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[var(--settings-section-sublabel)] transition-colors hover:bg-[var(--settings-btn-secondary-hover-bg)] hover:text-[var(--settings-section-title)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring-soft)]"
@@ -2633,7 +2608,7 @@ export function VoiceInputSection() {
                       })}
                     </div>
                   ) : (
-                    <p className="rounded-[12px] border border-[var(--settings-input-border)] bg-[var(--settings-input-bg)] px-4 py-3 text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
+                    <p className="rounded-[12px] border border-[var(--settings-input-border)] bg-[var(--settings-input-bg)] px-4 py-3 text-12 leading-[1.4] text-[var(--text-secondary)]">
                       {t(
                         dictionaryFilter === 'automatic'
                           ? 'settings.voiceInput.refinement.dictionary.emptyAutomatic'
@@ -2654,25 +2629,25 @@ export function VoiceInputSection() {
         {supportsSystemAudioMuteSetting ? (
           <div className="flex items-center justify-between gap-5">
             <div className="flex min-w-0 flex-col gap-1">
-              <p id="settings-search-settings-voiceInput-muteSystemAudio-label"
+              <p id={voiceInputSettings.muteSystemAudioLabel.targetId}
                 className="text-13 font-medium text-[var(--settings-section-title)]"
                 style={{ letterSpacing: '0.12px' }}
               >
-                {t('settings.voiceInput.muteSystemAudio.label')}
+                {t(voiceInputSettings.muteSystemAudioLabel.titleKey)}
               </p>
-              <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
-                {t('settings.voiceInput.muteSystemAudio.hint')}
+              <p className="text-12 leading-[1.4] text-[var(--text-secondary)]">
+                {t(voiceInputSettings.muteSystemAudioLabel.descriptionKey)}
               </p>
             </div>
 
-            <Switch
+            <Switch data-setting-id={voiceInputSettings.muteSystemAudioLabel.id}
               checked={settings.muteSystemAudio}
               onCheckedChange={setMuteSystemAudio}
               aria-label={t('settings.voiceInput.muteSystemAudio.ariaLabel')}
             />
           </div>
         ) : (
-          <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
+          <p className="text-12 leading-[1.4] text-[var(--text-secondary)]">
             {t('settings.voiceInput.muteSystemAudio.linuxUnsupported')}
           </p>
         )}
@@ -2682,18 +2657,18 @@ export function VoiceInputSection() {
           supportsSystemAudioMuteSetting && 'border-t border-[var(--settings-theme-card-border)]',
         )}>
           <div className="flex min-w-0 flex-col gap-1">
-            <p id="settings-search-settings-voiceInput-fastActivation-label"
+            <p id={voiceInputSettings.fastActivationLabel.targetId}
               className="text-13 font-medium text-[var(--settings-section-title)]"
               style={{ letterSpacing: '0.12px' }}
             >
-              {t('settings.voiceInput.fastActivation.label')}
+              {t(voiceInputSettings.fastActivationLabel.titleKey)}
             </p>
-            <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
-              {t('settings.voiceInput.fastActivation.hint')}
+            <p className="text-12 leading-[1.4] text-[var(--text-secondary)]">
+              {t(voiceInputSettings.fastActivationLabel.descriptionKey)}
             </p>
           </div>
 
-          <Switch
+          <Switch data-setting-id={voiceInputSettings.fastActivationLabel.id}
             checked={settings.fastActivationEnabled}
             onCheckedChange={setFastActivationEnabled}
             aria-label={t('settings.voiceInput.fastActivation.ariaLabel')}
@@ -2702,48 +2677,18 @@ export function VoiceInputSection() {
 
         <div className="flex items-center justify-between gap-5 border-t border-[var(--settings-theme-card-border)] pt-4">
           <div className="flex min-w-0 flex-col gap-1">
-            <p id="settings-search-settings-voiceInput-composerLongPress-label"
+            <p id={voiceInputSettings.interactionSoundLabel.targetId}
               className="text-13 font-medium text-[var(--settings-section-title)]"
               style={{ letterSpacing: '0.12px' }}
             >
-              {t('settings.voiceInput.composerLongPress.label')}
+              {t(voiceInputSettings.interactionSoundLabel.titleKey)}
             </p>
-            <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
-              {t('settings.voiceInput.composerLongPress.hint')}
-            </p>
-          </div>
-
-          <div className="flex shrink-0 items-center gap-2">
-            <DefaultOverrideControls
-              isCustomized={settings.composerLongPressEnabledOverride != null}
-              onReset={() => {
-                void resetComposerLongPressEnabled().then((ok) => {
-                  if (ok) toast.success(t('settings.defaults.restored'));
-                });
-              }}
-            />
-            <Switch
-              checked={settings.composerLongPressEnabled}
-              onCheckedChange={setComposerLongPressEnabled}
-              aria-label={t('settings.voiceInput.composerLongPress.ariaLabel')}
-            />
-          </div>
-        </div>
-
-        <div className="flex items-center justify-between gap-5 border-t border-[var(--settings-theme-card-border)] pt-4">
-          <div className="flex min-w-0 flex-col gap-1">
-            <p id="settings-search-settings-voiceInput-interactionSound-label"
-              className="text-13 font-medium text-[var(--settings-section-title)]"
-              style={{ letterSpacing: '0.12px' }}
-            >
-              {t('settings.voiceInput.interactionSound.label')}
-            </p>
-            <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
-              {t('settings.voiceInput.interactionSound.hint')}
+            <p className="text-12 leading-[1.4] text-[var(--text-secondary)]">
+              {t(voiceInputSettings.interactionSoundLabel.descriptionKey)}
             </p>
           </div>
 
-          <Switch
+          <Switch data-setting-id={voiceInputSettings.interactionSoundLabel.id}
             checked={settings.playInteractionSound}
             onCheckedChange={setPlayInteractionSound}
             aria-label={t('settings.voiceInput.interactionSound.ariaLabel')}
@@ -2762,10 +2707,10 @@ export function VoiceInputSection() {
       />
 
       <VoiceInputCard
-        id="settings-search-voice-usage-data"
-        title={t('settings.voiceInput.sections.usageData')}
+        id={voiceInputSettings.sectionsUsageData.targetId}
+        title={t(voiceInputSettings.sectionsUsageData.titleKey)}
         action={
-          <Button
+          <Button data-settings-search-action="Reset voice-input usage statistics"
             variant="secondary"
             size="md"
             compact
@@ -2780,7 +2725,7 @@ export function VoiceInputSection() {
       >
         <dl className="grid gap-3 sm:grid-cols-3">
           <div className="min-w-0">
-            <dt className="text-12 leading-[1.3] text-[var(--settings-section-sublabel)] opacity-70">
+            <dt className="text-12 leading-[1.3] text-[var(--text-secondary)]">
               {t('settings.voiceInput.usage.duration')}
             </dt>
             <dd className="mt-1 truncate text-16 font-medium leading-[1.2] text-[var(--settings-section-title)]">
@@ -2788,13 +2733,13 @@ export function VoiceInputSection() {
             </dd>
           </div>
           <div className="min-w-0">
-            <dt className="text-12 leading-[1.3] text-[var(--settings-section-sublabel)] opacity-70">
+            <dt className="text-12 leading-[1.3] text-[var(--text-secondary)]">
               {t('settings.voiceInput.usage.estimatedCost')}
             </dt>
             <dd className="mt-1 truncate text-16 font-medium leading-[1.2] text-[var(--settings-section-title)]">
               {formatUsd(cost.totalUsd)}
             </dd>
-            <dd className="mt-1 truncate text-11 leading-[1.3] text-[var(--settings-section-sublabel)] opacity-70">
+            <dd className="mt-1 truncate text-11 leading-[1.3] text-[var(--text-secondary)]">
               {t('settings.voiceInput.usage.costBreakdown', {
                 asr: formatUsd(cost.asrUsd),
                 refine: formatUsd(cost.refineUsd),
@@ -2802,13 +2747,13 @@ export function VoiceInputSection() {
             </dd>
           </div>
           <div className="min-w-0">
-            <dt className="text-12 leading-[1.3] text-[var(--settings-section-sublabel)] opacity-70">
+            <dt className="text-12 leading-[1.3] text-[var(--text-secondary)]">
               {t('settings.voiceInput.usage.sessions')}
             </dt>
             <dd className="mt-1 truncate text-16 font-medium leading-[1.2] text-[var(--settings-section-title)]">
               {stats.sessionCount}
             </dd>
-            <dd className="mt-1 text-11 leading-[1.3] text-[var(--settings-section-sublabel)] opacity-70">
+            <dd className="mt-1 text-11 leading-[1.3] text-[var(--text-secondary)]">
               {t('settings.voiceInput.usage.outcomes', {
                 noSpeech: stats.noSpeechSessionCount,
                 failed: stats.failedSessionCount,
@@ -2818,7 +2763,7 @@ export function VoiceInputSection() {
         </dl>
 
         <div className="border-t border-[var(--settings-theme-card-border)] pt-4">
-          <button
+          <button data-setting-id={voiceInputSettings.historyLabel.id}
             type="button"
             onClick={() => setHistoryExpanded((prev) => !prev)}
             aria-expanded={historyExpanded}
@@ -2833,12 +2778,12 @@ export function VoiceInputSection() {
               'transition-colors hover:opacity-90',
             )}
           >
-            <span id="settings-search-settings-voiceInput-history-label"
+            <span id={voiceInputSettings.historyLabel.targetId}
               className="text-13 font-medium text-[var(--settings-section-title)]"
               style={{ letterSpacing: '0.12px' }}
             >
-              {t('settings.voiceInput.history.label')}
-              <span className="ml-2 text-12 font-normal text-[var(--settings-section-sublabel)] opacity-70">
+              {t(voiceInputSettings.historyLabel.titleKey)}
+              <span className="ml-2 text-12 font-normal text-[var(--text-secondary)]">
                 ({historyEntries.length})
               </span>
             </span>
@@ -2869,14 +2814,14 @@ export function VoiceInputSection() {
                         <p className="max-h-[92px] overflow-y-auto whitespace-pre-wrap break-words text-13 leading-[1.45] text-[var(--settings-section-title)]">
                           {entry.text}
                         </p>
-                        <p className="mt-1 text-11 leading-[1.3] text-[var(--settings-section-sublabel)] opacity-60">
+                        <p className="mt-1 text-11 leading-[1.3] text-[var(--text-tertiary)]">
                           {formatHistoryTime(entry.createdAt, i18n.resolvedLanguage ?? i18n.language)}
                         </p>
                       </div>
 
                       <div className="flex shrink-0 items-center gap-1">
                         <Tip text={t('settings.voiceInput.history.copy')} side="top">
-                          <button
+                          <button data-settings-search-action="Copy this voice-input history entry"
                             type="button"
                             onClick={() => {
                               void handleCopyHistoryEntry(entry.text);
@@ -2893,7 +2838,7 @@ export function VoiceInputSection() {
                           </button>
                         </Tip>
                         <Tip text={t('settings.voiceInput.history.delete')} side="top">
-                          <button
+                          <button data-settings-search-action="Delete this voice-input history entry"
                             type="button"
                             onClick={() => deleteHistoryEntry(entry.id)}
                             className={cn(
@@ -2912,7 +2857,7 @@ export function VoiceInputSection() {
                   ))}
                 </div>
               ) : (
-                <p className="rounded-[12px] border border-[var(--settings-theme-card-border)] bg-[var(--settings-input-bg)] px-4 py-3 text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
+                <p className="rounded-[12px] border border-[var(--settings-theme-card-border)] bg-[var(--settings-input-bg)] px-4 py-3 text-12 leading-[1.4] text-[var(--text-secondary)]">
                   {t('settings.voiceInput.history.empty')}
                 </p>
               )}

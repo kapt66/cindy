@@ -27,6 +27,7 @@
  */
 
 import { createHmac, randomBytes } from 'node:crypto';
+import { BOT_DENIED_TOOLS_VENDOR_KEY } from '../../shared/botSystemSkills.js';
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import {
@@ -63,6 +64,7 @@ import { pluginIdForKnownProviderName } from '../maker-host/plugins/builtin-plug
 import { createPluginRegistry } from '../maker-host/plugins/index.js';
 import { isAllowedRemoteMcpUrl, isDesktopLoopbackMcpUrl } from './piMcpTransport.js';
 import { RUNTIME_MCP_NAMES_KEY } from '../maker-host/agentCapabilityCatalog.js';
+import { hasImChannelVendorOptions } from '../../shared/botImConnection.js';
 
 interface StartedPiBridge {
   bridge: CodexHttpBridge | null;
@@ -211,6 +213,12 @@ export async function getPiExtraSpawnConfig(
         server.name === CINDY_MAKE_MCP_SERVER_NAME
         && !isCindyMakeVendorOptions(sessionCtx?.vendorOptions)
       ) return false;
+      // Telegram Bot API 直通只给带 Telegram 渠道标记的会话(专线 chat / 伙伴绑了 Telegram);
+      // 共享 bridge 上它常注册, 可见性在这里按会话收。
+      if (
+        server.name === 'cindy_telegram_bot'
+        && !hasImChannelVendorOptions(sessionCtx?.vendorOptions, 'telegram')
+      ) return false;
       if (!isBotMcpServerAllowed(sessionCtx?.botMcpPolicy, server.name)) return false;
       if (!collabEnabled && REMOTE_COLLAB_SERVER_NAMES.has(server.name)) return false;
       // Custom HTTP MCPs are `s.remote` and skip the SSH URL rewriter. Desktop
@@ -257,6 +265,9 @@ export async function getPiExtraSpawnConfig(
       ...((sessionCtx?.botMcpPolicy || sessionCtx?.memoryScopeKey?.startsWith('bot:'))
         && servers.some((server) => server.name === 'cindy_memory' || server.name === 'cindy_helper')
         ? { botMemoryFacade: true }
+        : {}),
+      ...(Array.isArray(vendorOptions[BOT_DENIED_TOOLS_VENDOR_KEY])
+        ? { deniedTools: (vendorOptions[BOT_DENIED_TOOLS_VENDOR_KEY] as unknown[]).filter((name): name is string => typeof name === 'string') }
         : {}),
     };
   };

@@ -1,3 +1,5 @@
+import { getPluginToolUi } from '@cindy/plugin-protocol';
+import { runInNewContext } from 'node:vm';
 /**
  * forge.test.ts — 意识锻造打包(packGhostDir)单测。
  * 纯 Node 直测(规则 14):tmpdir 造源码目录 → 打包 → 用 GhostManager
@@ -8,14 +10,17 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import JSZip from 'jszip';
+import { GHOST_README_IMAGE_MAX_BYTES } from '@cindy/plugin-protocol';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { resolveCanonicalSessionPath } from '@cindy/mcps';
+import { handleForgeGuide, type CindyGhostsMcpDeps } from 'cindy-tools';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   GHOST_MANIFEST_SUMMARY_MAX_CHARS,
+  PLUGIN_UI_MIN_CINDY_VERSION,
   PLUGIN_MEMBER_UPLOAD_MAX_ARCHIVE_BYTES,
   PLUGIN_MEMBER_UPLOAD_MAX_UNCOMPRESSED_BYTES,
   PLUGIN_MEMBER_UPLOAD_MAX_ZIP_ENTRIES,
@@ -23,6 +28,7 @@ import {
 
 import {
   FORGE_GUIDE,
+  FORGE_PAGE_MANUAL,
   // 本测试文件用同名本地包装器(注入 sessionWorkdir / writeScaffold 门参)遮蔽,
   // 故 raw 函数以别名导入;main 的 packGhostDirToFile 无包装器,直接导入。
   packGhostDir as packGhostDirRaw,
@@ -40,6 +46,8 @@ import {
 import { sameForgeScaffoldParentIdentity } from '../forgeScaffoldIdentity';
 import { GHOST_SIGNATURE_FILE, signGhostPackage } from '../ghostSignature';
 import { GHOST_INSTALL_MANIFEST_MAX_BYTES } from '../../../shared/ghost';
+import { PLUGIN_PAGE_MANUAL_SKILL_PATH } from '../../../shared/pluginPageManual.mjs';
+import { MCP_APPS_MAX_BYTES } from '../../mcp-apps/protocol';
 
 const canSymlink = (() => {
   const probeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-forge-symlink-probe-'));
@@ -166,6 +174,105 @@ async function makeSrcDir(files: Record<string, string | Buffer>): Promise<strin
 }
 
 describe('packGhostDir', () => {
+  // FORGE_GUIDE §2「详细介绍」:打包期拦下缺图与超限图片,作者得到明确原因;运行时读取侧只会静默跳过。
+  // Tier: unit.
+  it('checks readme files and the package images they reference', async () => {
+    const manifest = { ...GOOD_MANIFEST, readme: { en: 'README.md' } };
+    const dir = await makeSrcDir({
+      'ghost.json': JSON.stringify(manifest),
+      'main.js': '',
+      'README.md': '# Demo\n![Search](assets/search.png) ![Remote](https://example.com/x.png)\n',
+    });
+    expect(await packGhostDir(dir)).toMatchObject({
+      ok: false,
+      errorCode: 'MANIFEST_INVALID',
+      message: expect.stringContaining('assets/search.png'),
+    });
+    await fs.promises.mkdir(path.join(dir, 'assets'));
+    await fs.promises.writeFile(path.join(dir, 'assets/search.png'), Buffer.alloc(GHOST_README_IMAGE_MAX_BYTES + 1));
+    expect(await packGhostDir(dir)).toMatchObject({ ok: false, errorCode: 'MANIFEST_INVALID' });
+    await fs.promises.writeFile(path.join(dir, 'assets/search.png'), Buffer.from('png'));
+    const packed = await packGhostDir(dir);
+    expect(packed.ok).toBe(true);
+    if (packed.ok) {
+      const zip = await JSZip.loadAsync(packed.buf);
+      expect(zip.file('README.md')).not.toBeNull();
+      expect(zip.file('assets/search.png')).not.toBeNull();
+    }
+  });
+  // 4.1: a named-tab declaration must not package successfully with a missing
+  // page. Contribution-page coverage does not exercise this entry list. Tier: unit.
+  it('requires named tab pages before producing an installable package', async () => {
+    const dir = await makeSrcDir({ 'ghost.json': JSON.stringify({ schemaVersion: 3, minCindyVersion: '0.1.64',
+      id: 'native-tab-view', name: 'Named tab', version: '1', entry: 'main.js',
+      ui: { version: 1, tabViews: [{ id: 'log', title: 'Log', scope: 'session', page: 'log.html' }] } }),
+      'main.js': '' });
+    expect(await packGhostDir(dir)).toMatchObject({ ok: false, errorCode: 'ENTRY_MISSING' });
+    await fs.promises.writeFile(path.join(dir, 'log.html'), '<p>Log</p>');
+    const result = await packGhostDir(dir);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect((await JSZip.loadAsync(result.buf)).file('log.html')).not.toBeNull();
+  });
+  // C11/C9: declared resource entries must survive packaging as actual files.
+  it('rejects a missing native UI appearance resource before producing an installable package', async () => {
+    const dir = await makeSrcDir({ 'ghost.json': JSON.stringify({ schemaVersion: 3, minCindyVersion: '0.1.64',
+      id: 'native-ui-resource', name: 'Native UI Resource', version: '1', entry: 'main.js',
+      ui: { version: 1, appearance: { fields: ['wallpaper'], resources: [{ id: 'background', kind: 'image', path: 'assets/background.webp' }] } } }),
+      'main.js': 'throw new Error("pack must not execute this file");' });
+    expect(await packGhostDir(dir)).toMatchObject({ ok: false, errorCode: 'ENTRY_MISSING' });
+  });
+  it('requires declared native UI pages to be included in the package', async () => {
+    const dir = await makeSrcDir({ 'ghost.json': JSON.stringify({ schemaVersion: 3, minCindyVersion: '0.1.64',
+      id: 'native-ui-page', name: 'Native UI Page', version: '1', entry: 'main.js',
+      ui: { version: 1, contributions: [{ id: 'view', point: 'message.body', scope: 'message', page: 'ui/view.html' }] } }),
+      'main.js': '' });
+    expect(await packGhostDir(dir)).toMatchObject({ ok: false, errorCode: 'ENTRY_MISSING' });
+    await fs.promises.mkdir(path.join(dir, 'ui'));
+    await fs.promises.writeFile(path.join(dir, 'ui/view.html'), '<p>plugin view</p>');
+    const packed = await packGhostDir(dir);
+    expect(packed).toMatchObject({ ok: true });
+    if (packed.ok) expect((await JSZip.loadAsync(packed.buf)).file('ui/view.html')).not.toBeNull();
+  });
+  it('rejects an oversized native UI page before packaging', async () => {
+    const dir = await makeSrcDir({ 'ghost.json': JSON.stringify({ schemaVersion: 3, minCindyVersion: '0.1.64',
+      id: 'native-ui-page', name: 'Native UI Page', version: '1', entry: 'main.js',
+      ui: { version: 1, contributions: [{ id: 'view', point: 'message.body', scope: 'message', page: 'view.html' }] } }),
+      'main.js': '', 'view.html': Buffer.alloc(MCP_APPS_MAX_BYTES + 1) });
+    expect(await packGhostDir(dir)).toMatchObject({ ok: false, errorCode: 'MANIFEST_INVALID' });
+  });
+  // C1/C9: static UI hints must not reject future declarations or run plugin JS.
+  it('returns native UI warnings with declaration locations while preserving the package', async () => {
+    const dir = await makeSrcDir({ 'ghost.json': JSON.stringify({ schemaVersion: 3, minCindyVersion: '0.1.64',
+      id: 'native-ui-demo', name: 'Native UI', version: '1', entry: 'main.js',
+      ui: { version: 1, contributions: [{ id: 'future', point: 'future.point', scope: 'session' }] } }),
+      'main.js': 'throw new Error("pack must not execute this file");' });
+    const result = await packGhostDir(dir);
+    expect(result).toMatchObject({ ok: true });
+    if (result.ok) {
+      expect(result.warnings?.some(w => w.includes('ui.contributions[0].point') && w.includes('future.point'))).toBe(true);
+      expect(result.manifest.ui).toMatchObject({ contributions: [{ id: 'future', point: 'future.point' }] });
+    }
+  });
+  it('reports unsupported command locations without rejecting the plugin package', async () => {
+    const dir = await makeSrcDir({ 'ghost.json': JSON.stringify({ schemaVersion: 3, minCindyVersion: '0.1.64',
+      id: 'native-ui-command', name: 'Native UI command', version: '1', entry: 'main.js',
+      ui: { version: 1, commands: [{ id: 'run', title: 'Run', scope: 'session', points: ['future.point'] }] } }),
+      'main.js': '' });
+    const result = await packGhostDir(dir);
+    expect(result).toMatchObject({ ok: true });
+    if (result.ok) expect(result.warnings?.some(w => w.includes('ui.commands[0].points') && w.includes('future.point'))).toBe(true);
+  });
+  it('packs the native UI author example through the ordinary package validator', async () => {
+    const dir = path.join(workDir, 'reference');
+    await fs.promises.cp(fileURLToPath(new URL('../../../../resources/system-skills/cindy-plugin-creator/examples/native-ui-reference/', import.meta.url)), dir, { recursive: true });
+    const packed = await packGhostDir(dir);
+    expect(packed).toMatchObject({ ok: true, manifest: { schemaVersion: 3, id: 'native-ui-reference' } });
+    if (packed.ok) {
+      const zip = await JSZip.loadAsync(packed.buf);
+      expect(JSON.parse(await zip.file('ghost.json')!.async('string'))).toMatchObject({ ui: { version: 1 } });
+      expect(zip.file('main.js')).not.toBeNull();
+    }
+  });
   it.each([null, 'xd'])('rejects author-declared namespace %s before v2 normalization', async (namespace) => {
     const dir = await makeSrcDir({
       'ghost.json': JSON.stringify({ ...GOOD_MANIFEST, namespace }),
@@ -1501,39 +1608,67 @@ describe('scaffoldGhostDir', () => {
     expect(typeof captured?.expectedParent.ino).toBe('bigint');
   });
 
-  it.each<ForgeScaffoldTemplate>(['plain', 'agent-action', 'node-json-rpc', 'node-mcp'])(
-    '生成 %s 模板，随后可以直接打包并通过装入检查',
-    async (template) => {
+  // The withUi overlay must preserve each template and execute its example handler.
+  // The published UI floor must reject older declarations without creating files,
+  // accept its exact version and preserve newer declarations. Tier: unit.
+  // Regression: the author-example migration must not relax the scaffold input contract.
+  // The SDK import guard protects the host-provided module contract in the generated asset.
+  it.each((['plain', 'agent-action', 'node-json-rpc', 'node-mcp'] as ForgeScaffoldTemplate[])
+    .flatMap(template => [
+      { template, withUi: false, minCindyVersion: '1.2.3', expectedMin: '1.2.3' },
+      { template, withUi: true, minCindyVersion: '0.1.122-beta', expectedMin: '0.1.122-beta' },
+      { template, withUi: true, minCindyVersion: '0.1.121', expectedMin: null },
+      { template, withUi: true, minCindyVersion: '1.2.3', expectedMin: '1.2.3' },
+    ]))(
+    '校验 $template 模板（withUi=$withUi，min=$minCindyVersion），仅为有效版本生成可打包骨架',
+    async ({ template, withUi, minCindyVersion, expectedMin }) => {
       const dir = path.join(workDir, template);
       const result = await scaffoldGhostDir(
         {
           dir,
           template,
           id: `demo-${template}`,
+          withUi,
+          minCindyVersion,
           name: `演示 ${template}`,
           description: `${template} 起步插件`,
         },
         { sessionWorkdir: workDir },
       );
+      if (expectedMin === null) {
+        expect(result).toEqual({
+          ok: false,
+          errorCode: 'INVALID_INPUT',
+          message: '交互页面要求 minCindyVersion >= 0.1.122-beta',
+        });
+        expect(fs.existsSync(dir)).toBe(false);
+        return;
+      }
       expect(result, JSON.stringify(result)).toMatchObject({ ok: true, dir, template });
       if (!result.ok) return;
       expect(result.files).toContain('ghost.json');
       expect(result.files).toContain('main.js');
+      // Meka 骨架默认图标（第七轮恢复）：见下方 manifest 断言。
       expect(result.files).toContain('assets/icon.png');
       expect(result.files.includes('node/worker.cjs')).toBe(template.startsWith('node-'));
 
-      // 骨架默认带占位图标(#809):清单声明 + 文件真实存在且是 PNG。
+      // 回归：新骨架不再把色块当作正式图标；作者需提供图片或同意生成。Tier: unit。
       const manifestJson = JSON.parse(
         await fs.promises.readFile(path.join(dir, 'ghost.json'), 'utf8'),
       ) as Record<string, unknown>;
+      // Meka 第六轮产品决定（第七轮同步恢复）：骨架默认带图标——manifest 预填
+      // `assets/icon.png` 且随包写入该 PNG。上游 `b80d27fccc` 一度删除此行为，本仓按
+      // Meka 决定保留；客户端仍按字节把这张历史占位图视为「未设置」（显示默认符号），
+      // 所以这里只钉包/manifest 形状，用户可见图标仍由作者提供或生成。
       expect(manifestJson.icon).toBe('assets/icon.png');
       expect(manifestJson.schemaVersion).toBe(3);
-      expect(manifestJson.minCindyVersion).toBe('1.2.3');
+      expect(manifestJson.minCindyVersion).toBe(expectedMin);
       expect(manifestJson).not.toHaveProperty('slots');
-      const iconBytes = await fs.promises.readFile(path.join(dir, 'assets/icon.png'));
-      expect(iconBytes.subarray(0, 8)).toEqual(
-        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-      );
+      expect(result.files).toContain('assets/icon.png');
+      const scaffoldedIcon = await fs.promises.readFile(path.join(dir, 'assets/icon.png'));
+      expect(scaffoldedIcon.subarray(1, 4).toString('latin1')).toBe('PNG');
+      expect(scaffoldedIcon.byteLength).toBeGreaterThan(64);
+      expect(result.nextSteps.some((step) => /用户同意.*生成.*图标/u.test(step))).toBe(true);
 
       const packed = await packGhostDir(dir);
       expect(packed.ok, JSON.stringify(packed)).toBe(true);
@@ -1542,6 +1677,28 @@ describe('scaffoldGhostDir', () => {
       expect(await manager.inspect(packed.cindyPath)).toHaveProperty('manifest');
 
       const mainSource = await fs.promises.readFile(path.join(dir, 'main.js'), 'utf8');
+      if (withUi) {
+        expect(result.files).toContain('ui/page.html');
+        expect(getPluginToolUi(packed.manifest)?.resources[0].uri).toBe('ui://interactive-records/v1');
+        const page = await fs.promises.readFile(path.join(dir, 'ui/page.html'), 'utf8');
+        expect(page).toContain("import { App } from '@modelcontextprotocol/ext-apps'");
+        let handler: ((message: unknown) => unknown) | undefined;
+        const results: Array<{ result: { structuredContent: unknown } }> = [];
+        runInNewContext(mainSource, { cindy: { onHostMessage: (callback: typeof handler) => { handler = callback; }, send: (message: typeof results[number]) => { results.push(message); } } });
+        await handler!({ type: 'tool-call', tool: 'save_record', callId: 'page', args: { title: '用户修改', idempotencyKey: 'request-1' } });
+        expect(results).toHaveLength(1);
+        expect(results[0].result.structuredContent).toEqual({ title: '用户修改', saved: 1 });
+        await handler!({ type: 'tool-call', tool: 'save_record', callId: 'retry', args: { title: '用户修改', idempotencyKey: 'request-1' } });
+        expect(results[1].result.structuredContent).toEqual({ title: '用户修改', saved: 1 });
+        // Regression: the scaffolded write must reject a reused request id with different content.
+        await handler!({ type: 'tool-call', tool: 'save_record', callId: 'conflict', args: { title: '另一条', idempotencyKey: 'request-1' } });
+        expect(results[2].result).toMatchObject({ isError: true });
+        if (template === 'plain') {
+          await handler!({ type: 'tool-call', tool: 'hello', callId: 'original' });
+          expect(results[3].result).toEqual({ message: '插件已经正常工作。' });
+        }
+      } else expect(packed.manifest).not.toHaveProperty('mcpApps');
+
       if (template === 'agent-action') {
         expect(mainSource).toContain('cindy.agent.run');
         expect(mainSource).toContain('{{user_message}}');
@@ -1789,6 +1946,40 @@ describe('scaffoldGhostDir', () => {
 });
 
 describe('FORGE_GUIDE', () => {
+  // 协议:ghost_forge_guide 按章号精确取章,章号重复时只能取到靠前的一章。
+  // 历史 bug:随包浏览器扩展与交互页面都编号 4.23,section "4.23" 返回的是浏览器扩展。
+  it('keeps chapter numbers unique so ghost_forge_guide reaches every chapter by number', async () => {
+    const numbers = FORGE_GUIDE.split('\n')
+      .map((line) => line.match(/^## ([0-9]+(?:\.[0-9]+)*)\.?(?:\s|$)/)?.[1])
+      .filter((n): n is string => n !== undefined);
+    expect(numbers.filter((n, i) => numbers.indexOf(n) !== i)).toEqual([]);
+    const deps = {
+      forgeGuide: async () => FORGE_GUIDE,
+      forgePageManual: async () => FORGE_PAGE_MANUAL,
+    } as unknown as CindyGhostsMcpDeps;
+    const read = async (section: string) => (await handleForgeGuide(deps, { section })).content[0].text;
+    expect(await read('4.23')).toMatch(/^## 4\.23 交互页面 MCP Apps/);
+    expect(await read('4.24')).toMatch(/^## 4\.24 随包浏览器扩展/);
+    expect(await read('pages')).toBe(FORGE_PAGE_MANUAL);
+  });
+
+  // 协议:ghost_forge_guide section "pages" 返回的手册与 MCP Apps 请求头按 sha256 公布的
+  // 是同一份文件;两者分叉时模型读到的手册与 CDN 上的版本对不上。
+  it('serves the same page manual bytes that the MCP Apps manual header hashes', () => {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const shipped = fs.readFileSync(
+      path.resolve(here, '../../../../resources/system-skills', PLUGIN_PAGE_MANUAL_SKILL_PATH),
+    );
+    expect(Buffer.from(FORGE_PAGE_MANUAL, 'utf8').equals(shipped)).toBe(true);
+  });
+
+  it('documents plugin-level defaults independently of Host authorization', () => {
+    expect(FORGE_GUIDE).toContain('"showTaskPreferences": false');
+    expect(FORGE_GUIDE).toContain('"showTaskPreferences": true');
+    expect(FORGE_GUIDE).toContain('且不读取其旧模型、目录、权限配置；其它插件不受影响');
+    expect(FORGE_GUIDE).toContain('Host 仍独立检查能力批准、任务归属、目录和任务当前权限');
+  });
+
   it('账号业务元数据使用插件 KV，不声明 Host 昵称接口', () => {
     expect(FORGE_GUIDE).toContain('昵称等自定义账号元数据由插件通过 `/kv` 保存');
     expect(FORGE_GUIDE).toContain('执行仍传账号 id，不把昵称当作指令或授权');
@@ -1887,22 +2078,23 @@ describe('FORGE_GUIDE', () => {
     expect(FORGE_GUIDE).not.toContain('只有大手册才拆深层文件');
   });
 
-  it('skill 迁移精确映射召回元数据、正文与容器目录', () => {
+  it('skill 章节写明它是正式能力、与 Manual 的分工和长期使用的脚本路径', () => {
     const skillSection = FORGE_GUIDE.slice(
       FORGE_GUIDE.indexOf('## 4.16 捆绑 Agent Skills(skill 能力)'),
       FORGE_GUIDE.indexOf('## 4.17'),
     );
     for (const marker of [
-      '迁移时按职责映射,不是按篇幅搬运',
-      'Skill frontmatter 的 `name + description` 所承担的身份/召回作用',
-      '对标系统提示词区\n  插件花名册的身份与 `recall`',
-      '`manual.items` 只是插件容器级一级目录,不对标 Skill frontmatter',
-      '`MANUAL.md` 与深层 Markdown 承接 Skill 正文、references',
-      '只经 `ghost_manual` tool-result 按需进入上下文',
-      '当前已停止新增,未来计划全部废弃',
+      '装了插件才有这些技能,不装就完全不出现',
+      '按职责选,不按篇幅选',
+      '需要斜杠命令入口(`/<name>`)',
+      '经 `ghost_manual` 读取,不占技能列表',
+      '斜杠菜单里显示的就是 `name`',
+      '跨插件版本不变的入口(路径含 `/agent-skills/skills/`)',
+      '不受插件沙箱约束',
     ]) {
       expect(skillSection).toContain(marker);
     }
+    expect(skillSection).not.toContain('停止新增');
   });
 
   it('Manual-only 插件可发现，已下线 Host 能力不再宣传', () => {
@@ -1928,7 +2120,7 @@ describe('FORGE_GUIDE', () => {
       'Cindy 先发布',
       '确认首个支持它的**正式版本号**',
       '`minCindyVersion` 设为不低于\n该正式版本',
-      '移除\n`skill.items` 的迁移版本也必须设置上述 `minCindyVersion`',
+      '把存量\n`skill.items` 改成 Manual 的版本也必须设置上述 `minCindyVersion`',
       '服务端还要保留上一份带 Skill 的历史 release',
       '旧客户端能通过历史版本回退',
     ];
@@ -2080,6 +2272,12 @@ describe('FORGE_GUIDE', () => {
   it('手册覆盖关键章节(身份卡/工具面/管子/聊天卡片/订阅拦截/网络代发/系统提示/沙箱红线/打包)', () => {
     for (const marker of [
       'ghost.json',
+      // 2026-10-20 同账号插件资料同步：manifest 声明、API 与结果不明语义同步交付。
+      '`library`、`deviceSync`、`sessionContext`',
+      '4.10.2 同账号电脑间的插件资料同步',
+      '"deviceSync": true',
+      'cindy.deviceSync',
+      'SYNC_RESULT_UNKNOWN',
       '两段式',
       'call_tool',
       'tool-result',
@@ -2229,14 +2427,12 @@ describe('FORGE_GUIDE', () => {
       '面板(panel.html/css/js)',
       'panel.position',
       '右侧栏页签',
-      // 2026-07-25 标准头系统按钮:主机画标题条,systemButtons 逐个关
-      // (maximize 撑满 / detach 独立窗口 / minimize 气泡);§2 样例与 §5
-      // 面板章节同步。
+      // 2026-10 停靠面板收束:panel.position left = 右侧栏常驻面板(不跟对话的全局
+      // 页签),systemButtons 保留兼容但不生效;§0 / §2 样例与 §5 面板章节同步。
       'systemButtons',
-      '撑满内容区',
-      '在独立窗口中打开',
-      'minimize',
-      '最小化面板',
+      '右侧栏常驻面板',
+      '全局页签',
+      '弹成独立 OS 窗口',
       // Manifest v3:直接字段声明能力；未知字段保留但不授权。
       'v3 直接用顶层字段声明插件贡献项与自主 Host 能力',
       'v2 的 `slots` 只用于存量包兼容',
@@ -2257,7 +2453,7 @@ describe('FORGE_GUIDE', () => {
       '`mainView.title`',
       '`mainView.icon`',
       '`puzzle`、`globe`、`code`、`folder`、`database`、`chart-column`',
-      '只控制主视图的侧边栏入口',
+      '只控制主视图的左侧导航入口',
       // 2026-07-28 图标与官方仓门禁(#809):§1/§2 的 icon 字段说明、
       // §8.1 官方插件仓的四语言 locale 与 assets/icon.png 惯例。
       '"icon": "assets/icon.png"',
@@ -2281,7 +2477,7 @@ describe('FORGE_GUIDE', () => {
       "kind: 'deposit_media'",
       "kind: 'release_media'",
       '"cindy": { "media": ["deposit"] }',
-      '每意识配额 1GB',
+      '每个插件配额 1GB',
       '寄存物不是产物',
       // 2026-07-29 媒体代办画面参数:edit_image 放开 aspectRatio,视频四参数
       // (ratio/resolution/duration/fps)+ 实际生效参数回执 videoParams。
@@ -2317,17 +2513,17 @@ describe('FORGE_GUIDE', () => {
     expect(FORGE_GUIDE).not.toContain('十九个卡槽');
   });
 
-  it('打包前仅轻提醒一次图标选择，AI 生成有固定提示词且失败不阻塞', () => {
+  it('图标缺失时告知用户提供图片或同意生成，禁止把占位色块当正式图标', () => {
     for (const marker of [
-      '没有明确替换它生成的占位图',
-      '轻提醒一次',
+      '会写入一张默认占位图',
+      '不能代替正式图标',
+      '用户同意',
       '使用用户当前对话语言',
       '使用 AI 生成（推荐）',
       '上传图片',
       '同步把',
       'ghost.json',
       'icon',
-      '使用默认图标（跳过）',
       '聊天模型解耦',
       '不要因为用户正在使用 GLM',
       'Create a polished square app icon for a Cindy plugin named "{{name}}"',
@@ -2340,13 +2536,17 @@ describe('FORGE_GUIDE', () => {
       'xdt_image_urls',
       'selectedImageUrl',
       'icon_source: selectedImageUrl',
-      '两种工具都会回退默认图标',
+      '使用客户端默认符号',
       'pack 会保留原图标和原签名',
-      '跳过与使用默认是同一个选择',
       '不要用 AI 仿制商标',
       '使用官方品牌图标',
     ]) {
-      expect(FORGE_GUIDE).toContain(marker);
+      // 手册正文由多个 Skill 参考文件拼接，中文排版换行会落在词中间（如
+      // "使用用户当前\n对话语言"）。这里按**空白归一**后再匹配：只钉「内容在」，
+      // 不钉具体断行位置（独立审查 P1：字面断言会因排版换行误报，且不应反过来
+      // 约束 Skill 正文的排版）。
+      const collapseWhitespace = (value: string) => value.replace(/\s+/gu, '');
+      expect(collapseWhitespace(FORGE_GUIDE)).toContain(collapseWhitespace(marker));
     }
   });
 });
@@ -2579,3 +2779,43 @@ describe('packGhostDir · manual 渐进披露手册', () => {
     }
   });
 });
+
+// Unit / §3.2: the real packer must include the page and enforce its first release.
+// Generic pack cases lack ui and do not distinguish a prerelease floor from a
+// stable-only floor. Minimal input: one HTML page, changing only minCindyVersion;
+// 0.1.122-beta and later must pack; 0.1.121 shipped without UI support and must fail.
+it('packs the shared page, defaults its version floor, and rejects missing HTML or a low floor', async () => {
+  const base = { ...GOOD_MANIFEST, schemaVersion: 3, slots: undefined,
+    mcpApps: { ui: { resources: [{
+            uri: "ui://planner",
+            file: 'ui/planner.html'
+        }], tools: { do_thing: { resourceUri: "ui://planner" } } } } };
+  const dir = await makeSrcDir({ 'ghost.json': JSON.stringify(base), 'main.js': '/* fixture */', 'ui/planner.html': '<html>Planner</html>' });
+  const result = await packGhostDir(dir);
+  expect(result).toMatchObject({ ok: true, manifest: { mcpApps: base.mcpApps, minCindyVersion: PLUGIN_UI_MIN_CINDY_VERSION } });
+  for (const [minCindyVersion, allowed] of [
+    ['0.1.122-beta', true], ['0.1.122-beta.1', true], ['0.1.122', true],
+    ['0.1.121-beta', false], ['0.1.121', false],
+    ['0.1.120', false], ['0.1.120-beta', false],
+  ] as const) {
+    await fs.promises.writeFile(path.join(dir, 'ghost.json'), JSON.stringify({ ...base, minCindyVersion }));
+    const packed = await packGhostDir(dir);
+    expect(packed, minCindyVersion).toMatchObject(allowed
+      ? { ok: true, manifest: { minCindyVersion } }
+      : { ok: false, errorCode: 'MANIFEST_INVALID' });
+  }
+  await fs.promises.writeFile(path.join(dir, 'ghost.json'), JSON.stringify(base));
+  // #4420969498: a new author package must not exceed the runtime page budget.
+  await fs.promises.writeFile(path.join(dir, 'ui/planner.html'), 'x'.repeat(4 * 1024 * 1024 + 1));
+  await expect(packGhostDir(dir)).resolves.toMatchObject({ ok: false, errorCode: 'MANIFEST_INVALID' });
+  await fs.promises.unlink(path.join(dir, 'ui/planner.html'));
+  await expect(packGhostDir(dir)).resolves.toMatchObject({ ok: false });
+});
+
+// Unit: stored-release tolerance must never relax the real new-package packer.
+it.each([null, 'legacy', [], { ui: { resources: [{ uri: 'ui://bad', file: '../page.html' }], tools: { do_thing: {} } } }])(
+  'refuses new author packages with malformed mcpApps %j', async mcpApps => {
+    const dir = await makeSrcDir({ 'ghost.json': JSON.stringify({ ...GOOD_MANIFEST, schemaVersion: 3, slots: undefined, mcpApps }), 'main.js': '// fixture' });
+    expect(await packGhostDir(dir)).toMatchObject({ ok: false, errorCode: 'MANIFEST_INVALID' });
+  },
+);

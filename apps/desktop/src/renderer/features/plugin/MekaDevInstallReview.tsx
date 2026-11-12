@@ -34,7 +34,10 @@ import {
   Network,
   PanelLeft,
   PanelRight,
+  Puzzle,
+  Radio,
   ShieldAlert,
+  Smartphone,
   Sparkles,
   Terminal,
   Wrench,
@@ -70,6 +73,12 @@ const KIND_ICON: Record<GhostPermissionItem['kind'], LucideIcon> = {
   reveal: FolderOpen,
   workspace: FolderPlus,
   mcpr: Network,
+  // 第七轮同步:上游新增的四个能力 kind。映射与 `lib/permissionItemIcon.ts` 同源,
+  // 两处不得分叉(漏项会让本表类型不完整)。
+  'task-view': PanelRight,
+  'live-screen': Smartphone,
+  deviceSync: Radio,
+  'browser-extension': Puzzle,
 };
 
 function itemIcon(item: GhostPermissionItem): LucideIcon {

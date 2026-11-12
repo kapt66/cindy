@@ -1,9 +1,12 @@
+import { DelegationNotAuthorizedError, formatForwardedRequest, type CapturedAgentRequest } from './forwardedRequest.js';
+import type { AgentRequestReceipt } from '../../shared/forwardedRequest.js';
 import type {
   AgentKind,
   Effort,
   SessionGracefulStopResult,
   SessionTurnControlSnapshot,
 } from '@cindy/maker-core';
+import { assertTaskActionCurrent, bindTaskActionInput, combineInputGuards } from './taskActionAuthorization.js';
 import type { SessionActivitySnapshot } from '@cindy/maker-shared/session-activity';
 
 import type {
@@ -32,11 +35,12 @@ export type SessionQueuedMessageControlResult =
       | 'MESSAGE_CONSUMING'
       | 'NOT_AUTHORIZED'
       | 'INVALID_ARGS'
+      | 'DELEGATION_NOT_AUTHORIZED'
     >;
 
 export type SessionSteerResult =
   | { ok: true; queuedMessageId: string }
-  | Failure<'NOT_FOUND' | 'NO_ACTIVE_TURN' | 'UNSUPPORTED_CAPABILITY' | 'DELIVERY_FAILED'>;
+  | Failure<'NOT_FOUND' | 'NO_ACTIVE_TURN' | 'UNSUPPORTED_CAPABILITY' | 'DELIVERY_FAILED' | 'DELEGATION_NOT_AUTHORIZED'>;
 
 export type SessionStopResult =
   | {
@@ -98,7 +102,7 @@ export interface SessionControlServiceDeps {
       model?: string;
       providerId?: string | null;
       effort?: Effort | null;
-      fastMode?: boolean;
+      fastMode?: boolean | 'ultrafast';
     };
   }): Promise<SessionRuntimeSetResult>;
   assertExternalInputAllowed(sessionId: string): Promise<void>;
@@ -108,6 +112,11 @@ export interface SessionControlServiceDeps {
     queuedMessageId: string;
     message: string;
   }): Promise<AgentInputQueuedMessage>;
+  /**
+   * The editing task's current request decides whether an edited hand-off still speaks for
+   * the owner. Omitted keeps the item's provenance without owner authority.
+   */
+  captureRequest?(callerSessionId: string, message: string, target: { sessionId: string }): Promise<CapturedAgentRequest>;
   steerQueuedMessage(
     sessionId: string,
     item: AgentInputQueuedMessage,
@@ -153,13 +162,20 @@ export function createSessionControlService(deps: SessionControlServiceDeps) {
     }): Promise<SessionQueuedMessageControlResult> {
       const missing = await ensureTarget(params.targetSessionId);
       if (missing) return missing;
+      const captured = await deps.captureRequest?.(params.callerSessionId, params.message,
+        { sessionId: params.targetSessionId });
+      if (captured?.blocked) return { ok: false, errorCode: 'DELEGATION_NOT_AUTHORIZED', message: captured.blocked };
       return queueControl.update({
         sessionId: params.targetSessionId,
         queuedMessageId: params.queuedMessageId,
         message: params.message,
         authorize: (item) => authorizeSessionQueueItem(item, params.callerSessionId),
-        beforeMutation: params.beforeMutation,
-        rebuild: rebuildSessionQueueItem,
+        beforeMutation: combineInputGuards(params.beforeMutation, assertTaskActionCurrent),
+        rebuild: (item, message) => {
+          const next = rebuildSessionQueueItem(item, message, captured?.autoReviewUserText);
+          bindTaskActionInput(params.targetSessionId, next);
+          return next;
+        },
       });
     },
 
@@ -176,7 +192,7 @@ export function createSessionControlService(deps: SessionControlServiceDeps) {
         sessionId: params.targetSessionId,
         queuedMessageId: params.queuedMessageId,
         authorize: (item) => authorizeSessionQueueItem(item, params.callerSessionId),
-        beforeMutation: params.beforeMutation,
+        beforeMutation: combineInputGuards(params.beforeMutation, assertTaskActionCurrent),
       });
     },
 
@@ -216,6 +232,7 @@ export function createSessionControlService(deps: SessionControlServiceDeps) {
       return queueControl.steer({
         sessionId: params.targetSessionId,
         queuedMessageId: params.queuedMessageId,
+        beforeMutation: assertTaskActionCurrent,
         authorize: (item) =>
           authorizeSessionQueueReorder(item, params.callerSessionId, params.targetSessionId),
       });
@@ -233,6 +250,7 @@ export function createSessionControlService(deps: SessionControlServiceDeps) {
         sessionId: params.targetSessionId,
         queuedMessageId: params.queuedMessageId,
         position: params.position,
+        beforeMutation: assertTaskActionCurrent,
         authorize: (item) =>
           authorizeSessionQueueReorder(item, params.callerSessionId, params.targetSessionId),
       });
@@ -246,13 +264,14 @@ export function createSessionControlService(deps: SessionControlServiceDeps) {
       queuedMessageId?: string;
       beforeMutation?: () => Promise<void>;
     }): Promise<SessionSteerResult> {
+      const beforeMutation = combineInputGuards(params.beforeMutation, assertTaskActionCurrent);
       const missing = await ensureTarget(params.targetSessionId);
-      await params.beforeMutation?.();
+      await beforeMutation?.();
       if (missing) return missing;
       try {
         await deps.assertExternalInputAllowed(params.targetSessionId);
       } catch (error) {
-        await params.beforeMutation?.();
+        await beforeMutation?.();
         if ((error as { code?: unknown }).code === 'UNSUPPORTED_CAPABILITY') {
           return {
             ok: false,
@@ -262,7 +281,7 @@ export function createSessionControlService(deps: SessionControlServiceDeps) {
         }
         throw error;
       }
-      await params.beforeMutation?.();
+      await beforeMutation?.();
       const live = deps.getLiveSession(params.targetSessionId);
       if (!live?.isTurnRunning()) {
         return {
@@ -280,11 +299,18 @@ export function createSessionControlService(deps: SessionControlServiceDeps) {
       }
       const turnGeneration = live.getTurnGeneration();
       const queuedMessageId = params.queuedMessageId ?? deps.createId();
-      const item = await deps.createQueuedMessage({
-        ...params,
-        queuedMessageId,
-      });
-      await params.beforeMutation?.();
+      let item: AgentInputQueuedMessage;
+      try {
+        item = await deps.createQueuedMessage({
+          ...params,
+          queuedMessageId,
+        });
+      } catch (error) {
+        if (error instanceof DelegationNotAuthorizedError)
+          return { ok: false, errorCode: 'DELEGATION_NOT_AUTHORIZED', message: error.message };
+        throw error;
+      }
+      await beforeMutation?.();
       const current = deps.getLiveSession(params.targetSessionId);
       if (
         current !== live ||
@@ -297,7 +323,7 @@ export function createSessionControlService(deps: SessionControlServiceDeps) {
           message: `session ${params.targetSessionId} changed turns before steer was accepted`,
         };
       }
-      const expectedTurn = { session: live, turnGeneration, ...(params.beforeMutation ? { beforeMutation: params.beforeMutation } : {}) };
+      const expectedTurn = { session: live, turnGeneration, beforeMutation };
       const accepted = await deps.steerQueuedMessage(params.targetSessionId, item, expectedTurn);
       if (!accepted) {
         const latest = deps.getLiveSession(params.targetSessionId);
@@ -320,7 +346,7 @@ export function createSessionControlService(deps: SessionControlServiceDeps) {
 
     async stopSessionTurn(params: { targetSessionId: string; beforeMutation?: () => Promise<void> }): Promise<SessionStopResult> {
       const missing = await ensureTarget(params.targetSessionId);
-      if (params.beforeMutation) await params.beforeMutation();
+      await combineInputGuards(params.beforeMutation, assertTaskActionCurrent)?.();
       if (missing) return missing;
       const live = deps.getLiveSession(params.targetSessionId);
       if (!live) return { ok: true, status: 'no-active-turn' };
@@ -368,13 +394,15 @@ export function createSessionControlService(deps: SessionControlServiceDeps) {
         model?: string;
         providerId?: string | null;
         effort?: Effort | null;
-        fastMode?: boolean;
+        fastMode?: boolean | 'ultrafast';
       };
     }): Promise<SessionRuntimeSetResult> {
       const missing = await ensureTarget(params.targetSessionId);
       if (params.beforeMutation) await params.beforeMutation();
       if (missing) return missing;
-      return deps.setSessionRuntime(params);
+      return deps.setSessionRuntime({ ...params,
+        beforeMutation: combineInputGuards(params.beforeMutation, assertTaskActionCurrent),
+      });
     },
   };
 }
@@ -415,9 +443,26 @@ export function authorizeSessionQueueReorder(
 export function rebuildSessionQueueItem(
   item: AgentInputQueuedMessage,
   message: string,
+  /** The editor's freshly captured receipt; edited text is a new hand-off, not the old one. */
+  captured?: AgentRequestReceipt,
 ): AgentInputQueuedMessage {
+  const request = typeof item.autoReviewUserText === 'object' ? item.autoReviewUserText.request : undefined;
+  // Older envelopes keep their quoted user words when edited. Any other item (a plain hand-off or
+  // an ordinary message without authority) speaks for the user only if the editor's own request
+  // re-checked exactly the new text; otherwise it keeps its provenance without authority.
+  const legacyEnvelope = request?.plainBody !== true && typeof request?.userText === 'string';
+  const plainRequest = legacyEnvelope ? undefined
+    : captured?.request?.delegatedText === message ? captured.request
+      : request?.plainBody ? { sessionId: request.sessionId, clientId: request.clientId, plainBody: true as const }
+        : undefined;
+  const nextRequest = plainRequest ?? request;
+  if (item.origin?.kind === 'session') message = formatForwardedRequest(nextRequest ?? { userText: null }, message);
   const updated = updateQueuedMessageText(item, message);
   if (updated.origin?.kind === 'session') {
+    updated.autoReviewUserText = {
+      kind: typeof item.autoReviewUserText === 'object' ? item.autoReviewUserText.kind : 'agent-request',
+      request: nextRequest ?? { userText: null },
+    };
     // send_to_session owns raw user text, not a renderer composer envelope.
     // A valid JSON object/array is still literal message content, so editing it
     // must replace the persisted history row wholesale instead of merging a

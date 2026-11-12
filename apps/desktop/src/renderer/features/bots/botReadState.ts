@@ -2,17 +2,19 @@
  * botReadState — per-Bot read position for the Bots list unread badges.
  * ---------------------------------------------------------------------------
  * 设计取舍:
- *   - **读位是 renderer 状态,不进 SQLite**。它是「这台机器上的这个人看到哪儿了」,
- *     不是 Bot 的权威数据;新增 schema/migration 的代价远大于收益。main 侧只在
- *     `local-db:bots:list` 的入参里收下这张表,算完 unreadCount 就丢,不落盘。
- *   - 存储位置与 `userPromptStore` / `composerDraftStore` 同源(localStorage),
- *     key 按数据主人分命名空间,换账号不串读位(见 `setBotReadStateOwner`,
+ *   - **权威读位在这台电脑的 main**(`main/maker-ipc/botReadStateStore.ts`,按账号落盘)。
+ *     手机与其他电脑经伙伴的远程资源 `read` 动作推进同一份读位,所以在哪台设备看过,
+ *     其他设备的角标都会清掉(docs/product-rules/cindy-bots-runtime.md「导航未读与系统角标」)。
+ *   - renderer 保留一份 localStorage 副本:首帧同步可读、同机多窗口经 storage 事件即时更新,
+ *     main 不可用时退回本机语义。key 按数据主人分命名空间(见 `setBotReadStateOwner`,
  *     由 AuthContext 在 owner 切换时调用)。
- *   - 已知局限:同一台机器同一账号的多个窗口共享读位(localStorage 语义如此);
- *     跨设备不同步——手机端看过不清桌面端角标。
+ *   - 两边只按「取较新」合并:本地推进时上报 main(`mark`),新伙伴的初始读位按「没有才写」
+ *     上报(`seed`);切换账号后把本地副本作为 seed 交给 main(升级时迁移旧读位,
+ *     已有的读位不被覆盖),再把 main 的读位合并回来;main 的变化推送同样合并。
  *   - 读位只前进不后退(`markBotRead` 单调),避免乱序事件把已读退回未读。
  */
 
+import { isDataOwnerPushCurrent } from '@/contexts/dataOwnerGeneration';
 import type { BotGroupSummary } from '../../../shared/botGroupChat';
 
 const STORAGE_KEY_PREFIX = 'cindy.bots.readState.v1';
@@ -46,6 +48,64 @@ function readStorage(): ReadStateMap {
   return next;
 }
 
+type HostReadState = { ownerId: string | null; positions: Record<string, number> };
+type HostReadApi = {
+  get: () => Promise<HostReadState>;
+  update: (body: { ownerId: string; mark?: ReadStateMap; seed?: ReadStateMap; prune?: { botIds?: string[]; groupIds?: string[] } }) => Promise<HostReadState>;
+  onChanged: (callback: (payload: unknown, ownerStamp?: unknown) => void) => () => void;
+};
+
+function hostApi(): HostReadApi | undefined {
+  return (window as unknown as { electronAPI?: { localDb?: { bots?: { readState?: HostReadApi } } } })
+    .electronAPI?.localDb?.bots?.readState;
+}
+
+let hostUnsubscribe: (() => void) | null = null;
+
+/** Fold host positions in, newest wins; never rewinds a local position. */
+function mergeHostPositions(ownerId: string, value: unknown): void {
+  if (ownerId !== activeOwnerId || !value || typeof value !== 'object' || Array.isArray(value)) return;
+  const current = readStorage();
+  let next: ReadStateMap | null = null;
+  for (const [key, at] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof at !== 'number' || !Number.isFinite(at) || at <= 0 || at <= (current[key] ?? 0)) continue;
+    next ??= { ...current };
+    next[key] = Math.floor(at);
+  }
+  if (next) writeStorage(next);
+}
+
+function applyHostState(state: HostReadState | null | undefined): void {
+  if (state?.ownerId) mergeHostPositions(state.ownerId, state.positions);
+}
+
+/** Report to the host ledger; a failure keeps the local position (next report carries it). */
+function reportToHost(body: { mark?: ReadStateMap; seed?: ReadStateMap; prune?: { botIds?: string[]; groupIds?: string[] } }): void {
+  const api = hostApi();
+  const ownerId = activeOwnerId;
+  if (!api || !ownerId) return;
+  void api.update({ ownerId, ...body }).then(applyHostState, () => undefined);
+}
+
+function bindHost(): void {
+  const api = hostApi();
+  if (!api || hostUnsubscribe) return;
+  hostUnsubscribe = api.onChanged((payload, ownerStamp) => {
+    if (!isDataOwnerPushCurrent(ownerStamp)) return;
+    applyHostState(payload as HostReadState);
+  });
+}
+
+/** After an owner switch: hand the local copy over as seeds (upgrade migration), then fold the host in. */
+function syncWithHost(): void {
+  const ownerId = activeOwnerId;
+  if (!ownerId) return;
+  bindHost();
+  const local = readStorage();
+  if (Object.keys(local).length) reportToHost({ seed: { ...local } });
+  else void hostApi()?.get().then(applyHostState, () => undefined);
+}
+
 function writeStorage(next: ReadStateMap): void {
   cache = next;
   try {
@@ -62,6 +122,7 @@ export function setBotReadStateOwner(ownerId: string | null): void {
   activeOwnerId = ownerId;
   cache = null;
   for (const subscriber of subscribers) subscriber();
+  syncWithHost();
 }
 
 /** Snapshot handed to `local-db:bots:list` so main can count unread replies. */
@@ -83,6 +144,7 @@ export function markBotRead(botId: string, at: number = Date.now()): boolean {
   const previous = current[botId] ?? 0;
   if (at <= previous) return false;
   writeStorage({ ...current, [botId]: Math.floor(at) });
+  reportToHost({ mark: { [botId]: Math.floor(at) } });
   return true;
 }
 
@@ -97,13 +159,16 @@ export function seedMissingBotReadState(botIds: readonly string[], at: number = 
   if (!Number.isFinite(at) || at <= 0) return false;
   const current = readStorage();
   const next = { ...current };
-  let changed = false;
+  const seeded: ReadStateMap = {};
   for (const botId of botIds) {
     if (!botId || next[botId] !== undefined) continue;
-    next[botId] = Math.floor(at);
-    changed = true;
+    next[botId] = seeded[botId] = Math.floor(at);
   }
-  if (changed) writeStorage(next);
+  const changed = Object.keys(seeded).length > 0;
+  if (changed) {
+    writeStorage(next);
+    reportToHost({ seed: seeded });
+  }
   return changed;
 }
 
@@ -114,10 +179,12 @@ export function pruneBotReadState(botIds: readonly string[]): boolean {
   const next: ReadStateMap = {};
   let changed = false;
   for (const [botId, at] of Object.entries(current)) {
-    if (botId.startsWith('group:') || alive.has(botId)) next[botId] = at;
+    if (botId.startsWith('group:') || botId.startsWith('thread:') || alive.has(botId)) next[botId] = at;
     else changed = true;
   }
   if (changed) writeStorage(next);
+  // The host may also hold positions this window never had (read on the phone).
+  reportToHost({ prune: { botIds: [...alive] } });
   return changed;
 }
 
@@ -141,12 +208,14 @@ export function resetBotReadStateForTests(): void {
   activeOwnerId = null;
   cache = null;
   subscribers.clear();
+  hostUnsubscribe?.();
+  hostUnsubscribe = null;
   window.removeEventListener('storage', onStorage);
 }
 
 /** Group replies use the same owner-scoped, monotonic local read positions. */
 export const botGroupReadKey = (groupId: string) => `group:${groupId}`;
-type GroupReadSummary = Pick<BotGroupSummary, 'id' | 'lastReplyAt'> & Partial<Pick<BotGroupSummary, 'lastMessage'>> & {
+type GroupReadSummary = Pick<BotGroupSummary, 'id' | 'lastReplyAt'> & Partial<Pick<BotGroupSummary, 'lastMessage' | 'serverUnread'>> & {
   /**
    * ISO times of the group's latest (up to 99) messages from others — Bots and other humans,
    * never the reader's own or notices — oldest first. Older hosts omit it.
@@ -166,6 +235,7 @@ function latestGroupReplyAt(group: GroupReadSummary): number {
  * most 99); a host without the list only says whether anything is new (1).
  */
 export function botGroupUnreadCount(group: GroupReadSummary): number {
+  if (group.serverUnread) return group.serverUnread.count;
   const readAt = getBotLastReadAt(botGroupReadKey(group.id));
   if (readAt === null) return 0;
   const latestUnread = latestGroupReplyAt(group) > readAt ? 1 : 0;
@@ -187,9 +257,21 @@ export function seedBotGroupReadState(groups: readonly GroupReadSummary[]): void
   const next = { ...current };
   const alive = new Set(groups.map(group => botGroupReadKey(group.id)));
   for (const key of Object.keys(next)) if (key.startsWith('group:') && !alive.has(key)) delete next[key];
+  const seeded: ReadStateMap = {};
   for (const group of groups) {
     const key = botGroupReadKey(group.id);
-    if (next[key] === undefined) next[key] = Math.max(1, latestGroupReplyAt(group));
+    if (next[key] === undefined) next[key] = seeded[key] = Math.max(1, latestGroupReplyAt(group));
   }
   if (JSON.stringify(next) !== JSON.stringify(current)) writeStorage(next);
+  reportToHost({ ...(Object.keys(seeded).length ? { seed: seeded } : {}), prune: { groupIds: groups.map(group => group.id) } });
+}
+
+/** Private-chat topics use the same owner-scoped, monotonic local read positions, per topic Session. */
+export const botDmThreadReadKey = (threadSessionId: string) => `thread:${threadSessionId}`;
+
+/** A topic has a companion reply the reader has not seen in its panel. */
+export function isBotDmThreadUnread(thread: { sessionId: string; lastAssistantAt: number | null }): boolean {
+  if (thread.lastAssistantAt === null) return false;
+  const readAt = getBotLastReadAt(botDmThreadReadKey(thread.sessionId));
+  return readAt === null || thread.lastAssistantAt > readAt;
 }

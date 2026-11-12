@@ -107,13 +107,75 @@ P4 项目根、插件面板呈现方式等 Meka 专属配置；这些配置落�
 - **自动化门禁**：`pnpm --filter desktop exec vitest run src/main/meka-settings/__tests__/service.test.ts`
 - **实机验证**：选一个含 `saga2_*` 子目录的根 → 列表显示匹配项；选空目录 → 显示空态
 
-#### WL-1.5 插件面板呈现方式开关
+#### WL-1.5 插件面板呈现方式开关（2026-11-06 第七轮收口为「上游全局页签 / Meka Modal」二选一）
 
-- **代码锚点**：`MekaAssistantSettingsSection.tsx:291-326`（`settings.meka.pluginPanel.title` / `toggleAria`）；`apps/desktop/src/renderer/lib/ghostPanelPresentationPreference.ts:15-16,101-107,119-129`
-- **持久化 key**：`xdt:ghostPanelPresentation:v1`（全局默认）与 `xdt:ghostPanelPresentationOverrides:v1`（逐插件覆盖）。**不变量**：关闭时**移除**存储项而不是写 `false`（保持「未设置 = 跟随默认」的语义）
-- **不变量**：该开关只改变插件面板的呈现方式（Modal/停靠），**不改变逻辑沙箱与 Node worker 的生命周期**（`plugin-security-and-authoring.md`：隐藏态不得改变后台生命周期）
-- **自动化门禁**：`pnpm --filter desktop exec vitest run src/renderer/lib/__tests__/ghostPanelPresentationPreference.test.ts src/renderer/__tests__/pluginPanelPresentationPreference.test.tsx`
-- **实机验证**：切换开关后打开插件面板，呈现方式改变但插件后台仍在运行；关闭开关后 localStorage 里该键**不存在**
+- **最终形态（以本行为准，取代此前的「停靠 pane / 独立窗口 / 气泡」三件套口径）**
+  - `docked` = **上游的插件页签宿主**：右侧栏全局页签 `plugin-view`，`state.view === 'panel'`，复用
+    `GhostChipPanelBody`（`renderer/features/right-sidebar/plugins/plugin-view/index.tsx`）。落边 =
+    用户页签组记忆 > `panel.position`（`globalTabs.ts:258` 的 `defaultGroupForGhost`）⇒ Meka 三个在产插件
+    声明 `position:'left'`，实际落在**聊天区左侧**页签组。
+  - `modal` = **Meka 的 `GhostPanelModal`**（页面级单例宿主，90vw/90vh，复用同一 `GhostChipPanelBody`、
+    原分区、`cindy-ghost://` 供片、主题注入、崩溃接管）。它不是第三种页签，不参与页签组/拖拽/弹出窗口。
+  - `position:'tab'` = **回上游 `GhostPagePanelHost`（插件页内独占宿主）**，Meka 不再做 Modal 兜底
+    （旧兜底会造出两个面板 WebView 宿主）。分流点在 `GhostPluginPage.tsx` 的 `[MEKA]` resolver（`:614`）；
+  `useGhostPanelLauncher.tsx` 的 `tab` 分支（`:92-93`）直接交回插件页宿主、不抢宿主。
+  - **已删除**：布局树停靠 pane、`PanelChrome`、面板独立窗口（`main/ghost-panel-window/**`、preload、
+    `?ghostPanelWindow=` 路由与崩溃隔离）、气泡最小化与恢复入口、`GhostPanelBubbleLayer` /
+    `GhostPanelRestoreEntry` / `useMinimizedGhostPanels`。**不存在**「布局树/最小化位置不变」这条旧口径。
+- **代码锚点**（符号名为准）：
+  - 契约与校验：`apps/desktop/src/shared/ghost.ts` 的 `GhostPanelDecl.allowUserPresentationOverride`（约 `:518`）、
+    布尔拒装（`allowUserPresentationOverride !== 'boolean'` 分支，实测 `:4680-4686`）、
+    `position:'tab'` 拒装（`:4704-4709`）、已知键清单（`:4714-4719`）、作者格式往返（`:4727-4728`）。
+    > 行号为 2026-11-12（10:33）版实测：该文件当日在面板校验前插入了 7 行「存量兼容红线」注释，
+    > 上一版审查记录的 `:4669-4675` 是同一分支的旧行号。**以符号为准**，改代码后重新实测。
+  - 有效呈现 resolver（Meka 侧唯一真值，纯函数、可在模块级同步路径调用）：
+    `renderer/lib/ghostPanelPresentationPreference.ts` 的 `resolveGhostPanelPresentation`（`:178`）与
+    `useGhostPanelPresentation`（`:189`）；存储键仍为 `xdt:ghostPanelPresentation:v1`（全局，关闭时**移除**而非写
+    `false`）与 `xdt:ghostPanelPresentationOverrides:v1`（逐插件 `docked|modal`，`inherit` = 删键）。
+  - 页签投影收敛：`renderer/features/plugin/lib/panelTabProjection.ts`（`syncPanelTabProjection` `:36`、
+    `applyGhostPanelPresentationChange` `:47`）+ `globalTabs.ts` 两处 `[MEKA]` seam
+    （`isAutoGlobalPanelGhost` `:457-462`、`setGlobalPanelAutoTabEnabled` `:576-591`）+
+    `cindy-brain/ghostPanels.tsx:40`。Modal 上游侧护栏：`GhostPanelModal.tsx:56`（非 modal 呈现 `return null`）。
+  - 设置面：`components/settings/MekaAssistantSettingsSection.tsx`（`settings.meka.pluginPanel.*` 卡）、
+    `features/plugin/PluginPanelPresentationPreference.tsx`（三态选择器）、
+    `features/plugin/useGhostPanelLauncher.tsx`（目录所有入口的唯一 launcher，先挂关闭态、下一帧再开）。
+- **不变量**：
+  1. **单宿主（I1）**：同一插件实例同一时刻至多一个面板 WebView 宿主（全局页签 / Modal / 插件页宿主三选一）。
+  2. **关闭语义分离（I3）**：关页签写 `dismissedInstanceIds`（跨重启记忆，不再自动加回）；关 Modal 只是隐藏，
+     **不写 dismissed**，也不清页签组记忆。
+  3. **优先级不变**：插件级 override → Meka 全局开关 → 停靠产品默认；全局开关作用于**所有**停靠形态插件，不要求
+     声明 flag；偏好按**逻辑插件 id**（`manifest.id`），宿主按**物理实例键**（`_root__*` / `_ns__*`），两者不可混。
+  4. **`allowUserPresentationOverride` 契约**：只在「有 `panel` 且 `position !== 'tab'`」时可声明；
+     **`position:'tab'` + 该字段 ⇒ 拒装**（第七轮唯一新增拒绝点，见下）；非布尔值拒装；插件脚本无写接口，
+     不得在 `settingsHtml` 复刻同名设置。
+  5. **旧状态只读迁移**：`xdt:ghostPanelBubble:v1`（旧气泡键）由上游 `reconcileGlobalPluginTabs` **只读**消费
+     （`globalTabs.ts:478-484` 读旧键、`:498` `legacyPanelEdge`、`:532-538` 迁移落点：命中的实例记成
+    `dismissed`，旧边迁成页签组），Meka **不再写**
+     该键；`userData/ghost-panel-windows-settings.json` 等独立窗口账本成为孤儿，不主动删（删键属数据操作需单独批准）。
+- **新增拒绝点（与插件基座白名单 Approve 同批知悉）**：**该批准已于 2026-11-12 由用户给出**
+  （同批确认了协议变更与「移动端全部复用上游」）。`position:'tab'` 声明 `allowUserPresentationOverride`
+  或 `minWidth` / `defaultFraction` / `systemButtons` ⇒ 拒装，文案「仅停靠形态(left)有效」。影响面 = 已声明 `tab`
+  且声明该字段的插件，当前 **0 个**（在产三个插件全是 `left` + `true`）；存量已装插件**无需重装/重确认/重配置** ——
+  机制是**严格路径才拒装**：`validateGhostManifest`（新装/更新）拒非法值，而已装快照走
+  `validateInstalledGhostManifest`（`preserveHistoricalTasks`）**容错**，历史非法值按未知字段保留、不把已装插件
+  判成 invalid（`shared/__tests__/ghost.test.ts` 的「严格新装拒非法值，已装快照容错」用例锁住这条红线）。
+- **自动化门禁**：`pnpm --filter desktop exec vitest run src/renderer/lib/__tests__/ghostPanelPresentationPreference.test.ts src/renderer/__tests__/pluginPanelPresentationPreference.test.tsx src/renderer/features/plugin/lib/__tests__/panelTabProjection.test.ts src/renderer/features/right-sidebar/__tests__/globalTabs.test.ts src/renderer/cindy-brain/__tests__/GhostPanelModal.test.tsx src/renderer/features/plugin/__tests__/useGhostPanelLauncher.test.tsx src/renderer/cindy-brain/__tests__/ghostPanelBodyFocus.test.tsx`
+  - `shared/__tests__/ghost.test.ts` 覆盖 `tab` + 该字段拒装与合法声明往返；`pnpm check:i18n` 覆盖新键
+    `settings.ghosts.detail.panelModal`（12 语齐备）。
+- **实机验证**：① 停靠态：打开插件「界面」→ 出现在声明边的全局页签组（Meka 插件=左侧），`document.querySelectorAll('webview')`
+  只应有该面板一个；关页签后状态行显示「已从右侧栏关闭 · 可在此处或右侧栏「+」菜单重新打开」且不再自动加回。
+  ② 切 Modal：设置开关或详情三态选「弹窗」→ 页签消失、Modal 打开；关 Modal 后状态行显示「显示在弹窗中」而**不是**
+  「已从右侧栏关闭」（三态状态行实测文案：`panelInSidebar` = 「显示在右侧栏（所有任务中保留）」、
+  `panelDismissed` = 「已从右侧栏关闭 · …」、`panelPageHosted` = 「从插件页打开 · 离开插件页自动关闭」、
+  `panelModal` = 「显示在弹窗中」）；再次打开复用同一 WebView（选择/滚动保留）。
+  ③ 切回停靠：页签回到原边、`dismissed` 被清。④ `position:'tab'` 插件从插件页打开时走页内宿主，**不弹 Modal**。
+  **2026-11-12 实机（CDP，main target）已跑**：docked 打开时 `[data-testid=ghost-panel-modal]` = **0**；
+  详情选「弹窗打开」→ **=1 且 header=Meka P4**；切回 `inherit` → **=0**（单宿主 I1 与双向切换成立）。
+  仍**未做**：Light/Dark 目检、页签关掉后「已从右侧栏关闭」状态行的人工核对、`position:'tab'` 插件页宿主的人工核对
+  （见当期同步报告「未验证」）。
+- **存量迁移风险**：升级前被气泡抑制过的面板会被上游迁成 `dismissed` ⇒ 右栏不自动出现，但详情页状态行与「在右侧栏中打开」
+  按钮让它**可发现**（不是静默消失）；另 `panel.systemButtons` 已退化为**声明数据**（校验照旧、无 UI 消费方），
+  旧包 `position:'right'` 不再归一化成 `left`（跟上游落右/上/下边）。
 
 #### WL-1.6 Meka 工具风险分级策略
 
@@ -702,12 +764,20 @@ edition 与端点自举）；② 登录页实际认证的 **realm**;③ 运行�
   - 模型/供应商目录投影：`apps/desktop/src/main/cindy-brain/index.ts:3560`（`getAuthState().edition`）、`:8147`；`apps/desktop/src/main/maker-host/active-catalog.ts:1086-1103`
   - 法务链接：`apps/desktop/src/shared/legalLinks.ts:31`
   - 货币/计价：`apps/desktop/src/renderer/features/billing/money.ts:14`、`apps/desktop/src/shared/regionalMoney.ts:81`
-  - 版本行区域标注：`apps/desktop/src/renderer/components/sidebar/UserInfoSection.tsx:70-80,139-146`
-  - 日志上报目标：`apps/desktop/src/main/log-upload/logUploadTarget.ts:117`
+  - 版本行区域标注：`apps/desktop/src/renderer/components/sidebar/UserInfoSection.tsx:71-81,147-156`
+    （`edition` 作为组件入参、缺省回落 `CURRENT_CINDY_REGION`；版本行展示**有效产品 edition**，dev 构建显式显示
+    `Global`）
+  - 日志上报目标（**第七轮已随 WL-26 移除**）：原 `main/log-upload/logUploadTarget.ts` 全仓不存在；edition 不再有
+    「上报目标」这一消费面，不得据此恢复上报通道
   - 埋点项目：`apps/desktop/src/renderer/analytics/tapdbClient.ts:94`
-- **自动化门禁**：`pnpm --filter desktop exec vitest run src/main/cindy-brain/__tests__/cindyMediaCatalogEditionWiring.test.ts src/renderer/__tests__/regionCode.consistency.test.ts src/renderer/__tests__/userInfoSectionHover.test.ts`
+- **自动化门禁**：`pnpm --filter desktop exec vitest run src/main/cindy-brain/__tests__/cindyMediaCatalogEditionWiring.test.ts src/renderer/__tests__/regionCode.consistency.test.ts src/renderer/__tests__/userInfoSectionMobileDownload.test.tsx src/renderer/__tests__/userInfoSectionUpdateFlame.test.tsx`
   - `cindyMediaCatalogEditionWiring` 显式断言目录投影**必须**用 `getAuthState().edition` 而**不得**用构建常量 `CURRENT_CINDY_REGION`
   - `regionCode.consistency.test.ts` 要求新增区域消费链路时把它的 i18n 命名空间登记进去
+  - **2026-11-06 第七轮改动**：`src/renderer/__tests__/userInfoSectionHover.test.ts` 已被上游**删除**（Git `UD`；
+    上游不再用源码字面量扫描，改为两个**行为级**用例）⇒ 版本行 / 火焰入口的 edition 断言现由
+    `userInfoSectionMobileDownload.test.tsx`（`shows the Global startup edition in the default dev build` + Beta 标签 +
+    折叠态入口）与 `userInfoSectionUpdateFlame.test.tsx`（火焰入口与 banner 互斥、rail 态无火焰）承担。
+    **不要**把源码形态断言加回来（与 `engineering-conventions.md` §3.2 的「不得复制源码字面量」对撞）。
 - **实机验证**：切到 CN edition 后，版本行前缀、货币、法务链接、可用供应商集合同步改变；
   用户数据目录不变（仍是 `CindyMeka`，dev 为 `CindyMekaDev`）
 - **已知未收敛的消费点**（上游同步不要误以为它们已改好）：供应商空态引导
@@ -1299,6 +1369,15 @@ Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台；Meka 渠�
 | WL-11.6 | 运行期按角色解析**角色级 MCP / 技能快照含角色声明的技能**（**workflow 已随机制删除：`MekaRuntimeConfig` 上没有该字段，运行期不再解析它**，见 §8.12）；**默认角色正向断言**（2026-09-23 重写口径，smoke 默认路径即命中）：**默认角色确实贡献角色级技能与项目元数据**——`skillsCount > platformSkillsCount`、MCP 集合 ⊇ 平台基线（`mcp-router`）**且** ⊇ 项目 `roleDefaults` 的 provider、快照技能 ⊇ 项目默认技能且总数 > 平台基线（旧口径「`skillsCount === platformSkillsCount`、平台基线外 MCP 为空、快照技能数 === platformSkillsCount」**已作废**，它断言的是「刻意零注入」）；**并断言会话 system 前缀里出现 `[MEKA_PROJECT_REFERENCES]`（order 65）且不含任何 `agents-md` / `rule` 正文**（该项目没有有效规范类元数据时该段不出现——空集合不渲染，这一支另行处理）。**不得**断言 mcp/skills 为空或无快照——Host 平台基线对每个普通 Meka 任务都存在。**⚠️ 本条的战斗角色分支与 workflow 断言已失效，脚本待改，见上文 2026-09-29 块与 §8.12 第 4 条第 7 项** | `workflow=saga2-combat-development-v1 mcp=mcp-router,project-agent skillsCount=2 快照技能=combat-skill-configuration,platform-capabilities`（**2026-09-14 历史证据**；其中 `workflow` 字段与 `combat-skill-configuration` 技能随本次交付消失）。**2026-09-29 起：随包 saga2 基线的 `roleDefaults.mcp` 已清空**（它此前贡献的 `project-agent` 只是 `mcp-router` 的冗余别名，见 `meka-capability-layers.md` §3）⇒ **干净机器上默认角色的 MCP 集合应为 `mcp-router,meka-design`**；本机因项目根 override 仍声明该别名，实跑仍会显示三个 —— 两者都对，差别在 override 而不在基线。 |
 | WL-11.7 | 新会话在 Meka 分区该项目容器内，且不在普通「对话」分组内 | `会话在项目「SAGA2」容器内；普通对话分组排除=已核对` |
 | WL-11.8 | 同一项目内再次点击新建入口时保留当前草稿已选角色（现行行为，裁决见 §8.2 第 6 条） | 改动前：`fresh 默认=「通用开发」；切到「战斗开发」后同项目重进仍为「战斗开发」`；**第二次更新（2026-09-23）期望不变：`fresh 默认=「默认角色」…`（待实跑）** |
+
+> **2026-11-12 第七轮同步后复跑（权威更新）**：`pnpm desktop:session-smoke` **PASS 11/11**
+> （`SESSION_SMOKE PASSED — checks=11 pass=11 fail=0 unverified=0`，日志 `_analysis/wp7-session-smoke3.log`）。
+> WL-11.3 = `workspace_kind=meka / project=saga2 / role=saga2-default-role / is_formal=0`；
+> WL-11.6 运行期 `mcp=mcp-router,meka-design`、`skillsCount=51`、`platformSkillsCount=1`、`workflow键=不存在`；
+> WL-11.17 参考段 4 条、无 `#` 标题行。**同一轮修掉一个会破坏 WL-11.3 的真实缺陷**：
+> `NewMakerDraftRoute` 的 Meka 草稿曾**预建一条 provisional dialogue 会话**，使草稿先以非 meka 身份落库/落分组；
+> 已改为不预建、绑定由创建路径完整写入（同步报告 §4.5 第 1 条）。`maker-ipc` 的 `send_to_session` create 分支
+> 也补回「`'meka'` + project + role」三键一起写（缺一即降级为普通会话，§4.5 第 2 条）。
 
 **同一配置下角色差异必须真实生效**（WL-11.6 的对照证据，2026-09-14 实测）：
 
@@ -2603,7 +2682,13 @@ pnpm desktop:session-smoke
   `git rev-parse --short HEAD` 比对）——实例陈旧会直接 FAIL，这正是同步验收最容易犯的错；
   ② **把语言归一到简体中文并在结束时还原**，使断言与用户当前语言无关（否则中文文案断言在
   英文界面下会整片假红）。
+  > **2026-11-12 实跑**：`UI_SMOKE PASSED — checks=15 pass=13 fail=0 unverified=2`（`0 FAIL`）。
+  > 2 项 `unverified` = WL-1.2 / WL-1.3 的 MCPRouter / MekaDesign「配置」对话框：当前 profile **已连接**，
+  > 入口被「断开」替代；为不打扰用户真实凭证未构造未连接态。**脚本已按连接状态分支**（已连接断言「断开」/
+  > 未连接断言「配置」并开对话框），不再误报 FAIL。
 - `pnpm desktop:session-smoke` → **程序化会话验收**（WL-3.2 + WL-11.1–WL-11.8 共 9 项）：
+  > **2026-11-12 实跑**：`SESSION_SMOKE PASSED — checks=11 pass=11 fail=0 unverified=0`（脚本已扩到 11 项），
+  > 详见 WL-11「2026-11-12 第七轮同步后复跑」块。
   从侧栏项目入口建草稿 → 断默认角色 → 切角色 → 真实发消息 → 交叉核对库行 / main 日志里的
   运行期配置 / 该会话的技能快照 / 侧栏归属。**它是唯一会真正建会话并调用模型的验收命令**
   （刻意如此：项目/角色机制的语义只在真实运行期成立）。
@@ -3255,40 +3340,86 @@ HTTPS-only 发布根**不受本次回退影响**；真实发布与签名验证�
 - **本条的自我约束**：本节只登记退役/新增与验证现状，不改写任何带日期的历史原句；
   历史正文全部保留在 Git 历史与迁移总账 §11.32 的交付记录里。
 
-### WL-26 Meka 不启用客户端日志上报（该能力已整体移除，2026-10-08 第五轮同步后裁决）
+### WL-26 Meka 不启用客户端日志上报（2026-11-06 第七轮补全：含 `performance-trace` 的去上传收口）
 
 **保护的不变量**：Meka **不调用**任何客户端日志上报（SLS）：构建期**不**读取/注入上报目标、
 运行时**没有**上报通道与设置存储、**没有**崩溃自动补传、设置 → 关于**没有**上报入口。
 因此 `config/log-upload.json`（gitignore 的上游真值）在 Meka 上**既不需要、也不会被读取**；
-打包机缺它**不是**失败条件。**但**「报告问题」流程所依赖的**采集与脱敏**必须继续可用：
-一旦有人把 `main/log-upload/` 整块删掉，issue 诊断会连带失效 —— 那是本条的边界。
+打包机缺它**不是**失败条件。**但**「报告问题」流程所依赖的**采集与脱敏**必须继续可用，
+「设置 → 关于 → 打开日志目录」也必须可用：一旦有人把 `main/log-upload/` 整块删掉，
+issue 诊断会连带失效 —— 那是本条的边界。
 
 **与上游的关系**：**刻意分歧（整块移除）**。上游 #1661 的「桌面打包必须能解析到日志上报目标」
 接线是在**第五轮同步**（`bf3835f0ab`）才进入 meka/main 的（上游一侧 `bf3835f0ab^2` 有 3 行，
 同步前的 meka/main 与 0.0.25 的 tag 提交 `1b4f6a7c9` 都是 0 行）⇒ 版本化桌面打包随即报
-`缺少日志上报配置`。维护者裁决不需要该上报，故**移除**而非补真值。
+`缺少日志上报配置`。维护者裁决不需要该上报，故**移除**而非补真值。**第七轮（2026-11-06）**
+上游新增 `main/logSupport.ts` + `renderer/components/log-support/**` 的「打开日志目录 / 上传日志」
+对话框与 `main/performance-trace/**`（原实现直接 import `log-upload` 的
+`uploadPerformanceTraceReport` / `uploadCode` 做上报），本仓按同一裁决：**保留本地面、删除上报面**。
+`bootstrap-electron.ts` 的 `initLogUploadService` / `scheduleStartupBackfill` 保持不接线
+（只剩 divergence 注释）；`initPerformanceTraceService` **接线**，但它已是纯本地服务
+（录制 → 写 `userData/diagnostics/performance-traces/<id>/report.json` → 在文件夹中显示 → 7 天保留期，
+命令面里 `upload` 已被拒绝为 `INVALID_PARAMS`）。
 
-**代码锚点**（符号名为准）：移除面 —— `apps/desktop/scripts/package-desktop.mjs`（原
-`desktopLogUploadBuildEnv` 注入）、`apps/desktop/vite.main.config.ts`（原
-`process.env.XDT_LOG_UPLOAD_TARGET` define）、`apps/mobile/metro.config.js`（原
-`mobileLogUploadBuildEnv` 注入）、`scripts/shared/log-upload-build-env.mjs`（已删）、
-`main/bootstrap-electron.ts`（原 `initLogUploadService()`）、`preload/preload.ts`（原五个上报 API）、
-`shared/ipc-errors.ts`（原 `LOG_UPLOAD_*` / `PRIVACY_CONSENT_REQUIRED`）、
-`renderer/components/settings/AboutSection.{tsx,settings-search.ts}`（原两行入口）、
-五语 `settings.about.logUpload.*`、`main/log-upload/` 的上报模块与其测试（已删）、
-`apps/mobile/app/settings.tsx` 的「上传日志」行与其模块（已删）。
-保留面 —— `main/log-upload/` 的 `redact` / `collect` / `collectRuntime` / `mainLogReader` /
-`agentLogReader` / `sourceAllowlist` / `limits` / `types`（`github-issue/**` 与
-`maker-host/pi-package-diagnostic.ts` 在用）、`shared/logUpload.ts` 仅剩 `LogUploadReason`。
+**代码锚点**（符号名为准）：
+- 移除面（不得恢复）：`main/log-upload/index.ts` / `uploadRunner.ts` / `logSink.ts` 与
+  `__tests__/logSink.test.ts` / `__tests__/uploadRunner.test.ts`（**已删**）；
+  `main/performance-trace/upload.ts` / `artifacts.ts` / `restore.ts` / `traceRedactionWorker.ts` 与
+  `apps/desktop/scripts/restore-performance-report.ts`（**已删**，`forge.config.ts` 的 worker 入口同步移除；
+  本地口径正本见 [`performance-tracing.md`](performance-tracing.md)）；
+  `apps/desktop/scripts/package-desktop.mjs`（原 `desktopLogUploadBuildEnv` 注入，现只剩 divergence 注释）、
+  `apps/desktop/vite.main.config.ts`（原 `process.env.XDT_LOG_UPLOAD_TARGET` define）、
+  `apps/mobile/metro.config.js`（原 `mobileLogUploadBuildEnv` 注入）、
+  `scripts/shared/log-upload-build-env.mjs` 与其 runner 测试（**已删**，`pnpm test:runner` 名单同步移除）、
+  `main/bootstrap-electron.ts`（`initLogUploadService()` / `scheduleStartupBackfill()` 不接线）、
+  `preload/preload.ts`（原五个上报 API 不暴露）、`shared/ipc-errors.ts`（原 `LOG_UPLOAD_*` /
+  `PRIVACY_CONSENT_REQUIRED`）、`renderer/components/log-support/LogSupportActions.tsx`（只保留
+  `OpenLogsRow`，删 `UploadLogsRow` / `UploadLogsActionRow`）、
+  `renderer/components/log-support/useManualLogUpload.ts`（**已删**）、
+  `renderer/components/settings/AboutSection.{tsx,settings-search.ts}`（不渲染/不索引两行上报）、
+  `apps/mobile/app/settings/developer.tsx`（上游把调试内容移到该二级页；上传行、上传状态与隐私同意订阅已删）。
+- 保留面（删了就是诊断能力回归）：`main/logSupport.ts`（`openLogsDirectory()`，被「设置 → 关于」与
+  tray 的「打开日志目录」使用）、`main/log-upload/` 的 `redact.ts` / `collect.ts` / `collectRuntime.ts` /
+  `mainLogReader.ts` / `agentLogReader.ts` / `sourceAllowlist.ts` / `limits.ts` / `types.ts`
+  （`github-issue/**`、`maker-host/pi-package-diagnostic.ts`、`performance-trace/report.ts` 在用：后者
+  `import { redact } from '../log-upload/redact'` 做**本地**报告脱敏）；其中 `types.ts` / `limits.ts`
+  **只保留采集记录形状与采集上限** —— 上报专用的 `LogUploadTarget` / `LogUploadMeta` 与 4 个上传批次常量
+  （`MAX_LOGS_PER_BATCH` / `MAX_BATCH_BYTES` / `BATCH_TIMEOUT_MS` / `AUTO_UPLOAD_MIN_INTERVAL_MS`）已随上报面删除。
+  `shared/logUpload.ts` **只保留** `LogUploadReason`；`main/performance-trace/**`（`capture` / `controller` /
+  `measure` / `report` / `reportId` / `retention` / `ipc` / `index`）与 `renderer/components/performance-trace/**` +
+  `shared/performanceTrace.ts` 的本地录制、保存、查看目录、保留期（`upload` 相位/状态/命令已从类型里删掉）。
+- 移动端漏面**已清（2026-11-06 本轮）**：`apps/mobile/src/debug/diagnosticUpload.ts`
+  （`parseDiagnosticUploadTarget` / `uploadDiagnosticSnapshot`，SLS web-tracking 上传）与其测试
+  `diagnosticUpload.test.ts` **已删除**（删除前生产 0 引用，只被自身测试引用）。
+  **删除后 `git grep -n diagnosticUpload` 只应命中历史文档**（本清单、`log-upload-and-redaction.md` §4.1、
+  迁移总账 §11.37 与本期报告），**代码路径 0 命中**；若再出现代码命中，说明上报面被上游同步带回，按回归处理。
 
-**自动化门禁**：`pnpm --filter desktop run typecheck`（移除面与保留面的类型都必须自洽）；
-`pnpm --filter desktop exec vitest run src/main/github-issue/__tests__/issueDiagnostics.test.ts src/main/log-upload/__tests__`
-（保留的采集/脱敏与 issue 诊断仍绿）；`node scripts/check-i18n.mjs`（五语键一致）。
+**自动化门禁**：
+`pnpm --filter desktop exec vitest run src/main/log-upload/__tests__/redact.test.ts src/main/log-upload/__tests__/collect.test.ts src/main/log-upload/__tests__/recordBoundary.test.ts src/main/log-upload/__tests__/sourceAllowlist.test.ts src/main/log-upload/__tests__/agentLogReader.test.ts src/main/github-issue/__tests__/issueDiagnostics.test.ts src/main/performance-trace/__tests__/performanceTrace.test.ts src/main/performance-trace/__tests__/capture.test.ts src/renderer/components/log-support/__tests__/StartupLogSupport.test.tsx src/renderer/components/title-bar/__tests__/MenuButton.test.tsx`
+- `performanceTrace.test.ts` 是 `performance-trace` 的 WL-26 反回归锚点：它守住「命令面不得重新出现
+  `upload`」（`handler(event, 'upload')` 必须 `INVALID_PARAMS`）、报告编号不再复用 log-upload 的上传编号、
+  本地脱敏与保留期清理。
+- `StartupLogSupport.test.tsx` 同时含移除守门（对话框只有「打开日志目录」+「关闭」，
+  `electronAPI.uploadLogsNow === undefined`）与启动门卡住快照的诊断用例；
+  `MenuButton.test.tsx` 守住性能跟踪结果页**没有**说明输入框/提交按钮、只有「查看本地文件」。
+- **反回归 grep**（代码 0 命中）：`uploadPerformanceTraceReport` / `generateUploadCode` /
+  `submitPerformanceReport` / `traceRedactionWorker` / `restore-performance-report` / `diagnosticUpload` /
+  `MAX_LOGS_PER_BATCH`；`LogUploadTarget` 只允许出现在解释「为什么删」的注释里。
+  **代码锚点与文档同批**：本地口径正本是 [`performance-tracing.md`](performance-tracing.md)
+  （命令面 `state`/`start`/`stop`/`show-local`、7 天保留期、本地报告 ID、无上传面）；该文档与本节必须一起改，
+  只改一处会让下一次同步按另一处恢复上传面。
+- `pnpm check:test-hygiene`：上述守门**不得**新增「复制源码字面量/JSX/CSS」型断言；本域新增用例必须合规
+  （2026-11-06 第七轮已按 `engineering-conventions.md` §3.2 完成收口，该命令当前 **exit 0 / PASS 372 files**）。
+- `pnpm check:i18n`：12 语键集合一致，且 `logSupport.*` 只保留本地面文案（上传三键已删）。
+
 **反回归自检**（同步后必跑）：在 `apps/desktop/scripts`、`scripts/shared`、`apps/desktop/vite.main.config.ts`、
 `apps/mobile/metro.config.js` 里搜 `log-upload-build-env` 与 `XDT_LOG_UPLOAD_TARGET`，**代码引用**必须为空
-（**排除注释行**：移除点上刻意保留的 Meka divergence 注释会提到这些标识符；实测仅 `package-desktop.mjs`
-与 `vite.main.config.ts` 的注释命中，属预期）。
+（**排除注释行**：移除点上刻意保留的 Meka divergence 注释会提到这些标识符，实测仅 `package-desktop.mjs`
+与 `vite.main.config.ts` 的注释命中，属预期）。另搜 `uploadPerformanceTraceReport` / `uploadLogsNow` /
+`initLogUploadService`：只允许出现在注释、类型定义（`log-upload/types.ts` 的采集字段）与**反回归断言**里。
 
-**实机验证**：**未验证**（需一次真实版本化桌面打包；判据：在没有 `config/log-upload.json` 的机器上
-`release:windows:canary` / 本地 `pnpm release:win <ver>` 能走到打包结束，且「设置 → 关于」不再出现
-「崩溃时自动上传」与「上传日志」两行；同时「报告问题」仍能采集并脱敏日志）。
+**实机验证**：**未验证**（需一次真实版本化桌面打包）——判据：在没有 `config/log-upload.json` 的机器上
+`pnpm release:win <ver>`（或 `pnpm --filter desktop release:package`）能走到打包结束；「设置 → 关于」只剩「打开日志目录」
+（不再出现「崩溃时自动上传」与「上传日志」）；「报告问题」仍能采集并脱敏日志；性能跟踪录一次后能在
+`diagnostics/performance-traces/` 找到本地报告并打开所在文件夹，全程无网络上报；移动端设置 → 开发者页只有
+本地日志开关/导出/清除。

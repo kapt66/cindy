@@ -1,9 +1,10 @@
+import type { OrcaWorkerCreateRequest } from './orcaWorkerDefaults';
 import type { AgentKind } from '@cindy/maker-core';
 
+import { normalizeOrcaWorkerLabel } from '@cindy/maker-shared/orca-team';
 import { createHostSendFailure } from '../maker-host/send-outcome.js';
 import { buildUiAssignmentInitialTask } from './orcaUiAssignment.js';
 import type { DispatchWorkerTaskResult, OrcaWorkerEffort } from './orcaTeamService.js';
-import { normalizeOrcaWorkerLabel } from './orcaWorkerCreationService.js';
 import type {
   OrcaTeamSnapshot,
   OrcaWorkerCreateInTeamParams,
@@ -26,13 +27,12 @@ export interface OrcaEnableTeamParams {
   label?: string;
   model?: string;
   effort?: OrcaWorkerEffort;
-  fast?: boolean;
+  fast?: boolean | 'ultrafast';
   /**
-   * Worker 工作目录（同一个 wire 字段，两侧语义并存）：指定运行设备时 = 那台电脑上的目录，
-   * 缺省在那台电脑创建对话任务；Meka 目标提示也走这里，由 Host 的 `resolveWorkerTarget` 在
-  Main 侧重核（提示不可信，resolver 返回注册表值）。
+   * Meka 远程 Worker 目标（`mcpr:<instance.id>`）。与 workingDir 同一个 wire 字段族：
+   * Host 的 `resolveWorkerTarget` 在 Main 侧重核项目绑定、实例稳定 id 与在线状态
+   * （提示不可信，resolver 返回注册表值）。
    */
-  workingDir?: string;
   remoteHostId?: string;
   /** 显式选定的模型来源;语义见 OrcaWorkerCreateParams.providerId。 */
   providerId?: string | null;
@@ -43,7 +43,9 @@ export interface OrcaEnableTeamParams {
   workerPermissionMode?: OrcaWorkerPermissionMode;
   /** 首个 Worker 放到同账号另一台电脑运行；语义见 OrcaWorkerCreateParams.executionDeviceId。 */
   executionDeviceId?: string;
-  /** 运行设备上的工作目录；只在指定运行设备时生效。 */
+  /** 显式工作目录；本机可选项目，指定运行设备时为那台电脑上的路径。 */
+  workingDir?: string;
+  worktree?: OrcaWorkerCreateParams['worktree'];
   /** 首个 Worker 的 Agent 所在位置(远程供应商)；语义见 OrcaWorkerCreateParams.agentDeviceId。 */
   agentDeviceId?: string | null;
 }
@@ -105,11 +107,12 @@ export interface OrcaLifecycleDeps {
     assertCurrent: () => Promise<void>;
   }>;
   setWorkerPermissionMode(workerPermissionMode: OrcaWorkerPermissionMode): void;
-  createWorkerInTeam(params: OrcaWorkerCreateInTeamParams, assertCurrent?: () => Promise<void>,
+  createWorkerInTeam(params: Omit<OrcaWorkerCreateInTeamParams, 'agent'> & OrcaWorkerCreateRequest, assertCurrent?: () => Promise<void>,
     onCreated?: (assertCreatedCurrent: () => Promise<void>) => void): Promise<OrcaWorkerCreationResult>;
   dispatchWorkerTask(params: {
     targetSessionId: string;
     message: string;
+    imagePaths?: string[];
     dispatchMeta: {
       source: string;
       context: string;
@@ -140,7 +143,7 @@ export interface OrcaLifecycleDeps {
 export interface OrcaLifecycleService {
   /** Host-only admission check; kept inside native work and its existing compensation. */
   startTeam(params: OrcaStartTeamParams, assertCurrent?: () => Promise<void>): Promise<OrcaStartTeamResult>;
-  createWorker(params: OrcaWorkerCreateParams): Promise<OrcaWorkerCreationResult>;
+  createWorker(params: OrcaWorkerCreateRequest): Promise<OrcaWorkerCreationResult>;
   enableTeam(params: OrcaEnableTeamParams): Promise<OrcaEnableTeamResult>;
 }
 
@@ -164,16 +167,16 @@ function normalizeEnableParams(params: OrcaEnableTeamParams): OrcaWorkerCreatePa
     model: params.model?.trim() || undefined,
     effort: params.effort,
     fast: params.fast,
-    workingDir: params.workingDir?.trim() || undefined,
     remoteHostId: params.remoteHostId?.trim() || undefined,
     providerId: params.providerId,
     initialTask: delegateTask,
     ...(params.executionDeviceId
       ? {
           executionDeviceId: params.executionDeviceId,
-          ...(params.workingDir ? { workingDir: params.workingDir } : {}),
         }
       : {}),
+    ...(params.workingDir !== undefined ? { workingDir: params.workingDir } : {}),
+    ...(params.worktree ? { worktree: params.worktree } : {}),
     ...(params.agentDeviceId !== undefined ? { agentDeviceId: params.agentDeviceId } : {}),
   };
 }
@@ -229,6 +232,7 @@ export function createOrcaLifecycleService(deps: OrcaLifecycleDeps): OrcaLifecyc
   async function dispatchInitialTask(params: {
     workerSessionId: string;
     message: string | undefined;
+    imagePaths?: string[];
     context: string;
   }, assertCurrent?: () => Promise<void>): Promise<DispatchWorkerTaskResult | undefined> {
     if (!params.message) return undefined;
@@ -248,6 +252,7 @@ export function createOrcaLifecycleService(deps: OrcaLifecycleDeps): OrcaLifecyc
       const result = await deps.dispatchWorkerTask({
         targetSessionId: params.workerSessionId,
         message: params.message,
+        ...(params.imagePaths ? { imagePaths: params.imagePaths } : {}),
         dispatchMeta: {
           source: dispatchSource,
           context: params.context,
@@ -271,7 +276,7 @@ export function createOrcaLifecycleService(deps: OrcaLifecycleDeps): OrcaLifecyc
     }
   }
 
-  async function createWorker(params: OrcaWorkerCreateParams): Promise<OrcaWorkerCreationResult> {
+  async function createWorker(params: OrcaWorkerCreateRequest): Promise<OrcaWorkerCreationResult> {
     const override = await deps.getWorkerPermissionModeOverride?.(params.leadSessionId);
     let team = await deps.getActiveTeamByLead(params.leadSessionId);
     let automaticallyStartedTeam = false;
@@ -318,6 +323,7 @@ export function createOrcaLifecycleService(deps: OrcaLifecycleDeps): OrcaLifecyc
         dispatchResult = await dispatchInitialTask({
           workerSessionId: created.workerSessionId,
           message: initialTask,
+          ...(params.initialTaskImages ? { imagePaths: params.initialTaskImages } : {}),
           context: `create_worker/${created.workerSessionId}/initial_task`,
         }, assertCreatedCurrent);
       } else {
@@ -383,8 +389,9 @@ export function createOrcaLifecycleService(deps: OrcaLifecycleDeps): OrcaLifecyc
   async function activateLeadTeam(params: {
     leadSessionId: string;
     teamId: string;
-  }): Promise<void> {
+  }, assertCurrent: () => Promise<void>): Promise<void> {
     await deps.setSessionOrcaRole(params.leadSessionId, 'lead');
+    await assertCurrent();
     deps.clearKnownNonOrcaSession(params.leadSessionId);
     await deps.setLeadVendorOptions({
       leadSessionId: params.leadSessionId,
@@ -403,7 +410,7 @@ export function createOrcaLifecycleService(deps: OrcaLifecycleDeps): OrcaLifecyc
     await assertAdmission();
     if (existing) {
       try {
-        await activateLeadTeam({ leadSessionId: params.leadSessionId, teamId: existing.id });
+        await activateLeadTeam({ leadSessionId: params.leadSessionId, teamId: existing.id }, assertAdmission);
         await assertAdmission();
       } catch (err) {
         return internalFailure(err);
@@ -415,7 +422,7 @@ export function createOrcaLifecycleService(deps: OrcaLifecycleDeps): OrcaLifecyc
     initializingTeamIds.add(team.id);
     try {
       await assertAdmission();
-      await activateLeadTeam({ leadSessionId: params.leadSessionId, teamId: team.id });
+      await activateLeadTeam({ leadSessionId: params.leadSessionId, teamId: team.id }, assertAdmission);
       await assertAdmission();
     } catch (err) {
       return failCreatedTeamOnly({ teamId: team.id, leadSessionId: params.leadSessionId, err });

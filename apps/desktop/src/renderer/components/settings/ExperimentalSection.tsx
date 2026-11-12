@@ -1,31 +1,44 @@
+import { generalSettings } from './GeneralSettings.settings-search';
 import { Button } from '@/components/ui/button';
 /**
  * ExperimentalSection — Settings → General 的"实验功能"区块。
  *
- * 风格对齐 NotificationSection：rounded-xl card、相同的 settings CSS variables。
+ * 各项是同一张卡片里的设置行(settingsRowClasses),行间分割线只出现在可见行之间。
  *
  * LSP 这类实验能力有专用 IPC 行；普通实验功能由 EXPERIMENTAL_FEATURES 驱动。
  * 全员可见(2026-07 与 Lizi 定案):原 admin 门控随产品级 role 退役——实验
  * 开关都是本地 flag、默认关闭,对普通用户无破坏性。
  */
 
+import { Fragment, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import { Switch } from '@/components/ui/switch';
-import { cn } from '@/lib/utils';
 import {
   EXPERIMENTAL_FEATURES,
   useExperimentalFlag,
   type ExperimentalFeatureMeta,
 } from '@/hooks/useExperimentalFeatures';
 import { LspBetaCell } from './LspBetaCell';
+import { SETTINGS_CARD_CLASS, SETTINGS_ROW_DIVIDER_CLASS } from './settingsRowClasses';
 import { BetaChannelCell } from './BetaChannelCell';
+import { additionalSettings } from './AdditionalSettings.settings-search';
 
 export function ExperimentalSection() {
   const { t } = useTranslation();
-  const betaChannelSupported =
-    window.electronAPI?.supportsBetaUpdateChannel ?? window.electronAPI?.platform !== 'linux';
+  const betaChannelSupported = additionalSettings.betaChannel.isVisible({
+    platform: window.electronAPI?.platform ?? '',
+    supportsBetaUpdateChannel: window.electronAPI?.supportsBetaUpdateChannel,
+  });
+  const rows: { key: string; node: ReactNode }[] = [
+    { key: 'lsp', node: <LspBetaCell /> },
+    ...(betaChannelSupported ? [{ key: 'beta-channel', node: <BetaChannelCell /> }] : []),
+    ...EXPERIMENTAL_FEATURES.map((feature) => ({
+      key: feature.key,
+      node: <ExperimentalFeatureRow feature={feature} />,
+    })),
+  ];
 
   return (
     <div className="flex flex-col gap-[14px]">
@@ -33,11 +46,12 @@ export function ExperimentalSection() {
         {t('settings.experimental.title')}
       </h2>
 
-      <div className="flex flex-col gap-3">
-        <LspBetaCell />
-        {betaChannelSupported ? <BetaChannelCell /> : null}
-        {EXPERIMENTAL_FEATURES.map((feature) => (
-          <ExperimentalFeatureRow key={feature.key} feature={feature} />
+      <div className={SETTINGS_CARD_CLASS}>
+        {rows.map((row, index) => (
+          <Fragment key={row.key}>
+            {index > 0 ? <div className={SETTINGS_ROW_DIVIDER_CLASS} /> : null}
+            {row.node}
+          </Fragment>
         ))}
       </div>
     </div>
@@ -58,13 +72,7 @@ function ExperimentalFeatureRow({ feature }: { feature: ExperimentalFeatureMeta 
   });
 
   return (
-    <div
-      className={cn(
-        'flex flex-col gap-3 rounded-xl p-5',
-        'bg-[var(--settings-theme-card-bg)]',
-        'border border-[var(--settings-theme-card-border)]',
-      )}
-    >
+    <div className="flex flex-col gap-3 px-4 py-4">
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 flex-col gap-1">
           <p
@@ -73,12 +81,12 @@ function ExperimentalFeatureRow({ feature }: { feature: ExperimentalFeatureMeta 
           >
             {title}
           </p>
-          <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
+          <p className="text-12 leading-[1.4] text-[var(--text-secondary)]">
             {description}
           </p>
         </div>
 
-        <Switch
+        <Switch data-setting-id={generalSettings.experimental.id}
           checked={enabled}
           onCheckedChange={setEnabled}
           aria-label={t('settings.experimental.toggleAria', { title })}
@@ -88,7 +96,7 @@ function ExperimentalFeatureRow({ feature }: { feature: ExperimentalFeatureMeta 
       {/* toggle on 后才显示入口按钮 */}
       {enabled && feature.openAction && (
         <div className="flex items-center justify-end pt-1">
-          <Button
+          <Button data-settings-search-action="Open the enabled experimental feature"
             variant="cta"
             size="md"
             compact

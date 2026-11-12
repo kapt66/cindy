@@ -27,6 +27,7 @@ import {
 } from './codexHttpBridge.js';
 import { getRemoteMcpBridgeToken } from './remoteMcpBridgeToken.js';
 import { appServerIds } from '../mcp-apps/runtime.js';
+import { hasImChannelVendorOptions } from '../../shared/botImConnection.js';
 
 const TOKEN_ENV = 'LIZI_MCP_TOKEN';
 const MCP_TIMEOUT_SEC = 10 * 60;
@@ -232,6 +233,15 @@ export function registerCodexMcpThreadContext(
   });
 }
 
+/** Capture only the current bridge generation; confirmation cannot target a replacement. */
+export function prepareCodexMcpToolCancellation(identity: {
+  sessionId: string; sessionInstanceId: string; threadId: string;
+}): () => void {
+  const bridge = activeBridge;
+  const cancel = bridge?.prepareToolCancellation(identity);
+  return () => { if (activeBridge === bridge) cancel?.(); };
+}
+
 export function unregisterCodexMcpThreadContext(
   threadId: string,
   expectedSessionInstanceId?: string,
@@ -249,6 +259,8 @@ export function unregisterCodexMcpThreadContext(
   callerProvenanceByThread.delete(threadId);
   activeBridge?.unregisterThreadContext(threadId, expectedSessionInstanceId);
 }
+
+const TELEGRAM_BOT_MCP_SERVER_NAME = 'cindy_telegram_bot';
 
 async function doStart(
   opts: GetCodexExtraSpawnConfigOptions,
@@ -455,6 +467,13 @@ async function doStart(
             ...(bridgeServerNames.includes(CINDY_MAKE_MCP_SERVER_NAME)
               && !isCindyMakeVendorOptions(session?.vendorOptions)
               ? { [`mcp_servers.${CINDY_MAKE_MCP_SERVER_NAME}.enabled`]: false }
+              : {}),
+            // Telegram Bot API 直通同理: 只有带 Telegram 渠道标记(专线 chat / 伙伴绑了 Telegram)
+            // 的线程看得到, 普通桌面任务按线程关掉。工具本身没有租约也 fail closed, 这里是让
+            // 工具清单别在无关任务里出现。
+            ...(bridgeServerNames.includes(TELEGRAM_BOT_MCP_SERVER_NAME)
+              && !hasImChannelVendorOptions(session?.vendorOptions, 'telegram')
+              ? { [`mcp_servers.${TELEGRAM_BOT_MCP_SERVER_NAME}.enabled`]: false }
               : {}),
           }),
         }

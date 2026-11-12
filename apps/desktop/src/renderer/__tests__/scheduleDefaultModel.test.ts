@@ -125,6 +125,21 @@ function seedChatDraft(ccModel?: string, opts: { chosen?: boolean } = {}): void 
 }
 
 describe('getScheduleDefaultModel 三级回退', () => {
+  // Unit characterization for the reported Grok default: existing tests cover
+  // schedule reads, but not whether saving a schedule changes ordinary defaults.
+  it('自动任务记住 Grok 时，不改普通新建任务的模型与来源', async () => {
+    const draft = await import('@/state/newMakerDraft');
+    draft.patchVendorPrefs('pi', { model: 'gpt-6-sol', providerId: 'openai' });
+    const before = draft.getDraft().lastByVendor.pi;
+    const { makeFormFromSchedule, rememberScheduleFormPrefs, getScheduleDefaultRoute } = await loadModule();
+    rememberScheduleFormPrefs({
+      ...makeFormFromSchedule(null), agentKind: 'pi', model: 'grok-4.7', providerId: 'xai',
+    });
+    expect(getScheduleDefaultRoute('pi')).toEqual({ model: 'grok-4.7', providerId: 'xai' });
+    expect(draft.getDraft().lastByVendor.pi).toEqual(before);
+    expect(draft.getPersistedVendorModel('pi')).toBe('gpt-6-sol');
+  });
+
   it('一级:上次建任务的选择优先(即使对话侧有不同选择)', async () => {
     seedSchedulePrefs('claude-haiku-4-5');
     seedChatDraft('claude-opus-4-8');
@@ -144,16 +159,19 @@ describe('getScheduleDefaultModel 三级回退', () => {
     expect(getScheduleDefaultModel('codex', PROVIDERS)).toBe('gpt-6-luna');
   });
 
-  it('三级:默认模型与来源成对返回;一级没记来源时为 null', async () => {
+  it('默认模型与来源成对返回，历史缺来源时待清单就绪后补齐', async () => {
     const { getScheduleDefaultRoute } = await loadModule();
     expect(getScheduleDefaultRoute('claude-code', PROVIDERS)).toEqual({
       model: 'claude-opus-5-5',
       providerId: 'anthropic',
     });
     seedSchedulePrefs('claude-haiku-4-5');
+    expect(getScheduleDefaultRoute('claude-code')).toEqual({
+      model: 'claude-haiku-4-5', providerId: null,
+    });
     expect(getScheduleDefaultRoute('claude-code', PROVIDERS)).toEqual({
       model: 'claude-haiku-4-5',
-      providerId: null,
+      providerId: 'xd',
     });
   });
 

@@ -17,6 +17,12 @@ describe('writable directory grant wiring', () => {
     expect(dialog).toContain('assertTrustedAppRendererEvent(event)');
     expect(dialog).toContain('issueWritableDirectoryPickerGrant({');
     expect(dialog).toContain('senderId: event.sender.id');
+    // 最近列表是第二个发放入口：同样只给可信窗口，且只认最近项目里的路径。
+    const recentStart = bootstrap.indexOf("'dialog:authorize-recent-writable-directory'");
+    const recent = bootstrap.slice(recentStart, bootstrap.indexOf('ipcMain.handle(', recentStart));
+    expect(recent).toContain('assertTrustedAppRendererEvent(event)');
+    expect(recent).toContain('isRecentProject: (candidate) => hasRecentWorkdir(candidate)');
+    expect(recent).toContain('senderId: event.sender.id');
     expect(register).toContain('consumeWritableDirectoryPickerGrants({');
     expect(register).toContain('scopeId: sessionId');
     expect(register).toContain('senderId: options.senderId');
@@ -24,7 +30,8 @@ describe('writable directory grant wiring', () => {
 
   it('uses the reserved local draft task id for picker scope and persisted session creation', () => {
     const draft = read('renderer/features/cc-agent/NewMakerDraftRoute.tsx');
-    expect(draft).toContain('const localDraftSessionIdRef = useRef(makeDraftSessionId())');
+    // An unsent task already opened from this draft keeps its id when the user comes back.
+    expect(draft).toContain('const localDraftSessionIdRef = useRef(provisionalDraftTaskIdForCurrentOwner() ?? makeDraftSessionId())');
     expect(draft).toContain('writableGrantScope={localDraftSessionIdRef.current}');
     expect(draft).toContain('const sessionId = localDraftSessionIdRef.current');
     expect(draft).toContain('goalSessionId = localDraftSessionIdRef.current');

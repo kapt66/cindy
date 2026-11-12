@@ -7,6 +7,9 @@ import type { PluginMarketDetail } from '../../shared/pluginMarket';
 import { MarketPluginDetailView } from '../features/plugin/MarketPluginDetailView';
 
 vi.mock('react-i18next', () => ({
+  // i18n bootstrap imports initReactI18next; a partial mock would make the
+  // module import throw before the component can render.
+  initReactI18next: { type: '3rdParty', init: () => {} },
   useTranslation: () => ({
     t: (key: string, options?: Record<string, unknown>) =>
       options?.percent === undefined ? key : `${key}:${String(options.percent)}`,
@@ -15,6 +18,11 @@ vi.mock('react-i18next', () => ({
 
 vi.mock('../features/plugin/GhostPluginIcon', () => ({
   GhostPluginIcon: () => <div data-testid="plugin-icon" />,
+}));
+
+// The detail view now mounts PluginShareButton, which reads the auth context.
+vi.mock('../contexts/AuthContext', () => ({
+  useAuth: () => ({ user: null, dataOwnerId: null, mode: 'local' }),
 }));
 
 afterEach(cleanup);

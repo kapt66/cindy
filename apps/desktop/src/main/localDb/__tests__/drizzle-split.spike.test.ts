@@ -136,7 +136,51 @@ async function runMigrationStatement(target: DbClient, statement: string): Promi
   }
 }
 
+/** `drizzle/scripts/0092_sync_upstream_20260821.ts` 在 `hook_group_messages` 存在时挂的
+ * 三颗 stats 触发器。0139（上游 0136）先 DROP TRIGGER 再按 image_refs 重建，模拟链里必须
+ * 真实存在这三个对象，否则整条迁移链在 DROP 处报 `no such trigger`。 */
+const GROUP_STATS_TRIGGER_STATEMENTS = [
+  `CREATE TRIGGER IF NOT EXISTS hook_group_message_stats_insert
+AFTER INSERT ON hook_group_messages BEGIN
+  INSERT INTO hook_group_message_stats (provider, row_count, text_bytes)
+  VALUES (new.provider, 1, length(CAST(new.text AS BLOB)))
+  ON CONFLICT(provider) DO UPDATE SET
+    row_count = row_count + 1,
+    text_bytes = text_bytes + excluded.text_bytes;
+END;`,
+  `CREATE TRIGGER IF NOT EXISTS hook_group_message_stats_delete
+AFTER DELETE ON hook_group_messages BEGIN
+  UPDATE hook_group_message_stats
+  SET row_count = row_count - 1,
+      text_bytes = max(0, text_bytes - length(CAST(old.text AS BLOB)))
+  WHERE provider = old.provider;
+  DELETE FROM hook_group_message_stats
+  WHERE provider = old.provider AND row_count <= 0;
+END;`,
+  `CREATE TRIGGER IF NOT EXISTS hook_group_message_stats_update
+AFTER UPDATE ON hook_group_messages BEGIN
+  UPDATE hook_group_message_stats
+  SET row_count = row_count - 1,
+      text_bytes = max(0, text_bytes - length(CAST(old.text AS BLOB)))
+  WHERE provider = old.provider;
+  DELETE FROM hook_group_message_stats
+  WHERE provider = old.provider AND row_count <= 0;
+  INSERT INTO hook_group_message_stats (provider, row_count, text_bytes)
+  VALUES (new.provider, 1, length(CAST(new.text AS BLOB)))
+  ON CONFLICT(provider) DO UPDATE SET
+    row_count = row_count + 1,
+    text_bytes = text_bytes + excluded.text_bytes;
+END;`,
+];
+
 function applyMigrationScriptSync(db: Sqlite, fileName: string): void {
+  if (fileName === '0141_talented_blacklash.sql') {
+    ensureColumnSync(db, 'session_pr_refs', 'pinned', 'integer DEFAULT false NOT NULL');
+    ensureColumnSync(db, 'session_pr_refs', 'priority', 'integer DEFAULT 0 NOT NULL');
+    ensureColumnSync(db, 'session_pr_refs', 'manually_added', 'integer DEFAULT false NOT NULL');
+    ensureColumnSync(db, 'session_pr_refs', 'removed_at', 'integer');
+    return;
+  }
   if (fileName === '0128_magical_night_thrasher.sql') {
     ensureColumnSync(db, 'orca_workers', 'pending_remote_report', 'text');
     ensureColumnSync(db, 'orca_workers', 'remote_stop_confirmed_at', 'integer');
@@ -250,6 +294,10 @@ function applyMigrationScriptSync(db: Sqlite, fileName: string): void {
   }
   if (fileName === '0092_sync_upstream_20260821.sql') {
     ensureColumnSync(db, 'sessions', 'codex_plan_json', 'text');
+    // 触发器真身在同名 companion；只在表已存在时挂（与 companion 守卫一致）。
+    if (tableExistsSync(db, 'hook_group_messages')) {
+      for (const statement of GROUP_STATS_TRIGGER_STATEMENTS) db.exec(statement);
+    }
   }
   // 上游 2026-09 同步新增的占位 SQL + 配套脚本迁移(加列真身在
   // drizzle/scripts/0100|0102|0107_*.ts),此处同样按文件名等价模拟。
@@ -270,6 +318,13 @@ function applyMigrationScriptSync(db: Sqlite, fileName: string): void {
 }
 
 async function applyMigrationScript(target: DbClient, fileName: string): Promise<void> {
+  if (fileName === '0141_talented_blacklash.sql') {
+    await ensureColumn(target, 'session_pr_refs', 'pinned', 'integer DEFAULT false NOT NULL');
+    await ensureColumn(target, 'session_pr_refs', 'priority', 'integer DEFAULT 0 NOT NULL');
+    await ensureColumn(target, 'session_pr_refs', 'manually_added', 'integer DEFAULT false NOT NULL');
+    await ensureColumn(target, 'session_pr_refs', 'removed_at', 'integer');
+    return;
+  }
   if (fileName === '0128_magical_night_thrasher.sql') {
     await ensureColumn(target, 'orca_workers', 'pending_remote_report', 'text');
     await ensureColumn(target, 'orca_workers', 'remote_stop_confirmed_at', 'integer');
@@ -422,6 +477,10 @@ async function applyMigrationScript(target: DbClient, fileName: string): Promise
   }
   if (fileName === '0092_sync_upstream_20260821.sql') {
     await ensureColumn(target, 'sessions', 'codex_plan_json', 'text');
+    // 触发器真身在同名 companion；只在表已存在时挂（与 companion 守卫一致）。
+    if (await tableExists(target, 'hook_group_messages')) {
+      for (const statement of GROUP_STATS_TRIGGER_STATEMENTS) await target.exec(statement);
+    }
   }
   if (fileName === '0100_fresh_stryfe.sql') {
     await ensureColumn(target, 'sessions', 'list_preview', 'text');

@@ -57,6 +57,24 @@ Cindy Meka 使用单一安装身份，并允许用户在登录页选择 CN / Glo
 静默作废、被迫重新登录；它使 `authManager.ts` 的跨区拒绝分支成为有意保留的死代码。
 跨区恢复**不做 UID 映射**，同一时刻的登录态属于单一 realm。
 
+**冷启动端点清单必须走可重试流程，不得用「加载失败即登出」代替（2026-11-06 第七轮同步采纳上游）**：
+上游把客户端端点 discovery 从登录/启动的线性步骤移进 `authManager.ts` 的
+`runColdStartRefreshFlow`（约 `:4987`），失败只做退避重试，**绝不把凭证发给另一个区域（fallback realm）的
+refresh／端点**；`authColdStartRecovery.test.ts:508`
+（`retries endpoint discovery without sending the credential to a fallback realm`）钉住这条语义。
+Meka 原实现在 `initialize()` 里提前 `loadClientEndpointsForRealm(persistedSession.realm)`，失败即
+`finishColdStartSignedOut('cold-start-realm-manifest-unavailable')`；该早退**已删除**，只保留
+`activeProductEdition = readPersistedProductEdition() ?? CURRENT_CINDY_REGION`（约 `:4905`）。
+理由：清单**暂时**不可用不该把有效会话判成未登录（那会把离线/弱网用户踢出登录），而重试路径既不跨区
+发凭证、也不改变 WL-5.6 的运行期版别语义（`select-realm`、`authRealmForEdition(activeProductEdition)`、
+`selectedRealm`、`buildRegion` 全部在位，`authLoginFlowReset.contract.test.ts` 37 例锁定）。
+**区域回归判据不变**：删选择器、把 `activeProductEdition` 退回只读构建常量、把区域消费点改回
+`CURRENT_CINDY_REGION`，才算回归；「冷启动端点暂时不可用 → 重试而不是登出」是本条要求的行为。
+> 已知 1 例红（**非本轮身份裁决引入**）：`authColdStartRecovery.test.ts` 的
+> `continues a retry requested before the stopped request fails without offering new login`，用上游
+> `:3:authManager.ts` 复现同样失败，属上游新增用例与 `auth/startup-gate` 组合的缺口，待 auth 领域跟进；
+> 逐条登记见 `docs/migrations/2026-11-06-origin-main-to-meka-main.md` §6.1。
+
 **凭证库不可用态下运行期切区不可达——这不是 WL-5.6 的回归（2026-09-23 登记）**：上游的
 凭证库健康守卫（`CREDENTIAL_STORE_UNAVAILABLE` 早退）位于 `select-realm` **之前**：
 `apps/desktop/src/main/authManager.ts` 的 `runLoginAction` 里
@@ -171,13 +189,13 @@ Cindy Meka 使用单一安装身份，并允许用户在登录页选择 CN / Glo
 
 ## 4. 已知例外与待收敛项
 
-以下是与 §2 冲突的既有实现。按 `core-product-principles.md` §9，它们属于历史实现
+以下是与 §2 冲突的既有实现。按[产品原则与现状](core-product-principles.md#原则与现状)，它们属于历史实现
 遗留，**不构成对新代码的豁免**：新增代码一律按 §2 执行，既有项按用户影响与迁移
 风险分阶段收敛。
 
 | 项 | 现状 | 冲突条款 | 收敛难点 |
 | --- | --- | --- | --- |
-| 登录页区域徽标 | 原设计规范规定国际区在标题旁显示红色 `Global` pill、中国大陆版不标。规范散落三处：`docs/design-rules/DESIGN.md` §16.1、`docs/design-rules/figma-component-spec.md` §4.10、`docs/design-rules/token-decision-table.md`（§3 的 `#df0c27` 语义与 `login-global-badge-bg` token）。落码在 `apps/desktop/src/renderer/components/login/LoginControls.tsx` 的 `LoginTitleBlock`（`LoginPage.tsx` 只负责传入） | §2.3 | **正在收敛**：PR #554 已将徽标翻转为 global 不标、`cn` / `dev` 标注，并同步修订 `DESIGN.md`。但它只改了三份设计源中的一份——`figma-component-spec.md` §4.10 与 `token-decision-table.md` 仍规定 `Global` pill 可见。**本行的删除条件是实现与三份设计源全部收敛，而不是 #554 单独合并** |
+| 登录页区域徽标 | 原设计规范规定国际区在标题旁显示红色 `Global` pill、中国大陆版不标。规范原散落三处：`docs/design-rules/DESIGN.md` §16.1、`docs/design-rules/figma-component-spec.md` §4.10、`docs/design-rules/token-decision-table.md`（§3 的 `#df0c27` 语义与 `login-global-badge-bg` token）；其中 `figma-component-spec.md` 已于 2026-10-23 随该文档移除，不再是设计源。落码在 `apps/desktop/src/renderer/components/login/LoginControls.tsx` 的 `LoginTitleBlock`（`LoginPage.tsx` 只负责传入） | §2.3 | **正在收敛**：PR #554 已将徽标翻转为 global 不标、`cn` / `dev` 标注，并同步修订 `DESIGN.md`。但它只改了现存两份设计源中的一份——`token-decision-table.md` 仍规定 `Global` pill 可见。**本行的删除条件是实现与剩余设计源（`DESIGN.md`、`token-decision-table.md`）全部收敛，而不是 #554 单独合并** |
 | 侧栏与移动端的区域标签 | 桌面侧栏 `apps/desktop/src/renderer/components/sidebar/UserInfoSection.tsx` 的 **§2.3 部分已收敛**：区域代号统一走 `apps/desktop/src/shared/regionCode.ts` 的 `CINDY_REGION_CODE`（cn → `CN`、dev → `Dev`、global 为 `null` 不标），Global 构建的版本行只剩版本号。**§2.5 部分未收敛**：cn 构建仍渲染代号 `CN`，不是本文规定的 `Mainland China`。`apps/mobile/src/settings/mobileSettings.ts:124` 的 debug 项两条都未收敛，仍输出 `Global` / `CN` | §2.5（桌面）；§2.3、§2.5（移动端） | 属于调试 / 身份自查信息而非产品叙事表达，收敛优先级低于登录页。**`CN` → `Mainland China` 是待产品裁决项**，不是单纯落码：术语表把 `CN` / `Dev` 登记为 `proposed`（`i18n/GLOSSARY.md` region-code-cn / region-code-dev），且 `DESIGN.md` §16.3 现规定徽标值就是四语同文的区域代号——改判要同时动设计规范、术语表与三条消费链路（登录页徽标、侧栏版本行、issue 正文）。本行的删除条件是移动端补上 §2.3、且 `CN` 措辞冲突被裁决或重新归类 |
 | 端点清单文件名 | `config/endpoint.json` 是中国大陆版，`config/endpoint.global.json` 才是 Global | §2.1 | 改名牵动构建脚本与发布链路 |
 | Electron userData 目录名 | `cn` 为 `Cindy`、`global` 为 `CindyGlobal` | §2.1 | 已发布客户端的数据目录不能直接改名，需要迁移方案 |

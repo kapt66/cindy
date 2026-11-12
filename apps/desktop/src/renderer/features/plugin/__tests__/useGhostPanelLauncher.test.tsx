@@ -2,7 +2,9 @@
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const presentation = vi.hoisted(() => ({ modal: true }));
+// 三分支 resolver 的行为在这里钉:tab → 插件页宿主(回调),docked → 上游右侧栏页签,
+// modal → Modal 宿主。偏好读取用真实 store(见下方 mock 的 resolver 实现)。
+const presentation = vi.hoisted(() => ({ modal: false }));
 
 vi.mock('@/cindy-brain/GhostPanelModal', () => ({
   GhostPanelModal: ({ ghost, open }: { ghost: { manifest: { id: string } }; open: boolean }) => (
@@ -14,21 +16,24 @@ vi.mock('@/cindy-brain/GhostPanelModal', () => ({
   ),
 }));
 
-vi.mock('@/lib/ghostPanelBubbleState', () => ({
-  restoreGhostPanel: vi.fn(),
+vi.mock('@/lib/ghostPanelPresentationPreference', () => ({
+  resolveGhostPanelPresentation: (ghost: { manifest: { panel?: { position?: string } } }) =>
+    ghost.manifest.panel?.position === 'tab' ? 'docked' : presentation.modal ? 'modal' : 'docked',
 }));
 
-vi.mock('@/lib/ghostPanelPresentationPreference', () => ({
-  isGhostPanelModalPresentationEnabled: () => presentation.modal,
+const openPluginInSidebar = vi.hoisted(() =>
+  vi.fn(async (_ghost: unknown, _view?: string): Promise<void> => undefined),
+);
+vi.mock('@/features/right-sidebar/pluginPlacement', () => ({
+  openPluginInSidebar: (ghost: unknown, view?: string) => openPluginInSidebar(ghost, view),
 }));
 
 import type { NavigateFunction } from 'react-router-dom';
 
 import type { InstalledGhost } from '../../../../shared/ghost';
-import { createDefaultLayout } from '../../../../shared/layoutTree';
 import { useGhostPanelLauncher, type GhostPanelLauncher } from '../useGhostPanelLauncher';
 
-const ghost = (id: string): InstalledGhost => ({
+const ghost = (id: string, position: 'left' | 'tab' = 'left'): InstalledGhost => ({
   enabled: true,
   dir: `/plugins/${id}`,
   approval: { state: 'approved', revision: '00000000-0000-4000-8000-000000000001' },
@@ -43,7 +48,7 @@ const ghost = (id: string): InstalledGhost => ({
     panel: {
       title: id,
       html: 'panel.html',
-      position: 'left',
+      position,
     },
   },
 });
@@ -64,22 +69,22 @@ let launcher: GhostPanelLauncher;
 let frames: Map<number, FrameRequestCallback>;
 let nextFrameId: number;
 let navigateMock: ReturnType<typeof vi.fn>;
-let layoutSetMock: ReturnType<typeof vi.fn>;
-let setDetachedMock: ReturnType<typeof vi.fn>;
+let openPageHostMock: ReturnType<typeof vi.fn>;
 
 function Harness({ ghosts }: { ghosts: InstalledGhost[] }) {
   launcher = useGhostPanelLauncher({
     ghosts,
     navigate: navigateMock as unknown as NavigateFunction,
+    openPageHost: openPageHostMock,
   });
   return <>{launcher.modalHost}</>;
 }
 
 beforeEach(() => {
-  presentation.modal = true;
+  presentation.modal = false;
   navigateMock = vi.fn();
-  layoutSetMock = vi.fn(async () => ({ ok: true }));
-  setDetachedMock = vi.fn(async () => ({ ok: true }));
+  openPageHostMock = vi.fn();
+  openPluginInSidebar.mockClear();
   frames = new Map();
   nextFrameId = 0;
   vi.stubGlobal(
@@ -96,28 +101,16 @@ beforeEach(() => {
       frames.delete(id);
     }),
   );
-  Object.defineProperty(window, 'electronAPI', {
-    configurable: true,
-    value: {
-      layout: {
-        getStateSync: () => ({ layout: createDefaultLayout() }),
-        set: layoutSetMock,
-      },
-      ghostPanelWindow: {
-        setDetached: setDetachedMock,
-      },
-    },
-  });
 });
 
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
-  Reflect.deleteProperty(window, 'electronAPI');
 });
 
 describe('useGhostPanelLauncher', () => {
-  it('mounts the target closed before opening it on the next frame', async () => {
+  it('mounts the modal target closed before opening it on the next frame', async () => {
+    presentation.modal = true;
     render(<Harness ghosts={[ghost('meka-p4')]} />);
     const trigger = document.createElement('button');
 
@@ -137,6 +130,7 @@ describe('useGhostPanelLauncher', () => {
   });
 
   it('cancels an older launch when another entry point selects a new target', async () => {
+    presentation.modal = true;
     render(<Harness ghosts={[ghost('first-plugin'), ghost('second-plugin')]} />);
 
     await act(async () => {
@@ -155,6 +149,7 @@ describe('useGhostPanelLauncher', () => {
   });
 
   it('reset cancels a pending open and removes the shared host', async () => {
+    presentation.modal = true;
     render(<Harness ghosts={[ghost('meka-p4')]} />);
     await act(async () => {
       await launcher.openPanel('meka-p4', document.createElement('button'));
@@ -167,6 +162,7 @@ describe('useGhostPanelLauncher', () => {
   });
 
   it('resolves the physical instance key of a new-layout root install', async () => {
+    presentation.modal = true;
     render(<Harness ghosts={[rootInstance('meka-p4')]} />);
 
     await act(async () => {
@@ -183,8 +179,8 @@ describe('useGhostPanelLauncher', () => {
     expect(screen.getByTestId('plugin-panel-modal-host').dataset.open).toBe('true');
   });
 
-  it('uses the same launcher for the inherited docked presentation', async () => {
-    presentation.modal = false;
+  // 上游停靠路径:modal 未生效时不再写布局树、不再跳任务页,而是走右侧栏全局页签。
+  it('opens the upstream right-sidebar tab for the docked presentation', async () => {
     render(<Harness ghosts={[ghost('meka-p4')]} />);
 
     await act(async () => {
@@ -192,9 +188,48 @@ describe('useGhostPanelLauncher', () => {
     });
 
     expect(requestAnimationFrame).not.toHaveBeenCalled();
-    expect(layoutSetMock).toHaveBeenCalledTimes(1);
-    expect(setDetachedMock).toHaveBeenCalledWith('meka-p4', false);
-    expect(navigateMock).toHaveBeenCalledWith('/cc-agent/new');
+    expect(openPluginInSidebar).toHaveBeenCalledTimes(1);
+    expect(openPluginInSidebar.mock.calls[0]?.[1]).toBe('panel');
+    expect(navigateMock).not.toHaveBeenCalled();
     expect(screen.queryByTestId('plugin-panel-modal-host')).toBeNull();
+  });
+
+  // T9 深链无 trigger:触发元素可省略,Modal 分支仍按「先关后开」挂载。
+  it('opens from a deep link without a trigger element', async () => {
+    presentation.modal = true;
+    render(<Harness ghosts={[ghost('meka-p4')]} />);
+
+    await act(async () => {
+      await launcher.openPanel('meka-p4');
+    });
+
+    expect(screen.getByTestId('plugin-panel-modal-host').dataset.open).toBe('false');
+    act(() => frames.get(1)?.(0));
+    expect(screen.getByTestId('plugin-panel-modal-host').dataset.open).toBe('true');
+  });
+
+  // tab 形态由 manifest 固定:不抢宿主,交给插件页里的 GhostPagePanelHost(Q-B①)。
+  it('hands tab-form panels to the page host instead of opening a modal', async () => {
+    presentation.modal = true;
+    render(<Harness ghosts={[ghost('tab-plugin', 'tab')]} />);
+
+    await act(async () => {
+      await launcher.openPanel('tab-plugin', document.createElement('button'));
+    });
+
+    expect(openPageHostMock).toHaveBeenCalledWith('tab-plugin');
+    expect(openPluginInSidebar).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('plugin-panel-modal-host')).toBeNull();
+  });
+
+  // 关闭全局页签后点入口:页签重建由 openPluginInSidebar 负责(清 dismissed)。
+  it('rebuilds a dismissed docked tab through the sidebar opener', async () => {
+    render(<Harness ghosts={[ghost('meka-p4')]} />);
+
+    await act(async () => {
+      await launcher.openPanel('meka-p4');
+    });
+
+    expect(openPluginInSidebar).toHaveBeenCalledTimes(1);
   });
 });

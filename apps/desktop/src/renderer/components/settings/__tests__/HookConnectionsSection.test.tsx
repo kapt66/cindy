@@ -21,6 +21,7 @@ const ipc = vi.hoisted(() => ({
   openProviderAction: vi.fn(),
   openExternal: vi.fn(),
   setProviderDefaultWorkspace: vi.fn(),
+  setXCompanion: vi.fn(),
   imDefaultSettingsGet: vi.fn(),
   imDefaultSettingsReset: vi.fn(),
 }));
@@ -53,17 +54,20 @@ vi.mock('@/components/ui/switch', () => ({
     disabled,
     onCheckedChange,
     'aria-label': ariaLabel,
+    'data-setting-id': settingId,
   }: {
     checked: boolean;
     disabled?: boolean;
     onCheckedChange: (checked: boolean) => void;
     'aria-label'?: string;
+    'data-setting-id'?: string;
   }) => (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
       aria-label={ariaLabel}
+      data-setting-id={settingId}
       disabled={disabled}
       onClick={() => onCheckedChange(!checked)}
     />
@@ -111,6 +115,7 @@ vi.mock('../TelegramBehaviorSettings', () => ({
 
 import { deriveAlias, HookConnectionsSection, workspaceRowsToMap } from '../HookConnectionsSection';
 import { SettingsSearchNavigationContext } from '../SettingsSearchNavigation';
+import { resolveSettingsSearchEntry } from '../settingsSearchCatalog';
 import { resetXUsageNoticeMemoryState } from '@/state/xUsageNotice';
 
 /** 渠道卡收起时内容卸载(Collapse), 交互前先点开对应卡的头部行。 */
@@ -157,6 +162,16 @@ const BASE_HOOK: SlackHookView = {
 // 原名 'HookConnectionsSection Telegram binding actions' —— 本 suite 现在同时覆盖
 // Telegram 绑定动作与 X 的用法告知/确认门, 名字得跟上, 否则失败用例的定位会误导人。
 describe('HookConnectionsSection binding actions (Telegram / X)', () => {
+  // Unit regression (#8481): resolve each rendered provider switch through the
+  // production catalog to its own card, rather than accepting the parent group.
+  it.each(['telegram', 'x'])('binds the %s switch to its provider search target', async (provider) => {
+    ipc.get.mockResolvedValue({ hook: { ...BASE_HOOK, x: { ...BASE_HOOK.x, url: 'wss://x.example.test' } } });
+    render(<HookConnectionsSection />);
+    const toggle = await screen.findByRole('switch', { name: `settings.remoteControl.hook.${provider}.toggleAria` });
+    const entry = resolveSettingsSearchEntry('im-bot', toggle.getAttribute('data-setting-id'));
+    expect(entry?.id).toBe(`imBot.cindy.${provider}`);
+    expect(document.getElementById(entry!.targetId)?.contains(toggle)).toBe(true);
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     // X 用法确认门按 principalId 记账在 localStorage 里, 而 jsdom 的 localStorage
@@ -194,6 +209,7 @@ describe('HookConnectionsSection binding actions (Telegram / X)', () => {
         revokeTeam: ipc.revokeTeam,
         openProviderAction: ipc.openProviderAction,
         setProviderDefaultWorkspace: ipc.setProviderDefaultWorkspace,
+        setXCompanion: ipc.setXCompanion,
       },
       maker: {
         imDefaultSettingsGet: ipc.imDefaultSettingsGet,
@@ -204,6 +220,42 @@ describe('HookConnectionsSection binding actions (Telegram / X)', () => {
   });
 
   afterEach(() => cleanup());
+
+  // The real settings component must assign/revoke with the previously observed
+  // owner, and cancellation must not write (new companion entry, unit DOM).
+  it('assigns and removes X without disconnecting the account', async () => {
+    const unbound = { ...BASE_HOOK, x: { ...BASE_HOOK.x, url: 'wss://x.example.test' } };
+    const bound = { ...unbound, x: { ...unbound.x, companionBotId: 'bot-fixture' } };
+    ipc.get.mockResolvedValue({ hook: unbound });
+    ipc.setXCompanion.mockResolvedValueOnce({ hook: bound }).mockResolvedValueOnce({ hook: unbound });
+    render(<HookConnectionsSection companion={{ id: 'bot-fixture', name: 'Fixture' }} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.channels.officialX.bind' }));
+    await waitFor(() => expect(ipc.setXCompanion).toHaveBeenCalledWith('bot-fixture', null));
+    expect(screen.queryByRole('button', { name: SLACK_CARD })).toBeNull();
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.channels.officialX.remove' }));
+    await waitFor(() => expect(ipc.setXCompanion).toHaveBeenLastCalledWith(null, 'bot-fixture'));
+    expect(ipc.providerBindRevoke).not.toHaveBeenCalled();
+  });
+
+  it('can remove an orphaned assignment from the global X settings', async () => {
+    const unbound = { ...BASE_HOOK, x: { ...BASE_HOOK.x, url: 'wss://x.example.test' } };
+    ipc.get.mockResolvedValue({ hook: { ...unbound, x: { ...unbound.x, companionBotId: 'deleted-bot' } } });
+    ipc.setXCompanion.mockResolvedValue({ hook: unbound });
+    render(<HookConnectionsSection />);
+    await expandChannelCard(X_CARD);
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.channels.officialX.remove' }));
+    await waitFor(() => expect(ipc.setXCompanion).toHaveBeenCalledWith(null, 'deleted-bot'));
+    expect(ipc.providerBindRevoke).not.toHaveBeenCalled();
+  });
+
+  it('keeps the X assignment unchanged when confirmation is cancelled', async () => {
+    ipc.get.mockResolvedValue({ hook: { ...BASE_HOOK, x: { ...BASE_HOOK.x, url: 'wss://x.example.test' } } });
+    dialog.confirm.mockResolvedValue(false);
+    render(<HookConnectionsSection companion={{ id: 'bot-fixture', name: 'Fixture' }} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.channels.officialX.bind' }));
+    await waitFor(() => expect(dialog.confirm).toHaveBeenCalled());
+    expect(ipc.setXCompanion).not.toHaveBeenCalled();
+  });
 
   it('never derives prototype or built-in chat aliases from a selected folder', () => {
     expect(deriveAlias('/tmp/chat', new Set())).toBe('chat-2');
@@ -288,6 +340,11 @@ describe('HookConnectionsSection binding actions (Telegram / X)', () => {
     render(<HookConnectionsSection />);
     await expandChannelCard(SLACK_CARD);
     const toggle = await screen.findByRole('switch', { name: 'settings.remoteControl.hook.multi.localCommunications' });
+    // Unit regression (#8481): a bound Slack workspace is absent from the
+    // provider-switch fixture above; its search binding must resolve to Slack.
+    const entry = resolveSettingsSearchEntry('im-bot', toggle.getAttribute('data-setting-id'));
+    expect(entry?.id).toBe('imBot.cindy.slack');
+    expect(document.getElementById(entry!.targetId)?.contains(toggle)).toBe(true);
     const masterToggle = screen.getByRole('switch', { name: 'settings.remoteControl.hook.toggleAria' });
     expect(masterToggle.getAttribute('aria-checked')).toBe('true');
     expect(toggle.getAttribute('aria-checked')).toBe(String(enabled));

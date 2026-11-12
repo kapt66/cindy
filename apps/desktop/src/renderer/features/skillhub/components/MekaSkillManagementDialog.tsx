@@ -260,7 +260,7 @@ export function MekaSkillManagementDialog({
                           onChange={(event) => setSharedUsers(event.target.value)}
                           placeholder={t('mekaSkills.sharedUsersPlaceholder')}
                           rows={3}
-                          className="mt-1.5 w-full resize-none rounded-lg border border-[var(--border-default)] bg-[var(--surface-elevated)] px-3 py-2 text-13 text-[var(--text-primary)] outline-none placeholder:text-[var(--text-tertiary)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:opacity-50"
+                          className="mt-1.5 w-full resize-none rounded-lg border border-[var(--border-default)] bg-[var(--surface-elevated)] px-3 py-2 text-13 text-[var(--text-primary)] outline-none placeholder:text-[var(--text-placeholder)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:opacity-50"
                         />
                         {accessInvalid ? (
                           <span className="mt-1 block text-11 text-[var(--error-fg)]">

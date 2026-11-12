@@ -186,15 +186,15 @@ describe('installFlow · 本地包安装', () => {
               },
             })),
             listSync: vi.fn(() => ({
-              // 上游 93f1393143 起「拖入/双击」只认**已确认的 root 实例**
-              // (findInstalledRootGhostForFileImport: namespaceState 已确认且 namespace 为 null,
-              // 或 pending 且无 namespace 字段)。裸 manifest 记录不再构成 root 受体。
+              // 上游 93f1393143 起「拖入/双击」的原位更新只认**同名 local 副本**
+              // (findInstalledLocalGhostForFileImport: namespace==='local' 且 namespaceState 已确认)。
+              // root / 企业实例不得被本地包静默覆盖,它们走 install 新装路径。
               ghosts: [
                 {
                   manifest: baseManifest,
-                  dir: '/tmp/brain/node-ghost',
-                  instanceKey: 'node-ghost',
-                  namespace: null,
+                  dir: '/tmp/brain/_ns/local/node-ghost',
+                  instanceKey: '_ns__local__node-ghost',
+                  namespace: 'local',
                   namespaceState: 'confirmed' as const,
                 },
               ],
@@ -215,17 +215,17 @@ describe('installFlow · 本地包安装', () => {
     expect(update).toHaveBeenCalledWith('/tmp/node-update.cindy', {
       expectedPackageSha256: 'b'.repeat(64),
       expectedInstalledApproval: 'legacy-unapproved',
-      // 上游 93f1393143 起更新事务必须交出受体实例键(裸 id 目录与实例键同值)。
-      expectedInstalledInstanceId: 'node-ghost',
+      // 更新事务必须交出受体实例键(物理实例键,不是逻辑插件 id)。
+      expectedInstalledInstanceId: '_ns__local__node-ghost',
     });
     expect(onInstalled).toHaveBeenCalledWith(updatedGhost);
   });
-  it('同 id 已安装时直接原位更新，并绑定当前安装 receipt', async () => {
+  it('同名 local 副本原位更新，并绑定当前安装 receipt', async () => {
     const installed = {
       manifest: { ...baseManifest, version: '0.9.0' },
-      dir: '/tmp/brain/node-ghost',
-      instanceKey: 'node-ghost',
-      namespace: null,
+      dir: '/tmp/brain/_ns/local/node-ghost',
+      instanceKey: '_ns__local__node-ghost',
+      namespace: 'local',
       namespaceState: 'confirmed' as const,
       enabled: false,
       approval: {
@@ -243,12 +243,12 @@ describe('installFlow · 本地包安装', () => {
     expect(update).toHaveBeenCalledWith('/tmp/node.cindy', {
       expectedPackageSha256: 'a'.repeat(64),
       expectedInstalledApproval: 'approved:00000000-0000-4000-8000-000000000001',
-      expectedInstalledInstanceId: 'node-ghost',
+      expectedInstalledInstanceId: '_ns__local__node-ghost',
     });
   });
 
 
-  it('updates a new root install instead of starting another one', async () => {
+  it('installs local beside a market root', async () => {
     const installed = {
       manifest: { ...baseManifest, version: '0.9.0' },
       dir: '/tmp/brain/_ns/_root/node-ghost',
@@ -259,13 +259,11 @@ describe('installFlow · 本地包安装', () => {
     };
     const { install, update } = setupWindow(baseManifest, [installed]);
     await installGhostFromFile('/tmp/node.cindy', { t: ((key: string) => key) as never });
-    expect(install).not.toHaveBeenCalled();
-    expect(update).toHaveBeenCalledWith('/tmp/node.cindy', expect.objectContaining({
-      expectedInstalledInstanceId: '_root__node-ghost',
-    }));
+    expect(update).not.toHaveBeenCalled();
+    expect(install).toHaveBeenCalled();
   });
 
-  it('updates a pending legacy directory', async () => {
+  it('installs local beside a pending legacy directory', async () => {
     const installed = {
       manifest: { ...baseManifest, version: '0.9.0' },
       dir: '/tmp/brain/node-ghost',
@@ -275,13 +273,11 @@ describe('installFlow · 本地包安装', () => {
     };
     const { install, update } = setupWindow(baseManifest, [installed]);
     await installGhostFromFile('/tmp/node.cindy', { t: ((key: string) => key) as never });
-    expect(install).not.toHaveBeenCalled();
-    expect(update).toHaveBeenCalledWith('/tmp/node.cindy', expect.objectContaining({
-      expectedInstalledInstanceId: 'node-ghost',
-    }));
+    expect(update).not.toHaveBeenCalled();
+    expect(install).toHaveBeenCalled();
   });
 
-  it('installs a new root beside an organization instance', async () => {
+  it('installs local beside an organization instance', async () => {
     const installed = {
       manifest: baseManifest,
       dir: '/tmp/brain/_ns/xd/node-ghost',
@@ -296,7 +292,7 @@ describe('installFlow · 本地包安装', () => {
     expect(install).toHaveBeenCalled();
   });
 
-  it('installs a new root beside an in-place confirmed organization plugin', async () => {
+  it('installs local beside an in-place confirmed organization plugin', async () => {
     const installed = {
       manifest: { ...baseManifest, id: 'xd-feishu', name: 'Feishu' },
       dir: '/tmp/brain/xd-feishu',

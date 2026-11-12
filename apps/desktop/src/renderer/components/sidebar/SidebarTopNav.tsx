@@ -44,11 +44,11 @@ import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { NavigationCountBadge } from '@/components/sidebar/NavigationCountBadge';
 import { useAuth } from '@/contexts/AuthContext';
+import { usePluginReviewUpdates } from '@/contexts/PluginReviewUpdatesContext';
 import { AttentionDot, type DotTone } from '@/components/sidebar/AttentionDot';
 import { useAnyGhostUnread } from '@/cindy-brain/ghostUnreadStore';
 import { useGhostMainViews, type GhostMainViewItem } from '@/cindy-brain/ghostMainViews';
 import { useInstalledGhosts } from '@/cindy-brain/useInstalledGhosts';
-import { GhostPanelRestoreEntry } from '@/cindy-brain/GhostPanelRestoreEntry';
 import { useActiveMainView } from '@/hooks/useActiveMainView';
 import { SidebarInlineSearch } from '@/features/cc-agent/sidebar/SidebarInlineSearch';
 import { SidebarIconButton, SIDEBAR_RAIL_ICON_BUTTON_CLASS } from './SidebarIconButton';
@@ -63,6 +63,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { NewTag } from './NewTag';
 import { SidebarNavigationCustomize } from './SidebarNavigationCustomize';
 import { useHoverOpenMenu } from './useHoverOpenMenu';
 import {
@@ -142,6 +143,7 @@ function useSidebarNavigationActions(
   // 呼吸留给单条卡片;见 AttentionDot 头部的形态规范)。
   const hasRetirementUnread = useInstalledGhosts().some((ghost) => ghost.retirement?.unread);
   const hasGhostUnread = useAnyGhostUnread() || hasRetirementUnread;
+  const reviewUnread = usePluginReviewUpdates().updates.filter(item => item.unread);
   return {
     automations: {
       label: t('ccAgent.layout.automations'),
@@ -155,8 +157,8 @@ function useSidebarNavigationActions(
       icon: SIDEBAR_NAVIGATION_ITEM_ICONS.plugins,
       onSelect: () => navigateToView('plugins'),
       active: activeKey === 'plugins',
-      showDot: hasGhostUnread,
-      dotTone: hasRetirementUnread ? 'awaiting' : 'done',
+      showDot: hasGhostUnread || reviewUnread.length > 0,
+      dotTone: reviewUnread.some(item => item.status !== 'approved' && item.status !== 'enabled') ? 'error' : hasRetirementUnread ? 'awaiting' : 'done',
     },
     search: {
       label: t('sidebar.navigation.items.search'),
@@ -217,21 +219,6 @@ function useSidebarNavigationEntries(): {
     if (dataOwnerId) markSidebarAppArrivalsSeen(dataOwnerId);
   };
   return { order, hidden, isVisible, appFor, unseen, markSeen };
-}
-
-/** Quiet grayscale tag for entries that just joined More. */
-function NewTag({ className }: { className?: string }) {
-  const { t } = useTranslation();
-  return (
-    <span
-      className={cn(
-        'shrink-0 rounded-full bg-[var(--surface-chip)] px-1.5 py-px text-10 font-medium leading-4 text-[var(--text-primary)]',
-        className,
-      )}
-    >
-      {t('sidebar.navigation.new')}
-    </span>
-  );
 }
 
 /**
@@ -351,7 +338,8 @@ export interface SidebarRailSearchOptions {
 
 /**
  * 任务视图 rail 的导航段:与展开态同一份偏好 —— 勾选项(含插件主视图)按保存顺序
- * 成图标,其后是面板恢复入口,最后「更多」收纳未勾选项。
+ * 成图标,最后「更多」收纳未勾选项。「面板恢复入口」已随上游删除(origin/main 移除了
+ * `cindy-brain/GhostPanelRestoreEntry`,rail 与行两处调用一并消失,W28 第七轮同步)。
  * 搜索图标由调用方提供(依赖任务列表的数据),这里只决定它的位置与显隐。
  * `mekaEntry` 是 Meka 私有产品线的**常驻**入口(WL-2.2),由调用方注入;它不占偏好 id,
  * 因此既不进「更多」也不进「自定义」,位次固定紧随「自动任务」之后(与展开态 mekaRow 同一规则)。
@@ -424,7 +412,6 @@ export function SidebarRailNavigation({
       {tiles.slice(0, mekaTileIndex).map(renderTile)}
       {mekaEntry}
       {tiles.slice(mekaTileIndex).map(renderTile)}
-      <GhostPanelRestoreEntry variant="rail" className={SIDEBAR_RAIL_ICON_BUTTON_CLASS} />
       <SidebarNavigationMoreMenu
         hiddenIds={entries.hidden}
         actions={actions}
@@ -547,9 +534,6 @@ export function SidebarTopNav({
       </button>
     );
   };
-  const restoreRow = showScrollable ? (
-    <GhostPanelRestoreEntry variant="row" className={ROW_CLASS} />
-  ) : null;
   const searchRow = showScrollable ? (
     <SidebarInlineSearch
       search={search}
@@ -641,7 +625,6 @@ export function SidebarTopNav({
         ) : !showSearch ? (
           <div className="flex flex-col gap-0.5 pr-3 pl-3">
             {orderedNavigationRows}
-            {restoreRow}
             {customizeRow}
           </div>
         ) : (
@@ -662,8 +645,7 @@ export function SidebarTopNav({
                 results follow them instead of replacing them. */}
             <div className="-mt-1.5 flex flex-col gap-0.5 pr-3 pl-3">
               {rowsAfterSearch}
-              {restoreRow}
-              {customizeRow}
+                {customizeRow}
             </div>
           </>
         )}
@@ -671,7 +653,7 @@ export function SidebarTopNav({
     );
   }
 
-  // Persistent-view contract: saved navigation order -> {restoreRow} -> More.
+  // Persistent-view contract: saved navigation order -> More.
   return (
     // pt-1(原 2.5):顶行 chrome 收窄到 46px 后,列表整体上提贴近顶行(对齐 Codex)。
     // 分段渲染时(section≠'all')两段各自成块,由调用方分别放进固定区 / 滚动区;
@@ -705,7 +687,6 @@ export function SidebarTopNav({
         ) : (
           orderedNavigationRows
         ))}
-      {showScrollable && !customizing && restoreRow}
       {showScrollable && !customizing && customizeRow}
     </div>
   );

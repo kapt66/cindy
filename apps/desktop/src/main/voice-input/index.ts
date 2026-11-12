@@ -1,3 +1,6 @@
+import { registerVoiceConversationIpc } from '../voice-conversation/index.js';
+import { hasVoiceConversationLease } from '../voice-conversation/lease.js';
+import { VOICE_CONVERSATION_ACTIVE_MESSAGE } from '../../shared/voiceInputErrors.js';
 import { app, ipcMain, shell, systemPreferences, type WebContents } from 'electron';
 import fs from 'node:fs/promises';
 
@@ -34,6 +37,7 @@ import { getEffectiveAuxiliaryModelChainSnapshot } from '../utility-model/resolv
 import { getAppCapabilities } from '../appCapabilities.js';
 import { getProviderSecretStore } from '../secrets/providerSecretStore.js';
 import { assertTrustedAppRendererEvent } from '../security/trustedAppRenderer.js';
+import { publishMicrophonePermissionSnapshot, registerMicrophonePermissionIpc } from './microphonePermissionIpc.js';
 import {
   desktopCodexAuthAdapter,
   readOwnerScopedXdGatewayKey,
@@ -1485,6 +1489,7 @@ function readMicrophonePermissionSnapshot(): VoiceInputMicrophonePermissionCache
 
 function refreshMicrophonePermissionCache(): VoiceInputMicrophonePermissionCache {
   cachedMicrophonePermission = readMicrophonePermissionSnapshot();
+  publishMicrophonePermissionSnapshot(cachedMicrophonePermission);
   return cachedMicrophonePermission;
 }
 
@@ -1885,10 +1890,46 @@ export async function transcribeVoiceInputAudioFile(
 export function registerVoiceInputIpc(): void {
   registerVoiceInputDataStoreIpc();
   registerVoiceSpeakerFilterIpc();
+  let pendingDictationStarts = 0;
+  registerVoiceConversationIpc({
+    getSettings: () => voiceInputDataStore.getSettings(),
+    // Reuse dictation's opt-in setting, local enrollment and strictness. A new
+    // microphone run (including unmute) reads current settings; ASR rotation
+    // keeps the same gate. No separate companion voiceprint or audio storage.
+    createAudioGate: (onFiltered) => getSpeakerFilterService().createGate(voiceInputDataStore.getSettings(), onFiltered),
+    updateSettings: patch => voiceInputDataStore.updateSettings(patch),
+    hasDictation: () => activeByWebContentsId.size > 0 || pendingDictationStarts > 0 || systemAudioMuteGuard.hasPendingOrActiveMute,
+    createProvider: async () => {
+      const owner = activeOwnerScopeKey();
+      const snapshot = getEffectiveAuxiliaryModelChainSnapshot();
+      assertVoiceInputOwnerScopeCurrent(owner, snapshot);
+      const language = resolveAsrLanguageHint(voiceInputDataStore.getSettings().language);
+      const managed = !isVoiceInputByokMode();
+      const chain = (await resolveStartableAsrChain()).filter(
+        (kind) => getVoiceInputAsrProfile(kind).mode !== 'batch-http',
+      );
+      assertVoiceInputOwnerScopeCurrent(owner, snapshot);
+      if (!chain.length || (managed && !isCindyVoiceServiceReady())) throw new Error('ASR unavailable');
+      // A fresh managed connection for each rotation; never cross into BYOK implicitly.
+      const context = managed ? new CindyVoiceRunContext(language, undefined) : undefined;
+      return new FallbackAsrProvider(chain.map((kind) => ({
+        kind,
+        create: () => {
+          assertVoiceInputOwnerScopeCurrent(owner, snapshot);
+          if (!context && isAsrProfileRouteDisabled(getVoiceInputAsrProfile(kind))) throw new Error('ASR disabled');
+          return createVoiceInputProvider(kind, language, context);
+        },
+      })), { hedgeDelayMs: context ? null : undefined, sharedAccountRateLimit: Boolean(context) });
+    },
+  });
   if (!appRestoreRegistered) {
     appRestoreRegistered = true;
     app.once('before-quit', () => {
       void systemAudioMuteGuard.restoreAll();
+    });
+    // 用户去系统设置里授权或撤销后回到应用:缓存跟着刷新,长按语音按最新授权状态生效。
+    app.on('browser-window-focus', () => {
+      refreshMicrophonePermissionCache();
     });
   }
   const modelSelection = readActiveVoiceInputModelSelection('register');
@@ -1915,9 +1956,7 @@ export function registerVoiceInputIpc(): void {
     },
   );
 
-  ipcMain.on('voice-input:get-microphone-permission-cached', (event) => {
-    event.returnValue = getCachedMicrophonePermission();
-  });
+  registerMicrophonePermissionIpc(getCachedMicrophonePermission);
 
   ipcMain.handle('voice-input:set-renderer-microphone-permission-verified', async (_event, verified: boolean) => {
     rendererVerifiedMicrophonePermission = verified;
@@ -2075,6 +2114,7 @@ export function registerVoiceInputIpc(): void {
   );
 
   ipcMain.handle('voice-input:mute-system-audio', async (event): Promise<VoiceInputActionResult> => {
+    if (hasVoiceConversationLease()) return { ok: false, error: VOICE_CONVERSATION_ACTIVE_MESSAGE };
     try {
       await systemAudioMuteGuard.mute(event.sender.id);
       return { ok: true };
@@ -2096,7 +2136,7 @@ export function registerVoiceInputIpc(): void {
     }
   });
 
-  ipcMain.handle('voice-input:start', async (event, payload: StartPayload | undefined): Promise<StartResult> => {
+  const startVoiceInput = async (event: Electron.IpcMainInvokeEvent, payload: StartPayload | undefined): Promise<StartResult> => {
     // Bind this run to the owner that initiated it before any cancellation,
     // readiness, or credential await. A later account switch must fail closed
     // at the final refiner dispatch instead of using the new owner's route.
@@ -2338,6 +2378,8 @@ export function registerVoiceInputIpc(): void {
           timelineEvent,
           provider.activeProviderKind,
         ));
+      } else if (timelineEvent.type === 'speculative_refine_skipped') {
+        log.info('speculative refinement skipped', summarizeTimelineEventForLog(timelineEvent));
       } else if (timelineEvent.type === 'refine_accepted' || timelineEvent.type === 'refine_rejected') {
         const start = timelineEvents.get(`${timelineEvent.runId}:start_clicked`);
         log.info('refinement latency summary', {
@@ -2352,12 +2394,17 @@ export function registerVoiceInputIpc(): void {
     });
 
     // "Recognize my voice": undefined unless enabled, enrolled and the models are on disk.
-    const audioGate = getSpeakerFilterService().createGate(voiceInputDataStore.getSettings());
+    const audioGate = getSpeakerFilterService().createGate(voiceInputDataStore.getSettings(), () => {
+      if (runId) emit({ type: 'speaker-filtered', runId });
+    });
     const controller = new VoiceInputController({
       asr: provider,
       refiner,
       audioGate,
       pauseRefinementEnabled: true,
+      // Managed refinement is capped per voice-server session; keep one request
+      // for the final text. BYOK refiners have no such cap.
+      refineRequestBudget: voiceContext ? () => voiceContext.refineRequestBudget() : undefined,
       recoveryErrorMessage: voiceContext ? getVoiceInputRateLimitMessage : undefined,
       logger,
       callbacks: {
@@ -2460,6 +2507,13 @@ export function registerVoiceInputIpc(): void {
           : message,
       };
     }
+  };
+  ipcMain.handle('voice-input:start', async (event, payload: StartPayload | undefined): Promise<StartResult> => {
+    if (hasVoiceConversationLease()) return { ok: false, error: VOICE_CONVERSATION_ACTIVE_MESSAGE };
+    // Reserve before the first await, including readiness/auth and provider connection.
+    pendingDictationStarts++;
+    try { return await startVoiceInput(event, payload); }
+    finally { pendingDictationStarts--; }
   });
 
   ipcMain.on('voice-input:audio', (event, payload: AudioPayload | undefined) => {

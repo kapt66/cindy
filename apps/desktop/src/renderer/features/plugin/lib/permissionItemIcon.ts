@@ -17,7 +17,9 @@ import {
   Network,
   PanelLeft,
   PanelRight,
+  Puzzle,
   Radio,
+  Smartphone,
   Sparkles,
   Terminal,
   Wrench,
@@ -34,6 +36,7 @@ const PERMISSION_ICON: Record<GhostPermissionItem['kind'], LucideIcon> = {
   command: Terminal,
   panel: PanelRight,
   'main-view': AppWindow,
+  'task-view': PanelRight,
   code: FileCode2,
   subscribe: Radio,
   card: LayoutTemplate,
@@ -42,9 +45,11 @@ const PERMISSION_ICON: Record<GhostPermissionItem['kind'], LucideIcon> = {
   confirm: MessageCircleQuestion,
   fs: FilePen,
   library: Library,
+  deviceSync: Radio,
   'session-context': MapPin,
   pick: FolderOpen,
   preview: AppWindow,
+  'browser-extension': Puzzle,
   skill: GraduationCap,
   reveal: FolderOpen,
   workspace: FolderPlus,
@@ -54,6 +59,7 @@ const PERMISSION_ICON: Record<GhostPermissionItem['kind'], LucideIcon> = {
   // 映射与 MekaDevInstallReview.tsx 的 KIND_ICON 保持一致(reveal→FolderOpen,
   // mcpr→Network),两处不得分叉。
   mcpr: Network,
+  'live-screen': Smartphone,
 };
 
 /**

@@ -312,7 +312,7 @@ export function MekaDevPluginPackageDialog({
                     onChange={(event) => setSharedUsernamesText(event.target.value)}
                     placeholder={t('settings.ghosts.meka.dev.sharedUsersPlaceholder')}
                     rows={2}
-                    className="resize-none rounded-lg border border-[var(--border-default)] bg-[var(--surface-elevated)] px-3 py-2 text-13 text-[var(--text-primary)] outline-none placeholder:text-[var(--text-tertiary)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:cursor-not-allowed disabled:opacity-50"
+                    className="resize-none rounded-lg border border-[var(--border-default)] bg-[var(--surface-elevated)] px-3 py-2 text-13 text-[var(--text-primary)] outline-none placeholder:text-[var(--text-placeholder)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:cursor-not-allowed disabled:opacity-50"
                   />
                   {accessInvalid ? (
                     <span className="text-11 text-[var(--error-fg)]">

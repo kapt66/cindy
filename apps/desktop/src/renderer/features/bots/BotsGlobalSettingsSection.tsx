@@ -1,8 +1,19 @@
+import { additionalSettings } from '@/components/settings/AdditionalSettings.settings-search';
+import { useSettingDefinition } from '@/components/settings/useSettingDefinition';
 /** Shared default model chain; individual teammates may override it. */
 import { useEffect, useRef, useState } from 'react';
 import { useBotTranslation } from './botPronounContext';
 
 import { cn } from '@/lib/utils';
+import {
+  SETTINGS_CARD_CLASS,
+  SETTINGS_ROW_CLASS,
+  SETTINGS_ROW_HINT_CLASS,
+  SETTINGS_ROW_LABEL_CLASS,
+  SETTINGS_SECTION_TITLE_CLASS,
+} from '@/components/settings/settingsRowClasses';
+import { Switch } from '@/components/ui/switch';
+import { useBotReplyTargetPreference } from './useBotReplyTargetPreference';
 import { useProviders } from '@/hooks/useProviders';
 import { useAvailableAgents } from '@/hooks/useAvailableAgents';
 import {
@@ -14,18 +25,10 @@ import {
 } from './botStore';
 import { BotModelChainEditor } from './BotModelChainEditor';
 
-const CARD_CLASS = cn(
-  'rounded-xl p-5',
-  'bg-[var(--settings-theme-card-bg)]',
-  'border border-[var(--settings-theme-card-border)]',
-);
-
-const ROW_LABEL_CLASS = 'text-13 font-medium text-[var(--settings-section-sublabel)]';
-const ROW_HINT_CLASS =
-  'text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70';
-
 export function BotsGlobalSettingsSection() {
   const { t } = useBotTranslation();
+  const modelSetting = useSettingDefinition(additionalSettings.botModel, t);
+  const replySetting = useSettingDefinition(additionalSettings.botReplyTarget, t);
   // Re-render derived defaults when the shared picker inputs change, including
   // when the empty-chain editor has no ModelSelector mounted yet.
   useProviders();
@@ -36,6 +39,7 @@ export function BotsGlobalSettingsSection() {
   useEffect(() => subscribeBotGlobalModel(() => bumpModelSettings((value) => value + 1)), []);
   const modelChain = getEffectiveBotModelChain();
   const customized = isBotGlobalModelChainCustomized();
+  const replyTarget = useBotReplyTargetPreference();
   const pendingRef = useRef(false);
   const [pending, setPending] = useState(false);
 
@@ -56,14 +60,16 @@ export function BotsGlobalSettingsSection() {
 
   return (
     <div className="flex flex-col gap-[14px]">
-      <h2 className="text-16 font-medium leading-[1.2] text-[var(--settings-section-title)]">
-        {t('bots.globalSettings.title')}
-      </h2>
+      <h2 className={SETTINGS_SECTION_TITLE_CLASS}>{t('bots.globalSettings.title')}</h2>
 
-      <div className={cn(CARD_CLASS, 'flex flex-col gap-4')}>
-        <p className={ROW_LABEL_CLASS}>{t('bots.modelLabel')}</p>
-        <fieldset disabled={pending} aria-busy={pending} className="min-w-0">
-          <BotModelChainEditor
+      <div className={SETTINGS_CARD_CLASS}>
+        <fieldset {...modelSetting.anchorProps} disabled={pending} aria-busy={pending} className="min-w-0">
+          <BotModelChainEditor {...modelSetting.controlProps}
+            layout="settings"
+            settingsRows={{
+              primaryLabel: modelSetting.title,
+              primaryHint: modelSetting.description,
+            }}
             disabled={pending}
             value={modelChain}
             onChange={(next) => changeModelChain(() => setBotGlobalModelChain(next))}
@@ -73,10 +79,25 @@ export function BotsGlobalSettingsSection() {
           />
         </fieldset>
         {notice ? (
-          <p className={ROW_HINT_CLASS} role="status">
+          <p className={cn(SETTINGS_ROW_HINT_CLASS, 'px-4 pb-4')} role="status">
             {notice}
           </p>
         ) : null}
+      </div>
+
+      <div className={SETTINGS_CARD_CLASS}>
+        <div {...replySetting.anchorProps} className={SETTINGS_ROW_CLASS}>
+          <div className="min-w-0 flex-1">
+            <p className={SETTINGS_ROW_LABEL_CLASS}>{replySetting.title}</p>
+            <p className={SETTINGS_ROW_HINT_CLASS}>{replySetting.description}</p>
+          </div>
+          <Switch {...replySetting.controlProps}
+            aria-label={replySetting.title}
+            className="shrink-0"
+            checked={replyTarget.enabled}
+            onCheckedChange={(value) => replyTarget.setEnabled(value === true)}
+          />
+        </div>
       </div>
     </div>
   );

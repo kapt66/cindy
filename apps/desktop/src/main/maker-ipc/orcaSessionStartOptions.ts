@@ -4,7 +4,8 @@ import {
   renderOrcaWorkerSystemPrompt,
 } from '@cindy/orca-workflow';
 
-import { getSessionOrcaRole, getWorkerLink } from '../localDb/orcaTeamStore.js';
+import { getSessionOrcaRole, getWorkerLink, getRemoteOrcaSession } from '../localDb/orcaTeamStore.js';
+import type { OrcaRemoteLead } from '../../shared/orcaRemoteWorker.js';
 import { createLogger } from '../logger.js';
 import type { MakerSessionCreateOpts } from './sessionRequest.js';
 import { knownNonOrcaSessionIds, readOrcaRoleFromVendorOptions } from './orcaMcpHydrationCache.js';
@@ -20,6 +21,7 @@ interface OrcaWorkerLink {
 export interface OrcaSessionStartOptionsDeps {
   getSessionRole(sessionId: string): Promise<OrcaRole | null>;
   getWorkerLink(workerSessionId: string): Promise<OrcaWorkerLink | null>;
+  getRemoteLead?(sessionId: string): Promise<OrcaRemoteLead | null>;
   warn(message: string, meta: Record<string, unknown>): void;
 }
 
@@ -28,6 +30,7 @@ const log = createLogger('maker-ipc:orca-session-start');
 const defaultDeps: OrcaSessionStartOptionsDeps = {
   getSessionRole: getSessionOrcaRole,
   getWorkerLink: (workerSessionId) => getWorkerLink({ workerSessionId }),
+  getRemoteLead: async sessionId => (await getRemoteOrcaSession(sessionId))?.orcaRemoteLead ?? null,
   warn: (message, meta) => log.warn(message, meta),
 };
 
@@ -88,6 +91,12 @@ export async function synthesizeOrcaVendorOptionsFromDb(
     return true;
   }
   if (!hasExplicitRole) {
+    const lead = await deps.getRemoteLead?.(sessionId);
+    if (lead && lead.releasedAt === undefined) {
+      // Enable the bridge for Claude too, without inventing a local Worker/team role.
+      o.vendorOptions = { ...(o.vendorOptions ?? {}), orcaRemoteWorker: true, orcaRemoteLead: lead };
+      return true;
+    }
     knownNonOrcaSessionIds.add(sessionId);
   }
   return false;
