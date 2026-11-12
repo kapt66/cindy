@@ -509,6 +509,8 @@
 3. **`authColdStartRecovery.test.ts` 在 `manualLogin` 后清 provider spy** —— 测试隔离修复，断言未弱化。
 4. **`check:settings-search` 加 `--merge-parent` 双父判据 + 33 条 Meka 定义** —— 防「只搜单侧父线」漏项：
    合并提交有两个父，搜索项校验必须对**双父**同时成立；Meka 侧 33 条设置搜索定义已登记。
+   同步 merge 之后若还有普通跟进提交，脚本沿 first-parent 找到最近的 merge 再套同一判据，
+   保证跟进提交后的 push 仍以真正的上游父为 base（否则会把上游新增误报成 Meka 漏登记）。
 5. **`desktop:ui-smoke` 的 MCPRouter / MekaDesign 检查改为按连接状态分支** —— 已连接断言「断开」，
    未连接才断言「配置」并验证对话框；不再把「用户真实已连接」误报成 FAIL（本轮 15 checks = 13 pass /
    0 fail / **2 unverified** 即此两态无法在不影响用户凭证下构造）。

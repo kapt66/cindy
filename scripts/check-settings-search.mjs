@@ -435,6 +435,27 @@ export function resolveSettingsSearchBase(
     return eventBaseRef;
   }
   if (!mergeCommit) {
+    // A sync merge may already be committed and followed by ordinary fixes (the
+    // push then lands on the follow-up tip). Walk the first-parent merge chain
+    // once; the most recent merge is the sync boundary we must evaluate. This is
+    // only a fallback: HEAD being a merge keeps the existing fast path above.
+    try {
+      const latestMerge = git(["rev-list", "--first-parent", "--merges", "-n", "1", "HEAD"]).trim();
+      if (latestMerge) {
+        const [, ...parents] = git(["rev-list", "--parents", "-n", "1", latestMerge])
+          .trim()
+          .split(/\s+/);
+        if (parents.length > 1) {
+          mergeCommit = true;
+          [firstParentRef, mergeParentRef] = parents;
+        }
+      }
+    } catch {
+      // No merge on the first-parent chain: fall through to the in-progress
+      // MERGE_HEAD probe below, then to the event base.
+    }
+  }
+  if (!mergeCommit) {
     // In-progress merge: HEAD is still the first parent and MERGE_HEAD is the future HEAD^2.
     // Keeping the same rule lets the push path be verified before the merge is committed.
     try {

@@ -260,6 +260,20 @@ describe("settings search CI base resolution", () => {
     );
   });
 
+  it("uses the upstream parent after follow-up commits on top of the sync merge", () => {
+    const git = gitWith({
+      "rev-list --parents -n 1 HEAD": "follow-up merge-commit\n",
+      "rev-list --first-parent --merges -n 1 HEAD": "merge-commit\n",
+      "rev-list --parents -n 1 merge-commit": "merge-commit meka-head upstream-parent\n",
+      ...notAncestor("meka-head"),
+      ...ancestor("upstream-parent"),
+    });
+    assert.equal(
+      resolveSettingsSearchBase("event-base", { mergeParent: true, git }),
+      "upstream-parent",
+    );
+  });
+
   it("uses MERGE_HEAD while the sync merge is still uncommitted", () => {
     const git = gitWith({
       "rev-list --parents -n 1 HEAD": "meka-head meka-parent\n",
