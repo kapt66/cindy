@@ -435,6 +435,17 @@ export function resolveSettingsSearchBase(
     return eventBaseRef;
   }
   if (!mergeCommit) {
+    // In-progress merge takes priority over any historical merge: HEAD is still
+    // the first parent and MERGE_HEAD is the future HEAD^2. Keeping the same rule
+    // lets the push path be verified before the merge is committed.
+    try {
+      mergeParentRef = git(["rev-parse", "--verify", "MERGE_HEAD^{commit}"]).trim();
+      mergeCommit = true;
+    } catch {
+      // No merge in progress; try the committed first-parent merge below.
+    }
+  }
+  if (!mergeCommit) {
     // A sync merge may already be committed and followed by ordinary fixes (the
     // push then lands on the follow-up tip). Walk the first-parent merge chain
     // once; the most recent merge is the sync boundary we must evaluate. This is
@@ -451,19 +462,10 @@ export function resolveSettingsSearchBase(
         }
       }
     } catch {
-      // No merge on the first-parent chain: fall through to the in-progress
-      // MERGE_HEAD probe below, then to the event base.
+      // No merge on the first-parent chain: use the event base.
     }
   }
-  if (!mergeCommit) {
-    // In-progress merge: HEAD is still the first parent and MERGE_HEAD is the future HEAD^2.
-    // Keeping the same rule lets the push path be verified before the merge is committed.
-    try {
-      mergeParentRef = git(["rev-parse", "--verify", "MERGE_HEAD^{commit}"]).trim();
-    } catch {
-      return eventBaseRef;
-    }
-  }
+  if (!mergeCommit) return eventBaseRef;
   const isAncestorOfUpstream = (ref) => {
     try {
       git(["merge-base", "--is-ancestor", ref, upstreamRef]);

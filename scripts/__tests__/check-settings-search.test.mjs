@@ -274,6 +274,21 @@ describe("settings search CI base resolution", () => {
     );
   });
 
+  it("prefers MERGE_HEAD over an older committed merge while a sync merge is in progress", () => {
+    const git = gitWith({
+      "rev-list --parents -n 1 HEAD": "meka-head meka-parent\n",
+      "rev-parse --verify MERGE_HEAD^{commit}": "upstream-parent\n",
+      // An older merge exists; picking it would verify the wrong boundary.
+      "rev-list --first-parent --merges -n 1 HEAD": "old-merge\n",
+      ...notAncestor("HEAD"),
+      ...ancestor("upstream-parent"),
+    });
+    assert.equal(
+      resolveSettingsSearchBase("event-base", { mergeParent: true, git }),
+      "upstream-parent",
+    );
+  });
+
   it("uses MERGE_HEAD while the sync merge is still uncommitted", () => {
     const git = gitWith({
       "rev-list --parents -n 1 HEAD": "meka-head meka-parent\n",

@@ -189,7 +189,8 @@ Pi 使用逐模型 reserveTokens，Claude Code 同步原生环境与 host 判断
 `--merge-parent` 改用它自己的第二父提交（HEAD^2）作 base：HEAD 是 merge commit（本地尚未
 提交时为 MERGE_HEAD），第二父已经是 `refs/remotes/origin/main` 的祖先，**且第一父不是**
 该祖先。同步 merge 后若已有普通跟进提交，HEAD 不再有第二父；脚本沿 first-parent 找到最近的
-merge commit 再套用同一双父判据，避免把跟进提交后的 push 退化成事件 base 而误报上游新增。第二条判据不可省：落在 `main` 上的普通 feature merge 在 push 后，第二父（feature
+merge commit 再套用同一双父判据，避免把跟进提交后的 push 退化成事件 base 而误报上游新增。
+未提交的同步 merge 始终优先读 `MERGE_HEAD`；历史 merge 只是没有进行中 merge 时的回退。第二条判据不可省：落在 `main` 上的普通 feature merge 在 push 后，第二父（feature
 tip）同样成为 `origin/main` 祖先，只有第一父（旧 main）也在上游时才必须保留事件 base，
 否则会把这次 feature 新增的设置排除在检查之外。普通功能分支 merge 不满足该条件，仍用事件
 base，不能借此跳过检查。`--merge-parent` 只由 CI 的 push 步骤传入，PR／merge_group 不传。
