@@ -65,6 +65,9 @@ pnpm restart:desktop:remote -- --shared
 `DESKTOP_DEV_VERDICT=ready` 才算成功；看到
 `DESKTOP_DEV_VERDICT=failed` 或没有 verdict 行，不得声称开发版已启动。失败时报告
 `code` / `message`；有 `next=` 且用户未指定必须共享时，可执行该命令重试。
+`dev:remote` / `dev:local` 包装会为 Forge/Vite 注入 `--max-old-space-size=8192`（开发者显式
+`NODE_OPTIONS` 覆盖优先）；2026-11-06 上游同步后 6144 MB 会在冷启动阶段确定性触发 exit 134，
+表现为 renderer guard 30 秒无活动，不是应用代码崩溃。
 
 Agent 没有 TTY 时，dev 会在新开的 Terminal（macOS）／cmd（Windows）窗口里运行。macOS 上
 该窗口的输出同时写入当前 checkout 的 `apps/desktop/logs/dev-terminal.log`（每次启动覆盖，
