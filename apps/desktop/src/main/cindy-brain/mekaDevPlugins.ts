@@ -14,6 +14,7 @@ import path from 'node:path';
 import JSZip from 'jszip';
 
 import type { MekaDevPluginInspection, MekaDevPluginItem } from '../../shared/mekaDevPlugin.js';
+import { parsePluginStoragePart } from '../../shared/pluginIdentity.js';
 import {
   GHOST_MANIFEST_FILE,
   validateGhostManifest,
@@ -58,6 +59,16 @@ export function mekaDevRuntimeId(pluginId: string): string {
   const digest = crypto.createHash('sha256').update(pluginId).digest('hex').slice(0, 8);
   const readableLength = 32 - prefix.length - digest.length - 1;
   return `${prefix}${pluginId.slice(0, readableLength)}-${digest}`;
+}
+
+/**
+ * 开发注册表按 runtime ID 建索引，但通用插件页只看得见物理实例键
+ * （开发副本固定落 root：`_root__<runtimeId>`）。两个拼法都接受，避免把一个
+ * 合法的移除请求判成「未登记」；其它形状原样返回，仍走 not-found。
+ */
+function mekaDevRegistryKey(id: string): string {
+  const identity = parsePluginStoragePart(id);
+  return identity && identity.namespace === null ? identity.ghostId : id;
 }
 
 function mekaDevCommand(command: string, runtimeId: string): string {
@@ -327,22 +338,23 @@ export class MekaDevPluginManager {
 
   async remove(runtimeId: string): Promise<void> {
     await this.ensureNamespace();
-    const record = this.records.get(runtimeId);
+    const record = this.records.get(mekaDevRegistryKey(runtimeId));
     if (!record) {
       throw new MekaDevPluginError('not-found', `开发插件 ${runtimeId} 未登记`);
     }
-    await this.stopWatching(runtimeId);
+    const id = record.runtimeId;
+    await this.stopWatching(id);
     try {
-      await this.deps.uninstallPackage(runtimeId);
+      await this.deps.uninstallPackage(id);
     } catch (error) {
       await this.watch(record).catch(() => undefined);
       throw error;
     }
-    this.records.delete(runtimeId);
+    this.records.delete(id);
     await this.persistRegistry();
     this.emitChanged();
     this.deps.log?.info('Meka development Plugin removed', {
-      runtimeId,
+      runtimeId: id,
       pluginId: record.pluginId,
     });
   }

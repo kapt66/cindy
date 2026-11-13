@@ -51,8 +51,9 @@ vi.mock('react-i18next', async (importOriginal) => ({
   ...(await importOriginal<typeof import('react-i18next')>()),
   useTranslation: () => translation,
 }));
+const { confirmMock } = vi.hoisted(() => ({ confirmMock: vi.fn<(value?: boolean) => Promise<boolean | undefined>>() }));
 vi.mock('@/components/ui/confirm-dialog-provider', () => ({
-  useConfirmDialog: () => ({ confirm: vi.fn() }),
+  useConfirmDialog: () => ({ confirm: confirmMock }),
 }));
 
 const detail: PluginMarketDetail = {
@@ -110,6 +111,7 @@ beforeEach(() => {
   loadDetail.mockReset().mockResolvedValue(detail);
   pickAndUpdateGhost.mockReset().mockResolvedValue(undefined);
   listAgentSkills.mockReset().mockResolvedValue({ success: true, skills: [] });
+  confirmMock.mockReset().mockResolvedValue(undefined);
   patchDraft({ vendor: 'cc' });
   vi.stubGlobal('electronAPI', {
     platform: 'win32',
@@ -450,6 +452,48 @@ describe('plugin page return navigation', () => {
     const card = screen.getByRole('button', { name: detail.name });
     await within(card).findByText(`settings.ghosts.detail.${kind === 'local' ? 'localDevelopment' : 'publicInstall'}`);
     expect(Boolean(within(card).queryByText('Local package author'))).toBe(kind === 'local');
+  });
+
+  // 回归：详情页拿到的是物理实例键（`_root__meka-dev-*`），而开发注册表按 runtime ID
+  // 建索引；把前者传给 `meka-dev-plugins:remove` 会让每次卸载都报「开发插件 … 未登记」。
+  it('removes a development copy by its logical runtime id, not the physical instance key', async () => {
+    const runtimeId = 'meka-dev-mcpr-project-m-541d7a2d';
+    const installed: InstalledGhost = {
+      manifest: { ...detail.manifest, id: runtimeId, name: 'Development Plugin' },
+      dir: '/tmp/brain/_ns/_root/' + runtimeId,
+      instanceKey: '_root__' + runtimeId,
+      namespace: null, namespaceState: 'confirmed', enabled: true,
+      publishingSource: { kind: 'local', source: 'manual' },
+      approval: { state: 'approved', revision: 'revision' },
+    };
+    const remove = vi.fn(async () => ({ ok: true as const }));
+    window.electronAPI.ghosts.listSync = () => ({ ghosts: [installed] });
+    window.electronAPI.pluginMarket.snapshot = async () => ({
+      items: [], unavailableReason: null, customSourceNames: [], unavailableCustomSourceNames: [],
+    });
+    window.electronAPI.mekaDevPlugins.list = async () => ({
+      items: [{
+        runtimeId,
+        pluginId: 'mcpr-project-manager',
+        sourceDir: '/src/mcpr-project-manager',
+        status: 'watching',
+      }],
+    });
+    window.electronAPI.mekaDevPlugins.remove = remove;
+    confirmMock.mockResolvedValue(true);
+
+    render(page('/plugins?ghost=' + encodeURIComponent('_root__' + runtimeId)));
+
+    // 源码 plugin ID 只在开发副本详情里出现（`displayId`），用它确认注册表已对上。
+    await screen.findByText('mcpr-project-manager');
+    fireEvent.pointerDown(
+      screen.getByRole('button', { name: 'settings.ghosts.detail.moreActions' }),
+      { button: 0, ctrlKey: false },
+    );
+    fireEvent.click(screen.getByRole('menuitem', { name: 'settings.ghosts.uninstall' }));
+
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(runtimeId));
+    expect(remove).not.toHaveBeenCalledWith('_root__' + runtimeId);
   });
 
   it.each([

@@ -347,6 +347,22 @@ describe('MekaDevPluginManager', () => {
     expect(await manager.list()).toEqual([]);
   });
 
+  // 回归：通用插件页只看得见物理实例键（开发副本固定落 root：`_root__<runtimeId>`），
+  // 按该拼法移除时必须落到同一条登记，而不是报「未登记」。
+  it('接受物理实例键移除开发副本，并按 runtime ID 停监听与卸载', async () => {
+    const manager = new MekaDevPluginManager(deps);
+    const installed = await manager.install(
+      sourceDir,
+      (await manager.inspect(sourceDir)).packageSha256,
+    );
+    const runtimeId = installed.item.runtimeId;
+    await manager.remove(`_root__${runtimeId}`);
+
+    expect(deps.uninstallPackage).toHaveBeenCalledWith(runtimeId);
+    expect(await manager.list()).toEqual([]);
+    await expect(manager.remove(`_root__${runtimeId}`)).rejects.toMatchObject({ code: 'not-found' });
+  });
+
   it('移除前排空进行中的自动同步，避免卸载后被重新装回', async () => {
     const manager = new MekaDevPluginManager(deps);
     const installed = await manager.install(

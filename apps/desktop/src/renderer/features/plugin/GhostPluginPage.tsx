@@ -1713,7 +1713,9 @@ function LocalGhostPluginPage({
     if (!ok) return;
     try {
       if (selectedDevPlugin) {
-        await window.electronAPI.mekaDevPlugins.remove(selectedDetail.id);
+        // 开发注册表按 `runtimeId` 建索引，而 `selectedDetail.id` 是物理实例键
+        // (`_root__meka-dev-*`)，直接传会被判成「未登记」。
+        await window.electronAPI.mekaDevPlugins.remove(selectedDevPlugin.runtimeId);
         await refreshMarket();
       } else if (selectedMarketInstall) {
         await marketApi.uninstall(selectedMarketInstall.pluginId);

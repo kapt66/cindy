@@ -7314,3 +7314,38 @@ Codex/Claude/Pi 原生读 `AGENTS.md`/`CLAUDE.md`/`SKILL.md`，不看我们的 m
   Meka 归属身份，含反例与门禁）、`docs/dev-rules/meka-injection-layer.md` §5（写入方不变量：
   `workspace_kind='meka'` 的行必须同时带 project+role，bootstrap 硬校验）。
 
+### 6.68 2026-11-13 Meka 开发目录插件从详情页卸载恒报「开发插件 … 未登记」（已修）
+
+- **现象（用户原话）**：「我添加了本地插件，然后卸载的时候报错」，截图文案
+  `开发插件 _root__meka-dev-mcpr-project-m-541d7a2d 未登记`。现场（生产 profile
+  `CindyMeka`）`owners/459233d71ccd3e1a2a9b/cindy-brain/.meka-dev-plugins.json` 里该登记
+  **存在且合法**（`runtimeId=meka-dev-mcpr-project-m-541d7a2d`、`pluginId=mcpr-project-manager`），
+  开发副本也已落位 `cindy-brain/_ns/_root/meka-dev-mcpr-project-m-541d7a2d`。
+- **根因**：混用两种身份。渲染层 `toGhostPluginListItem.id` 自 namespace 隔离起就是**物理实例键**
+  （`installedGhostStoragePart` → `_root__<id>` / `_ns__<ns>__<id>`），而开发注册表按
+  **runtime ID**（`meka-dev-*`，等于 `manifest.id`）建索引。`GhostPluginPage.handleUninstall`
+  把 `selectedDetail.id`（物理键）直接交给 `meka-dev-plugins:remove`，`records.get()` 永远取不到
+  → 稳定抛 `not-found`。页面里其它开发副本查询早已按 `detail.ghostId` 取（第 956-962 行的注释
+  就是这么写的），只有这一处漏改；因为开发副本固定落 root，`_root__` 前缀必然存在，所以是
+  **每次都失败**，不是偶发。
+- **改动**：① 渲染层改传 `selectedDevPlugin.runtimeId`（与 dev 抽屉、打包/上传对话框同一口径）；
+  ② Host 侧 `MekaDevPluginManager.remove` 增加入口归一：`parsePluginStoragePart` 解析出 root 身份
+  （`_root__<runtimeId>`）时回落成 `runtimeId`，随后停监听／卸载／删登记全部使用**登记里的**
+  `runtimeId`（原实现把入参直接传给 `stopWatching`／`uninstallPackage`，只做查表归一仍会漏掉
+  watcher 退订）；其它形状仍 `not-found`。路由、manifest、批准状态、owner 校验与 `provisioning`
+  均未改。
+- **验证（实跑）**：`src/main/cindy-brain/__tests__/mekaDevPlugins.test.ts` **20/20**（新增
+  「接受物理实例键移除开发副本，并按 runtime ID 停监听与卸载」，含二次移除仍 `not-found`）；
+  `src/renderer/features/plugin/__tests__/GhostPluginPage.navigation.test.tsx` **83/83**
+  （新增「removes a development copy by its logical runtime id, not the physical instance key」：
+  真实 `GhostPluginPage` + ⋮ 菜单 → 卸载 → 断言收到 `meka-dev-*`，且不收到 `_root__meka-dev-*`）。
+- **未验证 / 风险**：① 未启动 Electron 实机点一次卸载（本会话不重启客户端）；② **存量不可移除状态
+  不回填**：生产 0.0.29 没有本次修复，用户现场的开发副本仍留下登记 + 已装目录 + 批准 receipt
+  三件产物，要清掉只能等含修复的构建，或退出应用后手工删除
+  `owners/<owner>/cindy-brain/.meka-dev-plugins.json` 的对应条目、
+  `cindy-brain/_ns/_root/meka-dev-mcpr-project-m-541d7a2d/`、
+  `ghost-install-state/_ns/_root/meka-dev-mcpr-project-m-541d7a2d.json`
+  （`plugin-instances.v2.json` 的对应行由下次登记/核对收敛）；本轮未替用户执行任何删除。
+- **规则落点**：`docs/dev-rules/plugin-security-and-authoring.md` §4.1（新登记：开发注册表按
+  runtime ID 定位，Host 移除入口必须同时接受 root 物理实例键，并按登记里的 runtime ID 执行）。
+
