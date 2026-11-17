@@ -1,3 +1,6 @@
+import { configureSqliteVecExtPath } from '../../sqliteVecLoader.js';
+import { configureUserDataDir } from '../../../userDataPath.js';
+import { configureMigrationRuntime } from '../../migrationRuntime.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -25,44 +28,14 @@ vi.mock('electron', () => ({
 }));
 
 const INIT_SQL = `
-${fs.readFileSync(path.resolve(__dirname, '../../../../../drizzle/0000_init.sql'), 'utf8')}
-ALTER TABLE sessions ADD COLUMN workspace_kind TEXT NOT NULL DEFAULT 'project';
-ALTER TABLE sessions ADD COLUMN meka_role TEXT;
-ALTER TABLE sessions ADD COLUMN meka_target_json TEXT;
-ALTER TABLE sessions ADD COLUMN meka_project_id TEXT;
-ALTER TABLE sessions ADD COLUMN meka_role_id TEXT;
-ALTER TABLE sessions ADD COLUMN is_formal INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE sessions ADD COLUMN formal_type TEXT;
-ALTER TABLE sessions ADD COLUMN formal_link TEXT;
-ALTER TABLE sessions ADD COLUMN formal_ref TEXT;
-ALTER TABLE sessions ADD COLUMN formal_content_json TEXT;
-ALTER TABLE sessions ADD COLUMN total_cost_amount REAL NOT NULL DEFAULT 0;
-ALTER TABLE sessions ADD COLUMN total_cost_currency TEXT;
-ALTER TABLE sessions ADD COLUMN total_cost_is_approximate INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE sessions ADD COLUMN plan_mode_enabled INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE sessions ADD COLUMN summary TEXT;
-ALTER TABLE sessions ADD COLUMN provider_id TEXT;
-ALTER TABLE sessions ADD COLUMN user_send_at INTEGER;
-ALTER TABLE sessions ADD COLUMN agent_kind TEXT NOT NULL DEFAULT 'cc';
-ALTER TABLE sessions ADD COLUMN orca_role TEXT;
-ALTER TABLE sessions ADD COLUMN parent_session_id TEXT;
-ALTER TABLE sessions ADD COLUMN forked_at_message_id TEXT;
-ALTER TABLE sessions ADD COLUMN worktree_path TEXT;
-ALTER TABLE sessions ADD COLUMN source TEXT NOT NULL DEFAULT 'desktop';
-ALTER TABLE sessions ADD COLUMN feishu_open_id TEXT;
-ALTER TABLE sessions ADD COLUMN feishu_bot_app_id TEXT;
-ALTER TABLE sessions ADD COLUMN im_bot_context_id TEXT;
-ALTER TABLE sessions ADD COLUMN im_user_id TEXT;
-ALTER TABLE sessions ADD COLUMN used_project_context INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE sessions ADD COLUMN codex_history_has_product_prompt INTEGER;
-ALTER TABLE sessions ADD COLUMN codex_plan_json TEXT;
-ALTER TABLE sessions ADD COLUMN extra_dirs TEXT NOT NULL DEFAULT '[]';
-ALTER TABLE sessions ADD COLUMN remote_host_id TEXT;
-ALTER TABLE sessions ADD COLUMN capability_snapshot_json TEXT;
-ALTER TABLE sessions ADD COLUMN active_turn_started_at INTEGER;
-ALTER TABLE sessions ADD COLUMN active_turn_pid INTEGER;
-ALTER TABLE sessions ADD COLUMN last_turn_ended_at INTEGER;
-CREATE TABLE IF NOT EXISTS embedding_jobs (
+CREATE TABLE migration_meta (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE migration_history (
+  seq INTEGER PRIMARY KEY,
+  file_name TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  applied_at INTEGER NOT NULL
+);
+CREATE TABLE embedding_jobs (
   rowid INTEGER PRIMARY KEY AUTOINCREMENT,
   source TEXT NOT NULL,
   source_id TEXT NOT NULL,
@@ -90,29 +63,13 @@ CREATE TABLE session_task_tags (
   tag_id TEXT NOT NULL,
   PRIMARY KEY (session_id, tag_id)
 );
-CREATE TABLE meka_projects (
+CREATE TABLE sessions (
   id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  path TEXT,
-  tags TEXT,
-  is_builtin INTEGER NOT NULL DEFAULT 0,
-  sort_order INTEGER NOT NULL DEFAULT 0,
-  created_at INTEGER,
-  updated_at INTEGER
-);
-CREATE TABLE meka_roles (
-  id TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL,
-  name TEXT NOT NULL,
-  display_name TEXT NOT NULL,
-  description TEXT,
-  tags TEXT,
-  file_path TEXT NOT NULL,
-  is_builtin INTEGER NOT NULL DEFAULT 0,
-  content_digest TEXT,
-  sort_order INTEGER NOT NULL DEFAULT 0,
-  created_at INTEGER,
-  updated_at INTEGER
+  status TEXT,
+  working_dir TEXT,
+  worktree_path TEXT,
+  source TEXT NOT NULL DEFAULT 'desktop',
+  remote_host_id TEXT
 );
 `;
 
@@ -142,8 +99,15 @@ describe('DbClient in-proc fallback', () => {
     const drizzleDir = path.join(userDataDir, 'drizzle');
     fs.mkdirSync(drizzleDir);
     fs.writeFileSync(path.join(drizzleDir, '0000_init.sql'), INIT_SQL, 'utf-8');
+    for (const fileName of ['0131_demonic_odin.sql', '0135_abnormal_dazzler.sql']) {
+      fs.copyFileSync(new URL(`../../../../../drizzle/${fileName}`, import.meta.url), path.join(drizzleDir, fileName));
+    }
     process.env.XDT_INPROC_TEST_USER_DATA = userDataDir;
     process.env.XDT_DB_INPROC = 'true';
+    configureUserDataDir(userDataDir);
+    configureMigrationRuntime({ drizzleDir, isPackaged: true });
+    // This fixture does not exercise vector search; use its isolated optional path.
+    configureSqliteVecExtPath(path.join(userDataDir, 'optional-vec0'));
     previousResourcesPath = process.resourcesPath;
     Object.defineProperty(process, 'resourcesPath', {
       configurable: true,
@@ -173,15 +137,8 @@ describe('DbClient in-proc fallback', () => {
     ).resolves.toEqual({ id: 1, name: 'alice' });
 
     await client.exec(
-      'INSERT INTO sessions (id, status, working_dir, worktree_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
-      [
-        'inproc-session',
-        'active',
-        userDataDir,
-        path.join(userDataDir, 'worktree'),
-        Date.now(),
-        Date.now(),
-      ],
+      'INSERT INTO sessions (id, status, working_dir, worktree_path) VALUES (?, ?, ?, ?)',
+      ['inproc-session', 'active', userDataDir, path.join(userDataDir, 'worktree')],
     );
     await expect(client.readLocalWorktreeReferences?.()).resolves.toEqual([
       expect.objectContaining({
@@ -191,10 +148,6 @@ describe('DbClient in-proc fallback', () => {
       }),
     ]);
 
-    for (const fileName of ['0131_demonic_odin.sql', '0135_abnormal_dazzler.sql']) {
-      const usageMigration = fs.readFileSync(new URL(`../../../../../drizzle/${fileName}`, import.meta.url), 'utf8');
-      for (const statement of usageMigration.split('--> statement-breakpoint').filter(s => s.trim())) await client.exec(statement);
-    }
     const identity = { ghostId: 'inproc-plugin', displayName: 'Test', revision: 'revision', sourceKind: 'manual' as const,
       stableKey: null, pluginId: null, organizationId: null, sourceKey: null, serverRoot: null, version: '1.0', releaseId: null };
     const bindUsage = { action: 'bind', identity, newId: 'inproc-subject', now: 1 } satisfies PluginUsageTransaction;

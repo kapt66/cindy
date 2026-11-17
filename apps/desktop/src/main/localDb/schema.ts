@@ -109,6 +109,7 @@ const SESSION_SOURCES = [
   'wechat',
   'dingtalk',
   'wecom',
+  'imessage',
   'scheduler',
   'learn',
   'review',
@@ -1017,6 +1018,16 @@ export const messages = sqliteTable(
   }),
 );
 
+export const mcpAppViewStates = sqliteTable('mcp_app_view_states', {
+  messageId: text('message_id').primaryKey().references(() => messages.id, { onDelete: 'cascade' }),
+  sessionId: text('session_id').notNull().references(() => sessions.id, { onDelete: 'cascade' }),
+  serverId: text('server_id').notNull(),
+  serverRevision: text('server_revision').notNull(),
+  pluginInstance: text('plugin_instance'),
+  stateJson: text('state_json').notNull(),
+  byteLength: integer('byte_length').notNull(),
+}, t => ({ bySession: index('idx_mcp_app_view_states_session').on(t.sessionId) }));
+
 /**
  * messages_fts 的稳定整数行号映射。
  *
@@ -1523,6 +1534,8 @@ export const schedules = sqliteTable(
       .notNull()
       .default('agent'),
     scriptConfig: text('script_config'),
+    /** JSON ScheduleWebhookTrigger；NULL = 未开启。签名密钥不进数据库。 */
+    webhookTrigger: text('webhook_trigger'),
     source: text('source').default('user'),
     projectConfigId: text('project_config_id'),
     /**
@@ -1788,6 +1801,8 @@ export const scheduleRuns = sqliteTable(
     resultText: text('result_text'),
     /** 前置检查一次执行的结构化 JSON 结果；NULL 表示本轮未配置/未执行检查。 */
     preRunHookResult: text('pre_run_hook_result'),
+    /** 本轮触发来源；NULL = 定时或手动。 */
+    triggerSource: text('trigger_source'),
     readAt: integer('read_at'),
     /**
      * In-flight 心跳时间戳（毫秒）——跨实例的"仍有活实例在跑"租约信号。
@@ -2269,7 +2284,7 @@ export const rightSidebarTabs = sqliteTable(
  * 覆盖写(队列空则删行),重启后打开会话时懒恢复为「暂停中的队列」。
  *
  * 设计要点:
- *   - payload 是 `AgentInputQueuedMessage[]` 的 JSON.stringify;读侧逐条做形状
+ *   - payload 是排队消息与可选 Main 停止元数据组成的 JSON 数组；读侧逐条做形状
  *     校验,坏行整体丢弃(尽力而为的恢复信号,不做跨版本迁移)。
  *   - 单行覆盖写而非逐条行:队列通常只有个位数条目,整体快照避免"逐条 CRUD 与
  *     内存态漂移"一族一致性问题;体量上限与超限降级在写入模块做。
@@ -2279,7 +2294,7 @@ export const agentInputQueueSnapshots = sqliteTable('agent_input_queue_snapshots
   sessionId: text('session_id')
     .primaryKey()
     .references((): AnySQLiteColumn => sessions.id, { onDelete: 'cascade' }),
-  /** AgentInputQueuedMessage[] 的 JSON 字符串。 */
+  /** 队列消息与可选 Main 停止元数据的 JSON 数组；元数据不是消息。 */
   payload: text('payload').notNull(),
   updatedAt: integer('updated_at').notNull(),
 });

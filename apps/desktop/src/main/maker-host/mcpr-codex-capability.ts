@@ -25,7 +25,7 @@ import {
   buildCodexGatewayBaseUrl,
   buildCodexProxySpawnArgs,
   CODEX_GATEWAY_ENV_KEY,
-} from './codex-gateway-config.js';
+} from './codex-gateway-config.desktop.js';
 import { openMcprTunnel } from './mcpr-tunnel.js';
 
 const log = createLogger('mcpr-codex-capability');

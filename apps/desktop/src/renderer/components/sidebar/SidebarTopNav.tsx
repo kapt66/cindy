@@ -24,13 +24,12 @@
  * (伙伴的 rail 入口由 CollapsedView 提供)。
  */
 
-// 图标集合(2026-10 第六轮同步复核):上游 `2ce5ab565e` 把「伙伴」并入侧栏第一层
-// (`features/bots/TeammatesSection`),`sidebarNavigationPrefs.ts` 里的 `bots` 条目连同
-// `SIDEBAR_NAVIGATION_ITEM_ICONS.bots` 一并删除,本文件也不再消费 `ArrowLeft`(它只服务
-// 旧的「伙伴 ↔ 返回任务」双态行)。Meka 的 `mekaRow` 仍需要 `BriefcaseBusiness`;
-// 两侧集合不同,取并集,勿整体取单侧(2026-09 上一轮同步曾因同一原因丢过 `Bot`,
-// 见 meka-whitelist-verification.md WL-2.1)。
-import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
+// 图标集合(WL-2 复核):上游已把「伙伴」并入侧栏第一层,`sidebarNavigationPrefs.ts`
+// 的 `bots` 条目连同 `SIDEBAR_NAVIGATION_ITEM_ICONS.bots` 一并删除;Meka 的 `mekaRow`
+// 仍需要 `BriefcaseBusiness`(rail 与行两处)。两侧集合不同,取并集 —— 2026-09 上一轮
+// 同步曾因同一原因丢过 `Bot`(见 meka-whitelist-verification.md WL-2)。
+// 上游本轮新增 `useLayoutEffect`(搜索行 sticky 的 clipPath 观察器)。
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   BriefcaseBusiness,
   CirclePlus,
@@ -49,6 +48,7 @@ import { AttentionDot, type DotTone } from '@/components/sidebar/AttentionDot';
 import { useAnyGhostUnread } from '@/cindy-brain/ghostUnreadStore';
 import { useGhostMainViews, type GhostMainViewItem } from '@/cindy-brain/ghostMainViews';
 import { useInstalledGhosts } from '@/cindy-brain/useInstalledGhosts';
+import { readPluginUiEntries, PluginUiSlotControls } from '@/cindy-brain/PluginUiContributions';
 import { useActiveMainView } from '@/hooks/useActiveMainView';
 import { SidebarInlineSearch } from '@/features/cc-agent/sidebar/SidebarInlineSearch';
 import { SidebarIconButton, SIDEBAR_RAIL_ICON_BUTTON_CLASS } from './SidebarIconButton';
@@ -377,7 +377,7 @@ export function SidebarRailNavigation({
   };
   const showSearch = entries.isVisible('search') || forceSearch || searchOpen;
   const tiles = entries.order.filter((id) => entries.isVisible(id) || (id === 'search' && showSearch));
-  // 「自动任务」不在偏好里时(被用户关掉)Meka 顶到图标列最前,避免它掉到列表末尾。
+  // [MEKA] 「自动任务」不在偏好里时(被用户关掉)Meka 顶到图标列最前,避免它掉到列表末尾。
   const mekaTileIndex = tiles.includes('automations') ? tiles.indexOf('automations') + 1 : 0;
   const renderTile = (id: SidebarNavigationEntryId): React.ReactNode => {
     const app = entries.appFor(id);
@@ -407,11 +407,14 @@ export function SidebarRailNavigation({
     );
   };
 
+  const pluginNavigation = readPluginUiEntries('sidebar.navigation');
+
   return (
     <>
       {tiles.slice(0, mekaTileIndex).map(renderTile)}
       {mekaEntry}
       {tiles.slice(mekaTileIndex).map(renderTile)}
+      {pluginNavigation.length > 0 && <PluginUiSlotControls entries={pluginNavigation} appearance="rail" />}
       <SidebarNavigationMoreMenu
         hiddenIds={entries.hidden}
         actions={actions}
@@ -482,7 +485,7 @@ export function SidebarTopNav({
   const showPinned = section !== 'scrollable' && section !== 'rail';
   const showScrollable = section !== 'pinned' && section !== 'rail';
   const pinSearch = section === 'scrollable' && search.query.trim().length > 0;
-  // Meka 是 Meka 私有产品线的一级产品区(WL-2.1):**常驻且可高亮**,不参与用户的
+  // Meka 是 Meka 私有产品线的一级产品区(WL-2):**常驻且可高亮**,不参与用户的
   // 侧栏自定义顺序 / 显隐 —— 它没有登记进 `sidebarNavigationPrefs` 的 id 联合,因此
   // 既不进「更多」也不会被用户关掉。位次在下面按「紧随自动任务之后」插入行序。
   const mekaRow = showScrollable ? (
@@ -503,6 +506,44 @@ export function SidebarTopNav({
       <span className="leading-none">{t('meka.manage')}</span>
     </button>
   ) : null;
+  const searchRowRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const row = searchRowRef.current;
+    const scroller = row?.parentElement;
+    if (!pinSearch || !row || !scroller) return;
+
+    // The sidebar and input are translucent. Clip scrolling content at the
+    // search row's bottom instead of painting an opaque rectangle over it.
+    const originalClips = new Map<HTMLElement, string>();
+    const resizeObserver = new ResizeObserver(() => updateClip());
+    const updateClip = () => {
+      const rowRect = row.getBoundingClientRect();
+      let beforeRow = true;
+      for (const sibling of scroller.children) {
+        if (sibling === row) { beforeRow = false; continue; }
+        if (!(sibling instanceof HTMLElement)) continue;
+        if (!originalClips.has(sibling)) {
+          originalClips.set(sibling, sibling.style.clipPath);
+          resizeObserver.observe(sibling);
+        }
+        const overlap = beforeRow && rowRect.top > scroller.getBoundingClientRect().top + 1
+          ? 0 : Math.max(0, rowRect.bottom - sibling.getBoundingClientRect().top);
+        sibling.style.clipPath = overlap > 0 ? `inset(${overlap}px 0 0)` : originalClips.get(sibling)!;
+      }
+    };
+    updateClip();
+    scroller.addEventListener('scroll', updateClip, { passive: true });
+    resizeObserver.observe(row);
+    resizeObserver.observe(scroller);
+    const mutationObserver = new MutationObserver(updateClip);
+    mutationObserver.observe(scroller, { childList: true });
+    return () => {
+      scroller.removeEventListener('scroll', updateClip);
+      resizeObserver.disconnect();
+      mutationObserver.disconnect();
+      for (const [element, clip] of originalClips) element.style.clipPath = clip;
+    };
+  }, [pinSearch, customizing]);
   // 其它 Feature 的 rail 过去只借这里补一个伙伴入口;伙伴并入侧栏后 rail 入口由
   // 任务侧栏的 CollapsedView 提供,这里不再渲染内容(2026-10-13 上游 2ce5ab565e)。
   if (section === 'rail') return <></>;
@@ -557,13 +598,11 @@ export function SidebarTopNav({
   const orderedIds = entries.order.filter((id) =>
     entries.isVisible(id) || (id === 'search' && showSearch),
   );
-  // 行序:用户偏好顺序(含插件主视图)之上插入**常驻**的 Meka 行(WL-2.1)。
+  // 行序:用户偏好顺序(含插件主视图)之上插入**常驻**的 Meka 行(WL-2)。
   // Meka 不占 `SidebarNavigationEntryId`,所以不进「更多」/ 自定义面板;它统一跟在
-  // 「自动任务」之后、「插件」之前(即旧版 automationsRow → mekaRow → pluginsRow 的
-  // 位次);该入口被用户隐藏时 Meka 顶到这一组最前,避免它掉到列表末尾。
+  // 「自动任务」之后(该入口被用户隐藏时顶到这一组最前,避免掉到列表末尾)。
   // 位次算在**槽位表**上:搜索行按同一张表切片,所以「整段渲染」与「搜索前后两段渲染」
-  // 共用同一份顺序,不需要再各自做下标补偿(2026-10 第六轮:上游把行序收敛成
-  // `renderRows(ids)` + `searchIndex`,Meka 只多一个非偏好槽位,不再替换该结构)。
+  // 共用同一份顺序,不需要再各自做下标补偿。
   const orderedSlots: SidebarNavigationSlot[] = [...orderedIds];
   orderedSlots.splice(
     orderedIds.includes('automations') ? orderedIds.indexOf('automations') + 1 : 0,
@@ -578,6 +617,8 @@ export function SidebarTopNav({
         : <Fragment key={slot}>{rowFor(slot)}</Fragment>,
     );
   const orderedNavigationRows = renderRows(orderedSlots);
+  const pluginNavigation = readPluginUiEntries('sidebar.navigation');
+  const pluginRows = pluginNavigation.length ? <PluginUiSlotControls entries={pluginNavigation} sessionId={null} appearance="navigation" /> : null;
   const customizeRow = showScrollable ? (
     <SidebarNavigationMoreMenu
       hiddenIds={entries.hidden}
@@ -625,6 +666,7 @@ export function SidebarTopNav({
         ) : !showSearch ? (
           <div className="flex flex-col gap-0.5 pr-3 pl-3">
             {orderedNavigationRows}
+            {pluginRows}
             {customizeRow}
           </div>
         ) : (
@@ -634,10 +676,13 @@ export function SidebarTopNav({
             )}
             <div
               className={cn(
-                'px-3',
+                // 上游把「不透明底色盖住滚动内容」换成 `searchRowRef` 的 clipPath
+                // 观察器（见上面的 useLayoutEffect），所以不再需要 bg-/pb- hack。
+                'shrink-0 px-3',
                 searchSlotIndex > 0 && '-mt-1.5',
-                pinSearch && 'sticky top-0 z-30 bg-[var(--cmd-palette-bg)] pb-2.5',
+                pinSearch && 'sticky top-0 z-30',
               )}
+              ref={searchRowRef}
             >
               {searchRow}
             </div>
@@ -645,6 +690,7 @@ export function SidebarTopNav({
                 results follow them instead of replacing them. */}
             <div className="-mt-1.5 flex flex-col gap-0.5 pr-3 pl-3">
               {rowsAfterSearch}
+              {pluginRows}
                 {customizeRow}
             </div>
           </>
@@ -688,6 +734,7 @@ export function SidebarTopNav({
           orderedNavigationRows
         ))}
       {showScrollable && !customizing && customizeRow}
+      {showScrollable && !customizing && pluginRows}
     </div>
   );
 }

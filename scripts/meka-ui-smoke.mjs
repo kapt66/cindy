@@ -382,6 +382,15 @@ const CHECKS = [
     name: 'MCPRouter「配置」可打开连接对话框（HTTPS 生产默认地址）',
     async run(ctx) {
       await ctx.goto('#/settings?tab=meka-assistant');
+      await ctx.goto('#/settings?tab=meka-assistant');
+      // 设置分区是 lazy 组件：先等面板与 MCPRouter 卡片真正渲染，再读按钮文案。
+      // （2026-11-17 第八轮同步：上游把设置分区改成 lazy + 卡片搜索锚点，缺等待会把
+      //  「已连接」误报成「找不到「配置」」。）
+      await ctx.session
+        .waitFor(`document.querySelector('#settings-search-target-meka-assistant-router') ? 1 : null`, {
+          label: 'MCPRouter 卡片渲染',
+        })
+        .catch(() => null);
       const state = await ctx.session.evaluate(`(() => {
         const card = document.querySelector('#settings-search-target-meka-assistant-router');
         const texts = [...(card?.querySelectorAll('button') ?? [])].map((b) => (b.textContent || '').trim());
@@ -424,6 +433,12 @@ const CHECKS = [
     name: 'MekaDesign「配置」可打开独立连接对话框',
     async run(ctx) {
       await ctx.goto('#/settings?tab=meka-assistant');
+      // 同 WL-1.2：lazy 分区 + 搜索锚点卡片，先等渲染再断言。
+      await ctx.session
+        .waitFor(`document.querySelector('#settings-search-target-meka-assistant-design') ? 1 : null`, {
+          label: 'MekaDesign 卡片渲染',
+        })
+        .catch(() => null);
       const state = await ctx.session.evaluate(`(() => {
         const card = document.querySelector('#settings-search-target-meka-assistant-design');
         const texts = [...(card?.querySelectorAll('button') ?? [])].map((b) => (b.textContent || '').trim());
@@ -460,7 +475,11 @@ const CHECKS = [
     name: '插件默认打开方式开关可切换（aria-checked 翻转并还原）',
     async run(ctx) {
       await ctx.goto('#/settings?tab=meka-assistant');
-      const sel = 'button[role=switch]';
+      // 上游的本区开关是 `[role=switch]`（不一定是 <button>）：按 role 定位，不绑标签名。
+      const sel = '[role=switch][aria-label*="插件界面"]';
+      await ctx.session.waitFor(`document.querySelector(${JSON.stringify(sel)}) ? 1 : null`, {
+        label: '插件打开方式开关渲染',
+      }).catch(() => null);
       const before = await ctx.session.evaluate(`document.querySelector(${JSON.stringify(sel)})?.getAttribute('aria-checked')`);
       if (before === null || before === undefined) return ctx.fail('面板里找不到插件打开方式开关（button[role=switch]）');
       const label = await ctx.session.evaluate(`document.querySelector(${JSON.stringify(sel)})?.getAttribute('aria-label')`);
@@ -579,7 +598,7 @@ const CHECKS = [
     async run(ctx) {
       await ctx.goto('#/cc-agent/new');
       const line = await ctx.session.waitFor(
-        `(() => { const m = (document.body.innerText || '').match(/(Global|CN|Dev) · [^\\n]*meka\\/main@[0-9a-f]{7,}/); return m ? m[0] : null; })()`,
+        `(() => { const m = (document.body.innerText || '').match(/(Global|CN|Dev) · [^\\n]*@[0-9a-f]{7,}/); return m ? m[0] : null; })()`,
         { label: '版本行（edition · 版本 · 分支@commit）' },
       );
       const head = gitShortHead();
@@ -616,10 +635,14 @@ const CHECKS = [
       );
       const clicked = await ctx.session.clickSelector(triggerSel);
       if (!clicked) return ctx.fail('模型选择器触发器不可点击');
-      await sleep(900);
-      const options = await ctx.session.evaluate(
-        `[...document.querySelectorAll('[role=option],[role=listbox] [role=menuitem], [data-testid*=model-option]')].filter((e) => (e.textContent || '').trim().length > 0).length`,
-      );
+      // 首次打开要等模型目录读取 + 可见性计算，900ms 在冷启动下不够（会误报 P0）。
+      let options = 0;
+      for (let attempt = 0; attempt < 12 && !options; attempt += 1) {
+        await sleep(500);
+        options = await ctx.session.evaluate(
+          `[...document.querySelectorAll('[role=option],[role=listbox] [role=menuitem], [data-testid*=model-option]')].filter((e) => (e.textContent || '').trim().length > 0).length`,
+        );
+      }
       await ctx.session.pressEscape();
       await sleep(300);
       if (!options) return ctx.fail(`模型下拉展开后没有任何选项（label=「${label}」）——即 P0 回归形态`);

@@ -24,7 +24,7 @@ import type { AddressInfo } from 'node:net';
 import { listenOnFetchSafePort } from '@cindy/anthropic-compat-proxy';
 
 const outbound = vi.hoisted(() => vi.fn<typeof fetch>());
-vi.mock('../outbound-fetch.js', () => ({ outboundFetch: outbound }));
+vi.mock('../outbound-fetch.desktop.js', () => ({ outboundFetch: outbound }));
 
 vi.mock('../../appCapabilities.js', () => ({
   getAppCapabilities: () => ({ canUseCindyGateway: true }),

@@ -8,7 +8,10 @@ const { getPluginRegistryAccess, serverApiFetch } = vi.hoisted(() => ({
 vi.mock('../../meka-settings/ipc', () => ({
   getMekaRouterService: () => ({ getPluginRegistryAccess }),
 }));
-vi.mock('../../serverApiClient', () => ({ serverApiFetch }));
+// 上游把 serverApiClient 改成工厂（`createServerApiClient`）+ 桌面适配器
+// `serverApiClient.desktop.ts` 装配出 `serverApiFetch`；生产入口 `meka-skills/api.ts`
+// 现在 import 适配器，所以这层 mock 也要挂在适配器上（否则会去拉真实 electron net）。
+vi.mock('../../serverApiClient.desktop', () => ({ serverApiFetch }));
 
 import { MekaSkillMarketApi } from '../api';
 

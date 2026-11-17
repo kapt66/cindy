@@ -39,10 +39,12 @@ describe('Plugin Market IPC error boundary', () => {
     expect(body).toContain('isPluginMarketPassthroughErrorCode(error.code)');
     expect(body).toContain("throwIpcError(error.code, 'Plugin market operation failed');");
     expect(body).toContain("throwIpcError('INTERNAL', 'Plugin market operation failed');");
-    // The merged client also registers the Meka market channel. Every
-    // registration must stay behind the same structured error boundary;
-    // the union currently has twenty call sites (upstream fourteen + Meka six).
-    expect(registerSource.match(/return invokePluginMarket\(/g)?.length).toBe(20);
+    // The merged client registers the Meka market channel on top of upstream's
+    // operations. Every registration must stay behind the same structured error
+    // boundary; the union currently has twenty-three call sites
+    // (upstream seventeen — fourteen operations + three catalog/query/recommendation
+    // entry points — plus Meka six).
+    expect(registerSource.match(/return invokePluginMarket\(/g)?.length).toBe(23);
   });
 
   it('validates local icon keys with the same reserved-prefix contract as the service', () => {

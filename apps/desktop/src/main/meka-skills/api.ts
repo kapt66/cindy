@@ -3,7 +3,9 @@ import type {
   MekaSkillReleaseSummary,
 } from '../../shared/mekaSkillMarket.js';
 import { getMekaRouterService } from '../meka-settings/ipc.js';
-import { serverApiFetch } from '../serverApiClient.js';
+// 上游把 serverApiClient 改成工厂（`createServerApiClient`），桌面侧由
+// `serverApiClient.desktop.ts` 装配出模块级 `serverApiFetch`；这里跟着走适配器入口。
+import { serverApiFetch } from '../serverApiClient.desktop.js';
 
 interface DeliveryAccess {
   baseUrl: string;

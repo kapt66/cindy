@@ -21,7 +21,7 @@ import { getRemoteOauthContext, notifyOauthCardClosed } from '../plugin-oauth/co
 import type { OauthCardBinding } from '../plugin-oauth/transactions.js';
 import { installedGhostStoragePart } from '../../shared/pluginIdentity.js';
 import { resolvePreferredSystemLocale } from '../../shared/locale.js';
-import { t } from '../i18n.js';
+import { t } from '../i18n.desktop.js';
 import { mobilePluginUsage } from './mobilePluginUsage.js';
 import { readGhostReadmeFromDir } from './ghostReadme.js';
 import type { GhostReadmeContent } from '@cindy/plugin-protocol';
@@ -711,7 +711,7 @@ export class MobilePluginPages {
       collection: {
         id: PLUGIN_COLLECTION,
         resourceKind: 'plugin',
-        title: { fallback: 'Plugins', translations: { 'zh-CN': '插件' } },
+        title: { fallback: 'Plugins', translations: { 'zh-CN': '插件', 'zh-TW': '插件', ja: 'プラグイン', ko: '플러그인', es: 'Complementos', fr: 'Plugins', de: 'Plugins', 'pt-PT': 'Plugins', 'pt-BR': 'Plugins', 'zh-Hant-x-lzh': '法器', 'zh-Hans-x-lzh': '法器' } },
         icon: { name: 'puzzle', fallbackText: 'P' },
         ...(this.deps.management
           ? { actions: [
@@ -859,7 +859,7 @@ export class MobilePluginPages {
                   })) ?? [],
                 permissions,
                 details: detailFacts,
-                tasks: ghost.manifest.showTaskPreferences !== false && Boolean(ghost.manifest.agent?.tasks || ghost.manifest.agent?.errand),
+                tasks: ghost.manifest.showTaskPreferences !== false && Boolean(ghost.manifest.agent?.tasks || ghost.manifest.agent?.errand || ghost.manifest.workspace),
                 // Content is fetched on demand with PLUGIN_README_ACTION; older phones ignore the flag.
                 ...(ghost.manifest.readme ? { readme: true } : {}),
                 mobile: parsePluginMobileDeclaration(ghost.manifest.mobile) !== null,
@@ -905,7 +905,7 @@ export class MobilePluginPages {
           if (
             !settings ||
             !ghost.enabled ||
-            !(ghost.manifest.agent?.tasks || ghost.manifest.agent?.errand)
+            !(ghost.manifest.agent?.tasks || ghost.manifest.agent?.errand || ghost.manifest.workspace)
           )
             return fail();
           const revision = this.deps.revision(ghost),

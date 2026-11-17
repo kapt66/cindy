@@ -50,6 +50,13 @@ override 语义见 [`configuration-and-overrides.md`](configuration-and-override
 > `main/log-upload/{logSink,uploadRunner,index}.ts` 及其测试。`config/log-upload.json`
 > **不参与本仓打包**（缺它不是失败条件），也没有 `CINDY_REQUIRE_LOG_UPLOAD_CONFIG` 这类配置前置。
 
+远程卡顿诊断新增精确来源 `device-link:ipc-diagnostics`、
+`device-link:execution-diagnostics`、`device-link-transfer`，仅含固定操作类别、短请求标识、
+计数、字节数和时长；其子 scope 继续默认拒绝。`device-link diagnostic` 将较大的现场拆成
+低于 2,000 字符的 JSON 记录，用 `instance + event + part` 关联，避免单条截断丢掉队头证据。
+采样省略数由 `suppressed` 明示；总量裁剪仍遵守现有上限，不放宽来源、记录边界或脱敏规则。
+新增诊断须验证默认 INFO → 正式 writer → collectLogs 后的内容，不能只断言 logger 被调用。
+
 ## 1. 三条不变量
 
 这套东西的正确性依赖三条不变量。破坏任一条的后果都不是「功能不好用」，而是隐私事故或崩溃
@@ -224,6 +231,12 @@ proxy 根下的记录**（双闸）。同一文件里还有 `maker` 源的日志
 > `CINDY_REQUIRE_LOG_UPLOAD_CONFIG` 在 Meka 上不存在也不需要（上游仓外发布流程的约定不适用于本仓）。
 > 历史与移除面见 §4.1；本地口径见 §1 与 [`performance-tracing.md`](performance-tracing.md)。
 
+上传编号统一采用 `CN-XXXX-XXXX` / `GLOBAL-XXXX-XXXX`，内部 Dev 构建使用
+`DEV-XXXX-XXXX`。前缀来自当前构建区域，随机部分仍保留 8 位；前缀只保证不同区域的
+新编号不重号，同一区域内仍是随机编号，不承诺严格全局唯一。用户看到和复制的编号、
+SLS `__tags__.uploadCode` 与每条记录的 `uploadCode` 使用同一个完整值。历史无前缀
+`XXXX-XXXX` 编号继续被格式校验器接受，既有日志不改写。
+
 目标 = 日志服务的 project + logstore + 服务区域接入域名，**构建期注入、运行期只读**。
 
 链路（与 `config/endpoint.dev.json` / `release-regions.json` 同款约定）：
@@ -295,6 +308,16 @@ main/log-upload/logUploadTarget.ts         ← 解析 + 区域交叉校验;不�
   `collectRuntime` / `mainLogReader` / `agentLogReader` / `sourceAllowlist` / `limits` / `types` —— 因为
   「报告问题」流程（`main/github-issue/**`）与 `maker-host/pi-package-diagnostic` 仍在用它们的脱敏与
   采集能力；`shared/logUpload.ts` 只保留 `LogUploadReason` 类型（采集原因标签）。
+- **唯一窄例外（2026-11-17 第八轮）**：`main/log-upload/crashTriggers.ts` 以**极窄形态**保留 —— **只有**
+  `isFatalCrashReason()`。上游本轮新增的 `main/crash-diagnosis.ts` 是**纯本地**崩溃诊断
+  （`createCrashDiagnosisService` / `initCrashDiagnosisService`：启动后把「上次异常退出」做成可解释的
+  提示 → 打开本地日志摘要；**无网络、无上报目标、无补传**），它需要这个判据。同模块的补传专用函数
+  （`shouldBackfillForReportKind` / `crashAtFromMarker` / `selectBackfillGrouping`）与待补传标记
+  **不得**随这次恢复加回；`bootstrap-electron.ts` 只接 `initCrashDiagnosisService()`。
+- **区域前缀编号不接（2026-11-17）**：上游把上传编号改造成带区域前缀的
+  `formatUploadCode(raw, region)` / `isFormattedUploadCode`。Meka 的**本地**性能报告编号仍是
+  无前缀的 `generateTraceReportId()`（`XXXX-XXXX`），`performance-trace/{index,retention}.ts` 是这条
+  改造的诱饵入口 —— **不要**按前缀语义改本地 ID、也不要让 `retention.ts` 识别前缀目录。
 - **结论**：`config/log-upload.json` 在 Meka 上**既不需要、也不会被读取**（本仓 §4 的上游口径仅作背景，
   供将来若要重新启用时参考）；`cindy-meka-cicd` 里那条「桌面打包前解析该文件」的闸门已随之撤掉。
 

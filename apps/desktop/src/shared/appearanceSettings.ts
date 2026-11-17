@@ -1,5 +1,8 @@
+import { APP_ICONS, isAppIcon, type AppIcon } from '@cindy/maker-shared/app-icons';
 import { DEFAULT_FONT_SIZES } from './generated/appearance-tokens';
 import { normalizePluginAppearanceSettings, type PluginAppearanceSettingsFields } from './pluginAppearance';
+import type { AppearanceFontResource } from './pluginAppearance';
+import type { DownloadProgress } from './downloadProgress';
 
 /**
  * Desktop appearance preferences shared by main, preload and renderer.
@@ -9,6 +12,9 @@ import { normalizePluginAppearanceSettings, type PluginAppearanceSettingsFields 
  */
 
 export interface AppearanceOverrides extends PluginAppearanceSettingsFields {
+  density?: number;
+  motion?: number;
+  terminalFontResource?: AppearanceFontResource;
   uiFamily?: string;
   codeFamily?: string;
   uiSize?: number;
@@ -20,10 +26,16 @@ export interface AppearanceOverrides extends PluginAppearanceSettingsFields {
   wallpaperOverlay?: number;
   /** null removes the explicit visibility override. */
   wallpaperVisibility?: number | null;
+  /** Explicit desktop transparency; absent/null means opaque, never inherit artwork. */
+  desktopVisibility?: number | null;
   /** Blur radius in CSS pixels; null removes the override (default: off). */
   wallpaperBlur?: number | null;
   wallpaperMotion?: WallpaperMotion;
+  appIcon?: AppIcon;
 }
+
+/** macOS Dock icon choices; the list and artwork are shared with Mobile. */
+export { APP_ICONS, isAppIcon, type AppIcon };
 
 export type WallpaperMotion = 'static' | 'dynamic';
 
@@ -34,11 +46,19 @@ export const WALLPAPER_DOWNLOAD_PROGRESS_CHANNEL =
 export interface WallpaperDownloadProgress {
   wallpaperId: WallpaperId;
   kind: 'image' | 'video';
+  /** Raw bytes of the current attempt; the tile bar draws this. */
   loaded: number;
   total: number;
+  /** Standard phase (retrying and why, completed) for assistive text. */
+  download?: DownloadProgress;
 }
 
 export interface AppearanceSettings extends PluginAppearanceSettingsFields {
+  /** Read-only projection from the Host override owner, never a writable field. */
+  customizedKeys?: readonly string[];
+  density: number;
+  motion: number;
+  terminalFontResource?: AppearanceFontResource;
   uiFamily: string;
   codeFamily: string;
   uiSize: number;
@@ -50,8 +70,11 @@ export interface AppearanceSettings extends PluginAppearanceSettingsFields {
   wallpaperOverlay: number;
   /** Absent for legacy/default preferences; derive visibility from the theme's old veil. */
   wallpaperVisibility?: number | null;
+  /** Explicit desktop transparency; absent/null means opaque, never inherit artwork. */
+  desktopVisibility?: number | null;
   wallpaperBlur?: number | null;
   wallpaperMotion: WallpaperMotion;
+  appIcon: AppIcon;
   /** Read-only, host-owned media reference; never accepted by set-patch. */
   customWallpaperUrl?: string;
   customWallpaperFallbackUrl?: string;
@@ -62,6 +85,8 @@ export const DEFAULT_TERMINAL_FONT_FAMILY =
   '"SF Mono", Menlo, Monaco, "Cascadia Code", "Courier New", monospace';
 
 export const DEFAULT_APPEARANCE_SETTINGS: AppearanceSettings = {
+  density: 1,
+  motion: 1,
   uiFamily: '',
   codeFamily: '',
   uiSize: DEFAULT_FONT_SIZES.uiSize,
@@ -72,6 +97,7 @@ export const DEFAULT_APPEARANCE_SETTINGS: AppearanceSettings = {
   wallpaperId: 'none',
   wallpaperOverlay: 0.2,
   wallpaperMotion: 'static',
+  appIcon: 'default',
   customWallpaperUrl: '',
 };
 
@@ -153,6 +179,16 @@ export function getWallpaperVisibility(
     : (100 - getWallpaperVeil(settings.wallpaperOverlay, isDark)) / 100;
 }
 
+/** Reuse the control, but never interpret a legacy artwork preference as desktop opt-in. */
+export function getBackgroundVisibility(
+  settings: Pick<AppearanceSettings, 'wallpaperId' | 'wallpaperOverlay' | 'wallpaperVisibility' | 'desktopVisibility'>,
+  isDark: boolean,
+): number {
+  return settings.wallpaperId === 'none'
+    ? clampAppearanceWallpaperVisibility(settings.desktopVisibility ?? 0)
+    : getWallpaperVisibility(settings, isDark);
+}
+
 export function clampAppearanceWallpaperOverlay(
   value: number,
   fallback = DEFAULT_APPEARANCE_SETTINGS.wallpaperOverlay,
@@ -221,6 +257,12 @@ export function normalizeAppearanceSettings(raw: unknown): AppearanceSettings {
   const value = raw as Record<string, unknown>;
   return {
     ...normalizePluginAppearanceSettings(value),
+    ...(Array.isArray(value.customizedKeys) && value.customizedKeys.length <= 128 && value.customizedKeys.every(key => typeof key === 'string')
+      ? { customizedKeys: value.customizedKeys as string[] } : {}),
+    density: typeof value.density === 'number' && Number.isFinite(value.density) ? Math.min(1.25, Math.max(0.75, value.density)) : 1,
+    motion: typeof value.motion === 'number' && Number.isFinite(value.motion) ? Math.min(2, Math.max(0, value.motion)) : 1,
+    ...(value.terminalFontResource ? { terminalFontResource: normalizePluginAppearanceSettings({ codeFontResource: value.terminalFontResource }).codeFontResource } : {}),
+    ...(normalizeCustomWallpaperUrl(value.customWallpaperFallbackUrl) ? { customWallpaperFallbackUrl: normalizeCustomWallpaperUrl(value.customWallpaperFallbackUrl) } : {}),
     uiFamily: normalizeFamily(value.uiFamily),
     codeFamily: normalizeFamily(value.codeFamily),
     terminalFamily: normalizeFamily(value.terminalFamily),
@@ -246,15 +288,17 @@ export function normalizeAppearanceSettings(raw: unknown): AppearanceSettings {
         ? clampAppearanceWallpaperOverlay(value.wallpaperOverlay)
         : DEFAULT_APPEARANCE_SETTINGS.wallpaperOverlay,
     wallpaperMotion: value.wallpaperMotion === 'dynamic' ? 'dynamic' : 'static',
+    appIcon: isAppIcon(value.appIcon) ? value.appIcon : DEFAULT_APPEARANCE_SETTINGS.appIcon,
     ...(typeof value.wallpaperBlur === 'number' && Number.isFinite(value.wallpaperBlur)
       ? { wallpaperBlur: clampAppearanceWallpaperBlur(value.wallpaperBlur) }
       : {}),
     ...(typeof value.wallpaperVisibility === 'number' && Number.isFinite(value.wallpaperVisibility)
       ? { wallpaperVisibility: clampAppearanceWallpaperVisibility(value.wallpaperVisibility) }
       : {}),
+    ...(typeof value.desktopVisibility === 'number' && Number.isFinite(value.desktopVisibility)
+      ? { desktopVisibility: clampAppearanceWallpaperVisibility(value.desktopVisibility) }
+      : {}),
     customWallpaperUrl: normalizeCustomWallpaperUrl(value.customWallpaperUrl),
-    ...(normalizeCustomWallpaperUrl(value.customWallpaperFallbackUrl)
-      ? { customWallpaperFallbackUrl: normalizeCustomWallpaperUrl(value.customWallpaperFallbackUrl) } : {}),
   };
 }
 

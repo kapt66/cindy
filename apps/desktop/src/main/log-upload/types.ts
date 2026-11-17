@@ -63,3 +63,4 @@ export interface CollectResult {
    */
   coveredAnchors: number[];
 }
+

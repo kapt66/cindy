@@ -55,7 +55,7 @@
     纯粹的编号占位，用来保持与已发布 Meka 链的序号一致。
   它们必须原样保留：序号连续是对已升级用户的 `migration_history` 承诺，删掉或换号会让存量
   Meka 安装的迁移历史对不上。
-  **编号现状（2026-11-06 第七轮上游同步后；本轮前已发布 `0000`–`0131`）**：历史上看，第三轮同步**之前**的
+  **编号现状（2026-11-17 第八轮上游同步后；本轮前已发布 `0000`–`0131`）**：历史上看，第三轮同步**之前**的
   Meka 已发布谱系是 `0000`–`0112`（其中 `0110`–`0112` 是 Meka 自有增量），第三轮同步把上游 `0110`–`0114` 顺移追加为 Meka 的 **`0113`–`0117`**
   （`0113_abandoned_scarlet_witch`、`0114_messy_newton_destine`、`0115_backfill_task_tag_order`、
   `0116_grey_cannonball`、`0117_shared_task_events`），第四轮把上游新增的
@@ -103,19 +103,36 @@
   `DbClient.inproc`、`chatCacheTx`、`plugin-usage/service`）已全部改到 Meka 号；
   `botGroupTaskPostSnapshot` / `autoReviewProjection` / `pluginReviewSnapshotFreshness` 实测**本就是** Meka 号，未改。
   逐条证据见 `docs/migrations/2026-11-06-origin-main-to-meka-main.md` §2.1。
-  **因此「已发布（值得冻结）的 Meka 编号」在第七轮后是 `0000`–`0131`（132 条），本轮新增到 `0150`。**
+  **第八轮（2026-11-17）**：上游本轮新增 `0148_schedule_webhook_trigger` / `0149_damp_wind_dancer`
+  **2 条**，顺移追加为 Meka 的 **`0151` / `0152`**（+3，与第三～七轮同一偏移；后缀不变）。
+  偏移用 **blob 相等**证明（上游 `0145`≡Meka `0148`、`0146`≡`0149`、`0147`≡`0150`）。
+  SQL 与 companion **逐字节取自上游**（`0151_schedule_webhook_trigger.sql` +
+  `scripts/0151_schedule_webhook_trigger.ts`；上游 `0149` **无 companion**，未凭空补造）。
+  本仓已占用的 Meka `0148`/`0149` 与上游原号撞号，只有 2 份 `meta/0NNN_snapshot.json` 产生 `AA`，
+  按 Meka 已发布内容取 `:2:`（实测与合并前 `HEAD` 逐字节相同），上游内容改写进新号 `0151`/`0152`。
+  新 snapshot = 上游同内容 + **Meka delta（每份恰 15 项，与第七轮同一组表/列/索引/外键）**；
+  变换用三重对照验证（上游 `0145`→Meka `0148`、`0146`→`0149`、`0147`→`0150` 全部逐字节相同），
+  `0151.prevId` = `0150.id`、`0152.prevId` = `0151.id`，链自然接上。合并态的
+  `meta/_journal.json` 是**无效中间态**（153 条但 idx `148`/`149` 各出现两次），已重建为
+  **153 条、idx `0..152` 连续无重复**，既有 `0..150` 段逐字节取自 `HEAD`。
+  **对象碰撞核对**：`schedules.webhook_trigger`、`schedule_runs.trigger_source`、`mcp_app_view_states`
+  在 Meka 已发布 schema 与全部历史 SQL/companion 中**零命中**，两条新 migration 全文**无 `DROP`**
+  ⇒ 不需要像第七轮 `0139` 那样为 Meka companion 创建的对象打补丁。
+  逐条证据见 `docs/migrations/2026-11-17-origin-main-to-meka-main.md` §2.1。
+  **因此「已发布（值得冻结）的 Meka 编号」在第七轮后是 `0000`–`0131`（132 条），
+  第七轮新增到 `0150`，第八轮新增到 `0152`。**
   更早几轮同步落的是 `0096`–`0107`；处理方式同源，见
   `docs/migrations/2026-10-08-origin-main-to-meka-main.md`、
   `docs/migrations/2026-09-25-origin-main-to-meka-main.md` §4 与
   `docs/migrations/2026-09-origin-main-to-meka-main.md` 的 D4。
   这段编号不在 `migration-baseline.json` 的 SHA256 清单里（该清单只覆盖迁仓前的
   `0000`–`0079`，实测 80 条 SQL + 23 条脚本），由上面第 3 段的 **Git 基线冻结** 保护。
-  `db:validate` 第 6 步报出的 canonical 基线条数是**动态值**，随每次追加而变化：第七轮实测为
-  **固定 SHA256 基线 80 条 SQL + 23 条 runtime script、canonical 基线冻结 132 条 SQL + 47 条 runtime script**
-  （`132` = 第六轮结束时的 `0000`–`0131`，本轮新增的 `0132`–`0150` 不在冻结集合内；
-  第六轮该值是 `127` SQL + `45` script，第五轮是 `123` SQL + `44` script）。
-  同一次 `db:validate` 的 6 步实测（第七轮）：`151 sql / seq 0000..0150`、`151 snapshot 与 journal 对齐且
-  `id`/`prevId` 链连续`、`drizzle-kit check` 无 drift、**52 个 companion 全 CommonJS**。
+  `db:validate` 第 6 步报出的 canonical 基线条数是**动态值**，随每次追加而变化：第八轮实测为
+  **固定 SHA256 基线 80 条 SQL + 23 条 runtime script、canonical 基线冻结 151 条 SQL + 52 条 runtime script**
+  （`151` = 第七轮结束时的 `0000`–`0150`，本轮新增的 `0151`–`0152` 不在冻结集合内；
+  第七轮该值是 `132` SQL + `47` script，第六轮 `127` SQL + `45` script）。
+  同一次 `db:validate` 的 6 步实测（第八轮）：`153 sql / seq 0000..0152`、`153 snapshot 与 journal 对齐且
+  `id`/`prevId` 链连续`、`drizzle-kit check` 无 drift、**53 个 companion 全 CommonJS**。
   该数字随每轮同步变化，改动 migration 时**以命令实际输出为准，不要把这里的数字当断言**。
 - 生成 migration 前先基于最新 canonical 产品分支：Cindy Meka 使用 `meka/main`，上游
   checkout 使用 `origin/main`。同步上游时还要显式检查 `origin/main` 的新编号是否与
@@ -247,6 +264,20 @@ WAL 或聊天数据。生产入口、发布中断与竞争回归见 `schemaMigra
   worker、migration runner、漂移修复都经由 `createBetterSqliteDatabase` /
   `createWorkerDatabase` 注册。分词规格冻结在 `cjkSeg.ts`（只收
   `\p{Script=Han}`）；改这个函数必须配新的重建 migration。
+
+### 启动时的依赖就绪
+
+认证可用不代表 `DbClient` 已接管。主窗常驻角标与项目自动化通知桥跟随
+`LocalDbGate` 的账号代次就绪状态挂载／查询；自动化 IPC 提前注册，项目加载器和目标
+控制器尚未可用时分别等待 scheduler 和 Goal 的 30 秒 readiness 信号，等待期间切账号的请求拒绝继续。
+自定义 MCP 的首轮读取在无 DB 时延后，由已有 account-provider readiness 流程补刷。
+
+历史插件卡片的改名修复在 `localDb.onReady` 取得当前 owner 的 client 后等待完成，
+再放行历史读取；成功写入才记录完成日志。更新仅命中旧 id、可重复执行，失败进入已有
+ensure-ready 重试流程，不凭插件播种完成或之后没有警告推断数据已迁移。
+保存点清理随已有 worktree maintenance 就绪点执行，避免启动时查询失败后整轮丢失。
+实现见 `bootstrap-electron.ts`、`cindy-brain/cardStoreDb.ts`；回归见
+`cardStoreDb.test.ts`、`scheduleReadiness.test.ts`、`AppWindowSync.test.tsx`。
 
 ## SQLite 语义避坑清单
 

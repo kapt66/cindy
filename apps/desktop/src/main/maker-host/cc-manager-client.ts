@@ -60,7 +60,7 @@ import {
 import type { RemoteHost } from '@cindy/maker-remote-ssh';
 
 import { createLogger } from '../logger.js';
-import { drainPersistQueue } from '../messagePersistBroadcaster.js';
+import { drainPersistQueue } from '../messagePersistBroadcaster.desktop.js';
 import { recordRemoteTransportEvent } from './remoteTransportRegistry.js';
 
 const log = createLogger('cc-manager-client');

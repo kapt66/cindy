@@ -28,18 +28,20 @@ export function OpenLogsRow({ presentation = 'settings' }: LogSupportRowProps) {
   };
 
   return (
-    // Preserve AboutSection's existing 18px row gutter; dialogs supply their own panel padding.
+    // Settings rows use the shared px-4 py-4 gutter (DESIGN.md §4); dialogs supply their own panel padding.
     <div
       className={cn(
         'flex justify-between gap-3',
-        inDialog ? 'items-start' : 'items-center px-[18px] py-4',
+        inDialog ? 'items-start' : 'items-center px-4 py-4',
       )}
     >
       <div className="flex min-w-0 flex-col gap-1">
         <span
           className={cn(
             'text-13',
-            inDialog ? 'text-[var(--confirm-title)]' : 'text-[var(--settings-section-sublabel)]',
+            inDialog
+              ? 'text-[var(--confirm-title)]'
+              : 'font-medium text-[var(--settings-section-sublabel)]',
           )}
         >
           {t('settings.about.logsDirLabel')}

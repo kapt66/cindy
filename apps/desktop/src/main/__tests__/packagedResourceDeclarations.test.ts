@@ -163,6 +163,20 @@ const NON_EXTRA_RESOURCE_ROOTS = new Map<string, string>([
     '..',
     'app-icon.ts 在 macOS packaged 下用 resourcesPath/../.. 指向 .app bundle 本体交给 app.getFileIcon；它不是 resources 子项,也不应被 extraResources 声明。',
   ],
+  // ── Meka 个人版构建（personal build）产物 ──────────────────────────────────
+  // 两者都由 src/cindy-make 的个人版构建流水线写进 `apps/desktop/resources/`，
+  // 运行期用 `app.getAppPath()/resources/...` 读取；它们**不是** extraResource 条目
+  // （普通发布包里根本不存在，声明它反而会在公开包留下空目录/无来源资产）。
+  // 登记依据：docs/dev-rules/advanced/personal-build.md §（registry 落 personal-plugins、
+  // personal-native.json 记录 SDK/能力/工件哈希）。
+  [
+    'personal-plugins',
+    '个人版构建把注册的本地插件写进 resources/personal-plugins（含内容哈希索引与来源），由个人版流水线生成、只在该构建里存在；普通包与源码树都没有它，故不是 extraResource 声明项。读点：cindy-brain/index.ts 的 applyPersonalPluginUpdates。',
+  ],
+  [
+    'personal-native.json',
+    '个人版 macOS 运行时的原生能力清单（版本 2：SDK / 能力状态 / 工件哈希），由个人版构建写入 resources/；packaged 后用于确认输入 helper 被封在稳定签名壳里。它不是 extraResource 声明项。读点：remote-desktop/inputHost.ts 的 macOS 分支（读不到时按“普通源码 checkout”继续）。',
+  ],
 ]);
 
 /**

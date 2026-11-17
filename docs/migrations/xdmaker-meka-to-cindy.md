@@ -7113,6 +7113,116 @@ Codex/Claude/Pi 原生读 `AGENTS.md`/`CLAUDE.md`/`SKILL.md`，不看我们的 m
   `meka-session-smoke.mjs` 战斗角色硬编码、三个上游段头的 hover 规则内联副本 ——
   逐条见本期报告 §6.4。
 
+### 11.38 2026-11-17 第八轮上游同步（`origin/main` → `meka/main`）
+
+> 本条是**新条目**，不改写任何带日期的历史原句。逐组解决结论、验证实跑与「未验证 + 原因」登记写在
+> [`2026-11-17-origin-main-to-meka-main.md`](./2026-11-17-origin-main-to-meka-main.md)。
+
+- **基线**：来源 `origin/main` = `e8b5e2fd965c70c30959fca3f1b3449b299ae61a`（上游独有 **5047** 提交 /
+  **8280** 文件 / `+972067 −201117`，约 11 天）；目标 `meka/main` 合并前 `74dd61d10f`（本轮前真实增量
+  **212** 提交 / 1100 文件）；merge-base `b69985e79b`（= **第七轮登记的上游端点**，第三～七轮裁决继续有效）。
+  Git 冲突 **139**（130 `UU` + 2 `AA` + 6 `DU` + 1 `UD`），按 9 个并行能力组解决（数据库谱系、插件基座/面板/市场、
+  maker-ipc/Orca、maker-core/Pi/host、UI、身份/构建/更新/脚本、i18n、治理文档、WL-26 日志面）；
+  另有 1 个未分组 `UD`（`botGroupTaskPostSnapshot.test.ts`）按上游接受删除。
+- **本轮主导上游改动（非穷举）**：`maker-ipc/{modelRouteAdmission,sessionRuntimeSelectionApply,sessionOptionsReconciler}`、
+  `mcp-integrations/{codexEnvironment,piEnvironment}.ts` 与 `serverApiClient.ts` 三处**工厂化重构**
+  （模块级函数改为 `createXxx(ports)` + `*.desktop.ts` 适配器）、`crash-diagnosis`（纯本地崩溃诊断）、
+  `maker-ipc/sessionHandoffIpc` + `mcp-integrations/sessionHandoffRemote`（跨端会话交接新链路）、
+  `packages/agent-net-core`（可靠 UDP 协议层 + 预编译 wasm）、`startup-diagnostics`（启动尸检）、
+  Orca auto-bridge 收敛为 `(lead, message, workerId, report?, reportClientId?)`、上游新增
+  `0148`/`0149` 两条 migration、上游 `activity`/`extensions` 侧插件基座与市场继续演进。
+- **D4 顺移追加（数据库）**：已发布谱系 `0000`–`0150` **零改动**（2 个 `AA` snapshot 取 Meka 侧，实测与合并前
+  `HEAD` 逐字节相同）；上游 `0148_schedule_webhook_trigger` / `0149_damp_wind_dancer` 落为 Meka
+  **`0151` / `0152`**（+3，与第三～七轮同一偏移；后缀不变），SQL 与 companion 逐字节取自上游
+  （上游 `0149` 无 companion，未凭空补造）。偏移用 **blob 相等**证明（上游 `0145/0146/0147` ≡ Meka `0148/0149/0150`）。
+  新 snapshot = 上游同内容 + **Meka delta（每份恰 15 项）**，变换用三重对照验证；`prevId` 链自然接上；
+  `meta/_journal.json` 重建为 **153 条、idx `0..152` 连续无重复**（合并自动结果是 153 条但 idx 148/149 各重复一次的
+  **无效中间态**）。对象碰撞核对：`schedules.webhook_trigger` / `schedule_runs.trigger_source` /
+  `mcp_app_view_states` 在 Meka 已发布 schema 与历史 SQL/companion 中零命中，两条新 migration 全文无 `DROP`
+  ⇒ 无需像第七轮 `0139` 那样给上游 SQL 打补丁。**实跑**：`db:validate` **6/6**（153 sql、seq `0000..0152`、
+  journal↔sql↔snapshot 对齐、`drizzle-kit check` 无 drift、53 companion 全 CommonJS、canonical 冻结
+  **151 SQL + 52 script**）；`migrationReplay` / `DbClient.inproc` 在 db tier 内实跑。
+- **工厂化重构的 Meka 重挂（本轮最容易静默失效的一类）**：上游把「模块级单例」改成「工厂 + desktop 适配器」，
+  Meka 的调用点按**适配器入口**重挂，不保留第二份实现 —— `meka-skills/api.ts` 改走
+  `serverApiClient.desktop.js`；`mcp-environment` 的 Meka 测试改走 `codexEnvironment.desktop` /
+  `piEnvironment.desktop`；`mcpr-codex-capability.ts` 改走 `codex-gateway-config.desktop.js`
+  （`buildCodexGatewayBaseUrl()` 的 0 参形态只在该适配器上成立）。
+- **上游搬家 ⇒ Meka 不变量跟着搬（范围外但必须改，已登记）**：`maker-ipc/modelRouteAdmission.ts` 与
+  `sessionRuntimeSelectionApply.ts` 各补 `classifyRemoteSessionTransport(...) === 'ssh'`（WL-4 的
+  「SSH-only 探针不得吃 `mcpr:`」若不搬会重新落 `SSH_EXEC_FAILED`）；`sessionOptionsReconciler.ts` 承接
+  WL-3 归属身份守卫（`workspace_kind='meka'` + project + role 三键 + `extraDirs`）与 `requirePersistedSession`
+  fail-closed；`localDb/ipc/createUserSession.ts`（上游新增）承接 Meka 会话创建校验与工作目录解析；
+  `mcp-integrations/ghost.desktop.ts`（上游新增网关装配器）补 Meka 端口，否则 meka-unity / 开发目录映射在 Desktop 静默失效；
+  `codexSpawnConfigCore.ts` / `localDb/sessionStorageAdapter.ts` / `mcp-integrations/codexEnvironment.ts` /
+  `codexHttpBridge.ts` 各 1–6 行补回 Meka 语义（原生子代理硬关、`workspaceKind:'meka'`、module exports）。
+- **WL-3.6 跨层身份契约的**两处**上游新联合缺 `'meka'`**（typecheck 抓到，非冲突面）：
+  `shared/remoteSessionCreation.ts` 的 `RemoteSessionCreated.workspaceKind` 与
+  `packages/lizi-mcps/src/xdt-helper/send_to_session.ts` 的回执 `workspaceKind` —— 不补则跨端创建/回执把 Meka 任务
+  降级成 project/dialogue。已按 WL-3.6 补 `'meka'` 并注明理由。
+- **WL-26（第三次核对，**新增两处边界**）**：① 上游新增的 `main/crash-diagnosis.ts` 是**纯本地**崩溃诊断
+  （无网络、无上报目标），它只消费 `isFatalCrashReason` ⇒ `main/log-upload/crashTriggers.ts` 以**极窄形态**保留
+  （**只含该函数**，补传三函数 `shouldBackfillForReportKind` / `crashAtFromMarker` / `selectBackfillGrouping`
+  **禁止加回**），`bootstrap-electron.ts` 只接 `initCrashDiagnosisService()`、**不接** `initLogUploadService()` /
+  `scheduleStartupBackfill()`；② 上游给上传编号加区域前缀（`formatUploadCode` / `isFormattedUploadCode`）并让
+  清理识别前缀目录 —— **不接**：本地报告编号仍是 `generateTraceReportId()` 的无前缀形状，
+  `performance-trace/{index,retention}.ts` 与 `performanceTrace.test.ts` 的上游前缀用例都不采纳（已写入 WL-26 与
+  `performance-tracing.md` §3、`log-upload-and-redaction.md` §4.1）。上报面 5 个 preload API 继续不声明；
+  采集/脱敏 9 模块保留（`redact.ts` 本轮 0 diff），上游新增 `device-link:*` 精确 scope 收下。
+- **刻意偏离上游（已登记）**：① `AGENTS.md` 与 `development-workflow.md` 继续保留 Meka 的提交前门禁口径
+  （第四轮裁决不变；上游同一时期放宽为「提交前验证」，本仓不采纳）；② **WL-26 维持**（见上）；
+ ③ Meka 面板 Modal 保留为停靠宿主的替代呈现；④ `taskView` 协议接受、UI 不主动开放；
+  ⑤ 冷启动端点清单取上游可重试流程（WL-5.6 运行期版别语义不变）；⑥ 十二语中 de/es/fr/pt-BR/pt-PT 与文言
+  为**占位**（翻译债继续挂账，见下）；⑦ **删除 Meka 上一轮在 `scripts/desktop-whoami.mjs` 的一处偏离**
+  （「跳过 crashpad 子进程」）—— 上游 `desktop whoami` 用例要求 crashpad 的 `--user-data-dir` 就是 profile 来源，
+  尾部 `/prefetch:N` 由 `extractArgumentPath` 的边界正则剥掉；保留旧过滤会让 `userDataDir` 变 `null`（实跑见红）。
+- **i18n**：desktop 12 语按「上游结构为宿主 + Meka 自有键按锚点回插」解决，**Meka 自有键 6868 leaves 零丢失**
+  （`missing 0 / value-changed 0`）；采纳上游新增 2217~2255 leaves、删除 305/309 leaves；同 key 双侧改 18 条中
+  16 条为品牌/任务通用文案（取上游新文案 + `Cindy`→`{{appName}}`，WL-3.7）。WL-26 面上 desktop 22 leaves +
+  mobile 7 leaves **保持删除**（脚本加 deny 前缀防复活）。`i18n/glossary.json` 取上游宿主（225 条）。
+  **实跑**：`check:i18n` **exit 0**（17662 key × 12 语一致，警告 7806 不阻断）、`check:i18n-glossary` **exit 0**
+  （35 裁决 / 190 待讨论 / 无新增违规）、`check:brand-terminology` **exit 0**。
+  **代价如实登记**：上游新增英文写法规则把 **12 处 Meka 自有存量文案**判为新增违规 ⇒ 3 处机器字面量登记
+  `englishCopyExempt`、9 处按 `DESIGN.md` §11 修 en 源（弯引号 7 / 去 "Please" 1 / 去 "successfully" 1）。
+- **生成物**：`docs/design-rules/design-inventory.md` 已用 `pnpm design:inventory` 重建（63 surface）；
+  `maker-ipc/helpKnowledge.generated.ts` 已用 `gen:help-kb` 重建（33 篇）；`docs/legal/notices/**` 与 SBOM
+  未重建 —— `licenses:generate` 在本机**跑不动**（缺 `cargo`，环境），其登记闸要求的两枚上游新二进制
+  （`packages/agent-net-core/prebuilt/core.wasm` 本仓 Apache-2.0 构建、插件作者手册自带 OFL 字体）已补登记；
+  产物同步性由 `third-party-notices.test.mjs` **14/14** 证明。
+- **验证（实跑）**：`audit:merge` **PASS**（`blockers=0` / `dropped=0`（5 条逐条 `--allow`）/ `review=15` /
+  `generated=17`）；desktop **两个 typecheck 分片均 exit 0**（main 6389 + renderer 4571 = 10481 文件）；
+  `@cindy/maker-shared` / `@cindy/maker-core` / `cindy-tools` 的 `tsc --noEmit` 均 exit 0；
+  `db:validate` **6/6**；`test:db`、`test:runner`、`desktop:ui-smoke`、`desktop:session-smoke`、
+  `check:test-hygiene`、`check:dev-docs` 见本期报告 §3（逐条命令 + 结果）。
+- **未验证 / 风险（不得读成通过）**：真机打包 / 真机更新 / 移动端冷更**实机**、Light/Dark 与十二语**人工目检**、
+  WL-4 端到端 V1–V4（缺 MCPRouter 账号/实例/Gateway key）、`licenses:generate`（缺 cargo）—— 逐项见本期报告 §4。
+- **存量缺口（非本轮引入，未擅自扩大范围）**：`maker-ipc/scheduledModelSelection.ts:211` 的
+  `readSshCodexProviders` 仍缺 `classifyRemoteSessionTransport(...) === 'ssh'` 守卫（`HEAD` 同形，WL-4 §3 第 7 条
+  应补但不在本轮 diff 内）；`packages/lizi-mcps/src/__tests__/sessionContext.test.ts` 用例名仍写 "21-tool"
+  （断言 22、文档 22 均正确，属上一轮遗留文案漂移）；`deepLink.ts` 若干存量注释仍写 `cindy://`（两侧一致）。
+- **收口修复（2026-11-17 交付前；全量与实机跑完后逐条修）**：① 上游把 `prepareCodexExtraSpawnConfig`
+  收敛成 `createCodexSpawnConfig(ports)` 工厂 ⇒ Meka 的「原生子代理硬关」测试从**源码 AST 提取**
+  改为**直接驱动工厂**（硬关/放行两侧 argv 与智能调配互为正反证据，5/5）；② 上游 `detailCache` 四处
+  直接读 `window.electronAPI.pluginMarket.detail` ⇒ 新增 `marketApiRef` 让市场详情请求永远走**当前
+  surface 的 API**（否则 Meka 前台请求被打回 Cindy 渠道，WL-9）；③ 新增的「随包资源声明」静态门禁
+  把 Meka 个人版构建产物 `resources/personal-plugins` 与 `resources/personal-native.json` 判为未声明 ⇒
+  按门禁既有契约登记进 `NON_EXTRA_RESOURCE_ROOTS`（每条写清理由与读点；它们不是 extraResource）；
+  ④ `MarketPluginDetailView` 的 busy 态文案结构按上游 `opacity-0` 遮罩契约收成单一文案节点；
+  ⑤ 上游把 `serverApiClient` / `codexEnvironment` / `piEnvironment` 工厂化后，Meka 调用点与 mock 全部
+  改挂 `*.desktop.ts` 适配器；⑥ 上游新用例里的 `drizzle/0092_fixed_zeigeist.sql` 按「Meka 里哪条
+  migration 建了 `media_invocations` 表」改指 `0092_sync_upstream_20260821.sql`（不是盲目顺移）；
+  ⑦ `agent-island` 的本机深链断言改 `cindy-meka://`（跨设备 interop 链接仍是 `cindy://`，保持上游）；
+  ⑧ 三处源码锚点（`bootstrapSessionOnce` / `createSessionWithRuntimePlugins` /
+  `resolveSendToSessionCreateRoute`）改按符号名定位；⑨ 一处测试夹具补 `writable: true`；
+  ⑩ `PerformanceTrace` / WL-26 的上游区域前缀编号**不接**（已在 WL-26 与两份文档登记）。
+- **实机验收（2026-11-17，真跑）**：合并后代码在本机以 `pnpm restart:desktop:remote` 启动
+  （`DESKTOP_DEV_VERDICT=ready`、`commit=96bda3761e`），`desktop:ui-smoke` **13 pass / 0 fail / 2 unverified**
+  （WL-1.2/WL-1.3 因本机 MCPRouter/MekaDesign 已连接，入口被「断开」替代），
+  `desktop:session-smoke` **11/11**（`workspace_kind=meka / saga2 / saga2-default-role / is_formal=0`，
+  真实 Agent 回复「收到。」，`[MEKA_ROLE_CONTEXT]` 回显正确，`mcp=mcp-router,meka-design`、`skillsCount=51`）。
+  `ui-smoke` 首跑 5 FAIL 全部是**脚本锚点随上游 UI 漂移**（lazy 分区缺等待、`button[role=switch]`
+  实际是 `[role=switch]`、版本行正则写死 `meka/main@`、模型下拉首次展开只等 900ms）—— 按 DOM 事实修锚点后转绿，
+  **断言口径未放宽**。
+
 ### 6.63 2026-10-08 MCPRouter 的 linux runtime manifest 从来没有目录分发段：远端 Codex 命令执行起不来（已修）
 
 - **现象**：MCPRouter（远程 agent 宿主）会话里远端 Codex 的 code-mode（命令执行）起不来，

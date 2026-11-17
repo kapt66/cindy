@@ -31,8 +31,10 @@ import {
   resetMekaRuntimeMcpRegistryForTests,
   setMekaRuntimeRouterLoginPrompter,
 } from '../meka-runtime-mcp';
-import { getCodexExtraSpawnConfig, shutdownCodexEnvironment } from '../codexEnvironment';
-import { getPiExtraSpawnConfig, shutdownPiEnvironment } from '../piEnvironment';
+// 上游把 codex/pi 环境改成工厂（`createCodexEnvironment` / `createPiEnvironment`）后，
+// 桌面侧只有 `*.desktop.ts` 适配器导出这些模块级函数；测试同样走适配器入口。
+import { getCodexExtraSpawnConfig, shutdownCodexEnvironment } from '../codexEnvironment.desktop';
+import { getPiExtraSpawnConfig, shutdownPiEnvironment } from '../piEnvironment.desktop';
 
 function noopLogger(): Logger {
   const logger: Logger = {

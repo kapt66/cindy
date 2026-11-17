@@ -149,9 +149,13 @@ function runtime(overrides: Partial<MekaRuntimeConfig> = {}): MekaRuntimeConfig 
 describe('applyMekaRuntimeConfig', () => {
   it('is wired into register bootstrap before maker.createSession', async () => {
     const source = await loadRegisterSource();
-    const bootstrap = source.indexOf('async function bootstrapSession');
+    // 第八轮同步后上游把函数体改名为 `bootstrapSessionOnce`（Meka 的 in-flight 去重包装仍叫
+    // `bootstrapSession`），创建调用也从 `maker.createSession(o)` 收敛成
+    // `createSessionWithRuntimePlugins(o, creationSignal)`。锚点按**符号名 + 前缀**定位，
+    // 不绑已被上游改写的字面量（否则每次上游重命名都会假红）。
+    const bootstrap = source.indexOf('async function bootstrapSessionOnce');
     const applyRuntime = source.indexOf('await applyMekaRuntimeConfig(o,', bootstrap);
-    const createSession = source.indexOf('await maker.createSession(o', bootstrap);
+    const createSession = source.indexOf('createSessionWithRuntimePlugins(o', applyRuntime);
 
     expect(bootstrap).toBeGreaterThanOrEqual(0);
     expect(applyRuntime).toBeGreaterThan(bootstrap);
@@ -581,7 +585,10 @@ describe('send_to_session create 分支的 Meka 归属继承', () => {
   async function inheritedWorkspaceSlice(): Promise<string> {
     const source = await loadRegisterSource();
     const start = source.indexOf('const inheritedMekaProjectId = row?.mekaProjectId ?? null;');
-    const end = source.indexOf('const hasExecutionOverrides =', start);
+    // 结束锚点：上游把来源路由判定抽成 `resolveSendToSessionCreateRoute(...)`（原先的
+    // `const hasExecutionOverrides =` 局部变量已不存在），但「这段继承逻辑到路由解析为止」
+    // 的语义不变 ⇒ 用新符号名做边界。
+    const end = source.indexOf('const route = await resolveSendToSessionCreateRoute({', start);
     expect(start).toBeGreaterThanOrEqual(0);
     expect(end).toBeGreaterThan(start);
     return source.slice(start, end);

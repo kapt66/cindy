@@ -113,7 +113,7 @@ function commandContainsPath(command, candidatePath) {
     const before = normalizedCommand[index - 1];
     const after = normalizedCommand[index + normalizedPath.length];
     const start = before === undefined || /\s|["'=]/.test(before);
-    const end = after === undefined || after === '/' || after === '"' || after === "'";
+    const end = after === undefined || /\s/.test(after) || after === '/' || after === '"' || after === "'";
     if (start && end) return true;
     index = normalizedCommand.indexOf(normalizedPath, index + 1);
   }
@@ -142,7 +142,8 @@ function repositoryWorktrees(cwd = rootDir) {
 }
 
 function extractArgumentPath(command, name) {
-  const match = command.match(new RegExp(`--${name}=(.*?)(?=\\s--[A-Za-z0-9-]+=|\\s--[A-Za-z0-9-]+\\s|$)`));
+  // Windows Crashpad puts /prefetch:N between the profile path and --switches.
+  const match = command.match(new RegExp(`--${name}=(.*?)(?=\\s--[A-Za-z0-9-]+=|\\s--[A-Za-z0-9-]+\\s|\\s/prefetch:\\d+(?:\\s|$)|$)`));
   return match?.[1]?.replace(/^['"]|['"]$/g, '') ?? null;
 }
 
@@ -195,9 +196,18 @@ export function identifyDesktopProcesses(processes, worktrees) {
   const result = [];
   for (const worktree of worktrees) {
     const electronRoot = path.join(worktree.rootDir, 'node_modules', 'electron');
+    const native = readJson(path.join(worktree.rootDir, 'apps/desktop/resources/personal-native.json'));
+    const sharedExecutable = typeof native?.runtime?.directory === 'string'
+      ? path.join(native.runtime.directory, 'Cindy.app/Contents/MacOS/Electron') : null;
     for (const proc of processes) {
+      const fixedMatch = /^(\/.*?\.app)\/Contents\/MacOS\/Electron /.exec(proc.command);
+      const installed = fixedMatch ? readJson(fixedMatch[1] + '.personal-install.json') : null;
+      const fixedRuntime = installed && typeof installed.key === 'string' && installed.key === native?.runtime?.key
+        && installed.digest === native?.runtime?.digest;
       if (
-        !commandContainsPath(proc.command, electronRoot) ||
+        !(commandContainsPath(proc.command, electronRoot) || sharedExecutable &&
+          (proc.command.startsWith(sharedExecutable + ' ') || fixedRuntime) &&
+          commandContainsPath(proc.command, path.join(worktree.rootDir, 'apps/desktop'))) ||
         proc.command.includes('--type=') ||
         proc.command.includes('crashpad_handler')
       ) continue;
@@ -207,12 +217,12 @@ export function identifyDesktopProcesses(processes, worktrees) {
         child.command.includes('--type=renderer') &&
         normalize(extractArgumentPath(child.command, 'app-path') ?? path.sep) ===
           normalize(path.join(worktree.rootDir, 'apps', 'desktop')));
-      // Electron starts a crashpad helper before the renderer. Its Windows
-      // command line uses an unquoted userData path followed by `/prefetch`,
-      // which is not a reliable source for the app profile. Prefer the
-      // renderer/utility children whose paths are quoted and skip crashpad.
+      // Windows 的 Crashpad 子进程用**未加引号**的 userData 路径后跟 `/prefetch:N`，
+      // 它是最早带 `--user-data-dir` 的子进程，也是上游认可的唯一来源；
+      // 尾部 `/prefetch:N` 由 `extractArgumentPath` 的边界正则剥掉。
+      // （第八轮同步：删掉 Meka 上一轮“跳过 crashpad 子进程”的偏离 —— 那会让
+      // userDataDir 变成 null，与上游 `desktop whoami` 用例直接冲突。）
       const userDataDir = children
-        .filter((child) => !child.command.includes('--type=crashpad-handler'))
         .map((child) => extractArgumentPath(child.command, 'user-data-dir'))
         .find(Boolean) ?? null;
       const commands = [proc.command, ...ancestorCommands(proc.pid, byPid)];

@@ -16,7 +16,6 @@ import { toast } from '@/lib/toast';
 
 import { GHOST_SCHEME, ghostInstallApprovalToken, type InstalledGhost } from '../../shared/ghost';
 import { installedGhostStoragePart, installedGhostWebviewPartitionClaim } from '../../shared/pluginIdentity';
-import { mountPluginTabView } from '@/features/right-sidebar/pluginTabViews';
 import { buildGhostMainViewThemeCss, createGhostThemeInjector, observeHostTheme } from './ghostPanelTheme';
 import {
   clearGhostUnread,
@@ -206,7 +205,6 @@ export function GhostWebviewBody({
   wallpaperCanvas = false,
   onHostNode,
   autoFocusWebview = false,
-  tabView,
 }: {
   ghost: Pick<InstalledGhost, 'manifest' | 'dir' | 'namespace'> & Partial<Pick<InstalledGhost, 'approval'>>;
   html: string | undefined;
@@ -220,7 +218,6 @@ export function GhostWebviewBody({
   onHostNode?: (node: HTMLDivElement | null) => void;
   /** Meka 面板呈现方式 = Modal 时由宿主置位：dom-ready 后把键盘焦点交给 guest。 */
   autoFocusWebview?: boolean;
-  tabView?: { tabId: string; id: string; sessionId: string | null; visible: boolean };
 }): ReactNode {
   const { manifest } = ghost;
   const instanceId = installedGhostStoragePart(ghost);
@@ -229,9 +226,6 @@ export function GhostWebviewBody({
   const partitionClaim = installedGhostWebviewPartitionClaim(ghost);
   const [generation, setGeneration] = useState(0);
   const [mediaMenu, setMediaMenu] = useState<GhostPanelMediaMenuState | null>(null);
-  const tabMount = useRef<Awaited<ReturnType<typeof mountPluginTabView>> | null>(null);
-  const tabVisible = useRef(tabView?.visible ?? false); tabVisible.current = tabView?.visible ?? false;
-  useEffect(() => { tabMount.current?.setVisible(tabView?.visible ?? false); }, [tabView?.visible]);
 
   // The host is swapping this instance's library on disk. Drop the webview
   // until the swap and the partition clear finish, then load from disk again,
@@ -271,7 +265,6 @@ export function GhostWebviewBody({
     const host = hostRef.current;
     if (!host) return;
     const webview = document.createElement('webview') as WebviewTag;
-    const lifetime = new AbortController();
     webview.setAttribute('partition', partitionClaim);
     webview.setAttribute('src', `${GHOST_SCHEME}://${manifest.id}/${html}${query ? `?${query}` : ''}`);
     webview.setAttribute('style', 'display:flex;flex:1 1 auto;width:100%;height:100%;');
@@ -331,15 +324,7 @@ export function GhostWebviewBody({
     webview.addEventListener('did-fail-load', onFailLoad);
     webview.addEventListener('context-menu', onContextMenu);
     const unobserveTheme = observeHostTheme(scheduleInjectTheme);
-    if (tabView) {
-      void mountPluginTabView({ tabId: tabView.tabId, instanceId, id: tabView.id, sessionId: tabView.sessionId, visible: tabVisible.current }, lifetime.signal).then(mount => {
-        if (disposed) { mount.dispose(); return; }
-        tabMount.current = mount;
-        mount.setVisible(tabVisible.current);
-        webview.setAttribute('src', `${GHOST_SCHEME}://${manifest.id}/${html}?cindyView=${encodeURIComponent(mount.token)}`);
-        host.appendChild(webview);
-      }, () => { if (!disposed) onGone(); });
-    } else host.appendChild(webview);
+    host.appendChild(webview);
     // [MEKA] Modal 宿主 = 唯一主动抢焦点的面板宿主(停靠页签与插件页宿主保持被动)。
     if (autoFocusWebview) webview.focus();
     // 每次创建 / 销毁各一条:只记插件实例 id、存活毫秒与原因类别,不带 URL 与页面内容。
@@ -350,8 +335,6 @@ export function GhostWebviewBody({
       crashMarkedRef.current = false;
       log.info('webview destroyed', { instanceId, aliveMs: Date.now() - createdAt, reason });
       disposed = true;
-      lifetime.abort();
-      tabMount.current?.dispose(); tabMount.current = null;
       injector.dispose();
       if (themeTimer !== null) clearTimeout(themeTimer);
       unobserveTheme();
@@ -366,7 +349,7 @@ export function GhostWebviewBody({
     };
     // version 入依赖:原位更新换版后 webview 重挂载,面板立刻跑新代码
     // (供片协议直读安装目录,不重挂会一直渲染旧版缓存的页面)。
-  }, [crashed, generation, librarySwapping, instanceId, approvalToken, partitionClaim, manifest.id, manifest.version, manifest.resolvedLocale, html, query, wallpaperCanvas, tabView?.tabId, tabView?.id, tabView?.sessionId, autoFocusWebview]);
+  }, [crashed, generation, librarySwapping, instanceId, approvalToken, partitionClaim, manifest.id, manifest.version, manifest.resolvedLocale, html, query, wallpaperCanvas, autoFocusWebview]);
 
   if (crashed) {
     return (

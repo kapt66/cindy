@@ -10,6 +10,12 @@ import { PluginPublishDialog, type PluginPublishDialogRequest } from './PluginPu
 import { featureRetirementById, type FeatureRetirement } from '../../../shared/featureRetirements';
 import { RetiredFeatureDetail } from './RetiredFeatureDetail';
 import { Button } from '@/components/ui/button';
+import { PluginCatalogBrowser, PLUGIN_PAGE_SIZE } from './PluginCatalogBrowser';
+import { PluginVirtualGrid } from './PluginVirtualGrid';
+import { pluginCatalogMemory, pluginCatalogOwnerKey, pluginInstalledGrid, readLocalPluginSnapshot, readPluginRecommendations, usePluginCatalogState } from './lib/pluginCatalogMemory';
+import { PluginRecommendationSlots } from './lib/PluginRecommendationSlots';
+import { PluginCatalogPanels } from './lib/PluginCatalogPanels';
+import { marketDetailAccessRejected, marketDetailCacheFor, retainMarketDetailIcon, marketItemSummary } from './lib/marketDetailCache';
 /**
  * Local Plugin management and Meka catalog coordinator backed by the latest Ghost host APIs.
  *
@@ -75,6 +81,7 @@ import {
 import { getDraft as getWorkspaceDraft, resetDraftWorkspaceTargets } from '@/state/newMakerDraft';
 import { ghostInstallErrorKey } from '@/cindy-brain/installErrorKey';
 import { installGhostFromFile, pickAndUpdateGhost } from '@/cindy-brain/installFlow';
+import { importCindyFile } from '@/cindy-brain/importCindyFile';
 import { MekaDevInstallReview } from './MekaDevInstallReview';
 import { SegmentedControl } from '@/components/ui/segmented-control';
 import { cn, basename } from '@/lib/utils';
@@ -105,7 +112,6 @@ import type {
   PluginMarketInstallProgress,
   PluginMarketInstallOptions,
   PluginMarketItem,
-  PluginMarketSnapshot,
 } from '../../../shared/pluginMarket';
 import type { LegacyGhostRecoveryStatus } from '../../../shared/legacyGhostRecovery';
 import type { MekaDevPluginItem } from '../../../shared/mekaDevPlugin';
@@ -148,6 +154,7 @@ import { GhostPagePanelHost } from './GhostPagePanelHost';
 import { GhostPluginActions } from './GhostPluginActions';
 import { GhostPluginDetailView } from './GhostPluginDetailView';
 import { PluginSharedUsage } from './PluginSharedUsage';
+import { PluginPublisherBadge } from './PluginPublisherBadge';
 import {
   currentMainViewVisibilityOwner,
   readMainViewSidebarVisible,
@@ -167,6 +174,7 @@ import {
   marketItemMatchesInstalledGhost,
   marketReviewTargetsInstalledGhost,
   orderPluginCatalogItems,
+  pluginPresentationAuthor,
   pluginPresentationOrigin,
   pluginUpdateForInstalledVersion,
   type PluginPresentationOrigin,
@@ -223,8 +231,8 @@ const RECOMMENDED_FILTERS: readonly PluginPresentationFilter[] = [
   'custom',
 ];
 
-/** 已安装区默认只展开一屏内的前 8 个，其余通过显式操作渐进展示。 */
-const MAX_VISIBLE_INSTALLED_PLUGINS = 8;
+/** 已安装首批展示 10 个，继续滚动时按相同批次追加。 */
+const MAX_VISIBLE_INSTALLED_PLUGINS = PLUGIN_PAGE_SIZE;
 /** 折叠入口只预览前三个隐藏插件，避免头像堆叠反过来抢占操作文案。 */
 const MAX_COLLAPSED_INSTALLED_PLUGIN_PREVIEWS = 3;
 
@@ -478,11 +486,13 @@ export function GhostPluginPage(props: {
 function LocalGhostPluginPage({
   surface = 'plugins',
   embedded = false,
+  active = true,
   deviceControl,
   onSelectCatalogTab,
 }: {
   surface?: PluginMarketSurface;
   embedded?: boolean;
+  active?: boolean;
   deviceControl?: CatalogDeviceControl;
   onSelectCatalogTab?: (tab: 'plugins' | 'skills') => void;
 } = {}) {
@@ -492,6 +502,11 @@ function LocalGhostPluginPage({
     () => pluginMarketApiForSurface(surface, window.electronAPI),
     [surface],
   );
+  // [MEKA] 详情缓存/预取的回调会在 effect deps 之外被调用，不能捕获某次渲染的 marketApi；
+  // 同时**不得**直接摸 `window.electronAPI.pluginMarket`（那会把 Meka 前台的市场请求
+  // 打回 Cindy 渠道，WL-9）。统一走这个 ref，永远指向当前 surface 选中的 API。
+  const marketApiRef = useRef(marketApi);
+  marketApiRef.current = marketApi;
   const marketLocale = resolveSystemLocale(i18n.resolvedLanguage ?? i18n.language);
   const navigate = useNavigate();
   const location = useLocation();
@@ -632,14 +647,40 @@ function LocalGhostPluginPage({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [devPackageDialogGhostId, setDevPackageDialogGhostId] = useState<string | null>(null);
   const [devPackageDialogOpen, setDevPackageDialogOpen] = useState(false);
-  const [query, setQuery] = useState('');
   const [installedExpanded, setInstalledExpanded] = useState(false);
-  const installedOverflowId = useId();
-  const [marketSnapshot, setMarketSnapshot] = useState<PluginMarketSnapshot | null>(null);
   const [mekaInstalledGhostIds, setMekaInstalledGhostIds] = useState<string[]>([]);
   const [mekaDevPluginItems, setMekaDevPluginItems] = useState<MekaDevPluginItem[]>([]);
+  const catalogOwnerKey = pluginCatalogOwnerKey(mode, dataOwnerId, dataOwnerGeneration, marketLocale);
+  const catalogMemory = pluginCatalogMemory(catalogOwnerKey, 'local');
+  const catalogMemoryRef = useRef(catalogMemory);
+  catalogMemoryRef.current = catalogMemory;
+  const [query, setQuery] = usePluginCatalogState(catalogMemory, 'query');
+  const [catalogTab, setCatalogTab] = usePluginCatalogState(catalogMemory, 'catalogTab');
+  const [installedLimit, setInstalledLimit] = usePluginCatalogState(catalogMemory, 'installedLimit');
+  const [marketTotal, setMarketTotal] = usePluginCatalogState(catalogMemory, 'marketTotal');
+  const [catalogRevision, setCatalogRevision] = usePluginCatalogState(catalogMemory, 'catalogRevision');
+  const [todayPool, setTodayPool] = usePluginCatalogState(catalogMemory, 'todayPool');
+  const [consumedToday, setConsumedToday] = usePluginCatalogState(catalogMemory, 'consumedToday');
+  const [todayLoaded, setTodayLoaded] = usePluginCatalogState(catalogMemory, 'todayLoaded');
+  const browserCache = catalogMemory.browser;
+  const secondaryTabs = useRef<HTMLDivElement>(null);
+  const marketFiltersHost = useRef<HTMLDivElement>(null);
+  const installedSentinel = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    let current = true;
+    void (async () => {
+      try {
+        await window.electronAPI.setApplicationMenuLocale(marketLocale);
+        const items = await readPluginRecommendations(catalogMemory);
+        if (current) { setTodayPool(items); setTodayLoaded(true); }
+      } catch { if (current) { setTodayPool([]); setTodayLoaded(true); } }
+    })();
+    return () => { current = false; };
+  }, [catalogMemory]);
+  const [marketSnapshot, setMarketSnapshot] = usePluginCatalogState(catalogMemory, 'snapshot');
   // 数据归属键:面板宿主按它失效(定义要早于消费点)。
   const panelOwnerKey = ghostWebviewOwnerKey(mode, dataOwnerId);
+  const installedGridCache = pluginInstalledGrid(catalogMemory, query);
   // Meka 市场有独立账本,「忽略本轮」键按渠道分桶,不与 Cindy 用户共用。
   const ignoredRoundKey = ignoredRoundStorageKey(
     mode,
@@ -651,8 +692,26 @@ function LocalGhostPluginPage({
   useEffect(() => {
     setIgnoredRound(readIgnoredRound(ignoredRoundKey));
   }, [ignoredRoundKey]);
-  const [originFilter, setOriginFilter] = useState<PluginPresentationFilter>('all');
-  const [marketDetail, setMarketDetail] = useState<PluginMarketDetail | null>(null);
+  const [originFilter, setOriginFilter] = usePluginCatalogState(catalogMemory, 'originFilter');
+  const [marketDetail, setMarketDetail] = useState<PluginMarketItem | PluginMarketDetail | null>(null);
+  const [marketDetailError, setMarketDetailError] = useState<string | null>(null);
+  const [marketDetailRefreshing, setMarketDetailRefreshing] = useState(false);
+  const detailCache = marketDetailCacheFor(catalogOwnerKey);
+  const activeDetailCacheRef = useRef(detailCache);
+  const foregroundDetailRefresh = useRef<(() => Promise<void>) | null>(null);
+  activeDetailCacheRef.current = detailCache;
+  const lastDetailScrollRef = useRef(0);
+  useEffect(() => {
+    const onScroll = () => { lastDetailScrollRef.current = Date.now(); };
+    document.addEventListener('scroll', onScroll, { capture: true, passive: true });
+    return () => document.removeEventListener('scroll', onScroll, true);
+  }, []);
+  const prefetchMarketDetail = useCallback((item: PluginMarketItem, isCurrent: () => boolean) => {
+    const scrollStamp = lastDetailScrollRef.current;
+    if (Date.now() - scrollStamp < 250) return;
+    detailCache.prefetch(item.pluginId, async () => retainMarketDetailIcon(await marketApiRef.current.detail(item.pluginId), item),
+      () => isCurrent() && lastDetailScrollRef.current === scrollStamp && activeDetailCacheRef.current === detailCache);
+  }, [detailCache]);
   const contributionViewKey = JSON.stringify([location.key, selectedId, marketDetail?.pluginId]);
   const contributionView = useRef({ key: contributionViewKey, token: {} });
   if (contributionView.current.key !== contributionViewKey)
@@ -665,8 +724,10 @@ function LocalGhostPluginPage({
     capture: capturePluginCatalogScroll,
     requestRestore: requestPluginCatalogScrollRestore,
     clearPendingRestore: clearPluginCatalogScrollRestore,
-  } = usePluginListScrollRestoration(pluginCatalogVisible);
-  const [marketBusyId, setMarketBusyId] = useState<string | null>(null);
+  } = usePluginListScrollRestoration(pluginCatalogVisible, catalogMemory.scroll);
+  const [marketBusy, setMarketBusy] = useState<{ pluginId: string; intent: 'detail' | 'install' } | null>(null);
+  const marketBusyId = marketBusy?.pluginId ?? null;
+  const marketInstallBusyId = marketBusy?.intent === 'install' ? marketBusy.pluginId : null;
   const [mekaInstallProgress, setMekaInstallProgress] =
     useState<PluginMarketInstallProgress | null>(null);
   const activeMekaInstallRef = useRef<{ operationId: string; pluginId: string } | null>(null);
@@ -674,17 +735,17 @@ function LocalGhostPluginPage({
   // 都读到 null;ref 先到先得,state 只驱动按钮禁用等 UI 展示。每次占锁都返回
   // 唯一 lease,避免账号/模式切换后的旧异步流程误释放新流程持有的同 pluginId 锁。
   const marketBusyLockRef = useRef<{ pluginId: string } | null>(null);
-  const acquireMarketBusy = useCallback((pluginId: string) => {
+  const acquireMarketBusy = useCallback((pluginId: string, intent: 'detail' | 'install' = 'install') => {
     if (marketBusyLockRef.current !== null) return null;
-    const lease = { pluginId };
+    const lease = { pluginId, intent };
     marketBusyLockRef.current = lease;
-    setMarketBusyId(pluginId);
+    setMarketBusy(lease);
     return lease;
   }, []);
   const releaseMarketBusy = useCallback((lease: { pluginId: string }) => {
     if (marketBusyLockRef.current !== lease) return;
     marketBusyLockRef.current = null;
-    setMarketBusyId((current) => (current === lease.pluginId ? null : current));
+    setMarketBusy((current) => (current === lease ? null : current));
   }, []);
   const isMarketBusyLeaseActive = useCallback(
     (lease: { pluginId: string }) => marketBusyLockRef.current === lease,
@@ -749,7 +810,7 @@ function LocalGhostPluginPage({
   const [legacyRecoveryStatus, setLegacyRecoveryStatus] =
     useState<LegacyGhostRecoveryStatus | null>(null);
   const [legacyRecoveryRetrying, setLegacyRecoveryRetrying] = useState(false);
-  const refreshMarket = useCallback(async (preserveOnError = false) => {
+  const refreshMarket = useCallback(async (preserveOnError = false, background = false, renewIcons = false) => {
     installedGhostMarketKeyRef.current = installedGhostMarketKeyFor(readInstalledGhostsSnapshot());
     const requestId = ++marketRefreshRequestRef.current;
     const owner = contributionOwnerRef.current;
@@ -762,29 +823,31 @@ function LocalGhostPluginPage({
       .list()
       .then(({ items }) => items)
       .catch(() => []);
+    const memory = catalogMemoryRef.current;
+    const current = () => requestId === marketRefreshRequestRef.current && contributionOwnerRef.current === owner && catalogMemoryRef.current === memory;
     try {
       const [snapshot, nextMekaInstalledGhostIds, nextMekaDevPluginItems] = await Promise.all([
-        marketApi.snapshot(),
+        readLocalPluginSnapshot(memory, !background, renewIcons),
         mekaInstalledGhostIdsPromise,
         mekaDevPluginsPromise,
       ]);
-      if (requestId !== marketRefreshRequestRef.current || contributionOwnerRef.current !== owner) return;
+      if (!current()) return;
       setMekaInstalledGhostIds(nextMekaInstalledGhostIds);
       setMekaDevPluginItems(nextMekaDevPluginItems);
-      // Main intentionally represents market outages as data so the initial page can render a
-      // non-blocking empty state. During icon renewal, convert that fulfilled unavailable result
-      // back into a failure: the catch path preserves the visible snapshot and the hook retries.
+      setMarketSnapshot(snapshot);
+      lastMarketRefreshAtRef.current = Date.now();
+      if (current()) await memory.browser.current.refresh?.();
+      // Publish successful sources before reporting an official outage to the
+      // existing icon-renewal retry hook. Failed sources retain their old data.
       if (preserveOnError && snapshot.unavailableReason !== null) {
         throw new Error(snapshot.unavailableReason);
       }
-      setMarketSnapshot(snapshot);
-      lastMarketRefreshAtRef.current = Date.now();
     } catch (error) {
-      if (requestId !== marketRefreshRequestRef.current || contributionOwnerRef.current !== owner) return;
+      if (!current()) return;
       setMekaInstalledGhostIds(await mekaInstalledGhostIdsPromise);
       setMekaDevPluginItems(await mekaDevPluginsPromise);
       setMarketSnapshot((current) =>
-        preserveOnError && current
+        current
           ? current
           : {
               items: [],
@@ -799,12 +862,12 @@ function LocalGhostPluginPage({
     }
   }, [marketApi]);
   useEffect(() => {
-    clearPluginCatalogScrollRestore();
-    setMarketSnapshot(null);
     setMarketDetail(null);
     marketBusyLockRef.current = null;
-    setMarketBusyId(null);
+    setMarketBusy(null);
     marketDetailRequestRef.current += 1;
+    // The retained bucket may have missed installation changes off-route.
+    // Show it immediately, but revalidate once through the existing reader.
     void refreshMarket();
   }, [clearPluginCatalogScrollRestore, refreshMarket, mode, dataOwnerId, dataOwnerGeneration]);
   useEffect(
@@ -814,7 +877,9 @@ function LocalGhostPluginPage({
       }),
     [],
   );
-  const refreshMarketOnForeground = useCallback(() => refreshMarket(true), [refreshMarket]);
+  const refreshMarketOnForeground = useCallback(async () => {
+    await Promise.all([refreshMarket(true), foregroundDetailRefresh.current?.()]);
+  }, [refreshMarket]);
   usePluginMarketForegroundRefresh(refreshMarketOnForeground, lastMarketRefreshAtRef);
   useEffect(() => {
     return window.electronAPI.pluginMarket.onUpdateConsentHoldsChanged(() => {
@@ -948,6 +1013,10 @@ function LocalGhostPluginPage({
   }, [openPanel, searchParams, setSearchParams]);
   // 引用稳定:批次对账 effect 以它为依赖,裸 `?? []` 每次渲染都是新数组会空转。
   const marketItems = useMemo(() => marketSnapshot?.items ?? [], [marketSnapshot]);
+  const todayItems = todayPool.filter(item => {
+    const latest = marketItems.find(current => current.pluginId === item.pluginId) ?? item;
+    return !consumedToday.has(item.pluginId) && latest.installState !== 'installed' && latest.installState !== 'update-available';
+  }).slice(0, 3);
   const customSourceNames = useMemo(
     () => marketSnapshot?.customSourceNames ?? [],
     [marketSnapshot?.customSourceNames],
@@ -981,9 +1050,12 @@ function LocalGhostPluginPage({
           const developmentItem = mekaDevPluginById.get(ghost.manifest.id);
           const development = developmentItem !== undefined;
           const presentation = marketPresentationForInstalledGhost(ghost, marketItem);
+          const listItem = toGhostPluginListItem(ghost, presentation);
           return {
-            ...toGhostPluginListItem(ghost, presentation),
-            origin: pluginPresentationOrigin(marketItem),
+            ...listItem,
+            // 有市场记录时以市场来源为准；没有时用 Host 的来源事实（未验证/旧安装是
+            // undefined，按本地归口径，与「不能自称公域」一致）。
+            origin: marketItem ? pluginPresentationOrigin(marketItem) : (listItem.origin ?? 'local'),
             development,
             sourcePluginId: developmentItem?.pluginId ?? ghost.manifest.id,
             // 同版本展示刷新由 main 标成 installed;legacy-unresolved 仍保留
@@ -1047,18 +1119,6 @@ function LocalGhostPluginPage({
     () => filterGhostPluginItems(surfaceInstalledItems, query),
     [query, surfaceInstalledItems],
   );
-  const searchedAvailableMarketItems = useMemo(() => {
-    const normalizedQuery = query.trim().toLocaleLowerCase();
-    return marketItems.filter((item) => {
-      if (item.installState === 'installed' || item.installState === 'update-available') {
-        return false;
-      }
-      if (!showEnterprise && pluginPresentationOrigin(item) === 'organization') return false;
-      return `${item.name} ${item.description ?? ''} ${item.ghostId} ${item.author ?? ''}`
-        .toLocaleLowerCase()
-        .includes(normalizedQuery);
-    });
-  }, [marketItems, query, showEnterprise]);
   const recommendedFilters = useMemo(
     () =>
       RECOMMENDED_FILTERS.filter((filter) => {
@@ -1075,6 +1135,22 @@ function LocalGhostPluginPage({
       : originFilter === 'custom' && (isMekaSurface || customSourceNames.length === 0)
         ? 'all'
         : originFilter;
+
+  // [MEKA] Meka 管理页的市场条目派生（第八轮同步：上游把「按来源筛选的市场列表」从共享
+  // 骨架里移走，Meka 前台的 `mekaCatalogItems` 仍需要它）⇒ 这两段是 Meka 自有逻辑，
+  // 就地保留，不依赖上游的新骨架。
+  const searchedAvailableMarketItems = useMemo(() => {
+    const normalizedQuery = query.trim().toLocaleLowerCase();
+    return marketItems.filter((item) => {
+      if (item.installState === 'installed' || item.installState === 'update-available') {
+        return false;
+      }
+      if (!showEnterprise && pluginPresentationOrigin(item) === 'organization') return false;
+      return `${item.name} ${item.description ?? ''} ${item.ghostId} ${item.author ?? ''}`
+        .toLocaleLowerCase()
+        .includes(normalizedQuery);
+    });
+  }, [marketItems, query, showEnterprise]);
   const availableMarketItems = useMemo(
     () =>
       effectiveOriginFilter === 'all'
@@ -1084,43 +1160,6 @@ function LocalGhostPluginPage({
           ),
     [effectiveOriginFilter, searchedAvailableMarketItems],
   );
-  // 「自定义」档内按来源市场分组(≥2 个源时展示小标题);组顺序沿用市场添加顺序。
-  const organizationAccessErrorKey = pluginMarketOrganizationAccessErrorKey(
-    marketSnapshot?.organizationAccessError,
-  );
-  const customGroups = useMemo(() => {
-    if (effectiveOriginFilter !== 'custom') return null;
-    const groups = new Map<string, PluginMarketItem[]>();
-    for (const item of availableMarketItems) {
-      const key = item.sourceMarketName ?? '';
-      const list = groups.get(key);
-      if (list) {
-        list.push(item);
-      } else {
-        groups.set(key, [item]);
-      }
-    }
-    return [...groups.entries()].sort((a, b) => {
-      const aIndex = customSourceNames.indexOf(a[0]);
-      const bIndex = customSourceNames.indexOf(b[0]);
-      return (
-        (aIndex === -1 ? Number.MAX_SAFE_INTEGER : aIndex) -
-        (bIndex === -1 ? Number.MAX_SAFE_INTEGER : bIndex)
-      );
-    });
-  }, [availableMarketItems, customSourceNames, effectiveOriginFilter]);
-  const recommendedCounts = useMemo(() => {
-    const counts: Record<PluginPresentationOrigin, number> = {
-      public: 0,
-      organization: 0,
-      local: 0,
-      custom: 0,
-    };
-    for (const item of searchedAvailableMarketItems) {
-      counts[pluginPresentationOrigin(item)] += 1;
-    }
-    return counts;
-  }, [searchedAvailableMarketItems]);
 
   // ── 已安装区排序:未读通知(新→旧) → 最近使用 → 基础序,实时计算 ──
   // 反应式而非冻结快照:排序信号变化即重排。安全边界——`markUsed` 只在对话里
@@ -1133,13 +1172,6 @@ function LocalGhostPluginPage({
     () => new Map(unreadEntries.map((entry) => [entry.ghostId, entry.at])),
     [unreadEntries],
   );
-  // 切账号/模式收起折叠区:换 owner 的已装集合不同,上一个身份的展开态不带过去。
-  const collapseOwnerKeyRef = useRef(panelOwnerKey);
-  useEffect(() => {
-    if (collapseOwnerKeyRef.current === panelOwnerKey) return;
-    collapseOwnerKeyRef.current = panelOwnerKey;
-    setInstalledExpanded(false);
-  }, [panelOwnerKey]);
   const displayInstalledItems = useMemo(
     () =>
       sortInstalledForDisplay(searchedInstalledItems, {
@@ -1148,21 +1180,21 @@ function LocalGhostPluginPage({
       }),
     [searchedInstalledItems, recentGhostIds, unreadAtById],
   );
-  // 未读通知永不折叠:可见窗口至少 MAX_VISIBLE_INSTALLED_PLUGINS 个,并容纳全部
-  // 未读——未读已排在最前,按未读数量扩窗即可保证它们都落在可见区(更新可被折叠)。
-  const visibleInstalledCount = useMemo(
-    () => installedVisibleCount(displayInstalledItems, unreadAtById, MAX_VISIBLE_INSTALLED_PLUGINS),
-    [displayInstalledItems, unreadAtById],
-  );
   const primaryInstalledItems = useMemo(
-    () => displayInstalledItems.slice(0, visibleInstalledCount),
-    [displayInstalledItems, visibleInstalledCount],
+    () => displayInstalledItems.slice(0, installedLimit),
+    [displayInstalledItems, installedLimit],
   );
-  const additionalInstalledItems = useMemo(
-    () => displayInstalledItems.slice(visibleInstalledCount),
-    [displayInstalledItems, visibleInstalledCount],
-  );
-  const hiddenInstalledCount = Math.max(0, displayInstalledItems.length - visibleInstalledCount);
+  useEffect(() => {
+    const sentinel = installedSentinel.current;
+    const root = pluginCatalogListRef.current;
+    if (!pluginCatalogVisible || (!query.trim() && catalogTab !== 'installed') || !sentinel || !root
+      || installedLimit >= displayInstalledItems.length) return;
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) setInstalledLimit(count => Math.min(count + PLUGIN_PAGE_SIZE, displayInstalledItems.length));
+    }, { root, rootMargin: '80px' });
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [catalogTab, query, pluginCatalogVisible, installedLimit, displayInstalledItems.length, pluginCatalogListRef]);
 
   // ── 更新横幅与批量更新：作为自动更新失败／忙碌跳过后的手动重试入口 ──
   const updatableInstalledItems = useMemo(
@@ -1316,6 +1348,7 @@ function LocalGhostPluginPage({
         ? await installFromActiveMarket(input.pluginId, input.options)
         : await window.electronAPI.pluginMarket.install(input.pluginId, input.options);
       if (!input.isStillActive()) return null;
+      setConsumedToday(current => new Set([...current, input.pluginId]));
       return result.ghost;
     },
     [installFromActiveMarket, isMekaSurface],
@@ -1473,7 +1506,7 @@ function LocalGhostPluginPage({
   const handleInstall = useCallback(async () => {
     const picked = await window.electronAPI.ghosts.pickFile().catch(() => null);
     if (!picked || 'canceled' in picked) return;
-    await installGhostFromFile(picked.filePath, {
+    await importCindyFile(picked.filePath, {
       t,
       // 本地包装入同样记渠道归属:Host 侧按 dataOwnerId + pluginId 落账本。
       onInstalled: async (ghost) => {
@@ -1481,6 +1514,7 @@ function LocalGhostPluginPage({
           await marketApi.markLocalInstall(ghost.manifest.id, dataOwnerId);
         }
       },
+      openThemes: () => navigate('/settings?tab=appearance'),
       // 已在插件页:安装完成后按统一 resolver 打开该插件面板
       // (tab → 插件页宿主;docked → 右侧栏页签;modal → Modal)。
       openPluginPanel: (instanceId) => {
@@ -1488,7 +1522,7 @@ function LocalGhostPluginPage({
         void openPanel(instanceId);
       },
     });
-  }, [dataOwnerId, marketApi, openPanel, t]);
+  }, [dataOwnerId, marketApi, navigate, openPanel, t]);
 
   const handleInstallDevelopment = useCallback(async () => {
     let picked: Awaited<ReturnType<typeof window.electronAPI.mekaDevPlugins.pick>>;
@@ -1744,39 +1778,56 @@ function LocalGhostPluginPage({
   ]);
 
   const handleSelectMarket = useCallback(
-    async (pluginId: string, preferInstalled = false) => {
-      // 与 handleMarketUpdate 共用同一互斥锁:更新进行中不叠加其它市场操作。
-      const marketBusyLease = acquireMarketBusy(pluginId);
-      if (!marketBusyLease) return;
-      capturePluginCatalogScroll();
+    async (item: PluginMarketItem | string, preferInstalled = false) => {
+      if (marketBusyLockRef.current) return;
+      const pluginId = typeof item === 'string' ? item : item.pluginId;
+      capturePluginCatalogScroll(pluginId);
       const requestId = ++marketDetailRequestRef.current;
+      const owner = contributionOwnerRef.current;
+      const current = () => contributionMounted.current && requestId === marketDetailRequestRef.current && contributionOwnerRef.current === owner && activeDetailCacheRef.current === detailCache;
+      const cached = detailCache.peek(pluginId);
+      const preview = typeof item === 'string' ? marketItems.find(item => item.pluginId === pluginId) : item;
+      if (cached && preview && (cached.releaseId !== preview.releaseId || cached.installState !== preview.installState)) {
+        detailCache.invalidate(pluginId);
+      }
+      setMarketDetailError(null);
+      setMarketDetailRefreshing(!detailCache.isFresh(pluginId));
+      // A list item has no authority to provide permissions or enable installation.
+      // Drop any extra fields supplied by a catalog fixture/older host.
+      const summary = marketItemSummary((preview ?? {}) as Partial<PluginMarketDetail>);
+      if (cached) setMarketDetail(cached);
+      else if (preview) setMarketDetail(summary as PluginMarketItem);
       try {
-        const detail = await marketApi.detail(pluginId);
-        if (
-          requestId === marketDetailRequestRef.current &&
-          isMarketBusyLeaseActive(marketBusyLease)
-        ) {
+        const detail = await detailCache.load(pluginId, async () => retainMarketDetailIcon(await marketApiRef.current.detail(pluginId), preview));
+        if (current()) {
           const installed = preferInstalled && (detail.installState === 'installed' || detail.installState === 'update-available')
             ? ghosts.find(ghost => marketItemMatchesInstalledGhost(detail, ghost)) : undefined;
           if (installed) {
             setMarketDetail(null);
             setSelectedId(installedGhostStoragePart(installed));
           } else {
-            setMarketDetail(detail);
+            if (detail !== cached) setMarketDetail(detail);
           }
         }
       } catch (error) {
-        if (
-          requestId === marketDetailRequestRef.current &&
-          isMarketBusyLeaseActive(marketBusyLease)
-        ) {
-          toast.error(t(pluginMarketErrorKey(error)));
+        if (current()) {
+          // A transient background failure must not hide usable content. A Main
+          // refusal revokes the cached permissions and install action immediately.
+          if (cached && !marketDetailAccessRejected(error)) {
+            setMarketDetailError(t(pluginMarketErrorKey(error)));
+            return;
+          }
+          if (preview || cached) {
+            const unavailable = marketItemSummary((cached ?? summary) as Partial<PluginMarketDetail>);
+            setMarketDetail(unavailable as PluginMarketItem);
+            setMarketDetailError(t(pluginMarketErrorKey(error)));
+          } else toast.error(t(pluginMarketErrorKey(error)));
         }
       } finally {
-        releaseMarketBusy(marketBusyLease);
+        if (current()) setMarketDetailRefreshing(false);
       }
     },
-    [acquireMarketBusy, capturePluginCatalogScroll, ghosts, isMarketBusyLeaseActive, marketApi, releaseMarketBusy, t],
+    [capturePluginCatalogScroll, detailCache, ghosts, marketItems, t],
   );
   const handleMarketBack = useCallback(() => {
     cancelPendingPluginSuggestion(recommendationNonce ?? undefined);
@@ -1785,22 +1836,33 @@ function LocalGhostPluginPage({
     setMarketDetail(null);
   }, [recommendationNonce, requestPluginCatalogScrollRestore]);
 
-  const refreshVisibleMarketDetail = useCallback(
-    async (pluginId: string) => {
-      // A background icon renewal may observe navigation, but must never invalidate a
-      // user-initiated detail request by advancing its request generation.
-      const requestId = marketDetailRequestRef.current;
-      try {
-        const detail = await marketApi.detail(pluginId);
-        if (requestId !== marketDetailRequestRef.current) return;
-        setMarketDetail((current) => (current?.pluginId === pluginId ? detail : current));
-      } catch (error) {
-        // A background URL renewal must not close an otherwise usable detail page.
-        if (requestId === marketDetailRequestRef.current) throw error;
+  const refreshVisibleMarketDetail = useCallback(async (pluginId: string, background = false) => {
+    // A background icon renewal may observe navigation, but must never invalidate a
+    // user-initiated detail request by advancing its request generation.
+    const requestId = marketDetailRequestRef.current;
+    const owner = contributionOwnerRef.current;
+    const current = () => contributionMounted.current && requestId === marketDetailRequestRef.current && contributionOwnerRef.current === owner && activeDetailCacheRef.current === detailCache;
+    try {
+      const detail = await detailCache.load(pluginId, () => marketApiRef.current.detail(pluginId), background ? 'background' : 'refresh');
+      if (!current()) return;
+      setMarketDetailError(null);
+      setMarketDetail((current) => (current?.pluginId === pluginId ? detail : current));
+    } catch (error) {
+      // A background URL renewal must not close an otherwise usable detail page.
+      if (current()) {
+        if (marketDetailAccessRejected(error)) {
+          setMarketDetail(current => {
+            if (!current || current.pluginId !== pluginId) return current;
+            return marketItemSummary(current);
+          });
+          setMarketDetailError(t(pluginMarketErrorKey(error)));
+        }
+        throw error;
       }
-    },
-    [marketApi],
-  );
+    }
+  }, [detailCache, t]);
+  foregroundDetailRefresh.current = marketDetail?.pluginId
+    ? () => refreshVisibleMarketDetail(marketDetail.pluginId, true) : null;
   useEffect(() => {
     const pluginId = searchParams.get('market');
     if (!pluginId || marketBusyId !== null) return;
@@ -1812,9 +1874,19 @@ function LocalGhostPluginPage({
   usePluginMarketLocaleRefresh(
     marketLocale,
     async () => {
+      const memory = catalogMemoryRef.current;
       await window.electronAPI.setApplicationMenuLocale(marketLocale);
+      if (catalogMemoryRef.current !== memory) return;
+      if (!memory.localeReady) {
+        // A cold page may have started its snapshot before Main acknowledged the
+        // UI language. Finish that read, then refresh once in the correct bucket.
+        await memory.snapshotFlight?.catch(() => undefined);
+        if (catalogMemoryRef.current !== memory) return;
+        memory.snapshotAt = 0;
+        memory.localeReady = true;
+      }
     },
-    () => refreshMarket(true),
+    () => refreshMarket(true, true),
     marketDetail?.pluginId ? () => refreshVisibleMarketDetail(marketDetail.pluginId) : undefined,
   );
   const visibleMarketIcons = useMemo(
@@ -1822,7 +1894,7 @@ function LocalGhostPluginPage({
     [marketDetail?.icon, marketItems],
   );
   const refreshVisibleMarketIcons = useCallback(async () => {
-    const refreshes: Promise<void>[] = [refreshMarket(true)];
+    const refreshes: Promise<void>[] = [refreshMarket(true, false, true), browserCache.current.refresh?.({ force: true, renewIcons: true }) ?? Promise.resolve()];
     if (marketDetail?.pluginId) {
       refreshes.push(refreshVisibleMarketDetail(marketDetail.pluginId));
     }
@@ -1897,6 +1969,18 @@ function LocalGhostPluginPage({
               }),
         );
         if (shouldOpenInstalledDetailAfterMarketSuccess(isUpdate)) {
+          // The IPC receipt can precede namespace/source hydration. Use the same
+          // Host instance projection as the selected detail, keeping the exact
+          // namespace/version match rather than inventing missing identity.
+          const installedGhost = findInstalledGhostByInstanceId(readInstalledGhostsSnapshot(), installedGhostStoragePart(ghost)) ?? ghost;
+          if (marketItemMatchesInstalledGhost(marketDetail, installedGhost) && marketDetail.version === installedGhost.manifest.version) {
+            const summary = marketItemSummary(marketDetail);
+            const installed: PluginMarketItem = { ...summary, installState: 'installed', enabled: ghost.enabled };
+            // Display-only receipt projection, before selecting configuration.
+            // The normal snapshot refresh replaces it through the existing flow.
+            setMarketSnapshot(current => ({ ...(current ?? { unavailableReason: null, customSourceNames: [], unavailableCustomSourceNames: [] }),
+              items: [...(current?.items.filter(item => item.pluginId !== installed.pluginId) ?? []), installed] }));
+          }
           setMarketDetail((current) =>
             current?.pluginId === marketDetail.pluginId ? null : current,
           );
@@ -1923,14 +2007,37 @@ function LocalGhostPluginPage({
       refreshMarket,
       refreshVisibleMarketDetail,
       releaseMarketBusy,
+      setMarketSnapshot,
       showPluginMarketActionError,
       t,
     ],
   );
   const handleInstallFromMarket = useCallback(async () => {
-    if (!marketDetail) return;
-    await runMarketInstallFlow(marketDetail);
-  }, [marketDetail, runMarketInstallFlow]);
+    if (!marketDetail || !('manifest' in marketDetail) || marketDetailError || marketDetailRefreshing) return;
+    const requestId = marketDetailRequestRef.current;
+    const owner = contributionOwnerRef.current;
+    const view = contributionView.current.token;
+    const current = () => contributionMounted.current && contributionView.current.token === view && requestId === marketDetailRequestRef.current && contributionOwnerRef.current === owner && activeDetailCacheRef.current === detailCache;
+    setMarketDetailRefreshing(true);
+    try {
+      // load joins an existing foreground read before consulting its fresh cache.
+      // Installation must consume that result, never this render's old manifest.
+      const detail = await detailCache.load(marketDetail.pluginId, () => marketApiRef.current.detail(marketDetail.pluginId));
+      if (!current()) return;
+      setMarketDetail(detail);
+      await runMarketInstallFlow(detail);
+    } catch (error) {
+      if (current()) {
+        if (marketDetailAccessRejected(error)) {
+          const summary = marketItemSummary(marketDetail);
+          setMarketDetail(summary);
+        }
+        setMarketDetailError(t(pluginMarketErrorKey(error)));
+      }
+    } finally {
+      if (current()) setMarketDetailRefreshing(false);
+    }
+  }, [detailCache, marketDetail, marketDetailError, marketDetailRefreshing, runMarketInstallFlow, t]);
   /** 推荐卡片上的直接「安装」:先取详情,再走与详情页相同的确认+安装流。 */
   const handleInstallMarketItem = useCallback(
     async (pluginId: string) => {
@@ -2185,14 +2292,13 @@ function LocalGhostPluginPage({
           {recommendationNotice}
           <div className="min-h-0 flex-1">
             <GhostPluginDetailView
-              usageOwnerKey={`${panelOwnerKey}:${dataOwnerGeneration}`}
-              confirmClearUsage={() => confirm({ title: t('settings.ghosts.usage.clearTitle'), description: t('settings.ghosts.usage.clearDescription'), confirmText: t('settings.ghosts.usage.clear'), confirmVariant: 'destructive' })}
               ghost={selectedGhost}
               sharePluginId={selectedMarketInstall?.sourceType === 'server' && selectedMarketInstall.scope === 'public' ? selectedMarketInstall.pluginId : undefined}
               detail={selectedDetail}
               development={selectedDevPlugin !== null}
               displayId={selectedDevPlugin?.pluginId}
               marketItem={selectedMarketInstall}
+              installationPending={selectedMarketInstall !== null && marketInstallBusyId === selectedMarketInstall.pluginId}
               panelStatus={panelStatus}
               enabledOverride={
                 selectedGhost
@@ -2202,6 +2308,7 @@ function LocalGhostPluginPage({
               onBack={() => {
                 resetPanelModal();
                 cancelPendingPluginSuggestion(recommendationNonce ?? undefined);
+                requestPluginCatalogScrollRestore();
                 setSelectedId(null);
               }}
               onToggle={(enabled) => {
@@ -2282,7 +2389,11 @@ function LocalGhostPluginPage({
           {recommendationNotice}
           <div className="min-h-0 flex-1">
             <MarketPluginDetailView
+              key={marketDetail.pluginId}
               detail={marketDetail}
+              error={marketDetailError}
+              refreshing={marketDetailRefreshing}
+              onRetry={() => void handleSelectMarket(marketDetail)}
               busy={marketBusyId === marketDetail.pluginId}
               progress={
                 mekaInstallProgress?.pluginId === marketDetail.pluginId ? mekaInstallProgress : null
@@ -2290,7 +2401,7 @@ function LocalGhostPluginPage({
               onBack={handleMarketBack}
               onInstall={
                 canOfferMarketInstall(mode, marketDetail.ghostId)
-                  ? () => void handleInstallFromMarket()
+                  ? handleInstallFromMarket
                   : undefined
               }
               onIconLoadError={handleMarketIconLoadError}
@@ -2556,14 +2667,14 @@ function LocalGhostPluginPage({
     <PluginManagementLayout
       activeTab="plugins"
       query={query}
-      onQueryChange={setQuery}
+      onQueryChange={value => { setQuery(value.slice(0, 100)); if (pluginCatalogListRef.current) pluginCatalogListRef.current.scrollTop = 0; }}
       searchPlaceholder={t('settings.ghosts.page.search')}
       clearSearchLabel={t('settings.ghosts.page.clearSearch')}
       embedded={embedded}
       onSelectTab={onSelectCatalogTab}
       headerActions={
         <>
-          <Button variant="secondary" size="sm" onClick={() => openMyPlugins()}>
+          <Button variant="secondary" size="lg" onClick={() => openMyPlugins()}>
             {t('settings.ghosts.contribution.myPlugins')}
             {reviewUnread.length > 0 ? (
               <span role="img" className="inline-flex" aria-label={t('settings.ghosts.contribution.unreadReview')}>
@@ -2627,11 +2738,32 @@ function LocalGhostPluginPage({
                 />
               }
             >
-            <section className="plugin-motion-page-section mt-6 min-w-0">
-              <InstalledCatalogHeader
-                title={t('settings.ghosts.page.installedSection')}
-                count={searchedInstalledItems.length}
-              />
+            {!query.trim() && (!todayLoaded || todayItems.length === 3) ? <section className="mt-6 min-w-0">
+              <h2 className="mb-4 text-20 font-medium text-[var(--text-primary)]">{t('settings.ghosts.page.todayRecommendations')}</h2>
+              <PluginRecommendationSlots loading={!todayLoaded}>
+                {todayItems.map(item => <MarketPluginCard compact key={item.pluginId} item={item}
+                  busy={marketBusyId !== null} pending={marketInstallBusyId === item.pluginId}
+                  onSelect={() => void handleSelectMarket(item)}
+                  onPrefetch={isCurrent => prefetchMarketDetail(item, isCurrent)}
+                  onInstall={canOfferMarketInstall(mode, item.ghostId) ? () => void handleInstallMarketItem(item.pluginId) : undefined}
+                  onIconLoadError={handleMarketIconLoadError} />)}
+              </PluginRecommendationSlots>
+            </section> : null}
+            {!query.trim() ? <><div ref={secondaryTabs} className="mt-6 h-0" /><div className="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border-default)] app-wallpaper-surface bg-[var(--surface)] py-3">
+              <SegmentedControl role="tablist" height={38} optionHeight={32}
+                optionClassName="plugin-management-tab min-w-[88px] px-4 text-13" value={catalogTab} onValueChange={value => {
+                setCatalogTab(value);
+                const root = pluginCatalogListRef.current;
+                const tabs = secondaryTabs.current;
+                if (root && tabs && tabs.getBoundingClientRect().top < root.getBoundingClientRect().top)
+                  root.scrollTop += tabs.getBoundingClientRect().top - root.getBoundingClientRect().top;
+              }} aria-label={t('settings.ghosts.page.secondaryTabsAria')}
+                options={[
+                  { value: 'installed', label: <>{t('settings.ghosts.page.installedSection')} <span className="ml-1.5 inline-block min-w-[3ch] text-right tabular-nums">{installedItems.length}</span></> },
+                  { value: 'market', label: <>{t('settings.ghosts.page.marketSection')} <span className="ml-1.5 inline-block min-w-[3ch] text-right tabular-nums">{marketTotal ?? '\u00a0'}</span></> },
+                ]} />
+              <div ref={marketFiltersHost} className="min-w-0" />
+            </div></> : null}
             {scopeDir ? (
               <CatalogManagementNotice
                 title={t('settings.ghosts.projectBanner.title', { name: basename(scopeDir) })}
@@ -2652,6 +2784,12 @@ function LocalGhostPluginPage({
                 })}
               </CatalogManagementNotice>
             ) : null}
+            <PluginCatalogPanels scrollRef={pluginCatalogListRef} query={query}>
+            <section hidden={!query.trim() && catalogTab !== 'installed'} className="plugin-motion-page-section mt-6 min-w-0">
+              <InstalledCatalogHeader
+                title={t('settings.ghosts.page.installedSection')}
+                count={searchedInstalledItems.length}
+              />
 
 
               {legacyRecoveryStatus ? (
@@ -2662,7 +2800,7 @@ function LocalGhostPluginPage({
                 />
               ) : null}
 
-              {bannerVisible ? (
+              {bannerVisible && !query.trim() ? (
                 <div className="mb-4 flex items-center gap-4 rounded-xl border-[0.5px] border-[var(--border-default)] bg-[var(--surface-elevated)] px-4 py-3.5">
                   <span className="grid size-9 shrink-0 place-items-center rounded-full bg-[var(--surface-chip)] text-[var(--text-primary)]">
                     <ArrowUp size={16} aria-hidden="true" />
@@ -2694,7 +2832,7 @@ function LocalGhostPluginPage({
                     <Button
                       variant="cta"
                       size="lg"
-                      loading={marketBusyId !== null}
+                      loading={marketInstallBusyId !== null}
                     type="button"
                     onClick={handleUpdateAll}
                     disabled={marketBusyId !== null}
@@ -2707,12 +2845,13 @@ function LocalGhostPluginPage({
 
               {primaryInstalledItems.length > 0 ? (
                 <>
-                  <div className={cn('plugin-motion-stagger', PLUGIN_INSTALLED_CARD_GRID_CLASS)}>
-                    {primaryInstalledItems.map((item) => (
+                  <PluginVirtualGrid count={primaryInstalledItems.length} scrollRef={pluginCatalogListRef} cache={installedGridCache} active={!!query.trim() || catalogTab === 'installed'} renderItem={index => {
+                    const item = primaryInstalledItems[index]!;
+                    return (
                       <GhostPluginCard
                         key={item.id}
                         item={item}
-                        sourceLabel={t(`settings.ghosts.page.origin.${item.origin}`)}
+                        sourceLabel={item.origin ? t(`settings.ghosts.page.origin.${item.origin}`) : undefined}
                         marketItem={item.marketItem}
                         author={item.author}
                         updateVersion={item.marketUpdate?.version}
@@ -2720,51 +2859,18 @@ function LocalGhostPluginPage({
                         updateBusy={
                           (item.marketUpdate !== null && marketBusyId !== null) || batchRunning
                         }
-                        updatePending={item.marketUpdate?.pluginId === marketBusyId}
+                        updatePending={item.marketUpdate?.pluginId === marketInstallBusyId}
                         onUpdate={
                           item.marketUpdate ? () => void handleMarketUpdate(item.id) : undefined
                         }
                         effectiveEnabled={effectiveEnabled(item.id, item.enabled)}
                         onPrimary={() => handlePrimaryAction(item)}
-                        onManage={() => setSelectedId(item.id)}
+                        onManage={() => { capturePluginCatalogScroll(`installed:${item.id}`); setSelectedId(item.id); }}
                         onIconLoadError={handleMarketIconLoadError}
                       />
-                    ))}
-                  </div>
-                  {additionalInstalledItems.length > 0 ? (
-                    <InstalledPluginOverflow id={installedOverflowId} expanded={installedExpanded}>
-                      <div
-                        className={cn(
-                          PLUGIN_INSTALLED_CARD_GRID_CLASS,
-                          'plugin-installed-overflow-grid',
-                          installedExpanded && 'plugin-motion-stagger',
-                        )}
-                      >
-                        {additionalInstalledItems.map((item) => (
-                          <GhostPluginCard
-                            key={item.id}
-                            item={item}
-                            sourceLabel={t(`settings.ghosts.page.origin.${item.origin}`)}
-                            marketItem={item.marketItem}
-                            author={item.author}
-                            updateVersion={item.marketUpdate?.version}
-                            updateNeedsConsent={item.marketUpdate?.updateRequiresConsent === true}
-                            updateBusy={
-                              (item.marketUpdate !== null && marketBusyId !== null) || batchRunning
-                            }
-                            updatePending={item.marketUpdate?.pluginId === marketBusyId}
-                            onUpdate={
-                              item.marketUpdate ? () => void handleMarketUpdate(item.id) : undefined
-                            }
-                            effectiveEnabled={effectiveEnabled(item.id, item.enabled)}
-                            onPrimary={() => handlePrimaryAction(item)}
-                            onManage={() => setSelectedId(item.id)}
-                            onIconLoadError={handleMarketIconLoadError}
-                          />
-                        ))}
-                      </div>
-                    </InstalledPluginOverflow>
-                  ) : null}
+                    );
+                  }} />
+                  <div ref={installedSentinel} className="h-1" />
                 </>
               ) : !legacyRecoveryStatus ? (
                 <div className="rounded-xl border-[0.5px] border-[var(--border-default)] px-5 py-10 text-center">
@@ -2774,164 +2880,42 @@ function LocalGhostPluginPage({
                       : t('settings.ghosts.page.emptyFiltered')}
                   </p>
                   {installedItems.length === 0 ? (
-                    <p className="mt-1.5 text-12 text-[var(--text-tertiary)]">
+                    <><p className="mt-1.5 text-12 text-[var(--text-tertiary)]">
                       {t('settings.ghosts.emptyHint')}
-                    </p>
+                    </p><Button className="mt-4" size="sm" onClick={() => { setQuery(''); setCatalogTab('market'); }}>{t('settings.ghosts.page.browseMarket')}</Button></>
                   ) : null}
                 </div>
               ) : null}
-              {hiddenInstalledCount > 0 ? (
-                <InstalledPluginDisclosure
-                  expanded={installedExpanded}
-                  controlsId={installedOverflowId}
-                  totalCount={displayInstalledItems.length}
-                  previewItems={additionalInstalledItems}
-                  onToggle={() => setInstalledExpanded((expanded) => !expanded)}
-                  onIconLoadError={handleMarketIconLoadError}
-                />
-              ) : null}
             </section>
 
-            {availableMarketItems.length > 0 ||
-            searchedAvailableMarketItems.length > 0 ||
-            marketSnapshot?.unavailableReason ||
-            marketSnapshot?.organizationAccessError ||
-            marketSnapshot?.unavailableCustomSourceNames.length ? (
-              <section className="plugin-motion-page-section mt-10 min-w-0">
-                <div className={PLUGIN_CATALOG_TOOLBAR_CLASS}>
-                  {/* 推荐区标题不带数字(设计定稿):数量感由卡片自身传达。 */}
-                  <h2 className="shrink-0 whitespace-nowrap text-20 font-medium text-[var(--text-primary)]">
-                    {t('settings.ghosts.page.recommendedSection')}
-                  </h2>
-                  <SegmentedControl
-                    className="plugin-catalog-filters"
-                    role="radiogroup"
-                    aria-label={t('settings.ghosts.page.filtersAria')}
-                    style={WINDOW_NO_DRAG_STYLE}
-                    height={32}
-                    optionHeight={28}
-                    optionClassName="px-3.5 text-12"
-                    value={effectiveOriginFilter}
-                    onValueChange={setOriginFilter}
-                    options={recommendedFilters.map((filter) => {
-                      const count =
-                        filter === 'all'
-                          ? searchedAvailableMarketItems.length
-                          : recommendedCounts[filter];
-                      return {
-                        value: filter,
-                        label: (
-                          <>
-                            {filter === 'all'
-                              ? t('settings.ghosts.page.filterAll')
-                              : t(`settings.ghosts.page.origin.${filter}`)}
-                            <span className="ml-1.5 tabular-nums text-[var(--text-tertiary)]">
-                              {count}
-                            </span>
-                          </>
-                        ),
-                      };
-                    })}
-                  />
-                </div>
-
-                <p className="mb-3 text-12 leading-5 text-[var(--text-tertiary)]">
-                  {t('settings.ghosts.remote.installDestination', { device: t('settings.ghosts.remote.thisComputer') })}
-                </p>
-                {marketSnapshot?.unavailableReason ? (
-                  <p className="mb-4 rounded-xl border border-[var(--border-default)] bg-[var(--surface-chip)] px-4 py-3 text-12 text-[var(--text-secondary)]">
-                    {t(
-                      marketSnapshot.unavailableReason === 'authentication-required'
-                        ? 'settings.ghosts.market.authenticationRequired'
-                        : marketSnapshot.unavailableReason === 'not-configured'
-                          ? 'settings.ghosts.market.notConfigured'
-                          : 'settings.ghosts.market.unavailable',
-                    )}
-                  </p>
-                ) : null}
-
-                {marketSnapshot?.unavailableCustomSourceNames.length ? (
-                  <p className="mb-4 rounded-xl border border-[var(--border-default)] bg-[var(--surface-chip)] px-4 py-3 text-12 text-[var(--text-secondary)]">
-                    {t('settings.ghosts.market.customSourcesUnavailable', {
-                      names: marketSnapshot.unavailableCustomSourceNames.join(', '),
-                    })}
-                  </p>
-                ) : null}
-
-                {organizationAccessErrorKey ? (
-                  <p className="mb-4 rounded-xl border border-[var(--border-default)] bg-[var(--surface-chip)] px-4 py-3 text-12 text-[var(--text-secondary)]">
-                    {t(organizationAccessErrorKey)}
-                  </p>
-                ) : null}
-
-                {availableMarketItems.length > 0 ? (
-                  customGroups && customGroups.length > 1 ? (
-                    <div className="flex flex-col gap-6">
-                      {customGroups.map(([marketName, groupItems]) => (
-                        <section key={marketName || 'unknown-source'}>
-                          <header className="mb-3 flex items-baseline gap-2">
-                            <h3 className="text-14 font-medium text-[var(--text-primary)]">
-                              {marketName || t('settings.ghosts.page.origin.custom')}
-                            </h3>
-                            <span className="text-12 tabular-nums text-[var(--text-tertiary)]">
-                              {groupItems.length}
-                            </span>
-                          </header>
-                          <div
-                            className={cn(
-                              'plugin-motion-stagger',
-                              PLUGIN_MANAGEMENT_CARD_GRID_CLASS,
-                            )}
-                          >
-                            {groupItems.map((item) => (
-                              <MarketPluginCard
-                                key={item.pluginId}
-                                item={item}
-                                busy={marketBusyId !== null}
-                                pending={marketBusyId === item.pluginId}
-                                onSelect={() => void handleSelectMarket(item.pluginId)}
-                                onInstall={
-                                  canOfferMarketInstall(mode, item.ghostId)
-                                    ? () => void handleInstallMarketItem(item.pluginId)
-                                    : undefined
-                                }
-                                onIconLoadError={handleMarketIconLoadError}
-                              />
-                            ))}
-                          </div>
-                        </section>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className={cn('plugin-motion-stagger', PLUGIN_MANAGEMENT_CARD_GRID_CLASS)}>
-                      {availableMarketItems.map((item) => (
-                        <MarketPluginCard
-                          key={item.pluginId}
-                          item={item}
-                          busy={marketBusyId !== null}
-                          pending={marketBusyId === item.pluginId}
-                          onSelect={() => void handleSelectMarket(item.pluginId)}
-                          onInstall={
-                            canOfferMarketInstall(mode, item.ghostId)
-                              ? () => void handleInstallMarketItem(item.pluginId)
-                              : undefined
-                          }
-                          onIconLoadError={handleMarketIconLoadError}
-                        />
-                      ))}
-                    </div>
-                  )
-                ) : marketSnapshot?.unavailableReason ||
-                  marketSnapshot?.organizationAccessError ||
-                  marketSnapshot?.unavailableCustomSourceNames.length ? null : (
-                  <div className="rounded-xl border-[0.5px] border-[var(--border-default)] px-5 py-10 text-center">
-                    <p className="text-13 text-[var(--text-secondary)]">
-                      {t('settings.ghosts.page.emptyFiltered')}
-                    </p>
-                  </div>
-                )}
-              </section>
-            ) : null}
+            <PluginCatalogBrowser cacheRef={browserCache} ownerKey={catalogOwnerKey}
+              prewarm={active}
+              filterHost={marketFiltersHost}
+              catalogKey={marketLocale}
+              revision={JSON.stringify([marketSnapshot?.items.map(item => [item.pluginId, item.installState, item.version]), customSourceNames, catalogRevision])}
+              installedItems={marketSnapshot?.items}
+              installedGhosts={ghosts}
+              query={query} scope={effectiveOriginFilter === 'local' ? 'custom' : effectiveOriginFilter}
+              onScope={value => {
+                setOriginFilter(value === 'personal' ? 'all' : value);
+                const root = pluginCatalogListRef.current;
+                const tabs = secondaryTabs.current;
+                if (root && tabs && tabs.getBoundingClientRect().top < root.getBoundingClientRect().top)
+                  root.scrollTop += tabs.getBoundingClientRect().top - root.getBoundingClientRect().top;
+              }}
+              showOrganization={showEnterprise} visible={active && (!!query.trim() || catalogTab === 'market')}
+              scrollRef={pluginCatalogListRef} loadPage={window.electronAPI.pluginMarket.query}
+              renderRevision={marketBusyId}
+              onCounts={counts => setMarketTotal(counts?.all ?? null)}
+              renderItem={item => <MarketPluginCard key={item.pluginId} item={item}
+                busy={marketBusyId !== null} pending={marketInstallBusyId === item.pluginId}
+                onSelect={() => void handleSelectMarket(item)}
+                onPrefetch={isCurrent => prefetchMarketDetail(item, isCurrent)}
+                onInstall={canOfferMarketInstall(mode, item.ghostId) && item.installState !== 'installed' && item.installState !== 'update-available'
+                  ? () => void handleInstallMarketItem(item.pluginId) : undefined}
+                onIconLoadError={handleMarketIconLoadError} />}
+            />
+            </PluginCatalogPanels>
             </MyPublishesSectionVisibilityGate>
           </PluginManagementPage>
         </main>
@@ -2940,7 +2924,7 @@ function LocalGhostPluginPage({
       <AddMarketplaceDialog
         open={addMarketplaceOpen}
         onOpenChange={setAddMarketplaceOpen}
-        onSourcesChanged={() => void refreshMarket()}
+        onSourcesChanged={() => { setCatalogRevision(value => value + 1); void refreshMarket(); }}
       />
       {updateRows ? (
         <UpdateAllDialog
@@ -3000,18 +2984,22 @@ export function LegacyGhostRecoveryNotice({
 
 export function MarketPluginCard({
   item,
+  compact = false,
   busy,
   pending = false,
   onSelect,
+  onPrefetch,
   onInstall,
   onIconLoadError,
   sourceLabel,
 }: {
   item: PluginMarketItem;
+  compact?: boolean;
   busy: boolean;
   /** 本卡正在安装:主按钮换成 Spinner。 */
   pending?: boolean;
   onSelect: () => void;
+  onPrefetch?: (isCurrent: () => boolean) => void;
   /** 卡片直接安装；卡片正文、右侧空白与右上角箭头都进入详情。 */
   onInstall?: () => void;
   onIconLoadError: () => void;
@@ -3020,12 +3008,62 @@ export function MarketPluginCard({
   const { t } = useTranslation();
   const metadataId = useId();
   const marketIcon = usePluginMarketIcon(item, { deferUntilVisible: true });
+  const origin = pluginPresentationOrigin(item);
+  const author = pluginPresentationAuthor(item);
   const unavailable = busy;
   const replacementDescriptionId = useId();
   const replacementDescription =
     item.installState === 'conflict' ? t('settings.ghosts.market.replaceDescription') : undefined;
+  const prefetchRef = useRef(onPrefetch);
+  prefetchRef.current = onPrefetch;
+  const prefetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prefetchGeneration = useRef(0);
+  const cancelPrefetch = useCallback(() => {
+    prefetchGeneration.current += 1;
+    if (prefetchTimer.current !== null) clearTimeout(prefetchTimer.current);
+    prefetchTimer.current = null;
+  }, []);
+  const schedulePrefetch = useCallback(() => {
+    cancelPrefetch();
+    const generation = prefetchGeneration.current;
+    prefetchTimer.current = setTimeout(() => { prefetchRef.current?.(() => prefetchGeneration.current === generation); }, 250);
+  }, [cancelPrefetch]);
+  useEffect(() => cancelPrefetch, [cancelPrefetch]);
+  const prefetchEvents = {
+    onPointerEnter: schedulePrefetch,
+    onPointerLeave: cancelPrefetch,
+    onFocusCapture: schedulePrefetch,
+    onBlurCapture: cancelPrefetch,
+  };
+  if (compact) return <article {...prefetchEvents} className="relative min-w-0 rounded-xl border-[0.5px] border-[var(--border-default)] bg-[var(--surface-elevated)] px-3.5 py-3">
+    <button type="button" className="absolute inset-0 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+      disabled={unavailable} onClick={onSelect} aria-label={item.name} aria-describedby={metadataId} />
+    <div className="pointer-events-none flex min-w-0 items-start gap-3">
+      <GhostPluginIcon size="sm" iconContainerRef={marketIcon.containerRef} iconDataUrl={marketIcon.iconDataUrl}
+        iconId={item.ghostId} iconName={item.name} onIconLoad={marketIcon.onIconLoad}
+        onIconLoadError={() => marketIcon.onIconLoadError(onIconLoadError)} />
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <p className="truncate text-15 font-medium text-[var(--text-primary)]" title={item.name}>{item.name}</p>
+          <PluginPublisherBadge origin={origin} kind={item.publisherKind} />
+        </div>
+        <div className="mt-1 flex min-w-0 items-center gap-3">
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5 gap-y-1 text-11 text-[var(--text-tertiary)]">
+            <span>{t(`settings.ghosts.page.origin.${origin}`)}</span>
+            {author ? <><span aria-hidden="true">·</span><span className="min-w-0 max-w-[120px] truncate">{author}</span></> : null}
+            <PluginSharedUsage detail={item} variant="list" onClick={unavailable ? undefined : onSelect} />
+          </div>
+          {onInstall ? <Button className="pointer-events-auto relative z-[1] shrink-0" variant="secondary" size="sm" compact
+            loading={pending} disabled={unavailable} onClick={onInstall}
+            aria-label={t('settings.ghosts.page.installAria', { name: item.name })}>{t('settings.ghosts.market.install')}</Button> : null}
+        </div>
+      </div>
+    </div>
+    <p id={metadataId} className="pointer-events-none mt-2 line-clamp-2 text-13 leading-5 text-[var(--text-secondary)]">{item.description || item.ghostId}</p>
+  </article>;
   return (
     <article
+      {...prefetchEvents}
       className={cn(
         'group flex min-h-[108px] w-full select-none items-start gap-4 rounded-xl border-[0.5px] border-[var(--border-default)] bg-[var(--surface-elevated)] p-4 text-left',
         'transition-[background-color,border-color,transform] duration-150 ease-out',
@@ -3054,17 +3092,18 @@ export function MarketPluginCard({
           onIconLoadError={() => marketIcon.onIconLoadError(onIconLoadError)}
         />
         <span className="flex min-w-0 flex-1 flex-col self-stretch pt-0.5">
-          <span className="truncate text-15 font-medium text-[var(--text-primary)]">
-            {item.name}
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className="truncate text-15 font-medium text-[var(--text-primary)]" title={item.name}>{item.name}</span>
+            <PluginPublisherBadge origin={origin} kind={item.publisherKind} />
           </span>
           <span id={metadataId} className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-11 text-[var(--text-tertiary)]">
             <span className="shrink-0">
               {sourceLabel ?? t(`settings.ghosts.page.origin.${pluginPresentationOrigin(item)}`)}
             </span>
-            {item.author ? (
+            {author ? (
               <>
                 <span aria-hidden="true">·</span>
-                <span className="min-w-0 max-w-[120px] truncate">{item.author}</span>
+                <span className="min-w-0 max-w-[120px] truncate">{author}</span>
               </>
             ) : null}
             <PluginSharedUsage detail={item} variant="list" />
@@ -3098,7 +3137,9 @@ export function MarketPluginCard({
             <ChevronRight size={16} aria-hidden="true" />
           </span>
         </button>
-        {onInstall ? (
+        {item.installState === 'installed' || item.installState === 'update-available' ? (
+          <span className="relative z-[1] px-2 py-2 text-12 text-[var(--text-tertiary)]">{t('settings.ghosts.page.installedSection')}</span>
+        ) : onInstall ? (
           <Button
             variant="secondary"
             size="md"
@@ -3116,7 +3157,7 @@ export function MarketPluginCard({
                 ? t('settings.ghosts.market.replaceAria', { name: item.name })
                 : t('settings.ghosts.page.installAria', { name: item.name })
             }
-            aria-describedby={replacementDescription ? replacementDescriptionId : undefined}
+          aria-describedby={replacementDescription ? replacementDescriptionId : undefined}
             className="relative z-[1] min-w-[72px] shrink-0"
           >
             {t(
@@ -3187,6 +3228,10 @@ export function GhostPluginCard({
   const metadataId = useId();
   const installationLabel = item.installationLabelKey
     ? t(`settings.ghosts.detail.${item.installationLabelKey}`, { name: item.installationNamespace }) : sourceLabel;
+  const origin = marketItem ? pluginPresentationOrigin(marketItem) : item.origin;
+  const publisherKind = marketItem?.sourceType === 'server' && marketItem.scope === 'public'
+    ? marketItem.publisherKind : item.publisherKind;
+  const visibleAuthor = origin === 'public' && publisherKind !== 'official' ? null : author;
   const enabled = effectiveEnabled ?? item.enabled;
   // 远程列表不投影本机同名插件的未读状态。
   const localUnread = useGhostUnread(item.id);
@@ -3245,6 +3290,7 @@ export function GhostPluginCard({
     <article
       role="button"
       tabIndex={0}
+      data-plugin-id={`installed:${item.id}`}
       onClick={onManage}
       onKeyDown={handleCardKeyDown}
       aria-label={item.name}
@@ -3268,13 +3314,14 @@ export function GhostPluginCard({
       />
       <span className="flex min-w-0 flex-1 flex-col self-stretch pt-0.5">
         <span className="flex min-w-0 items-center gap-1.5">
-          <span className="truncate text-15 font-medium text-[var(--text-primary)]">
+          <span className="truncate text-15 font-medium text-[var(--text-primary)]" title={item.name}>
             {item.name}
           </span>
+          <PluginPublisherBadge origin={origin} kind={publisherKind} />
           {item.retirement?.unread ? (
             <AttentionDot tone="awaiting" size={6} className="mt-px" />
           ) : unread ? (
-            <AttentionDot breathing size={6} className="mt-px" />
+            <AttentionDot size={6} className="mt-px" />
           ) : null}
         </span>
         {/* 元信息行只说事实:来源、作者、共享下载量与异常态,**不能**断言「已是最新」——
@@ -3294,10 +3341,10 @@ export function GhostPluginCard({
         >
           {sourceLabel ? <span className="shrink-0">{sourceLabel}</span> : null}
           {installationLabel ? <span className="min-w-0 break-words">{installationLabel}</span> : null}
-          {author ? (
+          {visibleAuthor ? (
             <>
               {installationLabel ? <span aria-hidden="true">·</span> : null}
-              <span className="min-w-0 max-w-[120px] truncate">{author}</span>
+              <span className="min-w-0 max-w-[120px] truncate">{visibleAuthor}</span>
             </>
           ) : null}
           {marketItem ? <PluginSharedUsage detail={marketItem} variant="list" /> : null}

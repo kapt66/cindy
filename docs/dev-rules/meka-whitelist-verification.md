@@ -3340,7 +3340,7 @@ HTTPS-only 发布根**不受本次回退影响**；真实发布与签名验证�
 - **本条的自我约束**：本节只登记退役/新增与验证现状，不改写任何带日期的历史原句；
   历史正文全部保留在 Git 历史与迁移总账 §11.32 的交付记录里。
 
-### WL-26 Meka 不启用客户端日志上报（2026-11-06 第七轮补全：含 `performance-trace` 的去上传收口）
+### WL-26 Meka 不启用客户端日志上报（2026-11-06 第七轮补全；2026-11-17 第八轮补 `crashTriggers` 窄例外与区域前缀不接）
 
 **保护的不变量**：Meka **不调用**任何客户端日志上报（SLS）：构建期**不**读取/注入上报目标、
 运行时**没有**上报通道与设置存储、**没有**崩溃自动补传、设置 → 关于**没有**上报入口。
@@ -3360,6 +3360,20 @@ issue 诊断会连带失效 —— 那是本条的边界。
 （只剩 divergence 注释）；`initPerformanceTraceService` **接线**，但它已是纯本地服务
 （录制 → 写 `userData/diagnostics/performance-traces/<id>/report.json` → 在文件夹中显示 → 7 天保留期，
 命令面里 `upload` 已被拒绝为 `INVALID_PARAMS`）。
+
+**第八轮（2026-11-17）的两处补全**：
+1. **`crashTriggers` 窄例外**：上游本轮新增的 `main/crash-diagnosis.ts` 是**纯本地**崩溃诊断
+   （启动后提示「上次异常退出」→ 打开本地日志摘要，**无网络、无上报目标**），它只从
+   `main/log-upload/crashTriggers.ts` 取一个 `isFatalCrashReason()`。因此本仓把该文件以**极窄形态**
+   保留：**只含 `isFatalCrashReason`**，上游同模块里的补传专用函数
+   （`shouldBackfillForReportKind` / `crashAtFromMarker` / `selectBackfillGrouping`）**禁止加回**。
+   `bootstrap-electron.ts` 接 `initCrashDiagnosisService()`、**不接** `initLogUploadService()` /
+   `scheduleStartupBackfill()`。
+2. **区域前缀上报编号不接**：本轮上游把上传编号改造为带区域前缀的
+   `formatUploadCode(raw, region)` / `isFormattedUploadCode`，它们只服务上报批次与补传标记。
+   本仓的本地性能报告编号仍是**无前缀**的 `generateTraceReportId()`（形状 `XXXX-XXXX`），
+   `performance-trace/{index,retention}.ts` 是这条改造的**诱饵入口**，**不要**按
+   `isFormattedUploadCode` 把前缀语义接回本地 ID，也不要让 `retention.ts` 去识别前缀目录。
 
 **代码锚点**（符号名为准）：
 - 移除面（不得恢复）：`main/log-upload/index.ts` / `uploadRunner.ts` / `logSink.ts` 与
@@ -3388,6 +3402,8 @@ issue 诊断会连带失效 —— 那是本条的边界。
   `shared/logUpload.ts` **只保留** `LogUploadReason`；`main/performance-trace/**`（`capture` / `controller` /
   `measure` / `report` / `reportId` / `retention` / `ipc` / `index`）与 `renderer/components/performance-trace/**` +
   `shared/performanceTrace.ts` 的本地录制、保存、查看目录、保留期（`upload` 相位/状态/命令已从类型里删掉）。
+  **`main/log-upload/crashTriggers.ts` 是唯一的窄例外**（只含 `isFatalCrashReason`，见上文第八轮补全第 1 条），
+  消费者只有 `main/crash-diagnosis.ts`（纯本地崩溃诊断）+ `renderer/components/log-support/StartupRecoveryDialogs.tsx`。
 - 移动端漏面**已清（2026-11-06 本轮）**：`apps/mobile/src/debug/diagnosticUpload.ts`
   （`parseDiagnosticUploadTarget` / `uploadDiagnosticSnapshot`，SLS web-tracking 上传）与其测试
   `diagnosticUpload.test.ts` **已删除**（删除前生产 0 引用，只被自身测试引用）。
@@ -3404,7 +3420,8 @@ issue 诊断会连带失效 —— 那是本条的边界。
   `MenuButton.test.tsx` 守住性能跟踪结果页**没有**说明输入框/提交按钮、只有「查看本地文件」。
 - **反回归 grep**（代码 0 命中）：`uploadPerformanceTraceReport` / `generateUploadCode` /
   `submitPerformanceReport` / `traceRedactionWorker` / `restore-performance-report` / `diagnosticUpload` /
-  `MAX_LOGS_PER_BATCH`；`LogUploadTarget` 只允许出现在解释「为什么删」的注释里。
+  `MAX_LOGS_PER_BATCH` / **`isFormattedUploadCode`** / **`formatUploadCode`**（后两者仅允许出现在「不接」的注释里）；
+  `LogUploadTarget` 只允许出现在解释「为什么删」的注释里。
   **代码锚点与文档同批**：本地口径正本是 [`performance-tracing.md`](performance-tracing.md)
   （命令面 `state`/`start`/`stop`/`show-local`、7 天保留期、本地报告 ID、无上传面）；该文档与本节必须一起改，
   只改一处会让下一次同步按另一处恢复上传面。

@@ -346,12 +346,15 @@ describe('local report id', () => {
 describe('performance report retention', () => {
   // Review: expired raw profiles survived indefinitely without another recording.
   // Real cleanup entry, bounded OS temp fixtures; the former tests covered no retention.
+  // Meka（WL-26）：录制编号是本模块自己的**本地** ID（`<4>-<4>`，无区域前缀），保留期判据是
+  // `TRACE_REPORT_ID_PATTERN`。上游把编号换成带区域前缀的上传编号后，同一用例变成了
+  // 「CN-/GLOBAL-/DEV- 前缀目录也要被清理」——本仓不适用，这里只锁本功能自己产出的目录形状。
   it('removes only expired generated directories and preserves active/new/exported files', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'cindy-trace-retention-'));
     const now = Date.now();
     const old = new Date(now - TRACE_RETENTION_MS - 1);
     try {
-      for (const name of ['2345-6789', 'BCDE-FGHJ', 'K M N', 'PQRS-TVWX']) {
+      for (const name of ['2345-6789', 'BCDE-FGHJ', 'K M N', 'PQRS-TVWX', 'OTHER-2345-6789']) {
         const dir = path.join(root, name);
         await mkdir(dir);
         await writeFile(path.join(dir, 'chromium-trace.json'), '{}');
@@ -359,12 +362,9 @@ describe('performance report retention', () => {
       }
       await writeFile(path.join(root, 'YZ23-4567'), 'not a directory');
       await cleanupTraceReports(root, (id) => id !== 'BCDE-FGHJ', now);
-      expect((await readdir(root)).sort()).toEqual([
-        'BCDE-FGHJ',
-        'K M N',
-        'PQRS-TVWX',
-        'YZ23-4567',
-      ]);
+      expect((await readdir(root)).sort()).toEqual(
+        ['BCDE-FGHJ', 'K M N', 'PQRS-TVWX', 'OTHER-2345-6789', 'YZ23-4567'].sort(),
+      );
       await cleanupTraceReports(root, () => true, now);
       expect(await readdir(root)).not.toContain('BCDE-FGHJ');
     } finally {

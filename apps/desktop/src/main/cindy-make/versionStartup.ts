@@ -8,7 +8,7 @@ import { brandExecutableName } from '@cindy/maker-shared/brand-identity';
 import { CINDY_MAKE_ENABLED } from '@cindy/maker-shared/cindy-make-feature';
 import { CURRENT_CINDY_REGION } from '../../shared/brandRegion.js';
 import { createLogger } from '../logger.js';
-import { t } from '../i18n.js';
+import { t } from '../i18n.desktop.js';
 import { observeDesktopStartupResult } from '../devStartupStatus.js';
 import { defaultPtySpawn } from '../terminal/ptyFactory.js';
 import { makeTestEnvironment } from './testRunner.js';

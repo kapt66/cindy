@@ -21,6 +21,11 @@ import {
   dingtalkSessionIdFor,
 } from '../adapter';
 import { DINGTALK_PERSONAL_GROUP_WINDOW } from '../../shared/channelGroupWindow';
+import { setMainLocale } from '../../../i18n.desktop';
+
+// 断言中文控制文案:显式锁定界面语言,结束后还原默认。
+beforeEach(() => setMainLocale('zh-CN'));
+afterEach(() => setMainLocale('en'));
 
 // meka/main 谱系：群窗口表在 0092（上游 0086/0087/0136 在这里是占位或
 // chat_history_cache），三颗统计触发器则由 0092 的 TS 脚本补建；0139 重建触发器，
@@ -98,6 +103,15 @@ describe('dingtalk turn permission boundary', () => {
 
   it('主人私聊遵循 session permissionMode，不叠加与完全访问互斥的逐轮策略', () => {
     expect(adapter.turnPermissionPolicyFor?.(baseEvent)).toBeUndefined();
+  });
+
+  it('directs unsupported permission modes to Cindy, not an unsupported chat command', () => {
+    const copy = adapter.ui.error!.permissionModeUnsupported;
+    const message = typeof copy === 'function' ? copy('bypassPermissions') : copy;
+    expect(message).toContain('尚未执行');
+    expect(message).toContain('Cindy');
+    expect(message).toContain('自动审批');
+    expect(message).not.toContain('/permission');
   });
 
   it('群聊保留逐轮危险操作强确认', () => {

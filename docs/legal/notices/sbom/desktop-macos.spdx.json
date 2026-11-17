@@ -3,9 +3,9 @@
   "dataLicense": "CC0-1.0",
   "SPDXID": "SPDXRef-DOCUMENT",
   "name": "cindy-desktop-macos",
-  "documentNamespace": "https://cindy.app/spdx/desktop-macos/29e81aa5a6649f823170f830ecd42b52aaee7564dfae68f8780203c86ec1b374",
+  "documentNamespace": "https://cindy.app/spdx/desktop-macos/66b6328bfd7e124eea022f574f0c90942f3a0b919152c4280283c08da211cce0",
   "creationInfo": {
-    "created": "2026-10-19T02:03:23Z",
+    "created": "2026-10-22T12:27:42Z",
     "creators": [
       "Tool: scripts/generate-third-party-notices.mjs"
     ]
@@ -112,6 +112,16 @@
       "copyrightText": "NOASSERTION"
     },
     {
+      "name": "Magpie SVG mark (adapted)",
+      "SPDXID": "SPDXRef-Package-4ca8318bb935f57f",
+      "versionInfo": "adapted",
+      "downloadLocation": "https://github.com/yetone/magpie/blob/main/site/public/img/magpie-small.svg",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION"
+    },
+    {
       "name": "oh-my-pi Windows Git PATH helpers (adapted)",
       "SPDXID": "SPDXRef-Package-42f340d5003334bd",
       "versionInfo": "326d24bd40d9858e24e1036ae739c27c72eeb543",
@@ -183,8 +193,8 @@
     },
     {
       "name": "pi coding agent (runtime-downloaded binary)",
-      "SPDXID": "SPDXRef-Package-23c9ac3c9c1b077c",
-      "versionInfo": "1.4.0",
+      "SPDXID": "SPDXRef-Package-9a414e8a6f3ff55d",
+      "versionInfo": "1.0.2",
       "downloadLocation": "https://github.com/earendil-works/pi",
       "filesAnalyzed": false,
       "licenseConcluded": "MIT",
@@ -8439,23 +8449,6 @@
       ]
     },
     {
-      "name": "gifenc",
-      "SPDXID": "SPDXRef-Package-489972220a87f19b",
-      "versionInfo": "1.0.3",
-      "downloadLocation": "https://github.com/mattdesl/gifenc",
-      "filesAnalyzed": false,
-      "licenseConcluded": "MIT",
-      "licenseDeclared": "MIT",
-      "copyrightText": "NOASSERTION",
-      "externalRefs": [
-        {
-          "referenceCategory": "PACKAGE-MANAGER",
-          "referenceType": "purl",
-          "referenceLocator": "pkg:npm/gifenc@1.0.3"
-        }
-      ]
-    },
-    {
       "name": "github-from-package",
       "SPDXID": "SPDXRef-Package-986647e01a0c4195",
       "versionInfo": "0.0.0",
@@ -16058,6 +16051,11 @@
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-Package-4ca8318bb935f57f"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
       "relatedSpdxElement": "SPDXRef-Package-42f340d5003334bd"
     },
     {
@@ -16093,7 +16091,7 @@
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
-      "relatedSpdxElement": "SPDXRef-Package-23c9ac3c9c1b077c"
+      "relatedSpdxElement": "SPDXRef-Package-9a414e8a6f3ff55d"
     },
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
@@ -18534,11 +18532,6 @@
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
       "relatedSpdxElement": "SPDXRef-Package-aa8f1bd1b4a702d6"
-    },
-    {
-      "spdxElementId": "SPDXRef-DOCUMENT",
-      "relationshipType": "DESCRIBES",
-      "relatedSpdxElement": "SPDXRef-Package-489972220a87f19b"
     },
     {
       "spdxElementId": "SPDXRef-DOCUMENT",

@@ -60,6 +60,7 @@ import {
   writePackageVersion,
   runDbValidate,
   verifyPackagedDrizzle,
+  verifyPackagedSkillVersionRecords,
   runSmokeTest,
   fetchExistingManifestIfAvailable,
   findInstallerArtifact,
@@ -916,6 +917,7 @@ async function main() {
         ? path.join(DESKTOP_ROOT, 'out', `${appName}-darwin-${arch}`, `${appName}.app`, 'Contents', 'Resources', 'drizzle')
         : path.join(DESKTOP_ROOT, 'out', `${appName}-${platformKey}`, 'resources', 'drizzle');
     verifyPackagedDrizzle(drizzleOut);
+    verifyPackagedSkillVersionRecords(path.join(path.dirname(drizzleOut), 'system-skills'));
 
     // 原生运行时二进制必须已被 asar.unpack 释放到 app.asar.unpacked/。留在
     // app.asar 里的 libvips / conpty / sherpa / sqlite-vec 会让 packaged 应用在
