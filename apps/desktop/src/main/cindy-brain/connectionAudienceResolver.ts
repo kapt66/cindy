@@ -1,7 +1,19 @@
 /**
  * Host-owned Connection audience resolution. Explicit Forge installs for the
  * current organization and intact organization-market installs are the two
- * dynamic bases. A temporary local-install exception exists only for root
+ * dynamic bases. A third base covers the Meka internal distribution channel:
+ * installs from the MCPRouter Meka registry land in their own market ledger
+ * (`meka-ledger.v1.json`) with `personal` / `public` scope, so they can never
+ * satisfy the organization-scope basis; they resolve when the current identity
+ * is an organization membership, the ghost is recorded installed in the Meka
+ * market ledger (or is a Host-trusted bundled seed id of a root instance), an
+ * approved package digest exists, and the installed manifest declares an exact
+ * oidc-token host. A recorded install must also match the currently installed
+ * ghost.json identity (`verifyInstalledMarketManifest`); a record without that
+ * identity is rejected instead of being trusted. A corrupted Meka ledger is a
+ * hard failure, not an absent record. The Cindy channel itself keeps the
+ * organization-only rule.
+ * A temporary local-install exception exists only for root
  * ghostId `mivo-canvas`: organization members may resolve after the org gate
  * when the installed manifest's exact oidc-token host is only
  * `mivo-canvas.dsworks.cn` and the instance namespace is null or not yet
@@ -100,6 +112,13 @@ export interface LoadConnectionAudienceResolverOptions {
   readMarketInstallation(
     ghostId: string,
   ): PluginMarketInstallationRecord | MarketInstallationLookup | null;
+  /**
+   * Meka 渠道的独立账本查询（`meka-ledger.v1.json`）。缺省表示 Host 没有装配该来源，
+   * 此时不签发；抛错按不满足处理（fail-closed）。
+   */
+  readMekaMarketInstallation?(ghostId: string): MarketInstallationLookup | null;
+  /** Host 已知的可信随包种子 id（与 provisioning 用同一判据）；抛错按不满足处理。 */
+  isTrustedBundledGhostId?(id: string): boolean;
   readApprovedPackageSha256?(ghostId: string): string | null;
   readInstallOrigin?(ghostId: string): 'manual' | 'agent-forge';
   /** Trusted receipt namespace. undefined means no delivery field. */
@@ -219,6 +238,92 @@ export function loadConnectionAudienceResolver(
         return recordedNamespace === undefined || recordedNamespace === null;
       };
 
+      /**
+       * Meka 内部渠道基座。Meka 市场安装只写自己的账本（`meka-ledger.v1.json`），
+       * 可见性只会投影成 `personal` / `public`，因此永远过不了 organization scope
+       * 那道门。只在 Cindy 账本完全没有记录时生效——组织 Market / agent-forge /
+       * mivo-canvas 三条既有判据的优先级与结果不变。账本损坏必须 reject，不得当成
+       * 「无记录」；读取器抛错同样按不满足处理。
+       *
+       * 返回值三态：`undefined` = 不是 Meka 内部渠道来源，交回调用方保持原有
+       * `market-installation-missing` 口径；`null` = 已判定并拒绝（原因已在下面记录，
+       * 调用方不得再追加一条通用 reject）；对象 = 签发资格成立。
+       *
+       * 记录非空时必须与当前已装 manifest 的摘要对得上（`verifyInstalledMarketManifest`）：
+       * 本地替换过字节、账本记录过期但 `installed:true` 的状态不得借这条基座放行。
+       * 连摘要字段都没有的旧记录显式拒绝并留下原因，不得静默放行。
+       */
+      const resolveMekaChannelInstall = (): ConnectionAudienceResolution | null | undefined => {
+        let record: PluginMarketInstallationRecord | null = null;
+        if (options.readMekaMarketInstallation) {
+          let lookup: MarketInstallationLookup | null;
+          try {
+            lookup = options.readMekaMarketInstallation(ghostId);
+          } catch {
+            return reject('meka-market-installation-read-failed');
+          }
+          if (lookup?.kind === 'invalid') return reject('meka-market-installation-invalid');
+          if (lookup?.kind === 'found') record = lookup.record;
+        }
+        // 随包种子只存在于 root namespace：`GhostManager` 打 builtin 标记时同样要求
+        // namespace 为 null。组织 namespace 下的同名实例（`_ns/<org>/<id>`）不是随包
+        // 种子，不得借这条分支签发。
+        const instance = parsePluginInstanceId(ghostId);
+        const rootNamespace = instance !== null && instance.namespace === null;
+        let bundled = false;
+        if (rootNamespace && options.isTrustedBundledGhostId) {
+          try {
+            // 随包种子按**逻辑插件 id** 登记（与 provisioning / 随包批准入口一致），
+            // 不能用可能带 `_root__` / `_ns__` 前缀的物理实例 id。
+            bundled = options.isTrustedBundledGhostId(pluginSlug) === true;
+          } catch {
+            bundled = false;
+          }
+        }
+        // 既不在 Meka 账本里、也不是可信随包种子：不是 Meka 内部渠道来源，交回调用方
+        // 保持原有 `market-installation-missing` 口径。
+        if (!bundled && record === null) return undefined;
+        if (record !== null) {
+          if (!record.installed) return reject('meka-market-installation-missing');
+          if (record.ghostId !== pluginSlug) {
+            return reject('meka-market-installation-ghost-mismatch');
+          }
+          // 只认 Meka 市场安装记录。`ledger.ts` 的 custom / ns sidecar 由主账本
+          // dirname 派生——`meka-ledger.v1.json` 与 `ledger.v1.json` 同目录 ⇒ 两个
+          // 渠道实际共用 `custom-ledger.v1.json` / `ns-ledger.v1.json`，读侧合并视图
+          // 里会出现另一渠道的自定义来源或组织 namespace 记录。它们不构成 Meka 内部
+          // 渠道资格（改文件名会丢存量数据，不在这里动；边界见
+          // `docs/dev-rules/plugin-distribution-and-version-compat.md` §3.2）。
+          if (record.source !== 'market') {
+            return reject('meka-market-installation-untrusted');
+          }
+          if (hasDeliveryNamespace(record) && record.namespace !== null) {
+            return reject('meka-market-installation-namespace-unsupported');
+          }
+        }
+        let approvedSha: string | null;
+        try {
+          approvedSha = options.readApprovedPackageSha256?.(ghostId) ?? null;
+        } catch {
+          return reject('meka-package-sha-unavailable');
+        }
+        if (!approvedSha || !/^[a-f0-9]{64}$/.test(approvedSha)) {
+          return reject('meka-package-sha-missing');
+        }
+        const installed = readManifestIdentity();
+        if (!installed) return reject('plugin-not-installed');
+        if (installed.manifest.id !== pluginSlug) return reject('plugin-id-mismatch');
+        if (record !== null) {
+          if (record.rawManifestSha256 === undefined && record.manifestDigest === undefined) {
+            return reject('meka-market-manifest-identity-missing');
+          }
+          if (!verifyInstalledMarketManifest(record, installed)) {
+            return reject('meka-market-manifest-identity-mismatch');
+          }
+        }
+        return finish(installed.manifest);
+      };
+
       let installation: PluginMarketInstallationRecord | null = null;
       try {
         const lookup = options.readMarketInstallation(ghostId);
@@ -251,6 +356,10 @@ export function loadConnectionAudienceResolver(
           }
           return finish(allowlisted.manifest);
         }
+        // `undefined` 才是「不是 Meka 来源」；`null` 表示已判定并拒绝（原因已记录），
+        // 不能再补一条通用 reject——双日志会把真实拒绝原因埋掉。
+        const mekaResolution = resolveMekaChannelInstall();
+        if (mekaResolution !== undefined) return mekaResolution;
         return reject('market-installation-missing');
       }
       if (!installation.installed) return reject('market-installation-missing');

@@ -1024,8 +1024,8 @@ Host 接线锚点由 `mcp-providers.ts:418` 漂移到 `:47`（导入）+ `:513`�
 - `apps/desktop/src/main/plugin-market/clientIdentity.ts`（插件分发身份的**唯一**解析入口：
   `resolvePluginClientIdentity` / `readPluginClientIdentity` / `pluginClientVersionReader`；
   `app.getVersion()` 在本模块之外不再被任何渠道读取）
-- `apps/desktop/src/main/plugin-market/registerIpc.ts:56-62`（`mekaService()` 构造点传
-  `pluginClientVersionReader('meka')`）与 `apps/desktop/src/main/plugin-market/service.ts:649`
+- `apps/desktop/src/main/plugin-market/registerIpc.ts` 的 `mekaService()`（构造点传
+  `pluginClientVersionReader('meka')`；行号随重构漂移，以符号名为准）与 `apps/desktop/src/main/plugin-market/service.ts:649`
   （上游渠道 `new PluginMarketApi(undefined, pluginClientVersionReader('cindy'))`）同构——
   两个渠道各取自己 edition 的身份，不再各写一份 getter
 - `apps/desktop/src/main/plugin-market/api.ts:198-211`（`MekaPluginMarketApi` 的版本读取器是
@@ -3440,3 +3440,126 @@ issue 诊断会连带失效 —— 那是本条的边界。
 （不再出现「崩溃时自动上传」与「上传日志」）；「报告问题」仍能采集并脱敏日志；性能跟踪录一次后能在
 `diagnostics/performance-traces/` 找到本地报告并打开所在文件夹，全程无网络上报；移动端设置 → 开发者页只有
 本地日志开关/导出/清除。
+
+### WL-27 Meka 内部渠道的 `oidc-token` 企业 JWT 基座（2026-11-17 登记）
+
+**保护的不变量**
+1. 从 MCPRouter Meka 市场安装的插件（可见性只有 `private / public / shared`，投影到
+   Cindy `scope` 只有 `personal / public`）在当前**组织身份**下能解析出
+   `<orgSlug>:<pluginSlug>` audience，并只在 manifest 声明的精确 host 注入企业 JWT。
+2. 资格来源只认两条：Meka 独立账本 `meka-ledger.v1.json` 里 `installed: true`、
+   `source: 'market'` 且摘要与当前已装 `ghost.json` 一致的安装记录，或 Host 可信随包种子
+   id（与 provisioning / 随包批准入口同一判据，且只对 **root 实例**（namespace 为 null）
+   生效）。Cindy 账本与本地 `.cindy` 渠道归属（`channels.v1.json`，channelLedger）
+   **单独都不构成**资格；经共用 custom / ns sidecar 带出的另一渠道记录也不构成资格。
+3. fail-closed：Meka 账本 `invalid`（存在但不可读/schema 不认）或读取抛错 → reject；
+   个人号 → reject；缺已批准包 sha / 形状非法 → reject；账本记录摘要与已装 manifest
+   不一致或**两个摘要字段都缺** → reject；通配 oidc host 仍由 manifest 层 reject。
+   账本损坏**不得**当成「无记录」放行。已判定拒绝时不得再追加一条通用
+   `market-installation-missing`（双日志会埋掉真实原因）。
+4. 协议解析只在 Meka 渠道放开 `oidc-token` 的 scope 校验
+   （`MekaPluginDetailParseOptions.oidcTokenScope: 'meka-internal'`）；Cindy 渠道与其它
+   调用方保持严格，manifest 结构 / namespace 一致性 / 展示字段一致性校验一条不少。
+5. 既有判据（组织 Market、agent-forge、`mivo-canvas` 临时例外）的优先级与结果不变：
+   Meka 基座只在 Cindy 账本**没有记录**时生效；Cindy 账本 `invalid` 或 `found` 都由
+   Cindy 判据先裁决，不会落到 Meka 基座。
+
+**与上游的关系**：**刻意分歧（新增能力，Meka 私有）**。上游没有 Meka 渠道、没有
+`meka-ledger.v1.json`，且 `oidc-token` 只允许 organization scope。维护者裁决为 Meka
+内部市场开这个口子、不做插件白名单；信任边界实际上由 **MCPR 的发布权限**承担（风险
+声明、收紧方式与回滚方式见
+[`plugin-security-and-authoring.md`](plugin-security-and-authoring.md) 的 `oidc-token` 节）。
+按 `plugin-security-and-authoring.md` 的插件基座白名单确认门，本项属**插件基座改动
+（批准状态之外的新签发判据 + 协议解析选项）**，需放行人明确 Approve；本次由维护者裁决
+后交付，交付报告必须如实写明门禁执行范围。
+
+**结构断言（同步后必须成立，用于抓「代码都在、语义被覆盖」）**
+- `packages/plugin-protocol/src/delivery.ts`：`MekaPluginDetailParseOptions` 存在且
+  `parseGetPluginResponse` 第二参数接受它；详情里 scope 那条 throw 仍带
+  `options?.oidcTokenScope !== 'meka-internal'` 前置条件；`namespace 与有效 manifest
+  不一致`、name / description / author 四条一致性校验仍然存在。
+- `apps/desktop/src/main/plugin-market/api.ts`：基类 `mekaDetailParseOptions()` 返回
+  `pluginObjectUrlOptions()`（**不含** `oidcTokenScope`），`MekaPluginMarketApi` 覆写返回
+  `{ ...pluginObjectUrlOptions(), oidcTokenScope: 'meka-internal' }`；`collectList` 与
+  `detail` 用的是这个钩子，`download` 不用。
+- `apps/desktop/src/main/cindy-brain/connectionAudienceResolver.ts`：
+  `readMekaMarketInstallation` / `isTrustedBundledGhostId` 两个注入项存在；
+  `resolveMekaChannelInstall` 的调用点在 Cindy 账本 `invalid` 判定**之后**的
+  `!installation` 分支里（放在前面会让「市场账本损坏 fail-closed」失效）；
+  记录非空时必须调用 `verifyInstalledMarketManifest` 并区分「缺摘要」（显式 reject）与
+  「摘要不一致」（reject）；种子分支必须带 root namespace 前置判定；返回三态
+  （`undefined` = 非 Meka 来源 / `null` = 已判定拒绝）且调用方不得追加通用 reject；
+  非 `market` 来源与带组织 namespace 的记录必须 reject。
+- `apps/desktop/src/main/cindy-brain/index.ts`：装配点注入
+  `readMekaMarketInstallation`（来自 `plugin-market/mekaLedger.ts`）与
+  `isTrustedBundledGhostId`；后者与 `GhostManager` 的 `isTrustedBundledId` 共用同一个
+  判据函数（不得各写一份）；cindy-brain 不得自拼 Meka 账本路径。
+- `apps/desktop/src/main/plugin-market/ledger.ts`：custom / ns sidecar 由主账本 dirname
+  派生，注释必须点明「两渠道主账本不合并、sidecar 共用」的边界（不得为隔离改文件名）。
+
+**代码锚点**
+- `packages/plugin-protocol/src/delivery.ts`（`MekaPluginDetailParseOptions`、
+  `parseVisiblePluginDetail` 的 scope 门、`parseGetPluginResponse` 签名）
+- `apps/desktop/src/main/plugin-market/api.ts`（`mekaDetailParseOptions` 基类／Meka 覆写）
+- `apps/desktop/src/main/plugin-market/mekaLedger.ts`（`getMekaLedger` /
+  `readMekaMarketInstallation`；`meka-ledger.v1.json` 路径与 fail-closed 语义）
+- `apps/desktop/src/main/plugin-market/registerIpc.ts`（`mekaService()` 注入同一个
+  `getMekaLedger()` 实例，两渠道账本不合并）
+- `apps/desktop/src/main/cindy-brain/connectionAudienceResolver.ts`
+  （`resolveMekaChannelInstall`、`readMekaMarketInstallation` / `isTrustedBundledGhostId` 注入项）
+- `apps/desktop/src/main/cindy-brain/index.ts`（`getConnectionAudienceResolver` 装配点与
+  `isTrustedBundledGhostId`）
+
+**自动化门禁**
+- `pnpm --filter @cindy/plugin-protocol exec vitest run src/__tests__/delivery.test.ts`
+  —— 默认与显式 `organization-only` 仍抛；`meka-internal` 放行 `public + oidc-token`；
+  同一模式下 namespace 与有效 manifest 不一致仍抛（证明只开一条缝）。
+- `pnpm --filter desktop exec vitest run src/main/cindy-brain/__tests__/connectionAudienceResolver.test.ts`
+  —— Meka 账本 `found` + 组织身份 → resolve 且 audience=`org-example:plugin-a`；个人号
+  reject；只有本地渠道归属（无 Meka 记录、非随包种子）reject；随包种子只对 root 实例
+  resolve、带组织 namespace 实例 reject；账本摘要不一致 / 缺摘要 reject、只带
+  `manifestDigest` 的 released 记录仍 resolve；非 `market` 来源与带 namespace 记录
+  reject；缺/非法 sha reject；`invalid` / 读取抛错 / `installed:false` reject；拒绝日志
+  不出现「已判定原因 + 通用 missing」双条；Cindy 账本 `invalid` / `found` 不得落入 Meka
+  基座。
+- `pnpm --filter desktop exec vitest run src/main/plugin-market/__tests__/` —— 契约测试
+  断言 Meka 账本落点为 `mekaLedger.ts`（`registerIpc.ts` 只许 `getMekaLedger()`，不得
+  出现文件名字面量）且 cindy-brain 不得自拼 Meka 账本路径；`api.test.ts` 断言 Meka 渠道
+  可解析 `public + oidc-token` 详情、同一份响应在 Cindy 渠道仍被拒。
+- `pnpm --filter desktop exec vitest run src/main/cindy-brain/__tests__/forge.connection.test.ts`
+  —— FORGE_GUIDE（内嵌同一份 `plugin-network.md`）含 Meka 内部渠道基座与
+  「Cindy 公共市场仍严格」的作者可见说明。
+- `pnpm --filter desktop run typecheck`（编译面；协议包选项通过 workspace 直接消费）。
+
+**实机验证**（语义验收步骤：同步后实机/端到端，不得用单测代替）
+1. 真实 MCPRouter 绑定 + 组织账号：在 **Meka → 插件** 安装一个声明 `oidc-token` 的
+   public 插件 → 列表可见、**点安装成功**（修前是「点安装失败」）→ 插件发起请求时
+   Host 注入 `Authorization: Bearer <JWT>`，audience 为 `<orgSlug>:<pluginSlug>`。
+2. 同一插件改用个人账号：不签发、不注入（不产生 Connection audience）。
+3. 破坏 `owners/<owner>/plugin-market/meka-ledger.v1.json`（改成非法 JSON）后重试：
+   仍不签发（日志 `meka-market-installation-invalid`），不得被当成「无记录」放行。
+4. 在**普通 Cindy 插件页**安装同样声明 `oidc-token` 的 public 插件：详情解析仍被拒
+   （`currentRelease.manifest 的 oidc-token 仅允许 organization scope`）。
+5. 改掉账本记录的 `rawManifestSha256`（或替换已装 `ghost.json` 字节）后重试：不签发
+   （日志 `meka-market-manifest-identity-mismatch`）；删掉两个摘要字段后重试：不签发
+   （日志 `meka-market-manifest-identity-missing`），不得静默放行。
+6. 将来恢复随包种子后：root 实例（`<id>` / `_root__<id>`）可借种子基座签发；同一 id 的
+   组织 namespace 实例（`_ns/<org>/<id>`）**不得**借种子基座签发（日志走通用
+   `market-installation-missing`）。当前种子集为空，本步无法在现网执行，仅作为恢复随包
+   种子时的验收前置。
+7. **已知边界复核**：`meka-ledger.v1.json` 与 `ledger.v1.json` 共用同目录
+   `custom-ledger.v1.json` / `ns-ledger.v1.json`；用 Cindy 渠道的自定义市场记录
+   （`git-market` / `local-market`）不得让同名 Meka 插件获得签发资格。
+
+**当前验证状态（2026-11-17，独立审查修正后重跑）**
+- 已实跑通过：上述四条定向 vitest 与 `pnpm --filter desktop run typecheck`（只做定向
+  验证，未跑全量门禁）。实测：`delivery.test.ts` 36/36；桌面组
+  （`connectionAudienceResolver.test.ts` + `src/main/plugin-market/__tests__/` +
+  `forge.connection.test.ts`）27 个文件、893 passed / 5 skipped；`check:dev-docs` 与
+  `check:test-hygiene` 通过。
+- **未验证**：① 真实 MCPRouter Meka 市场安装 → JWT 注入的端到端实机（需真实绑定与组织
+  账号）；② `mekaLedger.ts` 与 `mekaService()` 共用实例的写读联动没有直接单测（读侧
+  fail-closed 语义复用 `PluginMarketLedger` 已有覆盖）；③ 随包种子分支当前是**空集**
+  （仓内不随包分发种子，见 §8.10），只有将来重新随包分发种子后才可能生效；root
+  namespace 门已由单测钉住，但实机不可复现；④ 共用 sidecar 的跨渠道写入联动没有直接
+  单测（来源过滤只在 resolver 单测里以合成记录覆盖）。

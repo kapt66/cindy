@@ -722,8 +722,13 @@ export const GHOST_OAUTH_BOUNCE_PATH_RE = /^\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)
  *   按受信组织插件 provenance 按需签发的短时 Cindy Connection JWT;
  *   插件和 Node Worker 都不能读取或保存令牌。必须固定注入
  *   `Authorization: Bearer {value}` 并显式声明非空的精确 inject.hosts;
- *   不允许 url / exchange / oauth / input,也不要求 settingsHtml。只有
- *   organization scope 的插件可以通过 Plugin Market 发布该来源。
+ *   不允许 url / exchange / oauth / input,也不要求 settingsHtml。
+ *   Cindy 公共市场仍只允许 organization scope 的插件发布该来源；
+ *   唯一例外是 Cindy Meka 客户端的 Meka 内部渠道（MCPRouter 的 Meka
+ *   注册表，可见性只有 private/public/shared）：安装记录落在 Meka
+ *   渠道独立账本，由 Host 按本地账本 + 已装 manifest 摘要校验后签发
+ *   （详见 `plugin-network.md` 与 `plugin-security-and-authoring.md`
+ *   的 `oidc-token` 节）。该例外不改变页面解析的默认严格口径。
  * - 'gh-cli'(2026-08-05 增补):值优先取主机本地 GitHub CLI
  *   登录态(`gh auth token`),不可用时回落到用户在该插件设置页
  *   保存的备用 Token。两种值都只允许固定注入

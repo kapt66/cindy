@@ -680,6 +680,7 @@ import {
   type InstalledMarketManifestIdentity,
 } from '../plugin-market/installedManifestIdentity.js';
 import { createOrganizationPrefixStore } from '../plugin-market/organizationPrefixStore.js';
+import { readMekaMarketInstallation } from '../plugin-market/mekaLedger.js';
 import {
   GhostSubscriptionGateway,
   GhostActivityTracker,
@@ -1605,6 +1606,15 @@ function builtinSeedRootDirs(): string[] {
 
 function isTrustedBundledSource(id: string, sourceDir: string): boolean {
   return isTrustedBuiltinSeedSource(builtinSeedRootDirs(), id, sourceDir);
+}
+
+/**
+ * Host 已知的可信随包种子 id。与播种对账、随包批准入口（`GhostManager` 的
+ * `isTrustedBundledId`）用同一判据，Connection 签发资格也复用它，避免出现第二套
+ * 「什么算随包种子」的口径。
+ */
+function isTrustedBundledGhostId(id: string): boolean {
+  return listBuiltinSeedIds(builtinSeedRootDirs()).includes(id);
 }
 
 /**
@@ -3968,6 +3978,10 @@ function getConnectionAudienceResolver(): ConnectionAudienceResolver {
       readInstalledManifestIdentity: readInstalledGhostManifestIdentity,
       readMarketInstallation: (ghostId) =>
         getPluginMarketLedger().lookupInstallationForOidc(pluginMarketAuthorizationTargetFor(ghostId)),
+      // Meka 渠道的独立账本（`meka-ledger.v1.json`）：Meka 市场安装只写这一份，两渠道
+      // 账本不合并。账本损坏时返回 `invalid`，resolver 按 fail-closed 处理。
+      readMekaMarketInstallation: (ghostId) => readMekaMarketInstallation(ghostId),
+      isTrustedBundledGhostId,
       readApprovedPackageSha256: (ghostId) =>
         getGhostManager().approvedInstallEvidence(ghostId)?.packageSha256 ?? null,
       readInstallOrigin: (ghostId) => getGhostManager().readEffectiveInstallOrigin(ghostId),

@@ -12,6 +12,7 @@ import {
   isConnectionSecretReady,
   isReservedConnectionPluginSlug,
   loadConnectionAudienceResolver,
+  type LoadConnectionAudienceResolverOptions,
 } from '../connectionAudienceResolver.js';
 
 const manifest: GhostManifest = {
@@ -877,6 +878,242 @@ describe('installed Plugin Connection audience resolver', () => {
     expect(isConnectionSecretReady(['service-a.x.test'], resolution)).toBe(true);
     expect(isConnectionSecretReady(['service-b.x.test'], resolution)).toBe(false);
     expect(isConnectionSecretReady(['service-a.x.test'], null)).toBe(false);
+  });
+});
+
+
+/**
+ * Meka 内部渠道基座：Meka 市场安装只写自己的账本（`meka-ledger.v1.json`），可见性
+ * 只会投影成 personal / public，所以 organization scope 那条门永远过不了。这里钉住
+ * 新的第三条基座与它的 fail-closed 边界，同时证明它不替代、不削弱既有两条基座。
+ */
+describe('Meka internal channel Connection basis', () => {
+  const mekaRecord: PluginMarketInstallationRecord = {
+    ...marketInstallation,
+    scope: 'public',
+    organizationId: null,
+    namespace: null,
+    source: 'market',
+    installed: true,
+  };
+
+  function mekaOptions(overrides: Record<string, unknown> = {}) {
+    return {
+      readInstalledManifestIdentity: resolverOptions().readInstalledManifestIdentity,
+      readMarketInstallation: () => ({ kind: 'absent' as const }),
+      readMekaMarketInstallation: () => ({ kind: 'found' as const, record: mekaRecord }),
+      readApprovedPackageSha256: () => 'b'.repeat(64),
+      ...overrides,
+    };
+  }
+
+  function warnReasons(options: Record<string, unknown>): string[] {
+    const warn = vi.fn();
+    loadConnectionAudienceResolver({
+      ...(options as unknown as LoadConnectionAudienceResolverOptions),
+      log: { info: () => {}, warn },
+    }).resolve('plugin-a', identity);
+    return warn.mock.calls.map(([, meta]) => (meta as { reason?: string }).reason ?? '');
+  }
+
+  it('resolves a public Meka-market install for the current organization membership', () => {
+    expect(loadConnectionAudienceResolver(mekaOptions()).resolve('plugin-a', identity)).toEqual({
+      membershipId: 'membership-1',
+      audience: 'org-example:plugin-a',
+      pluginSlug: 'plugin-a',
+      allowedHosts: ['service-a.x.test'],
+    });
+  });
+
+  it('keeps the organization-membership gate: a personal account never signs', () => {
+    expect(
+      loadConnectionAudienceResolver(mekaOptions()).resolve('plugin-a', {
+        membershipId: 'membership-1',
+        membershipKind: 'personal',
+        orgId: null,
+        orgSlug: null,
+      }),
+    ).toBeNull();
+  });
+
+  it('does not treat a local .cindy channel attribution as a Meka market install', () => {
+    // 本地 `.cindy` 渠道归属记在 `channels.v1.json`（channelLedger），不是 Meka 市场
+    // 账本；resolver 不读它，因此只有渠道归属时不签发（用错依据就会在这里变红）。
+    const resolver = loadConnectionAudienceResolver(
+      mekaOptions({
+        readMekaMarketInstallation: undefined,
+        isTrustedBundledGhostId: () => false,
+      }),
+    );
+    expect(resolver.resolve('plugin-a', identity)).toBeNull();
+  });
+
+  it('resolves a Host-trusted bundled seed only for a root instance', () => {
+    expect(
+      loadConnectionAudienceResolver(
+        mekaOptions({
+          readMekaMarketInstallation: () => ({ kind: 'absent' as const }),
+          isTrustedBundledGhostId: (id: string) => id === 'plugin-a',
+        }),
+      ).resolve('plugin-a', identity),
+    ).toMatchObject({ audience: 'org-example:plugin-a' });
+    // 随包种子按**逻辑插件 id** 判定：物理实例键 `_root__<id>` 也要命中同一颗种子。
+    expect(
+      loadConnectionAudienceResolver(
+        mekaOptions({
+          readMekaMarketInstallation: () => ({ kind: 'absent' as const }),
+          isTrustedBundledGhostId: (id: string) => id === 'plugin-a',
+        }),
+      ).resolve('_root__plugin-a', identity),
+    ).toMatchObject({ audience: 'org-example:plugin-a' });
+    expect(
+      loadConnectionAudienceResolver(
+        mekaOptions({
+          readMekaMarketInstallation: () => ({ kind: 'absent' as const }),
+          isTrustedBundledGhostId: (id: string) => id === 'other-plugin',
+        }),
+      ).resolve('plugin-a', identity),
+    ).toBeNull();
+    // `GhostManager` 的 builtin 标记要求 namespace === null；带组织 namespace 的同名
+    // 实例不是随包种子，不得借种子分支签发（否则将来恢复随包种子后会出现越权）。
+    for (const ghostId of ['_ns/acme/plugin-a', '_ns__acme__plugin-a']) {
+      expect(
+        loadConnectionAudienceResolver(
+          mekaOptions({
+            readMekaMarketInstallation: () => ({ kind: 'absent' as const }),
+            isTrustedBundledGhostId: (id: string) => id === 'plugin-a',
+          }),
+        ).resolve(ghostId, identity),
+      ).toBeNull();
+    }
+  });
+
+  it('requires the Meka ledger record to match the installed manifest identity', () => {
+    // 账本记录带 `rawManifestSha256` 时按精确字节比对：本地替换过 manifest、记录过期
+    // 但 installed:true 的状态不得签发。
+    expect(
+      loadConnectionAudienceResolver(
+        mekaOptions({
+          readMekaMarketInstallation: () => ({
+            kind: 'found' as const,
+            record: { ...mekaRecord, rawManifestSha256: 'f'.repeat(64) },
+          }),
+        }),
+      ).resolve('plugin-a', identity),
+    ).toBeNull();
+    // 只带 `manifestDigest` 的旧记录仍走 released 客户端的 legacy 摘要兼容路径。
+    expect(
+      loadConnectionAudienceResolver(
+        mekaOptions({
+          readMekaMarketInstallation: () => ({
+            kind: 'found' as const,
+            record: {
+              ...mekaRecord,
+              rawManifestSha256: undefined,
+              manifestDigest: ghostManifestDigest(manifest),
+            },
+          }),
+        }),
+      ).resolve('plugin-a', identity),
+    ).toMatchObject({ audience: 'org-example:plugin-a' });
+    // 两个摘要字段都缺的旧记录不得静默放行（必须留下可排查的原因）。
+    expect(
+      loadConnectionAudienceResolver(
+        mekaOptions({
+          readMekaMarketInstallation: () => ({
+            kind: 'found' as const,
+            record: { ...mekaRecord, rawManifestSha256: undefined, manifestDigest: undefined },
+          }),
+        }),
+      ).resolve('plugin-a', identity),
+    ).toBeNull();
+  });
+
+  it('rejects non-market or namespaced records leaked through the shared sidecars', () => {
+    // Meka 主账本与 Cindy 主账本不合并，但 custom / ns sidecar 由主账本 dirname 派生
+    // 而共用（已知边界，见 ledger.ts）。另一渠道的自定义来源与组织 namespace 记录
+    // 可以被读侧合并视图带出来，它们不构成 Meka 内部渠道资格。
+    for (const record of [
+      { ...mekaRecord, source: 'local-market' as const },
+      { ...mekaRecord, source: 'git-market' as const },
+      { ...mekaRecord, namespace: 'acme' },
+    ]) {
+      expect(
+        loadConnectionAudienceResolver(
+          mekaOptions({
+            readMekaMarketInstallation: () => ({ kind: 'found' as const, record }),
+          }),
+        ).resolve('plugin-a', identity),
+      ).toBeNull();
+    }
+  });
+
+  it('rejects a missing or malformed approved package digest on the Meka basis', () => {
+    for (const sha of [null, '', 'not-a-digest', 'a'.repeat(63)]) {
+      expect(
+        loadConnectionAudienceResolver(
+          mekaOptions({ readApprovedPackageSha256: () => sha }),
+        ).resolve('plugin-a', identity),
+      ).toBeNull();
+    }
+  });
+
+  it('fails closed when the Meka ledger is invalid, unreadable, or not installed', () => {
+    expect(
+      loadConnectionAudienceResolver(
+        mekaOptions({ readMekaMarketInstallation: () => ({ kind: 'invalid' as const }) }),
+      ).resolve('plugin-a', identity),
+    ).toBeNull();
+    expect(
+      loadConnectionAudienceResolver(
+        mekaOptions({
+          readMekaMarketInstallation: () => {
+            throw new Error('meka ledger unreadable');
+          },
+        }),
+      ).resolve('plugin-a', identity),
+    ).toBeNull();
+    expect(
+      loadConnectionAudienceResolver(
+        mekaOptions({
+          readMekaMarketInstallation: () => ({
+            kind: 'found' as const,
+            record: { ...mekaRecord, installed: false },
+          }),
+        }),
+      ).resolve('plugin-a', identity),
+    ).toBeNull();
+  });
+
+  it('never falls into the Meka basis when the Cindy ledger resolved a record', () => {
+    // Cindy 账本损坏：必须在旧口径直接 reject，不得把「损坏」当成「无记录」后落到
+    // Meka 基座（那会让 fail-closed 失效）。
+    expect(warnReasons(mekaOptions({
+      readMarketInstallation: () => ({ kind: 'invalid' as const }),
+    }))).toEqual(['market-installation-invalid']);
+    // Cindy 账本有记录（public / personal 不会满足组织口径）：结果与拒绝原因必须由
+    // Cindy 那套判据决定，不得改由 Meka 基座签发。
+    expect(warnReasons(mekaOptions({
+      readMarketInstallation: () => ({
+        kind: 'found' as const,
+        record: { ...mekaRecord, scope: 'public' as const },
+      }),
+    }))).toEqual(['market-installation-not-organization']);
+  });
+
+  it('does not append a generic reject log after a decided Meka rejection', () => {
+    // P2-4：`null`（已判定拒绝）与 `undefined`（不是 Meka 来源）必须区分，否则真实
+    // 原因后面必然再跟一条 `market-installation-missing`，排查会被误导。
+    expect(warnReasons(mekaOptions({
+      readMekaMarketInstallation: () => ({
+        kind: 'found' as const,
+        record: { ...mekaRecord, installed: false },
+      }),
+    }))).toEqual(['meka-market-installation-missing']);
+    // 不是 Meka 来源时仍保留原有通用原因，且只有一条。
+    expect(warnReasons(mekaOptions({
+      readMekaMarketInstallation: () => ({ kind: 'absent' as const }),
+    }))).toEqual(['market-installation-missing']);
   });
 });
 

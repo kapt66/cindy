@@ -120,8 +120,11 @@
    [`protocol-and-submodules.md:36,46-49`](protocol-and-submodules.md)、
    `plugin-security-and-authoring.md:516-526`）；但**数据域不交叉**：release 命名空间、账本、
    来源记录、投影输入、遥测各自归属本 edition，Meka 的数据不写进上游数据域，反之亦然
-   （现有账本隔离见 `plugin-security-and-authoring.md:666-670`；本地账本落点见
-   `apps/desktop/src/main/plugin-market/registerIpc.ts:56-69`）。
+   （现有账本隔离见 `plugin-security-and-authoring.md` 的「两个市场服务必须通过各自注入的
+   owner-scoped ledger resolver 绑定账本」一节；本地账本落点：Cindy 侧
+   `service.ts` 注入 `plugin-market/ledger.v1.json`，Meka 侧由
+   `apps/desktop/src/main/plugin-market/mekaLedger.ts` 提供 `plugin-market/meka-ledger.v1.json`，
+   两渠道**主账本不合并**；sidecar 共用边界见 §3.2）。
 
 ⑥ **增量演进、对未知 fail closed。**
    已发布 `schemaVersion` 的字段语义只增不改；新增能力对旧宿主 fail closed，不静默降级
@@ -192,11 +195,26 @@
 - **`edition` 集合必须与代码枚举全覆盖**：`pluginMarketSurface.ts:7` 的每个 surface
   字面量、以及 `meka-plugin-market:*` / `plugin-market:*` 两组 IPC 前缀，都必须在工件里
   有且只有一个归属。
-- **`dataDomain` 必须与账本落点一致**：`cindy` → `plugin-market/ledger.v1.json`，
-  `meka` → `plugin-market/meka-ledger.v1.json`（`registerIpc.ts:56-69`、
-  `plugin-security-and-authoring.md:666-670`）。
-- **本工件是唯一事实源**：`service.ts:645-666` 与 `registerIpc.ts:48-69` 的构造必须从它
-  派生，不得各处自行硬编码常量或文件名。
+- **`dataDomain` 必须与账本落点一致**：`cindy` → `plugin-market/ledger.v1.json`
+  （`service.ts` 的 `PluginMarketService` 注入），`meka` →
+  `plugin-market/meka-ledger.v1.json`（**落点正本**是
+  `apps/desktop/src/main/plugin-market/mekaLedger.ts:getMekaLedger()`；
+  `registerIpc.ts` 的 `mekaService()` 注入同一实例）。**为什么把 Meka 账本实例从
+  `registerIpc.ts` 抽到 `mekaLedger.ts`（2026-11-17）**：
+  ① 两渠道账本不合并，Meka 需要一个不依赖 IPC 注册、可被写入方与读取方共用的 loader；
+  ② Connection 签发资格判定（`cindy-brain/connectionAudienceResolver.ts`）必须**只读注入**
+  同一个账本实例，不能反过来 import 整个 IPC 注册模块（那会把主进程装配图拖进
+  cindy-brain 判定，且第二份实例会让写入与读到的记录分叉）。
+  **真实边界（sidecar 共用，2026-11-17 登记）**：`PluginMarketLedger` 的
+  `custom-ledger.v1.json` / `ns-ledger.v1.json` 由**主账本 dirname** 派生
+  （`ledger.ts:customFilePath()`），而两份主账本同在 `plugin-market/` 目录 ⇒ 两渠道
+  实际**共用**这两个 sidecar。主账本文件与语义不合并，但读侧合并视图可能带出另一渠道
+  写入的自定义来源／组织 namespace 记录；消费方必须自己按来源判定（Connection 的
+  Meka 基座只认 `source: 'market'` 且不带组织 namespace 的已装记录，见
+  `connectionAudienceResolver.ts`）。**不要直接改这两个 sidecar 的文件名/子目录**——会丢
+  存量自定义安装溯源；要真正分开必须另带一次数据迁移。
+- **本工件是唯一事实源**：`service.ts:645-666`、`registerIpc.ts` 的 `mekaService()` 与
+  `mekaLedger.ts` 的账本落点必须从它派生，不得各处自行硬编码常量或文件名。
 
 ### 3.3 下限如何声明：方案对比与选定
 
@@ -329,7 +347,7 @@
 |---|---|---|---|---|
 | P1-1 | 新增声明工件 `config/plugin-distribution.json`（§3.2 形态） | 新文件，与 `config/endpoint.json` 同级 | 新 `scripts/__tests__/plugin-distribution-contract.test.mjs`，注册进根 `package.json` 的 `test:runner` 列表（CI 落点 `.github/workflows/ci.yml:63-64`；如需独立入口，加 `check:plugin-distribution` 到 `:84-85` 的 `check:*` 邻位） | 工件与实现漂移 → 由门禁反向读取源码枚举兜住 |
 | P1-2 | 身份解析收口为纯函数 `resolvePluginClientIdentity({ edition, appVersion, versionless })` → `{ versionSpace, reportedVersion, identityKind }`，两渠道都用它 | `apps/desktop/src/main/plugin-market/api.ts:64-91`（`requestOptions`）、`:167-176`（`MekaPluginMarketApi`）；替代"各处自己传 getter" | desktop unit tier（`apps/desktop/vitest.config.ts:8-23` 自动收集）：`plugin-market/__tests__/api.test.ts` 补两条渠道的版本头与 identityKind 断言（现状 `api.test.ts:191-214` 只覆盖 endpoint/凭证） | 与 §5.4 的在途改动冲突 → 以收口后的单一入口合并，避免双份逻辑 |
-| P1-3 | 渠道构造从工件派生（含 `dataDomain` → 账本文件） | `apps/desktop/src/main/plugin-market/registerIpc.ts:48-69`；`apps/desktop/src/main/plugin-market/service.ts:645-666` | 同上 tier；另可用源码级守卫（形态参考 `plugin-market/__tests__/ipcErrorBoundary.test.ts` 的源码断言）防"退回无参构造" | 误动上游渠道接线 → 现有 `api.test.ts:191-214` 保持绿即证明未牵动 |
+| P1-3 | 渠道构造从工件派生（含 `dataDomain` → 账本文件） | `apps/desktop/src/main/plugin-market/registerIpc.ts:48-81`；`apps/desktop/src/main/plugin-market/service.ts:645-666`；Meka 账本实例正本 `apps/desktop/src/main/plugin-market/mekaLedger.ts`（2026-11-17 从 `registerIpc.ts` 抽出） | 同上 tier；另可用源码级守卫（形态参考 `plugin-market/__tests__/ipcErrorBoundary.test.ts` 的源码断言）防"退回无参构造" | 误动上游渠道接线 → 现有 `api.test.ts:191-214` 保持绿即证明未牵动 |
 | P1-4 | 可观测：`identity-unresolved` / `space-mismatch` / `bound-unmet` 三类 reason 进 snapshot 与日志 | `apps/desktop/src/shared/pluginMarket.ts`（snapshot 结构）；`apps/desktop/src/main/plugin-market/service.ts`（投影/对账）；`registerIpc.ts:330-346`（meka snapshot/detail） | 单测断言三类 reason 互不相同且不伴随成功语义；日志字段遵守 [`engineering-conventions.md`](engineering-conventions.md) | **UI 文案需产品裁决 + 术语表**（`i18n/GLOSSARY.md`、`pnpm check:i18n-glossary`）→ 未决 |
 | P1-5 | 反向守卫：证明兼容基线工件**不被运行时消费**（防止它演化成客户端二次筛选） | 扫描 `apps/desktop/src/**` 的 import 图 | 新 `scripts/__tests__/plugin-distribution-contract.test.mjs` 内断言 | 断言过窄会误报 → 只钉"无运行时 import 路径" |
 | P1-6 | 发布身份断言补齐（versioned / unversioned 两类产物） | `apps/desktop/scripts/ci/package-lib.mjs:190-218` 已就位 | `scripts/__tests__/meka-release-identity.test.mjs:15-40,73-80`、`meka-release-flow.test.mjs`（同一 `test:runner`） | 无 |
@@ -344,7 +362,7 @@
 |---|---|---|---|
 | P1-1 | 声明工件 | **已落地**：`config/plugin-distribution.json`（`schemaVersion: 1`），只引用键名、无地址字面量；默认终态按 **D1 方案 1**（每个 edition 单空间），并用 `fallbackVersionSpaces` 预留位表达**方案 2** 的过渡期双空间（不新增 schemaVersion） | 工件新增 `surface` / `ipcPrefix` / `versionSpace` / `fallbackVersionSpaces` / `venue` / `identity` / `projectionOwner` / `dataDomain` / `ledgerFile`，另有顶层 `versionlessPolicy` 显式声明"两个 space 都上报 `0.0.0` 是预期行为" |
 | P1-2 | 身份解析收口 | **已落地**：新增单一真源 `apps/desktop/src/main/plugin-market/clientIdentity.ts`，导出 `resolvePluginClientIdentity({ edition, appVersion, versionless })`（纯函数）、`readPluginClientIdentity(edition)`、`pluginClientVersionReader(edition)`；`MekaPluginMarketApi` 的读取器改为**必填**（不再有"漏传 → `0.0.0`"路径）；`api.ts` 的头名改从协议常量取，不再留本地字面量。**当时不发** P2 的空间头（P2 就绪件已在同一工作区落地，但默认关闭，见 §5.5.1）：门禁钉住 `requestOptions()` 的**默认路径**只有 `x-cindy-version` | 两个渠道构造点：`registerIpc.ts` 的 `mekaService()` 与 `service.ts` 的 `PluginMarketService` 默认参数 |
-| P1-3 | 渠道构造从工件派生 | **部分落地（形态调整，见下）**：`dataDomain` → 账本文件名在工件里声明，并与源码字面量对账；运行期**不** import 工件（原因见下） | 工件 `ledgerFile` 与 `service.ts` / `registerIpc.ts` 的 `ownerScopedUserDataPath(...)` 由门禁双向核对 |
+| P1-3 | 渠道构造从工件派生 | **部分落地（形态调整，见下）**：`dataDomain` → 账本文件名在工件里声明，并与源码字面量对账；运行期**不** import 工件（原因见下）。**2026-11-17 补充**：Meka 账本实例从 `registerIpc.ts` 抽到 `plugin-market/mekaLedger.ts`（`getMekaLedger()`），`mekaService()` 与 cindy-brain 的 Connection 签发资格判定共用该实例；门禁断言改读 `mekaLedger.ts`，并禁止 cindy-brain 自拼 Meka 账本路径 | 工件 `ledgerFile` 与 `service.ts` / `mekaLedger.ts` 的 `ownerScopedUserDataPath(...)` 由门禁双向核对；`registerIpc.ts` 只允许 `getMekaLedger()` |
 | P1-4 | 可观测 reason（`identity-unresolved` / `space-mismatch` / `bound-unmet`） | **未落地**：依赖服务端返回结构化 reason（§3.5 第 3 条，仓外）与 D2 的产品裁决；P1 不做虚假承诺 | — |
 | P1-5 | 反向守卫：工件不被运行期消费 | **已落地**：门禁断言 `apps/desktop/src/**` 运行期文件里没有引用工件路径的语句 | 与 P1-1 同一门禁文件 |
 | P1-6 | 发布身份断言（versioned / unversioned 两类产物） | **已就位**：既有 `scripts/__tests__/meka-release-identity.test.mjs` / `meka-release-flow.test.mjs` 未改动 | 既有 `test:runner` |
@@ -568,8 +586,12 @@ dev 覆盖、space 头常量与默认关闭的发送路径、以及若干一致�
    新门禁出现在 `pnpm test:runner`（或 CI 已执行的 `check:*`）中，且能在与实现不一致时
    红灯——不接受只写在文档里的规则（`docs/dev-rules/README.md:12` 的既有口径）。
 6. **数据隔离**
-   两渠道各自的账本文件、凭证来源、来源记录不交叉（`registerIpc.ts:56-69` +
-   `api.test.ts:191-214`）；工件里 `dataDomain` 与账本落点一致。
+   两渠道各自的**主**账本文件、凭证来源、来源记录不合并（`service.ts` 注入
+   `ledger.v1.json`；`mekaLedger.ts` 注入 `meka-ledger.v1.json`，均由
+   `pluginDistributionContract.test.ts` 源码断言钉住；`api.test.ts:191-214` 钉渠道凭证）。
+   工件里 `dataDomain` 与账本落点一致。**已知边界**：`custom-ledger.v1.json` /
+   `ns-ledger.v1.json` 两个 sidecar 由主账本 dirname 派生而共用（见 §3.2），消费方须按
+   来源判定；本条只承诺主账本与语义不合并，不承诺 sidecar 物理隔离。
 7. **发布身份不回退**
    `meka-release-identity.test.mjs` 中 `cindy-meka-<x.y.z>` / `cindy-meka-unversioned` 两类
    身份断言通过。
