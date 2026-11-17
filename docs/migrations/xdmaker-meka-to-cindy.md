@@ -7554,3 +7554,12 @@ Codex/Claude/Pi 原生读 `AGENTS.md`/`CLAUDE.md`/`SKILL.md`，不看我们的 m
   变更登记）、[`meka-whitelist-verification.md`](../dev-rules/meka-whitelist-verification.md)
   的 WL-27。
 
+
+- **收口再合并（2026-11-17）**：同步执行期间 `meka/main` 前进了维护者提交 `7f6d828622`
+  （Meka 内部渠道 `oidc-token` 签发基座 + `MekaPluginDetailParseOptions.oidcTokenScope`，登记 WL-27），
+  因此最终结果 = `3c9e1806`（上游同步合并，父 `74dd61d10f` + `origin/main@e8b5e2fd96`）
+  → `fe77c857`（并入 `7f6d828622`；冲突 3：`plugin-market/api.ts` 两侧成员并存、
+  `cindy-brain/index.ts` 取上游新双回调签名 + Meka 等价判定、`protocol-compatibility.md` 并集）。
+  `meka/main` 已 `--ff-only` 到 `fe77c857`；再合并后 `tsc -p tsconfig.main.json` exit 0、
+  插件/Meka 定向 **28 files / 942 passed**，且 `ui-smoke` **13 pass / 0 fail / 2 unverified**、
+  `session-smoke` **11/11** 在该结果上重跑通过。**未推送** `origin/meka/main`（见本期报告 §6 结尾的推送前待确认项）。

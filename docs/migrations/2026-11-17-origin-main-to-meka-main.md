@@ -402,3 +402,29 @@ REVIEW 15 条的处置：
    `packages/lizi-mcps/src/__tests__/sessionContext.test.ts` 用例名仍写 "21-tool"（断言 22）。
 
 
+
+## 6. 收口：同步期间 `meka/main` 前进与再合并
+
+本轮同步执行期间，`meka/main` 在维护者侧前进了 **1 条 Meka 功能提交**
+（`7f6d828622` `feat(插件/Meka): Meka 内部渠道 oidc-token 签发基座与协议解析放开`，
+新增 WL-27、`MekaPluginDetailParseOptions.oidcTokenScope`、`plugin-market/mekaLedger.ts`
+与第三条签发基座）。因此最终结果不是一个平铺 CR，而是：
+
+- `3c9e1806` —— 本轮上游同步的合并提交（父：`74dd61d10f` + `origin/main@e8b5e2fd96`）；
+- `fe77c857` —— 把 `7f6d828622` 并入同步结果（父：`3c9e1806` + `7f6d828622`），
+  冲突 **3** 个：`plugin-market/api.ts`（两侧成员并存：保留上游 `isKnownLegacyServer`
+  并补 Meka 的 `mekaDetailParseOptions` 基座实现）、`cindy-brain/index.ts`
+  （上游把信任判定拆成 `isTrustedBundledId` + `wasBuiltinSeeded` 两个回调 ⇒ 取上游新签名，
+  Meka 判定语义等价并入，不新增 `isTrustedBundledGhostId` 中间层）、
+  `protocol-compatibility.md`（并集：保留上游新增章节，追加 7f6d 的 oidc-token scope 口径段）。
+- **`meka/main` 已快进到 `fe77c857`**（`git merge --ff-only`，无重写维护者提交）。
+- 再合并后复跑：`tsc -p tsconfig.main.json` **exit 0**；插件/Meka 定向
+  `vitest run src/main/plugin-market/__tests__ src/main/cindy-brain/__tests__/connectionAudienceResolver.test.ts src/main/cindy-brain/__tests__/forge.connection.test.ts src/renderer/features/plugin/__tests__/pluginMarketSurface.test.ts`
+  → **28 files / 942 passed / 5 skipped**。
+- **最终实机验收在本合并结果（`fe77c857`）上重跑**：`ui-smoke` **13 pass / 0 fail / 2 unverified**、
+  `session-smoke` **11/11**（`DESKTOP_DEV_VERDICT=ready`，`commit=fe77c8571c`）。
+
+> **推送状态**：本轮**未推送** `origin/meka/main`。理由：`meka/main` 的自动化门禁是 `client-ci`
+> 的 push 触发，而本机全量 `pnpm test:unit` 仍有 §4.1 登记的已知红（Windows symlink EPERM /
+> zh-CN locale / 1 条上游渲染计数 / 缺 cargo·rustc 的两步）。按仓库规则「推送即门禁」，
+> 推送前应由维护者确认这些项（或先修那 1 条真实红）再推。本地合并与实机验收已完成。
