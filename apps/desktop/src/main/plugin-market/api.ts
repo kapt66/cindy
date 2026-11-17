@@ -7,6 +7,7 @@ import {
   parsePluginDownloadResponse,
   type GetPluginResponse,
   type ListPluginsResponse,
+  type MekaPluginDetailParseOptions,
   type OrganizationPluginAccessError,
   type PluginRemovalNotice,
   type PluginDownloadResponse,
@@ -135,6 +136,17 @@ export class PluginMarketApi {
     return 'cindy';
   }
 
+  /**
+   * 详情／列表解析的渠道选项。基座（上游 Cindy 渠道与测试里注入 fetcher 的假渠道）返回
+   * 纯对象地址策略，因此 `oidc-token` 仍只允许 organization scope；Meka 渠道覆写它，
+   * 只对自己的请求声明 `meka-internal`（MCPRouter Meka 注册表的可见性只有
+   * private / public / shared，永远投影不到 organization）。规则见
+   * `docs/dev-rules/plugin-security-and-authoring.md` 的 `oidc-token` 一节。
+   */
+  protected mekaDetailParseOptions(): MekaPluginDetailParseOptions | undefined {
+    return pluginObjectUrlOptions();
+  }
+
   private requestOptions(): Omit<ApiFetchOptions, 'baseUrl'> {
     const headers: Record<string, string> = {
       [CINDY_CLIENT_VERSION_HEADER]: this.versionReader(),
@@ -189,7 +201,7 @@ export class PluginMarketApi {
           `/api/plugins?${search.toString()}`,
           this.requestOptions(),
         ),
-        pluginObjectUrlOptions(),
+        this.mekaDetailParseOptions(),
       );
       for (const plugin of response.plugins) {
         if (seen.has(plugin.id)) continue;
@@ -266,7 +278,7 @@ export class PluginMarketApi {
         `/api/plugins/${encodeURIComponent(pluginId)}${query}`,
         this.requestOptions(),
       ),
-      pluginObjectUrlOptions(),
+      this.mekaDetailParseOptions(),
     ).plugin;
   }
 
@@ -332,6 +344,15 @@ export class MekaPluginMarketApi extends PluginMarketApi {
    */
   protected override pluginEdition(): PluginEdition {
     return 'meka';
+  }
+
+  /**
+   * Meka 渠道的详情／列表解析声明 Meka 内部市场口径：MCPRouter Meka 注册表的可见性
+   * 只有 private / public / shared，投影到本协议的 scope 只有 personal / public，
+   * 永远到不了 organization。基座（Cindy 渠道）不受影响，仍走严格口径。
+   */
+  protected override mekaDetailParseOptions(): MekaPluginDetailParseOptions {
+    return { ...pluginObjectUrlOptions(), oidcTokenScope: 'meka-internal' };
   }
 
   isConfigured(): Promise<boolean> {

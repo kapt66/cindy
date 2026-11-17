@@ -78,6 +78,12 @@ const REGISTER_SOURCE_PATH = `${MARKET_SOURCE_ROOT}/registerIpc.ts`;
 const SERVICE_SOURCE_PATH = `${MARKET_SOURCE_ROOT}/service.ts`;
 const API_SOURCE_PATH = `${MARKET_SOURCE_ROOT}/api.ts`;
 const IDENTITY_SOURCE_PATH = `${MARKET_SOURCE_ROOT}/clientIdentity.ts`;
+/**
+ * Meka 渠道账本的落点正本。2026-11-17 起账本实例从 `registerIpc.ts` 抽到
+ * `mekaLedger.ts`（Connection 签发资格要读同一份账本），但「两渠道账本不合并、
+ * 各自文件不同」这条契约不变，因此断言跟着移动而不是放宽。
+ */
+const MEKA_LEDGER_SOURCE_PATH = `${MARKET_SOURCE_ROOT}/mekaLedger.ts`;
 const SURFACE_SOURCE_PATH = 'apps/desktop/src/renderer/features/plugin/lib/pluginMarketSurface.ts';
 const SHARED_MARKET_PATH = 'apps/desktop/src/shared/pluginMarket.ts';
 
@@ -507,7 +513,7 @@ describe('工件与代码枚举不漂移', () => {
     >;
     const ledgerSources: Record<string, string> = {
       cindy: readRepoFile(SERVICE_SOURCE_PATH),
-      meka: readRepoFile(REGISTER_SOURCE_PATH),
+      meka: readRepoFile(MEKA_LEDGER_SOURCE_PATH),
     };
     for (const edition of PLUGIN_EDITIONS) {
       const ledgerFile = editions[edition].ledgerFile;
@@ -515,8 +521,30 @@ describe('工件与代码枚举不漂移', () => {
       expect(ledgerSources[edition]).toContain(`'${directory}'`);
       expect(ledgerSources[edition]).toContain(`'${fileName}'`);
     }
+    // 账本落点搬家后，Meka service 必须消费这份共享实例，而不是自己再拼一条路径
+    // （自己拼会让「两渠道账本不合并」与「签发资格读同一份账本」各说一套）。
+    expect(readRepoFile(REGISTER_SOURCE_PATH)).toContain('getMekaLedger()');
+    expect(readRepoFile(REGISTER_SOURCE_PATH)).not.toContain("'meka-ledger.v1.json'");
     expect(editions.cindy.dataDomain).not.toBe(editions.meka.dataDomain);
     expect(editions.cindy.ledgerFile).not.toBe(editions.meka.ledgerFile);
+  });
+
+  it('cindy-brain 只消费 mekaLedger 的访问点，不自拼 Meka 账本路径', () => {
+    // Meka 账本的路径字面量只允许出现在 `mekaLedger.ts` 一处。cindy-brain 再拼一条
+    // `ownerScopedUserDataPath('plugin-market', 'meka-ledger.v1.json')` 会造出第二份
+    // 实例：签发资格读到的记录与 Meka 市场服务写入的账本可能不是同一份（owner 作用域
+    // 解析时机、sidecar 写入视图都会分叉）。
+    const cindyBrainRoot = 'apps/desktop/src/main/cindy-brain';
+    const resolverSource = readRepoFile(`${cindyBrainRoot}/connectionAudienceResolver.ts`);
+    const indexSource = readRepoFile(`${cindyBrainRoot}/index.ts`);
+    for (const source of [resolverSource, indexSource]) {
+      expect(source).not.toMatch(
+        /ownerScopedUserDataPath\s*\(\s*'plugin-market'\s*,\s*'meka-ledger/,
+      );
+    }
+    expect(indexSource).toContain(
+      "import { readMekaMarketInstallation } from '../plugin-market/mekaLedger.js'",
+    );
   });
 });
 

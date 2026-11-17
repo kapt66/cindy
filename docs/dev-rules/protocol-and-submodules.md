@@ -79,6 +79,26 @@ Meka 插件市场可以使用独立的 MCPRouter endpoint 和凭证，但仍复�
 - **任何改动都必须与服务端同步升级**，避免两端 wire protocol 漂移。协议是
   跨仓契约，单端先行会让线上连接对不上。
 
+### 1.4 Meka 渠道的详情解析选项（客户端本地，无 wire 变更）
+
+`packages/plugin-protocol` 的 `parseGetPluginResponse(value, options)` 新增**可选**
+`MekaPluginDetailParseOptions.oidcTokenScope?: 'organization-only' | 'meka-internal'`
+（2026-11-17，Meka 私有扩展）：
+
+- **默认严格**：缺省或 `'organization-only'` 时是今天的行为——manifest 声明
+  `oidc-token` 的详情只允许 `scope === 'organization'`。
+- **只有 Meka 渠道传 `'meka-internal'`**：`MekaPluginMarketApi` 覆写
+  `mekaDetailParseOptions()`，仅自己的 `detail()` / `listAll()` 带上该值；Cindy 渠道
+  （`PluginMarketApi` / 默认 fetcher）与其它构造点保持严格，`parseListPluginsResponse`
+  的 summary 解析本来就不做这项检查，**不为它新增检查**。
+- **其余校验不因该选项放宽**：manifest 结构、namespace 一致性、展示字段一致性、
+  对象地址策略全部照旧（选项只跳过 scope 那一条 throw）。
+- **跨仓影响 = 仅 Cindy 客户端解析层，无 wire 变更**：不新增/修改请求或响应字段、
+  请求头、错误码与 `schemaVersion`，服务端无需同步发布，旧客户端行为逐字节不变。
+  Host 是否真的签发企业 JWT 属 Host 本地资格判定，登记在
+  [`plugin-security-and-authoring.md`](plugin-security-and-authoring.md) 的 `oidc-token` 节；
+  同步上游时按 [`meka-whitelist-verification.md`](meka-whitelist-verification.md) 的 WL-27 复核。
+
 ## 2. 插件来源
 
 - 客户端不包含内建插件种子 submodule，不在安装包中预置插件，启动期也没有播种

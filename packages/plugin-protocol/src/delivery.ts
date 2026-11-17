@@ -28,6 +28,21 @@ export { PluginProtocolError } from './internal/parse.js';
 export { parsePluginObjectUrl, type PluginObjectUrlOptions } from './deliveryObjectUrl.js';
 export { isValidPluginResourceId } from './internal/pluginResourceId.js';
 
+/**
+ * 详情解析的渠道选项（Meka 私有扩展，登记见
+ * `docs/migrations/xdmaker-meka-to-cindy.md` 与 `docs/dev-rules/protocol-and-submodules.md`）。
+ *
+ * `oidcTokenScope` 缺省或为 `'organization-only'` 时保持严格口径：manifest 声明
+ * `oidc-token` 只允许 `scope === 'organization'`。只有 Meka 渠道显式传
+ * `'meka-internal'` 时跳过这一条 scope 校验——MCPRouter 的 Meka 注册表可见性只有
+ * `private` / `public` / `shared`，投影到本协议的 scope 只有 `personal` / `public`，
+ * 永远到不了 `organization`。其余校验（manifest 结构、namespace、展示字段一致性）
+ * 在该模式下**一律不变**。
+ */
+export interface MekaPluginDetailParseOptions extends PluginObjectUrlOptions {
+  oidcTokenScope?: 'organization-only' | 'meka-internal';
+}
+
 /** Plugin 客户端 HTTP list/detail envelope 版本；与 ghost.json 版本独立演进。 */
 export const PLUGIN_API_SCHEMA_VERSION = 2 as const;
 
@@ -509,7 +524,11 @@ function parseVisiblePluginSummary(value: unknown, index: number, options?: Plug
   };
 }
 
-function parseVisiblePluginDetail(value: unknown, path: string, options?: PluginObjectUrlOptions): VisiblePluginDetail {
+function parseVisiblePluginDetail(
+  value: unknown,
+  path: string,
+  options?: MekaPluginDetailParseOptions,
+): VisiblePluginDetail {
   const { raw, ...parsed } = parseVisiblePluginBase(value, path);
   const downloadStatistics = parsePluginDownloadStatistics(raw.downloadStatistics);
   const currentRelease = parseReleaseDetail(
@@ -518,7 +537,11 @@ function parseVisiblePluginDetail(value: unknown, path: string, options?: Plugin
     `${path}.currentRelease`,
     options,
   );
-  if (ghostManifestUsesOidcToken(currentRelease.manifest) && parsed.scope !== 'organization') {
+  if (
+    options?.oidcTokenScope !== 'meka-internal' &&
+    ghostManifestUsesOidcToken(currentRelease.manifest) &&
+    parsed.scope !== 'organization'
+  ) {
     throw new PluginProtocolError(
       `${path}.currentRelease.manifest 的 oidc-token 仅允许 organization scope`,
     );
@@ -692,9 +715,14 @@ export function assertPluginListOrganizationNamespace(
  * 解析并规范化单个 Plugin 详情响应。
  *
  * 除通用字段校验外，还要求 manifest 的 id、version 和展示字段与外层数据一致。
- * 校验失败时抛出 `PluginProtocolError`。
+ * `oidc-token` 默认只允许 organization scope；Meka 渠道用
+ * `MekaPluginDetailParseOptions.oidcTokenScope: 'meka-internal'` 显式选择内部市场口径，
+ * 其余校验不因该选项放宽。校验失败时抛出 `PluginProtocolError`。
  */
-export function parseGetPluginResponse(value: unknown, options?: PluginObjectUrlOptions): GetPluginResponse {
+export function parseGetPluginResponse(
+  value: unknown,
+  options?: MekaPluginDetailParseOptions,
+): GetPluginResponse {
   const raw = object(value, 'response');
   if (raw.schemaVersion !== PLUGIN_API_SCHEMA_VERSION) {
     throw new PluginProtocolError(`response.schemaVersion 必须为 ${PLUGIN_API_SCHEMA_VERSION}`);

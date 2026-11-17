@@ -659,6 +659,7 @@ import {
   type InstalledMarketManifestIdentity,
 } from '../plugin-market/installedManifestIdentity.js';
 import { createOrganizationPrefixStore } from '../plugin-market/organizationPrefixStore.js';
+import { readMekaMarketInstallation } from '../plugin-market/mekaLedger.js';
 import {
   GhostSubscriptionGateway,
   GhostActivityTracker,
@@ -1599,6 +1600,15 @@ function isTrustedBundledSource(id: string, sourceDir: string): boolean {
 }
 
 /**
+ * Host 已知的可信随包种子 id。与播种对账、随包批准入口（`GhostManager` 的
+ * `isTrustedBundledId`）用同一判据，Connection 签发资格也复用它，避免出现第二套
+ * 「什么算随包种子」的口径。
+ */
+function isTrustedBundledGhostId(id: string): boolean {
+  return listBuiltinSeedIds(builtinSeedRootDirs()).includes(id);
+}
+
+/**
  * Forge scaffold/pack 绝不允许写入的 Host 受管根:安装内容根 + 批准状态根(来自
  * `managedRootDirs()`)+ **随包 seed 根**。seed 根漏在外面时,把 `.cindy` 产物写进
  * seed 目录会翻转播种指纹,下次启动触发整目录重播种(B-4);seed 根与内容/状态根
@@ -2200,7 +2210,7 @@ export function getGhostManager(): GhostManager {
       trustRegistry: loadGhostTrustRegistry(),
       // 随包批准入口的 builtin-only 边界:id 必须对应一颗随包种子。该入口不经用户
       // 确认就铸出批准,不能只靠"唯一调用者是随包对账"这条纪律。
-      isTrustedBundledId: (id) => listBuiltinSeedIds(builtinSeedRootDirs()).includes(id),
+      isTrustedBundledId: isTrustedBundledGhostId,
       isTokenBrokerAuthorized: (manifest) =>
         isGhostTokenBrokerAuthorized(manifest.id, 'install'),
       classifyPendingNamespace: (ghostId, marketSyncCompleted) =>
@@ -4099,6 +4109,10 @@ function getConnectionAudienceResolver(): ConnectionAudienceResolver {
       readInstalledManifestIdentity: readInstalledGhostManifestIdentity,
       readMarketInstallation: (ghostId) =>
         getPluginMarketLedger().lookupInstallationForOidc(pluginMarketAuthorizationTargetFor(ghostId)),
+      // Meka 渠道的独立账本（`meka-ledger.v1.json`）：Meka 市场安装只写这一份，两渠道
+      // 账本不合并。账本损坏时返回 `invalid`，resolver 按 fail-closed 处理。
+      readMekaMarketInstallation: (ghostId) => readMekaMarketInstallation(ghostId),
+      isTrustedBundledGhostId,
       readApprovedPackageSha256: (ghostId) =>
         getGhostManager().approvedInstallEvidence(ghostId)?.packageSha256 ?? null,
       readInstallOrigin: (ghostId) => getGhostManager().readEffectiveInstallOrigin(ghostId),

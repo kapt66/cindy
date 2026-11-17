@@ -406,6 +406,52 @@ describe('PluginMarketApi', () => {
     );
   });
 
+  // MCPRouter 的 Meka 注册表可见性只有 private / public / shared，投影到 Cindy 的 scope
+  // 只有 personal / public，永远到不了 organization。详情解析只对 Meka 渠道开
+  // `oidc-token` 这条缝：同一份响应在 Cindy 渠道仍必须被拒（不能顺带放开上游渠道）。
+  it('parses a public Meka Plugin detail that injects the Host oidc-token', async () => {
+    const item = summary(PLUGIN_A, 'service-a');
+    const manifest = {
+      schemaVersion: 2,
+      id: item.ghostId,
+      name: item.name,
+      version: item.currentRelease.version,
+      kind: 'chip',
+      entry: 'main.js',
+      slots: ['network'],
+      network: {
+        hosts: ['service-a.x.test'],
+        secrets: [{
+          key: 'cindy_identity',
+          label: 'Cindy organization identity',
+          source: 'oidc-token',
+          inject: {
+            header: 'Authorization',
+            format: 'Bearer {value}',
+            hosts: ['service-a.x.test'],
+          },
+        }],
+      },
+    };
+    const response = {
+      schemaVersion: 2,
+      plugin: { ...item, currentRelease: { ...item.currentRelease, manifest } },
+    };
+    sources.serverApiFetch.mockResolvedValue(response);
+
+    await expect(
+      new MekaPluginMarketApi(pluginClientVersionReader('meka')).detail(PLUGIN_A),
+    ).resolves.toMatchObject({
+      scope: 'public',
+      currentRelease: { manifest: { network: { secrets: [{ source: 'oidc-token' }] } } },
+    });
+
+    const cindyFetcher = vi.fn().mockResolvedValue(response);
+    await expect(
+      new PluginMarketApi(cindyFetcher).detail(PLUGIN_A),
+    ).rejects.toThrow(/currentRelease\.manifest.*oidc-token.*organization scope/);
+  });
+
   it('uses the anonymous public surface without credentials when MCPRouter is unbound', async () => {
     sources.mekaAccess.clientKey = null;
     sources.serverApiFetch

@@ -335,7 +335,18 @@ export class PluginMarketLedger {
       : this.filePathSource;
   }
 
-  /** 自定义溯源账本与主账本同目录（同一 owner 作用域）。 */
+  /**
+   * 自定义溯源账本与主账本同目录（同一 owner 作用域）。
+   *
+   * **已知边界（Meka 渠道，2026-11-17 登记）**：路径由主账本 dirname 派生，因此
+   * `plugin-market/ledger.v1.json`（Cindy）与 `plugin-market/meka-ledger.v1.json`
+   * （Meka）虽各有独立**主**账本，却实际**共用**同目录的 `custom-ledger.v1.json` 与
+   * `ns-ledger.v1.json` 两个 sidecar。两个渠道的主账本语义仍不合并；但读侧合并视图
+   * 可能看到另一渠道写入的 custom / namespace 记录，调用方必须自己按来源判定
+   * （Connection 的 Meka 基座只认 `source: 'market'` 且不带组织 namespace 的记录）。
+   * 不要为"隔离"直接改这两个 sidecar 文件名/子目录：Meka 账本可能已有存量写入，
+   * 改名会让历史自定义安装溯源失联。要真正分开必须另带一次数据迁移。
+   */
   private customFilePath(): string {
     return path.join(path.dirname(this.filePath()), CUSTOM_LEDGER_FILE);
   }

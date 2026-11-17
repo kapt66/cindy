@@ -623,7 +623,7 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
   进入更新确认；只有 `cindy-github` + root + `cindy-official` 的历史安装保留 PAT→gh 指纹兼容。
   已装、已批准的既有插件不因此获得新能力（未声明就用不到），也不需重新确认。
 - `source: "oidc-token"` 是 Host 托管的短时 Cindy Connection JWT：只对当前企业
-  Membership 生效。资格有两条默认基座：当前组织的 Plugin Market organization 安装记录仍有效、
+  Membership 生效。默认有两条组织基座（另有下面 Meka 内部渠道基座）：当前组织的 Plugin Market organization 安装记录仍有效、
   且安装目录 `ghost.json` 的 raw SHA（旧记录迁移前为集中 legacy digest）与记录一致；
   Manifest 与身份必须来自同一次受限读取，禁止分两次读取后分别校验与消费；或企业作者显式使用 `ghost_forge_install`
   安装、在提交前核对插件 id 与精确注入域名，且插件 id 命中当前组织前缀。手动导入不取得
@@ -633,6 +633,58 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
   不允许通配。实际目标必须精确命中这份可信 manifest 声明的服务域名才会签发和注入。它没有用户输入、`url`、`exchange` 或
   `setup.requires` 配置动作。Connection JWT 请求遇到 401 时，仅 GET / HEAD / OPTIONS
   可自动换令牌重试一次；非幂等请求只作废缓存，不自动重放。
+- **`oidc-token` 的 Meka 内部渠道基座（2026-11-17，Meka 私有差异）**：从 MCPRouter 的
+  Meka 市场安装的插件，可见性只有 `private / public / shared`，投影到本协议只有
+  `personal / public`，因此永远过不了上面「只对 organization scope 生效」那道门
+  （表现为列表能看到、点安装失败，装好后也拿不到 JWT）。维护者裁决为 **Meka 内部市场**
+  开第三条资格基座，**不做插件白名单**；发布流程不变（打包 → 发 MCPR → 别人在
+  Meka→插件 安装）。签发条件必须**全部**满足：
+  1. 当前身份是 organization membership（个人号一律 reject，不变）；
+  2. 该 ghost 在 Meka 渠道的独立账本
+     `owners/<owner>/plugin-market/meka-ledger.v1.json` 里有 `installed: true`、
+     `source: 'market'` 且 `rawManifestSha256` / `manifestDigest` 与当前已装 `ghost.json`
+     一致的安装记录（记录两个摘要字段都缺时**显式拒绝**并留日志原因，不得静默放行），
+     **或** 其 id 是 Host 已知的可信随包种子（与 provisioning / 随包批准入口同一判据
+     `isTrustedBundledId`；种子分支只对 **root 实例**（namespace 为 null）生效——`GhostManager`
+     的 builtin 标记同样要求 namespace === null，带组织 namespace 的同名实例不得借该分支
+     签发；当前仓不随包分发种子，故该分支目前是空集，见
+     [`meka-whitelist-verification.md`](meka-whitelist-verification.md) §8.10）；
+  3. 已批准包的 SHA-256 存在且形状合法（`/^[a-f0-9]{64}$/`）；
+  4. 已装 manifest 声明的 `oidc-token` 精确 host 非空（通配仍由 manifest 层拒绝）。
+
+  Meka 账本与 Cindy 账本**主文件不合并**，两边各自 fail-closed：记录为 `invalid`（账本存在但
+  不可读/schema 不认）或读取抛错一律 reject，不得当成「无记录」；Cindy 账本 `invalid` 或
+  `found` 时先由 Cindy 那套判据（组织 Market / agent-forge / `mivo-canvas` 临时例外）裁决，
+  不会落到 Meka 基座——Meka 基座只在 Cindy 账本**没有记录**时生效，`found` 但判据不满足时
+  按 Cindy 的拒绝原因收口，不改由 Meka 基座签发。
+  **已知边界（sidecar 共用）**：`PluginMarketLedger` 的 `custom-ledger.v1.json` /
+  `ns-ledger.v1.json` 由主账本 dirname 派生，而 `meka-ledger.v1.json` 与 `ledger.v1.json`
+  同在 `plugin-market/` 目录 ⇒ 两个渠道实际共用这两个 sidecar。主账本与语义仍不合并，但读侧
+  合并视图可能带出另一渠道写入的自定义来源／组织 namespace 记录；Meka 基座因此只认
+  `source: 'market'` 且不带组织 namespace 的已装记录。**不要**为"隔离"直接改 sidecar 文件名
+  （会丢存量自定义安装溯源），详见
+  [`plugin-distribution-and-version-compat.md`](plugin-distribution-and-version-compat.md) §3.2。
+  audience 推导**不变**：仍由 Host 按当前身份与插件 id 推导
+  `<orgSlug>:<pluginSlug>`，注入目标仍只认 manifest 声明的精确 host。解析侧只有 Meka
+  渠道传 `oidcTokenScope: 'meka-internal'`，Cindy 渠道保持严格口径（登记见
+  [`protocol-and-submodules.md`](protocol-and-submodules.md) §1.4）。
+  这次改动是**纯增量**：默认口径不变、账本 schema 不变、注入层不变，已装插件与批准
+  状态不受影响，用户不需要重新安装、重新确认权限或重新配置。
+
+  **风险（如实登记，不美化）**：MCPR 的 Meka 市场允许**任何账号**发布 public 插件。
+  放开后，这些插件只要声明 `oidc-token`，其声明的域名就能拿到用户的企业 JWT。这个
+  信任边界实际由 **MCPR 的发布权限**承担，不是由客户端审查承担。当前按维护者裁决
+  接受（内部市场、内部使用、不做插件白名单）。
+  **收紧要改哪里（不是一行判定）**：账本记录与批准证据里都**没有**发布者/账号事实，
+  所以无法只加一条比较就收紧。要收紧必须新增事实并让批准与签发都读它，例如：
+  ① 在 Meka 账本记录里增加 MCPR 发布者/账号标识（`plugin-market/service.ts:recordFrom`
+  写入、装入批准边界复核），或 ② 引入 MCPR 签名元数据（签名/证书）并在装入与签发时校验。
+  协议 wire 字段与注入层可以不变，但**账本记录 schema / 批准证据 schema 要变**；对没有
+  该字段的存量记录必须 fail-closed（视为不满足），不能当成"满足"。
+  **回滚**：删掉 `cindy-brain/connectionAudienceResolver.ts` 的
+  `resolveMekaChannelInstall` 分支与 `cindy-brain/index.ts` 的两项注入
+  （`readMekaMarketInstallation` / `isTrustedBundledGhostId`）即回到「组织 Market /
+  agent-forge / mivo-canvas」三条既有判据；不需要迁移已装插件、批准状态或任何数据。
 - 插件 setup 的完成状态只由 Host 读取真实持久化状态后判定。简单的
   `source: "user"` Secret 可由 Host 在聊天 Setup 卡中生成 `inline_form` 并直接写入
   保险库；插件详情页的 `settings.js` 仍可通过 `/oauth`、`/kv`、`/secrets`、

@@ -122,12 +122,20 @@ Auth 的企业服务。主机只在当前登录账号属于组织 Membership，�
 按需向 auth-server 换取短时 Connection JWT：①当前组织的 Plugin Market organization
 安装记录(source 必须是服务端 `market`)，且 namespace 属于当前组织、已批准整包 sha256 与记录一致；②企业作者
 显式调用 `ghost_forge_install` 安装到当前组织 namespace，且批准 receipt
-保有本次包的完整 sha256。两路都要求清单声明目标服务域名。
+保有本次包的完整 sha256；③**仅 Cindy Meka 客户端**的 Meka 内部渠道安装：从 Meka→插件
+（MCPRouter 的 Meka 注册表）安装，Meka 渠道独立账本里有 `installed:true` 且 source 为
+`market` 的记录、该记录的 manifest 摘要与当前已装清单一致，并具备已批准整包 sha256 与
+清单声明的精确域名。Meka 注册表的可见性只有 private/public/shared，投影不到
+organization scope，因此第③条不要求 organization scope；**Cindy 公共市场仍严格**——
+声明 `oidc-token` 的插件只有 organization scope 才能发布和安装，第③条不改变这一点。
+三路都要求清单声明目标服务域名。
 audience 与组织身份由主机推导,插件清单和运行时代码都不能选择、读取或保存
 audience/token；audience 固定为 `${orgSlug}:${ghostId}`,总长不得超过 64 字符。
-个人身份与手动导入不签发。临时例外，只对 root 实例生效：`ghostId` 精确等于 `mivo-canvas`、namespace 为 null 或尚未确认的旧 root 安装，且已装清单声明的精确 oidc-token host 仅为 `mivo-canvas.dsworks.cn` 时可解析 audience；企业 namespace 下的同名插件、其它本地插件、其它精确 host 仍不签发。已有市场
-organization 记录（含 installed:false）时必须仍走 digest，不得借例外跳过。市场账本损坏、schema 不认或该 ghostId 记录校验失败时 fail-closed，不得当成无记录。企业身份的 Forge 安装前会展示插件名、id 与精确域名，并要求手输相同 id
-确认。市场与 Forge 两条组织基座提供 Broker 与 oidc-token 的资格，通用能力仍按各自声明和实例批准处理。
+个人身份与手动导入不签发。本地 `.cindy` 渠道归属(`channels.v1.json`)与 Cindy 公共市场
+记录都不是第③条资格;账本记录与已装清单摘要不一致时按不满足处理。
+临时例外，只对 root 实例生效：`ghostId` 精确等于 `mivo-canvas`、namespace 为 null 或尚未确认的旧 root 安装，且已装清单声明的精确 oidc-token host 仅为 `mivo-canvas.dsworks.cn` 时可解析 audience；企业 namespace 下的同名插件、其它本地插件、其它精确 host 仍不签发。已有市场
+organization 记录（含 installed:false）时必须仍走 digest，不得借例外跳过。市场账本损坏、schema 不认或该 ghostId 记录校验失败时 fail-closed，不得当成无记录。企业身份的 Forge 安装前会展示插件名、id 与精确域名，并要求用户手输相同 id
+确认。市场与 Forge 两条组织基座提供 Broker 与 oidc-token 的资格（第③条 Meka 内部渠道基座只提供 oidc-token 资格，Broker 资格不变），通用能力仍按各自声明和实例批准处理。
 该凭证必须固定声明
 `"inject": { "header": "Authorization", "format": "Bearer {value}", "hosts": [...] }`,
 且 `hosts` 必须是非空的显式子集,只允许把断言发给列出的企业服务域名。

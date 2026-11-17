@@ -37,7 +37,7 @@ import { parseMarketSource } from './sources/parse.js';
 import { MekaPluginMarketApi } from './api.js';
 import { PluginChannelLedger } from './channelLedger.js';
 import { pluginClientVersionReader } from './clientIdentity.js';
-import { PluginMarketLedger } from './ledger.js';
+import { getMekaLedger } from './mekaLedger.js';
 import { LocalIconRequestGate } from './localIconRequestGate.js';
 import { resolveMekaPluginMaxDownloadBytes } from './mekaDownloadPolicy.js';
 import {
@@ -70,9 +70,9 @@ function mekaService(): PluginMarketService {
     // 服务端版本兼容门失效。身份（edition → 空间／版本／来源）只有
     // `plugin-market/clientIdentity.ts` 一个解析入口，构造点不再自己写 `app.getVersion()`。
     new MekaPluginMarketApi(pluginClientVersionReader('meka')),
-    new PluginMarketLedger(() =>
-      ownerScopedUserDataPath('plugin-market', 'meka-ledger.v1.json'),
-    ),
+    // Meka 渠道的独立账本（与 Cindy 的 `ledger.v1.json` 不合并）。实例来自
+    // `mekaLedger.ts`，Connection 签发资格判定读的是同一个账本实例。
+    getMekaLedger(),
     {
       adoptLegacyInstallations: false,
       applyDefaultInstalls: false,

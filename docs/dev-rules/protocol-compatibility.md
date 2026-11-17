@@ -1,5 +1,20 @@
 # 跨端协议兼容
 
+## Meka 渠道的详情 `oidc-token` scope 口径（客户端本地解析，无 wire 变更，2026-11-17）
+
+`packages/plugin-protocol` 的 `parseGetPluginResponse(value, options)` 新增**可选**
+`MekaPluginDetailParseOptions.oidcTokenScope?: 'organization-only' | 'meka-internal'`。
+缺省或 `'organization-only'` 保持今天的行为（manifest 声明 `oidc-token` 的详情只允许
+organization scope）；只有桌面 Meka 渠道的 `MekaPluginMarketApi` 显式传
+`'meka-internal'` 才放行 `scope: public | personal` 的详情——MCPRouter Meka 注册表的
+可见性只有 `private / public / shared`，投影到本协议永远到不了 organization。
+`parseListPluginsResponse` 的 summary 解析不做这项检查，也不新增检查；Cindy 渠道
+（`PluginMarketApi` / 默认 fetcher）保持严格。该选项只跳过 scope 那一条 throw，manifest
+结构、namespace 一致性和展示字段一致性照旧校验。不新增请求/响应字段、请求头、错误码
+或 `schemaVersion`，服务端与旧客户端行为不变，跨仓影响仅 Cindy 客户端解析层。
+Host 是否签发企业 JWT 是 Host 本地判定，正本见 `plugin-security-and-authoring.md` 的
+`oidc-token` 节；Meka 私有差异登记见 `migrations/xdmaker-meka-to-cindy.md` §6.69。
+
 ## 插件详细介绍 `manifest.readme`（2026-11-06，未发布）
 
 `ghost.json` 新增可选 `readme`：语言到包内 `.md` 文件的映射，必须提供 `en`，规则正本在

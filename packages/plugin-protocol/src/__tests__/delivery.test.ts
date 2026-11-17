@@ -315,6 +315,64 @@ describe('plugin delivery contract', () => {
     }
   });
 
+  it('opens the oidc-token scope gate only for the explicit Meka-internal opt-in', () => {
+    // MCPRouter 的 Meka 注册表可见性只有 private / public / shared，投影到本协议的
+    // scope 只有 personal / public；Meka 渠道用显式选项声明这条内部市场口径，
+    // 其余校验必须继续按原口径执行（只开一条缝）。
+    const plugin = {
+      id: pluginId,
+      ghostId: oidcManifest.id,
+      name: oidcManifest.name,
+      description: null,
+      author: null,
+      defaultInstall: false,
+      scope: 'public',
+      organizationId: null,
+      currentRelease: {
+        id: 'release-oidc',
+        version: oidcManifest.version,
+        sha256: 'a'.repeat(64),
+        sizeBytes: 1024,
+        publishedAt: '2026-07-19T00:00:00.000Z',
+        manifest: oidcManifest,
+      },
+    };
+    const strictError = /currentRelease\.manifest.*oidc-token.*organization scope/;
+
+    expect(() =>
+      parseGetPluginResponse({ schemaVersion: PLUGIN_API_SCHEMA_VERSION, plugin }),
+    ).toThrow(strictError);
+    expect(() =>
+      parseGetPluginResponse(
+        { schemaVersion: PLUGIN_API_SCHEMA_VERSION, plugin },
+        { oidcTokenScope: 'organization-only' },
+      ),
+    ).toThrow(strictError);
+    expect(
+      parseGetPluginResponse(
+        { schemaVersion: PLUGIN_API_SCHEMA_VERSION, plugin },
+        { oidcTokenScope: 'meka-internal' },
+      ).plugin.scope,
+    ).toBe('public');
+
+    // 同一模式下 namespace 与有效 manifest 不一致仍然抛：口子只覆盖 scope 那一条。
+    expect(() =>
+      parseGetPluginResponse(
+        {
+          schemaVersion: PLUGIN_API_SCHEMA_VERSION,
+          plugin: {
+            ...plugin,
+            currentRelease: {
+              ...plugin.currentRelease,
+              manifest: { ...oidcManifest, namespace: 'acme' },
+            },
+          },
+        },
+        { oidcTokenScope: 'meka-internal' },
+      ),
+    ).toThrow(/namespace 与有效 manifest 不一致/);
+  });
+
   it('keeps availability separate from default installation', () => {
     const response = parseListPluginsResponse({
       schemaVersion: PLUGIN_API_SCHEMA_VERSION,
