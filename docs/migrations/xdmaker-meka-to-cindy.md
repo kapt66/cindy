@@ -2918,6 +2918,36 @@ SHA-256 的提交，用户取消时才返回取消结果。Meka Renderer 原有�
 遗漏复核 bridge；最终验收需在 Windows 与 macOS 各安装一次，并确认 100% 后出现权限复核或
 明确错误，不能静默回到安装按钮。
 
+### 6.43 2026-11-18 dev 目录同步热更新后旧运行实例未退役，`/kv` 永久 403
+
+用户在会话进行中修改 Meka 开发插件源码触发自动同步，随后该会话的工具调用持续返回
+`STATE_UNAVAILABLE`，插件自报「读取运行账本失败：GET /kv 被宿主拒绝（HTTP 403）」，
+连试两次仍 403，只有重启 Cindy 才恢复。日志证据：`main-2026-11-18.log` 中
+`Meka development Plugin sync failed`／`ghost updated`（如 22:49:44 的
+`meka-dev-meka-submit-6953b2fd`）之后，会话后续调用反复 `STATE_UNAVAILABLE`，期间没有
+任何 `ghost sandbox restarts for the updated install` 或 `spawn ghost sandbox` 记录。
+
+根因是 `cindy-brain/index.ts` 里 dev 更新路径（`updateDevelopmentPackage`）用**逻辑
+runtimeId**（`meka-dev-*`）去停 `GhostRuntime`／`GhostNodeRuntimeBroker`／
+`GhostAgentSlot`，而开发副本固定落 root，这三处生命周期账本键都是物理实例键
+（`_root__meka-dev-*`）⇒ 停止全部落空。更新事务提交后 receipt 换新，`cindy-ghost://`
+分区名（`owner:mode:ownerKey:storagePart:receipt:<hash>`）随之改变，旧沙箱却仍在
+`running` 并服务活跃会话；协议目标守卫按 `installedGhostMutationTargetToken` 判旧注册
+「目标已变」，`/kv`（以及同源 `/secrets`、`/oauth`、`/connections`）持续 403，直到重启
+后才按新记录注册。市场/普通插件更新路径一直使用 `installedGhostStoragePart`，因此只有
+dev 目录通道受影响。
+
+修复：dev 更新路径改用 `installedGhostStoragePart(previousGhost)` 停旧代次并在更新成功后
+按同一键 `resetFuse`；管子派发器新增代次对齐（`GhostRuntime.isCurrentInstall`，沙箱报
+`running` 但不是当前安装记录时先 `spawn`），让活跃会话在下一次调用自动 rebind 到新实例。
+安全语义不放宽：目标守卫仍按 owner／目录／物理实例键／批准 receipt／namespace 的当前目标
+令牌判定，换账号、换实例、卸载或旧 receipt 仍 403；更新后第一次调用可能因旧代次被收成
+`GHOST_ASLEEP` 而需重试一次，但不再有长期失败。回归测试：
+`apps/desktop/src/main/cindy-brain/__tests__/mekaDevUpdateLifecycle.test.ts`（抽取并执行
+生产 `updateDevelopmentPackage`，锁生命周期键 + `/kv` 放行判据）与
+`apps/desktop/src/main/cindy-brain/__tests__/pipeDispatcher.test.ts`（派发前代次对齐）。
+未做：真实 dev 实例上的重启内复验（用户正在用该实例跑 E2E，本轮不重启）。
+
 ## 10. 后续继续迁移时的硬性注意事项
 
 ### 9.1 `origin/main` → `meka/main` 同步报告

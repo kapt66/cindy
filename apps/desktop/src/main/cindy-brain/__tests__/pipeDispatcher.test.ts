@@ -152,6 +152,55 @@ describe('tool dispatch while a real sandbox is starting', () => {
     });
 });
 
+// Regression (2026-11-18): 内容更新提交后，运行中的旧沙箱代次可能仍报 running，
+// 但它的 receipt 分区已被 cindy-ghost:// 目标守卫判过期。派发前必须按当前安装记录
+// 对齐沙箱代次（spawn 幂等），否则调用会落进旧页面，`/kv` 等端点持续 403。
+describe('tool dispatch after the installed generation changes', () => {
+  it('restarts the stale sandbox and waits for the new one before sending', async () => {
+    const loads: Array<{ resolve(): void }> = [];
+    const destroyed: number[] = [];
+    let currentGhost = fakeGhost({
+      approval: { state: 'approved', revision: '11111111-1111-4111-8111-111111111111' },
+    });
+    const runtime = new GhostRuntime({ adapter: { create: () => {
+      const index = loads.length;
+      return {
+        load: () => new Promise<void>((resolve) => { loads.push({ resolve }); }),
+        destroy: () => { destroyed.push(index); },
+        crashForTest: () => undefined,
+        onGone: () => undefined,
+      };
+    } } });
+    const sent: GhostPipeToolCall[] = [];
+    const dispatcher = new GhostPipeDispatcher({
+      getGhost: () => currentGhost,
+      runtimeStateOf: (id) => runtime.stateOf(id),
+      isCurrentInstall: (ghost) => runtime.isCurrentInstall(ghost),
+      spawn: (ghost) => runtime.spawnForTool(ghost),
+      sendToGhost: (_id, payload) => { sent.push(payload); return true; },
+    });
+    const first = runtime.spawn(currentGhost);
+    loads[0].resolve();
+    await first;
+    expect(runtime.stateOf('art')).toBe('running');
+
+    // 内容更新：同实例目录，但 receipt/版本变了；旧沙箱仍是上一代。
+    currentGhost = fakeGhost({
+      manifest: { ...currentGhost.manifest, version: '1.0.1' },
+      approval: { state: 'approved', revision: '22222222-2222-4222-8222-222222222222' },
+    });
+    const pending = dispatcher.callGhostTool(CALL);
+    await vi.waitFor(() => expect(loads).toHaveLength(2));
+    expect(destroyed).toEqual([0]);
+    expect(sent).toHaveLength(0); // 新代次就绪前不得派发。
+    loads[1].resolve();
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    dispatcher.handleToolResult('art', { callId: sent[0].callId, ok: true, result: 'done' });
+    await expect(pending).resolves.toEqual({ ok: true, result: 'done' });
+    runtime.destroyAll();
+  });
+});
+
 // #6404: wrapper-only tests did not exercise ordinary ghost_call arguments.
 // Unit: dispatch real tool payloads; only Host opening + literal opt-in may mark read.
 describe('mail reader opening intent', () => {

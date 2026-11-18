@@ -48,6 +48,12 @@ export interface PipeDispatcherDeps {
   runtimeStateOf(id: string): GhostRuntimeState;
   /** 拉起沙箱(幂等;fused/stopping 拒绝)。 */
   spawn(ghost: InstalledGhost): Promise<{ ok: true } | { ok: false; reason: string }>;
+  /**
+   * 运行中的沙箱是否按**这份安装记录**拉起(可选;生产接线到
+   * `GhostRuntime.isCurrentInstall`)。返回 false 时派发前先 `spawn` 对齐代次,
+   * 避免更新提交后新调用继续落进旧 receipt 分区的旧页面。
+   */
+  isCurrentInstall?(ghost: InstalledGhost): boolean;
   /** 把下行消息发到该意识的电子脑逻辑页;false = 逻辑页不在线。 */
   sendToGhost(ghostId: string, payload: GhostPipeToolCall): boolean | Promise<boolean>;
   ownerScope?: GhostOwnerScope;
@@ -269,11 +275,21 @@ export class GhostPipeDispatcher {
     }
 
     const callId = request.callId && request.callId.length > 0 ? request.callId : randomUUID();
-    // ── 按需拉起 ────────────────────────────────────────────────────────
-    if (this.deps.runtimeStateOf(storagePart) !== 'running') {
+    // ── 按需拉起 + 代次对齐 ─────────────────────────────────────────────
+    const running = this.deps.runtimeStateOf(storagePart) === 'running';
+    if (!running) {
       this.deps.log?.info('ghost tool waiting for sandbox readiness', {
         ghostId: storagePart, tool, callId, state: this.deps.runtimeStateOf(storagePart),
       });
+    }
+    // 代次对齐:沙箱报 running 不代表它就是**当前安装记录**拉起的。更新提交后旧
+    // 沙箱可能仍 running 且不匹配新的目录／receipt／版本／namespace;此时直接派发
+    // 会让调用落进旧页面,而旧页面的 receipt 分区已被 `cindy-ghost://` 目标守卫
+    // 判过期,`/kv`、`/secrets`、`/oauth`、`/connections` 会持续 403,只能重启应用
+    // (2026-11-18 dev 同步热更新实测)。spawn 是幂等的代次对齐入口:同身份立即返回,
+    // 不匹配就停旧沙箱、拉起新代次并等它就绪,让活跃会话自动 rebind(不再依赖每条
+    // 更新路径都记得停实例)。
+    if (!running || this.deps.isCurrentInstall?.(ghost) === false) {
       const spawned = await this.deps.spawn(ghost);
       if (!spawned.ok) {
         return { ok: false, errorCode: 'GHOST_CRASHED', message: `插件启动失败:${spawned.reason}` };

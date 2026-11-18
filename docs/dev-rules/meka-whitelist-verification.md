@@ -1028,6 +1028,14 @@ Host 接线锚点由 `mcp-providers.ts:418` 漂移到 `:47`（导入）+ `:513`�
    **边界**：源码仓 / 版本无关打包按设计就是 `0.0.0` 占位（`isVersionlessAppVersion`），
    此时两个渠道都发 `0.0.0` 是预期行为；本条要保证的是发布包（已写入真实版本）不再
    「恒发 `0.0.0`」。
+7. **dev 目录内容更新必须让旧运行代次退役**：内容指纹变化触发的同步更新成功后，
+   `GhostRuntime`／Node broker／Agent slot 必须按**物理实例键**（`_root__meka-dev-*`，
+   即 `installedGhostStoragePart`）停止，不能用逻辑 runtimeId；派发工具调用前还要按当前
+   安装记录核对沙箱代次（`GhostRuntime.isCurrentInstall`）。否则更新提交后旧沙箱会以旧
+   receipt 分区继续服务活跃会话，`/kv`、`/secrets`、`/oauth`、`/connections` 被
+   `cindy-ghost://` 目标守卫持续 403，只能重启 Cindy（2026-11-18 用户实测：会话中改源码
+   后 `/kv` 返回 `HTTP 403`、工具调用 `STATE_UNAVAILABLE`）。更新后第一次调用允许因旧
+   代次被收成 `GHOST_ASLEEP` 而重试一次；换账号、换实例、卸载或旧 receipt 仍必须 403。
 
 **代码锚点**
 - `apps/desktop/src/main/cindy-brain/mekaDevPlugins.ts`（派生包、注册表、watcher、打包、
@@ -1064,6 +1072,11 @@ Host 接线锚点由 `mcp-providers.ts:418` 漂移到 `:47`（导入）+ `:513`�
 
 **自动化门禁**
 - `pnpm --filter desktop exec vitest run src/main/cindy-brain/__tests__/mekaDevPlugins.test.ts`
+- `pnpm --filter desktop exec vitest run src/main/cindy-brain/__tests__/mekaDevUpdateLifecycle.test.ts`
+  （抽取并执行生产 `updateDevelopmentPackage`：dev 内容更新后按物理实例键停旧代次、
+  下一笔调用重绑新 receipt；`/kv` 对旧代次、换账号、换实例、卸载仍 403）
+- `pnpm --filter desktop exec vitest run src/main/cindy-brain/__tests__/pipeDispatcher.test.ts`
+  （沙箱报 `running` 但代次落后于当前安装记录时，派发前先重启新代次并等就绪再派发）
 - `pnpm --filter desktop exec vitest run src/main/meka-settings/__tests__/routerService.test.ts`
   （MCPRouter 读取失败映射到各自的 `MEKA_ROUTER_*` 码，且补充信息不含凭证/响应体；
   回退版本在**上传请求之前**被 `MEKA_ROUTER_VERSION_NOT_NEWER` 拒绝；409
@@ -1089,6 +1102,9 @@ Host 接线锚点由 `mcp-providers.ts:418` 漂移到 `:47`（导入）+ `:513`�
 接口不支持时分别给出对应引导与「重试」，且「打包到本地」始终可点。同一栅格里的开发卡与
 普通插件卡沿用既有布局，不做等高/拉伸改动。Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台；
 Meka 渠道请求头 `x-cindy-version` 是当前客户端真实版本（抓包或服务端日志确认，不是 `0.0.0`）。
+另需确认**会话进行中**修改开发插件源码：同步成功后第一次工具调用允许出现一次
+`GHOST_ASLEEP` 并要求重试，重试后工具与 `/kv` 读写正常，**不需要重启 Cindy**，面板内容
+也按 content revision 事件刷新；若仍出现持续 403，说明旧运行代次没有被退役。
 
 **本轮同步对 WL-9 四类契约的复核（2026-09-23 第三轮同步，逐条实查）**：
 1. **批准状态 schema 未动**：`RECEIPT_SCHEMA_VERSION` 仍为 **2**（上游本轮未改）；

@@ -94,6 +94,18 @@ export class GhostRuntime {
     return this.entries.get(id)?.state ?? 'off';
   }
 
+  /**
+   * 当前沙箱是否按**这份安装记录**拉起(目录／receipt／版本／namespace 全等)。
+   *
+   * 给"派发前代次对齐"用:状态机可能仍报 running,但沙箱其实是更新提交前那一代
+   * ——如果只看状态就派发,工具调用会落进旧 receipt 分区的旧页面。
+   */
+  isCurrentInstall(ghost: InstalledGhost): boolean {
+    const entry = this.entries.get(installedGhostStoragePart(ghost));
+    return entry?.handle != null && (entry.state === 'running' || entry.state === 'starting') &&
+      entry.identity === sandboxIdentity(ghost);
+  }
+
   listStates(): Record<string, GhostRuntimeState> {
     const out: Record<string, GhostRuntimeState> = {};
     for (const [id, entry] of this.entries) out[id] = entry.state;

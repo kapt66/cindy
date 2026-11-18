@@ -2624,6 +2624,9 @@ export function getGhostPipeDispatcher(): GhostPipeDispatcher {
       getGhost: findGhostForInstanceId,
       ownerScope: ghostOwnerScope,
       runtimeStateOf: (id) => getGhostRuntime().stateOf(id),
+      // 派发前代次对齐:更新提交后旧沙箱可能仍 running,不能把新调用送进旧
+      // receipt 分区的旧页面(否则 /kv 等协议会持续 403)。
+      isCurrentInstall: (ghost) => getGhostRuntime().isCurrentInstall(ghost),
       spawn: (ghost) => getGhostRuntime().spawnForTool(ghost),
       sendToGhost: (ghostId, payload) => sendToGhostLogic(ghostId, payload),
       prepareUsage: (ghost, callId, toolName, sessionId) => {
@@ -9870,9 +9873,15 @@ export function registerGhostIpc(): void {
         inspected.manifest,
         inspected.packageSha256,
       );
-      runtime.stop(expectedId);
-      getGhostNodeRuntimeBroker().stop(expectedId);
-      getGhostAgentSlot().clearGhost(expectedId);
+      // 生命周期账本键是**物理实例键**，不是逻辑 runtimeId：开发副本固定落 root
+      // （`_root__meka-dev-*`），runtime／Node broker／Agent slot 都按
+      // `installedGhostStoragePart` 记账。曾用逻辑 ID 停止，这三处全部落空 ⇒
+      // 更新提交后旧沙箱仍报 running 并以**旧 receipt 分区**服务活跃会话，
+      // `/kv` 等协议被目标守卫判过期后永久 403，只能重启 Cindy（2026-11-18）。
+      const instanceKey = installedGhostStoragePart(previousGhost);
+      runtime.stop(instanceKey);
+      getGhostNodeRuntimeBroker().stop(instanceKey);
+      getGhostAgentSlot().clearGhost(instanceKey);
       let result: Awaited<ReturnType<typeof manager.update>>;
       try {
         result = await manager.update(cindyPath, {
@@ -9887,7 +9896,7 @@ export function registerGhostIpc(): void {
         spawnIfResident(previousGhost);
         throwInstallError(result.rejection);
       }
-      runtime.resetFuse(expectedId);
+      runtime.resetFuse(instanceKey);
       spawnIfResident(result.ghost);
       return result.ghost;
     } finally {

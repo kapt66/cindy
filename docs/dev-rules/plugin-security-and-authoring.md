@@ -117,6 +117,11 @@ currentOrganization 核对同组织、同 membership 与 owner 后补齐，不�
 仍在凭证锁内复核，身份变更后旧流程不得把账号写给替代实例。
 面板和逻辑页的内存 session 绑定 owner 代次、批准版本及目录，协议注册事实不可原位复用。
 旧页即使尚未被 Renderer 销毁，也不能在替换后发起新请求；异步响应返回前再次核对绑定。
+内容更新提交后必须按**物理实例键**停掉旧代次（runtime／Node／Agent slot 的账本键都是
+`installedGhostStoragePart`，不是逻辑 `manifest.id`），派发工具调用前再按当前安装记录核对
+沙箱代次；不得把「旧页已过期」当成放宽目标守卫的理由——正确处理是让旧代次退役并由下一次
+调用按新记录重新拉起（2026-11-18 实测：dev 同步热更新用逻辑 ID 停止，三处全部落空，旧沙箱
+继续服务活跃会话，`/kv` 持续 403）。
 外部请求保留 namespace 缺失／null／组织三态；选定实例后的内部复核、订阅队列、下载和
 外链导航按物理实例定位，不再用裸名字重新选择。文件确认记忆及授权卡 adapter 绑定安装
 身份，不能跨实例复用授权；身份或批准变化使旧卡失效，恢复卡先更新实例与交互版本。
@@ -1248,6 +1253,19 @@ Renderer 的来源分类是封闭取值（`public / organization / local / custo
 - 同版本内容更新成功后，逻辑沙箱／Node／Agent slot 按正常更新生命周期重启；已经可见的
   panel/settings WebView 通过专用 content revision 事件重建，确保 HTML/CSS/JS 变化即时
   生效。该事件只负责本机可见界面刷新，不进入 device-link 协议。
+  > **生命周期键必须是物理实例键（2026-11-18 修复）**：开发副本固定落 root
+  > （`_root__meka-dev-*`），`runtime.stop`／`GhostNodeRuntimeBroker.stop`／
+  > `GhostAgentSlot.clearGhost`／`runtime.resetFuse` 的账本键都是
+  > `installedGhostStoragePart`，传给它们逻辑 runtime ID（`meka-dev-*`）会全部落空：
+  > 更新提交后旧沙箱继续报 `running`，活跃会话的请求仍打在**旧 receipt 分区**上，
+  > `cindy-ghost://` 目标守卫判其过期，`/kv`、`/secrets`、`/oauth`、`/connections`
+  > 持续 403，只有重启应用才恢复（用户实测 `/kv` 报 `HTTP 403`，后续工具调用
+  > `STATE_UNAVAILABLE`）。修复后：更新成功即按物理实例键停掉旧代次，在途调用按既有
+  > 生命周期收成结构化失败；下一次调用按新安装记录重新拉起并注册新 receipt 分区，
+  > **不需要重启 Cindy**。同一修复也接在管子派发器上：沙箱报 `running` 但
+  > `GhostRuntime.isCurrentInstall` 判定不是当前安装代次时，派发前先 `spawn` 对齐代次。
+  > 宽松方向被明确禁止：目标守卫仍以「owner + 目录 + 物理实例键 + 批准 receipt +
+  > namespace」的当前目标令牌为准，换账号、换实例、卸载或旧 receipt 一律 403。
 - Desktop 启动或 data owner 切换完成后，Host 必须从当前 owner 的开发注册表恢复 watcher，并在
   Agent 能唤醒已安装开发副本前，对每个已登记源码执行一次打包、校验和原子同步。不能等用户再次打开
   “Meka 插件”页才初始化 watcher，否则重启后的新任务会继续看到上次安装的旧工具描述和面板资源。
