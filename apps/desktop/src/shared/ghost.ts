@@ -2009,7 +2009,17 @@ export interface InstalledGhost {
   /** Read-only Host provenance, not authorship or publication permission. Missing is unknown. */
   publishingSource?:
     | { kind: 'local'; source: 'manual' | 'agent-forge' }
-    | { kind: 'public-market'; pluginId: string }
+    | {
+        kind: 'public-market';
+        pluginId: string;
+        /**
+         * 市场渠道。缺省是 Cindy 市场（`plugin-market/ledger.v1.json`）；`'meka'` 是
+         * Meka 独立分发渠道（`plugin-market/meka-ledger.v1.json`，MCPRouter 安装）。
+         * 两个渠道都是「市场安装」：不是本机作者包，因此不提供本地分享、本地更新覆盖
+         * 或「发布插件」入口；渠道差异只用于来源展示，`kind` 的既有语义不变。
+         */
+        channel?: 'meka';
+      }
     | { kind: 'unavailable' };
   /** Host retirement projection; never supplied by plugin authors. */
   retirement?: import('./featureRetirements').InstalledFeatureRetirement;

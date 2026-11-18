@@ -97,6 +97,20 @@ describe('pluginPresentationOrigin', () => {
     expect(pluginPresentationOrigin({ scope: 'personal', sourceType: 'server' })).toBe('local');
   });
 
+  // Bug／规则依据（2026-11-18 用户实测，迁移总账 §6.75）：MCPRouter 的 private/shared 被协议
+  // 投影成 personal scope，Meka 页曾把它显示成「本地」；两条渠道必须按 surface 分开。
+  // 覆盖缺口：本用例是唯一区分两条渠道同一 scope 的断言。
+  it('distinguishes the Meka channel personal scope from a local install', () => {
+    const personal = { scope: 'personal', sourceType: 'server' } as const;
+
+    expect(pluginPresentationOrigin(personal, 'plugins')).toBe('local');
+    expect(pluginPresentationOrigin(personal, 'meka')).toBe('personal-meka');
+  });
+
+  it('keeps public Meka entries public', () => {
+    expect(pluginPresentationOrigin({ scope: 'public', sourceType: 'server' }, 'meka')).toBe('public');
+  });
+
   it('maps custom market sources to the custom origin regardless of scope', () => {
     expect(pluginPresentationOrigin({ scope: 'public', sourceType: 'git-market' })).toBe('custom');
     expect(pluginPresentationOrigin({ scope: 'public', sourceType: 'local-market' })).toBe(

@@ -94,7 +94,8 @@ export function RemotePluginPage({
   const { t, i18n } = useTranslation();
   const { confirm } = useConfirmDialog();
   const catalogOwnerKey = pluginCatalogPartitionKey(JSON.stringify([device.deviceId, getDataOwnerGeneration()]), i18n.language);
-  const catalogMemory = pluginCatalogMemory(catalogOwnerKey, device.deviceId);
+  // 远端目录页只服务 Cindy 面（Meka 面固定走本机页），缓存槽按 plugins surface 归属。
+  const catalogMemory = pluginCatalogMemory(catalogOwnerKey, device.deviceId, 'plugins');
   const [snapshot, setSnapshot] = usePluginCatalogState(catalogMemory, 'remoteSnapshot');
   const [project, setProject] = useState<PluginManagementProject | null>(null);
   const projectRef = useRef(project);
@@ -737,7 +738,8 @@ export function RemotePluginPage({
     snapshot?.market.items.filter(
       (i) => !snapshot.ghosts.some((g) => marketItemMatchesInstalledGhost(i, g)),
     ) ?? [];
-  const marketOrigins = ['all', ...new Set(availableMarket.map(pluginPresentationOrigin))];
+  // 远端插件页只服务 Cindy 渠道（Meka 面固定走本机页），来源分类沿用缺省的 `plugins` 口径。
+  const marketOrigins = ['all', ...new Set(availableMarket.map((item) => pluginPresentationOrigin(item)))];
   const effectiveOriginFilter = marketOrigins.includes(originFilter) ? originFilter : 'all';
   const pageHeading = (
     <header className="mb-8" data-catalog-region="heading">

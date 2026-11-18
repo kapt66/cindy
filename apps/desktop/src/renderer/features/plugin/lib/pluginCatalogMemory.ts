@@ -1,14 +1,23 @@
 import { useCallback, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { emptyPluginBrowserCache, mergePluginItems, samePluginValue, PLUGIN_CATALOG_REFRESH_MS } from './pluginBrowserCache';
 import { ghostWebviewOwnerKey } from './ghostPluginViewModel';
+import { pluginMarketApiForSurface, type PluginMarketSurface } from './pluginMarketSurface';
 import { resolveSystemLocale } from '../../../../shared/locale';
 import type { PluginGridCache } from '../PluginVirtualGrid';
 import type { PluginMarketItem, PluginMarketSnapshot } from '../../../../shared/pluginMarket';
 import type { PluginManagementSnapshot } from '../../../../shared/pluginManagement';
 
-function emptyCatalogMemory() {
+/**
+ * 目录缓存按 surface 分槽：Cindy 与 Meka 页各有一份目录与在途请求。
+ * surface 同时决定快照读哪条市场渠道，缓存槽与渠道不会再错配。
+ */
+function emptyCatalogMemory(surface: PluginMarketSurface) {
   return {
-    query: '', catalogTab: 'installed' as 'installed' | 'market', originFilter: 'all' as 'all' | 'public' | 'organization' | 'personal' | 'custom' | 'local',
+    surface,
+    query: '', catalogTab: 'installed' as 'installed' | 'market',
+    // 来源筛选档位是渲染层分类的回显槽：除协议 scope（`personal` 等）外也承接
+    // `PluginPresentationOrigin` 的渠道专用分类（`personal-meka`，见 §6.75）。
+    originFilter: 'all' as 'all' | 'public' | 'organization' | 'personal' | 'custom' | 'local' | 'personal-meka',
     installedLimit: 10, marketTotal: null as number | null,
     browser: { current: emptyPluginBrowserCache() },
     installedGrid: { columns: 2, measurements: [] } as PluginGridCache, installedQuery: '',
@@ -35,11 +44,14 @@ export function pluginCatalogPartitionKey(ownerKey: string, locale: string, gene
 }
 
 /** View state only, for this renderer lifetime. Never restores actions or authority. */
-export function pluginCatalogMemory(ownerKey: string, target: string): CatalogMemory {
-  const entry = catalogs.get(target);
+export function pluginCatalogMemory(ownerKey: string, target: string, surface: PluginMarketSurface): CatalogMemory {
+  // 同一 target（本机或某台远端电脑）下，两个 surface 的目录缓存必须是两份：
+  // 否则先打开的页面会把 snapshot、在途 flight 与刷新时间留给另一个页面。
+  const slot = JSON.stringify([target, surface]);
+  const entry = catalogs.get(slot);
   if (entry?.ownerKey === ownerKey) return entry.memory;
-  const memory = emptyCatalogMemory();
-  catalogs.set(target, { ownerKey, memory });
+  const memory = emptyCatalogMemory(surface);
+  catalogs.set(slot, { ownerKey, memory });
   return memory;
 }
 
@@ -82,7 +94,8 @@ export function mergePluginSnapshot(previous: PluginMarketSnapshot | null, next:
 export function readLocalPluginSnapshot(memory: CatalogMemory, force = false, renewIcons = false): Promise<PluginMarketSnapshot> {
   if (memory.snapshotFlight) return memory.snapshotFlight;
   if (!force && memory.snapshot && Date.now() - memory.snapshotAt < PLUGIN_CATALOG_REFRESH_MS) return Promise.resolve(memory.snapshot);
-  const flight = window.electronAPI.pluginMarket.snapshot().then(next => {
+  // 目录快照跟随本缓存的 surface：Meka 页读 Meka 独立渠道，plugins 页读 Cindy 渠道。
+  const flight = pluginMarketApiForSurface(memory.surface, window.electronAPI).snapshot().then(next => {
     // Publish data and freshness together in the initiating partition. A locale
     // refresh joining immediately after settlement must not reuse the old data.
     memory.snapshot = mergePluginSnapshot(memory.snapshot, next, renewIcons);
@@ -96,6 +109,7 @@ export function readLocalPluginSnapshot(memory: CatalogMemory, force = false, re
 export function readPluginRecommendations(memory: CatalogMemory): Promise<PluginMarketItem[]> {
   if (memory.recommendationsFlight) return memory.recommendationsFlight;
   if (memory.todayLoaded && Date.now() - memory.recommendationsAt < PLUGIN_CATALOG_REFRESH_MS) return Promise.resolve(memory.todayPool);
+  // Meka 渠道没有 recommendations 端点，推荐位只在 plugins 面渲染；这里固定读 Cindy 渠道。
   const flight = window.electronAPI.pluginMarket.recommendations().then(next => {
     memory.recommendationsAt = Date.now();
     return mergePluginItems(memory.todayPool, next);

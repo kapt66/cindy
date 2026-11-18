@@ -19,7 +19,7 @@ it('prewarms installed data and recommendations once per owner, sharing the page
   schedulePluginCatalogPrewarm(input);
   await vi.advanceTimersByTimeAsync(300);
   await vi.dynamicImportSettled();
-  const memory = pluginCatalogMemory(pluginCatalogOwnerKey(input.mode, input.ownerId, input.generation, input.locale), 'local');
+  const memory = pluginCatalogMemory(pluginCatalogOwnerKey(input.mode, input.ownerId, input.generation, input.locale), 'local', 'plugins');
   expect(memory.snapshot?.items).toEqual([]);
   expect(memory.todayLoaded).toBe(true);
   expect(snapshot).toHaveBeenCalledOnce();
@@ -41,11 +41,35 @@ it('does not fetch or publish data after the owner changes before idle execution
   expect(snapshot).not.toHaveBeenCalled();
 });
 
+// Unit / §6.74: the Meka page's catalog must come from the Meka channel, and the
+// per-surface memory slot must keep both caches apart. Before the fix every surface
+// read `pluginMarket.snapshot` and the second page could reuse the first one's data.
+it('reads each surface from its own market channel with separate snapshot caches', async () => {
+  const cindySnapshot = vi.fn(async () => ({ items: [], unavailableReason: null, customSourceNames: ['cindy'], unavailableCustomSourceNames: [] }));
+  const mekaSnapshot = vi.fn(async () => ({ items: [], unavailableReason: null, customSourceNames: ['meka'], unavailableCustomSourceNames: [] }));
+  vi.stubGlobal('window', { electronAPI: {
+    pluginMarket: { snapshot: cindySnapshot },
+    mekaPluginMarket: { snapshot: mekaSnapshot },
+  } });
+  const cindy = pluginCatalogMemory('surface-owner', 'local', 'plugins');
+  const meka = pluginCatalogMemory('surface-owner', 'local', 'meka');
+  expect(meka).not.toBe(cindy);
+  expect((await readLocalPluginSnapshot(meka)).customSourceNames).toEqual(['meka']);
+  expect((await readLocalPluginSnapshot(cindy)).customSourceNames).toEqual(['cindy']);
+  expect(mekaSnapshot).toHaveBeenCalledOnce();
+  expect(cindySnapshot).toHaveBeenCalledOnce();
+  // 重读各自走本 surface 的缓存，不会串到另一渠道。
+  expect(await readLocalPluginSnapshot(meka)).toBe(meka.snapshot);
+  expect(await readLocalPluginSnapshot(cindy)).toBe(cindy.snapshot);
+  expect(mekaSnapshot).toHaveBeenCalledOnce();
+  expect(cindySnapshot).toHaveBeenCalledOnce();
+});
+
 // Unit / Codex C1: Main reports source failures alongside successful custom
 // results. Prewarm-only empty snapshots missed the warm-cache rejection and
 // loss of partial data. The read entry must retain only failed source items.
 it('accepts successful custom sources while retaining unavailable source projections', async () => {
-  const memory = pluginCatalogMemory('partial-sources', 'local');
+  const memory = pluginCatalogMemory('partial-sources', 'local', 'plugins');
   type Item = NonNullable<typeof memory.snapshot>['items'][number];
   const item = (id: string, source: string | null, version = '1.0.0'): Item => ({ pluginId: id, ghostId: id, name: id,
     description: null, author: null, scope: 'public', organizationId: null, defaultInstall: false,
@@ -78,7 +102,7 @@ it('accepts successful custom sources while retaining unavailable source project
 // request settles but before the page publishes it. A fresh timestamp must
 // never make that second reader receive the previous snapshot.
 it('publishes a completed snapshot with its freshness before a warm reader can reuse it', async () => {
-  const memory = pluginCatalogMemory('atomic-snapshot', 'local');
+  const memory = pluginCatalogMemory('atomic-snapshot', 'local', 'plugins');
   memory.snapshot = { items: [], unavailableReason: null, customSourceNames: [], unavailableCustomSourceNames: [] };
   const next = { ...memory.snapshot, customSourceNames: ['changed-off-page'] };
   const snapshot = vi.fn().mockResolvedValue(next);

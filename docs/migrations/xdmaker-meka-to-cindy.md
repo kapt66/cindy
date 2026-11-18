@@ -7704,3 +7704,131 @@ Codex/Claude/Pi 原生读 `AGENTS.md`/`CLAUDE.md`/`SKILL.md`，不看我们的 m
 132 passed + 1 既有失败（sustained-hover 预取用例，回退本次改动同样失败）；`pnpm --filter desktop run typecheck`、
 `pnpm check:i18n` 通过。**未验证**：Light/Dark 与 12 语种实机目检；`ui:check --changed` 因存量 `UNCOVERED`
 列表退出码 1。
+
+### 6.73 2026-11-18 Meka 渠道账本参与发布来源判定：MCPR 装的插件不再出现「发布插件」（已修）
+
+**背景**：`publishingSource` 的投影只读 Cindy 账本（`plugin-market/ledger.v1.json`），而 Meka 渠道
+（MCPRouter）的安装只写 `plugin-market/meka-ledger.v1.json`。Cindy 账本里没有这条记录时，实例注册表
+里的 `source:'manual'` 被投影成 `local`，详情页因此出现「发布插件」按钮（用户实测截图）；反过来若
+来源被记成 `market`，又会因 Cindy 账本无记录落到 `unavailable`，本地分享／本地更新语义连带失真。
+
+**改动**：
+1. **判定链**：`projectPluginPublishingSource` 增加第四参数（第二渠道账本懒读取器）。先查 Cindy 账本；
+   仅当它 `absent` 时才读 Meka 账本。命中 `found` 且 `installed:true`、`source:'market'`、root
+   namespace（`public` 不带组织；`personal` 的自然人 id 不视为组织身份）、同 ghostId、与已批准
+   receipt 相同包 sha256、实例未绑定冲突 `pluginId` 时，投影成
+   `{ kind:'public-market', pluginId, channel:'meka' }`。
+2. **共享类型**：`InstalledGhost['publishingSource']` 的 `public-market` 变体加可选 `channel?:'meka'`
+   （缺省 = Cindy 渠道）。**复用 `kind` 而不新增 `meka-market`**：现有消费方（本地更新覆盖、本地分享、
+   发布入口、安装来源标签）都按 `kind` 判定；新增 kind 会让 `GhostPluginDetailView.tsx` 的
+   `kind !== 'public-market'` 判据把 Meka 市场安装当成「可本地更新覆盖」，属真实回归，且该文件由并行
+   改动负责。`channel` 只做渠道区分，不改既有语义。
+3. **fail-closed**：任一侧账本 `invalid`（文件存在但不可读／不合法）或读取抛错 → `unavailable`；
+   Meka 账本有记录但对不上这次已批准安装 → 同样 `unavailable`（既不冒充市场安装，也不退回 `local`）。
+   两边都无记录时既有语义不变（`manual` / `agent-forge` 仍 `local`，`legacy` 仍 `unavailable`）；
+   `agent-forge` 显式自测安装与 `namespace:'local'` 的本地开发副本不被 Meka 账本覆盖。
+4. **接线**：`index.ts` 的 `sourcesForInstance`（逐实例实时查询）与 `prepareListingSources`（列表快照，
+   `isCurrent` 同时核对两份账本）都接入 Meka 账本；Meka 账本读不到时只让依赖它的实例 fail-closed，
+   不连带作废 Cindy 已确认的来源。
+5. **文档**：`docs/dev-rules/plugin-security-and-authoring.md` §5.3 补充两渠道来源事实合并规则。
+
+**验证**（定向，未跑提交前门禁）：
+`vitest run src/main/cindy-brain/__tests__/pluginPublishingSource.test.ts` → 1 file / 11 tests passed
+（Meka 匹配 → 市场安装；`invalid`／抛错 → `unavailable`；两边无记录 → `local`；记录不匹配不退回
+`local`；Cindy 有记录时不读 Meka；以及两处生产接线的源码级 guard）。
+**未验证**：`pnpm --filter desktop run typecheck`；`GhostPluginPage` / `GhostPluginDetailView` 等 renderer
+测试与实机目检（renderer 由并行改动负责）；i18n / dev-docs 门禁。
+
+**遗留（未在本次范围）**：
+- Renderer 展示：Meka 渠道安装现在与 Cindy 市场安装同 `kind`，`ghostPluginViewModel` 的来源标签会是
+  `publicInstall`、`ghostFallbackDisplayAuthor` 会取不到 manifest author。要显示 Meka 渠道专属文案需
+  renderer 读 `channel:'meka'`（本次未改 renderer 页面）。
+- `plugin-contributions/prepared.ts` 的 Host 发布准备入口仍只按 Cindy 账本 + `kind` 判定：Meka 渠道
+  安装目前仅靠 renderer 隐藏「发布插件」入口挡住。建议 main 侧对 `channel:'meka'` 显式拒绝——跨渠道
+  发布属产品边界，需要单独裁决后再改。
+
+### 6.74 2026-11-18 Meka 插件页列表误用 Cindy 渠道快照导致列表偏少（已修）
+
+**背景**：Meka 插件管理页的目录快照由 `pluginCatalogMemory.readLocalPluginSnapshot` 读取，但该函数硬编码
+`window.electronAPI.pluginMarket.snapshot()`（Cindy 渠道）；Meka 渠道的 `mekaPluginMarket.snapshot()`
+（preload `preload.ts:1914`，IPC `meka-plugin-market:snapshot` → `plugin-market/registerIpc.ts:433`）
+在 Renderer 从未被调用。Meka 页的列表与计数只来自这份快照（Meka 渲染分支不渲染分页的
+`PluginCatalogBrowser`），所以看到的是 Cindy 目录；原有守卫只扫 `GhostPluginPage.tsx`，看不到 `lib/` 里的旁路。
+
+**改动**：
+1. **目录快照按 surface 选渠道**：`pluginCatalogMemory` 的缓存槽改为按 `[target, surface]` 分区，槽内
+   `surface` 是快照读取的唯一渠道来源；`readLocalPluginSnapshot` 改走
+   `pluginMarketApiForSurface(memory.surface, window.electronAPI).snapshot()`。Meka 页创建缓存时传
+   `'meka'`（调 `mekaPluginMarket.snapshot`），`plugins` 页、远端目录页与登录预热继续传 `'plugins'`
+   （Cindy 渠道，行为不变）。同一 owner 下两个 surface 的 `snapshot` / `snapshotFlight` / `snapshotAt`
+   不再共用——先打开的页面不会决定另一个页面的数据。
+2. **守卫与回归**：`pluginMarketSurface.test.ts` 从只扫 `GhostPluginPage.tsx` 扩展为扫页面 + `lib/**`
+   生产源码：直接 `window.electronAPI.<渠道>.<method>` 调用必须命中每文件显式白名单，`snapshot` 一律
+   不得在适配器之外出现（两条渠道都覆盖）；`pluginCatalogPrewarm.test.ts` 用 mock electronAPI 断言
+   Meka surface 调 `mekaPluginMarket.snapshot`、plugins surface 调 `pluginMarket.snapshot`，且两份缓存
+   互不污染；`GhostPluginPage.navigation.test.tsx` 用真实 Meka 路由页面断言目录读 Meka 渠道、
+   Cindy 缓存槽原样保留。
+3. **文档**：`docs/dev-rules/plugin-security-and-authoring.md` §4.2 写明目录快照按 surface 选渠道、
+   缓存按 surface 隔离，以及 Meka 无等价端点的能力仍只服务 Cindy 面。
+
+**验证**（定向，未跑提交前门禁）：`vitest run pluginMarketSurface.test.ts pluginCatalogPrewarm.test.ts`
+→ 2 files / 10 tests passed；`vitest run GhostPluginPage.navigation.test.tsx -t 'Meka page catalog'`
+→ 1 passed（其余 133 跳过）。**未验证**：navigation 全文件、`typecheck`、i18n。
+
+**遗留（main 侧，未在本次改动范围）**：Meka `snapshot` 仍继承 `PluginMarketService` 的
+`loadMaintenanceCatalog`（`service.ts:1275-1340`），只返回「默认目录 + 已安装核对」的维护型目录，
+不是全量目录；`MekaPluginMarketApi` 也未覆写 `snapshot`（`api.ts:534`）。因此只换渠道只能让 Meka 页
+读对渠道，列表仍可能比 MCPRouter 少。需要 main 侧为 Meka 提供全量目录读取（例如新增
+`meka-plugin-market:query` 走 `mekaService().query`，或提供全量快照），Renderer 再按分页/全量消费；
+另 `meka-plugin-market:snapshot` 未像 Cindy `plugin-market:snapshot` 那样传 `discoveryOnly`
+（`registerIpc.ts:433-435` vs `241-248`），前台打开页面会顺带跑对账，建议 main 侧一并核对。
+
+### 6.75 2026-11-18 Meka 渠道的 private/shared 发布在「全部插件」里被显示成「本地」（已修）
+
+**背景**：用户实测 Meka 插件页「全部插件」里两个都还没安装的 Meka 市场插件：「Meka Docs」显示「公开」、
+无标签；「Meka 提交」显示「**本地**」标签，元信息行写「本地 · Cindy Meka」。根因是两条渠道共用一套
+来源分类：MCPRouter Meka 注册表的可见性只有 `private / public / shared`，Main 的
+`MekaPluginMarketApi` 把它投影成协议 scope（`public → public`，`private/shared → personal`，
+**永远到不了 `organization`**，见 `main/plugin-market/api.ts:558-565`）；而渲染层
+`pluginPresentationOrigin` 对「不是 public/organization」的服务端来源统一返回 `local` ——
+那条注释写的是 Cindy 渠道「个人发布不对外暴露」的封闭分类。Meka 渠道的 `personal` 是**已发布的
+Meka 市场条目**，不是「从本机安装」，落到 `local` 是错标。
+
+**改动**（只动 renderer 展示层、文案与测试；`main/plugin-market/api.ts` 的 scope 投影不动）：
+1. **分类按渠道拆开**：`pluginPresentationOrigin(item, surface = 'plugins')` 增加可选 surface；
+   `surface === 'meka' && scope === 'personal'` → 新分类 `personal-meka`。缺省仍是 Cindy 口径
+   （`personal → local`），`public / organization / custom` 行为不变。
+2. **文案**：新增 `settings.ghosts.page.origin.personal-meka`（卡片与徽标）、
+   `settings.ghosts.market.scope.personal-meka`（市场详情元信息行）与
+   `settings.ghosts.market.publisherDescription.personal-meka`（徽标 tooltip 与详情来源说明）
+   三个 key，落全部 12 个 locale（zh-CN「Meka 私有」、lzh「Meka 私」，其余按各语言译
+   Meka private；说明句「仅自己或指定成员可见」）。`PluginPublisherBadge` 增加
+   `personal-meka` identity：Lock 图标，沿用 `local` 的中性 `--surface-chip` 配色，
+   **不新增 design token**，Light/Dark 自动适配。
+3. **调用点传 surface**：`GhostPluginPage.tsx` 的 `MarketPluginCard`（新增 `surface` prop，
+   compact 与非 compact 两条渲染分支共用同一个 `origin`，不再各自重算）、`GhostPluginCard`、
+   已安装条目的 `origin` 计算、「全部插件」的市场过滤、`MarketPluginDetailView`、
+   `GhostPluginDetailView` / `PluginDetailHeader`（详情头部）。Meka 渲染分支传 `'meka'`；
+   `plugins` 页、远端插件页与推荐位传 `'plugins'`（与缺省值相同，Cindy 展示一行未变）。分页浏览
+   `PluginCatalogBrowser` 的 `scope` 参数把新分类映射回协议 `personal`，不把渲染层分类
+   带进市场查询参数。
+4. **文档**：`docs/dev-rules/plugin-security-and-authoring.md` 新增 §1.3「来源展示分类」。
+5. **测试**：`pluginMarketPresentation.test.ts` 锁定同一 personal scope 在 `plugins` 面 →
+   `local`、`meka` 面 → `personal-meka`，以及 public 在 meka 面仍为 `public`；
+   `GhostPluginCard.test.tsx` 用真实 `MarketPluginCard` 锁定两条 surface × compact 组合的
+   标签（徽标与元信息行同源、不出现另一面的分类）。
+
+**验证**（定向，未跑提交前门禁）：
+`pnpm --filter desktop exec vitest run src/renderer/features/plugin/__tests__/GhostPluginCard.test.tsx`
+→ 1 file / 62 tests passed（本次新增 4 条）。**未验证**：`typecheck`、其余 renderer 测试、
+Light/Dark 与 12 语种实机目检、i18n / i18n-glossary 门禁；`pluginMarketPresentation.test.ts`
+新增的 3 条用例未单独运行（同一函数已由上述卡片用例执行）。
+
+**遗留（需要协议补字段）**：MCPRouter 只有 private / public / shared 三档可见性，协议投影把
+private 与 shared 合并成 `personal`，客户端拿不到区分事实。所以本轮两者共用中性文案
+「Meka 私有」，**没有**按「仅自己 / 部分可见」分别展示（MCPRouter 自己的权限页用的是
+「仅自己 / 部分可见 / 公开」三档）。要精确区分，需要服务端在详情/列表投影里补一个可见性字段
+（例如 `visibility: 'private' | 'shared'`），渲染层再把 `personal-meka` 细分为两种文案；
+本轮不猜。另外 Meka 页的来源筛选目前只有「全部 / 公开」两档（`settings.ghosts.meka.origin`），
+新分类暂不进筛选项。
+

@@ -795,6 +795,46 @@ describe('MarketPluginCard', () => {
     expect(screen.queryByText('settings.ghosts.market.publisherKind.official')).toBeNull();
   });
 
+  /*
+   * 测试价值
+   * - 生产入口与可观察结果:Meka 插件页的市场卡把 MCPRouter 的 private/shared 发布显示成
+   *   「本地」——用户实测的错标(迁移总账 §6.75)。同一 personal scope 在 `plugins` 面仍必须
+   *   是「本地」,只有 `meka` 面换成中性分类;compact 与非 compact 两条渲染分支都要传对 surface。
+   * - Bug／规则依据:MCPRouter 可见性只有 private/public/shared,协议把它投影成 personal,
+   *   它不是「从本机安装」。Cindy 渠道的封闭分类(`personal → local`)不得随之改变。
+   * - 现有覆盖缺口:此前没有任何用例区分两条渠道对同一 scope 的展示。
+   * - 最小失败输入:`{ ...marketPlugin, scope: 'personal' }` × `surface` × `compact`。
+   * - tier:unit(jsdom 组件渲染;i18n mock 直接回显 key)。
+   */
+  it.each([
+    ['plugins', false, 'settings.ghosts.page.origin.local'],
+    ['plugins', true, 'settings.ghosts.page.origin.local'],
+    ['meka', false, 'settings.ghosts.page.origin.personal-meka'],
+    ['meka', true, 'settings.ghosts.page.origin.personal-meka'],
+  ] as const)(
+    'labels a personal scope on the %s surface (compact=%s) as %s',
+    (surface, compact, label) => {
+      const { container } = render(
+        <MarketPluginCard
+          surface={surface}
+          compact={compact}
+          item={{ ...marketPlugin, scope: 'personal', publisherKind: undefined }}
+          busy={false}
+          onSelect={vi.fn()}
+          onIconLoadError={vi.fn()}
+        />,
+      );
+
+      // 徽标与元信息行同源:两处都是这条分类。
+      expect(screen.getAllByText(label).length).toBeGreaterThan(1);
+      expect(container.textContent).not.toContain(
+        surface === 'meka'
+          ? 'settings.ghosts.page.origin.local'
+          : 'settings.ghosts.page.origin.personal-meka',
+      );
+    },
+  );
+
   it('does not guess a public identity from author text when provenance is missing', () => {
     render(<MarketPluginCard item={{ ...marketPlugin, publisherKind: undefined }} busy={false}
       onSelect={vi.fn()} onIconLoadError={vi.fn()} />);

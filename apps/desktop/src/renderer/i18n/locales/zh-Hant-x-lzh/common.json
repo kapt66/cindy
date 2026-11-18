@@ -7859,7 +7859,8 @@
           "public": "公",
           "organization": "團隊同享",
           "local": "此機",
-          "custom": "自訂"
+          "custom": "自訂",
+          "personal-meka": "Meka 私"
         },
         "emptyFiltered": "遍尋坊間，未得相符之法器",
         "useAria": "用 {{name}}",
@@ -7885,7 +7886,8 @@
           "community": "社群開發者所製，發布維護",
           "team": "本組織共享於獲准成員",
           "custom": "取自所添 Git 或本機目錄市集",
-          "local": "由本機檔案安裝，或於本機開發"
+          "local": "由本機檔案安裝，或於本機開發",
+          "personal-meka": "MCPRouter 所發 Meka 法器，唯己或所許成員可見"
         },
         "scopeAria": "篩法器之來源",
         "scope": {
@@ -7894,7 +7896,8 @@
           "organization": "組織",
           "personal": "私",
           "local": "此機",
-          "custom": "自訂"
+          "custom": "自訂",
+          "personal-meka": "Meka 私"
         },
         "install": "納",
         "details": "詳",

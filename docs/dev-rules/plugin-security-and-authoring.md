@@ -341,6 +341,25 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
   如实声明、在插件详情展示，并由 Host 运行时强制守门；动态资源与 Agent 在途操作不重复
   建权限实体，继续复用 Cindy 既有 Agent 授权系统，不新增 grant／申请状态机。
 
+### 1.3 来源展示分类（`pluginPresentationOrigin`）
+
+Renderer 的来源分类是封闭取值（`public / organization / local / custom`，另加渠道专用的
+`personal-meka`），personal scope 按**渠道**区分展示口径：
+
+- **Cindy 渠道**：个人发布刻意不对外暴露，`personal` 继续归 `local`——这是既有封闭分类，
+  行为不变；
+- **Meka 渠道**：MCPRouter Meka 注册表的可见性只有 private / public / shared，协议把它投影成
+  `personal` scope；它是「已发布的 Meka 市场条目」而不是「从本机安装」，**不得显示为「本地」**。
+  Renderer 用中性分类 `personal-meka`（文案「Meka 私有」）展示，徽标与元信息行同源。
+
+`pluginPresentationOrigin(item)` 缺省即 Cindy 口径；渲染层必须把当前页的 surface 传进去
+（`plugins` 页传 `plugins`／缺省，Meka 页传 `meka`，含 `MarketPluginCard`、`GhostPluginCard`、
+`MarketPluginDetailView` 与 `GhostPluginDetailView` 的详情头部）。
+
+**协议限制**：MCPRouter 的 private 与 shared 在投影后不可区分（都成为 `personal`），本轮不猜，
+统一显示中性文案；要区分「仅自己」与「部分可见」，需协议补一个可见性字段后再细分（见
+`docs/migrations/xdmaker-meka-to-cindy.md` §6.75）。
+
 ## 2. 运行时沙箱与进程隔离
 
 - 每个运行中的插件使用独立 Electron 沙箱进程与按 owner × plugin 隔离的内存 session
@@ -1303,6 +1322,21 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
   `expectedManifest`、`allowSourceReplacement` 或后续新增的安全前置条件，否则 Main 必须
   fail closed，用户会看到更新被拒。`pluginMarketSurface.test.ts` 同时锁定 surface 映射、
   安装事务透传，并禁止共享操作绕开适配器。
+- **目录快照（`snapshot`）同样按 surface 选渠道，目录缓存按 surface 隔离
+  （2026-11-18，迁移总账 §6.74）**：Meka 插件管理页的目录只经
+  `mekaPluginMarket.snapshot()` 读取，`plugins` 页继续经 `pluginMarket.snapshot()` 读取。
+  共享的目录缓存（`pluginCatalogMemory` 的 `snapshot` / `snapshotFlight` / `snapshotAt`）
+  按 `[target, surface]` 分槽：同一 owner 下两个页面**不得共用一份目录缓存**，否则先打开
+  哪个页面就决定了另一个页面的数据、在途请求与刷新时间。目录读取函数从缓存槽的 surface
+  取渠道，`lib/` 与页面不得再直接调用 `window.electronAPI.pluginMarket.snapshot()`。
+  Meka 渠道没有等价端点的能力（推荐位、分页 `query`、本地图标批量读取、自定义市场来源
+  管理）仍只服务 Cindy 面；Meka 面若需要全量目录，必须由 Main 补 Meka 渠道的全量读取，
+  不得回退读 Cindy 渠道。**现状边界**：Meka `snapshot` 与 Cindy 一样是「默认目录 + 已安装
+  核对」的维护型目录，不是全量目录；只换渠道不等于列表变全。回归：
+  `pluginCatalogPrewarm.test.ts`（两个 surface 的渠道选择与缓存隔离）、
+  `GhostPluginPage.navigation.test.tsx`（Meka 路由页面读 Meka 渠道且不碰 Cindy 缓存槽）与
+  `pluginMarketSurface.test.ts`（页面／`lib/` 的直接渠道调用白名单，`snapshot` 一律不得
+  在适配器之外出现）。
 
 ### 4.3 插件级界面打开方式
 
@@ -1484,6 +1518,18 @@ Host receipt 的 `simulatorPreviousRelId` 只允许这对 ID 和 root 路径，�
   注册表与 locale 的现有复核保持。展示快照不跨扫描保存，也不用于运行时授权；授权查询仍实时读取。
   实现见 `GhostManager.listAsync()` 与 `PluginMarketLedger.createListingLookup()`，回归见
   `cindy-brain/__tests__/GhostManager.test.ts` 和 `plugin-market/__tests__/ledger.test.ts`。
+- 发布来源（`publishingSource`）事实按渠道合并：先读 Cindy 渠道账本（`ledger.v1.json`），只有它
+  **没有这条实例的记录**时才读 Meka 渠道账本（`meka-ledger.v1.json`）。命中 Meka 渠道的已安装
+  市场记录（`installed`、`source:'market'`、root namespace、与已批准 receipt 相同的 ghostId 与
+  包 sha256、实例未绑定冲突的 pluginId）时投影成 `public-market` + `channel:'meka'`：与 Cindy
+  市场安装**同属市场安装**（`kind` 语义不变），因此不是 `local`，不提供本地分享、本地更新覆盖
+  或「发布插件」入口；`channel` 只区分渠道，供展示层使用。任一侧账本 `invalid`（文件存在但
+  不可读／不合法）或读取抛错都 fail-closed 成 `unavailable`，Meka 账本有记录但对不上这次已批准
+  安装时同样是 `unavailable`——账本损坏或身份冲突不是「无记录」，不得退回 `local` 的作者语义。
+  两边都无记录时既有语义不变（`manual` / `agent-forge` 仍为 `local`，`legacy` 仍为 `unavailable`），
+  显式 Forge 自测安装与 `namespace:'local'` 的本地开发副本不被 Meka 账本覆盖。实现见
+  `cindy-brain/pluginPublishingSource.ts` 与 `index.ts` 的 `sourcesForInstance` /
+  `prepareListingSources`，回归见 `cindy-brain/__tests__/pluginPublishingSource.test.ts`。
 - `pending-but-not-listed` 是注册表中的旧实例脱离普查清单，不能只记日志后永远跳过。
   修复不得扩大冻结的普查名单，也不能用 receipt 的 namespace 字段直接确认身份。必须核对
   唯一的已安装市场记录、包指纹、namespace 和当前组织；实例已有 pluginId 时，市场记录必须

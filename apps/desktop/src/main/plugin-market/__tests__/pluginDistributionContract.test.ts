@@ -542,8 +542,11 @@ describe('工件与代码枚举不漂移', () => {
         /ownerScopedUserDataPath\s*\(\s*'plugin-market'\s*,\s*'meka-ledger/,
       );
     }
-    expect(indexSource).toContain(
-      "import { readMekaMarketInstallation } from '../plugin-market/mekaLedger.js'",
+    // 只钉「从 mekaLedger 模块取访问点」，不钉 import 里的具体名字：Meka 账本参与
+    // 发布来源判定后同一个 import 还会带列表快照入口，继续用精确字符串会让合法的
+    // 访问点新增被误判成违规。
+    expect(indexSource).toMatch(
+      /import \{[^}]*\breadMekaMarketInstallation\b[^}]*\} from '\.\.\/plugin-market\/mekaLedger\.js'/,
     );
   });
 });

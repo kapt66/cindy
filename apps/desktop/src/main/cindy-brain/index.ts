@@ -680,7 +680,7 @@ import {
   type InstalledMarketManifestIdentity,
 } from '../plugin-market/installedManifestIdentity.js';
 import { createOrganizationPrefixStore } from '../plugin-market/organizationPrefixStore.js';
-import { readMekaMarketInstallation } from '../plugin-market/mekaLedger.js';
+import { createMekaLedgerListingLookup, readMekaMarketInstallation } from '../plugin-market/mekaLedger.js';
 import {
   GhostSubscriptionGateway,
   GhostActivityTracker,
@@ -2253,18 +2253,34 @@ export function getGhostManager(): GhostManager {
           lookup = { kind: 'invalid' };
         }
         return {
-          publishingSource: projectPluginPublishingSource(record, receipt, lookup),
+          // 第二条分发渠道（Meka 渠道账本）只在 Cindy 账本没有这条实例的记录时作为
+          // 来源事实；懒读取，Cindy 有记录时不会多读一份账本。读取失败在
+          // `projectPluginPublishingSource` 里按 invalid fail-closed。
+          publishingSource: projectPluginPublishingSource(record, receipt, lookup,
+            () => readMekaMarketInstallation(record.ghostId, record.namespace)),
         };
       },
       prepareListingSources: () => {
         try {
           const snapshot = getPluginMarketLedger().createListingLookup();
+          // Meka 渠道账本各自一份快照；读不到时不让 Cindy 已确认的来源连带失真
+          // （该账本对它的实例按 invalid fail-closed）。
+          let mekaSnapshot: ReturnType<typeof createMekaLedgerListingLookup> | null = null;
+          try {
+            mekaSnapshot = createMekaLedgerListingLookup();
+          } catch {
+            mekaSnapshot = null;
+          }
           return {
             project: (record, receipt) => ({
               publishingSource: projectPluginPublishingSource(record, receipt,
-                snapshot.lookup({ ghostId: record.ghostId, namespace: record.namespace })),
+                snapshot.lookup({ ghostId: record.ghostId, namespace: record.namespace }),
+                mekaSnapshot
+                  ? () => mekaSnapshot!.lookup({ ghostId: record.ghostId, namespace: record.namespace })
+                  : () => ({ kind: 'invalid' } as const)),
             }),
-            isCurrent: snapshot.isCurrent,
+            // Meka 账本快照变化同样要重扫：否则这一轮列表会发布过期的来源事实。
+            isCurrent: () => snapshot.isCurrent() && (mekaSnapshot?.isCurrent() ?? true),
           };
         } catch {
           return {

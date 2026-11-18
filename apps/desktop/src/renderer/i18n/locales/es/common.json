@@ -7969,7 +7969,8 @@
           "public": "Público",
           "organization": "Compartido con el equipo",
           "local": "Local",
-          "custom": "Personalizado"
+          "custom": "Personalizado",
+          "personal-meka": "Meka privado"
         },
         "emptyFiltered": "No hay complementos que coincidan",
         "useAria": "Usar {{name}}",
@@ -7995,7 +7996,8 @@
           "community": "Publicado y mantenido por desarrolladores de la comunidad",
           "team": "Compartido por tu organización con los miembros autorizados",
           "custom": "De un mercado Git o de una carpeta local que añadiste",
-          "local": "Instalado desde un archivo local o desarrollado en este equipo"
+          "local": "Instalado desde un archivo local o desarrollado en este equipo",
+          "personal-meka": "Complemento de Meka publicado a través de MCPRouter; solo tú o los miembros seleccionados podéis verlo"
         },
         "scopeAria": "Filtrar orígenes de complementos",
         "scope": {
@@ -8004,7 +8006,8 @@
           "organization": "Organización",
           "personal": "Personal",
           "local": "Local",
-          "custom": "Personalizado"
+          "custom": "Personalizado",
+          "personal-meka": "Meka privado"
         },
         "install": "Instalar",
         "details": "Detalles",

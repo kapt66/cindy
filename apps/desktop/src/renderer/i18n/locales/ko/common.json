@@ -7860,7 +7860,8 @@
           "public": "공개",
           "organization": "팀 공유",
           "local": "로컬",
-          "custom": "사용자 지정"
+          "custom": "사용자 지정",
+          "personal-meka": "Meka 비공개"
         },
         "emptyFiltered": "일치하는 플러그인이 없습니다",
         "useAria": "{{name}} 사용",
@@ -7886,7 +7887,8 @@
           "community": "커뮤니티 개발자가 배포 및 유지 관리",
           "team": "조직에서 권한이 있는 구성원에게 공유",
           "custom": "추가한 Git 또는 로컬 폴더 마켓에서 제공",
-          "local": "로컬 파일에서 설치하거나 이 컴퓨터에서 개발"
+          "local": "로컬 파일에서 설치하거나 이 컴퓨터에서 개발",
+          "personal-meka": "MCPRouter로 게시된 Meka 플러그인으로, 본인 또는 지정된 구성원에게만 표시됩니다"
         },
         "scopeAria": "플러그인 출처 필터",
         "scope": {
@@ -7895,7 +7897,8 @@
           "organization": "조직",
           "personal": "개인",
           "local": "로컬",
-          "custom": "사용자 지정"
+          "custom": "사용자 지정",
+          "personal-meka": "Meka 비공개"
         },
         "install": "설치",
         "details": "상세",

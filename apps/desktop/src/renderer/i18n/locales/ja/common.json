@@ -7860,7 +7860,8 @@
           "public": "公開",
           "organization": "チーム共有",
           "local": "ローカル",
-          "custom": "カスタム"
+          "custom": "カスタム",
+          "personal-meka": "Meka プライベート"
         },
         "emptyFiltered": "一致するプラグインがありません",
         "useAria": "{{name}} を使用",
@@ -7886,7 +7887,8 @@
           "community": "コミュニティ開発者が公開・保守しています",
           "team": "組織内の権限を持つメンバーに共有されています",
           "custom": "追加した Git またはローカルフォルダーのマーケットから取得",
-          "local": "このコンピューター上で開発、またはローカルファイルからインストール"
+          "local": "このコンピューター上で開発、またはローカルファイルからインストール",
+          "personal-meka": "MCPRouter で公開された Meka プラグインです。自分のみ、または指定したメンバーに表示されます"
         },
         "scopeAria": "プラグインの提供元を絞り込む",
         "scope": {
@@ -7895,7 +7897,8 @@
           "organization": "組織",
           "personal": "個人",
           "local": "ローカル",
-          "custom": "カスタム"
+          "custom": "カスタム",
+          "personal-meka": "Meka プライベート"
         },
         "install": "インストール",
         "details": "詳細",

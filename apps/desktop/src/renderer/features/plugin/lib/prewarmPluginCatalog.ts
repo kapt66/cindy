@@ -18,7 +18,7 @@ export function schedulePluginCatalogPrewarm(input: {
     void import('./pluginCatalogMemory').then(async module => {
       if (cancelled || !isDataOwnerGenerationCurrent(owner)) return;
       const ownerKey = module.pluginCatalogOwnerKey(input.mode, input.ownerId, input.generation, input.locale);
-      const memory = module.pluginCatalogMemory(ownerKey, 'local');
+      const memory = module.pluginCatalogMemory(ownerKey, 'local', 'plugins');
       const current = () => !cancelled && isDataOwnerGenerationCurrent(owner);
       await window.electronAPI.setApplicationMenuLocale(resolveSystemLocale(input.locale));
       if (!current()) return;

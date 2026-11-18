@@ -7860,7 +7860,8 @@
           "public": "公開",
           "organization": "團隊共享",
           "local": "本機",
-          "custom": "自訂"
+          "custom": "自訂",
+          "personal-meka": "Meka 私有"
         },
         "emptyFiltered": "沒有找到匹配的插件",
         "useAria": "使用 {{name}}",
@@ -7886,7 +7887,8 @@
           "community": "由社群開發者發布及維護",
           "team": "由目前組織分享給有權限的成員",
           "custom": "來自你新增的 Git 或本機資料夾市場",
-          "local": "從本機檔案安裝，或在本機開發"
+          "local": "從本機檔案安裝，或在本機開發",
+          "personal-meka": "透過 MCPRouter 發布的 Meka 插件，僅自己或指定成員可見"
         },
         "scopeAria": "篩選插件來源",
         "scope": {
@@ -7895,7 +7897,8 @@
           "organization": "組織",
           "personal": "個人",
           "local": "本機",
-          "custom": "自訂"
+          "custom": "自訂",
+          "personal-meka": "Meka 私有"
         },
         "install": "安裝",
         "details": "詳情",

@@ -652,7 +652,9 @@ function LocalGhostPluginPage({
   const [mekaInstalledGhostIds, setMekaInstalledGhostIds] = useState<string[]>([]);
   const [mekaDevPluginItems, setMekaDevPluginItems] = useState<MekaDevPluginItem[]>([]);
   const catalogOwnerKey = pluginCatalogOwnerKey(mode, dataOwnerId, dataOwnerGeneration, marketLocale);
-  const catalogMemory = pluginCatalogMemory(catalogOwnerKey, 'local');
+  // [MEKA] surface 进缓存槽：Meka 页与 plugins 页各自持有目录/在途请求，绝不共用一份
+  // snapshot；目录快照的渠道也由该槽的 surface 决定（见 `readLocalPluginSnapshot`）。
+  const catalogMemory = pluginCatalogMemory(catalogOwnerKey, 'local', surface);
   const catalogMemoryRef = useRef(catalogMemory);
   catalogMemoryRef.current = catalogMemory;
   const [query, setQuery] = usePluginCatalogState(catalogMemory, 'query');
@@ -1055,8 +1057,9 @@ function LocalGhostPluginPage({
           return {
             ...listItem,
             // 有市场记录时以市场来源为准；没有时用 Host 的来源事实（未验证/旧安装是
-            // undefined，按本地归口径，与「不能自称公域」一致）。
-            origin: marketItem ? pluginPresentationOrigin(marketItem) : (listItem.origin ?? 'local'),
+            // undefined，按本地归口径，与「不能自称公域」一致）。渠道决定 personal scope
+            // 的展示口径：Cindy 渠道落在 local，Meka 渠道不得显示成本地（§6.75）。
+            origin: marketItem ? pluginPresentationOrigin(marketItem, surface) : (listItem.origin ?? 'local'),
             development,
             sourcePluginId: developmentItem?.pluginId ?? ghost.manifest.id,
             // 同版本展示刷新由 main 标成 installed;legacy-unresolved 仍保留
@@ -1077,7 +1080,7 @@ function LocalGhostPluginPage({
                 : pluginUpdateForInstalledVersion(marketItem),
           };
         }),
-    [ghosts, marketItems, mekaDevPluginById],
+    [ghosts, marketItems, mekaDevPluginById, surface],
   );
   const installedItems = useMemo(
     () =>
@@ -1146,20 +1149,20 @@ function LocalGhostPluginPage({
       if (item.installState === 'installed' || item.installState === 'update-available') {
         return false;
       }
-      if (!showEnterprise && pluginPresentationOrigin(item) === 'organization') return false;
+      if (!showEnterprise && pluginPresentationOrigin(item, surface) === 'organization') return false;
       return `${item.name} ${item.description ?? ''} ${item.ghostId} ${item.author ?? ''}`
         .toLocaleLowerCase()
         .includes(normalizedQuery);
     });
-  }, [marketItems, query, showEnterprise]);
+  }, [marketItems, query, surface, showEnterprise]);
   const availableMarketItems = useMemo(
     () =>
       effectiveOriginFilter === 'all'
         ? searchedAvailableMarketItems
         : searchedAvailableMarketItems.filter(
-            (item) => pluginPresentationOrigin(item) === effectiveOriginFilter,
+            (item) => pluginPresentationOrigin(item, surface) === effectiveOriginFilter,
           ),
-    [effectiveOriginFilter, searchedAvailableMarketItems],
+    [effectiveOriginFilter, searchedAvailableMarketItems, surface],
   );
 
   // ── 已安装区排序:未读通知(新→旧) → 最近使用 → 基础序,实时计算 ──
@@ -2320,6 +2323,7 @@ function LocalGhostPluginPage({
               development={selectedDevPlugin !== null}
               displayId={selectedDevPlugin?.pluginId}
               marketItem={selectedMarketInstall}
+              surface={surface}
               installationPending={selectedMarketInstall !== null && marketInstallBusyId === selectedMarketInstall.pluginId}
               panelStatus={panelStatus}
               enabledOverride={
@@ -2411,6 +2415,7 @@ function LocalGhostPluginPage({
             <MarketPluginDetailView
               key={marketDetail.pluginId}
               detail={marketDetail}
+              surface={surface}
               error={marketDetailError}
               refreshing={marketDetailRefreshing}
               onRetry={() => void handleSelectMarket(marketDetail)}
@@ -2588,6 +2593,7 @@ function LocalGhostPluginPage({
                       <GhostPluginCard
                         key={`installed:${catalogItem.item.id}`}
                         item={catalogItem.item}
+                        surface="meka"
                         development={catalogItem.item.development}
                         developmentSyncFailed={
                           catalogItem.item.development
@@ -2651,6 +2657,7 @@ function LocalGhostPluginPage({
                       <MarketPluginCard
                         key={`market:${catalogItem.item.pluginId}`}
                         item={catalogItem.item}
+                        surface="meka"
                         busy={marketBusyId !== null}
                         onSelect={() => void handleSelectMarket(catalogItem.item.pluginId)}
                         onInstall={() => void handleInstallMarketItem(catalogItem.item.pluginId)}
@@ -2782,6 +2789,7 @@ function LocalGhostPluginPage({
               <h2 className="mb-4 text-20 font-medium text-[var(--text-primary)]">{t('settings.ghosts.page.todayRecommendations')}</h2>
               <PluginRecommendationSlots loading={!todayLoaded}>
                 {todayItems.map(item => <MarketPluginCard compact key={item.pluginId} item={item}
+                  surface={surface}
                   busy={marketBusyId !== null} pending={marketInstallBusyId === item.pluginId}
                   onSelect={() => void handleSelectMarket(item)}
                   onPrefetch={isCurrent => prefetchMarketDetail(item, isCurrent)}
@@ -2894,6 +2902,7 @@ function LocalGhostPluginPage({
                       <GhostPluginCard
                         key={item.id}
                         item={item}
+                        surface={surface}
                         sourceLabel={item.origin ? t(`settings.ghosts.page.origin.${item.origin}`) : undefined}
                         marketItem={item.marketItem}
                         author={item.author}
@@ -2938,7 +2947,16 @@ function LocalGhostPluginPage({
               revision={JSON.stringify([marketSnapshot?.items.map(item => [item.pluginId, item.installState, item.version]), customSourceNames, catalogRevision])}
               installedItems={marketSnapshot?.items}
               installedGhosts={ghosts}
-              query={query} scope={effectiveOriginFilter === 'local' ? 'custom' : effectiveOriginFilter}
+              query={query}
+              // `personal-meka` 是 Meka 页专用分类，分页浏览只服务 Cindy 面；映射回协议
+              // scope，避免把渲染层分类带进市场查询参数。
+              scope={
+                effectiveOriginFilter === 'local'
+                  ? 'custom'
+                  : effectiveOriginFilter === 'personal-meka'
+                    ? 'personal'
+                    : effectiveOriginFilter
+              }
               onScope={value => {
                 setOriginFilter(value === 'personal' ? 'all' : value);
                 const root = pluginCatalogListRef.current;
@@ -2951,6 +2969,7 @@ function LocalGhostPluginPage({
               renderRevision={marketBusyId}
               onCounts={counts => setMarketTotal(counts?.all ?? null)}
               renderItem={item => <MarketPluginCard key={item.pluginId} item={item}
+                surface={surface}
                 busy={marketBusyId !== null} pending={marketInstallBusyId === item.pluginId}
                 onSelect={() => void handleSelectMarket(item)}
                 onPrefetch={isCurrent => prefetchMarketDetail(item, isCurrent)}
@@ -3027,6 +3046,7 @@ export function LegacyGhostRecoveryNotice({
 
 export function MarketPluginCard({
   item,
+  surface = 'plugins',
   compact = false,
   busy,
   pending = false,
@@ -3037,6 +3057,8 @@ export function MarketPluginCard({
   sourceLabel,
 }: {
   item: PluginMarketItem;
+  /** 来源分类口径所属的渠道页：Meka 页的 personal scope 不能显示成「本地」（§6.75）。 */
+  surface?: PluginMarketSurface;
   compact?: boolean;
   busy: boolean;
   /** 本卡正在安装:主按钮换成 Spinner。 */
@@ -3051,7 +3073,7 @@ export function MarketPluginCard({
   const { t } = useTranslation();
   const metadataId = useId();
   const marketIcon = usePluginMarketIcon(item, { deferUntilVisible: true });
-  const origin = pluginPresentationOrigin(item);
+  const origin = pluginPresentationOrigin(item, surface);
   const author = pluginPresentationAuthor(item);
   const unavailable = busy;
   const replacementDescriptionId = useId();
@@ -3141,7 +3163,7 @@ export function MarketPluginCard({
           </span>
           <span id={metadataId} className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-11 text-[var(--text-tertiary)]">
             <span className="shrink-0">
-              {sourceLabel ?? t(`settings.ghosts.page.origin.${pluginPresentationOrigin(item)}`)}
+              {sourceLabel ?? t(`settings.ghosts.page.origin.${origin}`)}
             </span>
             {author ? (
               <>
@@ -3234,6 +3256,7 @@ export function GhostPluginCard({
   development = false,
   displayId = item.id,
   readOnly = false,
+  surface = 'plugins',
   sourceLabel,
   sourceTag,
   showLocalUnread = true,
@@ -3261,6 +3284,11 @@ export function GhostPluginCard({
   development?: boolean;
   displayId?: string;
   readOnly?: boolean;
+  /**
+   * 来源分类口径所属的渠道页。缺省 `plugins`（Cindy 渠道）：那里 personal 发布仍归
+   * `local`。Meka 页必须传 `meka`，否则 MCPRouter 的私有/部分可见发布会被显示成「本地」。
+   */
+  surface?: PluginMarketSurface;
   /**
    * 安装来源文案(上游语义):元信息行里「这个副本是从哪装的」。
    * `item.installationLabelKey` 存在时以它为权威标签,否则回退到这串调用方给的来源
@@ -3311,7 +3339,7 @@ export function GhostPluginCard({
   const installationLabel = item.installationLabelKey
     ? t(`settings.ghosts.detail.${item.installationLabelKey}`, { name: item.installationNamespace })
     : sourceLabel;
-  const origin = marketItem ? pluginPresentationOrigin(marketItem) : item.origin;
+  const origin = marketItem ? pluginPresentationOrigin(marketItem, surface) : item.origin;
   const publisherKind = marketItem?.sourceType === 'server' && marketItem.scope === 'public'
     ? marketItem.publisherKind : item.publisherKind;
   const visibleAuthor = origin === 'public' && publisherKind !== 'official' ? null : author;

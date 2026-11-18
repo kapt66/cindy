@@ -7969,7 +7969,8 @@
           "public": "Públicos",
           "organization": "Da equipe",
           "local": "Locais",
-          "custom": "Personalizados"
+          "custom": "Personalizados",
+          "personal-meka": "Meka privado"
         },
         "emptyFiltered": "Nenhum plugin correspondente",
         "useAria": "Usar {{name}}",
@@ -7995,7 +7996,8 @@
           "community": "Publicado e mantido por desenvolvedores da comunidade",
           "team": "Compartilhado pela sua organização com membros autorizados",
           "custom": "De um marketplace Git ou de uma pasta local que você adicionou",
-          "local": "Instalado de um arquivo local ou desenvolvido neste computador"
+          "local": "Instalado de um arquivo local ou desenvolvido neste computador",
+          "personal-meka": "Plugin Meka publicado via MCPRouter; visível apenas para você ou para os membros selecionados"
         },
         "scopeAria": "Filtrar origens de plugins",
         "scope": {
@@ -8004,7 +8006,8 @@
           "organization": "Organização",
           "personal": "Pessoal",
           "local": "Locais",
-          "custom": "Personalizados"
+          "custom": "Personalizados",
+          "personal-meka": "Meka privado"
         },
         "install": "Instalar",
         "details": "Detalhes",

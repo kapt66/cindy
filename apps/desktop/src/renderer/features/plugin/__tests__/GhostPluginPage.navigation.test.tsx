@@ -360,7 +360,7 @@ it('defers local catalog prewarming and hidden revisions until activation', asyn
   const warm = render(view(true));
   await act(async () => { await vi.advanceTimersByTimeAsync(0); });
   expect(query.mock.calls.some(([input]) => input.counts)).toBe(true);
-  const memory = pluginCatalogMemory(pluginCatalogOwnerKey('local', auth.dataOwnerId, auth.dataOwnerGeneration, 'en'), 'local');
+  const memory = pluginCatalogMemory(pluginCatalogOwnerKey('local', auth.dataOwnerId, auth.dataOwnerGeneration, 'en'), 'local', 'plugins');
   const pages = memory.browser.current.pages;
   warm.unmount();
   query.mockClear();
@@ -716,7 +716,7 @@ describe('plugin page return navigation', () => {
       customSourceNames: [], unavailableCustomSourceNames: [] });
     window.electronAPI.pluginMarket.snapshot = snapshots;
     render(page('/plugins'));
-    const memory = pluginCatalogMemory(pluginCatalogOwnerKey('local', auth.dataOwnerId, auth.dataOwnerGeneration, 'en'), 'local');
+    const memory = pluginCatalogMemory(pluginCatalogOwnerKey('local', auth.dataOwnerId, auth.dataOwnerGeneration, 'en'), 'local', 'plugins');
     await waitFor(() => expect(memory.snapshot?.items).toHaveLength(1));
     const custom = { ...detail, pluginId: 'custom-updated', ghostId: 'custom-updated', sourceType: 'local-market' as const,
       sourceMarketName: 'working', version: '2.0.0' };
@@ -756,7 +756,7 @@ describe('plugin page return navigation', () => {
     const first = render(page('/plugins'));
     fireEvent.click(screen.getByRole('tab', { name: /settings.ghosts.page.marketSection/ }));
     await screen.findByText(stable.name);
-    const memory = pluginCatalogMemory(pluginCatalogOwnerKey('local', auth.dataOwnerId, auth.dataOwnerGeneration, 'en'), 'local');
+    const memory = pluginCatalogMemory(pluginCatalogOwnerKey('local', auth.dataOwnerId, auth.dataOwnerGeneration, 'en'), 'local', 'plugins');
     await waitFor(() => expect(memory.localeReady && !memory.snapshotFlight).toBe(true));
     const pages = memory.browser.current.pages;
     first.unmount();
@@ -807,7 +807,7 @@ describe('plugin page return navigation', () => {
     await waitFor(() => expect(recommendations).toHaveBeenCalledOnce());
     translation.i18n.language = 'zh-CN'; translation.i18n.resolvedLanguage = 'zh-CN';
     mounted.rerender(page('/plugins'));
-    const bucket = pluginCatalogMemory(pluginCatalogOwnerKey('local', auth.dataOwnerId, auth.dataOwnerGeneration, 'zh-CN'), 'local');
+    const bucket = pluginCatalogMemory(pluginCatalogOwnerKey('local', auth.dataOwnerId, auth.dataOwnerGeneration, 'zh-CN'), 'local', 'plugins');
     const refresh = vi.fn(async () => {});
     bucket.browser.current.refresh = refresh;
     await act(async () => {
@@ -2145,4 +2145,23 @@ it.each([[120, 50], [-50, 0]])('keeps the source switch viewport appropriate at 
   root.scrollTop = 50;
   fireEvent.click(radio);
   expect(root.scrollTop).toBe(expected);
+});
+
+// Unit / §6.74: the Meka route must read its catalog from the Meka channel and
+// never reuse the Cindy page's cache slot. The direct-call sweep alone cannot see
+// which channel the page ends up on through the catalog memory.
+it('reads the Meka page catalog from the Meka channel without touching the Cindy cache', async () => {
+  const cindySnapshot = vi.fn(window.electronAPI.pluginMarket.snapshot);
+  window.electronAPI.pluginMarket.snapshot = cindySnapshot;
+  const mekaSnapshot = vi.fn(async () => ({ items: [], unavailableReason: null, customSourceNames: [], unavailableCustomSourceNames: [] }));
+  Object.assign(window.electronAPI.mekaPluginMarket, { snapshot: mekaSnapshot });
+  const cindy = pluginCatalogMemory(pluginCatalogOwnerKey('local', auth.dataOwnerId, auth.dataOwnerGeneration, 'en'), 'local', 'plugins');
+  cindy.snapshot = { items: [], unavailableReason: null, customSourceNames: ['cindy-cache'], unavailableCustomSourceNames: [] };
+  cindy.snapshotAt = Date.now();
+  render(<MemoryRouter initialEntries={['/meka/plugins']}><GhostPluginPage surface="meka" /></MemoryRouter>);
+  await waitFor(() => expect(mekaSnapshot).toHaveBeenCalledOnce());
+  expect(cindySnapshot).not.toHaveBeenCalled();
+  const meka = pluginCatalogMemory(pluginCatalogOwnerKey('local', auth.dataOwnerId, auth.dataOwnerGeneration, 'en'), 'local', 'meka');
+  await waitFor(() => expect(meka.snapshot?.customSourceNames).toEqual([]));
+  expect(cindy.snapshot?.customSourceNames).toEqual(['cindy-cache']);
 });

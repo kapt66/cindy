@@ -44,6 +44,7 @@ import { PluginReadmeSection, usePluginReadme } from './PluginReadmeSection';
 import { PluginSharedUsage } from './PluginSharedUsage';
 import { PluginPublisherBadge, PluginPublisherDescription } from './PluginPublisherBadge';
 import { pluginPresentationOrigin, type PluginPresentationOrigin } from './lib/pluginMarketPresentation';
+import type { PluginMarketSurface } from './lib/pluginMarketSurface';
 import type { PluginMarketItem } from '../../../shared/pluginMarket';
 import { GhostLibrarySection } from './GhostLibrarySection';
 import { GhostHandoffFilesSection } from './GhostHandoffFilesSection';
@@ -118,6 +119,11 @@ interface GhostPluginDetailViewProps {
   displayId?: string;
   marketItem?: PluginMarketItem | null;
   installationPending?: boolean;
+  /**
+   * 来源分类口径所属的渠道页（缺省 `plugins`）。Meka 页必须传 `meka`：MCPRouter 的
+   * private/shared 发布被协议投影成 personal，不能显示成「本地」（§6.75）。
+   */
+  surface?: PluginMarketSurface;
   panelStatus: string | null;
   enabledOverride?: boolean;
   onBack: () => void;
@@ -187,6 +193,7 @@ export function GhostPluginDetailView({
   onOpenPanel,
   marketItem,
   installationPending = false,
+  surface = 'plugins',
   mainViewSidebarVisible = true,
   onMainViewSidebarVisibleChange,
   onUpdate,
@@ -284,6 +291,7 @@ export function GhostPluginDetailView({
           author={detail.author}
           version={detail.version}
           marketItem={marketItem}
+          surface={surface}
           origin={detail.origin}
           publisherKind={detail.publisherKind}
           installationPending={installationPending}
@@ -729,6 +737,7 @@ export function PluginDetailHeader({
   author,
   version,
   marketItem,
+  surface = 'plugins',
   origin,
   publisherKind,
   installationLabel,
@@ -745,6 +754,8 @@ export function PluginDetailHeader({
   author?: string | null;
   version?: string;
   marketItem?: PluginMarketItem | null;
+  /** 来源分类口径所属的渠道页（缺省 `plugins`），决定 personal scope 的展示分类。 */
+  surface?: PluginMarketSurface;
   origin?: PluginPresentationOrigin;
   publisherKind?: PluginMarketItem['publisherKind'];
   installationLabel?: string;
@@ -758,7 +769,7 @@ export function PluginDetailHeader({
 }) {
   const { t } = useTranslation();
   const [descriptionExpanded, setDescriptionExpanded] = useState(false);
-  const source = marketItem ? pluginPresentationOrigin(marketItem) : origin;
+  const source = marketItem ? pluginPresentationOrigin(marketItem, surface) : origin;
   const kind = marketItem?.sourceType === 'server' && marketItem.scope === 'public'
     ? marketItem.publisherKind : publisherKind;
   const visibleAuthor = source === 'public' && kind !== 'official' ? null : author;

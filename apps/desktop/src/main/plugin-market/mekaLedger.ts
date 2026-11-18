@@ -37,7 +37,22 @@ export function getMekaLedger(): PluginMarketLedger {
  *
  * `invalid` 表示账本文件存在但内容不可读或不合法——调用方必须按 fail-closed 处理，
  * 不得当成 `absent`（「无记录」会误放行成另一种来源判定）。
+ *
+ * 传入 `namespace` 时按精确实例查询（`null` = root）；缺省沿用 Connection 签发资格的
+ * 宽松口径（该 ghostId 的唯一记录）。展示投影与签发资格共用这一处只读入口。
  */
-export function readMekaMarketInstallation(ghostId: string): PluginMarketAuthorizationLookup {
-  return getMekaLedger().lookupInstallationForOidc(ghostId);
+export function readMekaMarketInstallation(
+  ghostId: string,
+  namespace?: string | null,
+): PluginMarketAuthorizationLookup {
+  return getMekaLedger().lookupInstallationForOidc(ghostId, namespace);
+}
+
+/**
+ * 一次列表扫描内复用的 Meka 渠道只读快照。语义与 Cindy 账本的
+ * `PluginMarketLedger.createListingLookup()` 相同：只在本次扫描内使用，不跨扫描保存，
+ * 也不作为运行时授权依据。
+ */
+export function createMekaLedgerListingLookup(): ReturnType<PluginMarketLedger['createListingLookup']> {
+  return getMekaLedger().createListingLookup();
 }

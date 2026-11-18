@@ -21,10 +21,13 @@ import { GhostPluginIcon } from './GhostPluginIcon';
 import { PluginMarketProgressContent } from './PluginMarketProgressContent';
 import { usePluginMarketIcon } from './lib/usePluginMarketIcon';
 import { pluginPresentationAuthor, pluginPresentationOrigin } from './lib/pluginMarketPresentation';
+import type { PluginMarketSurface } from './lib/pluginMarketSurface';
 import { PluginDetailTopBar, usePluginDetailScrolled } from './PluginDetailTopBar';
 
 interface MarketPluginDetailViewProps {
   detail: PluginMarketItem | PluginMarketDetail;
+  /** 来源分类口径所属的渠道页；Meka 页的 personal scope 不能显示成「本地」（§6.75）。 */
+  surface?: PluginMarketSurface;
   error?: string | null;
   refreshing?: boolean;
   onRetry?: () => void;
@@ -37,6 +40,7 @@ interface MarketPluginDetailViewProps {
 /** 尚未安装的市场 Plugin 详情；只展示协议事实，不创建 renderer 侧安装逻辑。 */
 export function MarketPluginDetailView({
   detail,
+  surface = 'plugins',
   error,
   refreshing = false,
   onRetry,
@@ -60,7 +64,7 @@ export function MarketPluginDetailView({
   }, [loading]);
   const { scrolled, onScroll } = usePluginDetailScrolled();
   const marketIcon = usePluginMarketIcon(detail, { deferUntilVisible: false });
-  const presentationOrigin = pluginPresentationOrigin(detail);
+  const presentationOrigin = pluginPresentationOrigin(detail, surface);
   const actionKey =
     detail.installState === 'update-available'
       ? 'settings.ghosts.market.update'
