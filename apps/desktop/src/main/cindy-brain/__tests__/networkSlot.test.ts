@@ -3160,14 +3160,16 @@ describe('networkSlot · MCP Apps 手册头', () => {
  * 测试价值
  * - 生产入口与可观察结果：`GhostNetworkSlot.handleFetchRequest`（插件出网的唯一边界）
  *   在 `CINDY_MEKA_PSB_HOST` 生效时把发往正式 PSB 主机的请求改道到测试部署，且身份
- *   JWT 按改写后的 host 注入；用户可观察结果是 dev 插件连上测试 PSB。
+ *   JWT 与声明凭证按改写后的 host 注入；用户可观察结果是 dev 副本与**市场安装**的
+ *   Meka 插件都能连上测试 PSB。
  * - Bug／规则依据：2026-11-18 维护者需求（插件包保持正式 PSB 域名、发布后不改插件），
- *   覆盖规则与白名单见 `docs/dev-rules/plugin-security-and-authoring.md` §4.4。
- * - 现有覆盖缺口：既有用例全部按「没有覆盖」断言 dispatch URL，没有任何用例证明
- *   「只改正式 PSB 主机」「正式安装（未补声明）不被改道」「未设置时逐字节不变」。
- * - 最小失败输入：插件吐 `https://mekabot.meka.pawdy.fun/...` 时若被改道到未声明主机
- *   （或反之正式安装被改道），用户会看到「目标域名不在本意识的白名单内」、企业 JWT
- *   也拿不到；反过来未设置环境变量却改道就是发布后行为回归。
+ *   覆盖规则与白名单见 `docs/dev-rules/plugin-security-and-authoring.md` §4.4；同日用户
+ *   实测市场安装的 meka-submit 0.12.6 仍打正式 PSB（测试部署 `/capabilities` 404），
+ *   因为改道前提被错写成「manifest 已声明测试主机」（只有 dev 派生包满足）。
+ * - 现有覆盖缺口：既有用例只有 dev 派生包形态；没有任何用例证明市场安装（只声明正式
+ *   主机）在开关开启时被改道、开关关闭时逐字节不变、未声明正式主机的插件不被波及。
+ * - 最小失败输入：市场安装 + 正式 PSB 请求在开关开启时仍原样派发（测试部署读不到
+ *   该版本），或开关关闭时被改道（生产行为回归）；未声明 PSB 的插件被当成覆盖对象。
  * - tier：unit（DI fake，无 Electron、无真实网络）。
  */
 describe('networkSlot · Meka PSB 测试主机覆盖', () => {
@@ -3284,8 +3286,76 @@ describe('networkSlot · Meka PSB 测试主机覆盖', () => {
     expect(fetchImpl.mock.calls[1]![0]).toBe(`https://${PSB_TEST_HOST}/next`);
   });
 
-  it('正式安装（没补测试主机声明）不被改道：覆盖只影响 dev 派生包', async () => {
+  /** 市场安装的 Meka 插件形态：发布包只声明正式 PSB 主机（Host 不改包）。 */
+  const marketGhost = (): InstalledGhost =>
+    fakeGhost({
+      id: 'meka-submit',
+      network: {
+        hosts: [PSB_HOST],
+        secrets: [
+          {
+            key: 'psb_key',
+            label: 'PSB Key',
+            inject: { header: 'X-Psb-Key', format: '{value}', hosts: [PSB_HOST] },
+          },
+        ],
+      },
+    });
+
+  it('开关关闭（生产默认）：市场安装 + 正式 PSB 请求逐字节不变，测试主机不在白名单', async () => {
     const log = { info: vi.fn(), warn: vi.fn() };
+    const { slot, fetchImpl } = makeSlot({
+      getGhost: marketGhost,
+      // 缺省 = 未设置 CINDY_MEKA_PSB_HOST（生产路径就是这个值）。
+      readSecret: (_id, key) => (key === 'psb_key' ? 'psb-secret' : null),
+      log,
+    });
+
+    const result = await slot.handleFetchRequest('meka-submit', {
+      url: `https://${PSB_HOST}/api/x`,
+    });
+    expect(result.ok).toBe(true);
+    expect(fetchImpl.mock.calls[0]![0]).toBe(`https://${PSB_HOST}/api/x`);
+    expect(
+      (fetchImpl.mock.calls[0]![1].headers as Record<string, string>)['X-Psb-Key'],
+    ).toBe('psb-secret');
+    // 未设置变量时覆盖主机不是该实例的声明 host：直连它仍被白名单拒绝。
+    expect(
+      await slot.handleFetchRequest('meka-submit', { url: `https://${PSB_TEST_HOST}/api/x` }),
+    ).toMatchObject({ ok: false });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(log.info).not.toHaveBeenCalledWith(
+      'ghost fetch-request rewritten to Meka PSB test host',
+      expect.anything(),
+    );
+  });
+
+  it('开关开启 + manifest 声明正式主机（市场安装）：请求改道且凭证按覆盖 host 注入', async () => {
+    const log = { info: vi.fn(), warn: vi.fn() };
+    const { slot, fetchImpl } = makeSlot({
+      getGhost: marketGhost,
+      mekaPsbHostOverride: PSB_TEST_HOST,
+      readSecret: (_id, key) => (key === 'psb_key' ? 'psb-secret' : null),
+      log,
+    });
+
+    const result = await slot.handleFetchRequest('meka-submit', {
+      url: `https://${PSB_HOST}/api/x?trace=1`,
+    });
+    expect(result.ok).toBe(true);
+    expect(fetchImpl.mock.calls[0]![0]).toBe(`https://${PSB_TEST_HOST}/api/x?trace=1`);
+    // 凭证只声明了正式主机；运行时把覆盖主机当同一条目标，否则测试部署按无凭证 401。
+    expect(
+      (fetchImpl.mock.calls[0]![1].headers as Record<string, string>)['X-Psb-Key'],
+    ).toBe('psb-secret');
+    expect(log.info).toHaveBeenCalledWith(
+      'ghost fetch-request rewritten to Meka PSB test host',
+      expect.objectContaining({ host: PSB_HOST, overrideHost: PSB_TEST_HOST }),
+    );
+  });
+
+  it('开关开启 + 市场安装的企业身份 JWT 按改写后的 host 注入（否则测试部署 401）', async () => {
+    const getToken = vi.fn(async () => 'header.payload.signature');
     const { slot, fetchImpl } = makeSlot({
       getGhost: () =>
         fakeGhost({
@@ -3294,24 +3364,53 @@ describe('networkSlot · Meka PSB 测试主机覆盖', () => {
             hosts: [PSB_HOST],
             secrets: [
               {
-                key: 'psb_key',
-                label: 'PSB Key',
-                inject: { header: 'X-Psb-Key', format: '{value}', hosts: [PSB_HOST] },
+                key: 'cindy_identity',
+                label: 'Cindy Enterprise Identity',
+                source: 'oidc-token',
+                inject: { header: 'Authorization', format: 'Bearer {value}', hosts: [PSB_HOST] },
               },
             ],
           },
         }),
       mekaPsbHostOverride: PSB_TEST_HOST,
-      readSecret: (_id, key) => (key === 'psb_key' ? 'psb-secret' : null),
+      // 生产里 allowedHosts 由 connectionAudienceResolver + 同一覆盖选项给出。
+      connectionTokens: {
+        resolve: () => ({
+          membershipId: 'membership-1',
+          audience: 'acme:meka-submit',
+          allowedHosts: [PSB_HOST, PSB_TEST_HOST],
+        }),
+        getToken,
+        invalidate: vi.fn(),
+      },
+    });
+
+    await slot.handleFetchRequest('meka-submit', { url: `https://${PSB_HOST}/api/whoami` });
+
+    expect(fetchImpl.mock.calls[0]![0]).toBe(`https://${PSB_TEST_HOST}/api/whoami`);
+    expect(
+      (fetchImpl.mock.calls[0]![1].headers as Record<string, string>).Authorization,
+    ).toBe('Bearer header.payload.signature');
+    expect(getToken).toHaveBeenCalledTimes(1);
+  });
+
+  it('开关开启 + manifest 未声明正式主机：不改写，也不把测试主机当已声明 host', async () => {
+    const log = { info: vi.fn(), warn: vi.fn() };
+    const { slot, fetchImpl } = makeSlot({
+      getGhost: () =>
+        fakeGhost({ id: 'plain', network: { hosts: ['api.example.com'], secrets: [] } }),
+      mekaPsbHostOverride: PSB_TEST_HOST,
       log,
     });
 
-    const result = await slot.handleFetchRequest('meka-submit', {
-      url: `https://${PSB_HOST}/api/x`,
-    });
-
-    expect(result.ok).toBe(true);
-    expect(fetchImpl.mock.calls[0]![0]).toBe(`https://${PSB_HOST}/api/x`);
+    expect(
+      await slot.handleFetchRequest('plain', { url: `https://${PSB_HOST}/api/x` }),
+    ).toMatchObject({ ok: false });
+    // 直连覆盖主机同样不被当成声明 host：覆盖只对声明了正式 PSB 主机的实例生效。
+    expect(
+      await slot.handleFetchRequest('plain', { url: `https://${PSB_TEST_HOST}/api/x` }),
+    ).toMatchObject({ ok: false });
+    expect(fetchImpl).not.toHaveBeenCalled();
     expect(log.info).not.toHaveBeenCalledWith(
       'ghost fetch-request rewritten to Meka PSB test host',
       expect.anything(),

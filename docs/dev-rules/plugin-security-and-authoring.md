@@ -1220,6 +1220,19 @@ Renderer 的来源分类是封闭取值（`public / organization / local / custo
   Agent 能唤醒已安装开发副本前，对每个已登记源码执行一次打包、校验和原子同步。不能等用户再次打开
   “Meka 插件”页才初始化 watcher，否则重启后的新任务会继续看到上次安装的旧工具描述和面板资源。
   单个源码同步失败仍按 fail-safe 规则保留最后一次成功快照并标记错误，不阻断其它开发插件恢复。
+- **目录同步按派生包内容指纹幂等，工具调用前的对账另外节流**（2026-11-18 修复用户实测缺陷：
+  主进程日志每 3 秒一轮 `ghost updated`，P4 面板一直「正在连接…」，`p4_status` 返回
+  `GHOST_ASLEEP`）。注册表为每条登记持久化最近一次**成功落位**的派生包内容指纹
+  （`syncedPackageSha256`，与装入确认同一算法：排序后的包内条目名 + 逐文件字节，规避 JSZip
+  时间戳）。同步先打包并计算该指纹：与登记相同且开发副本确实在装时**不得**调用
+  `updatePackage` / `installPackage`、不得触发内容 reload（reload 会重建 panel WebView 并把
+  在途工具调用收成 `GHOST_ASLEEP`）、也不得写 `ghost updated`；只刷新 `status` / `updatedAt`
+  / 版本事实。指纹不同或旧登记没有指纹时才走原原子更新路径，成功后写回新指纹；`install()`
+  成功也写同一指纹，`remove()` 时随登记一起删除。Agent 工具调用前的
+  `ensureMekaDevPluginsReady()` → `syncRegistered()` 是**内存级短期节流**（3 秒内复用同一次
+  对账与结果），避免每次工具调用都重新打包；watcher 触发的同步走独立的 debounce 同步链、
+  不经过该节流，源码变化仍然即时生效。节流不跨进程、不落盘，换 data owner（`suspend()`）
+  时清空，重启后的第一次对账照常完整执行（内容未变时由指纹判为零更新）。
 - 移除开发插件先停止监听和 debounce，排空该 runtime 已进入队列或正在执行的同步链，再
   走标准卸载与清理，确保卸载是最后一次安装态 mutation；若卸载失败，恢复监听并保留
   注册记录。切换 data owner 时同样必须排空旧 owner 同步并停止 watcher，再加载新 owner
@@ -1393,21 +1406,34 @@ Renderer 的来源分类是封闭取值（`public / organization / local / custo
      覆盖生效且插件声明了正式 PSB 主机时，在**内存里的派生清单**追加测试主机——`network.hosts`
      与所有 `network.secrets[].inject.hosts`（正式主机条目保留；`gh-cli` 凭证被校验锁死为
      `api.github.com`，不补）。派生包因此通过严格 `validateGhostManifest`。**源目录、源包字节
-     与已发布包都不动**；不声明正式 PSB 主机的开发插件原样。
+     与已发布包都不动**；不声明正式 PSB 主机的开发插件原样。**这一条只服务 Meka 开发目录**；
+     市场安装的插件不改包（见第 4 条），运行时由 Host 把覆盖主机当作等价目标。
   2. **请求改写**（`cindy-brain/networkSlot.ts` 的 `handleFetchRequest`）：只改写**逐字等于正式
      PSB 主机 + HTTPS 默认端口**的目标（协议/端口/路径/参数保留），其它 host、自定义端口、明文
-     HTTP、WebSocket（`network-request`）一律不动；重定向回到正式 PSB 主机同样改写。
-  3. **身份注入按改写后的 host 命中**：靠第 1 步补进 manifest 的 `inject.hosts`，因此测试部署
-     同样拿到 Cindy Connection JWT（否则测试环境 401）。
-  4. **只影响 dev 插件**：改写的第二道条件是**该实例已装的 manifest 声明了测试主机**——只有
-     Meka 开发目录派生包会被补声明。正式安装的插件、其它渠道的插件即使开着覆盖也不会被改道。
+     HTTP、WebSocket（`network-request`）一律不动；重定向回到正式 PSB 主机同样改写。改写的
+     **唯一前提**是该实例 manifest 声明了**正式 PSB 主机**（`network.hosts` 命中它）——
+     dev 派生包与**市场/普通安装的 Meka 插件都满足**（2026-11-18 用户实测：市场安装的
+     `meka-submit` 0.12.6 只声明正式主机，旧判据要求「已声明测试主机」导致测试部署
+     `/capabilities` 404，现改为声明正式主机即可）。
+  3. **身份注入按改写后的 host 命中**：市场安装的磁盘 manifest 保持只声明正式主机，Host 在
+     **运行时**把覆盖主机当作该实例已声明/已注入 host（`mekaPsbHostOverride.ts` 的
+     `withMekaPsbHostRuntimeDeclarations`，同一判据同时用于 `networkSlot` 的出网白名单、
+     每条凭证的注入 scope 与 `connectionAudienceResolver` 的 `allowedHosts`）。因此测试部署
+     同样拿到 Cindy Connection JWT 与声明凭证（否则被当成「无凭证」401）。它只补运行时视图：
+     **不写回 manifest、不改变已批准 host 集合与回执**，其它 host 的注入面不放宽。
+  4. **覆盖范围（白名单 + 声明边界）**：生效对象只有「开着开关 + 目标逐字为正式 PSB 主机 +
+     HTTPS 默认端口 + 该实例声明了正式 PSB 主机」；未声明正式 PSB 主机的插件（以及未设置变量的
+     所有实例）不改写、不放行、不注入。**不做 `app.isPackaged` 门禁**：安全性来自白名单取值与
+     这条声明边界，而不是打包状态。
 - **日志**：只在真的改写时记 `ghost fetch-request rewritten to Meka PSB test host`，字段只有
   `ghostId` / `callId` / `host` / `overrideHost` / `path`（pathname；**不记 query/body**，遵守
   §4 开头的日志纪律）。派生补声明记一条 `Meka development Plugin manifest extends PSB test host`，
   写明原因与批准令牌会随派生清单变化。
-- **已知副作用（刻意接受）**：派生副本比源码多一条已批准网络主机 ⇒ 首次开启覆盖后的下次同步
-  会在更新确认里出现该新增权限，派生包摘要与已批准记录也随之与源码不同（关掉覆盖后同步回到
-  原清单）。只发生在设置环境变量的本地环境，不影响已发布包、正式安装与其它用户。
+- **已知副作用（刻意接受）**：**Meka 开发目录**的派生副本比源码多一条已批准网络主机 ⇒
+  首次开启覆盖后的下次同步会在更新确认里出现该新增权限，派生包摘要与已批准记录也随之与源码
+  不同（关掉覆盖后同步回到原清单）。**市场/普通安装**的插件不改包、不改批准记录：覆盖主机只
+  存在于宿主运行时视图（出网白名单/注入 host 匹配/Connection audience），关掉变量即完全消失。
+  两者都只发生在设置环境变量的本地环境，不影响已发布包与其它用户。
 - **怎么启动（精确命令）**：`restart-desktop-remote.mjs` 的 `devEnvPrefix()` 白名单已包含该变量
   （Windows 的 dev 跑在新开的 cmd 窗口里，不透传的话调用方 shell 的值进不去）：
 
@@ -1423,13 +1449,15 @@ Renderer 的来源分类是封闭取值（`public / organization / local / custo
   设置成功是 `Meka PSB test host override enabled for local testing`，白名单外的值是
   `CINDY_MEKA_PSB_HOST ignored: value is not on the whitelist`。
 - 回归：`cindy-brain/__tests__/mekaPsbHostOverride.test.ts`（白名单/零影响/清单补声明矩阵，
-  含补完后仍通过严格 manifest 校验）、`networkSlot.test.ts`（改道 + 身份注入 + 重定向 +
-  正式安装不改道 + 未设置时零影响）、`mekaDevPlugins.test.ts`（真实 forge 打包的派生清单与
-  源目录不变）、`scripts/__tests__/restart-desktop-remote.test.mjs`（启动器透传）。
+  含补完后仍通过严格 manifest 校验）、`networkSlot.test.ts`（dev 派生包与**市场安装**两种形态
+  的改道 + 凭证/身份注入 + 重定向 + 未声明正式主机不改写不注入 + 未设置时逐字节不变）、
+  `connectionAudienceResolver.test.ts`（覆盖开启/关闭/未声明正式主机三态下的 `allowedHosts`）、
+  `mekaDevPlugins.test.ts`（真实 forge 打包的派生清单与源目录不变）、
+  `scripts/__tests__/restart-desktop-remote.test.mjs`（启动器透传）。
 - **未验证 / 风险**：本条未在真实测试 PSB 服务上端到端验收（只做到单测 + 构建层）；启用后
-  dev 插件会真的把请求与企业 JWT 发往测试部署，测试环境的安全与数据边界由部署方负责。正式
-  发布包不做 `app.isPackaged` 门禁——安全性来自「白名单取值 + 只对声明了测试主机的实例生效」，
-  而不是打包状态；如以后要收紧，应改白名单而不是绕过声明检查。
+  dev 插件与**市场安装**的 Meka 插件都会真的把请求与企业 JWT 发往测试部署，测试环境的安全与
+  数据边界由部署方负责。发布包不做 `app.isPackaged` 门禁——安全性来自「白名单取值 + 只对声明
+  了正式 PSB 主机的实例生效」，而不是打包状态；如以后要收紧，应改白名单而不是绕过声明检查。
 
 ## 5. 存量插件兼容：升级必须无感（红线）
 

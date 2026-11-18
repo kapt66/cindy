@@ -898,11 +898,13 @@ const log = createLogger('brain');
  * 本地测试用的 Meka PSB 主机覆盖（`mekaPsbHostOverride.ts`）。
  *
  * 主进程**启动期只解析一次** `CINDY_MEKA_PSB_HOST`：环境变量只在启动时生效，进程
- * 生命周期内改环境变量不会翻盘。解析结论同时交给两个消费者——插件出网改写
- * （`GhostNetworkSlot.mekaPsbHostOverride`）与 Meka 开发目录派生清单补声明
- * （`MekaDevPluginManager.mekaPsbHostOverride`）。
+ * 生命周期内改环境变量不会翻盘。解析结论同时交给三个消费者——插件出网改写
+ * （`GhostNetworkSlot.mekaPsbHostOverride`）、Meka 开发目录派生清单补声明
+ * （`MekaDevPluginManager.mekaPsbHostOverride`）与 Connection 身份注入的 host 判定
+ * （`loadConnectionAudienceResolver` 的 `mekaPsbHostOverride`）。前两者只影响 dev
+ * 派生包；后两者让**市场安装**的 Meka 插件也能在运行时被改道到测试部署。
  *
- * 未设置 / 空值 / 白名单外的值 / 显式写正式主机时恒为 null：两个消费者都走原路径，
+ * 未设置 / 空值 / 白名单外的值 / 显式写正式主机时恒为 null：三个消费者都走原路径，
  * 行为与以前逐字节一致。白名单外的值只 warn 一次，绝不生效。
  */
 let mekaPsbHostOverrideResolved: string | null | undefined;
@@ -917,7 +919,7 @@ function mekaPsbHostOverrideHost(): string | null {
     } else if (resolution.kind === 'test') {
       log.info('Meka PSB test host override enabled for local testing', {
         host,
-        scope: 'meka development Plugins only',
+        scope: 'Plugins that declare the formal PSB host (Meka dev copies and market installs)',
       });
     }
     mekaPsbHostOverrideResolved = host;
@@ -4044,6 +4046,9 @@ function getConnectionAudienceResolver(): ConnectionAudienceResolver {
         createOrganizationPrefixStore(
           ownerScopedUserDataPath('plugin-market', 'organization.v1.json'),
         ).lookup(orgId),
+      // CINDY_MEKA_PSB_HOST 覆盖（启动期解析一次；未设置时 null = 判定逐字节不变）：
+      // 只让「声明了正式 PSB 主机」的实例把覆盖主机当作等价可注入 host（dev-only）。
+      mekaPsbHostOverride: mekaPsbHostOverrideHost(),
       log,
     });
   }

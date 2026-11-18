@@ -14,6 +14,7 @@ import {
   loadConnectionAudienceResolver,
   type LoadConnectionAudienceResolverOptions,
 } from '../connectionAudienceResolver.js';
+import { MEKA_PSB_HOST, MEKA_PSB_TEST_HOST } from '../mekaPsbHostOverride.js';
 
 const manifest: GhostManifest = {
   schemaVersion: 2,
@@ -96,6 +97,61 @@ describe('installed Plugin Connection audience resolver', () => {
       pluginSlug: 'plugin-a',
       allowedHosts: ['service-a.x.test'],
     });
+  });
+
+  /**
+   * 测试价值
+   * - 生产入口与可观察结果：`loadConnectionAudienceResolver(...).resolve()`（Connection
+   *   身份 JWT 的唯一签发资格判定）在启动期 `CINDY_MEKA_PSB_HOST` 生效、且实例 manifest
+   *   声明了正式 PSB 主机时，把覆盖主机也列为可注入 host；否则市场安装的 meka-submit
+   *   被改道到测试部署后拿不到企业身份 JWT，测试服务按「无凭证」401。
+   * - Bug／规则依据：2026-11-18 用户实测——市场安装的 meka-submit 仍打正式 PSB，测试部署
+   *   `/capabilities` 404；身份注入必须跟着运行时覆盖走（§4.4）。
+   * - 现有覆盖缺口：既有用例全部在「没有覆盖」下断言 `allowedHosts`，没有人证明覆盖开启
+   *   时只对声明了正式 PSB 主机的实例放宽、未设置时逐字节不变。
+   * - 最小失败输入：覆盖开启 + manifest 只声明正式主机时 `allowedHosts` 仍只有正式主机。
+   * - tier：unit（纯函数 + fake 账本/身份读取，无 Electron）。
+   */
+  it('Meka PSB 主机覆盖：只对声明了正式 PSB 主机的实例把覆盖主机列为可注入 host', () => {
+    const psbManifest: GhostManifest = {
+      ...manifest,
+      network: {
+        hosts: [MEKA_PSB_HOST],
+        secrets: [
+          {
+            key: 'cindy_identity',
+            label: 'Cindy organization identity',
+            source: 'oidc-token',
+            inject: {
+              header: 'Authorization',
+              format: 'Bearer {value}',
+              hosts: [MEKA_PSB_HOST],
+            },
+          },
+        ],
+      },
+    };
+    const resolveHosts = (
+      mekaPsbHostOverride: string | null | undefined,
+      installed: GhostManifest = psbManifest,
+    ) =>
+      loadConnectionAudienceResolver({
+        ...resolverOptions(installed, {
+          ...marketInstallation,
+          version: installed.version,
+          manifestDigest: ghostManifestDigest(installed),
+          rawManifestSha256: ghostManifestDigest(installed),
+        }),
+        ...(mekaPsbHostOverride === undefined ? {} : { mekaPsbHostOverride }),
+      }).resolve('plugin-a', identity)?.allowedHosts;
+
+    // 生产默认（未设置环境变量 / 被白名单拒绝）：allowedHosts 逐字不变。
+    expect(resolveHosts(undefined)).toEqual([MEKA_PSB_HOST]);
+    expect(resolveHosts(null)).toEqual([MEKA_PSB_HOST]);
+    // 开关生效 + manifest 声明正式 PSB 主机 ⇒ 覆盖主机也成为可注入 host。
+    expect(resolveHosts(MEKA_PSB_TEST_HOST)).toEqual([MEKA_PSB_HOST, MEKA_PSB_TEST_HOST]);
+    // 开关生效但实例没声明正式 PSB 主机：其它插件的注入面不放宽。
+    expect(resolveHosts(MEKA_PSB_TEST_HOST, manifest)).toEqual(['service-a.x.test']);
   });
 
   it('reads the installed manifest and byte identity only once', () => {

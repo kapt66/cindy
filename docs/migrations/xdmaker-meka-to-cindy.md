@@ -7880,3 +7880,59 @@ private 与 shared 合并成 `personal`，客户端拿不到区分事实。所�
 主机（派生包摘要与已批准记录因此与源码不同；刻意、仅限设置变量的本地环境）；② 不做
 `app.isPackaged` 门禁，安全性来自白名单取值 + 「只对声明了测试主机的实例生效」；③ WebSocket
 来源不参与覆盖（当前 PSB 插件不用 WS），如以后需要必须在同一开关下补对称测试。
+
+### 6.77 2026-11-18 Meka 开发插件同步按内容指纹幂等 + 市场安装的 PSB 测试域覆盖（已实现）
+
+**背景（两个用户实测缺陷，同一天报出）**：
+① 主进程日志每 3 秒一轮 `ghost updated { id: 'meka-dev-meka-p4-...', version: '1.2.3' }`，
+Meka P4 面板一直「正在连接…」，`p4_status` 返回 `GHOST_ASLEEP`。根因链：`ghost.ts` 的
+`callGhostTool` **每次工具调用**都 `await ensureMekaDevPluginsReady()` →
+`MekaDevPluginManager.syncRegistered()` → 每个登记源无条件 `updatePackage()`（没有任何「源
+没变就跳过」判断）⇒ 每轮都产生一次安装更新 → 面板 webview reload + 沙箱重启 → 在途工具调用
+被 `pipeDispatcher.onRuntimeState` 收成 `GHOST_ASLEEP`。
+② 市场安装的 `meka-submit` 0.12.6 仍打正式 PSB（`environment_check` 里 `/capabilities` 404）：
+旧覆盖实现只在 **dev 派生清单**里补测试主机声明，而被改道的前提被写成「manifest 已声明测试
+主机」；普通/市场安装的 manifest 只声明正式主机 ⇒ 不改写、身份注入也不命中。
+
+**改动（只动 Cindy 仓；插件仓/PSB/MCPRouter 零改动）**：
+1. **同步幂等**（`apps/desktop/src/main/cindy-brain/mekaDevPlugins.ts`）：注册表新增持久化字段
+   `syncedPackageSha256`（派生包内容指纹，复用 `fingerprintPackageContents`：排序条目名 + 逐
+   文件字节，规避 JSZip 时间戳）。`sync()` 先打包算指纹：与登记相同且 `isInstalled()` 时只刷
+   新 `status`/`updatedAt`/版本事实，**不调 `updatePackage`/`installPackage`、不调
+   `onContentReloaded`、不写 `ghost updated`**；不同或旧登记无指纹才走原原子更新路径并在成功
+   后写回指纹（含 legacy 迁移清理）。`install()` 成功写同一指纹，`remove()` 随登记删除。
+2. **对账节流**：`syncRegistered()` 增加 3 秒内存级节流（复用同一次对账 promise/结果），
+   `suspend()`（换 data owner）时清空；watcher 触发的 `scheduleSync`/`enqueueSync` 不走节流。
+3. **请求改写判据放宽**（`mekaPsbHostOverride.ts` + `networkSlot.ts`）：生效条件从「目标逐字
+   正式 PSB 主机 + HTTPS 默认端口 + manifest 已声明**测试**主机」改为「开关生效 + 目标逐字正式
+   PSB 主机 + HTTPS 默认端口 + manifest 声明了**正式** PSB 主机」；市场安装因此可被改道。
+4. **运行时等价声明**（新纯函数 `withMekaPsbHostRuntimeDeclarations`）：开关生效且清单声明
+   正式 PSB 主机时，覆盖主机在运行时等价于该实例已声明/可注入 host，同一判据用于
+   `networkSlot` 的出网白名单（含 nodeAuth 声明判定与重定向逐跳）、每条凭证的注入 scope 与
+   `connectionAudienceResolver` 的 `allowedHosts`（`loadConnectionAudienceResolver` 新选项
+   `mekaPsbHostOverride`，由 `index.ts` 启动期解析值注入）。**只改运行时视图**：manifest、
+   批准记录、回执与包字节都不动，其它 host 的注入面不放宽。
+5. **文档**：`docs/dev-rules/plugin-security-and-authoring.md` §4.1 补同步幂等/节流条款，
+   §4.4 改写覆盖范围（dev 派生包 + 市场安装）、身份注入与零影响口径。
+
+**零影响证明（未设置 `CINDY_MEKA_PSB_HOST` 时逐字节等价）**：
+- `mekaPsbHostOverrideHost()` 返回 null → `networkSlot` 的 `mekaPsbOverrideHost = null`，
+  `rewriteMekaPsbHost(target, null)` 返回**同一个 URL 实例**（不改写、不记日志）；
+  `withMekaPsbHostRuntimeDeclarations(declaredHosts, null)` 返回**同一个数组引用** ⇒
+  `hostDeclared`/`nodeAuth` 判定与 `injectSecrets` 的 scope 逐字节不变。
+- `loadConnectionAudienceResolver` 的 `mekaPsbHostOverride` 为 null ⇒ `allowedHosts` 与以前
+  **同一个数组**；resolver 的其它分支（org market / forge / mivo-canvas / Meka 渠道）零改动。
+- 同步幂等只依赖注册表里新增的可选字段：旧注册表没有 `syncedPackageSha256` 时下一次同步仍走
+  原更新路径一次并补齐；写入的是原原子 install/update 路径，不改变批准、包格式或运行时形态。
+
+**验证**（定向，未跑提交前门禁）：`vitest run src/main/cindy-brain/__tests__/mekaDevPlugins.test.ts`
+→ 通过（新增同步幂等/指纹持久化/节流用例，更新注册表形状与「内容变了才更新」的既有用例）；
+`vitest run src/main/cindy-brain/__tests__/networkSlot.test.ts -t PSB` → 通过（新增市场安装
+开关关闭/开启/未声明正式主机三态用例）；`vitest run src/main/cindy-brain/__tests__/connectionAudienceResolver.test.ts`
+→ 通过（新增 `allowedHosts` 三态用例）。**未验证**：`typecheck`、全量单测、`check:test-hygiene`、
+真实测试 PSB 端到端（含市场安装包 + 真实 JWT）；也**没有**重启 dev 实例做实测。
+
+**风险 / 遗留**：① 同步幂等后「正在更新时」的在途工具调用仍可能收到 `GHOST_ASLEEP`——那是
+真实内容变更导致的沙箱重启，本次不加重试；② 覆盖仍不做 `app.isPackaged` 门禁，安全性来自白名单
+取值 + 只对声明正式 PSB 主机的实例生效；③ WebSocket 来源不参与覆盖（当前 PSB 插件不用 WS）；
+④ dev 杠杆：dev 派生包仍会补声明测试主机（§4.4 已知副作用），市场安装不补声明。

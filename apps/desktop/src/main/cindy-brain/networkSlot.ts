@@ -27,8 +27,10 @@ import { randomUUID } from 'node:crypto';
 import type { Agent } from 'node:http';
 import { ghostNetworkTransportRejection } from './networkOriginPolicy.js';
 import {
+  MEKA_PSB_HOST,
   manifestDeclaresMekaPsbHost,
   rewriteMekaPsbHost,
+  withMekaPsbHostRuntimeDeclarations,
 } from './mekaPsbHostOverride.js';
 import { HostNetworkConnections } from './networkConnections.js';
 import { GHOST_SAVED_CREDENTIAL_MARKER } from '../../shared/pluginAccountReuse.js';
@@ -123,9 +125,11 @@ export interface NetworkSlotDeps {
    * 从 `CINDY_MEKA_PSB_HOST` 解析一次后原样传入。未设置 / 被白名单拒绝 / 显式写
    * 正式主机时恒为 null —— 所有行为逐字节不变。
    *
-   * 生效条件(三条同时满足)：目标逐字是正式 PSB 主机 + HTTPS 默认端口，且**该实例
-   * manifest 已声明覆盖主机**(只有 Meka 开发目录派生包会被补声明)。正式安装的插件
-   * 没有该声明，因此不会被改道。WebSocket(`network-request`)不在覆盖范围内。
+   * 生效条件(dev-only)：目标逐字是正式 PSB 主机 + HTTPS 默认端口，且**该实例
+   * manifest 声明了正式 PSB 主机**（Meka 开发目录派生包与市场安装的 Meka 插件都满足）。
+   * 生效时覆盖主机在运行时等价于该实例已声明/已批准的 host：出网白名单、凭证 scope
+   * 与身份注入的 host 匹配都按它命中；manifest、批准记录与包字节都不动。
+   * 其它 host 与其它插件不受影响。WebSocket(`network-request`)不在覆盖范围内。
    */
   mekaPsbHostOverride?: string | null;
   /**
@@ -1244,19 +1248,28 @@ export class GhostNetworkSlot {
     /**
      * Meka PSB 测试主机覆盖（`mekaPsbHostOverride.ts`，本地测试专用）：
      * - 开关在 Host 主进程启动期由 `CINDY_MEKA_PSB_HOST` 解析一次，未设置时恒 null；
-     * - 只有该实例 manifest **已声明**覆盖主机时才可能改写——只有 Meka 开发目录派生
-     *   包会被补声明（`mekaDevPlugins.ts`），正式安装的插件不会被改道；
+     * - 该实例 manifest 声明了**正式 PSB 主机**时覆盖才算生效（dev 派生包与市场安装
+     *   的 Meka 插件都声明了它；其它插件即使开着开关也不会被改道）；
      * - 改写只作用于「逐字匹配正式 PSB 主机 + HTTPS 默认端口」的目标，其它 host、
      *   自定义端口、HTTP、WebSocket 一律不动；
-     * - 改写后白名单与身份注入都按覆盖主机命中（第 2 步补进 manifest 的声明）。
+     * - 生效时覆盖主机在运行时等价于该实例已声明的 host（`networkSlot` 的白名单、
+     *   凭证 scope 与 Connection 身份注入都按它命中），但不写回 manifest、不改变
+     *   已批准记录。未设置变量时 `effectiveDeclaredHosts === declaredHosts`。
      * 日志只记 host 与 pathname（query 可能带敏感参数，不记）。
      */
     const mekaPsbConfiguredHost = this.deps.mekaPsbHostOverride ?? null;
-    const mekaPsbTestHost = manifestDeclaresMekaPsbHost(declaredHosts, mekaPsbConfiguredHost)
-      ? mekaPsbConfiguredHost
-      : null;
+    const mekaPsbOverrideHost =
+      mekaPsbConfiguredHost &&
+      manifestDeclaresMekaPsbHost(declaredHosts, MEKA_PSB_HOST)
+        ? mekaPsbConfiguredHost
+        : null;
+    // 运行时声明视图：未开覆盖时就是 declaredHosts 本身（不新建数组）。
+    const effectiveDeclaredHosts = withMekaPsbHostRuntimeDeclarations(
+      declaredHosts,
+      mekaPsbOverrideHost,
+    );
     const applyMekaPsbHostOverride = (target: URL): URL => {
-      const rewritten = rewriteMekaPsbHost(target, mekaPsbTestHost);
+      const rewritten = rewriteMekaPsbHost(target, mekaPsbOverrideHost);
       if (rewritten === target) return target;
       this.deps.log?.info('ghost fetch-request rewritten to Meka PSB test host', {
         ghostId: instanceKey,
@@ -1281,11 +1294,11 @@ export class GhostNetworkSlot {
     // 地址；但只有真正命中 manifest 详单的 host 才可获得 Host 托管凭证。
     const defaultTls = (target: URL) => target.protocol === 'https:' && target.port === '';
     const hostDeclared = (target: URL): boolean =>
-      declaredHosts.some(pattern => ghostNetworkTargetMatches(pattern, target)) ||
+      effectiveDeclaredHosts.some(pattern => ghostNetworkTargetMatches(pattern, target)) ||
       (defaultTls(target) && connectionHosts.includes(target.hostname));
     const hostAllowed = (target: URL): boolean =>
       hostDeclared(target) || (defaultTls(target) && hasLiveAgentAuthorization());
-    if (nodeAuth && (!defaultTls(url) || !net || !declaredHosts.some(pattern => ghostNetworkTargetMatches(pattern, url))))
+    if (nodeAuth && (!defaultTls(url) || !net || !effectiveDeclaredHosts.some(pattern => ghostNetworkTargetMatches(pattern, url))))
       return { ok: false, message: 'NODE_AUTH_HOST_NOT_DECLARED' };
     if (!hostAllowed(url)) {
       const declared = [...declaredHosts, ...connectionHosts];
@@ -1332,6 +1345,7 @@ export class GhostNetworkSlot {
       assertStillValid();
       const inject0 = await this.injectSecrets(
         instanceKey, declaredSecrets, connectionDecls, url, declaredHosts, requestHeaders, authAccount, credentialGuards, asMode === 'stream',
+        mekaPsbOverrideHost,
       );
       assertStillValid();
       if (inject0.error) return { ok: false, message: inject0.error };
@@ -1407,6 +1421,7 @@ export class GhostNetworkSlot {
             authAccount,
             credentialGuards,
             asMode === 'stream',
+            mekaPsbOverrideHost,
           );
           if (reInject.error) return { ok: false, message: reInject.error };
           initialConnectionInjected = new Map(reInject.connectionInjected);
@@ -1444,6 +1459,7 @@ export class GhostNetworkSlot {
               authAccount,
               credentialGuards,
               asMode === 'stream',
+              mekaPsbOverrideHost,
             );
             if (hopInject.error) return { ok: false, message: hopInject.error };
             currentConnectionInjected = hopInject.connectionInjected;
@@ -1889,6 +1905,7 @@ export class GhostNetworkSlot {
     authAccount?: string,
     credentialGuards: Array<() => void> = [],
     retainDirectCredential = false,
+    mekaPsbOverrideHost: string | null = null,
   ): Promise<{
     error: string | null;
     usedExchange: boolean;
@@ -1920,7 +1937,15 @@ export class GhostNetworkSlot {
       { membershipId: string; audience: string; hostname: string }
     >();
     for (const secret of secrets) {
-      const scope = secret.inject.hosts ?? allHosts.filter(pattern => !pattern.includes('://'));
+      /**
+       * Meka PSB 测试主机覆盖(dev-only)：该凭证本身就声明了正式 PSB 主机时，把覆盖
+       * 主机视为同一条已声明目标——否则请求被改道到测试部署后会缺凭证头，被当成
+       * 「无凭证」401。其它凭证、其它 host 不放宽；未开覆盖时 scope 就是原数组。
+       */
+      const scope = withMekaPsbHostRuntimeDeclarations(
+        secret.inject.hosts ?? allHosts.filter(pattern => !pattern.includes('://')),
+        mekaPsbOverrideHost,
+      );
       if (!scope.some(pattern => ghostNetworkTargetMatches(pattern, target))) continue;
       // New origins can carry explicitly scoped user keys, never widen Host identity tokens.
       if (!defaultTls && secret.source !== undefined && secret.source !== 'user') continue;

@@ -14,12 +14,15 @@
  * 2. **零影响**：未设置 / 被拒绝 / 显式写正式主机时，本模块的所有消费者行为逐字节
  *    不变（下面每个函数都先看 `host`，为 null 时原样返回入参）。
  * 3. **只覆盖正式 PSB 主机**：逐字匹配该主机 + HTTPS 默认端口的请求才改写；其它
- *    host、自定义端口、HTTP、WebSocket 一律不动。改写目标必须已经被该实例的
- *    manifest 声明（只有 Meka 开发目录派生包会被补声明，见 `mekaDevPlugins.ts`），
- *    所以正式安装的插件即使开着覆盖也不会被改道。
+ *    host、自定义端口、HTTP、WebSocket 一律不动。生效前提是**该实例 manifest 声明了
+ *    正式 PSB 主机**（`network.hosts` 命中它）——Meka 开发目录派生包与**市场安装的
+ *    Meka 插件**都满足（后者只声明正式主机，运行时由本模块把覆盖主机当作等价的可
+ *    改写／可注入目标），其它插件即使开着覆盖也不会被改道。覆盖只发生在运行时：
+ *    manifest、批准记录与包字节都不动。
  *
- * 纯函数 + 一次性读 env，不依赖 Electron：networkSlot / mekaDevPlugins 的定向单测
- * 直测本模块，main 侧只在启动期读一次（`cindy-brain/index.ts`）。
+ * 纯函数 + 一次性读 env，不依赖 Electron：networkSlot / mekaDevPlugins /
+ * connectionAudienceResolver 的定向单测直测本模块，main 侧只在启动期读一次
+ * （`cindy-brain/index.ts`）。
  */
 
 import { ghostNetworkTargetMatches } from '../../shared/ghost.js';
@@ -76,8 +79,9 @@ export function readMekaPsbHostOverride(env: NodeJS.ProcessEnv = process.env): {
 
 /**
  * 该实例 manifest 的 host 声明是否已经包含覆盖主机（逐字或 origin 形式都算）。
- * 只有 Meka 开发目录派生包会被 `withMekaPsbHostDeclarations` 补上这一条；正式安装
- * 的插件没有它 ⇒ 运行时改写不会发生（不会把正式插件改道到测试环境）。
+ * Meka 开发目录派生包由 `withMekaPsbHostDeclarations` 补上这一条；市场安装的 Meka
+ * 插件不在磁盘上补声明（那会改变已批准权限），运行时由
+ * `withMekaPsbHostRuntimeDeclarations` 把覆盖主机当作等价目标。
  */
 export function manifestDeclaresMekaPsbHost(
   patterns: readonly string[],
@@ -93,6 +97,26 @@ export function manifestDeclaresMekaPsbHost(
   return patterns.some(
     (pattern) => typeof pattern === 'string' && ghostNetworkTargetMatches(pattern, target),
   );
+}
+
+/**
+ * 运行时把覆盖主机视为「该实例已声明 / 可注入」的 host（dev-only，纯内存）。
+ *
+ * 生效条件只有两条：覆盖开关生效（`overrideHost` 非 null）且传入的声明集合**声明了
+ * 正式 PSB 主机**——也就是这个插件本来就该访问 PSB。满足时返回**追加了覆盖主机**的
+ * 新数组；否则原样返回入参（同一个数组引用 ⇒ 未设置环境变量时逐字节零影响）。
+ *
+ * 它只改运行时的宿主侧视图（出网白名单、注入 host 匹配、Connection audience 可注入
+ * host），不写回 manifest、不改变批准记录：市场安装的插件仍只批准了正式主机，覆盖
+ * 只把同一服务的测试部署当作已批准目标的等价形态。
+ */
+export function withMekaPsbHostRuntimeDeclarations(
+  patterns: readonly string[],
+  overrideHost: string | null,
+): readonly string[] {
+  if (!overrideHost || patterns.includes(overrideHost)) return patterns;
+  if (!manifestDeclaresMekaPsbHost(patterns, MEKA_PSB_HOST)) return patterns;
+  return [...patterns, overrideHost];
 }
 
 /**

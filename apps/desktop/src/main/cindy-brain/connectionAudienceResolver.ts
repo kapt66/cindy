@@ -23,12 +23,19 @@
  * installed:false, still takes the digest path and must not skip via this
  * exception. A present but invalid market ledger is a hard failure, not an
  * absent record. The Host derives the audience from current identity + plugin id.
+ * One dev-only exception is layered on the resolved snapshot: when the startup
+ * env override (`CINDY_MEKA_PSB_HOST`, a whitelisted test host) is active and
+ * the installed manifest declares the formal PSB host, that override host is
+ * treated as one more injectable host (runtime only — the manifest, approved
+ * host set and receipt are untouched). Without the env variable the option is
+ * null and the resolution is byte-for-byte unchanged.
  */
 import { isValidGhostId, isValidGhostNetworkHostPattern } from '../../shared/ghost.js';
 import type { GhostManifest } from '../../shared/ghost.js';
 import { hasDeliveryNamespace, parsePluginInstanceId } from '../../shared/pluginIdentity.js';
 import type { PluginMarketInstallationRecord } from '../plugin-market/ledger.js';
 import { matchesPendingLegacyForge } from './ghostFirstPartyPrivilege.js';
+import { withMekaPsbHostRuntimeDeclarations } from './mekaPsbHostOverride.js';
 import {
   verifyInstalledMarketManifest,
   type InstalledMarketManifestIdentity,
@@ -131,6 +138,15 @@ export interface LoadConnectionAudienceResolverOptions {
   lookupOrganizationPrefix?(
     orgId: string,
   ): { kind: 'known'; pluginPrefix: string | null } | { kind: 'absent' } | { kind: 'unavailable' };
+  /**
+   * 本地测试用的 Meka PSB 主机覆盖（`mekaPsbHostOverride.ts`，启动期环境变量
+   * `CINDY_MEKA_PSB_HOST` 解析出的生效主机）。非 null 且该实例 manifest 声明了
+   * **正式 PSB 主机**时，覆盖主机在运行时等价于一条可注入 host —— 请求被改道到测试
+   * 部署后仍能拿到 Host 托管的企业身份 JWT（否则测试环境按「无凭证」401）。未设置 /
+   * 被白名单拒绝时恒为 null：`allowedHosts` 与所有判定逐字节不变；其它 host 不因此
+   * 放宽。
+   */
+  mekaPsbHostOverride?: string | null;
   log?: {
     info: (msg: string, meta?: Record<string, unknown>) => void;
     warn: (msg: string, meta?: Record<string, unknown>) => void;
@@ -165,7 +181,13 @@ export function loadConnectionAudienceResolver(
       }
 
       const finish = (manifest: GhostManifest): ConnectionAudienceResolution | null => {
-        const allowedHosts = declaredOidcTokenHosts(manifest);
+        // 运行时覆盖只看内存：manifest 声明了正式 PSB 主机时把测试主机当作等价可注入
+        // host（dev-only，未设置变量时返回的是同一个数组引用）。不写回 manifest、
+        // 不改变已批准 host 集合与其展示。
+        const allowedHosts = withMekaPsbHostRuntimeDeclarations(
+          declaredOidcTokenHosts(manifest),
+          options.mekaPsbHostOverride ?? null,
+        );
         if (allowedHosts.length === 0) return reject('oidc-host-declaration-missing');
         const audience = `${identity.orgSlug}:${pluginSlug}`;
         if (audience.length > 64) return reject('audience-too-long');

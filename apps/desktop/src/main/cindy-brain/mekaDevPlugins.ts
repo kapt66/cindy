@@ -38,13 +38,36 @@ import type {
 
 const REGISTRY_VERSION = 2;
 const SYNC_DEBOUNCE_MS = 350;
+/**
+ * `syncRegistered()` 的内存级短期节流。
+ *
+ * 它被 Agent 工具调用前的对账(`ensureMekaDevPluginsReady`)高频调用,而每次真正对账
+ * 都要**重新打包**每个源目录(数秒级 IO)。同一进程内 3 秒内的重复调用复用上一份
+ * promise/结果即可:watcher 触发的同步走独立的 `scheduleSync`/`enqueueSync`,**不**
+ * 经过这里,源码变化仍然是即时的。节流不跨进程、不落盘,进程重启后的第一次对账照常
+ * 完整执行(内容未变时由内容指纹判定为零更新)。
+ */
+const SYNC_REGISTERED_THROTTLE_MS = 3_000;
 
 interface StoredDevPlugin {
   runtimeId: string;
   pluginId: string;
   sourceDir: string;
+  /**
+   * 最近一次**成功落位**的派生包内容指纹(`fingerprintPackageContents`:排序后的
+   * 条目名 + 逐文件字节,规避 JSZip 的时间戳)。
+   *
+   * 它让目录同步按内容幂等:指纹相同 ⇒ 不重装、不 reload、不写「ghost updated」。
+   * 缺省(旧 v1/v2 记录)表示还没有可信的同步事实,下一次同步照旧更新一次并写回。
+   */
+  syncedPackageSha256?: string;
   /** v1 开发副本曾直接占用原始 ID；迁移成功后清除此字段。 */
   legacyRuntimeId?: string;
+}
+
+/** 注册表里只认 SHA-256 十六进制;其它形状一律忽略(当作没有指纹)。 */
+function isPackageFingerprint(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 }
 
 interface StoredRegistry {
@@ -212,6 +235,9 @@ export class MekaDevPluginManager {
   private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private syncChains = new Map<string, Promise<void>>();
   private namespaceChain: Promise<void> = Promise.resolve();
+  /** 见 `SYNC_REGISTERED_THROTTLE_MS`:短期复用同一次对账。 */
+  private syncRegisteredThrottle: { at: number; promise: Promise<MekaDevPluginItem[]> } | null =
+    null;
 
   constructor(private readonly deps: MekaDevPluginManagerDeps) {}
 
@@ -235,8 +261,33 @@ export class MekaDevPluginManager {
     return this.snapshot();
   }
 
-  /** Restore watchers and reconcile every registered source before it is used. */
+  /**
+   * Restore watchers and reconcile every registered source before it is used.
+   *
+   * 对账按**内容指纹**幂等(未变不重装),并且 3 秒内的重复调用复用同一次对账
+   * (`SYNC_REGISTERED_THROTTLE_MS`):这一步会被 Agent 工具调用前的
+   * `ensureMekaDevPluginsReady` 高频触发,不能每次都重新打包。目录变化仍由 watcher
+   * 的 debounce 链即时同步,不经过本入口。失败不缓存:下一次调用会重新对账。
+   */
   async syncRegistered(): Promise<MekaDevPluginItem[]> {
+    const now = Date.now();
+    const throttle = this.syncRegisteredThrottle;
+    if (throttle && now - throttle.at < SYNC_REGISTERED_THROTTLE_MS) return throttle.promise;
+    const entry: { at: number; promise: Promise<MekaDevPluginItem[]> } = {
+      at: now,
+      promise: this.reconcileRegistered(),
+    };
+    // 失败不缓存：清掉本节流记录，下一次调用必须重新完整对账。
+    entry.promise = entry.promise.catch((error) => {
+      if (this.syncRegisteredThrottle === entry) this.syncRegisteredThrottle = null;
+      throw error;
+    });
+    this.syncRegisteredThrottle = entry;
+    return entry.promise;
+  }
+
+  /** 真正的一次对账:取消 pending debounce,逐源重跑同步链。 */
+  private async reconcileRegistered(): Promise<MekaDevPluginItem[]> {
     await this.ensureNamespace();
     const syncs: Promise<void>[] = [];
     for (const id of this.records.keys()) {
@@ -310,6 +361,10 @@ export class MekaDevPluginManager {
         runtimeId,
         path.dirname(packed.cindyPath),
       );
+      // 装入成功后把**派生包内容指纹**写进登记:下一次目录同步内容未变时据此判零更新。
+      const syncedPackageSha256 = await this.fingerprintPackageContents(
+        developmentPackage.cindyPath,
+      );
       const ghost =
         existingRecord && this.deps.isInstalled(runtimeId)
           ? await this.deps.updatePackage(
@@ -331,6 +386,7 @@ export class MekaDevPluginManager {
         updatedAt: Date.now(),
         sourceVersion: packed.manifest.version,
         installedVersion: ghost.manifest.version,
+        syncedPackageSha256,
         ...(existingRecord?.legacyRuntimeId
           ? { legacyRuntimeId: existingRecord.legacyRuntimeId }
           : {}),
@@ -490,6 +546,9 @@ export class MekaDevPluginManager {
         runtimeId: candidate.runtimeId,
         pluginId: candidate.pluginId,
         sourceDir: path.resolve(candidate.sourceDir),
+        ...(isPackageFingerprint(candidate.syncedPackageSha256)
+          ? { syncedPackageSha256: candidate.syncedPackageSha256 }
+          : {}),
         ...(typeof candidate.legacyRuntimeId === 'string'
           ? { legacyRuntimeId: candidate.legacyRuntimeId }
           : {}),
@@ -504,10 +563,11 @@ export class MekaDevPluginManager {
     const registry: StoredRegistry = {
       version: REGISTRY_VERSION,
       plugins: [...this.records.values()]
-        .map(({ runtimeId, pluginId, sourceDir, legacyRuntimeId }) => ({
+        .map(({ runtimeId, pluginId, sourceDir, syncedPackageSha256, legacyRuntimeId }) => ({
           runtimeId,
           pluginId,
           sourceDir,
+          ...(syncedPackageSha256 ? { syncedPackageSha256 } : {}),
           ...(legacyRuntimeId ? { legacyRuntimeId } : {}),
         }))
         .sort((a, b) => a.runtimeId.localeCompare(b.runtimeId)),
@@ -769,6 +829,8 @@ export class MekaDevPluginManager {
     record.status = 'syncing';
     delete record.error;
     this.emitChanged();
+    /** 本次是否真的重装了运行时(= 内容变了);只有它才允许 reload 可见界面。 */
+    let installedContentChanged = false;
     await this.withPackedDirectory(record.sourceDir, async (packed) => {
       if (packed.manifest.id !== record.pluginId) {
         throw new MekaDevPluginError(
@@ -781,6 +843,25 @@ export class MekaDevPluginManager {
         runtimeId,
         path.dirname(packed.cindyPath),
       );
+      /**
+       * 幂等判据(2026-11-18 修复「每 3 秒重装一轮、面板永远正在连接」):
+       * 指纹按**派生包条目名 + 逐文件字节**计算(规避 JSZip 时间戳),与登记里上次
+       * 成功落位的指纹比较。相同且开发副本确实在装 ⇒ 这次源码没有变化:不调用
+       * updatePackage/installPackage、不写「ghost updated」、不触发内容 reload(那会
+       * 重建 panel WebView 并把在途工具调用收成 GHOST_ASLEEP),只刷新状态与事实。
+       */
+      const syncedPackageSha256 = await this.fingerprintPackageContents(
+        developmentPackage.cindyPath,
+      );
+      record.sourceVersion = packed.manifest.version;
+      if (
+        record.syncedPackageSha256 === syncedPackageSha256 &&
+        this.deps.isInstalled(runtimeId)
+      ) {
+        const installedVersion = this.deps.readInstalledVersion(runtimeId);
+        if (installedVersion) record.installedVersion = installedVersion;
+        return;
+      }
       // 同步成功后源码版本与运行版本一致,漂移提示据此消失(不额外轮询)。
       const installed = this.deps.isInstalled(runtimeId)
         ? await this.deps.updatePackage(
@@ -794,18 +875,20 @@ export class MekaDevPluginManager {
             { mode: 'automatic' },
             ownerLease,
           );
-      record.sourceVersion = packed.manifest.version;
+      installedContentChanged = true;
       record.installedVersion = installed.manifest.version;
       if (record.legacyRuntimeId) {
         await this.deps.uninstallPackage(record.legacyRuntimeId);
         delete record.legacyRuntimeId;
-        await this.persistRegistry();
       }
+      // 只有真正落位过才写盘:记录本次内容指纹(旧记录没有指纹,这里同时是补齐)。
+      record.syncedPackageSha256 = syncedPackageSha256;
+      await this.persistRegistry();
     });
     record.status = 'watching';
     record.updatedAt = Date.now();
     delete record.error;
-    this.deps.onContentReloaded(runtimeId);
+    if (installedContentChanged) this.deps.onContentReloaded(runtimeId);
     this.emitChanged();
   }
 
@@ -880,6 +963,9 @@ export class MekaDevPluginManager {
         await this.stopAllWatchers();
         this.registryPath = null;
         this.records.clear();
+        // 换 owner 后的下一次对账必须重新读新 owner 的注册表,不能复用旧 owner 的
+        // 节流结果(那会把旧 owner 的开发副本当成新 owner 的对账结论)。
+        this.syncRegisteredThrottle = null;
         this.emitChanged();
       });
     await this.namespaceChain;

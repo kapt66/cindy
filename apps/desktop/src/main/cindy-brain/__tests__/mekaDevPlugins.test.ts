@@ -166,6 +166,8 @@ describe('MekaDevPluginManager', () => {
           runtimeId,
           pluginId: 'demo-plugin',
           sourceDir: await fs.promises.realpath(sourceDir),
+          // 装入成功即记录派生包内容指纹（同步幂等的判据，持久化供进程重启后使用）。
+          syncedPackageSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
         },
       ],
     });
@@ -276,6 +278,8 @@ describe('MekaDevPluginManager', () => {
   it('自动更新失败时保留已安装副本，并将开发条目标记为错误', async () => {
     const manager = new MekaDevPluginManager(deps);
     await manager.install(sourceDir, (await manager.inspect(sourceDir)).packageSha256);
+    // 内容未变的同步不会重装（幂等）；这里要制造一次真实更新，让 updatePackage 抛错。
+    currentManifest = manifest('1.0.1');
     vi.mocked(deps.updatePackage).mockRejectedValueOnce(new Error('broken source'));
 
     onEvents?.([{ type: 'update', path: path.join(sourceDir, 'main.js') }]);
@@ -319,6 +323,107 @@ describe('MekaDevPluginManager', () => {
     expect(deps.updatePackage).toHaveBeenCalledTimes(1);
     expect(deps.onContentReloaded).toHaveBeenCalledWith(runtimeId);
     expect(deps.subscribe).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * 测试价值
+   * - 生产入口与可观察结果：`MekaDevPluginManager.syncRegistered()`（`cindy-brain/index.ts`
+   *   的 `ensureMekaDevPluginsReady` 在**每次工具调用前**调用的对账入口）在源码内容没变时
+   *   必须零更新：不调 `updatePackage`/`installPackage`、不触发 `onContentReloaded`（reload
+   *   会重建 panel WebView 并把在途工具调用收成 `GHOST_ASLEEP`）。旧登记没有内容指纹时
+   *   只补一次，随后 3 秒节流内复用同一次对账（连打包都不再做）。
+   * - Bug／规则依据：2026-11-18 用户实测——主进程日志每 3 秒一轮 `ghost updated`，P4 面板
+   *   一直「正在连接…」且 `p4_status` 返回 `GHOST_ASLEEP`；根因是同步无条件 `updatePackage`。
+   * - 现有覆盖缺口：既有用例只断言「内容变了必须更新」，没有「内容没变不许更新」。
+   * - 最小失败输入：同一条未改动的开发副本被连续对账两次，第二次仍调 `updatePackage`。
+   * - tier：unit（注入 fake + 临时目录，无 Electron）。
+   */
+  it('内容未变的目录对账幂等：连续 syncRegistered 不重装、不 reload，旧登记只补一次指纹', async () => {
+    // 节流是 3 秒墙钟窗口；冻结 Date.now 让「第二次调用仍在节流内」成为确定事实，
+    // 不依赖机器快慢（CI 负载高时一次真实打包可能就超过窗口）。
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
+    try {
+      const registryPath = deps.getRegistryPath();
+      const runtimeId = mekaDevRuntimeId('demo-plugin');
+      await fs.promises.mkdir(path.dirname(registryPath), { recursive: true });
+      await fs.promises.writeFile(
+        registryPath,
+        JSON.stringify({
+          version: 2,
+          plugins: [
+            {
+              runtimeId,
+              pluginId: 'demo-plugin',
+              sourceDir: await fs.promises.realpath(sourceDir),
+            },
+          ],
+        }),
+      );
+      installedIds.add(runtimeId);
+      const manager = new MekaDevPluginManager(deps);
+
+      await manager.syncRegistered();
+      // 旧登记没有内容指纹 ⇒ 只补一次更新，并把本次派生包内容指纹写进注册表。
+      expect(deps.updatePackage).toHaveBeenCalledTimes(1);
+      expect(deps.onContentReloaded).toHaveBeenCalledTimes(1);
+      const registry = JSON.parse(await fs.promises.readFile(registryPath, 'utf8')) as {
+        plugins: Array<{ syncedPackageSha256?: string }>;
+      };
+      const fingerprint = registry.plugins[0]!.syncedPackageSha256;
+      expect(fingerprint).toMatch(/^[a-f0-9]{64}$/);
+
+      const packsAfterFirstSync = vi.mocked(deps.packDirectory).mock.calls.length;
+      await manager.syncRegistered();
+      // 3 秒节流内复用上一份对账结果：不重新打包、不重装、不 reload。
+      expect(vi.mocked(deps.packDirectory).mock.calls.length).toBe(packsAfterFirstSync);
+      expect(deps.updatePackage).toHaveBeenCalledTimes(1);
+      expect(deps.onContentReloaded).toHaveBeenCalledTimes(1);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  /**
+   * 测试价值
+   * - 生产入口与可观察结果：`syncRegistered()` 的幂等判据是**派生包内容指纹**——源码内容
+   *   变了才重装一次并写回新指纹；注册表里已有指纹时，进程重启后同一内容不再重装。
+   * - Bug／规则依据：同上一用例（2026-11-18 每 3 秒重装一轮）；指纹必须持久化，否则每次
+   *   启动后的第一次工具调用都会再重装一轮。
+   * - 现有覆盖缺口：既有用例没有任何指纹并列/持久化断言。
+   * - 最小失败输入：源码 `ghost.json` 改动后重建 manager 再对账，`updatePackage` 被调用。
+   * - tier：unit。
+   */
+  it('源码内容变化只更新一次并写回新指纹；重建 manager 后同一内容不再重装', async () => {
+    const runtimeId = mekaDevRuntimeId('demo-plugin');
+    const manager = new MekaDevPluginManager(deps);
+    await manager.install(sourceDir, (await manager.inspect(sourceDir)).packageSha256);
+    const readFingerprint = async (): Promise<string | undefined> => {
+      const registry = JSON.parse(
+        await fs.promises.readFile(deps.getRegistryPath(), 'utf8'),
+      ) as { plugins: Array<{ syncedPackageSha256?: string }> };
+      return registry.plugins[0]!.syncedPackageSha256;
+    };
+    const before = await readFingerprint();
+    expect(before).toMatch(/^[a-f0-9]{64}$/);
+
+    currentManifest = manifest('1.0.1');
+    await manager.syncRegistered();
+
+    expect(deps.updatePackage).toHaveBeenCalledTimes(1);
+    // 装入 1 次 + 本次内容更新 1 次；下面的重建对账内容未变，不 reload。
+    expect(deps.onContentReloaded).toHaveBeenCalledTimes(2);
+    const after = await readFingerprint();
+    expect(after).toMatch(/^[a-f0-9]{64}$/);
+    expect(after).not.toBe(before);
+
+    // 进程重启场景：同一注册表重建 manager，内容没变 ⇒ 不再重装、不再 reload。
+    const rebuilt = new MekaDevPluginManager(deps);
+    await rebuilt.syncRegistered();
+    expect(deps.updatePackage).toHaveBeenCalledTimes(1);
+    expect(deps.onContentReloaded).toHaveBeenCalledTimes(2);
+    expect(await rebuilt.list()).toMatchObject([
+      { runtimeId, status: 'watching', installedVersion: '1.0.1' },
+    ]);
   });
 
   it('同 ID 正式安装与开发副本共存，开发副本不改变正式安装状态', async () => {
@@ -388,6 +493,7 @@ describe('MekaDevPluginManager', () => {
           runtimeId: mekaDevRuntimeId('demo-plugin'),
           pluginId: 'demo-plugin',
           sourceDir: await fs.promises.realpath(sourceDir),
+          syncedPackageSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
         },
       ],
     });
@@ -427,6 +533,8 @@ describe('MekaDevPluginManager', () => {
       sourceDir,
       (await manager.inspect(sourceDir)).packageSha256,
     );
+    // 未变的内容会被幂等同步跳过，这里先改内容，确保 watcher 真的走到 updatePackage。
+    currentManifest = manifest('1.0.1');
     const originalUpdate = vi.mocked(deps.updatePackage).getMockImplementation()!;
     let releaseUpdate!: () => void;
     const updateGate = new Promise<void>((resolve) => {
