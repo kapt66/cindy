@@ -291,33 +291,59 @@ describe('GhostPluginCard', () => {
   /*
    * 测试价值
    * - 生产入口与可观察结果:`GhostPluginCard` 在开发副本的源码版本与运行版本不一致时
-   *   显示「尚未同步」提示与一键同步按钮;一致或事实缺失时不显示。
-   * - Bug／规则依据:2026-11-18 用户报告——源码改到 0.11.1 而运行副本仍是 0.9.1,
-   *   卡片没有任何提示,用户只看到旧版本号。
+   *   只显示「尚未同步」这条事实,**不出现任何手动同步按钮**;一致或事实缺失时不显示。
+   * - Bug／规则依据:2026-11-18 用户裁决——本地(dev)插件与线上插件本来就分开,
+   *   同步由 watcher 自动完成,卡片不需要(也不应该有)同步按钮;
+   *   上一批 `d732f1d6e6` 加的按钮与 `meka-dev-plugins:resync` 已按此裁决删除。
    * - 现有覆盖缺口:既有卡片用例只覆盖打包动作冒泡,没有版本漂移事实。
    * - 最小失败输入:sourceVersion=1.1.0 / installedVersion=1.0.0 的卡片。
    * - tier:unit(jsdom 组件渲染)。
    */
-  it('surfaces an unsynced source version with its own sync action', () => {
-    const onResync = vi.fn();
-    const onManage = vi.fn();
+  it('shows an unsynced source version as information and never adds a sync button', () => {
     const { container } = render(
       <GhostPluginCard
         item={{ ...commandPlugin, id: 'meka-dev-demo-plugin' }}
         development
         mekaDevSourceVersion="1.1.0"
         mekaDevInstalledVersion="1.0.0"
-        onMekaDevResync={onResync}
         onPrimary={vi.fn()}
-        onManage={onManage}
+        onManage={vi.fn()}
       />,
     );
 
-    expect(container.querySelector('[data-testid="meka-dev-version-drift"]')).toBeTruthy();
-    expect(screen.getByText('settings.ghosts.meka.dev.sourceOutOfSync')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'settings.ghosts.meka.dev.syncNow' }));
-    expect(onResync).toHaveBeenCalledTimes(1);
-    expect(onManage).not.toHaveBeenCalled();
+    const drift = container.querySelector('[data-testid="meka-dev-version-drift"]');
+    expect(drift).toBeTruthy();
+    expect(drift?.textContent).toBe('settings.ghosts.meka.dev.sourceOutOfSync');
+    // 提示是纯信息:块内没有任何可点击控件(旧版的「同步」按钮不再出现)。
+    expect(drift?.querySelector('button')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'settings.ghosts.meka.dev.syncNow' })).toBeNull();
+  });
+
+  /*
+   * 测试价值
+   * - 生产入口与可观察结果:开发目录后台同步失败时,卡片把 `MekaDevPluginItem.error`
+   *   原样显示出来(小字两行 + `title` 全文),用户不必只看到「同步失败」四个字。
+   * - Bug／规则依据:2026-11-18 用户裁决——删除手动同步入口后,失败原因必须自己可见,
+   *   否则失败不可诊断(真实案例:`meka-submit` 的 description 超过 300 字符)。
+   * - 现有覆盖缺口:既有用例没有任何同步失败原因的渲染覆盖。
+   * - 最小失败输入:带 `mekaDevError` 的开发卡。
+   * - tier:unit(jsdom 组件渲染)。
+   */
+  it('shows the development sync failure reason with the full text on hover', () => {
+    const reason = '生成开发插件包失败：ghost.json 的 description 超过 300 字符';
+    const { container } = render(
+      <GhostPluginCard
+        item={{ ...commandPlugin, id: 'meka-dev-demo-plugin' }}
+        development
+        mekaDevError={reason}
+        onPrimary={vi.fn()}
+        onManage={vi.fn()}
+      />,
+    );
+
+    const error = container.querySelector('[data-testid="meka-dev-sync-error"]');
+    expect(error?.textContent).toBe(reason);
+    expect(error?.getAttribute('title')).toBe(reason);
   });
 
   it('stays quiet when the source and running versions agree or are unknown', () => {

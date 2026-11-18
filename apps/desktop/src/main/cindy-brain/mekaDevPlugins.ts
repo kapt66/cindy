@@ -234,27 +234,6 @@ export class MekaDevPluginManager {
     return this.snapshot();
   }
 
-  /**
-   * 用户手动触发的单插件同步。
-   *
-   * watcher 只在应用运行期间观察源码变化:应用关闭时改过的源码不会自己同步,而
-   * `ghosts:reload` 只重启已装副本、不会重新打包源码。这里复用后台同步的同一条链
-   * (`enqueueSync`),不另造安装流程;同步失败仍按既有 fail-safe 标错误并保留旧快照。
-   */
-  async resync(runtimeId: string): Promise<MekaDevPluginItem[]> {
-    await this.ensureNamespace();
-    const record = this.records.get(mekaDevRegistryKey(runtimeId));
-    if (!record) {
-      throw new MekaDevPluginError('not-found', `开发插件 ${runtimeId} 未登记`);
-    }
-    const timer = this.debounceTimers.get(record.runtimeId);
-    if (timer) clearTimeout(timer);
-    this.debounceTimers.delete(record.runtimeId);
-    await this.enqueueSync(record.runtimeId);
-    await this.resolveVersions(record);
-    return this.snapshot();
-  }
-
   async inspect(sourceDir: string): Promise<MekaDevPluginInspection> {
     const realSourceDir = await this.resolveSourceDir(sourceDir);
     return this.withPackedDirectory(realSourceDir, async (packed) => {

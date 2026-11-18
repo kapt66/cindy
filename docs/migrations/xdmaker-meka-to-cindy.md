@@ -7592,24 +7592,36 @@ Codex/Claude/Pi 原生读 `AGENTS.md`/`CLAUDE.md`/`SKILL.md`，不看我们的 m
   3. 版本口径：`MekaDevPluginItem` 新增 `sourceVersion` / `installedVersion`（Main 侧读源码
      `ghost.json` 与已装 manifest，读不到就省略），弹窗展示 `upload-info.version`（源码打包
      结果），与运行版本不同时标出「当前运行 vX → 将上传 vY」。
-  4. 开发卡新增版本漂移提示与一键同步：`meka-dev-plugins:resync` 复用
-     `MekaDevPluginManager` 的后台 `sync` 链（`ghosts:reload` 只重启已装副本，不会重新打包
-     源码，因此没有可复用的手动同步入口），成功由 `meka-dev-plugins:changed` 广播刷新，
-     提示消失，不新增轮询；同步失败按既有 fail-safe 保留旧快照并标错误。
-  5. i18n：新增文案落到全部 12 个 locale；孤儿 key `settings.ghosts.meka.dev.versionLabel`
-     同时删除。
-- **验证（实跑）**：`MekaDevPluginPackageDialog.test.tsx`（13）、`GhostPluginCard.test.tsx`
-  （56）、`routerService.test.ts`（35，含新增失败映射表驱动用例）、
-  `mekaDevPlugins.test.ts`（22，含版本漂移与 resync）、`marketGhostSessionBoundary.test.ts`
-  （19）共 **145 passed**；`pnpm --filter desktop run typecheck`、`pnpm check:i18n`、
-  `pnpm check:i18n-glossary` 通过。`pnpm check:dev-docs` 与 `pnpm check:test-hygiene`
-  在本机基线（未含本次改动）即失败，与本次改动无关，未纳入范围：
-  `docs/dev-rules/protocol-compatibility.md` 已超 16384 字节上限（该文件本次未改动）；
-  `scripts/test-hygiene-baseline.json` 有一条陈旧条目
-  `apps/desktop/src/main/maker-host/__tests__/codexNativeSubagentsDisabled.test.ts`
-  可收紧（该测试文件本次未改动）。
-- **未验证 / 风险**：① Light/Dark 与 12 语种**人工目检**未做（视觉上只新增一行提示与两个
-  文字按钮，复用既有语义 token）；② 真实 MCPRouter 的 404/405 与超时端到端未实测（分类逻辑
-  由注入 client 的单测覆盖）；③ `GhostPluginPage.navigation.test.tsx` 的
-  「prefetches only a sustained hover…」用例在本机基线（未含本次改动）同样失败，属存量问题，
-  未纳入本次范围（见根 `AGENTS.md`「审查与问题范围」）。
+  4. 开发卡版本漂移提示（**2026-11-18 用户实测后修正**）：两个版本都存在且不同 ⇒ 卡片显示
+     「源码 vX，运行中 vY，尚未同步」这条**纯信息**。第一版曾附带「同步」按钮与
+     `meka-dev-plugins:resync` IPC，用户裁决删除——本地（dev）插件与线上插件本来就是分开的，
+     源码变更由 watcher 自动打包安装，不应该让用户手点。现在同步只由 watcher/启动对账驱动
+     （成功后 `meka-dev-plugins:changed` 广播刷新，不新增轮询）；`MekaDevPluginManager.resync`、
+     preload/`vite-env.d.ts` 暴露与 `syncingNow`/`syncFailed` 文案 key 一并删除，
+     `mekaDevPlugins.test.ts` 的漂移用例改走 `syncRegistered()`（watcher 同一条链）。
+  5. 同步失败原因可见：状态行标「开发模式 · 同步失败」时，把 `MekaDevPluginItem.error` 以两行
+     小字（`line-clamp-2`）原样渲染、`title` 保留全文（新增 `data-testid="meka-dev-sync-error"`）。
+     本次真实失败根因在插件清单元数据校验（`meka-submit` 的 `description` 超过 300 字符），
+     属插件仓侧问题，本仓不修。
+  6. 卡片等高：Meka「All」栅格与已装虚拟栅格的行内 grid 显式 `items-stretch`，卡片 `article`
+     `h-full`、内容列 `flex-1`、右侧操作区 `justify-between`/`justify-end` 贴底；描述仍
+     `line-clamp-2`，只为等高、不裁重要信息，不用固定像素高度。
+  7. i18n：上一版新增的文案已落到全部 12 个 locale（孤儿 key
+     `settings.ghosts.meka.dev.versionLabel` 也在那时删除）；本次把只服务于手动同步的
+     `syncNow` / `syncingNow` / `syncFailed` 从 12 个 locale 一并删除，保留 `sourceOutOfSync`
+     与 `syncError`，`check:i18n` 的 key 集合重新回到一致。
+- **验证（实跑）**：`GhostPluginCard.test.tsx`（57，含「漂移只提示、不出现同步按钮」与
+  「失败原因可见」两条）、`mekaDevPlugins.test.ts`（22）、
+  `pnpm --filter desktop exec vitest run src/renderer/features/plugin/__tests__/`
+  → 32 files / 680 passed / 1 failed（`GhostPluginPage.navigation.test.tsx`
+  「prefetches only a sustained hover…」；已用 `git checkout` 还原本次改动的两个 Renderer
+  文件在同一 HEAD 上复跑，**同样失败**，属本机存量问题，见根 `AGENTS.md`「审查与问题范围」）；
+  `pnpm --filter desktop run typecheck`、`pnpm check:i18n`（17670 key 一致）、
+  `pnpm check:i18n-glossary` 通过。
+- **未验证 / 风险**：① Light/Dark 与 12 语种**人工目检**未做（视觉上只新增「尚未同步」一行
+  提示与失败原因两行小字，等高靠 `items-stretch` + `h-full`，复用既有语义 token 与间距体系）；
+  ② 真实 MCPRouter 的 404/405 与超时端到端未实测（分类逻辑由注入 client 的单测覆盖）；
+  ③ 卡片等高的**实机目检**未做（jsdom 不计算布局），只锁定了类名契约与既有栅格测试；
+  ④ `GhostPluginPage.navigation.test.tsx` 的「prefetches only a sustained hover…」用例在本机
+  基线（未含本次改动）同样失败，属存量问题，未纳入本次范围（见根 `AGENTS.md`
+  「审查与问题范围」）。

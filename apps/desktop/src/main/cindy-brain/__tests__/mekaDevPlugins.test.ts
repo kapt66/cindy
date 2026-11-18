@@ -197,16 +197,17 @@ describe('MekaDevPluginManager', () => {
 
   /**
    * 测试价值
-   * - 生产入口与可观察结果:`MekaDevPluginManager.list()` / `resync()` 交出的条带
+   * - 生产入口与可观察结果:`MekaDevPluginManager.list()` / `syncRegistered()` 交出的条带
    *   `sourceVersion` / `installedVersion`;两者不同就是「源码已更新、运行副本还没同步」。
    * - Bug／规则依据:2026-11-18 用户报告——打包弹窗把已装 ghost 的版本当成上传版本,
    *   卡片也没有任何「源码改了但没同步」的事实。
    * - 现有覆盖缺口:既有用例只断言 runtimeId／status／源目录,没有任何版本事实。
    * - 最小失败输入:源码 `ghost.json` 改成 1.1.0 但不再触发 watcher,`list()` 必须报出漂移;
-   *   手动 `resync()` 必须回到一致。
+   *   走 watcher 的同一条同步链(`syncRegistered()` = 启动时的对账)必须回到一致
+   *   —— 同步只由 watcher/启动对账驱动,渲染层没有手动同步入口。
    * - tier:unit(注入 fake + 临时目录,无 Electron)。
    */
-  it('报出源码版本与运行版本的漂移，手动 resync 后回到一致', async () => {
+  it('报出源码版本与运行版本的漂移，同步链跑完后回到一致', async () => {
     const manager = new MekaDevPluginManager(deps);
     const runtimeId = mekaDevRuntimeId('demo-plugin');
     await fs.promises.writeFile(
@@ -229,7 +230,7 @@ describe('MekaDevPluginManager', () => {
       { runtimeId, sourceVersion: '1.1.0', installedVersion: '1.0.0' },
     ]);
 
-    expect(await manager.resync(runtimeId)).toMatchObject([
+    expect(await manager.syncRegistered()).toMatchObject([
       { runtimeId, sourceVersion: '1.1.0', installedVersion: '1.1.0', status: 'watching' },
     ]);
     expect(deps.updatePackage).toHaveBeenCalledTimes(1);

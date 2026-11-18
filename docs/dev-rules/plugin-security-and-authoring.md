@@ -1231,13 +1231,15 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
   Renderer。MCPRouter 已停用 HTTP 与裸 IP 入口，任何历史 HTTP 或裸 IP base 在运行期统一
   迁移到 `https://mcpr.meka.pawdy.fun/`，不得保留明文认证或证书主机名不匹配的例外。
   每次上传产生不可覆盖的 Release；未配置 Router 时不得尝试远端写操作。
-- **开发副本的版本漂移必须可见且可一键同步**：Host 在开发条目上填 `sourceVersion`
+- **开发副本的版本漂移只作提示，同步失败必须给出原因**：Host 在开发条目上填 `sourceVersion`
   （源码 `ghost.json` 的 version）与 `installedVersion`（已装开发副本 manifest 的 version），
   读不到时**省略字段而不是编造**。两者都存在且不同 ⇒ 卡片显示“源码 X，运行中 Y，尚未同步”
-  并提供同步入口；同步走与 watcher 同一条后台同步链（`meka-dev-plugins:resync` 复用
-  `MekaDevPluginManager` 的 `sync`，失败按既有 fail-safe 保留旧快照），成功后由
-  `meka-dev-plugins:changed` 广播刷新，提示自动消失，**不新增轮询**。该 IPC 只补“没有可复用
-  手动同步入口”这一缺口：`ghosts:reload` 只重启已装副本，不会重新打包源码。
+  这条**纯信息**，**不提供手动同步按钮**、**不新增同步 IPC**：本地（dev）插件与线上插件本来
+  就是两套身份，源码变更由 watcher 自动打包并安装新版本，成功后由
+  `meka-dev-plugins:changed` 广播刷新、提示自动消失，**不新增轮询**（2026-11-18 用户裁决；
+  上一版加的“同步”按钮与 `meka-dev-plugins:resync` 已删除）。同步失败时状态行标
+  “开发模式 · 同步失败”，并把 `MekaDevPluginItem.error` 以两行小字原样渲染、`title` 保留全文
+  ——失败原因必须用户自己能看见，不能只有红字状态。
 
 
 ### 4.2 Meka 独立市场的大包下载边界

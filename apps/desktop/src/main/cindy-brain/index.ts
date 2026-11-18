@@ -10115,26 +10115,6 @@ export function registerGhostIpc(): void {
       throwMekaDevPluginError(error);
     }
   });
-  ipcMain.handle('meka-dev-plugins:resync', async (event, id: unknown) => {
-    assertTrustedAppRendererEvent(event);
-    const runtimeId = requireString(id, 'id');
-    const expectedOwner = captureGhostMutationOwner();
-    try {
-      const items = await mekaDevPlugins.resync(runtimeId);
-      if (
-        isAppSessionBoundaryPending() ||
-        !isSameAppSession(expectedOwner, getActiveAppSession())
-      ) {
-        throwIpcError(
-          'PRECONDITION_FAILED',
-          'The active account changed while synchronizing the development Plugin.',
-        );
-      }
-      return { items };
-    } catch (error) {
-      throwMekaDevPluginError(error);
-    }
-  });
   ipcMain.handle('meka-dev-plugins:upload', async (event, rawRequest: unknown) => {
     assertTrustedAppRendererEvent(event);
     const payload = requireObject(rawRequest);

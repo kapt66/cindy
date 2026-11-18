@@ -63,7 +63,7 @@ export const PLUGIN_MANAGEMENT_FRAME_CLASS = 'mx-auto w-full max-w-[920px] px-8 
  * though viewport breakpoints such as `sm` / `md` still match.
  */
 export const PLUGIN_MANAGEMENT_CARD_GRID_CLASS =
-  'grid grid-cols-[repeat(auto-fit,minmax(min(100%,22.5rem),1fr))] gap-3';
+  'grid grid-cols-[repeat(auto-fit,minmax(min(100%,22.5rem),1fr))] items-stretch gap-3';
 
 export const PLUGIN_MANAGEMENT_CONTENT_CONTAINER_CLASS = 'plugin-management-content-frame';
 
@@ -72,7 +72,8 @@ export const PLUGIN_MANAGEMENT_CONTENT_CONTAINER_CLASS = 'plugin-management-cont
  * present, so a lone installed plugin does not stretch across the whole page.
  * The plugin catalog container collapses this to one column at narrow widths.
  */
-export const PLUGIN_INSTALLED_CARD_GRID_CLASS = 'plugin-installed-card-grid grid grid-cols-2 gap-3';
+export const PLUGIN_INSTALLED_CARD_GRID_CLASS =
+  'plugin-installed-card-grid grid grid-cols-2 items-stretch gap-3';
 
 const PLUGIN_MANAGEMENT_STACKED_MAX_WIDTH = 720;
 

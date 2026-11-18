@@ -1013,8 +1013,10 @@ Host 接线锚点由 `mcp-providers.ts:418` 漂移到 `:47`（导入）+ `:513`�
 5. 打包弹窗的版本口径是**源码打包结果**（`upload-info.version`），并标出与运行中开发副本的
    版本差异；读取 MCPRouter 发布信息的失败按固定码分类（未配置／session 过期／接口不支持／
    网络不可达／回包非法），**本地打包在任何失败下仍可用**。开发副本的源码版本与运行版本
-   不一致时，卡片显示“尚未同步”与一键同步入口（`meka-dev-plugins:resync`，复用后台同步链，
-   成功后由 `meka-dev-plugins:changed` 刷新，不加轮询）。
+   不一致时，卡片**只**显示“尚未同步”这条信息（**没有手动同步按钮**，本地 dev 与线上插件
+   本来就分开）；同步只由 watcher 自动完成，成功后由 `meka-dev-plugins:changed` 刷新，不加轮询。
+   同步失败时状态行标“同步失败”，并把 `MekaDevPluginItem.error` 原样显示（两行小字 + `title`
+   全文），失败原因必须可见。
 6. Meka 渠道必须上报**真实客户端版本**（`x-cindy-version`）；恒发 `0.0.0` 时协议的
    versionless 判据会让它在 Meka 版本空间里的兼容门**整体失效**（正式 `0.0.x` 包也会被
    当成 dev 占位）。版本兼容下限只在 Meka 自己的版本空间里表达，不借用上游渠道的读取器。
@@ -1024,16 +1026,16 @@ Host 接线锚点由 `mcp-providers.ts:418` 漂移到 `:47`（导入）+ `:513`�
 
 **代码锚点**
 - `apps/desktop/src/main/cindy-brain/mekaDevPlugins.ts`（派生包、注册表、watcher、打包、
-  `sourceVersion` / `installedVersion` 与 `resync`）
-- `apps/desktop/src/main/cindy-brain/index.ts` 的 `meka-dev-plugins:*` IPC（含 `resync`，
-  行号随重构漂移，以符号名为准）
+  `sourceVersion` / `installedVersion`）
+- `apps/desktop/src/main/cindy-brain/index.ts` 的 `meka-dev-plugins:*` IPC（**不含**同步类
+  channel；行号随重构漂移，以符号名为准）
 - `apps/desktop/src/main/meka-settings/mekaRouterFailure.ts`（MCPRouter 失败分类 +
   可公开补充信息；错误码集中在 `apps/desktop/src/shared/ipc-errors.ts` 的
   `MEKA_ROUTER_ERROR_CODES`）
 - `apps/desktop/src/renderer/features/plugin/MekaDevPluginPackageDialog.tsx`
   （源码版本口径、按原因引导与重试、本地打包始终可用）
 - `apps/desktop/src/renderer/features/plugin/GhostPluginPage.tsx`（开发卡版本漂移提示与
-  同步入口）
+  同步失败原因；卡片等高与底部操作区对齐）
 - `apps/desktop/src/main/plugin-market/registerIpc.ts:314,326`（channel 校验）
 - `apps/desktop/src/main/plugin-market/clientIdentity.ts`（插件分发身份的**唯一**解析入口：
   `resolvePluginClientIdentity` / `readPluginClientIdentity` / `pluginClientVersionReader`；
@@ -1073,10 +1075,12 @@ Host 接线锚点由 `mcp-providers.ts:418` 漂移到 `:47`（导入）+ `:513`�
 **实机验证**：Meka 插件页登记一个真实源码目录 → 卡片出现且带 `DEV` 角标 → 打开界面/使用
 可用 → 自动同步（改源码）生效 → 「打包」产出作者身份的 `.cindy` → 移除后正式插件不受影响。
 另需确认：关掉应用后把源码 `ghost.json` 版本改高、重开页面 → 卡片出现「源码 X，运行中 Y，
-尚未同步」→ 点「同步」后提示消失且运行版本变成 X；打包弹窗显示的是源码版本（不是运行
-版本），MCPRouter 未配置/断网/登录过期/接口不支持时分别给出对应引导与「重试」，且
-「打包到本地」始终可点。Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台；Meka 渠道
-请求头 `x-cindy-version` 是当前客户端真实版本（抓包或服务端日志确认，不是 `0.0.0`）。
+尚未同步」，**卡片上没有任何同步按钮**；重开应用（或改源码触发 watcher）后自动同步，提示
+消失且运行版本变成 X。同步失败时状态行出现「开发模式 · 同步失败」并显示具体原因（`title`
+里是全文）；打包弹窗显示的是源码版本（不是运行版本），MCPRouter 未配置/断网/登录过期/
+接口不支持时分别给出对应引导与「重试」，且「打包到本地」始终可点。同一栅格里的开发卡与
+普通插件卡等高、底部操作区对齐。Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台；
+Meka 渠道请求头 `x-cindy-version` 是当前客户端真实版本（抓包或服务端日志确认，不是 `0.0.0`）。
 
 **本轮同步对 WL-9 四类契约的复核（2026-09-23 第三轮同步，逐条实查）**：
 1. **批准状态 schema 未动**：`RECEIPT_SCHEMA_VERSION` 仍为 **2**（上游本轮未改）；

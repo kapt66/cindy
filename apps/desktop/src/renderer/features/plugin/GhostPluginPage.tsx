@@ -650,8 +650,6 @@ function LocalGhostPluginPage({
   const [installedExpanded, setInstalledExpanded] = useState(false);
   const [mekaInstalledGhostIds, setMekaInstalledGhostIds] = useState<string[]>([]);
   const [mekaDevPluginItems, setMekaDevPluginItems] = useState<MekaDevPluginItem[]>([]);
-  // 手动同步中的开发副本 runtimeId;同一次只允许一个在途同步。
-  const [mekaDevResyncingId, setMekaDevResyncingId] = useState<string | null>(null);
   const catalogOwnerKey = pluginCatalogOwnerKey(mode, dataOwnerId, dataOwnerGeneration, marketLocale);
   const catalogMemory = pluginCatalogMemory(catalogOwnerKey, 'local');
   const catalogMemoryRef = useRef(catalogMemory);
@@ -1574,32 +1572,6 @@ function LocalGhostPluginPage({
       toast.error(extractIpcError(error)?.message ?? t('settings.ghosts.meka.dev.installFailed'));
     }
   }, [confirm, refreshMarket, t]);
-
-  /**
-   * 开发卡上的「同步」:源码在应用未运行时被改过时,watcher 不会自动补一次同步,
-   * 卡片因此给出明确入口。这里复用 Main 的后台同步链(与 watcher 同一条),成功后由
-   * `meka-dev-plugins:changed` 广播刷新列表,漂移提示随之消失;不新增轮询。
-   */
-  const handleResyncDevelopmentPlugin = useCallback(
-    async (runtimeId: string) => {
-      if (mekaDevResyncingId !== null) return;
-      setMekaDevResyncingId(runtimeId);
-      try {
-        const { items } = await window.electronAPI.mekaDevPlugins.resync(runtimeId);
-        setMekaDevPluginItems(items);
-        const failed = items.find((item) => item.runtimeId === runtimeId);
-        if (failed?.status === 'error') {
-          toast.error(failed.error ?? t('settings.ghosts.meka.dev.syncFailed'));
-        }
-        await refreshMarket(true).catch(() => undefined);
-      } catch (error) {
-        toast.error(extractIpcError(error)?.message ?? t('settings.ghosts.meka.dev.syncFailed'));
-      } finally {
-        setMekaDevResyncingId(null);
-      }
-    },
-    [mekaDevResyncingId, refreshMarket, t],
-  );
 
   const handleRetryLegacyRecovery = useCallback(async () => {
     legacyRecoveryStatusRequestRef.current += 1;
@@ -2637,10 +2609,9 @@ function LocalGhostPluginPage({
                             ? mekaDevPluginById.get(catalogItem.item.ghostId)?.installedVersion
                             : undefined
                         }
-                        mekaDevResyncing={mekaDevResyncingId === catalogItem.item.ghostId}
-                        onMekaDevResync={
+                        mekaDevError={
                           catalogItem.item.development
-                            ? () => void handleResyncDevelopmentPlugin(catalogItem.item.ghostId)
+                            ? mekaDevPluginById.get(catalogItem.item.ghostId)?.error
                             : undefined
                         }
                         effectiveEnabled={effectiveEnabled(
@@ -3109,7 +3080,7 @@ export function MarketPluginCard({
     <article
       {...prefetchEvents}
       className={cn(
-        'group flex min-h-[108px] w-full select-none items-start gap-4 rounded-xl border-[0.5px] border-[var(--border-default)] bg-[var(--surface-elevated)] p-4 text-left',
+        'group flex h-full min-h-[108px] w-full select-none items-start gap-4 rounded-xl border-[0.5px] border-[var(--border-default)] bg-[var(--surface-elevated)] p-4 text-left',
         'transition-[background-color,border-color,transform] duration-150 ease-out',
         'hover:-translate-y-px hover:border-[var(--text-tertiary)] hover:bg-[var(--surface-hover-soft)]',
         'active:translate-y-0 active:scale-[0.992] motion-reduce:transform-none motion-reduce:transition-none',
@@ -3240,8 +3211,7 @@ export function GhostPluginCard({
   onDevelopmentPackage,
   mekaDevSourceVersion,
   mekaDevInstalledVersion,
-  mekaDevResyncing = false,
-  onMekaDevResync,
+  mekaDevError,
   updateProgress,
   effectiveEnabled,
   onPrimary,
@@ -3270,9 +3240,11 @@ export function GhostPluginCard({
   mekaDevSourceVersion?: string;
   /** 已装开发副本当前运行的版本;与 `mekaDevSourceVersion` 不同 = 源码改了还没同步。 */
   mekaDevInstalledVersion?: string;
-  mekaDevResyncing?: boolean;
-  /** 手动同步开发目录(复用 Main 的后台同步链)。 */
-  onMekaDevResync?: () => void;
+  /**
+   * 开发目录后台同步失败的原因(`MekaDevPluginItem.error`)。
+   * watcher 自动同步是唯一链路,失败时用户只能靠这段原因判断问题,因此原样给出。
+   */
+  mekaDevError?: string;
   updateProgress?: PluginMarketInstallProgress | null;
   effectiveEnabled?: boolean;
   onPrimary: () => void;
@@ -3356,7 +3328,7 @@ export function GhostPluginCard({
       aria-label={item.name}
       aria-describedby={metadataId}
       className={cn(
-        'group flex min-h-[108px] w-full cursor-pointer select-none items-start gap-4 rounded-xl border-[0.5px] border-[var(--border-default)] bg-[var(--surface-elevated)] p-4 text-left',
+        'group flex h-full min-h-[108px] w-full cursor-pointer select-none items-start gap-4 rounded-xl border-[0.5px] border-[var(--border-default)] bg-[var(--surface-elevated)] p-4 text-left',
         'transition-[background-color,border-color,transform] duration-150 ease-out',
         'hover:-translate-y-px hover:border-[var(--text-tertiary)] hover:bg-[var(--surface-hover-soft)]',
         'active:translate-y-0 active:scale-[0.992]',
@@ -3440,35 +3412,32 @@ export function GhostPluginCard({
             ? ` · ${t('settings.ghosts.disabledTag')}`
             : ''}
         </span>
-        {/* 开发目录专属事实:源码版本与运行版本不一致时明确说出「还没同步」,
-            并给出一键同步入口(复用 Main 的后台同步链)。 */}
+        {/* 同步失败时状态行只说「同步失败」,真正能定位问题的原因在这里原样给出:
+            自动重试由 watcher 负责,用户不需要(也没有)手动同步入口。 */}
+        {mekaDevError ? (
+          <span
+            data-testid="meka-dev-sync-error"
+            title={mekaDevError}
+            className="mt-1 line-clamp-2 min-w-0 break-words text-11 text-[var(--text-secondary)]"
+          >
+            {mekaDevError}
+          </span>
+        ) : null}
+        {/* 开发目录专属事实:源码版本与运行版本不一致时明确说出「还没同步」(纯信息)。
+            本地开发插件与线上插件本来就是分开的,同步只由 watcher 自动完成,
+            因此这里不给手动同步按钮。 */}
         {mekaDevVersionDrift ? (
           <span
-            className="mt-1.5 flex min-w-0 flex-wrap items-center gap-2 text-11 text-[var(--warning-fg)]"
+            className="mt-1.5 flex min-w-0 items-start gap-1.5 text-11 text-[var(--warning-fg)]"
             data-testid="meka-dev-version-drift"
           >
-            <AlertTriangle size={11} aria-hidden="true" />
+            <AlertTriangle size={11} className="mt-px shrink-0" aria-hidden="true" />
             <span className="min-w-0 break-words">
               {t('settings.ghosts.meka.dev.sourceOutOfSync', {
                 sourceVersion: mekaDevSourceVersion,
                 installedVersion: mekaDevInstalledVersion,
               })}
             </span>
-            {onMekaDevResync ? (
-              <button
-                type="button"
-                onClick={stopAnd(onMekaDevResync)}
-                disabled={mekaDevResyncing}
-                aria-busy={mekaDevResyncing || undefined}
-                className="shrink-0 rounded-full border border-[var(--border-default)] px-2 py-0.5 text-11 font-medium text-[var(--text-secondary)] transition-colors hover:border-[var(--text-tertiary)] hover:bg-[var(--surface-hover-soft)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:cursor-wait disabled:opacity-40"
-              >
-                {t(
-                  mekaDevResyncing
-                    ? 'settings.ghosts.meka.dev.syncingNow'
-                    : 'settings.ghosts.meka.dev.syncNow',
-                )}
-              </button>
-            ) : null}
           </span>
         ) : null}
         <span
