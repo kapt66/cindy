@@ -20,7 +20,7 @@ async function main() {
     r.json(),
   );
   const rendererTargets = list.filter(
-    (t) => t.type === "page" && t.url.startsWith("http://localhost:5173"),
+    (t) => t.type === "page" && /^http:\/\/localhost:\d+\//.test(t.url),
   );
   const target = rendererTargets.find((t) => {
     const parsed = new URL(t.url);
