@@ -7680,3 +7680,27 @@ Codex/Claude/Pi 原生读 `AGENTS.md`/`CLAUDE.md`/`SKILL.md`，不看我们的 m
   **人工目检**未做（只复用既有 `--error-fg` 语义 token 与既有 11px 排版，无新增布局）；
   ④ 回退状态下权限下拉框仍可改但上传禁用（本轮只改上传路径，未改权限同步入口）。
 
+
+### 6.72 2026-11-18 Meka 插件页收口：卡片回到「只加元素」、面板入口回上游语义、恢复被误删的来源文案（已修）
+
+**背景**：用户指出 Meka 插件卡片与 Cindy 上游原版差距过大、且在详情页点「打开界面」后看不到面板
+（实际已停靠进右侧栏）。核对上游后发现：面板停靠右侧栏**就是上游默认行为**（上游没有独立「打开界面」按钮，
+面板型插件的主动作即 `openPluginInSidebar(ghost,'panel')`），Meka 后加的独立按钮与措辞造成了期望错位；
+另外我们上一批顺手改动还误伤了共享卡片的既有来源文案。
+
+**改动**：
+1. **卡片只加元素、不改通用样式**：`GhostPluginCard` 骨架与上游一致（`article` 尺寸/间距/图标/内容列/
+   右列 primaryControl 位置）；Meka 增量信息（来源标记、「同步失败」、「源码 vX，运行中 vY，尚未同步」、
+   同步失败原因、「打包」）改为标题行小标签与元信息行行内小字/图标按钮，正常态与上游等高。曾短暂引入的
+   栅格 `items-stretch` / `h-full` / `auto-rows-fr` 已全部回退（净零）。
+2. **修复共享卡来源文案丢失**：`installationLabel` 恢复对 `sourceLabel` 的回退；`plugins` 页已装卡恢复
+   `sourceLabel` 传参；Meka 侧改由独立 `sourceTag` 承担标题行徽标，避免同一来源在标题行与元信息行重复。
+3. **面板入口回上游语义（方案 A）**：详情页**删除**独立「打开界面」按钮，面板型插件主动作统一为
+   「使用面板」，与卡片主动作共用 `useGhostPanelLauncher`。`openPanel` 返回可判定结果
+   （`modal` / `docked` / `page` / `unavailable`）：停靠成功 toast「已在右侧栏打开」，失败 toast 可读错误；
+   不再 `.catch(() => undefined)` 静默吞错。上游「停靠到右侧栏」的默认行为保持不变。
+
+**验证**（提交前统一跑）：`GhostPluginCard.test.tsx` 58 passed；`GhostPluginPage.navigation.test.tsx`
+132 passed + 1 既有失败（sustained-hover 预取用例，回退本次改动同样失败）；`pnpm --filter desktop run typecheck`、
+`pnpm check:i18n` 通过。**未验证**：Light/Dark 与 12 语种实机目检；`ui:check --changed` 因存量 `UNCOVERED`
+列表退出码 1。

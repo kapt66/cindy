@@ -6,6 +6,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // modal → Modal 宿主。偏好读取用真实 store(见下方 mock 的 resolver 实现)。
 const presentation = vi.hoisted(() => ({ modal: false }));
 
+// docked 分支的成败由右侧栏真实状态决定:launcher 会回查页签是否真的建了出来
+// (`addGlobalPluginTab` 在全局页签达到上限时返回 null,`openPluginInSidebar` 静默返回)。
+const placement = vi.hoisted(() => ({
+  /** 模拟 addGlobalPluginTab 是否建出了页签。 */
+  tabCreated: true,
+  /** 模拟打开右侧栏链路上的抛错(布局树/交回窗口失败)。 */
+  throwOnOpen: false,
+  /** `findGlobalTabByInstance` 的返回表:opener 成功时才登记。 */
+  tabs: new Map<string, { id: string }>(),
+}));
+
 vi.mock('@/cindy-brain/GhostPanelModal', () => ({
   GhostPanelModal: ({ ghost, open }: { ghost: { manifest: { id: string } }; open: boolean }) => (
     <div
@@ -21,6 +32,10 @@ vi.mock('@/lib/ghostPanelPresentationPreference', () => ({
     ghost.manifest.panel?.position === 'tab' ? 'docked' : presentation.modal ? 'modal' : 'docked',
 }));
 
+vi.mock('@/features/right-sidebar/globalTabs', () => ({
+  findGlobalTabByInstance: (instanceId: string) => placement.tabs.get(instanceId) ?? null,
+}));
+
 const openPluginInSidebar = vi.hoisted(() =>
   vi.fn(async (_ghost: unknown, _view?: string): Promise<void> => undefined),
 );
@@ -31,7 +46,8 @@ vi.mock('@/features/right-sidebar/pluginPlacement', () => ({
 import type { NavigateFunction } from 'react-router-dom';
 
 import type { InstalledGhost } from '../../../../shared/ghost';
-import { useGhostPanelLauncher, type GhostPanelLauncher } from '../useGhostPanelLauncher';
+import { installedGhostStoragePart } from '../../../../shared/pluginIdentity';
+import { useGhostPanelLauncher, type GhostPanelLauncher, type GhostPanelOpenResult } from '../useGhostPanelLauncher';
 
 const ghost = (id: string, position: 'left' | 'tab' = 'left'): InstalledGhost => ({
   enabled: true,
@@ -82,9 +98,19 @@ function Harness({ ghosts }: { ghosts: InstalledGhost[] }) {
 
 beforeEach(() => {
   presentation.modal = false;
+  placement.tabCreated = true;
+  placement.throwOnOpen = false;
+  placement.tabs.clear();
   navigateMock = vi.fn();
   openPageHostMock = vi.fn();
-  openPluginInSidebar.mockClear();
+  openPluginInSidebar.mockReset().mockImplementation(async (ghost: unknown) => {
+    if (placement.throwOnOpen) throw new Error('sidebar layout tree unavailable');
+    // 真实 opener 的分支:全局页签达到上限时 `addGlobalPluginTab` 返回 null、它静默返回;
+    // 成功时页签真的进了 store。
+    if (placement.tabCreated) {
+      placement.tabs.set(installedGhostStoragePart(ghost as InstalledGhost), { id: 'global-tab' });
+    }
+  });
   frames = new Map();
   nextFrameId = 0;
   vi.stubGlobal(
@@ -183,15 +209,54 @@ describe('useGhostPanelLauncher', () => {
   it('opens the upstream right-sidebar tab for the docked presentation', async () => {
     render(<Harness ghosts={[ghost('meka-p4')]} />);
 
+    let result: GhostPanelOpenResult | undefined;
     await act(async () => {
-      await launcher.openPanel('meka-p4', document.createElement('button'));
+      result = await launcher.openPanel('meka-p4', document.createElement('button'));
     });
 
+    expect(result).toBe('docked');
     expect(requestAnimationFrame).not.toHaveBeenCalled();
     expect(openPluginInSidebar).toHaveBeenCalledTimes(1);
     expect(openPluginInSidebar.mock.calls[0]?.[1]).toBe('panel');
     expect(navigateMock).not.toHaveBeenCalled();
     expect(screen.queryByTestId('plugin-panel-modal-host')).toBeNull();
+  });
+
+  /*
+   * 测试价值
+   * - 生产入口与可观察结果:`addGlobalPluginTab` 达到全局页签上限时返回 null,
+   *   `openPluginInSidebar` 会静默 return(不抛错)。以前 launcher 用
+   *   `.catch(() => undefined)` 把整条链路当成功,详情页「使用面板」点下去什么都不会发生。
+   *   现在必须回查页签是否存在,并把「没开成」如实返回给调用方。
+   * - Bug／规则依据:产品方案 A(2026-11-18)——面板型插件的主 CTA 必须给出明确反馈,
+   *   静默失败比没有入口更糟。
+   * - 现有覆盖缺口:原有 docked 用例只断言 opener 被调用,没有断言结果。
+   * - 最小失败输入:opener 不建页签(页签上限)/ opener 抛错。
+   * - tier:unit(jsdom hook 渲染)。
+   */
+  it('reports unavailable when the docked tab could not be created', async () => {
+    placement.tabCreated = false;
+    render(<Harness ghosts={[ghost('meka-p4')]} />);
+
+    let result: GhostPanelOpenResult | undefined;
+    await act(async () => {
+      result = await launcher.openPanel('meka-p4', document.createElement('button'));
+    });
+
+    expect(openPluginInSidebar).toHaveBeenCalledTimes(1);
+    expect(result).toBe('unavailable');
+  });
+
+  it('reports unavailable when the sidebar opener throws instead of swallowing it', async () => {
+    placement.throwOnOpen = true;
+    render(<Harness ghosts={[ghost('meka-p4')]} />);
+
+    let result: GhostPanelOpenResult | undefined;
+    await act(async () => {
+      result = await launcher.openPanel('meka-p4', document.createElement('button'));
+    });
+
+    expect(result).toBe('unavailable');
   });
 
   // T9 深链无 trigger:触发元素可省略,Modal 分支仍按「先关后开」挂载。
@@ -213,10 +278,12 @@ describe('useGhostPanelLauncher', () => {
     presentation.modal = true;
     render(<Harness ghosts={[ghost('tab-plugin', 'tab')]} />);
 
+    let result: GhostPanelOpenResult | undefined;
     await act(async () => {
-      await launcher.openPanel('tab-plugin', document.createElement('button'));
+      result = await launcher.openPanel('tab-plugin', document.createElement('button'));
     });
 
+    expect(result).toBe('page');
     expect(openPageHostMock).toHaveBeenCalledWith('tab-plugin');
     expect(openPluginInSidebar).not.toHaveBeenCalled();
     expect(screen.queryByTestId('plugin-panel-modal-host')).toBeNull();

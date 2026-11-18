@@ -8203,6 +8203,8 @@
         "groupSeparator": ", "
       },
       "toast": {
+        "panelOpenedInSidebar": "Ouvert dans la barre latérale droite",
+        "panelOpenFailed": "Impossible d'ouvrir le panneau : réessayez",
         "installed": "« {{name}} » installé",
         "uninstalled": "« {{name}} » désinstallé",
         "updated": "« {{name}} » mis à jour vers v{{version}}",
@@ -8661,7 +8663,7 @@
         "descriptionExpand": "Afficher plus",
         "descriptionCollapse": "Afficher moins",
         "readmeTitle": "À propos",
-        "useAction": "Utiliser le plugin",
+        "usePanelAction": "Utiliser le panneau",
         "chatAction": "Discuter",
         "enabledLabel": "Activé",
         "disabledLabel": "Désactivé",
@@ -8707,8 +8709,6 @@
         "permissionsDialogDescription": "Les {{count}} autorisations demandées par ce plugin",
         "closeDialog": "Fermer la boîte de dialogue",
         "resetPlacement": "Rétablir la position par défaut",
-        "openPanelAction": "Open Interface",
-        "openPanelDisabled": "Enable this Plugin before opening its interface",
         "closePanel": "Close Plugin Interface",
         "panelPresentation": {
           "title": "Opening Method",

@@ -123,8 +123,13 @@ interface GhostPluginDetailViewProps {
   onBack: () => void;
   publishingSection?: ReactNode;
   onToggle: (enabled: boolean) => void;
-  /** 主动作:面板型「使用」/ 指令或 Host 能力型「对话」;纯工具型不渲染主按钮。 */
+  /** 主动作:指令或 Host 能力型「对话」;没有 launcher 时面板型也回落到这里。 */
   onUse: () => void;
+  /**
+   * 面板型插件主 CTA 的打开入口(tab / docked / modal 由调用方的 launcher 分流)。
+   * 缺省(纯市场详情、远程只读)时主 CTA 回落到 `onUse`。打开结果的用户反馈
+   * (例如「已在右侧栏打开」)属于调用方职责。
+   */
   onOpenPanel?: (trigger: HTMLButtonElement) => void;
   /** main-view 入口偏好只影响侧边栏，不改变插件启用态或路由资格。 */
   mainViewSidebarVisible?: boolean;
@@ -211,9 +216,21 @@ export function GhostPluginDetailView({
   const needsReapproval = detail.approvalState !== 'approved';
   const enabled = (enabledOverride ?? detail.enabled) && !needsReapproval;
   const primaryAction = ghostPrimaryAction(detail);
+  /**
+   * 主 CTA 是否以「使用面板」打开(产品方案 A:回到上游语义,不再有独立的「打开界面」按钮)。
+   *
+   * - `panel`(panel.position:'tab'):上游原本就把面板当主动作;
+   * - `manage` + 有面板 + 有 launcher:停靠/Modal 形态的面板插件没有左侧栏入口,
+   *   在 Modal 呈现下右侧栏也没有常驻页签(见下方 `DetailsSection` 的呈现门控),
+   *   主 CTA 就是它唯一的打开入口;
+   * - `command`:指令优先(仍回到「对话」),面板不抢主按钮。
+   */
+  const panelPrimaryAction =
+    primaryAction === 'panel' ||
+    (primaryAction === 'manage' && onOpenPanel !== undefined);
   const primaryEnabled =
     enabled &&
-    (primaryAction === 'panel' ||
+    (panelPrimaryAction ||
       (primaryAction === 'command' && detail.canUse));
   // 上游 `226c83d31a` 把「逐能力选模」收敛成插件详情唯一的「模型与任务」卡
   // （`detail.hasTaskPreferences` / `hasPluginTasks`），`detail.cindyCapabilities`
@@ -323,26 +340,19 @@ export function GhostPluginDetailView({
                   />
                 </Button>
               ) : null}
-              {onOpenPanel ? (
-                // Meka 面板型插件的直达入口;视觉走上游共享 Button(secondary 面),
-                // 只保留 Meka 的打开语义与禁用文案。
-                <Button
-                  variant="secondary"
-                  size="lg"
-                  type="button"
-                  onClick={(event) => onOpenPanel(event.currentTarget)}
-                  disabled={!enabled}
-                  title={!enabled ? t('settings.ghosts.detail.openPanelDisabled') : undefined}
-                >
-                  {t('settings.ghosts.detail.openPanelAction')}
-                </Button>
-              ) : null}
-              {!remote && primaryAction !== 'manage' ? (
+              {!remote && (primaryAction !== 'manage' || panelPrimaryAction) ? (
                 <Button
                   variant={updateVersion ? 'secondary' : 'cta'}
                   size="lg"
                   type="button"
-                  onClick={onUse}
+                  // 面板型插件的主 CTA 就是打开面板:统一走 `onOpenPanel`(tab / docked /
+                  // modal 三分支由 launcher 决定),不再另给一个独立的「打开界面」按钮。
+                  // 没有 launcher 的宿主(纯市场详情、远程只读)仍回落到原来的 onUse。
+                  onClick={
+                    panelPrimaryAction && onOpenPanel
+                      ? (event) => onOpenPanel(event.currentTarget)
+                      : onUse
+                  }
                   disabled={!primaryEnabled}
                   title={!enabled ? t('settings.ghosts.detail.useDisabled') : undefined}
                   className="plugin-detail-primary-action min-w-[88px] whitespace-nowrap"
@@ -351,8 +361,8 @@ export function GhostPluginDetailView({
                     <MessageCircle size={14} aria-hidden="true" />
                   ) : null}
                   {t(
-                    primaryAction === 'panel'
-                      ? 'settings.ghosts.detail.useAction'
+                    panelPrimaryAction
+                      ? 'settings.ghosts.detail.usePanelAction'
                       : 'settings.ghosts.detail.chatAction',
                   )}
                 </Button>

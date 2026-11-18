@@ -9,6 +9,7 @@ import type { PluginMarketDetail } from '../../../../shared/pluginMarket';
 import type { ContributionTransferView, MyPluginDetailView, MyPluginReleasePageView } from '../../../../shared/pluginContributions';
 import type { InstalledGhost } from '../../../../shared/ghost';
 import { __resetInstalledGhostsStoreForTest } from '@/cindy-brain/useInstalledGhosts';
+import { __resetGlobalTabsForTest } from '@/features/right-sidebar/globalTabs';
 import {
   cancelPendingPluginSuggestion,
   getPendingPluginSuggestion,
@@ -1252,6 +1253,56 @@ describe('plugin page return navigation', () => {
 
     await waitFor(() => expect(remove).toHaveBeenCalledWith(runtimeId));
     expect(remove).not.toHaveBeenCalledWith('_root__' + runtimeId);
+  });
+
+  /*
+   * 测试价值
+   * - 生产入口与可观察结果:详情页「使用面板」主 CTA 在 docked 呈现下把面板放进右侧栏后,
+   *   页面必须 toast「已在右侧栏打开」。面板不在详情页视线内,静默等于用户以为按钮坏了。
+   * - Bug／规则依据:产品方案 A(2026-11-18)——面板型插件用主 CTA 打开,点击后要有明确
+   *   反馈;launcher 的 docked 失败也不能再被 `.catch(() => undefined)` 吞成成功。
+   * - 现有覆盖缺口:页面级没有任何面板打开反馈的断言;launcher 单测只覆盖结果形状,
+   *   这里覆盖 GhostPluginPage 的接线(返回值 → toast 文案)。
+   * - 最小失败输入:已装插件的 `panel.position:'left'`(docked)+ 点击详情主 CTA。
+   * - tier:integration(真实页面 + launcher + 右侧栏全局页签 store,jsdom)。
+   */
+  it('toasts the sidebar destination after the detail primary CTA docks a panel', async () => {
+    const instanceId = '_root__docked-panel';
+    const installed: InstalledGhost = {
+      manifest: {
+        ...detail.manifest,
+        id: 'docked-panel',
+        name: 'Docked Panel Plugin',
+        panel: { html: 'panel.html', position: 'left' },
+      },
+      dir: '/tmp/brain/_ns/_root/docked-panel',
+      instanceKey: instanceId,
+      namespace: null,
+      namespaceState: 'confirmed',
+      publishingSource: { kind: 'local', source: 'manual' },
+      enabled: true,
+      approval: { state: 'approved', revision: 'revision' },
+    };
+    window.electronAPI.ghosts.listSync = () => ({ ghosts: [installed] });
+    window.electronAPI.pluginMarket.snapshot = async () => ({
+      items: [], unavailableReason: null, customSourceNames: [], unavailableCustomSourceNames: [],
+    });
+    const successToast = vi.spyOn(toast, 'success').mockReturnValue('panel-opened');
+
+    render(page('/plugins?ghost=' + encodeURIComponent(instanceId)));
+    await screen.findByRole('heading', { level: 1, name: 'Docked Panel Plugin' });
+    fireEvent.click(screen.getByRole('button', { name: 'settings.ghosts.detail.usePanelAction' }));
+
+    await waitFor(() => expect(successToast).toHaveBeenCalledWith(
+      'settings.ghosts.toast.panelOpenedInSidebar',
+    ));
+
+    // 右侧栏页签是模块级 store + localStorage:本用例自己收尾,后面的用例不该看到
+    // 一个为这个 fixture 建出来的停靠页签。
+    for (const key of Object.keys(window.localStorage)) {
+      if (key.startsWith('xdt:rightSidebarGlobalTabs:v1:')) window.localStorage.removeItem(key);
+    }
+    __resetGlobalTabsForTest();
   });
 
   it.each([

@@ -628,7 +628,7 @@ function LocalGhostPluginPage({
   const [openPanelId, setOpenPanelId] = useState<string | null>(null);
   // 面板宿主:Meka 的面板收束入口(page 内页签面板与详情页共用)。
   // [MEKA] 统一 resolver:tab → 插件页 `GhostPagePanelHost`;docked → 上游右侧栏全局页签;
-  // modal → Meka Modal。所有入口(卡片主动作 / 详情「打开界面」/ `?panel=` 深链 /
+  // modal → Meka Modal。所有入口(卡片主动作 / 详情主 CTA「使用面板」/ `?panel=` 深链 /
   // 安装流程)都调这一个 `openPanel`。
   const { openPanel, resetPanelModal, modalHost } = useGhostPanelLauncher({
     ghosts,
@@ -1724,6 +1724,27 @@ function LocalGhostPluginPage({
     }
   }, [handlePrimaryAction, selectedDetail, selectedGhost]);
 
+  /**
+   * 详情页「使用面板」主 CTA:launcher 决定 tab / docked / modal,这里只负责把结果
+   * 如实告诉用户——docked 落到右侧栏时用户看不到它「已经开了」,必须给一句反馈;
+   * Modal 与页内页签就地可见,不再 toast 打扰。失败(页签上限、右侧栏抛错、
+   * 宿主缺失)必须报错,不能像以前那样静默吞掉。
+   */
+  const handleDetailOpenPanel = useCallback(
+    async (trigger: HTMLButtonElement) => {
+      if (!selectedDetail) return;
+      const result = await openPanel(selectedDetail.id, trigger);
+      if (result === 'docked') {
+        toast.success(t('settings.ghosts.toast.panelOpenedInSidebar'));
+        return;
+      }
+      if (result === 'unavailable') {
+        toast.error(t('settings.ghosts.toast.panelOpenFailed'));
+      }
+    },
+    [openPanel, selectedDetail, t],
+  );
+
   // 导出当前插件的 .cindy 包:main 侧打包安装目录 → 系统保存对话框落盘。
   // 取消选择静默返回;成功/失败都如实 toast。
   const handleExport = useCallback(async () => {
@@ -2318,9 +2339,7 @@ function LocalGhostPluginPage({
               }}
               onUse={handleUse}
               onOpenPanel={
-                selectedGhost?.manifest.panel
-                  ? (trigger) => void openPanel(selectedDetail.id, trigger)
-                  : undefined
+                selectedGhost?.manifest.panel ? handleDetailOpenPanel : undefined
               }
               mainViewSidebarVisible={selectedMainViewSidebarVisible}
               onMainViewSidebarVisibleChange={handleMainViewSidebarVisibleChange}
@@ -2576,10 +2595,12 @@ function LocalGhostPluginPage({
                             : undefined
                         }
                         displayId={catalogItem.item.sourcePluginId}
-                        sourceLabel={
+                        // 来源只标「开发模式」这一条上游没有的事实;安装来源仍由元信息行的
+                        // `installationLabelKey` 给出,同一串来源不在两张行里各写一次。
+                        sourceTag={
                           catalogItem.item.development
                             ? t('settings.ghosts.meka.dev.badge')
-                            : t(`settings.ghosts.meka.origin.${catalogItem.item.origin}`)
+                            : undefined
                         }
                         updateVersion={catalogItem.item.marketUpdate?.version}
                         updateBusy={marketBusyId !== null}
@@ -2866,13 +2887,14 @@ function LocalGhostPluginPage({
                 <>
                   <PluginVirtualGrid count={primaryInstalledItems.length} scrollRef={pluginCatalogListRef} cache={installedGridCache} active={!!query.trim() || catalogTab === 'installed'} renderItem={index => {
                     const item = primaryInstalledItems[index]!;
-                    // 来源不再单独传:上游卡片的来源由标题行 publisher badge 与元信息行的
-                    // `installationLabel`(本地开发版 / 公开市场 / 企业:…)如实给出,这里再
-                    // 传一次只会在标题行并排出现两个同样的「本地」小标签。
+                    // 上游语义:来源文案只进元信息行(`installationLabel` 的权威是
+                    // `installationLabelKey`,没有时回退到这里给的 `sourceLabel`)。
+                    // 标题行小徽标只留给 Meka 开发副本的 `sourceTag`,两者不混用。
                     return (
                       <GhostPluginCard
                         key={item.id}
                         item={item}
+                        sourceLabel={item.origin ? t(`settings.ghosts.page.origin.${item.origin}`) : undefined}
                         marketItem={item.marketItem}
                         author={item.author}
                         updateVersion={item.marketUpdate?.version}
@@ -3201,7 +3223,8 @@ export function MarketPluginCard({
  * - 更新 = 文字胶囊「更新到 vX」,无任何小圆点(绿点专职未读语义,PR-B 接入)。
  *
  * Meka 开发副本的额外事实只**加元素**,不改骨架(2026-11-18 用户要求对齐上游卡片):
- * - 来源标记(「本地」「个人与共享」「开发模式」)= 标题行的小标签,紧挨 publisher badge;
+ * - 来源徽标(仅开发副本的「开发模式」)= 标题行的小标签,紧挨 publisher badge;
+ *   安装来源本身仍按上游语义留在元信息行(`installationLabelKey` → 调用方的 `sourceLabel`);
  * - 「开发模式 · 同步失败」「源码 vX,运行中 vY,尚未同步」= 元信息行内的行内小字;
  * - 同步失败原因 = 元信息行内单行截断(全文在 `title`);
  * - 「打包」= 右上图标行里与「管理」同排的小图标按钮,不单独占一行。
@@ -3212,6 +3235,7 @@ export function GhostPluginCard({
   displayId = item.id,
   readOnly = false,
   sourceLabel,
+  sourceTag,
   showLocalUnread = true,
   marketItem,
   author,
@@ -3238,11 +3262,16 @@ export function GhostPluginCard({
   displayId?: string;
   readOnly?: boolean;
   /**
-   * 标题行的小来源标签(「本地」「个人与共享」「开发模式」)。
-   * 只接受调用方明确要标注的来源;安装来源本身仍走 `installationLabelKey` 的元信息行文案,
-   * 这样同一条来源信息不会在标题行与元信息行各出现一次。
+   * 安装来源文案(上游语义):元信息行里「这个副本是从哪装的」。
+   * `item.installationLabelKey` 存在时以它为权威标签,否则回退到这串调用方给的来源
+   * (上游「插件」页的市场来源、远程页的 namespace 都走这条回退)。
    */
   sourceLabel?: string;
+  /**
+   * [MEKA] 标题行的小来源徽标。只给 Meka 开发副本的「开发模式」用。
+   * 与 `sourceLabel` 分开:同一条来源信息不会在标题行与元信息行各出现一次。
+   */
+  sourceTag?: string;
   showLocalUnread?: boolean;
   marketItem?: PluginMarketItem | null;
   author?: string | null;
@@ -3276,11 +3305,12 @@ export function GhostPluginCard({
 }) {
   const { t } = useTranslation();
   const metadataId = useId();
-  // 安装来源只在有真实安装标签键时进元信息行;`sourceLabel` 是调用方给的来源小标签,
-  // 只放标题行(2026-11-18 对齐上游:同一条来源信息不在卡片里出现两次)。
+  // 安装来源:权威是 `installationLabelKey`(按 namespace 状态派生);没有它时回退到
+  // 调用方给的 `sourceLabel`。`cc4fb0a481` 曾删掉这条回退,结果上游「插件」页的已装卡
+  // 与远程页的 namespace 文案整条消失(两者都没有 installationLabelKey 可用)。
   const installationLabel = item.installationLabelKey
     ? t(`settings.ghosts.detail.${item.installationLabelKey}`, { name: item.installationNamespace })
-    : undefined;
+    : sourceLabel;
   const origin = marketItem ? pluginPresentationOrigin(marketItem) : item.origin;
   const publisherKind = marketItem?.sourceType === 'server' && marketItem.scope === 'public'
     ? marketItem.publisherKind : item.publisherKind;
@@ -3375,11 +3405,11 @@ export function GhostPluginCard({
           <span className="truncate text-15 font-medium text-[var(--text-primary)]" title={item.name}>
             {item.name}
           </span>
-          {/* 来源标记(「本地」「个人与共享」「开发模式」)与 publisher badge 同排:
+          {/* 来源徽标(只有 Meka 开发副本的「开发模式」)与 publisher badge 同排:
               上游卡片没有这条信息,它只占标题行(18px 小标签),不给卡片多加一行。 */}
-          {sourceLabel ? (
+          {sourceTag ? (
             <span className="inline-flex h-[18px] shrink-0 items-center rounded-full bg-[var(--surface-chip)] px-1.5 text-10 leading-none text-[var(--text-secondary)]">
-              {sourceLabel}
+              {sourceTag}
             </span>
           ) : null}
           <PluginPublisherBadge origin={origin} kind={publisherKind} />

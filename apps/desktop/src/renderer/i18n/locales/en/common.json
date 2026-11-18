@@ -8130,6 +8130,8 @@
         "groupSeparator": ", "
       },
       "toast": {
+        "panelOpenedInSidebar": "Opened in the right sidebar",
+        "panelOpenFailed": "Couldn’t open the panel — try again",
         "installed": "Installed “{{name}}”",
         "uninstalled": "Uninstalled “{{name}}”",
         "updated": "“{{name}}” updated to v{{version}}",
@@ -8588,7 +8590,7 @@
         "descriptionExpand": "Show more",
         "descriptionCollapse": "Show less",
         "readmeTitle": "About",
-        "useAction": "Use Plugin",
+        "usePanelAction": "Use Panel",
         "chatAction": "Chat",
         "enabledLabel": "Enabled",
         "disabledLabel": "Disabled",
@@ -8634,8 +8636,6 @@
         "permissionsDialogDescription": "All {{count}} permissions requested by this Plugin",
         "closeDialog": "Close Dialog",
         "resetPlacement": "Reset to default position",
-        "openPanelAction": "Open Interface",
-        "openPanelDisabled": "Enable this Plugin before opening its interface",
         "closePanel": "Close Plugin Interface",
         "panelPresentation": {
           "title": "Opening Method",

@@ -8084,6 +8084,8 @@
         "groupSeparator": "、"
       },
       "toast": {
+        "panelOpenedInSidebar": "已於右側欄啟之",
+        "panelOpenFailed": "啟面板未成，請再試",
         "reapproved": "已復「{{name}}」",
         "installed": "「{{name}}」已收入囊中",
         "uninstalled": "已卸除「{{name}}」",
@@ -8526,7 +8528,7 @@
         "descriptionExpand": "展",
         "descriptionCollapse": "收",
         "readmeTitle": "介紹",
-        "useAction": "用",
+        "usePanelAction": "用面板",
         "chatAction": "言談",
         "enabledLabel": "已啟",
         "disabledLabel": "已停",
@@ -8574,8 +8576,6 @@
         "resetPlacement": "復預設位置",
         "infoMinClientVersion": "最低客戶端版本",
         "minClientVersionTooOld": "需要更新的客戶端：此版本需要 {{appName}} {{version}} 或以上版本。",
-        "openPanelAction": "開啟介面",
-        "openPanelDisabled": "請先開啟法器",
         "closePanel": "關閉法器介面",
         "panelPresentation": {
           "title": "開啟方式",

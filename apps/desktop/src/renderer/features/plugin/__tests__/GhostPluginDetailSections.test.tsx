@@ -887,6 +887,57 @@ describe('Ghost plugin detail sections', () => {
     expect(onUse).toHaveBeenCalledTimes(1);
   });
 
+  /*
+   * 测试价值
+   * - 生产入口与可观察结果:面板型插件的主 CTA 必须叫「使用面板」并走 `onOpenPanel(trigger)`;
+   *   独立的「打开界面」按钮(product-decided A 2026-11-18)已删除,`onUse`(交接对话)
+   *   不再吃这一次点击。tab 形态与「没有命令、只有停靠/Modal 面板」两条路径都要覆盖:
+   *   后者在上游是 primaryAction='manage',没有主 CTA,面板就彻底没有入口。
+   * - 现有覆盖缺口:原有用例只覆盖指令型(chatAction)主 CTA,没有面板路径。
+   * - 最小失败输入:`tabPanel:true`(或 canUse:false 的停靠面板)+ onOpenPanel。
+   * - tier:unit(jsdom 组件渲染)。
+   */
+  it.each([
+    { kind: 'tab panel', detail: { canUse: false, tabPanel: true } },
+    { kind: 'docked panel without a command', detail: { canUse: false, tabPanel: false } },
+  ])('opens a $kind from the primary CTA without a separate open-interface button', ({ detail: panelDetail }) => {
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    const onUse = vi.fn();
+    const onOpenPanel = vi.fn();
+    render(
+      <GhostPluginDetailView
+        ghost={null}
+        detail={{ ...detail, ...panelDetail }}
+        panelStatus={null}
+        onBack={vi.fn()}
+        onToggle={vi.fn()}
+        onUse={onUse}
+        onOpenPanel={onOpenPanel}
+        onUpdate={vi.fn()}
+        onUpdateFromFile={vi.fn()}
+        onUninstall={vi.fn()}
+        toggleDisabled={false}
+      />,
+    );
+
+    // 「打开界面」按钮已删除;面板只从主 CTA 打开。
+    expect(screen.queryByRole('button', { name: 'settings.ghosts.detail.openPanelAction' })).toBeNull();
+    const primary = screen.getByRole('button', { name: 'settings.ghosts.detail.usePanelAction' });
+    expect((primary as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(primary);
+    expect(onOpenPanel).toHaveBeenCalledTimes(1);
+    // 焦点还原需要真实触发元素:launcher 的 Modal 分支用它把焦点还回按钮。
+    expect(onOpenPanel.mock.calls[0]?.[0]).toBeInstanceOf(HTMLButtonElement);
+    expect(onUse).not.toHaveBeenCalled();
+  });
+
   it('shows a non-blocking stale OAuth scope badge inside the configuration section', () => {
     vi.stubGlobal(
       'ResizeObserver',

@@ -282,7 +282,7 @@ describe('GhostPluginCard', () => {
       <GhostPluginCard
         item={{ ...commandPlugin, id: 'meka-dev-demo-plugin' }}
         development
-        sourceLabel="settings.ghosts.meka.dev.badge"
+        sourceTag="settings.ghosts.meka.dev.badge"
         onPrimary={vi.fn()}
         onManage={onManage}
         onDevelopmentPackage={onPackage}
@@ -290,10 +290,10 @@ describe('GhostPluginCard', () => {
     );
 
     expect(container.querySelector('[data-testid="plugin-dev-ribbon"]')).toBeTruthy();
-    // 来源小标签并入标题行(紧挨插件名的小标签),不再占用元信息行。
-    const sourceTag = screen.getByText('settings.ghosts.meka.dev.badge');
-    expect(sourceTag.parentElement).toBe(screen.getByText('Filo Google').parentElement);
-    expect(metadataRow(container)?.contains(sourceTag)).toBe(false);
+    // 来源徽标并入标题行(紧挨插件名的小标签),不再占用元信息行。
+    const devBadge = screen.getByText('settings.ghosts.meka.dev.badge');
+    expect(devBadge.parentElement).toBe(screen.getByText('Filo Google').parentElement);
+    expect(metadataRow(container)?.contains(devBadge)).toBe(false);
     const packageButton = screen.getByRole('button', {
       name: 'settings.ghosts.meka.dev.packageAction',
     });
@@ -304,6 +304,34 @@ describe('GhostPluginCard', () => {
     fireEvent.click(packageButton);
     expect(onPackage).toHaveBeenCalledTimes(1);
     expect(onManage).not.toHaveBeenCalled();
+  });
+
+  /*
+   * 测试价值
+   * - 生产入口与可观察结果:上游「插件」页与远程插件页的已装卡都没有
+   *   `installationLabelKey`(它只在 namespaceState==='confirmed' 时派生),来源文案
+   *   必须回退到调用方给的 `sourceLabel`,并落在元信息行(aria-describedby 指向的那一行)。
+   * - Bug／规则依据:`cc4fb0a481` 删掉这条回退后,上游已装卡的来源整条消失
+   *   (RemotePluginPage 的 namespace 文本还被挪进标题行)。回退是上游语义,恢复它,
+   *   同时新增的 `sourceTag` 只给开发副本的标题行徽标,两者不互相污染。
+   * - 现有覆盖缺口:只覆盖过开发徽标(sourceTag),没有覆盖这条回退。
+   * - 最小失败输入:`{ ...commandPlugin }` + `sourceLabel`,不带 installationLabelKey。
+   * - tier:unit(jsdom 组件渲染)。
+   */
+  it('falls back to the caller source label in the metadata row when the install has no label key', () => {
+    const { container } = render(
+      <GhostPluginCard
+        item={{ ...commandPlugin, id: 'local-installed' }}
+        sourceLabel="settings.ghosts.page.origin.local"
+        onPrimary={vi.fn()}
+        onManage={vi.fn()}
+      />,
+    );
+
+    const source = screen.getByText('settings.ghosts.page.origin.local');
+    expect(metadataRow(container)?.contains(source)).toBe(true);
+    // 同一串来源只出现一次:标题行没有并排的小徽标。
+    expect(screen.getAllByText('settings.ghosts.page.origin.local')).toHaveLength(1);
   });
 
   /*

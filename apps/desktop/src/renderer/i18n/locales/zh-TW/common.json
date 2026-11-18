@@ -8087,6 +8087,8 @@
         "groupSeparator": "、"
       },
       "toast": {
+        "panelOpenedInSidebar": "已在右側欄開啟",
+        "panelOpenFailed": "無法開啟面板，請稍後再試",
         "reapproved": "已恢復「{{name}}」",
         "installed": "已安裝「{{name}}」",
         "uninstalled": "已解除安裝「{{name}}」",
@@ -8545,7 +8547,7 @@
         "descriptionExpand": "展開",
         "descriptionCollapse": "收起",
         "readmeTitle": "介紹",
-        "useAction": "使用",
+        "usePanelAction": "使用面板",
         "chatAction": "對話",
         "enabledLabel": "已啟用",
         "disabledLabel": "已停用",
@@ -8591,8 +8593,6 @@
         "permissionsDialogDescription": "該插件申請的全部 {{count}} 項權限",
         "closeDialog": "關閉彈窗",
         "resetPlacement": "恢復預設位置",
-        "openPanelAction": "開啟介面",
-        "openPanelDisabled": "請先開啟插件",
         "closePanel": "關閉插件介面",
         "panelPresentation": {
           "title": "開啟方式",

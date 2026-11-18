@@ -1080,7 +1080,7 @@ Host 接线锚点由 `mcp-providers.ts:418` 漂移到 `:47`（导入）+ `:513`�
   （源码级守卫：`mekaService()` 构造点必须显式传版本，防「退回无参构造」的静默回归）
 - `pnpm --filter desktop exec vitest run src/shared/__tests__/ghost.test.ts src/main/cindy-brain/__tests__/forge.test.ts`
 
-**实机验证**：Meka 插件页登记一个真实源码目录 → 卡片出现且带 `DEV` 角标 → 打开界面/使用
+**实机验证**：Meka 插件页登记一个真实源码目录 → 卡片出现且带 `DEV` 角标 → 使用面板/使用
 可用 → 自动同步（改源码）生效 → 「打包」产出作者身份的 `.cindy` → 移除后正式插件不受影响。
 另需确认：关掉应用后把源码 `ghost.json` 版本改高、重开页面 → 卡片出现「源码 X，运行中 Y，
 尚未同步」，**卡片上没有任何同步按钮**；重开应用（或改源码触发 watcher）后自动同步，提示

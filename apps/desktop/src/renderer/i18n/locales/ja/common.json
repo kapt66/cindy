@@ -8087,6 +8087,8 @@
         "groupSeparator": "、"
       },
       "toast": {
+        "panelOpenedInSidebar": "右サイドバーで開きました",
+        "panelOpenFailed": "パネルを開けませんでした。もう一度お試しください",
         "installed": "「{{name}}」をインストールしました",
         "uninstalled": "「{{name}}」をアンインストールしました",
         "updated": "「{{name}}」を v{{version}} に更新しました",
@@ -8545,7 +8547,7 @@
         "descriptionExpand": "もっと見る",
         "descriptionCollapse": "折りたたむ",
         "readmeTitle": "紹介",
-        "useAction": "プラグインを使用",
+        "usePanelAction": "パネルを使う",
         "chatAction": "会話",
         "enabledLabel": "有効",
         "disabledLabel": "無効",
@@ -8591,8 +8593,6 @@
         "permissionsDialogDescription": "このプラグインが要求する全 {{count}} 項目の権限",
         "closeDialog": "ダイアログを閉じる",
         "resetPlacement": "既定の位置に戻す",
-        "openPanelAction": "画面を開く",
-        "openPanelDisabled": "先にプラグインを有効にしてください",
         "closePanel": "プラグイン画面を閉じる",
         "panelPresentation": {
           "title": "開き方",

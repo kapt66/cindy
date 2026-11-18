@@ -8087,6 +8087,8 @@
         "groupSeparator": ", "
       },
       "toast": {
+        "panelOpenedInSidebar": "오른쪽 사이드바에서 열었습니다",
+        "panelOpenFailed": "패널을 열지 못했습니다. 다시 시도하세요",
         "installed": "\"{{name}}\" 설치됨",
         "uninstalled": "\"{{name}}\" 제거됨",
         "updated": "\"{{name}}\"이(가) v{{version}}(으)로 업데이트되었습니다",
@@ -8545,7 +8547,7 @@
         "descriptionExpand": "더 보기",
         "descriptionCollapse": "접기",
         "readmeTitle": "소개",
-        "useAction": "플러그인 사용",
+        "usePanelAction": "패널 사용",
         "chatAction": "대화",
         "enabledLabel": "사용 중",
         "disabledLabel": "사용 안 함",
@@ -8591,8 +8593,6 @@
         "permissionsDialogDescription": "이 플러그인이 요청하는 전체 {{count}}개 권한",
         "closeDialog": "대화 상자 닫기",
         "resetPlacement": "기본 위치로 복원",
-        "openPanelAction": "화면 열기",
-        "openPanelDisabled": "먼저 플러그인을 활성화하세요",
         "closePanel": "플러그인 화면 닫기",
         "panelPresentation": {
           "title": "열기 방식",
