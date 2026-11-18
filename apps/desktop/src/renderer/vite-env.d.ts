@@ -1867,6 +1867,9 @@ interface ElectronAPI {
     upload: (
       request: import('../shared/mekaDevPlugin').MekaDevPluginUploadRequest,
     ) => Promise<import('../shared/mekaDevPlugin').MekaDevPluginUploadResult>;
+    resync: (id: string) => Promise<{
+      items: import('../shared/mekaDevPlugin').MekaDevPluginItem[];
+    }>;
     remove: (id: string) => Promise<{ ok: true }>;
     onChanged: (
       callback: (payload: { items: import('../shared/mekaDevPlugin').MekaDevPluginItem[] }) => void,

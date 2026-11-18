@@ -11,6 +11,16 @@ export interface MekaDevPluginItem {
   status: MekaDevPluginStatus;
   error?: string;
   updatedAt?: number;
+  /**
+   * 源码 `ghost.json` 声明的版本,即下一次打包/同步会产出的版本。
+   * 读不到源码清单时省略——不要用已装版本冒充。
+   */
+  sourceVersion?: string;
+  /**
+   * 已装开发副本 manifest 的版本,即当前运行中的版本。
+   * 与 `sourceVersion` 同时存在且不同 = 源码改过但还没同步。
+   */
+  installedVersion?: string;
 }
 
 export interface MekaDevPluginInspection {

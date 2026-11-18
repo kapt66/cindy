@@ -288,6 +288,63 @@ describe('GhostPluginCard', () => {
     expect(onManage).not.toHaveBeenCalled();
   });
 
+  /*
+   * 测试价值
+   * - 生产入口与可观察结果:`GhostPluginCard` 在开发副本的源码版本与运行版本不一致时
+   *   显示「尚未同步」提示与一键同步按钮;一致或事实缺失时不显示。
+   * - Bug／规则依据:2026-11-18 用户报告——源码改到 0.11.1 而运行副本仍是 0.9.1,
+   *   卡片没有任何提示,用户只看到旧版本号。
+   * - 现有覆盖缺口:既有卡片用例只覆盖打包动作冒泡,没有版本漂移事实。
+   * - 最小失败输入:sourceVersion=1.1.0 / installedVersion=1.0.0 的卡片。
+   * - tier:unit(jsdom 组件渲染)。
+   */
+  it('surfaces an unsynced source version with its own sync action', () => {
+    const onResync = vi.fn();
+    const onManage = vi.fn();
+    const { container } = render(
+      <GhostPluginCard
+        item={{ ...commandPlugin, id: 'meka-dev-demo-plugin' }}
+        development
+        mekaDevSourceVersion="1.1.0"
+        mekaDevInstalledVersion="1.0.0"
+        onMekaDevResync={onResync}
+        onPrimary={vi.fn()}
+        onManage={onManage}
+      />,
+    );
+
+    expect(container.querySelector('[data-testid="meka-dev-version-drift"]')).toBeTruthy();
+    expect(screen.getByText('settings.ghosts.meka.dev.sourceOutOfSync')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'settings.ghosts.meka.dev.syncNow' }));
+    expect(onResync).toHaveBeenCalledTimes(1);
+    expect(onManage).not.toHaveBeenCalled();
+  });
+
+  it('stays quiet when the source and running versions agree or are unknown', () => {
+    const { container, rerender } = render(
+      <GhostPluginCard
+        item={{ ...commandPlugin, id: 'meka-dev-demo-plugin' }}
+        development
+        mekaDevSourceVersion="1.0.0"
+        mekaDevInstalledVersion="1.0.0"
+        onPrimary={vi.fn()}
+        onManage={vi.fn()}
+      />,
+    );
+    expect(container.querySelector('[data-testid="meka-dev-version-drift"]')).toBeNull();
+
+    rerender(
+      <GhostPluginCard
+        item={{ ...commandPlugin, id: 'meka-dev-demo-plugin' }}
+        development
+        mekaDevSourceVersion="1.1.0"
+        onPrimary={vi.fn()}
+        onManage={vi.fn()}
+      />,
+    );
+    expect(container.querySelector('[data-testid="meka-dev-version-drift"]')).toBeNull();
+  });
+
   it('projects Meka update progress into the card action', () => {
     render(
       <GhostPluginCard

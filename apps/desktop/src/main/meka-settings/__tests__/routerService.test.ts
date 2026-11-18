@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createMekaRouterService, type MekaSecretVault } from '../routerService';
 import type { MekaRouterClient } from '../routerClient';
+import { MekaRouterRequestError, MekaRouterResponseInvalidError } from '../routerClient';
 import { DEFAULT_MEKA_MCPROUTER_URL } from '../config';
 
 function setup(initial: Record<string, unknown> = {}) {
@@ -755,6 +756,87 @@ describe('MekaRouterService', () => {
       'public',
       [],
     );
+  });
+
+  /**
+   * 测试价值
+   * - 生产入口与可观察结果:`MekaRouterService.getMekaPluginUploadInfo()` 把读取链上的
+   *   失败映射成可区分的 code(未配置 / session 过期 / 不支持接口 / 网络不可达 / 回包非法),
+   *   补充信息只有 HTTP 状态码与端点路径。
+   * - Bug／规则依据:2026-11-18 用户报告——打包弹窗除 PERMISSION_DENIED 外所有原因都渲染
+   *   同一句泛化文案,用户无法判断该重新连接、升级 MCPRouter 还是检查网络。
+   * - 现有覆盖缺口:既有用例只覆盖成功预览与发布,没有任何失败映射断言。
+   * - 最小失败输入:`listOwnedMekaPlugins` 分别抛 401／404／网络错误／非法回包,以及本地
+   *   没有任何 MCPRouter 秘密。
+   * - tier:unit(注入 client fake,无网络)。
+   */
+  it('maps each MCPRouter read failure to a distinct reason without leaking credentials', async () => {
+    const cases = [
+      {
+        name: 'missing binding',
+        secrets: [] as string[],
+        failure: null,
+        code: 'MEKA_ROUTER_NOT_CONFIGURED',
+        detail: 'MCPRouter is not configured (/api/meka-plugins)',
+      },
+      {
+        name: 'expired session',
+        secrets: ['meka.router.sessionToken', 'meka.router.clientKey'],
+        failure: new MekaRouterRequestError(
+          'MCPRouter list owned Meka Plugins failed (401): session=secret-cookie-value',
+          401,
+        ),
+        code: 'MEKA_ROUTER_SESSION_EXPIRED',
+        detail: 'MCPRouter session expired or has no permission (HTTP 401) at /api/meka-plugins',
+      },
+      {
+        name: 'unsupported endpoint',
+        secrets: ['meka.router.sessionToken', 'meka.router.clientKey'],
+        failure: new MekaRouterRequestError(
+          'MCPRouter list owned Meka Plugins failed (404): Not Found',
+          404,
+        ),
+        code: 'MEKA_ROUTER_ENDPOINT_UNSUPPORTED',
+        detail: 'MCPRouter does not support /api/meka-plugins (HTTP 404)',
+      },
+      {
+        name: 'unreachable',
+        secrets: ['meka.router.sessionToken', 'meka.router.clientKey'],
+        failure: new TypeError('fetch failed'),
+        code: 'MEKA_ROUTER_UNREACHABLE',
+        detail: 'MCPRouter is unreachable at /api/meka-plugins',
+      },
+      {
+        name: 'invalid response',
+        secrets: ['meka.router.sessionToken', 'meka.router.clientKey'],
+        failure: new MekaRouterResponseInvalidError('MCPRouter owned Plugin response is invalid'),
+        code: 'MEKA_ROUTER_RESPONSE_INVALID',
+        detail: 'MCPRouter returned an invalid response from /api/meka-plugins',
+      },
+    ];
+    for (const testCase of cases) {
+      const fixture = setup({ routerUrl: 'https://router.example' });
+      for (const secret of testCase.secrets) fixture.secrets.set(secret, 'secret-value');
+      if (testCase.failure) {
+        vi.mocked(fixture.client.listOwnedMekaPlugins).mockRejectedValue(testCase.failure);
+      }
+      const error = await fixture.service
+        .getMekaPluginUploadInfo('demo-plugin', '1.0.0')
+        .then(
+          () => {
+            throw new Error(`${testCase.name}: expected the read to fail`);
+          },
+          (reason: unknown) => reason as Error & { code: string },
+        );
+      expect({ name: testCase.name, code: error.code, message: error.message }).toEqual({
+        name: testCase.name,
+        code: testCase.code,
+        message: testCase.detail,
+      });
+      // 原始报文里的 session cookie / 响应体不得透传成用户可见的补充信息。
+      expect(error.message).not.toContain('secret');
+      expect(error.message).not.toContain('cookie');
+    }
   });
 
   it('publishes an immutable Meka Skill release and synchronizes exact-user access', async () => {

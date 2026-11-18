@@ -3,6 +3,9 @@
  *
  * The renderer never receives package bytes or Router credentials. Both actions
  * are explicit IPC mutations against the registered source directory.
+ *
+ * 读取线上信息失败时必须按**原因**给出不同下一步(重新连接 / 升级 MCPRouter /
+ * 检查网络 / 重试),所以这里保存结构化的 `{ code, detail }`,而不是一个布尔。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -27,6 +30,54 @@ import type { MekaRouterSettingsView } from '../../../shared/meka-router';
 
 type ActiveAction = 'package' | 'upload' | 'access' | null;
 
+/**
+ * 读取 MCPRouter 发布信息的失败事实。
+ *
+ * `code` 来自 Main 的固定分类(`MEKA_ROUTER_*`),`detail` 是可公开的补充信息
+ * (HTTP 状态码与端点),不含凭证、查询串或响应体。
+ */
+interface MekaUploadInfoFailure {
+  code: string;
+  detail?: string;
+}
+
+/** 凭证类失败:可以原位重新连接 MCPRouter 后重试。 */
+function isMekaRouterCredentialFailure(code: string): boolean {
+  return (
+    code === 'MEKA_ROUTER_NOT_CONFIGURED' ||
+    code === 'MEKA_ROUTER_SESSION_EXPIRED' ||
+    // 旧版本 Main 把 401 映射成通用 PERMISSION_DENIED,保持同一引导。
+    code === 'PERMISSION_DENIED'
+  );
+}
+
+function uploadInfoFailureCopyKey(code: string): string {
+  switch (code) {
+    case 'MEKA_ROUTER_NOT_CONFIGURED':
+      return 'settings.ghosts.meka.dev.publishInfoFailures.notConfigured';
+    case 'MEKA_ROUTER_SESSION_EXPIRED':
+    case 'PERMISSION_DENIED':
+      return 'settings.ghosts.meka.dev.publishInfoFailures.sessionExpired';
+    case 'MEKA_ROUTER_ENDPOINT_UNSUPPORTED':
+      return 'settings.ghosts.meka.dev.publishInfoFailures.endpointUnsupported';
+    case 'MEKA_ROUTER_UNREACHABLE':
+      return 'settings.ghosts.meka.dev.publishInfoFailures.unreachable';
+    case 'MEKA_ROUTER_RESPONSE_INVALID':
+      return 'settings.ghosts.meka.dev.publishInfoFailures.responseInvalid';
+    default:
+      return 'settings.ghosts.meka.dev.publishInfoFailed';
+  }
+}
+
+function describeUploadInfoFailure(error: unknown): MekaUploadInfoFailure {
+  const ipcError = extractIpcError(error);
+  const detail = ipcError?.message.trim();
+  return {
+    code: ipcError?.code ?? 'INTERNAL',
+    ...(detail ? { detail } : {}),
+  };
+}
+
 export function MekaDevPluginPackageDialog({
   item,
   pluginName,
@@ -37,6 +88,7 @@ export function MekaDevPluginPackageDialog({
 }: {
   item: MekaDevPluginItem | null;
   pluginName: string;
+  /** 已装开发副本当前运行的版本;只用于版本对照的回退,不当作上传版本。 */
   pluginVersion: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -52,7 +104,7 @@ export function MekaDevPluginPackageDialog({
   const [routerLoginOpen, setRouterLoginOpen] = useState(false);
   const [uploadInfo, setUploadInfo] = useState<MekaDevPluginUploadInfo | null>(null);
   const [checkingUploadInfo, setCheckingUploadInfo] = useState(false);
-  const [uploadInfoFailed, setUploadInfoFailed] = useState(false);
+  const [uploadInfoFailure, setUploadInfoFailure] = useState<MekaUploadInfoFailure | null>(null);
   const [visibility, setVisibility] = useState<MekaPluginVisibility>('private');
   const [sharedUsernamesText, setSharedUsernamesText] = useState('');
   const [activeAction, setActiveAction] = useState<ActiveAction>(null);
@@ -62,23 +114,24 @@ export function MekaDevPluginPackageDialog({
     setUploadInfo(info);
     setVisibility(info.existing?.visibility ?? 'private');
     setSharedUsernamesText(info.existing?.sharedUsernames.join(', ') ?? '');
-    setUploadInfoFailed(false);
+    setUploadInfoFailure(null);
   }, []);
 
   const refreshUploadInfo = useCallback(async () => {
     if (!runtimeId) return;
     setCheckingUploadInfo(true);
-    setUploadInfoFailed(false);
+    setUploadInfoFailure(null);
     try {
       applyUploadInfo(await window.electronAPI.mekaDevPlugins.uploadInfo(runtimeId));
     } catch (error) {
       setUploadInfo(null);
-      if (extractIpcError(error)?.code === 'PERMISSION_DENIED') {
+      const failure = describeUploadInfoFailure(error);
+      setUploadInfoFailure(failure);
+      // 凭证类失败时上传不可能成功:按「未连接」呈现,原位给出重新连接入口,
+      // 本地打包不受影响(它不读线上信息)。
+      if (isMekaRouterCredentialFailure(failure.code)) {
         setRouterConfigured(false);
         setRouterLoginRequired(true);
-        setUploadInfoFailed(false);
-      } else {
-        setUploadInfoFailed(true);
       }
     } finally {
       setCheckingUploadInfo(false);
@@ -93,7 +146,7 @@ export function MekaDevPluginPackageDialog({
     setRouterLoginRequired(false);
     setRouterLoginOpen(false);
     setUploadInfo(null);
-    setUploadInfoFailed(false);
+    setUploadInfoFailure(null);
     setVisibility('private');
     setSharedUsernamesText('');
     setCheckingRouter(true);
@@ -135,6 +188,14 @@ export function MekaDevPluginPackageDialog({
     uploadInfo.existing.currentVersion === uploadInfo.version;
   const isUpdate = uploadInfo?.existing != null && !sameVersion;
   const accessInvalid = visibility === 'shared' && sharedUsernames.length === 0;
+  // 版本口径:展示**将要打包/上传的版本**(源码打包结果)。已装开发副本的版本只是
+  // 「当前运行版本」,两者不同时必须并排标出,避免把运行版本误读成上传版本。
+  const uploadVersion = uploadInfo?.version ?? item?.sourceVersion ?? null;
+  const runningVersion = item?.installedVersion ?? (pluginVersion || null);
+  const versionChanged =
+    uploadVersion !== null && runningVersion !== null && uploadVersion !== runningVersion;
+  const credentialFailure =
+    uploadInfoFailure !== null && isMekaRouterCredentialFailure(uploadInfoFailure.code);
 
   const close = () => {
     if (activeAction) return;
@@ -274,11 +335,19 @@ export function MekaDevPluginPackageDialog({
                 </div>
                 <div className="shrink-0 text-right">
                   <p className="text-11 text-[var(--text-tertiary)]">
-                    {t('settings.ghosts.meka.dev.versionLabel')}
+                    {t('settings.ghosts.meka.dev.uploadVersionLabel')}
                   </p>
                   <p className="font-mono text-12 font-medium text-[var(--text-primary)]">
-                    v{pluginVersion}
+                    {uploadVersion ? `v${uploadVersion}` : '—'}
                   </p>
+                  {versionChanged ? (
+                    <p className="mt-0.5 max-w-[160px] text-11 leading-4 text-[var(--text-tertiary)]">
+                      {t('settings.ghosts.meka.dev.versionChanged', {
+                        runningVersion,
+                        uploadVersion,
+                      })}
+                    </p>
+                  ) : null}
                 </div>
               </div>
             </div>
@@ -325,10 +394,37 @@ export function MekaDevPluginPackageDialog({
                 <p className="mt-2 text-11 text-[var(--text-tertiary)]">
                   {t('settings.ghosts.meka.dev.checkingPublishInfo')}
                 </p>
-              ) : uploadInfoFailed ? (
-                <p className="mt-2 text-11 text-[var(--error-fg)]">
-                  {t('settings.ghosts.meka.dev.publishInfoFailed')}
-                </p>
+              ) : uploadInfoFailure ? (
+                <div className="mt-2" data-testid="meka-dev-plugin-publish-info-failure">
+                  <p className="text-11 text-[var(--error-fg)]">
+                    {t(uploadInfoFailureCopyKey(uploadInfoFailure.code))}
+                  </p>
+                  {uploadInfoFailure.detail ? (
+                    <p className="mt-0.5 break-words font-mono text-11 leading-4 text-[var(--text-tertiary)]">
+                      {uploadInfoFailure.detail}
+                    </p>
+                  ) : null}
+                  <div className="mt-1.5 flex flex-wrap items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => void refreshUploadInfo()}
+                      disabled={checkingUploadInfo || activeAction !== null}
+                      className="text-11 font-medium text-[var(--accent-text)] transition-colors hover:text-[var(--accent-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:cursor-wait disabled:opacity-40"
+                    >
+                      {t('settings.ghosts.meka.dev.publishInfoRetry')}
+                    </button>
+                    {credentialFailure ? (
+                      <button
+                        type="button"
+                        onClick={handleConfigureRouter}
+                        disabled={activeAction !== null}
+                        className="text-11 font-medium text-[var(--accent-text)] transition-colors hover:text-[var(--accent-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:cursor-wait disabled:opacity-40"
+                      >
+                        {t('settings.ghosts.meka.dev.configureRouter')}
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
               ) : uploadInfo?.existing ? (
                 <p className="mt-2 text-11 text-[var(--text-tertiary)]">
                   {t(
@@ -384,7 +480,7 @@ export function MekaDevPluginPackageDialog({
                   checkingUploadInfo ||
                   !routerConfigured ||
                   !uploadInfo ||
-                  uploadInfoFailed ||
+                  uploadInfoFailure !== null ||
                   accessInvalid ||
                   activeAction !== null
                 }
@@ -410,7 +506,9 @@ export function MekaDevPluginPackageDialog({
                 )}
               </button>
             </div>
-            {!checkingRouter && !routerConfigured ? (
+            {/* 凭证类失败的重新连接入口已就地渲染在失败原因下方,这里不重复;
+                从未配置过 MCPRouter 时才把配置入口放在弹窗底部。 */}
+            {!checkingRouter && !routerConfigured && !credentialFailure ? (
               <div className="mt-4 border-t border-[var(--border-default)] pt-4 text-center">
                 <button
                   type="button"

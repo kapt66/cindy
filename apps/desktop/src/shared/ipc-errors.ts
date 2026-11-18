@@ -71,6 +71,27 @@ export const COMPANION_IMPORT_ERROR_CODES = [
   'TARGET_HANDOVER_UNCERTAIN',
 ] as const;
 
+/**
+ * MCPRouter 读取链(如 `meka-dev-plugins:upload-info`)的可区分失败原因。
+ *
+ * 这些原因的下一步动作互不相同(重新连接／升级 MCPRouter／检查网络／稍后重试),
+ * 所以不能合并成一句泛化文案;集中定义在这里,Main 只抛码、Renderer 只按码选文案。
+ */
+export const MEKA_ROUTER_ERROR_CODES = [
+  /** 未配置,或本地保存的地址／session／client key 不完整。 */
+  'MEKA_ROUTER_NOT_CONFIGURED',
+  /** session 过期或该账号没有权限(HTTP 401／403)。 */
+  'MEKA_ROUTER_SESSION_EXPIRED',
+  /** 当前 MCPRouter 版本没有这个管理接口(HTTP 404／405)。 */
+  'MEKA_ROUTER_ENDPOINT_UNSUPPORTED',
+  /** 网络不可达、连接被拒绝或请求超时。 */
+  'MEKA_ROUTER_UNREACHABLE',
+  /** 接口有响应,但回包形状不是本客户端认识的结构。 */
+  'MEKA_ROUTER_RESPONSE_INVALID',
+] as const;
+
+export type MekaRouterErrorCode = (typeof MEKA_ROUTER_ERROR_CODES)[number];
+
 export type IpcErrorCode =
   | 'SUBSCRIPTION_LOGIN_CANCELLED'
   | 'SUBSCRIPTION_ACCOUNT_FAILED'
@@ -116,6 +137,7 @@ export type IpcErrorCode =
   | 'MAKER_MEMORY_NOT_READY'
   | 'SCHEDULER_NOT_READY'
   | 'PERMISSION_DENIED'
+  | MekaRouterErrorCode
   | 'UNSUPPORTED_CAPABILITY'
   | 'SSH_HARNESS_SWITCH_UNSUPPORTED'
   | 'MODEL_SELECTION_UNAVAILABLE'
@@ -406,6 +428,7 @@ const IPC_ERROR_CODES: ReadonlySet<IpcErrorCode> = new Set<IpcErrorCode>([
   'MAKER_MEMORY_NOT_READY',
   'SCHEDULER_NOT_READY',
   'PERMISSION_DENIED',
+  ...MEKA_ROUTER_ERROR_CODES,
   'UNSUPPORTED_CAPABILITY',
   'SSH_HARNESS_SWITCH_UNSUPPORTED',
   'MODEL_SELECTION_UNAVAILABLE',

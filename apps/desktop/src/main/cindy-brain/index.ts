@@ -9854,6 +9854,9 @@ export function registerGhostIpc(): void {
     updatePackage: updateDevelopmentPackage,
     uninstallPackage: uninstallGhostAndCleanup,
     isInstalled: (id) => manager.list().some((ghost) => ghost.manifest.id === id),
+    // 开发副本的「运行中版本」= 已装 manifest 的版本;读不到(未装入)时不编造。
+    readInstalledVersion: (id) =>
+      manager.list().find((ghost) => ghost.manifest.id === id)?.manifest.version ?? null,
     subscribe: (dir, ignore, onEvents, onError) =>
       watcherHostClient.subscribe(dir, ignore, onEvents, onError),
     onContentReloaded: broadcastGhostContentReloaded,
@@ -10108,6 +10111,26 @@ export function registerGhostIpc(): void {
         );
       }
       return uploadInfo;
+    } catch (error) {
+      throwMekaDevPluginError(error);
+    }
+  });
+  ipcMain.handle('meka-dev-plugins:resync', async (event, id: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    const runtimeId = requireString(id, 'id');
+    const expectedOwner = captureGhostMutationOwner();
+    try {
+      const items = await mekaDevPlugins.resync(runtimeId);
+      if (
+        isAppSessionBoundaryPending() ||
+        !isSameAppSession(expectedOwner, getActiveAppSession())
+      ) {
+        throwIpcError(
+          'PRECONDITION_FAILED',
+          'The active account changed while synchronizing the development Plugin.',
+        );
+      }
+      return { items };
     } catch (error) {
       throwMekaDevPluginError(error);
     }

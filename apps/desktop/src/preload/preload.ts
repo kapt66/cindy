@@ -1907,6 +1907,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       request: import('../shared/mekaDevPlugin').MekaDevPluginUploadRequest,
     ): Promise<import('../shared/mekaDevPlugin').MekaDevPluginUploadResult> =>
       ipcRenderer.invoke('meka-dev-plugins:upload', request),
+    resync: (
+      id: string,
+    ): Promise<{ items: import('../shared/mekaDevPlugin').MekaDevPluginItem[] }> =>
+      ipcRenderer.invoke('meka-dev-plugins:resync', id),
     remove: (id: string): Promise<{ ok: true }> =>
       ipcRenderer.invoke('meka-dev-plugins:remove', id),
     onChanged: fanOutMekaDevPluginsChanged,

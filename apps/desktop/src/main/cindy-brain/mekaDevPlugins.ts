@@ -51,6 +51,8 @@ interface LiveDevPlugin extends StoredDevPlugin {
   status: MekaDevPluginItem['status'];
   error?: string;
   updatedAt?: number;
+  sourceVersion?: string;
+  installedVersion?: string;
 }
 
 /** 32 字符 Ghost ID 内保留可读原 ID 与稳定摘要；正式插件 ID 永远不被占用。 */
@@ -142,6 +144,8 @@ export interface MekaDevPluginManagerDeps {
   ) => Promise<InstalledGhost>;
   uninstallPackage: (id: string) => Promise<void>;
   isInstalled: (id: string) => boolean;
+  /** 已装开发副本 manifest 的版本；未安装或读不到时返回 null（不编造）。 */
+  readInstalledVersion: (runtimeId: string) => string | null;
   subscribe: MekaDevPluginSubscribe;
   onContentReloaded: (id: string) => void;
   onChanged?: (items: MekaDevPluginItem[]) => void;
@@ -209,6 +213,9 @@ export class MekaDevPluginManager {
 
   async list(): Promise<MekaDevPluginItem[]> {
     await this.ensureNamespace();
+    // 版本漂移提示要的是「源码现在是什么」与「运行的是什么」两份事实;两者都读不到时
+    // 字段保持省略。读源码清单是每页一次的小读取,不是热路径轮询(见工程约定 §8)。
+    await this.resolveAllVersions();
     return this.snapshot();
   }
 
@@ -223,6 +230,28 @@ export class MekaDevPluginManager {
       syncs.push(this.enqueueSync(id));
     }
     await Promise.all(syncs);
+    await this.resolveAllVersions();
+    return this.snapshot();
+  }
+
+  /**
+   * 用户手动触发的单插件同步。
+   *
+   * watcher 只在应用运行期间观察源码变化:应用关闭时改过的源码不会自己同步,而
+   * `ghosts:reload` 只重启已装副本、不会重新打包源码。这里复用后台同步的同一条链
+   * (`enqueueSync`),不另造安装流程;同步失败仍按既有 fail-safe 标错误并保留旧快照。
+   */
+  async resync(runtimeId: string): Promise<MekaDevPluginItem[]> {
+    await this.ensureNamespace();
+    const record = this.records.get(mekaDevRegistryKey(runtimeId));
+    if (!record) {
+      throw new MekaDevPluginError('not-found', `开发插件 ${runtimeId} 未登记`);
+    }
+    const timer = this.debounceTimers.get(record.runtimeId);
+    if (timer) clearTimeout(timer);
+    this.debounceTimers.delete(record.runtimeId);
+    await this.enqueueSync(record.runtimeId);
+    await this.resolveVersions(record);
     return this.snapshot();
   }
 
@@ -305,6 +334,8 @@ export class MekaDevPluginManager {
         sourceDir: realSourceDir,
         status: 'watching',
         updatedAt: Date.now(),
+        sourceVersion: packed.manifest.version,
+        installedVersion: ghost.manifest.version,
         ...(existingRecord?.legacyRuntimeId
           ? { legacyRuntimeId: existingRecord.legacyRuntimeId }
           : {}),
@@ -622,6 +653,40 @@ export class MekaDevPluginManager {
     return crypto.createHash('sha256').update(JSON.stringify(fingerprint)).digest('hex');
   }
 
+  private async resolveAllVersions(): Promise<void> {
+    await Promise.all([...this.records.values()].map((record) => this.resolveVersions(record)));
+  }
+
+  /** 刷新一条开发副本的「源码版本 / 运行版本」事实;读不到就省略对应字段。 */
+  private async resolveVersions(record: LiveDevPlugin): Promise<void> {
+    const sourceVersion = await this.readSourceVersion(record.sourceDir);
+    const installedVersion = this.deps.readInstalledVersion(record.runtimeId);
+    if (sourceVersion) record.sourceVersion = sourceVersion;
+    else delete record.sourceVersion;
+    if (installedVersion) record.installedVersion = installedVersion;
+    else delete record.installedVersion;
+  }
+
+  /**
+   * 直接读源码 `ghost.json` 的 `version`。
+   *
+   * 只服务界面上的版本事实展示,不参与装入、打包或 manifest 校验判定;源码可能是作者
+   * 格式(v2 `slots`),这里只取一个字符串字段。任何读取或解析失败都返回 null,
+   * 由调用方省略字段——不用已装版本或占位值冒充源码版本。
+   */
+  private async readSourceVersion(sourceDir: string): Promise<string | null> {
+    try {
+      const raw: unknown = JSON.parse(
+        await fs.promises.readFile(path.join(sourceDir, GHOST_MANIFEST_FILE), 'utf8'),
+      );
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+      const version = (raw as { version?: unknown }).version;
+      return typeof version === 'string' && version.trim() ? version.trim() : null;
+    } catch {
+      return null;
+    }
+  }
+
   private async watch(record: LiveDevPlugin): Promise<void> {
     const current = this.subscriptions.get(record.runtimeId);
     if (current) return;
@@ -698,20 +763,21 @@ export class MekaDevPluginManager {
         runtimeId,
         path.dirname(packed.cindyPath),
       );
-      if (this.deps.isInstalled(runtimeId)) {
-        await this.deps.updatePackage(
-          developmentPackage.cindyPath,
-          runtimeId,
-          { mode: 'automatic' },
-          ownerLease,
-        );
-      } else {
-        await this.deps.installPackage(
-          developmentPackage.cindyPath,
-          { mode: 'automatic' },
-          ownerLease,
-        );
-      }
+      // 同步成功后源码版本与运行版本一致,漂移提示据此消失(不额外轮询)。
+      const installed = this.deps.isInstalled(runtimeId)
+        ? await this.deps.updatePackage(
+            developmentPackage.cindyPath,
+            runtimeId,
+            { mode: 'automatic' },
+            ownerLease,
+          )
+        : await this.deps.installPackage(
+            developmentPackage.cindyPath,
+            { mode: 'automatic' },
+            ownerLease,
+          );
+      record.sourceVersion = packed.manifest.version;
+      record.installedVersion = installed.manifest.version;
       if (record.legacyRuntimeId) {
         await this.deps.uninstallPackage(record.legacyRuntimeId);
         delete record.legacyRuntimeId;
@@ -776,6 +842,8 @@ export class MekaDevPluginManager {
       status: record.status,
       ...(record.error ? { error: record.error } : {}),
       ...(record.updatedAt ? { updatedAt: record.updatedAt } : {}),
+      ...(record.sourceVersion ? { sourceVersion: record.sourceVersion } : {}),
+      ...(record.installedVersion ? { installedVersion: record.installedVersion } : {}),
     };
   }
 

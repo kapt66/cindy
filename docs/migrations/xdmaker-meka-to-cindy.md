@@ -7563,3 +7563,53 @@ Codex/Claude/Pi 原生读 `AGENTS.md`/`CLAUDE.md`/`SKILL.md`，不看我们的 m
   `meka/main` 已 `--ff-only` 到 `fe77c857`；再合并后 `tsc -p tsconfig.main.json` exit 0、
   插件/Meka 定向 **28 files / 942 passed**，且 `ui-smoke` **13 pass / 0 fail / 2 unverified**、
   `session-smoke` **11/11** 在该结果上重跑通过。**未推送** `origin/meka/main`（见本期报告 §6 结尾的推送前待确认项）。
+
+### 6.70 2026-11-18 开发插件打包弹窗把运行版本当成上传版本，读不到发布信息时只有一句泛化报错（已修）
+
+- **症状（用户报告）**：打开「打包开发插件」对话框，界面显示 `v0.9.1` 并出现红字
+  「无法读取 MCPRouter 中的版本和权限，请稍后重试」，上传按钮不可用。实际源码目录
+  已经是 `0.11.1`，`meka-dev-plugins:upload-info` 打包的也是源码。
+- **根因（两条）**：
+  1. **版本口径错**：对话框显示的版本来自**已装 dev 实例**（`MekaDevPluginItem` 当时没有
+     版本字段，页面传的是已装 ghost 的 manifest version），与实际上传的源码版本无关。
+  2. **失败被吞**：读取链 `getMekaPluginUploadInfo` → `auth()`（未配置时抛普通 Error）→
+     `client.listOwnedMekaPlugins`（非 2xx 抛 `MekaRouterRequestError`）只把 401 映射成
+     `PERMISSION_DENIED`，其余原因在 Renderer 里合并成布尔 `uploadInfoFailed`，于是登录
+     过期、Router 不支持接口、网络不可达、回包非法都渲染同一句文案，也没有重试入口。
+- **改动**：
+  1. `apps/desktop/src/main/meka-settings/mekaRouterFailure.ts`（新文件）把读取链失败分类成
+     `MEKA_ROUTER_NOT_CONFIGURED` / `MEKA_ROUTER_SESSION_EXPIRED`（401/403）/
+     `MEKA_ROUTER_ENDPOINT_UNSUPPORTED`（404/405）/ `MEKA_ROUTER_UNREACHABLE` /
+     `MEKA_ROUTER_RESPONSE_INVALID`，其余 HTTP 状态回落到 `INTERNAL`；码集中在
+     `shared/ipc-errors.ts` 的 `MEKA_ROUTER_ERROR_CODES`。补充信息只含 HTTP 状态码与端点
+     路径，**不含** token、cookie、完整 URL 查询串或响应体原文。
+     `auth()` / `sessionAuth()` 改抛 `MekaRouterNotConfiguredError`（message 不变，
+     `mcprSlot` 的既有判定继续成立）；`listOwnedMekaPlugins` 的回包形状失败改抛
+     `MekaRouterResponseInvalidError`。
+  2. 弹窗把布尔换成结构化 `{ code, detail? }`：每类原因各自中文引导 + 「重试」，凭证类额外
+     给「配置登录」（原位复用既有 MCPRouter 配置弹窗）；**本地打包按钮在任何失败下都可用**；
+     打开对话框仍静默预读，成功只回填可见性/共享用户名，不额外弹提示。
+  3. 版本口径：`MekaDevPluginItem` 新增 `sourceVersion` / `installedVersion`（Main 侧读源码
+     `ghost.json` 与已装 manifest，读不到就省略），弹窗展示 `upload-info.version`（源码打包
+     结果），与运行版本不同时标出「当前运行 vX → 将上传 vY」。
+  4. 开发卡新增版本漂移提示与一键同步：`meka-dev-plugins:resync` 复用
+     `MekaDevPluginManager` 的后台 `sync` 链（`ghosts:reload` 只重启已装副本，不会重新打包
+     源码，因此没有可复用的手动同步入口），成功由 `meka-dev-plugins:changed` 广播刷新，
+     提示消失，不新增轮询；同步失败按既有 fail-safe 保留旧快照并标错误。
+  5. i18n：新增文案落到全部 12 个 locale；孤儿 key `settings.ghosts.meka.dev.versionLabel`
+     同时删除。
+- **验证（实跑）**：`MekaDevPluginPackageDialog.test.tsx`（13）、`GhostPluginCard.test.tsx`
+  （56）、`routerService.test.ts`（35，含新增失败映射表驱动用例）、
+  `mekaDevPlugins.test.ts`（22，含版本漂移与 resync）、`marketGhostSessionBoundary.test.ts`
+  （19）共 **145 passed**；`pnpm --filter desktop run typecheck`、`pnpm check:i18n`、
+  `pnpm check:i18n-glossary` 通过。`pnpm check:dev-docs` 与 `pnpm check:test-hygiene`
+  在本机基线（未含本次改动）即失败，与本次改动无关，未纳入范围：
+  `docs/dev-rules/protocol-compatibility.md` 已超 16384 字节上限（该文件本次未改动）；
+  `scripts/test-hygiene-baseline.json` 有一条陈旧条目
+  `apps/desktop/src/main/maker-host/__tests__/codexNativeSubagentsDisabled.test.ts`
+  可收紧（该测试文件本次未改动）。
+- **未验证 / 风险**：① Light/Dark 与 12 语种**人工目检**未做（视觉上只新增一行提示与两个
+  文字按钮，复用既有语义 token）；② 真实 MCPRouter 的 404/405 与超时端到端未实测（分类逻辑
+  由注入 client 的单测覆盖）；③ `GhostPluginPage.navigation.test.tsx` 的
+  「prefetches only a sustained hover…」用例在本机基线（未含本次改动）同样失败，属存量问题，
+  未纳入本次范围（见根 `AGENTS.md`「审查与问题范围」）。

@@ -26,6 +26,10 @@ import {
   type MekaSkillVisibility,
 } from '../../shared/mekaSkillMarket.js';
 import { createMekaRouterClient, type FetchLike, type MekaRouterClient } from './routerClient.js';
+import {
+  MekaRouterNotConfiguredError,
+  toMekaRouterFailureError,
+} from './mekaRouterFailure.js';
 import { classifyMekaRouterToolRisk, type MekaToolRisk } from './mekaRiskPolicy.js';
 import { DEFAULT_MEKA_MCPROUTER_URL } from './config.js';
 import {
@@ -250,7 +254,7 @@ export function createMekaRouterService(deps: MekaRouterServiceDeps) {
       token = deps.vault.read(SECRET_KEYS.sessionToken);
       clientKey = deps.vault.read(SECRET_KEYS.clientKey);
     }
-    if (!baseUrl || !token || !clientKey) throw new Error('MCPRouter is not configured');
+    if (!baseUrl || !token || !clientKey) throw new MekaRouterNotConfiguredError();
     return { baseUrl, token, clientKey };
   }
 
@@ -265,7 +269,7 @@ export function createMekaRouterService(deps: MekaRouterServiceDeps) {
       baseUrl = configuredBaseUrl ? client.normalizeBaseUrl(configuredBaseUrl) : null;
       token = deps.vault.read(SECRET_KEYS.sessionToken);
     }
-    if (!baseUrl || !token) throw new Error('MCPRouter is not configured');
+    if (!baseUrl || !token) throw new MekaRouterNotConfiguredError();
     return { baseUrl, token };
   }
 
@@ -817,23 +821,30 @@ export function createMekaRouterService(deps: MekaRouterServiceDeps) {
       pluginId: string,
       version: string,
     ): Promise<MekaDevPluginUploadInfo> {
-      const { baseUrl, token } = await auth();
-      const existing = (await client.listOwnedMekaPlugins(baseUrl, token)).find(
-        (plugin) => plugin.ghostId === pluginId,
-      );
-      return {
-        pluginId,
-        version,
-        existing: existing
-          ? {
-              pluginResourceId: existing.id,
-              currentReleaseId: existing.currentRelease.id,
-              currentVersion: existing.currentRelease.version,
-              visibility: existing.visibility,
-              sharedUsernames: existing.sharedUsernames,
-            }
-          : null,
-      };
+      const endpoint = '/api/meka-plugins';
+      try {
+        const { baseUrl, token } = await auth();
+        const existing = (await client.listOwnedMekaPlugins(baseUrl, token)).find(
+          (plugin) => plugin.ghostId === pluginId,
+        );
+        return {
+          pluginId,
+          version,
+          existing: existing
+            ? {
+                pluginResourceId: existing.id,
+                currentReleaseId: existing.currentRelease.id,
+                currentVersion: existing.currentRelease.version,
+                visibility: existing.visibility,
+                sharedUsernames: existing.sharedUsernames,
+              }
+            : null,
+        };
+      } catch (error) {
+        // 打包弹窗要按原因给出不同下一步(重新连接／升级 MCPRouter／检查网络／重试),
+        // 所以这里只交出固定的分类码与可公开的补充信息,不让原始报文继续往下走。
+        throw toMekaRouterFailureError(error, endpoint);
+      }
     },
 
     /**

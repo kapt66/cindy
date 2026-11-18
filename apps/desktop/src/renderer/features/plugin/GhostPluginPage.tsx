@@ -650,6 +650,8 @@ function LocalGhostPluginPage({
   const [installedExpanded, setInstalledExpanded] = useState(false);
   const [mekaInstalledGhostIds, setMekaInstalledGhostIds] = useState<string[]>([]);
   const [mekaDevPluginItems, setMekaDevPluginItems] = useState<MekaDevPluginItem[]>([]);
+  // 手动同步中的开发副本 runtimeId;同一次只允许一个在途同步。
+  const [mekaDevResyncingId, setMekaDevResyncingId] = useState<string | null>(null);
   const catalogOwnerKey = pluginCatalogOwnerKey(mode, dataOwnerId, dataOwnerGeneration, marketLocale);
   const catalogMemory = pluginCatalogMemory(catalogOwnerKey, 'local');
   const catalogMemoryRef = useRef(catalogMemory);
@@ -1572,6 +1574,32 @@ function LocalGhostPluginPage({
       toast.error(extractIpcError(error)?.message ?? t('settings.ghosts.meka.dev.installFailed'));
     }
   }, [confirm, refreshMarket, t]);
+
+  /**
+   * 开发卡上的「同步」:源码在应用未运行时被改过时,watcher 不会自动补一次同步,
+   * 卡片因此给出明确入口。这里复用 Main 的后台同步链(与 watcher 同一条),成功后由
+   * `meka-dev-plugins:changed` 广播刷新列表,漂移提示随之消失;不新增轮询。
+   */
+  const handleResyncDevelopmentPlugin = useCallback(
+    async (runtimeId: string) => {
+      if (mekaDevResyncingId !== null) return;
+      setMekaDevResyncingId(runtimeId);
+      try {
+        const { items } = await window.electronAPI.mekaDevPlugins.resync(runtimeId);
+        setMekaDevPluginItems(items);
+        const failed = items.find((item) => item.runtimeId === runtimeId);
+        if (failed?.status === 'error') {
+          toast.error(failed.error ?? t('settings.ghosts.meka.dev.syncFailed'));
+        }
+        await refreshMarket(true).catch(() => undefined);
+      } catch (error) {
+        toast.error(extractIpcError(error)?.message ?? t('settings.ghosts.meka.dev.syncFailed'));
+      } finally {
+        setMekaDevResyncingId(null);
+      }
+    },
+    [mekaDevResyncingId, refreshMarket, t],
+  );
 
   const handleRetryLegacyRecovery = useCallback(async () => {
     legacyRecoveryStatusRequestRef.current += 1;
@@ -2599,6 +2627,22 @@ function LocalGhostPluginPage({
                               }
                             : undefined
                         }
+                        mekaDevSourceVersion={
+                          catalogItem.item.development
+                            ? mekaDevPluginById.get(catalogItem.item.ghostId)?.sourceVersion
+                            : undefined
+                        }
+                        mekaDevInstalledVersion={
+                          catalogItem.item.development
+                            ? mekaDevPluginById.get(catalogItem.item.ghostId)?.installedVersion
+                            : undefined
+                        }
+                        mekaDevResyncing={mekaDevResyncingId === catalogItem.item.ghostId}
+                        onMekaDevResync={
+                          catalogItem.item.development
+                            ? () => void handleResyncDevelopmentPlugin(catalogItem.item.ghostId)
+                            : undefined
+                        }
                         effectiveEnabled={effectiveEnabled(
                           catalogItem.item.id,
                           catalogItem.item.enabled,
@@ -3194,6 +3238,10 @@ export function GhostPluginCard({
   updatePending = false,
   onUpdate,
   onDevelopmentPackage,
+  mekaDevSourceVersion,
+  mekaDevInstalledVersion,
+  mekaDevResyncing = false,
+  onMekaDevResync,
   updateProgress,
   effectiveEnabled,
   onPrimary,
@@ -3218,6 +3266,13 @@ export function GhostPluginCard({
   updatePending?: boolean;
   onUpdate?: () => void;
   onDevelopmentPackage?: () => void;
+  /** 开发目录源码里的版本(下一次同步/打包会产出的版本)。 */
+  mekaDevSourceVersion?: string;
+  /** 已装开发副本当前运行的版本;与 `mekaDevSourceVersion` 不同 = 源码改了还没同步。 */
+  mekaDevInstalledVersion?: string;
+  mekaDevResyncing?: boolean;
+  /** 手动同步开发目录(复用 Main 的后台同步链)。 */
+  onMekaDevResync?: () => void;
   updateProgress?: PluginMarketInstallProgress | null;
   effectiveEnabled?: boolean;
   onPrimary: () => void;
@@ -3242,6 +3297,11 @@ export function GhostPluginCard({
     canUse: item.canUse ?? false,
     tabPanel: item.tabPanel ?? false,
   });
+  // 两个版本都存在且不同 = 源码改过但运行副本还没同步;缺任一份事实就不下结论。
+  const mekaDevVersionDrift =
+    mekaDevSourceVersion !== undefined &&
+    mekaDevInstalledVersion !== undefined &&
+    mekaDevSourceVersion !== mekaDevInstalledVersion;
   const handleCardKeyDown = (event: KeyboardEvent<HTMLElement>) => {
     if (event.target !== event.currentTarget) return;
     if (event.key !== 'Enter' && event.key !== ' ') return;
@@ -3380,6 +3440,37 @@ export function GhostPluginCard({
             ? ` · ${t('settings.ghosts.disabledTag')}`
             : ''}
         </span>
+        {/* 开发目录专属事实:源码版本与运行版本不一致时明确说出「还没同步」,
+            并给出一键同步入口(复用 Main 的后台同步链)。 */}
+        {mekaDevVersionDrift ? (
+          <span
+            className="mt-1.5 flex min-w-0 flex-wrap items-center gap-2 text-11 text-[var(--warning-fg)]"
+            data-testid="meka-dev-version-drift"
+          >
+            <AlertTriangle size={11} aria-hidden="true" />
+            <span className="min-w-0 break-words">
+              {t('settings.ghosts.meka.dev.sourceOutOfSync', {
+                sourceVersion: mekaDevSourceVersion,
+                installedVersion: mekaDevInstalledVersion,
+              })}
+            </span>
+            {onMekaDevResync ? (
+              <button
+                type="button"
+                onClick={stopAnd(onMekaDevResync)}
+                disabled={mekaDevResyncing}
+                aria-busy={mekaDevResyncing || undefined}
+                className="shrink-0 rounded-full border border-[var(--border-default)] px-2 py-0.5 text-11 font-medium text-[var(--text-secondary)] transition-colors hover:border-[var(--text-tertiary)] hover:bg-[var(--surface-hover-soft)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:cursor-wait disabled:opacity-40"
+              >
+                {t(
+                  mekaDevResyncing
+                    ? 'settings.ghosts.meka.dev.syncingNow'
+                    : 'settings.ghosts.meka.dev.syncNow',
+                )}
+              </button>
+            ) : null}
+          </span>
+        ) : null}
         <span
           className={cn(
             'mt-1.5 line-clamp-2 text-13 leading-5',

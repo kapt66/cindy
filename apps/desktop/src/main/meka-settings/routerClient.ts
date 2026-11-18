@@ -71,6 +71,20 @@ export class MekaRouterRequestError extends Error {
   }
 }
 
+/**
+ * 接口有 2xx 回包但形状不对。
+ *
+ * 与 HTTP 状态失败分开:这不是 MCPRouter 拒绝,而是本客户端不认识回包(通常是老版本
+ * 服务端换了一种字段形状),用户能做的只有稍后重试或在 MCPRouter 侧升级,
+ * 不能按「登录失效」引导重新登录。
+ */
+export class MekaRouterResponseInvalidError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MekaRouterResponseInvalidError';
+  }
+}
+
 export interface ManagedMekaPlugin {
   id: string;
   ghostId: string;
@@ -336,7 +350,9 @@ export function createMekaRouterClient(deps: RouterClientDeps = {}) {
       });
       if (!response.ok) throw await readError(response, 'list owned Meka Plugins');
       const body = (await response.json()) as unknown;
-      if (!Array.isArray(body)) throw new Error('MCPRouter owned Plugin response is invalid');
+      if (!Array.isArray(body)) {
+        throw new MekaRouterResponseInvalidError('MCPRouter owned Plugin response is invalid');
+      }
       return body as ManagedMekaPlugin[];
     },
 

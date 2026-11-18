@@ -1,5 +1,6 @@
 /**
- * Development Plugin package modal capability gating.
+ * Development Plugin package modal capability gating, version wording and
+ * MCPRouter failure classification.
  * @vitest-environment jsdom
  */
 
@@ -242,7 +243,7 @@ describe('MekaDevPluginPackageDialog', () => {
     });
     getUploadInfo.mockRejectedValue(
       new Error(
-        "Error invoking remote method 'meka-dev-plugins:upload-info': Error: [PERMISSION_DENIED] MCPRouter session expired",
+        "Error invoking remote method 'meka-dev-plugins:upload-info': Error: [MEKA_ROUTER_SESSION_EXPIRED] MCPRouter session expired or has no permission (HTTP 401) at /api/meka-plugins",
       ),
     );
     render(
@@ -258,9 +259,174 @@ describe('MekaDevPluginPackageDialog', () => {
 
     await screen.findByText('settings.ghosts.meka.dev.packageLoginRequired');
     expect(
+      screen.getByText('settings.ghosts.meka.dev.publishInfoFailures.sessionExpired'),
+    ).toBeTruthy();
+    // 补充信息只展示可公开的 HTTP 状态码与端点。
+    expect(screen.getByText(/HTTP 401/)).toBeTruthy();
+    expect(
       screen.getByRole('button', { name: 'settings.ghosts.meka.dev.configureRouter' }),
     ).toBeTruthy();
     expect(screen.queryByText('settings.ghosts.meka.dev.publishInfoFailed')).toBeNull();
+  });
+
+  /*
+   * 测试价值
+   * - 生产入口与可观察结果:渲染 `MekaDevPluginPackageDialog`,打开即静默预读
+   *   `meka-dev-plugins:upload-info`;失败时按 Main 的分类码渲染不同中文引导。
+   * - Bug／规则依据:2026-11-18 用户报告——除 PERMISSION_DENIED 外所有失败都渲染同一句
+   *   「无法读取 MCPRouter 中的版本和权限」,上传按钮不可用且没有重试入口。
+   * - 现有覆盖缺口:原用例只覆盖 401 与成功路径,没有网络／接口不支持／回包非法三类。
+   * - 最小失败输入:upload-info 分别以 MEKA_ROUTER_UNREACHABLE /
+   *   MEKA_ROUTER_ENDPOINT_UNSUPPORTED / MEKA_ROUTER_RESPONSE_INVALID 拒绝。
+   * - tier:unit(jsdom + mocked preload bridge)。
+   */
+  it.each([
+    {
+      code: 'MEKA_ROUTER_UNREACHABLE',
+      copyKey: 'settings.ghosts.meka.dev.publishInfoFailures.unreachable',
+      detail: 'MCPRouter is unreachable at /api/meka-plugins',
+    },
+    {
+      code: 'MEKA_ROUTER_ENDPOINT_UNSUPPORTED',
+      copyKey: 'settings.ghosts.meka.dev.publishInfoFailures.endpointUnsupported',
+      detail: 'MCPRouter does not support /api/meka-plugins (HTTP 404)',
+    },
+    {
+      code: 'MEKA_ROUTER_RESPONSE_INVALID',
+      copyKey: 'settings.ghosts.meka.dev.publishInfoFailures.responseInvalid',
+      detail: 'MCPRouter returned an invalid response from /api/meka-plugins',
+    },
+  ])(
+    'renders the reason-specific notice and keeps local packaging available for $code',
+    async ({ code, copyKey, detail }) => {
+      getRouter.mockResolvedValue({ configured: true });
+      getUploadInfo.mockRejectedValue(
+        new Error(
+          `Error invoking remote method 'meka-dev-plugins:upload-info': Error: [${code}] ${detail}`,
+        ),
+      );
+      render(
+        <MekaDevPluginPackageDialog
+          item={item}
+          pluginName="Demo"
+          pluginVersion="1.0.0"
+          open
+          onOpenChange={vi.fn()}
+          onUploaded={vi.fn()}
+        />,
+      );
+
+      await screen.findByText(copyKey);
+      expect(screen.getByText(detail)).toBeTruthy();
+      // 本地打包不读线上信息,失败时也必须可用。
+      const packageButton = screen.getByRole('button', {
+        name: 'settings.ghosts.meka.dev.packageLocal',
+      }) as HTMLButtonElement;
+      expect(packageButton.disabled).toBe(false);
+      fireEvent.click(packageButton);
+      await waitFor(() => expect(packagePlugin).toHaveBeenCalledWith(item.runtimeId));
+      expect(
+        (
+          screen.getByRole('button', {
+            name: 'settings.ghosts.meka.dev.upload',
+          }) as HTMLButtonElement
+        ).disabled,
+      ).toBe(true);
+      // 非凭证类失败不给「配置登录」,给重试。
+      expect(
+        screen.queryByRole('button', { name: 'settings.ghosts.meka.dev.configureRouter' }),
+      ).toBeNull();
+      expect(
+        screen.getByRole('button', { name: 'settings.ghosts.meka.dev.publishInfoRetry' }),
+      ).toBeTruthy();
+    },
+  );
+
+  it('retries the publish-info read in place and enables upload again after success', async () => {
+    getRouter.mockResolvedValue({ configured: true });
+    getUploadInfo
+      .mockRejectedValueOnce(
+        new Error(
+          "Error invoking remote method 'meka-dev-plugins:upload-info': Error: [MEKA_ROUTER_UNREACHABLE] MCPRouter is unreachable at /api/meka-plugins",
+        ),
+      )
+      .mockResolvedValue({ pluginId: 'demo-plugin', version: '1.0.0', existing: null });
+    render(
+      <MekaDevPluginPackageDialog
+        item={item}
+        pluginName="Demo"
+        pluginVersion="1.0.0"
+        open
+        onOpenChange={vi.fn()}
+        onUploaded={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'settings.ghosts.meka.dev.publishInfoRetry' }),
+    );
+
+    await waitFor(() =>
+      expect(
+        (
+          screen.getByRole('button', {
+            name: 'settings.ghosts.meka.dev.upload',
+          }) as HTMLButtonElement
+        ).disabled,
+      ).toBe(false),
+    );
+    expect(screen.queryByTestId('meka-dev-plugin-publish-info-failure')).toBeNull();
+    expect(getUploadInfo).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows the version that will be packaged, and names the running version when they differ', async () => {
+    getRouter.mockResolvedValue({ configured: true });
+    getUploadInfo.mockResolvedValue({
+      pluginId: 'demo-plugin',
+      version: '0.11.1',
+      existing: null,
+    });
+    render(
+      <MekaDevPluginPackageDialog
+        item={{
+          ...item,
+          sourceVersion: '0.11.1',
+          installedVersion: '0.9.1',
+        }}
+        pluginName="Demo"
+        pluginVersion="0.9.1"
+        open
+        onOpenChange={vi.fn()}
+        onUploaded={vi.fn()}
+      />,
+    );
+
+    // 上传版本来自源码打包结果,不是已装开发副本的版本。
+    await screen.findByText('v0.11.1');
+    expect(screen.getByText('settings.ghosts.meka.dev.uploadVersionLabel')).toBeTruthy();
+    expect(screen.getByText('settings.ghosts.meka.dev.versionChanged')).toBeTruthy();
+  });
+
+  it('does not compare versions when the running copy already matches the source', async () => {
+    getRouter.mockResolvedValue({ configured: true });
+    getUploadInfo.mockResolvedValue({
+      pluginId: 'demo-plugin',
+      version: '1.0.0',
+      existing: null,
+    });
+    render(
+      <MekaDevPluginPackageDialog
+        item={{ ...item, sourceVersion: '1.0.0', installedVersion: '1.0.0' }}
+        pluginName="Demo"
+        pluginVersion="1.0.0"
+        open
+        onOpenChange={vi.fn()}
+        onUploaded={vi.fn()}
+      />,
+    );
+
+    await screen.findByText('v1.0.0');
+    expect(screen.queryByText('settings.ghosts.meka.dev.versionChanged')).toBeNull();
   });
 
   it('syncs access without overwriting an immutable existing version', async () => {

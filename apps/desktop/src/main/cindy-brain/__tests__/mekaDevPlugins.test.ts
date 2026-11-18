@@ -43,6 +43,7 @@ describe('MekaDevPluginManager', () => {
   let sourceDir: string;
   let currentManifest: GhostManifest;
   let installedIds: Set<string>;
+  let installedVersions: Map<string, string>;
   let onEvents: WatcherHostEventsHandler | null;
   let unsubscribeWatcher: ReturnType<typeof vi.fn>;
   let deps: MekaDevPluginManagerDeps;
@@ -54,6 +55,7 @@ describe('MekaDevPluginManager', () => {
     await fs.promises.writeFile(path.join(sourceDir, 'ghost.json'), '{}');
     currentManifest = manifest();
     installedIds = new Set();
+    installedVersions = new Map();
     onEvents = null;
     unsubscribeWatcher = vi.fn(async () => undefined);
 
@@ -103,6 +105,7 @@ describe('MekaDevPluginManager', () => {
           expect(zip.file('cindy-signatures.json')).toBeNull();
           const packageManifest = await readPackageManifest(cindyPath);
           installedIds.add(packageManifest.id);
+          installedVersions.set(packageManifest.id, packageManifest.version);
           return installedGhost(packageManifest);
         },
       ),
@@ -115,13 +118,16 @@ describe('MekaDevPluginManager', () => {
         ) => {
           const packageManifest = await readPackageManifest(cindyPath);
           expect(packageManifest.id).toBe(expectedId);
+          installedVersions.set(packageManifest.id, packageManifest.version);
           return installedGhost(packageManifest);
         },
       ),
       uninstallPackage: vi.fn(async (id) => {
         installedIds.delete(id);
+        installedVersions.delete(id);
       }),
       isInstalled: (id) => installedIds.has(id),
+      readInstalledVersion: (id) => installedVersions.get(id) ?? null,
       subscribe: vi.fn(async (_dir, _ignore, events) => {
         onEvents = events;
         return { unsubscribe: unsubscribeWatcher };
@@ -187,6 +193,56 @@ describe('MekaDevPluginManager', () => {
     await manager.install(sourceDir, (await manager.inspect(sourceDir)).packageSha256);
     expect(manager.runtimeIdFor('demo-plugin')).toBe(runtimeId);
     expect(manager.runtimeIdFor('missing-plugin')).toBeNull();
+  });
+
+  /**
+   * 测试价值
+   * - 生产入口与可观察结果:`MekaDevPluginManager.list()` / `resync()` 交出的条带
+   *   `sourceVersion` / `installedVersion`;两者不同就是「源码已更新、运行副本还没同步」。
+   * - Bug／规则依据:2026-11-18 用户报告——打包弹窗把已装 ghost 的版本当成上传版本,
+   *   卡片也没有任何「源码改了但没同步」的事实。
+   * - 现有覆盖缺口:既有用例只断言 runtimeId／status／源目录,没有任何版本事实。
+   * - 最小失败输入:源码 `ghost.json` 改成 1.1.0 但不再触发 watcher,`list()` 必须报出漂移;
+   *   手动 `resync()` 必须回到一致。
+   * - tier:unit(注入 fake + 临时目录,无 Electron)。
+   */
+  it('报出源码版本与运行版本的漂移，手动 resync 后回到一致', async () => {
+    const manager = new MekaDevPluginManager(deps);
+    const runtimeId = mekaDevRuntimeId('demo-plugin');
+    await fs.promises.writeFile(
+      path.join(sourceDir, GHOST_MANIFEST_FILE),
+      JSON.stringify(currentManifest),
+    );
+    await manager.install(sourceDir, (await manager.inspect(sourceDir)).packageSha256);
+
+    expect(await manager.list()).toMatchObject([
+      { runtimeId, sourceVersion: '1.0.0', installedVersion: '1.0.0' },
+    ]);
+
+    currentManifest = manifest('1.1.0');
+    await fs.promises.writeFile(
+      path.join(sourceDir, GHOST_MANIFEST_FILE),
+      JSON.stringify(currentManifest),
+    );
+
+    expect(await manager.list()).toMatchObject([
+      { runtimeId, sourceVersion: '1.1.0', installedVersion: '1.0.0' },
+    ]);
+
+    expect(await manager.resync(runtimeId)).toMatchObject([
+      { runtimeId, sourceVersion: '1.1.0', installedVersion: '1.1.0', status: 'watching' },
+    ]);
+    expect(deps.updatePackage).toHaveBeenCalledTimes(1);
+  });
+
+  it('源码清单读不到版本时省略字段，不拿运行版本冒充源码版本', async () => {
+    const manager = new MekaDevPluginManager(deps);
+    // beforeEach 只写了 `{}`:能装入,但读不到源码版本。
+    await manager.install(sourceDir, (await manager.inspect(sourceDir)).packageSha256);
+
+    const [item] = await manager.list();
+    expect(item).toMatchObject({ installedVersion: '1.0.0' });
+    expect(item).not.toHaveProperty('sourceVersion');
   });
 
   it('用户选择的开发目录无需活动任务 workdir 即可打包，并继续拒绝 Host 受管根', async () => {
@@ -654,6 +710,7 @@ describe('Meka 开发目录装入确认(派生包 inspection)', () => {
       ),
       uninstallPackage: vi.fn(async () => undefined),
       isInstalled: (id) => installed.has(id),
+      readInstalledVersion: (id) => installed.get(id)?.manifest.version ?? null,
       subscribe: vi.fn(async (_dir, _ignore, events) => {
         onEvents = events;
         return { unsubscribe: vi.fn(async () => undefined) };

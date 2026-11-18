@@ -1213,16 +1213,32 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
   身份）打成 `.cindy` 保存到用户选择的位置；上传动作在所有状态下保持同一位置，只有完整
   MCPRouter 绑定存在时才启用。未绑定时弹窗提供“配置登录”，原位复用“设置 → Meka 助理”
   的既有 MCPRouter 配置弹窗；登录完成后不得关闭或跳离打包流程，而应立即启用上传供用户
-  继续操作。弹窗展示源码 manifest 版本，并从 MCPRouter owner API 回填“仅自己／部分
+  继续操作。**弹窗里的版本口径是“将要打包/上传的版本”**（`meka-dev-plugins:upload-info`
+  返回的源码打包结果），不是已装开发副本的版本；两者不同时必须并排标出“当前运行 →
+  将上传”，不得让用户把运行版本误读成上传版本（2026-11-18 修复：此前展示的是已装 ghost 的
+  version，源码 0.11.1 却显示 0.9.1）。并从 MCPRouter owner API 回填“仅自己／部分
   可见／公开”权限及部分可见用户名；发布或单独保存权限后通过 `/access` 将完整权限设置
   同步回后台。远端已存在该插件且源码版本不同时，发布前必须显示当前／目标版本并二次
   确认；版本相同时不得覆盖不可变 Release，只允许同步权限，并提示提升版本后再发布内容。
-  owner API 返回空列表表示尚未发布，必须进入首次上传，不得显示读取失败；保存的 Router
-  session 返回 401 时表示登录已失效，弹窗应保留本地打包并原位提供“配置登录”。
+  owner API 返回空列表表示尚未发布，必须进入首次上传，不得显示读取失败。
+  **读取发布信息的失败必须按原因区分**（固定 IPC 码，见
+  `apps/desktop/src/shared/ipc-errors.ts` 的 `MEKA_ROUTER_ERROR_CODES`）：未配置/凭证不全、
+  session 过期或无权限（401／403）、MCPRouter 不支持该接口（404／405）、网络不可达/超时、
+  回包形状非法。弹窗按原因渲染各自的中文引导并提供“重试”；凭证类失败额外原位给出
+  “配置登录”。补充信息只允许 HTTP 状态码与端点路径，**不得**带 token、cookie、完整 URL
+  查询串或响应体原文。任何读取失败都只影响上传：**本地打包按钮始终可用**。
   上传使用 Main 内的 Router session cookie 经 HTTPS 调管理 API，包字节与凭证均不得进入
   Renderer。MCPRouter 已停用 HTTP 与裸 IP 入口，任何历史 HTTP 或裸 IP base 在运行期统一
   迁移到 `https://mcpr.meka.pawdy.fun/`，不得保留明文认证或证书主机名不匹配的例外。
   每次上传产生不可覆盖的 Release；未配置 Router 时不得尝试远端写操作。
+- **开发副本的版本漂移必须可见且可一键同步**：Host 在开发条目上填 `sourceVersion`
+  （源码 `ghost.json` 的 version）与 `installedVersion`（已装开发副本 manifest 的 version），
+  读不到时**省略字段而不是编造**。两者都存在且不同 ⇒ 卡片显示“源码 X，运行中 Y，尚未同步”
+  并提供同步入口；同步走与 watcher 同一条后台同步链（`meka-dev-plugins:resync` 复用
+  `MekaDevPluginManager` 的 `sync`，失败按既有 fail-safe 保留旧快照），成功后由
+  `meka-dev-plugins:changed` 广播刷新，提示自动消失，**不新增轮询**。该 IPC 只补“没有可复用
+  手动同步入口”这一缺口：`ghosts:reload` 只重启已装副本，不会重新打包源码。
+
 
 ### 4.2 Meka 独立市场的大包下载边界
 
