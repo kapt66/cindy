@@ -2760,8 +2760,19 @@ pnpm desktop:session-smoke
 - `node scripts/meka-submit-e2e.mjs` → **提交流程端到端驱动**（不挂 `package.json` 别名）：在真实
   dev 实例里跑一轮提交，把每个 `tool_use` / `tool_result`、错误码、自动作答记录与「`jira_issues`
   是否返回真实标题 / 是否走到 `submit_confirm` / `submit_record`」写成
-  `artifacts/meka-submit-e2e/e2e-<时间戳>.json`（`--answer` 作答、`--confirm` 才点确认、
-  `--dry-run` 只探测连接，详见脚本头注释）。
+  `artifacts/meka-submit-e2e/e2e-<时间戳>.json`（`--answer` 作答、`--dry-run` 只探测连接，详见脚本头注释）。
+  **确认框按正文/标题子串选择性放行（2026-11-18 起）**：`--confirm-match <子串>`（可重复）只放行命中
+  的弹窗；`--deny-match <子串>`（可重复）命中即点取消并停下、**优先级最高**；`--confirm` 保留旧语义
+  「任意插件确认框都点主按钮」，但只要同时传了 match/deny 就由它们收窄（deny 优先、match 生效）。
+  都不传或都没命中 = 点取消并判「卡住」（fail closed，报告提示可用 `--confirm-match`）。空子串是
+  参数错误（退出码 2）。每次处理都按 `{body, decision: confirm|cancel|blocked, matchedBy:
+  --confirm|--confirm-match:<s>|--deny-match:<s>|none}` 记进 `confirmDialog.occurrences[]`，
+  并由 `checks.confirmDialogs[]` 汇总（`checks.confirmPolicy` 记录本次规则）。
+  - P4 / 真实服务器项目（只允许**可逆前置写操作**，必须停在「实际提交前」）：
+    `--confirm-match "移动到目标 changelist"` —— 移动确认放行，创建 review/MR 的确认仍被拒。
+  - test-repo 远程项目（允许真实创建 MR）：`--confirm`（或 `--confirm-match "确认提交"`）。
+  - 无会话时自测解析与决策：`node scripts/meka-submit-e2e.mjs --self-test`（打印逐条 `PASS` 与
+    `SELF-TEST PASSED — assertions=N`，不连 CDP、不写报告；有 FAIL 时退出码 1）。
 - 于是 WL-13 的**五语横切**也进了程序：`ui-smoke` 会逐一切换到 English / 简体中文 / 繁体中文 /
   日本語 / 한국어，断言每种语言下 Meka 页签与面板都渲染、且界面没有裸 i18n key，
   并记录各语言的页签实际文案。
