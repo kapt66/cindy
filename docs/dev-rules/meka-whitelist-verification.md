@@ -2741,6 +2741,11 @@ pnpm desktop:session-smoke
   > 另：**「通过」不等于「已核对」** —— marker 漂移等情形走 `ctx.unverified`，
   > **退出码仍为 0、横幅仍打印 `PASSED`**（`failed.length` 是唯一决定退出码的量）。
   > 必须**一并读 `unverified=N`**，真实核对依赖 **`unverified === 0`**。
+- `node scripts/meka-submit-e2e.mjs` → **提交流程端到端驱动**（不挂 `package.json` 别名）：在真实
+  dev 实例里跑一轮提交，把每个 `tool_use` / `tool_result`、错误码、自动作答记录与「`jira_issues`
+  是否返回真实标题 / 是否走到 `submit_confirm` / `submit_record`」写成
+  `artifacts/meka-submit-e2e/e2e-<时间戳>.json`（`--answer` 作答、`--confirm` 才点确认、
+  `--dry-run` 只探测连接，详见脚本头注释）。
 - 于是 WL-13 的**五语横切**也进了程序：`ui-smoke` 会逐一切换到 English / 简体中文 / 繁体中文 /
   日本語 / 한국어，断言每种语言下 Meka 页签与面板都渲染、且界面没有裸 i18n key，
   并记录各语言的页签实际文案。
