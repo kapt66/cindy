@@ -9159,6 +9159,8 @@
           "versionChanged": "當前運行 v{{runningVersion}} → 將上傳 v{{uploadVersion}}",
           "versionAlreadyExists": "MCPRouter 已存在 v{{currentVersion}}。目前操作只會同步權限；如需釋出新內容，請先提升版本號。",
           "versionUpdate": "MCPRouter 當前為 v{{currentVersion}}，將釋出 v{{nextVersion}}。",
+          "publishVersionTooOld": "MCPRouter 目前已是 v{{currentVersion}}，本地要釋出的是 v{{nextVersion}}，版本較低；請先在法器中把版本號升到 v{{currentVersion}} 之上再釋出。",
+          "publishVersionAlreadyPublished": "MCPRouter 已存在該版本的釋出記錄。請先把法器版本號升到目前版本之上，再重新釋出。",
           "syncAccess": "同步權限",
           "syncingAccess": "正在同步權限",
           "accessSynced": "法器權限已同步",

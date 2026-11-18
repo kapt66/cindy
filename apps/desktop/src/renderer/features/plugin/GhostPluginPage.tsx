@@ -3080,7 +3080,7 @@ export function MarketPluginCard({
     <article
       {...prefetchEvents}
       className={cn(
-        'group flex h-full min-h-[108px] w-full select-none items-start gap-4 rounded-xl border-[0.5px] border-[var(--border-default)] bg-[var(--surface-elevated)] p-4 text-left',
+        'group flex min-h-[108px] w-full select-none items-start gap-4 rounded-xl border-[0.5px] border-[var(--border-default)] bg-[var(--surface-elevated)] p-4 text-left',
         'transition-[background-color,border-color,transform] duration-150 ease-out',
         'hover:-translate-y-px hover:border-[var(--text-tertiary)] hover:bg-[var(--surface-hover-soft)]',
         'active:translate-y-0 active:scale-[0.992] motion-reduce:transform-none motion-reduce:transition-none',
@@ -3328,7 +3328,7 @@ export function GhostPluginCard({
       aria-label={item.name}
       aria-describedby={metadataId}
       className={cn(
-        'group flex h-full min-h-[108px] w-full cursor-pointer select-none items-start gap-4 rounded-xl border-[0.5px] border-[var(--border-default)] bg-[var(--surface-elevated)] p-4 text-left',
+        'group flex min-h-[108px] w-full cursor-pointer select-none items-start gap-4 rounded-xl border-[0.5px] border-[var(--border-default)] bg-[var(--surface-elevated)] p-4 text-left',
         'transition-[background-color,border-color,transform] duration-150 ease-out',
         'hover:-translate-y-px hover:border-[var(--text-tertiary)] hover:bg-[var(--surface-hover-soft)]',
         'active:translate-y-0 active:scale-[0.992]',
@@ -3428,10 +3428,10 @@ export function GhostPluginCard({
             因此这里不给手动同步按钮。 */}
         {mekaDevVersionDrift ? (
           <span
-            className="mt-1.5 flex min-w-0 items-start gap-1.5 text-11 text-[var(--warning-fg)]"
+            className="mt-1.5 flex min-w-0 flex-wrap items-center gap-2 text-11 text-[var(--warning-fg)]"
             data-testid="meka-dev-version-drift"
           >
-            <AlertTriangle size={11} className="mt-px shrink-0" aria-hidden="true" />
+            <AlertTriangle size={11} aria-hidden="true" />
             <span className="min-w-0 break-words">
               {t('settings.ghosts.meka.dev.sourceOutOfSync', {
                 sourceVersion: mekaDevSourceVersion,

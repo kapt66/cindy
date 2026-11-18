@@ -26,9 +26,21 @@ import type {
   MekaDevPluginUploadInfo,
   MekaPluginVisibility,
 } from '../../../shared/mekaDevPlugin';
+import { compareMekaPluginVersion } from '../../../shared/mekaDevPlugin';
 import type { MekaRouterSettingsView } from '../../../shared/meka-router';
 
 type ActiveAction = 'package' | 'upload' | 'access' | null;
+
+/**
+ * 待发布版本相对 MCPRouter 上**已发布版本**的关系。
+ *
+ * - `new`:还没发布过,首次上传;
+ * - `newer`:正常「更新」,保留二次确认;
+ * - `same`:版本已存在,只同步权限,不碰不可覆盖的 Release;
+ * - `older`:本地要发布的是更低版本。MCPRouter 的 Release 不可覆盖,上传必然 409,
+ *   因此禁止上传并说明该怎么改。
+ */
+type MekaPublishVersionRelation = 'new' | 'same' | 'newer' | 'older';
 
 /**
  * 读取 MCPRouter 发布信息的失败事实。
@@ -76,6 +88,24 @@ function describeUploadInfoFailure(error: unknown): MekaUploadInfoFailure {
     code: ipcError?.code ?? 'INTERNAL',
     ...(detail ? { detail } : {}),
   };
+}
+
+/**
+ * 上传失败里可辨别的稳定码 → 用户语言的文案。
+ *
+ * 版本类失败必须换成可操作说明(当前线上是哪个版本、为什么发不出去),
+ * 不能让 Main 的英文诊断句直接冒到 toast 上;其余失败(网络、未知原因)
+ * 仍显示 Main 的说明,信息更多。
+ */
+function uploadFailureCopyKey(code: string): string | null {
+  switch (code) {
+    case 'MEKA_ROUTER_VERSION_NOT_NEWER':
+      return 'settings.ghosts.meka.dev.publishVersionTooOld';
+    case 'MEKA_ROUTER_VERSION_ALREADY_PUBLISHED':
+      return 'settings.ghosts.meka.dev.publishVersionAlreadyPublished';
+    default:
+      return null;
+  }
 }
 
 export function MekaDevPluginPackageDialog({
@@ -186,7 +216,19 @@ export function MekaDevPluginPackageDialog({
   const sameVersion =
     uploadInfo?.existing != null &&
     uploadInfo.existing.currentVersion === uploadInfo.version;
-  const isUpdate = uploadInfo?.existing != null && !sameVersion;
+  /**
+   * 三态判断。`older` 只有在**能证明更低**时才成立:不同字符串但数值段相同
+   * (例如 `1.0.0-beta` 与 `1.0.0`)仍按「更新」处理,不改变旧行为。
+   */
+  const versionRelation = useMemo<MekaPublishVersionRelation>(() => {
+    if (!uploadInfo?.existing) return 'new';
+    if (uploadInfo.existing.currentVersion === uploadInfo.version) return 'same';
+    return compareMekaPluginVersion(uploadInfo.version, uploadInfo.existing.currentVersion) < 0
+      ? 'older'
+      : 'newer';
+  }, [uploadInfo]);
+  const isUpdate = versionRelation === 'newer';
+  const versionTooOld = versionRelation === 'older';
   const accessInvalid = visibility === 'shared' && sharedUsernames.length === 0;
   // 版本口径:展示**将要打包/上传的版本**(源码打包结果)。已装开发副本的版本只是
   // 「当前运行版本」,两者不同时必须并排标出,避免把运行版本误读成上传版本。
@@ -223,7 +265,16 @@ export function MekaDevPluginPackageDialog({
   };
 
   const handleUpload = async () => {
-    if (!item || !routerConfigured || !uploadInfo || accessInvalid || activeAction) return;
+    if (
+      !item ||
+      !routerConfigured ||
+      !uploadInfo ||
+      accessInvalid ||
+      versionTooOld ||
+      activeAction
+    ) {
+      return;
+    }
     if (isUpdate) {
       const approved = await confirm({
         title: t('settings.ghosts.meka.dev.updateConfirmTitle'),
@@ -255,8 +306,15 @@ export function MekaDevPluginPackageDialog({
       await onUploaded();
       onOpenChange(false);
     } catch (error) {
+      const ipcError = extractIpcError(error);
+      const copyKey = ipcError ? uploadFailureCopyKey(ipcError.code) : null;
       toast.error(
-        extractIpcError(error)?.message ?? t('settings.ghosts.meka.dev.uploadFailed'),
+        copyKey
+          ? t(copyKey, {
+              currentVersion: uploadInfo.existing?.currentVersion,
+              nextVersion: uploadInfo.version,
+            })
+          : (ipcError?.message ?? t('settings.ghosts.meka.dev.uploadFailed')),
       );
     } finally {
       setActiveAction(null);
@@ -426,11 +484,20 @@ export function MekaDevPluginPackageDialog({
                   </div>
                 </div>
               ) : uploadInfo?.existing ? (
-                <p className="mt-2 text-11 text-[var(--text-tertiary)]">
+                <p
+                  className={
+                    versionTooOld
+                      ? 'mt-2 text-11 leading-4 text-[var(--error-fg)]'
+                      : 'mt-2 text-11 text-[var(--text-tertiary)]'
+                  }
+                  data-testid={versionTooOld ? 'meka-dev-plugin-version-too-old' : undefined}
+                >
                   {t(
-                    sameVersion
-                      ? 'settings.ghosts.meka.dev.versionAlreadyExists'
-                      : 'settings.ghosts.meka.dev.versionUpdate',
+                    versionTooOld
+                      ? 'settings.ghosts.meka.dev.publishVersionTooOld'
+                      : sameVersion
+                        ? 'settings.ghosts.meka.dev.versionAlreadyExists'
+                        : 'settings.ghosts.meka.dev.versionUpdate',
                     {
                       currentVersion: uploadInfo.existing.currentVersion,
                       nextVersion: uploadInfo.version,
@@ -482,6 +549,8 @@ export function MekaDevPluginPackageDialog({
                   !uploadInfo ||
                   uploadInfoFailure !== null ||
                   accessInvalid ||
+                  // 低于线上已发布版本时上传必然失败,直接禁用(本地打包不受影响)。
+                  versionTooOld ||
                   activeAction !== null
                 }
                 className={cn(

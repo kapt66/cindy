@@ -8882,6 +8882,8 @@
           "versionChanged": "実行中 v{{runningVersion}} → アップロード v{{uploadVersion}}",
           "versionAlreadyExists": "MCPRouter には v{{currentVersion}} が既に存在します。この操作では公開範囲のみ同期します。新しい内容を公開するにはバージョンを上げてください。",
           "versionUpdate": "MCPRouter の現在のバージョンは v{{currentVersion}} です。v{{nextVersion}} を公開します。",
+          "publishVersionTooOld": "MCPRouter は既に v{{currentVersion}} で、これから公開するパッケージは v{{nextVersion}} と低いバージョンです。プラグインのバージョンを v{{currentVersion}} より上げてから公開してください。",
+          "publishVersionAlreadyPublished": "MCPRouter にはこのバージョンの公開記録が既にあります。プラグインのバージョンを上げてから再公開してください。",
           "syncAccess": "公開範囲を同期",
           "syncingAccess": "公開範囲を同期中",
           "accessSynced": "プラグインの公開範囲を同期しました",

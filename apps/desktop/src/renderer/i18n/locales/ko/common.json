@@ -8882,6 +8882,8 @@
           "versionChanged": "실행 중 v{{runningVersion}} → 업로드 v{{uploadVersion}}",
           "versionAlreadyExists": "MCPRouter에 v{{currentVersion}}이 이미 있습니다. 이 작업은 공개 범위만 동기화합니다. 새 내용을 게시하려면 버전을 올려 주세요.",
           "versionUpdate": "MCPRouter의 현재 버전은 v{{currentVersion}}이며 v{{nextVersion}}을 게시합니다.",
+          "publishVersionTooOld": "MCPRouter의 현재 버전은 v{{currentVersion}}이고, 게시할 패키지는 더 낮은 v{{nextVersion}}입니다. 플러그인 버전을 v{{currentVersion}}보다 높인 뒤 게시하세요.",
+          "publishVersionAlreadyPublished": "MCPRouter에 이 버전의 게시 기록이 이미 있습니다. 플러그인 버전을 올린 뒤 다시 게시하세요.",
           "syncAccess": "공개 범위 동기화",
           "syncingAccess": "공개 범위 동기화 중",
           "accessSynced": "플러그인 공개 범위를 동기화했습니다",

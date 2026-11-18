@@ -8998,6 +8998,8 @@
           "versionChanged": "Em execução v{{runningVersion}} → será enviado v{{uploadVersion}}",
           "versionAlreadyExists": "MCPRouter already has v{{currentVersion}}. This action only synchronizes access; bump the version before publishing new content.",
           "versionUpdate": "MCPRouter currently has v{{currentVersion}}. This will publish v{{nextVersion}}.",
+          "publishVersionTooOld": "O MCPRouter já está em v{{currentVersion}} e o pacote é v{{nextVersion}}, uma versão anterior. Aumente a versão do plugin acima de v{{currentVersion}} e publique novamente.",
+          "publishVersionAlreadyPublished": "O MCPRouter já publicou esta versão. Aumente a versão do plugin e publique novamente.",
           "syncAccess": "Sync Access",
           "syncingAccess": "Syncing Access",
           "accessSynced": "Plugin access synchronized",

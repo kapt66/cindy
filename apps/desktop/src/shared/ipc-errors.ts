@@ -72,9 +72,10 @@ export const COMPANION_IMPORT_ERROR_CODES = [
 ] as const;
 
 /**
- * MCPRouter 读取链(如 `meka-dev-plugins:upload-info`)的可区分失败原因。
+ * MCPRouter 读取／发布链(如 `meka-dev-plugins:upload-info`、`meka-dev-plugins:upload`)
+ * 的可区分失败原因。
  *
- * 这些原因的下一步动作互不相同(重新连接／升级 MCPRouter／检查网络／稍后重试),
+ * 这些原因的下一步动作互不相同(重新连接／升级 MCPRouter／检查网络／提升版本号／稍后重试),
  * 所以不能合并成一句泛化文案;集中定义在这里,Main 只抛码、Renderer 只按码选文案。
  */
 export const MEKA_ROUTER_ERROR_CODES = [
@@ -88,6 +89,17 @@ export const MEKA_ROUTER_ERROR_CODES = [
   'MEKA_ROUTER_UNREACHABLE',
   /** 接口有响应,但回包形状不是本客户端认识的结构。 */
   'MEKA_ROUTER_RESPONSE_INVALID',
+  /**
+   * 要发布的版本不高于线上已发布的版本。MCPRouter 的 Release 不可覆盖,
+   * 这类请求必然失败,Main 在发起上传**之前**就拒绝(2026-11-18)。
+   */
+  'MEKA_ROUTER_VERSION_NOT_NEWER',
+  /**
+   * 服务端仍以「该版本已发布」拒绝(409 already published)。正常路径已被
+   * `MEKA_ROUTER_VERSION_NOT_NEWER` 前置拦住,这条只剩并发窗口:用户看预览后,
+   * 该版本被另一处发布。
+   */
+  'MEKA_ROUTER_VERSION_ALREADY_PUBLISHED',
 ] as const;
 
 export type MekaRouterErrorCode = (typeof MEKA_ROUTER_ERROR_CODES)[number];

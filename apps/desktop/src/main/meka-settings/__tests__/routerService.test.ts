@@ -758,6 +758,141 @@ describe('MekaRouterService', () => {
     );
   });
 
+  /*
+   * 测试价值
+   * - 生产入口与可观察结果:`MekaRouterService.uploadMekaPlugin()` 在本地版本低于
+   *   线上当前发布版本时,于**发起上传请求之前**抛 `MEKA_ROUTER_VERSION_NOT_NEWER`,
+   *   message 同时给出当前线上版本与目标版本;`uploadMekaPlugin` 与
+   *   `setMekaPluginAccess` 都没有被调用。
+   * - Bug／规则依据:2026-11-18 用户实测——MCPRouter 的 Release 不可覆盖,本地版本
+   *   回退时仍被 Renderer 当成「更新」上传,服务端 409,toast 原样抛出
+   *   `{"error":"This plugin version is already published"}`。
+   * - 现有覆盖缺口:既有用例只覆盖「更高版本发布」与「相同版本仅同步权限」,
+   *   没有「更低版本必须被前置拒绝」。
+   * - 最小失败输入:existing.currentRelease.version = 1.0.66、目标版本 1.0.65,且
+   *   expectedCurrentReleaseId 与预览一致(证明拦截来自版本判定,不是并发前置)。
+   * - tier:unit(注入 client fake,无网络)。
+   */
+  it('refuses to publish a lower version before contacting MCPRouter', async () => {
+    const fixture = setup({ routerUrl: 'https://router.example' });
+    fixture.secrets.set('meka.router.sessionToken', 'session-token');
+    fixture.secrets.set('meka.router.clientKey', 'client-key');
+    vi.mocked(fixture.client.listOwnedMekaPlugins).mockResolvedValue([
+      {
+        id: 'plugin-resource',
+        ghostId: 'demo-plugin',
+        visibility: 'private' as const,
+        sharedUsernames: [],
+        currentRelease: {
+          id: 'release-66',
+          version: '1.0.66',
+          sha256: 'a'.repeat(64),
+          sizeBytes: 4,
+          publishedAt: '2026-11-18T00:00:00.000Z',
+        },
+      },
+    ]);
+
+    const error = await fixture.service
+      .uploadMekaPlugin(
+        new Uint8Array([1]),
+        'demo-plugin',
+        '1.0.65',
+        'private',
+        [],
+        'release-66',
+      )
+      .then(
+        () => {
+          throw new Error('expected the lower version publish to be rejected');
+        },
+        (reason: unknown) => reason as Error & { code: string },
+      );
+
+    expect(error.code).toBe('MEKA_ROUTER_VERSION_NOT_NEWER');
+    expect(error.message).toContain('v1.0.66');
+    expect(error.message).toContain('v1.0.65');
+    expect(fixture.client.uploadMekaPlugin).not.toHaveBeenCalled();
+    expect(fixture.client.setMekaPluginAccess).not.toHaveBeenCalled();
+  });
+
+  /*
+   * 测试价值
+   * - 生产入口与可观察结果:上传被 MCPRouter 以 409 拒绝时,Release 版本冲突映射成
+   *   稳定码 `MEKA_ROUTER_VERSION_ALREADY_PUBLISHED`,其余 409 仍是 `ALREADY_EXISTS`;
+   *   两者的 message 只含 HTTP 状态码与服务端 error 文本,**不含**响应体 JSON 包装。
+   * - Bug／规则依据:2026-11-18 用户实测 toast 原文为
+   *   `MCPRouter upload Meka Plugin failed (409): {"error":"This plugin version is already published"}`,
+   *   用户看到的是 JSON 而不是该做什么。
+   * - 现有覆盖缺口:既有用例没有上传失败的映射断言(只有 routerClient 层断言 code)。
+   * - 最小失败输入:`client.uploadMekaPlugin` 分别以「该版本已发布」与「插件归属他人」
+   *   两种 409 拒绝。
+   * - tier:unit(注入 client fake,无网络)。
+   */
+  it.each([
+    {
+      conflict: 'the same version already published',
+      serverError: 'This plugin version is already published',
+      code: 'MEKA_ROUTER_VERSION_ALREADY_PUBLISHED',
+    },
+    {
+      conflict: 'another account owning the plugin id',
+      serverError: 'Another user already owns this plugin id',
+      code: 'ALREADY_EXISTS',
+    },
+  ])(
+    'maps a 409 ($conflict) to a stable code without leaking the response body',
+    async ({ serverError, code }) => {
+      const fixture = setup({ routerUrl: 'https://router.example' });
+      fixture.secrets.set('meka.router.sessionToken', 'session-token');
+      fixture.secrets.set('meka.router.clientKey', 'client-key');
+      vi.mocked(fixture.client.listOwnedMekaPlugins).mockResolvedValue([
+        {
+          id: 'plugin-resource',
+          ghostId: 'demo-plugin',
+          visibility: 'private' as const,
+          sharedUsernames: [],
+          currentRelease: {
+            id: 'release-1',
+            version: '1.0.0',
+            sha256: 'a'.repeat(64),
+            sizeBytes: 4,
+            publishedAt: '2026-11-18T00:00:00.000Z',
+          },
+        },
+      ]);
+      vi.mocked(fixture.client.uploadMekaPlugin).mockRejectedValue(
+        new MekaRouterRequestError(
+          `MCPRouter upload Meka Plugin failed (409): {"error":"${serverError}"}`,
+          409,
+          serverError,
+        ),
+      );
+
+      const error = await fixture.service
+        .uploadMekaPlugin(
+          new Uint8Array([1]),
+          'demo-plugin',
+          '1.0.1',
+          'private',
+          [],
+          'release-1',
+        )
+        .then(
+          () => {
+            throw new Error('expected the 409 publish to be rejected');
+          },
+          (reason: unknown) => reason as Error & { code: string },
+        );
+
+      expect(error.code).toBe(code);
+      expect(error.message).toContain('HTTP 409');
+      expect(error.message).not.toContain('{"error"');
+      expect(error.message).not.toContain('"error"');
+      expect(fixture.client.setMekaPluginAccess).not.toHaveBeenCalled();
+    },
+  );
+
   /**
    * 测试价值
    * - 生产入口与可观察结果:`MekaRouterService.getMekaPluginUploadInfo()` 把读取链上的

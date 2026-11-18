@@ -264,6 +264,9 @@ describe('MekaRouterClient', () => {
     ).rejects.toMatchObject({
       code: 'ALREADY_EXISTS',
       status: 409,
+      // 服务端 error 文本单独可读,响应体 JSON 包装不进 message(发布链会把它
+      // 加上 HTTP 状态码拼成面向用户的说明,不能把 `{"error":"…"}` 抛给用户)。
+      errorText: 'Another user already owns this plugin id',
       message: expect.stringContaining('Another user already owns this plugin id'),
     });
   });

@@ -12,10 +12,11 @@ import {
   type MekaRouterTemplate,
   type MekaRouterTool,
 } from '../../shared/meka-router.js';
-import type {
-  MekaDevPluginUploadInfo,
-  MekaDevPluginUploadResult,
-  MekaPluginVisibility,
+import {
+  compareMekaPluginVersion,
+  type MekaDevPluginUploadInfo,
+  type MekaDevPluginUploadResult,
+  type MekaPluginVisibility,
 } from '../../shared/mekaDevPlugin.js';
 import {
   nextMekaSkillVersion,
@@ -25,7 +26,13 @@ import {
   type MekaSkillSourcePreview,
   type MekaSkillVisibility,
 } from '../../shared/mekaSkillMarket.js';
-import { createMekaRouterClient, type FetchLike, type MekaRouterClient } from './routerClient.js';
+import {
+  createMekaRouterClient,
+  MekaRouterRequestError,
+  type FetchLike,
+  type ManagedMekaPlugin,
+  type MekaRouterClient,
+} from './routerClient.js';
 import {
   MekaRouterNotConfiguredError,
   toMekaRouterFailureError,
@@ -45,6 +52,31 @@ function publishError(code: string, message: string): Error {
   const error = new Error(message);
   (error as Error & { code: string }).code = code;
   return error;
+}
+
+/**
+ * 发布链(上传不可覆盖 Release)的失败映射。
+ *
+ * MCPRouter 的 Release 不可覆盖:同一版本再发就是 409 `already published`。
+ * 这里把它变成稳定 IPC 码,message 只保留 HTTP 状态码与服务端的 `error` 文本,
+ * **不把响应体 JSON 原样拼进去**——否则 toast 会把
+ * `{"error":"This plugin version is already published"}` 直接抛给用户
+ * (2026-11-18 用户实测)。返回 null 表示不是可识别的发布冲突,调用方原样抛出
+ * (登录失效、网络错误等仍走各自既有的处理)。
+ */
+function toMekaPluginPublishError(error: unknown, version: string): Error | null {
+  if (!(error instanceof MekaRouterRequestError) || error.status !== 409) return null;
+  const errorText = error.errorText?.trim() || null;
+  if (errorText !== null && /already published/i.test(errorText)) {
+    return publishError(
+      'MEKA_ROUTER_VERSION_ALREADY_PUBLISHED',
+      `MCPRouter already published v${version} (HTTP 409). Bump the version and publish again.`,
+    );
+  }
+  return publishError(
+    'ALREADY_EXISTS',
+    `MCPRouter rejected the upload (HTTP 409)${errorText === null ? '' : `: ${errorText}`}.`,
+  );
 }
 
 export interface MekaRouterHighRiskAuthorization {
@@ -876,11 +908,32 @@ export function createMekaRouterService(deps: MekaRouterServiceDeps) {
           'The MCPRouter Plugin changed after the upload preview was loaded.',
         );
       }
+      // Release 不可覆盖:目标版本低于线上当前发布版本时,服务端一定以 409 拒绝,
+      // 而本地版本回退时预览里仍会显示成「更新」。这里在**发起上传请求之前**拦住,
+      // 并说明当前线上版本与目标版本(只要求「必须更高」,不替用户编造下一个版本号)。
+      const currentVersion = existing?.currentRelease.version ?? null;
+      if (
+        currentVersion !== null &&
+        version.trim() !== currentVersion.trim() &&
+        compareMekaPluginVersion(version, currentVersion) < 0
+      ) {
+        throw publishError(
+          'MEKA_ROUTER_VERSION_NOT_NEWER',
+          `MCPRouter currently has v${currentVersion}; this package is v${version}. The version must be higher than the published version.`,
+        );
+      }
 
       const releasePublished = existing?.currentRelease.version !== version;
-      const published = releasePublished
-        ? await client.uploadMekaPlugin(baseUrl, token, bytes, existing?.id ?? null)
-        : existing;
+      let published: ManagedMekaPlugin | null | undefined;
+      if (releasePublished) {
+        try {
+          published = await client.uploadMekaPlugin(baseUrl, token, bytes, existing?.id ?? null);
+        } catch (error) {
+          throw toMekaPluginPublishError(error, version) ?? error;
+        }
+      } else {
+        published = existing;
+      }
       if (!published) {
         throw publishError('INTERNAL', 'MCPRouter did not return the published Plugin.');
       }

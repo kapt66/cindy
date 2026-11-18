@@ -1218,8 +1218,17 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
   将上传”，不得让用户把运行版本误读成上传版本（2026-11-18 修复：此前展示的是已装 ghost 的
   version，源码 0.11.1 却显示 0.9.1）。并从 MCPRouter owner API 回填“仅自己／部分
   可见／公开”权限及部分可见用户名；发布或单独保存权限后通过 `/access` 将完整权限设置
-  同步回后台。远端已存在该插件且源码版本不同时，发布前必须显示当前／目标版本并二次
-  确认；版本相同时不得覆盖不可变 Release，只允许同步权限，并提示提升版本后再发布内容。
+  同步回后台。远端已存在该插件时必须按**语义化版本**判三态（`shared/mekaDevPlugin.ts` 的
+  `compareMekaPluginVersion`），不能只判「版本字符串是否相同」：目标版本更高 → 显示当前／
+  目标版本并二次确认后发布；版本相同 → 不得覆盖不可变 Release，只允许同步权限，并提示提升
+  版本后再发布内容；**目标版本更低 → 禁止上传**（上传按钮 disabled，文案说明“当前线上 vX，
+  本地要发布的是 vY，版本必须更高，请先提升插件版本号”，不替用户编造下一个版本号），因为
+  MCPRouter 的 Release 不可覆盖，回退发布必然 409（2026-11-18 用户实测：弹窗同时显示
+  “MCPRouter 当前为 v1.0.66，将发布 v1.0.65”并让用户点了上传）。Main 侧
+  `uploadMekaPlugin` 拿到 `existing` 后也在**发起上传请求之前**用
+  `MEKA_ROUTER_VERSION_NOT_NEWER` 拒绝回退版本；服务端 409 `already published` 映射成
+  `MEKA_ROUTER_VERSION_ALREADY_PUBLISHED`（其余 409 仍是 `ALREADY_EXISTS`），message 只
+  保留 HTTP 状态码与服务端 `error` 文本，**不得**把响应体 JSON 原样拼进 message。
   owner API 返回空列表表示尚未发布，必须进入首次上传，不得显示读取失败。
   **读取发布信息的失败必须按原因区分**（固定 IPC 码，见
   `apps/desktop/src/shared/ipc-errors.ts` 的 `MEKA_ROUTER_ERROR_CODES`）：未配置/凭证不全、

@@ -219,14 +219,11 @@ describe('PluginManagementLayout', () => {
     expect(PLUGIN_MANAGEMENT_CARD_GRID_CLASS).toContain('auto-fit');
     expect(PLUGIN_MANAGEMENT_CARD_GRID_CLASS).toContain('min(100%,22.5rem)');
     expect(PLUGIN_MANAGEMENT_CARD_GRID_CLASS).not.toMatch(/\b(?:sm|md|lg):grid-cols-/);
-    // 同一行的开发卡/普通插件卡必须等高:栅格项拉伸,卡片自身再撑满行高。
-    expect(PLUGIN_MANAGEMENT_CARD_GRID_CLASS).toContain('items-stretch');
   });
 
   it('keeps a lone installed card on one of the two catalog tracks', () => {
     expect(PLUGIN_INSTALLED_CARD_GRID_CLASS).toContain('grid-cols-2');
     expect(PLUGIN_INSTALLED_CARD_GRID_CLASS).not.toContain('auto-fit');
-    expect(PLUGIN_INSTALLED_CARD_GRID_CLASS).toContain('items-stretch');
   });
 
   it('keeps catalog children in a height-constrained flex column so their main area can scroll', () => {

@@ -7603,9 +7603,9 @@ Codex/Claude/Pi 原生读 `AGENTS.md`/`CLAUDE.md`/`SKILL.md`，不看我们的 m
      小字（`line-clamp-2`）原样渲染、`title` 保留全文（新增 `data-testid="meka-dev-sync-error"`）。
      本次真实失败根因在插件清单元数据校验（`meka-submit` 的 `description` 超过 300 字符），
      属插件仓侧问题，本仓不修。
-  6. 卡片等高：Meka「All」栅格与已装虚拟栅格的行内 grid 显式 `items-stretch`，卡片 `article`
-     `h-full`、内容列 `flex-1`、右侧操作区 `justify-between`/`justify-end` 贴底；描述仍
-     `line-clamp-2`，只为等高、不裁重要信息，不用固定像素高度。
+  6. 卡片布局：**不改**通用栅格与卡片样式（`items-stretch` / `h-full` / 等高 / `auto-rows-fr`
+     曾试过并已全部回退，见 6.72）；卡片只按既有样式渲染，另在开发卡上**追加**「版本漂移提示」
+     与「同步失败原因」两行元素，复用既有间距与语义 token。
   7. i18n：上一版新增的文案已落到全部 12 个 locale（孤儿 key
      `settings.ghosts.meka.dev.versionLabel` 也在那时删除）；本次把只服务于手动同步的
      `syncNow` / `syncingNow` / `syncFailed` 从 12 个 locale 一并删除，保留 `sourceOutOfSync`
@@ -7619,9 +7619,64 @@ Codex/Claude/Pi 原生读 `AGENTS.md`/`CLAUDE.md`/`SKILL.md`，不看我们的 m
   `pnpm --filter desktop run typecheck`、`pnpm check:i18n`（17670 key 一致）、
   `pnpm check:i18n-glossary` 通过。
 - **未验证 / 风险**：① Light/Dark 与 12 语种**人工目检**未做（视觉上只新增「尚未同步」一行
-  提示与失败原因两行小字，等高靠 `items-stretch` + `h-full`，复用既有语义 token 与间距体系）；
+  提示与失败原因两行小字，卡片与栅格布局保持既有样式，复用既有语义 token 与间距体系）；
   ② 真实 MCPRouter 的 404/405 与超时端到端未实测（分类逻辑由注入 client 的单测覆盖）；
-  ③ 卡片等高的**实机目检**未做（jsdom 不计算布局），只锁定了类名契约与既有栅格测试；
+  ③ 卡片布局只做了类名与既有栅格测试核对（本轮已回退等高改动，jsdom 不计算布局）；
   ④ `GhostPluginPage.navigation.test.tsx` 的「prefetches only a sustained hover…」用例在本机
   基线（未含本次改动）同样失败，属存量问题，未纳入本次范围（见根 `AGENTS.md`
   「审查与问题范围」）。
+
+### 6.71 2026-11-18 开发插件打包弹窗把**回退版本**当成「更新」上传，服务端 409 把响应体 JSON 原样抛给用户（已修）
+
+- **症状（用户实测）**：本地源码 v1.0.65、MCPRouter 线上当前为 v1.0.66 时，弹窗同时显示
+  「将上传版本 v1.0.65 / 当前运行 v1.0.61」与「MCPRouter 当前为 v1.0.66，将发布 v1.0.65」，
+  上传按钮可用；点上传后被服务端拒绝，toast 原文是
+  `MCPRouter upload Meka Plugin failed (409): {"error":"This plugin version is already published"}`。
+- **根因（两条）**：
+  1. Renderer 只用 `uploadInfo.existing.currentVersion === uploadInfo.version` 判「同版本」，
+     其余一律当「更新」——于是本地版本**低于**线上已发布版本时也发起上传。MCPRouter 的
+     Release 不可覆盖，回退发布必然 409。
+  2. Main 的 `uploadMekaPlugin` 没有「目标版本必须高于当前发布版本」的前置校验；并且
+     `MekaRouterRequestError.message` 把响应体切片（含 `{"error": …}` 包装）一路带到 Renderer
+     的 toast，用户看到的是 JSON 而不是该做什么。
+- **改动**：
+  1. `apps/desktop/src/shared/mekaDevPlugin.ts` 新增 `compareMekaPluginVersion`（按点分段数值
+     比较，`v` 前缀／前导零不影响；非数字段按 0，因此**不能**用返回值 0 判「同一版本」，
+     字符串相等才是）。Main 与 Renderer 共用这一个比较，不新增依赖。
+  2. Renderer 三态（`MekaDevPluginPackageDialog.tsx`）：更高 → 保留既有更新确认；相等 → 走
+     既有「仅同步权限」（原逻辑不动）；更低 → **上传按钮 disabled** + 红字可操作文案
+     `publishVersionTooOld`（说明当前线上 vX、本地要发布的是 vY、必须提升版本号，不编造
+     下一个版本号），不再显示「将发布更低版本」这种自相矛盾的更新提示；「打包到本地」在
+     回退状态下仍可用。不同字符串但数值段相同（如 `1.0.0-beta` 与 `1.0.0`）仍按「更新」
+     处理——只有能证明更低才拦，不改旧行为。
+  3. Main（`main/meka-settings/routerService.ts`）：`uploadMekaPlugin` 拿到 `existing` 后，
+     目标版本低于 `currentRelease.version` 时**不发起上传请求**，抛
+     `MEKA_ROUTER_VERSION_NOT_NEWER`（message 同时给出当前线上版本与目标版本）；上传 409
+     `already published` 映射成 `MEKA_ROUTER_VERSION_ALREADY_PUBLISHED`（其它 409 仍是
+     `ALREADY_EXISTS`）。`routerClient.readError` 从回包体里只取 `error` 文本
+     (`MekaRouterRequestError.errorText`)，message 不再带 JSON 包装。两个新码登记在
+     `shared/ipc-errors.ts` 的 `MEKA_ROUTER_ERROR_CODES`，沿用既有 `MEKA_ROUTER_*` 风格。
+  4. 上传失败 toast 按稳定码走本地化文案（`publishVersionTooOld` /
+     `publishVersionAlreadyPublished`），其余失败仍显示 Main 的说明（网络、未知原因信息更多）。
+  5. i18n：两个新文案落到全部 12 个 locale（MCPRouter 保持专有名词原样；de / es / fr /
+     pt-BR / pt-PT 本次给出真正译文，未沿用该子树既有的英文回退）。
+  6. 事实文档：`docs/dev-rules/plugin-security-and-authoring.md` §4.1 与
+     `docs/dev-rules/meka-whitelist-verification.md` WL-9 第 5 条同步改写为三态 + 前置拒绝 +
+     409 稳定码口径。
+- **边界（有意）**：判据只有「低于 current 一律禁止」。即使该低版本历史上**曾经**发布过
+  （MCPRouter 上历史 Release 不可变，但 `current` 只指向最新），本轮也不放行回退发布；
+  回退内容的再次上线只能把插件版本号提升到 current 之上重新发布。另：`expectedCurrentReleaseId`
+  的并发前置仍先于版本判定，两者都失败时用户看到的是 `PRECONDITION_FAILED`（预览已过期）。
+- **验证（实跑）**：`pnpm --filter desktop exec vitest run
+  src/renderer/features/plugin/__tests__/MekaDevPluginPackageDialog.test.tsx
+  src/main/meka-settings/__tests__/routerService.test.ts
+  src/main/meka-settings/__tests__/routerClient.test.ts` → **3 files / 74 passed**；
+  `pnpm --filter desktop run typecheck` 通过（main 6391 + renderer 4571 文件）；
+  `pnpm check:i18n`（**17672 key** 一致，警告为既有「与默认语言相同」清单）、
+  `pnpm check:i18n-glossary`（35 条已裁决术语无新增违规）通过。
+- **未验证 / 风险**：① 真实 MCPRouter 的 409 端到端未复测（本地版本回退后服务端行为未知，
+  客户端已在上传前拦住；映射逻辑由注入 client 的单测覆盖）；② 「预览后该版本被另一处发布」
+  的并发窗口无法本机复现，只由错误码映射单测覆盖；③ 新增红字文案的 Light/Dark 与 12 语种
+  **人工目检**未做（只复用既有 `--error-fg` 语义 token 与既有 11px 排版，无新增布局）；
+  ④ 回退状态下权限下拉框仍可改但上传禁用（本轮只改上传路径，未改权限同步入口）。
+

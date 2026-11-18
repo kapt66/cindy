@@ -91,3 +91,33 @@ export interface MekaDevPluginUploadRequest {
   /** The release the user reviewed; null means the plugin did not yet exist. */
   expectedCurrentReleaseId: string | null;
 }
+
+/**
+ * 按点分段的数值比较两个 Meka 插件版本号(`v` 前缀与前导零都不影响结果)。
+ *
+ * 返回 >0 表示 `a` 更高,<0 表示 `a` 更低,0 表示**按数值段**相同。MCPRouter 的
+ * Release 不可覆盖,所以「目标版本是否更高」必须在客户端先判一次,不能只等服务端
+ * 409:本地版本低于线上已发布版本时,上传一定失败。
+ *
+ * 边界(有意如此):
+ * - 段数不同时缺失段按 0 处理(`1.0` 与 `1.0.0` 视为相同);
+ * - 非数字段按 0 处理(`1.0.0-beta` 与 `1.0.0` 视为相同),因此**不能**用返回值 0
+ *   判定「同一个版本」——字符串相等才是,调用方须先做严格相等判断。
+ */
+export function compareMekaPluginVersion(a: string, b: string): number {
+  const segments = (version: string) =>
+    version
+      .trim()
+      .replace(/^v(?=\d)/i, '')
+      .split('.')
+      .map((part) => Number(part));
+  const left = segments(a);
+  const right = segments(b);
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    const leftValue = Number.isFinite(left[index]) ? left[index] : 0;
+    const rightValue = Number.isFinite(right[index]) ? right[index] : 0;
+    const difference = leftValue - rightValue;
+    if (difference !== 0) return difference;
+  }
+  return 0;
+}

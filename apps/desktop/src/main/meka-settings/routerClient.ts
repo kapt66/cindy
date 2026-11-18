@@ -63,6 +63,14 @@ export class MekaRouterRequestError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    /**
+     * 服务端错误回包里的 `error` 文本(没有就不给)。
+     *
+     * 与 `message` 分开保存:message 是给日志／兜底诊断的完整行,可能带响应体片段;
+     * `errorText` 只有服务端自己写的错误句子,发布链可以把它加上 HTTP 状态码拼成
+     * 面向用户的说明,**不含**响应体 JSON 包装。
+     */
+    readonly errorText?: string,
   ) {
     super(message);
     this.name = 'MekaRouterRequestError';
@@ -222,11 +230,35 @@ async function request(
   );
 }
 
+/**
+ * 从错误回包体里取出可公开的错误文本。
+ *
+ * JSON `{"error": "..."}` 只取 `error` 的字符串值(不把整包 JSON 塞进 message);
+ * 不是 JSON 时退回纯文本切片(服务端常见 `Not Found`)。响应体里的其它字段
+ * (调试栈、账号标识等)一律不进入这个值。
+ */
+function readErrorText(text: string): string | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const error = (parsed as { error?: unknown }).error;
+      if (typeof error === 'string' && error.trim()) return error.trim();
+    }
+  } catch {
+    // 非 JSON 回包:按纯文本处理。
+  }
+  return trimmed.slice(0, 200);
+}
+
 async function readError(response: Response, operation: string): Promise<MekaRouterRequestError> {
   const text = await response.text().catch(() => '');
+  const errorText = readErrorText(text);
   return new MekaRouterRequestError(
-    `MCPRouter ${operation} failed (${response.status})${text ? `: ${text.slice(0, 200)}` : ''}`,
+    `MCPRouter ${operation} failed (${response.status})${errorText ? `: ${errorText}` : ''}`,
     response.status,
+    errorText ?? undefined,
   );
 }
 

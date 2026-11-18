@@ -510,6 +510,109 @@ describe('MekaDevPluginPackageDialog', () => {
     );
   });
 
+  /*
+   * 测试价值
+   * - 生产入口与可观察结果:线上已发布 v1.0.66、本地源码 v1.0.65 时,渲染
+   *   `MekaDevPluginPackageDialog` 把「上传到 MCPRouter」按钮置为 disabled,渲染
+   *   「当前线上版本更高、必须提升版本号」的可操作文案,并**不再**显示
+   *   「MCPRouter 当前为 v1.0.66，将发布 v1.0.65」这种自相矛盾的更新提示;
+   *   「打包到本地」不读线上状态,回退时仍然可用。
+   * - Bug／规则依据:2026-11-18 用户实测——本地版本低于线上已发布版本时仍被当成
+   *   「更新」上传,MCPRouter 的 Release 不可覆盖,必然 409,toast 原样抛出
+   *   `{"error":"This plugin version is already published"}`。
+   * - 现有覆盖缺口:原用例只有「更高 = 更新」与「相等 = 仅同步权限」两态,
+   *   没有「更低 = 禁止上传」。
+   * - 最小失败输入:upload-info 返回 version 1.0.65 + existing.currentVersion 1.0.66。
+   * - tier:unit(jsdom + mocked preload bridge)。
+   */
+  it('blocks publishing a lower version and explains what to change', async () => {
+    getRouter.mockResolvedValue({ configured: true });
+    getUploadInfo.mockResolvedValue({
+      pluginId: 'demo-plugin',
+      version: '1.0.65',
+      existing: {
+        pluginResourceId: 'plugin-resource',
+        currentReleaseId: 'release-66',
+        currentVersion: '1.0.66',
+        visibility: 'private',
+        sharedUsernames: [],
+      },
+    });
+    render(
+      <MekaDevPluginPackageDialog
+        item={item}
+        pluginName="Demo"
+        pluginVersion="1.0.65"
+        open
+        onOpenChange={vi.fn()}
+        onUploaded={vi.fn()}
+      />,
+    );
+
+    await screen.findByText('settings.ghosts.meka.dev.publishVersionTooOld');
+    expect(screen.getByTestId('meka-dev-plugin-version-too-old')).toBeTruthy();
+    // 回退状态下不能出现「将发布更低版本」这种自相矛盾但看似可执行的表述。
+    expect(screen.queryByText('settings.ghosts.meka.dev.versionUpdate')).toBeNull();
+    const upload = screen.getByRole('button', {
+      name: 'settings.ghosts.meka.dev.upload',
+    }) as HTMLButtonElement;
+    expect(upload.disabled).toBe(true);
+    fireEvent.click(upload);
+    expect(uploadPlugin).not.toHaveBeenCalled();
+    expect(
+      (
+        screen.getByRole('button', {
+          name: 'settings.ghosts.meka.dev.packageLocal',
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(false);
+  });
+
+  /*
+   * 测试价值
+   * - 生产入口与可观察结果:上传被 `MEKA_ROUTER_VERSION_ALREADY_PUBLISHED` 拒绝时,
+   *   toast 显示可操作的本地化文案,而不是 Main 的英文诊断句或响应体 JSON。
+   * - Bug／规则依据:2026-11-18 用户实测 toast 原文是
+   *   `MCPRouter upload Meka Plugin failed (409): {"error":"This plugin version is already published"}`。
+   * - 现有覆盖缺口:原用例只断言「Router 原因」被透传,没有覆盖版本类稳定码的文案映射。
+   * - 最小失败输入:upload 以 `[MEKA_ROUTER_VERSION_ALREADY_PUBLISHED]` 拒绝(版本已被
+   *   另一处发布的并发窗口)。
+   * - tier:unit(jsdom + mocked preload bridge)。
+   */
+  it('shows actionable copy instead of the raw Router conflict body', async () => {
+    getRouter.mockResolvedValue({ configured: true });
+    getUploadInfo.mockResolvedValue({
+      pluginId: 'demo-plugin',
+      version: '1.0.0',
+      existing: null,
+    });
+    uploadPlugin.mockRejectedValue(
+      new Error(
+        "Error invoking remote method 'meka-dev-plugins:upload': Error: [MEKA_ROUTER_VERSION_ALREADY_PUBLISHED] MCPRouter already published v1.0.0 (HTTP 409). Bump the version and publish again.",
+      ),
+    );
+    render(
+      <MekaDevPluginPackageDialog
+        item={item}
+        pluginName="Demo"
+        pluginVersion="1.0.0"
+        open
+        onOpenChange={vi.fn()}
+        onUploaded={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'settings.ghosts.meka.dev.upload' }),
+    );
+
+    await waitFor(() =>
+      expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+        'settings.ghosts.meka.dev.publishVersionAlreadyPublished',
+      ),
+    );
+  });
+
   it('shows the detailed IPC reason for an otherwise internal upload failure', async () => {
     getRouter.mockResolvedValue({ configured: true });
     getUploadInfo.mockResolvedValue({

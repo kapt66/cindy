@@ -1011,8 +1011,13 @@ Host 接线锚点由 `mcp-providers.ts:418` 漂移到 `:47`（导入）+ `:513`�
 3. 开发副本占用 `meka-dev-*` 派生 runtime ID，不占正式插件 ID，也不改变正式安装状态。
 4. `.cindy` 文件关联与安装渠道归 Meka（`channel: 'meka'`）。
 5. 打包弹窗的版本口径是**源码打包结果**（`upload-info.version`），并标出与运行中开发副本的
-   版本差异；读取 MCPRouter 发布信息的失败按固定码分类（未配置／session 过期／接口不支持／
-   网络不可达／回包非法），**本地打包在任何失败下仍可用**。开发副本的源码版本与运行版本
+   版本差异；上传前按**语义化版本**与线上已发布版本判三态（更高 = 更新并二次确认／相同 =
+   只同步权限／**更低 = 禁止上传**，按钮 disabled 且文案说明必须提升版本号）。Main 的
+   `uploadMekaPlugin` 在回退版本时**不发请求**、直接抛 `MEKA_ROUTER_VERSION_NOT_NEWER`；
+   服务端 409 `already published` 映射成 `MEKA_ROUTER_VERSION_ALREADY_PUBLISHED`，message
+   只含 HTTP 状态码与 `error` 文本，不带响应体 JSON。读取 MCPRouter 发布信息的失败按固定码
+   分类（未配置／session 过期／接口不支持／网络不可达／回包非法），**本地打包在任何失败下仍
+   可用**。开发副本的源码版本与运行版本
    不一致时，卡片**只**显示“尚未同步”这条信息（**没有手动同步按钮**，本地 dev 与线上插件
    本来就分开）；同步只由 watcher 自动完成，成功后由 `meka-dev-plugins:changed` 刷新，不加轮询。
    同步失败时状态行标“同步失败”，并把 `MekaDevPluginItem.error` 原样显示（两行小字 + `title`
@@ -1035,7 +1040,7 @@ Host 接线锚点由 `mcp-providers.ts:418` 漂移到 `:47`（导入）+ `:513`�
 - `apps/desktop/src/renderer/features/plugin/MekaDevPluginPackageDialog.tsx`
   （源码版本口径、按原因引导与重试、本地打包始终可用）
 - `apps/desktop/src/renderer/features/plugin/GhostPluginPage.tsx`（开发卡版本漂移提示与
-  同步失败原因；卡片等高与底部操作区对齐）
+  同步失败原因；卡片布局沿用既有样式，不新增等高/拉伸规则）
 - `apps/desktop/src/main/plugin-market/registerIpc.ts:314,326`（channel 校验）
 - `apps/desktop/src/main/plugin-market/clientIdentity.ts`（插件分发身份的**唯一**解析入口：
   `resolvePluginClientIdentity` / `readPluginClientIdentity` / `pluginClientVersionReader`；
@@ -1060,9 +1065,12 @@ Host 接线锚点由 `mcp-providers.ts:418` 漂移到 `:47`（导入）+ `:513`�
 **自动化门禁**
 - `pnpm --filter desktop exec vitest run src/main/cindy-brain/__tests__/mekaDevPlugins.test.ts`
 - `pnpm --filter desktop exec vitest run src/main/meka-settings/__tests__/routerService.test.ts`
-  （MCPRouter 读取失败映射到各自的 `MEKA_ROUTER_*` 码，且补充信息不含凭证/响应体）
+  （MCPRouter 读取失败映射到各自的 `MEKA_ROUTER_*` 码，且补充信息不含凭证/响应体；
+  回退版本在**上传请求之前**被 `MEKA_ROUTER_VERSION_NOT_NEWER` 拒绝；409
+  `already published` 映射成 `MEKA_ROUTER_VERSION_ALREADY_PUBLISHED` 且 message 不含响应体 JSON）
 - `pnpm --filter desktop exec vitest run src/renderer/features/plugin/__tests__/MekaDevPluginPackageDialog.test.tsx`
-  （失败原因分类渲染、重试、本地打包仍可用、上传版本与运行版本对照）
+  （失败原因分类渲染、重试、本地打包仍可用、上传版本与运行版本对照；版本三态：更高可上传／
+  相等只同步权限／更低禁用上传并给出可操作文案）
 - `pnpm --filter desktop exec vitest run src/renderer/features/plugin`
 - `pnpm --filter desktop exec vitest run src/main/plugin-market`
 - `pnpm --filter desktop exec vitest run src/main/plugin-market/__tests__/api.test.ts`
@@ -1079,7 +1087,7 @@ Host 接线锚点由 `mcp-providers.ts:418` 漂移到 `:47`（导入）+ `:513`�
 消失且运行版本变成 X。同步失败时状态行出现「开发模式 · 同步失败」并显示具体原因（`title`
 里是全文）；打包弹窗显示的是源码版本（不是运行版本），MCPRouter 未配置/断网/登录过期/
 接口不支持时分别给出对应引导与「重试」，且「打包到本地」始终可点。同一栅格里的开发卡与
-普通插件卡等高、底部操作区对齐。Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台；
+普通插件卡沿用既有布局，不做等高/拉伸改动。Meka 市场与 Cindy 市场的列表/凭证/忽略本轮互不串台；
 Meka 渠道请求头 `x-cindy-version` 是当前客户端真实版本（抓包或服务端日志确认，不是 `0.0.0`）。
 
 **本轮同步对 WL-9 四类契约的复核（2026-09-23 第三轮同步，逐条实查）**：
