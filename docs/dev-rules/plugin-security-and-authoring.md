@@ -1373,6 +1373,64 @@ Renderer 的来源分类是封闭取值（`public / organization / local / custo
   用户在原插件位置收到迁移引导，旧运行时、MCP、技能入口不再加载。见
   [`feature-retirements.md`](../product-rules/feature-retirements.md)。
 
+### 4.4 Meka PSB 测试主机覆盖（本地测试，`CINDY_MEKA_PSB_HOST`）
+
+2026-11-18 维护者需求：**插件包保持正式 PSB 域名不变，发布后不再改插件**；本地验收测试部署
+（`mekabot-test.meka.pawdy.fun`）时由 Cindy Host 在**启动期**把「正式 PSB 主机」在运行时替换
+成测试主机。因此**插件代码与插件包都不需要改**（`mekabot.meka.pawdy.fun` 仍是默认值），
+客户端也不需要为测试环境单独发版。
+
+- **环境变量**：`CINDY_MEKA_PSB_HOST`。主进程**启动期只解析一次**（`cindy-brain/index.ts` 的
+  `mekaPsbHostOverrideHost()` → `cindy-brain/mekaPsbHostOverride.ts` 的
+  `readMekaPsbHostOverride()`），进程内改环境变量不会生效，改完必须重启 dev 实例。
+- **取值白名单（凭证流向边界，不是便利开关）**：只接受
+  `mekabot-test.meka.pawdy.fun`（大小写与首尾空白归一化后比较）。显式写成正式主机
+  `mekabot.meka.pawdy.fun` 等于没开（幂等，便于部署脚本统一注入）。**其它任何值——包括完整
+  URL、通配、带端口、相似域名——一律忽略并写一条 `warn`，绝不生效**：企业身份 JWT 只能流向
+  插件 manifest 声明过的精确主机，绝不能由环境变量把凭证或流量引到别处。
+- **行为（全部由上面的开关显式开启；未设置时零影响）**：
+  1. **派生清单补声明**（`cindy-brain/mekaDevPlugins.ts`，仅 Meka 开发目录装入/目录监听同步）：
+     覆盖生效且插件声明了正式 PSB 主机时，在**内存里的派生清单**追加测试主机——`network.hosts`
+     与所有 `network.secrets[].inject.hosts`（正式主机条目保留；`gh-cli` 凭证被校验锁死为
+     `api.github.com`，不补）。派生包因此通过严格 `validateGhostManifest`。**源目录、源包字节
+     与已发布包都不动**；不声明正式 PSB 主机的开发插件原样。
+  2. **请求改写**（`cindy-brain/networkSlot.ts` 的 `handleFetchRequest`）：只改写**逐字等于正式
+     PSB 主机 + HTTPS 默认端口**的目标（协议/端口/路径/参数保留），其它 host、自定义端口、明文
+     HTTP、WebSocket（`network-request`）一律不动；重定向回到正式 PSB 主机同样改写。
+  3. **身份注入按改写后的 host 命中**：靠第 1 步补进 manifest 的 `inject.hosts`，因此测试部署
+     同样拿到 Cindy Connection JWT（否则测试环境 401）。
+  4. **只影响 dev 插件**：改写的第二道条件是**该实例已装的 manifest 声明了测试主机**——只有
+     Meka 开发目录派生包会被补声明。正式安装的插件、其它渠道的插件即使开着覆盖也不会被改道。
+- **日志**：只在真的改写时记 `ghost fetch-request rewritten to Meka PSB test host`，字段只有
+  `ghostId` / `callId` / `host` / `overrideHost` / `path`（pathname；**不记 query/body**，遵守
+  §4 开头的日志纪律）。派生补声明记一条 `Meka development Plugin manifest extends PSB test host`，
+  写明原因与批准令牌会随派生清单变化。
+- **已知副作用（刻意接受）**：派生副本比源码多一条已批准网络主机 ⇒ 首次开启覆盖后的下次同步
+  会在更新确认里出现该新增权限，派生包摘要与已批准记录也随之与源码不同（关掉覆盖后同步回到
+  原清单）。只发生在设置环境变量的本地环境，不影响已发布包、正式安装与其它用户。
+- **怎么启动（精确命令）**：`restart-desktop-remote.mjs` 的 `devEnvPrefix()` 白名单已包含该变量
+  （Windows 的 dev 跑在新开的 cmd 窗口里，不透传的话调用方 shell 的值进不去）：
+
+  ```bash
+  # POSIX
+  CINDY_MEKA_PSB_HOST=mekabot-test.meka.pawdy.fun pnpm restart:desktop:remote
+  # Windows PowerShell（dev 主进程由新 cmd 窗口启动，靠启动器白名单透传）
+  $env:CINDY_MEKA_PSB_HOST = 'mekabot-test.meka.pawdy.fun'; pnpm restart:desktop:remote
+  ```
+
+  去掉变量再执行同一条 restart 即回到正式域名。手工直跑 `pnpm dev:desktop` / `pnpm dev:desktop:remote`
+  时环境变量随进程继承即可（Agent 仍只走 restart 包装命令）。启动后检查主进程日志：
+  设置成功是 `Meka PSB test host override enabled for local testing`，白名单外的值是
+  `CINDY_MEKA_PSB_HOST ignored: value is not on the whitelist`。
+- 回归：`cindy-brain/__tests__/mekaPsbHostOverride.test.ts`（白名单/零影响/清单补声明矩阵，
+  含补完后仍通过严格 manifest 校验）、`networkSlot.test.ts`（改道 + 身份注入 + 重定向 +
+  正式安装不改道 + 未设置时零影响）、`mekaDevPlugins.test.ts`（真实 forge 打包的派生清单与
+  源目录不变）、`scripts/__tests__/restart-desktop-remote.test.mjs`（启动器透传）。
+- **未验证 / 风险**：本条未在真实测试 PSB 服务上端到端验收（只做到单测 + 构建层）；启用后
+  dev 插件会真的把请求与企业 JWT 发往测试部署，测试环境的安全与数据边界由部署方负责。正式
+  发布包不做 `app.isPackaged` 门禁——安全性来自「白名单取值 + 只对声明了测试主机的实例生效」，
+  而不是打包状态；如以后要收紧，应改白名单而不是绕过声明检查。
+
 ## 5. 存量插件兼容：升级必须无感（红线）
 
 本地模式首次云登录的插件交接随 #10357 暂时回退；已交接资料保持原样，未完成的交接

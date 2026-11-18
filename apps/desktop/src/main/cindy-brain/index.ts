@@ -868,6 +868,10 @@ import {
   type MekaDevPluginInstallAuthorization,
   type MekaDevPluginOwnerLease,
 } from './mekaDevPlugins.js';
+import {
+  MEKA_PSB_HOST_ENV,
+  readMekaPsbHostOverride,
+} from './mekaPsbHostOverride.js';
 import { getMekaRouterService } from '../meka-settings/ipc.js';
 import { openMekaRouterLoginWindow } from '../meka-settings/routerLoginWindow.js';
 import { watcherHostClient } from '../watcher-host/index.js';
@@ -889,6 +893,37 @@ import { isDataOwnerPushStamp, type DataOwnerPushStamp } from '../../shared/data
  */
 
 const log = createLogger('brain');
+
+/**
+ * 本地测试用的 Meka PSB 主机覆盖（`mekaPsbHostOverride.ts`）。
+ *
+ * 主进程**启动期只解析一次** `CINDY_MEKA_PSB_HOST`：环境变量只在启动时生效，进程
+ * 生命周期内改环境变量不会翻盘。解析结论同时交给两个消费者——插件出网改写
+ * （`GhostNetworkSlot.mekaPsbHostOverride`）与 Meka 开发目录派生清单补声明
+ * （`MekaDevPluginManager.mekaPsbHostOverride`）。
+ *
+ * 未设置 / 空值 / 白名单外的值 / 显式写正式主机时恒为 null：两个消费者都走原路径，
+ * 行为与以前逐字节一致。白名单外的值只 warn 一次，绝不生效。
+ */
+let mekaPsbHostOverrideResolved: string | null | undefined;
+function mekaPsbHostOverrideHost(): string | null {
+  if (mekaPsbHostOverrideResolved === undefined) {
+    const { host, resolution } = readMekaPsbHostOverride();
+    if (resolution.kind === 'rejected') {
+      log.warn(`${MEKA_PSB_HOST_ENV} ignored: value is not on the whitelist`, {
+        value: resolution.value,
+        accepted: ['mekabot-test.meka.pawdy.fun', 'mekabot.meka.pawdy.fun'],
+      });
+    } else if (resolution.kind === 'test') {
+      log.info('Meka PSB test host override enabled for local testing', {
+        host,
+        scope: 'meka development Plugins only',
+      });
+    }
+    mekaPsbHostOverrideResolved = host;
+  }
+  return mekaPsbHostOverrideResolved;
+}
 
 /** Attach the main-owned data-owner boundary to ghost UI pushes. */
 function getGhostOwnerPushStamp(): DataOwnerPushStamp | undefined {
@@ -7093,6 +7128,8 @@ export function getGhostNetworkSlot(): GhostNetworkSlot {
       },
       inFlightCallInfo: (callId) => getGhostCardService().inFlightCallInfoOf(callId),
       mcpAppsManual: bundledMcpAppsManual,
+      // CINDY_MEKA_PSB_HOST 覆盖（启动期解析一次；未设置时 null = 零影响）。
+      mekaPsbHostOverride: mekaPsbHostOverrideHost(),
       readSecret: (ghostId, secretKey) => readGhostSecret(ghostId, secretKey),
       resolveSavedCredential: (ghostId, secretKey) => getGhostSavedCredentialManager().resolve(ghostId, secretKey),
       readGhCliToken: () => getSharedGhCliTokenSource().readToken(),
@@ -9877,6 +9914,8 @@ export function registerGhostIpc(): void {
       watcherHostClient.subscribe(dir, ignore, onEvents, onError),
     onContentReloaded: broadcastGhostContentReloaded,
     onChanged: broadcastMekaDevPluginsChanged,
+    // CINDY_MEKA_PSB_HOST 覆盖（启动期解析一次；未设置时 null = 派生包逐字节不变）。
+    mekaPsbHostOverride: mekaPsbHostOverrideHost(),
     log,
   });
   mekaDevPluginsSingleton = mekaDevPlugins;

@@ -25,6 +25,11 @@ import {
 import { packGhostDir, type ForgePackResult } from './forge.js';
 import type { GhostInstallConsentPrompt } from './ghostInstallConsent.js';
 import { GHOST_SIGNATURE_FILE } from './ghostSignature.js';
+import {
+  MEKA_PSB_HOST,
+  MEKA_PSB_HOST_ENV,
+  withMekaPsbHostDeclarations,
+} from './mekaPsbHostOverride.js';
 import type {
   WatcherHostEventsHandler,
   WatcherHostErrorHandler,
@@ -149,6 +154,17 @@ export interface MekaDevPluginManagerDeps {
   subscribe: MekaDevPluginSubscribe;
   onContentReloaded: (id: string) => void;
   onChanged?: (items: MekaDevPluginItem[]) => void;
+  /**
+   * 本地测试用的 Meka PSB 主机覆盖(`mekaPsbHostOverride.ts`)：Host 主进程启动期
+   * 从 `CINDY_MEKA_PSB_HOST` 解析一次后原样传入。未设置 / 被白名单拒绝时恒为 null，
+   * 派生包与源目录逐字节不变。
+   *
+   * 生效时只改**内存里的派生清单**(install / 目录监听同步共用同一条派生路径)：
+   * `network.hosts` 与 `network.secrets[].inject.hosts` 追加覆盖主机、保留正式主机。
+   * 源目录、源包字节与已发布包都不动；派生副本因此多一条已批准主机，批准令牌随
+   * 安装摘要变化是刻意行为（下一次同步会重新求一次确认）。
+   */
+  mekaPsbHostOverride?: string | null;
   log?: {
     info(message: string, meta?: Record<string, unknown>): void;
     warn(message: string, meta?: Record<string, unknown>): void;
@@ -572,13 +588,36 @@ export class MekaDevPluginManager {
       // 这里只叠加 Host 派生的身份字段 —— 与正式打包保留作者字节同一口径,作者的卡槽与
       // 能力详单不因归一化往返而缩水。
       const sourceManifest = JSON.parse(await manifestEntry.async('text')) as Record<string, unknown>;
-      const developmentManifest: Record<string, unknown> = {
+      const derivedManifest: Record<string, unknown> = {
         ...sourceManifest,
         id: runtimeId,
         ...(packed.manifest.command
           ? { command: mekaDevCommand(packed.manifest.command, runtimeId) }
           : {}),
       };
+      /**
+       * Meka PSB 测试主机覆盖（`mekaPsbHostOverride.ts`）：
+       * 只在启动期环境变量显式开启、且插件真的声明了正式 PSB 主机时，给**内存里的
+       * 派生清单**追加测试主机（`network.hosts` 与所有 `network.secrets[].inject.hosts`，
+       * 正式主机原样保留）。源目录与已发布包不动；其它插件原样。
+       * 派生副本因此比源码多一条已批准网络主机 → 首次开启覆盖后的同步会在更新确认里出现
+       * 该新增权限，派生包摘要与已批准记录也随之与源码不同——这是刻意登记的 dev-only
+       * 副作用，未设置变量时不存在。
+       */
+      const psbOverride = withMekaPsbHostDeclarations(
+        derivedManifest,
+        this.deps.mekaPsbHostOverride ?? null,
+      );
+      if (psbOverride) {
+        this.deps.log?.info('Meka development Plugin manifest extends PSB test host', {
+          runtimeId,
+          pluginId: packed.manifest.id,
+          addedHosts: psbOverride.addedHosts,
+          addedInjectHosts: psbOverride.addedInjectHosts,
+          reason: `${MEKA_PSB_HOST_ENV} is set: requests to ${MEKA_PSB_HOST} are rewritten to the test host at runtime, so the derived manifest declares one extra approved host`,
+        });
+      }
+      const developmentManifest = psbOverride?.manifest ?? derivedManifest;
       const validated = validateGhostManifest(developmentManifest);
       if (!validated.ok) {
         throw new MekaDevPluginError('invalid-plugin', `无法生成独立开发身份：${validated.reason}`);

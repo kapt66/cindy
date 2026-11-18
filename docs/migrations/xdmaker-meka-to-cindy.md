@@ -7832,3 +7832,51 @@ private 与 shared 合并成 `personal`，客户端拿不到区分事实。所�
 本轮不猜。另外 Meka 页的来源筛选目前只有「全部 / 公开」两档（`settings.ghosts.meka.origin`），
 新分类暂不进筛选项。
 
+
+### 6.76 2026-11-18 本地验收测试 PSB：启动期环境变量把正式 PSB 域名换成测试域名（已实现）
+
+**背景**：Meka 插件包（`meka-submit` 0.12.5 等）把正式 Project Steward Bot 主机
+`mekabot.meka.pawdy.fun` 硬编码在源码里，manifest 的 `network.hosts` 与
+`network.secrets[].inject.hosts` 也只声明它；沙箱 renderer 只有 `window.cindy`、没有
+`process.env`，插件自己无法读环境变量。维护者要求「默认读正式域名，启动时带环境变量在
+运行时替换成 `mekabot-test.meka.pawdy.fun`，这样发布后也不用改插件」——即插件包保持正式
+域名不变、发布后不再改，由 Cindy Host 在启动期做替换。
+
+**改动**（只动 Cindy 仓；插件仓零改动）：
+1. **新模块 `apps/desktop/src/main/cindy-brain/mekaPsbHostOverride.ts`**：环境变量
+   `CINDY_MEKA_PSB_HOST` 的**白名单解析**（只接受 `mekabot-test.meka.pawdy.fun`；显式写正式
+   主机等于没开；其它值 ignored + warn）、`rewriteMekaPsbHost`（只改写逐字等于正式 PSB 主机
+   且 HTTPS 默认端口的目标）、`manifestDeclaresMekaPsbHost` 与
+   `withMekaPsbHostDeclarations`（内存补声明，不原地修改入参）。纯函数、不依赖 Electron。
+2. **启动期只读一次**：`cindy-brain/index.ts` 的 `mekaPsbHostOverrideHost()` 首次调用时解析
+   （白名单外 warn、生效 info），结论同时交给两个消费者；未设置时为 null。
+3. **dev 派生清单补声明**（`mekaDevPlugins.ts` 的 `createDevelopmentPackage`，install 与目录
+   监听同步共用）：覆盖生效且插件声明了正式 PSB 主机时，给内存派生清单追加测试主机到
+   `network.hosts` 与所有 `network.secrets[].inject.hosts`（正式主机保留，`gh-cli` 不补），
+   源目录/源包/已发布包不动；补完后仍通过严格 `validateGhostManifest`。
+4. **请求改写**（`networkSlot.ts` 的 `handleFetchRequest`）：命中「正式 PSB 主机 + HTTPS 默认
+   端口」且该实例 manifest 已声明测试主机时改道，身份注入按改写后的 host 命中；重定向回到
+   正式 PSB 主机同样改道；WebSocket 不动。日志只记 host + pathname。
+5. **启动器透传**：`scripts/restart-desktop-remote.mjs` 的 `devEnvPrefix()` 白名单加入该变量
+   （Windows dev 在新 cmd 窗口里跑，不透传则用户值进不去）。
+6. **文档**：`docs/dev-rules/plugin-security-and-authoring.md` 新增 §4.4（白名单、精确启动
+   命令、只影响 dev 插件、未设置时零影响、派生包权限差异副作用、未验证项）。
+
+**零影响证明**：未设置环境变量时，两个消费者拿到 `null` —— 派生清单走原对象、请求不改写，
+测试 `mekaPsbHostOverride.test.ts`（off/formal/rejected 全部 host=null）、
+`networkSlot.test.ts`（未设置时正式 PSB 请求原样派发）与 `mekaDevPlugins.test.ts`
+（无覆盖时既有派生行为不变）覆盖。
+
+**验证**（定向，未跑提交前门禁）：
+`vitest run src/main/cindy-brain/__tests__/mekaPsbHostOverride.test.ts` → 1 file / 8 passed；
+`vitest run src/main/cindy-brain/__tests__/mekaDevPlugins.test.ts` → 1 file / 23 passed（新增 1）；
+`vitest run src/main/cindy-brain/__tests__/networkSlot.test.ts -t PSB` → 5 passed / 200 skipped；
+`node --test --test-name-pattern="PSB" scripts/__tests__/restart-desktop-remote.test.mjs` →
+2 passed。**未验证**：`typecheck`、全量单测、`check:test-hygiene`、i18n、真实测试 PSB 端到端
+（含真实 JWT 注入与部署方数据边界）；也**没有**重建/启动 dev 实例——`apps/desktop/.vite/build`
+仍早于本次改动，必须按 §4.4 的命令 restart 一次才会带上新代码。
+
+**风险 / 遗留**：① 覆盖启用后的下次 dev 同步会在更新确认里出现派生清单多出的那条已批准网络
+主机（派生包摘要与已批准记录因此与源码不同；刻意、仅限设置变量的本地环境）；② 不做
+`app.isPackaged` 门禁，安全性来自白名单取值 + 「只对声明了测试主机的实例生效」；③ WebSocket
+来源不参与覆盖（当前 PSB 插件不用 WS），如以后需要必须在同一开关下补对称测试。

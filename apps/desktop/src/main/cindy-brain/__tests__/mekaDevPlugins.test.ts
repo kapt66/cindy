@@ -16,6 +16,7 @@ import {
   type GhostInstallConsentPrompt,
 } from '../ghostInstallConsent';
 import { GHOST_SIGNATURE_FILE } from '../ghostSignature';
+import { MEKA_PSB_HOST, MEKA_PSB_TEST_HOST } from '../mekaPsbHostOverride';
 import {
   MekaDevPluginManager,
   mekaDevRuntimeId,
@@ -530,6 +531,92 @@ describe('MekaDevPluginManager', () => {
       command: expect.stringMatching(/^demo-dev-[0-9a-f]{6}$/),
     });
     expect(zip.file(GHOST_SIGNATURE_FILE)).toBeNull();
+  });
+
+  /**
+   * 测试价值
+   * - 生产入口与可观察结果：`MekaDevPluginManager.install()`（Meka 插件页登记开发目录
+   *   的唯一入口）在 `CINDY_MEKA_PSB_HOST` 生效时交给安装器的**派生清单**必须声明
+   *   测试主机；用户可观察结果是 dev 插件请求正式 PSB 主机时被改道到测试部署并拿到
+   *   企业身份 JWT。
+   * - Bug／规则依据：2026-11-18 维护者需求——插件包保持正式 `mekabot.meka.pawdy.fun`、
+   *   发布后不再改插件；本地验收测试部署时只由 Cindy Host 在运行时替换。声明补全与
+   *   白名单见 `docs/dev-rules/plugin-security-and-authoring.md` §4.4。
+   * - 现有覆盖缺口：既有用例全部在「无覆盖」下断言派生清单；没人证明覆盖时多出来的
+   *   声明只出现在派生副本、正式主机保留、源目录与源清单不被污染。
+   * - 最小失败输入：`mekaPsbHostOverride` 生效但派生清单缺测试主机 ⇒ 改道后的请求被
+   *   白名单与身份注入双双拒绝（用户看到「目标域名不在本意识的白名单内」）。
+   * - tier：unit（临时目录 + 真实 forge 打包，无 Electron）。
+   */
+  it('CINDY_MEKA_PSB_HOST 生效时只给派生清单补测试主机声明，源目录不动', async () => {
+    const psbSourceManifest: Record<string, unknown> = {
+      schemaVersion: 2,
+      id: 'meka-submit',
+      name: 'Meka Submit',
+      version: '0.12.5',
+      entry: 'main.js',
+      slots: ['tool', 'network'],
+      tools: [{ name: 'submit_task', description: 'Submit a task to PSB' }],
+      network: {
+        hosts: [MEKA_PSB_HOST],
+        secrets: [
+          {
+            key: 'cindy_identity',
+            label: 'Cindy Enterprise Identity',
+            source: 'oidc-token',
+            inject: {
+              header: 'Authorization',
+              format: 'Bearer {value}',
+              hosts: [MEKA_PSB_HOST],
+            },
+          },
+        ],
+      },
+    };
+    await fs.promises.writeFile(
+      path.join(sourceDir, GHOST_MANIFEST_FILE),
+      `${JSON.stringify(psbSourceManifest, null, 2)}\n`,
+    );
+    await fs.promises.writeFile(path.join(sourceDir, 'main.js'), '// development Plugin');
+
+    const installedRaw: Array<Record<string, unknown>> = [];
+    const overrideDeps: MekaDevPluginManagerDeps = {
+      ...deps,
+      mekaPsbHostOverride: MEKA_PSB_TEST_HOST,
+      // 走真实 forge 打包,派生包内容就是生产路径会落位的那一份。
+      packDirectory: (dir, { outputDir }) =>
+        packMekaDevPluginSource(dir, { outputDir, forbiddenRootDirs: [] }),
+      installPackage: vi.fn(async (cindyPath: string): Promise<InstalledGhost> => {
+        const zip = await JSZip.loadAsync(await fs.promises.readFile(cindyPath));
+        const raw = JSON.parse(
+          await zip.file(GHOST_MANIFEST_FILE)!.async('text'),
+        ) as Record<string, unknown>;
+        installedRaw.push(raw);
+        return {
+          manifest: raw as unknown as GhostManifest,
+          dir: path.join(workDir, 'installed', String(raw.id)),
+          enabled: true,
+          approval: { state: 'legacy-unapproved' },
+        };
+      }),
+    };
+    const manager = new MekaDevPluginManager(overrideDeps);
+    await manager.install(sourceDir, (await manager.inspect(sourceDir)).packageSha256);
+
+    expect(installedRaw).toHaveLength(1);
+    const network = installedRaw[0]!.network as {
+      hosts: string[];
+      secrets: Array<{ inject: { hosts: string[] } }>;
+    };
+    // 派生副本：正式主机保留 + 测试主机追加（hosts 与 oidc inject.hosts 都补）。
+    expect(network.hosts).toEqual([MEKA_PSB_HOST, MEKA_PSB_TEST_HOST]);
+    expect(network.secrets[0]!.inject.hosts).toEqual([MEKA_PSB_HOST, MEKA_PSB_TEST_HOST]);
+    // 源目录里的作者清单一个字节都没改（发布用的就是这一份）。
+    expect(
+      JSON.parse(
+        await fs.promises.readFile(path.join(sourceDir, GHOST_MANIFEST_FILE), 'utf8'),
+      ),
+    ).toEqual(psbSourceManifest);
   });
 
   it('rejects a source directory that changes after approval', async () => {

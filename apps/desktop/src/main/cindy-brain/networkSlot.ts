@@ -26,6 +26,10 @@
 import { randomUUID } from 'node:crypto';
 import type { Agent } from 'node:http';
 import { ghostNetworkTransportRejection } from './networkOriginPolicy.js';
+import {
+  manifestDeclaresMekaPsbHost,
+  rewriteMekaPsbHost,
+} from './mekaPsbHostOverride.js';
 import { HostNetworkConnections } from './networkConnections.js';
 import { GHOST_SAVED_CREDENTIAL_MARKER } from '../../shared/pluginAccountReuse.js';
 
@@ -114,6 +118,16 @@ export interface NetworkSlotDeps {
    * 找不到手册时 null。未注入时不带手册头。
    */
   mcpAppsManual?(): McpAppsManualRef | null;
+  /**
+   * 本地测试用的 Meka PSB 主机覆盖(`mekaPsbHostOverride.ts`)：Host 主进程启动期
+   * 从 `CINDY_MEKA_PSB_HOST` 解析一次后原样传入。未设置 / 被白名单拒绝 / 显式写
+   * 正式主机时恒为 null —— 所有行为逐字节不变。
+   *
+   * 生效条件(三条同时满足)：目标逐字是正式 PSB 主机 + HTTPS 默认端口，且**该实例
+   * manifest 已声明覆盖主机**(只有 Meka 开发目录派生包会被补声明)。正式安装的插件
+   * 没有该声明，因此不会被改道。WebSocket(`network-request`)不在覆盖范围内。
+   */
+  mekaPsbHostOverride?: string | null;
   /**
    * 读某意识某条凭证的明文(safeStorage 现读,不缓存——用户改了 key 下一单
    * 即生效);未配置 / 读失败返回 null。
@@ -1194,7 +1208,9 @@ export class GhostNetworkSlot {
     // ── URL 硬校验 + 白名单 ─────────────────────────────────────────
     const parsed = parseTargetUrl(p.url);
     if ('error' in parsed) return { ok: false, message: parsed.error };
-    const url = parsed.url;
+    // `let` 只是因为下面可能被 Meka PSB 测试主机覆盖改写（启动期环境变量显式开启
+    // 时才可能发生，未设置时它就是原 URL）。
+    let url = parsed.url;
     const transportError = ghostNetworkTransportRejection(url);
     if (transportError) return { ok: false, errorCode: 'NETWORK_INSECURE_ORIGIN', message: transportError };
 
@@ -1225,6 +1241,33 @@ export class GhostNetworkSlot {
     }
     const declaredHosts = net?.hosts ?? [];
     const declaredSecrets = net?.secrets ?? [];
+    /**
+     * Meka PSB 测试主机覆盖（`mekaPsbHostOverride.ts`，本地测试专用）：
+     * - 开关在 Host 主进程启动期由 `CINDY_MEKA_PSB_HOST` 解析一次，未设置时恒 null；
+     * - 只有该实例 manifest **已声明**覆盖主机时才可能改写——只有 Meka 开发目录派生
+     *   包会被补声明（`mekaDevPlugins.ts`），正式安装的插件不会被改道；
+     * - 改写只作用于「逐字匹配正式 PSB 主机 + HTTPS 默认端口」的目标，其它 host、
+     *   自定义端口、HTTP、WebSocket 一律不动；
+     * - 改写后白名单与身份注入都按覆盖主机命中（第 2 步补进 manifest 的声明）。
+     * 日志只记 host 与 pathname（query 可能带敏感参数，不记）。
+     */
+    const mekaPsbConfiguredHost = this.deps.mekaPsbHostOverride ?? null;
+    const mekaPsbTestHost = manifestDeclaresMekaPsbHost(declaredHosts, mekaPsbConfiguredHost)
+      ? mekaPsbConfiguredHost
+      : null;
+    const applyMekaPsbHostOverride = (target: URL): URL => {
+      const rewritten = rewriteMekaPsbHost(target, mekaPsbTestHost);
+      if (rewritten === target) return target;
+      this.deps.log?.info('ghost fetch-request rewritten to Meka PSB test host', {
+        ghostId: instanceKey,
+        callId,
+        host: target.hostname,
+        overrideHost: rewritten.hostname,
+        path: target.pathname,
+      });
+      return rewritten;
+    };
+    url = applyMekaPsbHostOverride(url);
     const ghCliSecrets = declaredSecrets.filter((secret) => secret.source === 'gh-cli');
     if (ghCliSecrets.length > 0 && !canUseGithubHostCredentials(ghost)) {
       return { ok: false, message: '本插件尚未批准或安装身份待确认，已阻断 gh-cli 凭证请求' };
@@ -1500,7 +1543,8 @@ export class GhostNetworkSlot {
             currentBody = undefined;
             bodyDropped = true;
           }
-          currentUrl = nextUrl;
+          // 重定向回到正式 PSB 主机时同样按覆盖规则改写（同一开关、同一逐字匹配）。
+          currentUrl = applyMekaPsbHostOverride(nextUrl);
         }
         if (!response) break;
         if (

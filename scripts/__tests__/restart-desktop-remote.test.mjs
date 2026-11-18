@@ -1308,6 +1308,16 @@ test("devEnvPrefix omits harness envs when unset (whitelist stays opt-in)", () =
 	assert.equal(devEnvPrefix({}, "darwin"), "CINDY_CUA_SMOKE='0' ");
 });
 
+// Windows dev 在**新开的 cmd 窗口**里跑:不显式透传的话,用户在调用方 shell 设置的变量
+// 根本进不了 dev 主进程,本地验收测试 PSB 时会静默连回正式域名。
+test("devEnvPrefix forwards the Meka PSB host override to the dev process", () => {
+	const env = { CINDY_MEKA_PSB_HOST: "mekabot-test.meka.pawdy.fun" };
+	assert.ok(devEnvPrefix(env, "darwin").includes("CINDY_MEKA_PSB_HOST='mekabot-test.meka.pawdy.fun'"));
+	assert.ok(devEnvPrefix(env, "win32").includes('set "CINDY_MEKA_PSB_HOST=mekabot-test.meka.pawdy.fun"'));
+	// 未设置时要清掉长驻 Terminal 里可能残留的旧值,避免上一次启动的覆盖泄露到本次。
+	assert.ok(darwinStaleDevEnvUnset({}).includes("CINDY_MEKA_PSB_HOST"));
+});
+
 test("devEnvPrefix passes the explicit isolated OAuth write escape hatch", () => {
 	assert.equal(
 		devEnvPrefix(

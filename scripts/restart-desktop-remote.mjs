@@ -1212,6 +1212,10 @@ function devEnvEntries(env) {
     // 客户端模式目标（host-delegation.ts，只接受回环地址）：隔离沙箱里验收窗口连 Host。
     // main() 已用 retainHostClientTargetForIsolated 把非隔离启动里的值删掉。
     ['CINDY_HOST_API', env.CINDY_HOST_API],
+    // 本地测试用的 Meka PSB 主机覆盖（mekaPsbHostOverride.ts，主进程启动期读一次）：
+    // 只接受白名单内测试主机；dev 窗口在新终端里跑，不显式透传的话用户在当前 shell
+    // 设置的值根本进不了 dev 主进程。
+    ['CINDY_MEKA_PSB_HOST', env.CINDY_MEKA_PSB_HOST],
   ];
 }
 

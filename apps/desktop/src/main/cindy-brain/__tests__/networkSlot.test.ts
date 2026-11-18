@@ -3155,3 +3155,178 @@ describe('networkSlot · MCP Apps 手册头', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * 测试价值
+ * - 生产入口与可观察结果：`GhostNetworkSlot.handleFetchRequest`（插件出网的唯一边界）
+ *   在 `CINDY_MEKA_PSB_HOST` 生效时把发往正式 PSB 主机的请求改道到测试部署，且身份
+ *   JWT 按改写后的 host 注入；用户可观察结果是 dev 插件连上测试 PSB。
+ * - Bug／规则依据：2026-11-18 维护者需求（插件包保持正式 PSB 域名、发布后不改插件），
+ *   覆盖规则与白名单见 `docs/dev-rules/plugin-security-and-authoring.md` §4.4。
+ * - 现有覆盖缺口：既有用例全部按「没有覆盖」断言 dispatch URL，没有任何用例证明
+ *   「只改正式 PSB 主机」「正式安装（未补声明）不被改道」「未设置时逐字节不变」。
+ * - 最小失败输入：插件吐 `https://mekabot.meka.pawdy.fun/...` 时若被改道到未声明主机
+ *   （或反之正式安装被改道），用户会看到「目标域名不在本意识的白名单内」、企业 JWT
+ *   也拿不到；反过来未设置环境变量却改道就是发布后行为回归。
+ * - tier：unit（DI fake，无 Electron、无真实网络）。
+ */
+describe('networkSlot · Meka PSB 测试主机覆盖', () => {
+  const PSB_HOST = 'mekabot.meka.pawdy.fun';
+  const PSB_TEST_HOST = 'mekabot-test.meka.pawdy.fun';
+
+  /** 开发目录派生包的形态：正式主机与测试主机都在声明里（Host 补的那份）。 */
+  const patchedGhost = (): InstalledGhost =>
+    fakeGhost({
+      id: 'meka-dev-meka-submit-12345678',
+      network: {
+        hosts: [PSB_HOST, PSB_TEST_HOST, 'other.example.com'],
+        secrets: [
+          {
+            key: 'psb_key',
+            label: 'PSB Key',
+            inject: { header: 'X-Psb-Key', format: '{value}', hosts: [PSB_HOST, PSB_TEST_HOST] },
+          },
+        ],
+      },
+    });
+
+  it('声明了测试主机的实例：正式 PSB 请求改道到测试主机，路径/参数保留，身份按新 host 注入', async () => {
+    const log = { info: vi.fn(), warn: vi.fn() };
+    const { slot, fetchImpl } = makeSlot({
+      getGhost: patchedGhost,
+      mekaPsbHostOverride: PSB_TEST_HOST,
+      readSecret: (_id, key) => (key === 'psb_key' ? 'psb-secret' : null),
+      log,
+    });
+
+    const result = await slot.handleFetchRequest('meka-dev', {
+      url: `https://${PSB_HOST}/api/v1/task?trace=1`,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(fetchImpl.mock.calls[0]![0]).toBe(
+      `https://${PSB_TEST_HOST}/api/v1/task?trace=1`,
+    );
+    expect((fetchImpl.mock.calls[0]![1].headers as Record<string, string>)['X-Psb-Key']).toBe(
+      'psb-secret',
+    );
+    // 结构化日志只带 host + pathname，不带 query。
+    expect(log.info).toHaveBeenCalledWith(
+      'ghost fetch-request rewritten to Meka PSB test host',
+      expect.objectContaining({
+        host: PSB_HOST,
+        overrideHost: PSB_TEST_HOST,
+        path: '/api/v1/task',
+      }),
+    );
+    expect(JSON.stringify(log.info.mock.calls)).not.toContain('trace=1');
+
+    // 其它 host 一律不动（同一实例里声明的普通来源照旧直连）。
+    await slot.handleFetchRequest('meka-dev', { url: 'https://other.example.com/x' });
+    expect(fetchImpl.mock.calls[1]![0]).toBe('https://other.example.com/x');
+  });
+
+  it('身份 JWT 按改写后的 host 命中并注入（否则测试部署会 401）', async () => {
+    const getToken = vi.fn(async () => 'header.payload.signature');
+    const { slot, fetchImpl } = makeSlot({
+      getGhost: () =>
+        fakeGhost({
+          id: 'meka-dev-meka-submit-12345678',
+          network: {
+            hosts: [PSB_HOST, PSB_TEST_HOST],
+            secrets: [
+              {
+                key: 'cindy_identity',
+                label: 'Cindy Enterprise Identity',
+                source: 'oidc-token',
+                inject: {
+                  header: 'Authorization',
+                  format: 'Bearer {value}',
+                  hosts: [PSB_HOST, PSB_TEST_HOST],
+                },
+              },
+            ],
+          },
+        }),
+      mekaPsbHostOverride: PSB_TEST_HOST,
+      connectionTokens: {
+        resolve: () => ({
+          membershipId: 'membership-1',
+          audience: 'acme:meka-submit',
+          allowedHosts: [PSB_TEST_HOST],
+        }),
+        getToken,
+        invalidate: vi.fn(),
+      },
+    });
+
+    await slot.handleFetchRequest('meka-dev', { url: `https://${PSB_HOST}/api/v1/whoami` });
+
+    expect(fetchImpl.mock.calls[0]![0]).toBe(`https://${PSB_TEST_HOST}/api/v1/whoami`);
+    expect(
+      (fetchImpl.mock.calls[0]![1].headers as Record<string, string>).Authorization,
+    ).toBe('Bearer header.payload.signature');
+  });
+
+  it('重定向回到正式 PSB 主机时同样改道（同一开关、同一逐字匹配）', async () => {
+    const { slot, fetchImpl } = makeSlot({
+      getGhost: patchedGhost,
+      mekaPsbHostOverride: PSB_TEST_HOST,
+      readSecret: (_id, key) => (key === 'psb_key' ? 'psb-secret' : null),
+    });
+    fetchImpl.mockResolvedValueOnce(
+      fakeResponse({ status: 302, headers: { location: `https://${PSB_HOST}/next` } }),
+    );
+
+    await slot.handleFetchRequest('meka-dev', { url: `https://${PSB_HOST}/start` });
+
+    expect(fetchImpl.mock.calls[0]![0]).toBe(`https://${PSB_TEST_HOST}/start`);
+    expect(fetchImpl.mock.calls[1]![0]).toBe(`https://${PSB_TEST_HOST}/next`);
+  });
+
+  it('正式安装（没补测试主机声明）不被改道：覆盖只影响 dev 派生包', async () => {
+    const log = { info: vi.fn(), warn: vi.fn() };
+    const { slot, fetchImpl } = makeSlot({
+      getGhost: () =>
+        fakeGhost({
+          id: 'meka-submit',
+          network: {
+            hosts: [PSB_HOST],
+            secrets: [
+              {
+                key: 'psb_key',
+                label: 'PSB Key',
+                inject: { header: 'X-Psb-Key', format: '{value}', hosts: [PSB_HOST] },
+              },
+            ],
+          },
+        }),
+      mekaPsbHostOverride: PSB_TEST_HOST,
+      readSecret: (_id, key) => (key === 'psb_key' ? 'psb-secret' : null),
+      log,
+    });
+
+    const result = await slot.handleFetchRequest('meka-submit', {
+      url: `https://${PSB_HOST}/api/x`,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(fetchImpl.mock.calls[0]![0]).toBe(`https://${PSB_HOST}/api/x`);
+    expect(log.info).not.toHaveBeenCalledWith(
+      'ghost fetch-request rewritten to Meka PSB test host',
+      expect.anything(),
+    );
+  });
+
+  it('未设置环境变量时零影响：即使实例声明了测试主机也不改道', async () => {
+    const { slot, fetchImpl } = makeSlot({
+      getGhost: patchedGhost,
+      // 缺省 = 未设置 CINDY_MEKA_PSB_HOST（生产路径就是这个值）。
+      readSecret: (_id, key) => (key === 'psb_key' ? 'psb-secret' : null),
+    });
+
+    await slot.handleFetchRequest('meka-dev', { url: `https://${PSB_HOST}/api/v1/task` });
+
+    expect(fetchImpl.mock.calls[0]![0]).toBe(`https://${PSB_HOST}/api/v1/task`);
+  });
+});
