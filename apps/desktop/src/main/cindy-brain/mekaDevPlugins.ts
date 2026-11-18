@@ -253,6 +253,19 @@ export class MekaDevPluginManager {
     return this.records.get(runtimeId)?.pluginId ?? null;
   }
 
+  /**
+   * 把开发副本的物理 runtime id（或 `_root__<runtimeId>` 实例键）映射回
+   * **逻辑插件 id**。只读内存登记表——同步、无 IO、不触发对账/打包。
+   *
+   * 消费者是 `connectionAudienceResolver` 的 Meka 开发安装签发基座：开发安装的 audience
+   * 必须是 `<orgSlug>:<逻辑插件 id>`（PSB 侧按 `xd:meka-submit` 配置），不能是物理
+   * runtime id。未登记 / 注册表尚未加载时返回 null，由 resolver 按 runtime id 结构回退；
+   * 非 dev 实例不会调用它。
+   */
+  logicalPluginIdForRuntime(runtimeId: string): string | null {
+    return this.records.get(mekaDevRegistryKey(runtimeId))?.pluginId ?? null;
+  }
+
   async list(): Promise<MekaDevPluginItem[]> {
     await this.ensureNamespace();
     // 版本漂移提示要的是「源码现在是什么」与「运行的是什么」两份事实;两者都读不到时

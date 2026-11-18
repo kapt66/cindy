@@ -166,6 +166,9 @@ const desktopGuardInclude = [
   'src/main/maker-host/__tests__/hostDesktopSourceContracts.guard.test.ts',
   // Build fuses and Node worker entrypoints are a cross-file packaging contract.
   'src/main/cindy-brain/__tests__/nodeRuntimePackaging.test.ts',
+  // Meka 发布来源判定跨 Cindy/Meka 两本账本：源级接线断言（账本访问只经 mekaLedger 模块）
+  // 属于跨文件契约，不是运行期单测。
+  'src/main/cindy-brain/__tests__/pluginPublishingSource.test.ts',
   'src/renderer/components/settings/__tests__/settingsSearchCatalog.guard.test.ts',
   // Cross-file host/engine prompt ownership and remote-authorization isolation.
   'src/main/plugin-oauth/__tests__/runtimePrompt.test.ts',

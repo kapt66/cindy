@@ -271,9 +271,6 @@
     "apps/desktop/src/main/maker-host/__tests__/codexCustomContextCatalog.test.ts": {
       "sourceReads": 1
     },
-    "apps/desktop/src/main/maker-host/__tests__/codexNativeSubagentsDisabled.test.ts": {
-      "sourceReads": 1
-    },
     "apps/desktop/src/main/maker-host/__tests__/mcprPiTransport.test.ts": {
       "sourceReads": 1
     },

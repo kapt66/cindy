@@ -4049,6 +4049,11 @@ function getConnectionAudienceResolver(): ConnectionAudienceResolver {
       // CINDY_MEKA_PSB_HOST 覆盖（启动期解析一次；未设置时 null = 判定逐字节不变）：
       // 只让「声明了正式 PSB 主机」的实例把覆盖主机当作等价可注入 host（dev-only）。
       mekaPsbHostOverride: mekaPsbHostOverrideHost(),
+      // Meka 渠道开发安装（`_root__meka-dev-*`）：身份签发的 audience 必须是逻辑插件 id
+      // （`<orgSlug>:<meka-submit>`），不能是物理 runtime id。从 dev 注册表读内存映射，
+      // 同步、无 IO；未登记时返回 null，由 resolver 按 runtime id 结构回退。
+      mekaDevPluginLogicalId: (runtimeId) =>
+        mekaDevPluginsSingleton?.logicalPluginIdForRuntime(runtimeId) ?? null,
       log,
     });
   }

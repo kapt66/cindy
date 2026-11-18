@@ -7936,3 +7936,64 @@ Meka P4 面板一直「正在连接…」，`p4_status` 返回 `GHOST_ASLEEP`。
 真实内容变更导致的沙箱重启，本次不加重试；② 覆盖仍不做 `app.isPackaged` 门禁，安全性来自白名单
 取值 + 只对声明正式 PSB 主机的实例生效；③ WebSocket 来源不参与覆盖（当前 PSB 插件不用 WS）；
 ④ dev 杠杆：dev 派生包仍会补声明测试主机（§4.4 已知副作用），市场安装不补声明。
+
+### 6.78 2026-11-18 Meka 开发安装拿不到 Connection 身份 JWT（dev 插件 audience 用物理 runtime id）：新增 Meka 开发安装签发基座（已实现）
+
+**背景（真实日志）**：把 `meka-submit` 0.12.8 作为 **dev 插件**装入后，提交流程里 Host 身份
+签发被拒：
+
+```
+ghost Connection audience resolution rejected {
+  ghostId: '_root__meka-dev-meka-submit-6953b2fd',
+  pluginSlug: 'meka-dev-meka-submit-6953b2fd',
+  reason: 'market-installation-missing'
+}
+ghost Connection audience resolution returned no result { host: 'mekabot-test.meka.pawdy.fun' }
+```
+
+结果 `environment_check` 报「Host 未返回响应」、台账未参与，用户看到「PSB 还是没通」；同一插件
+按市场安装（0.12.6）是通的。根因两处：① `connectionAudienceResolver` 的既有基座全部要求市场／
+Forge／Meka 账本记录，而开发目录装入只落 `_root__meka-dev-<pluginId>-<8位hex>` 物理副本，没有
+任何市场记录 ⇒ 必然 `market-installation-missing`；② 即使放行，dev 实例的 `pluginSlug` 是物理
+runtime id，audience 会变成 `xd:meka-dev-meka-submit-...`，与 PSB 侧配置的 `xd:meka-submit` 不匹配。
+维护者裁决：**不要环境变量特例**——Meka 渠道的 dev 安装与市场安装一样具备身份签发资格；此前
+「仅当 `CINDY_MEKA_PSB_HOST` 生效才放行」的方案整体作废，代码/测试/文档只保留渠道策略这一套。
+
+**改动（只动 Cindy 仓；插件仓/PSB/MCPRouter 零改动）**：
+1. **resolver 第四条基座**（`apps/desktop/src/main/cindy-brain/connectionAudienceResolver.ts`）：
+   Cindy 账本无记录、实例是 root 的 `meka-dev-*` 时，满足以下**全部**条件即签发：
+   ① 组织 membership（个人号仍拒绝）；② `parsePluginInstanceId(ghostId)` 的 namespace 为 null 且
+   runtime id 以 `meka-dev-` 开头（带来 namespace 的同名实例不命中）；③ approved receipt 的包摘要
+   存在且形状合法（`readApprovedPackageSha256`，与 Meka 渠道／Forge 基座同一份批准证据，不新增
+   门槛）；④ 已装 `ghost.json` 的 `id` 与实例 runtime id 一致（沿用既有核对写法）；⑤ manifest 声明
+   了至少一个精确 `oidc-token` 注入 host（不要求是 PSB 主机；JWT 仍只注入这些已声明 host）；
+   ⑥ 能解析出逻辑插件 id（登记表优先，`meka-dev-<pluginId>-<8位hex>` 结构回退，都拿不到则拒绝）。
+   audience 用逻辑插件 id（`<orgSlug>:<meka-submit>`）；`finish(manifest, audiencePluginSlug)`
+   只改 audience，返回的 `pluginSlug` 仍是物理实例身份。
+2. **接线**（`cindy-brain/index.ts`）：`loadConnectionAudienceResolver` 新增
+   `mekaDevPluginLogicalId` 选项，接到 `MekaDevPluginManager.logicalPluginIdForRuntime(runtimeId)`
+   （`mekaDevPlugins.ts` 新增的同步方法：只读内存 `records`，无 IO、不触发对账）。
+3. **日志**：放行一条 info（`ghost Connection audience resolved`，含 `ghostId` / `pluginId` /
+   `audiencePluginSlug` / `allowedHostCount` / `reason: 'meka-dev-install-eligible'`）；拒绝一条 warn
+   （原 `reject()` 体系，新增 `meka-dev-logical-id-unavailable` / `meka-dev-install-not-approved` /
+   `meka-dev-install-oidc-host-missing`）。不写 token/claims。
+4. **文档**：`docs/dev-rules/plugin-security-and-authoring.md` §4 新增「`oidc-token` 的 Meka 开发
+   安装基座」并同步 §4.4 第 5 条、日志与回归清单。
+
+**安全边界（没有放宽）**：非 dev 安装的 reason 与日志逐字节不变；未批准、无 `oidc-token` host、
+找不到逻辑 id 的 dev 实例一律拒绝；JWT 注入目标仍只认 manifest 自己声明的精确 host；Cindy 渠道
+与上游口径不动；无 `CINDY_MEKA_PSB_HOST` 依赖（开关只继续负责请求改道与运行时 host 等价声明）。
+
+**验证**（定向，未跑提交前门禁）：`pnpm --filter desktop exec vitest run
+src/main/cindy-brain/__tests__/connectionAudienceResolver.test.ts src/main/cindy-brain/__tests__/mekaDevPlugins.test.ts`
+→ 2 files / 75 tests passed（resolver 新增 dev 基座 4 条用例：放行且 audience=`org-example:meka-submit`、
+结构回退、未批准/无 oidc host 拒绝、非 dev 仍按原 reason；mekaDevPlugins 扩展
+`logicalPluginIdForRuntime` 的 runtime id／`_root__` 物理键／找不到 → null 断言）。
+**未验证**：`typecheck`、全量单测、`check:test-hygiene`；真实 PSB 端到端（dev 安装包 + 真实 JWT）；
+也没有重启 dev 实例实测（`apps/desktop/.vite/build` 早于本次改动，需按 §4.4 命令 restart 一次）。
+
+**风险 / 遗留**：① 结构回退得到的逻辑 id 是 `mekaDevRuntimeId` 的可读前缀（最多 14 字符）；超过该
+长度的插件 id 在**登记表不可用**时会被截断，audience 与 PSB 配置不匹配——生产 Desktop 已接入
+登记表（完整逻辑 id），结构回退只服务启动早期/注册表不可用；② 该基座只按「root + `meka-dev-`
+前缀 + 已批准 + 声明 oidc host」判定，不额外核对 Meka 账本（dev 安装本来不写账本）；③ 真实测试
+PSB 的 audience 校验仍以部署方配置为准。

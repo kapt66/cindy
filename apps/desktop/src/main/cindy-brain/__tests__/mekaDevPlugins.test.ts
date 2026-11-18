@@ -193,9 +193,15 @@ describe('MekaDevPluginManager', () => {
     const manager = new MekaDevPluginManager(deps);
     const runtimeId = mekaDevRuntimeId('demo-plugin');
     expect(manager.runtimeIdFor('demo-plugin')).toBeNull();
+    // 登记表为空时不给逻辑 id（不猜、不按结构编造）。
+    expect(manager.logicalPluginIdForRuntime(runtimeId)).toBeNull();
     await manager.install(sourceDir, (await manager.inspect(sourceDir)).packageSha256);
     expect(manager.runtimeIdFor('demo-plugin')).toBe(runtimeId);
     expect(manager.runtimeIdFor('missing-plugin')).toBeNull();
+    // Connection audience 用的逻辑 id：runtime id 与物理实例键（`_root__*`）都要命中。
+    expect(manager.logicalPluginIdForRuntime(runtimeId)).toBe('demo-plugin');
+    expect(manager.logicalPluginIdForRuntime(`_root__${runtimeId}`)).toBe('demo-plugin');
+    expect(manager.logicalPluginIdForRuntime(mekaDevRuntimeId('missing-plugin'))).toBeNull();
   });
 
   /**

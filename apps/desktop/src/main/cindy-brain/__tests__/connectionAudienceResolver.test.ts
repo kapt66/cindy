@@ -1181,3 +1181,189 @@ it.each(['manual', 'agent-forge'] as const)('never signs enterprise OIDC for a l
   });
   expect(resolver.resolve('_ns__local__plugin-a', identity)).toBeNull();
 });
+
+
+/**
+ * 测试价值
+ * - 生产入口与可观察结果：`loadConnectionAudienceResolver(...).resolve()` 是 Host 签发
+ *   Connection 身份 JWT 的唯一资格判定。Meka 渠道的**开发安装**（root 的
+ *   `_root__meka-dev-<pluginId>-<8位hex>`，没有市场记录）必须和市场安装一样拿到签发
+ *   资格，且 audience 是逻辑插件 id（`<orgSlug>:<meka-submit>`）；否则 PSB 侧按
+ *   `xd:meka-submit` 校验会拒，用户看到「Host 未返回响应 / PSB 还是没通」。
+ * - Bug／规则依据：2026-11-18 真实日志——dev 安装的 `meka-submit` 0.12.8 被
+ *   `market-installation-missing` 拒绝；同一插件按市场安装（0.12.6）是通的。这是 Meka
+ *   渠道策略，不是 `CINDY_MEKA_PSB_HOST` 环境变量特例。
+ * - 现有覆盖缺口：既有用例只覆盖 Cindy 市场 / 组织市场 / Forge / Mivo / Meka 市场账本，
+ *   没有任何用例覆盖 `meka-dev-*` 开发安装；也没有用例钉住「逻辑 id audience」与
+ *   「未批准 / 无 oidc host / 非 dev 安装不放宽」三条边界。
+ * - 最小失败输入：已批准的 dev 安装声明了 oidc host 却仍返回 null（本次要修的 bug）；
+ *   或 audience 用物理 runtime id（PSB 侧不匹配）；或未批准/无 oidc host 的实例被放行。
+ * - tier：unit（纯函数 + fake 身份/批准读取，无 Electron、无真实网络）。
+ */
+describe('Meka 渠道开发安装 Connection 签发基座', () => {
+  const DEV_PLUGIN_ID = 'meka-submit';
+  // 真实日志里的物理实例键（`ghost Connection audience resolution rejected`）。
+  const DEV_RUNTIME_ID = 'meka-dev-meka-submit-6953b2fd';
+
+  const manifestIdentity = (installedManifest: GhostManifest) => ({
+    manifest: installedManifest,
+    rawManifestSha256: ghostManifestDigest(installedManifest),
+    legacyManifestDigest: ghostManifestDigest(installedManifest),
+    legacyManifestDigests: [ghostManifestDigest(installedManifest)],
+  });
+
+  const devManifest = (overrides: Partial<GhostManifest> = {}): GhostManifest => ({
+    ...manifest,
+    id: DEV_RUNTIME_ID,
+    network: {
+      hosts: [MEKA_PSB_HOST],
+      secrets: [
+        {
+          key: 'cindy_identity',
+          label: 'Cindy organization identity',
+          source: 'oidc-token' as const,
+          inject: {
+            header: 'Authorization',
+            format: 'Bearer {value}',
+            hosts: [MEKA_PSB_HOST],
+          },
+        },
+      ],
+    },
+    ...overrides,
+  });
+
+  function devOptions(
+    overrides: Partial<LoadConnectionAudienceResolverOptions> = {},
+    installed: GhostManifest = devManifest(),
+  ): LoadConnectionAudienceResolverOptions {
+    const instanceId = `_root__${installed.id}`;
+    return {
+      readInstalledManifestIdentity: (id: string) =>
+        id === instanceId || id === installed.id ? manifestIdentity(installed) : null,
+      readMarketInstallation: () => ({ kind: 'absent' }),
+      // 已批准安装的包摘要（沿用 Meka 渠道 / Forge 基座同一份 approved receipt 证据）。
+      readApprovedPackageSha256: () => 'b'.repeat(64),
+      mekaDevPluginLogicalId: (runtimeId: string) =>
+        runtimeId === DEV_RUNTIME_ID ? DEV_PLUGIN_ID : null,
+      ...overrides,
+    };
+  }
+
+  function warnReasons(
+    options: LoadConnectionAudienceResolverOptions,
+    ghostId: string = `_root__${DEV_RUNTIME_ID}`,
+  ): string[] {
+    const warn = vi.fn();
+    loadConnectionAudienceResolver({ ...options, log: { info: () => {}, warn } })
+      .resolve(ghostId, identity);
+    return warn.mock.calls.map(([, meta]) => (meta as { reason?: string }).reason ?? '');
+  }
+
+  it('已批准的 Meka dev 安装声明了 oidc host 即签发，audience 用逻辑插件 id', () => {
+    const info = vi.fn();
+    const warn = vi.fn();
+    const resolution = loadConnectionAudienceResolver({
+      ...devOptions(),
+      log: { info, warn },
+    }).resolve(`_root__${DEV_RUNTIME_ID}`, identity);
+
+    expect(resolution).toEqual({
+      membershipId: 'membership-1',
+      audience: 'org-example:meka-submit',
+      // 返回的物理实例身份保留 runtime id；只有 audience 换成逻辑插件 id。
+      pluginSlug: DEV_RUNTIME_ID,
+      allowedHosts: [MEKA_PSB_HOST],
+    });
+    expect(warn).not.toHaveBeenCalled();
+    // 放行一条 info：ghostId + 逻辑 pluginId + 可注入 host 数 + reason，不写 token/claims。
+    expect(info).toHaveBeenCalledWith(
+      'ghost Connection audience resolved',
+      expect.objectContaining({
+        ghostId: `_root__${DEV_RUNTIME_ID}`,
+        pluginId: DEV_PLUGIN_ID,
+        audiencePluginSlug: DEV_PLUGIN_ID,
+        allowedHostCount: 1,
+        reason: 'meka-dev-install-eligible',
+      }),
+    );
+
+    // 与 CINDY_MEKA_PSB_HOST 无关：未传覆盖时同样签发；覆盖开启只是多一条可注入 host。
+    expect(
+      loadConnectionAudienceResolver(devOptions()).resolve(`_root__${DEV_RUNTIME_ID}`, identity),
+    ).toMatchObject({ audience: 'org-example:meka-submit' });
+    expect(
+      loadConnectionAudienceResolver({
+        ...devOptions(),
+        mekaPsbHostOverride: MEKA_PSB_TEST_HOST,
+      }).resolve(`_root__${DEV_RUNTIME_ID}`, identity),
+    ).toMatchObject({
+      audience: 'org-example:meka-submit',
+      allowedHosts: [MEKA_PSB_HOST, MEKA_PSB_TEST_HOST],
+    });
+  });
+
+  it('登记表读不到时按 runtime id 结构回退逻辑 id；结构不可用则拒绝', () => {
+    // 注册表还没加载该 runtime（启动早期）：结构 `meka-dev-<pluginId>-<8hex>` 仍可解析。
+    expect(
+      loadConnectionAudienceResolver({
+        ...devOptions({ mekaDevPluginLogicalId: () => null }),
+      }).resolve(`_root__${DEV_RUNTIME_ID}`, identity),
+    ).toMatchObject({ audience: 'org-example:meka-submit' });
+
+    // 结构也不可用（没有 `-<8位hex>` 派生后缀）⇒ 不猜逻辑 id，拒绝并留下原因。
+    const unstructured = devManifest({ id: 'meka-dev-demo' });
+    const reasons = warnReasons(
+      devOptions({ mekaDevPluginLogicalId: () => null }, unstructured),
+      '_root__meka-dev-demo',
+    );
+    expect(reasons).toEqual(['meka-dev-logical-id-unavailable']);
+  });
+
+  it('未批准 / 无 oidc host 的 dev 安装仍拒绝', () => {
+    // 没有 approved receipt（未批准 / 旧版本批准记录无包摘要）：不放大到未批准安装。
+    expect(warnReasons(devOptions({ readApprovedPackageSha256: () => null }))).toEqual([
+      'meka-dev-install-not-approved',
+    ]);
+    // 声明的 oidc-token 注入 host 为空：JWT 没有可注入目标，不放行。
+    const noOidcHost = devManifest({
+      network: { hosts: ['service-a.x.test'], secrets: [] },
+    });
+    expect(warnReasons(devOptions({}, noOidcHost))).toEqual([
+      'meka-dev-install-oidc-host-missing',
+    ]);
+  });
+
+  it('非 dev 安装（正式 / 组织实例 / local 开发副本）仍按原 reason 拒绝', () => {
+    // 普通安装即使已被批准、声明了 oidc host，也不因这条 Meka 渠道基座获得资格。
+    const ordinary = loadConnectionAudienceResolver({
+      ...resolverOptions(manifest, null),
+      readApprovedPackageSha256: () => 'b'.repeat(64),
+      mekaDevPluginLogicalId: () => null,
+    });
+    expect(ordinary.resolve('plugin-a', identity)).toBeNull();
+    const ordinaryWarn = vi.fn();
+    loadConnectionAudienceResolver({
+      ...resolverOptions(manifest, null),
+      readApprovedPackageSha256: () => 'b'.repeat(64),
+      mekaDevPluginLogicalId: () => null,
+      log: { info: () => {}, warn: ordinaryWarn },
+    }).resolve('plugin-a', identity);
+    expect(ordinaryWarn.mock.calls.map(([, meta]) => (meta as { reason?: string }).reason)).toEqual([
+      'market-installation-missing',
+    ]);
+    // 带 org namespace 的同名 dev runtime 实例（非 root）不是 Meka 开发目录副本。
+    expect(
+      loadConnectionAudienceResolver(devOptions()).resolve(
+        `_ns__local__${DEV_RUNTIME_ID}`,
+        identity,
+      ),
+    ).toBeNull();
+    // 未安装的 dev 实例不签发。
+    expect(
+      loadConnectionAudienceResolver({
+        ...devOptions({ readInstalledManifestIdentity: () => null }),
+      }).resolve(`_root__${DEV_RUNTIME_ID}`, identity),
+    ).toBeNull();
+  });
+});

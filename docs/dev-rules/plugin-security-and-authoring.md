@@ -936,6 +936,38 @@ Renderer 的来源分类是封闭取值（`public / organization / local / custo
   `resolveMekaChannelInstall` 分支与 `cindy-brain/index.ts` 的两项注入
   （`readMekaMarketInstallation` / `isTrustedBundledGhostId`）即回到「组织 Market /
   agent-forge / mivo-canvas」三条既有判据；不需要迁移已装插件、批准状态或任何数据。
+
+- **`oidc-token` 的 Meka 开发安装基座（2026-11-18，Meka 私有差异）**：Meka 开发目录
+  装入的插件落到 Host 派生的物理 runtime id（`_root__meka-dev-<pluginId>-<8位hex>`），
+  它没有市场记录、也不写 Meka 市场账本，因此过不了上面任何一条基座（真实表现：host
+  日志 `reason: 'market-installation-missing'`，`environment_check` 报「Host 未返回
+  响应」，用户看到 PSB 还是没通；同一插件按市场安装当时是通的）。维护者裁决为
+  **Meka 渠道的开发安装与市场安装一样具备身份签发资格**。这是一条**渠道策略，不是环境
+  变量特例**：条件成立与否都与是否设置 `CINDY_MEKA_PSB_HOST` 无关。签发条件必须
+  **全部**满足：
+  1. 当前身份是 organization membership（个人号一律 reject，不变）；
+  2. 该实例是 Meka 开发安装：`parsePluginInstanceId(ghostId)` 的 namespace 为 null 且
+     runtime id 以 `meka-dev-` 开头；带 namespace 的同名实例（如 `_ns__local__<id>`）不命中；
+  3. 该安装已被用户批准：approved receipt 的包摘要存在且形状合法
+     （`readApprovedPackageSha256`，与 Meka 渠道基座／Forge 基座同一份 approved receipt
+     证据，不新增批准门槛）；
+  4. 已装 `ghost.json` 的 `id` 与该实例的 runtime id 一致（沿用既有身份核对写法）；
+  5. manifest 声明的 `oidc-token` 精确 host 非空（JWT 仍只注入这些**已声明** host，
+     注入逻辑不变；不要求必须是 PSB 主机）；
+  6. 能解析出逻辑插件 id：优先 `MekaDevPluginManager.logicalPluginIdForRuntime(runtimeId)`
+     （只读内存登记表，同步无 IO）；登记表还没有该记录（如启动早期／注册表不可用）时
+     按 `meka-dev-<pluginId>-<8位hex>` 结构回退；两处都拿不到时拒绝，不猜。
+
+  audience 用**逻辑插件 id**（`<orgSlug>:<meka-submit>`），不是物理 runtime id——PSB 侧
+  按 `xd:meka-submit` 校验，用 runtime id 会拒。放行记一条 `info`、拒绝记一条 `warn`
+  （含 ghostId、逻辑 pluginId、可注入 host 数与 reason，如 `meka-dev-install-eligible` /
+  `meka-dev-logical-id-unavailable` / `meka-dev-install-not-approved` /
+  `meka-dev-install-oidc-host-missing`），不写 token/claims。安全边界没有放宽：非 Meka
+  dev 安装、未批准、无 `oidc-token` host、找不到逻辑 id 的实例仍按原 reason 拒绝；Cindy
+  渠道与上游口径不变。回归见 `connectionAudienceResolver.test.ts`（dev 放行／结构回退／
+  未批准／无 host／非 dev 矩阵）与 `mekaDevPlugins.test.ts`
+  （`logicalPluginIdForRuntime` 映射，含物理实例键与找不到 → null）。
+
 - 插件 setup 的完成状态只由 Host 读取真实持久化状态后判定。简单的
   `source: "user"` Secret 可由 Host 在聊天 Setup 卡中生成 `inline_form` 并直接写入
   保险库；插件详情页的 `settings.js` 仍可通过 `/oauth`、`/kv`、`/secrets`、
@@ -1425,10 +1457,20 @@ Renderer 的来源分类是封闭取值（`public / organization / local / custo
      HTTPS 默认端口 + 该实例声明了正式 PSB 主机」；未声明正式 PSB 主机的插件（以及未设置变量的
      所有实例）不改写、不放行、不注入。**不做 `app.isPackaged` 门禁**：安全性来自白名单取值与
      这条声明边界，而不是打包状态。
+  5. **开发安装的身份签发与本开关无关**：§4 里 Meka 内部渠道基座的「既没有市场记录也没有
+     Meka 账本记录就不签发」口径不适用于 Meka 渠道的开发安装。`MekaDevPluginManager` 装入的
+     `_root__meka-dev-<pluginId>-<8位hex>` 副本与市场安装一样具备 Connection 身份签发资格，
+     **audience 用逻辑插件 id**（`<orgSlug>:<meka-submit>`），不是物理 runtime id；是否设置
+     `CINDY_MEKA_PSB_HOST` 不影响这条判定。安全边界不变：必须**已批准**（approved receipt
+     的包摘要）且 manifest 自己**声明了 `oidc-token` host**，JWT 只注入这些已声明 host；
+     未批准、无 oidc host、找不到逻辑 id 的实例仍按原 reason 拒绝。完整判据与日志见
+     §4「`oidc-token` 的 Meka 开发安装基座」。
 - **日志**：只在真的改写时记 `ghost fetch-request rewritten to Meka PSB test host`，字段只有
   `ghostId` / `callId` / `host` / `overrideHost` / `path`（pathname；**不记 query/body**，遵守
   §4 开头的日志纪律）。派生补声明记一条 `Meka development Plugin manifest extends PSB test host`，
-  写明原因与批准令牌会随派生清单变化。
+  写明原因与批准令牌会随派生清单变化。开发安装的身份签发另记一条 info（`reason:
+  'meka-dev-install-eligible'`，字段 `ghostId` / `pluginId` / `audiencePluginSlug` /
+  `allowedHostCount`）或一条 warn（拒绝原因），与开关无关。
 - **已知副作用（刻意接受）**：**Meka 开发目录**的派生副本比源码多一条已批准网络主机 ⇒
   首次开启覆盖后的下次同步会在更新确认里出现该新增权限，派生包摘要与已批准记录也随之与源码
   不同（关掉覆盖后同步回到原清单）。**市场/普通安装**的插件不改包、不改批准记录：覆盖主机只
@@ -1451,8 +1493,11 @@ Renderer 的来源分类是封闭取值（`public / organization / local / custo
 - 回归：`cindy-brain/__tests__/mekaPsbHostOverride.test.ts`（白名单/零影响/清单补声明矩阵，
   含补完后仍通过严格 manifest 校验）、`networkSlot.test.ts`（dev 派生包与**市场安装**两种形态
   的改道 + 凭证/身份注入 + 重定向 + 未声明正式主机不改写不注入 + 未设置时逐字节不变）、
-  `connectionAudienceResolver.test.ts`（覆盖开启/关闭/未声明正式主机三态下的 `allowedHosts`）、
-  `mekaDevPlugins.test.ts`（真实 forge 打包的派生清单与源目录不变）、
+  `connectionAudienceResolver.test.ts`（覆盖开启/关闭/未声明正式主机三态下的 `allowedHosts`；
+  以及 Meka 开发安装基座：已批准 + 声明 oidc host 放行且 audience 为逻辑 id、结构回退、
+  未批准/无 host/非 dev 仍拒绝）、
+  `mekaDevPlugins.test.ts`（真实 forge 打包的派生清单与源目录不变；`logicalPluginIdForRuntime`
+  映射含物理实例键与未找到 → null）、
   `scripts/__tests__/restart-desktop-remote.test.mjs`（启动器透传）。
 - **未验证 / 风险**：本条未在真实测试 PSB 服务上端到端验收（只做到单测 + 构建层）；启用后
   dev 插件与**市场安装**的 Meka 插件都会真的把请求与企业 JWT 发往测试部署，测试环境的安全与

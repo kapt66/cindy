@@ -24,11 +24,25 @@
  * exception. A present but invalid market ledger is a hard failure, not an
  * absent record. The Host derives the audience from current identity + plugin id.
  * One dev-only exception is layered on the resolved snapshot: when the startup
- * env override (`CINDY_MEKA_PSB_HOST`, a whitelisted test host) is active and
- * the installed manifest declares the formal PSB host, that override host is
- * treated as one more injectable host (runtime only — the manifest, approved
- * host set and receipt are untouched). Without the env variable the option is
- * null and the resolution is byte-for-byte unchanged.
+ * env override (`CINDY_MEKA_PSB_HOST`, a whitelisted test host) is active and the installed manifest declares the formal PSB host, that override
+ * host is treated as one more injectable host (runtime only — the manifest,
+ * approved host set and receipt are untouched). Without the env variable the
+ * option is null and the resolution is byte-for-byte unchanged.
+ * A fourth base covers the Meka channel's **development** installs: a root
+ * instance whose runtime id is a derived `meka-dev-*` id has no market record
+ * at all, so it would otherwise fall into
+ * `reject('market-installation-missing')`. It resolves when the current
+ * identity is an organization membership, the instance is a root dev install,
+ * the user approved that install (`readApprovedPackageSha256`, same approved
+ * receipt evidence as the Meka channel base), the installed manifest id matches
+ * the runtime id, the manifest declares at least one exact oidc-token host, and
+ * a logical plugin id can be resolved (in-memory dev registry first, then the
+ * `meka-dev-<pluginId>-<8 hex>` runtime-id structure). The audience uses that
+ * logical id (`<orgSlug>:<meka-submit>`) instead of the physical runtime id, so
+ * the PSB side configured for `xd:meka-submit` accepts it; tokens are still
+ * injected only into the hosts the manifest itself declared. This is a Meka
+ * channel policy, not an environment-variable exception: it does not depend on
+ * `CINDY_MEKA_PSB_HOST`. Non-dev installs keep every existing reason unchanged.
  */
 import { isValidGhostId, isValidGhostNetworkHostPattern } from '../../shared/ghost.js';
 import type { GhostManifest } from '../../shared/ghost.js';
@@ -65,6 +79,9 @@ export interface ConnectionAudienceResolver {
 
 const ORG_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 const PLUGIN_SLUG_RE = /^[a-z][a-z0-9-]{0,31}$/;
+/** Meka 开发安装的物理 runtime id 结构（`mekaDevRuntimeId`）：`meka-dev-<pluginId>-<8位hex>`。 */
+const MEKA_DEV_RUNTIME_PREFIX = 'meka-dev-';
+const MEKA_DEV_RUNTIME_ID_RE = /^meka-dev-(.+)-[a-f0-9]{8}$/;
 /**
  * Temporary root-only exception for the locally imported mivo-canvas.
  * Delete it after the XD enterprise-market build ships and the follow-up
@@ -147,6 +164,13 @@ export interface LoadConnectionAudienceResolverOptions {
    * 放宽。
    */
   mekaPsbHostOverride?: string | null;
+  /**
+   * Meka 渠道开发安装的物理 runtime id → **逻辑插件 id** 的同步映射
+   * （`MekaDevPluginManager.logicalPluginIdForRuntime`：只读内存登记表，无 IO）。
+   * 只在实例是 root 的 `meka-dev-*` 开发安装时被调用；返回 null / 抛错时按 runtime id
+   * 结构（`meka-dev-<pluginId>-<8位hex>`）回退解析。其它安装不会调用它。
+   */
+  mekaDevPluginLogicalId?(runtimeId: string): string | null;
   log?: {
     info: (msg: string, meta?: Record<string, unknown>) => void;
     warn: (msg: string, meta?: Record<string, unknown>) => void;
@@ -159,11 +183,12 @@ export function loadConnectionAudienceResolver(
   return {
     resolve(ghostId, identity) {
       const pluginSlug = parsePluginInstanceId(ghostId)?.ghostId ?? ghostId;
-      const reject = (reason: string): null => {
+      const reject = (reason: string, extra?: Record<string, unknown>): null => {
         options.log?.warn('ghost Connection audience resolution rejected', {
           ghostId,
           pluginSlug,
           reason,
+          ...(extra ?? {}),
         });
         return null;
       };
@@ -180,7 +205,11 @@ export function loadConnectionAudienceResolver(
         return reject('org-slug-unavailable');
       }
 
-      const finish = (manifest: GhostManifest): ConnectionAudienceResolution | null => {
+      const finish = (
+        manifest: GhostManifest,
+        audiencePluginSlug: string = pluginSlug,
+        audit: Record<string, unknown> = {},
+      ): ConnectionAudienceResolution | null => {
         // 运行时覆盖只看内存：manifest 声明了正式 PSB 主机时把测试主机当作等价可注入
         // host（dev-only，未设置变量时返回的是同一个数组引用）。不写回 manifest、
         // 不改变已批准 host 集合与其展示。
@@ -189,12 +218,16 @@ export function loadConnectionAudienceResolver(
           options.mekaPsbHostOverride ?? null,
         );
         if (allowedHosts.length === 0) return reject('oidc-host-declaration-missing');
-        const audience = `${identity.orgSlug}:${pluginSlug}`;
+        const audience = `${identity.orgSlug}:${audiencePluginSlug}`;
         if (audience.length > 64) return reject('audience-too-long');
         options.log?.info('ghost Connection audience resolved', {
           ghostId,
           pluginSlug,
           allowedHostCount: allowedHosts.length,
+          // Meka 渠道开发安装基座用的是逻辑 plugin id；其它基座不追加字段
+          // （日志逐字节不变）。
+          ...(audiencePluginSlug === pluginSlug ? {} : { audiencePluginSlug }),
+          ...audit,
         });
         return {
           membershipId: identity.membershipId,
@@ -210,6 +243,93 @@ export function loadConnectionAudienceResolver(
         } catch {
           return null;
         }
+      };
+
+      /**
+       * Meka 渠道开发安装的物理 runtime id → **逻辑插件 id**。
+       * 优先问内存登记表（`options.mekaDevPluginLogicalId`，`index.ts` 接到
+       * `MekaDevPluginManager.logicalPluginIdForRuntime`：同步、无 IO）；登记表还没有该
+       * 记录（例如启动早期/注册表不可用）时按 `mekaDevRuntimeId` 的结构
+       * （`meka-dev-<pluginId>-<8位hex>`）回退解析。只在 root 的 `meka-dev-*` 实例上调用。
+       */
+      const resolveMekaDevLogicalPluginId = (runtimeId: string): string | null => {
+        let fromRegistry: string | null = null;
+        try {
+          fromRegistry = options.mekaDevPluginLogicalId?.(runtimeId) ?? null;
+        } catch {
+          fromRegistry = null;
+        }
+        if (fromRegistry) return fromRegistry;
+        const match = MEKA_DEV_RUNTIME_ID_RE.exec(runtimeId);
+        return match ? match[1]! : null;
+      };
+
+      /**
+       * Meka 渠道开发安装的身份签发基座。**与 `CINDY_MEKA_PSB_HOST` 无关**：这是渠道
+       * 策略（dev 安装与市场安装一样具备签发资格），不是环境变量特例。
+       *
+       * Meka 开发目录装入会落到物理 runtime id（`_root__meka-dev-<pluginId>-<8位hex>`），
+       * 它没有市场记录，正常口径下必然 `reject('market-installation-missing')`。这里沿用
+       * 既有判据补齐：
+       * - root 实例（`namespace === null`）且 runtime id 带 `meka-dev-` 前缀（Meka 渠道
+       *   开发目录的派生身份；同名正式安装/组织实例不命中）；
+       * - 已装 manifest id 与 runtime id 一致（沿用既有身份核对写法）；
+       * - 该安装存在 approved receipt 的包摘要（`readApprovedPackageSha256`，与 Meka
+       *   渠道基座/Forge 基座同一份批准证据，不新增门槛）；
+       * - manifest 声明了至少一个精确 `oidc-token` 注入 host（`declaredOidcTokenHosts`
+       *   非空；JWT 仍只注入这些已声明 host，注入逻辑不变）；
+       * - 能解析出逻辑插件 id（登记表优先，结构回退）。
+       *
+       * 成立时 audience 用**逻辑插件 id**（`<orgSlug>:<meka-submit>`）而不是物理 runtime
+       * id —— 否则 PSB 侧按 `xd:meka-submit` 校验会拒。
+       *
+       * 返回值三态：`undefined` = 不是 root 的 `meka-dev-*` 实例，交回既有口径（非 dev
+       * 安装的 reason 与日志逐字节不变）；对象 = 已签发；`null` = 已判定并拒绝（原因已记录）。
+       */
+      const resolveMekaDevInstall = (): ConnectionAudienceResolution | null | undefined => {
+        const instance = parsePluginInstanceId(ghostId);
+        if (
+          instance === null ||
+          instance.namespace !== null ||
+          !instance.ghostId.startsWith(MEKA_DEV_RUNTIME_PREFIX)
+        ) {
+          return undefined;
+        }
+        const runtimeId = instance.ghostId;
+        // 先解析逻辑插件 id：放行与拒绝日志都要带它（拒绝日志不含 token/claims）。
+        const logicalPluginId = resolveMekaDevLogicalPluginId(runtimeId);
+        if (
+          !logicalPluginId ||
+          !isValidGhostId(logicalPluginId) ||
+          !PLUGIN_SLUG_RE.test(logicalPluginId)
+        ) {
+          return reject('meka-dev-logical-id-unavailable', { runtimeId });
+        }
+        const audit = { runtimeId, pluginId: logicalPluginId };
+        if (isReservedConnectionPluginSlug(logicalPluginId)) {
+          return reject('plugin-id-reserved', audit);
+        }
+        const installed = readManifestIdentity();
+        if (!installed) return reject('plugin-not-installed', audit);
+        if (installed.manifest.id !== runtimeId) {
+          return reject('plugin-id-mismatch', audit);
+        }
+        let approvedSha: string | null;
+        try {
+          approvedSha = options.readApprovedPackageSha256?.(ghostId) ?? null;
+        } catch {
+          approvedSha = null;
+        }
+        if (!approvedSha || !/^[a-f0-9]{64}$/.test(approvedSha)) {
+          return reject('meka-dev-install-not-approved', audit);
+        }
+        if (declaredOidcTokenHosts(installed.manifest).length === 0) {
+          return reject('meka-dev-install-oidc-host-missing', audit);
+        }
+        return finish(installed.manifest, logicalPluginId, {
+          ...audit,
+          reason: 'meka-dev-install-eligible',
+        });
       };
 
       // 显式 ghost_forge_install 的企业作者自测分支，同时兼容升级前已有的
@@ -364,6 +484,10 @@ export function loadConnectionAudienceResolver(
         return reject('market-installation-read-failed');
       }
       if (!installation) {
+        // Meka 渠道开发安装基座：`meka-dev-*` 的 root 开发副本没有市场记录。非 dev 实例
+        // 在这里返回 `undefined`，后续判定与日志逐字节不变。
+        const developmentResolution = resolveMekaDevInstall();
+        if (developmentResolution !== undefined) return developmentResolution;
         // Temporary root-only exception. Any persisted market row still takes digest.
         if (temporaryRootMivoCanvas()) {
           const allowlisted = readManifestIdentity();
