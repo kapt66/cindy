@@ -8875,7 +8875,7 @@
           "loadDirectory": "Load from Directory (Development)",
           "badge": "Development",
           "ribbon": "DEV",
-          "syncError": "Development · Sync failed",
+          "syncError": "Sync failed",
           "sourceOutOfSync": "Quelle v{{sourceVersion}}, in Betrieb v{{installedVersion}}, noch nicht synchronisiert",
           "confirmTitle": "Load development Plugin “{{name}}”?",
           "confirmDescription": "Cindy Meka will continuously watch and trust this directory. Changes are validated and copied into the installed snapshot automatically; the last working version stays active if an update fails.",

@@ -8833,7 +8833,7 @@
           "loadDirectory": "从目录加载（开发模式）",
           "badge": "开发模式",
           "ribbon": "DEV",
-          "syncError": "开发模式 · 同步失败",
+          "syncError": "同步失败",
           "sourceOutOfSync": "源码 v{{sourceVersion}}，运行中 v{{installedVersion}}，尚未同步",
           "confirmTitle": "加载开发插件“{{name}}”？",
           "confirmDescription": "Cindy Meka 会持续监听并信任此目录。目录内容变更后会自动校验并更新已安装副本；更新失败时继续使用上一个可用版本。",

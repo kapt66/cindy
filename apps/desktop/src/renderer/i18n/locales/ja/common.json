@@ -8833,7 +8833,7 @@
           "loadDirectory": "ディレクトリから読み込む（開発）",
           "badge": "開発モード",
           "ribbon": "DEV",
-          "syncError": "開発モード · 同期失敗",
+          "syncError": "同期失敗",
           "sourceOutOfSync": "ソース v{{sourceVersion}}、実行中 v{{installedVersion}}、未同期",
           "confirmTitle": "開発プラグイン「{{name}}」を読み込みますか？",
           "confirmDescription": "Cindy Meka はこのディレクトリを継続的に監視して信頼します。変更は検証後にインストール済みコピーへ自動反映され、更新に失敗した場合は直前の正常なバージョンを使い続けます。",

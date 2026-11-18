@@ -47,6 +47,7 @@ import {
   ChevronRight,
   ChevronUp,
   MessageCircle,
+  Package,
   ShieldAlert,
   SlidersHorizontal,
 } from 'lucide-react';
@@ -2569,12 +2570,15 @@ function LocalGhostPluginPage({
                         key={`installed:${catalogItem.item.id}`}
                         item={catalogItem.item}
                         development={catalogItem.item.development}
+                        developmentSyncFailed={
+                          catalogItem.item.development
+                            ? mekaDevPluginById.get(catalogItem.item.ghostId)?.status === 'error'
+                            : undefined
+                        }
                         displayId={catalogItem.item.sourcePluginId}
                         sourceLabel={
                           catalogItem.item.development
-                            ? mekaDevPluginById.get(catalogItem.item.ghostId)?.status === 'error'
-                              ? t('settings.ghosts.meka.dev.syncError')
-                              : t('settings.ghosts.meka.dev.badge')
+                            ? t('settings.ghosts.meka.dev.badge')
                             : t(`settings.ghosts.meka.origin.${catalogItem.item.origin}`)
                         }
                         updateVersion={catalogItem.item.marketUpdate?.version}
@@ -2862,11 +2866,13 @@ function LocalGhostPluginPage({
                 <>
                   <PluginVirtualGrid count={primaryInstalledItems.length} scrollRef={pluginCatalogListRef} cache={installedGridCache} active={!!query.trim() || catalogTab === 'installed'} renderItem={index => {
                     const item = primaryInstalledItems[index]!;
+                    // 来源不再单独传:上游卡片的来源由标题行 publisher badge 与元信息行的
+                    // `installationLabel`(本地开发版 / 公开市场 / 企业:…)如实给出,这里再
+                    // 传一次只会在标题行并排出现两个同样的「本地」小标签。
                     return (
                       <GhostPluginCard
                         key={item.id}
                         item={item}
-                        sourceLabel={item.origin ? t(`settings.ghosts.page.origin.${item.origin}`) : undefined}
                         marketItem={item.marketItem}
                         author={item.author}
                         updateVersion={item.marketUpdate?.version}
@@ -3193,6 +3199,12 @@ export function MarketPluginCard({
  * - 主动作留在右下角胶囊(面板「使用」/ 指令或能力「对话」/ 工具型无按钮);
  * - 无启用开关(收进详情页);滑杆图标 = 管理入口;
  * - 更新 = 文字胶囊「更新到 vX」,无任何小圆点(绿点专职未读语义,PR-B 接入)。
+ *
+ * Meka 开发副本的额外事实只**加元素**,不改骨架(2026-11-18 用户要求对齐上游卡片):
+ * - 来源标记(「本地」「个人与共享」「开发模式」)= 标题行的小标签,紧挨 publisher badge;
+ * - 「开发模式 · 同步失败」「源码 vX,运行中 vY,尚未同步」= 元信息行内的行内小字;
+ * - 同步失败原因 = 元信息行内单行截断(全文在 `title`);
+ * - 「打包」= 右上图标行里与「管理」同排的小图标按钮,不单独占一行。
  */
 export function GhostPluginCard({
   item,
@@ -3212,6 +3224,7 @@ export function GhostPluginCard({
   mekaDevSourceVersion,
   mekaDevInstalledVersion,
   mekaDevError,
+  developmentSyncFailed = false,
   updateProgress,
   effectiveEnabled,
   onPrimary,
@@ -3224,6 +3237,11 @@ export function GhostPluginCard({
   development?: boolean;
   displayId?: string;
   readOnly?: boolean;
+  /**
+   * 标题行的小来源标签(「本地」「个人与共享」「开发模式」)。
+   * 只接受调用方明确要标注的来源;安装来源本身仍走 `installationLabelKey` 的元信息行文案,
+   * 这样同一条来源信息不会在标题行与元信息行各出现一次。
+   */
   sourceLabel?: string;
   showLocalUnread?: boolean;
   marketItem?: PluginMarketItem | null;
@@ -3245,6 +3263,11 @@ export function GhostPluginCard({
    * watcher 自动同步是唯一链路,失败时用户只能靠这段原因判断问题,因此原样给出。
    */
   mekaDevError?: string;
+  /**
+   * 开发目录后台同步的状态是 `error`(`MekaDevPluginItem.status`)。
+   * 原因是失败的内容,状态是失败这件事;两者都可能单独存在,所以分开传。
+   */
+  developmentSyncFailed?: boolean;
   updateProgress?: PluginMarketInstallProgress | null;
   effectiveEnabled?: boolean;
   onPrimary: () => void;
@@ -3253,8 +3276,11 @@ export function GhostPluginCard({
 }) {
   const { t } = useTranslation();
   const metadataId = useId();
+  // 安装来源只在有真实安装标签键时进元信息行;`sourceLabel` 是调用方给的来源小标签,
+  // 只放标题行(2026-11-18 对齐上游:同一条来源信息不在卡片里出现两次)。
   const installationLabel = item.installationLabelKey
-    ? t(`settings.ghosts.detail.${item.installationLabelKey}`, { name: item.installationNamespace }) : sourceLabel;
+    ? t(`settings.ghosts.detail.${item.installationLabelKey}`, { name: item.installationNamespace })
+    : undefined;
   const origin = marketItem ? pluginPresentationOrigin(marketItem) : item.origin;
   const publisherKind = marketItem?.sourceType === 'server' && marketItem.scope === 'public'
     ? marketItem.publisherKind : item.publisherKind;
@@ -3349,6 +3375,13 @@ export function GhostPluginCard({
           <span className="truncate text-15 font-medium text-[var(--text-primary)]" title={item.name}>
             {item.name}
           </span>
+          {/* 来源标记(「本地」「个人与共享」「开发模式」)与 publisher badge 同排:
+              上游卡片没有这条信息,它只占标题行(18px 小标签),不给卡片多加一行。 */}
+          {sourceLabel ? (
+            <span className="inline-flex h-[18px] shrink-0 items-center rounded-full bg-[var(--surface-chip)] px-1.5 text-10 leading-none text-[var(--text-secondary)]">
+              {sourceLabel}
+            </span>
+          ) : null}
           <PluginPublisherBadge origin={origin} kind={publisherKind} />
           {item.retirement?.unread ? (
             <AttentionDot tone="awaiting" size={6} className="mt-px" />
@@ -3371,7 +3404,6 @@ export function GhostPluginCard({
           id={metadataId}
           className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-11 text-[var(--text-tertiary)]"
         >
-          {sourceLabel ? <span className="shrink-0">{sourceLabel}</span> : null}
           {installationLabel ? <span className="min-w-0 break-words">{installationLabel}</span> : null}
           {visibleAuthor ? (
             <>
@@ -3408,38 +3440,54 @@ export function GhostPluginCard({
               {t('settings.ghosts.installConsent.updateNeedsConsent')}
             </span>
           ) : null}
+          {/* Meka 开发副本的状态事实走同一行的行内小字(与上面的 oauth/consent 同款),
+              不再各自占一整行:失败是状态、未同步是版本差,两者都可能单独出现。 */}
+          {developmentSyncFailed ? (
+            <>
+              {' · '}
+              <span
+                className="inline-flex min-w-0 items-center gap-1 text-[var(--warning-fg)]"
+                data-testid="meka-dev-sync-failed"
+              >
+                <AlertTriangle size={11} className="inline" aria-hidden="true" />
+                <span>{t('settings.ghosts.meka.dev.syncError')}</span>
+              </span>
+            </>
+          ) : null}
+          {mekaDevVersionDrift ? (
+            <>
+              {' · '}
+              {/* 开发目录专属事实:源码版本与运行版本不一致时明确说出「还没同步」(纯信息)。
+                  同步只由 watcher 自动完成,因此这里不给手动同步按钮。 */}
+              <span
+                className="inline-flex min-w-0 items-center gap-1 text-[var(--warning-fg)]"
+                data-testid="meka-dev-version-drift"
+              >
+                <AlertTriangle size={11} className="inline" aria-hidden="true" />
+                <span className="min-w-0 break-words">
+                  {t('settings.ghosts.meka.dev.sourceOutOfSync', {
+                    sourceVersion: mekaDevSourceVersion,
+                    installedVersion: mekaDevInstalledVersion,
+                  })}
+                </span>
+              </span>
+            </>
+          ) : null}
+          {/* 同步失败时状态行只说「同步失败」,真正能定位问题的原因在同一行内截断给出,
+              全文留在 `title`:自动重试由 watcher 负责,用户不需要(也没有)手动同步入口。 */}
+          {mekaDevError ? (
+            <span
+              data-testid="meka-dev-sync-error"
+              title={mekaDevError}
+              className="min-w-[140px] flex-1 basis-0 line-clamp-1 text-[var(--text-secondary)]"
+            >
+              {mekaDevError}
+            </span>
+          ) : null}
           {!readOnly && enabled === false && !item.retirement
             ? ` · ${t('settings.ghosts.disabledTag')}`
             : ''}
         </span>
-        {/* 同步失败时状态行只说「同步失败」,真正能定位问题的原因在这里原样给出:
-            自动重试由 watcher 负责,用户不需要(也没有)手动同步入口。 */}
-        {mekaDevError ? (
-          <span
-            data-testid="meka-dev-sync-error"
-            title={mekaDevError}
-            className="mt-1 line-clamp-2 min-w-0 break-words text-11 text-[var(--text-secondary)]"
-          >
-            {mekaDevError}
-          </span>
-        ) : null}
-        {/* 开发目录专属事实:源码版本与运行版本不一致时明确说出「还没同步」(纯信息)。
-            本地开发插件与线上插件本来就是分开的,同步只由 watcher 自动完成,
-            因此这里不给手动同步按钮。 */}
-        {mekaDevVersionDrift ? (
-          <span
-            className="mt-1.5 flex min-w-0 flex-wrap items-center gap-2 text-11 text-[var(--warning-fg)]"
-            data-testid="meka-dev-version-drift"
-          >
-            <AlertTriangle size={11} aria-hidden="true" />
-            <span className="min-w-0 break-words">
-              {t('settings.ghosts.meka.dev.sourceOutOfSync', {
-                sourceVersion: mekaDevSourceVersion,
-                installedVersion: mekaDevInstalledVersion,
-              })}
-            </span>
-          </span>
-        ) : null}
         <span
           className={cn(
             'mt-1.5 line-clamp-2 text-13 leading-5',
@@ -3493,6 +3541,19 @@ export function GhostPluginCard({
               )}
             </Button>
           ) : null}
+          {/* 「打包」与「管理」同排的小图标按钮:开发副本的开发动作不能单独占一行大按钮,
+              否则整卡比上游高一头。 */}
+          {onDevelopmentPackage ? (
+            <button
+              type="button"
+              onClick={stopAnd(onDevelopmentPackage)}
+              aria-label={t('settings.ghosts.meka.dev.packageAction')}
+              title={t('settings.ghosts.meka.dev.packageAction')}
+              className="grid size-7 place-items-center rounded-full text-[var(--text-tertiary)] transition-colors duration-150 hover:bg-[var(--surface-hover-soft)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+            >
+              <Package size={14} aria-hidden="true" />
+            </button>
+          ) : null}
           {!readOnly ? (
             <button
               type="button"
@@ -3505,16 +3566,6 @@ export function GhostPluginCard({
             </button>
           ) : null}
         </span>
-        {onDevelopmentPackage ? (
-          <button
-            type="button"
-            onClick={stopAnd(onDevelopmentPackage)}
-            aria-label={t('settings.ghosts.meka.dev.packageAction')}
-            className="inline-flex h-7 shrink-0 items-center justify-center rounded-full border border-[var(--border-default)] bg-transparent px-2.5 text-11 font-medium text-[var(--text-secondary)] transition-colors duration-150 hover:border-[var(--text-tertiary)] hover:bg-[var(--surface-hover-soft)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
-          >
-            {t('settings.ghosts.meka.dev.packageAction')}
-          </button>
-        ) : null}
         {primaryControl}
       </span>
     </article>

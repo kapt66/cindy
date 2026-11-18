@@ -8838,7 +8838,7 @@
           "loadDirectory": "從目錄載入（開發模式）",
           "badge": "開發模式",
           "ribbon": "Dev",
-          "syncError": "開發模式 · 同步失敗",
+          "syncError": "同步失敗",
           "sourceOutOfSync": "原始碼 v{{sourceVersion}}，運行中 v{{installedVersion}}，尚未同步",
           "confirmTitle": "載入開發插件“{{name}}”？",
           "confirmDescription": "Cindy Meka 會持續監聽並信任此目錄。目錄內容變更後會自動校驗並更新已安裝副本；更新失敗時繼續使用上一個可用版本。",

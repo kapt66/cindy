@@ -223,6 +223,12 @@ const mainViewPlugin: GhostPluginListItem = {
 const unreadDot = (container: HTMLElement) =>
   container.querySelector<HTMLElement>('span[aria-hidden][class*="--card-status-"]');
 
+/** 卡片的元信息行:article 的 `aria-describedby` 指向的 `#metadataId`。 */
+const metadataRow = (container: HTMLElement) => {
+  const describedBy = container.querySelector('article')?.getAttribute('aria-describedby');
+  return describedBy ? container.ownerDocument.getElementById(describedBy) : null;
+};
+
 const marketPlugin: PluginMarketItem = {
   pluginId: 'release-google-calendar',
   ghostId: 'google-calendar',
@@ -276,6 +282,7 @@ describe('GhostPluginCard', () => {
       <GhostPluginCard
         item={{ ...commandPlugin, id: 'meka-dev-demo-plugin' }}
         development
+        sourceLabel="settings.ghosts.meka.dev.badge"
         onPrimary={vi.fn()}
         onManage={onManage}
         onDevelopmentPackage={onPackage}
@@ -283,7 +290,18 @@ describe('GhostPluginCard', () => {
     );
 
     expect(container.querySelector('[data-testid="plugin-dev-ribbon"]')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'settings.ghosts.meka.dev.packageAction' }));
+    // 来源小标签并入标题行(紧挨插件名的小标签),不再占用元信息行。
+    const sourceTag = screen.getByText('settings.ghosts.meka.dev.badge');
+    expect(sourceTag.parentElement).toBe(screen.getByText('Filo Google').parentElement);
+    expect(metadataRow(container)?.contains(sourceTag)).toBe(false);
+    const packageButton = screen.getByRole('button', {
+      name: 'settings.ghosts.meka.dev.packageAction',
+    });
+    // 2026-11-18 对齐上游:开发动作不再单独占一行大按钮,「打包」与「管理」同在上半图标行。
+    expect(packageButton.parentElement).toBe(
+      screen.getByRole('button', { name: 'settings.ghosts.page.manageAria' }).parentElement,
+    );
+    fireEvent.click(packageButton);
     expect(onPackage).toHaveBeenCalledTimes(1);
     expect(onManage).not.toHaveBeenCalled();
   });
@@ -292,6 +310,7 @@ describe('GhostPluginCard', () => {
    * 测试价值
    * - 生产入口与可观察结果:`GhostPluginCard` 在开发副本的源码版本与运行版本不一致时
    *   只显示「尚未同步」这条事实,**不出现任何手动同步按钮**;一致或事实缺失时不显示。
+   *   这条事实 2026-11-18 起并入元信息行(行内小字),不再单独占一行把卡片撑高。
    * - Bug／规则依据:2026-11-18 用户裁决——本地(dev)插件与线上插件本来就分开,
    *   同步由 watcher 自动完成,卡片不需要(也不应该有)同步按钮;
    *   上一批 `d732f1d6e6` 加的按钮与 `meka-dev-plugins:resync` 已按此裁决删除。
@@ -317,16 +336,19 @@ describe('GhostPluginCard', () => {
     // 提示是纯信息:块内没有任何可点击控件(旧版的「同步」按钮不再出现)。
     expect(drift?.querySelector('button')).toBeNull();
     expect(screen.queryByRole('button', { name: 'settings.ghosts.meka.dev.syncNow' })).toBeNull();
+    // 它属于元信息行(aria-describedby 指向的那一行),不是单独的一整行。
+    expect(metadataRow(container)?.contains(drift)).toBe(true);
   });
 
   /*
    * 测试价值
-   * - 生产入口与可观察结果:开发目录后台同步失败时,卡片把 `MekaDevPluginItem.error`
-   *   原样显示出来(小字两行 + `title` 全文),用户不必只看到「同步失败」四个字。
+   * - 生产入口与可观察结果:开发目录后台同步失败时,卡片在元信息行里标出「同步失败」,
+   *   并把 `MekaDevPluginItem.error` 原样以单行截断显示(`title` 留全文)。
    * - Bug／规则依据:2026-11-18 用户裁决——删除手动同步入口后,失败原因必须自己可见,
-   *   否则失败不可诊断(真实案例:`meka-submit` 的 description 超过 300 字符)。
+   *   否则失败不可诊断(真实案例:`meka-submit` 的 description 超过 300 字符);
+   *   同一裁决的样式要求:状态与原因留在元信息行,不能各占一行把卡片撑高。
    * - 现有覆盖缺口:既有用例没有任何同步失败原因的渲染覆盖。
-   * - 最小失败输入:带 `mekaDevError` 的开发卡。
+   * - 最小失败输入:带 `mekaDevError` + `developmentSyncFailed` 的开发卡。
    * - tier:unit(jsdom 组件渲染)。
    */
   it('shows the development sync failure reason with the full text on hover', () => {
@@ -335,15 +357,18 @@ describe('GhostPluginCard', () => {
       <GhostPluginCard
         item={{ ...commandPlugin, id: 'meka-dev-demo-plugin' }}
         development
+        developmentSyncFailed
         mekaDevError={reason}
         onPrimary={vi.fn()}
         onManage={vi.fn()}
       />,
     );
 
+    expect(screen.getByText('settings.ghosts.meka.dev.syncError')).toBeTruthy();
     const error = container.querySelector('[data-testid="meka-dev-sync-error"]');
     expect(error?.textContent).toBe(reason);
     expect(error?.getAttribute('title')).toBe(reason);
+    expect(metadataRow(container)?.contains(error)).toBe(true);
   });
 
   it('stays quiet when the source and running versions agree or are unknown', () => {
