@@ -1699,8 +1699,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // 管子请求。requestId 是 main 铸的,陌生/重复 id 由桥忽略。
     resolveConfirm: (requestId: string, confirmed: boolean): Promise<{ handled: boolean }> =>
       ipcRenderer.invoke('ghosts:confirm:resolve', { requestId, confirmed }),
-    // 确认框「已收到」回执:renderer 收到推送后立即回,main 据此取消「8s 没回执
-    // 就改投主窗口」的兜底。只表示画出来了,不结算(用户还没点)。
+    // 确认框「已收到」回执:renderer 收到推送后立即回,main 广播口径下只做诊断
+    // (哪个窗口、延迟多少、至少一窗画出来了);短窗口内一个回执都没有时 main 会把
+    // 主窗口带到前台 + 闪任务栏并记 warn。只表示画出来了,不结算(用户还没点)。
     ackConfirm: (requestId: string): Promise<{ handled: boolean }> =>
       ipcRenderer.invoke('ghosts:confirm:ack', requestId),
     onForgeOidcInstallConfirmRequest: fanOutForgeOidcInstallConfirmRequest,

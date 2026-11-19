@@ -1,14 +1,27 @@
-/** ghostConfirmDialogBridge.test — confirm 槽 main↔renderer 往返桥的单测。 */
+/** ghostConfirmDialogBridge.test — confirm 槽 main↔renderer 往返桥的单测。
+ *
+ * 测试价值
+ * - 生产入口与可观察结果:`createGhostConfirmWindowSender` 的广播投递与
+ *   `GhostConfirmDialogBridge.request/acknowledge/resolve` 的结算/收卡/ack 诊断。
+ *   用户可见结果:所有可承载窗口都弹框、只结算第一个答案、其余窗口的框被收起、
+ *   ack 缺失时只把主窗口带到前台而不结算。
+ * - Bug／规则依据:2026-11-19 用户复测(会话 8f94e843)第一次 `submit_confirm` 90s
+ *   超时——单窗口投递落到用户没在看的窗口,且当时没有 ack 兜底与诊断日志。
+ * - 现有覆盖缺口:原用例只锁单窗口投递 + 8s 改投,没有广播、首答收卡与 ack 缺失兜底。
+ * - 最小失败输入:两个可承载窗口但用户只点了其中一个;或 8s 内 0 个 ack。
+ * - tier:unit(纯依赖注入,无 Electron、无真实等待)。
+ * - 实测耗时:本机单独运行约 7.7s,其中 runner setup 约 7.0s、用例执行约 20ms。
+ */
 
 import { describe, expect, it, vi } from 'vitest';
 
 import {
-  createGhostConfirmMainWindowRedelivery,
   createGhostConfirmWindowSender,
   GhostConfirmDialogBridge,
+  selectGhostConfirmWindow,
   type GhostConfirmDeliveredTarget,
-  type GhostConfirmPush,
   type GhostConfirmDialogBridgeDeps,
+  type GhostConfirmPush,
   type GhostConfirmTargetWindow,
 } from '../ghostConfirmDialogBridge';
 
@@ -21,17 +34,26 @@ const ASK = {
   danger: false,
 };
 
+const PUSH: GhostConfirmPush = { requestId: 'request-1', ...ASK };
+
 function makeBridge(overrides: Partial<GhostConfirmDialogBridgeDeps> = {}) {
   const sent: GhostConfirmPush[] = [];
   const deps: GhostConfirmDialogBridgeDeps = {
     sendToWindow: (payload) => {
       sent.push(payload);
-      return true;
+      return { delivered: true };
     },
     timeoutMs: 50,
     ...overrides,
   };
   return { bridge: new GhostConfirmDialogBridge(deps), sent };
+}
+
+function makeTarget(id: number): GhostConfirmDeliveredTarget & {
+  dismiss: ReturnType<typeof vi.fn>;
+  stopAttention: ReturnType<typeof vi.fn>;
+} {
+  return { id, dismiss: vi.fn(), stopAttention: vi.fn() };
 }
 
 describe('ghostConfirmDialogBridge · 正常往返', () => {
@@ -58,24 +80,44 @@ describe('ghostConfirmDialogBridge · 正常往返', () => {
 
 describe('ghostConfirmDialogBridge · fail closed', () => {
   it('没有可投窗口 → reject(区别于"用户拒绝")', async () => {
-    const { bridge } = makeBridge({ sendToWindow: () => false });
+    const { bridge } = makeBridge({ sendToWindow: () => ({ delivered: false }) });
     await expect(bridge.request(ASK)).rejects.toThrow('没有可挂靠的宿主窗口');
     expect(bridge.pendingCount).toBe(0);
   });
 
-  it('投递结果对象 delivered:false 同样 reject(fail closed)', async () => {
+  it('投递本身抛错 → 同样 reject,不崩', async () => {
+    const warn = vi.fn();
     const { bridge } = makeBridge({
-      sendToWindow: () => ({ delivered: false, targetIsMainWindow: false }),
+      sendToWindow: () => {
+        throw new Error('window destroyed');
+      },
+      log: { warn },
     });
     await expect(bridge.request(ASK)).rejects.toThrow('没有可挂靠的宿主窗口');
+    expect(bridge.pendingCount).toBe(0);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('delivery threw'),
+      expect.objectContaining({ ghostId: 'g1', err: 'window destroyed' }),
+    );
   });
 
   it('没人应答到超时 → 当成没同意(false),并清掉 pending', async () => {
-    const warn = vi.fn();
-    const { bridge } = makeBridge({ timeoutMs: 10, log: { warn } });
-    expect(await bridge.request(ASK)).toBe(false);
-    expect(bridge.pendingCount).toBe(0);
-    expect(warn).toHaveBeenCalled();
+    vi.useFakeTimers();
+    try {
+      const warn = vi.fn();
+      const { bridge, sent } = makeBridge({ timeoutMs: 90_000, log: { warn } });
+      const pending = bridge.request(ASK);
+      await vi.advanceTimersByTimeAsync(90_000);
+      expect(await pending).toBe(false);
+      expect(bridge.pendingCount).toBe(0);
+      expect(warn).toHaveBeenCalledWith(
+        'ghost confirm timed out (treated as declined)',
+        expect.objectContaining({ requestId: sent[0].requestId, ackCount: 0 }),
+      );
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('回包不是布尔 → 一律按没同意兜底(不给靠畸形回包骗到同意的路)', async () => {
@@ -113,33 +155,42 @@ describe('ghostConfirmDialogBridge · fail closed', () => {
   });
 });
 
-const PUSH: GhostConfirmPush = { requestId: 'request-1', ...ASK };
-
 interface FakeConfirmWindow extends GhostConfirmTargetWindow {
   label: string;
-  /** 可见性动作与推送的调用顺序(锁「先 bring to front,再 send」)。 */
+  id: number;
+  /** 可见性动作与推送的调用顺序(锁「只对置前窗口 bring to front,再 send」)。 */
   calls: string[];
 }
 
 function fakeWindow(
   label: string,
-  options: { minimized?: boolean; focused?: boolean; destroyed?: boolean } = {},
+  options: { id?: number; minimized?: boolean; focused?: boolean; visible?: boolean; destroyed?: boolean } = {},
 ): FakeConfirmWindow {
+  let focused = options.focused === true;
   const calls: string[] = [];
   return {
     label,
+    id: options.id ?? 1,
     calls,
     isDestroyed: () => options.destroyed === true,
     isMinimized: () => options.minimized === true,
+    isVisible: () => options.visible ?? options.minimized !== true,
+    isFocused: () => focused,
     restore: () => {
       calls.push('restore');
     },
     show: () => {
       calls.push('show');
     },
-    isFocused: () => options.focused === true,
     focus: () => {
+      focused = true;
       calls.push('focus');
+    },
+    moveTop: () => {
+      calls.push('moveTop');
+    },
+    flashFrame: (flag) => {
+      calls.push(flag ? 'flash' : 'unflash');
     },
   };
 }
@@ -150,20 +201,21 @@ interface SenderHarnessOptions {
   all?: FakeConfirmWindow[];
   /** 哪些窗口「能承载确认框」;判据在生产是 isModalConfirmHostWindow。 */
   hostable?: (window: FakeConfirmWindow) => boolean;
-  throwOnSend?: boolean;
-  deliveryTarget?: (window: FakeConfirmWindow, payload: GhostConfirmPush) => GhostConfirmDeliveredTarget | undefined;
+  throwOnSend?: (window: FakeConfirmWindow) => boolean;
+  deliveryTarget?: (window: FakeConfirmWindow) => GhostConfirmDeliveredTarget | undefined;
 }
 
 function makeSender(options: SenderHarnessOptions = {}) {
-  const main = options.main === undefined ? fakeWindow('main') : options.main;
+  const main = options.main === undefined ? fakeWindow('main', { id: 1 }) : options.main;
   const focused = options.focused === undefined ? main : options.focused;
   const all = options.all ?? [focused, main].filter((win): win is FakeConfirmWindow => Boolean(win));
   const sentTo: FakeConfirmWindow[] = [];
   const send = vi.fn((window: FakeConfirmWindow, _payload: GhostConfirmPush) => {
-    if (options.throwOnSend) throw new Error('Object has been destroyed');
+    if (options.throwOnSend?.(window)) throw new Error('Object has been destroyed');
     window.calls.push('send');
     sentTo.push(window);
   });
+  const info = vi.fn();
   const warn = vi.fn();
   const sender = createGhostConfirmWindowSender({
     getFocusedWindow: () => focused,
@@ -172,73 +224,135 @@ function makeSender(options: SenderHarnessOptions = {}) {
     isHostable: options.hostable ?? (() => true),
     send,
     deliveryTarget: options.deliveryTarget,
-    log: { warn },
+    windowId: (window) => window.id,
+    log: { info, warn },
   });
-  return { sender, send, warn, main, focused, sentTo };
+  return { sender, send, info, warn, main, focused, sentTo };
 }
 
-describe('createGhostConfirmWindowSender · 选窗口径(2026-11-19 只投完整主壳)', () => {
-  it('focused 是侧栏轻量窗(不可承载)→ 投主窗口,绝不投它', () => {
-    const sidebar = fakeWindow('sidebar', { focused: true });
-    const main = fakeWindow('main');
+describe('createGhostConfirmWindowSender · 本地模式广播(2026-11-19 复测)', () => {
+  it('广播到两个可承载窗口;只把置前窗口 restore/show/focus/moveTop/flash,其余只 push', () => {
+    const sidebar = fakeWindow('sidebar', { focused: true, id: 9 });
+    const main = fakeWindow('main', { id: 2, minimized: true });
+    const session = fakeWindow('session', { id: 3 });
     const h = makeSender({
       focused: sidebar,
       main,
-      all: [sidebar, main],
-      hostable: (window) => window === main,
+      all: [sidebar, session, main],
+      hostable: (window) => window !== sidebar,
+      deliveryTarget: (window) => makeTarget(window.id),
     });
-    expect(h.sender(PUSH)).toEqual({ delivered: true, targetIsMainWindow: true });
-    expect(h.sentTo).toEqual([main]);
+
+    const result = h.sender(PUSH);
+
+    expect(result.delivered).toBe(true);
+    expect(result.targets?.map((target) => target.id)).toEqual([3, 2]);
+    expect(h.sentTo).toEqual([session, main]);
+    // 侧栏窗不可承载:既不 push,也不做任何可见性动作。
     expect(sidebar.calls).toEqual([]);
+    // 置前窗口(聚焦的侧栏不可承载 → 主窗口)先带到前台,再推送。
+    expect(main.calls).toEqual(['restore', 'show', 'focus', 'moveTop', 'flash', 'send']);
+    // 其余可承载窗口只 push,不抢焦点。
+    expect(session.calls).toEqual(['send']);
+
+    expect(h.info).toHaveBeenCalledWith('ghost confirm: delivered', {
+      ghostId: 'g1',
+      requestId: 'request-1',
+      windowCount: 2,
+      primary: 2,
+      windows: [
+        { id: 3, isMain: false, visible: true, focused: false, minimized: false, delivered: true },
+        // 置前窗口被 focus 后日志如实记 focused:true(它已经被带到最前)。
+        { id: 2, isMain: true, visible: false, focused: true, minimized: true, delivered: true },
+      ],
+    });
+    // 诊断日志不带插件正文。
+    expect(JSON.stringify(h.info.mock.calls)).not.toContain('要切分支吗?');
   });
 
-  it('focused 是可承载的完整会话副窗 → 投它(targetIsMainWindow:false),不抢主窗口', () => {
-    const session = fakeWindow('session', { focused: true });
-    const main = fakeWindow('main');
+  it('聚焦的可承载会话副窗也参与广播:两处都 push,只有它不被抢焦点', () => {
+    const session = fakeWindow('session', { focused: true, id: 3 });
+    const main = fakeWindow('main', { id: 2 });
     const h = makeSender({ focused: session, main, all: [main, session] });
-    expect(h.sender(PUSH)).toEqual({ delivered: true, targetIsMainWindow: false });
-    expect(h.sentTo).toEqual([session]);
-    expect(main.calls).toEqual([]);
-  });
 
-  it('focused 不可承载且主窗口也 destroyed → 回落到其它可承载的完整会话窗', () => {
-    const sidebar = fakeWindow('sidebar', { focused: true });
-    const destroyedMain = fakeWindow('main', { destroyed: true });
-    const session = fakeWindow('session');
-    const h = makeSender({
-      focused: sidebar,
-      main: destroyedMain,
-      all: [sidebar, destroyedMain, session],
-      hostable: (window) => window === session,
+    const result = h.sender(PUSH);
+
+    expect(result.delivered).toBe(true);
+    expect(h.sentTo).toEqual([main, session]);
+    expect(main.calls).toEqual(['send']);
+    expect(session.calls).toEqual(['send']);
+    const delivered = h.info.mock.calls.find(([message]) => message === 'ghost confirm: delivered');
+    expect(delivered?.[1]).toMatchObject({
+      windowCount: 2,
+      primary: 3,
+      windows: [
+        { id: 2, isMain: true, focused: false, delivered: true },
+        { id: 3, isMain: false, focused: true, delivered: true },
+      ],
     });
-    expect(h.sender(PUSH)).toEqual({ delivered: true, targetIsMainWindow: false });
-    expect(h.sentTo).toEqual([session]);
-    expect(sidebar.calls).toEqual([]);
-    expect(destroyedMain.calls).toEqual([]);
   });
 
-  it('只有辅助窗口可承载判定为空 → delivered:false,不投任何窗口(fail closed)', () => {
+  it('都没有聚焦且主窗口不可承载 → 第一个可承载窗口被带到前台', () => {
+    const session = fakeWindow('session', { id: 3 });
+    const h = makeSender({ focused: null, main: null, all: [session] });
+
+    expect(h.sender(PUSH)).toMatchObject({ delivered: true });
+    expect(session.calls).toEqual(['show', 'focus', 'moveTop', 'flash', 'send']);
+  });
+
+  it('只有辅助/不可承载窗口 → delivered:false,不 push 也不抢焦点(fail closed)', () => {
     const sidebar = fakeWindow('sidebar', { focused: true });
     const usage = fakeWindow('usage');
-    const h = makeSender({ focused: sidebar, main: null, all: [sidebar, usage], hostable: () => false });
-    expect(h.sender(PUSH)).toEqual({ delivered: false, targetIsMainWindow: false });
+    const h = makeSender({
+      focused: sidebar,
+      main: null,
+      all: [sidebar, usage],
+      hostable: () => false,
+    });
+
+    expect(h.sender(PUSH)).toEqual({ delivered: false });
     expect(h.send).not.toHaveBeenCalled();
     expect(sidebar.calls).toEqual([]);
     expect(usage.calls).toEqual([]);
+    expect(h.warn).toHaveBeenCalledWith(
+      'ghost confirm: no host window to deliver the dialog',
+      expect.objectContaining({ ghostId: 'g1', requestId: 'request-1' }),
+    );
   });
 
-  it('目标窗口最小化且在后台:restore → show → focus 之后才 send', () => {
-    const main = fakeWindow('main', { minimized: true });
-    const h = makeSender({ focused: null, main, all: [main] });
-    expect(h.sender(PUSH)).toEqual({ delivered: true, targetIsMainWindow: true });
-    expect(main.calls).toEqual(['restore', 'show', 'focus', 'send']);
+  it('部分窗口推送失败:另一处投成功就算投递成功,失败窗口只 warn', () => {
+    const main = fakeWindow('main', { id: 2, minimized: true });
+    const session = fakeWindow('session', { id: 3 });
+    const h = makeSender({
+      focused: null,
+      main,
+      all: [main, session],
+      throwOnSend: (window) => window === main,
+      deliveryTarget: (window) => makeTarget(window.id),
+    });
+
+    const result = h.sender(PUSH);
+
+    expect(result.delivered).toBe(true);
+    expect(result.targets?.map((target) => target.id)).toEqual([3]);
+    expect(h.sentTo).toEqual([session]);
+    expect(h.warn).toHaveBeenCalledWith(
+      expect.stringContaining('failed to push the dialog'),
+      expect.objectContaining({ requestId: 'request-1' }),
+    );
+    const delivered = h.info.mock.calls.find(([message]) => message === 'ghost confirm: delivered');
+    expect(delivered?.[1]).toMatchObject({
+      windowCount: 1,
+      windows: [
+        { id: 2, isMain: true, delivered: false },
+        { id: 3, isMain: false, delivered: true },
+      ],
+    });
   });
 
-  it('目标窗口已聚焦:不重复 show/focus,仍照常投递(不每次抢焦点)', () => {
-    const main = fakeWindow('main', { focused: true });
-    const h = makeSender({ focused: main, main, all: [main] });
-    expect(h.sender(PUSH)).toEqual({ delivered: true, targetIsMainWindow: true });
-    expect(main.calls).toEqual(['send']);
+  it('所有窗口都推送失败 → delivered:false(fail closed)', () => {
+    const h = makeSender({ all: [fakeWindow('main'), fakeWindow('session')], throwOnSend: () => true });
+    expect(h.sender(PUSH)).toEqual({ delivered: false });
   });
 
   it('可见性动作抛错只 warn,不阻断投递', () => {
@@ -247,50 +361,30 @@ describe('createGhostConfirmWindowSender · 选窗口径(2026-11-19 只投完整
       throw new Error('restore failed');
     };
     const h = makeSender({ focused: null, main, all: [main] });
-    expect(h.sender(PUSH)).toEqual({ delivered: true, targetIsMainWindow: true });
-    expect(main.calls).toEqual(['show', 'focus', 'send']);
+
+    expect(h.sender(PUSH)).toMatchObject({ delivered: true });
+    expect(main.calls).toEqual(['show', 'focus', 'moveTop', 'flash', 'send']);
     expect(h.warn).toHaveBeenCalledWith(
       expect.stringContaining('restore'),
       expect.objectContaining({ ghostId: 'g1', requestId: 'request-1', err: 'restore failed' }),
     );
   });
 
-  it('推送抛错 → delivered:false(fail closed),不崩', () => {
-    const main = fakeWindow('main');
-    const h = makeSender({ focused: main, main, all: [main], throwOnSend: true });
-    expect(h.sender(PUSH)).toEqual({ delivered: false, targetIsMainWindow: true });
-    expect(h.warn).toHaveBeenCalledWith(
-      expect.stringContaining('push'),
-      expect.objectContaining({ ghostId: 'g1', requestId: 'request-1' }),
-    );
-  });
-
-  it('登记收卡句柄:投递结果带上目标窗口 id 与 dismissed 动作', () => {
-    const main = fakeWindow('main');
-    const h = makeSender({
-      focused: main,
-      main,
-      all: [main],
-      deliveryTarget: (window) => ({ id: 7, dismiss: () => window.calls.push('dismiss') }),
-    });
-    const result = h.sender(PUSH);
-    expect(result).toMatchObject({ delivered: true, targetIsMainWindow: true });
-    expect(result.target?.id).toBe(7);
-    result.target?.dismiss();
-    expect(main.calls).toEqual(['show', 'focus', 'send', 'dismiss']);
-  });
-
   it('收卡句柄注册抛错只 warn:已经投出去的框不能报成"没投成"', () => {
     const main = fakeWindow('main');
     const h = makeSender({
-      focused: main,
+      focused: null,
       main,
       all: [main],
       deliveryTarget: () => {
         throw new Error('no webContents');
       },
     });
-    expect(h.sender(PUSH)).toEqual({ delivered: true, targetIsMainWindow: true });
+
+    const result = h.sender(PUSH);
+
+    expect(result.delivered).toBe(true);
+    expect(result.targets).toBeUndefined();
     expect(h.warn).toHaveBeenCalledWith(
       expect.stringContaining('dismiss handle'),
       expect.objectContaining({ requestId: 'request-1' }),
@@ -298,275 +392,152 @@ describe('createGhostConfirmWindowSender · 选窗口径(2026-11-19 只投完整
   });
 });
 
-describe('createGhostConfirmMainWindowRedelivery · ack 超时改投主窗口', () => {
-  it('主窗口可承载:带到前台后投递', () => {
-    const main = fakeWindow('main', { minimized: true });
-    const sentTo: FakeConfirmWindow[] = [];
-    const redeliver = createGhostConfirmMainWindowRedelivery({
-      getMainWindow: () => main,
-      isHostable: () => true,
-      send: (window) => {
-        window.calls.push('send');
-        sentTo.push(window);
-      },
+describe('selectGhostConfirmWindow · client-mode 单窗口口径', () => {
+  it('聚焦可承载 → 主窗口 → 第一个可承载 → null', () => {
+    const sidebar = fakeWindow('sidebar', { focused: true, id: 9 });
+    const main = fakeWindow('main', { id: 2 });
+    const session = fakeWindow('session', { id: 3 });
+    const candidates = (
+      focused: FakeConfirmWindow | null,
+      mainWindow: FakeConfirmWindow | null,
+      all: FakeConfirmWindow[],
+      hostable: (window: FakeConfirmWindow) => boolean,
+    ) => ({
+      getFocusedWindow: () => focused,
+      getMainWindow: () => mainWindow,
+      getAllWindows: () => all,
+      isHostable: hostable,
     });
-    expect(redeliver(PUSH)).toMatchObject({ delivered: true, targetIsMainWindow: true });
-    expect(main.calls).toEqual(['restore', 'show', 'focus', 'send']);
-    expect(sentTo).toEqual([main]);
-  });
 
-  it('没有主窗口 / 主窗口不可承载 / 推送抛错 → delivered:false(不扩散成广播)', () => {
-    const noMain = createGhostConfirmMainWindowRedelivery({
-      getMainWindow: () => null,
-      isHostable: () => true,
-      send: vi.fn(),
-    });
-    expect(noMain(PUSH).delivered).toBe(false);
-
-    const main = fakeWindow('main');
-    const notHostable = createGhostConfirmMainWindowRedelivery({
-      getMainWindow: () => main,
-      isHostable: () => false,
-      send: vi.fn(),
-    });
-    expect(notHostable(PUSH).delivered).toBe(false);
-
-    const throwing = createGhostConfirmMainWindowRedelivery({
-      getMainWindow: () => main,
-      isHostable: () => true,
-      send: () => {
-        throw new Error('closed');
-      },
-    });
-    expect(throwing(PUSH).delivered).toBe(false);
-  });
-
-  it('改投成功时带上主窗口的收卡句柄(供 settle 收起重复框)', () => {
-    const main = fakeWindow('main');
-    const dismiss = vi.fn();
-    const redeliver = createGhostConfirmMainWindowRedelivery({
-      getMainWindow: () => main,
-      isHostable: () => true,
-      send: vi.fn(),
-      deliveryTarget: () => ({ id: 2, dismiss }),
-    });
-    const result = redeliver(PUSH);
-    expect(result.target?.id).toBe(2);
-    result.target?.dismiss();
-    expect(dismiss).toHaveBeenCalledOnce();
+    expect(selectGhostConfirmWindow(candidates(session, main, [main, session], () => true))).toBe(session);
+    expect(selectGhostConfirmWindow(candidates(sidebar, main, [sidebar, session, main], (window) => window !== sidebar))).toBe(main);
+    const destroyedMain = fakeWindow('main', { destroyed: true });
+    expect(selectGhostConfirmWindow(
+      candidates(sidebar, destroyedMain, [sidebar, session, destroyedMain], (window) => window === session),
+    )).toBe(session);
+    expect(selectGhostConfirmWindow(candidates(sidebar, null, [sidebar], () => false))).toBeNull();
   });
 });
 
-describe('ghostConfirmDialogBridge · renderer 回执与改投主窗口', () => {
-  it('8s 内没有回执且首次不是主窗口 → 改投主窗口一次(同一 requestId)', async () => {
-    vi.useFakeTimers();
-    try {
-      const sent: GhostConfirmPush[] = [];
-      const redelivered: GhostConfirmPush[] = [];
-      const bridge = new GhostConfirmDialogBridge({
-        sendToWindow: (payload) => {
-          sent.push(payload);
-          return { delivered: true, targetIsMainWindow: false };
-        },
-        redeliverToMainWindow: (payload) => {
-          redelivered.push(payload);
-          return true;
-        },
-        ackTimeoutMs: 8_000,
-        timeoutMs: 90_000,
-      });
-      const pending = bridge.request(ASK);
-      expect(sent).toHaveLength(1);
-      await vi.advanceTimersByTimeAsync(7_999);
-      expect(redelivered).toHaveLength(0);
-      await vi.advanceTimersByTimeAsync(1);
-      expect(redelivered).toHaveLength(1);
-      expect(redelivered[0].requestId).toBe(sent[0].requestId);
-      // 改投不结算本单:答案仍由用户点击决定。
-      expect(bridge.resolve(sent[0].requestId, true)).toBe(true);
-      expect(await pending).toBe(true);
-      expect(vi.getTimerCount()).toBe(0);
-    } finally {
-      vi.useRealTimers();
-    }
+describe('ghostConfirmDialogBridge · 广播后的首答结算与收卡', () => {
+  it('第一个 resolve 结算答案,其它已投窗口收到 dismissed 并停掉任务栏闪烁', async () => {
+    const targets = [makeTarget(1), makeTarget(2)];
+    const info = vi.fn();
+    let requestId = '';
+    const bridge = new GhostConfirmDialogBridge({
+      sendToWindow: (payload) => {
+        requestId = payload.requestId;
+        return { delivered: true, targets };
+      },
+      timeoutMs: 60_000,
+      log: { info, warn: vi.fn() },
+    });
+    const pending = bridge.request(ASK);
+
+    expect(bridge.resolve(requestId, true, 1)).toBe(true);
+    expect(await pending).toBe(true);
+    expect(targets[1].dismiss).toHaveBeenCalledOnce();
+    expect(targets[0].dismiss).not.toHaveBeenCalled();
+    expect(targets[0].stopAttention).toHaveBeenCalledOnce();
+    expect(targets[1].stopAttention).toHaveBeenCalledOnce();
+    expect(info).toHaveBeenCalledWith('ghost confirm: settle', {
+      ghostId: 'g1',
+      requestId,
+      answeredBy: 1,
+      confirmed: true,
+      dismissed: 1,
+    });
+    // 迟到的第二个答案一律 handled:false,不改变已结算的 true。
+    expect(bridge.resolve(requestId, false, 2)).toBe(false);
+    expect(bridge.pendingCount).toBe(0);
   });
 
-  it('收到 renderer 回执 → 取消改投,答案照常结算', async () => {
+  it('清理(cancelAll)没有作答窗口:已投窗口全部收卡,答案 false', async () => {
+    const targets = [makeTarget(1), makeTarget(2)];
+    const bridge = new GhostConfirmDialogBridge({
+      sendToWindow: () => ({ delivered: true, targets }),
+      timeoutMs: 60_000,
+    });
+    const pending = bridge.request(ASK);
+    bridge.cancelAll();
+    expect(await pending).toBe(false);
+    expect(targets.every((target) => target.dismiss.mock.calls.length === 1)).toBe(true);
+  });
+});
+
+describe('ghostConfirmDialogBridge · ack 观测(只做诊断,不改投)', () => {
+  it('8s 内一个 ack 都没有 → 只把主窗口带到前台,不结算;随后作答照常成功', async () => {
     vi.useFakeTimers();
     try {
+      const targets = [makeTarget(1), makeTarget(2)];
+      const raiseMainWindow = vi.fn();
+      const warn = vi.fn();
       let requestId = '';
-      const redeliver = vi.fn(() => true);
       const bridge = new GhostConfirmDialogBridge({
         sendToWindow: (payload) => {
           requestId = payload.requestId;
-          return { delivered: true, targetIsMainWindow: false };
+          return { delivered: true, targets };
         },
-        redeliverToMainWindow: redeliver,
+        raiseMainWindow,
         ackTimeoutMs: 8_000,
         timeoutMs: 90_000,
+        log: { info: vi.fn(), warn },
       });
       const pending = bridge.request(ASK);
-      expect(bridge.acknowledge(requestId)).toBe(true);
-      await vi.advanceTimersByTimeAsync(8_000);
-      expect(redeliver).not.toHaveBeenCalled();
-      bridge.resolve(requestId, false);
-      expect(await pending).toBe(false);
-      expect(vi.getTimerCount()).toBe(0);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
 
-  it('首次已投主窗口 → 不回执也不改投(没有第二处可投)', async () => {
-    vi.useFakeTimers();
-    try {
-      const redeliver = vi.fn(() => true);
-      const bridge = new GhostConfirmDialogBridge({
-        sendToWindow: () => ({ delivered: true, targetIsMainWindow: true }),
-        redeliverToMainWindow: redeliver,
-        ackTimeoutMs: 8_000,
-        timeoutMs: 90_000,
-      });
-      const pending = bridge.request(ASK);
-      await vi.advanceTimersByTimeAsync(8_000);
-      expect(redeliver).not.toHaveBeenCalled();
-      bridge.cancelAll();
-      expect(await pending).toBe(false);
-      expect(vi.getTimerCount()).toBe(0);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+      await vi.advanceTimersByTimeAsync(7_999);
+      expect(raiseMainWindow).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(raiseMainWindow).toHaveBeenCalledOnce();
+      expect(raiseMainWindow).toHaveBeenCalledWith(requestId);
+      expect(warn).toHaveBeenCalledWith(
+        'ghost confirm: ack missing; forcing main window to front',
+        expect.objectContaining({ requestId, targetCount: 2 }),
+      );
+      // 兜底只影响可见性:不结算、不收卡,用户仍可从任一窗口作答。
+      expect(bridge.pendingCount).toBe(1);
+      expect(targets[0].dismiss).not.toHaveBeenCalled();
 
-  it('旧装配(boolean 投递结果)不启用改投,行为与旧版一致', async () => {
-    vi.useFakeTimers();
-    try {
-      const redeliver = vi.fn(() => true);
-      const bridge = new GhostConfirmDialogBridge({
-        sendToWindow: () => true,
-        redeliverToMainWindow: redeliver,
-        ackTimeoutMs: 8_000,
-        timeoutMs: 90_000,
-      });
-      const pending = bridge.request(ASK);
-      await vi.advanceTimersByTimeAsync(8_000);
-      expect(redeliver).not.toHaveBeenCalled();
-      bridge.cancelAll();
-      expect(await pending).toBe(false);
-      expect(vi.getTimerCount()).toBe(0);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('回执只取消改投、不结算本单;陌生 id 回执直接忽略', async () => {
-    let requestId = '';
-    const bridge = new GhostConfirmDialogBridge({
-      sendToWindow: (payload) => {
-        requestId = payload.requestId;
-        return { delivered: true, targetIsMainWindow: false };
-      },
-      redeliverToMainWindow: () => true,
-      ackTimeoutMs: 60_000,
-      timeoutMs: 60_000,
-    });
-    const pending = bridge.request(ASK);
-    expect(bridge.acknowledge(requestId)).toBe(true);
-    expect(bridge.acknowledge('not-a-real-id')).toBe(false);
-    expect(bridge.pendingCount).toBe(1);
-    bridge.cancelAll();
-    expect(await pending).toBe(false);
-  });
-
-  it('cancelAll / 超时结算会清掉改投闹钟(不留悬挂 timer)', async () => {
-    vi.useFakeTimers();
-    try {
-      const redeliver = vi.fn(() => true);
-      const bridge = new GhostConfirmDialogBridge({
-        sendToWindow: () => ({ delivered: true, targetIsMainWindow: false }),
-        redeliverToMainWindow: redeliver,
-        // 兜底超时(10s)先于改投闹钟(20s)到:结算必须把改投闹钟一起清掉。
-        ackTimeoutMs: 20_000,
-        timeoutMs: 10_000,
-      });
-      const pending = bridge.request(ASK);
-      await vi.advanceTimersByTimeAsync(10_000);
-      expect(await pending).toBe(false);
-      await vi.advanceTimersByTimeAsync(10_000);
-      expect(redeliver).not.toHaveBeenCalled();
-      expect(vi.getTimerCount()).toBe(0);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-});
-
-/**
- * 8s 没回执会改投主窗口:原窗口只是慢/阻塞时,同一 requestId 会在两个窗口各有一个
- * 模态框。桥要记住每一次成功投递,settle 时向除作答窗口外的已投窗口补发 dismissed。
- */
-describe('ghostConfirmDialogBridge · 改投后的重复模态框收卡', () => {
-  /** 首次投副窗(id=1);8s 无回执改投主窗(id=2);两个窗口都登记了收卡动作。 */
-  function makeMultiWindowBridge() {
-    const sent: GhostConfirmPush[] = [];
-    const dismissed: string[] = [];
-    let latestRequestId = '';
-    const bridge = new GhostConfirmDialogBridge({
-      sendToWindow: (payload) => {
-        latestRequestId = payload.requestId;
-        sent.push(payload);
-        return {
-          delivered: true,
-          targetIsMainWindow: false,
-          target: { id: 1, dismiss: () => dismissed.push(`secondary:${payload.requestId}`) },
-        };
-      },
-      redeliverToMainWindow: (payload) => {
-        sent.push(payload);
-        return {
-          delivered: true,
-          targetIsMainWindow: true,
-          target: { id: 2, dismiss: () => dismissed.push(`main:${payload.requestId}`) },
-        };
-      },
-      ackTimeoutMs: 8_000,
-      timeoutMs: 90_000,
-    });
-    return { bridge, sent, dismissed, requestId: () => latestRequestId };
-  }
-
-  it('慢窗口迟到回执后作答:只结算一次,改投的主窗口收到 dismissed', async () => {
-    vi.useFakeTimers();
-    try {
-      const h = makeMultiWindowBridge();
-      const pending = h.bridge.request(ASK);
-      await vi.advanceTimersByTimeAsync(8_000);
-      expect(h.sent).toHaveLength(2);
-      // 原窗口只是慢:回执在改投之后才到,不再取消改投(闹钟已触发),但答案仍有效。
-      expect(h.bridge.acknowledge(h.requestId())).toBe(true);
-      expect(h.bridge.resolve(h.requestId(), true, 1)).toBe(true);
-      expect(h.dismissed).toEqual([`main:${h.requestId()}`]);
+      expect(bridge.resolve(requestId, true, 1)).toBe(true);
       expect(await pending).toBe(true);
-      // 主窗口被收卡后回的迟到答案 handled:false,不改变已结算的 true。
-      expect(h.bridge.resolve(h.requestId(), false, 2)).toBe(false);
-      expect(h.bridge.pendingCount).toBe(0);
+      expect(targets[1].dismiss).toHaveBeenCalledOnce();
       expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('用户在改投窗口作答:原窗口被收起,答案只结算一次', async () => {
+  it('任一窗口 ack 即取消主窗口兜底,并记下窗口 id 与延迟', async () => {
     vi.useFakeTimers();
     try {
-      const h = makeMultiWindowBridge();
-      const pending = h.bridge.request(ASK);
+      const raiseMainWindow = vi.fn();
+      const info = vi.fn();
+      let requestId = '';
+      const bridge = new GhostConfirmDialogBridge({
+        sendToWindow: (payload) => {
+          requestId = payload.requestId;
+          return { delivered: true, targets: [makeTarget(1), makeTarget(2)] };
+        },
+        raiseMainWindow,
+        ackTimeoutMs: 8_000,
+        timeoutMs: 90_000,
+        log: { info, warn: vi.fn() },
+      });
+      const pending = bridge.request(ASK);
+
+      await vi.advanceTimersByTimeAsync(250);
+      expect(bridge.acknowledge(requestId, 2)).toBe(true);
+      expect(info).toHaveBeenCalledWith('ghost confirm: renderer ack', {
+        ghostId: 'g1',
+        requestId,
+        windowId: 2,
+        latencyMs: 250,
+      });
+      expect(bridge.acknowledge('not-a-real-id', 2)).toBe(false);
       await vi.advanceTimersByTimeAsync(8_000);
-      expect(h.bridge.resolve(h.requestId(), false, 2)).toBe(true);
-      expect(h.dismissed).toEqual([`secondary:${h.requestId()}`]);
-      expect(await pending).toBe(false);
-      // 原窗口的迟到点击不改变答案,也不产生新的 confirmed:true。
-      expect(h.bridge.resolve(h.requestId(), true, 1)).toBe(false);
+      expect(raiseMainWindow).not.toHaveBeenCalled();
+
+      bridge.resolve(requestId, false, 2);
       expect(await pending).toBe(false);
       expect(vi.getTimerCount()).toBe(0);
     } finally {
@@ -574,54 +545,70 @@ describe('ghostConfirmDialogBridge · 改投后的重复模态框收卡', () => 
     }
   });
 
-  it('兜底超时结算同时收起两个窗口,迟到的 confirmed:true 不生效', async () => {
+  it('ack 兜底触发后才到的回执仍记日志(标记 afterAckTimeout),不重复提主窗口', async () => {
     vi.useFakeTimers();
     try {
-      const h = makeMultiWindowBridge();
-      const pending = h.bridge.request(ASK);
+      const raiseMainWindow = vi.fn();
+      const info = vi.fn();
+      let requestId = '';
+      const bridge = new GhostConfirmDialogBridge({
+        sendToWindow: (payload) => {
+          requestId = payload.requestId;
+          return { delivered: true, targets: [makeTarget(1)] };
+        },
+        raiseMainWindow,
+        ackTimeoutMs: 8_000,
+        timeoutMs: 90_000,
+        log: { info, warn: vi.fn() },
+      });
+      const pending = bridge.request(ASK);
       await vi.advanceTimersByTimeAsync(8_000);
-      await vi.advanceTimersByTimeAsync(82_000);
-      expect(h.dismissed).toEqual([
-        `secondary:${h.requestId()}`,
-        `main:${h.requestId()}`,
-      ]);
+      expect(raiseMainWindow).toHaveBeenCalledOnce();
+
+      expect(bridge.acknowledge(requestId, 1)).toBe(true);
+      expect(info).toHaveBeenCalledWith(
+        'ghost confirm: renderer ack',
+        expect.objectContaining({ requestId, windowId: 1, afterAckTimeout: true }),
+      );
+      expect(raiseMainWindow).toHaveBeenCalledOnce();
+      bridge.cancelAll();
       expect(await pending).toBe(false);
-      expect(h.bridge.resolve(h.requestId(), true)).toBe(false);
       expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('作答窗口不收自己的 dismissed(只有其它已投窗口才补发)', async () => {
-    const dismiss = vi.fn();
-    let requestId = '';
-    const bridge = new GhostConfirmDialogBridge({
-      sendToWindow: (payload) => {
-        requestId = payload.requestId;
-        return { delivered: true, targetIsMainWindow: true, target: { id: 5, dismiss } };
-      },
-      timeoutMs: 60_000,
-    });
-    const pending = bridge.request(ASK);
-    expect(bridge.resolve(requestId, true, 5)).toBe(true);
-    expect(await pending).toBe(true);
-    expect(dismiss).not.toHaveBeenCalled();
-  });
+  it('超时留痕带 ack 数;已投窗口全部收卡,迟到的 confirmed:true 不生效', async () => {
+    vi.useFakeTimers();
+    try {
+      const targets = [makeTarget(1), makeTarget(2)];
+      const warn = vi.fn();
+      let requestId = '';
+      const bridge = new GhostConfirmDialogBridge({
+        sendToWindow: (payload) => {
+          requestId = payload.requestId;
+          return { delivered: true, targets };
+        },
+        ackTimeoutMs: 8_000,
+        timeoutMs: 10_000,
+        log: { info: vi.fn(), warn },
+      });
+      const pending = bridge.request(ASK);
+      expect(bridge.acknowledge(requestId, 1)).toBe(true);
 
-  it('清理(cancelAll)没有作答窗口:已投窗口全部补发一次 dismissed', async () => {
-    const dismissed: number[] = [];
-    const bridge = new GhostConfirmDialogBridge({
-      sendToWindow: () => ({
-        delivered: true,
-        targetIsMainWindow: true,
-        target: { id: 9, dismiss: () => dismissed.push(9) },
-      }),
-      timeoutMs: 60_000,
-    });
-    const pending = bridge.request(ASK);
-    bridge.cancelAll();
-    expect(await pending).toBe(false);
-    expect(dismissed).toEqual([9]);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(await pending).toBe(false);
+      expect(warn).toHaveBeenCalledWith(
+        'ghost confirm timed out (treated as declined)',
+        expect.objectContaining({ requestId, ackCount: 1 }),
+      );
+      expect(targets.every((target) => target.dismiss.mock.calls.length === 1)).toBe(true);
+      expect(targets.every((target) => target.stopAttention.mock.calls.length === 1)).toBe(true);
+      expect(bridge.resolve(requestId, true)).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

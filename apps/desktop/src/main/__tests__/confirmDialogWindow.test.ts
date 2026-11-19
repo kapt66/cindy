@@ -1,7 +1,7 @@
 /**
  * confirmDialogWindow.test — 「可承载模态确认框的窗口」URL 判据的纯函数单测。
  *
- * Bug 依据(2026-11-19 用户实测):插件 confirm 槽只投一个窗口,旧装配取
+ * Bug 依据(2026-11-19 用户实测):旧版插件 confirm 槽只投一个窗口,装配取
  * `focused ?? getAllWindows()[0]`。focused 可能是右侧栏独立窗 / 资源用量窗 /
  * utility 浮窗——它们只挂轻量 renderer + 专用 preload,**没有 GhostConfirmDialogHost**,
  * 结果确认框「小窗/白屏/点不到」或干脆看不见,插件只能等到 90s 超时。

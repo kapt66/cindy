@@ -111,7 +111,8 @@ describe('GhostInstallConsentHost', () => {
     expect(subscribeDismiss).not.toHaveBeenCalled();
     await act(async () => request?.({ requestId: 'command', ghostId: 'demo', ghostName: 'Demo',
       body: 'Run terminal_start', confirmText: null, cancelText: null, danger: false }));
-    // 「已收到」回执:main 只有收到它才不把这次投递当作没送达(8s 后改投主窗口)。
+    // 「已收到」回执:main 用它判断至少一个窗口把框画出来了;一个都没有时会把主窗口
+    // 带到前台 + 闪任务栏并记 warn。
     expect(ackConfirm).toHaveBeenCalledWith('command');
     expect(mocks.confirm).toHaveBeenCalledTimes(1);
     expect(subscribeDismiss).toHaveBeenCalledOnce();

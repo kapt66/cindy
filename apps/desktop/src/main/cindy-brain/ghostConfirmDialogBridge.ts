@@ -6,12 +6,20 @@
  * main 铸一个 requestId → 投给 renderer → pending promise 挂起 → renderer 用
  * ConfirmDialogProvider 弹主机同款确认框 → 用户点击后经 IPC 回包 → settle。
  *
- * 与过户确认卡(GhostGrantConfirmBridge)的两处不同,都是刻意的:
+ * 与过户确认卡(GhostGrantConfirmBridge)的差别:
  *
- * 1. **只投一个窗口,不 broadcast**。过户确认卡是聊天流里的卡片,广播到多窗口
- *    再靠 DISMISSED 收卡没问题;模态确认框广播出去会在每个窗口各弹一个、收回
- *    多份答案(preview 槽注释里踩过同类坑)。所以这里由 deps.sendToWindow 精确
- *    投递单个窗口,投不出去就 reject 让槽回 UNAVAILABLE。
+ * 1. **本地模式广播投递,结算仍只认第一个答案**。过户确认卡是聊天流里的卡片,广播到
+ *    多窗口再靠 DISMISSED 收卡没问题;模态确认框则只应该在用户看得见的地方出现。
+ *    单窗口投递在 2026-11-19 用户复测里仍失败:框投到了用户没在看的完整会话副窗 /
+ *    被遮挡的窗口 / 别的虚拟桌面,用户没看到、点不到,插件等到 90s 超时。现在把同一
+ *    requestId 推给**所有能承载确认框的窗口**(主窗口 + `?secondaryWindow=1` 完整会话
+ *    副窗),把"至少一处在用户眼前"的概率问题变成确定问题:
+ *      - 当前聚焦的可承载窗口(没有则主窗口,再没有则第一个可承载窗口)先
+ *        restore/show/focus + `moveTop()` + `flashFrame(true)`,保证至少一处在最前;
+ *      - 其余窗口只 push,不抢焦点;
+ *      - 桥以**第一次** resolve 为准(第一个用户点击/取消),结算时向**其它**已投窗口
+ *        补发 `ghosts:confirm-dismissed` 收掉重复模态框;迟到的 resolve 一律
+ *        `handled:false`(现有逻辑不变)。
  * 2. **不挂会话**。它可能来自面板点击、也可能来自工具调用链,不一定有 sessionId;
  *    清理靠超时与显式 cancelAll(窗口关闭/插件沉睡时调)。
  *
@@ -19,24 +27,26 @@
  *
  * confirm 宿主(`GhostConfirmDialogHost`)只挂在完整主壳 `main-entry → App.tsx` 上。
  * 右侧栏独立窗、资源用量窗、远程桌面查看器、utility 浮窗都是**轻量 renderer +
- * 专用 preload**,收不到 `ghosts:confirm-request`;投过去就是「小窗/白屏/点不到」,
- * 然后 90s 超时被误记成"用户拒绝"。所以选窗由注入的 `isHostable` 判据决定
- * (生产 = `confirmDialogWindow.isModalConfirmHostWindow`):
+ * 专用 preload**,收不到 `ghosts:confirm-request`;投过去就是「小窗/白屏/点不到」。
+ * 所以可投窗口由注入的 `isHostable` 判据决定(生产 =
+ * `confirmDialogWindow.isModalConfirmHostWindow`)。辅助窗永远不投,宁可回 UNAVAILABLE
+ * (明确区别于用户拒绝),也不把模态框塞进画不出来的窗口。
  *
- *   focused 且可承载 → 主窗口 → 其它可承载的完整会话副窗 → 都没有则 false
+ * ## ack 观测(只做诊断,不再改投)
  *
- * 只有「主窗口 / `?secondaryWindow=1` 的完整会话副窗」可承载;辅助窗永远不投,
- * 宁可回 UNAVAILABLE(明确区别于用户拒绝),也不把模态框塞进画不出来的窗口。
+ * renderer 收到 push 的第一时间回一条 `acknowledge` IPC。广播已经把框送到所有可承载
+ * 窗口,ack 不再触发「改投主窗口」,只用于:
+ *  - 记 `ghost confirm: renderer ack`(哪个窗口、延迟多少);
+ *  - 短窗口内**一个 ack 都没有**时,说明没有任何窗口画出框(渲染进程卡死/窗口在别的
+ *    虚拟桌面无法绘制等)。此时把主窗口 bring to front + `flashFrame`,并记
+ *    `ghost confirm: ack missing; forcing main window to front`——不改结算,最差仍是
+ *    90s 超时按「没同意」。
  *
- * 投递后若 **短窗口**内没收到 renderer 的「已收到」回执(`acknowledge`,renderer
- * 在收到请求的第一时间回 IPC),且首次目标不是主窗口,则**改投主窗口一次**——
- * 避免选窗判据漏掉某个新窗口类型时白等 90s。改投失败不改变 fail-closed。
+ * ## client-mode 口径
  *
- * 改投会让**同一个 requestId 短暂出现在两个窗口**。桥记录本次已投递的窗口;用户作答、
- * 兜底超时或清理时,向除作答窗口以外的已投窗口各补发一次 `ghosts:confirm-dismissed`
- * (本地模式由装配注入,按 `sendGhostWindowPush` 的单窗口口径推送,**不广播**),把迟到
- * 的第二个模态框收起。收卡只收 UI:迟到回包一律 `handled:false`,不改变已结算的答案,
- * 也绝不产生新的 `confirmed:true`。
+ * Host 托管模式下 Host 没有 ack 端点,跨 client 窗口广播会把同一份 push 重复送到
+ * Host 连接,所以 `bootstrap-electron.ts` 的 `onPluginPush` 保持**单窗口**投递
+ * (`selectGhostConfirmWindow` 选出的主窗口/完整会话窗口),与本地模式的广播口径不同。
  *
  * fail closed 是本模块的第一原则:超时、投递失败、回包形状非法、被清理,
  * 一律 resolve 成 false(没同意)。绝不把「问不出来」错当成「用户同意了」。
@@ -67,51 +77,49 @@ export interface GhostConfirmPush {
 }
 
 /**
- * 一次已生效投递的收卡句柄。桥在 settle 时用它收起**其它**还没作答的窗口——8s 没
- * 回执会改投主窗口,原窗口只是慢/阻塞时同一 requestId 会在两个窗口各有一个模态框。
+ * 一次已生效投递的收卡句柄。广播会让同一 requestId 出现在多个窗口,桥在 settle 时用
+ * 它向**作答窗口以外**的已投窗口补发 dismissed,并给所有窗口停掉任务栏闪烁。
  */
 export interface GhostConfirmDeliveredTarget {
   /** 该窗口的稳定标识(生产 = webContents.id);用来跳过已经作答的那个窗口。 */
   id: number;
   /** 从该窗口收起确认框(main → 该窗口一条 dismissed 推送)。 */
   dismiss(): void;
+  /**
+   * 停掉投递时开的任务栏闪烁(生产 = `flashFrame(false)`)。settle 时对**所有**已投
+   * 窗口调用(含作答窗口),避免任务栏常亮。
+   */
+  stopAttention?(): void;
 }
 
 /**
  * 投递结果。
  *
- * `double-check`:`targetIsMainWindow` 让桥知道「ack 没到时还值不值得改投主窗口」
- * ——首次已经投在主窗口上就没有第二处可改投。旧装配(纯 boolean)按「已投主窗口」
- * 处理,即不改投,保持老行为。
- *
- * `target` = 本次投递落到哪个窗口(收卡句柄)。桥记录每次成功投递,settle 时据此向
- * 其余窗口补发 dismissed;旧装配不给该字段时不做收卡,行为与旧版一致。
+ * `targets` = 本次成功投递到的全部窗口(按投递顺序)。桥记录它们,settle 时向**作答
+ * 窗口以外**的窗口补发 dismissed;旧装配不给该字段时不做收卡,行为与旧版一致。
  */
 export interface GhostConfirmDeliveryResult {
   delivered: boolean;
-  targetIsMainWindow: boolean;
-  target?: GhostConfirmDeliveredTarget;
+  targets?: GhostConfirmDeliveredTarget[];
 }
-
-export type GhostConfirmSendOutcome = boolean | GhostConfirmDeliveryResult;
 
 export interface GhostConfirmDialogBridgeDeps {
   /**
-   * 把确认框投给**一个**窗口。返回 false(或 delivered:false)= 没有可投的窗口
-   * (桥据此 reject,槽回 UNAVAILABLE,而不是谎报用户拒绝)。
+   * 把确认框投给**所有可承载窗口**(本地模式广播)。返回 delivered:false = 没有可投
+   * 的窗口(桥据此 reject,槽回 UNAVAILABLE,而不是谎报用户拒绝)。
    */
-  sendToWindow(payload: GhostConfirmPush): GhostConfirmSendOutcome;
+  sendToWindow(payload: GhostConfirmPush): GhostConfirmDeliveryResult;
   /**
-   * 短窗口内没收到 renderer 回执时改投主窗口一次(可选)。生产接线到
-   * `createGhostConfirmMainWindowRedelivery`;未提供 = 不做回执改投,行为与旧版一致。
+   * ack 缺失时把主窗口带到可见前台(可选,生产注入 restore/show/focus + moveTop +
+   * flashFrame)。只影响可见性,不结算本单。
    */
-  redeliverToMainWindow?(payload: GhostConfirmPush): GhostConfirmSendOutcome;
-  /** 等 renderer 「已收到」回执的窗口;缺省 GHOST_CONFIRM_ACK_TIMEOUT_MS。<=0 关闭。 */
+  raiseMainWindow?(requestId: string): void;
+  /** 等 renderer「已收到」回执的窗口;缺省 GHOST_CONFIRM_ACK_TIMEOUT_MS。<=0 关闭。 */
   ackTimeoutMs?: number;
   /** 兜底超时;缺省 GHOST_CONFIRM_TIMEOUT_MS。测试注小值。 */
   timeoutMs?: number;
   now?(): number;
-  log?: { warn: (msg: string, meta?: Record<string, unknown>) => void };
+  log?: GhostConfirmWindowLog;
 }
 
 /**
@@ -121,13 +129,19 @@ export interface GhostConfirmDialogBridgeDeps {
 export interface GhostConfirmTargetWindow {
   isDestroyed(): boolean;
   isMinimized(): boolean;
+  isVisible(): boolean;
+  isFocused(): boolean;
   restore(): void;
   show(): void;
-  isFocused(): boolean;
   focus(): void;
+  /** 把窗口提到同层最前(不改变焦点归属的补强)。 */
+  moveTop(): void;
+  /** 任务栏闪烁开关;投递时开,settle/dismiss 时关。 */
+  flashFrame(flag: boolean): void;
 }
 
 type GhostConfirmWindowLog = {
+  info?: (message: string, meta?: Record<string, unknown>) => void;
   warn: (message: string, meta?: Record<string, unknown>) => void;
 };
 
@@ -148,24 +162,17 @@ export interface GhostConfirmWindowSenderDeps<TWindow extends GhostConfirmTarget
   extends GhostConfirmWindowCandidates<TWindow> {
   send(window: TWindow, payload: GhostConfirmPush): void;
   /**
-   * 本次投递窗口的收卡句柄(可选)。桥记录每一次成功投递;settle(用户作答/超时/
-   * 清理)时向**其余**已投窗口补发 dismissed,收起 8s 改投造成的第二个模态框。
-   * 缺省 = 不记录、不补发(旧装配/无收卡通道),不改答案。
+   * 本次投递窗口的收卡句柄(可选)。桥记录每一次成功投递;settle 时向**其余**已投窗口
+   * 补发 dismissed,收起广播造成的重复模态框。缺省 = 不记录、不补发(旧装配/无收卡
+   * 通道),不改答案。
    */
   deliveryTarget?(window: TWindow, payload: GhostConfirmPush): GhostConfirmDeliveredTarget | undefined;
+  /** 诊断日志里的窗口 id(生产 = webContents.id)。缺省时用收卡句柄的 id。 */
+  windowId?(window: TWindow): number;
   log?: GhostConfirmWindowLog;
 }
 
-export interface GhostConfirmMainWindowRedeliveryDeps<TWindow extends GhostConfirmTargetWindow> {
-  getMainWindow(): TWindow | null;
-  isHostable(window: TWindow): boolean;
-  send(window: TWindow, payload: GhostConfirmPush): void;
-  /** 同 `GhostConfirmWindowSenderDeps.deliveryTarget`:改投到的主窗口也要参与收卡。 */
-  deliveryTarget?(window: TWindow, payload: GhostConfirmPush): GhostConfirmDeliveredTarget | undefined;
-  log?: GhostConfirmWindowLog;
-}
-
-/** 回执/改投日志里只带最小关联信息,不带插件正文。 */
+/** 日志里只带最小关联信息,不带插件正文。 */
 type GhostConfirmDeliveryLogContext = {
   requestId?: string;
   ghostId?: string;
@@ -175,13 +182,25 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function readWindowState<TWindow extends GhostConfirmTargetWindow, T>(
+  window: TWindow,
+  read: (window: TWindow) => T,
+): T | null {
+  try {
+    return read(window);
+  } catch {
+    return null;
+  }
+}
+
 /**
- * 投递前把 confirm 的宿主窗口带到可见前台:最小化 → restore;未聚焦 → show、focus。
- * 每一步独立兜底:任何一步抛错只记 warn,继续后面的步骤与投递——投递成功才是这次
- * 调用的结果。已聚焦时整段跳过,不每次抢焦点造成抖动。
+ * 投递前把 confirm 的宿主窗口带到可见前台:最小化 → restore;未聚焦 → show、focus、
+ * moveTop;并开任务栏闪烁(flashFrame)。已经聚焦且没最小化时整段跳过,不每次抢焦点
+ * 造成抖动。每一步独立兜底:任何一步抛错只记 warn,继续后面的步骤与投递——投递成功
+ * 才是这次调用的结果。
  *
- * 2026-11-19 用户实测:confirm 是**模态**确认框,用户切到别的应用时目标窗口不在
- * 前台,弹窗可能完全看不见,插件只能等到超时拿到 `confirmed:false`——看起来像
+ * 2026-11-19 用户复测:confirm 是**模态**确认框,用户切到别的应用/虚拟桌面时目标窗口
+ * 不在前台,弹窗可能完全看不见,插件只能等到超时拿到 `confirmed:false`——看起来像
  * "用户取消",实际是"用户没看到"。notify 等广播**不**走这条路径。
  */
 export function revealGhostConfirmWindow(
@@ -202,11 +221,19 @@ export function revealGhostConfirmWindow(
   attempt('restore minimized host window', () => {
     if (window.isMinimized()) window.restore();
   });
+  // isFocused 读不出来时按"没聚焦"处理:宁可多做一次 show/focus,也要保证框在前台。
+  if (readWindowState(window, (win) => win.isFocused()) === true) return;
   attempt('show host window', () => {
-    if (!window.isFocused()) window.show();
+    window.show();
   });
   attempt('focus host window', () => {
-    if (!window.isFocused()) window.focus();
+    window.focus();
+  });
+  attempt('raise host window above other windows', () => {
+    window.moveTop();
+  });
+  attempt('flash the host window', () => {
+    window.flashFrame(true);
   });
 }
 
@@ -218,7 +245,7 @@ function isUsableCandidate<TWindow extends GhostConfirmTargetWindow>(
 }
 
 /**
- * 选 confirm 的目标窗口(纯选窗,不投递)。
+ * 选 confirm 的**置前窗口**(纯选窗,不投递)。
  *
  * 顺序:聚焦且可承载 → 主窗口 → 其它可承载的完整会话副窗 → null。
  *
@@ -226,7 +253,9 @@ function isUsableCandidate<TWindow extends GhostConfirmTargetWindow>(
  * **可承载**的——侧栏/资源用量/utility 窗虽然也可能拿到焦点,却画不出确认框。
  * 为什么主窗口排第二、而不是"第一个可承载窗口":getAllWindows() 的顺序是创建
  * 顺序而非用户注意力顺序,侧栏窗常常排在前面;主窗口是用户一定看得见的那扇。
- * client-mode 的同一判据见 bootstrap-electron 的 onPluginPush。
+ *
+ * 本地模式用它选**唯一**被带到前台的窗口,其余可承载窗口只收 push(广播见
+ * `createGhostConfirmWindowSender`);client-mode 仍用它做单窗口投递。
  */
 export function selectGhostConfirmWindow<TWindow extends GhostConfirmTargetWindow>(
   candidates: GhostConfirmWindowCandidates<TWindow>,
@@ -241,7 +270,7 @@ export function selectGhostConfirmWindow<TWindow extends GhostConfirmTargetWindo
   return null;
 }
 
-/** 把确认框带给一个已选定的窗口;失败只 warn + 回 delivered:false(不抛)。 */
+/** 把确认框投给一个已在广播名单里的窗口;失败只 warn + 返回 false(不抛)。 */
 function deliverGhostConfirmDialog<TWindow extends GhostConfirmTargetWindow>(
   window: TWindow,
   payload: GhostConfirmPush,
@@ -249,7 +278,6 @@ function deliverGhostConfirmDialog<TWindow extends GhostConfirmTargetWindow>(
   log?: GhostConfirmWindowLog,
   deliveryTarget?: (window: TWindow, payload: GhostConfirmPush) => GhostConfirmDeliveredTarget | undefined,
 ): { delivered: boolean; target?: GhostConfirmDeliveredTarget } {
-  revealGhostConfirmWindow(window, payload, log);
   try {
     send(window, payload);
   } catch (error) {
@@ -276,62 +304,72 @@ function deliverGhostConfirmDialog<TWindow extends GhostConfirmTargetWindow>(
 }
 
 /**
- * 造 confirm 槽的 sendToWindow:选一个可承载的窗口 → 带到可见前台 → 推送。
+ * 造 confirm 槽的 sendToWindow:**本地模式广播**。
  *
- * 可见性失败不改变 fail-closed:选不到窗口、窗口已销毁、推送抛错都回 delivered:false
- * (桥据此 reject → 槽回 UNAVAILABLE,而不是谎报用户拒绝);可见性动作抛错只 warn,
- * 不阻断投递。`targetIsMainWindow` 供桥在收不到 renderer 回执时判断是否改投。
+ * 1. 收集**所有可承载**窗口(排除侧栏/资源/远程查看器/utility 等轻量窗);
+ * 2. 选一个置前窗口(聚焦可承载 → 主窗口 → 第一个可承载),只对它做
+ *    restore/show/focus + moveTop + flashFrame(true);
+ * 3. 其余可承载窗口只 push,不抢焦点;
+ * 4. 每个成功投递的窗口登记收卡句柄,settle 时由桥收掉其它窗口的重复模态框。
+ *
+ * 可见性失败不改变 fail-closed:一个窗口都投不出去才回 delivered:false(桥据此
+ * reject → 槽回 UNAVAILABLE,而不是谎报用户拒绝);可见性动作抛错只 warn,不阻断
+ * 投递;部分窗口推送失败时只要至少一处投成功就继续(用户有地方可点)。
  */
 export function createGhostConfirmWindowSender<TWindow extends GhostConfirmTargetWindow>(
   deps: GhostConfirmWindowSenderDeps<TWindow>,
 ): (payload: GhostConfirmPush) => GhostConfirmDeliveryResult {
   return (payload) => {
-    const window = selectGhostConfirmWindow(deps);
-    if (!window) {
+    const windows = deps.getAllWindows().filter((window) => isUsableCandidate(window, deps));
+    if (windows.length === 0) {
       deps.log?.warn('ghost confirm: no host window to deliver the dialog', {
         ghostId: payload.ghostId,
         requestId: payload.requestId,
       });
-      return { delivered: false, targetIsMainWindow: false };
+      return { delivered: false };
     }
-    const { delivered, target } = deliverGhostConfirmDialog(
-      window, payload, deps.send, deps.log, deps.deliveryTarget,
-    );
-    // 主窗口身份用引用比较:选窗时取的就是同一个 BrowserWindow。
     const mainWindow = deps.getMainWindow();
-    return {
-      delivered,
-      targetIsMainWindow: window === mainWindow,
-      ...(target ? { target } : {}),
-    };
-  };
-}
+    // 置前窗口:聚焦可承载 → 主窗口 → 第一个可承载。只带它到前台,不抢其它窗口焦点。
+    const primary = selectGhostConfirmWindow(deps) ?? windows[0];
+    revealGhostConfirmWindow(primary, payload, deps.log);
 
-/**
- * 造「改投主窗口」回调:只投主窗口,主窗口不可承载时回 delivered:false(不再找第二个
- * 候选——第一次已经试过聚焦/其它窗口了,再扩散就是广播)。改投成功时同样带上收卡句柄,
- * 让桥在用户从原窗口作答时能收起主窗口上的重复框。
- */
-export function createGhostConfirmMainWindowRedelivery<TWindow extends GhostConfirmTargetWindow>(
-  deps: GhostConfirmMainWindowRedeliveryDeps<TWindow>,
-): (payload: GhostConfirmPush) => GhostConfirmDeliveryResult {
-  return (payload) => {
-    const mainWindow = deps.getMainWindow();
-    if (!isUsableCandidate(mainWindow, deps)) {
-      deps.log?.warn('ghost confirm: main window cannot host the dialog; no redelivery', {
-        ghostId: payload.ghostId,
-        requestId: payload.requestId,
-      });
-      return { delivered: false, targetIsMainWindow: false };
+    const delivered: Array<{ window: TWindow; target?: GhostConfirmDeliveredTarget }> = [];
+    for (const window of windows) {
+      const { delivered: sent, target } = deliverGhostConfirmDialog(
+        window, payload, deps.send, deps.log, deps.deliveryTarget,
+      );
+      if (sent) delivered.push({ window, target });
     }
-    const { delivered, target } = deliverGhostConfirmDialog(
-      mainWindow, payload, deps.send, deps.log, deps.deliveryTarget,
-    );
-    return {
-      delivered,
-      targetIsMainWindow: true,
-      ...(target ? { target } : {}),
+    if (delivered.length === 0) return { delivered: false };
+
+    const deliveredSet = new Set(delivered.map((entry) => entry.window));
+    const windowId = (window: TWindow): number | null => {
+      const target = delivered.find((entry) => entry.window === window)?.target;
+      if (target) return target.id;
+      try {
+        return deps.windowId?.(window) ?? null;
+      } catch {
+        return null;
+      }
     };
+    deps.log?.info?.('ghost confirm: delivered', {
+      ghostId: payload.ghostId,
+      requestId: payload.requestId,
+      windowCount: delivered.length,
+      primary: windowId(primary),
+      windows: windows.map((window) => ({
+        id: windowId(window),
+        isMain: window === mainWindow,
+        visible: readWindowState(window, (win) => win.isVisible()),
+        focused: readWindowState(window, (win) => win.isFocused()),
+        minimized: readWindowState(window, (win) => win.isMinimized()),
+        delivered: deliveredSet.has(window),
+      })),
+    });
+    const targets = delivered
+      .map((entry) => entry.target)
+      .filter((target): target is GhostConfirmDeliveredTarget => target !== undefined);
+    return { delivered: true, ...(targets.length > 0 ? { targets } : {}) };
   };
 }
 
@@ -339,8 +377,14 @@ interface PendingConfirmEntry {
   ghostId: string;
   resolve: (confirmed: boolean) => void;
   timeoutId: ReturnType<typeof setTimeout>;
-  /** renderer「已收到」回执的兜底闹钟;回执到达/结算即清。 */
+  /** renderer「已收到」回执的诊断闹钟;回执到达/结算即清。 */
   ackTimeoutId?: ReturnType<typeof setTimeout>;
+  /** 投递时刻(ms),用于算 ack 延迟。 */
+  deliveredAt: number;
+  /** 已回执的窗口 id;>0 表示至少一个窗口把框画出来了。 */
+  ackedWindows: Set<number>;
+  /** ack 闹钟已经触发过(用于日志区分迟到回执)。 */
+  ackTimedOut: boolean;
   /** 本次已投递到的窗口(按 id 去重);settle 时只收**除作答窗口以外**的框。 */
   targets: Map<number, GhostConfirmDeliveredTarget>;
 }
@@ -358,21 +402,30 @@ export class GhostConfirmDialogBridge {
     const requestId = randomUUID();
     const payload: GhostConfirmPush = { requestId, ...params };
     return new Promise<boolean>((resolve, reject) => {
-      const outcome = this.deps.sendToWindow(payload);
-      const delivered = typeof outcome === 'boolean' ? outcome : outcome.delivered;
-      if (!delivered) {
+      let outcome: GhostConfirmDeliveryResult;
+      try {
+        outcome = this.deps.sendToWindow(payload);
+      } catch (error) {
+        this.deps.log?.warn('ghost confirm: delivery threw; treated as unavailable', {
+          ghostId: params.ghostId,
+          requestId,
+          err: describeError(error),
+        });
         reject(new Error('没有可挂靠的宿主窗口'));
         return;
       }
-      // 旧装配只有 boolean:无从知道目标是谁,按"已投主窗口"处理(不改投),行为不变。
-      const targetIsMainWindow = typeof outcome === 'boolean' ? true : outcome.targetIsMainWindow;
-      const firstTarget = typeof outcome === 'boolean' ? undefined : outcome.target;
+      if (!outcome.delivered) {
+        reject(new Error('没有可挂靠的宿主窗口'));
+        return;
+      }
+      const now = this.deps.now ?? Date.now;
       const timeoutMs = this.deps.timeoutMs ?? GHOST_CONFIRM_TIMEOUT_MS;
       const timeoutId = setTimeout(() => {
-        // 没人应答 = 没同意。日志留痕,方便排查"插件说它问了但我没看到"。
+        // 没人应答 = 没同意。日志留痕(带 ack 数),方便排查"插件说它问了但我没看到"。
         this.deps.log?.warn('ghost confirm timed out (treated as declined)', {
           ghostId: params.ghostId,
           requestId,
+          ackCount: this.pending.get(requestId)?.ackedWindows.size ?? 0,
         });
         this.settle(requestId, false);
       }, timeoutMs);
@@ -380,26 +433,39 @@ export class GhostConfirmDialogBridge {
         ghostId: params.ghostId,
         resolve,
         timeoutId,
-        targets: new Map(firstTarget ? [[firstTarget.id, firstTarget]] : []),
+        deliveredAt: now(),
+        ackedWindows: new Set(),
+        ackTimedOut: false,
+        targets: new Map((outcome.targets ?? []).map((target) => [target.id, target])),
       };
       this.pending.set(requestId, entry);
-      this.armAckFallback(requestId, payload, entry, targetIsMainWindow);
+      this.armAckObservation(requestId, entry);
     });
   }
 
   /**
    * renderer 回执:确认框已经在该窗口弹出来了(用户还没点)。
    *
-   * 只负责取消「ack 超时改投主窗口」的兜底动作,不结算本单——结算仍只看用户点击
-   * 或 90s 超时。返回是否命中在途请求(陌生/迟到的回执直接忽略)。
+   * 广播口径下 ack 只做诊断:记录哪个窗口、延迟多少;第一个 ack 取消「ack 缺失 → 把
+   * 主窗口带到前台」的兜底。不结算本单——结算仍只看用户点击或 90s 超时。返回是否命中
+   * 在途请求(陌生/迟到的回执直接忽略)。
    */
-  acknowledge(requestId: string): boolean {
+  acknowledge(requestId: string, ackedBy?: number): boolean {
     const entry = this.pending.get(requestId);
     if (!entry) return false;
+    const now = this.deps.now ?? Date.now;
+    if (ackedBy !== undefined) entry.ackedWindows.add(ackedBy);
     if (entry.ackTimeoutId !== undefined) {
       clearTimeout(entry.ackTimeoutId);
       entry.ackTimeoutId = undefined;
     }
+    this.deps.log?.info?.('ghost confirm: renderer ack', {
+      ghostId: entry.ghostId,
+      requestId,
+      windowId: ackedBy ?? null,
+      latencyMs: Math.max(0, now() - entry.deliveredAt),
+      ...(entry.ackTimedOut ? { afterAckTimeout: true } : {}),
+    });
     return true;
   }
 
@@ -441,35 +507,40 @@ export class GhostConfirmDialogBridge {
   }
 
   /**
-   * 短窗口内没有 renderer 回执时的兜底:首次不是主窗口 → 改投主窗口一次。
-   *
-   * 这是 A 版选窗判据的补丁位:新窗口类型若没被判据覆盖,确认框可能投进一个
-   * 画不出来的窗口。改投只做一次(不重挂闹钟),失败也不改变 fail-closed——
-   * 用户仍可以通过原窗口作答,最差到 90s 超时按"没同意"。改投成功要把主窗口的
-   * 收卡句柄记下来,否则用户从原窗口作答时主窗口上的重复框没人收。
+   * 短窗口内一个 renderer 回执都没有时的可见性兜底:把主窗口 bring to front +
+   * flashFrame,并记 warn。广播已经覆盖所有可承载窗口,所以这里**不改投、不结算**;
+   * 用户仍可从任一已投窗口作答,最差到 90s 超时按"没同意"。
    */
-  private armAckFallback(
-    requestId: string,
-    payload: GhostConfirmPush,
-    entry: PendingConfirmEntry,
-    targetIsMainWindow: boolean,
-  ): void {
-    const redeliverToMainWindow = this.deps.redeliverToMainWindow;
+  private armAckObservation(requestId: string, entry: PendingConfirmEntry): void {
     const ackTimeoutMs = this.deps.ackTimeoutMs ?? GHOST_CONFIRM_ACK_TIMEOUT_MS;
-    if (!redeliverToMainWindow || ackTimeoutMs <= 0 || targetIsMainWindow) return;
+    if (ackTimeoutMs <= 0) return;
     entry.ackTimeoutId = setTimeout(() => {
       entry.ackTimeoutId = undefined;
       if (!this.pending.has(requestId)) return;
-      const outcome = redeliverToMainWindow(payload);
-      const redelivered = typeof outcome === 'boolean' ? outcome : outcome.delivered;
-      const target = typeof outcome === 'boolean' ? undefined : outcome.target;
-      if (redelivered && target) entry.targets.set(target.id, target);
-      this.deps.log?.warn('ghost confirm: no renderer ack; redelivered to main window', {
-        ghostId: payload.ghostId,
+      if (entry.ackedWindows.size > 0) return;
+      entry.ackTimedOut = true;
+      this.raiseMainWindow(requestId);
+      this.deps.log?.warn('ghost confirm: ack missing; forcing main window to front', {
+        ghostId: entry.ghostId,
         requestId,
-        redelivered,
+        targetCount: entry.targets.size,
+        windowIds: [...entry.targets.keys()],
+        ackTimeoutMs,
       });
     }, ackTimeoutMs);
+  }
+
+  private raiseMainWindow(requestId: string): void {
+    const raise = this.deps.raiseMainWindow;
+    if (!raise) return;
+    try {
+      raise(requestId);
+    } catch (error) {
+      this.deps.log?.warn('ghost confirm: failed to force main window to front', {
+        requestId,
+        err: describeError(error),
+      });
+    }
   }
 
   private settle(requestId: string, confirmed: boolean, answeredBy?: number): void {
@@ -483,12 +554,29 @@ export class GhostConfirmDialogBridge {
     }
     const targets = [...entry.targets.values()];
     entry.targets.clear();
+    const dismissed = targets.filter((target) => target.id !== answeredBy);
+    this.deps.log?.info?.('ghost confirm: settle', {
+      ghostId: entry.ghostId,
+      requestId,
+      answeredBy: answeredBy ?? null,
+      confirmed,
+      dismissed: dismissed.length,
+    });
     entry.resolve(confirmed);
-    // 先结算答案、再收卡:收卡只是把迟到的第二个模态框拿掉,不参与答案计算。
-    // 已经作答的窗口不重复收(它的 pending 已先清掉,dismissed 是 no-op;跳过更省一次
-    // IPC)。收卡抛错只 warn,绝不能反噬已经结算的答案。
+    // 先结算答案、再收卡:收卡只是把重复/迟到的模态框拿掉,不参与答案计算。
+    // 所有已投窗口都要停掉投递时开的任务栏闪烁;作答窗口不重复收 dismissed
+    // (它的 pending 已先清掉,dismissed 是 no-op;跳过更省一次 IPC)。
     for (const target of targets) {
-      if (target.id === answeredBy) continue;
+      try {
+        target.stopAttention?.();
+      } catch (error) {
+        this.deps.log?.warn('ghost confirm: failed to stop the taskbar flash', {
+          requestId,
+          err: describeError(error),
+        });
+      }
+    }
+    for (const target of dismissed) {
       try {
         target.dismiss();
       } catch (error) {

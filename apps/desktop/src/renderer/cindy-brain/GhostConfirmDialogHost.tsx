@@ -17,8 +17,9 @@ import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
  *   与 content 都是文本节点,不注入 HTML);
  * - 用户的点击才是答案:确认 true、取消/Esc/点外部 false,原样回给 main。
  *
- * main 只把请求投给**单个**窗口,所以收到即本窗口负责弹,不需要按窗口类型 gate
- * ——弹在用户正看着的那个窗口才对。
+ * main 在本地模式把同一 requestId **广播**给所有能承载确认框的窗口(主窗口 + 完整会话
+ * 副窗),并只把用户当前聚焦的那一个带到前台;client-mode 仍只投一个窗口。每个收到
+ * push 的窗口各弹一个,首个用户点击经 resolve 结算,其余窗口收到 dismissed 后收起。
  *
  * 挂载点:App.tsx 的 ConfirmDialogProvider 内部(要用 context,不能挂在 store 里)。
  */
@@ -35,8 +36,9 @@ export function GhostConfirmDialogHost() {
         return;
       }
       const { requestId, ghostName, iconDataUrl, body, confirmText, cancelText, danger } = payload;
-      // 先回执再弹:main 只有收到「已收到」才不把这次投递当成没送达、在 8s 后改投
-      // 主窗口。回执不结算本单(用户还没点),失败也不影响本窗口继续弹框。
+      // 先回执再弹:main 用 ack 判断「至少一个窗口画出来了」;一个 ack 都没有时会把
+      // 主窗口带到前台 + 闪任务栏并记 warn。回执不结算本单(用户还没点),失败也不
+      // 影响本窗口继续弹框。
       try {
         void window.electronAPI.ghosts?.ackConfirm?.(requestId)?.catch(() => {});
       } catch {

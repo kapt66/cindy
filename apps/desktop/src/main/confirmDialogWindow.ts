@@ -1,13 +1,13 @@
 /**
  * confirmDialogWindow —— 「这个窗口能不能承载主机模态确认框」的单一判据。
  *
- * 背景(2026-11-19 用户实测):插件 confirm 槽的原生确认框由 main 铸 requestId 后
- * **只投一个窗口**(模态框不能广播,否则每个窗口各弹一个、收回多份答案)。
- * 旧装配写的是 `focused ?? getAllWindows()[0]`:focused 完全可能是右侧栏独立窗、
- * 资源用量窗、远程桌面查看器或 utility 浮窗——它们与 MainLayout 平级,只挂轻量
- * renderer 与专用 preload,**根本没有 `ghosts:confirm-request` 监听**(挂 confirm
- * 宿主的只有完整主壳 `main-entry -> App.tsx`)。投过去的结果就是「弹了小窗/白屏/
- * 点不到」或者干脆看不见,插件只能等到 90s 超时拿到 `confirmed:false`。
+ * 背景(2026-11-19 用户实测):插件 confirm 槽的原生确认框由 main 铸 requestId 后投递。
+ * 本地模式**广播**给所有可承载窗口(首个作答生效,其余窗口收卡),但单窗口时代与
+ * client-mode 仍由同一判据选出一个窗口。旧装配写的是 `focused ?? getAllWindows()[0]`:
+ * focused 完全可能是右侧栏独立窗、资源用量窗、远程桌面查看器或 utility 浮窗——它们与
+ * MainLayout 平级,只挂轻量 renderer 与专用 preload,**根本没有 `ghosts:confirm-request`
+ * 监听**(挂 confirm 宿主的只有完整主壳 `main-entry -> App.tsx`)。投过去的结果就是
+ * 「弹了小窗/白屏/点不到」或者干脆看不见,插件只能等到 90s 超时拿到 `confirmed:false`。
  *
  * 判据分两层,缺一不可:
  *  1. URL 口径(纯函数,`isModalConfirmHostUrl`)只认**完整主壳**:主窗口(不带任何

@@ -1518,11 +1518,14 @@ function installHostClientMode(): boolean {
         if (pending && isTrustedAppRendererWindow(pending.window)) pending.window.webContents.send(channel, payload);
       } else if (channel === 'ghosts:confirm-request' || channel === 'ghosts:install-consent:request') {
         if (pluginConfirmations.has(requestId)) return;
-        // 与本地模式确认槽同一判据(2026-11-19 用户实测):模态确认框只投**能承载
-        // 它的完整主壳**——主窗口,或 `?secondaryWindow=1` 的完整会话副窗。focused
-        // 完全可能是右侧栏/资源用量/远程桌面查看器等轻量窗(没有确认宿主,投过去
-        // 白屏或看不见,host 侧只能等到 90s 超时)。没有可承载窗口时直接回
-        // confirmed:false(fail closed,不当成用户同意)。
+        // **client-mode 保持单窗口确定性投递**(与本地 confirm 槽的广播口径有意不同):
+        // Host 没有 renderer ack 端点,跨 client 窗口广播会把同一份 push 重复送回 Host
+        // 连接;Host 侧也按 requestId 只回一份答案。所以这里只投 selectGhostConfirmWindow
+        // 选出的**一个**能承载确认框的完整主壳——主窗口,或 `?secondaryWindow=1` 的完整
+        // 会话副窗。focused 完全可能是右侧栏/资源用量/远程桌面查看器等轻量窗(没有确认
+        // 宿主,投过去白屏或看不见,host 侧只能等到 90s 超时)。判据与本地模式共用
+        // `confirmDialogWindow.ts`;没有可承载窗口时直接回 confirmed:false(fail closed,
+        // 不当成用户同意)。
         const target = selectGhostConfirmWindow<BrowserWindow>({
           getFocusedWindow: () => BrowserWindow.getFocusedWindow(),
           getMainWindow: () =>
