@@ -60,6 +60,24 @@ export const CINDY_PI_MODEL_REQUEST_INPUT_PREFIX = '[CINDY_MODEL_REQUEST]:';
 export const CINDY_PI_TEXT_ONLY_READY_PREFIX = 'cindy:text-only-ready:';
 export const CINDY_PI_TEXT_ONLY_CLOSED_PREFIX = 'cindy:text-only-unavailable:';
 export const CINDY_PI_REQUEST_DIAGNOSTICS_PREFIX = 'cindy:provider-request:';
+/**
+ * Machine-only marker for a multi-select question riding on Pi's RPC select.
+ *
+ * Pi's `select` contract carries just a title and options; there is no flag for
+ * "the user may pick several". The bridge therefore prepends this fixed prefix
+ * to the select title of a `multiSelect:true` question and the Host strips it
+ * before rendering the card (`handleExtensionUiRequest`). Single-select titles
+ * never carry it, so their wire text and return values stay byte-identical.
+ */
+export const CINDY_PI_MULTI_SELECT_PREFIX = '__CINDY_MULTI__';
+
+/**
+ * Max length of a multi-select question's optional `header` (also the first line the
+ * bridge folds into the select title). Shared with the Host so the composite
+ * `header + '\n' + question` title is not truncated back to the 512-char single-select
+ * bound (80 + 1 + 512 = 593).
+ */
+export const CINDY_PI_MULTI_SELECT_HEADER_MAX_LENGTH = 80;
 
 /** Shared with the generated bridge: only bounded counts and known effort names may enter logs. */
 export function projectPiRequestDiagnostics(value: unknown): Record<string, number | string | null> {
@@ -4551,18 +4569,24 @@ function rgGlob(
 
 /** Use Pi's existing UI RPC so a question becomes a real Host waiting interaction. */
 function registerCindyQuestionTool(pi: any): void {
+  const MULTI_SELECT_PREFIX = ${JSON.stringify(CINDY_PI_MULTI_SELECT_PREFIX)};
+  const MAX_HEADER_LENGTH = ${JSON.stringify(CINDY_PI_MULTI_SELECT_HEADER_MAX_LENGTH)};
   pi.registerTool({
     name: 'ask_user_question',
     label: 'Ask a question',
-    description: 'Ask the user for missing information or a choice and wait for their answer. Use this instead of claiming in text that a task is waiting. The parent of a Session task can relay the answer. Do not infer an answer from cancellation.',
+    description: 'Ask the user for missing information or a choice and wait for their answer. Use this instead of claiming in text that a task is waiting. The parent of a Session task can relay the answer. Use multiSelect when the user may pick several choices at once, for example when assigning reviewers. Do not infer an answer from cancellation.',
     parameters: {
       type: 'object',
       properties: {
         questions: { type: 'array', minItems: 1, maxItems: 3, items: {
           type: 'object', properties: {
             question: { type: 'string', minLength: 1, maxLength: 512 },
+            header: { type: 'string', minLength: 1, maxLength: MAX_HEADER_LENGTH,
+              description: 'Short label shown above the question.' },
             options: { type: 'array', minItems: 2, maxItems: 6,
               items: { type: 'string', minLength: 1, maxLength: 256 } },
+            multiSelect: { type: 'boolean',
+              description: 'Let the user pick one to several choices; requires options.' },
           }, required: ['question'], additionalProperties: false,
         } },
       }, required: ['questions'], additionalProperties: false,
@@ -4572,6 +4596,10 @@ function registerCindyQuestionTool(pi: any): void {
       if (!Array.isArray(questions) || questions.length < 1 || questions.length > 3
         || questions.some((q: any) => !q || typeof q.question !== 'string'
           || !q.question.trim() || q.question.length > 512
+          || (q.header !== undefined && (typeof q.header !== 'string'
+            || !q.header.trim() || q.header.length > MAX_HEADER_LENGTH))
+          || (q.multiSelect !== undefined && typeof q.multiSelect !== 'boolean')
+          || (q.multiSelect === true && q.options === undefined)
           || (q.options !== undefined && (!Array.isArray(q.options)
             || q.options.length < 2 || q.options.length > 6
             || q.options.some((v: unknown) => typeof v !== 'string' || !v.trim() || v.length > 256)
@@ -4579,21 +4607,60 @@ function registerCindyQuestionTool(pi: any): void {
         || new Set(questions.map((q: any) => q.question)).size !== questions.length) {
         throw new Error('Provide one to three distinct questions with optional distinct answer choices.');
       }
+      // The Host decides "multi-select" solely from the fixed title prefix, so a
+      // single-select question whose own text starts with that prefix would be
+      // rendered as a multi-select card while the bridge stores plain text. The
+      // prefix is a reserved machine marker: reject it instead of guessing intent.
+      const reservedPrefix = questions.find(
+        (q: any) => q.multiSelect !== true && q.question.startsWith(MULTI_SELECT_PREFIX));
+      if (reservedPrefix) {
+        throw new Error('INVALID_ARGS: question text must not start with the reserved prefix '
+          + MULTI_SELECT_PREFIX + ' — it is a machine marker for a multi-select question, '
+          + 'so a single-select question would be rendered as multi-select. Reword the question '
+          + '(or set multiSelect:true if the user may pick several).');
+      }
       if (ctx.hasUI === false || !ctx.ui) throw new Error('Question UI is unavailable in this runtime.');
-      const answers: Record<string, string> = {};
+      const answers: Record<string, string | string[]> = {};
+      const answerText: Record<string, string> = {};
       let cancelled = false;
+      let errorMessage: string | undefined;
       for (const q of questions) {
         if (signal?.aborted) { cancelled = true; break; }
+        const multiSelect = q.multiSelect === true;
+        // Pi's select contract cannot carry a multi-select flag, so the flag (and the
+        // optional short header) ride on the fixed prefix of the select title; the Host
+        // strips it before showing the card. Single-select titles stay untouched.
+        const title = multiSelect
+          ? MULTI_SELECT_PREFIX + (typeof q.header === 'string' ? q.header.trim() + '\n' : '') + q.question
+          : q.question;
         const answer = q.options
-          ? await ctx.ui.select(q.question, q.options)
+          ? await ctx.ui.select(title, q.options)
           : await ctx.ui.input(q.question);
         if (signal?.aborted || typeof answer !== 'string' || !answer.trim()) {
           cancelled = true;
           break;
         }
-        answers[q.question] = answer;
+        if (!multiSelect) {
+          answers[q.question] = answer;
+          continue;
+        }
+        // The Host hands back the renderer's multi-select decision verbatim: a JSON
+        // array string of labels, where a typed custom answer is just another element.
+        let labels: unknown;
+        try { labels = JSON.parse(answer); } catch { labels = undefined; }
+        if (!Array.isArray(labels) || labels.length === 0
+          || labels.some((label: unknown) => typeof label !== 'string' || !label.trim())) {
+          cancelled = true;
+          errorMessage = 'The multi-select answer for "' + q.question + '" was not a list of choices, so no answer was recorded. Ask the question again only if it is still needed.';
+          break;
+        }
+        answers[q.question] = labels;
+        answerText[q.question] = labels.join('、');
       }
-      const result = { answers, cancelled };
+      const result: Record<string, unknown> = { answers };
+      if (Object.keys(answerText).length > 0) result.answerText = answerText;
+      result.cancelled = cancelled;
+      if (errorMessage) result.error = errorMessage;
       return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
     },
   });

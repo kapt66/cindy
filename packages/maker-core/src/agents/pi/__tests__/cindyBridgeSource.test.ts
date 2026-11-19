@@ -27,6 +27,7 @@ import {
   CINDY_BRIDGE_EXTENSION_SOURCE,
   CINDY_PI_BASH_DEFAULT_TIMEOUT_SECONDS,
   CINDY_PI_BASH_MAX_TIMEOUT_SECONDS,
+  CINDY_PI_MULTI_SELECT_PREFIX,
 } from '../cindy-bridge-source.js';
 
 it('strips Fast control paths from shell environments without mutating the runner environment', () => {
@@ -571,13 +572,109 @@ describe('cindy-bridge extension source', () => {
     const tool = loadQuestionTool();
     let answer!: (value: string) => void;
     let finished = false;
+    let selectTitle = '';
     const run = tool.execute('q', { questions: [{ question: 'Continue?', options: ['Yes', 'No'] }] }, undefined, undefined, {
-      ui: { select: () => new Promise<string>((resolve) => { answer = resolve; }) },
+      ui: { select: (title: string) => new Promise<string>((resolve) => { selectTitle = title; answer = resolve; }) },
     }).then((result) => { finished = true; return result; });
     await Promise.resolve();
     expect(finished).toBe(false);
+    // Single-select questions keep the raw question as the select title.
+    expect(selectTitle).toBe('Continue?');
     answer('No');
     expect((await run).details).toEqual({ answers: { 'Continue?': 'No' }, cancelled: false });
+  });
+
+  it('marks a multi-select question on the select title and returns the label list with readable text', async () => {
+    const tool = loadQuestionTool();
+    const calls: Array<{ title: string; options: string[] }> = [];
+    const result = await tool.execute('q', {
+      questions: [{
+        question: 'Which reviewers?',
+        header: 'Reviewers',
+        multiSelect: true,
+        options: ['Ada', 'Grace', 'Linus'],
+      }],
+    }, undefined, undefined, {
+      ui: { select: async (title: string, options: string[]) => {
+        calls.push({ title, options });
+        // The renderer returns JSON.stringify(labels); a typed custom answer is just
+        // another element, and the bridge must not filter it out.
+        return JSON.stringify(['Ada', 'Linus', '待定评审人']);
+      } },
+    });
+    expect(calls).toEqual([{
+      title: CINDY_PI_MULTI_SELECT_PREFIX + 'Reviewers\nWhich reviewers?',
+      options: ['Ada', 'Grace', 'Linus'],
+    }]);
+    expect(result.details).toEqual({
+      answers: { 'Which reviewers?': ['Ada', 'Linus', '待定评审人'] },
+      answerText: { 'Which reviewers?': 'Ada、Linus、待定评审人' },
+      cancelled: false,
+    });
+    expect(JSON.parse(result.content[0].text)).toEqual(result.details);
+  });
+
+  it('treats a multi-select answer that is not a label list as cancelled and explains it', async () => {
+    const tool = loadQuestionTool();
+    const result = await tool.execute('q', {
+      questions: [{ question: 'Which reviewers?', multiSelect: true, options: ['Ada', 'Grace'] }],
+    }, undefined, undefined, {
+      ui: { select: async () => 'Ada' },
+    });
+    expect(result.details).toMatchObject({ answers: {}, cancelled: true });
+    expect(String(result.details.error)).toContain('multi-select');
+    expect(JSON.parse(result.content[0].text).cancelled).toBe(true);
+  });
+
+  it('validates multiSelect and header before showing any UI', async () => {
+    const tool = loadQuestionTool();
+    const ui = { select: async () => 'A', input: async () => 'A' };
+    const run = (questions: unknown[]) => tool.execute('q', { questions }, undefined, undefined, { ui });
+    await expect(run([{ question: 'Pick one', options: ['A', 'B'], multiSelect: 'yes' }]))
+      .rejects.toThrow('distinct questions');
+    await expect(run([{ question: 'Pick one', header: 'x'.repeat(81), options: ['A', 'B'] }]))
+      .rejects.toThrow('distinct questions');
+    await expect(run([{ question: 'Pick one', multiSelect: true }]))
+      .rejects.toThrow('distinct questions');
+    const result = await tool.execute('q', {
+      questions: [{ question: 'Pick one', header: 'x'.repeat(80), options: ['A', 'B'] }],
+    }, undefined, undefined, { ui });
+    expect(result.details).toEqual({ answers: { 'Pick one': 'A' }, cancelled: false });
+  });
+
+  // 2026-11-19 终审 P2-3：Host 只凭 title 前缀判定多选。单选问题文本若自己以该前缀
+  // 开头，会被渲染成多选卡片，而 bridge 仍按单选存字符串答案 —— 保留字必须显式拒绝。
+  it('rejects a single-select question that starts with the reserved multi-select prefix', async () => {
+    const tool = loadQuestionTool();
+    const select = vi.fn(async () => 'A');
+    const input = vi.fn(async () => 'A');
+    await expect(tool.execute('q', {
+      questions: [{ question: CINDY_PI_MULTI_SELECT_PREFIX + 'Pick one', options: ['A', 'B'] }],
+    }, undefined, undefined, { ui: { select, input } })).rejects.toThrow(/INVALID_ARGS.*reserved/);
+    expect(select).not.toHaveBeenCalled();
+    expect(input).not.toHaveBeenCalled();
+  });
+
+  // 2026-11-19 终审 P2-4：Host 曾对剥掉前缀后的 title 仍按 512 截断，80 字符 header +
+  // 512 字符 question 的合法多选问题会被砍掉约 96 字符。bridge 侧必须构造完整 title，
+  // Host 侧按复合长度放行（见 pi-auto-review-dispatch.test.ts）。
+  it('keeps a maximum-length multi-select title intact', async () => {
+    const tool = loadQuestionTool();
+    const calls: string[] = [];
+    const header = 'H'.repeat(80);
+    const question = 'Q'.repeat(512);
+    const result = await tool.execute('q', {
+      questions: [{ question, header, multiSelect: true, options: ['A', 'B'] }],
+    }, undefined, undefined, {
+      ui: { select: async (title: string) => { calls.push(title); return JSON.stringify(['A']); } },
+    });
+    expect(calls).toEqual([CINDY_PI_MULTI_SELECT_PREFIX + header + '\n' + question]);
+    expect(calls[0]!.length).toBe(608);
+    expect(result.details).toEqual({
+      answers: { [question]: ['A'] },
+      answerText: { [question]: 'A' },
+      cancelled: false,
+    });
   });
 
   it('returns a typed answer outside the options as a real answer, not a cancel (#4273)', async () => {

@@ -5,7 +5,9 @@ import type { MekaRuntimeConfig } from '../../meka-projects/runtimeConfig.js';
 import { applyMekaRuntimeConfig as applyMekaRuntimeConfigImpl } from '../../meka-injection/index.js';
 import {
   MEKA_PROJECT_REFERENCES_MARKER,
+  MEKA_SUBMIT_INTENT_MARKER,
   mekaProjectReferencesPrompt,
+  mekaSubmitIntentPrompt,
 } from '../../meka-injection/mekaPrompts.js';
 import { MEKA_PROMPT_SEGMENT_ORDER } from '../../meka-injection/mekaInjectionTypes.js';
 import type { MakerSessionCreateOpts } from '../sessionRequest.js';
@@ -18,11 +20,12 @@ import type { MakerSessionCreateOpts } from '../sessionRequest.js';
  * `opts.nativeSkillPluginPath` 与 `opts.nativeSkillRevision` 逐字节钉死，作为注入层
  * 重构（解析 → 计划 → 落地）的唯一「行为不变」证据。
  *
- * 平台注入面收敛后只剩三段（order 见 `mekaInjectionTypes.ts` 的 `MEKA_PROMPT_SEGMENT_ORDER`）：
- * 60 `meka.role-context` / 65 `meka.project-references` / 70 `meka.role-prompt`。原先的 10 档
- * 里有 7 档是战斗段，已随战斗业务与 workflow 机制整体退役 —— 本文件因此**删除了逐条战斗
- * 注入基线**（含战斗 resume 与战斗 vendorOptions 键序），只保留机制面（解析 / 落地 /
- * resume 短路 / 原子写入 / order 表 / 项目参考段）的基线。
+ * 平台注入面收敛后剩四段（order 见 `mekaInjectionTypes.ts` 的 `MEKA_PROMPT_SEGMENT_ORDER`）：
+ * 55 `meka.submit-intent` / 60 `meka.role-context` / 65 `meka.project-references` /
+ * 70 `meka.role-prompt`。原先的 10 档里有 7 档是战斗段，已随战斗业务与 workflow 机制整体退役
+ * （2026-09-29）；2026-11-19 又在空档 55 新增了提交意图段（原有 60 / 65 / 70 的数值与文本
+ * 未改）。本文件因此**删除**了逐条战斗注入基线（含战斗 resume 与战斗 vendorOptions 键序），
+ * 只保留机制面（解析 / 落地 / resume 短路 / 原子写入 / order 表 / 各注入段）的基线。
  *
  * 约定：
  * - 只用显式字面量断言，不使用 snapshot（inline 或外部文件都不行），这样任何一处注入
@@ -200,6 +203,8 @@ describe('meka runtime injection baseline', () => {
 
     expect(opts.userPrompt).toBe(
       expectedPrompt([
+        // order 55：提交意图 → 工具发现优先（2026-11-19 新增空档段，见 §3.3）。
+        mekaSubmitIntentPrompt(),
         roleContextSection('general-development', '通用开发'),
         NON_COMBAT_ROLE_PROMPT,
         USER_PROMPT,
@@ -294,6 +299,8 @@ describe('meka runtime injection baseline', () => {
 
     expect(result).toStrictEqual(emptyResult());
     expect(opts.userPrompt).toBe(USER_PROMPT);
+    // I6 的边界证据：Meka-only 的提交意图段也不得出现在非 Meka 会话里。
+    expect(opts.userPrompt).not.toContain(MEKA_SUBMIT_INTENT_MARKER);
     expect(opts.vendorOptions).toBeUndefined();
     expect(opts.nativeSkillPluginPath).toBeUndefined();
     expect(opts.nativeSkillRevision).toBeUndefined();
@@ -556,6 +563,7 @@ describe('meka project references segment (order 65)', () => {
     expect(opts.userPrompt).toContain(section!);
     expect(opts.userPrompt).toBe(
       expectedPrompt([
+        mekaSubmitIntentPrompt(),
         roleContextSection('general-development', '通用开发'),
         section!,
         NON_COMBAT_ROLE_PROMPT,
@@ -643,6 +651,8 @@ describe('meka project references segment (order 65)', () => {
     // 其余段落不受影响（与既有基线一致）。
     expect(opts.userPrompt).toBe(
       expectedPrompt([
+        // order 55：提交意图 → 工具发现优先（2026-11-19 新增空档段，见 §3.3）。
+        mekaSubmitIntentPrompt(),
         roleContextSection('general-development', '通用开发'),
         NON_COMBAT_ROLE_PROMPT,
         USER_PROMPT,
@@ -729,10 +739,11 @@ describe('meka project references segment (order 65)', () => {
     }
   });
 
-  it('pins the frozen three-row order table and keeps 60/65/70 in place', () => {
-    // 战斗段的 7 档（10/20/30/35/40/50/80）已随 workflow 机制删除。剩下的三档**数值原地冻结**：
-    // 删除相邻档不得触发重排，新增段只能插空档。
+  it('pins the order table and keeps the frozen 60/65/70 slots in place', () => {
+    // 战斗段的 7 档（10/20/30/35/40/50/80）已随 workflow 机制删除。存活档的**数值原地冻结**：
+    // 删除相邻档不得触发重排，新增段只能插空档 ⇒ 2026-11-19 的提交意图段插在空档 55。
     expect(MEKA_PROMPT_SEGMENT_ORDER).toEqual({
+      'meka.submit-intent': 55,
       'meka.role-context': 60,
       'meka.project-references': 65,
       'meka.role-prompt': 70,
@@ -743,6 +754,8 @@ describe('meka project references segment (order 65)', () => {
     // 65 正好落在 60 与 70 之间：这是它唯一合法的位置。
     expect(orders.indexOf(65)).toBe(orders.indexOf(60) + 1);
     expect(orders.indexOf(65)).toBe(orders.indexOf(70) - 1);
+    // 新增段在角色段之前，且没有挤进 60 与 70 之间。
+    expect(orders.indexOf(55)).toBe(orders.indexOf(60) - 1);
   });
 
   it('never injects the reference segment on the frozen/resume short-circuit', async () => {
@@ -758,12 +771,76 @@ describe('meka project references segment (order 65)', () => {
       materializeSkillSnapshot: vi.fn(async () => nonCombatSnapshot()),
     });
 
-    // I4：resume 不重解析项目/角色 ⇒ 60 / 65 / 70 三段同进同出。
+    // I4：resume 不重解析项目/角色 ⇒ 55 / 60 / 65 / 70 四段同进同出。
     expect(resolveRuntimeConfig).not.toHaveBeenCalled();
+    expect(opts.userPrompt).not.toContain(MEKA_SUBMIT_INTENT_MARKER);
     expect(opts.userPrompt).not.toContain(MEKA_PROJECT_REFERENCES_MARKER);
     expect(opts.userPrompt).not.toContain(PROJECT_REFERENCES_CLOSING_MARKER);
     expect(opts.userPrompt).not.toContain('[MEKA_ROLE_CONTEXT]');
     expect(opts.userPrompt).not.toContain(NON_COMBAT_ROLE_PROMPT);
     expect(opts.userPrompt).toBe(RESUMED_USER_PROMPT);
+  });
+});
+
+// ————————————————————————————————————————————————————————————————
+// 第 17 组（order 55）：提交意图段 `meka.submit-intent`（2026-11-19）。
+//
+// 测试价值
+// - 生产入口与可观察结果：`applyMekaRuntimeConfig` 落在 Meka 新会话的 system 前缀里时，
+//   出现固定的「提交意图 ⇒ 工具发现优先」规则段；非 Meka 会话不出现（见上方
+//   `writes nothing for a non-Meka session` 的负向断言）。
+// - Bug／规则依据：真实会话 4f09d41f-a5f7-4572-8fbd-a88cd81a4d76（Pi harness，用户只说
+//   「帮我提交模块表定义」）先跑了 13 次 `bash`、2 次 `read`、1 次 `grep`（全盘 find / p4 CLI
+//   探测 / 全仓 grep），**0 次**插件发现调用，直到 turn 被 abort 都没发出提交。规则与边界
+//   登记在 `docs/dev-rules/meka-injection-layer.md` §3.3。
+// - 现有覆盖缺口：本文件其它组只钉 60 / 65 / 70 的文本与 order，没有任何用例保护
+//   「提交意图先走插件流程」这条顺序（插件花名册已在系统提示里，缺的就是顺序）。
+// - 最小失败输入：一次 Meka bootstrap（`baseOpts` 默认输入）——旧实现产出的前缀里没有
+//   `[MEKA_SUBMIT_INTENT]`。
+// - tier：unit（注入层落地，纯内存 fake，无 I/O）。
+// ————————————————————————————————————————————————————————————————
+
+describe('meka submit-intent segment (order 55)', () => {
+  it('injects the tool-discovery-first rule for Meka sessions and pins its prose', async () => {
+    const opts = baseOpts({ userPrompt: USER_PROMPT });
+
+    await applyMekaRuntimeConfig(opts, {
+      resolveRuntimeConfig: vi.fn(async () => runtime()),
+      materializeSkillSnapshot: vi.fn(async () => nonCombatSnapshot()),
+    });
+
+    const prompt = opts.userPrompt ?? '';
+    const section = mekaSubmitIntentPrompt();
+    // 注入路径证据：段构建器的输出**确实**被渲染进 Meka 会话前缀。
+    expect(prompt).toContain(section);
+    // 散文契约（字面量，不从构建器推导）：改字必须同时改这里与 §3.3，否则就是契约变更。
+    expect(section.split('\n')).toEqual([
+      '[MEKA_SUBMIT_INTENT]',
+      '用户说「提交 / 提交代码 / 提交改动 / 提交服务器 / 推送建 MR」时，第一步固定是工具发现，不是探测：',
+      '工具发现先确认本机插件清单（Pi 经 cindy_mcp_list_tools 网关；Claude/Codex 直连本机插件的 MCP 工具），再 ghost_info(meka-submit) → ghost_call 调 meka-submit 的 list_tools，拿到该插件流程后再动手。若当前会话没有 meka-submit 插件（它是市场安装插件、不随包），如实告知用户，并按用户确认改用本机 CLI 或既有流程，不得假装插件可用。',
+      '拿到插件流程前，禁止用 p4 / git 等 CLI 探测或执行提交，禁止用全仓 find / grep 猜要提交什么。',
+      '提交对象只可能是「已存在的改动」：先确定改动来源再谈范围——P4 项目用 meka-p4 的 p4_status（pending changelists / 未 open 改动）；远程 Git 项目用 MCPRouter 的 mcpr-project-manager 的 git_status（工作树未提交改动）。',
+      '文件名词（例如「模块表定义」）先在改动清单里模糊匹配；匹配不到就问用户，不得改用全仓 grep 去找。',
+      '[/MEKA_SUBMIT_INTENT]',
+    ]);
+    // 顺序即语义：先列工具清单 → 再看单个插件 → 再拿插件流程；真实缺陷正是跳过前两步直接探测。
+    const listToolsIndex = section.indexOf('cindy_mcp_list_tools');
+    const ghostInfoIndex = section.indexOf('ghost_info');
+    const submitPluginIndex = section.indexOf('meka-submit');
+    expect(listToolsIndex).toBeGreaterThan(-1);
+    expect(listToolsIndex).toBeLessThan(ghostInfoIndex);
+    expect(ghostInfoIndex).toBeLessThan(submitPluginIndex);
+    // 提交对象是「已存在的改动」：P4 与远程 Git 两条来源都要从改动清单出发，而不是猜。
+    expect(section).toContain('p4_status');
+    expect(section).toContain('git_status');
+    // 插件缺失兜底：meka-submit 是市场安装插件、不随包，缺插件时不得把「提交」挡成死路，
+    // 也不得假装插件可用；必须如实告知并让用户确认改走本机 CLI/既有流程。
+    expect(section).toContain('没有 meka-submit 插件');
+    expect(section).toContain('不得假装插件可用');
+    // 段只出现一次，且作为 order 55 排在角色上下文（order 60）之前。
+    expect(prompt.split(MEKA_SUBMIT_INTENT_MARKER).length - 1).toBe(1);
+    const submitIntentIndex = prompt.indexOf(MEKA_SUBMIT_INTENT_MARKER);
+    expect(submitIntentIndex).toBeGreaterThan(-1);
+    expect(submitIntentIndex).toBeLessThan(prompt.indexOf('[MEKA_ROLE_CONTEXT]'));
   });
 });

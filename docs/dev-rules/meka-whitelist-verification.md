@@ -1247,25 +1247,32 @@ Meka 渠道请求头 `x-cindy-version` 是当前客户端真实版本（抓包�
 - 角色**运行期注入链**（WL-11.5–11.6，锚点为 2026-09-29 Meka 最小随包交付后逐条复核的快照；**以符号名为准**）：`apps/desktop/src/main/meka-injection/mekaResolvePlan.ts` 的
   `resolveBootstrapInjection`（约 `:240-400`：hydrate 持久绑定 → 非 meka 零写入 → 遗留角色回填到
   `mekaDefaultRoleId(projectId)`（约 `:298-301`）→ 强制「项目+角色都必须有」（约 `:302-304`））、
-  `resolveFrozenInjection`（约 `:195-232`，resume 短路；分派在约 `:418-425`）、
+  `resolveFrozenInjection`（约 `:195-232`，resume 短路；分派在约 `:421-428`）、
   `mergePlatformSkills`（`:170-177`）与 `mergePlatformMcp`（`:179-184`，调用点约 `:333-334`）、
   技能快照物化（约 `:351`）+ `nativeSkillMount`（`:156-162`）+ `meka-injection/mekaApplyPlan.ts` 的
-  `writeNativeSkill`（`:92-96`，写 `nativeSkillPluginPath` / `nativeSkillRevision`）、三段注入
-  （角色 prompt 约 `:353-356`、order 65 约 `:357-362`、`roleContextPrompt` 约 `:363`）+
+  `writeNativeSkill`（`:92-96`，写 `nativeSkillPluginPath` / `nativeSkillRevision`）、四段注入
+  （角色 prompt 约 `:353-356`、order 65 约 `:357-362`、`roleContextPrompt` 约 `:363`、
+  order 55 提交意图段约 `:364-366`）+
   `meka-injection/mekaPrompts.ts` 的 `roleContextPrompt`（`:23-32`，`[MEKA_ROLE_CONTEXT]` 区块）+
   `meka-injection/mekaApplyPlan.ts` 的 `renderMekaPromptSegments`（`:51-75`，按 order 渲染上提）、
-  `vendorOptions` patch（`mekaResolvePlan.ts` 约 `:365-380`：`source` / `mekaRuntimeResolved` /
+  `vendorOptions` patch（`mekaResolvePlan.ts` 约 `:368-383`：`source` / `mekaRuntimeResolved` /
   `mekaProjectId` / `mekaRoleId` / `mekaMcpProviderIds` / `mekaMcpInlineConfigs` /
   `mekaPolicyProviderRefs`）+ `mekaApplyPlan.ts`（`:84-87` 写入）
   > **锚点更正（2026-09-29 Meka 最小随包交付，逐条打开文件复核）**：本行原先的
   > `mekaCombatPrompts.ts:309-318` / `:152-161` 与「`mekaWorkflow` 进 `vendorOptions` patch」都已随
   > **workflow 机制**与**内置提示词正文**的删除而消失；`mekaCombatPrompts.ts` 已**改名为
-  > `mekaPrompts.ts`**（只剩 `roleContextPrompt` 与 `mekaProjectReferencesPrompt` 两个纯函数，
-  > 全文件 73 行）。段集合现为 **3 段**（60 `meka.role-context` / 65 `meka.project-references` /
-  > 70 `meka.role-prompt`，见 `mekaInjectionTypes.ts` 的 `MEKA_PROMPT_SEGMENT_ORDER`，`:68-72`），
-  > `MekaRuntimeConfig` 上**没有** `workflow` 字段。**`codexNativeSubagentsDisabled` 也不再由本层产出**
+  > `mekaPrompts.ts`**（现为 `roleContextPrompt` / `mekaSubmitIntentPrompt` /
+  > `mekaProjectReferencesPrompt` 三个纯函数，全文件 106 行）。段集合现为 **4 段**（55
+  > `meka.submit-intent` / 60 `meka.role-context` / 65 `meka.project-references` / 70
+  > `meka.role-prompt`，见 `mekaInjectionTypes.ts` 的 `MEKA_PROMPT_SEGMENT_ORDER`，`:71-76`），
+  > `MekaRuntimeConfig` 上**没有** `workflow` 字段。**2026-11-19 新增 order 55**（提交意图 ⇒
+  > 工具发现优先，规则见注入层文档 §3.3）：自动化门禁为 `mekaRuntimeInjectionBaseline.test.ts`
+  > 第 17 组（1 例）与非 Meka 零写入用例的负向断言；**实机验证未做**——smoke 脚本没有为它加
+  > 回显探针，本批也没有跑 `desktop:session-smoke`，因此「模型是否真的按该顺序行动」无任何
+  > 实跑证据（prompt 规则的实际效果只能在真机行为上观察）。
+  > **`codexNativeSubagentsDisabled` 也不再由本层产出**
   > （原判据 `runtime.workflow === 'saga2-combat-development-v1' || isCombatServerWorker` 两个判据都已删除；
-  > 键位与理由写在 `mekaResolvePlan.ts` 约 `:373-379` 的注释里，生产者交还宿主策略）。
+  > 键位与理由写在 `mekaResolvePlan.ts` 约 `:376-382` 的注释里，生产者交还宿主策略）。
 - 角色清单**事实源（2026-09-29 起）**：随包 `resources/meka/roles/` **已空**（不再随附任何内置角色清单，
   git 不跟踪空目录 ⇒ 新 clone 下该目录不存在，由 T3 容错兜住，见 WL-21）；实际来源按优先级为
   ① 项目文件 `<project-root>/.meka/project.json` 的 `builtinRoles` 角色快照（用户可编辑/可导入）、
@@ -2965,7 +2972,7 @@ WL-5（先确认区域与链路）→ WL-6（身份/更新）→ WL-1（设置�
    `buildCodexSubagentSpawnArgs`），WL-4.2.3 不因此失效。
    > **⚠️ 2026-09-29 更正（Meka 最小随包交付，只追加不改写上面原句）**：上面这句「未受影响」的
    > 前提**已不成立** —— `isCombatServerWorker` 判定与注入层的 `codexNativeSubagentsDisabled` 补丁
-   > 都随 workflow 机制删除（`mekaResolvePlan.ts` 现在**不再产出该键**，理由写在约 `:373-379` 的
+   > 都随 workflow 机制删除（`mekaResolvePlan.ts` 现在**不再产出该键**，理由写在约 `:376-382` 的
    > 注释里），**WL-4.2.3 已整体退役**（§8.12）。仍存活的是 **maker-core / maker-host 的消费侧**
    > （`packages/maker-core/src/agents/codex/index.ts` 的 `codexNativeSubagentsDisabled` 分支、
    > `maker-host/index.ts:1731` 的 `ctx.codexNativeSubagentsDisabled === true`），但

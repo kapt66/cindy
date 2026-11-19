@@ -35,6 +35,13 @@ export function GhostConfirmDialogHost() {
         return;
       }
       const { requestId, ghostName, iconDataUrl, body, confirmText, cancelText, danger } = payload;
+      // 先回执再弹:main 只有收到「已收到」才不把这次投递当成没送达、在 8s 后改投
+      // 主窗口。回执不结算本单(用户还没点),失败也不影响本窗口继续弹框。
+      try {
+        void window.electronAPI.ghosts?.ackConfirm?.(requestId)?.catch(() => {});
+      } catch {
+        // 旧 preload / client-mode 无此桥:main 侧 8s 兜底仍会按原窗口答案结算。
+      }
       if (pending.has(requestId)) return;
       const abort = new AbortController(); pending.set(requestId, abort);
       dismiss ??= window.electronAPI.ghosts?.onConfirmDismissed?.(({ requestId }) => pending.get(requestId)?.abort());

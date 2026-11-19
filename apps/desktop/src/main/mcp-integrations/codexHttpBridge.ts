@@ -37,7 +37,7 @@ import { runTaskActionRequest } from '../maker-ipc/taskActionAuthorization.js';
 
 /**
  * 绑定 loopback 端口时最多重试几次「内核分到的端口被 Fetch 标准拉黑」。
- * 正常情况下第一次就成功(命中概率约 1/777);连撞多次说明本机动态端口段异常,
+ * 正常情况下第一次就成功(命中概率约 1/735);连撞多次说明本机动态端口段异常,
  * 此时宁可让 bridge 启动失败,也不要交出一个全局 fetch 打不通的 URL。
  */
 const FETCH_SAFE_PORT_MAX_ATTEMPTS = 8;
@@ -545,7 +545,7 @@ async function startCodexHttpBridge(
    * `listen(0)` 把端口选择完全交给内核,而内核只判"空闲"、不判"客户端能不能用这个端口":
    * undici 的全局 `fetch` 会按 Fetch 标准拒绝对一批 **bad port** 发请求(报
    * `TypeError: fetch failed` + `cause: bad port`)。本机动态端口段并不保证避开它们 ——
-   * Windows 的动态范围可被改成 1024-15000,而该段内实测有 18 个 bad port(命中率约 1/777);
+   * Windows 的动态范围可被改成 1024-15000,而该段内实测有 19 个 bad port(命中率约 1/735);
    * 一旦命中,bridge 交给 codex 子进程的 URL 上**每一个请求**都直接失败,表现为整条远端
    * MCP 链路不可用,而不是偶发超时。
    *

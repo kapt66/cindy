@@ -9,7 +9,7 @@
  * 有第二个入口。
  *
  * 分层（文件名带 `meka` 前缀的依据见 `docs/dev-rules/meka-injection-layer.md` §0）：
- * - `mekaPrompts.ts`     段落文本的唯一来源（`role-context` 与 `project-references` 两段）
+ * - `mekaPrompts.ts`     段落文本的唯一来源（`submit-intent`、`role-context`、`project-references` 三段）
  * - `mekaResolvePlan.ts` 第 2 层：解析（含全部 I/O）→ `MekaInjectionPlan`
  * - `mekaApplyPlan.ts`   第 3 层：落地（纯写 opts，不做 I/O）
  *

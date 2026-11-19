@@ -18,7 +18,12 @@
 // 客户端"或"用 listen(0) 起本地服务再 fetch 它"的地方都必须用同一份，不得另立第二份
 // （desktop 的 codexHttpBridge 与各单测直接 import 它）。
 export { createAnthropicCompatProxy } from './server.js';
-export { isFetchBlockedPort, listenOnFetchSafePort } from './fetch-blocked-ports.js';
+export {
+  FETCH_SAFE_BIND_MAX_ATTEMPTS,
+  FetchSafePortBindError,
+  isFetchBlockedPort,
+  listenOnFetchSafePort,
+} from './fetch-blocked-ports.js';
 export { recoverInlineAttachments, recoverOversizedMessage } from './oversized-attachments.js';
 export type { OversizedBody, RecoveredAttachment, AttachmentKeeper } from './oversized-attachments.js';
 export type { OversizedRequestRecovery } from './types.js';

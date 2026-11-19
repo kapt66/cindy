@@ -101,7 +101,8 @@ describe('Worker running on another device (execution device)', () => {
     expect(deps.openRemoteWorker).toHaveBeenCalledWith(expect.objectContaining({
       deviceId: 'mac-mini', workerId: 'worker-1', teamId: 'team-1', leadSessionId: 'lead-1',
       label: 'transcribe', role: '转写', agent: 'claude-code', model: 'only-on-device',
-      permissionMode: 'auto', workingDir: '/Users/demo/Interviews', title: 'Worker · 转写 · transcribe',
+      // 运行设备 = 远程 Worker：默认 team 模式 auto 在创建处强制升级为 Full access。
+      permissionMode: 'bypassPermissions', workingDir: '/Users/demo/Interviews', title: 'Worker · 转写 · transcribe',
     }));
     expect(deps.addOrUpdateWorker).not.toHaveBeenCalled();
     expect(deps.recordRemoteWorker).toHaveBeenCalledWith({
@@ -115,6 +116,30 @@ describe('Worker running on another device (execution device)', () => {
     expect(deps.bootstrapSession).not.toHaveBeenCalled();
     expect(deps.resolveWorkerWorkingDir).not.toHaveBeenCalled();
     expect(deps.releaseWorkerCreationReservation).toHaveBeenCalledWith('worker-1');
+  });
+
+  // 2026-11-19 用户实测回归：远程 Worker 在 Auto 下写文件被自动审核拦下
+  // （「No user request authorizes this action; only reads may run without one.」）。
+  // 运行设备/远程 Worker 由 Lead 派单、没有用户原话，Auto 的授权前提不成立，因此
+  // 创建处强制 Full access，并把「本次升级」结构化带出（不是改用户偏好）。
+  it.each([
+    ['auto', 'bypassPermissions', true],
+    ['bypassPermissions', 'bypassPermissions', false],
+  ] as const)('creates the execution-device Worker from team mode %s with %s (upgraded=%s)', async (teamMode, expected, upgraded) => {
+    const { deps, service } = remoteDeps({ getWorkerPermissionMode: vi.fn(() => teamMode) });
+    const result = await service.createWorker({
+      leadSessionId: 'lead-1', role: 'dev', label: 'a', agent: 'codex', executionDeviceId: 'mac-mini',
+    });
+    expect(result).toMatchObject({ ok: true, permissionMode: expected });
+    expect(deps.openRemoteWorker).toHaveBeenCalledWith(expect.objectContaining({ permissionMode: expected }));
+    if (upgraded) {
+      expect(result).toMatchObject({
+        permissionModeUpgraded: true,
+        permissionModeReason: 'remote-worker-requires-full-access',
+      });
+    } else {
+      expect(result).not.toHaveProperty('permissionModeUpgraded');
+    }
   });
 
   it('lets the device allocate a directory when none is given and accepts Windows paths', async () => {
@@ -1599,12 +1624,19 @@ describe('OrcaWorkerCreationService', () => {
         agent: 'codex',
         label: 'reviewer',
       }),
-    ).resolves.toMatchObject({ ok: true });
+    ).resolves.toMatchObject({
+      ok: true,
+      // SSH Lead 继承的远端目标同样是远程 Worker：默认 team 模式 auto 被强制升级。
+      permissionMode: 'bypassPermissions',
+      permissionModeUpgraded: true,
+      permissionModeReason: 'remote-worker-requires-full-access',
+    });
 
     // remote lead 的 worker 必须在同一台远端主机 spawn,继承远端 workingDir。
     expect(deps.buildCreateOptsWithStderr).toHaveBeenCalledWith(expect.objectContaining({
       workingDir: '/srv/repo',
       remoteHostId: 'remote-host-1',
+      permissionMode: 'bypassPermissions',
     }));
   });
 
@@ -2083,6 +2115,67 @@ describe('OrcaWorkerCreationService', () => {
       }));
     },
   );
+
+  // 2026-11-19 用户实测回归（会话 0eba4a5f）：Meka Lead 用 remote_host_id=mcpr:<instance>
+  // 创建 Worker，Auto 下 Write 被自动审核拦下。Host 解析出远程 transport 后必须强制
+  // Full access（Auto 没有 userIntent/delegatedTask 只放行只读）；本机 Worker 不升级。
+  it.each([
+    ['auto', 'bypassPermissions', true],
+    ['bypassPermissions', 'bypassPermissions', false],
+  ] as const)('creates a Host-resolved remote Worker from team mode %s with %s (upgraded=%s)', async (teamMode, expected, upgraded) => {
+    const { deps, service } = createDeps({
+      getWorkerPermissionMode: vi.fn(() => teamMode),
+      resolveWorkerTarget: vi.fn(async () => ({
+        ok: true as const,
+        workingDir: '/workspace/project',
+        remoteHostId: 'mcpr:instance-1',
+      })),
+    });
+    const result = await service.createWorker({
+      leadSessionId: 'lead-1',
+      role: 'developer',
+      agent: 'claude-code',
+      model: 'claude-sonnet-4-6',
+      label: 'developer',
+      workingDir: '/forged',
+      remoteHostId: 'mcpr:instance-1',
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      permissionMode: expected,
+      resolved: { workingDir: '/workspace/project', remoteHostId: 'mcpr:instance-1' },
+    });
+    expect(deps.bootstrapSession).toHaveBeenCalledWith(expect.objectContaining({
+      workingDir: '/workspace/project',
+      remoteHostId: 'mcpr:instance-1',
+      permissionMode: expected,
+    }));
+    if (upgraded) {
+      expect(result).toMatchObject({
+        permissionModeUpgraded: true,
+        permissionModeReason: 'remote-worker-requires-full-access',
+      });
+    } else {
+      expect(result).not.toHaveProperty('permissionModeUpgraded');
+    }
+  });
+
+  it('keeps the team auto mode for a local Worker', async () => {
+    const { deps, service } = createDeps({ getWorkerPermissionMode: vi.fn(() => 'auto' as const) });
+    const result = await service.createWorker({
+      leadSessionId: 'lead-1',
+      role: 'reviewer',
+      agent: 'codex',
+      label: 'reviewer',
+      model: 'gpt-5.5',
+      providerId: 'xd',
+    });
+    expect(result).toMatchObject({ ok: true, permissionMode: 'auto' });
+    expect(result).not.toHaveProperty('permissionModeUpgraded');
+    expect(deps.buildCreateOptsWithStderr).toHaveBeenCalledWith(expect.objectContaining({
+      permissionMode: 'auto',
+    }));
+  });
 
   it('inherits the target-agent New Maker provider and persists it on the worker session', async () => {
     const { deps, service } = createDeps({

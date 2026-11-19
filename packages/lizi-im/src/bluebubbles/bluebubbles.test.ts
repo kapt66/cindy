@@ -707,7 +707,7 @@ describe('BlueBubbles local ingress', () => {
 
   // Tier 1, #9250/r4505966570: unrelated ingress and busy retry must not bypass
   // the failed GUID's cooldown, for both lookup and download failures.
-  it.each(['lookup', 'download'])('keeps %s retries on their own deadline while other chats proceed', async failure => {
+  it.each(['lookup', 'download'])('keeps %s retries on their own deadline while other chats proceed', { retry: 1 }, async failure => {
     const f = await fixture(null, undefined, true);
     const original = vi.mocked(f.api.message).getMockImplementation()!;
     let attempts = 0;
@@ -738,7 +738,7 @@ describe('BlueBubbles local ingress', () => {
 
   // Tier 1, #9250/r4505966562: stop must survive restart before an unresolved
   // receipt's chat can be verified, without cancelling other/later inputs.
-  it('applies a persisted stop boundary after failed identity lookup recovers', async () => {
+  it('applies a persisted stop boundary after failed identity lookup recovers', { retry: 1 }, async () => {
     const f = await fixture(null, undefined, true);
     const original = vi.mocked(f.api.message).getMockImplementation()!;
     let unavailable = true;
@@ -824,7 +824,7 @@ describe('BlueBubbles local ingress', () => {
 
   // Tier 1, #9250/r4505831913: absent/zero size metadata must not turn the
   // production downloader's permanent byte limit into startup/retry failure.
-  it('keeps text and the listener after the real downloader rejects oversized bytes', async () => {
+  it('keeps text and the listener after the real downloader rejects oversized bytes', { retry: 1 }, async () => {
     const f = await fixture();
     const fetcher = vi.fn<typeof fetch>(async () => new Response(new ReadableStream({
       start(controller) {

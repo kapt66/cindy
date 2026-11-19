@@ -92,6 +92,35 @@ describe('create_workers tool', () => {
     expect(registry.get('create_workers')?.description).toContain(
       '用户一次要求创建多个 Worker 时必须使用本工具，不要并行或连续多次调用 create_worker。',
     );
+    // 远程 Worker 会被主机强制升级为 Full access；批量描述必须同步这条引导。
+    expect(registry.get('create_workers')?.description).toContain('permission_mode_upgraded');
+  });
+
+  // 2026-11-19 远程 Worker 权限回归：逐项结果必须与单条 create_worker 回显同一组权限
+  // 字段（worker_permission_mode / permission_mode_upgraded / permission_mode_reason），
+  // 否则批量创建时 Lead 只能按单条契约理解，容易把升级后的 Worker 误报成 Auto。
+  it('echoes the same per-item permission fields as create_worker in a batch', async () => {
+    const createWorker = vi.fn<CreateWorkerDeps['createWorker']>()
+      .mockResolvedValueOnce({
+        ...created(1, 5),
+        permissionMode: 'bypassPermissions',
+        permissionModeUpgraded: true,
+        permissionModeReason: 'remote-worker-requires-full-access',
+      })
+      .mockResolvedValueOnce({ ...created(2, 5), permissionMode: 'auto' });
+    const result = parse(await setup(createWorker).call('create_workers', { workers: [
+      { ...worker(1), remote_host_id: 'mcpr:instance-1' },
+      worker(2),
+    ] }));
+    expect(result.results[0]).toMatchObject({
+      status: 'created',
+      worker_permission_mode: 'bypassPermissions',
+      permission_mode_upgraded: true,
+      permission_mode_reason: 'remote-worker-requires-full-access',
+      permission_mode_note: expect.stringContaining('Auto'),
+    });
+    expect(result.results[1]).toMatchObject({ status: 'created', worker_permission_mode: 'auto' });
+    expect(result.results[1]).not.toHaveProperty('permission_mode_upgraded');
   });
 
   it('rejects duplicate labels before creating any worker', async () => {

@@ -25,11 +25,16 @@ Meka Skill 分为两层：
 `roleDefaults`、角色 Skill/MCP 选择或旧任务中的角色配置来决定是否启用。项目和角色不能排除
 这组平台基线。专用 MCPR 远端 Worker 继续使用窄能力包，不继承普通 Meka 平台 Skill/provider。
 
-**「短的自动路由契约」的现状要说准（2026-09-29 订正）**：本节此前承诺平台基线里带一段
-「短的自动路由契约」。**代码里从来没有这样一个注入段**——注入层的 prompt 段只有三段
-（`meka.role-context` 60 / `meka.project-references` 65 / `meka.role-prompt` 70，见
+**「短的自动路由契约」的现状要说准（2026-09-29 订正；2026-11-19 补段）**：本节此前承诺平台基线里带一段
+「短的自动路由契约」。**代码里从来没有这样一个注入段**——注入层的 prompt 段现为四段
+（`meka.submit-intent` 55 / `meka.role-context` 60 / `meka.project-references` 65 /
+`meka.role-prompt` 70，见
 [`../dev-rules/meka-injection-layer.md`](../dev-rules/meka-injection-layer.md) §3），
-平台基线**不产生任何 prompt 段**。这条承诺实际由**两个非 prompt 载体**满足：
+平台基线**不产生任何 prompt 段**。其中 2026-11-19 新增的 order 55 段是**提交意图的顺序规则**
+（用户要「提交 / 推送建 MR」时先 `cindy_mcp_list_tools` → `ghost_info(meka-submit)` → 插件
+`list_tools`，拿到流程前禁止 CLI 探测与全仓 find/grep；提交对象只可能是已存在的改动，P4 用
+`p4_status`、远程 Git 用 `git_status`），**不是**本节的自动路由契约，也不选能力。原承诺实际由
+**两个非 prompt 载体**满足：
 
 1. **`platform-capabilities` Skill 正文**（36 行）—— 能力阶梯、配置层级、恢复与降级、
    结果归属，经 **harness 原生 skill catalog** 交付（只暴露 name / description，正文按需读取）；

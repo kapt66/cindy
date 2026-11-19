@@ -61,6 +61,11 @@ export interface CreateWorkerSuccessData {
   resolved?: WorkerCreationResolved;
   defaults?: WorkerCreationDefaults;
   executionDeviceId?: string;
+  /** Worker 实际启动的权限模式。远程/跨设备 Worker 的 auto 会被主机强制升级。 */
+  permissionMode?: 'auto' | 'bypassPermissions';
+  /** true = 主机因远程目标强制升级（不是用户偏好）；本机 Worker 不会带该字段。 */
+  permissionModeUpgraded?: true;
+  permissionModeReason?: 'remote-worker-requires-full-access';
   workerId: string;
   workerSessionId: string;
   workingDir?: string;
@@ -216,6 +221,7 @@ const DESCRIPTION = [
   '注:create_worker 建的是 Orca worker(session 级、持久、UI 可见),不是 subagent。若用户要的是 subagent(一次性、用完即弃),请用你自己的原生 subagent 机制(如 Codex 的 spawn_agent、Claude Code 的 Task 工具),不要用 create_worker。' +
   'Orca worker 永远不是 subagent 的替代品;你没有原生 subagent 机制时,如实告知用户并请他决定,不要拿 worker 顶替。',
   '用户一次要求创建 2 个及以上 Worker 时必须改用 create_workers；不要并行或连续多次调用 create_worker。',
+  '【Worker 权限】创建 Worker 的默认权限是完全访问（full access / bypassPermissions）。只有用户本人在这个 Worker 任务里直接对话、Auto 能拿到用户原话时才选 auto：Auto（自动审核）需要 owning session 的用户原话（userIntent）或经批准插件的委派（delegatedTask），否则写操作必然被拦——由 Lead 派单创建、没有用户直接参与的 Worker（尤其远程 Worker）不要选 auto。远程 Worker（传 remote_host_id，或 execution_device_id 指向另一台电脑；SSH Lead 继承的远端目标同样算）在团队模式为 auto 时，主机会在创建处强制以 full access 启动，并在结果里回显 worker_permission_mode=bypassPermissions、permission_mode_upgraded=true、permission_mode_reason=remote-worker-requires-full-access 与 permission_mode_note；收到后应向用户说明「远程 Worker 已用完全访问创建」，不要静默改权限。该升级只作用于本次创建的 Worker，不写用户全局 Worker 偏好；本机 Worker 不升级，仍按团队解析出的 auto / bypassPermissions 运行。',
   '【派单后立即结束本轮】worker 的结果会作为**下一条消息**自动送到你这里。派单成功后不要再 sleep、不要轮询 worker_status / read_worker、也不要反复 git_status 等它——你这一轮不结束，worker 的报告就只能排在队列里，永远送不到；等待本身反而让整个流程更慢。需要等它完成时，把已做的事说完，然后结束本轮；若这一轮必须拿到结果，用一次 wait_for_worker，不要 bash sleep。',
   '注:remote_host_id 指向 mcpr: 的 **Pi worker** 拿不到 Orca 桥接工具(send_to_lead / read_lead / lead_status)，它的最终答复由宿主自动桥接回来；这类 worker 无法中途反问，派单时请把验收标准与边界一次写清。',
   '',
@@ -303,6 +309,7 @@ export function registerCreateWorkerTool(
         ...(result.worktree ? { worktree: result.worktree } : {}),
         role,
         ...workerCreationRoutePayload(result, agent),
+        ...workerPermissionPayload(result),
         ...workerHandoffPayload({ initial_task, working_dir }, result),
         label,
         ...(result.resolved
@@ -405,5 +412,39 @@ export function workerCreationRoutePayload(result: CreateWorkerSuccessData, requ
     ...(result.executionDeviceId ? { execution_device_id: result.executionDeviceId } : {}),
     ...(result.defaults ? { defaults: { source: result.defaults.source,
       ...(result.defaults.fallbackReason ? { fallback_reason: result.defaults.fallbackReason } : {}) } } : {}),
+  };
+}
+
+/**
+ * 远程 Worker 被主机强制升级为 Full access 时给 Lead 与用户看的原因。
+ * 协议字段：`permission_mode_reason` 是稳定原因码，这段文字用于转告；两者都不改变
+ * 用户全局 Worker 偏好。
+ */
+export const REMOTE_WORKER_FULL_ACCESS_NOTE =
+  '这个 Worker 在远程或另一台电脑上运行：Auto（自动审核）需要用户原话（userIntent）或插件委派（delegatedTask）才允许非只读操作；远程 Worker 由 Lead 派单、没有用户直接参与，Auto 下写操作必然被拦。主机因此在创建时强制使用完全访问（bypassPermissions），只作用于这个 Worker，不写用户全局 Worker 偏好；本机 Worker 仍按团队解析出的权限运行。';
+
+/**
+ * Worker 实际权限的 MCP 回显，create_worker / create_workers 共用（批量逐项与单条同源）。
+ * 远程升级必须让 Lead 看到并转告用户，不能静默改权限；本机 Worker 只回显实际模式，
+ * 不带 upgraded 标记。
+ */
+export function workerPermissionPayload(result: CreateWorkerSuccessData): {
+  worker_permission_mode?: 'auto' | 'bypassPermissions';
+  permission_mode_upgraded?: true;
+  permission_mode_reason?: 'remote-worker-requires-full-access';
+  permission_mode_note?: string;
+} {
+  if (!result.permissionMode) return {};
+  return {
+    worker_permission_mode: result.permissionMode,
+    ...(result.permissionModeUpgraded
+      ? {
+          permission_mode_upgraded: true as const,
+          ...(result.permissionModeReason
+            ? { permission_mode_reason: result.permissionModeReason }
+            : {}),
+          permission_mode_note: REMOTE_WORKER_FULL_ACCESS_NOTE,
+        }
+      : {}),
   };
 }

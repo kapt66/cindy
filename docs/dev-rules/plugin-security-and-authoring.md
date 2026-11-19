@@ -376,6 +376,32 @@ Renderer 的来源分类是封闭取值（`public / organization / local / custo
 - 主机按 `webContents` 绑定反查真实 ghostId，**不信任 sender 自报身份**。
 - 沉睡、抽离和主机退出必须终止对应沙箱；沙箱崩溃只由 `GhostRuntime` 收敛，不得带崩
   主应用。
+- **confirm 槽的目标窗口与崩溃恢复（2026-11-19 用户实测补充）**：插件确认框由 Main
+  铸 `requestId` 后只投**一个**能承载模态框的窗口——完整主窗口，或
+  `?secondaryWindow=1` 的完整会话副窗。右侧栏独立窗、资源用量窗、远程桌面查看器、
+  截图/录屏浮层与 utility 浮窗只挂轻量 renderer 和专用 preload，**没有**
+  `GhostConfirmDialogHost`，不得作为目标（判据 `apps/desktop/src/main/confirmDialogWindow.ts`
+  的 `isModalConfirmHostUrl` / `isModalConfirmHostWindow`，本地 confirm 槽与 Host
+  client-mode 的 `onPluginPush` 共用同一判据）。聚焦窗口可承载时优先投它，否则投主窗口；
+  没有可承载窗口时回 `UNAVAILABLE`（fail closed），绝不投辅助窗口。投递前把目标窗口
+  restore/show/focus；投递后 8 秒内没收到 renderer「已收到」回执且首次不是主窗口时，
+  改投主窗口一次。沙箱崩溃/逻辑页离线导致投递失败时，派发器在同一实例上做**一次**受控
+  重启（单飞 + 冷却）后重投同一份卷子，失败仍回原 `GHOST_CRASHED`（「电子脑离线，派发
+  失败」），不无限重试、不把超时当同意。
+  **改投后的双窗口收口**：8 秒改投意味着同一 `requestId` 可能先后出现在两个窗口（原窗口
+  只是慢/阻塞时尤甚）。桥记录本次已投递的窗口，settle（任一窗口作答、超时或清理）时向
+  **其余**已投窗口各补发一次 `ghosts:confirm-dismissed` 收起迟到的重复模态框；收卡只收
+  UI：迟到回包一律 `handled:false`，不改变已结算答案、不产生新的 `confirmed:true`。本地
+  模式该收卡沿 `sendGhostWindowPush` 的单窗口 main→renderer 推送，不做广播。
+  **恢复后的用量观测**：受控重启的 stop 会让 `PluginInvocations.invalidate` 掉旧 volume
+  的 invocation，重投成功时派发器用同一 `callId` 重新调用 `prepareUsage` 建立观测（生产
+  实现按 callId 幂等），恢复成功的调用照常计入用量/计费；旧 volume 迟到的观测不再计数。
+  **范围登记（2026-11-19）**：本次恢复与 ack 改投**只覆盖 Desktop 本地模式**（`restart`
+  由 `apps/desktop/src/main/cindy-brain/index.ts` 的派发器装配注入）；Host/client-mode 的
+  pipe 派发器未注入 `restart`（落点 `apps/host/src/plugins/runtime.ts:361`），投递失败仍
+  按原 `GHOST_CRASHED` 语义处理，**未验证**，Host 接线另行立项；交付说明不得写成 Host
+  已支持。回归见 `ghostConfirmDialogBridge.test.ts`、`confirmDialogWindow.test.ts` 与
+  `pipeDispatcher.test.ts`。
 - 声明 `node` 的插件另有独立 Node 工作进程，拥有当前系统用户级本机能力，不属于
   上述浏览器沙箱。参考 [VS Code 的本地扩展权限模型](https://code.visualstudio.com/docs/configure/extensions/extension-runtime-security)，
   macOS 以 `disclaim: false` 创建插件 Node 工作进程及宿主代启的 Node 子进程，保留
@@ -495,6 +521,19 @@ Renderer 的来源分类是封闭取值（`public / organization / local / custo
     `node` / `reveal` 的插件，不导入字节、不签发票据；`deposit: true` 在该形态下仍拒绝。
   两态共用同一套限速、全局单框（BUSY）、安装目标漂移复核与取消语义（`callId` 在途绑定）。
   对话框标题与正文仍由 Host 拼装并带插件名，插件只贡献净化后的用途片段（`title`）。
+- `confirm` 槽只把模态确认框投给**一个**能承载它的宿主窗口（选窗口径与判据见第 2 节
+  「confirm 槽的目标窗口与崩溃恢复」：focused 可承载时优先，否则主窗口，辅助窗口永不投），
+  不像 `notify` 那样广播（多窗各弹一个、收回多份答案）。投递前先把该窗口 `restore`
+  （最小化时）、`show` 与 `focus`（仅在未聚焦时）带回可见前台——用户切到别的应用时窗口
+  不在前台，弹窗可能完全看不见，插件只会等到超时拿到 `confirmed:false`，看起来像
+  「用户取消」（2026-11-19 用户实测）；投递后 8 秒内没收到 renderer「已收到」回执且首次
+  不是主窗口时，改投主窗口一次；改投后两个窗口可能各有一个模态框，settle 时向其余已投
+  窗口补发一次 `ghosts:confirm-dismissed` 收卡（单窗口推送、不广播、不改答案）。可见性
+  与回执都只是**可达性保证**，不改变 fail-closed：
+  可见性动作抛错只记 `warn`、不阻断投递；没有可承载窗口、窗口已销毁或推送失败仍回
+  `UNAVAILABLE`，超时仍按「没同意」结算。`notify` 等其它广播不抢焦点、不做这层处理。
+  实现见 `createGhostConfirmWindowSender` / `createGhostConfirmMainWindowRedelivery`
+  （`ghostConfirmDialogBridge.ts`）与选窗判据 `confirmDialogWindow.ts`。
 - **启停态是授权口径里唯一的不对称例外**：`.disabled` 镜像读取时只往停用方向合并
   （`enabled = receipt.enabled && !镜像存在`）——停用必须永远能成功，状态根不可写时镜像
   是 `setEnabled(false)` 唯一还能落笔的地方；镜像**不能**把插件往启用方向翻。撤销陈旧批准

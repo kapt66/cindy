@@ -7,8 +7,9 @@
  */
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import type { AddressInfo, Socket } from 'node:net';
+import type { Socket } from 'node:net';
 
+import { listenOnFetchSafePort } from '@cindy/anthropic-compat-proxy';
 import type { DeviceHostedLinkActivity } from '@cindy/maker-core';
 import { WebSocketServer, type WebSocket } from 'ws';
 
@@ -279,14 +280,10 @@ export async function createRunTunnel(handlers: TunnelHandlers): Promise<RunTunn
     });
   });
 
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      server.off('error', reject);
-      resolve();
-    });
-  });
-  const { port } = server.address() as AddressInfo;
+  // 端口仍由内核选（listen(0)），但必须确认全局 fetch 能用：命中 Fetch 标准 bad port 时
+  // close() 后重选，超过上限抛结构化错误。绝不能把内核随机分到的坏端口 URL 交给本机 Agent
+  // （Claude/Codex/Pi 都经 fetch 连这条隧道），否则该 URL 上每个请求都会 `TypeError: fetch failed`。
+  const port = await listenOnFetchSafePort(server);
 
   return {
     url: `http://127.0.0.1:${port}`,

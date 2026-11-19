@@ -26,8 +26,19 @@ export interface StartTeamDeps {
     ControlResult<
       {
         teamId: string;
+        /** Team 的 Worker 创建默认偏好，不是首 Worker 实际权限。 */
         workerPermissionMode: "auto" | "bypassPermissions";
         reused?: boolean;
+        /**
+         * 首 Worker 实际启动权限。Host 的 start_team 当前**只建 team、不创建 Worker**
+         * （`maker-ipc/register.ts`），所以真实调用不会带这组字段，结果里也就按
+         * 「无首 Worker 时省略」处理；真正创建首 Worker 的入口是
+         * create_worker / create_workers（与 enable_collab_mode），那里已回显同一组
+         * `permission_mode*` 字段。若宿主将来在同一结果里回显首 Worker，这里原样透传。
+         */
+        firstWorkerPermissionMode?: "auto" | "bypassPermissions";
+        firstWorkerPermissionModeUpgraded?: true;
+        firstWorkerPermissionModeReason?: "remote-worker-requires-full-access";
       },
       "USER_CANCELLED" | "CONFIRM_TIMEOUT"
     >
@@ -38,6 +49,7 @@ const DESCRIPTION =
   "为当前 session 创建 orca team, 进入多 worker 协同模式。" +
   "失败码: LEAD_NOT_SUPPORTED / WORKER_CANNOT_NEST / ALREADY_ENABLED / USER_CANCELLED / CONFIRM_TIMEOUT。" +
   "worker_permission_mode 可选:auto(Auto-review)或 bypassPermissions(Full access);省略时沿用上次 Worker 创建偏好。没有保存过偏好时默认 bypassPermissions,但这只是可选初始值,可以显式选择 auto;手动选择后继续沿用该选择。当前 session 已是 Lead 时,必须显式指定模式才能更新默认值。" +
+  "【Worker 权限的授权前提】创建 Worker 的默认权限是完全访问(full access / bypassPermissions)。只有用户本人在这个 Worker 任务里直接对话、Auto 能拿到用户原话时才选 auto:Auto(自动审核)需要 owning session 的用户原话(userIntent)或经批准插件的委派(delegatedTask),两者都没有时只放行只读,写操作必然被拦;由 Lead 派单创建、没有用户直接参与的 Worker(尤其远程 Worker)不要选 auto。远程 Worker(remote_host_id,或 execution_device_id 指向另一台电脑;SSH Lead 继承的远端目标同样算)在团队模式为 auto 时,主机会在 create_worker / create_workers 创建处强制以 full access 启动,并在结果里回显 permission_mode_upgraded=true、permission_mode_reason='remote-worker-requires-full-access' 与说明;该升级只作用于本次创建的 Worker,不写用户全局 Worker 偏好,本机 Worker 不升级。" +
   "【成为 Lead 后的等待方式】派单成功后直接结束本轮(报告会作为下一条消息送达);若本轮必须拿到结果,调用一次 wait_for_worker,不要 bash sleep,也不要轮询 worker_status / read_worker。" +
   "显式指定后,它会成为 UI 与 agent tool 后续创建 Worker 的共同默认权限;不改变 Lead 自己的权限。从 auto 升级到 bypassPermissions 时,主机会等待用户确认;取消或超时不会更新偏好、也不会开启 team。" +
   "注:start_team 开启的是 session 级、持久、UI 可见的多 worker 协同。若用户要的是一个 subagent(一次性、用完即弃的子任务执行体),请用你自己的原生 subagent 机制(如 Codex 的 spawn_agent、Claude Code 的 Task 工具),不要为此 start_team 开协同。" +
@@ -66,7 +78,7 @@ export function registerStartTeamTool(
         .enum(["auto", "bypassPermissions"])
         .optional()
         .describe(
-          "Worker 创建默认权限。省略时沿用已保存偏好；没有保存过偏好时初始为 bypassPermissions，但可显式选择 auto，手动选择后 UI 与后续 create_worker/create_workers 都沿用该模式。当前 session 已是 Lead 时须显式指定才能更新默认值。",
+          "Worker 创建默认权限。省略时沿用已保存偏好；没有保存过偏好时初始为 bypassPermissions（full access），但可显式选择 auto，手动选择后 UI 与后续 create_worker/create_workers 都沿用该模式。Auto 需要用户原话或插件委派才允许写，没有用户直接参与的 Worker（尤其远程 Worker）不要选 auto；远程 Worker 在 auto 下会被主机强制升级为 full access 并在创建结果回显。当前 session 已是 Lead 时须显式指定才能更新默认值。",
         ),
     },
     handler: async ({ worker_permission_mode }) => {
@@ -115,9 +127,30 @@ export function registerStartTeamTool(
 
       return okPayload({
         team_id: result.teamId,
+        // 团队默认偏好：下一次创建 Worker 的初值，不等于首 Worker 实际权限。
         worker_permission_mode: result.workerPermissionMode,
         reused: result.reused === true,
+        // 首 Worker 实际权限（远程 auto 会被创建处升级）。Host 的 start_team 不创建
+        // Worker，因此通常省略；出现时按 create_worker 同语义回显，不能静默。
+        ...(result.firstWorkerPermissionMode
+          ? {
+              first_worker_permission_mode: result.firstWorkerPermissionMode,
+              ...(result.firstWorkerPermissionModeUpgraded
+                ? {
+                    first_worker_permission_mode_upgraded: true,
+                    ...(result.firstWorkerPermissionModeReason
+                      ? { first_worker_permission_mode_reason: result.firstWorkerPermissionModeReason }
+                      : {}),
+                    first_worker_permission_mode_note: FIRST_WORKER_PERMISSION_NOTE,
+                  }
+                : {}),
+            }
+          : {}),
       });
     },
   });
 }
+
+/** 首 Worker 权限被远程目标强制升级时给 Lead 与用户看的原因（与 create_worker 同口径）。 */
+export const FIRST_WORKER_PERMISSION_NOTE =
+  "这是首个 Worker 实际启动的权限，不是团队默认偏好：远程/跨设备 Worker 在团队偏好为 auto 时会被主机强制以完全访问（bypassPermissions）启动，只作用于该 Worker，不写用户全局 Worker 偏好；本机 Worker 不升级。";

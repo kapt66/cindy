@@ -577,9 +577,14 @@ import {
 import { isGhostUnreadProjectable, selectRevokedGhostUnreadIds } from './ghostUnreadProjection.js';
 import { GhostConfirmSlot } from './confirmSlot.js';
 import {
+  createGhostConfirmMainWindowRedelivery,
+  createGhostConfirmWindowSender,
   getGhostConfirmDialogBridge,
   initGhostConfirmDialogBridge,
+  type GhostConfirmDeliveredTarget,
+  type GhostConfirmPush,
 } from './ghostConfirmDialogBridge.js';
+import { isModalConfirmHostWindow } from '../confirmDialogWindow.js';
 import {
   createForgeOidcInstallMainWindowSender,
   forgeOidcInstallConfirmFacts,
@@ -2628,6 +2633,13 @@ export function getGhostPipeDispatcher(): GhostPipeDispatcher {
       // receipt 分区的旧页面(否则 /kv 等协议会持续 403)。
       isCurrentInstall: (ghost) => getGhostRuntime().isCurrentInstall(ghost),
       spawn: (ghost) => getGhostRuntime().spawnForTool(ghost),
+      // 受控重启:同一个实例先停旧沙箱再按当前安装记录从零拉起(crashed 预派发
+      // 恢复、以及投递发现逻辑页离线时的单次恢复)。失败仍回原 GHOST_CRASHED。
+      restart: async (ghost) => {
+        const runtime = getGhostRuntime();
+        runtime.stop(installedGhostStoragePart(ghost));
+        return runtime.spawnForTool(ghost);
+      },
       sendToGhost: (ghostId, payload) => sendToGhostLogic(ghostId, payload),
       prepareUsage: (ghost, callId, toolName, sessionId) => {
         const invocation = pluginInvocations.begin(installedGhostStoragePart(ghost), 'tool',
@@ -4450,6 +4462,12 @@ let confirmSlotSingleton: GhostConfirmSlot | null = null;
 
 /** 意识确认弹窗通道(main → **单个**窗口;renderer 用主机同款 ConfirmDialog 渲染)。 */
 export const GHOST_CONFIRM_CHANNEL = 'ghosts:confirm-request';
+/**
+ * 收起确认框(main → 该窗口单发):8s 没回执会改投主窗口,同一 requestId 可能短暂
+ * 出现在两个窗口;settle 时向其余已投窗口补发一次,把迟到的重复模态框收掉。
+ * 与 confirm-request 同一条单窗口推送口径(preload `onConfirmDismissed` 已就绪)。
+ */
+export const GHOST_CONFIRM_DISMISSED_CHANNEL = 'ghosts:confirm-dismissed';
 export const FORGE_OIDC_INSTALL_CONFIRM_CHANNEL = 'forge-oidc-install:confirm-request';
 /** 用户在窗口里发起安装时的确认请求与收起通知(main → 发起安装的那个窗口)。 */
 export const GHOST_INSTALL_CONSENT_REQUEST_CHANNEL = 'ghosts:install-consent:request';
@@ -4523,24 +4541,75 @@ function ensureForgeOidcInstallConfirmBridge() {
 }
 
 /**
+ * confirm 槽每次成功投递时登记的收卡句柄:settle 时桥据此把**其它**已投窗口上的
+ * 重复模态框收起(8s 没回执会改投主窗口;原窗口只是慢/阻塞时两个窗口会各有一个框)。
+ * 与投递走同一条单窗口 main → renderer 推送口径,不广播。窗口已销毁时静默跳过。
+ */
+function ghostConfirmDeliveryTarget(
+  window: BrowserWindow,
+  payload: GhostConfirmPush,
+): GhostConfirmDeliveredTarget {
+  return {
+    id: window.webContents.id,
+    dismiss: () => {
+      // 投递到 settle 之间窗口可能已关/已导航走;只给仍是受信完整 renderer 的窗口发,
+      // 免得把一条收卡推送投进别的页面。
+      if (window.isDestroyed() || !isTrustedAppRendererWindow(window)) return;
+      sendGhostWindowPush(window, GHOST_CONFIRM_DISMISSED_CHANNEL, { requestId: payload.requestId });
+    },
+  };
+}
+
+/**
  * 确认弹窗槽单例(confirm):资格审/净化/限速/单飞在 GhostConfirmSlot,往返与
  * 超时兜底在 GhostConfirmDialogBridge,这里只组装"投给哪个窗口"。
  *
- * 只投**一个**窗口(focused ?? 第一个),不像 notify 那样广播:模态确认框广播
- * 出去会在每个窗口各弹一个、收回多份答案。没有可投窗口时 sendToWindow 回
- * false → 桥 reject → 槽回 UNAVAILABLE(明确区别于"用户拒绝")。
+ * 只投**一个**窗口,不像 notify 那样广播:模态确认框广播出去会在每个窗口各弹
+ * 一个、收回多份答案。目标窗口必须**能承载确认框**——只有完整主壳(主窗口或
+ * `?secondaryWindow=1` 的会话副窗)挂着 GhostConfirmDialogHost;右侧栏独立窗、
+ * 资源用量窗、远程桌面查看器、utility 浮窗都只挂轻量 renderer + 专用 preload,
+ * 投过去就是「小窗/白屏/点不到」然后白等 90s(2026-11-19 用户实测)。选窗顺序
+ * 与判据见 `../confirmDialogWindow.ts` 与 `createGhostConfirmWindowSender`;
+ * 没有可承载窗口时 sendToWindow 回 delivered:false → 桥 reject → 槽回
+ * UNAVAILABLE(明确区别于"用户拒绝")。
+ *
+ * 投递前先把目标窗口 restore/show/focus 到可见前台:用户切到别的应用时窗口
+ * 可能被遮住,模态框弹了也白等超时(2026-11-19 实测)。可见性动作失败只 warn、
+ * 不阻断投递,也不改变上面的 fail-closed 语义。
+ *
+ * 两个补丁位都保持 fail-closed:
+ *  - 投递后 8s 内没有 renderer「已收到」回执且首次不是主窗口 → 改投主窗口一次;
+ *  - 超时/投不出去仍然是「没同意」,绝不当成用户同意。
+ *
+ * 改投会让同一 requestId 短暂出现在两个窗口,所以每次成功投递都登记收卡句柄
+ * (`ghostConfirmDeliveryTarget`):settle 时桥向**其余**已投窗口补发一次
+ * `ghosts:confirm-dismissed` 收掉迟到的重复模态框;作答窗口由 IPC 传回的
+ * `event.sender.id` 识别并跳过。收卡不广播、不参与答案结算。
  */
 export function getGhostConfirmSlot(): GhostConfirmSlot {
   if (!confirmSlotSingleton) {
     const bridge =
       getGhostConfirmDialogBridge() ??
       initGhostConfirmDialogBridge({
-        sendToWindow: (payload) => {
-          const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
-          if (!win || win.isDestroyed()) return false;
-          sendGhostWindowPush(win, GHOST_CONFIRM_CHANNEL, payload);
-          return true;
-        },
+        sendToWindow: createGhostConfirmWindowSender<BrowserWindow>({
+          getFocusedWindow: () => BrowserWindow.getFocusedWindow(),
+          getMainWindow: () => getDeepLinkMainWindow(),
+          getAllWindows: () => BrowserWindow.getAllWindows(),
+          // fail-closed:辅助窗口永远不投,宁可 UNAVAILABLE 也不投给画不出来的窗口。
+          isHostable: isModalConfirmHostWindow,
+          send: (window, payload) =>
+            sendGhostWindowPush(window, GHOST_CONFIRM_CHANNEL, payload),
+          deliveryTarget: ghostConfirmDeliveryTarget,
+          log,
+        }),
+        redeliverToMainWindow: createGhostConfirmMainWindowRedelivery<BrowserWindow>({
+          getMainWindow: () => getDeepLinkMainWindow(),
+          isHostable: isModalConfirmHostWindow,
+          send: (window, payload) =>
+            sendGhostWindowPush(window, GHOST_CONFIRM_CHANNEL, payload),
+          deliveryTarget: ghostConfirmDeliveryTarget,
+          log,
+        }),
         log,
       });
     confirmSlotSingleton = new GhostConfirmSlot({
@@ -11320,7 +11389,10 @@ export function registerGhostIpc(): void {
   // 不校验 sender 归属:requestId 是 main 自己铸的 randomUUID,只在本机 renderer
   // 手里;陌生/重复的 id 由桥直接忽略(返回 handled:false),没有可利用面。
   // 非布尔的 confirmed 在桥里一律按"没同意"兜底,不给靠畸形回包骗到同意的路。
-  ipcMain.handle('ghosts:confirm:resolve', async (_event, raw: unknown) => {
+  // 只把 `event.sender.id` 交给桥用于**跳过作答窗口**:8s 改投后同一 requestId 可能
+  // 同时在两个窗口,settle 时要把另一个窗口的重复框收起(迟到的回包是 handled:false,
+  // 不改变答案)。
+  ipcMain.handle('ghosts:confirm:resolve', async (event, raw: unknown) => {
     const p = raw as { requestId?: unknown; confirmed?: unknown } | null;
     if (
       !p ||
@@ -11332,7 +11404,21 @@ export function registerGhostIpc(): void {
     }
     const bridge = getGhostConfirmDialogBridge();
     if (!bridge) return { handled: false };
-    return { handled: bridge.resolve(p.requestId, p.confirmed) };
+    return { handled: bridge.resolve(p.requestId, p.confirmed, event.sender.id) };
+  });
+
+  // ── 确认框「已收到」回执(confirm 槽的可见性兜底)───────────────────
+  // renderer 的 GhostConfirmDialogHost 收到推送后立即回执,桥据此取消「改投主窗口」
+  // 的 8s 兜底。回执不结算本单(用户还没点),只说明"这个窗口画出来了"。
+  // 同样不校验 sender:requestId 是 main 铸的 randomUUID,陌生 id 返回 handled:false。
+  ipcMain.handle('ghosts:confirm:ack', async (_event, raw: unknown) => {
+    const requestId = typeof raw === 'string' ? raw : null;
+    if (!requestId || requestId.length > 128) {
+      throwIpcError('INVALID_PARAMS', 'requestId must be a non-empty string');
+    }
+    const bridge = getGhostConfirmDialogBridge();
+    if (!bridge) return { handled: false };
+    return { handled: bridge.acknowledge(requestId) };
   });
 
   ipcMain.handle('forge-oidc-install:resolve-confirm', async (event, raw: unknown) => {

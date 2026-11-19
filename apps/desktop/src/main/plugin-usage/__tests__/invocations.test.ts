@@ -126,4 +126,25 @@ describe('Host-owned plugin invocations', () => {
     expect(h.outcomes.get(tool.id)).toBe('cancelled');
     expect(h.events.size).toBe(1);
   });
+
+  // 2026-11-19 审查:受控重启的 stop 会 invalidate 旧 volume;派发器用同一 callId 重
+  // 建观测。旧 volume 的迟到记账必须被拒,同一次调用只能留下一条事件与一个结果。
+  it('re-establishes the same call id after invalidation and never counts the old volume again', () => {
+    const h = harness();
+    const oldVolume = h.invocations.begin('plugin-a', 'tool', { id: 'recovered-call' });
+    h.invocations.invalidate('plugin-a');
+    expect(() => h.invocations.accept(oldVolume)).toThrow('INVALID_INVOCATION');
+
+    const newVolume = h.invocations.begin('plugin-a', 'tool', { id: 'recovered-call' });
+    h.invocations.accept(newVolume);
+    h.invocations.settle(newVolume, 'succeeded');
+    expect([...h.events.entries()]).toEqual([['recovered-call', { pluginId: 'plugin-a', kind: 'tool', at: 100 }]]);
+    expect([...h.outcomes.entries()]).toEqual([['recovered-call', 'succeeded']]);
+
+    // 旧 volume 的迟到 accepted/settled 不会产生第二条计量。
+    expect(() => h.invocations.accept(oldVolume)).toThrow('INVALID_INVOCATION');
+    expect(() => h.invocations.settle(oldVolume, 'succeeded')).toThrow('INVALID_INVOCATION');
+    expect(h.events.size).toBe(1);
+    expect(h.outcomes.size).toBe(1);
+  });
 });

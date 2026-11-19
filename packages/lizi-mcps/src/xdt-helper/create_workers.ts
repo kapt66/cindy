@@ -14,6 +14,7 @@ import {
   createWorkerSpecSchema,
   workerCreationRoutePayload,
   workerHandoffPayload,
+  workerPermissionPayload,
   toHostAgentDeviceId,
   toWorkerLimitPayload,
   type CreateWorkerDeps,
@@ -46,6 +47,7 @@ const DESCRIPTION = [
   '在当前 workflow 内批量创建 2-32 个 Orca worker session。',
   '用户一次要求创建多个 Worker 时必须使用本工具，不要并行或连续多次调用 create_worker。',
   '本工具按 workers 顺序创建并返回真实逐项终态；首次命中 WORKER_LIMIT_HARD_EXCEEDED 后立即停止，剩余项标记 skipped，不再调用 host。',
+  '【Worker 权限】Worker 创建默认完全访问（full access / bypassPermissions）；没有用户直接参与的 Worker（尤其远程 Worker）不要选 auto——Auto（自动审核）需要 owning session 的用户原话（userIntent）或经批准插件的委派（delegatedTask），否则写操作必然被拦。逐项传了 remote_host_id 或 execution_device_id 的远程 Worker，在团队模式为 auto 时由主机在创建处强制以 full access 启动，逐项结果回显 worker_permission_mode / permission_mode_upgraded / permission_mode_reason / permission_mode_note（与单条 create_worker 同一组字段），收到后应向用户转告「远程 Worker 已用完全访问创建」；该升级只作用于本次创建的 Worker，不写用户全局 Worker 偏好，本机 Worker 不升级。',
   '结果包含 request_count / attempted_count / success_count / failure_count / skipped_count / not_created_count、hard limit 快照、确定生成的 user_report，以及每个 label 对应的 worker/session 或失败原因。success/failure/skipped 是互斥分区。',
   '每个 initial_task 的正文要自包含：目标、背景、边界与交付要求写进正文，文件只作补充并给绝对路径。逐项结果的 file_access 说明该 Worker 能看到什么（lead_working_directory / own_worktree / explicit_directory / other_computer），initial_task_state 说明首条任务的真实状态（delivered 已送达 / queued 已排队 / not_delivered 未送到 / none 未附任务）；创建成功不等于任务已完成。',
   'label 只需与团队里现有的 Worker 不同；已归档 Worker 的名字可以直接重新使用。Worker 只是出错时不必归档重建：它原样保留，可直接 send_to_worker 继续。',
@@ -74,6 +76,11 @@ interface CreatedWorkerResult {
   initial_task_state: InitialTaskState;
   file_access: WorkerFileAccess;
   handoff_hint?: string;
+  /** Worker 实际权限；远程 Worker 被强制升级时与单条 create_worker 回显同一组字段。 */
+  worker_permission_mode?: 'auto' | 'bypassPermissions';
+  permission_mode_upgraded?: true;
+  permission_mode_reason?: 'remote-worker-requires-full-access';
+  permission_mode_note?: string;
   warning?: 'WORKER_LIMIT_SOFT_EXCEEDED';
 }
 
@@ -205,6 +212,7 @@ export function registerCreateWorkersTool(
             ...baseResult(worker),
             ...workerCreationRoutePayload(result, worker.agent),
             ...workerHandoffPayload(worker, result),
+            ...workerPermissionPayload(result),
             status: 'created',
             worker_id: result.workerId,
             worker_session_id: result.workerSessionId,

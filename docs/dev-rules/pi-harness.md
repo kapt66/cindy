@@ -133,6 +133,29 @@ Cindy 以 `pi --mode rpc` spawn pi 二进制(JSONL/stdio),`translator.ts` 把 pi
 宿主未提供时不注册，不另建卡片或答案队列。独立的 `request_input_handoff` 直接注册并复用宿主 schema，处理窗口与截图二维码；
 不承接普通提问。异步问题随本轮结束或被替换而失效，用户答案经同轮 steer 交回。
 
+**Pi 问答多选（2026-11-19）。** Pi RPC 的 `select` 只能带 `title` + `options`，没有多选标志，
+因此多选走「固定机器前缀」单通道：`ask_user_question` 每个 question 可带可选
+`multiSelect: boolean` 与可选 `header`（≤80 字符）；bridge 对 `multiSelect:true` 的题把
+`CINDY_PI_MULTI_SELECT_PREFIX`（`__CINDY_MULTI__`）加在传给 `ctx.ui.select` 的 title 前
+（多选且带 `header` 时 header 作为首行并入 title），Host 的 `handleExtensionUiRequest` 识别
+该前缀后构造 `multiSelect: true` 的 `AskUserQuestionItem`、剥掉前缀再展示；不带前缀的
+select title、options 与返回值完全不变，单选路径不消费 `header`。**保留字防御（2026-11-19
+终审补）**：Host 只凭 title 前缀判定多选，因此 bridge 对 `multiSelect !== true` 的 question
+文本做校验——若它以 `__CINDY_MULTI__` 开头则**拒绝**并抛 `INVALID_ARGS` 风格错误（说明该前缀
+是保留机器标记、单选会被误渲染成多选），绝不静默当单选存答案；`multiSelect:true` 的 question
+文本不受此限。**长度（2026-11-19 终审补）**：多选 title 是 `prefix + header(≤80) + '\n' +
+question(≤512)`，Host 剥掉前缀后按 `512 + 80 + 1 = 593` 上限裁剪（`MAX_PI_MULTI_SELECT_DIALOG_TITLE_LENGTH`），
+合法多选问题不再被 512 截断；无前缀的普通 select title 仍按 512 裁剪，未放宽。
+Host 把 renderer 的决定
+原样作为 `value` 回给 Pi（多选是 `JSON.stringify(labels)` 字符串），bridge 对多选做
+`JSON.parse`：数组放进 `answers[question]`，同时给出 `answerText[question]`（顿号连接文本）；
+自定义输入就是数组里的一个元素，不过滤；解析失败（非数组／空数组／非字符串元素）按
+`cancelled: true` 返回并附 `error` 说明，不猜测答案。`multiSelect:true` 必须带 `options`
+（Pi 的 `input` 通道没有多选语义）。回归见
+[`cindyBridgeSource.test.ts`](../../packages/maker-core/src/agents/pi/__tests__/cindyBridgeSource.test.ts)
+与
+[`pi-auto-review-dispatch.test.ts`](../../packages/maker-core/src/agents/pi/__tests__/pi-auto-review-dispatch.test.ts)。
+
 ## 2. 配置面:Cindy 显式设置 vs 放任 pi 默认
 
 ### 请求计时与档位核验

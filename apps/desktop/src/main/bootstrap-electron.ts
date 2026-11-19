@@ -1284,6 +1284,11 @@ import { describeRelaunchTurns } from './relaunchTurnFacts.js';
 import { getGhostSetupChangeBus } from './cindy-brain/ghostSetupChangeBus.js';
 import { getGhostSetupInteractionBridge } from './cindy-brain/ghostSetupInteractionBridge.js';
 import {
+  revealGhostConfirmWindow,
+  selectGhostConfirmWindow,
+} from './cindy-brain/ghostConfirmDialogBridge.js';
+import { isModalConfirmHostWindow } from './confirmDialogWindow.js';
+import {
   registerPluginMarketIpc,
   syncDefaultMarketPlugins,
   refreshForegroundMarketPlugins,
@@ -1513,9 +1518,20 @@ function installHostClientMode(): boolean {
         if (pending && isTrustedAppRendererWindow(pending.window)) pending.window.webContents.send(channel, payload);
       } else if (channel === 'ghosts:confirm-request' || channel === 'ghosts:install-consent:request') {
         if (pluginConfirmations.has(requestId)) return;
-        const focused = BrowserWindow.getFocusedWindow();
-        const target = isTrustedAppRendererWindow(focused) ? focused : mainWindowRef;
-        if (target && isTrustedAppRendererWindow(target)) {
+        // 与本地模式确认槽同一判据(2026-11-19 用户实测):模态确认框只投**能承载
+        // 它的完整主壳**——主窗口,或 `?secondaryWindow=1` 的完整会话副窗。focused
+        // 完全可能是右侧栏/资源用量/远程桌面查看器等轻量窗(没有确认宿主,投过去
+        // 白屏或看不见,host 侧只能等到 90s 超时)。没有可承载窗口时直接回
+        // confirmed:false(fail closed,不当成用户同意)。
+        const target = selectGhostConfirmWindow<BrowserWindow>({
+          getFocusedWindow: () => BrowserWindow.getFocusedWindow(),
+          getMainWindow: () =>
+            mainWindowRef && !mainWindowRef.isDestroyed() ? mainWindowRef : null,
+          getAllWindows: () => BrowserWindow.getAllWindows(),
+          isHostable: isModalConfirmHostWindow,
+        });
+        if (target) {
+          revealGhostConfirmWindow(target, { requestId }, hostIpcLog);
           if (!confirmationWindows.has(target)) {
             confirmationWindows.add(target);
             target.once('closed', () => cancelWindowConfirmations(target));
@@ -1525,6 +1541,9 @@ function installHostClientMode(): boolean {
           const pending = { window: target, channel }; pluginConfirmations.set(requestId, pending);
           target.webContents.send(channel, payload);
         } else {
+          hostIpcLog.warn('host confirm: no window that can host the dialog; answering declined', {
+            channel,
+          });
           void hostClient.request(channel === 'ghosts:confirm-request' ? '/api/ghosts/confirm/resolve' : '/api/ghosts/install-consent/resolve',
             { requestId, confirmed: false }).catch(() => {});
         }

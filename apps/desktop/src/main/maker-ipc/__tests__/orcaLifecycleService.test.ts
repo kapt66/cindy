@@ -31,6 +31,7 @@ function createdWorker(
     workerSessionId: 'worker-session-1',
     workingDir: '/repo',
     softLimitExceeded: false,
+    permissionMode: 'auto',
     resolved: {
       agent: 'codex',
       model: 'gpt-5.5',
@@ -785,6 +786,62 @@ describe('OrcaLifecycleService', () => {
     );
     // 运行设备上没有读取 Lead 历史的 Worker 桥：不包 UI Assignment。
     expect(vi.mocked(deps.dispatchWorkerTask).mock.calls[0]?.[0].message).toBe('读取 notes.txt 第二行');
+  });
+
+  // 2026-11-19 终审 P2-1：远程/跨设备首 Worker 的 auto 会被创建处升级为 Full access。
+  // enable_collab_mode 结果过去只回团队偏好（auto），UI/控制端看不到实际权限；现在必须
+  // 分开回显「首 Worker 实际权限」与 upgraded/reason，且首次创建的就地路径一致。
+  it('echoes the first Worker actual permission when the remote upgrade applies', async () => {
+    const { deps, service } = createDeps();
+    const create = vi.mocked(deps.createWorkerInTeam);
+    const base = create.getMockImplementation()!;
+    create.mockImplementation(async (params, ...rest) => {
+      const created = await base(params, ...rest);
+      return created.ok
+        ? {
+            ...created,
+            executionDeviceId: params.executionDeviceId,
+            permissionMode: 'bypassPermissions' as const,
+            permissionModeUpgraded: true as const,
+            permissionModeReason: 'remote-worker-requires-full-access' as const,
+          }
+        : created;
+    });
+
+    await expect(
+      service.enableTeam({
+        leadSessionId: 'lead-1',
+        workerAgent: 'codex',
+        role: 'reader',
+        executionDeviceId: 'mac-mini',
+        workerPermissionMode: 'auto',
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      workerPermissionMode: 'auto',
+      firstWorkerPermissionMode: 'bypassPermissions',
+      firstWorkerPermissionModeUpgraded: true,
+      firstWorkerPermissionModeReason: 'remote-worker-requires-full-access',
+    });
+  });
+
+  it('echoes the local first Worker auto unchanged without an upgrade marker', async () => {
+    const { service } = createDeps();
+
+    const result = await service.enableTeam({
+      leadSessionId: 'lead-1',
+      workerAgent: 'codex',
+      role: 'reviewer',
+      workerPermissionMode: 'auto',
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      workerPermissionMode: 'auto',
+      firstWorkerPermissionMode: 'auto',
+    });
+    expect(result).not.toHaveProperty('firstWorkerPermissionModeUpgraded');
+    expect(result).not.toHaveProperty('firstWorkerPermissionModeReason');
   });
 
   it('keeps the worker role slug as the default label when a delegate task exists', async () => {

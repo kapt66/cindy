@@ -25,7 +25,7 @@ import {
 import { prepareMekaRuntimeMcp } from '../mcp-integrations/meka-runtime-mcp.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
 import { emptyMekaRuntimeResult } from './mekaApplyPlan.js';
-import { mekaProjectReferencesPrompt, roleContextPrompt } from './mekaPrompts.js';
+import { mekaProjectReferencesPrompt, mekaSubmitIntentPrompt, roleContextPrompt } from './mekaPrompts.js';
 import {
   createMekaPromptSegment,
   type AppliedMekaRuntimeConfig,
@@ -233,7 +233,7 @@ async function resolveFrozenInjection(input: {
 
 /**
  * 常规会话创建分支：hydrate 持久绑定 → 解析项目/角色运行期 → 平台技能 → MCP → 技能快照
- * → 三个平台注入段。
+ * → 四个平台注入段（55 提交意图 / 60 角色上下文 / 65 项目参考 / 70 角色 prompt）。
  *
  * 返回 null = 现状的「非 Meka 会话」提前返回且无需回填（I6：调用方零写入）。
  */
@@ -361,6 +361,9 @@ async function resolveBootstrapInjection(input: {
     builder.pushSegment('meka.project-references', projectReferencesPrompt);
   }
   builder.pushSegment('meka.role-context', roleContextPrompt(runtime));
+  // 提交意图段（段 id `meka.submit-intent`，order 55 ⇒ 最终排在角色段之前）。文本与项目/角色
+  // 无关，是固定常量；与 60 / 65 / 70 同进同出（frozen 短路不注入，见 §3.3 的边界说明）。
+  builder.pushSegment('meka.submit-intent', mekaSubmitIntentPrompt());
 
   builder.patches.push({
     source: 'meka',

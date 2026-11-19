@@ -867,6 +867,17 @@ IM 与官方 Hook 消息另带「用户本条明确指向的内容」：被回�
 不按旧模式派发。不得把原任务的 Auto／Ask
 落盘改为完全访问。无法恢复权限时不能套用独立调度的完全访问默认值。
 
+**Worker 的 Auto 授权前提**（2026-11-19）：Auto 审核只从 owning session 的用户原话
+（`userIntent`）与经批准插件的委派（`delegatedTask`）取授权；两者都没有时只放行只读，
+写操作一律拦下（`auto-permission-reviewer.ts` 的 LIMITS）。Orca Worker 由 Lead 派单创建，
+消息不是用户原话，远程/跨设备 Worker 更是没有任何本机用户参与，因此远程 Worker（MCPRouter
+`mcpr:`、显式远端目标、SSH Lead 继承的远端目标、`execution_device_id`）在团队模式为 `auto`
+时，由 Desktop 在 Worker 创建处强制以 `bypassPermissions` 启动，并随创建结果回传
+`permissionModeUpgraded` / `permissionModeReason`；本机 Worker 的 `auto` 语义不变，也不写用户
+全局 Worker 偏好。工具描述（`start_team` / `create_worker` / `create_workers`）已写明
+「没有用户直接参与的 Worker 不要选 auto」。详见
+[`orca-team-architecture.md`](orca-team-architecture.md) Part 1「Worker 权限」。
+
 Cindy reviewer 与 Codex native reviewer 使用同一份范围语义，但接入不同。Codex 的主
 Agent developer 指令不会进入原生审批摘要，因此通过线程级 `auto_review.policy` 内联
 Markdown 接入；在创建或恢复线程时预装，不依赖初始权限模式，后续切到 Auto 即可使用。
@@ -942,6 +953,13 @@ Host 对独立高风险工具调用的权限校验。
 `mcpr:<instanceId>` 的 Worker 后，Lead 应继续执行 `start_team` / `create_worker` /
 `send_to_worker`，不能把已经收到的批准再次渲染为确认文案。动态工具结果需要保留结构化
 答案，同时附带继续执行语义；回归测试应覆盖答案返回内容和工具描述。
+
+Pi 同步提问自 2026-11-19 起支持多选：`ask_user_question` 的 question 可带
+`multiSelect`（与可选 `header`），经 `select` title 的固定机器前缀
+（`CINDY_PI_MULTI_SELECT_PREFIX`）到 Host，卡片按多选渲染；回答以 JSON 数组字符串
+原样回到 bridge，bridge 返回 `answers[question]` 数组与 `answerText[question]`（顿号
+连接），单选路径与返回值不变。限制、自定义输入与失败语义见
+[`pi-harness.md`](pi-harness.md)「普通提问与操作交接」。
 
 ### 3.6 Host 工作流工具门禁
 
@@ -1158,6 +1176,41 @@ Desktop 的产品共用正文在 `apps/desktop/src/main/maker-host/host-system-p
   （原话：「除了 workflow 机制，其他的机制完全不动，只是动内容」）。本节据此登记为
   **「按维护者直接指示」**，**不是**已取得书面签名或独立确认文件；**缓存率影响未实测**
   这一条不因指示而消失。
+
+### 4.3 本轮登记：Meka 提交意图段（order 55，2026-11-19）
+
+- **改了什么（有效 prompt 增量）**：Meka 注入层在空档 **55** 新增一段
+  `meka.submit-intent`（`[MEKA_SUBMIT_INTENT]`，文本唯一来源
+  `apps/desktop/src/main/meka-injection/mekaPrompts.ts` 的 `mekaSubmitIntentPrompt`），
+  内容是「提交意图 ⇒ 工具发现优先」的硬顺序：用户说「提交 / 提交代码 / 提交改动 / 提交服务器 /
+  推送建 MR」时，第一步固定 `cindy_mcp_list_tools` → `ghost_info(meka-submit)` →
+  `ghost_call` 调插件 `list_tools`，拿到流程前禁止 `p4` / `git` CLI 探测与全仓 `find` / `grep`；
+  提交对象是「已存在的改动」（P4 用 `meka-p4` 的 `p4_status`，远程 Git 用 MCPRouter 的
+  `mcpr-project-manager` 的 `git_status`）；文件名词先在改动清单里模糊匹配，匹配不到问用户。
+  **插件缺失兜底（2026-11-19 终审补）**：`meka-submit` 是市场安装插件、不随包；确认插件清单时
+  若没有该插件，必须如实告知用户，并按用户确认改用本机 CLI 或既有流程，不得假装插件可用，
+  也不得把「提交」挡成死路。该兜底与规则 1 同句并入第 3 行，**段总行数仍是 7**
+  （与逐行散文契约、`meka-injection-layer.md` §3.3 同步）。
+  段是固定常量（不读 deps、不做 I/O、无时间/随机值），order 55 落在角色上下文（60）之前。
+  **既有 60 / 65 / 70 三段的数值与文本一个字符未改**（I1），新增段不参与「与重构前逐字节一致」对照。
+  规则与锚点登记在 [`meka-injection-layer.md`](meka-injection-layer.md) §3.3。
+- **改的依据（真实会话）**：会话 `4f09d41f-a5f7-4572-8fbd-a88cd81a4d76`（Pi harness，Meka 项目
+  saga2，用户只说「帮我提交模块表定义」）里，系统提示已带插件花名册，但模型先跑 13 次 `bash`、
+  2 次 `read`、1 次 `grep`，0 次插件发现调用，直到 turn 被 abort 都没发出提交；同一 harness 里
+  用户明确点名插件时第一反应就是 `cindy_mcp_list_tools` ⇒ 缺的是顺序规则，不是能力。
+- **前缀变化范围**：只落在 **Meka 会话**且**只在 bootstrap（新建）路径**；`resolveFrozenInjection`
+  （resume 短路）**push 零个段落**（I4 原口径不变，55 / 60 / 65 / 70 一并缺席）⇒ **旧会话前缀不变**。
+  非 Meka 会话零影响（I6）。Claude / Codex / Pi 共用同一份 `userPrompt` 组装 ⇒ 三者的 Meka
+  **新会话**前缀同步多这一段；文本约 450 字符（相对 Pi 的 `--append-system-prompt` 文件载体与
+  win32 argv 余量约 2× 的量级可忽略，但仍按既有口径登记：**argv 余量本就是算术推演、非实测**）。
+- **缓存率影响（按 §3.1 口径）：未实测。** 段文本在会话装配时求值一次、会话内恒定，无时间戳 /
+  随机数 / 递增计数 ⇒ 前缀逐字节稳定，不引入 turn 间漂移；代价是**已存在的 Meka 会话与新前缀
+  不再命中同一缓存条目**（一次性失效，属任何 system 文本改动的固有代价）。**本交付没有跑前后
+  缓存率对比**（`usage-tracker` 命中率 / `/context` 对比均未执行），按 §3.4 如实登记为**未实测**。
+- **owner 确认（诚实来源）**：按本节流程，改 system prompt 需要 owner 确认。实际情况是——
+  **本仓库维护者以直接指示要求新增这条注入规则**（任务描述即用户原话，含真实会话证据与规则
+  内容），本节据此登记为**「按维护者直接指示实现」**，**不伪造书面签名**，也没有独立的书面确认
+  文件；**缓存率影响未实测**这一条不因指示而消失。
 
 ## Review 清单
 

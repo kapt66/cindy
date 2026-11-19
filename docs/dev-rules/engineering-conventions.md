@@ -287,7 +287,8 @@ Electron、不打包、不联网）对齐 `forge.config.ts` 的 `extraResourcesF
   in-app 侧栏／iframe 时，用户看到的是 `ERR_UNSAFE_PORT`，页面本身却是好的 —— 排查时别
   只怀疑渲染。它同时适用于三类位置：
   - **生产代码**：本机起服务再把 URL 交给 SDK／子进程／浏览器的，用
-    `listenOnFetchSafePort(server)` 绑定（`codexHttpBridge`、`file-browser/html-preview`）。
+    `listenOnFetchSafePort(server)` 绑定（`codexHttpBridge`、`file-browser/html-preview`、
+    `remote-agent/host/tunnel`（`mcp-integrations/codexHttpBridge` 仍自有一份 `listen(0)` + `isFetchBlockedPort` 重试循环，尚未统一）——隧道 URL 交给本机 Claude／Codex／Pi，它们都经 `fetch` 连）。
   - **测试代码**：`server.listen(0, …)` 起的 fixture／upstream 服务，随后被测试或被测代理
     `fetch`。**不得写裸 `listen(0)`**。注意：**测试本身不 binder、端口由被测生产代码绑**
     的情况（如 `html-preview.test.ts` 直接 `fetch(preview.url)`）由修生产代码一并覆盖，
@@ -297,7 +298,10 @@ Electron、不打包、不联网）对齐 `forge.config.ts` 的 `extraResourcesF
     回调那类用例会整段红。
   名单与绑定工具的**唯一 SSoT** 是 `packages/anthropic-compat-proxy` 的
   `isFetchBlockedPort` / `listenOnFetchSafePort`（`fetch-blocked-ports.ts`；该包自己绑
-  loopback 时用同一份）。**不得另立第二份会漂移的端口黑名单**，也不要用
+  loopback 时用同一份）。`listenOnFetchSafePort` 命中坏端口就 `close()` 后重新 `listen(0)`，
+  上限 `FETCH_SAFE_BIND_MAX_ATTEMPTS`（32）次；仍失败抛结构化 `FetchSafePortBindError`
+  （含 `code`／`attempts`／`lastPort`）——**生产代码宁可这次绑定失败，也不能把坏端口 URL
+  交给调用方**，重选过程中也不留 listener／socket。**不得另立第二份会漂移的端口黑名单**，也不要用
   `netsh int ipv4 set dynamicport` 当修复（只降低密度，不根治 —— 2026-09-20 实测本机段
   `1024-15000` 内含 19 个 bad port，`listen(0)` 命中率约 1/735；**名单里最大的端口是
   10080，所以 Windows 默认段 `49152-65535` 反而是安全的**，只有在动态段被改小到含低位

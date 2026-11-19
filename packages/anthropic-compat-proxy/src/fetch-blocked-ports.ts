@@ -9,8 +9,9 @@
  * undici 按 Fetch 规范拒绝对一批 bad port 发请求，报
  * `TypeError: fetch failed` + `cause: bad port`。命中后该 URL 上**每个请求都失败**，
  * 表现为整条链路不可用，而不是偶发超时。OS 动态端口段并不保证避开这批端口：Windows
- * 默认段 49152-65535 只含少量，但可被改成 1024-15000 —— 那时段内含 18 个 bad port，
- * `listen(0)` 命中率约 1/777（2026-09-20 在本仓 CI 机器实测）。
+ * 默认段 49152-65535 只含少量，但可被改成 1024-15000 —— 那时段内含 19 个 bad port，
+ * `listen(0)` 命中率约 1/735（2026-09-20 在本仓 CI 机器实测；口径见
+ * `docs/dev-rules/engineering-conventions.md` §4）。
  */
 
 import type { AddressInfo, Server as NetServer } from 'node:net';
@@ -32,22 +33,46 @@ export function isFetchBlockedPort(port: number): boolean {
   return FETCH_BLOCKED_PORTS.has(port);
 }
 
-/** `listen(0)` 命中被拉黑端口后重新绑定几次。命中约 1/777，正常一次就成。 */
-const FETCH_SAFE_BIND_MAX_ATTEMPTS = 32;
+/** `listen(0)` 命中被拉黑端口后重新绑定几次。命中约 1/735，正常一次就成。 */
+export const FETCH_SAFE_BIND_MAX_ATTEMPTS = 32;
+
+/**
+ * 重试上限内始终没拿到 Fetch-safe 端口时抛出的**结构化错误**：调用方可以只按 `code`
+ * 或 `attempts` 分派，不必解析文案。宁愿绑定失败，也不交出一个 fetch 打不通的 URL。
+ */
+export class FetchSafePortBindError extends Error {
+  readonly code = 'FETCH_SAFE_PORT_UNAVAILABLE';
+
+  constructor(
+    /** 已经尝试绑定的次数（= `FETCH_SAFE_BIND_MAX_ATTEMPTS`）。 */
+    readonly attempts: number,
+    /** 最后一次内核分配的端口；用于日志与排查动态端口段。 */
+    readonly lastPort: number,
+  ) {
+    super(
+      `failed to bind a Fetch-safe loopback port after ${attempts} attempts: `
+      + `the OS kept assigning Fetch-blocked ports (last assigned port: ${lastPort})`,
+    );
+    this.name = 'FetchSafePortBindError';
+  }
+}
 
 /**
  * 把任意 `http.Server` 绑到 loopback 上一个**全局 fetch 能用**的临时端口，返回端口号。
  *
  * 用于替代裸 `server.listen(0, '127.0.0.1')` / `listen(0, host, cb)`：语义相同，只是当
  * 内核分到 Fetch bad port 时 `close()` 后重新 `listen(0)` 重选。生产代码（远端 MCP
- * bridge）与单测共用本函数，避免各自实现一份端口黑名单或各自遗漏。
+ * bridge、远程 Agent 本机隧道、HTML 预览）与单测共用本函数，避免各自实现一份端口
+ * 黑名单或各自遗漏。
  *
  * 抛出时调用方拿不到可用端口 —— 宁可绑定失败，也不要交出一个 fetch 打不通的 URL。
+ * 每次重选前都会先 `close()` 掉上一次绑定，不把 socket 留在 listener 上。
  */
 export async function listenOnFetchSafePort(
   server: NetServer,
   host = '127.0.0.1',
 ): Promise<number> {
+  let lastPort = 0;
   for (let attempt = 1; attempt <= FETCH_SAFE_BIND_MAX_ATTEMPTS; attempt += 1) {
     await new Promise<void>((resolve, reject) => {
       const onError = (error: Error): void => {
@@ -64,12 +89,11 @@ export async function listenOnFetchSafePort(
     });
     const address = server.address();
     const port = typeof address === 'object' && address !== null ? (address as AddressInfo).port : 0;
+    lastPort = port;
     if (port !== 0 && !isFetchBlockedPort(port)) return port;
     await new Promise<void>((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()));
     });
   }
-  throw new Error(
-    `failed to bind a Fetch-safe loopback port after ${FETCH_SAFE_BIND_MAX_ATTEMPTS} attempts`,
-  );
+  throw new FetchSafePortBindError(FETCH_SAFE_BIND_MAX_ATTEMPTS, lastPort);
 }

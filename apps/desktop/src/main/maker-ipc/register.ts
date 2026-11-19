@@ -2933,7 +2933,12 @@ interface OrcaCollabService {
     workerId: string;
     dispatched: boolean;
     uiAssignmentSnapshotBeforeMs: number;
+    /** Team 的 Worker 创建默认偏好，不是首 Worker 实际权限。 */
     workerPermissionMode: OrcaWorkerPermissionMode;
+    /** 首个 Worker 实际启动权限（远程/跨设备 Worker 的 auto 会在创建处升级）。 */
+    firstWorkerPermissionMode: OrcaWorkerPermissionMode;
+    firstWorkerPermissionModeUpgraded?: true;
+    firstWorkerPermissionModeReason?: 'remote-worker-requires-full-access';
     dispatchOutcome?: CollabDispatchOutcome;
   }>;
   disableOrca: (leadSessionId: string) => Promise<{ ok: true }>;
@@ -12354,6 +12359,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     dispatched: boolean;
     uiAssignmentSnapshotBeforeMs: number;
     workerPermissionMode: OrcaWorkerPermissionMode;
+    firstWorkerPermissionMode: OrcaWorkerPermissionMode;
+    firstWorkerPermissionModeUpgraded?: true;
+    firstWorkerPermissionModeReason?: 'remote-worker-requires-full-access';
     dispatchOutcome?: CollabDispatchOutcome;
   }> {
     await assertLeadCollabProjectEnabled(leadSessionId);
@@ -12394,6 +12402,16 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       dispatched: result.dispatched,
       uiAssignmentSnapshotBeforeMs: result.uiAssignmentSnapshotBeforeMs,
       workerPermissionMode: result.workerPermissionMode,
+      // 首 Worker 实际权限（远程 auto 已在创建处升级）；与团队偏好分开回显给 IPC/远程控制端。
+      firstWorkerPermissionMode: result.firstWorkerPermissionMode,
+      ...(result.firstWorkerPermissionModeUpgraded
+        ? {
+            firstWorkerPermissionModeUpgraded: true as const,
+            ...(result.firstWorkerPermissionModeReason
+              ? { firstWorkerPermissionModeReason: result.firstWorkerPermissionModeReason }
+              : {}),
+          }
+        : {}),
       ...(result.dispatchOutcome ? { dispatchOutcome: result.dispatchOutcome } : {}),
     };
   }

@@ -558,6 +558,21 @@ Session 准备期柔性停止的 `SendOptions.signal` 由本机代理传到同�
 回归为 `runClientReply.test.ts` 的有界慢链路完整交付，以及 `roundtrip.test.ts` 的上传中取消。
 协议兼容与中转边界见 [远程 Agent 协议](protocol-compatibility/remote-agent.md)。
 
+本机执行器隧道端口必须 Fetch 安全（2026-11-19）：被控端 `remote-agent/host/tunnel.ts`
+为每个任务起 `http://127.0.0.1:<port>` 隧道，URL 交给本机 Claude Code／Codex／Pi 进程
+（它们都经全局 `fetch`／undici 连），测试也直接 `fetch` 这条 URL。系统 `listen(0)` 只判
+端口空闲、不判客户端肯不肯用：内核分到 Fetch 标准 bad port 时，该 URL 上**每个请求**都
+`TypeError: fetch failed` + `cause: bad port`（没有网络往返），远程通道表现为整条不可用
+而不是偶发超时。隧道因此改走既有 SSoT `listenOnFetchSafePort(server)`
+（`packages/anthropic-compat-proxy/src/fetch-blocked-ports.ts`）：命中即 `close()` 后重新
+`listen(0)`，上限 `FETCH_SAFE_BIND_MAX_ATTEMPTS`（32）次，仍失败抛结构化
+`FetchSafePortBindError`（`code`／`attempts`／`lastPort`），绝不把坏端口 URL 交给调用方；
+URL 形状与 `close()` 释放 socket 的语义不变。回归见代理包 `fetch-blocked-ports.test.ts`
+（假 server：首次坏端口→重选成功、全部坏端口→结构化错误）与
+`remote-agent/__tests__/plumbing.test.ts` 的 Fetch-safe URL 断言。另有 3 处非本链路的
+生产 `listen(0)` 站点（OAuth／端口探测型）仍待裁决，清单见
+[`../migrations/xdmaker-meka-to-cindy.md`](../migrations/xdmaker-meka-to-cindy.md) §6.45。
+
 供应商进程重启（2026-10-29）：已打开的 run 收到 `missing`、`provider-restarting` 或旧端的
 `aborted` 时只释放这条远程连接，保留本机执行器和 MCP 身份。空闲任务下次发送再接回；进行中的
 一轮通过现有供应商组恢复租约、五次有界探测和输入队列自动续跑一次，未归组的供应商也适用。

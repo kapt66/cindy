@@ -114,6 +114,8 @@ import {
   CINDY_PI_TEXT_ONLY_READY_PREFIX,
   CINDY_PI_TEXT_ONLY_CLOSED_PREFIX,
   CINDY_PI_REQUEST_DIAGNOSTICS_PREFIX,
+  CINDY_PI_MULTI_SELECT_PREFIX,
+  CINDY_PI_MULTI_SELECT_HEADER_MAX_LENGTH,
   projectPiRequestDiagnostics,
   CINDY_BRIDGE_EXTENSION_SOURCE } from './cindy-bridge-source.js';
 import { nativeProviderAdapterAliases } from './native-provider-adapter-source.js';
@@ -1005,6 +1007,14 @@ const MAX_PI_MANAGED_PACKAGE_RECEIPT_COMMAND_LENGTH = 512;
 const MAX_PI_MANAGED_PACKAGE_RECEIPT_ERROR_LENGTH = 2_048;
 const MAX_PI_EXTENSION_NOTIFICATION_LENGTH = 16_384;
 const MAX_PI_EXTENSION_DIALOG_TITLE_LENGTH = 512;
+/**
+ * Multi-select titles are the bridge-composed `header + '\n' + question`, with the
+ * header/prefix removed at most `CINDY_PI_MULTI_SELECT_HEADER_MAX_LENGTH + 1` longer
+ * than a plain question. Applying the plain 512-char bound here silently chopped valid
+ * multi-select questions; bound the stripped composite instead.
+ */
+const MAX_PI_MULTI_SELECT_DIALOG_TITLE_LENGTH =
+  MAX_PI_EXTENSION_DIALOG_TITLE_LENGTH + CINDY_PI_MULTI_SELECT_HEADER_MAX_LENGTH + 1;
 const MAX_PI_EXTENSION_DIALOG_BODY_LENGTH = 4_096;
 const MAX_PI_EXTENSION_DIALOG_OPTIONS = 100;
 const MAX_PI_EXTENSION_DIALOG_OPTION_LENGTH = 512;
@@ -10200,7 +10210,17 @@ export class PiAgent extends BaseAgent {
         return;
       }
       const bounded = (value: unknown, max: number): string => (typeof value === 'string' ? value.trim().slice(0, max) : '');
-      const title = bounded(event.title, MAX_PI_EXTENSION_DIALOG_TITLE_LENGTH);
+      const rawTitle = typeof event.title === 'string' ? event.title : '';
+      // The bridge cannot express "multi-select" in Pi's select RPC, so it marks the
+      // title with a fixed machine prefix. Strip it before anything user-visible and
+      // carry the flag on the Cindy question; unprefixed dialogs keep today's shape.
+      const multiSelect = method === 'select' && rawTitle.startsWith(CINDY_PI_MULTI_SELECT_PREFIX);
+      const title = bounded(
+        multiSelect ? rawTitle.slice(CINDY_PI_MULTI_SELECT_PREFIX.length) : rawTitle,
+        multiSelect
+          ? MAX_PI_MULTI_SELECT_DIALOG_TITLE_LENGTH
+          : MAX_PI_EXTENSION_DIALOG_TITLE_LENGTH,
+      );
       const message = bounded(event.message, MAX_PI_EXTENSION_DIALOG_BODY_LENGTH);
       const placeholder = bounded(event.placeholder, MAX_PI_EXTENSION_DIALOG_BODY_LENGTH);
       const prefill = bounded(event.prefill, MAX_PI_EXTENSION_DIALOG_BODY_LENGTH);
@@ -10241,6 +10261,7 @@ export class PiAgent extends BaseAgent {
               question,
               header: title || 'Pi extension',
               ...(questionOptions ? { options: questionOptions } : {}),
+              ...(multiSelect ? { multiSelect: true } : {}),
             },
           ],
         }),

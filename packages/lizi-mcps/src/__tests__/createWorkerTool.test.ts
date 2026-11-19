@@ -187,6 +187,10 @@ describe('create_worker tool', () => {
     // report stays queued and the Lead burns minutes on sleep/poll loops.
     expect(registry.get('create_worker')?.description).toContain('派单后立即结束本轮');
     expect(registry.get('create_worker')?.description).toContain('不要再 sleep');
+    // Worker 权限引导（2026-11-19）：Auto 需要 userIntent/delegatedTask，远程 Worker
+    // 会被主机强制升级为 Full access 并回显，模型不能引导用户选 auto 后静默被拦写。
+    expect(registry.get('create_worker')?.description).toContain('远程 Worker');
+    expect(registry.get('create_worker')?.description).toContain('permission_mode_upgraded=true');
   });
 
   it('surfaces structured hard-limit details to the lead', async () => {
@@ -362,4 +366,32 @@ it('accepts omitted agent and returns the resolved route and branch fallback', a
   const result = parse(await registry.call('create_worker', { role: 'developer', label: 'worker' }));
   expect(result).toMatchObject({ agent: 'pi', model: 'test-model', provider_id: 'provider', agent_device_id: 'device',
     defaults: { source: 'memory' }, worktree_source: { source_branch: 'main', fallback_reason: 'saved branch missing' } });
+});
+
+// 2026-11-19 用户实测回归：Meka Lead 用 remote_host_id 创建 Worker，Auto 下 Write 被
+// 自动审核拦下，Host 强制以 Full access 创建。MCP 协议必须回显实际权限与升级原因，
+// 让 Lead 与用户看到「远程 Worker 已用完全访问创建」，而不是静默改权限。
+it('echoes the actual Worker permission and a forced remote upgrade', async () => {
+  const { registry, createWorker } = setup();
+  createWorker.mockResolvedValueOnce({
+    ok: true, workerId: 'worker', workerSessionId: 'session',
+    permissionMode: 'bypassPermissions', permissionModeUpgraded: true,
+    permissionModeReason: 'remote-worker-requires-full-access',
+    resolved: { agent: 'codex', model: 'test-model', providerId: 'provider', effort: null, fastMode: false, remoteHostId: 'mcpr:i1' },
+  });
+  const remote = parse(await registry.call('create_worker', {
+    role: 'developer', agent: 'codex', label: 'worker', remote_host_id: 'mcpr:i1',
+  }));
+  expect(remote).toMatchObject({
+    worker_permission_mode: 'bypassPermissions',
+    permission_mode_upgraded: true,
+    permission_mode_reason: 'remote-worker-requires-full-access',
+  });
+  expect(remote.permission_mode_note).toContain('Auto');
+
+  // 本机 Worker：只回显实际模式，不把普通 auto 说成升级。
+  createWorker.mockResolvedValueOnce({ ok: true, workerId: 'worker-2', workerSessionId: 'session-2', permissionMode: 'auto' });
+  const local = parse(await registry.call('create_worker', { role: 'developer', agent: 'codex', label: 'local' }));
+  expect(local).toMatchObject({ worker_permission_mode: 'auto' });
+  expect(local).not.toHaveProperty('permission_mode_upgraded');
 });

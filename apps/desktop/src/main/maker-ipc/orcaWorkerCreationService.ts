@@ -13,6 +13,8 @@ import type { DispatchWorkerTaskResult, OrcaWorkerEffort, OrcaWorkerStatus } fro
 import type { MakerSessionCreateOpts } from './sessionRequest.js';
 import type { OrcaRemoteWorkerProxySessionSeed } from '../localDb/client/tx/types.js';
 import {
+  REMOTE_WORKER_PERMISSION_UPGRADE_REASON,
+  resolveOrcaWorkerPermissionForTarget,
   resolveOrcaWorkerPermissionMode,
   type OrcaWorkerPermissionMode,
 } from '../../shared/orca-worker-permission-mode.js';
@@ -213,6 +215,15 @@ export type OrcaWorkerCreationResult =
       /** 在另一台电脑运行的 Worker 才有；workerSessionId 此时是本机代理任务。 */
       executionDeviceId?: string;
       defaults?: WorkerDefaultsResolution;
+      /**
+       * Worker 实际启动使用的权限模式。远程/跨设备 Worker 在团队解析出 `auto` 时会被
+       * 强制升级为 `bypassPermissions`（Auto 没有 userIntent/delegatedTask 只放行只读，
+       * 远程 Worker 由 Lead 派单、没有用户直接参与，写操作必被拦）。
+       */
+      permissionMode: OrcaWorkerPermissionMode;
+      /** true = 本次创建因远程目标强制升级；不写回用户偏好，也不改 Team 偏好存储。 */
+      permissionModeUpgraded?: true;
+      permissionModeReason?: typeof REMOTE_WORKER_PERMISSION_UPGRADE_REASON;
       resolved: {
         agent: AgentKind;
         model: string;
@@ -934,7 +945,12 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
       }
       requestedDir = dir;
     }
-    const permissionMode = resolveOrcaWorkerPermissionMode(params.workerPermissionMode);
+    // 运行设备 = 远程 Worker：Auto 在那边没有用户原话，创建即强制 Full access。
+    const workerPermission = resolveOrcaWorkerPermissionForTarget({
+      requested: params.workerPermissionMode,
+      remote: true,
+    });
+    const permissionMode = workerPermission.permissionMode;
     const explicitSourceId =
       typeof params.providerId === 'string' && params.providerId.trim() ? params.providerId.trim() : undefined;
 
@@ -1055,6 +1071,13 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
         executionDeviceId: deviceId,
         softLimitExceeded,
         limit: limitSnapshot(settings.workerHardLimit, reservation.occupiedSlotsBefore + 1),
+        permissionMode: workerPermission.permissionMode,
+        ...(workerPermission.permissionModeUpgraded
+          ? {
+              permissionModeUpgraded: true as const,
+              permissionModeReason: workerPermission.permissionModeReason,
+            }
+          : {}),
         resolved: {
           agent: opened.agent,
           model: opened.model,
@@ -1726,6 +1749,13 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
       const workerRemoteHostId = usesHostResolvedTarget
         ? target.remoteHostId
         : lead.remoteHostId ?? undefined;
+      // 是否远程只用 Host 解析后的 transport 身份判定（不采信 prompt 字段）：remoteHostId
+      // 存在（Meka mcpr / 显式远端 / SSH Lead 继承）时，Auto 没有用户原话会拦写，
+      // 创建即强制 Full access；本机 Worker 保持原有 auto / bypassPermissions 语义。
+      const workerPermission = resolveOrcaWorkerPermissionForTarget({
+        requested: params.workerPermissionMode,
+        remote: Boolean(workerRemoteHostId),
+      });
 
       const workerOpts = deps.buildCreateOptsWithStderr({
         id: workerSessionId,
@@ -1754,7 +1784,8 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
         effort: resolved.effort as MakerSessionCreateOpts['effort'],
         fastMode: resolved.fastMode,
         // 所有创建入口先解析 Worker 创建偏好，再统一透传到这里；不继承 Lead 权限。
-        permissionMode: resolveOrcaWorkerPermissionMode(params.workerPermissionMode),
+        // 远程 Worker 的 Auto 已被升级为 Full access（见 workerPermission）。
+        permissionMode: workerPermission.permissionMode,
         title: orcaWorkerTitle(role.value, label.value),
         orcaRole: 'worker',
         vendorOptions: workerVendorOptions,
@@ -1841,6 +1872,13 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
         ...(ownedWorktree ? { worktree: ownedWorktree, worktreeSource: worktreeSourceSelection } : {}),
         softLimitExceeded,
         limit: limitSnapshot(settings.workerHardLimit, reservation.occupiedSlotsBefore + 1),
+        permissionMode: workerPermission.permissionMode,
+        ...(workerPermission.permissionModeUpgraded
+          ? {
+              permissionModeUpgraded: true as const,
+              permissionModeReason: workerPermission.permissionModeReason,
+            }
+          : {}),
         resolved: {
           agent: params.agent,
           model: resolved.model,

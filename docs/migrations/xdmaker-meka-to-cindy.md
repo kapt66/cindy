@@ -8073,3 +8073,48 @@ dev 目录通道受影响。
 未做/未验证：真实 dev 实例上的重启内复验（用户正在用该实例跑 E2E，本轮不重启）；全量
 `pnpm test:unit`（由维护者统一跑）。本项已在 `meka-whitelist-verification.md` 的 WL-9 登记
 （不变量 7、门禁与实机验证步骤）。
+
+### 6.80 2026-11-19 Meka 会话缺少「提交意图 ⇒ 插件优先」的硬顺序：新增注入段 `meka.submit-intent`（order 55）（已实现）
+
+**问题（真实会话，不是推测）**：会话 `4f09d41f-a5f7-4572-8fbd-a88cd81a4d76`（Pi harness，
+Meka 项目 saga2，用户输入「帮我提交模块表定义」）里，系统提示**已经**带着插件花名册
+（addendum 含 `meka-submit` 的 recall），但模型先跑了 **13 次 `bash`**（全盘 find 找 memory、
+探测 p4 CLI）、**2 次 `read`**、**1 次 `grep`**（全仓 grep「模块定义」），**0 次**
+`cindy_mcp_list_tools` / `ghost_info` / `ghost_call`，直到 turn 被 abort（转录末
+`stopReason:"aborted"`）都没发出插件调用；thinking 原话已经知道「应该走 meka-submit 插件」。
+同一 harness 里用户**明确点名插件**的另一会话第一反应就是 `cindy_mcp_list_tools` ⇒
+**不是工具不可用，缺的是「提交意图 ⇒ 插件优先」的顺序规则**。
+
+**修法（客户端注入层，Meka-only）**：`meka-injection` 在 order 空档 **55** 新增固定文本段
+`meka.submit-intent`（文本唯一来源 `meka-injection/mekaPrompts.ts` 的
+`mekaSubmitIntentPrompt`，marker `[MEKA_SUBMIT_INTENT]`），推入点
+`mekaResolvePlan.ts` 的 `resolveBootstrapInjection`。内容四条：① 用户说「提交 / 提交代码 /
+提交改动 / 提交服务器 / 推送建 MR」时第一步固定是工具发现（`cindy_mcp_list_tools` →
+`ghost_info(meka-submit)` → `ghost_call` 调插件 `list_tools`），拿到流程前**禁止** p4/git CLI
+探测与全仓 find/grep 猜要提交什么；② 提交对象是「已存在的改动」：P4 项目用 `meka-p4` 的
+`p4_status`、远程 Git 项目用 MCPRouter 的 `mcpr-project-manager` 的 `git_status` 先定来源再谈
+范围；③ 文件名词先在改动清单里模糊匹配，匹配不到问用户，不得全仓 grep；④ **插件缺失兜底**
+（2026-11-19 终审补）：`meka-submit` 是市场安装插件、不随包，确认清单时没有该插件必须如实告知
+用户并按用户确认改用本机 CLI/既有流程，不得假装插件可用，也不得把「提交」挡成死路。兜底与
+①同句并入第 3 行，段总行数仍为 7，逐行散文契约与 §3.3 同步更新。
+
+**边界与语义**：order 55 落在角色上下文（60）之前，**60 / 65 / 70 的数值与文本一个字符未改**，
+新段与 order 65 一样不参与 I1 的「与重构前逐字节一致」对照；只在 `workspaceKind === 'meka'`
+的 bootstrap（新建）路径注入，`resolveFrozenInjection`（resume 短路）仍 push 零个段落
+⇒ **旧 Meka 会话前缀不变**，存量会话要等下一次新建任务才拿到该规则；非 Meka 会话零影响（I6）。
+本层只加 prompt 顺序，不加任何 Host 门禁或工具权限变化（提交仍由插件自身的流程与既有审批约束）。
+
+**回归测试**（`apps/desktop/src/main/maker-ipc/__tests__/mekaRuntimeInjectionBaseline.test.ts`）：
+新增第 17 组 1 例（Meka bootstrap 前缀含该段、逐行散文契约（含插件缺失兜底的两句）、段内工具名先后
+`cindy_mcp_list_tools < ghost_info < meka-submit`、`p4_status`/`git_status` 在场、段只出现一次且
+在 `[MEKA_ROLE_CONTEXT]` 之前）；非 Meka 零写入用例追加 `not.toContain(marker)`；
+order 表用例加入 `'meka.submit-intent': 55`。既有 60/65/70 的逐字节期望文本未改，三处
+`opts.userPrompt` 全文期望只多出该段（取自共享构建器）。本次定向实跑：注入层 4 个测试文件
+**55 例通过**、`tsc --noEmit -p tsconfig.main.json` **exit 0**、`pnpm check:test-hygiene` **PASS**。
+
+**未做/未验证**：① 真机行为未验证 —— 这是 prompt 规则，模型是否真的按该顺序行动只能在真实
+会话里观察，本批**未跑** `desktop:session-smoke`，smoke 也没有为该段加回显探针；② 缓存率未实测
+（改动性质与 §4.x 前两批同源，前缀稳定但既有会话与新前缀不再命中同一缓存条目）；
+③ 未新增独立 WL 编号 —— 本项按「注入链既有条目」登记在 `meka-whitelist-verification.md` 的
+WL-11 代码锚点与 `meka-injection-layer.md` §3.3，白名单覆盖现状是「单测已落地、实机未跑」；
+④ 全量 `test:unit` / `test:unit:related` 由维护者在交付时统一跑。

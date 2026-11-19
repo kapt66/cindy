@@ -60,6 +60,7 @@ function makeHarness(opts: {
   timeoutMs?: number;
   ownerScope?: PipeDispatcherDeps['ownerScope'];
   prepareUsage?: PipeDispatcherDeps['prepareUsage'];
+  restart?: PipeDispatcherDeps['restart'];
 } = {}): Harness {
   const sent: GhostPipeToolCall[] = [];
   const deps = {
@@ -80,6 +81,7 @@ function makeHarness(opts: {
     timeoutMs: opts.timeoutMs,
     ownerScope: opts.ownerScope,
     prepareUsage: opts.prepareUsage,
+    restart: opts.restart,
   } as unknown as PipeDispatcherDeps);
   return { dispatcher, deps, sent };
 }
@@ -526,6 +528,170 @@ describe('按需拉起', () => {
     await expect(pending).resolves.toMatchObject({ ok: false, errorCode: 'GHOST_ASLEEP' });
     expect(h.deps.sendToGhost).not.toHaveBeenCalled();
     expect(invalidated).toHaveBeenCalledWith('art');
+  });
+});
+
+// 2026-11-19 用户实测:插件 confirm 框 90s 超时后,ghost_call 挂满 330s 超时;
+// 随后沙箱永久处于"电子脑离线"——后续每个 ghost_call 都回 GHOST_CRASHED
+// "电子脑离线,派发失败",用户只能重开会话。修复要求:派发前发现 crashed /
+// 投递发现逻辑页离线时,先做**一次**受控重启(单飞),成功继续、失败保持原语义。
+describe('沙箱崩溃/离线的自动恢复', () => {
+  function harnessWithRestart(
+    state: GhostRuntimeState,
+    restartImplementation?: () => Promise<{ ok: true } | { ok: false; reason: string }>,
+  ) {
+    let h: Harness;
+    const restart = vi.fn(async () => {
+      if (restartImplementation) return restartImplementation();
+      h.deps.runtimeStateOf.mockReturnValue('running');
+      return { ok: true as const };
+    });
+    h = makeHarness({ state, restart });
+    return { h, restart };
+  }
+
+  it('crashed → 受控重启一次 → 本单继续派发成功(spawn 不再单独调用)', async () => {
+    const { h, restart } = harnessWithRestart('crashed');
+    const pending = h.dispatcher.callGhostTool(CALL);
+    await vi.waitFor(() => expect(h.sent).toHaveLength(1));
+    expect(restart).toHaveBeenCalledTimes(1);
+    expect(h.deps.spawn).not.toHaveBeenCalled();
+    h.dispatcher.handleToolResult('art', { callId: h.sent[0].callId, ok: true, result: 'done' });
+    await expect(pending).resolves.toEqual({ ok: true, result: 'done' });
+  });
+
+  it('crashed 且重启失败 → 原 GHOST_CRASHED,只尝试一次不无限重试', async () => {
+    const { h, restart } = harnessWithRestart('crashed', async () => ({
+      ok: false,
+      reason: '入口加载失败',
+    }));
+    const r = await h.dispatcher.callGhostTool(CALL);
+    expect(r).toMatchObject({ ok: false, errorCode: 'GHOST_CRASHED' });
+    expect(r.ok ? '' : r.message).toContain('入口加载失败');
+    expect(restart).toHaveBeenCalledTimes(1);
+    expect(h.deps.sendToGhost).not.toHaveBeenCalled();
+  });
+
+  it('投递发现逻辑页离线 → 重启一次后同一份卷子重投成功', async () => {
+    const { h, restart } = harnessWithRestart('running');
+    let attempts = 0;
+    h.deps.sendToGhost.mockImplementation((_id: string, payload: GhostPipeToolCall) => {
+      attempts += 1;
+      if (attempts === 1) return false;
+      h.sent.push(payload);
+      return true;
+    });
+    const pending = h.dispatcher.callGhostTool(CALL);
+    await vi.waitFor(() => expect(h.sent).toHaveLength(1));
+    expect(attempts).toBe(2);
+    expect(restart).toHaveBeenCalledTimes(1);
+    h.dispatcher.handleToolResult('art', { callId: h.sent[0].callId, ok: true, result: 'recovered' });
+    await expect(pending).resolves.toEqual({ ok: true, result: 'recovered' });
+  });
+
+  it('重启失败 / 重投仍失败 → 保持原「电子脑离线,派发失败」,重启只做一次', async () => {
+    const failedRestart = harnessWithRestart('running', async () => ({
+      ok: false,
+      reason: '沙箱创建失败',
+    }));
+    failedRestart.h.deps.sendToGhost.mockReturnValue(false);
+    await expect(failedRestart.h.dispatcher.callGhostTool(CALL)).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'GHOST_CRASHED',
+      message: '电子脑离线,派发失败',
+    });
+    expect(failedRestart.restart).toHaveBeenCalledTimes(1);
+
+    const retryStillFails = harnessWithRestart('running');
+    retryStillFails.h.deps.sendToGhost.mockReturnValue(false);
+    await expect(retryStillFails.h.dispatcher.callGhostTool(CALL)).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'GHOST_CRASHED',
+      message: '电子脑离线,派发失败',
+    });
+    expect(retryStillFails.restart).toHaveBeenCalledTimes(1);
+  });
+
+  it('恢复期间 runtime 的 stop/crashed 状态变化不提前结算正在等重投的那一单', async () => {
+    let h: Harness;
+    const restart = vi.fn(async () => {
+      // 生产里 restart = stop + spawnForTool,状态机必然发 stopping/off/starting;
+      // 派发器自己的 onRuntimeState 若把它当"插件被停用",重投就永远没机会发生。
+      h.dispatcher.onRuntimeState('art', 'stopping');
+      h.dispatcher.onRuntimeState('art', 'off');
+      h.deps.runtimeStateOf.mockReturnValue('running');
+      return { ok: true as const };
+    });
+    h = makeHarness({ state: 'running', restart });
+    let attempts = 0;
+    h.deps.sendToGhost.mockImplementation((_id: string, payload: GhostPipeToolCall) => {
+      attempts += 1;
+      if (attempts === 1) return false;
+      h.sent.push(payload);
+      return true;
+    });
+    const pending = h.dispatcher.callGhostTool(CALL);
+    await vi.waitFor(() => expect(h.sent).toHaveLength(1));
+    h.dispatcher.handleToolResult('art', { callId: h.sent[0].callId, ok: true, result: 'ok' });
+    await expect(pending).resolves.toEqual({ ok: true, result: 'ok' });
+  });
+
+  it('恢复期间同一实例的其它在途卷按崩溃收卷,不谎报成"用户停用"', async () => {
+    let h: Harness;
+    const restart = vi.fn(async () => {
+      // 真实 runtime 的状态事件是异步派发的;让出一次微任务,保证"另一单已在途"
+      // 这个前提与生产一致(重启触发的 stop 事件发生时,旧页面上的其它卷仍在等)。
+      await Promise.resolve();
+      h.dispatcher.onRuntimeState('art', 'stopping');
+      h.deps.runtimeStateOf.mockReturnValue('running');
+      return { ok: true as const };
+    });
+    h = makeHarness({ state: 'running', restart });
+    let attempts = 0;
+    h.deps.sendToGhost.mockImplementation((_id: string, payload: GhostPipeToolCall) => {
+      attempts += 1;
+      if (attempts === 1) return false; // 第一单触发恢复
+      h.sent.push(payload);
+      return true; // 第二单先正常投递在途;重投也走这里
+    });
+    const first = h.dispatcher.callGhostTool(CALL);
+    const second = h.dispatcher.callGhostTool({ ...CALL, callId: 'second-call' });
+    // h.sent[0] = 第二单的首次投递;h.sent[1] = 第一单在重启后的重投。
+    await vi.waitFor(() => expect(h.sent).toHaveLength(2));
+    // 第一单在重启后重投成功,继续等交卷;第二单被 stop 状态收卷,但语义是崩溃。
+    await expect(second).resolves.toMatchObject({ ok: false, errorCode: 'GHOST_CRASHED' });
+    h.dispatcher.handleToolResult('art', { callId: h.sent[1].callId, ok: true, result: 'ok' });
+    await expect(first).resolves.toEqual({ ok: true, result: 'ok' });
+  });
+
+  it('并发离线投递共享同一次受控重启(单飞)', async () => {
+    let resolveRestart!: (value: { ok: true }) => void;
+    const restart = vi.fn(
+      () =>
+        new Promise<{ ok: true }>((resolve) => {
+          resolveRestart = resolve;
+        }),
+    );
+    const h = makeHarness({ state: 'running', restart });
+    h.deps.sendToGhost.mockReturnValue(false);
+    const first = h.dispatcher.callGhostTool(CALL);
+    const second = h.dispatcher.callGhostTool({ ...CALL, callId: 'second-call' });
+    await vi.waitFor(() => expect(restart).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(h.dispatcher.pendingCount()).toBe(2));
+    resolveRestart({ ok: true });
+    await expect(first).resolves.toMatchObject({ ok: false, errorCode: 'GHOST_CRASHED' });
+    await expect(second).resolves.toMatchObject({ ok: false, errorCode: 'GHOST_CRASHED' });
+    expect(restart).toHaveBeenCalledTimes(1);
+  });
+
+  it('熔断(fused)不自动重启:保持熔断语义,重启入口不被调用', async () => {
+    let h: Harness;
+    const restart = vi.fn(async () => ({ ok: true as const }));
+    h = makeHarness({ state: 'fused', restart });
+    const r = await h.dispatcher.callGhostTool(CALL);
+    expect(r).toMatchObject({ ok: false, errorCode: 'GHOST_CRASHED' });
+    expect(restart).not.toHaveBeenCalled();
+    expect(h.deps.spawn).not.toHaveBeenCalled();
   });
 });
 
@@ -1040,6 +1206,50 @@ describe('dispatch usage observation', () => {
     const pending=h.dispatcher.callGhostTool({...CALL,callId:'no-block'});
     h.dispatcher.handleToolResult('art',{callId:'no-block',ok:true,result:'done'});
     expect(await pending).toMatchObject({ok:true,result:'done'});
+  });
+
+  // 2026-11-19 审查:受控重启的 stop 会触发 PluginInvocations.invalidate,旧 volume 的
+  // 观测随后 accepted/settled 都抛 INVALID_INVOCATION(被 observeUsage 吞成 warn)。
+  // 重投成功后必须按同一 callId 重建观测,否则一次**成功了**的恢复调用反而不进用量统计。
+  it('rebuilds the usage observation after a controlled restart so a recovered call is counted once', async () => {
+    let invalidated = false;
+    const staleAccepted = vi.fn(() => { if (invalidated) throw new Error('INVALID_INVOCATION'); });
+    const staleSettled = vi.fn(() => { if (invalidated) throw new Error('INVALID_INVOCATION'); });
+    const freshAccepted = vi.fn();
+    const freshSettled = vi.fn();
+    const prepare = vi.fn()
+      .mockReturnValueOnce({ accepted: staleAccepted, settled: staleSettled })
+      .mockReturnValueOnce({ accepted: freshAccepted, settled: freshSettled });
+    let h: Harness;
+    const restart = vi.fn(async () => {
+      invalidated = true; // 生产:restart 的 stop → onStateChanged → invalidate 旧观测
+      h.dispatcher.onRuntimeState('art', 'stopping');
+      h.deps.runtimeStateOf.mockReturnValue('running');
+      return { ok: true as const };
+    });
+    h = makeHarness({ state: 'running', restart, prepareUsage: prepare });
+    let attempts = 0;
+    h.deps.sendToGhost.mockImplementation((_id: string, payload: GhostPipeToolCall) => {
+      attempts += 1;
+      if (attempts === 1) return false;
+      h.sent.push(payload);
+      return true;
+    });
+    const pending = h.dispatcher.callGhostTool({ ...CALL, callId: 'recovered-usage' });
+    await vi.waitFor(() => expect(h.sent).toHaveLength(1));
+    expect(prepare).toHaveBeenCalledTimes(2);
+    // 旧 volume 的观测不再被使用(否则每次都会留一条 INVALID_INVOCATION warn)。
+    expect(staleAccepted).not.toHaveBeenCalled();
+    expect(staleSettled).not.toHaveBeenCalled();
+    h.dispatcher.handleToolResult('art', { callId: 'recovered-usage', ok: true, result: 'ok' });
+    await expect(pending).resolves.toEqual({ ok: true, result: 'ok' });
+    expect(freshAccepted).toHaveBeenCalledTimes(1);
+    expect(freshSettled).toHaveBeenCalledExactlyOnceWith('succeeded');
+    // 旧 volume 迟到的第二份交卷被配对表丢弃,不重复计量。
+    expect(h.dispatcher.handleToolResult('art', { callId: 'recovered-usage', ok: true, result: 'late' }).accepted).toBe(false);
+    expect(prepare).toHaveBeenCalledTimes(2);
+    expect(freshAccepted).toHaveBeenCalledTimes(1);
+    expect(freshSettled).toHaveBeenCalledTimes(1);
   });
 });
 

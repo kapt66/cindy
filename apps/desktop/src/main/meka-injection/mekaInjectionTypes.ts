@@ -55,6 +55,7 @@ export interface MekaSessionBindingPatch {
  * 不再依赖「谁先 prepend」这种涌现顺序。
  */
 export type MekaPromptSegmentId =
+  | 'meka.submit-intent'
   | 'meka.role-context'
   | 'meka.project-references'
   | 'meka.role-prompt';
@@ -64,8 +65,11 @@ export type MekaPromptSegmentId =
  *
  * 数值是契约而不是实现细节：60/65/70 原地冻结，**不得重排**；新增段落只能插空档。
  * `meka.project-references` 占 65，是 60 与 70 之间唯一的空档。
+ * `meka.submit-intent` 占 55（2026-11-19 新增，见
+ * `docs/dev-rules/meka-injection-layer.md` §3.3）：它落在角色段之前，按空档插入、**未重排任何既有段**。
  */
 export const MEKA_PROMPT_SEGMENT_ORDER: Readonly<Record<MekaPromptSegmentId, number>> = {
+  'meka.submit-intent': 55,
   'meka.role-context': 60,
   'meka.project-references': 65,
   'meka.role-prompt': 70,

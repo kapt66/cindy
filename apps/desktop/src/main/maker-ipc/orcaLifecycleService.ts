@@ -69,6 +69,11 @@ export type OrcaStartTeamResult =
   | {
       ok: true;
       teamId: string;
+      /**
+       * Team 的 Worker 创建默认偏好（下一次 create_worker 的初值）。
+       * start_team 不创建 Worker，因此这里没有「首 Worker 实际权限」可回显；
+       * 实际权限由 create_worker / create_workers 结果中的 `permissionMode*` 回传。
+       */
       workerPermissionMode: OrcaWorkerPermissionMode;
       reused?: boolean;
     }
@@ -84,7 +89,20 @@ export type OrcaEnableTeamResult =
       dispatched: boolean;
       /** 由 Worker 所在主机生成，供后续 history gate 避免跨设备时钟偏差。 */
       uiAssignmentSnapshotBeforeMs: number;
+      /** Team 的 Worker 创建默认偏好（下一次 create_worker 的初值），不是首 Worker 实际权限。 */
       workerPermissionMode: OrcaWorkerPermissionMode;
+      /**
+       * 首个 Worker 实际启动的权限模式。远程/跨设备 Worker 在团队偏好为 `auto` 时会被
+       * Worker 创建处强制升级为 `bypassPermissions`——本字段回显**实际生效值**，
+       * 不能再用上面的团队偏好代替（否则 UI/调用方以为 Worker 是 auto，实际已是完全访问）。
+       */
+      firstWorkerPermissionMode: OrcaWorkerPermissionMode;
+      /** true = 首 Worker 因远程/跨设备目标被强制升级；本机 Worker 不出现该字段。 */
+      firstWorkerPermissionModeUpgraded?: true;
+      firstWorkerPermissionModeReason?: Extract<
+        OrcaWorkerCreationResult,
+        { ok: true }
+      >['permissionModeReason'];
       dispatchOutcome?: DispatchWorkerTaskResult['dispatchOutcome'];
     }
   | Extract<OrcaWorkerCreationResult, { ok: false }>
@@ -553,6 +571,16 @@ export function createOrcaLifecycleService(deps: OrcaLifecycleDeps): OrcaLifecyc
       dispatched: dispatchResult?.dispatched ?? false,
       uiAssignmentSnapshotBeforeMs: Date.now(),
       workerPermissionMode,
+      // 首 Worker 的实际权限来自创建内核（远程 auto 已在那里升级）；团队偏好单独回显。
+      firstWorkerPermissionMode: created.permissionMode,
+      ...(created.permissionModeUpgraded
+        ? {
+            firstWorkerPermissionModeUpgraded: true as const,
+            ...(created.permissionModeReason
+              ? { firstWorkerPermissionModeReason: created.permissionModeReason }
+              : {}),
+          }
+        : {}),
       ...(dispatchResult ? { dispatchOutcome: dispatchResult.dispatchOutcome } : {}),
     };
   }

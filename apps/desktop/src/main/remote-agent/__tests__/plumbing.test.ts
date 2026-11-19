@@ -4,6 +4,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { LOCAL_AGENT_CLIENT, MAIN_OWNED_SEND_CONTEXT, type AgentEvent, type InteractionDecision } from '@cindy/maker-core';
+import { isFetchBlockedPort } from '@cindy/anthropic-compat-proxy';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -90,6 +91,22 @@ describe('event log', () => {
 });
 
 describe('tunnel', () => {
+  // 本机 Agent 都经全局 fetch 连这条隧道；内核分配的端口若命中 Fetch 标准 bad port，
+  // 这个 URL 上每个请求都会 `TypeError: fetch failed`（没有网络往返）。URL 由生产入口给出，
+  // 这里只钉住"交出来的端口一定是 fetch 能用的"。
+  it('hands out a Fetch-safe loopback URL to the local executor', async () => {
+    const tunnel = await createRunTunnel({
+      http: async () => ({ status: 200, headers: [] }),
+      wsOpen() {}, wsMessage() {}, wsClose() {},
+    });
+    try {
+      expect(tunnel.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+      expect(isFetchBlockedPort(Number(new URL(tunnel.url).port))).toBe(false);
+    } finally {
+      await tunnel.close();
+    }
+  });
+
   // Regression: SDK cancellation uses a notification without closing its transport.
   // Real MCP Client -> tunnel -> executor, with a pending credential read (unit/loopback).
   // Socket-abort coverage did not catch stale execution/grants after a tool timeout.

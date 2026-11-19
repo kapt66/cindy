@@ -8469,6 +8469,16 @@ export const GHOST_CONFIRM_MIN_INTERVAL_MS = 3000;
  */
 export const GHOST_CONFIRM_TIMEOUT_MS = 90_000;
 
+/**
+ * 等 renderer「已收到」回执的短窗口 ms(2026-11-19)。
+ *
+ * confirm 只投一个窗口,而目标窗口可能选错(侧栏/资源用量等轻量窗口收不到推送)。
+ * 桥在投递后等 renderer 的回执;8 秒内没有回执且首次不是主窗口时改投主窗口一次,
+ * 避免用户白等 90 秒。窗口内收到回执即取消改投。只是可见性兜底,不改变 fail-closed:
+ * 没回执、改投也失败,照样按超时"没同意"结算。
+ */
+export const GHOST_CONFIRM_ACK_TIMEOUT_MS = 8_000;
+
 /** cindy 槽代办的质量档位:意识只表达"要多好",具体模型由主机解析表决定。 */
 export const GHOST_MODEL_TIERS = ['draft', 'standard', 'best'] as const;
 export type GhostModelTier = (typeof GHOST_MODEL_TIERS)[number];

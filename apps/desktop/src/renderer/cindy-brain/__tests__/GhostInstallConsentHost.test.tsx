@@ -93,6 +93,7 @@ describe('GhostInstallConsentHost', () => {
     let dismiss: ((payload: { requestId: string }) => void) | undefined;
     let finish: ((value: boolean) => void) | undefined;
     const resolveConfirm = vi.fn(async () => ({ handled: false }));
+    const ackConfirm = vi.fn(async () => ({ handled: true }));
     const unsubscribeDismiss = vi.fn();
     const subscribeDismiss = vi.fn((callback: typeof dismiss) => { dismiss = callback; return unsubscribeDismiss; });
     const subscribeConnection = vi.fn();
@@ -101,6 +102,7 @@ describe('GhostInstallConsentHost', () => {
       onConfirmRequest: (callback: typeof request) => { request = callback; return () => {}; },
       onConfirmDismissed: subscribeDismiss,
       resolveConfirm,
+      ackConfirm,
     });
     mocks.confirm.mockImplementation(() => new Promise<boolean>(resolve => { finish = resolve; }));
     render(<GhostConfirmDialogHost />);
@@ -109,6 +111,8 @@ describe('GhostInstallConsentHost', () => {
     expect(subscribeDismiss).not.toHaveBeenCalled();
     await act(async () => request?.({ requestId: 'command', ghostId: 'demo', ghostName: 'Demo',
       body: 'Run terminal_start', confirmText: null, cancelText: null, danger: false }));
+    // 「已收到」回执:main 只有收到它才不把这次投递当作没送达(8s 后改投主窗口)。
+    expect(ackConfirm).toHaveBeenCalledWith('command');
     expect(mocks.confirm).toHaveBeenCalledTimes(1);
     expect(subscribeDismiss).toHaveBeenCalledOnce();
     expect(subscribeConnection).not.toHaveBeenCalled();

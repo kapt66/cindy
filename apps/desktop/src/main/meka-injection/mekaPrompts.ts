@@ -1,8 +1,8 @@
 /**
- * Meka 注入段的**文本唯一来源**：平台三段里的两段由本文件承载。
+ * Meka 注入段的**文本唯一来源**：平台四段里的三段由本文件承载。
  *
- * 平台注入面收敛后只剩三段（order 见 `mekaInjectionTypes.ts` 的
- * `MEKA_PROMPT_SEGMENT_ORDER`）：
+ * 平台注入面（order 见 `mekaInjectionTypes.ts` 的 `MEKA_PROMPT_SEGMENT_ORDER`）：
+ * - 55 `meka.submit-intent` —— `mekaSubmitIntentPrompt`（本文件；提交意图 → 工具发现优先的硬顺序规则）
  * - 60 `meka.role-context` —— `roleContextPrompt`（本文件）
  * - 65 `meka.project-references` —— `mekaProjectReferencesPrompt`（本文件）
  * - 70 `meka.role-prompt` —— 角色 `promptText`，由 `meka-projects/runtimeConfig.ts` 产出，
@@ -28,6 +28,39 @@ export function roleContextPrompt(runtime: MekaRuntimeConfig): string {
     `displayName: ${runtime.roleDisplayName}`,
     '这是当前任务的权威角色绑定。不得根据打开的窗口、缓存文件或其它项目角色推断或替换当前角色。',
     '[/MEKA_ROLE_CONTEXT]',
+  ].join('\n');
+}
+
+/** 提交意图段的 marker（正向断言段落存在、反向断言非 Meka / frozen 路径不在场都用它）。 */
+export const MEKA_SUBMIT_INTENT_MARKER = '[MEKA_SUBMIT_INTENT]';
+
+/**
+ * 提交意图段（段 id `meka.submit-intent`，order 55）。
+ *
+ * 修的是真实会话里的一条失败链（Pi harness，用户只说「帮我提交模块表定义」）：模型先跑了
+ * 13 次 `bash`、2 次 `read`、1 次 `grep`（全盘找 memory、探测 p4 CLI、全仓 grep「模块定义」），
+ * **0 次**插件发现调用（`cindy_mcp_list_tools` / `ghost_info` / `ghost_call`），直到 turn 被
+ * abort 都没发出真实提交调用；thinking 里已经知道「应该走 meka-submit 插件」，说明缺的不是
+ * 插件可见性，而是「提交意图 ⇒ 先走插件流程」的硬顺序。同一 harness 里用户明确点名插件时
+ * 第一反应就是 `cindy_mcp_list_tools`，因此这条规则只补顺序，不补能力。
+ *
+ * 三条契约：
+ * - **文本是固定常量**：不读 deps、不做 I/O、不含时间/随机值 ⇒ 会话前缀逐字节稳定（§3.1）。
+ *   行数固定 7，测试逐行断言，改字必须同时改用例与 `docs/dev-rules/meka-injection-layer.md` §3.3。
+ * - **工具名先后即语义**：`cindy_mcp_list_tools → ghost_info → meka-submit` 的先后不得改序；
+ *   「拿到插件流程前禁止 p4 / git CLI 与全仓 find / grep」是这条段的风险边界。
+ * - **只在 Meka 会话的 bootstrap 路径注入**（与 60 / 65 / 70 同进同出，I4 / I6），文本本身
+ *   与项目/角色无关，因此不参与 `runtimeConfig` 的解析。
+ */
+export function mekaSubmitIntentPrompt(): string {
+  return [
+    MEKA_SUBMIT_INTENT_MARKER,
+    '用户说「提交 / 提交代码 / 提交改动 / 提交服务器 / 推送建 MR」时，第一步固定是工具发现，不是探测：',
+    '工具发现先确认本机插件清单（Pi 经 cindy_mcp_list_tools 网关；Claude/Codex 直连本机插件的 MCP 工具），再 ghost_info(meka-submit) → ghost_call 调 meka-submit 的 list_tools，拿到该插件流程后再动手。若当前会话没有 meka-submit 插件（它是市场安装插件、不随包），如实告知用户，并按用户确认改用本机 CLI 或既有流程，不得假装插件可用。',
+    '拿到插件流程前，禁止用 p4 / git 等 CLI 探测或执行提交，禁止用全仓 find / grep 猜要提交什么。',
+    '提交对象只可能是「已存在的改动」：先确定改动来源再谈范围——P4 项目用 meka-p4 的 p4_status（pending changelists / 未 open 改动）；远程 Git 项目用 MCPRouter 的 mcpr-project-manager 的 git_status（工作树未提交改动）。',
+    '文件名词（例如「模块表定义」）先在改动清单里模糊匹配；匹配不到就问用户，不得改用全仓 grep 去找。',
+    '[/MEKA_SUBMIT_INTENT]',
   ].join('\n');
 }
 

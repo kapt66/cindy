@@ -1699,6 +1699,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // 管子请求。requestId 是 main 铸的,陌生/重复 id 由桥忽略。
     resolveConfirm: (requestId: string, confirmed: boolean): Promise<{ handled: boolean }> =>
       ipcRenderer.invoke('ghosts:confirm:resolve', { requestId, confirmed }),
+    // 确认框「已收到」回执:renderer 收到推送后立即回,main 据此取消「8s 没回执
+    // 就改投主窗口」的兜底。只表示画出来了,不结算(用户还没点)。
+    ackConfirm: (requestId: string): Promise<{ handled: boolean }> =>
+      ipcRenderer.invoke('ghosts:confirm:ack', requestId),
     onForgeOidcInstallConfirmRequest: fanOutForgeOidcInstallConfirmRequest,
     resolveForgeOidcInstallConfirm: (
       requestId: string,
@@ -7803,7 +7807,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
       workerSessionId: string;
       workerId: string;
       dispatched: boolean;
+      /** Team 的 Worker 创建默认偏好，不是首 Worker 实际权限。 */
       workerPermissionMode: 'auto' | 'bypassPermissions';
+      /** 首个 Worker 实际启动权限；远程/跨设备 Worker 的 auto 会被创建处升级。 */
+      firstWorkerPermissionMode?: 'auto' | 'bypassPermissions';
+      firstWorkerPermissionModeUpgraded?: true;
+      firstWorkerPermissionModeReason?: 'remote-worker-requires-full-access';
       uiAssignmentSnapshotBeforeMs: number;
     }> => ipcRenderer.invoke('maker:session:enable-orca', leadSessionId, opts),
 

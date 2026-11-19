@@ -49,6 +49,17 @@ export interface PipeDispatcherDeps {
   /** 拉起沙箱(幂等;fused/stopping 拒绝)。 */
   spawn(ghost: InstalledGhost): Promise<{ ok: true } | { ok: false; reason: string }>;
   /**
+   * 受控重启(可选;crashed 预派发恢复 / 投递发现逻辑页离线时用):同一个实例,
+   * 先停旧沙箱再按当前安装记录拉起并等就绪。生产接线
+   * `GhostRuntime.stop + spawnForTool`;未注入时保持旧行为(直接按 GHOST_CRASHED 收卷)。
+   * 每次调用最多触发一次,并有单飞与冷却,失败不重试。
+   *
+   * 覆盖范围:**Desktop 本地模式注入**;Host/client-mode 的派发器
+   * (`apps/host/src/plugins/runtime.ts:361`)尚未接线,缺省不发重启,投递失败仍按
+   * 原 GHOST_CRASHED 语义处理(该路径未验证)。
+   */
+  restart?(ghost: InstalledGhost): Promise<{ ok: true } | { ok: false; reason: string }>;
+  /**
    * 运行中的沙箱是否按**这份安装记录**拉起(可选;生产接线到
    * `GhostRuntime.isCurrentInstall`)。返回 false 时派发前先 `spawn` 对齐代次,
    * 避免更新提交后新调用继续落进旧 receipt 分区的旧页面。
@@ -57,6 +68,11 @@ export interface PipeDispatcherDeps {
   /** 把下行消息发到该意识的电子脑逻辑页;false = 逻辑页不在线。 */
   sendToGhost(ghostId: string, payload: GhostPipeToolCall): boolean | Promise<boolean>;
   ownerScope?: GhostOwnerScope;
+  /**
+   * 为一次工具调用建立用量观测(可选)。正常派发只问一次;受控重启(重启的 stop 会
+   * 让旧 volume 的观测失效)后重投成功时会以**同一 callId** 再问一次,用来把观测
+   * 换到恢复后的新 volume 上。实现必须按 callId 幂等:同一次调用只记一条账。
+   */
   prepareUsage?(ghost: InstalledGhost, callId: string, toolName: string, sessionId?: string): GhostCallUsageObserver | null;
   /** 单次调用超时(默认 330s,见 DEFAULT_TIMEOUT_MS 注释)。 */
   timeoutMs?: number;
@@ -123,6 +139,13 @@ const DEFAULT_TIMEOUT_MS = 330_000;
 const HOLD_SETTLE_GRACE_MS = 60_000;
 
 /**
+ * 同一实例的受控重启冷却(投递失败触发的那条路)。每次调用最多重启一次,冷却再
+ * 挡住"每失败一次就重启一次"的连续抖动;预派发发现 crashed 时不受冷却限制
+ * ——那时状态机本身就是"沙箱已死"的证据。
+ */
+const SANDBOX_RESTART_COOLDOWN_MS = 10_000;
+
+/**
  * TOOL_NOT_FOUND 自愈文案。只报"没有什么"会让 agent 拿同一错误形态反复重试,
  * 甚至误判"插件没有写能力"(2026-07-30 实测:二级分派型插件 cindy-github 的
  * 操作名被两个模型先后当作顶层 tool 直调,均在此卡死)。
@@ -172,6 +195,18 @@ export function toolNotFoundMessage(
 export class GhostPipeDispatcher {
   private readonly pending = new Map<string, PendingCall>();
   private readonly sessionCalls = new Map<string, Set<AbortController>>();
+  /** 同实例重启单飞:并发调用撞上同一份死沙箱时只重启一次。 */
+  private readonly sandboxRestarts = new Map<
+    string,
+    Promise<{ ok: true } | { ok: false; reason: string }>
+  >();
+  /** 实例最近一次受控重启时刻(冷却用)。 */
+  private readonly lastSandboxRestartAt = new Map<string, number>();
+  /**
+   * 正在被恢复流程保护的 callId:重启会触发 stop/crashed 状态变化,派发器自己的
+   * onRuntimeState 不得把手里的这一单提前结算掉,否则重投永远没机会发生。
+   */
+  private readonly recoveringCalls = new Set<string>();
 
   constructor(private readonly deps: PipeDispatcherDeps) {}
 
@@ -275,11 +310,12 @@ export class GhostPipeDispatcher {
     }
 
     const callId = request.callId && request.callId.length > 0 ? request.callId : randomUUID();
-    // ── 按需拉起 + 代次对齐 ─────────────────────────────────────────────
-    const running = this.deps.runtimeStateOf(storagePart) === 'running';
+    // ── 按需拉起 + 代次对齐 + 崩溃恢复 ─────────────────────────────────
+    const stateBefore = this.deps.runtimeStateOf(storagePart);
+    const running = stateBefore === 'running';
     if (!running) {
       this.deps.log?.info('ghost tool waiting for sandbox readiness', {
-        ghostId: storagePart, tool, callId, state: this.deps.runtimeStateOf(storagePart),
+        ghostId: storagePart, tool, callId, state: stateBefore,
       });
     }
     // 代次对齐:沙箱报 running 不代表它就是**当前安装记录**拉起的。更新提交后旧
@@ -289,8 +325,15 @@ export class GhostPipeDispatcher {
     // (2026-11-18 dev 同步热更新实测)。spawn 是幂等的代次对齐入口:同身份立即返回,
     // 不匹配就停旧沙箱、拉起新代次并等它就绪,让活跃会话自动 rebind(不再依赖每条
     // 更新路径都记得停实例)。
+    //
+    // crashed 态优先走受控重启(2026-11-19 用户实测):沙箱崩溃后状态机可能停在
+    // "已收尸但逻辑页绑定还在"的形态,后续每单都投递失败并永久报"电子脑离线"。
+    // 这里先停再按当前安装记录从零拉起,比只调 spawn 更彻底(单飞+受每次调用一次
+    // 限制,失败仍回原 GHOST_CRASHED)。
     if (!running || this.deps.isCurrentInstall?.(ghost) === false) {
-      const spawned = await this.deps.spawn(ghost);
+      const spawned = stateBefore === 'crashed' && this.deps.restart
+        ? await this.restartSandbox(ghost, storagePart, { respectCooldown: false })
+        : await this.deps.spawn(ghost);
       if (!spawned.ok) {
         return { ok: false, errorCode: 'GHOST_CRASHED', message: `插件启动失败:${spawned.reason}` };
       }
@@ -344,29 +387,176 @@ export class GhostPipeDispatcher {
         this.settle(callId, this.ownerBoundaryResult());
         return;
       }
-      const delivered = (accepted: boolean) => {
-        if (!this.ownerScopeUsable(storagePart, ownerScopeSnapshot)) {
-          this.settle(callId, this.ownerBoundaryResult());
-          return;
-        }
-        if (!accepted) {
-        // 逻辑页不在线(拉起后瞬时死亡等):立即收卷。
-        this.settle(callId, { ok: false, errorCode: 'GHOST_CRASHED', message: '电子脑离线,派发失败' });
-        } else {
+      /**
+       * 交付已到达逻辑卷。`refreshUsage` = 这次是受控重启后的重投:重启的 stop 已让
+       * 旧 volume 的用量观测失效(`PluginInvocations.invalidate`),恢复成功的新
+       * volume 要用同一 callId 重新建观测,否则这次**成功了**的调用反而不进用量/
+       * 计费统计,还每次留 warn。
+       */
+      const acceptDelivery = (refreshUsage = false) => {
+        if (refreshUsage && !entry.usageAccepted) this.refreshUsageObserver(entry, ghost, callId, tool, request.sessionId);
         entry.usageAccepted = true;
         this.observeUsage(() => entry.usage?.accepted(Date.now()));
         // A synchronous transport/test may already have returned the result.
         if (entry.usageOutcome) this.observeUsage(() => entry.usage?.settled(entry.usageOutcome!));
+      };
+      const settleOffline = () => {
+        // 逻辑页不在线(拉起后瞬时死亡等):立即收卷。这是恢复失败后的原语义,
+        // 用户可见文案不变。
+        this.settle(callId, { ok: false, errorCode: 'GHOST_CRASHED', message: '电子脑离线,派发失败' });
+      };
+      const delivered = async (accepted: boolean) => {
+        if (!this.ownerScopeUsable(storagePart, ownerScopeSnapshot)) {
+          this.settle(callId, this.ownerBoundaryResult());
+          return;
         }
+        if (accepted) {
+          acceptDelivery();
+          return;
+        }
+        // 投递失败 = 逻辑页离线。先做**一次**受控重启,恢复后把同一份卷子重投一次
+        // (2026-11-19 用户实测:330s 超时后沙箱永久离线,后续每单都直接失败,只能
+        // 重开会话)。重启失败/重投仍失败都回到原 GHOST_CRASHED 语义,不无限重试。
+        const recovered = await this.recoverOfflineSandbox(ghost, storagePart, callId);
+        if (!recovered || !this.pending.has(callId)) {
+          if (this.pending.has(callId)) settleOffline();
+          return;
+        }
+        if (!this.ownerScopeUsable(storagePart, ownerScopeSnapshot)) {
+          this.settle(callId, this.ownerBoundaryResult());
+          return;
+        }
+        this.recoveringCalls.add(callId);
+        let retried = false;
+        try {
+          const delivery = this.deps.sendToGhost(storagePart, payload);
+          retried = typeof delivery === 'boolean' ? delivery : await delivery;
+        } catch {
+          retried = false;
+        } finally {
+          this.recoveringCalls.delete(callId);
+        }
+        if (retried) {
+          // 重投成功但本单可能已在恢复期间被结算(超时/账号边界):只给仍在途的
+          // 卷记 accepted,避免事后冒出一次无主的使用观测。重启会 invalidate 旧
+          // volume 的 usage 观测,所以这一单要按同一 callId 重建观测后再记。
+          if (this.pending.has(callId)) acceptDelivery(true);
+          return;
+        }
+        if (this.pending.has(callId)) settleOffline();
       };
       try {
         const delivery = this.deps.sendToGhost(storagePart, payload);
         // Desktop IPC is synchronous; the headless Chromium transport confirms
         // delivery asynchronously. Both use the same once-only result record.
-        if (typeof delivery === 'boolean') delivered(delivery);
-        else void delivery.then(delivered, () => delivered(false));
-      } catch { delivered(false); }
+        if (typeof delivery === 'boolean') void delivered(delivery);
+        else void delivery.then((accepted) => delivered(accepted), () => delivered(false));
+      } catch { void delivered(false); }
     });
+  }
+
+  /**
+   * 受控重启后重建用量观测(同一 callId)。
+   *
+   * 重启 = stop + spawn,stop 的 onStateChanged 会调 `PluginInvocations.invalidate`,
+   * 旧 volume 的 observer 的 accepted/settled 全部抛 `INVALID_INVOCATION`(被
+   * `observeUsage` 吞成一条 warn)。恢复成功的新 volume 必须重新登记观测,否则这次
+   * 成功的调用不计入用量/计费。生产 `prepareUsage` 按 callId 幂等:真被 invalidate
+   * 过就新建一条,没被清掉则复用同一条,不会重复记账。
+   *
+   * 重挂失败(插件被禁用/账号边界变了)时保留旧对象:行为回到修复前(该调用记不到
+   * 账 + warn),不凭空造一条半截观测。
+   */
+  private refreshUsageObserver(
+    entry: PendingCall,
+    ghost: InstalledGhost,
+    callId: string,
+    tool: string,
+    sessionId?: string,
+  ): void {
+    if (!entry.usage) return;
+    this.observeUsage(() => {
+      entry.usage = this.deps.prepareUsage?.(ghost, callId, tool, sessionId) ?? null;
+    });
+  }
+
+  /**
+   * 沙箱离线恢复(投递失败触发的单次受控重启)。
+   *
+   * 返回 true 仅当重启成功且运行时确实回到 running。单飞:并发的离线投递共享同一次
+   * 重启;冷却阻止按调用连续重启抖动。没注入 restart(单测/旧装配)时直接 false,
+   * 保持原 GHOST_CRASHED 行为。
+   */
+  private async recoverOfflineSandbox(
+    ghost: InstalledGhost,
+    storagePart: string,
+    callId: string,
+  ): Promise<boolean> {
+    if (!this.deps.restart) return false;
+    this.deps.log?.warn('ghost sandbox offline; attempting one controlled restart', {
+      ghostId: storagePart,
+      callId,
+    });
+    this.recoveringCalls.add(callId);
+    let restarted: { ok: true } | { ok: false; reason: string };
+    try {
+      restarted = await this.restartSandbox(ghost, storagePart, { respectCooldown: true });
+    } finally {
+      this.recoveringCalls.delete(callId);
+    }
+    if (!restarted.ok) {
+      this.deps.log?.warn('ghost sandbox restart failed; keeping the original GHOST_CRASHED', {
+        ghostId: storagePart,
+        callId,
+        reason: restarted.reason,
+      });
+      return false;
+    }
+    return this.deps.runtimeStateOf(storagePart) === 'running';
+  }
+
+  /**
+   * 受控重启的执行点:同实例单飞 + 可选冷却。
+   *
+   * 重启本身会触发 runtime 的 stop/starting/running 状态变化;`recoveringCalls`
+   * 让 onRuntimeState 不提前结算正在等重投的那一单(其它在途卷照常收卷)。
+   */
+  private async restartSandbox(
+    ghost: InstalledGhost,
+    storagePart: string,
+    options: { respectCooldown: boolean },
+  ): Promise<{ ok: true } | { ok: false; reason: string }> {
+    const restart = this.deps.restart;
+    if (!restart) return { ok: false, reason: '派发通道不支持重启' };
+    const existing = this.sandboxRestarts.get(storagePart);
+    if (existing) return existing;
+    if (options.respectCooldown) {
+      const last = this.lastSandboxRestartAt.get(storagePart);
+      if (last !== undefined && Date.now() - last < SANDBOX_RESTART_COOLDOWN_MS) {
+        return { ok: false, reason: '沙箱刚刚重启过,冷却中' };
+      }
+    }
+    // 先登记单飞 Promise、再真正启动重启:重启入口会同步触发 runtime 的 stop
+    // 状态变化,`onRuntimeState` 靠这张表识别"这是主机自己的恢复动作"。
+    const shared = Promise.resolve()
+      .then(async () => {
+        this.lastSandboxRestartAt.set(storagePart, Date.now());
+        this.deps.log?.info('ghost sandbox controlled restart', { ghostId: storagePart });
+        try {
+          return await restart(ghost);
+        } catch (error) {
+          return {
+            ok: false as const,
+            reason: error instanceof Error ? error.message : String(error),
+          };
+        }
+      })
+      .finally(() => {
+        // 单飞槽在 finally 里清空:此后再进来的调用会开启新一次重启。
+        this.sandboxRestarts.delete(storagePart);
+      });
+    this.sandboxRestarts.set(storagePart, shared);
+    return shared;
   }
 
   /** Cancel opt-in work and deny late opt-in; legacy completion remains unchanged. */
@@ -668,15 +858,22 @@ export class GhostPipeDispatcher {
   /**
    * 运行时状态钩子:意识崩溃/熔断/熄灯时,把它名下全部在途调用收掉
    * (brain/index.ts 在 onStateChanged 里接线)。
+   *
+   * 恢复流程自己会 stop/spawn 并制造这些状态变化:正在等重投的那一单必须留下
+   * (`recoveringCalls`),否则重投永远没机会发生;同一实例的其它在途卷照常收卷。
    */
   onRuntimeState(ghostId: string, state: GhostRuntimeState): void {
     if (state === 'running' || state === 'starting') return;
     const isCrash = state === 'crashed' || state === 'fused';
+    // 恢复流程里的 stop 不是"用户停用":同一实例的其它在途卷按崩溃收卷,别把
+    // 「沙箱正在重启」谎报成 GHOST_ASLEEP(那会让 agent 以为插件被禁用)。
+    const recoveringSandbox = this.sandboxRestarts.has(ghostId);
     for (const [callId, entry] of [...this.pending]) {
       if (entry.ghostId !== ghostId) continue;
+      if (this.recoveringCalls.has(callId)) continue;
       this.settle(
         callId,
-        isCrash
+        isCrash || recoveringSandbox
           ? { ok: false, errorCode: 'GHOST_CRASHED', message: '插件执行中崩溃' }
           : { ok: false, errorCode: 'GHOST_ASLEEP', message: '插件执行中被停用' },
       );

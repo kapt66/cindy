@@ -222,6 +222,7 @@ import {
   constrainPiDestructivePathResolution,
   PiAgent,
 } from '../index.js';
+import { CINDY_PI_MULTI_SELECT_PREFIX } from '../cindy-bridge-source.js';
 import { Session } from '../../../session.js';
 import type { AgentDeps, AgentSessionHandle } from '../../base-agent.js';
 import type { Logger } from '../../../interfaces/logger.js';
@@ -1740,6 +1741,153 @@ describe('pi auto-review dispatch & spawn config (mocked pi process)', () => {
         id: 'select-empty',
         cancelled: true,
       });
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it('marks a prefixed Pi select as multi-select and strips the prefix from the card', async () => {
+    const handle = await start();
+    const questions: Array<{
+      question: string;
+      header?: string;
+      options?: Array<{ label: string }>;
+      multiSelect?: boolean;
+    }> = [];
+    handle.setInteractionResolver(async (request) => {
+      if (request.kind !== 'ask_user_question') throw new Error(`unexpected interaction ${request.kind}`);
+      const question = request.questions[0]!;
+      questions.push(question);
+      // The renderer encodes a multi-select answer as JSON.stringify(labels); the Host
+      // must hand that string back to the bridge verbatim.
+      const answer = question.multiSelect ? JSON.stringify(['Ada', 'Linus']) : 'Grace';
+      return { kind: 'ask_user_question', answers: { [question.question]: answer } };
+    });
+    try {
+      captured.onEvent!({
+        type: 'extension_ui_request',
+        id: 'select-multi',
+        method: 'select',
+        title: CINDY_PI_MULTI_SELECT_PREFIX + 'Which reviewers?',
+        options: ['Ada', 'Grace', 'Linus'],
+      });
+      expect(await waitForResponse('select-multi')).toEqual({
+        type: 'extension_ui_response',
+        id: 'select-multi',
+        value: JSON.stringify(['Ada', 'Linus']),
+      });
+
+      captured.onEvent!({
+        type: 'extension_ui_request',
+        id: 'select-plain',
+        method: 'select',
+        title: 'Pick one',
+        options: ['Ada', 'Grace'],
+      });
+      expect(await waitForResponse('select-plain')).toEqual({
+        type: 'extension_ui_response',
+        id: 'select-plain',
+        value: 'Grace',
+      });
+
+      // The prefix is only meaningful on `select`; other dialog methods keep their
+      // existing single-value semantics even if an extension sends the same text.
+      captured.onEvent!({
+        type: 'extension_ui_request',
+        id: 'input-prefixed',
+        method: 'input',
+        title: CINDY_PI_MULTI_SELECT_PREFIX + 'Enter value',
+        placeholder: 'name',
+      });
+      expect(await waitForResponse('input-prefixed')).toEqual({
+        type: 'extension_ui_response',
+        id: 'input-prefixed',
+        value: 'Grace',
+      });
+
+      expect(questions[0]).toEqual({
+        question: 'Which reviewers?',
+        header: 'Which reviewers?',
+        options: [{ label: 'Ada' }, { label: 'Grace' }, { label: 'Linus' }],
+        multiSelect: true,
+      });
+      // An unprefixed select keeps today's question shape: no multiSelect flag.
+      expect(questions[1]).toEqual({
+        question: 'Pick one',
+        header: 'Pick one',
+        options: [{ label: 'Ada' }, { label: 'Grace' }],
+      });
+      expect(Object.hasOwn(questions[1]!, 'multiSelect')).toBe(false);
+      expect(questions[2]).toMatchObject({
+        question: CINDY_PI_MULTI_SELECT_PREFIX + 'Enter value\n\nExpected input: name',
+      });
+      expect(Object.hasOwn(questions[2]!, 'multiSelect')).toBe(false);
+    } finally {
+      await handle.close();
+    }
+  });
+
+  // 2026-11-19 终审 P2-4：bridge 的合法多选 title 是 `prefix + header(≤80) + '\n' +
+  // question(≤512)`；Host 过去剥掉前缀后仍按 512 截断，合法问题被砍约 96 字符。
+  it('keeps a maximum-length multi-select card intact and bounds only single-select titles', async () => {
+    const handle = await start();
+    const questions: Array<{
+      question: string;
+      header?: string;
+      options?: Array<{ label: string }>;
+      multiSelect?: boolean;
+    }> = [];
+    handle.setInteractionResolver(async (request) => {
+      if (request.kind !== 'ask_user_question') throw new Error(`unexpected interaction ${request.kind}`);
+      const question = request.questions[0]!;
+      questions.push(question);
+      const answer = question.multiSelect ? JSON.stringify(['A']) : 'A';
+      return { kind: 'ask_user_question', answers: { [question.question]: answer } };
+    });
+    try {
+      const header = 'H'.repeat(80);
+      const body = 'Q'.repeat(512);
+      captured.onEvent!({
+        type: 'extension_ui_request',
+        id: 'select-max-multi',
+        method: 'select',
+        title: CINDY_PI_MULTI_SELECT_PREFIX + header + '\n' + body,
+        options: ['A', 'B'],
+      });
+      expect(await waitForResponse('select-max-multi')).toEqual({
+        type: 'extension_ui_response',
+        id: 'select-max-multi',
+        value: JSON.stringify(['A']),
+      });
+
+      // A plain select title keeps the original 512 bound — the relaxation is
+      // scoped to the bridge-composed multi-select title only.
+      captured.onEvent!({
+        type: 'extension_ui_request',
+        id: 'select-long-plain',
+        method: 'select',
+        title: 'P'.repeat(513),
+        options: ['A', 'B'],
+      });
+      expect(await waitForResponse('select-long-plain')).toEqual({
+        type: 'extension_ui_response',
+        id: 'select-long-plain',
+        value: 'A',
+      });
+
+      expect(questions[0]).toEqual({
+        question: header + '\n' + body,
+        header: header + '\n' + body,
+        options: [{ label: 'A' }, { label: 'B' }],
+        multiSelect: true,
+      });
+      expect(questions[0]!.question.length).toBe(593);
+      expect(questions[1]).toEqual({
+        question: 'P'.repeat(512),
+        header: 'P'.repeat(512),
+        options: [{ label: 'A' }, { label: 'B' }],
+      });
+      expect(questions[1]!.question.length).toBe(512);
     } finally {
       await handle.close();
     }

@@ -101,7 +101,7 @@ PR #101 之后，Orca 的 main 侧业务由独立 service 承接，`register.ts`
 | 服务                        | 文件                                                           | 责任                                                                                                                                                                                    |
 | --------------------------- | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `OrcaLifecycleService`      | `apps/desktop/src/main/maker-ipc/orcaLifecycleService.ts`      | `start_team`、开启协同 `enableTeam`、创建 team、读取或更新 Worker 创建权限偏好、设置 Lead `orcaRole`、首个 worker 创建补偿                                                              |
-| `OrcaWorkerCreationService` | `apps/desktop/src/main/maker-ipc/orcaWorkerCreationService.ts` | 既有 team 下创建 worker，统一 role/label/model/effort/fast 校验与默认值；新 Worker 使用 `workerCreationPrefs` 的权限偏好，不继承 Lead 当前模式；创建 worker session 并写 `orca_workers` |
+| `OrcaWorkerCreationService` | `apps/desktop/src/main/maker-ipc/orcaWorkerCreationService.ts` | 既有 team 下创建 worker，统一 role/label/model/effort/fast 校验与默认值；新 Worker 使用 `workerCreationPrefs` 的权限偏好，不继承 Lead 当前模式；远程/跨设备 Worker 的 `auto` 在创建处强制升级为 `bypassPermissions`（升级原因随结果回传）；创建 worker session 并写 `orca_workers` |
 | `OrcaTeamService`           | `apps/desktop/src/main/maker-ipc/orcaTeamService.ts`           | 给既有 worker 派活、resume、idle、archive、terminal turn 处理与 auto-bridge                                                                                                             |
 | `OrcaInterAgentDispatcher`  | `apps/desktop/src/main/maker-ipc/orcaInterAgentDispatcher.ts`  | Lead/Worker 之间的消息直发或排队、accepted callback、rollback/settle 语义                                                                                                               |
 
@@ -188,6 +188,49 @@ Worker 权限是 **Worker 创建偏好**，与 Agent、模型、effort、Fast �
   代码注释（`start_team.ts:49-51`）明确写了这一点。
 - `create_worker` / `create_workers` 省略权限参数，统一读取当前偏好；不继承 Lead 的 `sessions.permission_mode`，也不修改已经创建的 Worker。
 - device-link 新控制端只有在被控端 capabilities 明确声明支持 Worker 权限选择时才允许开启协同；已有旧版远程 Team 继续兼容旧创建行为，不宣称或回写该端不支持的偏好。
+- **远程/跨设备 Worker 强制 Full access（状态：不变量，2026-11-19）**：Cindy 负责的 Auto 审核
+  要求 owning session 能给出用户原话（`userIntent`，逐条消息拼成的用户意图）或经批准插件的
+  委派（`delegatedTask`）；两者都没有时规则是 **only reads**，除只读外一律拦下
+  （`apps/desktop/src/main/maker-host/auto-permission-reviewer.ts` 的 LIMITS；用户实测会话
+  0eba4a5f：Meka Lead 用 `remote_host_id=mcpr:<instance>` 建 Worker，Auto 下 Write 被拦，
+  提示「No user request authorizes this action; only reads may run without one.」）。远程/
+  跨设备 Worker 由 Lead 派单创建，没有用户直接参与，Auto 的授权前提不成立，所以：
+  - 判定与升级都发生在 **Worker 创建处**（`orcaWorkerCreationService.ts` 的
+    `createResolvedWorkerInTeam` / `createRemoteWorkerInTeam`），只认 Host 解析后的 transport
+    身份：`execution_device_id` 一定算远程；`remoteHostId` 取 `resolveWorkerTarget` 的结果
+    （Meka `mcpr:<instanceId>`、显式远端目标、SSH Lead 继承给 Worker 的远端目标都算），
+    不采信 prompt 里的 `remote_host_id` 字样。
+  - 团队解析出的模式是 `auto` 时强制以 `bypassPermissions` 启动该 Worker；结果带
+    `permissionMode`、`permissionModeUpgraded: true`、
+    `permissionModeReason: 'remote-worker-requires-full-access'`。MCP `create_worker` /
+    `create_workers` 把它回显为 `worker_permission_mode` / `permission_mode_upgraded` /
+    `permission_mode_reason` / `permission_mode_note`（批量与单条同一组字段、同一份 note），
+    Lead 应把「远程 Worker 已用完全访问创建」转告用户，不得静默改权限。
+  - **本机 Worker 不升级**：`auto` 仍是 `auto`，`bypassPermissions` 仍是
+    `bypassPermissions`，原有语义不变。升级只作用于本次创建的 Worker session：不写用户全局
+    Worker 偏好（`DEFAULT_ORCA_WORKER_PERMISSION_MODE` 仍是 `bypassPermissions`）、不改 Team
+    偏好存储、不改为别的 Worker 保存的权限。
+  - 判定入口是 `packages/lizi-mcps/src/xdt-helper/create_worker.ts` 的
+    `workerPermissionPayload`；工具描述（`start_team` / `create_worker` / `create_workers`）
+    同步写明「Auto 需要 userIntent/delegatedTask，没有用户直接参与的 Worker（尤其远程 Worker）
+    不要选 auto」与强制升级回显字段。
+  - **团队偏好与实际权限分开回显（2026-11-19 终审补）**：`enable_collab_mode`
+    （renderer `SESSION_ENABLE_ORCA` / `enableOrca` IPC）的首个 Worker 创建结果现在同时返回
+    `workerPermissionMode`（团队默认偏好）与 `firstWorkerPermissionMode` /
+    `firstWorkerPermissionModeUpgraded` / `firstWorkerPermissionModeReason`（首 Worker **实际**
+    启动权限）。远程/跨设备 Worker 的 `auto → bypassPermissions` 升级不再被团队偏好掩盖，
+    IPC 与远程控制端可如实展示。MCP `start_team` **只建 team、不创建 Worker**
+    （`maker-ipc/register.ts` 的注释与 `start_team.ts` 文件头），所以它的结果没有首 Worker
+    字段（「无首 Worker 时省略」），只透传团队默认；若宿主在同一结果里报告首 Worker，则按
+    `first_worker_permission_mode*` 原样回显。首 Worker 的实际权限仍以创建入口结果为准
+    （`create_worker` / `create_workers` 的 `worker_permission_mode*`）。
+  - **已知交互（未裁决，2026-11-19 记录）**：`mekaLockWorkerPermissionMode` 只收敛
+    `start_team` 的团队默认模式（钉在 `auto`），而远程升级在创建路径上求值，因此宿主若同时
+    声明只读工作流锁又创建远程 Worker，升级仍会生效；未来任何把「Worker 必须 Auto」钉在
+    权限 override 上的宿主策略（`getWorkerPermissionModeOverride`）同样不会阻止远程升级。
+    该锁目前**没有仓内生产者**，插件任务授权 override 也尚未携带 `permissionMode`；外部宿主
+    若需要「远程也只读」的 Worker，需要另加开关，当前不支持，不要在文档或代码里把它当作
+    已实现能力。
 
 工具注册是全局可见 + handler 拒绝：
 
@@ -949,7 +992,7 @@ Mobile 的入口读取和残留表单提交都检查该身份，元数据补齐�
 - Service 边界：`orcaLifecycleService`、`orcaWorkerCreationService`、`orcaTeamService` 的单测覆盖 start/enable/create/dispatch/idle/archive/auto-bridge 关键路径。
 - Auto-resume × auto-bridge：pending/deferred 的 vendor 终态不得 bridge / 置 `error`；失败轮随后的 unclaimed `done` 同样不得收口（含用户接手 force-flush 之后、无 persist-id 的零输出尾巴）；无配对 `done` 的旧 tail 不得吞掉后续更大 generation 的产品 `done`；surface/exhaust 恰好一次收口；成功续跑保持 `running` 且 pending 仍在；手动 stop 仍不 bridge。见 `autoResumeBookkeeping.test.ts` 的 `shouldSkipOrcaWorkerTerminal` 与 `interruptedContinuationContract.test.ts`。
 - 空闲 live 直发：`orcaInterAgentDispatcher` 在 `session.send()` 前必须先 `prepareUnhealthySession`，再重新 `getLiveSession`；prepare 关闭旧 handle 后不得继续向旧对象 send。并发直发必须串行化到同一把 per-session 锁。
-- Worker 创建权限偏好：覆盖无保存偏好时默认 `bypassPermissions`、已保存的 `auto` / `bypassPermissions` 继续优先、MCP 显式 `auto → bypassPermissions` 必须先经用户确认且取消／超时零副作用、复用 Team 时省略不重置／显式才更新、首个与后续 Worker 都读取共享创建偏好、已有 Worker 权限不反写、renderer localStorage 启动同步与 tool 写回，以及旧 device-link 被控端被阻止开启协同并提示升级。
+- Worker 创建权限偏好：覆盖无保存偏好时默认 `bypassPermissions`、已保存的 `auto` / `bypassPermissions` 继续优先、MCP 显式 `auto → bypassPermissions` 必须先经用户确认且取消／超时零副作用、复用 Team 时省略不重置／显式才更新、首个与后续 Worker 都读取共享创建偏好、已有 Worker 权限不反写、renderer localStorage 启动同步与 tool 写回，以及旧 device-link 被控端被阻止开启协同并提示升级。远程/跨设备 Worker 另覆盖：`execution_device_id` 与 Host 解析出的 `remoteHostId`（MCPRouter / SSH Lead 继承）在团队模式 `auto` 时实际以 `bypassPermissions` 启动并带 `permissionModeUpgraded` / `permissionModeReason`；本机 Worker 保持 `auto`；已是 `bypassPermissions` 的远程 Worker 不重复标记升级；`create_worker` / `create_workers` 回显同一组权限字段；`enable_collab_mode` 结果回显首 Worker 实际权限与 upgraded/reason（团队偏好单独保留），MCP `start_team` 无首 Worker 时省略 `first_worker_permission_mode*`、宿主报告时透传。
 - 交接与恢复（2026-11-11）：创建回执的 `initial_task_state` / `file_access`；出错 Worker 的异常终止回报带原地恢复说明；归档或重新派活后该 Worker 的过期异常终止回报被撤下且回执带回正文，成果与其他 Worker 的回报不动；已归档 Worker 的名字可重新使用；远程 Agent 写进协同正文的虚拟路径落成本机路径。
 - MCP 工具：`cindy_orca` 22 工具（18 team + 3 只读诊断 + `wait_for_worker`）的 role gate、ctx 缺失、worker/main 误调用、soft/hard limit、duplicate label、budget model API mode gate；`create_workers` 另覆盖默认 hard limit、配置 hard=3、部分成功、连续失败与 hard-limit 后不再调用 host；`update_worker` 覆盖归属校验（跨 lead 拒绝）、role/label 归一、idempotent 空操作、duplicate label 与生成标题同步；诊断工具的纯只读语义（无 active team 时返回空 workspace、不建 team）；排队消息控制 6 工具的归属校验（跨 lead 拒绝）、完整 consuming 投影、非 lead 条目拒绝（`NOT_LEAD_MESSAGE`）、自身队列非协同条目拒绝（`NOT_ORCA_MESSAGE`）、steering 拒绝（`MESSAGE_CONSUMING`）、撤回结清 accepted 暂存、合并的连续性、冲突零修改与移除回调结清，以及转插话的原因回执与排序落点；`send_to_worker` / `send_to_lead` 的 `delivery` 缺省不透传、显式插话与各类 fallback 原因；`interrupt_worker` 另覆盖队首预留、暂停态、graceful-stop 全部 outcome、auto-bridge 抑制和 done 互斥。
 - Codex MCP context：`CodexMcpThreadContextStore` 覆盖按 threadId 查 context、unknown / missing threadId fail-closed、unregister 后清理、`vendorOptions` 引用保持；`codexHttpBridge` 覆盖从 JSON-RPC `params._meta.threadId` 注入真实 session context。

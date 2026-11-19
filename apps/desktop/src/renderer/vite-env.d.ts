@@ -1729,6 +1729,12 @@ interface ElectronAPI {
     /** confirm 槽回包:把用户的点击送回 main 结算挂起的管子请求。 */
     onConfirmDismissed?: (callback: (payload: { requestId: string }) => void) => () => void;
     resolveConfirm: (requestId: string, confirmed: boolean) => Promise<{ handled: boolean }>;
+    /**
+     * confirm 槽「已收到」回执:收到推送后立即回。main 收不到回执会在 8s 后把
+     * 同一请求改投主窗口一次(防选窗判据漏掉某个窗口类型时白等 90s)。
+     * 可选:旧 preload / client-mode 无此桥时 renderer 直接跳过。
+     */
+    ackConfirm?: (requestId: string) => Promise<{ handled: boolean }>;
     onModelPickerRequest: (callback: (request: import('../shared/pluginModelPicker').PluginModelPickerPresentation) => void) => () => void;
     onModelPickerDismissed: (callback: (request: { requestId: string }) => void) => () => void;
     resolveModelPicker: (requestId: string, route: import('../shared/pluginTasks').PluginTaskRoute | null) => Promise<{ handled: boolean; accepted: boolean }>;
@@ -6708,7 +6714,12 @@ interface ElectronAPI {
       workerSessionId: string;
       workerId: string;
       dispatched: boolean;
+      /** Team 的 Worker 创建默认偏好，不是首 Worker 实际权限。 */
       workerPermissionMode: 'auto' | 'bypassPermissions';
+      /** 首个 Worker 实际启动权限；远程/跨设备 Worker 的 auto 会被创建处升级。 */
+      firstWorkerPermissionMode?: 'auto' | 'bypassPermissions';
+      firstWorkerPermissionModeUpgraded?: true;
+      firstWorkerPermissionModeReason?: 'remote-worker-requires-full-access';
       uiAssignmentSnapshotBeforeMs: number;
     }>;
 
