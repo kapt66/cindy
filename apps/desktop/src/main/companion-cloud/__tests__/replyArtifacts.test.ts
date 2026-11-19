@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { canCreateSymlinks } from '../../../test/vitest/symlinkSupport';
 import { collectReplyReferences, replyArtifactAttachments, replyPathToLookup, replyTextWithFiles, toolResultImageUrls, REPLY_ARTIFACTS_MAX } from '../replyArtifacts.js';
 
 const HASH = 'a'.repeat(64);
@@ -69,7 +70,8 @@ describe('replyArtifactAttachments', () => {
     expect(files[0]).toMatchObject({ name: 'report.docx', category: 'file', path: path.join(root, 'documents', 'report.docx'), url: null, size: 10 });
   });
 
-  it('sends a deliverable from the work folder but never code or configuration, even when the reply names it', async () => {
+  // Windows 无 symlink 权限的环境跳过「链接伪装成交付物」这一段；CI/Linux 与有权限的机器仍执行。
+  it.skipIf(!canCreateSymlinks())('sends a deliverable from the work folder but never code or configuration, even when the reply names it', async () => {
     await fs.mkdir(path.join(root, 'config'));
     await fs.mkdir(path.join(root, 'src', 'keys'), { recursive: true });
     await fs.writeFile(path.join(root, 'config', 'production.yml'), 'secret: 1');
@@ -98,7 +100,8 @@ describe('replyArtifactAttachments', () => {
     expect(files.map(file => file.name).sort()).toEqual(['chart.png', 'report.docx']);
   });
 
-  it('never reads outside the work folder, through a link out of it, a hidden file, or an oversized one', async () => {
+  // Windows 无 symlink 权限的环境跳过；CI/Linux 与有权限的机器仍执行。
+  it.skipIf(!canCreateSymlinks())('never reads outside the work folder, through a link out of it, a hidden file, or an oversized one', async () => {
     await fs.writeFile(path.join(outside, 'secret.docx'), 'secret');
     await fs.symlink(path.join(outside, 'secret.docx'), path.join(root, 'documents', 'link.docx'));
     await fs.writeFile(path.join(root, '.env.docx'), 'hidden');

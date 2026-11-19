@@ -58,9 +58,15 @@ const brief = (ms: NormalizedMessage[]) => ms.map((m) => `${m.role}:${typeof m.c
 beforeAll(async () => {
   home = await mkdtemp(path.join(os.tmpdir(), 'cindy-import-fixtures-'));
   await mkdir(project(), { recursive: true });
+  // 适配器根目录优先读宿主环境变量（deepseek 读 `DSH_HOME`，缺省 `~/.dsh`）。
+  // 单测进程可能正跑在 DSH 内（本机 `DSH_HOME` 已指向真实 `~/.dsh`），不隔离
+  // 就会导到真实会话而不只是临时 home 的样本；钉到临时 home 才符合本文件
+  // "临时目录里的文件" 的 tier 约定。
+  vi.stubEnv('DSH_HOME', path.join(home, '.dsh'));
 });
 
 afterAll(async () => {
+  vi.unstubAllEnvs();
   await rm(home, { recursive: true, force: true });
 });
 

@@ -156,6 +156,13 @@ describe('plugin identity and managed Skills: desktop production functions and t
       getAuthState: () => ({ isAuthenticated: user !== null, user }),
       PluginMarketLedger, loadGhostFirstPartyFactsLoader, authorizeGhostTokenBroker, createOrganizationPrefixStore,
       loadConnectionAudienceResolver, readInstalledGhostManifestSnapshot, installedMarketManifestIdentity,
+      // getConnectionAudienceResolver 从 index.ts 抽出后引用的模块级符号：本用例只覆盖
+      // 市场/组织/第三方三类安装，不涉及随包种子、Meka 渠道账本或 PSB 覆盖，按各
+      // 语义给中性值（否则 new Function 里是未声明的 free identifier）。
+      isTrustedBundledGhostId: (): boolean => false,
+      readMekaMarketInstallation: (): null => null,
+      mekaPsbHostOverrideHost: (): null => null,
+      mekaDevPluginsSingleton: null,
       GHOST_INSTALL_MANIFEST_MAX_BYTES, deliveryNamespaceFields, parsePluginInstanceId,
       getGhostRuntime: () => ({ stop() {} }), log: { info() {}, warn() {}, error() {}, debug() {} },
     });

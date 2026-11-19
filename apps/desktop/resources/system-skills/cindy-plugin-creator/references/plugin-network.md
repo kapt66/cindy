@@ -273,6 +273,8 @@ identity.displayTemplate 时,`/oauth` 回查与连接结果里 account.label 给
 `{"scopes":[...]}`——本次授权只申请清单 scopes 的**非空子集**(如"只读连接"
 按钮只带读 scope);越界或不在清单里的条目 400。不带 body = 申请全量声明面。
 
+## 4.7.1 媒体传输、目录过户与多连接
+
 **媒体上传(upload,媒体模式的镜像)**:要把媒体文件传给你的服务(改图源图、
 参考图等),在 fetch 请求里报总仓指纹,主机验归属、读字节、代组 multipart——
 字节同样不进你的沙箱:
@@ -400,11 +402,11 @@ maxConnections 收紧到 1–8);token ≤4096 字符。新连接添加成功时�
 白名单。长任务可用下面的流式连接，或用"提交 + 轮询"两个工具拆开做;在一次
 tool-call 内轮询时记得定期发 tool-progress 心跳续命(见 §4"长任务续命")。
 
-## 4.7.1 流式 HTTP 与 WebSocket
+## 4.7.2 流式 HTTP 与 WebSocket
 
 `cindy.fetch({as:'stream'})` 在响应头到达后立即返回 `{ok:true,status,headers,connectionId}`，
 只接收 UTF-8 文本（含 SSE/NDJSON）；媒体下载继续使用 `as:'media'` 或 Library。
-HTTP 的来源、逐跳守门与凭证注入沿用本章规则。WebSocket 使用完整 `ws://` 或 `wss://`
+HTTP 的来源、逐跳守门与凭证注入沿用 §4.7 的规则。WebSocket 使用完整 `ws://` 或 `wss://`
 origin 声明，例如 `network.hosts:["wss://stream.example.com"]`，不会从旧 HTTPS 域名批准推导，
 也不跟随握手重定向。沙箱本身仍不能直连。
 
@@ -462,7 +464,7 @@ Node 此入口仅使用已声明网络权限，不接受插件自报 callId 来�
 ### Library 下载与上传
 
 下载到本插件 Library 用 as:'library' 和库内 path；上传用 upload.library 相对路径数组。
-两者需要 library:true，域名和凭证按本章声明；检查 ok、HTTP status 和 truncated。
+两者需要 library:true，域名和凭证按 §4.7 声明；检查 ok、HTTP status 和 truncated。
 
 ```js
 const downloaded = await cindy.fetch({
@@ -479,7 +481,7 @@ const uploaded = await cindy.fetch({
 upload.library 与 upload.hashes 二选一，最多 4 个文件，单件 64 MiB、总量 128 MiB。
 对话交接的副本用 `upload.handoff:['handoff:<uuid>']`，与两者三选一，见 4.10.3。
 超限返回 TOO_LARGE；下载到 Library 单件上限 8 GiB，仍受磁盘空间约束。
-401 时的令牌重试按本章各凭证规则（exchange / OAuth 对写请求也会重试一次）；插件代码不要再自行重试
+401 时的令牌重试按 §4.7 各凭证规则（exchange / OAuth 对写请求也会重试一次）；插件代码不要再自行重试
 有副作用的调用，后端仍按请求编号去重。页面调用及文件预览见[§4.23](plugin-interactive-pages.md)。
 
 ### MCP Apps 页面生成手册头
@@ -490,7 +492,7 @@ upload.library 与 upload.hashes 二选一，最多 4 个文件，单件 64 MiB�
 `mcpAppsManual: true` 强制带（如 `load_view` 要片段），`false` 不带。只发往已声明主机，跳到其它主机即删；
 自带的同名头被剥除。开发版（0.0.0）、Node 工作进程与旧版 Cindy 不带：后端缺头时用缓存手册，按 sha256 缓存与校验。
 
-## 4.7.2 使用已连接的 OAuth 账号
+## 4.7.3 使用已连接的 OAuth 账号
 
 保留现有 `source:'oauth'`、OAuth 服务端点、scope 和注入范围声明。用户可以在 Cindy
 自有的插件详情区选择已连接的同服务账号，点“使用”即保存来源引用，不必重新登录或再次确认。

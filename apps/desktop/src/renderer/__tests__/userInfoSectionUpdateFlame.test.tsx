@@ -10,13 +10,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { UpdateBanner } from '@/components/sidebar/UpdateBanner';
 import {
   deferUpdateBannerBecauseBusy,
+  getUpdateBannerDismissState,
   resetUpdateBannerDismissStoreForTests,
 } from '@/hooks/useUpdateBannerDismiss';
 import type { RawReleaseNotes } from '../../shared/releaseNotesContent';
 
 const harness = vi.hoisted(() => ({
   updateStatus: { status: 'ready', version: '1.2.3', errorCode: null as string | null },
-  restore: vi.fn(),
 }));
 
 vi.mock('react-i18next', () => ({
@@ -38,18 +38,10 @@ vi.mock('@/contexts/AuthContext', () => ({
   }),
 }));
 
-const updateStatus = vi.hoisted(() => ({ version: '1.2.3' }));
-
 vi.mock('@/hooks/useUpdateStatus', () => ({
   // Meka 保留可变 harness：下面按用例切换 status / errorCode（exhausted vs 其它错误）。
+  // 版本也走 harness —— 只有一份可变状态，renderUpdate 改它才会真的喂给组件。
   useUpdateStatus: () => harness.updateStatus,
-}));
-
-vi.mock('@/hooks/useUpdateBannerDismiss', () => ({
-  useUpdateBannerDismiss: () => ({ dismissed: true, restore: harness.restore, reason: 'busy' }),
-  // 上游本轮给该 store 加了仅供测试的重置入口；本文件用真实模块之外的替身，
-  // 生产代码 import 名存在即可（缺它会 `No "…” export is defined on the mock`）。
-  resetUpdateBannerDismissStoreForTests: () => {},
 }));
 
 vi.mock('@/hooks/useLocale', () => ({
@@ -78,12 +70,11 @@ import { UserInfoSection } from '@/components/sidebar/UserInfoSection';
 
 beforeEach(() => {
   harness.updateStatus = { status: 'ready', version: '1.2.3', errorCode: null };
-  harness.restore.mockClear();
-  // 上游在本文件引入真实 dismiss store 的显式复位与 busy 延迟；
-  // 组件侧仍走上面的 hook mock，两套初始化互不冲突。
+  // 全部走真实 dismiss store：busy 让路后的火焰按钮本身由 store 的
+  // dismissed + reason:'busy' 决定，不能再用 hook 替身伪造状态（上游本文件
+  // 已改为真实 store 初始化；替身还会漏掉新增导出）。
   resetUpdateBannerDismissStoreForTests();
-  updateStatus.version = '1.2.3';
-  deferUpdateBannerBecauseBusy('ready', updateStatus.version);
+  deferUpdateBannerBecauseBusy('ready', harness.updateStatus.version);
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
     value: {
@@ -118,7 +109,7 @@ describe('UserInfoSection reopens update notes', () => {
   }
 
   async function renderUpdate(version: string) {
-    updateStatus.version = version;
+    harness.updateStatus = { ...harness.updateStatus, version };
     render(<>
       <UpdateBanner isCollapsed={false} onOpenVersionNotice={vi.fn()} />
       <UserInfoSection isCollapsed={false} onOpenUpdateNotice={vi.fn()} />
@@ -198,15 +189,16 @@ describe('UserInfoSection update flame vs rail', () => {
     // The exhausted dialog is one-shot and `isErrorOnly` renders nothing else, so
     // this flame is the only way back to the manual-install guidance after "later".
     harness.updateStatus = { status: 'error', version: '1.2.3', errorCode: 'update_apply_exhausted' };
-    render(<UserInfoSection isCollapsed={false} onOpenUpdateNotice={() => {}} />);
+    const onOpenUpdateNotice = vi.fn();
+    render(<UserInfoSection isCollapsed={false} onOpenUpdateNotice={onOpenUpdateNotice} />);
 
     const flame = screen.getByRole('button', { name: 'sidebar.user.reopenUpdateBanner' });
     fireEvent.click(flame);
-    expect(harness.restore).toHaveBeenCalled();
-
+    // 真实 store：火焰是「唤回 banner」= restore，并钉住当前版本（busy 不再藏）。
+    expect(getUpdateBannerDismissState()).toMatchObject({ dismissed: false, reason: null, pinnedByUser: true });
     // Not the release-notes entry: reaching update history instead of the
     // manual-install dialog would strand the user on a version they cannot apply.
-    expect(screen.queryByRole('button', { name: 'sidebar.user.viewReleaseNotes' })).toBeNull();
+    expect(onOpenUpdateNotice).not.toHaveBeenCalled();
   });
 
   it('does not turn other error states into a reopen flame', () => {

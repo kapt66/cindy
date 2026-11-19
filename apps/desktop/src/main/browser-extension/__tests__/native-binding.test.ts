@@ -375,7 +375,9 @@ describe('native-binding', () => {
   it('fails closed when the executable is absent or the registration directory is a symlink', async () => {
     const { dir, binaryDir, profile } = await fixture();
     const link = path.join(dir, 'link');
-    await fs.symlink(profile, link);
+    // Windows 上目录符号链接若按默认 'file' 类型建需要特权；junction 是同一类重解析点，
+    // lstat().isSymbolicLink() 同样为 true，生产代码照旧拒绝（engineering-conventions §4）。
+    await fs.symlink(profile, link, process.platform === 'win32' ? 'junction' : 'dir');
     const linked = createNativeBinding({
       hostName: 'com.example.browser',
       binaryDir,

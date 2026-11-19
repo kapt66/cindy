@@ -5,6 +5,7 @@ import path from 'node:path';
 import type { BrowserControlResult } from '@cindy/browser-control-runtime';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { canCreateSymlinks } from '../../../test/vitest/symlinkSupport';
 import { resolveBrowserScreenshot } from '../browserScreenshotResolver.js';
 
 const PNG_BYTES = Buffer.concat([
@@ -78,7 +79,9 @@ describe('resolveBrowserScreenshot', () => {
     );
   });
 
-  it('rejects a symlink inside the media root that points outside it', async () => {
+  // Windows 无 symlink 权限的环境跳过（符号链接指向文件，无法用 junction 表达）；
+  // CI/Linux 与有权限的机器仍执行。
+  it.skipIf(!canCreateSymlinks())('rejects a symlink inside the media root that points outside it', async () => {
     const runtimeDir = await makeRuntimeDir();
     const mediaRoot = path.join(runtimeDir, 'media', 'browser');
     const outsideTarget = path.join(runtimeDir, 'outside-target.png');

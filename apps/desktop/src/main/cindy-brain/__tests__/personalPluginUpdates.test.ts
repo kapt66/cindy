@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { canCreateSymlinks } from '../../../test/vitest/symlinkSupport';
 import type { InstalledGhost } from '../../../shared/ghost.js';
 import { applyPersonalPluginUpdates, personalPluginContentHash } from '../personalPluginUpdates.js';
 
@@ -41,7 +42,7 @@ describe('personal local plugin application', () => {
     expect(f.update).toHaveBeenCalledOnce();
     expect(await personalPluginContentHash(f.installed)).toBe(await personalPluginContentHash(f.source));
   });
-  it.each(['tampered', 'link', 'duplicate', 'namespace'] as const)('rejects %s bundle before touching the installed plugin', async reason => {
+  const rejectsBeforeTouch = async (reason: 'tampered' | 'link' | 'duplicate' | 'namespace') => {
     const f = fixture(), index = path.join(f.bundle, 'index.json');
     const record = JSON.parse(fs.readFileSync(index, 'utf8'));
     if (reason === 'tampered') fs.writeFileSync(path.join(f.bundle, 'sample/main.js'), 'changed');
@@ -55,7 +56,11 @@ describe('personal local plugin application', () => {
     await expect(applyPersonalPluginUpdates(f.bundle, f.deps)).rejects.toThrow();
     expect(f.update).not.toHaveBeenCalled();
     expect(fs.readFileSync(path.join(f.installed, 'main.js'), 'utf8')).toBe('old implementation');
-  });
+  };
+  it.each(['tampered', 'duplicate', 'namespace'] as const)('rejects %s bundle before touching the installed plugin', rejectsBeforeTouch);
+  // 'link' 单独一条：它要建文件符号链接，Windows 无 symlink 权限的环境跳过；CI/Linux 与
+  // 有权限的机器仍执行（其余三种坏 bundle 不受影响，照常跑）。
+  it.skipIf(!canCreateSymlinks())('rejects link bundle before touching the installed plugin', () => rejectsBeforeTouch('link'));
   it.each(['newer', 'unapproved', 'public', 'missing'] as const)('defers %s installed state without first-installing or replacing another source', async reason => {
     const f = fixture();
     if (reason === 'newer') f.target.manifest.version = '2.0.0';

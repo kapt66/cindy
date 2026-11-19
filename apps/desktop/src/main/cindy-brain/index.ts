@@ -10643,7 +10643,7 @@ export function registerGhostIpc(): void {
     });
   });
   // /connections 通道(network.connections 多连接的设置页动作面,FORGE_GUIDE
-  // §4.7):地址 + token 成对入库、回查状态、删除、设默认。同 /secrets 模式
+  // §4.7.1):地址 + token 成对入库、回查状态、删除、设默认。同 /secrets 模式
   // 现查在装清单(意识更新立即以新声明为准);卸下后残留请求统一 404。
   // 关键闸:**新增地址必须过 main 侧受信确认弹窗**——意识设置页是意识自绘
   // 的不可信界面,动态白名单扩张必须由主机模态拿到用户点头(规则 9:用代码

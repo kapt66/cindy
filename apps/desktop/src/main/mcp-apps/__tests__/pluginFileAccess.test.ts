@@ -3,6 +3,7 @@ import { mkdtemp, writeFile, rm, symlink } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 vi.mock('../../cindy-media/ledger.js', () => ({ ghostCanRead: vi.fn(async () => false) }));
+import { canCreateSymlinks } from '../../../test/vitest/symlinkSupport';
 import { createPluginFileAccess } from '../pluginFileAccess.js';
 
 // A2 production file reader: Range bytes and rejecting changed paths cannot be
@@ -59,7 +60,8 @@ it('does not read another plugin, an arbitrary URL or an unowned media hash', as
     expect((await access.read(instance, uri, new Request('https://card/file'))).status).toBe(404);
   }
 });
-it('rejects deleted files and symlink replacements instead of following them', async () => {
+// Windows 无 symlink 权限的环境跳过（文件链接无法用 junction 表达）；CI/Linux 与有权限的机器仍执行。
+it.skipIf(!canCreateSymlinks())('rejects deleted files and symlink replacements instead of following them', async () => {
   const { access, root, file } = await fixture();
   await rm(file);
   expect(await access.describe('plugin', 'library:data.txt')).toBeNull();

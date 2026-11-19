@@ -275,7 +275,10 @@ Electron、不打包、不联网）对齐 `forge.config.ts` 的 `extraResourcesF
   同样指到目标树之外，「指向仓库/根目录外的链接必须被跳过」这类语义不变；
   既有约定见 `apps/desktop/src/main/__tests__/codexGlobalSkills.test.ts`。
   只有目标确实**不是目录**时才用 `'file'`，那种情况在无特权 Windows 账号上无法表达，
-  必须在测试里显式说明并跳过，不得直接写裸 `symlink`。
+  必须在测试里显式说明并跳过，不得直接写裸 `symlink`。文件链接的能力探测统一走
+  `apps/desktop/src/test/vitest/symlinkSupport.ts` 的 `canCreateSymlinks()`：
+  `it.skipIf(!canCreateSymlinks())(...)` 只跳过受影响的用例（`it.each` 的某一行就拆成
+  独立用例再跳过），不要整文件 skip，CI/Linux 与有权限的机器照常执行。
 - **loopback 端口必须避开 Fetch 标准 bad port**：任何"把 `http://127.0.0.1:<port>` 交给
   `fetch`（全局或某个 undici 实例，含被代理间接使用的）的调用方"都不能把端口选择完全交给
   `listen(0)` —— 内核只判端口空闲，不判客户端肯不肯用；命中 bad port 时报

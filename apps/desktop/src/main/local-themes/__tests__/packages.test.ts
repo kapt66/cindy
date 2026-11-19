@@ -17,6 +17,7 @@ vi.mock('../../appSessionState', () => ({ activeOwnerScopeKey: () => task.owner,
 vi.mock('../../app-settings/preferences', () => ({ manageAppPreferences: task.refresh }));
 
 import { inspectCindyFile } from '../../cindy-files/reader';
+import { canCreateSymlinks } from '../../../test/vitest/symlinkSupport';
 import { getLocalThemesDir, loadLocalThemes, loadLocalThemesSync, resetLocalThemesMigrationForTest } from '../loader';
 import { installThemePackage, readThemePackageResource } from '../packages';
 import { importThemePackageFromTask } from '../agent';
@@ -363,7 +364,9 @@ describe('theme package installation and loading', () => {
     expect(loadLocalThemesSync().themes).toEqual([]);
   });
 
-  it('rejects oversized theme output and cannot load assets replaced by out-of-package links', async () => {
+  // Windows 无 symlink 权限的环境跳过「资产被换成包外文件链接」这一段（文件链接无法用
+  // junction 表达）；CI/Linux 与有权限的机器仍执行。
+  it.skipIf(!canCreateSymlinks())('rejects oversized theme output and cannot load assets replaced by out-of-package links', async () => {
     const dir = getLocalThemesDir();
     await expect(installThemePackage(await packageFile([{ ...light, name: 'x'.repeat(1024 * 1024) }]), dir)).rejects.toMatchObject({ code: 'invalid' });
     const inspected = await packageFile();

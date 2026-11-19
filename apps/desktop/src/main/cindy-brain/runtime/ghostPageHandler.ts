@@ -266,7 +266,7 @@ export function createGhostPageHandler(ports: GhostPagePorts) {
         });
       }
       // /connections:network.connections 多连接的设置页通道(FORGE_GUIDE
-      // §4.7)。地址与 token 只写入库(新地址过主机受信确认),GET 只回状态
+      // §4.7.1)。地址与 token 只写入库(新地址过主机受信确认),GET 只回状态
       // 与尾 4 位指纹;分区专属通道天然只碰自己的账。
       if (url.pathname === '/connections' || url.pathname.startsWith('/connections/')) {
         if (!ports.ghostConnectionsHandler) return new Response(null, { status: 503 });

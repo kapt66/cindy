@@ -4518,6 +4518,12 @@ describe('GhostManager · list', () => {
       await manager.install(await makeCindy('ledger-retry.cindy', goodManifest()), { namespace: null });
     }
     const ledger = new PluginMarketLedger(path.join(workDir, 'market', 'ledger.v1.json'));
+    // 生产 `prepareListingSources` 还引用模块级 `createMekaLedgerListingLookup()`
+    // （Meka 渠道发布来源）。本用例的插件是 Cindy 账本无记录的 root manual 实例，
+    // Meka 账本对它没有记录，所以给一个独立空账本快照；不给的话是未声明的 free
+    // identifier，会被生产的 catch 吞掉并投影成 `unavailable`，测不到本用例要验证的
+    // Cindy 账本瞬时失败重试语义。
+    const mekaLedger = new PluginMarketLedger(path.join(workDir, 'market', 'meka-ledger.v1.json'));
     manager = productionManager({
       // Keep production source callbacks; unrelated app services stay isolated.
       GhostManager: class extends GhostManager {
@@ -4535,6 +4541,7 @@ describe('GhostManager · list', () => {
       getGhostSetupManifestTracker: () => ({ seed: vi.fn() }),
       getPluginMarketLedger: () => ledger,
       projectPluginPublishingSource,
+      createMekaLedgerListingLookup: () => mekaLedger.createListingLookup(),
     }).getGhostManager();
     const unavailable = () => { throw Object.assign(new Error('ledger locked'), { code: 'EBUSY' }); };
     const snapshot = vi.spyOn(ledger, 'createListingLookup');

@@ -444,6 +444,19 @@ function installedGhostMarketKeyFor(ghosts: readonly InstalledGhost[]): string {
     .join('\0');
 }
 
+/**
+ * Meka 侧快照在每次刷新时都会拿到新数组引用。内容没变就不要用新引用重渲染整页：
+ * 等价的后台刷新不该推翻「详情内容不变就不重渲染」的既有不变式（页面上的开发副本
+ * 与渠道归属只是同一份快照的投影）。
+ */
+function sameMekaStringList(current: readonly string[], next: readonly string[]): boolean {
+  return current.length === next.length && current.every((value, index) => value === next[index]);
+}
+
+function sameMekaDevPluginItems(current: readonly MekaDevPluginItem[], next: readonly MekaDevPluginItem[]): boolean {
+  return current.length === next.length && JSON.stringify(current) === JSON.stringify(next);
+}
+
 /** 读「忽略本轮更新」的持久值(键按数据归属分桶,见 ignoredRoundStorageKey)。 */
 function readIgnoredRound(storageKey: string): string {
   try {
@@ -835,8 +848,8 @@ function LocalGhostPluginPage({
         mekaDevPluginsPromise,
       ]);
       if (!current()) return;
-      setMekaInstalledGhostIds(nextMekaInstalledGhostIds);
-      setMekaDevPluginItems(nextMekaDevPluginItems);
+      setMekaInstalledGhostIds((current) => sameMekaStringList(current, nextMekaInstalledGhostIds) ? current : nextMekaInstalledGhostIds);
+      setMekaDevPluginItems((current) => sameMekaDevPluginItems(current, nextMekaDevPluginItems) ? current : nextMekaDevPluginItems);
       setMarketSnapshot(snapshot);
       lastMarketRefreshAtRef.current = Date.now();
       if (current()) await memory.browser.current.refresh?.();
@@ -847,8 +860,10 @@ function LocalGhostPluginPage({
       }
     } catch (error) {
       if (!current()) return;
-      setMekaInstalledGhostIds(await mekaInstalledGhostIdsPromise);
-      setMekaDevPluginItems(await mekaDevPluginsPromise);
+      const failedMekaInstalledGhostIds = await mekaInstalledGhostIdsPromise;
+      const failedMekaDevPluginItems = await mekaDevPluginsPromise;
+      setMekaInstalledGhostIds((current) => sameMekaStringList(current, failedMekaInstalledGhostIds) ? current : failedMekaInstalledGhostIds);
+      setMekaDevPluginItems((current) => sameMekaDevPluginItems(current, failedMekaDevPluginItems) ? current : failedMekaDevPluginItems);
       setMarketSnapshot((current) =>
         current
           ? current

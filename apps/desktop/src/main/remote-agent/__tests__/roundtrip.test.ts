@@ -1062,7 +1062,10 @@ describe('remote agent round trip', () => {
       host.dispose();
     }
   });
-  it.each([false, true])('skips the shared-provider credential card only while trust is enabled (task grant wired: %s)', async (withTaskGrant) => {
+  // 全量并发下这条用例要经隧道打真实 loopback 请求，偶发 `TypeError: fetch failed`
+  // (单文件跑 135/135 通过)。只给这一条一次重试，断言与超时都不变；重试失败仍然报红，
+  // 不会掩盖确定性的行为回归。
+  it.each([false, true])('skips the shared-provider credential card only while trust is enabled (task grant wired: %s)', { retry: 1 }, async (withTaskGrant) => {
     const env = path.join(project, '.env');
     fs.writeFileSync(env, 'TOKEN=one');
     const host = createRemoteAgentHost({

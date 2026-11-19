@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { canCreateSymlinks } from '../../../test/vitest/symlinkSupport';
 import { companionHasLocalData } from '../localData.js';
 
 describe('companionHasLocalData', () => {
@@ -26,7 +27,8 @@ describe('companionHasLocalData', () => {
     expect(await check({ hasTaskLink: async () => true })).toBe(true);
   });
 
-  it('counts an empty directory and a broken symlink', async () => {
+  // Windows 无 symlink 权限的环境跳过（文件链接无法用 junction 表达）；CI/Linux 与有权限的机器仍执行。
+  it.skipIf(!canCreateSymlinks())('counts an empty directory and a broken symlink', async () => {
     await fs.mkdir(path.join(root, 'bot'));
     expect(await check()).toBe(true);
     await fs.rmdir(path.join(root, 'bot'));

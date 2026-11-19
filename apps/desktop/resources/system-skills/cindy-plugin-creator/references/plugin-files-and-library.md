@@ -69,7 +69,7 @@ await cindy.fs({ op: 'write', root: 'data', path: 'a.txt', content: 'hi' });
   该通道的写入必须在当次 tool-call 处理期间完成,交卷后 callId 立即失效
   (比会话通道更严:无宽限,先写盘再交卷);
 - `root:'save'` **过户目录**:仅 write,凭主 agent 在 ghost_call 顶层传 `save_dir`
-  过户后注入的 `args.save_deposit.token` 写入(与 §4.7 fetch `as:'file'` 下载
+  过户后注入的 `args.save_deposit.token` 写入(与 §4.7.1 fetch `as:'file'` 下载
   落盘同一张票:限时、限次数、限字节、文件名主机消毒、永不覆盖已有文件)。
 - `root:'picked'` **自主授权目录**：同一宿主文件服务提供 read/write/list/delete/watch/changes/unwatch。
   每次传 `directoryRef`；相对路径、16 MiB 单次读写、非递归列举、监听的 256 条元数据及游标缺口

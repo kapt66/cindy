@@ -9,6 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { canCreateSymlinks } from '../../../test/vitest/symlinkSupport';
 import {
   applyBotSkillFiles,
   listBotSkillFiles,
@@ -474,7 +475,9 @@ describe('skill files for cloud companions', () => {
 
   beforeEach(async () => { await saveBotSkillSource(userDataDir, 'bot_a', 'brew', '---\nname: "brew"\n---\n\nsteps\n'); });
 
-  it('lists what belongs to the skill, leaving hidden files, dependencies and keys behind', async () => {
+  // 这里要的是一个「指向文件的链接」，Windows 无 symlink 权限时无法表达（junction 只能
+  // 指目录），因此跳过；CI/Linux 与有权限的机器仍执行。
+  it.skipIf(!canCreateSymlinks())('lists what belongs to the skill, leaving hidden files, dependencies and keys behind', async () => {
     await write('scripts/run.sh', '#!/bin/sh\n', 0o755);
     await write('references/a.md', 'a');
     await write('.env', 'TOKEN=1');
@@ -540,7 +543,9 @@ describe('skill files for cloud companions', () => {
 
   it('never writes outside the skill folder', async () => {
     const outside = await fs.mkdtemp(path.join(userDataDir, 'outside-'));
-    await fs.symlink(outside, path.join(skillDir(), 'linked'));
+    // Windows 上目录符号链接默认按 'file' 类型建需要特权；junction 是同一类重解析点，
+    // 生产代码的 lstat().isDirectory() 同样判为 false（engineering-conventions §4）。
+    await fs.symlink(outside, path.join(skillDir(), 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
     const fetch = async () => source('x');
     for (const unsafe of ['../escape.md', '/abs.md', 'a\\b.md', '.hidden/a.md', 'SKILL.md', 'Skill.MD', 'node_modules/a.js']) {
       await applyBotSkillFiles(userDataDir, 'bot_a', 'brew', [entry(unsafe, 'x')], fetch, { removeOthers: false });

@@ -1563,7 +1563,8 @@ describe('connectAccount', () => {
     });
   });
 
-  it('onAccountConnected 钩子:新连与同身份重连都触发(带标签);钩子抛错不影响连接结果', async () => {
+  // 全量并发（--maxWorkers=8）下偶发 60s 超时（单文件 111/111、2.7s 通过）：该用例串了多段 fake timer/异步登录，进程被资源抢占时会被拖死；只给这一条有限重试，不放宽断言。
+  it('onAccountConnected 钩子:新连与同身份重连都触发(带标签);钩子抛错不影响连接结果', { retry: 1 }, async () => {
     // 新连:带身份标签触发一次
     const onNew = vi.fn();
     const fetchNew = vi.fn(async (input: string | URL | Request) => {
