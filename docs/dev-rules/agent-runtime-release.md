@@ -16,9 +16,11 @@
 - 每个对象同时记录 gzip SHA-256、裸二进制 SHA-256 与字节数。消费者必须完成两段校验，
   不能只以 HTTP 200、文件存在或 gzip 可解压作为成功条件。
 - `maker-cc-manager` bundle 不使用上述 runtime 版本号；它由
-  `packages/maker-cc-manager/src/protocol.ts` 的 `CC_MGR_BUNDLE_VERSION` 单独 pin。当前为
-  `0.0.11` / protocol `5`（pin 与 protocol 的最新值一律以该文件为准，本文不复述具体数字）。
-  修改该 pin 后必须运行
+  `packages/maker-cc-manager/src/protocol.ts` 的 `CC_MGR_BUNDLE_VERSION` 单独 pin（pin 与
+  protocol 的最新值一律以该文件为准，本文不复述具体数字）。历史上一次 pin 未跟随产物
+  变化（SDK 0.3 边界合并让 bundle 变大）时，发布侧以
+  `putImmutableArtifact` 的「同路径内容不同，拒绝覆盖」失败——遇到该错误先核对产物
+  字节是否真的变了，确认变化就 bump pin 后重跑，不要放宽不可覆盖约束。修改该 pin 后必须运行
   `pnpm --filter @cindy/maker-cc-manager bundle`，并让 MCPRouter 从同一 Cindy 源码重建、探测
   和重启 daemon；只发布 Claude/Codex runtime 资产不会更新 cc-manager。
 

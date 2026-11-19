@@ -199,7 +199,7 @@ transport 身份，`agentType` 为 `claude` 或 `codex` 时才进入支持判断
 - Claude 的 MCPRouter/SSH cc-mgr `protocol/hello` 必须携带
   `CC_MGR_BUNDLE_VERSION`。客户端可以兼容旧 daemon 不回显 bundle 字段，但不能省略请求
   参数；否则新版本 daemon 会返回 `[INVALID_PARAMS] bundleVersion is required (string)`。
-- 当前 pin 是 bundle `0.0.11` / protocol `5`（`packages/maker-cc-manager/src/protocol.ts`
+- 当前 pin 是 bundle `0.0.12` / protocol `5`（`packages/maker-cc-manager/src/protocol.ts`
   的 `PROTOCOL_VERSION` 与 `CC_MGR_BUNDLE_VERSION`，包内 `protocol.test.ts` 硬断言这两个值）。
   daemon 按连接协商版本隔离能力：protocol `2` 保留 Claude query/session 与 host
   `toolGuards`；protocol `3` 才开放 immutable bundle、Codex revision/thread routing 和
@@ -209,8 +209,8 @@ transport 身份，`agentType` 为 `claude` 或 `codex` 时才进入支持判断
   protocol 不同同样属于不可部署的 pin mismatch，MCPRouter 构建期和 tunnel 启动前都必须阻断。
   ⚠️ 每次上游同步后都要重新核对本节版本号与实际代码一致——2026-09 同步把 pin 从
   `0.0.9/protocol 4` 提升到 `0.0.10/protocol 5`，本节曾因此落后一版。
-  （2026-09-23 第三轮同步复核：`packages/maker-cc-manager/src/protocol.ts:42` 仍为
-  `PROTOCOL_VERSION = 5`、`:51` 仍为 `CC_MGR_BUNDLE_VERSION = '0.0.10'`，与本节一致，未改动。）
+  （2026-11-19：SDK 0.3 边界合并改变产物字节后 pin 升到 `0.0.12`；发布侧遇到
+  「同路径内容不同，拒绝覆盖」时先确认产物确实变了再 bump，不要放宽不可覆盖约束。）
 - protocol `4` 起的 immutable bundle 文件可二选一携带 UTF-8 `content` 或规范
   `contentBase64`；后者用于完整投递角色 Skill 的脚本、引用和二进制资产。daemon 必须先解码、
   校验规范 base64 与文件 SHA-256，再原子物化。Desktop 使用任务快照的 revision 和原始字节，

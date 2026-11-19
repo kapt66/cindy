@@ -47,10 +47,19 @@ export const PROTOCOL_VERSION = 5 as const;
  * 只在 cc-mgr 功能/协议有实质变化时递增。不随 SDK patch / esbuild 版本 /
  * 无关依赖变化而变。desktop 用这个（而非 bundle sha256）判断远端 daemon
  * 是否需要 upgrade,避免无关的 pnpm install 触发全量远端重装。
+ *
+ * 一旦源码产物字节变化而 pin 不升，发布侧会撞上 `putImmutableArtifact` 的
+ * 「同路径内容不同，拒绝覆盖」——那是版本号该升的信号，不是发布脚本要放宽的
+ * 约束（同版本两份字节会让两台机器行为不一致且无法回滚）。
  */
 // SDK 0.3 migration: explicit remote OS-env merge at the SDK boundary.
 // Existing installs must pick up this runtime change; the wire stays at v5.
-export const CC_MGR_BUNDLE_VERSION = '0.0.11' as const;
+//
+// 0.0.12: the SDK 0.3 boundary merge changed the emitted bundle (~190 KiB
+// larger than the published 0.0.11 object), so the pinned version moves with
+// it. Installing the migration under the old pin would leave already-published
+// 0.0.11 daemons claiming to be current while running different bytes.
+export const CC_MGR_BUNDLE_VERSION = '0.0.12' as const;
 
 export type RpcId = number;
 

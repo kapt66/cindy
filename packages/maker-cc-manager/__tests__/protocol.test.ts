@@ -24,7 +24,9 @@ describe('protocol constants', () => {
   });
 
   it('bumps the daemon bundle for the SDK environment migration without changing v5', () => {
-    expect(CC_MGR_BUNDLE_VERSION).toBe('0.0.11');
+    // 0.0.12: the SDK 0.3 boundary merge changed the emitted bundle bytes, so
+    // the pin moves with it (published 0.0.11 is immutable and differs).
+    expect(CC_MGR_BUNDLE_VERSION).toBe('0.0.12');
   });
 
   it('METHODS has expected method names', () => {
