@@ -4054,7 +4054,8 @@ function getConnectionAudienceResolver(): ConnectionAudienceResolver {
       mekaPsbHostOverride: mekaPsbHostOverrideHost(),
       // Meka 渠道开发安装（`_root__meka-dev-*`）：身份签发的 audience 必须是逻辑插件 id
       // （`<orgSlug>:<meka-submit>`），不能是物理 runtime id。从 dev 注册表读内存映射，
-      // 同步、无 IO；未登记时返回 null，由 resolver 按 runtime id 结构回退。
+      // 同步、无 IO；这是**唯一**的签发依据——未登记时返回 null，resolver 拒绝并以
+      // `logicalIdSource: 'parsed'` 记录结构佐证（不再按 id 形状放行）。
       mekaDevPluginLogicalId: (runtimeId) =>
         mekaDevPluginsSingleton?.logicalPluginIdForRuntime(runtimeId) ?? null,
       log,
@@ -9879,26 +9880,38 @@ export function registerGhostIpc(): void {
       // 更新提交后旧沙箱仍报 running 并以**旧 receipt 分区**服务活跃会话，
       // `/kv` 等协议被目标守卫判过期后永久 403，只能重启 Cindy（2026-11-18）。
       const instanceKey = installedGhostStoragePart(previousGhost);
-      runtime.stop(instanceKey);
-      getGhostNodeRuntimeBroker().stop(instanceKey);
-      getGhostAgentSlot().clearGhost(instanceKey);
-      let result: Awaited<ReturnType<typeof manager.update>>;
+      // 与市场更新（`applyMarketGhostUpdate`）／本地包更新（`updateLocalGhostPackageLocked`）
+      // 同口径：先让浏览器扩展槽暂停并等在途作业结束；再停沙箱并**等确认退出**
+      // （Windows 上不 await 会让入口文件仍被占用），最后清空 Agent / errand 槽。
+      // 旧进程未确认退出时不能 spawn 第二份 resident。
+      let releaseBrowserUpdate: (() => void) | undefined;
       try {
-        result = await manager.update(cindyPath, {
-          expectedInstalledApproval: ghostInstallApprovalToken(previousGhost.approval),
-          expectedPackageSha256: inspected.packageSha256,
-        });
-      } catch (error) {
-        spawnIfResident(previousGhost);
-        throw error;
+        releaseBrowserUpdate = await getGhostBrowserExtensionSlot().prepareUpdate(instanceKey);
+        runtime.stop(instanceKey);
+        await stopPluginAppInstance(instanceKey);
+        await getGhostNodeRuntimeBroker().stopAndWait(instanceKey);
+        getGhostAgentSlot().clearGhost(instanceKey);
+        getGhostErrandSlot().clearGhost(instanceKey);
+        let result: Awaited<ReturnType<typeof manager.update>>;
+        try {
+          result = await manager.update(cindyPath, {
+            expectedInstalledApproval: ghostInstallApprovalToken(previousGhost.approval),
+            expectedPackageSha256: inspected.packageSha256,
+          });
+        } catch (error) {
+          spawnIfResident(previousGhost);
+          throw error;
+        }
+        if ('rejection' in result) {
+          spawnIfResident(previousGhost);
+          throwInstallError(result.rejection);
+        }
+        runtime.resetFuse(instanceKey);
+        spawnIfResident(result.ghost);
+        return result.ghost;
+      } finally {
+        releaseBrowserUpdate?.();
       }
-      if ('rejection' in result) {
-        spawnIfResident(previousGhost);
-        throwInstallError(result.rejection);
-      }
-      runtime.resetFuse(instanceKey);
-      spawnIfResident(result.ghost);
-      return result.ghost;
     } finally {
       releaseMutation();
     }

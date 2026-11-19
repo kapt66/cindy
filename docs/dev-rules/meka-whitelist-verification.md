@@ -1036,6 +1036,12 @@ Host 接线锚点由 `mcp-providers.ts:418` 漂移到 `:47`（导入）+ `:513`�
    `cindy-ghost://` 目标守卫持续 403，只能重启 Cindy（2026-11-18 用户实测：会话中改源码
    后 `/kv` 返回 `HTTP 403`、工具调用 `STATE_UNAVAILABLE`）。更新后第一次调用允许因旧
    代次被收成 `GHOST_ASLEEP` 而重试一次；换账号、换实例、卸载或旧 receipt 仍必须 403。
+   **同一更新路径还必须与市场/本地包更新同口径（2026-11-19 审查补齐）**：
+   `await stopPluginAppInstance(instanceKey)`、`await getGhostNodeRuntimeBroker().stopAndWait(instanceKey)`、
+   清理 `GhostAgentSlot` 与 `GhostErrandSlot`、并在 `stop` 之前
+   `getGhostBrowserExtensionSlot().prepareUpdate(instanceKey)`（`finally` 释放，失败路径也释放）。
+   只 `runtime.stop` + 非 await 的 broker `stop` 会让 Windows 上旧 utilityProcess 仍占用入口
+   文件，且浏览器扩展槽长期停在 updating。
 
 **代码锚点**
 - `apps/desktop/src/main/cindy-brain/mekaDevPlugins.ts`（派生包、注册表、watcher、打包、
@@ -1073,8 +1079,14 @@ Host 接线锚点由 `mcp-providers.ts:418` 漂移到 `:47`（导入）+ `:513`�
 **自动化门禁**
 - `pnpm --filter desktop exec vitest run src/main/cindy-brain/__tests__/mekaDevPlugins.test.ts`
 - `pnpm --filter desktop exec vitest run src/main/cindy-brain/__tests__/mekaDevUpdateLifecycle.test.ts`
-  （抽取并执行生产 `updateDevelopmentPackage`：dev 内容更新后按物理实例键停旧代次、
-  下一笔调用重绑新 receipt；`/kv` 对旧代次、换账号、换实例、卸载仍 403）
+  （抽取并**执行生产** `updateDevelopmentPackage`：dev 内容更新后按物理实例键停旧代次、
+  `await stopPluginAppInstance` / Node broker `stopAndWait`、清理 Agent/errand 槽、暂停并释放
+  浏览器扩展槽（失败路径也释放），下一笔调用重绑新 receipt；`/kv` 用**生产**
+  `setGhostKvStore` 回调（`captureTarget` / `isTargetCurrent`）与生产
+  `createGhostProtocolTargetGuard` 驱动真实 `handleGhostKvRequest`：旧代次 GET/PUT 403、
+  新 receipt 200/204，换账号/换实例/卸载仍 403）
+- `pnpm --filter desktop exec vitest run src/main/cindy-brain/__tests__/ghostProtocolTargetLookup.test.ts`
+  （端点目标语义的既有回归：卸载、换账号、换实例后旧目标一律失效；本项不重复声称覆盖它）
 - `pnpm --filter desktop exec vitest run src/main/cindy-brain/__tests__/pipeDispatcher.test.ts`
   （沙箱报 `running` 但代次落后于当前安装记录时，派发前先重启新代次并等就绪再派发）
 - `pnpm --filter desktop exec vitest run src/main/meka-settings/__tests__/routerService.test.ts`
@@ -1105,6 +1117,10 @@ Meka 渠道请求头 `x-cindy-version` 是当前客户端真实版本（抓包�
 另需确认**会话进行中**修改开发插件源码：同步成功后第一次工具调用允许出现一次
 `GHOST_ASLEEP` 并要求重试，重试后工具与 `/kv` 读写正常，**不需要重启 Cindy**，面板内容
 也按 content revision 事件刷新；若仍出现持续 403，说明旧运行代次没有被退役。
+**同口径补充（2026-11-19）**：Windows 上同步更新时不得出现入口文件被占用的 `EPERM`
+（说明没有 `await stopPluginAppInstance` / `stopAndWait`）；更新进行中浏览器扩展槽
+`getPageControlUnavailableReason()` 只应短暂返回 `plugin-updating`，更新结束（成功或失败）
+后必须恢复，不得长期停在 updating；更新失败时旧版本应恢复 resident 而不是停着不动。
 
 **本轮同步对 WL-9 四类契约的复核（2026-09-23 第三轮同步，逐条实查）**：
 1. **批准状态 schema 未动**：`RECEIPT_SCHEMA_VERSION` 仍为 **2**（上游本轮未改）；
@@ -2763,16 +2779,20 @@ pnpm desktop:session-smoke
   `artifacts/meka-submit-e2e/e2e-<时间戳>.json`（`--answer` 作答、`--dry-run` 只探测连接，详见脚本头注释）。
   **确认框按正文/标题子串选择性放行（2026-11-18 起）**：`--confirm-match <子串>`（可重复）只放行命中
   的弹窗；`--deny-match <子串>`（可重复）命中即点取消并停下、**优先级最高**；`--confirm` 保留旧语义
-  「任意插件确认框都点主按钮」，但只要同时传了 match/deny 就由它们收窄（deny 优先、match 生效）。
-  都不传或都没命中 = 点取消并判「卡住」（fail closed，报告提示可用 `--confirm-match`）。空子串是
-  参数错误（退出码 2）。每次处理都按 `{body, decision: confirm|cancel|blocked, matchedBy:
-  --confirm|--confirm-match:<s>|--deny-match:<s>|none}` 记进 `confirmDialog.occurrences[]`，
-  并由 `checks.confirmDialogs[]` 汇总（`checks.confirmPolicy` 记录本次规则）。
+  「任意插件确认框都点主按钮」，但**只在没有传 `--confirm-match` 时生效**——传了 match 之后本参数被
+  **忽略**（不是兜底，未命中 match 的弹窗按取消处理）；`--deny-match` 始终优先于两者。
+  都不传或都没命中（且没有生效的 `--confirm`）= 点取消并判「卡住」（fail closed，报告提示可用
+  `--confirm-match`）。空子串是参数错误（退出码 2）。每次处理都按 `{body, decision:
+  confirm|cancel|blocked, matchedBy: --confirm|--confirm-match:<s>|--deny-match:<s>|none}` 记进
+  `confirmDialog.occurrences[]`，并由 `checks.confirmDialogs[]` 汇总（`checks.confirmPolicy` 记录本次规则）。
   - P4 / 真实服务器项目（只允许**可逆前置写操作**，必须停在「实际提交前」）：
     `--confirm-match "移动到目标 changelist"` —— 移动确认放行，创建 review/MR 的确认仍被拒。
-  - test-repo 远程项目（允许真实创建 MR）：`--confirm`（或 `--confirm-match "确认提交"`）。
-  - 无会话时自测解析与决策：`node scripts/meka-submit-e2e.mjs --self-test`（打印逐条 `PASS` 与
-    `SELF-TEST PASSED — assertions=N`，不连 CDP、不写报告；有 FAIL 时退出码 1）。
+  - test-repo 远程项目（允许真实创建 MR）：`--confirm` 或 `--confirm-match "确认提交"`（二者不要混用：
+    同时传时 `--confirm` 被忽略，只认 match）。
+  - 无会话时自测解析、决策与处理分支：`node scripts/meka-submit-e2e.mjs --self-test`（打印逐条
+    `PASS` 与 `SELF-TEST PASSED — assertions=N`；覆盖参数解析、`decideConfirmDialog`、
+    `handleConfirmDialog` 的放行/取消/未命中/非插件分支，用 fake CDP session，不连 CDP、不写报告；
+    有 FAIL 时退出码 1）。
 - 于是 WL-13 的**五语横切**也进了程序：`ui-smoke` 会逐一切换到 English / 简体中文 / 繁体中文 /
   日本語 / 한국어，断言每种语言下 Meka 页签与面板都渲染、且界面没有裸 i18n key，
   并记录各语言的页签实际文案。
@@ -3506,20 +3526,32 @@ issue 诊断会连带失效 —— 那是本条的边界。
 `diagnostics/performance-traces/` 找到本地报告并打开所在文件夹，全程无网络上报；移动端设置 → 开发者页只有
 本地日志开关/导出/清除。
 
-### WL-27 Meka 内部渠道的 `oidc-token` 企业 JWT 基座（2026-11-17 登记）
+### WL-27 Meka 内部渠道的 `oidc-token` 企业 JWT 基座（2026-11-17 登记；2026-11-18 补 Meka 开发安装基座；2026-11-19 审查加固）
 
 **保护的不变量**
 1. 从 MCPRouter Meka 市场安装的插件（可见性只有 `private / public / shared`，投影到
    Cindy `scope` 只有 `personal / public`）在当前**组织身份**下能解析出
    `<orgSlug>:<pluginSlug>` audience，并只在 manifest 声明的精确 host 注入企业 JWT。
-2. 资格来源只认两条：Meka 独立账本 `meka-ledger.v1.json` 里 `installed: true`、
-   `source: 'market'` 且摘要与当前已装 `ghost.json` 一致的安装记录，或 Host 可信随包种子
+   Meka 渠道的**开发目录装入**（`_root__meka-dev-<pluginId>-<8位hex>`）与市场安装一样
+   具备签发资格，audience 用**逻辑插件 id**（`<orgSlug>:<meka-submit>`），不是物理
+   runtime id。
+2. 资格来源只认三条：① Meka 独立账本 `meka-ledger.v1.json` 里 `installed: true`、
+   `source: 'market'` 且摘要与当前已装 `ghost.json` 一致的安装记录；② Host 可信随包种子
    id（与 provisioning / 随包批准入口同一判据，且只对 **root 实例**（namespace 为 null）
    生效）。Cindy 账本与本地 `.cindy` 渠道归属（`channels.v1.json`，channelLedger）
    **单独都不构成**资格；经共用 custom / ns sidecar 带出的另一渠道记录也不构成资格。
+   ③ **Meka 开发安装**（2026-11-18 新增，2026-11-19 加固）：root 的 `meka-dev-*` 物理实例
+   + 已批准 receipt 的包摘要 + 已装 manifest id 与 runtime id 一致 + manifest 声明至少一个
+   精确 `oidc-token` host + **Host 开发注册表命中**
+   （`MekaDevPluginManager.logicalPluginIdForRuntime`）。**id 形状不是资格**：结构解析
+   （`meka-dev-<pluginId>-<8位hex>`）只在拒绝日志中作为佐证
+   （`logicalIdSource: 'parsed'` → `meka-dev-logical-id-unregistered`），不再据此签发；
+   手工导入、恰好起名 `meka-dev-*` 的本地包一律拒绝。签发日志带
+   `logicalIdSource: 'registry'`，与拒绝日志的 `parsed` / `unavailable` 同字段可区分。
 3. fail-closed：Meka 账本 `invalid`（存在但不可读/schema 不认）或读取抛错 → reject；
    个人号 → reject；缺已批准包 sha / 形状非法 → reject；账本记录摘要与已装 manifest
-   不一致或**两个摘要字段都缺** → reject；通配 oidc host 仍由 manifest 层 reject。
+   不一致或**两个摘要字段都缺** → reject；通配 oidc host 仍由 manifest 层 reject；
+   Meka 开发安装的注册表未命中 / 读取抛错 → reject（不退化为结构放行）。
    账本损坏**不得**当成「无记录」放行。已判定拒绝时不得再追加一条通用
    `market-installation-missing`（双日志会埋掉真实原因）。
 4. 协议解析只在 Meka 渠道放开 `oidc-token` 的 scope 校验
@@ -3534,6 +3566,9 @@ issue 诊断会连带失效 —— 那是本条的边界。
 内部市场开这个口子、不做插件白名单；信任边界实际上由 **MCPR 的发布权限**承担（风险
 声明、收紧方式与回滚方式见
 [`plugin-security-and-authoring.md`](plugin-security-and-authoring.md) 的 `oidc-token` 节）。
+**Meka 开发安装基座不经过 MCPR**：它的信任边界是「用户亲手选择的开发源码目录 + 该安装
+已被用户批准 + Host 开发注册表命中」，不含发布者签名或 MCPR 发布权限（见不变量 2 ③，
+以及 2026-11-19 加固后结构回退不再参与签发）。
 按 `plugin-security-and-authoring.md` 的插件基座白名单确认门，本项属**插件基座改动
 （批准状态之外的新签发判据 + 协议解析选项）**，需放行人明确 Approve；本次由维护者裁决
 后交付，交付报告必须如实写明门禁执行范围。
@@ -3555,10 +3590,21 @@ issue 诊断会连带失效 —— 那是本条的边界。
   「摘要不一致」（reject）；种子分支必须带 root namespace 前置判定；返回三态
   （`undefined` = 非 Meka 来源 / `null` = 已判定拒绝）且调用方不得追加通用 reject；
   非 `market` 来源与带组织 namespace 的记录必须 reject。
+- `apps/desktop/src/main/cindy-brain/connectionAudienceResolver.ts` 的 **Meka 开发安装基座**
+  （2026-11-18 新增，2026-11-19 加固）：`mekaDevPluginLogicalId` 注入项存在且是唯一签发来源；
+  `resolveMekaDevInstall` 只在 root（namespace 为 null）且 runtime id 以 `meka-dev-` 开头时
+  生效；`logicalIdSource` 三态（`registry` 可签发 / `parsed` 只记录并 reject
+  `meka-dev-logical-id-unregistered` / `unavailable` reject）；结构正则
+  `MEKA_DEV_RUNTIME_ID_RE` 不得参与签发判定（只能用于拒绝日志）；非 dev 实例返回
+  `undefined` 交回既有口径（reason 与日志不变）。
+- `apps/desktop/src/main/cindy-brain/mekaDevPlugins.ts`：
+  `logicalPluginIdForRuntime(runtimeId)` 只读内存 `records`（同步、无 IO、不触发对账），
+  接受 `runtimeId` 与 `_root__<runtimeId>` 两种键；不得按 `meka-dev-*` 结构自造逻辑 id。
 - `apps/desktop/src/main/cindy-brain/index.ts`：装配点注入
   `readMekaMarketInstallation`（来自 `plugin-market/mekaLedger.ts`）与
   `isTrustedBundledGhostId`；后者与 `GhostManager` 的 `isTrustedBundledId` 共用同一个
-  判据函数（不得各写一份）；cindy-brain 不得自拼 Meka 账本路径。
+  判据函数（不得各写一份）；cindy-brain 不得自拼 Meka 账本路径；`mekaDevPluginLogicalId`
+  接到 `MekaDevPluginManager.logicalPluginIdForRuntime`。
 - `apps/desktop/src/main/plugin-market/ledger.ts`：custom / ns sidecar 由主账本 dirname
   派生，注释必须点明「两渠道主账本不合并、sidecar 共用」的边界（不得为隔离改文件名）。
 
@@ -3571,9 +3617,13 @@ issue 诊断会连带失效 —— 那是本条的边界。
 - `apps/desktop/src/main/plugin-market/registerIpc.ts`（`mekaService()` 注入同一个
   `getMekaLedger()` 实例，两渠道账本不合并）
 - `apps/desktop/src/main/cindy-brain/connectionAudienceResolver.ts`
-  （`resolveMekaChannelInstall`、`readMekaMarketInstallation` / `isTrustedBundledGhostId` 注入项）
-- `apps/desktop/src/main/cindy-brain/index.ts`（`getConnectionAudienceResolver` 装配点与
-  `isTrustedBundledGhostId`）
+  （`resolveMekaChannelInstall`、`resolveMekaDevInstall`、`readMekaMarketInstallation` /
+  `isTrustedBundledGhostId` / `mekaDevPluginLogicalId` 注入项）
+- `apps/desktop/src/main/cindy-brain/mekaDevPlugins.ts`
+  （`logicalPluginIdForRuntime`：物理 runtime id → 逻辑插件 id 的内存映射；开发安装基座
+  唯一的签发依据）
+- `apps/desktop/src/main/cindy-brain/index.ts`（`getConnectionAudienceResolver` 装配点、
+  `isTrustedBundledGhostId` 与 `mekaDevPluginLogicalId` 接线）
 
 **自动化门禁**
 - `pnpm --filter @cindy/plugin-protocol exec vitest run src/__tests__/delivery.test.ts`
@@ -3586,7 +3636,16 @@ issue 诊断会连带失效 —— 那是本条的边界。
   `manifestDigest` 的 released 记录仍 resolve；非 `market` 来源与带 namespace 记录
   reject；缺/非法 sha reject；`invalid` / 读取抛错 / `installed:false` reject；拒绝日志
   不出现「已判定原因 + 通用 missing」双条；Cindy 账本 `invalid` / `found` 不得落入 Meka
-  基座。
+  基座。**Meka 开发安装基座**（2026-11-18 新增 / 2026-11-19 加固）：已批准 + 声明 oidc host
+  + 开发注册表命中 → resolve 且 audience=`org-example:meka-submit`、放行日志带
+  `logicalIdSource: 'registry'`；未批准 / 无 oidc host reject；非 dev 安装仍按原 reason；
+  **只有 `meka-dev-*` 形状、注册表无记录（含手工导入包）→ reject
+  `meka-dev-logical-id-unregistered` 且日志带 `logicalIdSource: 'parsed'`**；注册表读取
+  抛错 / 未装配 → 同样拒绝；连结构都解析不出 → `meka-dev-logical-id-unavailable`；
+  `CINDY_MEKA_PSB_HOST` 覆盖与这条基座无依赖关系。
+- `pnpm --filter desktop exec vitest run src/main/cindy-brain/__tests__/mekaDevPlugins.test.ts`
+  —— `logicalPluginIdForRuntime` 的 runtime id / `_root__` 物理键命中、未登记与未找到 → null
+  （不按结构编造）。
 - `pnpm --filter desktop exec vitest run src/main/plugin-market/__tests__/` —— 契约测试
   断言 Meka 账本落点为 `mekaLedger.ts`（`registerIpc.ts` 只许 `getMekaLedger()`，不得
   出现文件名字面量）且 cindy-brain 不得自拼 Meka 账本路径；`api.test.ts` 断言 Meka 渠道
@@ -3615,16 +3674,36 @@ issue 诊断会连带失效 —— 那是本条的边界。
 7. **已知边界复核**：`meka-ledger.v1.json` 与 `ledger.v1.json` 共用同目录
    `custom-ledger.v1.json` / `ns-ledger.v1.json`；用 Cindy 渠道的自定义市场记录
    （`git-market` / `local-market`）不得让同名 Meka 插件获得签发资格。
+8. **Meka 开发安装基座（2026-11-18 新增）**：在 **Meka → 插件** 用「从目录加载（开发模式）」
+   装入声明 `oidc-token` 的 `meka-submit` 源码目录（派生 id `_root__meka-dev-*`）→ 批准后
+   让插件发起 Host 请求 → 注入 `Authorization: Bearer <JWT>`，audience 为
+   `<orgSlug>:meka-submit`（**不是**物理 runtime id），日志
+   `ghost Connection audience resolved` 带 `logicalIdSource: 'registry'`；设置/不设置
+   `CINDY_MEKA_PSB_HOST` 都成立。
+9. **开发安装基座的反向边界（2026-11-19 加固）**：把同一份 `.cindy` 通过**普通本地文件**
+   导入、manifest id 手工改成 `_root__` 里那个 `meka-dev-*` 形状（或任意
+   `meka-dev-<x>-<8位hex>`），在开发注册表没有对应记录时不得签发（日志
+   `meka-dev-logical-id-unregistered` + `logicalIdSource: 'parsed'`）；删除
+   `.meka-dev-plugins.json` 记录后重启也应拒绝而不是按结构放行。
 
-**当前验证状态（2026-11-17，独立审查修正后重跑）**
+**当前验证状态（2026-11-17，独立审查修正后重跑；2026-11-19 加固后补记）**
 - 已实跑通过：上述四条定向 vitest 与 `pnpm --filter desktop run typecheck`（只做定向
   验证，未跑全量门禁）。实测：`delivery.test.ts` 36/36；桌面组
   （`connectionAudienceResolver.test.ts` + `src/main/plugin-market/__tests__/` +
   `forge.connection.test.ts`）27 个文件、893 passed / 5 skipped；`check:dev-docs` 与
   `check:test-hygiene` 通过。
+- **2026-11-18 开发安装基座交付时实跑**：`connectionAudienceResolver.test.ts` +
+  `mekaDevPlugins.test.ts` → 2 files / 75 tests passed；`pnpm --filter desktop run typecheck`
+  PASS（main 6393 + renderer 4571 = 10485 files）；`check:test-hygiene` PASS（基线收紧到
+  353 files）。当时文档「未验证 typecheck / hygiene」的写法不准确，已于 2026-11-19 修正。
+- **2026-11-19 加固后实跑**：`connectionAudienceResolver.test.ts` → 51 tests passed
+  （新增「只有 `meka-dev-*` 形状、注册表无记录 → `meka-dev-logical-id-unregistered`」用例；
+  结构回退签发路径已删除）；同批 `mekaDevUpdateLifecycle.test.ts` → 4 tests passed。
 - **未验证**：① 真实 MCPRouter Meka 市场安装 → JWT 注入的端到端实机（需真实绑定与组织
   账号）；② `mekaLedger.ts` 与 `mekaService()` 共用实例的写读联动没有直接单测（读侧
   fail-closed 语义复用 `PluginMarketLedger` 已有覆盖）；③ 随包种子分支当前是**空集**
   （仓内不随包分发种子，见 §8.10），只有将来重新随包分发种子后才可能生效；root
   namespace 门已由单测钉住，但实机不可复现；④ 共用 sidecar 的跨渠道写入联动没有直接
-  单测（来源过滤只在 resolver 单测里以合成记录覆盖）。
+  单测（来源过滤只在 resolver 单测里以合成记录覆盖）；⑤ 真实 dev 实例上的开发安装 JWT
+  注入实机步骤（上面「实机验证」第 8/9 条）与第 8/9 条的反向边界都尚未实跑，只有单测证据；
+  ⑥ 全量 `pnpm test:unit`（由维护者统一跑）。

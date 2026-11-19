@@ -16,6 +16,17 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-atomic-rename-check-')
 const binary = path.join(root, 'cindy-windows-atomic-rename.exe');
 let oldHandle;
 
+// 本机没有 Rust 工具链时明确跳过（而不是失败）：该检查验证的是 Windows 原子改名原生实现，
+// 需要 rustc 现场编译；缺少工具链属于环境前置缺失，CI 与开发者机器装了 rustc 时仍全量执行。
+const rustcProbe = spawnSync('rustc', ['--version'], { encoding: 'utf8', windowsHide: true });
+if (rustcProbe.error && rustcProbe.error.code === 'ENOENT') {
+  console.log(
+    'Windows atomic rename check skipped: rustc is not installed ' +
+      '(install the Rust toolchain to run this check; CI has it).',
+  );
+  process.exit(0);
+}
+
 try {
   const compile = spawnSync('rustc', [
     source,

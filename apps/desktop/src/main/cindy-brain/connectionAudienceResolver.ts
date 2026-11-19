@@ -36,13 +36,17 @@
  * the user approved that install (`readApprovedPackageSha256`, same approved
  * receipt evidence as the Meka channel base), the installed manifest id matches
  * the runtime id, the manifest declares at least one exact oidc-token host, and
- * a logical plugin id can be resolved (in-memory dev registry first, then the
- * `meka-dev-<pluginId>-<8 hex>` runtime-id structure). The audience uses that
- * logical id (`<orgSlug>:<meka-submit>`) instead of the physical runtime id, so
- * the PSB side configured for `xd:meka-submit` accepts it; tokens are still
- * injected only into the hosts the manifest itself declared. This is a Meka
- * channel policy, not an environment-variable exception: it does not depend on
- * `CINDY_MEKA_PSB_HOST`. Non-dev installs keep every existing reason unchanged.
+ * the Host's in-memory Meka dev registry maps that runtime id back to a logical
+ * plugin id. The id shape alone is deliberately **not** sufficient: a package
+ * that merely names itself `meka-dev-<x>-<8 hex>` is not a dev install and is
+ * rejected (`meka-dev-logical-id-unregistered`, logged with
+ * `logicalIdSource: 'parsed'`) instead of being signed. The audience uses the
+ * registry logical id (`<orgSlug>:<meka-submit>`) instead of the physical
+ * runtime id, so the PSB side configured for `xd:meka-submit` accepts it; tokens
+ * are still injected only into the hosts the manifest itself declared. This is
+ * a Meka channel policy, not an environment-variable exception: it does not
+ * depend on `CINDY_MEKA_PSB_HOST`. Non-dev installs keep every existing reason
+ * unchanged.
  */
 import { isValidGhostId, isValidGhostNetworkHostPattern } from '../../shared/ghost.js';
 import type { GhostManifest } from '../../shared/ghost.js';
@@ -81,6 +85,10 @@ const ORG_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 const PLUGIN_SLUG_RE = /^[a-z][a-z0-9-]{0,31}$/;
 /** Meka 开发安装的物理 runtime id 结构（`mekaDevRuntimeId`）：`meka-dev-<pluginId>-<8位hex>`。 */
 const MEKA_DEV_RUNTIME_PREFIX = 'meka-dev-';
+/**
+ * 结构解析**只用于拒绝日志**（区分「形状像 dev 但注册表无记录」与「连形状都不是」），
+ * 不再是签发依据：签发必须命中 Host 的开发注册表（`mekaDevPluginLogicalId`）。
+ */
 const MEKA_DEV_RUNTIME_ID_RE = /^meka-dev-(.+)-[a-f0-9]{8}$/;
 /**
  * Temporary root-only exception for the locally imported mivo-canvas.
@@ -167,8 +175,11 @@ export interface LoadConnectionAudienceResolverOptions {
   /**
    * Meka 渠道开发安装的物理 runtime id → **逻辑插件 id** 的同步映射
    * （`MekaDevPluginManager.logicalPluginIdForRuntime`：只读内存登记表，无 IO）。
-   * 只在实例是 root 的 `meka-dev-*` 开发安装时被调用；返回 null / 抛错时按 runtime id
-   * 结构（`meka-dev-<pluginId>-<8位hex>`）回退解析。其它安装不会调用它。
+   * 只在实例是 root 的 `meka-dev-*` 开发安装时被调用，并且是**唯一**的签发依据：
+   * 返回 null / 抛错即拒绝（`meka-dev-logical-id-unavailable`）；runtime id 结构
+   * （`meka-dev-<pluginId>-<8位hex>`）只在拒绝日志里作为佐证
+   * （`logicalIdSource: 'parsed'` → `meka-dev-logical-id-unregistered`），不构成资格。
+   * 其它安装不会调用它。
    */
   mekaDevPluginLogicalId?(runtimeId: string): string | null;
   log?: {
@@ -247,21 +258,25 @@ export function loadConnectionAudienceResolver(
 
       /**
        * Meka 渠道开发安装的物理 runtime id → **逻辑插件 id**。
-       * 优先问内存登记表（`options.mekaDevPluginLogicalId`，`index.ts` 接到
-       * `MekaDevPluginManager.logicalPluginIdForRuntime`：同步、无 IO）；登记表还没有该
-       * 记录（例如启动早期/注册表不可用）时按 `mekaDevRuntimeId` 的结构
-       * （`meka-dev-<pluginId>-<8位hex>`）回退解析。只在 root 的 `meka-dev-*` 实例上调用。
+       *
+       * **唯一可签发的来源**是内存登记表（`options.mekaDevPluginLogicalId`，
+       * `index.ts` 接到 `MekaDevPluginManager.logicalPluginIdForRuntime`：同步、无 IO）。
+       * 登记表没有该记录时只尝试结构解析用于**拒绝日志**（`source: 'parsed'`），
+       * 绝不据此签发 —— 否则任何本地导入、恰好把 manifest id 起成
+       * `meka-dev-<x>-<8位hex>` 的包都能拿到企业身份 JWT。
        */
-      const resolveMekaDevLogicalPluginId = (runtimeId: string): string | null => {
+      const resolveMekaDevLogicalPluginId = (
+        runtimeId: string,
+      ): { pluginId: string; source: 'registry' | 'parsed' } | null => {
         let fromRegistry: string | null = null;
         try {
           fromRegistry = options.mekaDevPluginLogicalId?.(runtimeId) ?? null;
         } catch {
           fromRegistry = null;
         }
-        if (fromRegistry) return fromRegistry;
+        if (fromRegistry) return { pluginId: fromRegistry, source: 'registry' };
         const match = MEKA_DEV_RUNTIME_ID_RE.exec(runtimeId);
-        return match ? match[1]! : null;
+        return match ? { pluginId: match[1]!, source: 'parsed' } : null;
       };
 
       /**
@@ -278,7 +293,10 @@ export function loadConnectionAudienceResolver(
        *   渠道基座/Forge 基座同一份批准证据，不新增门槛）；
        * - manifest 声明了至少一个精确 `oidc-token` 注入 host（`declaredOidcTokenHosts`
        *   非空；JWT 仍只注入这些已声明 host，注入逻辑不变）；
-       * - 能解析出逻辑插件 id（登记表优先，结构回退）。
+       * - Host 的 Meka 开发注册表能把该 runtime id 映射回**逻辑插件 id**
+       *   （`logicalIdSource: 'registry'`）。**id 形状本身不是资格**：结构解析只在拒绝
+       *   日志里作为佐证（`logicalIdSource: 'parsed'` → `meka-dev-logical-id-unregistered`），
+       *   防止手工导入、恰好起名 `meka-dev-*` 的包借这条基座拿到企业 JWT。
        *
        * 成立时 audience 用**逻辑插件 id**（`<orgSlug>:<meka-submit>`）而不是物理 runtime
        * id —— 否则 PSB 侧按 `xd:meka-submit` 校验会拒。
@@ -297,15 +315,30 @@ export function loadConnectionAudienceResolver(
         }
         const runtimeId = instance.ghostId;
         // 先解析逻辑插件 id：放行与拒绝日志都要带它（拒绝日志不含 token/claims）。
-        const logicalPluginId = resolveMekaDevLogicalPluginId(runtimeId);
-        if (
-          !logicalPluginId ||
-          !isValidGhostId(logicalPluginId) ||
-          !PLUGIN_SLUG_RE.test(logicalPluginId)
-        ) {
-          return reject('meka-dev-logical-id-unavailable', { runtimeId });
+        const logical = resolveMekaDevLogicalPluginId(runtimeId);
+        if (logical === null) {
+          return reject('meka-dev-logical-id-unavailable', {
+            runtimeId,
+            logicalIdSource: 'unavailable',
+          });
         }
-        const audit = { runtimeId, pluginId: logicalPluginId };
+        if (!isValidGhostId(logical.pluginId) || !PLUGIN_SLUG_RE.test(logical.pluginId)) {
+          return reject('meka-dev-logical-id-unavailable', {
+            runtimeId,
+            logicalIdSource: logical.source,
+          });
+        }
+        if (logical.source !== 'registry') {
+          // 形状合法但开发注册表没有记录：只可能是手工导入的本地包（或注册表尚未
+          // 加载的启动早期）。两者都不具备签发资格，留可排查的日志而不是按结构猜。
+          return reject('meka-dev-logical-id-unregistered', {
+            runtimeId,
+            parsedPluginId: logical.pluginId,
+            logicalIdSource: logical.source,
+          });
+        }
+        const logicalPluginId = logical.pluginId;
+        const audit = { runtimeId, pluginId: logicalPluginId, logicalIdSource: logical.source };
         if (isReservedConnectionPluginSlug(logicalPluginId)) {
           return reject('plugin-id-reserved', audit);
         }

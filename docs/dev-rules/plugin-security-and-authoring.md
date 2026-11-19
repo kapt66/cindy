@@ -942,7 +942,7 @@ Renderer 的来源分类是封闭取值（`public / organization / local / custo
   （`readMekaMarketInstallation` / `isTrustedBundledGhostId`）即回到「组织 Market /
   agent-forge / mivo-canvas」三条既有判据；不需要迁移已装插件、批准状态或任何数据。
 
-- **`oidc-token` 的 Meka 开发安装基座（2026-11-18，Meka 私有差异）**：Meka 开发目录
+- **`oidc-token` 的 Meka 开发安装基座（2026-11-18 新增；2026-11-19 审查加固，Meka 私有差异）**：Meka 开发目录
   装入的插件落到 Host 派生的物理 runtime id（`_root__meka-dev-<pluginId>-<8位hex>`），
   它没有市场记录、也不写 Meka 市场账本，因此过不了上面任何一条基座（真实表现：host
   日志 `reason: 'market-installation-missing'`，`environment_check` 报「Host 未返回
@@ -959,18 +959,32 @@ Renderer 的来源分类是封闭取值（`public / organization / local / custo
   4. 已装 `ghost.json` 的 `id` 与该实例的 runtime id 一致（沿用既有身份核对写法）；
   5. manifest 声明的 `oidc-token` 精确 host 非空（JWT 仍只注入这些**已声明** host，
      注入逻辑不变；不要求必须是 PSB 主机）；
-  6. 能解析出逻辑插件 id：优先 `MekaDevPluginManager.logicalPluginIdForRuntime(runtimeId)`
-     （只读内存登记表，同步无 IO）；登记表还没有该记录（如启动早期／注册表不可用）时
-     按 `meka-dev-<pluginId>-<8位hex>` 结构回退；两处都拿不到时拒绝，不猜。
+  6. Host 的 Meka 开发注册表能把该 runtime id 映射回**逻辑插件 id**
+     （`MekaDevPluginManager.logicalPluginIdForRuntime`，只读内存登记表，同步无 IO）。
+
+  **id 形状本身不是资格（2026-11-19 审查加固）**：`meka-dev-<pluginId>-<8位hex>` 的结构解析
+  只用于**拒绝日志**（`logicalIdSource: 'parsed'` → `meka-dev-logical-id-unregistered`），
+  不参与签发；只要开发注册表没有该 runtime 的记录（例如手工导入一个把 manifest id 起成
+  `meka-dev-*` 的本地 `.cindy`，或注册表读取抛错/尚未加载），一律拒绝。放行日志带
+  `logicalIdSource: 'registry'`，拒绝日志带 `'parsed'` 或 `'unavailable'`，排查时能区分
+  「像 dev 但没登记」与「连可解析 id 都没有」。
 
   audience 用**逻辑插件 id**（`<orgSlug>:<meka-submit>`），不是物理 runtime id——PSB 侧
   按 `xd:meka-submit` 校验，用 runtime id 会拒。放行记一条 `info`、拒绝记一条 `warn`
   （含 ghostId、逻辑 pluginId、可注入 host 数与 reason，如 `meka-dev-install-eligible` /
-  `meka-dev-logical-id-unavailable` / `meka-dev-install-not-approved` /
-  `meka-dev-install-oidc-host-missing`），不写 token/claims。安全边界没有放宽：非 Meka
-  dev 安装、未批准、无 `oidc-token` host、找不到逻辑 id 的实例仍按原 reason 拒绝；Cindy
-  渠道与上游口径不变。回归见 `connectionAudienceResolver.test.ts`（dev 放行／结构回退／
-  未批准／无 host／非 dev 矩阵）与 `mekaDevPlugins.test.ts`
+  `meka-dev-logical-id-unavailable` / `meka-dev-logical-id-unregistered` /
+  `meka-dev-install-not-approved` / `meka-dev-install-oidc-host-missing`），不写 token/claims。
+  **安全边界（如实登记，2026-11-19 修正）**：这条基座**确实比此前放宽了一处**——此前只有市场/
+  Forge/Meka 账本记录或可信随包种子能拿企业 JWT，现在 Meka 渠道的开发目录装入也能；不能
+  写成「没有放宽」。收紧点是：可签发集合由 Host 开发注册表（用户通过 Meka 插件页显式选择的
+  源码目录）定义，不再由 id 形状定义；未批准、无 `oidc-token` host、注册表未命中或读取失败的
+  dev 实例仍拒绝；Cindy 渠道与上游口径不变；非 dev 安装的 reason 与日志逐字节不变。
+  **未核验**：注册表记录是 Host 本地事实，不含发布者签名，也不核对 Meka 市场账本（dev 安装
+  本来不写账本）；信任边界是「用户亲手选择的开发源码目录 + 该安装已被用户批准」。
+  启动早期（owner 提交完成前）注册表未加载时 fail closed，`stableOwnerPostCommitTask` 或
+  工具调用前的 `ensureMekaDevPluginsReady` 执行 `syncRegistered` 对账后恢复。
+  回归见 `connectionAudienceResolver.test.ts`（dev 放行/未批准/无 host/非 dev 矩阵 +
+  **形状合法但注册表无记录 → 拒绝**）与 `mekaDevPlugins.test.ts`
   （`logicalPluginIdForRuntime` 映射，含物理实例键与找不到 → null）。
 
 - 插件 setup 的完成状态只由 Host 读取真实持久化状态后判定。简单的
@@ -1264,6 +1278,13 @@ Renderer 的来源分类是封闭取值（`public / organization / local / custo
   > 生命周期收成结构化失败；下一次调用按新安装记录重新拉起并注册新 receipt 分区，
   > **不需要重启 Cindy**。同一修复也接在管子派发器上：沙箱报 `running` 但
   > `GhostRuntime.isCurrentInstall` 判定不是当前安装代次时，派发前先 `spawn` 对齐代次。
+  > **2026-11-19 审查补齐「与市场更新同口径」**：这条更新路径还必须
+  > `await stopPluginAppInstance(instanceKey)`、`await getGhostNodeRuntimeBroker().stopAndWait(instanceKey)`，
+  > 清 `GhostAgentSlot` 与 `GhostErrandSlot`，并在熄灯前
+  > `getGhostBrowserExtensionSlot().prepareUpdate(instanceKey)`、在 `finally` 释放
+  > （成功与失败都释放）。只 `runtime.stop` + 非 await 的 broker `stop` 会让 Windows 上旧
+  > utilityProcess 仍占用入口文件（原位 rename 可能 EPERM），浏览器扩展槽也会长期停在
+  > updating。
   > 宽松方向被明确禁止：目标守卫仍以「owner + 目录 + 物理实例键 + 批准 receipt +
   > namespace」的当前目标令牌为准，换账号、换实例、卸载或旧 receipt 一律 403。
 - Desktop 启动或 data owner 切换完成后，Host 必须从当前 owner 的开发注册表恢复 watcher，并在
@@ -1480,15 +1501,18 @@ Renderer 的来源分类是封闭取值（`public / organization / local / custo
      `_root__meka-dev-<pluginId>-<8位hex>` 副本与市场安装一样具备 Connection 身份签发资格，
      **audience 用逻辑插件 id**（`<orgSlug>:<meka-submit>`），不是物理 runtime id；是否设置
      `CINDY_MEKA_PSB_HOST` 不影响这条判定。安全边界不变：必须**已批准**（approved receipt
-     的包摘要）且 manifest 自己**声明了 `oidc-token` host**，JWT 只注入这些已声明 host；
-     未批准、无 oidc host、找不到逻辑 id 的实例仍按原 reason 拒绝。完整判据与日志见
+     的包摘要）、manifest 自己**声明了 `oidc-token` host**，且 **Host 开发注册表命中**
+     （`logicalIdSource: 'registry'`；仅 id 形状像 `meka-dev-*` 的本地包会被拒绝，
+     2026-11-19 起不再按结构回退签发）。JWT 只注入这些已声明 host；未批准、无 oidc host、
+     注册表未命中或读取失败的实例仍按原 reason 拒绝。完整判据与日志见
      §4「`oidc-token` 的 Meka 开发安装基座」。
 - **日志**：只在真的改写时记 `ghost fetch-request rewritten to Meka PSB test host`，字段只有
   `ghostId` / `callId` / `host` / `overrideHost` / `path`（pathname；**不记 query/body**，遵守
   §4 开头的日志纪律）。派生补声明记一条 `Meka development Plugin manifest extends PSB test host`，
   写明原因与批准令牌会随派生清单变化。开发安装的身份签发另记一条 info（`reason:
   'meka-dev-install-eligible'`，字段 `ghostId` / `pluginId` / `audiencePluginSlug` /
-  `allowedHostCount`）或一条 warn（拒绝原因），与开关无关。
+  `allowedHostCount` / `logicalIdSource: 'registry'`）或一条 warn（拒绝原因，带
+  `logicalIdSource: 'parsed' | 'unavailable'`），与开关无关。
 - **已知副作用（刻意接受）**：**Meka 开发目录**的派生副本比源码多一条已批准网络主机 ⇒
   首次开启覆盖后的下次同步会在更新确认里出现该新增权限，派生包摘要与已批准记录也随之与源码
   不同（关掉覆盖后同步回到原清单）。**市场/普通安装**的插件不改包、不改批准记录：覆盖主机只
@@ -1512,8 +1536,9 @@ Renderer 的来源分类是封闭取值（`public / organization / local / custo
   含补完后仍通过严格 manifest 校验）、`networkSlot.test.ts`（dev 派生包与**市场安装**两种形态
   的改道 + 凭证/身份注入 + 重定向 + 未声明正式主机不改写不注入 + 未设置时逐字节不变）、
   `connectionAudienceResolver.test.ts`（覆盖开启/关闭/未声明正式主机三态下的 `allowedHosts`；
-  以及 Meka 开发安装基座：已批准 + 声明 oidc host 放行且 audience 为逻辑 id、结构回退、
-  未批准/无 host/非 dev 仍拒绝）、
+  以及 Meka 开发安装基座：已批准 + 声明 oidc host + 注册表命中放行且 audience 为逻辑 id；
+  **形状合法但注册表无记录 → reject `meka-dev-logical-id-unregistered`**；未批准/无 host/
+  非 dev 仍拒绝）、
   `mekaDevPlugins.test.ts`（真实 forge 打包的派生清单与源目录不变；`logicalPluginIdForRuntime`
   映射含物理实例键与未找到 → null）、
   `scripts/__tests__/restart-desktop-remote.test.mjs`（启动器透传）。

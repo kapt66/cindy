@@ -2918,36 +2918,6 @@ SHA-256 的提交，用户取消时才返回取消结果。Meka Renderer 原有�
 遗漏复核 bridge；最终验收需在 Windows 与 macOS 各安装一次，并确认 100% 后出现权限复核或
 明确错误，不能静默回到安装按钮。
 
-### 6.43 2026-11-18 dev 目录同步热更新后旧运行实例未退役，`/kv` 永久 403
-
-用户在会话进行中修改 Meka 开发插件源码触发自动同步，随后该会话的工具调用持续返回
-`STATE_UNAVAILABLE`，插件自报「读取运行账本失败：GET /kv 被宿主拒绝（HTTP 403）」，
-连试两次仍 403，只有重启 Cindy 才恢复。日志证据：`main-2026-11-18.log` 中
-`Meka development Plugin sync failed`／`ghost updated`（如 22:49:44 的
-`meka-dev-meka-submit-6953b2fd`）之后，会话后续调用反复 `STATE_UNAVAILABLE`，期间没有
-任何 `ghost sandbox restarts for the updated install` 或 `spawn ghost sandbox` 记录。
-
-根因是 `cindy-brain/index.ts` 里 dev 更新路径（`updateDevelopmentPackage`）用**逻辑
-runtimeId**（`meka-dev-*`）去停 `GhostRuntime`／`GhostNodeRuntimeBroker`／
-`GhostAgentSlot`，而开发副本固定落 root，这三处生命周期账本键都是物理实例键
-（`_root__meka-dev-*`）⇒ 停止全部落空。更新事务提交后 receipt 换新，`cindy-ghost://`
-分区名（`owner:mode:ownerKey:storagePart:receipt:<hash>`）随之改变，旧沙箱却仍在
-`running` 并服务活跃会话；协议目标守卫按 `installedGhostMutationTargetToken` 判旧注册
-「目标已变」，`/kv`（以及同源 `/secrets`、`/oauth`、`/connections`）持续 403，直到重启
-后才按新记录注册。市场/普通插件更新路径一直使用 `installedGhostStoragePart`，因此只有
-dev 目录通道受影响。
-
-修复：dev 更新路径改用 `installedGhostStoragePart(previousGhost)` 停旧代次并在更新成功后
-按同一键 `resetFuse`；管子派发器新增代次对齐（`GhostRuntime.isCurrentInstall`，沙箱报
-`running` 但不是当前安装记录时先 `spawn`），让活跃会话在下一次调用自动 rebind 到新实例。
-安全语义不放宽：目标守卫仍按 owner／目录／物理实例键／批准 receipt／namespace 的当前目标
-令牌判定，换账号、换实例、卸载或旧 receipt 仍 403；更新后第一次调用可能因旧代次被收成
-`GHOST_ASLEEP` 而需重试一次，但不再有长期失败。回归测试：
-`apps/desktop/src/main/cindy-brain/__tests__/mekaDevUpdateLifecycle.test.ts`（抽取并执行
-生产 `updateDevelopmentPackage`，锁生命周期键 + `/kv` 放行判据）与
-`apps/desktop/src/main/cindy-brain/__tests__/pipeDispatcher.test.ts`（派发前代次对齐）。
-未做：真实 dev 实例上的重启内复验（用户正在用该实例跑 E2E，本轮不重启）。
-
 ## 10. 后续继续迁移时的硬性注意事项
 
 ### 9.1 `origin/main` → `meka/main` 同步报告
@@ -7997,33 +7967,109 @@ runtime id，audience 会变成 `xd:meka-dev-meka-submit-...`，与 PSB 侧配�
    存在且形状合法（`readApprovedPackageSha256`，与 Meka 渠道／Forge 基座同一份批准证据，不新增
    门槛）；④ 已装 `ghost.json` 的 `id` 与实例 runtime id 一致（沿用既有核对写法）；⑤ manifest 声明
    了至少一个精确 `oidc-token` 注入 host（不要求是 PSB 主机；JWT 仍只注入这些已声明 host）；
-   ⑥ 能解析出逻辑插件 id（登记表优先，`meka-dev-<pluginId>-<8位hex>` 结构回退，都拿不到则拒绝）。
+   ⑥ Host 的 Meka 开发注册表能把该 runtime id 映射回逻辑插件 id
+   （`MekaDevPluginManager.logicalPluginIdForRuntime`，只读内存记录）。**id 形状本身不是资格**：
+   结构解析（`meka-dev-<pluginId>-<8位hex>`）只用于拒绝日志
+   （`logicalIdSource: 'parsed'` → `meka-dev-logical-id-unregistered`），不据此签发。
    audience 用逻辑插件 id（`<orgSlug>:<meka-submit>`）；`finish(manifest, audiencePluginSlug)`
    只改 audience，返回的 `pluginSlug` 仍是物理实例身份。
 2. **接线**（`cindy-brain/index.ts`）：`loadConnectionAudienceResolver` 新增
    `mekaDevPluginLogicalId` 选项，接到 `MekaDevPluginManager.logicalPluginIdForRuntime(runtimeId)`
    （`mekaDevPlugins.ts` 新增的同步方法：只读内存 `records`，无 IO、不触发对账）。
 3. **日志**：放行一条 info（`ghost Connection audience resolved`，含 `ghostId` / `pluginId` /
-   `audiencePluginSlug` / `allowedHostCount` / `reason: 'meka-dev-install-eligible'`）；拒绝一条 warn
-   （原 `reject()` 体系，新增 `meka-dev-logical-id-unavailable` / `meka-dev-install-not-approved` /
-   `meka-dev-install-oidc-host-missing`）。不写 token/claims。
+   `audiencePluginSlug` / `allowedHostCount` / `logicalIdSource: 'registry'` /
+   `reason: 'meka-dev-install-eligible'`）；拒绝一条 warn
+   （原 `reject()` 体系，新增 `meka-dev-logical-id-unavailable` / `meka-dev-logical-id-unregistered` /
+   `meka-dev-install-not-approved` / `meka-dev-install-oidc-host-missing`）。不写 token/claims。
 4. **文档**：`docs/dev-rules/plugin-security-and-authoring.md` §4 新增「`oidc-token` 的 Meka 开发
    安装基座」并同步 §4.4 第 5 条、日志与回归清单。
 
-**安全边界（没有放宽）**：非 dev 安装的 reason 与日志逐字节不变；未批准、无 `oidc-token` host、
-找不到逻辑 id 的 dev 实例一律拒绝；JWT 注入目标仍只认 manifest 自己声明的精确 host；Cindy 渠道
-与上游口径不动；无 `CINDY_MEKA_PSB_HOST` 依赖（开关只继续负责请求改道与运行时 host 等价声明）。
+**安全边界（如实表述，2026-11-19 审查修正）**：这条基座**确实放宽了**一处口径——此前只有市场／
+Forge／Meka 账本记录或可信随包种子能拿到企业 JWT，现在 Meka 渠道的**开发目录装入**也能；因此
+不能写「没有放宽」。当前的收紧点与剩余边界：
+- 可签发集合由 Host 的**开发注册表**定义（用户通过 Meka 插件页显式选择源码目录后由
+  `MekaDevPluginManager` 登记），不再由 id 形状定义。手工导入的 `.cindy` 即使把 manifest id
+  起成 `meka-dev-*` 也不签发（`meka-dev-logical-id-unregistered`），2026-11-19 起结构回退已从
+  签发表决里移除，只保留在拒绝日志中；
+- 未批准、无 `oidc-token` host、找不到逻辑 id 的 dev 实例一律拒绝；JWT 注入目标仍只认 manifest
+  自己声明的精确 host；非 dev 安装的 reason 与日志逐字节不变；Cindy 渠道与上游口径不动；无
+  `CINDY_MEKA_PSB_HOST` 依赖（开关只继续负责请求改道与运行时 host 等价声明）；
+- **未核验**：注册表记录本身是 Host 本地事实（用户选择的开发目录），不含签名或发布者身份；
+  也不核对 Meka 市场账本（dev 安装本来不写账本）。信任边界落在「用户亲手选择的开发源码目录」
+  与「该安装已被用户批准」两条上，而不是 MCPR 发布权限；
+- 启动早期（开发注册表尚未加载）的 dev 实例会 fail closed，下一次调用（`ensureMekaDevPluginsReady`
+  对账后）恢复；不存在按结构猜测的窗口。
 
-**验证**（定向，未跑提交前门禁）：`pnpm --filter desktop exec vitest run
-src/main/cindy-brain/__tests__/connectionAudienceResolver.test.ts src/main/cindy-brain/__tests__/mekaDevPlugins.test.ts`
-→ 2 files / 75 tests passed（resolver 新增 dev 基座 4 条用例：放行且 audience=`org-example:meka-submit`、
-结构回退、未批准/无 oidc host 拒绝、非 dev 仍按原 reason；mekaDevPlugins 扩展
-`logicalPluginIdForRuntime` 的 runtime id／`_root__` 物理键／找不到 → null 断言）。
-**未验证**：`typecheck`、全量单测、`check:test-hygiene`；真实 PSB 端到端（dev 安装包 + 真实 JWT）；
-也没有重启 dev 实例实测（`apps/desktop/.vite/build` 早于本次改动，需按 §4.4 命令 restart 一次）。
+**验证（如实记录，2026-11-19 审查修正）**：
+- 本次交付时实际跑过：`pnpm --filter desktop exec vitest run
+  src/main/cindy-brain/__tests__/connectionAudienceResolver.test.ts src/main/cindy-brain/__tests__/mekaDevPlugins.test.ts`
+  → 2 files / 75 tests passed；`pnpm --filter desktop run typecheck` **PASS**（main 6393 + renderer 4571 =
+  10485 个文件，exit 0）；`pnpm check:test-hygiene` **PASS**（基线随之收紧到 353 files）。
+  此前提交说明里「未验证 typecheck / check:test-hygiene」的写法不准确：两者当时都已跑过并通过。
+- 2026-11-19 加固后重跑：`connectionAudienceResolver.test.ts` → 51 tests passed（结构回退已改为
+  「形状合法但注册表无记录 → `meka-dev-logical-id-unregistered` 拒绝」用例）；
+  `mekaDevUpdateLifecycle.test.ts` → 4 tests passed（本次同批修复的运行实例生命周期回归）。
+- **未验证**：全量 `pnpm test:unit`（迭代期未跑）；真实 PSB 端到端（dev 安装包 + 真实 JWT + 台账参与）；
+  也没有重启 dev 实例实测（`apps/desktop/.vite/build` 早于本次改动，需按 §4.4 命令 restart 一次）。
 
-**风险 / 遗留**：① 结构回退得到的逻辑 id 是 `mekaDevRuntimeId` 的可读前缀（最多 14 字符）；超过该
-长度的插件 id 在**登记表不可用**时会被截断，audience 与 PSB 配置不匹配——生产 Desktop 已接入
-登记表（完整逻辑 id），结构回退只服务启动早期/注册表不可用；② 该基座只按「root + `meka-dev-`
-前缀 + 已批准 + 声明 oidc host」判定，不额外核对 Meka 账本（dev 安装本来不写账本）；③ 真实测试
-PSB 的 audience 校验仍以部署方配置为准。
+**风险 / 遗留**：
+① 该基座只按「root + `meka-dev-` 前缀 + 已批准 + 声明 oidc host + **开发注册表命中**」判定，不额外核对
+Meka 账本（dev 安装本来不写账本）；注册表是 Host 本地事实，信任边界是「用户亲手选择的开发源码目录 +
+该安装已被批准」，不含发布者签名；
+② 启动早期（owner 提交完成前）开发注册表尚未加载时 fail closed（拒绝日志
+`meka-dev-logical-id-unregistered`）；`stableOwnerPostCommitTask`（owner 提交后）与工具调用前的
+`ensureMekaDevPluginsReady` 都会执行 `syncRegistered` 对账，之后恢复；不再有按 id 结构猜测的签发窗口；
+③ 真实测试 PSB 的 audience 校验仍以部署方配置为准。
+
+### 6.79 2026-11-18 dev 目录同步热更新后旧运行实例未退役，`/kv` 永久 403（已修；2026-11-19 审查补齐生命周期同口径与生产判据回归）
+
+用户在会话进行中修改 Meka 开发插件源码触发自动同步，随后该会话的工具调用持续返回
+`STATE_UNAVAILABLE`，插件自报「读取运行账本失败：GET /kv 被宿主拒绝（HTTP 403）」，
+连试两次仍 403，只有重启 Cindy 才恢复。日志证据：`main-2026-11-18.log` 中
+`Meka development Plugin sync failed`／`ghost updated`（如 22:49:44 的
+`meka-dev-meka-submit-6953b2fd`）之后，会话后续调用反复 `STATE_UNAVAILABLE`，期间没有
+任何 `ghost sandbox restarts for the updated install` 或 `spawn ghost sandbox` 记录。
+
+根因是 `cindy-brain/index.ts` 里 dev 更新路径（`updateDevelopmentPackage`）用**逻辑
+runtimeId**（`meka-dev-*`）去停 `GhostRuntime`／`GhostNodeRuntimeBroker`／
+`GhostAgentSlot`，而开发副本固定落 root，这三处生命周期账本键都是物理实例键
+（`_root__meka-dev-*`）⇒ 停止全部落空。更新事务提交后 receipt 换新，`cindy-ghost://`
+分区名（`owner:mode:ownerKey:storagePart:receipt:<hash>`）随之改变，旧沙箱却仍在
+`running` 并服务活跃会话；协议目标守卫按 `installedGhostMutationTargetToken` 判旧注册
+「目标已变」，`/kv`（以及同源 `/secrets`、`/oauth`、`/connections`）持续 403，直到重启
+后才按新记录注册。市场/普通插件更新路径一直使用 `installedGhostStoragePart`，因此只有
+dev 目录通道受影响。
+
+修复分两批：
+1. **2026-11-18 代次退役**：dev 更新路径改用 `installedGhostStoragePart(previousGhost)` 停旧
+   代次并在更新成功后按同一键 `resetFuse`；管子派发器新增代次对齐
+   （`GhostRuntime.isCurrentInstall`：沙箱报 `running` 但不是当前安装记录时先 `spawn`），
+   让活跃会话在下一次调用自动 rebind 到新实例。
+2. **2026-11-19 审查补齐「与市场更新同口径」**：dev 更新此前只 `runtime.stop` +
+   非 await 的 broker `stop`，没有 `await stopPluginAppInstance` / `stopAndWait`，也没有
+   清理 errand 槽、暂停浏览器扩展槽。现在与市场更新（`applyMarketGhostUpdate`）逐项对齐：
+   先 `getGhostBrowserExtensionSlot().prepareUpdate(instanceKey)` 暂停并在途作业结束 →
+   `runtime.stop` → `await stopPluginAppInstance(instanceKey)` →
+   `await getGhostNodeRuntimeBroker().stopAndWait(instanceKey)` → 清 `GhostAgentSlot` 与
+   `GhostErrandSlot` → `manager.update` → `resetFuse` / `spawnIfResident`，`finally` 释放
+   浏览器扩展槽（失败路径同样释放，旧版本恢复 resident）。
+
+安全语义不放宽：目标守卫仍按 owner／目录／物理实例键／批准 receipt／namespace 的当前目标
+令牌判定，换账号、换实例、卸载或旧 receipt 仍 403；更新后第一次调用可能因旧代次被收成
+`GHOST_ASLEEP` 而需重试一次，但不再有长期失败。
+
+回归测试（`apps/desktop/src/main/cindy-brain/__tests__/`）：
+- `mekaDevUpdateLifecycle.test.ts`：抽取并**执行生产** `updateDevelopmentPackage`，锁住按物理
+  实例键停旧代次、以及「浏览器扩展槽暂停 → 停沙箱/等退出 → 清 Agent/errand 槽 → 提交更新 →
+  释放浏览器扩展槽」的不可交换顺序（失败路径锁「旧版本恢复 resident + 槽位释放」）；
+  `/kv` 部分改用**生产** `setGhostKvStore` 回调（`captureTarget` / `isTargetCurrent`）与生产
+  `createGhostProtocolTargetGuard`（`runtime/electronSandboxAdapter.ts`，真正产生 403 的守卫）
+  驱动真实 `handleGhostKvRequest`，不再用手写同形谓词：更新后旧代次 GET/PUT 403、重绑新
+  receipt 后 200/204；换账号、换实例、卸载仍 403。
+- `pipeDispatcher.test.ts`：派发前代次对齐（沙箱报 `running` 但落后于当前安装记录时先重启）。
+- 端点目标语义的既有回归仍是 `ghostProtocolTargetLookup.test.ts`（卸载／换账号／换实例），
+  本项不重复声称覆盖它。
+
+未做/未验证：真实 dev 实例上的重启内复验（用户正在用该实例跑 E2E，本轮不重启）；全量
+`pnpm test:unit`（由维护者统一跑）。本项已在 `meka-whitelist-verification.md` 的 WL-9 登记
+（不变量 7、门禁与实机验证步骤）。

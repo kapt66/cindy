@@ -49,8 +49,9 @@
  *   --answer <text>        自动作答一个 ask_user 问题；**可重复**，按出现顺序（第 1 次提问用第 1 个
  *                          --answer，第 2 次用第 2 个）。不传 = 不猜，遇到提问直接判「卡住」。
  *   --confirm             自动点插件确认框的主按钮（`confirm` 槽，meka-submit 的 submit_confirm 会弹）。
- *                         **旧语义 = 对任意插件确认框都放行**；但只要同时传了 `--confirm-match` /
- *                         `--deny-match`，它就退化为兜底，不再无条件放行（deny 优先、match 生效）。
+ *                         **旧语义 = 对任意插件确认框都放行**，但只在**没有传** `--confirm-match` 时生效；
+ *                         只要传了 `--confirm-match`，本参数就被忽略（未命中 match 的弹窗按「取消」处理，
+ *                         没有「兜底放行」）。`--deny-match` 始终优先于本参数。
  *   --confirm-match <s>   **可重复**。确认框**正文或标题**包含子串 `s` 时才点主按钮（放行这一次）。
  *                         未命中 = 按「取消」处理并判「卡住」。用于「只走前置写操作」：
  *                         P4 传 `"移动到目标 changelist"`；远程真实 MR 传 `"确认提交"`。
@@ -58,8 +59,9 @@
  *                         `--confirm-match` 与 `--confirm`；两者同时命中同一个弹窗时 deny 生效，
  *                         报告里写明「拒绝优先」。P4 可传 `"创建 review"` 兜住真正的提交闸门。
  *                         空值（`--confirm-match ""`）是参数错误（退出码 2）：空串等于匹配一切。
- *   --self-test           不连 CDP、不建会话，跑内置的参数解析 + 确认框决策断言并打印 PASS/FAIL，
- *                         供无会话时验证本脚本的选择性确认逻辑。
+ *   --self-test           不连 CDP、不建会话，跑内置的参数解析 + 确认框决策（含
+ *                         `handleConfirmDialog` 的放行/取消/非插件分支，fake CDP session）断言并打印
+ *                         PASS/FAIL，供无会话时验证本脚本的选择性确认逻辑。
  *   --timeout-ms <n>      等待本轮 Agent 跑完的上限（默认 900000 = 15 分钟）。
  *   --out <path>          报告 JSON 路径（默认 `artifacts/meka-submit-e2e/e2e-<时间戳>.json`）。
  *   --dry-run             只连 CDP + 探测目标页/项目可见性，不建会话、不发消息、不点任何东西。
@@ -77,9 +79,11 @@
  *      **正文/标题的子串**决定这一次点主按钮还是点取消（不猜弹窗语义）：
  *        · `--deny-match <s>`（可重复）命中 ⇒ 一律点「取消」并判卡住，**优先级最高**；
  *        · `--confirm-match <s>`（可重复）命中 ⇒ 点主按钮放行这一次；
- *        · `--confirm` 是旧语义「任意插件确认框都放行」，但传了 match/deny 后它被收窄为兜底
- *          （deny 优先、match 生效；未命中 `--confirm-match` 的弹窗仍按取消处理）；
- *        · 都不传或都没命中 ⇒ 点「取消」并判「卡住」，报告里提示可用 `--confirm-match` 放行。
+ *        · `--confirm` 是旧语义「任意插件确认框都放行」，**只在没有传 `--confirm-match` 时生效**；
+ *          传了 match 之后它被忽略（不是兜底）——未命中 `--confirm-match` 的弹窗一律按取消处理，
+ *          否则选择性放行会被悄悄抹平；
+ *        · 都不传或都没命中（且没有生效的 `--confirm`）⇒ 点「取消」并判「卡住」，报告里提示
+ *          可用 `--confirm-match` 放行。
  *      两者同时命中同一弹窗时 deny 生效并在报告里写出原因。
  *   3. 只点**插件确认框**（`role=alertdialog` 且标题以「插件「」开头，见
  *      `GhostConfirmDialogHost`）；其它弹窗一律不碰，只登记并判卡住。
@@ -102,8 +106,9 @@
  *   - 选择性放行只看**确认框正文/标题的子串**，不判断「移动文件」与「创建 review/MR」的语义差别：
  *     子串必须足够具体（例如 `"移动到目标 changelist"`，而不是 `"确认"`），否则会把真正的提交
  *     一并放行。看错不会自动回滚已发生的操作——P4 场景宁可多停一次，也不要传宽子串。
- *   - `--self-test` 只覆盖参数解析与决策函数，**不**验证 DOM 选择器、CDP 链路与真实弹窗文案；
- *     真机一次实跑仍是必要证据。
+ *   - `--self-test` 覆盖参数解析、`decideConfirmDialog` 决策与 `handleConfirmDialog` 的
+ *     放行／取消／未命中／非插件分支（用 fake CDP session，不碰真实 DOM）；**不**验证 DOM
+ *     选择器、真实 CDP 链路与真实弹窗文案，真机一次实跑仍是必要证据。
  */
 
 import fs from 'node:fs';
@@ -213,13 +218,15 @@ function parseArgs(argv) {
 }
 
 /**
- * `--self-test`：不连 CDP、不建会话、不读库，只断言**参数解析 + 确认框决策**。
+ * `--self-test`：不连 CDP、不建会话、不读库，只断言**参数解析 + 确认框决策**，并用 fake
+ * CDP session 驱动 `handleConfirmDialog` 的放行／取消／未命中／非插件四条分支（覆盖
+ * 「决策之后真的点了哪个按钮、报告字段怎么投影」；不碰真实 DOM）。
  * 为什么内置而不是新增测试文件：`scripts/` 不是 workspace package、也不在 vitest 调度里，
  * 新建 `scripts/__tests__` 不会被任何门禁跑到；把断言挂在脚本自己的 flag 上，才能在无会话时
- * 用一条命令自证「选择性确认」的解析与优先级。
+ * 用一条命令自证「选择性确认」的解析、优先级与处理分支。
  * 退出码与主流程一致：0 = 全过；1 = 有 FAIL（逐条打印期望/实际）。
  */
-function runSelfTest() {
+async function runSelfTest() {
   const failures = [];
   let passed = 0;
   const record = (label, ok, detail) => {
@@ -416,6 +423,110 @@ function runSelfTest() {
     'occurrences 与 checks.confirmDialogs 数量一致',
     fakeChecks.confirmDialogs.length === fakeReport.confirmDialog.occurrences.length,
   );
+
+  console.log('SELF-TEST — handleConfirmDialog 决策与报告投影（fake CDP session）');
+  /**
+   * fake CDP session：`readConfirmDialog()` 只调用 `session.evaluate(CONFIRM_PROBE)`；
+   * `handleConfirmDialog()` 点按钮调用 `session.clickElement(expr)`；点完后再 evaluate
+   * 一次读「是否已关闭」。因此队列 = [首次读到的弹窗, null]，不碰真实 DOM/CDP。
+   */
+  const fakeSession = (dialogs) => {
+    const queue = [...dialogs];
+    const clicked = [];
+    return {
+      clicked,
+      evaluate: async () => (queue.length ? queue.shift() : null),
+      clickElement: async (expr) => {
+        clicked.push(
+          expr === CONFIRM_ACTION_EXPR
+            ? 'confirm'
+            : expr === CONFIRM_CANCEL_EXPR
+              ? 'cancel'
+              : 'unknown',
+        );
+      },
+    };
+  };
+  const fakeConfirmReport = () => ({ confirmDialog: { encountered: false, policy: null, occurrences: [] } });
+  /** `readConfirmDialog()` 的真实返回永远带 buttons；fake 弹窗补齐，供确认文案取主按钮 label。 */
+  const withButtons = (dialog) => ({
+    ...dialog,
+    buttons: dialog.buttons ?? [{ label: '取消' }, { label: '确认' }],
+  });
+  const runDialog = async (dialog, options) => {
+    const session = fakeSession([withButtons(dialog), null]);
+    const report = fakeConfirmReport();
+    const result = await handleConfirmDialog({ session, options, report });
+    return { session, report, result, occurrence: report.confirmDialog.occurrences[0] };
+  };
+
+  {
+    // 命中 --confirm-match：点主按钮，报告记 confirm；encountered 只表示「插件确认框」。
+    const run = await runDialog(p4Dialog, optionsFor({ confirmMatch: ['移动到目标 changelist'] }));
+    eq(
+      'handleConfirmDialog：命中 --confirm-match → 点主按钮并报告 confirm',
+      [run.session.clicked, run.result.ok, run.result.handled],
+      [['confirm'], true, true],
+    );
+    eq(
+      'handleConfirmDialog：occurrence 投影（plugin/confirm/closed/autoConfirmed）',
+      [
+        run.occurrence.kind,
+        run.occurrence.decision,
+        run.occurrence.matchedBy,
+        run.occurrence.closed,
+        run.occurrence.autoConfirmed,
+        run.occurrence.declined,
+        run.occurrence.body === p4Dialog.text,
+      ],
+      ['plugin', 'confirm', '--confirm-match:移动到目标 changelist', true, true, false, true],
+    );
+    eq('handleConfirmDialog：插件确认框后 encountered=true', run.report.confirmDialog.encountered, true);
+  }
+  {
+    // 命中 --deny-match：点取消、判卡住（ok=false / declined=true），报告记 cancel。
+    const run = await runDialog(reviewDialog, optionsFor({ denyMatch: ['创建 review'] }));
+    eq(
+      'handleConfirmDialog：命中 --deny-match → 点取消并判卡住',
+      [run.session.clicked, run.result.ok, run.result.declined, run.occurrence.decision, run.occurrence.matchedBy],
+      [['cancel'], false, true, 'cancel', '--deny-match:创建 review'],
+    );
+  }
+  {
+    // 没有任何放行规则：点取消并判卡住，报告记 blocked，reason 提示可用 --confirm-match。
+    const run = await runDialog(p4Dialog, optionsFor());
+    eq(
+      'handleConfirmDialog：未命中任何规则 → 点取消并判 blocked',
+      [run.session.clicked, run.result.ok, run.result.declined, run.occurrence.decision, run.occurrence.matchedBy],
+      [['cancel'], false, true, 'blocked', 'none'],
+    );
+    record(
+      'handleConfirmDialog：blocked 的 reason 提示 --confirm-match',
+      run.result.reason.includes('--confirm-match'),
+      `reason=${run.result.reason}`,
+    );
+  }
+  {
+    // 非插件确认框：不碰任何按钮、不猜语义，只登记事实；encountered 仍只表示插件确认框。
+    const foreignDialog = { title: '更新可用', text: '有新版本，是否现在重启？| 稍后 | 立即重启' };
+    const run = await runDialog(foreignDialog, optionsFor({ confirm: true }));
+    eq(
+      'handleConfirmDialog：非插件确认框不点任何按钮、不判卡在提交闸门',
+      [run.session.clicked, run.result.ok, run.result.handled, run.result.reason.includes('非插件确认框')],
+      [[], false, false, true],
+    );
+    eq(
+      'handleConfirmDialog：非插件分支报告 kind=non-plugin / decision=blocked / closed=null',
+      [
+        run.occurrence.kind,
+        run.occurrence.decision,
+        run.occurrence.closed,
+        run.occurrence.handled,
+        run.report.confirmDialog.encountered,
+      ],
+      ['non-plugin', 'blocked', null, false, false],
+    );
+  }
 
   if (failures.length) {
     console.log(`SELF-TEST FAILED — assertions=${passed + failures.length} pass=${passed} fail=${failures.length}`);
@@ -1719,8 +1830,9 @@ const MekaE2E = { session: null, db: null, sessionId: null, options: null };
  *   ① `--deny-match`（可重复）：正文或标题命中 ⇒ 点**取消**并停下。它压过一切放行规则
  *      （同一次命中里 deny 优先，报告写 `--deny-match:<s>` 并在 reason 里注明「拒绝优先」）。
  *   ② `--confirm-match`（可重复）：命中 ⇒ 放行这一次（按传参顺序取第一条命中的规则）。
- *   ③ `--confirm`：旧语义「任意插件确认框都点主按钮」，但**只要传了 match/deny 就被收窄**——
- *      仅在没有任何 `--confirm-match` 规则时兜底。否则 `--confirm` 会把选择性放行悄悄抹平。
+ *   ③ `--confirm`：旧语义「任意插件确认框都点主按钮」，但**只在没有传任何
+ *      `--confirm-match` 规则时生效**；传了 match 之后本参数被忽略（不是兜底）——否则
+ *      `--confirm` 会把选择性放行悄悄抹平。
  *   ④ 都没命中 ⇒ 按旧行为点取消并判「卡住」（fail closed），reason 里提示可用 `--confirm-match`。
  *
  * `dialog` 只要求 `{ title, body|text }`。返回 `{ decision, matchedBy, matchedSubstring, reason }`：
@@ -2027,11 +2139,11 @@ function printUsage() {
       '  --answer 可重复：按提问出现顺序逐个使用；不传 = 遇到提问直接判「卡住」（不猜）。',
       '  --confirm-match 可重复：确认框正文/标题包含该子串时才点主按钮（选择性放行）。',
       '  --deny-match 可重复：包含该子串时一律点取消并停下，优先级高于 --confirm-match / --confirm。',
-      '  --confirm：旧语义「任意插件确认框都点主按钮」；传了 match/deny 后由它们收窄（deny 优先、match 生效）。',
-      '  都不传或都没命中 = 点取消并判「卡住」（fail closed），报告提示可用 --confirm-match 放行。',
+      '  --confirm：旧语义「任意插件确认框都点主按钮」，只在没有 --confirm-match 时生效（传了 match 就被忽略，不是兜底）。',
+      '  都不传或都没命中（且没有生效的 --confirm）= 点取消并判「卡住」（fail closed），报告提示可用 --confirm-match 放行。',
       '  示例（P4 / 真实服务器项目，只走前置写操作）：--confirm-match "移动到目标 changelist"',
-      '  示例（test-repo 远程项目，真实创建 MR）：--confirm  或  --confirm-match "确认提交"',
-      '  --self-test：不连实例，跑内置的参数解析 + 确认框决策断言并打印 PASS/FAIL。',
+      '  示例（test-repo 远程项目，真实创建 MR）：--confirm  或  --confirm-match "确认提交"（两者不要混用）',
+      '  --self-test：不连实例，跑内置的参数解析 + 确认框决策（含 handleConfirmDialog 分支）断言并打印 PASS/FAIL。',
       '  报告默认写到 artifacts/meka-submit-e2e/e2e-<时间戳>.json（artifacts/ 已被 .gitignore 忽略）。',
       '  退出码：0 跑完 / 1 卡住或超时 / 2 前置不满足或参数错误（含 --confirm-match 空值）。',
     ].join('\n'),
@@ -2056,7 +2168,7 @@ async function main() {
   }
   if (options.selfTest) {
     // 不连 CDP、不读库、不写报告：无会话时也能自证参数解析与确认框决策。
-    const code = runSelfTest();
+    const code = await runSelfTest();
     if (code !== 0) process.exitCode = code;
     return code;
   }

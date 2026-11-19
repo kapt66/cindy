@@ -137,6 +137,13 @@ Rust 2024 edition 的 let-chain 写法和 `slice_as_chunks`（`as_chunks` 方法
 2024 edition，仍会编译失败。仓库目前没有 `rust-toolchain` / `rust-toolchain.toml` 固定版本，
 原生编译前应在实际执行构建的终端用 `rustc --version` 核对生效版本，不能只看已安装版本列表。
 
+**另一个 Rust 依赖**：`pnpm test:runner` 末尾会执行
+[`check-windows-atomic-rename.mjs`](../../apps/desktop/scripts/check-windows-atomic-rename.mjs)，
+它用 `rustc` 现场编译 Windows 原子改名原生实现来验证「改名不产生缺失窗口」。**没有安装 Rust
+工具链的机器会显式跳过该项并打印 `rustc is not installed`**（不再以失败退出）；CI 与装了
+Rust 的机器仍全量执行，因此该验证的最终结论以 CI/装有工具链的环境为准。要本地复现，装好
+Rust 后直接 `node apps/desktop/scripts/check-windows-atomic-rename.mjs`。
+
 ## macOS：iOS 模拟器构建工具链
 
 首次安装开发包不等于首次完整编译。先按 [Mobile 模拟器流程](../../apps/mobile/docs/simulator-debugging.md#截图与当前版本测试)

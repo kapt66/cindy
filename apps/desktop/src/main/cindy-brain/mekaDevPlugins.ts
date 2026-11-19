@@ -259,8 +259,8 @@ export class MekaDevPluginManager {
    *
    * 消费者是 `connectionAudienceResolver` 的 Meka 开发安装签发基座：开发安装的 audience
    * 必须是 `<orgSlug>:<逻辑插件 id>`（PSB 侧按 `xd:meka-submit` 配置），不能是物理
-   * runtime id。未登记 / 注册表尚未加载时返回 null，由 resolver 按 runtime id 结构回退；
-   * 非 dev 实例不会调用它。
+   * runtime id。未登记 / 注册表尚未加载时返回 null，resolver 直接拒绝（结构解析只用于
+   * 拒绝日志的佐证，不再据此签发）；非 dev 实例不会调用它。
    */
   logicalPluginIdForRuntime(runtimeId: string): string | null {
     return this.records.get(mekaDevRegistryKey(runtimeId))?.pluginId ?? null;

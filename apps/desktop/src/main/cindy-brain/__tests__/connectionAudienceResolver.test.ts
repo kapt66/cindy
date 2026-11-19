@@ -1284,6 +1284,7 @@ describe('Meka 渠道开发安装 Connection 签发基座', () => {
         pluginId: DEV_PLUGIN_ID,
         audiencePluginSlug: DEV_PLUGIN_ID,
         allowedHostCount: 1,
+        logicalIdSource: 'registry',
         reason: 'meka-dev-install-eligible',
       }),
     );
@@ -1303,21 +1304,61 @@ describe('Meka 渠道开发安装 Connection 签发基座', () => {
     });
   });
 
-  it('登记表读不到时按 runtime id 结构回退逻辑 id；结构不可用则拒绝', () => {
-    // 注册表还没加载该 runtime（启动早期）：结构 `meka-dev-<pluginId>-<8hex>` 仍可解析。
+  it('只有 meka-dev-* 形状、开发者注册表没有记录的安装一律拒绝（结构解析只用于日志）', () => {
+    // 手工导入的本地包可以把 manifest id 起成 `meka-dev-<x>-<8位hex>`；它不是 Meka
+    // 开发目录装入的副本（注册表里没有记录），因此不具备签发资格。结构解析只作为拒绝
+    // 日志的佐证：`logicalIdSource: 'parsed'` + `meka-dev-logical-id-unregistered`。
+    const warn = vi.fn();
+    const info = vi.fn();
+    const resolution = loadConnectionAudienceResolver({
+      ...devOptions({ mekaDevPluginLogicalId: () => null }),
+      log: { info, warn },
+    }).resolve(`_root__${DEV_RUNTIME_ID}`, identity);
+    expect(resolution).toBeNull();
+    expect(info).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      'ghost Connection audience resolution rejected',
+      expect.objectContaining({
+        ghostId: `_root__${DEV_RUNTIME_ID}`,
+        pluginSlug: DEV_RUNTIME_ID,
+        runtimeId: DEV_RUNTIME_ID,
+        parsedPluginId: DEV_PLUGIN_ID,
+        logicalIdSource: 'parsed',
+        reason: 'meka-dev-logical-id-unregistered',
+      }),
+    );
+    // 注册表读取抛错按「无记录」处理：照样拒绝，不退化为结构放行。
     expect(
       loadConnectionAudienceResolver({
-        ...devOptions({ mekaDevPluginLogicalId: () => null }),
+        ...devOptions({
+          mekaDevPluginLogicalId: () => {
+            throw new Error('registry unavailable');
+          },
+        }),
       }).resolve(`_root__${DEV_RUNTIME_ID}`, identity),
-    ).toMatchObject({ audience: 'org-example:meka-submit' });
+    ).toBeNull();
+    // 换一个同样带派生后缀的伪造 id 也一样拒绝。
+    const forgedManifest = devManifest({ id: 'meka-dev-evil-plugin-0123abcd' });
+    expect(
+      warnReasons(
+        devOptions({ mekaDevPluginLogicalId: () => null }, forgedManifest),
+        '_root__meka-dev-evil-plugin-0123abcd',
+      ),
+    ).toEqual(['meka-dev-logical-id-unregistered']);
+  });
 
-    // 结构也不可用（没有 `-<8位hex>` 派生后缀）⇒ 不猜逻辑 id，拒绝并留下原因。
+  it('连结构都解析不出逻辑 id 时按 meka-dev-logical-id-unavailable 拒绝', () => {
     const unstructured = devManifest({ id: 'meka-dev-demo' });
-    const reasons = warnReasons(
-      devOptions({ mekaDevPluginLogicalId: () => null }, unstructured),
-      '_root__meka-dev-demo',
-    );
-    expect(reasons).toEqual(['meka-dev-logical-id-unavailable']);
+    expect(
+      warnReasons(
+        devOptions({ mekaDevPluginLogicalId: () => null }, unstructured),
+        '_root__meka-dev-demo',
+      ),
+    ).toEqual(['meka-dev-logical-id-unavailable']);
+    // 没有注入注册表读取器（Host 没装配该来源）同样不可签发。
+    expect(
+      warnReasons(devOptions({ mekaDevPluginLogicalId: undefined })),
+    ).toEqual(['meka-dev-logical-id-unregistered']);
   });
 
   it('未批准 / 无 oidc host 的 dev 安装仍拒绝', () => {

@@ -124,14 +124,29 @@ describe('Windows Android 模拟器参数', () => {
       expect(command).toBe(cmd);
       expect(args.slice(0, 4)).toEqual(['/d', '/s', '/v:off', '/c']);
       expect(args[4]).toContain('%CINDY_PNPM_CMD_ARG_0%');
+      // 期望值必须用**与生产同一组输入**再算一次：生产调用显式传
+      // `npmExecPath: usablePnpmExecPath(process.env.npm_execpath, existsSync)`；
+      // 少了它 resolver 会退回读测试进程真实的 `process.env.npm_execpath`
+      // （vitest 下是 pnpm.cjs），走进 JS 入口分支、不产生 cmd/env 参数，
+      // 断言就会拿到 undefined。
+      const expectedInvocation = resolvePnpmInvocation(
+        ['exec', 'expo', 'start', '--dev-client', '--clear', '--port', '8082'],
+        {
+          npmExecPath: usablePnpmExecPath(
+            npmExecPath,
+            (target) => present && target === npmExecPath,
+          ),
+          platform: 'win32',
+          execPath: node,
+          comSpec: cmd,
+        },
+      );
+      expect(expectedInvocation.env).toBeDefined();
       expect(Object.entries(options.env)
         .filter(([key]) => key.startsWith('CINDY_PNPM_CMD_ARG_'))
         .sort(([left], [right]) => Number(left.split('_').at(-1)) - Number(right.split('_').at(-1)))
         .map(([, value]) => value)).toEqual([
-          resolvePnpmInvocation(
-            ['exec', 'expo', 'start', '--dev-client', '--clear', '--port', '8082'],
-            { platform: 'win32', execPath: node, comSpec: cmd },
-          ).env.CINDY_PNPM_CMD_ARG_0,
+          expectedInvocation.env.CINDY_PNPM_CMD_ARG_0,
           ...expoArgs,
         ]);
       expect(options.windowsVerbatimArguments).toBe(true);
