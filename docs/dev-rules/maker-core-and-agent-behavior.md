@@ -1187,7 +1187,7 @@ Desktop 的产品共用正文在 `apps/desktop/src/main/maker-host/host-system-p
   `ghost_call` 调插件 `list_tools`，拿到流程前禁止 `p4` / `git` CLI 探测与全仓 `find` / `grep`；
   提交对象是「已存在的改动」（P4 用 `meka-p4` 的 `p4_status`，远程 Git 用 MCPRouter 的
   `mcpr-project-manager` 的 `git_status`）；文件名词先在改动清单里模糊匹配，匹配不到问用户。
-  **插件缺失兜底（2026-11-19 终审补）**：`meka-submit` 是市场安装插件、不随包；确认插件清单时
+  **插件缺失兜底（2026-11-19 终审补）**：`meka-submit` 默认由 Meka 随包清单自动安装（包仍从市场下载，不随安装包分发）；自动安装失败/用户卸载后不装回；确认插件清单时
   若没有该插件，必须如实告知用户，并按用户确认改用本机 CLI 或既有流程，不得假装插件可用，
   也不得把「提交」挡成死路。该兜底与规则 1 同句并入第 3 行，**段总行数仍是 7**
   （与逐行散文契约、`meka-injection-layer.md` §3.3 同步）。

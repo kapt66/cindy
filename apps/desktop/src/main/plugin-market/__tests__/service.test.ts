@@ -2725,6 +2725,85 @@ describe('PluginMarketService migration and defaultInstall', () => {
       manifestDigest: ghostManifestDigest(manifest()),
     });
   });
+  it('ignores server defaultInstall entries when the channel only trusts the bundled manifest', async () => {
+    // Meka 渠道用随包清单，不接上游服务端 defaultInstall；不能因为目录里标了
+    // defaultInstall 就静默装上（这正是 Meka 关闭 applyDefaultInstalls 的原因，
+    // 现在改为只应用 bundled 集合）。
+    const item = summary({ defaultInstall: true });
+    const h = harness([item]);
+    const service = new PluginMarketService(
+      h.api as unknown as PluginMarketApi,
+      h.ledger,
+      {
+        applyDefaultInstalls: true,
+        defaultInstallSource: 'bundled',
+        bundledDefaultGhostIds: ['some-other-ghost'],
+      },
+    );
+    await service.snapshot();
+    expect(runtime.install).not.toHaveBeenCalled();
+  });
+
+  it('installs a plugin listed only in the bundled default manifest', async () => {
+    const item = summary({ defaultInstall: false });
+    const installDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-market-bundled-'));
+    roots.push(installDir);
+    fs.writeFileSync(path.join(installDir, 'ghost.json'), JSON.stringify(manifest()));
+    runtime.install.mockImplementation(async () => {
+      const ghost = { manifest: manifest(), dir: installDir, enabled: true };
+      runtime.ghosts = [ghost];
+      return ghost;
+    });
+    const h = harness([item]);
+    const service = new PluginMarketService(
+      h.api as unknown as PluginMarketApi,
+      h.ledger,
+      {
+        applyDefaultInstalls: false,
+        applyAutomaticUpgrades: false,
+        defaultInstallSource: 'bundled',
+        bundledDefaultGhostIds: [item.ghostId],
+      },
+    );
+    await service.snapshot();
+    expect(runtime.install).toHaveBeenCalledWith(
+      expect.stringMatching(/\.cindy$/),
+      expect.objectContaining({ ghostId: 'cindy-test', version: '1.0.0' }),
+    );
+    expect(h.ledger.installationForGhost('cindy-test')).toMatchObject({
+      source: 'market',
+      releaseId: 'release-1',
+      pluginId: item.id,
+    });
+    // 清单列 ghostId，市场 detail/账本用解析出的资源 id：不能拿 ghostId 去 detail。
+    expect(h.api.resolve).toHaveBeenCalledWith([
+      { key: '0', ghostId: item.ghostId, namespace: null },
+    ]);
+    expect(h.api.detail).toHaveBeenCalledWith(item.id);
+  });
+
+  it('does not reinstall a bundled default after explicit uninstall (opt-out keyed by resource id)', async () => {
+    const item = summary();
+    const h = harness([item]);
+    const record = recordForTest(item, { installed: true });
+    h.ledger.upsertInstallation(record);
+    h.ledger.markRemovedRecord(record, 'user-1');
+    const service = new PluginMarketService(
+      h.api as unknown as PluginMarketApi,
+      h.ledger,
+      {
+        applyDefaultInstalls: false,
+        applyAutomaticUpgrades: false,
+        defaultInstallSource: 'bundled',
+        bundledDefaultGhostIds: [item.ghostId],
+      },
+    );
+    await service.snapshot();
+    // 清单是 ghostId，账本退订是资源 id；两边都要能对上，不能把用户卸载过的插件装回来。
+    expect(runtime.install).not.toHaveBeenCalled();
+    expect(h.api.detail).not.toHaveBeenCalled();
+  });
+
   it('installs a namespaced default even when a public catalog entry shares the ghostId', async () => {
     const publicItem = summary({ ghostId: 'helper', namespace: null });
     const orgItem = summary({

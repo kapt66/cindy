@@ -3714,3 +3714,54 @@ issue 诊断会连带失效 —— 那是本条的边界。
   单测（来源过滤只在 resolver 单测里以合成记录覆盖）；⑤ 真实 dev 实例上的开发安装 JWT
   注入实机步骤（上面「实机验证」第 8/9 条）与第 8/9 条的反向边界都尚未实跑，只有单测证据；
   ⑥ 全量 `pnpm test:unit`（由维护者统一跑）。
+
+### WL-28 Meka 随包默认插件清单（2026-11-20 登记）
+
+**保护的不变量**
+1. Meka 渠道的默认插件只由安装包内 `apps/desktop/resources/meka/default-plugins.json`
+   决定（ghostId + 可选展示名），不读取服务端 `defaultInstall`；清单当前列
+   `mcpr-project-manager` / `meka-submit` / `meka-unity` / `meka-p4` 四个 ghostId。
+2. 清单条目先按 ghostId `resolve()` 出市场资源 id，再 `detail()`；账本/退订/detail
+   都用资源 id，不能把 ghostId 当资源 id。用户显式卸载写下的 opt-out（资源 id 或
+   ghostId）优先，清单不会把它装回。
+3. 首装为 `exempt`；已装更新为 `automatic`，扩权更新停在待确认、不静默扩权；
+   清单删除条目不会自动卸载已装插件。
+4. 清单损坏/超限/非法 ghostId 或打包版缺清单时 fail-closed（一个都不装）并留 warn；
+   dev 默认关闭，`CINDY_MEKA_BUNDLED_DEFAULTS=1` 才启用。
+5. 该清单只负责“装哪些”，不承担包可信：包仍从 Meka 市场下载并走 release 摘要、
+   manifest 与安装事务校验；不新增服务端接口。
+
+**与上游的关系**：**刻意分歧（Meka 私有）**。上游默认集由服务端 `defaultInstall` 下发；
+Meka 不继承该默认集，也不接管旧安装，改用随包清单。`applyDefaultInstalls:false`
+与 `applyAutomaticUpgrades:false` 保持不变，清单安装在独立路径
+（`applyBundledDefaultInstalls`）执行，不能顺带升级用户自行安装的其它 Meka 插件。
+
+**结构断言**
+- `apps/desktop/src/main/plugin-market/mekaDefaultPlugins.ts`：只认 `ghostId` 字段，
+  校验 schemaVersion / 上限 / 重复 / 非法字符；ENOENT 才是 `missing`，其它 errno 为
+  `unreadable`。
+- `apps/desktop/src/main/plugin-market/service.ts`：`isDefaultInstallEntry` 按
+  `plugin.ghostId` 匹配 bundled 集合；`applyBundledDefaultInstalls` 先 resolve 再 detail，
+  校验 `detail.id/ghostId` 与 summary 一致，装入走 `withMutation`，更新带
+  `expectedInstalledApproval`，扩权更新用 `automatic` 并保留待确认。
+- `apps/desktop/src/main/plugin-market/registerIpc.ts`：Meka service 固定
+  `applyDefaultInstalls:false`、`applyAutomaticUpgrades:false`、
+  `defaultInstallSource:'bundled'`、`bundledDefaultGhostIds`；清单为空时不发起 Meka 快照。
+- `apps/desktop/resources/meka/default-plugins.json` 随 `resources/meka` 打包，Forge
+  资源树按文件 SHA-256 校验。
+
+**自动化门禁**：`vitest run src/main/plugin-market/__tests__/mekaDefaultPlugins.test.ts
+src/main/plugin-market/__tests__/service.test.ts`（清单读取/校验、ghostId → 资源 id、
+bundled 路径安装、服务端默认集不生效、资源 id 退订不装回）；`pnpm --filter desktop run
+typecheck`、`pnpm check:test-hygiene`、`pnpm test:unit:related`。
+**2026-11-20 实跑**：两个定向文件 **388 passed**；`check:test-hygiene` PASS（353 files）；
+`typecheck` PASS（main 6399 + renderer 4571）；`test:unit:related` PASS
+（`apps/desktop unit` 1699.9s，6 chunks）。
+
+**实机验证**：全新 Meka 安装/登录后四个插件自动出现并启用；卸载 `meka-p4` 后重启/
+回前台不会被装回；清单加一个插件后发新包，升级启动只补装该插件；断网启动不阻塞、
+不误报失败。
+
+**未验证**：真实 MCPRouter 目录中四个 ghostId 的 resolve 结果与资源 id 映射（单测用
+合成资源 id 覆盖）；扩权更新停在待确认的用户可见提示；清单在真实打包产物中的存在性
+（仅由 Forge 资源树一致性间接保证）。

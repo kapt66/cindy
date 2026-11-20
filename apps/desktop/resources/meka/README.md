@@ -1,8 +1,8 @@
 # Bundled Meka resources
 
 This directory is the single read-only carrier copied to
-`process.resourcesPath/meka` in packaged builds. It carries the platform layer and one project
-baseline shell, and nothing else:
+`process.resourcesPath/meka` in packaged builds. It carries the platform layer, one project
+baseline shell, and the bundled default plugin manifest:
 
 - `skills/<category>/<sub-category>/<skill-id>/SKILL.md`: the one bundled platform Skill
   (`通用/platform/platform-capabilities`), which defines the capability ladder, the configuration
@@ -15,6 +15,18 @@ baseline shell, and nothing else:
   no such directory in the tree — git does not track empty directories. The role-manifest scan
   treats a missing bundled-role directory as an empty catalog, and the generated
   `<project-id>-default-role` is synthesized in memory, so nothing is lost by its absence.
+- `default-plugins.json`: the Meka **bundled default plugin manifest** (2026-11-20). It lists only
+  plugin **ghostIds** and display names (Meka 服务器管理 / Meka 提交 / Meka Unity / Meka P4);
+  package bytes and URLs never live here. On startup/login/foreground/periodic reconciliation the
+  Meka plugin market resolves each ghostId to its market resource id, then installs missing entries
+  and permission-neutral updates through the normal verified download/install transaction. First
+  install is exempt from the consent prompt; an update that expands permissions waits for the user
+  instead of silently expanding access. The list never overrides an explicit user uninstall
+  (opt-out wins), removing an entry does not uninstall an already installed plugin, and a malformed
+  manifest fails closed (nothing is installed). A packaged build with a missing manifest logs a
+  warning and installs nothing. Dev builds ignore the manifest by default to avoid duplicate dev
+  plugins; set `CINDY_MEKA_BUNDLED_DEFAULTS=1` to exercise it. Rule source:
+  `docs/dev-rules/plugin-security-and-authoring.md` “Meka 随包默认插件清单”.
 
 Everything else is declared by the projects themselves. A project root owns its configuration at
 `<project-root>/.meka/project.json` (project basics, metadata selections and role defaults), declares

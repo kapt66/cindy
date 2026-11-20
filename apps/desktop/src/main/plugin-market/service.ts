@@ -1021,6 +1021,21 @@ export interface PluginMarketServiceOptions {
   adoptLegacyInstallations?: boolean;
   /** Independent channels do not inherit Cindy's default install/upgrade policy. */
   applyDefaultInstalls?: boolean;
+  /**
+   * 后台自动升级开关（2026-11-20）：Meka 关闭后只由随包清单驱动补齐/更新，
+   * 不再顺带升级用户在 Meka 市场安装的其它插件。
+   */
+  applyAutomaticUpgrades?: boolean;
+  /**
+   * Default-install source (2026-11-20):
+   * - 'server'（缺省）= 上游服务端目录的 `defaultInstall`；
+   * - 'bundled' = Meka 随包清单 `resources/meka/default-plugins.json`；
+   * - 'both' = 两者都接受（保留给测试/迁移）。
+   * Meka 必须用 'bundled'，不能继承上游服务端默认集。
+   */
+  defaultInstallSource?: 'server' | 'bundled' | 'both';
+  /** Meka 随包清单里的插件 **ghostId**（包 `ghost.json.id`，不是市场生成的资源 id）；仅 bundled/both 时参与默认安装。 */
+  bundledDefaultGhostIds?: readonly string[];
   /** Optional channel-specific ceiling for already validated package manifests. */
   resolveMaxDownloadBytes?: (manifest: GhostManifest) => number | undefined;
 }
@@ -1189,6 +1204,23 @@ export class PluginMarketService {
   }
 
   /**
+   * 当前目录项是否属于本渠道的“默认安装集”：
+   * - server（缺省）：沿用上游 `defaultInstall`；
+   * - bundled：只认随包清单里的 id（Meka）；
+   * - both：两者并集（测试/迁移）。
+   * 注意：这里只回答“是否属于默认集”，退订/可用性由调用方另行判断。
+   */
+  private isDefaultInstallEntry(
+    plugin: Pick<VisiblePluginSummary, 'ghostId' | 'defaultInstall'>,
+  ): boolean {
+    const source = this.options.defaultInstallSource ?? 'server';
+    const bundled = (this.options.bundledDefaultGhostIds ?? []).includes(plugin.ghostId);
+    if (source === 'bundled') return bundled;
+    if (source === 'both') return plugin.defaultInstall === true || bundled;
+    return plugin.defaultInstall === true;
+  }
+
+  /**
    * 后台更新免确认只绑当前用户的默认下发资格，不绑目录上的 defaultInstall 标记。
    * 显式卸载写下的退订取消资格；用户再次显式从市场安装／更新会清除退订、恢复资格
    * （commitDownloadedPackage），历史遗留的「已安装 + 退订」由维护对账清除。退订仍在时
@@ -1199,7 +1231,7 @@ export class PluginMarketService {
     ledger: PluginMarketLedger,
     plugin: VisiblePluginSummary | VisiblePluginDetail,
   ): GhostInstallConsentPolicy {
-    if (plugin.defaultInstall !== true) return { mode: 'automatic' };
+    if (!this.isDefaultInstallEntry(plugin)) return { mode: 'automatic' };
     try {
       if (ledger.isDefaultInstallSuppressed(defaultInstallSubject(owner), plugin.id)) {
         return { mode: 'automatic' };
@@ -1221,7 +1253,7 @@ export class PluginMarketService {
     ledger: PluginMarketLedger,
   ): boolean {
     const ghost = binding.ghost;
-    return plugin.defaultInstall === true && binding.installState === 'installed' && binding.matchesUpdateRoute &&
+    return this.isDefaultInstallEntry(plugin) && binding.installState === 'installed' && binding.matchesUpdateRoute &&
       ghost?.approval.state === 'approved' && ghost.uiCapabilityApproved !== true &&
       pluginHasToolUi(ghost.manifest) && isGhostAvailableForActiveSession(plugin.ghostId) &&
       getGhostManager().readApprovedInstallOriginStrict(installedGhostPhysicalRelId(ghost)) !== 'agent-forge' &&
@@ -1844,34 +1876,42 @@ export class PluginMarketService {
     // whether a default plugin should be installed again.
     await this.ledgerMutation;
     const reconcileMarketInstallations = async (): Promise<'completed' | 'failed'> => {
-      if (this.options.applyDefaultInstalls === false) {
-        options.onDefaultReconciliationOutcome?.('completed');
-        return 'completed';
-      }
-      // 自定义来源只影响自己的目录发现；暂时不可读的来源不能阻塞官方默认安装。
-      // 已经落地的同 id 插件仍由 applyDefaultInstalls → installDetail 的本地事实检查保护。
       let completed = !namespaceReconciliationFailed;
       await yieldMarketReconciliation(owner);
+      if (this.options.applyDefaultInstalls !== false) {
+        try {
+          if (!(await this.applyDefaultInstalls(plugins, currentOrganization, owner, ledger, refresh))) {
+            completed = false;
+          }
+        } catch (error) {
+          completed = false;
+          log.warn('default plugin install reconciliation failed', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
       try {
-        if (!(await this.applyDefaultInstalls(plugins, currentOrganization, owner, ledger, refresh))) {
+        if (!(await this.applyBundledDefaultInstalls(owner, ledger, refresh))) {
           completed = false;
         }
       } catch (error) {
         completed = false;
-        log.warn('default plugin install reconciliation failed', {
+        log.warn('bundled default plugin install reconciliation failed', {
           error: error instanceof Error ? error.message : String(error),
         });
       }
-      await yieldMarketReconciliation(owner);
-      try {
-        if (!(await this.applyAutomaticUpgrades(plugins, customDiscovery.entries, owner, ledger, refresh))) {
+      if (this.options.applyAutomaticUpgrades !== false) {
+        await yieldMarketReconciliation(owner);
+        try {
+          if (!(await this.applyAutomaticUpgrades(plugins, customDiscovery.entries, owner, ledger, refresh))) {
+            completed = false;
+          }
+        } catch (error) {
           completed = false;
+          log.warn('automatic plugin upgrade reconciliation failed', {
+            error: error instanceof Error ? error.message : String(error),
+          });
         }
-      } catch (error) {
-        completed = false;
-        log.warn('automatic plugin upgrade reconciliation failed', {
-          error: error instanceof Error ? error.message : String(error),
-        });
       }
       const outcome = completed ? 'completed' : 'failed';
       options.onDefaultReconciliationOutcome?.(outcome);
@@ -4141,7 +4181,7 @@ export class PluginMarketService {
     for (const summary of plugins) {
       const uniqueIdentity = uniqueGhostIds.has(summary.ghostId) ||
         (hasDeliveryNamespace(summary) && identityCounts.get(pluginLedgerRecordKey(summary)) === 1);
-      if (!summary.defaultInstall ||
+      if (!this.isDefaultInstallEntry(summary) ||
           !uniqueIdentity) continue;
       if (!isGhostAvailableForActiveSession(summary.ghostId)) continue;
       if (ledgerData.defaultInstallOptOuts[installSubject]?.includes(summary.id)) continue;
@@ -4336,6 +4376,146 @@ export class PluginMarketService {
             error: error instanceof Error ? error.message : String(error),
           });
         }
+      }
+    }
+    return completed;
+  }
+
+  /**
+   * Meka 随包默认清单（2026-11-20）：清单列的是 **ghostId**（包 `ghost.json.id`），不是市场
+   * 生成的资源 id。目录 API 不一定把未标 defaultInstall 的条目放进 `defaults()`，所以先按
+   * ghostId 批量 `resolve()`，再对解析出的资源 id 走 detail + 同一套校验/下载/装入事务。
+   * 只处理 bundled 来源；server 来源仍由 applyDefaultInstalls。
+   *
+   * 首次安装走 exempt（随包清单是受信任的安装包内容）；已装更新走 automatic，只有不扩权
+   * 的更新能静默落位，扩权更新会停在 pending（留给用户显式更新），不会静默扩权。
+   */
+  private async applyBundledDefaultInstalls(
+    owner: ActiveAppSession,
+    ledger: PluginMarketLedger,
+    refresh: PluginMarketRefreshContext,
+  ): Promise<boolean> {
+    if (this.options.defaultInstallSource !== 'bundled' && this.options.defaultInstallSource !== 'both') {
+      return true;
+    }
+    const ghostIds = [...new Set(this.options.bundledDefaultGhostIds ?? [])];
+    if (ghostIds.length === 0) return true;
+    let completed = true;
+    let installSubject: string;
+    try {
+      installSubject = defaultInstallSubject(owner);
+    } catch {
+      // 未登录/公共目录浏览没有安装主体；清单留到下一次已登录对账。
+      return true;
+    }
+    let resolved;
+    try {
+      resolved = await this.api.resolve(ghostIds.map((ghostId, index) => ({
+        key: String(index),
+        ghostId,
+        namespace: null,
+      })));
+      requireSameMarketOwner(owner);
+    } catch (error) {
+      log.warn('bundled default plugin resolve failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
+    const rowsByKey = new Map(resolved.results.map((row) => [row.key, row]));
+    for (const [index, ghostId] of ghostIds.entries()) {
+      let pluginId = ghostId;
+      try {
+        const row = rowsByKey.get(String(index));
+        if (!row || row.status !== 'available') {
+          completed = false;
+          log.warn('bundled default plugin unavailable', { ghostId });
+          continue;
+        }
+        const summary = row.plugin;
+        pluginId = summary.id;
+        // 目录解析结果必须仍是清单声明的 ghostId；不能把同名/异 id 的条目装进来。
+        if (summary.ghostId !== ghostId) {
+          completed = false;
+          log.warn('bundled default plugin resolve identity mismatch', {
+            ghostId,
+            resolvedGhostId: summary.ghostId,
+            pluginId,
+          });
+          continue;
+        }
+        requirePluginVisibleForOwner(owner, summary);
+        const ledgerData = ledger.read();
+        const optOuts = ledgerData.defaultInstallOptOuts[installSubject] ?? [];
+        // 市场写退订用资源 id；旧账本/手写清单可能用 ghostId，两者都认，避免卸载后被装回。
+        if (optOuts.includes(summary.id) || optOuts.includes(ghostId)) continue;
+        if (!isGhostAvailableForActiveSession(summary.ghostId)) continue;
+        const local = await this.localInstallSnapshotAsync(
+          owner,
+          ledger,
+          refresh,
+          ledgerData.installations,
+        );
+        requireSameMarketOwner(owner);
+        const item = this.toItem(summary, local);
+        if (item.installState !== 'not-installed' && item.installState !== 'update-available') continue;
+        const binding = this.serverMarketBinding(summary, local);
+        if (binding.installState === 'conflict') continue;
+        if (binding.installState === 'update-available') {
+          // 目录的 currentRelease 可能比已装版本旧（兼容性回退/服务端缓存），不能降级。
+          if (isPluginDowngrade(summary.currentRelease.version, binding.ghost)) continue;
+          if (!binding.ghost || binding.ghost.approval.state !== 'approved') continue;
+          if (binding.target.namespace == null && isBuiltinGhostRemovedByUser(binding.target.ghostId)) {
+            continue;
+          }
+          if (isGhostBusy(binding.target, local.ghosts)) continue;
+        }
+        const detail = await this.api.detail(summary.id);
+        requireSameMarketOwner(owner);
+        assertDetailMatchesSummary(summary, detail);
+        const expectedInstalled = binding.installState === 'update-available';
+        const expectedInstalledApproval = expectedInstalled && binding.ghost
+          ? ghostInstallApprovalToken(binding.ghost.approval)
+          : undefined;
+        await this.withMutation(summary.id, async () => {
+          // 下载窗口里用户可能显式卸载；装前再读一次退订，避免清单把插件装回来。
+          const freshOptOuts = ledger.read().defaultInstallOptOuts[installSubject] ?? [];
+          if (freshOptOuts.includes(summary.id) || freshOptOuts.includes(ghostId)) {
+            throw new SilentDefaultInstallCancelledError('Default Plugin was explicitly uninstalled');
+          }
+          await this.installDetail(
+            detail,
+            {
+              consent: expectedInstalled
+                ? { mode: 'automatic' }
+                : { mode: 'exempt', reason: 'server-default-install' },
+              expectedInstalled,
+              ...(expectedInstalledApproval ? { expectedInstalledApproval } : {}),
+              sourceReplacementMode: 'preserve-existing-source',
+              beforeCommitInLock: () => {
+                const commitOptOuts = ledger.read().defaultInstallOptOuts[installSubject] ?? [];
+                if (commitOptOuts.includes(summary.id) || commitOptOuts.includes(ghostId)) {
+                  throw new SilentDefaultInstallCancelledError('Default Plugin was explicitly uninstalled');
+                }
+              },
+            },
+            owner,
+            ledger,
+          );
+        });
+      } catch (error) {
+        if (error instanceof SilentDefaultInstallCancelledError) continue;
+        if (isGhostInstallConsentRequiredError(error)) {
+          // 扩权更新需要用户确认：后台不弹窗，保持旧版本，等用户从插件页显式更新。
+          log.info('bundled default plugin update awaits user consent', { ghostId, pluginId });
+          continue;
+        }
+        completed = false;
+        log.warn('bundled default plugin install failed', {
+          ghostId,
+          pluginId,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
     return completed;

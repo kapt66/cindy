@@ -95,6 +95,11 @@
   目录。运行期读取元数据会校验 `rootPath` 属于当前项目配置的根集合，并拒绝路径逃逸。
 - 内置项目、角色与 Skill 统一从 `resources/meka/` 分发；正式包使用
   `process.resourcesPath/meka`，并在 Forge 打包后校验源码树与包内树的文件和内容一致。
+- Meka 默认插件改为**随包清单**（`resources/meka/default-plugins.json`，2026-11-20）：
+  当前 4 个（Meka 服务器管理 / Meka 提交 / Meka Unity / Meka P4）。启动/登录/回前台/周期对账
+  只按清单补齐或更新，不接服务端 `defaultInstall`；清单条目仍从 Meka 市场下载并走完整
+  校验，显式卸载写下的 opt-out 优先，清单删除条目不自动卸载。dev 默认关闭（本地 dev 插件
+  与稳定 id 会重复），`CINDY_MEKA_BUNDLED_DEFAULTS=1` 可验证；打包构建始终启用。
 - Meka 普通会话与 Jira/GitLab 正式流程会话。
 - Meka 会话侧栏、项目层级、正式流程/普通会话二级分组。
 - Meka 会话启动阶段不执行战斗环境聚合检查；`saga2_json`/P4 配置提交不触发 MCPRouter
@@ -8094,7 +8099,7 @@ Meka 项目 saga2，用户输入「帮我提交模块表定义」）里，系统
 探测与全仓 find/grep 猜要提交什么；② 提交对象是「已存在的改动」：P4 项目用 `meka-p4` 的
 `p4_status`、远程 Git 项目用 MCPRouter 的 `mcpr-project-manager` 的 `git_status` 先定来源再谈
 范围；③ 文件名词先在改动清单里模糊匹配，匹配不到问用户，不得全仓 grep；④ **插件缺失兜底**
-（2026-11-19 终审补）：`meka-submit` 是市场安装插件、不随包，确认清单时没有该插件必须如实告知
+（2026-11-19 终审补）：`meka-submit` 默认由 Meka 随包清单自动安装（包仍从市场下载，不随安装包分发）；自动安装失败/用户卸载后不装回，确认清单时没有该插件必须如实告知
 用户并按用户确认改用本机 CLI/既有流程，不得假装插件可用，也不得把「提交」挡成死路。兜底与
 ①同句并入第 3 行，段总行数仍为 7，逐行散文契约与 §3.3 同步更新。
 

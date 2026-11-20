@@ -617,7 +617,9 @@ Renderer 的来源分类是封闭取值（`public / organization / local / custo
     同一市场更新事务重新校验当前 Release 并补齐；保留启停态和同来源数据。落位前复核 owner、
     实例、批准 revision 与退订资格。没有有效安装 receipt 的后台恢复仍拒绝。
     普通市场手动安装、自定义市场、本地 `.cindy`、Forge 以及已失去默认资格的插件仍走原确认流程；
-    市场审核结果、展示 manifest 或内置种子身份不能替代服务端默认下发资格。实现与真实 receipt
+    市场审核结果、展示 manifest 或内置种子身份不能替代服务端默认下发资格。**Meka 随包清单**
+    （见下条）的首装同 `exempt`；已装更新走 `automatic`，权限/控制点变多时后台放弃本轮、
+    不静默扩权，等用户从插件页显式更新。实现与真实 receipt
     组合回归见 `main/plugin-market/service.ts`、`main/cindy-brain/ghostInstallConsent.ts` 及对应测试。
 - 市场安装账本是后续更新来源的唯一事实：服务端市场按 `pluginId + releaseId` 路由，
   任一来源账本文件存在却损坏时，读写都必须拒绝，不得把其它来源的记录当成完整视图重写并覆盖损坏文件。
@@ -645,7 +647,8 @@ Renderer 的来源分类是封闭取值（`public / organization / local / custo
   `updateRequiresConsent`，插件页标出「需确认新权限」，用户点更新时再弹确认。Renderer
   目录走延后对账时，记下新 hold 后立即通知重投影，不等无关前台刷新。自定义
   市场暂停记录同时钉住 release 与包内容指纹，同版本包被改掉后必须重新判定。仍具备
-  默认下发资格的服务端 `defaultInstall` 插件不受此限，权限变多也静默更新。
+  默认下发资格的服务端 `defaultInstall` 插件不受此限，权限变多也静默更新；Meka 随包清单
+  的**首装**不受此限，但它的**已装更新不静默扩权**（见下条）。
 - 服务端市场按客户端版本投影最近发布、曾上架且仍有效的兼容
   Release；current 不兼容时回退兼容历史版本，没有兼容版本时不展示。Desktop 信任该投影，
   不再用 `minCindyVersion` 二次筛选、跳过或弹兼容性确认。自定义市场和本地 `.cindy` 采用
@@ -708,6 +711,23 @@ Renderer 的来源分类是封闭取值（`public / organization / local / custo
   不猜身份或伪造批准；其它来源冲突仍需用户显式替换。
   实现与回归见 `main/cindy-brain/builtinGhostProvisioner.ts`、`main/plugin-market/service.ts`
   （`seededBuiltinYieldsToRelease`）及对应测试。
+- **Meka 随包默认插件清单（2026-11-20 用户裁决）**：Meka 渠道不接服务端 `defaultInstall`，
+  改为安装包内 `resources/meka/default-plugins.json`（schemaVersion 1，**ghostId** + 可选展示名；
+  ghostId 是包 `ghost.json.id`，不是市场生成的资源 id）。启动/登录/回前台/周期对账时先按
+  ghostId `resolve()` 出资源 id，再逐个 `detail()`，把未装或可更新的插件走与手动安装相同的
+  下载、校验、批准与装入事务；`defaultInstallSource='bundled'` 表示只认清单，服务端目录里
+  即使标了 `defaultInstall` 也不会被安装（`main/plugin-market/service.ts` 的
+  `isDefaultInstallEntry` / `applyBundledDefaultInstalls`）。显式卸载写下的
+  `defaultInstallOptOuts`（键是市场资源 id，兼容 ghostId）优先，清单不会把它装回；
+  首装免确认，已装更新走 `automatic`，权限/控制点变多时停在待确认、不静默扩权；
+  清单删除条目不会自动卸载已装插件（避免客户端回退误删用户环境）。清单损坏/超限/
+  非法 ghostId 一律 fail-closed（整份不生效，只记 warn）。dev 默认不应用清单（本地 dev
+  插件与稳定 id 会重复），验证时设 `CINDY_MEKA_BUNDLED_DEFAULTS=1`；打包构建始终启用。
+  清单是受信任的安装包内容，不需要新增服务端接口；实现见
+  `main/plugin-market/mekaDefaultPlugins.ts`、`registerIpc.ts` 的 `mekaService()` 与
+  `__tests__/mekaDefaultPlugins.test.ts`。
+  清单与随包种子同属受信任安装包内容：能改写安装包资源的人已经越过本机信任边界，
+  因此清单只负责“装哪些”，不承担“包是否可信”——包仍由市场 release 摘要与安装事务校验。
 - 同一 release 自动更新失败后，在当前进程内按 owner、来源路由和 release 做指数退避
   （5 分钟起、最长 6 小时），日志记录失败次数与下次重试时间；来源发布新 release 时立即
   解除。忙碌跳过不记失败，用户手动重试不受退避限制。

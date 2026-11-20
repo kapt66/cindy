@@ -1,6 +1,6 @@
 import os from 'node:os';
 
-import { ipcMain } from 'electron';
+import { app, ipcMain } from 'electron';
 
 import { isIpcError } from '../../shared/ipc-errors.js';
 import { ServerApiError } from '../serverApiClient.desktop.js';
@@ -38,6 +38,7 @@ import { MekaPluginMarketApi } from './api.js';
 import { PluginChannelLedger } from './channelLedger.js';
 import { pluginClientVersionReader } from './clientIdentity.js';
 import { getMekaLedger } from './mekaLedger.js';
+import { readMekaDefaultPlugins, resolveMekaDefaultPluginsPath } from './mekaDefaultPlugins.js';
 import { LocalIconRequestGate } from './localIconRequestGate.js';
 import { resolveMekaPluginMaxDownloadBytes } from './mekaDownloadPolicy.js';
 import {
@@ -61,9 +62,44 @@ let mekaServiceSingleton: PluginMarketService | null = null;
 /**
  * Meka keeps its own market identity: a separate server API surface, a separate
  * installation ledger and its own download ceiling, and it never adopts legacy
- * installations or applies the upstream default-install set.
- * Cindy 的目录页 / 后台对账 / Agent 调用继续共用上游 `getPluginMarketService()`。
+ * installations or applies the upstream default-install set. Cindy 的目录页 /
+ * 后台对账 / Agent 调用继续共用上游 `getPluginMarketService()`。
+ *
+ * 默认插件改为**随包清单**（2026-11-20 用户裁决）：安装包带
+ * `resources/meka/default-plugins.json`（列 ghostId），Meka 市场按清单补齐/更新；
+ * 不接服务端 `defaultInstall`，也不需要新增服务端接口。清单里的插件仍从市场下载并走
+ * 完整校验；用户显式卸载写下的 opt-out 优先，不会被清单装回。
  */
+let mekaBundledDefaultGhostIdsCache: string[] | null = null;
+
+/** 读一次随包清单；dev 默认关闭（避免与 dev 插件重复），打包构建始终启用。 */
+function mekaBundledDefaultGhostIds(): string[] {
+  if (mekaBundledDefaultGhostIdsCache) return mekaBundledDefaultGhostIdsCache;
+  const enableBundledDefaults = app.isPackaged || process.env.CINDY_MEKA_BUNDLED_DEFAULTS === '1';
+  let ghostIds: string[] = [];
+  if (enableBundledDefaults) {
+    const manifest = readMekaDefaultPlugins(resolveMekaDefaultPluginsPath({
+      isPackaged: app.isPackaged,
+      appPath: app.getAppPath(),
+      resourcesPath: process.resourcesPath,
+    }));
+    if (manifest.ok) {
+      ghostIds = manifest.ghostIds;
+      log.info('meka bundled default plugins loaded', { count: ghostIds.length });
+    } else if (manifest.reason === 'invalid' || manifest.reason === 'unreadable' ||
+      (manifest.reason === 'missing' && app.isPackaged)) {
+      // fail-closed：清单损坏/读不到时一个都不装，但不要让启动失败。打包版缺清单
+      // 也要留下可诊断的 warn（旧安装/裁剪包不再静默）。
+      log.warn('meka bundled default plugins ignored', {
+        reason: manifest.reason,
+        detail: manifest.detail,
+      });
+    }
+  }
+  mekaBundledDefaultGhostIdsCache = ghostIds;
+  return ghostIds;
+}
+
 function mekaService(): PluginMarketService {
   mekaServiceSingleton ??= new PluginMarketService(
     // Meka 渠道必须上报真实客户端版本：恒发 `0.0.0` 会被协议的 versionless 语义无条件放行，
@@ -75,7 +111,11 @@ function mekaService(): PluginMarketService {
     getMekaLedger(),
     {
       adoptLegacyInstallations: false,
+      // 不继承上游服务端 defaultInstall；只应用随包清单。
       applyDefaultInstalls: false,
+      applyAutomaticUpgrades: false,
+      defaultInstallSource: 'bundled',
+      bundledDefaultGhostIds: mekaBundledDefaultGhostIds(),
       resolveMaxDownloadBytes: resolveMekaPluginMaxDownloadBytes,
     },
   );
@@ -168,6 +208,17 @@ export async function syncDefaultMarketPlugins(
       snapshot,
       reconciliationOutcome ?? 'completed',
     );
+    // Meka 随包默认清单：与上游默认安装同一批启动/登录/前台/周期对账触发。
+    // 独立失败不影响上游对账结果；清单为空时完全跳过 Meka 快照。
+    if (mekaBundledDefaultGhostIds().length > 0) {
+      try {
+        await mekaService().snapshot();
+      } catch (error) {
+        log.warn('meka bundled default plugin sync failed', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
     if (outcome === 'failed') {
       log.warn('default plugin startup sync incomplete', {
         unavailableReason: snapshot.unavailableReason,
@@ -186,7 +237,18 @@ export async function syncDefaultMarketPlugins(
 /** Signal foreground removals without requesting another snapshot or disk scan. */
 export async function refreshForegroundMarketPlugins(): Promise<'completed' | 'failed'> {
   try {
-    return await service().refreshCatalogForForeground();
+    const outcome = await service().refreshCatalogForForeground();
+    // 启动/回前台也要应用 Meka 随包默认清单；清单为空时完全跳过快照。
+    if (mekaBundledDefaultGhostIds().length > 0) {
+      try {
+        await mekaService().snapshot();
+      } catch (error) {
+        log.warn('meka bundled default plugin sync failed', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return outcome;
   } finally {
     // A removal can succeed before a later maintenance step fails.
     signalRemovalNoticeAvailable();

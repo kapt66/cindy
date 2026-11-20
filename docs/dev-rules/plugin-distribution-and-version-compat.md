@@ -275,7 +275,10 @@
 4. **数据隔离**：Meka 请求不得在上游数据域写入任何状态（发布记录、投影缓存、遥测、
    组织/个人来源记录等）；上游请求同样不得读 Meka 数据域。上游既有身份（组织 scope、
    `defaultInstall` 等）在 Meka 空间下要么显式等价存在，要么明确不可用，**不得靠
-   venue 隐式继承**。
+   venue 隐式继承**。2026-11-20 起 Meka 的显式等价物是随包清单
+   `resources/meka/default-plugins.json`（`defaultInstallSource='bundled'`），服务端
+   `defaultInstall` 在 Meka 渠道不生效；见 `plugin-security-and-authoring.md`
+   「Meka 随包默认插件清单」。
 
 上游客户端侧的承诺保持不变：不新增筛选、不新增确认、下发即信任
 （`plugin-security-and-authoring.md:153-160`）。

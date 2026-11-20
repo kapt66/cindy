@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "plugins": [
+    { "ghostId": "mcpr-project-manager", "name": "Meka 服务器管理" },
+    { "ghostId": "meka-submit", "name": "Meka 提交" },
+    { "ghostId": "meka-unity", "name": "Meka Unity" },
+    { "ghostId": "meka-p4", "name": "Meka P4" }
+  ]
+}

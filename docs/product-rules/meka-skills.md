@@ -8,7 +8,7 @@
 >
 > **2026-09-29 随包内容收敛（先读这一段）**：按维护者裁决「除了 workflow 机制，其他的机制
 > 完全不动，只是动内容」「`saga2/project.json` 需要继续随包，其他的移除」，`resources/meka/`
-> 现在**只随包三样东西**：
+> 随后在 **2026-11-20** 增加第四项默认插件清单；现在随包四项：
 >
 > 1. `README.md`（Forge 要求资源树非空）；
 > 2. `skills/通用/platform/platform-capabilities/SKILL.md` —— **唯一的随包 Skill**
@@ -16,7 +16,12 @@
 > 3. `projects/saga2/project.json` —— 只保留 `basic` 身份与 66 条 `metadata` 发现清单；
 >    它的 `roleDefaults` 只剩 `projectMetadataSelection`（`mcp` 已空 —— 原 `project-agent` 声明
 >    是 `mcp-router` 的冗余别名，见下文「业务 MCP 与平台 provider 的边界」），
->    **没有 `promptFramework`、没有 `skills`**。
+>    **没有 `promptFramework`、没有 `skills`**；
+> 4. `default-plugins.json`（2026-11-20）—— **只列插件 ghostId 与展示名**（Meka 服务器管理 /
+>    Meka 提交 / Meka Unity / Meka P4），不包含包字节或业务内容；启动后由 Meka 插件市场
+>    按清单补齐/更新，不接服务端 `defaultInstall`。规则见
+>    [`../dev-rules/plugin-security-and-authoring.md`](../dev-rules/plugin-security-and-authoring.md)
+>    的「Meka 随包默认插件清单」。
 >
 > 被删除的内容：**整个战斗 workflow 机制**（`combatWorkflowPolicy.ts` /
 > `combatEnvironmentGate.ts` / `combatServerCapabilityState.ts` 及全部 `workflow` 字段与
