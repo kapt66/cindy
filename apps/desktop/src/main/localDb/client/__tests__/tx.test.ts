@@ -3209,6 +3209,60 @@ describe('db worker tx handlers', () => {
     });
   });
 
+  it('im.rotateSession persists an inherited Meka assistant binding in the same INSERT', async () => {
+    await withClient(async (client) => {
+      await seedSession(client, 'meka-old');
+      await client.exec(
+        `UPDATE sessions
+         SET source = 'telegram', im_bot_context_id = 'bot', im_user_id = 'user',
+             workspace_kind = 'project', project_dir = '/p4/saga2',
+             meka_project_id = 'saga2', meka_role_id = 'saga2-default-role'
+         WHERE id = 'meka-old'`,
+      );
+
+      const result = await client.tx('im.rotateSession', {
+        previousSessionId: 'meka-old',
+        detachBinding: null,
+        session: {
+          id: 'meka-new',
+          title: 'TG · New',
+          workingDir: '/p4/saga2',
+          workspaceKind: 'project',
+          model: 'grok-4.6',
+          effort: 'high',
+          permissionMode: 'bypassPermissions',
+          fastMode: false,
+          agentKind: 'pi',
+          providerId: null,
+          imDefaultRoute: null,
+          source: 'telegram',
+          imBotContextId: 'bot',
+          imUserId: 'user',
+          projectDir: '/p4/saga2',
+          mekaProjectId: 'saga2',
+          mekaRoleId: 'saga2-default-role',
+        },
+        now: 500,
+      });
+
+      expect(result).toEqual({ previousStatus: 'active' });
+      await expect(
+        client.query(
+          `SELECT workspace_kind, project_dir, meka_project_id, meka_role_id, meka_role
+           FROM sessions WHERE id = 'meka-new'`,
+        ),
+      ).resolves.toEqual([
+        {
+          workspace_kind: 'project',
+          project_dir: '/p4/saga2',
+          meka_project_id: 'saga2',
+          meka_role_id: 'saga2-default-role',
+          meka_role: null,
+        },
+      ]);
+    });
+  });
+
   it('im.rotateSession never revives a concurrently deleted previous task', async () => {
     await withClient(async (client) => {
       await seedSession(client, 'telegram-deleted');

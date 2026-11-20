@@ -5,6 +5,7 @@ import { getBotRemoteSettingsSource } from '../localDb/ipc/bots.js';
 import { listRecentWorkdirs } from '../localDb/ipc/recentWorkdirs.js';
 import { listProjectAliases } from '../localDb/ipc/projectAliases.js';
 import { loadSidebarSettingsSnapshot } from '../sidebarSettingsStore.js';
+import { listMekaProjectWorkspaceEntries } from '../meka-projects/workspaceCatalog.js';
 import { projectKeyComparisonKey } from '../../shared/projectKeys.js';
 import { extractDisplayName } from '../../shared/projectDisplayName.js';
 import { normalizeWorkingDirForStorage } from '../../shared/workingDir.js';
@@ -33,8 +34,11 @@ export async function botLinkedProjectAccess(botId: string) {
   assertCurrent();
   const read = async (): Promise<BotProjectOption[]> => {
     assertCurrent();
-    const [linked, registered, aliases] = await Promise.all([
+    const [linked, registered, aliases, mekaEntries] = await Promise.all([
       readBotLinkedProjects(root, botId), listRecentWorkdirs(), listProjectAliases(),
+      // Meka 项目目录同样是可关联的普通项目目录（meka-assistant-session-binding §4）；
+      // 关联后建出的任务由创建/更新侧的隐式绑定变成 Meka 助理会话。
+      listMekaProjectWorkspaceEntries(),
     ]);
     assertCurrent();
     const hidden = new Set(loadSidebarSettingsSnapshot().hiddenProjectKeys.map(key => projectKeyComparisonKey(key, process.platform)));
@@ -54,10 +58,21 @@ export async function botLinkedProjectAccess(botId: string) {
       const id = projectId(project);
       if (!options.has(id)) options.set(id, { id, path: project.path, linked: false, available: true });
     }
+    const mekaNames = new Map<string, string>();
+    for (const entry of mekaEntries) {
+      if (hidden.has(groupKey(entry.path))) continue;
+      const id = projectId({ path: entry.path });
+      mekaNames.set(id, entry.name);
+      if (options.has(id)) continue;
+      // 与 registered 的 exists 同口径：目录真的在才算可用候选。
+      const available = await stat(entry.path).then(value => value.isDirectory(), () => false);
+      assertCurrent();
+      options.set(id, { id, path: entry.path, linked: false, available });
+    }
     const result = [...options.values()];
     const displayPaths = result.map(project => normalizeWorkingDirForStorage(project.path) ?? project.path);
     return result.map((project, index) => ({ ...project,
-      name: !project.deviceId && names.get(groupKey(project.path))
+      name: !project.deviceId && (mekaNames.get(project.id) ?? names.get(groupKey(project.path)))
         || extractDisplayName(displayPaths[index], displayPaths).name,
     }));
   };

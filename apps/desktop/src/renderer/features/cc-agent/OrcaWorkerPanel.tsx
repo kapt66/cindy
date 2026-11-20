@@ -27,6 +27,7 @@ import { useWorkerAgentDevices } from './hooks/useWorkerAgentDevices';
 import { useWorkerDirectoryLabels } from './hooks/useWorkerDirectoryLabel';
 import { subscribeNewWorkerShortcut } from './lib/newWorkerShortcut';
 import type { ConversationSearchJump } from '../../../shared/conversationSearchJump';
+import { isMekaAssistantSession } from '../../../shared/mekaAssistantSession';
 import { isActiveWorkerStatus } from '../../../shared/orca-worker-status';
 
 export interface OrcaWorkerPanelProps {
@@ -123,7 +124,7 @@ export function OrcaWorkerPanel({
     onSelectionIntentCleared,
   });
   const [leadSession, setLeadSession] = useState<Session | null>(null);
-  const directoryLabels = useWorkerDirectoryLabels(workers, leadSession?.workspaceKind === 'meka');
+  const directoryLabels = useWorkerDirectoryLabels(workers, isMekaAssistantSession(leadSession));
   const lastAgentIslandPayloadRef = useRef<string | string[] | null>(null);
   const shownWorker = selectedWorkerRecord ?? focusedWorker;
   // 在另一台电脑运行的 Worker：本机代理任务不跑 Agent，展示运行设备上的真实任务。

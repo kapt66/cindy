@@ -31,6 +31,7 @@ import { getMaker } from '../maker-host/index.js';
 import { inferProviderIdForModel } from '../maker-host/provider-route.js';
 import { createBusinessSessionId } from '../sessionIds.js';
 import { dbToMakerAgentKind, normalizeDbAgentKind } from '../../shared/agentKindConversion.js';
+import { hasMekaAssistantBinding } from '../../shared/mekaAssistantSession.js';
 import { copySessionContextWindowBudget, pruneSessionContextWindowBudget } from '../maker-host/session-context-budget-store.js';
 import { readBoundClaudeConfigDir } from '../subscription-accounts/store.js';
 import type { AgentMeta, Session } from '../../renderer/lib/ccAgent.types';
@@ -1133,14 +1134,13 @@ export async function forkSessionAtMessage(
         userSendAt: now,
         agentKind: forkSource.agentKind,
         workspaceKind: source.workspaceKind,
-        // Meka 归属身份 = (mekaProjectId, mekaRoleId)，必须与 workspaceKind 一起继承。
-        // 只继承 workspaceKind 会写出「半绑定」行：侧栏 Meka 段只按 mekaProjectId 建桶
-        // (MekaAssistantSection.buildMekaProjectSessionGroups)，NULL 落进「旧版 Meka 对话」
-        // 孤儿桶；运行期 mekaResolvePlan.resolveBootstrapInjection 也会以
-        // 「Meka session requires a project and role」拒绝它。mekaRole 是无绑定历史行
-        // 才有的内置角色标记，原样继承以保持旧会话的身份呈现。
-        mekaProjectId: source.mekaProjectId ?? null,
-        mekaRoleId: source.mekaRoleId ?? null,
+        // Meka 归属身份 = (mekaProjectId, mekaRoleId) 成对绑定，只有完整绑定才继承
+        // （不产生半绑定行）；判据不再是 workspaceKind==='meka'——新会话可能是普通
+        // project/dialogue，旧行仍可能是 'meka'，kind 按源行原样复制只作展示分类。
+        // mekaRole 是更旧的无绑定历史行才有的内置角色标记，原样继承以保持身份呈现。
+        ...(hasMekaAssistantBinding(source)
+          ? { mekaProjectId: source.mekaProjectId, mekaRoleId: source.mekaRoleId }
+          : {}),
         mekaRole: source.mekaRole ?? null,
         // 轮 26 HIGH-1:远端会话 fork 必须继承 remoteHostId —— 缺失会落成
         // NULL, 子会话被下游当成本地会话处理(本地 transport/MCP 全错)。
@@ -1344,10 +1344,11 @@ export async function forkSessionStripEncrypted(sourceSessionId: string): Promis
         userSendAt: now,
         agentKind: source.agentKind,
         workspaceKind: source.workspaceKind,
-        // 同 forkSessionAtMessage：Meka 绑定与 workspaceKind 必须同时继承，
-        // 否则剥离 fork 出的子会话同样落进「旧版 Meka 对话」孤儿桶。
-        mekaProjectId: source.mekaProjectId ?? null,
-        mekaRoleId: source.mekaRoleId ?? null,
+        // 同 forkSessionAtMessage：完整 Meka 绑定才继承（判据不看 kind，kind 按源行原样
+        // 复制只作展示分类）；mekaRole 是无绑定旧行标记，原样继承。
+        ...(hasMekaAssistantBinding(source)
+          ? { mekaProjectId: source.mekaProjectId, mekaRoleId: source.mekaRoleId }
+          : {}),
         mekaRole: source.mekaRole ?? null,
         codexHistoryHasProductPrompt: source.codexHistoryHasProductPrompt,
         parentSessionId: source.id,

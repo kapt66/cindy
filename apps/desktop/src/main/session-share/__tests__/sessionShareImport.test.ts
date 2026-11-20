@@ -2062,13 +2062,13 @@ describe('sessionShareImport', () => {
       session: { workingDir: string; workspaceKind: string; extraDirs: string };
     };
     expect(txArgs.session.workingDir).toBe(expectedDir);
-    // 事务内的 INSERT 仍是粗粒度 'project':绑定必须由提交后的**单条 UPDATE** 落地,
-    // 这样绝不会出现只有 workspace_kind='meka' 而没有 role 的半绑定行。
+    // 事务内的 INSERT 直接写普通 'project'：2026-11-20 起 workspace_kind 只是展示分类，
+    // 身份由绑定列承载；提交后的**单条 UPDATE** 成对写绑定，不写 kind。
     expect(txArgs.session.workspaceKind).toBe('project');
 
     expect(dbMock.execCalls).toHaveLength(1);
     const [bindingCall] = dbMock.execCalls;
-    expect(bindingCall.sql).toContain("workspace_kind = 'meka'");
+    expect(bindingCall.sql).not.toContain('workspace_kind');
     expect(bindingCall.sql).toContain('meka_project_id = ?');
     expect(bindingCall.sql).toContain('meka_role_id = ?');
     expect(bindingCall.params).toEqual([
@@ -2361,10 +2361,9 @@ describe('sessionShareImport', () => {
   // 这条组合是本轮同步新造出来的:meka 绑定的工作目录取**本机项目解析结果**,而交接
   // 提供 newId 与它自己的 workingDir。两条路径必须各取所长,且非 Meka 包不受影响。
 
-  it('meka bundle under a device handoff keeps the local project dir and flips the kind to meka', async () => {
+  it('meka bundle under a device handoff keeps the local project dir and the ordinary kind', async () => {
     // 正例:交接的会话 id 必须留下,但工作目录必须是本机项目目录 —— `mekaResolvePlan`
-    // 从 workingDir 推导项目参考路径与只读范围,把 workspace_kind='meka' 的行指到交接
-    // 目录会让注入静默降级。
+    // 从 workingDir 推导项目参考路径与只读范围,把绑定会话指到交接目录会让注入静默降级。
     const p4Root = path.join(tmpRoot, 'saga2-handoff-root');
     registerMekaProject(p4Root);
     const handoffDir = path.join(tmpRoot, 'handoff-proj');
@@ -2397,11 +2396,11 @@ describe('sessionShareImport', () => {
     expect(args.session.id).toBe(migrationId);
     expect(args.session.workingDir).toBe(normalizeWorkingDirForStorage(p4Root));
     expect(args.session.workingDir).not.toBe(handoffDir);
-    // 事务里的 INSERT 仍是粗粒度 'project';绑定必须由提交后的单条 UPDATE 落地
-    // (workspace_kind 与身份列同一条语句,绝不留下半绑定行)。
+    // 事务里的 INSERT 就是最终普通种类 'project';绑定由提交后的单条 UPDATE 成对落地，
+    // 不再写 workspace_kind（新口径不产生第三态，旧行读取侧仍兼容）。
     expect(args.session.workspaceKind).toBe('project');
     expect(dbMock.execCalls).toHaveLength(1);
-    expect(dbMock.execCalls[0].sql).toContain("workspace_kind = 'meka'");
+    expect(dbMock.execCalls[0].sql).not.toContain('workspace_kind');
     expect(dbMock.execCalls[0].sql).toContain('meka_project_id = ?');
     expect(dbMock.execCalls[0].sql).toContain('meka_role_id = ?');
     expect(dbMock.execCalls[0].params.slice(0, 2)).toEqual(['saga2', 'saga2-default-role']);

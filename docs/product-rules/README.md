@@ -43,3 +43,4 @@
 | 文档成果、四格式与插件增强 | [文档工坊](document-workshop-quality.md) |
 | 新电脑迁移插件、技能、设置与经确认的密钥 | [迁移助理](new-device-setup-migration.md) |
 | 首次登录后的综合引导：认识 Cindy、迁移、连接模型、导入本机已有内容 | [开始引导](first-run-guide.md) |
+| Meka 助理会话：它是什么、Meka 项目目录的隐式规则、对外仍是普通会话的边界 | [Meka 助理会话](meka-assistant-session.md) |

@@ -999,6 +999,14 @@ export interface ImRotateSessionArgs {
     imDefaultRoute?: string | null;
     imBotContextId: string;
     imUserId: string;
+    /**
+     * Meka 助理会话身份：`/new` 轮换继承上一行的成对绑定。旧调用方不传 = 普通任务；
+     * 传了就与行同一次 INSERT 写入，不会出现「先建普通行再补绑定」的半绑定窗口。
+     */
+    projectDir?: string | null;
+    mekaProjectId?: string | null;
+    mekaRoleId?: string | null;
+    mekaRole?: 'planner' | 'artist' | 'programmer' | 'tester' | null;
   };
   now: number;
 }

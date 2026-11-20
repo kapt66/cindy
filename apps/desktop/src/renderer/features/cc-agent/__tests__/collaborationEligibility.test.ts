@@ -41,6 +41,19 @@ describe('collaboration eligibility', () => {
     expect(canShowCollabToggleForSession(session)).toBe(false);
   });
 
+  // 2026-11-20：新 Meka 会话落在兜底目录时 workspaceKind 是 'dialogue'，身份只由成对
+  // 绑定表达。只看 kind 会把这类会话挡掉，用户在新会话里看不到协同入口。
+  it('shows a dialogue-kind session whose identity is the persisted Meka binding', () => {
+    expect(canShowCollabToggleForSession({
+      workspaceKind: 'dialogue',
+      workingDir: 'C:\\meka-assistants\\session-1',
+      remoteHostId: null,
+      orcaRole: null,
+      mekaProjectId: 'project-a',
+      mekaRoleId: 'project-a-default-role',
+    })).toBe(true);
+  });
+
   it.each([
     ['local project', { workspaceKind: 'project', workingDir: 'C:\\repo', remoteHostId: null, deviceLinkDeviceId: null }],
     ['Meka before cwd allocation', { workspaceKind: 'meka', workingDir: null, remoteHostId: null, deviceLinkDeviceId: null }],

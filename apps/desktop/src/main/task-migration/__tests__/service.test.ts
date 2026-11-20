@@ -1378,6 +1378,20 @@ describe('resumable cross-computer copy', () => {
     expect(await fs.readFile(path.join(state.root, 'shared', 'draft'), 'utf8')).toBe('original');
   });
 
+  it('refuses a bound Meka task that keeps the ordinary workspace kind', async () => {
+    // 2026-11-20 起新 Meka 会话不再写 kind='meka'：身份只由成对绑定承载。迁移若仍只看
+    // kind，就会把带项目/角色绑定（且工作目录可能是整个 P4 根）的任务当普通任务搬运，
+    // 到目标机静默丢掉绑定。
+    const row = state.rows.get('A')!.get('fork')!;
+    row.workspaceKind = 'project';
+    row.mekaProjectId = 'saga2';
+    row.mekaRoleId = 'saga2-default-role';
+    await expect(start()).rejects.toThrow('MIGRATION_MEKA_UNSUPPORTED');
+    expect(state.exported).not.toHaveBeenCalled();
+    expect(state.snapshot).not.toHaveBeenCalled();
+    expect(state.imports).not.toHaveBeenCalled();
+  });
+
   it('refuses the whole team when a member is a Meka project task', async () => {
     await team();
     state.rows.get('A')!.get('separate-worker')!.workspaceKind = 'meka';

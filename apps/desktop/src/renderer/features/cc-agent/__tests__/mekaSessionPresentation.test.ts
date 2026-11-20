@@ -60,7 +60,9 @@ function session(id: string, patch: Partial<Session> = {}): Session {
     id,
     title: id,
     agentKind: 'cc',
-    workspaceKind: 'meka',
+    // 2026-11-20 起新 Meka 会话的 kind 是普通值，身份只看持久化绑定（见
+    // docs/dev-rules/meka-assistant-session-binding.md §1）。
+    workspaceKind: 'project',
     status: 'active',
     source: 'user',
     createdAt: '2026-01-01T00:00:00.000Z',

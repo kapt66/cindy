@@ -25,6 +25,7 @@ import { getDbClient, tryGetDbClient } from '../localDb/client/current';
 import { isOrcaReportStopSnapshotMarker } from '../localDb/agentInputQueueSnapshots';
 import { dialogueWorkspaceDayKey } from '../localDb/dialogueWorkspace';
 import { upsertRecentWorkdir } from '../localDb/ipc/recentWorkdirs';
+import { isMekaAssistantSession } from '../../shared/mekaAssistantSession';
 import { readDialogueWorkspaceSettings } from '../dialogue-workspace-settings';
 import { collapseWorktreeDirForGrouping, sessionProjectDirectory } from '@cindy/maker-shared/worktree-paths';
 import { emitSessionCreated } from '../localDb/ipc/sessionCreatedBroadcast';
@@ -239,7 +240,7 @@ function view(scope: Scope, record: MigrationRecord | null): TaskMigrationView {
 interface SourceSession {
   id: string;
   workingDir: string;
-  /** Third workspace state (`meka`). See the admission rule in `assertSource`. */
+  /** 旧第三态（'meka'）；身份判定已改成绑定，见 `assertSource`。 */
   workspaceKind: string | null;
   projectDir: string | null;
   remoteHostId: string | null;
@@ -249,6 +250,10 @@ interface SourceSession {
   source: string;
   orcaRole: string | null;
   agentKind: 'cc' | 'codex' | 'pi';
+  /** Meka 助理会话身份（成对绑定 / 旧角色标记），迁移必须显式拒绝。 */
+  mekaProjectId: string | null;
+  mekaRoleId: string | null;
+  mekaRole: string | null;
   updatedAt: number;
 }
 /**
@@ -262,11 +267,13 @@ async function assertSource(
   worker = false,
 ): Promise<SourceSession> {
   const row = await scope.db.queryOne<SourceSession>(
-    'SELECT id, working_dir AS workingDir, project_dir AS projectDir, workspace_kind AS workspaceKind, remote_host_id AS remoteHostId, agent_device_id AS agentDeviceId, orca_remote_lead AS orcaRemoteLead, status, source, orca_role AS orcaRole, agent_kind AS agentKind, updated_at AS updatedAt FROM sessions WHERE id = ?',
+    'SELECT id, working_dir AS workingDir, project_dir AS projectDir, workspace_kind AS workspaceKind, meka_project_id AS mekaProjectId, meka_role_id AS mekaRoleId, meka_role AS mekaRole, remote_host_id AS remoteHostId, agent_device_id AS agentDeviceId, orca_remote_lead AS orcaRemoteLead, status, source, orca_role AS orcaRole, agent_kind AS agentKind, updated_at AS updatedAt FROM sessions WHERE id = ?',
     [sessionId],
   );
   scope.assertCurrent();
-  // Meka project tasks never enter the copy/migration flow:
+  // Meka assistant sessions never enter the copy/migration flow. Identity is the
+  // persisted binding (new sessions keep an ordinary workspace_kind), so the judge
+  // is `isMekaAssistantSession` — not `workspace_kind === 'meka'` alone:
   //   1) their working directory can be the Perforce root itself (the built-in
   //      `saga2` project resolves to `p4RootPath`), so "copy task" would archive
   //      the whole P4 workspace — a transfer this capability never intends;
@@ -275,7 +282,7 @@ async function assertSource(
   //      session and only reports it through `result.notes`, which the copy
   //      channel never surfaces. Refuse explicitly instead of offering an entry
   //      that silently drops the project/role binding.
-  if (row?.workspaceKind === 'meka') throw new Error('MIGRATION_MEKA_UNSUPPORTED');
+  if (isMekaAssistantSession(row)) throw new Error('MIGRATION_MEKA_UNSUPPORTED');
   if (
     !row ||
     !(row.status === 'active' || (worker && row.status === 'archived')) ||

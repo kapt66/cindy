@@ -225,6 +225,7 @@ import { assertTrustedAppRendererEvent } from '../../../security/trustedAppRende
 import { createRemoteSessionsStatusSetter } from '../../../mcp-integrations/sessionStatusRemote.js';
 import * as sessionQueries from '../../sessionQueries';
 import { setSessionRuntimeProjector } from '../../mapper';
+import { setWorkspaceBindingResolver } from '../../workspaceBindingResolver';
 
 function createDb(): void {
   const sqlite = new Database(':memory:');
@@ -441,6 +442,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  setWorkspaceBindingResolver(null);
   setSessionRestoreObserver(null);
   _setStoreForTests(null);
   setSessionRuntimeCleanup(null);
@@ -1410,6 +1412,44 @@ describe('local-db:sessions:update handler wiring', () => {
       mekaRoleId: 'saga2-default-role',
     });
     expect(h.upsertRecentWorkdir).not.toHaveBeenCalled();
+  });
+
+  it('binds an unbound task that is moved into a registered Meka project directory', async () => {
+    // 2026-11-20 隐式绑定（规则 §2「已有未绑定会话被移动/切换到该目录时」）：移动到的目录
+    // 是已注册 Meka 项目时，身份必须与普通 kind 同一条 UPDATE 成对落库，并随 patch 广播给
+    // 已挂载镜像——否则侧栏/身份 chip 还停在「普通任务」，而库里已是 Meka 会话。
+    setWorkspaceBindingResolver(async () => ({
+      projectId: 'saga2',
+      roleId: 'saga2-default-role',
+      workspacePath: 'C:/P4/saga2',
+    }));
+
+    await invokeUpdate('cc-local', { workingDir: 'C:/P4/saga2' });
+
+    expect(
+      h.sqlite!
+        .prepare(
+          'SELECT working_dir AS workingDir, workspace_kind AS workspaceKind, project_dir AS projectDir, meka_project_id AS mekaProjectId, meka_role_id AS mekaRoleId FROM sessions WHERE id = ?',
+        )
+        .get('cc-local'),
+    ).toEqual({
+      workingDir: 'C:/P4/saga2',
+      workspaceKind: 'project',
+      projectDir: 'C:/P4/saga2',
+      mekaProjectId: 'saga2',
+      mekaRoleId: 'saga2-default-role',
+    });
+    expect(h.tapWindowBroadcast).toHaveBeenCalledWith(
+      'local-db:sessions:patched',
+      expect.objectContaining({
+        sessionId: 'cc-local',
+        patch: expect.objectContaining({
+          workspaceKind: 'project',
+          mekaProjectId: 'saga2',
+          mekaRoleId: 'saga2-default-role',
+        }),
+      }),
+    );
   });
 
   it('broadcasts local unarchive status patches to every window (#3175)', async () => {

@@ -14,8 +14,14 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({
   root: '', status: 'active',
   registered: vi.fn<() => Promise<Array<{ path: string; exists: boolean }>>>(),
+  mekaEntries: [] as Array<{ projectId: string; name: string; path: string; lastUsedAtMs: number }>,
 }));
 vi.mock('electron', () => ({ BrowserWindow: { getAllWindows: () => [] } }));
+// Meka 项目目录投影（meka-assistant-session-binding §4）由 meka-projects/workspaceCatalog 提供，
+// 真模块会把 Meka 设置/项目注册表（electron app/ipcMain）拉进本文件；这里用固定清单替身。
+vi.mock('../../meka-projects/workspaceCatalog.js', () => ({
+  listMekaProjectWorkspaceEntries: async () => h.mekaEntries,
+}));
 vi.mock('../../appSessionState.js', () => ({
   activeOwnerScopeKey: () => 'owner', isAppSessionBoundaryPending: () => false,
   ownerScopedUserDataPath: () => h.root,
@@ -44,6 +50,7 @@ function deferred() {
 beforeEach(async () => {
   h.root = await mkdtemp(path.join(os.tmpdir(), 'bot-linked-projects-'));
   h.status = 'active';
+  h.mekaEntries = [];
   h.registered.mockReset().mockResolvedValue([{ path: h.root, exists: true }]);
 });
 afterEach(async () => { await rm(h.root, { recursive: true, force: true }); });
@@ -125,4 +132,18 @@ it('disambiguates registered projects with the same basename before exposing the
   ]);
   const options = await (await botLinkedProjectAccess('bot-1')).read();
   expect(options.map(project => project.name)).toEqual(['team-a/app', 'team-b/app']);
+});
+
+it('offers Meka project directories as ordinary linkable projects', async () => {
+  const mekaRoot = path.join(h.root, 'meka-project');
+  await mkdir(mekaRoot, { recursive: true });
+  h.mekaEntries = [{ projectId: 'project-a', name: 'Project A', path: mekaRoot, lastUsedAtMs: 0 }];
+
+  const options = await (await botLinkedProjectAccess('bot-1')).read();
+
+  expect(options.find(project => project.path === mekaRoot)).toMatchObject({
+    name: 'Project A',
+    linked: false,
+    available: true,
+  });
 });

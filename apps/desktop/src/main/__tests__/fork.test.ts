@@ -688,6 +688,50 @@ describe('forkSessionAtMessage', () => {
     expect(result.parentSessionId).toBe('src-session');
   });
 
+  it('inherits the binding when the source keeps the ordinary kind (new Meka sessions)', async () => {
+    // 2026-11-20 起新 Meka 会话的 kind 是普通值，身份只在绑定列里：fork 若仍按 kind 判身份，
+    // 子会话会丢掉绑定，冷启动不再注入角色运行时（且侧栏 Meka 段里消失）。
+    const target = makeMessageRow({ id: 'target-user', role: 'user', createdAt: 3000 });
+    const priorUser = makeMessageRow({ id: 'user-1', role: 'user', content: '"hi"', createdAt: 2000 });
+
+    selectQueue.push([
+      makeSourceRow({
+        agentKind: 'pi',
+        sdkSessionId: 'pi-session-source',
+        workspaceKind: 'project',
+        mekaProjectId: 'saga2',
+        mekaRoleId: 'saga2-default-role',
+        mekaRole: null,
+      }),
+    ]);
+    selectQueue.push([target]);
+    selectQueue.push([priorUser]);
+    selectQueue.push([
+      makeSourceRow({
+        id: 'new-meka-fork',
+        agentKind: 'pi',
+        sdkSessionId: 'pi-session-fork',
+        workspaceKind: 'project',
+        mekaProjectId: 'saga2',
+        mekaRoleId: 'saga2-default-role',
+        parentSessionId: 'src-session',
+        forkedAtMessageId: 'target-user',
+      }),
+    ]);
+
+    await forkSessionAtMessage('src-session', 'target-user');
+
+    const sv = (
+      txCalls.find((c) => c.name === 'fork.session')!.args as {
+        newSession: Record<string, unknown>;
+      }
+    ).newSession;
+    expect(sv.workspaceKind).toBe('project');
+    expect(sv.mekaProjectId).toBe('saga2');
+    expect(sv.mekaRoleId).toBe('saga2-default-role');
+    expect(sv.mekaRole).toBeNull();
+  });
+
   it('codex path: rolls back target and later user turns, copies only prior messages', async () => {
     const target = makeMessageRow({ id: 'target-user', role: 'user', createdAt: 3000 });
     const priorUser = makeMessageRow({

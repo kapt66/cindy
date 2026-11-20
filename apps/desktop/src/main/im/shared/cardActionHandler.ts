@@ -49,6 +49,10 @@ import {
   wakeSessionInputAfterCredentialSwitch,
 } from '../../maker-ipc/register';
 import { applyRuntimeSetModelChange } from '../../maker-ipc/runtimeSetModel';
+import { applyMekaRuntimeConfig } from '../../meka-injection/index.js';
+import { readPersistedMekaSessionBinding } from '../../meka-injection/persistedBinding.js';
+import { resolveSessionWorkspaceBinding } from '../../localDb/workspaceBindingResolver.js';
+import type { MakerSessionCreateOpts } from '../../maker-ipc/sessionRequest.js';
 import { cancelPendingSessionRuntimeMutation } from '../../maker-ipc/sessionRuntimeControl';
 import { getDesktopCcPrefs, type DesktopCcPrefs } from '../index';
 import {
@@ -1060,6 +1064,28 @@ export function createCardActionHandler(
         log.warn(`control:new cleanup created session failed: ${msg}`);
       }
     };
+    // 2026-11-20 Meka 助理会话：control:new 直接写库（OwnerSessionStorage.create 会按
+    // 工作区补成对绑定），但运行期不经桌面 bootstrapSession。这里在 createSession 前用
+    // 创建侧同一解析端口补绑定并调用同一个注入入口，否则库里是 Meka、这一轮是普通会话。
+    const applyMekaBindingToCreateOpts = async (
+      createOpts: MakerSessionCreateOpts,
+    ): Promise<void> => {
+      if (createOpts.mekaProjectId || createOpts.mekaRoleId) return;
+      const resolution = await resolveSessionWorkspaceBinding({
+        workingDir: createOpts.workingDir ?? null,
+        projectDir: null,
+        remoteHostId: null,
+        agentDeviceId: createOpts.agentDeviceId ?? null,
+      });
+      if (!resolution) return;
+      createOpts.mekaProjectId = resolution.projectId;
+      createOpts.mekaRoleId = resolution.roleId;
+      createOpts.projectDir = resolution.workspacePath;
+      createOpts.workspaceKind = 'project';
+      await applyMekaRuntimeConfig(createOpts, {
+        readPersistedSession: readPersistedMekaSessionBinding,
+      });
+    };
     const persistCreatedSessionProvider = async (session: {
       id: string;
       model: string;
@@ -1078,7 +1104,7 @@ export function createCardActionHandler(
       let created: string | null = null;
       let createErr: string | null = null;
       try {
-        const newSession = await getMaker().createSession({
+        const createOpts: MakerSessionCreateOpts = {
           agentKind: 'claude-code',
           workingDir,
           model: requireRouteModel(),
@@ -1087,7 +1113,9 @@ export function createCardActionHandler(
           permissionMode: controlNewPermissionMode as PermissionMode,
           fastMode: routeFastMode,
           title: FBOT_DRAFT_TITLE,
-        });
+        };
+        await applyMekaBindingToCreateOpts(createOpts);
+        const newSession = await getMaker().createSession(createOpts);
         created = newSession.id;
         await persistCreatedSessionProvider(newSession);
         await touchUserSent(newSession.id);
@@ -1160,7 +1188,7 @@ export function createCardActionHandler(
       // 生成正式 title 'FBot · {gen}' (对齐 desktop makerChatStore 的 generateTitle
       // 逻辑)。这里不立刻用 displayName 跑 oneshot — 用户名作为 seed 没有任何
       // 对话上下文意义。
-      const newSession = await getMaker().createSession({
+      const createOpts: MakerSessionCreateOpts = {
         agentKind: 'claude-code',
         workingDir,
         model: requireRouteModel(),
@@ -1169,7 +1197,9 @@ export function createCardActionHandler(
         permissionMode: controlNewPermissionMode as PermissionMode,
         fastMode: routeFastMode,
         title: FBOT_DRAFT_TITLE,
-      });
+      };
+      await applyMekaBindingToCreateOpts(createOpts);
+      const newSession = await getMaker().createSession(createOpts);
       newSessionId = newSession.id;
       await persistCreatedSessionProvider(newSession);
       // bump userSendAt = now, 让 sidebar 直接把这条 session 落到 workingDir
@@ -1385,9 +1415,18 @@ export function createCardActionHandler(
     log.info(
       `project switch session=...${target.row.id.slice(-8)} kind=${workspaceKind} sender=...${event.senderId.slice(-8)}`,
     );
-    await switchSessionWorkingDir(target.row.id, workingDir, workspaceKind);
-    // 旧目录的 live session(含进行中 turn)必须丢弃 — 下一条消息在新目录重建。
-    await turnRunner.disposeOneSession(target.row.id);
+    try {
+      await switchSessionWorkingDir(target.row.id, workingDir, workspaceKind);
+      // 旧目录的 live session(含进行中 turn)必须丢弃 — 下一条消息在新目录重建。
+      await turnRunner.disposeOneSession(target.row.id);
+    } catch (err) {
+      // Meka 助理会话的项目/工作区身份不可变：/project 选中已绑定会话（或落成半绑定）
+      // 时这里会拒绝。必须把卡片收口成失败，否则用户点完看不到任何结果。
+      const msg = err instanceof Error ? err.message : String(err);
+      log.warn(`project switch rejected session=...${target.row.id.slice(-8)}: ${msg}`);
+      await patchProjectCard(im, event.messageId, projectUi.switchFailed(displayName));
+      return;
+    }
     await patchProjectCard(
       im,
       event.messageId,

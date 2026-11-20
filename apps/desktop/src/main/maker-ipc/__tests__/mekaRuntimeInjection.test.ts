@@ -570,15 +570,128 @@ describe('applyMekaRuntimeConfig', () => {
   });
 });
 
+// ————————————————————————————————————————————————————————————————
+// 2026-11-20：Meka 助理会话身份 = 持久化绑定（`mekaProjectId` + `mekaRoleId`），
+// `workspaceKind` 只是展示归类。规则见 `docs/dev-rules/meka-assistant-session-binding.md`。
+//
+// 测试价值
+// - 生产入口与可观察结果：`applyMekaRuntimeConfig` 的触发条件；冷启动（桌面 / IM / hook）时
+//   普通 kind 的新 Meka 会话必须被注入角色提示词与项目 MCP，普通会话必须零注入、零回填。
+// - Bug／规则依据：身份从 kind 改成绑定后，若触发条件仍只看 kind，所有新 Meka 会话冷启动
+//   都会静默退化成普通任务（无角色 prompt / 无项目能力）。
+// - 现有覆盖缺口：既有用例全部用 `baseOpts`（kind='meka' + 绑定）触发，没有任何用例证明
+//   「kind 普通但绑定成对」会注入，也没有普通会话 + readPersistedSession 的负向用例。
+// - 最小失败输入：create opts `workspaceKind='project'` + 成对绑定（新桌面会话的形状），
+//   或 IM 冷启动只有会话 id 而 DB 行带绑定。
+// - tier：unit（注入层，纯内存 fake）。
+// ————————————————————————————————————————————————————————————————
+describe('Meka session identity from the persisted binding (2026-11-20)', () => {
+  function runtimeDeps(materialize = vi.fn(async () => null)) {
+    return {
+      resolveRuntimeConfig: vi.fn(async (projectId: string, roleId: string) =>
+        runtime({ projectId, roleId, skills: [], mcp: [] }),
+      ),
+      prepareRuntimeMcp: vi.fn(() => ({ providerIds: [], inlineConfigs: [] })),
+      materializeSkillSnapshot: materialize,
+    };
+  }
+
+  it('injects when the create opts carry a complete binding under the ordinary project kind', async () => {
+    const opts = baseOpts({ workspaceKind: 'project', userPrompt: 'USER PROMPT' });
+    const deps = runtimeDeps();
+
+    const result = await applyMekaRuntimeConfig(opts, deps);
+
+    expect(result.didApply).toBe(true);
+    expect(deps.resolveRuntimeConfig).toHaveBeenCalledWith('saga2', 'saga2-default-role');
+    expect(opts.userPrompt).toContain('[MEKA_ROLE_CONTEXT]');
+    expect(opts.userPrompt).toContain('roleId: saga2-default-role');
+    expect(opts.vendorOptions).toMatchObject({
+      source: 'meka',
+      mekaProjectId: 'saga2',
+      mekaRoleId: 'saga2-default-role',
+    });
+  });
+
+  it('hydrates the persisted binding for a cold start whose create opts carry no identity', async () => {
+    const opts = baseOpts({
+      workspaceKind: undefined,
+      mekaProjectId: null,
+      mekaRoleId: null,
+      mekaRole: null,
+      userPrompt: 'USER PROMPT',
+    });
+    const deps = runtimeDeps();
+    const readPersistedSession = vi.fn(async () => ({
+      workspaceKind: 'project' as const,
+      mekaProjectId: 'saga2',
+      mekaRoleId: 'saga2-default-role',
+      mekaRole: null,
+    }));
+
+    const result = await applyMekaRuntimeConfig(opts, { ...deps, readPersistedSession });
+
+    expect(readPersistedSession).toHaveBeenCalledWith(opts.id);
+    expect(result.didApply).toBe(true);
+    // 回填的绑定写回 create opts：IM / hook 后续 createSession 看到的是完整 Meka 会话。
+    expect(opts).toMatchObject({
+      workspaceKind: 'project',
+      mekaProjectId: 'saga2',
+      mekaRoleId: 'saga2-default-role',
+    });
+    expect(opts.userPrompt).toContain('[MEKA_ROLE_CONTEXT]');
+  });
+
+  it('leaves an ordinary persisted session untouched and never backfills a binding', async () => {
+    const opts = baseOpts({
+      workspaceKind: 'project',
+      mekaProjectId: null,
+      mekaRoleId: null,
+      userPrompt: 'USER PROMPT',
+    });
+    const before = { ...opts };
+    const deps = runtimeDeps();
+
+    const result = await applyMekaRuntimeConfig(opts, {
+      ...deps,
+      readPersistedSession: vi.fn(async () => ({
+        workspaceKind: 'project' as const,
+        mekaProjectId: null,
+        mekaRoleId: null,
+        mekaRole: null,
+      })),
+    });
+
+    expect(result.didApply).toBe(false);
+    expect(deps.resolveRuntimeConfig).not.toHaveBeenCalled();
+    expect({ ...opts }).toEqual(before);
+  });
+
+  it('rejects a legacy meka row that has no project/role instead of injecting a roleless session', async () => {
+    const opts = baseOpts({
+      workspaceKind: 'meka',
+      mekaProjectId: null,
+      mekaRoleId: null,
+    });
+
+    await expect(applyMekaRuntimeConfig(opts, runtimeDeps())).rejects.toThrow(
+      '[INVALID_PARAMS] Meka session requires a project and role',
+    );
+  });
+});
+
 /**
  * WL-11.3（Meka 会话行绑定 project/role）：`send_to_session` 的 create 分支是
  * `sendToSessionInternal` 巨型闭包，仓内没有可单独调用的生产入口，因此按本文件既有
- * guard 口径用源码契约守住「写入方不变量」——`workspace_kind='meka'` 必须与
- * `meka_project_id` + `meka_role_id` 同一次写入，缺一即降级普通任务。
+ * guard 口径用源码契约守住「写入方不变量」——成对绑定必须与 session 行同一次写入，
+ * 缺一即降级普通任务、不落半绑定行。2026-11-20 起判据是**绑定成对**而不是
+ * `workspace_kind='meka'`（新会话 kind 是普通值，旧 kind 只作展示分类）。
  *
- * 真实回归（本轮修复）：Meka 项目入口新建草稿 → 首次发送走 create 分支，早先把
- * dispatcher 的 `'meka'` 一律降级成 project/dialogue，会话行落成
+ * 真实回归 1：Meka 项目入口新建草稿 → 首次发送走 create 分支，早先把 dispatcher 的
+ * `'meka'` 一律降级成 project/dialogue，会话行落成
  * `workspace_kind='dialogue' / meka_project_id=null / meka_role_id=null`（smoke WL-11.3 红）。
+ * 真实回归 2（2026-11-20）：身份改成绑定后，若继承判据仍要求 kind==='meka'，新 Meka 会话
+ * 派生的子任务会丢掉绑定、冷启动不再注入角色运行时。
  */
 describe('send_to_session create 分支的 Meka 归属继承', () => {
   /** create 分支里决定「继承哪个 workspaceKind / 写哪些 Meka 字段」的那一段。 */
@@ -606,19 +719,23 @@ describe('send_to_session create 分支的 Meka 归属继承', () => {
     return source.slice(createOpts, end);
   }
 
-  it('keeps the Meka third state and both ids when the dispatcher is fully bound', async () => {
+  it('inherits both ids whenever the dispatcher row carries a complete binding, regardless of kind', async () => {
     const slice = await inheritedWorkspaceSlice();
-    // 判据：来自 dispatcher 的 'meka' + 两个 id 都在 + 调用方没显式换项目。
-    expect(slice).toContain("meta.workspaceKind === 'meka'");
-    expect(slice).toContain('!!inheritedMekaProjectId');
-    expect(slice).toContain('!!inheritedMekaRoleId');
+    // 判据：两个 id 都在 + 调用方没显式换项目；不再要求 dispatcher 的 kind === 'meka'。
+    expect(slice).toContain('Boolean(inheritedMekaProjectId)');
+    expect(slice).toContain('Boolean(inheritedMekaRoleId)');
     expect(slice).toContain('params.projectDir === undefined');
-    // 完整绑定才保留第三态。
-    expect(slice).toContain("inheritsMekaBinding");
-    expect(slice).toContain("? 'meka'");
-    // 身份只随第三态一起带出，缺一就不带字段（避免半绑定行）。
-    expect(slice).toContain("inheritedWorkspaceKind === 'meka'");
+    expect(slice).toContain('inheritsMekaBinding');
+    // 新会话（普通 kind + 绑定）同样把身份带出子任务。
     expect(slice).toContain('mekaProjectId: inheritedMekaProjectId, mekaRoleId: inheritedMekaRoleId');
+    // 旧 kind='meka' 仍原样复制第三态，但只作展示分类：它出现在绑定判定**之后**，
+    // 证明 kind 不是继承身份的前提。
+    const bindingIndex = slice.indexOf('inheritsMekaBinding');
+    const mekaKindIndex = slice.indexOf("meta.workspaceKind === 'meka'");
+    const mekaKindValueIndex = slice.indexOf("? 'meka'");
+    expect(bindingIndex).toBeGreaterThanOrEqual(0);
+    expect(mekaKindIndex).toBeGreaterThan(bindingIndex);
+    expect(mekaKindValueIndex).toBeGreaterThan(mekaKindIndex);
   });
 
   it('degrades to a plain task when the dispatcher lacks project or role', async () => {
@@ -639,9 +756,7 @@ describe('send_to_session create 分支的 Meka 归属继承', () => {
   it('persists the identity through both createOpts and the openSession insert', async () => {
     const writes = await mekaIdentityWriteSites();
     // createOpts 与 openSession body 各自一次，且都要求成对（同一条件表达式）。
-    const pairs = writes.match(
-      /inherited\.workspaceKind === 'meka' && inherited\.mekaProjectId && inherited\.mekaRoleId/g,
-    );
+    const pairs = writes.match(/inherited\.mekaProjectId && inherited\.mekaRoleId/g);
     expect(pairs).toHaveLength(2);
     expect(writes).toContain('mekaProjectId: inherited.mekaProjectId, mekaRoleId: inherited.mekaRoleId');
   });

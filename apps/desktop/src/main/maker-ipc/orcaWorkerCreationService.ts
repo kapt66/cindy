@@ -8,6 +8,10 @@ import path from 'node:path';
 
 import { isCredentialModeSwitchBusyError } from '../maker-host/credentialSwitchError.js';
 import { classifyRemoteSessionTransport } from '../maker-host/remote-session-routing.js';
+import {
+  hasMekaAssistantBinding,
+  isMekaAssistantSession,
+} from '../../shared/mekaAssistantSession.js';
 import { isSubscriptionDirectModel } from '../../shared/subscriptionModels.js';
 import type { DispatchWorkerTaskResult, OrcaWorkerEffort, OrcaWorkerStatus } from './orcaTeamService.js';
 import type { MakerSessionCreateOpts } from './sessionRequest.js';
@@ -1295,7 +1299,9 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
       requestedRemoteHostId: params.remoteHostId,
     });
     if (!target.ok) return target;
-    if (lead.workspaceKind === 'meka' && (!lead.mekaProjectId || !lead.mekaRoleId)) {
+    // Meka Lead 没有可继承的成对绑定（旧 kind='meka' 缺 project/role、或只有更旧的
+    // 角色标记）时拒绝：身份只由绑定承载，写不出完整绑定的 Worker 不如不建。
+    if (isMekaAssistantSession(lead) && !hasMekaAssistantBinding(lead)) {
       return {
         ok: false,
         errorCode: 'INVALID_PARAMS',
@@ -1740,12 +1746,13 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
       };
 
       // Meka: the Host resolver (`resolveWorkerTarget`) owns Worker target selection for
-      // Meka Lead sessions and for explicitly requested remote (MCPRouter) targets. Its
-      // registry values — not the model-supplied working_dir / remote_host_id — are what
-      // the Worker binds, and the Meka workspace kind stays so project/role persists.
+      // Meka Lead sessions (成对绑定判定，不看 workspaceKind：新会话 kind 是普通值) and for
+      // explicitly requested remote (MCPRouter) targets. Its registry values — not the
+      // model-supplied working_dir / remote_host_id — are what the Worker binds; kind 按
+      // Lead 原值继承只作展示分类，身份由绑定承载。
       // 上游的本地目录继承路径（显式目录 → project）仍适用于普通 project / dialogue Lead。
       const usesHostResolvedTarget =
-        lead.workspaceKind === 'meka' || params.remoteHostId !== undefined;
+        hasMekaAssistantBinding(lead) || params.remoteHostId !== undefined;
       const workerRemoteHostId = usesHostResolvedTarget
         ? target.remoteHostId
         : lead.remoteHostId ?? undefined;
@@ -1771,7 +1778,8 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
         // remote lead 的 worker 继承 remoteHostId:在同一台远端主机上 spawn,
         // workingDir 在该远端校验；本地 lead 不带此字段（本地 worker）。
         ...(workerRemoteHostId ? { remoteHostId: workerRemoteHostId } : {}),
-        ...(lead.workspaceKind === 'meka' && lead.mekaProjectId && lead.mekaRoleId
+        // 成对绑定才继承（判据不看 kind：新会话普通 kind + 绑定同样要带身份）。
+        ...(hasMekaAssistantBinding(lead)
           ? {
               mekaProjectId: lead.mekaProjectId,
               mekaRoleId: lead.mekaRoleId,
@@ -1806,12 +1814,13 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
         return toInternalFailure(err);
       }
 
-      if (lead.workspaceKind === 'meka' && lead.mekaProjectId && lead.mekaRoleId) {
+      // 成对绑定才继承并持久化；kind 只作展示（旧 kind='meka' 缺绑定的 Lead 已在上方拒绝）。
+      if (hasMekaAssistantBinding(lead)) {
         try {
           await deps.persistMekaWorkerBinding({
             sessionId: workerSession.id,
-            projectId: lead.mekaProjectId,
-            roleId: lead.mekaRoleId,
+            projectId: lead.mekaProjectId!,
+            roleId: lead.mekaRoleId!,
           });
         } catch (err) {
           await cleanupBootstrappedWorkerSession(workerSession.id);

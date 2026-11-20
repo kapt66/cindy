@@ -22,6 +22,7 @@ import { remoteProjectsStore } from '@/features/device-link/remoteProjectsStore'
 import { toast } from '@/lib/toast';
 import { SessionProjectMoveSubmenu } from './SessionProjectMoveSubmenu';
 import { MENU_ITEM_CLASS, MENU_ROW_CLASS } from './menuStyles';
+import { isMekaAssistantSession } from '../../../../shared/mekaAssistantSession';
 
 // Static (non-focusable) loading line laid out like a menu row.
 const LOADING_ROW_CLASS = 'flex h-8 select-none items-center gap-2 px-2 text-14 leading-[1.43]';
@@ -83,12 +84,14 @@ export function TaskMoveSubmenu({
   onBrowseRemote(): void;
 }) {
   const { t } = useTranslation();
-  // Meka sessions (`workspaceKind === 'meka'`) are the third workspace state: they own a real
-  // working directory, so they carry project semantics rather than dialogue semantics. Main
-  // treats only `'dialogue'` as "no project directory" (agent-island/state.ts
-  // `projectNameFromWorkingDir`, git-snapshot/projectGitBootstrap) and the sidebar groups Meka
-  // tasks under their Meka project, so the two-state ternaries must not fall through for them.
-  const dialogueWorkspace = session.workspaceKind === 'dialogue';
+  // Meka 会话的归属身份是持久化绑定(不是 workspaceKind):新会话的 kind 是普通值,
+  // 落在 Meka 项目目录里为 'project'、历史兜底目录为 'dialogue',但仍拥有真实工作目录,
+  // 因此携带项目语义而不是对话语义。Main 只把 'dialogue' 当「没有项目目录」
+  // (agent-island/state.ts `projectNameFromWorkingDir`、git-snapshot/projectGitBootstrap),
+  // 侧栏也把 Meka 任务挂在它们的 Meka 项目下,所以这里的项目/对话二态三元组不能把
+  // 绑定会话当对话落下去。
+  const dialogueWorkspace =
+    session.workspaceKind === 'dialogue' && !isMekaAssistantSession(session);
   const [open, setOpen] = useState(false);
   const [devices, setDevices] = useState<DeviceLinkDeviceView[]>([]);
   const [projects, setProjects] = useState<FolderPickerOption[]>([]);
@@ -202,7 +205,7 @@ export function TaskMoveSubmenu({
         {/* Agent 在另一台电脑运行的任务可以换项目(那台按任务 id 定址 Agent 工作区)，
             但不能复制到其他电脑：Agent 会话记录在那台，复制带不走。
             另一台电脑派来的协同 Worker 同样不复制：协同归属在那台(main 同样拒绝)。 */}
-        {session.workspaceKind !== 'meka' &&
+        {!isMekaAssistantSession(session) &&
           ['desktop', 'shared', 'feishu'].includes(session.source ?? 'desktop') &&
           session.orcaRole !== 'worker' &&
           !session.agentDeviceId &&

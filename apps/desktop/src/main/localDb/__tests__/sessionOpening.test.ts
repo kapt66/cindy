@@ -1,4 +1,4 @@
-import { beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({ owner: {} as object | null,
   run: vi.fn(async () => undefined), values: vi.fn(), bootstrap: vi.fn(async () => undefined),
 }));
@@ -8,6 +8,7 @@ vi.mock('../dialogueWorkspace', () => ({ ensureDialogueWorkspaceDir: (id: string
 vi.mock('../../git-snapshot/projectGitBootstrap', () => ({ ensureProjectGitInitialized: h.bootstrap }));
 vi.mock('../../maker-host/git-safety-settings-store', () => ({ readGitSafetySettings: () => ({ autoSnapshotEnabled: false, autoInitProjectGit: false }) }));
 import { openSession, setSessionOpeningModelAdmission, type OpenedSessionRow } from '../sessionOpening';
+import { setWorkspaceBindingResolver } from '../workspaceBindingResolver';
 import { resolveSessionExecutionSelection } from '../../maker-ipc/sessionExecutionSelection';
 import { createOrcaRemoteWorkerHost, createOrcaRemoteWorkerSessionOpener } from '../../maker-ipc/orcaRemoteWorkerHost';
 import { parseOrcaRemoteLead } from '../../../shared/orcaRemoteWorker';
@@ -45,6 +46,7 @@ beforeEach(() => {
     return { ...request, model: route.model, providerId: route.providerId, effort: route.effort ?? '' };
   });
 });
+afterEach(() => setWorkspaceBindingResolver(null));
 // Unit: the opening boundary must persist membership independently of cwd.
 it('persists the selected project while initializing Git only in the execution directory', async () => {
   const opened = await openSession({ id: 'task', body: { ...body,
@@ -241,3 +243,109 @@ it('does not start a persisted remote Worker in a replacement account', async ()
   expect(bootstrapSession).not.toHaveBeenCalled();
   expect(broadcastSessionCreated).not.toHaveBeenCalled();
 });
+
+// ————————————————————————————————————————————————————————————————
+// 创建时的隐式 Meka 助理绑定（2026-11-20；规则见
+// docs/dev-rules/meka-assistant-session-binding.md §2）。
+//
+// 测试价值
+// - 生产入口与可观察结果：`openSession` 是所有创建通道共用的落库缝。工作区根命中已注册
+//   Meka 项目路径时，会话行必须带成对 `meka_project_id/meka_role_id`、普通
+//   `workspace_kind='project'` 与 `project_dir`；未命中/显式绑定/远程会话不得被改写。
+// - Bug／规则依据：本轮的隐式绑定裁决（§2「新建会话时」、显式优先、远程不参与）。
+// - 现有覆盖缺口：本文件此前只覆盖 model / permission / 目录分配，没有任何绑定用例；
+//   端口未安装时的普通行为已被其它用例共享，但没人断言「命中后落什么」。
+// - 最小失败输入：`projectDir` 指向已注册 Meka 项目的工作区；旧实现行里绑定与
+//   project_dir 全是 null（普通任务会绕过 Meka 项目目录的保留语义）。
+// - tier：unit（组合根端口 fake + 内存 DB 替身，无真实 I/O）。
+// ————————————————————————————————————————————————————————————————
+const mekaResolution = {
+  projectId: 'project-a',
+  roleId: 'project-a-default-role',
+  workspacePath: '/meka/project-a',
+};
+
+it('binds a new task to the default role when its workspace is a registered Meka project', async () => {
+  const resolver = vi.fn(async () => mekaResolution);
+  setWorkspaceBindingResolver(resolver);
+
+  const opened = await openSession({
+    id: 'meka-task',
+    body: { ...body, workspaceKind: 'project', projectDir: '/meka/project-a' },
+  });
+
+  expect(opened.row).toMatchObject({
+    workspaceKind: 'project',
+    mekaProjectId: 'project-a',
+    mekaRoleId: 'project-a-default-role',
+    projectDir: '/meka/project-a',
+    workingDir: '/meka/project-a',
+  });
+  expect(h.values).toHaveBeenCalledWith(
+    expect.objectContaining({
+      workspaceKind: 'project',
+      mekaProjectId: 'project-a',
+      mekaRoleId: 'project-a-default-role',
+    }),
+  );
+});
+
+it('keeps an ordinary task unbound when no Meka project matches its workspace', async () => {
+  setWorkspaceBindingResolver(async () => null);
+
+  const opened = await openSession({
+    id: 'ordinary-task',
+    body: { ...body, workspaceKind: 'project', workingDir: '/work/ordinary' },
+  });
+
+  expect(opened.row).toMatchObject({
+    workspaceKind: 'project',
+    workingDir: '/work/ordinary',
+    mekaProjectId: null,
+    mekaRoleId: null,
+    projectDir: null,
+  });
+});
+
+it('keeps an explicit Meka project/role instead of resolving the directory', async () => {
+  const resolver = vi.fn(async () => ({
+    projectId: 'implicit-project',
+    roleId: 'implicit-project-default-role',
+    workspacePath: '/meka/implicit',
+  }));
+  setWorkspaceBindingResolver(resolver);
+
+  const opened = await openSession({
+    id: 'explicit-meka-task',
+    body: {
+      ...body,
+      workspaceKind: 'project',
+      workingDir: '/meka/project-a',
+      mekaProjectId: 'project-a',
+      mekaRoleId: 'project-a-default-role',
+    },
+  });
+
+  expect(opened.row).toMatchObject({
+    mekaProjectId: 'project-a',
+    mekaRoleId: 'project-a-default-role',
+  });
+  expect(resolver).not.toHaveBeenCalled();
+});
+
+it.each(['remoteHostId', 'agentDeviceId'] as const)(
+  'does not resolve a Meka binding for a task running elsewhere (%s)',
+  async key => {
+    const resolver = vi.fn(async () => mekaResolution);
+    setWorkspaceBindingResolver(resolver);
+    const location = key === 'remoteHostId' ? { remoteHostId: 'ssh-host' } : { agentDeviceId: 'device-b' };
+
+    const opened = await openSession({
+      id: 'remote-task',
+      body: { ...body, workspaceKind: 'project', workingDir: '/meka/project-a', ...location },
+    });
+
+    expect(opened.row).toMatchObject({ mekaProjectId: null, mekaRoleId: null });
+    expect(resolver).not.toHaveBeenCalled();
+  },
+);

@@ -138,6 +138,14 @@ vi.mock('../../localDb/sessionOpening.js', () => ({
 vi.mock('electron', () => ({
   BrowserWindow: { getAllWindows: () => [] },
 }));
+// hook 冷启动会给持久行为 Meka 助理会话补注入（读 sessions 绑定）；本文件聚焦 runner 的
+// 路由 / 失败收口，不挂真实 DB，绑定读取固定「无绑定 ⇒ 不注入」。
+vi.mock('../../meka-injection/persistedBinding.js', () => ({
+  readPersistedMekaSessionBinding: async () => null,
+}));
+vi.mock('../../meka-injection/index.js', () => ({
+  applyMekaRuntimeConfig: vi.fn(async () => ({ didApply: false })),
+}));
 // 事件终止性判定与过载判定用**真实实现**: runner 现在按 isTerminal / willRetry
 // 区分"正在自动重试"与"真失败", 过载文案也直接复用 maker-core 的判定 —— 在这里
 // 复制一份桩会让两侧漂移时测试仍然全绿(旧桩把所有 error 都当终止, 恰好会掩盖

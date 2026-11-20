@@ -16,12 +16,13 @@
  * 里 running 归一为 idle(导入端没有正在跑的 turn)。
  *
  * Meka 任务(manifest.meka):包内只有绑定身份(project/role id 等),导入端在本机的
- * 项目注册与角色表中重新解析(`mekaShareBinding.ts`)——解析成功才是真正的 Meka 任务:
- * 工作目录取本机项目解析结果(不再要求用户选目录),额外只读目录取本机项目的
- * additionalPaths,绑定身份与正式流程快照在导入事务提交后由**一条 UPDATE** 落库
- * (workspace_kind 与 meka_project_id/meka_role_id 必须同时写,否则就是运行期直接
- * 拒绝的半绑定行)。解析失败(项目/角色本机缺失、工作目录解析不出、遗留四角色会话)
- * 一律按普通任务降级并在 notes 里明确告知丢失了什么。
+ * 项目注册与角色表中重新解析(`mekaShareBinding.ts`)——**判据是绑定解析结果，不是
+ * workspace_kind**：解析成功才是真正的 Meka 任务,工作目录取本机项目解析结果(不再要求
+ * 用户选目录),额外只读目录取本机项目的 additionalPaths,绑定身份与正式流程快照在导入
+ * 事务提交后由**一条 UPDATE** 落库(meka_project_id 与 meka_role_id 成对写入,否则就是
+ * 运行期直接拒绝的半绑定行;workspace_kind 只是展示分类,按新口径写解析出的项目会话值
+ * 'project',不再写旧第三态 'meka')。解析失败(项目/角色本机缺失、工作目录解析不出、
+ * 遗留四角色会话)一律按普通任务降级并在 notes 里明确告知丢失了什么。
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, promises as fsp } from 'node:fs';
@@ -479,9 +480,8 @@ export async function commitShareImport(
   //
   // 与迁移交接(`runtimeScope.migration`)的交集:Meka 绑定解析成功时,工作目录取
   // **本机项目解析结果**,而不是交接方给的那份 —— 运行期 `mekaResolvePlan` 从
-  // workingDir 推导项目参考路径与只读范围,`workspace_kind='meka'` 的行指向非项目
-  // 目录会让注入静默降级。交接侧的会话 id(`migration.sessionId`)与 Worker 目录
-  // (`plan.workingDir`)仍按上游口径走。
+  // workingDir 推导项目参考路径与只读范围,Meka 绑定会话指向非项目目录会让注入静默降级。
+  // 交接侧的会话 id(`migration.sessionId`)与 Worker 目录(`plan.workingDir`)仍按上游口径走。
   const mekaBinding = await guarded(() =>
     resolveShareMekaBinding(manifest.meka, { getDbClient: () => dbClient }),
   );
@@ -1144,7 +1144,9 @@ export async function commitShareImport(
             newId,
             agentKind: manifest.agentKind,
             title: manifest.title || 'Shared session',
-            workspaceKind: manifest.workspaceKind,
+            // 绑定解析成功即 Meka 助理会话：工作目录是本机解析出的项目目录，按新口径写
+            // 普通 'project'（身份只由绑定承载）；其余情况沿用包的粗粒度种类。
+            workspaceKind: mekaBound ? 'project' : manifest.workspaceKind,
             orcaRole: manifest.orca ? ('lead' as const) : null,
             snapshot: sessionSnapshot,
             draftPrefs,
@@ -1160,11 +1162,11 @@ export async function commitShareImport(
           ...(orcaTxArgs ? { orca: orcaTxArgs } : {}),
         });
         finalTxState.outcome = 'committed';
-        // Meka 绑定必须与 session 行**同一条 UPDATE**落库:workspace_kind='meka' 与
-        // meka_project_id/meka_role_id 分两次写会留下运行期直接拒绝的半绑定行
-        // (mekaResolvePlan:'Meka session requires a project and role')。事务里的
-        // INSERT 因此保持粗粒度 'project',这里一次性翻成 Meka 任务;失败不反转
-        // 已提交的导入(历史已经在库里),只降级成普通任务并记 note。
+        // Meka 绑定必须在 session 行提交后**一条 UPDATE**成对落库：分两次写
+        // meka_project_id/meka_role_id 会留下运行期直接拒绝的半绑定行
+        // (mekaResolvePlan:'Meka session requires a project and role')。事务内的 INSERT
+        // 已按绑定解析结果写普通 workspace_kind='project'，这里只补身份列/本机目录与冻结
+        // 历史事实；失败不反转已提交的导入(历史已经在库里),只降级成普通任务并记 note。
         if (mekaBound) {
           try {
             await applySharedMekaBinding(dbClient, newId, mekaBound, now);
@@ -1684,8 +1686,11 @@ const SHARE_MEKA_LOSS_NOTES: Record<ShareMekaUnavailableReason, string> = {
 /**
  * 把**本机解析出**的 Meka 绑定一次性写回导入的 session 行。
  *
- * - workspace_kind 与两个身份列必须同一条 UPDATE:分两次写会留下运行期直接拒绝的
- *   半绑定行(`mekaResolvePlan`:'Meka session requires a project and role');
+ * - 判据是绑定解析结果（`manifest.meka` + 本机项目/角色），与 workspace_kind 无关；
+ *   meka_project_id 与 meka_role_id 必须同一条 UPDATE 成对写入——分两次写会留下运行期
+ *   直接拒绝的半绑定行(`mekaResolvePlan`:'Meka session requires a project and role')；
+ * - workspace_kind 不在这里写：它只是展示分类，事务内 INSERT 已按绑定解析结果写普通
+ *   'project'（不再写旧第三态 'meka'，旧行读取侧仍兼容）；
  * - 工作目录与额外只读目录用本机项目的解析结果(包内不带这些路径),`meka_role`
  *   遗留列显式清空——有现代绑定的任务不该再挂遗留四角色；
  * - `is_formal` / `formal_*` 与 `meka_target_json` 是包内冻结的历史事实,原样回写。
@@ -1698,7 +1703,6 @@ async function applySharedMekaBinding(
 ): Promise<void> {
   await dbClient.exec(
     `UPDATE sessions SET
-       workspace_kind = 'meka',
        meka_project_id = ?,
        meka_role_id = ?,
        meka_role = NULL,

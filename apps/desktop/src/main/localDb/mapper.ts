@@ -471,9 +471,14 @@ export function sessionCreateToRow(
   now: number,
 ): SessionInsert {
   const workspaceKind = body?.workspaceKind ?? 'project';
-  const mekaProjectId = workspaceKind === 'meka' ? normalizeOptionalId(body?.mekaProjectId) : null;
-  const mekaRoleId = workspaceKind === 'meka' ? normalizeOptionalId(body?.mekaRoleId) : null;
-  const formal = workspaceKind === 'meka' && body?.isFormal === true
+  const mekaProjectId = normalizeOptionalId(body?.mekaProjectId);
+  const mekaRoleId = normalizeOptionalId(body?.mekaRoleId);
+  if (Boolean(mekaProjectId) !== Boolean(mekaRoleId)) {
+    // 半绑定行是历史上最难查的身份事故（fork / 迁移都踩过）：写入侧直接拒绝。
+    throw new Error('Meka session binding requires both a project and a role');
+  }
+  const hasMekaBinding = Boolean(mekaProjectId && mekaRoleId);
+  const formal = hasMekaBinding && body?.isFormal === true
     ? normalizeFormalSessionData(body.formal)
     : null;
   return {
@@ -488,7 +493,7 @@ export function sessionCreateToRow(
     mekaProjectId,
     mekaRoleId,
     mekaRole:
-      workspaceKind === 'meka' && !mekaProjectId && !mekaRoleId
+      !hasMekaBinding && workspaceKind === 'meka'
         ? (body?.mekaRole ?? null)
         : null,
     isFormal: formal ? 1 : 0,

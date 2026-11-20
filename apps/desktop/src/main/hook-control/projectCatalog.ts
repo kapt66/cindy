@@ -24,6 +24,7 @@ import {
 } from '../mcp-integrations/createProject.js';
 import { loadSidebarSettingsSnapshot, restoreLocalProjectVisibility } from '../sidebarSettingsStore.js';
 import { isTrustedAppRendererWindow } from '../security/trustedAppRenderer.js';
+import { listMekaProjectWorkspaceEntries } from '../meka-projects/workspaceCatalog.js';
 import { projectKeyComparisonKey } from '../../shared/projectKeys.js';
 import type { ProjectCatalogSnapshot } from './projectWorkspaceSync.js';
 
@@ -44,12 +45,15 @@ export async function loadImProjectCatalog(): Promise<ProjectCatalogSnapshot | n
       current.ownerGeneration === owner.ownerGeneration
     );
   };
-  const [rows, aliases] = await Promise.all([
+  const [rows, aliases, mekaEntries] = await Promise.all([
     client.drizzle
       .select({ path: recentWorkdirs.path, lastUsedAt: recentWorkdirs.lastUsedAt })
       .from(recentWorkdirs)
       .orderBy(desc(recentWorkdirs.lastUsedAt)),
     listProjectAliases(client),
+    // Meka 项目目录也是普通项目目录：外部（官方 IM 机器人）选得到才能切进去，
+    // 切进去后由创建/更新侧的隐式绑定把它变成 Meka 助理会话（规则 §4）。
+    listMekaProjectWorkspaceEntries(),
   ]);
   if (!isCurrent()) return null;
   const hidden = new Set(
@@ -63,13 +67,27 @@ export async function loadImProjectCatalog(): Promise<ProjectCatalogSnapshot | n
     const key = projectKeyComparisonKey(row.projectKey, process.platform);
     if (!names.has(key)) names.set(key, row.alias);
   }
+  const seen = new Set<string>();
   const projects = rows
     .filter((row) => !hidden.has(identity(row.path)) && !isTeammateProjectPath(row.path))
-    .map((row) => ({
-      path: row.path,
-      name: names.get(identity(row.path)) ?? (path.basename(row.path) || row.path),
-      lastUsedAtMs: row.lastUsedAt,
-    }));
+    .map((row) => {
+      const key = identity(row.path);
+      if (key) seen.add(key);
+      return {
+        path: row.path,
+        name: names.get(key) ?? (path.basename(row.path) || row.path),
+        lastUsedAtMs: row.lastUsedAt,
+      };
+    });
+  // 追加 Meka 项目目录：去重（已在最近项目里的目录不重复出现）、沿用 hidden / 伙伴项目
+  // 过滤，名称用项目名；没有任务使用记录，统一排在同 lastUsedAt 的项目之后。
+  for (const entry of mekaEntries) {
+    const key = identity(entry.path);
+    if (!key || seen.has(key)) continue;
+    if (hidden.has(key) || isTeammateProjectPath(entry.path)) continue;
+    seen.add(key);
+    projects.push({ path: entry.path, name: entry.name, lastUsedAtMs: 0 });
+  }
   return { projects, isCurrent, isRemoved: (directory) => hidden.has(identity(directory)) };
 }
 

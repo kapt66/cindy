@@ -52,6 +52,14 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../../../logger', () => ({ createLogger: () => mocks.logger }));
+// IM 冷启动会给持久行为 Meka 助理会话补注入（读 sessions 绑定）；本文件聚焦伙伴路由，
+// 不挂真实 DB，绑定读取固定「无绑定 ⇒ 不注入」。
+vi.mock('../../../meka-injection/persistedBinding.js', () => ({
+  readPersistedMekaSessionBinding: async () => null,
+}));
+vi.mock('../../../meka-injection/index.js', () => ({
+  applyMekaRuntimeConfig: vi.fn(async () => ({ didApply: false })),
+}));
 vi.mock('../../../maker-host', () => ({ getMaker: mocks.getMaker }));
 vi.mock('../../../maker-host/createDesktopProviderService', () => ({
   getDesktopProviderService: () => ({ listProviders: mocks.listProviders }),

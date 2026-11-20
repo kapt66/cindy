@@ -35,6 +35,8 @@ import { registerSearchIpc } from './search.desktop';
 import { registerRemoteHistoryIpc } from './history';
 import { registerHistoryQueryIpc } from './historyQuery';
 import { registerMekaProjectsIpc } from './mekaProjects';
+import { setWorkspaceBindingResolver } from '../workspaceBindingResolver';
+import { resolveMekaWorkspaceBinding } from '../../meka-projects/workspaceBinding';
 import { registerMekaRolesIpc } from './mekaRoles';
 import { registerMekaProjectMetadataIpc } from './mekaProjectMetadata';
 import { registerMekaFormalIpc } from './mekaFormal';
@@ -131,6 +133,8 @@ export interface RegisterLocalDbIpcOpts {
 }
 
 export function registerLocalDbIpc(opts: RegisterLocalDbIpcOpts = {}): void {
+  // 工作区 → Meka 助理绑定的解析器由 main 组合根安装；localDb / host 不直接依赖 Meka 设置。
+  setWorkspaceBindingResolver(resolveMekaWorkspaceBinding);
   setSessionWorktreeRecycle(opts.requestWorktreeRecycle ?? null);
   setSessionWorktreeBindingLookup(opts.lookupSessionWorktreeBinding ?? null);
   setSessionRouteLockImplementation(opts.withSessionLock ?? null);

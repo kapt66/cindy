@@ -47,6 +47,7 @@
 | 主题 | 正文 |
 | --- | --- |
 | Meka 会话注入层（prompt 段、能力矩阵、角色级 MCP／技能、运行时 MCP 注册） | [Meka 会话注入层](meka-injection-layer.md) |
+| Meka 助理会话的身份（`(mekaProjectId, mekaRoleId)` 成对绑定）、工作区路径隐式绑定、旧行兼容与外部可见性 | [Meka 助理会话身份绑定](meka-assistant-session-binding.md) |
 | Meka 能力白名单与合并后语义验收清单（上游同步的完成判定） | [Meka 能力白名单与验证清单](meka-whitelist-verification.md) |
 | 上游 `origin/main` → `meka/main` 同步的静默丢失门禁与验证口径 | [开发工作流 §4](development-workflow.md) |
 | Meka 独立插件渠道的版本语义、`x-cindy-version` 与渠道白名单 | [插件分发与版本兼容](plugin-distribution-and-version-compat.md) |

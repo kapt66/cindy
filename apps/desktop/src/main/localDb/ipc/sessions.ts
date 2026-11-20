@@ -81,6 +81,8 @@ import {
   finalizePlainPreview,
 } from '../mapper';
 import { ensureDialogueWorkspaceDir } from '../dialogueWorkspace';
+import { resolveSessionWorkspaceBinding, type WorkspaceBindingResolution } from '../workspaceBindingResolver';
+import { isMekaAssistantSession } from '../../../shared/mekaAssistantSession';
 import { recomputePrRefsForSession } from '../../git-context/prRefsStore';
 import * as imageCacheStore from '../../imageCacheStore.desktop';
 import { removeSessionRefsIfDeleted as removeDeletedSessionMediaRefs } from '../../cindy-media/ledger';
@@ -1732,16 +1734,48 @@ export async function updateSessionInDb(
         throwIpcError('INVALID_PARAMS', `invalid workspaceKind: ${String(value)}`);
       }
     }
-    // Meka 会话的项目/角色身份与工作区是本地事实源(WL-11):一旦落成
-    // `workspace_kind = 'meka'`,不得再经 sessions:update 改写工作区身份。
-    if (p.workspaceKind !== undefined || p.workingDir !== undefined) {
+    // Meka 会话的项目/角色身份与工作区是本地事实源（WL-11 + 2026-11-20 绑定裁决）：
+    // 已有成对绑定、旧 `workspace_kind = 'meka'`、或更旧的角色标记，都不得再经
+    // sessions:update 改写工作区身份；半绑定行同样拒绝，避免把它补成另一个身份的绑定。
+    let implicitMekaBinding: WorkspaceBindingResolution | null = null;
+    if (
+      p.workspaceKind !== undefined ||
+      p.workingDir !== undefined ||
+      p.projectDir !== undefined
+    ) {
       const [identity] = await db
-        .select({ workspaceKind: sessions.workspaceKind })
+        .select({
+          workspaceKind: sessions.workspaceKind,
+          mekaProjectId: sessions.mekaProjectId,
+          mekaRoleId: sessions.mekaRoleId,
+          mekaRole: sessions.mekaRole,
+          remoteHostId: sessions.remoteHostId,
+          agentDeviceId: sessions.agentDeviceId,
+        })
         .from(sessions)
         .where(eq(sessions.id, sid));
       if (!identity) throwIpcError('NOT_FOUND', 'Session does not exist');
-      if (identity.workspaceKind === 'meka') {
+      if (isMekaAssistantSession(identity) || identity.mekaProjectId || identity.mekaRoleId) {
         throwIpcError('INVALID_PARAMS', 'Meka project and workspace bindings are immutable');
+      }
+      // 隐式 Meka 绑定（规则 §2）：未绑定会话移动到 Meka 项目目录时按项目默认角色补绑定，
+      // 并与普通 'project' 归属同一条 UPDATE 落库。远程 / 跨设备任务不参与（端口也会跳过）；
+      // 解析失败按「不绑定」处理，普通任务不因为 Meka 项目注册表暂时不可用而移不动。
+      if (
+        typeof p.workingDir === 'string' &&
+        p.workingDir.trim().length > 0 &&
+        !identity.remoteHostId &&
+        !identity.agentDeviceId
+      ) {
+        implicitMekaBinding = await resolveSessionWorkspaceBinding({
+          workingDir: p.workingDir,
+          projectDir: null,
+        });
+        // 解析读的是「当前账号」的 Meka 项目注册表；写库用的是本请求捕获的账号。中途换
+        // 账号时不能把另一个账号的项目绑定写进旧账号的库。
+        if (!isOwnerScopeCurrent(ownerScope)) {
+          throwIpcError('PRECONDITION_FAILED', 'Session owner changed');
+        }
       }
     }
     const ALLOWED_UPDATE_ORCA_ROLES = new Set<string>(['lead', 'worker']);
@@ -1903,6 +1937,15 @@ export async function updateSessionInDb(
     const setObj = sessionPatchToRow(rowPatch as Parameters<typeof sessionPatchToRow>[0], {
       bumpUpdatedAt: !isSettingsOnly,
     });
+    // 隐式绑定与移动是同一条 UPDATE 的全部内容：要么普通移动、要么「普通 kind + 成对
+    // 绑定 + projectDir」，不会出现只写一半身份的行。这里覆盖 mapper 由 kind/workingDir
+    // 派生的 projectDir（sessionPatchToRow 对 project 移动会把它置空）。
+    if (implicitMekaBinding) {
+      setObj.mekaProjectId = implicitMekaBinding.projectId;
+      setObj.mekaRoleId = implicitMekaBinding.roleId;
+      setObj.projectDir = implicitMekaBinding.workspacePath;
+      setObj.workspaceKind = 'project';
+    }
     if (p.clearedAt !== undefined) {
       setObj.summary = null;
       setObj.listPreview = null;
@@ -2074,6 +2117,16 @@ export async function updateSessionInDb(
             // Include mapper-derived changes so every mounted mirror drops the
             // old explicit membership after a move, just as SQLite does.
             ...(setObj.projectDir !== undefined ? { projectDir: updated.projectDir } : {}),
+            // 隐式绑定改变的是「会话是不是 Meka 助理会话」：镜像必须同时收到普通 kind 与
+            // 成对绑定，只推 workingDir 会让侧栏/身份 chip 停在旧判断上。
+            ...(implicitMekaBinding
+              ? {
+                  workspaceKind: updated.workspaceKind,
+                  projectDir: updated.projectDir,
+                  mekaProjectId: updated.mekaProjectId,
+                  mekaRoleId: updated.mekaRoleId,
+                }
+              : {}),
             ...(p.pinnedAt !== undefined ? { pinnedAt: updated.pinnedAt } : {}),
             ...(p.status !== undefined ? { status: broadcastStatus } : {}),
             ...(p.pinnedAt !== undefined && updated.pinnedAt === null ? { summary: null } : {}),

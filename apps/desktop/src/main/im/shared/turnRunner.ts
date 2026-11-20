@@ -6,6 +6,7 @@ import {
   type ImContextSnapshot,
   type ImMessageOrigin,
 } from '../../../shared/imMessageSource';
+import { isMekaAssistantSession } from '../../../shared/mekaAssistantSession.js';
 /**
  * main/im/shared/turnRunner.ts
  * ---------------------------------------------------------------------------
@@ -85,6 +86,9 @@ import { t } from '../../i18n.desktop';
 import { resolveSafe as resolveXdtImageUrl } from '../../imageCacheStore.desktop';
 import { resolveSafe as resolveCindyMediaUrl } from '../../cindy-media/blobStore.desktop';
 import { beginHeadlessGhostSetupTurn } from '../../mcp-integrations/ghostSetupInteractionSurface.js';
+import { applyMekaRuntimeConfig } from '../../meka-injection/index.js';
+import { readPersistedMekaSessionBinding } from '../../meka-injection/persistedBinding.js';
+import type { MakerSessionCreateOpts } from '../../maker-ipc/sessionRequest.js';
 
 import {
   isTerminalAgentErrorEvent,
@@ -2201,7 +2205,7 @@ export function createTurnRunner(
       hydrateSessionProvider(sessionId, startOverride.providerId === undefined ? row.providerId ?? null : startOverride.providerId);
       setSessionEffort(sessionId, startOverride.model ? startOverride.effort : row.effort);
       setSessionFastMode(sessionId, startOverride.fastMode ?? row.fastMode ?? false);
-      current = await maker.createSession({
+      const createOpts: MakerSessionCreateOpts = {
         id: sessionId,
         agentKind,
         workingDir: row.workingDir,
@@ -2218,7 +2222,21 @@ export function createTurnRunner(
         vendorOptions: ownsChannelOutput(state)
           ? adapter.buildVendorOptions(userId, state.scopeKey)
           : undefined,
-      });
+      };
+      // 延迟 agent switch 的冷重建同样绕过桌面 bootstrapSession：Meka 会话必须按持久化
+      // 绑定重新注入，否则切完 Agent 后这一轮变成普通会话（与 turnRunner 冷启动同一入口）。
+      if (isMekaAssistantSession(row)) {
+        Object.assign(createOpts, {
+          workspaceKind: row.workspaceKind,
+          mekaProjectId: row.mekaProjectId,
+          mekaRoleId: row.mekaRoleId,
+          mekaRole: row.mekaRole,
+        });
+        await applyMekaRuntimeConfig(createOpts, {
+          readPersistedSession: readPersistedMekaSessionBinding,
+        });
+      }
+      current = await maker.createSession(createOpts);
     }
     if (current === previous) return;
 
@@ -2484,7 +2502,16 @@ export function createTurnRunner(
     // "总结当前状态" 就变成总结空会话, agent 输出短促/无内容; 用户看到渠道卡片
     // 停在 "灵感正在路上..." 然后秒收 finalize, 像是没回应 (Bug 2)。
     // 非接管路径 (渠道默认 session) 也带上, 进程重启后能继续之前的会话。
-    const makerSession = await maker.createSession({
+    //
+    // Meka 助理会话（2026-11-20）：身份是持久化绑定 `(mekaProjectId, mekaRoleId)`，不是
+    // `workspace_kind`（新会话 kind 就是普通 'project' / 'dialogue'）。IM 冷启动绕过了桌面
+    // `bootstrapSessionOnce`，必须在 `maker.createSession` 之前用**同一个入口**
+    // `applyMekaRuntimeConfig` 应用项目/角色运行时（prompt / MCP / 技能），否则库里是 Meka、
+    // 进程里跑起来的却是普通会话。`maker.getSession` 命中 = 本进程已启动过它，注入在那次已
+    // 生效，跳过（live session 行为不变）。绑定读库 / 注入失败按本轮既有错误路径抛出，不吞。
+    const coldStart = !maker.getSession(row.id);
+    const mekaBinding = coldStart ? await readPersistedMekaSessionBinding(row.id) : null;
+    const createOpts: MakerSessionCreateOpts = {
       id: row.id,
       agentKind: row.agentKind,
       workingDir: row.workingDir,
@@ -2502,7 +2529,21 @@ export function createTurnRunner(
       title: preserveSessionConfig ? undefined : adapter.sessions.defaultTitle(userId),
       vendorOptions,
       resumeSessionId: row.sdkSessionId ?? undefined,
-    });
+    };
+    if (coldStart && mekaBinding && isMekaAssistantSession(mekaBinding)) {
+      // 绑定列随 create opts 传入；注入层 hydrate 时还会以持久行复核一遍（同一数据源）。
+      Object.assign(createOpts, {
+        workspaceKind: mekaBinding.workspaceKind,
+        mekaProjectId: mekaBinding.mekaProjectId,
+        mekaRoleId: mekaBinding.mekaRoleId,
+        mekaRole: mekaBinding.mekaRole,
+      });
+      // 渠道 vendorOptions 已在上方构造：注入层只 spread 合并 Meka 补丁键，不整体重写。
+      await applyMekaRuntimeConfig(createOpts, {
+        readPersistedSession: readPersistedMekaSessionBinding,
+      });
+    }
+    const makerSession = await maker.createSession(createOpts);
 
     // 把 desktop 端的 IPC fan-out (broadcastToAllWindows + messagePersistBroadcaster
     // 的 assistant / tool_use / tool_result / thinking 落库 + 默认 interaction
