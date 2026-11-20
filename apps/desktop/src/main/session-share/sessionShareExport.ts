@@ -19,10 +19,11 @@
  * 自身仍拒绝直接导出(入口应是 lead)。使用远程供应商的 Worker 只带消息与
  * 本机可用媒体，整个包的保真度相应降档，不读取本机同名转录。
  *
- * Meka 任务:workspace_kind='meka' 的会话把**绑定身份**(meka_project_id /
+ * Meka 任务：带 Meka 助理会话身份（绑定成对，或旧 kind='meka' / 旧 meka_role 行，判定见
+ * `shared/mekaAssistantSession.ts`）的会话把**绑定身份**(meka_project_id /
  * meka_role_id / 遗留 meka_role / meka_target_json / 正式流程快照)写进
- * manifest.meka;workspace_kind 在 manifest 与 session.json 里都写粗粒度种类
- * ('project'),避免两个文件互相矛盾。项目与角色的**配置内容**、P4 绝对路径、
+ * manifest.meka；workspace_kind 在 manifest 与 session.json 里都写粗粒度种类
+ * ('project')，避免两个文件互相矛盾。项目与角色的**配置内容**、P4 绝对路径、
  * 技能快照与 MCPRouter 凭证都不随包携带——导入端在本机按同样的项目/角色重新
  * 解析(见 sessionShareImport.ts 与 mekaShareBinding.ts)。
  *
@@ -40,6 +41,7 @@ import JSZip from 'jszip';
 import { findClaudeSessionJsonl } from '@cindy/maker-core';
 
 import { activeOwnerScopeKey } from '../appSessionState.js';
+import { isMekaAssistantSession } from '../../shared/mekaAssistantSession.js';
 import { getDbClient } from '../localDb/client/current.js';
 import { getActiveTeamByLead } from '../localDb/orcaTeamStore.js';
 import { createLogger } from '../logger.js';
@@ -184,7 +186,7 @@ interface SessionRow {
   userSendAt: number | null;
   createdAt: number;
   updatedAt: number;
-  // ── Meka 绑定身份(仅 workspace_kind='meka' 的行有值) ──
+  // ── Meka 绑定身份（绑定成对，或旧 kind='meka' / 旧 meka_role 行） ──
   mekaProjectId: string | null;
   mekaRoleId: string | null;
   mekaRole: string | null;
@@ -902,8 +904,10 @@ export async function exportSessionShare(
       }
     : undefined;
 
+  // 身份判据是 Meka 助理会话身份（绑定成对 / 旧 kind / 旧角色标记），不是 workspaceKind
+  // 单值：新会话 kind 是普通值，只看 kind 会漏掉绑定。
   const mekaSection: XdtshareMekaManifest | undefined =
-    session.workspaceKind === 'meka' ? buildMekaSection(session) : undefined;
+    isMekaAssistantSession(session) ? buildMekaSection(session) : undefined;
 
   const manifest: XdtshareManifest = {
     // formatVersion 描述"这份包用到了哪一代格式能力":orca 段与 meka 段都是 v2 时代

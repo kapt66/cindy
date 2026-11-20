@@ -250,13 +250,17 @@ async function resolveBootstrapInjection(input: {
   let projectId = opts.mekaProjectId ?? null;
   let roleId = opts.mekaRoleId ?? null;
   let hydratedPersistedSession = false;
-  if (
-    sessionId.length > 0 &&
-    (!workspaceKind || workspaceKind === 'meka') &&
-    deps.readPersistedSession
-  ) {
+  // 2026-11-20：新 Meka 会话的 workspace_kind 已归一成 project / dialogue，身份由
+  // `(mekaProjectId, mekaRoleId)` 绑定承担。桌面/IM/hook 冷启动的 create opts 不一定带
+  // 绑定（新会话由创建缝写入 DB），所以有会话 id 时读回持久行；只有行本身是 Meka
+  // （绑定成对或旧 kind='meka'）才回填，普通会话保持零写入（I6）。
+  if (sessionId.length > 0 && deps.readPersistedSession) {
     const persisted = await deps.readPersistedSession(sessionId);
-    if (persisted) {
+    if (
+      persisted &&
+      (persisted.workspaceKind === 'meka' ||
+        (persisted.mekaProjectId && persisted.mekaRoleId))
+    ) {
       hydratedPersistedSession = true;
       workspaceKind = persisted.workspaceKind;
       projectId = persisted.mekaProjectId;
@@ -269,10 +273,10 @@ async function resolveBootstrapInjection(input: {
       };
     }
   }
-  if (workspaceKind !== 'meka') {
-    // 现状：持久绑定回填发生在 workspaceKind 判定**之前**，即使会话不是 Meka 也已写回 opts
-    // （否则 createSession 会丢掉 DB 里的 workspaceKind）。这里保留该副作用：只回填绑定，
-    // 不做任何其它写入，result.didApply 仍为 false。
+  const hasMekaBinding = Boolean(projectId && roleId);
+  if (!hasMekaBinding && workspaceKind !== 'meka') {
+    // 非 Meka 会话（含旧 kind='meka' 缺绑定、留待下方按默认角色补齐的路径）：
+    // 只回填持久绑定，不做任何其它写入，result.didApply 仍为 false。
     if (!builder.sessionBindingPatch) return null;
     return buildPlan({
       frozen: false,
@@ -287,8 +291,8 @@ async function resolveBootstrapInjection(input: {
     });
   }
 
-  // 到这里 workspaceKind 已确定为 'meka'：参数校验只在这里发生，非 Meka 会话（含只回填
-  // 持久绑定的早返回）保持零行为变化（I6）。
+  // 到这里会话要么带完整绑定（新数据），要么是旧 kind='meka' 行：参数校验只在这里发生，
+  // 非 Meka 会话（含只回填持久绑定的早返回）保持零行为变化（I6）。
   assertMekaUserPromptType(opts.userPrompt);
 
   // 历史 Meka 会话有意保留旧角色列（不在此处改写数据库行）。这里按**该项目自己的**共享默认角色

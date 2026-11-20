@@ -76,6 +76,9 @@ import { RemoteProjectIcon } from './sidebar/RemoteProjectIcon';
 import { MENU_ITEM_CLASS } from './sidebar/menuStyles';
 import { SessionProjectMoveSubmenu } from './sidebar/SessionProjectMoveSubmenu';
 import { sessionMoveFailureFeedback } from '../../../shared/worktreeMoveGuardError';
+// Meka 会话的身份判定:持久化绑定 (mekaProjectId, mekaRoleId) 为真源,
+// workspaceKind 只作旧数据兼容(见 docs/dev-rules/meka-assistant-session-binding.md)。
+import { isMekaAssistantSession } from '../../../shared/mekaAssistantSession';
 import { NewProjectFromTaskDialog } from './sidebar/NewProjectFromTaskDialog';
 import type { SessionMoveTarget } from './sidebar/sessionMoveTarget';
 import { SessionShareExportDialog } from './sidebar/SessionShareExportDialog';
@@ -156,9 +159,10 @@ export function SessionContentHeader({
   // active 桶里的会话。
   const session = routeSessionById.get(sessionProp.id) ?? sessionProp;
   const sharedGuest = isSharedTaskPeer(session.deviceLinkDeviceId ?? '');
+  const isMekaSession = isMekaAssistantSession(session);
   const mekaSessionScope = useMekaSessionScope(
-    session.workspaceKind === 'meka' ? session.mekaProjectId : null,
-    session.workspaceKind === 'meka' ? session.mekaRoleId : null,
+    isMekaSession ? session.mekaProjectId : null,
+    isMekaSession ? session.mekaRoleId : null,
   );
   const legacyMekaRoleLabel = session.mekaRole
     ? t('meka.legacySessionScope', { role: t(`meka.legacyRoles.${session.mekaRole}`) })
@@ -183,7 +187,7 @@ export function SessionContentHeader({
   // Meka 任务的归属身份是 (mekaProjectId, mekaRoleId) 而不是 workingDir，
   // 因此不提供「移动到项目」—— 见 meka-whitelist-verification.md WL-3。
   const canMoveToProject =
-    session.workspaceKind !== 'meka' &&
+    !isMekaSession &&
     !isEmpty &&
     !session.remoteHostId &&
     !session.deviceLinkDeviceId &&
@@ -690,7 +694,7 @@ export function SessionContentHeader({
       {/* WL-3.5:Meka 会话的角色 scope chip。两侧都是本轮新增的**独立**徽标,
           非 Meka 会话下 Meka 分支不渲染,上游两颗徽标的相对位次因此逐字节不变。 */}
       {!isEditing &&
-        session.workspaceKind === 'meka' &&
+        isMekaSession &&
         mekaSessionScope &&
         mekaRoleEditorRoute && (
           <button
@@ -705,7 +709,7 @@ export function SessionContentHeader({
         )}
 
       {!isEditing &&
-        session.workspaceKind === 'meka' &&
+        isMekaSession &&
         !mekaRoleEditorRoute &&
         legacyMekaRoleLabel && (
           <span

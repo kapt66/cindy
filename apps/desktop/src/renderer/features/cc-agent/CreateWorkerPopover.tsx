@@ -78,6 +78,7 @@ import {
 import type { Effort } from '@/lib/userPreferences.types';
 import type { Session } from '@/lib/ccAgent.types';
 import type { MekaRouterInstance } from '../../../shared/meka-router';
+import { isMekaAssistantSession } from '../../../shared/mekaAssistantSession';
 import { extractIpcError } from '@/utils/ipcError';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
 import { Tip } from '@/components/ui/tooltip';
@@ -265,8 +266,9 @@ export function CreateWorkerPopover({
   // Meka Lead(私有产品线):Worker 目标从 P4 根 / 本机目录 / 绑定的 MCPRouter 实例里选。
   // 判据用 **Lead** 的设备身份(上游把 `deviceId` prop 改名成 `leadDeviceId`,并把
   // `deviceId` 让给「Worker 的 Agent 实际所在电脑」这个派生值),语义与本轮之前逐字一致:
-  // 只有非 device-link 受控 Lead 的 Meka 会话才走 Meka 目标链。
-  const isMekaLead = !leadDeviceId && leadSession?.workspaceKind === 'meka';
+  // 只有非 device-link 受控 Lead 的 Meka 会话才走 Meka 目标链。Meka 身份按持久化
+  // 绑定判定(isMekaAssistantSession,含旧行兼容),不再看 workspaceKind。
+  const isMekaLead = !leadDeviceId && isMekaAssistantSession(leadSession);
   const [executionDevices, setExecutionDevices] = useState<ExecutionDeviceOption[]>([]);
   const [executionDeviceId, setExecutionDeviceId] = useState<string | null>(null);
   const [executionAgentDevices, setExecutionAgentDevices] = useState<{

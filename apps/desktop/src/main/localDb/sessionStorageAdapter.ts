@@ -13,6 +13,7 @@ import { normalizeWorkingDirForStorage } from '../../shared/workingDir.js';
 import type { DbClient } from '../localDb/client/DbClient.js';
 import { normalizeRemoteHostId } from '../localDb/mapper.js';
 import { sessions } from '../localDb/schema.js';
+import { resolveSessionWorkspaceBinding } from './workspaceBindingResolver.js';
 
 type DbAgentKind = 'cc' | 'codex' | 'pi';
 
@@ -75,15 +76,37 @@ export class OwnerSessionStorage implements SessionStorage {
   constructor(private readonly deps: SessionStorageDeps) {}
 
   async create(meta: Omit<SessionMeta, 'createdAt' | 'updatedAt'>): Promise<SessionMeta> {
-    const db = this.deps.db().drizzle;
+    const capturedClient = this.deps.db();
+    const db = capturedClient.drizzle;
     const now = Date.now();
     const workingDir = normalizeWorkingDirForStorage(meta.workDir);
+    const projectDir = normalizeWorkingDirForStorage(meta.projectDir);
+    const workspaceKind = normalizeWorkspaceKind(meta.workspaceKind);
+    const remoteHostId = normalizeRemoteHostId(meta.remoteHostId);
+    const agentDeviceId = remoteHostId ? null : normalizeRemoteHostId(meta.agentDeviceId);
+    // 隐式 Meka 助理绑定（2026-11-20）：工作区根落到已注册 Meka 项目路径时，新行写成
+    // 「普通 workspaceKind + 成对绑定」，不再写 kind='meka'。显式 Meka 创建（旧 kind）
+    // 优先；远程 / 跨设备会话由解析端口跳过。本适配器也被不装端口的 apps/host 复用，
+    // 端口未安装时解析返回 null，普通会话行为不变。规则见
+    // docs/dev-rules/meka-assistant-session-binding.md §2。
+    const binding =
+      workspaceKind === 'meka'
+        ? null
+        : await resolveSessionWorkspaceBinding({ workingDir, projectDir, remoteHostId, agentDeviceId });
+    // 解析读的是当前账号的 Meka 项目注册表；写库用的是进入 create 时捕获的 client。
+    // 中途换账号时不能把另一个账号的项目/角色绑定写进旧账号的行（与其它两条创建缝同口径）。
+    if (this.deps.db() !== capturedClient) {
+      throw new Error('Account changed while opening the session');
+    }
+    const rowWorkspaceKind = binding ? 'project' : workspaceKind;
+    const rowProjectDir = binding?.workspacePath ?? projectDir;
     await db.insert(sessions).values({
       id: meta.id,
       title: meta.title,
       workingDir,
-      workspaceKind: normalizeWorkspaceKind(meta.workspaceKind),
-      projectDir: normalizeWorkingDirForStorage(meta.projectDir),
+      workspaceKind: rowWorkspaceKind,
+      projectDir: rowProjectDir,
+      ...(binding ? { mekaProjectId: binding.projectId, mekaRoleId: binding.roleId } : {}),
       model: meta.model,
       providerId: meta.providerId?.trim() || null,
       effort: meta.effort ?? 'high',
@@ -98,13 +121,17 @@ export class OwnerSessionStorage implements SessionStorage {
       // 与 localDb sessions:create 同一规范化:trim 后非空才算 remote,空串/空白落 null,
       // 避免 maker.createSession (maker:create-session / scheduler / Feishu / Orca 等入口)
       // 把空白 host 原样入库,导致 renderer 按 local 分组、maker 按 remote-like 处理的分裂。
-      remoteHostId: normalizeRemoteHostId(meta.remoteHostId),
-      agentDeviceId: normalizeRemoteHostId(meta.remoteHostId) ? null : normalizeRemoteHostId(meta.agentDeviceId),
+      remoteHostId,
+      agentDeviceId,
       source: meta.reviewMode === true ? 'review' : 'desktop',
       createdAt: now,
       updatedAt: now,
     });
-    return { ...meta, workDir: workingDir ?? '', createdAt: now, updatedAt: now };
+    // 返回值与落库行保持一致：调用方的运行态看到的就是「移动后的 projectDir + 普通 kind」。
+    const resolvedMeta: Omit<SessionMeta, 'createdAt' | 'updatedAt'> = binding
+      ? { ...meta, workspaceKind: 'project', projectDir: binding.workspacePath }
+      : meta;
+    return { ...resolvedMeta, workDir: workingDir ?? '', createdAt: now, updatedAt: now };
   }
 
   async get(id: string): Promise<SessionMeta | null> {

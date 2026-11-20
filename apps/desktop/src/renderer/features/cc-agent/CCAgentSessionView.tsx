@@ -377,6 +377,7 @@ import {
 } from '@/lib/fileDrop';
 import { getCollaborationStartErrorMessage, workerAgentDeviceErrorMessage } from './collaborationErrors';
 import { canShowCollabToggleForSession } from './lib/collaborationEligibility';
+import { isMekaAssistantSession } from '../../../shared/mekaAssistantSession';
 import { useCollabProjectPolicy } from './hooks/useCollabProjectPolicy';
 import { resolveCollabEntryPolicy } from './collabEntryPolicy';
 import { consumePendingRemoteCollab, enableRemoteCollabForSession } from './remoteCollabHandoff';
@@ -3268,7 +3269,7 @@ function CCAgentSessionContent({
   // 针对 Lead session 接入了 OrcaSplitView toggle 布局,普通 session 必须能从
   // ChatInput 工具行启用协同变成 Lead,否则 doc 模式下首次开启入口完全没有。
   // 工具行同时传 denseToolbar=true,协同 pill 自动收成 icon-only,窄 rail 视觉 OK。
-  const isMekaCollabSession = session?.workspaceKind === 'meka';
+  const isMekaCollabSession = isMekaAssistantSession(session);
   // ChatInput「+」菜单启用协同变成 Lead,否则 doc 模式下首次开启入口完全没有。
   const collabWorkspaceKind = session?.workspaceKind;
   const collabEntry = isMekaCollabSession

@@ -73,7 +73,8 @@ MCP／技能落地、技能快照挂载、`vendorOptions` 的 Meka 键，或进�
 | --- | --- | --- | --- |
 | 0 文本常量 | `meka-injection/mekaPrompts.ts` | 平台注入段文本的**唯一来源**：`roleContextPrompt:23-32`（段 60）、`MEKA_SUBMIT_INTENT_MARKER:35` + `mekaSubmitIntentPrompt:55-65`（段 55，2026-11-19 新增）、marker `MEKA_PROJECT_REFERENCES_MARKER:68`、根作用范围显示常量 `MEKA_PROJECT_REFERENCES_ROOT_SCOPE_LABEL:71`、`mekaProjectReferencesPrompt:88-106`（段 65）。原文件 `mekaCombatPrompts.ts` 里的战斗段产出器、战斗 ID 解析（`parseCombatSkillIdFromUserPrompt` 等）、范围审批判定与 `removeCombatStartupGate` 已随 workflow 机制整体删除（2026-09-29） | 不做 I/O、不碰 opts、不读 deps |
 | 1 计划类型 + order 表 | `meka-injection/mekaInjectionTypes.ts` | `MekaPromptSegmentId:57-61`（**4 个 id**）、`MEKA_PROMPT_SEGMENT_ORDER:71-76`、`MekaPromptSegment:79-83`、段落工厂 `createMekaPromptSegment:86-88`、计划契约 `MekaInjectionPlan:109-140`（含 `frozen:110-111`、空诊断容器 `diagnostics:133-137`） | 不含业务分支 |
-| 2 解析 | `meka-injection/mekaResolvePlan.ts` | 把 create opts + 外部依赖（持久化绑定、运行期配置、平台技能、技能快照、MCP）解析成结构化 plan。**全部 I/O 都在这一层**（入口 `resolveMekaInjection:414`、resume 短路 `resolveFrozenInjection:195`、常规创建 `resolveBootstrapInjection:240`） | 不写 `opts`、不改注入文本 |
+| 2 解析 | `meka-injection/mekaResolvePlan.ts` | 把 create opts + 外部依赖（持久化绑定、运行期配置、平台技能、技能快照、MCP）解析成结构化 plan。**全部 I/O 都在这一层**（入口 `resolveMekaInjection:414`、resume 短路 `resolveFrozenInjection:195`、常规创建 `resolveBootstrapInjection:240`；2026-11-20 起 `resolveBootstrapInjection` 对任意有会话 id 的 create opts 读持久行，**只有旧 `kind='meka'` 或成对绑定**才回填） | 不写 `opts`、不改注入文本 |
+| 数据源 | `meka-injection/persistedBinding.ts` | `readPersistedMekaSessionBinding`：从 `sessions` 行只读投影 `workspaceKind` / `mekaProjectId` / `mekaRoleId` / `mekaRole`，供各冷启动调用方作为形态 A 的 `deps.readPersistedSession`（2026-11-20 新增；**不是入口**） | 不判定身份、不写任何东西、不做第二套会话投影 |
 | 3 落地 | `meka-injection/mekaApplyPlan.ts` | 把 plan 写进 create opts：按 `order` 升序渲染段落（`renderMekaPromptSegments:51`）、写 `vendorOptions`（`applyMekaInjection:84-87`）、挂原生技能（`:92-96`） | 不解析、不做 I/O、不重算 `plan.result` |
 | 能力矩阵 | `meka-injection/mekaAgentMatrix.ts` | `MEKA_AGENT_CAPABILITIES:41`、`MEKA_AGENT_KINDS:74`、`mekaRuntimeMcpAgentKinds:79` | 不得由调用方手写第二份 agent 清单 |
 | 进程级注册（形态 B） | `meka-injection/mekaMcpRegistration.ts` | `registerMekaCapabilities:53`：按矩阵遍历三个 `AgentKind`，`runtimeMcp: true` 的取数组注册（取不到**抛错**，`:66-72`），`false` 的显式留档（`:60-64`） | 不得绕过矩阵直接调低层原语 |
@@ -83,13 +84,28 @@ MCP／技能落地、技能快照挂载、`vendorOptions` 的 Meka 键，或进�
 
 | 形态 | 场景 | 唯一入口 | 说明 |
 | --- | --- | --- | --- |
-| A | 会话创建 / 恢复 | `meka-injection/index.ts` 的 `applyMekaRuntimeConfig(opts, deps?)` | 只做组合：`resolveMekaInjection`（含全部 I/O）→ `applyMekaInjection`（只写 opts）。生产调用点 `maker-ipc/register.ts:7054` |
+| A | 会话创建 / 恢复 | `meka-injection/index.ts` 的 `applyMekaRuntimeConfig(opts, deps?)` | 只做组合：`resolveMekaInjection`（含全部 I/O）→ `applyMekaInjection`（只写 opts）。**四个生产调用点共用这一个入口**（2026-11-20 收口）：桌面 `maker-ipc/register.ts` 的 `bootstrapSessionOnce`（含新会话行尚未落库时的创建侧工作区解析）；IM `im/shared/turnRunner.ts` 的冷启动（`wireSessionInternal` 与延迟 agent switch 的 `refreshSessionAfterPendingAgentSwitch`）；个人 IM 卡片 `im/shared/cardActionHandler.ts` 的 `control:new` 建任务；官方 hook `hook-control/session-runner.ts` 的 `createMakerHookSessionRunner`。IM / 官方 hook 的持久行数据源统一用 `meka-injection/persistedBinding.ts` 的 `readPersistedMekaSessionBinding`；桌面 `bootstrapSessionOnce` 仍内联同一段只读查询（行为等价） |
 | B | 进程级 Meka MCP 注册 | `meka-injection/mekaMcpRegistration.ts` 的 `registerMekaCapabilities(registry)` | 生产调用点**唯一**：`maker-host/index.ts:2367`（在 `_mcpProviders.pi = piMcpProviders`（`:2362`）之后，保证三个数组都已就位）。低层原语 `mcp-integrations/meka-runtime-mcp.ts` 的 `registerMekaRuntimeMcpArrays:1051` 仍是公开导出（测试直接用它），但**生产禁止直接调**——它只认数组、不认归属，少传一个数组时发现不了任何问题 |
 | ~~C~~ | ~~每轮续聊~~ | **已退役（2026-09-29）** | 原形态 C（`index.ts` 转发 `prepareCombatFollowupRuntimeContext`，实现原在 `mekaResolvePlan.ts`）随战斗业务与 workflow 机制**整体删除**，`index.ts` 不再有第二个入口。行**保留占位**：编号与 §2 之后的交叉引用继续成立，同时明确「这里没有第三个入口」 |
 
 **约束**：新增形态必须新增**唯一**入口，并在此表登记；不得为已有形态开第二入口，
 也不得把形态 B 从 `index.ts` 转发出去（那样会同时存在 `index.registerX` 与
 `mekaMcpRegistration.registerX` 两个名字）。
+
+> **2026-11-20 补充（同一入口新增的生产调用点）**：Meka 助理会话的身份改成持久化绑定
+> `(mekaProjectId, mekaRoleId)`、新会话 `workspace_kind` 写普通 `'project'` / `'dialogue'`
+> 之后，IM 与官方 hook 的冷启动不再经过桌面 `bootstrapSession`，但**注入入口没有变**：
+> 桌面 `bootstrapSessionOnce`、IM `wireSessionInternal` / 延迟 agent switch 重建、个人 IM
+> 卡片 `control:new`、官方 hook `createMakerHookSessionRunner` 都在 `maker.createSession`
+> 之前调用同一个 `applyMekaRuntimeConfig`，只是把持久行绑定
+> （`readPersistedMekaSessionBinding`）作为 `deps.readPersistedSession` 传入；新会话行
+> 尚未落库时（bootstrap / hook 新建 / `control:new`）先用创建侧同一解析端口
+> `resolveSessionWorkspaceBinding` 按工作区补绑定。这**不是**形态 A 之外的新入口，
+> 也**不得**据此另写一套注入实现或绕过 `applyMekaRuntimeConfig` 直调
+> `resolveMekaInjection` / `applyMekaInjection`。若以后再有绕过桌面 bootstrap 的会话启动
+> 路径，同样接这一个入口，并在本表补登调用点。**已知未接入的存量路径**：
+> `goal-host/sessionRestore.ts` 的休眠 Goal 恢复与 Pi runtime 预启动仍直接
+> `maker.createSession`（非本次引入），本轮未改。
 
 **导出面只留公共签名**：`index.ts` 只转出形态 A 的唯一入口与三个公共签名类型
 （`AppliedMekaRuntimeConfig` / `ApplyMekaRuntimeConfigDeps` / `PersistedMekaSessionBinding`，
@@ -456,11 +472,14 @@ thinking 原话已经知道「应该走 meka-submit 插件」。同一 harness �
 指令；且 55 是 60 之前的空档，**不重排任何既有段**（60 / 65 / 70 的数值与文本一个字符未改，
 I1 的既有对照范围不受影响：新段像 order 65 一样**不参与**「与重构前逐字节一致」的对照）。
 
-**生效边界（Meka-only）**：只在 `workspaceKind === 'meka'` 的 **bootstrap（新建）路径**注入，
-与 60 / 65 / 70 同进同出；`resolveFrozenInjection`（resume 短路）**不注入**（I4 的「该路径注入
-零个段落」不变）。非 Meka 会话实例上**零影响**（I6：`didApply=false` 且不写 prompt），由基线用例
-的 `writes nothing for a non-Meka session` 负向断言钉住。因此**旧 Meka 会话的前缀不变**，
-代价与 order 65 同源：存量会话需等下一次新建任务才拿到这条规则（登记见 §8 的同口径条目）。
+**生效边界（Meka-only）**：只在 **Meka 助理会话**的 **bootstrap（新建）路径**注入——2026-11-20
+起身份判据是持久化绑定 `(mekaProjectId, mekaRoleId)` 成对或旧 `workspaceKind === 'meka'`
+（新会话 kind 是普通 `'project'` / `'dialogue'`，只作展示分类），因此不能再写成「只在
+`workspaceKind === 'meka'` 注入」。与 60 / 65 / 70 同进同出；`resolveFrozenInjection`（resume
+短路）**不注入**（I4 的「该路径注入零个段落」不变）。非 Meka 会话实例上**零影响**（I6：
+`didApply=false` 且不写 prompt），由基线用例的 `writes nothing for a non-Meka session` 负向
+断言钉住。因此**旧 Meka 会话的前缀不变**，代价与 order 65 同源：存量会话需等下一次新建任务
+才拿到这条规则（登记见 §8 的同口径条目）。
 
 **验证方式**：`mekaRuntimeInjectionBaseline.test.ts` 的第 17 组（1 例，见 §6）断言 ——
 Meka bootstrap 后的 `opts.userPrompt` **包含**该段（段文本取自共享构建器，不在测试里另抄）、
@@ -555,16 +574,19 @@ CLI/既有流程、不得假装插件可用」兜底）、段内工具名先后 
   「后 prepend 者靠前」——两者方向相反，于是重复 id 会静默反转整组段落次序。
 - 段落拼接等价于原 `prependPromptSection`（`mekaApplyPlan.ts:39-43`）：`trim` + 丢空段 + `\n\n` 连接；
   全空则**不写** `opts.userPrompt`（保持调用方原值，含空白）。
-- **写入方不变量：`workspaceKind === 'meka'` 的会话行必须同时带 `(mekaProjectId, mekaRoleId)`**
-  （2026-10-30）：本层的 bootstrap 分支在 hydrate 持久绑定后对两者做硬校验
-  （`resolveBootstrapInjection`，`mekaResolvePlan.ts:253-271` 读持久行、`:302-304` 缺任一即
-  `throwIpcError('INVALID_PARAMS', 'Meka session requires a project and role')`），因此**任何**
-  创建或派生 Meka 会话行的路径都不得只写 `workspace_kind`。历史反例是 fork 派生链路
+- **写入方不变量：Meka 助理会话行必须同时带 `(mekaProjectId, mekaRoleId)`**（2026-10-30 建立；
+  2026-11-20 身份改为持久绑定后，从「`workspace_kind` 与绑定同时写」改为「绑定成对、
+  `workspace_kind` 只作展示」）：本层的 bootstrap 分支在 hydrate 持久绑定后对两者做硬校验
+  （`resolveBootstrapInjection` 只在持久行是「旧 `workspaceKind === 'meka'` 或绑定成对」时回填，
+  随后 `!projectId || !roleId` 即 `throwIpcError('INVALID_PARAMS', 'Meka session requires a
+  project and role')`），因此**任何**创建或派生 Meka 会话行的路径都不得只写一半绑定；写入侧
+  `localDb/mapper.ts` 的 `sessionCreateToRow` 也直接拒绝半绑定。历史反例是 fork 派生链路
   （`maker-orchestration/fork.ts` 的两处 `newSession` 只继承 `workspaceKind`）⇒ 子行半绑定：
-  侧栏按 `mekaProjectId` 分组时落进「旧版 Meka 对话」孤儿桶，且首次发送被本层拒绝。修复后
-  fork 与源会话同值写入 project/role（另含旧版标记 `mekaRole`），白名单落点 **WL-3.8**。
-  另注：`hydratedPersistedSession && projectId && !roleId` 的默认角色派生（`:294-301`）只兜住
-  「有 project、无 role」的存量行，**兜不住 project 也为 NULL 的行** —— 那一类必须靠写入方修。
+  侧栏按 `mekaProjectId` 分组时落进「旧版 Meka 对话」孤儿桶，且首次发送被本层拒绝。2026-11-20
+  修复后 fork 只在源会话有完整绑定时继承（`hasMekaAssistantBinding`）、kind 按源行复制，
+  白名单落点 **WL-3.8**。另注：`hydratedPersistedSession && projectId && !roleId` 的默认角色
+  派生只兜住「旧 `kind='meka'` 且只有 project」的存量行，**兜不住 project 也为 NULL 的行**——
+  那一类必须靠写入方修。
 - 解析层用 `createPlanBuilder`（`mekaResolvePlan.ts:87-104`）在解析期模拟「已 prepend 的 prompt」，
   以便 `hasMarker` 去重 guard 与重构前判定一致（含角色正文恰好含某 marker 的极端情况）。
   收敛后仍在用它的只剩存活段，但算法未动（同一次去重 guard 语义）。
@@ -977,8 +999,9 @@ pnpm --filter desktop exec vitest run src/main/meka-injection src/main/maker-ipc
 
 **D2.1 的校验位置**（`mekaResolvePlan.ts` 的 `assertMekaUserPromptType:74-78`）：
 
-- bootstrap 分支放在 `workspaceKind === 'meka'` 判定**之后**（`:292`）—— 非 Meka 会话（含只回填
-  持久绑定的早返回，`:272-288`）在那之前已经返回，因此 I6 的零行为变化不受影响；
+- bootstrap 分支放在 Meka 身份判定**之后**（2026-11-20 起判据是「绑定成对 || 旧
+  `workspaceKind === 'meka'`」；新会话 kind 是普通值）—— 非 Meka 会话（含只回填持久绑定的
+  早返回）在那之前已经返回，因此 I6 的零行为变化不受影响；
 - frozen 分支（`mekaRuntimeResolved === true`）本身即 Meka，校验放在 `resolveFrozenInjection`
   开头（`:203`）；
 - 文案固定、不含时间/随机值；错误码与位置由基线用例的非字符串 `userPrompt` 组（`it.each`，

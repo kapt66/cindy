@@ -352,6 +352,17 @@ export async function getMekaProjectById(id: string): Promise<MekaProject | null
   return getProject(id);
 }
 
+/**
+ * Main-side runtime project list (no IPC).
+ *
+ * Used by the implicit workspace → Meka assistant binding resolver. `toProject` already
+ * resolves built-in project tokens to their workspace path, so callers never need to know
+ * business-specific path rules.
+ */
+export async function listMekaProjectsForRuntime(): Promise<MekaProject[]> {
+  return listProjects();
+}
+
 async function createProject(input: unknown): Promise<MekaProject> {
   try {
     const body = requireObject(input);

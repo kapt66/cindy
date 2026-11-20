@@ -7223,6 +7223,86 @@ Codex/Claude/Pi 原生读 `AGENTS.md`/`CLAUDE.md`/`SKILL.md`，不看我们的 m
   实际是 `[role=switch]`、版本行正则写死 `meka/main@`、模型下拉首次展开只等 900ms）—— 按 DOM 事实修锚点后转绿，
   **断言口径未放宽**。
 
+### 11.39 2026-11-20 Meka 助理会话身份改为持久化绑定 + 工作区路径隐式绑定
+
+> 本条是**新条目**，不改写任何带日期的历史原句。规则正本
+> [`docs/dev-rules/meka-assistant-session-binding.md`](../dev-rules/meka-assistant-session-binding.md)、
+> 产品口径 [`docs/product-rules/meka-assistant-session.md`](../product-rules/meka-assistant-session.md)；
+> 白名单落点 **WL-3.9**（新增）与 WL-3.6 / WL-12 / WL-3.1 / WL-3.5 / WL-3.8 / §8.2 第 1 条（更新）。
+
+- **裁决（2026-11-20）**：Meka 助理会话的身份 = `sessions` 表的 `(meka_project_id, meka_role_id)`
+  **成对绑定**；`workspace_kind` 降级为展示归类，新会话写普通 `'project'` / `'dialogue'`，
+  旧 `'meka'` 行双读兼容。**存量普通会话不回填**（不按路径追溯绑定），`workspace_kind='meka'`
+  旧行保持原样。
+- **隐式路径绑定**：会话工作区根（`projectDir` 优先，其次 `workingDir`）规范化后**精确等于**
+  已注册 Meka 项目路径时，创建时隐式绑定该项目**默认角色**（`mekaDefaultRoleId`）。子目录 /
+  前缀 / `additionalPaths` / `meka-assistants/<日期>/<id>` 兜底目录不参与；`remoteHostId` /
+  `agentDeviceId` 不解析；`configUnavailable` 的项目跳过；解析端口未安装或异常按「不绑定」
+  兜底（`localDb` / Host 不直接依赖 Meka 设置）。生效缝：`localDb/sessionOpening.ts` 的
+  `openSession`、`localDb/sessionStorageAdapter.ts` 的 `OwnerSessionStorage.create`、
+  `im/shared/sessionRepo.ts` 的手工 INSERT / `switchSessionWorkingDir`、
+  `localDb/ipc/sessions.ts` 的 `sessions:update`（未绑定会话移入 Meka 目录时补绑定；已有绑定
+  拒绝改目录，避免半身份行）。解析实现 `meka-projects/workspaceBinding.ts` 的
+  `resolveMekaWorkspaceBinding`，端口 `localDb/workspaceBindingResolver.ts`，组合根安装点
+  `localDb/ipc/registerAll.ts` 的 `registerLocalDbIpc`。
+- **显式创建与写入侧**：`localDb/ipc/createUserSession.ts` 把显式 Meka 创建归一成普通
+  `workspace_kind` + `mekaProjectId` / `mekaRoleId` / `projectDir`（不再写第三态），正式流程
+  仍只能从桌面显式创建；`localDb/mapper.ts` 的 `sessionCreateToRow` 把绑定与 kind 解耦并对
+  半绑定直接抛错。身份判定唯一 helper：`apps/desktop/src/shared/mekaAssistantSession.ts` 的
+  `hasMekaAssistantBinding` / `isMekaAssistantSession`。
+- **对外可见性（2026-11-20 裁决，取代 §8.2 原「建议排除 Meka」）**：Meka 项目目录是**保留目录**，
+  不提供「在该目录按普通任务运行」的逃生口；但对个人 IM、伙伴、手机与远程调用方，绑定会话
+  **就是普通会话**——个人 IM 的 `/session` 与 `/ctr` 可以列出并接管，项目清单把 Meka 项目
+  路径作为普通项目目录提供（`hook-control/projectCatalog.ts` 与
+  `maker-ipc/botLinkedProjects.ts` 合并 `meka-projects/workspaceCatalog.ts` 的
+  `listMekaProjectWorkspaceEntries`），**不新增跨端字段**。官方飞书仍不声明
+  `session-picker-v1`（`hook-control/manager.ts` 的 `feishuProviderFeatures`），因此**没有**
+  会话选择器；要正式支持需跨端协议改动，本轮不做。接管 / 冷启动的注入保真是前提：桌面
+  `bootstrapSessionOnce`（新会话行尚未落库时先用创建侧解析端口按 `workingDir` 补绑定）、
+  IM `im/shared/turnRunner.ts` 的 `wireSessionInternal` 与延迟 agent switch 冷重建、个人 IM
+  卡片 `im/shared/cardActionHandler.ts` 的 `control:new`、官方 hook
+  `hook-control/session-runner.ts` 的 `createMakerHookSessionRunner` 都调用**同一个**
+  `applyMekaRuntimeConfig`（hook **新建任务轮**先用创建侧同一解析端口
+  `resolveSessionWorkspaceBinding` 解析绑定，行随后由
+  `maker.createSession → OwnerSessionStorage.create` 落库），IM / 官方 hook 的持久行数据源
+  统一 `meka-injection/persistedBinding.ts` 的 `readPersistedMekaSessionBinding`（桌面
+  `bootstrapSessionOnce` 仍内联同一段只读查询，行为等价）
+  （见 `meka-injection-layer.md` §2）。`/new` 轮换在 `im.rotateSession` 同一个 INSERT 里
+  继承上一行成对绑定，不在 Meka 保留目录里造普通任务。
+- **跨切面收口**：resume / lazy 重建按绑定还原（`maker-ipc/sessionOptionsReconciler.ts`）；
+  send_to_session 子任务继承成对绑定（`maker-ipc/register.ts`）；fork 仅继承成对绑定、kind
+  按源行复制（`maker-orchestration/fork.ts`）；`.cshare` 按绑定导出 / 导入
+  （`session-share/sessionShareExport.ts` / `sessionShareImport.ts`）；Orca Lead / Worker 与
+  Meka worker target 按绑定判断（`maker-ipc/orcaWorkerCreationService.ts`、
+  `maker-ipc/mekaWorkerTarget.ts`）；任务迁移遇到 Meka 助理会话显式拒绝
+  （`task-migration/service.ts` 改用 `isMekaAssistantSession`）；侧栏隐藏项目不再把 Meka
+  会话降级成对话（`renderer/features/cc-agent/lib/sidebarProjectVisibility.ts` 补绑定豁免）。
+- **兼容与不迁移**：旧 `workspace_kind='meka'` 行（含 `meka_project_id IS NULL` 的历史 backfill
+  形态，见 `apps/desktop/src/shared/meka-projects.ts` 的 `backfillSessions`）继续被识别，不写
+  migration、不回填 role；`WorkspaceKind` 跨进程联合继续接受 `'meka'`（旧行 / 旧 tx 参数），
+  但新写入不再产生该值；`send_to_session` 回执对模型 / 跨端仍投影
+  `'project' | 'dialogue'`（不扩共享枚举）。
+- **验证现状（交付时实跑）**：`pnpm --filter desktop run typecheck` **PASS**（2026-11-20 最终代码）；
+  受影响测试用单次 Vitest 调用实跑 **PASS**（20 个本轮新增/修改测试文件 1209 passed / 3 skipped，
+  外加 14 个受影响的既有套件 389 passed；覆盖 `sessionOpening`、`mekaRuntimeInjection`、
+  `mapperMekaFormal`、`createUserSessionMekaBinding`、`workspaceBinding`、
+  `mekaAssistantSession`、`im.rotateSession`、session-repo / turnRunner / session-runner /
+  cardAction / session-share / fork / task-migration / sessionsUpdate / transport-manager /
+  renderer Meka 分组等）；`pnpm check:dev-docs` **PASS**；`check:test-hygiene --base HEAD`
+  **PASS**（裸命令因本机 `origin/meka/main` 基准落后于当前分支而报基线抬高，属环境基准问题，
+  不是本 diff 引入）。**未跑**：完整 `pnpm test:unit:related`（本机把 desktop related 切成
+  57 个串行 chunk，预估数小时，交付时中止；以受影响文件单次调用替代）与全量 `test:unit`；
+  **未跑实机**（普通入口选 Meka 项目目录、个人 IM 列出并接管、重启后 IM / hook 冷启动注入、
+  fork / `.cshare` / 协同保真均无实机证据）。
+- **风险 / 未验证项**：① 官方 hook 新建任务首轮注入**已实现**（新建轮先经创建侧同一解析
+  端口 `resolveSessionWorkspaceBinding` 解析绑定，再走同一个 `applyMekaRuntimeConfig`；
+  行落库仍由 `maker.createSession → OwnerSessionStorage.create` 完成），与后续冷启动复用
+  同一注入入口，但**未实机验证**；② 仍按 `workspaceKind === 'meka'` 判断的存量守卫
+  （`hook-control/recentSessions.ts` 旧行跳过、`scheduler-host/storage.ts` 旧数据别名扫描）
+  不会再命中新绑定会话——前者是有意的旧行兼容，后者是否误认领**未验证**；③ 路径匹配依赖
+  `workingDirComparisonKey` 规范化，符号链接 realpath、跨电脑同名路径、P4 根变化后的旧会话
+  未覆盖；④ 官方飞书正式支持仍需协议改动（本轮明确不做）。
+
 ### 6.63 2026-10-08 MCPRouter 的 linux runtime manifest 从来没有目录分发段：远端 Codex 命令执行起不来（已修）
 
 - **现象**：MCPRouter（远程 agent 宿主）会话里远端 Codex 的 code-mode（命令执行）起不来，

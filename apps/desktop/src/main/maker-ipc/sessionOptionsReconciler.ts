@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { permissionModeOrAsk } from '@cindy/maker-shared/permission-mode';
 import { dbToMakerAgentKind } from '../../shared/agentKindConversion.js';
+import { hasMekaAssistantBinding } from '../../shared/mekaAssistantSession.js';
 import { getDbClient } from '../localDb/client/current.js';
 import { sessions } from '../localDb/schema.js';
 import { reconcileCreateOptsFromPersistedSession } from './sessionCreateReconciliation.js';
@@ -10,7 +11,7 @@ import type { createLogger } from '../logger.js';
 export type SessionExecutionRow = Partial<Pick<typeof sessions.$inferSelect,
   'agentKind' | 'model' | 'sdkSessionId' | 'providerId' | 'effort' | 'fastMode' |
   'permissionMode' | 'planModeEnabled' | 'agentDeviceId' | 'remoteHostId' |
-  'workingDir' | 'workspaceKind' | 'mekaProjectId' | 'mekaRoleId'>> & Pick<typeof sessions.$inferSelect, 'model'>;
+  'workingDir' | 'workspaceKind' | 'mekaProjectId' | 'mekaRoleId' | 'mekaRole'>> & Pick<typeof sessions.$inferSelect, 'model'>;
 
 /** Extra options for one reconciliation call (see `reconcileCreateOptsFromPersistedSession`). */
 export interface SessionOptionsReconcileOptions {
@@ -40,6 +41,7 @@ async function readSession(sessionId: string): Promise<SessionExecutionRow | und
       workspaceKind: sessions.workspaceKind,
       mekaProjectId: sessions.mekaProjectId,
       mekaRoleId: sessions.mekaRoleId,
+      mekaRole: sessions.mekaRole,
     })
     .from(sessions)
     .where(eq(sessions.id, sessionId))
@@ -119,16 +121,19 @@ export function createSessionOptionsReconciler(deps: {
         // 计划意图（伙伴委派等 Host 输入恒为 false），本轮意图仍由发送事务按原快照传给
         // send，这里只校正冷启动的会话状态，不改本轮是否以计划执行。
         co.planMode = row.planModeEnabled === true;
-        // Meka 归属身份：三键必须同一次写入并以落库值为准（WL-3.8/WL-11.3），
-        // 半绑定的行在运行期会被 `resolveBootstrapInjection` 直接拒绝。
-        if (row.workspaceKind === 'meka') {
+        // Meka 归属身份：绑定成对即恢复三键（2026-11-20 起新会话 workspace_kind 是普通
+        // 值，身份只由绑定承载；不复原就会在冷 resume 丢注入）。旧 kind='meka' 行继续
+        // 按原语义走同一分支，kind 原值透传（历史展示分类）。
+        const hasMekaBinding = hasMekaAssistantBinding(row);
+        if (hasMekaBinding || row.workspaceKind === 'meka') {
           if (!row.workingDir || !row.mekaProjectId || !row.mekaRoleId) {
             throw new Error(`Meka session ${sessionId} is missing its persisted project binding`);
           }
           co.workingDir = row.workingDir;
-          co.workspaceKind = 'meka';
+          co.workspaceKind = row.workspaceKind ?? 'project';
           co.mekaProjectId = row.mekaProjectId;
           co.mekaRoleId = row.mekaRoleId;
+          co.mekaRole = (row.mekaRole ?? null) as CreateOpts['mekaRole'];
           if (deps.readExtraDirs) co.extraDirs = await deps.readExtraDirs(sessionId);
         }
       },

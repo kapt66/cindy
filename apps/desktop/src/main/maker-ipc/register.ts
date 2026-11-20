@@ -880,6 +880,7 @@ import {
 import { buildMekaRemoteCodexBundle } from '../maker-host/meka-remote-codex-bundle.js';
 import { parseMcprRemoteHostId } from '../../shared/meka-router.js';
 import { mekaDefaultRoleId } from '../../shared/meka-projects.js';
+import { hasMekaAssistantBinding } from '../../shared/mekaAssistantSession.js';
 import { hasMekaSkillSnapshotEntries } from '../meka-projects/skillSnapshot.js';
 import {
   captureDeferredTurnError,
@@ -931,6 +932,8 @@ import { getMekaP4SettingsService, getMekaRouterService } from '../meka-settings
 import { classifyRemoteSessionTransport } from '../maker-host/remote-session-routing.js';
 import { createMekaWorkerTargetResolver } from './mekaWorkerTarget.js';
 import { applyMekaRuntimeConfig } from '../meka-injection/index.js';
+import { readPersistedMekaSessionBinding } from '../meka-injection/persistedBinding.js';
+import { resolveSessionWorkspaceBinding } from '../localDb/workspaceBindingResolver.js';
 import {
   recordSessionContextSnapshot,
   recordSessionTurnSpend,
@@ -2702,13 +2705,13 @@ type SendToSessionCreateDefaults = {
   fastMode?: boolean | 'ultrafast';
   workingDir: string;
   /**
-   * `'meka'` 只在本进程内部继承（Meka 项目草稿首发送 / dispatcher 自带完整绑定）时出现；
-   * 对 MCP 的回执仍投影回 `'project' | 'dialogue'`，不改 `send_to_session.workspace_kind`
-   * 的跨端取值（见该分支回执处的注释）。
+   * `'meka'` 是旧行的历史取值，只作展示分类；2026-11-20 起新会话 kind 是普通值，
+   * 身份只由下面的成对绑定承载。对 MCP 的回执仍投影回 `'project' | 'dialogue'`，不改
+   * `send_to_session.workspace_kind` 的跨端取值（见该分支回执处的注释）。
    */
   workspaceKind?: 'project' | 'dialogue' | 'meka';
   projectDir?: string | null;
-  /** Meka 归属：仅当 `workspaceKind === 'meka'` 时成对出现，缺一即降级为普通任务。 */
+  /** Meka 归属身份：成对出现才成立；`workspaceKind` 不再参与判定，缺一即降级为普通任务。 */
   mekaProjectId?: string | null;
   mekaRoleId?: string | null;
   permissionMode?: 'ask' | 'default' | 'acceptEdits' | 'plan' | 'auto' | 'bypassPermissions';
@@ -9329,6 +9332,31 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     assertAccess?.();
     // Cindy Make 的 purpose 上游已在本函数开头（applyPersistedCindyMakeMarker）落地；
     // 这里只接 Meka 的项目/角色运行时，两者都只补 vendorOptions，互不覆盖。
+    // 新会话行可能还没落库（scheduler fire / 远程 create / send_to_session 新任务），
+    // 此时 applyMekaRuntimeConfig 读不到持久绑定；用创建侧同一解析端口按本次工作区
+    // 补绑定。存量普通会话已经有行，保持「存量不管」，不会被回溯升级。
+    if (
+      o.id &&
+      !o.mekaProjectId &&
+      !o.mekaRoleId &&
+      (o.workingDir || o.projectDir)
+    ) {
+      const persisted = await readPersistedMekaSessionBinding(o.id);
+      if (!persisted) {
+        const resolution = await resolveSessionWorkspaceBinding({
+          workingDir: typeof o.workingDir === 'string' ? o.workingDir : null,
+          projectDir: typeof o.projectDir === 'string' ? o.projectDir : null,
+          remoteHostId: typeof o.remoteHostId === 'string' ? o.remoteHostId : null,
+          agentDeviceId: typeof o.agentDeviceId === 'string' ? o.agentDeviceId : null,
+        });
+        if (resolution) {
+          o.mekaProjectId = resolution.projectId;
+          o.mekaRoleId = resolution.roleId;
+          o.projectDir = resolution.workspacePath;
+          o.workspaceKind = 'project';
+        }
+      }
+    }
     const mekaRuntime = await applyMekaRuntimeConfig(o, {
       readPersistedSession: async (sessionId) => {
         const [row] = await getDbClient()
@@ -12795,26 +12823,28 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             .where(eq(sessions.id, dispatcherSessionId))
             .limit(1);
           const sourceAgentDeviceId = meta.agentDeviceId && !meta.remoteHostId ? meta.agentDeviceId : null;
-          // Meka 归属的继承规则（WL-11.3 阻断项修复）：
-          // - dispatcher 是 Meka 会话且**项目/角色都齐** ⇒ 子任务保留第三态 `'meka'`
-          //   并同一次写入两个 id。Meka 项目入口新建草稿后的首次发送就走这条，否则会话行
-          //   会落成 dialogue/null，侧栏落孤儿桶且运行期被判半绑定。
+          // Meka 归属的继承规则（2026-11-20 口径）：
+          // - 身份 = 持久化绑定成对，**不再以 `workspaceKind === 'meka'` 为前提**：dispatcher
+          //   是新 Meka 会话（普通 kind + 绑定）时同样把两个 id 成对继承给子任务，否则子任务
+          //   冷 resume / bootstrap 会丢注入。
+          // - kind 只是展示分类：旧 kind='meka' 且绑定完整时子任务保留第三态，其余按
+          //   project / dialogue 投影（不许落出 kind='meka' 却缺绑定的半绑定行）。
           // - 缺任一 id、或调用方显式指定了别的 `projectDir`（含 `null` = 不绑项目）⇒
-          //   维持普通任务投影。按 `meka-injection-layer.md`「写入方不变量」/WL-9.4，
-          //   任何路径都不得落出 `workspace_kind='meka'` 却缺 project/role 的半绑定行。
+          //   维持普通任务投影，任何路径都不得落出半绑定行。
           const inheritedMekaProjectId = row?.mekaProjectId ?? null;
           const inheritedMekaRoleId = row?.mekaRoleId ?? null;
           const inheritsMekaBinding =
             params.projectDir === undefined &&
-            meta.workspaceKind === 'meka' &&
-            !!inheritedMekaProjectId &&
-            !!inheritedMekaRoleId;
+            Boolean(inheritedMekaProjectId) &&
+            Boolean(inheritedMekaRoleId);
           const inheritedWorkspaceKind: SendToSessionCreateDefaults['workspaceKind'] =
             params.projectDir === null
               ? 'dialogue'
               : params.projectDir !== undefined
                 ? 'project'
-                : inheritsMekaBinding
+                : inheritsMekaBinding && meta.workspaceKind === 'meka'
+                  // 旧 kind='meka' 且绑定完整：子任务保留第三态（历史展示分类，读取侧仍兼容）。
+                  // 缺绑定时不得保留 'meka'（会造出半绑定行）——按旧逻辑降级普通 project。
                   ? 'meka'
                   : meta.workspaceKind === 'dialogue'
                     ? 'dialogue'
@@ -12823,7 +12853,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             agentKind: meta.agentKind,
             workingDir: resolvedWorkDir,
             workspaceKind: inheritedWorkspaceKind,
-            ...(inheritedWorkspaceKind === 'meka'
+            ...(inheritsMekaBinding
               ? { mekaProjectId: inheritedMekaProjectId, mekaRoleId: inheritedMekaRoleId }
               : {}),
             projectDir: params.projectDir !== undefined ? params.projectDir : meta.projectDir,
@@ -12925,9 +12955,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           ...(handoffWorktree ? { id: handoffWorktree.sessionId } : {}),
           agentKind: inherited.agentKind,
           workspaceKind: inherited.workspaceKind,
-          // 只有 Meka 身份成对时才带 id；bootstrap 的 resolveBootstrapInjection 会按
-          // 持久行复核「workspaceKind==='meka' 必须同时有 project+role」。
-          ...(inherited.workspaceKind === 'meka' && inherited.mekaProjectId && inherited.mekaRoleId
+          // 身份只由成对绑定承载（新会话 kind 是普通值）：成对才带 id；bootstrap 的
+          // resolveBootstrapInjection 会按持久行复核并拒绝半绑定。
+          ...(inherited.mekaProjectId && inherited.mekaRoleId
             ? { mekaProjectId: inherited.mekaProjectId, mekaRoleId: inherited.mekaRoleId }
             : {}),
           projectDir: inherited.projectDir,
@@ -12947,9 +12977,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             model: inherited.model, providerId: inherited.providerId, effort: inherited.effort,
             fastMode: (inherited.fastMode ?? false), permissionMode: createOpts.permissionMode,
             workspaceKind: inherited.workspaceKind, projectDir: inherited.projectDir, workingDir: createOpts.workingDir,
-            // Meka 身份与 workspaceKind 同一次 INSERT 写入（mapper 只在
-            // workspaceKind==='meka' 时落身份，见 localDb/mapper.ts 的 sessionCreateToRow）。
-            ...(inherited.workspaceKind === 'meka' && inherited.mekaProjectId && inherited.mekaRoleId
+            // Meka 身份与 session 行同一次 INSERT 写入（mapper 按成对绑定落身份，与
+            // workspaceKind 无关：新会话是普通 kind + 绑定，旧行仍可能是 'meka'）。
+            ...(inherited.mekaProjectId && inherited.mekaRoleId
               ? { mekaProjectId: inherited.mekaProjectId, mekaRoleId: inherited.mekaRoleId }
               : {}),
             ...(inheritedAgentDeviceId ? { agentDeviceId: inheritedAgentDeviceId } : {}) },
@@ -13046,8 +13076,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           worktreePath: handoffWorktree?.meta.path ?? null,
           projectDir: inherited.projectDir ?? null,
           // 回执（MCP `send_to_session.workspace_kind`）**不扩**到 Meka 第三态：这条分支
-          // 现在可能写入 'meka'（完整绑定的 Meka dispatcher），但对模型/跨端仍投影成
-          // 'project' | 'dialogue'——Meka 的项目/角色身份由注入层表达，不改变共享枚举。
+          // 现在可能写入旧第三态 'meka'（旧 dispatcher）或普通 kind（新 dispatcher + 绑定），
+          // 但对模型/跨端仍投影成 'project' | 'dialogue'——Meka 的项目/角色身份由持久化
+          // 绑定表达，不改变共享枚举。
           workspaceKind: openedRow.workspaceKind === 'dialogue' ? 'dialogue' : 'project',
           workingDir: openedRow.workingDir ?? createOpts.workingDir,
           model: openedRow.model,
@@ -17014,7 +17045,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         .from(sessions)
         .where(eq(sessions.id, sessionId))
         .limit(1);
-      if (!current || current.workspaceKind !== 'meka') {
+      // 身份判据是成对绑定（新会话 kind 是普通值，不再写 'meka'）。
+      if (!current || !hasMekaAssistantBinding(current)) {
         throw new Error(`Worker session ${sessionId} did not persist as a Meka workspace`);
       }
       if (

@@ -200,6 +200,11 @@ Cindy 面向大众用户，让人以简单高效的方式用 AI 完成工作。�
   技能快照挂载、`vendorOptions` 的 Meka 键，或进程级 Meka 运行时 MCP 注册
   `registerMekaCapabilities` / `declareMekaRuntimeMcpAgents`）前，必须先读
   `docs/dev-rules/meka-injection-layer.md`。
+- 修改 Meka 助理会话的身份判定（`workspaceKind` 与 `(mekaProjectId, mekaRoleId)` 绑定）、
+  会话创建时按工作区路径隐式绑定项目／角色、IM／伙伴对这类会话的可见性与项目投影，或改动
+  「Meka 项目目录里的任务」行为前，必须先读
+  `docs/dev-rules/meka-assistant-session-binding.md`（产品口径见
+  `docs/product-rules/meka-assistant-session.md`）。
 - 修改 PI harness 集成（`packages/maker-core/src/agents/pi/**`、`pi-host.ts`、
   `piEnvironment.ts`）、PI 会话权限／配置／system prompt／桥接，或 PI 相关的上线判断前，
   必须先读 `docs/dev-rules/pi-harness.md`（含设计原则、维护不变量与上线清单）。其中

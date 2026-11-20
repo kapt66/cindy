@@ -6,6 +6,7 @@ import { ensureDialogueWorkspaceDir } from './dialogueWorkspace.js';
 import { ensureProjectGitInitialized } from '../git-snapshot/projectGitBootstrap.js';
 import { readGitSafetySettings } from '../maker-host/git-safety-settings-store.js';
 import { normalizeWorkingDirForStorage } from '../../shared/workingDir.js';
+import { resolveSessionWorkspaceBinding } from './workspaceBindingResolver.js';
 
 export type SessionOpenBody = NonNullable<Parameters<typeof sessionCreateToRow>[1]>;
 export type OpenedSessionRow = ReturnType<typeof sessionCreateToRow> & { model: string };
@@ -66,14 +67,41 @@ export async function openSession<T = void>(input: {
   if (!admitModel) throw new Error('任务模型服务尚未就绪，请稍后重试');
   // Remote model admission belongs to the execution host. Preserve the existing remote path.
   // Agent 在另一台电脑运行的任务同理：模型与来源来自那台，由那台启动时按它的目录校验。
-  const selected = input.body.remoteHostId || agentRunsOnOtherDevice(input.body)
+  let selected = input.body.remoteHostId || agentRunsOnOtherDevice(input.body)
     ? input.body
     : await admitModel({ ...input.body });
   assertCurrent();
-  const workspaceKind = selected.workspaceKind ?? 'project';
+  let workspaceKind = selected.workspaceKind ?? 'project';
   const explicitDir = normalizeWorkingDirForStorage(selected.workingDir) ?? undefined;
-  const workingDir = workspaceKind === 'dialogue' && !explicitDir
+  let workingDir = workspaceKind === 'dialogue' && !explicitDir
     ? ensureDialogueWorkspaceDir(id, now) : explicitDir;
+  // 隐式 Meka 助理绑定（2026-11-20）：工作区根等于已注册 Meka 项目路径时，新会话按项目
+  // 默认角色绑定。显式绑定优先；远程 / 跨设备任务不参与。规则见
+  // docs/dev-rules/meka-assistant-session-binding.md §2。
+  const hasExplicitMekaBinding = Boolean(selected.mekaProjectId || selected.mekaRoleId);
+  if (
+    !hasExplicitMekaBinding &&
+    workspaceKind !== 'meka' &&
+    !selected.remoteHostId &&
+    !agentRunsOnOtherDevice(selected)
+  ) {
+    const resolution = await resolveSessionWorkspaceBinding({
+      workingDir: workingDir ?? null,
+      projectDir: normalizeWorkingDirForStorage(selected.projectDir) ?? null,
+    });
+    assertCurrent();
+    if (resolution) {
+      selected = {
+        ...selected,
+        mekaProjectId: resolution.projectId,
+        mekaRoleId: resolution.roleId,
+        projectDir: resolution.workspacePath,
+        workspaceKind: 'project',
+      };
+      workspaceKind = 'project';
+      workingDir = workingDir ?? resolution.workspacePath;
+    }
+  }
   const prepared = { ...selected, workspaceKind, workingDir };
   if (!input.deferGitInit) {
     await ensureOpenedProjectGit({ id, workingDir, workspaceKind, remoteHostId: prepared.remoteHostId ?? null });

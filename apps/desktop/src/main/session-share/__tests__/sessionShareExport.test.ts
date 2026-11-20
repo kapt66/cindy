@@ -795,6 +795,32 @@ describe('exportSessionShare', () => {
     expect(snapshot.workspaceKind).toBe('project');
   });
 
+  it('bound ordinary-kind session export also carries the Meka section', async () => {
+    // 2026-11-20 起新 Meka 会话的 kind 是普通值：导出判据变成「绑定成对 / 旧 kind / 旧角色」，
+    // 只看 kind='meka' 会让新会话在分享包里丢掉身份（导入端就只会得到普通任务）。
+    sessionRowRef.row = {
+      ...baseSession(),
+      workspaceKind: 'project',
+      mekaProjectId: 'saga2',
+      mekaRoleId: 'saga2-default-role',
+      mekaRole: null,
+      mekaTargetJson: null,
+    };
+    const target = path.join(tmpRoot, 'out-meka-bound-project.xdtshare');
+    const outcome = await exportSessionShare({ sessionId: 'xdt-session-1', targetPath: target });
+    expect(outcome.status).toBe('ok');
+
+    const zip = await unzipOf(target);
+    const manifest = validateManifest(JSON.parse(await zip.file('manifest.json')!.async('string')));
+    expect(manifest.meka).toEqual({
+      projectId: 'saga2',
+      roleId: 'saga2-default-role',
+      legacyRole: null,
+      formal: null,
+    });
+    expect(manifest.workspaceKind).toBe('project');
+  });
+
   it('legacy meka session export keeps the legacy role without inventing a binding', async () => {
     sessionRowRef.row = {
       ...baseSession(),

@@ -101,6 +101,15 @@ vi.mock('../../../logger', () => ({
   createLogger: () => mocks.logger,
 }));
 
+// IM 冷启动会给持久行为 Meka 助理会话补注入（读 sessions 绑定）；本文件聚焦发送结果与
+// 凭据忙碌收口，不挂真实 DB，绑定读取固定「无绑定 ⇒ 不注入」。
+vi.mock('../../../meka-injection/persistedBinding.js', () => ({
+  readPersistedMekaSessionBinding: async () => null,
+}));
+vi.mock('../../../meka-injection/index.js', () => ({
+  applyMekaRuntimeConfig: vi.fn(async () => ({ didApply: false })),
+}));
+
 vi.mock('../../../maker-host', () => ({
   getMaker: mocks.getMaker,
 }));
@@ -378,6 +387,9 @@ function createMakerHarness(session: Session) {
 
 function createMakerCreateSessionFailureHarness(err: unknown) {
   return {
+    // 冷启动补注入先看 `maker.getSession`（real Maker 必有）；失败收口用例只关心
+    // createSession 抛错，这里返回 undefined = 本进程没启动过它。
+    getSession: vi.fn(() => undefined),
     createSession: vi.fn(async () => {
       throw err;
     }),

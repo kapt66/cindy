@@ -100,7 +100,7 @@ export async function createUserSession(body: unknown, ports: UserSessionCreateP
     ) {
       throwIpcError('INVALID_PARAMS', 'agentDeviceId must be a device id');
     }
-    const workspaceKind =
+    const requestedWorkspaceKind =
       (createBody?.workspaceKind as 'project' | 'dialogue' | 'meka' | undefined) ?? 'project';
     let validatedCreateBody = createBody;
     const mekaProjectId =
@@ -108,11 +108,18 @@ export async function createUserSession(body: unknown, ports: UserSessionCreateP
     const mekaRoleId =
       typeof createBody?.mekaRoleId === 'string' ? createBody.mekaRoleId.trim() : '';
     const hasMekaProjectRole = mekaProjectId.length > 0 && mekaRoleId.length > 0;
+    if ((mekaProjectId.length > 0) !== (mekaRoleId.length > 0)) {
+      throwIpcError('INVALID_PARAMS', 'Meka session requires both a project and a role');
+    }
+    // 显式创建（桌面 Meka 入口）与隐式路径绑定共用同一套绑定校验；行的 workspace_kind
+    // 由绑定推导（有项目目录 → project，兜底目录 → dialogue），不再写第三态。
+    const requestsMekaBinding =
+      requestedWorkspaceKind === 'meka' || hasMekaProjectRole;
     let mekaProjectWorkingDir: string | null = null;
-    if (workspaceKind === 'meka' && !hasMekaProjectRole) {
+    if (requestsMekaBinding && !hasMekaProjectRole) {
       throwIpcError('INVALID_PARAMS', 'Meka session requires a project and role');
     }
-    if (workspaceKind === 'meka' && hasMekaProjectRole) {
+    if (requestsMekaBinding) {
       const project = await getMekaProjectById(mekaProjectId);
       if (!project) {
         throwIpcError('MEKA_PROJECT_NOT_FOUND', `Meka project ${mekaProjectId} not found`);
@@ -139,6 +146,9 @@ export async function createUserSession(body: unknown, ports: UserSessionCreateP
         : [];
       validatedCreateBody = {
         ...createBody,
+        mekaProjectId,
+        mekaRoleId,
+        ...(mekaProjectWorkingDir ? { projectDir: mekaProjectWorkingDir } : {}),
         extraDirs: [...new Set([...(project.additionalPaths ?? []), ...requestedExtraDirs])],
       };
       if (createBody?.isFormal === true) {
@@ -180,13 +190,17 @@ export async function createUserSession(body: unknown, ports: UserSessionCreateP
       remoteHostId: createBody?.remoteHostId,
       userData: ports.userDataDir,
     });
-    const workingDir =
-      workspaceKind === 'dialogue' && !explicitWorkingDir
+    const resolvedWorkspaceKind: 'project' | 'dialogue' = requestsMekaBinding
+      ? (mekaProjectWorkingDir ? 'project' : 'dialogue')
+      : requestedWorkspaceKind === 'dialogue'
+        ? 'dialogue'
+        : 'project';
+    const workingDir = requestsMekaBinding
+      ? (mekaProjectWorkingDir ?? ensureMekaWorkspaceDir(id, now))
+      : resolvedWorkspaceKind === 'dialogue' && !explicitWorkingDir
         ? ensureDialogueWorkspaceDir(id, now)
-        : workspaceKind === 'meka'
-          ? (mekaProjectWorkingDir ?? ensureMekaWorkspaceDir(id, now))
-          : explicitWorkingDir;
-    if (workspaceKind === 'dialogue' && !explicitWorkingDir) {
+        : explicitWorkingDir;
+    if (!requestsMekaBinding && resolvedWorkspaceKind === 'dialogue' && !explicitWorkingDir) {
       log.info('[localDb] allocated dialogue workspace', { sessionId: id, workingDir });
     }
     const requestedWritableDirs = createBody?.writableDirs ?? [];
@@ -223,14 +237,14 @@ export async function createUserSession(body: unknown, ports: UserSessionCreateP
     const markedProvisional = provisional && !isProvisionalSession(id);
     if (markedProvisional) {
       // Only a dialogue folder allocated here is ours to tidy up if the task is discarded.
-      const managedDir = workspaceKind === 'dialogue' && !explicitWorkingDir ? workingDir : undefined;
+      const managedDir = resolvedWorkspaceKind === 'dialogue' && !explicitWorkingDir ? workingDir : undefined;
       markProvisionalSession(id, now, managedDir);
     }
     let insertRow: Awaited<ReturnType<typeof openSession>>['row'];
     let row: typeof sessions.$inferSelect | undefined;
     try {
       ({ row: insertRow } = await openSession({ id, now, assertCurrent: assertOwner,
-        body: { ...validatedCreateBody, workspaceKind, workingDir },
+        body: { ...validatedCreateBody, workspaceKind: resolvedWorkspaceKind, workingDir },
         ...(provisional ? { deferGitInit: true } : {}),
       }, async (prepared, assertCurrent) => {
         const resource = !prepared.remoteHostId && prepared.workingDir

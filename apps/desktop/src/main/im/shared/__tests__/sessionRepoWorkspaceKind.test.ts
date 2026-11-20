@@ -74,6 +74,7 @@ vi.mock('../../../localDb/client/current', () => ({
 const { sessions } = await import('../../../localDb/schema');
 const { createImSessionRepo } = await import('../sessionRepo');
 const { switchSessionWorkingDir } = await import('../sessionRepo');
+const { setWorkspaceBindingResolver } = await import('../../../localDb/workspaceBindingResolver');
 import type { ImOrchestratorConfig, ImSessionNamespace } from '../types';
 
 const MANAGED_DIR = '/tmp/im-working-dir/telegram-bot1';
@@ -129,6 +130,8 @@ beforeEach(() => {
   raw.exec(createTableSql());
   db = drizzle(raw);
 });
+
+afterEach(() => setWorkspaceBindingResolver(null));
 
 
 // 这些用例断言中文控制文案：显式切到 zh-CN，结束后复位为 en。
@@ -272,5 +275,59 @@ describe('新任务写库前复核账号代次', () => {
       '账号已变化',
     );
     expect(await db.select().from(sessions)).toHaveLength(0);
+  });
+});
+
+// 测试价值
+// - 生产入口与可观察结果：`switchSessionWorkingDir` 是 IM `/project`（及渠道换目录）的
+//   落库缝。2026-11-20 起 Meka 目录是保留目录：未绑定会话切进去必须按项目默认角色补成
+//   「普通 kind + 成对绑定 + projectDir」，已绑定会话的任何目录切换必须拒绝。
+// - Bug／规则依据：`docs/dev-rules/meka-assistant-session-binding.md` §2「已有未绑定会话被
+//   移动/切换到该目录时」与 §3「身份不可变」。
+// - 现有覆盖缺口：本文件原先只覆盖 kind 归属，没有任何绑定写入 / 不可变用例。
+// - 最小失败输入：`/project` 切到已注册 Meka 项目目录的信号；旧实现只改 workingDir/kind，
+//   行里意味着会话仍被当普通任务（Meka 目录可被普通任务占用）。
+// - tier：unit（真 SQLite + 端口 fake，无真实项目注册表 I/O）。
+describe('隐式 Meka 绑定与不可变身份', () => {
+  const MEKA_DIR = '/tmp/meka-project-a';
+
+  it('moving an unbound conversation into a registered Meka directory writes the ordinary kind and binding', async () => {
+    const r = repo();
+    const created = await r.createSession('bot1', 'u1');
+    setWorkspaceBindingResolver(async () => ({
+      projectId: 'project-a',
+      roleId: 'project-a-default-role',
+      workspacePath: MEKA_DIR,
+    }));
+
+    await switchSessionWorkingDir(created.id, MEKA_DIR, 'project');
+
+    const row = (await db.select().from(sessions)).find((candidate) => candidate.id === created.id)!;
+    expect(row).toMatchObject({
+      workingDir: MEKA_DIR,
+      workspaceKind: 'project',
+      projectDir: MEKA_DIR,
+      mekaProjectId: 'project-a',
+      mekaRoleId: 'project-a-default-role',
+    });
+  });
+
+  it('refuses to move a task that is already bound to a Meka project', async () => {
+    const r = repo();
+    const created = await r.createSession('bot1', 'u1');
+    await db
+      .update(sessions)
+      .set({ mekaProjectId: 'project-a', mekaRoleId: 'project-a-default-role' });
+
+    await expect(switchSessionWorkingDir(created.id, '/tmp/elsewhere', 'project')).rejects.toThrow(
+      'Meka project and workspace bindings are immutable',
+    );
+
+    const row = (await db.select().from(sessions)).find((candidate) => candidate.id === created.id)!;
+    expect(row).toMatchObject({
+      workingDir: MANAGED_DIR,
+      workspaceKind: 'dialogue',
+      mekaProjectId: 'project-a',
+    });
   });
 });

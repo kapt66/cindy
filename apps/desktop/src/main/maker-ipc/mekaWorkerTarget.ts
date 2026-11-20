@@ -1,6 +1,7 @@
 import type { AgentKind } from '@cindy/maker-core';
 import path from 'node:path';
 
+import { isMekaAssistantSession } from '../../shared/mekaAssistantSession.js';
 import { parseMcprRemoteHostId } from '../../shared/meka-router.js';
 import type { MekaP4SettingsService } from '../meka-settings/service.js';
 import type { MekaRouterService } from '../meka-settings/routerService.js';
@@ -113,7 +114,9 @@ export function createMekaWorkerTargetResolver(deps: {
     input: MekaWorkerTargetInput,
   ): Promise<MekaWorkerTargetResult> {
     const { lead, agent, requestedWorkingDir, requestedRemoteHostId } = input;
-    if (lead.workspaceKind !== 'meka') {
+    // 身份判定走 shared helper（成对绑定 / 旧 kind='meka' / 旧角色标记）：新 Meka 会话是
+    // 普通 workspaceKind + 绑定，kind 只作展示，不能再用它决定是否走 Meka 目标解析。
+    if (!isMekaAssistantSession(lead)) {
       if (requestedWorkingDir !== undefined || requestedRemoteHostId !== undefined) {
         return {
           ok: false,

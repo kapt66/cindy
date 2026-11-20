@@ -206,6 +206,7 @@ import { MekaAssistantSection } from './sidebar/sections/MekaAssistantSection';
 import { MekaFormalIssueModal, type PreparedMekaFormalDraft } from './MekaFormalIssueModal';
 import { NEW_MAKER_DRAFT_KEY } from './newMakerDraftKeys';
 import type { MekaProject } from '../../../shared/meka-projects';
+import { isMekaAssistantSession } from '../../../shared/mekaAssistantSession';
 // 上游 cd3921a43c「单机范围下保留按设备分组」把 Meka 侧原先消费的
 // `onlineDeviceSectionIds(...)` 换成了 `hasSettledOnlineDeviceSection(...)`
 // (同一模块;旧符号已无引用,故随上游一并去掉,避免留下未使用的 import)。
@@ -1658,13 +1659,14 @@ function ExpandedView({
   /* ---- Grouping & collapse ---- */
   // WL-3.1:Meka 会话是与项目/对话同级的一级分类,只出现在 Meka 段。普通项目树的
   // **全部**派生(含 allProjectGroups / groupsWithPinnedProjects / projectUniverse)
-  // 都必须走 nonMeka*,否则 Meka 会话会重复出现在普通项目分组里。
+  // 都必须走 nonMeka*,否则 Meka 会话会重复出现在普通项目分组里。身份按持久化绑定
+  // 判定(isMekaAssistantSession),新会话的 workspaceKind 是普通值。
   const nonMekaSidebarSessions = useMemo(
-    () => sidebarSessions.filter((session) => session.workspaceKind !== 'meka'),
+    () => sidebarSessions.filter((session) => !isMekaAssistantSession(session)),
     [sidebarSessions],
   );
   const nonMekaActivitySessions = useMemo(
-    () => activityFilteredSessions.filter((session) => session.workspaceKind !== 'meka'),
+    () => activityFilteredSessions.filter((session) => !isMekaAssistantSession(session)),
     [activityFilteredSessions],
   );
   const allGroups = useProjectGroups(
@@ -1731,7 +1733,7 @@ function ExpandedView({
   const unfilteredProjectSessions = useMemo(
     () =>
       [...sessions, ...remoteProjectSessions].filter(
-        (session) => session.workspaceKind !== 'meka' && passesOrcaAndStatus(session),
+        (session) => !isMekaAssistantSession(session) && passesOrcaAndStatus(session),
       ),
     [sessions, remoteProjectSessions, passesOrcaAndStatus],
   );
@@ -2034,9 +2036,7 @@ function ExpandedView({
   const dialogueActionSessions = allProjectGroups.dialogues;
 
   const visibleMekaSessions = useMemo(() => {
-    const mekaSessions = activityFilteredSessions.filter(
-      (session) => session.workspaceKind === 'meka',
-    );
+    const mekaSessions = activityFilteredSessions.filter(isMekaAssistantSession);
     return vendorPredicate ? mekaSessions.filter(vendorPredicate) : mekaSessions;
   }, [activityFilteredSessions, vendorPredicate]);
 

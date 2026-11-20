@@ -98,6 +98,7 @@ import {
   setWorktreePathInDb,
   touchUserSendInDb,
 } from '../localDb/ipc/sessions.js';
+import { resolveSessionWorkspaceBinding } from '../localDb/workspaceBindingResolver.js';
 import {
   hydrateSessionProvider,
   setSessionProvider,
@@ -109,6 +110,7 @@ import { ingestMedia, supportedMime as isCindyMediaMime } from '../cindy-media/i
 import { worktreeStore, WorktreeManager } from '../worktree/index.js';
 import { readImDefaultSettings } from '../im/defaultSettingsStore.js';
 import { isImDefaultPermissionMode } from '../../shared/imDefaultSettings.js';
+import { isMekaAssistantSession } from '../../shared/mekaAssistantSession.js';
 import { readImRemoteAutomaticDefaults, readImRemotePermissionModes, readImRemoteProviderRoute } from '../im/remoteProviderRoute.js';
 import { resolveImAutomaticDefaults } from '../im/defaultSessionSettings.js';
 import { getWorkspaceProviderRoute } from './workspaceProviderSourceStore.js';
@@ -122,6 +124,9 @@ import {
 } from './workspacePrefsStore.js';
 import { getDesktopProviderService } from '../maker-host/createDesktopProviderService.js';
 import { beginHeadlessGhostSetupTurn } from '../mcp-integrations/ghostSetupInteractionSurface.js';
+import { applyMekaRuntimeConfig } from '../meka-injection/index.js';
+import { readPersistedMekaSessionBinding } from '../meka-injection/persistedBinding.js';
+import type { MakerSessionCreateOpts } from '../maker-ipc/sessionRequest.js';
 import { observeHookTurn, type HookTurnObserver } from './turnObserver.js';
 import { bindRuntimeRecoveryNotice } from '../im/shared/runtimeRecoveryNotice.js';
 
@@ -848,7 +853,7 @@ export function createMakerHookSessionRunner(deps: {
       const providerId = req.isNew ? (resolved?.providerId ?? null) : rowProviderId;
 
       let session: Awaited<ReturnType<ReturnType<typeof getMaker>['createSession']>>;
-      const createOpts: Parameters<ReturnType<typeof getMaker>['createSession']>[0] = {
+      const createOpts: MakerSessionCreateOpts = {
         id: req.sessionId,
         agentKind: effectiveAgentKind,
         workingDir,
@@ -993,6 +998,51 @@ export function createMakerHookSessionRunner(deps: {
           rowProviderId = createOpts.providerId ?? null;
           sessionProviderId = rowProviderId;
           createOpts.providerId = rowProviderId;
+        }
+        // 2026-11-20 Meka 助理会话：身份是持久化绑定 `(mekaProjectId, mekaRoleId)`，不是
+        // `workspace_kind`（新会话 kind 就是普通 'project' / 'dialogue'）。hook 冷启动绕过了
+        // 桌面 `bootstrapSessionOnce`，必须在 `maker.createSession` 之前用**同一个入口**
+        // `applyMekaRuntimeConfig` 应用项目/角色运行时（prompt / MCP / 技能），否则库里是
+        // Meka、进程里跑起来的却是普通会话。`maker.getSession` 命中 = 本进程已启动过它，
+        // 注入在那次已生效，跳过（live session 行为不变）。两条路径分别取身份：
+        //   - 新建：行要等 `maker.createSession → OwnerSessionStorage.create` 才落库，此处
+        //     读不到绑定，改按创建侧**同一个解析端口**（`resolveSessionWorkspaceBinding`，
+        //     规则 §2）用本次 create 的工作目录隐式绑定项目默认角色；显式 Meka 创建（旧
+        //     kind）仍只走桌面入口，不在 hook 复刻。
+        //   - 复用 / 接管：持久化行（含旧 kind / 旧角色标记的兼容）。
+        // 绑定解析 / 读库 / 注入失败按既有 fail 路径收口，不吞。
+        if (!maker.getSession(req.sessionId)) {
+          if (req.isNew) {
+            const resolution = await resolveSessionWorkspaceBinding({
+              workingDir,
+              projectDir: null,
+              // hook 请求没有远端 host；Agent 在另一台电脑时解析端口自己会跳过。
+              remoteHostId: null,
+              agentDeviceId: agentDeviceId ?? null,
+            });
+            if (resolution) {
+              // 只写判定身份所需的成对 id；`mekaRole` 是更旧的只读兼容列，新行不写。
+              createOpts.mekaProjectId = resolution.projectId;
+              createOpts.mekaRoleId = resolution.roleId;
+              await applyMekaRuntimeConfig(createOpts, {
+                readPersistedSession: readPersistedMekaSessionBinding,
+              });
+            }
+          } else {
+            const persistedBinding = await readPersistedMekaSessionBinding(req.sessionId);
+            if (persistedBinding && isMekaAssistantSession(persistedBinding)) {
+              Object.assign(createOpts, {
+                workspaceKind: persistedBinding.workspaceKind,
+                mekaProjectId: persistedBinding.mekaProjectId,
+                mekaRoleId: persistedBinding.mekaRoleId,
+                mekaRole: persistedBinding.mekaRole,
+              });
+              // 渠道 vendorOptions（isNew / 伙伴轮次）已先构造：注入层只 spread 合并 Meka 键。
+              await applyMekaRuntimeConfig(createOpts, {
+                readPersistedSession: readPersistedMekaSessionBinding,
+              });
+            }
+          }
         }
         session = req.isNew
           ? await openChannelSession(req.sessionId, newSessionRoute, (admitted) => {
