@@ -108,13 +108,6 @@ const r = await cindy.reveal({ path: picked.path });  // {ok:true} 或 {ok:false
 - 同一声明还会让 \`cindy.pick\` 在 \`mode:"directory"\` 与不带 \`into\` 的 \`mode:"file"\`
   结果里返回 \`path\`（未声明 \`node\` / \`reveal\` 的插件拿不到绝对路径，只能走票据或
   \`into\` 导入）。
-
-### 面板呈现方式（Meka 专属字段）
-
-停靠面板还可用 \`panel.allowUserPresentationOverride: true\` 声明「允许用户在本机把这块
-面板改成 Meka 的另一种呈现方式」。它只影响本机用户自己的界面偏好，不授予任何能力、
-不改变沙箱与协议；未声明时用户看不到该开关。上游没有这个字段，写进清单在 Cindy
-上游按未知字段原样保留、不生效。
 `;
 
 export const FORGE_GUIDE = [

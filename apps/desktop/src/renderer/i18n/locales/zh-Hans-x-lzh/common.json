@@ -8495,7 +8495,6 @@
         "openLocation": "启所纳之处",
         "panelInSidebar": "现于右侧栏（诸差事中皆留）",
         "panelDismissed": "已自右侧栏阖之 · 可于此处或右侧栏「+」菜单重启",
-        "panelModal": "现于弹窗中",
         "openInSidebar": "于侧栏启之",
         "panelPageHosted": "自法器页启之 · 离法器页即自阖",
         "panelNone": "此法器无面板",
@@ -8578,18 +8577,7 @@
         "closeDialog": "阖弹窗",
         "resetPlacement": "复预设位置",
         "infoMinClientVersion": "最低客户端版本",
-        "minClientVersionTooOld": "需要更新的客户端：此版本要求 {{appName}} {{version}} 或更高版本。",
-        "closePanel": "关闭法器界面",
-        "panelPresentation": {
-          "title": "打开方式",
-          "description": "仅影响此法器。选择“跟随默认”时，使用“设置 → Meka 助理 → 法器默认打开方式”。",
-          "aria": "选择此法器的打开方式",
-          "options": {
-            "inherit": "跟随默认",
-            "docked": "停靠在对话窗口",
-            "modal": "弹窗打开"
-          }
-        }
+        "minClientVersionTooOld": "需要更新的客户端：此版本要求 {{appName}} {{version}} 或更高版本。"
       },
       "contents": {
         "mainView": "主视",
@@ -9388,12 +9376,7 @@
     },
     "meka": {
       "title": "Meka 助理",
-      "description": "管理法器界面、P4 路径、MCPRouter 与 MekaDesign 连接。",
-      "pluginPanel": {
-        "title": "法器默认打开方式",
-        "description": "作为未单独设置法器的默认值。开启后默认使用覆盖主页面 90% 宽高的弹窗；关闭时默认停靠在对话窗口。法器可在自己的配置中单独覆盖。",
-        "toggleAria": "默认使用弹窗打开法器界面"
-      },
+      "description": "管理 P4 路径、MCPRouter 与 MekaDesign 连接。",
       "router": {
         "title": "MCPRouter 连接",
         "description": "连接 MCPRouter 后，Meka 助理对话可使用经路由聚合的全部 MCP 工具。凭证仅保存到操作系统加密存储。",

@@ -20,10 +20,9 @@ Build a Cindy plugin from the user's request, or update an existing plugin. This
 
 Cindy supplies the Forge tools. If they are unavailable in the current environment, explain the missing capability and continue any local source work that is possible; do not claim to have packaged, installed or published. The legacy ghost_forge_guide tool serves these same references by section number or title when needed. It is a compatibility entry point, not a second source of documentation.
 
-**Cindy Meka only.** This build also exposes three Meka-private declarations that the shared
-references intentionally do not cover: `mcpr` (MCPRouter route allowlist), `"reveal": true`
-(locate a local file/folder in the OS file manager) and `panel.allowUserPresentationOverride`
-(let the user override the docked panel presentation). Read them on demand with
+**Cindy Meka only.** This build also exposes two Meka-private declarations that the shared
+references intentionally do not cover: `mcpr` (MCPRouter route allowlist) and `"reveal": true`
+(locate a local file/folder in the OS file manager). Read them on demand with
 `ghost_forge_guide({ section: "4.25" })` and `ghost_forge_guide({ section: "4.26" })`; they are
 host-appended chapters, not part of the upstream Cindy contract, so do not invent their
 semantics and do not assume another Cindy build accepts them.

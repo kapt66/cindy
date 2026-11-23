@@ -8512,7 +8512,6 @@
         "openLocation": "インストール場所を開く",
         "panelInSidebar": "右サイドバーに表示（すべてのタスクで保持）",
         "panelDismissed": "右サイドバーから閉じました · ここまたはサイドバーの「+」メニューから再度開けます",
-        "panelModal": "モーダルウィンドウに表示中",
         "openInSidebar": "サイドバーで開く",
         "panelPageHosted": "プラグインページから開く · 離れると自動的に閉じます",
         "panelNone": "このプラグインにパネルはありません",
@@ -8595,18 +8594,7 @@
         "viewAllPermissions": "さらに表示",
         "permissionsDialogDescription": "このプラグインが要求する全 {{count}} 項目の権限",
         "closeDialog": "ダイアログを閉じる",
-        "resetPlacement": "既定の位置に戻す",
-        "closePanel": "プラグイン画面を閉じる",
-        "panelPresentation": {
-          "title": "開き方",
-          "description": "このプラグインだけに適用されます。「デフォルトに従う」では「設定 → Meka アシスタント → プラグインのデフォルトの開き方」を使用します。",
-          "aria": "このプラグインの開き方を選択",
-          "options": {
-            "inherit": "デフォルトに従う",
-            "docked": "会話の横にドッキング",
-            "modal": "モーダルで開く"
-          }
-        }
+        "resetPlacement": "既定の位置に戻す"
       },
       "contents": {
         "mainView": "メインビュー",
@@ -9366,12 +9354,7 @@
     },
     "meka": {
       "title": "Meka アシスタント",
-      "description": "プラグイン画面、P4 パス、MCPRouter、MekaDesign 接続を管理します。",
-      "pluginPanel": {
-        "title": "プラグインのデフォルトの開き方",
-        "description": "個別設定のないプラグインに適用するデフォルトです。有効にするとメインページの 90% を占めるモーダル、無効にすると会話の横にドッキングして開きます。各プラグインの設定で上書きできます。",
-        "toggleAria": "プラグイン画面をデフォルトでモーダル表示する"
-      },
+      "description": "P4 パス、MCPRouter、MekaDesign 接続を管理します。",
       "router": {
         "title": "MCPRouter 接続",
         "description": "MCPRouter に接続すると、Meka アシスタントのセッションで集約された MCP ツールを使用できます。認証情報は OS の暗号化ストレージにのみ保存されます。",

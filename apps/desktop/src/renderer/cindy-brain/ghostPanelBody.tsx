@@ -204,7 +204,6 @@ export function GhostWebviewBody({
   query,
   wallpaperCanvas = false,
   onHostNode,
-  autoFocusWebview = false,
 }: {
   ghost: Pick<InstalledGhost, 'manifest' | 'dir' | 'namespace'> & Partial<Pick<InstalledGhost, 'approval'>>;
   html: string | undefined;
@@ -216,8 +215,6 @@ export function GhostWebviewBody({
   /** Main-view pages share the host canvas, including when docked or detached. */
   wallpaperCanvas?: boolean;
   onHostNode?: (node: HTMLDivElement | null) => void;
-  /** Meka 面板呈现方式 = Modal 时由宿主置位：dom-ready 后把键盘焦点交给 guest。 */
-  autoFocusWebview?: boolean;
 }): ReactNode {
   const { manifest } = ghost;
   const instanceId = installedGhostStoragePart(ghost);
@@ -325,8 +322,6 @@ export function GhostWebviewBody({
     webview.addEventListener('context-menu', onContextMenu);
     const unobserveTheme = observeHostTheme(scheduleInjectTheme);
     host.appendChild(webview);
-    // [MEKA] Modal 宿主 = 唯一主动抢焦点的面板宿主(停靠页签与插件页宿主保持被动)。
-    if (autoFocusWebview) webview.focus();
     // 每次创建 / 销毁各一条:只记插件实例 id、存活毫秒与原因类别,不带 URL 与页面内容。
     const createdAt = Date.now();
     log.info('webview created', { instanceId });
@@ -349,7 +344,7 @@ export function GhostWebviewBody({
     };
     // version 入依赖:原位更新换版后 webview 重挂载,面板立刻跑新代码
     // (供片协议直读安装目录,不重挂会一直渲染旧版缓存的页面)。
-  }, [crashed, generation, librarySwapping, instanceId, approvalToken, partitionClaim, manifest.id, manifest.version, manifest.resolvedLocale, html, query, wallpaperCanvas, autoFocusWebview]);
+  }, [crashed, generation, librarySwapping, instanceId, approvalToken, partitionClaim, manifest.id, manifest.version, manifest.resolvedLocale, html, query, wallpaperCanvas]);
 
   if (crashed) {
     return (
@@ -381,11 +376,8 @@ export function GhostWebviewBody({
  */
 export function GhostChipPanelBody({
   ghost,
-  autoFocusWebview = false,
 }: {
   ghost: Pick<InstalledGhost, 'manifest' | 'dir' | 'namespace'> & Partial<Pick<InstalledGhost, 'approval'>>;
-  /** Meka 面板呈现方式 = Modal 时由宿主置位：dom-ready 后把键盘焦点交给 guest。 */
-  autoFocusWebview?: boolean;
 }): ReactNode {
   const { manifest } = ghost;
   /**
@@ -420,7 +412,6 @@ export function GhostChipPanelBody({
       ghost={ghost}
       html={manifest.panel?.html}
       onHostNode={observeHost}
-      autoFocusWebview={autoFocusWebview}
     />
   );
 }

@@ -43,7 +43,7 @@ Desktop 本机、远程查看与 Mobile 的页面 CSP 始终保留 `form-action 
 
 | 内容                                                 | 权威来源                                                                                                                                                                                                                                                                                                          |
 | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 编写手册（作者唯一教材，现拿现读）                   | `apps/desktop/resources/system-skills/cindy-plugin-creator/`；`SKILL.md` 编排创建流程，`references/` 保存完整作者契约；`ghost_forge_guide` 兼容读取同一份资料；Meka 私有章节（`mcpr` / `reveal` / 面板呈现方式）由 `main/cindy-brain/forgeGuide.ts` 的 `MEKA_FORGE_GUIDE` 追加        |
+| 编写手册（作者唯一教材，现拿现读）                   | `apps/desktop/resources/system-skills/cindy-plugin-creator/`；`SKILL.md` 编排创建流程，`references/` 保存完整作者契约；`ghost_forge_guide` 兼容读取同一份资料；Meka 私有章节（`mcpr` / `reveal`）由 `main/cindy-brain/forgeGuide.ts` 的 `MEKA_FORGE_GUIDE` 追加        |
 | `ghost.json` 身份卡字段与校验                        | `packages/plugin-protocol/src/manifest.ts` 是跨消费者协议正本；`apps/desktop/src/shared/ghost.ts` 是 Desktop 运行时 validator。除下文登记的 Desktop-only 能力外，两端必须同步维护                                                                                                                                 |
 | 管子协议类型                                         | `apps/desktop/src/shared/ghost.ts`（`cindy.send` / `cindy.onHostMessage` 类型）                                                                                                                                                                                                                                   |
 | 打包限制                                             | `apps/desktop/src/main/cindy-brain/forge.ts` 的 `packGhostDir`                                                                                                                                                                                                                                                    |
@@ -1241,30 +1241,18 @@ Renderer 的来源分类是封闭取值（`public / organization / local / custo
   按 owner × plugin 幂等注册；设置页与同插件其它页面继续共享 browser storage、IndexedDB
   与 `BroadcastChannel`。
 - 面板供片与注入的主题 token 只用 `ghostPanelTheme.ts` 白名单内的值，不扩大暴露面。
-- 已安装且声明 `panel` 的插件，面板入口统一为主动作「使用面板」（列表卡片与详情页同一个 launcher）：停靠形态点击后进右侧栏并给「已在右侧栏打开」反馈，失败给可读错误；弹窗形态就地弹出；**详情页不再单列「打开界面」按钮**。**最终呈现模型（2026-11-06 第七轮
-  上游同步收口，取代「停靠 pane + 独立窗口 + 气泡」旧三件套）**：
+- 已安装且声明 `panel` 的插件，面板入口统一为主动作「使用面板」（列表卡片与详情页同一个 launcher）：停靠形态点击后进右侧栏并给「已在右侧栏打开」反馈，失败给可读错误；**详情页不再单列「打开界面」按钮**。**呈现模型完全跟随上游（2026-11-23 起；Meka 的全局默认开关、插件级三态选择器与 `GhostPanelModal` 已删除）**：
   - **停靠形态 = 右侧栏全局页签** `plugin-view`（`state.view = 'panel'`，复用 `GhostChipPanelBody`；
     落边 = 用户页签组记忆 > manifest 的 `panel.position`，Meka 三个在产插件声明 `left` ⇒ 聊天区左侧页签组）。
     关闭页签写 `dismissed` 记忆（跨重启，不再自动加回）。
-  - **Meka 本机界面 override = `GhostPanelModal`**（覆盖主页面 90% 宽高的同页覆盖层，**不是**独立
-    `BrowserWindow`、不是第三种页签）。关 Modal 只是隐藏，**不写 `dismissed`**、不清页签组记忆。
-  - **`position: "tab"` = 插件页内的上游 `GhostPagePanelHost`**，由 manifest 固定，**不**走 Modal。
-  - 三条路径**同一插件实例同一时刻至多一个面板 WebView 宿主**（两个宿主会让同分区 webview 各存一份
+  - **`position: "tab"` = 插件页内的上游 `GhostPagePanelHost`**，由 manifest 固定。
+  - 两条路径**同一插件实例同一时刻至多一个面板 WebView 宿主**（两个宿主会让同分区 webview 各存一份
     数据而互相覆盖）。
-  - Modal 必须复用 `GhostChipPanelBody`、原插件专属 partition、`cindy-ghost://` 供片、主题注入、崩溃接管
-    和媒体右键链路，不得另建放宽权限的 WebView。
   - 布局树停靠 pane、`PanelChrome`、面板独立窗口（`main/ghost-panel-window/**`、preload、
     `?ghostPanelWindow=` 路由）、气泡最小化与恢复入口已随上游 `abb83fa21c` 删除；`xdt:ghostPanelBubble:v1`
     只作为旧状态**只读**迁移源（命中的实例被迁成 `dismissed`）⇒ 不存在「布局树/最小化位置/重装复活记忆
     保持不变」这条旧约束，不得据此恢复任一被删链路。
-  - Modal 内的面板 WebView 必须在 `dom-ready` 后接管键盘焦点，
-    确保插件内的树、列表及快捷键能收到真实键盘输入；停靠与页签宿主不得在重载时主动抢焦点。
-  - 用户关闭一个已经打开的 Modal 时，宿主只把 Modal 与遮罩切为不可见、不可交互，必须保留
-    原沙箱 WebView 的挂载，使插件内选择、滚动、输入和在途请求继续存在；再次打开同一插件
-    复用该实例。插件被停用／卸载、内容 revision 更新或所属页面真正卸载时仍按原生命周期
-    销毁并重建。逻辑沙箱与 Node worker 本来独立于面板 WebView，Modal 显隐不得改变其后台
-    生命周期。隐藏态内容更新不得抢走宿主焦点；重新显示时应把焦点交回已保活的 WebView，
-    不要求用户先点击面板才能继续键盘操作。该设置不改变 `ghost.json` 作者契约。
+  - 面板 WebView 保持被动焦点策略：宿主不在重载、切页或打开时主动抢走用户的键盘输入。
 
 ### 4.1 Meka 开发目录模式
 
@@ -1493,35 +1481,17 @@ Renderer 的来源分类是封闭取值（`public / organization / local / custo
   `pluginMarketSurface.test.ts`（页面／`lib/` 的直接渠道调用白名单，`snapshot` 一律不得
   在适配器之外出现）。
 
-### 4.3 插件级界面打开方式
+### 4.3 插件级界面打开方式（2026-11-23 已移除）
 
-- 停靠面板可在 `panel` 声明 `allowUserPresentationOverride: true`，由 Cindy 在插件详情
-  「配置」区自动绘制“跟随默认／停靠在对话窗口／弹窗打开”三态设置。声明条件：`panel` 存在且
-  `position !== "tab"`（含缺省 position）。**`position: "tab"` 的页签语义由 manifest 固定，声明本字段
-  必须拒装**——这是 2026-11-06 第七轮同步**唯一新增的拒绝点**（`shared/ghost.ts` 的 `panel` 段：
-  `tab` 同时拒绝 `minWidth` / `defaultFraction` / `systemButtons` / `allowUserPresentationOverride`；
-  该字段还必须是布尔值）。**拒绝只发生在严格路径**：`validateGhostManifest`（新装/更新）拒非法值，而已装快照走
-  `validateInstalledGhostManifest`（`preserveHistoricalTasks`）**容错**——历史非法值按未知字段保留，不得因此把
-  已装插件判成 invalid（存量红线；用例：`shared/__tests__/ghost.test.ts` 的
-  「严格新装拒非法值，已装快照容错」）。影响面 = 已声明 `tab` 且声明该字段的插件，当前 0 个；存量已装插件无需
-  重装、重确认或重配置。拒绝点登记与插件基座白名单 Approve 同批。
-- 这是宿主托管的用户界面偏好，不是插件能力、权限或业务参数。插件脚本没有写接口，不得
-  在 `settingsHtml` 里另画同名设置，也不得用 `/kv` 特殊键模拟。作者只负责声明是否展示；
-  选择、持久化、恢复默认以及**页签 / `dismissed` 记忆收敛**均由宿主负责（`detached`／`minimized`
-  已无对应物：独立窗口与气泡链路随上游删除）。
-- 有效值优先级固定为“插件级用户 override → Meka 助理的插件默认打开方式 → 停靠产品
-  默认”。插件级 `inherit` 通过删除 override 实现；只持久化显式 `docked`／`modal`，
-  不能把默认值快照复制到每个插件。偏好键按**逻辑插件 id**，页签键按**物理实例键**
-  （`installedGhostStoragePart`），两者不可混。插件更新按 runtime plugin ID 保留选择。
-- 全局默认和插件级 override 都是本机 Renderer 视图偏好，**不写布局树账本**（布局树里的
-  `ghost:<id>` pane 只保留历史数据、无渲染方）。`docked` 的可见性由右侧栏全局页签决定
-  （关页签 = `dismissed`），`modal` 的可见性只由 Modal 自身决定（关 Modal **不**记 `dismissed`）——
-  两种关闭语义不可互相写入。详情主按钮、列表卡片主动作、`?panel=<instanceId>` 深链、设置总开关、
-  插件页状态文案与安装流程必须调用**同一个 effective resolver**（`resolveGhostPanelPresentation`
-  + `useGhostPanelLauncher`），不得各自维护 Modal／停靠分支。Modal 首次打开时先以关闭态稳定挂载
-  目标宿主，再于下一 animation frame 切换为打开，避免创建 Dialog 的同一次可信点击被当作 outside
-  interaction 立即关闭；切换目标或离开详情时必须取消尚未执行的打开请求。该偏好不进入插件沙箱、
-  Main IPC 或 device-link 协议。
+- Meka 曾允许停靠面板声明 `panel.allowUserPresentationOverride: true`，并在插件详情「配置」区
+  提供“跟随默认／停靠在对话窗口／弹窗打开”三态选择器；设置页另有全局默认开关
+  「插件默认打开方式」。整套呈现覆盖（含 `GhostPanelModal`、`xdt:ghostPanelPresentation*` 偏好）
+  已于 2026-11-23 删除，插件界面显示方式完全跟随上游 manifest：停靠面板 = 右侧栏全局页签，
+  `position:'tab'` = 插件页宿主。**不得据此恢复 Modal 或重新引入宿主级呈现开关。**
+- `allowUserPresentationOverride` 字段仍被 manifest 校验接受（布尔值；`position:'tab'` 下仍拒装），
+  只为存量已装插件（含 Meka P4）保留往返兼容；宿主不再读取它决定界面。已装插件无需重装、
+  重确认或重配置；旧 localStorage 偏好键成为孤儿数据，不主动删除（删键属数据操作需单独批准）。
+- 作者手册不再宣传该字段；插件脚本没有写接口，也不得在 `settingsHtml` 里另画造成误导的同名设置。
 
 - 已下线功能仅保留通用迁移目录与历史清单兼容字段，不提供 Host 能力。
   `iosSimulator` / v2 `ios-simulator` 只用于旧安装记录往返和下线识别；升级前已装且启用的
@@ -1646,7 +1616,9 @@ UTF-8 字节计量；历史市场 release 入口 `validateStoredGhostManifest` �
   管子协议消息形态、随包种子与内置插件 id／前缀、市场侧的 id 与版本口径。
 - **第七轮（2026-11-06）manifest 拒绝点净变化：0**：上游删除 1 个（`source: "gh-cli"` 仅官方
   `cindy-github` 的拒绝面，见「宿主凭证来源」段），Meka 恢复 1 个（`panel.allowUserPresentationOverride`
-  在 `position: "tab"` 下拒装 + 该字段非布尔拒装，见 §4.3）⇒ `validateGhostManifest` 的 `ok: false`
+  在 `position: "tab"` 下拒装 + 该字段非布尔拒装，见 §4.3）。**2026-11-23 起该字段不再驱动界面，
+  但校验与原拒绝点保持不动**（存量兼容；不因为产品能力删除去改 manifest 准入）。
+  ⇒ `validateGhostManifest` 的 `ok: false`
   计数实测 base **268** / 合并前 HEAD **274** / 上游 **305** / 合并后工作区 **312**（= 274 + 上游 37 + Meka 1）。
   两个变化都只作用于**新声明**的校验路径，不进入已装插件的清单读取 ⇒ 存量无需重装／重确认／重配置。
 - **新增校验或新增必填字段，默认必须自带迁移（backfill），不是自带拒绝。** 老数据缺
@@ -1850,13 +1822,15 @@ MCP Apps，不能另建页面 SDK 或逐历史消息 render/query。`mcpApps.hos
 `apps/desktop/resources/system-skills/cindy-plugin-creator/`。`SKILL.md` 负责流程与按需阅读索引，
 `references/` 负责各章作者契约。**Meka 适配层（第七轮同步新增）**：上游把原本写在
 `main/cindy-brain/forge.ts` 的内联手册整体搬进该 Skill，`forge.ts` 只剩转出；Meka 私有的
-两个安装权限（`mcpr`、`reveal`）与 `panel.allowUserPresentationOverride` 在上游手册里没有
+两个安装权限（`mcpr`、`reveal`）在上游手册里没有
 对应章节，由 `main/cindy-brain/forgeGuide.ts` 的 `MEKA_FORGE_GUIDE` 追加（章号 4.25 / 4.26，
 保持 `ghost_forge_guide` 按章号取章的唯一性）。共享章节仍以上游 Skill 正文为唯一正本，
 不得把 Meka 章节复制回 Skill 或反向改写上游正文。**可发现性**：Skill 的 `SKILL.md` 与
-`references/plugin-manifest.md` 各有一行指针，说明这三个 Meka 私有声明用
+`references/plugin-manifest.md` 各有一行指针，说明这两个 Meka 私有声明用
 `ghost_forge_guide({section:"4.25"/"4.26"})` 读取（只指路、不复制正文），避免作者按
-上游手册写作时完全看不到 `mcpr` / `reveal` / `allowUserPresentationOverride`。
+上游手册写作时完全看不到 `mcpr` / `reveal`。停靠面板呈现覆盖
+（`panel.allowUserPresentationOverride`）已于 2026-11-23 退役为存量兼容声明，**不再进入
+作者手册**。
 **骨架默认图标（Meka 第七轮保留的偏离）**：上游 `b80d27fccc` 删除「脚手架生成色块占位图 +
 预填 `icon`」，改为必须由用户提供或同意生成，并让客户端按字节识别历史占位 PNG 复用默认
 符号。本仓按 Meka 第六轮产品决定**保留**骨架默认图标（`forge.ts` 的

@@ -538,7 +538,14 @@ export interface GhostPanelDecl {
    * 未知键保留为声明数据；当前宿主只读取已实现的按钮。
    */
   systemButtons?: { maximize?: boolean; detach?: boolean; minimize?: boolean };
-  /** Allow the user to override this docked panel's Meka presentation mode. */
+  /**
+   * 已退役的 Meka 面板呈现覆盖声明（2026-11-23）。
+   *
+   * 曾经允许停靠面板在插件详情切换「跟随默认／停靠／弹窗」。Meka 的呈现覆盖、
+   * Modal 宿主与设置总开关已全部删除，面板显示方式完全跟随上游 `position`；
+   * 本字段只为存量已装插件（含 Meka P4）保留 manifest 兼容，不再驱动任何界面，
+   * 也不得据此新增或恢复 Modal。
+   */
   allowUserPresentationOverride?: boolean;
 }
 
@@ -4800,10 +4807,9 @@ function validateGhostManifestInput(
         ...(typeof minimize === 'boolean' ? { minimize } : {}),
       };
     }
-    // Meka §4.3：面板呈现方式的用户覆盖开关（仅停靠形态有意义）。
-    //
-    // 存量兼容红线（plugin-security-and-authoring.md §5）：这条校验只作用于**严格新装/更新**
-    // 路径（`preserveHistoricalTasks === false`）。已安装快照走 `validateInstalledGhostManifest`
+    // 已退役的 Meka 面板呈现覆盖声明（2026-11-23）：校验保留用于存量兼容与作者往返，
+    // 宿主不再读取它决定界面。存量兼容红线（plugin-security-and-authoring.md §5）：
+    // 这条校验只作用于**严格新装/更新**路径（`preserveHistoricalTasks === false`）。已安装快照走 `validateInstalledGhostManifest`
     // （`preserveHistoricalTasks === true`），历史值必须原样容错——不得因为一个 Meka 私有
     // 字段的类型/形态把用户已装的插件判成 invalid。已装快照里的非布尔值按未知字段保留，
     // 不进入类型化投影，也不授予任何行为。

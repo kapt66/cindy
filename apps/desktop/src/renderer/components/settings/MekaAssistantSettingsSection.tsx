@@ -18,11 +18,6 @@ import { Switch } from '@/components/ui/switch';
 import { Tip } from '@/components/ui/tooltip';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
 import {
-  setGhostPanelModalPresentationEnabled,
-  useGhostPanelModalPresentation,
-} from '@/lib/ghostPanelPresentationPreference';
-import { applyGhostPanelPresentationChange } from '@/features/plugin/lib/panelTabProjection';
-import {
   buildMekaRouterClientGroups,
   getMekaRouterClientLabel,
   groupMekaRouterTemplates,
@@ -95,11 +90,9 @@ function SettingsModal(props: { title: string; onClose: () => void; children: Re
 
 export function MekaAssistantSettingsSection() {
   const { t } = useTranslation();
-  const pluginPanelSetting = useSettingDefinition(mekaAssistantSettings.pluginPanel);
   const routerSetting = useSettingDefinition(mekaAssistantSettings.router);
   const designSetting = useSettingDefinition(mekaAssistantSettings.design);
   const { confirm } = useConfirmDialog();
-  const pluginPanelModalPresentation = useGhostPanelModalPresentation();
   const [settings, setSettings] = useState<MekaP4Settings | null>(null);
   const [loading, setLoading] = useState(true);
   const [routerRefreshing, setRouterRefreshing] = useState(false);
@@ -294,37 +287,6 @@ export function MekaAssistantSettingsSection() {
 
   return (
     <div className="flex flex-col gap-5">
-      <div id="settings-search-target-meka-assistant-plugin-panel" className={CARD_CLASS}>
-        <div className="flex items-center justify-between gap-4">
-          <div className="min-w-0">
-            <h3 className="text-16 font-medium text-[var(--settings-section-title)]">
-              {t('settings.meka.pluginPanel.title')}
-            </h3>
-            <p className="mt-1 text-13 leading-relaxed text-[var(--settings-section-desc)]">
-              {t('settings.meka.pluginPanel.description')}
-            </p>
-          </div>
-          <Switch
-            {...pluginPanelSetting.controlProps}
-            checked={pluginPanelModalPresentation}
-            onCheckedChange={(enabled) => {
-              setGhostPanelModalPresentationEnabled(enabled);
-              // 呈现方式切换后按新有效值收敛每个面板插件的全局页签:
-              // - 开(modal):摘掉承载 panel 页的页签,但**不写 dismissed**(关 Modal ≠ 关页签),
-              //   并把「下次从页签点开进独立窗口」的放置记忆清掉;
-              // - 关(docked):清 dismissed 并补回页签,落在用户原来的组里。
-              // 停用/无面板/`tab` 形态的插件由 resolver 与投影自行跳过。
-              for (const ghost of window.electronAPI.ghosts.listSync().ghosts) {
-                if (!ghost.manifest.panel || ghost.manifest.panel.position === 'tab') continue;
-                if (ghost.enabled === false) continue;
-                applyGhostPanelPresentationChange(ghost);
-              }
-            }}
-            aria-label={t('settings.meka.pluginPanel.toggleAria')}
-          />
-        </div>
-      </div>
-
       <div id="settings-search-target-meka-assistant-p4" className={CARD_CLASS}>
         <div>
           <h3 className="text-16 font-medium text-[var(--settings-section-title)]">

@@ -8512,7 +8512,6 @@
         "openLocation": "開啟安裝位置",
         "panelInSidebar": "顯示在右側欄（所有任務中保留）",
         "panelDismissed": "已從右側欄關閉 · 可在此處或右側欄「+」選單重新開啟",
-        "panelModal": "顯示在彈窗中",
         "openInSidebar": "在側邊欄中開啟",
         "panelPageHosted": "從插件頁開啟 · 離開插件頁自動關閉",
         "panelNone": "這個插件不含面板",
@@ -8595,18 +8594,7 @@
         "viewAllPermissions": "檢視更多",
         "permissionsDialogDescription": "該插件申請的全部 {{count}} 項權限",
         "closeDialog": "關閉彈窗",
-        "resetPlacement": "恢復預設位置",
-        "closePanel": "關閉插件介面",
-        "panelPresentation": {
-          "title": "開啟方式",
-          "description": "僅影響此插件。選擇“跟隨預設”時，使用“設定 → Meka 助理 → 插件預設開啟方式”。",
-          "aria": "選擇此插件的開啟方式",
-          "options": {
-            "inherit": "跟隨預設",
-            "docked": "停靠在對話視窗",
-            "modal": "彈窗開啟"
-          }
-        }
+        "resetPlacement": "恢復預設位置"
       },
       "contents": {
         "mainView": "主視圖",
@@ -9366,12 +9354,7 @@
     },
     "meka": {
       "title": "Meka 助理",
-      "description": "管理插件介面、P4 路徑、MCPRouter 與 MekaDesign 連線。",
-      "pluginPanel": {
-        "title": "插件預設開啟方式",
-        "description": "作為未單獨設定插件的預設值。開啟後預設使用覆蓋主頁面 90% 寬高的彈窗；關閉時預設停靠在對話視窗。插件可在自己的配置中單獨覆蓋。",
-        "toggleAria": "預設使用彈窗開啟插件介面"
-      },
+      "description": "管理 P4 路徑、MCPRouter 與 MekaDesign 連線。",
       "router": {
         "title": "MCPRouter 連線",
         "description": "連線 MCPRouter 後，Meka 助理對話可使用經路由聚合的全部 MCP 工具。憑證僅儲存到作業系統加密儲存。",

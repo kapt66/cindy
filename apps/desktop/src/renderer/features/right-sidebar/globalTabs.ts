@@ -27,7 +27,6 @@ import { paneEdgeRelativeToChat, type Layout } from '../../../shared/layoutTree'
 import { installedGhostStoragePart } from '../../../shared/pluginIdentity';
 import { getDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
 import { createLogger } from '@/lib/logger';
-import { resolveGhostPanelPresentation } from '@/lib/ghostPanelPresentationPreference';
 import { isSidebarTabWindow } from '@/lib/sidebarTabWindow';
 import { isTabPoppedOut } from '@/lib/sidebarTabWindowState';
 import { clearTabGroup, getTabGroupAssignments, setTabGroup, type TabGroupId } from './tabGroups';
@@ -438,11 +437,7 @@ export function isAutoGlobalPanelGhost(ghost: InstalledGhost): boolean {
   return (
     ghost.enabled !== false &&
     ghost.manifest.panel !== undefined &&
-    ghost.manifest.panel.position !== 'tab' &&
-    // [MEKA] Modal 生效时面板只从 Modal 打开:不自动成页签,也不留 dismissed 记忆。
-    // 改这一处即可两层生效:本函数被 `isGlobalTabCapableGhost` 复用,后者决定投影层
-    // (`projectAvailableTabs`)是否可见 —— 残留页签因此连 body 都不挂载(I1 双宿主)。
-    resolveGhostPanelPresentation(ghost) !== 'modal'
+    ghost.manifest.panel.position !== 'tab'
   );
 }
 
@@ -550,69 +545,6 @@ export function reconcileGlobalPluginTabs(ghosts: readonly InstalledGhost[]): vo
 export function getActiveGlobalTabId(): string | null {
   if (activeGlobalTabId && !isGlobalTabId(activeGlobalTabId)) activeGlobalTabId = null;
   return activeGlobalTabId;
-}
-
-/**
- * [MEKA] 面板呈现方式切换时维护「自动全局页签」(Meka Modal ↔ 上游停靠页签)。
- *
- * - `enabled=false`(切到 Modal):摘掉承载 **panel 页**的页签,但**不记 dismissed**
- *   —— 关 Modal 不等于用户关过页签(I3);组归属(tabGroups)与 placed 记忆全部保留,
- *   切回来还在用户原来那一边。页签正弹在独立窗口里时按 `removeGlobalTab` 同一规则直接
- *   `closeForTab` 销毁:Modal 没有窗口承载,窗口「交回」也没有接收方。
- * - `enabled=true`(回到 docked):清掉该实例的 dismissed 记忆并补回页签(`view:'panel'`)。
- *   不清 dismissed 就只会「切回 docked 但面板不出来」。
- *
- * 只处理 panel 页页签:承载 mainView 的同实例页签不动(`tabShowsMainView`)。
- * `enabled=true` 时同实例只要已有任一 plugin-view 页签(panel 或 mainView)就直接返回,
- * 不再调 `addGlobalPluginTab` —— 否则双视图插件的 mainView 页签会被切页成 panel。
- * 必须落在本文件:`dismissedInstanceIds` 的序列化只在这里,在 Meka 侧直接改
- * localStorage 会与其它窗口的「读—改—写」竞争(`freshSnapshot` 正是为此存在)。
- */
-export function setGlobalPanelAutoTabEnabled(
-  instanceId: string,
-  enabled: boolean,
-  ghost?: InstalledGhost,
-): void {
-  const current = freshSnapshot();
-  const tabId = globalTabIdForInstance(instanceId);
-  const panelTab = current.tabs.find(
-    (tab) =>
-      tab.id === tabId &&
-      tab.kind === 'plugin-view' &&
-      !(ghost && tabShowsMainView(tab.state as PluginViewTabState, ghost)),
-  );
-  if (!enabled) {
-    if (!panelTab) return;
-    if (activeGlobalTabId === tabId) activeGlobalTabId = null;
-    persist({
-      ...current,
-      tabs: current.tabs.filter((tab) => tab !== panelTab),
-      dismissedInstanceIds: current.dismissedInstanceIds.filter((id) => id !== instanceId),
-    });
-    // 弹在独立窗口里的页签必须一起收(Modal 不提供窗口承载)。
-    if (!isSidebarTabWindow() && isTabPoppedOut(tabId)) {
-      void window.electronAPI?.sidebarTabWindow?.closeForTab(tabId).catch((err) => {
-        log.warn('close sidebar tab window for modal presentation failed', { tabId, err });
-      });
-    }
-    return;
-  }
-  const dismissed = current.dismissedInstanceIds.filter((id) => id !== instanceId);
-  // 同实例只要还挂着任意 plugin-view 页签就算「在」——包括承载 mainView 的那一份。若只认 panel 页,
-  // 下面的 addGlobalPluginTab(…,{view:'panel'}) 会把同实例的 mainView 页签就地切页,静默替换侧栏
-  // 主视图;契约是「承载 mainView 的同实例页签不动」。
-  const present = current.tabs.some(
-    (tab) =>
-      tab.kind === 'plugin-view' &&
-      (tab.state as PluginViewTabState | null)?.instanceId === instanceId,
-  );
-  if (present) {
-    if (dismissed.length !== current.dismissedInstanceIds.length) {
-      persist({ ...current, dismissedInstanceIds: dismissed });
-    }
-    return;
-  }
-  addGlobalPluginTab(instanceId, ghost ? { ghost, view: 'panel' } : { view: 'panel' });
 }
 
 /** 选中全局页签(null = 回到任务页签)。只影响本窗口。 */

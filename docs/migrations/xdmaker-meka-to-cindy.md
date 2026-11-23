@@ -366,37 +366,14 @@ macOS 原证书环境做 canary → stable 全链验收；代码级门禁不能�
 
 已迁移：
 
-- 插件界面显示方式：默认沿用现有停靠面板；「设置 → Meka 助理 → 插件默认打开方式」
-  可切换全局默认。该布尔偏好属于本机 Renderer 界面 override，默认 `false` 不落盘，用户
-  开启时仅在 localStorage 的 `xdt:ghostPanelPresentation:v1` 记录 `true`，关闭即删除
-  override、重新跟随停靠产品默认。声明 `panel.allowUserPresentationOverride: true` 的
-  停靠插件还会在自身详情「配置」区获得“跟随默认／停靠在对话窗口／弹窗打开”三态设置；
-  显式值按 runtime plugin ID 写入 `xdt:ghostPanelPresentationOverrides:v1`，选择跟随默认
-  即删除该项。有效优先级为插件级用户 override → 全局默认 → 停靠产品默认；`tab` 插件
-  保持 manifest 页签语义，不开放覆盖。Meka P4 是首个示例声明。
-  2026-07-30 定向验证覆盖 manifest 收词与拒装、全局/插件级优先级和继承恢复、气泡过滤、
-  宿主设置组件及 Forge 作者手册，共 172 项测试通过；Desktop typecheck、变更文件 ESLint、
-  i18n key 一致性及术语门禁通过。
-  插件目录的列表与详情“打开界面”统一改由同一个 launcher 解析上述优先级和承载形态；
-  Modal 目标先以关闭态挂载，下一 animation frame 再打开，修复详情页首次可信点击同时
-  创建 Dialog 时被 outside interaction 立即关闭、而列表再次点击才生效的不一致。切换
-  目标、离开详情或停用插件会取消待执行的打开请求；4 项 launcher 回归测试及原有 Modal
-  测试通过。
-  Modal 覆盖主页面 90% 宽高，并直接复用原沙箱面板内核；开启后相应插件的停靠
-  面板和最小化气泡只在视图层隐藏，布局树、气泡位置和重装位置记忆不改写。插件列表卡片
-  与详情页对所有声明 `panel` 且已启用的插件提供「打开界面」；停靠型插件在关闭 Modal
-  override 时返回工作区并恢复原面板，插件目录没有具体会话宿主时，`position: "tab"` 的显式打开
-  使用同一 Modal 兜底。列表卡片沿用原插件卡片布局；存在「打开界面」时，按钮操作区改为
-  纵向排列以避免挤压来源、版本和插件 ID，元信息保持单行并只截断 ID。打开按钮是独立操作，
-  不改变当前详情选择状态。Modal 面板的 WebView 在 `dom-ready` 后接管键盘焦点，以避免
-  Radix 对话框初始焦点停留在关闭按钮、导致插件内部树／列表收不到真实方向键；停靠与页签
-  面板仍保持被动焦点策略，不在重载或热更新时抢走宿主输入。Modal 首次打开后，关闭只把
-  宿主内容与遮罩切为不可见、不可交互，不卸载沙箱 WebView；再次打开同一插件会恢复原有
-  选择、滚动、输入和在途命令界面。插件逻辑页与 Node worker 继续沿用独立后台生命周期，
-  不因 Modal 显隐启动或终止；停用、卸载、内容 revision 更新或插件页真正卸载仍会按原规则
-  清理／重建对应面板实例。隐藏态 WebView 不抢宿主焦点，重新打开时复用实例并重新接管
-  键盘焦点。实机用 Meka P4 在扫描进行中关闭 Modal，关闭态 WebView target
-  保持存活并在后台完成扫描；重新打开后 target 身份与关闭前内存标记均保持不变。
+- 插件界面显示方式（2026-11-23 已移除）：Meka 曾提供「设置 → Meka 助理 → 插件默认打开方式」
+  全局开关、插件详情三态选择器与 `GhostPanelModal` 覆盖主页面 90% 宽高的弹窗宿主，并在
+  localStorage 写入 `xdt:ghostPanelPresentation:v1` / `xdt:ghostPanelPresentationOverrides:v1`。
+  这套呈现覆盖已整套删除：插件界面显示方式完全跟随上游 manifest（停靠面板 = 右侧栏全局页签，
+  `panel.position: "tab"` = 插件页宿主），不再有宿主级默认或插件级覆盖。存量已装插件无需
+  重装/重确认；`panel.allowUserPresentationOverride` 仍被 manifest 校验接受，仅作存量声明
+  往返兼容，不再驱动界面；两个旧偏好键成为孤儿数据，不主动删除（删键属数据操作需单独批准）。
+  详情见 §11.41。
 - P4 根目录读取、保存和 `saga2_design` / `saga2_json` / `saga2_unity` /
   `saga2_pm` 目录发现。`saga2_pm` 是项目管理工作区，包含长期 PM 治理规范、
   AI 开发流程看板、用于交付评估的可复用 Agent Skill，以及版本交付和收尾记录。
@@ -8312,3 +8289,51 @@ order 表用例加入 `'meka.submit-intent': 55`。既有 60/65/70 的逐字节�
 ③ 未新增独立 WL 编号 —— 本项按「注入链既有条目」登记在 `meka-whitelist-verification.md` 的
 WL-11 代码锚点与 `meka-injection-layer.md` §3.3，白名单覆盖现状是「单测已落地、实机未跑」；
 ④ 全量 `test:unit` / `test:unit:related` 由维护者在交付时统一跑。
+
+### 11.41 2026-11-23 删除「插件默认打开方式」与 Meka 面板呈现覆盖：插件界面完全回到上游
+
+> 本条是**新条目**，不改写任何带日期的历史原句；§4.3 的旧口径已按本条更正。产品裁决：
+> 「设置 → Meka 助理 → 插件默认打开方式」删除，插件的界面显示方式完全使用上游方式。
+
+- **删除范围**：设置页的全局默认开关（`settings.meka.pluginPanel.*`）、插件详情「配置」区的
+  「跟随默认／停靠在对话窗口／弹窗打开」三态选择器、有效呈现 resolver 与偏好 store
+  （`renderer/lib/ghostPanelPresentationPreference.ts`）、全局页签投影收敛
+  （`features/plugin/lib/panelTabProjection.ts`、`globalTabs.ts` 的 `[MEKA]` seam 与
+  `setGlobalPanelAutoTabEnabled`）、`cindy-brain/GhostPanelModal.tsx`、
+  `cindy-brain/ghostPanelBody.tsx` 的 `autoFocusWebview` 抢焦点分支，以及配套 12 语 i18n 键
+  （`pluginPanel.*` / `panelPresentation.*` / `panelModal` / `closePanel`）。
+- **保留的兼容面**：manifest 的 `panel.allowUserPresentationOverride` 仍被
+  `shared/ghost.ts` 接受并校验（布尔值；`position:'tab'` 下仍拒装），只为存量已装插件
+  （含 Meka P4）保留往返兼容；**宿主不再读取它决定界面**。已装插件无需重装、重确认或
+  重新配置。旧 localStorage 键 `xdt:ghostPanelPresentation:v1` /
+  `xdt:ghostPanelPresentationOverrides:v1` 成为孤儿数据，不主动删除（删键属数据操作）。
+- **行为变化（有意）**：升级前把全局默认或某个插件设成「弹窗打开」的用户，升级后插件面板
+  一律按 manifest 回到上游宿主（停靠面板 = 右侧栏全局页签；`position:'tab'` = 插件页
+  宿主），不再出现 Meka Modal。Meka P4 声明了 `allowUserPresentationOverride: true`，
+  升级后同样回到右侧栏页签，这是本裁决的直接结果。
+- **作者契约**：`cindy-plugin-creator` 的 `SKILL.md` 与 `references/plugin-manifest.md`
+  不再宣传该字段；`main/cindy-brain/forgeGuide.ts` 的 `MEKA_FORGE_GUIDE` 删除「面板呈现方式」
+  小节，只保留 `mcpr`（4.25）与 `reveal`（4.26）。
+- **白名单**：删除 WL-1.5 条目并写明理由，编号不复用；WL-1 的不变量与
+  `desktop:ui-smoke` 清单同步去掉该能力（15 项 → 14 项，四卡检查改为三卡）。
+- **验证（2026-11-23 实跑）**：
+  - `pnpm --filter desktop run typecheck` → **exit 0**（`tsconfig.main.json` + `tsconfig.renderer.json`
+    分片覆盖 10495 个文件）。
+  - 定向与相关目录 vitest → **269 files / 3883 tests passed**（`src/renderer/features/plugin`、
+    `src/renderer/features/right-sidebar`、`src/renderer/cindy-brain`、
+    `src/renderer/components/settings` + `shared/__tests__/ghost.test.ts`）；其中
+    `useGhostPanelLauncher` 5/5、`ghostPanels` 5/5、`globalTabs` 11/11、`ghost.test` 233/233、
+    `GhostPluginDetailSections` 87/87、`GhostPluginPage.navigation` 134/134、`forge.test` 115/115。
+  - `pnpm check:i18n` → **PASS**（12 语 17664 key 一致）；`pnpm check:settings-search` → **PASS**；
+    `pnpm check:dev-docs` → **11/11 PASS**；`pnpm check:test-hygiene` → **PASS（353 files）**。
+  - `pnpm test:unit:related`：两次全量运行暴露的失败项均已定位并修复 ——
+    ① `sessionStorageRemoteHostId.test.ts` 的 `getDbClient` mock 每次返回新对象，被创建侧
+    身份解析误判为「换账号」（17 例红）；改为稳定 client 后 **22/22**。
+    ② `ghostOauthAccounts.test.ts` 的 identity 用例在残留 Electron 进程抢占 CPU 时 60s 超时；
+    清理后 **111/111**。
+    ③ `@cindy/maker-pi-manager` 的 `session-registry.test.ts` 用固定 5000 次 `setImmediate`
+    等待真实 fs 链，在 Windows 慢盘上提前失败；改为真实时间上限后整包 **PASS**。
+    按维护者要求，失败修复后只复跑失败目标，不再重复跑全量；最后一次合并全量运行未完成，
+    因此**不写** `pnpm test:unit:related` PASS。
+  - `pnpm desktop:ui-smoke` **未跑**（需要运行中的 Desktop 实例）；Light/Dark 与真实插件
+    面板的实机目检也**未做**，登记为「未验证 + 原因」。

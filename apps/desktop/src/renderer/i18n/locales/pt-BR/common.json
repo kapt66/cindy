@@ -8628,7 +8628,6 @@
         "openLocation": "Abrir local de instalação",
         "panelInSidebar": "Exibido na barra lateral direita (mantido entre tarefas)",
         "panelDismissed": "Fechado na barra lateral direita · reabra aqui ou pelo menu “+” da barra lateral",
-        "panelModal": "Exibido em uma janela modal",
         "openInSidebar": "Abrir na barra lateral",
         "panelPageHosted": "Abre pela página do plugin · fecha ao sair",
         "panelNone": "Este plugin não tem painel",
@@ -8711,18 +8710,7 @@
         "viewAllPermissions": "Ver tudo",
         "permissionsDialogDescription": "Todas as {{count}} permissões solicitadas por este plugin",
         "closeDialog": "Fechar janela",
-        "resetPlacement": "Restaurar posição padrão",
-        "closePanel": "Close Plugin Interface",
-        "panelPresentation": {
-          "title": "Opening Method",
-          "description": "Only affects this Plugin. “Follow Default” uses Settings → Meka Assistant → Default Plugin Opening.",
-          "aria": "Choose how this Plugin opens",
-          "options": {
-            "inherit": "Follow Default",
-            "docked": "Dock Beside Conversation",
-            "modal": "Open in Modal"
-          }
-        }
+        "resetPlacement": "Restaurar posição padrão"
       },
       "contents": {
         "mainView": "Visualização principal",
@@ -9482,12 +9470,7 @@
     },
     "meka": {
       "title": "Meka Assistant",
-      "description": "Manage Plugin interfaces, P4 paths, MCPRouter, and MekaDesign connections.",
-      "pluginPanel": {
-        "title": "Default Plugin Opening",
-        "description": "Sets the default for Plugins without their own override. Turn it on to use a modal covering 90% of the main page, or off to dock interfaces beside the conversation. Individual Plugins can override it in their configuration.",
-        "toggleAria": "Open Plugin Interfaces in a Modal by Default"
-      },
+      "description": "Manage P4 paths, MCPRouter, and MekaDesign connections.",
       "router": {
         "title": "MCPRouter connection",
         "description": "Connect MCPRouter so Meka Assistant sessions can use its aggregated MCP tools. Credentials are stored only in OS-encrypted storage.",

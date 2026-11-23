@@ -450,7 +450,10 @@ describe('ghost · 清单校验', () => {
     ).toBeUndefined();
   });
 
-  it('panel.allowUserPresentationOverride（Meka §4.3）：严格新装拒非法值，已装快照容错', () => {
+  it('panel.allowUserPresentationOverride（已退役的 Meka 呈现声明）：严格新装拒非法值，已装快照容错', () => {
+    // 2026-11-23 起该字段不再驱动任何界面（Meka 的 Modal/三态选择器已删除），但
+    // manifest 契约仍接受它：存量已装插件（含 Meka P4）不得因这次产品移除被判定 invalid，
+    // 也不得要求重装/重确认。严格路径仍拒非布尔值，避免把任意数据当布尔声明。
     const withPanel = (panel: Record<string, unknown>) =>
       validateGhostManifest({ ...goodManifest(), panel: { html: 'panel.html', ...panel } });
     // 严格新装/更新路径：非布尔拒装；合法布尔保留并投影。

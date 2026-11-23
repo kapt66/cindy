@@ -889,9 +889,9 @@ describe('Ghost plugin detail sections', () => {
 
   /*
    * 测试价值
-   * - 生产入口与可观察结果:面板型插件的主 CTA 必须叫「使用面板」并走 `onOpenPanel(trigger)`;
+   * - 生产入口与可观察结果:面板型插件的主 CTA 必须叫「使用面板」并走 `onOpenPanel()`;
    *   独立的「打开界面」按钮(product-decided A 2026-11-18)已删除,`onUse`(交接对话)
-   *   不再吃这一次点击。tab 形态与「没有命令、只有停靠/Modal 面板」两条路径都要覆盖:
+   *   不再吃这一次点击。tab 形态与「没有命令、只有停靠面板」两条路径都要覆盖:
    *   后者在上游是 primaryAction='manage',没有主 CTA,面板就彻底没有入口。
    * - 现有覆盖缺口:原有用例只覆盖指令型(chatAction)主 CTA,没有面板路径。
    * - 最小失败输入:`tabPanel:true`(或 canUse:false 的停靠面板)+ onOpenPanel。
@@ -933,8 +933,6 @@ describe('Ghost plugin detail sections', () => {
     expect((primary as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(primary);
     expect(onOpenPanel).toHaveBeenCalledTimes(1);
-    // 焦点还原需要真实触发元素:launcher 的 Modal 分支用它把焦点还回按钮。
-    expect(onOpenPanel.mock.calls[0]?.[0]).toBeInstanceOf(HTMLButtonElement);
     expect(onUse).not.toHaveBeenCalled();
   });
 

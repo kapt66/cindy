@@ -84,12 +84,11 @@ Desktop 信任来源已经完成的版本选择，不再按 `minCindyVersion` �
 顺序、作用范围、引擎支持与大小限制见[静态系统提示词片段](plugin-control-points.md#静态系统提示词片段)。
 该能力尚未发布，开发示例不能作为正式版版本下限的依据。
 
-> **Cindy Meka 私有字段（不在本手册正文里，按需取章）**：Meka 还支持三个本手册未覆盖的
-> 声明——顶层 `mcpr`（MCPRouter 逻辑 route 白名单）、`"reveal": true`（在系统文件管理器中
-> 定位本机文件/目录）与停靠面板的 `panel.allowUserPresentationOverride`（允许用户覆盖面板
-> 呈现方式）。它们**只存在于 Cindy Meka**，Cindy 上游按未知字段保留但不授权。写这些字段前
+> **Cindy Meka 私有字段（不在本手册正文里，按需取章）**：Meka 还支持两个本手册未覆盖的
+> 声明——顶层 `mcpr`（MCPRouter 逻辑 route 白名单）与 `"reveal": true`（在系统文件管理器中
+> 定位本机文件/目录）。它们**只存在于 Cindy Meka**，Cindy 上游按未知字段保留但不授权。写这些字段前
 > 先 `ghost_forge_guide({ section: "4.25" })`（`mcpr`）与
-> `ghost_forge_guide({ section: "4.26" })`（`reveal` + 面板呈现方式）读取完整契约，
+> `ghost_forge_guide({ section: "4.26" })`（`reveal`）读取完整契约，
 > 不要凭字段名猜语义。
 
 ### whenToUse:只写发现线索,不写使用规则

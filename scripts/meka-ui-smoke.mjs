@@ -471,34 +471,6 @@ const CHECKS = [
     },
   },
   {
-    id: 'WL-1.5',
-    name: '插件默认打开方式开关可切换（aria-checked 翻转并还原）',
-    async run(ctx) {
-      await ctx.goto('#/settings?tab=meka-assistant');
-      // 上游的本区开关是 `[role=switch]`（不一定是 <button>）：按 role 定位，不绑标签名。
-      const sel = '[role=switch][aria-label*="插件界面"]';
-      await ctx.session.waitFor(`document.querySelector(${JSON.stringify(sel)}) ? 1 : null`, {
-        label: '插件打开方式开关渲染',
-      }).catch(() => null);
-      const before = await ctx.session.evaluate(`document.querySelector(${JSON.stringify(sel)})?.getAttribute('aria-checked')`);
-      if (before === null || before === undefined) return ctx.fail('面板里找不到插件打开方式开关（button[role=switch]）');
-      const label = await ctx.session.evaluate(`document.querySelector(${JSON.stringify(sel)})?.getAttribute('aria-label')`);
-      if (!(await ctx.session.clickSelector(sel))) return ctx.fail('开关不可点击');
-      const flipped = await ctx.session
-        .waitFor(
-          `(() => { const v = document.querySelector(${JSON.stringify(sel)})?.getAttribute('aria-checked'); return v !== ${JSON.stringify(before)} ? v : null; })()`,
-          { label: '开关 aria-checked 翻转' },
-        )
-        .catch(() => null);
-      if (flipped === null) return ctx.fail(`点击后 aria-checked 未翻转（仍为 ${before}）`);
-      await ctx.session.clickSelector(sel); // 还原
-      await sleep(400);
-      const restored = await ctx.session.evaluate(`document.querySelector(${JSON.stringify(sel)})?.getAttribute('aria-checked')`);
-      if (restored !== before) return ctx.fail(`还原失败：期望 ${before}，实际 ${restored}`);
-      return ctx.pass(`开关「${label}」aria-checked ${before}→${flipped}→${restored}`);
-    },
-  },
-  {
     id: 'WL-2.5+WL-3.3',
     name: '侧栏「Meka 助理」段头存在且可折叠',
     async run(ctx) {
@@ -577,19 +549,19 @@ const CHECKS = [
     },
   },
   {
-    id: 'WL-1.2-1.5',
-    name: 'Meka 助理面板四张卡齐全（插件打开方式 / P4 / MCPRouter / MekaDesign）',
+    id: 'WL-1.2-1.4',
+    name: 'Meka 助理面板三张卡齐全（P4 / MCPRouter / MekaDesign）',
     async run(ctx) {
       await ctx.goto('#/settings?tab=meka-assistant');
       const text = await ctx.session.waitFor(
         `(document.querySelector('#settings-panel-meka-assistant')?.innerText || '')`,
         { label: 'Meka 助理面板文本' },
       );
-      const expected = ['插件默认打开方式', 'P4 功能路径', 'MCPRouter 连接', 'MekaDesign'];
+      const expected = ['P4 功能路径', 'MCPRouter 连接', 'MekaDesign'];
       const missing = expected.filter((card) => !String(text).includes(card));
       if (missing.length) return ctx.fail(`面板缺少卡片 ${JSON.stringify(missing)}；实际文本片段=${String(text).slice(0, 200)}`);
       const subfolders = (String(text).match(/saga2_[a-z]+/g) ?? []).length;
-      return ctx.pass(`四卡齐全；P4 已匹配 ${subfolders} 个 saga2 子目录`);
+      return ctx.pass(`三卡齐全；P4 已匹配 ${subfolders} 个 saga2 子目录`);
     },
   },
   {

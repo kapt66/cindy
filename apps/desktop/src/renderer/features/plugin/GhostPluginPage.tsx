@@ -94,7 +94,6 @@ import {
 } from '@/cindy-brain/ghostUnreadStore';
 import { getLastWorkingDir, subscribeToLastWorkingDir } from '@/state/lastWorkingDir';
 import { useGlobalTabs } from '@/features/right-sidebar/globalTabs';
-import { useGhostPanelPresentation } from '@/lib/ghostPanelPresentationPreference';
 import { resolveSystemLocale } from '../../../shared/locale';
 import {
   ghostInstallApprovalToken,
@@ -639,13 +638,11 @@ function LocalGhostPluginPage({
   // 插件页内的 tab 型面板宿主(`GhostPagePanelHost`)的目标实例。
   // 必须声明在 launcher 之前:launcher 的 `openPageHost` 直接引用它的 setter。
   const [openPanelId, setOpenPanelId] = useState<string | null>(null);
-  // 面板宿主:Meka 的面板收束入口(page 内页签面板与详情页共用)。
-  // [MEKA] 统一 resolver:tab → 插件页 `GhostPagePanelHost`;docked → 上游右侧栏全局页签;
-  // modal → Meka Modal。所有入口(卡片主动作 / 详情主 CTA「使用面板」/ `?panel=` 深链 /
-  // 安装流程)都调这一个 `openPanel`。
-  const { openPanel, resetPanelModal, modalHost } = useGhostPanelLauncher({
+  // 面板宿主:所有入口(卡片主动作 / 详情主 CTA「使用面板」/ `?panel=` 深链 /
+  // 安装流程)都调这一个 `openPanel`;呈现方式完全跟随上游 manifest
+  // (tab → 插件页 `GhostPagePanelHost`,其余 → 右侧栏全局页签)。
+  const { openPanel } = useGhostPanelLauncher({
     ghosts,
-    navigate,
     openPageHost: setOpenPanelId,
   });
   useMainViewVisibilityRevision();
@@ -1019,8 +1016,8 @@ function LocalGhostPluginPage({
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams]);
   // /plugins?panel=<id> 深链(装入流程「立即开启并打开面板」与外部拖入都走它)。
-  // [MEKA] 统一 resolver:tab → 插件页页签宿主;docked → 右侧栏全局页签;
-  // modal → Modal。上游只认 `position:'tab'`,docked/modal 插件会静默无反应。
+  // 上游只把 `position:'tab'` 当页内宿主;Meka 额外让停靠面板落到右侧栏页签,
+  // 两者都由同一个 launcher 分流。
   useEffect(() => {
     const target = searchParams.get('panel');
     if (!target) return;
@@ -1311,23 +1308,20 @@ function LocalGhostPluginPage({
     setOpenPanelId((current) => nextOpenPanelIdForOwner(previous, panelOwnerKey, current));
   }, [panelOwnerKey]);
 
-  // 停靠形态的面板现在以右侧栏全局页签承载 + Meka Modal 替代呈现,状态分三态:
-  // 页内页签宿主(manifest 固定) / 弹窗打开(Modal,关掉只是隐藏) / 右侧栏在或已关闭。
+  // 面板呈现方式完全跟随上游 manifest:页内页签宿主(manifest 固定) /
+  // 右侧栏全局页签(在或已关闭)。不再有 Meka 的 Modal 三态。
   const globalTabs = useGlobalTabs();
-  const selectedPanelPresentation = useGhostPanelPresentation(selectedGhost ?? null);
   const panelStatus = useMemo(() => {
     if (!selectedDetail || selectedDetail.panelMinWidth === null) return null;
     // 页签形态(面板收束):由插件页承载,没有停靠状态可言。
     if (selectedDetail.tabPanel) return t('settings.ghosts.detail.panelPageHosted');
-    // Modal 呈现:宿主不提供页签,关闭 Modal 也不记 dismissed,不能复用「已关闭」文案。
-    if (selectedPanelPresentation === 'modal') return t('settings.ghosts.detail.panelModal');
     const inSidebar = globalTabs.some(
       (tab) => (tab.state as { instanceId?: string } | null)?.instanceId === selectedDetail.id,
     );
     return inSidebar
       ? t('settings.ghosts.detail.panelInSidebar')
       : t('settings.ghosts.detail.panelDismissed');
-  }, [globalTabs, selectedDetail, selectedPanelPresentation, t]);
+  }, [globalTabs, selectedDetail, t]);
 
   const handleToggle = useCallback(
     async (id: string, enabled: boolean, displayName: string) => {
@@ -1534,8 +1528,8 @@ function LocalGhostPluginPage({
         }
       },
       openThemes: () => navigate('/settings?tab=appearance'),
-      // 已在插件页:安装完成后按统一 resolver 打开该插件面板
-      // (tab → 插件页宿主;docked → 右侧栏页签;modal → Modal)。
+      // 已在插件页:安装完成后按上游 manifest 打开该插件面板
+      // (tab → 插件页宿主;其余停靠形态 → 右侧栏页签)。
       openPluginPanel: (instanceId) => {
         setSelectedId(null);
         void openPanel(instanceId);
@@ -1707,7 +1701,7 @@ function LocalGhostPluginPage({
     (item: Pick<GhostPluginListItem, 'id' | 'name' | 'tabPanel' | 'canUse'>) => {
       const action = ghostPrimaryAction(item);
       if (action === 'panel') {
-        // [MEKA] 统一 resolver:tab → 插件页宿主;docked → 右侧栏页签;modal → Modal。
+        // [MEKA] 统一入口:tab → 插件页宿主;其余停靠形态 → 右侧栏页签。
         void openPanel(item.id);
         return;
       }
@@ -1743,15 +1737,15 @@ function LocalGhostPluginPage({
   }, [handlePrimaryAction, selectedDetail, selectedGhost]);
 
   /**
-   * 详情页「使用面板」主 CTA:launcher 决定 tab / docked / modal,这里只负责把结果
+   * 详情页「使用面板」主 CTA:launcher 决定 tab / docked,这里只负责把结果
    * 如实告诉用户——docked 落到右侧栏时用户看不到它「已经开了」,必须给一句反馈;
-   * Modal 与页内页签就地可见,不再 toast 打扰。失败(页签上限、右侧栏抛错、
+   * 页内页签就地可见,不再 toast 打扰。失败(页签上限、右侧栏抛错、
    * 宿主缺失)必须报错,不能像以前那样静默吞掉。
    */
   const handleDetailOpenPanel = useCallback(
-    async (trigger: HTMLButtonElement) => {
+    async () => {
       if (!selectedDetail) return;
-      const result = await openPanel(selectedDetail.id, trigger);
+      const result = await openPanel(selectedDetail.id);
       if (result === 'docked') {
         toast.success(t('settings.ghosts.toast.panelOpenedInSidebar'));
         return;
@@ -2312,21 +2306,7 @@ function LocalGhostPluginPage({
   );
   const mekaSurfaceEmpty = surfaceInstalledItems.length === 0 && availableMarketItems.length === 0;
 
-  /**
-   * [MEKA] Modal 宿主单点挂载。
-   *
-   * 本页有多个互斥早返回分支(市场详情 / 已装详情 / Meka 列表 / 插件列表),Modal 宿主
-   * 必须只在这一个定义点出现:三份各自 `{modalHost}` 已经漂移过一次,而同一实例任何时刻
-   * 只能有一个面板宿主(I1 —— 两个 webview 会各存整份插件数据并互相覆写)。
-   */
-  const withModalHost = (content: ReactNode) => (
-    <>
-      {content}
-      {modalHost}
-    </>
-  );
-
-  const renderInstalledDetail = () => selectedDetail ? withModalHost(
+  const renderInstalledDetail = () => selectedDetail ? (
       <div className="flex h-full min-h-0 w-full">
         <div className="flex min-w-0 flex-1 flex-col">
           {recommendationNotice}
@@ -2347,13 +2327,11 @@ function LocalGhostPluginPage({
                   : undefined
               }
               onBack={() => {
-                resetPanelModal();
                 cancelPendingPluginSuggestion(recommendationNonce ?? undefined);
                 requestPluginCatalogScrollRestore();
                 setSelectedId(null);
               }}
               onToggle={(enabled) => {
-                if (!enabled) resetPanelModal();
                 void handleToggle(selectedDetail.id, enabled, selectedDetail.name);
               }}
               onUse={handleUse}
@@ -2422,7 +2400,7 @@ function LocalGhostPluginPage({
   />;
 
   if (marketDetail) {
-    return withModalHost(
+    return (
       <div className="flex h-full min-h-0 w-full">
         <div className="flex min-w-0 flex-1 flex-col">
           {recommendationNotice}
@@ -2476,7 +2454,7 @@ function LocalGhostPluginPage({
   if (selectedDetail) return renderInstalledDetail();
 
   if (isMekaSurface) {
-    return withModalHost(
+    return (
       <PluginManagementLayout
         activeTab="meka-plugins"
         query={query}
@@ -2721,11 +2699,11 @@ function LocalGhostPluginPage({
           }}
           onUploaded={() => refreshMarket(true).catch(() => undefined)}
         />
-      </PluginManagementLayout>,
+      </PluginManagementLayout>
     );
   }
 
-  return withModalHost(
+  return (
     <PluginManagementLayout
       activeTab="plugins"
       query={query}
@@ -3011,7 +2989,7 @@ function LocalGhostPluginPage({
           onClose={() => setUpdateDialogOpen(false)}
         />
       ) : null}
-    </PluginManagementLayout>,
+    </PluginManagementLayout>
   );
 }
 

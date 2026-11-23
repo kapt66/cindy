@@ -32,7 +32,6 @@ import {
   resetPluginPlacement,
   sanitizeGlobalTabsSnapshot,
   setActiveGlobalTabId,
-  setGlobalPanelAutoTabEnabled,
   tabShowsMainView,
 } from '../globalTabs';
 import { __resetTabGroupsForTest, getTabGroup, setTabGroup } from '../tabGroups';
@@ -338,96 +337,5 @@ describe('globalTabs', () => {
     expect(hydrate({ instanceId: 'a', view: 'bogus' })).toEqual({
       instanceId: 'a',
     });
-  });
-
-  // [MEKA] S1:Modal 生效的停靠面板插件不再算「应自动出现在右侧栏的全局页签」。
-  // 这一处同时决定第二层兜底:isGlobalTabCapableGhost 为 false → 投影层
-  // (projectAvailableTabs)把残留页签判为不可见、body 不挂载(避免两个面板 webview)。
-  it('treats a modal-presented panel plugin as not auto-docked', async () => {
-    const ghost = {
-      manifest: { id: 'meka-p4', name: 'p4', panel: { html: 'p.html', position: 'left' } },
-      enabled: true,
-    } as unknown as import('../../../../shared/ghost').InstalledGhost;
-    const { isAutoGlobalPanelGhost, isGlobalTabCapableGhost } = await import('../globalTabs');
-    const { __resetGhostPanelPresentationPreferenceForTest, setGhostPanelModalPresentationEnabled } =
-      await import('@/lib/ghostPanelPresentationPreference');
-    try {
-      expect(isAutoGlobalPanelGhost(ghost)).toBe(true);
-
-      setGhostPanelModalPresentationEnabled(true);
-      expect(isAutoGlobalPanelGhost(ghost)).toBe(false);
-      expect(isGlobalTabCapableGhost(ghost)).toBe(false);
-
-      // 同插件声明 mainView 时仍可作为页签承载:modal 只抑制 panel 页。
-      expect(
-        isGlobalTabCapableGhost({
-          ...ghost,
-          manifest: { ...ghost.manifest, mainView: { html: 'main.html' } },
-        } as unknown as import('../../../../shared/ghost').InstalledGhost),
-      ).toBe(true);
-    } finally {
-      __resetGhostPanelPresentationPreferenceForTest();
-    }
-  });
-
-  // [MEKA] S2:呈现方式切换时维护自动页签 —— 进 modal 摘页签且**不写 dismissed**;
-  // 回 docked 清 dismissed 并补回 panel 页签(I3:关 Modal ≠ 用户关过页签)。
-  it('toggles the automatic panel tab without polluting dismissals', async () => {
-    const ghost = {
-      manifest: { id: 'meka-p4', name: 'p4', panel: { html: 'p.html', position: 'left' } },
-      enabled: true,
-    } as unknown as import('../../../../shared/ghost').InstalledGhost;
-    const { setGlobalPanelAutoTabEnabled, globalTabIdForInstance } = await import('../globalTabs');
-    addGlobalPluginTab('meka-p4', { ghost, view: 'panel' });
-    const tabId = globalTabIdForInstance('meka-p4');
-
-    setGlobalPanelAutoTabEnabled('meka-p4', false, ghost);
-    expect(getGlobalTabs().some((tab) => tab.id === tabId)).toBe(false);
-    expect(getGlobalTabsSnapshot().dismissedInstanceIds).not.toContain('meka-p4');
-    // 组归属(放置记忆)保留:切回 docked 还在用户原来那一边。
-    expect(getTabGroup(tabId)).toBe('left');
-
-    setGlobalPanelAutoTabEnabled('meka-p4', true, ghost);
-    expect(getGlobalTabs().some((tab) => tab.id === tabId)).toBe(true);
-    expect(getGlobalTabsSnapshot().dismissedInstanceIds).not.toContain('meka-p4');
-  });
-
-  // 测试价值
-  // - 生产入口与可观察结果:setGlobalPanelAutoTabEnabled(enabled=true) 的真实切换路径;可观察的是
-  //   modal 下手工打开的 mainView 页签在切回 docked 后仍是同一页签、仍记 view:'main',实例只有一个页签。
-  // - Bug / 规则依据:S2 契约「承载 mainView 的同实例页签不动」。present 只看 view:'panel' 时,
-  //   同时声明 mainView+panel 的插件切回 docked 会经 addGlobalPluginTab({view:'panel'}) 把该 mainView
-  //   页签就地切页,静默替换侧栏主视图。
-  // - 现有覆盖缺口:S2 用例只覆盖单 panel 视图,没有 mainView 页签在场的双视图插件。
-  // - 最小失败输入:panel.html ≠ mainView.html 的插件,modal 下 addGlobalPluginTab({view:'main'}),
-  //   再 setGlobalPanelAutoTabEnabled(true)。
-  // - tier:unit(jsdom localStorage)。
-  it('keeps an existing mainView tab when a dual-view plugin switches back to docked', () => {
-    const ghost = {
-      manifest: {
-        id: 'meka-dual',
-        name: 'dual',
-        panel: { html: 'panel.html', position: 'left' },
-        mainView: { html: 'view.html', open: 'sidebar', side: 'right' },
-      },
-      enabled: true,
-    } as unknown as import('../../../../shared/ghost').InstalledGhost;
-    const tabId = globalTabIdForInstance('meka-dual');
-
-    // modal 生效(此时没有 panel 页签可摘),用户从左侧栏入口手动打开 mainView 页签。
-    setGlobalPanelAutoTabEnabled('meka-dual', false, ghost);
-    expect(getGlobalTabs()).toEqual([]);
-    const mainTab = addGlobalPluginTab('meka-dual', { ghost, view: 'main' })!;
-    expect((mainTab.state as { view?: string }).view).toBe('main');
-
-    // 切回 docked/打开全局开关:mainView 页签原样保留,不会被切页成 panel。
-    setGlobalPanelAutoTabEnabled('meka-dual', true, ghost);
-    const tabs = getGlobalTabs();
-    expect(tabs).toHaveLength(1);
-    expect(tabs[0].id).toBe(tabId);
-    expect((tabs[0].state as { view?: string }).view).toBe('main');
-    // 也没有新增重复的 panel 页签。
-    expect(tabs.filter((tab) => tab.kind === 'plugin-view')).toHaveLength(1);
-    expect(getGlobalTabsSnapshot().dismissedInstanceIds).toEqual([]);
   });
 });

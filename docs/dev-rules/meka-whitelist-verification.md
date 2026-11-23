@@ -71,9 +71,15 @@ Git 的冲突清单回答不了这个问题。本仓 2026-09 同步实测的两�
 ### WL-1 设置页的 Meka 相关设置
 
 **保护的不变量**：设置页有独立的「Meka 助理」分区，承载 MCPRouter 连接、MekaDesign 连接、
-P4 项目根、插件面板呈现方式等 Meka 专属配置；这些配置落盘在 `userData/meka-assistant-settings.json`
+P4 项目根等 Meka 专属配置；这些配置落盘在 `userData/meka-assistant-settings.json`
 （**设备级**，且旧身份迁移会把它一并带过来），上游同步不得把这套设置面并回上游的
 插件/技能设置或改掉落盘文件名。
+
+**已移除（2026-11-23）**：原 WL-1.5「插件面板呈现方式开关」连同插件详情的三态选择器与
+`GhostPanelModal` 整套删除，插件界面显示方式完全跟随上游 manifest（右侧栏全局页签 /
+`GhostPagePanelHost`）。原 WL-1.5 条目不保留、编号不复用；删除理由与兼容边界见
+[`migrations/xdmaker-meka-to-cindy.md`](../migrations/xdmaker-meka-to-cindy.md) §11.41。
+`panel.allowUserPresentationOverride` 仍被 manifest 校验接受，仅作存量已装插件的往返兼容。
 
 #### WL-1.1 设置侧栏入口与分区渲染
 
@@ -106,76 +112,6 @@ P4 项目根、插件面板呈现方式等 Meka 专属配置；这些配置落�
 - **不变量**：目录不存在/无匹配时给明确空态，不留白屏；该根目录是本地开发目录白名单的来源（与 WL-4.2.1 的本地 worker 目标解析同源）
 - **自动化门禁**：`pnpm --filter desktop exec vitest run src/main/meka-settings/__tests__/service.test.ts`
 - **实机验证**：选一个含 `saga2_*` 子目录的根 → 列表显示匹配项；选空目录 → 显示空态
-
-#### WL-1.5 插件面板呈现方式开关（2026-11-06 第七轮收口为「上游全局页签 / Meka Modal」二选一）
-
-- **最终形态（以本行为准，取代此前的「停靠 pane / 独立窗口 / 气泡」三件套口径）**
-  - `docked` = **上游的插件页签宿主**：右侧栏全局页签 `plugin-view`，`state.view === 'panel'`，复用
-    `GhostChipPanelBody`（`renderer/features/right-sidebar/plugins/plugin-view/index.tsx`）。落边 =
-    用户页签组记忆 > `panel.position`（`globalTabs.ts:258` 的 `defaultGroupForGhost`）⇒ Meka 三个在产插件
-    声明 `position:'left'`，实际落在**聊天区左侧**页签组。
-  - `modal` = **Meka 的 `GhostPanelModal`**（页面级单例宿主，90vw/90vh，复用同一 `GhostChipPanelBody`、
-    原分区、`cindy-ghost://` 供片、主题注入、崩溃接管）。它不是第三种页签，不参与页签组/拖拽/弹出窗口。
-  - `position:'tab'` = **回上游 `GhostPagePanelHost`（插件页内独占宿主）**，Meka 不再做 Modal 兜底
-    （旧兜底会造出两个面板 WebView 宿主）。分流点在 `GhostPluginPage.tsx` 的 `[MEKA]` resolver（`:614`）；
-  `useGhostPanelLauncher.tsx` 的 `tab` 分支（`:92-93`）直接交回插件页宿主、不抢宿主。
-  - **已删除**：布局树停靠 pane、`PanelChrome`、面板独立窗口（`main/ghost-panel-window/**`、preload、
-    `?ghostPanelWindow=` 路由与崩溃隔离）、气泡最小化与恢复入口、`GhostPanelBubbleLayer` /
-    `GhostPanelRestoreEntry` / `useMinimizedGhostPanels`。**不存在**「布局树/最小化位置不变」这条旧口径。
-- **代码锚点**（符号名为准）：
-  - 契约与校验：`apps/desktop/src/shared/ghost.ts` 的 `GhostPanelDecl.allowUserPresentationOverride`（约 `:518`）、
-    布尔拒装（`allowUserPresentationOverride !== 'boolean'` 分支，实测 `:4680-4686`）、
-    `position:'tab'` 拒装（`:4704-4709`）、已知键清单（`:4714-4719`）、作者格式往返（`:4727-4728`）。
-    > 行号为 2026-11-12（10:33）版实测：该文件当日在面板校验前插入了 7 行「存量兼容红线」注释，
-    > 上一版审查记录的 `:4669-4675` 是同一分支的旧行号。**以符号为准**，改代码后重新实测。
-  - 有效呈现 resolver（Meka 侧唯一真值，纯函数、可在模块级同步路径调用）：
-    `renderer/lib/ghostPanelPresentationPreference.ts` 的 `resolveGhostPanelPresentation`（`:178`）与
-    `useGhostPanelPresentation`（`:189`）；存储键仍为 `xdt:ghostPanelPresentation:v1`（全局，关闭时**移除**而非写
-    `false`）与 `xdt:ghostPanelPresentationOverrides:v1`（逐插件 `docked|modal`，`inherit` = 删键）。
-  - 页签投影收敛：`renderer/features/plugin/lib/panelTabProjection.ts`（`syncPanelTabProjection` `:36`、
-    `applyGhostPanelPresentationChange` `:47`）+ `globalTabs.ts` 两处 `[MEKA]` seam
-    （`isAutoGlobalPanelGhost` `:457-462`、`setGlobalPanelAutoTabEnabled` `:576-591`）+
-    `cindy-brain/ghostPanels.tsx:40`。Modal 上游侧护栏：`GhostPanelModal.tsx:56`（非 modal 呈现 `return null`）。
-  - 设置面：`components/settings/MekaAssistantSettingsSection.tsx`（`settings.meka.pluginPanel.*` 卡）、
-    `features/plugin/PluginPanelPresentationPreference.tsx`（三态选择器）、
-    `features/plugin/useGhostPanelLauncher.tsx`（目录所有入口的唯一 launcher，先挂关闭态、下一帧再开）。
-- **不变量**：
-  1. **单宿主（I1）**：同一插件实例同一时刻至多一个面板 WebView 宿主（全局页签 / Modal / 插件页宿主三选一）。
-  2. **关闭语义分离（I3）**：关页签写 `dismissedInstanceIds`（跨重启记忆，不再自动加回）；关 Modal 只是隐藏，
-     **不写 dismissed**，也不清页签组记忆。
-  3. **优先级不变**：插件级 override → Meka 全局开关 → 停靠产品默认；全局开关作用于**所有**停靠形态插件，不要求
-     声明 flag；偏好按**逻辑插件 id**（`manifest.id`），宿主按**物理实例键**（`_root__*` / `_ns__*`），两者不可混。
-  4. **`allowUserPresentationOverride` 契约**：只在「有 `panel` 且 `position !== 'tab'`」时可声明；
-     **`position:'tab'` + 该字段 ⇒ 拒装**（第七轮唯一新增拒绝点，见下）；非布尔值拒装；插件脚本无写接口，
-     不得在 `settingsHtml` 复刻同名设置。
-  5. **旧状态只读迁移**：`xdt:ghostPanelBubble:v1`（旧气泡键）由上游 `reconcileGlobalPluginTabs` **只读**消费
-     （`globalTabs.ts:478-484` 读旧键、`:498` `legacyPanelEdge`、`:532-538` 迁移落点：命中的实例记成
-    `dismissed`，旧边迁成页签组），Meka **不再写**
-     该键；`userData/ghost-panel-windows-settings.json` 等独立窗口账本成为孤儿，不主动删（删键属数据操作需单独批准）。
-- **新增拒绝点（与插件基座白名单 Approve 同批知悉）**：**该批准已于 2026-11-12 由用户给出**
-  （同批确认了协议变更与「移动端全部复用上游」）。`position:'tab'` 声明 `allowUserPresentationOverride`
-  或 `minWidth` / `defaultFraction` / `systemButtons` ⇒ 拒装，文案「仅停靠形态(left)有效」。影响面 = 已声明 `tab`
-  且声明该字段的插件，当前 **0 个**（在产三个插件全是 `left` + `true`）；存量已装插件**无需重装/重确认/重配置** ——
-  机制是**严格路径才拒装**：`validateGhostManifest`（新装/更新）拒非法值，而已装快照走
-  `validateInstalledGhostManifest`（`preserveHistoricalTasks`）**容错**，历史非法值按未知字段保留、不把已装插件
-  判成 invalid（`shared/__tests__/ghost.test.ts` 的「严格新装拒非法值，已装快照容错」用例锁住这条红线）。
-- **自动化门禁**：`pnpm --filter desktop exec vitest run src/renderer/lib/__tests__/ghostPanelPresentationPreference.test.ts src/renderer/__tests__/pluginPanelPresentationPreference.test.tsx src/renderer/features/plugin/lib/__tests__/panelTabProjection.test.ts src/renderer/features/right-sidebar/__tests__/globalTabs.test.ts src/renderer/cindy-brain/__tests__/GhostPanelModal.test.tsx src/renderer/features/plugin/__tests__/useGhostPanelLauncher.test.tsx src/renderer/cindy-brain/__tests__/ghostPanelBodyFocus.test.tsx`
-  - `shared/__tests__/ghost.test.ts` 覆盖 `tab` + 该字段拒装与合法声明往返；`pnpm check:i18n` 覆盖新键
-    `settings.ghosts.detail.panelModal`（12 语齐备）。
-- **实机验证**：① 停靠态：打开插件「界面」→ 出现在声明边的全局页签组（Meka 插件=左侧），`document.querySelectorAll('webview')`
-  只应有该面板一个；关页签后状态行显示「已从右侧栏关闭 · 可在此处或右侧栏「+」菜单重新打开」且不再自动加回。
-  ② 切 Modal：设置开关或详情三态选「弹窗」→ 页签消失、Modal 打开；关 Modal 后状态行显示「显示在弹窗中」而**不是**
-  「已从右侧栏关闭」（三态状态行实测文案：`panelInSidebar` = 「显示在右侧栏（所有任务中保留）」、
-  `panelDismissed` = 「已从右侧栏关闭 · …」、`panelPageHosted` = 「从插件页打开 · 离开插件页自动关闭」、
-  `panelModal` = 「显示在弹窗中」）；再次打开复用同一 WebView（选择/滚动保留）。
-  ③ 切回停靠：页签回到原边、`dismissed` 被清。④ `position:'tab'` 插件从插件页打开时走页内宿主，**不弹 Modal**。
-  **2026-11-12 实机（CDP，main target）已跑**：docked 打开时 `[data-testid=ghost-panel-modal]` = **0**；
-  详情选「弹窗打开」→ **=1 且 header=Meka P4**；切回 `inherit` → **=0**（单宿主 I1 与双向切换成立）。
-  仍**未做**：Light/Dark 目检、页签关掉后「已从右侧栏关闭」状态行的人工核对、`position:'tab'` 插件页宿主的人工核对
-  （见当期同步报告「未验证」）。
-- **存量迁移风险**：升级前被气泡抑制过的面板会被上游迁成 `dismissed` ⇒ 右栏不自动出现，但详情页状态行与「在右侧栏中打开」
-  按钮让它**可发现**（不是静默消失）；另 `panel.systemButtons` 已退化为**声明数据**（校验照旧、无 UI 消费方），
-  旧包 `position:'right'` 不再归一化成 `left`（跟上游落右/上/下边）。
 
 #### WL-1.6 Meka 工具风险分级策略
 
@@ -2956,14 +2892,15 @@ pnpm desktop:session-smoke
 - `pnpm restart:desktop:remote` → 期望 `DESKTOP_DEV_VERDICT=ready`。
 - `pnpm desktop:whoami` → 确认沙箱实例就是本次要验收的 checkout 与 commit。
 - `pnpm desktop:ui-smoke` → **程序化 GUI 验收**（CDP 驱动真实鼠标事件），覆盖
-  WL-1.1 / WL-1.2 / WL-1.3 / WL-1.5 / WL-1.2-1.5（四卡）/ WL-2.1 / WL-2.2 / WL-2.3 /
-  WL-2.4 / WL-2.5+WL-3.3 / WL-3.2 / WL-5.5+WL-6.1 / WL-6.5 / WL-10 / WL-13 共 15 项，
+  WL-1.1 / WL-1.2 / WL-1.3 / WL-1.2-1.4（三卡）/ WL-2.1 / WL-2.2 / WL-2.3 /
+  WL-2.4 / WL-2.5+WL-3.3 / WL-3.2 / WL-5.5+WL-6.1 / WL-6.5 / WL-10 / WL-13 共 14 项，
   逐项打印 `PASS / FAIL / UNVERIFIED` 与证据，`FAIL` 时退出码 1。
   它会自行处理两件容易出错的事：① **校验跑着的实例是否就是 HEAD**（版本行里的 commit 与
   `git rev-parse --short HEAD` 比对）——实例陈旧会直接 FAIL，这正是同步验收最容易犯的错；
   ② **把语言归一到简体中文并在结束时还原**，使断言与用户当前语言无关（否则中文文案断言在
   英文界面下会整片假红）。
   > **2026-11-12 实跑**：`UI_SMOKE PASSED — checks=15 pass=13 fail=0 unverified=2`（`0 FAIL`）。
+  > **2026-11-23 起 WL-1.5 删除后为 14 项**；上方 15 项记录是当日历史，不据此重算。
   > 2 项 `unverified` = WL-1.2 / WL-1.3 的 MCPRouter / MekaDesign「配置」对话框：当前 profile **已连接**，
   > 入口被「断开」替代；为不打扰用户真实凭证未构造未连接态。**脚本已按连接状态分支**（已连接断言「断开」/
   > 未连接断言「配置」并开对话框），不再误报 FAIL。

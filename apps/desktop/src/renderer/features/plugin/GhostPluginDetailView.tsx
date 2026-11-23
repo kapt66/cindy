@@ -79,7 +79,6 @@ import type { PluginMarketInstallProgress } from '../../../shared/pluginMarket';
 import { type GhostPluginDetail } from './lib/ghostPluginViewModel';
 import { GhostPluginIcon } from './GhostPluginIcon';
 import { PluginMarketProgressContent } from './PluginMarketProgressContent';
-import { PluginPanelPresentationPreference } from './PluginPanelPresentationPreference';
 import {
   hasPluginPlacementMemory,
   useGlobalTabs,
@@ -91,7 +90,6 @@ import {
 import { useTabGroupAssignments } from '@/features/right-sidebar/tabGroups';
 import { useInstalledGhosts } from '@/cindy-brain/useInstalledGhosts';
 import { installedGhostStoragePart } from '../../../shared/pluginIdentity';
-import { useGhostPanelPresentation } from '@/lib/ghostPanelPresentationPreference';
 import { ghostPluginSummary } from './lib/ghostPluginDetailModel';
 import { ghostPrimaryAction } from './lib/ghostPluginViewModel';
 import { permissionItemIcon } from './lib/permissionItemIcon';
@@ -132,11 +130,11 @@ interface GhostPluginDetailViewProps {
   /** 主动作:指令或 Host 能力型「对话」;没有 launcher 时面板型也回落到这里。 */
   onUse: () => void;
   /**
-   * 面板型插件主 CTA 的打开入口(tab / docked / modal 由调用方的 launcher 分流)。
+   * 面板型插件主 CTA 的打开入口(tab / 停靠由调用方的 launcher 按上游 manifest 分流)。
    * 缺省(纯市场详情、远程只读)时主 CTA 回落到 `onUse`。打开结果的用户反馈
    * (例如「已在右侧栏打开」)属于调用方职责。
    */
-  onOpenPanel?: (trigger: HTMLButtonElement) => void;
+  onOpenPanel?: () => void;
   /** main-view 入口偏好只影响侧边栏，不改变插件启用态或路由资格。 */
   mainViewSidebarVisible?: boolean;
   onMainViewSidebarVisibleChange?: (visible: boolean) => void;
@@ -227,9 +225,8 @@ export function GhostPluginDetailView({
    * 主 CTA 是否以「使用面板」打开(产品方案 A:回到上游语义,不再有独立的「打开界面」按钮)。
    *
    * - `panel`(panel.position:'tab'):上游原本就把面板当主动作;
-   * - `manage` + 有面板 + 有 launcher:停靠/Modal 形态的面板插件没有左侧栏入口,
-   *   在 Modal 呈现下右侧栏也没有常驻页签(见下方 `DetailsSection` 的呈现门控),
-   *   主 CTA 就是它唯一的打开入口;
+   * - `manage` + 有面板 + 有 launcher:停靠形态的面板插件在右侧栏没有常驻页签时
+   *   (用户关过页签),主 CTA 就是它最直接的打开入口;
    * - `command`:指令优先(仍回到「对话」),面板不抢主按钮。
    */
   const panelPrimaryAction =
@@ -242,10 +239,6 @@ export function GhostPluginDetailView({
   // 上游 `226c83d31a` 把「逐能力选模」收敛成插件详情唯一的「模型与任务」卡
   // （`detail.hasTaskPreferences` / `hasPluginTasks`），`detail.cindyCapabilities`
   // 与 `CindyCapabilityPrefs` 已随之删除，这里不再保留旧能力清单分支。
-  // [MEKA] WL-1.5：只有显式声明 `panel.allowUserPresentationOverride` 的停靠面板
-  // 才在「配置」区拿到三态选择器（`tab` 形态由 manifest 固定，声明即拒装）。
-  const hasPanelPresentationPreference =
-    ghost?.manifest.panel?.allowUserPresentationOverride === true;
   // The shared GitHub login is available to any approved declaration.
   const hasGithubConnection =
     !remote && !needsReapproval &&
@@ -255,7 +248,6 @@ export function GhostPluginDetailView({
     Boolean(ghost?.manifest.browserExtension) ||
     detail.hasMainView ||
     detail.hasSettingsUi ||
-    hasPanelPresentationPreference ||
     detail.hasTaskPreferences;
   const summary = hasGithubConnection
     ? t('ccAgent.gitContext.pr.setup.account.summary')
@@ -353,12 +345,12 @@ export function GhostPluginDetailView({
                   variant={updateVersion ? 'secondary' : 'cta'}
                   size="lg"
                   type="button"
-                  // 面板型插件的主 CTA 就是打开面板:统一走 `onOpenPanel`(tab / docked /
-                  // modal 三分支由 launcher 决定),不再另给一个独立的「打开界面」按钮。
+                  // 面板型插件的主 CTA 就是打开面板:统一走 `onOpenPanel`(tab / 停靠
+                  // 由 launcher 按上游 manifest 分流),不再另给一个独立的「打开界面」按钮。
                   // 没有 launcher 的宿主(纯市场详情、远程只读)仍回落到原来的 onUse。
                   onClick={
                     panelPrimaryAction && onOpenPanel
-                      ? (event) => onOpenPanel(event.currentTarget)
+                      ? () => onOpenPanel()
                       : onUse
                   }
                   disabled={!primaryEnabled}
@@ -523,17 +515,6 @@ export function GhostPluginDetailView({
                     </p>
                   ) : null}
                 </div>
-              ) : null}
-              {hasPanelPresentationPreference ? (
-                // 偏好按**逻辑插件 id** 存取：`ghostPanelPresentationPreference` 只接受
-                // `isValidGhostId` 的键，而启动器/设置页也都用 `ghost.manifest.id` 读取；
-                // `detail.id` 自 namespace 隔离起是物理实例键（`_root__<id>`），写进去既读不回
-                // 也会被 `isValidGhostId` 直接拒掉，等于开关失效。
-                <PluginPanelPresentationPreference
-                  ghostId={detail.ghostId}
-                  instanceId={detail.id}
-                  ghost={ghost}
-                />
               ) : null}
               {detail.hasMainView ? (
                 <div
@@ -1191,9 +1172,6 @@ export function DetailsSection({
   const inSidebar = globalTabs.some(
     (tab) => (tab.state as { instanceId?: string } | null)?.instanceId === detail.id,
   );
-  // [MEKA] 有效呈现 = 本实例面板页的宿主：modal 时页签不存在，行内不能提供
-  // 「在右侧栏中打开」/「恢复默认位置」——那会给用户一个点了不生效的入口（I1）。
-  const presentation = useGhostPanelPresentation(installedGhost ?? null);
   // 用户拖过 / 弹过 / 已套过默认边:给「恢复默认位置」。
   const canResetPlacement = hasPluginPlacementMemory(detail.id);
   const placementActionClass =
@@ -1268,9 +1246,9 @@ export function DetailsSection({
           ? t('settings.ghosts.detail.panelNone')
           : panelStatus || t('settings.ghosts.detail.panelDismissed'),
       // 停靠形态面板关掉页签后,这里是除右侧栏「+」菜单外的另一个重开入口
-      // (这类插件没有左侧栏入口)。已在侧栏、停用、tab 形态、Modal 呈现或无面板时不渲染。
+      // (这类插件没有左侧栏入口)。已在侧栏、停用、tab 形态或无面板时不渲染。
       // 「恢复默认位置」:清掉用户的放置记忆(拖到的边 / 弹过窗口),回到插件声明的默认边。
-      ...(detail.panelMinWidth !== null && !detail.tabPanel && presentation !== 'modal'
+      ...(detail.panelMinWidth !== null && !detail.tabPanel
         ? {
             action: (
               <span className="flex shrink-0 items-center gap-1">

@@ -7,8 +7,8 @@ import {
  * Static search metadata owned by this settings module; no component mounting or IPC.
  *
  * The Meka assistant tab declares its own catalog entries so it stays inside the upstream
- * per-tab completeness guard (`TAB_IDS` × `TAB_LABEL_KEY`) while its four cards
- * (plugin panel presentation, P4 root, MCPRouter, MekaDesign) remain individually searchable.
+ * per-tab completeness guard (`TAB_IDS` × `TAB_LABEL_KEY`) while its three cards
+ * (P4 root, MCPRouter, MekaDesign) remain individually searchable.
  *
  * `keywordKeys` carry the confirmation-dialog copy and sub-card headings that belong to the
  * same setting, so those strings stay searchable even though they are not the row title.
@@ -20,16 +20,6 @@ export const mekaAssistantSettings = defineSettings({
     targetId: 'settings-panel-meka-assistant',
     titleKey: 'settings.tabs.mekaAssistant',
     sectionKey: 'settings.tabs.mekaAssistant',
-  },
-  pluginPanel: {
-    id: 'settings.meka.pluginPanel.title',
-    fallbackTargetId: 'settings-panel-meka-assistant',
-    tab: 'meka-assistant',
-    targetId: 'settings-search-target-meka-assistant-plugin-panel',
-    titleKey: 'settings.meka.pluginPanel.title',
-    sectionKey: 'settings.tabs.mekaAssistant',
-    descriptionKey: 'settings.meka.pluginPanel.description',
-    aliases: ['plugin panel', '插件面板', '插件打开方式'],
   },
   p4: {
     id: 'settings.meka.p4.title',

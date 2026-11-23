@@ -3,7 +3,6 @@ import { useEffect, useState } from 'react';
 import type { InstalledGhost } from '../../shared/ghost';
 import { installedGhostLogicalIdentity, pluginStoragePart } from '../../shared/pluginIdentity';
 import { reconcileGlobalPluginTabs } from '../features/right-sidebar/globalTabs';
-import { syncPanelTabProjection } from '../features/plugin/lib/panelTabProjection';
 import { pruneGhostSettingsHeights } from './ghostSettingsHeight';
 import { readInstalledGhostsSnapshot } from './useInstalledGhosts';
 import { getDataOwnerGeneration } from '../contexts/dataOwnerGeneration';
@@ -21,6 +20,8 @@ import { getDataOwnerGeneration } from '../contexts/dataOwnerGeneration';
  * 布局树里历史遗留的 `ghost:<id>` pane 继续按「未注册面板」隐藏、数据保留
  * (docs/dev-rules/architecture-invariants.md §3),不再有渲染方。
  * 页签形态(`position: 'tab'`)照旧由插件页独占承载(features/plugin/GhostPagePanelHost)。
+ * 面板呈现方式完全跟随上游 manifest;Meka 的 Modal（整页覆盖层）已经删除,存量
+ * 偏好键(`xdt:ghostPanelPresentation*`)只是孤儿数据,宿主不再读取。
  */
 
 // 兼容既有导入点(测试等):粗筛纯函数随面板体一起搬家,原路径继续可用。
@@ -37,8 +38,6 @@ export function syncGhostPanelRegistrations(ghosts: InstalledGhost[]): void {
     ghosts.map((g) => pluginStoragePart(installedGhostLogicalIdentity(g))),
   );
   reconcileGlobalPluginTabs(ghosts);
-  // [MEKA] 「有效 modal」的实例不留 panel 页签(上游 reconcile 只管加,不管呈现方式)。
-  syncPanelTabProjection(ghosts);
 }
 
 let initialSynced = false;

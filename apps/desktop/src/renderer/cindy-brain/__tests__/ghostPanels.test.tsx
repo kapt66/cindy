@@ -17,18 +17,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { GhostManifest, InstalledGhost } from '../../../shared/ghost';
 import {
   __resetGlobalTabsForTest,
-  addGlobalPluginTab,
   getGlobalTabs,
-  getGlobalTabsSnapshot,
   removeGlobalTab,
   type PluginViewTabState,
 } from '../../features/right-sidebar/globalTabs';
 import { pickGhostPanelMediaUri, syncGhostPanelRegistrations } from '../ghostPanels';
 import { __resetTabGroupsForTest, getTabGroup } from '../../features/right-sidebar/tabGroups';
-import {
-  __resetGhostPanelPresentationPreferenceForTest,
-  setGhostPanelModalPresentationEnabled,
-} from '@/lib/ghostPanelPresentationPreference';
 
 function ghost(
   id: string,
@@ -65,13 +59,11 @@ beforeEach(() => {
   window.localStorage.clear();
   __resetGlobalTabsForTest();
   __resetTabGroupsForTest();
-  __resetGhostPanelPresentationPreferenceForTest();
 });
 
 afterEach(() => {
   __resetGlobalTabsForTest();
   __resetTabGroupsForTest();
-  __resetGhostPanelPresentationPreferenceForTest();
   window.localStorage.clear();
 });
 
@@ -117,57 +109,6 @@ describe('syncGhostPanelRegistrations · 停靠面板插件自动成为右侧栏
       ghost('ghost-c', { enabled: false }),
     ]);
     expect(instanceIds()).toEqual(['ghost-a', 'ghost-b']);
-  });
-});
-
-// [MEKA] S3:启动/`ghosts:changed` 同步后,「有效 modal」的插件既不加页签也不记
-// dismissed(关 Modal 不是用户关过页签);残留页签由投影摘掉,切回 docked 原位回来。
-describe('syncGhostPanelRegistrations · 面板呈现方式(Meka Modal)的页签投影', () => {
-  it('modal 生效的插件同步后没有页签,也不留关闭记录', () => {
-    setGhostPanelModalPresentationEnabled(true);
-    syncGhostPanelRegistrations([ghost('docked-panel')]);
-
-    expect(instanceIds()).toEqual([]);
-    expect(getGlobalTabsSnapshot().dismissedInstanceIds).toEqual([]);
-  });
-
-  it('modal → docked 后页签回来并落在声明的边', () => {
-    setGhostPanelModalPresentationEnabled(true);
-    syncGhostPanelRegistrations([ghost('docked-panel', { panel: { position: 'left' } })]);
-    expect(instanceIds()).toEqual([]);
-
-    setGhostPanelModalPresentationEnabled(false);
-    syncGhostPanelRegistrations([ghost('docked-panel', { panel: { position: 'left' } })]);
-
-    expect(instanceIds()).toEqual(['docked-panel']);
-    expect(getTabGroup('g_docked-panel')).toBe('left');
-  });
-
-  it('modal 生效时残留的页签被同步摘掉(另一窗口刚切偏好 / 旧状态)', () => {
-    // 先按 docked 落一份页签,再切 modal 并重新同步(等价于另一个窗口改了偏好)。
-    syncGhostPanelRegistrations([ghost('docked-panel')]);
-    expect(instanceIds()).toEqual(['docked-panel']);
-
-    setGhostPanelModalPresentationEnabled(true);
-    syncGhostPanelRegistrations([ghost('docked-panel')]);
-
-    expect(instanceIds()).toEqual([]);
-    expect(getGlobalTabsSnapshot().dismissedInstanceIds).toEqual([]);
-  });
-
-  // 同实例同时声明 mainView 与 panel:modal 只抑制 panel 页,mainView 页签不动。
-  it('保留 mainView 页签,只摘同实例的 panel 页签', () => {
-    const both = ghost('dual-view', { mainView: true });
-    addGlobalPluginTab('dual-view', { ghost: both, view: 'main' });
-    syncGhostPanelRegistrations([both]);
-    const mainTabs = getGlobalTabs();
-    expect(mainTabs).toHaveLength(1);
-
-    setGhostPanelModalPresentationEnabled(true);
-    syncGhostPanelRegistrations([both]);
-
-    expect(getGlobalTabs()).toHaveLength(1);
-    expect((getGlobalTabs()[0]?.state as PluginViewTabState).view).toBe('main');
   });
 });
 

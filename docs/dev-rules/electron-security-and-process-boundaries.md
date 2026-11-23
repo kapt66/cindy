@@ -129,8 +129,9 @@ Renderer 可以负责组件渲染、交互状态、表单状态、展示数据�
 而是把页签交回侧边栏（侧边栏本身就是安全态），这同样满足「恢复有界」。
 
 **插件面板没有专属窗口（2026-11-06 第七轮同步后）**：插件面板的停靠形态是右侧栏全局页签
-（`plugin-view`），弹出时用的就是上面这扇页签窗口，不另设窗口类型、preload 或崩溃隔离；
-Meka 的 Modal 形态是**页面内**覆盖层（`GhostPanelModal`），不是独立 `BrowserWindow`。
+（`plugin-view`），弹出时用的就是上面这扇页签窗口，不另设窗口类型、preload 或崩溃隔离。
+2026-11-23 起 Meka 的页面内 Modal 呈现也已删除，插件面板只走上游的右侧栏页签 /
+`GhostPagePanelHost`；不得为面板恢复页面级 Modal 宿主或独立窗口。
 该链路已随上游 `abb83fa21c` 删除，**已删 8 组路径（不得恢复）**：
 ① `main/ghost-panel-window/**`（controller / window / ipc / registry / settings-store 与测试）；
 ② `preload/ghostPanelWindowPreload.ts`；③ `shared/ghostPanelWindow.ts`；

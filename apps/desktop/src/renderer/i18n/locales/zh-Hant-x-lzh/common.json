@@ -8495,7 +8495,6 @@
         "openLocation": "啟所納之處",
         "panelInSidebar": "現於右側欄（諸差事中皆留）",
         "panelDismissed": "已自右側欄闔之 · 可於此處或右側欄「+」選單重啟",
-        "panelModal": "現於彈窗中",
         "openInSidebar": "於側欄啟之",
         "panelPageHosted": "自法器頁啟之 · 離法器頁即自闔",
         "panelNone": "此法器無面板",
@@ -8578,18 +8577,7 @@
         "closeDialog": "闔彈窗",
         "resetPlacement": "復預設位置",
         "infoMinClientVersion": "最低客戶端版本",
-        "minClientVersionTooOld": "需要更新的客戶端：此版本需要 {{appName}} {{version}} 或以上版本。",
-        "closePanel": "關閉法器介面",
-        "panelPresentation": {
-          "title": "開啟方式",
-          "description": "僅影響此法器。選擇“跟隨預設”時，使用“設定 → Meka 助理 → 法器預設開啟方式”。",
-          "aria": "選擇此法器的開啟方式",
-          "options": {
-            "inherit": "跟隨預設",
-            "docked": "停靠在對話視窗",
-            "modal": "彈窗開啟"
-          }
-        }
+        "minClientVersionTooOld": "需要更新的客戶端：此版本需要 {{appName}} {{version}} 或以上版本。"
       },
       "contents": {
         "mainView": "主視",
@@ -9388,12 +9376,7 @@
     },
     "meka": {
       "title": "Meka 助理",
-      "description": "管理法器介面、P4 路徑、MCPRouter 與 MekaDesign 連線。",
-      "pluginPanel": {
-        "title": "法器預設開啟方式",
-        "description": "作為未單獨設定法器的預設值。開啟後預設使用覆蓋主頁面 90% 寬高的彈窗；關閉時預設停靠在對話視窗。法器可在自己的配置中單獨覆蓋。",
-        "toggleAria": "預設使用彈窗開啟法器介面"
-      },
+      "description": "管理 P4 路徑、MCPRouter 與 MekaDesign 連線。",
       "router": {
         "title": "MCPRouter 連線",
         "description": "連線 MCPRouter 後，Meka 助理對話可使用經路由聚合的全部 MCP 工具。憑證僅儲存到作業系統加密儲存。",
