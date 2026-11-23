@@ -122,6 +122,15 @@ export interface NewMakerDraft {
   /** 远程项目所属 host。null = 本地项目或对话。 */
   remoteHostId: string | null;
   /**
+   * MCPRouter 远程目标的**展示名**两段原始值（`{{project}} · {{instance}}` 的翻译来源），
+   * 与 `remoteHostId` 同源、**跨重启保留**：`remoteHostId` 是 `mcpr:<stable-id>`，只存它时
+   * 新建会话的项目胶囊只能显示稳定 id（2026-11-23 用户可见 bug）。
+   * 用户在位置菜单重新选择目标时刷新；目标清空时一并清空。
+   * 不存翻译好的整串：语言切换与模板调整后仍要正确显示。
+   */
+  remoteProjectName: string | null;
+  remoteInstanceName: string | null;
+  /**
    * device-link 跨设备远程控制:本草稿目标被控设备 deviceId(非 null = 这是"在远程设备
    * 项目里新建对话")。**故意不跨重启持久化**——deviceId 绑定的是一台可能离线的活动设备,
    * sanitize 从 localStorage 加载时一律置 null(见 sanitize),只在单次会话内有效。
@@ -270,6 +279,8 @@ function makeDefault(): NewMakerDraft {
     workingDir: null,
     explicitNoProject: false,
     remoteHostId: null,
+    remoteProjectName: null,
+    remoteInstanceName: null,
     deviceLinkDeviceId: null,
     deviceLinkDeviceName: null,
     agentDeviceId: null,
@@ -330,6 +341,13 @@ function sanitize(raw: unknown): NewMakerDraft {
     typeof r.remoteHostId === 'string' && r.remoteHostId.trim().length > 0
       ? r.remoteHostId.trim()
       : null;
+  // 展示名只跟 remoteHostId 一起有效;老版本 localStorage 没有这两个字段 → null。
+  const remoteProjectName = remoteHostId && typeof r.remoteProjectName === 'string' && r.remoteProjectName.trim()
+    ? r.remoteProjectName.trim()
+    : null;
+  const remoteInstanceName = remoteHostId && typeof r.remoteInstanceName === 'string' && r.remoteInstanceName.trim()
+    ? r.remoteInstanceName.trim()
+    : null;
   const lastByVendorRaw = (r.lastByVendor ?? {}) as Partial<NewMakerDraft['lastByVendor']>;
   const fastModeByModelRaw =
     r.fastModeByModel && typeof r.fastModeByModel === 'object'
@@ -515,6 +533,9 @@ function sanitize(raw: unknown): NewMakerDraft {
     workingDir,
     explicitNoProject: workingDir == null && r.explicitNoProject === true,
     remoteHostId: workingDir == null ? null : remoteHostId,
+    // 展示名与 remoteHostId 同生共死:没有目标就没有名字,有目标才持久化。
+    remoteProjectName: workingDir == null ? null : remoteProjectName,
+    remoteInstanceName: workingDir == null ? null : remoteInstanceName,
     // device-link 目标**不跨重启恢复**:绑定的是活动设备,重启后可能已离线 → 一律置 null。
     deviceLinkDeviceId: null,
     deviceLinkDeviceName: null,
@@ -934,6 +955,12 @@ export function patchDraft(patch: Partial<NewMakerDraft>): void {
         ? remoteHostId.trim()
         : null;
   }
+  // 远程目标的展示名与 remoteHostId 同一来源：缺省/空串一律归 null，不把脏值写进持久层。
+  for (const key of ['remoteProjectName', 'remoteInstanceName'] as const) {
+    if (!(key in normalizedPatch)) continue;
+    const value = normalizedPatch[key];
+    normalizedPatch[key] = typeof value === 'string' && value.trim() ? value.trim() : null;
+  }
   const next: NewMakerDraft = { ...currentDraft, ...normalizedPatch };
   if ('workingDir' in normalizedPatch && next.workingDir != null) {
     next.explicitNoProject = false;
@@ -942,6 +969,21 @@ export function patchDraft(patch: Partial<NewMakerDraft>): void {
     next.remoteHostId = null;
   } else if ('workingDir' in patch && !('remoteHostId' in patch)) {
     next.remoteHostId = null;
+  }
+  // 展示名属于远程目标本身，不能跟着草稿漂移：目标被清空、或换成了另一个 remoteHostId 而
+  // 同一 patch 没带新名字时，旧名字必须丢掉（否则新目标会显示上一个项目的名称）。
+  // 这两条只在下游消费 `next.remoteHostId` 之前生效，和上面的级联保持同一顺序。
+  if (next.remoteHostId == null) {
+    next.remoteProjectName = null;
+    next.remoteInstanceName = null;
+  } else if (
+    'remoteHostId' in normalizedPatch
+    && normalizedPatch.remoteHostId !== currentDraft.remoteHostId
+    && !('remoteProjectName' in normalizedPatch)
+    && !('remoteInstanceName' in normalizedPatch)
+  ) {
+    next.remoteProjectName = null;
+    next.remoteInstanceName = null;
   }
   // 改 workingDir 但**没有显式带** deviceLink 字段 → 清除远程目标,避免把本地项目误当成
   // 远程设备项目。

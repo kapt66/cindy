@@ -36,21 +36,38 @@ async function loadModule() {
 describe('newMakerDraft remote host identity', () => {
   it('preserves remoteHostId across storage reload when workingDir exists', async () => {
     const m1 = await loadModule();
-    m1.patchDraft({ workingDir: '/srv/app', remoteHostId: 'remote-host-a' });
-    expect(m1.getDraft().remoteHostId).toBe('remote-host-a');
+    m1.patchDraft({
+      workingDir: '/srv/app',
+      remoteHostId: 'mcpr:instance-a',
+      // 2026-11-23：远程项目的展示名必须跟目标一起跨重启保留 —— 只存 `mcpr:<stable-id>`
+      // 时，下次新建会话的项目胶囊会显示稳定 id 而不是项目名。
+      remoteProjectName: 'SAGA2服务器',
+      remoteInstanceName: 'zhouwenkang/saga2-server',
+    });
+    expect(m1.getDraft().remoteHostId).toBe('mcpr:instance-a');
 
     vi.resetModules();
     const m2 = await loadModule();
     expect(m2.getDraft().workingDir).toBe('/srv/app');
-    expect(m2.getDraft().remoteHostId).toBe('remote-host-a');
+    expect(m2.getDraft().remoteHostId).toBe('mcpr:instance-a');
+    expect(m2.getDraft().remoteProjectName).toBe('SAGA2服务器');
+    expect(m2.getDraft().remoteInstanceName).toBe('zhouwenkang/saga2-server');
   });
 
   it('clears remoteHostId when switching to a local project or dialogue', async () => {
     const { getDraft, patchDraft } = await loadModule();
-    patchDraft({ workingDir: '/srv/app', remoteHostId: 'remote-host-a' });
+    patchDraft({
+      workingDir: '/srv/app',
+      remoteHostId: 'remote-host-a',
+      remoteProjectName: 'A 项目',
+      remoteInstanceName: 'a',
+    });
     patchDraft({ workingDir: '/local/app' });
     expect(getDraft().workingDir).toBe('/local/app');
     expect(getDraft().remoteHostId).toBeNull();
+    // 展示名跟目标同生共死,不能留在本地项目上。
+    expect(getDraft().remoteProjectName).toBeNull();
+    expect(getDraft().remoteInstanceName).toBeNull();
 
     patchDraft({ workingDir: '/srv/app', remoteHostId: 'remote-host-a' });
     patchDraft({ workingDir: null });

@@ -112,6 +112,50 @@ worker → 归档 → 读数 **1**，12 小时后仍为 1，重启客户端才�
      而不是靠注释约定；
    - 第二道保险在 `main/remote-ssh/index.ts` 的 `LIST_CODEX_MODELS` handler：先分类，非 SSH 抛
      `INVALID_PARAMS`，将来漏改时失败归因仍是事实，不会退化成「重连后重试」。
+   **2026-11-23 补记（渲染层第三处漏点：新建任务草稿）**：2026-11-02 新增的「SSH 草稿 Codex
+   目录」在 `NewMakerDraftRoute` 里**又手写了一遍**「有 `effectiveRemoteHostId` 就当 SSH 主机」，
+   于是 MCPRouter 远程项目草稿一打开模型选择器就命中同一条探针：主进程第二道保险抛
+   `INVALID_PARAMS`（同一台机器实测 9 次），`useSshCodexProviders` 把任何 reject 折叠成
+   `status:'error'`，选择器顶部弹出「无法读取远程设备上的模型。请检查连接后重试。」——
+   **远端请求从未发出，是假告警**；同类实例为 codex 类型时后果更重：空远端清单经
+   `mergeSshCodexCatalog` 会剥掉本机目录里的 codex 型号，并把草稿首选项钉成
+   `providerId:'openai'`。修复按三层落地，缺一层都会重演：
+   - **判据只留一处**：`renderer/lib/remoteCodexModelHost.ts` 新增品牌类型 `SshRemoteHostId` +
+     `asSshRemoteHostId()`，并把两个入口判据都收在这里：`resolveRemoteCodexModelHostId`
+     （Codex 探针）、`resolveSshCodexCatalogHostId`（草稿 SSH 目录，2026-11-23 新增）。
+   - **类型层封口**：`useSshCodexProviders` 只接受 `SshRemoteHostId`。新增或合并进来的调用点
+     若仍传裸 `remoteHostId`（`string`），`pnpm --filter desktop run typecheck` 直接失败，
+     不必等实机复现；`ChatInput` 与草稿页已按判据取值。
+   - **运行时保险**：钩子内部再用同一判据复核一次 —— 非 SSH 身份**零次 IPC**，返回空 `ready`
+     而不是 `error`（进入 error 态就会再次被渲染成「连接失败，重试」）。
+   - **合并防回归**：guard tier 新增
+     `renderer/__tests__/remoteTransportProbeWiring.guard.test.ts`（CI 的 `pnpm test:guard`），
+     静态断言上述接线；`remoteCodexModelHost.test.ts` 的输入矩阵继续断言渲染层与主进程分类器
+     逐字一致。语义验收登记在 `meka-whitelist-verification.md` 的 WL-29。
+   **同日补记（同一判据的第二个后果：MCPR 下 Codex 型号整组消失）**：`ChatInput` 先用裸
+   `sshHostId` 给选择器挂了一个 `{providers:[], status:'idle'}` 的「待到远端读取」目录。SSH 主机
+   这是对的（远端清单到了再替换），但 `mcpr:` 的清单永远到不了，于是
+   `mergeSshCodexCatalog(本机目录, [])` 把本机目录里所有 `codex` 型号、以及只有 codex 的来源
+   全部当成「远端没有」剥掉 —— 用户看到的就是「用 MCPR 时 Codex 相关模型一个都不显示」。
+   修复口径与上面同一条：目录**是否存在**也由唯一判据决定（`resolveSshCodexCatalogHostId`），
+   不是由「有没有 remoteHostId」决定；`ChatInput` 的 `sshCodexCatalog` 与
+   `sshCatalogProviders` 都以它为门，非 SSH 目标（本地 / device-link / mcpr）完全不挂该目录，
+   直接使用本机目录。行为级回归在 `chatInputModelLoading.test.tsx` 的 mcpr 用例（断言选择器
+   拿不到 `sshCodex` 目录）与 `remoteTransportProbeWiring.guard.test.ts`（禁止退回裸
+   `sshHostId` 判断）。
+   **仍有意保留的边界**：MCPRouter 是 gateway-key only，`excludeSubscriptionDirect` /
+   `excludeChatBridgedCodex` / `filterChatBridgedCodexProviders(..., !!remoteHostId)` 对 mcpr
+   保持 true —— 订阅直连（`chatgpt/` 等）与仅本机可桥接的来源在那条路由上本就发不出去，
+   它们不显示不是上面的 bug，而是这条路由能力边界。
+   **同日补记（渲染层第四处：错误横幅的「同步 Codex 登录」）**：`ErrorBanner` 同样用裸
+   `remoteHostId` 判断「远端 Codex 缺登录态」，于是 MCPR 会话的 Codex 401 会显示「同步登录态」
+   按钮；点下去把 `mcpr:` 传进 `remoteSsh.checkCodexAuth` / `syncCodexAuth`，主进程
+   `requireConnectedHost` 抛 `SSH_HOST_NOT_FOUND: unknown host: mcpr:…`，用户被指向一个不存在的
+   SSH 主机。修复口径同前：SSH 专属动作先用 `asSshRemoteHostId(remoteHostId)` 取品牌 host，
+   `mcpr:` 不显示该按钮、保留普通 Retry（网关侧重试是有效路径），真 SSH host 行为不变；
+   `remoteTransportProbeWiring.guard.test.ts` 同时禁止这两个 IPC 再收裸 `remoteHostId`。
+   **本轮的渲染层结论**：`remoteHostId` 一律先过 `lib/remoteCodexModelHost.ts` 的判据再进
+   SSH-only 分支；「有 remoteHostId」只等于「这是远端会话」，不等于「这是 SSH 主机」。
 8. **每个远端 hook 的第一句都必须完成 transport 分类或引擎门禁**，而不是只要求
    「SSH-only 探针」分类。2026-09-29 实机证明了这条更严的口径：Pi 引擎在 MCPR 位置下
    建任务，首条消息报

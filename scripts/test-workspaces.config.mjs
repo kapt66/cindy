@@ -314,6 +314,9 @@ const desktopGuardInclude = [
   'src/renderer/__tests__/projectsSidebarSection.test.ts',
   'src/renderer/__tests__/remoteWorkerCreationContext.test.ts',
   'src/renderer/__tests__/remoteAgentModelMemoryWiring.test.ts',
+  // SSH-only 远端 Codex 清单探针的入口接线：哪些渲染层入口可以把 host 交给它，是跨文件
+  // transport 契约（mcpr 模型面来自本机目录）。行为级覆盖在 unit tier。
+  'src/renderer/__tests__/remoteTransportProbeWiring.guard.test.ts',
   'src/renderer/__tests__/orcaRemoteRoutingInvariants.test.ts',
   'src/renderer/__tests__/sidebarCollapseResetSource.test.ts',
   'src/renderer/__tests__/sessionContentHeaderDragRegion.test.ts',

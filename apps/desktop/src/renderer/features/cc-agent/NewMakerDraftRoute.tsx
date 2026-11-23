@@ -378,6 +378,7 @@ import { resolveNewMakerDraftRightSidebar } from './newMakerDraftRightSidebar';
 import { resolveNewMakerDraftEffort } from './newMakerDraftModelPrefs';
 import { loadSshSessionModelSelection, SshModelSelectionError } from './sshSessionModelSelection';
 import { useSshCodexProviders } from '@/hooks/useSshCodexProviders';
+import { resolveSshCodexCatalogHostId } from '@/lib/remoteCodexModelHost';
 import { mergeSshCodexCatalog, type SshCodexCatalog } from '@/lib/sshCodexCatalog';
 import { useSshCodexDraftSelection } from './useSshCodexDraftSelection';
 import { closeAllTabs as closeRightSidebarTabs } from '@/features/right-sidebar/store';
@@ -949,6 +950,12 @@ interface DraftTargetRequest {
   workingDir: string | null;
   /** MCPRouter target; mutually exclusive with device-link. */
   remoteHostId?: string | null;
+  /**
+   * MCPRouter 目标的展示名两段原始值（`{{project}} · {{instance}}`）。与 remoteHostId 一起
+   * 落下：跨重启恢复草稿时只剩 `mcpr:<stable-id>`，没有它只能显示稳定 id。
+   */
+  remoteProjectName?: string | null;
+  remoteInstanceName?: string | null;
   /** Remote MCPRouter workspaces have a different filesystem from the controller. */
   remoteTarget?: boolean;
   /** Only explicit dialogue selections suppress the saved default for this draft. */
@@ -1686,8 +1693,22 @@ export function NewMakerDraftRoute() {
     ],
   );
   const mcprInstanceId = parseMcprRemoteHostId(effectiveRemoteHostId);
+  // 跨重启的展示名：草稿里只存 `mcpr:<stable-id>`，项目名随目标一起持久化
+  // （`remoteProjectName` / `remoteInstanceName`）。渲染时再套 i18n 模板，语言切换后仍正确；
+  // 老草稿没有这两个字段时退回稳定 id（用户重新选一次目标即恢复友好名）。
+  const persistedRemoteTargetLabel = draft.remoteProjectName
+    ? t('newChat.folderPicker.remoteSelected', {
+        project: draft.remoteProjectName,
+        instance: draft.remoteInstanceName || draft.remoteProjectName,
+      })
+    : draft.remoteInstanceName
+      ? t('newChat.folderPicker.remoteSelected', {
+          project: draft.remoteInstanceName,
+          instance: draft.remoteInstanceName,
+        })
+      : null;
   const remoteSessionLabel = mcprInstanceId
-    ? (remoteSessionDisplayLabel ?? mcprInstanceId)
+    ? (remoteSessionDisplayLabel ?? persistedRemoteTargetLabel ?? mcprInstanceId)
     : effectiveRemoteHostId
       ? (effectiveWorkingDir?.split(/[\\/]/).filter(Boolean).pop() ?? effectiveRemoteHostId)
       : null;
@@ -1830,7 +1851,17 @@ export function NewMakerDraftRoute() {
   } = useDeviceProviders(catalogDeviceId);
   // SSH Codex 草稿:Codex 只走远端主机的原生连接,默认模型、来源与档位都按远端清单校准;
   // 本机目录里的 Codex 来源(网关等)发到远端会被 main 拒绝(LAZY_CREATE_FAILED)。
-  const sshDraftHostId = !catalogDeviceId ? (effectiveRemoteHostId ?? null) : null;
+  //
+  // **目标必须是真 SSH 主机**(`resolveSshCodexCatalogHostId`,唯一判据在
+  // `lib/remoteCodexModelHost.ts`)。`mcpr:<instanceId>` 是 MCPRouter 隧道身份,模型面就是
+  // 本机 AI Gateway 目录;2026-11-02 这里手写了「有 remoteHostId 就当 SSH 主机」,于是
+  // 2026-11-23 实机: MCPRouter 远程项目草稿一打开模型选择器,主进程 `LIST_CODEX_MODELS`
+  // 的 transport 分类抛 `INVALID_PARAMS`,选择器顶部弹「无法读取远程设备上的模型」假告警,
+  // codex 类型实例还会被空远端清单剥掉本机目录里的 codex 型号。
+  const sshDraftHostId = resolveSshCodexCatalogHostId({
+    remoteHostId: effectiveRemoteHostId,
+    deviceLinkDeviceId: catalogDeviceId,
+  });
   const sshCodexDraftHostId = capabilityAgentKind === 'codex' ? sshDraftHostId : null;
   const [sshCatalogRequestedHost, setSshCatalogRequestedHost] = useState<string | null>(null);
   useEffect(() => {
@@ -3419,6 +3450,9 @@ export function NewMakerDraftRoute() {
         explicitNoProject: req.workingDir == null && req.explicitNoProject === true,
         // device-link 与 SSH 互斥。
         remoteHostId: req.remoteHostId ?? null,
+        // 展示名跟目标一起写(每次转移都显式带上,缺省 null 顺手清掉上一个目标的旧名字)。
+        remoteProjectName: req.remoteProjectName ?? null,
+        remoteInstanceName: req.remoteInstanceName ?? null,
         // 换设备 → 上一台的路径全失效;进「对话」→ 单次授权不该跨上下文延续。
         // 同机换项目时不传(store 保持原值):那些目录在这台机器上仍然有效。
         ...(deviceChanged || req.workingDir == null ? { extraDirs: [], writableDirs: [] } : {}),
@@ -4498,6 +4532,9 @@ export function NewMakerDraftRoute() {
         deviceName: null,
         workingDir: instance.workingDir,
         remoteHostId: instance.remoteHostId,
+        // 名字与 host id 一起持久化：'mcpr:<stable-id>' 在下次新建会话时还原不出项目名。
+        remoteProjectName: instance.projectName || instance.instanceId,
+        remoteInstanceName: instance.instanceId,
         remoteTarget: true,
       });
       navigate('/cc-agent/new', {

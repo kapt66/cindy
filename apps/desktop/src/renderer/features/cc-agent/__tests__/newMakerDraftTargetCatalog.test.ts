@@ -1634,3 +1634,38 @@ describe('the seed keeps a restored explicit choice', () => {
     expect(spy.mock.calls[0]?.[3]).toBe(true);
   });
 });
+
+// 2026-11-23 用户可见 bug：选中 MCPRouter 远程项目后跨重启，新建会话的项目胶囊显示
+// `mcpr:<stable-id>` 而不是项目名。修复要求选中目标时把展示名两段原始值一起落草稿
+// （`remoteProjectName` / `remoteInstanceName`），本用例锁住生产回调确实这样做。
+describe('MCPRouter remote target display name', () => {
+  it('persists the project name with the target, not only the stable host id', () => {
+    const applyDraftTarget = vi.fn();
+    const selectRemoteSession = callback<(instance: unknown) => void>('handleSelectRemoteSession', {
+      applyDraftTarget,
+      navigate: vi.fn(),
+      switchVendor: vi.fn(),
+      setRemoteSessionDisplayLabel: vi.fn(),
+      draft: { vendor: 'cc' },
+      t: (key: string, options: Record<string, string>) => `${key}:${options.project}:${options.instance}`,
+      sendInFlightRef: { current: false },
+      setFolderPickerOpen: vi.fn(),
+      setMcprChannelSelected: vi.fn(),
+    });
+    selectRemoteSession({
+      remoteHostId: 'mcpr:instance-1',
+      workingDir: '/data/cindy-remote-runtime/workspaces/zhouwenkang/saga2-server',
+      instanceId: 'zhouwenkang/saga2-server',
+      projectName: 'SAGA2服务器',
+      supported: true,
+      available: true,
+      agentType: 'claude',
+    });
+    expect(applyDraftTarget).toHaveBeenCalledWith(expect.objectContaining({
+      remoteHostId: 'mcpr:instance-1',
+      workingDir: '/data/cindy-remote-runtime/workspaces/zhouwenkang/saga2-server',
+      remoteProjectName: 'SAGA2服务器',
+      remoteInstanceName: 'zhouwenkang/saga2-server',
+    }));
+  });
+});

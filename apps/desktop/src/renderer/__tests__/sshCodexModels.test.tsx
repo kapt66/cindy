@@ -6,11 +6,15 @@ import { loadSshSessionModelSelection } from '@/features/cc-agent/sshSessionMode
 import { useSshCodexDraftSelection } from '@/features/cc-agent/useSshCodexDraftSelection';
 import { sshNativeCodexProvider, sshModel } from '@/features/cc-agent/__tests__/sshModelFixtures';
 import { setDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
+import { asSshRemoteHostId, type SshRemoteHostId } from '@/lib/remoteCodexModelHost';
 import { connectedProvidersForAgent } from '@cindy/model-providers';
 import { mergeSshCodexCatalog } from '@/lib/sshCodexCatalog';
 import { sshProvider } from '@/features/cc-agent/__tests__/sshModelFixtures';
 
 const list = vi.fn();
+// 探针入口是品牌类型 `SshRemoteHostId`（见 lib/remoteCodexModelHost.ts）：用例必须和真实调用点
+// 一样先过唯一判据，不能直接用裸字符串。
+const sshHost = (id: string): SshRemoteHostId => asSshRemoteHostId(id) as SshRemoteHostId;
 let statusChanged: (snapshot: RemoteHostSnapshot) => void;
 beforeEach(() => {
   setDataOwnerGeneration('owner', 1);
@@ -84,7 +88,7 @@ describe('SSH Codex model discovery', () => {
     let reject!: (error: Error) => void;
     list.mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }))
       .mockResolvedValue(providers('connected-model'));
-    const view = renderHook(() => useSshCodexProviders('a'));
+    const view = renderHook(() => useSshCodexProviders(sshHost('a')));
     if (!late) await act(async () => reject(new Error('connecting')));
     act(() => {
       statusChanged({ config: { id: 'a' }, status: 'ready' } as RemoteHostSnapshot);
@@ -97,7 +101,7 @@ describe('SSH Codex model discovery', () => {
   });
   it('keeps the catalog on repeated ready snapshots and reloads once on reconnect', async () => {
     list.mockResolvedValue(providers('remote-model'));
-    const view = renderHook(() => useSshCodexProviders('a'));
+    const view = renderHook(() => useSshCodexProviders(sshHost('a')));
     const status = (value: string) => statusChanged({ config: { id: 'a' }, status: value } as RemoteHostSnapshot);
     act(() => { status('ready'); status('ready'); });
     await waitFor(() => expect(view.result.current.status).toBe('ready'));
@@ -116,7 +120,7 @@ describe('SSH Codex model discovery', () => {
     let finish!: (value: ReturnType<typeof providers>) => void;
     list.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }))
       .mockResolvedValue(providers('host-b'));
-    const view = renderHook(({ hostId }) => useSshCodexProviders(hostId), { initialProps: { hostId: 'a' } });
+    const view = renderHook(({ hostId }: { hostId: string }) => useSshCodexProviders(sshHost(hostId)), { initialProps: { hostId: 'a' } });
     view.rerender({ hostId: 'b' });
     await waitFor(() => expect(view.result.current.providers[0]?.models.codex?.[0].id).toBe('host-b'));
     await act(async () => { finish(providers('host-a')); });
@@ -131,7 +135,7 @@ describe('SSH Codex model discovery', () => {
     let finish!: (value: ReturnType<typeof providers>) => void;
     list.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }))
       .mockRejectedValueOnce(new Error('offline')).mockResolvedValue(providers('new'));
-    const view = renderHook(() => useSshCodexProviders('a'));
+    const view = renderHook(() => useSshCodexProviders(sshHost('a')));
     setDataOwnerGeneration('other', 2);
     view.rerender();
     await waitFor(() => expect(view.result.current.status).toBe('error'));
@@ -195,5 +199,19 @@ describe('SSH Codex model discovery', () => {
     });
     expect(list).not.toHaveBeenCalled();
     expect(selection).toEqual({ ok: false, reason: 'catalog-error' });
+  });
+  // 2026-11-23 实机：新建任务草稿把 `mcpr:<id>` 当成 SSH 主机喂进这条探针，主进程
+  // `LIST_CODEX_MODELS` 按 transport 分类抛 `INVALID_PARAMS`，模型选择器顶部因此弹出
+  // 「无法读取远程设备上的模型」假告警（远端请求从未发出）。品牌类型已让裸 `string`
+  // 编译不过；这条用例锁住钩子里的运行时保险：非 SSH 身份连 `refresh()` 都零次 IPC，
+  // 也不进入 error 态 —— 否则选择器又会把它渲染成「连接失败，重试」。
+  it('never probes for a non-SSH identity even through an untyped caller', async () => {
+    list.mockResolvedValue(providers('remote-native'));
+    const mcprHost = 'mcpr:f235de4c-bed5-4486-a83e-71baa3f22a46' as unknown as SshRemoteHostId;
+    const view = renderHook(() => useSshCodexProviders(mcprHost));
+    expect(view.result.current.status).toBe('ready');
+    expect(view.result.current.providers).toEqual([]);
+    await act(async () => { view.result.current.refresh(); });
+    expect(list).not.toHaveBeenCalled();
   });
 });

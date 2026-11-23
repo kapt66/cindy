@@ -1334,6 +1334,22 @@ ensure 响应之后把同一条连接当 pi JSONL（与 SSH 逐字节同源，�
 控制端 in-process MCP bridge（无反向转发）与 `Agent 流量走本地 Proxy` 的 tunnel 模式；
 provider/凭证语义沿用 SSH，不为该位置新增任何供应商门禁。
 
+2026-11-23 修复一处 Meka 位置回归（两个用户可见症状同源）：2026-11-02 新增的「SSH 草稿
+Codex 目录」在新建任务草稿里把任意 `remoteHostId`（含 `mcpr:<instanceId>`）当成 SSH 执行主机。
+① MCPRouter 远程项目一打开模型选择器就向 SSH-only 的
+`maker:remote-ssh:list-codex-models` 探针发请求，主进程按 transport 分类抛
+`INVALID_PARAMS`，选择器顶部因此显示「无法读取远程设备上的模型。请检查连接后重试。」
+——远端请求从未发出；② `ChatInput` 给「模型面就是本机目录」的目标挂了空的 SSH Codex 目录，
+`mergeSshCodexCatalog(本机目录, [])` 把本机目录里所有 codex 型号（及只有 codex 的来源）当成
+「远端没有」剥掉，表现为「用 MCPR 时 Codex 相关模型一个都不显示」。修复把 transport 判据收成
+渲染层唯一入口 `renderer/lib/remoteCodexModelHost.ts`（品牌类型 `SshRemoteHostId` +
+探针判据 + 目录判据），钩子只接受品牌类型并在发 IPC 前复核，`ChatInput` 的两处派生也以目录
+判据为门（非 SSH 目标完全不挂该目录、直接用本机目录）；错误横幅里 SSH 专属的「同步
+Codex 登录」同样改用品牌 host（MCPR 会话不再把 `mcpr:` 送进 `checkCodexAuth`/`syncCodexAuth`，
+保留普通 Retry）。另加 guard tier 接线契约与白名单 WL-29 作为合并验收项。MCPRouter 的模型面继续是本机 AI Gateway 目录，不改任何远端协议或
+服务端行为；订阅直连与仅本机可桥接的 codex 来源在该路由上本就不可用（gateway-key only），
+保持既有排除口径。
+
 ### 4.8 Orca Worker 微调
 
 本模块不能只按“目标选择器”迁移。XDMaker `meka/main` 的 Meka Orca 是一条完整链路：

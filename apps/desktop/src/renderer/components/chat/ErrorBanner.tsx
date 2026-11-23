@@ -28,6 +28,7 @@ import { useProviders } from '@/hooks/useProviders';
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { providerDisplayNameById } from '@/lib/providerDisplayName';
+import { asSshRemoteHostId } from '@/lib/remoteCodexModelHost';
 import { isCodexResumeNotReadyProjectionError } from '@cindy/maker-shared/agent-input-projection';
 import {
   isCcMgrRuntimeVersionMismatchError,
@@ -246,6 +247,11 @@ export function ErrorBanner({
   // SSH 与 device-link 是两种互斥的远端来源，但都不能读取或修复控制端本机认证。
   // 保留具体 id 而不是只传 boolean，SSH Codex 仍可使用既有的定向凭证同步入口。
   const isAnyRemoteSession = Boolean(remoteHostId) || Boolean(deviceLinkDeviceId);
+  // `remoteHostId` 是「两种 transport 身份」的联合（SSH host / `mcpr:<instance.id>`）。
+  // SSH 专属动作（把本机 Codex 登录态推到执行主机）只能用品牌类型：MCPRouter 的 Codex
+  // 走本机 AI Gateway key，没有可推送的远端 `auth.json`，把 `mcpr:` 传进 SSH 探针只会得到
+  // `SSH_HOST_NOT_FOUND: unknown host: mcpr:…` 这种误导错误（2026-11-23）。
+  const sshRemoteHostId = asSshRemoteHostId(remoteHostId);
   const isLocalAuthSession = !isAnyRemoteSession && !agentDeviceId;
   // 本会话 codex app-server 的 spawn 鉴权注入(oauth-bearer = 走订阅 / env-key = 走网关 / provider-oauth = proxy 注入供应商 OAuth)。
   // 默认 'env-key'(保守):真值未回来前不会误命中 OAuth 引导分支而短暂 hide Retry。
@@ -305,7 +311,9 @@ export function ErrorBanner({
   const isOversizedHistoryError =
     agentKind === 'codex' && errorReason === 'codex_history_oversized';
   // SSH 不能自动剥图。本机 / device-link 由 main 侧协调器就地恢复，横幅不给按钮。
-  const isSshRemoteSession = Boolean(remoteHostId);
+  // 注意：这是「有 remoteHostId 的会话」，包含 MCPRouter（mcpr:）—— 只影响文案，
+  // SSH 专属动作必须用 sshRemoteHostId。
+  const isRemoteHostSession = Boolean(remoteHostId);
   // Codex 401 auth-missing detection 分三层:
   //  - isCodexAuthMissing: codex session + 401/Missing bearer pattern。
   //  - isCodexRemoteAuthMissing: 远端 codex + 上面命中 → 显「同步登录态」按钮。
@@ -346,7 +354,9 @@ export function ErrorBanner({
   // "Unauthorized file system access" 等非 HTTP-auth 误伤。
   const isCodexAuthMissing =
     agentKind === 'codex' && isCodexOpenAiSource && /\b401\b|Missing bearer/i.test(error);
-  const isCodexRemoteAuthMissing = isCodexAuthMissing && !!remoteHostId;
+  // 「同步登录态」= 把本机 auth.json 推到 SSH 执行主机：只对真 SSH host 成立。
+  // MCPRouter（mcpr:）的 Codex 只带本机 AI Gateway key，没有可推送的远端登录态。
+  const isCodexRemoteAuthMissing = isCodexAuthMissing && sshRemoteHostId != null;
   const isCodexLocalOAuthAuthMissing =
     isCodexAuthMissing && isLocalAuthSession &&
     (hasExplicitOpenAiProvider || codexAuthInjection === 'oauth-bearer');
@@ -572,7 +582,7 @@ export function ErrorBanner({
     displayError = t('chat.errorBanner.invalidEncryptedContent');
   } else if (isOversizedHistoryError) {
     displayError = t(
-      isSshRemoteSession
+      isRemoteHostSession
         ? 'logic.errors.codexHistoryOversizedRemote'
         : 'logic.errors.codexHistoryOversized',
     );
@@ -768,16 +778,16 @@ export function ErrorBanner({
   // 4. 看 daemonRestart.ok: false 时显软提示 (auth 推送了但 daemon 没重启,
   //    需要 reconnect 才能用新 auth) 而不是误导的 "已同步, 请重试"。
   const handleSyncAuth = async (): Promise<void> => {
-    if (!remoteHostId) return;
+    if (!sshRemoteHostId) return;
     setSyncing(true);
     try {
-      const status = await window.electronAPI.remoteSsh.checkCodexAuth(remoteHostId);
+      const status = await window.electronAPI.remoteSsh.checkCodexAuth(sshRemoteHostId);
       if (!status.localExists) {
         toast.error(t('settings.remote.toast.codexSyncNoLocal'));
         return;
       }
       const description = buildCodexSyncWarning(
-        remoteHostId,
+        sshRemoteHostId,
         status.remoteExists,
         status.remoteMtime,
         t,
@@ -793,7 +803,7 @@ export function ErrorBanner({
       });
       if (!ok) return;
 
-      const syncResult = await window.electronAPI.remoteSsh.syncCodexAuth(remoteHostId);
+      const syncResult = await window.electronAPI.remoteSsh.syncCodexAuth(sshRemoteHostId);
       if (!syncResult.daemonRestart.ok) {
         // pkill 失败 (eg. 远端没装 pkill / 权限不足) → daemon 还在跑旧 auth, 不能
         // 让 banner 切成 "已同步, Retry" 否则 Retry 还会撞 401。提示用户去

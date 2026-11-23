@@ -139,6 +139,33 @@ describe('ErrorBanner Codex xAI auth classification', () => {
     expect(screen.queryByRole('button', { name: 'logic.confirm.goToSettings' })).toBeNull();
     expect(screen.queryByText('chat.errorBanner.codexAuthMissingLocal')).toBeNull();
   });
+
+  // 2026-11-23：「同步登录态」= 把本机 auth.json 推到 **SSH 执行主机**。`remoteHostId` 是
+  // SSH host 与 `mcpr:<instance-id>` 的联合；MCPRouter 的 Codex 只带本机 AI Gateway key，
+  // 没有可推送的远端登录态，给它显示这个按钮只会把 `mcpr:` 送进 SSH 探针并得到
+  // `SSH_HOST_NOT_FOUND: unknown host`。MCPRouter 会话保留普通 Retry（网关侧重试是有效的），
+  // 真 SSH host 保留同步入口。
+  it.each([
+    ['mcpr:f235de4c-bed5-4486-a83e-71baa3f22a46', false],
+    ['ssh-computer', true],
+  ])('only offers SSH auth sync for real SSH hosts (%s)', (remoteHostId, offersSync) => {
+    render(
+      <ErrorBanner
+        error="401 Unauthorized from Codex"
+        agentKind="codex"
+        remoteHostId={remoteHostId}
+        retryText="original"
+        onRetry={vi.fn()}
+      />,
+    );
+    if (offersSync) {
+      expect(screen.getByText('chat.errorBanner.syncAuth')).toBeTruthy();
+      expect(screen.queryByTitle('chat.errorBanner.retryTitle')).toBeNull();
+    } else {
+      expect(screen.queryByText('chat.errorBanner.syncAuth')).toBeNull();
+      expect(screen.getByTitle('chat.errorBanner.retryTitle')).toBeTruthy();
+    }
+  });
 });
 
 describe('ErrorBanner context-overflow retry', () => {

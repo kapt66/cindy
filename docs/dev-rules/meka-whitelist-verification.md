@@ -3958,7 +3958,7 @@ Meka 不继承该默认集，也不接管旧安装，改用随包清单。`apply
 与 `applyAutomaticUpgrades:false` 保持不变，清单安装在独立路径
 （`applyBundledDefaultInstalls`）执行，不能顺带升级用户自行安装的其它 Meka 插件。
 
-**结构断言**
+**代码锚点**
 - `apps/desktop/src/main/plugin-market/mekaDefaultPlugins.ts`：只认 `ghostId` 字段，
   校验 schemaVersion / 上限 / 重复 / 非法字符；ENOENT 才是 `missing`，其它 errno 为
   `unreadable`。
@@ -3974,8 +3974,8 @@ Meka 不继承该默认集，也不接管旧安装，改用随包清单。`apply
 
 **自动化门禁**：`vitest run src/main/plugin-market/__tests__/mekaDefaultPlugins.test.ts
 src/main/plugin-market/__tests__/service.test.ts`（清单读取/校验、ghostId → 资源 id、
-bundled 路径安装、服务端默认集不生效、资源 id 退订不装回）；`pnpm --filter desktop run
-typecheck`、`pnpm check:test-hygiene`、`pnpm test:unit:related`。
+bundled 路径安装、服务端默认集不生效、资源 id 退订不装回）；`pnpm --filter desktop run typecheck`、
+`pnpm check:test-hygiene`、`pnpm test:unit:related`。
 **2026-11-20 实跑**：两个定向文件 **388 passed**；`check:test-hygiene` PASS（353 files）；
 `typecheck` PASS（main 6399 + renderer 4571）；`test:unit:related` PASS
 （`apps/desktop unit` 1699.9s，6 chunks）。
@@ -3987,3 +3987,70 @@ typecheck`、`pnpm check:test-hygiene`、`pnpm test:unit:related`。
 **未验证**：真实 MCPRouter 目录中四个 ghostId 的 resolve 结果与资源 id 映射（单测用
 合成资源 id 覆盖）；扩权更新停在待确认的用户可见提示；清单在真实打包产物中的存在性
 （仅由 Forge 资源树一致性间接保证）。
+
+### WL-29 MCPRouter 模型面不走 SSH-only 清单探针（2026-11-23 登记）
+
+**保护的不变量**
+1. `remoteHostId` 的 transport 分类在渲染层只有一个判据：`mcpr:<instanceId>`（含畸形 `mcpr:`、
+   带空格的实例值）永远不是 SSH 执行主机；本地目标与 device-link 目标同样不是。
+2. SSH-only 探针 `maker:remote-ssh:list-codex-models` 只接受真 SSH 主机。MCPRouter 的 Codex
+   模型面就是本机 AI Gateway 目录（远端 bridge 只带本机 key，`resolveRemoteCodexCredentialMode`
+   判 `gateway-key`），不得向远端读清单，也不得把本机目录当「读失败」。
+3. 非 SSH 目标不得因为这条探针进入失败态：模型选择器不出现「无法读取远程设备上的模型」，
+   草稿不剥掉本机目录里的 codex 型号、也不把首选项钉成 `providerId:'openai'`。
+   **会话与草稿都一样**：目标没有远端 Codex 清单时（本地 / device-link / `mcpr:`），
+   `mergeSshCodexCatalog` 不参与模型面 —— 否则空目录会把本机目录里所有 codex 型号整组剥掉
+   （2026-11-23 用户反馈「MCPR 下 Codex 模型全不显示」即此）。
+4. 主进程 `LIST_CODEX_MODELS` 的 transport 分类（第二道保险）保留：非 SSH 抛
+   `INVALID_PARAMS`，失败归因是事实而不是「重连后重试」。
+
+**代码锚点**
+- `apps/desktop/src/renderer/lib/remoteCodexModelHost.ts`：品牌类型 `SshRemoteHostId`、
+  `asSshRemoteHostId`、`resolveRemoteCodexModelHostId`、`resolveSshCodexCatalogHostId`。
+  判据与主进程 `main/maker-host/remote-session-routing.ts` 的 `classifyRemoteSessionTransport`
+  逐字一致（共用 `MCPR_REMOTE_HOST_PREFIX`）。
+- `apps/desktop/src/renderer/hooks/useSshCodexProviders.ts`：参数为 `SshRemoteHostId`，发 IPC
+  前再用同一判据复核；非 SSH 身份零次调用、不进入 `error`。
+- 渲染层消费方：`components/chat/ErrorBanner.tsx`（SSH 专属的「同步 Codex 登录」用
+  `asSshRemoteHostId(remoteHostId)` 取品牌 host；mcpr 不显示该按钮、保留 Retry）、
+  `components/new-chat/ChatInput.tsx`（`resolveRemoteCodexModelHostId` 管探针、
+  `resolveSshCodexCatalogHostId` 管「是否挂 SSH Codex 目录」；两者的门都不是裸
+  `remoteHostId`）、`features/cc-agent/NewMakerDraftRoute.tsx`（`resolveSshCodexCatalogHostId`）、
+  `features/cc-agent/sshSessionModelSelection.ts`。
+- `apps/desktop/src/main/remote-ssh/index.ts`：`LIST_CODEX_MODELS` 先分类再读。
+
+**自动化门禁**：`pnpm test:guard`（`remoteTransportProbeWiring.guard.test.ts` 静态锁定上述接线）、
+unit tier 的 `errorBannerCodexXaiAuth.test.tsx`（mcpr 会话不出现「同步登录态」、真 SSH 仍保留）、
+`remoteCodexModelHost.test.ts`（渲染层判据 × 主进程分类器输入矩阵）、
+`sshCodexModels.test.tsx`（mcpr 身份零 IPC、不进入 error）与 `chatInputModelLoading.test.tsx`
+（mcpr 会话不得给选择器挂 SSH Codex 目录 —— codex 型号不被剥掉的生产入口回归）、
+`pnpm --filter desktop run typecheck`（品牌类型让裸 host 编译不过）、`pnpm check:test-hygiene`；
+提交前统一跑 `pnpm test:unit:related`。
+**2026-11-23 实跑**：`remoteCodexModelHost.test.ts` + `sshCodexModels.test.tsx` → 2 files /
+32 tests passed；新 guard 文件 → 6 tests passed，并做过**变异验证**（把草稿判据改回
+`!catalogDeviceId ? remoteHostId : null` 后该 guard 立刻变红，恢复后转绿）；
+`chatInputModelLoading.test.tsx` 的 mcpr 用例先红后绿（改前选择器拿到
+`{providers:[],status:'idle'}`，改后为 `undefined`）；受影响单测最终一轮 8 files / 526 tests
+passed（`chatInputModelLoading` / `unifiedModelPanelRendering` / `newMakerDraft*` /
+`remoteCodexCreation` 等；第一次修复后另加测的 `newMakerDraftRemoteHost` /
+`newMakerDraftWorkspaceReset` / `newMakerDraftSubmission` / `offlineAgentModelPanel` 也已通过）；
+`pnpm --filter desktop run typecheck` PASS（main 6411 + renderer 4574 文件）；
+`pnpm check:test-hygiene` PASS（353 files）；`check:dev-docs` 11/11 PASS。
+**同批另修两条存量门禁红（非本项代码引入）**：`pnpm test:runner` 的 WL-28 文档契约两条失败
+（`origin/meka/main` 同样红：WL-28 缺「代码锚点」，其
+`pnpm --filter desktop run typecheck` 命令在文档里被换行截断）已一并修掉，
+避免任何提交都被 runner 阶段挡住。
+
+**实机验证**：MCPRouter 已连接 → 新建任务草稿选「MCPR远程」+ 远程项目（claude 类型与 codex
+类型实例各一次）→ 打开模型选择器：不出现「无法读取远程设备上的模型」，列表为本机 Cindy AI
+目录、codex 型号与改动前一致；`main-<日期>.log` 不再出现 `maker:remote-ssh:list-codex-models`
+的 `INVALID_PARAMS`；真 SSH 项目草稿照旧读到那台主机的 Codex 清单（回归）。
+
+**与上游的关系**：**刻意分歧（Meka 私有修复）**。上游没有 MCPRouter 这条 transport，
+`mcpr:` 分类、第二道保险、品牌类型与入口判据都在本仓；上游同步时按本项验收，不得被上游版本
+覆盖成「任意 `remoteHostId` 都是 SSH 主机」。
+
+**未验证**：① 本轮**未启动 GUI 实机**跑上述 MCPR 草稿步骤（只有单测、guard 接线契约与
+typecheck 证据，打包后仍须按「实机验证」逐条确认）；② Pi 类型 MCPRouter 实例的草稿选择器
+实机点击（同一判据覆盖，本轮未点）；③ 真 SSH 草稿的远端 Codex 清单读取（既有行为，本轮未做
+实机回归）。

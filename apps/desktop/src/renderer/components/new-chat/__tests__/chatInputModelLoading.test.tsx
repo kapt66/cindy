@@ -545,10 +545,17 @@ it('keeps MCPRouter Codex tasks off the SSH-only model probe', async () => {
   );
   const { rerender } = render(input('mcpr:f235de4c-bed5-4486-a83e-71baa3f22a46'));
   await waitFor(() => expect(h.sshCodexHostId).toBeNull());
+  // 2026-11-23 用户反馈「MCPR 下 Codex 相关模型全不显示」：模型面就是本机目录的目标**不得**给
+  // 选择器挂一个 SSH Codex 目录 —— `mergeSshCodexCatalog(本机目录, [])` 会把本机目录里所有
+  // codex 型号（以及只有 codex 的来源）当成「远端没有」整组剥掉。只有真 SSH 主机才会先挂
+  // 空目录、等远端清单到达后替换。
+  expect(h.sshCodex).toBeUndefined();
   // MCPR 位置下引擎面收掉 Pi，但当前引擎(Codex)必须仍在列 —— 收敛不能把正在用的引擎摘掉。
   expect(screen.getByTestId('model-selector')).toBeTruthy();
   rerender(input('builder'));
   await waitFor(() => expect(h.sshCodexHostId).toBe('builder'));
+  // SSH 目标照旧挂上远端目录（当前引擎是 Codex，所以立即读；h.remoteStatus 这里是 error）。
+  expect(h.sshCodex).toMatchObject({ status: 'error' });
 });
 
 it('lets a new SSH task with no window report reach main on model selection and retry', async () => {

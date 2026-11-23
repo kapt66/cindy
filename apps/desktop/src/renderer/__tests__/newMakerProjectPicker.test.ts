@@ -886,9 +886,13 @@ describe('Shared create project picker', () => {
   // #807 review 第十二轮:in-flight 保护要覆盖**工作区** pill,不只是设备 pill —— 否则用户点了
   // Send 还能从远程项目 X 切到 Y,会话建在 X 里、刚选的 Y 又被 create 后的重置清掉。
   it('disables and guards workspace switching while a send is in flight', () => {
-    // 设备、工作区以及本次创建会消费的 worktree 配置都要冻结。
+    // 设备、工作区以及本次创建会消费的 worktree 配置都要冻结。三处控件的 disabled 表达式后来
+    // 各自长了本地前缀（工作区 pill 的 `isFormalDraft ||`、设备 pill 的 `wtCheckoutBusy ||`），
+    // 所以这里只断言「同一个 disabled 表达式里同时出现 sendInFlight 与
+    // directoryRecoverySelecting」，不再锁字面前缀；控件数仍是 3（2026-11-23 复核：设备 pill /
+    // 项目·工作区 pill / worktree 设置）。新增会消费创建目标的控件时这条计数必须变并在此登记。
     expect(
-      (newMakerDraftRouteSource.match(/disabled=\{\s*wtCreating \|\| (?:wtCheckoutBusy \|\| )?sendInFlight \|\| directoryRecoverySelecting\s*\}/g) ?? []).length,
+      (newMakerDraftRouteSource.match(/disabled=\{[^}]*sendInFlight[^}]*directoryRecoverySelecting[^}]*\}/g) ?? []).length,
     ).toBe(3);
     const handler = newMakerDraftRouteSource.slice(
       newMakerDraftRouteSource.indexOf('const handleModePickerSelect = useCallback('),
@@ -1299,12 +1303,14 @@ describe('Shared create project picker', () => {
    * 它真正依赖的那一半(设备 / 项目)。新增路径时,①会直接失败,而②保证它自动是对的。
    */
   it('routes every draft-target transition through the single action', () => {
-    // 七条路径 = 上游五条(设备 pill、设备域浏览器选项目、工作区 picker、所选设备失效后的
-    // 自动回落、「对话」分组导航请求)+ Meka 的 MCPRouter channel 与实例选择两条。
-    // 声明本身是 `= useCallback(` 不匹配这个模式,所以数出来的就是调用点。
+    // 九条路径 = 上游五条(设备 pill、设备域浏览器选项目、工作区 picker、所选设备失效后的
+    // 自动回落、「对话」分组导航请求)+ Meka 的 MCPRouter channel 与实例选择两条 +
+    // 「默认工作目录」的两次预填(对话目标请求内与通用对话入口各一处,见
+    // `shouldPrefillDefaultNewTaskWorkingDir`)。声明本身是 `= useCallback(` 不匹配这个模式,
+    // 所以数出来的就是调用点。
     // (远程 Agent 由模型选择器选择、只在本机任务出现,不再经设备菜单转移草稿目标。)
     const calls = newMakerDraftRouteSource.match(/applyDraftTarget\(\{/g) ?? [];
-    expect(calls.length).toBe(7);
+    expect(calls.length).toBe(9);
     // 组件里不得再有任何一处手写这些副作用 —— 手写一处就等于又开了一条绕过推导的路。
     // patchDraft 仍可出现(入场清 extraDirs、发送后复位),但不得再带设备字段。
     expect(newMakerDraftRouteSource).not.toContain('deviceLinkDeviceId: deviceId,');

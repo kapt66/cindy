@@ -106,7 +106,7 @@ import {
 // Meka: MCPRouter 位置判定（`mcpr:<instanceId>`）。附件安全/预览判定已随上游
 // composer 重构迁到 `hooks/useAttachments.ts` 与 `./ComposerAttachments.tsx`；
 // Codex 的「按 SSH 执行主机读远端清单」判定收在 `lib/remoteCodexModelHost`。
-import { resolveRemoteCodexModelHostId } from '@/lib/remoteCodexModelHost';
+import { resolveRemoteCodexModelHostId, resolveSshCodexCatalogHostId } from '@/lib/remoteCodexModelHost';
 import {
   getDraft as getComposerDraft,
   getOrCreateRemoteOptimisticTransitionCheckpoint,
@@ -2173,6 +2173,14 @@ export function ChatInput({
   // 读远端清单前会确保远端装好 Codex,所以当前不是 Codex 时等用户打开模型选择器再读;
   // 读过一次后保持,换到别的引擎也不丢 Codex 那一组。
   const sshHostId = !deviceLinkDeviceId ? remoteHostId ?? null : null;
+  // 「这个目标有没有远端 Codex 清单」= 只有真 SSH 执行主机有（本地 / device-link / `mcpr:` 都没有，
+  // 后者的模型面就是本机 AI Gateway 目录）。判据正本见 `lib/remoteCodexModelHost.ts`。
+  //
+  // 不能再用裸 `sshHostId` 当这个条件：给 `mcpr:` 目标挂一个 `{providers:[], status:'idle'}` 的
+  // 空 SSH 目录后，下面 `mergeSshCodexCatalog(本机目录, [])` 会把本机目录里的 codex 型号
+  //（以及只有 codex 的来源）当成「远端没有」整组剥掉 —— 2026-11-23 用户反馈「MCPR 下
+  // Codex 相关模型全不显示」就是这条。
+  const sshCodexTargetHostId = resolveSshCodexCatalogHostId({ remoteHostId, deviceLinkDeviceId });
   // `mcpr:` 必须排除:那条「按 SSH 执行主机读远端 Codex 清单」的探针只接受真正的 SSH host,
   // MCPRouter 的 Codex 走本机 AI Gateway,模型面就是本机目录(见 `lib/remoteCodexModelHost.ts`)。
   // 该纯函数同时承担「只有 Codex 才探」这条上游语义(agentKind !== 'codex' 直接返回 null)。
@@ -2185,26 +2193,29 @@ export function ChatInput({
   useEffect(() => {
     if (sshCodexHostId) setSshCodexRequestedHostId(sshCodexHostId);
   }, [sshCodexHostId]);
-  const sshCodexCatalogHostId =
-    sshHostId && (sshCodexHostId || sshCodexRequestedHostId === sshHostId) ? sshHostId : null;
+  // 品牌类型入口：这条探针只接受真 SSH 主机（`remoteHostId` 是裸值，含 `mcpr:`）。
+  const sshCodexCatalogHostId = sshCodexTargetHostId &&
+    (sshCodexHostId || sshCodexRequestedHostId === sshCodexTargetHostId)
+    ? sshCodexTargetHostId
+    : null;
   const ownSshCodexProviders = useSshCodexProviders(sshCodexCatalogOverride ? null : sshCodexCatalogHostId);
   const sshCodexProviders = sshCodexCatalogOverride ?? ownSshCodexProviders;
   const requestSshCodexCatalog = useCallback(() => {
-    if (sshHostId) setSshCodexRequestedHostId(sshHostId);
-  }, [sshHostId]);
+    if (sshCodexTargetHostId) setSshCodexRequestedHostId(sshCodexTargetHostId);
+  }, [sshCodexTargetHostId]);
   const sshCodexCatalog = useMemo<SshCodexCatalog | undefined>(
-    () => sshCodexCatalogOverride ?? (sshHostId
+    () => sshCodexCatalogOverride ?? (sshCodexTargetHostId
       ? sshCodexCatalogHostId
         ? sshCodexProviders
         : { providers: sshCodexProviders.providers, status: 'idle', refresh: requestSshCodexCatalog }
       : undefined),
-    [sshCodexCatalogOverride, sshHostId, sshCodexCatalogHostId, sshCodexProviders, requestSshCodexCatalog],
+    [sshCodexCatalogOverride, sshCodexTargetHostId, sshCodexCatalogHostId, sshCodexProviders, requestSshCodexCatalog],
   );
   const localProviders = useProviders();
   const remoteProviders = useDeviceProviders(catalogDeviceId);
   const sshCatalogProviders = useMemo(
-    () => sshHostId ? mergeSshCodexCatalog(localProviders.providers, sshCodexProviders.providers) : null,
-    [sshHostId, localProviders.providers, sshCodexProviders.providers],
+    () => sshCodexTargetHostId ? mergeSshCodexCatalog(localProviders.providers, sshCodexProviders.providers) : null,
+    [sshCodexTargetHostId, localProviders.providers, sshCodexProviders.providers],
   );
   // 已建立的本机任务跟着账号走：账号被拆出 / 移走后，原来源在这个任务里按账号现在所在的供应商显示和放行
   // (sourceSwitch.ts followedAccountSourceProvider)。草稿、远程、SSH 与其他任务不受影响。
