@@ -1226,6 +1226,85 @@ describe('GhostManager · 存量插件一次性迁移(§5 升级无感)', () => 
   });
 });
 
+describe('GhostManager · skill 插件能力批准', () => {
+  const skillManifest = (id: string) => ({
+    ...goodManifest(id),
+    slots: ['tool', 'agent', 'skill'],
+    agent: { tasks: true },
+    skill: { items: [{ dir: 'skills/demo', name: 'demo', description: 'Demo skill' }] },
+  });
+  const skillFiles = {
+    'main.js': '// plugin',
+    'skills/demo/SKILL.md': '---\nname: demo\ndescription: Demo skill\n---\n\nApproved instructions\n',
+  };
+
+  async function installSkillPlugin(fileName: string): Promise<{ ghost: InstalledGhost; revision: string }> {
+    const result = await manager.install(await makeCindy(fileName, skillManifest('skilled-tasks'), skillFiles));
+    if ('rejection' in result) throw new Error(JSON.stringify(result.rejection));
+    if (result.ghost.approval.state !== 'approved') throw new Error('fixture not approved');
+    return { ghost: result.ghost, revision: result.ghost.approval.revision };
+  }
+
+  // Bug: 批准原先在 worker 入口把 sourceDir 当必填,已发布的完好快照走不到
+  // fast path,声明 skill 的插件每次批准都报 approved skill snapshot is missing。
+  // Minimum input: 带 skill 槽的插件 + 一次 approveTaskCapability。
+  it('批准任务能力时复用完好快照,不把缺失 sourceDir 误报成 snapshot missing', async () => {
+    const { ghost, revision } = await installSkillPlugin('skilled-tasks.cindy');
+    expect(
+      await manager.approveTaskCapability(installedGhostStoragePart(ghost), revision, () => true),
+    ).toBe(true);
+    const approved = manager.list().find((item) => item.dir === ghost.dir);
+    expect(approved?.taskCapabilityApproved).toBe(true);
+    expect(await manager.verifyApprovedSkillSnapshot(approved!)).toBe(true);
+  });
+
+  // 快照被外部删掉时,批准仍应从当前安装目录重建并逐字节核对 receipt,
+  // 而不是把插件卡在"不重装就不能批准"。
+  it('批准时从安装目录重建被删掉的技能快照', async () => {
+    const { ghost, revision } = await installSkillPlugin('skilled-rebuild.cindy');
+    expect(ghost.approvedSkillRoot).toBeTruthy();
+    await fs.promises.rm(ghost.approvedSkillRoot!, { recursive: true, force: true });
+    expect(
+      await manager.approveTaskCapability(installedGhostStoragePart(ghost), revision, () => true),
+    ).toBe(true);
+    const approved = manager.list().find((item) => item.dir === ghost.dir);
+    expect(approved?.taskCapabilityApproved).toBe(true);
+    expect(await manager.verifyApprovedSkillSnapshot(approved!)).toBe(true);
+  });
+
+  // 页面能力批准走同一条纯状态写入,同样不能因为缺少重建来源而失败。
+  it('页面能力批准同样复用完好快照', async () => {
+    const manifest = {
+      ...goodManifest('skilled-ui'),
+      schemaVersion: 3,
+      minCindyVersion: '0.1.122-beta',
+      slots: undefined,
+      agent: { tasks: true },
+      mcpApps: {
+        ui: {
+          resources: [{ uri: 'ui://form', file: 'ui/form.html' }],
+          tools: { do_thing: { resourceUri: 'ui://form' } },
+        },
+      },
+      skill: { items: [{ dir: 'skills/demo', name: 'demo', description: 'Demo skill' }] },
+    };
+    const result = await manager.install(await makeCindy('skilled-ui.cindy', manifest, {
+      ...skillFiles,
+      'ui/form.html': '<p>App</p>',
+    }));
+    if ('rejection' in result) throw new Error(JSON.stringify(result.rejection));
+    const ghost = result.ghost;
+    if (ghost.approval.state !== 'approved') throw new Error('fixture not approved');
+    const revision = ghost.approval.revision;
+    expect(
+      await manager.approveUiCapability(installedGhostStoragePart(ghost), revision, () => true),
+    ).toBe(true);
+    const approved = manager.list().find((item) => item.dir === ghost.dir);
+    expect(approved?.uiCapabilityApproved).toBe(true);
+    expect(await manager.verifyApprovedSkillSnapshot(approved!)).toBe(true);
+  });
+});
+
 describe('GhostManager · owner 受管根路径', () => {
   it('允许 userData 祖先通过 symlink/junction 重定位', async () => {
     const physicalUserData = path.join(workDir, 'physical-user-data');

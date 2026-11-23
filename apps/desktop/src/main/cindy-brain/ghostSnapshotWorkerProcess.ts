@@ -188,7 +188,11 @@ export async function runGhostSnapshotWorkerRequest(
     );
     send({ ok: true }); return;
   }
-  if (!request.receipt || !request.sourceDir) throw new Error('approved skill snapshot is missing');
+  // 纯状态改写(批准/启停)不产生新的技能字节:已发布的快照只要与 receipt 钉住的
+  // 指纹逐字节一致就直接复用,不能把 sourceDir 当成前置条件——否则下面的 fast
+  // path 永远走不到,会把"快照其实完好"误报成 snapshot missing。
+  // 只有确实需要重建时才要求源目录,并保持 fail closed。
+  if (!request.receipt) throw new Error('approved skill snapshot is missing');
   let exists = false;
   let existingTargetIdentity: { realPath: string; dev: bigint; ino: bigint } | undefined;
   try {
@@ -215,6 +219,7 @@ export async function runGhostSnapshotWorkerRequest(
       send({ ok: true }); return;
     }
   }
+  if (!request.sourceDir) throw new Error('approved skill snapshot is missing');
   try {
     const parentKind = await classifyGhostDirEntry(workPath(parts[0]));
     if (parentKind !== 'directory') throw new Error('snapshot parent identity changed');

@@ -8337,3 +8337,33 @@ WL-11 代码锚点与 `meka-injection-layer.md` §3.3，白名单覆盖现状是
     因此**不写** `pnpm test:unit:related` PASS。
   - `pnpm desktop:ui-smoke` **未跑**（需要运行中的 Desktop 实例）；Light/Dark 与真实插件
     面板的实机目检也**未做**，登记为「未验证 + 原因」。
+
+### 11.42 2026-11-23 声明 skill 的插件能力批准恒失败：纯状态写入不再要求技能快照源目录
+
+> 本条是**新条目**，不改写任何带日期的历史原句。现象：Meka Docs 0.3.591
+> （`agent.tasks: true` + `skill.items`）点「确认任务权限」弹「操作失败，请稍后重试」，
+> 宿主日志留下 `approved skill snapshot is missing`。
+
+- **根因**：`approveTaskCapability` / `approveUiCapability` 写 receipt 时只带 `relId`，
+  没有 `skillSourceDir`；`GhostSnapshotWorker` 在 `lstat` 已有快照**之前**就判
+  `!sourceDir` 抛错，已发布且指纹匹配的快照走不到 fast path；`write()` 在 receipt
+  rename 前退出，批准不落盘。安装／更新／启停不受影响，因为它们本来就传源目录。
+- **修复**：① worker 先按 receipt 校验已存在快照，只有确实需要重建时才要求源目录；
+  快照缺失／不匹配且无源目录时仍 fail closed。② 两条批准路径统一经
+  `GhostManager.approvalStateWriteOptions` 传当前安装目录，快照被外部删除时按批准
+  receipt 逐字节校验后重建，不要求用户重装。
+- **兼容面**：receipt schema、快照路径与指纹、manifest 校验、授权字段均未改；已装插件
+  无需重装、重确认或重配，旧 receipt 按原语义读取；停用方向仍永远可成功
+  （`setEnabled` 的 `requireSkillSnapshot:false` 未改）。
+- **测试**：`ghostInstallReceipt.test.ts` 覆盖无 `sourceDir` 复用匹配快照、需要重建时
+  fail closed；`GhostManager.test.ts` 覆盖任务批准落盘、快照删除后批准自愈、页面能力
+  批准落盘。其中 store 用例在回退 worker 修复后实测变红，确认钉住原缺陷。
+- **验证（2026-11-23 实跑）**：
+  - `pnpm --filter desktop run typecheck` → **exit 0**（分片覆盖 10495 个文件）。
+  - `pnpm test:unit:related` → **PASS**（`apps/desktop unit`，4 chunks，2036.8s）。
+  - `pnpm check:test-hygiene` → **PASS（353 files）**；`pnpm check:dev-docs` → **11/11 PASS**。
+  - 定向 vitest：`ghostInstallReceipt.test.ts` 49/49；`GhostManager.test.ts` 新用例 3/3。
+  - 定向 `eslint` 只报 `GhostManager.test.ts` 既有的 4064/5172/6785 三处，均不在本次 diff。
+- **未验证**：Windows 实机点击 Meka Docs「确认任务权限」的 UI 端到端未在本次跑（需要
+  真实安装与账号），登记为「未验证 + 原因」。
+- **白名单**：未新增／删除 Meka 能力，WL 清单不变。

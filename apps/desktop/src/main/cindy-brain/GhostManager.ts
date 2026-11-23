@@ -3372,6 +3372,21 @@ export class GhostManager {
     return runtimeManifest;
   }
 
+  /**
+   * 纯状态改写(能力批准)的统一写入参数。
+   *
+   * 批准不产生新的技能字节:快照已存在且匹配时 write() 直接复用;缺失时以当前
+   * 安装目录为重建来源并逐字节核对 receipt。漏传 sourceDir 会让声明 skill 的
+   * 插件每次批准都停在 `approved skill snapshot is missing`。
+   */
+  private approvalStateWriteOptions(relId: string, assertCurrent: () => void): {
+    relId: string;
+    skillSourceDir: string;
+    assertCurrent: () => void;
+  } {
+    return { relId, skillSourceDir: this.contentPath(relId), assertCurrent };
+  }
+
   /** Called only after Host permission UI confirms this exact installed revision. */
   async approveTaskCapability(id: string, revision: string, isCurrent: () => boolean, capability: PluginTaskCapability = 'tasks'): Promise<boolean> {
     return this.runExclusiveMutation(async () => {
@@ -3387,10 +3402,10 @@ export class GhostManager {
       if (approval.receipt[field] !== true) {
         const expired = new Error('Task capability approval owner changed');
         try {
-          await this.receiptStore.write({ ...approval.receipt, [field]: true }, {
-            relId,
-            assertCurrent: () => { if (!isCurrent()) throw expired; },
-          });
+          await this.receiptStore.write(
+            { ...approval.receipt, [field]: true },
+            this.approvalStateWriteOptions(relId, () => { if (!isCurrent()) throw expired; }),
+          );
         } catch (error) {
           if (error === expired) return false;
           throw error;
@@ -3409,9 +3424,10 @@ export class GhostManager {
       const installed = findInstalledGhostByInstanceId(this.list(), id);
       if (!isCurrent() || approval.state !== 'approved' || approval.receipt.revision !== revision ||
         !installed?.enabled || !pluginHasToolUi(installed.manifest)) return false;
-      await this.receiptStore.write({ ...approval.receipt, uiCapabilityApproved: true }, {
-        relId, assertCurrent: () => { if (!isCurrent()) throw new Error('Page capability approval expired'); },
-      });
+      await this.receiptStore.write(
+        { ...approval.receipt, uiCapabilityApproved: true },
+        this.approvalStateWriteOptions(relId, () => { if (!isCurrent()) throw new Error('Page capability approval expired'); }),
+      );
       return isCurrent();
     });
   }

@@ -14,8 +14,10 @@ import {
   effectiveInstallOrigin,
   type GhostInstallReceipt,
   GhostInstallReceiptStore,
+  hashApprovedSkillContent,
   isValidGhostSourceStateArchiveId,
 } from '../ghostInstallReceipt';
+import { runGhostSnapshotWorkerRequest } from '../ghostSnapshotWorkerProcess';
 
 describe('GhostInstallReceiptStore cleanup', () => {
   it('accepts only a canonical random archive namespace destination', () => {
@@ -679,6 +681,63 @@ describe('GhostInstallReceiptStore cleanup', () => {
       'skill snapshot path segment is not a real directory',
     );
     expect(await fs.promises.readFile(sentinel, 'utf8')).toBe('keep');
+  });
+
+  // Bug: 纯状态写入(能力批准)原先在 worker 入口把 sourceDir 当必填,已发布且
+  // 指纹匹配的快照走不到 fast path,声明 skill 的插件永远批不下来。
+  // Contract: 有匹配快照时不要求源目录;需要重建时仍然 fail closed。
+  it('reuses a matching skill snapshot for state-only writes and fails closed when a rebuild is needed', async () => {
+    const sourceDir = path.join(workDir, 'skill-source');
+    await fs.promises.mkdir(path.join(sourceDir, 'skills', 'demo'), { recursive: true });
+    await fs.promises.writeFile(
+      path.join(sourceDir, 'skills', 'demo', 'SKILL.md'),
+      '---\nname: demo\ndescription: Demo skill\n---\n\nApproved instructions\n',
+    );
+    const validated = validateGhostManifest({
+      schemaVersion: 2,
+      id: 'hello',
+      name: 'Hello',
+      version: '1.0.0',
+      kind: 'chip',
+      entry: 'main.js',
+      slots: ['tool', 'agent', 'skill'],
+      tools: [{ name: 'do_thing', description: 'Do something' }],
+      agent: { tasks: true, observe: true },
+      skill: { items: [{ dir: 'skills/demo', name: 'demo', description: 'Demo skill' }] },
+    });
+    if (!validated.ok) throw new Error(validated.reason);
+    const receipt = createGhostInstallReceipt({
+      manifest: validated.manifest,
+      localeResources: {},
+      enabled: true,
+      trust: { level: 'unverified', publisherSigned: false, publisherVerified: false, reviewed: false },
+      skillContentSha256: await hashApprovedSkillContent(validated.manifest, sourceDir),
+    });
+    const snapped = new GhostInstallReceiptStore(
+      () => stateRoot,
+      async ({ parentDir, ...workerRequest }) => runGhostSnapshotWorkerRequest(workerRequest, parentDir),
+    );
+    await snapped.write(receipt, { relId: 'hello', skillSourceDir: sourceDir });
+    const snapshotRoot = snapped.skillSnapshotRoot('hello', receipt.revision);
+    expect(await snapped.skillSnapshotMatchesReceipt(receipt, snapshotRoot)).toBe(true);
+
+    // approveTaskCapability()/approveUiCapability() 是纯状态写入:没有源目录,
+    // 已发布且匹配的快照必须直接复用。
+    await snapped.write({ ...receipt, taskCapabilityApproved: true }, { relId: 'hello' });
+    expect(snapped.read('hello')).toMatchObject({
+      state: 'approved',
+      receipt: { taskCapabilityApproved: true, revision: receipt.revision },
+    });
+
+    // 快照缺失且没有源目录时必须失败,不能把"需要重建"当成成功。
+    await fs.promises.rm(snapshotRoot, { recursive: true, force: true });
+    await expect(
+      snapped.write({ ...receipt, taskCapabilityApproved: true, observeCapabilityApproved: true }, { relId: 'hello' }),
+    ).rejects.toThrow('approved skill snapshot is missing');
+    expect(snapped.read('hello')).toMatchObject({
+      state: 'approved',
+      receipt: { taskCapabilityApproved: true, revision: receipt.revision },
+    });
   });
 
   it('rejects a linked receipt instead of treating it as cleaned', async () => {
