@@ -77,8 +77,10 @@ function conditionMatches(row: Record<string, unknown>, condition: SQL): boolean
   return compileCondition(condition).every((p) => row[p.column] === p.value);
 }
 
-vi.mock('../../localDb/client/current.js', () => ({
-  getDbClient: () => ({
+vi.mock('../../localDb/client/current.js', () => {
+  // 同一个 client 实例:2026-11-20 的创建侧身份解析会再读一次 db,
+  // 生产代码用对象身份判断「中途是否换账号」;每次返回新字面量会被误判为换账号。
+  const client = {
     drizzle: {
       insert: () => ({
         values: (row: Record<string, unknown>) => {
@@ -106,8 +108,9 @@ vi.mock('../../localDb/client/current.js', () => ({
         }),
       }),
     },
-  }),
-}));
+  };
+  return { getDbClient: () => client };
+});
 
 // schema.js 同样需要指向 hoisted 行存储的列名映射;这里不 mock schema,
 // 直接用真实 schema(drizzle 列对象的 name 即 db 列名)。
