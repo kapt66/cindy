@@ -87,7 +87,7 @@ import { resolveSafe as resolveXdtImageUrl } from '../../imageCacheStore.desktop
 import { resolveSafe as resolveCindyMediaUrl } from '../../cindy-media/blobStore.desktop';
 import { beginHeadlessGhostSetupTurn } from '../../mcp-integrations/ghostSetupInteractionSurface.js';
 import { applyMekaRuntimeConfig } from '../../meka-injection/index.js';
-import { readPersistedMekaSessionBinding } from '../../meka-injection/persistedBinding.js';
+import { ensurePersistedMekaSessionBinding } from '../../meka-injection/persistedBinding.js';
 import type { MakerSessionCreateOpts } from '../../maker-ipc/sessionRequest.js';
 
 import {
@@ -2233,7 +2233,7 @@ export function createTurnRunner(
           mekaRole: row.mekaRole,
         });
         await applyMekaRuntimeConfig(createOpts, {
-          readPersistedSession: readPersistedMekaSessionBinding,
+          readPersistedSession: ensurePersistedMekaSessionBinding,
         });
       }
       current = await maker.createSession(createOpts);
@@ -2510,7 +2510,7 @@ export function createTurnRunner(
     // 进程里跑起来的却是普通会话。`maker.getSession` 命中 = 本进程已启动过它，注入在那次已
     // 生效，跳过（live session 行为不变）。绑定读库 / 注入失败按本轮既有错误路径抛出，不吞。
     const coldStart = !maker.getSession(row.id);
-    const mekaBinding = coldStart ? await readPersistedMekaSessionBinding(row.id) : null;
+    const mekaBinding = coldStart ? await ensurePersistedMekaSessionBinding(row.id) : null;
     const createOpts: MakerSessionCreateOpts = {
       id: row.id,
       agentKind: row.agentKind,
@@ -2540,7 +2540,7 @@ export function createTurnRunner(
       });
       // 渠道 vendorOptions 已在上方构造：注入层只 spread 合并 Meka 补丁键，不整体重写。
       await applyMekaRuntimeConfig(createOpts, {
-        readPersistedSession: readPersistedMekaSessionBinding,
+        readPersistedSession: ensurePersistedMekaSessionBinding,
       });
     }
     const makerSession = await maker.createSession(createOpts);

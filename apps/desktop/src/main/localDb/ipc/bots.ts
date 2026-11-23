@@ -24,6 +24,7 @@ import type { OpenDialogOptions } from 'electron';
 import { and, desc, eq, gt, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 
 import { getDbClient, tryGetDbClient } from '../client/current';
+import { resolveSessionIdentityForCreate } from '../sessionIdentity.js';
 import { flushAssistantSamplingMetadata } from '../../messagePersistBroadcaster.desktop.js';
 import { notifyAgentIslandCompanionChanged } from '../agentIslandSessionPatch.js';
 import type {
@@ -394,15 +395,28 @@ export async function ensureBotGroupLaneSession(input: {
   if (!primaryRoute) return { ok: false, errorCode: 'NO_MODEL', message: '伙伴还没有可用模型' };
   const workspaceKind = input.plan || wantedProject ? ('project' as const) : ('dialogue' as const);
   const workingDir = input.plan ? input.plan.workDir : wantedProject ?? await ensureBotWorkspaceDir(owner.userDataDir, input.botId, app.getPath('userData'));
+  // 群 lane 可以直接工作在群项目目录（bot-group-chat.md §7.5）。若该目录就是本机已注册的
+  // Meka 项目，新行必须与创建侧身份同一次写入成对绑定（docs/dev-rules/
+  // meka-assistant-session-binding.md §2）。事务里不能 await，先在这里解析完再进 tx。
+  const identity = await resolveSessionIdentityForCreate({
+    workspaceKind,
+    workingDir,
+    projectDir: wantedProject,
+    remoteHostId: null,
+    agentDeviceId: primaryRoute?.agentDeviceId ?? null,
+  });
+  owner.assertCurrent();
   const now = Date.now();
   const sessionId = resolveBusinessSessionId(input.plan?.sessionId);
   const row = {
     ...sessionCreateToRow(
       sessionId,
       {
-        workspaceKind,
+        workspaceKind: identity.workspaceKind,
         workingDir,
-        ...(wantedProject ? { projectDir: wantedProject } : {}),
+        ...(identity.projectDir ? { projectDir: identity.projectDir } : {}),
+        mekaProjectId: identity.mekaProjectId,
+        mekaRoleId: identity.mekaRoleId,
         ...botSessionRouteFields(config, primaryRoute),
         remoteHostId: undefined,
         source: 'bot',
@@ -414,7 +428,7 @@ export async function ensureBotGroupLaneSession(input: {
   const gitSafety = readGitSafetySettings();
   await ensureProjectGitInitialized({
     workingDir,
-    workspaceKind,
+    workspaceKind: row.workspaceKind,
     remoteHostId: null,
     sessionId,
     autoSnapshotEnabled: gitSafety.autoSnapshotEnabled,
@@ -432,6 +446,9 @@ export async function ensureBotGroupLaneSession(input: {
       title: row.title,
       workingDir: row.workingDir ?? null,
       ...(row.projectDir ? { projectDir: row.projectDir } : {}),
+      ...(row.mekaProjectId
+        ? { mekaProjectId: row.mekaProjectId, mekaRoleId: row.mekaRoleId }
+        : {}),
       workspaceKind: row.workspaceKind,
       model: row.model,
       effort: row.effort,

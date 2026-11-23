@@ -827,6 +827,36 @@ describe('MakerScheduleRunner send outcome policy', () => {
     expect(latestNotifiedRun(notifier).status).toBe('success');
   });
 
+  it('routes the drift-recycle rebuild through the startup funnel (Meka runtime re-injection)', async () => {
+    // 回归:重建若绕过 `bootstrapSession`,会拿一份**没被持久行注入过**的 createSessionOpts
+    // 起新实例 —— 库里是 Meka、运行期却是普通会话(prompt/MCP/技能全丢)。重建与首次启动
+    // 必须走同一个 funnel;这里钉住第二次 create 仍然经过 bootstrapSession。
+    const h = createSessionHarness(async () => ({ accepted: true }));
+    const rebuilt = createSessionHarness(async () => ({ accepted: true }));
+    let created = 0;
+    const bootstrapSession = vi.fn(async (_opts: { id?: string; agentKind?: string; workingDir?: string }) => {
+      created += 1;
+      return created === 1 ? h.session : rebuilt.session;
+    });
+    const { runner, maker } = createRunnerHarness(h.session, { bootstrapSession });
+    (maker.recyclePiRuntimeIfResourcesDrifted as ReturnType<typeof vi.fn>).mockResolvedValue(true);
+    const firePromise = runner.fire(baseSchedule(), createFireContext());
+    await vi.waitFor(() => expect(rebuilt.send).toHaveBeenCalled());
+    rebuilt.emit({ type: 'done', data: {} } as AgentEvent);
+    await firePromise;
+
+    expect(bootstrapSession).toHaveBeenCalledTimes(2);
+    // 重建沿用同一持久会话 id 与启动参数，只是重新经过 funnel（生产侧由持久行 ensure +
+    // applyMekaRuntimeConfig 重新注入 Meka 运行时）。
+    expect(bootstrapSession.mock.calls[1]?.[0]).toMatchObject({
+      agentKind: 'codex',
+      workingDir: 'F:\\XDMaker',
+    });
+    expect(bootstrapSession.mock.calls[1]?.[0]?.id).toBe(bootstrapSession.mock.calls[0]?.[0]?.id);
+    expect(maker.createSession).not.toHaveBeenCalled();
+    expect(mocks.wireSessionToIpc).toHaveBeenCalledWith(rebuilt.session);
+  });
+
   it('surfaces rebuild failure loudly after a successful recycle instead of sending to a closed instance', async () => {
     // 回归(fe45afa803 语义):回收成功(旧实例已关)后的重建失败必须上抛原始原因,
     // 继续用已关闭实例只会把真实原因换成误导性的「会话已关闭」。

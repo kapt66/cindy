@@ -13,7 +13,7 @@ import { normalizeWorkingDirForStorage } from '../../shared/workingDir.js';
 import type { DbClient } from '../localDb/client/DbClient.js';
 import { normalizeRemoteHostId } from '../localDb/mapper.js';
 import { sessions } from '../localDb/schema.js';
-import { resolveSessionWorkspaceBinding } from './workspaceBindingResolver.js';
+import { resolveSessionIdentityForCreate } from './sessionIdentity.js';
 
 type DbAgentKind = 'cc' | 'codex' | 'pi';
 
@@ -84,22 +84,34 @@ export class OwnerSessionStorage implements SessionStorage {
     const workspaceKind = normalizeWorkspaceKind(meta.workspaceKind);
     const remoteHostId = normalizeRemoteHostId(meta.remoteHostId);
     const agentDeviceId = remoteHostId ? null : normalizeRemoteHostId(meta.agentDeviceId);
-    // 隐式 Meka 助理绑定（2026-11-20）：工作区根落到已注册 Meka 项目路径时，新行写成
-    // 「普通 workspaceKind + 成对绑定」，不再写 kind='meka'。显式 Meka 创建（旧 kind）
-    // 优先；远程 / 跨设备会话由解析端口跳过。本适配器也被不装端口的 apps/host 复用，
-    // 端口未安装时解析返回 null，普通会话行为不变。规则见
-    // docs/dev-rules/meka-assistant-session-binding.md §2。
-    const binding =
-      workspaceKind === 'meka'
-        ? null
-        : await resolveSessionWorkspaceBinding({ workingDir, projectDir, remoteHostId, agentDeviceId });
+    // 创建侧身份唯一入口：工作区根落到已注册 Meka 项目路径时，新行写成
+    // 「普通 workspaceKind + 成对绑定」，不再写 kind='meka'。这里也覆盖
+    // scheduler / device-link / Orca 等由 maker storage 建行的路径；显式绑定由
+    // 调用方先 provision 行（bootstrap 收口），storage 只负责路径推断。
+    // 本适配器也被不装端口的 apps/host 复用，端口未安装时解析返回 null。
+    // 规则见 docs/dev-rules/meka-assistant-session-binding.md §2。
+    const identity = await resolveSessionIdentityForCreate({
+      workspaceKind,
+      workingDir,
+      projectDir,
+      remoteHostId,
+      agentDeviceId,
+      // SessionMeta 不携带显式绑定：显式身份必须先由 host 创建缝落行
+      // （bootstrap / openSession），storage 只做路径兜底。
+      mekaProjectId: null,
+      mekaRoleId: null,
+    });
     // 解析读的是当前账号的 Meka 项目注册表；写库用的是进入 create 时捕获的 client。
     // 中途换账号时不能把另一个账号的项目/角色绑定写进旧账号的行（与其它两条创建缝同口径）。
     if (this.deps.db() !== capturedClient) {
       throw new Error('Account changed while opening the session');
     }
-    const rowWorkspaceKind = binding ? 'project' : workspaceKind;
-    const rowProjectDir = binding?.workspacePath ?? projectDir;
+    const binding = identity.mekaProjectId && identity.mekaRoleId
+      ? { projectId: identity.mekaProjectId, roleId: identity.mekaRoleId,
+          workspacePath: identity.projectDir ?? workingDir }
+      : null;
+    const rowWorkspaceKind = identity.workspaceKind;
+    const rowProjectDir = identity.projectDir ?? projectDir;
     await db.insert(sessions).values({
       id: meta.id,
       title: meta.title,

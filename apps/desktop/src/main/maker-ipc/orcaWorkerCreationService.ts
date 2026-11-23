@@ -401,11 +401,6 @@ export interface OrcaWorkerCreationDeps {
     didInjectOrcaInstructions: boolean;
     didInjectProjectContext: boolean;
   }>;
-  persistMekaWorkerBinding(params: {
-    sessionId: string;
-    projectId: string;
-    roleId: string;
-  }): Promise<void>;
   addOrUpdateWorker(worker: OrcaWorkerRecordInput): Promise<void>;
   markOrcaRoleIfNeeded(sessionId: string, role: 'worker'): Promise<void>;
   closeWorkerSession(sessionId: string): Promise<void>;
@@ -1770,7 +1765,8 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
         // 未指定目录时保留 Lead 的 workspace 语义（包括 dialogue 托管目录）。
         // 显式选择目录才使用 project，并在 bootstrap 前完成校验。
         workspaceKind: usesHostResolvedTarget
-          ? lead.workspaceKind
+          // 新 Worker 是普通 kind + 绑定；旧 Lead 的 meka 只作历史展示，不再复制给新行。
+          ? (hasMekaAssistantBinding(lead) ? 'project' : lead.workspaceKind)
           : params.workingDir === undefined
             ? lead.workspaceKind
             : 'project',
@@ -1814,19 +1810,8 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
         return toInternalFailure(err);
       }
 
-      // 成对绑定才继承并持久化；kind 只作展示（旧 kind='meka' 缺绑定的 Lead 已在上方拒绝）。
-      if (hasMekaAssistantBinding(lead)) {
-        try {
-          await deps.persistMekaWorkerBinding({
-            sessionId: workerSession.id,
-            projectId: lead.mekaProjectId!,
-            roleId: lead.mekaRoleId!,
-          });
-        } catch (err) {
-          await cleanupBootstrappedWorkerSession(workerSession.id);
-          return toInternalFailure(err);
-        }
-      }
+      // 身份在 bootstrap 前随 sessions 行原子写入（register 的创建收口），这里不再有
+      // 事后补绑定步骤；worker 行必须已是成对绑定，否则说明创建协议被绕过。
       const renewed = reservationValid
         ? await deps.renewWorkerCreationReservation(workerId, ORCA_WORKER_CREATION_RESERVATION_LEASE_MS).catch(() => false)
         : false;

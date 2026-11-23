@@ -16,6 +16,10 @@ import { migrationNativeContext } from '../migrationNativeContext';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DB_TRANSPORT_OUTCOME_UNKNOWN } from '../../localDb/client/DbTransport.js';
+import {
+  setWorkspaceBindingResolver,
+  type WorkspaceBindingResolveInput,
+} from '../../localDb/workspaceBindingResolver.js';
 // 角色行夹具由包内注册表派生（见 `bundledDefaultRoleRow`），不手抄生产里可能已不存在的角色。
 import { BUILTIN_MEKA_PROJECTS, mekaDefaultRoleId } from '../../../shared/meka-projects.js';
 
@@ -517,6 +521,7 @@ async function writeBundleFile(bytes: Buffer, password?: string): Promise<string
 
 describe('sessionShareImport', () => {
   beforeEach(async () => {
+    setWorkspaceBindingResolver(null);
     closeSharedTaskForTask.mockReset().mockResolvedValue(undefined);
     dbMock.conflictRow = null;
     dbMock.conflictForResumeId = null;
@@ -2205,6 +2210,111 @@ describe('sessionShareImport', () => {
     };
     expect(txArgs.session.workspaceKind).toBe('project');
     expect(txArgs.session.workingDir).toBe(newWorkdir);
+  });
+
+  // ── 普通分享包（无 meka 段）× 本机路径隐式绑定 ──
+  // 规则 §2：会话工作区精确等于本机已注册 Meka 项目目录时绑定该项目默认角色。
+  // 普通分享包没有 Meka 段，但导入到该目录时必须在落库时补齐成对绑定，不能等首个 turn。
+
+  it('binds an ordinary bundle when its working dir is a local Meka project', async () => {
+    const resolver = vi.fn(async (input: WorkspaceBindingResolveInput) =>
+      input.workingDir === newWorkdir
+        ? { projectId: 'saga2', roleId: 'saga2-default-role', workspacePath: newWorkdir }
+        : null,
+    );
+    setWorkspaceBindingResolver(resolver);
+    try {
+      const { result } = await commitBundle({}, newWorkdir);
+      // 主进程在事务前按本地工作区解析；远端路径不参与（这里根本没有远端）。
+      expect(resolver).toHaveBeenCalledWith(expect.objectContaining({
+        workingDir: newWorkdir,
+        projectDir: null,
+        remoteHostId: null,
+      }));
+      expect(result.sessionId).toBeTruthy();
+      // 包本身没有 Meka 身份，不产生「恢复 / 丢失」note。
+      expect(result.notes.filter((note) => note.startsWith('meka'))).toEqual([]);
+      const txArgs = dbMock.txCalls[0].args as {
+        session: { workspaceKind: string; workingDir: string };
+      };
+      expect(txArgs.session.workspaceKind).toBe('project');
+      // 落库后一条 UPDATE 成对写绑定 + 项目根（与 tx 里的普通 project kind 同一事务语义）。
+      expect(dbMock.execCalls).toHaveLength(1);
+      const [bindingCall] = dbMock.execCalls;
+      expect(bindingCall.sql).toContain('meka_project_id = ?');
+      expect(bindingCall.sql).toContain('meka_role_id = ?');
+      expect(bindingCall.sql).toContain('project_dir = ?');
+      expect(bindingCall.params).toEqual([
+        'saga2',
+        'saga2-default-role',
+        newWorkdir,
+        expect.any(Number),
+        result.sessionId,
+      ]);
+    } finally {
+      setWorkspaceBindingResolver(null);
+    }
+  });
+
+  it('keeps the import ordinary when local Meka resolution fails', async () => {
+    // 解析失败（项目注册表 / 设置暂时不可用）不能阻断导入；包没有承诺 Meka 身份，不提示。
+    setWorkspaceBindingResolver(async () => {
+      throw new Error('project registry unavailable');
+    });
+    try {
+      const { result } = await commitBundle({}, newWorkdir);
+      expect(result.sessionId).toBeTruthy();
+      expect(dbMock.execCalls).toHaveLength(0);
+      expect(result.notes.filter((note) => note.startsWith('meka'))).toEqual([]);
+    } finally {
+      setWorkspaceBindingResolver(null);
+    }
+  });
+
+  it('keeps the import ordinary when the implicit binding UPDATE fails', async () => {
+    setWorkspaceBindingResolver(async () => ({
+      projectId: 'saga2',
+      roleId: 'saga2-default-role',
+      workspacePath: newWorkdir,
+    }));
+    dbMock.execError = new Error('db down');
+    try {
+      const { result } = await commitBundle({}, newWorkdir);
+      // 事务已提交（历史可恢复），绑定写入失败只降级为普通任务，不反转导入、不提示。
+      expect(result.sessionId).toBeTruthy();
+      expect(dbMock.execCalls).toHaveLength(1);
+      expect(result.notes.filter((note) => note.startsWith('meka'))).toEqual([]);
+    } finally {
+      setWorkspaceBindingResolver(null);
+    }
+  });
+
+  it('does not add an implicit binding during a device handoff', async () => {
+    // 交接身份由交接方决定（Meka 会话在迁移入口已被拒绝）；导入端不悄悄补新身份。
+    setWorkspaceBindingResolver(async () => ({
+      projectId: 'saga2',
+      roleId: 'saga2-default-role',
+      workspacePath: newWorkdir,
+    }));
+    try {
+      const migrationId = '11111111-2222-4333-a444-555555555555';
+      const filePath = await writeBundleFile(await buildBundle({}));
+      const inspect = await inspectShareFile(filePath);
+      if (inspect.encrypted) throw new Error('unexpected encrypted fixture');
+      const result = await commitShareImport(
+        {
+          draftId: inspect.draftId,
+          workingDir: newWorkdir,
+          projectsRootOverride: projectsRoot,
+          sharedMediaRootOverride: sharedMediaRoot,
+        },
+        { sessionId: migrationId, workingDir: newWorkdir },
+      );
+      expect(result.sessionId).toBe(migrationId);
+      expect(dbMock.execCalls).toHaveLength(0);
+    } finally {
+      setWorkspaceBindingResolver(null);
+    }
   });
 
   it('round-trip: exporting a meka session and importing it preserves the binding', async () => {

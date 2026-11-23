@@ -7308,6 +7308,99 @@ Codex/Claude/Pi 原生读 `AGENTS.md`/`CLAUDE.md`/`SKILL.md`，不看我们的 m
   `workingDirComparisonKey` 规范化，符号链接 realpath、跨电脑同名路径、P4 根变化后的旧会话
   未覆盖；④ 官方飞书正式支持仍需协议改动（本轮明确不做）。
 
+### 11.40 2026-11-23 Orca Worker「did not persist as a Meka workspace」：身份只靠启动后补写的根因与创建 / 启动统一收口（row-first）
+
+> 本条是**新条目**，不改写任何带日期的历史原句；§11.39 的结论仍然成立（身份 = 成对绑定），
+> 本条修的是**写入时机**。规则正本
+> [`docs/dev-rules/meka-assistant-session-binding.md`](../dev-rules/meka-assistant-session-binding.md)
+> §2 / §3 与 [`docs/dev-rules/meka-injection-layer.md`](../dev-rules/meka-injection-layer.md) §1 / §2；
+> 白名单落点 **WL-3.9** 的 2026-11-23 追加块。
+
+- **现象（回归报告）**：Orca 创建 Worker 时 `create_worker` 失败并回滚 / 归档，报
+  `Worker session <sessionId> did not persist as a Meka workspace`。触发面是**会走
+  `bootstrapSession` + 启动后补绑定的 Worker 分支**：本机 Worker 与带 `remoteHostId` 的
+  远端 Worker（SSH / MCPRouter）。普通本地 Meka 会话（桌面显式创建的行本来就带绑定）不受
+  影响，因此最初看起来像「Worker 专属」问题。
+- **根因链（按当前 `meka/main` 的 2026-11-20 实现逐环还原）**：
+  1. §11.39 把身份改成成对绑定后，Worker 的 Lead 绑定只被塞进 `createOpts`
+     （`orcaWorkerCreationService` 继承 `lead.mekaProjectId` / `lead.mekaRoleId`），而
+     `sessions` 行的落库仍发生在 `maker.createSession → OwnerSessionStorage.create`。
+  2. `OwnerSessionStorage.create` 收到的是 maker-core 的 `SessionMeta`，**它不携带显式
+     Meka 绑定**（`packages/maker-core/src/maker.ts` 只传 `workspaceKind` / `projectDir` 等），
+     所以 storage 只能按工作区路径推断身份。Worker 的实际工作目录是 Host 解析出来的目标
+     （MCPRouter 实例目录 / SSH 远端目录 / P4 子目录 / 自动 worktree），通常**不是本机 Meka
+     项目根**；带 `remoteHostId` 时路径推断更是被直接跳过 ⇒ 行落库时没有成对绑定。
+  3. `bootstrapSessionOnce` 当时直接按 `createOpts` 里的绑定注入，并把这行留给启动后的
+     `deps.persistMekaWorkerBinding` 补写；注入本身成功，所以运行期一度像 Meka 会话。
+  4. `bootstrapSession` 返回后 `persistMekaWorkerBinding` 读回该行，用
+     `hasMekaAssistantBinding` 判「有没有持久化为 Meka」，读到空抛
+     `Worker session <id> did not persist as a Meka workspace`；创建服务随即
+     `cleanupBootstrappedWorkerSession` 归档任务并返回 `INTERNAL`。
+  5. **结构性根因**：身份有两条写入路径（创建缝 INSERT / 启动后 UPDATE），而显式身份在
+     `SessionMeta` 这一层丢失 ⇒ 「先按 opts 运行、再补写行」的两段式在任何「工作区路径不是
+     本机 Meka 项目根」的入口上都会失败。Orca Worker 只是最先被用户看到的那条。
+     「另一台电脑执行」的远端 Worker 分支不经过这段补写，但它另有「协议无 Meka 字段、
+     无身份传递」的缺口（见下方风险 1）。
+- **修复（本批，row-first + 创建侧统一身份入口）**：
+  - **唯一创建侧身份入口** `localDb/sessionIdentity.ts` 的 `resolveSessionIdentityForCreate`：
+    显式成对绑定优先；半绑定直接抛错；`remoteHostId` 不做本机路径推断；`agentDeviceId`
+    仍参与（工作区在本机）；旧 `kind='meka'` 命中路径时归一 `project`。
+  - **启动前建行** `localDb/sessionProvisioning.ts` 的 `insertProvisionedSessionRow`：
+    `bootstrapSessionOnce` 在 Agent 启动前把解析出的身份随 `sessions` 行**一次 INSERT** 落库
+    （`onConflictDoNothing` 幂等），覆盖远端 Worker / worktree / device-link / scheduler 等
+    「路径不是本机 Meka 项目根」的入口；随后 `maker.createSession` 命中已有行（跳过
+    `storage.create`，只回写 `sdkSessionId`）。
+  - **启动失败清理**：本次先建的行在 Agent 启动前失败时删除，条件 `sdkSessionId IS NULL`
+    （绝不删已挂 Agent 的行），删除失败只 `log.warn`。
+  - **Orca Worker**：删除 `OrcaWorkerCreationDeps.persistMekaWorkerBinding` 与启动后补写；
+    Worker 行由上面 row-first 保证，绑定来自 Lead；新 Worker 的 `workspaceKind` 归一
+    `'project'`（旧 Lead 的 `'meka'` 只作历史展示，不再复制给新行）；Lead 缺完整成对绑定
+    仍直接拒绝创建 Worker（既有守卫不变）。
+  - **运行期注入数据源统一**：`applyMekaRuntimeConfig` 仍是唯一入口，`deps.readPersistedSession`
+    换成 `meka-injection/persistedBinding.ts` 的 `ensurePersistedMekaSessionBinding`：读持久行 +
+    「本地工作区命中 Meka 项目但未绑定」的行按路径升级一次并写回（`IS NULL` 条件 UPDATE；
+    半绑定 / 远端行不修；已绑定行零写入；账号切换中途抛错）。桌面不再内联只读查询。
+  - **其它创建缝统一**：`openSession`、`OwnerSessionStorage.create`、IM `sessionRepo` 的手工
+    INSERT / `/new` 轮换 / `switchSessionWorkingDir`、`sessions:update`、伙伴群 lane
+    (`bots.ts` + `createGroupLane` tx)、Cindy Make、会话导入 / `relocateImportedSession`、
+    fork、Orca Worker（经 bootstrap）都走同一身份规则；无法在 worker/tx 内解析的路径
+    （导入 worker、群 lane tx）在 main 侧解析好再带进同一次 INSERT。
+  - **非 bootstrap 启动路径收口**：休眠 Goal 恢复在 `maker.createSession` 前先 ensure 再走同一
+    注入入口；scheduler 的 Pi runtime 漂移重建改回 `bootstrapSession` funnel（不再裸
+    `createSession`）；Pi runtime 预启动经 renderer `maker:create-session` →
+    `registerMakerSessionCreateHandler` → `bootstrapSessionOnce`。**均未实机验证。**
+- **兼容与不迁移**：普通存量行**不批量回填、不写 migration、不扫全库**；一条历史普通行只有
+  在**被首次启动**时（桌面 / IM / hook / Goal / 调度）才按本地工作区升级成 Meka 会话；未启动
+  的行保持原样。半绑定行**不自动修**（新写入已拒绝产生）；`remoteHostId` 行不由本机升级。
+  旧 `workspace_kind='meka'` / 旧 `mekaRole` 行继续按 §11.39 兼容双读。
+- **验证现状（如实登记）**：
+  - **本轮门禁由 lead 在交付时最终执行，写作时尚未运行**：`pnpm test:unit:related`、
+    desktop typecheck、`pnpm check:test-hygiene`、`pnpm test:runner` 与白名单实机清单
+    都**没有**本轮结果；不得把本条读成「已通过」。
+  - 已写 / 改的自动化覆盖：新增 `localDb/__tests__/sessionIdentity.test.ts`；更新
+    `sessionOpening` / `goal-host/sessionRestore` / `hook-control/session-runner` /
+    `im/shared/turnRunner*` / `orcaWorkerCreationService` / 伙伴 lane（`botCanonicalSession`、
+    `botGroupLaneTx`、`botTx`）/ `cindy-make`（`taskRuntime`、`upstreamMergeSession`）/
+    `session-import` / `fork` 等受影响用例。
+  - **实机未跑**：没有真实 Desktop 上的「Meka Lead 建远端 Worker / 重启后接管 / 历史普通行
+    首次启动升级」证据。
+- **风险 / 未覆盖**：
+  1. **Orca 跨设备（另一台电脑执行 Worker）没有身份传递**：`OrcaRemoteWorkerOpenRequest` /
+     `Result`（`packages/device-link/src/orcaRemoteWorker.ts`）没有 Meka 字段；运行设备的
+     Worker 身份由那台自己的目录 / 注册表解析（可能是默认角色），发起端本机代理行也不带
+     Meka 身份。**跨端协议改动 + 产品裁决，需用户明确决定。**
+  2. **`apps/host`（cindy-host）不装解析端口、无注入**：host 上既不做隐式绑定也不做启动期
+     升级，Meka 目录任务仍是普通任务。
+  3. **半绑定行启动不自动修**；**启动期升级只处理本地工作区**；存量普通行只在首次启动时
+     升级，不追溯未启动的行。
+  4. **Pi runtime 预启动 / Goal 恢复 / scheduler 重建**虽已接同一入口，但**未实机验证**；
+     以后新增绕过 bootstrap 的启动路径必须同样接入，否则会重现「库里/运行期不一致」。
+  5. 路径匹配仍是规范化后的精确比较：符号链接 realpath、跨电脑同名路径、P4 根变化后的旧
+     会话**未覆盖**（按「不批量回填 + 启动时按当前路径解析」接受）。
+  6. **`persistMekaWorkerBinding` 类后置补写被移除后没有替代的「二次校验」**：row-first 只
+     保证创建缝不丢身份；若将来又有路径绕过 bootstrap 直接 `maker.createSession` 且不建行，
+     运行期会按普通会话启动（不会报错）。发现后按规则 §3.3 接同一入口，不要恢复后置补写。
+
 ### 6.63 2026-10-08 MCPRouter 的 linux runtime manifest 从来没有目录分发段：远端 Codex 命令执行起不来（已修）
 
 - **现象**：MCPRouter（远程 agent 宿主）会话里远端 Codex 的 code-mode（命令执行）起不来，

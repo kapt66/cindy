@@ -157,6 +157,8 @@ export interface ForkSessionArgs {
     id: string;
     title: string;
     workingDir: string | null;
+    /** 源行未绑定、但工作目录命中本机 Meka 项目时创建侧解析出的项目根；缺省复制源行。 */
+    projectDir?: string | null;
     model: string;
     /** 凭证形态来源。fork 必须继承 source 的值(null = 跟随系统默认),否则新会话首发会触发共享 codex 进程重启。 */
     providerId: string | null;
@@ -725,6 +727,13 @@ export interface BotsReplaceCanonicalSessionArgs {
     title: string;
     workingDir: string | null;
     projectDir?: string | null;
+    /**
+     * 创建侧已解析好的 Meka 成对绑定（见 `sessionIdentity.resolveSessionIdentityForCreate`）。
+     * 伙伴群 lane 可能直接工作在群项目目录，若该目录是本机已注册的 Meka 项目，行必须与
+     * 绑定同一次 INSERT 写入；有绑定时 `workspaceKind` 必须是普通 `project`。
+     */
+    mekaProjectId?: string | null;
+    mekaRoleId?: string | null;
     workspaceKind: string;
     model: string;
     effort: string;
@@ -1548,6 +1557,11 @@ export type SessionImportTransactionArgs =
         title: string;
         workingDir: string | null;
         workspaceKind: 'project' | 'dialogue';
+        /** 创建侧（main）按本机工作区解析出的 Meka 项目根；仅导入命中时带。 */
+        projectDir?: string | null;
+        /** 创建侧解析出的成对绑定；worker 只落库，不做路径解析。 */
+        mekaProjectId?: string | null;
+        mekaRoleId?: string | null;
         model: string;
         providerId: string | null;
         effort: string;
@@ -1592,7 +1606,14 @@ export type SessionImportTransactionArgs =
       mode?: 'native' | 'handoff';
       issue: string | null;
       unhide: boolean;
-      sessionPatch?: { sdkSessionId?: string | null; workingDir?: string };
+      sessionPatch?: {
+        sdkSessionId?: string | null;
+        workingDir?: string;
+        /** relocate 时 main 按新目录解析出的成对绑定/项目根；只允许成对出现。 */
+        projectDir?: string | null;
+        mekaProjectId?: string | null;
+        mekaRoleId?: string | null;
+      };
       marker?: { id: string; clientId: string; content: string; createdAt: number };
     }
   | { action: 'adopt'; sessionId: string; source: string; sourceSessionId: string; now: number }

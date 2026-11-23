@@ -6,7 +6,7 @@ import { ensureDialogueWorkspaceDir } from './dialogueWorkspace.js';
 import { ensureProjectGitInitialized } from '../git-snapshot/projectGitBootstrap.js';
 import { readGitSafetySettings } from '../maker-host/git-safety-settings-store.js';
 import { normalizeWorkingDirForStorage } from '../../shared/workingDir.js';
-import { resolveSessionWorkspaceBinding } from './workspaceBindingResolver.js';
+import { resolveSessionIdentityForCreate } from './sessionIdentity.js';
 
 export type SessionOpenBody = NonNullable<Parameters<typeof sessionCreateToRow>[1]>;
 export type OpenedSessionRow = ReturnType<typeof sessionCreateToRow> & { model: string };
@@ -75,32 +75,32 @@ export async function openSession<T = void>(input: {
   const explicitDir = normalizeWorkingDirForStorage(selected.workingDir) ?? undefined;
   let workingDir = workspaceKind === 'dialogue' && !explicitDir
     ? ensureDialogueWorkspaceDir(id, now) : explicitDir;
-  // 隐式 Meka 助理绑定（2026-11-20）：工作区根等于已注册 Meka 项目路径时，新会话按项目
-  // 默认角色绑定。显式绑定优先；远程 / 跨设备任务不参与。规则见
-  // docs/dev-rules/meka-assistant-session-binding.md §2。
-  const hasExplicitMekaBinding = Boolean(selected.mekaProjectId || selected.mekaRoleId);
-  if (
-    !hasExplicitMekaBinding &&
-    workspaceKind !== 'meka' &&
-    !selected.remoteHostId &&
-    !agentRunsOnOtherDevice(selected)
-  ) {
-    const resolution = await resolveSessionWorkspaceBinding({
-      workingDir: workingDir ?? null,
-      projectDir: normalizeWorkingDirForStorage(selected.projectDir) ?? null,
-    });
-    assertCurrent();
-    if (resolution) {
-      selected = {
-        ...selected,
-        mekaProjectId: resolution.projectId,
-        mekaRoleId: resolution.roleId,
-        projectDir: resolution.workspacePath,
-        workspaceKind: 'project',
-      };
-      workspaceKind = 'project';
-      workingDir = workingDir ?? resolution.workspacePath;
-    }
+  // 创建侧身份唯一入口（docs/dev-rules/meka-assistant-session-binding.md §2）：
+  // 显式成对绑定优先；否则本地工作区精确命中 Meka 项目时绑定该项目默认角色。
+  // `agentDeviceId` 任务的工作区/文件仍在本机，因此也参与解析；只有远端工作区
+  // (remoteHostId) 的路径不属于本机项目表。
+  const identity = await resolveSessionIdentityForCreate({
+    workspaceKind,
+    workingDir: workingDir ?? null,
+    projectDir: normalizeWorkingDirForStorage(selected.projectDir) ?? null,
+    remoteHostId: selected.remoteHostId ?? null,
+    agentDeviceId: selected.agentDeviceId ?? null,
+    mekaProjectId: selected.mekaProjectId,
+    mekaRoleId: selected.mekaRoleId,
+  });
+  assertCurrent();
+  if (identity.mekaProjectId && identity.mekaRoleId) {
+    selected = {
+      ...selected,
+      mekaProjectId: identity.mekaProjectId,
+      mekaRoleId: identity.mekaRoleId,
+      projectDir: identity.projectDir ?? selected.projectDir,
+      workspaceKind: identity.workspaceKind,
+    };
+    workspaceKind = identity.workspaceKind;
+    workingDir = workingDir ?? identity.projectDir ?? undefined;
+  } else if (identity.workspaceKind !== workspaceKind && identity.workspaceKind === 'project') {
+    workspaceKind = 'project';
   }
   const prepared = { ...selected, workspaceKind, workingDir };
   if (!input.deferGitInit) {

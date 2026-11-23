@@ -162,6 +162,20 @@ describe('applyMekaRuntimeConfig', () => {
     expect(createSession).toBeGreaterThan(applyRuntime);
   });
 
+  it('provisions the persisted Meka identity before injection and never patches it after start', async () => {
+    const source = await loadRegisterSource();
+    const bootstrap = source.indexOf('async function bootstrapSessionOnce');
+    const provision = source.indexOf('insertProvisionedSessionRow({', bootstrap);
+    const applyRuntime = source.indexOf('await applyMekaRuntimeConfig(o,', provision);
+
+    // 行-first：身份行必须在注入/启动之前落库（远端 Worker / worktree 的路径推断兜不住）。
+    expect(provision).toBeGreaterThan(bootstrap);
+    expect(applyRuntime).toBeGreaterThan(provision);
+    // 不再有「启动后补绑定」这条第二写路径；它的缺失正是 2026-11-23 回归的根因。
+    expect(source).not.toContain('persistMekaWorkerBinding');
+    expect(source).not.toContain('did not persist as a Meka workspace');
+  });
+
   it('injects project-role prompt and MCP provider ids for Meka sessions', async () => {
     const opts = baseOpts({
       userPrompt: 'USER PROMPT',

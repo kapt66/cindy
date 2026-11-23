@@ -25,7 +25,7 @@ import { normalizeDbAgentKind } from '../../../shared/agentKindConversion';
 import { sessions } from '../../localDb/schema';
 import { withSessionRouteLock } from '../../localDb/sessionRouteLock';
 import { retireDeletedPiSubagentState } from '../../localDb/ipc/piSubagentDeletion';
-import { resolveSessionWorkspaceBinding } from '../../localDb/workspaceBindingResolver';
+import { resolveSessionIdentityForCreate } from '../../localDb/sessionIdentity';
 import { createLogger, maskPath } from '../../logger';
 import { setSessionProvider } from '../../maker-host/session-provider-store';
 import { hasMekaAssistantBinding, isMekaAssistantSession } from '../../../shared/mekaAssistantSession';
@@ -443,17 +443,26 @@ export function createImSessionRepo(
       // 校验); 建行仍是下面这段确定性 id 的 upsert。准入可能规范化来源 / 推理强度 / Fast,
       // 新插入的行写准入后的路由; 冲突分支(并发建出 / 残留行)照旧不碰路由列。
       let row = defaults;
-      // 隐式 Meka 助理绑定（2026-11-20）：渠道建行同样先解析工作区（远程 / 跨设备不参与），
-      // 命中则新行写「普通 workspaceKind + 成对绑定」。手工 INSERT 不走 storage adapter，
-      // 所以在这里解析；规则见 docs/dev-rules/meka-assistant-session-binding.md §2。
-      const implicitMekaBinding =
-        defaults.remoteHostId || defaults.agentDeviceId
-          ? null
-          : await resolveSessionWorkspaceBinding({
-              workingDir: defaults.workingDir,
-              projectDir: null,
-            });
+      // 隐式 Meka 助理绑定：渠道建行同样走创建侧唯一身份入口，命中本地 Meka
+      // 工作区则新行写「普通 workspaceKind + 成对绑定」。手工 INSERT 不走 storage
+      // adapter，所以必须在这里解析；规则见
+      // docs/dev-rules/meka-assistant-session-binding.md §2。
+      const identity = await resolveSessionIdentityForCreate({
+        workspaceKind: (defaults.workspaceKind ?? ns.workspaceKind ?? 'project') as
+          | 'project' | 'dialogue' | 'meka',
+        workingDir: defaults.workingDir,
+        projectDir: null,
+        remoteHostId: defaults.remoteHostId ?? null,
+        agentDeviceId: defaults.agentDeviceId ?? null,
+      });
       assertAccount();
+      const implicitMekaBinding = identity.mekaProjectId && identity.mekaRoleId
+        ? {
+            projectId: identity.mekaProjectId,
+            roleId: identity.mekaRoleId,
+            workspacePath: identity.projectDir ?? defaults.workingDir,
+          }
+        : null;
       const persisted = await openChannelSession(defaults.id, {
         agentKind: defaults.agentKind,
         model: defaults.model,
@@ -604,15 +613,40 @@ export function createImSessionRepo(
                 projectDir: previous.projectDir ?? null,
               }
             : null;
+        // `/new` 本质是一次新建：上一行没有绑定但 lane 目录已是 Meka 项目时，新行必须按
+        // 创建缝同一条路径解析升级，而不是继承“未绑定”状态。
+        const freshWorkingDir = previous?.workingDir ?? defaults.workingDir;
+        const freshIdentity = inheritedMekaBinding
+          ? null
+          : await resolveSessionIdentityForCreate({
+              workspaceKind: (previous?.workspaceKind ?? defaults.workspaceKind ?? 'project') as
+                | 'project' | 'dialogue' | 'meka',
+              workingDir: freshWorkingDir,
+              projectDir: previous?.projectDir ?? null,
+              remoteHostId: previous?.remoteHostId ?? defaults.remoteHostId ?? null,
+              agentDeviceId: previous?.agentDeviceId ?? defaults.agentDeviceId ?? null,
+            });
+        const rotatedMekaBinding = inheritedMekaBinding ?? (
+          freshIdentity?.mekaProjectId && freshIdentity.mekaRoleId
+            ? {
+                mekaProjectId: freshIdentity.mekaProjectId,
+                mekaRoleId: freshIdentity.mekaRoleId,
+                mekaRole: null,
+                projectDir: freshIdentity.projectDir ?? freshWorkingDir,
+              }
+            : null
+        );
         const fresh: ImSessionRow = {
           ...defaults,
           id: randomUUID(),
           // `/project` is a lane preference. `/new` changes the task and its
           // model route, but must not unexpectedly move the lane elsewhere.
-          workingDir: previous?.workingDir ?? defaults.workingDir,
-          workspaceKind: previous?.workspaceKind ?? defaults.workspaceKind,
+          workingDir: freshWorkingDir,
+          workspaceKind: rotatedMekaBinding
+            ? 'project'
+            : (previous?.workspaceKind ?? defaults.workspaceKind),
           sdkSessionId: null,
-          ...(inheritedMekaBinding ?? {}),
+          ...(rotatedMekaBinding ?? {}),
         };
         const rotateAdmitted = async (): Promise<{
           current: ImSessionRow;
@@ -677,7 +711,7 @@ export function createImSessionRepo(
               source: ns.source,
               imBotContextId,
               imUserId,
-              ...(inheritedMekaBinding ?? {}),
+              ...(rotatedMekaBinding ?? {}),
             },
             now,
           });
@@ -790,6 +824,45 @@ export async function resetSessionToDefaults(
     prepared ??
     rowFromDefaults(sessionId, '', await resolveImSessionDefaults(config, undefined, channel));
   const db = getDbClient().drizzle;
+  const nextWorkingDir = channel === 'wechat' && defaults.workingDir ? defaults.workingDir : null;
+  let resetMekaBinding: { projectId: string; roleId: string; projectDir: string } | null = null;
+  if (nextWorkingDir) {
+    const [current] = await db
+      .select({
+        workingDir: sessions.workingDir,
+        workspaceKind: sessions.workspaceKind,
+        mekaProjectId: sessions.mekaProjectId,
+        mekaRoleId: sessions.mekaRoleId,
+        mekaRole: sessions.mekaRole,
+        remoteHostId: sessions.remoteHostId,
+        agentDeviceId: sessions.agentDeviceId,
+      })
+      .from(sessions)
+      .where(eq(sessions.id, sessionId))
+      .limit(1);
+    if (current && hasMekaAssistantBinding(current)) {
+      throw new Error('Meka project and workspace bindings are immutable');
+    }
+    // `/new` 在 wechat 上允许换渠道工作目录；新目录若命中本机 Meka 项目，必须与
+    // 目录同一次 UPDATE 落成对身份，不能先落普通行等首个 turn。
+    const identity = await resolveSessionIdentityForCreate({
+      workspaceKind: (current?.workspaceKind ?? 'project') as 'project' | 'dialogue' | 'meka',
+      workingDir: nextWorkingDir,
+      projectDir: null,
+      remoteHostId: current?.remoteHostId ?? null,
+      agentDeviceId: current?.agentDeviceId ?? null,
+    });
+    if (identity.mekaProjectId && identity.mekaRoleId) {
+      resetMekaBinding = {
+        projectId: identity.mekaProjectId,
+        roleId: identity.mekaRoleId,
+        projectDir: identity.projectDir ?? nextWorkingDir,
+      };
+    } else if (current?.workspaceKind === 'meka' || current?.mekaRole) {
+      // 旧 Meka 行没有成对绑定也不能在换目录时变成普通行。
+      throw new Error('Meka project and workspace bindings are immutable');
+    }
+  }
   await db
     .update(sessions)
     .set({
@@ -804,7 +877,16 @@ export async function resetSessionToDefaults(
       // Personal WeChat exposes a user-selected channel working directory.
       // It applies only at the explicit `/new` boundary; existing context is
       // never moved silently.
-      ...(channel === 'wechat' && defaults.workingDir ? { workingDir: defaults.workingDir } : {}),
+      ...(nextWorkingDir ? { workingDir: nextWorkingDir } : {}),
+      ...(resetMekaBinding
+        ? {
+            workspaceKind: 'project',
+            projectDir: resetMekaBinding.projectDir,
+            mekaProjectId: resetMekaBinding.projectId,
+            mekaRoleId: resetMekaBinding.roleId,
+            mekaRole: null,
+          }
+        : {}),
       sdkSessionId: null,
       clearedAt: Date.now(),
       updatedAt: Date.now(),
@@ -848,13 +930,21 @@ export async function switchSessionWorkingDir(
     throw new Error('Meka project and workspace bindings are immutable');
   }
   // 隐式 Meka 绑定（规则 §2）：未绑定会话切到 Meka 项目目录时按项目默认角色补绑定，
-  // 并归成普通 'project'。远程 / 跨设备会话由解析端口跳过；解析失败按「不绑定」处理。
-  const binding = await resolveSessionWorkspaceBinding({
+  // 并归成普通 'project'。远端工作区不做本机路径推断；解析失败按「不绑定」处理。
+  const identity = await resolveSessionIdentityForCreate({
+    workspaceKind,
     workingDir,
     projectDir: null,
     remoteHostId: current.remoteHostId,
     agentDeviceId: current.agentDeviceId,
   });
+  const binding = identity.mekaProjectId && identity.mekaRoleId
+    ? {
+        projectId: identity.mekaProjectId,
+        roleId: identity.mekaRoleId,
+        workspacePath: identity.projectDir ?? workingDir,
+      }
+    : null;
   const now = Date.now();
   // 绑定列只在「写这一刻仍未绑定」时才写（条件 UPDATE），并发下不会覆盖另一路刚写入的
   // 身份，也不会写出半绑定行。

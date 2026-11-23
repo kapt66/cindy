@@ -73,8 +73,9 @@ MCP／技能落地、技能快照挂载、`vendorOptions` 的 Meka 键，或进�
 | --- | --- | --- | --- |
 | 0 文本常量 | `meka-injection/mekaPrompts.ts` | 平台注入段文本的**唯一来源**：`roleContextPrompt:23-32`（段 60）、`MEKA_SUBMIT_INTENT_MARKER:35` + `mekaSubmitIntentPrompt:55-65`（段 55，2026-11-19 新增）、marker `MEKA_PROJECT_REFERENCES_MARKER:68`、根作用范围显示常量 `MEKA_PROJECT_REFERENCES_ROOT_SCOPE_LABEL:71`、`mekaProjectReferencesPrompt:88-106`（段 65）。原文件 `mekaCombatPrompts.ts` 里的战斗段产出器、战斗 ID 解析（`parseCombatSkillIdFromUserPrompt` 等）、范围审批判定与 `removeCombatStartupGate` 已随 workflow 机制整体删除（2026-09-29） | 不做 I/O、不碰 opts、不读 deps |
 | 1 计划类型 + order 表 | `meka-injection/mekaInjectionTypes.ts` | `MekaPromptSegmentId:57-61`（**4 个 id**）、`MEKA_PROMPT_SEGMENT_ORDER:71-76`、`MekaPromptSegment:79-83`、段落工厂 `createMekaPromptSegment:86-88`、计划契约 `MekaInjectionPlan:109-140`（含 `frozen:110-111`、空诊断容器 `diagnostics:133-137`） | 不含业务分支 |
-| 2 解析 | `meka-injection/mekaResolvePlan.ts` | 把 create opts + 外部依赖（持久化绑定、运行期配置、平台技能、技能快照、MCP）解析成结构化 plan。**全部 I/O 都在这一层**（入口 `resolveMekaInjection:414`、resume 短路 `resolveFrozenInjection:195`、常规创建 `resolveBootstrapInjection:240`；2026-11-20 起 `resolveBootstrapInjection` 对任意有会话 id 的 create opts 读持久行，**只有旧 `kind='meka'` 或成对绑定**才回填） | 不写 `opts`、不改注入文本 |
-| 数据源 | `meka-injection/persistedBinding.ts` | `readPersistedMekaSessionBinding`：从 `sessions` 行只读投影 `workspaceKind` / `mekaProjectId` / `mekaRoleId` / `mekaRole`，供各冷启动调用方作为形态 A 的 `deps.readPersistedSession`（2026-11-20 新增；**不是入口**） | 不判定身份、不写任何东西、不做第二套会话投影 |
+| 2 解析 | `meka-injection/mekaResolvePlan.ts` | 把 create opts + 外部依赖（持久化绑定、运行期配置、平台技能、技能快照、MCP）解析成结构化 plan。**全部 I/O 都在这一层**（入口 `resolveMekaInjection:414`、resume 短路 `resolveFrozenInjection:195`、常规创建 `resolveBootstrapInjection:240`；2026-11-20 起 `resolveBootstrapInjection` 对任意有会话 id 的 create opts 读持久行，**只有旧 `kind='meka'` 或成对绑定**才回填；2026-11-23 起 `deps.readPersistedSession` 的生产实现换成下面「数据源」里的 `ensurePersistedMekaSessionBinding`） | 不写 `opts`、不改注入文本 |
+| 数据源 | `meka-injection/persistedBinding.ts` | **两个函数，都不是入口**：① `readPersistedMekaSessionBinding`：从 `sessions` 行只读投影 `workspaceKind` / `mekaProjectId` / `mekaRoleId` / `mekaRole`（2026-11-20 新增；2026-11-23 后**已无生产调用方**，仅测试与将来只需要读的场景使用）；② `ensurePersistedMekaSessionBinding`（2026-11-23 新增，**生产形态 A 的唯一数据源**）：读行 + 「行未绑定且工作区是本机 Meka 项目目录」时按路径补一次成对绑定并写回同一行（`IS NULL` 条件 UPDATE；半绑定 / 远端行不修；已绑定行零写入；账号切换中途抛错）。桌面 bootstrap、IM / 官方 hook 冷启动、Goal 恢复的 `deps.readPersistedSession` 统一用它 | 不判定身份（判定仍走 `shared/mekaAssistantSession.ts`）、不做第二套会话投影 |
+| 启动前建行（非本层，但形态 A 的前置） | `localDb/sessionProvisioning.ts` | `insertProvisionedSessionRow`：桌面 `bootstrapSessionOnce` 在 Agent 启动前，把创建侧（`localDb/sessionIdentity.ts` 的 `resolveSessionIdentityForCreate`）已解析好的身份随 `sessions` 行**同一次 INSERT** 落库（`onConflictDoNothing` 幂等，不覆盖已有行）；启动失败由 bootstrap 删除本次空行（`sdkSessionId IS NULL` 条件）。原因：`maker.createSession` 的 `SessionMeta` 不携带显式 Meka 绑定，`OwnerSessionStorage.create` 只能按路径兜底 | 不做身份解析、不做模型准入 / git 初始化；不得绕过它让身份在启动后补写 |
 | 3 落地 | `meka-injection/mekaApplyPlan.ts` | 把 plan 写进 create opts：按 `order` 升序渲染段落（`renderMekaPromptSegments:51`）、写 `vendorOptions`（`applyMekaInjection:84-87`）、挂原生技能（`:92-96`） | 不解析、不做 I/O、不重算 `plan.result` |
 | 能力矩阵 | `meka-injection/mekaAgentMatrix.ts` | `MEKA_AGENT_CAPABILITIES:41`、`MEKA_AGENT_KINDS:74`、`mekaRuntimeMcpAgentKinds:79` | 不得由调用方手写第二份 agent 清单 |
 | 进程级注册（形态 B） | `meka-injection/mekaMcpRegistration.ts` | `registerMekaCapabilities:53`：按矩阵遍历三个 `AgentKind`，`runtimeMcp: true` 的取数组注册（取不到**抛错**，`:66-72`），`false` 的显式留档（`:60-64`） | 不得绕过矩阵直接调低层原语 |
@@ -84,7 +85,7 @@ MCP／技能落地、技能快照挂载、`vendorOptions` 的 Meka 键，或进�
 
 | 形态 | 场景 | 唯一入口 | 说明 |
 | --- | --- | --- | --- |
-| A | 会话创建 / 恢复 | `meka-injection/index.ts` 的 `applyMekaRuntimeConfig(opts, deps?)` | 只做组合：`resolveMekaInjection`（含全部 I/O）→ `applyMekaInjection`（只写 opts）。**四个生产调用点共用这一个入口**（2026-11-20 收口）：桌面 `maker-ipc/register.ts` 的 `bootstrapSessionOnce`（含新会话行尚未落库时的创建侧工作区解析）；IM `im/shared/turnRunner.ts` 的冷启动（`wireSessionInternal` 与延迟 agent switch 的 `refreshSessionAfterPendingAgentSwitch`）；个人 IM 卡片 `im/shared/cardActionHandler.ts` 的 `control:new` 建任务；官方 hook `hook-control/session-runner.ts` 的 `createMakerHookSessionRunner`。IM / 官方 hook 的持久行数据源统一用 `meka-injection/persistedBinding.ts` 的 `readPersistedMekaSessionBinding`；桌面 `bootstrapSessionOnce` 仍内联同一段只读查询（行为等价） |
+| A | 会话创建 / 恢复 | `meka-injection/index.ts` 的 `applyMekaRuntimeConfig(opts, deps?)` | 只做组合：`resolveMekaInjection`（含全部 I/O）→ `applyMekaInjection`（只写 opts）。**所有生产调用点共用这一个入口**（2026-11-20 收口，2026-11-23 补登）：① 桌面 `maker-ipc/register.ts` 的 `bootstrapSessionOnce`（先按持久行 / 创建侧身份收口 + row-first 建行，再注入）；② IM `im/shared/turnRunner.ts` 的冷启动（`wireSessionInternal` 与延迟 agent switch 的 `refreshSessionAfterPendingAgentSwitch`）；③ 个人 IM 卡片 `im/shared/cardActionHandler.ts` 的 `control:new` 建任务；④ 官方 hook `hook-control/session-runner.ts` 的 `createMakerHookSessionRunner`（新建任务轮 + 冷启动）；⑤ 休眠 Goal 恢复 `goal-host/sessionRestore.ts` 的 `restoreSessionForGoal`（不经过桌面 bootstrap，`deps.applyMekaRuntime` 默认就是本入口）；⑥ scheduler 的 Pi runtime 漂移重建（`scheduler-host/runner.ts` 回到 `bootstrapSession` funnel，不再裸 `maker.createSession`）；⑦ Pi runtime 预启动（renderer `maker:create-session` → `registerMakerSessionCreateHandler` → `bootstrapSessionOnce`）。**数据源统一** `meka-injection/persistedBinding.ts` 的 `ensurePersistedMekaSessionBinding`（2026-11-23 起；桌面不再内联只读查询） |
 | B | 进程级 Meka MCP 注册 | `meka-injection/mekaMcpRegistration.ts` 的 `registerMekaCapabilities(registry)` | 生产调用点**唯一**：`maker-host/index.ts:2367`（在 `_mcpProviders.pi = piMcpProviders`（`:2362`）之后，保证三个数组都已就位）。低层原语 `mcp-integrations/meka-runtime-mcp.ts` 的 `registerMekaRuntimeMcpArrays:1051` 仍是公开导出（测试直接用它），但**生产禁止直接调**——它只认数组、不认归属，少传一个数组时发现不了任何问题 |
 | ~~C~~ | ~~每轮续聊~~ | **已退役（2026-09-29）** | 原形态 C（`index.ts` 转发 `prepareCombatFollowupRuntimeContext`，实现原在 `mekaResolvePlan.ts`）随战斗业务与 workflow 机制**整体删除**，`index.ts` 不再有第二个入口。行**保留占位**：编号与 §2 之后的交叉引用继续成立，同时明确「这里没有第三个入口」 |
 
@@ -106,6 +107,29 @@ MCP／技能落地、技能快照挂载、`vendorOptions` 的 Meka 键，或进�
 > 路径，同样接这一个入口，并在本表补登调用点。**已知未接入的存量路径**：
 > `goal-host/sessionRestore.ts` 的休眠 Goal 恢复与 Pi runtime 预启动仍直接
 > `maker.createSession`（非本次引入），本轮未改。
+>
+> **2026-11-23 更新（row-first 与唯一数据源；本条取代上一段里的「未接入」清单）**：
+> 创建 / 启动身份收口统一后，形态 A 的**入口没有变**，变的是「什么时候能读到身份」与
+> 「按谁注入」：
+>
+> - **row-first**：桌面 `bootstrapSessionOnce` 在 Agent 启动前完成身份收口——已有行用
+>   `ensurePersistedMekaSessionBinding` 读（并把本地 Meka 目录的未绑定行按路径升级）；解析出
+>   成对绑定的新行先用 `localDb/sessionProvisioning.ts` 的 `insertProvisionedSessionRow` 落库，
+>   之后才调用本入口注入、最后 `maker.createSession`（命中已有行，只回写 `sdkSessionId`）。
+>   这替代了旧实现「先按 opts 注入、启动后再由调用方补写绑定」的两段式。
+> - **唯一数据源**：`deps.readPersistedSession` 的生产实现统一为
+>   `ensurePersistedMekaSessionBinding`（桌面不再内联只读查询）。它**只**做「读行 + 本地
+>   工作区未绑定行的启动期升级」，半绑定 / `remoteHostId` 行不修、已绑定行零写入、不扫全库；
+>   注入层本身仍只按行里的成对绑定 / 旧 `kind='meka'` 判定，非 Meka 会话零写入（I6 不变）。
+> - **调用点补登**：休眠 Goal 恢复（`goal-host/sessionRestore.ts`）与 Pi runtime 预启动
+>   （renderer `maker:create-session` → `registerMakerSessionCreateHandler` →
+>   `bootstrapSessionOnce`）**已接同一入口**；scheduler 的 Pi runtime 漂移重建改回
+>   `bootstrapSession` funnel（`scheduler-host/runner.ts` 不再裸 `maker.createSession`）。
+>   原「已知未接入」的 `goal-host` / Pi 预启动两条作废，**均为代码事实，未实机验证**。
+> - **仍然不参与注入的边界**：`apps/host`（cindy-host）不安装工作区解析端口、也没有 Meka
+>   注入，host 上的 Meka 目录任务仍是普通任务；Orca 跨设备 Worker 在运行设备上按那台自己的
+>   `openSession` / 路径解析决定身份（跨端 `OrcaRemoteWorkerOpenRequest` 没有 Meka 字段，
+>   尚无身份传递，需用户裁决）。
 
 **导出面只留公共签名**：`index.ts` 只转出形态 A 的唯一入口与三个公共签名类型
 （`AppliedMekaRuntimeConfig` / `ApplyMekaRuntimeConfigDeps` / `PersistedMekaSessionBinding`，
@@ -784,6 +808,16 @@ Session。用模块级 `getMakerIfReady()?.getSession(...)` 而不是 `maker`：
 
 ## 6. 验证方式
 
+> **2026-11-23 口径（优先于下面所有历史计数）**：本批**没有改注入层的段落 / 文本 / 能力
+> 矩阵 / 落地顺序**，改的是「谁在什么时机、按哪一行注入」：`deps.readPersistedSession`
+> 生产实现换成 `ensurePersistedMekaSessionBinding`、桌面 bootstrap 增加 row-first、Goal /
+> scheduler / Pi 预启动的调用点收口。**本轮门禁由 lead 在交付时一次性执行，本文写作时尚未跑**
+> （`pnpm test:unit:related`、desktop typecheck、`pnpm test:runner`、实机清单均无本轮结果），
+> 因此下面所有计数都只是历史记录，**不得当作本轮已验证**。新增 / 受影响用例见
+> [`meka-whitelist-verification.md`](meka-whitelist-verification.md) **WL-3.9** 的
+> 2026-11-23 追加块；定向命令仍是本节末尾「定向门禁」那一条，另加
+> `apps/desktop/src/main/localDb/__tests__/sessionIdentity.test.ts`。
+
 > **2026-11-19 提交意图段批次的实跑口径（优先于下面所有历史计数）**：
 > `mekaRuntimeInjectionBaseline.test.ts` 现为 **14 个逐个 `it` + 2 组 `it.each` ⇒ 展开后 19 条**
 > （2026-09-29 的 18 条 + 新增的第 17 组 1 条）。新增组断言 order 55 段的注入、逐行散文契约、
@@ -1059,6 +1093,7 @@ pnpm --filter desktop exec vitest run src/main/meka-injection src/main/maker-ipc
 | **T1 容错（2026-09-29 新增）**：角色显式选择的未知 bundled skill ⇒ 跳过 | `runtimeConfig.ts` 的 skill 循环（`~:848-860`）：catalog 里查不到的**非平台** id ⇒ `log.warn` + `continue`；**平台基线 id（`MEKA_PLATFORM_SKILL_IDS`）取不到仍硬失败**（包损坏不是历史残留，见 C1）。**为什么必需**：`resolveRoleFile` 里**用户项目文件的 `builtinRoles` 快照优先于 T2 回落**，而旧版角色编辑器 / `mergeBundledRoleFallbacks` 会把随包角色（含其 `skills` 选择，如已删的 `combat-skill-configuration`）整份写进该快照 ⇒ 不兜住就 `unknown bundled Meka skill` fail-closed，会话建不出也打不开 | **必需的容错边界**。`saga2/project.json` 的 `roleDefaults.skills` 被清空是**另一层**内容修正（消除随包内引用），不能替代本层（挡不住用户项目文件里的快照） |
 | **T4 容错（2026-09-29 新增）**：角色 fragment 文件缺失 ⇒ 跳过该条 | `runtimeConfig.ts` 的 fragment 循环（`~:809-834`）：`readRoleRelativeFile` 抛 **ENOENT** ⇒ `log.warn` + `continue`；**路径逃逸 / 非法编码等其它错误照旧上抛**；空 `path` 的显式错误也不变。**为什么必需**：`combat-development` 的内置快照携带 5 条 `promptFragments`（`prompts/combat-*.md`，已随包删除），快照优先于 T2 且按「内置行」解析 ⇒ fragment 根仍是 `resources/meka/roles/` ⇒ ENOENT。**曾一度判断「没有触发路径」并回退本项，那是错的** —— 只考虑了随包角色行，漏了用户项目文件里的快照 | **必需的容错边界**（与 T1 同一判据） |
 | `codexNativeSubagentsDisabled` **仓内已无生产者**（2026-09-29，刻意边界不是缺陷） | 该键的**唯一**产出条件是「当前是战斗 workflow」（`runtime.workflow === 'saga2-combat-development-v1' \|\| isCombatServerWorker`）——两个判据都在 workflow 机制内，已随该机制删除；`MekaRuntimeConfig` 上没有任何存活字段能等价替代，所以 `mekaResolvePlan.ts:376-382` 现在**不再产出该键**。**消费面未动**：`packages/maker-core/src/agents/codex/index.ts:4993` 读取、`:5062` / `:5108` / `:6359`（`agents.enabled=false`）消费，`maker-host/index.ts:1710-1731` 的 `prepareCodexExtraSpawnConfig` 钩子也照旧读它（`:1731` 求值）；`packages/maker-core/src/agents/codex/index.test.ts` 与该键的 maker-host 测试仍在跑 | **刻意保留的边界**：把它换成「按角色 id / 远端 worker 判定」会给**普通任务**新增行为，与「共享默认角色及普通任务继续沿用用户的全局子任务设置」冲突。生产者交还宿主策略：由 host 经 `vendorOptions` 声明该键（与 `start_team.ts` 的 `mekaLockWorkerPermissionMode` 同一种写法）。**描述成 bug 是错的**；`maker-core` 侧不知道也不关心谁写的键 |
+| **启动期身份升级的边界（2026-11-23）** | `ensurePersistedMekaSessionBinding` 只补「**本地工作区** + **未绑定**（project/role 都空）+ **精确命中已注册 Meka 项目**」的行；**半绑定行不自动修**、`remoteHostId` 行跳过、已绑定行零写入、不扫全库批处理。`apps/host`（cindy-host）不安装工作区解析端口 ⇒ host 上既无隐式绑定也无启动期升级 / 注入；Orca 跨设备 Worker 由运行设备按自己的目录与注册表决定身份（`OrcaRemoteWorkerOpenRequest` 无 Meka 字段，尚无身份传递） | 登记为**有意边界**：升级只发生在该行被某入口启动时，不是用户数据迁移；跨设备身份传递需跨端协议裁决，本轮不做。**门禁由 lead 本轮最终执行，未跑前本行不得视为已验证** |
 | 本批（2026-09-29 最小随包内核收敛）**门禁已一次性实跑，白名单实机清单也已实跑通过** | 已跑：`pnpm --filter desktop run typecheck`（**exit 0**，T4 恢复并新增 T1/T4 回归用例后**重跑仍 exit 0**）；`pnpm test:unit:related`（desktop 层 **3144 个测试文件通过 / 44834 例通过**）；`pnpm test:runner`（**706 tests / 699 pass / 0 fail**，含白名单结构契约与新增 WL-22/WL-23）；`check:i18n` / `check:i18n-glossary` / `check:brand-terminology` / `check:design-colors` / `check:design-inventory` / `check:dev-docs`（**全部 exit 0**）。`@cindy/maker-core` / `@cindy/mcps` 无 `typecheck` script，按规则该步自动跳过。**四例非通过项已逐一取证、均与本批无关**：① `background-task-output/__tests__/reader.test.ts` 两例 `EPERM: operation not permitted, symlink` —— Windows 符号链接权限，该目录本批未触碰；② 全量运行时 `packages/lizi-mcps` 报超时/`COMMAND_FAILED` —— **单独重跑 67 文件 / 904 例全过、exit 0**，属并发与进程派发负载所致。**实机验收（`pnpm desktop:session-smoke`，真实 Desktop dev 实例 CDP 9222）：`SESSION_SMOKE PASSED — checks=11 pass=11 fail=0 unverified=0`** —— 其中 WL-11.5 真实回显 `[MEKA_ROLE_CONTEXT]`（`projectId=saga2 roleId=saga2-default-role`）、WL-11.6 实测 **`workflow键=不存在`** 且 `platformSkillsCount=1`、WL-11.17 实测 order 65 段**只投地址不内联正文**；T2/T3 的运行期证据见 `meka-whitelist-verification.md` §8.12。本批新增的 T1/T4 回归用例在 `runtimeConfig.projectReferences.test.ts`（走真实 `builtinRoles` 快照优先级，**23 例全过**） | 缓存率影响仍**未实测**（见 `maker-core-and-agent-behavior.md` §4）；存量 SAGA2 会话不再受原战斗写入门禁约束（裁决的既定后果，已登记于白名单 §8.12） |
 
 > **门禁实跑结果（2026-09-23 交付时一次性执行，权威；下述内容的代码基线是收敛前的工作树）**：
@@ -1095,7 +1130,8 @@ pnpm --filter desktop exec vitest run src/main/meka-injection src/main/maker-ipc
 - [`pi-harness.md`](pi-harness.md) 第 4 节不变量 12：argv 预算与非 argv 载体；不变量 8：项目资源
   与宿主技能快照的显式装配。
 - [`../migrations/xdmaker-meka-to-cindy.md`](../migrations/xdmaker-meka-to-cindy.md) §6.49：注入层重构登记；
-  §6.54：Pi 能力补齐与 D1 的取代。
+  §6.54：Pi 能力补齐与 D1 的取代；§11.39：身份改为持久化绑定；§11.40：2026-11-23
+  「Orca Worker 未持久化为 Meka 工作区」根因与创建 / 启动统一收口（row-first、唯一数据源）。
 
 ## 10. 本次收敛（2026-09-29，最小随包内核）
 

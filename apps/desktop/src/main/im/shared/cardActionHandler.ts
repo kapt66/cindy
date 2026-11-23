@@ -50,8 +50,8 @@ import {
 } from '../../maker-ipc/register';
 import { applyRuntimeSetModelChange } from '../../maker-ipc/runtimeSetModel';
 import { applyMekaRuntimeConfig } from '../../meka-injection/index.js';
-import { readPersistedMekaSessionBinding } from '../../meka-injection/persistedBinding.js';
-import { resolveSessionWorkspaceBinding } from '../../localDb/workspaceBindingResolver.js';
+import { ensurePersistedMekaSessionBinding } from '../../meka-injection/persistedBinding.js';
+import { resolveSessionIdentityForCreate } from '../../localDb/sessionIdentity.js';
 import type { MakerSessionCreateOpts } from '../../maker-ipc/sessionRequest.js';
 import { cancelPendingSessionRuntimeMutation } from '../../maker-ipc/sessionRuntimeControl';
 import { getDesktopCcPrefs, type DesktopCcPrefs } from '../index';
@@ -1071,19 +1071,20 @@ export function createCardActionHandler(
       createOpts: MakerSessionCreateOpts,
     ): Promise<void> => {
       if (createOpts.mekaProjectId || createOpts.mekaRoleId) return;
-      const resolution = await resolveSessionWorkspaceBinding({
+      const identity = await resolveSessionIdentityForCreate({
+        workspaceKind: createOpts.workspaceKind ?? 'project',
         workingDir: createOpts.workingDir ?? null,
-        projectDir: null,
+        projectDir: createOpts.projectDir ?? null,
         remoteHostId: null,
         agentDeviceId: createOpts.agentDeviceId ?? null,
       });
-      if (!resolution) return;
-      createOpts.mekaProjectId = resolution.projectId;
-      createOpts.mekaRoleId = resolution.roleId;
-      createOpts.projectDir = resolution.workspacePath;
+      if (!identity.mekaProjectId || !identity.mekaRoleId) return;
+      createOpts.mekaProjectId = identity.mekaProjectId;
+      createOpts.mekaRoleId = identity.mekaRoleId;
+      createOpts.projectDir = identity.projectDir ?? createOpts.projectDir;
       createOpts.workspaceKind = 'project';
       await applyMekaRuntimeConfig(createOpts, {
-        readPersistedSession: readPersistedMekaSessionBinding,
+        readPersistedSession: ensurePersistedMekaSessionBinding,
       });
     };
     const persistCreatedSessionProvider = async (session: {

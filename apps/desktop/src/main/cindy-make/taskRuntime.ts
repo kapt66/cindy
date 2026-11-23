@@ -21,6 +21,7 @@ import { installScriptsTrust, remoteContentScriptsUnverified } from './installSc
 import { CINDY_MAKE_RUN_ID_PATTERN, makeSourceRoot, makeTaskWorktreePath } from './sourcePaths.js';
 import { makeToolRoot } from './toolInstaller.js';
 import { getDbClient } from '../localDb/client/current.js';
+import { resolveSessionIdentityForCreate } from '../localDb/sessionIdentity.js';
 import { messages, sessions } from '../localDb/schema.js';
 import { sessionCreateToRow } from '../localDb/mapper.js';
 import { createMessage, updateMessageContent } from '../localDb/ipc/messages.js';
@@ -427,12 +428,27 @@ export async function startCindyMakeTask(raw: unknown, sender: number): Promise<
         if (origin?.remoteHostId)
           throwIpcError('UNSUPPORTED_CAPABILITY', 'Cindy Make requires a local task');
         sessionId = createBusinessSessionId();
+        const workingDir = makeTaskWorktreePath(userData, input.runId);
+        // Cindy Make 任务总在应用托管的 worktree 里工作，正常不可能是 Meka 项目目录；
+        // 仍走统一的创建侧身份入口：若该路径恰好是注册的 Meka 项目（通用情况），
+        // 新行写普通 project kind + 成对绑定，否则行为完全不变。见
+        // docs/dev-rules/meka-assistant-session-binding.md §2。
+        const identity = await resolveSessionIdentityForCreate({
+          workspaceKind: 'project',
+          workingDir,
+          projectDir: null,
+          remoteHostId: null,
+        });
+        checkCurrent();
         const row = sessionCreateToRow(
           sessionId,
           {
             title: input.title,
-            workingDir: makeTaskWorktreePath(userData, input.runId),
-            workspaceKind: 'project',
+            workingDir,
+            workspaceKind: identity.workspaceKind,
+            ...(identity.projectDir ? { projectDir: identity.projectDir } : {}),
+            mekaProjectId: identity.mekaProjectId,
+            mekaRoleId: identity.mekaRoleId,
             source: 'cindy-make',
             ...taskOptions,
           },

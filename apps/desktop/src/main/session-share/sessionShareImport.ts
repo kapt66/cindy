@@ -23,6 +23,11 @@
  * 运行期直接拒绝的半绑定行;workspace_kind 只是展示分类,按新口径写解析出的项目会话值
  * 'project',不再写旧第三态 'meka')。解析失败(项目/角色本机缺失、工作目录解析不出、
  * 遗留四角色会话)一律按普通任务降级并在 notes 里明确告知丢失了什么。
+ *
+ * 包内**没有** Meka 段的普通分享包也会做一次本机路径判定:导入的工作目录若精确等于某个
+ * 已注册 Meka 项目目录,就在落库后同一条 UPDATE 里补成对绑定 + 项目根(与"在该目录新建
+ * 任务"同一身份口径),不等首个 turn。判定失败按普通任务导入且不提示——包没有承诺过
+ * Meka 身份,没有丢失;设备交接(runtimeScope.migration)不参与隐式补绑定。
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, promises as fsp } from 'node:fs';
@@ -43,6 +48,7 @@ import type {
 } from '../localDb/client/tx/types.js';
 import { ensureDialogueWorkspaceDir } from '../localDb/dialogueWorkspace.js';
 import { getDbClient } from '../localDb/client/current.js';
+import { resolveSessionIdentityForCreate } from '../localDb/sessionIdentity.js';
 import { createLogger } from '../logger.js';
 import { resolveNewTaskDefaultModelRoute } from '../maker-host/model-route-guard-live.js';
 import {
@@ -508,6 +514,39 @@ export async function commitShareImport(
     assertStillValid();
   }
 
+  // 包内没有 Meka 段（普通分享包）但导入的工作目录就是本机已注册 Meka 项目目录时，
+  // 用创建侧同一解析入口（docs/dev-rules/meka-assistant-session-binding.md §2）在本机
+  // 补成对绑定：身份与「在该目录新建任务」一致，不等首个 turn / 冷启动才补。
+  // 只在普通分享生效：包内已带 meka 段走上面的包内身份路径；设备交接
+  // (`runtimeScope.migration`) 的身份由交接方决定（Meka 会话在迁移入口已被拒绝），
+  // 导入端不悄悄补一个新身份。与包内 meka 段同一口径，隐式绑定只落在 lead 行——
+  // 协同 Worker 保留包的粗粒度 kind（每行绑定身份属另一轮产品裁决）。
+  // 解析失败按普通任务导入并记日志——包本身没有承诺
+  // Meka 身份，没有「丢失」需要提示，因此不产生 meka note（也绝不阻断导入）。
+  const localMekaBinding = manifest.workspaceKind === 'project' && !mekaBinding.present && !runtimeScope.migration
+    ? await guarded(async () => {
+        const identity = await resolveSessionIdentityForCreate({
+          workspaceKind: manifest.workspaceKind,
+          workingDir,
+          projectDir: null,
+          remoteHostId: null,
+          agentDeviceId: null,
+        }).catch((err) => {
+          log.warn('workspace Meka binding resolution failed; importing as a regular session', {
+            workingDir,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          return null;
+        });
+        if (!identity?.mekaProjectId || !identity.mekaRoleId || !identity.projectDir) return null;
+        return {
+          projectId: identity.mekaProjectId,
+          roleId: identity.mekaRoleId,
+          projectDir: identity.projectDir,
+        };
+      })
+    : null;
+
   // activeSdkSessionId 同样是不可信输入,且会流入落盘路径:codex 侧
   // importSharedCodexThread 的 rollout 文件名兜底会把 threadId 拼进 filename,
   // CC 侧 resume 也按 `<id>.jsonl` 定位转录——非单路径段一律拒整包(审查 P0)。
@@ -758,8 +797,9 @@ export async function commitShareImport(
     //     草稿开 worktree 创建同语义。失败即中止导入;成功登记 journal,后续
     //     任一步失败逆序回滚时移除 worktree,不留孤儿。
     //     Meka 任务排除在外:它的工作目录是项目解析出来的 P4 目录,不是用户选的
-    //     普通仓库目录,套 worktree 会让 P4 视图与任务目录不一致。
-    if (opts.useWorktree && manifest.workspaceKind === 'project' && !mekaBound) {
+    //     普通仓库目录,套 worktree 会让 P4 视图与任务目录不一致。按路径隐式命中
+    //     Meka 项目的普通分享包同理（否则 workingDir 被换成 worktree，绑定就丢了）。
+    if (opts.useWorktree && manifest.workspaceKind === 'project' && !mekaBound && !localMekaBinding) {
       const detect = await guarded(() => detectCwd(workingDir).catch(() => null));
       if (!detect?.isGitRepo || !detect.repoRoot) {
         throw codedError(
@@ -1145,8 +1185,9 @@ export async function commitShareImport(
             agentKind: manifest.agentKind,
             title: manifest.title || 'Shared session',
             // 绑定解析成功即 Meka 助理会话：工作目录是本机解析出的项目目录，按新口径写
-            // 普通 'project'（身份只由绑定承载）；其余情况沿用包的粗粒度种类。
-            workspaceKind: mekaBound ? 'project' : manifest.workspaceKind,
+            // 普通 'project'（身份只由绑定承载）；按路径隐式命中的普通包同理。其余情况
+            // 沿用包的粗粒度种类。
+            workspaceKind: mekaBound || localMekaBinding ? 'project' : manifest.workspaceKind,
             orcaRole: manifest.orca ? ('lead' as const) : null,
             snapshot: sessionSnapshot,
             draftPrefs,
@@ -1180,6 +1221,21 @@ export async function commitShareImport(
             const restored = notes.indexOf('mekaBindingRestored');
             if (restored >= 0) notes.splice(restored, 1);
             notes.push('mekaBindingFailed');
+          }
+        } else if (localMekaBinding) {
+          // 普通分享包按本机路径补的绑定：事务已提交（历史是可恢复的），这里失败不反转
+          // 导入——降级为普通任务并记日志。包本身没有承诺 Meka 身份，没有「丢失」需要
+          // 告知，所以不产生 meka note；若这次 UPDATE 失败，下一次冷启动的
+          // ensurePersistedMekaSessionBinding 会按同一路径再次补身份。
+          try {
+            await applyLocalWorkspaceMekaBinding(dbClient, newId, localMekaBinding, now);
+          } catch (err) {
+            log.warn('workspace meka binding write failed; kept as a regular session', {
+              sessionId: newId,
+              projectId: localMekaBinding.projectId,
+              roleId: localMekaBinding.roleId,
+              error: err instanceof Error ? err.message : String(err),
+            });
           }
         }
         // The transaction is now durable. Consume the in-memory draft before
@@ -1728,6 +1784,34 @@ async function applySharedMekaBinding(
       now,
       sessionId,
     ],
+  );
+}
+
+/**
+ * 普通分享包（包内没有 Meka 段）导入到本机 Meka 项目目录时，把按路径解析出的成对
+ * 绑定补到导入行上。
+ *
+ * 与 `applySharedMekaBinding` 的区别：这里没有包内 Meka 身份/正式流程快照可恢复，
+ * 只写本机解析出的项目与默认角色 + 项目根，并把展示分类归一到普通 `'project'`；
+ * `extra_dirs` 不补（创建缝的隐式绑定同样不写额外只读目录，保持同一口径）。
+ * 成对写入仍是硬要求：分两次写会留下运行期直接拒绝的半绑定行。
+ */
+async function applyLocalWorkspaceMekaBinding(
+  dbClient: DbClient,
+  sessionId: string,
+  binding: { projectId: string; roleId: string; projectDir: string },
+  now: number,
+): Promise<void> {
+  await dbClient.exec(
+    `UPDATE sessions SET
+       meka_project_id = ?,
+       meka_role_id = ?,
+       meka_role = NULL,
+       project_dir = ?,
+       workspace_kind = 'project',
+       updated_at = ?
+     WHERE id = ?`,
+    [binding.projectId, binding.roleId, binding.projectDir, now, sessionId],
   );
 }
 

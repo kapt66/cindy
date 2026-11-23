@@ -33,6 +33,15 @@ export function runSessionImportTransaction(db: Database.Database, raw: unknown)
     const r = body.record as Record<string, unknown>;
     const sessionId = required(s.id, 'session.id');
     const now = finite(body.now, 'now');
+    // 创建侧（main 进程）已解析好的 Meka 身份：本文件只负责落库，不做任何路径解析
+    // （被 toString 内联进 worker，不能依赖 Meka 项目注册表）。成对写入 + 项目根；
+    // 有绑定即归一普通 project kind（workspace_kind 只是展示分类，身份由绑定列承载）。
+    const mekaProjectId = text(s.mekaProjectId);
+    const mekaRoleId = text(s.mekaRoleId);
+    if (Boolean(mekaProjectId) !== Boolean(mekaRoleId)) {
+      throw Object.assign(new Error('Meka session binding requires both a project and a role'), { code: 'INVALID_ARGS' });
+    }
+    const hasMekaBinding = Boolean(mekaProjectId && mekaRoleId);
     return db.transaction(() => {
       const existing = db.prepare('SELECT id, hidden_at AS hiddenAt, status FROM sessions WHERE id = ?').get(sessionId) as
         { id: string; hiddenAt: number | null; status: string } | undefined;
@@ -43,18 +52,23 @@ export function runSessionImportTransaction(db: Database.Database, raw: unknown)
             id, title, working_dir, workspace_kind, model, provider_id, effort, permission_mode, status,
             sdk_session_id, total_token_usage, total_cost_usd, context_tokens, context_window, fast_mode,
             user_send_at, agent_kind, source, used_project_context, extra_dirs,
-            codex_history_has_product_prompt, hidden_at, created_at, updated_at
+            codex_history_has_product_prompt, project_dir, meka_project_id, meka_role_id,
+            hidden_at, created_at, updated_at
           ) VALUES (
             @id, @title, @workingDir, @workspaceKind, @model, @providerId, @effort, @permissionMode, @status,
             NULL, @tokensUsed, 0, 0, 0, 0,
             @userSendAt, @agentKind, 'desktop', 0, '[]',
-            @codexHistoryHasProductPrompt, @hiddenAt, @createdAt, @updatedAt
+            @codexHistoryHasProductPrompt, @projectDir, @mekaProjectId, @mekaRoleId,
+            @hiddenAt, @createdAt, @updatedAt
           )
         `).run({
           id: sessionId,
           title: required(s.title, 'session.title'),
           workingDir: text(s.workingDir),
-          workspaceKind: s.workspaceKind === 'dialogue' ? 'dialogue' : 'project',
+          workspaceKind: hasMekaBinding ? 'project' : (s.workspaceKind === 'dialogue' ? 'dialogue' : 'project'),
+          projectDir: text(s.projectDir),
+          mekaProjectId,
+          mekaRoleId,
           model: required(s.model, 'session.model'),
           providerId: text(s.providerId),
           effort: text(s.effort) ?? 'high',
@@ -168,6 +182,22 @@ export function runSessionImportTransaction(db: Database.Database, raw: unknown)
       }
       if (typeof patch.workingDir === 'string') {
         db.prepare('UPDATE sessions SET working_dir = ? WHERE id = ?').run(patch.workingDir, sessionId);
+      }
+      // 未绑定行移动到本机 Meka 项目目录（导入页「选择文件夹」）时，main 进程已按路径
+      // 解析好成对绑定与项目根，这里与 working_dir 同一次事务补写——绝不落半绑定行，
+      // 也不留「先按普通任务建行、首个 turn 才补身份」的窗口。
+      const patchMekaProjectId = text(patch.mekaProjectId);
+      const patchMekaRoleId = text(patch.mekaRoleId);
+      if (Boolean(patchMekaProjectId) !== Boolean(patchMekaRoleId)) {
+        throw Object.assign(new Error('Meka session binding requires both a project and a role'), { code: 'INVALID_ARGS' });
+      }
+      if (patchMekaProjectId && patchMekaRoleId) {
+        db.prepare(`
+          UPDATE sessions SET
+            meka_project_id = ?, meka_role_id = ?, meka_role = NULL,
+            project_dir = COALESCE(?, project_dir), workspace_kind = 'project'
+          WHERE id = ?
+        `).run(patchMekaProjectId, patchMekaRoleId, text(patch.projectDir), sessionId);
       }
       const marker = body.marker as Record<string, unknown> | undefined;
       if (marker) {

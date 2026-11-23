@@ -635,7 +635,6 @@ function createDeps(overrides: Partial<OrcaWorkerCreationDeps> = {}) {
         didInjectProjectContext: false,
       };
     }),
-    persistMekaWorkerBinding: vi.fn(async () => undefined),
     resolveWorkerTarget: vi.fn(async ({ lead }) => ({
       ok: true as const,
       workingDir: lead.workingDir ?? '',
@@ -2946,57 +2945,14 @@ describe('OrcaWorkerCreationService', () => {
 
     expect(deps.buildCreateOptsWithStderr).toHaveBeenCalledWith(
       expect.objectContaining({
-        workspaceKind: 'meka',
+        // 新 Worker 行是普通 kind + 成对绑定；身份在 bootstrap 前由创建收口落行。
+        workspaceKind: 'project',
         mekaProjectId: 'saga2',
         mekaRoleId: 'system-development',
         workingDir: '/workspace/saga2',
         remoteHostId: 'mcpr:saga2-dev',
       }),
     );
-    expect(deps.persistMekaWorkerBinding).toHaveBeenCalledWith({
-      sessionId: WORKER_SESSION_ID,
-      projectId: 'saga2',
-      roleId: 'system-development',
-    });
-  });
-
-  it('cleans up a bootstrapped Worker when its Meka binding cannot be persisted', async () => {
-    const { deps, service } = createDeps({
-      getLeadSessionRow: vi.fn(async () => ({
-        id: 'lead-1',
-        agentKind: 'codex' as const,
-        workingDir: 'C:\\p4',
-        workspaceKind: 'meka' as const,
-        mekaProjectId: 'saga2',
-        mekaRoleId: 'system-debug',
-        model: 'gpt-5.5',
-        effort: 'medium',
-        permissionMode: 'default',
-        fastMode: false,
-        providerId: 'xd',
-        remoteHostId: null,
-      })),
-      persistMekaWorkerBinding: vi.fn(async () => {
-        throw new Error('binding write failed');
-      }),
-    });
-
-    await expect(
-      service.createWorker({
-        leadSessionId: 'lead-1',
-        role: 'debugger',
-        agent: 'codex',
-        label: 'debugger',
-      }),
-    ).resolves.toMatchObject({
-      ok: false,
-      errorCode: 'INTERNAL',
-      message: 'binding write failed',
-    });
-
-    expect(deps.closeWorkerSession).toHaveBeenCalledWith(WORKER_SESSION_ID);
-    expect(deps.archiveWorkerSession).toHaveBeenCalledWith(WORKER_SESSION_ID);
-    expect(deps.addOrUpdateWorker).not.toHaveBeenCalled();
   });
 
   it('does not bootstrap a Worker when main rejects its Meka target', async () => {

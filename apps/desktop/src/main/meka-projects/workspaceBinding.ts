@@ -40,7 +40,8 @@ function resolutionFor(
  *
  * - `projectDir` 是显式项目归属，优先于 `workingDir`；
  * - 只做**精确匹配**（规范化后相等），不做子目录/前缀推断；
- * - 远程 / 跨设备会话不解析（身份在执行的电脑上，Meka 目前也只支持本机）；
+ * - 远端工作区不解析（路径属于执行的电脑）；`agentDeviceId` 只改变 Agent 执行位置，
+ *   任务工作区仍在本机，创建侧统一身份 helper 不把它传给本函数，因此仍按本机目录解析；
  * - 配置不可用的项目不参与，避免把普通任务拖进必然失败的 Meka 启动。
  */
 export async function resolveMekaWorkspaceBinding(

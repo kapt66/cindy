@@ -81,7 +81,7 @@ import {
   finalizePlainPreview,
 } from '../mapper';
 import { ensureDialogueWorkspaceDir } from '../dialogueWorkspace';
-import { resolveSessionWorkspaceBinding, type WorkspaceBindingResolution } from '../workspaceBindingResolver';
+import { resolveSessionIdentityForCreate } from '../sessionIdentity';
 import { isMekaAssistantSession } from '../../../shared/mekaAssistantSession';
 import { recomputePrRefsForSession } from '../../git-context/prRefsStore';
 import * as imageCacheStore from '../../imageCacheStore.desktop';
@@ -1737,7 +1737,7 @@ export async function updateSessionInDb(
     // Meka 会话的项目/角色身份与工作区是本地事实源（WL-11 + 2026-11-20 绑定裁决）：
     // 已有成对绑定、旧 `workspace_kind = 'meka'`、或更旧的角色标记，都不得再经
     // sessions:update 改写工作区身份；半绑定行同样拒绝，避免把它补成另一个身份的绑定。
-    let implicitMekaBinding: WorkspaceBindingResolution | null = null;
+    let implicitMekaBinding: { projectId: string; roleId: string; workspacePath: string } | null = null;
     if (
       p.workspaceKind !== undefined ||
       p.workingDir !== undefined ||
@@ -1761,16 +1761,24 @@ export async function updateSessionInDb(
       // 隐式 Meka 绑定（规则 §2）：未绑定会话移动到 Meka 项目目录时按项目默认角色补绑定，
       // 并与普通 'project' 归属同一条 UPDATE 落库。远程 / 跨设备任务不参与（端口也会跳过）；
       // 解析失败按「不绑定」处理，普通任务不因为 Meka 项目注册表暂时不可用而移不动。
-      if (
-        typeof p.workingDir === 'string' &&
-        p.workingDir.trim().length > 0 &&
-        !identity.remoteHostId &&
-        !identity.agentDeviceId
-      ) {
-        implicitMekaBinding = await resolveSessionWorkspaceBinding({
+      if (typeof p.workingDir === 'string' && p.workingDir.trim().length > 0) {
+        // 与创建缝同一身份规则：远端工作区跳过；agentDeviceId 任务的目录仍在本机，
+        // 移到 Meka 项目目录时同样要升级（不能再按 agentDeviceId 排除）。
+        const resolvedIdentity = await resolveSessionIdentityForCreate({
+          workspaceKind: (p.workspaceKind ?? identity.workspaceKind) as
+            | 'project' | 'dialogue' | 'meka',
           workingDir: p.workingDir,
-          projectDir: null,
+          projectDir: (p.projectDir ?? null) as string | null,
+          remoteHostId: identity.remoteHostId,
+          agentDeviceId: identity.agentDeviceId,
         });
+        if (resolvedIdentity.mekaProjectId && resolvedIdentity.mekaRoleId) {
+          implicitMekaBinding = {
+            projectId: resolvedIdentity.mekaProjectId,
+            roleId: resolvedIdentity.mekaRoleId,
+            workspacePath: resolvedIdentity.projectDir ?? p.workingDir,
+          };
+        }
         // 解析读的是「当前账号」的 Meka 项目注册表；写库用的是本请求捕获的账号。中途换
         // 账号时不能把另一个账号的项目绑定写进旧账号的库。
         if (!isOwnerScopeCurrent(ownerScope)) {

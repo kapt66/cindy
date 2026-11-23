@@ -82,6 +82,7 @@ import {
 import { MAKE_DOCTOR_CHECK_IDS } from '../../../shared/cindyMakeDoctor.js';
 import { sessionCreateToRow } from '../../localDb/mapper.js';
 import { normalizeWorkingDirForStorage } from '../../../shared/workingDir.js';
+import { setWorkspaceBindingResolver } from '../../localDb/workspaceBindingResolver.js';
 import * as sourcePaths from '../sourcePaths.js';
 
 const client = { drizzle: { select: harness.select, insert: harness.insert } };
@@ -119,6 +120,7 @@ function initialReads() {
 
 beforeEach(() => {
   configureCindyMakeEditingGuard(() => false);
+  setWorkspaceBindingResolver(null);
   vi.restoreAllMocks();
   vi.clearAllMocks();
   harness.current = true;
@@ -186,6 +188,39 @@ beforeEach(() => {
 });
 
 describe('Cindy Make task runtime', () => {
+  // Cindy Make 任务在应用托管的 worktree 里工作，正常不会命中 Meka 项目目录；但创建侧
+  // 统一身份入口仍必须生效：一旦该路径被注册为 Meka 项目，新行必须与成对绑定同一次
+  // INSERT 写入，且 kind 归一为普通 project（docs/dev-rules/meka-assistant-session-binding.md §2）。
+  it('writes the paired Meka binding when the task worktree is a registered Meka project directory', async () => {
+    const start = input();
+    initialReads();
+    const worktree = sourcePaths.makeTaskWorktreePath(harness.userData, start.runId);
+    const requested: Array<{ workingDir: string | null; projectDir: string | null }> = [];
+    setWorkspaceBindingResolver(async ({ workingDir, projectDir, remoteHostId }) => {
+      requested.push({ workingDir, projectDir });
+      return !remoteHostId &&
+        normalizeWorkingDirForStorage(workingDir) === normalizeWorkingDirForStorage(worktree)
+        ? { projectId: 'project-a', roleId: 'project-a-default-role', workspacePath: worktree }
+        : null;
+    });
+    try {
+      const sessionId = await startCindyMakeTask(start, 1);
+      await cindyMakeManager.waitForTask(start.runId);
+      expect(requested).toContainEqual({ workingDir: worktree, projectDir: null });
+      expect(harness.rows[0]).toMatchObject({
+        id: sessionId,
+        source: 'cindy-make',
+        workspaceKind: 'project',
+        workingDir: normalizeWorkingDirForStorage(worktree),
+        projectDir: normalizeWorkingDirForStorage(worktree),
+        mekaProjectId: 'project-a',
+        mekaRoleId: 'project-a-default-role',
+      });
+    } finally {
+      setWorkspaceBindingResolver(null);
+    }
+  });
+
   it('updates the personal source before creating the task worktree', async () => {
     const start = input();
     initialReads();

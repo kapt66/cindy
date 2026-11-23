@@ -333,19 +333,35 @@ it('keeps an explicit Meka project/role instead of resolving the directory', asy
   expect(resolver).not.toHaveBeenCalled();
 });
 
-it.each(['remoteHostId', 'agentDeviceId'] as const)(
-  'does not resolve a Meka binding for a task running elsewhere (%s)',
-  async key => {
-    const resolver = vi.fn(async () => mekaResolution);
-    setWorkspaceBindingResolver(resolver);
-    const location = key === 'remoteHostId' ? { remoteHostId: 'ssh-host' } : { agentDeviceId: 'device-b' };
+it('does not resolve a Meka binding for a remote workspace', async () => {
+  const resolver = vi.fn(async () => mekaResolution);
+  setWorkspaceBindingResolver(resolver);
 
-    const opened = await openSession({
-      id: 'remote-task',
-      body: { ...body, workspaceKind: 'project', workingDir: '/meka/project-a', ...location },
-    });
+  const opened = await openSession({
+    id: 'remote-task',
+    body: { ...body, workspaceKind: 'project', workingDir: '/meka/project-a', remoteHostId: 'ssh-host' },
+  });
 
-    expect(opened.row).toMatchObject({ mekaProjectId: null, mekaRoleId: null });
-    expect(resolver).not.toHaveBeenCalled();
-  },
-);
+  // 远端路径属于执行电脑，本机项目表不能据此推断身份。
+  expect(opened.row).toMatchObject({ mekaProjectId: null, mekaRoleId: null });
+  expect(resolver).not.toHaveBeenCalled();
+});
+
+it('still resolves the local workspace for a task whose Agent runs on another computer', async () => {
+  const resolver = vi.fn(async () => mekaResolution);
+  setWorkspaceBindingResolver(resolver);
+
+  const opened = await openSession({
+    id: 'device-task',
+    body: { ...body, workspaceKind: 'project', workingDir: '/meka/project-a', agentDeviceId: 'device-b' },
+  });
+
+  // agentDeviceId 只改变 Agent 执行位置；任务文件/工作区仍在本机，身份按本机目录解析。
+  expect(opened.row).toMatchObject({
+    mekaProjectId: 'project-a',
+    mekaRoleId: 'project-a-default-role',
+    projectDir: '/meka/project-a',
+    workspaceKind: 'project',
+  });
+  expect(resolver).toHaveBeenCalledOnce();
+});

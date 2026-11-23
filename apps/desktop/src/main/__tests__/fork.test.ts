@@ -26,6 +26,10 @@ import { RemoteAgentPoller, RemoteAgentRunClient } from '../remote-agent/control
 import { CODEX_RESUME_NOT_READY_WIRE_MESSAGE } from '@cindy/maker-shared/agent-input-projection';
 import { projectSessionContextWindow } from '../../shared/sessionContextWindow';
 import { computeForkSourceMessagesDigest } from '../localDb/forkRecoverySnapshot.js';
+import {
+  setWorkspaceBindingResolver,
+  type WorkspaceBindingResolveInput,
+} from '../localDb/workspaceBindingResolver.js';
 import { admitTaskAction } from '../maker-ipc/taskActionAuthorization.js';
 import {
   pruneSessionContextWindowBudget,
@@ -732,6 +736,68 @@ describe('forkSessionAtMessage', () => {
     expect(sv.mekaRole).toBeNull();
   });
 
+  it('binds the fork child when the unbound source works in a Meka project directory', async () => {
+    // 规则 §2/§3：源行没有成对绑定、但工作目录就是本机已注册 Meka 项目目录时，子行必须
+    // 创建瞬间就带成对绑定（主进程解析，随 fork 事务落库），不能等首个 turn / 重启补身份。
+    const target = makeMessageRow({ id: 'target-user', role: 'user', createdAt: 3000 });
+    const priorUser = makeMessageRow({ id: 'user-1', role: 'user', content: '"hi"', createdAt: 2000 });
+
+    selectQueue.push([
+      makeSourceRow({
+        agentKind: 'pi',
+        sdkSessionId: 'pi-session-source',
+        workspaceKind: 'project',
+        workingDir: '/meka/project-a',
+        mekaProjectId: null,
+        mekaRoleId: null,
+        mekaRole: null,
+      }),
+    ]);
+    selectQueue.push([target]);
+    selectQueue.push([priorUser]);
+    selectQueue.push([
+      makeSourceRow({
+        id: 'new-meka-fork',
+        agentKind: 'pi',
+        sdkSessionId: 'pi-session-fork',
+        workspaceKind: 'project',
+        parentSessionId: 'src-session',
+        forkedAtMessageId: 'target-user',
+      }),
+    ]);
+
+    const resolver = vi.fn(async (input: WorkspaceBindingResolveInput) =>
+      input.workingDir === '/meka/project-a'
+        ? { projectId: 'saga2', roleId: 'saga2-default-role', workspacePath: '/meka/project-a' }
+        : null,
+    );
+    setWorkspaceBindingResolver(resolver);
+    try {
+      await forkSessionAtMessage('src-session', 'target-user');
+    } finally {
+      setWorkspaceBindingResolver(null);
+    }
+
+    // 解析发生在事务之前、按源行的本地工作区（agentDeviceId 任务不跳过：目录仍在本机）。
+    expect(resolver).toHaveBeenCalledWith(expect.objectContaining({
+      workingDir: '/meka/project-a',
+      projectDir: null,
+      remoteHostId: null,
+    }));
+    const sv = (
+      txCalls.find((c) => c.name === 'fork.session')!.args as {
+        newSession: Record<string, unknown>;
+      }
+    ).newSession;
+    expect(sv.workspaceKind).toBe('project');
+    expect(sv.mekaProjectId).toBe('saga2');
+    expect(sv.mekaRoleId).toBe('saga2-default-role');
+    // 补写现代绑定后不再携带遗留四角色标记。
+    expect(sv.mekaRole).toBeNull();
+    // 项目根随 tx 参数下发（tx 侧需接受该可选覆盖，见交付报告给 lead 的 patch）。
+    expect(sv.projectDir).toBe('/meka/project-a');
+  });
+
   it('codex path: rolls back target and later user turns, copies only prior messages', async () => {
     const target = makeMessageRow({ id: 'target-user', role: 'user', createdAt: 3000 });
     const priorUser = makeMessageRow({
@@ -1323,6 +1389,56 @@ describe('forkSessionAtMessage', () => {
 
     expect(forkSdkSessionMock).toHaveBeenCalled();
     expect(result.parentSessionId).toBe('src-session');
+  });
+
+  it('strip encrypted fork binds the child when the unbound source works in a Meka project', async () => {
+    // 剥离 fork 也是新建会话行：源行未绑定但目录命中本机 Meka 项目时，子行必须立刻带绑定。
+    const source = makeSourceRow({
+      agentKind: 'codex',
+      model: 'gpt-5.5',
+      sdkSessionId: 'codex-thread-source',
+      workspaceKind: 'project',
+      workingDir: '/meka/project-a',
+      mekaProjectId: null,
+      mekaRoleId: null,
+      mekaRole: null,
+    });
+    const first = makeMessageRow({ id: 'user-1', role: 'user', createdAt: 1000 });
+    selectQueue.push([source]);
+    selectQueue.push([]); // no existing strip-fork child
+    selectQueue.push([first]);
+    selectQueue.push([
+      makeSourceRow({
+        agentKind: 'codex',
+        title: '[Fork·已剥离] Project A',
+        sdkSessionId: 'codex-thread-new',
+        parentSessionId: 'src-session',
+        forkedAtMessageId: null,
+      }),
+    ]);
+
+    const resolver = vi.fn(async (input: WorkspaceBindingResolveInput) =>
+      input.workingDir === '/meka/project-a'
+        ? { projectId: 'saga2', roleId: 'saga2-default-role', workspacePath: '/meka/project-a' }
+        : null,
+    );
+    setWorkspaceBindingResolver(resolver);
+    try {
+      await forkSessionStripEncrypted('src-session');
+    } finally {
+      setWorkspaceBindingResolver(null);
+    }
+
+    const sv = (
+      txCalls.find((c) => c.name === 'fork.session')!.args as {
+        newSession: Record<string, unknown>;
+      }
+    ).newSession;
+    expect(sv.workspaceKind).toBe('project');
+    expect(sv.mekaProjectId).toBe('saga2');
+    expect(sv.mekaRoleId).toBe('saga2-default-role');
+    expect(sv.mekaRole).toBeNull();
+    expect(sv.projectDir).toBe('/meka/project-a');
   });
 
   it('reuses the newest strip-fork child that still covers source history', async () => {

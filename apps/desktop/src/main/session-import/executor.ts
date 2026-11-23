@@ -19,6 +19,7 @@ import { activeOwnerScopeKey, getActiveDataOwnerPushStamp, ownerScopedUserDataPa
 import { recordPrRefsForImportedMessages } from '../git-context/prRefsStore.js';
 import { getCurrentDbClientSnapshot, getDbClient } from '../localDb/client/current.js';
 import { emitSessionCreated } from '../localDb/ipc/sessionCreatedBroadcast.js';
+import { resolveSessionIdentityForCreate } from '../localDb/sessionIdentity.js';
 import { createLogger } from '../logger.js';
 import { resolveDefaultScheduleRoute, resolveNewTaskDefaultModelRoute } from '../maker-host/model-route-guard-live.js';
 import { getNewMakerModelTuning, getRemoteNewMakerDefaults, getSelectedNewMakerRoute } from '../maker-host/newMakerDefaultsCache.js';
@@ -231,6 +232,29 @@ async function importOne(job: Job, key: string, source: SourceSession): Promise<
   const now = Date.now();
   item.sessionId = sessionId;
   item.harness = route.agentKind;
+  // 创建侧身份唯一入口（docs/dev-rules/meka-assistant-session-binding.md §2）：导入的 cwd
+  // 是本机已注册 Meka 项目目录时，任务行创建瞬间就写普通 project kind + 成对绑定 +
+  // 项目根，而不是等首个 turn 或重启时再补。远程工作区/未命中一律按普通任务；
+  // 解析失败（端口未安装、项目注册表暂不可用）也降级为普通任务——导入本身不能因为
+  // Meka 解析失败而失败。worker 侧只落库，不做路径解析。
+  const identity = await resolveSessionIdentityForCreate({
+    workspaceKind: source.dialogue ? 'dialogue' : 'project',
+    workingDir: cwd,
+    projectDir: null,
+    remoteHostId: null,
+    agentDeviceId: null,
+  }).catch(() => null);
+  // 成对绑定 + 项目根只在这里整体出现；有绑定即普通 project kind。tx 参数类型里
+  // （localDb/client/tx/types.ts 的 SessionImportTransactionArgs）尚未声明这些字段，
+  // 用展开传入避免改别人正在写的类型文件；worker 侧按同名字段落库（见交付报告 patch）。
+  const boundSessionIdentity = identity?.mekaProjectId && identity.mekaRoleId
+    ? {
+        workspaceKind: 'project' as const,
+        projectDir: identity.projectDir,
+        mekaProjectId: identity.mekaProjectId,
+        mekaRoleId: identity.mekaRoleId,
+      }
+    : null;
   try {
     await runImportTx({
       action: 'begin',
@@ -240,6 +264,7 @@ async function importOne(job: Job, key: string, source: SourceSession): Promise<
         title: source.title,
         workingDir: cwd,
         workspaceKind: source.dialogue ? 'dialogue' : 'project',
+        ...(boundSessionIdentity ?? {}),
         model: route.model || 'default',
         providerId: route.providerId,
         effort: route.effort,
@@ -565,7 +590,43 @@ export async function relocateImportedSession(sessionId: string, workingDir: str
     [sessionId],
   );
   if (!record) throw Object.assign(new Error('not an imported task'), { code: 'NOT_FOUND' });
+  // 已绑定行（成对绑定 / 旧 kind='meka' / 旧角色标记）的工作区是身份的一部分：
+  // 与 `sessions:update` 同一口径硬拒绝换目录，避免造出「目录与绑定不一致」的半身份行。
+  // 半绑定行也拒绝：它只能来自损坏历史，不能靠移动补齐成另一个身份。
+  const sessionRow = await getDbClient().queryOne<{
+    workspaceKind: string | null;
+    mekaProjectId: string | null;
+    mekaRoleId: string | null;
+    mekaRole: string | null;
+    remoteHostId: string | null;
+    agentDeviceId: string | null;
+  }>(
+    `SELECT workspace_kind AS workspaceKind, meka_project_id AS mekaProjectId,
+       meka_role_id AS mekaRoleId, meka_role AS mekaRole,
+       remote_host_id AS remoteHostId, agent_device_id AS agentDeviceId
+     FROM sessions WHERE id = ?`,
+    [sessionId],
+  );
+  if (
+    sessionRow &&
+    (sessionRow.mekaProjectId || sessionRow.mekaRoleId || sessionRow.workspaceKind === 'meka' || sessionRow.mekaRole)
+  ) {
+    throw Object.assign(new Error('Meka project and workspace bindings are immutable'), { code: 'PRECONDITION_FAILED' });
+  }
   const dir = normalizeWorkingDirForStorage(workingDir) ?? workingDir;
+  // 未绑定导入任务移动到本机 Meka 项目目录时，与创建缝同一解析入口（规则 §2）补成对
+  // 绑定，并在下面的 commit 事务里与 working_dir 一起落库。远端工作区不参与；解析失败
+  // 按普通任务移动（不阻断「选择文件夹」）。
+  const identity = await resolveSessionIdentityForCreate({
+    workspaceKind: 'project',
+    workingDir: dir,
+    projectDir: null,
+    remoteHostId: sessionRow?.remoteHostId ?? null,
+    agentDeviceId: sessionRow?.agentDeviceId ?? null,
+  }).catch(() => null);
+  const mekaPatch = identity?.mekaProjectId && identity.mekaRoleId && identity.projectDir
+    ? { mekaProjectId: identity.mekaProjectId, mekaRoleId: identity.mekaRoleId, projectDir: identity.projectDir }
+    : {};
   let sdkPatch: { sdkSessionId?: string } = {};
   if (record.source === 'pi') {
     const key = `pi:${record.sourceSessionId}`;
@@ -588,7 +649,7 @@ export async function relocateImportedSession(sessionId: string, workingDir: str
     status: 'ready',
     issue: null,
     unhide: true,
-    sessionPatch: { ...sdkPatch, workingDir: dir },
+    sessionPatch: { ...sdkPatch, workingDir: dir, ...mekaPatch },
   });
   for (const job of jobs.values()) {
     const item = job.view.items.find((i) => i.sessionId === sessionId);

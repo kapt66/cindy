@@ -2115,8 +2115,14 @@ function forkSession(readyDb, args) {
       expectNumber(newSession.updatedAt, 'newSession.updatedAt'),
     );
     // Keep this in sync with the worker fork transaction.
-    readyDb.prepare('UPDATE sessions SET project_dir = (SELECT project_dir FROM sessions WHERE id = ?) WHERE id = ?')
-      .run(sourceSessionId, expectString(newSession.id, 'newSession.id'));
+    const explicitForkProjectDir = typeof newSession.projectDir === 'string' ? newSession.projectDir : null;
+    if (explicitForkProjectDir !== null) {
+      readyDb.prepare('UPDATE sessions SET project_dir = ? WHERE id = ?')
+        .run(explicitForkProjectDir, expectString(newSession.id, 'newSession.id'));
+    } else {
+      readyDb.prepare('UPDATE sessions SET project_dir = (SELECT project_dir FROM sessions WHERE id = ?) WHERE id = ?')
+        .run(sourceSessionId, expectString(newSession.id, 'newSession.id'));
+    }
     if (newSession.source === 'side-chat') {
       readyDb.prepare("UPDATE sessions SET source = 'side-chat', extra_dirs = (SELECT extra_dirs FROM sessions WHERE id = ?), writable_dirs = (SELECT writable_dirs FROM sessions WHERE id = ?) WHERE id = ?")
         .run(sourceSessionId, sourceSessionId, expectString(newSession.id, 'newSession.id'));

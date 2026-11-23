@@ -24,6 +24,8 @@ import { existsSync, mkdirSync, promises as fsPromises, readFileSync, rmSync, wr
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BOT_TEMPLATE_PRESET_IDENTITIES } from '../../../../shared/botTemplatePreset';
+import { normalizeWorkingDirForStorage } from '../../../../shared/workingDir';
+import { setWorkspaceBindingResolver } from '../../workspaceBindingResolver';
 import { createBotModelRouteReconciler } from '../../../maker-ipc/botModelRouteReconciler';
 import { configureBotModelSelectionCoordinator, createBotModelSelectionCoordinator } from '../../../maker-ipc/botModelSelectionCoordinator';
 import { createScheduledModelScope, writeScheduledModelBaselineIfProfileCurrent, ScheduledModelSelectionBusyError, type ScheduledModelSelection } from '../../../maker-ipc/scheduledModelSelection';
@@ -2441,6 +2443,50 @@ describe('Bot canonical Session lifecycle', () => {
       { sessionSources: null },
     );
     expect(h.searchConversations.mock.lastCall?.[0].filters.sessionIds).toHaveLength(4);
+  });
+
+  // 群 lane 可以直接工作在群项目目录（bot-group-chat.md §7.5）。该目录若是本机已注册的
+  // Meka 项目，创建侧必须把成对绑定与行写在同一次 INSERT，且 kind 归一为普通 project
+  // （docs/dev-rules/meka-assistant-session-binding.md §2）。
+  it('writes the paired Meka binding for a group lane working in a registered Meka project directory', async () => {
+    const mekaDir = normalizeWorkingDirForStorage(join(h.userDataDir, 'meka-project-a'))!;
+    mkdirSync(mekaDir, { recursive: true });
+    h.sqlite!.exec("CREATE TABLE bot_group_members(group_id TEXT, bot_id TEXT); INSERT INTO bot_group_members VALUES ('room','bot-1')");
+    const normalized = (value: string | null | undefined) => normalizeWorkingDirForStorage(value);
+    const requested: Array<{ workingDir: string | null; projectDir: string | null }> = [];
+    setWorkspaceBindingResolver(async ({ workingDir, projectDir, remoteHostId }) => {
+      requested.push({ workingDir, projectDir });
+      if (remoteHostId) return null;
+      return [projectDir, workingDir].some((candidate) => normalized(candidate) === normalized(mekaDir))
+        ? { projectId: 'project-a', roleId: 'project-a-default-role', workspacePath: mekaDir }
+        : null;
+    });
+    try {
+      const lane = await ensureBotGroupLaneSession({
+        botId: 'bot-1', groupId: 'room', title: 'Shared project', projectDir: mekaDir,
+      });
+      expect(lane).toMatchObject({ ok: true, created: true });
+      if (!lane.ok) throw new Error(lane.message);
+      expect(requested).toContainEqual({ workingDir: mekaDir, projectDir: mekaDir });
+      expect(h.sqlite!.prepare(`SELECT s.workspace_kind AS workspaceKind, s.working_dir AS workingDir,
+          s.project_dir AS projectDir, s.meka_project_id AS mekaProjectId, s.meka_role_id AS mekaRoleId,
+          l.role, l.route_key AS routeKey
+        FROM sessions s JOIN bot_session_links l ON l.session_id = s.id WHERE s.id = ?`).get(lane.sessionId)).toEqual({
+        workspaceKind: 'project',
+        workingDir: normalizeWorkingDirForStorage(mekaDir),
+        projectDir: normalizeWorkingDirForStorage(mekaDir),
+        mekaProjectId: 'project-a',
+        mekaRoleId: 'project-a-default-role',
+        role: 'group',
+        routeKey: 'group:room',
+      });
+      // The same lane is reused on later turns, not re-created with a second identity.
+      await expect(ensureBotGroupLaneSession({
+        botId: 'bot-1', groupId: 'room', title: 'ignored', projectDir: mekaDir,
+      })).resolves.toEqual({ ok: true, sessionId: lane.sessionId, created: false });
+    } finally {
+      setWorkspaceBindingResolver(null);
+    }
   });
 
   it('creates one IM channel lane per route key, notifies the task list and keeps it out of private history search', async () => {

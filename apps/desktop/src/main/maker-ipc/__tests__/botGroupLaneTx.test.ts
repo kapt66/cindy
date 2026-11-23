@@ -65,7 +65,7 @@ describe('Bot group lane transactions', () => {
         pinned_at INTEGER, user_send_at INTEGER, agent_kind TEXT, orca_role TEXT,
         parent_session_id TEXT, forked_at_message_id TEXT, worktree_path TEXT, extra_dirs TEXT,
         remote_host_id TEXT, agent_device_id TEXT, provider_id TEXT, source TEXT NOT NULL, created_at INTEGER,
-        updated_at INTEGER NOT NULL
+        updated_at INTEGER NOT NULL, meka_project_id TEXT, meka_role_id TEXT
       );
       CREATE TABLE messages (id TEXT PRIMARY KEY);
       CREATE TABLE mcp_app_view_states (
@@ -116,6 +116,28 @@ describe('Bot group lane transactions', () => {
       .toEqual({ bot_id: 'mimi', role: 'group', route_key: 'group:g1', profile_version: 3 });
     expect(db.prepare("SELECT source, status FROM sessions WHERE id = 'lane-1'").get())
       .toEqual({ source: 'bot', status: 'active' });
+  });
+
+  // The main process resolves the Meka binding before entering the transaction; the lane row
+  // must persist it in the same INSERT and normalize a bound row to the ordinary project kind.
+  it('persists the resolved Meka binding on the group lane row', () => {
+    const session = {
+      ...laneSession('lane-meka'),
+      workingDir: '/meka/project-a',
+      projectDir: '/meka/project-a',
+      workspaceKind: 'project',
+      mekaProjectId: 'project-a',
+      mekaRoleId: 'project-a-default-role',
+    };
+    expect(tx(db, { name: 'bots.createGroupLane', args: { botId: 'mimi', groupId: 'g1', routeKey: 'group:g1', session } }))
+      .toEqual({ sessionId: 'lane-meka', created: true });
+    expect(db.prepare(`SELECT workspace_kind, project_dir, meka_project_id, meka_role_id
+      FROM sessions WHERE id = 'lane-meka'`).get()).toEqual({
+      workspace_kind: 'project',
+      project_dir: '/meka/project-a',
+      meka_project_id: 'project-a',
+      meka_role_id: 'project-a-default-role',
+    });
   });
 
   it('creates a separate 分工 Session per plan that works in the plan directory', () => {

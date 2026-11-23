@@ -13,6 +13,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ImportJobView, NormalizedMessage, SourceSession } from '../types';
 import { cancelImport, onImportProgress, startImport } from '../executor';
+import {
+  setWorkspaceBindingResolver,
+  type WorkspaceBindingResolveInput,
+} from '../../localDb/workspaceBindingResolver';
+import { normalizeWorkingDirForStorage } from '../../../shared/workingDir';
 
 const h = vi.hoisted(() => ({
   owner: 'owner-a',
@@ -20,6 +25,7 @@ const h = vi.hoisted(() => ({
   sources: new Map<string, SourceSession>(),
   visible: new Set<string>(),
   visibleAtNotification: [] as Array<{ sessionId: string; visible: string[] }>,
+  beginSessions: [] as Array<Record<string, unknown>>,
   send: vi.fn(),
   tap: vi.fn(),
   read: vi.fn<(source: SourceSession) => AsyncIterable<NormalizedMessage>>(),
@@ -61,7 +67,8 @@ vi.mock('../scan.js', () => ({ resolveSourceSessions: async () => new Map(h.sour
 vi.mock('../sources/index.js', () => ({ adapterFor: () => ({ label: 'Example', read: h.read }) }));
 vi.mock('../handoff.js', () => ({ buildImportHandoffMarker: async () => undefined }));
 vi.mock('../writer.js', () => ({
-  runImportTx: async (args: { action: string; sessionId?: string; unhide?: boolean }) => {
+  runImportTx: async (args: { action: string; session?: Record<string, unknown>; sessionId?: string; unhide?: boolean }) => {
+    if (args.action === 'begin' && args.session) h.beginSessions.push(args.session);
     if (args.action === 'commit' && args.unhide && args.sessionId) h.visible.add(args.sessionId);
   },
   writeImportCards: async () => {},
@@ -89,7 +96,7 @@ function source(id: string, project = false): string {
 
 beforeEach(() => {
   h.owner = 'owner-a'; h.epoch++;
-  h.sources.clear(); h.visible.clear();
+  h.sources.clear(); h.visible.clear(); h.beginSessions.length = 0;
   h.visibleAtNotification.length = 0;
   h.send.mockReset(); h.tap.mockReset();
   h.read.mockReset().mockImplementation(async function* () {
@@ -164,5 +171,41 @@ describe('import completion notifications without an import page', () => {
       expect(notifications()).toHaveLength(0);
       expect(h.tap).not.toHaveBeenCalled();
     } finally { off(); }
+  });
+});
+
+describe('session import Meka identity', () => {
+  // 价值：规则 §2 的创建侧身份必须覆盖任务导入，且在**建隐藏行那一刻**就带成对绑定，
+  // 不能等首个 turn / 冷启动；最小失败输入 = cwd 精确等于本机 Meka 项目目录的普通来源。
+  it('writes the resolved Meka pair when the imported cwd is a Meka project directory', async () => {
+    const done = deferred(); h.settled = done.resolve;
+    const key = source('meka-workspace', true);
+    const workingDir = path.resolve('meka-project-a');
+    const normalizedDir = normalizeWorkingDirForStorage(workingDir) ?? workingDir;
+    h.sources.get(key)!.cwd = workingDir;
+    const resolver = vi.fn(async (_input: WorkspaceBindingResolveInput) => ({
+      projectId: 'saga2',
+      roleId: 'saga2-default-role',
+      workspacePath: normalizedDir,
+    }));
+    setWorkspaceBindingResolver(resolver);
+    try {
+      await startImport([key]);
+      await done.promise;
+    } finally {
+      setWorkspaceBindingResolver(null);
+    }
+    expect(resolver).toHaveBeenCalledWith(expect.objectContaining({
+      workingDir: normalizedDir,
+      remoteHostId: null,
+    }));
+    expect(h.beginSessions).toHaveLength(1);
+    expect(h.beginSessions[0]).toMatchObject({
+      workspaceKind: 'project',
+      workingDir: normalizedDir,
+      projectDir: normalizedDir,
+      mekaProjectId: 'saga2',
+      mekaRoleId: 'saga2-default-role',
+    });
   });
 });

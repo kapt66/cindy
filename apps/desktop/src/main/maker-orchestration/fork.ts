@@ -25,6 +25,7 @@ import {
 import { getDbClient } from '../localDb/client/current';
 import { sessions, messages } from '../localDb/schema';
 import { sessionToCamel } from '../localDb/mapper';
+import { resolveSessionIdentityForCreate } from '../localDb/sessionIdentity';
 import { computeForkSourceMessagesDigest } from '../localDb/forkRecoverySnapshot.js';
 import { commitContextRebuild, createMessage } from '../localDb/ipc/messages.js';
 import { getMaker } from '../maker-host/index.js';
@@ -808,6 +809,80 @@ function collectClaudeToolParentUuids(
   return [...uuids];
 }
 
+interface ForkSourceMekaIdentity {
+  workspaceKind: string;
+  workingDir: string | null;
+  projectDir: string | null;
+  remoteHostId: string | null;
+  agentDeviceId: string | null;
+  mekaProjectId: string | null;
+  mekaRoleId: string | null;
+  mekaRole: string | null;
+}
+
+interface ForkChildMekaBinding {
+  mekaProjectId: string;
+  mekaRoleId: string;
+  projectDir: string;
+}
+
+/**
+ * 源行未成对绑定时的子行 Meka 身份：用创建侧同一解析入口
+ * （docs/dev-rules/meka-assistant-session-binding.md §2）判断源行/子行的工作目录是否就是
+ * 本机已注册 Meka 项目。命中返回成对绑定 + 项目根，由事务参数写进子行——子行创建瞬间
+ * 就是 Meka 会话，不依赖首个 turn / 重启补身份。源行已绑定返回 null（直接从源行继承）；
+ * 解析失败返回 null 按普通会话 fork，不能因为 Meka 项目注册表暂时不可用而 fork 不出来。
+ */
+async function resolveUnboundForkMekaBinding(
+  source: ForkSourceMekaIdentity,
+): Promise<ForkChildMekaBinding | null> {
+  if (hasMekaAssistantBinding(source)) return null;
+  const identity = await resolveSessionIdentityForCreate({
+    workspaceKind:
+      source.workspaceKind === 'dialogue'
+        ? 'dialogue'
+        : source.workspaceKind === 'meka'
+          ? 'meka'
+          : 'project',
+    workingDir: source.workingDir ?? null,
+    projectDir: source.projectDir ?? null,
+    remoteHostId: source.remoteHostId ?? null,
+    agentDeviceId: source.agentDeviceId ?? null,
+  }).catch(() => null);
+  if (!identity?.mekaProjectId || !identity.mekaRoleId || !identity.projectDir) return null;
+  return {
+    mekaProjectId: identity.mekaProjectId,
+    mekaRoleId: identity.mekaRoleId,
+    projectDir: identity.projectDir,
+  };
+}
+
+/**
+ * fork 子行 tx 里的 Meka 身份字段：源行有成对绑定则继承（`kind` 按源行原样复制只作
+ * 展示分类）；源行未绑定但路径命中时用主进程解析出的成对绑定，并把展示分类归一到普通
+ * `'project'`。补写现代绑定后不再携带遗留四角色标记（`mekaRole` 只继承无绑定旧行）。
+ */
+function forkChildMekaTxFields(
+  source: ForkSourceMekaIdentity,
+  resolved: ForkChildMekaBinding | null,
+): {
+  mekaProjectId?: string | null;
+  mekaRoleId?: string | null;
+  mekaRole: string | null;
+  projectDir?: string;
+} {
+  const inherited = hasMekaAssistantBinding(source);
+  return {
+    ...(inherited
+      ? { mekaProjectId: source.mekaProjectId, mekaRoleId: source.mekaRoleId }
+      : resolved
+        ? { mekaProjectId: resolved.mekaProjectId, mekaRoleId: resolved.mekaRoleId }
+        : {}),
+    mekaRole: resolved ? null : (source.mekaRole ?? null),
+    ...(resolved ? { projectDir: resolved.projectDir } : {}),
+  };
+}
+
 /**
  * 把 source 会话在 messageClientId 处 fork 成新会话。fork 点支持两种 role：
  *
@@ -1102,6 +1177,10 @@ export async function forkSessionAtMessage(
   // （否则 DB 已提交、调用方却认为整体失败，会留下一个“报了错但存在”的任务）；
   // 事务失败则把刚写的条目撤掉，不留指向不存在任务的孤儿条目。
   await assertTaskActionCurrent();
+  // 源行没有成对绑定时，用创建侧同一解析入口判断子行工作目录是否就是本机已注册的
+  // Meka 项目：命中则把解析出的成对绑定 + 项目根随 fork 事务一起写进子行（见
+  // resolveUnboundForkMekaBinding / forkChildMekaTxFields）。
+  const resolvedMekaBinding = await resolveUnboundForkMekaBinding(source);
   const inheritedBudget = copySessionContextWindowBudget(sourceSessionId, newSessionId);
   try {
     await dbClient.tx('fork.session', {
@@ -1133,15 +1212,10 @@ export async function forkSessionAtMessage(
         pinnedAt: null,
         userSendAt: now,
         agentKind: forkSource.agentKind,
-        workspaceKind: source.workspaceKind,
-        // Meka 归属身份 = (mekaProjectId, mekaRoleId) 成对绑定，只有完整绑定才继承
-        // （不产生半绑定行）；判据不再是 workspaceKind==='meka'——新会话可能是普通
-        // project/dialogue，旧行仍可能是 'meka'，kind 按源行原样复制只作展示分类。
-        // mekaRole 是更旧的无绑定历史行才有的内置角色标记，原样继承以保持身份呈现。
-        ...(hasMekaAssistantBinding(source)
-          ? { mekaProjectId: source.mekaProjectId, mekaRoleId: source.mekaRoleId }
-          : {}),
-        mekaRole: source.mekaRole ?? null,
+        // 按路径补绑定命中的子行必须落普通 'project'；源行已绑定时 kind 仍按源行原样复制
+        // 只作展示分类（规则 §3：fork 只继承成对绑定，kind 不承担身份）。
+        workspaceKind: resolvedMekaBinding ? 'project' : source.workspaceKind,
+        ...forkChildMekaTxFields(source, resolvedMekaBinding),
         // 轮 26 HIGH-1:远端会话 fork 必须继承 remoteHostId —— 缺失会落成
         // NULL, 子会话被下游当成本地会话处理(本地 transport/MCP 全错)。
         remoteHostId: source.remoteHostId ?? null,
@@ -1314,6 +1388,9 @@ export async function forkSessionStripEncrypted(sourceSessionId: string): Promis
   const recoveryMarker = newSdkSessionId === null ? buildCodexForkRecoveryMarker({
     source, rows: sourceMessages, newMessageIds, sessionId: newSessionId, now,
   }) : undefined;
+  // 与 forkSessionAtMessage 同口径：源行未绑定但目录命中本机 Meka 项目时，主进程在事务前
+  // 解析出成对绑定，子行创建瞬间即 Meka 会话（剥离 fork 同样是新建会话行）。
+  const resolvedMekaBinding = await resolveUnboundForkMekaBinding(source);
   // 任务级窗口档位与普通 fork 同口径继承（同一条任务意图）；这是偏好文件里的条目，
   // 与普通 fork 一样先写后提交：写失败时任务还没建出来，事务失败则撤掉条目。
   const inheritedBudget = copySessionContextWindowBudget(sourceSessionId, newSessionId);
@@ -1343,13 +1420,10 @@ export async function forkSessionStripEncrypted(sourceSessionId: string): Promis
         pinnedAt: null,
         userSendAt: now,
         agentKind: source.agentKind,
-        workspaceKind: source.workspaceKind,
-        // 同 forkSessionAtMessage：完整 Meka 绑定才继承（判据不看 kind，kind 按源行原样
-        // 复制只作展示分类）；mekaRole 是无绑定旧行标记，原样继承。
-        ...(hasMekaAssistantBinding(source)
-          ? { mekaProjectId: source.mekaProjectId, mekaRoleId: source.mekaRoleId }
-          : {}),
-        mekaRole: source.mekaRole ?? null,
+        // 同 forkSessionAtMessage：按路径补绑定命中的子行落普通 'project'；完整 Meka
+        // 绑定才继承（判据不看 kind，kind 按源行原样复制只作展示分类）。
+        workspaceKind: resolvedMekaBinding ? 'project' : source.workspaceKind,
+        ...forkChildMekaTxFields(source, resolvedMekaBinding),
         codexHistoryHasProductPrompt: source.codexHistoryHasProductPrompt,
         parentSessionId: source.id,
         forkedAtMessageId: null,

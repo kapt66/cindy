@@ -858,23 +858,35 @@ function botsFinishRuntime(db: Database.Database, args: unknown): boolean {
 
 
 function insertBotSession(db: Database.Database, s: Record<string, unknown>): void {
+  // Meka 身份只认成对绑定：半绑定行在运行期会被拒绝（docs/dev-rules/
+  // meka-assistant-session-binding.md §1），写入侧直接拦。有绑定的行一律归成普通
+  // `project`：新会话不再写第三态 kind。
+  const mekaProjectId = nullableString(s.mekaProjectId);
+  const mekaRoleId = nullableString(s.mekaRoleId);
+  if (Boolean(mekaProjectId) !== Boolean(mekaRoleId)) {
+    throw invalidArgs('session Meka binding requires both a project and a role');
+  }
   db.prepare(`INSERT INTO sessions
     (id, title, working_dir, workspace_kind, model, effort, permission_mode, status,
      sdk_session_id, total_token_usage, total_cost_usd, context_tokens, context_window,
      fast_mode, plan_mode_enabled, cleared_at, pinned_at, user_send_at, agent_kind,
      orca_role, parent_session_id, forked_at_message_id, worktree_path, extra_dirs,
-     remote_host_id, provider_id, source, created_at, updated_at, agent_device_id, project_dir)
+     remote_host_id, provider_id, source, created_at, updated_at, agent_device_id, project_dir,
+     meka_project_id, meka_role_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, 'active', NULL, 0, 0, 0, 0, ?, 0, NULL, NULL, NULL,
-     ?, NULL, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`)
+     ?, NULL, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(expectString(s.id, 'session.id'), expectString(s.title, 'session.title'),
-      nullableString(s.workingDir), expectString(s.workspaceKind, 'session.workspaceKind'),
+      nullableString(s.workingDir), mekaProjectId && mekaRoleId
+        ? 'project'
+        : expectString(s.workspaceKind, 'session.workspaceKind'),
       expectString(s.model, 'session.model'), expectString(s.effort, 'session.effort'),
       expectString(s.permissionMode, 'session.permissionMode'), fastModeToStorage(s.fastMode),
       expectString(s.agentKind, 'session.agentKind'),
       nullableString(s.parentSessionId),
       expectString(s.extraDirs, 'session.extraDirs'), nullableString(s.remoteHostId), nullableString(s.providerId),
       expectString(s.source, 'session.source'), expectNumber(s.createdAt, 'session.createdAt'),
-      expectNumber(s.updatedAt, 'session.updatedAt'), nullableString(s.agentDeviceId), nullableString(s.projectDir));
+      expectNumber(s.updatedAt, 'session.updatedAt'), nullableString(s.agentDeviceId), nullableString(s.projectDir),
+      mekaProjectId, mekaRoleId);
 }
 
 /** One isolated lane per (group, Bot); reuses an active lane instead of creating a second. */
@@ -2995,8 +3007,14 @@ function forkSession(db: Database.Database, args: unknown): { messageCount: numb
       expectNumber(newSession.updatedAt, 'newSession.updatedAt'),
     );
     // A fork keeps its source project's identity even when cwd is a checkout.
-    db.prepare('UPDATE sessions SET project_dir = (SELECT project_dir FROM sessions WHERE id = ?) WHERE id = ?')
-      .run(sourceSessionId, expectString(newSession.id, 'newSession.id'));
+    const explicitForkProjectDir = typeof newSession.projectDir === 'string' ? newSession.projectDir : null;
+    if (explicitForkProjectDir !== null) {
+      db.prepare('UPDATE sessions SET project_dir = ? WHERE id = ?')
+        .run(explicitForkProjectDir, expectString(newSession.id, 'newSession.id'));
+    } else {
+      db.prepare('UPDATE sessions SET project_dir = (SELECT project_dir FROM sessions WHERE id = ?) WHERE id = ?')
+        .run(sourceSessionId, expectString(newSession.id, 'newSession.id'));
+    }
     if (newSession.source === 'side-chat') {
       db.prepare("UPDATE sessions SET source = 'side-chat', extra_dirs = (SELECT extra_dirs FROM sessions WHERE id = ?), writable_dirs = (SELECT writable_dirs FROM sessions WHERE id = ?) WHERE id = ?")
         .run(sourceSessionId, sourceSessionId, expectString(newSession.id, 'newSession.id'));

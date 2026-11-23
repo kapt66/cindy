@@ -1,5 +1,6 @@
 import { and, eq } from 'drizzle-orm';
 import { getDbClient } from '../localDb/client/current.js';
+import { resolveSessionIdentityForCreate } from '../localDb/sessionIdentity.js';
 import { sessions, messages } from '../localDb/schema.js';
 import { sessionCreateToRow } from '../localDb/mapper.js';
 import { emitSessionCreated } from '../localDb/ipc/sessionCreatedBroadcast.js';
@@ -131,6 +132,18 @@ export async function ensureUpstreamMergeSession(
   // Bind the ID before INSERT, so retries after a crash never create a second task.
   bind(id);
   const createdAt = Date.now();
+  // 合并任务同样在应用托管的 worktree 里工作，正常不可能命中 Meka 项目目录；若命中，
+  // 与其它创建入口一样写普通 project kind + 成对绑定（docs/dev-rules/
+  // meka-assistant-session-binding.md §2）。已存在的行不再解析身份。
+  const identity = existing
+    ? null
+    : await resolveSessionIdentityForCreate({
+        workspaceKind: 'project',
+        workingDir,
+        projectDir: null,
+        remoteHostId: null,
+      });
+  check();
   const row =
     existing ??
     sessionCreateToRow(
@@ -151,7 +164,10 @@ export async function ensureUpstreamMergeSession(
           createdAt,
         ),
         workingDir,
-        workspaceKind: 'project',
+        workspaceKind: identity?.workspaceKind ?? 'project',
+        ...(identity?.projectDir ? { projectDir: identity.projectDir } : {}),
+        mekaProjectId: identity?.mekaProjectId,
+        mekaRoleId: identity?.mekaRoleId,
         source: CINDY_MAKE_MERGE_SESSION_SOURCE,
       },
       createdAt,

@@ -2086,7 +2086,11 @@ export class MakerScheduleRunner implements ScheduleRunner {
     // 直发会打到已关闭的实例上。
     if (await this.deps.maker.recyclePiRuntimeIfResourcesDrifted(session)) {
       this.deps.logger.info?.('[runner] project resources drifted, recycled runtime before dispatch', { sessionId: session.id });
-      session = await this.deps.maker.createSession({ ...createSessionOpts });
+      // 重建必须回到与首次启动**同一个** funnel:桌面 `bootstrapSession` 在启动前按持久行
+      // 收口 Meka 身份并注入运行时(prompt/MCP/技能)。直接 `maker.createSession` 会拿一份
+      // 没被 `createScheduledSessionBootstrap` 注入过的原始 opts,起出「库里是 Meka、运行期
+      // 是普通会话」的实例。无 bootstrap 的配置只存在于测试/宿主降级态,那时退回裸创建。
+      session = await this.createSession({ ...createSessionOpts }, ctx.signal, holder.assertOwner);
       // wireSessionToIpc 按 Session 实例幂等,换实例需重接广播/落库链路,
       // 否则本轮回复与工具记录不进聊天页(上游已改为 runtime 注入的依赖)。
       this.runtime.wireSessionToIpc(session);

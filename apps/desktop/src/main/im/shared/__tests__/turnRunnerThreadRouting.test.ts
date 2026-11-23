@@ -72,6 +72,7 @@ vi.mock('../../../logger', () => ({ createLogger: () => mocks.logger }));
 // 并发表，不挂真实 DB，绑定读取固定「无绑定 ⇒ 不注入」。
 vi.mock('../../../meka-injection/persistedBinding.js', () => ({
   readPersistedMekaSessionBinding: async () => null,
+  ensurePersistedMekaSessionBinding: async () => null,
 }));
 vi.mock('../../../meka-injection/index.js', () => ({
   applyMekaRuntimeConfig: vi.fn(async () => ({ didApply: false })),

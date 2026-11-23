@@ -4,6 +4,7 @@ import { ensureUpstreamMergeSession, assertUpstreamMergeSession } from '../upstr
 import { mergeWorktree } from '../upstreamMerge';
 import type { CindyMakeMergeState } from '../../../shared/cindyMakeMerge';
 import { normalizeWorkingDirForStorage } from '../../../shared/workingDir';
+import { setWorkspaceBindingResolver } from '../../localDb/workspaceBindingResolver';
 import { setMainLocale } from '../../i18n.desktop';
 
 const h = vi.hoisted(() => {
@@ -52,6 +53,7 @@ const row = {
 };
 beforeEach(() => {
   setMainLocale('en');
+  setWorkspaceBindingResolver(null);
   h.reads.length = 0;
   h.current = true;
   vi.clearAllMocks();
@@ -82,6 +84,37 @@ describe('dedicated upstream merge session', () => {
     expect(h.dispatch).toHaveBeenCalledOnce();
     expect(h.dispatch.mock.calls[0][1]).toContain('确保不丢失本地已有功能');
     expect(h.dispatch.mock.calls[0][1]).toContain(state.upstreamCommit);
+  });
+  // 合并任务在应用托管 worktree 里工作，正常不会命中 Meka 项目目录；命中时仍按统一
+  // 创建侧身份入口写普通 project kind + 成对绑定（meka-assistant-session-binding.md §2）。
+  it('writes the paired Meka binding when the merge worktree is a registered Meka project directory', async () => {
+    const workingDir = mergeWorktree(userData, state.id);
+    setWorkspaceBindingResolver(async ({ workingDir: candidate, remoteHostId }) =>
+      !remoteHostId &&
+      normalizeWorkingDirForStorage(candidate) === normalizeWorkingDirForStorage(workingDir)
+        ? { projectId: 'project-a', roleId: 'project-a-default-role', workspacePath: workingDir }
+        : null);
+    try {
+      await ensureUpstreamMergeSession(
+        userData,
+        state,
+        { agentKind: 'codex', model: 'test-model' },
+        vi.fn(),
+        () => true,
+      );
+      expect(h.insert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source: 'cindy-make-merge',
+          workspaceKind: 'project',
+          workingDir: normalizeWorkingDirForStorage(workingDir),
+          projectDir: normalizeWorkingDirForStorage(workingDir),
+          mekaProjectId: 'project-a',
+          mekaRoleId: 'project-a-default-role',
+        }),
+      );
+    } finally {
+      setWorkspaceBindingResolver(null);
+    }
   });
   it('distinguishes later conflicts of the same kind using their own creation times', async () => {
     await ensureUpstreamMergeSession(userData, state, undefined, vi.fn(), () => true);

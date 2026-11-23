@@ -932,8 +932,9 @@ import { getMekaP4SettingsService, getMekaRouterService } from '../meka-settings
 import { classifyRemoteSessionTransport } from '../maker-host/remote-session-routing.js';
 import { createMekaWorkerTargetResolver } from './mekaWorkerTarget.js';
 import { applyMekaRuntimeConfig } from '../meka-injection/index.js';
-import { readPersistedMekaSessionBinding } from '../meka-injection/persistedBinding.js';
-import { resolveSessionWorkspaceBinding } from '../localDb/workspaceBindingResolver.js';
+import { ensurePersistedMekaSessionBinding } from '../meka-injection/persistedBinding.js';
+import { resolveSessionIdentityForCreate } from '../localDb/sessionIdentity.js';
+import { insertProvisionedSessionRow } from '../localDb/sessionProvisioning.js';
 import {
   recordSessionContextSnapshot,
   recordSessionTurnSpend,
@@ -9266,6 +9267,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // 边界；Meka 侧只把函数体改名为 bootstrapSessionOnce 并加了一层 in-flight 去重
     // 包装（bootstrapSession），授权回调必须继续透传，否则共享任务路径失去重授权。
     let session: Awaited<ReturnType<typeof maker.createSession>> | undefined;
+    /** 本次 bootstrap 先建的行；启动失败时要撤掉，避免留下可点开却没有 Agent 的空任务。 */
+    let provisionedRowId: string | null = null;
     const creationSignal = o.id ? currentSessionCreationSignal(o.id) : undefined;
     const resumeRecoveryOwner = captureDataOwnerBroadcastScope();
     const assertResumeRecoveryCurrent = () => {
@@ -9332,45 +9335,86 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     assertAccess?.();
     // Cindy Make 的 purpose 上游已在本函数开头（applyPersistedCindyMakeMarker）落地；
     // 这里只接 Meka 的项目/角色运行时，两者都只补 vendorOptions，互不覆盖。
-    // 新会话行可能还没落库（scheduler fire / 远程 create / send_to_session 新任务），
-    // 此时 applyMekaRuntimeConfig 读不到持久绑定；用创建侧同一解析端口按本次工作区
-    // 补绑定。存量普通会话已经有行，保持「存量不管」，不会被回溯升级。
-    if (
-      o.id &&
-      !o.mekaProjectId &&
-      !o.mekaRoleId &&
-      (o.workingDir || o.projectDir)
-    ) {
-      const persisted = await readPersistedMekaSessionBinding(o.id);
-      if (!persisted) {
-        const resolution = await resolveSessionWorkspaceBinding({
+    //
+    // 身份收口（长期规则）：行在 Agent 启动前落库，运行期只按持久化行注入。
+    // 1) 已有行：ensure 会把「本地工作区=Meka 项目但未绑定」的存量普通行按路径升级，
+    //    已绑定行直接以 row 为准，不接受 caller opts 另造身份。
+    // 2) 新行：用创建侧同一身份入口解析显式/路径绑定，然后在启动前 INSERT（远端 Worker /
+    //    worktree / device-link 的路径不是本机项目根，走不了 storage 路径推断）。
+    // 3) 最后才注入；注入读取刚写好的持久化行。
+    if (o.id) {
+      const persisted = await ensurePersistedMekaSessionBinding(o.id);
+      if (persisted?.mekaProjectId && persisted.mekaRoleId) {
+        if (
+          (o.mekaProjectId && o.mekaProjectId !== persisted.mekaProjectId) ||
+          (o.mekaRoleId && o.mekaRoleId !== persisted.mekaRoleId)
+        ) {
+          throw new Error('Meka session binding differs from the persisted identity');
+        }
+        o.mekaProjectId = persisted.mekaProjectId;
+        o.mekaRoleId = persisted.mekaRoleId;
+        o.mekaRole = persisted.mekaRole ?? o.mekaRole;
+        o.workspaceKind = 'project';
+      }
+    }
+    if (!o.mekaProjectId && !o.mekaRoleId) {
+      const identity = await resolveSessionIdentityForCreate({
+        workspaceKind: o.workspaceKind ?? 'project',
+        workingDir: typeof o.workingDir === 'string' ? o.workingDir : null,
+        projectDir: typeof o.projectDir === 'string' ? o.projectDir : null,
+        remoteHostId: typeof o.remoteHostId === 'string' ? o.remoteHostId : null,
+        agentDeviceId: typeof o.agentDeviceId === 'string' ? o.agentDeviceId : null,
+      });
+      if (identity.mekaProjectId && identity.mekaRoleId) {
+        o.mekaProjectId = identity.mekaProjectId;
+        o.mekaRoleId = identity.mekaRoleId;
+        o.projectDir = identity.projectDir ?? o.projectDir;
+        o.workspaceKind = 'project';
+      }
+    }
+    if (o.mekaProjectId && o.mekaRoleId) {
+      if (!o.id) o.id = randomUUID();
+      const [existingRow] = await getDbClient()
+        .drizzle.select({ id: sessions.id })
+        .from(sessions)
+        .where(eq(sessions.id, o.id))
+        .limit(1);
+      assertAccess?.();
+      if (!existingRow) {
+        if (await insertProvisionedSessionRow({
+          id: o.id,
+          agentKind: o.agentKind,
+          workspaceKind: o.workspaceKind ?? 'project',
           workingDir: typeof o.workingDir === 'string' ? o.workingDir : null,
           projectDir: typeof o.projectDir === 'string' ? o.projectDir : null,
-          remoteHostId: typeof o.remoteHostId === 'string' ? o.remoteHostId : null,
-          agentDeviceId: typeof o.agentDeviceId === 'string' ? o.agentDeviceId : null,
-        });
-        if (resolution) {
-          o.mekaProjectId = resolution.projectId;
-          o.mekaRoleId = resolution.roleId;
-          o.projectDir = resolution.workspacePath;
-          o.workspaceKind = 'project';
+          title: o.title,
+          model: o.model,
+          providerId: o.providerId ?? null,
+          effort: o.effort ?? null,
+          permissionMode: o.permissionMode ?? null,
+          fastMode: o.fastMode ?? null,
+          planModeEnabled: o.planMode ?? false,
+          parentSessionId: o.parentSessionId ?? null,
+          remoteHostId: o.remoteHostId ?? null,
+          agentDeviceId: o.agentDeviceId ?? null,
+          mekaProjectId: o.mekaProjectId,
+          mekaRoleId: o.mekaRoleId,
+          source: o.reviewMode === true ? 'review' : 'desktop',
+        })) {
+          provisionedRowId = o.id;
+          log.info('Meka session row provisioned before agent start', {
+            sessionId: o.id,
+            projectId: o.mekaProjectId,
+            roleId: o.mekaRoleId,
+            workspaceKind: o.workspaceKind,
+            remoteHostId: o.remoteHostId ?? null,
+            agentDeviceId: o.agentDeviceId ?? null,
+          });
         }
       }
     }
     const mekaRuntime = await applyMekaRuntimeConfig(o, {
-      readPersistedSession: async (sessionId) => {
-        const [row] = await getDbClient()
-          .drizzle.select({
-            workspaceKind: sessions.workspaceKind,
-            mekaProjectId: sessions.mekaProjectId,
-            mekaRoleId: sessions.mekaRoleId,
-            mekaRole: sessions.mekaRole,
-          })
-          .from(sessions)
-          .where(eq(sessions.id, sessionId))
-          .limit(1);
-        return row ?? null;
-      },
+      readPersistedSession: ensurePersistedMekaSessionBinding,
     });
     if (mekaRuntime.didApply) {
       log.info('Meka runtime config applied before session start', {
@@ -9748,6 +9792,28 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
 
     assertAccess?.();
     return { session, didInjectOrcaInstructions, didInjectProjectContext };
+    } catch (error) {
+      // 本函数在 Agent 启动前先 INSERT 了身份行；启动失败时撤掉这条尚未绑定 sdkSessionId
+      // 的空任务，避免 scheduler / handoff 入口留下“可点开但没有 Agent”的孤儿行。
+      if (provisionedRowId) {
+        const orphanId = provisionedRowId;
+        provisionedRowId = null;
+        try {
+          const deleted = await getDbClient()
+            .drizzle.delete(sessions)
+            .where(and(eq(sessions.id, orphanId), isNull(sessions.sdkSessionId)))
+            .returning({ id: sessions.id });
+          if (deleted.length > 0) {
+            log.info('Provisioned session row removed after failed agent start', { sessionId: orphanId });
+          }
+        } catch (cleanupError) {
+          log.warn('Failed to remove provisioned session row after failed agent start', {
+            sessionId: orphanId,
+            error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+          });
+        }
+      }
+      throw error;
     } finally { creationSignal?.removeEventListener('abort', closeCancelled); }
   }
 
@@ -9810,6 +9876,45 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           }
           // Keep the local application's existing tool capability and native storage.
           // The regular task pipeline supplies persistence and the desktop's live view.
+          // Meka 身份收口：local-app 的 open 不走 bootstrapSession，但它的行可能落在
+          // Meka 项目目录 / 继承既有绑定；启动前按持久行 ensure 并注入，否则会再次出现
+          // 「库里 Meka、运行期普通会话」。
+          let mekaBinding = opts.id ? await ensurePersistedMekaSessionBinding(opts.id) : null;
+          if (!mekaBinding && opts.id) {
+            // 行不存在/new：按本次工作区解析；行随后由 storage 按同一路径落库。
+            const identity = await resolveSessionIdentityForCreate({
+              workspaceKind: opts.workspaceKind ?? 'project',
+              workingDir: opts.workingDir ?? null,
+              projectDir: opts.projectDir ?? null,
+              remoteHostId: opts.remoteHostId ?? null,
+              agentDeviceId: opts.agentDeviceId ?? null,
+            });
+            if (identity.mekaProjectId && identity.mekaRoleId) {
+              Object.assign(opts, {
+                mekaProjectId: identity.mekaProjectId,
+                mekaRoleId: identity.mekaRoleId,
+                projectDir: identity.projectDir ?? opts.projectDir,
+                workspaceKind: 'project',
+              });
+              mekaBinding = {
+                workspaceKind: 'project',
+                mekaProjectId: identity.mekaProjectId,
+                mekaRoleId: identity.mekaRoleId,
+                mekaRole: null,
+              };
+            }
+          }
+          if (mekaBinding && hasMekaAssistantBinding(mekaBinding)) {
+            Object.assign(opts, {
+              workspaceKind: 'project',
+              mekaProjectId: mekaBinding.mekaProjectId,
+              mekaRoleId: mekaBinding.mekaRoleId,
+              mekaRole: mekaBinding.mekaRole,
+            });
+            await applyMekaRuntimeConfig(opts as MakerSessionCreateOpts, {
+              readPersistedSession: ensurePersistedMekaSessionBinding,
+            });
+          }
           const session = await localMaker.createSession(opts);
           try {
             assertLocalAppOwner();
@@ -17034,32 +17139,6 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       await ensureRemoteReadyForSessionStart({ createOpts: params.createOpts });
     },
     bootstrapSession,
-    persistMekaWorkerBinding: async ({ sessionId, projectId, roleId }) => {
-      const db = getDbClient().drizzle;
-      const [current] = await db
-        .select({
-          workspaceKind: sessions.workspaceKind,
-          mekaProjectId: sessions.mekaProjectId,
-          mekaRoleId: sessions.mekaRoleId,
-        })
-        .from(sessions)
-        .where(eq(sessions.id, sessionId))
-        .limit(1);
-      // 身份判据是成对绑定（新会话 kind 是普通值，不再写 'meka'）。
-      if (!current || !hasMekaAssistantBinding(current)) {
-        throw new Error(`Worker session ${sessionId} did not persist as a Meka workspace`);
-      }
-      if (
-        (current.mekaProjectId && current.mekaProjectId !== projectId) ||
-        (current.mekaRoleId && current.mekaRoleId !== roleId)
-      ) {
-        throw new Error(`Worker session ${sessionId} already has a different Meka binding`);
-      }
-      await db
-        .update(sessions)
-        .set({ mekaProjectId: projectId, mekaRoleId: roleId, updatedAt: Date.now() })
-        .where(eq(sessions.id, sessionId));
-    },
     addOrUpdateWorker: async (worker) => {
       await addOrUpdateWorker(worker);
     },

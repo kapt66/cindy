@@ -464,6 +464,70 @@ P4 项目根、插件面板呈现方式等 Meka 专属配置；这些配置落�
     "未绑定 lane 位于 Meka 目录时 `/new`" 仍只按上一行绑定继承、不重新解析工作区，
     存量边界未覆盖。
 
+- **2026-11-23 追加（统一创建 / 启动身份协议 + row-first；本节上方 2026-11-20 的记录原文保留，不改写）**：
+  - **保护的不变量（本批新增 / 收紧）**：
+    1. **创建侧只有一个身份入口**：任何写 `sessions` 行的通道在 INSERT 前调用
+       `localDb/sessionIdentity.ts` 的 `resolveSessionIdentityForCreate`（显式成对绑定优先；
+       半绑定直接抛错；`remoteHostId` 不做本机路径推断；`agentDeviceId` 仍参与——工作区与
+       文件在本机；旧 `kind='meka'` 命中路径时归一普通 `project`）。身份必须随**同一次
+       INSERT** 落库，**不得**在启动后补写身份。
+    2. **row-first**：`bootstrapSessionOnce` 在 Agent 启动前，对「还没有行且创建侧解析出成对
+       绑定」的会话先用 `localDb/sessionProvisioning.ts` 的 `insertProvisionedSessionRow`
+       落库；已有行以持久身份为准，调用方 opts 与行不一致直接报错；本次先建的行在 Agent
+       启动失败时删除（仅 `sdkSessionId IS NULL`），不留「可点开但没有 Agent」的空任务。
+    3. **运行期注入入口不变**（仍只有 `applyMekaRuntimeConfig`），数据源改为
+       `meka-injection/persistedBinding.ts` 的 `ensurePersistedMekaSessionBinding`：读持久行 +
+       「本地工作区命中 Meka 项目但未绑定」的行按路径升级一次；**半绑定行不修**、
+       `remoteHostId` 行跳过、已绑定行零写入、**不扫全库**。这是**不批量回填、首次启动按行
+       升级**，取代 2026-11-20「存量不管」在**启动面**的表述。
+    4. **Orca Worker 不再事后补绑定**：删除启动后的 `persistMekaWorkerBinding` 写回；worker
+       行由 bootstrap 先 provision，绑定来自 Lead；新 worker 的 `workspaceKind` 归一
+       `'project'`（旧 Lead 的 `'meka'` 只作历史展示，不再复制给新行）。
+  - **代码锚点**（**以符号名为准**；2026-11-23 工作树）：`localDb/sessionIdentity.ts`
+    （`resolveSessionIdentityForCreate`，新增）、`localDb/sessionProvisioning.ts`
+    （`insertProvisionedSessionRow`，新增）、`localDb/sessionOpening.ts`（`openSession`）、
+    `localDb/sessionStorageAdapter.ts`（`OwnerSessionStorage.create`）、
+    `localDb/mapper.ts`（`sessionCreateToRow` 成对校验）、`maker-ipc/register.ts` 的
+    `bootstrapSessionOnce`（身份收口 / row-first provision / 启动失败清理）与
+    `OrcaWorkerCreationDeps`（`persistMekaWorkerBinding` 已删）、
+    `meka-injection/persistedBinding.ts`（`ensurePersistedMekaSessionBinding`）、
+    `im/shared/sessionRepo.ts`（手工 INSERT / `/new` 轮换 / `switchSessionWorkingDir`）、
+    `im/shared/turnRunner.ts`、`im/shared/cardActionHandler.ts`、`hook-control/session-runner.ts`、
+    `goal-host/sessionRestore.ts`、`scheduler-host/runner.ts`（重建回到 bootstrap funnel）、
+    `localDb/ipc/sessions.ts`（`sessions:update`）、`localDb/ipc/bots.ts`（群 lane）、
+    `cindy-make/taskRuntime.ts` / `cindy-make/upstreamMergeSession.ts`、
+    `session-import/executor.ts` / `localDb/worker/opHandlers/sessionImportTx.ts`（main 解析、
+    worker 只落库）、`maker-orchestration/fork.ts`、`maker-ipc/orcaWorkerCreationService.ts`。
+  - **自动化门禁**（**本轮由 lead 在交付时最终执行，写作时尚未运行**）：新增
+    `pnpm --filter desktop exec vitest run src/main/localDb/__tests__/sessionIdentity.test.ts`
+    以及受影响文件的定向用例（`sessionOpening` / `sessionRestore` / `session-runner` /
+    `turnRunner*` / `orcaWorkerCreationService` / 伙伴 lane / `cindy-make` / `session-import` /
+    `fork`）；完整口径以 lead 跑的 `pnpm test:unit:related` + desktop typecheck +
+    `pnpm check:test-hygiene` 为准。**既有 WL-3.9 里的 2026-11-20 计数与「桌面内联查询」类
+    描述均已被取代，不再代表当前工作树。**
+  - **实机验证**：**本轮未跑**。在 2026-11-20 待执行判据之外追加：⑥ 一条历史普通会话
+    （本地工作区 = Meka 项目目录）被桌面 / IM / 官方 hook / Goal 恢复任一路径**首次启动**后，
+    库里升级为成对绑定且运行期 Meka 注入生效；⑦ 半绑定行启动后不会被自动改成另一个身份；
+    ⑧ 一条远端（`remoteHostId`）会话启动不会被本机项目表误绑。
+  - **未验证 / 已知边界**：
+    - **门禁未跑**：本轮所有自动化结果以 lead 最终门禁为准，不得记成已通过。
+    - **Orca 跨设备（另一台电脑执行 Worker）**：`OrcaRemoteWorkerOpenRequest` / `Result`
+      （`packages/device-link/src/orcaRemoteWorker.ts`）**没有 Meka 字段**，运行设备的 Worker
+      身份只能按它自己的目录 / 注册表解析（可能是默认角色，也可能不是 Lead 的角色）；发起端
+      本机代理行也不带 Meka 身份。**尚无身份传递，属跨端协议 / 产品裁决，需用户明确决定。**
+    - **`apps/host`（cindy-host）无解析端口 / 无注入**：host 上的 Meka 目录任务仍是普通任务，
+      也没有启动期升级。
+    - **半绑定行不自动修**；**启动期升级只处理本地工作区**；**存量普通行只在首次启动时升级**，
+      不批量迁移、不追溯未启动的行。
+    - **Pi runtime 预启动 / Goal 恢复 / scheduler 重建**：代码上已接同一注入入口（见锚点），
+      但**未实机验证**；以后新增绕过 bootstrap 的启动路径必须按同一入口接入。
+    - **上文 2026-11-20 记录的时效**：`readPersistedMekaSessionBinding` 作为生产
+      `deps.readPersistedSession`、「桌面 `bootstrapSessionOnce` 仍内联同一段只读查询」、
+      「Goal 恢复与 Pi runtime 预启动未接入」这三条已被 2026-11-23 取代 —— **保留上文作历史**，
+      现状以本追加块为准。
+  - **历史回归**：`../migrations/xdmaker-meka-to-cindy.md` §11.40（2026-11-23 Orca Worker
+    「did not persist as a Meka workspace」根因与 row-first 修复）；§11.39（2026-11-20 身份裁决）。
+
 > 横切域守卫（IM `/sessions` 投影、scheduler 域、协同资格）见 **WL-12**，不在本节重复。
 
 ### WL-4 MCPRouter 远程会话
